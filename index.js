@@ -31,6 +31,14 @@ function normPhone(s) {
   return d;
 }
 
+// pg's default param binder does NOT serialize JS objects/arrays to JSONB.
+// Use this for every JSONB parameter to force JSON encoding.
+function jb(v) {
+  if (v === null || v === undefined) return null;
+  if (typeof v === "string") return v; // assume already-serialized JSON
+  return JSON.stringify(v);
+}
+
 const app = new Hono();
 
 app.use("*", cors({
@@ -174,7 +182,7 @@ app.get("/api/settings", async (c) => {
 app.put("/api/settings", async (c) => {
   const err = await requireAdmin(c); if (err) return err;
   const body = await c.req.json();
-  await pool.query("UPDATE settings SET data=$1, updated_at=NOW() WHERE id=1", [body]);
+  await pool.query("UPDATE settings SET data=$1::jsonb, updated_at=NOW() WHERE id=1", [jb(body)]);
   return c.json({ ok: true });
 });
 
@@ -241,7 +249,7 @@ app.post("/api/batches", async (c) => {
     [
       b.id, b.campaignName, b.ambassadorId, b.discountPercent, b.validityDate,
       b.codePrefix || "", b.offerDescription || "", b.bannerTemplateId || "",
-      b.customText || {}, b.customColors || {}, b.source || "auto", b.status || "draft",
+      jb(b.customText || {}), jb(b.customColors || {}), b.source || "auto", b.status || "draft",
       !!b.tabSenseUploaded, b.exportedAt || null, b.createdAt || null,
     ]
   );
@@ -258,8 +266,8 @@ app.put("/api/batches/:id", async (c) => {
      WHERE id=$1`,
     [
       id, b.campaignName, b.discountPercent, b.validityDate, b.codePrefix || "",
-      b.offerDescription || "", b.bannerTemplateId || "", b.customText || {},
-      b.customColors || {}, b.status || "draft", !!b.tabSenseUploaded, b.exportedAt || null,
+      b.offerDescription || "", b.bannerTemplateId || "", jb(b.customText || {}),
+      jb(b.customColors || {}), b.status || "draft", !!b.tabSenseUploaded, b.exportedAt || null,
     ]
   );
   return c.json({ ok: true });
@@ -352,8 +360,8 @@ app.post("/api/designs", async (c) => {
   const b = await c.req.json();
   await pool.query(
     `INSERT INTO designs (id, name, image_url, width, height, fields, created_at)
-     VALUES ($1,$2,$3,$4,$5,$6, COALESCE($7::timestamptz, NOW()))`,
-    [b.id, b.name, b.imageUrl, b.width || null, b.height || null, b.fields || [], b.createdAt || null]
+     VALUES ($1,$2,$3,$4,$5,$6::jsonb, COALESCE($7::timestamptz, NOW()))`,
+    [b.id, b.name, b.imageUrl, b.width || null, b.height || null, jb(b.fields || []), b.createdAt || null]
   );
   return c.json({ ok: true });
 });
@@ -362,9 +370,9 @@ app.put("/api/designs/:id", async (c) => {
   const id = c.req.param("id");
   const b = await c.req.json();
   await pool.query(
-    `UPDATE designs SET name=$2, image_url=$3, width=$4, height=$5, fields=$6, updated_at=NOW()
+    `UPDATE designs SET name=$2, image_url=$3, width=$4, height=$5, fields=$6::jsonb, updated_at=NOW()
      WHERE id=$1`,
-    [id, b.name, b.imageUrl, b.width || null, b.height || null, b.fields || []]
+    [id, b.name, b.imageUrl, b.width || null, b.height || null, jb(b.fields || [])]
   );
   return c.json({ ok: true });
 });
@@ -383,7 +391,7 @@ app.post("/api/import", async (c) => {
   try {
     await client.query("BEGIN");
     if (body.settings) {
-      await client.query("UPDATE settings SET data=$1, updated_at=NOW() WHERE id=1", [body.settings]);
+      await client.query("UPDATE settings SET data=$1::jsonb, updated_at=NOW() WHERE id=1", [jb(body.settings)]);
       stats.settings = 1;
     }
     for (const a of (body.ambassadors || [])) {
@@ -413,7 +421,7 @@ app.post("/api/import", async (c) => {
         [
           b.id, b.campaignName, b.ambassadorId, b.discountPercent, b.validityDate,
           b.codePrefix || "", b.offerDescription || "", b.bannerTemplateId || "",
-          b.customText || {}, b.customColors || {}, b.source || "auto", b.status || "draft",
+          jb(b.customText || {}), jb(b.customColors || {}), b.source || "auto", b.status || "draft",
           !!b.tabSenseUploaded, b.exportedAt || null, b.createdAt || null,
         ]
       );
@@ -436,10 +444,10 @@ app.post("/api/import", async (c) => {
     for (const d of (body.designs || [])) {
       await client.query(
         `INSERT INTO designs (id, name, image_url, width, height, fields, created_at)
-         VALUES ($1,$2,$3,$4,$5,$6, COALESCE($7::timestamptz, NOW()))
+         VALUES ($1,$2,$3,$4,$5,$6::jsonb, COALESCE($7::timestamptz, NOW()))
          ON CONFLICT (id) DO UPDATE SET name=EXCLUDED.name, image_url=EXCLUDED.image_url,
            width=EXCLUDED.width, height=EXCLUDED.height, fields=EXCLUDED.fields, updated_at=NOW()`,
-        [d.id, d.name, d.imageUrl, d.width || null, d.height || null, d.fields || [], d.createdAt || null]
+        [d.id, d.name, d.imageUrl, d.width || null, d.height || null, jb(d.fields || []), d.createdAt || null]
       );
       stats.designs++;
     }
