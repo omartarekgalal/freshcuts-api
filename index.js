@@ -6,7 +6,8 @@ import pg from "pg";
 const { Pool } = pg;
 
 const DATABASE_URL = process.env.DATABASE_URL;
-const ADMIN_TOKEN = process.env.ADMIN_TOKEN; // shared secret for admin
+const ADMIN_TOKEN = process.env.ADMIN_TOKEN; // bearer token for admin requests
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || ADMIN_TOKEN; // human-friendly password to log in (falls back to token)
 const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || "*").split(",").map(s => s.trim());
 const PORT = Number(process.env.PORT || 3000);
 
@@ -145,7 +146,7 @@ app.get("/health", async (c) => {
 // ─── Auth ────────────────────────────────────────────────────────────────────
 app.post("/api/auth/admin", async (c) => {
   const { password } = await c.req.json().catch(() => ({}));
-  if (!password || password !== ADMIN_TOKEN) return c.json({ ok: false }, 401);
+  if (!password || password !== ADMIN_PASSWORD) return c.json({ ok: false }, 401);
   return c.json({ ok: true, token: ADMIN_TOKEN });
 });
 
