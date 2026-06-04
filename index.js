@@ -382,6 +382,63 @@ app.delete("/api/designs/:id", async (c) => {
   return c.json({ ok: true });
 });
 
+// ─── Sync redeemed codes (paste TabSense usage list) ────────────────────────
+// Body: { codes: ["AB-XYZ", { code:"AB-XYZ", date:"2026-05-24" }, ...], redeemedAt? }
+// Marks every code that exists in DB as redeemed. Returns per-code outcome.
+app.post("/api/sync/redeemed", async (c) => {
+  const err = await requireAdmin(c); if (err) return err;
+  const body = await c.req.json().catch(() => ({}));
+  const arr = Array.isArray(body.codes) ? body.codes : [];
+  const defaultAt = body.redeemedAt || null;
+
+  // Normalize entries → [{code, at}]
+  const entries = [];
+  for (const item of arr) {
+    if (!item) continue;
+    if (typeof item === "string") {
+      const c = item.trim();
+      if (c) entries.push({ code: c, at: defaultAt });
+    } else if (typeof item === "object") {
+      const c = (item.code || "").trim();
+      if (c) entries.push({ code: c, at: item.date || item.redeemedAt || defaultAt });
+    }
+  }
+  if (entries.length === 0) return c.json({ ok: false, error: "no_codes" }, 400);
+
+  const matched = [], unknown = [], alreadyRedeemed = [];
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    for (const e of entries) {
+      const r = await client.query("SELECT code, redeemed FROM codes WHERE code = $1", [e.code]);
+      if (!r.rowCount) { unknown.push(e.code); continue; }
+      if (r.rows[0].redeemed) { alreadyRedeemed.push(e.code); continue; }
+      const at = e.at || new Date().toISOString();
+      await client.query(
+        "UPDATE codes SET redeemed = true, redeemed_at = COALESCE($2::timestamptz, NOW()), updated_at = NOW() WHERE code = $1",
+        [e.code, at]
+      );
+      matched.push(e.code);
+    }
+    await client.query("COMMIT");
+  } catch (ex) {
+    await client.query("ROLLBACK");
+    throw ex;
+  } finally {
+    client.release();
+  }
+  return c.json({
+    ok: true,
+    total: entries.length,
+    matched: matched.length,
+    unknown: unknown.length,
+    alreadyRedeemed: alreadyRedeemed.length,
+    matchedCodes: matched.slice(0, 200),
+    unknownCodes: unknown.slice(0, 200),
+    alreadyRedeemedCodes: alreadyRedeemed.slice(0, 200),
+  });
+});
+
 // ─── Bulk import (one-shot migration from localStorage) ──────────────────────
 app.post("/api/import", async (c) => {
   const err = await requireAdmin(c); if (err) return err;
