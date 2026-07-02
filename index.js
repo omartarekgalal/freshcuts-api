@@ -699,12 +699,58 @@ app.post("/api/tabsense/sync-now", async (c) => {
   }
 });
 
+// Full promotions list (id, name, type, dates, active) for the offers manager.
 app.get("/api/tabsense/promotions", async (c) => {
   const err = await requireAdmin(c); if (err) return err;
   if (!TS_ENABLED) return c.json({ ok: false, error: "tabsense_not_configured" }, 400);
   try {
-    const promotions = await ts.listPromotions();
+    const promotions = await ts.listPromotionsFull();
     return c.json({ ok: true, promotions });
+  } catch (e) {
+    return c.json({ ok: false, error: e.message }, 500);
+  }
+});
+
+// Create an offer (simplified % or fixed discount that requires an ambassador code).
+// Body: { name, value, discountType?, startDate, endDate, active? }
+app.post("/api/tabsense/promotions", async (c) => {
+  const err = await requireAdmin(c); if (err) return err;
+  if (!TS_ENABLED) return c.json({ ok: false, error: "tabsense_not_configured" }, 400);
+  const b = await c.req.json().catch(() => ({}));
+  if (!b.name || b.value == null || !b.startDate || !b.endDate) {
+    return c.json({ ok: false, error: "name, value, startDate, endDate required" }, 400);
+  }
+  try {
+    const created = await ts.createPromotion({
+      name: String(b.name).trim(),
+      value: b.value,
+      discountType: b.discountType === "fixed" || b.discountType === 1 ? 1 : 2,
+      startDate: b.startDate,
+      endDate: b.endDate,
+    });
+    // Optionally deactivate right away (created active by default).
+    if (created.id && b.active === false) {
+      await ts.setPromotionActive(created.id, false).catch(() => {});
+    }
+    return c.json({ ok: true, ...created });
+  } catch (e) {
+    return c.json({ ok: false, error: e.message }, 500);
+  }
+});
+
+// Toggle / set an offer's active state. Body: { active?: boolean } (omit to flip).
+app.post("/api/tabsense/promotions/:id/toggle", async (c) => {
+  const err = await requireAdmin(c); if (err) return err;
+  if (!TS_ENABLED) return c.json({ ok: false, error: "tabsense_not_configured" }, 400);
+  const id = Number(c.req.param("id"));
+  const b = await c.req.json().catch(() => ({}));
+  try {
+    if (typeof b.active === "boolean") {
+      const r = await ts.setPromotionActive(id, b.active);
+      return c.json({ ok: true, ...r });
+    }
+    const r = await ts.togglePromotionActive(id);
+    return c.json({ ok: true, toggled: true, raw: r });
   } catch (e) {
     return c.json({ ok: false, error: e.message }, 500);
   }

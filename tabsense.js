@@ -321,6 +321,19 @@ function findPromocodeFormAction(html) {
   return null;
 }
 
+// Find the <form> action whose body contains a field matching `fieldRe`.
+function findFormAction(html, fieldRe) {
+  const forms = html.split(/<form/i);
+  for (let i = 1; i < forms.length; i++) {
+    const chunk = "<form" + forms[i];
+    if (fieldRe.test(chunk)) {
+      const m = chunk.match(/action="([^"]+)"/);
+      if (m) return m[1];
+    }
+  }
+  return null;
+}
+
 // ─── List promotions (for discount% → promotion mapping) ────────────────────────
 // Returns [{ id, name }] parsed from the create page's promotion dropdown.
 async function listPromotions() {
@@ -334,6 +347,145 @@ async function listPromotions() {
   let m;
   while ((m = re.exec(scope))) out.push({ id: Number(m[1]), name: m[2].trim() });
   return out;
+}
+
+// ─── Promotions: full list + create + activate/deactivate + delete ───────────────
+// Rich list from the promotions DataTables endpoint. Returns
+// [{ id, name, type, startDate, endDate, active }]
+async function listPromotionsFull() {
+  const cols = ["id", "name", "promotion_type", "start_date", "end_date", "start_time", "applies_on_days", "active", "actions"];
+  const qs = new URLSearchParams();
+  qs.set("draw", "1");
+  cols.forEach((c, i) => qs.set(`columns[${i}][data]`, c));
+  qs.set("order[0][column]", "0");
+  qs.set("order[0][dir]", "desc");
+  qs.set("start", "0");
+  qs.set("length", "1000");
+  qs.set("search[value]", "");
+  const res = await authGet(`/promotions?${qs.toString()}`, { json: true });
+  if (!res.ok) throw new Error(`listPromotionsFull: HTTP ${res.status}`);
+  const data = await res.json();
+  const rows = Array.isArray(data.data) ? data.data : [];
+  return rows.map((r) => ({
+    id: Number(r.id),
+    // The name cell appends a priority-indicator <div>; keep only the leading text.
+    name: stripTags(String(r.name ?? "").split("<")[0]).trim(),
+    type: stripTags(String(r.promotion_type ?? "")),
+    startDate: stripTags(String(r.start_date ?? "")),
+    endDate: stripTags(String(r.end_date ?? "")),
+    // The `active` cell is a checkbox; "checked" means active.
+    active: /checked/i.test(String(r.active ?? "")),
+  })).filter((p) => Number.isFinite(p.id));
+}
+
+// Create a SIMPLIFIED percentage/fixed promotion that requires a promo code
+// (so it only applies when an ambassador code is entered — the natural pairing
+// for the ambassador system). Returns { ok, id, name }.
+// opts: { name, localName?, startDate, endDate, value, discountType=2(%)|1(fixed),
+//         branches=[1], orderOptions=[1,2,3], paymentMethods=[], applyOn=3(order),
+//         enablePromocode=true, customerTargetType=1(all), priority?, active? }
+async function createPromotion(opts) {
+  const {
+    name, localName = "", startDate, endDate, value,
+    discountType = 2, branches = [1], orderOptions = [1, 2, 3],
+    paymentMethods = [], applyOn = 3, enablePromocode = true,
+    customerTargetType = 1, priority = "",
+  } = opts || {};
+  if (!name || !startDate || !endDate || value == null) {
+    throw new Error("createPromotion: name, startDate, endDate, value are required");
+  }
+  const s = await getSession();
+  const pageRes = await authGet(`/promotions/create`);
+  const page = await pageRes.text();
+  const token = matchToken(page);
+  if (!token) throw new Error("createPromotion: CSRF token not found");
+  const action = findFormAction(page, /name="promotion_type"/) || dash("/promotions");
+
+  const body = new URLSearchParams();
+  body.append("_token", token);
+  body.append("name", name);
+  if (localName) body.append("local_name", localName);
+  body.append("start_date", startDate);
+  body.append("end_date", endDate);
+  for (const b of branches) body.append("branches[]", String(b));
+  for (const o of orderOptions) body.append("order_options[]", String(o));
+  for (const p of paymentMethods) body.append("payment_methods[]", String(p));
+  if (priority) body.append("priority", String(priority));
+  body.append("promotion_type", "3");          // simplified
+  body.append("discount_type", String(discountType)); // 2=percent, 1=fixed
+  body.append("value", String(value));
+  body.append("apply_on", String(applyOn));     // 3 = whole order
+  if (enablePromocode) body.append("enable_promocode", "1");
+  body.append("customer_target_type", String(customerTargetType)); // 1=all
+
+  const res = await fetch(action.startsWith("http") ? action : BASE + action, {
+    method: "POST",
+    headers: {
+      "User-Agent": UA,
+      "Cookie": s.jar.header(),
+      "Content-Type": "application/x-www-form-urlencoded",
+      "Accept": "text/html,application/json",
+      "Referer": dash("/promotions/create"),
+    },
+    body,
+    redirect: "manual",
+  });
+  // Laravel redirects (302) to /promotions on success; 200 with the form back = validation error.
+  if (res.status === 200) {
+    const txt = await res.text().catch(() => "");
+    if (/is-invalid|alert-danger|The .* field is required|whoops/i.test(txt)) {
+      throw new Error(`createPromotion: rejected (validation). ${txt.slice(0, 200)}`);
+    }
+  } else if (!(res.status >= 300 && res.status < 400)) {
+    const txt = await res.text().catch(() => "");
+    throw new Error(`createPromotion: HTTP ${res.status} ${txt.slice(0, 200)}`);
+  }
+  // Resolve the new promotion's id by name (newest match).
+  const list = await listPromotionsFull();
+  const match = list.filter((p) => p.name === name).sort((a, b) => b.id - a.id)[0];
+  return { ok: true, id: match?.id ?? null, name };
+}
+
+// Toggle a promotion's active flag (GET endpoint used by the dashboard switch).
+// Returns the raw JSON ({ status }) from TabSense.
+async function togglePromotionActive(id) {
+  const res = await authGet(`/promotions/${id}/toggle-active`, { json: true });
+  if (!res.ok) throw new Error(`togglePromotionActive(${id}): HTTP ${res.status}`);
+  return res.json().catch(() => ({}));
+}
+
+// Ensure a promotion ends up in the desired active state (reads current, toggles if needed).
+async function setPromotionActive(id, desired) {
+  const list = await listPromotionsFull();
+  const cur = list.find((p) => p.id === Number(id));
+  if (!cur) throw new Error(`setPromotionActive: promotion ${id} not found`);
+  if (cur.active === !!desired) return { ok: true, active: cur.active, changed: false };
+  await togglePromotionActive(id);
+  return { ok: true, active: !!desired, changed: true };
+}
+
+// Delete a promotion (Laravel destroy via POST _method=DELETE).
+async function deletePromotion(id) {
+  const s = await getSession();
+  const pageRes = await authGet(`/promotions`);
+  const token = matchToken(await pageRes.text());
+  const body = new URLSearchParams();
+  if (token) body.append("_token", token);
+  body.append("_method", "DELETE");
+  const res = await fetch(dash(`/promotions/${id}`), {
+    method: "POST",
+    headers: {
+      "User-Agent": UA,
+      "Cookie": s.jar.header(),
+      "Content-Type": "application/x-www-form-urlencoded",
+      "Accept": "text/html,application/json",
+      "Referer": dash("/promotions"),
+    },
+    body,
+    redirect: "manual",
+  });
+  const ok = res.status === 200 || (res.status >= 300 && res.status < 400);
+  return { ok, status: res.status };
 }
 
 async function ping() {
@@ -350,6 +502,11 @@ export {
   fetchExistingCodeSet,
   uploadCodeBatch,
   listPromotions,
+  listPromotionsFull,
+  createPromotion,
+  togglePromotionActive,
+  setPromotionActive,
+  deletePromotion,
   ping,
   BASE,
   STORE,
