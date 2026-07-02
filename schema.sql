@@ -35,6 +35,7 @@ CREATE TABLE IF NOT EXISTS batches (
   custom_colors JSONB DEFAULT '{}',
   source TEXT,
   status TEXT,
+  promotion_id INT,               -- chosen TabSense offer this batch's codes link to
   tab_sense_uploaded BOOL DEFAULT false,
   exported_at TIMESTAMPTZ,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),

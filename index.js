@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import { serve } from "@hono/node-server";
 import { cors } from "hono/cors";
 import pg from "pg";
+import crypto from "node:crypto";
 import * as ts from "./tabsense.js";
 
 const { Pool } = pg;
@@ -120,6 +121,7 @@ function batchRow(r) {
     customColors: r.custom_colors || {},
     source: r.source || "auto",
     status: r.status || "draft",
+    promotionId: r.promotion_id ?? null,
     tabSenseUploaded: r.tab_sense_uploaded,
     exportedAt: r.exported_at,
     createdAt: r.created_at,
@@ -251,14 +253,14 @@ app.post("/api/batches", async (c) => {
   const b = await c.req.json();
   await pool.query(
     `INSERT INTO batches (id, campaign_name, ambassador_id, discount_percent, validity_date, code_prefix,
-       offer_description, banner_template_id, custom_text, custom_colors, source, status, tab_sense_uploaded,
+       offer_description, banner_template_id, custom_text, custom_colors, source, status, promotion_id, tab_sense_uploaded,
        exported_at, created_at)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14, COALESCE($15::timestamptz, NOW()))`,
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15, COALESCE($16::timestamptz, NOW()))`,
     [
       b.id, b.campaignName, b.ambassadorId, b.discountPercent, b.validityDate,
       b.codePrefix || "", b.offerDescription || "", b.bannerTemplateId || "",
       jb(b.customText || {}), jb(b.customColors || {}), b.source || "auto", b.status || "draft",
-      !!b.tabSenseUploaded, b.exportedAt || null, b.createdAt || null,
+      b.promotionId ?? null, !!b.tabSenseUploaded, b.exportedAt || null, b.createdAt || null,
     ]
   );
   return c.json({ ok: true });
@@ -273,12 +275,14 @@ app.put("/api/batches/:id", async (c) => {
   await pool.query(
     `UPDATE batches SET campaign_name=$2, discount_percent=$3, validity_date=$4, code_prefix=$5,
        offer_description=$6, banner_template_id=$7, custom_text=$8, custom_colors=$9,
-       status=$10, tab_sense_uploaded=(tab_sense_uploaded OR $11), exported_at=COALESCE($12, exported_at), updated_at=NOW()
+       status=$10, tab_sense_uploaded=(tab_sense_uploaded OR $11), exported_at=COALESCE($12, exported_at),
+       promotion_id=COALESCE($13, promotion_id), updated_at=NOW()
      WHERE id=$1`,
     [
       id, b.campaignName, b.discountPercent, b.validityDate, b.codePrefix || "",
       b.offerDescription || "", b.bannerTemplateId || "", jb(b.customText || {}),
       jb(b.customColors || {}), b.status || "draft", !!b.tabSenseUploaded, b.exportedAt || null,
+      b.promotionId ?? null,
     ]
   );
   return c.json({ ok: true });
@@ -574,24 +578,29 @@ function todayISO() { return new Date().toISOString().slice(0, 10); }
 // `existing` (optional) = Set of code strings already on TabSense; when any of
 // this batch's codes are in it, we skip the upload (idempotency guard against
 // duplicate batches — covers legacy batches, retries, and crash-after-upload).
-async function pushBatch(batch, settings, existing) {
-  const promotionId = resolvePromotionId(batch.discount_percent, settings);
+async function pushBatch(batch, settings, existing, overridePromotionId) {
+  // Prefer an explicit offer: override arg → the batch's stored promotion_id →
+  // discount%→promotion mapping. Persist the resolved id back to the batch.
+  const promotionId = overridePromotionId || batch.promotion_id || resolvePromotionId(batch.discount_percent, settings);
   if (!promotionId) {
     const e = new Error(`no_promotion_mapping_for_${batch.discount_percent}%`);
     e.code = "NO_PROMOTION";
     throw e;
   }
+  if (batch.promotion_id !== promotionId) {
+    await pool.query("UPDATE batches SET promotion_id=$2, updated_at=NOW() WHERE id=$1", [batch.id, promotionId]);
+  }
   const codesR = await pool.query("SELECT code FROM codes WHERE batch_id=$1", [batch.id]);
   const codes = codesR.rows.map((r) => r.code);
   if (!codes.length) return { ok: true, uploaded: 0, skipped: "no_codes" };
 
-  // Idempotency: if TabSense already has any of these codes, mark uploaded, skip.
+  // Idempotency PER CODE: upload only codes not already on TabSense. This makes
+  // push safe to call repeatedly (legacy batches, retries, crash-after-upload)
+  // AND lets us top up an existing batch — only the new codes get uploaded.
   const existingSet = existing || await ts.fetchExistingCodeSet();
-  if (codes.some((c) => existingSet.has(c))) {
-    await pool.query(
-      "UPDATE batches SET tab_sense_uploaded=true, updated_at=NOW() WHERE id=$1",
-      [batch.id]
-    );
+  const toUpload = codes.filter((c) => !existingSet.has(c));
+  if (toUpload.length === 0) {
+    await pool.query("UPDATE batches SET tab_sense_uploaded=true, updated_at=NOW() WHERE id=$1", [batch.id]);
     return { ok: true, uploaded: 0, skipped: "already_on_tabsense" };
   }
 
@@ -605,7 +614,7 @@ async function pushBatch(batch, settings, existing) {
     startDate: todayISO(),
     endDate: validity || todayISO(),
     usageLimit: 1,
-    codes,
+    codes: toUpload,
   });
 
   // Confirm the upload actually landed before marking uploaded. TabSense may
@@ -613,7 +622,7 @@ async function pushBatch(batch, settings, existing) {
   // proves success. If nothing landed, throw so it's retried next cycle
   // (codes aren't on TabSense, so no duplicate risk).
   const after = await ts.fetchExistingCodeSet();
-  const landed = codes.filter((c) => after.has(c)).length;
+  const landed = toUpload.filter((c) => after.has(c)).length;
   if (landed === 0) {
     const e = new Error("upload_not_confirmed: no codes found on TabSense after upload");
     e.code = "UPLOAD_UNCONFIRMED";
@@ -624,7 +633,7 @@ async function pushBatch(batch, settings, existing) {
     "UPDATE batches SET tab_sense_uploaded=true, exported_at=NOW(), updated_at=NOW() WHERE id=$1",
     [batch.id]
   );
-  return { ...res, confirmed: landed };
+  return { ...res, uploaded: toUpload.length, confirmed: landed };
 }
 
 async function runAutoSync() {
@@ -756,26 +765,120 @@ app.post("/api/tabsense/promotions/:id/toggle", async (c) => {
   }
 });
 
-// Push a single batch to TabSense on demand (called by the UI right after create).
+// Push a batch to TabSense on demand. Body: { promotionId? } to link/relink an
+// offer. Safe to call repeatedly and after adding codes — only new codes upload.
 app.post("/api/batches/:id/push", async (c) => {
   const err = await requireAdmin(c); if (err) return err;
   if (!TS_ENABLED) return c.json({ ok: false, error: "tabsense_not_configured" }, 400);
   const id = c.req.param("id");
+  const body = await c.req.json().catch(() => ({}));
+  const overridePromotionId = body.promotionId ? Number(body.promotionId) : null;
   const r = await pool.query("SELECT * FROM batches WHERE id=$1", [id]);
   if (!r.rowCount) return c.json({ ok: false, error: "not_found" }, 404);
   const batch = r.rows[0];
-  if (batch.tab_sense_uploaded) return c.json({ ok: true, alreadyUploaded: true });
   if (pushingBatches.has(id)) return c.json({ ok: false, error: "already_in_progress" }, 409);
   pushingBatches.add(id);
   try {
     const settings = await getSettingsData();
-    const res = await pushBatch(batch, settings);
+    const res = await pushBatch(batch, settings, null, overridePromotionId);
     return c.json({ ok: true, ...res });
   } catch (e) {
     const status = e.code === "NO_PROMOTION" ? 422 : 500;
     return c.json({ ok: false, error: e.message }, status);
   } finally {
     pushingBatches.delete(id);
+  }
+});
+
+// ─── Quick add codes to an ambassador (new batch or top up an existing one) ─────
+// Server-side code generation + insert + TabSense upload, all in one call.
+// Body: { count, promotionId, discountPercent?, validityDate?, campaignName?, batchId?, codePrefix? }
+const CODE_CHARS = "ABCDEFGHJKMNPQRSTUVWXYZ23456789";
+function randToken(n) {
+  let s = "";
+  const bytes = crypto.randomBytes(n);
+  for (let i = 0; i < n; i++) s += CODE_CHARS[bytes[i] % CODE_CHARS.length];
+  return s;
+}
+
+app.post("/api/ambassadors/:id/generate-codes", async (c) => {
+  const err = await requireAdmin(c); if (err) return err;
+  if (!TS_ENABLED) return c.json({ ok: false, error: "tabsense_not_configured" }, 400);
+  const ambId = c.req.param("id");
+  const b = await c.req.json().catch(() => ({}));
+  const count = Math.max(1, Math.min(500, Number(b.count) || 0));
+  if (!count) return c.json({ ok: false, error: "count required (1-500)" }, 400);
+  const promotionId = b.promotionId ? Number(b.promotionId) : null;
+  if (!promotionId) return c.json({ ok: false, error: "promotionId (offer) required" }, 400);
+
+  const ambR = await pool.query("SELECT * FROM ambassadors WHERE id=$1", [ambId]);
+  if (!ambR.rowCount) return c.json({ ok: false, error: "ambassador_not_found" }, 404);
+  const amb = ambR.rows[0];
+
+  // Prefix: explicit → existing batch prefix → derived from ambassador name.
+  const derivePrefix = (name) => {
+    const ascii = String(name || "").toUpperCase().replace(/[^A-Z]/g, "");
+    return (ascii.slice(0, 3) || "AMB");
+  };
+
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    // Resolve / create the target batch.
+    let batch;
+    if (b.batchId) {
+      const r = await client.query("SELECT * FROM batches WHERE id=$1 AND ambassador_id=$2", [b.batchId, ambId]);
+      if (!r.rowCount) { await client.query("ROLLBACK"); return c.json({ ok: false, error: "batch_not_found" }, 404); }
+      batch = r.rows[0];
+    } else {
+      const prefix = (b.codePrefix || derivePrefix(amb.name)).toUpperCase();
+      const id = "b" + randToken(10).toLowerCase();
+      const discount = Number(b.discountPercent) || 15;
+      const validity = b.validityDate || new Date(Date.now() + 30 * 86400000).toISOString().slice(0, 10);
+      const name = (b.campaignName || `${amb.name} ${discount}%`).trim();
+      await client.query(
+        `INSERT INTO batches (id, campaign_name, ambassador_id, discount_percent, validity_date, code_prefix,
+           offer_description, banner_template_id, custom_text, custom_colors, source, status, promotion_id, tab_sense_uploaded, created_at)
+         VALUES ($1,$2,$3,$4,$5,$6,'','','{}'::jsonb,'{}'::jsonb,'auto','draft',$7,false,NOW())`,
+        [id, name, ambId, discount, validity, prefix, promotionId]
+      );
+      batch = (await client.query("SELECT * FROM batches WHERE id=$1", [id])).rows[0];
+    }
+
+    // Generate `count` unique codes (collision-checked against the whole codes table).
+    const existingR = await client.query("SELECT code FROM codes");
+    const used = new Set(existingR.rows.map((r) => r.code));
+    const prefix = (batch.code_prefix || derivePrefix(amb.name)).toUpperCase();
+    const newCodes = [];
+    let guard = 0;
+    while (newCodes.length < count && guard < count * 50) {
+      guard++;
+      const code = `${prefix}-${randToken(4)}`;
+      if (used.has(code)) continue;
+      used.add(code); newCodes.push(code);
+    }
+    for (const code of newCodes) {
+      await client.query(
+        `INSERT INTO codes (code, batch_id, ambassador_id, redeemed, created_at)
+         VALUES ($1,$2,$3,false,NOW()) ON CONFLICT (code) DO NOTHING`,
+        [code, batch.id, ambId]
+      );
+    }
+    await client.query("COMMIT");
+
+    // Upload the new codes to TabSense under the chosen offer.
+    let push = null;
+    try {
+      push = await pushBatch(batch, await getSettingsData(), null, promotionId);
+    } catch (e) {
+      push = { ok: false, error: e.message };
+    }
+    return c.json({ ok: true, batchId: batch.id, campaignName: batch.campaign_name, generated: newCodes.length, codes: newCodes, push });
+  } catch (e) {
+    await client.query("ROLLBACK").catch(() => {});
+    return c.json({ ok: false, error: e.message }, 500);
+  } finally {
+    client.release();
   }
 });
 
