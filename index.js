@@ -720,8 +720,13 @@ app.get("/api/tabsense/promotions", async (c) => {
   }
 });
 
-// Create an offer (simplified % or fixed discount that requires an ambassador code).
+// Create an offer (simplified % or fixed discount).
 // Body: { name, value, discountType?, startDate, endDate, active? }
+// SAFETY: TabSense's "require promo code" (enable_promocode) does NOT persist via
+// this HTTP path, so a created offer would auto-apply to ALL customers. We
+// therefore ALWAYS create it INACTIVE and never auto-activate — the admin must
+// open it in TabSense, tick "تفعيل رمز الخصم", then activate. `requiresManualCodeGate`
+// tells the UI to warn about this.
 app.post("/api/tabsense/promotions", async (c) => {
   const err = await requireAdmin(c); if (err) return err;
   if (!TS_ENABLED) return c.json({ ok: false, error: "tabsense_not_configured" }, 400);
@@ -737,11 +742,9 @@ app.post("/api/tabsense/promotions", async (c) => {
       startDate: b.startDate,
       endDate: b.endDate,
     });
-    // Optionally deactivate right away (created active by default).
-    if (created.id && b.active === false) {
-      await ts.setPromotionActive(created.id, false).catch(() => {});
-    }
-    return c.json({ ok: true, ...created });
+    // Force INACTIVE — never leave a code-less discount live.
+    if (created.id) await ts.setPromotionActive(created.id, false).catch(() => {});
+    return c.json({ ok: true, ...created, active: false, requiresManualCodeGate: true });
   } catch (e) {
     return c.json({ ok: false, error: e.message }, 500);
   }
