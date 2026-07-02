@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import { serve } from "@hono/node-server";
 import { cors } from "hono/cors";
 import pg from "pg";
+import * as ts from "./tabsense.js";
 
 const { Pool } = pg;
 
@@ -10,6 +11,13 @@ const ADMIN_TOKEN = process.env.ADMIN_TOKEN; // bearer token for admin requests
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || ADMIN_TOKEN; // human-friendly password to log in (falls back to token)
 const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || "*").split(",").map(s => s.trim());
 const PORT = Number(process.env.PORT || 3000);
+
+// ─── TabSense automation config ────────────────────────────────────────────────
+const TS_ENABLED = !!(process.env.TABSENSE_EMAIL && process.env.TABSENSE_PASSWORD);
+const TS_AUTOSYNC = (process.env.TABSENSE_AUTOSYNC ?? "1") !== "0";
+const TS_AUTOPUSH = (process.env.TABSENSE_AUTOPUSH ?? "1") !== "0";
+const TS_SYNC_MINUTES = Math.max(1, Number(process.env.TABSENSE_SYNC_MINUTES || 5));
+const TS_DEFAULT_PROMOTION = process.env.TABSENSE_PROMOTION_ID ? Number(process.env.TABSENSE_PROMOTION_ID) : null;
 
 if (!DATABASE_URL) {
   console.error("DATABASE_URL is required");
@@ -259,10 +267,13 @@ app.put("/api/batches/:id", async (c) => {
   const err = await requireAdmin(c); if (err) return err;
   const id = c.req.param("id");
   const b = await c.req.json();
+  // tab_sense_uploaded is promote-only (existing OR incoming) and exported_at is
+  // preserved when omitted — so an edit carrying a stale client copy can never
+  // clear the flag/timestamp the TabSense worker set. See pushBatch/runAutoPush.
   await pool.query(
     `UPDATE batches SET campaign_name=$2, discount_percent=$3, validity_date=$4, code_prefix=$5,
        offer_description=$6, banner_template_id=$7, custom_text=$8, custom_colors=$9,
-       status=$10, tab_sense_uploaded=$11, exported_at=$12, updated_at=NOW()
+       status=$10, tab_sense_uploaded=(tab_sense_uploaded OR $11), exported_at=COALESCE($12, exported_at), updated_at=NOW()
      WHERE id=$1`,
     [
       id, b.campaignName, b.discountPercent, b.validityDate, b.codePrefix || "",
@@ -382,30 +393,14 @@ app.delete("/api/designs/:id", async (c) => {
   return c.json({ ok: true });
 });
 
-// ─── Sync redeemed codes (paste TabSense usage list) ────────────────────────
-// Body: { codes: ["AB-XYZ", { code:"AB-XYZ", date:"2026-05-24" }, ...], redeemedAt? }
-// Marks every code that exists in DB as redeemed. Returns per-code outcome.
-app.post("/api/sync/redeemed", async (c) => {
-  const err = await requireAdmin(c); if (err) return err;
-  const body = await c.req.json().catch(() => ({}));
-  const arr = Array.isArray(body.codes) ? body.codes : [];
-  const defaultAt = body.redeemedAt || null;
-
-  // Normalize entries → [{code, at}]
-  const entries = [];
-  for (const item of arr) {
-    if (!item) continue;
-    if (typeof item === "string") {
-      const c = item.trim();
-      if (c) entries.push({ code: c, at: defaultAt });
-    } else if (typeof item === "object") {
-      const c = (item.code || "").trim();
-      if (c) entries.push({ code: c, at: item.date || item.redeemedAt || defaultAt });
-    }
-  }
-  if (entries.length === 0) return c.json({ ok: false, error: "no_codes" }, 400);
-
+// ─── Sync redeemed codes ─────────────────────────────────────────────────────
+// Core: given normalized entries [{code, at}], mark existing codes as redeemed.
+// Shared by the manual paste route and the automatic TabSense worker.
+async function applyRedeemed(entries) {
   const matched = [], unknown = [], alreadyRedeemed = [];
+  if (!entries.length) {
+    return { total: 0, matched: 0, unknown: 0, alreadyRedeemed: 0, matchedCodes: [], unknownCodes: [], alreadyRedeemedCodes: [] };
+  }
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
@@ -427,8 +422,7 @@ app.post("/api/sync/redeemed", async (c) => {
   } finally {
     client.release();
   }
-  return c.json({
-    ok: true,
+  return {
     total: entries.length,
     matched: matched.length,
     unknown: unknown.length,
@@ -436,7 +430,31 @@ app.post("/api/sync/redeemed", async (c) => {
     matchedCodes: matched.slice(0, 200),
     unknownCodes: unknown.slice(0, 200),
     alreadyRedeemedCodes: alreadyRedeemed.slice(0, 200),
-  });
+  };
+}
+
+// Manual paste: { codes: ["AB-XYZ", { code:"AB-XYZ", date:"2026-05-24" }, ...], redeemedAt? }
+app.post("/api/sync/redeemed", async (c) => {
+  const err = await requireAdmin(c); if (err) return err;
+  const body = await c.req.json().catch(() => ({}));
+  const arr = Array.isArray(body.codes) ? body.codes : [];
+  const defaultAt = body.redeemedAt || null;
+
+  const entries = [];
+  for (const item of arr) {
+    if (!item) continue;
+    if (typeof item === "string") {
+      const s = item.trim();
+      if (s) entries.push({ code: s, at: defaultAt });
+    } else if (typeof item === "object") {
+      const s = (item.code || "").trim();
+      if (s) entries.push({ code: s, at: item.date || item.redeemedAt || defaultAt });
+    }
+  }
+  if (entries.length === 0) return c.json({ ok: false, error: "no_codes" }, 400);
+
+  const result = await applyRedeemed(entries);
+  return c.json({ ok: true, ...result });
 });
 
 // ─── Bulk import (one-shot migration from localStorage) ──────────────────────
@@ -518,6 +536,211 @@ app.post("/api/import", async (c) => {
   return c.json({ ok: true, stats });
 });
 
+// ─── TabSense worker: auto-push new batches + auto-sync redemptions ──────────
+const tsState = {
+  enabled: TS_ENABLED,
+  autoSync: TS_AUTOSYNC,
+  autoPush: TS_AUTOPUSH,
+  intervalMinutes: TS_SYNC_MINUTES,
+  running: false,
+  lastSyncAt: null,
+  lastSyncResult: null,
+  lastPushAt: null,
+  lastPushResult: null,
+  lastError: null,
+};
+const pushingBatches = new Set(); // in-flight guard to avoid double upload
+
+async function getSettingsData() {
+  const r = await pool.query("SELECT data FROM settings WHERE id=1");
+  return r.rows[0]?.data || {};
+}
+
+// Map an ambassador batch's discount% to a TabSense promotion id.
+// Priority: settings.tabsense.promotionMap[pct] → settings.tabsense.defaultPromotionId → env.
+function resolvePromotionId(discountPercent, settings) {
+  const cfg = settings?.tabsense || {};
+  const map = cfg.promotionMap || {};
+  const byPct = map[String(discountPercent)];
+  if (byPct) return Number(byPct);
+  if (cfg.defaultPromotionId) return Number(cfg.defaultPromotionId);
+  if (TS_DEFAULT_PROMOTION) return TS_DEFAULT_PROMOTION;
+  return null;
+}
+
+function todayISO() { return new Date().toISOString().slice(0, 10); }
+
+// Upload one batch's codes to TabSense. Returns { ok, uploaded } or throws.
+// `existing` (optional) = Set of code strings already on TabSense; when any of
+// this batch's codes are in it, we skip the upload (idempotency guard against
+// duplicate batches — covers legacy batches, retries, and crash-after-upload).
+async function pushBatch(batch, settings, existing) {
+  const promotionId = resolvePromotionId(batch.discount_percent, settings);
+  if (!promotionId) {
+    const e = new Error(`no_promotion_mapping_for_${batch.discount_percent}%`);
+    e.code = "NO_PROMOTION";
+    throw e;
+  }
+  const codesR = await pool.query("SELECT code FROM codes WHERE batch_id=$1", [batch.id]);
+  const codes = codesR.rows.map((r) => r.code);
+  if (!codes.length) return { ok: true, uploaded: 0, skipped: "no_codes" };
+
+  // Idempotency: if TabSense already has any of these codes, mark uploaded, skip.
+  const existingSet = existing || await ts.fetchExistingCodeSet();
+  if (codes.some((c) => existingSet.has(c))) {
+    await pool.query(
+      "UPDATE batches SET tab_sense_uploaded=true, updated_at=NOW() WHERE id=$1",
+      [batch.id]
+    );
+    return { ok: true, uploaded: 0, skipped: "already_on_tabsense" };
+  }
+
+  const validity = batch.validity_date instanceof Date
+    ? batch.validity_date.toISOString().slice(0, 10)
+    : String(batch.validity_date || "").slice(0, 10);
+
+  const res = await ts.uploadCodeBatch({
+    promotionId,
+    batchName: batch.campaign_name,
+    startDate: todayISO(),
+    endDate: validity || todayISO(),
+    usageLimit: 1,
+    codes,
+  });
+
+  // Confirm the upload actually landed before marking uploaded. TabSense may
+  // return HTTP 200 with an error/challenge page; only re-reading the codes
+  // proves success. If nothing landed, throw so it's retried next cycle
+  // (codes aren't on TabSense, so no duplicate risk).
+  const after = await ts.fetchExistingCodeSet();
+  const landed = codes.filter((c) => after.has(c)).length;
+  if (landed === 0) {
+    const e = new Error("upload_not_confirmed: no codes found on TabSense after upload");
+    e.code = "UPLOAD_UNCONFIRMED";
+    throw e;
+  }
+
+  await pool.query(
+    "UPDATE batches SET tab_sense_uploaded=true, exported_at=NOW(), updated_at=NOW() WHERE id=$1",
+    [batch.id]
+  );
+  return { ...res, confirmed: landed };
+}
+
+async function runAutoSync() {
+  const { codes, scanned, batches } = await ts.fetchAllRedeemedCodes();
+  const entries = codes.map((code) => ({ code, at: null }));
+  const result = await applyRedeemed(entries);
+  tsState.lastSyncAt = new Date().toISOString();
+  tsState.lastSyncResult = { ...result, tabSenseCodes: codes.length, scanned, batches };
+  return tsState.lastSyncResult;
+}
+
+async function runAutoPush() {
+  const pending = await pool.query(
+    "SELECT * FROM batches WHERE source='auto' AND tab_sense_uploaded=false ORDER BY created_at ASC LIMIT 25"
+  );
+  if (!pending.rows.length) return []; // common case: no TabSense calls at all
+  const settings = await getSettingsData();
+  // Build the existing-code set ONCE per sweep (idempotency guard for every batch).
+  const existing = await ts.fetchExistingCodeSet();
+  const results = [];
+  for (const b of pending.rows) {
+    if (pushingBatches.has(b.id)) continue;
+    pushingBatches.add(b.id);
+    try {
+      const r = await pushBatch(b, settings, existing);
+      results.push({ id: b.id, name: b.campaign_name, ...r });
+    } catch (e) {
+      results.push({ id: b.id, name: b.campaign_name, ok: false, error: e.message });
+    } finally {
+      pushingBatches.delete(b.id);
+    }
+  }
+  if (results.length) {
+    tsState.lastPushAt = new Date().toISOString();
+    tsState.lastPushResult = results;
+  }
+  return results;
+}
+
+async function runCycle() {
+  if (!TS_ENABLED || tsState.running) return;
+  tsState.running = true;
+  try {
+    if (TS_AUTOPUSH) await runAutoPush();   // push before sync so fresh codes can be read back
+    if (TS_AUTOSYNC) await runAutoSync();
+    tsState.lastError = null;
+  } catch (e) {
+    tsState.lastError = { at: new Date().toISOString(), message: e.message };
+    console.error("[tabsense] cycle error:", e.message);
+  } finally {
+    tsState.running = false;
+  }
+}
+
+// ─── TabSense endpoints ─────────────────────────────────────────────────────────
+app.get("/api/tabsense/status", async (c) => {
+  // Admin-only: tsState.lastSyncResult carries code lists spanning ALL
+  // ambassadors, so it must not be exposed to a single ambassador.
+  const err = await requireAdmin(c); if (err) return err;
+  return c.json(tsState);
+});
+
+app.post("/api/tabsense/sync-now", async (c) => {
+  const err = await requireAdmin(c); if (err) return err;
+  if (!TS_ENABLED) return c.json({ ok: false, error: "tabsense_not_configured" }, 400);
+  try {
+    const push = TS_AUTOPUSH ? await runAutoPush() : [];
+    const sync = await runAutoSync();
+    return c.json({ ok: true, push, sync });
+  } catch (e) {
+    return c.json({ ok: false, error: e.message }, 500);
+  }
+});
+
+app.get("/api/tabsense/promotions", async (c) => {
+  const err = await requireAdmin(c); if (err) return err;
+  if (!TS_ENABLED) return c.json({ ok: false, error: "tabsense_not_configured" }, 400);
+  try {
+    const promotions = await ts.listPromotions();
+    return c.json({ ok: true, promotions });
+  } catch (e) {
+    return c.json({ ok: false, error: e.message }, 500);
+  }
+});
+
+// Push a single batch to TabSense on demand (called by the UI right after create).
+app.post("/api/batches/:id/push", async (c) => {
+  const err = await requireAdmin(c); if (err) return err;
+  if (!TS_ENABLED) return c.json({ ok: false, error: "tabsense_not_configured" }, 400);
+  const id = c.req.param("id");
+  const r = await pool.query("SELECT * FROM batches WHERE id=$1", [id]);
+  if (!r.rowCount) return c.json({ ok: false, error: "not_found" }, 404);
+  const batch = r.rows[0];
+  if (batch.tab_sense_uploaded) return c.json({ ok: true, alreadyUploaded: true });
+  if (pushingBatches.has(id)) return c.json({ ok: false, error: "already_in_progress" }, 409);
+  pushingBatches.add(id);
+  try {
+    const settings = await getSettingsData();
+    const res = await pushBatch(batch, settings);
+    return c.json({ ok: true, ...res });
+  } catch (e) {
+    const status = e.code === "NO_PROMOTION" ? 422 : 500;
+    return c.json({ ok: false, error: e.message }, status);
+  } finally {
+    pushingBatches.delete(id);
+  }
+});
+
 serve({ fetch: app.fetch, port: PORT, hostname: "0.0.0.0" }, (info) => {
   console.log(`freshcuts-api listening on http://0.0.0.0:${info.port}`);
+  if (TS_ENABLED) {
+    console.log(`[tabsense] worker on — sync=${TS_AUTOSYNC} push=${TS_AUTOPUSH} every ${TS_SYNC_MINUTES}m`);
+    // First cycle shortly after boot, then on the configured interval.
+    setTimeout(runCycle, 15_000);
+    setInterval(runCycle, TS_SYNC_MINUTES * 60_000);
+  } else {
+    console.log("[tabsense] worker off — set TABSENSE_EMAIL/TABSENSE_PASSWORD to enable");
+  }
 });
