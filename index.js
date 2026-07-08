@@ -808,6 +808,36 @@ app.get("/api/tabsense/discount-log", async (c) => {
   }
 });
 
+// Per-customer discount log with ambassador detection (phone match).
+// ?from=&to=&cap= (default cap 150). Heavy — throttled ~1.1s/customer.
+app.get("/api/tabsense/customer-discounts", async (c) => {
+  const err = await requireAdmin(c); if (err) return err;
+  if (!TS_ENABLED) return c.json({ ok: false, error: "tabsense_not_configured" }, 400);
+  const to = c.req.query("to") || todayISO();
+  const from = c.req.query("from") || new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10);
+  const cap = Math.max(1, Math.min(400, Number(c.req.query("cap")) || 150));
+  try {
+    const { customers, scanned } = await ts.fetchCustomerDiscounts(from, to, { cap });
+
+    // Match each customer phone against our ambassadors (normalized).
+    const ambR = await pool.query("SELECT id, name, phone_norm FROM ambassadors WHERE phone_norm <> ''");
+    const byPhone = new Map(ambR.rows.map((a) => [a.phone_norm, a]));
+    const rows = customers.map((c2) => {
+      const amb = byPhone.get(normPhone(c2.phone));
+      return { ...c2, isAmbassador: !!amb, ambassadorName: amb ? amb.name : null };
+    }).sort((a, b) => b.totalDiscount - a.totalDiscount);
+
+    const totals = {
+      totalDiscount: rows.reduce((s, r) => s + r.totalDiscount, 0),
+      customers: rows.length,
+      ambassadorCustomers: rows.filter((r) => r.isAmbassador).length,
+    };
+    return c.json({ ok: true, from, to, scanned, totals, customers: rows });
+  } catch (e) {
+    return c.json({ ok: false, error: e.message }, 500);
+  }
+});
+
 // Toggle / set an offer's active state. Body: { active?: boolean } (omit to flip).
 app.post("/api/tabsense/promotions/:id/toggle", async (c) => {
   const err = await requireAdmin(c); if (err) return err;

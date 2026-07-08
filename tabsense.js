@@ -528,6 +528,79 @@ async function fetchPromotionSales(startDate, endDate) {
   });
 }
 
+// ─── Customer discount log ───────────────────────────────────────────────────────
+// TabSense doesn't link orders→customers in the orders list, but the
+// customer-scoped /customers/{id}/orders DOES carry the discount per order. We
+// list active customers (sales-by-customer) then pull each one's orders and sum.
+// Heavy (1 request/customer, 60/min limit) → throttled + capped; use on-demand.
+// Returns [{ id, name, phone, points, orders, spending, totalDiscount, discountedOrders:[...] }]
+async function fetchCustomerSales(startDate, endDate) {
+  const qs = new URLSearchParams();
+  qs.set("draw", "1");
+  qs.set("columns[0][data]", "name");
+  qs.set("start", "0");
+  qs.set("length", "1000");
+  qs.set("start_date", startDate);
+  qs.set("end_date", endDate);
+  qs.set("daterange", `${startDate} - ${endDate}`);
+  const res = await authGet(`/reports/sales-by-customer?${qs.toString()}`, { json: true });
+  if (!res.ok) throw new Error(`fetchCustomerSales: HTTP ${res.status}`);
+  const data = await res.json();
+  const num = (v) => Number(String(v ?? "0").replace(/[^0-9.\-]/g, "")) || 0;
+  return (Array.isArray(data.data) ? data.data : []).map((r) => ({
+    id: r.customer_id ?? r.customer?.id,
+    name: [r.customer?.first_name, r.customer?.last_name].filter(Boolean).join(" ") || "(بدون اسم)",
+    phone: r.customer?.phone || "",
+    points: Number(r.customer?.earned_points || 0),
+    orders: Number(r.orders) || 0,
+    spending: num(r.total_spending),
+  })).filter((c) => c.id != null);
+}
+
+async function fetchCustomerOrders(customerId) {
+  const res = await authGet(`/customers/${customerId}/orders?draw=1&start=0&length=500`, { json: true });
+  if (!res.ok) throw new Error(`fetchCustomerOrders(${customerId}): HTTP ${res.status}`);
+  const data = await res.json();
+  return Array.isArray(data.data) ? data.data : [];
+}
+
+async function fetchCustomerDiscounts(startDate, endDate, { cap = 150, throttleMs = 1100 } = {}) {
+  const customers = (await fetchCustomerSales(startDate, endDate))
+    .sort((a, b) => b.spending - a.spending)
+    .slice(0, cap);
+  const num = (v) => Number(v || 0);
+  const inRange = (iso) => { const d = String(iso || "").slice(0, 10); return d >= startDate && d <= endDate; };
+  const out = [];
+  for (let i = 0; i < customers.length; i++) {
+    const cust = customers[i];
+    if (i > 0) await sleep(throttleMs);
+    let orders = [];
+    try { orders = await fetchCustomerOrders(cust.id); }
+    catch (e) { console.error(`[tabsense] customer ${cust.id} orders failed:`, e.message); }
+    let totalDiscount = 0;
+    const discountedOrders = [];
+    for (const o of orders) {
+      const disc = num(o.total_discount_amount) + num(o.total_promotion_amount);
+      if (disc <= 0) continue;
+      if (!inRange(o.created_at || o.order_created_at)) continue;
+      totalDiscount += disc;
+      discountedOrders.push({
+        orderId: o.id,
+        date: String(o.created_at || o.order_created_at || "").slice(0, 19),
+        receipt: o.receipt_number || o.receipt?.number || "",
+        gross: num(o.total_gross_amount),
+        discount: num(o.total_discount_amount),
+        promotion: num(o.total_promotion_amount),
+        total: num(o.total_amount ?? o.total),
+      });
+    }
+    if (totalDiscount > 0) {
+      out.push({ ...cust, totalDiscount, discountedOrders });
+    }
+  }
+  return { customers: out, scanned: customers.length };
+}
+
 async function ping() {
   await getSession(true);
   const b = await listPromocodeBatches();
@@ -548,6 +621,7 @@ export {
   setPromotionActive,
   deletePromotion,
   fetchPromotionSales,
+  fetchCustomerDiscounts,
   ping,
   BASE,
   STORE,
