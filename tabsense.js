@@ -564,13 +564,14 @@ async function fetchCustomerOrders(customerId) {
   return Array.isArray(data.data) ? data.data : [];
 }
 
-async function fetchCustomerDiscounts(startDate, endDate, { cap = 150, throttleMs = 1100 } = {}) {
+async function fetchCustomerDiscounts(startDate, endDate, { cap = 150, throttleMs = 1100, onProgress } = {}) {
   const customers = (await fetchCustomerSales(startDate, endDate))
     .sort((a, b) => b.spending - a.spending)
     .slice(0, cap);
   const num = (v) => Number(v || 0);
   const inRange = (iso) => { const d = String(iso || "").slice(0, 10); return d >= startDate && d <= endDate; };
   const out = [];
+  if (onProgress) onProgress(0, customers.length);
   for (let i = 0; i < customers.length; i++) {
     const cust = customers[i];
     if (i > 0) await sleep(throttleMs);
@@ -597,6 +598,7 @@ async function fetchCustomerDiscounts(startDate, endDate, { cap = 150, throttleM
     if (totalDiscount > 0) {
       out.push({ ...cust, totalDiscount, discountedOrders });
     }
+    if (onProgress) onProgress(i + 1, customers.length);
   }
   return { customers: out, scanned: customers.length };
 }

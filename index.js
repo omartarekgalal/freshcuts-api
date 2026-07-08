@@ -808,34 +808,67 @@ app.get("/api/tabsense/discount-log", async (c) => {
   }
 });
 
-// Per-customer discount log with ambassador detection (phone match).
-// ?from=&to=&cap= (default cap 150). Heavy — throttled ~1.1s/customer.
-app.get("/api/tabsense/customer-discounts", async (c) => {
+// Attach ambassador flags + totals to raw customer-discount rows.
+async function decorateCustomerDiscounts(from, to, customers, scanned) {
+  const ambR = await pool.query("SELECT id, name, phone_norm FROM ambassadors WHERE phone_norm <> ''");
+  const byPhone = new Map(ambR.rows.map((a) => [a.phone_norm, a]));
+  const rows = customers.map((c2) => {
+    const amb = byPhone.get(normPhone(c2.phone));
+    return { ...c2, isAmbassador: !!amb, ambassadorName: amb ? amb.name : null };
+  }).sort((a, b) => b.totalDiscount - a.totalDiscount);
+  const totals = {
+    totalDiscount: rows.reduce((s, r) => s + r.totalDiscount, 0),
+    customers: rows.length,
+    ambassadorCustomers: rows.filter((r) => r.isAmbassador).length,
+  };
+  return { from, to, scanned, totals, customers: rows };
+}
+
+// Per-customer discount log runs as a BACKGROUND JOB — scanning customers one by
+// one (60/min limit) can exceed the 100s proxy timeout, so we return a jobId
+// immediately and let the UI poll for progress. In-memory job store.
+const discountJobs = new Map();
+function pruneJobs() {
+  if (discountJobs.size <= 30) return;
+  const oldest = [...discountJobs.values()].sort((a, b) => a.startedAt - b.startedAt)[0];
+  if (oldest) discountJobs.delete(oldest.id);
+}
+
+app.post("/api/tabsense/customer-discounts/start", async (c) => {
   const err = await requireAdmin(c); if (err) return err;
   if (!TS_ENABLED) return c.json({ ok: false, error: "tabsense_not_configured" }, 400);
-  const to = c.req.query("to") || todayISO();
-  const from = c.req.query("from") || new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10);
-  const cap = Math.max(1, Math.min(400, Number(c.req.query("cap")) || 150));
-  try {
-    const { customers, scanned } = await ts.fetchCustomerDiscounts(from, to, { cap });
+  const b = await c.req.json().catch(() => ({}));
+  const to = b.to || todayISO();
+  const from = b.from || new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10);
+  const cap = Math.max(1, Math.min(400, Number(b.cap) || 200));
+  const jobId = randToken(12);
+  const job = { id: jobId, status: "running", from, to, done: 0, total: 0, startedAt: Date.now(), result: null, error: null };
+  discountJobs.set(jobId, job);
+  pruneJobs();
+  // Fire and forget — updates the job as it progresses.
+  (async () => {
+    try {
+      const { customers, scanned } = await ts.fetchCustomerDiscounts(from, to, {
+        cap,
+        onProgress: (done, total) => { job.done = done; job.total = total; },
+      });
+      job.result = await decorateCustomerDiscounts(from, to, customers, scanned);
+      job.status = "done";
+    } catch (e) {
+      job.error = e.message; job.status = "error";
+    }
+  })();
+  return c.json({ ok: true, jobId, from, to });
+});
 
-    // Match each customer phone against our ambassadors (normalized).
-    const ambR = await pool.query("SELECT id, name, phone_norm FROM ambassadors WHERE phone_norm <> ''");
-    const byPhone = new Map(ambR.rows.map((a) => [a.phone_norm, a]));
-    const rows = customers.map((c2) => {
-      const amb = byPhone.get(normPhone(c2.phone));
-      return { ...c2, isAmbassador: !!amb, ambassadorName: amb ? amb.name : null };
-    }).sort((a, b) => b.totalDiscount - a.totalDiscount);
-
-    const totals = {
-      totalDiscount: rows.reduce((s, r) => s + r.totalDiscount, 0),
-      customers: rows.length,
-      ambassadorCustomers: rows.filter((r) => r.isAmbassador).length,
-    };
-    return c.json({ ok: true, from, to, scanned, totals, customers: rows });
-  } catch (e) {
-    return c.json({ ok: false, error: e.message }, 500);
-  }
+app.get("/api/tabsense/customer-discounts/status/:jobId", async (c) => {
+  const err = await requireAdmin(c); if (err) return err;
+  const job = discountJobs.get(c.req.param("jobId"));
+  if (!job) return c.json({ ok: false, error: "job_not_found" }, 404);
+  const out = { ok: true, status: job.status, done: job.done, total: job.total, from: job.from, to: job.to };
+  if (job.status === "done") out.result = job.result;
+  if (job.status === "error") out.error = job.error;
+  return c.json(out);
 });
 
 // Toggle / set an offer's active state. Body: { active?: boolean } (omit to flip).
