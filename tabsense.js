@@ -488,6 +488,46 @@ async function deletePromotion(id) {
   return { ok, status: res.status };
 }
 
+// ─── Discount log: sales-by-promotion report over a date range ───────────────────
+// Returns per-offer discount totals + the list of codes used. This is TabSense's
+// own accounting of how much each promotion discounted, per period.
+// [{ promotionId, name, orders, products, totalDiscount, totalSales, grossSales,
+//    percentDiscount, codes:[string], startDate, endDate }]
+async function fetchPromotionSales(startDate, endDate) {
+  const cols = ["name", "promotion_type", "orders_count", "products_count", "net_sales", "net_discount", "gross_sales", "discount_percentage", "promocode"];
+  const qs = new URLSearchParams();
+  qs.set("draw", "1");
+  cols.forEach((c, i) => qs.set(`columns[${i}][data]`, c));
+  qs.set("start", "0");
+  qs.set("length", "500");
+  qs.set("search[value]", "");
+  qs.set("start_date", startDate);
+  qs.set("end_date", endDate);
+  qs.set("daterange", `${startDate} - ${endDate}`);
+  const res = await authGet(`/reports/sales-by-promotion?${qs.toString()}`, { json: true });
+  if (!res.ok) throw new Error(`fetchPromotionSales: HTTP ${res.status}`);
+  const data = await res.json();
+  const rows = Array.isArray(data.data) ? data.data : [];
+  const num = (v) => Number(String(v ?? "0").replace(/[^0-9.\-]/g, "")) || 0;
+  return rows.map((r) => {
+    const codesStr = String(r.promocodes ?? "").trim();
+    const codes = (!codesStr || codesStr === "—") ? [] : codesStr.split(",").map((c) => c.trim()).filter(Boolean);
+    return {
+      promotionId: Number(r.promotion_id) || null,
+      name: stripTags(String(r.promotion_name ?? "")),
+      orders: Number(r.number_of_orders) || 0,
+      products: Number(r.number_of_products) || 0,
+      totalDiscount: num(r.total_discount),
+      totalSales: num(r.total_sales),
+      grossSales: num(r.total_gross_sales),
+      percentDiscount: num(r.percentage_discount),
+      codes,
+      startDate,
+      endDate,
+    };
+  });
+}
+
 async function ping() {
   await getSession(true);
   const b = await listPromocodeBatches();
@@ -507,6 +547,7 @@ export {
   togglePromotionActive,
   setPromotionActive,
   deletePromotion,
+  fetchPromotionSales,
   ping,
   BASE,
   STORE,

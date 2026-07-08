@@ -750,6 +750,64 @@ app.post("/api/tabsense/promotions", async (c) => {
   }
 });
 
+// Discount log: per-offer discount totals (SAR) + who used the codes.
+// Query: ?from=YYYY-MM-DD&to=YYYY-MM-DD (defaults to the last 30 days).
+app.get("/api/tabsense/discount-log", async (c) => {
+  const err = await requireAdmin(c); if (err) return err;
+  if (!TS_ENABLED) return c.json({ ok: false, error: "tabsense_not_configured" }, 400);
+  const to = c.req.query("to") || todayISO();
+  const from = c.req.query("from") || new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10);
+  try {
+    const offers = await ts.fetchPromotionSales(from, to);
+
+    // Map every code seen in the report to its ambassador (from our DB).
+    const allCodes = [...new Set(offers.flatMap((o) => o.codes))];
+    const codeOwner = new Map();
+    if (allCodes.length) {
+      const r = await pool.query(
+        `SELECT c.code, c.ambassador_id, a.name
+           FROM codes c LEFT JOIN ambassadors a ON a.id = c.ambassador_id
+          WHERE c.code = ANY($1)`,
+        [allCodes]
+      );
+      for (const row of r.rows) codeOwner.set(row.code, { id: row.ambassador_id, name: row.name || "(غير معروف)" });
+    }
+
+    // Per-offer ambassador breakdown (code counts) + an overall by-ambassador roll-up.
+    const byAmb = new Map();
+    const offersOut = offers.map((o) => {
+      const perAmb = new Map();
+      let unknown = 0;
+      for (const code of o.codes) {
+        const owner = codeOwner.get(code);
+        if (!owner || !owner.id) { unknown++; continue; }
+        perAmb.set(owner.id, { name: owner.name, count: (perAmb.get(owner.id)?.count || 0) + 1 });
+        const agg = byAmb.get(owner.id) || { name: owner.name, codesUsed: 0, offers: new Set() };
+        agg.codesUsed++; agg.offers.add(o.name); byAmb.set(owner.id, agg);
+      }
+      return {
+        ...o,
+        codesUsed: o.codes.length,
+        ambassadors: [...perAmb.entries()].map(([id, v]) => ({ id, name: v.name, codesUsed: v.count }))
+          .sort((a, b) => b.codesUsed - a.codesUsed),
+        unknownCodes: unknown,
+      };
+    });
+
+    const totals = {
+      totalDiscount: offers.reduce((s, o) => s + o.totalDiscount, 0),
+      orders: offers.reduce((s, o) => s + o.orders, 0),
+      codesUsed: allCodes.length,
+    };
+    const byAmbassador = [...byAmb.entries()].map(([id, v]) => ({ id, name: v.name, codesUsed: v.codesUsed, offers: [...v.offers] }))
+      .sort((a, b) => b.codesUsed - a.codesUsed);
+
+    return c.json({ ok: true, from, to, totals, offers: offersOut, byAmbassador });
+  } catch (e) {
+    return c.json({ ok: false, error: e.message }, 500);
+  }
+});
+
 // Toggle / set an offer's active state. Body: { active?: boolean } (omit to flip).
 app.post("/api/tabsense/promotions/:id/toggle", async (c) => {
   const err = await requireAdmin(c); if (err) return err;
