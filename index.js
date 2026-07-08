@@ -808,22 +808,6 @@ app.get("/api/tabsense/discount-log", async (c) => {
   }
 });
 
-// Attach ambassador flags + totals to raw customer-discount rows.
-async function decorateCustomerDiscounts(from, to, customers, scanned) {
-  const ambR = await pool.query("SELECT id, name, phone_norm FROM ambassadors WHERE phone_norm <> ''");
-  const byPhone = new Map(ambR.rows.map((a) => [a.phone_norm, a]));
-  const rows = customers.map((c2) => {
-    const amb = byPhone.get(normPhone(c2.phone));
-    return { ...c2, isAmbassador: !!amb, ambassadorName: amb ? amb.name : null };
-  }).sort((a, b) => b.totalDiscount - a.totalDiscount);
-  const totals = {
-    totalDiscount: rows.reduce((s, r) => s + r.totalDiscount, 0),
-    customers: rows.length,
-    ambassadorCustomers: rows.filter((r) => r.isAmbassador).length,
-  };
-  return { from, to, scanned, totals, customers: rows };
-}
-
 // Per-customer discount log runs as a BACKGROUND JOB — scanning customers one by
 // one (60/min limit) can exceed the 100s proxy timeout, so we return a jobId
 // immediately and let the UI poll for progress. In-memory job store.
@@ -834,25 +818,51 @@ function pruneJobs() {
   if (oldest) discountJobs.delete(oldest.id);
 }
 
-app.post("/api/tabsense/customer-discounts/start", async (c) => {
+// Upsert a customer's discounted orders into the cache table.
+async function cacheCustomerOrders(cust, discountedOrders) {
+  const np = normPhone(cust.phone);
+  for (const o of discountedOrders) {
+    await pool.query(
+      `INSERT INTO ts_customer_orders
+         (order_id, customer_id, customer_name, customer_phone, customer_phone_norm, customer_points, order_date, gross, discount, promotion, total, updated_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7::timestamptz,$8,$9,$10,$11,NOW())
+       ON CONFLICT (order_id) DO UPDATE SET
+         customer_id=EXCLUDED.customer_id, customer_name=EXCLUDED.customer_name,
+         customer_phone=EXCLUDED.customer_phone, customer_phone_norm=EXCLUDED.customer_phone_norm,
+         customer_points=EXCLUDED.customer_points, order_date=EXCLUDED.order_date,
+         gross=EXCLUDED.gross, discount=EXCLUDED.discount, promotion=EXCLUDED.promotion,
+         total=EXCLUDED.total, updated_at=NOW()`,
+      [String(o.orderId), String(cust.id), cust.name || "", cust.phone || "", np, cust.points || 0,
+       o.date || null, o.gross || 0, o.discount || 0, o.promotion || 0, o.total || 0]
+    );
+  }
+}
+
+// Refresh the discount cache from TabSense (background job with progress).
+// Body: { from, to, cap }. Writes into ts_customer_orders + records freshness.
+app.post("/api/discounts/refresh", async (c) => {
   const err = await requireAdmin(c); if (err) return err;
   if (!TS_ENABLED) return c.json({ ok: false, error: "tabsense_not_configured" }, 400);
   const b = await c.req.json().catch(() => ({}));
   const to = b.to || todayISO();
-  const from = b.from || new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10);
-  const cap = Math.max(1, Math.min(400, Number(b.cap) || 200));
+  const from = b.from || new Date(Date.now() - 120 * 86400000).toISOString().slice(0, 10);
+  const cap = Math.max(1, Math.min(500, Number(b.cap) || 400));
   const jobId = randToken(12);
-  const job = { id: jobId, status: "running", from, to, done: 0, total: 0, startedAt: Date.now(), result: null, error: null };
+  const job = { id: jobId, status: "running", from, to, done: 0, total: 0, startedAt: Date.now(), cached: 0, error: null };
   discountJobs.set(jobId, job);
   pruneJobs();
-  // Fire and forget — updates the job as it progresses.
   (async () => {
     try {
-      const { customers, scanned } = await ts.fetchCustomerDiscounts(from, to, {
+      const { customers } = await ts.fetchCustomerDiscounts(from, to, {
         cap,
         onProgress: (done, total) => { job.done = done; job.total = total; },
       });
-      job.result = await decorateCustomerDiscounts(from, to, customers, scanned);
+      let cached = 0;
+      for (const cust of customers) { await cacheCustomerOrders(cust, cust.discountedOrders); cached += cust.discountedOrders.length; }
+      job.cached = cached;
+      const settings = await getSettingsData();
+      settings.tsDiscountSync = { lastRefreshAt: new Date().toISOString(), from, to, customers: customers.length, orders: cached };
+      await pool.query("UPDATE settings SET data=$1::jsonb, updated_at=NOW() WHERE id=1", [jb(settings)]);
       job.status = "done";
     } catch (e) {
       job.error = e.message; job.status = "error";
@@ -861,14 +871,106 @@ app.post("/api/tabsense/customer-discounts/start", async (c) => {
   return c.json({ ok: true, jobId, from, to });
 });
 
-app.get("/api/tabsense/customer-discounts/status/:jobId", async (c) => {
+app.get("/api/discounts/refresh-status/:jobId", async (c) => {
   const err = await requireAdmin(c); if (err) return err;
   const job = discountJobs.get(c.req.param("jobId"));
   if (!job) return c.json({ ok: false, error: "job_not_found" }, 404);
-  const out = { ok: true, status: job.status, done: job.done, total: job.total, from: job.from, to: job.to };
-  if (job.status === "done") out.result = job.result;
-  if (job.status === "error") out.error = job.error;
-  return c.json(out);
+  return c.json({ ok: true, status: job.status, done: job.done, total: job.total, cached: job.cached, error: job.error });
+});
+
+// Cache freshness.
+app.get("/api/discounts/status", async (c) => {
+  const err = await requireAdmin(c); if (err) return err;
+  const r = await pool.query("SELECT count(*)::int AS orders, count(DISTINCT customer_id)::int AS customers, max(updated_at) AS refreshed FROM ts_customer_orders");
+  const settings = await getSettingsData();
+  return c.json({ ok: true, ...r.rows[0], sync: settings.tsDiscountSync || null });
+});
+
+// Fast customer discount search/filters — reads the cache (instant).
+// ?search=&from=&to=&minDiscount=&onlyAmbassadors=1&sort=discount|orders|recent&limit=
+app.get("/api/discounts/customers", async (c) => {
+  const err = await requireAdmin(c); if (err) return err;
+  const q = c.req.query();
+  const params = [];
+  const where = [];
+  if (q.from) { params.push(q.from); where.push(`order_date >= $${params.length}::date`); }
+  if (q.to) { params.push(q.to); where.push(`order_date < ($${params.length}::date + 1)`); }
+  const whereSql = where.length ? "WHERE " + where.join(" AND ") : "";
+  // Aggregate per customer, join ambassadors by phone.
+  const rows = (await pool.query(
+    `SELECT o.customer_id, max(o.customer_name) AS name, max(o.customer_phone) AS phone,
+            max(o.customer_phone_norm) AS phone_norm, max(o.customer_points) AS points,
+            count(*)::int AS orders, sum(o.discount + o.promotion) AS total_discount,
+            sum(o.total) AS total_spent, max(o.order_date) AS last_order,
+            (a.id IS NOT NULL) AS is_ambassador, a.name AS ambassador_name
+       FROM ts_customer_orders o
+       LEFT JOIN ambassadors a ON a.phone_norm = o.customer_phone_norm AND a.phone_norm <> ''
+       ${whereSql}
+      GROUP BY o.customer_id, a.id, a.name`,
+    params
+  )).rows;
+  let list = rows.map((r) => ({
+    customerId: r.customer_id, name: r.name, phone: r.phone, points: Number(r.points) || 0,
+    orders: r.orders, totalDiscount: Number(r.total_discount) || 0, totalSpent: Number(r.total_spent) || 0,
+    lastOrder: r.last_order, isAmbassador: r.is_ambassador, ambassadorName: r.ambassador_name,
+  }));
+  if (q.search) {
+    const s = q.search.trim().toLowerCase(); const sp = normPhone(q.search);
+    list = list.filter((x) => (x.name || "").toLowerCase().includes(s) || (sp && normPhone(x.phone).includes(sp)));
+  }
+  if (q.minDiscount) list = list.filter((x) => x.totalDiscount >= Number(q.minDiscount));
+  if (q.onlyAmbassadors === "1") list = list.filter((x) => x.isAmbassador);
+  const sort = q.sort || "discount";
+  list.sort((a, b) => sort === "orders" ? b.orders - a.orders : sort === "recent" ? new Date(b.lastOrder) - new Date(a.lastOrder) : b.totalDiscount - a.totalDiscount);
+  const limit = Math.min(500, Number(q.limit) || 200);
+  const totals = {
+    customers: list.length,
+    totalDiscount: list.reduce((s, x) => s + x.totalDiscount, 0),
+    ambassadorCustomers: list.filter((x) => x.isAmbassador).length,
+  };
+  return c.json({ ok: true, totals, customers: list.slice(0, limit) });
+});
+
+// Smart discount report — aggregates the cache several ways.
+app.get("/api/discounts/report", async (c) => {
+  const err = await requireAdmin(c); if (err) return err;
+  const q = c.req.query();
+  const params = []; const where = [];
+  if (q.from) { params.push(q.from); where.push(`order_date >= $${params.length}::date`); }
+  if (q.to) { params.push(q.to); where.push(`order_date < ($${params.length}::date + 1)`); }
+  const whereSql = where.length ? "WHERE " + where.join(" AND ") : "";
+  const one = async (sql) => (await pool.query(sql, params)).rows;
+
+  const summary = (await one(
+    `SELECT count(*)::int AS orders, count(DISTINCT customer_id)::int AS customers,
+            COALESCE(sum(discount+promotion),0) AS total_discount, COALESCE(sum(total),0) AS total_spent,
+            COALESCE(avg(discount+promotion),0) AS avg_discount FROM ts_customer_orders ${whereSql}`
+  ))[0];
+  const daily = await one(
+    `SELECT to_char(order_date,'YYYY-MM-DD') AS day, count(*)::int AS orders, sum(discount+promotion) AS discount
+       FROM ts_customer_orders ${whereSql} GROUP BY 1 ORDER BY 1`
+  );
+  const ambVsRegular = await one(
+    `SELECT (a.id IS NOT NULL) AS is_ambassador, count(*)::int AS orders, sum(o.discount+o.promotion) AS discount
+       FROM ts_customer_orders o LEFT JOIN ambassadors a ON a.phone_norm=o.customer_phone_norm AND a.phone_norm<>''
+       ${whereSql} GROUP BY 1`
+  );
+  const topCustomers = await one(
+    `SELECT customer_name AS name, customer_phone AS phone, count(*)::int AS orders, sum(discount+promotion) AS discount
+       FROM ts_customer_orders ${whereSql} GROUP BY customer_name, customer_phone ORDER BY discount DESC LIMIT 10`
+  );
+  return c.json({
+    ok: true,
+    summary: {
+      orders: summary.orders, customers: summary.customers,
+      totalDiscount: Number(summary.total_discount), totalSpent: Number(summary.total_spent),
+      avgDiscount: Number(summary.avg_discount),
+      discountRatio: Number(summary.total_spent) > 0 ? Number(summary.total_discount) / (Number(summary.total_spent) + Number(summary.total_discount)) : 0,
+    },
+    daily: daily.map((d) => ({ day: d.day, orders: d.orders, discount: Number(d.discount) })),
+    ambassadorVsRegular: ambVsRegular.map((r) => ({ isAmbassador: r.is_ambassador, orders: r.orders, discount: Number(r.discount) })),
+    topCustomers: topCustomers.map((t) => ({ name: t.name, phone: t.phone, orders: t.orders, discount: Number(t.discount) })),
+  });
 });
 
 // Toggle / set an offer's active state. Body: { active?: boolean } (omit to flip).

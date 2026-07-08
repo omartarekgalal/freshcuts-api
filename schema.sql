@@ -68,5 +68,26 @@ CREATE TABLE IF NOT EXISTS designs (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+-- Cache of TabSense customer orders that carry a discount (refreshed by the API
+-- worker). Enables instant search / filters / discount reports without re-hitting
+-- TabSense (which rate-limits per-customer order fetches at 60/min).
+CREATE TABLE IF NOT EXISTS ts_customer_orders (
+  order_id TEXT PRIMARY KEY,
+  customer_id TEXT,
+  customer_name TEXT,
+  customer_phone TEXT,
+  customer_phone_norm TEXT,
+  customer_points INT DEFAULT 0,
+  order_date TIMESTAMPTZ,
+  gross NUMERIC DEFAULT 0,
+  discount NUMERIC DEFAULT 0,
+  promotion NUMERIC DEFAULT 0,
+  total NUMERIC DEFAULT 0,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS tsco_phone_idx ON ts_customer_orders(customer_phone_norm);
+CREATE INDEX IF NOT EXISTS tsco_date_idx ON ts_customer_orders(order_date);
+CREATE INDEX IF NOT EXISTS tsco_customer_idx ON ts_customer_orders(customer_id);
+
 -- Bootstrap settings row
 INSERT INTO settings (id, data) VALUES (1, '{}') ON CONFLICT (id) DO NOTHING;
