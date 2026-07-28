@@ -89,5 +89,58 @@ CREATE INDEX IF NOT EXISTS tsco_phone_idx ON ts_customer_orders(customer_phone_n
 CREATE INDEX IF NOT EXISTS tsco_date_idx ON ts_customer_orders(order_date);
 CREATE INDEX IF NOT EXISTS tsco_customer_idx ON ts_customer_orders(customer_id);
 
+-- Marketing: paid-ads tracking (TikTok / Meta / Snapchat). These are ALSO
+-- auto-created on API boot (ensureMarketingSchema in index.js) so deploys
+-- need no manual migration.
+CREATE TABLE IF NOT EXISTS mk_campaigns (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  platform TEXT NOT NULL DEFAULT 'tiktok',
+  objective TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'active',
+  daily_budget NUMERIC DEFAULT 0,
+  target_cpr NUMERIC DEFAULT 0,
+  start_date DATE,
+  end_date DATE,
+  notes TEXT NOT NULL DEFAULT '',
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS mk_entries (
+  id TEXT PRIMARY KEY,
+  campaign_id TEXT REFERENCES mk_campaigns(id) ON DELETE CASCADE,
+  day DATE NOT NULL,
+  spend NUMERIC DEFAULT 0,
+  impressions BIGINT DEFAULT 0,
+  reach BIGINT DEFAULT 0,
+  clicks BIGINT DEFAULT 0,
+  results NUMERIC DEFAULT 0,
+  video_views BIGINT DEFAULT 0,
+  engagements BIGINT DEFAULT 0,
+  leads_whatsapp INT DEFAULT 0,
+  leads_calls INT DEFAULT 0,
+  leads_visits INT DEFAULT 0,
+  leads_delivery INT DEFAULT 0,
+  leads_apps INT DEFAULT 0,
+  notes TEXT NOT NULL DEFAULT '',
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE (campaign_id, day)
+);
+CREATE INDEX IF NOT EXISTS mk_entries_day_idx ON mk_entries(day);
+CREATE INDEX IF NOT EXISTS mk_entries_campaign_idx ON mk_entries(campaign_id);
+
+CREATE TABLE IF NOT EXISTS mk_ideas (
+  id TEXT PRIMARY KEY,
+  title TEXT NOT NULL,
+  body TEXT NOT NULL DEFAULT '',
+  category TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'new',
+  builtin BOOL NOT NULL DEFAULT false,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
 -- Bootstrap settings row
 INSERT INTO settings (id, data) VALUES (1, '{}') ON CONFLICT (id) DO NOTHING;

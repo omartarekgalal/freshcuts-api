@@ -1108,6 +1108,301 @@ app.post("/api/ambassadors/:id/generate-codes", async (c) => {
   }
 });
 
+/* ═══════════════════════════════════════════════════════════════════════════
+   MARKETING — paid ads tracking (TikTok / Meta / Snapchat), manual + file import
+═══════════════════════════════════════════════════════════════════════════ */
+async function ensureMarketingSchema() {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS mk_campaigns (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      platform TEXT NOT NULL DEFAULT 'tiktok',
+      objective TEXT NOT NULL DEFAULT '',
+      status TEXT NOT NULL DEFAULT 'active',
+      daily_budget NUMERIC DEFAULT 0,
+      target_cpr NUMERIC DEFAULT 0,
+      start_date DATE,
+      end_date DATE,
+      notes TEXT NOT NULL DEFAULT '',
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    CREATE TABLE IF NOT EXISTS mk_entries (
+      id TEXT PRIMARY KEY,
+      campaign_id TEXT REFERENCES mk_campaigns(id) ON DELETE CASCADE,
+      day DATE NOT NULL,
+      spend NUMERIC DEFAULT 0,
+      impressions BIGINT DEFAULT 0,
+      reach BIGINT DEFAULT 0,
+      clicks BIGINT DEFAULT 0,
+      results NUMERIC DEFAULT 0,
+      video_views BIGINT DEFAULT 0,
+      engagements BIGINT DEFAULT 0,
+      leads_whatsapp INT DEFAULT 0,
+      leads_calls INT DEFAULT 0,
+      leads_visits INT DEFAULT 0,
+      leads_delivery INT DEFAULT 0,
+      leads_apps INT DEFAULT 0,
+      notes TEXT NOT NULL DEFAULT '',
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE (campaign_id, day)
+    );
+    CREATE INDEX IF NOT EXISTS mk_entries_day_idx ON mk_entries(day);
+    CREATE INDEX IF NOT EXISTS mk_entries_campaign_idx ON mk_entries(campaign_id);
+    CREATE TABLE IF NOT EXISTS mk_ideas (
+      id TEXT PRIMARY KEY,
+      title TEXT NOT NULL,
+      body TEXT NOT NULL DEFAULT '',
+      category TEXT NOT NULL DEFAULT '',
+      status TEXT NOT NULL DEFAULT 'new',
+      builtin BOOL NOT NULL DEFAULT false,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+  `);
+}
+
+function mkCampaignRow(r) {
+  return {
+    id: r.id,
+    name: r.name,
+    platform: r.platform,
+    objective: r.objective || "",
+    status: r.status || "active",
+    dailyBudget: Number(r.daily_budget) || 0,
+    targetCpr: Number(r.target_cpr) || 0,
+    startDate: r.start_date instanceof Date ? r.start_date.toISOString().slice(0, 10) : r.start_date,
+    endDate: r.end_date instanceof Date ? r.end_date.toISOString().slice(0, 10) : r.end_date,
+    notes: r.notes || "",
+    createdAt: r.created_at,
+  };
+}
+function mkEntryRow(r) {
+  return {
+    id: r.id,
+    campaignId: r.campaign_id,
+    day: r.day instanceof Date ? r.day.toISOString().slice(0, 10) : r.day,
+    spend: Number(r.spend) || 0,
+    impressions: Number(r.impressions) || 0,
+    reach: Number(r.reach) || 0,
+    clicks: Number(r.clicks) || 0,
+    results: Number(r.results) || 0,
+    videoViews: Number(r.video_views) || 0,
+    engagements: Number(r.engagements) || 0,
+    leadsWhatsapp: Number(r.leads_whatsapp) || 0,
+    leadsCalls: Number(r.leads_calls) || 0,
+    leadsVisits: Number(r.leads_visits) || 0,
+    leadsDelivery: Number(r.leads_delivery) || 0,
+    leadsApps: Number(r.leads_apps) || 0,
+    notes: r.notes || "",
+  };
+}
+
+// ─── Campaigns ──────────────────────────────────────────────────────────────
+app.get("/api/marketing/campaigns", async (c) => {
+  const err = await requireAdmin(c); if (err) return err;
+  const r = await pool.query(`
+    SELECT c.*,
+           COALESCE(sum(e.spend),0)        AS t_spend,
+           COALESCE(sum(e.impressions),0)  AS t_impressions,
+           COALESCE(sum(e.clicks),0)       AS t_clicks,
+           COALESCE(sum(e.results),0)      AS t_results,
+           COALESCE(sum(e.leads_whatsapp + e.leads_calls + e.leads_visits + e.leads_delivery + e.leads_apps),0) AS t_leads,
+           count(e.id)::int                AS t_days,
+           max(e.day)                      AS last_day
+      FROM mk_campaigns c
+      LEFT JOIN mk_entries e ON e.campaign_id = c.id
+     GROUP BY c.id
+     ORDER BY c.created_at DESC`);
+  return c.json(r.rows.map((row) => ({
+    ...mkCampaignRow(row),
+    totals: {
+      spend: Number(row.t_spend), impressions: Number(row.t_impressions),
+      clicks: Number(row.t_clicks), results: Number(row.t_results),
+      leads: Number(row.t_leads), days: row.t_days,
+      lastDay: row.last_day instanceof Date ? row.last_day.toISOString().slice(0, 10) : row.last_day,
+    },
+  })));
+});
+app.post("/api/marketing/campaigns", async (c) => {
+  const err = await requireAdmin(c); if (err) return err;
+  const b = await c.req.json();
+  await pool.query(
+    `INSERT INTO mk_campaigns (id, name, platform, objective, status, daily_budget, target_cpr, start_date, end_date, notes)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+    [b.id, b.name, b.platform || "tiktok", b.objective || "", b.status || "active",
+     Number(b.dailyBudget) || 0, Number(b.targetCpr) || 0, b.startDate || null, b.endDate || null, b.notes || ""]
+  );
+  return c.json({ ok: true });
+});
+app.put("/api/marketing/campaigns/:id", async (c) => {
+  const err = await requireAdmin(c); if (err) return err;
+  const b = await c.req.json();
+  await pool.query(
+    `UPDATE mk_campaigns SET name=$2, platform=$3, objective=$4, status=$5, daily_budget=$6,
+            target_cpr=$7, start_date=$8, end_date=$9, notes=$10, updated_at=NOW() WHERE id=$1`,
+    [c.req.param("id"), b.name, b.platform || "tiktok", b.objective || "", b.status || "active",
+     Number(b.dailyBudget) || 0, Number(b.targetCpr) || 0, b.startDate || null, b.endDate || null, b.notes || ""]
+  );
+  return c.json({ ok: true });
+});
+app.delete("/api/marketing/campaigns/:id", async (c) => {
+  const err = await requireAdmin(c); if (err) return err;
+  await pool.query("DELETE FROM mk_campaigns WHERE id=$1", [c.req.param("id")]);
+  return c.json({ ok: true });
+});
+
+// ─── Daily entries (manual log + file import both land here) ────────────────
+app.get("/api/marketing/entries", async (c) => {
+  const err = await requireAdmin(c); if (err) return err;
+  const q = c.req.query();
+  const params = []; const where = [];
+  if (q.from) { params.push(q.from); where.push(`day >= $${params.length}::date`); }
+  if (q.to) { params.push(q.to); where.push(`day <= $${params.length}::date`); }
+  if (q.campaignId) { params.push(q.campaignId); where.push(`campaign_id = $${params.length}`); }
+  const whereSql = where.length ? "WHERE " + where.join(" AND ") : "";
+  const limit = Math.min(1000, Number(q.limit) || 400);
+  const r = await pool.query(`SELECT * FROM mk_entries ${whereSql} ORDER BY day DESC, created_at DESC LIMIT ${limit}`, params);
+  return c.json(r.rows.map(mkEntryRow));
+});
+// Upsert on (campaign_id, day) — an import or a re-submitted manual entry
+// replaces that day's numbers for that campaign.
+app.post("/api/marketing/entries/bulk", async (c) => {
+  const err = await requireAdmin(c); if (err) return err;
+  const b = await c.req.json().catch(() => ({}));
+  const entries = Array.isArray(b.entries) ? b.entries : [];
+  if (!entries.length) return c.json({ ok: false, error: "entries required" }, 400);
+  const client = await pool.connect();
+  let upserted = 0;
+  try {
+    await client.query("BEGIN");
+    for (const e of entries) {
+      if (!e.campaignId || !e.day) continue;
+      await client.query(
+        `INSERT INTO mk_entries (id, campaign_id, day, spend, impressions, reach, clicks, results,
+                                 video_views, engagements, leads_whatsapp, leads_calls, leads_visits,
+                                 leads_delivery, leads_apps, notes)
+         VALUES ($1,$2,$3::date,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
+         ON CONFLICT (campaign_id, day) DO UPDATE SET
+           spend=EXCLUDED.spend, impressions=EXCLUDED.impressions, reach=EXCLUDED.reach,
+           clicks=EXCLUDED.clicks, results=EXCLUDED.results, video_views=EXCLUDED.video_views,
+           engagements=EXCLUDED.engagements, leads_whatsapp=EXCLUDED.leads_whatsapp,
+           leads_calls=EXCLUDED.leads_calls, leads_visits=EXCLUDED.leads_visits,
+           leads_delivery=EXCLUDED.leads_delivery, leads_apps=EXCLUDED.leads_apps,
+           notes=EXCLUDED.notes, updated_at=NOW()`,
+        [e.id || ("me" + randToken(10).toLowerCase()), e.campaignId, e.day,
+         Number(e.spend) || 0, Math.round(Number(e.impressions) || 0), Math.round(Number(e.reach) || 0),
+         Math.round(Number(e.clicks) || 0), Number(e.results) || 0,
+         Math.round(Number(e.videoViews) || 0), Math.round(Number(e.engagements) || 0),
+         Math.round(Number(e.leadsWhatsapp) || 0), Math.round(Number(e.leadsCalls) || 0),
+         Math.round(Number(e.leadsVisits) || 0), Math.round(Number(e.leadsDelivery) || 0),
+         Math.round(Number(e.leadsApps) || 0), e.notes || ""]
+      );
+      upserted++;
+    }
+    await client.query("COMMIT");
+  } catch (e) {
+    await client.query("ROLLBACK");
+    throw e;
+  } finally {
+    client.release();
+  }
+  return c.json({ ok: true, upserted });
+});
+app.delete("/api/marketing/entries/:id", async (c) => {
+  const err = await requireAdmin(c); if (err) return err;
+  await pool.query("DELETE FROM mk_entries WHERE id=$1", [c.req.param("id")]);
+  return c.json({ ok: true });
+});
+
+// ─── Ideas (builtin library statuses + custom ideas, upsert by id) ──────────
+app.get("/api/marketing/ideas", async (c) => {
+  const err = await requireAdmin(c); if (err) return err;
+  const r = await pool.query("SELECT * FROM mk_ideas ORDER BY created_at DESC");
+  return c.json(r.rows.map((x) => ({
+    id: x.id, title: x.title, body: x.body || "", category: x.category || "",
+    status: x.status || "new", builtin: x.builtin, createdAt: x.created_at,
+  })));
+});
+app.post("/api/marketing/ideas", async (c) => {
+  const err = await requireAdmin(c); if (err) return err;
+  const b = await c.req.json();
+  await pool.query(
+    `INSERT INTO mk_ideas (id, title, body, category, status, builtin)
+     VALUES ($1,$2,$3,$4,$5,$6)
+     ON CONFLICT (id) DO UPDATE SET
+       title=EXCLUDED.title, body=EXCLUDED.body, category=EXCLUDED.category,
+       status=EXCLUDED.status, updated_at=NOW()`,
+    [b.id, b.title, b.body || "", b.category || "", b.status || "new", !!b.builtin]
+  );
+  return c.json({ ok: true });
+});
+app.delete("/api/marketing/ideas/:id", async (c) => {
+  const err = await requireAdmin(c); if (err) return err;
+  await pool.query("DELETE FROM mk_ideas WHERE id=$1", [c.req.param("id")]);
+  return c.json({ ok: true });
+});
+
+// ─── Report — ads aggregates + TabSense discounted-orders sales overlay ─────
+app.get("/api/marketing/report", async (c) => {
+  const err = await requireAdmin(c); if (err) return err;
+  const q = c.req.query();
+  const params = []; const where = [];
+  if (q.from) { params.push(q.from); where.push(`e.day >= $${params.length}::date`); }
+  if (q.to) { params.push(q.to); where.push(`e.day <= $${params.length}::date`); }
+  const whereSql = where.length ? "WHERE " + where.join(" AND ") : "";
+  const one = async (sql) => (await pool.query(sql, params)).rows;
+
+  const sumCols = `
+    COALESCE(sum(e.spend),0) AS spend, COALESCE(sum(e.impressions),0) AS impressions,
+    COALESCE(sum(e.reach),0) AS reach, COALESCE(sum(e.clicks),0) AS clicks,
+    COALESCE(sum(e.results),0) AS results, COALESCE(sum(e.video_views),0) AS video_views,
+    COALESCE(sum(e.engagements),0) AS engagements,
+    COALESCE(sum(e.leads_whatsapp),0) AS leads_whatsapp, COALESCE(sum(e.leads_calls),0) AS leads_calls,
+    COALESCE(sum(e.leads_visits),0) AS leads_visits, COALESCE(sum(e.leads_delivery),0) AS leads_delivery,
+    COALESCE(sum(e.leads_apps),0) AS leads_apps`;
+  const numify = (r) => ({
+    spend: Number(r.spend), impressions: Number(r.impressions), reach: Number(r.reach),
+    clicks: Number(r.clicks), results: Number(r.results), videoViews: Number(r.video_views),
+    engagements: Number(r.engagements), leadsWhatsapp: Number(r.leads_whatsapp),
+    leadsCalls: Number(r.leads_calls), leadsVisits: Number(r.leads_visits),
+    leadsDelivery: Number(r.leads_delivery), leadsApps: Number(r.leads_apps),
+  });
+
+  const summary = numify((await one(`SELECT ${sumCols} FROM mk_entries e ${whereSql}`))[0]);
+  const perPlatform = (await one(
+    `SELECT c.platform, ${sumCols} FROM mk_entries e JOIN mk_campaigns c ON c.id = e.campaign_id
+     ${whereSql} GROUP BY c.platform`
+  )).map((r) => ({ platform: r.platform, ...numify(r) }));
+  const perCampaign = (await one(
+    `SELECT c.id, c.name, c.platform, c.status, c.target_cpr, ${sumCols}, count(e.id)::int AS days
+       FROM mk_entries e JOIN mk_campaigns c ON c.id = e.campaign_id
+     ${whereSql} GROUP BY c.id ORDER BY sum(e.spend) DESC`
+  )).map((r) => ({ id: r.id, name: r.name, platform: r.platform, status: r.status,
+                   targetCpr: Number(r.target_cpr) || 0, days: r.days, ...numify(r) }));
+  const daily = (await one(
+    `SELECT to_char(e.day,'YYYY-MM-DD') AS day, ${sumCols} FROM mk_entries e ${whereSql} GROUP BY 1 ORDER BY 1`
+  )).map((r) => ({ day: r.day, ...numify(r) }));
+
+  // Sales overlay from the TabSense discounted-orders cache (same date range).
+  const sParams = []; const sWhere = [];
+  if (q.from) { sParams.push(q.from); sWhere.push(`order_date >= $${sParams.length}::date`); }
+  if (q.to) { sParams.push(q.to); sWhere.push(`order_date < ($${sParams.length}::date + 1)`); }
+  const sWhereSql = sWhere.length ? "WHERE " + sWhere.join(" AND ") : "";
+  const salesDaily = (await pool.query(
+    `SELECT to_char(order_date,'YYYY-MM-DD') AS day, count(*)::int AS orders,
+            COALESCE(sum(total),0) AS revenue, COALESCE(sum(discount+promotion),0) AS discount
+       FROM ts_customer_orders ${sWhereSql} GROUP BY 1 ORDER BY 1`, sParams
+  )).rows.map((r) => ({ day: r.day, orders: r.orders, revenue: Number(r.revenue), discount: Number(r.discount) }));
+
+  return c.json({ ok: true, summary, perPlatform, perCampaign, daily, salesDaily });
+});
+
+ensureMarketingSchema()
+  .then(() => console.log("[marketing] schema ready"))
+  .catch((e) => console.error("[marketing] schema init failed:", e.message));
+
 serve({ fetch: app.fetch, port: PORT, hostname: "0.0.0.0" }, (info) => {
   console.log(`freshcuts-api listening on http://0.0.0.0:${info.port}`);
   if (TS_ENABLED) {
