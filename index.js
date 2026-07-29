@@ -1187,8 +1187,10 @@ async function ensureMarketingSchema() {
       payments JSONB NOT NULL DEFAULT '{}',
       branch TEXT,
       customer_id TEXT,
+      staff_name TEXT,
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
+    ALTER TABLE ts_orders ADD COLUMN IF NOT EXISTS staff_name TEXT;
     CREATE INDEX IF NOT EXISTS ts_orders_day_idx ON ts_orders(calendar_day);
     CREATE INDEX IF NOT EXISTS ts_orders_customer_idx ON ts_orders(customer_id);
     -- Cache of the TabSense customer directory (has the registration date).
@@ -1215,6 +1217,11 @@ async function ensureMarketingSchema() {
       filled_by TEXT NOT NULL DEFAULT 'cashier',
       filled_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
+    -- Cashier-captured customer identity for orders TabSense has no customer on.
+    ALTER TABLE order_sources ADD COLUMN IF NOT EXISTS customer_name TEXT NOT NULL DEFAULT '';
+    ALTER TABLE order_sources ADD COLUMN IF NOT EXISTS customer_phone TEXT NOT NULL DEFAULT '';
+    ALTER TABLE order_sources ADD COLUMN IF NOT EXISTS phone_norm TEXT NOT NULL DEFAULT '';
+    CREATE INDEX IF NOT EXISTS order_sources_phone_idx ON order_sources(phone_norm);
   `);
 }
 
@@ -1529,15 +1536,16 @@ async function syncOrdersCache(sinceDate) {
   for (const o of orders) {
     await pool.query(
       `INSERT INTO ts_orders (order_id, receipt, order_date, calendar_day, order_option, order_type,
-                              order_status, gross, discount, promotion, total, payments, branch, updated_at)
-       VALUES ($1,$2,$3::timestamptz,$4::date,$5,$6,$7,$8,$9,$10,$11,$12::jsonb,$13,NOW())
+                              order_status, gross, discount, promotion, total, payments, branch, staff_name, updated_at)
+       VALUES ($1,$2,$3::timestamptz,$4::date,$5,$6,$7,$8,$9,$10,$11,$12::jsonb,$13,$14,NOW())
        ON CONFLICT (order_id) DO UPDATE SET
          receipt=EXCLUDED.receipt, order_date=EXCLUDED.order_date, calendar_day=EXCLUDED.calendar_day,
          order_option=EXCLUDED.order_option, order_type=EXCLUDED.order_type, order_status=EXCLUDED.order_status,
          gross=EXCLUDED.gross, discount=EXCLUDED.discount, promotion=EXCLUDED.promotion,
-         total=EXCLUDED.total, payments=EXCLUDED.payments, branch=EXCLUDED.branch, updated_at=NOW()`,
+         total=EXCLUDED.total, payments=EXCLUDED.payments, branch=EXCLUDED.branch,
+         staff_name=COALESCE(NULLIF(EXCLUDED.staff_name,''), ts_orders.staff_name), updated_at=NOW()`,
       [o.orderId, o.receipt, o.orderDate, o.calendarDay, o.orderOption, o.orderType,
-       o.orderStatus, o.gross, o.discount, o.promotion, o.total, jb(o.payments), o.branch]
+       o.orderStatus, o.gross, o.discount, o.promotion, o.total, jb(o.payments), o.branch, o.staffName || ""]
     );
   }
   const appList = (Array.isArray(settings?.deliveryAppMethods) && settings.deliveryAppMethods.length)
@@ -1632,10 +1640,14 @@ async function runInsightsSync() {
   if (due) {
     await syncCustomersCache();
     insightsState.lastCustomersSyncAt = new Date().toISOString();
-    // Link only customers active in the last 2 days — small, cheap sweep.
+    // Link EVERY customer active in the last 2 days (not a top-N slice) — a day
+    // is only ~15-25 unique customers, and full coverage is what makes a NULL
+    // customer_id mean "no customer on the order" instead of "not swept yet".
+    // That distinction is the basis of the cashier attach-rate score.
     const actives = await ts.fetchCustomerSales(daysAgoISO(2), todayISO());
-    await linkCustomersOrders(actives.slice(0, 40).map((c) => c.id));
+    await linkCustomersOrders(actives.slice(0, 150).map((c) => c.id));
     insightsState.lastLinkAt = new Date().toISOString();
+    insightsState.lastLinkCount = actives.length;
   }
 }
 
@@ -1737,7 +1749,8 @@ app.get("/api/cashier/queue", async (c) => {
   const hours = Math.max(1, Math.min(168, Number(c.req.query("hours")) || 48));
   const pending = (await pool.query(
     `SELECT o.order_id, o.receipt, o.order_date, o.calendar_day, o.order_option, o.order_type,
-            o.total, o.discount, o.promotion, o.payments, o.customer_id, tc.name AS customer_name
+            o.total, o.discount, o.promotion, o.payments, o.customer_id, o.staff_name,
+            tc.name AS customer_name, tc.phone AS customer_phone
        FROM ts_orders o
        LEFT JOIN order_sources s ON s.order_id = o.order_id
        LEFT JOIN ts_customers tc ON tc.customer_id = o.customer_id
@@ -1749,6 +1762,9 @@ app.get("/api/cashier/queue", async (c) => {
     orderOption: r.order_option || "", orderType: r.order_type || "",
     total: Number(r.total) || 0, discount: (Number(r.discount) || 0) + (Number(r.promotion) || 0),
     customerName: r.customer_name || "",
+    customerPhone: r.customer_phone || "",
+    hasCustomer: !!r.customer_id,
+    staffName: r.staff_name || "",
     // POS bug: delivery-app orders are logged as Dine-in — order_type
     // 'External' (FeedUs) and the aggregator payment method are the
     // reliable delivery signals.
@@ -1772,15 +1788,129 @@ app.post("/api/cashier/submit", async (c) => {
   if (!b.orderId || !CASHIER_SOURCES.includes(String(b.source))) {
     return c.json({ ok: false, error: "orderId + valid source required" }, 400);
   }
+  // Cashier-captured identity: TabSense often has no customer on the order, so
+  // the phone typed here is what makes new-vs-returning measurable.
+  const name = String(b.customerName || "").trim();
+  const phone = String(b.customerPhone || "").trim();
+  const pn = normPhone(phone);
   await pool.query(
-    `INSERT INTO order_sources (order_id, source, source_note, customer_kind, filled_by, filled_at)
-     VALUES ($1,$2,$3,$4,'cashier',NOW())
+    `INSERT INTO order_sources (order_id, source, source_note, customer_kind, filled_by, filled_at,
+                                customer_name, customer_phone, phone_norm)
+     VALUES ($1,$2,$3,$4,'cashier',NOW(),$5,$6,$7)
      ON CONFLICT (order_id) DO UPDATE SET
        source=EXCLUDED.source, source_note=EXCLUDED.source_note,
-       customer_kind=EXCLUDED.customer_kind, filled_by='cashier', filled_at=NOW()`,
-    [String(b.orderId), String(b.source), String(b.note || ""), String(b.customerKind || "unknown")]
+       customer_kind=EXCLUDED.customer_kind, filled_by='cashier', filled_at=NOW(),
+       customer_name=EXCLUDED.customer_name, customer_phone=EXCLUDED.customer_phone,
+       phone_norm=EXCLUDED.phone_norm`,
+    [String(b.orderId), String(b.source), String(b.note || ""), String(b.customerKind || "unknown"),
+     name, phone, pn]
   );
-  return c.json({ ok: true });
+  // Was this phone seen before (TabSense customer directory or an earlier
+  // cashier entry)? Lets the station tell the cashier "returning customer".
+  let seenBefore = null;
+  if (pn) {
+    const r = await pool.query(
+      `SELECT (SELECT count(*)::int FROM ts_customers WHERE phone_norm = $1) AS in_directory,
+              (SELECT count(*)::int FROM order_sources WHERE phone_norm = $1 AND order_id <> $2) AS earlier_orders`,
+      [pn, String(b.orderId)]
+    );
+    const row = r.rows[0];
+    seenBefore = (row.in_directory > 0 || row.earlier_orders > 0);
+  }
+  return c.json({ ok: true, seenBefore });
+});
+
+// ─── Cashier performance — the score Omar evaluates staff on ────────────────
+// Denominator = in-restaurant orders only (delivery-app orders carry no
+// customer the cashier could capture, so they are excluded, not counted against).
+app.get("/api/insights/staff", async (c) => {
+  const err = await requireAdmin(c); if (err) return err;
+  const from = c.req.query("from") || daysAgoISO(29);
+  const to = c.req.query("to") || todayISO();
+  const settings = await getSettingsData();
+  const appList = (Array.isArray(settings?.deliveryAppMethods) && settings.deliveryAppMethods.length)
+    ? settings.deliveryAppMethods.map((s) => String(s).toLowerCase())
+    : DEFAULT_DELIVERY_APPS;
+
+  const rows = (await pool.query(
+    `SELECT COALESCE(NULLIF(o.staff_name,''),'(غير معروف)') AS staff,
+            count(*)::int AS orders,
+            COALESCE(sum(o.total),0) AS revenue,
+            count(*) FILTER (WHERE o.customer_id IS NOT NULL)::int AS pos_customer,
+            count(*) FILTER (WHERE s.phone_norm <> '')::int AS cashier_phone,
+            count(*) FILTER (WHERE o.customer_id IS NOT NULL OR s.phone_norm <> '')::int AS identified,
+            count(*) FILTER (WHERE s.order_id IS NOT NULL AND s.source <> 'skipped')::int AS source_tagged,
+            count(*) FILTER (WHERE s.source = 'skipped')::int AS skipped
+       FROM ts_orders o
+       LEFT JOIN order_sources s ON s.order_id = o.order_id
+      WHERE o.calendar_day BETWEEN $1::date AND $2::date
+        AND o.order_type NOT ILIKE '%external%'
+        AND o.order_type NOT ILIKE '%void%'
+        AND o.order_type NOT ILIKE '%refund%'
+        AND NOT EXISTS (SELECT 1 FROM jsonb_object_keys(o.payments) k WHERE lower(k) = ANY($3))
+      GROUP BY 1 ORDER BY orders DESC`, [from, to, appList]
+  )).rows.map((r) => ({
+    staff: r.staff,
+    orders: r.orders,
+    revenue: Number(r.revenue),
+    posCustomer: r.pos_customer,
+    cashierPhone: r.cashier_phone,
+    identified: r.identified,
+    identifyRate: r.orders > 0 ? r.identified / r.orders : 0,
+    sourceTagged: r.source_tagged,
+    sourceRate: r.orders > 0 ? r.source_tagged / r.orders : 0,
+    skipped: r.skipped,
+  }));
+
+  const totals = rows.reduce((a, r) => ({
+    orders: a.orders + r.orders, identified: a.identified + r.identified,
+    sourceTagged: a.sourceTagged + r.sourceTagged, revenue: a.revenue + r.revenue,
+  }), { orders: 0, identified: 0, sourceTagged: 0, revenue: 0 });
+
+  // New vs returning on in-restaurant orders, using every phone we know:
+  // TabSense customer registration date OR the first time the cashier typed it.
+  const nvr = (await pool.query(
+    `WITH inhouse AS (
+       SELECT o.order_id, o.calendar_day,
+              COALESCE(NULLIF(s.phone_norm,''), tc.phone_norm) AS pn
+         FROM ts_orders o
+         LEFT JOIN order_sources s ON s.order_id = o.order_id
+         LEFT JOIN ts_customers tc ON tc.customer_id = o.customer_id
+        WHERE o.calendar_day BETWEEN $1::date AND $2::date
+          AND o.order_type NOT ILIKE '%external%'
+          AND o.order_type NOT ILIKE '%void%'
+          AND o.order_type NOT ILIKE '%refund%'
+     ), firsts AS (
+       SELECT pn, min(first_at) AS first_at FROM (
+         SELECT phone_norm AS pn, min(filled_at) AS first_at FROM order_sources
+          WHERE phone_norm <> '' GROUP BY 1
+         UNION ALL
+         SELECT phone_norm AS pn, min(COALESCE(first_order_at, registered_at)) AS first_at
+           FROM ts_customers WHERE phone_norm <> '' GROUP BY 1
+       ) u GROUP BY pn
+     )
+     SELECT count(*)::int AS total,
+            count(*) FILTER (WHERE i.pn IS NULL OR i.pn = '')::int AS unknown,
+            count(*) FILTER (WHERE i.pn <> '' AND f.first_at::date >= i.calendar_day)::int AS new_customers,
+            count(*) FILTER (WHERE i.pn <> '' AND f.first_at::date < i.calendar_day)::int AS returning_customers
+       FROM inhouse i LEFT JOIN firsts f ON f.pn = i.pn`, [from, to]
+  )).rows[0];
+
+  return c.json({
+    ok: true, from, to,
+    staff: rows,
+    totals: {
+      ...totals,
+      identifyRate: totals.orders > 0 ? totals.identified / totals.orders : 0,
+      sourceRate: totals.orders > 0 ? totals.sourceTagged / totals.orders : 0,
+    },
+    newVsReturning: {
+      total: nvr.total, unknown: nvr.unknown,
+      newCustomers: nvr.new_customers, returning: nvr.returning_customers,
+      returnRate: (nvr.new_customers + nvr.returning_customers) > 0
+        ? nvr.returning_customers / (nvr.new_customers + nvr.returning_customers) : 0,
+    },
+  });
 });
 
 // ─── Insights summary — the numbers Omar asked for ──────────────────────────

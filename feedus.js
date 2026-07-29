@@ -44,11 +44,20 @@ function makeJar() {
   };
 }
 
-function matchToken(html) {
-  const m = html.match(/name="_token"[^>]*value="([^"]+)"/) ||
-            html.match(/value="([^"]+)"[^>]*name="_token"/) ||
-            html.match(/<meta name="csrf-token" content="([^"]+)"/);
-  return m ? m[1] : null;
+// The login page carries TWO forms — the login form (#login_form → /post-login)
+// and a logout form. Pull the token out of the login form specifically.
+function findLoginForm(html) {
+  for (const part of html.split(/<form/i).slice(1)) {
+    const end = part.search(/<\/form>/i);
+    const chunk = "<form" + (end > -1 ? part.slice(0, end) : part);
+    if (!/name="password"/.test(chunk)) continue;
+    return {
+      action: (chunk.match(/action="([^"]*)"/) || [])[1] || `${BASE}/post-login`,
+      token: (chunk.match(/name="_token"[^>]*value="([^"]+)"/) ||
+              chunk.match(/value="([^"]+)"[^>]*name="_token"/) || [])[1] || null,
+    };
+  }
+  return null;
 }
 
 let _session = null;
@@ -63,11 +72,11 @@ async function doLogin() {
   });
   jar.absorb(page);
   const html = await page.text();
-  const token = matchToken(html);
-  if (!token) throw new Error("feedus login: CSRF _token not found");
+  const form = findLoginForm(html);
+  if (!form?.token) throw new Error("feedus login: login form / CSRF _token not found");
 
-  const body = new URLSearchParams({ _token: token, email: EMAIL, password: PASSWORD, remember: "on" });
-  const res = await fetch(`${BASE}/login`, {
+  const body = new URLSearchParams({ _token: form.token, email: EMAIL, password: PASSWORD, remember: "on" });
+  const res = await fetch(form.action.startsWith("http") ? form.action : BASE + form.action, {
     method: "POST",
     headers: {
       "User-Agent": UA,
@@ -87,12 +96,18 @@ async function doLogin() {
     }
   } else if (res.status >= 300 && res.status < 400) {
     const loc = res.headers.get("location") || "";
-    if (/\/login/.test(loc)) throw new Error("feedus login: bounced back to /login");
-    const follow = await fetch(loc.startsWith("http") ? loc : BASE + loc, {
-      headers: { "User-Agent": UA, Cookie: jar.header(), Accept: "text/html" },
-      redirect: "manual",
-    });
-    jar.absorb(follow);
+    if (/\/login/.test(loc)) throw new Error("feedus login: bounced back to /login (bad credentials?)");
+    // Follow up to 3 redirects so every session cookie lands in the jar.
+    let next = loc;
+    for (let i = 0; i < 3 && next; i++) {
+      const follow = await fetch(next.startsWith("http") ? next : BASE + next, {
+        headers: { "User-Agent": UA, Cookie: jar.header(), Accept: "text/html" },
+        redirect: "manual",
+      });
+      jar.absorb(follow);
+      next = follow.status >= 300 && follow.status < 400 ? follow.headers.get("location") : null;
+      if (next && /\/login/.test(next)) throw new Error("feedus login: redirected back to /login");
+    }
   }
   return { jar, createdAt: Date.now() };
 }

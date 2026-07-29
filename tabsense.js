@@ -640,6 +640,8 @@ function mapOrderRow(r) {
     total: num(r.total_amount ?? r.total),
     payments,
     branch: stripTags(String(r.branch_name ?? "")),
+    // POS user who rang the order up — used for cashier performance scoring.
+    staffName: stripTags(String(r.created_by ?? r.staff?.user?.first_name ?? "")),
   };
 }
 
