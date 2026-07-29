@@ -1496,15 +1496,21 @@ const insightsState = {
 // Pull the FeedUs → TabSense order log and tag each matching order with the
 // delivery app it actually came from (Keeta / HungerStation / Ninja …).
 // This is the only place the origin app and the TabSense order id meet.
-async function syncFeedusSources({ pages = 3 } = {}) {
+async function syncFeedusSources({ pages = 3, full = false } = {}) {
   if (!feedus.ENABLED) return { ok: false, error: "feedus_not_configured", tagged: 0 };
-  const known = new Set(
+  // Incremental runs stop once they hit a run of already-attributed orders.
+  // `full` walks every page — needed to re-attribute the orders that were
+  // auto-tagged with the generic aggregator name before this connector existed.
+  const known = full ? null : new Set(
     (await pool.query(
       `SELECT order_id FROM order_sources WHERE filled_by = 'feedus'
         ORDER BY filled_at DESC LIMIT 400`
     )).rows.map((r) => String(r.order_id))
   );
-  const rows = await feedus.fetchPosLogs({ pages, isKnown: (id) => known.has(String(id)) });
+  const rows = await feedus.fetchPosLogs({
+    pages,
+    isKnown: known ? (id) => known.has(String(id)) : null,
+  });
   let tagged = 0;
   for (const r of rows) {
     if (!r.tabsenseOrderId || !r.provider) continue;
@@ -1705,7 +1711,7 @@ app.post("/api/feedus/sync", async (c) => {
   const b = await c.req.json().catch(() => ({}));
   const pages = Math.max(1, Math.min(60, Number(b.pages) || 3));
   try {
-    const r = await syncFeedusSources({ pages });
+    const r = await syncFeedusSources({ pages, full: !!b.full });
     insightsState.lastFeedusSyncAt = new Date().toISOString();
     insightsState.lastFeedusTagged = r.tagged || 0;
     return c.json(r);
