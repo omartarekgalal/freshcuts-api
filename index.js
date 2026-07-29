@@ -1471,8 +1471,12 @@ function deliveryAppOf(payments, settings) {
   }
   return null;
 }
-function isDeliveryOrder(orderOption, payments, settings) {
-  return !!deliveryAppOf(payments, settings) || /deliver|توصيل/i.test(String(orderOption || ""));
+// order_type='External' = aggregator (FeedUs) orders — present from creation,
+// unlike the payment method which only lands when the order is paid/closed.
+function isDeliveryOrder(orderOption, payments, settings, orderType) {
+  return /external/i.test(String(orderType || ""))
+    || !!deliveryAppOf(payments, settings)
+    || /deliver|توصيل/i.test(String(orderOption || ""));
 }
 
 const insightsState = {
@@ -1509,13 +1513,15 @@ async function syncOrdersCache(sinceDate) {
   await pool.query(
     `INSERT INTO order_sources (order_id, source, source_note, customer_kind, filled_by)
      SELECT o.order_id, 'delivery_app',
-            COALESCE((SELECT k FROM jsonb_object_keys(o.payments) k WHERE lower(k) = ANY($1) LIMIT 1), ''),
+            COALESCE((SELECT k FROM jsonb_object_keys(o.payments) k WHERE lower(k) = ANY($1) LIMIT 1),
+                     CASE WHEN o.order_type ILIKE '%external%' THEN 'Feedus' ELSE '' END),
             'unknown', 'auto'
        FROM ts_orders o
        LEFT JOIN order_sources s ON s.order_id = o.order_id
       WHERE s.order_id IS NULL
         AND o.order_date < NOW() - interval '48 hours'
-        AND EXISTS (SELECT 1 FROM jsonb_object_keys(o.payments) k WHERE lower(k) = ANY($1))
+        AND (o.order_type ILIKE '%external%'
+             OR EXISTS (SELECT 1 FROM jsonb_object_keys(o.payments) k WHERE lower(k) = ANY($1)))
      ON CONFLICT (order_id) DO NOTHING`,
     [appList]
   );
@@ -1679,9 +1685,11 @@ app.get("/api/cashier/queue", async (c) => {
     orderOption: r.order_option || "", orderType: r.order_type || "",
     total: Number(r.total) || 0, discount: (Number(r.discount) || 0) + (Number(r.promotion) || 0),
     customerName: r.customer_name || "",
-    // POS bug: delivery-app orders are logged as Dine-in — the aggregator
-    // payment method is the reliable delivery signal.
-    deliveryApp: deliveryAppOf(r.payments, settings),
+    // POS bug: delivery-app orders are logged as Dine-in — order_type
+    // 'External' (FeedUs) and the aggregator payment method are the
+    // reliable delivery signals.
+    deliveryApp: deliveryAppOf(r.payments, settings)
+      || (/external/i.test(r.order_type || "") ? "Feedus" : null),
   }));
   const stats = (await pool.query(
     `SELECT (SELECT count(*)::int FROM ts_orders WHERE calendar_day = CURRENT_DATE) AS today_orders,
@@ -1745,13 +1753,17 @@ app.get("/api/insights/summary", async (c) => {
   const daily = Object.fromEntries(days.map((d) => [d, {
     day: d, orders: 0, revenue: 0, delivery: 0, deliveryRevenue: 0, newCustomers: 0, newCustomerValue: 0,
   }]));
-  let totDelivery = 0, totDeliveryRev = 0, totRevenue = 0, totDiscount = 0;
+  let totDelivery = 0, totDeliveryRev = 0, totRevenue = 0, totDiscount = 0, totAggregatorAdj = 0;
   for (const o of orders) {
     const d = daily[dayKey(o.calendar_day)];
     const total = Number(o.total) || 0;
-    const isDel = isDeliveryOrder(o.order_option, o.payments, settings);
+    const isExternal = /external/i.test(o.order_type || "");
+    const isDel = isDeliveryOrder(o.order_option, o.payments, settings, o.order_type);
+    const disc = (Number(o.discount) || 0) + (Number(o.promotion) || 0);
     totRevenue += total;
-    totDiscount += (Number(o.discount) || 0) + (Number(o.promotion) || 0);
+    // "discounts" on External (FeedUs) orders are aggregator commissions /
+    // price adjustments — not marketing discounts. Track separately.
+    if (isExternal) totAggregatorAdj += disc; else totDiscount += disc;
     if (isDel) { totDelivery++; totDeliveryRev += total; }
     if (d) {
       d.orders++; d.revenue += total;
@@ -1832,6 +1844,7 @@ app.get("/api/insights/summary", async (c) => {
       orders: orders.length,
       revenue: totRevenue,
       discount: totDiscount,
+      aggregatorAdjustments: totAggregatorAdj,
       avgOrder: orders.length > 0 ? totRevenue / orders.length : 0,
       deliveryOrders: totDelivery,
       deliveryRevenue: totDeliveryRev,
