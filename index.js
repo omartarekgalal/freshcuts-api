@@ -1480,8 +1480,12 @@ const insightsState = {
   lastCustomersSyncAt: null, lastLinkAt: null, lastError: null,
 };
 
-// Pull orders (newest-first down to sinceDate) into ts_orders + auto-tag
-// delivery-app orders in order_sources so the cashier never sees them.
+// Pull orders (newest-first down to sinceDate) into ts_orders. Recent
+// delivery-app orders are NOT auto-tagged anymore — the POS logs them all as
+// Dine-in under an aggregator payment (e.g. Feedus), so the cashier picks the
+// actual app (Keeta / HungerStation / Ninja…) from the queue. Orders nobody
+// tagged within 48h get auto-tagged with the payment-method name as fallback
+// so analytics never lose the delivery attribution.
 async function syncOrdersCache(sinceDate) {
   const settings = await getSettingsData();
   const orders = await ts.fetchOrdersSince(sinceDate);
@@ -1498,15 +1502,23 @@ async function syncOrdersCache(sinceDate) {
       [o.orderId, o.receipt, o.orderDate, o.calendarDay, o.orderOption, o.orderType,
        o.orderStatus, o.gross, o.discount, o.promotion, o.total, jb(o.payments), o.branch]
     );
-    const app = deliveryAppOf(o.payments, settings);
-    if (app) {
-      await pool.query(
-        `INSERT INTO order_sources (order_id, source, source_note, customer_kind, filled_by)
-         VALUES ($1,'delivery_app',$2,'unknown','auto') ON CONFLICT (order_id) DO NOTHING`,
-        [o.orderId, app]
-      );
-    }
   }
+  const appList = (Array.isArray(settings?.deliveryAppMethods) && settings.deliveryAppMethods.length)
+    ? settings.deliveryAppMethods.map((s) => String(s).toLowerCase())
+    : DEFAULT_DELIVERY_APPS;
+  await pool.query(
+    `INSERT INTO order_sources (order_id, source, source_note, customer_kind, filled_by)
+     SELECT o.order_id, 'delivery_app',
+            COALESCE((SELECT k FROM jsonb_object_keys(o.payments) k WHERE lower(k) = ANY($1) LIMIT 1), ''),
+            'unknown', 'auto'
+       FROM ts_orders o
+       LEFT JOIN order_sources s ON s.order_id = o.order_id
+      WHERE s.order_id IS NULL
+        AND o.order_date < NOW() - interval '48 hours'
+        AND EXISTS (SELECT 1 FROM jsonb_object_keys(o.payments) k WHERE lower(k) = ANY($1))
+     ON CONFLICT (order_id) DO NOTHING`,
+    [appList]
+  );
   return orders.length;
 }
 
@@ -1651,10 +1663,11 @@ app.post("/api/auth/cashier", async (c) => {
 // Pending = cached orders in the window with no source row yet.
 app.get("/api/cashier/queue", async (c) => {
   const err = await requireCashierOrAdmin(c); if (err) return err;
+  const settings = await getSettingsData();
   const hours = Math.max(1, Math.min(168, Number(c.req.query("hours")) || 48));
   const pending = (await pool.query(
-    `SELECT o.order_id, o.receipt, o.order_date, o.order_option, o.order_type, o.total, o.discount, o.promotion,
-            o.customer_id, tc.name AS customer_name
+    `SELECT o.order_id, o.receipt, o.order_date, o.calendar_day, o.order_option, o.order_type,
+            o.total, o.discount, o.promotion, o.payments, o.customer_id, tc.name AS customer_name
        FROM ts_orders o
        LEFT JOIN order_sources s ON s.order_id = o.order_id
        LEFT JOIN ts_customers tc ON tc.customer_id = o.customer_id
@@ -1662,9 +1675,13 @@ app.get("/api/cashier/queue", async (c) => {
       ORDER BY o.order_date DESC LIMIT 100`, [hours]
   )).rows.map((r) => ({
     orderId: r.order_id, receipt: r.receipt || "", orderDate: r.order_date,
+    day: r.calendar_day instanceof Date ? r.calendar_day.toISOString().slice(0, 10) : r.calendar_day,
     orderOption: r.order_option || "", orderType: r.order_type || "",
     total: Number(r.total) || 0, discount: (Number(r.discount) || 0) + (Number(r.promotion) || 0),
     customerName: r.customer_name || "",
+    // POS bug: delivery-app orders are logged as Dine-in — the aggregator
+    // payment method is the reliable delivery signal.
+    deliveryApp: deliveryAppOf(r.payments, settings),
   }));
   const stats = (await pool.query(
     `SELECT (SELECT count(*)::int FROM ts_orders WHERE calendar_day = CURRENT_DATE) AS today_orders,
