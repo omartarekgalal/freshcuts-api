@@ -1457,6 +1457,7 @@ app.get("/api/marketing/report", async (c) => {
    INSIGHTS — full orders/customers cache, cashier source-tagging, analytics
 ═══════════════════════════════════════════════════════════════════════════ */
 const daysAgoISO = (n) => new Date(Date.now() - n * 86400000).toISOString().slice(0, 10);
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // Payment-method names that mean "this order came through a delivery app".
 // Overridable via settings.deliveryAppMethods (array of names).
