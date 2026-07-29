@@ -4,6 +4,7 @@ import { cors } from "hono/cors";
 import pg from "pg";
 import crypto from "node:crypto";
 import * as ts from "./tabsense.js";
+import * as feedus from "./feedus.js";
 
 const { Pool } = pg;
 
@@ -1482,7 +1483,39 @@ function isDeliveryOrder(orderOption, payments, settings, orderType) {
 const insightsState = {
   lastOrdersSyncAt: null, lastOrdersCount: 0,
   lastCustomersSyncAt: null, lastLinkAt: null, lastError: null,
+  feedusEnabled: feedus.ENABLED, lastFeedusSyncAt: null, lastFeedusTagged: 0, lastFeedusError: null,
 };
+
+// Pull the FeedUs → TabSense order log and tag each matching order with the
+// delivery app it actually came from (Keeta / HungerStation / Ninja …).
+// This is the only place the origin app and the TabSense order id meet.
+async function syncFeedusSources({ pages = 3 } = {}) {
+  if (!feedus.ENABLED) return { ok: false, error: "feedus_not_configured", tagged: 0 };
+  const known = new Set(
+    (await pool.query(
+      `SELECT order_id FROM order_sources WHERE filled_by = 'feedus'
+        ORDER BY filled_at DESC LIMIT 400`
+    )).rows.map((r) => String(r.order_id))
+  );
+  const rows = await feedus.fetchPosLogs({ pages, isKnown: (id) => known.has(String(id)) });
+  let tagged = 0;
+  for (const r of rows) {
+    if (!r.tabsenseOrderId || !r.provider) continue;
+    // Only tag orders we actually hold — avoids orphan rows for other branches.
+    const res = await pool.query(
+      `INSERT INTO order_sources (order_id, source, source_note, customer_kind, filled_by, filled_at)
+       SELECT o.order_id, 'delivery_app', $2, 'unknown', 'feedus', NOW()
+         FROM ts_orders o WHERE o.order_id = $1
+       ON CONFLICT (order_id) DO UPDATE SET
+         source='delivery_app', source_note=EXCLUDED.source_note,
+         filled_by='feedus', filled_at=NOW()
+       WHERE order_sources.filled_by IN ('auto','feedus')`,
+      [String(r.tabsenseOrderId), r.provider]
+    );
+    tagged += res.rowCount;
+  }
+  return { ok: true, tagged, scanned: rows.length };
+}
 
 // Pull orders (newest-first down to sinceDate) into ts_orders. Recent
 // delivery-app orders are NOT auto-tagged anymore — the POS logs them all as
@@ -1583,6 +1616,17 @@ async function runInsightsSync() {
   const n = await syncOrdersCache(daysAgoISO(3));
   insightsState.lastOrdersSyncAt = new Date().toISOString();
   insightsState.lastOrdersCount = n;
+  if (feedus.ENABLED) {
+    try {
+      const r = await syncFeedusSources({ pages: 2 });
+      insightsState.lastFeedusSyncAt = new Date().toISOString();
+      insightsState.lastFeedusTagged = r.tagged || 0;
+      insightsState.lastFeedusError = null;
+    } catch (e) {
+      insightsState.lastFeedusError = e.message;
+      console.error("[feedus] sync error:", e.message);
+    }
+  }
   const THIRTY_MIN = 30 * 60 * 1000;
   const due = !insightsState.lastLinkAt || (Date.now() - new Date(insightsState.lastLinkAt).getTime() > THIRTY_MIN);
   if (due) {
@@ -1634,6 +1678,26 @@ app.get("/api/insights/backfill-status/:jobId", async (c) => {
   const job = insightsJobs.get(c.req.param("jobId"));
   if (!job) return c.json({ ok: false, error: "job_not_found" }, 404);
   return c.json({ ok: true, status: job.status, phase: job.phase, done: job.done, total: job.total, linked: job.linked, error: job.error });
+});
+
+// FeedUs: connectivity check + on-demand backfill of the app attribution.
+app.get("/api/feedus/ping", async (c) => {
+  const err = await requireAdmin(c); if (err) return err;
+  if (!feedus.ENABLED) return c.json({ ok: false, error: "feedus_not_configured" }, 400);
+  try { return c.json(await feedus.ping()); }
+  catch (e) { return c.json({ ok: false, error: e.message }, 500); }
+});
+app.post("/api/feedus/sync", async (c) => {
+  const err = await requireAdmin(c); if (err) return err;
+  if (!feedus.ENABLED) return c.json({ ok: false, error: "feedus_not_configured" }, 400);
+  const b = await c.req.json().catch(() => ({}));
+  const pages = Math.max(1, Math.min(60, Number(b.pages) || 3));
+  try {
+    const r = await syncFeedusSources({ pages });
+    insightsState.lastFeedusSyncAt = new Date().toISOString();
+    insightsState.lastFeedusTagged = r.tagged || 0;
+    return c.json(r);
+  } catch (e) { return c.json({ ok: false, error: e.message }, 500); }
 });
 
 app.get("/api/insights/status", async (c) => {

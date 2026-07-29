@@ -1,0 +1,234 @@
+// feedus.js — headless connector to the FeedUs merchant dashboard (app.feedus.io).
+//
+// Why: FeedUs is the aggregator middleware sitting between the delivery apps
+// (Keeta / HungerStation / Ninja / Jahez …) and the TabSense POS. TabSense
+// records those orders as `order_type=External` but DROPS the originating app
+// name — its dashboard never exposes `orders_external.source_channel`. FeedUs's
+// own "POS order logs" page does expose it, together with the TabSense order id
+// (`tenant_order_id: "freshcuts-2149"`), so this is the only place the two ids
+// meet.
+//
+// Same shape as tabsense.js: cookie session, HTML scraping, no deps.
+
+const BASE = (process.env.FEEDUS_BASE || "https://app.feedus.io").replace(/\/$/, "");
+const EMAIL = process.env.FEEDUS_EMAIL || "";
+const PASSWORD = process.env.FEEDUS_PASSWORD || "";
+// The POS integration id in FeedUs (TabSense = 23 for Fresh Cuts; the number in
+// the /pos-logs/<id> URL reachable from POS → Tabsense → gear icon).
+const POS_ID = process.env.FEEDUS_POS_ID || "23";
+// TabSense tenant prefix used in `tenant_order_id` ("freshcuts-2149").
+const TENANT = process.env.TABSENSE_STORE || "freshcuts";
+
+const UA =
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
+  "(KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36";
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const THROTTLE_MS = Number(process.env.FEEDUS_THROTTLE_MS || 400);
+
+const ENABLED = !!(EMAIL && PASSWORD);
+
+function makeJar() {
+  const jar = new Map();
+  return {
+    absorb(res) {
+      const set = res.headers.getSetCookie ? res.headers.getSetCookie() : [];
+      for (const line of set) {
+        const [pair] = line.split(";");
+        const i = pair.indexOf("=");
+        if (i > 0) jar.set(pair.slice(0, i).trim(), pair.slice(i + 1).trim());
+      }
+    },
+    header() {
+      return Array.from(jar.entries()).map(([k, v]) => `${k}=${v}`).join("; ");
+    },
+  };
+}
+
+function matchToken(html) {
+  const m = html.match(/name="_token"[^>]*value="([^"]+)"/) ||
+            html.match(/value="([^"]+)"[^>]*name="_token"/) ||
+            html.match(/<meta name="csrf-token" content="([^"]+)"/);
+  return m ? m[1] : null;
+}
+
+let _session = null;
+let _loginInFlight = null;
+
+async function doLogin() {
+  if (!ENABLED) throw new Error("FEEDUS_EMAIL / FEEDUS_PASSWORD not set");
+  const jar = makeJar();
+  const page = await fetch(`${BASE}/login`, {
+    headers: { "User-Agent": UA, Accept: "text/html" },
+    redirect: "manual",
+  });
+  jar.absorb(page);
+  const html = await page.text();
+  const token = matchToken(html);
+  if (!token) throw new Error("feedus login: CSRF _token not found");
+
+  const body = new URLSearchParams({ _token: token, email: EMAIL, password: PASSWORD, remember: "on" });
+  const res = await fetch(`${BASE}/login`, {
+    method: "POST",
+    headers: {
+      "User-Agent": UA,
+      "Content-Type": "application/x-www-form-urlencoded",
+      Accept: "text/html",
+      Referer: `${BASE}/login`,
+      Cookie: jar.header(),
+    },
+    body,
+    redirect: "manual",
+  });
+  jar.absorb(res);
+  if (res.status === 200) {
+    const txt = await res.text();
+    if (/name="password"/.test(txt) && /name="email"/.test(txt)) {
+      throw new Error("feedus login: credentials rejected");
+    }
+  } else if (res.status >= 300 && res.status < 400) {
+    const loc = res.headers.get("location") || "";
+    if (/\/login/.test(loc)) throw new Error("feedus login: bounced back to /login");
+    const follow = await fetch(loc.startsWith("http") ? loc : BASE + loc, {
+      headers: { "User-Agent": UA, Cookie: jar.header(), Accept: "text/html" },
+      redirect: "manual",
+    });
+    jar.absorb(follow);
+  }
+  return { jar, createdAt: Date.now() };
+}
+
+async function getSession(force = false) {
+  if (force) _session = null;
+  const MAX_AGE = 20 * 60 * 1000;
+  if (_session && Date.now() - _session.createdAt < MAX_AGE) return _session;
+  if (_loginInFlight) return _loginInFlight;
+  _loginInFlight = doLogin()
+    .then((s) => { _session = s; return s; })
+    .finally(() => { _loginInFlight = null; });
+  return _loginInFlight;
+}
+
+async function authGet(path, { json = false } = {}) {
+  const run = async (s) => fetch(path.startsWith("http") ? path : BASE + path, {
+    headers: {
+      "User-Agent": UA,
+      Cookie: s.jar.header(),
+      Accept: json ? "application/json, text/javascript, */*" : "text/html",
+      ...(json ? { "X-Requested-With": "XMLHttpRequest" } : {}),
+    },
+    redirect: "manual",
+  });
+  let s = await getSession();
+  let res = await run(s);
+  const bouncedToLogin = res.status >= 300 && res.status < 400 && /\/login/.test(res.headers.get("location") || "");
+  if (res.status === 401 || res.status === 419 || bouncedToLogin) {
+    s = await getSession(true);
+    res = await run(s);
+  }
+  return res;
+}
+
+// ─── POS order logs: the TabSense-order-id ⇄ delivery-app mapping ─────────────
+// Each table row carries the row cells (provider, ids, time, status) AND the
+// full JSON payload FeedUs pushed to TabSense, HTML-escaped inside the modal.
+// The payload holds `tenant_order_id` ("freshcuts-2149") — the TabSense order id.
+function parsePosLogsPage(html) {
+  const out = [];
+  const chunks = html.split(/<tr[\s>]/i).slice(1);
+  for (const chunk of chunks) {
+    const cells = [...chunk.matchAll(/<td[^>]*>([\s\S]*?)<\/td>/g)]
+      .map((m) => m[1].replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim());
+    if (cells.length < 9) continue;
+    const tenantRaw = (chunk.match(/tenant_order_id\\?&quot;:\\?&quot;([^\\&"]+)/) ||
+                       chunk.match(/tenant_order_id"?:"?([\w-]+)/) || [])[1];
+    const channel = (chunk.match(/source_channel\\?&quot;:\\?&quot;([^\\&"]+)/) ||
+                     chunk.match(/source_channel"?:"?([\w ]+)/) || [])[1];
+    // Row layout: # | ID | Feedus Order ID | Pos Order ID | Provider Order ID |
+    //             Provider | Location | Brand | Date Time | Status
+    const provider = (channel || cells[5] || "").trim();
+    if (!tenantRaw || !provider) continue;
+    const prefix = `${TENANT}-`;
+    const tabsenseOrderId = tenantRaw.startsWith(prefix) ? tenantRaw.slice(prefix.length) : tenantRaw;
+    out.push({
+      tabsenseOrderId,
+      tenantOrderId: tenantRaw,
+      provider,
+      feedusId: cells[1] || "",
+      feedusOrderId: cells[2] || "",
+      posOrderRef: cells[3] || "",
+      providerOrderId: cells[4] || "",
+      location: cells[6] || "",
+      brand: cells[7] || "",
+      dateTime: cells[8] || "",
+      status: cells[9] || "",
+    });
+  }
+  return out;
+}
+
+// Walk the POS logs newest-first. Stops early once `stopAfterKnown` consecutive
+// rows are already-known TabSense order ids (cheap incremental sync).
+async function fetchPosLogs({ pages = 3, posId = POS_ID, isKnown = null, stopAfterKnown = 15 } = {}) {
+  const out = [];
+  let knownStreak = 0;
+  for (let page = 1; page <= pages; page++) {
+    if (page > 1) await sleep(THROTTLE_MS);
+    const res = await authGet(`/pos-logs/${posId}?page=${page}`);
+    if (!res.ok) throw new Error(`fetchPosLogs: HTTP ${res.status}`);
+    const rows = parsePosLogsPage(await res.text());
+    if (!rows.length) break;
+    for (const r of rows) {
+      out.push(r);
+      if (isKnown && isKnown(r.tabsenseOrderId)) knownStreak++; else knownStreak = 0;
+    }
+    if (isKnown && knownStreak >= stopAfterKnown) break;
+  }
+  return out;
+}
+
+// ─── Sales orders (JSON API behind the v2 dashboard) ─────────────────────────
+// Rich per-order rows: provider, customer name, item names, amounts, delivery
+// type. No TabSense id here — use fetchPosLogs for the id mapping.
+async function fetchSalesOrders(startDate, endDate, { perPage = 100, maxPages = 20 } = {}) {
+  const out = [];
+  for (let page = 1; page <= maxPages; page++) {
+    if (page > 1) await sleep(THROTTLE_MS);
+    const qs = new URLSearchParams({
+      start_date: startDate, end_date: endDate,
+      order_by: "CreatedDate", page: String(page), per_page: String(perPage),
+    });
+    const res = await authGet(`/api/react/dashboard/sales/orders?${qs}`, { json: true });
+    if (!res.ok) throw new Error(`fetchSalesOrders: HTTP ${res.status}`);
+    const body = await res.json();
+    const rows = body?.data?.data || [];
+    for (const r of rows) {
+      out.push({
+        id: r.id,
+        orderId: String(r.order_id ?? ""),
+        dateTime: r.date_time,
+        brand: r.brand, location: r.location,
+        provider: r.provider,
+        customer: (r.customer || "").trim(),
+        paymentMethod: r.payment_method,
+        status: r.status,
+        amountWithVat: Number(r.amount_with_vat) || 0,
+        amountWithoutVat: Number(r.amount_without_vat) || 0,
+        vat: Number(r.vat) || 0,
+        items: r.item_names_arabic || "",
+        deliveryType: r.delivery_type,
+        scheduled: r.is_scheduled,
+      });
+    }
+    const last = body?.data?.pagination?.last_page || 1;
+    if (page >= last) break;
+  }
+  return out;
+}
+
+async function ping() {
+  await getSession(true);
+  const rows = await fetchPosLogs({ pages: 1 });
+  return { ok: true, rows: rows.length, sample: rows[0] || null };
+}
+
+export { ENABLED, getSession, fetchPosLogs, fetchSalesOrders, parsePosLogsPage, ping, BASE, POS_ID };
