@@ -603,6 +603,118 @@ async function fetchCustomerDiscounts(startDate, endDate, { cap = 150, throttleM
   return { customers: out, scanned: customers.length };
 }
 
+// ─── Full orders list ────────────────────────────────────────────────────────────
+// The /orders DataTables endpoint returns EVERY order with amounts, the order
+// option (Dine in / Take away / Delivery…), an order-type badge (POS / QR-Menu)
+// and one amount column per payment method (Cash, Visa, Mada, Ninja, …).
+// No customer link here — that comes from /customers/{id}/orders sweeps.
+const ORDER_PAYMENT_KEYS = [
+  "Cash", "Visa", "Mastercard", "Mada", "Ninja", "TABsense Pay", "Feedus",
+  "Keeta", "HungerStation", "Jahez", "ToYou", "Mrsool", "Careem",
+  "e-Mada", "e-Credit Card", "e-Apple Pay Credit", "e-Apple Pay Mada",
+  "e-Google Pay", "e-STC Pay", "e-Amex",
+];
+
+function mapOrderRow(r) {
+  const num = (v) => Number(String(v ?? "0").replace(/[^0-9.\-]/g, "")) || 0;
+  const payments = {};
+  for (const k of Object.keys(r)) {
+    // Payment-method columns vary per store; match known keys case-insensitively
+    // and keep any nonzero amount.
+    if (ORDER_PAYMENT_KEYS.some((p) => p.toLowerCase() === k.toLowerCase())) {
+      const v = num(r[k]);
+      if (v > 0) payments[k] = v;
+    }
+  }
+  return {
+    orderId: String(r.main_order_id ?? r.id),
+    receipt: stripTags(String(r.receipt_number ?? "")),
+    orderDate: String(r.order_created_at || "").slice(0, 19) || null,
+    calendarDay: String(r.order_calendar_day || r.order_created_at || "").slice(0, 10) || null,
+    orderOption: stripTags(String(r.order_option_id ?? r.order_option_name ?? "")),
+    orderType: stripTags(String(r.order_type ?? "")),
+    orderStatus: Number(r.order_status) || 0,
+    gross: num(r.total_gross_amount),
+    discount: num(r.total_discount_amount),
+    promotion: num(r.total_promotion_amount),
+    total: num(r.total_amount ?? r.total),
+    payments,
+    branch: stripTags(String(r.branch_name ?? "")),
+  };
+}
+
+// Fetch orders newest-first, stopping once we're past `sinceDate` (YYYY-MM-DD).
+// Pass sinceDate=null to sweep everything (bounded by maxPages).
+async function fetchOrdersSince(sinceDate, { maxPages = 20, pageSize = 200 } = {}) {
+  const cols = [
+    "main_order_id", "order_created_at", "order_calendar_day", "order_option_id",
+    "order_type", "order_status", "purchases_quantity", "total_gross_amount",
+    "total_discount_amount", "total_promotion_amount", "total_net_amount",
+    "total_amount", "receipt_number", "branch_name", "payment_method", "notes",
+  ];
+  const out = [];
+  for (let page = 0; page < maxPages; page++) {
+    const qs = new URLSearchParams();
+    qs.set("draw", String(page + 1));
+    cols.forEach((c, i) => qs.set(`columns[${i}][data]`, c));
+    qs.set("order[0][column]", "0");
+    qs.set("order[0][dir]", "desc");
+    qs.set("start", String(page * pageSize));
+    qs.set("length", String(pageSize));
+    qs.set("search[value]", "");
+    const res = await authGet(`/orders?${qs.toString()}`, { json: true });
+    if (!res.ok) throw new Error(`fetchOrdersSince: HTTP ${res.status}`);
+    const data = await res.json();
+    const rows = Array.isArray(data.data) ? data.data : [];
+    if (!rows.length) break;
+    let pastRange = false;
+    for (const r of rows) {
+      const o = mapOrderRow(r);
+      if (sinceDate && o.calendarDay && o.calendarDay < sinceDate) { pastRange = true; continue; }
+      out.push(o);
+    }
+    if (pastRange || rows.length < pageSize) break;
+    await sleep(THROTTLE_MS);
+  }
+  return out;
+}
+
+// ─── Full customers list (includes registration date!) ──────────────────────────
+// Returns [{ id, name, phone, gender, email, points, registeredAt }]
+async function fetchCustomersList({ maxPages = 10, pageSize = 500 } = {}) {
+  const cols = ["id", "first_name", "last_name", "phone", "birth_date", "gender", "email", "earned_points", "created_at"];
+  const out = [];
+  for (let page = 0; page < maxPages; page++) {
+    const qs = new URLSearchParams();
+    qs.set("draw", String(page + 1));
+    cols.forEach((c, i) => qs.set(`columns[${i}][data]`, c));
+    qs.set("order[0][column]", "0");
+    qs.set("order[0][dir]", "desc");
+    qs.set("start", String(page * pageSize));
+    qs.set("length", String(pageSize));
+    qs.set("search[value]", "");
+    const res = await authGet(`/customers?${qs.toString()}`, { json: true });
+    if (!res.ok) throw new Error(`fetchCustomersList: HTTP ${res.status}`);
+    const data = await res.json();
+    const rows = Array.isArray(data.data) ? data.data : [];
+    if (!rows.length) break;
+    for (const r of rows) {
+      out.push({
+        id: String(r.id),
+        name: [r.first_name, r.last_name].filter(Boolean).join(" ").trim() || "(بدون اسم)",
+        phone: String(r.phone || "").trim(),
+        gender: r.gender || "",
+        email: r.email || "",
+        points: Number(r.earned_points) || 0,
+        registeredAt: r.created_at || null,
+      });
+    }
+    if (rows.length < pageSize) break;
+    await sleep(THROTTLE_MS);
+  }
+  return out;
+}
+
 async function ping() {
   await getSession(true);
   const b = await listPromocodeBatches();
@@ -624,6 +736,10 @@ export {
   deletePromotion,
   fetchPromotionSales,
   fetchCustomerDiscounts,
+  fetchCustomerSales,
+  fetchCustomerOrders,
+  fetchOrdersSince,
+  fetchCustomersList,
   ping,
   BASE,
   STORE,

@@ -679,6 +679,15 @@ async function runCycle() {
   try {
     if (TS_AUTOPUSH) await runAutoPush();   // push before sync so fresh codes can be read back
     if (TS_AUTOSYNC) await runAutoSync();
+    if (TS_AUTOSYNC) {
+      // Insights cache (all orders + customers + linking) — errors here must
+      // not break the codes sync above.
+      try { await runInsightsSync(); insightsState.lastError = null; }
+      catch (e) {
+        insightsState.lastError = { at: new Date().toISOString(), message: e.message };
+        console.error("[insights] sync error:", e.message);
+      }
+    }
     tsState.lastError = null;
   } catch (e) {
     tsState.lastError = { at: new Date().toISOString(), message: e.message };
@@ -1160,6 +1169,51 @@ async function ensureMarketingSchema() {
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
+    -- Cache of ALL TabSense orders (not just discounted ones). Filled by the
+    -- background worker from the /orders DataTables endpoint.
+    CREATE TABLE IF NOT EXISTS ts_orders (
+      order_id TEXT PRIMARY KEY,
+      receipt TEXT,
+      order_date TIMESTAMPTZ,
+      calendar_day DATE,
+      order_option TEXT,
+      order_type TEXT,
+      order_status INT DEFAULT 0,
+      gross NUMERIC DEFAULT 0,
+      discount NUMERIC DEFAULT 0,
+      promotion NUMERIC DEFAULT 0,
+      total NUMERIC DEFAULT 0,
+      payments JSONB NOT NULL DEFAULT '{}',
+      branch TEXT,
+      customer_id TEXT,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS ts_orders_day_idx ON ts_orders(calendar_day);
+    CREATE INDEX IF NOT EXISTS ts_orders_customer_idx ON ts_orders(customer_id);
+    -- Cache of the TabSense customer directory (has the registration date).
+    CREATE TABLE IF NOT EXISTS ts_customers (
+      customer_id TEXT PRIMARY KEY,
+      name TEXT,
+      phone TEXT,
+      phone_norm TEXT,
+      gender TEXT,
+      email TEXT,
+      points INT DEFAULT 0,
+      registered_at TIMESTAMPTZ,
+      first_order_at TIMESTAMPTZ,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS ts_customers_reg_idx ON ts_customers(registered_at);
+    -- Where each invoice's customer came from — filled by the cashier station
+    -- (#cashier) or auto-tagged (delivery apps) by the sync worker.
+    CREATE TABLE IF NOT EXISTS order_sources (
+      order_id TEXT PRIMARY KEY,
+      source TEXT NOT NULL,
+      source_note TEXT NOT NULL DEFAULT '',
+      customer_kind TEXT NOT NULL DEFAULT 'unknown',
+      filled_by TEXT NOT NULL DEFAULT 'cashier',
+      filled_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
   `);
 }
 
@@ -1397,6 +1451,389 @@ app.get("/api/marketing/report", async (c) => {
   )).rows.map((r) => ({ day: r.day, orders: r.orders, revenue: Number(r.revenue), discount: Number(r.discount) }));
 
   return c.json({ ok: true, summary, perPlatform, perCampaign, daily, salesDaily });
+});
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   INSIGHTS — full orders/customers cache, cashier source-tagging, analytics
+═══════════════════════════════════════════════════════════════════════════ */
+const daysAgoISO = (n) => new Date(Date.now() - n * 86400000).toISOString().slice(0, 10);
+
+// Payment-method names that mean "this order came through a delivery app".
+// Overridable via settings.deliveryAppMethods (array of names).
+const DEFAULT_DELIVERY_APPS = ["ninja", "feedus", "keeta", "hungerstation", "jahez", "toyou", "mrsool", "careem"];
+function deliveryAppOf(payments, settings) {
+  const list = (Array.isArray(settings?.deliveryAppMethods) && settings.deliveryAppMethods.length)
+    ? settings.deliveryAppMethods.map((s) => String(s).toLowerCase())
+    : DEFAULT_DELIVERY_APPS;
+  for (const k of Object.keys(payments || {})) {
+    if (list.includes(String(k).toLowerCase())) return k;
+  }
+  return null;
+}
+function isDeliveryOrder(orderOption, payments, settings) {
+  return !!deliveryAppOf(payments, settings) || /deliver|توصيل/i.test(String(orderOption || ""));
+}
+
+const insightsState = {
+  lastOrdersSyncAt: null, lastOrdersCount: 0,
+  lastCustomersSyncAt: null, lastLinkAt: null, lastError: null,
+};
+
+// Pull orders (newest-first down to sinceDate) into ts_orders + auto-tag
+// delivery-app orders in order_sources so the cashier never sees them.
+async function syncOrdersCache(sinceDate) {
+  const settings = await getSettingsData();
+  const orders = await ts.fetchOrdersSince(sinceDate);
+  for (const o of orders) {
+    await pool.query(
+      `INSERT INTO ts_orders (order_id, receipt, order_date, calendar_day, order_option, order_type,
+                              order_status, gross, discount, promotion, total, payments, branch, updated_at)
+       VALUES ($1,$2,$3::timestamptz,$4::date,$5,$6,$7,$8,$9,$10,$11,$12::jsonb,$13,NOW())
+       ON CONFLICT (order_id) DO UPDATE SET
+         receipt=EXCLUDED.receipt, order_date=EXCLUDED.order_date, calendar_day=EXCLUDED.calendar_day,
+         order_option=EXCLUDED.order_option, order_type=EXCLUDED.order_type, order_status=EXCLUDED.order_status,
+         gross=EXCLUDED.gross, discount=EXCLUDED.discount, promotion=EXCLUDED.promotion,
+         total=EXCLUDED.total, payments=EXCLUDED.payments, branch=EXCLUDED.branch, updated_at=NOW()`,
+      [o.orderId, o.receipt, o.orderDate, o.calendarDay, o.orderOption, o.orderType,
+       o.orderStatus, o.gross, o.discount, o.promotion, o.total, jb(o.payments), o.branch]
+    );
+    const app = deliveryAppOf(o.payments, settings);
+    if (app) {
+      await pool.query(
+        `INSERT INTO order_sources (order_id, source, source_note, customer_kind, filled_by)
+         VALUES ($1,'delivery_app',$2,'unknown','auto') ON CONFLICT (order_id) DO NOTHING`,
+        [o.orderId, app]
+      );
+    }
+  }
+  return orders.length;
+}
+
+async function syncCustomersCache() {
+  const customers = await ts.fetchCustomersList();
+  for (const c of customers) {
+    await pool.query(
+      `INSERT INTO ts_customers (customer_id, name, phone, phone_norm, gender, email, points, registered_at, updated_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8::timestamptz,NOW())
+       ON CONFLICT (customer_id) DO UPDATE SET
+         name=EXCLUDED.name, phone=EXCLUDED.phone, phone_norm=EXCLUDED.phone_norm,
+         gender=EXCLUDED.gender, email=EXCLUDED.email, points=EXCLUDED.points,
+         registered_at=EXCLUDED.registered_at, updated_at=NOW()`,
+      [c.id, c.name, c.phone, normPhone(c.phone), c.gender, c.email, c.points, c.registeredAt]
+    );
+  }
+  return customers.length;
+}
+
+// Link ts_orders rows to a customer by sweeping /customers/{id}/orders (which
+// carries the same order ids). Heavy (1 req/customer @ 60/min) — throttled.
+async function linkCustomersOrders(customerIds, { throttleMs = 1100, onProgress } = {}) {
+  let linked = 0;
+  for (let i = 0; i < customerIds.length; i++) {
+    if (i > 0) await sleep(throttleMs);
+    const cid = String(customerIds[i]);
+    let orders = [];
+    try { orders = await ts.fetchCustomerOrders(cid); }
+    catch (e) { console.error(`[insights] link customer ${cid} failed:`, e.message); continue; }
+    let firstAt = null;
+    for (const o of orders) {
+      const at = o.created_at || o.order_created_at || null;
+      if (at && (!firstAt || at < firstAt)) firstAt = at;
+      const r = await pool.query(
+        "UPDATE ts_orders SET customer_id=$2, updated_at=NOW() WHERE order_id=$1 AND (customer_id IS NULL OR customer_id<>$2)",
+        [String(o.id), cid]
+      );
+      linked += r.rowCount;
+    }
+    if (firstAt) {
+      await pool.query(
+        `UPDATE ts_customers SET first_order_at = CASE
+           WHEN first_order_at IS NULL OR first_order_at > $2::timestamptz THEN $2::timestamptz
+           ELSE first_order_at END
+         WHERE customer_id=$1`,
+        [cid, firstAt]
+      );
+    }
+    if (onProgress) onProgress(i + 1, customerIds.length);
+  }
+  return linked;
+}
+
+// Runs inside the worker cycle: orders every cycle, customers+linking every ~30m.
+async function runInsightsSync() {
+  const n = await syncOrdersCache(daysAgoISO(3));
+  insightsState.lastOrdersSyncAt = new Date().toISOString();
+  insightsState.lastOrdersCount = n;
+  const THIRTY_MIN = 30 * 60 * 1000;
+  const due = !insightsState.lastLinkAt || (Date.now() - new Date(insightsState.lastLinkAt).getTime() > THIRTY_MIN);
+  if (due) {
+    await syncCustomersCache();
+    insightsState.lastCustomersSyncAt = new Date().toISOString();
+    // Link only customers active in the last 2 days — small, cheap sweep.
+    const actives = await ts.fetchCustomerSales(daysAgoISO(2), todayISO());
+    await linkCustomersOrders(actives.slice(0, 40).map((c) => c.id));
+    insightsState.lastLinkAt = new Date().toISOString();
+  }
+}
+
+// ─── Backfill job (orders history + full customer linking) ──────────────────
+const insightsJobs = new Map();
+app.post("/api/insights/backfill", async (c) => {
+  const err = await requireAdmin(c); if (err) return err;
+  if (!TS_ENABLED) return c.json({ ok: false, error: "tabsense_not_configured" }, 400);
+  const b = await c.req.json().catch(() => ({}));
+  const days = Math.max(7, Math.min(400, Number(b.days) || 120));
+  const cap = Math.max(10, Math.min(500, Number(b.cap) || 250));
+  const jobId = randToken(12);
+  const job = { id: jobId, status: "running", phase: "orders", done: 0, total: 0, linked: 0, startedAt: Date.now(), error: null };
+  insightsJobs.set(jobId, job);
+  if (insightsJobs.size > 20) {
+    const oldest = [...insightsJobs.values()].sort((a, b2) => a.startedAt - b2.startedAt)[0];
+    if (oldest) insightsJobs.delete(oldest.id);
+  }
+  (async () => {
+    try {
+      await syncOrdersCache(daysAgoISO(days));
+      job.phase = "customers";
+      await syncCustomersCache();
+      job.phase = "linking";
+      const actives = (await ts.fetchCustomerSales(daysAgoISO(days), todayISO()))
+        .sort((a, b2) => b2.spending - a.spending).slice(0, cap);
+      job.total = actives.length;
+      job.linked = await linkCustomersOrders(actives.map((x) => x.id), {
+        onProgress: (done, total) => { job.done = done; job.total = total; },
+      });
+      job.status = "done";
+    } catch (e) {
+      job.error = e.message; job.status = "error";
+    }
+  })();
+  return c.json({ ok: true, jobId, days, cap });
+});
+app.get("/api/insights/backfill-status/:jobId", async (c) => {
+  const err = await requireAdmin(c); if (err) return err;
+  const job = insightsJobs.get(c.req.param("jobId"));
+  if (!job) return c.json({ ok: false, error: "job_not_found" }, 404);
+  return c.json({ ok: true, status: job.status, phase: job.phase, done: job.done, total: job.total, linked: job.linked, error: job.error });
+});
+
+app.get("/api/insights/status", async (c) => {
+  const err = await requireAdmin(c); if (err) return err;
+  const r = await pool.query(`
+    SELECT (SELECT count(*)::int FROM ts_orders) AS orders,
+           (SELECT count(*)::int FROM ts_orders WHERE customer_id IS NOT NULL) AS linked_orders,
+           (SELECT count(*)::int FROM ts_customers) AS customers,
+           (SELECT count(*)::int FROM order_sources WHERE source <> 'skipped') AS tagged,
+           (SELECT max(order_date) FROM ts_orders) AS latest_order`);
+  return c.json({ ok: true, ...r.rows[0], state: insightsState });
+});
+
+// ─── Cashier auth + task queue ──────────────────────────────────────────────
+async function requireCashierOrAdmin(c) {
+  const a = getAuth(c);
+  if (a && a.kind === "admin") return null;
+  const h = c.req.header("Authorization") || "";
+  if (h.startsWith("Bearer cashier:")) {
+    const pin = h.slice("Bearer cashier:".length);
+    const s = await getSettingsData();
+    if (pin && String(pin) === String(s.cashierPin || "1111")) return null;
+  }
+  return c.json({ error: "Unauthorized" }, 401);
+}
+app.post("/api/auth/cashier", async (c) => {
+  const b = await c.req.json().catch(() => ({}));
+  const s = await getSettingsData();
+  if (String(b.pin || "") === String(s.cashierPin || "1111")) return c.json({ ok: true });
+  return c.json({ ok: false, error: "wrong_pin" }, 401);
+});
+
+// Pending = cached orders in the window with no source row yet.
+app.get("/api/cashier/queue", async (c) => {
+  const err = await requireCashierOrAdmin(c); if (err) return err;
+  const hours = Math.max(1, Math.min(168, Number(c.req.query("hours")) || 48));
+  const pending = (await pool.query(
+    `SELECT o.order_id, o.receipt, o.order_date, o.order_option, o.order_type, o.total, o.discount, o.promotion,
+            o.customer_id, tc.name AS customer_name
+       FROM ts_orders o
+       LEFT JOIN order_sources s ON s.order_id = o.order_id
+       LEFT JOIN ts_customers tc ON tc.customer_id = o.customer_id
+      WHERE s.order_id IS NULL AND o.order_date >= NOW() - ($1 || ' hours')::interval
+      ORDER BY o.order_date DESC LIMIT 100`, [hours]
+  )).rows.map((r) => ({
+    orderId: r.order_id, receipt: r.receipt || "", orderDate: r.order_date,
+    orderOption: r.order_option || "", orderType: r.order_type || "",
+    total: Number(r.total) || 0, discount: (Number(r.discount) || 0) + (Number(r.promotion) || 0),
+    customerName: r.customer_name || "",
+  }));
+  const stats = (await pool.query(
+    `SELECT (SELECT count(*)::int FROM ts_orders WHERE calendar_day = CURRENT_DATE) AS today_orders,
+            (SELECT count(*)::int FROM order_sources s JOIN ts_orders o ON o.order_id = s.order_id
+              WHERE o.calendar_day = CURRENT_DATE AND s.filled_by = 'cashier') AS today_tagged,
+            (SELECT count(*)::int FROM order_sources s JOIN ts_orders o ON o.order_id = s.order_id
+              WHERE o.calendar_day = CURRENT_DATE AND s.filled_by = 'auto') AS today_auto`
+  )).rows[0];
+  return c.json({ ok: true, pending, stats, lastSyncAt: insightsState.lastOrdersSyncAt });
+});
+
+const CASHIER_SOURCES = ["facebook", "instagram", "tiktok", "snapchat", "google_maps", "influencer", "friend", "walkin", "old_customer", "delivery_app", "other", "skipped"];
+app.post("/api/cashier/submit", async (c) => {
+  const err = await requireCashierOrAdmin(c); if (err) return err;
+  const b = await c.req.json().catch(() => ({}));
+  if (!b.orderId || !CASHIER_SOURCES.includes(String(b.source))) {
+    return c.json({ ok: false, error: "orderId + valid source required" }, 400);
+  }
+  await pool.query(
+    `INSERT INTO order_sources (order_id, source, source_note, customer_kind, filled_by, filled_at)
+     VALUES ($1,$2,$3,$4,'cashier',NOW())
+     ON CONFLICT (order_id) DO UPDATE SET
+       source=EXCLUDED.source, source_note=EXCLUDED.source_note,
+       customer_kind=EXCLUDED.customer_kind, filled_by='cashier', filled_at=NOW()`,
+    [String(b.orderId), String(b.source), String(b.note || ""), String(b.customerKind || "unknown")]
+  );
+  return c.json({ ok: true });
+});
+
+// ─── Insights summary — the numbers Omar asked for ──────────────────────────
+app.get("/api/insights/summary", async (c) => {
+  const err = await requireAdmin(c); if (err) return err;
+  const from = c.req.query("from") || daysAgoISO(29);
+  const to = c.req.query("to") || todayISO();
+  const settings = await getSettingsData();
+
+  const orders = (await pool.query(
+    `SELECT order_id, calendar_day, order_option, order_type, total, discount, promotion, payments, customer_id
+       FROM ts_orders WHERE calendar_day BETWEEN $1::date AND $2::date`, [from, to]
+  )).rows;
+  const newCust = (await pool.query(
+    `SELECT customer_id, registered_at::date AS reg_day FROM ts_customers
+      WHERE registered_at::date BETWEEN $1::date AND $2::date`, [from, to]
+  )).rows;
+  const custOrders = (await pool.query(
+    `SELECT customer_id, order_date, calendar_day, total FROM ts_orders
+      WHERE customer_id IS NOT NULL ORDER BY order_date`
+  )).rows;
+  const sourceRows = (await pool.query(
+    `SELECT s.source, s.source_note, s.customer_kind, s.filled_by, o.total
+       FROM order_sources s JOIN ts_orders o ON o.order_id = s.order_id
+      WHERE o.calendar_day BETWEEN $1::date AND $2::date`, [from, to]
+  )).rows;
+
+  // Daily series over the full range
+  const days = [];
+  for (let d = new Date(from); d <= new Date(to) && days.length < 400; d.setDate(d.getDate() + 1)) {
+    days.push(d.toISOString().slice(0, 10));
+  }
+  const dayKey = (v) => String(v instanceof Date ? v.toISOString() : v).slice(0, 10);
+  const daily = Object.fromEntries(days.map((d) => [d, {
+    day: d, orders: 0, revenue: 0, delivery: 0, deliveryRevenue: 0, newCustomers: 0, newCustomerValue: 0,
+  }]));
+  let totDelivery = 0, totDeliveryRev = 0, totRevenue = 0, totDiscount = 0;
+  for (const o of orders) {
+    const d = daily[dayKey(o.calendar_day)];
+    const total = Number(o.total) || 0;
+    const isDel = isDeliveryOrder(o.order_option, o.payments, settings);
+    totRevenue += total;
+    totDiscount += (Number(o.discount) || 0) + (Number(o.promotion) || 0);
+    if (isDel) { totDelivery++; totDeliveryRev += total; }
+    if (d) {
+      d.orders++; d.revenue += total;
+      if (isDel) { d.delivery++; d.deliveryRevenue += total; }
+    }
+  }
+
+  // New customers per day + the value they spent inside the range
+  const newCustSet = new Map(newCust.map((r) => [String(r.customer_id), dayKey(r.reg_day)]));
+  for (const [, regDay] of newCustSet) { if (daily[regDay]) daily[regDay].newCustomers++; }
+  let newCustomerValue = 0;
+  for (const o of custOrders) {
+    const regDay = newCustSet.get(String(o.customer_id));
+    if (!regDay) continue;
+    const od = dayKey(o.calendar_day);
+    if (od >= from && od <= to) {
+      const t = Number(o.total) || 0;
+      newCustomerValue += t;
+      if (daily[regDay]) daily[regDay].newCustomerValue += t;
+    }
+  }
+
+  // Retention — per-customer order timeline (linked orders only)
+  const byCust = new Map();
+  for (const o of custOrders) {
+    const cid = String(o.customer_id);
+    if (!byCust.has(cid)) byCust.set(cid, []);
+    byCust.get(cid).push({ at: o.order_date, day: dayKey(o.calendar_day), total: Number(o.total) || 0 });
+  }
+  let inRangeCustomers = 0, inRangeRepeaters = 0;
+  for (const [, list] of byCust) {
+    const inRange = list.filter((x) => x.day >= from && x.day <= to);
+    if (!inRange.length) continue;
+    inRangeCustomers++;
+    if (inRange.length > 1) inRangeRepeaters++;
+  }
+  // Cohorts by first-order month: % who ordered again within 30/60/90 days
+  const cohorts = new Map();
+  const now = Date.now();
+  for (const [, list] of byCust) {
+    if (!list.length) continue;
+    const first = new Date(list[0].at);
+    if (isNaN(first)) continue;
+    const key = `${first.getFullYear()}-${String(first.getMonth() + 1).padStart(2, "0")}`;
+    if (!cohorts.has(key)) cohorts.set(key, { month: key, size: 0, r30: 0, r60: 0, r90: 0, m30: 0, m60: 0, m90: 0 });
+    const co = cohorts.get(key);
+    co.size++;
+    const again = (winDays) => list.some((x, i) => i > 0 && (new Date(x.at) - first) <= winDays * 86400000 && (new Date(x.at) - first) > 0);
+    if (now - first.getTime() >= 30 * 86400000) { co.m30++; if (again(30)) co.r30++; }
+    if (now - first.getTime() >= 60 * 86400000) { co.m60++; if (again(60)) co.r60++; }
+    if (now - first.getTime() >= 90 * 86400000) { co.m90++; if (again(90)) co.r90++; }
+  }
+  const cohortList = [...cohorts.values()].sort((a, b) => a.month < b.month ? -1 : 1).slice(-8)
+    .map((co) => ({
+      month: co.month, size: co.size,
+      retained30: co.m30 > 0 ? co.r30 / co.m30 : null,
+      retained60: co.m60 > 0 ? co.r60 / co.m60 : null,
+      retained90: co.m90 > 0 ? co.r90 / co.m90 : null,
+    }));
+
+  // Sources
+  const srcAgg = new Map();
+  let skipped = 0, autoTagged = 0, cashierTagged = 0;
+  for (const r of sourceRows) {
+    if (r.source === "skipped") { skipped++; continue; }
+    if (r.filled_by === "auto") autoTagged++; else cashierTagged++;
+    const key = r.source === "delivery_app" && r.source_note ? `delivery_app:${r.source_note}` : r.source;
+    if (!srcAgg.has(key)) srcAgg.set(key, { source: r.source, note: r.source === "delivery_app" ? r.source_note : "", orders: 0, revenue: 0, newCustomers: 0 });
+    const s = srcAgg.get(key);
+    s.orders++; s.revenue += Number(r.total) || 0;
+    if (r.customer_kind === "new") s.newCustomers++;
+  }
+  const linkedInRange = orders.filter((o) => o.customer_id).length;
+
+  return c.json({
+    ok: true, from, to,
+    summary: {
+      orders: orders.length,
+      revenue: totRevenue,
+      discount: totDiscount,
+      avgOrder: orders.length > 0 ? totRevenue / orders.length : 0,
+      deliveryOrders: totDelivery,
+      deliveryRevenue: totDeliveryRev,
+      deliveryShare: orders.length > 0 ? totDelivery / orders.length : 0,
+      newCustomers: newCustSet.size,
+      newCustomerValue,
+      taggedOrders: sourceRows.length - skipped,
+      sourceCoverage: orders.length > 0 ? (sourceRows.length - skipped) / orders.length : 0,
+    },
+    daily: days.map((d) => daily[d]),
+    retention: {
+      linkedCoverage: orders.length > 0 ? linkedInRange / orders.length : 0,
+      customersInRange: inRangeCustomers,
+      repeatersInRange: inRangeRepeaters,
+      repeatRate: inRangeCustomers > 0 ? inRangeRepeaters / inRangeCustomers : 0,
+      cohorts: cohortList,
+    },
+    sources: [...srcAgg.values()].sort((a, b) => b.orders - a.orders),
+    tagging: { cashier: cashierTagged, auto: autoTagged, skipped },
+  });
 });
 
 ensureMarketingSchema()
