@@ -643,15 +643,19 @@ function mapOrderRow(r) {
   };
 }
 
-// Fetch orders newest-first, stopping once we're past `sinceDate` (YYYY-MM-DD).
-// Pass sinceDate=null to sweep everything (bounded by maxPages).
-async function fetchOrdersSince(sinceDate, { maxPages = 20, pageSize = 200 } = {}) {
+// Fetch all orders from `sinceDate` (YYYY-MM-DD) to today, newest-first.
+// IMPORTANT: the /orders endpoint hard-caps at 200 rows and ignores `start`
+// UNLESS the date-range params are present — with start_date/end_date it
+// paginates correctly and honours big lengths. Always send the range.
+async function fetchOrdersSince(sinceDate, { maxPages = 30, pageSize = 200 } = {}) {
   const cols = [
     "main_order_id", "order_created_at", "order_calendar_day", "order_option_id",
     "order_type", "order_status", "purchases_quantity", "total_gross_amount",
     "total_discount_amount", "total_promotion_amount", "total_net_amount",
     "total_amount", "receipt_number", "branch_name", "payment_method", "notes",
   ];
+  const from = sinceDate || "2020-01-01";
+  const to = new Date().toISOString().slice(0, 10);
   const out = [];
   for (let page = 0; page < maxPages; page++) {
     const qs = new URLSearchParams();
@@ -662,18 +666,16 @@ async function fetchOrdersSince(sinceDate, { maxPages = 20, pageSize = 200 } = {
     qs.set("start", String(page * pageSize));
     qs.set("length", String(pageSize));
     qs.set("search[value]", "");
+    qs.set("start_date", from);
+    qs.set("end_date", to);
+    qs.set("daterange", `${from} - ${to}`);
     const res = await authGet(`/orders?${qs.toString()}`, { json: true });
     if (!res.ok) throw new Error(`fetchOrdersSince: HTTP ${res.status}`);
     const data = await res.json();
     const rows = Array.isArray(data.data) ? data.data : [];
     if (!rows.length) break;
-    let pastRange = false;
-    for (const r of rows) {
-      const o = mapOrderRow(r);
-      if (sinceDate && o.calendarDay && o.calendarDay < sinceDate) { pastRange = true; continue; }
-      out.push(o);
-    }
-    if (pastRange || rows.length < pageSize) break;
+    for (const r of rows) out.push(mapOrderRow(r));
+    if (rows.length < pageSize) break;
     await sleep(THROTTLE_MS);
   }
   return out;
