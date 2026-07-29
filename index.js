@@ -1633,8 +1633,11 @@ async function runInsightsSync() {
   if (feedus.ENABLED) {
     try {
       const r = await syncFeedusSources({ pages: 2 });
+      // The POS log only holds ~25 rows, so also match the last 2 days through
+      // the sales API — catches anything that rotated out between cycles.
+      const b = await backfillFeedusFromSales(daysAgoISO(2), todayISO());
       insightsState.lastFeedusSyncAt = new Date().toISOString();
-      insightsState.lastFeedusTagged = r.tagged || 0;
+      insightsState.lastFeedusTagged = (r.tagged || 0) + (b.tagged || 0);
       insightsState.lastFeedusError = null;
     } catch (e) {
       insightsState.lastFeedusError = e.message;
@@ -1656,6 +1659,68 @@ async function runInsightsSync() {
     insightsState.lastLinkCount = actives.length;
   }
 }
+
+// FeedUs keeps only ~25 rows in the POS order log, so history needs the sales
+// API instead — which carries the provider and the customer name but no
+// TabSense id. Match on time: TabSense stores UTC, FeedUs shows Riyadh wall
+// clock, and the same order lands in both within a couple of seconds (measured
+// max drift 6s over 71 orders, zero ambiguity), so time alone is a safe key.
+const RIYADH_OFFSET_MS = 3 * 3600_000;
+async function backfillFeedusFromSales(from, to, { windowMs = 120_000 } = {}) {
+  if (!feedus.ENABLED) return { ok: false, error: "feedus_not_configured", tagged: 0 };
+  const pad = (d, days) => new Date(Date.parse(d) + days * 86400000).toISOString().slice(0, 10);
+  const sales = await feedus.fetchSalesOrders(pad(from, -1), pad(to, 1), { perPage: 100, maxPages: 40 });
+  const ext = (await pool.query(
+    `SELECT o.order_id, o.order_date FROM ts_orders o
+       LEFT JOIN order_sources s ON s.order_id = o.order_id
+      WHERE o.calendar_day BETWEEN $1::date AND $2::date
+        AND o.order_type ILIKE '%external%'
+        AND (s.order_id IS NULL OR s.filled_by IN ('auto','feedus'))
+      ORDER BY o.order_date`, [from, to]
+  )).rows;
+
+  const at = (s) => Date.parse(String(s).replace(" ", "T") + "Z");
+  const used = new Set();
+  let tagged = 0, unmatched = 0;
+  for (const o of ext) {
+    const target = new Date(o.order_date).getTime() + RIYADH_OFFSET_MS;
+    let best = null;
+    for (const s of sales) {
+      if (used.has(s.id)) continue;
+      const d = Math.abs(at(s.dateTime) - target);
+      if (d > windowMs) continue;
+      if (!best || d < best.d) best = { s, d };
+    }
+    if (!best) { unmatched++; continue; }
+    used.add(best.s.id);
+    const r = await pool.query(
+      `INSERT INTO order_sources (order_id, source, source_note, customer_kind, filled_by, filled_at,
+                                  customer_name, customer_phone, phone_norm)
+       VALUES ($1,'delivery_app',$2,'unknown','feedus',NOW(),$3,'','')
+       ON CONFLICT (order_id) DO UPDATE SET
+         source='delivery_app', source_note=EXCLUDED.source_note,
+         filled_by='feedus', filled_at=NOW(),
+         customer_name=CASE WHEN order_sources.customer_name = '' THEN EXCLUDED.customer_name
+                            ELSE order_sources.customer_name END
+       WHERE order_sources.filled_by IN ('auto','feedus')`,
+      [String(o.order_id), best.s.provider || "", (best.s.customer || "").slice(0, 120)]
+    );
+    tagged += r.rowCount;
+  }
+  return { ok: true, tagged, unmatched, salesRows: sales.length, externalOrders: ext.length };
+}
+
+app.post("/api/feedus/backfill", async (c) => {
+  const err = await requireAdmin(c); if (err) return err;
+  if (!feedus.ENABLED) return c.json({ ok: false, error: "feedus_not_configured" }, 400);
+  const b = await c.req.json().catch(() => ({}));
+  const days = Math.max(1, Math.min(180, Number(b.days) || 60));
+  try {
+    const r = await backfillFeedusFromSales(daysAgoISO(days), todayISO());
+    insightsState.lastFeedusSyncAt = new Date().toISOString();
+    return c.json(r);
+  } catch (e) { return c.json({ ok: false, error: e.message }, 500); }
+});
 
 // ─── Backfill job (orders history + full customer linking) ──────────────────
 const insightsJobs = new Map();
