@@ -1919,6 +1919,184 @@ app.post("/api/cashier/submit", async (c) => {
   return c.json({ ok: true, seenBefore });
 });
 
+/* ═══════════════════════════════════════════════════════════════════════════
+   DEVICE — the POS status app + its background agent
+   The device only ever calls OUT to us (no ADB, no inbound port on the tablet).
+═══════════════════════════════════════════════════════════════════════════ */
+async function ensureDeviceSchema() {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS devices (
+      device_id TEXT PRIMARY KEY,
+      name TEXT NOT NULL DEFAULT '',
+      model TEXT NOT NULL DEFAULT '',
+      android TEXT NOT NULL DEFAULT '',
+      app_version TEXT NOT NULL DEFAULT '',
+      battery INT DEFAULT -1,
+      charging BOOL DEFAULT false,
+      network TEXT NOT NULL DEFAULT '',
+      extra JSONB NOT NULL DEFAULT '{}',
+      last_seen TIMESTAMPTZ,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    CREATE TABLE IF NOT EXISTS device_commands (
+      id TEXT PRIMARY KEY,
+      device_id TEXT NOT NULL,
+      command TEXT NOT NULL,
+      args JSONB NOT NULL DEFAULT '{}',
+      status TEXT NOT NULL DEFAULT 'pending',
+      result JSONB,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      delivered_at TIMESTAMPTZ,
+      done_at TIMESTAMPTZ
+    );
+    CREATE INDEX IF NOT EXISTS device_commands_pending_idx ON device_commands(device_id, status);
+  `);
+}
+
+async function requireDevice(c) {
+  const h = c.req.header("Authorization") || "";
+  if (h.startsWith("Bearer device:")) {
+    const tok = h.slice("Bearer device:".length);
+    const s = await getSettingsData();
+    if (tok && String(tok) === String(s.deviceToken || "freshcuts-device")) return null;
+  }
+  const a = getAuth(c);
+  if (a && a.kind === "admin") return null;
+  return c.json({ error: "Unauthorized" }, 401);
+}
+
+// Health of every moving part, as the cashier should see it on the POS.
+// Delivery channels are judged by order recency: a channel that used to deliver
+// orders and suddenly went quiet is exactly the failure we want on screen.
+app.get("/api/device/health", async (c) => {
+  const err = await requireDevice(c); if (err) return err;
+  const settings = await getSettingsData();
+  const now = Date.now();
+  const mins = (t) => (t ? Math.round((now - new Date(t).getTime()) / 60000) : null);
+
+  const last = (await pool.query(`
+    SELECT max(o.order_date) AS last_any,
+           max(o.order_date) FILTER (WHERE o.order_type NOT ILIKE '%external%') AS last_inhouse
+      FROM ts_orders o`)).rows[0];
+
+  // Per delivery app: last order + how typical the gap is (median gap over 14d)
+  const apps = (await pool.query(`
+    SELECT s.source_note AS app, max(o.order_date) AS last_order, count(*)::int AS orders_14d
+      FROM order_sources s JOIN ts_orders o ON o.order_id = s.order_id
+     WHERE s.source = 'delivery_app' AND s.source_note <> ''
+       AND o.order_date > NOW() - interval '14 days'
+     GROUP BY 1 ORDER BY 2 DESC NULLS LAST`)).rows;
+
+  const services = [];
+  const push = (id, label, ok, detail, warn = false) => services.push({ id, label, state: ok ? "ok" : warn ? "warn" : "down", detail });
+
+  // TabSense — our sync worker is the proxy for "the POS backend answers"
+  const tsMin = mins(insightsState.lastOrdersSyncAt);
+  push("tabsense", "TabSense", tsMin != null && tsMin <= 20, tsMin == null ? "لم تتم أي مزامنة" : `آخر مزامنة من ${tsMin} دقيقة`, tsMin != null && tsMin <= 60);
+  // FeedUs
+  if (feedus.ENABLED) {
+    const fMin = mins(insightsState.lastFeedusSyncAt);
+    push("feedus", "FeedUs", !insightsState.lastFeedusError && fMin != null && fMin <= 30,
+      insightsState.lastFeedusError ? "خطأ في الاتصال" : fMin == null ? "لم تتم أي مزامنة" : `آخر مزامنة من ${fMin} دقيقة`,
+      fMin != null && fMin <= 120);
+  } else {
+    push("feedus", "FeedUs", false, "غير مربوط", true);
+  }
+  // Delivery channels
+  const labels = { keeta: "كيتا", hungerstation: "هنقرستيشن", ninja: "نينجا", jahez: "جاهز", toyou: "تويو", mrsool: "مرسول" };
+  const quietAfter = Number(settings.channelQuietMinutes) || 240;
+  for (const a of apps) {
+    const m = mins(a.last_order);
+    const key = String(a.app).toLowerCase();
+    push(`app_${key}`, labels[key] || a.app, m != null && m <= quietAfter,
+      m == null ? "لا توجد طلبات" : `آخر طلب من ${m >= 60 ? Math.round(m / 60) + " ساعة" : m + " دقيقة"}`,
+      m != null && m <= quietAfter * 2);
+  }
+  // Orders flowing at all
+  const anyMin = mins(last.last_any);
+  push("orders", "حركة الطلبات", anyMin != null && anyMin <= 180,
+    anyMin == null ? "لا توجد طلبات" : `آخر طلب من ${anyMin >= 60 ? Math.round(anyMin / 60) + " ساعة" : anyMin + " دقيقة"}`, true);
+
+  // Anything the owner wants watched but we have no probe for yet (NerPay …)
+  for (const extra of (Array.isArray(settings.watchServices) ? settings.watchServices : [])) {
+    push(extra.id || extra.label, extra.label || extra.id, null, extra.note || "متابعة يدوية", true);
+  }
+
+  const worst = services.some((s) => s.state === "down") ? "down"
+    : services.some((s) => s.state === "warn") ? "warn" : "ok";
+  return c.json({ ok: true, overall: worst, at: new Date().toISOString(), services });
+});
+
+app.post("/api/device/heartbeat", async (c) => {
+  const err = await requireDevice(c); if (err) return err;
+  const b = await c.req.json().catch(() => ({}));
+  const id = String(b.deviceId || "").slice(0, 80);
+  if (!id) return c.json({ ok: false, error: "deviceId required" }, 400);
+  await pool.query(
+    `INSERT INTO devices (device_id, name, model, android, app_version, battery, charging, network, extra, last_seen)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,NOW())
+     ON CONFLICT (device_id) DO UPDATE SET
+       name=COALESCE(NULLIF(EXCLUDED.name,''), devices.name), model=EXCLUDED.model,
+       android=EXCLUDED.android, app_version=EXCLUDED.app_version, battery=EXCLUDED.battery,
+       charging=EXCLUDED.charging, network=EXCLUDED.network, extra=EXCLUDED.extra, last_seen=NOW()`,
+    [id, String(b.name || ""), String(b.model || ""), String(b.android || ""), String(b.appVersion || ""),
+     Number.isFinite(Number(b.battery)) ? Math.round(Number(b.battery)) : -1, !!b.charging,
+     String(b.network || ""), jb(b.extra || {})]
+  );
+  // Hand back any queued commands in the same round-trip.
+  const cmds = (await pool.query(
+    `UPDATE device_commands SET status='sent', delivered_at=NOW()
+      WHERE id IN (SELECT id FROM device_commands WHERE device_id=$1 AND status='pending' ORDER BY created_at LIMIT 5)
+      RETURNING id, command, args`, [id]
+  )).rows;
+  return c.json({ ok: true, commands: cmds.map((r) => ({ id: r.id, command: r.command, args: r.args })) });
+});
+
+app.post("/api/device/command-result", async (c) => {
+  const err = await requireDevice(c); if (err) return err;
+  const b = await c.req.json().catch(() => ({}));
+  if (!b.id) return c.json({ ok: false, error: "id required" }, 400);
+  await pool.query(
+    "UPDATE device_commands SET status=$2, result=$3::jsonb, done_at=NOW() WHERE id=$1",
+    [String(b.id), b.ok === false ? "error" : "done", jb(b.result ?? {})]
+  );
+  return c.json({ ok: true });
+});
+
+// Admin: see devices, queue a command
+app.get("/api/device/list", async (c) => {
+  const err = await requireAdmin(c); if (err) return err;
+  const rows = (await pool.query("SELECT * FROM devices ORDER BY last_seen DESC NULLS LAST")).rows;
+  return c.json({
+    ok: true,
+    devices: rows.map((r) => ({
+      deviceId: r.device_id, name: r.name, model: r.model, android: r.android,
+      appVersion: r.app_version, battery: r.battery, charging: r.charging,
+      network: r.network, extra: r.extra, lastSeen: r.last_seen,
+      onlineMinutes: r.last_seen ? Math.round((Date.now() - new Date(r.last_seen).getTime()) / 60000) : null,
+    })),
+  });
+});
+app.post("/api/device/command", async (c) => {
+  const err = await requireAdmin(c); if (err) return err;
+  const b = await c.req.json().catch(() => ({}));
+  if (!b.deviceId || !b.command) return c.json({ ok: false, error: "deviceId + command required" }, 400);
+  const id = randToken(12);
+  await pool.query(
+    "INSERT INTO device_commands (id, device_id, command, args) VALUES ($1,$2,$3,$4::jsonb)",
+    [id, String(b.deviceId), String(b.command), jb(b.args || {})]
+  );
+  return c.json({ ok: true, id });
+});
+app.get("/api/device/commands/:deviceId", async (c) => {
+  const err = await requireAdmin(c); if (err) return err;
+  const rows = (await pool.query(
+    "SELECT * FROM device_commands WHERE device_id=$1 ORDER BY created_at DESC LIMIT 30",
+    [c.req.param("deviceId")]
+  )).rows;
+  return c.json({ ok: true, commands: rows });
+});
+
 // ─── Manager: order explorer with advanced filters ──────────────────────────
 // Every filter is optional; returns rows + the totals for the filtered set so
 // the UI never has to add up a truncated page.
@@ -2282,6 +2460,10 @@ app.get("/api/insights/summary", async (c) => {
 ensureMarketingSchema()
   .then(() => console.log("[marketing] schema ready"))
   .catch((e) => console.error("[marketing] schema init failed:", e.message));
+
+ensureDeviceSchema()
+  .then(() => console.log("[device] schema ready"))
+  .catch((e) => console.error("[device] schema init failed:", e.message));
 
 serve({ fetch: app.fetch, port: PORT, hostname: "0.0.0.0" }, (info) => {
   console.log(`freshcuts-api listening on http://0.0.0.0:${info.port}`);
