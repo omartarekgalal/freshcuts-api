@@ -2002,20 +2002,34 @@ app.get("/api/device/health", async (c) => {
   } else {
     push("feedus", "FeedUs", false, "غير مربوط", true);
   }
-  // Delivery channels
+  // Delivery channels. A channel is only "down" when the restaurant is
+  // demonstrably working — otherwise every closed night would light up red.
   const labels = { keeta: "كيتا", hungerstation: "هنقرستيشن", ninja: "نينجا", jahez: "جاهز", toyou: "تويو", mrsool: "مرسول" };
-  const quietAfter = Number(settings.channelQuietMinutes) || 240;
+  const quietAfter = Number(settings.channelQuietMinutes) || 120;
+  const anyMin = mins(last.last_any);
+  const restaurantWorking = anyMin != null && anyMin <= 45;
+  const ago = (m) => m >= 60 ? `${Math.round(m / 60)} ساعة` : `${m} دقيقة`;
+
   for (const a of apps) {
-    const m = mins(a.last_order);
     const key = String(a.app).toLowerCase();
+    // 'Feedus' is the aggregator itself, not a customer-facing channel.
+    if (key === "feedus") continue;
+    const m = mins(a.last_order);
+    if (!restaurantWorking) {
+      services.push({ id: `app_${key}`, label: labels[key] || a.app, state: "idle",
+        detail: m == null ? "لا توجد طلبات" : `آخر طلب من ${ago(m)} · المطعم هادي` });
+      continue;
+    }
     push(`app_${key}`, labels[key] || a.app, m != null && m <= quietAfter,
-      m == null ? "لا توجد طلبات" : `آخر طلب من ${m >= 60 ? Math.round(m / 60) + " ساعة" : m + " دقيقة"}`,
+      m == null ? "لا توجد طلبات" : `آخر طلب من ${ago(m)}`,
       m != null && m <= quietAfter * 2);
   }
   // Orders flowing at all
-  const anyMin = mins(last.last_any);
-  push("orders", "حركة الطلبات", anyMin != null && anyMin <= 180,
-    anyMin == null ? "لا توجد طلبات" : `آخر طلب من ${anyMin >= 60 ? Math.round(anyMin / 60) + " ساعة" : anyMin + " دقيقة"}`, true);
+  services.push({
+    id: "orders", label: "حركة الطلبات",
+    state: restaurantWorking ? "ok" : "idle",
+    detail: anyMin == null ? "لا توجد طلبات" : `آخر طلب من ${ago(anyMin)}`,
+  });
 
   // Anything the owner wants watched but we have no probe for yet (NerPay …)
   for (const extra of (Array.isArray(settings.watchServices) ? settings.watchServices : [])) {
