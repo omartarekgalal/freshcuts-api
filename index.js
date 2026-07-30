@@ -5,6 +5,7 @@ import pg from "pg";
 import crypto from "node:crypto";
 import * as ts from "./tabsense.js";
 import * as feedus from "./feedus.js";
+import * as portals from "./portals.js";
 
 const { Pool } = pg;
 
@@ -2002,32 +2003,47 @@ app.get("/api/device/health", async (c) => {
   } else {
     push("feedus", "FeedUs", false, "غير مربوط", true);
   }
-  // Delivery channels. A channel is only "down" when the restaurant is
-  // demonstrably working — otherwise every closed night would light up red.
+  // Delivery channels. The verdict comes from the platform's OWN portal —
+  // order silence alone means nothing (a quiet hour looks exactly like a
+  // broken integration). Order recency is shown as context, never as the
+  // reason a channel is called down.
   const labels = { keeta: "كيتا", hungerstation: "هنقرستيشن", ninja: "نينجا", jahez: "جاهز", toyou: "تويو", mrsool: "مرسول" };
-  const quietAfter = Number(settings.channelQuietMinutes) || 120;
   const anyMin = mins(last.last_any);
-  const restaurantWorking = anyMin != null && anyMin <= 45;
   const ago = (m) => m >= 60 ? `${Math.round(m / 60)} ساعة` : `${m} دقيقة`;
+  const portalStatus = {};
+  try {
+    for (const p of await portals.checkAll()) portalStatus[p.id] = p;
+  } catch (e) { console.error("[portals] check failed:", e.message); }
+
+  const seen = new Set();
+  const emitChannel = (key, label, lastOrderMin) => {
+    if (seen.has(key)) return;
+    seen.add(key);
+    const p = portalStatus[key];
+    const ctx = lastOrderMin == null ? "لا توجد طلبات" : `آخر طلب من ${ago(lastOrderMin)}`;
+    if (!p || p.state === "unconfigured") {
+      services.push({ id: `app_${key}`, label, state: "info", detail: `${ctx} · حالة المتجر غير مربوطة` });
+    } else if (p.state === "open") {
+      services.push({ id: `app_${key}`, label, state: "ok", detail: `المتجر مفتوح · ${ctx}` });
+    } else if (p.state === "closed") {
+      services.push({ id: `app_${key}`, label, state: "down", detail: `${p.detail} · ${ctx}` });
+    } else {
+      services.push({ id: `app_${key}`, label, state: "warn", detail: `${p.detail} · ${ctx}` });
+    }
+  };
 
   for (const a of apps) {
     const key = String(a.app).toLowerCase();
     // 'Feedus' is the aggregator itself, not a customer-facing channel.
     if (key === "feedus") continue;
-    const m = mins(a.last_order);
-    if (!restaurantWorking) {
-      services.push({ id: `app_${key}`, label: labels[key] || a.app, state: "idle",
-        detail: m == null ? "لا توجد طلبات" : `آخر طلب من ${ago(m)} · المطعم هادي` });
-      continue;
-    }
-    push(`app_${key}`, labels[key] || a.app, m != null && m <= quietAfter,
-      m == null ? "لا توجد طلبات" : `آخر طلب من ${ago(m)}`,
-      m != null && m <= quietAfter * 2);
+    emitChannel(key, labels[key] || a.app, mins(a.last_order));
   }
+  // Channels we can check but have never seen an order from still deserve a tile.
+  for (const [key, p] of Object.entries(portalStatus)) emitChannel(key, p.label || labels[key] || key, null);
   // Orders flowing at all
   services.push({
     id: "orders", label: "حركة الطلبات",
-    state: restaurantWorking ? "ok" : "idle",
+    state: anyMin != null && anyMin <= 45 ? "ok" : "idle",
     detail: anyMin == null ? "لا توجد طلبات" : `آخر طلب من ${ago(anyMin)}`,
   });
 
