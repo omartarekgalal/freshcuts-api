@@ -95,24 +95,105 @@ const hungerstation = {
   },
 };
 
-/* ─── Keeta / Ninja ───────────────────────────────────────────────────────────
-   Their merchant portals need a login we do not hold yet. The adapters are
-   declared so the UI lists the channel and says exactly what is missing,
-   instead of silently pretending everything is fine.                          */
-function pendingPortal(id, label, envPrefix) {
-  return {
-    id, label,
-    configured: () => false,
-    missing: `${envPrefix}_EMAIL / ${envPrefix}_PASSWORD`,
-    async status() { throw new Error("not configured"); },
-  };
-}
+/* ─── Keeta (Meituan "sailor" merchant portal) ────────────────────────────────
+   GET /api/scm/shop/base/summary?shopId=<id> answers with
+     businessStatus     1 = open
+     duringBusinessHour whether we are inside the configured hours
+     deliveryRestStatus / pickupRestStatus  1 = accepting
+   Auth is the portal session cookie plus a set of Meituan bookkeeping headers
+   (the page keeps them in localStorage under __fc_biz). Their login is captcha
+   / risk-scored, so we carry a cookie rather than trying to log in headlessly;
+   KEETA_COOKIE is refreshed from a logged-in browser when it lapses.          */
+const KEETA = {
+  base: process.env.KEETA_BASE || "https://merchant.mykeeta.com",
+  shopId: process.env.KEETA_SHOP_ID || "",
+  cookie: process.env.KEETA_COOKIE || "",
+  headers: process.env.KEETA_HEADERS || "",   // JSON copied from __fc_biz
+};
 
-const PORTALS = [
-  hungerstation,
-  pendingPortal("keeta", "كيتا", "KEETA"),
-  pendingPortal("ninja", "نينجا", "NINJA"),
-];
+const keeta = {
+  id: "keeta",
+  label: "كيتا",
+  configured: () => !!(KEETA.shopId && KEETA.cookie),
+  missing: "KEETA_SHOP_ID / KEETA_COOKIE (+ KEETA_HEADERS)",
+  async status() {
+    let extra = {};
+    try { extra = KEETA.headers ? JSON.parse(KEETA.headers) : {}; } catch { extra = {}; }
+    const res = await fetch(`${KEETA.base}/api/scm/shop/base/summary?shopId=${encodeURIComponent(KEETA.shopId)}`, {
+      headers: { "User-Agent": UA, Accept: "application/json", Cookie: KEETA.cookie, ...extra },
+    });
+    if (!res.ok) throw new Error(`keeta HTTP ${res.status}`);
+    const j = await res.json();
+    // Their gateway answers 200 with a non-zero code for auth problems.
+    if (j.code !== 0 || !j.data) throw new Error(`keeta code ${j.code}: ${j.message || "الجلسة انتهت — جدّد KEETA_COOKIE"}`);
+    const d = j.data;
+    const open = d.businessStatus === 1 && d.duringBusinessHour !== false;
+    const resting = d.deliveryRestStatus != null && d.deliveryRestStatus !== 1;
+    return {
+      state: open && !resting ? "open" : "closed",
+      detail: !open && d.duringBusinessHour === false ? "خارج ساعات العمل"
+        : resting ? "التوصيل موقوف مؤقتاً"
+        : open ? "المتجر مفتوح" : "المتجر مقفول",
+      raw: { businessStatus: d.businessStatus, duringBusinessHour: d.duringBusinessHour, deliveryRestStatus: d.deliveryRestStatus },
+    };
+  },
+};
+
+/* ─── Ninja (restaurant-portal.ananinja.com) ──────────────────────────────────
+   The branch object carries status ("available" | "busy" | "closed") and
+   activationStatus. Login is a plain username/password form that returns a
+   bearer token, so this one can authenticate itself once the API base and
+   branch path are confirmed from one authenticated request.                    */
+const NINJA = {
+  base: process.env.NINJA_API_BASE || "",
+  email: process.env.NINJA_EMAIL || "",
+  password: process.env.NINJA_PASSWORD || "",
+  branchId: process.env.NINJA_BRANCH_ID || "",
+  loginPath: process.env.NINJA_LOGIN_PATH || "/api/v1/auth/login",
+  branchPath: process.env.NINJA_BRANCH_PATH || "/api/v1/branches/{id}",
+  _token: null,
+  _tokenAt: 0,
+};
+
+const ninja = {
+  id: "ninja",
+  label: "نينجا",
+  configured: () => !!(NINJA.base && NINJA.email && NINJA.password && NINJA.branchId),
+  missing: "NINJA_API_BASE / NINJA_EMAIL / NINJA_PASSWORD / NINJA_BRANCH_ID",
+  async status() {
+    const HOUR = 3600 * 1000;
+    if (!NINJA._token || Date.now() - NINJA._tokenAt > 6 * HOUR) {
+      const r = await fetch(NINJA.base + NINJA.loginPath, {
+        method: "POST",
+        headers: { "User-Agent": UA, "Content-Type": "application/json", Accept: "application/json" },
+        body: JSON.stringify({ username: NINJA.email, password: NINJA.password }),
+      });
+      if (!r.ok) throw new Error(`ninja login HTTP ${r.status}`);
+      const j = await r.json();
+      NINJA._token = j.token || j.access_token || j.data?.token;
+      if (!NINJA._token) throw new Error("ninja login: no token in response");
+      NINJA._tokenAt = Date.now();
+    }
+    const res = await fetch(NINJA.base + NINJA.branchPath.replace("{id}", NINJA.branchId), {
+      headers: { "User-Agent": UA, Accept: "application/json", Authorization: `Bearer ${NINJA._token}` },
+    });
+    if (res.status === 401) { NINJA._token = null; throw new Error("ninja HTTP 401"); }
+    if (!res.ok) throw new Error(`ninja HTTP ${res.status}`);
+    const j = await res.json();
+    const b = j.data || j;
+    const st = String(b.status || "").toLowerCase();
+    return {
+      state: st === "available" ? "open" : st ? "closed" : "unknown",
+      detail: st === "available" ? "المتجر مفتوح"
+        : st === "busy" ? "مشغول مؤقتاً"
+        : st === "closed" ? "المتجر مقفول"
+        : `الحالة: ${st || "غير معروفة"}`,
+      raw: { status: b.status, activationStatus: b.activationStatus },
+    };
+  },
+};
+
+const PORTALS = [hungerstation, keeta, ninja];
 
 // Cache so the POS app polling every 30s doesn't hammer the platforms.
 const cache = new Map();
