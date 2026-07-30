@@ -634,9 +634,14 @@ function mapOrderRow(r) {
     orderOption: stripTags(String(r.order_option_id ?? r.order_option_name ?? "")),
     orderType: stripTags(String(r.order_type ?? "")),
     orderStatus: Number(r.order_status) || 0,
+    // NOTE: gross / discount / net are EXCLUDING VAT, while `total` (and the
+    // printed receipt) are VAT-inclusive. Callers that show money to a human
+    // must use the *Incl figures below, or the discount reads ~15% too small.
     gross: num(r.total_gross_amount),
     discount: num(r.total_discount_amount),
     promotion: num(r.total_promotion_amount),
+    net: num(r.total_net_amount),
+    tax: num(r.total_tax_amount),
     total: num(r.total_amount ?? r.total),
     payments,
     branch: stripTags(String(r.branch_name ?? "")),
@@ -719,6 +724,33 @@ async function fetchCustomersList({ maxPages = 10, pageSize = 500 } = {}) {
   return out;
 }
 
+// ─── Order line items ───────────────────────────────────────────────────────
+// The dashboard renders them into a modal from an HTML fragment endpoint.
+// Returns [{ name, qty, amount, note }] — modifiers arrive as their own rows.
+async function fetchOrderProducts(orderId) {
+  const res = await authGet(`/orders/${orderId}/products`);
+  if (!res.ok) throw new Error(`fetchOrderProducts(${orderId}): HTTP ${res.status}`);
+  const html = await res.text();
+  const out = [];
+  for (const rowHtml of html.split(/<tr[\s>]/i).slice(1)) {
+    const cells = [...rowHtml.matchAll(/<td[^>]*>([\s\S]*?)<\/td>/g)]
+      .map((m) => m[1].replace(/<[^>]*>/g, " ").replace(/&nbsp;/g, " ").replace(/\s+/g, " ").trim());
+    if (cells.length < 2) continue;
+    // Layout: Product | Amount | Notes — the product cell starts with "1.0 name"
+    const prod = cells[0];
+    if (!prod || /^product$/i.test(prod)) continue;
+    const qm = prod.match(/^([\d.]+)\s+(.*)$/);
+    const qty = qm ? Number(qm[1]) || 1 : 1;
+    let name = qm ? qm[2] : prod;
+    // A nested modifier is appended as "... 1.0 modifier" — keep it as a suffix.
+    name = name.replace(/\s+/g, " ").trim();
+    const amount = Number(String(cells[1] || "").replace(/[^\d.-]/g, "")) || 0;
+    if (!name) continue;
+    out.push({ name, qty, amount, note: cells[2] || "" });
+  }
+  return out;
+}
+
 async function ping() {
   await getSession(true);
   const b = await listPromocodeBatches();
@@ -744,6 +776,7 @@ export {
   fetchCustomerOrders,
   fetchOrdersSince,
   fetchCustomersList,
+  fetchOrderProducts,
   ping,
   BASE,
   STORE,

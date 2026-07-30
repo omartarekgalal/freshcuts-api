@@ -1191,6 +1191,24 @@ async function ensureMarketingSchema() {
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
     ALTER TABLE ts_orders ADD COLUMN IF NOT EXISTS staff_name TEXT;
+    -- TabSense reports gross/discount/net EXCLUDING VAT while the printed
+    -- receipt and the total column are VAT-inclusive. These hold the
+    -- human-facing (VAT-inclusive) figures so reports match the receipt.
+    ALTER TABLE ts_orders ADD COLUMN IF NOT EXISTS net NUMERIC DEFAULT 0;
+    ALTER TABLE ts_orders ADD COLUMN IF NOT EXISTS tax NUMERIC DEFAULT 0;
+    ALTER TABLE ts_orders ADD COLUMN IF NOT EXISTS gross_incl NUMERIC DEFAULT 0;
+    ALTER TABLE ts_orders ADD COLUMN IF NOT EXISTS discount_incl NUMERIC DEFAULT 0;
+    -- Line items per order (rebuilt from TabSense on demand).
+    CREATE TABLE IF NOT EXISTS ts_order_items (
+      order_id TEXT NOT NULL,
+      idx INT NOT NULL,
+      name TEXT NOT NULL,
+      qty NUMERIC DEFAULT 1,
+      amount NUMERIC DEFAULT 0,
+      note TEXT NOT NULL DEFAULT '',
+      PRIMARY KEY (order_id, idx)
+    );
+    CREATE INDEX IF NOT EXISTS ts_order_items_name_idx ON ts_order_items(name);
     CREATE INDEX IF NOT EXISTS ts_orders_day_idx ON ts_orders(calendar_day);
     CREATE INDEX IF NOT EXISTS ts_orders_customer_idx ON ts_orders(customer_id);
     -- Cache of the TabSense customer directory (has the registration date).
@@ -1540,18 +1558,27 @@ async function syncOrdersCache(sinceDate) {
   const settings = await getSettingsData();
   const orders = await ts.fetchOrdersSince(sinceDate);
   for (const o of orders) {
+    // VAT-inclusive figures, derived from the order's own effective tax rate so
+    // we never hardcode 15%: gross*(1+rate) is the pre-discount price the
+    // customer saw, and the difference to `total` is the discount they got.
+    const rate = o.net > 0 ? o.tax / o.net : 0.15;
+    const grossIncl = Math.round(o.gross * (1 + rate) * 1000) / 1000;
+    const discountIncl = Math.max(0, Math.round((grossIncl - o.total) * 1000) / 1000);
     await pool.query(
       `INSERT INTO ts_orders (order_id, receipt, order_date, calendar_day, order_option, order_type,
-                              order_status, gross, discount, promotion, total, payments, branch, staff_name, updated_at)
-       VALUES ($1,$2,$3::timestamptz,$4::date,$5,$6,$7,$8,$9,$10,$11,$12::jsonb,$13,$14,NOW())
+                              order_status, gross, discount, promotion, net, tax, gross_incl, discount_incl,
+                              total, payments, branch, staff_name, updated_at)
+       VALUES ($1,$2,$3::timestamptz,$4::date,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16::jsonb,$17,$18,NOW())
        ON CONFLICT (order_id) DO UPDATE SET
          receipt=EXCLUDED.receipt, order_date=EXCLUDED.order_date, calendar_day=EXCLUDED.calendar_day,
          order_option=EXCLUDED.order_option, order_type=EXCLUDED.order_type, order_status=EXCLUDED.order_status,
          gross=EXCLUDED.gross, discount=EXCLUDED.discount, promotion=EXCLUDED.promotion,
+         net=EXCLUDED.net, tax=EXCLUDED.tax, gross_incl=EXCLUDED.gross_incl, discount_incl=EXCLUDED.discount_incl,
          total=EXCLUDED.total, payments=EXCLUDED.payments, branch=EXCLUDED.branch,
          staff_name=COALESCE(NULLIF(EXCLUDED.staff_name,''), ts_orders.staff_name), updated_at=NOW()`,
       [o.orderId, o.receipt, o.orderDate, o.calendarDay, o.orderOption, o.orderType,
-       o.orderStatus, o.gross, o.discount, o.promotion, o.total, jb(o.payments), o.branch, o.staffName || ""]
+       o.orderStatus, o.gross, o.discount, o.promotion, o.net, o.tax, grossIncl, discountIncl,
+       o.total, jb(o.payments), o.branch, o.staffName || ""]
     );
   }
   const appList = (Array.isArray(settings?.deliveryAppMethods) && settings.deliveryAppMethods.length)
@@ -1820,7 +1847,7 @@ app.get("/api/cashier/queue", async (c) => {
   const hours = Math.max(1, Math.min(168, Number(c.req.query("hours")) || 48));
   const pending = (await pool.query(
     `SELECT o.order_id, o.receipt, o.order_date, o.calendar_day, o.order_option, o.order_type,
-            o.total, o.discount, o.promotion, o.payments, o.customer_id, o.staff_name,
+            o.total, o.discount_incl AS discount, o.gross_incl, o.payments, o.customer_id, o.staff_name,
             tc.name AS customer_name, tc.phone AS customer_phone
        FROM ts_orders o
        LEFT JOIN order_sources s ON s.order_id = o.order_id
@@ -1831,7 +1858,8 @@ app.get("/api/cashier/queue", async (c) => {
     orderId: r.order_id, receipt: r.receipt || "", orderDate: r.order_date,
     day: r.calendar_day instanceof Date ? r.calendar_day.toISOString().slice(0, 10) : r.calendar_day,
     orderOption: r.order_option || "", orderType: r.order_type || "",
-    total: Number(r.total) || 0, discount: (Number(r.discount) || 0) + (Number(r.promotion) || 0),
+    total: Number(r.total) || 0, discount: Number(r.discount) || 0,
+    grossIncl: Number(r.gross_incl) || 0,
     customerName: r.customer_name || "",
     customerPhone: r.customer_phone || "",
     hasCustomer: !!r.customer_id,
@@ -1891,11 +1919,129 @@ app.post("/api/cashier/submit", async (c) => {
   return c.json({ ok: true, seenBefore });
 });
 
+// ─── Manager: order explorer with advanced filters ──────────────────────────
+// Every filter is optional; returns rows + the totals for the filtered set so
+// the UI never has to add up a truncated page.
+app.get("/api/manager/orders", async (c) => {
+  const err = await requireAdmin(c); if (err) return err;
+  const q = c.req.query();
+  const settings = await getSettingsData();
+  const appList = (Array.isArray(settings?.deliveryAppMethods) && settings.deliveryAppMethods.length)
+    ? settings.deliveryAppMethods.map((s) => String(s).toLowerCase())
+    : DEFAULT_DELIVERY_APPS;
+
+  const p = []; const w = [];
+  const add = (v) => { p.push(v); return `$${p.length}`; };
+  w.push(`o.calendar_day BETWEEN ${add(q.from || daysAgoISO(29))}::date AND ${add(q.to || todayISO())}::date`);
+  if (q.staff) w.push(`o.staff_name = ${add(q.staff)}`);
+  if (q.orderOption) w.push(`o.order_option ILIKE ${add("%" + q.orderOption + "%")}`);
+  if (q.orderType) w.push(`o.order_type ILIKE ${add("%" + q.orderType + "%")}`);
+  if (q.source) w.push(`s.source = ${add(q.source)}`);
+  if (q.app) w.push(`s.source_note ILIKE ${add(q.app)}`);
+  if (q.minTotal) w.push(`o.total >= ${add(Number(q.minTotal))}`);
+  if (q.maxTotal) w.push(`o.total <= ${add(Number(q.maxTotal))}`);
+  if (q.hasDiscount === "1") w.push(`o.discount_incl > 0`);
+  if (q.hasCustomer === "1") w.push(`(o.customer_id IS NOT NULL OR s.phone_norm <> '')`);
+  if (q.hasCustomer === "0") w.push(`(o.customer_id IS NULL AND (s.phone_norm IS NULL OR s.phone_norm = ''))`);
+  if (q.channel === "delivery") {
+    w.push(`(o.order_type ILIKE '%external%' OR EXISTS (SELECT 1 FROM jsonb_object_keys(o.payments) k WHERE lower(k) = ANY(${add(appList)})))`);
+  } else if (q.channel === "inhouse") {
+    w.push(`o.order_type NOT ILIKE '%external%' AND NOT EXISTS (SELECT 1 FROM jsonb_object_keys(o.payments) k WHERE lower(k) = ANY(${add(appList)}))`);
+  }
+  if (q.excludeVoid === "1") w.push(`o.order_type NOT ILIKE '%void%' AND o.order_type NOT ILIKE '%refund%'`);
+  if (q.search) {
+    const s = add("%" + q.search + "%"); const ph = add(normPhone(q.search) || " ");
+    w.push(`(o.receipt ILIKE ${s} OR o.order_id ILIKE ${s} OR tc.name ILIKE ${s}
+             OR s.customer_name ILIKE ${s} OR tc.phone_norm LIKE ${ph} OR s.phone_norm LIKE ${ph})`);
+  }
+  const whereSql = "WHERE " + w.join(" AND ");
+  const base = `FROM ts_orders o
+     LEFT JOIN order_sources s ON s.order_id = o.order_id
+     LEFT JOIN ts_customers tc ON tc.customer_id = o.customer_id
+     ${whereSql}`;
+
+  const sortMap = {
+    date: "o.order_date DESC", date_asc: "o.order_date ASC",
+    total: "o.total DESC", total_asc: "o.total ASC",
+    discount: "o.discount_incl DESC",
+  };
+  const order = sortMap[q.sort] || sortMap.date;
+  const limit = Math.min(500, Number(q.limit) || 100);
+  const offset = Math.max(0, Number(q.offset) || 0);
+
+  const rows = (await pool.query(
+    `SELECT o.order_id, o.receipt, o.order_date, o.calendar_day, o.order_option, o.order_type,
+            o.total, o.gross_incl, o.discount_incl, o.payments, o.staff_name, o.customer_id,
+            COALESCE(NULLIF(tc.name,''), s.customer_name) AS customer_name,
+            COALESCE(NULLIF(tc.phone,''), s.customer_phone) AS customer_phone,
+            s.source, s.source_note, s.filled_by, s.customer_kind
+     ${base} ORDER BY ${order} LIMIT ${limit} OFFSET ${offset}`, p
+  )).rows.map((r) => ({
+    orderId: r.order_id, receipt: r.receipt || "", orderDate: r.order_date,
+    day: r.calendar_day instanceof Date ? r.calendar_day.toISOString().slice(0, 10) : r.calendar_day,
+    orderOption: r.order_option || "", orderType: r.order_type || "",
+    total: Number(r.total) || 0, grossIncl: Number(r.gross_incl) || 0, discount: Number(r.discount_incl) || 0,
+    staffName: r.staff_name || "", customerName: r.customer_name || "", customerPhone: r.customer_phone || "",
+    hasCustomer: !!(r.customer_id || r.customer_phone),
+    source: r.source || "", sourceNote: r.source_note || "", filledBy: r.filled_by || "",
+    deliveryApp: deliveryAppOf(r.payments, settings) || (/external/i.test(r.order_type || "") ? "Feedus" : null),
+  }));
+
+  const t = (await pool.query(
+    `SELECT count(*)::int AS orders, COALESCE(sum(o.total),0) AS revenue,
+            COALESCE(sum(o.discount_incl),0) AS discount, COALESCE(avg(o.total),0) AS avg_order,
+            count(DISTINCT COALESCE(o.customer_id, NULLIF(s.phone_norm,'')))::int AS customers
+     ${base}`, p
+  )).rows[0];
+
+  const facets = {
+    staff: (await pool.query(`SELECT COALESCE(NULLIF(o.staff_name,''),'(غير معروف)') AS k, count(*)::int AS n ${base} GROUP BY 1 ORDER BY n DESC`, p)).rows,
+    option: (await pool.query(`SELECT COALESCE(NULLIF(o.order_option,''),'—') AS k, count(*)::int AS n ${base} GROUP BY 1 ORDER BY n DESC`, p)).rows,
+    source: (await pool.query(`SELECT COALESCE(NULLIF(s.source,''),'(غير مسجل)') AS k, count(*)::int AS n ${base} GROUP BY 1 ORDER BY n DESC`, p)).rows,
+    app: (await pool.query(`SELECT NULLIF(s.source_note,'') AS k, count(*)::int AS n ${base} AND s.source='delivery_app' GROUP BY 1 ORDER BY n DESC`, p)).rows,
+  };
+
+  return c.json({
+    ok: true,
+    totals: {
+      orders: t.orders, revenue: Number(t.revenue), discount: Number(t.discount),
+      avgOrder: Number(t.avg_order), customers: t.customers,
+    },
+    facets, orders: rows, limit, offset,
+  });
+});
+
+// Line items of one order — pulled live from TabSense, then cached.
+app.get("/api/manager/order/:id/items", async (c) => {
+  const err = await requireAdmin(c); if (err) return err;
+  const id = c.req.param("id");
+  const cached = (await pool.query("SELECT idx, name, qty, amount, note FROM ts_order_items WHERE order_id=$1 ORDER BY idx", [id])).rows;
+  if (cached.length) {
+    return c.json({ ok: true, cached: true, items: cached.map((r) => ({ name: r.name, qty: Number(r.qty), amount: Number(r.amount), note: r.note })) });
+  }
+  if (!TS_ENABLED) return c.json({ ok: false, error: "tabsense_not_configured" }, 400);
+  try {
+    const items = await ts.fetchOrderProducts(id);
+    for (let i = 0; i < items.length; i++) {
+      const it = items[i];
+      await pool.query(
+        `INSERT INTO ts_order_items (order_id, idx, name, qty, amount, note)
+         VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT (order_id, idx) DO UPDATE SET
+           name=EXCLUDED.name, qty=EXCLUDED.qty, amount=EXCLUDED.amount, note=EXCLUDED.note`,
+        [id, i, it.name, it.qty, it.amount, it.note]
+      );
+    }
+    return c.json({ ok: true, cached: false, items });
+  } catch (e) { return c.json({ ok: false, error: e.message }, 500); }
+});
+
 // ─── Cashier performance — the score Omar evaluates staff on ────────────────
 // Denominator = in-restaurant orders only (delivery-app orders carry no
 // customer the cashier could capture, so they are excluded, not counted against).
 app.get("/api/insights/staff", async (c) => {
-  const err = await requireAdmin(c); if (err) return err;
+  // The cashier station shows this too (staff need to see their own score), so
+  // a cashier PIN is enough here — it exposes no customer data.
+  const err = await requireCashierOrAdmin(c); if (err) return err;
   const from = c.req.query("from") || daysAgoISO(29);
   const to = c.req.query("to") || todayISO();
   const settings = await getSettingsData();
@@ -1992,7 +2138,8 @@ app.get("/api/insights/summary", async (c) => {
   const settings = await getSettingsData();
 
   const orders = (await pool.query(
-    `SELECT order_id, calendar_day, order_option, order_type, total, discount, promotion, payments, customer_id
+    `SELECT order_id, calendar_day, order_option, order_type, total, discount_incl AS discount,
+            gross_incl, payments, customer_id
        FROM ts_orders WHERE calendar_day BETWEEN $1::date AND $2::date`, [from, to]
   )).rows;
   const newCust = (await pool.query(
@@ -2024,7 +2171,7 @@ app.get("/api/insights/summary", async (c) => {
     const total = Number(o.total) || 0;
     const isExternal = /external/i.test(o.order_type || "");
     const isDel = isDeliveryOrder(o.order_option, o.payments, settings, o.order_type);
-    const disc = (Number(o.discount) || 0) + (Number(o.promotion) || 0);
+    const disc = Number(o.discount) || 0;   // VAT-inclusive, matches the receipt
     totRevenue += total;
     // "discounts" on External (FeedUs) orders are aggregator commissions /
     // price adjustments — not marketing discounts. Track separately.
