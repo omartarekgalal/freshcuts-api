@@ -84,12 +84,21 @@ const hungerstation = {
     const list = Array.isArray(j) ? j : (j.availabilities || j.data || []);
     const first = list[0] || {};
     const st = String(first.availabilityState || first.state || "").toUpperCase();
+    // currentSlotEndAt is when the current open/closed slot flips, which is the
+    // only genuinely useful thing to show a cashier staring at a closed store.
+    const until = first.currentSlotEndAt || first.closedUntil;
+    const localTime = (iso) => {
+      try {
+        return new Date(iso).toLocaleTimeString("ar-SA", { hour: "2-digit", minute: "2-digit", timeZone: "Asia/Riyadh" });
+      } catch { return String(iso); }
+    };
     return {
       state: st === "OPEN" ? "open" : st ? "closed" : "unknown",
-      detail: st === "OPEN" ? "المتجر مفتوح"
-        : st === "CLOSED_UNTIL" ? `مقفول حتى ${first.closedUntil || "?"}`
+      detail: st === "OPEN" ? (until ? `المتجر مفتوح حتى ${localTime(until)}` : "المتجر مفتوح")
+        : st === "CLOSED_UNTIL" ? `مقفول حتى ${until ? localTime(until) : "?"}`
         : st === "CLOSED_TODAY" ? "مقفول اليوم"
-        : "حالة غير معروفة",
+        : st === "CLOSED" ? (until ? `مقفول — يفتح ${localTime(until)}` : "المتجر مقفول")
+        : `حالة غير معروفة (${st || "فاضية"})`,
       raw: first,
     };
   },
@@ -140,55 +149,77 @@ const keeta = {
 };
 
 /* ─── Ninja (restaurant-portal.ananinja.com) ──────────────────────────────────
-   The branch object carries status ("available" | "busy" | "closed") and
-   activationStatus. Login is a plain username/password form that returns a
-   bearer token, so this one can authenticate itself once the API base and
-   branch path are confirmed from one authenticated request.                    */
+   GET {base}/restaurants/branches/{id} -> JSON:API, data.attributes.status is
+   "available" | "busy" | "closed".
+
+   Their login is MFA'd (password -> preAuthToken -> EMAIL OTP -> jwtToken),
+   so a server can never log in unattended. We therefore carry the tokens:
+   the access JWT lives 24h and the refresh token 7 days, and we try the
+   refresh endpoint before giving up. When both lapse the tile says so
+   explicitly rather than pretending the branch is fine.                        */
 const NINJA = {
-  base: process.env.NINJA_API_BASE || "",
-  email: process.env.NINJA_EMAIL || "",
-  password: process.env.NINJA_PASSWORD || "",
+  base: process.env.NINJA_API_BASE || "https://food-vendor-portal.ananinja.com",
+  authBase: process.env.NINJA_AUTH_BASE || "https://public.ananinja.com",
   branchId: process.env.NINJA_BRANCH_ID || "",
-  loginPath: process.env.NINJA_LOGIN_PATH || "/api/v1/auth/login",
-  branchPath: process.env.NINJA_BRANCH_PATH || "/api/v1/branches/{id}",
-  _token: null,
-  _tokenAt: 0,
+  jwt: process.env.NINJA_JWT || "",
+  refresh: process.env.NINJA_REFRESH_TOKEN || "",
+  branchPath: process.env.NINJA_BRANCH_PATH || "/restaurants/branches/{id}",
+  _jwt: null,
 };
+
+function jwtExpired(tok) {
+  try {
+    const p = JSON.parse(Buffer.from(tok.split(".")[1], "base64url").toString());
+    return !p.exp || p.exp * 1000 < Date.now() + 60_000;
+  } catch { return true; }
+}
+
+async function ninjaToken() {
+  const current = NINJA._jwt || NINJA.jwt;
+  if (current && !jwtExpired(current)) return current;
+  if (!NINJA.refresh) throw new Error("انتهت صلاحية التوكن — لازم تسجيل دخول جديد");
+  // Endpoint name is not in the capture; try the usual shapes once each.
+  for (const path of ["/users/refresh", "/users/token/refresh", "/users/refresh-token"]) {
+    try {
+      const r = await fetch(NINJA.authBase + path, {
+        method: "POST",
+        headers: { "User-Agent": UA, "Content-Type": "application/json", Accept: "application/json" },
+        body: JSON.stringify({ refreshToken: NINJA.refresh }),
+      });
+      if (!r.ok) continue;
+      const j = await r.json();
+      const tok = j.jwtToken || j.token || j.accessToken;
+      if (tok) { NINJA._jwt = tok; return tok; }
+    } catch { /* try the next shape */ }
+  }
+  throw new Error("انتهت صلاحية التوكن — سجّل دخول وحدّث NINJA_JWT");
+}
 
 const ninja = {
   id: "ninja",
   label: "نينجا",
-  configured: () => !!(NINJA.base && NINJA.email && NINJA.password && NINJA.branchId),
-  missing: "NINJA_API_BASE / NINJA_EMAIL / NINJA_PASSWORD / NINJA_BRANCH_ID",
+  configured: () => !!(NINJA.branchId && (NINJA.jwt || NINJA.refresh)),
+  missing: "NINJA_BRANCH_ID / NINJA_JWT",
   async status() {
-    const HOUR = 3600 * 1000;
-    if (!NINJA._token || Date.now() - NINJA._tokenAt > 6 * HOUR) {
-      const r = await fetch(NINJA.base + NINJA.loginPath, {
-        method: "POST",
-        headers: { "User-Agent": UA, "Content-Type": "application/json", Accept: "application/json" },
-        body: JSON.stringify({ username: NINJA.email, password: NINJA.password }),
-      });
-      if (!r.ok) throw new Error(`ninja login HTTP ${r.status}`);
-      const j = await r.json();
-      NINJA._token = j.token || j.access_token || j.data?.token;
-      if (!NINJA._token) throw new Error("ninja login: no token in response");
-      NINJA._tokenAt = Date.now();
-    }
+    const token = await ninjaToken();
     const res = await fetch(NINJA.base + NINJA.branchPath.replace("{id}", NINJA.branchId), {
-      headers: { "User-Agent": UA, Accept: "application/json", Authorization: `Bearer ${NINJA._token}` },
+      headers: { "User-Agent": UA, Accept: "application/json", Authorization: `Bearer ${token}` },
     });
-    if (res.status === 401) { NINJA._token = null; throw new Error("ninja HTTP 401"); }
+    if (res.status === 401 || res.status === 403) {
+      NINJA._jwt = null;
+      throw new Error("انتهت صلاحية التوكن — سجّل دخول وحدّث NINJA_JWT");
+    }
     if (!res.ok) throw new Error(`ninja HTTP ${res.status}`);
     const j = await res.json();
-    const b = j.data || j;
-    const st = String(b.status || "").toLowerCase();
+    const a = j?.data?.attributes || j?.data || j;
+    const st = String(a.status || "").toLowerCase();
     return {
       state: st === "available" ? "open" : st ? "closed" : "unknown",
       detail: st === "available" ? "المتجر مفتوح"
         : st === "busy" ? "مشغول مؤقتاً"
         : st === "closed" ? "المتجر مقفول"
         : `الحالة: ${st || "غير معروفة"}`,
-      raw: { status: b.status, activationStatus: b.activationStatus },
+      raw: { status: a.status, activationStatus: a.activationStatus, enabled: a.enabled },
     };
   },
 };
