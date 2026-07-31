@@ -10,6 +10,7 @@ import * as analytics from "./analytics.js";
 import * as ai from "./ai.js";
 import * as staff from "./staff.js";
 import * as chat from "./chat.js";
+import * as dayreport from "./dayreport.js";
 
 const { Pool } = pg;
 
@@ -1658,10 +1659,47 @@ async function linkCustomersOrders(customerIds, { throttleMs = 1100, onProgress 
 }
 
 // Runs inside the worker cycle: orders every cycle, customers+linking every ~30m.
+// Pull line items for orders that don't have them yet. Item-level reports are
+// only as honest as this coverage, and today's orders are exactly the ones an
+// owner looks at — so the worker keeps it current instead of waiting for
+// someone to press a backfill button.
+async function syncRecentOrderItems(cap = 40) {
+  const rows = (await pool.query(
+    `SELECT o.order_id FROM ts_orders o
+      WHERE o.order_date > NOW() - interval '3 days'
+        AND NOT EXISTS (SELECT 1 FROM ts_order_items i WHERE i.order_id = o.order_id)
+      ORDER BY o.order_date DESC LIMIT $1`, [cap]
+  )).rows;
+  let fetched = 0;
+  for (const r of rows) {
+    try {
+      const items = await ts.fetchOrderProducts(r.order_id);
+      for (let i = 0; i < items.length; i++) {
+        const it = items[i];
+        await pool.query(
+          `INSERT INTO ts_order_items (order_id, idx, name, qty, amount, note)
+           VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT (order_id, idx) DO UPDATE SET
+             name=EXCLUDED.name, qty=EXCLUDED.qty, amount=EXCLUDED.amount, note=EXCLUDED.note`,
+          [r.order_id, i, it.name, it.qty, it.amount, it.note]
+        );
+      }
+      fetched++;
+    } catch (e) {
+      // One unreadable order must not stall the sweep.
+      console.error(`[items] order ${r.order_id}:`, e.message);
+    }
+    await sleep(300);   // TabSense rate-limits per-order reads
+  }
+  return fetched;
+}
+
 async function runInsightsSync() {
   const n = await syncOrdersCache(daysAgoISO(3));
   insightsState.lastOrdersSyncAt = new Date().toISOString();
   insightsState.lastOrdersCount = n;
+  try {
+    insightsState.lastItemsFetched = await syncRecentOrderItems(40);
+  } catch (e) { console.error("[items] sweep failed:", e.message); }
   if (feedus.ENABLED) {
     try {
       const r = await syncFeedusSources({ pages: 2 });
@@ -2510,6 +2548,7 @@ analytics.register(app, moduleCtx);
 ai.register(app, moduleCtx);
 staff.register(app, moduleCtx);
 chat.register(app, moduleCtx);
+dayreport.register(app, moduleCtx);
 console.log("[analytics] routes ready");
 console.log(`[ai] routes ready (provider: ${process.env.ANTHROPIC_API_KEY ? "anthropic" : process.env.LITELLM_KEY ? "litellm" : "NOT CONFIGURED"})`);
 
