@@ -11,6 +11,7 @@ import * as ai from "./ai.js";
 import * as staff from "./staff.js";
 import * as chat from "./chat.js";
 import * as dayreport from "./dayreport.js";
+import * as ads from "./ads.js";
 
 const { Pool } = pg;
 
@@ -2549,6 +2550,7 @@ ai.register(app, moduleCtx);
 staff.register(app, moduleCtx);
 chat.register(app, moduleCtx);
 dayreport.register(app, moduleCtx);
+ads.register(app, moduleCtx);
 console.log("[analytics] routes ready");
 console.log(`[ai] routes ready (provider: ${process.env.ANTHROPIC_API_KEY ? "anthropic" : process.env.LITELLM_KEY ? "litellm" : "NOT CONFIGURED"})`);
 
