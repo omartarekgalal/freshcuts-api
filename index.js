@@ -8,6 +8,8 @@ import * as feedus from "./feedus.js";
 import * as portals from "./portals.js";
 import * as analytics from "./analytics.js";
 import * as ai from "./ai.js";
+import * as staff from "./staff.js";
+import * as chat from "./chat.js";
 
 const { Pool } = pg;
 
@@ -1876,7 +1878,8 @@ app.get("/api/cashier/queue", async (c) => {
   const stats = (await pool.query(
     `SELECT (SELECT count(*)::int FROM ts_orders WHERE calendar_day = CURRENT_DATE) AS today_orders,
             (SELECT count(*)::int FROM order_sources s JOIN ts_orders o ON o.order_id = s.order_id
-              WHERE o.calendar_day = CURRENT_DATE AND s.filled_by = 'cashier') AS today_tagged,
+              WHERE o.calendar_day = CURRENT_DATE
+                AND (s.filled_by = 'cashier' OR s.filled_by LIKE 'staff:%')) AS today_tagged,
             (SELECT count(*)::int FROM order_sources s JOIN ts_orders o ON o.order_id = s.order_id
               WHERE o.calendar_day = CURRENT_DATE AND s.filled_by = 'auto') AS today_auto`
   )).rows[0];
@@ -2505,6 +2508,8 @@ const moduleCtx = {
 };
 analytics.register(app, moduleCtx);
 ai.register(app, moduleCtx);
+staff.register(app, moduleCtx);
+chat.register(app, moduleCtx);
 console.log("[analytics] routes ready");
 console.log(`[ai] routes ready (provider: ${process.env.ANTHROPIC_API_KEY ? "anthropic" : process.env.LITELLM_KEY ? "litellm" : "NOT CONFIGURED"})`);
 
