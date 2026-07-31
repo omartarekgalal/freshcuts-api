@@ -6,6 +6,8 @@ import crypto from "node:crypto";
 import * as ts from "./tabsense.js";
 import * as feedus from "./feedus.js";
 import * as portals from "./portals.js";
+import * as analytics from "./analytics.js";
+import * as ai from "./ai.js";
 
 const { Pool } = pg;
 
@@ -2494,6 +2496,17 @@ ensureMarketingSchema()
 ensureDeviceSchema()
   .then(() => console.log("[device] schema ready"))
   .catch((e) => console.error("[device] schema init failed:", e.message));
+
+// Reporting and AI advice live in their own modules — they only read, so they
+// get the same helpers rather than their own copies of the business rules.
+const moduleCtx = {
+  pool, requireAdmin, requireCashierOrAdmin, getSettingsData, jb,
+  todayISO, daysAgoISO, normPhone, ts, deliveryAppOf, DEFAULT_DELIVERY_APPS,
+};
+analytics.register(app, moduleCtx);
+ai.register(app, moduleCtx);
+console.log("[analytics] routes ready");
+console.log(`[ai] routes ready (provider: ${process.env.ANTHROPIC_API_KEY ? "anthropic" : process.env.LITELLM_KEY ? "litellm" : "NOT CONFIGURED"})`);
 
 serve({ fetch: app.fetch, port: PORT, hostname: "0.0.0.0" }, (info) => {
   console.log(`freshcuts-api listening on http://0.0.0.0:${info.port}`);
