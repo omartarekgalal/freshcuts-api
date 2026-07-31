@@ -12,9 +12,31 @@
 // Adding a platform later = one more adapter here; the health endpoint and the
 // POS app pick it up with no other change.
 
+import https from "node:https";
+
 const UA =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
   "(KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36";
+
+// Ninja's gateway answers 500 to anything undici (global fetch) sends — the
+// extra sec-fetch-*/accept-encoding hints it adds are enough to upset it —
+// while a plain node:https request with the same token succeeds. So that one
+// portal gets a raw client.
+function rawGet(url, headers = {}) {
+  return new Promise((resolve, reject) => {
+    const u = new URL(url);
+    const req = https.request(
+      { host: u.hostname, path: u.pathname + u.search, method: "GET", headers },
+      (res) => {
+        let body = "";
+        res.on("data", (d) => { body += d; });
+        res.on("end", () => resolve({ status: res.statusCode, body }));
+      }
+    );
+    req.on("error", reject);
+    req.end();
+  });
+}
 
 /* ─── HungerStation (Deliveryhero vendor portal) ──────────────────────────────
    Auth: POST /api/1/auth/form -> { token } (JWT, 14 days, no refresh endpoint,
@@ -202,22 +224,18 @@ const ninja = {
   missing: "NINJA_BRANCH_ID / NINJA_JWT",
   async status() {
     const token = await ninjaToken();
-    // Their gateway 500s without the portal Origin/Referer pair.
-    const res = await fetch(NINJA.base + NINJA.branchPath.replace("{id}", NINJA.branchId), {
-      headers: {
-        "User-Agent": UA,
-        Accept: "application/json",
-        Authorization: `Bearer ${token}`,
-        Origin: "https://restaurant-portal.ananinja.com",
-        Referer: "https://restaurant-portal.ananinja.com/",
-      },
+    const res = await rawGet(NINJA.base + NINJA.branchPath.replace("{id}", NINJA.branchId), {
+      "User-Agent": "Mozilla/5.0",
+      Accept: "application/json",
+      Authorization: `Bearer ${token}`,
+      Origin: "https://restaurant-portal.ananinja.com",
     });
     if (res.status === 401 || res.status === 403) {
       NINJA._jwt = null;
       throw new Error("انتهت صلاحية التوكن — سجّل دخول وحدّث NINJA_JWT");
     }
-    if (!res.ok) throw new Error(`ninja HTTP ${res.status}`);
-    const j = await res.json();
+    if (res.status < 200 || res.status >= 300) throw new Error(`ninja HTTP ${res.status}`);
+    const j = JSON.parse(res.body);
     const a = j?.data?.attributes || j?.data || j;
     const st = String(a.status || "").toLowerCase();
     return {
