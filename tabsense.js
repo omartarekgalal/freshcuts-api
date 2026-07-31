@@ -751,6 +751,55 @@ async function fetchOrderProducts(orderId) {
   return out;
 }
 
+// ─── Create a customer in the TabSense directory ────────────────────────────
+// The "add customer" form lives in a modal on /customers (there is no working
+// /customers/create page — it 500s), and posts first_name / last_name /
+// phone_country_code / phone back to /customers.
+//
+// NOTE: this only puts the person in the directory. TabSense offers no way to
+// attach a customer to an order that is already closed — six candidate
+// endpoints all 404 and the orders table has no customer control — so this
+// cannot retro-fix attribution. Its value is that a delivery customer who
+// later walks in or calls is already known, with their points and history.
+async function createCustomer({ firstName, lastName = "", phone, countryCode = "966" }) {
+  if (!phone) throw new Error("createCustomer: phone required");
+  const s = await getSession();
+  const page = await authGet("/customers");
+  const html = await page.text();
+  const token = matchToken(html);
+  if (!token) throw new Error("createCustomer: CSRF token not found");
+
+  const body = new URLSearchParams({
+    _token: token,
+    first_name: String(firstName || "").slice(0, 60) || "عميل",
+    last_name: String(lastName || "").slice(0, 60),
+    phone_country_code: String(countryCode),
+    phone: String(phone).replace(/\D/g, ""),
+  });
+  const res = await fetch(dash("/customers"), {
+    method: "POST",
+    headers: {
+      "User-Agent": UA,
+      "Content-Type": "application/x-www-form-urlencoded",
+      Accept: "text/html,application/json",
+      Referer: dash("/customers"),
+      Cookie: s.jar.header(),
+    },
+    body,
+    redirect: "manual",
+  });
+  // Laravel redirects on success; a 200 means the form came back with errors.
+  if (res.status >= 300 && res.status < 400) return { ok: true, created: true };
+  const txt = await res.text().catch(() => "");
+  if (res.status === 200) {
+    if (/is-invalid|alert-danger|has already been taken|error/i.test(txt)) {
+      return { ok: false, created: false, error: "rejected", detail: txt.slice(0, 200) };
+    }
+    return { ok: true, created: true };
+  }
+  return { ok: false, created: false, error: `HTTP ${res.status}` };
+}
+
 async function ping() {
   await getSession(true);
   const b = await listPromocodeBatches();
@@ -777,6 +826,7 @@ export {
   fetchOrdersSince,
   fetchCustomersList,
   fetchOrderProducts,
+  createCustomer,
   ping,
   BASE,
   STORE,

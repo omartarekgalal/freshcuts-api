@@ -1799,6 +1799,55 @@ async function backfillFeedusFromSales(from, to, { windowMs = 120_000, withDetai
   return { ok: true, tagged, unmatched, salesRows: sales.length, externalOrders: ext.length, detailFetched, detailFailed };
 }
 
+// Push delivery customers we learned from FeedUs into the TabSense directory,
+// so a Keeta customer who later walks in or phones is already a known face
+// with points and history. Deduped on the normalised phone against the
+// customer cache; defaults to a dry run because this writes to the live POS.
+app.post("/api/customers/push-to-tabsense", async (c) => {
+  const err = await requireAdmin(c); if (err) return err;
+  if (!TS_ENABLED) return c.json({ ok: false, error: "tabsense_not_configured" }, 400);
+  const b = await c.req.json().catch(() => ({}));
+  const dryRun = b.dryRun !== false;              // must opt IN to writing
+  const limit = Math.max(1, Math.min(200, Number(b.limit) || 50));
+
+  const rows = (await pool.query(
+    `SELECT DISTINCT ON (s.phone_norm) s.phone_norm, s.customer_name, s.customer_phone
+       FROM order_sources s
+       LEFT JOIN ts_customers tc ON tc.phone_norm = s.phone_norm
+      WHERE s.phone_norm <> '' AND tc.customer_id IS NULL
+        AND s.customer_name <> ''
+      ORDER BY s.phone_norm, s.filled_at DESC
+      LIMIT $1`, [limit]
+  )).rows;
+
+  const results = { candidates: rows.length, created: 0, failed: 0, samples: [], errors: [] };
+  for (const r of rows) {
+    const parts = String(r.customer_name).trim().split(/\s+/);
+    const payload = {
+      firstName: parts[0] || "عميل",
+      lastName: parts.slice(1).join(" "),
+      // phone_norm is the 9-digit subscriber number; TabSense wants it without
+      // the country code, which it takes separately.
+      phone: r.phone_norm.replace(/^966/, "").replace(/^0/, ""),
+      countryCode: "966",
+    };
+    if (results.samples.length < 3) {
+      results.samples.push({ ...payload, phone: payload.phone.slice(0, 2) + "XXXXXXX" });
+    }
+    if (dryRun) continue;
+    try {
+      const res = await ts.createCustomer(payload);
+      if (res.ok) results.created++;
+      else { results.failed++; if (results.errors.length < 5) results.errors.push(res.error || "rejected"); }
+    } catch (e) {
+      results.failed++;
+      if (results.errors.length < 5) results.errors.push(e.message);
+    }
+    await sleep(700);   // the dashboard is not an API; stay gentle
+  }
+  return c.json({ ok: true, dryRun, ...results });
+});
+
 app.post("/api/feedus/backfill", async (c) => {
   const err = await requireAdmin(c); if (err) return err;
   if (!feedus.ENABLED) return c.json({ ok: false, error: "feedus_not_configured" }, 400);
