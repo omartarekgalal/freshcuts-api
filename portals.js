@@ -202,8 +202,15 @@ const ninja = {
   missing: "NINJA_BRANCH_ID / NINJA_JWT",
   async status() {
     const token = await ninjaToken();
+    // Their gateway 500s without the portal Origin/Referer pair.
     const res = await fetch(NINJA.base + NINJA.branchPath.replace("{id}", NINJA.branchId), {
-      headers: { "User-Agent": UA, Accept: "application/json", Authorization: `Bearer ${token}` },
+      headers: {
+        "User-Agent": UA,
+        Accept: "application/json",
+        Authorization: `Bearer ${token}`,
+        Origin: "https://restaurant-portal.ananinja.com",
+        Referer: "https://restaurant-portal.ananinja.com/",
+      },
     });
     if (res.status === 401 || res.status === 403) {
       NINJA._jwt = null;
