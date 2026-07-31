@@ -761,19 +761,26 @@ async function fetchOrderProducts(orderId) {
 // endpoints all 404 and the orders table has no customer control — so this
 // cannot retro-fix attribution. Its value is that a delivery customer who
 // later walks in or calls is already known, with their points and history.
-async function createCustomer({ firstName, lastName = "", phone, countryCode = "966" }) {
+// countryCode MUST carry the plus. The select's option values are "+966",
+// "+965"… and TabSense silently rejects a bare "966": the POST still answers
+// 302 to /customers exactly as it does on success, and nothing is created.
+// Never trust that redirect — verifyCreated() below is the real check.
+// first_name also has a 3-character minimum.
+async function createCustomer({ firstName, lastName = "", phone, countryCode = "+966" }) {
   if (!phone) throw new Error("createCustomer: phone required");
+  const cc = String(countryCode).startsWith("+") ? String(countryCode) : `+${countryCode}`;
   const s = await getSession();
   const page = await authGet("/customers");
   const html = await page.text();
   const token = matchToken(html);
   if (!token) throw new Error("createCustomer: CSRF token not found");
 
+  const first = String(firstName || "").trim().slice(0, 30);
   const body = new URLSearchParams({
     _token: token,
-    first_name: String(firstName || "").slice(0, 60) || "عميل",
-    last_name: String(lastName || "").slice(0, 60),
-    phone_country_code: String(countryCode),
+    first_name: first.length >= 3 ? first : "عميل توصيل",
+    last_name: String(lastName || "").trim().slice(0, 30),
+    phone_country_code: cc,
     phone: String(phone).replace(/\D/g, ""),
   });
   const res = await fetch(dash("/customers"), {

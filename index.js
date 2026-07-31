@@ -1845,6 +1845,20 @@ app.post("/api/customers/push-to-tabsense", async (c) => {
     }
     await sleep(700);   // the dashboard is not an API; stay gentle
   }
+
+  // TabSense answers 302 whether or not it accepted the record, so the only
+  // honest count is what the directory actually holds afterwards. Re-read it
+  // and report `verified` — that is the number to trust, not `created`.
+  if (!dryRun && rows.length) {
+    try {
+      const live = await ts.fetchCustomersList({ maxPages: 3 });
+      const have = new Set(live.map((x) => normPhone(x.phone)));
+      results.verified = rows.filter((r) => have.has(r.phone_norm)).length;
+      await syncCustomersCache();     // keep our cache in step
+    } catch (e) {
+      results.verifyError = e.message;
+    }
+  }
   return c.json({ ok: true, dryRun, ...results });
 });
 
