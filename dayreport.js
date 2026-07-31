@@ -851,7 +851,7 @@ const MIN_HIGHLIGHTS = 3;
 // Movement smaller than this is noise on a single restaurant day.
 const MOVE_THRESHOLD = 0.15;
 // Same 80% source-tagging target the staff module coaches against.
-const TARGET_SOURCE_RATE = 0.8;
+const TARGET_SOURCE_RATE = 0.9;
 // Below this many orders a cashier's rate is not a signal, it is a small sample.
 const MIN_ORDERS_TO_JUDGE = 5;
 // Discounting is only remarkable when it is both well above the norm AND

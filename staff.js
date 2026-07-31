@@ -49,11 +49,11 @@ const STAFF_SOURCES = [
 const ROLES = ["cashier", "manager"];
 
 // Targets the coaching engine measures against. Same numbers the owner quotes.
-const TARGET_SOURCE_RATE = 0.8;
-const TARGET_IDENTIFY_RATE = 0.6;
+const TARGET_SOURCE_RATE = 0.9;
+const TARGET_IDENTIFY_RATE = 0.9;
 const MAX_SKIP_RATE = 0.1;
 // A "streak day" is a business day the employee worked at >= 80% source tagging.
-const STREAK_THRESHOLD = 0.8;
+const STREAK_THRESHOLD = 0.9;
 const STREAK_LOOKBACK_DAYS = 120;
 
 const isoDay = (d) => (d instanceof Date ? d.toISOString().slice(0, 10) : d ? String(d).slice(0, 10) : null);

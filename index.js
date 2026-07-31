@@ -1737,7 +1737,8 @@ async function runInsightsSync() {
 // clock, and the same order lands in both within a couple of seconds (measured
 // max drift 6s over 71 orders, zero ambiguity), so time alone is a safe key.
 const RIYADH_OFFSET_MS = 3 * 3600_000;
-async function backfillFeedusFromSales(from, to, { windowMs = 120_000 } = {}) {
+async function backfillFeedusFromSales(from, to, { windowMs = 120_000, withDetail = true } = {}) {
+  let detailFetched = 0, detailFailed = 0;
   if (!feedus.ENABLED) return { ok: false, error: "feedus_not_configured", tagged: 0 };
   const pad = (d, days) => new Date(Date.parse(d) + days * 86400000).toISOString().slice(0, 10);
   const sales = await feedus.fetchSalesOrders(pad(from, -1), pad(to, 1), { perPage: 100, maxPages: 40 });
@@ -1764,21 +1765,38 @@ async function backfillFeedusFromSales(from, to, { windowMs = 120_000 } = {}) {
     }
     if (!best) { unmatched++; continue; }
     used.add(best.s.id);
+    // The sales list carries only a name. The per-order page carries the real
+    // mobile, which is the whole point — without it a delivery customer can
+    // never be recognised on a second visit.
+    let name = (best.s.customer || "").trim();
+    let phone = "";
+    if (withDetail && best.s.id) {
+      try {
+        const d = await feedus.fetchOrderDetail(best.s.id);
+        if (d.customerName) name = d.customerName;
+        if (d.customerMobile) phone = d.customerMobile;
+        detailFetched++;
+      } catch (e) {
+        detailFailed++;
+      }
+      await sleep(250);
+    }
     const r = await pool.query(
       `INSERT INTO order_sources (order_id, source, source_note, customer_kind, filled_by, filled_at,
                                   customer_name, customer_phone, phone_norm)
-       VALUES ($1,'delivery_app',$2,'unknown','feedus',NOW(),$3,'','')
+       VALUES ($1,'delivery_app',$2,'unknown','feedus',NOW(),$3,$4,$5)
        ON CONFLICT (order_id) DO UPDATE SET
          source='delivery_app', source_note=EXCLUDED.source_note,
          filled_by='feedus', filled_at=NOW(),
-         customer_name=CASE WHEN order_sources.customer_name = '' THEN EXCLUDED.customer_name
-                            ELSE order_sources.customer_name END
+         customer_name=COALESCE(NULLIF(EXCLUDED.customer_name,''), order_sources.customer_name),
+         customer_phone=COALESCE(NULLIF(EXCLUDED.customer_phone,''), order_sources.customer_phone),
+         phone_norm=COALESCE(NULLIF(EXCLUDED.phone_norm,''), order_sources.phone_norm)
        WHERE order_sources.filled_by IN ('auto','feedus')`,
-      [String(o.order_id), best.s.provider || "", (best.s.customer || "").slice(0, 120)]
+      [String(o.order_id), best.s.provider || "", name.slice(0, 120), phone, normPhone(phone)]
     );
     tagged += r.rowCount;
   }
-  return { ok: true, tagged, unmatched, salesRows: sales.length, externalOrders: ext.length };
+  return { ok: true, tagged, unmatched, salesRows: sales.length, externalOrders: ext.length, detailFetched, detailFailed };
 }
 
 app.post("/api/feedus/backfill", async (c) => {

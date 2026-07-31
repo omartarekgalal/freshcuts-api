@@ -240,10 +240,51 @@ async function fetchSalesOrders(startDate, endDate, { perPage = 100, maxPages = 
   return out;
 }
 
+// ─── Per-order detail: the ONLY place the customer's phone exists ────────────
+// The v2 React dashboard has no phone in any of its 72 column definitions —
+// clicking an order id opens a legacy server-rendered page instead, and that
+// page carries the name, the mobile and the free-text address. `id` here is the
+// internal numeric id from the sales JSON, NOT the aggregator's order_id.
+//
+// The numbers are real subscriber MSISDNs, not a privacy relay: a 45-order
+// sample held 40 distinct values spread across the genuine Saudi prefixes
+// (50/53/55 STC, 54/56 Mobily, 58/59 Zain) — a relay collapses onto one.
+// HungerStation masks both fields at source ('**********'); Ninja sends a name
+// with an empty mobile.
+function cellAfter(html, label) {
+  // <td>Customer Name </td><td><strong>: Walid Banah </strong></td>
+  const re = new RegExp(
+    `<td[^>]*>\\s*${label}\\s*(?:</td>)\\s*<td[^>]*>\\s*(?:<strong[^>]*>)?\\s*:?\\s*([^<]*)`,
+    "i"
+  );
+  const m = html.match(re);
+  return m ? m[1].replace(/&nbsp;/g, " ").trim() : "";
+}
+
+async function fetchOrderDetail(internalId) {
+  const res = await authGet(`/order/view?id=${encodeURIComponent(internalId)}`);
+  if (!res.ok) throw new Error(`fetchOrderDetail(${internalId}): HTTP ${res.status}`);
+  const html = await res.text();
+  const masked = (v) => !v || /^\*+$/.test(v.replace(/\s/g, ""));
+  const name = cellAfter(html, "Customer Name");
+  const mobile = cellAfter(html, "Customer Mobile");
+  const notesM = html.match(/Customer Order Notes\s*:?\s*<\/?[^>]*>?([^<]{0,300})/i);
+  return {
+    internalId: String(internalId),
+    provider: cellAfter(html, "Provider"),
+    orderId: cellAfter(html, "Order ID"),
+    orderDate: cellAfter(html, "Order Date"),
+    orderTime: cellAfter(html, "Order Time"),
+    customerName: masked(name) ? "" : name,
+    customerMobile: masked(mobile) ? "" : mobile.replace(/[^\d+]/g, ""),
+    notes: (notesM ? notesM[1] : "").trim(),
+  };
+}
+
 async function ping() {
   await getSession(true);
   const rows = await fetchPosLogs({ pages: 1 });
   return { ok: true, rows: rows.length, sample: rows[0] || null };
 }
 
-export { ENABLED, getSession, fetchPosLogs, fetchSalesOrders, parsePosLogsPage, ping, BASE, POS_ID };
+export { ENABLED, getSession, fetchPosLogs, fetchSalesOrders, fetchOrderDetail, parsePosLogsPage, ping, BASE, POS_ID };
