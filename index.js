@@ -2407,10 +2407,27 @@ app.get("/api/manager/orders", async (c) => {
   if (q.hasDiscount === "1") w.push(`o.discount_incl > 0`);
   if (q.hasCustomer === "1") w.push(`(o.customer_id IS NOT NULL OR s.phone_norm <> '')`);
   if (q.hasCustomer === "0") w.push(`(o.customer_id IS NULL AND (s.phone_norm IS NULL OR s.phone_norm = ''))`);
-  if (q.channel === "delivery") {
-    w.push(`(o.order_type ILIKE '%external%' OR EXISTS (SELECT 1 FROM jsonb_object_keys(o.payments) k WHERE lower(k) = ANY(${add(appList)})))`);
+  // Four channels, not three. Omar's own delivery ("توصيل") is a separate
+  // business from the aggregators — no 34% platform cut — so folding it into
+  // take-away would hide the one delivery channel that actually pays well.
+  //
+  // Reliability differs sharply between them and the UI says so: the apps are
+  // certain, because order_type/payment method is set by the integration. Hall
+  // vs take-away rests on the cashier picking the right option on a POS whose
+  // default is Take away, so those two can be under-counted in either
+  // direction. That caveat belongs next to the filter, not buried here.
+  const isApp = (aliasList) =>
+    `(o.order_type ILIKE '%external%' OR EXISTS (SELECT 1 FROM jsonb_object_keys(o.payments) k WHERE lower(k) = ANY(${aliasList})))`;
+  if (q.channel === "delivery" || q.channel === "apps") {
+    w.push(isApp(add(appList)));
   } else if (q.channel === "inhouse") {
-    w.push(`o.order_type NOT ILIKE '%external%' AND NOT EXISTS (SELECT 1 FROM jsonb_object_keys(o.payments) k WHERE lower(k) = ANY(${add(appList)}))`);
+    w.push(`NOT ${isApp(add(appList))}`);
+  } else if (q.channel === "own_delivery") {
+    w.push(`NOT ${isApp(add(appList))} AND o.order_option ILIKE '%deliver%'`);
+  } else if (q.channel === "hall") {
+    w.push(`NOT ${isApp(add(appList))} AND o.order_option ILIKE '%dine%'`);
+  } else if (q.channel === "takeaway") {
+    w.push(`NOT ${isApp(add(appList))} AND o.order_option ILIKE '%take%'`);
   }
   // Voids and refunds are excluded by DEFAULT — a refund booked as +20 revenue
   // is a wrong number, and "show me the orders" never means "inflate my sales".
