@@ -444,9 +444,13 @@ export function register(app, ctx) {
   /* ─── GET /api/staff/score?days=7 ───────────────────────────────────────── */
   app.get("/api/staff/score", async (c) => {
     const staff = await requireStaff(c); if (isResponse(staff)) return staff;
+    // Accept an explicit range too. Reporting a 7-day window under a `period`
+    // block the caller did not ask for is worse than an error — it looks right.
+    const isDate = (v) => /^\d{4}-\d{2}-\d{2}$/.test(String(v || ""));
+    const qFrom = c.req.query("from"), qTo = c.req.query("to");
     const days = clampInt(c.req.query("days"), 1, 365, 7);
-    const from = daysAgoISO(days - 1);
-    const to = todayISO();
+    const from = isDate(qFrom) ? qFrom : daysAgoISO(days - 1);
+    const to = isDate(qTo) ? qTo : todayISO();
     const apps = await deliveryApps();
     const mine = tsName(staff);
 
@@ -553,9 +557,13 @@ export function register(app, ctx) {
   // orders without an account yet (so a new POS user is visible immediately).
   app.get("/api/staff/leaderboard", async (c) => {
     const staff = await requireStaff(c); if (isResponse(staff)) return staff;
+    // Accept an explicit range too. Reporting a 7-day window under a `period`
+    // block the caller did not ask for is worse than an error — it looks right.
+    const isDate = (v) => /^\d{4}-\d{2}-\d{2}$/.test(String(v || ""));
+    const qFrom = c.req.query("from"), qTo = c.req.query("to");
     const days = clampInt(c.req.query("days"), 1, 365, 7);
-    const from = daysAgoISO(days - 1);
-    const to = todayISO();
+    const from = isDate(qFrom) ? qFrom : daysAgoISO(days - 1);
+    const to = isDate(qTo) ? qTo : todayISO();
     const apps = await deliveryApps();
 
     const accounts = (await pool.query(

@@ -2245,7 +2245,9 @@ app.post("/api/device/command", async (c) => {
   return c.json({ ok: true, id });
 });
 app.get("/api/device/commands/:deviceId", async (c) => {
-  const err = await requireAdmin(c); if (err) return err;
+  // The device itself may read its own command history — it already
+  // authenticates for /health and /heartbeat with the same token.
+  const err = await requireDevice(c); if (err) return err;
   const rows = (await pool.query(
     "SELECT * FROM device_commands WHERE device_id=$1 ORDER BY created_at DESC LIMIT 30",
     [c.req.param("deviceId")]
@@ -2282,7 +2284,10 @@ app.get("/api/manager/orders", async (c) => {
   } else if (q.channel === "inhouse") {
     w.push(`o.order_type NOT ILIKE '%external%' AND NOT EXISTS (SELECT 1 FROM jsonb_object_keys(o.payments) k WHERE lower(k) = ANY(${add(appList)}))`);
   }
-  if (q.excludeVoid === "1") w.push(`o.order_type NOT ILIKE '%void%' AND o.order_type NOT ILIKE '%refund%'`);
+  // Voids and refunds are excluded by DEFAULT — a refund booked as +20 revenue
+  // is a wrong number, and "show me the orders" never means "inflate my sales".
+  // Pass includeVoid=1 to see them (e.g. when investigating a void spike).
+  if (q.includeVoid !== "1") w.push(`o.order_type NOT ILIKE '%void%' AND o.order_type NOT ILIKE '%refund%'`);
   if (q.search) {
     const s = add("%" + q.search + "%"); const ph = add(normPhone(q.search) || " ");
     w.push(`(o.receipt ILIKE ${s} OR o.order_id ILIKE ${s} OR tc.name ILIKE ${s}
@@ -2474,7 +2479,9 @@ app.get("/api/insights/summary", async (c) => {
   const orders = (await pool.query(
     `SELECT order_id, calendar_day, order_option, order_type, total, discount_incl AS discount,
             gross_incl, payments, customer_id
-       FROM ts_orders WHERE calendar_day BETWEEN $1::date AND $2::date`, [from, to]
+       FROM ts_orders
+      WHERE calendar_day BETWEEN $1::date AND $2::date
+        AND order_type NOT ILIKE '%void%' AND order_type NOT ILIKE '%refund%'`, [from, to]
   )).rows;
   const newCust = (await pool.query(
     `SELECT customer_id, registered_at::date AS reg_day FROM ts_customers
