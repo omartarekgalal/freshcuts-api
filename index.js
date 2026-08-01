@@ -1553,7 +1553,7 @@ async function syncFeedusSources({ pages = 3, full = false } = {}) {
     pages,
     isKnown: known ? (id) => known.has(String(id)) : null,
   });
-  let tagged = 0;
+  let tagged = 0, named = 0, detailFailed = 0;
   for (const r of rows) {
     if (!r.tabsenseOrderId || !r.provider) continue;
     // Only tag orders we actually hold — avoids orphan rows for other branches.
@@ -1568,8 +1568,40 @@ async function syncFeedusSources({ pages = 3, full = false } = {}) {
       [String(r.tabsenseOrderId), r.provider]
     );
     tagged += res.rowCount;
+
+    // The name and mobile too, straight away. The POS log's `feedusOrderId` is
+    // the same id the order-detail page takes (verified against order 2232:
+    // pos-log feedusOrderId 104026521 === sales-API id 104026521, and both
+    // return Mohammed WAHEED / 595459952 — while the row's other id, feedusId
+    // 34642104, answers HTTP 500). Reading it here means a delivery customer
+    // is known within a minute of the order instead of waiting for the sales
+    // report, which does not list the current day at all.
+    if (!r.feedusOrderId) continue;
+    const needs = await pool.query(
+      `SELECT 1 FROM order_sources WHERE order_id = $1 AND COALESCE(phone_norm,'') = ''`,
+      [String(r.tabsenseOrderId)]
+    );
+    if (!needs.rowCount) continue;
+    try {
+      const d = await feedus.fetchOrderDetail(r.feedusOrderId);
+      if (d.customerName || d.customerMobile) {
+        const upd = await pool.query(
+          `UPDATE order_sources SET
+             customer_name = COALESCE(NULLIF($2,''), customer_name),
+             customer_phone = COALESCE(NULLIF($3,''), customer_phone),
+             phone_norm = COALESCE(NULLIF($4,''), phone_norm)
+           WHERE order_id = $1 AND filled_by IN ('auto','feedus')`,
+          [String(r.tabsenseOrderId), String(d.customerName || "").slice(0, 120),
+           d.customerMobile || "", normPhone(d.customerMobile)]
+        );
+        named += upd.rowCount;
+      }
+    } catch (e) {
+      detailFailed++;
+    }
+    await sleep(250);
   }
-  return { ok: true, tagged, scanned: rows.length };
+  return { ok: true, tagged, named, detailFailed, scanned: rows.length };
 }
 
 // Pull orders (newest-first down to sinceDate) into ts_orders. Recent
@@ -1726,6 +1758,7 @@ async function runInsightsSync() {
       const b = await backfillFeedusFromSales(daysAgoISO(2), todayISO());
       insightsState.lastFeedusSyncAt = new Date().toISOString();
       insightsState.lastFeedusTagged = (r.tagged || 0) + (b.tagged || 0);
+      insightsState.lastFeedusNamed = (r.named || 0) + (b.detailFetched || 0);
       insightsState.lastFeedusError = null;
     } catch (e) {
       insightsState.lastFeedusError = e.message;
