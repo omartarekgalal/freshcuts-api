@@ -181,7 +181,7 @@ const keeta = {
    explicitly rather than pretending the branch is fine.                        */
 const NINJA = {
   base: process.env.NINJA_API_BASE || "https://food-vendor-portal.ananinja.com",
-  authBase: process.env.NINJA_AUTH_BASE || "https://public.ananinja.com",
+  adminBase: process.env.NINJA_ADMIN_BASE || "https://admin.ananinja.com",
   branchId: process.env.NINJA_BRANCH_ID || "",
   jwt: process.env.NINJA_JWT || "",
   refresh: process.env.NINJA_REFRESH_TOKEN || "",
@@ -200,21 +200,29 @@ async function ninjaToken() {
   const current = NINJA._jwt || NINJA.jwt;
   if (current && !jwtExpired(current)) return current;
   if (!NINJA.refresh) throw new Error("انتهت صلاحية التوكن — لازم تسجيل دخول جديد");
-  // Endpoint name is not in the capture; try the usual shapes once each.
-  for (const path of ["/users/refresh", "/users/token/refresh", "/users/refresh-token"]) {
-    try {
-      const r = await fetch(NINJA.authBase + path, {
-        method: "POST",
-        headers: { "User-Agent": UA, "Content-Type": "application/json", Accept: "application/json" },
-        body: JSON.stringify({ refreshToken: NINJA.refresh }),
-      });
-      if (!r.ok) continue;
-      const j = await r.json();
-      const tok = j.jwtToken || j.token || j.accessToken;
-      if (tok) { NINJA._jwt = tok; return tok; }
-    } catch { /* try the next shape */ }
+  // The three POST shapes guessed here never worked, so Ninja's tile has been
+  // reporting a dead branch whenever the JWT lapsed. The real call, captured
+  // from the portal: a GET to admin.ananinja.com — different host AND different
+  // verb — carrying the REFRESH token in the Authorization header. The refresh
+  // token rotates on each call but the old one stays valid to its own 7-day
+  // expiry, so there is nothing to persist.
+  const r = await rawGet(`${NINJA.adminBase}/users/users/refresh`, {
+    "User-Agent": UA,
+    "Content-Type": "application/json",
+    Accept: "application/json",
+    Authorization: `Bearer ${NINJA.refresh}`,
+  });
+  if (r.status < 200 || r.status >= 300) {
+    throw new Error(`انتهت صلاحية التوكن — سجّل دخول وحدّث NINJA_JWT (HTTP ${r.status})`);
   }
-  throw new Error("انتهت صلاحية التوكن — سجّل دخول وحدّث NINJA_JWT");
+  let tok = null;
+  try {
+    const j = JSON.parse(r.body);
+    tok = j?.data?.attributes?.jwtToken || j.jwtToken || j.token || j.accessToken;
+  } catch { /* fall through to the error below */ }
+  if (!tok) throw new Error("انتهت صلاحية التوكن — رد التحديث مافيهوش توكن");
+  NINJA._jwt = tok;
+  return tok;
 }
 
 const ninja = {
