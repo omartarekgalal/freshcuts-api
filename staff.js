@@ -552,6 +552,68 @@ export function register(app, ctx) {
     });
   });
 
+  /* ─── GET /api/staff/missing-orders?from&to&staff= ───────────────────────
+     The specific tickets behind a low score. A percentage tells an employee
+     they are short; the receipt number, the time and the amount tell them
+     exactly which orders to think about — that is what makes it actionable
+     rather than an accusation. Same scorable filter as the score itself, so
+     delivery-app orders can never appear here.                              */
+  app.get("/api/staff/missing-orders", async (c) => {
+    const staff = await requireStaff(c); if (isResponse(staff)) return staff;
+    const isDate = (v) => /^\d{4}-\d{2}-\d{2}$/.test(String(v || ""));
+    const qFrom = c.req.query("from"), qTo = c.req.query("to");
+    const days = clampInt(c.req.query("days"), 1, 365, 1);
+    const from = isDate(qFrom) ? qFrom : daysAgoISO(days - 1);
+    const to = isDate(qTo) ? qTo : todayISO();
+    const apps = await deliveryApps();
+    // A cashier sees only their own; a manager sees everyone, or one person.
+    const who = staff.role === "manager" ? (c.req.query("staff") || null) : staff.tabsense_name;
+    const limit = clampInt(c.req.query("limit"), 1, 500, 200);
+
+    const rows = (await pool.query(
+      `SELECT COALESCE(NULLIF(o.staff_name,''),'(غير معروف)') AS staff_name,
+              o.order_id, o.receipt, o.order_date, o.total, o.calendar_day,
+              (o.customer_id IS NOT NULL OR COALESCE(s.phone_norm,'') <> '') AS has_customer,
+              (s.order_id IS NOT NULL AND s.source <> 'skipped') AS has_source
+         FROM ts_orders o
+         LEFT JOIN order_sources s ON s.order_id = o.order_id
+        WHERE o.calendar_day BETWEEN $1::date AND $2::date
+          AND ${scorableSql("$3::text[]")}
+          AND ($4::text IS NULL OR o.staff_name = $4)
+          AND NOT (
+            (o.customer_id IS NOT NULL OR COALESCE(s.phone_norm,'') <> '')
+            AND (s.order_id IS NOT NULL AND s.source <> 'skipped'))
+        ORDER BY o.order_date DESC
+        LIMIT $5`,
+      [from, to, apps, who, limit]
+    )).rows;
+
+    const byStaff = new Map();
+    for (const r of rows) {
+      const key = r.staff_name;
+      if (!byStaff.has(key)) byStaff.set(key, { staff: key, missing: [] });
+      const missing = [];
+      if (!r.has_customer) missing.push("customer");
+      if (!r.has_source) missing.push("source");
+      byStaff.get(key).missing.push({
+        orderId: r.order_id,
+        receipt: r.receipt || "",
+        day: r.calendar_day instanceof Date ? r.calendar_day.toISOString().slice(0, 10) : r.calendar_day,
+        // Riyadh wall clock — the employee remembers the shift, not UTC.
+        time: new Date(new Date(r.order_date).getTime() + 3 * 3600_000).toISOString().slice(11, 16),
+        total: Number(r.total) || 0,
+        missing,
+        label: missing.length === 2 ? "بدون عميل وبدون مصدر"
+          : missing[0] === "customer" ? "بدون بيانات عميل" : "بدون تسجيل مصدر",
+      });
+    }
+    const out = [...byStaff.values()].sort((a, b) => b.missing.length - a.missing.length);
+    return c.json({
+      ok: true, from, to, scope: staff.role === "manager" ? "all" : "own",
+      totalMissing: rows.length, staff: out,
+    });
+  });
+
   /* ─── GET /api/staff/leaderboard?days=7 ─────────────────────────────────── */
   // Every ACTIVE account that rang orders in the window, plus anyone who rang
   // orders without an account yet (so a new POS user is visible immediately).
