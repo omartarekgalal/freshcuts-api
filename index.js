@@ -1585,12 +1585,17 @@ async function syncFeedusSources({ pages = 3, full = false } = {}) {
     try {
       const d = await feedus.fetchOrderDetail(r.feedusOrderId);
       if (d.customerName || d.customerMobile) {
+        // Deliberately NOT guarded on filled_by. That guard exists to protect
+        // the cashier's source choice from being overwritten — but the cashier
+        // never types a delivery customer's name or number and has no way to,
+        // so applying it here only left those fields permanently empty.
+        // Filling a blank field destroys nothing.
         const upd = await pool.query(
           `UPDATE order_sources SET
              customer_name = COALESCE(NULLIF($2,''), customer_name),
              customer_phone = COALESCE(NULLIF($3,''), customer_phone),
              phone_norm = COALESCE(NULLIF($4,''), phone_norm)
-           WHERE order_id = $1 AND filled_by IN ('auto','feedus')`,
+           WHERE order_id = $1 AND COALESCE(phone_norm,'') = ''`,
           [String(r.tabsenseOrderId), String(d.customerName || "").slice(0, 120),
            d.customerMobile || "", normPhone(d.customerMobile)]
         );
@@ -1805,7 +1810,7 @@ async function runInsightsSync() {
 // max drift 6s over 71 orders, zero ambiguity), so time alone is a safe key.
 const RIYADH_OFFSET_MS = 3 * 3600_000;
 async function backfillFeedusFromSales(from, to, { windowMs = 120_000, withDetail = true } = {}) {
-  let detailFetched = 0, detailFailed = 0;
+  let detailFetched = 0, detailFailed = 0, contactsFilled = 0;
   if (!feedus.ENABLED) return { ok: false, error: "feedus_not_configured", tagged: 0 };
   const pad = (d, days) => new Date(Date.parse(d) + days * 86400000).toISOString().slice(0, 10);
   const sales = await feedus.fetchSalesOrders(pad(from, -1), pad(to, 1), { perPage: 100, maxPages: 40 });
@@ -1814,7 +1819,11 @@ async function backfillFeedusFromSales(from, to, { windowMs = 120_000, withDetai
        LEFT JOIN order_sources s ON s.order_id = o.order_id
       WHERE o.calendar_day BETWEEN $1::date AND $2::date
         AND o.order_type ILIKE '%external%'
-        AND (s.order_id IS NULL OR s.filled_by IN ('auto','feedus'))
+        -- Orders the cashier tagged by hand are candidates too. Their source is
+        -- protected below, but their contact fields are empty and only FeedUs
+        -- can fill them, so excluding them here left 25 Keeta orders nameless.
+        AND (s.order_id IS NULL OR s.filled_by IN ('auto','feedus')
+             OR COALESCE(s.phone_norm,'') = '')
       ORDER BY o.order_date`, [from, to]
   )).rows;
 
@@ -1862,8 +1871,23 @@ async function backfillFeedusFromSales(from, to, { windowMs = 120_000, withDetai
       [String(o.order_id), best.s.provider || "", name.slice(0, 120), phone, normPhone(phone)]
     );
     tagged += r.rowCount;
+
+    // The statement above leaves a cashier-tagged row untouched, which is right
+    // for the source and wrong for the contact details — the cashier cannot
+    // enter those. Fill them separately, only where they are still blank.
+    if (phone || name) {
+      const fill = await pool.query(
+        `UPDATE order_sources SET
+           customer_name = COALESCE(NULLIF($2,''), customer_name),
+           customer_phone = COALESCE(NULLIF($3,''), customer_phone),
+           phone_norm = COALESCE(NULLIF($4,''), phone_norm)
+         WHERE order_id = $1 AND COALESCE(phone_norm,'') = ''`,
+        [String(o.order_id), name.slice(0, 120), phone, normPhone(phone)]
+      );
+      contactsFilled += fill.rowCount;
+    }
   }
-  return { ok: true, tagged, unmatched, salesRows: sales.length, externalOrders: ext.length, detailFetched, detailFailed };
+  return { ok: true, tagged, contactsFilled, unmatched, salesRows: sales.length, externalOrders: ext.length, detailFetched, detailFailed };
 }
 
 // Shared by the manual endpoint and the worker: the delivery customers we know
