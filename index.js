@@ -9,6 +9,7 @@ import * as portals from "./portals.js";
 import * as analytics from "./analytics.js";
 import * as ai from "./ai.js";
 import * as staff from "./staff.js";
+import * as customers from "./customers.js";
 import * as chat from "./chat.js";
 import * as dayreport from "./dayreport.js";
 import * as ads from "./ads.js";
@@ -2760,6 +2761,7 @@ const moduleCtx = {
 analytics.register(app, moduleCtx);
 ai.register(app, moduleCtx);
 staff.register(app, moduleCtx);
+customers.register(app, moduleCtx);
 chat.register(app, moduleCtx);
 dayreport.register(app, moduleCtx);
 ads.register(app, moduleCtx);

@@ -614,6 +614,103 @@ export function register(app, ctx) {
     });
   });
 
+  /* ─── GET /api/staff/no-customer?from&to ─────────────────────────────────
+     Orders with no customer attached, and nothing else. Omar asked for this
+     as its own report because it is the number he wants to act on first —
+     mixed in with the source figures it reads as one more column instead of
+     the priority. Source is deliberately absent here; it has its own report.
+     Same scorable filter as the score, so delivery-app orders never appear:
+     nobody stands at the till for those, so they are not the cashier's miss. */
+  app.get("/api/staff/no-customer", async (c) => {
+    const staff = await requireStaff(c); if (isResponse(staff)) return staff;
+    const isDate = (v) => /^\d{4}-\d{2}-\d{2}$/.test(String(v || ""));
+    const qFrom = c.req.query("from"), qTo = c.req.query("to");
+    const days = clampInt(c.req.query("days"), 1, 365, 1);
+    const from = isDate(qFrom) ? qFrom : daysAgoISO(days - 1);
+    const to = isDate(qTo) ? qTo : todayISO();
+    const apps = await deliveryApps();
+    const who = staff.role === "manager" ? (c.req.query("staff") || null) : staff.tabsense_name;
+    const limit = clampInt(c.req.query("limit"), 1, 500, 200);
+
+    const hasCustomer = `(o.customer_id IS NOT NULL OR COALESCE(s.phone_norm,'') <> '')`;
+
+    // One pass for the rates so the denominator is provably the same set of
+    // orders the ticket list is drawn from.
+    const totals = (await pool.query(
+      `SELECT COALESCE(NULLIF(o.staff_name,''),'(غير معروف)') AS staff_name,
+              count(*)::int AS base,
+              count(*) FILTER (WHERE ${hasCustomer})::int AS identified,
+              COALESCE(sum(o.total) FILTER (WHERE NOT ${hasCustomer}),0)::numeric AS missed_value
+         FROM ts_orders o
+         LEFT JOIN order_sources s ON s.order_id = o.order_id
+        WHERE o.calendar_day BETWEEN $1::date AND $2::date
+          AND ${scorableSql("$3::text[]")}
+          AND ($4::text IS NULL OR o.staff_name = $4)
+        GROUP BY 1`,
+      [from, to, apps, who]
+    )).rows;
+
+    const rows = (await pool.query(
+      `SELECT COALESCE(NULLIF(o.staff_name,''),'(غير معروف)') AS staff_name,
+              o.order_id, o.receipt, o.order_date, o.total, o.calendar_day
+         FROM ts_orders o
+         LEFT JOIN order_sources s ON s.order_id = o.order_id
+        WHERE o.calendar_day BETWEEN $1::date AND $2::date
+          AND ${scorableSql("$3::text[]")}
+          AND ($4::text IS NULL OR o.staff_name = $4)
+          AND NOT ${hasCustomer}
+        ORDER BY o.order_date DESC
+        LIMIT $5`,
+      [from, to, apps, who, limit]
+    )).rows;
+
+    const byStaff = new Map();
+    for (const t of totals) {
+      const base = Number(t.base) || 0;
+      byStaff.set(t.staff_name, {
+        staff: t.staff_name,
+        orders: base,
+        identified: Number(t.identified) || 0,
+        missing: base - (Number(t.identified) || 0),
+        // A rate with no orders behind it is not zero, it is unknown.
+        rate: base > 0 ? (Number(t.identified) || 0) / base : null,
+        missedValue: Number(t.missed_value) || 0,
+        tickets: [],
+      });
+    }
+    for (const r of rows) {
+      const e = byStaff.get(r.staff_name);
+      if (!e) continue;   // outside the scored set; the totals query is the truth
+      e.tickets.push({
+        orderId: r.order_id,
+        receipt: r.receipt || "",
+        day: r.calendar_day instanceof Date ? r.calendar_day.toISOString().slice(0, 10) : r.calendar_day,
+        // Riyadh wall clock — the employee remembers the shift, not UTC.
+        time: new Date(new Date(r.order_date).getTime() + 3 * 3600_000).toISOString().slice(11, 16),
+        total: Number(r.total) || 0,
+      });
+    }
+    // Worst first: most misses, then lowest rate.
+    const out = [...byStaff.values()].sort(
+      (a, b) => b.missing - a.missing || (a.rate ?? 1) - (b.rate ?? 1));
+
+    const base = out.reduce((a, r) => a + r.orders, 0);
+    const identified = out.reduce((a, r) => a + r.identified, 0);
+    return c.json({
+      ok: true, from, to, target: TARGET_IDENTIFY_RATE,
+      scope: staff.role === "manager" ? "all" : "own",
+      totals: {
+        orders: base, identified, missing: base - identified,
+        rate: base > 0 ? identified / base : null,
+        missedValue: out.reduce((a, r) => a + r.missedValue, 0),
+      },
+      // The ticket list is capped; say so rather than let a short list read as
+      // "that is all of them".
+      truncated: rows.length >= limit,
+      staff: out,
+    });
+  });
+
   /* ─── GET /api/staff/leaderboard?days=7 ─────────────────────────────────── */
   // Every ACTIVE account that rang orders in the window, plus anyone who rang
   // orders without an account yet (so a new POS user is visible immediately).
