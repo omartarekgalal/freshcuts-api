@@ -63,17 +63,75 @@ const channelSql = (appsParam) => `
 // orders TabSense attached no customer to.
 const IDENT_SQL = `COALESCE(NULLIF(s.phone_norm, ''), NULLIF(tc.phone_norm, ''))`;
 
-// First time we ever saw each phone — across BOTH identity sources. For
-// ts_customers that is the registration/first-order date; for cashier-typed
-// phones the best proxy we have is when the cashier first typed it.
-const FIRSTS_CTE = `
+/* ═══════════════════════════════════════════════════════════════════════════
+   THE NEW-CUSTOMER RULE — ONE DEFINITION FOR THE WHOLE API.
+
+   IN PLAIN TERMS: a customer is NEW in a window when they ORDERED INSIDE THE
+   WINDOW **and** had never ordered before it. Both halves are required.
+   Everyone else who ordered in the window is a RETURNING customer, and someone
+   who did not order in the window is neither — they are not on the report at
+   all. Registering, being synced, or being typed into the cashier station is
+   not "new": only an order makes a customer appear.
+
+   Dropping the first half is what made /api/analytics/live report 93 new
+   customers on 2026-07-31, a day on which only 13 of them ordered — it counted
+   every identity first seen that day whether or not they bought anything.
+
+   FIRST-SEEN COMES FROM ORDER DAYS, NEVER FROM A SYNC TIMESTAMP.
+   `order_sources.filled_at` is when the cashier station (or a backfill) WROTE
+   the row, not when the order happened: 153 of 162 rows are stamped after
+   their own order's business day, 9.4 days later on average and up to 37. Any
+   rule built on it silently rewrites new-customer history for past days every
+   time a backfill runs. So first-seen is the earliest `ts_orders.calendar_day`
+   of the orders behind the identity — via the order each order_sources row
+   belongs to, and via the customer record the POS attached to the order — with
+   the customer record's own first_order_at (falling back to registered_at only
+   when there is no first order) folded onto the business day as a third
+   source, so a customer whose real first order predates our order cache is not
+   mistaken for new. Being a min(), that third source can only pull first_day
+   EARLIER; it can never invent a first day after an order we actually hold.
+
+   Voids and refunds do not count as a first order — a void never happened.
+
+   Yields `firsts(pn, first_day)`. Callers join it as
+   `LEFT JOIN firsts f ON f.pn = <the identity expression>` and use exactly
+   these two predicates:
+     new customer in [from,to]  →  f.first_day BETWEEN <from> AND <to>
+     returning on an order      →  f.first_day < <that order's calendar_day>
+   A NULL first_day (no order day known at all) is never counted as new.
+
+   Aliases inside are deliberately fs/fo/fc so the fragment can be pasted into
+   any query without capturing an outer `o` / `s` / `tc`.
+═══════════════════════════════════════════════════════════════════════════ */
+export const FIRST_ORDER_DAY_CTE = `
   firsts AS (
-    SELECT pn, min(first_at) AS first_at FROM (
-      SELECT phone_norm AS pn, min(filled_at) AS first_at
-        FROM order_sources WHERE phone_norm <> '' GROUP BY 1
+    SELECT pn, min(first_day) AS first_day FROM (
+      -- (a) the phone the cashier station / FeedUs connector typed on the order
+      SELECT fs.phone_norm AS pn, min(fo.calendar_day) AS first_day
+        FROM order_sources fs
+        JOIN ts_orders fo ON fo.order_id = fs.order_id
+       WHERE fs.phone_norm <> ''
+         AND (fo.order_type IS NULL
+              OR (fo.order_type NOT ILIKE '%void%' AND fo.order_type NOT ILIKE '%refund%'))
+       GROUP BY 1
       UNION ALL
-      SELECT phone_norm AS pn, min(COALESCE(first_order_at, registered_at)) AS first_at
-        FROM ts_customers WHERE phone_norm IS NOT NULL AND phone_norm <> '' GROUP BY 1
+      -- (b) the customer record the POS attached to the order
+      SELECT fc.phone_norm AS pn, min(fo.calendar_day) AS first_day
+        FROM ts_orders fo
+        JOIN ts_customers fc ON fc.customer_id = fo.customer_id
+       WHERE COALESCE(fc.phone_norm, '') <> ''
+         AND (fo.order_type IS NULL
+              OR (fo.order_type NOT ILIKE '%void%' AND fo.order_type NOT ILIKE '%refund%'))
+       GROUP BY 1
+      UNION ALL
+      -- (c) history older than our order cache, straight off the customer record
+      SELECT fc.phone_norm AS pn,
+             min(((COALESCE(fc.first_order_at, fc.registered_at) AT TIME ZONE '${TZ}')
+                  - interval '${BIZ_DAY_START_HOUR} hours')::date) AS first_day
+        FROM ts_customers fc
+       WHERE COALESCE(fc.phone_norm, '') <> ''
+         AND COALESCE(fc.first_order_at, fc.registered_at) IS NOT NULL
+       GROUP BY 1
     ) u GROUP BY 1
   )`;
 
@@ -224,19 +282,25 @@ export function register(app, ctx) {
     const get = (iso) => byDay.get(iso) || zero;
     const t = get(day);
 
-    // New customers whose very first order landed on today's business day.
+    // New customers — THE shared rule (see FIRST_ORDER_DAY_CTE): they have to
+    // have ORDERED in today's window, not merely been first seen today. The
+    // window here is the single business day `day`, cut at the same elapsed
+    // offset as every other number on this screen.
     const nc = (await pool.query(
-      `SELECT count(*)::int AS n FROM (
-         SELECT pn, min(first_at) AS first_at FROM (
-           SELECT phone_norm AS pn, min(filled_at) AS first_at
-             FROM order_sources WHERE phone_norm <> '' GROUP BY 1
-           UNION ALL
-           SELECT phone_norm AS pn, min(COALESCE(first_order_at, registered_at)) AS first_at
-             FROM ts_customers WHERE phone_norm IS NOT NULL AND phone_norm <> '' GROUP BY 1
-         ) u GROUP BY 1
-       ) f
-       WHERE ((f.first_at AT TIME ZONE '${TZ}') - interval '${BIZ_DAY_START_HOUR} hours')::date = $1::date`,
-      [day]
+      `WITH scoped AS (
+         SELECT ${IDENT_SQL} AS ident, ${BIZ_ELAPSED_H} AS eh
+           FROM ts_orders o
+           LEFT JOIN order_sources s ON s.order_id = o.order_id
+           LEFT JOIN ts_customers tc ON tc.customer_id = o.customer_id
+          WHERE o.calendar_day = $1::date AND ${SALES_ONLY}
+       ),
+       ${FIRST_ORDER_DAY_CTE}
+       SELECT count(DISTINCT sc.ident)::int AS known,
+              count(DISTINCT sc.ident) FILTER (
+                WHERE f.first_day BETWEEN $1::date AND $1::date)::int AS n
+         FROM scoped sc LEFT JOIN firsts f ON f.pn = sc.ident
+        WHERE sc.ident IS NOT NULL AND sc.eh <= $2::numeric`,
+      [day, elapsedH]
     )).rows[0];
 
     const cmp = (key, label, base) => ({
@@ -358,6 +422,9 @@ export function register(app, ctx) {
         delivery: { orders: num(t.delivery_orders), revenue: money(t.delivery_revenue) },
         inhouse: { orders: num(t.inhouse_orders), revenue: money(t.inhouse_revenue) },
         newCustomers: num(nc.n),
+        // The denominator newCustomers came out of: identifiable humans who
+        // ordered inside the same window. Ships so the ratio is auditable.
+        knownCustomers: num(nc.known),
         hoursElapsed: Math.round(elapsedH * 100) / 100,
       },
       compare,
@@ -381,7 +448,7 @@ export function register(app, ctx) {
            LEFT JOIN ts_customers tc ON tc.customer_id = o.customer_id
           WHERE o.calendar_day BETWEEN $1::date AND $2::date AND ${SALES_ONLY}
        ),
-       ${FIRSTS_CTE}
+       ${FIRST_ORDER_DAY_CTE}
        SELECT count(*)::int AS orders,
               COALESCE(sum(sc.total), 0) AS revenue,
               COALESCE(sum(sc.discount_incl), 0) AS discount,
@@ -391,14 +458,14 @@ export function register(app, ctx) {
               count(*) FILTER (WHERE NOT sc.is_delivery)::int AS inhouse_orders,
               COALESCE(sum(sc.total) FILTER (WHERE NOT sc.is_delivery), 0) AS inhouse_revenue,
               count(DISTINCT sc.ident)::int AS unique_customers,
+              -- THE shared new-customer rule: ordered in this window (scoped
+              -- already guarantees that) AND never ordered before it.
               count(DISTINCT sc.ident) FILTER (
-                WHERE ((f.first_at AT TIME ZONE '${TZ}') - interval '${BIZ_DAY_START_HOUR} hours')::date
-                      BETWEEN $1::date AND $2::date)::int AS new_customers,
+                WHERE f.first_day BETWEEN $1::date AND $2::date)::int AS new_customers,
               count(*) FILTER (WHERE sc.ident IS NOT NULL)::int AS identified_orders,
               count(*) FILTER (
                 WHERE sc.ident IS NOT NULL
-                  AND ((f.first_at AT TIME ZONE '${TZ}') - interval '${BIZ_DAY_START_HOUR} hours')::date
-                      < sc.calendar_day)::int AS returning_orders
+                  AND f.first_day < sc.calendar_day)::int AS returning_orders
          FROM scoped sc LEFT JOIN firsts f ON f.pn = sc.ident`,
       [from, to, apps]
     )).rows[0];
@@ -782,6 +849,7 @@ export function register(app, ctx) {
     // rejects a statement that binds a parameter it never references, so each
     // query has to number its own params from $1.
     const knownCte = (appsParam) => `
+      ${FIRST_ORDER_DAY_CTE},
       known AS (
         SELECT ${IDENT_SQL} AS ident,
                o.order_id, o.order_date, o.calendar_day, o.total,
@@ -794,66 +862,70 @@ export function register(app, ctx) {
          WHERE ${SALES_ONLY} AND ${IDENT_SQL} IS NOT NULL
       ),
       lifetime AS (
-        -- NOTE: first_at here is the first order WE HOLD for that phone, which
-        -- is deliberately not the same as the FIRSTS_CTE definition used by
-        -- /compare (registration date, or when a cashier first typed the
-        -- phone). Cohorts and recency must hang off a real order date, so the
-        -- two can differ by a customer or two. Do not "unify" them blindly.
-        SELECT ident, min(order_date) AS first_at, max(order_date) AS last_at,
-               count(*)::int AS freq, sum(total) AS ltv
-          FROM known GROUP BY 1
+        -- first_day is THE shared first-order day (FIRST_ORDER_DAY_CTE), so
+        -- "new" means the same thing here as on /live, /compare and /api/day.
+        -- It is a BUSINESS day, which is also why cohorts and recency below
+        -- bucket on calendar_day and never on a timestamp cast.
+        SELECT k.ident, f.first_day,
+               max(k.calendar_day) AS last_day,
+               count(*)::int AS freq, sum(k.total) AS ltv
+          FROM known k LEFT JOIN firsts f ON f.pn = k.ident
+         GROUP BY 1, 2
       )`;
 
     // ── new vs returning, over the window ──
     const nvr = (await pool.query(
       `WITH ${knownCte("$3::text[]")}
        , win AS (
-         SELECT k.*, l.first_at
+         SELECT k.*, l.first_day
            FROM known k JOIN lifetime l ON l.ident = k.ident
           WHERE k.calendar_day BETWEEN $1::date AND $2::date
        )
+       -- Order-level split: an order is a "new" order when it was placed on the
+       -- customer's own first order day, returning when they had ordered on an
+       -- earlier day. >= rather than = only so the two always add up to
+       -- identified_orders even if first_day were ever unknown.
        SELECT (SELECT count(*)::int FROM ts_orders o
                 WHERE o.calendar_day BETWEEN $1::date AND $2::date AND ${SALES_ONLY}) AS orders_total,
               count(*)::int AS identified_orders,
-              count(*) FILTER (
-                WHERE ((first_at AT TIME ZONE '${TZ}') - interval '${BIZ_DAY_START_HOUR} hours')::date
-                      >= calendar_day)::int AS new_orders,
-              count(*) FILTER (
-                WHERE ((first_at AT TIME ZONE '${TZ}') - interval '${BIZ_DAY_START_HOUR} hours')::date
-                      < calendar_day)::int AS returning_orders,
+              count(*) FILTER (WHERE first_day >= calendar_day
+                                  OR first_day IS NULL)::int AS new_orders,
+              count(*) FILTER (WHERE first_day < calendar_day)::int AS returning_orders,
               count(DISTINCT ident)::int AS customers,
+              -- THE shared new-customer rule (win already restricts to people
+              -- who ordered inside the window).
               count(DISTINCT ident) FILTER (
-                WHERE ((first_at AT TIME ZONE '${TZ}') - interval '${BIZ_DAY_START_HOUR} hours')::date
-                      BETWEEN $1::date AND $2::date)::int AS new_customers,
-              COALESCE(sum(total) FILTER (
-                WHERE ((first_at AT TIME ZONE '${TZ}') - interval '${BIZ_DAY_START_HOUR} hours')::date
-                      >= calendar_day), 0) AS new_revenue,
-              COALESCE(sum(total) FILTER (
-                WHERE ((first_at AT TIME ZONE '${TZ}') - interval '${BIZ_DAY_START_HOUR} hours')::date
-                      < calendar_day), 0) AS returning_revenue
+                WHERE first_day BETWEEN $1::date AND $2::date)::int AS new_customers,
+              COALESCE(sum(total) FILTER (WHERE first_day >= calendar_day
+                                             OR first_day IS NULL), 0) AS new_revenue,
+              COALESCE(sum(total) FILTER (WHERE first_day < calendar_day), 0) AS returning_revenue
          FROM win`,
       [from, to, apps]
     )).rows[0];
 
     // ── monthly first-order cohorts ──
     const cohortRows = (await pool.query(
+      // Cohort = the month of the customer's first order BUSINESS day. Bucketing
+      // on the raw order_date timestamp instead would file a 01:30 order on the
+      // 1st into the wrong month, so the month comes off `first_day` and the
+      // return windows are counted in business days, not timestamp intervals.
       `WITH ${knownCte("$1::text[]")}
-       SELECT to_char((l.first_at AT TIME ZONE '${TZ}'), 'YYYY-MM') AS cohort,
+       SELECT to_char(l.first_day, 'YYYY-MM') AS cohort,
               count(*)::int AS customers,
               COALESCE(sum(l.ltv), 0) AS revenue,
               count(*) FILTER (WHERE EXISTS (
                 SELECT 1 FROM known k WHERE k.ident = l.ident
-                  AND k.order_date > l.first_at
-                  AND k.order_date <= l.first_at + interval '30 days'))::int AS ret30,
+                  AND k.calendar_day > l.first_day
+                  AND k.calendar_day <= l.first_day + 30))::int AS ret30,
               count(*) FILTER (WHERE EXISTS (
                 SELECT 1 FROM known k WHERE k.ident = l.ident
-                  AND k.order_date > l.first_at
-                  AND k.order_date <= l.first_at + interval '60 days'))::int AS ret60,
+                  AND k.calendar_day > l.first_day
+                  AND k.calendar_day <= l.first_day + 60))::int AS ret60,
               count(*) FILTER (WHERE EXISTS (
                 SELECT 1 FROM known k WHERE k.ident = l.ident
-                  AND k.order_date > l.first_at
-                  AND k.order_date <= l.first_at + interval '90 days'))::int AS ret90
-         FROM lifetime l GROUP BY 1 ORDER BY 1`,
+                  AND k.calendar_day > l.first_day
+                  AND k.calendar_day <= l.first_day + 90))::int AS ret90
+         FROM lifetime l WHERE l.first_day IS NOT NULL GROUP BY 1 ORDER BY 1`,
       [apps]
     )).rows;
 
@@ -882,8 +954,11 @@ export function register(app, ctx) {
     const segRows = (await pool.query(
       `WITH ${knownCte("$1::text[]")}
        , scored AS (
-         SELECT ident, freq, ltv, last_at,
-                ($2::date - ((last_at AT TIME ZONE '${TZ}') - interval '${BIZ_DAY_START_HOUR} hours')::date) AS recency
+         -- Recency in BUSINESS days: last_day is already the TabSense
+         -- calendar_day of the customer's last order, so nothing is re-derived
+         -- from a timestamp here.
+         SELECT ident, freq, ltv, last_day,
+                ($2::date - last_day) AS recency
            FROM lifetime
        )
        SELECT CASE

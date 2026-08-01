@@ -37,6 +37,10 @@
       able to render "—" instead of a fabricated -100%.
 ═══════════════════════════════════════════════════════════════════════════ */
 
+// The "who counts as a new customer" rule is defined once, in analytics.js, so
+// this screen and the analytics screens can never drift apart again.
+import { FIRST_ORDER_DAY_CTE } from "./analytics.js";
+
 const TZ = "Asia/Riyadh";
 // Hour (Riyadh local) at which TabSense rolls the business day over. See rule 3.
 const BIZ_DAY_START_HOUR = 4;
@@ -79,19 +83,16 @@ const channelSql = (appsParam, a = "o") => `
 // orders TabSense attached no customer to.
 const IDENT_SQL = `COALESCE(NULLIF(s.phone_norm, ''), NULLIF(tc.phone_norm, ''))`;
 
-// First time we ever saw each phone, across BOTH identity sources — the same
-// definition /api/analytics/compare uses, so "new customer" means the same
-// thing on this screen as on the analytics screen.
-const FIRSTS_CTE = `
-  firsts AS (
-    SELECT pn, min(first_at) AS first_at FROM (
-      SELECT phone_norm AS pn, min(filled_at) AS first_at
-        FROM order_sources WHERE phone_norm <> '' GROUP BY 1
-      UNION ALL
-      SELECT phone_norm AS pn, min(COALESCE(first_order_at, registered_at)) AS first_at
-        FROM ts_customers WHERE phone_norm IS NOT NULL AND phone_norm <> '' GROUP BY 1
-    ) u GROUP BY 1
-  )`;
+// THE new-customer rule lives in exactly ONE place — FIRST_ORDER_DAY_CTE in
+// analytics.js, imported at the top of this file — and this screen uses that
+// fragment rather than restating it. It used to keep its own copy AND its own
+// predicate (`first_at::date >= date` instead of `BETWEEN from AND to`), which
+// let customers first seen AFTER the day being viewed count as new on that
+// day: 9 of the 15 it reported for 2026-07-30 were exactly that.
+//
+// In plain terms: a customer is NEW on this day when they ORDERED on it AND
+// had never ordered before it. Read the note above FIRST_ORDER_DAY_CTE for why
+// first-seen comes from order days and never from a sync timestamp.
 
 /* ── Labels. Keys stay English, everything the owner reads is Arabic. ────── */
 
@@ -472,12 +473,14 @@ export function register(app, ctx) {
           GROUP BY 1`,
         [date, apps]
       ),
-      /* 11 ── One row per identified human on the day. `is_new` uses the same
-              "first time we ever saw this phone" definition as
-              /api/analytics/compare, folded onto the BUSINESS day. Orders with
-              no phone at all are excluded from both sides rather than silently
-              counted as new — dataQuality.customerCoverage is how the UI knows
-              how big that hole is. */
+      /* 11 ── One row per identified human on the day. `is_new` is THE shared
+              rule (FIRST_ORDER_DAY_CTE in analytics.js): they ordered on this
+              day — `scoped` already guarantees that — AND their first order day
+              is this day. Identical predicate to /api/analytics/live,
+              /compare and /customers, so all four agree. Orders with no phone
+              at all are excluded from both sides rather than silently counted
+              as new — dataQuality.customerCoverage is how the UI knows how big
+              that hole is. */
       pool.query(
         `WITH scoped AS (
            SELECT o.order_id, o.total,
@@ -489,14 +492,13 @@ export function register(app, ctx) {
              LEFT JOIN ts_customers tc ON tc.customer_id = o.customer_id
             WHERE o.calendar_day = $1::date AND ${salesOnly()} AND ${bizElapsedH()} <= $2::numeric
          ),
-         ${FIRSTS_CTE}
+         ${FIRST_ORDER_DAY_CTE}
          SELECT sc.ident,
                 max(sc.cname) AS name,
                 max(sc.cphone) AS phone,
                 count(*)::int AS orders,
                 COALESCE(sum(sc.total), 0) AS revenue,
-                bool_or(((f.first_at AT TIME ZONE '${TZ}') - interval '${BIZ_DAY_START_HOUR} hours')::date
-                        >= $1::date) AS is_new
+                bool_or(f.first_day BETWEEN $1::date AND $1::date) AS is_new
            FROM scoped sc LEFT JOIN firsts f ON f.pn = sc.ident
           WHERE sc.ident IS NOT NULL
           GROUP BY 1

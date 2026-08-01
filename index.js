@@ -911,17 +911,23 @@ app.get("/api/discounts/customers", async (c) => {
   const q = c.req.query();
   const params = [];
   const where = [];
-  if (q.from) { params.push(q.from); where.push(`order_date >= $${params.length}::date`); }
-  if (q.to) { params.push(q.to); where.push(`order_date < ($${params.length}::date + 1)`); }
+  // ts_customer_orders is a legacy cache: it keeps TabSense's raw EX-VAT
+  // discount columns and no business day. Join the order table for both, or
+  // this endpoint reports a discount ~15% below every other screen and drops
+  // 21% of rows on the wrong day (a 03:48 order belongs to the previous day).
+  if (q.from) { params.push(q.from); where.push(`o2.calendar_day >= $${params.length}::date`); }
+  if (q.to) { params.push(q.to); where.push(`o2.calendar_day <= $${params.length}::date`); }
+  where.push(`(o2.order_type IS NULL OR (o2.order_type NOT ILIKE '%void%' AND o2.order_type NOT ILIKE '%refund%'))`);
   const whereSql = where.length ? "WHERE " + where.join(" AND ") : "";
   // Aggregate per customer, join ambassadors by phone.
   const rows = (await pool.query(
     `SELECT o.customer_id, max(o.customer_name) AS name, max(o.customer_phone) AS phone,
             max(o.customer_phone_norm) AS phone_norm, max(o.customer_points) AS points,
-            count(*)::int AS orders, sum(o.discount + o.promotion) AS total_discount,
-            sum(o.total) AS total_spent, max(o.order_date) AS last_order,
+            count(*)::int AS orders, sum(o2.discount_incl) AS total_discount,
+            sum(o2.total) AS total_spent, max(o.order_date) AS last_order,
             (a.id IS NOT NULL) AS is_ambassador, a.name AS ambassador_name
        FROM ts_customer_orders o
+       JOIN ts_orders o2 ON o2.order_id = o.order_id
        LEFT JOIN ambassadors a ON a.phone_norm = o.customer_phone_norm AND a.phone_norm <> ''
        ${whereSql}
       GROUP BY o.customer_id, a.id, a.name`,
@@ -954,28 +960,35 @@ app.get("/api/discounts/report", async (c) => {
   const err = await requireAdmin(c); if (err) return err;
   const q = c.req.query();
   const params = []; const where = [];
-  if (q.from) { params.push(q.from); where.push(`order_date >= $${params.length}::date`); }
-  if (q.to) { params.push(q.to); where.push(`order_date < ($${params.length}::date + 1)`); }
+  // Same legacy-cache correction as /api/discounts/customers above: the money
+  // and the day must come from ts_orders, not from TabSense's raw ex-VAT
+  // columns and UTC timestamps.
+  if (q.from) { params.push(q.from); where.push(`o2.calendar_day >= $${params.length}::date`); }
+  if (q.to) { params.push(q.to); where.push(`o2.calendar_day <= $${params.length}::date`); }
+  where.push(`(o2.order_type IS NULL OR (o2.order_type NOT ILIKE '%void%' AND o2.order_type NOT ILIKE '%refund%'))`);
   const whereSql = where.length ? "WHERE " + where.join(" AND ") : "";
   const one = async (sql) => (await pool.query(sql, params)).rows;
+  const FROM = "FROM ts_customer_orders o JOIN ts_orders o2 ON o2.order_id = o.order_id";
 
   const summary = (await one(
-    `SELECT count(*)::int AS orders, count(DISTINCT customer_id)::int AS customers,
-            COALESCE(sum(discount+promotion),0) AS total_discount, COALESCE(sum(total),0) AS total_spent,
-            COALESCE(avg(discount+promotion),0) AS avg_discount FROM ts_customer_orders ${whereSql}`
+    `SELECT count(*)::int AS orders, count(DISTINCT o.customer_id)::int AS customers,
+            COALESCE(sum(o2.discount_incl),0) AS total_discount, COALESCE(sum(o2.total),0) AS total_spent,
+            COALESCE(sum(o2.gross_incl),0) AS gross_incl,
+            COALESCE(avg(o2.discount_incl),0) AS avg_discount ${FROM} ${whereSql}`
   ))[0];
   const daily = await one(
-    `SELECT to_char(order_date,'YYYY-MM-DD') AS day, count(*)::int AS orders, sum(discount+promotion) AS discount
-       FROM ts_customer_orders ${whereSql} GROUP BY 1 ORDER BY 1`
+    `SELECT to_char(o2.calendar_day,'YYYY-MM-DD') AS day, count(*)::int AS orders,
+            sum(o2.discount_incl) AS discount ${FROM} ${whereSql} GROUP BY 1 ORDER BY 1`
   );
   const ambVsRegular = await one(
-    `SELECT (a.id IS NOT NULL) AS is_ambassador, count(*)::int AS orders, sum(o.discount+o.promotion) AS discount
-       FROM ts_customer_orders o LEFT JOIN ambassadors a ON a.phone_norm=o.customer_phone_norm AND a.phone_norm<>''
+    `SELECT (a.id IS NOT NULL) AS is_ambassador, count(*)::int AS orders, sum(o2.discount_incl) AS discount
+       ${FROM} LEFT JOIN ambassadors a ON a.phone_norm=o.customer_phone_norm AND a.phone_norm<>''
        ${whereSql} GROUP BY 1`
   );
   const topCustomers = await one(
-    `SELECT customer_name AS name, customer_phone AS phone, count(*)::int AS orders, sum(discount+promotion) AS discount
-       FROM ts_customer_orders ${whereSql} GROUP BY customer_name, customer_phone ORDER BY discount DESC LIMIT 10`
+    `SELECT o.customer_name AS name, o.customer_phone AS phone, count(*)::int AS orders,
+            sum(o2.discount_incl) AS discount
+       ${FROM} ${whereSql} GROUP BY o.customer_name, o.customer_phone ORDER BY discount DESC LIMIT 10`
   );
   return c.json({
     ok: true,
@@ -983,7 +996,10 @@ app.get("/api/discounts/report", async (c) => {
       orders: summary.orders, customers: summary.customers,
       totalDiscount: Number(summary.total_discount), totalSpent: Number(summary.total_spent),
       avgDiscount: Number(summary.avg_discount),
-      discountRatio: Number(summary.total_spent) > 0 ? Number(summary.total_discount) / (Number(summary.total_spent) + Number(summary.total_discount)) : 0,
+      // Against the real pre-discount value, the same denominator the other
+      // reports use — not total_spent + discount, which is neither figure.
+      discountRatio: Number(summary.gross_incl) > 0
+        ? Number(summary.total_discount) / Number(summary.gross_incl) : null,
     },
     daily: daily.map((d) => ({ day: d.day, orders: d.orders, discount: Number(d.discount) })),
     ambassadorVsRegular: ambVsRegular.map((r) => ({ isAmbassador: r.is_ambassador, orders: r.orders, discount: Number(r.discount) })),
