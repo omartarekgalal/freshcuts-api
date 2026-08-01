@@ -1746,6 +1746,23 @@ async function runInsightsSync() {
     insightsState.lastLinkAt = new Date().toISOString();
     insightsState.lastLinkCount = actives.length;
   }
+
+  // Every delivery customer FeedUs gave us a phone for gets created in the
+  // TabSense directory automatically. Capped per cycle because this writes to
+  // the live POS through a session, not an API — 12 a cycle is 144 an hour,
+  // far above any real day, and keeps the request rate polite.
+  if (TS_ENABLED) {
+    try {
+      const p = await pushPendingCustomers({ limit: 12, dryRun: false });
+      insightsState.lastPushAt = new Date().toISOString();
+      insightsState.lastPushCreated = p.verified ?? p.created;
+      insightsState.lastPushPending = p.candidates;
+      insightsState.lastPushError = p.failed ? (p.errors[0] || "rejected") : null;
+    } catch (e) {
+      insightsState.lastPushError = e.message;
+      console.error("[push] tabsense customer push failed:", e.message);
+    }
+  }
 }
 
 // FeedUs keeps only ~25 rows in the POS order log, so history needs the sales
@@ -1816,26 +1833,28 @@ async function backfillFeedusFromSales(from, to, { windowMs = 120_000, withDetai
   return { ok: true, tagged, unmatched, salesRows: sales.length, externalOrders: ext.length, detailFetched, detailFailed };
 }
 
+// Shared by the manual endpoint and the worker: the delivery customers we know
+// that TabSense's directory does not have yet. The normalised phone is the
+// identity — one person, one number, so a repeat customer is recognisable.
+async function pendingTabsenseCustomers(limit) {
+  return (await pool.query(
+    `SELECT DISTINCT ON (s.phone_norm) s.phone_norm, s.customer_name
+       FROM order_sources s
+       LEFT JOIN ts_customers tc ON tc.phone_norm = s.phone_norm
+      WHERE s.phone_norm <> '' AND tc.customer_id IS NULL AND s.customer_name <> ''
+      ORDER BY s.phone_norm, s.filled_at DESC
+      LIMIT $1`, [limit]
+  )).rows;
+}
+
 // Push delivery customers we learned from FeedUs into the TabSense directory,
 // so a Keeta customer who later walks in or phones is already a known face
 // with points and history. Deduped on the normalised phone against the
 // customer cache; defaults to a dry run because this writes to the live POS.
-app.post("/api/customers/push-to-tabsense", async (c) => {
-  const err = await requireAdmin(c); if (err) return err;
-  if (!TS_ENABLED) return c.json({ ok: false, error: "tabsense_not_configured" }, 400);
-  const b = await c.req.json().catch(() => ({}));
-  const dryRun = b.dryRun !== false;              // must opt IN to writing
-  const limit = Math.max(1, Math.min(200, Number(b.limit) || 50));
-
-  const rows = (await pool.query(
-    `SELECT DISTINCT ON (s.phone_norm) s.phone_norm, s.customer_name, s.customer_phone
-       FROM order_sources s
-       LEFT JOIN ts_customers tc ON tc.phone_norm = s.phone_norm
-      WHERE s.phone_norm <> '' AND tc.customer_id IS NULL
-        AND s.customer_name <> ''
-      ORDER BY s.phone_norm, s.filled_at DESC
-      LIMIT $1`, [limit]
-  )).rows;
+// Create the pending customers in the TabSense directory. Shared by the manual
+// endpoint and by the worker, which runs it with dryRun = false every cycle.
+async function pushPendingCustomers({ limit = 50, dryRun = true } = {}) {
+  const rows = await pendingTabsenseCustomers(limit);
 
   const results = { candidates: rows.length, created: 0, failed: 0, samples: [], errors: [] };
   for (const r of rows) {
@@ -1876,6 +1895,16 @@ app.post("/api/customers/push-to-tabsense", async (c) => {
       results.verifyError = e.message;
     }
   }
+  return results;
+}
+
+app.post("/api/customers/push-to-tabsense", async (c) => {
+  const err = await requireAdmin(c); if (err) return err;
+  if (!TS_ENABLED) return c.json({ ok: false, error: "tabsense_not_configured" }, 400);
+  const b = await c.req.json().catch(() => ({}));
+  const dryRun = b.dryRun !== false;              // must opt IN to writing
+  const limit = Math.max(1, Math.min(200, Number(b.limit) || 50));
+  const results = await pushPendingCustomers({ limit, dryRun });
   return c.json({ ok: true, dryRun, ...results });
 });
 
