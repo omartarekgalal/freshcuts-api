@@ -1874,6 +1874,9 @@ async function pushPendingCustomers({ limit = 50, dryRun = true } = {}) {
     try {
       const res = await ts.createCustomer(payload);
       if (res.ok) results.created++;
+      // A number that is not a Saudi mobile can never be created; it is not a
+      // transient failure, so it is counted apart from real errors.
+      else if (res.error === "invalid_saudi_mobile") results.skipped = (results.skipped || 0) + 1;
       else { results.failed++; if (results.errors.length < 5) results.errors.push(res.error || "rejected"); }
     } catch (e) {
       results.failed++;
@@ -1887,7 +1890,7 @@ async function pushPendingCustomers({ limit = 50, dryRun = true } = {}) {
   // and report `verified` — that is the number to trust, not `created`.
   if (!dryRun && rows.length) {
     try {
-      const live = await ts.fetchCustomersList({ maxPages: 3 });
+      const live = await ts.fetchCustomersList({ maxPages: 8 });
       const have = new Set(live.map((x) => normPhone(x.phone)));
       results.verified = rows.filter((r) => have.has(r.phone_norm)).length;
       await syncCustomersCache();     // keep our cache in step

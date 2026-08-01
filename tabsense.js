@@ -765,10 +765,21 @@ async function fetchOrderProducts(orderId) {
 // "+965"… and TabSense silently rejects a bare "966": the POST still answers
 // 302 to /customers exactly as it does on success, and nothing is created.
 // Never trust that redirect — verifyCreated() below is the real check.
-// first_name also has a 3-character minimum.
+//
+// The silent-rejection rules, each confirmed by posting and then searching the
+// directory for the phone (302 every time, record present only when it passed):
+//   • first_name shorter than 3 characters      → rejected
+//   • last_name 1 or 2 characters               → rejected; EMPTY is accepted
+//   • phone that is not a 9-digit Saudi mobile  → rejected
+// FeedUs names like "Fawaz H" or "M E" hit the second rule, which is why 5 of
+// 12 pushed records never appeared while the API reported all 12 created.
 async function createCustomer({ firstName, lastName = "", phone, countryCode = "+966" }) {
   if (!phone) throw new Error("createCustomer: phone required");
   const cc = String(countryCode).startsWith("+") ? String(countryCode) : `+${countryCode}`;
+  const digits = String(phone).replace(/\D/g, "").replace(/^966/, "").replace(/^0/, "");
+  if (cc === "+966" && !/^5\d{8}$/.test(digits)) {
+    return { ok: false, created: false, error: "invalid_saudi_mobile", detail: digits };
+  }
   const s = await getSession();
   const page = await authGet("/customers");
   const html = await page.text();
@@ -776,12 +787,15 @@ async function createCustomer({ firstName, lastName = "", phone, countryCode = "
   if (!token) throw new Error("createCustomer: CSRF token not found");
 
   const first = String(firstName || "").trim().slice(0, 30);
+  const last = String(lastName || "").trim().slice(0, 30);
   const body = new URLSearchParams({
     _token: token,
     first_name: first.length >= 3 ? first : "عميل توصيل",
-    last_name: String(lastName || "").trim().slice(0, 30),
+    // A 1-2 character surname is rejected but no surname at all is fine, so an
+    // initial gets dropped rather than costing us the whole record.
+    last_name: last.length >= 3 ? last : "",
     phone_country_code: cc,
-    phone: String(phone).replace(/\D/g, ""),
+    phone: digits,
   });
   const res = await fetch(dash("/customers"), {
     method: "POST",
