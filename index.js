@@ -1535,6 +1535,10 @@ const insightsState = {
   feedusEnabled: feedus.ENABLED, lastFeedusSyncAt: null, lastFeedusTagged: 0, lastFeedusError: null,
 };
 
+// Names that identify the middleware rather than the delivery app the order
+// actually came from. Never good enough to store as an order's source.
+const GENERIC_PROVIDERS = new Set(["feedus", "aggregator", "unknown", ""]);
+
 // Pull the FeedUs → TabSense order log and tag each matching order with the
 // delivery app it actually came from (Keeta / HungerStation / Ninja …).
 // This is the only place the origin app and the TabSense order id meet.
@@ -1553,9 +1557,14 @@ async function syncFeedusSources({ pages = 3, full = false } = {}) {
     pages,
     isKnown: known ? (id) => known.has(String(id)) : null,
   });
-  let tagged = 0, named = 0, detailFailed = 0;
+  let tagged = 0, named = 0, detailFailed = 0, providerFixed = 0;
   for (const r of rows) {
     if (!r.tabsenseOrderId || !r.provider) continue;
+    // FeedUs sometimes writes its own name into the POS log's Provider column
+    // instead of the delivery app — order 2249 (receipt …2157) logged "feedus"
+    // while the order-detail page for the same row said "Keeta". A generic name
+    // is not an answer, so it is resolved from the detail page below.
+    const generic = GENERIC_PROVIDERS.has(String(r.provider).trim().toLowerCase());
     // Only tag orders we actually hold — avoids orphan rows for other branches.
     const res = await pool.query(
       `INSERT INTO order_sources (order_id, source, source_note, customer_kind, filled_by, filled_at)
@@ -1581,9 +1590,18 @@ async function syncFeedusSources({ pages = 3, full = false } = {}) {
       `SELECT 1 FROM order_sources WHERE order_id = $1 AND COALESCE(phone_norm,'') = ''`,
       [String(r.tabsenseOrderId)]
     );
-    if (!needs.rowCount) continue;
+    if (!needs.rowCount && !generic) continue;
     try {
       const d = await feedus.fetchOrderDetail(r.feedusOrderId);
+      // The detail page carries the real app name; prefer it over a generic one.
+      if (generic && d.provider && !GENERIC_PROVIDERS.has(d.provider.trim().toLowerCase())) {
+        const fix = await pool.query(
+          `UPDATE order_sources SET source_note = $2
+             WHERE order_id = $1 AND lower(COALESCE(source_note,'')) = ANY($3)`,
+          [String(r.tabsenseOrderId), d.provider.trim(), [...GENERIC_PROVIDERS]]
+        );
+        providerFixed += fix.rowCount;
+      }
       if (d.customerName || d.customerMobile) {
         // Deliberately NOT guarded on filled_by. That guard exists to protect
         // the cashier's source choice from being overwritten — but the cashier
@@ -1606,7 +1624,7 @@ async function syncFeedusSources({ pages = 3, full = false } = {}) {
     }
     await sleep(250);
   }
-  return { ok: true, tagged, named, detailFailed, scanned: rows.length };
+  return { ok: true, tagged, named, providerFixed, detailFailed, scanned: rows.length };
 }
 
 // Pull orders (newest-first down to sinceDate) into ts_orders. Recent
