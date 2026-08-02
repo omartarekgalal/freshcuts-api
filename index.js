@@ -16,6 +16,7 @@ import * as finance from "./finance.js";
 import * as retarget from "./retarget.js";
 import * as keetaReports from "./keeta_reports.js";
 import * as keetaPayouts from "./keeta_payouts.js";
+import * as ninja from "./ninja.js";
 import * as chat from "./chat.js";
 import * as dayreport from "./dayreport.js";
 import * as ads from "./ads.js";
@@ -2066,6 +2067,20 @@ app.post("/api/feedus/sync", async (c) => {
   } catch (e) { return c.json({ ok: false, error: e.message }, 500); }
 });
 
+/* Live open/closed state straight from each platform's own portal. The same
+   check already runs inside /api/device/health, but that route is device-token
+   only, so the manager pages had no way to ask. Order silence is deliberately
+   NOT part of the verdict — a quiet hour looks exactly like a broken
+   integration, and Omar has been given that wrong answer before. */
+app.get("/api/portals/status", async (c) => {
+  const err = await requireAdmin(c); if (err) return err;
+  try {
+    return c.json({ ok: true, checkedAt: new Date().toISOString(), portals: await portals.checkAll() });
+  } catch (e) {
+    return c.json({ ok: false, error: e.message }, 502);
+  }
+});
+
 app.get("/api/insights/status", async (c) => {
   const err = await requireAdmin(c); if (err) return err;
   const r = await pool.query(`
@@ -2791,6 +2806,7 @@ finance.register(app, moduleCtx);
 retarget.register(app, moduleCtx);
 keetaReports.register(app, moduleCtx);
 keetaPayouts.register(app, moduleCtx);
+ninja.register(app, moduleCtx);
 chat.register(app, moduleCtx);
 dayreport.register(app, moduleCtx);
 ads.register(app, moduleCtx);
