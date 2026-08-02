@@ -56,6 +56,26 @@
       includes 350 g cooked rice, tahini and salad. Meal costs from the
       workbook need nothing added. Do not "fix" them.
 
+   5b. MOST BATCHES HERE ARE RAW PREP, AND OUTPUT = INPUT IS CORRECT.
+      Settled with Omar: he makes 5 kg of marinated chicken breast and it stays
+      5 kg; a meal takes 300 g of it and that 300 g is a PRE-COOKING weight,
+      scooped and weighed raw. So raw grams × raw price is the complete cost
+      and there is NO cooking loss to model on those batches — the shrinkage
+      happens on the grill, after the portion has been costed. A yield belongs
+      only on a batch that is cooked BEFORE it is portioned (a reduced sauce, a
+      béchamel, a braise); `COOKED_BATCHES` names the four and says why.
+      An earlier version of this file raised SAR 3,288 / 2,263 / 1,929 of false
+      alarms on الصدور / الكفتة / شيش طاووق for exactly this reason. They are
+      gone. Do not bring them back.
+
+   5c. THE REAL YIELD LOSS IS ON THE PREP BENCH, NOT THE GRILL.
+      Buy 1 kg of ribs, clean it, get 820 g. The bone and fat cap were paid for
+      and cannot be sold, so every usable gram cost more than the invoice says.
+      That is `cost_raw_materials.trim_bought_g` / `trim_usable_g` — TWO WEIGHTS
+      off one scale, never a percentage — and because it scales the price per
+      gram it flows into every recipe line, batch line and nested batch through
+      `effRaw()` automatically. There is exactly one place it is applied.
+
    6. COSTS ARE VAT-EXCLUSIVE, REVENUE IS VAT-INCLUSIVE.
       Same convention as finance.js: `item_costs.cost` and every workbook cost
       are VAT-free (a COGS carries no output VAT), while `ts_order_items.amount`
@@ -170,10 +190,15 @@ export function portionSizeOf(name) {
   return null;
 }
 
-/* Raw materials that lose weight when they hit heat. Used only to grade how
-   badly a batch's "output = inputs" assumption bites: a mixed sauce loses
-   nothing, grilled meat always does. */
-const PROTEIN_RE = /لحم|دجاج|فراخ|فرخ|كبد|صدور|ريش|سجق|بسطرم|أوراك|اوراك|فيليه|هوت دوج|بيبروني|تونة|تونه|جمبري|روبيان|رومي|بيكون|كباب|كفت|طرب|شيش/;
+/* ── REMOVED: PROTEIN_RE ──────────────────────────────────────────────────────
+   It graded how badly a batch's "output = inputs" claim bit, by protein share,
+   and it drove `BATCH_NO_YIELD_LOSS`. Deleted with that rule. The share of a
+   batch that is meat says NOTHING about whether the batch loses weight, because
+   in this kitchen the meat batches are MARINATIONS: 5 kg in, 5 kg out,
+   portioned raw at 300 g and cooked to order. What matters is whether the batch
+   is cooked BEFORE it is portioned, which is a fact about the process, not
+   about the ingredients — see COOKED_BATCHES inside register().
+   Do not reintroduce a protein-share yield heuristic here. ─────────────────── */
 
 const round3 = (x) => Math.round((Number(x) || 0) * 1000) / 1000;
 const round2 = (x) => Math.round((Number(x) || 0) * 100) / 100;
@@ -326,10 +351,37 @@ export function register(app, ctx) {
       -- cooking — bone, fat cap, silverskin, outer leaves. NULL means nobody
       -- has measured it, which is not the same as zero and must never be
       -- rendered as 0%.
+      --
+      -- ── HOW THE KITCHEN ENTERS IT ────────────────────────────────────────
+      -- Omar's instruction, verbatim in effect: he will weigh what he BOUGHT
+      -- and weigh what CAME OUT after cleaning. He will not compute a
+      -- percentage, and asking him to is how the number stops being entered.
+      -- So the two weights are the input of record — trim_bought_g and
+      -- trim_usable_g — and trim_loss_pct is DERIVED from them
+      -- (1 − usable ÷ bought) and stored alongside so that every reader
+      -- downstream keeps working unchanged.
+      --
+      -- trim_source says which of the two it is:
+      --   weighed  — the two weights are on the row; the pct is arithmetic
+      --   assumed  — somebody typed a percentage with no weights behind it
+      --   (empty)  — nobody has said anything, and NULL pct means exactly that
+      -- Only 'weighed' is evidence. RIBS_YIELD_ASSUMED and MATERIAL_NO_YIELD
+      -- both close when a row turns 'weighed', and neither closes on a typed
+      -- percentage — that is deliberate.
       ALTER TABLE cost_raw_materials ADD COLUMN IF NOT EXISTS supplier      TEXT NOT NULL DEFAULT '';
       ALTER TABLE cost_raw_materials ADD COLUMN IF NOT EXISTS trim_loss_pct NUMERIC;
+      ALTER TABLE cost_raw_materials ADD COLUMN IF NOT EXISTS trim_bought_g NUMERIC;
+      ALTER TABLE cost_raw_materials ADD COLUMN IF NOT EXISTS trim_usable_g NUMERIC;
+      ALTER TABLE cost_raw_materials ADD COLUMN IF NOT EXISTS trim_source   TEXT NOT NULL DEFAULT '';
+      ALTER TABLE cost_raw_materials ADD COLUMN IF NOT EXISTS trim_measured_at TIMESTAMPTZ;
       ALTER TABLE cost_raw_materials ADD COLUMN IF NOT EXISTS yield_note    TEXT NOT NULL DEFAULT '';
       ALTER TABLE cost_raw_materials ADD COLUMN IF NOT EXISTS updated_by    TEXT NOT NULL DEFAULT '';
+
+      -- Any pct that arrived before the two-weight model existed is, by
+      -- definition, a typed number. Label it once so the queue can tell the
+      -- difference between "somebody guessed 18%" and "somebody weighed it".
+      UPDATE cost_raw_materials SET trim_source = 'assumed'
+       WHERE trim_loss_pct IS NOT NULL AND trim_source = '' AND trim_bought_g IS NULL;
 
       -- Purchase history. Cost lookups resolve BY DATE, exactly like
       -- item_costs.effective_from, so a supplier raising a price next week
@@ -359,13 +411,26 @@ export function register(app, ctx) {
         ON cw_material_prices(canonical_ar, effective_from DESC);
 
       -- ── 2. Batch-level cooking yield ─────────────────────────────────────
-      -- yield_pct = output weight / input weight, 0..1. The imported workbook
-      -- asserts 1.0 for every batch, which for grilled meat is impossible.
-      -- output_measured says whether output_g came off a scale or was copied
-      -- from the input sum.
+      -- yield_pct = output weight / input weight, 0..1.
+      --
+      -- ══ READ THIS BEFORE YOU "FIX" A BATCH WHOSE OUTPUT EQUALS ITS INPUT ══
+      -- For most batches in THIS kitchen, output = input is CORRECT, not a
+      -- missing yield. See COOKED_BATCHES below for the full argument and the
+      -- batch-by-batch classification. In one line: الصدور / شيش طاووق /
+      -- الكفتة / الحواوشي / البرجر are MARINATION batches — 5 kg of chicken
+      -- goes in, 5 kg of marinated chicken comes out, a meal takes 300 g of it
+      -- and that 300 g is a PRE-COOKING weight. Raw grams × raw price is the
+      -- whole cost and there is no shrinkage to model, because the shrinkage
+      -- happens on the grill AFTER the portion has been weighed and costed.
+      --
+      -- cooked_before_portioning is what separates those from a sauce that
+      -- is genuinely reduced on the stove before anyone scoops it. NULL means
+      -- the code default in COOKED_BATCHES applies; TRUE/FALSE is a human
+      -- overriding it and always wins.
       ALTER TABLE cost_batches ADD COLUMN IF NOT EXISTS yield_pct       NUMERIC;
       ALTER TABLE cost_batches ADD COLUMN IF NOT EXISTS yield_note      TEXT NOT NULL DEFAULT '';
       ALTER TABLE cost_batches ADD COLUMN IF NOT EXISTS output_measured BOOL NOT NULL DEFAULT false;
+      ALTER TABLE cost_batches ADD COLUMN IF NOT EXISTS cooked_before_portioning BOOL;
       ALTER TABLE cost_batches ADD COLUMN IF NOT EXISTS updated_by      TEXT NOT NULL DEFAULT '';
 
       ALTER TABLE cost_recipe_lines ADD COLUMN IF NOT EXISTS note       TEXT NOT NULL DEFAULT '';
@@ -1063,36 +1128,55 @@ export function register(app, ctx) {
                 basis: "assumed",
                 action: "أدخل وصفة الطرب ووزن الإنتاج الفعلي في cost_batch_lines / cost_batches" });
         }
-        /* ── 2b. Zero cooking loss. output >= inputs means the batch assumes the
-              meat weighs the same after grilling, which it never does. Every
-              such batch is understated. */
+        /* ── 2b. A missing cooking yield — but ONLY on a batch that is cooked
+              BEFORE it is portioned.
+
+              This used to fire on every batch whose output equalled its input
+              while containing protein, graded by protein share. On this menu
+              that was wrong, and loudly: الصدور / شيش طاووق / الكفتة are
+              MARINATION batches. 5 kg in, 5 kg out, and the 300 g a meal takes
+              out of the tub is weighed RAW before it goes on the grill. Raw
+              grams × raw price IS the cost; the grill shrinkage happens after
+              the portion has been costed. See COOKED_BATCHES for the full
+              argument and the batch-by-batch classification.
+
+              A batch only needs a yield when its recipe grams are grams of the
+              FINISHED thing — a reduced sauce, a béchamel, a braise. */
         const inputs = lines.reduce((a, l) => a + num(l.qty_g), 0);
-        if (inputs > 0 && num(b.output_g) >= inputs - 0.5) {
-          // Severity turns on WHAT is in the batch, not on the arithmetic. A
-          // whisked sauce genuinely loses nothing on the scale; grilled meat
-          // always does. Grading by protein share stops 15 identical-looking
-          // findings from burying the four that matter.
-          const proteinG = lines.reduce((a, l) => {
-            const res = resolve(model, l.ing_type, l.ing_ar);
-            return a + (PROTEIN_RE.test(res.canonical) ? num(l.qty_g) : 0);
-          }, 0);
-          const share = proteinG / inputs;
+        if (isCookedBatch(key, b) && inputs > 0 && num(b.output_g) >= inputs - 0.5) {
+          const info = COOKED_BATCHES.get(norm(key)) || {};
           const dependents = dependentsOfBatch(model, key);
           const value = dependents.reduce((a, pid) => a + prodSales(pid).value, 0);
-          add({ code: "BATCH_NO_YIELD_LOSS",
-                severity: share > 0.4 ? "high" : share > 0.1 ? "medium" : "low",
+          add({ code: "BATCH_COOKED_NO_YIELD",
+                severity: value > 3000 ? "high" : "medium",
                 area: "batch", item: b.batch_ar, itemEn: b.batch_en,
-                message: share > 0.1
-                  ? `وزن الإنتاج ${num(b.output_g)} جم = مجموع المدخلات ${round3(inputs)} جم، رغم أن ${Math.round(share * 100)}% منها بروتين يفقد وزناً بالطهي — التكلفة أقل من الحقيقة`
-                  : `وزن الإنتاج ${num(b.output_g)} جم مأخوذ من مجموع المدخلات ولم يُوزن فعلياً (خلطة بدون طهي — الأثر ضئيل)`,
-                messageEn: share > 0.1
-                  ? `Output ${num(b.output_g)} g = inputs ${round3(inputs)} g, but ${Math.round(share * 100)}% of it is protein that loses weight when cooked — the cost is understated`
-                  : `Output ${num(b.output_g)} g was taken from the input sum, never weighed (uncooked mix — impact negligible)`,
+                message: `التشغيلة دي بتتطبخ قبل ما تتقسّم (${info.why || ""}) — `
+                  + `يعني الجرام في الوصفة جرام بعد الطهي، لكن التكلفة متقسومة على `
+                  + `${round3(inputs)} جم مدخلات كأن مفيش حاجة راحت`,
+                messageEn: `This batch is cooked BEFORE it is portioned, so its recipe `
+                  + `grams are finished grams — yet the cost is divided by the `
+                  + `${round3(inputs)} g of raw input. The SAR/g is understated`,
                 salesValue: round2(value), basis: "assumed",
                 posNames: dependents.flatMap((pid) => prodSales(pid).names),
                 evidence: { outputG: num(b.output_g), inputG: round3(inputs),
-                            proteinShare: round3(share),
-                            impliedYield: round3(num(b.output_g) / inputs) } });
+                            classification: info.evidence || "manual",
+                            reason: info.why || "" } });
+        }
+        /* Conservation of mass: a RAW batch cannot yield more than it was
+           given. effBatch() caps it; here it is reported. */
+        if (!isCookedBatch(key, b) && inputs > 0 && num(b.output_g) > inputs + 0.5) {
+          const dependents = dependentsOfBatch(model, key);
+          const value = dependents.reduce((a, pid) => a + prodSales(pid).value, 0);
+          add({ code: "BATCH_OUTPUT_EXCEEDS_INPUT", severity: "critical",
+                area: "batch", item: b.batch_ar, itemEn: b.batch_en,
+                message: `وزن الإنتاج ${num(b.output_g)} جم أكبر من مجموع المدخلات `
+                  + `${round3(inputs)} جم — مستحيل لخلطة نيّة، والفرق بيقلّل تكلفة الكيلو`,
+                messageEn: `Output ${num(b.output_g)} g exceeds inputs ${round3(inputs)} g — `
+                  + `impossible for a raw mix, and it understates the cost per kilo`,
+                salesValue: round2(value), basis: "measured",
+                posNames: dependents.flatMap((pid) => prodSales(pid).names),
+                evidence: { outputG: num(b.output_g), inputG: round3(inputs),
+                            phantomG: round3(num(b.output_g) - inputs) } });
         }
       }
 
@@ -1331,6 +1415,50 @@ export function register(app, ctx) {
     return [...direct];
   }
 
+  /** The portion of an ingredient this kitchen actually uses, taken as the
+   *  MEDIAN of every non-zero quantity of it anywhere in the recipe book.
+   *  Used only to SIZE a hole where a quantity is missing — never to fill one.
+   *  Falls back to 20 g, which is a scoop of most things. */
+  function typicalQtyG(model, ingKey) {
+    const qs = [];
+    for (const lines of [...model.recipeLines.values(), ...model.batchLines.values()])
+      for (const l of lines)
+        if (norm(l.ing_ar) === ingKey && num(l.qty_g) > 0) qs.push(num(l.qty_g));
+    if (!qs.length) return 20;
+    qs.sort((a, b) => a - b);
+    return qs[Math.floor(qs.length / 2)];
+  }
+
+  /** GRAMS of a batch consumed per unit of each dependent dish — direct use
+   *  plus the share arriving through a batch that itself consumes it.
+   *
+   *  This is what turns a batch finding from "SAR 16,050 of sales touch this"
+   *  into "SAR 22 of COGS actually moves". A finding whose impact is the SALES
+   *  it touches rather than the MONEY it moves ranks a 0.5% error on a big
+   *  seller above a 20% error on a small one, which is exactly backwards. */
+  function batchGramsPerUnit(model, batchKey) {
+    const out = new Map();          // productId -> grams of this batch per unit
+    for (const [pid, lines] of model.recipeLines) {
+      let g = 0;
+      for (const l of lines) {
+        const res = resolve(model, l.ing_type, l.ing_ar);
+        if (res.kind !== "batch") continue;
+        if (res.canonical === batchKey) { g += num(l.qty_g); continue; }
+        // One level down: this batch inside that batch, pro-rata by output.
+        const sub = model.batch.get(res.canonical);
+        const subOut = sub ? num(sub.output_g) : 0;
+        if (!subOut) continue;
+        for (const bl of model.batchLines.get(res.canonical) || []) {
+          const br = resolve(model, bl.ing_type, bl.ing_ar);
+          if (br.kind === "batch" && br.canonical === batchKey)
+            g += num(l.qty_g) * (num(bl.qty_g) / subOut);
+        }
+      }
+      if (g > 0) out.set(pid, g);
+    }
+    return out;
+  }
+
   /** Menu products exposed to a raw material, with the SAR of that raw inside
    *  one unit of the dish — direct use plus its share of any batch it feeds. */
   function dependentsOfRaw(model, rawKey) {
@@ -1438,16 +1566,90 @@ export function register(app, ctx) {
     return Math.min(Math.max(p, 0.05), 1);
   };
 
-  /* Which materials plausibly LOSE weight to trimming before they are cooked.
-     `PROTEIN_RE` above is deliberately broad — it grades how badly a batch's
-     "output = inputs" claim bites, and over-including there is harmless. Here
-     it is not: run against the live 129-material list it produced trim-loss
-     tasks for `فلفل رومي` (a bell pepper, caught by رومي = turkey) and
-     `مرقة دجاج ( بهارات دجاج )` (a spice blend, caught by دجاج). A queue that
-     asks the manager to weigh the trim off a bag of seasoning teaches him to
-     ignore the queue. */
+  /* Which materials plausibly LOSE weight on the PREP BENCH — bone, fat cap,
+     silverskin, outer leaves — i.e. which ones are worth a trim test.
+
+     This list is deliberately tight. An earlier, broader pattern run against
+     the live 129-material list produced trim-loss tasks for `فلفل رومي` (a bell
+     pepper, caught by رومي = turkey) and `مرقة دجاج ( بهارات دجاج )` (a spice
+     blend, caught by دجاج). A queue that asks the manager to weigh the trim off
+     a bag of seasoning teaches him to ignore the queue. */
   const TRIMMABLE_RE = /لحم|ريش|كبدة|صدور|فيليه|دجاجة|فراخ|أوراك|اوراك|بسطرم|سجق|جمبري|روبيان|تونة|تونه|سمك|ضاني|خروف/;
   const NOT_TRIMMABLE_RE = /بهار|مرقة|مرقه|توابل|فلفل|صوص|مسحوق|بودرة|بودره|مكعب|زيت|ملح/;
+
+  /* ══════════════════════════════════════════════════════════════════════════
+     WHY "OUTPUT = INPUT" IS THE RIGHT ANSWER FOR MOST BATCHES HERE
+     ─────────────────────────────────────────────────────────────────────────
+     This module used to raise `BATCH_NO_YIELD_LOSS` on any batch whose output
+     weight equalled its input sum while containing protein, on the reasoning
+     that "meat loses weight when you cook it". At the top of the live queue
+     that produced three findings worth SAR 3,288 (الصدور), 2,263 (الكفتة) and
+     1,929 (شيش طاووق). **All three were wrong**, and the error was the model's,
+     not the data's.
+
+     Omar's operation, as he describes it: he makes 5 kg of marinated chicken
+     breast and it stays 5 kg. A meal takes 300 g of it. **That 300 g is a
+     PRE-COOKING weight** — it is scooped out of the tub, weighed raw, and put
+     on the grill. So:
+
+         batch cost per raw gram  ×  raw grams in the portion  =  the cost
+
+     is complete and correct. The shrinkage on the grill is real, but it happens
+     AFTER the portion has left the tub, so it changes what lands on the plate,
+     not what left the store. Charging a cooking loss against a raw-weighed
+     portion would count meat Omar never bought. It is the classic double-count
+     and it makes every grill dish look 20% more expensive than it is.
+
+     A yield belongs on a batch only when the batch is COOKED BEFORE IT IS
+     PORTIONED — i.e. the recipe's grams are grams of the FINISHED thing, so the
+     kilo you are dividing by is smaller than the kilo you bought. On this menu
+     four batches are in that state, and they were found by reading the recipes,
+     not by pattern-matching the names:
+
+       صوص البيتزا   5 kg of FRESH tomato + oil, garlic, sugar, basil, oregano.
+                     Raw blended tomato is water; it slides off a pizza and
+                     steams the base. This is a cooked marinara and it is the
+                     largest unmodelled reduction in the workbook.
+       الوايت صوص    A béchamel: milk + water + flour, simmered, and infused
+                     with whole bay/cardamom/clove plus onion and celery that
+                     are STRAINED OUT. Both the evaporation and the strainer
+                     are weight that never reaches the portion.
+       البيف كازرول  A braise — 2 kg beef with 1.7 L of water and demi-glace.
+                     Nobody serves a braise at its input weight.
+       اللحمة المفرومة  Whole bay leaf and cardamom in a minced-meat mix means a
+                     pot, not a bowl; a raw kofta mix (الكفتة) has neither. Fat
+                     and water render off. This one is a chef's read of the
+                     ingredient list, not a measurement — flagged as such.
+
+     And the batches where output = input is CORRECT and must be left alone:
+       الصدور, شيش طاووق, الكفتة, الحواوشي, البرجر, برجر كوردن بلو  — marinated
+         or formed raw, portioned raw, cooked to order.
+       عجينة البيتزا, خضار فرشة  — nothing is cooked at all.
+     Two batches already carry a measured loss (فراخ فحم, الطحينة, عجينة الكريب,
+     السلطة الحاتي) and one already models a GAIN (الأرز المطبوخ: 1 kg raw rice
+     → 2.5 kg cooked). None of them needs anything.
+
+     DO NOT re-add a blanket protein-share yield rule. If a future batch really
+     is cooked before portioning, add it here with the reason, or set
+     `cost_batches.cooked_before_portioning` on the row.
+     ══════════════════════════════════════════════════════════════════════════ */
+  const COOKED_BATCHES = new Map([
+    ["صوص البيتزا", { evidence: "measured",
+      why: "٥ كجم طماطم طازة بتتطبخ وتتشرب — الناتج أقل من المدخل بفارق كبير" }],
+    ["الوايت صوص", { evidence: "measured",
+      why: "بشاميل بيتسوّى على النار، والبصل والكرفس وورق اللورى بيتصفّوا منه" }],
+    ["البيف كازرول", { evidence: "measured",
+      why: "طبخة لحم بـ١٫٧ لتر ماء — الناتج بعد الطبخ أقل من المدخل" }],
+    ["اللحمة المفرومة", { evidence: "judgement",
+      why: "ورق لورى وحبهان في خلطة مفروم = طبخ في حلة، والدهن والمية بينزلوا" }],
+  ]);
+  /** TRUE only for a batch that is cooked BEFORE it is portioned. The DB column
+   *  is a human override and always wins over the table above. */
+  function isCookedBatch(key, b) {
+    if (b && b.cooked_before_portioning === true) return true;
+    if (b && b.cooked_before_portioning === false) return false;
+    return COOKED_BATCHES.has(norm(key));
+  }
 
   const UNIT_G = { g: 1, gm: 1, gram: 1, ml: 1, "جم": 1, "غم": 1, "مل": 1,
                    kg: 1000, l: 1000, lt: 1000, litre: 1000, liter: 1000,
@@ -1688,6 +1890,44 @@ export function register(app, ctx) {
     return wb;
   }
 
+  /* ── THE TRIM TEST ────────────────────────────────────────────────────────
+     The one genuine yield loss in this operation that the workbook never
+     captured. Omar buys a kilo of ribs, cleans it, and ~820 g survives. Bone,
+     fat cap, silverskin and the outer leaves of a cabbage are weight he paid
+     for and can never sell.
+
+     It is entered as TWO WEIGHTS, never as a percentage:
+
+         bought 1000 g  →  usable 820 g
+         loss  = 1 − 820/1000 = 18%
+         cost  = purchase SAR/kg ÷ (1 − 0.18) = purchase × 1.2195
+
+     Both weights come off the same scale on the same afternoon, which is a
+     thing a kitchen can actually do. A percentage is a thing a kitchen quietly
+     never does, and an unentered number is worth nothing however elegant the
+     column is. `trimFrom()` reads the weights first and only falls back to a
+     typed percentage for rows that predate the two-weight model.
+
+     Note carefully what this is NOT: it is not a cooking loss. It happens on
+     the prep bench, BEFORE the raw material reaches a batch or a recipe, so it
+     scales the price per gram and every consumer — recipe line, batch line,
+     nested batch — inherits it automatically through `effRaw`. There is no
+     second place to apply it and no risk of applying it twice. */
+  function trimFrom(base) {
+    const bought = base?.trim_bought_g === null || base?.trim_bought_g === undefined
+      ? null : num(base.trim_bought_g);
+    const usable = base?.trim_usable_g === null || base?.trim_usable_g === undefined
+      ? null : num(base.trim_usable_g);
+    // Two weights that make physical sense beat anything typed.
+    if (bought !== null && usable !== null && bought > 0 && usable > 0 && usable <= bought) {
+      const pct = asPct(1 - usable / bought);
+      return { pct, boughtG: bought, usableG: usable, source: "weighed" };
+    }
+    const typed = asPct(base?.trim_loss_pct);
+    return { pct: typed, boughtG: bought, usableG: usable,
+             source: typed === null ? "" : String(base?.trim_source || "assumed") };
+  }
+
   /** A raw material's cost per USABLE gram on `wb.asOf`, and the paper trail.
    *  This is the whole of point 2 above in six lines. */
   function effRaw(model, wb, canonical) {
@@ -1697,7 +1937,8 @@ export function register(app, ctx) {
                           : b !== null && b !== undefined ? num(b) : null);
     const purchasePerG = pick(p?.cost_per_g, base?.cost_per_g);
     const purchasePerPiece = pick(p?.cost_per_piece, base?.cost_per_piece);
-    const loss = asPct(base?.trim_loss_pct);
+    const trim = trimFrom(base);
+    const loss = trim.pct;
     const f = loss === null ? 1 : 1 / (1 - loss);
     const status = String(base?.status || "").toUpperCase();
     const source = p ? String(p.source || "workbook") : (base ? "workbook" : null);
@@ -1707,6 +1948,11 @@ export function register(app, ctx) {
       perG: purchasePerG === null ? null : purchasePerG * f,
       perPiece: purchasePerPiece === null ? null : purchasePerPiece * f,
       trimLossPct: loss, yieldFactor: f,
+      // The two weights, so the screen can show the measurement rather than
+      // the arithmetic derived from it.
+      trimBoughtG: trim.boughtG, trimUsableG: trim.usableG,
+      trimSource: trim.source,          // weighed | assumed | ''
+      trimWeighed: trim.source === "weighed",
       priceSource: source,
       verified: source === "invoice",
       supplier: String(p?.supplier || base?.supplier || ""),
@@ -1716,6 +1962,24 @@ export function register(app, ctx) {
       flaggedReview: status === "REVIEW",
       note: String(p?.note || base?.note || ""),
       yieldNote: String(base?.yield_note || ""),
+    };
+  }
+
+  /** The trim arithmetic spelled out for the screen, or NULL when untested. */
+  function trimMathOf(e) {
+    if (e.trimLossPct === null || e.purchasePerG === null) return null;
+    const pctTxt = `${round2(e.trimLossPct * 100)}%`;
+    return {
+      boughtG: e.trimBoughtG, usableG: e.trimUsableG,
+      trimLossPct: e.trimLossPct, source: e.trimSource,
+      purchaseSarPerKg: round3(e.purchasePerG * 1000),
+      effectiveSarPerKg: round3(e.perG * 1000),
+      formula: e.trimWeighed
+        ? `اشتريت ${round2(e.trimBoughtG)} جم ← طلع ${round2(e.trimUsableG)} جم `
+          + `(فاقد ${pctTxt}) — ${round3(e.purchasePerG * 1000)} ÷ (1 − ${round3(e.trimLossPct)}) `
+          + `= ${round3(e.perG * 1000)} ر.س/كجم`
+        : `نسبة مكتوبة ${pctTxt} بدون وزنتين — ${round3(e.purchasePerG * 1000)} ÷ `
+          + `(1 − ${round3(e.trimLossPct)}) = ${round3(e.perG * 1000)} ر.س/كجم`,
     };
   }
 
@@ -1750,9 +2014,33 @@ export function register(app, ctx) {
 
     const yieldPct = asYield(b.yield_pct);
     const storedOut = b.output_g === null || b.output_g === undefined ? null : num(b.output_g);
+    const cooked = isCookedBatch(key, b);
+
+    /* ── The conservation-of-mass cap ─────────────────────────────────────────
+       A batch that is NOT cooked before portioning cannot produce more than
+       went into it. Three live batches claim it does, because the workbook set
+       the output cell by hand and then somebody zeroed an ingredient without
+       revisiting it:
+
+         البرجر    5,285 g in  →  6,280 g out  (لحم وش فخدة and بوش are 0 g)
+         الكلوسلو  1,920 g in  →  2,005 g out
+         الكفتة    6,867 g in  →  6,994 g out
+         شيش طاووق 5,281 g in  →  5,351 g out
+
+       Dividing the real cost by a phantom output UNDERSTATES the cost per
+       gram — البرجر by 18.8%, and البرجر feeds a burger, a pizza, a crepe and
+       a طاسة. So a raw batch's output is capped at its input. The cap is
+       one-directional on purpose: a stored output BELOW the input is somebody
+       recording a real loss (bowl residue in عجينة الكريب, water excluded from
+       السلطة الحاتي) and is left exactly as entered. Correcting upward would
+       be inventing a saving. */
+    const outputCapped = !cooked && yieldPct === null
+      && storedOut !== null && inputG > 0 && storedOut > inputG + 0.5;
+
     // Priority: an explicit yield beats a stored output weight, because the
     // stored weight in the imported workbook is the input sum wearing a hat.
     const outputG = yieldPct !== null && inputG > 0 ? inputG * yieldPct
+                  : outputCapped ? inputG
                   : storedOut && storedOut > 0 ? storedOut
                   : inputG > 0 ? inputG : null;
 
@@ -1779,6 +2067,19 @@ export function register(app, ctx) {
       inputG: inputG || null, outputG: outputG || null,
       storedOutputG: storedOut, outputMeasured: b.output_measured === true,
       yieldPct, yieldAssumed: yieldPct === null,
+      /* `cookedBeforePortioning` is the flag that decides whether a missing
+         yield is a finding or a fact. FALSE means the recipe's grams are raw
+         grams and output = input is correct — do not "fix" it. */
+      cookedBeforePortioning: cooked,
+      cookedReason: cooked
+        ? (b.cooked_before_portioning === true ? "محدّدة يدويًا"
+           : COOKED_BATCHES.get(norm(key))?.why || "")
+        : "",
+      cookedEvidence: cooked
+        ? (b.cooked_before_portioning === true ? "manual"
+           : COOKED_BATCHES.get(norm(key))?.evidence || "")
+        : null,
+      outputCapped, capGainG: outputCapped ? round3(storedOut - inputG) : 0,
       // The number Omar can argue with: what the batch costs per kilo now, and
       // what it costed before the yield was applied.
       sarPerKg: perG === null ? null : round3(perG * 1000),
@@ -2485,6 +2786,15 @@ export function register(app, ctx) {
           purchaseSarPerKg: e.purchasePerG === null ? null : round3(e.purchasePerG * 1000),
           purchaseSarPerPiece: e.purchasePerPiece === null ? null : round3(e.purchasePerPiece),
           trimLossPct: e.trimLossPct,
+          /* The trim test, as the two weights the kitchen actually takes.
+             `trimSource` is the difference between evidence and a hunch:
+               weighed — bought/usable are on the row, the pct is arithmetic
+               assumed — a typed percentage, nothing weighed
+               ''      — nobody has looked (and NULL pct means exactly that) */
+          trimBoughtG: e.trimBoughtG, trimUsableG: e.trimUsableG,
+          trimSource: e.trimSource, trimWeighed: e.trimWeighed,
+          trimNeeded: TRIMMABLE_RE.test(key) && !NOT_TRIMMABLE_RE.test(key),
+          trimMath: trimMathOf(e),
           // The ribs line: 90 in, 18% loss, 110 out — visible, not typed.
           effectiveSarPerKg: e.perG === null ? null : round3(e.perG * 1000),
           effectiveSarPerPiece: e.perPiece === null ? null : round3(e.perPiece),
@@ -2533,21 +2843,72 @@ export function register(app, ctx) {
 
       // ── the material's own attributes ──
       const supplier = b.supplier === undefined ? cur.supplier || "" : String(b.supplier);
-      const trimRaw = b.trimLossPct ?? b.yieldLossPct ?? b.trim_loss_pct;
-      const trim = trimRaw === undefined ? asPct(cur.trim_loss_pct)
-                 : trimRaw === null || trimRaw === "" ? null : asPct(trimRaw);
       const yieldNote = b.yieldNote === undefined ? cur.yield_note || "" : String(b.yieldNote);
+
+      /* ── THE TRIM TEST, ENTERED AS TWO WEIGHTS ────────────────────────────
+         The preferred body is `{ trimBoughtG: 1000, trimUsableG: 820 }` — what
+         the scale said before cleaning and after. The percentage is derived
+         here, once, and stored so every existing reader keeps working.
+
+         `trimLossPct` is still accepted, because the ribs row already carries
+         one and a UI may still send it, but a percentage arriving on its own is
+         recorded as `trim_source='assumed'` and does NOT close the task asking
+         for the weights. Sending the two weights clears any old typed pct;
+         sending `trimBoughtG: null` clears the test entirely. */
+      const numOrNull = (v) => (v === undefined ? undefined
+        : v === null || v === "" ? null
+        : Number.isFinite(Number(v)) && Number(v) > 0 ? Number(v) : null);
+      const boughtIn = numOrNull(b.trimBoughtG ?? b.boughtG ?? b.trim_bought_g);
+      const usableIn = numOrNull(b.trimUsableG ?? b.usableG ?? b.trim_usable_g);
+      const weightsTouched = boughtIn !== undefined || usableIn !== undefined;
+
+      const curBought = cur.trim_bought_g === null || cur.trim_bought_g === undefined
+        ? null : num(cur.trim_bought_g);
+      const curUsable = cur.trim_usable_g === null || cur.trim_usable_g === undefined
+        ? null : num(cur.trim_usable_g);
+      const bought = boughtIn === undefined ? curBought : boughtIn;
+      const usable = usableIn === undefined ? curUsable : usableIn;
+
+      if (bought !== null && usable !== null && usable > bought)
+        return c.json({ ok: false, error: "trim_impossible",
+          message: "الوزن بعد التنظيف أكبر من وزن الشراء — راجع الرقمين" }, 400);
+
+      const trimRaw = b.trimLossPct ?? b.yieldLossPct ?? b.trim_loss_pct;
+      let trim, trimSource;
+      if (bought !== null && usable !== null && bought > 0) {
+        trim = asPct(1 - usable / bought);
+        trimSource = "weighed";
+      } else if (weightsTouched && (bought === null || usable === null)) {
+        // The weights were explicitly cleared or only half-entered: the test no
+        // longer stands, so neither does a percentage derived from it.
+        trim = trimRaw === undefined || trimRaw === null || trimRaw === "" ? null : asPct(trimRaw);
+        trimSource = trim === null ? "" : "assumed";
+      } else if (trimRaw !== undefined) {
+        trim = trimRaw === null || trimRaw === "" ? null : asPct(trimRaw);
+        trimSource = trim === null ? "" : "assumed";
+      } else {
+        trim = asPct(cur.trim_loss_pct);
+        trimSource = String(cur.trim_source || (trim === null ? "" : "assumed"));
+      }
 
       if (String(cur.supplier || "") !== supplier)
         await audit(u, "material", id, "supplier", cur.supplier || "", supplier, note);
-      if (asPct(cur.trim_loss_pct) !== trim)
-        await audit(u, "material", id, "trimLossPct", asPct(cur.trim_loss_pct), trim, note);
+      if (asPct(cur.trim_loss_pct) !== trim || curBought !== bought || curUsable !== usable)
+        await audit(u, "material", id, "trimLoss",
+          curBought !== null && curUsable !== null ? `${curBought}→${curUsable} جم`
+            : asPct(cur.trim_loss_pct),
+          bought !== null && usable !== null ? `${bought}→${usable} جم` : trim,
+          `${trimSource || "بدون"}${note ? " · " + note : ""}`);
 
       await pool.query(
         `UPDATE cost_raw_materials
-            SET supplier=$2, trim_loss_pct=$3, yield_note=$4, updated_by=$5, updated_at=NOW()
+            SET supplier=$2, trim_loss_pct=$3, yield_note=$4, updated_by=$5,
+                trim_bought_g=$6, trim_usable_g=$7, trim_source=$8,
+                trim_measured_at = CASE WHEN $8 = 'weighed' THEN NOW() ELSE trim_measured_at END,
+                updated_at=NOW()
           WHERE canonical_ar=$1`,
-        [cur.canonical_ar, supplier, trim, yieldNote, String(u.id || "")]);
+        [cur.canonical_ar, supplier, trim, yieldNote, String(u.id || ""),
+         bought, usable, trimSource]);
 
       // ── a new dated purchase price, if one was supplied ──
       let priceRow = null;
@@ -2627,17 +2988,15 @@ export function register(app, ctx) {
           supplier: e.supplier, purchaseUnit: e.purchaseUnit, pricePerUnit: e.pricePerUnit,
           purchaseSarPerKg: e.purchasePerG === null ? null : round3(e.purchasePerG * 1000),
           trimLossPct: e.trimLossPct,
+          trimBoughtG: e.trimBoughtG, trimUsableG: e.trimUsableG,
+          trimSource: e.trimSource, trimWeighed: e.trimWeighed,
           effectiveSarPerKg: e.perG === null ? null : round3(e.perG * 1000),
           priceSource: e.priceSource, verified: e.verified, effectiveFrom: e.effectiveFrom,
         },
         priceRowAdded: !!priceRow,
-        // Spelled out so the ribs case is legible on screen:  90 ÷ (1−0.18) = 110
-        yieldMath: e.trimLossPct === null || e.purchasePerG === null ? null : {
-          purchaseSarPerKg: round3(e.purchasePerG * 1000),
-          trimLossPct: e.trimLossPct,
-          effectiveSarPerKg: round3(e.perG * 1000),
-          formula: `${round3(e.purchasePerG * 1000)} ÷ (1 − ${e.trimLossPct}) = ${round3(e.perG * 1000)} ر.س/كجم`,
-        },
+        // Spelled out so the ribs case is legible on screen:
+        //   bought 1000 g → usable 820 g → 90 ÷ (1 − 0.18) = 110 SAR/kg
+        yieldMath: trimMathOf(e),
       });
     } catch (e) {
       console.error("[costing] material save failed:", e);
@@ -2689,6 +3048,12 @@ export function register(app, ctx) {
           inputG: eb.inputG, outputG: eb.outputG, storedOutputG: eb.storedOutputG,
           outputMeasured: eb.outputMeasured,
           yieldPct: eb.yieldPct, yieldAssumed: eb.yieldAssumed,
+          /* The flag the UI must show next to "output = input", so nobody reads
+             an equal weight as a missing number. FALSE = raw prep batch,
+             portioned raw, and the equality is the correct answer. */
+          cookedBeforePortioning: eb.cookedBeforePortioning,
+          cookedReason: eb.cookedReason, cookedEvidence: eb.cookedEvidence,
+          outputCapped: eb.outputCapped, capGainG: eb.capGainG,
           sarPerKg: eb.sarPerKg, sarPerKgBeforeYield: eb.sarPerKgBeforeYield,
           storedSarPerKg: eb.storedSarPerKg,
           totalCost: eb.totalCost, confidence: eb.confidence,
@@ -2730,6 +3095,9 @@ export function register(app, ctx) {
           hasRecipe: !eb.plug, inputG: eb.inputG, outputG: eb.outputG,
           storedOutputG: eb.storedOutputG, outputMeasured: eb.outputMeasured,
           yieldPct: eb.yieldPct, yieldAssumed: eb.yieldAssumed,
+          cookedBeforePortioning: eb.cookedBeforePortioning,
+          cookedReason: eb.cookedReason, cookedEvidence: eb.cookedEvidence,
+          outputCapped: eb.outputCapped, capGainG: eb.capGainG,
           sarPerKg: eb.sarPerKg, sarPerKgBeforeYield: eb.sarPerKgBeforeYield,
           storedSarPerKg: eb.storedSarPerKg, totalCost: eb.totalCost,
           confidence: eb.confidence, note: eb.note, yieldNote: eb.yieldNote,
@@ -2738,6 +3106,14 @@ export function register(app, ctx) {
             outputG: round3(eb.outputG),
             formula: `${round3(eb.inputG)} جم × ${eb.yieldPct} = ${round3(eb.outputG)} جم`,
           },
+          /* Why a batch whose output equals its input is fine. The UI should
+             render this instead of an alarm — see COOKED_BATCHES. */
+          yieldExplain: eb.cookedBeforePortioning
+            ? (eb.yieldPct === null
+                ? `التشغيلة دي بتتطبخ قبل ما تتقسّم (${eb.cookedReason}) — محتاجة نسبة ناتج مقيسة`
+                : "")
+            : "التشغيلة دي بتتحضّر نيّة وبتتقسّم نيّة — الوزن الخارج = الوزن الداخل، "
+              + "والجرام في الوصفة جرام قبل الطهي. مفيش فاقد طهي ينفع يتحسب هنا.",
         },
         recipe: eb.lines,
         dependents: deps.map((pid) => ({
@@ -2816,21 +3192,33 @@ export function register(app, ctx) {
       const outputMeasured = b.outputMeasured === undefined
         ? cur.output_measured === true : !!b.outputMeasured;
 
+      /* Whether this batch is cooked BEFORE it is portioned. Only ever set by a
+         human — the code default (COOKED_BATCHES) fills the NULL. Setting it
+         FALSE is the way to say "output = input is correct here, stop asking",
+         and setting it TRUE is the way to make the queue ask for a real yield. */
+      const cookedRaw = b.cookedBeforePortioning ?? b.cooked_before_portioning;
+      const cooked = cookedRaw === undefined ? (cur.cooked_before_portioning ?? null)
+                   : cookedRaw === null || cookedRaw === "" ? null : !!cookedRaw;
+
       if (asYield(cur.yield_pct) !== yieldPct)
         await audit(u, "batch", key, "yieldPct", asYield(cur.yield_pct), yieldPct, note);
       if ((cur.output_g === null ? null : num(cur.output_g)) !== outputG)
         await audit(u, "batch", key, "outputG",
           cur.output_g === null ? null : num(cur.output_g), outputG, note);
+      if ((cur.cooked_before_portioning ?? null) !== cooked)
+        await audit(u, "batch", key, "cookedBeforePortioning",
+          cur.cooked_before_portioning ?? null, cooked, note);
 
       await pool.query(
         `UPDATE cost_batches
             SET yield_pct=$2, output_g=$3, output_measured=$4,
                 yield_note=$5, note=COALESCE(NULLIF($6,''), note),
+                cooked_before_portioning=$8,
                 updated_by=$7, updated_at=NOW()
           WHERE batch_ar=$1`,
         [cur.batch_ar, yieldPct, outputG, outputMeasured,
          b.yieldNote === undefined ? cur.yield_note || "" : String(b.yieldNote),
-         String(b.batchNote || ""), String(u.id || "")]);
+         String(b.batchNote || ""), String(u.id || ""), cooked]);
 
       cache = { at: 0, model: null };
       const model = await loadModel();
@@ -2850,6 +3238,8 @@ export function register(app, ctx) {
         batch: {
           id: eb.nameAr, sarPerKg: eb.sarPerKg, sarPerKgBeforeYield: eb.sarPerKgBeforeYield,
           inputG: eb.inputG, outputG: eb.outputG, yieldPct: eb.yieldPct,
+          cookedBeforePortioning: eb.cookedBeforePortioning,
+          outputCapped: eb.outputCapped, capGainG: eb.capGainG,
           totalCost: eb.totalCost, confidence: eb.confidence, hasRecipe: !eb.plug,
         },
         previousSarPerKg: before.sarPerKg,
@@ -3231,13 +3621,29 @@ export function register(app, ctx) {
      touches. These are judgement calls, and they are written down here rather
      than buried in an expression so they can be argued with. */
   const UNCERTAINTY = {
-    BATCH_PLUG: 0.35,           // tarb modelled as kofta, zero yield loss — a third out is easy
-    BATCH_NO_YIELD_LOSS: 0.20,  // a 20% grill loss is the conservative end
+    BATCH_PLUG: 0.35,           // tarb modelled as kofta — a third out is easy
+    /* Reductions, not grill losses. A tomato sauce loses a LOT of water; a
+       béchamel and a braise lose less. 25% is the conservative end of what a
+       reduced sauce does, and it is applied only to the four batches that are
+       genuinely cooked before they are portioned — see COOKED_BATCHES.
+       It is NOT applied to marinated meat, whose portions are weighed raw. */
+    BATCH_COOKED_NO_YIELD: 0.25,
     RAW_GUESSED: 1.00,          // a typed round number could be double
     ITEM_UNREVIEWED: 0.10,      // nobody has looked; assume a tenth
     PACKAGING_UNPRICED: 1.00,   // unknown is unknown
     RULES_UNREVIEWED: 0.50,
+    /* Deep-fried items absorb oil and the fryer is dumped on a cycle. A working
+       trade figure is 3–5% of the fried item's own food cost; 4% is used and
+       stated as an estimate everywhere it appears. */
+    FRY_OIL: 0.04,
   };
+
+  /* Which menu items are deep-fried, for the frying-oil finding. Matched on the
+     INGREDIENT, not the dish name, because "كرانشي" is marketing and بطاطس is
+     a fryer basket. Every one of these arrives at the restaurant frozen and
+     leaves it through 180 °C oil. */
+  const FRIED_INGREDIENT_RE = /بطاطس|اصابع موزاريلا|أصابع موزاريلا|حلقات بصل|فيليه زنجر|استربس|بوب كوردن|كوردن بلو|كالماري|جمبري/;
+  const FRY_OIL_RE = /زيت قلي|زيت القلي|frying oil/i;
 
   async function buildTasks(model, wb, from, to) {
     const { sales, byProduct } = await salesByProduct(wb, from, to);
@@ -3246,6 +3652,20 @@ export function register(app, ctx) {
     const prodValue = (pid) => byProduct.get(pid)?.value || 0;
     const T = [];
     const push = (t) => T.push({ impactSar: 0, salesSar: 0, evidence: {}, ...t });
+
+    /* Grams of one batch that physically left the store over the window, and
+       what those grams cost. Batch findings are ranked on THIS, not on the
+       sales value of every dish that happens to touch the batch — a 0.5% error
+       on a 16,000-SAR seller is not a bigger problem than a 20% error on a
+       3,000-SAR one, and ranking by sales says it is. */
+    const batchGramsInWindow = (m, key) => {
+      let g = 0;
+      for (const [pid, perUnit] of batchGramsPerUnit(m, key))
+        g += perUnit * (byProduct.get(pid)?.units || 0);
+      return g;
+    };
+    const batchCogsInWindow = (m, key, eb) =>
+      eb.perG === null ? 0 : batchGramsInWindow(m, key) * eb.perG;
 
     /* ── 1. Batches with no recipe. The headline: Tarb. ── */
     for (const [key, b] of model.batch) {
@@ -3267,24 +3687,83 @@ export function register(app, ctx) {
         });
         continue;   // a batch with no recipe cannot also have a yield finding
       }
-      /* ── 2. Batches asserting zero cooking loss. ── */
-      if (eb.yieldAssumed && eb.inputG && eb.outputG >= eb.inputG - 0.5) {
-        const proteinG = (model.batchLines.get(key) || []).reduce((a, l) => {
-          const res = resolve(model, l.ing_type, l.ing_ar);
-          return a + (PROTEIN_RE.test(res.canonical) ? num(l.qty_g) : 0);
-        }, 0);
-        const share = eb.inputG ? proteinG / eb.inputG : 0;
-        if (share <= 0.1) continue;   // an uncooked mix genuinely loses nothing
+      /* ── 2. A yield finding, but ONLY where a yield can exist. ─────────────
+         ═══ DELETED ON PURPOSE: the old BATCH_NO_YIELD_LOSS rule ═══
+         It fired on any batch whose output equalled its input while containing
+         protein, and it was WRONG on this menu. It put SAR 3,288 (الصدور),
+         2,263 (الكفتة) and 1,929 (شيش طاووق) at the very top of the manager's
+         queue asking him to fix numbers that were already right.
+
+         Those are MARINATION batches. 5 kg of chicken goes into the tub and
+         5 kg comes out; a meal takes 300 g and that 300 g is weighed RAW,
+         before it ever sees the grill. Raw grams × raw price is the complete
+         and correct cost. The grill shrinkage happens after the portion has
+         been costed, so charging it here would bill Omar for meat he never
+         bought — and it would do it on his best-selling dishes.
+
+         "Output = input" is only a problem when the recipe's grams are grams
+         of the FINISHED thing, i.e. the batch is cooked before it is
+         portioned. That is `isCookedBatch()`, and on this menu it is four
+         sauces and a braise, not the meat. Do not generalise this back to a
+         protein-share heuristic. */
+      if (eb.cookedBeforePortioning && eb.yieldAssumed
+          && eb.inputG && eb.outputG >= eb.inputG - 0.5) {
+        const info = COOKED_BATCHES.get(norm(key)) || {};
+        const judged = eb.cookedEvidence === "judgement";
         push({
-          kind: "BATCH_NO_YIELD_LOSS", severity: share > 0.4 ? "high" : "medium",
+          kind: "BATCH_COOKED_NO_YIELD",
+          severity: value > 3000 ? "high" : "medium",
           itemKind: "batch", itemRef: b.batch_ar,
-          title: `«${b.batch_ar}» تفترض أن الوزن لا يقل بالطهي`,
-          why: `وزن الإنتاج ${round3(eb.outputG)} جم = مجموع المدخلات، رغم أن `
-             + `${Math.round(share * 100)}% منها بروتين يفقد وزناً — التكلفة أقل من الحقيقة`,
-          action: "زِن ناتج تشغيلة واحدة فعلياً وأدخل نسبة الناتج (مثلاً 80%)",
-          salesSar: round2(value), impactSar: round2(value * UNCERTAINTY.BATCH_NO_YIELD_LOSS * share),
+          title: `«${b.batch_ar}» بتتطبخ قبل ما تتقسّم وبدون نسبة ناتج`,
+          why: `${eb.cookedReason || info.why || "التشغيلة دي بتتطبخ"} — يعني الجرام في `
+             + `الوصفة جرام بعد الطهي، لكن التكلفة متقسومة على وزن المدخلات `
+             + `(${round3(eb.inputG)} جم) كأن مفيش حاجة راحت. التكلفة الحقيقية للجرام أعلى، `
+             + `و${round2(value)} ر.س مبيعات بتعتمد عليها`
+             + (judged ? ". ملاحظة: التصنيف ده قراءة مهنية لقائمة المكونات، مش قياس" : ""),
+          action: `اطبخ تشغيلة وزن ${round3(eb.inputG)} جم مدخلات، وزن الناتج بعد ما يبرد، وأدخل الرقمين`,
+          salesSar: round2(value),
+          /* Real money, not a share of sales: the grams of THIS batch that
+             actually left the store over the window, priced at the difference
+             between the current SAR/g and what it would be at a 25% loss. */
+          impactSar: round2(batchCogsInWindow(model, key, eb)
+            * (1 / (1 - UNCERTAINTY.BATCH_COOKED_NO_YIELD) - 1)),
           evidence: { inputG: round3(eb.inputG), outputG: round3(eb.outputG),
-                      proteinShare: round3(share), sarPerKg: eb.sarPerKg },
+                      sarPerKg: eb.sarPerKg, cookedReason: eb.cookedReason,
+                      classification: eb.cookedEvidence,
+                      batchCogsInWindow: round2(batchCogsInWindow(model, key, eb)),
+                      note: "الأثر تقدير: لو الفاقد الحقيقي 25%، ده الفرق في تكلفة "
+                          + "الكمية اللي اتباعت فعلاً في الفترة" },
+        });
+      }
+
+      /* ── 2b. More out than in. Conservation of mass, and provable. ─────────
+         A raw batch cannot yield more than it was given. Four do on paper,
+         because the output cell was typed by hand and an ingredient was later
+         zeroed without revisiting it. effBatch() now caps the output at the
+         input, so the cost is already corrected — this finding exists to tell
+         the manager the number MOVED and why, and to get the recipe fixed at
+         source rather than left leaning on a cap. */
+      if (eb.outputCapped) {
+        const before = eb.storedOutputG ? round3(eb.totalCost / eb.storedOutputG * 1000) : null;
+        const zeros = (model.batchLines.get(key) || [])
+          .filter((l) => num(l.qty_g) === 0 && num(l.qty) === 0).map((l) => l.ing_ar);
+        push({
+          kind: "BATCH_OUTPUT_EXCEEDS_INPUT", severity: "critical",
+          itemKind: "batch", itemRef: b.batch_ar,
+          title: `«${b.batch_ar}» ناتجها أكبر من مكوّناتها`,
+          why: `المكتوب ${round3(eb.storedOutputG)} جم ناتج من ${round3(eb.inputG)} جم مكوّنات — `
+             + `${round3(eb.capGainG)} جم بيظهروا من العدم، وده بيخلي سعر الكيلو ${before} `
+             + `بدل ${eb.sarPerKg}. التكلفة اتصححت تلقائيًا لكن الوصفة نفسها لسه ناقصة`
+             + (zeros.length ? `؛ في ${zeros.length} مكوّن مكتوب بكمية صفر (${zeros.join("، ")})` : ""),
+          action: "افتح التشغيلة وأدخل كميات المكوّنات اللي مكتوبة صفر، أو صحّح وزن الناتج",
+          salesSar: round2(value),
+          /* Exact: the grams sold over the window × the SAR/g the cap moved.
+             No estimate in this one — the correction is arithmetic. */
+          impactSar: before === null ? round2(value * 0.05)
+            : round2(batchGramsInWindow(model, key) * (eb.perG - before / 1000)),
+          evidence: { storedOutputG: round3(eb.storedOutputG), inputG: round3(eb.inputG),
+                      phantomG: round3(eb.capGainG), sarPerKgWas: before,
+                      sarPerKgNow: eb.sarPerKg, zeroQtyLines: zeros },
         });
       }
     }
@@ -3312,55 +3791,83 @@ export function register(app, ctx) {
       });
     }
 
-    /* ── 4. Meat with no trim loss measured. Omar's ribs workaround, generalised. ── */
+    /* ── 4. THE TRIM TEST — the real yield loss in this operation. ─────────────
+          This is where the money the deleted BATCH_NO_YIELD_LOSS rule was
+          chasing actually is. Not on the grill, where the portion has already
+          been weighed and paid for, but on the prep bench BEFORE anything is
+          weighed: buy 1 kg of ribs, clean it, get 820 g. The 180 g of bone and
+          fat cap is bought, paid for, and unsellable, so every usable gram cost
+          more than the invoice says.
+
+          The task asks for the two weights and nothing else. A typed percentage
+          does not close it (`trimWeighed`), because the point of the whole
+          exercise is to replace inference with a scale. */
     for (const [key, r] of model.raw) {
       if (!TRIMMABLE_RE.test(key) || NOT_TRIMMABLE_RE.test(key)) continue;
       const e = effRaw(model, wb, key);
-      if (e.trimLossPct !== null) continue;
+      if (e.trimWeighed) continue;          // measured — done
       if (e.purchasePerG === null) continue;
       const deps = dependentsOfRaw(model, key);
       const value = deps.reduce((a, d) => a + prodValue(d.productId), 0);
       if (value < 100) continue;    // not worth the manager's morning
+      const assumed = e.trimLossPct !== null;   // a number exists, unweighed
+      const buyKg = round3(e.purchasePerG * 1000);
       push({
         kind: "MATERIAL_NO_YIELD", severity: value > 3000 ? "high" : "medium",
         itemKind: "material", itemRef: r.canonical_ar,
-        title: `«${r.canonical_ar}» بدون نسبة فاقد تنظيف`,
-        why: `سعر الشراء ${round3(e.purchasePerG * 1000)} ر.س/كجم، لكن جزء من الكيلو `
-           + `بيتشال قبل الطهي ولا أحد قاسه — فالتكلفة الحقيقية للجرام المستخدم أعلى. `
-           + `${round2(value)} ر.س مبيعات تعتمد عليها`,
-        action: "زِن كيلو قبل وبعد التنظيف وأدخل النسبة — الموديل هيحسب سعر الجرام الصافي",
-        salesSar: round2(value), impactSar: round2(value * 0.08),
-        evidence: { purchaseSarPerKg: round3(e.purchasePerG * 1000), dependents: deps.length },
+        title: assumed
+          ? `فاقد تنظيف «${r.canonical_ar}» رقم مفترض مش موزون`
+          : `«${r.canonical_ar}» — مقستش الفاقد بعد التنظيف`,
+        why: assumed
+          ? `الموديل شغّال على فاقد ${round2(e.trimLossPct * 100)}% وده رقم استُنتج، `
+            + `مش خارج من ميزان. سعر الشراء ${buyKg} ر.س/كجم بيطلع ${round3(e.perG * 1000)} `
+            + `بعد الفاقد، و${round2(value)} ر.س مبيعات ماشية على الرقم ده`
+          : `سعر الشراء ${buyKg} ر.س/كجم، لكن العضم والدهن اللي بيتشال قبل الطهي `
+            + `اتدفع تمنه ومش بيتباع. من غير الوزنتين الموديل بيحسب الجرام بسعر الشراء، `
+            + `يعني أرخص من الحقيقة. ${round2(value)} ر.س مبيعات تعتمد عليها`,
+        // One instruction, two numbers, one scale. No percentage anywhere.
+        action: "زِن الكمية وهي زي ما اشتريتها، نضّفها، زِنها تاني — "
+              + "وأدخل الرقمين (اشتريت / طلع). النسبة والسعر الصافي بيتحسبوا لوحدهم",
+        salesSar: round2(value), impactSar: round2(value * (assumed ? 0.05 : 0.08)),
+        evidence: { purchaseSarPerKg: buyKg, dependents: deps.length,
+                    trimSource: e.trimSource || "none",
+                    assumedTrimLossPct: e.trimLossPct,
+                    example: `اشتريت 1000 جم ← طلع 820 جم يعني فاقد 18% → `
+                           + `${round3(buyKg / 0.82)} ر.س/كجم بدل ${buyKg}`,
+                    note: "الأثر تقدير — الفاقد الحقيقي مش متقاس لسه" },
       });
     }
 
-    /* ── 4b. The ribs number, and every other weight-sold grill priced by hand.
-          `GRILL_FAMILIES` carries meat costs Omar typed; the workbench can now
-          derive them, and where the two disagree the difference is real money
-          on the weight-sold lines. ── */
+    /* ── 4b. The ribs number. The one material where a trim loss is ALREADY in
+          the cost, derived by algebra from the gap between what Omar pays (90)
+          and what he was pricing off (110). It is the right shape and the wrong
+          provenance, and it stays flagged until the two weights replace it. ── */
     {
       const ribs = model.raw.get(norm("ريش"));
-      if (ribs && String(ribs.yield_note || "").includes(RIBS_YIELD_SENTINEL)) {
-        const e = effRaw(model, wb, norm("ريش"));
+      const eR = effRaw(model, wb, norm("ريش"));
+      if (ribs && !eR.trimWeighed
+          && String(ribs.yield_note || "").includes(RIBS_YIELD_SENTINEL)) {
         const ribSales = sales.filter((s) => !s.isModifier && norm(s.name).includes("ريش"))
                               .reduce((a, s) => a + s.amount, 0);
         push({
           kind: "RIBS_YIELD_ASSUMED", severity: ribSales > 2000 ? "high" : "medium",
           itemKind: "material", itemRef: "ريش",
-          title: "نسبة فاقد الريش مستنتجة، مش مقيسة",
-          why: `التسعير الحالي 110 ر.س/كجم بينما سعر الشراء 90. الفرق ده معناه فاقد `
-             + `${Math.round(RIBS_TRIM_ASSUMED * 100)}% — وده رقم استنتجناه من الفرق نفسه، `
-             + `مش من ميزان. ${round2(ribSales)} ر.س مبيعات ريش بتعتمد عليه`,
-          action: "زِن صندوق ريش قبل التنظيف وبعد الشوي، وأدخل النسبة الحقيقية — "
-                + "السعر هيطلع لوحده بدل ما يتكتب باليد",
+          title: "فاقد الريش متحسوب بالعكس من السعر، مش من ميزان",
+          why: `الموديل عارف إن الشراء 90 ر.س/كجم والتسعير 110، فاستنتج إن الفاقد `
+             + `${Math.round(RIBS_TRIM_ASSUMED * 100)}%. ده رقم اتحسب من الفرق نفسه — `
+             + `لو الفاقد الحقيقي 25% السعر الصافي 120 مش 110، ولو 12% يبقى 102. `
+             + `${round2(ribSales)} ر.س مبيعات ريش قاعدة على التخمين ده`,
+          action: "زِن صندوق ريش قبل التنظيف وبعده وأدخل الرقمين — الوزنتين بس",
           salesSar: round2(ribSales),
           impactSar: round2(ribSales * 0.12),
           evidence: {
-            purchaseSarPerKg: e.purchasePerG === null ? null : round3(e.purchasePerG * 1000),
+            purchaseSarPerKg: eR.purchasePerG === null ? null : round3(eR.purchasePerG * 1000),
             assumedTrimLossPct: round3(RIBS_TRIM_ASSUMED),
-            derivedSarPerKg: e.perG === null ? null : round3(e.perG * 1000),
+            derivedSarPerKg: eR.perG === null ? null : round3(eR.perG * 1000),
             hardcodedSarPerKg: 110,
+            trimSource: eR.trimSource || "none",
             formula: "90 ÷ (1 − 0.1818) = 110.0 ر.س/كجم",
+            note: "الأثر تقدير: ±6 نقاط حوالين الـ18% المفترضة",
           },
         });
       }
@@ -3517,6 +4024,220 @@ export function register(app, ctx) {
       });
     }
 
+    /* ══════════════════════════════════════════════════════════════════════════
+       11. THE CHEF'S READ OF THE RECIPES
+       Everything above audits the arithmetic. The four findings below come from
+       reading the recipes the way a kitchen reads them — what would you actually
+       have to buy to send this dish out of the pass — and every one of them is a
+       cost that is genuinely being incurred and genuinely is not in the model.
+       ══════════════════════════════════════════════════════════════════════════ */
+
+    /* ── 11a. An ingredient written into a recipe at ZERO grams. ───────────────
+       Somebody listed it, then never measured it. Either the kitchen does not
+       use it (delete the line) or it does (the dish is undercosted every time).
+       On the live data this is 36 lines: جبنة كيري on 25 pizzas — a cheese
+       nobody has weighed onto a product family worth SAR 2,100 — and بطاطس on
+       four طاسات, which matters more than it looks: a طاسة is SERVED on a bed
+       of fries. A skillet with 0 g of potato is not a costing rounding error,
+       it is a recipe that cannot produce the dish on the menu photo. */
+    {
+      const byIng = new Map();
+      for (const [pid, lines] of model.recipeLines) {
+        const m = model.menuById.get(pid);
+        if (!m) continue;
+        for (const l of lines) {
+          if (num(l.qty) !== 0 || num(l.qty_g) !== 0) continue;
+          const k = norm(l.ing_ar);
+          const e = byIng.get(k) || { ing: l.ing_ar, items: [], value: 0, units: 0 };
+          e.items.push(m.product_ar);
+          e.value += prodValue(pid);
+          e.units += byProduct.get(pid)?.units || 0;
+          byIng.set(k, e);
+        }
+      }
+      for (const [k, e] of byIng) {
+        const er = effRaw(model, wb, k);
+        /* Size the hole with the portion this kitchen ACTUALLY uses of the
+           same ingredient elsewhere, not a flat guess. بطاطس is 250 g in the
+           fries and 100 g in a حواوشي, so the four طاسات missing their potato
+           base are a far bigger hole than جبنة كيري at 15 g. The number is
+           never written to any cost — the whole point of the finding is that
+           nobody has said what the quantity is. */
+        const typicalG = typicalQtyG(model, k);
+        const perPortion = er.perG === null ? null : round3(er.perG * typicalG);
+        push({
+          kind: "RECIPE_ZERO_QTY",
+          severity: e.value > 2000 ? "high" : e.value > 300 ? "medium" : "low",
+          itemKind: "material", itemRef: e.ing,
+          title: `«${e.ing}» مكتوبة في ${e.items.length} وصفة بكمية صفر`,
+          why: `مكوّن اتكتب في الوصفة وماتحطلوش كمية، يعني إما المطبخ مش بيستخدمه `
+             + `والسطر لازم يتشال، أو بيستخدمه والتكلفة ناقصة على `
+             + `${round2(e.value)} ر.س مبيعات`
+             + (perPortion === null ? ""
+                : ` — في وصفات تانية بيتحط منه ${round2(typicalG)} جم بـ${perPortion} ر.س`),
+          action: `افتح أي صنف من دول وقول: بيتحط منه كام جرام فعلاً؟ لو مش بيتحط، امسح السطر`,
+          salesSar: round2(e.value),
+          impactSar: perPortion === null ? round2(e.value * 0.01)
+                                         : round2(perPortion * e.units),
+          evidence: { ingredient: e.ing, itemCount: e.items.length,
+                      items: e.items.slice(0, 12),
+                      typicalQtyG: round2(typicalG), sarPerTypicalPortion: perPortion,
+                      unitsSold: round2(e.units),
+                      note: "الأثر تقدير: الحصة مأخوذة من متوسط استخدام نفس المكوّن في "
+                          + "وصفات تانية — الكمية الحقيقية هنا مش مكتوبة" },
+        });
+      }
+    }
+
+    /* ── 11b. The fryer. ──────────────────────────────────────────────────────
+       `زيت قلي دلال` is in the raw-material list at 6.30 SAR/L and it appears in
+       exactly zero recipes. So is `بهارات بطاطس`. Meanwhile بطاطس محمرة is
+       costed as 250 g of potato at 1.50 SAR and NOTHING ELSE — no oil, no
+       seasoning. Every fried item on this menu is in the same state: mozzarella
+       sticks, onion rings, zinger fillets, strips, بوب كوردن, calamari.
+
+       Frying oil is not a rounding error in a fried-food business. The basket
+       absorbs it and the fryer gets dumped on a cycle whether or not it was
+       busy, and both of those are bought oil that left the building as food
+       cost. 4% of the fried item's own cost is the conservative trade figure
+       and it is stated as an estimate. */
+    {
+      // The exact canonical name, so the task links to the real material row.
+      const oilKey = [...model.raw.keys()].find((k) => FRY_OIL_RE.test(String(k))) || null;
+      const oilExists = oilKey !== null;
+      const oilUsed = [...model.recipeLines.values()].flat()
+        .some((l) => FRY_OIL_RE.test(norm(l.ing_ar)) && num(l.qty_g) > 0)
+        || [...model.batchLines.values()].flat()
+        .some((l) => FRY_OIL_RE.test(norm(l.ing_ar)) && num(l.qty_g) > 0);
+      if (!oilUsed) {
+        const fried = [];
+        for (const [pid, lines] of model.recipeLines) {
+          const m = model.menuById.get(pid);
+          if (!m) continue;
+          if (!lines.some((l) => FRIED_INGREDIENT_RE.test(norm(l.ing_ar)))) continue;
+          fried.push({ pid, nameAr: m.product_ar, value: prodValue(pid) });
+        }
+        const friedValue = fried.reduce((a, f) => a + f.value, 0);
+        const friedCogs = fried.reduce((a, f) => {
+          const cm = computeItem(model, wb, f.pid);
+          return a + (cm.cost || 0) * (byProduct.get(f.pid)?.units || 0);
+        }, 0);
+        if (fried.length) {
+          fried.sort((a, b) => b.value - a.value);
+          push({
+            kind: "FRY_OIL_UNCOSTED", severity: friedValue > 3000 ? "high" : "medium",
+            itemKind: "material", itemRef: oilKey || "زيت قلي",
+            title: "زيت القلي مش داخل في تكلفة أي صنف مقلي",
+            why: (oilExists
+                   ? `«${model.raw.get(oilKey)?.canonical_ar || oilKey}» موجود في قايمة الخامات `
+                     + `بـ${round3(num(model.raw.get(oilKey)?.cost_per_unit))} `
+                     + `ر.س/${model.raw.get(oilKey)?.purchase_unit || "لتر"} ومستخدم في صفر وصفة. `
+                   : "مفيش مادة خام اسمها زيت قلي أصلاً. ")
+               + `${fried.length} صنف بيتقلي (${fried.slice(0, 4).map((f) => f.nameAr).join("، ")}…) `
+               + `بـ${round2(friedValue)} ر.س مبيعات محسوبة كأن القلي مجاني. البطاطس المحمرة `
+               + `مثلاً تكلفتها 1.50 ر.س = بطاطس وبس، لا زيت ولا بهارات`,
+            action: "قول القلاية بتاخد كام لتر، وبتتغير كل كام يوم — الموديل هيوزّع "
+                  + "التكلفة على الأصناف المقلية",
+            salesSar: round2(friedValue),
+            impactSar: round2(friedCogs * UNCERTAINTY.FRY_OIL),
+            evidence: { friedItems: fried.length, friedCogsInWindow: round2(friedCogs),
+                        oilMaterialExists: oilExists, assumedShareOfFriedCost: UNCERTAINTY.FRY_OIL,
+                        topItems: fried.slice(0, 8).map((f) => f.nameAr),
+                        note: "الأثر تقدير: 4% من تكلفة الأصناف المقلية، رقم مهني مش قياس" },
+          });
+        }
+      }
+    }
+
+    /* ── 11c. qty and qty_g disagreeing on a gram line. ────────────────────────
+       Two live rows, both of them a straight data-entry slip that changes the
+       cost: كريب ميكس فراخ charges 100 g of strips for a line that says 75 g
+       (over by 0.66 SAR), and كريب هوت دوج charges 160 g for a line that says
+       180 g (under by 0.40 SAR). Small money, but it is the kind of thing that
+       makes a manager stop trusting the recipe screen. */
+    {
+      const bad = [];
+      for (const [pid, lines] of model.recipeLines) {
+        const m = model.menuById.get(pid);
+        if (!m) continue;
+        for (const l of lines) {
+          const u = String(l.unit || "g").trim().toLowerCase();
+          if (!["g", "ml", "جم", "مل"].includes(u)) continue;
+          const q = num(l.qty), g = num(l.qty_g);
+          if (!q || !g || Math.abs(q - g) < 0.001) continue;
+          bad.push({ pid, nameAr: m.product_ar, ing: l.ing_ar, qty: q, qtyG: g,
+                     value: prodValue(pid) });
+        }
+      }
+      if (bad.length) {
+        const value = [...new Set(bad.map((x) => x.pid))]
+          .reduce((a, pid) => a + prodValue(pid), 0);
+        const gap = bad.reduce((a, x) => {
+          const er = effRaw(model, wb, norm(x.ing));
+          const units = byProduct.get(x.pid)?.units || 0;
+          return a + (er.perG === null ? 0 : Math.abs(x.qtyG - x.qty) * er.perG * units);
+        }, 0);
+        push({
+          kind: "RECIPE_QTY_UNIT_MISMATCH", severity: "high",
+          itemKind: "recipe", itemRef: "qty_mismatch",
+          title: `${bad.length} سطر في الوصفات الكمية فيه غير الجرامات`,
+          why: bad.map((x) => `«${x.nameAr}» — ${x.ing} مكتوبة ${x.qty} جم ومحسوبة ${x.qtyG} جم`)
+                  .join("؛ ") + `. الفرق ${round2(gap)} ر.س في الفترة دي`,
+          action: "افتح السطرين دول وخلّي الكمية والجرامات نفس الرقم",
+          salesSar: round2(value), impactSar: round2(gap),
+          evidence: { lines: bad.map((x) => ({ item: x.nameAr, ingredient: x.ing,
+                        qty: x.qty, qtyG: x.qtyG })) },
+        });
+      }
+    }
+
+    /* ── 11d. The same dish, two prices, one of them a loss. ───────────────────
+       The delivery apps take 18–21%. A platform price at or below the in-house
+       price therefore cannot cover the commission, let alone the extra
+       packaging — the dish earns LESS on the app than on the counter and the
+       app is the channel that costs more to serve. `/health` has reported this
+       for a while; it belongs in the queue, because it is the one pricing error
+       here that can be fixed in a minute by editing a number in an app portal. */
+    {
+      const COMMISSION = 0.195;    // midpoint of the 18–21% band
+      for (const m of model.menu) {
+        const r = m.price_restaurant === null ? null : num(m.price_restaurant);
+        const p = m.price_platform === null ? null : num(m.price_platform);
+        if (!r || !p) continue;
+        if (p > r * (1 + COMMISSION)) continue;      // uplift covers the cut
+        const cm = computeItem(model, wb, m.product_id);
+        const cost = cm.cost;
+        if (cost === null || cost === undefined) continue;
+        const gpHouse = r / (1 + VAT_RATE) - cost;
+        const gpApp = (p * (1 - COMMISSION)) / (1 + VAT_RATE) - cost;
+        const value = prodValue(m.product_id);
+        const units = byProduct.get(m.product_id)?.units || 0;
+        push({
+          kind: "PLATFORM_PRICE_TOO_LOW",
+          /* A platform price at or BELOW the counter price is not an
+             optimisation, it is a mistake — four pizzas are in that state and
+             they must not be filtered out by the noise floor just because they
+             sold two units. Critical means "this is wrong", not "this is big". */
+          severity: p <= r || gpApp <= 0 ? "critical" : "high",
+          itemKind: "item", itemRef: m.product_ar, productId: m.product_id,
+          title: gpApp <= 0
+            ? `«${m.product_ar}» بتخسر على التطبيق`
+            : `«${m.product_ar}» سعرها على التطبيق مش مغطّي العمولة`,
+          why: `سعر المطعم ${r} وسعر التطبيق ${p} — فرق ${round2((p / r - 1) * 100)}% بس، `
+             + `والتطبيقات بتاخد 18–21%. بعد العمولة الطبق بيجيب `
+             + `${round2(gpApp)} ر.س مقابل ${round2(gpHouse)} داخل المطعم`
+             + (gpApp <= 0 ? " — يعني كل وحدة بتتباع خسارة" : ""),
+          action: `ارفع سعر «${m.product_ar}» على التطبيقات لـ${round2(r * 1.35)} ر.س على الأقل`,
+          salesSar: round2(value),
+          impactSar: round2(Math.max(0, gpHouse - gpApp) * Math.max(units, 1)),
+          evidence: { priceRestaurant: r, pricePlatform: p, cost: round3(cost),
+                      gpHouse: round2(gpHouse), gpPlatform: round2(gpApp),
+                      commissionAssumed: COMMISSION, units,
+                      note: "العمولة 19.5% متوسط نطاق 18–21% — تقدير، والنسبة الحقيقية في تبويب المالية" },
+        });
+      }
+    }
+
     /* ── 12. Open questions, asked in the queue instead of over WhatsApp ──────
        Omar's instruction: put the questions to the manager directly. These are
        costs every restaurant carries and this menu certainly carries — charcoal
@@ -3558,6 +4279,26 @@ export function register(app, ctx) {
         title: "الكوباية والتلج والشاليموه",
         why: "لو في مشروب بيتقدّم مفتوح، الكوباية والتلج تكلفة مالهاش سطر",
         action: "قول المشروب بيتقدّم إزاي، وسعر الكوباية والشاليموه" },
+      /* Skewers. شيش طاووق, كفتة and طرب all go on a skewer and the skewer is
+         either a wooden one that leaves with the food or a steel one that has
+         to be washed. Neither is in any recipe or in the packaging list. Small
+         per unit, constant across the whole grill section. */
+      { id: "skewers", need: /سيخ|أسياخ|اسياخ|skewer/i, sales: grillSales, share: 0.004,
+        title: "الأسياخ مش محسوبة في الشيش والكفتة والطرب",
+        why: `الشيش طاووق والكفتة والطرب كلها بتتشوى على أسياخ، ومفيش سيخ في أي وصفة `
+           + `ولا في قايمة التغليف. ${round2(grillSales)} ر.س مبيعات مشاوي محسوبة من غير سيخ`,
+        action: "قول الأسياخ خشب ولا حديد، والخشب بكام الكيس وفيه كام سيخ" },
+      /* Crepe/hawawshi wrapping. A crepe leaves the pass in paper before it
+         reaches a box, and every سندوتش is wrapped. Nothing in PACKAGING_SEED
+         covers paper — only boxes and bags. */
+      { id: "wrap_paper", need: /ورق تغليف|ورق كريب|ورق ساندوتش|wrapping/i,
+        sales: sales.filter((s) => /كريب|حواوشي|ساندوتش|برجر/.test(s.name))
+                    .reduce((a, s) => a + (s.amount || 0), 0),
+        share: 0.006,
+        title: "ورق تغليف الكريب والساندوتشات",
+        why: "الكريب والحواوشي والبرجر بيتلفّوا في ورق قبل ما يدخلوا العلبة، "
+           + "وقايمة التغليف فيها علب وأكياس بس — مفيش ورق",
+        action: "قول رول ورق التغليف بكام وبيلف كام قطعة تقريبًا" },
     ];
     for (const q of QUESTIONS) {
       if (materialExists(q.need)) continue;   // answered — the material now exists
@@ -3592,9 +4333,19 @@ export function register(app, ctx) {
        manager cannot finish is a queue he stops opening, and the cost of
        hiding a SAR 12 finding is smaller than the cost of burying the SAR
        3,288 one under it. Anything CRITICAL survives regardless of size —
-       those are correctness bugs, not optimisations. */
+       those are correctness bugs, not optimisations.
+
+       So do STRUCTURAL findings: statements about how the model itself is
+       built, of which there can only ever be a handful. صوص البيتزا carries a
+       few tens of riyals because pizza sauce is 30 g of cooked tomato, but
+       "this batch needs a yield and those twelve do not" is the sentence that
+       keeps the whole yield model honest. Burying it would let the next reader
+       conclude nothing here ever needs a yield. */
+    const STRUCTURAL = new Set(["BATCH_COOKED_NO_YIELD", "BATCH_OUTPUT_EXCEEDS_INPUT",
+                                "RECIPE_QTY_UNIT_MISMATCH", "FRY_OIL_UNCOSTED"]);
     const FLOOR_SAR = 15;
-    const kept = T.filter((t) => t.severity === "critical" || (t.impactSar || 0) >= FLOOR_SAR);
+    const kept = T.filter((t) => t.severity === "critical" || STRUCTURAL.has(t.kind)
+      || (t.impactSar || 0) >= FLOOR_SAR);
     kept.sort((a, b) => (b.impactSar || 0) - (a.impactSar || 0));
     kept.belowFloor = T.length - kept.length;
     return kept;
