@@ -724,6 +724,61 @@ async function fetchCustomersList({ maxPages = 10, pageSize = 500 } = {}) {
   return out;
 }
 
+// ─── Customer groups (مجموعات العملاء) ──────────────────────────────────────
+// Where the owners and the staff are actually named. Without this list a 50%
+// discount can only be guessed at from its size; with it, the two people who
+// were topping our "best customers" table turn out to be the owners.
+// Both the group list and each group's members are DataTables endpoints; the
+// member link is embedded in the count cell's HTML rather than being derivable
+// from the id, so it is parsed out rather than assumed.
+async function fetchCustomerGroups() {
+  const dt = (cols, extra = {}) => {
+    const qs = new URLSearchParams();
+    qs.set("draw", "1");
+    cols.forEach((c, i) => { qs.set(`columns[${i}][data]`, c); qs.set(`columns[${i}][searchable]`, "true"); });
+    qs.set("order[0][column]", "0");
+    qs.set("order[0][dir]", "desc");
+    qs.set("start", "0");
+    qs.set("length", "200");
+    qs.set("search[value]", "");
+    for (const [k, v] of Object.entries(extra)) qs.set(k, v);
+    return qs.toString();
+  };
+
+  const listRes = await authGet(`/customer-groups?${dt(["id", "name", "local_name", "customers_count", "actions"])}`, { json: true });
+  if (!listRes.ok) throw new Error(`fetchCustomerGroups: HTTP ${listRes.status}`);
+  const list = await listRes.json();
+
+  const out = [];
+  for (const g of list.data || []) {
+    const href = (String(g.customers_count || "").match(/href="([^"]+)"/) || [])[1];
+    const group = {
+      id: String(g.id),
+      name: g.name || "",
+      localName: g.local_name || "",
+      members: [],
+    };
+    if (href) {
+      const path = href.replace(/^https?:\/\/[^/]+\/[^/]+\/dashboard/, "");
+      const q = dt(["id", "first_name", "last_name", "phone", "email"]);
+      const res = await authGet(`${path}${path.includes("?") ? "&" : "?"}${q}`, { json: true });
+      if (res.ok) {
+        const body = await res.json().catch(() => null);
+        for (const m of body?.data || []) {
+          group.members.push({
+            id: String(m.id),
+            name: [m.first_name, m.last_name].filter(Boolean).join(" ").trim(),
+            phone: String(m.phone || "").trim(),
+          });
+        }
+      }
+      await sleep(THROTTLE_MS);
+    }
+    out.push(group);
+  }
+  return out;
+}
+
 // ─── Order line items ───────────────────────────────────────────────────────
 // The dashboard renders them into a modal from an HTML fragment endpoint.
 // Returns [{ name, qty, amount, note }] — modifiers arrive as their own rows.
@@ -846,6 +901,7 @@ export {
   fetchCustomerOrders,
   fetchOrdersSince,
   fetchCustomersList,
+  fetchCustomerGroups,
   fetchOrderProducts,
   createCustomer,
   ping,
