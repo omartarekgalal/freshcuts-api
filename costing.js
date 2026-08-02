@@ -3517,6 +3517,75 @@ export function register(app, ctx) {
       });
     }
 
+    /* ── 12. Open questions, asked in the queue instead of over WhatsApp ──────
+       Omar's instruction: put the questions to the manager directly. These are
+       costs every restaurant carries and this menu certainly carries — charcoal
+       under the grill, the sauce nobody ordered, the daily bin — none of which
+       exists anywhere in the workbook. Each one is a finding tied to a piece of
+       missing DATA, so it closes itself the moment the answer is entered rather
+       than needing someone to remember to tick it off.
+
+       Impact is deliberately conservative and stated as a share of the sales it
+       touches, because the honest answer to "how much is this costing you" is
+       currently "nobody has measured it". */
+    const materialExists = (re) => [...model.raw.keys()].some((k) => re.test(String(k)));
+    const totalSales = sales.reduce((a, s) => a + (s.amount || 0), 0);
+    const grillSales = sales
+      .filter((s) => /مشوي|ريش|كباب|كفت|طرب|شيش|فحم|مشكل/.test(s.name))
+      .reduce((a, s) => a + (s.amount || 0), 0);
+
+    const QUESTIONS = [
+      { id: "charcoal", need: /فحم|charcoal|غاز|gas/i, sales: grillSales, share: 0.02,
+        title: "الفحم والغاز مش محسوبين في تكلفة أي طبق",
+        why: `المشاوي بتاكل فحم وغاز وده مصروف حقيقي لكل طبق، ومفيش مادة خام بالاسم ده أصلاً. `
+           + `${round2(grillSales)} ر.س مبيعات مشاوي محسوبة من غيره`,
+        action: "قول كيس الفحم بكام وبيكفي كام طبق تقريبًا، وأضفه كمادة خام" },
+      { id: "free_sauce", need: /صوص مجاني|إضافات مجانية/i, sales: totalSales, share: 0.01,
+        title: "الصوصات والمخلل اللي بتتحط من غير طلب",
+        why: "الحاجات اللي بتنزل مع الطبق من غير ما العميل يطلبها مش في أي وصفة، "
+           + "وبتاكل من الهامش على كل طلب",
+        action: "قول إيه اللي بينزل مجاني مع كل صنف وبكمية تقريبية قد إيه" },
+      { id: "waste", need: /هدر يومي|تالف/i, sales: totalSales, share: 0.015,
+        title: "الأكل التالف آخر اليوم مش محسوب",
+        why: "اللي بيترمي في آخر اليوم تكلفته بتتوزع على اللي اتباع فعلاً. "
+           + "من غير الرقم ده تكلفة الطعام أقل من الحقيقة",
+        action: "قول تقريبًا بيترمي بكام في اليوم، أو ابدأ تكتبه يوم بيوم" },
+      { id: "staff_meal", need: /وجبة موظفين|أكل العاملين/i, sales: totalSales, share: 0.01,
+        title: "أكل الموظفين مش متسجل كتكلفة",
+        why: "ده غير خصم الـ٥٠٪ — الوجبة اللي بياكلها العامل بتطلع من نفس المخزون",
+        action: "قول كام وجبة موظفين في اليوم وإيه اللي بياكلوه غالبًا" },
+      { id: "drink_serve", need: /كوب|شاليموه|تلج|ice|cup/i, sales: totalSales, share: 0.005,
+        title: "الكوباية والتلج والشاليموه",
+        why: "لو في مشروب بيتقدّم مفتوح، الكوباية والتلج تكلفة مالهاش سطر",
+        action: "قول المشروب بيتقدّم إزاي، وسعر الكوباية والشاليموه" },
+    ];
+    for (const q of QUESTIONS) {
+      if (materialExists(q.need)) continue;   // answered — the material now exists
+      if (!(q.sales > 0)) continue;
+      push({
+        kind: "OPEN_QUESTION", severity: "medium", itemKind: "question", itemRef: q.id,
+        title: q.title, why: q.why, action: q.action,
+        salesSar: round2(q.sales), impactSar: round2(q.sales * q.share),
+        evidence: { note: "الأثر تقدير محافظ — الرقم الحقيقي مش متقاس لسه", share: q.share },
+      });
+    }
+    // Delivery packaging is a different question: it is about a RULE, not a
+    // material, so it closes when a channel rule for delivery is reviewed.
+    const reviewedChannelRule = (await pool.query(
+      `SELECT 1 FROM cw_packaging_rules
+        WHERE scope = 'channel' AND active AND reviewed LIMIT 1`)).rowCount > 0;
+    if (!reviewedChannelRule) {
+      push({
+        kind: "OPEN_QUESTION", severity: "medium", itemKind: "question", itemRef: "delivery_box",
+        title: "علبة التوصيل نفس علبة الصالة؟",
+        why: "طلبات التوصيل غالبًا بتتغلّف أتقل عشان تستحمل الطريق، "
+           + "وقواعد التغليف الحالية اتكتبت من كلام مش من مراجعة",
+        action: "راجع قواعد التغليف وقول لو التوصيل بياخد علبة أغلى",
+        salesSar: 0, impactSar: 20,
+        evidence: { note: "بند تشغيلي، مش مربوط بصنف" },
+      });
+    }
+
     /* ── The noise floor ─────────────────────────────────────────────────────
        Before this line the live build produced 140 open tasks, 30 of them
        food-cost alarms worth under SAR 15 each over three months. A queue the
