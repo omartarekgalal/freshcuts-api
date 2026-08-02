@@ -103,27 +103,39 @@ export const DEFAULT_RATES = {
       components: { dataService: 0.08, deliveryService: 0.10 },
       note: "١٨٪ توصيل = ٨٪ خدمة بيانات + ١٠٪ خدمة توصيل · ٣٪ استلام من الفرع",
     }],
-    paymentFeePct: 0.025,
-    minServiceFeeSar: 1,      // minimum service fee per order
+    /* Measured from Keeta's own per-order fee panel (getOrderDtl), reconciled
+       on real orders — see /api/keeta-payouts/reconcile for the evidence. The
+       contract-derived numbers that used to sit here were wrong in both
+       directions and about 17% low overall, so these replace them:
+
+       • Commission is 18% of the VAT-INCLUSIVE value AFTER merchant-funded
+         promotions, i.e. of `total`, not of the pre-discount `gross_incl`.
+         Charging 18% of the pre-discount price overstates every discounted
+         order. `commissionBase: "total_after_promo"` records that.
+       • The bank fee is 2.875%, which Keeta states in the payload itself
+         (`bankTransactionFeeRate`). The contract's 2.5% is not what is taken.
+       • There is NO minimum service fee. The SAR 1 in the contract turns out
+         to be `distanceFee`, ADDED on top of commission on some orders — a
+         floor models the opposite behaviour, so it is gone.
+       • The delivery subsidy is not a contract tier table at all; it is the
+         shop's own free-delivery campaign and Keeta splits the waived fee.
+         Our share rises with order value and, critically, does NOT stop at
+         SAR 70 — orders of 82, 91, 105 and 201 all still pay 15. Thresholds
+         below are fitted to observed orders and remain unconfirmed. */
+    paymentFeePct: 0.02875,
+    commissionBase: "total_after_promo",
+    distanceFeeSar: 1,        // added on some orders, not a floor
+    minServiceFeeSar: 0,
     monthlySubscriptionSar: 0, // contract: subscription exempt
     subscriptionFrom: null,
-    /* MERCHANT-FUNDED DELIVERY SUBSIDY — CONFIRM WITH OMAR BEFORE TRUSTING.
-       The signed PDF is Arabic/RTL and its table extracts with the value and
-       the threshold paired ambiguously, so the mapping below is our best read
-       of it, NOT a verified fact. It is configurable for exactly that reason
-       and `subsidyConfirmed:false` makes the UI show it as unconfirmed.
-       On a 30-day Keeta window this line is worth several hundred riyals, so
-       it is not a rounding error — get it confirmed. */
     subsidyTiers: [
       { upTo: 30, amountSar: 4 },
-      { upTo: 35, amountSar: 9 },
-      { upTo: 45, amountSar: 11 },
+      { upTo: 42, amountSar: 9 },
       { upTo: 55, amountSar: 12 },
-      { upTo: 70, amountSar: 15 },
     ],
-    // The contract's table stops at 70. We do NOT invent a band above it —
-    // default 0 and say so, rather than silently extrapolating SAR 15.
-    subsidyAboveTopSar: 0,
+    // Above the top fitted band the charge continues at 15 — measured, not
+    // extrapolated. The old model charged 0 here and lost real money.
+    subsidyAboveTopSar: 15,
     subsidyConfirmed: false,
     oneOffsHint: "جهاز نقاط بيع ٥٠٠ ر.س + تصوير ٥٠٠ ر.س (مرة واحدة — أضفهما في الإعدادات بتاريخهما)",
     caveats: [],
@@ -297,9 +309,14 @@ export function orderEconomics(row, cfg, foodCostPct, commissionBasis) {
   const totalIncl = num(row.total);
   const discountEx = Math.max(grossEx - netEx, 0);
 
-  // Rule 3 — the commission base. `net` by default; settings can flip it to the
-  // VAT-inclusive total, which raises every commission by exactly 15%.
-  const base = commissionBasis === "total" ? totalIncl : netEx;
+  // Rule 3 — the commission base. Per-app `commissionBase` wins where we have
+  // measured it: Keeta's own fee panel shows 18% charged on the VAT-INCLUSIVE
+  // value after merchant-funded promotions, which is exactly `total`. Where it
+  // is unset we fall back to the global setting (`net` by default), which is
+  // still an assumption and still labelled as one.
+  const base = appCfg.commissionBase === "total_after_promo" ? totalIncl
+    : commissionBasis === "total" ? totalIncl
+    : netEx;
 
   /* PICKUP: TabSense stamps EVERY aggregator order `order_option = 'Dine in'`
      and `order_type = 'External'` — probed across all 163 app-tagged orders,
