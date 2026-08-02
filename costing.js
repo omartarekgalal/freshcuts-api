@@ -69,6 +69,7 @@
    ═══════════════════════════════════════════════════════════════════════════ */
 
 import crypto from "node:crypto";
+import { registerCostingAuth } from "./costing_auth.js";
 
 const VAT_RATE = 0.15;
 const SALES_ONLY = `(o.order_type IS NULL OR (o.order_type NOT ILIKE '%void%' AND o.order_type NOT ILIKE '%refund%'))`;
@@ -76,6 +77,11 @@ const SALES_ONLY = `(o.order_type IS NULL OR (o.order_type NOT ILIKE '%void%' AN
 /* Notes written by the loaders, used to tell measured from hand-priced. */
 const NOTE_RECIPE = "من ملف التكاليف بالوصفات";   // loaded from the recipe workbook
 const NOTE_WEIGHT = "نموذج الوزن المصحّح";          // written by the weight-model fix
+/* Written by POST /api/costing/recalc. A cost row carrying this note came from
+   the workbench — a recipe the manager reviewed, priced at dated purchase
+   prices, with yield and item-level packaging applied. It is the only note
+   that means "this number has a paper trail you can open". */
+const NOTE_WORKBENCH = "من ورشة التكاليف";
 
 /* ── The weight model (business rule 4) ──────────────────────────────────────
    Portion costs are MEASURED, from the workbook's own batches:
@@ -211,6 +217,13 @@ const WB_MODS = [["اضافة صوص باربيكيو","Add BBQ Sauce","بارب
 export function register(app, ctx) {
   const { pool, requireAdmin, todayISO, daysAgoISO } = ctx;
 
+  /* The workbench's own login. Mounted from here, not from index.js: the
+     workbench and the accounts that may write to it are one feature, and
+     wiring them separately would let one ship without the other. */
+  const auth = registerCostingAuth(app, ctx);
+  const { requireCostingUser, requireCostingOwner, visibilityFor, audit } = auth;
+  const isResponse = (x) => typeof Response !== "undefined" && x instanceof Response;
+
   /* ── Schema. Same shape as finance.js: fired once at registration, a failure
      logs instead of taking the API down. Seeding is idempotent AND
      non-destructive — see business rule 7. ─────────────────────────────────*/
@@ -295,7 +308,200 @@ export function register(app, ctx) {
         cost        NUMERIC, price_incl NUMERIC
       );
     `);
+
+    /* ═══ THE WORKBENCH LAYER ════════════════════════════════════════════════
+       Everything above is the WORKBOOK as it was imported. Everything below is
+       the workbench the manager actually works in, and it is deliberately
+       additive: the columns are added to the existing tables rather than
+       copied into new ones, so `resolve()`, `/coverage`, `/recipe` and
+       `/health` keep working unchanged while gaining a yield model and a
+       dated price history underneath them.                                 */
+    await pool.query(`
+      -- ── 1. Raw materials: supplier + trim/prep loss ──────────────────────
+      -- A price is a fact on a date (that is cw_material_prices below). What
+      -- lives on the material itself is what does not change per invoice: who
+      -- sells it, and how much of a purchased kilo survives prep.
+      --
+      -- trim_loss_pct is the share of the PURCHASED weight thrown away before
+      -- cooking — bone, fat cap, silverskin, outer leaves. NULL means nobody
+      -- has measured it, which is not the same as zero and must never be
+      -- rendered as 0%.
+      ALTER TABLE cost_raw_materials ADD COLUMN IF NOT EXISTS supplier      TEXT NOT NULL DEFAULT '';
+      ALTER TABLE cost_raw_materials ADD COLUMN IF NOT EXISTS trim_loss_pct NUMERIC;
+      ALTER TABLE cost_raw_materials ADD COLUMN IF NOT EXISTS yield_note    TEXT NOT NULL DEFAULT '';
+      ALTER TABLE cost_raw_materials ADD COLUMN IF NOT EXISTS updated_by    TEXT NOT NULL DEFAULT '';
+
+      -- Purchase history. Cost lookups resolve BY DATE, exactly like
+      -- item_costs.effective_from, so a supplier raising a price next week
+      -- cannot silently rewrite last month's reported profit.
+      CREATE TABLE IF NOT EXISTS cw_material_prices (
+        id             TEXT PRIMARY KEY,
+        canonical_ar   TEXT NOT NULL,
+        supplier       TEXT NOT NULL DEFAULT '',
+        purchase_unit  TEXT NOT NULL DEFAULT '',   -- كجم / علبة / حبة …
+        pack_qty       NUMERIC,                    -- how much one purchase unit holds
+        pack_unit      TEXT NOT NULL DEFAULT 'g',  -- g | ml | piece
+        price          NUMERIC,                    -- SAR per purchase unit, VAT-EXCLUSIVE
+        cost_per_g     NUMERIC,
+        cost_per_piece NUMERIC,
+        effective_from DATE NOT NULL DEFAULT '2000-01-01',
+        -- invoice  = a real supplier document exists
+        -- quote    = a price we were told but have not bought at
+        -- estimate = somebody typed a plausible number  ← this is the enemy
+        -- workbook = inherited from the imported spreadsheet, provenance unknown
+        source         TEXT NOT NULL DEFAULT 'invoice',
+        note           TEXT NOT NULL DEFAULT '',
+        created_by     TEXT NOT NULL DEFAULT '',
+        created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        UNIQUE (canonical_ar, effective_from)
+      );
+      CREATE INDEX IF NOT EXISTS cw_material_prices_mat_idx
+        ON cw_material_prices(canonical_ar, effective_from DESC);
+
+      -- ── 2. Batch-level cooking yield ─────────────────────────────────────
+      -- yield_pct = output weight / input weight, 0..1. The imported workbook
+      -- asserts 1.0 for every batch, which for grilled meat is impossible.
+      -- output_measured says whether output_g came off a scale or was copied
+      -- from the input sum.
+      ALTER TABLE cost_batches ADD COLUMN IF NOT EXISTS yield_pct       NUMERIC;
+      ALTER TABLE cost_batches ADD COLUMN IF NOT EXISTS yield_note      TEXT NOT NULL DEFAULT '';
+      ALTER TABLE cost_batches ADD COLUMN IF NOT EXISTS output_measured BOOL NOT NULL DEFAULT false;
+      ALTER TABLE cost_batches ADD COLUMN IF NOT EXISTS updated_by      TEXT NOT NULL DEFAULT '';
+
+      ALTER TABLE cost_recipe_lines ADD COLUMN IF NOT EXISTS note       TEXT NOT NULL DEFAULT '';
+      ALTER TABLE cost_batch_lines  ADD COLUMN IF NOT EXISTS note       TEXT NOT NULL DEFAULT '';
+
+      -- Per-item cooking loss, for the case a recipe's grams were written as
+      -- SERVED weight rather than raw weight. Omar's recipes are PRE-cooking,
+      -- so this defaults to NULL for every item and is only ever set by hand,
+      -- on an item somebody has actually checked. Applying a blanket cooking
+      -- loss on top of raw weights would double-count the loss.
+      CREATE TABLE IF NOT EXISTS cw_item_yield (
+        product_id    INT PRIMARY KEY,
+        cook_loss_pct NUMERIC,
+        note          TEXT NOT NULL DEFAULT '',
+        updated_by    TEXT NOT NULL DEFAULT '',
+        updated_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+
+      -- ── 3. Packaging ─────────────────────────────────────────────────────
+      -- unit_cost is SAR for ONE piece, VAT-exclusive. NULL = not priced yet,
+      -- and that is the honest state on first boot: Omar named the items, he
+      -- did not quote them. A 0 here would be a lie the P&L would believe.
+      CREATE TABLE IF NOT EXISTS cw_packaging (
+        id         TEXT PRIMARY KEY,
+        name_ar    TEXT NOT NULL,
+        name_en    TEXT NOT NULL DEFAULT '',
+        unit_cost  NUMERIC,
+        pack_size  NUMERIC,      -- pieces in one purchased pack
+        pack_price NUMERIC,      -- SAR per pack, VAT-exclusive
+        supplier   TEXT NOT NULL DEFAULT '',
+        active     BOOL NOT NULL DEFAULT true,
+        note       TEXT NOT NULL DEFAULT '',
+        updated_by TEXT NOT NULL DEFAULT '',
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+
+      -- Attachment rules, at the THREE levels packaging is really consumed at.
+      --   scope='item'    → per unit of a dish. Goes INTO item_costs.
+      --   scope='order'   → once per ticket, however many lines it has.
+      --   scope='channel' → once per ticket, only for that channel.
+      -- The scope is what stops the double count; see the long note on
+      -- orderPackagingModel() further down.
+      CREATE TABLE IF NOT EXISTS cw_packaging_rules (
+        id           TEXT PRIMARY KEY,
+        scope        TEXT NOT NULL DEFAULT 'item',   -- item | order | channel
+        match_kind   TEXT NOT NULL DEFAULT 'all',    -- all | product | category | name | channel
+        match_value  TEXT NOT NULL DEFAULT '',
+        packaging_id TEXT NOT NULL,
+        qty          NUMERIC NOT NULL DEFAULT 1,
+        active       BOOL NOT NULL DEFAULT true,
+        reviewed     BOOL NOT NULL DEFAULT false,
+        note         TEXT NOT NULL DEFAULT '',
+        updated_by   TEXT NOT NULL DEFAULT '',
+        updated_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS cw_packaging_rules_scope_idx ON cw_packaging_rules(scope, active);
+
+      -- ── 4. Review state ──────────────────────────────────────────────────
+      -- unreviewed | in_review | confirmed | needs_info.
+      -- 'confirmed' is a promise: an import may never overwrite this item's
+      -- recipe again without an explicit force. See importGuard().
+      CREATE TABLE IF NOT EXISTS cw_item_review (
+        product_id      INT PRIMARY KEY,
+        status          TEXT NOT NULL DEFAULT 'unreviewed',
+        note            TEXT NOT NULL DEFAULT '',
+        changed_by      TEXT NOT NULL DEFAULT '',
+        changed_by_name TEXT NOT NULL DEFAULT '',
+        changed_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        confirmed_cost  NUMERIC,
+        confirmed_at    TIMESTAMPTZ
+      );
+
+      -- ── 5. POS name → workbook product ───────────────────────────────────
+      -- The POS spells one dish several ways. Deriving the link from the free
+      -- text in item_costs.note worked while the loader owned that note, but
+      -- the workbench rewrites the note — so the mapping becomes a table, and
+      -- an editable one, instead of a string-parsing accident.
+      CREATE TABLE IF NOT EXISTS cw_item_pos (
+        pos_name   TEXT PRIMARY KEY,
+        product_id INT NOT NULL,
+        source     TEXT NOT NULL DEFAULT 'note',   -- note | exact | manual
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS cw_item_pos_pid_idx ON cw_item_pos(product_id);
+
+      -- ── 6. The queue ─────────────────────────────────────────────────────
+      -- Rebuilt from live findings on every read and upserted by fingerprint,
+      -- so a task the manager closed does not come back the next morning and a
+      -- problem that got worse gets re-ranked without losing its history.
+      CREATE TABLE IF NOT EXISTS cw_tasks (
+        id            TEXT PRIMARY KEY,
+        fingerprint   TEXT NOT NULL UNIQUE,
+        kind          TEXT NOT NULL,
+        title         TEXT NOT NULL DEFAULT '',
+        why           TEXT NOT NULL DEFAULT '',
+        action        TEXT NOT NULL DEFAULT '',
+        impact_sar    NUMERIC,
+        sales_sar     NUMERIC,
+        item_ref      TEXT NOT NULL DEFAULT '',
+        item_kind     TEXT NOT NULL DEFAULT '',   -- item | batch | material | packaging | pos | rules
+        product_id    INT,
+        severity      TEXT NOT NULL DEFAULT 'medium',
+        status        TEXT NOT NULL DEFAULT 'open',   -- open | done | snoozed | wont_fix
+        evidence      JSONB NOT NULL DEFAULT '{}',
+        note          TEXT NOT NULL DEFAULT '',
+        resolved_by   TEXT NOT NULL DEFAULT '',
+        resolved_name TEXT NOT NULL DEFAULT '',
+        resolved_at   TIMESTAMPTZ,
+        snooze_until  DATE,
+        first_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        last_seen_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS cw_tasks_status_idx ON cw_tasks(status, impact_sar DESC);
+
+      -- ── 7. Audit ─────────────────────────────────────────────────────────
+      -- Identical DDL to the copy in costing_auth.js on purpose: both modules
+      -- boot in parallel and either may win the race. IF NOT EXISTS makes the
+      -- loser a no-op.
+      CREATE TABLE IF NOT EXISTS cw_audit (
+        id         TEXT PRIMARY KEY,
+        at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        actor_id   TEXT NOT NULL DEFAULT '',
+        actor_name TEXT NOT NULL DEFAULT '',
+        entity     TEXT NOT NULL DEFAULT '',
+        entity_ref TEXT NOT NULL DEFAULT '',
+        field      TEXT NOT NULL DEFAULT '',
+        old_value  TEXT,
+        new_value  TEXT,
+        note       TEXT NOT NULL DEFAULT ''
+      );
+      CREATE INDEX IF NOT EXISTS cw_audit_at_idx     ON cw_audit(at DESC);
+      CREATE INDEX IF NOT EXISTS cw_audit_entity_idx ON cw_audit(entity, entity_ref);
+    `);
+
     await seedIfEmpty();
+    await seedWorkbenchIfEmpty();
   }
 
   /** Seed each reference table only when it is EMPTY. Omar's later edits in the
@@ -333,7 +539,11 @@ export function register(app, ctx) {
        VALUES ($1,$2,$3,$4,$5,$6,$7) ON CONFLICT (modifier_ar) DO NOTHING`, WB_MODS);
   }
 
-  ensureCostingSchema()
+  // Sequenced behind the auth module's schema: both declare `cw_audit`, and
+  // concurrent CREATE TABLE IF NOT EXISTS on one relation is a real race in
+  // PostgreSQL. See the note at the bottom of costing_auth.js.
+  Promise.resolve(auth.ready)
+    .then(() => ensureCostingSchema())
     .then(() => console.log("[costing] schema ready"))
     .catch((e) => console.error("[costing] ensureCostingSchema failed:", e.message));
 
@@ -1158,4 +1368,2358 @@ export function register(app, ctx) {
     }
     return out.sort((a, b) => b.exposureSar - a.exposureSar);
   }
+
+  /* ═══════════════════════════════════════════════════════════════════════════
+     ═══════════════════════ THE COSTING WORKBENCH ═══════════════════════════
+
+     Everything above answers "is this number trustworthy?". Everything below
+     is where the manager FIXES it — one item at a time, ranked by money, with
+     a record of who changed what.
+
+     ── The four things the imported workbook could not express ───────────────
+
+     1. A PRICE IS A FACT ON A DATE. `cw_material_prices` is append-only by
+        (material, effective_from). Every cost lookup takes an `asOf` day and
+        resolves the newest price not later than it — the same discipline
+        `item_costs.effective_from` already gives finance.js. Re-running last
+        month's P&L after a supplier raises a price gives last month's answer.
+
+     2. YIELD IS TWO DIFFERENT THINGS, AT TWO DIFFERENT LEVELS.
+        • TRIM loss lives on the material: the share of a purchased kilo you
+          throw away before it ever meets heat (bone, fat cap, outer leaves).
+              effective SAR/usable-g = purchase SAR/g ÷ (1 − trim_loss)
+          This is Omar's ribs case. He buys ribs at 90 SAR/kg and types 110
+          into the sheet so the number "comes out right". 110 = 90 ÷ (1 − 0.18).
+          Enter 90 as the purchase price and 18% as the trim loss and the model
+          produces 110 by itself — and now the 110 is derived, dated and
+          arguable instead of a hand-typed constant nobody can audit.
+        • COOKING loss lives on the batch: output weight ÷ input weight. The
+          imported workbook asserts 1.00 for all 20 batches, which for grilled
+          meat is impossible. Set `yield_pct` and the batch's SAR/g rises by
+          exactly the water it lost.
+        There is a third slot, `cw_item_yield.cook_loss_pct`, and it defaults
+        to NULL on every item ON PURPOSE: Omar's recipe weights are PRE-cooking,
+        so the raw grams × raw price is already the right cost. Applying a
+        blanket cooking loss on top would count the same shrinkage twice. It
+        exists only for the individual item somebody later discovers was
+        written in served weight.
+
+     3. PACKAGING IS CONSUMED AT THREE LEVELS, AND ONLY ONE OF THEM IS A LINE
+        ITEM. See orderPackagingFor() below — this is the part that is easiest
+        to get quietly, expensively wrong.
+
+     4. A NUMBER HAS A REVIEW STATE. `cw_item_review` — unreviewed / in_review
+        / confirmed / needs_info, with who and when. `confirmed` is a promise
+        the import path honours (importGuard).
+
+     Nothing here is seeded with a plausible-looking zero. Packaging arrives
+     with `unit_cost = NULL` because Omar named the boxes, he did not price
+     them — and a 0.00 box would quietly tell the P&L that packaging is free.
+     ═══════════════════════════════════════════════════════════════════════ */
+
+  const isoDayOf = (d) =>
+    d instanceof Date ? d.toISOString().slice(0, 10) : d ? String(d).slice(0, 10) : null;
+
+  /** A loss percentage, accepting either 0.18 or 18. NULL for anything that is
+   *  not a measurement — an unmeasured loss is not a zero loss. */
+  const asPct = (v) => {
+    if (v === null || v === undefined || v === "") return null;
+    const n = Number(v);
+    if (!Number.isFinite(n) || n < 0) return null;
+    const p = n > 1 ? n / 100 : n;
+    return Math.min(p, 0.95);          // a 100% loss is not a yield, it is a bin
+  };
+  /** A yield (output ÷ input), accepting 0.82 or 82. NULL when unset. */
+  const asYield = (v) => {
+    if (v === null || v === undefined || v === "") return null;
+    const n = Number(v);
+    if (!Number.isFinite(n) || n <= 0) return null;
+    const p = n > 1 ? n / 100 : n;
+    return Math.min(Math.max(p, 0.05), 1);
+  };
+
+  /* Which materials plausibly LOSE weight to trimming before they are cooked.
+     `PROTEIN_RE` above is deliberately broad — it grades how badly a batch's
+     "output = inputs" claim bites, and over-including there is harmless. Here
+     it is not: run against the live 129-material list it produced trim-loss
+     tasks for `فلفل رومي` (a bell pepper, caught by رومي = turkey) and
+     `مرقة دجاج ( بهارات دجاج )` (a spice blend, caught by دجاج). A queue that
+     asks the manager to weigh the trim off a bag of seasoning teaches him to
+     ignore the queue. */
+  const TRIMMABLE_RE = /لحم|ريش|كبدة|صدور|فيليه|دجاجة|فراخ|أوراك|اوراك|بسطرم|سجق|جمبري|روبيان|تونة|تونه|سمك|ضاني|خروف/;
+  const NOT_TRIMMABLE_RE = /بهار|مرقة|مرقه|توابل|فلفل|صوص|مسحوق|بودرة|بودره|مكعب|زيت|ملح/;
+
+  const UNIT_G = { g: 1, gm: 1, gram: 1, ml: 1, "جم": 1, "غم": 1, "مل": 1,
+                   kg: 1000, l: 1000, lt: 1000, litre: 1000, liter: 1000,
+                   "كجم": 1000, "كيلو": 1000, "لتر": 1000, "ليتر": 1000 };
+  const PIECE_UNITS = new Set(["piece", "pieces", "pcs", "pc", "unit", "each",
+                               "حبة", "قطعة", "عدد", "رغيف"]);
+  /** Grams for a qty+unit, or NULL when the unit is a countable piece — a piece
+   *  has no gram equivalent and must be costed off `cost_per_piece`. */
+  function toGrams(qty, unit) {
+    const u = String(unit || "g").trim().toLowerCase();
+    if (PIECE_UNITS.has(u)) return null;
+    const f = UNIT_G[u];
+    return f === undefined ? num(qty) : num(qty) * f;
+  }
+
+  /* ── Seeds ────────────────────────────────────────────────────────────────
+     Omar named these eleven packaging items out loud. Their COSTS he did not,
+     so every one arrives NULL and the queue's first packaging task is "price
+     them". The rules below are his words turned into attachments, all flagged
+     `reviewed=false` so the workbench asks him to confirm them rather than
+     pretending they are settled. */
+  const PACKAGING_SEED = [
+    ["pkg_box_pizza",   "علبة بيتزا",       "Pizza box"],
+    ["pkg_box_doritos", "علبة دوريتوس",     "Doritos box"],
+    ["pkg_box_fries",   "علبة فرايز",       "Fries box"],
+    ["pkg_box_crepe",   "علبة كريب",        "Crepe box"],
+    ["pkg_box_meal",    "علبة وجبة",        "Meal box"],
+    ["pkg_fork",        "شوكة",             "Fork"],
+    ["pkg_spoon",       "ملعقة",            "Spoon"],
+    ["pkg_bag_small",   "كيس ورق صغير",     "Small paper bag"],
+    ["pkg_bag_large",   "كيس ورق كبير",     "Large paper bag"],
+    ["pkg_sticker",     "ستيكر الطلب",      "Order sticker"],
+    ["pkg_wipe",        "منديل مبلل معطر",  "Scented wet wipe"],
+  ];
+  /* [scope, match_kind, match_value, packaging_id, qty]
+     Matched on CATEGORY where the menu has one — the workbook's eight
+     categories (بيتزا 26, كريبات 10, باستا 9, مقبلات 8, برجر 8, وجبات 7,
+     طاسات 5, سندوتشات 5) are a far better key than a substring, and a
+     substring rule on "بيتزا" would also have caught anything merely named
+     after it. `فرايز` stays a name match because the fries boxes cut across
+     مقبلات rather than being a category.
+
+     Five categories — باستا, برجر, سندوتشات, طاسات, مقبلات, 32 items — get NO
+     rule here, because Omar did not say what they are served in. That gap is
+     surfaced as a task (PACKAGING_NO_RULE), not filled with a guess. The
+     doritos box likewise has no rule: nothing in the costed menu is a doritos
+     item, so the box is real but its attachment is unknown. */
+  const RULE_SEED = [
+    ["item",    "category", "بيتزا",    "pkg_box_pizza",   1],
+    ["item",    "category", "كريبات",   "pkg_box_crepe",   1],
+    ["item",    "category", "وجبات",    "pkg_box_meal",    1],
+    ["item",    "category", "وجبات",    "pkg_fork",        1],
+    ["item",    "category", "وجبات",    "pkg_spoon",       1],
+    ["item",    "name",     "فرايز",    "pkg_box_fries",   1],
+    ["order",   "all",      "",         "pkg_sticker",     1],
+    ["order",   "all",      "",         "pkg_wipe",        1],
+    ["channel", "channel",  "delivery", "pkg_bag_large",   1],
+    ["channel", "channel",  "takeaway", "pkg_bag_small",   1],
+    // dine-in deliberately has NO bag rule. Its absence is the model.
+  ];
+
+  /* The ribs trim loss Omar's own 90-vs-110 implies, and the marker that says
+     it is still an inference. Clearing the marker (or changing the number)
+     retires the task. */
+  const RIBS_TRIM_ASSUMED = 1 - 90 / 110;          // 0.18181818…
+  const RIBS_YIELD_SENTINEL = "نسبة مفترضة من فرق 90/110";
+
+  const CHANNELS = [
+    { key: "delivery", ar: "توصيل" },
+    { key: "takeaway", ar: "سفري" },
+    { key: "dinein",   ar: "صالة" },
+  ];
+
+  async function seedWorkbenchIfEmpty() {
+    const empty = async (t) =>
+      num((await pool.query(`SELECT count(*)::int AS n FROM ${t}`)).rows[0].n) === 0;
+
+    // The imported workbook price becomes the row that has been true "since
+    // forever", tagged with what it actually is. The materials the workbook
+    // itself flagged REVIEW become `estimate` — that is the audit's SAR 163
+    // of guessed sauces, now labelled in the data instead of in a comment.
+    if (await empty("cw_material_prices")) {
+      await pool.query(`
+        INSERT INTO cw_material_prices
+          (id, canonical_ar, purchase_unit, price, cost_per_g, cost_per_piece,
+           effective_from, source, note)
+        SELECT 'mp_' || substr(md5(canonical_ar), 1, 20), canonical_ar, purchase_unit,
+               cost_per_unit, cost_per_g, cost_per_piece, DATE '2000-01-01',
+               CASE WHEN upper(status) = 'REVIEW' THEN 'estimate' ELSE 'workbook' END,
+               'من ملف التكاليف عند أول تشغيل — بدون فاتورة'
+          FROM cost_raw_materials
+        ON CONFLICT (canonical_ar, effective_from) DO NOTHING`);
+      console.log("[costing] seeded cw_material_prices from the imported workbook");
+    }
+
+    if (await empty("cw_packaging")) {
+      for (const [id, ar, en] of PACKAGING_SEED)
+        await pool.query(
+          `INSERT INTO cw_packaging (id, name_ar, name_en, unit_cost, note)
+           VALUES ($1,$2,$3,NULL,$4) ON CONFLICT (id) DO NOTHING`,
+          [id, ar, en, "سمّاه عمر — لم يُسعّر بعد"]);
+      console.log(`[costing] seeded ${PACKAGING_SEED.length} packaging items, all unpriced`);
+    }
+
+    if (await empty("cw_packaging_rules")) {
+      for (const [scope, kind, value, pkg, qty] of RULE_SEED)
+        await pool.query(
+          `INSERT INTO cw_packaging_rules
+             (id, scope, match_kind, match_value, packaging_id, qty, reviewed, note)
+           VALUES ($1,$2,$3,$4,$5,$6,false,$7) ON CONFLICT (id) DO NOTHING`,
+          [idFor("pr", scope, kind, value, pkg), scope, kind, value, pkg, qty,
+           "قاعدة مبدئية من كلام عمر — تحتاج مراجعة"]);
+      console.log(`[costing] seeded ${RULE_SEED.length} packaging rules, none reviewed`);
+    }
+
+    /* ── Omar's ribs, made expressible ──────────────────────────────────────
+       `GRILL_FAMILIES` prices ريش at 36.63 SAR for a ثلث portion — 333 g at
+       110 SAR/kg. Omar told us the true purchase price is 90; he typed 110 so
+       the number would "come out right" after trim and cooking loss. That
+       makes 110 a constant nobody can audit and 90 a fact nobody can see.
+
+       There is no `ريش` row in the 129 imported raw materials (checked against
+       the live table) — the weight-sold grills never went through the recipe
+       engine at all. So we create one, and we create it as the DERIVATION
+       rather than the answer:
+
+           90 ÷ (1 − 0.1818) = 110.0 SAR/kg
+
+       The 0.1818 is not a measurement; it is the loss Omar's own two numbers
+       imply, and `yield_note` says so. The queue asks him to confirm it, and
+       the moment he weighs a real box of ribs the 110 moves by itself. */
+    if (!(await pool.query(
+      "SELECT 1 FROM cost_raw_materials WHERE canonical_ar = 'ريش'")).rowCount) {
+      await pool.query(
+        `INSERT INTO cost_raw_materials
+           (canonical_ar, name_en, purchase_unit, cost_per_unit, cost_per_g,
+            status, note, trim_loss_pct, yield_note)
+         VALUES ('ريش','Lamb ribs','kg',90,0.09,'REVIEW',$1,$2,$3)
+         ON CONFLICT (canonical_ar) DO NOTHING`,
+        ["سعر الشراء الحقيقي حسب عمر — 90 ر.س/كجم",
+         RIBS_TRIM_ASSUMED,
+         RIBS_YIELD_SENTINEL + " — 110 ÷ 90 يعني فاقد 18.18%. رقم مستنتج من كلام عمر، "
+         + "مش من ميزان. زِن صندوق ريش قبل وبعد التنظيف والشوي وصحّح النسبة."]);
+      await pool.query(
+        `INSERT INTO cw_material_prices
+           (id, canonical_ar, purchase_unit, price, cost_per_g, effective_from, source, note)
+         VALUES ($1,'ريش','kg',90,0.09,DATE '2000-01-01','estimate',$2)
+         ON CONFLICT (canonical_ar, effective_from) DO NOTHING`,
+        [idFor("mp", "ريش", "2000-01-01"), "سعر عمر — يحتاج فاتورة"]);
+      console.log("[costing] seeded ريش at 90 SAR/kg + 18.18% assumed trim loss (derives the 110)");
+    }
+
+    // Depends on `item_costs` and `ts_order_items`, which other modules create.
+    // If we lost that race the map is simply rebuilt on the next boot, or on
+    // demand via POST /api/costing/remap — it must not abort the whole schema.
+    if (await empty("cw_item_pos"))
+      await rebuildPosMap().catch((e) =>
+        console.warn("[costing] cw_item_pos seed deferred:", e.message));
+  }
+
+  /** Hono has already percent-decoded a path param, but an Arabic name that
+   *  genuinely contains '%' would make a second decode throw. Try, then keep
+   *  what we were given. */
+  const safeDecode = (s) => {
+    try { return decodeURIComponent(String(s || "")); } catch { return String(s || ""); }
+  };
+
+  /* ── POS name → workbook product ─────────────────────────────────────────
+     The old route derived this by parsing `item_costs.note`. That worked only
+     while the recipe loader owned the note; the workbench rewrites it, so the
+     mapping is promoted to a table. Rebuilt non-destructively: a row a human
+     added by hand (`source='manual'`) is never overwritten. */
+  async function rebuildPosMap() {
+    const model = await loadModel();
+    const byAr = new Map(model.menu.map((m) => [norm(m.product_ar), m]));
+    const found = new Map();          // pos_name -> [product_id, source]
+
+    const costRows = (await pool.query(
+      `SELECT DISTINCT ON (item_name) item_name, note
+         FROM item_costs ORDER BY item_name, effective_from DESC`)).rows;
+    for (const r of costRows) {
+      const n = String(r.note || "");
+      if (!n.includes(NOTE_RECIPE) && !n.includes(NOTE_WORKBENCH)) continue;
+      const hit = byAr.get(norm(n.split("—")[0]));
+      if (hit) found.set(r.item_name, [hit.product_id, "note"]);
+    }
+    // Plus every POS line whose name IS a workbook name, cost row or not.
+    const sold = (await pool.query(
+      `SELECT DISTINCT name FROM ts_order_items WHERE name IS NOT NULL`)).rows;
+    for (const s of sold) {
+      if (found.has(s.name)) continue;
+      const hit = byAr.get(norm(s.name));
+      if (hit) found.set(s.name, [hit.product_id, "exact"]);
+    }
+
+    let n = 0;
+    for (const [name, [pid, src]] of found) {
+      const r = await pool.query(
+        `INSERT INTO cw_item_pos (pos_name, product_id, source) VALUES ($1,$2,$3)
+         ON CONFLICT (pos_name) DO NOTHING`, [name, pid, src]);
+      n += r.rowCount;
+    }
+    if (n) console.log(`[costing] cw_item_pos: linked ${n} POS name(s) to workbook products`);
+    return n;
+  }
+
+  /* ── The dated, yield-aware model ────────────────────────────────────────── */
+
+  async function loadWorkbench(asOf) {
+    const day = isDay(asOf) ? asOf : todayISO();
+    const [prices, pkg, rules, iy, review, posmap] = await Promise.all([
+      pool.query(
+        `SELECT DISTINCT ON (canonical_ar) * FROM cw_material_prices
+          WHERE effective_from <= $1::date
+          ORDER BY canonical_ar, effective_from DESC`, [day]),
+      pool.query("SELECT * FROM cw_packaging ORDER BY name_ar"),
+      pool.query("SELECT * FROM cw_packaging_rules ORDER BY scope, match_kind, match_value"),
+      pool.query("SELECT * FROM cw_item_yield"),
+      pool.query("SELECT * FROM cw_item_review"),
+      pool.query("SELECT * FROM cw_item_pos"),
+    ]);
+    const wb = {
+      asOf: day,
+      prices: new Map(prices.rows.map((r) => [norm(r.canonical_ar), r])),
+      packaging: pkg.rows,
+      packagingById: new Map(pkg.rows.map((r) => [r.id, r])),
+      rules: rules.rows,
+      itemYield: new Map(iy.rows.map((r) => [r.product_id, r])),
+      review: new Map(review.rows.map((r) => [r.product_id, r])),
+      posByName: new Map(posmap.rows.map((r) => [norm(r.pos_name), r.product_id])),
+      posByProduct: new Map(),
+      batchCache: new Map(),
+    };
+    for (const r of posmap.rows) {
+      if (!wb.posByProduct.has(r.product_id)) wb.posByProduct.set(r.product_id, []);
+      wb.posByProduct.get(r.product_id).push(r.pos_name);
+    }
+    return wb;
+  }
+
+  /** A raw material's cost per USABLE gram on `wb.asOf`, and the paper trail.
+   *  This is the whole of point 2 above in six lines. */
+  function effRaw(model, wb, canonical) {
+    const base = model.raw.get(canonical) || null;
+    const p = wb.prices.get(canonical) || null;
+    const pick = (a, b) => (a !== null && a !== undefined ? num(a)
+                          : b !== null && b !== undefined ? num(b) : null);
+    const purchasePerG = pick(p?.cost_per_g, base?.cost_per_g);
+    const purchasePerPiece = pick(p?.cost_per_piece, base?.cost_per_piece);
+    const loss = asPct(base?.trim_loss_pct);
+    const f = loss === null ? 1 : 1 / (1 - loss);
+    const status = String(base?.status || "").toUpperCase();
+    const source = p ? String(p.source || "workbook") : (base ? "workbook" : null);
+    return {
+      found: !!(base || p),
+      purchasePerG, purchasePerPiece,
+      perG: purchasePerG === null ? null : purchasePerG * f,
+      perPiece: purchasePerPiece === null ? null : purchasePerPiece * f,
+      trimLossPct: loss, yieldFactor: f,
+      priceSource: source,
+      verified: source === "invoice",
+      supplier: String(p?.supplier || base?.supplier || ""),
+      purchaseUnit: String(p?.purchase_unit || base?.purchase_unit || ""),
+      pricePerUnit: pick(p?.price, base?.cost_per_unit),
+      effectiveFrom: p ? isoDayOf(p.effective_from) : null,
+      flaggedReview: status === "REVIEW",
+      note: String(p?.note || base?.note || ""),
+      yieldNote: String(base?.yield_note || ""),
+    };
+  }
+
+  /** A batch's cost per gram OF OUTPUT on `wb.asOf`, with the cooking loss
+   *  applied. Memoised per workbench load; recursive (a batch may consume a
+   *  batch) with a cycle guard, and a result that touched a cycle is never
+   *  cached because it is not the true answer, only a safe one. */
+  function effBatch(model, wb, key, stack = []) {
+    const hit = wb.batchCache.get(key);
+    if (hit) return hit;
+    if (stack.includes(key))
+      return { perG: null, cycle: true, hadCycle: true, confidence: "missing",
+               lines: [], inputG: null, outputG: null, totalCost: null, batch: null };
+
+    const b = model.batch.get(key);
+    if (!b)
+      return { perG: null, missing: true, hadCycle: false, confidence: "missing",
+               lines: [], inputG: null, outputG: null, totalCost: null, batch: null };
+
+    const lines = model.batchLines.get(key) || [];
+    const next = [...stack, key];
+    let cost = 0, inputG = 0, conf = "measured", hadCycle = false;
+    const rows = [];
+    for (const l of lines) {
+      const res = resolve(model, l.ing_type, l.ing_ar);
+      const e = effLine(model, wb, res, l, next);
+      cost += e.cost; inputG += num(l.qty_g);
+      conf = worst(conf, e.confidence);
+      hadCycle = hadCycle || e.hadCycle;
+      rows.push(e.row);
+    }
+
+    const yieldPct = asYield(b.yield_pct);
+    const storedOut = b.output_g === null || b.output_g === undefined ? null : num(b.output_g);
+    // Priority: an explicit yield beats a stored output weight, because the
+    // stored weight in the imported workbook is the input sum wearing a hat.
+    const outputG = yieldPct !== null && inputG > 0 ? inputG * yieldPct
+                  : storedOut && storedOut > 0 ? storedOut
+                  : inputG > 0 ? inputG : null;
+
+    let perG = null, plug = false;
+    if (!lines.length) {
+      // No recipe was ever entered. Whatever SAR/g the workbook carries is a
+      // plug, and saying so is the single most valuable thing this file does.
+      perG = b.cost_per_g === null || b.cost_per_g === undefined ? null : num(b.cost_per_g);
+      plug = true; conf = "plug";
+    } else if (outputG && outputG > 0) {
+      perG = cost / outputG;
+      /* The Tarb trap. عجينة الطرب HAS two lines — 1000 g of kofta mix and
+         500 g of caul fat — so it recomputes cleanly and would otherwise be
+         graded 'measured'. But its own note says the recipe is missing, and it
+         is: tarb is not kofta. An arithmetic that reconciles is not evidence
+         that the inputs are the right inputs. The note is the truth, and it
+         downgrades the whole dependent tree — including وجبة ميكس جريل, the
+         best-selling item in the business. */
+      if (/missing recipe/i.test(b.note || "")) { plug = true; conf = "plug"; }
+    }
+
+    const r = {
+      key, perG, plug, hadCycle, lines: rows,
+      inputG: inputG || null, outputG: outputG || null,
+      storedOutputG: storedOut, outputMeasured: b.output_measured === true,
+      yieldPct, yieldAssumed: yieldPct === null,
+      // The number Omar can argue with: what the batch costs per kilo now, and
+      // what it costed before the yield was applied.
+      sarPerKg: perG === null ? null : round3(perG * 1000),
+      sarPerKgBeforeYield: lines.length && inputG > 0 ? round3((cost / inputG) * 1000) : null,
+      storedSarPerKg: b.cost_per_g === null || b.cost_per_g === undefined
+        ? null : round3(num(b.cost_per_g) * 1000),
+      totalCost: round3(cost), confidence: conf,
+      nameAr: b.batch_ar, nameEn: b.batch_en || "", note: b.note || "",
+      yieldNote: b.yield_note || "", batch: b,
+    };
+    if (!hadCycle) wb.batchCache.set(key, r);
+    return r;
+  }
+
+  /** Cost one recipe/batch line at workbench prices, and say where the number
+   *  came from. `costSource` is the provenance the manager reads:
+   *    purchase — a dated purchase price, invoice-backed or not
+   *    batch    — a sub-recipe with its own breakdown one click away
+   *    guess    — a price somebody typed (REVIEW flag, or source='estimate')
+   *    missing  — no cost at all; the line contributes nothing and says so */
+  function effLine(model, wb, res, line, stack) {
+    const qtyG = num(line.qty_g);
+    const qty = num(line.qty);
+    const base = {
+      lineId: line.id || null,
+      type: line.ing_type, ingredientAr: line.ing_ar, ingredientEn: line.ing_en || "",
+      canonical: res.canonical, viaAlias: res.viaAlias,
+      qty, unit: line.unit || "g", qtyG,
+      note: line.note || "",
+    };
+
+    if (!res.found)
+      return { cost: 0, confidence: "missing", hadCycle: false,
+               row: { ...base, cost: null, unitCost: null, unitCostBasis: null,
+                      costSource: "missing", costSourceAr: "بدون تكلفة",
+                      source: "MISSING", verified: false, trimLossPct: null } };
+
+    if (res.kind === "batch") {
+      const eb = effBatch(model, wb, res.canonical, stack);
+      const cost = eb.perG === null ? 0 : qtyG * eb.perG;
+      return {
+        cost, confidence: eb.confidence, hadCycle: eb.hadCycle === true,
+        row: { ...base,
+          cost: eb.perG === null ? null : round3(cost),
+          unitCost: eb.sarPerKg, unitCostBasis: "SAR/kg",
+          costSource: eb.plug ? "guess" : "batch",
+          costSourceAr: eb.plug ? "تشغيلة بدون وصفة — رقم مؤقت" : "تشغيلة داخلية",
+          source: res.source, verified: false,
+          trimLossPct: null,
+          batchRef: { key: res.canonical, nameAr: eb.nameAr, nameEn: eb.nameEn,
+                      sarPerKg: eb.sarPerKg, sarPerKgBeforeYield: eb.sarPerKgBeforeYield,
+                      yieldPct: eb.yieldPct, yieldAssumed: eb.yieldAssumed,
+                      hasRecipe: !eb.plug, confidence: eb.confidence } },
+      };
+    }
+
+    const er = effRaw(model, wb, res.canonical);
+    let cost = 0, unitCost = null, basis = null;
+    if (er.perG !== null) { cost = qtyG * er.perG; unitCost = round3(er.perG * 1000); basis = "SAR/kg"; }
+    else if (er.perPiece !== null) { cost = qty * er.perPiece; unitCost = round3(er.perPiece); basis = "SAR/piece"; }
+
+    const conf = er.perG === null && er.perPiece === null ? "missing"
+               : er.flaggedReview || er.priceSource === "estimate" ? "guess"
+               : "measured";
+    return {
+      cost, confidence: conf, hadCycle: false,
+      row: { ...base,
+        cost: conf === "missing" ? null : round3(cost),
+        unitCost, unitCostBasis: basis,
+        // The two halves of the ribs story, side by side.
+        purchaseSarPerKg: er.purchasePerG === null ? null : round3(er.purchasePerG * 1000),
+        trimLossPct: er.trimLossPct,
+        effectiveSarPerKg: er.perG === null ? null : round3(er.perG * 1000),
+        costSource: conf === "missing" ? "missing" : conf === "guess" ? "guess" : "purchase",
+        costSourceAr: conf === "missing" ? "بدون تكلفة"
+                    : conf === "guess" ? "سعر تقديري — بدون فاتورة"
+                    : er.verified ? "سعر شراء بفاتورة" : "سعر من ملف التكاليف",
+        source: res.source, verified: er.verified, priceSource: er.priceSource,
+        supplier: er.supplier, effectiveFrom: er.effectiveFrom },
+    };
+  }
+
+  /* ── Packaging ────────────────────────────────────────────────────────────
+     ═══ HOW PER-ORDER PACKAGING AVOIDS BEING COUNTED FIVE TIMES ═══
+
+     `item_costs` is keyed by ITEM NAME and multiplied by LINE QUANTITY. Any
+     cost written there is, by construction, a per-unit cost. A bag costs the
+     same whether the ticket has one dish or six — so putting the bag into
+     `item_costs` charges it once per line, and a six-line delivery order pays
+     for six bags. On this menu that is not a rounding error: the bag is
+     plausibly the third-largest packaging line there is.
+
+     So the three scopes are separated at the schema level and only ONE of them
+     can ever reach `item_costs`:
+
+       scope='item'    the box a dish is physically served in. Genuinely
+                       per-unit. Added to the item's cost by computeItem() and
+                       written to item_costs by /recalc. Two pizzas = two boxes.
+
+       scope='order'   the sticker, the wet wipe — once per ticket, whatever is
+                       on it. NEVER written to item_costs. There is no honest
+                       per-unit value for these, and inventing one by dividing
+                       by "average lines per order" would make every item's
+                       cost depend on how big other people's orders were.
+
+       scope='channel' the bag — once per ticket, and only for the channels
+                       that use one. Delivery packs a large bag, takeaway a
+                       small one, dine-in none. Also never per-unit.
+
+     Order- and channel-scoped packaging is therefore reported as what it
+     actually is: a PERIOD COST, priced as (orders in the window × per-order
+     packaging for that channel) and surfaced by GET /rules. That figure
+     belongs in the P&L as an operating expense line, next to gas and gloves —
+     not smeared across item costs. The alternative, "just divide by the number
+     of orders", would double-count the moment anyone also counted the boxes.
+
+     If a rule is ever mis-scoped, the damage is visible rather than silent:
+     `GET /rules` returns `orderPackaging` and `itemPackagingItems` as two
+     separate blocks, and the same packaging id appearing in both is a fact you
+     can see. ──────────────────────────────────────────────────────────────── */
+
+  function ruleMatchesItem(rule, item) {
+    if (rule.scope !== "item" || rule.active === false) return false;
+    const k = String(rule.match_kind || "all");
+    const v = norm(rule.match_value);
+    if (k === "all") return true;
+    if (!item) return false;
+    if (k === "product") return String(item.product_id) === String(rule.match_value).trim();
+    if (k === "category") return norm(item.category_ar) === v || norm(item.category_en) === v;
+    if (k === "name")
+      return v !== "" && (norm(item.product_ar).includes(v)
+        || norm(item.product_en).toLowerCase().includes(v.toLowerCase()));
+    return false;
+  }
+
+  function packLine(wb, r) {
+    const p = wb.packagingById.get(r.packaging_id);
+    if (!p || p.active === false) return null;
+    const unit = p.unit_cost === null || p.unit_cost === undefined ? null : num(p.unit_cost);
+    const q = num(r.qty) || 1;
+    return {
+      ruleId: r.id, packagingId: p.id, nameAr: p.name_ar, nameEn: p.name_en || "",
+      qty: q, unitCost: unit, cost: unit === null ? null : round3(unit * q),
+      scope: r.scope, matchKind: r.match_kind, matchValue: r.match_value,
+      reviewed: r.reviewed === true, note: r.note || "",
+    };
+  }
+
+  /** Item-scoped packaging for one menu item. `cost` is the sum of what is
+   *  PRICED; anything unpriced is named in `unpriced` rather than counted as
+   *  zero, so a total can never quietly claim a free box. */
+  function itemPackagingFor(model, wb, item) {
+    const lines = []; const unpriced = []; let cost = 0;
+    for (const r of wb.rules) {
+      if (!ruleMatchesItem(r, item)) continue;
+      const l = packLine(wb, r);
+      if (!l) continue;
+      if (l.cost === null) unpriced.push(l.nameAr); else cost += l.cost;
+      lines.push(l);
+    }
+    /* Four genuinely different states, and they must not collapse into a 0:
+         no_rule       nothing says what this dish is served in
+         unpriced      we know the boxes, none of them has a price
+         partly_priced some priced, some not — the sum is a floor, not a total
+         priced        the only state where `cost` is the whole story          */
+    const status = !lines.length ? "no_rule"
+      : unpriced.length === lines.length ? "unpriced"
+      : unpriced.length ? "partly_priced" : "priced";
+    return {
+      lines, cost, unpriced, status,
+      complete: status === "priced",
+      // `cost` is what is KNOWN; `total` is the honest answer, which is null
+      // whenever anything attached has no price.
+      total: status === "priced" ? cost : null,
+    };
+  }
+
+  /** Order- and channel-scoped packaging for ONE ticket on a given channel.
+   *  Never per-unit, never written to item_costs. */
+  function orderPackagingFor(wb, channel) {
+    const lines = []; const unpriced = []; let cost = 0;
+    for (const r of wb.rules) {
+      if (r.active === false) continue;
+      const applies = r.scope === "order"
+        || (r.scope === "channel" && norm(r.match_value) === norm(channel));
+      if (!applies) continue;
+      const l = packLine(wb, r);
+      if (!l) continue;
+      if (l.cost === null) unpriced.push(l.nameAr); else cost += l.cost;
+      lines.push(l);
+    }
+    return { channel, lines, perOrder: round3(cost),
+             complete: unpriced.length === 0, unpriced };
+  }
+
+  async function deliveryAppList() {
+    try {
+      const s = await ctx.getSettingsData?.();
+      const list = Array.isArray(s?.deliveryAppMethods) && s.deliveryAppMethods.length
+        ? s.deliveryAppMethods : (ctx.DEFAULT_DELIVERY_APPS || []);
+      return list.map((x) => String(x).toLowerCase());
+    } catch {
+      return (ctx.DEFAULT_DELIVERY_APPS || []).map((x) => String(x).toLowerCase());
+    }
+  }
+
+  /* Ticket counts per packaging channel. `order_option` lies for aggregator
+     orders (the POS logs them as Dine-in — see staff.js), so the aggregator
+     test runs FIRST and wins. */
+  async function ordersByChannel(from, to) {
+    const apps = await deliveryAppList();
+    const rows = (await pool.query(
+      `SELECT CASE
+                WHEN COALESCE(o.order_type,'') ILIKE '%external%'
+                  OR EXISTS (SELECT 1 FROM jsonb_object_keys(o.payments) k
+                              WHERE lower(k) = ANY($3::text[]))         THEN 'delivery'
+                -- The POS's own delivery option, checked AFTER the aggregator
+                -- test because order_option lies for aggregator tickets (it
+                -- logs them as Dine-in — see staff.js). Live data: 'توصيل
+                -- Delivery' on 41 orders the aggregator test does not catch.
+                -- Without this line those 41 were being packed as dine-in,
+                -- i.e. with no bag at all.
+                WHEN COALESCE(o.order_option,'') ILIKE '%deliver%'
+                  OR COALESCE(o.order_option,'') LIKE '%توصيل%'          THEN 'delivery'
+                WHEN COALESCE(o.order_option,'') ILIKE '%take%'
+                  OR COALESCE(o.order_option,'') ILIKE '%away%'
+                  OR COALESCE(o.order_option,'') LIKE '%سفري%'
+                  OR COALESCE(o.order_option,'') LIKE '%خارج%'          THEN 'takeaway'
+                ELSE 'dinein' END AS channel,
+              count(*)::int AS orders,
+              COALESCE(sum(o.total),0)::float AS revenue
+         FROM ts_orders o
+        WHERE o.calendar_day BETWEEN $1::date AND $2::date AND ${SALES_ONLY}
+        GROUP BY 1`, [from, to, apps])).rows;
+    const out = new Map(CHANNELS.map((ch) => [ch.key, { channel: ch.key, ar: ch.ar, orders: 0, revenue: 0 }]));
+    for (const r of rows) {
+      const e = out.get(r.channel) || { channel: r.channel, ar: r.channel, orders: 0, revenue: 0 };
+      e.orders += r.orders; e.revenue += num(r.revenue);
+      out.set(r.channel, e);
+    }
+    return [...out.values()];
+  }
+
+  /* ── One item, fully costed ─────────────────────────────────────────────── */
+
+  const REVIEW_STATUSES = ["unreviewed", "in_review", "confirmed", "needs_info"];
+  const REVIEW_AR = {
+    unreviewed: "لم تُراجع", in_review: "قيد المراجعة",
+    confirmed: "مؤكدة", needs_info: "ناقصة معلومات",
+  };
+  const PACKAGING_STATUS_AR = {
+    no_rule: "لا توجد قاعدة تغليف لهذا الصنف",
+    unpriced: "التغليف معروف لكن بدون أسعار",
+    partly_priced: "بعض أصناف التغليف بدون سعر",
+    priced: "التغليف مُسعّر بالكامل",
+  };
+  const COST_SOURCE_AR = {
+    recipe: "محسوبة من الوصفة", estimate: "الوصفة فيها سعر تقديري",
+    plug: "الوصفة فيها تشغيلة بدون وصفة", missing: "مكوّن بلا تكلفة",
+    none: "لا توجد وصفة",
+  };
+
+  function computeItem(model, wb, productId) {
+    const item = model.menuById.get(productId) || null;
+    const lines = model.recipeLines.get(productId) || [];
+    let food = 0, conf = "measured";
+    const rows = [];
+    for (const l of lines) {
+      const res = resolve(model, l.ing_type, l.ing_ar);
+      const e = effLine(model, wb, res, l, []);
+      food += e.cost; conf = worst(conf, e.confidence);
+      rows.push(e.row);
+    }
+    const cy = wb.itemYield.get(productId) || null;
+    const cookLoss = asPct(cy?.cook_loss_pct);
+    const foodAfter = cookLoss === null ? food : food / (1 - cookLoss);
+    const pk = itemPackagingFor(model, wb, item);
+    const rv = wb.review.get(productId) || null;
+
+    const costSource = !lines.length ? "none"
+      : conf === "missing" ? "missing" : conf === "plug" ? "plug"
+      : conf === "guess" ? "estimate" : "recipe";
+
+    return {
+      productId, item,
+      lines: rows,
+      hasRecipe: lines.length > 0,
+      foodCost: lines.length ? round3(food) : null,
+      cookLossPct: cookLoss,
+      foodCostAfterYield: lines.length ? round3(foodAfter) : null,
+      packaging: pk.lines,
+      // NULL unless every attached box has a price. A 0 here would tell the
+      // P&L that a meal box is free, which is the exact class of lie this
+      // module exists to remove.
+      packagingCost: pk.total === null ? null : round3(pk.total),
+      packagingCostKnown: round3(pk.cost),
+      packagingStatus: pk.status,
+      packagingStatusAr: PACKAGING_STATUS_AR[pk.status],
+      packagingComplete: pk.complete,
+      packagingUnpriced: pk.unpriced,
+      // A cost with no recipe behind it is not zero — it is unknown. With a
+      // recipe but unpriced packaging it is a FLOOR, and `costComplete` says so.
+      cost: lines.length ? round3(foodAfter + pk.cost) : null,
+      costComplete: lines.length > 0 && conf !== "missing" && pk.status === "priced",
+      confidence: lines.length ? conf : "missing",
+      costSource, costSourceAr: COST_SOURCE_AR[costSource],
+      reviewStatus: rv ? rv.status : "unreviewed",
+      reviewStatusAr: REVIEW_AR[rv ? rv.status : "unreviewed"] || "",
+      reviewNote: rv?.note || "",
+      reviewedBy: rv?.changed_by_name || "",
+      reviewedAt: rv?.changed_at || null,
+      posNames: wb.posByProduct.get(productId) || [],
+    };
+  }
+
+  /** Sales rolled onto workbook products through cw_item_pos. */
+  async function salesByProduct(wb, from, to) {
+    const sales = await salesByItem(from, to);
+    const byProduct = new Map();
+    for (const s of sales) {
+      if (s.isModifier) continue;                    // rule 3: an add-on is not the dish
+      const pid = wb.posByName.get(norm(s.name));
+      if (pid === undefined) continue;
+      const cur = byProduct.get(pid) || { units: 0, value: 0, names: [] };
+      cur.units += s.qty; cur.value += s.amount; cur.names.push(s.name);
+      byProduct.set(pid, cur);
+    }
+    return { sales, byProduct };
+  }
+
+  /* ── Guards ───────────────────────────────────────────────────────────────
+     A hidden section is a courtesy to the manager's attention, not a
+     permission — so every route re-checks rather than trusting the UI. */
+  async function gate(c, u, section) {
+    if (u.role === "owner" || u.isAdmin) return null;
+    const v = await visibilityFor(u);
+    if (v[section] === false)
+      return c.json({ ok: false, error: "hidden",
+                      message: "هذا القسم غير متاح لحسابك — كلّم المالك" }, 403);
+    return null;
+  }
+
+  /** A `confirmed` item is a promise: no importer may rewrite its recipe
+   *  without saying so out loud. Exported behaviour, not decoration — any
+   *  future workbook re-import must call this. */
+  async function importGuard(productId) {
+    const r = await pool.query(
+      "SELECT status FROM cw_item_review WHERE product_id = $1", [productId]);
+    return r.rowCount && r.rows[0].status === "confirmed";
+  }
+
+  /* ═══════════════════════════════════════════════════════════════════════════
+     WORKBENCH ROUTE 1 — /items and /items/:id
+     ═══════════════════════════════════════════════════════════════════════ */
+
+  app.get("/api/costing/items", async (c) => {
+    const u = await requireCostingUser(c); if (isResponse(u)) return u;
+    const denied = await gate(c, u, "items"); if (denied) return denied;
+    try {
+      const from = dayArg(c.req.query("from"), daysAgoISO(89));
+      const to = dayArg(c.req.query("to"), todayISO());
+      const search = norm(c.req.query("search") || "");
+      const status = String(c.req.query("status") || "").trim();
+      const vis = await visibilityFor(u);
+
+      const model = await loadModel();
+      const wb = await loadWorkbench(to);
+      const { byProduct } = await salesByProduct(wb, from, to);
+
+      let items = model.menu.map((m) => {
+        const cm = computeItem(model, wb, m.product_id);
+        const s = byProduct.get(m.product_id) || { units: 0, value: 0, names: [] };
+        const revEx = s.value > 0 ? s.value / (1 + VAT_RATE) : null;
+        // Realised food cost when we have sales; the menu price when we do not;
+        // null when we have neither — never a 0 that reads as "brilliant margin".
+        const foodCostPct =
+          cm.cost !== null && revEx && s.units > 0 ? round3((cm.cost * s.units) / revEx)
+          : cm.cost !== null && m.price_restaurant
+            ? round3(cm.cost / (num(m.price_restaurant) / (1 + VAT_RATE)))
+            : null;
+        return {
+          id: m.product_id,
+          nameAr: m.product_ar, nameEn: m.product_en || "",
+          category: m.category_ar || m.category_en || "",
+          categoryEn: m.category_en || "",
+          sku: m.sku || "",
+          cost: cm.cost,
+          costComplete: cm.costComplete,
+          foodCost: cm.foodCost,
+          packagingCost: cm.packagingCost,
+          packagingStatus: cm.packagingStatus, packagingStatusAr: cm.packagingStatusAr,
+          costSource: cm.costSource, costSourceAr: cm.costSourceAr,
+          confidence: cm.confidence,
+          foodCostPct,
+          foodCostPctBasis: revEx && s.units > 0 ? "realised" : m.price_restaurant ? "menuPrice" : null,
+          reviewStatus: cm.reviewStatus, reviewStatusAr: cm.reviewStatusAr,
+          ingredientCount: cm.lines.length,
+          packagingComplete: cm.packagingComplete,
+          // A manager whose visibility blob hides sales sees nulls, not zeros.
+          salesUnits: vis.sales ? (s.units || null) : null,
+          salesValue: vis.sales ? (s.value ? round2(s.value) : null) : null,
+          priceRestaurantIncl: vis.prices && m.price_restaurant !== null ? num(m.price_restaurant) : null,
+          pricePlatformIncl: vis.prices && m.price_platform !== null ? num(m.price_platform) : null,
+          posNames: cm.posNames,
+        };
+      });
+
+      if (search)
+        items = items.filter((i) =>
+          norm(i.nameAr).includes(search) || norm(i.category).includes(search)
+          || String(i.nameEn).toLowerCase().includes(search.toLowerCase())
+          || String(i.id) === search);
+      if (status && REVIEW_STATUSES.includes(status))
+        items = items.filter((i) => i.reviewStatus === status);
+
+      // Money first: the item the manager should open next is the one the most
+      // revenue depends on, not the one that sorts first alphabetically.
+      items.sort((a, b) => (b.salesValue || 0) - (a.salesValue || 0)
+                        || String(a.nameAr).localeCompare(String(b.nameAr), "ar"));
+
+      const counts = {};
+      for (const s of REVIEW_STATUSES) counts[s] = 0;
+      for (const i of items) counts[i.reviewStatus] = (counts[i.reviewStatus] || 0) + 1;
+
+      return c.json({ ok: true, from, to, count: items.length, items,
+                      statusCounts: counts, statusLabels: REVIEW_AR });
+    } catch (e) {
+      console.error("[costing] items failed:", e);
+      return c.json({ ok: false, error: "items_failed", detail: e.message }, 500);
+    }
+  });
+
+  app.get("/api/costing/items/:id", async (c) => {
+    const u = await requireCostingUser(c); if (isResponse(u)) return u;
+    const denied = await gate(c, u, "items"); if (denied) return denied;
+    try {
+      const pid = Number(c.req.param("id"));
+      if (!Number.isFinite(pid)) return c.json({ ok: false, error: "bad_id" }, 400);
+      const from = dayArg(c.req.query("from"), daysAgoISO(89));
+      const to = dayArg(c.req.query("to"), todayISO());
+
+      const model = await loadModel();
+      const wb = await loadWorkbench(to);
+      const m = model.menuById.get(pid);
+      if (!m) return c.json({ ok: false, error: "not_found", message: "الصنف غير موجود" }, 404);
+
+      const cm = computeItem(model, wb, pid);
+      const { byProduct } = await salesByProduct(wb, from, to);
+      const s = byProduct.get(pid) || { units: 0, value: 0, names: [] };
+      const revEx = s.value > 0 ? s.value / (1 + VAT_RATE) : null;
+
+      // History: what changed on this item, and every dated cost row its POS
+      // names carry — that second half is the audit trail finance.js reads.
+      const changes = (await pool.query(
+        `SELECT * FROM cw_audit
+          WHERE (entity = 'item' AND entity_ref = $1)
+             OR (entity = 'recipe' AND entity_ref = $1)
+          ORDER BY at DESC LIMIT 100`, [String(pid)])).rows;
+      const names = cm.posNames;
+      const costRows = names.length
+        ? (await pool.query(
+            `SELECT item_name, cost::float AS cost, effective_from, note, updated_at
+               FROM item_costs WHERE item_name = ANY($1::text[])
+              ORDER BY effective_from DESC, item_name`, [names])).rows
+        : [];
+
+      const cy = wb.itemYield.get(pid) || null;
+      return c.json({
+        ok: true,
+        item: {
+          id: pid, nameAr: m.product_ar, nameEn: m.product_en || "",
+          category: m.category_ar || "", categoryEn: m.category_en || "", sku: m.sku || "",
+          cost: cm.cost, costComplete: cm.costComplete,
+          foodCost: cm.foodCost, foodCostAfterYield: cm.foodCostAfterYield,
+          packagingCost: cm.packagingCost, packagingCostKnown: cm.packagingCostKnown,
+          packagingStatus: cm.packagingStatus, packagingStatusAr: cm.packagingStatusAr,
+          packagingComplete: cm.packagingComplete, packagingUnpriced: cm.packagingUnpriced,
+          confidence: cm.confidence, costSource: cm.costSource, costSourceAr: cm.costSourceAr,
+          reviewStatus: cm.reviewStatus, reviewStatusAr: cm.reviewStatusAr,
+          reviewNote: cm.reviewNote, reviewedBy: cm.reviewedBy, reviewedAt: cm.reviewedAt,
+          storedWorkbookCost: m.total_cost === null ? null : round3(num(m.total_cost)),
+          // What the workbench now says minus what the imported sheet said.
+          driftFromWorkbook: cm.cost === null || m.total_cost === null
+            ? null : round3(cm.cost - num(m.total_cost)),
+          priceRestaurantIncl: m.price_restaurant === null ? null : num(m.price_restaurant),
+          pricePlatformIncl: m.price_platform === null ? null : num(m.price_platform),
+          foodCostPct: cm.cost !== null && revEx && s.units > 0
+            ? round3((cm.cost * s.units) / revEx) : null,
+          salesUnits: s.units || null, salesValue: s.value ? round2(s.value) : null,
+          posNames: names,
+        },
+        recipe: cm.lines,
+        packaging: cm.packaging,
+        yield: {
+          cookLossPct: cy ? asPct(cy.cook_loss_pct) : null,
+          note: cy?.note || "",
+          updatedBy: cy?.updated_by || "", updatedAt: cy?.updated_at || null,
+          // Said out loud so nobody "fixes" a null by typing 20%.
+          explain: "أوزان الوصفة قبل الطهي، فالتكلفة صحيحة بدونها. لا تُدخل نسبة هنا "
+                 + "إلا لو تأكدت أن أوزان هذه الوصفة مكتوبة بعد الطهي.",
+        },
+        history: [
+          ...changes.map((r) => ({
+            kind: "change", at: r.at, by: r.actor_name || r.actor_id,
+            field: r.field, from: r.old_value, to: r.new_value, note: r.note || "",
+          })),
+          ...costRows.map((r) => ({
+            kind: "cost", at: r.updated_at, by: "", field: "item_costs",
+            from: null, to: `${r.cost} ر.س`, effectiveFrom: isoDayOf(r.effective_from),
+            posName: r.item_name, note: r.note || "",
+          })),
+        ],
+      });
+    } catch (e) {
+      console.error("[costing] item detail failed:", e);
+      return c.json({ ok: false, error: "item_failed", detail: e.message }, 500);
+    }
+  });
+
+  /* ── PUT /api/costing/items/:id ───────────────────────────────────────────
+     { recipe?, packaging?, yield?, reviewStatus?, note? } → { ok, cost, breakdown }
+
+     Each block is optional and independent, so "mark this confirmed" does not
+     have to resend the recipe. Every change is audited with its old value —
+     a change log without the old value cannot answer "what did it used to
+     say?", which is the only question anyone ever asks it. */
+  app.put("/api/costing/items/:id", async (c) => {
+    const u = await requireCostingUser(c); if (isResponse(u)) return u;
+    const denied = await gate(c, u, "items"); if (denied) return denied;
+    try {
+      const pid = Number(c.req.param("id"));
+      if (!Number.isFinite(pid)) return c.json({ ok: false, error: "bad_id" }, 400);
+      const b = await c.req.json().catch(() => ({}));
+      const note = String(b.note || "");
+
+      const model0 = await loadModel();
+      if (!model0.menuById.has(pid))
+        return c.json({ ok: false, error: "not_found", message: "الصنف غير موجود" }, 404);
+      const before = computeItem(model0, await loadWorkbench(todayISO()), pid);
+
+      /* Recipe — replace the item's lines wholesale. Partial merges on a list
+         the user reordered produce ghosts; a full replace is what the screen
+         actually means when it says "save". */
+      if (Array.isArray(b.recipe)) {
+        const old = model0.recipeLines.get(pid) || [];
+        await pool.query("DELETE FROM cost_recipe_lines WHERE product_id = $1", [pid]);
+        let i = 0;
+        for (const l of b.recipe) {
+          const ingAr = norm(l?.ingredientAr ?? l?.ing_ar ?? l?.name);
+          if (!ingAr) continue;
+          const unit = String(l?.unit || "g");
+          const qty = num(l?.qty);
+          const qtyG = l?.qtyG !== undefined && l?.qtyG !== null ? num(l.qtyG) : toGrams(qty, unit);
+          const type = String(l?.type || l?.ing_type || "Raw");
+          await pool.query(
+            `INSERT INTO cost_recipe_lines (id, product_id, ing_type, ing_ar, ing_en, qty, unit, qty_g, line_cost, note)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,NULL,$9)`,
+            [idFor("rl", String(pid), String(i), ingAr), pid, type, ingAr,
+             String(l?.ingredientEn || l?.ing_en || ""), qty, unit,
+             qtyG === null ? 0 : qtyG, String(l?.note || "")]);
+          i += 1;
+        }
+        await audit(u, "recipe", String(pid), "lines",
+          old.map((x) => `${x.ing_ar}:${num(x.qty_g)}g`).join(", "),
+          b.recipe.map((x) => `${norm(x?.ingredientAr ?? x?.ing_ar)}:${num(x?.qtyG ?? x?.qty)}`).join(", "),
+          note);
+        cache = { at: 0, model: null };   // the recipe changed; drop the 60 s cache
+      }
+
+      /* Packaging — the item's OWN attachments, i.e. rules scoped to this
+         product id. Rules that reach it by category or name are shared with
+         other dishes and are edited in /rules, not here. */
+      if (Array.isArray(b.packaging)) {
+        const oldRows = (await pool.query(
+          `SELECT * FROM cw_packaging_rules
+            WHERE scope='item' AND match_kind='product' AND match_value=$1`, [String(pid)])).rows;
+        await pool.query(
+          `DELETE FROM cw_packaging_rules
+            WHERE scope='item' AND match_kind='product' AND match_value=$1`, [String(pid)]);
+        for (const p of b.packaging) {
+          const pkgId = String(p?.packagingId || p?.id || "").trim();
+          if (!pkgId) continue;
+          await pool.query(
+            `INSERT INTO cw_packaging_rules
+               (id, scope, match_kind, match_value, packaging_id, qty, reviewed, note, updated_by, updated_at)
+             VALUES ($1,'item','product',$2,$3,$4,true,$5,$6,NOW())
+             ON CONFLICT (id) DO UPDATE SET qty=EXCLUDED.qty, reviewed=true,
+               note=EXCLUDED.note, updated_by=EXCLUDED.updated_by, updated_at=NOW()`,
+            [idFor("pr", "item", "product", String(pid), pkgId), String(pid), pkgId,
+             num(p?.qty) || 1, String(p?.note || ""), String(u.id || "")]);
+        }
+        await audit(u, "item", String(pid), "packaging",
+          oldRows.map((r) => `${r.packaging_id}×${num(r.qty)}`).join(", "),
+          b.packaging.map((p) => `${p?.packagingId || p?.id}×${num(p?.qty) || 1}`).join(", "), note);
+      }
+
+      /* Yield — see the long warning on the GET route. */
+      if (b.yield && typeof b.yield === "object") {
+        const oldY = (await pool.query(
+          "SELECT * FROM cw_item_yield WHERE product_id = $1", [pid])).rows[0] || null;
+        const raw = b.yield.cookLossPct ?? b.yield.cook_loss_pct;
+        const pct = raw === null || raw === "" ? null : asPct(raw);
+        await pool.query(
+          `INSERT INTO cw_item_yield (product_id, cook_loss_pct, note, updated_by, updated_at)
+           VALUES ($1,$2,$3,$4,NOW())
+           ON CONFLICT (product_id) DO UPDATE SET
+             cook_loss_pct=EXCLUDED.cook_loss_pct, note=EXCLUDED.note,
+             updated_by=EXCLUDED.updated_by, updated_at=NOW()`,
+          [pid, pct, String(b.yield.note || ""), String(u.id || "")]);
+        await audit(u, "item", String(pid), "cookLossPct",
+          oldY ? asPct(oldY.cook_loss_pct) : null, pct, note);
+      }
+
+      /* Review state. */
+      if (b.reviewStatus !== undefined) {
+        const st = String(b.reviewStatus);
+        if (!REVIEW_STATUSES.includes(st))
+          return c.json({ ok: false, error: "bad_status",
+                          message: `الحالة لازم تكون: ${REVIEW_STATUSES.join(" / ")}` }, 400);
+        const oldR = (await pool.query(
+          "SELECT status FROM cw_item_review WHERE product_id = $1", [pid])).rows[0];
+        const wbNow = await loadWorkbench(todayISO());
+        const nowCost = computeItem(await loadModel(), wbNow, pid).cost;
+        await pool.query(
+          `INSERT INTO cw_item_review
+             (product_id, status, note, changed_by, changed_by_name, changed_at, confirmed_cost, confirmed_at)
+           VALUES ($1,$2,$3,$4,$5,NOW(),$6,$7)
+           ON CONFLICT (product_id) DO UPDATE SET
+             status=EXCLUDED.status, note=EXCLUDED.note,
+             changed_by=EXCLUDED.changed_by, changed_by_name=EXCLUDED.changed_by_name,
+             changed_at=NOW(),
+             confirmed_cost=EXCLUDED.confirmed_cost, confirmed_at=EXCLUDED.confirmed_at`,
+          [pid, st, note, String(u.id || ""), String(u.display_name || u.username || ""),
+           st === "confirmed" ? nowCost : null,
+           st === "confirmed" ? new Date() : null]);
+        await audit(u, "item", String(pid), "reviewStatus", oldR?.status || "unreviewed", st, note);
+      }
+
+      cache = { at: 0, model: null };
+      const model = await loadModel();
+      const wb = await loadWorkbench(todayISO());
+      const after = computeItem(model, wb, pid);
+
+      return c.json({
+        ok: true,
+        cost: after.cost,
+        breakdown: {
+          foodCost: after.foodCost,
+          cookLossPct: after.cookLossPct,
+          foodCostAfterYield: after.foodCostAfterYield,
+          packagingCost: after.packagingCost,
+          packagingCostKnown: after.packagingCostKnown,
+          packagingStatus: after.packagingStatus,
+          packagingStatusAr: after.packagingStatusAr,
+          packagingComplete: after.packagingComplete,
+          packagingUnpriced: after.packagingUnpriced,
+          total: after.cost, totalComplete: after.costComplete,
+          confidence: after.confidence,
+          costSource: after.costSource, costSourceAr: after.costSourceAr,
+          reviewStatus: after.reviewStatus,
+          recipe: after.lines, packaging: after.packaging,
+          // What this edit did to the number, so the screen can say it.
+          previousCost: before.cost,
+          delta: after.cost === null || before.cost === null
+            ? null : round3(after.cost - before.cost),
+        },
+        // Saving an item does NOT publish it to the P&L. /recalc does that,
+        // deliberately, so a half-finished edit cannot move last week's profit.
+        writtenToItemCosts: false,
+        hint: "التغيير محفوظ في الورشة. اضغط «إعادة الاحتساب» لنقله إلى تقارير الأرباح.",
+      });
+    } catch (e) {
+      console.error("[costing] item save failed:", e);
+      return c.json({ ok: false, error: "save_failed", detail: e.message }, 500);
+    }
+  });
+
+  /* ═══════════════════════════════════════════════════════════════════════════
+     WORKBENCH ROUTE 2 — /materials
+     ═══════════════════════════════════════════════════════════════════════ */
+
+  app.get("/api/costing/materials", async (c) => {
+    const u = await requireCostingUser(c); if (isResponse(u)) return u;
+    const denied = await gate(c, u, "materials"); if (denied) return denied;
+    try {
+      const asOf = dayArg(c.req.query("asOf"), todayISO());
+      const search = norm(c.req.query("search") || "");
+      const model = await loadModel();
+      const wb = await loadWorkbench(asOf);
+
+      const counts = (await pool.query(
+        `SELECT canonical_ar, count(*)::int AS n FROM cw_material_prices GROUP BY 1`)).rows;
+      const nPrices = new Map(counts.map((r) => [norm(r.canonical_ar), r.n]));
+
+      let out = [...model.raw.values()].map((r) => {
+        const key = norm(r.canonical_ar);
+        const e = effRaw(model, wb, key);
+        return {
+          id: r.canonical_ar,
+          nameAr: r.canonical_ar, nameEn: r.name_en || "",
+          supplier: e.supplier,
+          purchaseUnit: e.purchaseUnit,
+          pricePerUnit: e.pricePerUnit,
+          purchaseSarPerKg: e.purchasePerG === null ? null : round3(e.purchasePerG * 1000),
+          purchaseSarPerPiece: e.purchasePerPiece === null ? null : round3(e.purchasePerPiece),
+          trimLossPct: e.trimLossPct,
+          // The ribs line: 90 in, 18% loss, 110 out — visible, not typed.
+          effectiveSarPerKg: e.perG === null ? null : round3(e.perG * 1000),
+          effectiveSarPerPiece: e.perPiece === null ? null : round3(e.perPiece),
+          yieldNote: e.yieldNote,
+          priceSource: e.priceSource, verified: e.verified,
+          effectiveFrom: e.effectiveFrom,
+          flaggedReview: e.flaggedReview,
+          priceRows: nPrices.get(key) || 0,
+          note: r.note || "",
+        };
+      });
+      if (search)
+        out = out.filter((m) => norm(m.nameAr).includes(search)
+          || String(m.nameEn).toLowerCase().includes(search.toLowerCase())
+          || norm(m.supplier).includes(search));
+
+      out.sort((a, b) => Number(!!b.flaggedReview) - Number(!!a.flaggedReview)
+                      || String(a.nameAr).localeCompare(String(b.nameAr), "ar"));
+      return c.json({
+        ok: true, asOf, count: out.length, materials: out,
+        priceSources: {
+          invoice: "فاتورة مورّد", quote: "عرض سعر", estimate: "تقدير — بدون مستند",
+          workbook: "من ملف التكاليف المستورد",
+        },
+      });
+    } catch (e) {
+      console.error("[costing] materials failed:", e);
+      return c.json({ ok: false, error: "materials_failed", detail: e.message }, 500);
+    }
+  });
+
+  /* PUT /api/costing/materials/:id — :id is the canonical Arabic name.
+     A price change INSERTS a dated row; it never edits the old one. That is
+     the whole reason last month's P&L is stable. */
+  app.put("/api/costing/materials/:id", async (c) => {
+    const u = await requireCostingUser(c); if (isResponse(u)) return u;
+    const denied = await gate(c, u, "materials"); if (denied) return denied;
+    try {
+      const id = norm(safeDecode(c.req.param("id")));
+      const b = await c.req.json().catch(() => ({}));
+      const model = await loadModel();
+      if (!model.raw.has(id))
+        return c.json({ ok: false, error: "not_found", message: "المادة غير موجودة" }, 404);
+      const cur = model.raw.get(id);
+      const note = String(b.note || "");
+
+      // ── the material's own attributes ──
+      const supplier = b.supplier === undefined ? cur.supplier || "" : String(b.supplier);
+      const trimRaw = b.trimLossPct ?? b.yieldLossPct ?? b.trim_loss_pct;
+      const trim = trimRaw === undefined ? asPct(cur.trim_loss_pct)
+                 : trimRaw === null || trimRaw === "" ? null : asPct(trimRaw);
+      const yieldNote = b.yieldNote === undefined ? cur.yield_note || "" : String(b.yieldNote);
+
+      if (String(cur.supplier || "") !== supplier)
+        await audit(u, "material", id, "supplier", cur.supplier || "", supplier, note);
+      if (asPct(cur.trim_loss_pct) !== trim)
+        await audit(u, "material", id, "trimLossPct", asPct(cur.trim_loss_pct), trim, note);
+
+      await pool.query(
+        `UPDATE cost_raw_materials
+            SET supplier=$2, trim_loss_pct=$3, yield_note=$4, updated_by=$5, updated_at=NOW()
+          WHERE canonical_ar=$1`,
+        [cur.canonical_ar, supplier, trim, yieldNote, String(u.id || "")]);
+
+      // ── a new dated purchase price, if one was supplied ──
+      let priceRow = null;
+      const hasPrice = b.pricePerUnit !== undefined || b.costPerG !== undefined
+                    || b.costPerPiece !== undefined || b.sarPerKg !== undefined;
+      if (hasPrice) {
+        const effectiveFrom = dayArg(b.effectiveFrom, todayISO());
+        const purchaseUnit = String(b.purchaseUnit ?? cur.purchase_unit ?? "");
+        const perG = b.costPerG !== undefined && b.costPerG !== null ? num(b.costPerG)
+                   : b.sarPerKg !== undefined && b.sarPerKg !== null ? num(b.sarPerKg) / 1000
+                   : null;
+        const perPiece = b.costPerPiece !== undefined && b.costPerPiece !== null
+                   ? num(b.costPerPiece) : null;
+        if (perG === null && perPiece === null)
+          return c.json({ ok: false, error: "no_unit_cost",
+            message: "لازم تدخل سعر للكيلو أو سعر للحبة" }, 400);
+        const src = ["invoice", "quote", "estimate", "workbook"].includes(String(b.priceSource))
+          ? String(b.priceSource) : "invoice";
+        /* A screen that offers "SAR per kilo" should not leave `price` NULL and
+           make the history read as if nobody recorded what was paid. When the
+           purchase unit IS the kilo (or the litre), the per-kg figure and the
+           per-unit price are the same number — derive it rather than lose it. */
+        const perUnitGiven = b.pricePerUnit === undefined || b.pricePerUnit === null
+          ? null : num(b.pricePerUnit);
+        const unitIsKilo = /^(kg|كجم|كيلو|l|lt|لتر|ليتر)$/i.test(purchaseUnit.trim());
+        const pricePerUnit = perUnitGiven !== null ? perUnitGiven
+          : (unitIsKilo && perG !== null ? round3(perG * 1000)
+          : (/^(piece|حبة|قطعة|عدد)$/i.test(purchaseUnit.trim()) && perPiece !== null
+             ? round3(perPiece) : null));
+
+        priceRow = (await pool.query(
+          `INSERT INTO cw_material_prices
+             (id, canonical_ar, supplier, purchase_unit, pack_qty, pack_unit, price,
+              cost_per_g, cost_per_piece, effective_from, source, note, created_by)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::date,$11,$12,$13)
+           ON CONFLICT (canonical_ar, effective_from) DO UPDATE SET
+             supplier=EXCLUDED.supplier, purchase_unit=EXCLUDED.purchase_unit,
+             pack_qty=EXCLUDED.pack_qty, pack_unit=EXCLUDED.pack_unit, price=EXCLUDED.price,
+             cost_per_g=EXCLUDED.cost_per_g, cost_per_piece=EXCLUDED.cost_per_piece,
+             source=EXCLUDED.source, note=EXCLUDED.note, created_by=EXCLUDED.created_by
+           RETURNING *`,
+          [idFor("mp", id, effectiveFrom), cur.canonical_ar, supplier, purchaseUnit,
+           b.packQty === undefined ? null : num(b.packQty), String(b.packUnit || "g"),
+           pricePerUnit,
+           perG, perPiece, effectiveFrom, src, String(b.priceNote || note), String(u.id || "")]
+        )).rows[0];
+
+        // The base table keeps the CURRENT price so /coverage, /recipe and
+        // /health — which do not take an asOf — keep working unchanged.
+        if (effectiveFrom <= todayISO())
+          await pool.query(
+            `UPDATE cost_raw_materials
+                SET cost_per_unit=COALESCE($2, cost_per_unit),
+                    cost_per_g=$3, cost_per_piece=$4,
+                    purchase_unit=COALESCE(NULLIF($5,''), purchase_unit),
+                    status = CASE WHEN $6 = 'invoice' THEN 'OK' ELSE status END,
+                    updated_at=NOW()
+              WHERE canonical_ar=$1`,
+            [cur.canonical_ar,
+             pricePerUnit,
+             perG, perPiece, purchaseUnit, src]);
+
+        await audit(u, "material", id, "price",
+          cur.cost_per_g === null ? null : round3(num(cur.cost_per_g) * 1000),
+          perG === null ? round3(perPiece) : round3(perG * 1000),
+          `${effectiveFrom} · ${src}${note ? " · " + note : ""}`);
+      }
+
+      cache = { at: 0, model: null };
+      const m2 = await loadModel();
+      const wb = await loadWorkbench(todayISO());
+      const e = effRaw(m2, wb, id);
+      return c.json({
+        ok: true,
+        material: {
+          id: cur.canonical_ar, nameAr: cur.canonical_ar, nameEn: cur.name_en || "",
+          supplier: e.supplier, purchaseUnit: e.purchaseUnit, pricePerUnit: e.pricePerUnit,
+          purchaseSarPerKg: e.purchasePerG === null ? null : round3(e.purchasePerG * 1000),
+          trimLossPct: e.trimLossPct,
+          effectiveSarPerKg: e.perG === null ? null : round3(e.perG * 1000),
+          priceSource: e.priceSource, verified: e.verified, effectiveFrom: e.effectiveFrom,
+        },
+        priceRowAdded: !!priceRow,
+        // Spelled out so the ribs case is legible on screen:  90 ÷ (1−0.18) = 110
+        yieldMath: e.trimLossPct === null || e.purchasePerG === null ? null : {
+          purchaseSarPerKg: round3(e.purchasePerG * 1000),
+          trimLossPct: e.trimLossPct,
+          effectiveSarPerKg: round3(e.perG * 1000),
+          formula: `${round3(e.purchasePerG * 1000)} ÷ (1 − ${e.trimLossPct}) = ${round3(e.perG * 1000)} ر.س/كجم`,
+        },
+      });
+    } catch (e) {
+      console.error("[costing] material save failed:", e);
+      return c.json({ ok: false, error: "save_failed", detail: e.message }, 500);
+    }
+  });
+
+  /* Price history for one material — the evidence behind `effectiveFrom`. */
+  app.get("/api/costing/materials/:id/prices", async (c) => {
+    const u = await requireCostingUser(c); if (isResponse(u)) return u;
+    const denied = await gate(c, u, "materials"); if (denied) return denied;
+    const id = norm(safeDecode(c.req.param("id")));
+    const rows = (await pool.query(
+      `SELECT * FROM cw_material_prices WHERE canonical_ar = $1
+        ORDER BY effective_from DESC`, [id])).rows;
+    return c.json({
+      ok: true, material: id,
+      prices: rows.map((r) => ({
+        id: r.id, effectiveFrom: isoDayOf(r.effective_from), supplier: r.supplier || "",
+        purchaseUnit: r.purchase_unit || "", pricePerUnit: r.price === null ? null : num(r.price),
+        sarPerKg: r.cost_per_g === null ? null : round3(num(r.cost_per_g) * 1000),
+        sarPerPiece: r.cost_per_piece === null ? null : round3(num(r.cost_per_piece)),
+        source: r.source, note: r.note || "", createdAt: r.created_at,
+      })),
+    });
+  });
+
+  /* ═══════════════════════════════════════════════════════════════════════════
+     WORKBENCH ROUTE 3 — /batches
+     ═══════════════════════════════════════════════════════════════════════ */
+
+  app.get("/api/costing/batches", async (c) => {
+    const u = await requireCostingUser(c); if (isResponse(u)) return u;
+    const denied = await gate(c, u, "batches"); if (denied) return denied;
+    try {
+      const from = dayArg(c.req.query("from"), daysAgoISO(89));
+      const to = dayArg(c.req.query("to"), todayISO());
+      const model = await loadModel();
+      const wb = await loadWorkbench(to);
+      const { byProduct } = await salesByProduct(wb, from, to);
+
+      const out = [...model.batch.keys()].map((k) => {
+        const eb = effBatch(model, wb, k);
+        const deps = dependentsOfBatch(model, k);
+        const salesValue = deps.reduce((a, pid) => a + (byProduct.get(pid)?.value || 0), 0);
+        return {
+          id: eb.nameAr, nameAr: eb.nameAr, nameEn: eb.nameEn,
+          hasRecipe: !eb.plug, lineCount: eb.lines.length,
+          inputG: eb.inputG, outputG: eb.outputG, storedOutputG: eb.storedOutputG,
+          outputMeasured: eb.outputMeasured,
+          yieldPct: eb.yieldPct, yieldAssumed: eb.yieldAssumed,
+          sarPerKg: eb.sarPerKg, sarPerKgBeforeYield: eb.sarPerKgBeforeYield,
+          storedSarPerKg: eb.storedSarPerKg,
+          totalCost: eb.totalCost, confidence: eb.confidence,
+          note: eb.note, yieldNote: eb.yieldNote,
+          dependents: deps.length,
+          salesValue: salesValue ? round2(salesValue) : null,
+        };
+      });
+      out.sort((a, b) => (b.salesValue || 0) - (a.salesValue || 0));
+      return c.json({ ok: true, from, to, count: out.length, batches: out });
+    } catch (e) {
+      console.error("[costing] batches failed:", e);
+      return c.json({ ok: false, error: "batches_failed", detail: e.message }, 500);
+    }
+  });
+
+  app.get("/api/costing/batches/:id", async (c) => {
+    const u = await requireCostingUser(c); if (isResponse(u)) return u;
+    const denied = await gate(c, u, "batches"); if (denied) return denied;
+    try {
+      const key = norm(safeDecode(c.req.param("id")));
+      const from = dayArg(c.req.query("from"), daysAgoISO(89));
+      const to = dayArg(c.req.query("to"), todayISO());
+      const model = await loadModel();
+      if (!model.batch.has(key))
+        return c.json({ ok: false, error: "not_found", message: "التشغيلة غير موجودة" }, 404);
+      const wb = await loadWorkbench(to);
+      const eb = effBatch(model, wb, key);
+      const deps = dependentsOfBatch(model, key);
+      const { byProduct } = await salesByProduct(wb, from, to);
+      const history = (await pool.query(
+        `SELECT * FROM cw_audit WHERE entity = 'batch' AND entity_ref = $1
+          ORDER BY at DESC LIMIT 100`, [key])).rows;
+
+      return c.json({
+        ok: true,
+        batch: {
+          id: eb.nameAr, nameAr: eb.nameAr, nameEn: eb.nameEn,
+          hasRecipe: !eb.plug, inputG: eb.inputG, outputG: eb.outputG,
+          storedOutputG: eb.storedOutputG, outputMeasured: eb.outputMeasured,
+          yieldPct: eb.yieldPct, yieldAssumed: eb.yieldAssumed,
+          sarPerKg: eb.sarPerKg, sarPerKgBeforeYield: eb.sarPerKgBeforeYield,
+          storedSarPerKg: eb.storedSarPerKg, totalCost: eb.totalCost,
+          confidence: eb.confidence, note: eb.note, yieldNote: eb.yieldNote,
+          yieldMath: eb.yieldPct === null || !eb.inputG ? null : {
+            inputG: round3(eb.inputG), yieldPct: eb.yieldPct,
+            outputG: round3(eb.outputG),
+            formula: `${round3(eb.inputG)} جم × ${eb.yieldPct} = ${round3(eb.outputG)} جم`,
+          },
+        },
+        recipe: eb.lines,
+        dependents: deps.map((pid) => ({
+          productId: pid, nameAr: model.menuById.get(pid)?.product_ar || `#${pid}`,
+          salesValue: byProduct.get(pid)?.value ? round2(byProduct.get(pid).value) : null,
+        })).sort((a, b) => (b.salesValue || 0) - (a.salesValue || 0)),
+        history: history.map((r) => ({ at: r.at, by: r.actor_name || r.actor_id,
+          field: r.field, from: r.old_value, to: r.new_value, note: r.note || "" })),
+      });
+    } catch (e) {
+      console.error("[costing] batch detail failed:", e);
+      return c.json({ ok: false, error: "batch_failed", detail: e.message }, 500);
+    }
+  });
+
+  /* PUT /api/costing/batches/:id — { lines?, outputG?, yieldPct?, note?, yieldNote? }
+     This is the route that fixes the Tarb plug: post the real recipe lines and
+     a real grill yield, and the 21.68 SAR/kg placeholder is replaced by a
+     number with a derivation. */
+  app.put("/api/costing/batches/:id", async (c) => {
+    const u = await requireCostingUser(c); if (isResponse(u)) return u;
+    const denied = await gate(c, u, "batches"); if (denied) return denied;
+    try {
+      const key = norm(safeDecode(c.req.param("id")));
+      const b = await c.req.json().catch(() => ({}));
+      const model0 = await loadModel();
+      if (!model0.batch.has(key))
+        return c.json({ ok: false, error: "not_found", message: "التشغيلة غير موجودة" }, 404);
+      const cur = model0.batch.get(key);
+      const before = effBatch(model0, await loadWorkbench(todayISO()), key);
+      const note = String(b.note || "");
+
+      if (Array.isArray(b.lines)) {
+        const old = model0.batchLines.get(key) || [];
+        await pool.query("DELETE FROM cost_batch_lines WHERE batch_ar = $1", [cur.batch_ar]);
+        let i = 0;
+        for (const l of b.lines) {
+          const ingAr = norm(l?.ingredientAr ?? l?.ing_ar ?? l?.name);
+          if (!ingAr) continue;
+          const unit = String(l?.unit || "g");
+          const qty = num(l?.qty);
+          const qtyG = l?.qtyG !== undefined && l?.qtyG !== null ? num(l.qtyG) : toGrams(qty, unit);
+          await pool.query(
+            `INSERT INTO cost_batch_lines (id, batch_ar, ing_type, ing_ar, ing_en, qty, unit, qty_g, line_cost, note)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,NULL,$9)`,
+            [idFor("bl", cur.batch_ar, String(i), ingAr), cur.batch_ar,
+             String(l?.type || l?.ing_type || "Raw"), ingAr,
+             String(l?.ingredientEn || l?.ing_en || ""), qty, unit,
+             qtyG === null ? 0 : qtyG, String(l?.note || "")]);
+          i += 1;
+        }
+        await audit(u, "batch", key, "lines",
+          old.map((x) => `${x.ing_ar}:${num(x.qty_g)}g`).join(", "),
+          b.lines.map((x) => `${norm(x?.ingredientAr ?? x?.ing_ar)}:${num(x?.qtyG ?? x?.qty)}`).join(", "),
+          note);
+
+        /* Entering the recipe IS the resolution of "recipe is missing". The
+           marker in `note` is what effBatch() reads to grade the batch a plug
+           — and it is what /health has always read — so leaving it behind
+           would mean the manager does the work and the system keeps calling
+           his number a placeholder forever. Clear it, and say so in the audit
+           rather than deleting evidence quietly. */
+        if (b.lines.length && /missing recipe/i.test(cur.note || "")) {
+          const cleaned = String(cur.note).replace(/missing recipe[^.;]*[.;]?/i, "").trim();
+          await pool.query("UPDATE cost_batches SET note=$2 WHERE batch_ar=$1",
+            [cur.batch_ar, cleaned]);
+          await audit(u, "batch", key, "note", cur.note, cleaned,
+            "أُدخلت الوصفة — رُفعت علامة «الوصفة غير مُدخلة»");
+        }
+      }
+
+      const yieldPct = b.yieldPct === undefined ? asYield(cur.yield_pct)
+                     : b.yieldPct === null || b.yieldPct === "" ? null : asYield(b.yieldPct);
+      const outputG = b.outputG === undefined ? (cur.output_g === null ? null : num(cur.output_g))
+                    : b.outputG === null || b.outputG === "" ? null : num(b.outputG);
+      const outputMeasured = b.outputMeasured === undefined
+        ? cur.output_measured === true : !!b.outputMeasured;
+
+      if (asYield(cur.yield_pct) !== yieldPct)
+        await audit(u, "batch", key, "yieldPct", asYield(cur.yield_pct), yieldPct, note);
+      if ((cur.output_g === null ? null : num(cur.output_g)) !== outputG)
+        await audit(u, "batch", key, "outputG",
+          cur.output_g === null ? null : num(cur.output_g), outputG, note);
+
+      await pool.query(
+        `UPDATE cost_batches
+            SET yield_pct=$2, output_g=$3, output_measured=$4,
+                yield_note=$5, note=COALESCE(NULLIF($6,''), note),
+                updated_by=$7, updated_at=NOW()
+          WHERE batch_ar=$1`,
+        [cur.batch_ar, yieldPct, outputG, outputMeasured,
+         b.yieldNote === undefined ? cur.yield_note || "" : String(b.yieldNote),
+         String(b.batchNote || ""), String(u.id || "")]);
+
+      cache = { at: 0, model: null };
+      const model = await loadModel();
+      const wb = await loadWorkbench(todayISO());
+      const eb = effBatch(model, wb, key);
+
+      // Keep the denormalised columns the older routes read in step with the
+      // recomputed truth, so /health and /recipe never disagree with /batches.
+      await pool.query(
+        `UPDATE cost_batches SET total_cost=$2, cost_per_g=$3, updated_at=NOW() WHERE batch_ar=$1`,
+        [cur.batch_ar, eb.plug ? cur.total_cost : eb.totalCost,
+         eb.perG === null ? cur.cost_per_g : eb.perG]);
+      cache = { at: 0, model: null };
+
+      return c.json({
+        ok: true,
+        batch: {
+          id: eb.nameAr, sarPerKg: eb.sarPerKg, sarPerKgBeforeYield: eb.sarPerKgBeforeYield,
+          inputG: eb.inputG, outputG: eb.outputG, yieldPct: eb.yieldPct,
+          totalCost: eb.totalCost, confidence: eb.confidence, hasRecipe: !eb.plug,
+        },
+        previousSarPerKg: before.sarPerKg,
+        delta: eb.sarPerKg === null || before.sarPerKg === null
+          ? null : round3(eb.sarPerKg - before.sarPerKg),
+        recipe: eb.lines,
+        hint: "اضغط «إعادة الاحتساب» لنقل الأثر إلى تكاليف الأصناف وتقارير الأرباح.",
+      });
+    } catch (e) {
+      console.error("[costing] batch save failed:", e);
+      return c.json({ ok: false, error: "save_failed", detail: e.message }, 500);
+    }
+  });
+
+  /* ═══════════════════════════════════════════════════════════════════════════
+     WORKBENCH ROUTE 4 — /packaging and /rules
+     ═══════════════════════════════════════════════════════════════════════ */
+
+  app.get("/api/costing/packaging", async (c) => {
+    const u = await requireCostingUser(c); if (isResponse(u)) return u;
+    const denied = await gate(c, u, "packaging"); if (denied) return denied;
+    const rows = (await pool.query("SELECT * FROM cw_packaging ORDER BY active DESC, name_ar")).rows;
+    const used = (await pool.query(
+      `SELECT packaging_id, count(*)::int AS n FROM cw_packaging_rules
+        WHERE active = true GROUP BY 1`)).rows;
+    const uses = new Map(used.map((r) => [r.packaging_id, r.n]));
+    return c.json({
+      ok: true,
+      packaging: rows.map((r) => ({
+        id: r.id, nameAr: r.name_ar, nameEn: r.name_en || "",
+        // NULL, not 0. An unpriced box is unknown, not free.
+        unitCost: r.unit_cost === null || r.unit_cost === undefined ? null : num(r.unit_cost),
+        packSize: r.pack_size === null ? null : num(r.pack_size),
+        packPrice: r.pack_price === null ? null : num(r.pack_price),
+        supplier: r.supplier || "", active: r.active !== false,
+        note: r.note || "", ruleCount: uses.get(r.id) || 0,
+        updatedAt: r.updated_at,
+      })),
+      unpricedCount: rows.filter((r) => r.unit_cost === null || r.unit_cost === undefined).length,
+    });
+  });
+
+  async function upsertPackaging(c, u, id) {
+    const b = await c.req.json().catch(() => ({}));
+    const nameAr = norm(b.nameAr ?? b.name_ar ?? b.name);
+    const pkgId = String(id || b.id || "").trim()
+      || `pkg_${idFor("pkg", nameAr).slice(0, 10)}`;
+    const cur = (await pool.query("SELECT * FROM cw_packaging WHERE id = $1", [pkgId])).rows[0] || null;
+    if (!cur && !nameAr)
+      return c.json({ ok: false, error: "name_required", message: "اسم صنف التغليف مطلوب" }, 400);
+
+    // pack price ÷ pack size is the honest way to price a box: you buy 500 for
+    // 180 SAR, not one for 0.36. Either form is accepted, the per-unit wins.
+    const packSize = b.packSize === undefined ? (cur ? cur.pack_size : null)
+                   : b.packSize === null || b.packSize === "" ? null : num(b.packSize);
+    const packPrice = b.packPrice === undefined ? (cur ? cur.pack_price : null)
+                    : b.packPrice === null || b.packPrice === "" ? null : num(b.packPrice);
+    let unitCost = b.unitCost === undefined ? (cur ? cur.unit_cost : null)
+                 : b.unitCost === null || b.unitCost === "" ? null : num(b.unitCost);
+    if ((b.unitCost === undefined || b.unitCost === null || b.unitCost === "")
+        && packSize && packPrice) unitCost = packPrice / packSize;
+
+    const row = (await pool.query(
+      `INSERT INTO cw_packaging (id, name_ar, name_en, unit_cost, pack_size, pack_price,
+                                 supplier, active, note, updated_by, updated_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,NOW())
+       ON CONFLICT (id) DO UPDATE SET
+         name_ar=EXCLUDED.name_ar, name_en=EXCLUDED.name_en, unit_cost=EXCLUDED.unit_cost,
+         pack_size=EXCLUDED.pack_size, pack_price=EXCLUDED.pack_price,
+         supplier=EXCLUDED.supplier, active=EXCLUDED.active, note=EXCLUDED.note,
+         updated_by=EXCLUDED.updated_by, updated_at=NOW()
+       RETURNING *`,
+      [pkgId, nameAr || cur?.name_ar || pkgId, String(b.nameEn ?? cur?.name_en ?? ""),
+       unitCost === null || unitCost === undefined ? null : round3(unitCost),
+       packSize, packPrice, String(b.supplier ?? cur?.supplier ?? ""),
+       b.active === undefined ? (cur ? cur.active : true) : !!b.active,
+       // The seed note says "not priced yet". Once it IS priced that note is a
+       // lie sitting on the screen next to the price, so pricing clears it.
+       b.note !== undefined ? String(b.note)
+         : (unitCost !== null && unitCost !== undefined
+            && String(cur?.note || "").includes("لم يُسعّر بعد") ? "" : String(cur?.note ?? "")),
+       String(u.id || "")]
+    )).rows[0];
+
+    const oldUnit = cur && cur.unit_cost !== null ? num(cur.unit_cost) : null;
+    const newUnit = row.unit_cost === null ? null : num(row.unit_cost);
+    if (oldUnit !== newUnit)
+      await audit(u, "packaging", pkgId, "unitCost", oldUnit, newUnit, String(b.note || ""));
+    if (!cur) await audit(u, "packaging", pkgId, "create", null, row.name_ar, "");
+
+    return c.json({
+      ok: true,
+      packaging: {
+        id: row.id, nameAr: row.name_ar, nameEn: row.name_en || "",
+        unitCost: newUnit, packSize: row.pack_size === null ? null : num(row.pack_size),
+        packPrice: row.pack_price === null ? null : num(row.pack_price),
+        supplier: row.supplier || "", active: row.active !== false, note: row.note || "",
+      },
+    });
+  }
+  app.post("/api/costing/packaging", async (c) => {
+    const u = await requireCostingUser(c); if (isResponse(u)) return u;
+    const denied = await gate(c, u, "packaging"); if (denied) return denied;
+    return upsertPackaging(c, u, null);
+  });
+  app.put("/api/costing/packaging/:id", async (c) => {
+    const u = await requireCostingUser(c); if (isResponse(u)) return u;
+    const denied = await gate(c, u, "packaging"); if (denied) return denied;
+    return upsertPackaging(c, u, c.req.param("id"));
+  });
+
+  /* GET /api/costing/rules — the attachment rules, PLUS the per-order figure
+     they imply. The two blocks are returned separately on purpose: seeing
+     `itemPackaging` and `orderPackaging` side by side is what makes a
+     mis-scoped rule visible instead of silently doubling a cost. */
+  app.get("/api/costing/rules", async (c) => {
+    const u = await requireCostingUser(c); if (isResponse(u)) return u;
+    const denied = await gate(c, u, "rules"); if (denied) return denied;
+    try {
+      const from = dayArg(c.req.query("from"), daysAgoISO(29));
+      const to = dayArg(c.req.query("to"), todayISO());
+      const wb = await loadWorkbench(to);
+      const model = await loadModel();
+
+      const shape = (r) => {
+        const p = wb.packagingById.get(r.packaging_id);
+        return {
+          id: r.id, scope: r.scope, matchKind: r.match_kind, matchValue: r.match_value,
+          packagingId: r.packaging_id, packagingNameAr: p ? p.name_ar : "(محذوف)",
+          unitCost: p && p.unit_cost !== null && p.unit_cost !== undefined ? num(p.unit_cost) : null,
+          qty: num(r.qty) || 1, active: r.active !== false, reviewed: r.reviewed === true,
+          note: r.note || "",
+        };
+      };
+
+      const channels = await ordersByChannel(from, to);
+      const perChannel = channels.map((ch) => {
+        const op = orderPackagingFor(wb, ch.channel);
+        return {
+          channel: ch.channel, channelAr: ch.ar, orders: ch.orders,
+          perOrder: op.complete ? op.perOrder : null,
+          perOrderKnown: op.perOrder,
+          complete: op.complete, unpriced: op.unpriced,
+          lines: op.lines,
+          periodCost: op.complete && ch.orders ? round2(op.perOrder * ch.orders) : null,
+        };
+      });
+      const known = perChannel.every((x) => x.complete);
+      const periodTotal = perChannel.reduce((a, x) => a + (x.periodCost || 0), 0);
+
+      // How many item-scoped boxes the menu actually attracts, so the manager
+      // can see the other half of the packaging bill.
+      let itemPackagingTotal = 0, itemPackagingComplete = true;
+      const { byProduct } = await salesByProduct(wb, from, to);
+      for (const m of model.menu) {
+        const pk = itemPackagingFor(model, wb, m);
+        if (!pk.lines.length) continue;
+        if (!pk.complete) itemPackagingComplete = false;
+        itemPackagingTotal += pk.cost * (byProduct.get(m.product_id)?.units || 0);
+      }
+
+      return c.json({
+        ok: true, from, to,
+        rules: wb.rules.map(shape),
+        packaging: wb.packaging.map((p) => ({
+          id: p.id, nameAr: p.name_ar,
+          unitCost: p.unit_cost === null || p.unit_cost === undefined ? null : num(p.unit_cost),
+        })),
+        scopes: [
+          { key: "item", ar: "لكل صنف", explain: "يدخل في تكلفة الصنف ويُضرب في الكمية — علبة البيتزا" },
+          { key: "order", ar: "لكل طلب", explain: "مرة واحدة لكل فاتورة مهما كان عدد الأصناف — الستيكر والمنديل" },
+          { key: "channel", ar: "حسب القناة", explain: "مرة واحدة لكل فاتورة، وللقناة دي بس — الكيس للتوصيل" },
+        ],
+        matchKinds: [
+          { key: "all", ar: "كل الأصناف" }, { key: "product", ar: "صنف محدد" },
+          { key: "category", ar: "تصنيف" }, { key: "name", ar: "الاسم يحتوي" },
+          { key: "channel", ar: "قناة البيع" },
+        ],
+        channels: CHANNELS,
+        orderPackaging: {
+          byChannel: perChannel,
+          complete: known,
+          periodCost: known ? round2(periodTotal) : null,
+          // The sentence that keeps this out of item_costs.
+          explain: "تغليف الطلب (كيس، ستيكر، منديل) يُحسب مرة واحدة لكل فاتورة، "
+                 + "ولا يدخل في تكلفة الصنف — لأنه لو دخل، الطلب اللي فيه ٦ أصناف "
+                 + "هيدفع ٦ أكياس. رقمه هنا مصروف تشغيلي شهري، مش تكلفة وحدة.",
+        },
+        itemPackaging: {
+          periodCost: itemPackagingComplete ? round2(itemPackagingTotal) : null,
+          complete: itemPackagingComplete,
+          explain: "تغليف الصنف (علبة البيتزا، علبة الوجبة) يدخل في تكلفة الوحدة ويُكتب في item_costs.",
+        },
+        unreviewedRules: wb.rules.filter((r) => r.reviewed !== true).length,
+      });
+    } catch (e) {
+      console.error("[costing] rules failed:", e);
+      return c.json({ ok: false, error: "rules_failed", detail: e.message }, 500);
+    }
+  });
+
+  /* PUT /api/costing/rules — { rules:[…] } replaces the whole set.
+     A rule set is a single coherent statement about how orders are packed;
+     merging half of one is how you end up with two bags. */
+  app.put("/api/costing/rules", async (c) => {
+    const u = await requireCostingUser(c); if (isResponse(u)) return u;
+    const denied = await gate(c, u, "rules"); if (denied) return denied;
+    try {
+      const b = await c.req.json().catch(() => ({}));
+      const rules = Array.isArray(b.rules) ? b.rules : null;
+      if (!rules) return c.json({ ok: false, error: "rules_required" }, 400);
+
+      const oldRows = (await pool.query("SELECT * FROM cw_packaging_rules")).rows;
+      const known = new Set((await pool.query("SELECT id FROM cw_packaging")).rows.map((r) => r.id));
+      const errors = [];
+      const keep = [];
+      for (const r of rules) {
+        const scope = ["item", "order", "channel"].includes(String(r?.scope)) ? String(r.scope) : null;
+        const pkg = String(r?.packagingId || r?.packaging_id || "").trim();
+        if (!scope) { errors.push(`نطاق غير صحيح: ${r?.scope}`); continue; }
+        if (!known.has(pkg)) { errors.push(`صنف تغليف غير معروف: ${pkg}`); continue; }
+        let kind = String(r?.matchKind || (scope === "channel" ? "channel" : "all"));
+        let value = String(r?.matchValue ?? "");
+        if (scope === "order") { kind = "all"; value = ""; }
+        if (scope === "channel") {
+          kind = "channel";
+          if (!CHANNELS.some((ch) => ch.key === value)) { errors.push(`قناة غير معروفة: ${value}`); continue; }
+        }
+        if (scope === "item" && !["all", "product", "category", "name"].includes(kind)) {
+          errors.push(`نوع مطابقة غير صحيح: ${kind}`); continue;
+        }
+        keep.push({ id: r?.id || idFor("pr", scope, kind, value, pkg),
+                    scope, kind, value, pkg, qty: num(r?.qty) || 1,
+                    active: r?.active === undefined ? true : !!r.active,
+                    reviewed: r?.reviewed === undefined ? true : !!r.reviewed,
+                    note: String(r?.note || "") });
+      }
+      if (!keep.length && rules.length)
+        return c.json({ ok: false, error: "all_rules_invalid", errors }, 400);
+
+      await pool.query("DELETE FROM cw_packaging_rules");
+      for (const k of keep)
+        await pool.query(
+          `INSERT INTO cw_packaging_rules
+             (id, scope, match_kind, match_value, packaging_id, qty, active, reviewed, note, updated_by, updated_at)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,NOW())
+           ON CONFLICT (id) DO UPDATE SET qty=EXCLUDED.qty, active=EXCLUDED.active,
+             reviewed=EXCLUDED.reviewed, note=EXCLUDED.note, updated_by=EXCLUDED.updated_by,
+             updated_at=NOW()`,
+          [k.id, k.scope, k.kind, k.value, k.pkg, k.qty, k.active, k.reviewed, k.note,
+           String(u.id || "")]);
+
+      const desc = (r) => `${r.scope}/${r.match_kind ?? r.kind}:${r.match_value ?? r.value}→${r.packaging_id ?? r.pkg}×${num(r.qty)}`;
+      await audit(u, "rules", "packaging", "ruleset",
+        oldRows.map(desc).join(" | "), keep.map(desc).join(" | "), String(b.note || ""));
+
+      return c.json({ ok: true, saved: keep.length, errors });
+    } catch (e) {
+      console.error("[costing] rules save failed:", e);
+      return c.json({ ok: false, error: "save_failed", detail: e.message }, 500);
+    }
+  });
+
+  /* ═══════════════════════════════════════════════════════════════════════════
+     WORKBENCH ROUTE 5 — /recalc. The only route that writes to `item_costs`,
+     which is the only table finance.js reads. Everything else in the workbench
+     is a draft until this runs.
+     ═══════════════════════════════════════════════════════════════════════ */
+
+  app.post("/api/costing/recalc", async (c) => {
+    const u = await requireCostingUser(c); if (isResponse(u)) return u;
+    const denied = await gate(c, u, "recalc"); if (denied) return denied;
+    try {
+      const b = await c.req.json().catch(() => ({}));
+      const dryRun = b.dryRun === true;
+      // Default effective date is TODAY, never '2000-01-01'. Backdating a new
+      // cost to the beginning of time rewrites every month already reported.
+      const effectiveFrom = dayArg(b.effectiveFrom, todayISO());
+      const onlyIds = Array.isArray(b.productIds) ? new Set(b.productIds.map(Number)) : null;
+
+      cache = { at: 0, model: null };
+      const model = await loadModel();
+      const wb = await loadWorkbench(effectiveFrom);
+      const current = await costsAsOf(effectiveFrom);
+
+      const changed = [], unchanged = [], skipped = [];
+      for (const m of model.menu) {
+        const pid = m.product_id;
+        if (onlyIds && !onlyIds.has(pid)) continue;
+        const names = wb.posByProduct.get(pid) || [];
+        const cm = computeItem(model, wb, pid);
+        const rv = wb.review.get(pid);
+
+        const reject = (reason, reasonAr) => skipped.push({
+          productId: pid, nameAr: m.product_ar, reason, reasonAr,
+          cost: cm.cost, confidence: cm.confidence });
+
+        if (!names.length) { reject("no_pos_name", "لا يوجد اسم مطابق على الكاشير"); continue; }
+        if (cm.cost === null) { reject("no_recipe", "لا توجد وصفة"); continue; }
+        // We refuse to publish a number we do not believe. A missing ingredient
+        // makes the total an understatement, and an understated COGS is worse
+        // than the blended 43% fallback finance.js already applies.
+        if (cm.confidence === "missing") { reject("missing_ingredient", "أحد المكونات بلا تكلفة"); continue; }
+        if (rv?.status === "needs_info") { reject("needs_info", "الصنف معلّم «ناقص معلومات»"); continue; }
+
+        for (const name of names) {
+          const cur = current.get(name);
+          const same = cur && Math.abs(num(cur.cost) - cm.cost) < 0.005;
+          if (same) { unchanged.push({ posName: name, productId: pid, cost: cm.cost }); continue; }
+          const entry = {
+            posName: name, productId: pid, nameAr: m.product_ar,
+            from: cur ? round3(num(cur.cost)) : null, to: cm.cost,
+            delta: cur ? round3(cm.cost - num(cur.cost)) : null,
+            confidence: cm.confidence, reviewStatus: cm.reviewStatus,
+            foodCost: cm.foodCost, packagingCost: cm.packagingCost,
+          };
+          if (!dryRun) {
+            await pool.query(
+              `INSERT INTO item_costs (id, item_name, item_id, cost, effective_from, note)
+               VALUES ($1,$2,$3,$4,$5::date,$6)
+               ON CONFLICT (item_name, effective_from) DO UPDATE SET
+                 cost=EXCLUDED.cost, item_id=EXCLUDED.item_id, note=EXCLUDED.note, updated_at=NOW()`,
+              [crypto.randomUUID(), name, String(pid), cm.cost, effectiveFrom,
+               `${m.product_ar} — ${NOTE_WORKBENCH}`]);
+            await audit(u, "item_costs", name, "cost", entry.from, entry.to,
+              `${effectiveFrom} · ${m.product_ar}`);
+          }
+          changed.push(entry);
+        }
+      }
+
+      if (!dryRun)
+        await audit(u, "recalc", effectiveFrom, "run", null,
+          `${changed.length} تغيير`, String(b.note || ""));
+
+      changed.sort((a, b2) => Math.abs(b2.delta ?? b2.to ?? 0) - Math.abs(a.delta ?? a.to ?? 0));
+
+      // Order-scoped packaging is deliberately absent from everything above.
+      // Reported here so the number is not lost, only kept out of unit costs.
+      const chans = await ordersByChannel(daysAgoISO(29), todayISO());
+      const orderPack = chans.map((ch) => {
+        const op = orderPackagingFor(wb, ch.channel);
+        return { channel: ch.channel, channelAr: ch.ar, orders: ch.orders,
+                 perOrder: op.complete ? op.perOrder : null,
+                 periodCost: op.complete ? round2(op.perOrder * ch.orders) : null };
+      });
+
+      return c.json({
+        ok: true, dryRun, effectiveFrom,
+        changed: changed.length, unchanged: unchanged.length, skipped: skipped.length,
+        changes: changed, skippedItems: skipped,
+        totalDelta: round3(changed.reduce((a, x) => a + (x.delta || 0), 0)),
+        orderPackagingLast30d: {
+          byChannel: orderPack,
+          note: "لم تُكتب في تكاليف الأصناف — تُحسب مرة واحدة لكل فاتورة كمصروف تشغيلي.",
+        },
+        wrote: dryRun ? "لا شيء (تجربة فقط)" : "item_costs",
+      });
+    } catch (e) {
+      console.error("[costing] recalc failed:", e);
+      return c.json({ ok: false, error: "recalc_failed", detail: e.message }, 500);
+    }
+  });
+
+  /* ═══════════════════════════════════════════════════════════════════════════
+     WORKBENCH ROUTE 6 — /tasks. The queue.
+
+     Ranked by MONEY MOVED, which is deliberately not the same as severity:
+
+         impact ≈ sales value riding on the number × how wrong it could be
+
+     A 5%-uncertain cost on the best-selling dish outranks a 100%-uncertain
+     cost on a dish nobody orders. That is the ordering that makes the Tarb
+     plug — flagged 'OK' by the source workbook — the first thing the manager
+     sees, and the three loud sauce flags the last.
+     ═══════════════════════════════════════════════════════════════════════ */
+
+  /* How wrong each kind of gap could plausibly be, as a share of the cost it
+     touches. These are judgement calls, and they are written down here rather
+     than buried in an expression so they can be argued with. */
+  const UNCERTAINTY = {
+    BATCH_PLUG: 0.35,           // tarb modelled as kofta, zero yield loss — a third out is easy
+    BATCH_NO_YIELD_LOSS: 0.20,  // a 20% grill loss is the conservative end
+    RAW_GUESSED: 1.00,          // a typed round number could be double
+    ITEM_UNREVIEWED: 0.10,      // nobody has looked; assume a tenth
+    PACKAGING_UNPRICED: 1.00,   // unknown is unknown
+    RULES_UNREVIEWED: 0.50,
+  };
+
+  async function buildTasks(model, wb, from, to) {
+    const { sales, byProduct } = await salesByProduct(wb, from, to);
+    const costs = await costsAsOf(to);
+    const salesByName = new Map(sales.map((s) => [s.name, s]));
+    const prodValue = (pid) => byProduct.get(pid)?.value || 0;
+    const T = [];
+    const push = (t) => T.push({ impactSar: 0, salesSar: 0, evidence: {}, ...t });
+
+    /* ── 1. Batches with no recipe. The headline: Tarb. ── */
+    for (const [key, b] of model.batch) {
+      const eb = effBatch(model, wb, key);
+      const deps = dependentsOfBatch(model, key);
+      const value = deps.reduce((a, pid) => a + prodValue(pid), 0);
+      const noRecipe = eb.plug || /missing recipe/i.test(b.note || "");
+      if (noRecipe) {
+        push({
+          kind: "BATCH_PLUG", severity: "critical", itemKind: "batch", itemRef: b.batch_ar,
+          title: `وصفة «${b.batch_ar}» غير مُدخلة`,
+          why: `التكلفة الحالية ${eb.storedSarPerKg ?? "?"} ر.س/كجم رقم مؤقت بلا وصفة خلفه، `
+             + `و${round2(value)} ر.س من المبيعات محسوبة عليه`
+             + (deps.length ? ` عبر ${deps.length} صنف` : ""),
+          action: "أدخل مكونات التشغيلة ووزن الإنتاج الفعلي بعد الطهي",
+          salesSar: round2(value), impactSar: round2(value * UNCERTAINTY.BATCH_PLUG),
+          evidence: { storedSarPerKg: eb.storedSarPerKg, dependents: deps.length,
+                      dependentItems: deps.map((pid) => model.menuById.get(pid)?.product_ar).filter(Boolean) },
+        });
+        continue;   // a batch with no recipe cannot also have a yield finding
+      }
+      /* ── 2. Batches asserting zero cooking loss. ── */
+      if (eb.yieldAssumed && eb.inputG && eb.outputG >= eb.inputG - 0.5) {
+        const proteinG = (model.batchLines.get(key) || []).reduce((a, l) => {
+          const res = resolve(model, l.ing_type, l.ing_ar);
+          return a + (PROTEIN_RE.test(res.canonical) ? num(l.qty_g) : 0);
+        }, 0);
+        const share = eb.inputG ? proteinG / eb.inputG : 0;
+        if (share <= 0.1) continue;   // an uncooked mix genuinely loses nothing
+        push({
+          kind: "BATCH_NO_YIELD_LOSS", severity: share > 0.4 ? "high" : "medium",
+          itemKind: "batch", itemRef: b.batch_ar,
+          title: `«${b.batch_ar}» تفترض أن الوزن لا يقل بالطهي`,
+          why: `وزن الإنتاج ${round3(eb.outputG)} جم = مجموع المدخلات، رغم أن `
+             + `${Math.round(share * 100)}% منها بروتين يفقد وزناً — التكلفة أقل من الحقيقة`,
+          action: "زِن ناتج تشغيلة واحدة فعلياً وأدخل نسبة الناتج (مثلاً 80%)",
+          salesSar: round2(value), impactSar: round2(value * UNCERTAINTY.BATCH_NO_YIELD_LOSS * share),
+          evidence: { inputG: round3(eb.inputG), outputG: round3(eb.outputG),
+                      proteinShare: round3(share), sarPerKg: eb.sarPerKg },
+        });
+      }
+    }
+
+    /* ── 3. Materials priced by guess. ── */
+    for (const [key, r] of model.raw) {
+      const e = effRaw(model, wb, key);
+      if (!e.flaggedReview && e.priceSource !== "estimate") continue;
+      const deps = dependentsOfRaw(model, key);
+      const value = deps.reduce((a, d) => a + prodValue(d.productId), 0);
+      // If the true price is double, this is the extra COGS over the window —
+      // a direct money figure, not a share, so it is used as the impact as-is.
+      const doubleRisk = deps.reduce(
+        (a, d) => a + d.exposureSar * (byProduct.get(d.productId)?.units || 0), 0);
+      push({
+        kind: "RAW_GUESSED", severity: doubleRisk > 500 ? "high" : "low",
+        itemKind: "material", itemRef: r.canonical_ar,
+        title: `سعر «${r.canonical_ar}» تقديري`,
+        why: `${e.pricePerUnit ?? "?"} ر.س/${e.purchaseUnit || "وحدة"} رقم مكتوب بلا فاتورة. `
+           + `لو السعر الحقيقي الضعف، الفرق ${round2(doubleRisk)} ر.س في الفترة دي`,
+        action: "أدخل سعر الشراء من آخر فاتورة، مع اسم المورّد",
+        salesSar: round2(value), impactSar: round2(doubleRisk),
+        evidence: { pricePerUnit: e.pricePerUnit, purchaseUnit: e.purchaseUnit,
+                    dependents: deps.length, costIfDoubled: round2(doubleRisk) },
+      });
+    }
+
+    /* ── 4. Meat with no trim loss measured. Omar's ribs workaround, generalised. ── */
+    for (const [key, r] of model.raw) {
+      if (!TRIMMABLE_RE.test(key) || NOT_TRIMMABLE_RE.test(key)) continue;
+      const e = effRaw(model, wb, key);
+      if (e.trimLossPct !== null) continue;
+      if (e.purchasePerG === null) continue;
+      const deps = dependentsOfRaw(model, key);
+      const value = deps.reduce((a, d) => a + prodValue(d.productId), 0);
+      if (value < 100) continue;    // not worth the manager's morning
+      push({
+        kind: "MATERIAL_NO_YIELD", severity: value > 3000 ? "high" : "medium",
+        itemKind: "material", itemRef: r.canonical_ar,
+        title: `«${r.canonical_ar}» بدون نسبة فاقد تنظيف`,
+        why: `سعر الشراء ${round3(e.purchasePerG * 1000)} ر.س/كجم، لكن جزء من الكيلو `
+           + `بيتشال قبل الطهي ولا أحد قاسه — فالتكلفة الحقيقية للجرام المستخدم أعلى. `
+           + `${round2(value)} ر.س مبيعات تعتمد عليها`,
+        action: "زِن كيلو قبل وبعد التنظيف وأدخل النسبة — الموديل هيحسب سعر الجرام الصافي",
+        salesSar: round2(value), impactSar: round2(value * 0.08),
+        evidence: { purchaseSarPerKg: round3(e.purchasePerG * 1000), dependents: deps.length },
+      });
+    }
+
+    /* ── 4b. The ribs number, and every other weight-sold grill priced by hand.
+          `GRILL_FAMILIES` carries meat costs Omar typed; the workbench can now
+          derive them, and where the two disagree the difference is real money
+          on the weight-sold lines. ── */
+    {
+      const ribs = model.raw.get(norm("ريش"));
+      if (ribs && String(ribs.yield_note || "").includes(RIBS_YIELD_SENTINEL)) {
+        const e = effRaw(model, wb, norm("ريش"));
+        const ribSales = sales.filter((s) => !s.isModifier && norm(s.name).includes("ريش"))
+                              .reduce((a, s) => a + s.amount, 0);
+        push({
+          kind: "RIBS_YIELD_ASSUMED", severity: ribSales > 2000 ? "high" : "medium",
+          itemKind: "material", itemRef: "ريش",
+          title: "نسبة فاقد الريش مستنتجة، مش مقيسة",
+          why: `التسعير الحالي 110 ر.س/كجم بينما سعر الشراء 90. الفرق ده معناه فاقد `
+             + `${Math.round(RIBS_TRIM_ASSUMED * 100)}% — وده رقم استنتجناه من الفرق نفسه، `
+             + `مش من ميزان. ${round2(ribSales)} ر.س مبيعات ريش بتعتمد عليه`,
+          action: "زِن صندوق ريش قبل التنظيف وبعد الشوي، وأدخل النسبة الحقيقية — "
+                + "السعر هيطلع لوحده بدل ما يتكتب باليد",
+          salesSar: round2(ribSales),
+          impactSar: round2(ribSales * 0.12),
+          evidence: {
+            purchaseSarPerKg: e.purchasePerG === null ? null : round3(e.purchasePerG * 1000),
+            assumedTrimLossPct: round3(RIBS_TRIM_ASSUMED),
+            derivedSarPerKg: e.perG === null ? null : round3(e.perG * 1000),
+            hardcodedSarPerKg: 110,
+            formula: "90 ÷ (1 − 0.1818) = 110.0 ر.س/كجم",
+          },
+        });
+      }
+    }
+
+    /* ── 5. Packaging Omar named but never priced. ── */
+    const unpriced = wb.packaging.filter((p) => p.active !== false
+      && (p.unit_cost === null || p.unit_cost === undefined));
+    if (unpriced.length) {
+      const orders = (await ordersByChannel(from, to)).reduce((a, ch) => a + ch.orders, 0);
+      push({
+        kind: "PACKAGING_UNPRICED", severity: "high", itemKind: "packaging",
+        itemRef: "packaging", title: `${unpriced.length} صنف تغليف بدون سعر`,
+        why: `${unpriced.map((p) => p.name_ar).join("، ")} — كلها بلا تكلفة، `
+           + `يعني ${orders} طلب في الفترة دي محسوبة كأن التغليف مجاني`,
+        action: "أدخل سعر العبوة وعدد القطع فيها لكل صنف تغليف",
+        salesSar: null,
+        // 0.75 SAR of packaging per order is a placeholder for the SIZE of the
+        // hole, not a cost estimate — it is never written anywhere.
+        impactSar: round2(orders * 0.75),
+        evidence: { unpriced: unpriced.map((p) => p.name_ar), ordersInWindow: orders },
+      });
+    }
+
+    /* ── 5b. Categories no packaging rule reaches. Omar named boxes for pizza,
+          doritos, fries and crepe and said every meal goes out in a box — he
+          said nothing about burgers, pasta, sandwiches, طاسات or مقبلات. That
+          is 32 of the 78 costed items being served in something nobody has
+          named. The gap is reported; it is not filled with a plausible box. ── */
+    {
+      const uncovered = new Map();
+      for (const m of model.menu) {
+        if (itemPackagingFor(model, wb, m).lines.length) continue;
+        const cat = m.category_ar || "(بدون تصنيف)";
+        const e = uncovered.get(cat) || { items: 0, value: 0 };
+        e.items += 1; e.value += prodValue(m.product_id);
+        uncovered.set(cat, e);
+      }
+      for (const [cat, e] of uncovered) {
+        if (e.value < 200) continue;
+        push({
+          kind: "PACKAGING_NO_RULE", severity: "medium", itemKind: "rules",
+          itemRef: `category:${cat}`,
+          title: `«${cat}» — ${e.items} صنف بدون تغليف محدد`,
+          why: `${round2(e.value)} ر.س مبيعات، وما فيش قاعدة تقول الأصناف دي بتتقدم في إيه. `
+             + `تكلفتها دلوقتي محسوبة كأنها بتتقدم بدون علبة`,
+          action: `افتح «قواعد التغليف» وأضف علبة لتصنيف ${cat}`,
+          salesSar: round2(e.value), impactSar: round2(e.value * 0.02),
+          evidence: { category: cat, items: e.items },
+        });
+      }
+    }
+
+    /* ── 6. Packaging rules nobody has confirmed. ── */
+    const unrev = wb.rules.filter((r) => r.reviewed !== true).length;
+    if (unrev) {
+      const orders = (await ordersByChannel(from, to)).reduce((a, ch) => a + ch.orders, 0);
+      push({
+        kind: "RULES_UNREVIEWED", severity: "medium", itemKind: "rules", itemRef: "rules",
+        title: `${unrev} قاعدة تغليف لم تُراجع`,
+        why: "القواعد الحالية مكتوبة من كلام عمر ولم يؤكدها أحد: أي صنف بياخد علبة، "
+           + "وأي قناة بتاخد كيس",
+        action: "افتح «قواعد التغليف» وأكّد أو صحّح كل قاعدة",
+        salesSar: null, impactSar: round2(orders * 0.25),
+        evidence: { unreviewedRules: unrev },
+      });
+    }
+
+    /* ── 7. Sold every day, never reviewed. ── */
+    for (const m of model.menu) {
+      const rv = wb.review.get(m.product_id);
+      if (rv && rv.status !== "unreviewed") continue;
+      const value = prodValue(m.product_id);
+      if (value < 500) continue;
+      const cm = computeItem(model, wb, m.product_id);
+      push({
+        kind: "ITEM_UNREVIEWED", severity: value > 5000 ? "high" : "medium",
+        itemKind: "item", itemRef: m.product_ar, productId: m.product_id,
+        title: `«${m.product_ar}» لم تُراجع تكلفتها`,
+        why: `${round2(value)} ر.س مبيعات، والتكلفة ${cm.cost ?? "غير معروفة"} ر.س `
+           + `جاية من ملف التكاليف بدون ما حد يفتحها ويتأكد`,
+        action: "افتح الصنف، راجع كل مكوّن، ثم علّمه «مؤكدة»",
+        salesSar: round2(value), impactSar: round2(value * UNCERTAINTY.ITEM_UNREVIEWED),
+        evidence: { cost: cm.cost, confidence: cm.confidence, ingredients: cm.lines.length },
+      });
+    }
+
+    /* ── 8. A size-M dish carrying the size-L recipe. Direct, provable money. ── */
+    for (const [name, row] of costs) {
+      const note = String(row.note || "");
+      if (!note.includes(NOTE_RECIPE) && !note.includes(NOTE_WORKBENCH)) continue;
+      const wbName = norm(note.split("—")[0]);
+      const a = portionSizeOf(name), z = portionSizeOf(wbName);
+      if (!a || !z || a === z) continue;
+      const s = salesByName.get(name) || { qty: 0, amount: 0 };
+      const want = model.menu.find((m) => norm(m.product_ar) ===
+        norm(wbName.replace(/\(L\)/, "(M)").replace(/\(M\)/, "(L)")));
+      const gap = want ? round3(num(row.cost) - num(want.total_cost)) : null;
+      /* A gap of exactly zero means the COST is already the size-correct one
+         and only the free-text note still names the other size. Live data: all
+         nine medium pizzas are in this state — the number was fixed, the note
+         was not. Raising nine 'critical' tasks worth SAR 0 would teach the
+         manager that critical means nothing. The mapping no longer depends on
+         that note anyway (cw_item_pos does), so there is nothing to fix. */
+      if (gap !== null && Math.abs(gap) < 0.005) continue;
+      push({
+        kind: "SIZE_COST_MISMATCH", severity: "critical", itemKind: "pos", itemRef: name,
+        title: `«${name}» بتحمل تكلفة مقاس تاني`,
+        why: `الصنف مقاس ${a} لكن التكلفة مأخوذة من وصفة مقاس ${z} («${wbName}»)`
+           + (gap === null ? "" : ` — فرق ${gap} ر.س للوحدة × ${round2(s.qty)} وحدة`),
+        action: "اربط الصنف بالوصفة الصحيحة في جدول الربط ثم أعد الاحتساب",
+        salesSar: round2(s.amount),
+        impactSar: gap === null ? round2(s.amount * 0.1) : round2(Math.abs(gap) * s.qty),
+        evidence: { posSize: a, workbookSize: z, workbookItem: wbName,
+                    costUsed: num(row.cost), gapPerUnit: gap, units: round2(s.qty) },
+      });
+    }
+
+    /* ── 9. Items whose realised food cost is above the alarm line. ── */
+    for (const s of sales) {
+      if (s.isModifier || s.amount <= 0 || s.qty <= 0) continue;
+      const row = costs.get(s.name);
+      if (!row) continue;
+      const revEx = s.amount / (1 + VAT_RATE);
+      const fc = (num(row.cost) * s.qty) / revEx;
+      if (fc <= 0.45) continue;
+      push({
+        kind: "FOOD_COST_HIGH", severity: fc > 0.6 ? "critical" : "high",
+        itemKind: "pos", itemRef: s.name,
+        title: `«${s.name}» تكلفتها ${(fc * 100).toFixed(0)}% من سعرها`,
+        why: `التكلفة ${round3(num(row.cost))} ر.س والسعر ${round2(s.amount / s.qty)} ر.س شامل الضريبة. `
+           + `الهدف 22% — الفرق ${round2((fc - 0.22) * revEx)} ر.س في الفترة دي`,
+        action: "راجع الوصفة أولاً؛ لو التكلفة صحيحة فالمشكلة في السعر",
+        salesSar: round2(s.amount),
+        // Direct money: what a 45% ceiling would have saved. Not a guess.
+        impactSar: round2((fc - 0.45) * revEx),
+        evidence: { foodCostPct: round3(fc), unitCost: round3(num(row.cost)),
+                    avgPriceIncl: round2(s.amount / s.qty), units: round2(s.qty) },
+      });
+    }
+
+    /* ── 10. Sold with no cost row at all. ── */
+    for (const s of sales) {
+      if (costs.get(s.name)) continue;
+      if (s.isModifier || s.amount <= 200) continue;
+      push({
+        kind: "ITEM_UNPRICED", severity: s.amount > 2000 ? "high" : "medium",
+        itemKind: "pos", itemRef: s.name,
+        title: `«${s.name}» تُباع بدون تكلفة معروفة`,
+        why: `${round2(s.amount)} ر.س مبيعات بتتحسب بنسبة 43% العامة بدل تكلفة حقيقية`,
+        action: "اربط الصنف بوصفة في القائمة، أو أدخل له وصفة جديدة",
+        salesSar: round2(s.amount), impactSar: round2(s.amount * 0.15),
+        evidence: { units: round2(s.qty), value: round2(s.amount) },
+      });
+    }
+
+    /* ── The noise floor ─────────────────────────────────────────────────────
+       Before this line the live build produced 140 open tasks, 30 of them
+       food-cost alarms worth under SAR 15 each over three months. A queue the
+       manager cannot finish is a queue he stops opening, and the cost of
+       hiding a SAR 12 finding is smaller than the cost of burying the SAR
+       3,288 one under it. Anything CRITICAL survives regardless of size —
+       those are correctness bugs, not optimisations. */
+    const FLOOR_SAR = 15;
+    const kept = T.filter((t) => t.severity === "critical" || (t.impactSar || 0) >= FLOOR_SAR);
+    kept.sort((a, b) => (b.impactSar || 0) - (a.impactSar || 0));
+    kept.belowFloor = T.length - kept.length;
+    return kept;
+  }
+
+  /** Persist the candidate list, preserving whatever the manager already did
+   *  with each one, and auto-close the ones that no longer occur. */
+  async function syncTasks(candidates) {
+    const stamp = new Date();
+    for (const t of candidates) {
+      const fp = `${t.kind}|${t.itemRef}`;
+      await pool.query(
+        `INSERT INTO cw_tasks
+           (id, fingerprint, kind, title, why, action, impact_sar, sales_sar,
+            item_ref, item_kind, product_id, severity, evidence, last_seen_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13::jsonb,$14)
+         ON CONFLICT (fingerprint) DO UPDATE SET
+           title=EXCLUDED.title, why=EXCLUDED.why, action=EXCLUDED.action,
+           impact_sar=EXCLUDED.impact_sar, sales_sar=EXCLUDED.sales_sar,
+           severity=EXCLUDED.severity, evidence=EXCLUDED.evidence,
+           last_seen_at=EXCLUDED.last_seen_at,
+           -- A snooze that has run out becomes open again by itself.
+           status = CASE WHEN cw_tasks.status = 'snoozed'
+                          AND cw_tasks.snooze_until IS NOT NULL
+                          AND cw_tasks.snooze_until <= CURRENT_DATE
+                         THEN 'open' ELSE cw_tasks.status END`,
+        [`tk_${idFor("tk", fp).slice(0, 16)}`, fp, t.kind, t.title, t.why, t.action || "",
+         t.impactSar, t.salesSar, String(t.itemRef), t.itemKind || "",
+         t.productId ?? null, t.severity || "medium", JSON.stringify(t.evidence || {}), stamp]);
+    }
+    // Anything still open that this build did not produce is fixed. Closing it
+    // as 'done' by 'system' is honest — and it stays in the table, so the
+    // manager can see that it was once a problem.
+    const gone = await pool.query(
+      `UPDATE cw_tasks SET status='done', resolved_by='system',
+              resolved_name='تلقائي', resolved_at=NOW(),
+              note = CASE WHEN note = '' THEN 'لم تعد المشكلة موجودة' ELSE note END
+        WHERE status = 'open' AND last_seen_at < $1
+        RETURNING id`, [stamp]);
+    return gone.rowCount;
+  }
+
+  app.get("/api/costing/tasks", async (c) => {
+    const u = await requireCostingUser(c); if (isResponse(u)) return u;
+    const denied = await gate(c, u, "tasks"); if (denied) return denied;
+    try {
+      const from = dayArg(c.req.query("from"), daysAgoISO(89));
+      const to = dayArg(c.req.query("to"), todayISO());
+      const status = String(c.req.query("status") || "open").trim();
+      const model = await loadModel();
+      const wb = await loadWorkbench(to);
+
+      const candidates = await buildTasks(model, wb, from, to);
+      const autoClosed = await syncTasks(candidates);
+
+      const where = status === "all" ? "" : "WHERE status = $1";
+      const rows = (await pool.query(
+        `SELECT * FROM cw_tasks ${where}
+          ORDER BY (status='open') DESC, impact_sar DESC NULLS LAST, last_seen_at DESC
+          LIMIT 400`, status === "all" ? [] : [status])).rows;
+
+      const tasks = rows.map((r, i) => ({
+        id: r.id,
+        kind: r.kind,
+        title: r.title,
+        why: r.why,
+        action: r.action || "",
+        impactSar: r.impact_sar === null ? null : round2(num(r.impact_sar)),
+        salesSar: r.sales_sar === null ? null : round2(num(r.sales_sar)),
+        itemRef: r.item_ref,
+        itemKind: r.item_kind,
+        productId: r.product_id,
+        severity: r.severity,
+        status: r.status,
+        priority: i + 1,
+        evidence: r.evidence || {},
+        note: r.note || "",
+        resolvedBy: r.resolved_name || "",
+        resolvedAt: r.resolved_at,
+        snoozeUntil: isoDayOf(r.snooze_until),
+        firstSeenAt: r.first_seen_at,
+      }));
+
+      const counts = (await pool.query(
+        "SELECT status, count(*)::int AS n FROM cw_tasks GROUP BY 1")).rows;
+      return c.json({
+        ok: true, from, to, status,
+        tasks,
+        autoClosed,
+        // Findings real but too small to be worth a morning. Reported as a
+        // number so "the queue is short" never means "we hid things".
+        belowFloor: candidates.belowFloor || 0,
+        counts: Object.fromEntries(counts.map((r) => [r.status, r.n])),
+        totalImpactOpen: round2(rows.filter((r) => r.status === "open")
+          .reduce((a, r) => a + num(r.impact_sar), 0)),
+        ranking: "مرتبة حسب المبلغ اللي بيتحرك لو صُلّحت: قيمة المبيعات المعتمدة على الرقم "
+               + "× مقدار الشك فيه. المشكلة الغالية أولاً، مش الأعلى صوتاً.",
+      });
+    } catch (e) {
+      console.error("[costing] tasks failed:", e);
+      return c.json({ ok: false, error: "tasks_failed", detail: e.message }, 500);
+    }
+  });
+
+  /* POST /api/costing/tasks/:id/resolve — { action, note } → { ok }
+     action: done | snooze | wont_fix | reopen. A task the manager closes stays
+     closed even when the underlying finding is still detectable, because
+     "I have decided this is fine" is information the system does not have. */
+  app.post("/api/costing/tasks/:id/resolve", async (c) => {
+    const u = await requireCostingUser(c); if (isResponse(u)) return u;
+    const denied = await gate(c, u, "tasks"); if (denied) return denied;
+    try {
+      const id = String(c.req.param("id") || "").trim();
+      const b = await c.req.json().catch(() => ({}));
+      const action = String(b.action || "done");
+      const note = String(b.note || "");
+      const MAP = { done: "done", snooze: "snoozed", wont_fix: "wont_fix",
+                    wontfix: "wont_fix", reopen: "open", open: "open" };
+      const status = MAP[action];
+      if (!status)
+        return c.json({ ok: false, error: "bad_action",
+                        message: "الإجراء: done / snooze / wont_fix / reopen" }, 400);
+      if (status === "wont_fix" && !note.trim())
+        return c.json({ ok: false, error: "note_required",
+                        message: "اكتب سبب تجاهل المهمة — ده اللي هيفسّرها بعدين" }, 400);
+
+      const cur = (await pool.query("SELECT * FROM cw_tasks WHERE id = $1", [id])).rows[0];
+      if (!cur) return c.json({ ok: false, error: "not_found" }, 404);
+
+      const days = Math.min(90, Math.max(1, Number(b.days) || 7));
+      await pool.query(
+        `UPDATE cw_tasks
+            SET status=$2, note=$3,
+                resolved_by = CASE WHEN $2 = 'open' THEN '' ELSE $4 END,
+                resolved_name = CASE WHEN $2 = 'open' THEN '' ELSE $5 END,
+                resolved_at = CASE WHEN $2 = 'open' THEN NULL ELSE NOW() END,
+                snooze_until = CASE WHEN $2 = 'snoozed'
+                                    THEN CURRENT_DATE + ($6 || ' days')::interval
+                                    ELSE NULL END
+          WHERE id=$1`,
+        [id, status, note, String(u.id || ""),
+         String(u.display_name || u.username || ""), String(days)]);
+      await audit(u, "task", cur.fingerprint, "status", cur.status, status, note);
+      return c.json({ ok: true, status, snoozeDays: status === "snoozed" ? days : null });
+    } catch (e) {
+      console.error("[costing] task resolve failed:", e);
+      return c.json({ ok: false, error: "resolve_failed", detail: e.message }, 500);
+    }
+  });
+
+  /* ═══════════════════════════════════════════════════════════════════════════
+     WORKBENCH ROUTE 7 — /audit
+     ═══════════════════════════════════════════════════════════════════════ */
+
+  app.get("/api/costing/audit", async (c) => {
+    const u = await requireCostingUser(c); if (isResponse(u)) return u;
+    const denied = await gate(c, u, "audit"); if (denied) return denied;
+    const limit = Math.min(1000, Math.max(1, Number(c.req.query("limit")) || 200));
+    const entity = String(c.req.query("entity") || "").trim();
+    const ref = String(c.req.query("ref") || "").trim();
+    const params = [limit];
+    let where = "";
+    if (entity) { params.push(entity); where += ` AND entity = $${params.length}`; }
+    if (ref) { params.push(ref); where += ` AND entity_ref = $${params.length}`; }
+    const rows = (await pool.query(
+      `SELECT * FROM cw_audit WHERE true ${where} ORDER BY at DESC LIMIT $1`, params)).rows;
+    return c.json({
+      ok: true, count: rows.length,
+      entries: rows.map((r) => ({
+        id: r.id, at: r.at, by: r.actor_name || r.actor_id || "—", byId: r.actor_id,
+        entity: r.entity, entityAr: AUDIT_ENTITY_AR[r.entity] || r.entity,
+        ref: r.entity_ref, field: r.field,
+        from: r.old_value, to: r.new_value, note: r.note || "",
+      })),
+    });
+  });
+
+  const AUDIT_ENTITY_AR = {
+    item: "صنف", recipe: "وصفة", batch: "تشغيلة", material: "مادة خام",
+    packaging: "تغليف", rules: "قواعد التغليف", task: "مهمة", user: "مستخدم",
+    auth: "دخول", recalc: "إعادة احتساب", item_costs: "تكلفة صنف",
+    visibility: "صلاحيات العرض",
+  };
+
+  /* ── Admin utility: rebuild the POS↔product mapping on demand. Exposed
+     because a new dish on the POS is otherwise invisible to /recalc until the
+     next empty-table boot, which never comes. ─────────────────────────────── */
+  app.post("/api/costing/remap", async (c) => {
+    const u = await requireCostingOwner(c); if (isResponse(u)) return u;
+    const n = await rebuildPosMap();
+    await audit(u, "recalc", "posmap", "rebuild", null, String(n), "");
+    return c.json({ ok: true, linked: n });
+  });
+
+  /* Referenced by any future workbook re-importer; see cw_item_review. */
+  ctx.costingImportGuard = importGuard;
 }
