@@ -137,8 +137,13 @@ export function expectedWeightCost(name) {
 /* ── The modifier trap (business rule 3) ─────────────────────────────────────
    The POS shape is `<parent dish> <qty> <modifier>` where qty is a bare number
    like `1.0`. Matching on that middle number is what distinguishes a modifier
-   line from a dish whose name merely contains digits. */
-const MODIFIER_RE = /^(.+?)\s+\d+(?:\.\d+)?\s+(.+)$/;
+   line from a dish whose name merely contains digits.
+
+   The DECIMAL POINT is load-bearing. Allowing a bare integer here swept up
+   `صينية اللمة 100 ريال` — a real SAR 635 platter named after its price — and
+   filed it as a free add-on. The POS always writes the modifier quantity with
+   a decimal (`1.0`, `2.0`); prices in dish names never carry one. */
+const MODIFIER_RE = /^(.+?)\s+\d+\.\d+\s+(.+)$/;
 export function isModifierLine(name) {
   return MODIFIER_RE.test(String(name || ""));
 }
@@ -146,6 +151,23 @@ export function splitModifierLine(name) {
   const m = MODIFIER_RE.exec(String(name || ""));
   return m ? { parent: m[1].trim(), modifier: m[2].trim() } : null;
 }
+
+/* ── Portion-size markers (L / M) ────────────────────────────────────────────
+   The POS spells a medium pizza six ways — `- وسط`, `- M`, `Pizza - M` — while
+   the workbook writes `(M)`. Every one of those has to reduce to the same
+   letter, because the loader that filled `item_costs` matched on name and got
+   29 medium pizzas costed with the LARGE recipe. `/health` re-checks it. */
+export function portionSizeOf(name) {
+  const s = String(name || "");
+  if (/\(L\)|\bL\b|كبير/.test(s)) return "L";
+  if (/\(M\)|\bM\b|وسط/.test(s)) return "M";
+  return null;
+}
+
+/* Raw materials that lose weight when they hit heat. Used only to grade how
+   badly a batch's "output = inputs" assumption bites: a mixed sauce loses
+   nothing, grilled meat always does. */
+const PROTEIN_RE = /لحم|دجاج|فراخ|فرخ|كبد|صدور|ريش|سجق|بسطرم|أوراك|اوراك|فيليه|هوت دوج|بيبروني|تونة|تونه|جمبري|روبيان|رومي|بيكون|كباب|كفت|طرب|شيش/;
 
 const round3 = (x) => Math.round((Number(x) || 0) * 1000) / 1000;
 const round2 = (x) => Math.round((Number(x) || 0) * 100) / 100;
@@ -358,9 +380,23 @@ export function register(app, ctx) {
      recipe wrote, say what it costs and WHERE that came from. ─────────────── */
   function resolve(model, type, nameAr) {
     const raw0 = norm(nameAr);
-    const canonical = model.alias.get(raw0) || raw0;
-    const viaAlias = canonical !== raw0;
     const isBatch = String(type || "").toLowerCase().startsWith("batch");
+
+    /* ── The self-referential alias ──────────────────────────────────────────
+       `Name_Map` maps MENU shorthand onto batches: `كفته → الكفتة`,
+       `صدور → الصدور`, `كبدة → الكبدة`. That is right at the menu level and
+       catastrophic inside a batch, because the الكبدة batch's own first
+       ingredient IS `كبدة` — the raw liver. Follow the alias there and the
+       batch is priced from itself.
+
+       Excel got the right answer by accident: it looked the raw up first. So
+       the rule here is explicit — a literal name that is already a canonical
+       raw material wins over any alias pointing away from it. Only genuine
+       shorthand (a name that is NOT itself a raw) is redirected. Without this,
+       الكبدة comes out at 108.89 instead of 111.47. */
+    const literalIsRaw = model.raw.has(raw0);
+    const canonical = (!isBatch && literalIsRaw) ? raw0 : (model.alias.get(raw0) || raw0);
+    const viaAlias = canonical !== raw0;
 
     // A Batch line looks in cost_batches first, a Raw line in cost_raw_materials
     // first, but each falls through to the other — Name_Map legitimately maps
@@ -493,7 +529,13 @@ export function register(app, ctx) {
         GROUP BY 1`, [from, to])).rows;
     return rows.map((r) => ({
       name: r.name, qty: num(r.qty), amount: num(r.amount), orders: r.orders,
-      isModifier: isModifierLine(r.name) && num(r.amount) === 0,
+      // Classified on the NAME SHAPE alone. Doing it on `amount === 0` looked
+      // safer and was wrong: a handful of add-on lines do carry a few riyals,
+      // and treating those as dishes let 17 units of "pizza + crust filling"
+      // land on the pizza's own unit economics and drag its average price from
+      // 23 SAR down to 0.18. Shape is the only stable signal (rule 3).
+      isModifier: isModifierLine(r.name),
+      zeroRevenue: num(r.amount) === 0,
     }));
   }
 
@@ -552,7 +594,8 @@ export function register(app, ctx) {
       };
       // Rule 3: zero-revenue modifier lines are counted apart. They add real
       // cost but no revenue, so folding them into a value share is meaningless.
-      const modifiers = { items: 0, units: 0, cost: 0, priced: 0, unpriced: 0 };
+      const modifiers = { items: 0, units: 0, value: 0, cost: 0, priced: 0, unpriced: 0,
+                          zeroRevenueItems: 0 };
       const missing = [];
 
       for (const s of sales) {
@@ -561,6 +604,8 @@ export function register(app, ctx) {
         const cost = row ? num(row.cost) * s.qty : 0;
         if (s.isModifier) {
           modifiers.items++; modifiers.units += s.qty; modifiers.cost += cost;
+          modifiers.value += s.amount;
+          if (s.zeroRevenue) modifiers.zeroRevenueItems++;
           if (row) modifiers.priced++; else modifiers.unpriced++;
           if (!row) missing.push({ name: s.name, units: s.qty, value: round2(s.amount),
                                    orders: s.orders, isModifier: true });
@@ -593,8 +638,9 @@ export function register(app, ctx) {
         // was actually built from ingredients rather than typed from memory.
         recipeBackedValueShare: totalValue ? round3(measuredValue / totalValue) : 0,
         pricedValueShare: totalValue ? round3(1 - buckets.unpriced.value / totalValue) : 0,
-        modifiers: { ...modifiers, units: round2(modifiers.units), cost: round2(modifiers.cost),
-                     note: "أسطر الإضافات لا تحمل إيراداً (المبلغ على الصنف الأب) — تُحسب تكلفتها فقط" },
+        modifiers: { ...modifiers, units: round2(modifiers.units), value: round2(modifiers.value),
+                     cost: round2(modifiers.cost),
+                     note: "أسطر الإضافات: الإيراد غالباً على الصنف الأب — تُحسب تكلفتها كإضافة وليس كالصنف الأب" },
         missing: missing.sort((a, b) => b.value - a.value || b.units - a.units).slice(0, limit),
         missingCount: missing.length,
         basis: {
@@ -637,11 +683,23 @@ export function register(app, ctx) {
           const { parent, modifier } = splitModifierLine(itemArg);
           const mod = model.modifiers.find((m) => norm(m.modifier_ar) === norm(modifier))
                    || model.modifiers.find((m) => norm(modifier).includes(norm(m.modifier_ar)));
+          const row = costs.get(itemArg);
+          const parentProduct = map.get(norm(parent))
+            || model.menu.find((m) => norm(m.product_ar) === norm(parent)) || null;
           return c.json({
             kind: "modifier", query: itemArg, parentDish: parent, modifier,
+            // The Modifiers sheet only covers 13 priced add-ons; the POS emits
+            // many more (crust fillings, drink+fries combos, "بدون X"). The
+            // item_costs row is the operative cost when the sheet has no match.
             matched: mod ? { nameAr: mod.modifier_ar, nameEn: mod.modifier_en,
                              ingredientAr: mod.ing_ar, qty: num(mod.qty), unit: mod.unit,
-                             cost: round3(num(mod.cost)), priceIncl: num(mod.price_incl) } : null,
+                             cost: round3(num(mod.cost)), priceIncl: num(mod.price_incl),
+                             source: "cost_modifiers" } : null,
+            costRow: row ? { cost: num(row.cost), note: row.note, bucket: bucketOf(row),
+                             source: "item_costs" } : null,
+            // Named so a caller can look the parent up, and labelled so nobody
+            // ever charges the parent's cost to this line (rule 3).
+            parentProduct: parentProduct ? menuBrief(parentProduct) : null,
             warning: "سطر إضافة: التكلفة تُحسب للإضافة نفسها وليس للصنف الأب — الإيراد على الصنف الأب",
           });
         }
@@ -735,6 +793,7 @@ export function register(app, ctx) {
       // be priced in real money even though the POS spells the dish six ways.
       const byProduct = new Map();
       for (const s of sales) {
+        if (s.isModifier) continue;            // rule 3: an add-on is not the dish
         const p = map.get(norm(s.name));
         if (!p) continue;
         const cur = byProduct.get(p.product_id) || { units: 0, value: 0, names: [] };
@@ -743,7 +802,11 @@ export function register(app, ctx) {
       }
       const prodSales = (pid) => byProduct.get(pid) || { units: 0, value: 0, names: [] };
       const F = [];
-      const add = (f) => F.push({ salesValue: 0, units: 0, ...f });
+      // `posNames` is carried on every finding so the summary can union the
+      // affected lines before totalling. Without it, four batch findings that
+      // all touch وجبة ميكس جريل each claim its SAR 7,532 and the "sales on
+      // assumed inputs" figure sails past 100% of revenue.
+      const add = (f) => F.push({ salesValue: 0, units: 0, posNames: [], ...f });
 
       /* ── 1. Arithmetic. Recomputed vs stored, per menu item and per batch.
             Expected to be silent on the shipped workbook — it is here so that
@@ -757,7 +820,7 @@ export function register(app, ctx) {
                 message: `تكلفة الصنف المخزّنة ${round3(num(m.total_cost))} لا تساوي مجموع المكونات ${ex.recomputedCost}`,
                 messageEn: `Stored total ${round3(num(m.total_cost))} != sum of ingredients ${ex.recomputedCost}`,
                 gapSar: ex.arithmeticDrift, salesValue: round2(s.value), units: round2(s.units),
-                basis: "measured" });
+                posNames: s.names, basis: "measured" });
         }
       }
       for (const [key, b] of model.batch) {
@@ -778,6 +841,7 @@ export function register(app, ctx) {
           const dependents = dependentsOfBatch(model, key);
           const value = dependents.reduce((a, pid) => a + prodSales(pid).value, 0);
           const units = dependents.reduce((a, pid) => a + prodSales(pid).units, 0);
+          const names = dependents.flatMap((pid) => prodSales(pid).names);
           add({ code: "BATCH_PLUG", severity: "critical", area: "batch",
                 item: b.batch_ar, itemEn: b.batch_en,
                 message: `وصفة التشغيلة غير مُدخلة — التكلفة ${round3(num(b.cost_per_g) * 1000)} ر.س/كجم رقم مؤقت`,
@@ -785,7 +849,8 @@ export function register(app, ctx) {
                 dependents: dependents.map((pid) => ({
                   productId: pid, item: model.menuById.get(pid)?.product_ar,
                   salesValue: round2(prodSales(pid).value) })),
-                salesValue: round2(value), units: round2(units), basis: "assumed",
+                salesValue: round2(value), units: round2(units), posNames: names,
+                basis: "assumed",
                 action: "أدخل وصفة الطرب ووزن الإنتاج الفعلي في cost_batch_lines / cost_batches" });
         }
         /* ── 2b. Zero cooking loss. output >= inputs means the batch assumes the
@@ -793,14 +858,30 @@ export function register(app, ctx) {
               such batch is understated. */
         const inputs = lines.reduce((a, l) => a + num(l.qty_g), 0);
         if (inputs > 0 && num(b.output_g) >= inputs - 0.5) {
+          // Severity turns on WHAT is in the batch, not on the arithmetic. A
+          // whisked sauce genuinely loses nothing on the scale; grilled meat
+          // always does. Grading by protein share stops 15 identical-looking
+          // findings from burying the four that matter.
+          const proteinG = lines.reduce((a, l) => {
+            const res = resolve(model, l.ing_type, l.ing_ar);
+            return a + (PROTEIN_RE.test(res.canonical) ? num(l.qty_g) : 0);
+          }, 0);
+          const share = proteinG / inputs;
           const dependents = dependentsOfBatch(model, key);
           const value = dependents.reduce((a, pid) => a + prodSales(pid).value, 0);
-          add({ code: "BATCH_NO_YIELD_LOSS", severity: "medium", area: "batch",
-                item: b.batch_ar, itemEn: b.batch_en,
-                message: `وزن الإنتاج ${num(b.output_g)} جم يساوي أو يزيد عن مجموع المدخلات ${round3(inputs)} جم — لا يوجد فقد طهي`,
-                messageEn: `Output ${num(b.output_g)} g >= inputs ${round3(inputs)} g — zero cooking loss assumed, so the cost is understated`,
+          add({ code: "BATCH_NO_YIELD_LOSS",
+                severity: share > 0.4 ? "high" : share > 0.1 ? "medium" : "low",
+                area: "batch", item: b.batch_ar, itemEn: b.batch_en,
+                message: share > 0.1
+                  ? `وزن الإنتاج ${num(b.output_g)} جم = مجموع المدخلات ${round3(inputs)} جم، رغم أن ${Math.round(share * 100)}% منها بروتين يفقد وزناً بالطهي — التكلفة أقل من الحقيقة`
+                  : `وزن الإنتاج ${num(b.output_g)} جم مأخوذ من مجموع المدخلات ولم يُوزن فعلياً (خلطة بدون طهي — الأثر ضئيل)`,
+                messageEn: share > 0.1
+                  ? `Output ${num(b.output_g)} g = inputs ${round3(inputs)} g, but ${Math.round(share * 100)}% of it is protein that loses weight when cooked — the cost is understated`
+                  : `Output ${num(b.output_g)} g was taken from the input sum, never weighed (uncooked mix — impact negligible)`,
                 salesValue: round2(value), basis: "assumed",
+                posNames: dependents.flatMap((pid) => prodSales(pid).names),
                 evidence: { outputG: num(b.output_g), inputG: round3(inputs),
+                            proteinShare: round3(share),
                             impliedYield: round3(num(b.output_g) / inputs) } });
         }
       }
@@ -823,6 +904,7 @@ export function register(app, ctx) {
                 exposureSar: round3(d.exposureSar), shareOfItemCost: d.share,
                 salesValue: round2(prodSales(d.productId).value) })),
               salesValue: round2(value), units: round2(units), basis: "assumed",
+              posNames: deps.flatMap((d) => prodSales(d.productId).names),
               costIfDoubled: round2(doubleRisk),
               action: "أدخل سعر الشراء الحالي في cost_raw_materials" });
       }
@@ -850,7 +932,8 @@ export function register(app, ctx) {
               messageEn: s.isModifier
                 ? "Modifier line with no cost — falls back to the blended 43%"
                 : "Sold item with no cost — falls back to the blended 43%",
-              salesValue: round2(s.amount), units: round2(s.qty), basis: "measured" });
+              salesValue: round2(s.amount), units: round2(s.qty), posNames: [s.name],
+              basis: "measured" });
       }
 
       /* ── 6. Weight-model drift. Re-checks every weight-sold item_costs row
@@ -866,6 +949,7 @@ export function register(app, ctx) {
               message: `تكلفة ${name} = ${num(row.cost)} بينما نموذج الوزن يعطي ${exp.total} (لحم ${exp.meat} + مرفقات ${exp.acc})`,
               messageEn: `item_costs says ${num(row.cost)}, the weight model says ${exp.total} (meat ${exp.meat} + accompaniments ${exp.acc})`,
               gapSar: gap, expected: exp, salesValue: round2(s.amount), units: round2(s.qty),
+              posNames: [name],
               basis: exp.accSource === "omar" ? "measured" : "assumed" });
       }
 
@@ -892,21 +976,52 @@ export function register(app, ctx) {
                 salesValue: round2(s.value), units: round2(s.units), basis: "measured" });
       }
 
-      /* ── 8. Margin alarm, measured against what the dish actually sold for. */
+      /* ── 8. Size mismatch. `item_costs` is keyed on the exact POS string, and
+            whoever loaded it matched by name — so a medium pizza can end up
+            carrying the LARGE recipe. It did, 29 times. This finding compares
+            the size marker in the POS name against the one in the workbook
+            product named in the cost row's own note. */
+      for (const [name, row] of costs) {
+        const note = String(row.note || "");
+        if (!note.includes(NOTE_RECIPE)) continue;
+        const wbName = norm(note.split("—")[0]);
+        const a = portionSizeOf(name), b = portionSizeOf(wbName);
+        if (!a || !b || a === b) continue;
+        const s = salesByNameFor(sales, name);
+        // What it should have been: the same dish at the POS line's own size.
+        const want = model.menu.find((m) => norm(m.product_ar) ===
+          norm(wbName.replace(/\(L\)/, "(M)").replace(/\(M\)/, "(L)")));
+        const gap = want ? round3(num(row.cost) - num(want.total_cost)) : null;
+        add({ code: "SIZE_COST_MISMATCH", severity: "critical", area: "pos", item: name,
+              message: `صنف مقاس ${a} يحمل تكلفة وصفة مقاس ${b} («${wbName}»)`
+                     + (gap === null ? "" : ` — فرق ${gap} ر.س للوحدة`),
+              messageEn: `A size-${a} item is carrying the size-${b} recipe cost ("${wbName}")`
+                     + (gap === null ? "" : ` — ${gap} SAR per unit`),
+              gapSar: gap, evidence: { posSize: a, workbookSize: b, workbookItem: wbName,
+                costUsed: num(row.cost),
+                costExpected: want ? round3(num(want.total_cost)) : null },
+              salesValue: round2(s.amount), units: round2(s.qty), basis: "measured",
+              action: "صحّح صف التكلفة ليشير إلى وصفة المقاس الصحيح" });
+      }
+
+      /* ── 9. Margin alarm. Computed PER POS LINE from that line's own cost row
+            and its own revenue — never through the workbook name mapping, which
+            is exactly what finding 8 shows cannot be trusted for sizes. */
       const FC_ALARM = 0.45;
-      for (const m of model.menu) {
-        const s = prodSales(m.product_id);
-        if (s.value <= 0) continue;
-        const fc = num(m.total_cost) * s.units / (s.value / (1 + VAT_RATE));
-        if (fc > FC_ALARM)
-          add({ code: "FOOD_COST_HIGH", severity: fc > 0.6 ? "critical" : "high",
-                area: "pricing", item: m.product_ar, itemEn: m.product_en,
-                productId: m.product_id,
-                message: `نسبة تكلفة الطعام الفعلية ${(fc * 100).toFixed(1)}% مقابل هدف 22%`,
-                messageEn: `Realised food cost ${(fc * 100).toFixed(1)}% against a 22% target`,
-                evidence: { foodCostPct: round3(fc), unitCost: round3(num(m.total_cost)),
-                            avgPriceIncl: round2(s.value / (s.units || 1)) },
-                salesValue: round2(s.value), units: round2(s.units), basis: "measured" });
+      for (const s of sales) {
+        if (s.isModifier || s.amount <= 0 || s.qty <= 0) continue;
+        const row = costs.get(s.name);
+        if (!row) continue;
+        const fc = num(row.cost) * s.qty / (s.amount / (1 + VAT_RATE));
+        if (fc <= FC_ALARM) continue;
+        add({ code: "FOOD_COST_HIGH", severity: fc > 0.6 ? "critical" : "high",
+              area: "pricing", item: s.name,
+              message: `نسبة تكلفة الطعام الفعلية ${(fc * 100).toFixed(1)}% مقابل هدف 22%`,
+              messageEn: `Realised food cost ${(fc * 100).toFixed(1)}% against a 22% target`,
+              evidence: { foodCostPct: round3(fc), unitCost: round3(num(row.cost)),
+                          avgPriceIncl: round2(s.amount / s.qty),
+                          costBucket: bucketOf(row) },
+              salesValue: round2(s.amount), units: round2(s.qty), basis: "measured" });
       }
 
       const SEV = { critical: 0, high: 1, medium: 2, low: 3 };
@@ -917,14 +1032,14 @@ export function register(app, ctx) {
         bySeverity[f.severity] = (bySeverity[f.severity] || 0) + 1;
       }
       const totalValue = sales.reduce((a, s) => a + s.amount, 0);
+      // Union of the POS LINES whose cost depends on at least one assumed
+      // input, then price that union once. Summing findings would double-count
+      // every dish that has more than one problem.
+      const byName = new Map(sales.map((s) => [s.name, s]));
       const atRisk = new Set();
+      for (const f of F) if (f.basis === "assumed") for (const n of f.posNames) atRisk.add(n);
       let atRiskValue = 0;
-      for (const f of F) {
-        if (f.basis !== "assumed") continue;
-        const k = f.item || f.code;
-        if (atRisk.has(k)) continue;
-        atRisk.add(k); atRiskValue += f.salesValue;
-      }
+      for (const n of atRisk) atRiskValue += byName.get(n)?.amount || 0;
 
       return c.json({
         from, to,
@@ -957,6 +1072,9 @@ export function register(app, ctx) {
     plug: "أحد المكونات تشغيلة بدون وصفة — الرقم مؤقت",
     missing: "أحد المكونات بلا تكلفة إطلاقاً — التكلفة ناقصة",
   };
+
+  const salesByNameFor = (sales, name) =>
+    sales.find((s) => s.name === name) || { qty: 0, amount: 0, orders: 0 };
 
   function menuBrief(m) {
     return { productId: m.product_id, sku: m.sku || "", nameAr: m.product_ar,
