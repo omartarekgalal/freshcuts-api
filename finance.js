@@ -73,8 +73,24 @@ import crypto from "node:crypto";
 const VAT_RATE = 0.15;              // measured, see rule 1
 const DEFAULT_FOOD_COST_PCT = 0.43; // Omar's TabSense blended figure
 
-/* Voids/refunds never happened. Same predicate as analytics.js. */
-const SALES_ONLY = `(o.order_type IS NULL OR (o.order_type NOT ILIKE '%void%' AND o.order_type NOT ILIKE '%refund%'))`;
+/* Voids/refunds never happened. Same predicate as analytics.js.
+
+   TabSense's own order_type is not enough for delivery-app orders. When Keeta
+   reverses an order the POS is never told, so the row stays `External` and
+   every report counts it as a completed sale — two July orders worth SAR 290
+   were being reported as revenue Keeta had paid nothing for. Keeta's own
+   refund record is the only source that knows, so a fully-reversed order is
+   excluded here too. A PARTIAL refund is deliberately left in: the sale did
+   happen, only part of the money came back, and dropping the whole order
+   would understate revenue as badly as keeping it overstates it. */
+const SALES_ONLY = `(
+  (o.order_type IS NULL OR (o.order_type NOT ILIKE '%void%' AND o.order_type NOT ILIKE '%refund%'))
+  AND NOT EXISTS (
+    SELECT 1 FROM keeta_payouts kp
+     WHERE kp.order_id = o.order_id
+       AND jsonb_array_length(COALESCE(kp.refunds,'[]'::jsonb)) > 0
+       AND COALESCE(kp.part_refund, false) = false)
+)`;
 
 /* VAT-exclusive money, with the rule-2 fallback chain baked in. */
 const NET_EX = `COALESCE(NULLIF(o.net,0), NULLIF(o.total,0)/${1 + VAT_RATE}, 0)`;
