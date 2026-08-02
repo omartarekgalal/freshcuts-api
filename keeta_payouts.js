@@ -108,12 +108,88 @@
    * `total`/`gross_incl`/`discount_incl` INCLUDE VAT; `net`/`gross`/`discount`
      EXCLUDE it. Keeta's productPrice is VAT-inclusive.
    * Voids and refunds are not sales.
+
+   ═════════════ ROUND 2 (2026-08-02) — measured on 153 of 153 orders ═══════
+   Full coverage was reached, so several round-1 statements are now superseded.
+   Everything below was verified against the five settlement bills, and bills
+   1-4 (149 orders, 01/07-31/07) reconcile to the HALALA on gross items, item
+   subsidy, delivery subsidy, commission and bank fee.
+
+   1. ID COVERAGE IS SOLVED. `feedus.js` also exports `fetchSalesOrders(from,to)`
+      — a paginated JSON API whose `order_id` IS the Keeta `orderViewIdStr`.
+      149/149 Keeta rows carried a usable id. `fetchPosLogs` is still used on top
+      because it reaches the newest days the sales dashboard has not ingested.
+      Round 1's "we can only ever see ~13 ids" is wrong.
+
+   2. THE COMMISSION RULE, complete:
+        delivery: max(SAR 5.00, 18% x (productPrice - activityFee))
+        pickup:   max(SAR 1.00,  3% x (productPrice - activityFee))
+      * The SAR 5.00 delivery floor is real: 6 of 6 orders whose 18% fell below
+        5.00 were charged exactly 5.00, and the boundary is exact (base 27.80 ->
+        5.00 unfloored, base 28.00 -> 5.04). Round 1 called this a one-order
+        hypothesis; it is now settled. Cost over the window: SAR 1.56.
+      * The SAR 1.00 minimum DOES exist — on PICKUP only. Round 1 never saw a
+        pickup order. 8 pickup orders, 3% exact, floor bit on 7. Cost SAR 5.50.
+      * `distanceFee` is SAR 1.00 flat, on 29 of 147 orders, ADDED to the
+        commission. Statement category 30101, despite being named
+        "العمولة الأساسية", carries commission INCLUDING distanceFee.
+
+   3. THE BANK-FEE BASE IS SOLVED — it is `payTotal - platformFee - tip`.
+        bankTransactionFee = 2.875% x (payTotal - platformFee - tip)
+      Exact on 147 of 147 orders. That decodes `bankTransactionFeeCalculateBy: 0`.
+      Round 1's "base ~= customer paid, we cannot pin it" is superseded.
+
+   4. REFUNDS LIVE IN `orderInfo`, NOT IN A SEPARATE ENDPOINT:
+        refundInfos[]        the after-sale ledger (applyType, refundType,
+                             partRefund, refundMoney/actRefundMoney in halalas,
+                             duty/responsible/commonExt.refundBearer = who pays,
+                             applyReason, commonExt.cancelType, refundStatusHisList)
+        partRefundOrderTag   bool
+        rebatesTag           bool — the rebates* family is populated
+        refundInfo           appeals container; empty for this shop
+      `/api/order/statisticsAfterSaleOrder` was never needed and is NOT called.
+      Three refunds exist in the whole visible history, of three different kinds:
+        (a) auto-cancel, merchant never accepted (applyType 3001, refundBearer -1)
+            -> settlement reverses EVERYTHING including the bank fee. Costs nothing.
+        (b) full after-sale refund, merchant at fault (applyType 1001, refundBearer 20)
+            -> revenue, commission and both subsidies reversed, but the BANK FEE
+               IS RETAINED. Proven: it is the entire 2.48 residual in bill 4.
+        (c) partial refund (applyType 2002, partRefund 1) -> the rebates* family
+            appears. Commission fell 1.92 on a base that fell 24.00 = exactly
+            8.000%, i.e. only the contract's 8-point data-service share came back
+            and the 10-point delivery share was kept. rebatesBankTransactionFee=0
+            means NOTHING was rebated: the recomputed identity closes only with
+            the ORIGINAL bank fee.
+      ** getOrderDtl is NOT refund-aware for (a) and (b): it still shows the full
+         original `earnings`. Only the settlement knows. Never quote `earnings`
+         on an order whose status is 50. **
+
+   5. STATUS 50 = reversed/cancelled. Its revenue and fees are absent from the
+      statement entirely. FeedUs may still report such an order as "Accepted",
+      and `ts_orders` holds it as a normal completed sale — so our own revenue
+      overstates Keeta by the full value of those orders.
+
+   6. AD SPEND IS BILLED WITH A ONE-DAY LAG. Statement category 20205 for a bill
+      period [from..to] equals the ads portal's daily `debit` summed over
+      [from-1 .. to-1]. Exact on all five bills. Ad spend is a real deduction
+      from the payout, not a dashboard-only number.
+
+   7. VAT: category 20204 is 0.00 on every bill — Keeta withholds nothing and
+      Omar remits the 15% himself. Because `productPrice` is VAT-INCLUSIVE, the
+      18% is levied on a base that contains the government's money.
+
+   ── STILL NOT CALLED (writes) ────────────────────────────────────────────
+      everything listed above, plus /api/bff/ad/poi/v1/sspcpc/plan/update/status,
+      /api/bff/ad/poi/v1/sspcpc/operation/update and
+      /api/ad/billing/account/fund/allocate. The ad routes here are READ ONLY.
 ═══════════════════════════════════════════════════════════════════════════ */
 
 import { keetaCall, KeetaError, configured as keetaConfigured } from "./keeta.js";
-import { fetchPosLogs, ENABLED as FEEDUS_ENABLED } from "./feedus.js";
+import { fetchPosLogs, fetchSalesOrders, ENABLED as FEEDUS_ENABLED } from "./feedus.js";
 
 const SHOP_ID = process.env.KEETA_SHOP_ID || "1430391221";
+/* The ad account the CPC plan hangs off. Same default keeta.js uses. */
+const ACCT_ID = process.env.KEETA_ACCT_ID || "4611686018430691085";
 /* How many POS-log pages to walk when hunting for order ids. FeedUs's
    pagination is shallow in practice (a `pages:12` sweep returned 13 rows
    total), so this is a ceiling, not a promise. */
@@ -184,6 +260,48 @@ async function ensurePayoutSchema(pool) {
     ALTER TABLE keeta_payouts ADD COLUMN IF NOT EXISTS items JSONB NOT NULL DEFAULT '[]'::jsonb;
     CREATE INDEX IF NOT EXISTS keeta_payouts_order_idx ON keeta_payouts(order_id);
     CREATE INDEX IF NOT EXISTS keeta_payouts_day_idx   ON keeta_payouts(keeta_day);
+
+    -- ── round 2: the refund surface ───────────────────────────────────────
+    -- The refunds column is orderInfo.refundInfos normalised. Empty array = no refund
+    -- ever happened, which is NOT the same as "refunded zero" — an order that
+    -- was reversed entirely (status 50) carries a refund row while its
+    -- merchantFee still shows the full original earnings.
+    ALTER TABLE keeta_payouts ADD COLUMN IF NOT EXISTS refunds JSONB NOT NULL DEFAULT '[]'::jsonb;
+    ALTER TABLE keeta_payouts ADD COLUMN IF NOT EXISTS refunded_to_customer NUMERIC DEFAULT 0;
+    ALTER TABLE keeta_payouts ADD COLUMN IF NOT EXISTS part_refund BOOLEAN NOT NULL DEFAULT FALSE;
+    ALTER TABLE keeta_payouts ADD COLUMN IF NOT EXISTS has_rebates BOOLEAN NOT NULL DEFAULT FALSE;
+    -- Keeta's own post-refund recomputation. NULL (not 0) where Keeta did not
+    -- populate it, so "not rebated" can never be misread as "rebated to zero".
+    ALTER TABLE keeta_payouts ADD COLUMN IF NOT EXISTS rebates_product_price NUMERIC;
+    ALTER TABLE keeta_payouts ADD COLUMN IF NOT EXISTS rebates_activity_fee  NUMERIC;
+    ALTER TABLE keeta_payouts ADD COLUMN IF NOT EXISTS rebates_commission    NUMERIC;
+    ALTER TABLE keeta_payouts ADD COLUMN IF NOT EXISTS rebates_bank_fee      NUMERIC;
+    ALTER TABLE keeta_payouts ADD COLUMN IF NOT EXISTS rebates_distance_fee  NUMERIC;
+    -- customerFee components — needed because the bank fee base is
+    -- (payTotal - platformFee - tip) and nothing else reproduces it.
+    ALTER TABLE keeta_payouts ADD COLUMN IF NOT EXISTS customer_platform_fee NUMERIC DEFAULT 0;
+    ALTER TABLE keeta_payouts ADD COLUMN IF NOT EXISTS customer_tip          NUMERIC DEFAULT 0;
+    CREATE INDEX IF NOT EXISTS keeta_payouts_status_idx ON keeta_payouts(order_status);
+
+    -- One row per settlement bill: the authoritative money-moved view, cached
+    -- so the audit routes do not have to re-walk the portal on every request.
+    CREATE TABLE IF NOT EXISTS keeta_bills (
+      bill_id            TEXT PRIMARY KEY,
+      period_from        DATE,
+      period_to          DATE,
+      period_from_ms     BIGINT,
+      period_to_ms       BIGINT,
+      label              TEXT NOT NULL DEFAULT '',
+      status             INT,
+      status_name        TEXT NOT NULL DEFAULT '',
+      pay_date           TEXT NOT NULL DEFAULT '',
+      -- Keeta signs deductions negative here; we store its own sign untouched
+      -- in the categories column and expose flipped values in the routes.
+      categories         JSONB NOT NULL DEFAULT '{}'::jsonb,
+      net_paid           NUMERIC DEFAULT 0,
+      fetched_at         TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS keeta_bills_period_idx ON keeta_bills(period_from);
   `);
 }
 
@@ -257,6 +375,59 @@ function modelOrder(fees, { total, net, isPickup }) {
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
+   THE MEASURED RULES — what Keeta actually does, as opposed to FEE_DEFAULTS
+   above which is what the signed contract says. Every constant here was
+   reproduced to the halala against the portal; the comment on each says on how
+   many orders, because that IS the strength of the claim.
+═══════════════════════════════════════════════════════════════════════════ */
+const MEASURED = {
+  // 133/139 delivery orders reproduce exactly; the other 6 are the floor below.
+  deliveryCommissionRate: 0.18,
+  // 8/8 pickup orders reproduce exactly.
+  pickupCommissionRate: 0.03,
+  // 6/6 delivery orders whose 18% fell under 5.00 were charged exactly 5.00,
+  // and base 28.00 (18% = 5.04) was NOT floored. Boundary confirmed both sides.
+  deliveryMinCommissionSAR: 5,
+  // 7/8 pickup orders hit this; the 8th (base 34.50) paid a clean 3%.
+  pickupMinCommissionSAR: 1,
+  // Keeta ships this as a STRING percent in every payload: "2.875".
+  bankFeeRate: 0.02875,
+  // SAR 1.00 flat, never another value, on 29 of 147 orders. ADDED to commission.
+  distanceFeeSAR: 1,
+  // The base the 18%/3% is charged on: VAT-inclusive value after ALL
+  // merchant-funded promotions.
+  commissionBase: "productPrice - activityFee",
+  // 147/147 exact. Decodes bankTransactionFeeCalculateBy: 0.
+  bankFeeBase: "payTotal - platformFee - tip",
+  // Saudi standard rate. Keeta withholds none of it (category 20204 = 0.00).
+  vatRate: 0.15,
+  sampleOrders: 153,
+  sampleWindow: "2026-07-01 .. 2026-08-02",
+};
+
+/** Keeta's real commission for one order, from Keeta's own inputs. */
+function measuredCommission({ productPrice, activityFee, isPickup, distanceFee }) {
+  const base = money(n0(productPrice) - n0(activityFee));
+  const rate = isPickup ? MEASURED.pickupCommissionRate : MEASURED.deliveryCommissionRate;
+  const floor = isPickup ? MEASURED.pickupMinCommissionSAR : MEASURED.deliveryMinCommissionSAR;
+  const raw = base * rate;
+  const basic = money(Math.max(raw, floor));
+  return {
+    baseSAR: base,
+    rate,
+    rawSAR: money(raw),
+    floorSAR: floor,
+    floorApplied: raw < floor,
+    floorCostSAR: raw < floor ? money(floor - raw) : 0,
+    basicCommissionSAR: basic,
+    // distanceFee is additive and we cannot predict WHICH orders get it, so it
+    // is passed through from the payload rather than modelled.
+    distanceFeeSAR: money(distanceFee),
+    commissionSAR: money(basic + n0(distanceFee)),
+  };
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
    PORTAL READS
 ═══════════════════════════════════════════════════════════════════════════ */
 
@@ -275,6 +446,39 @@ async function fetchOrderPayout(viewId) {
     e.noFee = true;
     throw e;
   }
+  /* ── the refund ledger ──────────────────────────────────────────────────
+     `refundInfos` is the only place a refund is actually recorded. On a fully
+     reversed order (status 50) NOTHING in merchantFee changes — earnings still
+     reads as if the order paid out — so this array is the sole signal. */
+  const refundRows = Array.isArray(info.refundInfos) ? info.refundInfos : [];
+  const parseExt = (x) => { try { return JSON.parse(x?.commonExt || "{}"); } catch { return {}; } };
+  const refunds = refundRows.map((x) => {
+    const ext = parseExt(x);
+    return {
+      refundId: x?.id != null ? String(x.id) : null,
+      // 1001 customer after-sale claim, 2002 partial, 3001 auto-cancel (merchant
+      // never accepted). Keeta does not publish this enum; these are observed.
+      applyType: x?.applyType ?? null,
+      refundType: x?.refundType ?? null,
+      isPartial: Number(x?.partRefund) === 1,
+      // status 5002 = refund completed.
+      status: x?.status ?? null,
+      completed: Number(x?.status) === 5002,
+      refundedToCustomerSAR: hal(x?.actRefundMoney ?? x?.refundMoney),
+      // duty/responsible/refundBearer all encode fault. 20 = merchant,
+      // -1 = nobody (platform absorbs), 0 = unassigned.
+      duty: x?.duty ?? null,
+      responsible: x?.responsible ?? null,
+      bearer: ext?.refundBearer ?? null,
+      merchantAtFault: Number(x?.duty) === 20 || Number(ext?.refundBearer) === 20,
+      cancelType: ext?.cancelType ?? null,
+      compensationSAR: hal(ext?.compensationMoneyAmount),
+      reason: x?.applyReason || null,
+      at: Number(x?.ctime) ? new Date(Number(x.ctime)).toISOString() : null,
+    };
+  });
+  const refundedToCustomer = money(refunds.reduce((a, r) => a + n0(r.refundedToCustomerSAR), 0));
+
   const promos = Array.isArray(m.merchantActivityFeeDtls) ? m.merchantActivityFeeDtls : [];
   // Promo type 4 = خصم رسوم التوصيل, the merchant's share of a waived delivery
   // fee — the thing keeta_reports.js models as a five-tier table. Everything
@@ -319,9 +523,28 @@ async function fetchOrderPayout(viewId) {
     earnings: hal(m.earnings ?? m.total),
     rebatesEarnings: hal(m.rebatesEarnings ?? m.rebatesTotal),
     refundPrice: hal(m.refundPrice),
+    /* Keeta's post-refund recomputation. NULL where Keeta left the field out —
+       storing 0 there would read as "rebated down to zero", which is the
+       opposite of the truth. Note rebatesBankTransactionFee is genuinely 0 on
+       the one partial refund we have: nothing of the payment fee came back. */
+    rebatesProductPrice: m.rebatesProductPrice === undefined ? null : hal(m.rebatesProductPrice),
+    rebatesActivityFee: m.rebatesActivityFee === undefined ? null : hal(m.rebatesActivityFee),
+    rebatesCommission: (m.rebatesCommission ?? m.rebatesBrokerage) === undefined
+      ? null : hal(m.rebatesCommission ?? m.rebatesBrokerage),
+    rebatesBankFee: m.rebatesBankTransactionFee === undefined ? null : hal(m.rebatesBankTransactionFee),
+    rebatesDistanceFee: m.rebatesDistanceFee === undefined ? null : hal(m.rebatesDistanceFee),
+    refunds,
+    refundedToCustomer,
+    partRefund: !!info.partRefundOrderTag,
+    hasRebates: !!info.rebatesTag,
+    /* status 50 = the order was reversed. Its money is absent from the
+       settlement even though merchantFee still shows the original earnings. */
+    reversed: Number(mo.status ?? base.status) === 50,
     customerPayTotal: hal(c.payTotal),
     customerShippingFee: hal(c.shippingFee),
     customerDiscounts: hal(c.discounts),
+    customerPlatformFee: hal(c.platformFee),
+    customerTip: hal(c.tip),
     earningsFormula: String(m.earningsFormula || ""),
     promos: promos.map((p) => ({
       type: p?.type ?? null,
@@ -466,24 +689,59 @@ export function register(app, ctx) {
             error: "FeedUs مش مربوط (FEEDUS_EMAIL/FEEDUS_PASSWORD) ومفيش viewIds في الطلب — مفيش مصدر لمعرفات طلبات كيتا.",
           }, 400);
         }
-        let logs = null, lastErr = null;
-        // FeedUs's login is flaky under load; two tries, then say so honestly.
-        for (let i = 0; i < 2 && !logs; i++) {
-          try { logs = await fetchPosLogs({ pages: POSLOG_PAGES }); }
-          catch (e) { lastErr = e; await sleep(1500); }
+        /* TWO FeedUs sources, deliberately. `fetchSalesOrders` is the one that
+           gives full historical coverage — its `order_id` IS the Keeta
+           orderViewIdStr, and it takes a date range, so it reaches every order
+           in the window (149/149 on the first full run). `fetchPosLogs` only
+           walks a few shallow pages, but it is the ONLY source that carries the
+           TabSense order id, and it sees the newest orders before the sales
+           dashboard has ingested them. Union of both. */
+        const from = dayArg(body.from, daysAgoISO(45));
+        const to = dayArg(body.to, todayISO());
+        const seen = new Map();   // viewId -> orderId|null
+        let salesErr = null, logsErr = null, salesCount = 0;
+
+        for (let i = 0; i < 2; i++) {
+          try {
+            const rows = await fetchSalesOrders(from, to, { perPage: 100, maxPages: 40 });
+            salesCount = rows.length;
+            for (const r of rows) {
+              if (!/keeta/i.test(r.provider || "")) continue;
+              const v = String(r.orderId || "").trim();
+              if (!/^\d{6,}$/.test(v)) continue;
+              if (!seen.has(v)) seen.set(v, null);
+            }
+            salesErr = null; break;
+          } catch (e) { salesErr = e; await sleep(1500); }
         }
-        if (!logs) {
-          return c.json({ ok: false, error: `تعذر قراءة سجل FeedUs: ${lastErr?.message || "سبب غير معروف"}` }, 502);
+        for (let i = 0; i < 2; i++) {
+          try {
+            const logs = await fetchPosLogs({ pages: POSLOG_PAGES });
+            for (const r of logs) {
+              if (!/keeta/i.test(r.provider || "")) continue;
+              const v = String(r.providerOrderId || "").trim();
+              if (!/^\d{6,}$/.test(v)) continue;
+              // The POS log is the only carrier of the TabSense id, so it wins
+              // on that field even when the sales API already supplied the id.
+              seen.set(v, r.tabsenseOrderId || seen.get(v) || null);
+            }
+            logsErr = null; break;
+          } catch (e) { logsErr = e; await sleep(1500); }
         }
-        const seen = new Set();
-        for (const r of logs) {
-          if (!/keeta/i.test(r.provider || "")) continue;
-          const v = String(r.providerOrderId || "").trim();
-          if (!/^\d{6,}$/.test(v) || seen.has(v)) continue;
-          seen.add(v);
-          candidates.push({ viewId: v, orderId: r.tabsenseOrderId || null });
+        if (salesErr && logsErr) {
+          return c.json({ ok: false, error: `تعذر قراءة FeedUs: ${salesErr.message} / ${logsErr.message}` }, 502);
         }
-        notes.push(`FeedUs رجّع ${logs.length} سطر، منهم ${candidates.length} طلب كيتا. صفحات سجل FeedUs محدودة، فالتغطية بتكبر مع كل تشغيل.`);
+        for (const [viewId, orderId] of seen) candidates.push({ viewId, orderId });
+        notes.push(
+          `مصادر المعرفات: مبيعات FeedUs (${from} → ${to}) رجّعت ${salesCount} سطر` +
+          (salesErr ? ` (فشلت: ${salesErr.message})` : "") +
+          `، وسجل POS أضاف معرفات TabSense` + (logsErr ? ` (فشل: ${logsErr.message})` : "") +
+          `. الإجمالي ${candidates.length} طلب كيتا.`
+        );
+        const withTs = candidates.filter((x) => x.orderId).length;
+        if (withTs < candidates.length) {
+          notes.push(`${candidates.length - withTs} طلب من غير معرّف TabSense — بيتخزّن وبيتحسب في المطابقة مع الكشف، لكن مش هيظهر في /reconcile اللي بيربط على ts_orders.`);
+        }
       }
 
       // ── skip what we already hold ──────────────────────────────────────
@@ -518,9 +776,14 @@ export function register(app, ctx) {
              basic_commission, distance_fee, commission, bank_fee, bank_fee_rate,
              activity_fee, delivery_subsidy, item_subsidy, earnings, rebates_earnings,
              refund_price, customer_pay_total, customer_shipping_fee, customer_discounts,
-             promos, earnings_formula, raw, items, fetched_at)
+             promos, earnings_formula, raw, items,
+             refunds, refunded_to_customer, part_refund, has_rebates,
+             rebates_product_price, rebates_activity_fee, rebates_commission,
+             rebates_bank_fee, rebates_distance_fee,
+             customer_platform_fee, customer_tip, fetched_at)
            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,
-                   $21,$22,$23,$24,$25,$26,$27,$28,$29, NOW())
+                   $21,$22,$23,$24,$25,$26,$27,$28,$29,
+                   $30,$31,$32,$33,$34,$35,$36,$37,$38,$39,$40, NOW())
            ON CONFLICT (order_view_id) DO UPDATE SET
              order_id = COALESCE(EXCLUDED.order_id, keeta_payouts.order_id),
              shop_id = EXCLUDED.shop_id, order_time = EXCLUDED.order_time,
@@ -538,7 +801,18 @@ export function register(app, ctx) {
              customer_shipping_fee = EXCLUDED.customer_shipping_fee,
              customer_discounts = EXCLUDED.customer_discounts,
              promos = EXCLUDED.promos, earnings_formula = EXCLUDED.earnings_formula,
-             raw = EXCLUDED.raw, items = EXCLUDED.items, fetched_at = NOW()`,
+             raw = EXCLUDED.raw, items = EXCLUDED.items,
+             refunds = EXCLUDED.refunds,
+             refunded_to_customer = EXCLUDED.refunded_to_customer,
+             part_refund = EXCLUDED.part_refund, has_rebates = EXCLUDED.has_rebates,
+             rebates_product_price = EXCLUDED.rebates_product_price,
+             rebates_activity_fee = EXCLUDED.rebates_activity_fee,
+             rebates_commission = EXCLUDED.rebates_commission,
+             rebates_bank_fee = EXCLUDED.rebates_bank_fee,
+             rebates_distance_fee = EXCLUDED.rebates_distance_fee,
+             customer_platform_fee = EXCLUDED.customer_platform_fee,
+             customer_tip = EXCLUDED.customer_tip,
+             fetched_at = NOW()`,
           [p.orderViewId, cand.orderId, p.shopId, p.orderTime, p.keetaDay, p.status,
             p.userGetMode, p.currency, p.productPrice, p.platformServiceFee, p.diffPrice,
             p.basicCommission, p.distanceFee, p.commission, p.bankFee, p.bankFeeRate,
@@ -546,11 +820,47 @@ export function register(app, ctx) {
             p.refundPrice, p.customerPayTotal, p.customerShippingFee, p.customerDiscounts,
             jb ? jb(p.promos) : JSON.stringify(p.promos), p.earningsFormula,
             jb ? jb(p.raw || {}) : JSON.stringify(p.raw || {}),
-            jb ? jb(p.items) : JSON.stringify(p.items)]
+            jb ? jb(p.items) : JSON.stringify(p.items),
+            jb ? jb(p.refunds) : JSON.stringify(p.refunds), p.refundedToCustomer,
+            p.partRefund, p.hasRebates,
+            p.rebatesProductPrice, p.rebatesActivityFee, p.rebatesCommission,
+            p.rebatesBankFee, p.rebatesDistanceFee,
+            p.customerPlatformFee, p.customerTip]
         );
         stored++;
         await sleep(FETCH_GAP_MS);
       }
+
+      /* ── link sweep ────────────────────────────────────────────────────
+         Only `fetchPosLogs` carries the TabSense id, and it walks a handful of
+         pages, so most rows arrive with order_id NULL. Recover the link from
+         the money instead: round 1 proved `ts_orders.gross_incl` equals Keeta's
+         `productPrice` to the halala, and the two clocks agree to within the
+         POS-push delay. Require the match to be UNIQUE on both sides — an
+         ambiguous match is left NULL rather than guessed, because a wrong link
+         would silently attribute one order's fees to another order's revenue. */
+      const linked = (await pool.query(`
+        WITH cand AS (
+          SELECT p.order_view_id, o.order_id,
+                 count(*) OVER (PARTITION BY p.order_view_id) AS n_orders,
+                 count(*) OVER (PARTITION BY o.order_id)      AS n_payouts
+            FROM keeta_payouts p
+            JOIN order_sources s ON lower(COALESCE(s.source_note, '')) = 'keeta'
+            JOIN ts_orders o ON o.order_id = s.order_id
+           WHERE p.order_id IS NULL
+             AND p.order_time IS NOT NULL
+             AND abs(o.gross_incl - p.product_price) <= 0.05
+             AND o.order_date BETWEEN p.order_time - interval '90 minutes'
+                                  AND p.order_time + interval '90 minutes'
+             AND NOT EXISTS (SELECT 1 FROM keeta_payouts q WHERE q.order_id = o.order_id)
+        )
+        UPDATE keeta_payouts t
+           SET order_id = c.order_id
+          FROM cand c
+         WHERE t.order_view_id = c.order_view_id
+           AND c.n_orders = 1 AND c.n_payouts = 1
+        RETURNING t.order_view_id`)).rowCount || 0;
+      if (linked) notes.push(`ربطنا ${linked} طلب كمان بـ TabSense عن طريق تطابق القيمة شاملة الضريبة مع وقت الطلب (تطابق وحيد من الناحيتين فقط).`);
 
       const cov = (await pool.query(`
         SELECT count(*)::int AS ours,
@@ -628,12 +938,20 @@ export function register(app, ctx) {
          WHERE p.order_id IS NULL OR NOT EXISTS (SELECT 1 FROM ts_orders o WHERE o.order_id = p.order_id)`)).rows[0]?.n || 0;
 
       // Keeta's real rule, so the response can show the model, the reality, AND
-      // the rule that actually generated the reality.
-      const KEETA_COMMISSION_RATE = 0.18;
+      // the rule that actually generated the reality. Round 2 completed this
+      // rule: the rate depends on the channel and BOTH channels carry a floor.
       const orders = rows.map((r) => {
         const mdl = modelOrder(fee, { total: r.our_total, net: r.our_net, isPickup: !!r.is_pickup });
         // The base Keeta charges on: VAT-inclusive value after merchant promos.
         const kBase = money(n0(r.product_price) - n0(r.activity_fee));
+        /* Keeta's own channel — `userGetMode`, not our order_option guess. A
+           pickup order is billed at 3% with a SAR 1 floor, a delivery order at
+           18% with a SAR 5 floor, so getting the channel wrong misprices it. */
+        const keetaPickup = String(r.user_get_mode || "").toLowerCase() === "pickup";
+        const mc = measuredCommission({
+          productPrice: r.product_price, activityFee: r.activity_fee,
+          isPickup: keetaPickup, distanceFee: r.distance_fee,
+        });
         // Keeta's own deduction set, on Keeta's sign convention (positive = taken).
         const actual = {
           commissionSAR: money(r.commission),
@@ -685,10 +1003,12 @@ export function register(app, ctx) {
           effectiveCommissionOnTotal: ratio(r.basic_commission, r.our_total),
           effectiveCommissionOnNet: ratio(r.basic_commission, r.our_net),
           effectiveBankOnCustomerPaid: ratio(r.bank_fee, r.customer_pay_total),
-          // What the rule predicts vs what was charged. Anything but ~0 is
-          // either a refund or a floor we have not identified.
-          commissionByKeetaRuleSAR: money(kBase * KEETA_COMMISSION_RATE),
-          commissionRuleResidualSAR: money(n0(r.basic_commission) - kBase * KEETA_COMMISSION_RATE),
+          // What the MEASURED rule predicts vs what was charged — channel rate
+          // plus the channel's floor. Anything but ~0 now means a genuine
+          // anomaly, not a rule we have not identified yet.
+          commissionByKeetaRuleSAR: mc.basicCommissionSAR,
+          commissionRuleResidualSAR: money(n0(r.basic_commission) - mc.basicCommissionSAR),
+          commissionRule: mc,
           // Keeta's own arithmetic, recomputed. Non-zero = we misread a field.
           earningsIdentityResidualSAR: money(
             n0(r.product_price) - n0(r.activity_fee) - n0(r.commission) - n0(r.bank_fee)
@@ -804,11 +1124,14 @@ export function register(app, ctx) {
             commissionShareOfVatExclusiveNet: onNet,
             configuredRate: fee.deliveryCommissionRate,
             configuredBase: fee.commissionBase,
+            keetaRuleComplete: "توصيل: max(5.00, 18% × الأساس) | استلام: max(1.00, 3% × الأساس) | + رسم مسافة 1.00 على بعض الطلبات",
             verdict: orders.length === 0 ? "مفيش بيانات"
-              : `القاعدة الحقيقية: ${(onKeetaBase * 100).toFixed(3)}% من (المجموع شامل الضريبة − العروض ممولة التاجر)، مضبوطة على ${ruleExact} من ${orders.length} طلب. ` +
+              : `القاعدة الكاملة مضبوطة على ${ruleExact} من ${orders.length} طلب: ` +
+                `توصيل ١٨٪ من (المجموع شامل الضريبة − العروض ممولة التاجر) بحد أدنى ٥ ر.س.، واستلام ٣٪ بنفس الأساس بحد أدنى ريال. ` +
+                `النسبة الإجمالية بتطلع ${(onKeetaBase * 100).toFixed(3)}% لأن فيها طلبات استلام بـ٣٪. ` +
                 `النموذج الحالي بيحسب ${(fee.deliveryCommissionRate * 100).toFixed(1)}% على ${fee.commissionBase === "net" ? "الصافي بدون ضريبة" : "الإجمالي قبل الخصم"} — ` +
-                `اللي بيطلع ${(onTotal * 100).toFixed(2)}% / ${(onNet * 100).toFixed(2)}% فعليًا، يعني بيحمّل الطلب المخصوم عمولة أكبر من الحقيقة.`,
-            fixHint: "keeta_reports.js لازم يطرح العروض ممولة التاجر من الأساس قبل ما يضرب في ١٨٪. تغيير commissionBase لوحده مش كفاية.",
+                `يعني بيحمّل الطلب المخصوم عمولة أكبر من الحقيقة، وبيحمّل طلب الاستلام ١٨٪ بدل ٣٪.`,
+            fixHint: "keeta_reports.js لازم (١) يطرح العروض ممولة التاجر من الأساس قبل ما يضرب في النسبة، (٢) يفرّق بين التوصيل والاستلام على userGetMode بتاع كيتا مش على order_option بتاعنا، (٣) يطبّق حد أدنى ٥ ر.س. على التوصيل مش ريال.",
           },
           deliverySubsidyTiers: {
             question: "شرايح دعم التوصيل اللي يدفعها التاجر — القيم دي مقابل الشرايح دي؟",
@@ -834,10 +1157,16 @@ export function register(app, ctx) {
             distanceFeeTotalSAR: money(S((o) => o.actual.distanceFeeSAR)),
             distinctDistanceFeeValuesSAR: [...new Set(distanceFeeOrders.map((o) => o.actual.distanceFeeSAR))].sort((a, b) => a - b),
             smallestCommissionChargedSAR: smallestCommission,
-            // The only orders that could ever reveal a floor are the ones the
-            // 18% rule under-shoots on. Reported as a candidate, never applied.
-            possibleFloorCandidates: ruleOff.filter((x) => !x.hadRefund && x.residualSAR > 0),
-            verdict: "مفيش حد أدنى بريال. الريال اللي كنا شايفينه هو distanceFee — رسم مسافة بيتزاد فوق العمولة الأساسية (commission = basicCommission + distanceFee)، مش أرضية بترفع عمولة الطلب الصغير. لو فيه حد أدنى أصلًا فهو على العمولة نفسها وشكله أكبر من ريال — بصّ في possibleFloorCandidates.",
+            // Now measured, not guessed: both floors are real and neither is
+            // the contract's SAR 1 on delivery.
+            measuredDeliveryFloorSAR: MEASURED.deliveryMinCommissionSAR,
+            measuredPickupFloorSAR: MEASURED.pickupMinCommissionSAR,
+            residualsAfterApplyingTheMeasuredRule: ruleOff,
+            verdict: "فيه حدين أدنى، ومفيش واحد فيهم بيطابق العقد على التوصيل. " +
+              "التوصيل: حد أدنى ٥.٠٠ ر.س. — كل طلب توصيل الـ١٨٪ بتاعه أقل من ٥ اتحسب ٥.٠٠ بالظبط، وطلب أساسه ٢٨.٠٠ (١٨٪ = ٥.٠٤) ماتحسبش بالحد، يعني الحد عند ٥ بالضبط. العقد بيقول ريال. " +
+              "الاستلام: حد أدنى ١.٠٠ ر.س. — مطابق للعقد. " +
+              "أما الريال اللي كنا شايفينه على طلبات التوصيل فهو distanceFee، رسم مسافة منفصل بيتزاد فوق العمولة (commission = basicCommission + distanceFee) ومش موجود في العقد أصلًا. " +
+              "تفاصيل الأثر النقدي في /api/keeta-payouts/contract-audit.",
           },
           paymentFee: {
             question: "نسبة رسوم الدفع 2.5%؟",
@@ -1053,7 +1382,810 @@ export function register(app, ctx) {
     } catch (e) { return fail(c, e, "order"); }
   });
 
-  console.log("[keeta-payouts] routes ready (/api/keeta-payouts/sync|reconcile|summary|order/:viewId)");
+  /* ─── SHARED: cached per-order rows for a KEETA-DAY window ────────────────
+     These three routes are about Keeta's money, so they window on `keeta_day`
+     (Riyadh midnight — Keeta's own bill day), NOT on ts_orders.calendar_day.
+     They also do not JOIN ts_orders, so orders FeedUs never handed a TabSense
+     id to are still counted. */
+  async function cachedRows(from, to) {
+    return (await pool.query(`
+      SELECT order_view_id, order_id, keeta_day::text AS keeta_day, order_time,
+             order_status, user_get_mode,
+             product_price::float8 AS product_price, activity_fee::float8 AS activity_fee,
+             delivery_subsidy::float8 AS delivery_subsidy, item_subsidy::float8 AS item_subsidy,
+             basic_commission::float8 AS basic_commission, distance_fee::float8 AS distance_fee,
+             commission::float8 AS commission, bank_fee::float8 AS bank_fee,
+             bank_fee_rate::float8 AS bank_fee_rate,
+             platform_service_fee::float8 AS platform_service_fee, diff_price::float8 AS diff_price,
+             earnings::float8 AS earnings, rebates_earnings::float8 AS rebates_earnings,
+             refund_price::float8 AS refund_price,
+             customer_pay_total::float8 AS customer_pay_total,
+             customer_platform_fee::float8 AS customer_platform_fee,
+             customer_tip::float8 AS customer_tip,
+             customer_shipping_fee::float8 AS customer_shipping_fee,
+             refunds, refunded_to_customer::float8 AS refunded_to_customer,
+             part_refund, has_rebates,
+             rebates_product_price::float8 AS rebates_product_price,
+             rebates_activity_fee::float8  AS rebates_activity_fee,
+             rebates_commission::float8    AS rebates_commission,
+             rebates_bank_fee::float8      AS rebates_bank_fee,
+             rebates_distance_fee::float8  AS rebates_distance_fee,
+             promos
+        FROM keeta_payouts
+       WHERE keeta_day BETWEEN $1::date AND $2::date
+       ORDER BY order_time`, [from, to])).rows;
+  }
+  const isPickupRow = (r) => String(r.user_get_mode || "").toLowerCase() === "pickup";
+  /** status 50 = reversed. Its money is absent from the settlement entirely. */
+  const isReversed = (r) => Number(r.order_status) === 50;
+
+  /* ─── SHARED: bills, cached in keeta_bills ────────────────────────────────
+     `cate/detail/timeRange` snaps to the bill period containing the start
+     stamp, so each bill is always asked for with its OWN stamps.              */
+  async function syncBills(fromMs, toMs) {
+    const bills = await fetchBills(fromMs, toMs);
+    const out = [];
+    for (const b of bills) {
+      const cats = await fetchBillCategories(b);
+      // Keep Keeta's own signs in `categories`; flip only at the edges.
+      const flat = {};
+      for (const [code, v] of Object.entries(cats)) flat[code] = v.amount;
+      const row = {
+        billId: String(b.billId),
+        periodFrom: isoDay(new Date(n0(b.periodStartDateStamp) + 3 * 3600000).toISOString()),
+        periodTo: isoDay(new Date(n0(b.periodEndDateStamp) + 3 * 3600000).toISOString()),
+        fromMs: n0(b.periodStartDateStamp), toMs: n0(b.periodEndDateStamp),
+        label: b.timeText || "", status: b.status ?? null,
+        statusName: BILL_STATUS[b.status] || `STATUS_${b.status}`,
+        payDate: b.payTimeText || "",
+        categories: flat,
+        netPaidSAR: money(flat[CAT.paid] || 0),
+      };
+      await pool.query(
+        `INSERT INTO keeta_bills (bill_id, period_from, period_to, period_from_ms, period_to_ms,
+           label, status, status_name, pay_date, categories, net_paid, fetched_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,NOW())
+         ON CONFLICT (bill_id) DO UPDATE SET
+           period_from = EXCLUDED.period_from, period_to = EXCLUDED.period_to,
+           period_from_ms = EXCLUDED.period_from_ms, period_to_ms = EXCLUDED.period_to_ms,
+           label = EXCLUDED.label, status = EXCLUDED.status,
+           status_name = EXCLUDED.status_name, pay_date = EXCLUDED.pay_date,
+           categories = EXCLUDED.categories, net_paid = EXCLUDED.net_paid, fetched_at = NOW()`,
+        [row.billId, row.periodFrom, row.periodTo, row.fromMs, row.toMs, row.label,
+          row.status, row.statusName, row.payDate,
+          jb ? jb(row.categories) : JSON.stringify(row.categories), row.netPaidSAR]
+      );
+      out.push(row);
+      await sleep(FETCH_GAP_MS);
+    }
+    return out;
+  }
+
+  /* ─── 5. REFUNDS ──────────────────────────────────────────────────────────
+     Omar's question, answered per order: when a customer gets money back, does
+     Keeta give back its commission and its payment fee, or does he pay them on
+     money he never kept?
+
+     Three refund shapes were observed and they behave differently, so this
+     route classifies each one rather than applying a single rule.             */
+  app.get("/api/keeta-payouts/refunds", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    const { from, to } = qRange(c);
+    try {
+      const rows = (await cachedRows(from, to)).filter(
+        (r) => (Array.isArray(r.refunds) && r.refunds.length) || n0(r.refund_price) > 0 || isReversed(r)
+      );
+
+      const orders = rows.map((r) => {
+        const events = Array.isArray(r.refunds) ? r.refunds : [];
+        const reversed = isReversed(r);
+        const pickup = isPickupRow(r);
+        const rate = pickup ? MEASURED.pickupCommissionRate : MEASURED.deliveryCommissionRate;
+        const base = money(n0(r.product_price) - n0(r.activity_fee));
+        const refundedToCustomer = money(
+          n0(r.refunded_to_customer) || events.reduce((a, e) => a + n0(e?.refundedToCustomerSAR), 0)
+        );
+        const merchantAtFault = events.some((e) => e?.merchantAtFault);
+
+        /* ── what came back, and what Keeta kept ──────────────────────────
+           Only a PARTIAL refund populates the rebates* family, so only there
+           can we compute the split from Keeta's own numbers. */
+        let kept = null;
+        if (r.has_rebates && r.rebates_product_price !== null && r.rebates_commission !== null) {
+          const rebBase = money(n0(r.rebates_product_price) - n0(r.rebates_activity_fee));
+          const baseReversedSAR = money(base - rebBase);
+          const commissionGivenBack = money(n0(r.commission) - n0(r.rebates_commission));
+          // If commission scaled with the base the way it does on a fresh
+          // order, this is what should have come back.
+          const commissionShouldReturn = money(baseReversedSAR * rate);
+          // rebates_bank_fee = 0 means NOTHING was rebated, not "fee zeroed":
+          // the recomputed earnings identity only closes with the ORIGINAL fee.
+          const bankGivenBack = money(n0(r.rebates_bank_fee));
+          const bankOnRefunded = money(refundedToCustomer * MEASURED.bankFeeRate);
+          kept = {
+            commissionBaseReversedSAR: baseReversedSAR,
+            commissionGivenBackSAR: commissionGivenBack,
+            commissionShouldReturnAtFullRateSAR: commissionShouldReturn,
+            commissionKeptOnRefundedMoneySAR: money(commissionShouldReturn - commissionGivenBack),
+            effectiveRefundedCommissionRate: ratio(commissionGivenBack, baseReversedSAR),
+            bankFeeGivenBackSAR: bankGivenBack,
+            bankFeeKeptOnRefundedMoneySAR: bankGivenBack === 0 ? bankOnRefunded : money(bankOnRefunded - bankGivenBack),
+            earningsBeforeSAR: money(r.earnings),
+            earningsAfterSAR: money(r.rebates_earnings),
+            earningsLostSAR: money(n0(r.earnings) - n0(r.rebates_earnings)),
+          };
+        }
+
+        return {
+          orderViewId: r.order_view_id,
+          orderId: r.order_id,
+          keetaDay: r.keeta_day,
+          orderTime: r.order_time,
+          channel: r.user_get_mode || null,
+          /* Which of the three shapes this is. */
+          kind: reversed ? "reversed_entirely" : (r.part_refund ? "partial_refund" : "refund_recorded"),
+          reversedEntirely: reversed,
+          isPartial: !!r.part_refund,
+          merchantAtFault,
+          refundedToCustomerSAR: refundedToCustomer,
+          orderValueSAR: money(r.product_price),
+          customerPaidSAR: money(r.customer_pay_total),
+          /* What the ORDER SCREEN still claims. On a reversed order this is a
+             trap: getOrderDtl is not refund-aware and keeps showing the full
+             original earnings even though the settlement paid nothing. */
+          orderScreenStillShows: {
+            earningsSAR: money(r.earnings),
+            commissionSAR: money(r.commission),
+            bankFeeSAR: money(r.bank_fee),
+            warning: reversed
+              ? "الطلب دا اتلغى بالكامل — الشاشة لسه بتعرض الأرباح الأصلية، بس الكشف مدفعش عليه ولا هللة. متقراش الرقم دا كإيراد."
+              : null,
+          },
+          keetaKept: kept,
+          settlementEvidence: reversed
+            ? "الإيراد والعمولة والدعم اتشالوا كلهم من الكشف. الرسوم البنكية بتتشال كمان لو الإلغاء مش غلطة المطعم؛ لو غلطة المطعم بتفضل متخصومة."
+            : null,
+          events,
+        };
+      });
+
+      /* ── window-level exposure ─────────────────────────────────────────── */
+      const all = await cachedRows(from, to);
+      const S = (rs, f) => money(rs.reduce((a, x) => a + n0(f(x)), 0));
+      const reversedRows = all.filter(isReversed);
+      const refundedTotal = S(orders, (o) => o.refundedToCustomerSAR);
+      const commissionKept = S(orders.filter((o) => o.keetaKept), (o) => o.keetaKept.commissionKeptOnRefundedMoneySAR);
+      const bankKeptPartial = S(orders.filter((o) => o.keetaKept), (o) => o.keetaKept.bankFeeKeptOnRefundedMoneySAR);
+      // On a merchant-fault full reversal the bank fee stays charged — measured
+      // once (order 4776823276295365, SAR 2.48, the whole residual of bill 4).
+      const bankKeptOnReversals = S(
+        reversedRows.filter((r) => (Array.isArray(r.refunds) ? r.refunds : []).some((e) => e?.merchantAtFault)),
+        (r) => r.bank_fee
+      );
+
+      /* ── refunds our own books do not know about ───────────────────────── */
+      const viewIds = reversedRows.map((r) => r.order_view_id);
+      const blind = viewIds.length ? (await pool.query(`
+        SELECT p.order_view_id, p.order_id, o.calendar_day::text AS calendar_day,
+               o.total::float8 AS our_total, o.gross_incl::float8 AS our_gross_incl,
+               o.order_type
+          FROM keeta_payouts p
+          JOIN ts_orders o ON o.order_id = p.order_id
+         WHERE p.order_view_id = ANY($1::text[])
+           AND (o.order_type IS NULL OR (o.order_type NOT ILIKE '%void%' AND o.order_type NOT ILIKE '%refund%'))
+      `, [viewIds])).rows : [];
+
+      return c.json({
+        ok: true,
+        window: { from, to, basis: "keeta_day (Riyadh midnight — Keeta's own bill day)" },
+        coverage: {
+          ordersInCache: all.length,
+          ordersWithARefundRecord: orders.length,
+          refundRatePercent: all.length ? rate4((orders.length / all.length) * 100) : null,
+          note: all.length
+            ? null
+            : "مفيش صفوف مخزّنة للفترة دي — شغّل POST /api/keeta-payouts/sync الأول.",
+        },
+        /* The direct answer, three shapes, each with its evidence. */
+        howKeetaTreatsRefunds: [
+          {
+            kind: "reversed_entirely",
+            trigger: "المطعم مقبلش الطلب في الوقت / كيتا لغت الطلب تلقائيًا (applyType 3001, refundBearer -1)",
+            commission: "بترجع بالكامل",
+            bankFee: "بترجع بالكامل",
+            costToMerchantSAR: 0,
+            evidence: "طلب 4726820734515664 — 185.00 ر.س. اتشالت من الكشف بالكامل مع العمولة 23.94 والرسوم البنكية 3.82.",
+          },
+          {
+            kind: "full_after_sale_refund_merchant_at_fault",
+            trigger: "شكوى عميل والمنصة حمّلت المطعم المسؤولية (applyType 1001, duty 20, refundBearer 20)",
+            commission: "بترجع بالكامل",
+            bankFee: "❌ متترجعش — بتفضل متخصومة على فلوس رجعت للعميل",
+            evidence: "طلب 4776823276295365 — العميل استرد 88.40 كاملة؛ الإيراد 105.00 والعمولة 12.85 والدعم اتشالوا، بس الرسوم البنكية 2.48 فضلت. الـ2.48 دي هي بالظبط الفرق الوحيد في كشف 22-31/07.",
+          },
+          {
+            kind: "partial_refund",
+            trigger: "استرداد جزئي (applyType 2002, partRefund 1) — بيملا حقول rebates*",
+            commission: "⚠️ بترجع جزئيًا بس — ٨ نقط من الـ١٨ رجعت والـ١٠ اتاخدت",
+            bankFee: "❌ متترجعش خالص (rebatesBankTransactionFee = 0)",
+            evidence: "طلب 4796823030358149 — الأساس نزل 24.00 ر.س. والعمولة نزلت 1.92 بس = ٨٪ بالظبط. العقد بيقول الـ١٨٪ = ٨٪ خدمة بيانات + ١٠٪ خدمة توصيل، يعني كيتا رجّعت حصة البيانات وقعدت بحصة التوصيل: 2.40 ر.س. عمولة على أكل اترد ثمنه.",
+            sampleSize: 1,
+            caveat: "قياس على طلب واحد. القاعدة مضبوطة رياضيًا لكن محتاجة استرداد جزئي تاني عشان تتأكد كسياسة.",
+          },
+        ],
+        exposure: {
+          refundedToCustomersSAR: refundedTotal,
+          feesKeetaKeptOnRefundedMoneySAR: money(commissionKept + bankKeptPartial + bankKeptOnReversals),
+          breakdown: {
+            commissionKeptOnPartialRefundsSAR: commissionKept,
+            bankFeeKeptOnPartialRefundsSAR: bankKeptPartial,
+            bankFeeKeptOnMerchantFaultReversalsSAR: bankKeptOnReversals,
+          },
+          note: "الأرقام دي على الاستردادات الظاهرة في الفترة دي بس. لو الاستردادات زادت، البند اللي بيكبر أسرع هو الاسترداد الجزئي.",
+        },
+        /* The operational finding: our own books count reversed orders as sales. */
+        refundsOurBooksMiss: {
+          reversedOrders: reversedRows.length,
+          stillCountedAsSalesInTsOrders: blind.length,
+          grossInclStillCountedSAR: S(blind, (b) => b.our_gross_incl),
+          revenueStillCountedSAR: S(blind, (b) => b.our_total),
+          orders: blind.map((b) => ({
+            orderViewId: b.order_view_id, orderId: b.order_id,
+            calendarDay: b.calendar_day, orderType: b.order_type,
+            ourGrossInclSAR: money(b.our_gross_incl), ourRevenueSAR: money(b.our_total),
+          })),
+          note: "TabSense مبيسجّلش استرداد كيتا خالص — الطلبات دي متسجلة عندنا كمبيعات تامة، فإيرادنا بيزيد عن اللي كيتا سوّته فعلًا بنفس القيمة.",
+        },
+        orders,
+      });
+    } catch (e) { return fail(c, e, "refunds"); }
+  });
+
+  /* ─── 6. CONTRACT AUDIT ───────────────────────────────────────────────────
+     Line by line: what the signed agreement says, what Keeta actually did,
+     the SAR difference, and which side it favours. Machine-readable so the UI
+     can render it as a table and so Omar can take it to Keeta.
+
+     TWO KINDS OF FINDING, kept strictly apart, because conflating them would
+     destroy the credibility of the whole document:
+       * `calculationError: true`  — Keeta deviates from its OWN contract.
+         These are the only ones that are arguably a mistake.
+       * `calculationError: false` — Keeta applies the contract correctly and
+         the contract itself is the issue (or our model was wrong).
+     Every line carries `source` so no figure is ever mistaken for a
+     contract-derived guess.                                                   */
+  app.get("/api/keeta-payouts/contract-audit", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    const { from, to } = qRange(c);
+    const wantPortal = c.req.query("portal") !== "0";
+    try {
+      const fee = await fees();
+      const all = await cachedRows(from, to);
+      // Reversed orders never reached the settlement, so they must not inflate
+      // any fee total in the audit.
+      const rows = all.filter((r) => !isReversed(r));
+      const dlv = rows.filter((r) => !isPickupRow(r));
+      const pick = rows.filter((r) => isPickupRow(r));
+      const S = (rs, f) => money(rs.reduce((a, x) => a + n0(f(x)), 0));
+      const baseOf = (r) => n0(r.product_price) - n0(r.activity_fee);
+      const bankBaseOf = (r) => n0(r.customer_pay_total) - n0(r.customer_platform_fee) - n0(r.customer_tip);
+
+      const grossIncl = S(rows, (r) => r.product_price);
+      const commissionBase = S(rows, baseOf);
+      const commissionCharged = S(rows, (r) => r.commission);
+      const basicCharged = S(rows, (r) => r.basic_commission);
+      const distanceCharged = S(rows, (r) => r.distance_fee);
+      const bankCharged = S(rows, (r) => r.bank_fee);
+      const bankBase = S(rows, bankBaseOf);
+      const dlvSubsidy = S(rows, (r) => r.delivery_subsidy);
+      const itemSubsidy = S(rows, (r) => r.item_subsidy);
+
+      /* ── per-order rule conformance ─────────────────────────────────────── */
+      const exact = (a, b) => Math.abs(n0(a) - n0(b)) <= 0.011;
+      const dlvExact = dlv.filter((r) => exact(r.basic_commission,
+        measuredCommission({ productPrice: r.product_price, activityFee: r.activity_fee, isPickup: false, distanceFee: 0 }).basicCommissionSAR)).length;
+      const pickExact = pick.filter((r) => exact(r.basic_commission,
+        measuredCommission({ productPrice: r.product_price, activityFee: r.activity_fee, isPickup: true, distanceFee: 0 }).basicCommissionSAR)).length;
+      const bankExact = rows.filter((r) => exact(r.bank_fee, Math.round(bankBaseOf(r) * MEASURED.bankFeeRate * 100) / 100)).length;
+
+      // What the SAR 5 delivery floor and the SAR 1 pickup floor actually cost.
+      const dlvFloorHits = dlv.filter((r) => baseOf(r) * MEASURED.deliveryCommissionRate < MEASURED.deliveryMinCommissionSAR);
+      const dlvFloorCost = S(dlvFloorHits, (r) => MEASURED.deliveryMinCommissionSAR - baseOf(r) * MEASURED.deliveryCommissionRate);
+      const pickFloorHits = pick.filter((r) => baseOf(r) * MEASURED.pickupCommissionRate < MEASURED.pickupMinCommissionSAR);
+      const pickFloorCost = S(pickFloorHits, (r) => MEASURED.pickupMinCommissionSAR - baseOf(r) * MEASURED.pickupCommissionRate);
+      const distanceOrders = rows.filter((r) => n0(r.distance_fee) > 0).length;
+
+      // The contract's five-tier subsidy table, applied to the same orders.
+      const modelledSubsidy = S(dlv, (r) => {
+        const t = fee.subsidyTiers.find((x) => n0(r.product_price) <= x.upTo);
+        return t ? t.sar : 0;
+      });
+      const aboveTopTier = dlv.filter((r) => n0(r.product_price) > Math.max(...fee.subsidyTiers.map((t) => t.upTo)));
+      const aboveTopTierCharged = S(aboveTopTier, (r) => r.delivery_subsidy);
+
+      // VAT — the base Keeta charges on is VAT-INCLUSIVE.
+      const vatInBase = money(commissionBase - commissionBase / (1 + MEASURED.vatRate));
+      const commissionOnVat = money(vatInBase * MEASURED.deliveryCommissionRate);
+      const bankOnVat = money(vatInBase * MEASURED.bankFeeRate);
+
+      /* ── the statement side: fees that should have appeared and did not ─── */
+      let statement = null;
+      if (wantPortal && keetaConfigured()) {
+        try {
+          const fromMs = Date.parse(from + "T00:00:00+03:00") - 7 * 86400000;
+          const toMs = Date.parse(to + "T23:59:59+03:00") + 7 * 86400000;
+          const bills = await syncBills(fromMs, toMs);
+          const cat = (code) => money(bills.reduce((a, b) => a + n0(b.categories?.[code]), 0));
+          statement = {
+            bills: bills.length,
+            periods: bills.map((b) => `${b.periodFrom}..${b.periodTo} (${b.statusName})`),
+            posMachineFeeSAR: money(-cat("20202")),
+            photographyFeeSAR: money(-cat("30301")),
+            vatWithheldSAR: money(-cat("20204")),
+            platformClawbackMerchantFaultSAR: money(-cat("20201")),
+            platformCompensationToMerchantSAR: cat("10201"),
+            commissionAdjustmentSAR: money(-cat("30303")),
+            adSpendSAR: money(-cat("20205")),
+            commissionSAR: money(-cat("30101")),
+            bankFeeSAR: money(-cat("30201")),
+            deliverySubsidySAR: money(-cat("30302")),
+            itemSubsidySAR: money(-cat("20101")),
+            grossItemsSAR: cat("10101"),
+            netPaidSAR: cat(CAT.paid),
+            note: "كل الفئات الـ٢٤ موجودة في كل كشف حتى لو بصفر، فالصفر هنا معناه فعلًا مفيش خصم — مش إن البند ناقص.",
+          };
+        } catch (e) {
+          statement = { available: false, expired: e instanceof KeetaError ? !!e.expired : false, reason: e.message };
+        }
+      }
+
+      const L = [];
+      const line = (o) => { L.push(o); return o; };
+
+      line({
+        id: "delivery_commission_rate",
+        contractSays: "عمولة توصيل ١٨٪ (٨٪ خدمة بيانات + ١٠٪ خدمة توصيل)",
+        keetaActuallyDoes: `${MEASURED.deliveryCommissionRate * 100}% على (المجموع شامل الضريبة − العروض ممولة التاجر)`,
+        measured: {
+          baseSAR: S(dlv, baseOf), chargedSAR: S(dlv, (r) => r.basic_commission),
+          effectiveRate: ratio(S(dlv, (r) => r.basic_commission), S(dlv, baseOf)),
+          ordersMatchingExactly: dlvExact, orders: dlv.length,
+        },
+        sarImpact: 0, category: "correct", favours: "neutral", calculationError: false,
+        source: "getOrderDtl merchantFee.basicCommission على " + dlv.length + " طلب توصيل",
+        note: "النسبة نفسها مطابقة للعقد. تقسيم الـ٨٪/١٠٪ مش مبيّن في أي طلب عادي — بيبان بس وقت الاسترداد الجزئي.",
+      });
+
+      line({
+        id: "commission_base",
+        contractSays: "العقد مبيحددش الأساس صراحة",
+        keetaActuallyDoes: "الأساس = المجموع شامل الضريبة ناقص كل العروض اللي ممولها التاجر",
+        measured: { baseSAR: commissionBase, grossInclSAR: grossIncl, differenceSAR: money(grossIncl - commissionBase) },
+        /* NOT money Keeta owes or saved — this line only says our own old model
+           was wrong. Kept out of every total on purpose. */
+        sarImpact: 0,
+        modelCorrectionSAR: money((grossIncl - commissionBase) * MEASURED.deliveryCommissionRate),
+        category: "model_correction",
+        favours: "omar", calculationError: false,
+        source: "getOrderDtl — 18% × (productPrice − activityFee) بيطابق basicCommission بالهللة",
+        note: `كيتا بتخصم العروض قبل ما تحسب العمولة. نموذجنا القديم كان بيحسب على الإجمالي قبل الخصم، يعني كان بيبالغ في العمولة بـ${money((grossIncl - commissionBase) * MEASURED.deliveryCommissionRate)} ر.س. ده لصالح عمر — مكسب في الدقة مش مطالبة على كيتا.`,
+      });
+
+      line({
+        id: "pickup_rate",
+        contractSays: "استلام من المطعم ٣٪",
+        keetaActuallyDoes: `${MEASURED.pickupCommissionRate * 100}% على نفس الأساس`,
+        measured: { orders: pick.length, ordersMatchingExactly: pickExact, chargedSAR: S(pick, (r) => r.basic_commission), baseSAR: S(pick, baseOf) },
+        sarImpact: 0, category: "correct", favours: "neutral", calculationError: false,
+        source: `getOrderDtl على ${pick.length} طلب استلام`,
+        note: "مطابق للعقد بالظبط.",
+      });
+
+      line({
+        id: "min_service_fee_delivery",
+        contractSays: "حد أدنى لرسوم الخدمة ريال واحد للطلب",
+        keetaActuallyDoes: `حد أدنى ${MEASURED.deliveryMinCommissionSAR}.00 ر.س. على طلبات التوصيل — مش ريال`,
+        measured: {
+          ordersHittingTheFloor: dlvFloorHits.length,
+          floorSAR: MEASURED.deliveryMinCommissionSAR,
+          contractFloorSAR: fee.minServiceFeeSAR,
+          examples: dlvFloorHits.slice(0, 8).map((r) => ({
+            orderViewId: r.order_view_id, baseSAR: money(baseOf(r)),
+            eighteenPercentSAR: money(baseOf(r) * MEASURED.deliveryCommissionRate),
+            chargedSAR: money(r.basic_commission),
+          })),
+        },
+        sarImpact: dlvFloorCost, category: "calculation_error", favours: "keeta", calculationError: true,
+        source: "getOrderDtl — كل طلب توصيل الـ١٨٪ بتاعه أقل من ٥ اتحسب ٥.٠٠ بالظبط؛ وطلب أساسه ٢٨.٠٠ (١٨٪ = ٥.٠٤) ماتحسبش بالحد الأدنى، يعني الحد عند ٥ مش عند ١",
+        note: "ده أوضح بند ممكن يترفع لكيتا: العقد بيقول ريال، والمطبّق خمسة. الأثر النقدي صغير دلوقتي لأن الطلبات الصغيرة قليلة، بس النص غلط بمقدار خمس أضعاف.",
+      });
+
+      line({
+        id: "min_service_fee_pickup",
+        contractSays: "حد أدنى لرسوم الخدمة ريال واحد للطلب",
+        keetaActuallyDoes: `حد أدنى ${MEASURED.pickupMinCommissionSAR}.00 ر.س. على طلبات الاستلام — مطابق`,
+        measured: { ordersHittingTheFloor: pickFloorHits.length, floorSAR: MEASURED.pickupMinCommissionSAR },
+        sarImpact: pickFloorCost, category: "contract_term", favours: "keeta", calculationError: false,
+        source: `getOrderDtl على ${pick.length} طلب استلام`,
+        note: "الحد الأدنى موجود فعلًا على الاستلام وبقيمة العقد. التكلفة دي مستحقة تعاقديًا — مش خطأ.",
+      });
+
+      line({
+        id: "distance_fee",
+        contractSays: "مفيش أي بند اسمه رسوم مسافة",
+        keetaActuallyDoes: `${MEASURED.distanceFeeSAR}.00 ر.س. للطلب، بتتضاف فوق العمولة الأساسية`,
+        measured: {
+          ordersCharged: distanceOrders, orders: rows.length,
+          shareOfOrders: ratio(distanceOrders, rows.length),
+          totalSAR: distanceCharged,
+          onlyValueSeenSAR: MEASURED.distanceFeeSAR,
+        },
+        sarImpact: distanceCharged, category: "calculation_error", favours: "keeta", calculationError: true,
+        source: "getOrderDtl merchantFee.distanceFee — commission = basicCommission + distanceFee",
+        note: "مش موجود في العقد خالص، وبيتحصّل على " + distanceOrders + " طلب. وأسوأ من كده إنه مش ظاهر في الكشف: بند 30101 اسمه «العمولة الأساسية» بس بيشمل رسوم المسافة جواه، فمن الكشف لوحده مستحيل تشوفه.",
+      });
+
+      line({
+        id: "payment_fee_rate",
+        contractSays: "رسوم بنكية / دفع ٢.٥٪",
+        keetaActuallyDoes: `${MEASURED.bankFeeRate * 100}% — كيتا بتعلنها بنفسها في bankTransactionFeeRate`,
+        measured: {
+          contractRate: fee.paymentFeeRate, actualRate: MEASURED.bankFeeRate,
+          baseSAR: bankBase, baseFormula: MEASURED.bankFeeBase,
+          chargedSAR: bankCharged,
+          atContractRateSAR: money(bankBase * fee.paymentFeeRate),
+          ordersMatchingExactly: bankExact, orders: rows.length,
+        },
+        sarImpact: money(bankCharged - bankBase * fee.paymentFeeRate),
+        category: "calculation_error", favours: "keeta", calculationError: true,
+        source: "getOrderDtl merchantFee.bankTransactionFeeRate = \"2.875\" على كل طلب؛ والأساس (payTotal − platformFee − tip) بيطابق الرسم بالهللة على " + bankExact + " من " + rows.length,
+        note: "العقد بيقول ٢.٥٪ والمحصّل ٢.٨٧٥٪ — فرق ٠.٣٧٥ نقطة. ده تاني أوضح بند يترفع لكيتا، والفرق النقدي أكبر من الحد الأدنى.",
+      });
+
+      line({
+        id: "delivery_subsidy_tiers",
+        contractSays: "خمس شرايح دعم توصيل يغطيها التاجر (≤30→4، ≤35→9، ≤45→11، ≤55→12، ≤70→15) ومفيش دعم فوق ٧٠",
+        keetaActuallyDoes: "مش جدول في العقد — ده عرض التوصيل المجاني بتاع المطعم نفسه (promo type 4)، وكيتا بتقسّم رسوم التوصيل المتنازل عنها بين المطعم والمنصة. ومفيش سقف عند ٧٠",
+        measured: {
+          actualSAR: dlvSubsidy, contractTierModelSAR: modelledSubsidy,
+          ordersAboveTopTier: aboveTopTier.length,
+          stillChargedAboveTopTierSAR: aboveTopTierCharged,
+        },
+        sarImpact: money(dlvSubsidy - modelledSubsidy),
+        category: "merchant_choice", favours: "keeta", calculationError: false,
+        source: "getOrderDtl merchantActivityFeeDtls[type=4] — sillAmount / reduceFee / merchantActivityFee / platformActivityFee",
+        note: `جدول العقد بيقول صفر فوق ٧٠ ر.س.، والواقع إن ${aboveTopTier.length} طلب فوق السقف دفعوا ${aboveTopTierCharged} ر.س. بس ده مش خطأ حسابي من كيتا: البند دا حملة المطعم نفسه وهو اللي مشغّلها، فالتحكم فيه عند عمر مش عند كيتا. لو عايز يوقفه، يوقف حملة التوصيل المجاني.`,
+      });
+
+      line({
+        id: "pos_machine_fee",
+        contractSays: "رسوم جهاز نقاط بيع ٥٠٠ ر.س. لمرة واحدة",
+        keetaActuallyDoes: "متحصّلتش خالص",
+        measured: { statementCategory: "20202 رسوم آلة الدفع", chargedSAR: statement?.posMachineFeeSAR ?? null },
+        sarImpact: 0, notChargedButContractedSAR: 500, category: "in_omars_favour", favours: "omar", calculationError: false,
+        source: "بند 20202 = 0.00 في كل الكشوف الخمسة",
+        note: "لصالح عمر. تستاهل تتسجّل عشان لو كيتا حصّلتها بأثر رجعي بعدين يبقى فيه توثيق إنها ماكانتش متحصّلة.",
+      });
+
+      line({
+        id: "photography_fee",
+        contractSays: "رسوم تصوير ٥٠٠ ر.س. لمرة واحدة",
+        keetaActuallyDoes: "متحصّلتش خالص",
+        measured: { statementCategory: "30301 رسوم خدمة الصور", chargedSAR: statement?.photographyFeeSAR ?? null },
+        sarImpact: 0, notChargedButContractedSAR: 500, category: "in_omars_favour", favours: "omar", calculationError: false,
+        source: "بند 30301 = 0.00 في كل الكشوف الخمسة",
+        note: "لصالح عمر.",
+      });
+
+      line({
+        id: "subscription_fee",
+        contractSays: "معفى من رسوم الاشتراك",
+        keetaActuallyDoes: "مفيش أي بند اشتراك في شجرة الكشف أصلًا",
+        measured: { categoriesInTree: 24, subscriptionCategoriesFound: 0 },
+        sarImpact: 0, category: "in_omars_favour", favours: "omar", calculationError: false,
+        source: "شجرة cate/detail/timeRange كاملة، ٢٤ بند، متطابقة في الخمس كشوف",
+        note: "الإعفاء متطبّق.",
+      });
+
+      line({
+        id: "vat_base",
+        contractSays: "العقد بيقول ١٨٪ من قيمة الطلب، من غير ما يحدد قبل ولا بعد الضريبة",
+        keetaActuallyDoes: "بتحسب على أساس شامل ضريبة القيمة المضافة ١٥٪، وفي نفس الوقت مبتقتطعش الضريبة (بند 20204 = 0.00)",
+        measured: {
+          commissionBaseInclVatSAR: commissionBase,
+          vatInsideBaseSAR: vatInBase,
+          baseExclVatSAR: money(commissionBase - vatInBase),
+          commissionChargedOnVatSAR: commissionOnVat,
+          bankFeeChargedOnVatSAR: bankOnVat,
+          totalFeesOnVatSAR: money(commissionOnVat + bankOnVat),
+          headlineRate: MEASURED.deliveryCommissionRate,
+          effectiveRateOnVatExclusiveRevenue: ratio(commissionCharged, commissionBase - vatInBase),
+          vatWithheldByKeetaSAR: statement?.vatWithheldSAR ?? 0,
+        },
+        sarImpact: money(commissionOnVat + bankOnVat),
+        category: "contract_term", favours: "keeta", calculationError: false,
+        source: "productPrice شامل الضريبة (بيطابق ts_orders.gross_incl بالهللة) + بند 20204 = 0.00",
+        note: `كيتا بتقتطعش ضريبة، يعني عمر بيورّد الـ١٥٪ لهيئة الزكاة والضريبة من جيبه. وبما إن الأساس شامل الضريبة، فعمر بيدفع لكيتا عمولة ورسوم على فلوس الحكومة اللي هو أصلًا مش بياخدها: ${money(commissionOnVat + bankOnVat)} ر.س. في الفترة دي. النتيجة إن الـ١٨٪ المعلنة بتساوي ${((ratio(commissionCharged, commissionBase - vatInBase) || 0) * 100).toFixed(2)}٪ من الإيراد الحقيقي بدون ضريبة. ده مش خطأ حسابي — كيتا بتطبّق شروطها صح — لكنه بند تفاوضي مشروع.`,
+      });
+
+      line({
+        id: "refund_bank_fee",
+        contractSays: "العقد مبيقولش إيه اللي بيرجع لما يحصل استرداد",
+        keetaActuallyDoes: "الرسوم البنكية متترجعش على الاسترداد الكامل اللي المطعم مسؤول عنه، ولا على الاسترداد الجزئي",
+        measured: { seeRoute: "/api/keeta-payouts/refunds" },
+        sarImpact: null, category: "contract_term", favours: "keeta", calculationError: false,
+        source: "فرق كشف 22-31/07 = 2.48 ر.س. بالظبط = الرسوم البنكية للطلب 4776823276295365 المسترد بالكامل",
+        note: "الأثر النقدي محسوب في راوت /refunds. القاعدة نفسها مش مكتوبة في العقد، فهي بند يستحق التوضيح مع كيتا.",
+      });
+
+      line({
+        id: "refund_commission_split",
+        contractSays: "١٨٪ = ٨٪ خدمة بيانات + ١٠٪ خدمة توصيل",
+        keetaActuallyDoes: "على الاسترداد الجزئي بترجع حصة الـ٨٪ بس وبتقعد بحصة الـ١٠٪",
+        measured: { observedOn: 1, refundedRatePercent: 8, keptRatePercent: 10, seeRoute: "/api/keeta-payouts/refunds" },
+        sarImpact: null, category: "contract_term", favours: "keeta", calculationError: false,
+        source: "طلب 4796823030358149 — الأساس نزل 24.00 والعمولة نزلت 1.92 = ٨.٠٠٠٪ بالظبط",
+        note: "قياس على طلب واحد. رياضيًا مضبوط تمامًا، لكن مينفعش يتقال إنه سياسة مؤكدة من عينة واحدة.",
+      });
+
+      line({
+        id: "ad_spend",
+        contractSays: "مش جزء من العقد — منتج إعلانات منفصل",
+        keetaActuallyDoes: "بتتخصم من التحويل الأسبوعي في بند 20205، بتأخير يوم واحد",
+        measured: { statementAdSpendSAR: statement?.adSpendSAR ?? null, seeRoute: "/api/keeta-payouts/ad-spend" },
+        sarImpact: statement?.adSpendSAR ?? null, category: "correct", favours: "neutral", calculationError: false,
+        source: "بند 20205 مقابل data/query/his — مطابق بالهللة على الخمس كشوف بعد إزاحة يوم",
+        note: "كيتا بتحسبها صح. المهم إن دي تكلفة حقيقية بتقلّل التحويل، مش رقم لوحة تحكم.",
+      });
+
+      /* ── BUCKETS, kept apart on purpose ─────────────────────────────────
+         A single "total in Keeta's favour" would be dishonest: it would add
+         Omar's own free-delivery campaign, a legitimate contract term and an
+         actual breach into one number he might then quote at Keeta. Each
+         bucket means something different and only the first is claimable. */
+      const sum = (xs) => money(xs.reduce((a, x) => a + n0(x.sarImpact), 0));
+      const byCat = (k) => L.filter((x) => x.category === k);
+      const errors = byCat("calculation_error");
+      const contractTerms = byCat("contract_term");
+      const merchantChoice = byCat("merchant_choice");
+      const inOmarsFavour = byCat("in_omars_favour");
+
+      return c.json({
+        ok: true,
+        window: { from, to, basis: "keeta_day (Riyadh midnight)" },
+        coverage: {
+          ordersInCache: all.length,
+          reversedExcluded: all.length - rows.length,
+          deliveryOrders: dlv.length, pickupOrders: pick.length,
+          note: all.length
+            ? "الأرقام على الطلبات المخزّنة في الفترة دي بس. شغّل sync لو التغطية ناقصة."
+            : "مفيش صفوف مخزّنة — شغّل POST /api/keeta-payouts/sync الأول.",
+        },
+        contractModel: fee,
+        measuredRules: MEASURED,
+        headline: {
+          /* ONLY this number is a claim against Keeta. Everything else is
+             either a term of the contract, Omar's own campaign, or a
+             correction to our own model. */
+          claimableAgainstKeeta: {
+            lines: errors.length,
+            sarImpact: sum(errors),
+            items: errors.map((x) => ({ id: x.id, sarImpact: x.sarImpact, contractSays: x.contractSays, keetaActuallyDoes: x.keetaActuallyDoes })),
+            note: "دي البنود الوحيدة اللي كيتا بتخالف فيها نص عقدها هي نفسها. الرقم دا هو اللي ينفع يترفع لكيتا.",
+          },
+          contractTermsWorthNegotiating: {
+            lines: contractTerms.length,
+            sarImpact: sum(contractTerms),
+            note: "كيتا بتطبّق شروطها صح هنا — الاعتراض على الشرط نفسه مش على الحساب. ينفع يتفاوض عليه، مش يترفع كخطأ.",
+          },
+          merchantsOwnChoice: {
+            lines: merchantChoice.length,
+            sarImpact: sum(merchantChoice),
+            note: "دي حملة التوصيل المجاني بتاعة المطعم نفسه. عمر هو اللي مشغّلها وهو اللي يقدر يوقفها — مش مطالبة على كيتا.",
+          },
+          inOmarsFavour: {
+            lines: inOmarsFavour.length,
+            contractedButNeverChargedSAR: money(inOmarsFavour.reduce((a, x) => a + n0(x.notChargedButContractedSAR), 0)),
+            note: "رسوم منصوص عليها في العقد ومتحصّلتش. مهم تتوثّق قبل أي نقاش مع كيتا.",
+          },
+          summary:
+            `${errors.length} بنود كيتا بتخالف فيها عقدها هي نفسها، بأثر ${sum(errors)} ر.س. في الفترة دي: ` +
+            `الرسوم البنكية ٢.٨٧٥٪ بدل ٢.٥٪ المكتوبة، ورسم مسافة ريال للطلب مش موجود في العقد أصلًا، وحد أدنى للعمولة ٥ ر.س. بدل الريال المكتوب. ` +
+            `دول بس اللي ينفعوا يترفعوا لكيتا. ` +
+            `بند الضريبة (${sum(contractTerms)} ر.س.) شرط تعاقدي مطبّق صح — تفاوض مش مطالبة. ` +
+            `ودعم التوصيل (${sum(merchantChoice)} ر.س.) حملة المطعم نفسه. ` +
+            `وفي المقابل رسوم جهاز نقاط البيع ٥٠٠ ر.س. ورسوم التصوير ٥٠٠ ر.س. متحصّلوش خالص، ومفيش رسوم اشتراك.`,
+          doNotAdd: "متجمعش الأربع أرقام دي في رقم واحد — كل واحد منهم معناه مختلف تمامًا عن التاني.",
+        },
+        lines: L,
+        statement,
+        integrity: {
+          note: "أي بند sarImpact فيه = null معناه إنه مش متقدّر رقميًا من البيانات المتاحة، مش إنه بصفر.",
+        },
+      });
+    } catch (e) { return fail(c, e, "contract-audit"); }
+  });
+
+  /* ─── 7. AD SPEND ─────────────────────────────────────────────────────────
+     Ad spend as a real cost line: per settlement period, from the statement,
+     reconciled against what the ads portal reports.
+
+     THE ONE-DAY LAG is the whole trick. Statement category 20205 for a bill
+     period [from..to] equals the ads portal's daily `debit` summed over
+     [from-1 .. to-1]. Without the shift the two sides look permanently wrong
+     by a day's spend; with it they match to the halala on every bill.
+
+     READ ONLY. plan/query and data/query/his only — never plan/update/status,
+     never operation/update, never fund/allocate.                              */
+  app.get("/api/keeta-payouts/ad-spend", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    const { from, to } = qRange(c);
+    if (!keetaConfigured()) {
+      return c.json({ ok: false, expired: true, error: "كيتا مش مربوطة — الناقص KEETA_COOKIE أو KEETA_SHOP_ID" }, 401);
+    }
+    const compact = (d) => String(d).replace(/-/g, "");
+    const shiftDay = (d, n) => isoDay(new Date(Date.parse(d + "T12:00:00Z") + n * 86400000).toISOString());
+    try {
+      // ── statement side ────────────────────────────────────────────────────
+      const fromMs = Date.parse(from + "T00:00:00+03:00") - 7 * 86400000;
+      const toMs = Date.parse(to + "T23:59:59+03:00") + 7 * 86400000;
+      const bills = await syncBills(fromMs, toMs);
+
+      // ── ads portal side: one daily series covering every bill period, shifted ──
+      const spanFrom = bills.length ? shiftDay(bills[0].periodFrom, -1) : shiftDay(from, -1);
+      const spanTo = bills.length ? shiftDay(bills[bills.length - 1].periodTo, -1) : shiftDay(to, -1);
+      let daily = [], plan = null, portalError = null;
+      try {
+        const his = await keetaCall("/api/bff/ad/poi/v1/sspcpc/data/query/his", {
+          targetAcctId: ACCT_ID, startDate: compact(spanFrom), endDate: compact(spanTo),
+        });
+        const rows = his?.details?.selfData || his?.details || [];
+        // `debit` is the money actually spent that day. adrevenue/roas are
+        // Keeta's own attribution and are passed through untouched.
+        daily = (Array.isArray(rows) ? rows : []).map((d) => {
+          const t = String(d?.time || "");
+          return {
+            day: t.length === 8 ? `${t.slice(0, 4)}-${t.slice(4, 6)}-${t.slice(6, 8)}` : t,
+            spendSAR: money(String(d?.debit ?? "0").replace(/[^\d.-]/g, "")),
+            impressions: n0(String(d?.showCount ?? "0").replace(/[^\d.-]/g, "")),
+            clicks: n0(String(d?.clickCount ?? "0").replace(/[^\d.-]/g, "")),
+            attributedOrders: n0(String(d?.orders ?? "0").replace(/[^\d.-]/g, "")),
+            attributedRevenueSAR: money(String(d?.adrevenue ?? "0").replace(/[^\d.-]/g, "")),
+          };
+        });
+      } catch (e) {
+        if (e instanceof KeetaError && e.expired) throw e;
+        portalError = e.message;
+      }
+      try {
+        const p = await keetaCall("/api/bff/ad/poi/v1/sspcpc/plan/query", undefined, {
+          query: { targetAcctId: ACCT_ID, shopId: SHOP_ID },
+        });
+        if (p) {
+          plan = {
+            planId: p.planId ?? null,
+            running: Number(p.status) === 0,
+            budgetSAR: hal(p.budget),
+            // NOT lifetime spend — this is spend inside the CURRENT budget
+            // period, which is why it disagrees with the settlement total.
+            budgetUsedThisPeriodSAR: hal(p.budgetUsed),
+            budgetRemainingPercent: p.budgetRemainingPercent ?? null,
+            lifetimeClicks: n0(p.clickCount),
+            bidSAR: hal((p.unitList || [])[0]?.bid * 100),
+            targetRoi: (p.unitList || [])[0]?.targetRoi ?? null,
+          };
+        }
+      } catch (e) {
+        if (e instanceof KeetaError && e.expired) throw e;
+        portalError = portalError ? `${portalError}; ${e.message}` : e.message;
+      }
+
+      const byDay = new Map(daily.map((d) => [d.day, d]));
+      const sumRange = (a, b, f) => money(daily.filter((d) => d.day >= a && d.day <= b).reduce((x, d) => x + n0(f(d)), 0));
+
+      const periods = bills.map((b) => {
+        const statementSAR = money(-n0(b.categories?.[CAT.ads]));
+        const shiftedFrom = shiftDay(b.periodFrom, -1);
+        const shiftedTo = shiftDay(b.periodTo, -1);
+        const portalShifted = sumRange(shiftedFrom, shiftedTo, (d) => d.spendSAR);
+        const portalSameDates = sumRange(b.periodFrom, b.periodTo, (d) => d.spendSAR);
+        return {
+          billId: b.billId,
+          period: { from: b.periodFrom, to: b.periodTo },
+          label: b.label,
+          status: b.statusName,
+          settled: b.status === 90,
+          payDate: b.payDate || null,
+          adSpendFromStatementSAR: statementSAR,
+          adSpendFromPortalSAR: portalShifted,
+          portalWindowUsed: { from: shiftedFrom, to: shiftedTo, note: "مزاح يوم لورا — ده اللي بيخلي الرقمين يطابقوا" },
+          differenceSAR: money(statementSAR - portalShifted),
+          /* An unsettled bill is still filling up, so it CANNOT match a full
+             period of portal spend and a mismatch there means nothing.
+             `matches` is null for those rather than false, and they are left
+             out of the verdict entirely. */
+          comparable: b.status === 90,
+          matches: b.status === 90 ? Math.abs(statementSAR - portalShifted) <= 0.011 : null,
+          openBillNote: b.status === 90 ? null
+            : "الكشف دا لسه مفتوح وبيتجمّع — الفرق هنا صرف لسه مانزلش، مش اختلاف في الحساب.",
+          adSpendFromPortalSameDatesSAR: portalSameDates,
+          differenceWithoutShiftSAR: money(statementSAR - portalSameDates),
+          // Performance over the bill's own dates, not shifted — this is what
+          // the campaign did, as opposed to what was billed.
+          performanceOverBillDates: {
+            impressions: sumRange(b.periodFrom, b.periodTo, (d) => d.impressions),
+            clicks: sumRange(b.periodFrom, b.periodTo, (d) => d.clicks),
+            attributedOrders: sumRange(b.periodFrom, b.periodTo, (d) => d.attributedOrders),
+            attributedRevenueSAR: sumRange(b.periodFrom, b.periodTo, (d) => d.attributedRevenueSAR),
+          },
+          netPaidSAR: b.netPaidSAR,
+          adSpendShareOfNetPaid: ratio(statementSAR, b.netPaidSAR),
+        };
+      });
+
+      const statementTotal = money(periods.reduce((a, p) => a + n0(p.adSpendFromStatementSAR), 0));
+      const portalTotal = money(daily.reduce((a, d) => a + n0(d.spendSAR), 0));
+      const comparable = periods.filter((p) => p.comparable);
+      const matched = comparable.filter((p) => p.matches).length;
+      const openBills = periods.filter((p) => !p.comparable);
+      // Spend the portal has recorded that no bill has picked up yet: whatever
+      // the open bills have not accrued, plus anything past the last period.
+      const notYetBilled = money(
+        openBills.reduce((a, p) => a + Math.max(0, n0(p.adSpendFromPortalSAR) - n0(p.adSpendFromStatementSAR)), 0)
+        + (bills.length
+          ? daily.filter((d) => d.day > shiftDay(bills[bills.length - 1].periodTo, -1)).reduce((a, d) => a + n0(d.spendSAR), 0)
+          : 0)
+      );
+
+      return c.json({
+        ok: true,
+        window: { from, to },
+        source: {
+          statement: "/api/settlement/statement/v2 — category 20205 تكاليف الإعلانات",
+          portal: "/api/bff/ad/poi/v1/sspcpc/data/query/his (daily `debit`) + plan/query",
+          readOnly: true,
+        },
+        reconciliation: {
+          periodsTotal: periods.length,
+          periodsComparable: comparable.length,
+          periodsStillOpen: openBills.length,
+          periodsMatchingExactly: matched,
+          allSettledPeriodsMatch: comparable.length > 0 && matched === comparable.length,
+          statementTotalSAR: statementTotal,
+          portalTotalOverWholeSpanSAR: portalTotal,
+          spendNotYetBilledSAR: notYetBilled,
+          billingLagDays: 1,
+          rule: "بند 20205 لفترة [من..إلى] = مجموع debit اليومي من البوابة لـ [من−١ .. إلى−١]",
+          verdict: comparable.length === 0
+            ? "مفيش كشوف مقفولة في الفترة دي عشان نطابق عليها."
+            : (matched === comparable.length
+              ? `كيتا بتحسب الإعلانات صح: ${matched} من ${comparable.length} كشف مقفول مطابقين بالهللة بعد إزاحة اليوم الواحد. ` +
+                (openBills.length
+                  ? `فيه كمان ${openBills.length} كشف لسه مفتوح — الفرق فيه (${notYetBilled} ر.س.) صرف لسه مانزلش، مش فلوس ضايعة ولا محسوبة مرتين.`
+                  : "")
+              : `${matched} من ${comparable.length} كشف مقفول مطابق. اللي مش مطابق محتاج مراجعة — بص على differenceSAR.`),
+        },
+        /* The point of the route: ad spend is a real deduction from the bank
+           transfer, not a dashboard-only number. Proven independently on the
+           22-31/07 bill, where earnings − adSpend − retainedBankFee equals the
+           statement's own net-paid figure to the halala. */
+        costLine: {
+          note: "صرف الإعلانات بيتخصم من التحويل الأسبوعي فعلًا — لازم يتحسب كتكلفة تشغيل، مش كرقم في لوحة تحكم منفصلة.",
+          totalDeductedFromPayoutsSAR: statementTotal,
+        },
+        plan,
+        planCaveat: plan
+          ? "budgetUsedThisPeriodSAR هو الصرف جوه فترة الميزانية الحالية بس — مش الصرف الكلي. الصرف الكلي هو portalTotalOverWholeSpanSAR."
+          : null,
+        attributionCaveat: "attributedRevenueSAR دي قيمة الطلبات اللي كيتا بتنسبها للإعلان — قيمة إجمالية قبل العمولة والرسوم والعروض. مش ربح، ومش صافي عمر. الـROAS اللي البوابة بتعرضه محسوب عليها.",
+        periods,
+        daily,
+        portalError,
+      });
+    } catch (e) { return fail(c, e, "ad-spend"); }
+  });
+
+  console.log("[keeta-payouts] routes ready (/api/keeta-payouts/sync|reconcile|summary|order/:viewId|refunds|contract-audit|ad-spend)");
 }
 
 export default { register };
