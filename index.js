@@ -16,6 +16,7 @@ import * as finance from "./finance.js";
 import * as costing from "./costing.js";
 import * as notifications from "./notifications.js";
 import * as staffMeals from "./staff_meals.js";
+import * as chef from "./chef.js";
 import * as retarget from "./retarget.js";
 import * as keetaReports from "./keeta_reports.js";
 import * as keetaPayouts from "./keeta_payouts.js";
@@ -2822,6 +2823,7 @@ hungerstation.register(app, moduleCtx);
 finance.register(app, moduleCtx);
 costing.register(app, moduleCtx);
 staffMeals.register(app, moduleCtx);
+chef.register(app, moduleCtx);
 // register() hands back { generate } so the worker can raise alerts each cycle
 const notif = notifications.register(app, moduleCtx);
 retarget.register(app, moduleCtx);

@@ -4886,7 +4886,11 @@ export function register(app, ctx) {
       const e = effLine(model, wb, res, line, []);
       food += e.cost;
       conf = worst(conf, e.confidence);
-      if (e.row.costSource === "missing") unpriced.push(ingAr);
+      /* `cost === null` is the one reliable signal, and it catches the case a
+         `costSource` test misses: a BATCH with no price answers "batch", not
+         "missing", yet still contributes nothing. Reading costSource alone
+         would let an unpriced sub-recipe pass as a complete total. */
+      if (e.row.cost === null) unpriced.push(ingAr);
       rows.push(e.row);
     });
 

@@ -838,9 +838,18 @@ function repairLeakedParams(raw) {
   return raw;
 }
 
-/* ── Validation ───────────────────────────────────────────────────────────────*/
-function validateReview(raw, numberPool, defaultSubject) {
+/* ── Validation ───────────────────────────────────────────────────────────────
+   `strict` applies on the first attempt only. `honesty` is a required field in
+   the tool schema, and a response that arrives without it is a partial response
+   — seen live: one menu run came back with no honesty AND zero findings where
+   the same call had produced seven. Retrying costs one call and usually fixes
+   it. On the retry we accept whatever comes back, because losing a good review
+   to a missing disclosure line would be a worse outcome than showing it. */
+function validateReview(raw, numberPool, defaultSubject, strict = false) {
   repairLeakedParams(raw);
+  if (strict && !str(raw?.honesty)) {
+    return { ok: false, error: "missing honesty field (partial response)" };
+  }
   const rawFindings = Array.isArray(raw?.findings) ? raw.findings : [];
   const rawQuestions = Array.isArray(raw?.questions) ? raw.questions : [];
 
@@ -913,7 +922,7 @@ async function generate(provider, { system, user, tool, validate }) {
       : `${user}\n\nملاحظة: المحاولة السابقة رجعت إجابة مرفوضة (${lastError}). التزم حرفيًا بمخطط الأداة، وتأكد إن حقل evidence في كل ملاحظة فيه رقم حقيقي منقول بالظبط من حزمة الأدلة. لو مش لاقي رقم يسند ملاحظة، شيلها واسأل سؤال بدالها.`;
     try {
       const raw = await callTool(provider, { system, user: prompt, tool });
-      const v = validate(raw);
+      const v = validate(raw, attempt === 0);
       if (v.ok) return v.value;
       lastError = v.error;
     } catch (e) {
@@ -1048,7 +1057,7 @@ export function register(app, ctx) {
       system: CHEF_SYSTEM,
       user: buildUser(evidence),
       tool: CHEF_TOOL,
-      validate: (raw) => validateReview(raw, numberPool, defaultSubject),
+      validate: (raw, strict) => validateReview(raw, numberPool, defaultSubject, strict),
     });
 
     const id = crypto.randomUUID();
