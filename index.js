@@ -14,6 +14,8 @@ import * as groups from "./groups.js";
 import * as hungerstation from "./hungerstation.js";
 import * as finance from "./finance.js";
 import * as costing from "./costing.js";
+import * as notifications from "./notifications.js";
+import * as staffMeals from "./staff_meals.js";
 import * as retarget from "./retarget.js";
 import * as keetaReports from "./keeta_reports.js";
 import * as keetaPayouts from "./keeta_payouts.js";
@@ -1828,6 +1830,20 @@ async function runInsightsSync() {
       console.error("[push] tabsense customer push failed:", e.message);
     }
   }
+
+  // Alerts, last — everything above has just refreshed the data they read.
+  // Shallow only: the deep pass pulls a CSV report from the Ninja portal, which
+  // has no business running every five minutes. A failing source skips its own
+  // alerts rather than the whole run, and a run already in flight is reused.
+  if (notif?.generate) {
+    try {
+      const n = await notif.generate({ deep: false });
+      insightsState.lastNotifyAt = new Date().toISOString();
+      insightsState.lastNotifyCount = n?.active ?? n?.count ?? null;
+    } catch (e) {
+      console.error("[notifications] generate failed:", e.message);
+    }
+  }
 }
 
 // FeedUs keeps only ~25 rows in the POS order log, so history needs the sales
@@ -2805,6 +2821,9 @@ groups.register(app, moduleCtx);
 hungerstation.register(app, moduleCtx);
 finance.register(app, moduleCtx);
 costing.register(app, moduleCtx);
+staffMeals.register(app, moduleCtx);
+// register() hands back { generate } so the worker can raise alerts each cycle
+const notif = notifications.register(app, moduleCtx);
 retarget.register(app, moduleCtx);
 keetaReports.register(app, moduleCtx);
 keetaPayouts.register(app, moduleCtx);

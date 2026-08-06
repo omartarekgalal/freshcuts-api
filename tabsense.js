@@ -806,6 +806,58 @@ async function fetchOrderProducts(orderId) {
   return out;
 }
 
+// ─── The menu: every product the POS knows about ────────────────────────────
+// `/products` is a DataTables endpoint like /orders and /customers, and it is
+// the ONLY authoritative answer to "what is on the menu". It matters because
+// `ts_order_items.name` — the string every cost and every sale is joined on —
+// is this `name`, character for character. A hand-typed product name would
+// never match it, so the costing workbench picks from this list instead.
+//
+// Two fields that are easy to get wrong:
+//   • `price` is VAT-EXCLUSIVE, `gross_price` is VAT-INCLUSIVE. The dashboard
+//     shows the gross one as "Sales Price", which is what Omar quotes.
+//   • `id` is TabSense's own product id and is NOT the workbook's product_id.
+//     The two id spaces overlap numerically and mean different dishes; `sku`
+//     is the only safe key between them.
+//
+// Returns [{ id, sku, nameAr, nameEn, categoryAr, categoryEn, priceIncl,
+//            priceExcl, posCost, active, createdAt }]
+async function fetchProducts({ search = "", pageSize = 1000 } = {}) {
+  const cols = ["id", "name", "local_name", "cost", "gross_price",
+                "category.name", "sku", "created_at", "active"];
+  const qs = new URLSearchParams();
+  qs.set("draw", "1");
+  cols.forEach((c, i) => qs.set(`columns[${i}][data]`, c));
+  qs.set("order[0][column]", "1");
+  qs.set("order[0][dir]", "asc");
+  qs.set("start", "0");
+  qs.set("length", String(pageSize));
+  qs.set("search[value]", String(search || ""));
+
+  const res = await authGet(`/products?${qs.toString()}`, { json: true });
+  if (!res.ok) throw new Error(`fetchProducts: HTTP ${res.status}`);
+  const data = await res.json();
+  const rows = Array.isArray(data.data) ? data.data : [];
+  const num = (v) => { const n = Number(String(v ?? "").replace(/[^0-9.\-]/g, "")); return Number.isFinite(n) ? n : null; };
+  return rows.map((r) => ({
+    id: String(r.id),
+    sku: String(r.sku || "").trim(),
+    nameAr: stripTags(String(r.name ?? "")).trim(),
+    nameEn: stripTags(String(r.local_name ?? "")).trim(),
+    categoryAr: stripTags(String(r.category?.name ?? r["category.name"] ?? "")).trim(),
+    categoryEn: stripTags(String(r.category?.local_name ?? "")).trim(),
+    priceIncl: num(r.gross_price),
+    priceExcl: num(r.price),
+    // The POS carries a cost field of its own. It is almost always 0 and is
+    // never used as a cost here — it is reported so the screen can say the POS
+    // has no idea what the dish costs, which is the reason this module exists.
+    posCost: num(r.cost),
+    // The cell is a rendered toggle; "checked" is the only signal in it.
+    active: /checked/i.test(String(r.active ?? "")),
+    createdAt: r.updated_at || null,
+  })).filter((p) => p.nameAr);
+}
+
 // ─── Create a customer in the TabSense directory ────────────────────────────
 // The "add customer" form lives in a modal on /customers (there is no working
 // /customers/create page — it 500s), and posts first_name / last_name /
@@ -903,6 +955,7 @@ export {
   fetchCustomersList,
   fetchCustomerGroups,
   fetchOrderProducts,
+  fetchProducts,
   createCustomer,
   ping,
   BASE,

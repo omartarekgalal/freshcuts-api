@@ -90,6 +90,15 @@
 
 import crypto from "node:crypto";
 import { registerCostingAuth } from "./costing_auth.js";
+/* Read-only borrows. The delivery contracts live in ONE place — finance.js —
+   and the "what would this earn on Keeta?" calculator below imports them
+   rather than restating them. A second copy of an 18% would be wrong within a
+   month of the first contract renegotiation, and nobody would notice. */
+import { mergeRates, bandFor, subsidyFor } from "./finance.js";
+/* The POS's own menu. A costed product must be CHOSEN from here, never typed:
+   `ts_order_items.name` is this exact string and a hand-typed near-miss would
+   produce a cost that reaches zero orders. */
+import { fetchProducts as tsFetchProducts } from "./tabsense.js";
 
 const VAT_RATE = 0.15;
 const SALES_ONLY = `(o.order_type IS NULL OR (o.order_type NOT ILIKE '%void%' AND o.order_type NOT ILIKE '%refund%'))`;
@@ -563,6 +572,50 @@ export function register(app, ctx) {
       );
       CREATE INDEX IF NOT EXISTS cw_audit_at_idx     ON cw_audit(at DESC);
       CREATE INDEX IF NOT EXISTS cw_audit_entity_idx ON cw_audit(entity, entity_ref);
+    `);
+
+    /* ── 8. Creation: the POS menu cache, and deactivation ──────────────────
+       A product added to the workbench must be CHOSEN from the POS, never
+       typed — `ts_order_items.name` is the join key for every sale and every
+       cost, and a hand-typed near-miss produces a cost that reaches zero
+       orders. So the TabSense menu is mirrored here: the picker reads this
+       table, not the network, and a TabSense outage degrades the create flow
+       to "the list is a few hours old" instead of "you cannot add a product".
+
+       `last_seen_at` is what makes the cache honest — a row TabSense stops
+       returning is not deleted (it may be an outage), it simply stops being
+       refreshed, and the screen can say how old the list is. */
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS cw_pos_products (
+        pos_id       TEXT PRIMARY KEY,          -- TabSense's own product id
+        sku          TEXT NOT NULL DEFAULT '',
+        name_ar      TEXT NOT NULL,             -- EXACTLY ts_order_items.name
+        name_en      TEXT NOT NULL DEFAULT '',
+        category_ar  TEXT NOT NULL DEFAULT '',
+        category_en  TEXT NOT NULL DEFAULT '',
+        price_incl   NUMERIC,                   -- VAT-INCLUSIVE (POS gross_price)
+        price_excl   NUMERIC,                   -- VAT-exclusive
+        pos_cost     NUMERIC,                   -- the POS's own cost field; ~always 0
+        active       BOOL NOT NULL DEFAULT true,
+        fetched_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        last_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS cw_pos_products_name_idx ON cw_pos_products(name_ar);
+
+      -- Deactivation, never deletion. A hard DELETE orphans every cw_audit row
+      -- that names the thing, and orphaned audit is worse than no audit: it
+      -- reads as if the change never happened. These flags hide a row from the
+      -- pickers and the create flows; they deliberately do NOT change what any
+      -- existing recipe costs, because retiring a material today must not
+      -- silently rewrite last month's reported profit.
+      ALTER TABLE cost_raw_materials ADD COLUMN IF NOT EXISTS active BOOL NOT NULL DEFAULT true;
+      ALTER TABLE cost_batches       ADD COLUMN IF NOT EXISTS active BOOL NOT NULL DEFAULT true;
+      ALTER TABLE cost_menu_items    ADD COLUMN IF NOT EXISTS active BOOL NOT NULL DEFAULT true;
+      -- Who added it, and from where. '' for every row the workbook seeded.
+      ALTER TABLE cost_menu_items    ADD COLUMN IF NOT EXISTS pos_product_id TEXT NOT NULL DEFAULT '';
+      ALTER TABLE cost_menu_items    ADD COLUMN IF NOT EXISTS created_by     TEXT NOT NULL DEFAULT '';
+      ALTER TABLE cost_raw_materials ADD COLUMN IF NOT EXISTS created_by     TEXT NOT NULL DEFAULT '';
+      ALTER TABLE cost_batches       ADD COLUMN IF NOT EXISTS created_by     TEXT NOT NULL DEFAULT '';
     `);
 
     await seedIfEmpty();
@@ -4538,6 +4591,1027 @@ export function register(app, ctx) {
     const n = await rebuildPosMap();
     await audit(u, "recalc", "posmap", "rebuild", null, String(n), "");
     return c.json({ ok: true, linked: n });
+  });
+
+  /* ═══════════════════════════════════════════════════════════════════════════
+     WORKBENCH ROUTE 8 — CREATION
+
+     Everything above edits what already exists. This section adds: a raw
+     material, a production batch, a menu product, and — the reason the whole
+     section is worth building — a calculator that costs a dish BEFORE it
+     exists, so the answer to "should this go on the menu?" is a number rather
+     than a feeling.
+
+     ── THE ONE RULE THAT IS NOT NEGOTIABLE ──────────────────────────────────
+     A product is CHOSEN from TabSense, never typed. `finance.js` joins
+     `ts_order_items.name` to `item_costs.item_name` on string equality; the
+     POS is the only place that string is authored. A manager who types
+     "كريب شيش طاووق" when the POS says "كريب شيش طاووك" creates a cost that is
+     perfectly correct and reaches exactly zero orders — and nothing in the
+     system would ever say so. So the create-product flow presents the POS
+     menu and writes the chosen name verbatim into `cw_item_pos`.
+     ═══════════════════════════════════════════════════════════════════════ */
+
+  const TS_READY = !!(process.env.TABSENSE_EMAIL && process.env.TABSENSE_PASSWORD);
+  const POS_CACHE_MS = 6 * 60 * 60 * 1000;   // 6 h — a menu does not move hourly
+  let posFetchInFlight = null;
+
+  /** Mirror the POS menu into `cw_pos_products`. Never destructive: a product
+   *  TabSense stops returning is left in place (an outage looks identical to a
+   *  deletion) and simply stops being refreshed, which `ageMinutes` reveals. */
+  async function refreshPosProducts() {
+    if (!TS_READY) throw new Error("tabsense_not_configured");
+    if (posFetchInFlight) return posFetchInFlight;
+    posFetchInFlight = (async () => {
+      const rows = await tsFetchProducts({});
+      for (const p of rows) {
+        await pool.query(
+          `INSERT INTO cw_pos_products
+             (pos_id, sku, name_ar, name_en, category_ar, category_en,
+              price_incl, price_excl, pos_cost, active, fetched_at, last_seen_at)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,NOW(),NOW())
+           ON CONFLICT (pos_id) DO UPDATE SET
+             sku=EXCLUDED.sku, name_ar=EXCLUDED.name_ar, name_en=EXCLUDED.name_en,
+             category_ar=EXCLUDED.category_ar, category_en=EXCLUDED.category_en,
+             price_incl=EXCLUDED.price_incl, price_excl=EXCLUDED.price_excl,
+             pos_cost=EXCLUDED.pos_cost, active=EXCLUDED.active,
+             fetched_at=NOW(), last_seen_at=NOW()`,
+          [p.id, p.sku, p.nameAr, p.nameEn, p.categoryAr, p.categoryEn,
+           p.priceIncl, p.priceExcl, p.posCost, p.active !== false]);
+      }
+      return rows.length;
+    })().finally(() => { posFetchInFlight = null; });
+    return posFetchInFlight;
+  }
+
+  /** The POS menu as the picker sees it, each product flagged with whether the
+   *  workbench already costs it.
+   *
+   *  `source` is part of the answer, not decoration:
+   *    pos       — the live TabSense menu (cached)
+   *    pos_stale — the cache, because TabSense would not answer just now
+   *    sold      — the FALLBACK: distinct `ts_order_items.name`. Real POS
+   *                strings, but sales history rather than a menu, so it
+   *                contains retired dishes and misses anything never sold. */
+  async function posCatalog({ search = "", refresh = false } = {}) {
+    let fetchError = null;
+    const have = num((await pool.query("SELECT count(*)::int AS n FROM cw_pos_products")).rows[0].n);
+    const oldest = have
+      ? (await pool.query("SELECT min(fetched_at) AS t FROM cw_pos_products")).rows[0].t
+      : null;
+    const stale = !have || !oldest || (Date.now() - new Date(oldest).getTime() > POS_CACHE_MS);
+    if (TS_READY && (refresh || stale)) {
+      try { await refreshPosProducts(); }
+      catch (e) { fetchError = e.message; }
+    } else if (!TS_READY) {
+      fetchError = "tabsense_not_configured";
+    }
+
+    const rows = (await pool.query(
+      "SELECT * FROM cw_pos_products ORDER BY category_ar, name_ar")).rows;
+
+    // What the workbench already knows: the POS→product map is the real link
+    // (it is what /recalc writes item_costs against), SKU and exact name are
+    // the two ways a workbook row can already BE this product.
+    const model = await loadModel();
+    const linked = (await pool.query("SELECT pos_name, product_id FROM cw_item_pos")).rows;
+    const byPosName = new Map(linked.map((r) => [norm(r.pos_name), r.product_id]));
+    const bySku = new Map(model.menu.filter((m) => m.sku)
+      .map((m) => [String(m.sku).trim().toUpperCase(), m]));
+    const byAr = new Map(model.menu.map((m) => [norm(m.product_ar), m]));
+    const soldNames = new Set((await pool.query(
+      "SELECT DISTINCT name FROM ts_order_items WHERE name IS NOT NULL")).rows.map((r) => norm(r.name)));
+
+    const decorate = (p) => {
+      const pidLinked = byPosName.get(norm(p.name_ar));
+      const skuHit = p.sku ? bySku.get(String(p.sku).trim().toUpperCase()) : null;
+      const arHit = byAr.get(norm(p.name_ar));
+      const match = pidLinked !== undefined ? model.menuById.get(pidLinked) : (skuHit || arHit || null);
+      const productId = pidLinked !== undefined ? pidLinked : (match ? match.product_id : null);
+      const computed = productId !== null && model.menuById.has(productId)
+        ? { hasRecipe: (model.recipeLines.get(productId) || []).length > 0 } : null;
+      return {
+        posId: p.pos_id, sku: p.sku || "",
+        nameAr: p.name_ar, nameEn: p.name_en || "",
+        categoryAr: p.category_ar || "", categoryEn: p.category_en || "",
+        priceIncl: p.price_incl === null ? null : num(p.price_incl),
+        priceExcl: p.price_excl === null ? null : num(p.price_excl),
+        activeOnPos: p.active !== false,
+        /* Three different states the screen must not merge:
+             costed        — linked AND has a recipe behind it
+             linkedNoRecipe— a workbook row exists but is empty
+             new           — nothing in the workbench knows this dish        */
+        costed: !!(productId !== null && computed?.hasRecipe),
+        linkedProductId: productId,
+        linkedNameAr: match ? match.product_ar : null,
+        linkMatchedBy: pidLinked !== undefined ? "pos_map"
+          : skuHit ? "sku" : arHit ? "name" : null,
+        // Whether the POS has ever actually sold this string. A product that
+        // has never sold is not a mistake — it may be brand new — but a cost
+        // written against it will sit idle until it does.
+        everSold: soldNames.has(norm(p.name_ar)),
+      };
+    };
+
+    let list = rows.map(decorate);
+    let source = fetchError && stale ? "pos_stale" : "pos";
+
+    /* FALLBACK. Only when the menu endpoint gave us nothing at all — then the
+       distinct names on real order lines are the best remaining source of
+       genuine POS strings, and the response says so out loud rather than
+       pretending it is the menu. */
+    if (!list.length) {
+      const sold = (await pool.query(
+        `SELECT name, count(*)::int AS n, max(o.calendar_day) AS last_day
+           FROM ts_order_items i JOIN ts_orders o ON o.order_id = i.order_id
+          WHERE i.name IS NOT NULL GROUP BY 1 ORDER BY 2 DESC`)).rows;
+      list = sold.filter((r) => !isModifierLine(r.name)).map((r) => {
+        const pid = byPosName.get(norm(r.name));
+        const arHit = byAr.get(norm(r.name));
+        const productId = pid !== undefined ? pid : (arHit ? arHit.product_id : null);
+        return {
+          posId: "", sku: "", nameAr: r.name, nameEn: "",
+          categoryAr: "", categoryEn: "", priceIncl: null, priceExcl: null,
+          activeOnPos: true,
+          costed: !!(productId !== null && (model.recipeLines.get(productId) || []).length),
+          linkedProductId: productId,
+          linkedNameAr: productId !== null ? model.menuById.get(productId)?.product_ar ?? null : null,
+          linkMatchedBy: pid !== undefined ? "pos_map" : arHit ? "name" : null,
+          everSold: true, soldLines: r.n, lastSoldDay: isoDayOf(r.last_day),
+        };
+      });
+      source = "sold";
+    }
+
+    const s = norm(search);
+    if (s) {
+      const low = s.toLowerCase();
+      list = list.filter((p) => norm(p.nameAr).includes(s)
+        || String(p.nameEn).toLowerCase().includes(low)
+        || String(p.sku).toLowerCase().includes(low)
+        || norm(p.categoryAr).includes(s));
+    }
+    return {
+      list, source, fetchError,
+      fetchedAt: oldest || null,
+      ageMinutes: oldest ? Math.round((Date.now() - new Date(oldest).getTime()) / 60000) : null,
+    };
+  }
+
+  /* GET /api/costing/catalog/products — the picker behind "add a product". */
+  app.get("/api/costing/catalog/products", async (c) => {
+    const u = await requireCostingUser(c); if (isResponse(u)) return u;
+    const denied = await gate(c, u, "items"); if (denied) return denied;
+    try {
+      const r = await posCatalog({
+        search: c.req.query("search") || "",
+        refresh: c.req.query("refresh") === "1",
+      });
+      const SOURCE_AR = {
+        pos: "قائمة نقاط البيع مباشرة",
+        pos_stale: "نسخة محفوظة من قائمة نقاط البيع — تعذّر تحديثها الآن",
+        sold: "أسماء اتباعت فعلاً على الكاشير (مش قائمة المنيو)",
+      };
+      return c.json({
+        ok: true,
+        count: r.list.length,
+        products: r.list,
+        source: r.source,
+        sourceAr: SOURCE_AR[r.source] || r.source,
+        fetchedAt: r.fetchedAt, ageMinutes: r.ageMinutes,
+        fetchError: r.fetchError,
+        newCount: r.list.filter((p) => !p.costed).length,
+        costedCount: r.list.filter((p) => p.costed).length,
+        hint: r.source === "sold"
+          ? "دي أسماء من الطلبات الحقيقية مش من المنيو — فيها أصناف قديمة، وناقصها أي صنف لسه ما اتباعش."
+          : "الاسم بيتاخد من نقاط البيع بالحرف — ده اللي بيخلّي التكلفة توصل للطلبات.",
+      });
+    } catch (e) {
+      console.error("[costing] catalog/products failed:", e);
+      return c.json({ ok: false, error: "catalog_failed", detail: e.message }, 500);
+    }
+  });
+
+  /* GET /api/costing/catalog/ingredients — everything a recipe line may point
+     at, in one light payload: raw materials and batches with the price the
+     calculator will actually use. Deliberately NOT /materials + /batches: the
+     latter runs a 90-day sales sweep per call and the picker needs neither. */
+  app.get("/api/costing/catalog/ingredients", async (c) => {
+    const u = await requireCostingUser(c); if (isResponse(u)) return u;
+    try {
+      const asOf = dayArg(c.req.query("asOf"), todayISO());
+      const model = await loadModel();
+      const wb = await loadWorkbench(asOf);
+      const s = norm(c.req.query("search") || "");
+      const keep = (ar, en) => !s || norm(ar).includes(s)
+        || String(en || "").toLowerCase().includes(s.toLowerCase());
+
+      const materials = [...model.raw.values()]
+        .filter((r) => r.active !== false && keep(r.canonical_ar, r.name_en))
+        .map((r) => {
+          const e = effRaw(model, wb, norm(r.canonical_ar));
+          return {
+            kind: "Raw", id: r.canonical_ar, nameAr: r.canonical_ar, nameEn: r.name_en || "",
+            sarPerKg: e.perG === null ? null : round3(e.perG * 1000),
+            sarPerPiece: e.perPiece === null ? null : round3(e.perPiece),
+            // A piece-priced material must be entered in pieces, not grams —
+            // multiplying a per-piece price by 200 g is the classic 1000× error.
+            unitBasis: e.perG !== null ? "g" : e.perPiece !== null ? "piece" : null,
+            priced: e.perG !== null || e.perPiece !== null,
+            priceSource: e.priceSource, verified: e.verified,
+            purchaseUnit: e.purchaseUnit, supplier: e.supplier,
+          };
+        });
+
+      const batches = [...model.batch.values()]
+        .filter((b) => b.active !== false && keep(b.batch_ar, b.batch_en))
+        .map((b) => {
+          const eb = effBatch(model, wb, norm(b.batch_ar));
+          return {
+            kind: "Batch", id: b.batch_ar, nameAr: b.batch_ar, nameEn: b.batch_en || "",
+            sarPerKg: eb.sarPerKg, sarPerPiece: null, unitBasis: "g",
+            priced: eb.perG !== null, hasRecipe: !eb.plug,
+            priceSource: eb.plug ? "plug" : "batch", verified: false,
+            confidence: eb.confidence,
+          };
+        });
+
+      const cmp = (a, b) => String(a.nameAr).localeCompare(String(b.nameAr), "ar");
+      return c.json({
+        ok: true, asOf,
+        materials: materials.sort(cmp),
+        batches: batches.sort(cmp),
+        packaging: wb.packaging.filter((p) => p.active !== false).map((p) => ({
+          id: p.id, nameAr: p.name_ar, nameEn: p.name_en || "",
+          unitCost: p.unit_cost === null || p.unit_cost === undefined ? null : num(p.unit_cost),
+        })),
+        unpricedMaterials: materials.filter((m) => !m.priced).length,
+      });
+    } catch (e) {
+      console.error("[costing] catalog/ingredients failed:", e);
+      return c.json({ ok: false, error: "catalog_failed", detail: e.message }, 500);
+    }
+  });
+
+  /* ── THE CALCULATOR ───────────────────────────────────────────────────────
+     Cost a recipe that does not exist yet, at today's real purchase prices,
+     and write nothing.
+
+     It reuses `effLine` — the very function that costs the live menu — so a
+     dish estimated here and the same dish saved and recalculated cannot
+     disagree. Reimplementing the arithmetic "just for the preview" is how a
+     preview starts lying.
+
+     The honesty rule from `computeItem` carries over intact: an ingredient
+     with no price contributes NOTHING and is named, so `total` is a FLOOR and
+     `complete` is false. It is never quietly treated as free. */
+  function estimateRecipe(model, wb, body) {
+    const lines = Array.isArray(body.recipe) ? body.recipe : [];
+    const rows = []; const unpriced = [];
+    let food = 0, conf = lines.length ? "measured" : "missing";
+
+    lines.forEach((l, i) => {
+      const ingAr = norm(l?.ingredientAr ?? l?.ing_ar ?? l?.name ?? l?.id);
+      if (!ingAr) return;
+      const unit = String(l?.unit || "g");
+      const qty = num(l?.qty);
+      const qtyG = l?.qtyG !== undefined && l?.qtyG !== null ? num(l.qtyG) : toGrams(qty, unit);
+      const type = String(l?.type || l?.ing_type || "Raw");
+      const line = {
+        id: `est_${i}`, ing_type: type, ing_ar: ingAr,
+        ing_en: String(l?.ingredientEn || l?.ing_en || ""),
+        qty, unit, qty_g: qtyG === null ? 0 : qtyG, note: String(l?.note || ""),
+      };
+      const res = resolve(model, type, ingAr);
+      const e = effLine(model, wb, res, line, []);
+      food += e.cost;
+      conf = worst(conf, e.confidence);
+      if (e.row.costSource === "missing") unpriced.push(ingAr);
+      rows.push(e.row);
+    });
+
+    // Cooking loss, only if the manager says the grams are SERVED weight.
+    // Defaults to NULL exactly like cw_item_yield — Omar's recipes are written
+    // pre-cooking, and applying a blanket loss on top would double-count it.
+    const cookLoss = body.cookLossPct === undefined || body.cookLossPct === null
+      || body.cookLossPct === "" ? null : asPct(body.cookLossPct);
+    const foodAfter = cookLoss === null ? food : food / (1 - cookLoss);
+
+    // Packaging: [{ packagingId, qty }]. Same four states as itemPackagingFor.
+    const pkgIn = Array.isArray(body.packaging) ? body.packaging : [];
+    const pkgRows = []; const pkgUnpriced = []; let pkgCost = 0;
+    for (const p of pkgIn) {
+      const id = String(p?.packagingId || p?.id || "").trim();
+      const row = wb.packagingById.get(id);
+      if (!row) continue;
+      const q = num(p?.qty) || 1;
+      const unitCost = row.unit_cost === null || row.unit_cost === undefined ? null : num(row.unit_cost);
+      if (unitCost === null) pkgUnpriced.push(row.name_ar); else pkgCost += unitCost * q;
+      pkgRows.push({ packagingId: row.id, nameAr: row.name_ar, nameEn: row.name_en || "",
+                     qty: q, unitCost, cost: unitCost === null ? null : round3(unitCost * q) });
+    }
+    const pkgStatus = !pkgRows.length ? "no_rule"
+      : pkgUnpriced.length === pkgRows.length ? "unpriced"
+      : pkgUnpriced.length ? "partly_priced" : "priced";
+
+    const complete = lines.length > 0 && !unpriced.length
+      && (pkgStatus === "priced" || pkgStatus === "no_rule");
+
+    return {
+      lines: rows,
+      ingredientCost: lines.length ? round3(food) : null,
+      cookLossPct: cookLoss,
+      ingredientCostAfterYield: lines.length ? round3(foodAfter) : null,
+      packaging: pkgRows,
+      packagingCost: pkgStatus === "priced" ? round3(pkgCost) : null,
+      packagingCostKnown: round3(pkgCost),
+      packagingStatus: pkgStatus, packagingStatusAr: PACKAGING_STATUS_AR[pkgStatus],
+      packagingUnpriced: pkgUnpriced,
+      // The number on the screen. `totalIsFloor` is the whole honesty of it:
+      // true means "at least this much", not "this much".
+      total: lines.length ? round3(foodAfter + pkgCost) : null,
+      totalComplete: complete,
+      totalIsFloor: lines.length > 0 && !complete,
+      confidence: lines.length ? conf : "missing",
+      unpricedIngredients: unpriced,
+      warning: !lines.length ? "مافيش مكوّنات — ضيف سطر عشان يبقى في رقم"
+        : unpriced.length ? `في ${unpriced.length} مكوّن بدون سعر — الرقم ده أقل من الحقيقة، مش التكلفة النهائية`
+        : pkgUnpriced.length ? "في تغليف بدون سعر — التكلفة أعلى من الرقم ده"
+        : null,
+    };
+  }
+
+  /** What ONE unit of this dish leaves behind, in-house and on each delivery
+   *  app, at a proposed VAT-INCLUSIVE menu price.
+   *
+   *  Mirrors `orderEconomics` in finance.js line for line — same commission
+   *  base per app, same payment fee, same subsidy tiers, same band-by-day — on
+   *  a hypothetical single-line order. The rates themselves are imported, not
+   *  restated, so a contract change in the finance settings moves this screen
+   *  on the same deploy. */
+  function channelMath(priceIncl, cost, rates, day) {
+    const p = num(priceIncl);
+    if (!(p > 0)) return null;
+    const netEx = p / (1 + VAT_RATE);
+    const out = [];
+    for (const key of ["restaurant", "keeta", "hungerstation", "ninja"]) {
+      const cfg = rates[key];
+      if (!cfg) continue;
+      const band = bandFor(cfg, day);
+      const rate = num(band.delivery);
+      /* Keeta charges on the VAT-INCLUSIVE value; the other two on the
+         VAT-exclusive net. Getting this backwards is a 15% error on the single
+         biggest cost line there is — see rule 3 in finance.js. */
+      const base = cfg.commissionBase === "total_after_promo" ? p : netEx;
+      const commission = base * rate;
+      const minFee = num(cfg.minServiceFeeSar);
+      const minFeeTopUp = commission < minFee ? minFee - commission : 0;
+      const paymentFee = base * num(cfg.paymentFeePct);
+      const sub = subsidyFor(cfg, base);
+      const platformCost = commission + minFeeTopUp + paymentFee + sub.amount;
+      const contribution = cost === null ? null : netEx - cost - platformCost;
+      out.push({
+        channel: key,
+        label: cfg.label || key,
+        commissionRate: round3(rate),
+        commissionBase: round2(base),
+        commissionBaseAr: cfg.commissionBase === "total_after_promo"
+          ? "العمولة على السعر شامل الضريبة" : "العمولة على السعر بدون ضريبة",
+        commission: round2(commission),
+        minFeeTopUp: round2(minFeeTopUp),
+        paymentFee: round2(paymentFee),
+        deliverySubsidy: round2(sub.amount),
+        subsidyTier: sub.tier,
+        subsidyConfirmed: cfg.subsidyConfirmed !== false,
+        platformCost: round2(platformCost),
+        revenueEx: round2(netEx),
+        // What the plate leaves behind before rent, salaries and ads. Those are
+        // period costs and charging them per dish would be inventing a number.
+        contribution: contribution === null ? null : round2(contribution),
+        contributionPct: contribution === null || netEx <= 0 ? null : round3(contribution / netEx),
+        foodCostPct: cost === null || netEx <= 0 ? null : round3(cost / netEx),
+        losesMoney: contribution !== null && contribution < 0,
+        outOfContract: !!band.outOfContract,
+        bandWhy: band.why,
+        note: band.note || "",
+        caveats: Array.isArray(cfg.caveats) ? cfg.caveats : [],
+      });
+    }
+    return out;
+  }
+
+  /* POST /api/costing/estimate — creates NOTHING. The scratchpad behind
+     "should this dish exist?", and the same call powers the live preview while
+     a real product is being built. */
+  app.post("/api/costing/estimate", async (c) => {
+    const u = await requireCostingUser(c); if (isResponse(u)) return u;
+    const denied = await gate(c, u, "items"); if (denied) return denied;
+    try {
+      const b = await c.req.json().catch(() => ({}));
+      const asOf = dayArg(b.asOf, todayISO());
+      const model = await loadModel();
+      const wb = await loadWorkbench(asOf);
+      const est = estimateRecipe(model, wb, b);
+
+      const priceIncl = b.priceIncl === undefined || b.priceIncl === null || b.priceIncl === ""
+        ? null : num(b.priceIncl);
+      let rates = null;
+      try { rates = mergeRates((await ctx.getSettingsData?.())?.financeRates); }
+      catch { rates = mergeRates(null); }
+      const channels = priceIncl === null ? null
+        : channelMath(priceIncl, est.total, rates, asOf);
+
+      const netEx = priceIncl === null ? null : priceIncl / (1 + VAT_RATE);
+      /* The price the dish would need to hit a target food-cost percentage.
+         Offered because the manager's real question is usually the inverse of
+         the one he asked: not "what is the margin at 30 riyals" but "what do I
+         have to charge". Defaults to 30% — a number to argue with, and the
+         response says it is a target, not a recommendation from the data. */
+      const targetPct = b.targetFoodCostPct === undefined || b.targetFoodCostPct === null
+        || b.targetFoodCostPct === "" ? 0.30 : asPct(b.targetFoodCostPct);
+      const suggestedIncl = est.total === null || !targetPct || targetPct <= 0
+        ? null : round2((est.total / targetPct) * (1 + VAT_RATE));
+
+      return c.json({
+        ok: true,
+        asOf,
+        cost: {
+          ingredientCost: est.ingredientCost,
+          cookLossPct: est.cookLossPct,
+          ingredientCostAfterYield: est.ingredientCostAfterYield,
+          packagingCost: est.packagingCost,
+          packagingCostKnown: est.packagingCostKnown,
+          packagingStatus: est.packagingStatus,
+          packagingStatusAr: est.packagingStatusAr,
+          packagingUnpriced: est.packagingUnpriced,
+          total: est.total,
+          totalComplete: est.totalComplete,
+          totalIsFloor: est.totalIsFloor,
+          confidence: est.confidence,
+          unpricedIngredients: est.unpricedIngredients,
+          warning: est.warning,
+        },
+        lines: est.lines,
+        packaging: est.packaging,
+        pricing: priceIncl === null ? null : {
+          priceIncl: round2(priceIncl),
+          priceExVat: round2(netEx),
+          vat: round2(priceIncl - netEx),
+          foodCostPct: est.total === null ? null : round3(est.total / netEx),
+          contributionInHouse: est.total === null ? null : round2(netEx - est.total),
+          // A floor cost makes an OPTIMISTIC margin. Say so next to it.
+          marginIsOptimistic: est.totalIsFloor,
+        },
+        target: { foodCostPct: targetPct, suggestedPriceIncl: suggestedIncl },
+        channels,
+        vatRate: VAT_RATE,
+        writtenToItemCosts: false,
+        hint: "ده حساب على الورق — مافيش حاجة اتحفظت.",
+      });
+    } catch (e) {
+      console.error("[costing] estimate failed:", e);
+      return c.json({ ok: false, error: "estimate_failed", detail: e.message }, 500);
+    }
+  });
+
+  /* ── POST /api/costing/materials — a new raw material ─────────────────────
+     The canonical Arabic name IS the primary key and IS what every recipe line
+     resolves against, so a duplicate is not a harmless extra row: it splits one
+     ingredient's price history in two and quietly halves the evidence behind
+     every dish that uses it. A name that already exists — directly, or through
+     an alias the kitchen already writes — is REFUSED with the existing row
+     named, so the manager edits that one instead. */
+  app.post("/api/costing/materials", async (c) => {
+    const u = await requireCostingUser(c); if (isResponse(u)) return u;
+    const denied = await gate(c, u, "materials"); if (denied) return denied;
+    try {
+      const b = await c.req.json().catch(() => ({}));
+      const nameAr = norm(b.nameAr ?? b.name_ar ?? b.name);
+      if (!nameAr)
+        return c.json({ ok: false, error: "name_required",
+                        message: "اكتب اسم المادة بالعربي — الاسم ده هو اللي الوصفات بتنده بيه" }, 400);
+
+      const model0 = await loadModel();
+      if (model0.raw.has(nameAr))
+        return c.json({ ok: false, error: "duplicate",
+          message: `«${nameAr}» موجودة عندك خلاص — عدّل عليها بدل ما تعمل تانية`,
+          existingId: nameAr }, 409);
+      const viaAlias = model0.alias.get(nameAr);
+      if (viaAlias && model0.raw.has(viaAlias))
+        return c.json({ ok: false, error: "duplicate_alias",
+          message: `«${nameAr}» اسم تاني لـ «${viaAlias}» الموجودة عندك — عدّل عليها`,
+          existingId: viaAlias }, 409);
+      if (model0.batch.has(nameAr))
+        return c.json({ ok: false, error: "duplicate_batch",
+          message: `«${nameAr}» اسم تشغيلة موجودة — اختار اسم تاني للمادة الخام`,
+          existingId: nameAr }, 409);
+
+      const purchaseUnit = String(b.purchaseUnit ?? b.purchase_unit ?? "").trim();
+      /* Two weights, never a percentage — the same input of record as
+         PUT /materials/:id. See THE TRIM TEST above. */
+      const numOrNull = (v) => (v === null || v === undefined || v === ""
+        ? null : Number.isFinite(Number(v)) && Number(v) > 0 ? Number(v) : null);
+      const bought = numOrNull(b.trimBoughtG ?? b.boughtG);
+      const usable = numOrNull(b.trimUsableG ?? b.usableG);
+      if (bought !== null && usable !== null && usable > bought)
+        return c.json({ ok: false, error: "trim_impossible",
+          message: "الوزن بعد التنظيف أكبر من وزن الشراء — راجع الرقمين" }, 400);
+      const trim = bought !== null && usable !== null && bought > 0
+        ? asPct(1 - usable / bought) : null;
+      const trimSource = trim === null ? "" : "weighed";
+
+      /* Price. NULL is a legitimate answer — "I know we buy this, I do not know
+         today's price" is a real state and far better than a typed guess. The
+         material is created either way and the queue will ask for the price. */
+      const perG = b.costPerG !== undefined && b.costPerG !== null && b.costPerG !== ""
+          ? num(b.costPerG)
+        : b.sarPerKg !== undefined && b.sarPerKg !== null && b.sarPerKg !== ""
+          ? num(b.sarPerKg) / 1000 : null;
+      const perPiece = b.costPerPiece !== undefined && b.costPerPiece !== null && b.costPerPiece !== ""
+        ? num(b.costPerPiece) : null;
+      if (perG !== null && perPiece !== null)
+        return c.json({ ok: false, error: "two_bases",
+          message: "إمّا سعر بالكيلو أو سعر بالحبة — مش الاتنين. المادة بتتحسب بواحد بس" }, 400);
+      const unitIsKilo = /^(kg|كجم|كيلو|l|lt|لتر|ليتر)$/i.test(purchaseUnit);
+      const perUnitGiven = b.pricePerUnit === undefined || b.pricePerUnit === null
+        || b.pricePerUnit === "" ? null : num(b.pricePerUnit);
+      const pricePerUnit = perUnitGiven !== null ? perUnitGiven
+        : unitIsKilo && perG !== null ? round3(perG * 1000)
+        : perPiece !== null ? round3(perPiece) : null;
+      const src = ["invoice", "quote", "estimate", "workbook"].includes(String(b.priceSource))
+        ? String(b.priceSource) : "invoice";
+      const note = String(b.note || "");
+
+      await pool.query(
+        `INSERT INTO cost_raw_materials
+           (canonical_ar, name_en, purchase_unit, cost_per_unit, cost_per_g, cost_per_piece,
+            status, note, supplier, trim_loss_pct, trim_bought_g, trim_usable_g,
+            trim_source, trim_measured_at, yield_note, created_by, updated_by, updated_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,
+                 CASE WHEN $13 = 'weighed' THEN NOW() ELSE NULL END,$14,$15,$15,NOW())`,
+        [nameAr, String(b.nameEn ?? b.name_en ?? ""), purchaseUnit,
+         pricePerUnit, perG, perPiece,
+         // A material with no price is not 'OK'. Saying REVIEW is what puts it
+         // in front of somebody instead of letting it read as costed.
+         perG === null && perPiece === null ? "REVIEW" : "OK",
+         note, String(b.supplier || ""), trim, bought, usable, trimSource,
+         String(b.yieldNote || ""), String(u.id || "")]);
+
+      if (perG !== null || perPiece !== null) {
+        const effectiveFrom = dayArg(b.effectiveFrom, todayISO());
+        await pool.query(
+          `INSERT INTO cw_material_prices
+             (id, canonical_ar, supplier, purchase_unit, pack_qty, pack_unit, price,
+              cost_per_g, cost_per_piece, effective_from, source, note, created_by)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::date,$11,$12,$13)
+           ON CONFLICT (canonical_ar, effective_from) DO NOTHING`,
+          [idFor("mp", nameAr, effectiveFrom), nameAr, String(b.supplier || ""),
+           purchaseUnit, b.packQty === undefined || b.packQty === "" ? null : num(b.packQty),
+           String(b.packUnit || "g"), pricePerUnit, perG, perPiece,
+           effectiveFrom, src, String(b.priceNote || note), String(u.id || "")]);
+      }
+
+      await audit(u, "material", nameAr, "create", null, nameAr,
+        `${purchaseUnit || "بدون وحدة"}${perG !== null ? ` · ${round3(perG * 1000)} ر.س/كجم`
+          : perPiece !== null ? ` · ${round3(perPiece)} ر.س/حبة` : " · بدون سعر"}`
+        + `${trimSource === "weighed" ? ` · تنضيف ${bought}→${usable} جم` : ""}`
+        + `${note ? " · " + note : ""}`);
+
+      cache = { at: 0, model: null };
+      const model = await loadModel();
+      const wb = await loadWorkbench(todayISO());
+      const e = effRaw(model, wb, nameAr);
+      return c.json({
+        ok: true, created: true,
+        material: {
+          id: nameAr, nameAr, nameEn: String(b.nameEn ?? ""),
+          supplier: e.supplier, purchaseUnit: e.purchaseUnit, pricePerUnit: e.pricePerUnit,
+          purchaseSarPerKg: e.purchasePerG === null ? null : round3(e.purchasePerG * 1000),
+          effectiveSarPerKg: e.perG === null ? null : round3(e.perG * 1000),
+          effectiveSarPerPiece: e.perPiece === null ? null : round3(e.perPiece),
+          trimLossPct: e.trimLossPct, trimBoughtG: e.trimBoughtG, trimUsableG: e.trimUsableG,
+          trimSource: e.trimSource, trimWeighed: e.trimWeighed,
+          priceSource: e.priceSource, verified: e.verified,
+        },
+        yieldMath: trimMathOf(e),
+        priced: e.perG !== null || e.perPiece !== null,
+        hint: e.perG === null && e.perPiece === null
+          ? "اتضافت من غير سعر — هتفضل في قايمة المهام لحد ما تدخّل سعر شراء."
+          : "اتضافت. أي وصفة تستعملها دلوقتي هتحسب بالسعر ده.",
+      });
+    } catch (e) {
+      console.error("[costing] material create failed:", e);
+      return c.json({ ok: false, error: "create_failed", detail: e.message }, 500);
+    }
+  });
+
+  /* ── POST /api/costing/batches — a new production batch ───────────────────
+     `cooked` is the field that decides whether a missing yield is a finding or
+     a fact, and it is asked HERE rather than left to the code default, because
+     the person entering the batch is the only one who knows. FALSE (the
+     kitchen's normal case — a marinade portioned raw) makes output = input the
+     correct answer and stops the queue from nagging about a yield that does
+     not exist. See the long note on `effBatch`. */
+  app.post("/api/costing/batches", async (c) => {
+    const u = await requireCostingUser(c); if (isResponse(u)) return u;
+    const denied = await gate(c, u, "batches"); if (denied) return denied;
+    try {
+      const b = await c.req.json().catch(() => ({}));
+      const nameAr = norm(b.nameAr ?? b.batchAr ?? b.name);
+      if (!nameAr)
+        return c.json({ ok: false, error: "name_required",
+                        message: "اكتب اسم التشغيلة بالعربي" }, 400);
+
+      const model0 = await loadModel();
+      if (model0.batch.has(nameAr))
+        return c.json({ ok: false, error: "duplicate",
+          message: `«${nameAr}» تشغيلة موجودة خلاص — عدّل عليها`, existingId: nameAr }, 409);
+      if (model0.raw.has(nameAr))
+        return c.json({ ok: false, error: "duplicate_material",
+          message: `«${nameAr}» اسم مادة خام موجودة — لو دي تشغيلة سمّيها باسم مختلف، `
+            + `وإلا الوصفات هتلخبط بين الاتنين`, existingId: nameAr }, 409);
+
+      const lines = Array.isArray(b.lines) ? b.lines : [];
+      if (!lines.length)
+        return c.json({ ok: false, error: "no_lines",
+          message: "التشغيلة من غير مكوّنات تكلفتها رقم مؤقت مش أكتر — دخّل المكوّنات" }, 400);
+
+      const cookedRaw = b.cookedBeforePortioning ?? b.cooked;
+      const cooked = cookedRaw === undefined || cookedRaw === null || cookedRaw === ""
+        ? null : !!cookedRaw;
+      const outputG = b.outputG === undefined || b.outputG === null || b.outputG === ""
+        ? null : num(b.outputG);
+      const yieldPct = b.yieldPct === undefined || b.yieldPct === null || b.yieldPct === ""
+        ? null : asYield(b.yieldPct);
+
+      await pool.query(
+        `INSERT INTO cost_batches
+           (batch_ar, batch_en, output_g, total_cost, cost_per_g, note,
+            yield_pct, yield_note, output_measured, cooked_before_portioning,
+            created_by, updated_by, updated_at)
+         VALUES ($1,$2,$3,NULL,NULL,$4,$5,$6,$7,$8,$9,$9,NOW())`,
+        [nameAr, String(b.nameEn ?? b.batchEn ?? ""), outputG, String(b.batchNote || ""),
+         yieldPct, String(b.yieldNote || ""), b.outputMeasured === true, cooked,
+         String(u.id || "")]);
+
+      let i = 0;
+      for (const l of lines) {
+        const ingAr = norm(l?.ingredientAr ?? l?.ing_ar ?? l?.name ?? l?.id);
+        if (!ingAr) continue;
+        const unit = String(l?.unit || "g");
+        const qty = num(l?.qty);
+        const qtyG = l?.qtyG !== undefined && l?.qtyG !== null ? num(l.qtyG) : toGrams(qty, unit);
+        await pool.query(
+          `INSERT INTO cost_batch_lines (id, batch_ar, ing_type, ing_ar, ing_en, qty, unit, qty_g, line_cost, note)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,NULL,$9)`,
+          [idFor("bl", nameAr, String(i), ingAr), nameAr,
+           String(l?.type || l?.ing_type || "Raw"), ingAr,
+           String(l?.ingredientEn || l?.ing_en || ""), qty, unit,
+           qtyG === null ? 0 : qtyG, String(l?.note || "")]);
+        i += 1;
+      }
+
+      await audit(u, "batch", nameAr, "create", null, nameAr,
+        `${i} مكوّن${outputG !== null ? ` · ناتج ${outputG} جم` : ""}`
+        + `${cooked === null ? "" : cooked ? " · بتتطبخ قبل التقسيم" : " · بتتقسّم نيّة"}`
+        + `${b.note ? " · " + String(b.note) : ""}`);
+
+      cache = { at: 0, model: null };
+      const model = await loadModel();
+      const wb = await loadWorkbench(todayISO());
+      const eb = effBatch(model, wb, nameAr);
+      // Keep the denormalised columns in step, exactly as PUT /batches/:id does.
+      await pool.query(
+        `UPDATE cost_batches SET total_cost=$2, cost_per_g=$3, updated_at=NOW() WHERE batch_ar=$1`,
+        [nameAr, eb.plug ? null : eb.totalCost, eb.perG]);
+      cache = { at: 0, model: null };
+
+      return c.json({
+        ok: true, created: true,
+        batch: {
+          id: nameAr, nameAr, nameEn: String(b.nameEn ?? ""),
+          lineCount: i, inputG: eb.inputG, outputG: eb.outputG,
+          yieldPct: eb.yieldPct, cookedBeforePortioning: eb.cookedBeforePortioning,
+          outputCapped: eb.outputCapped, capGainG: eb.capGainG,
+          sarPerKg: eb.sarPerKg, sarPerKgBeforeYield: eb.sarPerKgBeforeYield,
+          totalCost: eb.totalCost, confidence: eb.confidence, hasRecipe: !eb.plug,
+        },
+        recipe: eb.lines,
+        hint: "اتضافت. تقدر تستعملها كمكوّن في أي صنف دلوقتي — واضغط «إعادة الاحتساب» عشان الأثر يوصل للأرباح.",
+      });
+    } catch (e) {
+      console.error("[costing] batch create failed:", e);
+      return c.json({ ok: false, error: "create_failed", detail: e.message }, 500);
+    }
+  });
+
+  /* ── POST /api/costing/items — a new costed product ───────────────────────
+     Body: { posId | posNameAr, recipe:[…], packaging:[…], priceIncl?, … }
+
+     The product MUST come from the POS catalogue. `posNameAr` is accepted as
+     well as `posId` only because the sold-names fallback has no ids; either
+     way the name is looked up in `cw_pos_products` (or, failing that, in the
+     real order lines) and REJECTED if it is not a string the POS has authored.
+     Free text is refused on purpose — see the header of this section.
+
+     Two ids are in play and must not be confused:
+       pos_product_id  TabSense's own id for the dish
+       product_id      the workbench's key, ours, allocated here.
+     They overlap numerically and mean different dishes (TabSense 6 and
+     workbook 8 are both SKU CRE-008), so new rows are allocated from 9001 up:
+     high enough that a future re-import of the original workbook — whose ids
+     stop at 97 — can never land on one. */
+  app.post("/api/costing/items", async (c) => {
+    const u = await requireCostingUser(c); if (isResponse(u)) return u;
+    const denied = await gate(c, u, "items"); if (denied) return denied;
+    try {
+      const b = await c.req.json().catch(() => ({}));
+      const posId = String(b.posId ?? b.pos_id ?? "").trim();
+      const askedName = norm(b.posNameAr ?? b.nameAr ?? b.name);
+
+      // ── the product must exist on the POS ──
+      let pos = null;
+      if (posId) {
+        pos = (await pool.query("SELECT * FROM cw_pos_products WHERE pos_id = $1", [posId])).rows[0] || null;
+      }
+      if (!pos && askedName) {
+        pos = (await pool.query(
+          "SELECT * FROM cw_pos_products WHERE name_ar = $1 LIMIT 1", [askedName])).rows[0] || null;
+      }
+      if (!pos && askedName) {
+        // Fallback path: the catalogue came from sold order lines, so the only
+        // proof the POS authored this string is that it appears on a real
+        // order. That is proof enough — and it is still not free text.
+        const sold = (await pool.query(
+          "SELECT name FROM ts_order_items WHERE name = $1 LIMIT 1", [askedName])).rows[0];
+        if (sold) pos = { pos_id: "", sku: "", name_ar: sold.name, name_en: "",
+                          category_ar: "", category_en: "", price_incl: null };
+      }
+      if (!pos)
+        return c.json({ ok: false, error: "not_on_pos",
+          message: "الصنف ده مش موجود في نقاط البيع. اختاره من القايمة — الاسم لازم يطابق "
+            + "اللي الكاشير بيطبعه بالحرف، وإلا التكلفة مش هتلحق أي طلب.",
+          hint: "لو الصنف جديد فعلاً، أضفه في نقاط البيع الأول وبعدين حدّث القايمة هنا." }, 400);
+
+      const nameAr = norm(pos.name_ar);
+
+      // ── already costed? ──
+      const model0 = await loadModel();
+      const existingPid = (await pool.query(
+        "SELECT product_id FROM cw_item_pos WHERE pos_name = $1", [nameAr])).rows[0]?.product_id;
+      if (existingPid !== undefined && model0.menuById.has(existingPid))
+        return c.json({ ok: false, error: "already_costed",
+          message: `«${nameAr}» متربط خلاص بصنف في الورشة — عدّل عليه بدل ما تعمل نسخة تانية`,
+          productId: existingPid }, 409);
+      const skuHit = pos.sku
+        ? model0.menu.find((m) => String(m.sku).trim().toUpperCase() === String(pos.sku).trim().toUpperCase())
+        : null;
+      const arHit = model0.menu.find((m) => norm(m.product_ar) === nameAr);
+      const twin = skuHit || arHit || null;
+      if (twin && b.linkToExisting !== true)
+        return c.json({ ok: false, error: "existing_workbook_item",
+          message: `في صنف في الورشة اسمه «${twin.product_ar}»`
+            + `${skuHit ? ` بنفس الكود ${twin.sku}` : ""} — على الأغلب ده نفس الطبق. `
+            + `اربطه بيه بدل ما تعمل واحد جديد.`,
+          productId: twin.product_id, matchedBy: skuHit ? "sku" : "name",
+          // The escape hatch: saying "no, these are different dishes" is a
+          // decision a human is allowed to make — it just may not be silent.
+          resolveWith: { linkToExisting: true } }, 409);
+
+      /* linkToExisting: adopt the workbook row rather than duplicating it. The
+         POS name is mapped onto it and the recipe (if one was sent) replaces
+         whatever was there — which is exactly what PUT /items/:id does. */
+      let pid;
+      let adopted = false;
+      if (twin && b.linkToExisting === true) {
+        pid = twin.product_id;
+        adopted = true;
+      } else {
+        pid = num((await pool.query(
+          `SELECT GREATEST(COALESCE(max(product_id),0) + 1, 9001)::int AS id FROM cost_menu_items`
+        )).rows[0].id);
+        const priceIncl = b.priceIncl === undefined || b.priceIncl === null || b.priceIncl === ""
+          ? (pos.price_incl === null || pos.price_incl === undefined ? null : num(pos.price_incl))
+          : num(b.priceIncl);
+        await pool.query(
+          `INSERT INTO cost_menu_items
+             (product_id, sku, product_ar, product_en, category_ar, category_en,
+              total_cost, price_suggested, price_restaurant, price_platform,
+              pos_product_id, created_by, updated_at)
+           VALUES ($1,$2,$3,$4,$5,$6,NULL,NULL,$7,$8,$9,$10,NOW())`,
+          [pid, String(pos.sku || ""), nameAr, String(pos.name_en || ""),
+           String(pos.category_ar || ""), String(pos.category_en || ""),
+           priceIncl,
+           // The platform (delivery-app) price is a separate commercial
+           // decision. NULL until somebody makes it — a copy of the restaurant
+           // price would read as "we checked, they are the same".
+           b.pricePlatformIncl === undefined || b.pricePlatformIncl === null || b.pricePlatformIncl === ""
+             ? null : num(b.pricePlatformIncl),
+           String(pos.pos_id || ""), String(u.id || "")]);
+      }
+
+      /* The link that makes the whole thing worth doing: `pos_name` is the
+         exact `ts_order_items.name`, and /recalc writes `item_costs` against
+         it. Without this row the cost exists and reaches nothing.
+         source='manual' so rebuildPosMap() never overwrites it. */
+      await pool.query(
+        `INSERT INTO cw_item_pos (pos_name, product_id, source) VALUES ($1,$2,'manual')
+         ON CONFLICT (pos_name) DO UPDATE SET product_id = EXCLUDED.product_id, source = 'manual'`,
+        [pos.name_ar, pid]);
+
+      // ── recipe ──
+      const recipe = Array.isArray(b.recipe) ? b.recipe : [];
+      if (recipe.length) {
+        await pool.query("DELETE FROM cost_recipe_lines WHERE product_id = $1", [pid]);
+        let i = 0;
+        for (const l of recipe) {
+          const ingAr = norm(l?.ingredientAr ?? l?.ing_ar ?? l?.name ?? l?.id);
+          if (!ingAr) continue;
+          const unit = String(l?.unit || "g");
+          const qty = num(l?.qty);
+          const qtyG = l?.qtyG !== undefined && l?.qtyG !== null ? num(l.qtyG) : toGrams(qty, unit);
+          await pool.query(
+            `INSERT INTO cost_recipe_lines (id, product_id, ing_type, ing_ar, ing_en, qty, unit, qty_g, line_cost, note)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,NULL,$9)`,
+            [idFor("rl", String(pid), String(i), ingAr), pid,
+             String(l?.type || l?.ing_type || "Raw"), ingAr,
+             String(l?.ingredientEn || l?.ing_en || ""), qty, unit,
+             qtyG === null ? 0 : qtyG, String(l?.note || "")]);
+          i += 1;
+        }
+      }
+
+      // ── packaging: rules scoped to THIS product, same shape as PUT /items ──
+      const pkg = Array.isArray(b.packaging) ? b.packaging : [];
+      if (pkg.length) {
+        await pool.query(
+          `DELETE FROM cw_packaging_rules
+            WHERE scope='item' AND match_kind='product' AND match_value=$1`, [String(pid)]);
+        for (const p of pkg) {
+          const pkgId = String(p?.packagingId || p?.id || "").trim();
+          if (!pkgId) continue;
+          await pool.query(
+            `INSERT INTO cw_packaging_rules
+               (id, scope, match_kind, match_value, packaging_id, qty, reviewed, note, updated_by, updated_at)
+             VALUES ($1,'item','product',$2,$3,$4,true,$5,$6,NOW())
+             ON CONFLICT (id) DO UPDATE SET qty=EXCLUDED.qty, reviewed=true,
+               note=EXCLUDED.note, updated_by=EXCLUDED.updated_by, updated_at=NOW()`,
+            [idFor("pr", "item", "product", String(pid), pkgId), String(pid), pkgId,
+             num(p?.qty) || 1, String(p?.note || ""), String(u.id || "")]);
+        }
+      }
+
+      /* A brand-new item starts `unreviewed`, never `confirmed`. Confirmed is
+         a promise that a human checked it, and creating it is not checking it. */
+      await pool.query(
+        `INSERT INTO cw_item_review (product_id, status, note, changed_by, changed_by_name, changed_at)
+         VALUES ($1,'unreviewed',$2,$3,$4,NOW())
+         ON CONFLICT (product_id) DO NOTHING`,
+        [pid, String(b.note || ""), String(u.id || ""),
+         String(u.display_name || u.username || "")]);
+
+      await audit(u, "item", String(pid), adopted ? "link" : "create",
+        null, nameAr,
+        `${adopted ? "ربط" : "إنشاء"} من نقاط البيع${pos.pos_id ? ` (POS #${pos.pos_id})` : ""}`
+        + `${pos.sku ? ` · ${pos.sku}` : ""} · ${recipe.length} مكوّن`
+        + `${b.note ? " · " + String(b.note) : ""}`);
+      await audit(u, "item", String(pid), "posName", null, pos.name_ar, "ربط اسم الكاشير بالصنف");
+
+      cache = { at: 0, model: null };
+      const model = await loadModel();
+      const wb = await loadWorkbench(todayISO());
+      const after = computeItem(model, wb, pid);
+      const m = model.menuById.get(pid);
+      let rates = null;
+      try { rates = mergeRates((await ctx.getSettingsData?.())?.financeRates); }
+      catch { rates = mergeRates(null); }
+      const priceIncl = m && m.price_restaurant !== null ? num(m.price_restaurant) : null;
+
+      return c.json({
+        ok: true, created: !adopted, linked: adopted,
+        productId: pid,
+        item: {
+          productId: pid, sku: m?.sku || "", nameAr: m?.product_ar || nameAr,
+          nameEn: m?.product_en || "", categoryAr: m?.category_ar || "",
+          posNames: after.posNames, posProductId: String(pos.pos_id || ""),
+          priceRestaurantIncl: priceIncl,
+        },
+        breakdown: {
+          foodCost: after.foodCost,
+          packagingCost: after.packagingCost,
+          packagingStatus: after.packagingStatus,
+          packagingStatusAr: after.packagingStatusAr,
+          packagingUnpriced: after.packagingUnpriced,
+          total: after.cost, totalComplete: after.costComplete,
+          confidence: after.confidence,
+          costSource: after.costSource, costSourceAr: after.costSourceAr,
+          reviewStatus: after.reviewStatus,
+          recipe: after.lines, packaging: after.packaging,
+        },
+        channels: priceIncl === null ? null : channelMath(priceIncl, after.cost, rates, todayISO()),
+        writtenToItemCosts: false,
+        hint: recipe.length
+          ? "الصنف اتعمل واتربط باسم الكاشير. اضغط «إعادة الاحتساب» عشان التكلفة تدخل تقارير الأرباح."
+          : "الصنف اتعمل من غير وصفة — تكلفته لسه مش معروفة. افتحه وضيف المكوّنات.",
+      });
+    } catch (e) {
+      console.error("[costing] item create failed:", e);
+      return c.json({ ok: false, error: "create_failed", detail: e.message }, 500);
+    }
+  });
+
+  /* ── Deactivation ─────────────────────────────────────────────────────────
+     There is no hard delete anywhere in the workbench and there must not be.
+     `cw_audit` names things by their key — a canonical Arabic name, a batch
+     name, a product id — so deleting the row leaves the history pointing at
+     nothing, which reads as if the change never happened. Deactivating hides
+     the thing from the pickers and the create flows and leaves every past
+     number, and every explanation of it, exactly where it was.
+
+     A thing still used by a live recipe is refused, with the users named. */
+  async function deactivate(c, u, kind, rawId) {
+    const b = await c.req.json().catch(() => ({}));
+    const id = norm(safeDecode(rawId));
+    const activate = b.active === true;
+    const note = String(b.note || "");
+    const model = await loadModel();
+
+    if (kind === "material") {
+      const cur = model.raw.get(id);
+      if (!cur) return c.json({ ok: false, error: "not_found", message: "المادة غير موجودة" }, 404);
+      if (!activate) {
+        // Products that consume it (directly or through a batch), plus the
+        // batches whose own lines name it — the two together are every place
+        // a removal would change a number.
+        const inItems = dependentsOfRaw(model, id);
+        const inBatches = [];
+        for (const [bk, lines] of model.batchLines)
+          if (lines.some((l) => resolve(model, l.ing_type, l.ing_ar).canonical === id
+                                && resolve(model, l.ing_type, l.ing_ar).kind === "raw"))
+            inBatches.push(bk);
+        if (inItems.length || inBatches.length)
+          return c.json({ ok: false, error: "in_use",
+            message: `«${id}» لسه مستعملة في ${inItems.length} صنف و${inBatches.length} تشغيلة`
+              + " — شيلها من الوصفات الأول",
+            usedByItems: inItems.map((d) => ({ productId: d.productId, nameAr: d.item })),
+            usedByBatches: inBatches }, 409);
+      }
+      await pool.query(
+        "UPDATE cost_raw_materials SET active=$2, updated_by=$3, updated_at=NOW() WHERE canonical_ar=$1",
+        [cur.canonical_ar, activate, String(u.id || "")]);
+      await audit(u, "material", id, "active", cur.active !== false, activate, note);
+    } else if (kind === "batch") {
+      const cur = model.batch.get(id);
+      if (!cur) return c.json({ ok: false, error: "not_found", message: "التشغيلة غير موجودة" }, 404);
+      if (!activate) {
+        const deps = dependentsOfBatch(model, id);
+        if (deps.length)
+          return c.json({ ok: false, error: "in_use",
+            message: `«${id}» داخلة في ${deps.length} صنف — شيلها منهم الأول`,
+            usedByProductIds: deps }, 409);
+      }
+      await pool.query(
+        "UPDATE cost_batches SET active=$2, updated_by=$3, updated_at=NOW() WHERE batch_ar=$1",
+        [cur.batch_ar, activate, String(u.id || "")]);
+      await audit(u, "batch", id, "active", cur.active !== false, activate, note);
+    } else {
+      const pid = Number(rawId);
+      const cur = model.menuById.get(pid);
+      if (!Number.isFinite(pid) || !cur)
+        return c.json({ ok: false, error: "not_found", message: "الصنف غير موجود" }, 404);
+      await pool.query(
+        "UPDATE cost_menu_items SET active=$2, updated_at=NOW() WHERE product_id=$1",
+        [pid, activate]);
+      await audit(u, "item", String(pid), "active", cur.active !== false, activate, note);
+    }
+    cache = { at: 0, model: null };
+    return c.json({
+      ok: true, active: activate, kind, id: kind === "item" ? Number(rawId) : id,
+      // Say plainly what did NOT happen, so nobody reads this as a delete.
+      hint: activate
+        ? "رجّعناها للقايمة."
+        : "اتشالت من القوايم بس ما اتمسحتش — كل الأرقام والسجل القديم زي ما هما، "
+          + "وأي وصفة شغّالة عليها لسه بتحسب بيها.",
+    });
+  }
+
+  app.delete("/api/costing/materials/:id", async (c) => {
+    const u = await requireCostingUser(c); if (isResponse(u)) return u;
+    const denied = await gate(c, u, "materials"); if (denied) return denied;
+    try { return await deactivate(c, u, "material", c.req.param("id")); }
+    catch (e) { return c.json({ ok: false, error: "deactivate_failed", detail: e.message }, 500); }
+  });
+  app.delete("/api/costing/batches/:id", async (c) => {
+    const u = await requireCostingUser(c); if (isResponse(u)) return u;
+    const denied = await gate(c, u, "batches"); if (denied) return denied;
+    try { return await deactivate(c, u, "batch", c.req.param("id")); }
+    catch (e) { return c.json({ ok: false, error: "deactivate_failed", detail: e.message }, 500); }
+  });
+  app.delete("/api/costing/items/:id", async (c) => {
+    const u = await requireCostingUser(c); if (isResponse(u)) return u;
+    const denied = await gate(c, u, "items"); if (denied) return denied;
+    try { return await deactivate(c, u, "item", c.req.param("id")); }
+    catch (e) { return c.json({ ok: false, error: "deactivate_failed", detail: e.message }, 500); }
   });
 
   /* Referenced by any future workbook re-importer; see cw_item_review. */
