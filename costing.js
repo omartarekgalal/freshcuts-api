@@ -94,7 +94,24 @@ import { registerCostingAuth } from "./costing_auth.js";
    and the "what would this earn on Keeta?" calculator below imports them
    rather than restating them. A second copy of an 18% would be wrong within a
    month of the first contract renegotiation, and nobody would notice. */
-import { mergeRates, bandFor, subsidyFor } from "./finance.js";
+import {
+  mergeRates,
+  /* `bandFor` and `subsidyFor` used to be called here to hand-assemble a
+     commission and a subsidy. They are gone from this file on purpose: that
+     hand-assembly WAS the bug — it could only ever produce the lines somebody
+     remembered to write, and nobody wrote the item promotion. The whole stack
+     now comes from one function that must account for every component or
+     declare it unmeasured.
+
+     The full deduction model — commission, payment fee, merchant-funded item
+     promotion, merchant-funded delivery subsidy, subscription, per-order fee —
+     with `basis` on every line and `null` wherever nobody has measured. See the
+     long header above `channelDeductions` in finance.js for why the old
+     "commission + payment fee" model understated HungerStation by a factor of
+     four and Ninja by three. */
+  channelDeductions, nextBandFor, DEFAULT_PROMOTION, KEETA_MEASUREMENT,
+  DEDUCTION_MODEL, BASIS_AR,
+} from "./finance.js";
 /* The POS's own menu. A costed product must be CHOSEN from here, never typed:
    `ts_order_items.name` is this exact string and a hand-typed near-miss would
    produce a cost that reaches zero orders. */
@@ -572,6 +589,54 @@ export function register(app, ctx) {
       );
       CREATE INDEX IF NOT EXISTS cw_audit_at_idx     ON cw_audit(at DESC);
       CREATE INDEX IF NOT EXISTS cw_audit_entity_idx ON cw_audit(entity, entity_ref);
+
+      -- ── 9. Bundles / packages ────────────────────────────────────────────
+      -- Several dishes sold as one thing at one price: «صينية اللمة ١٠٠ ريال»,
+      -- a family platter, a two-for-one. The POS sells them as a single line
+      -- with no recipe behind it, so until now they had NO cost at all — the
+      -- most expensive items on the menu were the ones nobody could price.
+      --
+      -- A bundle is stored, not computed on the fly, for one reason: the
+      -- decision it supports ("is this offer worth running?") is revisited
+      -- every time a supplier price moves, and re-typing eight components to
+      -- ask the same question again is how the question stops being asked.
+      -- Costs are NEVER stored — only the composition. Every read re-prices
+      -- from today's purchase prices, so a saved bundle cannot go stale.
+      CREATE TABLE IF NOT EXISTS cw_bundles (
+        id         TEXT PRIMARY KEY,
+        name_ar    TEXT NOT NULL,
+        name_en    TEXT NOT NULL DEFAULT '',
+        price_incl NUMERIC,               -- the bundle's own price, VAT-INCLUSIVE
+        pos_name   TEXT NOT NULL DEFAULT '',  -- the POS line it is sold as, if any
+        note       TEXT NOT NULL DEFAULT '',
+        -- The promotion assumption the bundle was judged under, saved WITH it.
+        -- Reopening a bundle next month and silently re-judging it at a
+        -- different discount depth would make the verdict unreproducible.
+        promo      JSONB NOT NULL DEFAULT '{}',
+        active     BOOL NOT NULL DEFAULT true,
+        created_by TEXT NOT NULL DEFAULT '',
+        updated_by TEXT NOT NULL DEFAULT '',
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+
+      -- A bundle line is EITHER a costed menu item (kind='item', product_id) or
+      -- a raw/batch ingredient (kind='Raw'|'Batch', ing_ar) — the same two
+      -- things the calculator already knows how to price. Mixing them is
+      -- deliberate: a platter is usually four dishes plus a kilo of rice.
+      CREATE TABLE IF NOT EXISTS cw_bundle_lines (
+        id         TEXT PRIMARY KEY,
+        bundle_id  TEXT NOT NULL,
+        seq        INT  NOT NULL DEFAULT 0,
+        kind       TEXT NOT NULL DEFAULT 'item',   -- item | Raw | Batch
+        product_id INT,
+        ing_ar     TEXT NOT NULL DEFAULT '',
+        ing_en     TEXT NOT NULL DEFAULT '',
+        qty        NUMERIC NOT NULL DEFAULT 1,
+        unit       TEXT NOT NULL DEFAULT 'unit',   -- unit for items; g/kg/piece for ingredients
+        note       TEXT NOT NULL DEFAULT ''
+      );
+      CREATE INDEX IF NOT EXISTS cw_bundle_lines_bundle_idx ON cw_bundle_lines(bundle_id, seq);
     `);
 
     /* ── 8. Creation: the POS menu cache, and deactivation ──────────────────
@@ -4945,64 +5010,231 @@ export function register(app, ctx) {
     };
   }
 
+  /* ── THE PROMOTION INPUT ──────────────────────────────────────────────────
+     The merchant-funded "20% off" is the single largest thing the apps take —
+     2,322.95 of Keeta's 5,734.66 over 146 orders — and until now the calculator
+     modelled it NOWHERE. It is an input, not a constant, because Omar decides
+     which dishes go on promotion and how deep; the default is what Keeta
+     actually runs, and it can be switched off entirely. */
+  function readPromotion(b) {
+    const src = b?.promotion ?? b?.promo ?? null;
+    if (src === false || src === null && b?.promotionEnabled === false)
+      return { ...DEFAULT_PROMOTION, enabled: false, pct: 0, source: "off" };
+    if (!src || typeof src !== "object")
+      return { ...DEFAULT_PROMOTION, source: "default" };
+    /* NOT `asPct`: that helper caps at 0.95 because a 100% yield loss is a bin,
+       not a yield. Here 100% is the NORMAL case — "merchant-funded" means the
+       whole discount comes out of Omar's side, which is exactly what Keeta's
+       2,322.95 item subsidy is. Capping it at 95% would understate the single
+       biggest line in the model. Accepts 20 or 0.20 either way. */
+    const share01 = (v, dflt) => {
+      if (v === undefined || v === null || v === "") return dflt;
+      const x = Number(v);
+      if (!Number.isFinite(x) || x < 0) return dflt;
+      return Math.min(x > 1 ? x / 100 : x, 1);
+    };
+    const enabled = src.enabled !== false;
+    const pct = share01(src.pct, DEFAULT_PROMOTION.pct);
+    const share = share01(src.merchantShare, DEFAULT_PROMOTION.merchantShare);
+    return {
+      ...DEFAULT_PROMOTION,
+      enabled,
+      pct: enabled ? pct : 0,
+      merchantShare: share,
+      basis: "assumed",
+      source: "custom",
+    };
+  }
+
   /** What ONE unit of this dish leaves behind, in-house and on each delivery
    *  app, at a proposed VAT-INCLUSIVE menu price.
    *
-   *  Mirrors `orderEconomics` in finance.js line for line — same commission
-   *  base per app, same payment fee, same subsidy tiers, same band-by-day — on
-   *  a hypothetical single-line order. The rates themselves are imported, not
-   *  restated, so a contract change in the finance settings moves this screen
-   *  on the same deploy. */
-  function channelMath(priceIncl, cost, rates, day) {
+   *  Every deduction the app takes, each with its own name, amount and `basis`
+   *  — measured, contractual, your assumption, or not measured at all. A
+   *  component nobody has measured comes back `null` and turns the channel's
+   *  total into a FLOOR; it is never quietly zero, which is precisely how
+   *  HungerStation came to be modelled at 10.9% when Keeta's own settlements
+   *  put the real take at 47%.
+   *
+   *  The rates are imported from finance.js, not restated, so a contract change
+   *  in the finance settings moves this screen on the same deploy. */
+  function channelMath(priceIncl, cost, rates, day, opts = {}) {
     const p = num(priceIncl);
     if (!(p > 0)) return null;
-    const netEx = p / (1 + VAT_RATE);
+    const promo = opts.promo || DEFAULT_PROMOTION;
     const out = [];
-    for (const key of ["restaurant", "keeta", "hungerstation", "ninja"]) {
-      const cfg = rates[key];
-      if (!cfg) continue;
-      const band = bandFor(cfg, day);
-      const rate = num(band.delivery);
-      /* Keeta charges on the VAT-INCLUSIVE value; the other two on the
-         VAT-exclusive net. Getting this backwards is a 15% error on the single
-         biggest cost line there is — see rule 3 in finance.js. */
-      const base = cfg.commissionBase === "total_after_promo" ? p : netEx;
-      const commission = base * rate;
-      const minFee = num(cfg.minServiceFeeSar);
-      const minFeeTopUp = commission < minFee ? minFee - commission : 0;
-      const paymentFee = base * num(cfg.paymentFeePct);
-      const sub = subsidyFor(cfg, base);
-      const platformCost = commission + minFeeTopUp + paymentFee + sub.amount;
-      const contribution = cost === null ? null : netEx - cost - platformCost;
-      out.push({
+
+    const shape = (d, cfg, key) => {
+      if (!d) return null;
+      /* Contribution is measured VAT-EXCLUSIVELY on what actually reaches the
+         bank: the menu price, minus every deduction, minus the VAT we owe
+         ZATCA on what the customer really paid. For the restaurant — no promo,
+         no deductions — that reduces to price/1.15 exactly, so the in-house
+         number on this screen does not move. */
+      const revenueEx = num(d.netRevenueEx);
+      const contribution = cost === null ? null : revenueEx - cost;
+      const grossEx = p / (1 + VAT_RATE);
+      return {
         channel: key,
-        label: cfg.label || key,
-        commissionRate: round3(rate),
-        commissionBase: round2(base),
-        commissionBaseAr: cfg.commissionBase === "total_after_promo"
-          ? "العمولة على السعر شامل الضريبة" : "العمولة على السعر بدون ضريبة",
-        commission: round2(commission),
-        minFeeTopUp: round2(minFeeTopUp),
-        paymentFee: round2(paymentFee),
-        deliverySubsidy: round2(sub.amount),
-        subsidyTier: sub.tier,
-        subsidyConfirmed: cfg.subsidyConfirmed !== false,
-        platformCost: round2(platformCost),
-        revenueEx: round2(netEx),
+        label: d.label,
+        basis: d.basis,
+        basisAr: d.basisAr,
+        basisNote: d.basisNote,
+        /* THE STACK. Sorted biggest-first by finance.js, because the entire
+           point is that the promotion — not the commission — is the top line. */
+        deductions: d.deductions,
+        biggestLine: d.biggestLine,
+        promotion: d.promotion,
+        menuPriceIncl: d.menuPriceIncl,
+        customerPaysIncl: d.customerPaysIncl,
+        platformCost: d.platformCost,
+        platformCostIsFloor: d.platformCostIsFloor,
+        unknownLines: d.unknownLines,
+        takePctOfMenu: d.takePctOfMenu,
+        netPaidIncl: d.netPaidIncl,
+        vatOwed: d.vatOwed,
+        revenueEx: round2(revenueEx),
+        grossRevenueEx: round2(grossEx),
         // What the plate leaves behind before rent, salaries and ads. Those are
         // period costs and charging them per dish would be inventing a number.
         contribution: contribution === null ? null : round2(contribution),
-        contributionPct: contribution === null || netEx <= 0 ? null : round3(contribution / netEx),
-        foodCostPct: cost === null || netEx <= 0 ? null : round3(cost / netEx),
+        contributionPct: contribution === null || grossEx <= 0 ? null : round3(contribution / grossEx),
+        foodCostPct: cost === null || grossEx <= 0 ? null : round3(cost / grossEx),
         losesMoney: contribution !== null && contribution < 0,
-        outOfContract: !!band.outOfContract,
-        bandWhy: band.why,
-        note: band.note || "",
-        caveats: Array.isArray(cfg.caveats) ? cfg.caveats : [],
-      });
+        /* A floor cost makes an OPTIMISTIC contribution: the real number can
+           only be worse. Said out loud so a "profitable" verdict built on an
+           unmeasured line is never mistaken for a safe one. */
+        contributionIsOptimistic: d.platformCostIsFloor,
+        band: d.band,
+        outOfContract: d.band.outOfContract,
+        bandWhy: d.band.why,
+        note: d.band.note || "",
+        caveats: d.caveats,
+        // Legacy keys the older screens still read. Same numbers, one level up.
+        commission: d.deductions.find((x) => x.id === "commission")?.amount ?? null,
+        commissionRate: d.deductions.find((x) => x.id === "commission")?.rate ?? null,
+        paymentFee: d.deductions.find((x) => x.id === "paymentFee")?.amount ?? null,
+        deliverySubsidy: d.deductions.find((x) => x.id === "deliverySubsidy")?.amount ?? null,
+        subsidyConfirmed: cfg?.subsidyConfirmed !== false,
+      };
+    };
+
+    for (const key of ["restaurant", "keeta", "hungerstation", "ninja"]) {
+      const cfg = rates[key];
+      if (!cfg) continue;
+      const args = {
+        channel: key, cfg: rates, day, menuPriceIncl: p, promo,
+        ordersPerMonth: opts.ordersPerMonth?.[key] ?? null,
+        subsidyBasis: opts.subsidyBasis || "tiers",
+        includeAdSpend: opts.includeAdSpend === true,
+        includeRefunds: opts.includeRefunds === true,
+      };
+      const row = shape(channelDeductions(args), cfg, key);
+      if (!row) continue;
+
+      /* ── HungerStation's band is temporary, so today's answer alone is a trap.
+         10% until 2026-09-30, then 18%, then 21%. A price set in August on the
+         strength of 10% is wrong eight weeks later, so BOTH bands travel
+         together and the screen shows them side by side. Any app whose current
+         band has an end date gets this; today only HungerStation does. */
+      const nb = nextBandFor(cfg, day);
+      row.nextBand = null;
+      if (nb) {
+        const nextDay = nb.from;
+        const nrow = shape(
+          channelDeductions({ ...args, day: nextDay, bandOverride: nb }), cfg, key);
+        row.nextBand = nrow && {
+          from: nb.from, to: nb.to || null,
+          rate: nrow.band.rate,
+          note: nb.note || "",
+          startsInDays: Math.max(0, Math.round(
+            (Date.parse(nb.from + "T00:00:00Z") - Date.parse(day + "T00:00:00Z")) / 86400000)),
+          deductions: nrow.deductions,
+          platformCost: nrow.platformCost,
+          platformCostIsFloor: nrow.platformCostIsFloor,
+          takePctOfMenu: nrow.takePctOfMenu,
+          contribution: nrow.contribution,
+          contributionPct: nrow.contributionPct,
+          losesMoney: nrow.losesMoney,
+          deltaPlatformCost: round2(num(nrow.platformCost) - num(row.platformCost)),
+          deltaContribution: row.contribution === null || nrow.contribution === null
+            ? null : round2(num(nrow.contribution) - num(row.contribution)),
+          // The verdict that matters: does the dish survive the step?
+          flipsToLoss: row.losesMoney === false && nrow.losesMoney === true,
+          hint: `دلوقتي وبعد ${nb.from} — قرار سعر بتاخده النهاردة لازم يعدّي الشريحتين.`,
+        };
+      }
+      out.push(row);
     }
     return out;
   }
+
+  /* Everything the screen needs to say HOW MUCH to believe each number, sent
+     once per response rather than repeated on every line. */
+  function platformModelMeta() {
+    return {
+      measurement: KEETA_MEASUREMENT,
+      basisLabels: BASIS_AR,
+      byChannel: Object.fromEntries(
+        ["keeta", "hungerstation", "ninja", "restaurant"].map((k) => [k, {
+          basis: DEDUCTION_MODEL[k]?.basis || "unknown",
+          basisNote: DEDUCTION_MODEL[k]?.basisNote || "",
+          ordersPerMonth: DEDUCTION_MODEL[k]?.ordersPerMonth ?? null,
+          ordersPerMonthBasis: DEDUCTION_MODEL[k]?.ordersPerMonthBasis || null,
+          ordersPerMonthNote: DEDUCTION_MODEL[k]?.ordersPerMonthNote || "",
+        }])),
+      hint: "كيتا مقيسة من كشوف تسوية حقيقية. هنقرستيشن ونينجا من العقود بس — "
+          + "ومساهمة التوصيل فيهم مش متقاسة أصلًا، يعني التكلفة أعلى من الرقم اللي بتشوفه.",
+    };
+  }
+
+  /* ── Model vs measurement ────────────────────────────────────────────────
+     A model that cannot be checked against a bank statement is a story. This
+     runs the same `channelMath` over an order of the measured AVERAGE size and
+     puts the answer next to what Keeta actually deducted across 146 orders, so
+     the gap is a number on the screen and not a matter of opinion. */
+  function keetaCalibration(rates, day, promo, subsidyBasis) {
+    const M = KEETA_MEASUREMENT;
+    const P = M.avgMenuPerOrderSar;
+    const run = (pr, sb) => {
+      const rows = channelMath(P, null, rates, day, { promo: pr, subsidyBasis: sb });
+      const k = arrOf(rows).find((r) => r.channel === "keeta");
+      return k ? { takePctOfMenu: k.takePctOfMenu, platformCost: k.platformCost,
+                   deductions: k.deductions } : null;
+    };
+    const asAsked = run(promo, subsidyBasis || "tiers");
+    // The same model with BOTH Keeta-measured aggregates substituted in: the
+    // realised promotion depth, and the measured average delivery subsidy.
+    const atMeasured = run({ ...promo, enabled: true, pct: M.derived.itemPromoPctOfMenu,
+                             merchantShare: 1 }, "measured");
+    const gap = asAsked === null ? null
+      : round3(num(asAsked.takePctOfMenu) - M.derived.takePctOfMenu);
+    return {
+      measured: {
+        orders: M.orders,
+        window: M.window,
+        avgMenuPerOrderSar: M.avgMenuPerOrderSar,
+        takePctOfMenu: M.derived.takePctOfMenu,
+        totalDeductedSar: M.totalDeductedSar,
+        source: M.source,
+      },
+      modelAtAvgOrder: asAsked,
+      modelAtMeasuredInputs: atMeasured,
+      gapVsMeasured: gap,
+      verdict: asAsked === null ? "—"
+        : Math.abs(gap) <= 0.02
+          ? "النموذج بيطابق الكشف الحقيقي."
+          : gap > 0
+            ? `النموذج أعلى من الكشف بـ ${round1pct(gap)} — الفرق كله من شرايح مساهمة التوصيل: `
+              + `الشريحة العليا بتحسب ١٥ ر.س على أي طلب فوق ٥٥، والمتوسط المقيس ١١٫٠٥. `
+              + `اختار «المتوسط المقيس» بدل الشرايح ويطابق بالظبط.`
+            : `النموذج أقل من الكشف بـ ${round1pct(Math.abs(gap))} — راجع عمق الخصم.`,
+      note: "المقارنة على طلب بحجم المتوسط المقيس (٨٣٫٥١ ر.س سعر منيو). "
+          + "الشرايح بتتغير مع حجم الطلب، فالفرق بيتغير مع السعر.",
+    };
+  }
+  const arrOf = (v) => (Array.isArray(v) ? v : []);
+  const round1pct = (v) => `${Math.round(num(v) * 1000) / 10}٪`;
 
   /* POST /api/costing/estimate — creates NOTHING. The scratchpad behind
      "should this dish exist?", and the same call powers the live preview while
@@ -5022,8 +5254,20 @@ export function register(app, ctx) {
       let rates = null;
       try { rates = mergeRates((await ctx.getSettingsData?.())?.financeRates); }
       catch { rates = mergeRates(null); }
+
+      /* The promotion is the biggest line the apps take and the one the old
+         model missed entirely. It arrives as an input so it can be turned off,
+         deepened, or split with the platform. */
+      const promo = readPromotion(b);
+      const chOpts = {
+        promo,
+        subsidyBasis: b.subsidyBasis === "measured" ? "measured" : "tiers",
+        ordersPerMonth: b.ordersPerMonth && typeof b.ordersPerMonth === "object" ? b.ordersPerMonth : {},
+        includeAdSpend: b.includeAdSpend === true,
+        includeRefunds: b.includeRefunds === true,
+      };
       const channels = priceIncl === null ? null
-        : channelMath(priceIncl, est.total, rates, asOf);
+        : channelMath(priceIncl, est.total, rates, asOf, chOpts);
 
       const netEx = priceIncl === null ? null : priceIncl / (1 + VAT_RATE);
       /* The price the dish would need to hit a target food-cost percentage.
@@ -5068,6 +5312,23 @@ export function register(app, ctx) {
         },
         target: { foodCostPct: targetPct, suggestedPriceIncl: suggestedIncl },
         channels,
+        /* The promotion actually applied, echoed back so the screen can never
+           show a margin without showing the discount assumption behind it. */
+        promotion: {
+          enabled: promo.enabled && promo.pct > 0,
+          pct: promo.pct,
+          merchantShare: promo.merchantShare,
+          source: promo.source,
+          basis: promo.source === "default" ? "measured" : "assumed",
+          label: promo.label,
+          note: promo.source === "default" ? DEFAULT_PROMOTION.note
+            : "ده افتراضك إنت — مش رقم مقيس.",
+          measuredKeetaDepth: KEETA_MEASUREMENT.derived.itemPromoPctOfMenu,
+        },
+        subsidyBasis: chOpts.subsidyBasis,
+        platformModel: platformModelMeta(),
+        // Proof, not assertion: the model run against Keeta's own bank statement.
+        calibration: keetaCalibration(rates, asOf, promo, chOpts.subsidyBasis),
         vatRate: VAT_RATE,
         writtenToItemCosts: false,
         hint: "ده حساب على الورق — مافيش حاجة اتحفظت.",
@@ -5075,6 +5336,462 @@ export function register(app, ctx) {
     } catch (e) {
       console.error("[costing] estimate failed:", e);
       return c.json({ ok: false, error: "estimate_failed", detail: e.message }, 500);
+    }
+  });
+
+  /* ══════════════════════════════════════════════════════════════════════════
+     BUNDLES — several things sold as one thing at one price.
+
+     «صينية اللمة ١٠٠ ريال» is the case this exists for. It is on the POS, it
+     sells, and it has no recipe — so it had no cost, so nobody could say
+     whether it made money. Its components come to roughly SAR 46 against a
+     SAR 100 price: a 46% food cost BEFORE any platform takes a cut. In-house
+     that is thin. On Keeta, where the apps take 47% of the menu price, it is
+     not thin, it is underwater — and that reversal, profitable at the counter
+     and loss-making on the app, is the entire reason this feature exists.
+     Every bundle response therefore carries an explicit `trap` verdict rather
+     than leaving the manager to compare two columns and spot it himself.
+
+     WHAT IS STORED IS THE COMPOSITION, NEVER THE COST. Prices move weekly;
+     a cached total would be a lie with a timestamp on it. Every read
+     re-prices from today's purchase prices through the same `computeItem` and
+     `estimateRecipe` the rest of the workbench uses.
+     ═════════════════════════════════════════════════════════════════════════ */
+
+  /** Price one bundle: the summed cost, the summed à-la-carte price, what the
+   *  bundle gives away, and the same per-channel deduction stack as a dish. */
+  function computeBundle(model, wb, rates, day, head, lineRows, opts = {}) {
+    const rows = [];
+    let cost = 0;
+    let aLaCarte = 0;
+    const costUnknown = [];      // components we cannot price at all
+    const priceUnknown = [];     // components with no à-la-carte price on the menu
+    let conf = lineRows.length ? "measured" : "missing";
+
+    for (const l of lineRows) {
+      const qty = num(l.qty) || 1;
+      const kind = String(l.kind || "item");
+
+      if (kind === "item") {
+        const pid = l.product_id === null || l.product_id === undefined ? null : Number(l.product_id);
+        const cm = pid === null ? null : computeItem(model, wb, pid);
+        const it = cm?.item || null;
+        const unitCost = cm && cm.cost !== null && cm.cost !== undefined ? num(cm.cost) : null;
+        const unitPrice = it && it.price_restaurant !== null && it.price_restaurant !== undefined
+          ? num(it.price_restaurant) : null;
+        /* A component with no recipe is NOT free. It contributes nothing to the
+           total and its name goes on the screen — the bundle total becomes a
+           floor, exactly like an unpriced ingredient in a dish. */
+        if (unitCost === null) costUnknown.push(it?.product_ar || `#${pid}`);
+        else cost += unitCost * qty;
+        if (unitPrice === null) priceUnknown.push(it?.product_ar || `#${pid}`);
+        else aLaCarte += unitPrice * qty;
+        if (cm) conf = worst(conf, cm.confidence);
+        else conf = worst(conf, "missing");
+        rows.push({
+          seq: num(l.seq), kind: "item", productId: pid,
+          nameAr: it?.product_ar || (l.ing_ar || ""), nameEn: it?.product_en || "",
+          categoryAr: it?.category_ar || "",
+          qty, unit: "unit",
+          unitCost, cost: unitCost === null ? null : round3(unitCost * qty),
+          unitPriceIncl: unitPrice, aLaCarteIncl: unitPrice === null ? null : round2(unitPrice * qty),
+          hasRecipe: cm ? cm.hasRecipe : false,
+          confidence: cm?.confidence || "missing",
+          costComplete: cm ? cm.costComplete : false,
+          note: String(l.note || ""),
+          warning: unitCost === null
+            ? "الصنف ده مالوش وصفة — تكلفته مش داخلة في المجموع"
+            : cm && !cm.costComplete ? "تكلفة الصنف ده ناقصة — الرقم أقل من الحقيقة" : null,
+        });
+      } else {
+        /* A raw or batch line, priced through the very same function the dish
+           calculator uses, so a kilo of rice inside a platter and a kilo of
+           rice inside a dish can never come out at two different numbers. */
+        const est = estimateRecipe(model, wb, {
+          recipe: [{ type: kind, ingredientAr: l.ing_ar, ingredientEn: l.ing_en,
+                     qty, unit: String(l.unit || "g") }],
+        });
+        const lineCost = est.lines.length && est.lines[0].cost !== null ? num(est.lines[0].cost) : null;
+        if (lineCost === null) costUnknown.push(String(l.ing_ar || ""));
+        else cost += lineCost;
+        // Raw ingredients have no menu price; that is not a gap, it is the
+        // nature of the thing, so they do not go on the priceUnknown list.
+        conf = worst(conf, est.confidence);
+        rows.push({
+          seq: num(l.seq), kind, productId: null,
+          nameAr: String(l.ing_ar || ""), nameEn: String(l.ing_en || ""),
+          categoryAr: kind === "Batch" ? "تشغيلة داخلية" : "مادة خام",
+          qty, unit: String(l.unit || "g"),
+          unitCost: est.lines[0]?.unitCost ?? null,
+          cost: lineCost === null ? null : round3(lineCost),
+          unitPriceIncl: null, aLaCarteIncl: null,
+          hasRecipe: true, confidence: est.confidence, costComplete: lineCost !== null,
+          note: String(l.note || ""),
+          warning: lineCost === null ? "المكوّن ده مالوش سعر — مش داخل في المجموع" : null,
+        });
+      }
+    }
+
+    rows.sort((a, b) => a.seq - b.seq);
+
+    const costIsFloor = costUnknown.length > 0 || conf === "missing";
+    const costTotal = lineRows.length ? round3(cost) : null;
+    const aLaCarteTotal = aLaCarte > 0 ? round2(aLaCarte) : null;
+
+    const priceIncl = head.price_incl === null || head.price_incl === undefined
+      ? null : num(head.price_incl);
+    const netEx = priceIncl === null ? null : priceIncl / (1 + VAT_RATE);
+
+    /* What the bundle gives away versus buying the same things separately.
+       NULL — not zero — when any component has no à-la-carte price, because
+       "the bundle saves the customer nothing" and "we could not add it up"
+       are opposite statements. */
+    const discountSar = aLaCarteTotal === null || priceIncl === null || priceUnknown.length
+      ? null : round2(aLaCarteTotal - priceIncl);
+    const discountPct = discountSar === null || !aLaCarteTotal ? null
+      : round3(discountSar / aLaCarteTotal);
+
+    const promo = opts.promo || DEFAULT_PROMOTION;
+    const channels = priceIncl === null || !(priceIncl > 0) ? null
+      : channelMath(priceIncl, costTotal, rates, day, {
+          promo,
+          subsidyBasis: opts.subsidyBasis || "tiers",
+          ordersPerMonth: opts.ordersPerMonth || {},
+        });
+
+    /* ── The trap this feature exists to catch ──────────────────────────────*/
+    const inHouse = (channels || []).find((x) => x.channel === "restaurant") || null;
+    const apps = (channels || []).filter((x) => x.channel !== "restaurant");
+    const losing = apps.filter((x) => x.losesMoney).map((x) => ({ channel: x.channel, label: x.label }));
+    const thin = apps.filter((x) => !x.losesMoney && x.contribution !== null
+      && x.contributionPct !== null && x.contributionPct < 0.15)
+      .map((x) => ({ channel: x.channel, label: x.label, contributionPct: x.contributionPct }));
+    const profitableInHouse = inHouse ? inHouse.contribution !== null && inHouse.contribution > 0 : null;
+
+    return {
+      id: head.id,
+      nameAr: head.name_ar, nameEn: head.name_en || "",
+      posName: head.pos_name || "",
+      note: head.note || "",
+      active: head.active !== false,
+      lineCount: rows.length,
+      lines: rows,
+      cost: {
+        total: costTotal,
+        isFloor: costIsFloor,
+        complete: lineRows.length > 0 && !costIsFloor,
+        confidence: lineRows.length ? conf : "missing",
+        unpriced: costUnknown,
+        warning: !lineRows.length ? "الباكدج فاضية — ضيف أصناف عشان يبقى في رقم"
+          : costUnknown.length
+            ? `في ${costUnknown.length} حاجة من غير تكلفة — الرقم ده أقل من الحقيقة، مش التكلفة`
+            : null,
+      },
+      aLaCarte: {
+        totalIncl: aLaCarteTotal,
+        complete: priceUnknown.length === 0 && aLaCarteTotal !== null,
+        missingPrices: priceUnknown,
+        note: priceUnknown.length
+          ? "في أصناف مالهاش سعر في المنيو، فمجموع البيع المفرّق ناقص — والخصم مش محسوب."
+          : "",
+      },
+      priceIncl,
+      priceExVat: netEx === null ? null : round2(netEx),
+      discount: { sar: discountSar, pct: discountPct },
+      // The number Omar asks for first, and the one the platform stack then
+      // ruins: cost over the VAT-exclusive bundle price.
+      foodCostPct: costTotal === null || netEx === null || netEx <= 0
+        ? null : round3(costTotal / netEx),
+      foodCostPctIsOptimistic: costIsFloor,
+      channels,
+      trap: {
+        profitableInHouse,
+        losesOnPlatforms: losing,
+        thinOnPlatforms: thin,
+        /* The whole point in one sentence. A bundle that clears at the counter
+           and drowns on the apps is invisible in any single number, so it is
+           spelled out rather than left to be inferred from two columns. */
+        message: !channels ? "حط سعر الباكدج عشان نقارن الفرع بالتطبيقات."
+          : profitableInHouse && losing.length
+            ? `الباكدج دي بتكسب في الفرع وبتخسر على ${losing.map((x) => x.label).join(" و")}. `
+              + `ده الفخ: نفس السعر، بس التطبيق بياخد نص سعر المنيو.`
+          : profitableInHouse === false
+            ? "الباكدج دي بتخسر حتى في الفرع — قبل ما أي تطبيق ياخد نسبته."
+          : losing.length === 0 && thin.length
+            ? `بتكسب في كل مكان، بس الهامش على ${thin.map((x) => x.label).join(" و")} `
+              + `أقل من ١٥٪ — أي غلطة في التكلفة بتاكله.`
+          : "بتكسب في الفرع وعلى التطبيقات.",
+      },
+      promotion: { pct: promo.pct, merchantShare: promo.merchantShare, enabled: promo.enabled },
+      platformModel: platformModelMeta(),
+    };
+  }
+
+  /** Read a bundle's stored head + lines. */
+  async function loadBundle(id) {
+    const h = (await pool.query("SELECT * FROM cw_bundles WHERE id = $1", [id])).rows[0] || null;
+    if (!h) return null;
+    const l = (await pool.query(
+      "SELECT * FROM cw_bundle_lines WHERE bundle_id = $1 ORDER BY seq, id", [id])).rows;
+    return { head: h, lines: l };
+  }
+
+  /** Normalise the lines a client sent into storable rows. Silently drops the
+   *  meaningless (no product, no ingredient) rather than storing a blank. */
+  function readBundleLines(raw) {
+    const out = [];
+    let seq = 0;
+    for (const l of (Array.isArray(raw) ? raw : [])) {
+      const kind = String(l?.kind || l?.type || "item");
+      const qty = num(l?.qty) || 1;
+      if (kind === "item") {
+        const pid = l?.productId ?? l?.product_id ?? l?.id;
+        if (pid === null || pid === undefined || pid === "") continue;
+        out.push({ kind: "item", productId: Number(pid), ingAr: "", ingEn: "",
+                   qty, unit: "unit", note: String(l?.note || ""), seq: seq++ });
+      } else {
+        const ingAr = norm(l?.ingredientAr ?? l?.ing_ar ?? l?.nameAr ?? l?.name);
+        if (!ingAr) continue;
+        out.push({ kind: kind === "Batch" ? "Batch" : "Raw", productId: null,
+                   ingAr, ingEn: String(l?.ingredientEn || l?.ing_en || ""),
+                   qty, unit: String(l?.unit || "g"), note: String(l?.note || ""), seq: seq++ });
+      }
+    }
+    return out;
+  }
+
+  async function writeBundleLines(id, lines) {
+    await pool.query("DELETE FROM cw_bundle_lines WHERE bundle_id = $1", [id]);
+    for (const l of lines) {
+      await pool.query(
+        `INSERT INTO cw_bundle_lines (id, bundle_id, seq, kind, product_id, ing_ar, ing_en, qty, unit, note)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+        [idFor("bnl", id, String(l.seq), l.kind, String(l.productId ?? l.ingAr)),
+         id, l.seq, l.kind, l.productId, l.ingAr, l.ingEn, l.qty, l.unit, l.note]);
+    }
+  }
+
+  const readBundleOpts = (b) => ({
+    promo: readPromotion(b),
+    subsidyBasis: b?.subsidyBasis === "measured" ? "measured" : "tiers",
+    ordersPerMonth: b?.ordersPerMonth && typeof b.ordersPerMonth === "object" ? b.ordersPerMonth : {},
+  });
+
+  async function ratesNow() {
+    try { return mergeRates((await ctx.getSettingsData?.())?.financeRates); }
+    catch { return mergeRates(null); }
+  }
+
+  /* POST /api/costing/bundles/preview — cost a package that does not exist yet.
+     Writes nothing. Same relationship to POST /bundles that /estimate has to
+     /items: the live preview and the saved thing go through one function. */
+  app.post("/api/costing/bundles/preview", async (c) => {
+    const u = await requireCostingUser(c); if (isResponse(u)) return u;
+    const denied = await gate(c, u, "items"); if (denied) return denied;
+    try {
+      const b = await c.req.json().catch(() => ({}));
+      const asOf = dayArg(b.asOf, todayISO());
+      const model = await loadModel();
+      const wb = await loadWorkbench(asOf);
+      const rates = await ratesNow();
+      const lines = readBundleLines(b.lines ?? b.items);
+      const head = {
+        id: null,
+        name_ar: norm(b.nameAr ?? b.name) || "باكدج جديدة",
+        name_en: String(b.nameEn || ""),
+        pos_name: String(b.posName || ""),
+        note: String(b.note || ""),
+        active: true,
+        price_incl: b.priceIncl === undefined || b.priceIncl === null || b.priceIncl === ""
+          ? null : num(b.priceIncl),
+      };
+      const rowsForCalc = lines.map((l) => ({
+        seq: l.seq, kind: l.kind, product_id: l.productId,
+        ing_ar: l.ingAr, ing_en: l.ingEn, qty: l.qty, unit: l.unit, note: l.note,
+      }));
+      const out = computeBundle(model, wb, rates, asOf, head, rowsForCalc, readBundleOpts(b));
+      return c.json({ ok: true, asOf, bundle: out, saved: false,
+                      hint: "ده حساب على الورق — مافيش حاجة اتحفظت." });
+    } catch (e) {
+      console.error("[costing] bundle preview failed:", e);
+      return c.json({ ok: false, error: "preview_failed", detail: e.message }, 500);
+    }
+  });
+
+  /* GET /api/costing/bundles — every saved package, re-priced at today's costs. */
+  app.get("/api/costing/bundles", async (c) => {
+    const u = await requireCostingUser(c); if (isResponse(u)) return u;
+    const denied = await gate(c, u, "items"); if (denied) return denied;
+    try {
+      const asOf = dayArg(c.req.query("asOf"), todayISO());
+      const model = await loadModel();
+      const wb = await loadWorkbench(asOf);
+      const rates = await ratesNow();
+      const heads = (await pool.query(
+        "SELECT * FROM cw_bundles ORDER BY active DESC, updated_at DESC")).rows;
+      const allLines = (await pool.query(
+        "SELECT * FROM cw_bundle_lines ORDER BY bundle_id, seq, id")).rows;
+      const byBundle = new Map();
+      for (const l of allLines) {
+        if (!byBundle.has(l.bundle_id)) byBundle.set(l.bundle_id, []);
+        byBundle.get(l.bundle_id).push(l);
+      }
+      const bundles = heads.map((h) =>
+        computeBundle(model, wb, rates, asOf, h, byBundle.get(h.id) || [],
+                      { promo: readPromotion({ promotion: h.promo }) }));
+      return c.json({
+        ok: true, asOf, count: bundles.length, bundles,
+        // Money first, and the ones that lose money on an app come first of all.
+        trapCount: bundles.filter((x) => x.trap.losesOnPlatforms.length).length,
+        platformModel: platformModelMeta(),
+      });
+    } catch (e) {
+      console.error("[costing] bundles list failed:", e);
+      return c.json({ ok: false, error: "bundles_failed", detail: e.message }, 500);
+    }
+  });
+
+  app.get("/api/costing/bundles/:id", async (c) => {
+    const u = await requireCostingUser(c); if (isResponse(u)) return u;
+    const denied = await gate(c, u, "items"); if (denied) return denied;
+    try {
+      const asOf = dayArg(c.req.query("asOf"), todayISO());
+      const got = await loadBundle(String(c.req.param("id")));
+      if (!got) return c.json({ ok: false, error: "not_found" }, 404);
+      const model = await loadModel();
+      const wb = await loadWorkbench(asOf);
+      const rates = await ratesNow();
+      return c.json({
+        ok: true, asOf,
+        bundle: computeBundle(model, wb, rates, asOf, got.head, got.lines,
+                              { promo: readPromotion({ promotion: got.head.promo }) }),
+      });
+    } catch (e) {
+      console.error("[costing] bundle read failed:", e);
+      return c.json({ ok: false, error: "bundle_failed", detail: e.message }, 500);
+    }
+  });
+
+  app.post("/api/costing/bundles", async (c) => {
+    const u = await requireCostingUser(c); if (isResponse(u)) return u;
+    const denied = await gate(c, u, "items"); if (denied) return denied;
+    try {
+      const b = await c.req.json().catch(() => ({}));
+      const nameAr = norm(b.nameAr ?? b.name);
+      if (!nameAr)
+        return c.json({ ok: false, error: "name_required", message: "اكتب اسم الباكدج بالعربي" }, 400);
+      const lines = readBundleLines(b.lines ?? b.items);
+      if (!lines.length)
+        return c.json({ ok: false, error: "no_lines",
+          message: "الباكدج من غير أصناف مالهاش تكلفة — ضيف الأصناف اللي جواها" }, 400);
+
+      const dup = (await pool.query("SELECT id FROM cw_bundles WHERE name_ar = $1", [nameAr])).rows[0];
+      if (dup)
+        return c.json({ ok: false, error: "duplicate",
+          message: `«${nameAr}» باكدج موجودة خلاص — عدّل عليها`, existingId: dup.id }, 409);
+
+      const id = idFor("bundle", nameAr, String(Date.now()));
+      const promo = readPromotion(b);
+      await pool.query(
+        `INSERT INTO cw_bundles (id, name_ar, name_en, price_incl, pos_name, note, promo,
+                                 created_by, updated_by)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$8)`,
+        [id, nameAr, String(b.nameEn || ""),
+         b.priceIncl === undefined || b.priceIncl === null || b.priceIncl === "" ? null : num(b.priceIncl),
+         String(b.posName || ""), String(b.note || ""),
+         JSON.stringify({ pct: promo.pct, merchantShare: promo.merchantShare, enabled: promo.enabled }),
+         String(u.id || "")]);
+      await writeBundleLines(id, lines);
+      await audit(u, "bundle", id, "create", null, nameAr,
+        `${lines.length} صنف${b.priceIncl ? ` · سعر ${num(b.priceIncl)} ر.س` : ""}`
+        + `${b.note ? " · " + String(b.note) : ""}`);
+
+      const got = await loadBundle(id);
+      const model = await loadModel();
+      const wb = await loadWorkbench(todayISO());
+      const rates = await ratesNow();
+      return c.json({
+        ok: true, created: true,
+        bundle: computeBundle(model, wb, rates, todayISO(), got.head, got.lines, { promo }),
+        hint: "اتحفظت. الأسعار بتتحسب من جديد كل مرة تفتحها — فمافيش رقم بيبات قديم.",
+      });
+    } catch (e) {
+      console.error("[costing] bundle create failed:", e);
+      return c.json({ ok: false, error: "create_failed", detail: e.message }, 500);
+    }
+  });
+
+  app.put("/api/costing/bundles/:id", async (c) => {
+    const u = await requireCostingUser(c); if (isResponse(u)) return u;
+    const denied = await gate(c, u, "items"); if (denied) return denied;
+    try {
+      const id = String(c.req.param("id"));
+      const b = await c.req.json().catch(() => ({}));
+      const cur = (await pool.query("SELECT * FROM cw_bundles WHERE id = $1", [id])).rows[0];
+      if (!cur) return c.json({ ok: false, error: "not_found" }, 404);
+
+      const nameAr = b.nameAr === undefined ? cur.name_ar : norm(b.nameAr);
+      if (!nameAr)
+        return c.json({ ok: false, error: "name_required", message: "اكتب اسم الباكدج بالعربي" }, 400);
+      const priceIncl = b.priceIncl === undefined ? cur.price_incl
+        : (b.priceIncl === null || b.priceIncl === "" ? null : num(b.priceIncl));
+      const promo = b.promotion !== undefined || b.promo !== undefined
+        ? readPromotion(b) : readPromotion({ promotion: cur.promo });
+
+      await pool.query(
+        `UPDATE cw_bundles SET name_ar=$2, name_en=$3, price_incl=$4, pos_name=$5, note=$6,
+                               promo=$7, active=$8, updated_by=$9, updated_at=NOW()
+          WHERE id=$1`,
+        [id, nameAr, b.nameEn === undefined ? cur.name_en : String(b.nameEn),
+         priceIncl, b.posName === undefined ? cur.pos_name : String(b.posName),
+         b.note === undefined ? cur.note : String(b.note),
+         JSON.stringify({ pct: promo.pct, merchantShare: promo.merchantShare, enabled: promo.enabled }),
+         b.active === undefined ? cur.active : !!b.active, String(u.id || "")]);
+
+      // Lines are replaced wholesale, and ONLY when the client sent them — a
+      // price-only edit must not silently empty the package.
+      if (b.lines !== undefined || b.items !== undefined) {
+        const lines = readBundleLines(b.lines ?? b.items);
+        if (!lines.length)
+          return c.json({ ok: false, error: "no_lines",
+            message: "الباكدج من غير أصناف مالهاش تكلفة" }, 400);
+        await writeBundleLines(id, lines);
+      }
+      if (num(cur.price_incl) !== num(priceIncl))
+        await audit(u, "bundle", id, "priceIncl",
+          cur.price_incl === null ? null : String(cur.price_incl),
+          priceIncl === null ? null : String(priceIncl), String(b.note || ""));
+      else
+        await audit(u, "bundle", id, "update", null, nameAr, String(b.note || ""));
+
+      const got = await loadBundle(id);
+      const model = await loadModel();
+      const wb = await loadWorkbench(todayISO());
+      const rates = await ratesNow();
+      return c.json({
+        ok: true, updated: true,
+        bundle: computeBundle(model, wb, rates, todayISO(), got.head, got.lines, { promo }),
+      });
+    } catch (e) {
+      console.error("[costing] bundle update failed:", e);
+      return c.json({ ok: false, error: "update_failed", detail: e.message }, 500);
+    }
+  });
+
+  app.delete("/api/costing/bundles/:id", async (c) => {
+    const u = await requireCostingUser(c); if (isResponse(u)) return u;
+    const denied = await gate(c, u, "items"); if (denied) return denied;
+    try {
+      const id = String(c.req.param("id"));
+      const cur = (await pool.query("SELECT * FROM cw_bundles WHERE id = $1", [id])).rows[0];
+      if (!cur) return c.json({ ok: false, error: "not_found" }, 404);
+      await pool.query("DELETE FROM cw_bundle_lines WHERE bundle_id = $1", [id]);
+      await pool.query("DELETE FROM cw_bundles WHERE id = $1", [id]);
+      await audit(u, "bundle", id, "delete", cur.name_ar, null, "اتمسحت من الورشة");
+      return c.json({ ok: true, deleted: true });
+    } catch (e) {
+      console.error("[costing] bundle delete failed:", e);
+      return c.json({ ok: false, error: "delete_failed", detail: e.message }, 500);
     }
   });
 

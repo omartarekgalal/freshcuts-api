@@ -308,6 +308,555 @@ export function subsidyFor(appCfg, value) {
   return { amount: num(appCfg.subsidyAboveTopSar), tier: `> ${tiers[tiers.length - 1].upTo}` };
 }
 
+/* ═══════════════════════════════════════════════════════════════════════════
+   THE FULL DEDUCTION MODEL — what the apps ACTUALLY take, line by line.
+
+   ── WHY THIS EXISTS ────────────────────────────────────────────────────────
+   The costing calculator modelled a delivery app as "commission + payment fee"
+   and nothing else. On Keeta that happened to land near the truth, because the
+   Keeta path already carried the delivery subsidy. On HungerStation and Ninja
+   it produced 10.9% and 16.1% — a third of reality — because the two largest
+   real costs were modelled NOWHERE:
+
+     • the merchant-funded ITEM promotion (the "20% off" on the customer's
+       screen, paid out of Omar's side), and
+     • the monthly subscription, which at four orders a month dwarfs everything.
+
+   Keeta's own settlement statements over 146 orders settle the argument:
+
+     gross items (VAT-incl)              12,192.00
+       commission                        -1,514.37  (of which distance fee 30.00)
+       bank fee                            -283.34
+       merchant-funded DELIVERY subsidy  -1,614.00
+       merchant-funded ITEM subsidy      -2,322.95  ← the biggest single line
+       total deducted                    -5,734.66
+     net paid to merchant                 6,457.34
+
+   47.0% of the menu price. The headline "18% commission" is barely a third of
+   what leaves. A model that says 21% is not conservative, it is wrong.
+
+   ── THE ONE RULE ───────────────────────────────────────────────────────────
+   A COMPONENT WE HAVE NOT MEASURED IS `null`, NEVER 0.
+
+   A zero is a claim: "this costs nothing". A null is the truth: "nobody has
+   measured this". Silently zeroing the item promotion on HungerStation and
+   Ninja is precisely the bug this file is fixing, so every component carries a
+   `basis` and an unknown one makes the channel total a FLOOR, not a total.
+
+   ── THE PRESENTATION BASIS ─────────────────────────────────────────────────
+   Deliberately Keeta's own: the gross is the MENU price (pre-promotion, VAT
+   INCLUSIVE) and the merchant-funded promotion is a DEDUCTION LINE, not a
+   quiet reduction of revenue. Two reasons:
+
+     1. `takePctOfMenu` is then directly comparable to the measured 47.0%, so
+        the model can be checked against a real bank statement.
+     2. Omar can SEE that the promotion, not the commission, is the biggest
+        line. Netting it off revenue hides exactly the number he needs.
+
+   VAT is charged on what the customer actually paid, i.e. after the discount,
+   so `vatOwed = (menu − promo) × 0.15/1.15`. For the restaurant channel — no
+   promotion, no deductions — the whole thing reduces to `menu / 1.15`, which
+   is the in-house number this screen has always shown. It does not move.
+
+   NOTHING BELOW IS READ BY `orderEconomics`. The P&L keeps using `bands`,
+   `paymentFeePct` and `subsidyTiers` exactly as before; these are additive
+   exports for the costing calculator, so a fix here cannot restate last
+   month's reported profit.
+═══════════════════════════════════════════════════════════════════════════ */
+
+/** How much a number is worth believing. Printed next to every line. */
+export const BASIS_AR = {
+  measured: "مقيس من كشوف تسوية حقيقية",
+  contract: "من العقد — ما اتقاسش على طلبات حقيقية",
+  assumed: "افتراض إنت حاططه، مش رقم مقيس",
+  unknown: "مش متقاس",
+};
+
+/* The measurement itself, kept whole so every ratio below can be re-derived by
+   hand from it. Source: GET /api/keeta-payouts/summary, which reads Keeta's
+   own per-order settlement panel — not our estimate of it. */
+export const KEETA_MEASUREMENT = {
+  source: "كشوف تسوية كيتا نفسها (GET /api/keeta-payouts/summary)",
+  sourceEn: "Keeta's own settlement statements",
+  window: { from: "2026-07-08", to: "2026-08-06" },
+  orders: 146,
+  grossMenuInclVatSar: 12192,
+  avgMenuPerOrderSar: 83.5069,
+  lines: {
+    commissionSar: 1484.37,
+    distanceFeeSar: 30,
+    bankFeeSar: 283.34,
+    deliverySubsidySar: 1614,
+    itemSubsidySar: 2322.95,
+  },
+  totalDeductedSar: 5734.66,
+  netPaidSar: 6457.34,
+  // Deducted from the payout over the same window but not part of the per-order
+  // take, so they are separate switchable lines rather than baked in.
+  adSpendSar: 261.37,
+  refundsSar: 40.28,
+  /* Every ratio the model is seeded from, with the division that produced it.
+     `ofMenu` divides by 12,192; `ofAfterPromo` by 12,192 − 2,322.95 = 9,869.05. */
+  derived: {
+    afterPromoTotalSar: 9869.05,
+    takePctOfMenu: 0.470363,          // 5734.66 / 12192
+    commissionPctOfMenu: 0.12175,     // 1484.37 / 12192
+    commissionPctOfAfterPromo: 0.150406, // 1484.37 / 9869.05  ← contract says 18%
+    bankFeePctOfAfterPromo: 0.02871,  //  283.34 / 9869.05  ← Keeta states 2.875%
+    distanceFeeSarPerOrder: 0.205479, //   30.00 / 146
+    deliverySubsidySarPerOrder: 11.0548, // 1614 / 146
+    deliverySubsidyPctOfMenu: 0.132382,  // 1614 / 12192
+    itemPromoPctOfMenu: 0.190531,     // 2322.95 / 12192 — the realised depth of a "20% off"
+    adSpendSarPerOrder: 1.7902,
+    adSpendPctOfMenu: 0.021438,
+    refundsSarPerOrder: 0.2759,
+    refundsPctOfMenu: 0.003304,
+  },
+};
+
+/* The promotion Keeta actually runs, and the default of the promotion input.
+   `merchantShare: 1` — the whole discount comes out of Omar's side; that is
+   what "merchant-funded" means and what the 2,322.95 above is. */
+export const DEFAULT_PROMOTION = {
+  pct: 0.20,
+  merchantShare: 1,
+  enabled: true,
+  label: "خصم ٢٠٪ ممول من المطعم",
+  basis: "measured",
+  note: "الحملة اللي كيتا شغّالة بيها فعلًا. المقيس على ١٤٦ طلب طلع ١٩٫٠٥٪ — "
+      + "يعني الخصم بيتطبّق على كل الطلبات تقريبًا. تقدر تقفله أو تغيّر عمقه.",
+};
+
+/* ── The per-platform component table ───────────────────────────────────────
+   `null` in any `pct`/`sar` means UNKNOWN and is rendered as «مش متقاس».
+   Anything already in DEFAULT_RATES (band rates, subscription, subsidy tiers)
+   is READ FROM THE MERGED CONFIG at call time, so a contract edited in the
+   finance settings moves this model on the same request. Only what is NOT in
+   DEFAULT_RATES lives here. */
+export const DEDUCTION_MODEL = {
+  keeta: {
+    basis: "measured",
+    basisNote: "الأرقام دي مقيسة من كشوف تسوية كيتا على ١٤٦ طلب — مش من العقد.",
+    commission: {
+      // The band says 18%. The settlements say 15.04% of the same base. We use
+      // what was taken, and print what was promised beside it.
+      pct: KEETA_MEASUREMENT.derived.commissionPctOfAfterPromo,
+      base: "after_promo_incl",
+      basis: "measured",
+      contractPct: 0.18,
+      note: "العقد بيقول ١٨٪ — الكشوف بتقول ١٥٫٠٪ من نفس القاعدة. بنحسب اللي اتخصم فعلًا.",
+    },
+    paymentFee: {
+      pct: KEETA_MEASUREMENT.derived.bankFeePctOfAfterPromo,
+      base: "after_promo_incl",
+      basis: "measured",
+      contractPct: 0.025,
+      note: "رسوم بنك ٢٫٨٧٥٪ — كيتا بتكتبها في بياناتها، والمقيس طلع ٢٫٨٧٪. العقد بيقول ٢٫٥٪.",
+    },
+    perOrderFee: {
+      sar: KEETA_MEASUREMENT.derived.distanceFeeSarPerOrder,
+      basis: "measured",
+      label: "رسوم مسافة",
+      note: "٣٠ ر.س على ١٤٦ طلب. مابتتحطّش على كل طلب — ده المتوسط.",
+    },
+    itemPromo: {
+      basis: "measured",
+      measuredPctOfMenu: KEETA_MEASUREMENT.derived.itemPromoPctOfMenu,
+      note: "أكبر بند في الكشف كله: ٢٬٣٢٢٫٩٥ ر.س من ١٢٬١٩٢ — ١٩٫١٪ من سعر المنيو.",
+    },
+    deliverySubsidy: {
+      basis: "measured",
+      // The order-size-aware tiers stay the default (they live in DEFAULT_RATES
+      // and are what the P&L uses); the flat measured average is offered as an
+      // alternative because it is what reproduces the 47.0% exactly.
+      measuredAvgSarPerOrder: KEETA_MEASUREMENT.derived.deliverySubsidySarPerOrder,
+      measuredPctOfMenu: KEETA_MEASUREMENT.derived.deliverySubsidyPctOfMenu,
+      tiersConfirmed: false,
+      note: "١٬٦١٤ ر.س على ١٤٦ طلب = ١١٫٠٥ للطلب. الشرايح مستنتجة من طلبات حقيقية مش من العقد.",
+    },
+    subscription: { monthlySar: 0, basis: "contract", note: "العقد بيعفينا من الاشتراك." },
+    adSpend: {
+      sarPerOrder: KEETA_MEASUREMENT.derived.adSpendSarPerOrder,
+      basis: "measured",
+      defaultOn: false,
+      note: "٢٦١٫٣٧ ر.س اتخصمت من التحويل في نفس الفترة. مصروف فترة مش تكلفة طبق — مقفول افتراضيًا.",
+    },
+    refunds: {
+      sarPerOrder: KEETA_MEASUREMENT.derived.refundsSarPerOrder,
+      basis: "measured",
+      defaultOn: false,
+      note: "٤٠٫٢٨ ر.س مرتجعات في نفس الفترة.",
+    },
+    ordersPerMonth: null,
+  },
+
+  hungerstation: {
+    basis: "contract",
+    basisNote: "مافيش عندنا ولا كشف تسوية من هنقرستيشن — كل رقم هنا من العقد، "
+             + "ومحدش اتأكد منه على طلب حقيقي.",
+    commission: {
+      pct: null,               // comes from the band, by the order's own day
+      base: "after_promo_ex",
+      basis: "contract",
+      note: "عقد OQ-0010703967. النسبة على قيمة الطلب بدون ضريبة — قاعدة رقم ٣.",
+    },
+    paymentFee: { pct: 0.025, base: "after_promo_ex", basis: "contract", note: "٢٫٥٪ رسوم دفع إلكتروني." },
+    perOrderFee: { sar: null, basis: "unknown", note: "مش معروف لو في رسوم ثابتة للطلب." },
+    itemPromo: {
+      basis: "assumed",
+      note: "مافيش عندنا إثبات إن هنقرستيشن بتشغّل نفس حملة الخصم — بس لو شغّالة، "
+          + "التمويل من عندنا زي كيتا بالظبط. الرقم ده افتراضك إنت.",
+    },
+    deliverySubsidy: {
+      basis: "unknown",
+      note: "مساهمة التوصيل على هنقرستيشن مش متقاسة ولا موجودة في العقد. "
+          + "مش صفر — مش معروفة. يعني الرقم اللي تحت أقل من الحقيقة.",
+    },
+    subscription: {
+      basis: "contract",
+      note: "٢٠٠ ر.س في الشهر من ٠١/٠٧/٢٠٢٦. بتتقسّم على عدد الطلبات — وده اللي بيخليها "
+          + "أكبر بند لما الطلبات قليلة.",
+    },
+    // Measured from the July 2026 P&L: 4 HungerStation orders in the month.
+    ordersPerMonth: 4,
+    ordersPerMonthBasis: "measured",
+    ordersPerMonthNote: "٤ طلبات في يوليو ٢٠٢٦ — مقيسة من تقرير الأرباح. "
+                      + "لو الطلبات زادت، نصيب الاشتراك للطلب بينزل بنفس النسبة.",
+  },
+
+  ninja: {
+    basis: "contract",
+    basisNote: "نسختنا من العقد مكتوب على كل صفحة فيها «Incomplete» — والأرقام دي "
+             + "ما اتقاستش على أي كشف تسوية.",
+    commission: {
+      pct: null,               // from the band
+      base: "after_promo_ex",
+      basis: "contract",
+      note: "رسوم خدمة ١٠٪ لحد ٢٢/٠٧/٢٠٢٦ وبعدها ١٦٪ — من العقد المعلّم «Incomplete».",
+    },
+    paymentFee: { pct: 0.025, base: "after_promo_ex", basis: "contract", note: "٢٫٥٪ دفع إلكتروني." },
+    perOrderFee: { sar: null, basis: "unknown", note: "مش معروف." },
+    itemPromo: { basis: "assumed", note: "زي هنقرستيشن — لو في خصم، تمويله من عندنا. الرقم افتراضك." },
+    deliverySubsidy: { basis: "unknown", note: "مش متقاسة ومش في العقد. مش صفر." },
+    subscription: {
+      basis: "contract_incomplete",
+      note: "العقد اللي معانا اسمه «اتفاقية اشتراك» بس مافيهوش بند اشتراك بفلوس، "
+          + "وهو نفسه معلّم «Incomplete». اعتبرها صفر مؤقت مش صفر مؤكد.",
+    },
+    ordersPerMonth: 4,
+    ordersPerMonthBasis: "measured",
+    ordersPerMonthNote: "٤ طلبات في يوليو ٢٠٢٦ — مقيسة من تقرير الأرباح.",
+  },
+
+  restaurant: {
+    basis: "measured",
+    basisNote: "بيع من الفرع — مافيش منصة تاخد نسبة.",
+    commission: { pct: 0, base: "after_promo_ex", basis: "contract", note: "مافيش عمولة منصة." },
+    paymentFee: {
+      pct: null, base: "after_promo_incl", basis: "unknown",
+      note: "رسوم ماكينة الشبكة مش في أي عقد معانا. مش صفر — مش معروفة. "
+          + "يعني ربح الفرع اللي تحت أحسن شوية من الحقيقة.",
+    },
+    perOrderFee: { sar: 0, basis: "contract", note: "مافيش." },
+    itemPromo: { basis: "assumed", defaultOn: false, note: "خصم التطبيقات مابينطبقش على بيع الفرع." },
+    deliverySubsidy: { basis: "contract", flatSar: 0, note: "مافيش توصيل." },
+    subscription: { basis: "contract", note: "مافيش اشتراك." },
+    ordersPerMonth: null,
+  },
+};
+
+/** The band that takes over AFTER the one governing `day`. HungerStation steps
+ *  10% → 18% on 2026-10-01, and a price set in August on the strength of 10%
+ *  is wrong eight weeks later. Returns null when the current band is the last. */
+export function nextBandFor(appCfg, day) {
+  const bands = (Array.isArray(appCfg?.bands) ? appCfg.bands : [])
+    .slice()
+    .sort((a, b) => String(a.from || "").localeCompare(String(b.from || "")));
+  const cur = bands.findIndex((b) => day >= (b.from || "2000-01-01") && day <= (b.to || "9999-12-31"));
+  if (cur < 0 || cur >= bands.length - 1) return null;
+  const nb = bands[cur + 1];
+  return {
+    ...nb,
+    why: `الشريحة الجاية تبدأ ${nb.from}`,
+    whyEn: `next band starts ${nb.from}`,
+  };
+}
+
+const pctOr = (v) => (v === null || v === undefined ? null : num(v));
+
+/**
+ * Every riyal a channel takes out of ONE order at a given MENU price, as a
+ * named stack of lines. This is the function the costing calculator prices
+ * against; `orderEconomics` above is untouched and still owns the P&L.
+ *
+ * opts:
+ *   channel        "keeta" | "hungerstation" | "ninja" | "restaurant"
+ *   cfg            the merged rate table (mergeRates output) — ALL of it
+ *   day            ISO day; picks the contract band, never "today"
+ *   menuPriceIncl  the menu price the customer sees BEFORE any promotion, VAT-incl
+ *   promo          { pct, merchantShare, enabled } — the promotion input
+ *   ordersPerMonth override for the subscription split (null → the model's own)
+ *   subsidyBasis   "tiers" (default, order-size aware) | "measured" (flat average)
+ *   bandOverride   force a band — used to price HungerStation's NEXT band
+ *   includeAdSpend / includeRefunds  the two measured period costs, off by default
+ */
+export function channelDeductions(opts) {
+  const {
+    channel, cfg, day, menuPriceIncl,
+    promo = DEFAULT_PROMOTION,
+    ordersPerMonth = null,
+    subsidyBasis = "tiers",
+    bandOverride = null,
+    includeAdSpend = false,
+    includeRefunds = false,
+  } = opts || {};
+
+  const appCfg = cfg?.[channel] || cfg?.restaurant || {};
+  const dm = DEDUCTION_MODEL[channel] || DEDUCTION_MODEL.restaurant;
+  const P = num(menuPriceIncl);
+  if (!(P > 0)) return null;
+
+  const band = bandOverride || bandFor(appCfg, day);
+
+  /* ── 1. The merchant-funded item promotion ────────────────────────────────
+     First, because everything downstream is charged on what is left of the
+     price after it. The restaurant channel opts out by default: the 20% off is
+     a delivery-app campaign, not a walk-in one. */
+  const promoOn = promo?.enabled !== false && dm.itemPromo?.defaultOn !== false;
+  const promoPct = promoOn ? Math.max(0, Math.min(1, num(promo?.pct))) : 0;
+  const merchantShare = promoOn
+    ? Math.max(0, Math.min(1, promo?.merchantShare === undefined ? 1 : num(promo.merchantShare)))
+    : 0;
+  const promoTotalSar = P * promoPct;            // off the customer's screen price
+  const promoOursSar = promoTotalSar * merchantShare;  // the part we pay for
+
+  const customerPaysIncl = P - promoTotalSar;
+  const afterPromoIncl = customerPaysIncl;
+  const afterPromoEx = afterPromoIncl / (1 + VAT_RATE);
+  const baseOf = (b) => (b === "after_promo_incl" ? afterPromoIncl : afterPromoEx);
+
+  const lines = [];
+  const push = (l) => lines.push({
+    pctOfMenu: l.amount === null ? null : rate4(l.amount / P),
+    ...l,
+    basisAr: BASIS_AR[l.basis] || BASIS_AR.unknown,
+    unknown: l.amount === null,
+  });
+
+  // Only when it actually costs us something. A "promotion — 0.00" line beside
+  // a real unknown is the same category error as a zeroed unknown: it makes an
+  // absent cost and an unmeasured one look alike. The screen says «مقفول».
+  if (promoOursSar > 0) {
+    push({
+      id: "itemPromo",
+      label: "خصم على الأصناف ممول من المطعم",
+      labelEn: "Merchant-funded item promotion",
+      amount: round2c(promoOursSar),
+      basis: dm.itemPromo?.basis || "assumed",
+      base: "menu",
+      why: promoPct > 0
+        ? `${Math.round(promoPct * 100)}٪ خصم على ${money(P)} ر.س، ${Math.round(merchantShare * 100)}٪ منه علينا`
+        : "الخصم مقفول",
+      note: dm.itemPromo?.note || "",
+      measuredPctOfMenu: dm.itemPromo?.measuredPctOfMenu ?? null,
+    });
+  }
+
+  /* ── 2. Commission ────────────────────────────────────────────────────────
+     The rate is whichever the evidence supports: Keeta's measured 15.04% wins
+     over its contractual 18% because a settlement statement beats a PDF. For
+     the other two the band IS the only evidence there is. */
+  const cRate = dm.commission?.pct !== null && dm.commission?.pct !== undefined
+    ? num(dm.commission.pct)
+    : pctOr(band.delivery);
+  const cBase = baseOf(dm.commission?.base);
+  // A flat zero commission (the restaurant) is not a line, it is the absence of
+  // one. Printing "عمولة المنصة — 0" beside a real unknown teaches the reader
+  // that zero and unknown look alike, which is the habit this file is breaking.
+  if (cRate === null || cRate > 0 || band.outOfContract) push({
+    id: "commission",
+    label: "عمولة المنصة",
+    labelEn: "Platform commission",
+    amount: cRate === null ? null : round2c(cBase * cRate),
+    rate: rate4(cRate),
+    contractRate: rate4(dm.commission?.contractPct ?? band.delivery ?? null),
+    basis: band.outOfContract ? "unknown" : (dm.commission?.basis || "contract"),
+    base: dm.commission?.base === "after_promo_incl" ? "بعد الخصم شامل الضريبة" : "بعد الخصم بدون ضريبة",
+    why: band.outOfContract ? band.why : `${pctTxt(cRate)} × ${money(cBase)} ر.س`,
+    note: dm.commission?.note || band.note || "",
+    bandFrom: band.from || null,
+    bandTo: band.to || null,
+  });
+
+  /* ── 3. Payment / bank fee ───────────────────────────────────────────────*/
+  /* `basis: "unknown"` beats any fallback. The restaurant's card-machine rate is
+     in no contract we hold, and reading `appCfg.paymentFeePct` — which the P&L
+     defaults to 0 — would turn "nobody has asked the bank" into "the bank is
+     free". That is the exact substitution this whole model exists to stop. */
+  const pRate = dm.paymentFee?.basis === "unknown" ? null
+    : pctOr(dm.paymentFee?.pct ?? appCfg.paymentFeePct);
+  const pBase = baseOf(dm.paymentFee?.base);
+  push({
+    id: "paymentFee",
+    label: channel === "keeta" ? "رسوم بنك" : "رسوم دفع إلكتروني",
+    labelEn: "Payment / bank fee",
+    amount: pRate === null ? null : round2c(pBase * pRate),
+    rate: rate4(pRate),
+    basis: dm.paymentFee?.basis || "contract",
+    base: dm.paymentFee?.base === "after_promo_incl" ? "بعد الخصم شامل الضريبة" : "بعد الخصم بدون ضريبة",
+    why: pRate === null ? "مش متقاسة" : `${pctTxt(pRate)} × ${money(pBase)} ر.س`,
+    note: dm.paymentFee?.note || "",
+  });
+
+  /* ── 4. Flat per-order fee (Keeta's distance fee) ────────────────────────*/
+  const perOrder = dm.perOrderFee?.sar === null || dm.perOrderFee?.sar === undefined
+    ? null : num(dm.perOrderFee.sar);
+  if (perOrder === null || perOrder > 0) {
+    push({
+      id: "perOrderFee",
+      label: dm.perOrderFee?.label || "رسوم ثابتة للطلب",
+      labelEn: "Per-order fee",
+      amount: perOrder === null ? null : round2c(perOrder),
+      basis: dm.perOrderFee?.basis || "unknown",
+      base: "للطلب",
+      why: perOrder === null ? "مش متقاسة" : `${money(perOrder)} ر.س للطلب`,
+      note: dm.perOrderFee?.note || "",
+    });
+  }
+
+  /* ── 5. Merchant-funded DELIVERY subsidy ─────────────────────────────────
+     Keeta's is fitted from real orders and rises with order value. Nobody has
+     measured HungerStation's or Ninja's, so theirs is null — which is the
+     whole point of this rewrite. */
+  let subAmount = null, subWhy = "مش متقاسة", subTier = null;
+  const dsm = dm.deliverySubsidy || {};
+  if (dsm.basis === "unknown") {
+    subAmount = null;
+  } else if (num(dsm.flatSar) === 0 && dsm.flatSar !== undefined && dsm.flatSar !== null) {
+    subAmount = 0; subWhy = "مافيش";
+  } else if (subsidyBasis === "measured" && dsm.measuredPctOfMenu != null) {
+    subAmount = P * num(dsm.measuredPctOfMenu);
+    subWhy = `${pctTxt(dsm.measuredPctOfMenu)} من سعر المنيو — متوسط مقيس على ١٤٦ طلب`;
+  } else {
+    const s = subsidyFor(appCfg, afterPromoIncl);
+    subAmount = num(s.amount); subTier = s.tier;
+    subWhy = s.tier ? `شريحة ${s.tier} على ${money(afterPromoIncl)} ر.س بعد الخصم` : "مافيش شرايح";
+  }
+  if (subAmount === null || subAmount > 0) push({
+    id: "deliverySubsidy",
+    label: "مساهمة التوصيل الممولة من المطعم",
+    labelEn: "Merchant-funded delivery subsidy",
+    amount: subAmount === null ? null : round2c(subAmount),
+    basis: dsm.basis === "unknown" ? "unknown"
+      : subsidyBasis === "measured" ? "measured"
+      : (appCfg.subsidyConfirmed === false ? "assumed" : (dsm.basis || "contract")),
+    base: "بعد الخصم شامل الضريبة",
+    why: subWhy,
+    tier: subTier,
+    measuredAvgSarPerOrder: dsm.measuredAvgSarPerOrder ?? null,
+    note: dsm.note || "",
+  });
+
+  /* ── 6. Subscription, split over the month's orders ──────────────────────
+     SAR 200 a month is nothing across 300 orders and ruinous across four. The
+     divisor is an ASSUMPTION about volume and is labelled as one every time. */
+  const monthly = num(appCfg.monthlySubscriptionSar);
+  const opm = ordersPerMonth !== null && ordersPerMonth !== undefined && num(ordersPerMonth) > 0
+    ? num(ordersPerMonth)
+    : (dm.ordersPerMonth && num(dm.ordersPerMonth) > 0 ? num(dm.ordersPerMonth) : null);
+  const subInForce = monthly > 0
+    && (!appCfg.subscriptionFrom || day >= appCfg.subscriptionFrom);
+  if (subInForce) {
+    push({
+      id: "subscription",
+      label: "نصيب الطلب من الاشتراك الشهري",
+      labelEn: "Monthly subscription, per order",
+      amount: opm === null ? null : round2c(monthly / opm),
+      basis: opm === null ? "unknown" : "assumed",
+      base: "للشهر ÷ عدد الطلبات",
+      why: opm === null
+        ? "مش عارفين عدد الطلبات في الشهر — مش هنخمّن"
+        : `${money(monthly)} ر.س ÷ ${opm} طلب في الشهر`,
+      monthlySar: money(monthly),
+      ordersPerMonth: opm,
+      ordersPerMonthBasis: dm.ordersPerMonthBasis || "assumed",
+      note: [dm.subscription?.note, dm.ordersPerMonthNote].filter(Boolean).join(" "),
+    });
+  }
+
+  /* ── 7. The two measured period costs, off unless asked for ─────────────*/
+  if (includeAdSpend && dm.adSpend) {
+    push({
+      id: "adSpend", label: "إعلانات مخصومة من التحويل", labelEn: "Ad spend deducted from payout",
+      amount: round2c(num(dm.adSpend.sarPerOrder)), basis: dm.adSpend.basis, base: "للطلب",
+      why: `${money(dm.adSpend.sarPerOrder)} ر.س للطلب — متوسط مقيس`, note: dm.adSpend.note || "",
+    });
+  }
+  if (includeRefunds && dm.refunds) {
+    push({
+      id: "refunds", label: "مرتجعات", labelEn: "Refunds",
+      amount: round2c(num(dm.refunds.sarPerOrder)), basis: dm.refunds.basis, base: "للطلب",
+      why: `${money(dm.refunds.sarPerOrder)} ر.س للطلب — متوسط مقيس`, note: dm.refunds.note || "",
+    });
+  }
+
+  /* ── The totals ─────────────────────────────────────────────────────────*/
+  const known = lines.filter((l) => l.amount !== null);
+  const unknownLines = lines.filter((l) => l.amount === null);
+  const totalSar = known.reduce((a, l) => a + num(l.amount), 0);
+  const isFloor = unknownLines.length > 0;
+
+  // VAT is owed on what the customer actually paid, not on the menu price.
+  const vatOwed = customerPaysIncl * (VAT_RATE / (1 + VAT_RATE));
+  const netPaidIncl = P - totalSar;
+  const netRevenueEx = netPaidIncl - vatOwed;
+
+  // Sort biggest-first: the whole complaint was that nobody could see which
+  // line was actually the largest. Unknowns sink to the bottom.
+  const sorted = lines.slice().sort((a, b) =>
+    (a.amount === null ? 1 : 0) - (b.amount === null ? 1 : 0) || num(b.amount) - num(a.amount));
+
+  return {
+    channel,
+    label: appCfg.label || channel,
+    labelEn: appCfg.labelEn || channel,
+    day,
+    basis: dm.basis,
+    basisAr: BASIS_AR[dm.basis] || dm.basisNote || "",
+    basisNote: dm.basisNote || "",
+    menuPriceIncl: money(P),
+    promotion: {
+      enabled: promoPct > 0,
+      pct: rate4(promoPct),
+      merchantShare: rate4(merchantShare),
+      totalSar: money(promoTotalSar),
+      merchantFundedSar: money(promoOursSar),
+      basis: dm.itemPromo?.basis || "assumed",
+    },
+    customerPaysIncl: money(customerPaysIncl),
+    deductions: sorted,
+    biggestLine: sorted.length && sorted[0].amount !== null ? sorted[0].id : null,
+    platformCost: money(totalSar),
+    platformCostIsFloor: isFloor,
+    unknownLines: unknownLines.map((l) => l.id),
+    takePctOfMenu: rate4(totalSar / P),
+    netPaidIncl: money(netPaidIncl),
+    vatOwed: money(vatOwed),
+    netRevenueEx: money(netRevenueEx),
+    band: {
+      from: band.from || null, to: band.to || null,
+      rate: rate4(band.delivery), note: band.note || "",
+      why: band.why || "", outOfContract: !!band.outOfContract,
+    },
+    caveats: Array.isArray(appCfg.caveats) ? appCfg.caveats : [],
+  };
+}
+
+/* Two small formatters kept local so this block does not depend on anything
+   defined further down the file. */
+function round2c(v) { return Math.round(num(v) * 100) / 100; }
+function pctTxt(v) { return v === null || v === undefined ? "—" : `${Math.round(num(v) * 1000) / 10}٪`; }
+
 /**
  * Full economics of ONE order. This is the single place the money model lives;
  * /pnl, /per-order, /commissions and the advisor all go through it, so they can
