@@ -141,7 +141,6 @@ export function register(app, ctx) {
       body: {
         event_source: "web",
         event_source_id: pixel,
-        partner_name: "freshcuts-api",
         data: [{
           event: TT_NAME[e.name] || e.name,
           event_time: e.time,

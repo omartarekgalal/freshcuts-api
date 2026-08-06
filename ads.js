@@ -230,6 +230,12 @@ const meta = {
   manageEnv: ["META_AD_ACCOUNT_ID", "META_CAPI_TOKEN"],
   eventName: "Purchase",
 
+  // Meta rejects the ENTIRE batch if any single event has empty user_data
+  // (error_subcode 2804050, verified live 2026-08-07). An identityless order
+  // is skipped rather than sent — if a later sync learns its phone (FeedUs
+  // linking runs behind the orders), the unclaimed row goes out then.
+  usable(e) { return !!(e.phoneDigits || e.email || e.externalId); },
+
   ver: () => env("META_API_VERSION") || "v25.0",
   base() { return `https://graph.facebook.com/${this.ver()}`; },
   actId() {
@@ -430,9 +436,10 @@ const tiktok = {
     const body = {
       // 'offline' is the honest source for a restaurant till. Override with
       // TIKTOK_EVENT_SOURCE=web only if the pixel id is a web pixel.
+      // NB: no partner_name — TikTok 40002-rejects it for non-registered
+      // partners (verified live 2026-08-07).
       event_source: env("TIKTOK_EVENT_SOURCE") || "offline",
       event_source_id: pixel,
-      partner_name: "freshcuts-api",
       data,
     };
     const testCode = env("TIKTOK_TEST_EVENT_CODE");
@@ -1056,6 +1063,15 @@ export function register(app, ctx) {
       out.skipped = events.length;
       out.errors.push(`not configured — missing ${missingOf(p.conversionEnv).join(", ") || "GOOGLE_ADS_ENABLE=1"}`);
       return out;
+    }
+
+    // Platform-specific eligibility (e.g. Meta refuses empty user_data).
+    // Unusable events are NOT claimed, so they remain eligible for a later
+    // sync once the linking sweeps attach an identity to them.
+    if (p.usable) {
+      const eligible = events.filter((e) => p.usable(e));
+      out.skipped += events.length - eligible.length;
+      events = eligible;
     }
 
     if (dryRun) {
