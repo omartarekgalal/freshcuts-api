@@ -25,6 +25,9 @@ import * as chat from "./chat.js";
 import * as dayreport from "./dayreport.js";
 import * as ads from "./ads.js";
 import * as keeta from "./keeta.js";
+import * as funnel from "./funnel.js";
+import * as audiences from "./audiences.js";
+import * as autopilot from "./autopilot.js";
 
 const { Pool } = pg;
 
@@ -2832,8 +2835,13 @@ keetaPayouts.register(app, moduleCtx);
 ninja.register(app, moduleCtx);
 chat.register(app, moduleCtx);
 dayreport.register(app, moduleCtx);
-ads.register(app, moduleCtx);
+// ads.register returns { syncOrders } so the autopilot can push CAPI events
+// on its own schedule without HTTP round-trips against ourselves.
+const adsApi = ads.register(app, moduleCtx);
 keeta.register(app, moduleCtx);
+funnel.register(app, moduleCtx);
+const audApi = audiences.register(app, moduleCtx);
+const ap = autopilot.register(app, moduleCtx, { adsSync: adsApi, audiencesSync: audApi });
 console.log("[analytics] routes ready");
 console.log(`[ai] routes ready (provider: ${process.env.ANTHROPIC_API_KEY ? "anthropic" : process.env.LITELLM_KEY ? "litellm" : "NOT CONFIGURED"})`);
 
@@ -2847,4 +2855,10 @@ serve({ fetch: app.fetch, port: PORT, hostname: "0.0.0.0" }, (info) => {
   } else {
     console.log("[tabsense] worker off — set TABSENSE_EMAIL/TABSENSE_PASSWORD to enable");
   }
+  // Ads autopilot: hourly. The cycle itself checks mode=off and platform
+  // credentials, so an unconfigured install just no-ops cheaply.
+  const AP_MINUTES = Math.max(15, Number(process.env.AUTOPILOT_MINUTES || 60));
+  setTimeout(() => ap.runCycle({ trigger: "boot" }).catch(() => {}), 60_000);
+  setInterval(() => ap.runCycle({ trigger: "cron" }).catch(() => {}), AP_MINUTES * 60_000);
+  console.log(`[autopilot] scheduled every ${AP_MINUTES}m`);
 });

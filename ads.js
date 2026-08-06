@@ -1420,7 +1420,33 @@ export function register(app, ctx) {
   });
 
   console.log(`[ads] routes ready (send: ${PLATFORMS.filter(canSend).map((p) => p.id).join(",") || "none"} · manage: ${PLATFORMS.filter(canManage).map((p) => p.id).join(",") || "none"} · write ${writeAllowed() ? "ARMED" : "locked"})`);
+
+  // Handed back to index.js so the worker/autopilot can push conversions on a
+  // schedule without going through HTTP + admin auth against ourselves.
+  return {
+    async syncOrders({ from, to, limit = 5000 } = {}) {
+      const f = from || daysAgoISO(2);
+      const t = to || todayISO();
+      const rows = await loadOrders(f, t, limit);
+      const events = rows.map((r) => toEvent(r));
+      const results = {};
+      for (const p of PLATFORMS) {
+        if (!canSend(p)) continue;
+        try { results[p.id] = await sendToPlatform(p, events); }
+        catch (e) { results[p.id] = { platform: p.id, failed: events.length, errors: [String(e.message || e)] }; }
+      }
+      return { from: f, to: t, orders: events.length, platforms: results };
+    },
+  };
 }
 
 // Exported for offline tests of the payload builders (no network, no DB).
 export const __test = { PLATFORMS, sha256, hashEmail, hashPhoneDigits, hashPhonePlus, phoneDigits, redact, safeRequest, googleDateTime };
+
+// Shared with sibling modules (autopilot.js / audiences.js / funnel.js) so the
+// platform adapters, hashing rules and redaction live in exactly one place.
+export {
+  PLATFORMS, byId, canSend, canManage, missingOf,
+  sha256, hashEmail, hashPhoneDigits, hashPhonePlus, phoneDigits,
+  redact, safeRequest, httpJson, writeAllowed, MAX_DAILY_BUDGET, DEFAULT_CURRENCY,
+};
