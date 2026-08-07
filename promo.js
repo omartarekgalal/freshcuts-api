@@ -479,6 +479,31 @@ export function register(app, ctx, deps = {}) {
     });
   });
 
+  /* ═══ DELETE /api/promo/issue/:id ══════════════════════════════════════
+     الكود اتبعت لرقم غلط (خطأ كتابة في الواتساب). الصف ده أخطر من الاستخدام
+     الغلط: هو بيربط كل طلبات الرقم ده بالحملة أوتوماتيك، فطالما موجود
+     الحملة بتاخد إيراد مش بتاعها. نفس قاعدة المسح: الحدث والربط سوا. */
+  app.delete("/api/promo/issue/:id", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    const r = await pool.query(
+      "DELETE FROM promo_issues WHERE id = $1 RETURNING funnel_event_id, phone_norm", [String(c.req.param("id") || "")]);
+    if (!r.rowCount) return c.json({ ok: false, error: "not_found", message: "الصف ده مش موجود" }, 404);
+    const { funnel_event_id, phone_norm } = r.rows[0];
+    if (funnel_event_id) {
+      await pool.query("DELETE FROM attrib_links WHERE lead_event_id = $1", [funnel_event_id]).catch(() => {});
+      await pool.query("DELETE FROM funnel_events WHERE id = $1", [funnel_event_id]).catch(() => {});
+    }
+    // كل يوم فيه طلب للرقم ده لازم يتعاد بناه — الربط اتشال من تحته.
+    await pool.query(
+      `DELETE FROM attrib_built WHERE day IN (
+         SELECT o.calendar_day FROM ts_orders o
+           LEFT JOIN order_sources s ON s.order_id = o.order_id
+           LEFT JOIN ts_customers tc ON tc.customer_id = o.customer_id
+          WHERE COALESCE(NULLIF(s.phone_norm,''), NULLIF(tc.phone_norm,'')) = $1)`,
+      [phone_norm]).catch(() => {});
+    return c.json({ ok: true, deleted: 1, message: "الكود اترجع من الرقم ده" });
+  });
+
   /* ═══ DELETE /api/promo/redemption/:id ═════════════════════════════════
      الكاشير دوس على كود غلط. من غير طريق رجوع الصف الغلط ده بيفضل «دليل
      مؤكد» في تقرير الإعلانات للأبد — وده أسوأ من إنه مايتسجلش أصلاً.
