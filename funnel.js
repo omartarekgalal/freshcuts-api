@@ -221,6 +221,10 @@ export function register(app, ctx) {
       meta: metaPixel() || null,
       tiktok: ttPixel() || null,
       snapchat: snapPixel() || null,
+      // Google Ads gtag: the conversion id loads the tag, the label routes the
+      // WhatsApp-click conversion. Both are public page values, like a pixel id.
+      google: env("GOOGLE_ADS_CONVERSION_ID") || null,
+      googleLabel: env("GOOGLE_ADS_CONVERSION_LABEL") || null,
     });
   });
 
