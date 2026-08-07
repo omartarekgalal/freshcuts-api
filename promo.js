@@ -479,6 +479,42 @@ export function register(app, ctx, deps = {}) {
     });
   });
 
+  /* ═══ DELETE /api/promo/redemption/:id ═════════════════════════════════
+     الكاشير دوس على كود غلط. من غير طريق رجوع الصف الغلط ده بيفضل «دليل
+     مؤكد» في تقرير الإعلانات للأبد — وده أسوأ من إنه مايتسجلش أصلاً.
+
+     بيمسح التلاتة مع بعض: الاستخدام، وحدث الفنل اللي اتكتب منه، والربط اللي
+     اتبنى عليه. لو سبنا أي واحد فيهم الطلب هيفضل منسوب للحملة الغلط.
+     الأدمن بيمسح أي صف؛ المحطة بتمسح صف عمره أقل من ربع ساعة بس. */
+  app.delete("/api/promo/redemption/:id", async (c) => {
+    const isAdmin = !(await requireAdmin(c));
+    if (!isAdmin) {
+      const who = await requireStation(c); if (isResponse(who)) return who;
+    }
+    const id = String(c.req.param("id") || "").trim();
+    const win = isAdmin ? "" : " AND redeemed_at > NOW() - interval '15 minutes'";
+    const r = await pool.query(
+      `DELETE FROM promo_redemptions WHERE id = $1${win}
+       RETURNING order_id, funnel_event_id`, [id]);
+    if (!r.rowCount) {
+      return c.json({ ok: false, error: "not_found",
+        message: isAdmin ? "الاستخدام ده مش موجود" : "فات وقت التراجع" }, 404);
+    }
+    const { order_id, funnel_event_id } = r.rows[0];
+    // الربط الأول، وبعدين الحدث — العكس بيسيب ربط شايل مفتاح مش موجود.
+    if (funnel_event_id) {
+      await pool.query("DELETE FROM attrib_links WHERE lead_event_id = $1", [funnel_event_id]).catch(() => {});
+      await pool.query("DELETE FROM funnel_events WHERE id = $1", [funnel_event_id]).catch(() => {});
+    }
+    // اليوم اللي اتغيّر لازم يتعاد بناه، وإلا الرقم القديم يفضل في الجدول.
+    if (order_id) {
+      await pool.query(
+        `DELETE FROM attrib_built WHERE day IN (SELECT calendar_day FROM ts_orders WHERE order_id = $1)`,
+        [order_id]).catch(() => {});
+    }
+    return c.json({ ok: true, deleted: 1, orderId: order_id, message: "الاستخدام اترجع" });
+  });
+
   /* دفع التحويلات للمنصات — مخنوق عمداً. الكاشير ممكن يسجّل عشر أكواد في
      دقيقة، ومفيش داعي نضرب المنصات عشر مرات على نفس اليوم. */
   const lastPush = new Map();
