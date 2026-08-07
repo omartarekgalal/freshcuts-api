@@ -52,6 +52,7 @@
 ═══════════════════════════════════════════════════════════════════════════ */
 
 import crypto from "node:crypto";
+import { menuRows } from "./catalog.js";
 
 /* ─────────────────────────────────────────────────────────────────────────
    CONFIG — every environment variable this module reads.
@@ -267,6 +268,13 @@ const meta = {
           currency: e.currency,
           ...(e.orderId ? { order_id: String(e.orderId) } : {}),
           ...(e.contentCategory ? { content_category: e.contentCategory } : {}),
+          ...(e.contents ? {
+            content_type: "product",
+            contents: e.contents.map((i) => ({
+              id: String(i.id), quantity: i.quantity, item_price: i.unitPrice,
+            })),
+            num_items: e.numItems,
+          } : {}),
         },
       };
       return ev;
@@ -432,6 +440,12 @@ const tiktok = {
           content_type: "product",
           ...(e.orderId ? { order_id: String(e.orderId) } : {}),
           ...(e.contentCategory ? { description: e.contentCategory } : {}),
+          ...(e.contents ? {
+            contents: e.contents.map((i) => ({
+              content_id: String(i.id), content_name: i.name,
+              quantity: i.quantity, price: i.unitPrice,
+            })),
+          } : {}),
         },
       };
     });
@@ -621,6 +635,10 @@ const snapchat = {
           value: String(e.value),
           ...(e.orderId ? { order_id: String(e.orderId) } : {}),
           ...(e.contentCategory ? { content_category: [e.contentCategory] } : {}),
+          ...(e.contents ? {
+            content_ids: e.contents.map((i) => String(i.id)),
+            number_items: String(e.numItems),
+          } : {}),
         },
       };
     });
@@ -978,6 +996,50 @@ export function register(app, ctx) {
     return r.rows;
   }
 
+  /* ─── basket contents ────────────────────────────────────────────────
+     "What did they buy" is the half of a Purchase the optimisers use to
+     find look-alike buyers and to power catalog ads. TabSense gives us the
+     item NAME, so we map it onto the catalog product id — a purchase that
+     carries the same id as the feed is one the platform can act on.       */
+  let menuIdx = { at: 0, byName: new Map() };
+  const normName = (s) => String(s || "").trim().replace(/\s+/g, " ").toLowerCase();
+
+  async function menuIndex() {
+    if (menuIdx.byName.size && Date.now() - menuIdx.at < 15 * 60_000) return menuIdx.byName;
+    try {
+      const rows = await menuRows();
+      const m = new Map();
+      for (const r of rows) m.set(normName(r.title), r.id);
+      menuIdx = { at: Date.now(), byName: m };
+    } catch (e) {
+      console.error("[ads] menu index failed:", e.message);   // fall back to names
+    }
+    return menuIdx.byName;
+  }
+
+  async function loadItems(orderIds) {
+    if (!orderIds.length) return new Map();
+    const r = await pool.query(
+      `SELECT order_id, name, qty, amount FROM ts_order_items
+        WHERE order_id = ANY($1::text[]) ORDER BY order_id, idx`, [orderIds]);
+    const idx = await menuIndex();
+    const out = new Map();
+    for (const row of r.rows) {
+      const qty = Math.max(1, Math.round(Number(row.qty) || 1));
+      const total = Number(row.amount) || 0;
+      const id = idx.get(normName(row.name)) || null;
+      if (!out.has(row.order_id)) out.set(row.order_id, []);
+      out.get(row.order_id).push({
+        id: id || `n:${normName(row.name).slice(0, 60)}`,   // اسم كبديل لو الصنف مش في الكاتالوج
+        matched: !!id,
+        name: String(row.name || "").trim(),
+        quantity: qty,
+        unitPrice: Math.round((total / qty) * 100) / 100,
+      });
+    }
+    return out;
+  }
+
   // Channel label the platforms can slice on: "delivery:keeta" / "delivery"
   // for aggregator orders, "instore" for everything punched at the till.
   // External order_type is the POS truth; the cashier/FeedUs tag adds the app.
@@ -989,7 +1051,7 @@ export function register(app, ctx) {
   }
 
   // A restaurant sale, expressed the same way for every platform.
-  function toEvent(row, eventName = "Purchase") {
+  function toEvent(row, eventName = "Purchase", items = null) {
     const digits = row.phone_norm ? phoneDigits(row.phone_norm, normPhone) : null;
     return {
       eventId: String(row.order_id),          // TabSense order id IS the dedup key
@@ -1004,6 +1066,8 @@ export function register(app, ctx) {
       email: row.email || null,
       externalId: row.customer_id || null,
       contentCategory: channelOf(row),
+      contents: items && items.length ? items : null,
+      numItems: items ? items.reduce((a, i) => a + i.quantity, 0) : null,
       // A till sale in Jeddah is not a website conversion. Saying so is both
       // truthful and what unlocks offline/store optimisation on each platform.
       actionSource: "physical_store",
@@ -1158,12 +1222,22 @@ export function register(app, ctx) {
   function matchQuality(events) {
     const withPhone = events.filter((e) => e.phoneDigits).length;
     const withEmail = events.filter((e) => e.email).length;
+    const withItems = events.filter((e) => e.contents && e.contents.length).length;
+    const lines = events.flatMap((e) => e.contents || []);
+    const matchedLines = lines.filter((i) => i.matched).length;
     return {
       total: events.length,
       withPhone,
       withEmail,
       identityless: events.filter((e) => !e.phoneDigits && !e.email).length,
       pctMatchable: events.length ? Math.round((withPhone / events.length) * 100) : 0,
+      // Basket depth: an order with items teaches the optimiser far more than
+      // a bare total, and a line matched to a catalog id can drive product ads.
+      withItems,
+      pctWithItems: events.length ? Math.round((withItems / events.length) * 100) : 0,
+      itemLines: lines.length,
+      itemLinesMatchedToCatalog: matchedLines,
+      pctItemsInCatalog: lines.length ? Math.round((matchedLines / lines.length) * 100) : 0,
     };
   }
 
@@ -1235,7 +1309,10 @@ export function register(app, ctx) {
     } catch (e) {
       return c.json({ ok: false, error: `could not read ts_orders: ${e.message}` }, 500);
     }
-    const events = rows.map((r) => toEvent(r, b.eventName || "Purchase"));
+    let itemsByOrder = new Map();
+    try { itemsByOrder = await loadItems(rows.map((r) => String(r.order_id))); }
+    catch (e) { console.error("[ads] items load failed:", e.message); }  // basket is a bonus, never a blocker
+    const events = rows.map((r) => toEvent(r, b.eventName || "Purchase", itemsByOrder.get(String(r.order_id)) || null));
 
     const results = {};
     for (const p of targets) {
@@ -1463,7 +1540,9 @@ export function register(app, ctx) {
       const f = from || daysAgoISO(2);
       const t = to || todayISO();
       const rows = await loadOrders(f, t, limit);
-      const events = rows.map((r) => toEvent(r));
+      let itemsByOrder = new Map();
+      try { itemsByOrder = await loadItems(rows.map((r) => String(r.order_id))); } catch { /* bonus */ }
+      const events = rows.map((r) => toEvent(r, "Purchase", itemsByOrder.get(String(r.order_id)) || null));
       const results = {};
       for (const p of PLATFORMS) {
         if (!canSend(p)) continue;

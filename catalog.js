@@ -60,6 +60,12 @@ async function getRows() {
 // CSV per Meta's product-feed spec. Quotes doubled, commas safe.
 const q = (s) => `"${String(s ?? "").replace(/"/g, '""').replace(/[\r\n]+/g, " ")}"`;
 
+/** Menu rows for other modules (ads.js maps order-item names → catalog ids so
+ *  the platforms can tie a purchase to the exact product in the feed). */
+export async function menuRows() {
+  return getRows();
+}
+
 export function register(app, ctx) {
   const { requireAdmin } = ctx;
 
