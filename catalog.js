@@ -43,6 +43,40 @@ async function fetchMenu() {
       });
     }
   }
+  return fillMissingImages(rows);
+}
+
+/* Meta drops (and warns about) any product row with an empty image_link, and a
+   DPA carousel cannot render a card without one. 18 of the 72 menu items — the
+   by-weight grill cuts — carry no photo in TabSense. Rather than let them fall
+   out of the catalog, borrow the photo of the closest sibling item: same
+   category, most shared words once weight/serving words are stripped, so
+   "كبدة مشوية كيلو" inherits the photo of "كبدة مشوية". If nothing in the
+   category matches, any photo from that category is still truer than none. */
+const WEIGHT_WORDS = /(?:^|\s)(كيلو|نصف|نص|ربع|وجبة|طبق|صحن|علبة|قطعة|حبة)(?=\s|$)/g;
+const normName = (s) => String(s || "")
+  .replace(/[ً-ْـ]/g, "")      // harakat + tatweel
+  .replace(/[أإآ]/g, "ا").replace(/ة/g, "ه").replace(/[ىئ]/g, "ي")
+  .replace(WEIGHT_WORDS, " ")
+  .replace(/[^\p{L}\p{N}\s]/gu, " ")
+  .replace(/\s+/g, " ").trim();
+
+function fillMissingImages(rows) {
+  const withImage = rows.filter((r) => r.image);
+  if (!withImage.length) return rows;
+  for (const r of rows) {
+    if (r.image) continue;
+    const want = new Set(normName(r.title).split(" ").filter(Boolean));
+    let best = null, bestScore = 0;
+    for (const cand of withImage) {
+      if (cand.category !== r.category) continue;
+      const words = normName(cand.title).split(" ").filter(Boolean);
+      const score = words.filter((w) => want.has(w)).length;
+      if (score > bestScore) { best = cand; bestScore = score; }
+    }
+    if (!best) best = withImage.find((c) => c.category === r.category) || null;
+    if (best) { r.image = best.image; r.imageFrom = best.id; }
+  }
   return rows;
 }
 
@@ -93,6 +127,9 @@ export function register(app, ctx) {
       ok: !e,
       items: rows ? rows.length : 0,
       withImage: rows ? rows.filter((r) => r.image).length : 0,
+      ownImage: rows ? rows.filter((r) => r.image && !r.imageFrom).length : 0,
+      borrowedImage: rows ? rows.filter((r) => r.imageFrom).length : 0,
+      stillMissingImage: rows ? rows.filter((r) => !r.image).map((r) => r.title) : [],
       lastFetch: cache.at ? new Date(cache.at).toISOString() : null,
       error: e || cache.error,
       feedUrl: "https://freshcuts-api.o2m8.me/api/catalog/feed.csv",
