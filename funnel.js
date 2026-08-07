@@ -58,8 +58,9 @@ function rateLimited(ip) {
   return slot.n > 240;
 }
 
-export function register(app, ctx) {
+export function register(app, ctx, deps = {}) {
   const { pool, requireAdmin, jb, normPhone } = ctx;
+  const attribution = deps.attribution || null;   // attribution.register() return value
 
   async function ensureSchema() {
     await pool.query(`
@@ -293,6 +294,16 @@ export function register(app, ctx) {
        jb(utm), jb(e.click), pnLocal || null, e.ip, e.ua, jb(results)]).catch((err) => {
         console.error("[funnel] store failed:", err.message);
       });
+
+    // A Purchase with an order id closes the loop: the same phone (or the same
+    // order id) may already be sitting in this table as a Lead from an ad. Link
+    // it now so /api/attribution/* can say "مؤكد" instead of guessing. Never
+    // blocks the response — the autopilot sweep catches anything missed here.
+    if (attribution?.linkOrder && orderId && (name === "Purchase" || name === "InitiateCheckout")) {
+      attribution.linkOrder({ orderId }).catch((err) => {
+        console.error("[funnel] link-lead failed:", err.message);
+      });
+    }
 
     return c.json({ ok: true, results });
   });

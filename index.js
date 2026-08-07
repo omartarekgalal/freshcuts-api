@@ -28,6 +28,7 @@ import * as keeta from "./keeta.js";
 import * as funnel from "./funnel.js";
 import * as audiences from "./audiences.js";
 import * as autopilot from "./autopilot.js";
+import * as attribution from "./attribution.js";
 import * as catalog from "./catalog.js";
 
 const { Pool } = pg;
@@ -2840,10 +2841,17 @@ dayreport.register(app, moduleCtx);
 // on its own schedule without HTTP round-trips against ourselves.
 const adsApi = ads.register(app, moduleCtx);
 keeta.register(app, moduleCtx);
-funnel.register(app, moduleCtx);
+// attribution.register hands back { sweepAndRoll, linkOrder, overviewData }.
+// It registers BEFORE funnel so a storefront Purchase can link itself to the
+// ad lead that produced it the moment it lands, and before autopilot so the
+// agent can read attribution numbers without an HTTP round-trip to ourselves.
+const attribApi = attribution.register(app, moduleCtx);
+funnel.register(app, moduleCtx, { attribution: attribApi });
 catalog.register(app, moduleCtx);
 const audApi = audiences.register(app, moduleCtx);
-const ap = autopilot.register(app, moduleCtx, { adsSync: adsApi, audiencesSync: audApi });
+const ap = autopilot.register(app, moduleCtx, {
+  adsSync: adsApi, audiencesSync: audApi, attribution: attribApi,
+});
 console.log("[analytics] routes ready");
 console.log(`[ai] routes ready (provider: ${process.env.ANTHROPIC_API_KEY ? "anthropic" : process.env.LITELLM_KEY ? "litellm" : "NOT CONFIGURED"})`);
 
@@ -2863,4 +2871,14 @@ serve({ fetch: app.fetch, port: PORT, hostname: "0.0.0.0" }, (info) => {
   setTimeout(() => ap.runCycle({ trigger: "boot" }).catch(() => {}), 60_000);
   setInterval(() => ap.runCycle({ trigger: "cron" }).catch(() => {}), AP_MINUTES * 60_000);
   console.log(`[autopilot] scheduled every ${AP_MINUTES}m`);
+  // Fast loop: emergencies only. It reads today's numbers, and only wakes the
+  // LLM when something is actually wrong — a quiet quarter-hour costs a couple
+  // of platform calls and nothing else. Offset from the full cycle so the two
+  // never contend (both take the same in-process lock anyway).
+  const AP_FAST_MINUTES = Math.max(5, Number(process.env.AUTOPILOT_FAST_MINUTES || 15));
+  setTimeout(() => {
+    ap.runEmergencyCheck({ trigger: "boot" }).catch(() => {});
+    setInterval(() => ap.runEmergencyCheck({ trigger: "fast" }).catch(() => {}), AP_FAST_MINUTES * 60_000);
+  }, 180_000);
+  console.log(`[autopilot] emergency check every ${AP_FAST_MINUTES}m`);
 });

@@ -48,22 +48,24 @@ function llmProvider() {
   return null;
 }
 
+async function llmPost(url, headers, body) {
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), LLM_TIMEOUT_MS);
+  try {
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "content-type": "application/json", ...headers },
+      body: JSON.stringify(body),
+      signal: ctl.signal,
+    });
+    const text = await res.text();
+    if (!res.ok) throw new Error(`LLM ${res.status}: ${text.slice(0, 300)}`);
+    return JSON.parse(text);
+  } finally { clearTimeout(timer); }
+}
+
 async function llmTool(provider, { system, user, tool, maxTokens = 8000 }) {
-  const post = async (url, headers, body) => {
-    const ctl = new AbortController();
-    const timer = setTimeout(() => ctl.abort(), LLM_TIMEOUT_MS);
-    try {
-      const res = await fetch(url, {
-        method: "POST",
-        headers: { "content-type": "application/json", ...headers },
-        body: JSON.stringify(body),
-        signal: ctl.signal,
-      });
-      const text = await res.text();
-      if (!res.ok) throw new Error(`LLM ${res.status}: ${text.slice(0, 300)}`);
-      return JSON.parse(text);
-    } finally { clearTimeout(timer); }
-  };
+  const post = llmPost;
   if (provider.kind === "anthropic") {
     const data = await post(ANTHROPIC_URL,
       { "x-api-key": provider.key, "anthropic-version": ANTHROPIC_VERSION },
@@ -90,6 +92,60 @@ async function llmTool(provider, { system, user, tool, maxTokens = 8000 }) {
   return JSON.parse(call.function.arguments || "{}");
 }
 
+/* ── دورة محادثة واحدة بأدوات حقيقية ────────────────────────────────────────
+   نفس سلسلة المزوّدين، بس بدل ما نجبر الموديل على أداة واحدة، بنديله عدة
+   أدوات وبنسيبه يقرر — وبنرجّع الرد بشكل موحّد مهما كان المزوّد.
+   `native` هو رسالة المساعد بصيغة المزوّد نفسه عشان تترجّع في المحادثة زي
+   ما هي (مينفعش نعيد تركيبها بإيدينا — هنكسر تسلسل الـ tool ids).          */
+function toolSpecs(provider, tools) {
+  return provider.kind === "anthropic"
+    ? tools.map((t) => ({ name: t.name, description: t.description, input_schema: t.schema }))
+    : tools.map((t) => ({ type: "function", function: { name: t.name, description: t.description, parameters: t.schema } }));
+}
+
+async function llmTurn(provider, { system, messages, tools, maxTokens = 4000 }) {
+  if (provider.kind === "anthropic") {
+    const data = await llmPost(ANTHROPIC_URL,
+      { "x-api-key": provider.key, "anthropic-version": ANTHROPIC_VERSION },
+      { model: provider.model, max_tokens: maxTokens, system, messages, tools: toolSpecs(provider, tools) });
+    const blocks = data.content || [];
+    return {
+      native: { role: "assistant", content: blocks },
+      text: blocks.filter((b) => b.type === "text").map((b) => b.text).join("\n").trim(),
+      calls: blocks.filter((b) => b.type === "tool_use").map((b) => ({ id: b.id, name: b.name, input: b.input || {} })),
+      stop: data.stop_reason || null,
+      usage: data.usage || null,
+    };
+  }
+  const data = await llmPost(`${LITELLM_BASE}/chat/completions`,
+    { authorization: `Bearer ${provider.key}` },
+    {
+      model: provider.model, max_tokens: maxTokens,
+      messages: [{ role: "system", content: system }, ...messages],
+      tools: toolSpecs(provider, tools),
+    });
+  const msg = (data.choices || [])[0]?.message || {};
+  return {
+    native: msg,
+    text: String(msg.content || "").trim(),
+    calls: (msg.tool_calls || []).map((tc) => {
+      let input = {};
+      try { input = JSON.parse(tc.function?.arguments || "{}"); } catch { input = { __parseError: tc.function?.arguments }; }
+      return { id: tc.id, name: tc.function?.name, input };
+    }),
+    stop: (data.choices || [])[0]?.finish_reason || null,
+    usage: data.usage || null,
+  };
+}
+
+/* نتائج الأدوات بترجع للموديل بصيغة المزوّد. */
+function toolResultMessages(provider, results) {
+  if (provider.kind === "anthropic") {
+    return [{ role: "user", content: results.map((r) => ({ type: "tool_result", tool_use_id: r.id, content: r.text })) }];
+  }
+  return results.map((r) => ({ role: "tool", tool_call_id: r.id, content: r.text }));
+}
+
 /* ── Settings (single JSONB row, editable from the UI) ─────────────────────── */
 const DEFAULT_SETTINGS = {
   mode: "suggest",            // off | suggest | auto
@@ -108,8 +164,14 @@ const DEFAULT_SETTINGS = {
   syncConversions: true,      // push CAPI events each cycle
   syncAudiences: true,        // refresh retargeting audiences nightly
   useLlm: true,               // creative briefs + strategy notes
+  agent: true,                // الوكيل الذكي (تفكير + أدوات) — غير قواعد التشغيل
+  agentMaxTurns: 8,           // سقف دورات المحادثة في الجولة الواحدة
+  emergencyCooldownHours: 6,  // نفس الطوارئ ما تتفتحش تاني قبل كده
   platforms: { meta: true, tiktok: true, snapchat: true },
 };
+
+/* أقصى عدد دورات مهما قال الإعداد — سياج أخير ضد لوب لا نهائي بيحرق توكنز. */
+const AGENT_TURN_CEILING = 12;
 
 /* ── Rules engine — pure function, unit-testable, no I/O ───────────────────────
    Input rows: { platform, id, name, status, dailyBudget, ageDays,
@@ -206,6 +268,13 @@ export function register(app, ctx, deps = {}) {
   const { pool, requireAdmin, jb, todayISO, daysAgoISO } = ctx;
   const adsSync = deps.adsSync || null;          // ads.register() return value
   const audiencesSync = deps.audiencesSync || null;
+  const attribution = deps.attribution || null;  // attribution.register() return value
+
+  // حالة الدورات — معرّفة هنا عشان الوكيل والدورة الكاملة يشوفوا نفس الأقفال.
+  let running = false;
+  let emergencyRunning = false;
+  let lastNightlyAudienceDay = null;
+  const platformFails = {};
 
   /* ── schema ── */
   async function ensureSchema() {
@@ -423,9 +492,509 @@ export function register(app, ctx, deps = {}) {
     });
   }
 
+  /* ═══════════════════════════════════════════════════════════════════════
+     الوكيل — LLM بأدوات حقيقية، محبوس جوه نفس الأسوار
+
+     الفرق بينه وبين المستشار (runStrategist) إنه بيشوف ويعمل، مش بس بيقترح:
+     بيسأل عن الأرقام بأدوات قراءة، وبيقدر يوقف حملة أو يغيّر ميزانية.
+
+     كل أداة كتابة بتعدي على نفس الأسوار اللي القواعد الصمّاء بتعدي عليها:
+       writeAllowed() · maxCampaignBudget · maxChangePct · maxTotalBudget ·
+       budgetCooldownHours · وقاعدة القتل (مايوقفش حملة كاسبة).
+     الوكيل ميقدرش يعدّيها. لو حاول، الأداة بترجّعله رفض مكتوب بالسبب،
+     والرفض نفسه بيتسجّل في ap_decisions عشان المالك يشوف الوكيل حاول يعمل
+     إيه — مش بس اللي نفّذه.
+
+     في mode=suggest الأدوات مش بتنفّذ: بتحط القرار في طابور الموافقة وبتقول
+     للموديل كده صراحة، فهو ميفتكرش إن الحاجة اتعملت.
+     ═══════════════════════════════════════════════════════════════════════ */
+
+  async function budgetCooldownSet(s) {
+    const cd = await pool.query(
+      `SELECT DISTINCT platform, campaign_id FROM ap_decisions
+        WHERE kind='budget' AND status IN ('executed','auto_executed')
+          AND executed_at > NOW() - ($1 || ' hours')::interval`,
+      [String(Number(s.budgetCooldownHours) || 24)]);
+    return new Set(cd.rows.map((r) => `${r.platform}:${r.campaign_id}`));
+  }
+
+  /* لقطة الحملات + أرقام آخر ٣ أيام. بتتاخد مرة في أول الجولة وبتُستعمل في
+     كل قرارات الأسوار — عشان ما نضربش المنصات عند كل نداء أداة. */
+  async function perfSnapshot({ from, to, platform = null } = {}) {
+    const today = todayISO();
+    const f = from || daysAgoISO(2), t = to || today;
+    const rows = [], reasons = {};
+    for (const p of PLATFORMS) {
+      if (p.id === "google") continue;
+      if (platform && p.id !== platform) continue;
+      if (!canManage(p)) { reasons[p.id] = `غير مربوطة — ناقص ${missingOf(p.manageEnv).join(", ")}`; continue; }
+      try {
+        const [camps, ins] = await Promise.all([p.campaigns(), p.insights({ from: f, to: t })]);
+        if (!camps.ok) { reasons[p.id] = camps.reason; continue; }
+        if (!ins.ok) reasons[p.id] = ins.reason;
+        const m = new Map((ins.ok ? ins.rows : []).map((x) => [String(x.campaignId), x]));
+        for (const c of camps.campaigns) {
+          const a = m.get(String(c.id));
+          const spend = a?.spend || 0, results = a?.results || 0, revenue = a?.resultValue || 0;
+          rows.push({
+            platform: p.id, id: String(c.id), name: c.name, status: c.status,
+            dailyBudget: c.dailyBudget,
+            spend, results, revenue,
+            impressions: a?.impressions || 0, clicks: a?.clicks || 0,
+            cpa: results > 0 ? Math.round((spend / results) * 100) / 100 : null,
+            roas: spend > 0 ? Math.round((revenue / spend) * 100) / 100 : null,
+          });
+        }
+      } catch (e) { reasons[p.id] = String(e.message || e); }
+    }
+    return { range: { from: f, to: t }, rows, reasons };
+  }
+
+  const activeBudgetOf = (rows) => rows
+    .filter((r) => r.status === "ACTIVE" && r.dailyBudget != null)
+    .reduce((a, r) => a + r.dailyBudget, 0);
+
+  /* ── الأسوار كدوال ترجّع سبب الرفض بالعربي، مش boolean ────────────────── */
+
+  function guardPause({ platform, campaignId }, s, snap) {
+    if (!writeAllowed()) return "ADS_ALLOW_WRITE مش مساوي 1 — الكتابة على المنصات مقفولة من أصلها.";
+    const row = snap.rows.find((r) => r.platform === platform && r.id === String(campaignId));
+    if (!row) return `مفيش حملة بالرقم ${campaignId} على ${platform} في اللقطة الحالية — راجع get_performance الأول.`;
+    if (row.status !== "ACTIVE") return `الحملة "${row.name}" أصلاً ${row.status} — مفيش حاجة تتوقف.`;
+    // قاعدة القتل بتحدد إمتى الإيقاف مبرر. حملة بتضرب المستهدف مش بتتقفل.
+    if (row.spend >= s.minSpend && row.cpa != null && row.cpa <= s.targetCpa) {
+      return `مرفوض: "${row.name}" تكلفة نتيجتها ${row.cpa} ر.س وهي أقل من المستهدف (${s.targetCpa} ر.س) — دي حملة كاسبة والقواعد بتقول ما توقفش الكاسب. قاعدة القتل بتشتغل عند تكلفة أعلى من ${s.killMultiple}× المستهدف. لو عايز تقلل صرفها استخدم set_budget.`;
+    }
+    return null;
+  }
+
+  function guardBudget({ platform, campaignId, amount }, s, snap, cooldown) {
+    if (!writeAllowed()) return "ADS_ALLOW_WRITE مش مساوي 1 — الكتابة على المنصات مقفولة من أصلها.";
+    const row = snap.rows.find((r) => r.platform === platform && r.id === String(campaignId));
+    if (!row) return `مفيش حملة بالرقم ${campaignId} على ${platform} في اللقطة الحالية — راجع get_performance الأول.`;
+    const to = Number(amount);
+    if (!Number.isFinite(to) || to <= 0) return "المبلغ لازم يكون رقم موجب بالريال.";
+    if (row.dailyBudget == null) {
+      return `مرفوض: "${row.name}" ميزانيتها متظبطة على مستوى المجموعة الإعلانية مش الحملة — الوكيل بيدير ميزانيات الحملات بس.`;
+    }
+    const cap = Math.min(s.maxCampaignBudget, MAX_DAILY_BUDGET);
+    if (to > cap) {
+      return `مرفوض: ${to} ر.س/يوم فوق سقف الحملة الواحدة (${cap} ر.س). السقف ده إعداد المالك — لو عايز تعدّيه لازم هو يرفعه من الإعدادات، مش انت.`;
+    }
+    const changePct = Math.abs(to - row.dailyBudget) / row.dailyBudget * 100;
+    if (changePct > s.maxChangePct) {
+      return `مرفوض: التغيير من ${row.dailyBudget} لـ ${to} ر.س يعني ${Math.round(changePct)}٪ وده فوق أقصى تغيير مسموح في الخطوة الواحدة (${s.maxChangePct}٪). الخوارزمية بتتكسر لو الميزانية نطّت مرة واحدة — كبّر على خطوات.`;
+    }
+    const after = activeBudgetOf(snap.rows) - row.dailyBudget + to;
+    if (after > s.maxTotalBudget) {
+      return `مرفوض: مجموع ميزانيات الحملات الشغالة هيبقى ${Math.round(after)} ر.س/يوم وده فوق السقف الكلي (${s.maxTotalBudget} ر.س). وقّف أو قلّل حملة تانية الأول.`;
+    }
+    if (cooldown.has(`${platform}:${campaignId}`)) {
+      return `مرفوض: "${row.name}" ميزانيتها اتغيّرت خلال آخر ${s.budgetCooldownHours} ساعة — فترة تعلّم لازم تعدّي قبل أي تغيير تاني.`;
+    }
+    return null;
+  }
+
+  /* ── تعريفات الأدوات ──────────────────────────────────────────────────── */
+  const AGENT_TOOLS = [
+    {
+      name: "get_performance",
+      description: "أرقام الحملات من المنصات (صرف، نتايج، تكلفة النتيجة، العائد، الميزانية اليومية، الحالة) في مدى تواريخ.",
+      schema: {
+        type: "object",
+        properties: {
+          from: { type: "string", description: "تاريخ البداية YYYY-MM-DD" },
+          to: { type: "string", description: "تاريخ النهاية YYYY-MM-DD" },
+          platform: { type: "string", enum: ["meta", "tiktok", "snapchat"], description: "اختياري — منصة واحدة بس" },
+        },
+        required: ["from", "to"],
+      },
+    },
+    {
+      name: "get_attribution",
+      description: "مردود كل قناة: صرف ← عملاء محتملين ← طلبات ← إيراد ← عملاء جداد/راجعين، مع درجة ثقة لكل صف (مؤكد/مرجّح/تقديري). ده المصدر الوحيد اللي بيربط الإعلان بمبيعات الكاشير الحقيقية.",
+      schema: {
+        type: "object",
+        properties: { from: { type: "string" }, to: { type: "string" } },
+        required: ["from", "to"],
+      },
+    },
+    {
+      name: "get_sales",
+      description: "مبيعات المطعم الحقيقية من نظام الكاشير يوم بيوم، ومقارنتها بهدف المبيعات اليومي.",
+      schema: {
+        type: "object",
+        properties: { from: { type: "string" }, to: { type: "string" } },
+        required: ["from", "to"],
+      },
+    },
+    {
+      name: "pause_campaign",
+      description: "إيقاف حملة. بيمر على الأسوار — لو الحملة كاسبة أو الكتابة مقفولة هترجعلك رفض بالسبب.",
+      schema: {
+        type: "object",
+        properties: {
+          platform: { type: "string", enum: ["meta", "tiktok", "snapchat"] },
+          id: { type: "string", description: "رقم الحملة على المنصة" },
+          reason: { type: "string", description: "السبب بالعربي، مبني على رقم من البيانات" },
+        },
+        required: ["platform", "id", "reason"],
+      },
+    },
+    {
+      name: "set_budget",
+      description: "تغيير الميزانية اليومية لحملة (بالريال). بيمر على أسوار: سقف الحملة، أقصى نسبة تغيير في الخطوة، السقف الكلي، وفترة التبريد.",
+      schema: {
+        type: "object",
+        properties: {
+          platform: { type: "string", enum: ["meta", "tiktok", "snapchat"] },
+          id: { type: "string" },
+          amount: { type: "number", description: "الميزانية اليومية الجديدة بالريال" },
+          reason: { type: "string", description: "السبب بالعربي، مبني على رقم من البيانات" },
+        },
+        required: ["platform", "id", "amount", "reason"],
+      },
+    },
+    {
+      name: "create_note",
+      description: "تسجيل ملاحظة أو توصية للمالك تظهر في لوحة القرارات. استخدمها لأي حاجة انت شايفها مهمة ومش من صلاحياتك تنفّذها.",
+      schema: {
+        type: "object",
+        properties: { text: { type: "string", description: "الملاحظة بالعربي" } },
+        required: ["text"],
+      },
+    },
+  ];
+
+  /* ── تنفيذ الأدوات ────────────────────────────────────────────────────── */
+  async function runAgentTool(name, input, agentCtx) {
+    const { s, snap, cooldown, runId } = agentCtx;
+    const day = (v, fb) => (/^\d{4}-\d{2}-\d{2}$/.test(String(v || "")) ? String(v) : fb);
+
+    if (name === "get_performance") {
+      const from = day(input.from, daysAgoISO(6)), to = day(input.to, todayISO());
+      const only = ["meta", "tiktok", "snapchat"].includes(input.platform) ? input.platform : null;
+      const r = await perfSnapshot({ from, to, platform: only });
+      return { ok: true, ...r };
+    }
+
+    if (name === "get_sales") {
+      const from = day(input.from, daysAgoISO(6)), to = day(input.to, todayISO());
+      const days = await pool.query(
+        `SELECT calendar_day::text AS day, count(*)::int AS orders, COALESCE(sum(total),0)::numeric(12,2) AS revenue
+           FROM ts_orders
+          WHERE calendar_day BETWEEN $1::date AND $2::date
+            AND (order_type IS NULL OR (order_type NOT ILIKE '%void%' AND order_type NOT ILIKE '%refund%'))
+          GROUP BY 1 ORDER BY 1`, [from, to]);
+      const total = days.rows.reduce((a, r) => a + Number(r.revenue), 0);
+      const avg = days.rows.length ? total / days.rows.length : 0;
+      return {
+        ok: true, range: { from, to }, days: days.rows,
+        totalRevenue: Math.round(total * 100) / 100,
+        avgDailySales: Math.round(avg),
+        goalDailySales: s.goalDailySales,
+        goalProgressPct: s.goalDailySales > 0 ? Math.round((avg / s.goalDailySales) * 100) : null,
+      };
+    }
+
+    if (name === "get_attribution") {
+      if (!attribution?.overviewData) {
+        return { ok: false, error: "موديول الإسناد مش مربوط في النسخة دي — مفيش أرقام إسناد أقدر أوريهالك. متخترعش أرقام بدالها." };
+      }
+      const from = day(input.from, daysAgoISO(29)), to = day(input.to, todayISO());
+      const r = await attribution.overviewData(from, to);
+      // بنبعت الصفوف اللي فيها حياة بس — الباقي أصفار وبتاكل توكنز من غير فايدة.
+      return {
+        ok: true, range: r.range,
+        channels: r.rows.filter((x) => x.orders > 0 || x.spend.total > 0 || x.leadsTotal > 0),
+        totals: r.totals, coverage: r.coverage, reasons: r.reasons, notes: r.notes,
+      };
+    }
+
+    if (name === "create_note") {
+      const text = String(input.text || "").slice(0, 4000);
+      if (!text) return { ok: false, error: "الملاحظة فاضية." };
+      await pool.query(
+        `INSERT INTO ap_decisions (id, run_id, platform, campaign_id, campaign_name, kind, detail, reason, status)
+         VALUES ($1,$2,NULL,NULL,NULL,'note',$3,$4,'info')`,
+        [crypto.randomUUID(), runId, jb({ by: "agent" }), text]);
+      return { ok: true, saved: true };
+    }
+
+    if (name === "pause_campaign" || name === "set_budget") {
+      const platform = String(input.platform || "");
+      const campaignId = String(input.id || "");
+      const reason = String(input.reason || "").slice(0, 2000);
+      const kind = name === "pause_campaign" ? "pause" : "budget";
+      const row = snap.rows.find((r) => r.platform === platform && r.id === campaignId);
+
+      const refusal = kind === "pause"
+        ? guardPause({ platform, campaignId }, s, snap)
+        : guardBudget({ platform, campaignId, amount: input.amount }, s, snap, cooldown);
+
+      if (refusal) {
+        // الرفض نفسه حدث يستاهل التسجيل — المالك لازم يشوف الوكيل حاول إيه.
+        await pool.query(
+          `INSERT INTO ap_decisions (id, run_id, platform, campaign_id, campaign_name, kind, detail, reason, status)
+           VALUES ($1,$2,$3,$4,$5,'agent',$6,$7,'refused')`,
+          [crypto.randomUUID(), runId, platform, campaignId, row?.name || null,
+           jb({ tool: name, input, refusal }), refusal]);
+        agentCtx.refusals.push({ tool: name, input, refusal });
+        return { ok: false, refused: true, error: refusal };
+      }
+
+      const detail = kind === "pause"
+        ? { state: "PAUSED", by: "agent" }
+        : { from: row.dailyBudget, to: Number(input.amount), by: "agent" };
+
+      // suggest: مبنكتبش على المنصة، بنحط في الطابور وبنقول للموديل الحقيقة.
+      if (s.mode !== "auto") {
+        const id = crypto.randomUUID();
+        await pool.query(
+          `INSERT INTO ap_decisions (id, run_id, platform, campaign_id, campaign_name, kind, detail, reason, status)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'proposed')`,
+          [id, runId, platform, campaignId, row.name, kind, jb(detail), reason]);
+        agentCtx.queued++;
+        return { ok: true, executed: false, queued: true, decisionId: id,
+          note: `الوضع الحالي "${s.mode}" مش "auto" — القرار اتحط في طابور موافقة المالك ومااتنفّذش على المنصة. متفترضش إنه اتنفّذ.` };
+      }
+
+      const res = await executeDecision({ platform, campaign_id: campaignId, kind, detail }, s);
+      const id = crypto.randomUUID();
+      await pool.query(
+        `INSERT INTO ap_decisions (id, run_id, platform, campaign_id, campaign_name, kind, detail, reason, status, result, executed_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+        [id, runId, platform, campaignId, row.name, kind, jb(detail), reason,
+         res.ok ? "auto_executed" : "failed", jb(res), res.ok ? new Date() : null]);
+      if (res.ok) {
+        agentCtx.executed++;
+        // اللقطة لازم تتحدّث جوه نفس الجولة، وإلا السور الكلي هيحسب برقم قديم.
+        if (kind === "budget") row.dailyBudget = Number(input.amount);
+        if (kind === "pause") row.status = "PAUSED";
+        cooldown.add(`${platform}:${campaignId}`);
+      }
+      return res.ok
+        ? { ok: true, executed: true, decisionId: id, applied: detail }
+        : { ok: false, executed: false, error: res.error || "المنصة رفضت التنفيذ", platform: res.platform ?? null };
+    }
+
+    return { ok: false, error: `أداة غير معروفة: ${name}` };
+  }
+
+  /* ── الـ system prompt ────────────────────────────────────────────────── */
+  function agentSystem(s, baseline, focus) {
+    return `أنت وكيل إدارة إعلانات مطعم "فريش كتس" في جدة (برجر وستيك). السوق سعودي والعملة ريال.
+
+الهدف: مبيعات ${s.goalDailySales} ريال في اليوم.
+خط الأساس دلوقتي: متوسط ${baseline.avgDaily} ريال/يوم على آخر ٧ أيام${baseline.progressPct != null ? ` (${baseline.progressPct}٪ من الهدف)` : ""}.
+المستهدف من الإعلانات: تكلفة النتيجة ≤ ${s.targetCpa} ريال، والعائد ≥ ${s.targetRoas}×.
+
+العميل بيوصلنا بخمس طرق، وكل واحدة بتتقاس بشكل مختلف:
+  ١. مكالمة تليفون — مفيش أثر رقمي، العد يدوي.
+  ٢. ضغطة واتساب من صفحة المتجر — بتتسجل كحدث Contact.
+  ٣. طلب من المتجر الأونلاين — الفنل كامل من المشاهدة للشراء.
+  ٤. زيارة داخل المحل (صالة).
+  ٥. تيك أواي.
+٣ و٤ و٥ بيتسجّلوا في نظام الكاشير، وتصنيف مصدرهم بيعتمد على إن الكاشير يسأل العميل — يعني كلام عميل مش دليل تقني.
+
+صلاحياتك وحدودها:
+• التكبير مسموح لحد السقوف لما تكلفة النتيجة تكون تحت المستهدف — ده بالظبط اللي المفروض تعمله لما تلاقي حملة كاسبة.
+• سقف الحملة الواحدة ${s.maxCampaignBudget} ريال/يوم، والسقف الكلي ${s.maxTotalBudget} ريال/يوم، وأقصى تغيير في الخطوة الواحدة ${s.maxChangePct}٪، وفترة تبريد ${s.budgetCooldownHours} ساعة بين تغييرين لنفس الحملة.
+• السقوف دي مش قابلة للتفاوض. لو طلبت حاجة بره الحدود الأداة هترجعلك رفض — اقرا الرفض واشتغل جوه الحد، متحاولش تلف حواليه.
+• قاعدة القتل: حملة تكلفة نتيجتها أعلى من ${s.killMultiple}× المستهدف مع صرف حقيقي تستاهل الإيقاف. حملة تحت المستهدف ممنوع توقفها.
+• مفيش حكم على حملة صرفت أقل من ${s.minSpend} ريال في الشباك — ده ضجيج مش أداء.
+
+قواعد الصدق (الأهم):
+• ممنوع تخترع رقم. أي رقم تقوله لازم يكون جاي من أداة نديتها في نفس الجولة.
+• لو الأداة رجعت خطأ أو داتا ناقصة، قول كده بصراحة. "مش عارف" إجابة مقبولة، الرقم المخترع لأ.
+• أرقام الإسناد ليها درجة ثقة: مؤكد (مطابقة رقم جوال) / مرجّح (تصنيف الكاشير) / تقديري (استنتاج). لما تبني قرار على "تقديري" قول كده في السبب.
+• متقولش إن حاجة اتنفّذت غير لما الأداة ترجعلك executed:true.
+
+${focus}
+
+اشتغل كده: نده أدوات القراءة الأول لحد ما تفهم الوضع، بعدين نفّذ اللي يستاهل، وفي الآخر اكتب خلاصة قصيرة بالعربي: شفت إيه، عملت إيه، وليه. لو مفيش حاجة تستاهل التدخل، قول كده وخلاص — عدم التدخل قرار محترم.`;
+  }
+
+  const FOCUS_FULL = `دي جولة كاملة (كل ساعة). راجع الوضع العام: أداء الحملات، مردود القنوات، والمسافة من هدف المبيعات.`;
+  const FOCUS_EMERGENCY = `دي جولة طوارئ سريعة (كل ربع ساعة) — مش مراجعة عامة. ركّز على المشكلة المذكورة تحت بس واتصرف فيها لو مستاهلة، وسيب أي حاجة تانية للجولة الكاملة. لو اتضح إن مفيش مشكلة حقيقية، قول كده وما تعملش أي كتابة.`;
+
+  /* ── الجولة ───────────────────────────────────────────────────────────── */
+  async function runAgent({ runId, s, trigger = "cycle", task, focus = FOCUS_FULL, snap = null }) {
+    const provider = llmProvider();
+    if (!provider) return { ok: false, skipped: "مفيش مزوّد LLM مضبوط (ANTHROPIC_API_KEY أو LITELLM_KEY)" };
+    if (!s.agent) return { ok: false, skipped: "الوكيل مقفول من الإعدادات" };
+
+    const sales = await pool.query(
+      `SELECT COALESCE(sum(total),0) AS rev, count(DISTINCT calendar_day)::int AS days
+         FROM ts_orders
+        WHERE calendar_day >= (NOW() AT TIME ZONE 'utc')::date - 6
+          AND (order_type IS NULL OR (order_type NOT ILIKE '%void%' AND order_type NOT ILIKE '%refund%'))`);
+    const avgDaily = sales.rows[0].days > 0 ? Math.round(Number(sales.rows[0].rev) / sales.rows[0].days) : 0;
+    const baseline = { avgDaily, progressPct: s.goalDailySales > 0 ? Math.round((avgDaily / s.goalDailySales) * 100) : null };
+
+    const agentCtx = {
+      s,
+      snap: snap || await perfSnapshot({}),
+      cooldown: await budgetCooldownSet(s),
+      runId,
+      executed: 0, queued: 0, refusals: [],
+    };
+
+    const system = agentSystem(s, baseline, focus);
+    const messages = [{ role: "user", content: task }];
+    const maxTurns = Math.min(Number(s.agentMaxTurns) || 8, AGENT_TURN_CEILING);
+    const turns = [];
+    let final = "";
+
+    for (let turn = 1; turn <= maxTurns; turn++) {
+      let reply;
+      try {
+        reply = await llmTurn(provider, { system, messages, tools: AGENT_TOOLS });
+      } catch (e) {
+        // الموديل مش موجود → الوكيل بس هو اللي بيقف. القواعد الصمّاء خلصت خلاص.
+        await logAgentTurn(runId, trigger, turn, { error: String(e.message || e) }, "failed");
+        return { ok: false, error: String(e.message || e), turns: turns.length,
+                 executed: agentCtx.executed, queued: agentCtx.queued, refusals: agentCtx.refusals.length };
+      }
+      messages.push(reply.native);
+
+      if (!reply.calls.length) {
+        final = reply.text || final;
+        turns.push({ turn, text: reply.text, tools: [] });
+        await logAgentTurn(runId, trigger, turn, { text: reply.text, tools: [], stop: reply.stop, final: true }, "info");
+        break;
+      }
+
+      const results = [];
+      const logged = [];
+      for (const call of reply.calls) {
+        let output;
+        try { output = await runAgentTool(call.name, call.input, agentCtx); }
+        catch (e) { output = { ok: false, error: String(e.message || e) }; }
+        const text = JSON.stringify(output).slice(0, 24000);
+        results.push({ id: call.id, text });
+        logged.push({ name: call.name, input: call.input, output: trim(output) });
+      }
+      turns.push({ turn, text: reply.text, tools: logged });
+      await logAgentTurn(runId, trigger, turn, { text: reply.text, tools: logged, stop: reply.stop }, "info");
+      messages.push(...toolResultMessages(provider, results));
+      final = reply.text || final;
+    }
+
+    return {
+      ok: true, turns: turns.length, final,
+      executed: agentCtx.executed, queued: agentCtx.queued,
+      refusals: agentCtx.refusals.length, refusalDetail: agentCtx.refusals,
+    };
+  }
+
+  // نتيجة الأداة ممكن تكون ضخمة — بنسجّل نسخة مقصوصة عشان الجدول ما يتخمش.
+  function trim(v) {
+    const s2 = JSON.stringify(v);
+    return s2.length <= 6000 ? v : { truncated: true, preview: s2.slice(0, 6000) };
+  }
+
+  async function logAgentTurn(runId, trigger, turn, detail, status) {
+    await pool.query(
+      `INSERT INTO ap_decisions (id, run_id, platform, campaign_id, campaign_name, kind, detail, reason, status)
+       VALUES ($1,$2,NULL,NULL,NULL,'agent',$3,$4,$5)`,
+      [crypto.randomUUID(), runId, jb({ trigger, turn, ...detail }),
+       String(detail.text || detail.error || "").slice(0, 4000), status]
+    ).catch((e) => console.error("[autopilot] agent log failed:", e.message));
+  }
+
+  /* ═══ الطوارئ — كشف رخيص من غير LLM، والـ LLM بينده بس لما يبقى فيه سبب ═══ */
+
+  async function detectEmergencies(s) {
+    const today = todayISO();
+    const found = [];
+    const snap = await perfSnapshot({ from: today, to: today });
+
+    for (const r of snap.rows) {
+      if (r.status !== "ACTIVE") continue;
+      // (١) حملة بتحرق فلوس النهارده من غير أي نتيجة
+      if (r.spend >= s.minSpend * 2 && (r.results || 0) === 0) {
+        found.push({ key: `burn:${r.platform}:${r.id}:${today}`, kind: "burn", platform: r.platform,
+          campaignId: r.id, campaignName: r.name,
+          text: `"${r.name}" (${r.platform}) صرفت ${Math.round(r.spend)} ر.س النهارده من غير أي نتيجة.` });
+      }
+      // (٢) تكلفة النتيجة النهارده فوق حد القتل
+      if (r.spend >= s.minSpend && r.cpa != null && r.cpa > s.killMultiple * s.targetCpa) {
+        found.push({ key: `cpa:${r.platform}:${r.id}:${today}`, kind: "cpa", platform: r.platform,
+          campaignId: r.id, campaignName: r.name,
+          text: `"${r.name}" (${r.platform}) تكلفة النتيجة النهارده ${r.cpa} ر.س — أعلى من ${s.killMultiple}× المستهدف (${s.targetCpa} ر.س).` });
+      }
+    }
+
+    // (٣) مجموع الميزانيات فوق السقف الكلي
+    const active = activeBudgetOf(snap.rows);
+    if (active > s.maxTotalBudget) {
+      found.push({ key: `pacing:${today}`, kind: "pacing",
+        text: `مجموع ميزانيات الحملات الشغالة ${Math.round(active)} ر.س/يوم وده فوق السقف الكلي (${s.maxTotalBudget} ر.س).` });
+    }
+
+    // (٤) منصة بتضرب خطأ — بس بعد ٣ مرات ورا بعض، عشان خطأ عابر ما يدقّش جرس
+    for (const [pid, reason] of Object.entries(snap.reasons)) {
+      platformFails[pid] = (platformFails[pid] || 0) + 1;
+      if (platformFails[pid] === 3) {
+        found.push({ key: `platform:${pid}:${today}`, kind: "platform", platform: pid,
+          text: `منصة ${pid} رجعت خطأ ٣ مرات ورا بعض: ${String(reason).slice(0, 300)}` });
+      }
+    }
+    for (const p of PLATFORMS) {
+      if (p.id !== "google" && !snap.reasons[p.id]) platformFails[p.id] = 0;
+    }
+
+    // نفس المشكلة ما تتفتحش تاني قبل فترة التبريد
+    const fresh = [];
+    for (const e of found) {
+      const seen = await pool.query(
+        `SELECT 1 FROM ap_decisions WHERE kind='emergency' AND detail->>'key' = $1
+           AND created_at > NOW() - ($2 || ' hours')::interval LIMIT 1`,
+        [e.key, String(Number(s.emergencyCooldownHours) || 6)]);
+      if (!seen.rowCount) fresh.push(e);
+    }
+    return { snap, all: found, fresh };
+  }
+
+  async function runEmergencyCheck({ trigger = "fast" } = {}) {
+    if (emergencyRunning || running) return { ok: false, skipped: "already running" };
+    const s = await getSettings();
+    if (s.mode === "off") return { ok: false, skipped: "mode=off" };
+
+    emergencyRunning = true;
+    const runId = crypto.randomUUID();
+    try {
+      const { snap, fresh } = await detectEmergencies(s);
+      if (!fresh.length) return { ok: true, emergencies: 0 };
+
+      await pool.query(`INSERT INTO ap_runs (id, status, summary) VALUES ($1,'running',$2)`,
+        [runId, jb({ trigger, mode: s.mode, kind: "emergency" })]);
+      for (const e of fresh) {
+        await pool.query(
+          `INSERT INTO ap_decisions (id, run_id, platform, campaign_id, campaign_name, kind, detail, reason, status)
+           VALUES ($1,$2,$3,$4,$5,'emergency',$6,$7,'info')`,
+          [crypto.randomUUID(), runId, e.platform || null, e.campaignId || null, e.campaignName || null,
+           jb(e), e.text, "info"]);
+      }
+
+      const task = `طوارئ. الفحص السريع لقى المشاكل دي النهارده:\n\n${fresh.map((e, i) => `${i + 1}. [${e.kind}] ${e.text}`).join("\n")}\n\nاتأكد بالأرقام الأول (get_performance على النهارده وعلى آخر ٣ أيام) قبل ما تتصرف — ممكن تكون الحملة لسه بتتعلم أو النتايج متأخرة في التسجيل. بعدين اتصرف في اللي يستاهل بس.`;
+      const agent = await runAgent({ runId, s, trigger: "emergency", task, focus: FOCUS_EMERGENCY, snap });
+
+      const summary = { trigger, mode: s.mode, kind: "emergency", emergencies: fresh.length, agent };
+      await pool.query(`UPDATE ap_runs SET status='done', finished_at=NOW(), summary=$2 WHERE id=$1`, [runId, jb(summary)]);
+      return { ok: true, runId, emergencies: fresh.length, agent };
+    } catch (e) {
+      await pool.query(`UPDATE ap_runs SET status='error', finished_at=NOW(), error=$2 WHERE id=$1`,
+        [runId, String(e.message || e)]).catch(() => {});
+      console.error("[autopilot] emergency check error:", e.message);
+      return { ok: false, error: String(e.message || e) };
+    } finally {
+      emergencyRunning = false;
+    }
+  }
+
   /* ── THE CYCLE ─────────────────────────────────────────────────────────── */
-  let running = false;
-  let lastNightlyAudienceDay = null;
 
   async function runCycle({ force = false, trigger = "cron" } = {}) {
     if (running) return { ok: false, error: "already running" };
@@ -455,12 +1024,7 @@ export function register(app, ctx, deps = {}) {
       };
 
       // budget-change cooldown set
-      const cd = await pool.query(
-        `SELECT DISTINCT platform, campaign_id FROM ap_decisions
-          WHERE kind='budget' AND status IN ('executed','auto_executed')
-            AND executed_at > NOW() - ($1 || ' hours')::interval`,
-        [String(Number(s.budgetCooldownHours) || 24)]);
-      const cooldown = new Set(cd.rows.map((r) => `${r.platform}:${r.campaign_id}`));
+      const cooldown = await budgetCooldownSet(s);
 
       // 4. rules
       const decisions = decide(facts.campaigns, s, cooldown);
@@ -507,7 +1071,30 @@ export function register(app, ctx, deps = {}) {
         } catch (e) { summary.llm = { error: e.message }; }
       }
 
-      // 7. nightly audience refresh (once per calendar day, after midnight Riyadh)
+      // 6. الإسناد — بنربط أي طلب جديد بالـ leads بتاعته ونعيد بناء آخر أسبوع
+      //    قبل ما الوكيل يقرا، عشان get_attribution يشوف أحدث أرقام.
+      if (attribution?.sweepAndRoll) {
+        try { summary.attribution = await attribution.sweepAndRoll({ days: 14 }); }
+        catch (e) { summary.attribution = { error: e.message }; }
+      }
+
+      // 7. الوكيل — بيجري بعد القواعد الصمّاء عمداً: لو وقع، القرارات
+      //    الحتمية تكون خلاص اتسجّلت واتنفّذت. مفيش اعتماد عليه.
+      if (s.agent) {
+        try {
+          const task = `جولة كاملة. الوضع باختصار: ${facts.campaigns.length} حملة على المنصات، ` +
+            `متوسط المبيعات ${facts.sales.avgDaily} ر.س/يوم (الهدف ${s.goalDailySales}). ` +
+            (decisions.length
+              ? `محرك القواعد الصمّاء خد ${decisions.length} قرار في الجولة دي: ${decisions.map((d) => `${d.kind}/${d.campaignName || "—"}`).join("، ")}. متعيدش نفس القرارات.`
+              : `محرك القواعد الصمّاء ماخدش أي قرار الجولة دي.`) +
+            `\n\nراجع الوضع بنفسك بالأدوات: أداء الحملات، مردود القنوات (get_attribution) والمبيعات. ` +
+            `دوّر على حاجتين بالذات: (أ) حملة كاسبة تستاهل تكبير جوه السقوف، (ب) صرف بيروح على قناة مردودها ضعيف. ` +
+            `نفّذ اللي يستاهل، وسجّل بـ create_note أي حاجة مهمة مش من صلاحياتك.`;
+          summary.agent = await runAgent({ runId, s, trigger, task, focus: FOCUS_FULL });
+        } catch (e) { summary.agent = { error: e.message }; }
+      }
+
+      // 8. nightly audience refresh (once per calendar day, after midnight Riyadh)
       const riyadhDay = new Date(Date.now() + 3 * 3600_000).toISOString().slice(0, 10);
       if (s.syncAudiences && audiencesSync && lastNightlyAudienceDay !== riyadhDay) {
         try {
@@ -547,7 +1134,10 @@ export function register(app, ctx, deps = {}) {
       settings: s,
       writeEnabled: writeAllowed(),
       llmConfigured: !!llmProvider(),
+      agentEnabled: !!(s.agent && llmProvider()),
+      attributionWired: !!attribution,
       running,
+      emergencyRunning,
       lastRun: lastRun.rows[0] || null,
       pendingApprovals: pending.rows[0].n,
       goal: {
@@ -618,6 +1208,65 @@ export function register(app, ctx, deps = {}) {
     return c.json({ ok: true });
   });
 
+  /* سجل الوكيل — كل دورة تفكير: قال إيه، نده أنهي أداة، رجعله إيه، واتنفّذ
+     ولا اترفض. ده اللي بيخلّي المالك يقرا "ليه" مش بس "إيه". */
+  app.get("/api/autopilot/agent-log", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    const limit = Math.min(Number(c.req.query("limit") || 50), 300);
+    const r = await pool.query(
+      `SELECT id, run_id, platform, campaign_id, campaign_name, kind, detail, reason, status, created_at
+         FROM ap_decisions
+        WHERE kind IN ('agent','emergency')
+        ORDER BY created_at DESC LIMIT $1`, [limit]);
+    const entries = r.rows.map((x) => ({
+      id: x.id, runId: x.run_id, kind: x.kind, status: x.status, at: x.created_at,
+      trigger: x.detail?.trigger || null,
+      turn: x.detail?.turn ?? null,
+      thinking: x.reason || "",
+      tools: (x.detail?.tools || []).map((t) => ({
+        name: t.name, input: t.input,
+        ok: t.output?.ok !== false,
+        refused: !!t.output?.refused,
+        summary: t.output?.error || (t.output?.executed ? "اتنفّذ" : t.output?.queued ? "في طابور الموافقة" : "قراءة"),
+      })),
+      refusal: x.status === "refused" ? x.detail?.refusal || x.reason : null,
+      campaign: x.campaign_name || null,
+      platform: x.platform || null,
+      error: x.detail?.error || null,
+      final: !!x.detail?.final,
+    }));
+    return c.json({
+      ok: true,
+      llmConfigured: !!llmProvider(),
+      entries,
+    });
+  });
+
+  /* تشغيل جولة الوكيل يدوياً — للاختبار وللمالك لما يكون مستعجل. */
+  app.post("/api/autopilot/agent-run", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    const s = await getSettings();
+    if (!llmProvider()) return c.json({ ok: false, error: "مفيش مزوّد LLM مضبوط" }, 503);
+    let b = {};
+    try { b = await c.req.json(); } catch { b = {}; }
+    const runId = crypto.randomUUID();
+    await pool.query(`INSERT INTO ap_runs (id, status, summary) VALUES ($1,'running',$2)`,
+      [runId, jb({ trigger: "manual-agent", mode: s.mode })]);
+    const task = String(b.task || "").slice(0, 4000) ||
+      "جولة يدوية. راجع أداء الحملات ومردود القنوات والمبيعات، ونفّذ اللي يستاهل جوه الحدود.";
+    const agent = await runAgent({ runId, s, trigger: "manual", task, focus: FOCUS_FULL });
+    await pool.query(`UPDATE ap_runs SET status=$2, finished_at=NOW(), summary=$3 WHERE id=$1`,
+      [runId, agent.ok ? "done" : "error", jb({ trigger: "manual-agent", mode: s.mode, agent })]);
+    return c.json({ ok: agent.ok, runId, agent }, agent.ok ? 200 : 502);
+  });
+
+  /* فحص الطوارئ يدوياً. */
+  app.post("/api/autopilot/emergency-check", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    const r = await runEmergencyCheck({ trigger: "manual" });
+    return c.json(r, r.ok ? 200 : 409);
+  });
+
   app.get("/api/autopilot/runs", async (c) => {
     const err = await requireAdmin(c); if (err) return err;
     const limit = Math.min(Number(c.req.query("limit") || 20), 100);
@@ -626,5 +1275,5 @@ export function register(app, ctx, deps = {}) {
   });
 
   console.log("[autopilot] routes ready");
-  return { runCycle };
+  return { runCycle, runEmergencyCheck, runAgent };
 }
