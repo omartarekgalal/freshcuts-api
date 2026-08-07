@@ -99,6 +99,14 @@ const PLATFORM_CHANNEL = { meta: "meta", tiktok: "tiktok", snapchat: "snapchat",
 const LINK_WINDOW_DAYS = 7;   // شباك مطابقة الـ lead بالطلب
 const HOT_DAYS = 2;           // آخر يومين بيتعاد بناهم كل مرة
 
+/* أحداث الفنل اللي بتصلح تربط طلب بإعلان. `PromoRedeem` بيتكتب من promo.js
+   لما العميل ينطق كود عرض على الكاشير — أقوى دليل عندنا على زيارة جوّه
+   المطعم، لإنه الحاجة الوحيدة اللي بتخرج من بق العميل ومكتوبة في إعلان
+   بعينه. مقصود إنه مش اسمه 'Lead': استخدام الكود بيحصل عند الدفع، فلو
+   اتسمّى Lead كان هيتعدّ اهتمام جديد في SQL_ROLL_LEADS وده مش صحيح. */
+const LINKABLE_EVENTS = ["Purchase", "InitiateCheckout", "Lead", "Contact", "PromoRedeem"]
+  .map((s) => `'${s}'`).join(",");
+
 /* قيم بيكتبها نظام الكاشير معناها "مفيش تصنيف" — مش تصنيف يتبنى عليه حكم. */
 const EMPTY_SOURCES = ["", "skipped", "unknown", "none", "-"];
 const NOT_TAGGED = EMPTY_SOURCES.map((s) => `'${s}'`).join(",");
@@ -233,12 +241,20 @@ export const CONFIDENCE_OF_BASIS = { linked: "مؤكد", pos: "مؤكد", tagged
 
 /* درجة ثقة الصف = الأساس اللي بيغطي نص الطلبات على الأقل، وإلا الأضعف.
    مبنقولش "مؤكد" غير لما نص الطلبات على الأقل وراها مطابقة رقم جوال أو
-   تصنيف من نظام الكاشير نفسه (External) — مش تخمين ولا كلام عميل. */
-export function confidenceOf({ orders, linked, pos, tagged }) {
+   تصنيف من نظام الكاشير نفسه (External) — مش تخمين ولا كلام عميل.
+
+   `redeemed` = أكواد عروض اتقالت على الكاشير ولسه متربطتش بطلب. الاستخدام
+   اللي اتربط بطلب بقى جوّه `linked` خلاص، فبنعدّ اللي مش مربوط بس — عشان
+   نفس الدليل ما يتحسبش مرتين. الكود دليل مباشر (العميل نطق كلمة مكتوبة في
+   إعلان بعينه)، فبيتحسب مع اليقين مش مع التخمين. */
+export function confidenceOf({ orders, linked, pos, tagged, redeemed }) {
   if (!orders) return { confidence: CONFIDENCE_OF_BASIS.guess, note: "مفيش طلبات في المدى ده — أي رقم عائد هنا صفر مش تقدير." };
-  const certain = (linked || 0) + (pos || 0);
+  const hard = (linked || 0) + (pos || 0);
+  // السقف هو عدد الطلبات — استخدامات من غير طلب مبتزوّدش اليقين فوق الواقع.
+  const certain = Math.min(orders, hard + Math.max(0, redeemed || 0));
   if (certain / orders >= 0.5) {
-    return { confidence: CONFIDENCE_OF_BASIS.linked, note: `${certain} من ${orders} طلب متطابقين برقم جوال من الفنل أو مصنّفين من نظام الكاشير نفسه.` };
+    const extra = (redeemed || 0) > 0 ? ` منهم ${redeemed} قالوا كود عرض على الكاشير.` : "";
+    return { confidence: CONFIDENCE_OF_BASIS.linked, note: `${certain} من ${orders} طلب متطابقين برقم جوال من الفنل أو مصنّفين من نظام الكاشير نفسه.${extra}` };
   }
   if ((tagged || 0) > 0) {
     return { confidence: CONFIDENCE_OF_BASIS.tagged, note: `${tagged} من ${orders} طلب معتمدين على تصنيف الكاشير اليدوي — ده كلام العميل مش دليل تقني.` };
@@ -248,6 +264,7 @@ export function confidenceOf({ orders, linked, pos, tagged }) {
 
 const num = (v) => (v == null ? 0 : Number(v) || 0);
 const r2 = (v) => Math.round(v * 100) / 100;
+const pct = (v) => (v == null ? "—" : `${Math.round(v * 1000) / 10}%`);
 const isDay = (s) => /^\d{4}-\d{2}-\d{2}$/.test(String(s || ""));
 
 /* التغطية بتقول للمالك ليه الأرقام واقفة عند "تقديري" وإيه اللي يصلّحها.
@@ -274,8 +291,11 @@ function coverageOf(cov) {
   };
 }
 
-export function register(app, ctx) {
+export function register(app, ctx, deps = {}) {
   const { pool, requireAdmin, todayISO, daysAgoISO } = ctx;
+  /* promo.js بيتسجل بعدنا (محتاج `linkOrder` مننا)، فالمرجع بيوصل كدالة
+     بدل قيمة — كده مفيش دور استيراد ومفيش ترتيب تسجيل هش. */
+  const promoOf = typeof deps.promo === "function" ? deps.promo : () => deps.promo || null;
 
   /* ── schema ── */
   async function ensureSchema() {
@@ -336,7 +356,7 @@ export function register(app, ctx) {
          FROM ts_orders o
          JOIN funnel_events f ON f.order_id = o.order_id
         WHERE o.calendar_day >= $1::date ${scope}
-          AND f.event_name IN ('Purchase','InitiateCheckout','Lead','Contact')
+          AND f.event_name IN (${LINKABLE_EVENTS})
        ON CONFLICT (order_id, lead_event_id) DO NOTHING`, [since]);
 
     const byPhone = await pool.query(
@@ -353,7 +373,7 @@ export function register(app, ctx) {
          ) op
          JOIN funnel_events f
            ON f.phone_norm = op.pn
-          AND f.event_name IN ('Contact','Lead','InitiateCheckout','Purchase')
+          AND f.event_name IN (${LINKABLE_EVENTS})
           AND f.created_at <= op.at + interval '1 day'
           AND f.created_at >= op.at - ($2 || ' days')::interval
         WHERE op.pn IS NOT NULL AND length(op.pn) >= 9
@@ -479,6 +499,28 @@ export function register(app, ctx) {
     const spend = await platformSpend(from, to);
     const cov = (await pool.query(SQL_COVERAGE, [from, to])).rows[0] || {};
 
+    /* أكواد العروض — الدليل الصلب للزيارات جوّه المطعم. الماب من utm_source
+       لقناة بيحصل هنا بنفس الخريطة اللي الروابط بتستخدمها، فكود utm_source
+       بتاعه tiktok بيقع على نفس صف تيك توك. */
+    const promo = { byChannel: {}, codes: [], total: 0 };
+    try {
+      const api = promoOf();
+      if (api?.redemptionsInRange) {
+        for (const r of await api.redemptionsInRange(from, to)) {
+          const ch = UTM_CHANNEL[String(r.utm_source || "").trim().toLowerCase()] || "organic";
+          const cur = promo.byChannel[ch] || { redemptions: 0, unlinked: 0, codes: [] };
+          cur.redemptions += num(r.redemptions);
+          cur.unlinked += num(r.unlinked);
+          if (r.code) cur.codes.push({ code: r.code, campaign: r.utm_campaign || "", redemptions: num(r.redemptions) });
+          promo.byChannel[ch] = cur;
+          promo.total += num(r.redemptions);
+          promo.codes.push({ code: r.code, channel: ch, campaign: r.utm_campaign || "", redemptions: num(r.redemptions) });
+        }
+      }
+    } catch (e) {
+      console.error("[attribution] promo redemptions failed:", e.message);
+    }
+
     const seen = new Set(agg.rows.map((r) => r.channel));
     for (const k of Object.keys(spend.byChannel)) seen.add(k);
     const ids = [
@@ -495,8 +537,10 @@ export function register(app, ctx) {
       const total = manual + plat;
       const orders = num(a.orders), revenue = num(a.revenue);
       const leads = num(a.leads), manualLeads = num(a.manual_leads);
+      const pr = promo.byChannel[id] || { redemptions: 0, unlinked: 0, codes: [] };
       const conf = confidenceOf({
         orders, linked: num(a.linked_orders), pos: num(a.pos_orders), tagged: num(a.tagged_orders),
+        redeemed: pr.unlinked,
       });
       const meta = channelMeta(id);
       return {
@@ -518,6 +562,14 @@ export function register(app, ctx) {
         confidenceBreakdown: {
           linked: num(a.linked_orders), pos: num(a.pos_orders),
           tagged: num(a.tagged_orders), guessed: num(a.guessed_orders),
+          // دليل صلب: كام مرة العميل نطق كود الإعلان عند الكاشير.
+          redeemed: pr.redemptions,
+        },
+        promo: {
+          redemptions: pr.redemptions,
+          // اللي لسه متربطش بطلب — ده اللي زوّد اليقين فوق الروابط الموجودة.
+          unlinked: pr.unlinked,
+          codes: pr.codes.sort((x, y) => y.redemptions - x.redemptions),
         },
       };
     });
@@ -556,9 +608,14 @@ export function register(app, ctx) {
       reasons: spend.reasons,
       rollup: fresh,
       coverage: coverageOf(cov),
+      promo: {
+        redemptions: promo.total,
+        codes: promo.codes.sort((a, b) => b.redemptions - a.redemptions),
+      },
       notes: [
         "الإيراد من ts_orders.total وهو شامل الضريبة — نفس الرقم اللي على الفاتورة.",
         "الطلبات الملغية/المرتجعة مستبعدة.",
+        "أكواد العروض (promo.redemptions) هي الدليل الوحيد الصلب على زيارة جوّه المطعم جاية من إعلان — العميل نطق كلمة مكتوبة في إعلان بعينه. الاستخدام اللي معاه رقم طلب بيتحوّل لربط عادي وبيبان في linked.",
         "درجة الثقة مش زينة: مؤكد = مطابقة رقم جوال أو تصنيف النظام نفسه، مرجّح = تصنيف الكاشير اليدوي، تقديري = محسوب بالاستبعاد.",
         "totals.paid.roas هو عائد الإعلانات الحقيقي. totals.blendedRoas بيقسم مبيعات المطعم كلها على صرف الإعلانات — رقم متابعة إداري، ومش دليل على إن الإعلان جاب المبيعات دي.",
         "صرف جوجل يدوي بس — Google Ads API لسه محتاج developer token معتمد.",
@@ -574,6 +631,158 @@ export function register(app, ctx) {
       return c.json({ ok: true, ...data });
     } catch (e) {
       console.error("[attribution] overview failed:", e.message);
+      return c.json({ ok: false, error: String(e.message || e) }, 500);
+    }
+  });
+
+  /* ═══ صحة التسجيل جوّه المطعم ═══════════════════════════════════════════
+     أغلب عملاء Fresh Cuts بياكلوا جوّه المطعم، والزيارة دي مبتسيبش أي أثر
+     رقمي. يعني كل كلام عن مردود الإعلانات معلّق على حاجة واحدة: إن الكاشير
+     يسجّل «عرفتنا منين؟». الـ endpoint دي بتقول الرقم الحقيقي — من غير
+     تجميل ومن غير رأي — عشان نعرف إحنا فين قبل ما نتكلم عن أي عائد.
+
+     «جوّه المطعم» = مش External ومفيش وسيلة دفع تطبيق توصيل. نفس تعريف
+     staff.js بالحرف، عشان الرقمين ما يختلفوش. */
+  const QUEUE_HOURS = 48;   // شباك عرض الطلب في المحطة — بعده مبيتعرضش تاني
+
+  async function deliveryMethods() {
+    const s = await ctx.getSettingsData();
+    const list = Array.isArray(s?.deliveryAppMethods) && s.deliveryAppMethods.length
+      ? s.deliveryAppMethods : ctx.DEFAULT_DELIVERY_APPS;
+    return list.map((x) => String(x).toLowerCase());
+  }
+
+  const INSTORE_SQL = `
+          COALESCE(o.order_type,'') NOT ILIKE '%void%'
+      AND COALESCE(o.order_type,'') NOT ILIKE '%refund%'
+      AND COALESCE(o.order_type,'') NOT ILIKE '%external%'
+      AND NOT EXISTS (SELECT 1 FROM jsonb_object_keys(o.payments) k WHERE lower(k) = ANY($3))`;
+
+  // نفس التعبيرات في كل استعلام تحت — مصدر واحد للحقيقة يمنع رقمين متضاربين.
+  const TAGGED = `(s.order_id IS NOT NULL AND lower(btrim(COALESCE(s.source,''))) NOT IN (${NOT_TAGGED}))`;
+  const HUMAN  = `(s.filled_by = 'cashier' OR s.filled_by LIKE 'staff:%' OR s.filled_by = 'admin')`;
+  const PHONE  = `(COALESCE(NULLIF(s.phone_norm,''), NULLIF(tc.phone_norm,'')) IS NOT NULL)`;
+
+  app.get("/api/attribution/instore-health", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    const { from, to } = range(c);
+    try {
+      const apps = await deliveryMethods();
+      const p = [from, to, apps];
+      const base = `FROM ts_orders o
+         LEFT JOIN order_sources s ON s.order_id = o.order_id
+         LEFT JOIN ts_customers tc ON tc.customer_id = o.customer_id
+        WHERE o.calendar_day BETWEEN $1::date AND $2::date AND ${INSTORE_SQL}`;
+
+      const AGG = `
+        count(*)::int AS orders,
+        count(*) FILTER (WHERE ${TAGGED})::int AS tagged,
+        count(*) FILTER (WHERE ${TAGGED} AND ${HUMAN})::int AS tagged_by_human,
+        count(*) FILTER (WHERE ${PHONE})::int AS with_phone,
+        count(*) FILTER (WHERE lower(btrim(COALESCE(s.source,''))) = 'skipped')::int AS skipped,
+        COALESCE(sum(o.total),0) AS revenue`;
+
+      const totals = (await pool.query(`SELECT ${AGG} ${base}`, p)).rows[0];
+
+      const byDay = (await pool.query(
+        `SELECT o.calendar_day::text AS day, ${AGG} ${base} GROUP BY 1 ORDER BY 1`, p)).rows;
+
+      const byStaff = (await pool.query(
+        `SELECT COALESCE(NULLIF(btrim(o.staff_name),''),'(غير معروف)') AS staff, ${AGG}
+         ${base} GROUP BY 1 ORDER BY orders DESC`, p)).rows;
+
+      /* الزمن بين قفل الطلب وتسجيل مصدره. الوسيط مش المتوسط: صف واحد اتسجل
+         بعد يومين بيرفع المتوسط ويخلّيه بلا معنى. */
+      const lag = (await pool.query(
+        `SELECT count(*)::int AS n,
+                percentile_cont(0.5) WITHIN GROUP (
+                  ORDER BY EXTRACT(EPOCH FROM (s.filled_at - o.order_date))) AS median_s,
+                percentile_cont(0.9) WITHIN GROUP (
+                  ORDER BY EXTRACT(EPOCH FROM (s.filled_at - o.order_date))) AS p90_s
+         ${base} AND ${TAGGED} AND ${HUMAN} AND o.order_date IS NOT NULL AND s.filled_at IS NOT NULL`, p)).rows[0];
+
+      /* ليه الصف مش متسجّل؟ أربعة أسباب، وكل واحد ليه علاج مختلف تماماً:
+         الكاشير دوس «سيبه» / الطلب لسه في الطابور / الطلب عدّى شباك الطابور
+         فمستحيل يتعرض تاني / متسجّل تلقائياً من غير أي تدخل بشري. */
+      const why = (await pool.query(
+        `SELECT
+           count(*) FILTER (WHERE lower(btrim(COALESCE(s.source,''))) = 'skipped')::int AS skipped,
+           count(*) FILTER (WHERE s.order_id IS NULL
+                              AND o.order_date >= NOW() - interval '${QUEUE_HOURS} hours')::int AS still_in_queue,
+           count(*) FILTER (WHERE s.order_id IS NULL
+                              AND o.order_date <  NOW() - interval '${QUEUE_HOURS} hours')::int AS missed_window,
+           count(*) FILTER (WHERE ${TAGGED} AND NOT ${HUMAN})::int AS auto_only,
+           count(*) FILTER (WHERE NOT ${TAGGED} AND NOT ${PHONE})::int AS untagged_no_phone
+         ${base}`, p)).rows[0];
+
+      // الترتيب الحقيقي لاستخدام المصادر — الواجهة بتبني عليه ترتيب الأزرار.
+      const sources = (await pool.query(
+        `SELECT lower(btrim(s.source)) AS source, count(*)::int AS n
+         ${base} AND ${TAGGED} GROUP BY 1 ORDER BY n DESC`, p)).rows;
+
+      const promoApi = promoOf();
+      const redemptions = promoApi?.redemptionsInRange
+        ? (await promoApi.redemptionsInRange(from, to)).reduce((a, r) => a + num(r.redemptions), 0)
+        : 0;
+
+      const shape = (r) => {
+        const o = num(r.orders);
+        return {
+          orders: o, revenue: r2(num(r.revenue)),
+          tagged: num(r.tagged), taggedByHuman: num(r.tagged_by_human),
+          withPhone: num(r.with_phone), skipped: num(r.skipped),
+          // نسبة من غير مقام = مجهولة، مش صفر.
+          tagRate: o > 0 ? r2(num(r.tagged) / o) : null,
+          phoneRate: o > 0 ? r2(num(r.with_phone) / o) : null,
+        };
+      };
+
+      const t = shape(totals);
+      const untagged = t.orders - t.tagged;
+      const blockers = [];
+      if (t.orders > 0 && t.tagRate !== null && t.tagRate < 0.1) {
+        blockers.push(`${t.tagged} من ${t.orders} طلب داخل المطعم بس عليهم مصدر (${pct(t.tagRate)}). عملياً مفيش إسناد للزيارات الجوّه خالص — أي رقم عائد إعلان للقنوات دي تخمين.`);
+      }
+      if (num(why.missed_window) > 0) {
+        blockers.push(`${num(why.missed_window)} طلب عدّوا شباك الـ ${QUEUE_HOURS} ساعة من غير تسجيل — المحطة مش بتعرضهم تاني، فدول ضاعوا نهائياً.`);
+      }
+      if (num(why.skipped) > 0 && num(why.skipped) / Math.max(1, untagged) > 0.3) {
+        blockers.push(`${num(why.skipped)} طلب الكاشير دوس عليهم «سيبه» — دي مشكلة تدريب/سرعة مش مشكلة نظام.`);
+      }
+      if (redemptions === 0) {
+        blockers.push("مفيش ولا كود عرض اتقال على الكاشير في المدى ده — الأكواد هي الطريقة الوحيدة اللي بتثبت إن إعلان معيّن جاب زيارة للمحل.");
+      }
+
+      return c.json({
+        ok: true, range: { from, to }, queueHours: QUEUE_HOURS,
+        totals: { ...t, untagged, promoRedemptions: redemptions },
+        lag: {
+          samples: num(lag.n),
+          medianSeconds: lag.median_s == null ? null : Math.round(num(lag.median_s)),
+          p90Seconds: lag.p90_s == null ? null : Math.round(num(lag.p90_s)),
+        },
+        untaggedReasons: {
+          skipped: num(why.skipped),
+          stillInQueue: num(why.still_in_queue),
+          missedWindow: num(why.missed_window),
+          autoTaggedOnly: num(why.auto_only),
+          untaggedAndNoPhone: num(why.untagged_no_phone),
+        },
+        byDay: byDay.map((r) => ({ day: r.day, ...shape(r) })),
+        byStaff: byStaff.map((r) => ({ staff: r.staff, ...shape(r) })),
+        sourceUsage: sources.map((r) => ({ source: r.source, orders: num(r.n) })),
+        blockers,
+        healthy: blockers.length === 0,
+        notes: [
+          "«جوّه المطعم» = كل طلب مش External ومفيش عليه وسيلة دفع تطبيق توصيل — نفس تعريف تقييم الموظفين بالحرف.",
+          "الملغي والمرتجع مستبعدين.",
+          `الزمن بين قفل الطلب والتسجيل وسيط مش متوسط، ومحسوب على التسجيلات البشرية بس (${num(lag.n)} صف).`,
+          `«ضاع في الشباك» = طلب عدّى ${QUEUE_HOURS} ساعة من غير تسجيل. المحطة مش بتعرض أقدم من كده، فالرقم ده مش قابل للإصلاح بأثر رجعي.`,
+          "«اتسجل تلقائي بس» = صف من غير أي تدخل بشري (تطبيق توصيل أو FeedUs) — بيتحسب متسجّل، بس مش شغل الكاشير.",
+        ],
+      });
+    } catch (e) {
+      console.error("[attribution] instore-health failed:", e.message);
       return c.json({ ok: false, error: String(e.message || e) }, 500);
     }
   });

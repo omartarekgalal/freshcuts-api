@@ -379,9 +379,44 @@ export function register(app, ctx) {
         today_auto: stats.today_auto,
         today_pending: stats.today_pending,
       },
+      // How often each "how did you hear about us?" answer is really picked.
+      // The station puts the common ones under the thumb instead of forcing a
+      // fixed alphabetical grid on every shift.
+      sourceRank: ctx.sourceRank ? await ctx.sourceRank() : [],
       scope: all ? "all" : "own",
       staff: publicStaff(staff),
     });
+  });
+
+  /* ─── POST /api/staff/undo ──────────────────────────────────────────────── */
+  // A mis-tap on a tablet becomes a wrong number in the ad report forever, so
+  // the station gets a real way back — for YOUR OWN row, put there by a human,
+  // in the last 15 minutes. Auto-tagged delivery rows are never touched.
+  const UNDO_WINDOW_MIN = 15;
+  app.post("/api/staff/undo", async (c) => {
+    const staff = await requireStaff(c); if (isResponse(staff)) return staff;
+    const b = await c.req.json().catch(() => ({}));
+    const orderId = String(b.orderId || "").trim();
+    if (!orderId) return c.json({ ok: false, error: "orderId_required", message: "رقم الطلب مطلوب" }, 400);
+
+    const mineOnly = isManager(staff)
+      ? ""
+      : ` AND EXISTS (SELECT 1 FROM ts_orders o WHERE o.order_id = order_sources.order_id
+                       AND btrim(COALESCE(o.staff_name,'')) = $2)`;
+    const params = isManager(staff) ? [orderId] : [orderId, tsName(staff)];
+
+    const r = await pool.query(
+      `DELETE FROM order_sources
+        WHERE order_id = $1
+          AND (filled_by = 'cashier' OR filled_by LIKE 'staff:%' OR filled_by = 'admin')
+          AND filled_at > NOW() - interval '${UNDO_WINDOW_MIN} minutes'${mineOnly}`,
+      params
+    );
+    if (!r.rowCount) {
+      return c.json({ ok: false, error: "nothing_to_undo",
+        message: `مفيش تسجيل يدوي على الطلب ده خلال آخر ${UNDO_WINDOW_MIN} دقيقة` }, 409);
+    }
+    return c.json({ ok: true, undone: r.rowCount, windowMinutes: UNDO_WINDOW_MIN });
   });
 
   /* ─── POST /api/staff/submit ────────────────────────────────────────────── */
@@ -849,6 +884,10 @@ export function register(app, ctx) {
   ensureStaffSchema()
     .then(() => console.log("[staff] schema ready"))
     .catch((e) => console.error("[staff] schema init failed:", e.message));
+
+  // Handed to sibling modules (promo.js) so a station logged in as an employee
+  // is recognised there too — one copy of the staff auth rules, not two.
+  return { requireStaff, isManager, tsName };
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════

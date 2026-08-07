@@ -30,6 +30,7 @@ import * as audiences from "./audiences.js";
 import * as autopilot from "./autopilot.js";
 import * as attribution from "./attribution.js";
 import * as catalog from "./catalog.js";
+import * as promo from "./promo.js";
 
 const { Pool } = pg;
 
@@ -2134,6 +2135,33 @@ app.post("/api/auth/cashier", async (c) => {
   return c.json({ ok: false, error: "wrong_pin" }, 401);
 });
 
+/* How often each answer to "عرفتنا منين؟" is ACTUALLY picked, newest 60 days.
+   The station orders its buttons by this, so the answer staff reach for most
+   sits under their thumb. Cached for a minute — the queue is polled every 20s
+   by every tablet on the floor and this ranking moves once a shift at most.
+   An empty result is returned as an empty list, NOT as a guessed order: the UI
+   falls back to its own default rather than us inventing a ranking. */
+const SOURCE_RANK_TTL_MS = 60_000;
+let sourceRankCache = { at: 0, rows: [] };
+async function sourceRank() {
+  if (Date.now() - sourceRankCache.at < SOURCE_RANK_TTL_MS) return sourceRankCache.rows;
+  try {
+    const rows = (await pool.query(
+      `SELECT lower(btrim(s.source)) AS source, count(*)::int AS n
+         FROM order_sources s JOIN ts_orders o ON o.order_id = s.order_id
+        WHERE o.order_date > NOW() - interval '60 days'
+          AND (s.filled_by = 'cashier' OR s.filled_by LIKE 'staff:%' OR s.filled_by = 'admin')
+          AND lower(btrim(COALESCE(s.source,''))) NOT IN ('', 'skipped', 'unknown', 'none', '-')
+        GROUP BY 1 ORDER BY n DESC`
+    )).rows.map((r) => ({ source: r.source, n: r.n }));
+    sourceRankCache = { at: Date.now(), rows };
+    return rows;
+  } catch (e) {
+    console.error("[cashier] source rank failed:", e.message);
+    return sourceRankCache.rows;   // آخر ترتيب معروف أحسن من لا حاجة
+  }
+}
+
 // Pending = cached orders in the window with no source row yet.
 app.get("/api/cashier/queue", async (c) => {
   const err = await requireCashierOrAdmin(c); if (err) return err;
@@ -2170,9 +2198,13 @@ app.get("/api/cashier/queue", async (c) => {
               WHERE o.calendar_day = CURRENT_DATE
                 AND (s.filled_by = 'cashier' OR s.filled_by LIKE 'staff:%')) AS today_tagged,
             (SELECT count(*)::int FROM order_sources s JOIN ts_orders o ON o.order_id = s.order_id
-              WHERE o.calendar_day = CURRENT_DATE AND s.filled_by = 'auto') AS today_auto`
+              WHERE o.calendar_day = CURRENT_DATE AND s.filled_by = 'auto') AS today_auto,
+            (SELECT count(*)::int FROM ts_orders o
+               LEFT JOIN order_sources s ON s.order_id = o.order_id
+              WHERE o.calendar_day = CURRENT_DATE AND s.order_id IS NULL) AS today_pending`
   )).rows[0];
-  return c.json({ ok: true, pending, stats, lastSyncAt: insightsState.lastOrdersSyncAt });
+  // ترتيب أزرار المصدر بالاستخدام الحقيقي — الوردية بتشوف إجابتها الشائعة أول.
+  return c.json({ ok: true, pending, stats, sourceRank: await sourceRank(), lastSyncAt: insightsState.lastOrdersSyncAt });
 });
 
 const CASHIER_SOURCES = ["facebook", "instagram", "tiktok", "snapchat", "google_maps", "influencer", "friend", "walkin", "old_customer", "delivery_app", "other", "skipped"];
@@ -2212,6 +2244,31 @@ app.post("/api/cashier/submit", async (c) => {
     seenBefore = (row.in_directory > 0 || row.earlier_orders > 0);
   }
   return c.json({ ok: true, seenBefore });
+});
+
+/* Undo the last tag. A mis-tap on a tablet is a wrong number in the ad report
+   forever, so the station gets a real way back — but only for a row a human
+   put there in the last 15 minutes. Auto-tagged delivery rows and older
+   history are never touched: undo is for the tap you just made, not an eraser
+   for the record. */
+const UNDO_WINDOW_MIN = 15;
+app.post("/api/cashier/undo", async (c) => {
+  const err = await requireCashierOrAdmin(c); if (err) return err;
+  const b = await c.req.json().catch(() => ({}));
+  const orderId = String(b.orderId || "").trim();
+  if (!orderId) return c.json({ ok: false, error: "orderId required" }, 400);
+  const r = await pool.query(
+    `DELETE FROM order_sources
+      WHERE order_id = $1
+        AND (filled_by = 'cashier' OR filled_by LIKE 'staff:%' OR filled_by = 'admin')
+        AND filled_at > NOW() - interval '${UNDO_WINDOW_MIN} minutes'`,
+    [orderId]
+  );
+  if (!r.rowCount) {
+    return c.json({ ok: false, error: "nothing_to_undo",
+      message: `مفيش تسجيل يدوي على الطلب ده خلال آخر ${UNDO_WINDOW_MIN} دقيقة` }, 409);
+  }
+  return c.json({ ok: true, undone: r.rowCount, windowMinutes: UNDO_WINDOW_MIN });
 });
 
 /* ═══════════════════════════════════════════════════════════════════════════
@@ -2818,10 +2875,13 @@ ensureDeviceSchema()
 const moduleCtx = {
   pool, requireAdmin, requireCashierOrAdmin, getSettingsData, jb,
   todayISO, daysAgoISO, normPhone, ts, deliveryAppOf, DEFAULT_DELIVERY_APPS,
+  sourceRank,
 };
 analytics.register(app, moduleCtx);
 ai.register(app, moduleCtx);
-staff.register(app, moduleCtx);
+// staff.register hands back { requireStaff } so the promo station can accept a
+// per-employee login without a second copy of the staff auth rules.
+const staffApi = staff.register(app, moduleCtx);
 customers.register(app, moduleCtx);
 groups.register(app, moduleCtx);
 hungerstation.register(app, moduleCtx);
@@ -2845,10 +2905,18 @@ keeta.register(app, moduleCtx);
 // It registers BEFORE funnel so a storefront Purchase can link itself to the
 // ad lead that produced it the moment it lands, and before autopilot so the
 // agent can read attribution numbers without an HTTP round-trip to ourselves.
-const attribApi = attribution.register(app, moduleCtx);
+// promo.js needs attribution.linkOrder, and attribution needs promo's
+// redemption counts — so promo is registered AFTER and handed back as a
+// function. Neither module imports the other; the reference is resolved at
+// request time, not at boot.
+let promoApi = null;
+const attribApi = attribution.register(app, moduleCtx, { promo: () => promoApi });
 funnel.register(app, moduleCtx, { attribution: attribApi });
 catalog.register(app, moduleCtx);
 const audApi = audiences.register(app, moduleCtx);
+promoApi = promo.register(app, moduleCtx, {
+  staff: staffApi, attribution: attribApi, adsSync: adsApi,
+});
 const ap = autopilot.register(app, moduleCtx, {
   adsSync: adsApi, audiencesSync: audApi, attribution: attribApi,
 });
