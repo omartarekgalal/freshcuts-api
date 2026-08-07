@@ -590,6 +590,10 @@ const snapchat = {
   conversionEnv: ["SNAP_PIXEL_ID", "SNAP_ACCESS_TOKEN"],
   manageEnv: ["SNAP_AD_ACCOUNT_ID", "SNAP_CLIENT_ID", "SNAP_CLIENT_SECRET", "SNAP_REFRESH_TOKEN"],
   eventName: "PURCHASE",
+
+  // Snap rejects an identityless event with code 507 — same rule as Meta's
+  // 2804050 (verified live 2026-08-07). Skip rather than burn the batch.
+  usable(e) { return !!(e.phoneDigits || e.email || e.externalId); },
   capiBase: "https://tr.snapchat.com/v3",
   apiBase: "https://adsapi.snapchat.com/v1",
   _tok: null,
