@@ -599,33 +599,36 @@ export function register(app, ctx, deps = {}) {
   const AGENT_TOOLS = [
     {
       name: "get_performance",
-      description: "أرقام الحملات من المنصات (صرف، نتايج، تكلفة النتيجة، العائد، الميزانية اليومية، الحالة) في مدى تواريخ.",
+      description: "أرقام الحملات من المنصات (صرف، نتايج، تكلفة النتيجة، العائد، الميزانية اليومية، الحالة). سيب التواريخ فاضية وهتاخد آخر ٧ أيام تلقائي — ده أأمن من إنك تحزر التاريخ.",
       schema: {
         type: "object",
         properties: {
-          from: { type: "string", description: "تاريخ البداية YYYY-MM-DD" },
-          to: { type: "string", description: "تاريخ النهاية YYYY-MM-DD" },
+          from: { type: "string", description: "YYYY-MM-DD — اختياري، الافتراضي آخر ٧ أيام" },
+          to: { type: "string", description: "YYYY-MM-DD — اختياري، الافتراضي النهارده" },
           platform: { type: "string", enum: ["meta", "tiktok", "snapchat"], description: "اختياري — منصة واحدة بس" },
         },
-        required: ["from", "to"],
       },
     },
     {
       name: "get_attribution",
-      description: "مردود كل قناة: صرف ← عملاء محتملين ← طلبات ← إيراد ← عملاء جداد/راجعين، مع درجة ثقة لكل صف (مؤكد/مرجّح/تقديري). ده المصدر الوحيد اللي بيربط الإعلان بمبيعات الكاشير الحقيقية.",
+      description: "مردود كل قناة: صرف ← عملاء محتملين ← طلبات ← إيراد ← عملاء جداد/راجعين، مع درجة ثقة لكل صف (مؤكد/مرجّح/تقديري). ده المصدر الوحيد اللي بيربط الإعلان بمبيعات الكاشير الحقيقية. سيب التواريخ فاضية وهتاخد آخر ٣٠ يوم.",
       schema: {
         type: "object",
-        properties: { from: { type: "string" }, to: { type: "string" } },
-        required: ["from", "to"],
+        properties: {
+          from: { type: "string", description: "YYYY-MM-DD — اختياري، الافتراضي آخر ٣٠ يوم" },
+          to: { type: "string", description: "YYYY-MM-DD — اختياري، الافتراضي النهارده" },
+        },
       },
     },
     {
       name: "get_sales",
-      description: "مبيعات المطعم الحقيقية من نظام الكاشير يوم بيوم، ومقارنتها بهدف المبيعات اليومي.",
+      description: "مبيعات المطعم الحقيقية من نظام الكاشير يوم بيوم، ومقارنتها بهدف المبيعات اليومي. سيب التواريخ فاضية وهتاخد آخر ٧ أيام.",
       schema: {
         type: "object",
-        properties: { from: { type: "string" }, to: { type: "string" } },
-        required: ["from", "to"],
+        properties: {
+          from: { type: "string", description: "YYYY-MM-DD — اختياري، الافتراضي آخر ٧ أيام" },
+          to: { type: "string", description: "YYYY-MM-DD — اختياري، الافتراضي النهارده" },
+        },
       },
     },
     {
@@ -666,20 +669,40 @@ export function register(app, ctx, deps = {}) {
     },
   ];
 
+  /* الموديل مبيعرفش النهارده إيه — وقت تدريبه بيخليه يفتكر تاريخ قديم بسنة.
+     لو سابناه يمرّر التاريخ اللي في دماغه، هيسأل عن شباك فاضي ويستنتج إن
+     المطعم مبيبيعش. فبنصحّح: أي تاريخ بره آخر سنة بيترد بتصحيح فيه تاريخ
+     النهارده بدل ما يترد بصفوف فاضية تتقري كحقيقة. */
+  function resolveRange(input, defaultDays) {
+    const today = todayISO();
+    const ok = (v) => /^\d{4}-\d{2}-\d{2}$/.test(String(v || ""));
+    let from = ok(input.from) ? String(input.from) : daysAgoISO(defaultDays);
+    let to = ok(input.to) ? String(input.to) : today;
+    if (from > to) { const t = from; from = to; to = t; }
+    if (to > today) to = today;                       // مفيش أرقام من المستقبل
+    if (to < daysAgoISO(365)) {
+      return { error: `التاريخ اللي طلبته (${input.to || input.from}) أقدم من سنة كاملة، وده غالباً غلط في التاريخ مش سؤال حقيقي. النهارده ${today}. سيب from و to فاضيين وهاجيبلك الافتراضي الصح، أو استخدم تواريخ قريبة من ${today}.` };
+    }
+    return { from, to, clamped: to !== (ok(input.to) ? String(input.to) : today) };
+  }
+
   /* ── تنفيذ الأدوات ────────────────────────────────────────────────────── */
   async function runAgentTool(name, input, agentCtx) {
     const { s, snap, cooldown, runId } = agentCtx;
-    const day = (v, fb) => (/^\d{4}-\d{2}-\d{2}$/.test(String(v || "")) ? String(v) : fb);
 
     if (name === "get_performance") {
-      const from = day(input.from, daysAgoISO(6)), to = day(input.to, todayISO());
+      const rg = resolveRange(input, 6);
+      if (rg.error) return { ok: false, error: rg.error };
+      const { from, to } = rg;
       const only = ["meta", "tiktok", "snapchat"].includes(input.platform) ? input.platform : null;
       const r = await perfSnapshot({ from, to, platform: only });
       return { ok: true, ...r };
     }
 
     if (name === "get_sales") {
-      const from = day(input.from, daysAgoISO(6)), to = day(input.to, todayISO());
+      const rg = resolveRange(input, 6);
+      if (rg.error) return { ok: false, error: rg.error };
+      const { from, to } = rg;
       const days = await pool.query(
         `SELECT calendar_day::text AS day, count(*)::int AS orders, COALESCE(sum(total),0)::numeric(12,2) AS revenue
            FROM ts_orders
@@ -701,7 +724,9 @@ export function register(app, ctx, deps = {}) {
       if (!attribution?.overviewData) {
         return { ok: false, error: "موديول الإسناد مش مربوط في النسخة دي — مفيش أرقام إسناد أقدر أوريهالك. متخترعش أرقام بدالها." };
       }
-      const from = day(input.from, daysAgoISO(29)), to = day(input.to, todayISO());
+      const rg = resolveRange(input, 29);
+      if (rg.error) return { ok: false, error: rg.error };
+      const { from, to } = rg;
       const r = await attribution.overviewData(from, to);
       // بنبعت الصفوف اللي فيها حياة بس — الباقي أصفار وبتاكل توكنز من غير فايدة.
       return {
@@ -783,7 +808,15 @@ export function register(app, ctx, deps = {}) {
 
   /* ── الـ system prompt ────────────────────────────────────────────────── */
   function agentSystem(s, baseline, focus) {
+    const today = todayISO();
     return `أنت وكيل إدارة إعلانات مطعم "فريش كتس" في جدة (برجر وستيك). السوق سعودي والعملة ريال.
+
+⚠️ التاريخ: النهارده ${today}.
+إحساسك الداخلي بالتاريخ غلط — انت مدرّب على بيانات أقدم من كده بكتير. اعتمد على السطر اللي فوق ده بس.
+  • آخر ٧ أيام = من ${daysAgoISO(6)} لـ ${today}
+  • آخر ٣٠ يوم = من ${daysAgoISO(29)} لـ ${today}
+  • الشهر ده لحد النهارده = من ${today.slice(0, 8)}01 لـ ${today}
+الأأمن إنك تسيب from و to فاضيين خالص في أدوات القراءة، وهي هتاخد المدى الصح لوحدها. لو سألت عن تاريخ قديم بسنة هترجعلك أرقام فاضية، والفاضي ده مش معناه إن المطعم مبيعش — معناه إنك سألت السؤال الغلط.
 
 الهدف: مبيعات ${s.goalDailySales} ريال في اليوم.
 خط الأساس دلوقتي: متوسط ${baseline.avgDaily} ريال/يوم على آخر ٧ أيام${baseline.progressPct != null ? ` (${baseline.progressPct}٪ من الهدف)` : ""}.
@@ -1227,7 +1260,12 @@ ${focus}
         name: t.name, input: t.input,
         ok: t.output?.ok !== false,
         refused: !!t.output?.refused,
-        summary: t.output?.error || (t.output?.executed ? "اتنفّذ" : t.output?.queued ? "في طابور الموافقة" : "قراءة"),
+        summary: t.output?.error
+          || (t.output?.executed ? "اتنفّذ"
+            : t.output?.queued ? "في طابور الموافقة"
+            : t.output?.saved ? "ملاحظة اتسجّلت"
+            : t.output?.range ? `قراءة ${t.output.range.from} → ${t.output.range.to}`
+            : "قراءة"),
       })),
       refusal: x.status === "refused" ? x.detail?.refusal || x.reason : null,
       campaign: x.campaign_name || null,
