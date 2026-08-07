@@ -262,6 +262,57 @@ export function decide(rows, s, recentBudgetChanges = new Set()) {
   return out;
 }
 
+/* ── الأسوار كدوال نقية ────────────────────────────────────────────────────
+   نفس معاملة decide(): مفيش I/O، فتتجرّب من غير سيرفر ولا قاعدة بيانات.
+   بترجّع نص الرفض بالعربي، أو null لو الطلب جوه الحدود. الوكيل بيمر عليها
+   قبل أي كتابة، وكل رفض بيترجع للموديل وبيتسجّل في ap_decisions.
+
+   `rows` = لقطة الحملات: { platform, id, name, status, dailyBudget, spend,
+                            results, cpa, roas }                              */
+
+export const activeBudgetOf = (rows) => rows
+  .filter((r) => r.status === "ACTIVE" && r.dailyBudget != null)
+  .reduce((a, r) => a + r.dailyBudget, 0);
+
+export function guardPause({ platform, campaignId }, s, rows, { writeOk }) {
+  if (!writeOk) return "ADS_ALLOW_WRITE مش مساوي 1 — الكتابة على المنصات مقفولة من أصلها.";
+  const row = rows.find((r) => r.platform === platform && r.id === String(campaignId));
+  if (!row) return `مفيش حملة بالرقم ${campaignId} على ${platform} في اللقطة الحالية — راجع get_performance الأول.`;
+  if (row.status !== "ACTIVE") return `الحملة "${row.name}" أصلاً ${row.status} — مفيش حاجة تتوقف.`;
+  // قاعدة القتل بتحدد إمتى الإيقاف مبرر. حملة بتضرب المستهدف مش بتتقفل.
+  if (row.spend >= s.minSpend && row.cpa != null && row.cpa <= s.targetCpa) {
+    return `مرفوض: "${row.name}" تكلفة نتيجتها ${row.cpa} ر.س وهي أقل من المستهدف (${s.targetCpa} ر.س) — دي حملة كاسبة والقواعد بتقول ما توقفش الكاسب. قاعدة القتل بتشتغل عند تكلفة أعلى من ${s.killMultiple}× المستهدف. لو عايز تقلل صرفها استخدم set_budget.`;
+  }
+  return null;
+}
+
+export function guardBudget({ platform, campaignId, amount }, s, rows, { writeOk, cooldown, hardCap }) {
+  if (!writeOk) return "ADS_ALLOW_WRITE مش مساوي 1 — الكتابة على المنصات مقفولة من أصلها.";
+  const row = rows.find((r) => r.platform === platform && r.id === String(campaignId));
+  if (!row) return `مفيش حملة بالرقم ${campaignId} على ${platform} في اللقطة الحالية — راجع get_performance الأول.`;
+  const to = Number(amount);
+  if (!Number.isFinite(to) || to <= 0) return "المبلغ لازم يكون رقم موجب بالريال.";
+  if (row.dailyBudget == null) {
+    return `مرفوض: "${row.name}" ميزانيتها متظبطة على مستوى المجموعة الإعلانية مش الحملة — الوكيل بيدير ميزانيات الحملات بس.`;
+  }
+  const cap = Math.min(s.maxCampaignBudget, hardCap);
+  if (to > cap) {
+    return `مرفوض: ${to} ر.س/يوم فوق سقف الحملة الواحدة (${cap} ر.س). السقف ده إعداد المالك — لو عايز تعدّيه لازم هو يرفعه من الإعدادات، مش انت.`;
+  }
+  const changePct = Math.abs(to - row.dailyBudget) / row.dailyBudget * 100;
+  if (changePct > s.maxChangePct) {
+    return `مرفوض: التغيير من ${row.dailyBudget} لـ ${to} ر.س يعني ${Math.round(changePct)}٪ وده فوق أقصى تغيير مسموح في الخطوة الواحدة (${s.maxChangePct}٪). الخوارزمية بتتكسر لو الميزانية نطّت مرة واحدة — كبّر على خطوات.`;
+  }
+  const after = activeBudgetOf(rows) - row.dailyBudget + to;
+  if (after > s.maxTotalBudget) {
+    return `مرفوض: مجموع ميزانيات الحملات الشغالة هيبقى ${Math.round(after)} ر.س/يوم وده فوق السقف الكلي (${s.maxTotalBudget} ر.س). وقّف أو قلّل حملة تانية الأول.`;
+  }
+  if (cooldown.has(`${platform}:${campaignId}`)) {
+    return `مرفوض: "${row.name}" ميزانيتها اتغيّرت خلال آخر ${s.budgetCooldownHours} ساعة — فترة تعلّم لازم تعدّي قبل أي تغيير تاني.`;
+  }
+  return null;
+}
+
 /* ═══════════════════════════════════════════════════════════════════════════ */
 
 export function register(app, ctx, deps = {}) {
@@ -550,51 +601,6 @@ export function register(app, ctx, deps = {}) {
     return { range: { from: f, to: t }, rows, reasons };
   }
 
-  const activeBudgetOf = (rows) => rows
-    .filter((r) => r.status === "ACTIVE" && r.dailyBudget != null)
-    .reduce((a, r) => a + r.dailyBudget, 0);
-
-  /* ── الأسوار كدوال ترجّع سبب الرفض بالعربي، مش boolean ────────────────── */
-
-  function guardPause({ platform, campaignId }, s, snap) {
-    if (!writeAllowed()) return "ADS_ALLOW_WRITE مش مساوي 1 — الكتابة على المنصات مقفولة من أصلها.";
-    const row = snap.rows.find((r) => r.platform === platform && r.id === String(campaignId));
-    if (!row) return `مفيش حملة بالرقم ${campaignId} على ${platform} في اللقطة الحالية — راجع get_performance الأول.`;
-    if (row.status !== "ACTIVE") return `الحملة "${row.name}" أصلاً ${row.status} — مفيش حاجة تتوقف.`;
-    // قاعدة القتل بتحدد إمتى الإيقاف مبرر. حملة بتضرب المستهدف مش بتتقفل.
-    if (row.spend >= s.minSpend && row.cpa != null && row.cpa <= s.targetCpa) {
-      return `مرفوض: "${row.name}" تكلفة نتيجتها ${row.cpa} ر.س وهي أقل من المستهدف (${s.targetCpa} ر.س) — دي حملة كاسبة والقواعد بتقول ما توقفش الكاسب. قاعدة القتل بتشتغل عند تكلفة أعلى من ${s.killMultiple}× المستهدف. لو عايز تقلل صرفها استخدم set_budget.`;
-    }
-    return null;
-  }
-
-  function guardBudget({ platform, campaignId, amount }, s, snap, cooldown) {
-    if (!writeAllowed()) return "ADS_ALLOW_WRITE مش مساوي 1 — الكتابة على المنصات مقفولة من أصلها.";
-    const row = snap.rows.find((r) => r.platform === platform && r.id === String(campaignId));
-    if (!row) return `مفيش حملة بالرقم ${campaignId} على ${platform} في اللقطة الحالية — راجع get_performance الأول.`;
-    const to = Number(amount);
-    if (!Number.isFinite(to) || to <= 0) return "المبلغ لازم يكون رقم موجب بالريال.";
-    if (row.dailyBudget == null) {
-      return `مرفوض: "${row.name}" ميزانيتها متظبطة على مستوى المجموعة الإعلانية مش الحملة — الوكيل بيدير ميزانيات الحملات بس.`;
-    }
-    const cap = Math.min(s.maxCampaignBudget, MAX_DAILY_BUDGET);
-    if (to > cap) {
-      return `مرفوض: ${to} ر.س/يوم فوق سقف الحملة الواحدة (${cap} ر.س). السقف ده إعداد المالك — لو عايز تعدّيه لازم هو يرفعه من الإعدادات، مش انت.`;
-    }
-    const changePct = Math.abs(to - row.dailyBudget) / row.dailyBudget * 100;
-    if (changePct > s.maxChangePct) {
-      return `مرفوض: التغيير من ${row.dailyBudget} لـ ${to} ر.س يعني ${Math.round(changePct)}٪ وده فوق أقصى تغيير مسموح في الخطوة الواحدة (${s.maxChangePct}٪). الخوارزمية بتتكسر لو الميزانية نطّت مرة واحدة — كبّر على خطوات.`;
-    }
-    const after = activeBudgetOf(snap.rows) - row.dailyBudget + to;
-    if (after > s.maxTotalBudget) {
-      return `مرفوض: مجموع ميزانيات الحملات الشغالة هيبقى ${Math.round(after)} ر.س/يوم وده فوق السقف الكلي (${s.maxTotalBudget} ر.س). وقّف أو قلّل حملة تانية الأول.`;
-    }
-    if (cooldown.has(`${platform}:${campaignId}`)) {
-      return `مرفوض: "${row.name}" ميزانيتها اتغيّرت خلال آخر ${s.budgetCooldownHours} ساعة — فترة تعلّم لازم تعدّي قبل أي تغيير تاني.`;
-    }
-    return null;
-  }
-
   /* ── تعريفات الأدوات ──────────────────────────────────────────────────── */
   const AGENT_TOOLS = [
     {
@@ -754,8 +760,9 @@ export function register(app, ctx, deps = {}) {
       const row = snap.rows.find((r) => r.platform === platform && r.id === campaignId);
 
       const refusal = kind === "pause"
-        ? guardPause({ platform, campaignId }, s, snap)
-        : guardBudget({ platform, campaignId, amount: input.amount }, s, snap, cooldown);
+        ? guardPause({ platform, campaignId }, s, snap.rows, { writeOk: writeAllowed() })
+        : guardBudget({ platform, campaignId, amount: input.amount }, s, snap.rows,
+            { writeOk: writeAllowed(), cooldown, hardCap: MAX_DAILY_BUDGET });
 
       if (refusal) {
         // الرفض نفسه حدث يستاهل التسجيل — المالك لازم يشوف الوكيل حاول إيه.
