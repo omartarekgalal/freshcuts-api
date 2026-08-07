@@ -266,6 +266,7 @@ const meta = {
           value: e.value,
           currency: e.currency,
           ...(e.orderId ? { order_id: String(e.orderId) } : {}),
+          ...(e.contentCategory ? { content_category: e.contentCategory } : {}),
         },
       };
       return ev;
@@ -430,6 +431,7 @@ const tiktok = {
           currency: e.currency,
           content_type: "product",
           ...(e.orderId ? { order_id: String(e.orderId) } : {}),
+          ...(e.contentCategory ? { description: e.contentCategory } : {}),
         },
       };
     });
@@ -614,6 +616,7 @@ const snapchat = {
           currency: e.currency,
           value: String(e.value),
           ...(e.orderId ? { order_id: String(e.orderId) } : {}),
+          ...(e.contentCategory ? { content_category: [e.contentCategory] } : {}),
         },
       };
     });
@@ -956,7 +959,8 @@ export function register(app, ctx) {
       `SELECT o.order_id, o.order_date, o.calendar_day, o.order_type, o.order_option,
               o.total, o.customer_id, o.branch,
               COALESCE(NULLIF(s.phone_norm,''), NULLIF(tc.phone_norm,'')) AS phone_norm,
-              NULLIF(tc.email,'') AS email
+              NULLIF(tc.email,'') AS email,
+              s.source AS src, s.source_note AS src_note
          FROM ts_orders o
          LEFT JOIN ts_customers tc ON tc.customer_id = o.customer_id
          LEFT JOIN order_sources s ON s.order_id = o.order_id
@@ -968,6 +972,16 @@ export function register(app, ctx) {
       [from, to, limit]
     );
     return r.rows;
+  }
+
+  // Channel label the platforms can slice on: "delivery:keeta" / "delivery"
+  // for aggregator orders, "instore" for everything punched at the till.
+  // External order_type is the POS truth; the cashier/FeedUs tag adds the app.
+  function channelOf(row) {
+    const isDelivery = row.src === "delivery_app" || /external/i.test(row.order_type || "");
+    if (!isDelivery) return "instore";
+    const app = (row.src_note || "").trim().toLowerCase();
+    return app ? `delivery:${app}` : "delivery";
   }
 
   // A restaurant sale, expressed the same way for every platform.
@@ -985,6 +999,7 @@ export function register(app, ctx) {
       phoneDigits: digits,
       email: row.email || null,
       externalId: row.customer_id || null,
+      contentCategory: channelOf(row),
       // A till sale in Jeddah is not a website conversion. Saying so is both
       // truthful and what unlocks offline/store optimisation on each platform.
       actionSource: "physical_store",
