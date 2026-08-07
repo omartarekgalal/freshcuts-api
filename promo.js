@@ -43,6 +43,7 @@ export function codeKey(s) {
     .replace(/ى/g, "ي")
     .replace(/ؤ/g, "و")
     .replace(/ئ/g, "ي")
+    .replace(/ة/g, "ه")   // «لمة» و«لمه» نفس الكلمة لما حد يكتبها
     .replace(/[\s._\-]+/g, "")
     .toUpperCase();
 }
@@ -100,6 +101,27 @@ export function register(app, ctx, deps = {}) {
       -- مش هيلاحظ إنه ضغط مرتين.
       CREATE UNIQUE INDEX IF NOT EXISTS promo_redemptions_order_uniq
         ON promo_redemptions(code_id, order_id) WHERE order_id IS NOT NULL;
+
+      /* الكود اتبعت لمين — وده أهم جدول في الملف كله.
+
+         الإعلانات الشغالة دلوقتي (fc-wa-orders) بتقول للعميل يبعت كلمة على
+         الواتساب وإحنا نرد عليه بالكود. يعني ساعة الرد إحنا عارفين رقمه
+         والحملة اللي جابته، قبل ما يشوف الكاشير أصلاً. الصف اللي بيتكتب هنا
+         بيدخل funnel_events كـ Lead برقم جوال، وبعدها sweepLinks بيطابقه
+         بالطلب لوحده لما العميل ييجي — من غير ولا لمسة من الكاشير.
+
+         ده مقصود: محطة الكاشير اتفتحت مرتين في عمرها كلها، فأي قياس معلّق
+         على إن الموظف يفتكر يدوس هو قياس مش موجود. */
+      CREATE TABLE IF NOT EXISTS promo_issues (
+        id TEXT PRIMARY KEY,
+        code_id TEXT NOT NULL,
+        phone_norm TEXT NOT NULL,
+        channel TEXT NOT NULL DEFAULT 'whatsapp',
+        funnel_event_id TEXT,
+        issued_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS promo_issues_uniq ON promo_issues(code_id, phone_norm);
+      CREATE INDEX IF NOT EXISTS promo_issues_phone_idx ON promo_issues(phone_norm);
     `);
   }
   ensureSchema()
@@ -277,6 +299,72 @@ export function register(app, ctx, deps = {}) {
     return c.json({ ok: true, deleted: r.rowCount });
   });
 
+  /* ═══ POST /api/promo/issue ════════════════════════════════════════════
+     { code, phone, channel? } — بتتنده لما نبعت الكود للعميل على الواتساب.
+
+     دي الرجل اللي بتشتغل من غير كاشير خالص. الإعلان بيقول «ابعتلنا مشاوي على
+     الواتساب» → إحنا نرد بالكود → هنا بنسجّل إن الرقم ده خد كود الحملة
+     الفلانية. لما العميل ييجي المطعم ويتسجل رقمه في TabSense (وده بيحصل في
+     ٧٢٪ من الطلبات فعلاً)، sweepLinks بيطابق الرقم بالرقم ويربط الطلب
+     بالحملة لوحده. الكاشير مش طرف في العملية دي.
+
+     الحدث هنا اسمه Lead — على عكس الاستخدام. ده صح: العميل كلّمنا فعلاً قبل
+     ما يشتري، فده اهتمام حقيقي يستاهل يتعدّ في عدّ الـ leads. */
+  app.post("/api/promo/issue", async (c) => {
+    const who = await requireStation(c); if (isResponse(who)) return who;
+    const b = await c.req.json().catch(() => ({}));
+    const key = codeKey(b.code);
+    const phone = normPhone(b.phone || "");
+    if (!key) return c.json({ ok: false, error: "code_required", message: "اكتب الكود" }, 400);
+    // من غير رقم الصف ده بلا قيمة — الرقم هو كل الفكرة.
+    if (!phone || phone.length < 9) {
+      return c.json({ ok: false, error: "phone_required", message: "رقم الجوال مطلوب — من غيره مفيش ربط" }, 400);
+    }
+
+    const cur = await pool.query(
+      `SELECT p.*, (SELECT count(*)::int FROM promo_redemptions r WHERE r.code_id = p.id) AS used
+         FROM promo_codes p WHERE p.code_key = $1`, [key]);
+    if (!cur.rowCount) return c.json({ ok: false, error: "unknown_code", message: "الكود ده مش موجود" }, 404);
+    const code = cur.rows[0];
+
+    const id = `pi_${crypto.randomBytes(6).toString("hex")}`;
+    const ins = await pool.query(
+      `INSERT INTO promo_issues (id, code_id, phone_norm, channel)
+       VALUES ($1,$2,$3,$4) ON CONFLICT (code_id, phone_norm) DO NOTHING RETURNING id`,
+      [id, code.id, phone, String(b.channel || "whatsapp").slice(0, 24)]
+    );
+    if (!ins.rowCount) {
+      return c.json({ ok: true, duplicate: true, code: shapeCode(code),
+        message: "الرقم ده خد الكود ده قبل كده" });
+    }
+
+    let eventId = null;
+    if (code.utm_campaign || code.utm_source) {
+      eventId = crypto.randomUUID();
+      try {
+        await pool.query(
+          `INSERT INTO funnel_events (id, event_name, event_id, value, currency, url, utm, phone_norm, results)
+           VALUES ($1,'Lead',$2,0,'SAR','',$3,$4,$5)`,
+          [eventId, id,
+           jb({ utm_source: code.utm_source || "", utm_campaign: code.utm_campaign || "",
+                utm_medium: "promo_code", promo_code: code.code }),
+           phone,
+           jb({ promo: { id: code.id, code: code.code, issue: id, channel: b.channel || "whatsapp" } })]
+        );
+        await pool.query("UPDATE promo_issues SET funnel_event_id=$2 WHERE id=$1", [id, eventId]);
+      } catch (e) {
+        eventId = null;
+        console.error("[promo] issue event failed:", e.message);
+      }
+    }
+
+    return c.json({
+      ok: true, issueId: id, code: shapeCode(code), linkable: !!eventId,
+      message: `📩 كود ${code.code} اتسجل للرقم ده`,
+      note: "الطلب اللي هييجي بنفس الرقم خلال ٧ أيام هيتربط بالحملة دي لوحده — من غير أي تدخل من الكاشير.",
+    });
+  });
+
   /* ═══ POST /api/promo/redeem ═══════════════════════════════════════════
      { code, orderId?, phone? } — بتتنده من محطة الكاشير بضغطة واحدة. */
   app.post("/api/promo/redeem", async (c) => {
@@ -417,6 +505,10 @@ export function register(app, ctx, deps = {}) {
               count(r.id) FILTER (WHERE COALESCE(r.phone_norm,'') <> '')::int AS with_phone,
               count(DISTINCT NULLIF(r.phone_norm,''))::int AS customers,
               COALESCE(sum(o.total),0) AS revenue,
+              -- الكود اتبعت لكام رقم مقابل اتقال كام مرة. الفرق بينهم هو
+              -- الرقم اللي بيقول الإعلان شغّال ولا لأ فعلاً.
+              (SELECT count(*)::int FROM promo_issues i
+                WHERE i.code_id = p.id AND i.issued_at::date BETWEEN $1::date AND $2::date) AS issued,
               min(r.redeemed_at) AS first_at, max(r.redeemed_at) AS last_at
          FROM promo_codes p
          LEFT JOIN promo_redemptions r
@@ -438,6 +530,9 @@ export function register(app, ctx, deps = {}) {
         discountText: r.discount_text || "", active: r.active !== false,
         redemptions: num(r.redemptions), withOrder: num(r.with_order), withPhone: num(r.with_phone),
         customers: num(r.customers), revenue: Math.round(num(r.revenue) * 100) / 100,
+        issued: num(r.issued),
+        // نسبة اللي خدوا الكود وفعلاً جم — مقياس الإعلان نفسه، مش الكاشير.
+        redeemRate: num(r.issued) > 0 ? Math.round((num(r.redemptions) / num(r.issued)) * 100) / 100 : null,
         firstAt: r.first_at, lastAt: r.last_at,
       })),
       daily,

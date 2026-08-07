@@ -264,7 +264,8 @@ export function confidenceOf({ orders, linked, pos, tagged, redeemed }) {
 
 const num = (v) => (v == null ? 0 : Number(v) || 0);
 const r2 = (v) => Math.round(v * 100) / 100;
-const pct = (v) => (v == null ? "—" : `${Math.round(v * 1000) / 10}%`);
+const r4 = (v) => Math.round(v * 10000) / 10000;
+const pct = (v) => (v == null ? "—" : `${Math.round(v * 10000) / 100}%`);
 const isDay = (s) => /^\d{4}-\d{2}-\d{2}$/.test(String(s || ""));
 
 /* التغطية بتقول للمالك ليه الأرقام واقفة عند "تقديري" وإيه اللي يصلّحها.
@@ -731,9 +732,10 @@ export function register(app, ctx, deps = {}) {
           orders: o, revenue: r2(num(r.revenue)),
           tagged: num(r.tagged), taggedByHuman: num(r.tagged_by_human),
           withPhone: num(r.with_phone), skipped: num(r.skipped),
-          // نسبة من غير مقام = مجهولة، مش صفر.
-          tagRate: o > 0 ? r2(num(r.tagged) / o) : null,
-          phoneRate: o > 0 ? r2(num(r.with_phone) / o) : null,
+          // نسبة من غير مقام = مجهولة، مش صفر. وأربع خانات مش اتنين: تغطية
+          // ١ من ٦٣٦ لازم تبان ٠.٠٠١٦ مش تتقرّب لصفر وتتقري «مفيش خالص».
+          tagRate: o > 0 ? r4(num(r.tagged) / o) : null,
+          phoneRate: o > 0 ? r4(num(r.with_phone) / o) : null,
         };
       };
 
