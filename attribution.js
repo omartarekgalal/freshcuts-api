@@ -522,19 +522,36 @@ export function register(app, ctx) {
       };
     });
 
-    const totals = rows.reduce((t, r) => ({
-      spend: t.spend + r.spend.total, leads: t.leads + r.leadsTotal,
-      orders: t.orders + r.orders, revenue: t.revenue + r.revenue,
-      newCustomers: t.newCustomers + r.newCustomers,
-    }), { spend: 0, leads: 0, orders: 0, revenue: 0, newCustomers: 0 });
+    const sum = (list, pick) => list.reduce((a, r) => a + pick(r), 0);
+    const paidRows = rows.filter((r) => r.spend.total > 0);
+    const spendAll = sum(rows, (r) => r.spend.total);
+    const revenueAll = sum(rows, (r) => r.revenue);
+    const paidSpend = sum(paidRows, (r) => r.spend.total);
+    const paidRevenue = sum(paidRows, (r) => r.revenue);
+    const paidOrders = sum(paidRows, (r) => r.orders);
 
     return {
       range: { from, to }, rows,
       totals: {
-        spend: r2(totals.spend), leads: totals.leads, orders: totals.orders,
-        revenue: r2(totals.revenue), newCustomers: totals.newCustomers,
-        cpa: totals.orders > 0 && totals.spend > 0 ? r2(totals.spend / totals.orders) : null,
-        roas: totals.spend > 0 ? r2(totals.revenue / totals.spend) : null,
+        spend: r2(spendAll),
+        leads: sum(rows, (r) => r.leadsTotal),
+        orders: sum(rows, (r) => r.orders),
+        revenue: r2(revenueAll),
+        newCustomers: sum(rows, (r) => r.newCustomers),
+        // العائد الحقيقي للإعلانات: إيراد القنوات اللي فيها صرف ÷ الصرف.
+        // ده الرقم اللي يتبني عليه قرار.
+        paid: {
+          spend: r2(paidSpend), orders: paidOrders, revenue: r2(paidRevenue),
+          leads: sum(paidRows, (r) => r.leadsTotal),
+          cpa: paidOrders > 0 && paidSpend > 0 ? r2(paidSpend / paidOrders) : null,
+          roas: paidSpend > 0 ? r2(paidRevenue / paidSpend) : null,
+          channels: paidRows.map((r) => r.channel),
+        },
+        // مبيعات المطعم كلها ÷ صرف الإعلانات. رقم إداري للمتابعة، مش إسناد:
+        // معظم الإيراد ده جاي من قنوات مالهاش أي صرف. ممنوع يتقري كعائد إعلان.
+        blendedRoas: spendAll > 0 ? r2(revenueAll / spendAll) : null,
+        blendedCpa: spendAll > 0 && sum(rows, (r) => r.orders) > 0
+          ? r2(spendAll / sum(rows, (r) => r.orders)) : null,
       },
       reasons: spend.reasons,
       rollup: fresh,
@@ -543,6 +560,7 @@ export function register(app, ctx) {
         "الإيراد من ts_orders.total وهو شامل الضريبة — نفس الرقم اللي على الفاتورة.",
         "الطلبات الملغية/المرتجعة مستبعدة.",
         "درجة الثقة مش زينة: مؤكد = مطابقة رقم جوال أو تصنيف النظام نفسه، مرجّح = تصنيف الكاشير اليدوي، تقديري = محسوب بالاستبعاد.",
+        "totals.paid.roas هو عائد الإعلانات الحقيقي. totals.blendedRoas بيقسم مبيعات المطعم كلها على صرف الإعلانات — رقم متابعة إداري، ومش دليل على إن الإعلان جاب المبيعات دي.",
         "صرف جوجل يدوي بس — Google Ads API لسه محتاج developer token معتمد.",
       ],
     };
