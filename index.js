@@ -28,6 +28,7 @@ import * as keeta from "./keeta.js";
 import * as funnel from "./funnel.js";
 import * as audiences from "./audiences.js";
 import * as autopilot from "./autopilot.js";
+import * as catalog from "./catalog.js";
 
 const { Pool } = pg;
 
@@ -2840,6 +2841,7 @@ dayreport.register(app, moduleCtx);
 const adsApi = ads.register(app, moduleCtx);
 keeta.register(app, moduleCtx);
 funnel.register(app, moduleCtx);
+catalog.register(app, moduleCtx);
 const audApi = audiences.register(app, moduleCtx);
 const ap = autopilot.register(app, moduleCtx, { adsSync: adsApi, audiencesSync: audApi });
 console.log("[analytics] routes ready");
