@@ -236,15 +236,18 @@ export function register(app, ctx, deps = {}) {
         WHERE created_at > NOW() - ($1 || ' days')::interval
         GROUP BY 1,2,3`, [String(days)]);
 
+    // DISTINCT ON, not "ORDER BY created_at DESC LIMIT n". With a plain limit,
+    // one noisy event name fills the whole sample and every other pair's error
+    // text comes back empty — which reads as "rejected, reason unknown" when
+    // the reason was sitting in the table the whole time.
     const err = await pool.query(
-      `SELECT platform, event_name, response, created_at
+      `SELECT DISTINCT ON (platform, event_name) platform, event_name, response, created_at
          FROM ads_events
         WHERE status = 'failed' AND created_at > NOW() - ($1 || ' days')::interval
-        ORDER BY created_at DESC LIMIT 60`, [String(days)]);
+        ORDER BY platform, event_name, created_at DESC`, [String(days)]);
     const lastErr = new Map();
     for (const e of err.rows) {
-      const k = `${e.event_name}|${e.platform}`;
-      if (!lastErr.has(k)) lastErr.set(k, { text: errText(e.response), at: e.created_at });
+      lastErr.set(`${e.event_name}|${e.platform}`, { text: errText(e.response), at: e.created_at });
     }
 
     const cells = {};
