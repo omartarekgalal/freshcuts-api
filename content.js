@@ -572,7 +572,9 @@ export function register(app, ctx) {
          (id, channel, status, scheduled_at, published_at, caption, hashtags,
           media_url, external_id, permalink, origin, synced_at)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'imported',NOW())
-       ON CONFLICT (channel, external_id) DO UPDATE SET
+       -- الفهرس الفريد جزئي (external_id IS NOT NULL)، وبوستجرس مش بيستنتجه
+       -- إلا لو الشرط اتكتب هنا كمان — من غيره بيرمي «no unique constraint».
+       ON CONFLICT (channel, external_id) WHERE external_id IS NOT NULL DO UPDATE SET
          status = EXCLUDED.status,
          scheduled_at = EXCLUDED.scheduled_at,
          published_at = COALESCE(EXCLUDED.published_at, content_posts.published_at),
