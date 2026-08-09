@@ -330,11 +330,19 @@ export function register(app, ctx, deps = {}) {
         if (!v) continue;
         r.platformStatus = v.status === "ACTIVE" ? "الجمهور نشط عند سناب" : v.status;
         r.platformReady = v.status === "ACTIVE";
-        // 0 here is Snap saying "أصغر من إني أوصّل له", not "الرفع فشل".
+        // Snap's approximate_number_users is bucketed and it reports 0 for a
+        // segment it will not serve to. But when upload_status is PROCESSING
+        // a 0 may simply mean the match has not finished — two different
+        // facts, and we do not have the evidence to pick between them, so we
+        // say both instead of asserting the harsher one.
+        const processing = v.uploadStatus && v.uploadStatus !== "COMPLETE";
         r.platformSizeNote = v.approxUsers === 0
-          ? "سناب بتقول صفر مستخدم قابل للاستهداف — الرفع نجح، بس القائمة أصغر من الحد اللي بتوصّل عنده."
+          ? (processing
+            ? `سناب لسه بتطابق القايمة (${v.uploadStatus}) وبتقول لسه صفر مستخدم قابل للاستهداف — يا إما المطابقة ما خلصتش، يا إما القايمة أصغر من الحد اللي بتوصّل عنده.`
+            : "سناب بتقول صفر مستخدم قابل للاستهداف — الرفع نجح، بس القائمة أصغر من الحد اللي بتوصّل عنده.")
           : (v.approxUsers != null ? `سناب بتقدّرها بـ ~${v.approxUsers} مستخدم` : null);
         r.platformUnusable = v.approxUsers === 0;
+        r.platformProcessing = !!processing;
       }
     }
 
@@ -505,7 +513,11 @@ export function register(app, ctx, deps = {}) {
       if (a.platformReady === false) problems.push(`جمهور «${a.segment}» على ${a.platformAr}: المنصة بتقول «${a.platformStatus}».`);
       // رفع ناجح + صفر مستهدفين = القائمة أصغر من إن المنصة توصّل ليها. ده
       // مش عطل في الكود، بس لازم عمر يعرفه قبل ما يبني عليه حملة ريتارجتنج.
-      if (a.platformUnusable) problems.push(`جمهور «${a.segment}» على ${a.platformAr}: اترفع تمام بس المنصة بتقول مفيش مستخدمين كفاية للاستهداف — القائمة (${a.size}) صغيرة.`);
+      if (a.platformUnusable) {
+        problems.push(a.platformProcessing
+          ? `جمهور «${a.segment}» على ${a.platformAr}: اترفع تمام، بس المنصة لسه بتطابق ولسه بتقول صفر مستخدم قابل للاستهداف — راجعه بعد شوية، ولو فضل صفر يبقى القائمة (${a.size}) صغيرة عليه.`
+          : `جمهور «${a.segment}» على ${a.platformAr}: اترفع تمام بس المنصة بتقول مفيش مستخدمين كفاية للاستهداف — القائمة (${a.size}) صغيرة.`);
+      }
     }
     if (catalog.matchRate != null && catalog.matchRate < 90) {
       problems.push(`الكاتالوج: ${catalog.matchRate}% بس من أسطر المشتريات بتوصل لمنتج في الفيد — الباقي بيوصل باسمه، والمنصة مش بتقدر تعمل بيه إعلان منتج.`);
