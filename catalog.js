@@ -33,13 +33,13 @@ async function fetchMenu() {
   // category. A catalog feed must not — Meta keys rows by `id` and rejects the
   // duplicates — so the first page a product appears on wins, and the
   // merchandising pages are read last so the row keeps its true product_type.
-  const MERCH_PAGES = new Set(["Best Sellers", "الأكثر طلباً", "Offers", "العروض"]);
+  // "Offers" outranks "Best Sellers" among the merchandising pages: the family
+  // tray lives nowhere else, so whichever of the two is read first decides its
+  // product_type, and "Offers" is the honest label for it.
+  const MERCH_RANK = { Offers: 1, "العروض": 1, "Best Sellers": 2, "الأكثر طلباً": 2 };
+  const rank = (p) => MERCH_RANK[p.title] || MERCH_RANK[p.local_title] || 0;
   const seen = new Set();
-  const ordered = [...pages].sort((a, b) => {
-    const am = MERCH_PAGES.has(a.title) || MERCH_PAGES.has(a.local_title) ? 1 : 0;
-    const bm = MERCH_PAGES.has(b.title) || MERCH_PAGES.has(b.local_title) ? 1 : 0;
-    return am - bm;
-  });
+  const ordered = [...pages].sort((a, b) => rank(a) - rank(b));
   for (const p of ordered) {
     const category = p.title || p.local_title || "";
     for (const it of p.items || []) {
