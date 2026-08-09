@@ -734,12 +734,25 @@ const snapchat = {
     const list = await this.campaigns();
     if (!list.ok) return { ok: false, reason: list.reason, rows: [] };
     const rows = [];
+    /* Snap rejects any stats window that does not land on an hour boundary:
+       "Unsupported Stats Query: End time should end at the beginning of an
+       hour." A T23:59:59 end is therefore not "the end of `to`", it is an
+       error — and the row came back as a clean zero, so Snap spend read as
+       0.00 everywhere (scorecard, attribution, the autopilot's own snapshot)
+       with nothing to say it had failed. The end is exclusive, so the day
+       AFTER `to` at 00:00:00 is the window that actually means "through the
+       end of `to`". */
+    const endExclusive = (() => {
+      const d = new Date(`${to}T00:00:00Z`);
+      d.setUTCDate(d.getUTCDate() + 1);
+      return d.toISOString().slice(0, 10);
+    })();
     for (const c of list.campaigns) {
       const params = new URLSearchParams({
         granularity: "TOTAL",
         fields: "spend,impressions,swipes,conversion_purchases,conversion_purchases_value",
         start_time: `${from}T00:00:00.000-00:00`,
-        end_time: `${to}T23:59:59.000-00:00`,
+        end_time: `${endExclusive}T00:00:00.000-00:00`,
       });
       const res = await httpJson(`${this.apiBase}/campaigns/${c.id}/stats?${params}`, {
         headers: { Authorization: `Bearer ${t}` },

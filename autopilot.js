@@ -1563,6 +1563,27 @@ ${focus}
                  gate: decision.gate, notes: decision.notes.length };
       }
 
+      /* في mode=suggest مفيش تنفيذ ومفيش طابور — ملاحظة واحدة بتلخّص اللي
+         كنا هنعمله. الدورة دي بتجري كل ١٥ دقيقة، فمن غير الفلتر ده هتكتب
+         نفس الملاحظة أربع مرات في الساعة وتغرق شاشة القرارات. */
+      if (s.mode !== "auto" && !force) {
+        const recent = await pool.query(
+          `SELECT 1 FROM ap_decisions WHERE kind='pace' AND status='info'
+             AND created_at > NOW() - interval '1 hour' LIMIT 1`);
+        if (!recent.rowCount) {
+          await pool.query(
+            `INSERT INTO ap_decisions (id, run_id, platform, campaign_id, campaign_name, kind, detail, reason, status)
+             VALUES ($1,NULL,NULL,NULL,NULL,'pace',$2,$3,'info')`,
+            [crypto.randomUUID(),
+             jb({ mode: s.mode, phase: decision.phase, pacePct: pulse.pacePct, wouldDo: decision.actions }),
+             `الإيقاع كان هيعمل ${decision.actions.length} حركة دلوقتي (${decision.actions.map((a) => `${a.campaignName}: ${a.from}→${a.to}`).join("، ")}) — بس الوضع "${s.mode}" مش "auto". ` +
+             `التسريع اليومي مش بيتحط في طابور الموافقة عن قصد: الموافقة ممكن تيجي بعد ساعات وساعتها الزيادة هتترفع من غير أساس مسجّل ومحدش هيرجّعها. ` +
+             `لو عايز التسريع يشتغل، حوّل الوضع لـ auto.`]);
+        }
+        return { ok: true, phase: decision.phase, accountDay, pace: pulse.pacePct,
+                 mode: s.mode, executed: 0, wouldDo: decision.actions.length };
+      }
+
       const runId = crypto.randomUUID();
       await pool.query(`INSERT INTO ap_runs (id, status, summary) VALUES ($1,'running',$2)`,
         [runId, jb({ trigger, mode: s.mode, kind: "pace", phase: decision.phase, pace: pulse.pacePct })]);
@@ -1613,7 +1634,14 @@ ${focus}
           /* لو الاسترجاع فشل بنسيب restored_at فاضية عن قصد — الدورة اللي
              بعدها هتشوفها كزيادة على يوم حساب قديم وتعيد المحاولة. */
         } else {
-          status = "proposed";     // mode=suggest → طابور الموافقة
+          /* mode=suggest: بنسجّل الاقتراح كمعلومة، ومش بنحطه في طابور
+             الموافقة. السبب مش تفضيل — ده سور: الموافقة ممكن تيجي بعد ٦
+             ساعات، والتنفيذ ساعتها هيرفع الميزانية من غير ما يكتب صف في
+             ap_pacing (لإن المسار ده بيعدي على executeDecision لوحده)،
+             يعني زيادة مالهاش أساس مسجّل ومحدش هيرجّعها. زيادة منسية شغالة
+             ليل ونهار هي بالظبط الحاجة اللي المالك خايف منها.
+             الإيقاع اليومي شغل mode=auto — أو زرار pace-now بـ force. */
+          status = "info";
         }
 
         await pool.query(
