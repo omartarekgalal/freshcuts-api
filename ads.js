@@ -290,16 +290,28 @@ const meta = {
     };
   },
 
+  /* Meta answers in three different shapes and this has to read all of them,
+     because the same function judges a CAPI batch AND a campaign write:
+       CAPI events    → { events_received: N, … }
+       update a field → { success: true }            ← state / budget calls
+       create         → { id: "…" }
+     It used to require `events_received`, so every campaign write fell into
+     the error branch and was recorded as failed while Meta had in fact
+     applied it. That is worse than a plain failure: the budget moves and our
+     books say it did not, so nothing ever moves it back. An `error` object in
+     the body still loses, whatever the HTTP status says. */
   readBatchResult(res) {
-    if (res.ok && res.json && typeof res.json.events_received === "number") {
-      return { ok: true, accepted: res.json.events_received, raw: res.json };
+    const j = res.json;
+    if (res.ok && !j?.error) {
+      if (typeof j?.events_received === "number") return { ok: true, accepted: j.events_received, raw: j };
+      if (j?.success === true || j?.id != null) return { ok: true, accepted: 1, raw: j };
     }
-    const err = res.json?.error;
+    const err = j?.error;
     return {
       ok: false,
       error: err ? `${err.type || "error"} ${err.code ?? ""}: ${err.message || ""}`.trim()
         : res.error || `HTTP ${res.status}`,
-      raw: res.json ?? res.text ?? null,
+      raw: j ?? res.text ?? null,
     };
   },
 
