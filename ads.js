@@ -1031,7 +1031,45 @@ export function register(app, ctx, deps = {}) {
      item NAME, so we map it onto the catalog product id — a purchase that
      carries the same id as the feed is one the platform can act on.       */
   let menuIdx = { at: 0, byName: new Map() };
-  const normName = (s) => String(s || "").trim().replace(/\s+/g, " ").toLowerCase();
+
+  /* The till writes a VARIANT name; the catalog holds the BASE product.
+     Measured 2026-08-09 over 30 days: exact lowercase matching mapped only
+     81% of order lines onto a catalog id, and every miss was one of three
+     shapes, never a genuinely absent product:
+       "بيتزا تشيكن رانش - وسط"                   size suffix after " - "
+       "بيتزا تشيكن رانش 1.0 حشو اطراف كيري"      modifier tail
+       "مشكل مخصوص بالوزن - ثلث كيلو"             weight suffix
+       "مشروبات غازية - كان"                       packaging suffix
+     Meta keys a catalog product by `id`; a line that carries `n:<name>`
+     instead is invisible to product ads and adds nothing to the optimiser.
+     So: normalise Arabic orthography, then peel the variant tails off in
+     order and retry, longest form first, so "كفتة نصف كيلو" (a real catalog
+     row of its own) still wins over the base "كفتة مشوية بالوزن". */
+  const arNorm = (s) => String(s || "")
+    .replace(/[ً-ْـ]/g, "")               // harakat + tatweel
+    .replace(/[أإآٱ]/g, "ا").replace(/ة/g, "ه").replace(/[ىئ]/g, "ي").replace(/ؤ/g, "و")
+    .replace(/[^\p{L}\p{N}\s.]/gu, " ")
+    .replace(/\s+/g, " ").trim().toLowerCase();
+  const normName = (s) => arNorm(s);
+
+  // Lines that are not products at all. Sending a delivery fee to a catalog
+  // as if it were a dish teaches the optimiser nothing and pollutes DPA.
+  const NOT_A_PRODUCT = /^(توصيل|رسوم توصيل|رسوم|خدمة|ضريبه|ضريبة|تيك اوي|delivery|service|tax)$/;
+
+  // Progressively shorter candidates for one till name, longest first.
+  function nameCandidates(raw) {
+    const base = arNorm(raw);
+    const out = [base];
+    // "… 1.0 حشو اطراف كيري" / "… 1.0 بدون حشو اطراف"  → drop the modifier tail
+    const noMod = base.replace(/\s\d+(\.\d+)?\s+(حشو|بدون|مع|اضافه|اضافات).*$/, "").trim();
+    if (noMod && noMod !== base) out.push(noMod);
+    // "… - وسط" / "… - ثلث كيلو" / "… - كان"  → drop the variant after the dash
+    for (const c of [...out]) {
+      const i = c.lastIndexOf(" - ");
+      if (i > 0) { const cut = c.slice(0, i).trim(); if (cut && !out.includes(cut)) out.push(cut); }
+    }
+    return out;
+  }
 
   async function menuIndex() {
     if (menuIdx.byName.size && Date.now() - menuIdx.at < 15 * 60_000) return menuIdx.byName;
@@ -1046,6 +1084,18 @@ export function register(app, ctx, deps = {}) {
     return menuIdx.byName;
   }
 
+  /** till item name → catalog product id, or null. Handed back by register()
+   *  so the tracking health check reports the real match rate, not a guess. */
+  async function matchToCatalog(name) {
+    if (NOT_A_PRODUCT.test(arNorm(name))) return "__fee__";
+    const idx = await menuIndex();
+    for (const cand of nameCandidates(name)) {
+      const hit = idx.get(cand);
+      if (hit) return hit;
+    }
+    return null;
+  }
+
   async function loadItems(orderIds) {
     if (!orderIds.length) return new Map();
     const r = await pool.query(
@@ -1056,10 +1106,13 @@ export function register(app, ctx, deps = {}) {
     for (const row of r.rows) {
       const qty = Math.max(1, Math.round(Number(row.qty) || 1));
       const total = Number(row.amount) || 0;
-      const id = idx.get(normName(row.name)) || null;
+      const norm = normName(row.name);
+      if (NOT_A_PRODUCT.test(norm)) continue;            // fees are not basket contents
+      let id = null;
+      for (const cand of nameCandidates(row.name)) { id = idx.get(cand) || null; if (id) break; }
       if (!out.has(row.order_id)) out.set(row.order_id, []);
       out.get(row.order_id).push({
-        id: id || `n:${normName(row.name).slice(0, 60)}`,   // اسم كبديل لو الصنف مش في الكاتالوج
+        id: id || `n:${norm.slice(0, 60)}`,   // اسم كبديل لو الصنف مش في الكاتالوج
         matched: !!id,
         name: String(row.name || "").trim(),
         quantity: qty,
@@ -1774,6 +1827,9 @@ export function register(app, ctx, deps = {}) {
       }
       return { from: f, to: t, orders: events.length, platforms: results };
     },
+    // tracking.js asks "does this till name reach a catalog id?" — same code
+    // path the real Purchase payload uses, so the reported rate is the truth.
+    matchToCatalog,
   };
 }
 

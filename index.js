@@ -32,6 +32,7 @@ import * as attribution from "./attribution.js";
 import * as catalog from "./catalog.js";
 import * as promo from "./promo.js";
 import * as hub from "./hub.js";
+import * as content from "./content.js";
 
 const { Pool } = pg;
 
@@ -2929,6 +2930,11 @@ const ap = autopilot.register(app, moduleCtx, {
 // صفحة المراجعة والموافقة في التسويق: وصف الحملات بالعربي، طابور الموافقات،
 // العروض، وجسر أزرار الحملة على مسار موافقة الطيار (نفس حدود الأمان).
 hub.register(app, moduleCtx);
+// مركز المحتوى: تقويم واحد لكل القنوات، استيراد اللي موجود على فيسبوك
+// وانستجرام، وناشر انستجرام بتاعنا (المنصة نفسها مالهاش جدولة).
+// register بيرجّع { runPublisher, syncPlatforms } عشان العامل تحت يشغّلهم
+// من غير ما يبعت طلب HTTP لنفسه.
+const contentApi = content.register(app, moduleCtx);
 console.log("[analytics] routes ready");
 console.log(`[ai] routes ready (provider: ${process.env.ANTHROPIC_API_KEY ? "anthropic" : process.env.LITELLM_KEY ? "litellm" : "NOT CONFIGURED"})`);
 
@@ -2966,4 +2972,19 @@ serve({ fetch: app.fetch, port: PORT, hostname: "0.0.0.0" }, (info) => {
     setInterval(() => ap.runPaceCheck({ trigger: "fast" }).catch(() => {}), AP_FAST_MINUTES * 60_000);
   }, 180_000 + (AP_FAST_MINUTES * 30_000));
   console.log(`[autopilot] intraday pacing every ${AP_FAST_MINUTES}m`);
+
+  /* ناشر انستجرام. انستجرام API ملوش جدولة أصلاً، فالجدولة بتاعتنا هي
+     العامل ده: كل ٥ دقايق بياخد الصفوف اللي ميعادها جه وينشرها. الدورة
+     بتاخد قفل في الذاكرة والصف بيتحجز في الداتابيز — فمفيش نشر مرتين. */
+  const C_MIN = content.WORKER_MINUTES;
+  setTimeout(() => contentApi.runPublisher({ trigger: "boot" }).catch(() => {}), 45_000);
+  setInterval(() => contentApi.runPublisher({ trigger: "cron" }).catch(() => {}), C_MIN * 60_000);
+  console.log(`[content] instagram publisher every ${C_MIN}m`);
+
+  /* مزامنة المنصات. غير مجرد استيراد: روابط صور فيسبوك موقّعة وبتنتهي بعد
+     أيام، فمن غير التجديد ده معاينة التقويم بتبوظ لوحدها. */
+  const C_SYNC = content.SYNC_MINUTES;
+  setTimeout(() => contentApi.syncPlatforms().catch(() => {}), 30_000);
+  setInterval(() => contentApi.syncPlatforms().catch(() => {}), C_SYNC * 60_000);
+  console.log(`[content] platform sync every ${C_SYNC}m`);
 });

@@ -83,6 +83,10 @@ export function register(app, ctx, deps = {}) {
       );
       CREATE INDEX IF NOT EXISTS funnel_events_time_idx ON funnel_events(created_at DESC);
       CREATE INDEX IF NOT EXISTS funnel_events_name_idx ON funnel_events(event_name, created_at DESC);
+      -- what was in the basket. Added 2026-08-09: without it the web events
+      -- carried no product ids at all, so the catalog could not retarget a
+      -- browser that had already looked at a specific dish.
+      ALTER TABLE funnel_events ADD COLUMN IF NOT EXISTS contents JSONB;
     `);
   }
   ensureSchema()
@@ -115,6 +119,15 @@ export function register(app, ctx, deps = {}) {
         custom_data: {
           currency: e.currency, value: e.value,
           ...(e.orderId ? { order_id: e.orderId } : {}),
+          // A ViewContent/AddToCart without content_ids is invisible to the
+          // product catalog: Meta cannot retarget "the dish he looked at",
+          // only "someone who visited". The ids are the catalog's own ids.
+          ...(e.contents.length ? {
+            content_type: "product",
+            content_ids: e.contents.map((i) => i.id),
+            contents: e.contents.map((i) => ({ id: i.id, quantity: i.quantity, item_price: i.itemPrice })),
+            num_items: e.numItems,
+          } : {}),
         },
       }],
       access_token: token,
@@ -151,6 +164,12 @@ export function register(app, ctx, deps = {}) {
           properties: {
             currency: e.currency, value: e.value, content_type: "product",
             ...(e.orderId ? { order_id: e.orderId } : {}),
+            ...(e.contents.length ? {
+              contents: e.contents.map((i) => ({
+                content_id: i.id, content_name: i.name || undefined,
+                quantity: i.quantity, price: i.itemPrice,
+              })),
+            } : {}),
           },
         }],
       },
@@ -183,6 +202,10 @@ export function register(app, ctx, deps = {}) {
           custom_data: {
             currency: e.currency, value: String(e.value),
             ...(e.orderId ? { order_id: e.orderId } : {}),
+            ...(e.contents.length ? {
+              content_ids: e.contents.map((i) => i.id),
+              number_items: String(e.numItems),
+            } : {}),
           },
         }],
       },
@@ -248,8 +271,21 @@ export function register(app, ctx, deps = {}) {
     const pnLocal = b.phone ? normPhone(b.phone) : "";
     const digits = pnLocal ? phoneDigits(pnLocal, normPhone) : null;
 
+    /* Basket contents. The storefront sends the SAME product ids the catalog
+       feed publishes (both come from the TabSense menu), so a browser that
+       viewed a dish can be retargeted with that exact dish. Capped and coerced
+       here because this route is public. */
+    const contents = (Array.isArray(b.contents) ? b.contents : []).slice(0, 50).map((i) => ({
+      id: String(i?.id ?? "").slice(0, 64),
+      name: i?.name ? String(i.name).slice(0, 120) : null,
+      quantity: Math.max(1, Math.min(999, Math.round(Number(i?.quantity) || 1))),
+      itemPrice: Math.round((Number(i?.item_price ?? i?.itemPrice) || 0) * 100) / 100,
+    })).filter((i) => i.id);
+
     const e = {
       name, eventId, orderId, value,
+      contents,
+      numItems: contents.reduce((a, i) => a + i.quantity, 0),
       currency: String(b.currency || "SAR").slice(0, 3).toUpperCase(),
       time: Math.floor(Date.now() / 1000),
       url, referrer: String(b.referrer || "").slice(0, 500),
@@ -288,10 +324,11 @@ export function register(app, ctx, deps = {}) {
     }
 
     await pool.query(
-      `INSERT INTO funnel_events (id, event_name, event_id, order_id, value, currency, url, referrer, utm, click_ids, phone_norm, ip, ua, results)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
+      `INSERT INTO funnel_events (id, event_name, event_id, order_id, value, currency, url, referrer, utm, click_ids, phone_norm, ip, ua, results, contents)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`,
       [crypto.randomUUID(), name, eventId, orderId, value, e.currency, url, e.referrer,
-       jb(utm), jb(e.click), pnLocal || null, e.ip, e.ua, jb(results)]).catch((err) => {
+       jb(utm), jb(e.click), pnLocal || null, e.ip, e.ua, jb(results),
+       contents.length ? jb(contents) : null]).catch((err) => {
         console.error("[funnel] store failed:", err.message);
       });
 
