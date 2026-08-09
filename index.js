@@ -31,6 +31,7 @@ import * as autopilot from "./autopilot.js";
 import * as attribution from "./attribution.js";
 import * as catalog from "./catalog.js";
 import * as promo from "./promo.js";
+import * as hub from "./hub.js";
 
 const { Pool } = pg;
 
@@ -2920,6 +2921,9 @@ promoApi = promo.register(app, moduleCtx, {
 const ap = autopilot.register(app, moduleCtx, {
   adsSync: adsApi, audiencesSync: audApi, attribution: attribApi,
 });
+// صفحة المراجعة والموافقة في التسويق: وصف الحملات بالعربي، طابور الموافقات،
+// العروض، وجسر أزرار الحملة على مسار موافقة الطيار (نفس حدود الأمان).
+hub.register(app, moduleCtx);
 console.log("[analytics] routes ready");
 console.log(`[ai] routes ready (provider: ${process.env.ANTHROPIC_API_KEY ? "anthropic" : process.env.LITELLM_KEY ? "litellm" : "NOT CONFIGURED"})`);
 
