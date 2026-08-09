@@ -25,6 +25,8 @@
    as Meta's own count rather than ours.
 ═══════════════════════════════════════════════════════════════════════════ */
 
+import { byId, httpJson } from "./ads.js";
+
 const PLATFORMS = ["meta", "tiktok", "snapchat"];
 const WEB_EVENTS = ["PageView", "ViewContent", "AddToCart", "InitiateCheckout", "Contact", "Lead", "Purchase"];
 
@@ -138,6 +140,35 @@ export function register(app, ctx, deps = {}) {
           operationStatus: v?.operation_status?.description || null,
           sizeLower: v?.approximate_count_lower_bound ?? null,
           sizeUpper: v?.approximate_count_upper_bound ?? null,
+        };
+      }
+      return out;
+    } catch { return {}; }
+  }
+
+  /* ── Snapchat's own verdict on each segment ───────────────────────────
+     Snap reports approximate_number_users in coarse buckets and returns 0 for
+     a segment below the size it will serve to. A 0 here does NOT mean the
+     upload failed — the upload log says whether it did — it means the segment
+     is too small for Snap to target. Two very different facts, and the owner
+     needs to be able to tell them apart. */
+  async function snapAudiences(ids) {
+    if (!ids.length) return {};
+    try {
+      const snap = byId("snapchat");
+      const t = snap ? await snap.token() : null;
+      if (!t) return {};
+      const out = {};
+      for (const id of ids) {
+        const res = await httpJson(`https://adsapi.snapchat.com/v1/segments/${id}`, {
+          headers: { Authorization: `Bearer ${t}` }, timeout: 10000,
+        });
+        const s = res.json?.segments?.[0]?.segment;
+        if (!s) continue;
+        out[id] = {
+          status: s.status || null,
+          uploadStatus: s.upload_status || null,
+          approxUsers: s.approximate_number_users ?? null,
         };
       }
       return out;
@@ -278,12 +309,13 @@ export function register(app, ctx, deps = {}) {
         });
       }
     }
-    // Meta's own verdict, attached to the rows it belongs to.
-    const metaIds = rows.filter((r) => r.platform === "meta" && r.audienceId).map((r) => r.audienceId);
-    const verdict = await metaAudiences(metaIds);
+    // Each platform's own verdict, attached to the rows it belongs to.
+    const idsOf = (p) => rows.filter((r) => r.platform === p && r.audienceId).map((r) => r.audienceId);
+    const [mv, sv] = await Promise.all([metaAudiences(idsOf("meta")), snapAudiences(idsOf("snapchat"))]);
     for (const r of rows) {
-      const v = r.audienceId ? verdict[r.audienceId] : null;
-      if (v) {
+      if (r.platform === "meta") {
+        const v = r.audienceId ? mv[r.audienceId] : null;
+        if (!v) continue;
         r.platformStatus = v.deliveryStatus;
         r.platformReady = v.deliveryCode === 200;
         // Meta buckets small audiences: equal bounds at 1000 means "under
@@ -291,6 +323,16 @@ export function register(app, ctx, deps = {}) {
         r.platformSizeNote = (v.sizeLower === v.sizeUpper && v.sizeLower === 1000)
           ? "ميتا مش بتعرض رقم مضبوط للجماهير الصغيرة — بتقول «أقل من ١٠٠٠»."
           : (v.sizeLower != null ? `ميتا بتقدّرها بين ${v.sizeLower} و${v.sizeUpper}` : null);
+      } else if (r.platform === "snapchat") {
+        const v = r.audienceId ? sv[r.audienceId] : null;
+        if (!v) continue;
+        r.platformStatus = v.status === "ACTIVE" ? "الجمهور نشط عند سناب" : v.status;
+        r.platformReady = v.status === "ACTIVE";
+        // 0 here is Snap saying "أصغر من إني أوصّل له", not "الرفع فشل".
+        r.platformSizeNote = v.approxUsers === 0
+          ? "سناب بتقول صفر مستخدم قابل للاستهداف — الرفع نجح، بس القائمة أصغر من الحد اللي بتوصّل عنده."
+          : (v.approxUsers != null ? `سناب بتقدّرها بـ ~${v.approxUsers} مستخدم` : null);
+        r.platformUnusable = v.approxUsers === 0;
       }
     }
 
@@ -458,7 +500,10 @@ export function register(app, ctx, deps = {}) {
       problems.push(`الكاتالوج: آخر سحب للفيد فيه ${catalog.meta.errors} خطأ عند ميتا.`);
     }
     for (const a of audiences.rows || []) {
-      if (a.platformReady === false) problems.push(`جمهور «${a.segment}» على ${a.platformAr}: ميتا بتقول «${a.platformStatus}».`);
+      if (a.platformReady === false) problems.push(`جمهور «${a.segment}» على ${a.platformAr}: المنصة بتقول «${a.platformStatus}».`);
+      // رفع ناجح + صفر مستهدفين = القائمة أصغر من إن المنصة توصّل ليها. ده
+      // مش عطل في الكود، بس لازم عمر يعرفه قبل ما يبني عليه حملة ريتارجتنج.
+      if (a.platformUnusable) problems.push(`جمهور «${a.segment}» على ${a.platformAr}: اترفع تمام بس المنصة بتقول مفيش مستخدمين كفاية للاستهداف — القائمة (${a.size}) صغيرة.`);
     }
     if (catalog.matchRate != null && catalog.matchRate < 90) {
       problems.push(`الكاتالوج: ${catalog.matchRate}% بس من أسطر المشتريات بتوصل لمنتج في الفيد — الباقي بيوصل باسمه، والمنصة مش بتقدر تعمل بيه إعلان منتج.`);
