@@ -1597,7 +1597,7 @@ export function register(app, ctx, deps = {}) {
         platformConversions: t.results,
         platformConversionValue: Math.round(t.resultValue * 100) / 100,
         platformNote: t.results === 0 && t.spend > 0
-          ? "المنصة مسجّلة صفر تحويل رغم الصرف. ده متوقّع عندنا مش مؤشر فشل: الطلب بيتقفل جوّه المطعم و CAPI بيبعته بـ action_source=physical_store، وميتا مبتنسبش الحدث ده لحملة. اتفرّج على العمود اللي جنبه."
+          ? `${p.label} مسجّلة صفر تحويل رغم الصرف. ده متوقّع عندنا مش مؤشر فشل: الطلب بيتقفل جوّه المطعم و CAPI بيبعته بـ action_source=physical_store، والمنصة مبتنسبش الحدث ده لحملة بعينها. اتفرّج على عمود التحويلات المؤكدة جنبه.`
           : null,
         confirmedConversions: confirmed,
         confirmedRevenue: a ? a.revenue : null,

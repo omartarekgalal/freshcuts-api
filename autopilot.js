@@ -1563,10 +1563,18 @@ ${focus}
                  gate: decision.gate, notes: decision.notes.length };
       }
 
-      /* في mode=suggest مفيش تنفيذ ومفيش طابور — ملاحظة واحدة بتلخّص اللي
-         كنا هنعمله. الدورة دي بتجري كل ١٥ دقيقة، فمن غير الفلتر ده هتكتب
-         نفس الملاحظة أربع مرات في الساعة وتغرق شاشة القرارات. */
-      if (s.mode !== "auto" && !force) {
+      /* الوضع بيتحكم في الرفع والخفض بس. الاسترجاع بيتنفّذ في أي وضع:
+         الزيادة اتعملت وإحنا في auto، ولو المالك حوّل لـ suggest بعدها
+         تفضل الزيادة شغالة على حسابه لحد ما حد ياخد باله. رجوع الفلوس مش
+         قرار محتاج موافقة — ده إتمام لقرار اتاخد خلاص. */
+      const restores = decision.actions.filter((a) => a.op === "restore");
+      const moves = decision.actions.filter((a) => a.op !== "restore");
+      const canMove = s.mode === "auto" || force;
+
+      /* في mode=suggest بنسجّل ملاحظة واحدة بتلخّص اللي كنا هنعمله. الدورة
+         بتجري كل ١٥ دقيقة، فمن غير الفلتر ده هتكتب نفس الملاحظة أربع مرات
+         في الساعة وتغرق شاشة القرارات. */
+      if (!canMove && moves.length) {
         const recent = await pool.query(
           `SELECT 1 FROM ap_decisions WHERE kind='pace' AND status='info'
              AND created_at > NOW() - interval '1 hour' LIMIT 1`);
@@ -1575,13 +1583,17 @@ ${focus}
             `INSERT INTO ap_decisions (id, run_id, platform, campaign_id, campaign_name, kind, detail, reason, status)
              VALUES ($1,NULL,NULL,NULL,NULL,'pace',$2,$3,'info')`,
             [crypto.randomUUID(),
-             jb({ mode: s.mode, phase: decision.phase, pacePct: pulse.pacePct, wouldDo: decision.actions }),
-             `الإيقاع كان هيعمل ${decision.actions.length} حركة دلوقتي (${decision.actions.map((a) => `${a.campaignName}: ${a.from}→${a.to}`).join("، ")}) — بس الوضع "${s.mode}" مش "auto". ` +
+             jb({ mode: s.mode, phase: decision.phase, pacePct: pulse.pacePct, wouldDo: moves }),
+             `الإيقاع كان هيعمل ${moves.length} حركة دلوقتي (${moves.map((a) => `${a.campaignName}: ${a.from}→${a.to}`).join("، ")}) — بس الوضع "${s.mode}" مش "auto". ` +
              `التسريع اليومي مش بيتحط في طابور الموافقة عن قصد: الموافقة ممكن تيجي بعد ساعات وساعتها الزيادة هتترفع من غير أساس مسجّل ومحدش هيرجّعها. ` +
              `لو عايز التسريع يشتغل، حوّل الوضع لـ auto.`]);
         }
+      }
+
+      const todo = canMove ? decision.actions : restores;
+      if (!todo.length) {
         return { ok: true, phase: decision.phase, accountDay, pace: pulse.pacePct,
-                 mode: s.mode, executed: 0, wouldDo: decision.actions.length };
+                 mode: s.mode, executed: 0, wouldDo: moves.length };
       }
 
       const runId = crypto.randomUUID();
@@ -1589,7 +1601,7 @@ ${focus}
         [runId, jb({ trigger, mode: s.mode, kind: "pace", phase: decision.phase, pace: pulse.pacePct })]);
 
       const results = [];
-      for (const a of decision.actions) {
+      for (const a of todo) {
         /* الأسوار مطلقة — نفس الدالة اللي الوكيل والقواعد الصمّاء بيعدّوا
            عليها. استثناءان مكتوبين بصوت عالي:
            • فترة التبريد اليومية (٢٤ ساعة) مش بتنطبق هنا: الإيقاع عنده
@@ -1608,7 +1620,10 @@ ${focus}
         if (refusal) {
           status = "refused";
           result = { ok: false, error: refusal };
-        } else if (s.mode === "auto" || force) {
+        } else {
+          /* وصلنا هنا يعني إما الوضع auto، أو دي عملية استرجاع — والاسترجاع
+             بيعدّي في أي وضع (todo مفلترة فوق). القرارات اللي الوضع منعها
+             خلاص اتسجّلت كملاحظة واحدة ومش بتوصل للّوب ده أصلاً. */
           const res = await executeDecision(
             { platform: a.platform, campaign_id: a.campaignId, kind: "pace", detail: { to: a.to } }, s);
           result = res;
@@ -1633,15 +1648,6 @@ ${focus}
           }
           /* لو الاسترجاع فشل بنسيب restored_at فاضية عن قصد — الدورة اللي
              بعدها هتشوفها كزيادة على يوم حساب قديم وتعيد المحاولة. */
-        } else {
-          /* mode=suggest: بنسجّل الاقتراح كمعلومة، ومش بنحطه في طابور
-             الموافقة. السبب مش تفضيل — ده سور: الموافقة ممكن تيجي بعد ٦
-             ساعات، والتنفيذ ساعتها هيرفع الميزانية من غير ما يكتب صف في
-             ap_pacing (لإن المسار ده بيعدي على executeDecision لوحده)،
-             يعني زيادة مالهاش أساس مسجّل ومحدش هيرجّعها. زيادة منسية شغالة
-             ليل ونهار هي بالظبط الحاجة اللي المالك خايف منها.
-             الإيقاع اليومي شغل mode=auto — أو زرار pace-now بـ force. */
-          status = "info";
         }
 
         await pool.query(
