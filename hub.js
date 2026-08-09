@@ -156,6 +156,13 @@ export function register(app, ctx) {
     return c.json({ ok: true, note: noteRow(r.rows[0]) });
   });
 
+  app.delete("/api/marketing/campaign-notes/:platform/:id", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    await pool.query("DELETE FROM campaign_notes WHERE platform=$1 AND campaign_id=$2",
+      [c.req.param("platform"), c.req.param("id")]);
+    return c.json({ ok: true });
+  });
+
   /* ═══ ٢) طابور الموافقات العام ═══════════════════════════════════════════ */
   const approvalRow = (r) => ({
     id: r.id, kind: r.kind, title: r.title, body: r.body || "",

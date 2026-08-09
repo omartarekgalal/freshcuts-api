@@ -313,6 +313,302 @@ export function guardBudget({ platform, campaignId, amount }, s, rows, { writeOk
   return null;
 }
 
+/* ═══════════════════════════════════════════════════════════════════════════
+   الإيقاع اليومي (INTRADAY PACING) — الجزء النقي
+
+   ليه ده موجود أصلاً. decide() فوق بيحكم على الحملة بـ `results` اللي المنصة
+   بتقولها. وميتا بتقول صفر لكل حملة عندنا — مش لإن الحملة فاشلة، لكن لإن
+   الشرا الحقيقي بيحصل جوّه المطعم وبيتبعت CAPI بـ action_source =
+   physical_store، وده مبيرجعش في actions.purchase بتاعة insights. النتيجة:
+   results = 0 → cpa = null → شرط "winning" عمره ما يتحقق → عمر الوكيل ما
+   هيكبّر حملة. كل ساعة بيطلع ٦ ملاحظات وصفر تنفيذ.
+
+   الإشارة الحقيقية الوحيدة اللي عندنا لايف هي مبيعات الكاشير نفسها:
+   ts_orders بتتزامن كل ٥ دقايق. فالتسريع جوّه اليوم بيتبني عليها هي، مش على
+   رقم المنصة. ورقم المنصة الصفر ده بيتقال صراحة في نص السبب عشان اللي بيقرا
+   ما يفتكرش إننا اتجاهلنا إشارة سلبية.
+
+   ── تلات ساعات مختلفة، وخلطهم بيكسر كل حاجة ──────────────────────────────
+   ١. يوم المطعم بيلف الساعة ٤ فجراً بتوقيت الرياض (طلب ١:٣٠ بليل بيتحسب على
+      اليوم اللي فات) — نفس القاعدة اللي في analytics.js.
+   ٢. يوم الحساب الإعلاني بتوقيت America/Los_Angeles، يعني بيلف الساعة ١٠
+      صباحاً بتوقيت جدة في التوقيت الصيفي و١١ في الشتوي.
+   ٣. ساعة الحائط اللي بنكلّم بيها المالك = الرياض.
+
+   الاسترجاع آخر اليوم لازم يتعلّق برقم (٢) — ميزانية اترفعت ١٠ مساءً بتوقيت
+   جدة بتبقى تبع يوم الحساب اللي ابتدا ١٠ صباح نفس اليوم وبيقفل ١٠ صباح بكرة.
+   لو رجّعناها قبل منتصف ليل جدة نكون رمينا عشر ساعات صرف على الأرض، ولو
+   علّقنا الاسترجاع على يوم المطعم هيضرب في ساعة غلط أصلاً.
+
+   كل اللي تحت دوال نقية: مفيش I/O، فبتتجرّب من غير سيرفر ولا قاعدة بيانات.
+═══════════════════════════════════════════════════════════════════════════ */
+
+export const ADS_ACCOUNT_TZ = process.env.ADS_ACCOUNT_TZ || "America/Los_Angeles";
+export const RIYADH_TZ = "Asia/Riyadh";
+export const BIZ_DAY_START_HOUR = 4;      // نفس رقم analytics.js — يوم المطعم
+
+const tzFormatters = new Map();
+function fmtFor(tz) {
+  let f = tzFormatters.get(tz);
+  if (!f) {
+    f = new Intl.DateTimeFormat("en-CA", {
+      timeZone: tz, year: "numeric", month: "2-digit", day: "2-digit",
+      // h23 مقصودة: hour12:false لوحدها بترجّع "24" لمنتصف الليل في بعض نسخ
+      // ICU، وده بيخلي حساب "كام فاضل على نهاية اليوم" يطلع يوم كامل بالغلط.
+      hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23",
+    });
+    tzFormatters.set(tz, f);
+  }
+  return f;
+}
+
+/* ساعة الحائط ليوم/ساعة أي منطقة زمنية — من غير مكتبات ومن غير حساب فروق
+   يدوي (التوقيت الصيفي بيتظبط لوحده لإن Intl هي اللي بتترجم اللحظة). */
+export function tzClock(at, tz) {
+  const p = {};
+  for (const part of fmtFor(tz).formatToParts(at)) if (part.type !== "literal") p[part.type] = part.value;
+  return {
+    day: `${p.year}-${p.month}-${p.day}`,
+    hour: Number(p.hour) % 24,
+    minute: Number(p.minute),
+    second: Number(p.second),
+  };
+}
+
+/* يوم الحساب الإعلاني (مش يوم جدة ولا يوم المطعم). */
+export const accountDayOf = (at = new Date(), tz = ADS_ACCOUNT_TZ) => tzClock(at, tz).day;
+
+/* كام مللي ثانية فاضلة على ما يوم الحساب الإعلاني يلف. */
+export function msToAccountRoll(at = new Date(), tz = ADS_ACCOUNT_TZ) {
+  const c = tzClock(at, tz);
+  const elapsed = ((c.hour * 60 + c.minute) * 60 + c.second) * 1000 + Math.max(0, at.getTime() % 1000);
+  return 86_400_000 - elapsed;
+}
+
+/* الوسيط — مش المتوسط. يوم واحد شاذ (حفلة، عطلة، عطل في الكاشير) بيلوي
+   المتوسط ومبيلويش الوسيط، وإحنا بنقارن بأربع أيام بس. */
+export function medianOf(list) {
+  const xs = (list || []).filter((v) => Number.isFinite(Number(v))).map(Number).sort((a, b) => a - b);
+  if (!xs.length) return null;
+  const mid = xs.length >> 1;
+  return xs.length % 2 ? xs[mid] : (xs[mid - 1] + xs[mid]) / 2;
+}
+
+const r2 = (n) => Math.round(Number(n) * 100) / 100;
+const ar = (n) => new Intl.NumberFormat("ar-EG", { maximumFractionDigits: 0 }).format(Math.round(Number(n) || 0));
+
+/* ── النبض: النهارده لحد دلوقتي مقابل خط أساس نفس اليوم من الأسبوع ────────
+   `comparables` = نفس يوم الأسبوع في آخر ٤ أسابيع، كل واحد مقصوص عند نفس
+   عدد الساعات اللي عدّت من يوم النهارده. `operated` معناها إن المطعم اشتغل
+   اليوم ده أصلاً — يوم مقفول بصفر مبيعات مش خط أساس، ده غياب بيانات.       */
+export function shapePulse({ day, elapsedH, riyadhHour, today, comparables = [] }) {
+  const usable = comparables.filter((c) => c.operated);
+  const baseOrders = medianOf(usable.map((c) => c.orders));
+  const baseRevenue = medianOf(usable.map((c) => c.revenue));
+  const paceRevenue = baseRevenue > 0 ? today.revenue / baseRevenue - 1 : null;
+  const paceOrders = baseOrders > 0 ? today.orders / baseOrders - 1 : null;
+
+  let level = "عالي", note = `خط الأساس مبني على ${usable.length} أيام مقارنة كاملة.`;
+  if (usable.length < 2) {
+    level = "ضعيف";
+    note = usable.length === 0
+      ? "مفيش ولا يوم مقارنة من نفس يوم الأسبوع في الكاش — الرقم ده مش خط أساس، ومينفعش يتبني عليه قرار ميزانية."
+      : "يوم مقارنة واحد بس — ده مش وسيط، ده يوم. أي نسبة هنا ممكن تكون صدفة، فالتسريع مقفول.";
+  } else if (usable.length < 3) {
+    level = "متوسط";
+    note = "يومين مقارنة بس — الوسيط هنا هو متوسط اليومين، فالنسبة تحتمل خطأ أوسع من المعتاد.";
+  }
+
+  return {
+    day, elapsedH: r2(elapsedH), riyadhHour,
+    today: { orders: today.orders, revenue: r2(today.revenue) },
+    baseline: {
+      orders: baseOrders == null ? null : r2(baseOrders),
+      revenue: baseRevenue == null ? null : r2(baseRevenue),
+      days: usable.length,
+      sample: comparables,
+    },
+    pace: paceRevenue,
+    pacePct: paceRevenue == null ? null : Math.round(paceRevenue * 1000) / 10,
+    paceOrders,
+    paceOrdersPct: paceOrders == null ? null : Math.round(paceOrders * 1000) / 10,
+    confidence: { level, note },
+  };
+}
+
+/* الإعدادات الخاصة بالإيقاع — منفصلة عن إعدادات الجولة البطيئة عن قصد.
+   الساعات هنا بتوقيت الرياض لإن دي الساعة اللي المالك بيفكر بيها. */
+export const PACE_DEFAULTS = {
+  pacing: true,                // شغّال؟
+  paceStartHour: 13,           // أول ساعة رياض نبص فيها (المطبخ فاتح)
+  paceLastRaiseHour: 1,        // آخر ساعة رياض نرفع فيها (بعد نص الليل بساعة)
+  paceUpThresholdPct: 20,      // أسرع من خط الأساس بالنسبة دي → تسريع
+  paceDownThresholdPct: -15,   // أبطأ منه بالنسبة دي → تراجع للأساس
+  paceStepPct: 15,             // خطوة الرفع/الخفض جوّه اليوم
+  paceMaxUpliftPct: 60,        // أقصى زيادة تراكمية فوق ميزانية المالك
+  paceCooldownMinutes: 60,     // أقل فاصل بين حركتين على نفس الحملة
+  paceMinBaselineDays: 2,      // أقل عدد أيام مقارنة نقبل نحكم بيها
+  paceMinOrders: 6,            // أقل عدد طلبات النهارده قبل ما نصدّق الإيقاع
+  paceRestoreBeforeMin: 45,    // نرجّع الميزانية قبل قفل يوم الحساب بكام دقيقة
+};
+
+/* ── القرار ──────────────────────────────────────────────────────────────
+   input:
+     rows        لقطة الحملات: { platform, id, name, status, dailyBudget, spend, results }
+     state       Map "platform:id" → { accountDay, baseBudget, currentBudget, lastActionAt, ... }
+     s           الإعدادات (الجولة البطيئة + PACE_DEFAULTS)
+     now         Date
+     accountDay  يوم الحساب الإعلاني دلوقتي
+     msToRoll    كام فاضل على ما يلف
+     pulse       ناتج shapePulse (أو null)
+     confirmed   { redemptions, linkedOrders } — دليلنا إحنا، مش دليل المنصة
+   output: { phase, actions[], notes[], gate }                              */
+export function decidePace(input) {
+  const {
+    rows = [], state = new Map(), now = new Date(),
+    accountDay, msToRoll = Infinity, pulse = null,
+    confirmed = { redemptions: 0, linkedOrders: 0 },
+    hardCap = Infinity,
+  } = input;
+  const s = { ...PACE_DEFAULTS, ...(input.s || {}) };
+  const nowMs = now.getTime();
+  const actions = [], notes = [];
+  const keyOf = (p, id) => `${p}:${id}`;
+
+  /* ── ١. الاسترجاع. بييجي قبل أي حاجة تانية عشان ما نرفعش ميزانية في نفس
+        الدقيقة اللي المفروض نرجّعها فيها. سببين للاسترجاع:
+        (أ) يوم الحساب على وشك يقفل → القرار اللي المالك طلبه بالنص.
+        (ب) الزيادة مسجّلة على يوم حساب قديم خلص خلاص → استرجاع متأخر.
+        (ب) هي شبكة الأمان: لو الخدمة كانت واقعة وقت النافذة، أول تشغيلة
+        بعدها بترجّع الفلوس بدل ما تفضل الزيادة شغالة يوم كامل زيادة.      */
+  const restoreWindowMs = Math.max(5, Number(s.paceRestoreBeforeMin) || 45) * 60_000;
+  const preRoll = msToRoll <= restoreWindowMs;
+  const touched = new Set();
+
+  for (const [key, st] of state) {
+    const stale = st.accountDay !== accountDay;
+    if (!stale && !preRoll) continue;
+    const base = Number(st.baseBudget);
+    if (!Number.isFinite(base) || base <= 0) continue;
+    const row = rows.find((r) => keyOf(r.platform, r.id) === key);
+    const cur = row && row.dailyBudget != null ? Number(row.dailyBudget) : Number(st.currentBudget);
+    touched.add(key);
+    if (!Number.isFinite(cur) || cur <= base + 0.5) {
+      notes.push({ key, op: "restore-noop", text: `"${row?.name || st.campaignName || key}" ميزانيتها ${ar(cur)} ر.س وهي مش أعلى من الأساس (${ar(base)}) — مفيش حاجة ترجع.` });
+      continue;
+    }
+    actions.push({
+      op: "restore", platform: st.platform, campaignId: st.campaignId,
+      campaignName: row?.name || st.campaignName || null,
+      from: r2(cur), to: r2(base), base: r2(base), accountDay: st.accountDay,
+      reason: stale
+        ? `استرجاع متأخر: الزيادة دي كانت على يوم الحساب الإعلاني ${st.accountDay} بتوقيت ${ADS_ACCOUNT_TZ} وهو قفل خلاص (إحنا دلوقتي في ${accountDay}). رجّعنا الميزانية من ${ar(cur)} لـ ${ar(base)} ر.س/يوم زي ما كانت قبل التسريع.`
+        : `يوم الحساب الإعلاني ${st.accountDay} (بتوقيت ${ADS_ACCOUNT_TZ}) بيقفل بعد ${Math.round(msToRoll / 60000)} دقيقة — ده الساعة ١٠ صباحاً بتوقيت جدة مش نص الليل. رجّعنا الميزانية من ${ar(cur)} لـ ${ar(base)} ر.س/يوم زي ما اتفقنا: نسرّع النهارده ونرجّع الميزانية قبل ما اليوم يخلص.`,
+    });
+  }
+
+  /* في نافذة الاسترجاع مفيش أي رفع — النافذة دي للتنضيف بس. */
+  if (preRoll) return { phase: "restore", accountDay, msToRoll, actions, notes, gate: null };
+
+  /* ── ٢. البوابات. كل رفض هنا بيترد بجملة بالعربي عشان تتسجّل وتتقري،
+        مش بـ false صامتة تخلّي المالك يسأل "طب ليه ما عملش حاجة؟"          */
+  const done = (gate, phase = "hold") => ({ phase, accountDay, msToRoll, actions, notes, gate });
+  if (s.pacing === false) return done("التسريع اليومي مقفول من الإعدادات (pacing=false).");
+  if (!pulse) return done("مفيش نبض مبيعات — مقدرناش نقرا ts_orders.");
+  if (pulse.pace == null) return done("مفيش خط أساس بقيمة أكبر من صفر لنفس يوم الأسبوع — مفيش نسبة نقارن بيها.");
+
+  const offsetOf = (h) => ((Number(h) - BIZ_DAY_START_HOUR) + 24) % 24;
+  const startOffset = offsetOf(s.paceStartHour);
+  const endOffset = offsetOf(s.paceLastRaiseHour);
+  if (pulse.elapsedH < startOffset) {
+    return done(`لسه بدري — الساعة ${pulse.riyadhHour}:00 بتوقيت الرياض والتسريع بيبدأ من ${s.paceStartHour}:00 لما المطبخ يبقى شغال ومبيعات الساعة تبقى معبّرة.`);
+  }
+  if (pulse.elapsedH > endOffset) {
+    return done(`الوقت عدّى ${s.paceLastRaiseHour}:00 بتوقيت الرياض — المطبخ بيقفل، ورفع ميزانية دلوقتي هيصرف على ساعات مفيش فيها بيع.`);
+  }
+  if (pulse.baseline.days < Number(s.paceMinBaselineDays)) {
+    return done(`خط الأساس مبني على ${ar(pulse.baseline.days)} يوم بس (المطلوب ${ar(s.paceMinBaselineDays)}) — ${pulse.confidence.note}`);
+  }
+  if (pulse.today.orders < Number(s.paceMinOrders)) {
+    return done(`${ar(pulse.today.orders)} طلب بس لحد دلوقتي (المطلوب ${ar(s.paceMinOrders)} قبل ما نصدّق الإيقاع) — العيّنة صغيرة أوي وطلب واحد بيقلب النسبة.`);
+  }
+
+  const pacePct = pulse.pacePct;
+  const up = pacePct >= Number(s.paceUpThresholdPct);
+  const down = pacePct <= Number(s.paceDownThresholdPct);
+  if (!up && !down) {
+    return done(`الإيقاع ${pacePct >= 0 ? "+" : ""}${pacePct}٪ مقابل خط الأساس — جوّه المنطقة الطبيعية (${s.paceDownThresholdPct}٪ إلى ${s.paceUpThresholdPct}٪)، فمفيش داعي نلمس أي ميزانية.`);
+  }
+
+  /* ── ٣. الحملات. الأكتر صرفاً الأول: لو السقف الكلي هيخلص، يخلص على
+        الحملة اللي الفلوس شغالة فيها فعلاً مش على أول واحدة في اللستة.     */
+  const activeRows = rows.filter((r) => r.status === "ACTIVE" && r.dailyBudget != null);
+  let totalActive = activeRows.reduce((a, r) => a + Number(r.dailyBudget), 0);
+  const cooldownMs = Math.max(5, Number(s.paceCooldownMinutes) || 60) * 60_000;
+  const step = Math.min(Number(s.paceStepPct) || 15, Number(s.maxChangePct) || 30);
+  const perCap = Math.min(Number(s.maxCampaignBudget) || 500, hardCap);
+  const totalCap = Number(s.maxTotalBudget) || 1000;
+
+  const ctx = `مبيعات النهارده لحد الساعة ${pulse.riyadhHour}:00: ${ar(pulse.today.orders)} طلب و${ar(pulse.today.revenue)} ر.س، ` +
+    `مقابل خط أساس ${ar(pulse.baseline.orders)} طلب و${ar(pulse.baseline.revenue)} ر.س (وسيط ${pulse.baseline.days} أيام من نفس يوم الأسبوع، مقصوصين عند نفس عدد الساعات) — ` +
+    `يعني ${pacePct >= 0 ? "أسرع" : "أبطأ"} بـ ${Math.abs(pacePct)}٪.`;
+  const evidence = `الدليل اللي بنينا عليه غير المبيعات: ${ar(confirmed.redemptions)} كود عرض اتقال على الكاشير النهارده و${ar(confirmed.linkedOrders)} طلب اتربط برقم جوال من الفنل.`;
+
+  for (const r of activeRows.slice().sort((a, b) => (Number(b.spend) || 0) - (Number(a.spend) || 0))) {
+    const key = keyOf(r.platform, r.id);
+    if (touched.has(key)) continue;                        // اترجّعت الجولة دي
+    const st = state.get(key);
+    const mine = st && st.accountDay === accountDay;        // زيادة من عندنا على نفس يوم الحساب
+    const base = mine ? Number(st.baseBudget) : Number(r.dailyBudget);
+    const cur = Number(r.dailyBudget);
+
+    if (mine && nowMs - st.lastActionAt < cooldownMs) {
+      notes.push({ key, op: "cooldown", text: `"${r.name}" اتغيّرت من ${Math.round((nowMs - st.lastActionAt) / 60000)} دقيقة — فترة تبريد الإيقاع ${s.paceCooldownMinutes} دقيقة عشان المنصة تاخد وقتها تصرف الزيادة قبل ما نحكم عليها تاني.` });
+      continue;
+    }
+
+    const zero = !Number(r.results)
+      ? ` المنصة مسجّلة ${Number(r.results) || 0} نتيجة للحملة دي النهارده — وده مش دليل فشل: الشرا بيحصل جوّه المطعم وبيتبعت CAPI بـ action_source=physical_store، فمبيرجعش في أرقام المنصة أصلاً. فمابنحكمش بيه لا بالسلب ولا بالإيجاب.`
+      : ` المنصة مسجّلة ${ar(r.results)} نتيجة النهارده — رقم مساعد، بس القرار مبني على مبيعات الكاشير.`;
+
+    if (up) {
+      const upliftCap = Math.floor(base * (1 + (Number(s.paceMaxUpliftPct) || 60) / 100));
+      let next = Math.round(cur * (1 + step / 100));
+      let capped = null;
+      if (next > upliftCap) { next = upliftCap; capped = `سقف الزيادة اليومية ${s.paceMaxUpliftPct}٪ فوق أساس ${ar(base)}`; }
+      if (next > perCap) { next = perCap; capped = `سقف الحملة الواحدة ${ar(perCap)} ر.س`; }
+      const headroom = totalCap - totalActive;
+      if (next - cur > headroom) { next = cur + Math.max(0, Math.floor(headroom)); capped = `السقف الكلي ${ar(totalCap)} ر.س/يوم`; }
+      if (next <= cur) {
+        notes.push({ key, op: "capped", text: `"${r.name}" تستاهل تسريع بس وصلت ${capped || "السقف"} — الميزانية واقفة عند ${ar(cur)} ر.س. لو عايز توسّع أكتر، ارفع السقف من الإعدادات بإيدك.` });
+        continue;
+      }
+      totalActive += next - cur;
+      actions.push({
+        op: "up", platform: r.platform, campaignId: r.id, campaignName: r.name,
+        from: r2(cur), to: r2(next), base: r2(base), accountDay,
+        reason: `${ctx} رفعنا "${r.name}" من ${ar(cur)} لـ ${ar(next)} ر.س/يوم (خطوة ${step}٪${capped ? `، متقصوصة على ${capped}` : ""}).${zero} ${evidence} الزيادة دي هترجع لـ ${ar(base)} ر.س قبل ما يوم الحساب الإعلاني ${accountDay} (${ADS_ACCOUNT_TZ}) يقفل — يعني حوالي ١٠ صباحاً بتوقيت جدة.`,
+      });
+    } else {
+      /* التراجع بيلمس زيادتنا إحنا بس. الخفض تحت ميزانية المالك شغلانة
+         الجولة البطيئة بتبريدها ٢٤ ساعة — لو الاتنين خفّضوا هنكون قصّينا
+         الحملة مرتين على نفس السبب. */
+      if (!mine || cur <= base + 0.5) continue;
+      let next = Math.round(cur * (1 - step / 100));
+      next = Math.max(next, base);
+      if (next >= cur) continue;
+      totalActive += next - cur;
+      actions.push({
+        op: "down", platform: r.platform, campaignId: r.id, campaignName: r.name,
+        from: r2(cur), to: r2(next), base: r2(base), accountDay,
+        reason: `${ctx} فسحبنا التسريع على "${r.name}" من ${ar(cur)} لـ ${ar(next)} ر.س/يوم (خطوة ${step}٪، ومش بننزل تحت ميزانية المالك ${ar(base)} ر.س — الخفض تحتها شغل الجولة اليومية مش الإيقاع).${zero}`,
+      });
+    }
+  }
+
+  return { phase: up ? "up" : "down", accountDay, msToRoll, pacePct, actions, notes, gate: null };
+}
+
 /* ═══════════════════════════════════════════════════════════════════════════ */
 
 export function register(app, ctx, deps = {}) {
@@ -360,6 +656,23 @@ export function register(app, ctx, deps = {}) {
       );
       CREATE INDEX IF NOT EXISTS ap_decisions_status_idx ON ap_decisions(status, created_at DESC);
       CREATE INDEX IF NOT EXISTS ap_decisions_campaign_idx ON ap_decisions(platform, campaign_id, created_at DESC);
+      -- دفتر الإيقاع اليومي. المفتاح فيه account_day (يوم الحساب الإعلاني
+      -- بتوقيت لوس أنجلوس) مش يوم جدة — لإن ده اليوم اللي المنصة بتحاسب
+      -- عليه، وهو اللي الاسترجاع بيتعلّق بيه. base_budget = ميزانية المالك
+      -- قبل أول لمسة في اليوم ده، وهي الرقم اللي بنرجّع له مهما حصل.
+      CREATE TABLE IF NOT EXISTS ap_pacing (
+        platform TEXT NOT NULL,
+        campaign_id TEXT NOT NULL,
+        campaign_name TEXT,
+        account_day DATE NOT NULL,
+        base_budget NUMERIC NOT NULL,
+        current_budget NUMERIC NOT NULL,
+        steps INT NOT NULL DEFAULT 0,
+        last_action_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        restored_at TIMESTAMPTZ,
+        PRIMARY KEY (platform, campaign_id, account_day)
+      );
+      CREATE INDEX IF NOT EXISTS ap_pacing_open_idx ON ap_pacing(restored_at, account_day);
     `);
   }
   ensureSchema()
@@ -368,7 +681,7 @@ export function register(app, ctx, deps = {}) {
 
   async function getSettings() {
     const r = await pool.query(`SELECT data FROM ap_settings WHERE id=1`);
-    return { ...DEFAULT_SETTINGS, ...(r.rows[0]?.data || {}) };
+    return { ...DEFAULT_SETTINGS, ...PACE_DEFAULTS, ...(r.rows[0]?.data || {}) };
   }
   async function saveSettings(patch) {
     const cur = await getSettings();
@@ -379,6 +692,165 @@ export function register(app, ctx, deps = {}) {
       `INSERT INTO ap_settings (id, data, updated_at) VALUES (1, $1, NOW())
        ON CONFLICT (id) DO UPDATE SET data=$1, updated_at=NOW()`, [jb(next)]);
     return next;
+  }
+
+  /* ═══════════════════════════════════════════════════════════════════════
+     نبض المبيعات — الإشارة اللي المنصات مش بتديهالنا
+
+     كل الأرقام هنا بتوقيت الرياض وبقاعدة يوم المطعم (بيلف ٤ فجراً)، نفس
+     اللي analytics.js شغالة بيه بالظبط. المقارنة بتتقص عند نفس عدد الساعات
+     اللي عدّت النهارده — لإن مقارنة يوم نص خلصان بيوم كامل بتقول "المبيعات
+     وقعت" كل يوم بعد الضهر.
+     ═══════════════════════════════════════════════════════════════════════ */
+
+  const SALES_ONLY_SQL = `(o.order_type IS NULL OR (o.order_type NOT ILIKE '%void%' AND o.order_type NOT ILIKE '%refund%'))`;
+  const BIZ_TS_SQL = `((o.order_date AT TIME ZONE '${RIYADH_TZ}') - interval '${BIZ_DAY_START_HOUR} hours')`;
+  const BIZ_ELAPSED_SQL = `(extract(epoch from (${BIZ_TS_SQL} - ${BIZ_TS_SQL}::date::timestamp)) / 3600.0)`;
+  const LOCAL_HOUR_SQL = `(extract(hour from (o.order_date AT TIME ZONE '${RIYADH_TZ}'))::int)`;
+  const isoDay = (v) => (v instanceof Date ? v.toISOString().slice(0, 10) : String(v || "").slice(0, 10));
+
+  async function bizNow() {
+    const r = await pool.query(
+      `SELECT ((now() AT TIME ZONE '${RIYADH_TZ}') - interval '${BIZ_DAY_START_HOUR} hours')::date AS day,
+              extract(epoch from (
+                ((now() AT TIME ZONE '${RIYADH_TZ}') - interval '${BIZ_DAY_START_HOUR} hours')
+                - ((now() AT TIME ZONE '${RIYADH_TZ}') - interval '${BIZ_DAY_START_HOUR} hours')::date::timestamp
+              )) / 3600.0 AS elapsed_h,
+              extract(hour from (now() AT TIME ZONE '${RIYADH_TZ}'))::int AS riyadh_hour`);
+    return {
+      day: isoDay(r.rows[0].day),
+      elapsedH: Math.min(24, Math.max(0, Number(r.rows[0].elapsed_h) || 0)),
+      riyadhHour: Number(r.rows[0].riyadh_hour) || 0,
+    };
+  }
+
+  /* دليلنا إحنا على إن الإعلان بيجيب ناس: كود عرض اتنطق على الكاشير، أو طلب
+     اتطابق برقم جوال مع lead من الفنل. الاتنين مستقلين تماماً عن أي رقم
+     بترجّعه المنصة — وده بالظبط سبب وجودهم. */
+  async function confirmedToday(day) {
+    const out = { redemptions: 0, linkedOrders: 0 };
+    try {
+      const r = await pool.query(
+        `SELECT (SELECT count(*)::int FROM promo_redemptions WHERE day = $1::date) AS redemptions`, [day]);
+      out.redemptions = Number(r.rows[0]?.redemptions) || 0;
+    } catch { /* promo مش متسطّب في النسخة دي — صفر مش كذب هنا */ }
+    try {
+      const r = await pool.query(
+        `SELECT count(DISTINCT l.order_id)::int AS n
+           FROM attrib_links l JOIN ts_orders o ON o.order_id = l.order_id
+          WHERE o.calendar_day = $1::date`, [day]);
+      out.linkedOrders = Number(r.rows[0]?.n) || 0;
+    } catch { /* نفس الكلام */ }
+    return out;
+  }
+
+  async function pulseData() {
+    const { day, elapsedH, riyadhHour } = await bizNow();
+
+    // النهارده + نفس يوم الأسبوع في آخر ٤ أسابيع، كلهم مقصوصين عند elapsedH.
+    const per = (await pool.query(
+      `WITH scoped AS (
+         SELECT o.calendar_day, o.total, ${BIZ_ELAPSED_SQL} AS eh
+           FROM ts_orders o
+          WHERE o.calendar_day = ANY (ARRAY[$1::date, $1::date - 7, $1::date - 14, $1::date - 21, $1::date - 28])
+            AND ${SALES_ONLY_SQL}
+       )
+       SELECT calendar_day AS day, count(*)::int AS orders, COALESCE(sum(total),0) AS revenue
+         FROM scoped WHERE eh <= $2::numeric GROUP BY 1`,
+      [day, elapsedH])).rows;
+    const byDay = new Map(per.map((r) => [isoDay(r.day), r]));
+    const get = (iso) => byDay.get(iso) || { orders: 0, revenue: 0 };
+
+    /* "اشتغل اليوم ده" = فيه طلبات في اليوم كله، مش في الشباك المقصوص. يوم
+       مقفول (عطلة، عطل في الكاشير، الكاش لسه مش راجع لحد هناك) لو اتحسب
+       كصفر هيخلي خط الأساس واطي ويخلينا نسرّع على وهم. */
+    const operated = new Set((await pool.query(
+      `SELECT DISTINCT o.calendar_day AS day FROM ts_orders o
+        WHERE o.calendar_day = ANY (ARRAY[$1::date - 7, $1::date - 14, $1::date - 21, $1::date - 28])
+          AND ${SALES_ONLY_SQL}`, [day])).rows.map((r) => isoDay(r.day)));
+
+    const shift = (iso, n) => {
+      const d = new Date(iso + "T00:00:00Z");
+      d.setUTCDate(d.getUTCDate() + n);
+      return d.toISOString().slice(0, 10);
+    };
+    const DOW = ["الأحد", "الاثنين", "الثلاثاء", "الأربعاء", "الخميس", "الجمعة", "السبت"];
+    const comparables = [7, 14, 21, 28].map((n) => {
+      const iso = shift(day, -n);
+      const row = get(iso);
+      return {
+        day: iso, weeksAgo: n / 7, dow: DOW[new Date(iso + "T00:00:00Z").getUTCDay()],
+        orders: Number(row.orders) || 0, revenue: Number(row.revenue) || 0,
+        operated: operated.has(iso),
+      };
+    });
+
+    const today = get(day);
+    const pulse = shapePulse({
+      day, elapsedH, riyadhHour,
+      today: { orders: Number(today.orders) || 0, revenue: Number(today.revenue) || 0 },
+      comparables,
+    });
+
+    // ساعة بساعة: النهارده مقابل متوسط نفس الساعة في أيام المقارنة الشغالة.
+    const hourRows = (await pool.query(
+      `SELECT ${LOCAL_HOUR_SQL} AS hour,
+              count(*) FILTER (WHERE o.calendar_day = $1::date)::int AS today_orders,
+              COALESCE(sum(o.total) FILTER (WHERE o.calendar_day = $1::date),0) AS today_revenue,
+              count(*) FILTER (WHERE o.calendar_day <> $1::date)::int AS base_orders,
+              COALESCE(sum(o.total) FILTER (WHERE o.calendar_day <> $1::date),0) AS base_revenue
+         FROM ts_orders o
+        WHERE o.calendar_day = ANY (ARRAY[$1::date, $1::date - 7, $1::date - 14, $1::date - 21, $1::date - 28])
+          AND ${SALES_ONLY_SQL}
+        GROUP BY 1`, [day])).rows;
+    const hourMap = new Map(hourRows.map((r) => [Number(r.hour), r]));
+    const baseDays = comparables.filter((c) => c.operated).length;
+    const hourly = [];
+    for (let i = 0; i < 24; i++) {
+      const h = (BIZ_DAY_START_HOUR + i) % 24;             // بنعرض بترتيب يوم المطعم: ٤ص → ٣ص
+      const row = hourMap.get(h) || {};
+      hourly.push({
+        hour: h, offset: i, elapsed: i < elapsedH,
+        orders: Number(row.today_orders) || 0,
+        revenue: Math.round((Number(row.today_revenue) || 0) * 100) / 100,
+        baselineOrders: baseDays ? Math.round(((Number(row.base_orders) || 0) / baseDays) * 10) / 10 : null,
+        baselineRevenue: baseDays ? Math.round(((Number(row.base_revenue) || 0) / baseDays) * 100) / 100 : null,
+      });
+    }
+
+    const now = new Date();
+    return {
+      ...pulse,
+      hourly,
+      confirmed: await confirmedToday(day),
+      clock: {
+        riyadh: `${String(tzClock(now, RIYADH_TZ).hour).padStart(2, "0")}:${String(tzClock(now, RIYADH_TZ).minute).padStart(2, "0")}`,
+        businessDay: day,
+        businessDayStartsAt: `${String(BIZ_DAY_START_HOUR).padStart(2, "0")}:00 ${RIYADH_TZ}`,
+        accountDay: accountDayOf(now),
+        accountTz: ADS_ACCOUNT_TZ,
+        minutesToAccountRoll: Math.round(msToAccountRoll(now) / 60000),
+        note: `يوم الحساب الإعلاني بيلف الساعة ٠٠:٠٠ بتوقيت ${ADS_ACCOUNT_TZ} — اللي هي حوالي ١٠ صباحاً بتوقيت جدة، مش نص الليل. الاسترجاع بيتعلّق بالتوقيت ده.`,
+      },
+    };
+  }
+
+  /* الزيادات المفتوحة (اللي لسه ماترجعتش) — دي حالة الإيقاع كلها. */
+  async function pacingState() {
+    const r = await pool.query(
+      `SELECT platform, campaign_id, campaign_name, account_day::text AS account_day,
+              base_budget, current_budget, steps, last_action_at
+         FROM ap_pacing WHERE restored_at IS NULL`);
+    const m = new Map();
+    for (const x of r.rows) {
+      m.set(`${x.platform}:${x.campaign_id}`, {
+        platform: x.platform, campaignId: x.campaign_id, campaignName: x.campaign_name,
+        accountDay: isoDay(x.account_day),
+        baseBudget: Number(x.base_budget), currentBudget: Number(x.current_budget),
+        steps: Number(x.steps) || 0, lastActionAt: new Date(x.last_action_at).getTime(),
+      });
+    }
+    return m;
   }
 
   /* ── facts: campaigns × insights × real sales ─────────────────────────── */
@@ -451,7 +923,9 @@ export function register(app, ctx, deps = {}) {
     let call;
     if (dec.kind === "pause") call = p.stateCall(dec.campaign_id, "PAUSED");
     else if (dec.kind === "resume") call = p.stateCall(dec.campaign_id, "ACTIVE");
-    else if (dec.kind === "budget") {
+    // `pace` هو تغيير ميزانية جوّه اليوم — نفس النداء بالظبط، الفرق في
+    // السبب وفي الدفتر اللي بيتسجّل فيه، مش في الحاجة اللي بتتبعت للمنصة.
+    else if (dec.kind === "budget" || dec.kind === "pace") {
       const to = Number(dec.detail?.to);
       if (!Number.isFinite(to) || to <= 0) return { ok: false, error: "budget decision has no target amount" };
       if (to > Math.min(s.maxCampaignBudget, MAX_DAILY_BUDGET)) {
@@ -566,7 +1040,17 @@ export function register(app, ctx, deps = {}) {
         WHERE kind='budget' AND status IN ('executed','auto_executed')
           AND executed_at > NOW() - ($1 || ' hours')::interval`,
       [String(Number(s.budgetCooldownHours) || 24)]);
-    return new Set(cd.rows.map((r) => `${r.platform}:${r.campaign_id}`));
+    const set = new Set(cd.rows.map((r) => `${r.platform}:${r.campaign_id}`));
+    /* حملة عليها زيادة إيقاع مفتوحة = الميزانية اللي الجولة البطيئة شايفاها
+       مش ميزانية المالك، دي ميزانية مؤقتة هترجع خلال ساعات. لو الجولة
+       البطيئة بنت عليها قرار هتضاعف الزيادة (أو تقفل عليها) وهي مش بتعرف
+       ده أصلاً. فبتستنى لحد ما الإيقاع يرجّع الأصل. */
+    try {
+      const open = await pool.query(
+        `SELECT DISTINCT platform, campaign_id FROM ap_pacing WHERE restored_at IS NULL`);
+      for (const r of open.rows) set.add(`${r.platform}:${r.campaign_id}`);
+    } catch { /* الجدول لسه ما اتعملش — مفيش زيادات مفتوحة أصلاً */ }
+    return set;
   }
 
   /* لقطة الحملات + أرقام آخر ٣ أيام. بتتاخد مرة في أول الجولة وبتُستعمل في
@@ -1034,6 +1518,128 @@ ${focus}
     }
   }
 
+  /* ═══ الإيقاع اليومي — الدورة السريعة ═══════════════════════════════════
+     بتجري كل ١٥ دقيقة جنب فحص الطوارئ. رخيصة عن قصد: بتسأل قاعدة البيانات
+     الأول (نداء واحد على ts_orders)، ومبتضربش المنصات غير لما يكون فيه سبب
+     فعلي — يا حاجة تترجّع يا إيقاع خارج المنطقة الطبيعية. ساعات الفجر
+     والصبح بتكلّف استعلام SQL واحد وخلاص.                                  */
+
+  let pacingRunning = false;
+
+  async function runPaceCheck({ trigger = "fast", force = false } = {}) {
+    if (pacingRunning) return { ok: false, skipped: "already running" };
+    const s = await getSettings();
+    if (s.mode === "off" && !force) return { ok: false, skipped: "mode=off" };
+    if (s.pacing === false && !force) return { ok: false, skipped: "pacing disabled" };
+
+    pacingRunning = true;
+    const now = new Date();
+    const accountDay = accountDayOf(now);
+    const msToRoll = msToAccountRoll(now);
+    try {
+      const state = await pacingState();
+      const preRoll = msToRoll <= Math.max(5, Number(s.paceRestoreBeforeMin) || 45) * 60_000;
+      const hasStale = [...state.values()].some((v) => v.accountDay !== accountDay);
+      const mustSettle = preRoll || hasStale;
+
+      /* هل إحنا جوّه نافذة الرفع أصلاً؟ لو لأ ومفيش حاجة تترجّع، نخرج من
+         غير ما نلمس أي منصة. ده اللي بيخلي الدورة دي مجانية بالليل. */
+      const pulse = await pulseData();
+      const offsetOf = (h) => ((Number(h) - BIZ_DAY_START_HOUR) + 24) % 24;
+      const inWindow = pulse.elapsedH >= offsetOf(s.paceStartHour) && pulse.elapsedH <= offsetOf(s.paceLastRaiseHour);
+      if (!mustSettle && !inWindow && !force) {
+        return { ok: true, phase: "asleep", accountDay, pace: pulse.pacePct,
+          gate: `برّه نافذة التسريع (${s.paceStartHour}:00 → ${s.paceLastRaiseHour}:00 بتوقيت الرياض) ومفيش زيادات مفتوحة تترجّع.` };
+      }
+
+      const snap = await perfSnapshot({ from: todayISO(), to: todayISO() });
+      const decision = decidePace({
+        rows: snap.rows, state, s, now, accountDay, msToRoll, pulse,
+        confirmed: pulse.confirmed, hardCap: MAX_DAILY_BUDGET,
+      });
+
+      if (!decision.actions.length) {
+        return { ok: true, phase: decision.phase, accountDay, pace: pulse.pacePct,
+                 gate: decision.gate, notes: decision.notes.length };
+      }
+
+      const runId = crypto.randomUUID();
+      await pool.query(`INSERT INTO ap_runs (id, status, summary) VALUES ($1,'running',$2)`,
+        [runId, jb({ trigger, mode: s.mode, kind: "pace", phase: decision.phase, pace: pulse.pacePct })]);
+
+      const results = [];
+      for (const a of decision.actions) {
+        /* الأسوار مطلقة — نفس الدالة اللي الوكيل والقواعد الصمّاء بيعدّوا
+           عليها. استثناءان مكتوبين بصوت عالي:
+           • فترة التبريد اليومية (٢٤ ساعة) مش بتنطبق هنا: الإيقاع عنده
+             تبريده بتاعه (٦٠ دقيقة) في ap_pacing.last_action_at، وسجله
+             منفصل في ap_decisions بـ kind='pace'.
+           • الاسترجاع بيتعدّى maxChangePct: السور ده موجود عشان الخوارزمية
+             ما تتكسرش من نطة ميزانية، وإحنا في آخر يوم الحساب والتعلّم خلص.
+             وفوق كده الاسترجاع دايماً بينزل بالميزانية لرقم المالك نفسه —
+             منع رجوع الفلوس للمالك مش حماية، ده عطل. */
+        const forGuard = a.op === "restore" ? { ...s, maxChangePct: 100 } : s;
+        const refusal = guardBudget(
+          { platform: a.platform, campaignId: a.campaignId, amount: a.to },
+          forGuard, snap.rows, { writeOk: writeAllowed(), cooldown: new Set(), hardCap: MAX_DAILY_BUDGET });
+
+        let status = "proposed", result = null, executedAt = null;
+        if (refusal) {
+          status = "refused";
+          result = { ok: false, error: refusal };
+        } else if (s.mode === "auto" || force) {
+          const res = await executeDecision(
+            { platform: a.platform, campaign_id: a.campaignId, kind: "pace", detail: { to: a.to } }, s);
+          result = res;
+          status = res.ok ? "auto_executed" : "failed";
+          executedAt = res.ok ? new Date() : null;
+          if (res.ok) {
+            if (a.op === "restore") {
+              await pool.query(
+                `UPDATE ap_pacing SET restored_at=NOW(), current_budget=$4
+                  WHERE platform=$1 AND campaign_id=$2 AND account_day=$3::date`,
+                [a.platform, a.campaignId, a.accountDay, a.to]);
+            } else {
+              await pool.query(
+                `INSERT INTO ap_pacing (platform, campaign_id, campaign_name, account_day,
+                                        base_budget, current_budget, steps, last_action_at)
+                 VALUES ($1,$2,$3,$4::date,$5,$6,1,NOW())
+                 ON CONFLICT (platform, campaign_id, account_day) DO UPDATE
+                   SET current_budget=EXCLUDED.current_budget, campaign_name=EXCLUDED.campaign_name,
+                       steps=ap_pacing.steps+1, last_action_at=NOW()`,
+                [a.platform, a.campaignId, a.campaignName, a.accountDay, a.base, a.to]);
+            }
+          }
+          /* لو الاسترجاع فشل بنسيب restored_at فاضية عن قصد — الدورة اللي
+             بعدها هتشوفها كزيادة على يوم حساب قديم وتعيد المحاولة. */
+        } else {
+          status = "proposed";     // mode=suggest → طابور الموافقة
+        }
+
+        await pool.query(
+          `INSERT INTO ap_decisions (id, run_id, platform, campaign_id, campaign_name, kind, detail, reason, status, result, executed_at)
+           VALUES ($1,$2,$3,$4,$5,'pace',$6,$7,$8,$9,$10)`,
+          [crypto.randomUUID(), runId, a.platform, a.campaignId, a.campaignName,
+           jb({ op: a.op, from: a.from, to: a.to, base: a.base, accountDay: a.accountDay,
+                accountTz: ADS_ACCOUNT_TZ, pacePct: pulse.pacePct, trigger,
+                baseline: pulse.baseline, today: pulse.today, confirmed: pulse.confirmed }),
+           a.reason, status, jb(result), executedAt]);
+        results.push({ op: a.op, campaign: a.campaignName, from: a.from, to: a.to, status });
+      }
+
+      const summary = { trigger, mode: s.mode, kind: "pace", phase: decision.phase,
+                        pace: pulse.pacePct, accountDay, actions: results };
+      await pool.query(`UPDATE ap_runs SET status='done', finished_at=NOW(), summary=$2 WHERE id=$1`,
+        [runId, jb(summary)]);
+      return { ok: true, runId, ...summary };
+    } catch (e) {
+      console.error("[autopilot] pace check error:", e.message);
+      return { ok: false, error: String(e.message || e) };
+    } finally {
+      pacingRunning = false;
+    }
+  }
+
   /* ── THE CYCLE ─────────────────────────────────────────────────────────── */
 
   async function runCycle({ force = false, trigger = "cron" } = {}) {
@@ -1178,6 +1784,15 @@ ${focus}
       attributionWired: !!attribution,
       running,
       emergencyRunning,
+      pacing: {
+        enabled: s.pacing !== false,
+        running: pacingRunning,
+        accountDay: accountDayOf(),
+        accountTz: ADS_ACCOUNT_TZ,
+        minutesToAccountRoll: Math.round(msToAccountRoll() / 60000),
+        openUplifts: (await pool.query(
+          `SELECT count(*)::int AS n FROM ap_pacing WHERE restored_at IS NULL`).catch(() => ({ rows: [{ n: 0 }] }))).rows[0].n,
+      },
       lastRun: lastRun.rows[0] || null,
       pendingApprovals: pending.rows[0].n,
       goal: {
@@ -1312,6 +1927,47 @@ ${focus}
     return c.json(r, r.ok ? 200 : 409);
   });
 
+  /* نبض المبيعات لايف — النهارده لحد دلوقتي مقابل نفس يوم الأسبوع. ده
+     الرقم اللي كل قرارات الإيقاع بتتبني عليه، فبيترجع كامل بعيّنته وبدرجة
+     ثقته عشان المالك يقدر يشكّك في القرار من نفس الشاشة. */
+  app.get("/api/autopilot/pulse", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    try {
+      const s = await getSettings();
+      const pulse = await pulseData();
+      const open = await pacingState();
+      return c.json({
+        ok: true,
+        ...pulse,
+        pacing: {
+          enabled: s.pacing !== false && s.mode !== "off",
+          mode: s.mode,
+          window: `${s.paceStartHour}:00 → ${s.paceLastRaiseHour}:00 بتوقيت الرياض`,
+          thresholds: { up: s.paceUpThresholdPct, down: s.paceDownThresholdPct },
+          step: s.paceStepPct, maxUplift: s.paceMaxUpliftPct,
+          cooldownMinutes: s.paceCooldownMinutes,
+          restoreBeforeMin: s.paceRestoreBeforeMin,
+          openUplifts: [...open.values()].map((v) => ({
+            platform: v.platform, campaignId: v.campaignId, campaignName: v.campaignName,
+            accountDay: v.accountDay, base: v.baseBudget, current: v.currentBudget, steps: v.steps,
+          })),
+        },
+      });
+    } catch (e) {
+      console.error("[autopilot] pulse failed:", e.message);
+      return c.json({ ok: false, error: String(e.message || e) }, 500);
+    }
+  });
+
+  /* تشغيل دورة الإيقاع بإيد المالك — بيتخطى البوابة الزمنية بس، مش الأسوار. */
+  app.post("/api/autopilot/pace-now", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    let b = {};
+    try { b = await c.req.json(); } catch { b = {}; }
+    const r = await runPaceCheck({ trigger: "manual", force: b.force === true });
+    return c.json(r, r.ok ? 200 : 409);
+  });
+
   app.get("/api/autopilot/runs", async (c) => {
     const err = await requireAdmin(c); if (err) return err;
     const limit = Math.min(Number(c.req.query("limit") || 20), 100);
@@ -1320,5 +1976,5 @@ ${focus}
   });
 
   console.log("[autopilot] routes ready");
-  return { runCycle, runEmergencyCheck, runAgent };
+  return { runCycle, runEmergencyCheck, runAgent, runPaceCheck, pulseData };
 }

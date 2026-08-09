@@ -926,8 +926,12 @@ const canManage = (p) => missingOf(p.manageEnv).length === 0 && p.id !== "google
    REGISTER
    ═══════════════════════════════════════════════════════════════════════ */
 
-export function register(app, ctx) {
+export function register(app, ctx, deps = {}) {
   const { pool, requireAdmin, jb, todayISO, daysAgoISO, normPhone } = ctx;
+  /* attribution.register بتتنده بعدنا (محتاجة تقرا PLATFORMS مننا)، فالمرجع
+     بيوصل كدالة بدل قيمة — نفس حيلة promo. مفيش دور استيراد ومفيش ترتيب
+     تسجيل هش، والمرجع بيتحل وقت الطلب مش وقت الإقلاع. */
+  const attributionOf = typeof deps.attribution === "function" ? deps.attribution : () => deps.attribution || null;
 
   /* ─── schema ─────────────────────────────────────────────────────────
      UNIQUE(order_id, platform, event_name) IS the deduplication guarantee.
@@ -1507,6 +1511,200 @@ export function register(app, ctx) {
     }
     return guardedWrite(c, platform, (p) => p.budgetCall(id, amount),
       `set ${platform} campaign ${id} daily budget to ${amount} ${DEFAULT_CURRENCY}`);
+  });
+
+  /* ═══════════════════════════════════════════════════════════════════════
+     GET /api/ads/scorecard?from&to — "كل منصة صرفت كام وجابتلنا كام"
+
+     صف واحد لكل منصة. الصرف والانطباعات والنقرات لايف من insights بتاعة
+     المنصة نفسها. أما التحويلات فبعمودين مختلفين عن قصد:
+
+       platformConversions — الرقم اللي المنصة بتقوله. عندنا ده صفر على
+         طول تقريباً، لإن الشرا بيحصل جوّه المطعم وبيتبعت CAPI بـ
+         action_source=physical_store فميتا مبتنسبهوش لحملة. الرقم ده
+         بيترجع زي ما هو ومعاه تحذير، ومش بيتبني عليه أي حكم.
+       confirmedConversions — دليلنا إحنا من attribution.js: أكواد عروض
+         اتنطقت على الكاشير + طلبات اتطابقت برقم جوال. ده الرقم اللي
+         costPerConfirmed بيتقسم عليه.
+
+     الفرق بين العمودين هو نفسه رسالة الشاشة: منصة "مجيباش" بلغة المنصة
+     ممكن تكون جايبة، والعكس مش بيحصل.
+     ═══════════════════════════════════════════════════════════════════════ */
+  const scoreCache = new Map();
+  const SCORE_TTL_MS = 3 * 60_000;
+
+  async function scorecardData(from, to) {
+    const attribution = attributionOf();
+    let overview = null, attribError = null;
+    if (attribution?.overviewData) {
+      try { overview = await attribution.overviewData(from, to); }
+      catch (e) { attribError = String(e.message || e); }
+    } else {
+      attribError = "موديول الإسناد مش مربوط — مفيش تحويلات مؤكدة أقدر أقارن بيها.";
+    }
+    const attribBy = Object.fromEntries((overview?.rows || []).map((r) => [r.channel, r]));
+
+    const rows = [];
+    const reasons = {};
+    for (const p of PLATFORMS) {
+      if (!canManage(p)) { reasons[p.id] = `غير مربوطة — ناقص ${missingOf(p.manageEnv).join(", ") || "صلاحيات"}`; continue; }
+      let ins = null;
+      try { ins = await p.insights({ from, to }); }
+      catch (e) { reasons[p.id] = String(e.message || e); continue; }
+      if (!ins.ok) { reasons[p.id] = ins.reason || "insights رجعت خطأ"; continue; }
+
+      const t = ins.rows.reduce((a, r) => ({
+        spend: a.spend + (Number(r.spend) || 0),
+        impressions: a.impressions + (Number(r.impressions) || 0),
+        clicks: a.clicks + (Number(r.clicks) || 0),
+        results: a.results + (Number(r.results) || 0),
+        resultValue: a.resultValue + (Number(r.resultValue) || 0),
+      }), { spend: 0, impressions: 0, clicks: 0, results: 0, resultValue: 0 });
+      for (const r of ins.rows) if (r.error) reasons[p.id] = r.error;
+
+      const a = attribBy[p.id] || null;
+      /* التحويلات المؤكدة = طلبات مربوطة برقم جوال + طلبات صنّفها النظام
+         نفسه + أكواد عروض لسه متربطتش بطلب (اللي اتربط بقى جوّه linked،
+         وعدّه تاني بيبقى تكرار لنفس الدليل). نفس حساب confidenceOf. */
+      const b = a?.confidenceBreakdown || {};
+      const confirmed = a
+        ? Math.min(Number(a.orders) || 0,
+            (Number(b.linked) || 0) + (Number(b.pos) || 0) + Math.max(0, Number(a.promo?.unlinked) || 0))
+        : null;
+
+      rows.push({
+        platform: p.id, label: p.label,
+        spend: Math.round(t.spend * 100) / 100,
+        impressions: t.impressions,
+        clicks: t.clicks,
+        cpc: t.clicks > 0 ? Math.round((t.spend / t.clicks) * 100) / 100 : null,
+        cpm: t.impressions > 0 ? Math.round((t.spend / t.impressions) * 1000 * 100) / 100 : null,
+        ctr: t.impressions > 0 ? Math.round((t.clicks / t.impressions) * 10000) / 100 : null,
+        campaigns: ins.rows.length,
+        platformConversions: t.results,
+        platformConversionValue: Math.round(t.resultValue * 100) / 100,
+        platformNote: t.results === 0 && t.spend > 0
+          ? "المنصة مسجّلة صفر تحويل رغم الصرف. ده متوقّع عندنا مش مؤشر فشل: الطلب بيتقفل جوّه المطعم و CAPI بيبعته بـ action_source=physical_store، وميتا مبتنسبش الحدث ده لحملة. اتفرّج على العمود اللي جنبه."
+          : null,
+        confirmedConversions: confirmed,
+        confirmedRevenue: a ? a.revenue : null,
+        codeRedemptions: a?.promo?.redemptions ?? null,
+        phoneMatched: Number(b.linked) || 0,
+        newCustomers: a ? a.newCustomers : null,
+        costPerConfirmed: confirmed > 0 && t.spend > 0 ? Math.round((t.spend / confirmed) * 100) / 100 : null,
+        confirmedRoas: a && t.spend > 0 ? Math.round((Number(a.revenue) / t.spend) * 100) / 100 : null,
+        confidence: a?.confidence ?? "تقديري",
+        confidenceNote: a?.confidenceNote
+          ?? (attribError || "مفيش صف إسناد للمنصة دي في المدى المطلوب."),
+      });
+    }
+
+    const totals = rows.reduce((acc, r) => ({
+      spend: acc.spend + r.spend,
+      impressions: acc.impressions + r.impressions,
+      clicks: acc.clicks + r.clicks,
+      platformConversions: acc.platformConversions + (r.platformConversions || 0),
+      confirmedConversions: acc.confirmedConversions + (r.confirmedConversions || 0),
+      confirmedRevenue: acc.confirmedRevenue + (Number(r.confirmedRevenue) || 0),
+    }), { spend: 0, impressions: 0, clicks: 0, platformConversions: 0, confirmedConversions: 0, confirmedRevenue: 0 });
+    totals.spend = Math.round(totals.spend * 100) / 100;
+    totals.confirmedRevenue = Math.round(totals.confirmedRevenue * 100) / 100;
+    totals.costPerConfirmed = totals.confirmedConversions > 0 && totals.spend > 0
+      ? Math.round((totals.spend / totals.confirmedConversions) * 100) / 100 : null;
+
+    return {
+      range: { from, to }, rows, totals, reasons,
+      ...(attribError ? { attributionError: attribError } : {}),
+      coverage: overview?.coverage || null,
+      notes: [
+        "الصرف والانطباعات والنقرات لايف من كل منصة على حدة وقت الطلب.",
+        "platformConversions = رقم المنصة. confirmedConversions = دليلنا إحنا (كود عرض على الكاشير أو طلب متطابق برقم جوال). الاتنين مش نفس الحاجة ومينفعش يتجمعوا.",
+        "costPerConfirmed = الصرف ÷ التحويلات المؤكدة. لو التحويلات المؤكدة صفر بيرجع null — مش رقم كبير، لأ محصلش قياس أصلاً.",
+        "درجة الثقة جاية من attribution.js: مؤكد = مطابقة رقم جوال أو تصنيف النظام، مرجّح = تصنيف الكاشير اليدوي، تقديري = محسوب بالاستبعاد.",
+      ],
+    };
+  }
+
+  app.get("/api/ads/scorecard", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    const to = c.req.query("to") || todayISO();
+    const from = c.req.query("from") || daysAgoISO(29);
+    const key = `${from}|${to}`;
+    const hit = scoreCache.get(key);
+    if (hit && Date.now() - hit.at < SCORE_TTL_MS && c.req.query("refresh") !== "1") {
+      return c.json({ ok: true, cached: true, cachedAgeSec: Math.round((Date.now() - hit.at) / 1000), ...hit.val });
+    }
+    try {
+      const val = await scorecardData(from, to);
+      if (scoreCache.size > 30) scoreCache.clear();
+      scoreCache.set(key, { at: Date.now(), val });
+      return c.json({ ok: true, cached: false, ...val });
+    } catch (e) {
+      console.error("[ads] scorecard failed:", e.message);
+      return c.json({ ok: false, error: String(e.message || e) }, 500);
+    }
+  });
+
+  /* GET /api/ads/events-feed?limit=&hours=&platform=
+     نفس جدول ads_events بس مقروء: إيه اللي اتبعت، لأنهي منصة، اتقبل ولا
+     اترفض، والرفض بنص المنصة نفسها. الفرق عن /api/ads/events إن ده مقصوص
+     ومترجم — المالك عايز يتفرّج على التحويلات وهي ماشية، مش يقرا JSON خام. */
+  const errorTextOf = (resp) => {
+    if (!resp || typeof resp !== "object") return null;
+    const j = resp.json || resp;
+    return j?.error?.message                                   // Meta
+      || j?.error?.error_user_msg
+      || (j?.message && j?.code ? `[${j.code}] ${j.message}` : null)  // TikTok
+      || j?.debug_message                                      // Snap
+      || j?.request_status
+      || resp.error
+      || (resp.status ? `HTTP ${resp.status}` : null);
+  };
+
+  app.get("/api/ads/events-feed", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    const limit = Math.min(Number(c.req.query("limit") || 50), 500);
+    const hours = Math.min(Number(c.req.query("hours") || 48), 24 * 30);
+    const platform = c.req.query("platform");
+    const params = [String(hours)];
+    let where = `WHERE created_at > NOW() - ($1 || ' hours')::interval`;
+    if (platform) { params.push(platform); where += ` AND platform = $${params.length}`; }
+    params.push(limit);
+
+    const r = await pool.query(
+      `SELECT id, order_id, event_name, event_time, value, currency, platform, status,
+              response, attempts, created_at
+         FROM ads_events ${where} ORDER BY created_at DESC LIMIT $${params.length}`, params);
+
+    const agg = await pool.query(
+      `SELECT platform, status, count(*)::int AS n
+         FROM ads_events WHERE created_at > NOW() - ($1 || ' hours')::interval
+        GROUP BY 1,2`, [String(hours)]);
+    const summary = {};
+    for (const x of agg.rows) {
+      summary[x.platform] = summary[x.platform] || { sent: 0, failed: 0, skipped: 0, pending: 0 };
+      if (summary[x.platform][x.status] != null) summary[x.platform][x.status] = x.n;
+    }
+
+    return c.json({
+      ok: true,
+      window: { hours, limit },
+      summary,
+      events: r.rows.map((x) => ({
+        at: x.created_at,
+        eventTime: x.event_time,
+        event: x.event_name,
+        orderId: x.order_id,
+        value: x.value == null ? null : Number(x.value),
+        currency: x.currency,
+        platform: x.platform,
+        accepted: x.status === "sent",
+        status: x.status,
+        attempts: x.attempts,
+        // نص الخطأ بتاع المنصة نفسها — مش ترجمة ولا تلخيص، عشان يتبحث عنه.
+        error: x.status === "sent" ? null : errorTextOf(redact(x.response)),
+      })),
+    });
   });
 
   /* GET /api/ads/events — the audit trail behind everything above. */

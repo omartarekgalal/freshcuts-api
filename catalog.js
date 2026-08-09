@@ -28,11 +28,25 @@ async function fetchMenu() {
   const j = await res.json();
   const pages = j?.data?.pages || [];
   const rows = [];
-  for (const p of pages) {
+  // A dish can now sit on two menu pages: the merchandising sections ("الأكثر
+  // طلباً", "العروض") deliberately repeat items that also live in their real
+  // category. A catalog feed must not — Meta keys rows by `id` and rejects the
+  // duplicates — so the first page a product appears on wins, and the
+  // merchandising pages are read last so the row keeps its true product_type.
+  const MERCH_PAGES = new Set(["Best Sellers", "الأكثر طلباً", "Offers", "العروض"]);
+  const seen = new Set();
+  const ordered = [...pages].sort((a, b) => {
+    const am = MERCH_PAGES.has(a.title) || MERCH_PAGES.has(a.local_title) ? 1 : 0;
+    const bm = MERCH_PAGES.has(b.title) || MERCH_PAGES.has(b.local_title) ? 1 : 0;
+    return am - bm;
+  });
+  for (const p of ordered) {
     const category = p.title || p.local_title || "";
     for (const it of p.items || []) {
       const price = Number(it.retail_price != null ? it.retail_price : it.price);
       if (!Number.isFinite(price) || price <= 0) continue;
+      if (seen.has(String(it.id))) continue;
+      seen.add(String(it.id));
       rows.push({
         id: String(it.id),
         title: (it.name || it.local_name || "").trim(),

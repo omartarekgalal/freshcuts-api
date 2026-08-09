@@ -2899,8 +2899,13 @@ ninja.register(app, moduleCtx);
 chat.register(app, moduleCtx);
 dayreport.register(app, moduleCtx);
 // ads.register returns { syncOrders } so the autopilot can push CAPI events
-// on its own schedule without HTTP round-trips against ourselves.
-const adsApi = ads.register(app, moduleCtx);
+// on its own schedule without HTTP round-trips against ourselves. It also
+// takes attribution back as a LATE-BOUND function: /api/ads/scorecard needs
+// the confirmed-conversion counts, but attribution imports PLATFORMS from
+// ads.js so it has to register after us. The closure resolves at request
+// time, which is long after both are up.
+let attribApi = null;
+const adsApi = ads.register(app, moduleCtx, { attribution: () => attribApi });
 keeta.register(app, moduleCtx);
 // attribution.register hands back { sweepAndRoll, linkOrder, overviewData }.
 // It registers BEFORE funnel so a storefront Purchase can link itself to the
@@ -2911,7 +2916,7 @@ keeta.register(app, moduleCtx);
 // function. Neither module imports the other; the reference is resolved at
 // request time, not at boot.
 let promoApi = null;
-const attribApi = attribution.register(app, moduleCtx, { promo: () => promoApi });
+attribApi = attribution.register(app, moduleCtx, { promo: () => promoApi });
 funnel.register(app, moduleCtx, { attribution: attribApi });
 catalog.register(app, moduleCtx);
 const audApi = audiences.register(app, moduleCtx);
@@ -2953,4 +2958,12 @@ serve({ fetch: app.fetch, port: PORT, hostname: "0.0.0.0" }, (info) => {
     setInterval(() => ap.runEmergencyCheck({ trigger: "fast" }).catch(() => {}), AP_FAST_MINUTES * 60_000);
   }, 180_000);
   console.log(`[autopilot] emergency check every ${AP_FAST_MINUTES}m`);
+  // Intraday pacing: same cadence, offset by half the interval so the two
+  // never start together. Outside the kitchen's hours (and with nothing to
+  // restore) a tick is one SQL query, so this is cheap to run all night.
+  setTimeout(() => {
+    ap.runPaceCheck({ trigger: "boot" }).catch(() => {});
+    setInterval(() => ap.runPaceCheck({ trigger: "fast" }).catch(() => {}), AP_FAST_MINUTES * 60_000);
+  }, 180_000 + (AP_FAST_MINUTES * 30_000));
+  console.log(`[autopilot] intraday pacing every ${AP_FAST_MINUTES}m`);
 });
