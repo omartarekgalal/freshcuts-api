@@ -120,30 +120,32 @@ export function register(app, ctx, deps = {}) {
   }
 
   /* ── Meta's own verdict on each retargeting audience ──────────────────
-     One request for all five (Graph's ?ids= batch). "ready for use" is Meta's
-     wording, not ours; the size it reports is a privacy bucket, not a count. */
+     "ready for use" is Meta's wording, not ours; the size it reports is a
+     privacy bucket, not a count.
+     NB: one request per audience. The ?ids= batch form answers
+     "The ids query parameter is deprecated in v26.0+" and returns a 500, so
+     the batched version of this silently produced no verdict at all. */
   async function metaAudiences(ids) {
     const token = env("META_CAPI_TOKEN");
     if (!token || !ids.length) return {};
     const ver = env("META_API_VERSION") || "v25.0";
-    try {
-      const url = `https://graph.facebook.com/${ver}/?ids=${ids.join(",")}` +
-        `&fields=name,approximate_count_lower_bound,approximate_count_upper_bound,delivery_status,operation_status` +
-        `&access_token=${encodeURIComponent(token)}`;
-      const j = await fetch(url, { signal: AbortSignal.timeout(12000) }).then((r) => r.json());
-      if (j.error) return {};
-      const out = {};
-      for (const [id, v] of Object.entries(j)) {
+    const fields = "name,approximate_count_lower_bound,approximate_count_upper_bound,delivery_status,operation_status";
+    const out = {};
+    await Promise.all(ids.map(async (id) => {
+      try {
+        const url = `https://graph.facebook.com/${ver}/${id}?fields=${fields}&access_token=${encodeURIComponent(token)}`;
+        const v = await fetch(url, { signal: AbortSignal.timeout(12000) }).then((r) => r.json());
+        if (!v || v.error) return;
         out[id] = {
-          deliveryStatus: v?.delivery_status?.description || null,
-          deliveryCode: v?.delivery_status?.code ?? null,
-          operationStatus: v?.operation_status?.description || null,
-          sizeLower: v?.approximate_count_lower_bound ?? null,
-          sizeUpper: v?.approximate_count_upper_bound ?? null,
+          deliveryStatus: v.delivery_status?.description || null,
+          deliveryCode: v.delivery_status?.code ?? null,
+          operationStatus: v.operation_status?.description || null,
+          sizeLower: v.approximate_count_lower_bound ?? null,
+          sizeUpper: v.approximate_count_upper_bound ?? null,
         };
-      }
-      return out;
-    } catch { return {}; }
+      } catch { /* one audience failing must not blank the rest */ }
+    }));
+    return out;
   }
 
   /* ── Snapchat's own verdict on each segment ───────────────────────────
