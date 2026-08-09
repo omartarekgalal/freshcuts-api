@@ -1048,7 +1048,11 @@ export function register(app, ctx, deps = {}) {
   const arNorm = (s) => String(s || "")
     .replace(/[ً-ْـ]/g, "")               // harakat + tatweel
     .replace(/[أإآٱ]/g, "ا").replace(/ة/g, "ه").replace(/[ىئ]/g, "ي").replace(/ؤ/g, "و")
-    .replace(/[^\p{L}\p{N}\s.]/gu, " ")
+    // The hyphen SURVIVES here on purpose: it is the variant separator the
+    // till uses ("… - وسط"), and stripping it as punctuation is what made the
+    // first version of this matcher silently do nothing.
+    .replace(/[^\p{L}\p{N}\s.\-]/gu, " ")
+    .replace(/\s*-\s*/g, " - ")
     .replace(/\s+/g, " ").trim().toLowerCase();
   const normName = (s) => arNorm(s);
 
