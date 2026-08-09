@@ -33,6 +33,7 @@ import * as catalog from "./catalog.js";
 import * as promo from "./promo.js";
 import * as hub from "./hub.js";
 import * as content from "./content.js";
+import * as tracking from "./tracking.js";
 
 const { Pool } = pg;
 
@@ -2921,6 +2922,9 @@ attribApi = attribution.register(app, moduleCtx, { promo: () => promoApi });
 funnel.register(app, moduleCtx, { attribution: attribApi });
 catalog.register(app, moduleCtx);
 const audApi = audiences.register(app, moduleCtx);
+// صحّة التتبع: بيقرا من نفس الجداول اللي الإرسال بيكتب فيها + اعتراف ميتا نفسه.
+// بياخد ads (عشان نفس دالة مطابقة الكاتالوج اللي الحمولة بتستخدمها) والكاتالوج.
+tracking.register(app, moduleCtx, { ads: adsApi, catalog });
 promoApi = promo.register(app, moduleCtx, {
   staff: staffApi, attribution: attribApi, adsSync: adsApi,
 });
