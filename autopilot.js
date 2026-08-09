@@ -1499,7 +1499,7 @@ ${focus}
           `INSERT INTO ap_decisions (id, run_id, platform, campaign_id, campaign_name, kind, detail, reason, status)
            VALUES ($1,$2,$3,$4,$5,'emergency',$6,$7,'info')`,
           [crypto.randomUUID(), runId, e.platform || null, e.campaignId || null, e.campaignName || null,
-           jb(e), e.text, "info"]);
+           jb(e), e.text]);
       }
 
       const task = `طوارئ. الفحص السريع لقى المشاكل دي النهارده:\n\n${fresh.map((e, i) => `${i + 1}. [${e.kind}] ${e.text}`).join("\n")}\n\nاتأكد بالأرقام الأول (get_performance على النهارده وعلى آخر ٣ أيام) قبل ما تتصرف — ممكن تكون الحملة لسه بتتعلم أو النتايج متأخرة في التسجيل. بعدين اتصرف في اللي يستاهل بس.`;
