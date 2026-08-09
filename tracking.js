@@ -83,6 +83,67 @@ export function register(app, ctx, deps = {}) {
     }
   }
 
+  /* ── what Meta holds for the catalog, vs what we publish ──────────────
+     Our feed serving 95 rows means nothing if Meta's copy still has 72. The
+     scheduled fetch runs once a day, so a menu change is invisible to product
+     ads until it does — and that gap was real and silent until this read it. */
+  async function metaCatalog() {
+    const token = env("META_CAPI_TOKEN");
+    const catId = env("META_CATALOG_ID") || "27744296608525457";
+    const feedId = env("META_CATALOG_FEED_ID") || "1392433232794606";
+    if (!token) return { ok: false, reason: "لا يوجد META_CAPI_TOKEN" };
+    const ver = env("META_API_VERSION") || "v25.0";
+    try {
+      const [cat, feed] = await Promise.all([
+        fetch(`https://graph.facebook.com/${ver}/${catId}?fields=product_count&access_token=${encodeURIComponent(token)}`,
+          { signal: AbortSignal.timeout(12000) }).then((r) => r.json()),
+        fetch(`https://graph.facebook.com/${ver}/${feedId}?fields=schedule,latest_upload{end_time,error_count,warning_count,num_detected_items,num_persisted_items}&access_token=${encodeURIComponent(token)}`,
+          { signal: AbortSignal.timeout(12000) }).then((r) => r.json()),
+      ]);
+      if (cat.error) return { ok: false, reason: cat.error.message };
+      const up = feed.latest_upload || null;
+      return {
+        ok: true,
+        productCount: Number(cat.product_count) || 0,
+        lastUploadAt: up?.end_time || null,
+        detected: up ? Number(up.num_detected_items) : null,
+        persisted: up ? Number(up.num_persisted_items) : null,
+        errors: up ? Number(up.error_count) : null,
+        warnings: up ? Number(up.warning_count) : null,
+        scheduleAr: feed.schedule
+          ? `كل ${feed.schedule.interval === "DAILY" ? "يوم" : feed.schedule.interval} الساعة ${feed.schedule.hour}:00 (${feed.schedule.timezone})`
+          : null,
+      };
+    } catch (e) { return { ok: false, reason: String(e.message || e) }; }
+  }
+
+  /* ── Meta's own verdict on each retargeting audience ──────────────────
+     One request for all five (Graph's ?ids= batch). "ready for use" is Meta's
+     wording, not ours; the size it reports is a privacy bucket, not a count. */
+  async function metaAudiences(ids) {
+    const token = env("META_CAPI_TOKEN");
+    if (!token || !ids.length) return {};
+    const ver = env("META_API_VERSION") || "v25.0";
+    try {
+      const url = `https://graph.facebook.com/${ver}/?ids=${ids.join(",")}` +
+        `&fields=name,approximate_count_lower_bound,approximate_count_upper_bound,delivery_status,operation_status` +
+        `&access_token=${encodeURIComponent(token)}`;
+      const j = await fetch(url, { signal: AbortSignal.timeout(12000) }).then((r) => r.json());
+      if (j.error) return {};
+      const out = {};
+      for (const [id, v] of Object.entries(j)) {
+        out[id] = {
+          deliveryStatus: v?.delivery_status?.description || null,
+          deliveryCode: v?.delivery_status?.code ?? null,
+          operationStatus: v?.operation_status?.description || null,
+          sizeLower: v?.approximate_count_lower_bound ?? null,
+          sizeUpper: v?.approximate_count_upper_bound ?? null,
+        };
+      }
+      return out;
+    } catch { return {}; }
+  }
+
   /* ── the web funnel, per event × per platform ─────────────────────────── */
   async function webMatrix(days) {
     const rows = await pool.query(
@@ -217,6 +278,22 @@ export function register(app, ctx, deps = {}) {
         });
       }
     }
+    // Meta's own verdict, attached to the rows it belongs to.
+    const metaIds = rows.filter((r) => r.platform === "meta" && r.audienceId).map((r) => r.audienceId);
+    const verdict = await metaAudiences(metaIds);
+    for (const r of rows) {
+      const v = r.audienceId ? verdict[r.audienceId] : null;
+      if (v) {
+        r.platformStatus = v.deliveryStatus;
+        r.platformReady = v.deliveryCode === 200;
+        // Meta buckets small audiences: equal bounds at 1000 means "under
+        // 1000", not "exactly 1000". Never print it as if it were a count.
+        r.platformSizeNote = (v.sizeLower === v.sizeUpper && v.sizeLower === 1000)
+          ? "ميتا مش بتعرض رقم مضبوط للجماهير الصغيرة — بتقول «أقل من ١٠٠٠»."
+          : (v.sizeLower != null ? `ميتا بتقدّرها بين ${v.sizeLower} و${v.sizeUpper}` : null);
+      }
+    }
+
     rows.sort((x, y) => (x.platform + x.segment).localeCompare(y.platform + y.segment));
     return { ok: true, rows };
   }
@@ -262,6 +339,7 @@ export function register(app, ctx, deps = {}) {
         out.unmatchedTop = misses.sort((a, b) => b.n - a.n).slice(0, 10);
       } catch (e) { out.error = out.error || String(e.message || e); }
     }
+    out.meta = await metaCatalog();
     return out;
   }
 
@@ -373,6 +451,15 @@ export function register(app, ctx, deps = {}) {
     }
 
     if (catalog.error) problems.push(`الكاتالوج: ${catalog.error}`);
+    if (catalog.meta?.ok && catalog.items && catalog.meta.productCount !== catalog.items) {
+      problems.push(`الكاتالوج: إحنا بننشر ${catalog.items} صنف وميتا عندها ${catalog.meta.productCount} — الفيد بيتسحب مرة في اليوم، فأي تعديل في المنيو بيفضل مش ظاهر في إعلانات المنتجات لحد ما يتسحب.`);
+    }
+    if (catalog.meta?.ok && catalog.meta.errors) {
+      problems.push(`الكاتالوج: آخر سحب للفيد فيه ${catalog.meta.errors} خطأ عند ميتا.`);
+    }
+    for (const a of audiences.rows || []) {
+      if (a.platformReady === false) problems.push(`جمهور «${a.segment}» على ${a.platformAr}: ميتا بتقول «${a.platformStatus}».`);
+    }
     if (catalog.matchRate != null && catalog.matchRate < 90) {
       problems.push(`الكاتالوج: ${catalog.matchRate}% بس من أسطر المشتريات بتوصل لمنتج في الفيد — الباقي بيوصل باسمه، والمنصة مش بتقدر تعمل بيه إعلان منتج.`);
     }
