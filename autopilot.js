@@ -2709,6 +2709,43 @@ ${focus}
     return c.json({ ok: true });
   });
 
+  /* ═══════════════════════════════════════════════════════════════════════
+     تسجيل حدث تم بره الدورة — الطريقة الوحيدة المسموحة
+
+     في تغييرات بتحصل على الحساب الإعلاني وإحنا مش اللي عملناها في دورة:
+     المالك عدّل بإيده، أو حد شغّل تغيير من الطرفية، أو المنصة رفضت حركة
+     وإحنا محتاجين الرفض ده يبان في شريط المالك. من غير الباب ده الحل
+     الوحيد بيبقى INSERT يدوي على قاعدة الإنتاج — وده بيتخطّى كل عقود
+     الموديل: توليد الـ id، شكل الـ detail، ومفردات kind/status اللي
+     logLine() بتقرا بيها. فالباب موجود، ومقفول بـ requireAdmin.
+
+     status الافتراضي 'info' («للعلم») لإن الحدث حصل خلاص — مش اقتراح
+     مستني موافقة. kind لازم يكون من مفردات logLine() عشان السطر يتقرا. */
+  const NOTE_KINDS = new Set(["note", "pause", "resume", "budget", "strategy", "emergency"]);
+  const NOTE_STATUSES = new Set(["info", "executed", "failed", "rejected", "refused"]);
+
+  app.post("/api/autopilot/note", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    const b = await c.req.json().catch(() => ({}));
+    const reason = String(b.reason || "").trim();
+    if (!reason) return c.json({ ok: false, error: "reason required", message: "اكتب سبب الحدث — ده اللي المالك بيقراه" }, 400);
+    const kind = String(b.kind || "note");
+    if (!NOTE_KINDS.has(kind)) return c.json({ ok: false, error: `kind must be one of ${[...NOTE_KINDS].join("|")}` }, 400);
+    const status = String(b.status || "info");
+    if (!NOTE_STATUSES.has(status)) return c.json({ ok: false, error: `status must be one of ${[...NOTE_STATUSES].join("|")}` }, 400);
+
+    const detail = { ...(b.detail && typeof b.detail === "object" ? b.detail : {}), manual: true, source: String(b.source || "operator") };
+    const id = crypto.randomUUID();
+    await pool.query(
+      `INSERT INTO ap_decisions (id, run_id, platform, campaign_id, campaign_name, kind, detail, reason, status, executed_at)
+       VALUES ($1,NULL,$2,$3,$4,$5,$6,$7,$8,$9)`,
+      [id, b.platform ? String(b.platform) : null, b.campaignId ? String(b.campaignId) : null,
+        b.campaignName ? String(b.campaignName) : null, kind, jb(detail), reason, status,
+        status === "info" ? null : new Date()]);
+    const row = await pool.query(`SELECT * FROM ap_decisions WHERE id=$1`, [id]);
+    return c.json({ ok: true, id, line: logLine(row.rows[0]) });
+  });
+
   /* سجل الوكيل — كل دورة تفكير: قال إيه، نده أنهي أداة، رجعله إيه، واتنفّذ
      ولا اترفض. ده اللي بيخلّي المالك يقرا "ليه" مش بس "إيه". */
   app.get("/api/autopilot/agent-log", async (c) => {
