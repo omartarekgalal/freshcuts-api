@@ -19,19 +19,28 @@ const BRAND = "Fresh Cuts";
 const CACHE_MS = 10 * 60_000;
 
 /* ── KEEPING META'S COPY OF THE MENU HONEST ────────────────────────────────
-   Meta's scheduled feed pull runs ONCE A DAY (03:00 America/Los_Angeles).
-   The menu, however, changes the moment someone edits it — and between the
-   edit and the next pull, Meta's catalog does not contain the new dish.
+   Meta's scheduled feed pull runs ONCE A DAY (03:00 America/Los_Angeles), and
+   the menu changes whenever someone edits it. A dish added between two pulls
+   is a dish Meta has never heard of, and every event carrying its id comes
+   back MUST_FIX / INVALID_CONTENT_ID.
 
-   That gap is not cosmetic. Every AddToCart / InitiateCheckout / Lead that
-   carries a brand-new product id is rejected by the catalog as
-   MUST_FIX / INVALID_CONTENT_ID, because as far as Meta knows that id is not
-   a product at all. It happened on 2026-08-09: the menu grew from 72 items
-   to 95 at 09:53 PT, a customer ordered "كريب ميكس لحوم" (id 1) at 14:09 PT,
-   and his 3 events were all flagged invalid — the daily pull that would have
-   taught Meta about id 1 did not run until 02:51 PT the next morning.
+   The 2026-08-09 case, in UTC, because it is worth not re-diagnosing:
 
-   So we push instead of waiting: whenever the set of product ids in the feed
+     09:50  scheduled pull — 72 items
+     16:53  menu grows to 95; "كريب ميكس لحوم" (id 1) exists for the first time
+     19:08  a manual push persists all 95 items (num_persisted_items 95, 0 errors)
+     21:09  a customer orders it — his InitiateCheckout and Lead are flagged
+     00:42  (next day) a second InitiateCheckout, also flagged
+     09:51  scheduled pull — 95 items
+     16:28  another InitiateCheckout with id 1 — NOT flagged
+
+   Note the 19:08 push: the PRODUCT existed hours before the flagged events.
+   What had not caught up was Meta's event↔catalog matching index, which
+   refreshes off the feed's own cadence — so the id stayed "invalid" until the
+   next scheduled pull, then went clean and stayed clean. The lesson is the
+   same either way: the longer a new id waits, the more events it poisons.
+
+   So we push instead of waiting. Whenever the set of product ids in the feed
    differs from the set we last pushed, ask Meta to re-read the feed now. */
 const META_FEED_ID = process.env.META_PRODUCT_FEED_ID || "1392433232794606";
 const FEED_URL = process.env.CATALOG_FEED_URL || "https://freshcuts-api.o2m8.me/api/catalog/feed.csv";
