@@ -2,9 +2,10 @@
    CATALOG — live product feed for the ad platforms, generated from the real
    TABsense menu (names, prices, images) via the storefront proxy.
 
-   GET /api/catalog/feed.csv       Meta Commerce Manager scheduled-feed format
+   GET  /api/catalog/feed.csv      Meta Commerce Manager scheduled-feed format
                                    (also accepted by Snap and TikTok catalogs)
-   GET /api/catalog/status         item count + last fetch (admin)
+   GET  /api/catalog/status        item count + last fetch (admin)
+   POST /api/catalog/sync          force Meta to re-read the feed now (admin)
 
    The feed is PUBLIC by design: the platforms poll it on a schedule, and the
    menu itself is already public on order.o2m8.me. Prices update themselves —
@@ -16,6 +17,26 @@
 const STORE_BASE = process.env.CATALOG_MENU_BASE || "https://order.o2m8.me";
 const BRAND = "Fresh Cuts";
 const CACHE_MS = 10 * 60_000;
+
+/* ── KEEPING META'S COPY OF THE MENU HONEST ────────────────────────────────
+   Meta's scheduled feed pull runs ONCE A DAY (03:00 America/Los_Angeles).
+   The menu, however, changes the moment someone edits it — and between the
+   edit and the next pull, Meta's catalog does not contain the new dish.
+
+   That gap is not cosmetic. Every AddToCart / InitiateCheckout / Lead that
+   carries a brand-new product id is rejected by the catalog as
+   MUST_FIX / INVALID_CONTENT_ID, because as far as Meta knows that id is not
+   a product at all. It happened on 2026-08-09: the menu grew from 72 items
+   to 95 at 09:53 PT, a customer ordered "كريب ميكس لحوم" (id 1) at 14:09 PT,
+   and his 3 events were all flagged invalid — the daily pull that would have
+   taught Meta about id 1 did not run until 02:51 PT the next morning.
+
+   So we push instead of waiting: whenever the set of product ids in the feed
+   differs from the set we last pushed, ask Meta to re-read the feed now. */
+const META_FEED_ID = process.env.META_PRODUCT_FEED_ID || "1392433232794606";
+const FEED_URL = process.env.CATALOG_FEED_URL || "https://freshcuts-api.o2m8.me/api/catalog/feed.csv";
+const SYNC_EVERY_MS = 30 * 60_000;
+let lastPush = { at: null, ids: null, upload: null, error: null, skipped: null };
 
 /* ── DINE-IN ONLY ──────────────────────────────────────────────────────────
    Two offers are served at the table and cannot be delivered: صينية اللمة
@@ -144,6 +165,47 @@ export async function menuRows() {
   return getRows();
 }
 
+/* Ask Meta to fetch the feed now. `force` skips the "did anything change?"
+   test — the scheduled sweep uses the test, the admin route does not. */
+export async function syncCatalog({ force = false } = {}) {
+  const token = process.env.META_CAPI_TOKEN;
+  if (!token || !META_FEED_ID) {
+    lastPush = { ...lastPush, skipped: "no META_CAPI_TOKEN / META_PRODUCT_FEED_ID" };
+    return lastPush;
+  }
+  let rows;
+  try { rows = await getRows(); }
+  catch (e) {
+    lastPush = { ...lastPush, error: `menu unavailable: ${e.message}` };
+    return lastPush;
+  }
+
+  // The id SET is what the catalog keys on, so that is what decides a push.
+  // A price change rides along on the next sweep; a missing id costs events.
+  const ids = rows.map((r) => String(r.id)).sort().join(",");
+  if (!force && ids === lastPush.ids) {
+    lastPush = { ...lastPush, skipped: "unchanged", error: null };
+    return lastPush;
+  }
+
+  const ver = process.env.META_API_VERSION || "v21.0";
+  try {
+    const res = await fetch(`https://graph.facebook.com/${ver}/${META_FEED_ID}/uploads`, {
+      method: "POST",
+      body: new URLSearchParams({ url: FEED_URL, access_token: token }),
+    });
+    const j = await res.json().catch(() => null);
+    if (!res.ok) throw new Error(j?.error?.message || `HTTP ${res.status}`);
+    lastPush = { at: new Date().toISOString(), ids, upload: j?.id || null, error: null, skipped: null };
+    console.log(`[catalog] pushed ${rows.length} items to Meta (upload ${j?.id})`);
+  } catch (e) {
+    // Keep lastPush.ids unchanged so the next sweep retries this same change.
+    lastPush = { ...lastPush, error: String(e.message || e), at: new Date().toISOString() };
+    console.error("[catalog] push failed:", lastPush.error);
+  }
+  return lastPush;
+}
+
 export function register(app, ctx) {
   const { requireAdmin } = ctx;
 
@@ -191,9 +253,23 @@ export function register(app, ctx) {
       stillMissingImage: rows ? rows.filter((r) => !r.image).map((r) => r.title) : [],
       lastFetch: cache.at ? new Date(cache.at).toISOString() : null,
       error: e || cache.error,
-      feedUrl: "https://freshcuts-api.o2m8.me/api/catalog/feed.csv",
+      feedUrl: FEED_URL,
+      metaPush: lastPush,
     });
   });
+
+  /* Force a push. Use after a menu edit rather than waiting for the sweep. */
+  app.post("/api/catalog/sync", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    const r = await syncCatalog({ force: true });
+    return c.json({ ok: !r.error, ...r });
+  });
+
+  // Boot push, then every 30 minutes — a new dish is advertisable within the
+  // half hour instead of being un-matchable until 03:00 the next morning.
+  setTimeout(() => { syncCatalog().catch(() => {}); }, 20_000);
+  const timer = setInterval(() => { syncCatalog().catch(() => {}); }, SYNC_EVERY_MS);
+  if (timer.unref) timer.unref();
 
   console.log("[catalog] routes ready");
 }
