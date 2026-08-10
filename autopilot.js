@@ -1100,7 +1100,10 @@ export function logLine(row) {
       if (dot > 10) return { head: full.slice(0, dot + 1), tail: full.slice(dot + 2) };
       return { head: full, tail: "" };
     })();
+    /* الملاحظة بتتكتب عن حملة بعينها بس نصّها مبيسمّهاش — ست حملات في
+       فترة التعلّم بيطلعوا ست سطور متطابقة. الاسم بيتحط قدام. */
     title = clip(cutAt.head, 120) || "ملاحظة";
+    if (name && !title.includes(name)) title = `${q}: ${title}`;
     why = clip(cutAt.tail, 220);
   }
 
