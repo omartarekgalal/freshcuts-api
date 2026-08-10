@@ -1088,10 +1088,20 @@ export function logLine(row) {
       : "الوكيل وقع في الجولة دي";
     why = clip(d.refusal || row.reason || d.error, 260);
   } else {
-    // note وأي حاجة تانية
+    /* note وأي حاجة تانية. نصوص القواعد الصمّاء مكتوبة كجملة حكم بعدها
+       شرطة بعدها الأرقام — فبنقصّها عند الشرطة: الجملة تبقى العنوان
+       والأرقام تبقى السبب. لو مفيش شرطة، بنقصّ عند أول نقطة. */
     type = "note";
-    title = clip(row.reason, 180) || "ملاحظة";
-    why = "";
+    const full = stripIds(row.reason || "");
+    const cutAt = (() => {
+      const dash = full.indexOf(" — ");
+      if (dash > 10) return { head: full.slice(0, dash), tail: full.slice(dash + 3) };
+      const dot = full.indexOf(". ");
+      if (dot > 10) return { head: full.slice(0, dot + 1), tail: full.slice(dot + 2) };
+      return { head: full, tail: "" };
+    })();
+    title = clip(cutAt.head, 120) || "ملاحظة";
+    why = clip(cutAt.tail, 220);
   }
 
   if (status === "failed" && type !== "error") {
@@ -2820,7 +2830,17 @@ ${focus}
         ORDER BY created_at DESC
         LIMIT $2`, [String(days), limit * 3]);
 
+    /* ── الملاحظات المكرّرة بتتلمّ في سطر واحد ─────────────────────────
+       القواعد الصمّاء بتعيد نفس الملاحظة لكل حملة في كل جولة — «لسه في
+       فترة التعلّم» بتتكتب ٦ مرات كل ساعة. من غير اللمّة دي أول شاشة
+       المالك بتبقى نفس الجملة اتكتبت ٢٤ مرة، والقرار الحقيقي اللي فوقها
+       مش هيشوفه.
+
+       بنلمّ الملاحظات بس (اللي نتيجتها «للعلم»). أي حاجة اتنفّذت أو
+       اترفضت أو مستنية موافقة بتفضل سطر لوحدها مهما اتكررت — إن الوكيل
+       رفع نفس الميزانية مرتين مش تكرار، ده حدثين. */
     const entries = [];
+    const seen = new Map();
     for (const row of r.rows) {
       const line = logLine(row);
       if (!line) continue;
@@ -2832,6 +2852,13 @@ ${focus}
         line.clock = `${String(cl.hour).padStart(2, "0")}:${String(cl.minute).padStart(2, "0")}`;
         line.day = cl.day;
         line.dayLabel = dow;
+      }
+      if (line.outcome === "للعلم") {
+        const sig = `${line.type}|${line.campaign || ""}|${line.title}`;
+        const hit = seen.get(sig);
+        if (hit) { hit.repeats = (hit.repeats || 1) + 1; continue; }
+        line.repeats = 1;
+        seen.set(sig, line);
       }
       entries.push(line);
       if (entries.length >= limit) break;
