@@ -17,6 +17,30 @@ const STORE_BASE = process.env.CATALOG_MENU_BASE || "https://order.o2m8.me";
 const BRAND = "Fresh Cuts";
 const CACHE_MS = 10 * 60_000;
 
+/* ── DINE-IN ONLY ──────────────────────────────────────────────────────────
+   Two offers are served at the table and cannot be delivered: صينية اللمة
+   (100 ر.س) and بيتزا+باستا+كريب (70 ر.س). A DPA card or a catalog row that
+   does not say so invites a delivery order the kitchen has to refuse — the
+   worst kind of ad, because we paid for the click AND lost the customer.
+   So every catalog surface carries the note, in the title and in the
+   description, where no platform can crop it away entirely.
+
+   Matched two ways so a menu edit cannot silently drop the label: by explicit
+   product id (CATALOG_DINE_IN_IDS, comma separated) and by name pattern. The
+   second offer is not a POS product at all today — it exists only in ad copy
+   and the offers strip — so the pattern is what will catch it if it is ever
+   added to the menu. */
+const DINE_IN_NOTE = "داخل الصالة فقط";
+const dineInIds = () =>
+  new Set(String(process.env.CATALOG_DINE_IN_IDS ?? "121").split(",").map((s) => s.trim()).filter(Boolean));
+const DINE_IN_NAME_RE = /صيني[ةه]\s*اللم[ةه]|بيتزا\s*\+\s*باستا|باستا\s*\+\s*كريب/;
+
+export function isDineInOnly(item) {
+  const name = `${item?.title || item?.name || ""} ${item?.local_name || ""}`;
+  return dineInIds().has(String(item?.id ?? "")) || DINE_IN_NAME_RE.test(name);
+}
+const withNote = (s) => (String(s || "").includes(DINE_IN_NOTE) ? String(s) : `${String(s || "").trim()} — ${DINE_IN_NOTE}`.trim());
+
 let cache = { at: 0, rows: null, error: null };
 
 async function fetchMenu() {
@@ -47,14 +71,20 @@ async function fetchMenu() {
       if (!Number.isFinite(price) || price <= 0) continue;
       if (seen.has(String(it.id))) continue;
       seen.add(String(it.id));
-      rows.push({
+      const row = {
         id: String(it.id),
         title: (it.name || it.local_name || "").trim(),
         description: (it.description || it.local_description || it.name || "").trim().slice(0, 500),
         price,
         image: it.image || "",
         category,
-      });
+      };
+      if (isDineInOnly({ ...it, title: row.title })) {
+        row.dineIn = true;
+        row.title = withNote(row.title).slice(0, 200);
+        row.description = withNote(row.description).slice(0, 500);
+      }
+      rows.push(row);
     }
   }
   return fillMissingImages(rows);
@@ -133,6 +163,20 @@ export function register(app, ctx) {
     return c.body([header, ...lines].join("\n"));
   });
 
+  /* Which products may NOT be delivered. Public: the storefront's browser
+     reads it to badge those dishes and to warn before a delivery order is
+     sent. One source of truth with the feed above — a dish cannot be labelled
+     dine-in in the catalog and unlabelled on the site. */
+  app.get("/api/catalog/dine-in", async (c) => {
+    let ids = [...dineInIds()];
+    try {
+      const rows = await getRows();
+      ids = [...new Set([...ids, ...rows.filter((r) => r.dineIn).map((r) => r.id)])];
+    } catch { /* fall back to the configured ids */ }
+    c.header("Cache-Control", "public, max-age=300");
+    return c.json({ ok: true, note: DINE_IN_NOTE, ids });
+  });
+
   app.get("/api/catalog/status", async (c) => {
     const err = await requireAdmin(c); if (err) return err;
     let rows = null, e = null;
@@ -143,6 +187,7 @@ export function register(app, ctx) {
       withImage: rows ? rows.filter((r) => r.image).length : 0,
       ownImage: rows ? rows.filter((r) => r.image && !r.imageFrom).length : 0,
       borrowedImage: rows ? rows.filter((r) => r.imageFrom).length : 0,
+      dineInOnly: rows ? rows.filter((r) => r.dineIn).map((r) => ({ id: r.id, title: r.title })) : [],
       stillMissingImage: rows ? rows.filter((r) => !r.image).map((r) => r.title) : [],
       lastFetch: cache.at ? new Date(cache.at).toISOString() : null,
       error: e || cache.error,

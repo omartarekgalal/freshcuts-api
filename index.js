@@ -2968,14 +2968,29 @@ serve({ fetch: app.fetch, port: PORT, hostname: "0.0.0.0" }, (info) => {
     setInterval(() => ap.runEmergencyCheck({ trigger: "fast" }).catch(() => {}), AP_FAST_MINUTES * 60_000);
   }, 180_000);
   console.log(`[autopilot] emergency check every ${AP_FAST_MINUTES}m`);
-  // Intraday pacing: same cadence, offset by half the interval so the two
-  // never start together. Outside the kitchen's hours (and with nothing to
-  // restore) a tick is one SQL query, so this is cheap to run all night.
+  // Intraday pacing runs on its OWN, faster clock. The owner asked the agent
+  // to "see all the time and be ready for anything — when income rises it
+  // should scale fast and use the day": a 15-minute loop can miss a third of
+  // a dinner rush. A tick outside the acceleration band is one SQL query and
+  // touches no platform (the gates in runPaceCheck bail before that), so
+  // running it every 5 minutes costs almost nothing.
+  const AP_PACE_MINUTES = Math.max(3, Number(process.env.AUTOPILOT_PACE_MINUTES || 5));
   setTimeout(() => {
     ap.runPaceCheck({ trigger: "boot" }).catch(() => {});
-    setInterval(() => ap.runPaceCheck({ trigger: "fast" }).catch(() => {}), AP_FAST_MINUTES * 60_000);
-  }, 180_000 + (AP_FAST_MINUTES * 30_000));
-  console.log(`[autopilot] intraday pacing every ${AP_FAST_MINUTES}m`);
+    setInterval(() => ap.runPaceCheck({ trigger: "fast" }).catch(() => {}), AP_PACE_MINUTES * 60_000);
+  }, 180_000 + (AP_PACE_MINUTES * 30_000));
+  console.log(`[autopilot] intraday pacing every ${AP_PACE_MINUTES}m`);
+
+  // Ads window (dayparting): pause while the kitchen is shut, resume an hour
+  // before it opens. Runs FIRST after boot — deliberately, and quickly: if the
+  // service was down across 11:00 Jeddah, every campaign is sitting paused and
+  // the restaurant is advertising nothing on a full trading day. The book of
+  // what we paused lives in Postgres, so this recovers on its own.
+  setTimeout(() => {
+    ap.runDaypartCheck({ trigger: "boot" }).catch(() => {});
+    setInterval(() => ap.runDaypartCheck({ trigger: "fast" }).catch(() => {}), AP_PACE_MINUTES * 60_000);
+  }, 30_000);
+  console.log(`[autopilot] ads window (dayparting) every ${AP_PACE_MINUTES}m`);
 
   /* ناشر انستجرام. انستجرام API ملوش جدولة أصلاً، فالجدولة بتاعتنا هي
      العامل ده: كل ٥ دقايق بياخد الصفوف اللي ميعادها جه وينشرها. الدورة

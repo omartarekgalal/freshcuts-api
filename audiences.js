@@ -360,6 +360,18 @@ export function register(app, ctx) {
     return c.json({ ok: true, ...r });
   });
 
+  /* حجم كل شريحة من غير ما ننده أي منصة — الطيار بيقرا منها «كام عميل
+     بنعيد استهدافه» في شاشة الاقتصاديات، فالحساب لازم يكون متاح جوّه
+     العملية من غير طلب HTTP على نفسنا. */
+  async function segmentSizes() {
+    const out = [];
+    for (const s of SEGMENTS) {
+      try { out.push({ ...s, size: (await segmentPhones(s.id)).length }); }
+      catch (e) { out.push({ ...s, size: null, error: String(e.message || e) }); }
+    }
+    return out;
+  }
+
   console.log("[audiences] routes ready");
-  return { syncAll };
+  return { syncAll, segmentSizes, SEGMENTS };
 }

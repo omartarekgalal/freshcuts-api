@@ -87,6 +87,22 @@ export function register(app, ctx, deps = {}) {
       -- carried no product ids at all, so the catalog could not retarget a
       -- browser that had already looked at a specific dish.
       ALTER TABLE funnel_events ADD COLUMN IF NOT EXISTS contents JSONB;
+
+      -- Clicks on /go/keeta | /go/hungerstation | /go/ninja. These leave our
+      -- site for a delivery app we cannot instrument, so the click is the last
+      -- thing we will ever see of that customer. Kept here — NOT pushed to any
+      -- ad platform — because the platform has no way to close the loop on it
+      -- and a fabricated conversion is worse than no conversion.
+      CREATE TABLE IF NOT EXISTS go_clicks (
+        id TEXT PRIMARY KEY,
+        target TEXT NOT NULL,
+        utm JSONB,
+        referrer TEXT,
+        ip TEXT,
+        ua TEXT,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS go_clicks_time_idx ON go_clicks(target, created_at DESC);
     `);
   }
   ensureSchema()
@@ -343,6 +359,125 @@ export function register(app, ctx, deps = {}) {
     }
 
     return c.json({ ok: true, results });
+  });
+
+  /* ── delivery-app redirect clicks ──────────────────────────────────────
+     The storefront used to forward these to /api/funnel/event as a Lead. That
+     was wrong twice over: the call is server-to-server, so the "customer" IP
+     Meta/TikTok/Snap received was the storefront container's own address and
+     the event carried no identifier at all; and Lead is the event three live
+     campaigns optimise on, so every /go click taught the delivery algorithms
+     to find more people who look like our own datacentre. Recorded here
+     instead, and reported by /api/funnel/delivery-lift below. */
+  const GO_TARGETS = new Set(["keeta", "hungerstation", "ninja"]);
+  app.post("/api/funnel/go-click", async (c) => {
+    const ip = (c.req.header("cf-connecting-ip") || c.req.header("x-forwarded-for") || "").split(",")[0].trim();
+    if (rateLimited(`go:${ip || "unknown"}`)) return c.json({ ok: false, error: "rate limited" }, 429);
+    let b = {};
+    try { b = await c.req.json(); } catch { return c.json({ ok: false, error: "invalid JSON" }, 400); }
+    const target = String(b.target || "").toLowerCase().slice(0, 32);
+    if (!GO_TARGETS.has(target)) return c.json({ ok: false, error: "unknown target" }, 400);
+    await pool.query(
+      `INSERT INTO go_clicks (id, target, utm, referrer, ip, ua) VALUES ($1,$2,$3,$4,$5,$6)`,
+      [crypto.randomUUID(), target,
+       jb(b.utm && typeof b.utm === "object" ? b.utm : {}),
+       String(b.referrer || "").slice(0, 500) || null,
+       String(b.ip || ip || "").slice(0, 64) || null,
+       String(b.ua || c.req.header("user-agent") || "").slice(0, 400) || null])
+      .catch((err) => console.error("[funnel] go-click store failed:", err.message));
+    return c.json({ ok: true });
+  });
+
+  /* ── delivery-app lift test ────────────────────────────────────────────
+     The owner's bar: an ad that sends people to Keeta/HungerStation is worth
+     running only if it returns MORE THAN 7 SAR of delivery-app sales per 1 SAR
+     spent. Nothing about a delivery app is directly attributable — the app
+     tells us nothing about where its customer came from — so the only honest
+     test is a before/after on that app's OWN sales, with the clicks we sent as
+     the evidence that the ad actually pushed traffic there.
+
+     Per app, per day: our redirect clicks, the app's orders and revenue from
+     ts_orders, plus a baseline computed from the days BEFORE the test window.
+     `lift` is revenue above that baseline; `ratio` is lift ÷ spend. Spend is
+     not guessed: it must be passed in (?spend_keeta=…), because no ad platform
+     knows which of its campaigns was the delivery-app one. */
+  app.get("/api/funnel/delivery-lift", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    const days = Math.min(Math.max(Number(c.req.query("days") || 14), 2), 120);
+    // The test window: days the campaign ran. Everything before it, inside the
+    // same query range, is the baseline.
+    const testFrom = c.req.query("from") || null;      // YYYY-MM-DD, optional
+
+    const orders = await pool.query(
+      `SELECT o.calendar_day AS day,
+              lower(COALESCE(NULLIF(s.source_note,''),'unknown')) AS app,
+              count(*)::int AS orders,
+              round(COALESCE(sum(o.total),0)::numeric,2) AS revenue
+         FROM ts_orders o
+         JOIN order_sources s ON s.order_id = o.order_id
+        WHERE s.source = 'delivery_app'
+          AND o.calendar_day > CURRENT_DATE - $1::int
+        GROUP BY 1,2 ORDER BY 1`, [days + 1]);
+
+    const clicks = await pool.query(
+      `SELECT (created_at AT TIME ZONE 'Asia/Riyadh')::date AS day, target AS app, count(*)::int AS clicks
+         FROM go_clicks
+        WHERE created_at > NOW() - ($1 || ' days')::interval
+        GROUP BY 1,2 ORDER BY 1`, [String(days + 1)]);
+
+    const apps = {};
+    const app_ = (name) => (apps[name] ||= { app: name, days: {}, clicks: 0, orders: 0, revenue: 0 });
+    for (const r of orders.rows) {
+      const a = app_(r.app);
+      const d = (a.days[r.day.toISOString().slice(0, 10)] ||= { day: r.day.toISOString().slice(0, 10), clicks: 0, orders: 0, revenue: 0 });
+      d.orders = r.orders; d.revenue = Number(r.revenue);
+      a.orders += r.orders; a.revenue += Number(r.revenue);
+    }
+    for (const r of clicks.rows) {
+      const a = app_(r.app);
+      const key = r.day.toISOString().slice(0, 10);
+      const d = (a.days[key] ||= { day: key, clicks: 0, orders: 0, revenue: 0 });
+      d.clicks = r.clicks; a.clicks += r.clicks;
+    }
+
+    const BAR = Number(process.env.DELIVERY_LIFT_BAR || 7);   // owner's 7:1 bar
+    const out = Object.values(apps).map((a) => {
+      const rows = Object.values(a.days).sort((x, y) => x.day.localeCompare(y.day));
+      const test = testFrom ? rows.filter((r) => r.day >= testFrom) : [];
+      const base = testFrom ? rows.filter((r) => r.day < testFrom) : rows;
+      const avg = (list, k) => (list.length ? list.reduce((s, r) => s + r[k], 0) / list.length : 0);
+      const baselineRevPerDay = Math.round(avg(base, "revenue") * 100) / 100;
+      const testRevPerDay = Math.round(avg(test, "revenue") * 100) / 100;
+      const spend = Number(c.req.query(`spend_${a.app}`) || 0);
+      const liftPerDay = testFrom ? Math.round((testRevPerDay - baselineRevPerDay) * 100) / 100 : null;
+      const liftTotal = liftPerDay == null ? null : Math.round(liftPerDay * test.length * 100) / 100;
+      return {
+        app: a.app,
+        days: rows,
+        totals: { clicks: a.clicks, orders: a.orders, revenue: Math.round(a.revenue * 100) / 100 },
+        baselineRevPerDay, testRevPerDay,
+        testDays: test.length, baselineDays: base.length,
+        spend: spend || null,
+        liftPerDay, liftTotal,
+        ratio: spend > 0 && liftTotal != null ? Math.round((liftTotal / spend) * 100) / 100 : null,
+        verdict: spend > 0 && liftTotal != null
+          ? (liftTotal / spend >= BAR ? "نجح — فوق الحد" : "فشل — تحت الحد")
+          : "محتاج فترة اختبار (from=) ومصروف (spend_<app>=)",
+      };
+    }).sort((x, y) => y.totals.revenue - x.totals.revenue);
+
+    // What would make the test valid. Reported alongside the numbers rather
+    // than assumed, because most of it is not true yet.
+    const linkable = { keeta: true, hungerstation: false, ninja: false };
+    return c.json({
+      ok: true, days, from: testFrom, bar: BAR, apps: out,
+      requirements: {
+        realDeepLinks: linkable,
+        note: "روابط /go/hungerstation و /go/ninja لسه راجعة على order.o2m8.me نفسه — أي إعلان عليها بيقيس لا شيء.",
+        minTestDays: 7, minBaselineDays: 14,
+        spendMustBeDedicated: true,
+      },
+    });
   });
 
   /* Funnel numbers for the dashboard. */
