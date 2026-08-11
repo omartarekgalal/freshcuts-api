@@ -360,8 +360,11 @@ export function createGoogleAdapter({ httpJson, hashEmail, hashPhonePlus, google
         method: "POST",
         headers: { ...this.hdr(), Authorization: `Bearer ${t}` },
         body: {
+          /* No FROM clause: GoogleAdsFieldService rejects one outright
+             (UNEXPECTED_FROM_CLAUSE). It is the one query in the whole API
+             that names no resource, because the fields ARE the resource. */
           query: `SELECT name, category, selectable, filterable, sortable, data_type, is_repeated
-                    FROM google_ads_field WHERE name LIKE '${safe}%' ORDER BY name`,
+                   WHERE name LIKE '${safe}%' ORDER BY name`,
           pageSize: 1000,
         },
       });
@@ -956,19 +959,23 @@ export function createGoogleAdapter({ httpJson, hashEmail, hashPhonePlus, google
                 ad_group_criterion.keyword.text, ad_group_criterion.keyword.match_type,
                 ad_group_criterion.status, ad_group_criterion.negative,
                 ad_group_criterion.approval_status,
+                ad_group_criterion.disapproval_reasons,
                 ad_group_criterion.system_serving_status,
-                ad_group_criterion.quality_info.quality_score,
-                ad_group_criterion.policy_summary.approval_status,
-                ad_group_criterion.policy_summary.review_status,
-                ad_group_criterion.policy_summary.policy_topic_entries
+                ad_group_criterion.quality_info.quality_score
            FROM keyword_view WHERE ad_group_criterion.status != 'REMOVED'`,
         KW_LEAN);
       if (!kwRes.ok) out.errors.keywords = kwRes.reason;
       if (kwRes.degraded) out.errors.keywordPolicyDetail = kwRes.degraded;
       out.keywords = (kwRes.results || []).map((x) => {
         const k = x.adGroupCriterion || {};
-        const ps = k.policySummary || {};
-        const topics = policyEntries(ps.policyTopicEntries);
+        /* Unlike an ad, a keyword carries no PolicyTopicEntry list — Google
+           gives `disapproval_reasons`, a flat array of policy-topic names
+           ("Sensitive events"). That IS Google's wording, so it is passed
+           through untouched and shaped like the ad-level topics so the two
+           read the same downstream. */
+        const topics = (k.disapprovalReasons || []).map((t) => ({
+          topic: t, type: null, typeAr: null, evidence: [], constraints: [],
+        }));
         return {
           campaignId: String(x.campaign?.id ?? ""),
           adGroupId: String(x.adGroup?.id ?? ""),
@@ -978,14 +985,13 @@ export function createGoogleAdapter({ httpJson, hashEmail, hashPhonePlus, google
           matchType: k.keyword?.matchType || null,
           negative: !!k.negative,
           status: k.status || null,
-          // Two different approval fields exist; the policy summary is the one
-          // that carries the reasons, so it wins when both are present.
-          approvalStatus: ps.approvalStatus || k.approvalStatus || null,
-          reviewStatus: ps.reviewStatus || null,
+          approvalStatus: k.approvalStatus || null,
           servingStatus: k.systemServingStatus || null,
           qualityScore: k.qualityInfo?.qualityScore ?? null,
           policyTopics: topics,
-          policyText: topics.map(policyLine),
+          // Verbatim, so the owner reads Google's label and not our gloss.
+          disapprovalReasons: k.disapprovalReasons || [],
+          policyText: topics.map((t) => `«${t.topic}»`),
         };
       });
 
@@ -1067,10 +1073,10 @@ export function createGoogleAdapter({ httpJson, hashEmail, hashPhonePlus, google
            looks like nothing is wrong: the ads pass review, the campaign says
            ELIGIBLE, and the queries the restaurant is actually named for never
            enter the auction. Say it per keyword, with Google's own topic. */
-        const badKw = kw.filter((k) => k.approvalStatus === "DISAPPROVED" || k.policyTopics.some((t) => t.type === "PROHIBITED" || t.type === "FULLY_LIMITED"));
+        const badKw = kw.filter((k) => k.approvalStatus === "DISAPPROVED" || (k.disapprovalReasons || []).length);
         for (const k of badKw) {
-          const why = k.policyText.length ? k.policyText.join(" · ") : (k.approvalStatus || "مرفوضة من غير سبب مذكور");
-          add("blocker", `«${c.name}» / ${k.adGroupName} — الكلمة «${k.text}» ${k.approvalStatus === "DISAPPROVED" ? "مرفوضة" : "محظورة"}: ${why}`);
+          const why = k.disapprovalReasons?.length ? k.disapprovalReasons.map((t) => `«${t}»`).join(" · ") : (k.approvalStatus || "مرفوضة من غير سبب مذكور");
+          add("blocker", `«${c.name}» / ${k.adGroupName} — الكلمة «${k.text}» مرفوضة من جوجل، والسبب بنص جوجل: ${why}`);
         }
         const idleKw = kw.filter((k) => !badKw.includes(k) && k.servingStatus && !["SERVING", "PENDING_REVIEW", "UNKNOWN"].includes(k.servingStatus));
         for (const k of idleKw) add("warn", `«${c.name}» — الكلمة «${k.text}» حالتها عند جوجل ${k.servingStatus}.`);
