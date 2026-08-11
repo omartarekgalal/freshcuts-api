@@ -2178,6 +2178,22 @@ ${focus}
       if (!w.open && book.size > 0 && !force && Date.now() - lastClosedProbeAt < CLOSED_PROBE_MS) {
         return { ok: true, phase: "closed", window: w, skipped: "throttled", paused: book.size };
       }
+
+      /* كل منصة نقدر نكتب عليها بابها مقفول = مفيش حاجة نقدر نعملها الدورة
+         دي، وقراءة الأرقام تحت بتاكل من نفس حصة النداءات اللي اتقفل الباب
+         عشانها أصلاً. ده بالظبط اللي حصل ليلة ١١ أغسطس: أوامر الإيقاف
+         بتترفض، فالدفتر بيفضل فاضي، فالشرط اللي فوق مابيتحققش، فبنرجع كل
+         ٥ دقايق نقرا ونحاول من تاني ونستهلك الحصة اللي كانت هتخلّي الإيقاف
+         ينجح. بنستنى لحد ما الحصة ترجع. */
+      const managed = PLATFORMS.filter((p) => canManage(p));
+      const gated = writeGates();
+      if (managed.length && !force && gated.length >= managed.length
+          && managed.every((p) => gated.some((g) => g.platform === p.id))) {
+        const soonest = Math.min(...gated.map((g) => g.minutes));
+        return { ok: true, phase: w.open ? "open" : "closed", window: w, skipped: "platforms rate-limited",
+                 retryInMinutes: soonest, gates: gated.map((g) => ({ platform: g.platform, minutes: g.minutes })) };
+      }
+
       if (!w.open) lastClosedProbeAt = Date.now();
 
       const snap = await perfSnapshot({ from: todayISO(), to: todayISO() });
