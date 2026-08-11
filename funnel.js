@@ -518,9 +518,13 @@ export function register(app, ctx, deps = {}) {
               COALESCE(sum(value) FILTER (WHERE event_name='Purchase'),0) AS revenue
          FROM funnel_events WHERE ${where}
         GROUP BY 1 ORDER BY views DESC LIMIT 15`, params);
+    /* أول حدث اتسجّل على الإطلاق. من غيره تقرير بيغطي أسبوع بدأ التتبع في
+       نصّه بيقرا كأن نص الأسبوع كان صفر زيارات — وده كذب. */
+    const first = await pool.query(`SELECT min(created_at) AS first FROM funnel_events`);
     return {
       days: ranged ? null : days, from: ranged ? from : null, to: ranged ? to : null,
       basis: ranged ? "business-day" : "rolling",
+      firstEventAt: first.rows[0]?.first || null,
       events: r.rows, sources: bySrc.rows,
     };
   }

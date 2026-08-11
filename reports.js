@@ -90,9 +90,12 @@ export function register(app, ctx, deps = {}) {
   const analytics = deps.analytics || null;         // { periodKpis, channelsData, deliveryApps }
   const attribution = deps.attribution || null;     // { overviewData }
   const autopilot = deps.autopilot || null;         // { economicsData, logData }
-  const ads = deps.ads || null;                     // { scorecardData }
-  const tracking = deps.tracking || null;           // { healthData }
-  const funnel = deps.funnel || null;               // { funnelStats }
+  // `adsApi` مش `ads`: جوّه buildReport فيه كتلة اسمها `ads` بتتبني للتقرير،
+  // والاسمين لو اتساوا الـ const الجوّاني بيعمل TDZ على الخارجاني — وكشف
+  // المنصات بيرجع «Cannot access 'ads' before initialization» بدل الأرقام.
+  const adsApi = deps.ads || null;                  // { scorecardData }
+  const trackingApi = deps.tracking || null;        // { healthData }
+  const funnelApi = deps.funnel || null;            // { funnelStats }
 
   /* لو موديول وقع، التقرير بيكمّل والقسم بتاعه بيتكتب «غير متاح» بالسبب.
      تقرير ناقص قسم أحسن من تقرير مبيوظ كله عشان منصة رجّعت خطأ. */
@@ -126,11 +129,25 @@ export function register(app, ctx, deps = {}) {
       prev = n;
       return row;
     });
-    // أكبر تسريب = أكبر عدد ناس ضاعوا، مش أكبر نسبة. ٩٠٪ من عشرة مش مشكلة.
-    const leak = steps.slice(1).reduce((best, s) => (best == null || s.lost > best.lost ? s : best), null);
+    /* اختيار «أكبر تسريب» فيه حكم، والحكم ده مكتوب:
+       • الأساس: أكتر خطوة ضاع فيها ناس بالعدد — ٩٠٪ من عشرة مش مشكلة.
+       • الاستثناء: خطوة ضاع فيها **الكل** (١٠٠٪) ومعاها عدد معتبر، دي مش
+         تسريب — دي خطوة مكسورة. حد ما كمّلش ولا مرة واحدة معناه إن الخطوة
+         مش شغالة أصلاً، وده كلام مختلف عن «الناس بتزهق». فبتكسب الترشيح. */
+    const rest = steps.slice(1);
+    const dead = rest.find((s) => s.dropPct === 100 && s.lost >= 20);
+    const leak = dead || rest.reduce((best, s) => (best == null || s.lost > best.lost ? s : best), null);
     const from = steps[steps.findIndex((s) => s.id === leak?.id) - 1] || null;
     return {
       basis: stats?.basis || null,
+      firstEventAt: stats?.firstEventAt || null,
+      coverageNote: stats?.firstEventAt
+        ? `تتبع الموقع بدأ يسجّل يوم ${String(stats.firstEventAt).slice(0, 10)} — أي فترة قبل التاريخ ده مالهاش أرقام فنل، ومش صفر.`
+        : null,
+      broken: dead ? {
+        step: dead.label, entered: dead.lost,
+        sentence: `${ar(dead.lost)} شخص وصلوا لخطوة «${dead.label}» وولا واحد كمّلها. صفر مش نسبة ضعيفة — الخطوة نفسها مش شغالة.`,
+      } : null,
       steps,
       sideExits: [
         { id: "Contact", label: "ضغط واتساب/اتصال بدل ما يكمّل أونلاين", count: contact },
@@ -238,30 +255,45 @@ export function register(app, ctx, deps = {}) {
       });
     }
 
-    /* ٦) التتبع — أحداث بترجع مرفوضة */
-    const rej = d.tracking?.rejectPct;
-    if (rej != null && rej >= T.trackRejectPct) {
+    /* ٦) التتبع — النسبة بتتقاس لكل منصة على حدة. منصة بترفض ١٠٪ من
+          أحداثها بتختفي جوّه متوسط عام لو حسبناها كلها مع بعض. */
+    const worst = d.tracking?.worstPlatform;
+    if (worst && worst.rejectPct >= T.trackRejectPct && worst.sent >= 50) {
       push({
-        severity: Math.min(100, 40 + Math.round(rej)),
+        severity: Math.min(100, 40 + Math.round(worst.rejectPct)),
         tone: "warn",
-        title: "جزء من أحداث التتبع بيترفض",
-        number: `${ar1(rej)}٪ من الأحداث اترفضت`,
-        why: d.tracking.firstProblem || "المنصة بترفض جزء من الأحداث المرسلة.",
+        title: `${worst.label}: جزء من الأحداث بيترفض`,
+        number: `${ar1(worst.rejectPct)}٪ من أحداث ${worst.label} اترفضت (${ar(worst.rejected)} من ${ar(worst.sent)})`,
+        why: worst.lastError ? `آخر رد من المنصة: ${worst.lastError}` : "المنصة بترفض جزء من الأحداث المرسلة.",
         action: "كل حدث مرفوض معناه إن المنصة مش شايفة عميل — والحملة بتتعلم على داتا ناقصة. صفحة 📡 التتبع فيها نص الخطأ بالحرف.",
         source: "tracking/health",
       });
     }
 
-    /* ٧) تسريب الفنل — بالعدد الحقيقي مش بالنسبة لوحدها */
+    /* ٧) خطوة مكسورة على الموقع — الكل وصل ومحدش كمّل */
+    const broken = d.funnel?.broken;
+    if (broken) {
+      push({
+        severity: 88,
+        tone: "bad",
+        title: `مفيش ولا طلب اكتمل على الموقع`,
+        number: `${ar(broken.entered)} شخص وصلوا لـ«${broken.step}» وصفر كمّلوا`,
+        why: broken.sentence,
+        action: "افتح order.o2m8.me من موبايلك واطلب طلب حقيقي لحد آخر خطوة. لو الطلب اتم يبقى التتبع هو المكسور؛ لو ما اتمّش يبقى الموقع — وفي الحالتين كل ريال بيتصرف على إعلانات بتودّي هناك ضايع.",
+        source: "funnel/stats",
+      });
+    }
+
+    /* ٨) تسريب عادي — بالعدد الحقيقي مش بالنسبة لوحدها */
     const leak = d.funnel?.biggestLeak;
-    if (leak && leak.lost >= T.funnelLeakPeople && num(leak.dropPct) >= T.funnelLeakPct) {
+    if (!broken && leak && leak.lost >= T.funnelLeakPeople && num(leak.dropPct) >= T.funnelLeakPct) {
       push({
         severity: Math.min(100, 35 + Math.round(leak.dropPct / 3)),
         tone: "warn",
         title: "ناس كتير بتقف في نفس الخطوة على الموقع",
         number: `${ar(leak.lost)} شخص وقفوا عند «${leak.to}»`,
         why: leak.sentence,
-        action: `افتح ${leak.to === "كمّل الطلب" ? "خطوة إتمام الطلب" : "الخطوة دي"} من موبايلك وجرّبها بنفسك مرة واحدة. أغلب التسريبات في الخطوة دي بتبان في أول تجربة.`,
+        action: `افتح «${leak.to}» من موبايلك وجرّبها بنفسك مرة واحدة. أغلب التسريبات في الخطوة دي بتبان من أول تجربة.`,
         source: "funnel/stats",
       });
     }
@@ -300,9 +332,9 @@ export function register(app, ctx, deps = {}) {
       soft("تفصيل القنوات", () => need(analytics, "channelsData", "التحليلات")(from, to, period === "day" ? "lastweek" : "prev")),
       soft("اقتصاديات العميل", () => need(autopilot, "economicsData", "الطيار")(from, to)),
       soft("الإسناد", () => need(attribution, "overviewData", "الإسناد")(from, to)),
-      soft("كشف المنصات", () => need(ads, "scorecardData", "الإعلانات")(from, to)),
-      soft("صحة التتبع", () => need(tracking, "healthData", "التتبع")(Math.min(90, Math.max(1, range.days)))),
-      soft("الفنل", () => need(funnel, "funnelStats", "الفنل")({ from, to })),
+      soft("كشف المنصات", () => need(adsApi, "scorecardData", "الإعلانات")(from, to)),
+      soft("صحة التتبع", () => need(trackingApi, "healthData", "التتبع")(Math.min(90, Math.max(1, range.days)))),
+      soft("الفنل", () => need(funnelApi, "funnelStats", "الفنل")({ from, to })),
       soft("سجل الطيار", () => need(autopilot, "logData", "الطيار")({ from, to, limit: 120 })),
     ]);
 
@@ -516,17 +548,33 @@ export function register(app, ctx, deps = {}) {
         if (c.lastError && !p.lastError) p.lastError = c.lastError;
       }
       const ident = track.web?.identity || null;
+      /* نسبة الرفض لكل منصة على حدة، وبتحسب الويب والأوفلاين مع بعض: منصة
+         بتقبل كل أحداث الويب وبترفض تلت الشراء الأوفلاين مش «سليمة». */
+      const plats = Object.values(byPlat).map((p) => {
+        const allSent = p.sent + (p.offlineSent || 0);
+        const allRej = p.rejected + (p.offlineRejected || 0);
+        return {
+          ...p,
+          totalSent: allSent, totalRejected: allRej,
+          rejectPct: allSent > 0 ? r2((allRej / allSent) * 100) : null,
+          verdict: allSent === 0 ? "مفيش داتا"
+            : allRej > 0 ? "بيوصل بس فيه مرفوض"
+            : "بيوصل سليم",
+        };
+      });
+      const worst = plats
+        .filter((p) => p.totalSent >= 50 && p.rejectPct != null)
+        .sort((a, b) => b.rejectPct - a.rejectPct)[0] || null;
       tr = {
         healthy: !!track.healthy,
         problems: track.problems || [],
         firstProblem: (track.problems || [])[0] || null,
         rejectPct: sent > 0 ? r2((rejected / sent) * 100) : null,
-        platforms: Object.values(byPlat).map((p) => ({
-          ...p,
-          verdict: p.sent === 0 && !p.offlineSent ? "مفيش داتا"
-            : p.rejected > 0 || p.offlineRejected > 0 ? "بيوصل بس فيه مرفوض"
-            : "بيوصل سليم",
-        })),
+        worstPlatform: worst ? {
+          id: worst.id, label: worst.label, rejectPct: worst.rejectPct,
+          rejected: worst.totalRejected, sent: worst.totalSent, lastError: worst.lastError,
+        } : null,
+        platforms: plats,
         matchQuality: ident ? {
           events: ident.total, withPhone: ident.withPhone,
           withPhonePct: ident.total > 0 ? r2((ident.withPhone / ident.total) * 100) : null,
