@@ -4252,6 +4252,27 @@ ${focus}
     const verdict = await verifyDaypart({ priority }).catch(() => null);
     const problems = [];
 
+    /* أوامر إيقاف اتأجّلت والمطبخ قافل = إعلانات شغالة على ساعات مفيهاش بيع.
+       بنقولها صريحة من غير ما نقرا المنصة، عشان في الحالة دي بالظبط إحنا
+       مش بنقرا (الحصة محجوزة للأمر نفسه) — والسكوت هنا هيبقى أسوأ من
+       القراءة: إحنا *عارفين* إن الأمر ماخرجش، مش بنخمّن. */
+    const deferred = await pool.query(
+      `SELECT count(*)::int n, count(DISTINCT campaign_id)::int camps
+         FROM ap_decisions
+        WHERE kind='daypart' AND status='deferred'
+          AND detail->>'op' = 'pause'
+          AND created_at > NOW() - interval '90 minutes'`).catch(() => ({ rows: [{ n: 0 }] }));
+    const defN = deferred.rows[0]?.n || 0;
+    if (!w.open && defN > 0) {
+      const mins = gates.length ? Math.min(...gates.map((g) => g.minutes)) : null;
+      problems.push({
+        rank: 1, tone: "bad", who: "agent",
+        line: `🚨 المطبخ قافل و${ar(deferred.rows[0]?.camps || 0)} حملة لسه شغالة — أمر الإيقاف اتأجّل عشان المنصة مخنوقة`
+          + (mins ? ` (بنعيد بعد ${ar(mins)} دقيقة).` : "."),
+        prevents: "بنصرف على ساعات مفيهاش بيع دلوقتي.",
+      });
+    }
+
     /* ١ — أغلى حاجة ممكنة: بندفع والمطبخ قافل، أو موقوفين والمطعم فاتح. */
     if (verdict && verdict.tone === "bad") {
       problems.push({
