@@ -846,7 +846,12 @@ const tiktok = {
     };
   },
 
-  /* The pre-flight the sender consults before claiming any order. Once the
+  /* `reason` is preferred over `error` by every read above: when the adapter
+     already knows the door is shut, the surfaces get the Arabic sentence a
+     restaurant owner can act on rather than TikTok's English one about a
+     missing scope, which reads like a credential somebody forgot to paste.
+
+     The pre-flight the sender consults before claiming any order. Once the
      refusal is latched nothing is claimed at all, so a shut door costs zero
      rows and zero calls. Re-tested every six hours so approval is noticed
      without anyone having to redeploy. */
@@ -867,7 +872,7 @@ const tiktok = {
     const q = `advertiser_ids=${encodeURIComponent(JSON.stringify(adv.split(",").map((s) => s.trim())))}`;
     const res = await httpJson(`${this.base}/advertiser/info/?${q}`, { headers: this.hdr() });
     const r = this.readBatchResult(res, 0);
-    if (!r.ok) return { ok: false, reason: r.error, accounts: [] };
+    if (!r.ok) return { ok: false, reason: r.reason || r.error, accounts: [] };
     return {
       ok: true,
       accounts: (res.json?.data?.list || []).map((a) => ({
@@ -885,7 +890,7 @@ const tiktok = {
       headers: this.hdr(),
     });
     const r = this.readBatchResult(res, 0);
-    if (!r.ok) return { ok: false, reason: r.error, campaigns: [] };
+    if (!r.ok) return { ok: false, reason: r.reason || r.error, campaigns: [] };
     return {
       ok: true,
       campaigns: (res.json?.data?.list || []).map((c) => ({
@@ -922,7 +927,7 @@ const tiktok = {
     });
     const res = await httpJson(`${this.base}/report/integrated/get/?${params}`, { headers: this.hdr() });
     const r = this.readBatchResult(res, 0);
-    if (!r.ok) return { ok: false, reason: r.error, rows: [] };
+    if (!r.ok) return { ok: false, reason: r.reason || r.error, rows: [] };
     return {
       ok: true,
       rows: (res.json?.data?.list || []).map((row) => ({

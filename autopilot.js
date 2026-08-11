@@ -3051,7 +3051,15 @@ ${focus}
          المالك لما يدوس «افحص تاني» بيعدّي (priority=owner). */
       const live = await platformRead(p, () => p.campaigns(), { priority, empty: { campaigns: [] } });
       if (!live.ok) {
-        platforms.push({ id: p.id, label: p.label, readable: false, reason: live.reason, mismatches: [] });
+        /* لو المنصة نفسها عارفة إنها مقفولة، سببها هو اللي يتعرض — مش نص
+           الخطأ الإنجليزي. «التطبيق تحت المراجعة» جملة المالك يقدر يعمل
+           بيها حاجة؛ «code 40001: The access token lacks the required
+           scope» بتخلّيه يفتكر إن في توكن محتاج تظبيط وهو مش كده. */
+        const known = p.lastReadiness?.();
+        platforms.push({ id: p.id, label: p.label, readable: false,
+                         reason: known?.reason || live.reason,
+                         ...(known?.code ? { code: known.code } : {}),
+                         mismatches: [] });
         continue;
       }
       /* اللي بيهمنا: الحملات اللي المفروض تكون موقوفة دلوقتي. وقت القفل دي
