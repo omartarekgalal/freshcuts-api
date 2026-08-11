@@ -373,6 +373,31 @@ test("جوجل: خطوة أكبر وتبريد أقصر، بسقف لحد ما �
   assert.equal(gp.cap, null);
 });
 
+test("منصة لسه ما جابتش نتيجة: السقف الصغير بيمسك فعلاً", () => {
+  /* ١١ أغسطس: جوجل اترفعت من ١٠٠ لـ ١٢٥ رغم إن قاعدتها بتقول مسقوفة عند
+     ١٠٠ لحد ما تجيب أول عميل — لإن `proven` مكانش موصّل من اللقطة للقرار.
+     الاختبار ده بيمسك الوصلة دي مش القاعدة لوحدها. */
+  const pulse = {
+    riyadhHour: 20, riyadhMinute: 0, elapsedH: 16, dow: 2, pacePct: 70, pace: 0.7,
+    today: { orders: 25, revenue: 1800 }, baseline: { orders: 15, revenue: 1050, days: 4 },
+    confidence: { level: "عالي", note: "" },
+  };
+  const mk = (proven) => decidePace({
+    rows: [{ platform: "google", id: "g1", name: "FC-Search-Jeddah", status: "ACTIVE", dailyBudget: 100, spend: 60, results: 0, proven }],
+    state: new Map(), s: { ...PACE_DEFAULTS, maxTotalBudget: 1000, maxCampaignBudget: 500 },
+    now: new Date(), accountDay: "2026-08-11", msToRoll: 14 * 3600_000, pulse,
+  });
+
+  const unproven = mk(false);
+  assert.equal(unproven.actions.length, 0, "منصة مش مثبتة ما تعدّيش سقفها");
+  assert.ok(unproven.notes.some((n) => n.op === "capped"), "ولازم يتكتب السبب");
+
+  const ok = mk(true);
+  const up = ok.actions.find((a) => a.op === "up");
+  assert.ok(up, "ولما تثبت نفسها تاخد رفع عادي");
+  assert.ok(up.to > 100);
+});
+
 test("المنصة المقفولة مبتاخدش رفع حتى في يوم شغّال", () => {
   const pulse = {
     riyadhHour: 20, riyadhMinute: 0, elapsedH: 16, dow: 2, pacePct: 70, pace: 0.7,

@@ -3083,8 +3083,25 @@ ${focus}
       }
 
       const snap = await perfSnapshot({ from: todayISO(), to: todayISO() });
+
+      /* ── منصة "مثبتة" يعني إيه ──────────────────────────────────────────
+         قواعد التوسّع بتحطّ سقف صغير على منصة لسه ما جابتش نتيجة نقدر نعدّها
+         (جوجل دلوقتي: صفر تحويل و٦١ رفعة فشلت أول يوم). السقف ده كان مكتوب
+         في القاعدة بس مكانش موصّل — فجوجل خدت رفع لـ ١٢٥ ر.س وهي المفروض
+         مسقوفة عند ١٠٠. الدليل المتاح هو نتايج المنصة على شباك أوسع من
+         النهارده: يوم واحد بصفر نتايج مش دليل، أسبوع بصفر نتايج دليل.     */
+      let proven = {};
+      try {
+        const wide = await perfSnapshot({ from: daysAgoISO(7), to: todayISO() });
+        for (const r of wide.rows) {
+          proven[r.platform] = (proven[r.platform] || 0) + (Number(r.results) || 0);
+        }
+        proven = Object.fromEntries(Object.entries(proven).map(([k, v]) => [k, v > 0]));
+      } catch { proven = {}; }
+
       const decision = decidePace({
-        rows: snap.rows, state, s, now, accountDay, msToRoll, pulse,
+        rows: snap.rows.map((r) => ({ ...r, proven: proven[r.platform] ?? null })),
+        state, s, now, accountDay, msToRoll, pulse,
         confirmed: pulse.confirmed, hardCap: MAX_DAILY_BUDGET,
       });
 
