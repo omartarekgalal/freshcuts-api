@@ -185,7 +185,8 @@ export function register(app, ctx, deps = {}) {
               (phone_norm IS NOT NULL AND phone_norm <> '') AS has_phone,
               (contents IS NOT NULL) AS has_contents,
               (click_ids->>'fbc' IS NOT NULL OR click_ids->>'ttclid' IS NOT NULL
-               OR click_ids->>'scid' IS NOT NULL) AS has_clickid
+               OR click_ids->>'scid' IS NOT NULL OR click_ids->>'gclid' IS NOT NULL
+               OR click_ids->>'gbraid' IS NOT NULL OR click_ids->>'wbraid' IS NOT NULL) AS has_clickid
          FROM funnel_events
         WHERE created_at > NOW() - ($1 || ' days')::interval`, [String(days)]);
 
@@ -446,11 +447,11 @@ export function register(app, ctx, deps = {}) {
     return { uniqueKeyPresent: keyed, indexName: keyName, bySource, example };
   }
 
-  /* ═══ ROUTE ════════════════════════════════════════════════════════════ */
-  app.get("/api/tracking/health", async (c) => {
-    const err = await requireAdmin(c); if (err) return err;
-    const days = Math.min(Math.max(Number(c.req.query("days") || 7), 1), 90);
-
+  /* ═══ THE READING ══════════════════════════════════════════════════════
+     Split out of the route so reports.js can fold tracking health into the
+     weekly report without an HTTP call to ourselves — and, more importantly,
+     so the report's verdict is literally the same verdict this page shows. */
+  async function healthData(days) {
     const [web, offline, audiences, catalog, dedup, meta] = await Promise.all([
       webMatrix(days).catch((e) => ({ cells: [], identity: null, eventTotals: {}, error: String(e.message || e) })),
       offlineMatrix(days).catch(() => []),
@@ -536,8 +537,7 @@ export function register(app, ctx, deps = {}) {
 
     const healthy = problems.length === 0;
 
-    return c.json({
-      ok: true,
+    return {
       days,
       generatedAt: new Date().toISOString(),
       healthy,
@@ -560,8 +560,16 @@ export function register(app, ctx, deps = {}) {
       catalog,
       dedup,
       recent,
-    });
+    };
+  }
+
+  /* ═══ ROUTE ════════════════════════════════════════════════════════════ */
+  app.get("/api/tracking/health", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    const days = Math.min(Math.max(Number(c.req.query("days") || 7), 1), 90);
+    return c.json({ ok: true, ...(await healthData(days)) });
   });
 
   console.log("[tracking] health route ready");
+  return { healthData };
 }

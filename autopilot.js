@@ -937,11 +937,25 @@ export function shapeEconomics(input) {
       value: r2(cacMargin), unit: "ر.س",
     },
     measuredCac != null && {
-      label: "التكلفة اللي بندفعها فعلاً (مسندة)",
-      expr: `${ar(adSpendInWindow)} ر.س صرف إعلانات ÷ ${ar(attributedNewCustomers)} عميل جديد مسند للإعلان`,
+      label: "أقصى تقدير للتكلفة — العملاء اللي أثبتنا إن الإعلان جابهم",
+      expr: `${ar(adSpendInWindow)} ر.س صرف إعلانات ÷ ${ar(attributedNewCustomers)} عميل جديد مسند لقناة مدفوعة`,
       value: r2(measuredCac), unit: "ر.س",
     },
+    blendedCac != null && {
+      label: "أقل تقدير للتكلفة — كل عميل جديد في المطعم",
+      expr: `${ar(adSpendInWindow)} ر.س صرف إعلانات ÷ ${ar(newCustomersInWindow)} عميل جديد (مهما جه منين)`,
+      value: r2(blendedCac), unit: "ر.س",
+    },
   ].filter(Boolean);
+
+  /* التكلفة الحقيقية بين الرقمين، مش واحد منهم. الأعلى بيحسب بس اللي قدرنا
+     نثبته برقم جوال (وده أقل بكتير من الحقيقة لأن أغلب البيع كاش على
+     الكاشير)، والأقل بينسب للإعلان كل عميل جديد دخل المطعم (وده أكرم من
+     اللازم). عرض واحد منهم لوحده على إنه «التكلفة» كذب في اتجاه أو التاني. */
+  const cacRange = measuredCac != null && blendedCac != null
+    ? { low: r2(Math.min(measuredCac, blendedCac)), high: r2(Math.max(measuredCac, blendedCac)),
+        note: "التكلفة الحقيقية للعميل الجديد بين الرقمين: الأقل بينسب للإعلان كل عميل جديد دخل المطعم، والأعلى بيحسب بس العملاء اللي قدرنا نثبت بالجوال إنهم جم من قناة مدفوعة." }
+    : null;
 
   return {
     ltv: ltv == null ? null : r2(ltv),
@@ -958,6 +972,9 @@ export function shapeEconomics(input) {
     allowedCacByMargin: cacMargin == null ? null : r2(cacMargin),
     measuredCac: measuredCac == null ? null : r2(measuredCac),
     blendedCac: blendedCac == null ? null : r2(blendedCac),
+    attributedNewCustomers: attributedNewCustomers ?? null,
+    newCustomersInWindow,
+    cacRange,
     affordableCacToday: affordableToday == null ? null : r2(affordableToday),
     salesPerDay: r2(salesPerDay),
     returningRevenuePerDay: r2(returningPerDay),
@@ -1460,7 +1477,9 @@ export function register(app, ctx, deps = {}) {
     const rows = [];
     const reasons = {};
     for (const p of PLATFORMS) {
-      if (p.id === "google") continue;
+      /* جوجل كان مستثنى بالاسم هنا لإن الأدابتر بتاعه كان قشرة فاضية. بقى
+         أدابتر كامل (google.js) فالاستثناء اتشال — ولو مش مربوط بيقع في نفس
+         سطر canManage تحت زي أي منصة تانية بنفس رسالة «ناقص كذا». */
       if (s.platforms && s.platforms[p.id] === false) continue;
       if (!canManage(p)) { reasons[p.id] = `غير مربوطة — ناقص ${missingOf(p.manageEnv).join(", ")}`; continue; }
       try {
@@ -1535,8 +1554,11 @@ export function register(app, ctx, deps = {}) {
     } else return { ok: false, error: `kind ${dec.kind} is not executable` };
 
     if (p.authorize) {
+      /* authorize() بتحطّ التوكن، وفي حالة جوجل كمان بتحلّ اسم مورد الميزانية
+         اللي مكانش معروف وقت بناء النداء. لو رفضت بترجع سبب — والسبب ده هو
+         اللي بيتكتب في اللوج، مش «مقدرناش نجيب توكن» على طول الخط. */
       const authed = await p.authorize(call);
-      if (!authed) return { ok: false, error: "could not obtain an access token" };
+      if (!authed || !authed.url) return { ok: false, error: authed?.error || "could not obtain an access token" };
       call = authed;
     }
     const res = await httpJson(call.url, { method: call.method, headers: call.headers, body: call.body });
@@ -1660,7 +1682,6 @@ export function register(app, ctx, deps = {}) {
     const f = from || daysAgoISO(2), t = to || today;
     const rows = [], reasons = {};
     for (const p of PLATFORMS) {
-      if (p.id === "google") continue;
       if (platform && p.id !== platform) continue;
       if (!canManage(p)) { reasons[p.id] = `غير مربوطة — ناقص ${missingOf(p.manageEnv).join(", ")}`; continue; }
       try {
@@ -2066,7 +2087,7 @@ ${focus}
       }
     }
     for (const p of PLATFORMS) {
-      if (p.id !== "google" && !snap.reasons[p.id]) platformFails[p.id] = 0;
+      if (!snap.reasons[p.id]) platformFails[p.id] = 0;
     }
 
     // نفس المشكلة ما تتفتحش تاني قبل فترة التبريد
@@ -2478,7 +2499,7 @@ ${focus}
       const facts = await gatherFacts(s);
       summary.facts = {
         campaigns: facts.campaigns.length,
-        platforms: Object.fromEntries(PLATFORMS.filter((p) => p.id !== "google").map((p) => [p.id, facts.reasons[p.id] ? "blocked" : "ok"])),
+        platforms: Object.fromEntries(PLATFORMS.map((p) => [p.id, facts.reasons[p.id] ? "blocked" : "ok"])),
         avgDailySales: facts.sales.avgDaily,
         goalProgressPct: facts.sales.progressPct,
       };
@@ -2646,7 +2667,7 @@ ${focus}
         avgDaily: Math.round(avgDaily),
         progressPct: s.goalDailySales > 0 ? Math.round((avgDaily / s.goalDailySales) * 100) : null,
       },
-      platforms: PLATFORMS.filter((p) => p.id !== "google").map((p) => ({
+      platforms: PLATFORMS.map((p) => ({
         id: p.id, label: p.label,
         capi: canSend(p), manage: canManage(p),
         missingCapi: missingOf(p.conversionEnv),
@@ -2859,16 +2880,24 @@ ${focus}
      شريط واحد مسطّح، الأحدث فوق. مفيش فلاتر ومفيش تبويبات — الفلترة الوحيدة
      هي إننا بنشيل دورات تفكير الوكيل الخام (بتتعرض في الشاشة التفصيلية).
      ═══════════════════════════════════════════════════════════════════════ */
-  app.get("/api/autopilot/log", async (c) => {
-    const err = await requireAdmin(c); if (err) return err;
-    const limit = Math.min(Math.max(Number(c.req.query("limit") || 60), 1), 300);
-    const days = Math.min(Math.max(Number(c.req.query("days") || 7), 1), 90);
+  /* الصيغة اللي المالك بيقراها. اتفصلت عن الـ route عشان تقرير الأسبوع في
+     reports.js يعرض نفس السطور بالحرف بدل ما يعيد صياغة القرارات من تاني.
+     من غير from/to بتشتغل بشباك متدحرج زي ما كانت؛ مع from/to بتقص على
+     يوم العمل بتاع TabSense (٤ الفجر بتوقيت جدة) — نفس حدود المبيعات. */
+  async function logData({ days = 7, limit = 60, from = null, to = null } = {}) {
+    const ranged = !!(from && to);
     const r = await pool.query(
-      `SELECT id, platform, campaign_id, campaign_name, kind, detail, reason, status, result, created_at
-         FROM ap_decisions
-        WHERE created_at > NOW() - ($1 || ' days')::interval
-        ORDER BY created_at DESC
-        LIMIT $2`, [String(days), limit * 3]);
+      ranged
+        ? `SELECT id, platform, campaign_id, campaign_name, kind, detail, reason, status, result, created_at
+             FROM ap_decisions
+            WHERE (((created_at AT TIME ZONE '${RIYADH_TZ}') - interval '4 hours')::date)
+                  BETWEEN $1::date AND $2::date
+            ORDER BY created_at DESC LIMIT $3`
+        : `SELECT id, platform, campaign_id, campaign_name, kind, detail, reason, status, result, created_at
+             FROM ap_decisions
+            WHERE created_at > NOW() - ($1 || ' days')::interval
+            ORDER BY created_at DESC LIMIT $2`,
+      ranged ? [from, to, limit * 3] : [String(days), limit * 3]);
 
     /* ── الملاحظات المكرّرة بتتلمّ في سطر واحد ─────────────────────────
        القواعد الصمّاء بتعيد نفس الملاحظة لكل حملة في كل جولة — «لسه في
@@ -2903,7 +2932,14 @@ ${focus}
       entries.push(line);
       if (entries.length >= limit) break;
     }
-    return c.json({ ok: true, tz: RIYADH_TZ, days, types: LOG_TYPES, entries });
+    return { tz: RIYADH_TZ, days: ranged ? null : days, from, to, types: LOG_TYPES, entries };
+  }
+
+  app.get("/api/autopilot/log", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    const limit = Math.min(Math.max(Number(c.req.query("limit") || 60), 1), 300);
+    const days = Math.min(Math.max(Number(c.req.query("days") || 7), 1), 90);
+    return c.json({ ok: true, ...(await logData({ days, limit })) });
   });
 
   /* ═══════════════════════════════════════════════════════════════════════
@@ -3008,13 +3044,19 @@ ${focus}
           AND (order_type IS NULL OR (order_type NOT ILIKE '%void%' AND order_type NOT ILIKE '%refund%'))`,
       [from, to])).rows[0];
 
-    /* (٥) صرف الإعلانات والعملاء الجداد المسندين — من موديول الإسناد. */
+    /* (٥) صرف الإعلانات والعملاء الجداد المسندين — من موديول الإسناد.
+
+       «مسند» هنا معناها: عميل جديد وقع على قناة فيها صرف إعلاني
+       (totals.paid.newCustomers). كان الرقم ده بيتقرا من totals.newCustomers
+       — اللي هو كل عميل جديد في المطعم مهما جه منين — فكانت «التكلفة اللي
+       بندفعها فعلاً (مسندة)» بتطلع نفس الرقم المخلوط بالظبط وبتقول عن نفسها
+       إنها مسندة. رقم مخلوط بيلبس اسم رقم مسند أخطر من إنه ما يكونش موجود. */
     let spend = null, attributedNew = null, attributionNote = null;
     if (attribution?.overviewData) {
       try {
         const ov = await attribution.overviewData(from, to);
         spend = Number(ov?.totals?.paid?.spend) || 0;
-        attributedNew = Number(ov?.totals?.newCustomers) || 0;
+        attributedNew = Number(ov?.totals?.paid?.newCustomers) || 0;
       } catch (e) { attributionNote = `مقدرناش نقرا الإسناد: ${String(e.message || e)}`; }
     } else {
       attributionNote = "موديول الإسناد مش مربوط — مفيش صرف إعلانات ولا عملاء مسندين في الحسبة.";
@@ -3139,5 +3181,5 @@ ${focus}
   });
 
   console.log("[autopilot] routes ready");
-  return { runCycle, runEmergencyCheck, runAgent, runPaceCheck, runDaypartCheck, pulseData, economicsData };
+  return { runCycle, runEmergencyCheck, runAgent, runPaceCheck, runDaypartCheck, pulseData, economicsData, logData };
 }

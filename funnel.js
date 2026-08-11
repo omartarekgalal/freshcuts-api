@@ -314,6 +314,15 @@ export function register(app, ctx, deps = {}) {
         ttclid: String(clicks.ttclid || "").slice(0, 300) || null,
         ttp: String(clicks.ttp || "").slice(0, 200) || null,
         scid: String(clicks.scid || "").slice(0, 300) || null,
+        /* Google's click ids. gclid is the normal one; gbraid/wbraid are what
+           Google sends instead on iOS app / web-to-app journeys where a gclid
+           is not available. Stored so that when this order later appears at
+           the till, ads.js can key its offline conversion on a REAL click —
+           that is the only thing that makes a Google upload strong rather
+           than a hashed-phone best guess. */
+        gclid: String(clicks.gclid || "").slice(0, 300) || null,
+        gbraid: String(clicks.gbraid || "").slice(0, 300) || null,
+        wbraid: String(clicks.wbraid || "").slice(0, 300) || null,
       },
     };
 
@@ -480,26 +489,48 @@ export function register(app, ctx, deps = {}) {
     });
   });
 
-  /* Funnel numbers for the dashboard. */
-  app.get("/api/funnel/stats", async (c) => {
-    const err = await requireAdmin(c); if (err) return err;
-    const days = Math.min(Number(c.req.query("days") || 7), 90);
+  /* Funnel numbers, two ways of cutting time — and the difference matters.
+
+     `days` is a ROLLING window off NOW(): "the last 7×24 hours". That is what
+     the dashboard has always asked for and it stays exactly as it was.
+
+     `from`/`to` cut on the TABSENSE BUSINESS DAY (Riyadh clock minus 4h), the
+     same boundary every sales number in this API uses. reports.js asks for
+     that one, because a funnel counted over a different span than the sales it
+     sits next to is not a funnel — it is two unrelated numbers side by side. */
+  const BIZ_DAY = `(((created_at AT TIME ZONE 'Asia/Riyadh') - interval '4 hours')::date)`;
+
+  async function funnelStats({ days = 7, from = null, to = null } = {}) {
+    const ranged = !!(from && to);
+    const where = ranged
+      ? `${BIZ_DAY} BETWEEN $1::date AND $2::date`
+      : `created_at > NOW() - ($1 || ' days')::interval`;
+    const params = ranged ? [from, to] : [String(days)];
+
     const r = await pool.query(
       `SELECT event_name, count(*)::int AS n, COALESCE(sum(value) FILTER (WHERE event_name='Purchase'),0) AS purchase_value,
               count(DISTINCT ip)::int AS uniques
-         FROM funnel_events
-        WHERE created_at > NOW() - ($1 || ' days')::interval
-        GROUP BY event_name`, [String(days)]);
+         FROM funnel_events WHERE ${where} GROUP BY event_name`, params);
     const bySrc = await pool.query(
       `SELECT COALESCE(NULLIF(utm->>'utm_source',''),'(مباشر)') AS source,
               count(*) FILTER (WHERE event_name='PageView')::int AS views,
               count(*) FILTER (WHERE event_name='Purchase')::int AS purchases,
               COALESCE(sum(value) FILTER (WHERE event_name='Purchase'),0) AS revenue
-         FROM funnel_events
-        WHERE created_at > NOW() - ($1 || ' days')::interval
-        GROUP BY 1 ORDER BY views DESC LIMIT 15`, [String(days)]);
-    return c.json({ ok: true, days, events: r.rows, sources: bySrc.rows });
+         FROM funnel_events WHERE ${where}
+        GROUP BY 1 ORDER BY views DESC LIMIT 15`, params);
+    return {
+      days: ranged ? null : days, from: ranged ? from : null, to: ranged ? to : null,
+      basis: ranged ? "business-day" : "rolling",
+      events: r.rows, sources: bySrc.rows,
+    };
+  }
+
+  app.get("/api/funnel/stats", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    const days = Math.min(Number(c.req.query("days") || 7), 90);
+    return c.json({ ok: true, ...(await funnelStats({ days })) });
   });
 
   console.log(`[funnel] routes ready (pixels: meta=${metaPixel() ? "set" : "—"} tiktok=${ttPixel() ? "set" : "—"} snap=${snapPixel() ? "set" : "—"})`);
+  return { funnelStats };
 }

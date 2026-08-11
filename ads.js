@@ -53,6 +53,7 @@
 
 import crypto from "node:crypto";
 import { menuRows } from "./catalog.js";
+import { createGoogleAdapter } from "./google.js";
 
 /* ─────────────────────────────────────────────────────────────────────────
    CONFIG — every environment variable this module reads.
@@ -68,7 +69,10 @@ import { menuRows } from "./catalog.js";
      TIKTOK_TEST_EVENT_CODE  optional
      SNAP_PIXEL_ID           Snap Pixel id (or Snap App id)
      SNAP_ACCESS_TOKEN       Conversions API token
-     GOOGLE_ADS_*            see the google adapter — mostly not usable here
+     GOOGLE_ADS_CONVERSION_ACTION_ID
+                             numeric id of the conversion action till sales are
+                             filed against. Without it we know the account but
+                             not the conversion, so nothing is uploaded.
 
    Campaign management (platform ← us, the hard half):
      META_AD_ACCOUNT_ID      act_xxxxxxxxx (the act_ prefix is optional)
@@ -77,6 +81,15 @@ import { menuRows } from "./catalog.js";
      SNAP_CLIENT_ID / SNAP_CLIENT_SECRET / SNAP_REFRESH_TOKEN
                              Snap Marketing API OAuth (separate from CAPI)
      SNAP_MARKETING_TOKEN    optional short-lived bearer, skips the OAuth dance
+     GOOGLE_ADS_CLIENT_ID / GOOGLE_ADS_CLIENT_SECRET / GOOGLE_ADS_REFRESH_TOKEN
+                             OAuth2 installed-app credentials (Google Cloud)
+     GOOGLE_ADS_DEVELOPER_TOKEN
+                             from the Google Ads API Center; a test-access
+                             token can only reach test accounts
+     GOOGLE_ADS_CUSTOMER_ID  the ad account, digits only (878-265-9560 is fine)
+     GOOGLE_ADS_LOGIN_CUSTOMER_ID
+                             optional; the MCC id when access is via a manager
+     GOOGLE_ADS_API_VERSION  optional; default v21
 
    Safety:
      ADS_ALLOW_WRITE=1       REQUIRED before any state/budget change is sent.
@@ -814,125 +827,24 @@ const snapchat = {
 };
 
 /* ─── Google Ads ──────────────────────────────────────────────────────────
-   BE HONEST: this one mostly does not apply to us.
+   Lives in google.js, because it is the only one of the four that needs a
+   query language (GAQL), a second resource to write a budget (CampaignBudget)
+   and a diagnostic of its own. It is built here, from this file's helpers, so
+   the hashing and redaction rules still have exactly one home.
 
-   Offline conversion import (ConversionUploadService.UploadClickConversions)
-   requires, per conversion, EXACTLY ONE of gclid / gbraid / wbraid — the click
-   id Google stamps on a click through to YOUR website. Fresh Cuts has no
-   online checkout and no landing page that captures a gclid, so there is
-   simply nothing to key a click conversion on.
+   What it can do is the same list as the other three — read campaigns/ad
+   groups/budgets/insights, pause-resume, move a daily budget, push offline
+   conversions — under the same ADS_ALLOW_WRITE gate and the same budget
+   ceiling. No Google exception anywhere.
 
-   The escape hatch is "Enhanced conversions for leads": upload a ClickConversion
-   carrying hashed first-party identifiers (email / phone) instead of a gclid.
-   Google then matches on the identifier. That only works if (a) the conversion
-   action is a *lead* type created for this purpose and (b) we actually hold an
-   identifier — which for our delivery orders we do not, and for in-house orders
-   we hold a phone for roughly a third of tickets.
+   The one honest caveat: an offline conversion needs a real identifier. The
+   adapter's usable() demands a gclid/gbraid/wbraid or a hashed phone/email,
+   and ads.js does not even CLAIM an event that fails it — so an order with no
+   identity is a reported skip, not a failure and never an invented row.
 
-   So: the adapter is wired and will build a correct request, but it stays OFF
-   unless GOOGLE_ADS_ENABLE=1 is set deliberately, and even then it skips every
-   event with no identifier rather than sending an unmatched row.
-
-   docs https://developers.google.com/google-ads/api/docs/conversions/upload-offline
-        https://developers.google.com/google-ads/api/docs/conversions/legacy_oci_guide
-   Note: from 15 June 2026 an UploadClickConversion request fails outright if
-   the developer token has never previously been used for offline conversion
-   uploads — i.e. there is a Google-side enablement step, not just a token.     */
-const google = {
-  id: "google",
-  label: "Google Ads",
-  conversionEnv: ["GOOGLE_ADS_DEVELOPER_TOKEN", "GOOGLE_ADS_CLIENT_ID", "GOOGLE_ADS_CLIENT_SECRET",
-    "GOOGLE_ADS_REFRESH_TOKEN", "GOOGLE_ADS_CUSTOMER_ID", "GOOGLE_ADS_CONVERSION_ACTION_ID"],
-  manageEnv: ["GOOGLE_ADS_DEVELOPER_TOKEN", "GOOGLE_ADS_CLIENT_ID", "GOOGLE_ADS_CLIENT_SECRET",
-    "GOOGLE_ADS_REFRESH_TOKEN", "GOOGLE_ADS_CUSTOMER_ID"],
-  eventName: "Purchase",
-  ver: () => env("GOOGLE_ADS_API_VERSION") || "v21",
-  enabled: () => process.env.GOOGLE_ADS_ENABLE === "1",
-  note: "Needs a gclid (we never capture one — no online checkout) or Enhanced Conversions for Leads with a hashed phone/email. Off unless GOOGLE_ADS_ENABLE=1.",
-  _tok: null,
-  _tokAt: 0,
-
-  buildBatch(events) {
-    if (!this.enabled()) return null;
-    const cust = env("GOOGLE_ADS_CUSTOMER_ID").replace(/\D/g, "");
-    const action = env("GOOGLE_ADS_CONVERSION_ACTION_ID");
-    if (!cust || !action) return null;
-    // Only events that carry an identifier are worth uploading. A conversion
-    // with neither gclid nor user identifier is rejected outright.
-    const usable = events.filter((e) => e.phoneDigits || e.email || e.gclid);
-    if (!usable.length) return null;
-    return {
-      url: `https://googleads.googleapis.com/${this.ver()}/customers/${cust}:uploadClickConversions`,
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: "Bearer ***resolved-at-send***",
-        "developer-token": env("GOOGLE_ADS_DEVELOPER_TOKEN"),
-        ...(env("GOOGLE_ADS_LOGIN_CUSTOMER_ID") ? { "login-customer-id": env("GOOGLE_ADS_LOGIN_CUSTOMER_ID").replace(/\D/g, "") } : {}),
-      },
-      body: {
-        conversions: usable.map((e) => ({
-          conversionAction: `customers/${cust}/conversionActions/${action}`,
-          conversionDateTime: googleDateTime(e.eventTime),
-          conversionValue: e.value,
-          currencyCode: e.currency,
-          orderId: e.orderId ? String(e.orderId) : undefined,
-          ...(e.gclid ? { gclid: e.gclid } : {}),
-          userIdentifiers: [
-            ...(e.email ? [{ hashedEmail: hashEmail(e.email) }] : []),
-            ...(e.phoneDigits ? [{ hashedPhoneNumber: hashPhonePlus(e.phoneDigits) }] : []),
-          ],
-        })),
-        partialFailure: true,
-      },
-    };
-  },
-
-  readBatchResult(res, n) {
-    if (res.ok && res.json && !res.json.partialFailureError) return { ok: true, accepted: n, raw: res.json };
-    return {
-      ok: false,
-      error: res.json?.error?.message || res.json?.partialFailureError?.message || res.error || `HTTP ${res.status}`,
-      raw: res.json ?? res.text ?? null,
-    };
-  },
-
-  async token() {
-    const id = env("GOOGLE_ADS_CLIENT_ID"), secret = env("GOOGLE_ADS_CLIENT_SECRET"), refresh = env("GOOGLE_ADS_REFRESH_TOKEN");
-    if (!id || !secret || !refresh) return null;
-    if (this._tok && Date.now() - this._tokAt < 25 * 60 * 1000) return this._tok;
-    const res = await httpJson("https://oauth2.googleapis.com/token", {
-      method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
-      body: new URLSearchParams({ client_id: id, client_secret: secret, refresh_token: refresh, grant_type: "refresh_token" }).toString(),
-    });
-    if (!res.ok || !res.json?.access_token) return null;
-    this._tok = res.json.access_token;
-    this._tokAt = Date.now();
-    return this._tok;
-  },
-  async authorize(call) {
-    const t = await this.token();
-    if (!t) return null;
-    return { ...call, headers: { ...call.headers, Authorization: `Bearer ${t}` } };
-  },
-
-  async accounts() {
-    return { ok: false, reason: `not wired: ${this.note}`, accounts: [] };
-  },
-  async campaigns() {
-    return { ok: false, reason: `not wired: ${this.note} Campaign listing needs a GAQL search call and an approved developer token.`, campaigns: [] };
-  },
-  async insights() {
-    return { ok: false, reason: `not wired: ${this.note}`, rows: [] };
-  },
-  stateCall(id, state) {
-    return { url: `https://googleads.googleapis.com/${this.ver()}/customers/.../campaigns:mutate`, method: "POST", headers: {}, body: { note: "Google campaign mutate is not implemented — needs an approved developer token (basic access) first.", id, state } };
-  },
-  budgetCall(id, dailyBudget) {
-    return { url: `https://googleads.googleapis.com/${this.ver()}/customers/.../campaignBudgets:mutate`, method: "POST", headers: {}, body: { note: "Google budget mutate is not implemented — campaign budgets are separate CampaignBudget resources.", id, dailyBudget } };
-  },
-};
+   docs https://developers.google.com/google-ads/api/rest/overview
+        https://developers.google.com/google-ads/api/docs/conversions/upload-clicks */
+const google = createGoogleAdapter({ httpJson, hashEmail, hashPhonePlus, googleDateTime });
 
 function googleDateTime(d) {
   // Google wants "yyyy-mm-dd hh:mm:ss+|-hh:mm". We are Asia/Riyadh, UTC+03:00.
@@ -944,8 +856,14 @@ function googleDateTime(d) {
 const PLATFORMS = [meta, tiktok, snapchat, google];
 const byId = (id) => PLATFORMS.find((p) => p.id === String(id || "").toLowerCase());
 
-const canSend = (p) => missingOf(p.conversionEnv).length === 0 && (p.id !== "google" || p.enabled());
-const canManage = (p) => missingOf(p.manageEnv).length === 0 && p.id !== "google";
+/* One rule for four platforms: you can send if you hold the credentials to
+   send, and you can manage if you hold the credentials to manage. Google used
+   to be excluded from `canManage` by name because its adapter was a stub; the
+   stub is gone, so the exception is gone with it. An unconfigured platform now
+   degrades identically whichever one it is — the missing env vars ARE the
+   "not connected" message. */
+const canSend = (p) => missingOf(p.conversionEnv).length === 0;
+const canManage = (p) => missingOf(p.manageEnv).length === 0;
 
 /* ═══════════════════════════════════════════════════════════════════════
    REGISTER
@@ -1126,6 +1044,37 @@ export function register(app, ctx, deps = {}) {
     return out;
   }
 
+  /* ─── Google click ids ───────────────────────────────────────────────
+     The ONLY thing that can key a Google offline conversion to a real ad
+     click. The storefront pixel stores gclid/gbraid/wbraid in
+     funnel_events.click_ids when the customer lands from a Google ad; if
+     that order later shows up at the till, the two halves meet here.
+
+     Read in its own query, the same way basket items are, so a missing or
+     empty funnel_events can never take /api/ads/sync-orders down with it —
+     the click id is a bonus that improves matching, never a precondition. */
+  async function loadClickIds(orderIds) {
+    const out = new Map();
+    if (!orderIds.length) return out;
+    const r = await pool.query(
+      `SELECT DISTINCT ON (order_id) order_id,
+              click_ids->>'gclid'  AS gclid,
+              click_ids->>'gbraid' AS gbraid,
+              click_ids->>'wbraid' AS wbraid
+         FROM funnel_events
+        WHERE order_id = ANY($1::text[])
+          AND (click_ids->>'gclid' IS NOT NULL
+            OR click_ids->>'gbraid' IS NOT NULL
+            OR click_ids->>'wbraid' IS NOT NULL)
+        ORDER BY order_id, created_at DESC`, [orderIds]);
+    for (const row of r.rows) {
+      out.set(String(row.order_id), {
+        gclid: row.gclid || null, gbraid: row.gbraid || null, wbraid: row.wbraid || null,
+      });
+    }
+    return out;
+  }
+
   // Channel label the platforms can slice on: "delivery:keeta" / "delivery"
   // for aggregator orders, "instore" for everything punched at the till.
   // External order_type is the POS truth; the cashier/FeedUs tag adds the app.
@@ -1137,9 +1086,14 @@ export function register(app, ctx, deps = {}) {
   }
 
   // A restaurant sale, expressed the same way for every platform.
-  function toEvent(row, eventName = "Purchase", items = null) {
+  function toEvent(row, eventName = "Purchase", items = null, click = null) {
     const digits = row.phone_norm ? phoneDigits(row.phone_norm, normPhone) : null;
     return {
+      // Google only. Exactly one of the three is ever set on a click, and the
+      // adapter sends whichever is present — never a substitute.
+      gclid: click?.gclid || null,
+      gbraid: click?.gbraid || null,
+      wbraid: click?.wbraid || null,
       eventId: String(row.order_id),          // TabSense order id IS the dedup key
       orderId: String(row.order_id),
       eventName,
@@ -1157,7 +1111,8 @@ export function register(app, ctx, deps = {}) {
       // A till sale in Jeddah is not a website conversion. Saying so is both
       // truthful and what unlocks offline/store optimisation on each platform.
       actionSource: "physical_store",
-      matchKeys: [digits ? "phone" : null, row.email ? "email" : null, row.customer_id ? "customer_id" : null]
+      matchKeys: [digits ? "phone" : null, row.email ? "email" : null, row.customer_id ? "customer_id" : null,
+        click?.gclid || click?.gbraid || click?.wbraid ? "google_click" : null]
         .filter(Boolean),
     };
   }
@@ -1177,8 +1132,14 @@ export function register(app, ctx, deps = {}) {
       phoneDigits: digits,
       email: body.email || null,
       externalId: body.externalId || null,
+      // Only ever what the caller genuinely handed us — a click id is not
+      // something this route may invent to make a conversion look matchable.
+      gclid: body.gclid || null,
+      gbraid: body.gbraid || null,
+      wbraid: body.wbraid || null,
       actionSource: body.actionSource || "physical_store",
-      matchKeys: [digits ? "phone" : null, body.email ? "email" : null].filter(Boolean),
+      matchKeys: [digits ? "phone" : null, body.email ? "email" : null,
+        body.gclid || body.gbraid || body.wbraid ? "google_click" : null].filter(Boolean),
     };
   }
 
@@ -1230,7 +1191,7 @@ export function register(app, ctx, deps = {}) {
     if (!canSend(p)) {
       out.attempted = 0;
       out.skipped = events.length;
-      out.errors.push(`not configured — missing ${missingOf(p.conversionEnv).join(", ") || "GOOGLE_ADS_ENABLE=1"}`);
+      out.errors.push(`not configured — missing ${missingOf(p.conversionEnv).join(", ")}`);
       return out;
     }
 
@@ -1279,11 +1240,18 @@ export function register(app, ctx, deps = {}) {
         continue;
       }
       if (p.authorize) {
+        /* authorize() is the send-time hook: it stamps the bearer token and,
+           for Google, resolves the budget resource it could not know when the
+           descriptor was built. It may refuse — and a refusal that says WHY
+           (refresh token revoked, budget is shared) beats a blanket "token
+           exchange failed", so a call that comes back with no url is read for
+           its `error` instead. */
         const authed = await p.authorize(call);
-        if (!authed) {
+        if (!authed || !authed.url) {
+          const why = authed?.error || "could not obtain an access token";
           out.failed += chunk.length;
-          out.errors.push(`${p.id}: could not obtain an access token`);
-          await finish(ids, "failed", { error: "token exchange failed" });
+          out.errors.push(`${p.id}: ${why}`);
+          await finish(ids, "failed", { error: why });
           continue;
         }
         call = authed;
@@ -1308,6 +1276,10 @@ export function register(app, ctx, deps = {}) {
   function matchQuality(events) {
     const withPhone = events.filter((e) => e.phoneDigits).length;
     const withEmail = events.filter((e) => e.email).length;
+    // Google-only: an order that can be tied to an actual ad click. Reported
+    // separately because it is the one thing that makes a Google offline
+    // conversion strong rather than best-effort.
+    const withGoogleClick = events.filter((e) => e.gclid || e.gbraid || e.wbraid).length;
     const withItems = events.filter((e) => e.contents && e.contents.length).length;
     const lines = events.flatMap((e) => e.contents || []);
     const matchedLines = lines.filter((i) => i.matched).length;
@@ -1315,6 +1287,7 @@ export function register(app, ctx, deps = {}) {
       total: events.length,
       withPhone,
       withEmail,
+      withGoogleClick,
       identityless: events.filter((e) => !e.phoneDigits && !e.email).length,
       pctMatchable: events.length ? Math.round((withPhone / events.length) * 100) : 0,
       // Basket depth: an order with items teaches the optimiser far more than
@@ -1395,10 +1368,15 @@ export function register(app, ctx, deps = {}) {
     } catch (e) {
       return c.json({ ok: false, error: `could not read ts_orders: ${e.message}` }, 500);
     }
+    const ids = rows.map((r) => String(r.order_id));
     let itemsByOrder = new Map();
-    try { itemsByOrder = await loadItems(rows.map((r) => String(r.order_id))); }
+    try { itemsByOrder = await loadItems(ids); }
     catch (e) { console.error("[ads] items load failed:", e.message); }  // basket is a bonus, never a blocker
-    const events = rows.map((r) => toEvent(r, b.eventName || "Purchase", itemsByOrder.get(String(r.order_id)) || null));
+    let clickByOrder = new Map();
+    try { clickByOrder = await loadClickIds(ids); }
+    catch (e) { console.error("[ads] click ids load failed:", e.message); }
+    const events = rows.map((r) => toEvent(r, b.eventName || "Purchase",
+      itemsByOrder.get(String(r.order_id)) || null, clickByOrder.get(String(r.order_id)) || null));
 
     const results = {};
     for (const p of targets) {
@@ -1548,7 +1526,11 @@ export function register(app, ctx, deps = {}) {
     let authed = call;
     if (p.authorize) {
       authed = await p.authorize(call);
-      if (!authed) return c.json({ ok: false, applied: false, error: "could not obtain an access token", wouldDo: describe }, 502);
+      // A refusal with a reason (revoked refresh token, shared Google budget)
+      // is the whole value of this branch — repeat it instead of a generic.
+      if (!authed || !authed.url) {
+        return c.json({ ok: false, applied: false, error: authed?.error || "could not obtain an access token", wouldDo: describe }, 502);
+      }
     }
     const res = await httpJson(authed.url, { method: authed.method, headers: authed.headers, body: authed.body });
     const parsed = p.readBatchResult(res, 1);
@@ -1593,6 +1575,35 @@ export function register(app, ctx, deps = {}) {
     }
     return guardedWrite(c, platform, (p) => p.budgetCall(id, amount),
       `set ${platform} campaign ${id} daily budget to ${amount} ${DEFAULT_CURRENCY}`);
+  });
+
+  /* ═══════════════════════════════════════════════════════════════════════
+     GET /api/ads/google/diagnose?days=14 — "ليه جوجل مش بيعرض؟"
+
+     نداء واحد بيرجع كل اللي كان بيتطلب فتح واجهة جوجل عشانه: حالة الحساب،
+     كل حملة وحالتها الحقيقية عند جوجل (primary_status) وأسبابها المفصّلة،
+     الميزانية، الانطباعات والنقرات في المدى، الإعلانات وحالة مراجعتها،
+     الكلمات المفتاحية، وإجراءات التحويل وكام تحويل اتسجّل على كل واحد.
+
+     كل قسم بيتقرا باستعلام لوحده وبيسجّل فشله لوحده — عمود واحد مش مدعوم
+     في نسخة الـ API مايصحّش يودّي الإجابة كلها. اللي مقدرناش نقراه بيترجع
+     في `errors` بنفس وضوح اللي قدرنا نقراه، و`findings` هي الفقرة اللي
+     المالك بيقراها فعلاً: كل مانع بالعربي مرتّب من الأخطر.
+     ═══════════════════════════════════════════════════════════════════════ */
+  app.get("/api/ads/google/diagnose", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    const days = Math.min(Math.max(Number(c.req.query("days") || 14), 1), 90);
+    const g = byId("google");
+    try {
+      const out = await g.diagnose({ days });
+      // 200 even when Google is not connected: "مش مربوط" is an answer, not a
+      // server fault — same contract every other read route here keeps. The
+      // caller reads `connected`, not the HTTP status.
+      return c.json({ ...out, ok: true });
+    } catch (e) {
+      console.error("[ads] google diagnose failed:", e.message);
+      return c.json({ ok: false, error: String(e.message || e) }, 500);
+    }
   });
 
   /* ═══════════════════════════════════════════════════════════════════════
@@ -1734,7 +1745,11 @@ export function register(app, ctx, deps = {}) {
   const errorTextOf = (resp) => {
     if (!resp || typeof resp !== "object") return null;
     const j = resp.json || resp;
-    return j?.error?.message                                   // Meta
+    // Google buries the useful sentence two levels down; `error.message` on
+    // its own only ever says "Request contains an invalid argument".
+    const gInner = (e) => e?.details?.find((d) => Array.isArray(d?.errors))?.errors?.[0]?.message;
+    return gInner(j?.error) || gInner(j?.partialFailureError)  // Google Ads
+      || j?.error?.message                                     // Meta
       || j?.error?.error_user_msg
       || (j?.message && j?.code ? `[${j.code}] ${j.message}` : null)  // TikTok
       || j?.debug_message                                      // Snap
@@ -1820,9 +1835,13 @@ export function register(app, ctx, deps = {}) {
       const f = from || daysAgoISO(2);
       const t = to || todayISO();
       const rows = await loadOrders(f, t, limit);
+      const ids = rows.map((r) => String(r.order_id));
       let itemsByOrder = new Map();
-      try { itemsByOrder = await loadItems(rows.map((r) => String(r.order_id))); } catch { /* bonus */ }
-      const events = rows.map((r) => toEvent(r, "Purchase", itemsByOrder.get(String(r.order_id)) || null));
+      try { itemsByOrder = await loadItems(ids); } catch { /* bonus */ }
+      let clickByOrder = new Map();
+      try { clickByOrder = await loadClickIds(ids); } catch { /* bonus */ }
+      const events = rows.map((r) => toEvent(r, "Purchase",
+        itemsByOrder.get(String(r.order_id)) || null, clickByOrder.get(String(r.order_id)) || null));
       const results = {};
       for (const p of PLATFORMS) {
         if (!canSend(p)) continue;
@@ -1834,6 +1853,10 @@ export function register(app, ctx, deps = {}) {
     // tracking.js asks "does this till name reach a catalog id?" — same code
     // path the real Purchase payload uses, so the reported rate is the truth.
     matchToCatalog,
+    // reports.js reads the same per-platform scorecard the screen reads. One
+    // function → the report and the screen can never quote two different
+    // spends for the same week.
+    scorecardData,
   };
 }
 

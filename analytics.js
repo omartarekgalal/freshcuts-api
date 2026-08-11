@@ -739,12 +739,11 @@ export function register(app, ctx) {
     return c.json({ ok: true, from, to, cells: rows, byDow, byHour, peakHours, deadHours });
   });
 
-  /* GET /api/analytics/channels?from&to&vs=prev */
-  app.get("/api/analytics/channels", async (c) => {
-    const err = await ctx.requireAdmin(c); if (err) return err;
-    const from = dayArg(c.req.query("from"), daysAgoISO(29));
-    const to = dayArg(c.req.query("to"), todayISO());
-    const vsRaw = String(c.req.query("vs") || "prev");
+  /* The body of GET /api/analytics/channels, callable in-process so reports.js
+     can reuse it. A second copy of `channelSql` living somewhere else is
+     exactly how two screens start disagreeing about how many orders Keeta
+     brought — there is one query and this is it. */
+  async function channelsData(from, to, vsRaw = "prev") {
     const vs = ["prev", "lastweek", "lastyear"].includes(vsRaw) ? vsRaw : "prev";
     const apps = await deliveryApps();
     const win = comparisonWindow(from, to, vs);
@@ -814,12 +813,20 @@ export function register(app, ctx) {
         delta: { orders: -1, revenue: -1, avgOrder: null, discount: null },
       }));
 
-    return c.json({
-      ok: true, from, to, vs,
+    return {
+      from, to, vs,
       compareFrom: win.from, compareTo: win.to,
       totals: { orders: totalOrders, revenue: money(totalRevenue) },
       channels: channels.concat(gone),
-    });
+    };
+  }
+
+  /* GET /api/analytics/channels?from&to&vs=prev */
+  app.get("/api/analytics/channels", async (c) => {
+    const err = await ctx.requireAdmin(c); if (err) return err;
+    const from = dayArg(c.req.query("from"), daysAgoISO(29));
+    const to = dayArg(c.req.query("to"), todayISO());
+    return c.json({ ok: true, ...(await channelsData(from, to, String(c.req.query("vs") || "prev"))) });
   });
 
   /* ─────────────────────────────────────────────────────────────────────────
@@ -1120,6 +1127,10 @@ export function register(app, ctx) {
       errors,
     });
   });
+
+  /* Handed to index.js so reports.js can read the SAME period KPIs and channel
+     split the analytics screens read, instead of re-deriving them. */
+  return { periodKpis, channelsData, deliveryApps, comparisonWindow, spanDays };
 }
 
 export default { register };

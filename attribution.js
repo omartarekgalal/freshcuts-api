@@ -596,6 +596,9 @@ export function register(app, ctx, deps = {}) {
         paid: {
           spend: r2(paidSpend), orders: paidOrders, revenue: r2(paidRevenue),
           leads: sum(paidRows, (r) => r.leadsTotal),
+          // العملاء الجداد اللي وقعوا على قناة فيها صرف. أي حساب لتكلفة
+          // العميل الجديد لازم يقسم على ده، مش على كل عملاء المطعم الجداد.
+          newCustomers: sum(paidRows, (r) => r.newCustomers),
           cpa: paidOrders > 0 && paidSpend > 0 ? r2(paidSpend / paidOrders) : null,
           roas: paidSpend > 0 ? r2(paidRevenue / paidSpend) : null,
           channels: paidRows.map((r) => r.channel),
@@ -619,7 +622,7 @@ export function register(app, ctx, deps = {}) {
         "أكواد العروض (promo.redemptions) هي الدليل الوحيد الصلب على زيارة جوّه المطعم جاية من إعلان — العميل نطق كلمة مكتوبة في إعلان بعينه. الاستخدام اللي معاه رقم طلب بيتحوّل لربط عادي وبيبان في linked.",
         "درجة الثقة مش زينة: مؤكد = مطابقة رقم جوال أو تصنيف النظام نفسه، مرجّح = تصنيف الكاشير اليدوي، تقديري = محسوب بالاستبعاد.",
         "totals.paid.roas هو عائد الإعلانات الحقيقي. totals.blendedRoas بيقسم مبيعات المطعم كلها على صرف الإعلانات — رقم متابعة إداري، ومش دليل على إن الإعلان جاب المبيعات دي.",
-        "صرف جوجل يدوي بس — Google Ads API لسه محتاج developer token معتمد.",
+        "صرف جوجل بيتقرا لايف من Google Ads API زي باقي المنصات بمجرد ما مفاتيح GOOGLE_ADS_* تتحطّ؛ من غيرها بيفضل إدخال يدوي والسبب بيبان في reasons.google.",
       ],
     };
   }

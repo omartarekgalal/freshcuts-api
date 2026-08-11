@@ -34,6 +34,7 @@ import * as promo from "./promo.js";
 import * as hub from "./hub.js";
 import * as content from "./content.js";
 import * as tracking from "./tracking.js";
+import * as reports from "./reports.js";
 
 const { Pool } = pg;
 
@@ -2752,17 +2753,33 @@ app.get("/api/insights/summary", async (c) => {
     day: d, orders: 0, revenue: 0, delivery: 0, deliveryRevenue: 0, newCustomers: 0, newCustomerValue: 0,
   }]));
   let totDelivery = 0, totDeliveryRev = 0, totRevenue = 0, totDiscount = 0, totAggregatorAdj = 0;
+  /* DELIVERY IS TWO DIFFERENT THINGS AND THEY MUST NOT BE ADDED UP BLIND.
+     `isDel` below is "delivered somehow" — it also fires on order_option
+     'توصيل Delivery', which is the restaurant's OWN driver taking a phone
+     order out. That is not a delivery-app sale and it carries no commission.
+     analytics.js / attribution.js deliberately ignore order_option (the POS
+     types aggregator orders as Dine-in, so the field lies in the other
+     direction too) and count ONLY External + aggregator payment methods.
+     Result: this endpoint used to report 69 "delivery" orders for a week the
+     channels screen reported 60 for, and both were labelled the same. The
+     app-only figure is broken out here so the two screens can be reconciled
+     instead of argued about. */
+  let totDeliveryApp = 0, totDeliveryAppRev = 0, totOwnDelivery = 0, totOwnDeliveryRev = 0;
   for (const o of orders) {
     const d = daily[dayKey(o.calendar_day)];
     const total = Number(o.total) || 0;
     const isExternal = /external/i.test(o.order_type || "");
     const isDel = isDeliveryOrder(o.order_option, o.payments, settings, o.order_type);
+    // Same test analytics.js uses: External order, or an aggregator wallet paid it.
+    const isApp = isExternal || !!deliveryAppOf(o.payments, settings);
     const disc = Number(o.discount) || 0;   // VAT-inclusive, matches the receipt
     totRevenue += total;
     // "discounts" on External (FeedUs) orders are aggregator commissions /
     // price adjustments — not marketing discounts. Track separately.
     if (isExternal) totAggregatorAdj += disc; else totDiscount += disc;
     if (isDel) { totDelivery++; totDeliveryRev += total; }
+    if (isApp) { totDeliveryApp++; totDeliveryAppRev += total; }
+    else if (isDel) { totOwnDelivery++; totOwnDeliveryRev += total; }
     if (d) {
       d.orders++; d.revenue += total;
       if (isDel) { d.delivery++; d.deliveryRevenue += total; }
@@ -2844,9 +2861,20 @@ app.get("/api/insights/summary", async (c) => {
       discount: totDiscount,
       aggregatorAdjustments: totAggregatorAdj,
       avgOrder: orders.length > 0 ? totRevenue / orders.length : 0,
+      // "delivered somehow" — apps PLUS the restaurant's own driver.
       deliveryOrders: totDelivery,
       deliveryRevenue: totDeliveryRev,
       deliveryShare: orders.length > 0 ? totDelivery / orders.length : 0,
+      // Delivery APPS only. This is the figure /api/analytics/channels and
+      // /api/attribution/overview report, and the one to quote when the
+      // sentence is "in-restaurant vs delivery apps".
+      deliveryAppOrders: totDeliveryApp,
+      deliveryAppRevenue: totDeliveryAppRev,
+      // The restaurant's own driver. No commission, and no ad platform knows
+      // it exists — it belongs with in-restaurant, not with the apps.
+      ownDeliveryOrders: totOwnDelivery,
+      ownDeliveryRevenue: totOwnDeliveryRev,
+      deliveryNote: "deliveryOrders = تطبيقات + توصيل المطعم بنفسه. لو بتقارن بشاشة القنوات أو الإسناد استعمل deliveryAppOrders — دي اللي بتعدّ التطبيقات بس.",
       newCustomers: newCustSet.size,
       newCustomerValue,
       taggedOrders: sourceRows.length - skipped,
@@ -2880,7 +2908,10 @@ const moduleCtx = {
   todayISO, daysAgoISO, normPhone, ts, deliveryAppOf, DEFAULT_DELIVERY_APPS,
   sourceRank,
 };
-analytics.register(app, moduleCtx);
+// analytics.register hands back { periodKpis, channelsData, deliveryApps } so
+// reports.js can quote the SAME sales figures the analytics screens quote
+// instead of writing a second copy of the delivery/new-customer rules.
+const analyticsApi = analytics.register(app, moduleCtx);
 ai.register(app, moduleCtx);
 // staff.register hands back { requireStaff } so the promo station can accept a
 // per-employee login without a second copy of the staff auth rules.
@@ -2919,12 +2950,12 @@ keeta.register(app, moduleCtx);
 // request time, not at boot.
 let promoApi = null;
 attribApi = attribution.register(app, moduleCtx, { promo: () => promoApi });
-funnel.register(app, moduleCtx, { attribution: attribApi });
+const funnelApi = funnel.register(app, moduleCtx, { attribution: attribApi });
 catalog.register(app, moduleCtx);
 const audApi = audiences.register(app, moduleCtx);
 // صحّة التتبع: بيقرا من نفس الجداول اللي الإرسال بيكتب فيها + اعتراف ميتا نفسه.
 // بياخد ads (عشان نفس دالة مطابقة الكاتالوج اللي الحمولة بتستخدمها) والكاتالوج.
-tracking.register(app, moduleCtx, { ads: adsApi, catalog });
+const trackingApi = tracking.register(app, moduleCtx, { ads: adsApi, catalog });
 promoApi = promo.register(app, moduleCtx, {
   staff: staffApi, attribution: attribApi, adsSync: adsApi,
 });
@@ -2939,6 +2970,13 @@ hub.register(app, moduleCtx);
 // register بيرجّع { runPublisher, syncPlatforms } عشان العامل تحت يشغّلهم
 // من غير ما يبعت طلب HTTP لنفسه.
 const contentApi = content.register(app, moduleCtx);
+// 📊 التقارير: بيجمّع الأرقام المحسوبة أصلاً في الموديولات اللي فوق ويقولها
+// في صفحة واحدة. بياخد الدوال نفسها مش نسخ منها — عشان التقرير ما يقدرش
+// يقول رقم غير اللي الشاشة بتقوله. لازم يتسجّل بعدهم كلهم.
+reports.register(app, moduleCtx, {
+  analytics: analyticsApi, attribution: attribApi, autopilot: ap,
+  ads: adsApi, tracking: trackingApi, funnel: funnelApi,
+});
 console.log("[analytics] routes ready");
 console.log(`[ai] routes ready (provider: ${process.env.ANTHROPIC_API_KEY ? "anthropic" : process.env.LITELLM_KEY ? "litellm" : "NOT CONFIGURED"})`);
 
