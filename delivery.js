@@ -213,7 +213,15 @@ export function register(app, ctx, deps = {}) {
         },
         {
           type: "dropoff", sequence: 2,
-          address: addr.street || addr.area || "Delivery",
+          // Everything the customer typed, in the order a driver reads it:
+          // street → building → floor/flat → landmark → district.
+          address: [
+            addr.street,
+            addr.building && `مبنى ${addr.building}`,
+            addr.floor,
+            addr.landmark && `بجوار ${addr.landmark}`,
+            addr.area && `حي ${addr.area}`,
+          ].filter(Boolean).join("، ") || "Delivery",
           latitude: Number(addr.latitude), longitude: Number(addr.longitude),
           contact_name: order.customer?.name || "",
           contact_phone: order.customer?.phone || "",
