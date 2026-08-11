@@ -38,6 +38,7 @@ import * as reports from "./reports.js";
 import * as pay from "./pay.js";
 import * as deliveryMod from "./delivery.js";
 import * as shop from "./shop.js";
+import * as accounts from "./accounts.js";
 
 const { Pool } = pg;
 
@@ -2987,6 +2988,9 @@ let shopApi = null;
 const payApi = pay.register(app, moduleCtx, { shop: () => shopApi });
 const deliveryApi = deliveryMod.register(app, moduleCtx, { shop: () => shopApi });
 shopApi = shop.register(app, moduleCtx, { pay: payApi, delivery: deliveryApi });
+// ملف العميل: دخول OTP، عناوين محفوظة، تاريخ الطلبات وإعادة الطلب، وربط/إنشاء
+// في دفتر عملاء TabSense (الموجود يتربط، الجديد بس هو اللي يتعمل).
+accounts.register(app, moduleCtx);
 console.log("[analytics] routes ready");
 console.log(`[ai] routes ready (provider: ${process.env.ANTHROPIC_API_KEY ? "anthropic" : process.env.LITELLM_KEY ? "litellm" : "NOT CONFIGURED"})`);
 
