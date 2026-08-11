@@ -22,6 +22,13 @@
    • campaigns are only judged after settings.minSpend SAR of spend in the
      window — no verdicts on statistical noise.
    • kill rule: CPA > killMultiple × targetCpa (with real spend) → pause.
+   • the total ceiling is 20% of the day's PROJECTED revenue, and the
+     projection is locked until 25% of the day has actually landed — before
+     that the ceiling is 20% of the trailing-7 average (see movingCeiling).
+   • no budget raise once delivery efficiency drops below 35% — money that
+     lands after the kitchen closes is waste, not patience (deliveryEfficiency).
+   • per-platform steps override the global step downward, never upward:
+     Meta stays under 20% so the learning phase is not reset (PLATFORM_SCALING).
 ═══════════════════════════════════════════════════════════════════════════ */
 
 import crypto from "node:crypto";
@@ -408,7 +415,7 @@ const ar = (n) => new Intl.NumberFormat("ar-EG", { maximumFractionDigits: 0 }).f
    `comparables` = نفس يوم الأسبوع في آخر ٤ أسابيع، كل واحد مقصوص عند نفس
    عدد الساعات اللي عدّت من يوم النهارده. `operated` معناها إن المطعم اشتغل
    اليوم ده أصلاً — يوم مقفول بصفر مبيعات مش خط أساس، ده غياب بيانات.       */
-export function shapePulse({ day, elapsedH, riyadhHour, today, comparables = [] }) {
+export function shapePulse({ day, elapsedH, riyadhHour, riyadhMinute = 0, today, comparables = [] }) {
   const usable = comparables.filter((c) => c.operated);
   const baseOrders = medianOf(usable.map((c) => c.orders));
   const baseRevenue = medianOf(usable.map((c) => c.revenue));
@@ -427,7 +434,9 @@ export function shapePulse({ day, elapsedH, riyadhHour, today, comparables = [] 
   }
 
   return {
-    day, elapsedH: r2(elapsedH), riyadhHour,
+    day, elapsedH: r2(elapsedH), riyadhHour, riyadhMinute,
+    // يوم الأسبوع بيوم المطعم (بيلف ٤ فجراً) — الساعة ٢ بالليل لسه ليلة امبارح.
+    dow: new Date(String(day) + "T00:00:00Z").getUTCDay(),
     today: { orders: today.orders, revenue: r2(today.revenue) },
     baseline: {
       orders: baseOrders == null ? null : r2(baseOrders),
@@ -467,6 +476,83 @@ export const PACE_DEFAULTS = {
   paceHotMaxUpliftPct: 100,    // وسقف الزيادة التراكمية بيتوسّع في اليوم ده
   paceHotHeadroomPct: 20,      // لازم يفضل ٢٠٪ على الأقل من السقف الكلي فاضي
 };
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   قواعد التوسّع لكل منصة — الميديا باير مش بيعامل المنصات زي بعض
+
+   كل قاعدة هنا معاها سببها، والسبب بيتكتب في اللوج مع القرار عشان المالك
+   يقرا "ليه ميتا خطوتها ١٥٪ وجوجل ٣٠٪" من غير ما يسأل حد.
+
+   ── ميتا: الخطوة محكومة بمرحلة التعلّم مش بالفلوس ────────────────────
+   كل الـ ad sets عندنا لسه في LEARNING (١٧، ٢، ٢، ٢، ١، ٠ تحويل في الأسبوع
+   مقابل عتبة ٥٠). تعديل جوهري على الميزانية بيصفّر التعلّم ويرجّع الـ ad set
+   لأول السطر — وده أغلى بكتير من أي فرصة يوم واحد. عشان كده السقف ١٩٪
+   (تحت عتبة الـ ٢٠٪ اللي ميتا بتعتبرها تعديل جوهري) والخطوة الافتراضية ١٥٪.
+
+   وميتا فيها تفصيلة تانية: fc-leads-contact بيتحسّن على Contact وبيجيب ~١١٠
+   حدث كل ٤ أيام — دي الحملة الوحيدة اللي ليها طريق حقيقي تخرج من التعلّم.
+   الحملات اللي بتتحسّن على OFFSITE_CONVERSIONS بتجيب تحويلين في الأسبوع؛
+   رفع ميزانيتها معناه إننا بنشتري تعلّم أغلى مش نتايج أكتر.
+
+   ── سناب: القياس هو المشكلة مش الميزانية ─────────────────────────────
+   ٣٣٣ حدث من ٨٨٥ رجعوا failed (٣٨٪) في أول أيام الربط. مانرفعش ميزانية
+   منصة إحنا مش شايفين نتايجها — الفلوس الزيادة هتتصرف والقياس هيفضل أعمى.
+
+   ── تيك توك: التوكن ناقص صلاحية ───────────────────────────────────────
+   بيرجّع «Permission error … /campaign/get». يعني إحنا مش بنقرا حملاته أصلاً،
+   فأي رفع هيبقى في الضلمة. مقفول لحد ما التوكن يتصلّح.
+
+   ── جوجل: أسرع منصة استجابة ───────────────────────────────────────────
+   البحث بيصرف على الطلب مش على التوزيع، وجوجل نفسها بتسمح للحملة تصرف لحد
+   ٢× الميزانية اليومية وبتعوّض على مدار الشهر. مفيش مرحلة تعلّم بتتصفّر من
+   تغيير ميزانية. فالخطوة أكبر (٣٠٪) والتبريد أقصر — بس بسقف مطلق صغير لحد
+   ما يجيب داتا (٦١ رفعة تحويل فشلت أول يوم).
+═══════════════════════════════════════════════════════════════════════════ */
+
+export const PLATFORM_SCALING = {
+  meta: {
+    stepPct: 15, maxStepPct: 19, cooldownMinutes: 60, allowed: true,
+    why: "ميتا بتعتبر أي تعديل ميزانية ٢٠٪ أو أكتر «تعديل جوهري» وبتصفّر مرحلة التعلّم. كل الـ ad sets عندنا لسه في التعلّم، فالخطوة بتفضل تحت ٢٠٪ عشان نكبّر من غير ما نرجّع الحملة لأول السطر.",
+    duplicateAtUpliftPct: 100,
+    duplicateWhy: "لما الميزانية توصل ضعف رقم المالك، التوسّع الصح بيبقى نسخة جديدة من الـ ad set بجمهور مختلف مش ضغط أكتر على نفس المزاد — الضغط الزيادة على نفس الجمهور بيرفع الـ CPM من غير ما يجيب ناس جداد.",
+  },
+  snapchat: {
+    stepPct: 10, maxStepPct: 20, cooldownMinutes: 90, allowed: false,
+    why: "٣٨٪ من أحداث سناب رجعت failed، يعني إحنا مش شايفين نتايج المنصة دي أصلاً. مانرفعش ميزانية على منصة قياسها أعمى — أول حاجة نصلّح الربط، وبعدين نتكلم في التوسّع.",
+  },
+  tiktok: {
+    stepPct: 0, maxStepPct: 0, cooldownMinutes: 120, allowed: false,
+    why: "توكن تيك توك ناقصه صلاحية قراءة الحملات (Permission error على /campaign/get)، فإحنا مش قادرين نقرا حالة الحملة ولا صرفها. رفع ميزانية في الضلمة مش توسّع، ده رهان.",
+  },
+  google: {
+    stepPct: 30, maxStepPct: 40, cooldownMinutes: 30, allowed: true,
+    why: "إعلانات البحث بتصرف على طلب فعلي مش على توزيع، ومفيش مرحلة تعلّم بتتصفّر من تغيير الميزانية — فجوجل بتستجيب لأي زيادة في نص ساعة تقريباً. دي أسرع منصة نحوّل لها ريال زيادة.",
+    unprovenCap: 100,
+    unprovenWhy: "لسه جديدة ومفيش منها تحويل مؤكّد لحد دلوقتي، فمسقوفة عند ١٠٠ ر.س/يوم لحد ما تجيب أول عملاء نقدر نقيسهم.",
+  },
+};
+
+/* الخطوة والسقف لمنصة معيّنة. `s` بتسمح للمالك يتحكم من الإعدادات، والقيم
+   دي بتقص فوقها مش تحتها — يعني الإعدادات مش بتقدر توسّع خطوة ميتا فوق ١٩٪. */
+export function platformScaling(platform, { s = {}, proven = null } = {}) {
+  const p = PLATFORM_SCALING[String(platform || "").toLowerCase()];
+  const globalStep = Number(s.paceStepPct) || 15;
+  if (!p) {
+    return { allowed: true, stepPct: globalStep, cooldownMinutes: Number(s.paceCooldownMinutes) || 45,
+      cap: null, why: `مفيش قاعدة توسّع مخصّصة للمنصة دي، فبنمشي بالخطوة العامة ${globalStep}٪.` };
+  }
+  const step = Math.min(Number(p.stepPct) || 0, Number(p.maxStepPct) || 0,
+    Math.max(globalStep, Number(p.stepPct) || 0), Number(s.maxChangePct) || 30);
+  return {
+    allowed: p.allowed !== false,
+    stepPct: p.allowed === false ? 0 : step,
+    cooldownMinutes: Math.max(Number(p.cooldownMinutes) || 45, Number(s.paceCooldownMinutes) || 45),
+    cap: proven === false && p.unprovenCap ? Number(p.unprovenCap) : null,
+    duplicateAtUpliftPct: p.duplicateAtUpliftPct || null,
+    duplicateWhy: p.duplicateWhy || null,
+    why: p.why + (proven === false && p.unprovenWhy ? ` ${p.unprovenWhy}` : ""),
+  };
+}
 
 /* ── القرار ──────────────────────────────────────────────────────────────
    input:
@@ -550,19 +636,49 @@ export function decidePace(input) {
   }
 
   const pacePct = pulse.pacePct;
-  const up = pacePct >= Number(s.paceUpThresholdPct);
-  const down = pacePct <= Number(s.paceDownThresholdPct);
-  if (!up && !down) {
+  const activeRows0 = rows.filter((r) => r.status === "ACTIVE" && r.dailyBudget != null);
+  const budgetNow = activeRows0.reduce((a, r) => a + Number(r.dailyBudget), 0);
+  const totalCap0 = Number(s.maxTotalBudget) || 1000;
+
+  /* ── ٢ب. خرق السقف. السقف الحيّ بينزل لما اليوم يطلع أقل من المتوقّع، وساعتها
+     الميزانية اللي رفعناها الصبح ممكن تبقى فوق السقف الجديد. ده مش «إيقاع
+     بطيء» — ده قرار قديم بقى غلط، ولازم يترجع حتى لو النبض لسه جوّه المنطقة
+     الطبيعية. المالك وصف الجزء اللي بيطلع بس؛ ده الجزء اللي بيحميه.        */
+  const breach = budgetNow > totalCap0 + 0.5;
+  const up0 = pacePct >= Number(s.paceUpThresholdPct);
+  const down0 = pacePct <= Number(s.paceDownThresholdPct);
+  if (!up0 && !down0 && !breach) {
     return done(`الإيقاع ${pacePct >= 0 ? "+" : ""}${pacePct}٪ مقابل خط الأساس — جوّه المنطقة الطبيعية (${s.paceDownThresholdPct}٪ إلى ${s.paceUpThresholdPct}٪)، فمفيش داعي نلمس أي ميزانية.`);
+  }
+  const up = up0 && !breach;
+  const down = down0 || breach;
+  const breachNote = breach
+    ? ` السقف الحيّ نزل لـ ${ar(totalCap0)} ر.س/يوم والميزانية الشغالة ${ar(budgetNow)} ر.س — اليوم طلع أقل من التوقّع، فبنسحب الزيادة بدل ما نكمّل صرف على يوم مش مستحمل.`
+    : "";
+
+  /* ── ٢ج. حرس آخر الليل. الميزانية اليومية عند المنصات بتتوزّع على يوم
+     الحساب الإعلاني (بيلف ١٠ صباحاً بتوقيت جدة)، لكن الإعلانات بتتقفل ٣
+     الفجر. يعني كل ما الوقت يتأخر، الجزء اللي ممكن يتصرف والمطعم فاتح
+     يقلّ. رفع الساعة ١ بالليل معناه إن ٢٢٪ بس من الزيادة ليها فرصة تشتغل.  */
+  const eff = deliveryEfficiency({
+    riyadhHour: pulse.riyadhHour, riyadhMinute: pulse.riyadhMinute || 0,
+    adsCloseHour: (s.adsLateNightDows || DAYPART_DEFAULTS.adsLateNightDows).map(Number).includes(pulse.dow)
+      ? Number(s.adsLateCloseHour ?? DAYPART_DEFAULTS.adsLateCloseHour)
+      : Number(s.adsCloseHour ?? DAYPART_DEFAULTS.adsCloseHour),
+    accountRollHourRiyadh: Number(s.accountRollHourRiyadh ?? 10),
+  });
+  const minEff = Number(s.minDeliveryEfficiencyPct ?? INTRADAY_DEFAULTS.minDeliveryEfficiencyPct);
+  if (up && eff.pct < minEff) {
+    return done(`${eff.reason} أقل من ${minEff}٪ فمابنرفعش — الفلوس اللي بتتصرف بعد ما المطبخ يقفل مش بطيئة، هي ضايعة.`);
   }
 
   /* ── ٣. الحملات. الأكتر صرفاً الأول: لو السقف الكلي هيخلص، يخلص على
         الحملة اللي الفلوس شغالة فيها فعلاً مش على أول واحدة في اللستة.     */
-  const activeRows = rows.filter((r) => r.status === "ACTIVE" && r.dailyBudget != null);
-  let totalActive = activeRows.reduce((a, r) => a + Number(r.dailyBudget), 0);
+  const activeRows = activeRows0;
+  let totalActive = budgetNow;
   const cooldownMs = Math.max(5, Number(s.paceCooldownMinutes) || 45) * 60_000;
   const perCap = Math.min(Number(s.maxCampaignBudget) || 500, hardCap);
-  const totalCap = Number(s.maxTotalBudget) || 1000;
+  const totalCap = totalCap0;
 
   /* اليوم الشغّال. الشرطين لازم يتحققوا مع بعض: نبض عالي + مساحة تحت السقف.
      لو المساحة خلصت، الخطوة الكبيرة معناها إننا هنطلع رفع بيتقصّ على السقف
@@ -589,8 +705,17 @@ export function decidePace(input) {
     const base = mine ? Number(st.baseBudget) : Number(r.dailyBudget);
     const cur = Number(r.dailyBudget);
 
-    if (mine && nowMs - st.lastActionAt < cooldownMs) {
-      notes.push({ key, op: "cooldown", text: `"${r.name}" اتغيّرت من ${Math.round((nowMs - st.lastActionAt) / 60000)} دقيقة — فترة تبريد الإيقاع ${s.paceCooldownMinutes} دقيقة عشان المنصة تاخد وقتها تصرف الزيادة قبل ما نحكم عليها تاني.` });
+    /* قاعدة المنصة. الخطوة العامة (أو خطوة اليوم الشغّال) بتتقص عليها مش
+       العكس: يوم شغّال مش سبب نصفّر تعلّم ad set على ميتا.                 */
+    const ps = platformScaling(r.platform, { s, proven: r.proven ?? null });
+    const pCooldownMs = Math.max(cooldownMs, Number(ps.cooldownMinutes) * 60_000);
+
+    if (mine && nowMs - st.lastActionAt < pCooldownMs) {
+      notes.push({ key, op: "cooldown", text: `"${r.name}" اتغيّرت من ${Math.round((nowMs - st.lastActionAt) / 60000)} دقيقة — فترة تبريد ${Math.round(pCooldownMs / 60000)} دقيقة على ${r.platform} عشان المنصة تاخد وقتها تصرف الزيادة قبل ما نحكم عليها تاني.` });
+      continue;
+    }
+    if (up && !ps.allowed) {
+      notes.push({ key, op: "platform-blocked", text: `"${r.name}" على ${r.platform} — مقفولة للتوسّع. ${ps.why}` });
       continue;
     }
 
@@ -599,10 +724,12 @@ export function decidePace(input) {
       : ` المنصة مسجّلة ${ar(r.results)} نتيجة النهارده — رقم مساعد، بس القرار مبني على مبيعات الكاشير.`;
 
     if (up) {
+      const pStep = Math.min(step, Number(ps.stepPct) || step);
       const upliftCap = Math.floor(base * (1 + upliftPct / 100));
-      let next = Math.round(cur * (1 + step / 100));
+      let next = Math.round(cur * (1 + pStep / 100));
       let capped = null;
       if (next > upliftCap) { next = upliftCap; capped = `سقف الزيادة اليومية ${upliftPct}٪ فوق أساس ${ar(base)}`; }
+      if (ps.cap != null && next > ps.cap) { next = ps.cap; capped = `سقف المنصة غير المثبتة ${ar(ps.cap)} ر.س`; }
       if (next > perCap) { next = perCap; capped = `سقف الحملة الواحدة ${ar(perCap)} ر.س`; }
       const headroom = totalCap - totalActive;
       if (next - cur > headroom) { next = cur + Math.max(0, Math.floor(headroom)); capped = `السقف الكلي ${ar(totalCap)} ر.س/يوم`; }
@@ -610,30 +737,40 @@ export function decidePace(input) {
         notes.push({ key, op: "capped", text: `"${r.name}" تستاهل تسريع بس وصلت ${capped || "السقف"} — الميزانية واقفة عند ${ar(cur)} ر.س. لو عايز توسّع أكتر، ارفع السقف من الإعدادات بإيدك.` });
         continue;
       }
+      /* التكرار بدل التكبير: لما الميزانية توصل ضعف رقم المالك، الضغط الزيادة
+         على نفس الجمهور بيرفع الـ CPM من غير ناس جداد. بنقول الاقتراح في
+         اللوج ومابنعملهوش لوحدنا — إنشاء ad set جديد قرار المالك.          */
+      if (ps.duplicateAtUpliftPct && cur >= base * (1 + Number(ps.duplicateAtUpliftPct) / 100) - 0.5) {
+        notes.push({ key, op: "duplicate-hint", text: `"${r.name}" وصلت ${ar(cur)} ر.س — ضعف رقم المالك (${ar(base)}). ${ps.duplicateWhy} الخطوة الجاية المفروض تبقى نسخة جديدة بجمهور تاني، مش رفع تاني على نفس الـ ad set.` });
+      }
       totalActive += next - cur;
       actions.push({
         op: "up", platform: r.platform, campaignId: r.id, campaignName: r.name,
-        from: r2(cur), to: r2(next), base: r2(base), accountDay,
-        reason: `${ctx} رفعنا "${r.name}" من ${ar(cur)} لـ ${ar(next)} ر.س/يوم (خطوة ${step}٪${capped ? `، متقصوصة على ${capped}` : ""}).${hotNote}${zero} ${evidence} الزيادة دي هترجع لـ ${ar(base)} ر.س قبل ما يوم الحساب الإعلاني ${accountDay} (${ADS_ACCOUNT_TZ}) يقفل — يعني حوالي ١٠ صباحاً بتوقيت جدة.`,
+        from: r2(cur), to: r2(next), base: r2(base), accountDay, stepPct: pStep,
+        reason: `${ctx} رفعنا "${r.name}" من ${ar(cur)} لـ ${ar(next)} ر.س/يوم (خطوة ${pStep}٪ على ${r.platform}${capped ? `، متقصوصة على ${capped}` : ""}). ${ps.why}${hotNote}${zero} ${evidence} ${eff.reason} الزيادة دي هترجع لـ ${ar(base)} ر.س قبل ما يوم الحساب الإعلاني ${accountDay} (${ADS_ACCOUNT_TZ}) يقفل — يعني حوالي ١٠ صباحاً بتوقيت جدة.`,
       });
     } else {
       /* التراجع بيلمس زيادتنا إحنا بس. الخفض تحت ميزانية المالك شغلانة
          الجولة البطيئة بتبريدها ٢٤ ساعة — لو الاتنين خفّضوا هنكون قصّينا
          الحملة مرتين على نفس السبب. */
       if (!mine || cur <= base + 0.5) continue;
-      let next = Math.round(cur * (1 - step / 100));
+      /* خرق السقف بينزل خطوة أكبر عن قصد: السقف نزل خلاص، والزحف بـ ١٥٪ كل
+         ٤٥ دقيقة معناه إننا هنفضل فوق السقف ساعتين. */
+      const downStep = breach ? Math.max(step, 25) : step;
+      let next = Math.round(cur * (1 - downStep / 100));
       next = Math.max(next, base);
       if (next >= cur) continue;
       totalActive += next - cur;
       actions.push({
         op: "down", platform: r.platform, campaignId: r.id, campaignName: r.name,
-        from: r2(cur), to: r2(next), base: r2(base), accountDay,
-        reason: `${ctx} فسحبنا التسريع على "${r.name}" من ${ar(cur)} لـ ${ar(next)} ر.س/يوم (خطوة ${step}٪، ومش بننزل تحت ميزانية المالك ${ar(base)} ر.س — الخفض تحتها شغل الجولة اليومية مش الإيقاع).${zero}`,
+        from: r2(cur), to: r2(next), base: r2(base), accountDay, stepPct: downStep, breach,
+        reason: `${ctx}${breachNote} فسحبنا التسريع على "${r.name}" من ${ar(cur)} لـ ${ar(next)} ر.س/يوم (خطوة ${downStep}٪، ومش بننزل تحت ميزانية المالك ${ar(base)} ر.س — الخفض تحتها شغل الجولة اليومية مش الإيقاع).${zero}`,
       });
     }
   }
 
-  return { phase: up ? "up" : "down", accountDay, msToRoll, pacePct, hot, step, actions, notes, gate: null };
+  return { phase: up ? "up" : "down", accountDay, msToRoll, pacePct, hot, step,
+           breach, delivery: eff, actions, notes, gate: null };
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
@@ -804,11 +941,27 @@ export function decideDaypart({ rows = [], book = new Map(), pacing = new Map(),
    المبيعات الفعلية: كل ما المبيعات تكبر، مسموح نصرف أكتر — وده بالظبط اللي
    بيخلي التوسّع ممكن من غير ما المالك يقعد يعدّل رقم بإيده كل أسبوع.
 
-   الأساس هو متوسط آخر ٧ أيام مش مبيعات النهارده: النهارده لسه ما خلصش،
-   والصرف بيتحدد أول اليوم. والـ stretch (نسبة أعلى شوية) بيتفتح بس لما نبض
-   المبيعات يكون فوق خط الأساس فعلاً — يوم شغّال يستاهل فلوس زيادة.
+   ── الغلطة اللي كانت هنا وأول ما اتصلّحت ──────────────────────────────
+   كان الأساس متوسط آخر ٧ أيام: رقم بيتحسب أول اليوم ويقعد ثابت. يعني في
+   يوم بيجري ضعف المعتاد الوكيل مقدرش يصرف فيه، وفي يوم ميت كان مسموح له
+   يصرف ميزانية يوم كبير. المالك شاف الناحية الأولى وقال: «مش عايز متوسط
+   عشان منضيعش الفرص اللي ممكن تحصل في نفس اليوم.» والناحية التانية —
+   الحماية في اليوم الميت — طلعت مهمة زيها بالظبط.
 
-   وفوق كل ده سقف مطلق بيحطه المالك (٢٠٠٠ افتراضياً) مفيش أي حساب بيعدّيه.
+   دلوقتي الأساس هو *توقّع مبيعات النهارده*: المبيعات اللي دخلت لحد دلوقتي
+   مقسومة على حصة اليوم اللي عدّت فعلاً، مخلوطة بالمتوسط بوزن = نفس الحصة.
+   (شوف projectDayRevenue فوق — والحصة نفسها في buildDayShape.)
+
+   والتوقّع مقفول قبل ما ٢٥٪ من اليوم يعدّي — يعني عملياً قبل ٦ المسا تقريباً.
+   ده مش تحفّظ، ده اللي الداتا قالته: الساعة ٥ العصر الارتباط بين اللي حصل
+   واللي هيحصل ٠٫٤٤ والخطأ الوسيط ٥١٪، يعني التوقّع ساعتها أسوأ من مجرد
+   استعمال المتوسط. من الساعة ٧ الارتباط بيبقى ٠٫٨٣ والخطأ ١٢٪.
+
+   والـ stretch (٢٥٪) بيتقفل تلقائياً لما التوقّع الحيّ يشتغل: هو كان موجود
+   عشان المتوسط بيقلّل من قيمة اليوم الشغّال، والتوقّع بيصلّح ده من الأصل.
+
+   وفوق كل ده سقف مطلق بيحطه المالك (٢٠٠٠ افتراضياً) مفيش أي حساب بيعدّيه،
+   وأرضية (١٥٠) عشان يوم واطي مايطفّيش الإعلانات خالص.
 ═══════════════════════════════════════════════════════════════════════════ */
 
 export const ECON_DEFAULTS = {
@@ -820,36 +973,233 @@ export const ECON_DEFAULTS = {
   ltvHorizonDays: 90,           // شباك القيمة العمرية اللي بنقيس عنده
 };
 
+/* ═══════════════════════════════════════════════════════════════════════════
+   منحنى اليوم — شكل مبيعات فريش كاتس ساعة بساعة
+
+   ده أهم رقم في الملف كله، ومن غيره جملة «الساعة ٥ العصر عندنا ١٠٠٠ ريال»
+   مالهاش معنى. اتحسب من ts_orders على ٥٩ يوم شغل (يونيو → ١٠ أغسطس ٢٠٢٦):
+
+     الساعة ١٥:٠٠ → عدّى ٤٫٥٪ بس من مبيعات اليوم (وسيط)
+     الساعة ١٧:٠٠ → ١٥٫٨٪
+     الساعة ١٩:٠٠ → ٤٢٫٣٪
+     الساعة ٢٠:٠٠ → ٥١٫٠٪
+     الساعة ٢٢:٠٠ → ٦٧٫٢٪
+     الساعة ٠٠:٠٠ → ٨٦٫٢٪
+
+   يعني فريش كاتس مطعم ليلي: نص اليوم بيحصل بعد الساعة ٨ بالليل. والنتيجة
+   المباشرة إن التوقّع بدري بيتضرب في رقم كبير — الساعة ٥ العصر بنقسم على
+   ٠٫١٥٨، يعني بنضرب في ٦٫٣. طلب واحد بـ ٢٠٠ ر.س الساعة ٤ بيزوّد التوقّع
+   ١٬٢٦٠ ر.س. عشان كده التوقّع بدري مش «متفائل»، هو مضخّم.
+
+   ── الشكل بيتبني ليه من أيام سابقة بس ─────────────────────────────────
+   لو حسبنا الحصة من نفس اليوم اللي بنتوقّعه كنا هنقرا المستقبل. الدالة
+   بتاخد أيام كاملة انتهت خلاص، وبتاخد نفس يوم الأسبوع لو فيه ٣ أيام على
+   الأقل (الخميس شكله مختلف عن الأحد)، وإلا بترجع للمنحنى المجمّع.
+═══════════════════════════════════════════════════════════════════════════ */
+
+export const INTRADAY_DEFAULTS = {
+  liveCeiling: true,            // السقف الحيّ شغّال؟ (لو false بنرجع لسقف المتوسط)
+  shapeLookbackDays: 56,        // كام يوم بنبني منهم منحنى اليوم
+  shapeMinDowDays: 3,           // أقل عدد أيام من نفس يوم الأسبوع نصدّق منحناه
+  projMinSharePct: 25,          // مانتوقّعش قبل ما ٢٥٪ من اليوم يعدّي فعلاً
+  projMinOrders: 6,             // ولا قبل ٦ طلبات النهارده
+  minDeliveryEfficiencyPct: 35, // أقل نسبة من الزيادة ممكن تتصرف في ساعات بيع
+};
+
+/* منحنى اليوم من صفوف تاريخية. كل صف: { day, dow, total, orders, cum[24] } —
+   cum[i] = الإيراد المتراكم لحد آخر الساعة رقم i من يوم المطعم (٠ = ٤ صباحاً). */
+export function buildDayShape(rows = [], { lookbackDays = 56, minDowDays = 3 } = {}) {
+  const usable = (rows || [])
+    .filter((d) => Number(d.total) > 0 && Number(d.orders || 0) >= 5 && Array.isArray(d.cum))
+    .slice(-Math.max(7, Number(lookbackDays) || 56));
+  const shareRow = (ds, i) => medianOf(ds.map((d) => Number(d.cum[i]) / Number(d.total)));
+
+  const pooled = usable.length >= 5 ? Array.from({ length: 24 }, (_, i) => shareRow(usable, i)) : null;
+  const dow = {};
+  for (let w = 0; w < 7; w++) {
+    const ds = usable.filter((d) => Number(d.dow) === w);
+    dow[w] = ds.length >= Math.max(2, Number(minDowDays) || 3)
+      ? { curve: Array.from({ length: 24 }, (_, i) => shareRow(ds, i)), days: ds.length }
+      : null;
+  }
+  return { pooled, dow, days: usable.length, lookbackDays, minDowDays };
+}
+
+/* الحصة المتوقّعة من اليوم عند عدد ساعات كسري. بنملّس بين ساعتين عشان الساعة
+   ١٩:٤٠ ما تتقريش زي ١٩:٠٠ — الفرق بينهم في ساعة الذروة يوصل ١٠٪ من اليوم. */
+export function shareAt(shape, dow, elapsedH) {
+  if (!shape) return null;
+  const c = (shape.dow && shape.dow[dow] && shape.dow[dow].curve) || shape.pooled;
+  if (!c) return null;
+  const e = Math.max(0, Math.min(24, Number(elapsedH) || 0));
+  const i = Math.floor(e) - 1;                       // الحصة اللي خلصت آخر الساعة i
+  const lo = i < 0 ? 0 : (Number(c[i]) || 0);
+  const hi = i + 1 < 24 ? (c[i + 1] == null ? lo : Number(c[i + 1])) : 1;
+  const v = lo + (hi - lo) * (e - Math.floor(e));
+  return Math.max(0, Math.min(1, v));
+}
+
+/* ── التوقّع ────────────────────────────────────────────────────────────
+   projected = w × (المبيعات لحد دلوقتي ÷ حصة اليوم اللي عدّت) + (1−w) × متوسط ٧ أيام
+
+   و w = نفس الحصة. يعني: نصدّق النهارده بالظبط بقد ما النهارده حصل فعلاً.
+   الساعة ٦ المسا عدّى ٢٨٪ من اليوم → بناخد ٢٨٪ من التوقّع و٧٢٪ من المتوسط.
+   الساعة ١١ بالليل عدّى ٧٧٪ → بناخد ٧٧٪ من التوقّع. الرقم ده مش مخترع:
+   جرّبناه على ٥٨ يوم بأوزان من ٠ لـ ١، والوزن = الحصة طلع الأقرب في كل ساعة
+   (خطأ الوسيط ١٢٪ الساعة ٧ مقابل ٢٤٪ للمتوسط لوحده).
+
+   وقبل ما ٢٥٪ من اليوم يعدّي التوقّع بيتقفل تماماً ونرجع للمتوسط: قبل كده
+   الارتباط بين اللي حصل واللي هيحصل ٠٫٤٤ بس، والخطأ أسوأ من مجرد استعمال
+   المتوسط. ده الرد الأمين على «الساعة ٥ العصر» — مش رفض للفكرة، رفض للساعة.
+   ═══════════════════════════════════════════════════════════════════════ */
+export function projectDayRevenue({
+  shape = null, dow = null, elapsedH = 0, revSoFar = 0, ordersSoFar = 0,
+  trailingAvg = null, minSharePct = 25, minOrders = 6,
+} = {}) {
+  const baseline = Number(trailingAvg);
+  const hasBaseline = Number.isFinite(baseline) && baseline > 0;
+  const share = shareAt(shape, dow, elapsedH);
+  const rev = Math.max(0, Number(revSoFar) || 0);
+  const orders = Math.max(0, Number(ordersSoFar) || 0);
+  const minShare = Math.max(0, Math.min(1, (Number(minSharePct) || 25) / 100));
+  const raw = share > 0.005 ? rev / share : null;
+
+  const shell = (source, reason) => ({
+    usable: false, projected: hasBaseline ? r2(baseline) : null,
+    share: share == null ? null : Math.round(share * 1000) / 10,
+    weight: 0, raw: raw == null ? null : Math.round(raw),
+    revSoFar: r2(rev), ordersSoFar: orders, trailingAvg: hasBaseline ? r2(baseline) : null,
+    source, reason,
+  });
+
+  if (!hasBaseline) {
+    return shell("no-baseline",
+      "مفيش متوسط مبيعات لآخر ٧ أيام نخلط بيه، فمينفعش نتوقّع اليوم — التوقّع من غير خط أساس بيبقى رقم واحد شايل كل الخطأ.");
+  }
+  if (share == null) {
+    return shell("no-shape",
+      "مفيش منحنى ساعات كفاية في التاريخ عشان نعرف اليوم عدّى منه قد إيه — رجعنا لمتوسط آخر ٧ أيام.");
+  }
+  if (share < minShare) {
+    return shell("too-early",
+      `الساعة دي عدّى ${Math.round(share * 100)}٪ بس من مبيعات اليوم المعتاد (المطلوب ${Math.round(minShare * 100)}٪ قبل ما نصدّق التوقّع). ` +
+      `فريش كاتس مطعم ليلي: نص المبيعات بتحصل بعد ٨ بالليل، فالقسمة دلوقتي بتضرب أي رقم في ${(1 / Math.max(share, 0.01)).toFixed(1)} — طلب واحد كبير كان هيقلب التوقّع. ` +
+      `السقف فاضل على متوسط آخر ٧ أيام (${ar(baseline)} ر.س/يوم) لحد ما اليوم يثبت نفسه.`);
+  }
+  if (orders < Number(minOrders)) {
+    return shell("too-few-orders",
+      `${ar(orders)} طلب بس النهارده لحد دلوقتي (المطلوب ${ar(minOrders)}) — العيّنة صغيرة أوي والتوقّع عليها هيبقى رأي مش قياس.`);
+  }
+
+  const w = share;                                    // نصدّق اليوم بقد ما حصل
+  const projected = w * raw + (1 - w) * baseline;
+  return {
+    usable: true, projected: r2(projected),
+    share: Math.round(share * 1000) / 10, weight: Math.round(w * 1000) / 10,
+    raw: Math.round(raw), revSoFar: r2(rev), ordersSoFar: orders, trailingAvg: r2(baseline),
+    source: "live",
+    reason: `عدّى ${Math.round(share * 100)}٪ من اليوم و${ar(rev)} ر.س دخلوا فعلاً من ${ar(orders)} طلب. ` +
+      `القسمة على الحصة بتدّي ${ar(raw)} ر.س لليوم كله، والمتوسط بيقول ${ar(baseline)} ر.س. ` +
+      `بنصدّق النهارده بقد ما حصل (${Math.round(w * 100)}٪) فالتوقّع ${ar(projected)} ر.س.`,
+  };
+}
+
+/* ── كفاءة التوصيل: الزيادة دي هتلحق تتصرف في ساعات بيع ولا لأ؟ ─────────
+   الميزانية اليومية عند ميتا بتتوزّع على *يوم الحساب الإعلاني* اللي بيلف
+   ١٠ صباحاً بتوقيت جدة. لكن الإعلانات بتتقفل ٣ الفجر لما المطبخ يقفل. يعني
+   لو رفعنا الساعة ١١ بالليل، المنصة قدامها ١١ ساعة توزّع فيهم، إحنا هنستفيد
+   بـ ٤ منهم بس — والباقي يا بيتصرف والمطعم قافل يا مبيتصرفش أصلاً.
+
+   الرقم ده اتشاف في الداتا: يوم ٩ أغسطس رفعنا الميزانية ٦٠٪ الساعة ٨ المسا
+   والصرف الفعلي زاد ١٨٪ بس (٤٦١ بدل ٣٩١ ر.س). ويوم ١٠ أغسطس ضاعفناها ١٠٠٪
+   والصرف طلع ٣٦٤ — أقل من يوم عادي. الرافعة موجودة بس ضعيفة، وبتضعف كل ما
+   الوقت يتأخر.                                                             */
+export function deliveryEfficiency({
+  riyadhHour = 0, riyadhMinute = 0, adsCloseHour = 3, accountRollHourRiyadh = 10,
+} = {}) {
+  const now = Number(riyadhHour) * 60 + Number(riyadhMinute);
+  const ahead = (h) => { const d = Number(h) * 60 - now; return d > 0 ? d : d + 1440; };
+  const sellingMin = ahead(adsCloseHour);
+  const accountMin = ahead(accountRollHourRiyadh);
+  const pct = accountMin > 0 ? Math.round((Math.min(sellingMin, accountMin) / accountMin) * 100) : 0;
+  return {
+    pct, sellingMinutes: sellingMin, accountMinutes: accountMin,
+    reason: `فاضل ${Math.round(sellingMin / 60)} ساعة بيع قبل ما الإعلانات تقفل ${adsCloseHour}:00، و${Math.round(accountMin / 60)} ساعة قبل ما يوم الحساب الإعلاني يلف (${accountRollHourRiyadh}:00 بتوقيت جدة). ` +
+      `يعني ${pct}٪ بس من أي زيادة دلوقتي ممكن تتصرف والمطعم فاتح — الباقي بيروح على ساعات مفيش فيها بيع.`,
+  };
+}
+
+/* ── السقف الحيّ ────────────────────────────────────────────────────────
+   نفس قاعدة المالك (٢٠٪) بس مضروبة في اليوم اللي بيحصل فعلاً بدل المتوسط.
+   وبيتحرك في الاتجاهين: يوم شغّال بيوسّع السقف، ويوم ميت بيقفّله. المالك
+   وصف الاتجاه الأول بس — التاني هو اللي بيحميه من إنه يصرف ميزانية يوم كبير
+   على يوم صغير.                                                            */
 export function movingCeiling({
   trailing7Avg = null, sharePct = 20, stretchPct = 25, pacePct = null,
   hotThresholdPct = 20, hardMax = 2000, floor = 150, fallback = 1000,
+  projection = null, stretchAllowed = true,
 } = {}) {
   const cap = Math.max(0, Number(hardMax) || 0);
-  const hot = pacePct != null && Number.isFinite(Number(pacePct)) && Number(pacePct) >= Number(hotThresholdPct);
+  const live = !!(projection && projection.usable && Number(projection.projected) > 0);
+  const hot = !live && stretchAllowed
+    && pacePct != null && Number.isFinite(Number(pacePct)) && Number(pacePct) >= Number(hotThresholdPct);
   const avg = Number(trailing7Avg);
 
-  if (!Number.isFinite(avg) || avg <= 0) {
+  if (!live && (!Number.isFinite(avg) || avg <= 0)) {
     const ceiling = Math.min(Number(fallback) || 0, cap);
     return {
-      ceiling, base: null, stretch: null, hot: false, trailing7Avg: null,
+      ceiling, base: null, stretch: null, hot: false, live: false, trailing7Avg: null, projection,
       sharePct, stretchPct, hardMax: cap, floor, source: "fallback",
       reason: `مفيش مبيعات محسوبة لآخر ٧ أيام، فقاعدة الـ ${sharePct}٪ مالهاش أساس تتحسب عليه. السقف رجع للرقم الاحتياطي ${ar(ceiling)} ر.س/يوم لحد ما المبيعات تبقى مقروءة.`,
     };
   }
 
-  const base = Math.round(avg * (Number(sharePct) || 0) / 100);
-  const stretch = Math.round(avg * (Number(stretchPct) || 0) / 100);
+  /* لما التوقّع الحيّ شغّال بنستعمل نسبة المالك الأصلية (٢٠٪) وبس: التوسّع
+     لـ ٢٥٪ كان موجود عشان المتوسط بيقلّل من قيمة اليوم الشغّال — والتوقّع
+     الحيّ بيصلّح ده من الأصل. لو سبناهم مع بعض كنا هنحسب اليوم الحلو مرتين. */
+  const anchor = live ? Number(projection.projected) : avg;
+  const base = Math.round(anchor * (Number(sharePct) || 0) / 100);
+  const stretch = Math.round(anchor * (Number(stretchPct) || 0) / 100);
   let ceiling = hot ? stretch : base;
   let capped = null;
   if (ceiling > cap) { ceiling = cap; capped = "السقف المطلق"; }
   if (ceiling < Number(floor)) { ceiling = Math.min(Number(floor) || 0, cap); capped = "أرضية السقف"; }
 
-  return {
-    ceiling, base, stretch, hot, trailing7Avg: r2(avg),
-    sharePct, stretchPct, hardMax: cap, floor, capped, source: hot ? "stretch" : "base",
-    reason: `متوسط مبيعات آخر ٧ أيام ${ar(avg)} ر.س/يوم × ${sharePct}٪ = ${ar(base)} ر.س مسموح للإعلانات النهارده` +
+  const head = live
+    ? `توقّع مبيعات النهارده ${ar(anchor)} ر.س × ${sharePct}٪ = ${ar(base)} ر.س مسموح للإعلانات. ${projection.reason}`
+    : `متوسط مبيعات آخر ٧ أيام ${ar(avg)} ر.س/يوم × ${sharePct}٪ = ${ar(base)} ر.س مسموح للإعلانات النهارده` +
       (hot ? `، والنبض فوق خط الأساس بـ ${Math.round(Number(pacePct))}٪ فاتفتح سقف التوسّع ${stretchPct}٪ = ${ar(stretch)} ر.س` : "") +
-      (capped ? ` — متقصوص على ${capped} (${ar(ceiling)} ر.س).` : ` — السقف النهارده ${ar(ceiling)} ر.س.`),
+      (projection && projection.reason ? ` ${projection.reason}` : "");
+
+  return {
+    ceiling, base, stretch, hot, live, anchor: r2(anchor),
+    trailing7Avg: Number.isFinite(avg) && avg > 0 ? r2(avg) : null, projection,
+    sharePct, stretchPct, hardMax: cap, floor, capped,
+    source: live ? "live" : hot ? "stretch" : "base",
+    reason: head + (capped ? ` — متقصوص على ${capped} (${ar(ceiling)} ر.س).` : ` — السقف دلوقتي ${ar(ceiling)} ر.س.`),
+  };
+}
+
+/* ── تسوية آخر اليوم ────────────────────────────────────────────────────
+   السقف كان مبني على توقّع. آخر اليوم بنعرف الرقم الحقيقي، فبنكتب الفرق:
+   صرفنا كام مقابل الـ ٢٠٪ اللي اليوم استحقّها فعلاً. من غير السطر ده الوكيل
+   بيسرّع كل يوم ومحدش بيعرف كان محق ولا لأ.                                */
+export function reconcileDay({ realisedRevenue = 0, spend = 0, sharePct = 20, ceilingUsed = null } = {}) {
+  const rev = Math.max(0, Number(realisedRevenue) || 0);
+  const spent = Math.max(0, Number(spend) || 0);
+  const entitled = Math.round(rev * (Number(sharePct) || 20) / 100);
+  const variance = spent - entitled;
+  const pctOfSales = rev > 0 ? Math.round((spent / rev) * 1000) / 10 : null;
+  const band = Math.max(20, entitled * 0.15);
+  const tone = variance > band ? "over" : variance < -band ? "under" : "on";
+  return {
+    realisedRevenue: r2(rev), spend: r2(spent), entitled, variance: r2(variance),
+    pctOfSales, ceilingUsed, tone,
+    reason: `اليوم قفل على ${ar(rev)} ر.س مبيعات، يعني قاعدة الـ ${sharePct}٪ كانت بتسمح بـ ${ar(entitled)} ر.س إعلانات. ` +
+      `صرفنا ${ar(spent)} ر.س${pctOfSales == null ? "" : ` (${pctOfSales}٪ من المبيعات)`} — ` +
+      (tone === "over" ? `يعني زيادة ${ar(Math.abs(variance))} ر.س فوق المستحق. التوقّع كان أعلى من الحقيقة، والمتوسط بكرة هيحسب اليوم ده فالسقف بيتظبط لوحده.`
+        : tone === "under" ? `يعني أقل بـ ${ar(Math.abs(variance))} ر.س من المستحق — سبنا فرصة على الأرض.`
+          : `يعني في حدود المستحق.`),
   };
 }
 
@@ -1004,6 +1354,7 @@ export const LOG_TYPES = {
   alert:   { label: "تنبيه",       icon: "🚨", tone: "alert" },
   note:    { label: "ملاحظة",      icon: "📝", tone: "note" },
   error:   { label: "خطأ",         icon: "⚠️", tone: "error" },
+  settle:  { label: "تسوية اليوم",  icon: "🧾", tone: "note" },
 };
 
 const OUTCOME = {
@@ -1076,6 +1427,15 @@ export function logLine(row) {
           (t.orders != null && b.orders != null ? ` (${ar(t.orders)} طلب و${ar(t.revenue)} ر.س مقابل ${ar(b.orders)} طلب و${ar(b.revenue)} ر.س في نفس اليوم من الأسابيع اللي فاتت).` : ".")
         : clip(row.reason, 200);
     }
+  } else if (kind === "reconcile") {
+    /* سطر آخر اليوم: صرفنا كام مقابل اللي اليوم استحقّه فعلاً. ده السطر اللي
+       بيخلي المالك يحكم على الوكيل بدل ما يصدّقه. */
+    type = "settle";
+    const varAbs = ar(Math.abs(Number(d.variance) || 0));
+    title = d.tone === "over" ? `صرفنا ${ar(d.spend)} ر.س والمستحق كان ${ar(d.entitled)} — زيادة ${varAbs} ر.س`
+      : d.tone === "under" ? `صرفنا ${ar(d.spend)} ر.س والمستحق كان ${ar(d.entitled)} — سبنا ${varAbs} ر.س على الأرض`
+      : `صرفنا ${ar(d.spend)} ر.س والمستحق ${ar(d.entitled)} ر.س — في الحدود`;
+    why = clip(row.reason, 300);
   } else if (kind === "budget") {
     const from = Number(d.from), to = Number(d.to);
     type = Number.isFinite(from) && Number.isFinite(to) && to < from ? "cut" : "raise";
@@ -1236,7 +1596,7 @@ export function register(app, ctx, deps = {}) {
     // الحقول المحسوبة عمرها ما بتتخزن — لو صف قديم فيه واحد منهم بيتشال هنا
     // عشان ما يتثبّتش سقف اتحسب من مبيعات أسبوع فات.
     delete stored.ceiling;
-    return { ...DEFAULT_SETTINGS, ...PACE_DEFAULTS, ...DAYPART_DEFAULTS, ...ECON_DEFAULTS, ...stored };
+    return { ...DEFAULT_SETTINGS, ...PACE_DEFAULTS, ...DAYPART_DEFAULTS, ...ECON_DEFAULTS, ...INTRADAY_DEFAULTS, ...stored };
   }
   async function saveSettings(patch) {
     const cur = await getSettings();
@@ -1274,14 +1634,85 @@ export function register(app, ctx, deps = {}) {
      وبيتحقن في نفس كائن الإعدادات اللي بيتمرّر لكل حتة — بدل ما نعدّل خمس
      أماكن ونسيب واحدة بالرقم القديم.
      الإعداد المخزّن (maxTotalBudget) بيفضل موجود كاحتياطي بس. */
-  async function settingsNow({ pacePct = null, base = null } = {}) {
+  /* ── منحنى اليوم من قاعدة البيانات ──────────────────────────────────────
+     استعلام واحد بيرجّع لكل يوم شغل سابق الإيراد المتراكم ساعة بساعة بترتيب
+     يوم المطعم. الناتج بيتكاش نص ساعة: الشكل ده بيتغيّر على مدار أسابيع مش
+     دقايق، والدورة السريعة بتجري كل ٥ دقايق — من غير الكاش كنا هنقرا كل
+     الطلبات ٢٨٨ مرة في اليوم عشان نفس الرقم.                              */
+  let shapeCache = { at: 0, shape: null };
+  const SHAPE_TTL_MS = 30 * 60_000;
+
+  async function dayShape(force = false) {
+    if (!force && shapeCache.shape && Date.now() - shapeCache.at < SHAPE_TTL_MS) return shapeCache.shape;
+    const lookback = Number((await getSettings()).shapeLookbackDays) || INTRADAY_DEFAULTS.shapeLookbackDays;
+    const r = await pool.query(
+      `SELECT o.calendar_day AS day,
+              extract(dow from o.calendar_day)::int AS dow,
+              floor(${BIZ_ELAPSED_SQL})::int AS off,
+              count(*)::int AS orders,
+              COALESCE(sum(o.total),0)::numeric AS revenue
+         FROM ts_orders o
+        WHERE o.calendar_day >= ((now() AT TIME ZONE '${RIYADH_TZ}') - interval '${BIZ_DAY_START_HOUR} hours')::date - $1::int
+          AND o.calendar_day <  ((now() AT TIME ZONE '${RIYADH_TZ}') - interval '${BIZ_DAY_START_HOUR} hours')::date
+          AND ${SALES_ONLY_SQL}
+        GROUP BY 1,2,3`, [lookback]);
+
+    const byDay = new Map();
+    for (const row of r.rows) {
+      const iso = isoDay(row.day);
+      let d = byDay.get(iso);
+      if (!d) { d = { day: iso, dow: Number(row.dow), rev: new Array(24).fill(0), orders: 0 }; byDay.set(iso, d); }
+      const off = Math.max(0, Math.min(23, Number(row.off)));
+      d.rev[off] += Number(row.revenue);
+      d.orders += Number(row.orders);
+    }
+    const rows = [...byDay.values()].sort((a, b) => a.day.localeCompare(b.day)).map((d) => {
+      const cum = []; let c = 0;
+      for (let i = 0; i < 24; i++) { c += d.rev[i]; cum.push(c); }
+      return { day: d.day, dow: d.dow, orders: d.orders, total: c, cum };
+    });
+    const s = await getSettings();
+    const shape = buildDayShape(rows, {
+      lookbackDays: lookback,
+      minDowDays: Number(s.shapeMinDowDays) || INTRADAY_DEFAULTS.shapeMinDowDays,
+    });
+    shapeCache = { at: Date.now(), shape };
+    return shape;
+  }
+
+  /* المتصل يقدر يبعت النبض لو هو قاراه أصلاً (عشان ما نقراهوش مرتين)، وإلا
+     بنقراه إحنا. مهم إن كل اللي بيصرف فلوس يشوف *نفس* السقف: لو الجولة
+     البطيئة اشتغلت على سقف المتوسط والإيقاع على السقف الحيّ، اليوم الميت
+     كان هيتقفل من ناحية ويتفتح من التانية. `pulse: false` بيقفل القراءة. */
+  async function settingsNow({ pacePct = null, base = null, pulse = null } = {}) {
     const s = base || await getSettings();
+    if (pulse === null && s.liveCeiling !== false && s.moveCeilingWithSales !== false) {
+      try { pulse = await pulseData(); } catch { pulse = false; }
+    }
     if (s.moveCeilingWithSales === false) {
       return { ...s, ceiling: { ceiling: s.maxTotalBudget, source: "manual", trailing7Avg: null,
         reason: `سقف يدوي ثابت ${ar(s.maxTotalBudget)} ر.س/يوم — قاعدة الـ ٢٠٪ متقفولة من الإعدادات.` } };
     }
     let trailing = { avg: null, days: 0 };
     try { trailing = await trailingDailySales(7); } catch { /* المبيعات مش مقروءة → fallback */ }
+
+    /* التوقّع الحيّ. محتاج النبض (مبيعات النهارده + عدد الساعات اللي عدّت).
+       لو المتصل ما بعتش نبض بنشتغل بالمتوسط زي الأول — ما بنعملش نداء زيادة
+       على قاعدة البيانات من جوّه دالة الإعدادات. */
+    let projection = null;
+    if (s.liveCeiling !== false && pulse && pulse.today) {
+      try {
+        projection = projectDayRevenue({
+          shape: await dayShape(),
+          dow: pulse.dow, elapsedH: pulse.elapsedH,
+          revSoFar: pulse.today.revenue, ordersSoFar: pulse.today.orders,
+          trailingAvg: trailing.avg,
+          minSharePct: s.projMinSharePct ?? INTRADAY_DEFAULTS.projMinSharePct,
+          minOrders: s.projMinOrders ?? INTRADAY_DEFAULTS.projMinOrders,
+        });
+      } catch (e) { projection = null; console.error("[autopilot] projection failed:", e.message); }
+    }
+
     const ceiling = movingCeiling({
       trailing7Avg: trailing.avg,
       sharePct: s.adsShareOfSalesPct,
@@ -1291,6 +1722,10 @@ export function register(app, ctx, deps = {}) {
       hardMax: Math.min(Number(s.absoluteMaxTotalBudget) || ECON_DEFAULTS.absoluteMaxTotalBudget, MAX_DAILY_BUDGET),
       floor: s.minTotalBudget,
       fallback: s.maxTotalBudget,
+      projection,
+      /* التوسّع لـ ٢٥٪ كان بيتفتح على مجرد نسبة إيقاع — والنسبة دي الساعة ٣
+         العصر ممكن تتقلب بطلب واحد. دلوقتي لازم كمان يبقى فيه طلبات كفاية. */
+      stretchAllowed: !pulse || Number(pulse.today?.orders || 0) >= Number(s.paceMinOrders ?? 6),
     });
     return { ...s, maxTotalBudget: ceiling.ceiling, ceiling: { ...ceiling, sampleDays: trailing.days } };
   }
@@ -1317,11 +1752,13 @@ export function register(app, ctx, deps = {}) {
                 ((now() AT TIME ZONE '${RIYADH_TZ}') - interval '${BIZ_DAY_START_HOUR} hours')
                 - ((now() AT TIME ZONE '${RIYADH_TZ}') - interval '${BIZ_DAY_START_HOUR} hours')::date::timestamp
               )) / 3600.0 AS elapsed_h,
-              extract(hour from (now() AT TIME ZONE '${RIYADH_TZ}'))::int AS riyadh_hour`);
+              extract(hour from (now() AT TIME ZONE '${RIYADH_TZ}'))::int AS riyadh_hour,
+              extract(minute from (now() AT TIME ZONE '${RIYADH_TZ}'))::int AS riyadh_minute`);
     return {
       day: isoDay(r.rows[0].day),
       elapsedH: Math.min(24, Math.max(0, Number(r.rows[0].elapsed_h) || 0)),
       riyadhHour: Number(r.rows[0].riyadh_hour) || 0,
+      riyadhMinute: Number(r.rows[0].riyadh_minute) || 0,
     };
   }
 
@@ -1346,7 +1783,7 @@ export function register(app, ctx, deps = {}) {
   }
 
   async function pulseData() {
-    const { day, elapsedH, riyadhHour } = await bizNow();
+    const { day, elapsedH, riyadhHour, riyadhMinute } = await bizNow();
 
     // النهارده + نفس يوم الأسبوع في آخر ٤ أسابيع، كلهم مقصوصين عند elapsedH.
     const per = (await pool.query(
@@ -1388,7 +1825,7 @@ export function register(app, ctx, deps = {}) {
 
     const today = get(day);
     const pulse = shapePulse({
-      day, elapsedH, riyadhHour,
+      day, elapsedH, riyadhHour, riyadhMinute,
       today: { orders: Number(today.orders) || 0, revenue: Number(today.revenue) || 0 },
       comparables,
     });
@@ -2512,7 +2949,7 @@ ${focus}
       const pulse = await pulseData();
       // السقف بيتحسب هنا عشان النبض يدخل في الحسبة: يوم شغّال بيفتح سقف
       // التوسّع، ومن غير كده كنا هنقيس اليوم الشغّال بسقف اليوم العادي.
-      const s = await settingsNow({ pacePct: pulse.pacePct, base: stored });
+      const s = await settingsNow({ pacePct: pulse.pacePct, base: stored, pulse });
       const offsetOf = (h) => ((Number(h) - BIZ_DAY_START_HOUR) + 24) % 24;
       const inWindow = pulse.elapsedH >= offsetOf(s.paceStartHour) && pulse.elapsedH <= offsetOf(s.paceLastRaiseHour);
       if (!mustSettle && !inWindow && !force) {
@@ -2647,8 +3084,34 @@ ${focus}
         results.push({ op: a.op, campaign: a.campaignName, from: a.from, to: a.to, status });
       }
 
+      /* ── التسوية: الاسترجاع خلص، نكتب الحساب الحقيقي ────────────────────
+         السقف كان توقّع. دلوقتي اليوم اللي صرفنا عليه قفل خلاص وبقى عندنا
+         رقمه الحقيقي، فبنسجّل سطر واحد بيقول: اليوم استحق كام، صرفنا كام،
+         والفرق. من غيره الوكيل بيسرّع كل يوم ومحدش بيعرف كان محق ولا لأ. */
+      const restoredOk = results.filter((x) => x.op === "restore" && x.status === "auto_executed");
+      if (restoredOk.length) {
+        try {
+          const settledDay = decision.actions.find((x) => x.op === "restore")?.accountDay || accountDay;
+          const rev = await pool.query(
+            `SELECT COALESCE(sum(total),0) AS rev FROM ts_orders
+               WHERE calendar_day = $1::date
+                 AND (order_type IS NULL OR (order_type NOT ILIKE '%void%' AND order_type NOT ILIKE '%refund%'))`,
+            [settledDay]);
+          const spent = snap.rows.reduce((a2, r2r) => a2 + (Number(r2r.spend) || 0), 0);
+          const rec = reconcileDay({
+            realisedRevenue: Number(rev.rows[0]?.rev) || 0, spend: spent,
+            sharePct: s.adsShareOfSalesPct, ceilingUsed: s.ceiling?.ceiling ?? null,
+          });
+          await pool.query(
+            `INSERT INTO ap_decisions (id, run_id, kind, detail, reason, status)
+             VALUES ($1,$2,'reconcile',$3,$4,'info')`,
+            [crypto.randomUUID(), runId, jb({ ...rec, accountDay: settledDay, bizDay: settledDay }), rec.reason]);
+        } catch (e) { console.error("[autopilot] reconcile failed:", e.message); }
+      }
+
       const summary = { trigger, mode: s.mode, kind: "pace", phase: decision.phase,
-                        pace: pulse.pacePct, accountDay, actions: results };
+                        pace: pulse.pacePct, accountDay, breach: decision.breach || false,
+                        delivery: decision.delivery?.pct ?? null, actions: results };
       await pool.query(`UPDATE ap_runs SET status='done', finished_at=NOW(), summary=$2 WHERE id=$1`,
         [runId, jb(summary)]);
       return { ok: true, runId, ...summary };
@@ -2800,9 +3263,9 @@ ${focus}
        الصرف بيتقرا من المنصات نفسها (لقطة النهارده) — لو منصة مش مربوطة
        بترجّع سبب بدل صفر كذّاب. النبض بيدخل في حساب السقف عشان اليوم
        الشغّال يفتح سقف التوسّع في نفس السطر. */
-    let pacePct = null;
-    try { pacePct = (await pulseData()).pacePct; } catch { /* المبيعات مش مقروءة */ }
-    const eff = await settingsNow({ pacePct, base: s });
+    let pacePct = null, statusPulse = null;
+    try { statusPulse = await pulseData(); pacePct = statusPulse.pacePct; } catch { /* المبيعات مش مقروءة */ }
+    const eff = await settingsNow({ pacePct, base: s, pulse: statusPulse });
     let todaySpend = null, spendReasons = {};
     try {
       const snapToday = await perfSnapshot({ from: todayISO(), to: todayISO() });
@@ -3031,13 +3494,64 @@ ${focus}
     const err = await requireAdmin(c); if (err) return err;
     try {
       const pulse = await pulseData();
-      const s = await settingsNow({ pacePct: pulse.pacePct });
+      const s = await settingsNow({ pacePct: pulse.pacePct, pulse });
       const open = await pacingState();
+      const w = adsWindow(new Date(), s);
+
+      /* ── السطر اللي المالك بيبصله وهو واقف ─────────────────────────────
+         صرفنا كام، السقف كام دلوقتي، وفاضل كام. الصرف بيتقرا من المنصات —
+         لو منصة مش مربوطة بيرجع سببها بدل صفر كذّاب. ولو كل المنصات وقعت
+         بنقول مش عارفين بدل ما نقول فاضل السقف كله.                        */
+      let spendToday = null, spendReasons = {};
+      try {
+        const snapToday = await perfSnapshot({ from: todayISO(), to: todayISO() });
+        spendReasons = snapToday.reasons;
+        if (snapToday.rows.length) spendToday = r2(snapToday.rows.reduce((a, r) => a + (Number(r.spend) || 0), 0));
+      } catch (e) { spendReasons = { _: String(e.message || e) }; }
+
+      const eff = deliveryEfficiency({
+        riyadhHour: pulse.riyadhHour, riyadhMinute: pulse.riyadhMinute || 0,
+        adsCloseHour: w.closeHour, accountRollHourRiyadh: Number(s.accountRollHourRiyadh ?? 10),
+      });
+      const minEff = Number(s.minDeliveryEfficiencyPct ?? INTRADAY_DEFAULTS.minDeliveryEfficiencyPct);
+      const ceilingNow = Number(s.ceiling?.ceiling) || 0;
+      const headroom = spendToday == null ? null : r2(Math.max(0, ceilingNow - spendToday));
+      const proj = s.ceiling?.projection || null;
+
       return c.json({
         ok: true,
         ...pulse,
         ceiling: s.ceiling,
-        adsWindow: adsWindow(new Date(), s),
+        /* كل الأرقام اللي الشاشة محتاجاها في مكان واحد — الواجهة مبتحسبش
+           حاجة، عشان الرقم اللي المالك بيشوفه يبقى هو نفسه الرقم اللي
+           القرار اتاخد بيه. */
+        budget: {
+          revenueToday: pulse.today.revenue,
+          ordersToday: pulse.today.orders,
+          normalPaceToday: pulse.baseline.revenue,     // نفس يوم الأسبوع مقصوص عند نفس الساعة
+          pacePct: pulse.pacePct,
+          dayShare: proj?.share ?? null,               // عدّى كام ٪ من اليوم
+          projectedDayRevenue: proj?.projected ?? s.ceiling?.trailing7Avg ?? null,
+          projectionLive: !!(proj && proj.usable),
+          projectionRaw: proj?.raw ?? null,
+          trailingAvg: s.ceiling?.trailing7Avg ?? null,
+          sharePct: s.adsShareOfSalesPct,
+          ceiling: ceilingNow,
+          spendToday, spendReasons,
+          headroom,
+          headroomPct: spendToday == null || ceilingNow <= 0 ? null
+            : Math.max(0, Math.round(((ceilingNow - spendToday) / ceilingNow) * 100)),
+          delivery: eff, minDeliveryEfficiencyPct: minEff,
+          canRaiseNow: eff.pct >= minEff && w.open && (headroom == null || headroom > 0),
+          why: eff.pct < minEff
+            ? `الوقت اتأخر: ${eff.reason} مابنرفعش تحت ${minEff}٪.`
+            : !w.open ? w.why
+              : headroom != null && headroom <= 0
+                ? `صرفنا ${ar(spendToday)} ر.س والسقف ${ar(ceilingNow)} — مفيش مساحة زيادة دلوقتي.`
+                : `${s.ceiling?.reason || ""}`,
+          reconcileNote: `آخر اليوم بنقارن اللي صرفناه بـ ${s.adsShareOfSalesPct}٪ من المبيعات الحقيقية وبنسجّل الفرق — السقف توقّع، والتسوية هي الحقيقة.`,
+        },
+        adsWindow: w,
         pacing: {
           enabled: s.pacing !== false && s.mode !== "off",
           mode: s.mode,
