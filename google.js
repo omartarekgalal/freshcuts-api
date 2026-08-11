@@ -49,6 +49,25 @@
         https://developers.google.com/google-ads/api/docs/conversions/upload-clicks
 ═══════════════════════════════════════════════════════════════════════════ */
 
+/* ═══════════════════════════════════════════════════════════════════════════
+   API VERSION — ONE constant, overridable by env, and nothing else.
+
+   Google sunsets a major version about a year after it ships, and since
+   January 2026 it ships a major roughly every quarter. v21 died on
+   2026-08-05: every GAQL call started answering
+     INVALID_ARGUMENT (UNSUPPORTED_VERSION): Version v21 is deprecated.
+   while OAuth and the developer token kept working perfectly — so the account
+   read fine and every query failed, which is the most confusing possible
+   failure mode.
+
+   The version now lives HERE and only here (mirroring META_API_VERSION in
+   ads.js). The next bump is `GOOGLE_ADS_API_VERSION=v26` in Coolify — a config
+   change that needs no deploy — and this default is the floor, not the truth.
+   googleError() below also recognises the sunset error by name and says what
+   to do about it, so the next time it happens the message is the fix.
+   ═══════════════════════════════════════════════════════════════════════════ */
+const DEFAULT_API_VERSION = "v25";        // released 2026-07-22, supported to ~2026-07
+
 const env = (k) => (process.env[k] || "").trim();
 const digitsOnly = (s) => String(s || "").replace(/\D/g, "");
 const micros = (v) => String(Math.round(Number(v) * 1e6));
@@ -79,6 +98,65 @@ function googleError(res) {
   if (!res.ok) return res.error || `HTTP ${res.status}`;
   return null;
 }
+
+/* A sunset version is not a query bug and must not read like one. Google says
+   "Version v21 is deprecated" and stops there; the owner needs the next step,
+   which is one env var. Wrapping it here means every reader — diagnose, the
+   scorecard, the autopilot — repeats the same instruction. */
+function withVersionHint(reason, version) {
+  if (!reason) return reason;
+  if (!/UNSUPPORTED_VERSION|is deprecated|Version v\d+/i.test(reason)) return reason;
+  return `${reason} — نسخة Google Ads API «${version}» انتهت صلاحيتها. غيّر GOOGLE_ADS_API_VERSION في إعدادات التطبيق لأحدث نسخة (${DEFAULT_API_VERSION} أو أعلى) من غير ما تعدّل كود.`;
+}
+
+/* ─── policy text ─────────────────────────────────────────────────────────
+   PolicyTopicEntry is where Google writes, in its own words, WHY a keyword or
+   an ad is blocked — and it is nested three levels deep in
+   evidences[].textList.texts[]. Flattening it is the difference between
+   "Disapproved" and "Disapproved: Sensitive events — «فريش كاتس»".
+   Everything is passed through verbatim; nothing is paraphrased, because the
+   whole value of this field is that it is Google's sentence and not ours. */
+const POLICY_TYPE_AR = {
+  PROHIBITED: "ممنوع تمامًا — الإعلان/الكلمة مش هتشتغل",
+  LIMITED: "مسموح بحدود — بيظهر في أماكن أقل",
+  FULLY_LIMITED: "محظور في كل الدول المستهدفة",
+  DESCRIPTIVE: "وصف فقط — مش مانع",
+  BROADENING: "بيوسّع الوصول",
+  AREA_OF_INTEREST_ONLY: "بيظهر بس لناس مهتمّة بالمنطقة",
+  UNKNOWN: "غير معروف",
+};
+
+function policyEvidenceTexts(ev = {}) {
+  const out = [];
+  const push = (v) => { if (v != null && v !== "") out.push(String(v)); };
+  for (const t of ev.textList?.texts || []) push(t);
+  for (const t of ev.destinationTextList?.destinationTexts || []) push(t);
+  for (const w of ev.websiteList?.websites || []) push(w);
+  if (ev.languageCode) push(`language=${ev.languageCode}`);
+  if (ev.destinationNotWorking?.expandedUrl) push(ev.destinationNotWorking.expandedUrl);
+  if (ev.destinationMismatch?.urlTypes?.length) push(`url mismatch: ${ev.destinationMismatch.urlTypes.join(", ")}`);
+  return out;
+}
+
+function policyEntries(list) {
+  return (list || []).map((t) => ({
+    topic: t.topic || null,                       // Google's own topic name, verbatim
+    type: t.type || null,
+    typeAr: POLICY_TYPE_AR[t.type] || t.type || null,
+    // The exact strings Google objected to — usually the keyword itself.
+    evidence: (t.evidences || []).flatMap(policyEvidenceTexts),
+    // Country-level restrictions, when the topic is limited rather than banned.
+    constraints: (t.constraints || []).map((c) => ({
+      countriesTargeted: c.countryConstraintList?.totalTargetedCountries ?? null,
+      countriesBlocked: (c.countryConstraintList?.countries || []).length || null,
+      resellerConstraint: !!c.resellerConstraint,
+    })).filter((c) => c.countriesTargeted != null || c.countriesBlocked != null || c.resellerConstraint),
+  }));
+}
+
+// One human line per blocked entry: «topic» (type) — evidence, evidence…
+const policyLine = (e) =>
+  `«${e.topic || "?"}» ${e.typeAr || e.type || ""}${e.evidence.length ? ` — ${e.evidence.join(" / ")}` : ""}`.trim();
 
 /* Arabic labels for the campaign primary-status reasons. These ARE the answer
    to "why is nothing serving?", so they are translated rather than passed
@@ -157,7 +235,7 @@ export function createGoogleAdapter({ httpJson, hashEmail, hashPhonePlus, google
     eventName: "Purchase",
     note: "المطعم مفيهوش دفع أونلاين، فالشراء عمره ما بيحصل على الويب. اللي بيترفع لجوجل هو الطلبات اللي معاها معرّف حقيقي: gclid من ضغطة إعلان على المتجر، أو رقم جوال/إيميل مشفّر (Enhanced Conversions for Leads). الطلب اللي مامعهوش أي معرّف مابيتبعتش أصلاً.",
 
-    ver: () => env("GOOGLE_ADS_API_VERSION") || "v21",
+    ver: () => env("GOOGLE_ADS_API_VERSION") || DEFAULT_API_VERSION,
     apiBase() { return `https://googleads.googleapis.com/${this.ver()}`; },
     cust: () => digitsOnly(env("GOOGLE_ADS_CUSTOMER_ID")),
     loginCust: () => digitsOnly(env("GOOGLE_ADS_LOGIN_CUSTOMER_ID")),
@@ -248,9 +326,22 @@ export function createGoogleAdapter({ httpJson, hashEmail, hashPhonePlus, google
         body: { query },
       });
       const err = googleError(res);
-      if (err) return { ok: false, reason: err, results: [] };
+      if (err) return { ok: false, reason: withVersionHint(err, this.ver()), results: [] };
       const chunks = Array.isArray(res.json) ? res.json : res.json ? [res.json] : [];
       return { ok: true, results: chunks.flatMap((ch) => ch?.results || []) };
+    },
+
+    /* Same query, minus the columns a newer/older version may not know.
+       `search()` is all-or-nothing by design — one bad column loses the row set
+       — so a reader that has optional columns asks for them first and falls
+       back to the mandatory ones rather than returning nothing at all. This is
+       the other half of "a version bump must not be a code change". */
+    async searchWithFallback(fullQuery, leanQuery) {
+      const r = await this.search(fullQuery);
+      if (r.ok || !/UNRECOGNIZED_FIELD|unrecognized field|not found in resource|FIELD_DOES_NOT_EXIST|invalid field|Error in.*SELECT/i.test(r.reason || "")) return r;
+      const lean = await this.search(leanQuery);
+      if (lean.ok) return { ...lean, degraded: r.reason };
+      return r;
     },
 
     /* ─── READ: accounts ─────────────────────────────────────────────────
@@ -545,6 +636,111 @@ export function createGoogleAdapter({ httpJson, hashEmail, hashPhonePlus, google
     },
 
     /* ═══════════════════════════════════════════════════════════════════
+       UPLOAD READINESS — the pre-flight that turns 61 identical errors a
+       day into one sentence.
+
+       UploadClickConversions only accepts a conversion action whose TYPE is
+       UPLOAD_CLICKS (or UPLOAD_CALLS for calls). Point it at a WEBPAGE action
+       and every single row is rejected with INVALID_CONVERSION_ACTION_TYPE —
+       per row, per batch, per hour, forever, because ads.js retries `failed`
+       rows on the next sync. Sixty-one error rows a day, all saying the same
+       thing, none of them actionable from the dashboard.
+
+       So we ask the account ONCE (cached) whether the configured action can
+       actually receive an upload, and if it cannot we refuse to claim or send
+       anything and hand back one reason. Nothing is marked failed, so the
+       orders stay eligible: the day a valid action exists they upload with
+       their real timestamps instead of having been burned as failures.
+       ═══════════════════════════════════════════════════════════════════ */
+    _ready: null,
+    _readyAt: 0,
+    // Synchronous peek for /api/ads/status — never makes a network call, so
+    // the dashboard tile stays fast and simply says nothing until a sync ran.
+    lastReadiness() { return this._ready; },
+
+    async readiness({ force = false, ttlMs = 10 * 60 * 1000 } = {}) {
+      if (!force && this._ready && Date.now() - this._readyAt < ttlMs) return this._ready;
+      const settle = (v) => { this._ready = { ...v, checkedAt: new Date().toISOString() }; this._readyAt = Date.now(); return this._ready; };
+
+      const miss = this.missing("conversionEnv");
+      if (miss) return settle({ ok: false, code: "NOT_CONFIGURED", reason: miss });
+
+      const wanted = digitsOnly(env("GOOGLE_ADS_CONVERSION_ACTION_ID"));
+      const r = await this.search(
+        `SELECT conversion_action.id, conversion_action.name, conversion_action.type,
+                conversion_action.status, conversion_action.category
+           FROM conversion_action WHERE conversion_action.id = ${wanted || 0}`);
+      // Could not ask (token, version, network). That is NOT "misconfigured" —
+      // refusing to send on a transient read failure would silently stop a
+      // working upload, so we let the send proceed and report the doubt.
+      if (!r.ok) return settle({ ok: true, code: "UNVERIFIED", reason: `مقدرتش أتأكد من إجراء التحويل: ${r.reason}` });
+
+      const a = r.results[0]?.conversionAction;
+      if (!a) {
+        return settle({
+          ok: false, code: "ACTION_NOT_FOUND",
+          reason: `إجراء التحويل رقم ${wanted} مش موجود في حساب Google Ads ${this.cust()} — الرفع متوقّف لحد ما يتظبط GOOGLE_ADS_CONVERSION_ACTION_ID.`,
+        });
+      }
+      if (a.status && a.status !== "ENABLED") {
+        return settle({
+          ok: false, code: "ACTION_DISABLED",
+          reason: `إجراء التحويل «${a.name}» حالته ${a.status} مش ENABLED — الرفع متوقّف.`,
+        });
+      }
+      if (a.type !== "UPLOAD_CLICKS" && a.type !== "UPLOAD_CALLS") {
+        return settle({
+          ok: false, code: "WRONG_ACTION_TYPE",
+          actionId: String(a.id), actionName: a.name || null, actionType: a.type || null,
+          reason: `إجراء التحويل «${a.name}» نوعه ${a.type}، ورفع الطلبات من الكاشير (UploadClickConversions) بيقبل بس إجراء نوعه UPLOAD_CLICKS. الرفع متوقّف عن قصد لحد ما يتعمل إجراء «Import» جديد — الإجراء الحالي بيقيس ضغطات واتساب على الموقع وميصحّش نغيّر نوعه.`,
+        });
+      }
+      return settle({ ok: true, code: "READY", actionId: String(a.id), actionName: a.name || null, actionType: a.type });
+    },
+
+    // ads.js calls this before claiming anything. Contract: { ok, reason }.
+    async preflight() {
+      const r = await this.readiness();
+      return r.ok ? { ok: true } : { ok: false, code: r.code, reason: r.reason };
+    },
+
+    /* ─── WRITE: create the UPLOAD_CLICKS conversion action ───────────────
+       A descriptor, exactly like stateCall/budgetCall, so it goes through the
+       SAME ADS_ALLOW_WRITE gate, the same dry-run preview and the same
+       redaction. Two deliberate choices:
+         • primaryForGoal:false — a new PRIMARY action joins Smart Bidding's
+           optimisation target the moment it exists. Creating a measurement
+           row must not quietly change what the campaign bids toward; the
+           owner can promote it in the UI when they mean to.
+         • MANY_PER_CLICK — every till order is its own sale, and orderId
+           already dedups them.
+       Nothing here touches a campaign, a budget or billing. */
+    createUploadActionCall({ name = "Fresh Cuts — Till Orders (Import)", category = "PURCHASE", currency = "SAR" } = {}) {
+      const cust = this.cust();
+      return {
+        url: `${this.apiBase()}/customers/${cust}/conversionActions:mutate`,
+        method: "POST",
+        headers: this.hdr(),
+        body: {
+          operations: [{
+            create: {
+              name,
+              type: "UPLOAD_CLICKS",
+              category,
+              status: "ENABLED",
+              primaryForGoal: false,
+              countingType: "MANY_PER_CLICK",
+              clickThroughLookbackWindowDays: 90,
+              viewThroughLookbackWindowDays: 1,
+              attributionModelSettings: { attributionModel: "GOOGLE_ADS_LAST_CLICK" },
+              valueSettings: { defaultValue: 0, defaultCurrencyCode: currency, alwaysUseDefaultValue: false },
+            },
+          }],
+        },
+      };
+    },
+
+    /* ═══════════════════════════════════════════════════════════════════
        DIAGNOSE — "ليه جوجل مش بيعرض؟" مجاوَب من الـ API
 
        Every section runs its own query and records its own failure, because
@@ -562,7 +758,7 @@ export function createGoogleAdapter({ httpJson, hashEmail, hashPhonePlus, google
           findings: [{ level: "blocker", ar: miss }],
         };
       }
-      const out = { ok: true, connected: true, customerId: this.cust(), days, errors: {} };
+      const out = { ok: true, connected: true, customerId: this.cust(), apiVersion: this.ver(), days, errors: {} };
       const run = async (key, query) => {
         const r = await this.search(query);
         if (!r.ok) { out.errors[key] = r.reason; return []; }
@@ -668,44 +864,83 @@ export function createGoogleAdapter({ httpJson, hashEmail, hashPhonePlus, google
         };
       });
 
-      /* 4. ad groups + ads, with the policy verdict on each ad */
+      /* 4. ad groups + ads, with the policy verdict on each ad — and, when
+         the verdict is bad, Google's own sentence for why. */
       const ads = await run("ads",
         `SELECT campaign.id, ad_group.id, ad_group.name, ad_group.status,
-                ad_group_ad.ad.id, ad_group_ad.status,
+                ad_group_ad.ad.id, ad_group_ad.ad.type, ad_group_ad.status,
                 ad_group_ad.policy_summary.approval_status,
                 ad_group_ad.policy_summary.review_status,
                 ad_group_ad.policy_summary.policy_topic_entries
            FROM ad_group_ad WHERE ad_group_ad.status != 'REMOVED'`);
       out.ads = ads.map((x) => {
         const ps = x.adGroupAd?.policySummary || {};
+        const topics = policyEntries(ps.policyTopicEntries);
         return {
           campaignId: String(x.campaign?.id ?? ""),
           adGroupId: String(x.adGroup?.id ?? ""),
           adGroupName: x.adGroup?.name || "",
           adGroupStatus: x.adGroup?.status || null,
           adId: String(x.adGroupAd?.ad?.id ?? ""),
+          adType: x.adGroupAd?.ad?.type || null,
           status: x.adGroupAd?.status || null,
           approvalStatus: ps.approvalStatus || null,
           reviewStatus: ps.reviewStatus || null,
-          policyTopics: (ps.policyTopicEntries || []).map((t) => ({
-            topic: t.topic || null, type: t.type || null,
-          })),
+          policyTopics: topics,
+          policyText: topics.map(policyLine),
         };
       });
 
-      /* 5. keywords — a Search campaign with none of them cannot serve */
-      const kws = await run("keywords",
-        `SELECT campaign.id, ad_group_criterion.criterion_id, ad_group_criterion.keyword.text,
-                ad_group_criterion.status, ad_group_criterion.approval_status,
+      /* 5. keywords — a Search campaign with none of them cannot serve, and a
+         keyword can be DISAPPROVED while every ad above it is APPROVED. That
+         case is invisible at the ad level and is exactly what killed delivery
+         here, so the policy summary is read at the criterion level too and
+         Google's topic + the offending text are carried out verbatim.
+         `ad_group_criterion.policy_summary` is the optional half: if a future
+         version drops or renames it, the fallback still answers "are there
+         keywords and are they enabled". */
+      const KW_LEAN = `SELECT campaign.id, ad_group.id, ad_group.name, ad_group_criterion.criterion_id,
+                ad_group_criterion.keyword.text, ad_group_criterion.keyword.match_type,
+                ad_group_criterion.status, ad_group_criterion.negative,
                 ad_group_criterion.system_serving_status
-           FROM keyword_view WHERE ad_group_criterion.status != 'REMOVED'`);
-      out.keywords = kws.map((x) => ({
-        campaignId: String(x.campaign?.id ?? ""),
-        text: x.adGroupCriterion?.keyword?.text || "",
-        status: x.adGroupCriterion?.status || null,
-        approvalStatus: x.adGroupCriterion?.approvalStatus || null,
-        servingStatus: x.adGroupCriterion?.systemServingStatus || null,
-      }));
+           FROM keyword_view WHERE ad_group_criterion.status != 'REMOVED'`;
+      const kwRes = await this.searchWithFallback(
+        `SELECT campaign.id, ad_group.id, ad_group.name, ad_group_criterion.criterion_id,
+                ad_group_criterion.keyword.text, ad_group_criterion.keyword.match_type,
+                ad_group_criterion.status, ad_group_criterion.negative,
+                ad_group_criterion.approval_status,
+                ad_group_criterion.system_serving_status,
+                ad_group_criterion.quality_info.quality_score,
+                ad_group_criterion.policy_summary.approval_status,
+                ad_group_criterion.policy_summary.review_status,
+                ad_group_criterion.policy_summary.policy_topic_entries
+           FROM keyword_view WHERE ad_group_criterion.status != 'REMOVED'`,
+        KW_LEAN);
+      if (!kwRes.ok) out.errors.keywords = kwRes.reason;
+      if (kwRes.degraded) out.errors.keywordPolicyDetail = kwRes.degraded;
+      out.keywords = (kwRes.results || []).map((x) => {
+        const k = x.adGroupCriterion || {};
+        const ps = k.policySummary || {};
+        const topics = policyEntries(ps.policyTopicEntries);
+        return {
+          campaignId: String(x.campaign?.id ?? ""),
+          adGroupId: String(x.adGroup?.id ?? ""),
+          adGroupName: x.adGroup?.name || "",
+          criterionId: String(k.criterionId ?? ""),
+          text: k.keyword?.text || "",
+          matchType: k.keyword?.matchType || null,
+          negative: !!k.negative,
+          status: k.status || null,
+          // Two different approval fields exist; the policy summary is the one
+          // that carries the reasons, so it wins when both are present.
+          approvalStatus: ps.approvalStatus || k.approvalStatus || null,
+          reviewStatus: ps.reviewStatus || null,
+          servingStatus: k.systemServingStatus || null,
+          qualityScore: k.qualityInfo?.qualityScore ?? null,
+          policyTopics: topics,
+          policyText: topics.map(policyLine),
+        };
+      });
 
       /* 6. conversion actions and what they actually recorded */
       const actions = await run("conversionActions",
@@ -775,8 +1010,26 @@ export function createGoogleAdapter({ httpJson, hashEmail, hashPhonePlus, google
         if (disapproved.length) add("blocker", `«${c.name}»: ${disapproved.length} إعلان مرفوض من مراجعة جوجل.`);
         const underReview = mine.filter((a) => a.reviewStatus === "UNDER_REVIEW" || a.reviewStatus === "REVIEW_IN_PROGRESS");
         if (underReview.length && !c.impressions) add("warn", `«${c.name}»: ${underReview.length} إعلان لسه تحت المراجعة — ده بياخد لحد يوم شغل.`);
-        const kw = out.keywords.filter((k) => k.campaignId === c.id);
+        for (const a of disapproved) {
+          for (const line of a.policyText) add("blocker", `«${c.name}» إعلان ${a.adId} مرفوض: ${line}`);
+        }
+        const kw = out.keywords.filter((k) => k.campaignId === c.id && !k.negative);
         if (c.channel === "SEARCH" && !kw.length && !out.errors.keywords) add("blocker", `«${c.name}»: حملة بحث من غير كلمات مفتاحية.`);
+
+        /* A DISAPPROVED keyword under an APPROVED ad is the failure mode that
+           looks like nothing is wrong: the ads pass review, the campaign says
+           ELIGIBLE, and the queries the restaurant is actually named for never
+           enter the auction. Say it per keyword, with Google's own topic. */
+        const badKw = kw.filter((k) => k.approvalStatus === "DISAPPROVED" || k.policyTopics.some((t) => t.type === "PROHIBITED" || t.type === "FULLY_LIMITED"));
+        for (const k of badKw) {
+          const why = k.policyText.length ? k.policyText.join(" · ") : (k.approvalStatus || "مرفوضة من غير سبب مذكور");
+          add("blocker", `«${c.name}» / ${k.adGroupName} — الكلمة «${k.text}» ${k.approvalStatus === "DISAPPROVED" ? "مرفوضة" : "محظورة"}: ${why}`);
+        }
+        const idleKw = kw.filter((k) => !badKw.includes(k) && k.servingStatus && !["SERVING", "PENDING_REVIEW", "UNKNOWN"].includes(k.servingStatus));
+        for (const k of idleKw) add("warn", `«${c.name}» — الكلمة «${k.text}» حالتها عند جوجل ${k.servingStatus}.`);
+        if (kw.length && badKw.length === kw.length) {
+          add("blocker", `«${c.name}»: كل الكلمات المفتاحية (${kw.length}) مرفوضة — الحملة مؤهّلة على الورق بس مفيش استعلام واحد ممكن تدخل مزاده.`);
+        }
       }
 
       const conv = out.conversionActions;
@@ -788,11 +1041,19 @@ export function createGoogleAdapter({ httpJson, hashEmail, hashPhonePlus, google
       }
       const target = conv.find((a) => a.isOurUploadTarget);
       if (target && !target.uploadable) {
-        add("warn", `إجراء التحويل «${target.name}» نوعه ${target.type} — الرفع من السيرفر (UploadClickConversions) بيحتاج إجراء نوعه UPLOAD_CLICKS، أو تفعيل Enhanced Conversions for Leads عليه.`);
+        add("blocker", `إجراء التحويل «${target.name}» نوعه ${target.type} — الرفع من السيرفر (UploadClickConversions) بيقبل بس نوع UPLOAD_CLICKS. الرفع متوقّف عن قصد (مش بيحاول ويفشل)؛ اعمل إجراء استيراد جديد بـ POST /api/ads/google/conversion-action وحطّ رقمه في GOOGLE_ADS_CONVERSION_ACTION_ID.`);
+        // The one already in the account that WOULD work, if there is one.
+        const ok = conv.filter((a) => a.uploadable && a.status === "ENABLED");
+        if (ok.length) add("info", `فيه إجراء رفع صالح جاهز في الحساب: ${ok.map((a) => `«${a.name}» (${a.id})`).join(" · ")}.`);
       }
       if (!wantedAction) {
         add("info", "GOOGLE_ADS_CONVERSION_ACTION_ID مش متحطّط — القراءة والتحكم شغالين، لكن مفيش رفع للطلبات من الكاشير لجوجل.");
       }
+      /* The upload gate, stated once. This is the same object /api/ads/status
+         shows, so the dashboard and this screen never disagree. */
+      try { out.uploadReadiness = await this.readiness({ force: true }); }
+      catch (e) { out.uploadReadiness = { ok: true, code: "UNVERIFIED", reason: String(e.message || e) }; }
+
       for (const [k, v] of Object.entries(out.errors)) add("warn", `مقدرتش أقرا «${k}» من جوجل: ${v}`);
       if (!f.length) add("info", "مفيش أي مانع ظاهر — الحساب والحملات مؤهّلين وبيصرفوا.");
 

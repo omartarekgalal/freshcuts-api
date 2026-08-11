@@ -89,7 +89,12 @@ import { createGoogleAdapter } from "./google.js";
      GOOGLE_ADS_CUSTOMER_ID  the ad account, digits only (878-265-9560 is fine)
      GOOGLE_ADS_LOGIN_CUSTOMER_ID
                              optional; the MCC id when access is via a manager
-     GOOGLE_ADS_API_VERSION  optional; default v21
+     GOOGLE_ADS_API_VERSION  optional; default lives in google.js (currently
+                             v25). Google sunsets a major version a year after
+                             release — v21 died 2026-08-05 and every query
+                             started answering UNSUPPORTED_VERSION while auth
+                             kept working. Bumping this env var is the whole
+                             migration; no deploy needed.
 
    Safety:
      ADS_ALLOW_WRITE=1       REQUIRED before any state/budget change is sent.
@@ -1494,6 +1499,31 @@ export function register(app, ctx, deps = {}) {
       return out;
     }
 
+    /* ─── pre-flight: fail closed, once, instead of open, per row ────────
+       Having every env var is not the same as being able to upload. Google
+       will take the credentials, take the batch, and reject every row because
+       the conversion action is the wrong TYPE — and because ads.js retries
+       `failed` rows, that becomes the same error written down dozens of times
+       a day with no way to act on it from the dashboard.
+
+       An adapter that can know in advance says so here. Nothing is claimed and
+       nothing is marked failed: the orders stay eligible, so the day the
+       account is fixed they upload with their real timestamps. One reason
+       line, surfaced on /api/ads/status, replaces the error counter.        */
+    if (p.preflight) {
+      let pre;
+      try { pre = await p.preflight(); }
+      catch (e) { pre = { ok: true, note: `preflight itself failed: ${e.message}` }; }  // never let the check block a working send
+      if (pre && pre.ok === false) {
+        out.attempted = 0;
+        out.skipped = events.length;
+        out.notReady = pre.reason;
+        out.notReadyCode = pre.code || null;
+        out.errors.push(pre.reason);
+        return out;
+      }
+    }
+
     // Platform-specific eligibility (e.g. Meta refuses empty user_data).
     // Unusable events are NOT claimed, so they remain eligible for a later
     // sync once the linking sweeps attach an identity to them.
@@ -1621,6 +1651,14 @@ export function register(app, ctx, deps = {}) {
 
   /* ═══ ROUTES ══════════════════════════════════════════════════════════ */
 
+  /* An adapter that pre-flights caches its verdict; we only ever read that
+     cache here so /api/ads/status never waits on a platform round-trip. Null
+     until the first sync (or the first diagnose) asked. */
+  const readinessOf = (p) => {
+    const r = p.lastReadiness?.();
+    return r && r.ok === false ? r : null;
+  };
+
   /* GET /api/ads/status — what the owner's dashboard tile reads. */
   app.get("/api/ads/status", async (c) => {
     const err = await requireAdmin(c); if (err) return err;
@@ -1632,7 +1670,12 @@ export function register(app, ctx, deps = {}) {
                 count(*) FILTER (WHERE status='sent'   AND created_at > NOW() - interval '24 hours')::int AS sent24h,
                 count(*) FILTER (WHERE status='failed' AND created_at > NOW() - interval '24 hours')::int AS failed24h,
                 count(*) FILTER (WHERE status='pending')::int AS pending,
-                count(*) FILTER (WHERE status='sent')::int AS sent_total
+                count(*) FILTER (WHERE status='sent')::int AS sent_total,
+                /* Sixty-one failures that all say the same thing are one
+                   problem, not sixty-one. Show the newest reason next to the
+                   count so the tile is readable without opening the table. */
+                (ARRAY_AGG(response->>'error' ORDER BY created_at DESC)
+                   FILTER (WHERE status='failed' AND response ? 'error'))[1] AS last_error
            FROM ads_events GROUP BY platform`
       );
     } catch (e) {
@@ -1659,6 +1702,13 @@ export function register(app, ctx, deps = {}) {
           failed24h: s.failed24h || 0,
           pending: s.pending || 0,
           sentTotal: s.sent_total || 0,
+          /* ONE reason line, not a counter of the same error repeated.
+             `blockedReason` is the adapter's own pre-flight verdict — why we
+             are deliberately not sending — and it is read from cache, never
+             from the network, so this tile stays instant. `lastFailure` is the
+             last thing the platform actually said when we did send. */
+          ...(readinessOf(p) ? { blocked: true, blockedReason: readinessOf(p).reason, blockedCode: readinessOf(p).code } : {}),
+          ...(s.last_error ? { lastFailure: s.last_error } : {}),
           ...(p.note ? { note: p.note } : {}),
         };
       }),
@@ -1888,6 +1938,35 @@ export function register(app, ctx, deps = {}) {
     }
     return guardedWrite(c, platform, (p) => p.budgetCall(id, amount),
       `set ${platform} campaign ${id} daily budget to ${amount} ${DEFAULT_CURRENCY}`);
+  });
+
+  /* ═══════════════════════════════════════════════════════════════════════
+     POST /api/ads/google/conversion-action {name?, category?}
+
+     بيعمل إجراء تحويل جديد نوعه UPLOAD_CLICKS عشان طلبات الكاشير.
+
+     ليه إجراء جديد ومش تعديل الموجود: «WhatsApp Order Click» نوعه WEBPAGE
+     وبيقيس فعلاً ضغطات واتساب على الموقع — ده قياس صحيح وشغّال، وتغيير نوعه
+     بيلغي التاريخ ويكسر القياس ده. الرفع من السيرفر محتاج نوع تاني، فالحل
+     إجراء منفصل جنبه مش مكانه.
+
+     بيمشي على نفس بوابة ADS_ALLOW_WRITE زي أي تعديل تاني: لو مقفولة بيرجع
+     النداء اللي كان هيتبعت من غير ما يبعته. مش بيلمس ولا حملة ولا ميزانية
+     ولا فوترة، وبيتعمل primary_for_goal=false عشان مايدخلش في حسابات
+     Smart Bidding من غير ما حد يقرر ده.
+
+     بعد النجاح: خُد الـ id من الرد وحطّه في GOOGLE_ADS_CONVERSION_ACTION_ID.
+     ═══════════════════════════════════════════════════════════════════════ */
+  app.post("/api/ads/google/conversion-action", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    let b = {};
+    try { b = await c.req.json(); } catch { b = {}; }
+    const name = String(b.name || "Fresh Cuts — Till Orders (Import)").slice(0, 120);
+    const category = String(b.category || "PURCHASE").toUpperCase();
+    return guardedWrite(c, "google", (p) => {
+      if (!p.createUploadActionCall) throw new Error("this adapter cannot create conversion actions");
+      return p.createUploadActionCall({ name, category, currency: DEFAULT_CURRENCY });
+    }, `create a UPLOAD_CLICKS conversion action named "${name}" (category ${category}) in the Google Ads account`);
   });
 
   /* ═══════════════════════════════════════════════════════════════════════
