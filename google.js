@@ -109,6 +109,21 @@ function withVersionHint(reason, version) {
   return `${reason} — نسخة Google Ads API «${version}» انتهت صلاحيتها. غيّر GOOGLE_ADS_API_VERSION في إعدادات التطبيق لأحدث نسخة (${DEFAULT_API_VERSION} أو أعلى) من غير ما تعدّل كود.`;
 }
 
+/* ─── refusals that will never come good on a retry ───────────────────────
+   Google closed ConversionUploadService to new integrations: an account that
+   was not already uploading gets
+
+     CUSTOMER_NOT_ALLOWLISTED_FOR_THIS_FEATURE — "New integrations for
+     uploading click conversions should use the Data Manager API."
+
+   however correct the payload, however right the conversion action's type.
+   That is a shut door, not a bad row, and retrying it is precisely how 61
+   identical failures a day happen. We latch it, refuse to send, and say so
+   once — while leaving a long expiry so the day the account IS allowlisted
+   (or the Data Manager integration lands) it costs one batch to find out. */
+const PERMANENT_REFUSAL = /CUSTOMER_NOT_ALLOWLISTED_FOR_THIS_FEATURE|DEVELOPER_TOKEN_NOT_APPROVED|CUSTOMER_NOT_ENABLED|NOT_ADS_USER|OPERATION_ACCESS_DENIED/i;
+const REFUSAL_TTL_MS = 12 * 60 * 60 * 1000;
+
 /* ─── policy text ─────────────────────────────────────────────────────────
    PolicyTopicEntry is where Google writes, in its own words, WHY a keyword or
    an ad is blocked — and it is nested three levels deep in
@@ -249,7 +264,7 @@ export function createGoogleAdapter({ httpJson, hashEmail, hashPhonePlus, google
       "GOOGLE_ADS_REFRESH_TOKEN", "GOOGLE_ADS_CUSTOMER_ID",
     ],
     eventName: "Purchase",
-    note: "المطعم مفيهوش دفع أونلاين، فالشراء عمره ما بيحصل على الويب. اللي بيترفع لجوجل هو الطلبات اللي معاها معرّف حقيقي: gclid من ضغطة إعلان على المتجر، أو رقم جوال/إيميل مشفّر (Enhanced Conversions for Leads). الطلب اللي مامعهوش أي معرّف مابيتبعتش أصلاً.",
+    note: "المطعم مفيهوش دفع أونلاين، فالشراء عمره ما بيحصل على الويب. اللي بيترفع لجوجل هو الطلبات اللي معاها معرّف حقيقي: gclid من ضغطة إعلان على المتجر، أو رقم جوال/إيميل مشفّر. الطلب اللي مامعهوش أي معرّف مابيتبعتش أصلاً. ⚠️ جوجل قفلت ConversionUploadService على التكاملات الجديدة (لازم Data Manager API)، فالرفع نفسه متوقّف حاليًا — القراءة والتشخيص والتحكم في الحملات شغّالين.",
 
     ver: () => env("GOOGLE_ADS_API_VERSION") || DEFAULT_API_VERSION,
     apiBase() { return `https://googleads.googleapis.com/${this.ver()}`; },
@@ -676,13 +691,37 @@ export function createGoogleAdapter({ httpJson, hashEmail, hashPhonePlus, google
       if (!err && res.ok) {
         const j = Array.isArray(res.json) ? res.json[0] : res.json;
         const accepted = Array.isArray(j?.results) ? j.results.length : n;
+        this._refusal = null;               // it worked; forget any old latch
         return { ok: true, accepted, raw: j ?? null };
       }
+      const message = err || res.error || `HTTP ${res.status}`;
+      // `permanent` tells ads.js to file these rows as skipped, not failed:
+      // they were never judged on their merits, the service refused wholesale.
+      const permanent = this.noteRefusal(message);
       return {
         ok: false,
-        error: err || res.error || `HTTP ${res.status}`,
+        permanent,
+        reason: permanent ? this._refusal.reason : null,
+        error: withVersionHint(message, this.ver()),
         raw: res.json ?? res.text ?? null,
       };
+    },
+
+    /* Recognise a refusal that a retry cannot fix, and remember it. Returns
+       true when the caller should stop rather than try the next batch. */
+    _refusal: null,
+    noteRefusal(err) {
+      if (!err || !PERMANENT_REFUSAL.test(err)) return false;
+      const closed = /Data Manager API/i.test(err);
+      this._refusal = {
+        at: Date.now(),
+        code: closed ? "SERVICE_CLOSED_TO_NEW_INTEGRATIONS" : "NOT_ALLOWLISTED",
+        reason: closed
+          ? `جوجل قفلت ConversionUploadService على أي تكامل جديد. ردّها بالنص: «CUSTOMER_NOT_ALLOWLISTED_FOR_THIS_FEATURE — New integrations for uploading click conversions should use the Data Manager API». يعني رفع طلبات الكاشير لجوجل بقى محتاج Data Manager API، وده تكامل تاني بالكامل مش نفس النداء ده. الرفع متوقّف عن قصد لحد ما يتعمل — مش بيحاول ويفشل كل ساعة. (القراءة والتشخيص والتحكم في الحملات شغّالين عادي.)`
+          : `جوجل رفضت الرفع رفض دائم على مستوى الحساب: ${err}`,
+        google: err,
+      };
+      return true;
     },
 
     /* Uniform "what is still missing" sentence, so every read below refuses
@@ -722,6 +761,12 @@ export function createGoogleAdapter({ httpJson, hashEmail, hashPhonePlus, google
 
       const miss = this.missing("conversionEnv");
       if (miss) return settle({ ok: false, code: "NOT_CONFIGURED", reason: miss });
+
+      /* A door Google shut outranks anything a query can tell us: the
+         conversion action can be perfect and the upload still refused. */
+      if (this._refusal && Date.now() - this._refusal.at < REFUSAL_TTL_MS) {
+        return settle({ ok: false, code: this._refusal.code, reason: this._refusal.reason, googleSaid: this._refusal.google });
+      }
 
       const wanted = digitsOnly(env("GOOGLE_ADS_CONVERSION_ACTION_ID"));
       const r = await this.search(
@@ -1161,6 +1206,9 @@ export function createGoogleAdapter({ httpJson, hashEmail, hashPhonePlus, google
          shows, so the dashboard and this screen never disagree. */
       try { out.uploadReadiness = await this.readiness({ force: true }); }
       catch (e) { out.uploadReadiness = { ok: true, code: "UNVERIFIED", reason: String(e.message || e) }; }
+      if (out.uploadReadiness?.ok === false && !f.some((x) => x.ar === out.uploadReadiness.reason)) {
+        add("blocker", out.uploadReadiness.reason);
+      }
 
       for (const [k, v] of Object.entries(out.errors)) add("warn", `مقدرتش أقرا «${k}» من جوجل: ${v}`);
       if (!f.length) add("info", "مفيش أي مانع ظاهر — الحساب والحملات مؤهّلين وبيصرفوا.");

@@ -1604,6 +1604,18 @@ export function register(app, ctx, deps = {}) {
       if (parsed.ok) {
         out.sent += chunk.length;
         await finish(ids, "sent", { httpStatus: res.status, platform: parsed.raw ?? null, sentAt: new Date().toISOString() });
+      } else if (parsed.permanent) {
+        /* The platform refused the whole service, not these rows — an account
+           that is not allowlisted, a developer token that was never approved.
+           Filing that as `failed` is wrong twice over: it reads as if the
+           orders were bad, and `failed` rows are retried, which turns one shut
+           door into a daily error stream. `skipped` is the truth, and it keeps
+           the orders eligible for the day the door opens.                    */
+        out.skipped += chunk.length;
+        out.notReady = parsed.reason || parsed.error;
+        if (!out.errors.includes(out.notReady)) out.errors.push(out.notReady);
+        await finish(ids, "skipped", { httpStatus: res.status, reason: parsed.reason || parsed.error, permanent: true });
+        break;                                   // no point sending batch two
       } else {
         out.failed += chunk.length;
         out.errors.push(parsed.error);
