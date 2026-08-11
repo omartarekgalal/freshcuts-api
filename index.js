@@ -35,6 +35,9 @@ import * as hub from "./hub.js";
 import * as content from "./content.js";
 import * as tracking from "./tracking.js";
 import * as reports from "./reports.js";
+import * as pay from "./pay.js";
+import * as deliveryMod from "./delivery.js";
+import * as shop from "./shop.js";
 
 const { Pool } = pg;
 
@@ -2977,6 +2980,13 @@ reports.register(app, moduleCtx, {
   analytics: analyticsApi, attribution: attribApi, autopilot: ap,
   ads: adsApi, tracking: trackingApi, funnel: funnelApi,
 });
+// الطلب الأونلاين على بوابتنا (MyFatoorah بتاعتنا + توصيل Flying Arrow):
+// pay وdelivery بياخدوا shop كدالة مؤجلة لأن shop بيتسجّل بعدهم — نفس نمط
+// attribution/ads فوق. shop هو المالك الوحيد لدورة حياة الطلب.
+let shopApi = null;
+const payApi = pay.register(app, moduleCtx, { shop: () => shopApi });
+const deliveryApi = deliveryMod.register(app, moduleCtx, { shop: () => shopApi });
+shopApi = shop.register(app, moduleCtx, { pay: payApi, delivery: deliveryApi });
 console.log("[analytics] routes ready");
 console.log(`[ai] routes ready (provider: ${process.env.ANTHROPIC_API_KEY ? "anthropic" : process.env.LITELLM_KEY ? "litellm" : "NOT CONFIGURED"})`);
 
