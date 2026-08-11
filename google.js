@@ -344,6 +344,39 @@ export function createGoogleAdapter({ httpJson, hashEmail, hashPhonePlus, google
       return r;
     },
 
+    /* ─── GoogleAdsFieldService — ask Google what the columns are CALLED ──
+       The v21→v25 jump renamed campaign.start_date to start_date_time and
+       moved the keyword policy summary. Guessing that from a blog post is how
+       the next bump goes wrong too, so the account can be asked directly:
+       googleAdsFields:search is version-scoped, not customer-scoped, and it
+       answers with the exact selectable field list for whatever version this
+       adapter is pinned to. Read-only, and the answer IS the migration note. */
+    async fields(prefix) {
+      const t = await this.token();
+      if (!t) return { ok: false, reason: `Google OAuth refused: ${this._tokErr || "missing credentials"}`, fields: [] };
+      const safe = String(prefix || "").replace(/[^a-z0-9_.]/gi, "");
+      if (!safe) return { ok: false, reason: "prefix is required, e.g. 'ad_group_criterion'", fields: [] };
+      const res = await httpJson(`${this.apiBase()}/googleAdsFields:search`, {
+        method: "POST",
+        headers: { ...this.hdr(), Authorization: `Bearer ${t}` },
+        body: {
+          query: `SELECT name, category, selectable, filterable, sortable, data_type, is_repeated
+                    FROM google_ads_field WHERE name LIKE '${safe}%' ORDER BY name`,
+          pageSize: 1000,
+        },
+      });
+      const err = googleError(res);
+      if (err) return { ok: false, reason: withVersionHint(err, this.ver()), fields: [] };
+      return {
+        ok: true,
+        version: this.ver(),
+        fields: (res.json?.results || []).map((f) => ({
+          name: f.name, category: f.category || null, dataType: f.dataType || null,
+          selectable: f.selectable === true, repeated: f.isRepeated === true,
+        })),
+      };
+    },
+
     /* ─── READ: accounts ─────────────────────────────────────────────────
        customer_client lists everything under the login customer; on a plain
        (non-manager) account it returns the account itself, which is exactly
@@ -383,15 +416,21 @@ export function createGoogleAdapter({ httpJson, hashEmail, hashPhonePlus, google
     async campaigns() {
       const miss = this.missing("manageEnv");
       if (miss) return { ok: false, reason: miss, campaigns: [] };
-      const r = await this.search(
+      const CAMP = (dates) =>
         `SELECT campaign.id, campaign.name, campaign.status, campaign.primary_status,
                 campaign.primary_status_reasons, campaign.advertising_channel_type,
-                campaign.bidding_strategy_type, campaign.start_date, campaign.end_date,
+                campaign.bidding_strategy_type, ${dates},
                 campaign_budget.id, campaign_budget.resource_name, campaign_budget.amount_micros,
                 campaign_budget.total_amount_micros, campaign_budget.explicitly_shared,
                 campaign_budget.delivery_method
            FROM campaign WHERE campaign.status != 'REMOVED'
-          ORDER BY campaign.id`);
+          ORDER BY campaign.id`;
+      /* v24 renamed campaign.start_date → campaign.start_date_time (same for
+         end_date). Ask for the current names, fall back to the old ones so a
+         pinned older GOOGLE_ADS_API_VERSION still reads. */
+      const r = await this.searchWithFallback(
+        CAMP("campaign.start_date_time, campaign.end_date_time"),
+        CAMP("campaign.start_date, campaign.end_date"));
       if (!r.ok) return { ok: false, reason: r.reason, campaigns: [] };
       return {
         ok: true,
@@ -416,8 +455,8 @@ export function createGoogleAdapter({ httpJson, hashEmail, hashPhonePlus, google
             budgetResource: b.resourceName || null,
             budgetShared: !!b.explicitlyShared,
             budgetDelivery: b.deliveryMethod || null,
-            startTime: c.startDate || null,
-            stopTime: c.endDate || null,
+            startTime: c.startDateTime || c.startDate || null,
+            stopTime: c.endDateTime || c.endDate || null,
           };
         }),
       };
@@ -789,15 +828,23 @@ export function createGoogleAdapter({ httpJson, hashEmail, hashPhonePlus, google
         conversionTrackingStatus: cu.conversionTrackingSetting?.conversionTrackingStatus || null,
       };
 
-      /* 2. campaigns, with Google's own verdict on why they are/aren't serving */
-      const camps = await run("campaigns",
+      /* 2. campaigns, with Google's own verdict on why they are/aren't serving.
+         v24 renamed start_date/end_date to start_date_time/end_date_time; the
+         fallback keeps an older pinned version readable. */
+      const CAMP = (dates) =>
         `SELECT campaign.id, campaign.name, campaign.status, campaign.primary_status,
                 campaign.primary_status_reasons, campaign.serving_status,
                 campaign.advertising_channel_type, campaign.advertising_channel_sub_type,
-                campaign.bidding_strategy_type, campaign.start_date, campaign.end_date,
+                campaign.bidding_strategy_type, ${dates},
                 campaign_budget.amount_micros, campaign_budget.explicitly_shared,
                 campaign_budget.delivery_method
-           FROM campaign WHERE campaign.status != 'REMOVED' ORDER BY campaign.id`);
+           FROM campaign WHERE campaign.status != 'REMOVED' ORDER BY campaign.id`;
+      const campRes = await this.searchWithFallback(
+        CAMP("campaign.start_date_time, campaign.end_date_time"),
+        CAMP("campaign.start_date, campaign.end_date"));
+      if (!campRes.ok) out.errors.campaigns = campRes.reason;
+      if (campRes.degraded) out.errors.campaignDates = campRes.degraded;
+      const camps = campRes.results || [];
 
       /* 3. what those campaigns actually did over the window */
       const to = new Date();
@@ -847,8 +894,8 @@ export function createGoogleAdapter({ httpJson, hashEmail, hashPhonePlus, google
           channel: c.advertisingChannelType || null,
           channelSub: c.advertisingChannelSubType || null,
           biddingStrategy: c.biddingStrategyType || null,
-          startDate: c.startDate || null,
-          endDate: c.endDate || null,
+          startDate: c.startDateTime || c.startDate || null,
+          endDate: c.endDateTime || c.endDate || null,
           dailyBudget: fromMicros(b.amountMicros),
           budgetShared: !!b.explicitlyShared,
           budgetDelivery: b.deliveryMethod || null,

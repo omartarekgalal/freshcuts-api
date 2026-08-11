@@ -1940,6 +1940,19 @@ export function register(app, ctx, deps = {}) {
       `set ${platform} campaign ${id} daily budget to ${amount} ${DEFAULT_CURRENCY}`);
   });
 
+  /* GET /api/ads/google/fields?prefix=ad_group_criterion&selectable=1
+     أسماء الأعمدة زي ما جوجل نفسها بتقولها في النسخة المربوطة دلوقتي. لما
+     تيجي نسخة جديدة وتغيّر اسم عمود (v24 غيّرت campaign.start_date لـ
+     start_date_time)، ده المكان اللي بيقول الاسم الجديد من غير تخمين. */
+  app.get("/api/ads/google/fields", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    const g = byId("google");
+    if (!canManage(g)) return c.json({ ok: false, error: `missing ${missingOf(g.manageEnv).join(", ")}` }, 400);
+    const r = await g.fields(c.req.query("prefix") || "");
+    const onlySelectable = c.req.query("selectable") === "1";
+    return c.json({ ...r, fields: onlySelectable ? (r.fields || []).filter((f) => f.selectable) : r.fields });
+  });
+
   /* ═══════════════════════════════════════════════════════════════════════
      POST /api/ads/google/conversion-action {name?, category?}
 
