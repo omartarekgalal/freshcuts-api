@@ -1974,12 +1974,14 @@ export function register(app, ctx, deps = {}) {
     const err = await requireAdmin(c); if (err) return err;
     let b = {};
     try { b = await c.req.json(); } catch { b = {}; }
-    const name = String(b.name || "Fresh Cuts — Till Orders (Import)").slice(0, 120);
+    const name = String(b.name || "Fresh Cuts - Till Orders (Import)").slice(0, 120);
     const category = String(b.category || "PURCHASE").toUpperCase();
+    const id = b.id ? String(b.id) : null;      // pass an id to rename one, nothing else
     return guardedWrite(c, "google", (p) => {
       if (!p.createUploadActionCall) throw new Error("this adapter cannot create conversion actions");
-      return p.createUploadActionCall({ name, category, currency: DEFAULT_CURRENCY });
-    }, `create a UPLOAD_CLICKS conversion action named "${name}" (category ${category}) in the Google Ads account`);
+      return p.createUploadActionCall({ name, category, currency: DEFAULT_CURRENCY, id });
+    }, id ? `rename Google Ads conversion action ${id} to "${name}"`
+      : `create a UPLOAD_CLICKS conversion action named "${name}" (category ${category}) in the Google Ads account`);
   });
 
   /* ═══════════════════════════════════════════════════════════════════════

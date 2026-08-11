@@ -197,6 +197,22 @@ const REASON_AR = {
 };
 const reasonAr = (r) => REASON_AR[r] || r;
 
+/* Reasons that describe a normal phase or a soft limit rather than something
+   broken. They are worth saying, but they must not outrank a real blocker in
+   `verdict` — which is simply the first blocker in the list. */
+const SOFT_REASONS = new Set([
+  "BUDGET_CONSTRAINED", "BIDDING_STRATEGY_LEARNING", "BIDDING_STRATEGY_LIMITED",
+  "BIDDING_STRATEGY_CONSTRAINED", "SEARCH_VOLUME_LIMITED", "MOST_ADS_UNDER_REVIEW",
+  "MOST_ASSET_GROUPS_UNDER_REVIEW",
+]);
+
+/* system_serving_status on a keyword: ELIGIBLE is the healthy value. These are
+   the ones that mean "enabled, approved, and still not entering auctions". */
+const SLOW_KEYWORD = new Set([
+  "RARELY_SERVED", "LOW_SEARCH_VOLUME", "LOW_QUALITY_SCORE",
+  "BELOW_FIRST_PAGE_BID", "BELOW_TOP_OF_PAGE_BID", "PAUSED", "REMOVED",
+]);
+
 const PRIMARY_STATUS_AR = {
   ELIGIBLE: "مؤهّلة وبتظهر",
   PAUSED: "موقوفة",
@@ -757,8 +773,24 @@ export function createGoogleAdapter({ httpJson, hashEmail, hashPhonePlus, google
          • MANY_PER_CLICK — every till order is its own sale, and orderId
            already dedups them.
        Nothing here touches a campaign, a budget or billing. */
-    createUploadActionCall({ name = "Fresh Cuts — Till Orders (Import)", category = "PURCHASE", currency = "SAR" } = {}) {
+    createUploadActionCall({ name = "Fresh Cuts - Till Orders (Import)", category = "PURCHASE", currency = "SAR", id = null } = {}) {
       const cust = this.cust();
+      // Rename an existing action: the only field this route may touch, and
+      // the only reason it exists is that a name can arrive mangled from a
+      // shell. Type, status and category are never updated from here.
+      if (id) {
+        return {
+          url: `${this.apiBase()}/customers/${cust}/conversionActions:mutate`,
+          method: "POST",
+          headers: this.hdr(),
+          body: {
+            operations: [{
+              update: { resourceName: `customers/${cust}/conversionActions/${digitsOnly(id)}`, name },
+              updateMask: "name",
+            }],
+          },
+        };
+      }
       return {
         url: `${this.apiBase()}/customers/${cust}/conversionActions:mutate`,
         method: "POST",
@@ -907,6 +939,8 @@ export function createGoogleAdapter({ httpJson, hashEmail, hashPhonePlus, google
           spend: Math.round(p.spend * 100) / 100,
           conversions: Math.round(p.conversions * 100) / 100,
           conversionValue: Math.round(p.value * 100) / 100,
+          imprShare: s.searchImpressionShare != null
+            ? Math.round(Number(s.searchImpressionShare) * 10000) / 100 : null,
           lostImprShareBudget: s.searchBudgetLostImpressionShare != null
             ? Math.round(Number(s.searchBudgetLostImpressionShare) * 10000) / 100 : null,
           lostImprShareRank: s.searchRankLostImpressionShare != null
@@ -1043,7 +1077,11 @@ export function createGoogleAdapter({ httpJson, hashEmail, hashPhonePlus, google
       if (out.campaigns.length && !enabled.length) add("blocker", "كل الحملات موقوفة — مفيش حملة واحدة شغالة.");
 
       for (const c of enabled) {
-        for (const r of c.reasons) add(r.code === "BUDGET_CONSTRAINED" ? "warn" : "blocker", `«${c.name}»: ${r.ar}`);
+        /* Not every reason Google gives is a fault. A campaign four days old
+           on TARGET_SPEND is SUPPOSED to say LEARNING; calling that a blocker
+           buries the actual blocker under it and makes the verdict — which is
+           just the first blocker — point at the wrong thing. */
+        for (const r of c.reasons) add(SOFT_REASONS.has(r.code) ? "warn" : "blocker", `«${c.name}»: ${r.ar}`);
         if (c.primaryStatus && !["ELIGIBLE", "LEARNING", "LIMITED"].includes(c.primaryStatus) && !c.reasons.length) {
           add("blocker", `«${c.name}»: جوجل بيقول حالتها ${c.primaryStatusAr} من غير سبب مفصّل.`);
         }
@@ -1078,10 +1116,27 @@ export function createGoogleAdapter({ httpJson, hashEmail, hashPhonePlus, google
           const why = k.disapprovalReasons?.length ? k.disapprovalReasons.map((t) => `«${t}»`).join(" · ") : (k.approvalStatus || "مرفوضة من غير سبب مذكور");
           add("blocker", `«${c.name}» / ${k.adGroupName} — الكلمة «${k.text}» مرفوضة من جوجل، والسبب بنص جوجل: ${why}`);
         }
-        const idleKw = kw.filter((k) => !badKw.includes(k) && k.servingStatus && !["SERVING", "PENDING_REVIEW", "UNKNOWN"].includes(k.servingStatus));
-        for (const k of idleKw) add("warn", `«${c.name}» — الكلمة «${k.text}» حالتها عند جوجل ${k.servingStatus}.`);
+        /* One line for all of them. Twelve warnings that each name a keyword
+           is not twelve problems, it is one sentence. */
+        const idleKw = kw.filter((k) => !badKw.includes(k) && SLOW_KEYWORD.has(k.servingStatus));
+        if (idleKw.length) {
+          add("warn", `«${c.name}»: ${idleKw.length} كلمة مقبولة بس جوجل بيقول إنها نادرًا ما بتظهر (${[...new Set(idleKw.map((k) => k.servingStatus))].join(", ")}) — ${idleKw.map((k) => `«${k.text}»`).join(" · ")}. غالبًا حجم بحث قليل جدًا على الصياغة دي.`);
+        }
         if (kw.length && badKw.length === kw.length) {
           add("blocker", `«${c.name}»: كل الكلمات المفتاحية (${kw.length}) مرفوضة — الحملة مؤهّلة على الورق بس مفيش استعلام واحد ممكن تدخل مزاده.`);
+        }
+        /* Brand keywords are a special case worth naming: if the ones that
+           carry the restaurant's own name are blocked, nobody searching for
+           Fresh Cuts by name can be shown a Fresh Cuts ad, however healthy
+           everything else looks. */
+        const brandBlocked = badKw.filter((k) => /فريش|fresh\s*cut/i.test(k.text));
+        if (brandBlocked.length) {
+          add("blocker", `«${c.name}»: اسم المطعم نفسه محجوب — ${brandBlocked.map((k) => `«${k.text}»`).join(" · ")} مرفوضة، يعني اللي بيدوّر على «فريش كاتس» بالاسم مش ممكن يشوف إعلانك. قدّم اعتراض (Appeal) على الكلمات دي من شاشة الكلمات المفتاحية في جوجل.`);
+        }
+        /* Enabled, approved, funded, and still effectively invisible. Zero is
+           already covered; this is the "one impression in two weeks" case. */
+        if (c.impressions > 0 && c.impressions < 10 && !c.spend) {
+          add("warn", `«${c.name}»: ${c.impressions} انطباع بس في ${days} يوم وصفر صرف من ميزانية ${c.dailyBudget} — الحملة عمليًا مش داخلة مزادات، مش إنها بتصرف من غير نتيجة.`);
         }
       }
 
