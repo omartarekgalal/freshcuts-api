@@ -721,6 +721,13 @@ export function createGoogleAdapter({ httpJson, hashEmail, hashPhonePlus, google
           : `جوجل رفضت الرفع رفض دائم على مستوى الحساب: ${err}`,
         google: err,
       };
+      /* Publish it as the readiness verdict straight away rather than waiting
+         for the cache to lapse. Otherwise the ten minutes after a refusal
+         still cost one rejected batch per sync — the exact drip this whole
+         change exists to stop — and /api/ads/status would keep saying READY
+         while every upload was being turned away. */
+      this._ready = { ok: false, code: this._refusal.code, reason: this._refusal.reason, googleSaid: err, checkedAt: new Date().toISOString() };
+      this._readyAt = Date.now();
       return true;
     },
 
