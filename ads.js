@@ -170,6 +170,16 @@ function safeRequest(req) {
 
 /* ─── HTTP: timeout + one retry on 5xx, never throws ──────────────────── */
 
+/* The few response headers worth keeping. Meta's rate-limit budget lives in
+   one of them and nowhere in the body, so a refusal is unreadable without it. */
+const KEEP_HEADERS = ["x-business-use-case-usage", "x-app-usage", "x-ad-account-usage", "retry-after"];
+function pickHeaders(h) {
+  const out = {};
+  if (!h) return out;
+  for (const k of KEEP_HEADERS) { const v = h.get(k); if (v) out[k] = v; }
+  return out;
+}
+
 async function httpJson(url, { method = "GET", headers = {}, body = null, timeout = HTTP_TIMEOUT_MS } = {}) {
   let last = null;
   for (let attempt = 0; attempt < 2; attempt++) {
@@ -187,10 +197,10 @@ async function httpJson(url, { method = "GET", headers = {}, body = null, timeou
       let json = null;
       try { json = text ? JSON.parse(text) : null; } catch { /* not JSON */ }
       if (res.status >= 500 && attempt === 0) {
-        last = { ok: false, status: res.status, json, text: json ? undefined : text.slice(0, 1000), retried: true };
+        last = { ok: false, status: res.status, json, text: json ? undefined : text.slice(0, 1000), retried: true, headers: pickHeaders(res.headers) };
         continue;
       }
-      return { ok: res.ok, status: res.status, json, text: json ? undefined : text.slice(0, 1000) };
+      return { ok: res.ok, status: res.status, json, text: json ? undefined : text.slice(0, 1000), headers: pickHeaders(res.headers) };
     } catch (e) {
       const msg = e && e.name === "AbortError" ? `timeout after ${timeout}ms` : String((e && e.message) || e);
       last = { ok: false, status: 0, error: msg };
@@ -200,6 +210,183 @@ async function httpJson(url, { method = "GET", headers = {}, body = null, timeou
     }
   }
   return last || { ok: false, status: 0, error: "unknown transport failure" };
+}
+
+/* ═══════════════════════════════════════════════════════════════════════
+   WHY THE PLATFORM SAID NO — and for how long
+
+   Meta does not always say "you are over your quota". On 2026-08-11 the ads
+   window tried to pause four campaigns every five minutes from 00:00 to 07:00
+   UTC and Meta answered 337 times with
+
+     OAuthException 200 · error_subcode 4841013
+     "Permissions error" / "The user does not have permission for this action."
+
+   The token was never the problem: it is a SYSTEM_USER token with
+   ads_management + business_management, MANAGE on act_210662083554074, and it
+   does not expire. What the account carries is
+   `ads_api_access_tier: development_access` — the smallest Marketing API
+   quota Meta issues — and the SAME calls succeeded the moment the hourly
+   bucket rolled over at 07:00:37. Two of the rejections in that window came
+   back honestly as `(#613) Calls to this api have exceeded the rate limit`
+   with subcode 4841018, one digit away from 4841013. It is the same wall
+   wearing two different labels.
+
+   That mislabelling cost real money: a "permission" error looks permanent, so
+   nothing backed off, so the retries kept eating the very quota the pause
+   needed — and the ads ran all night with the kitchen shut. Everything in the
+   4841xxx family is therefore read as a THROTTLE, and a throttle closes the
+   gate below until the bucket resets instead of retrying into it.
+   ═══════════════════════════════════════════════════════════════════════ */
+
+const META_THROTTLE_CODES = new Set([4, 17, 32, 613, 80000, 80001, 80002, 80003, 80004, 80014]);
+
+function msToTopOfNextHour(now = Date.now()) {
+  const d = new Date(now);
+  d.setUTCMinutes(60, 30, 0);          // half a minute past, so we do not race the reset
+  return Math.max(60_000, d.getTime() - now);
+}
+
+// Meta hands the remaining budget back in a header, never in the body.
+function metaRegainMs(res) {
+  const raw = res?.headers?.["x-business-use-case-usage"];
+  if (!raw) return 0;
+  try {
+    const parsed = JSON.parse(raw);
+    let minutes = 0;
+    for (const entries of Object.values(parsed)) {
+      for (const e of entries || []) {
+        minutes = Math.max(minutes, Number(e.estimated_time_to_regain_access) || 0);
+      }
+    }
+    return minutes > 0 ? minutes * 60_000 : 0;
+  } catch { return 0; }
+}
+
+// What tier is this account on? Purely informational, but it is the single
+// fact that explains the whole incident, so it is worth surfacing.
+export function metaAccessTier(res) {
+  const raw = res?.headers?.["x-business-use-case-usage"];
+  if (!raw) return null;
+  try {
+    for (const entries of Object.values(JSON.parse(raw))) {
+      for (const e of entries || []) if (e.ads_api_access_tier) return e.ads_api_access_tier;
+    }
+  } catch { /* header shape changed */ }
+  return null;
+}
+
+/* kind: throttled | auth | permission | rejected | transport */
+export function classifyRefusal(platformId, res) {
+  const j = res?.json;
+  const status = res?.status ?? 0;
+  if (!status) return { kind: "transport", retryAfterMs: 60_000 };
+  if (status === 429) return { kind: "throttled", retryAfterMs: Number(res?.headers?.["retry-after"] || 0) * 1000 || 15 * 60_000 };
+
+  if (platformId === "meta") {
+    const e = j?.error || {};
+    const code = Number(e.code);
+    const sub = Number(e.error_subcode);
+    const family4841 = Number.isFinite(sub) && String(sub).startsWith("4841");
+    if (META_THROTTLE_CODES.has(code) || family4841) {
+      return {
+        kind: "throttled",
+        retryAfterMs: metaRegainMs(res) || msToTopOfNextHour(),
+        tier: metaAccessTier(res),
+        subcode: Number.isFinite(sub) ? sub : null,
+      };
+    }
+    if (code === 190 || code === 102 || code === 463 || code === 467) return { kind: "auth", retryAfterMs: 0 };
+    if (code === 200 || code === 10 || code === 3 || code === 294) return { kind: "permission", retryAfterMs: 0 };
+    return { kind: "rejected", retryAfterMs: 0 };
+  }
+
+  if (platformId === "tiktok") {
+    const code = Number(j?.code);
+    if (code === 40100 || code === 51021) return { kind: "throttled", retryAfterMs: 10 * 60_000 };
+    if (code === 40001 || code === 40105 || code === 40002) return { kind: "auth", retryAfterMs: 0 };
+    return { kind: status === 403 ? "permission" : "rejected", retryAfterMs: 0 };
+  }
+
+  if (platformId === "snapchat") {
+    if (status === 401) return { kind: "auth", retryAfterMs: 0 };
+    if (status === 403) return { kind: "permission", retryAfterMs: 0 };
+    return { kind: "rejected", retryAfterMs: 0 };
+  }
+
+  if (status === 401 || status === 403) return { kind: status === 401 ? "auth" : "permission", retryAfterMs: 0 };
+  return { kind: "rejected", retryAfterMs: 0 };
+}
+
+/* ─── The gate ─────────────────────────────────────────────────────────
+   One in-memory door per platform. A throttle shuts it; the first success
+   after it reopens clears it. It exists so a refusal costs ONE call instead
+   of one every five minutes — on a development-tier quota the retries are
+   what keep the quota exhausted.
+
+   In memory on purpose: a deploy should reopen every door and re-learn the
+   truth from the platform rather than inherit a stale block. The durable
+   record of what failed and how often already lives in ap_decisions.        */
+const gates = new Map();
+
+export function writeGate(platformId) {
+  const g = gates.get(platformId);
+  if (!g) return null;
+  if (Date.now() >= g.until) { gates.delete(platformId); return null; }
+  return { ...g, minutes: Math.ceil((g.until - Date.now()) / 60_000) };
+}
+
+export function closeWriteGate(platformId, { ms, reason, kind }) {
+  const until = Date.now() + Math.max(60_000, ms || 0);
+  const prev = gates.get(platformId);
+  gates.set(platformId, {
+    platform: platformId, kind, reason, until,
+    since: prev?.since || Date.now(),
+    hits: (prev?.hits || 0) + 1,
+  });
+}
+
+export function openWriteGate(platformId) { gates.delete(platformId); }
+
+export function writeGates() {
+  return [...gates.keys()].map(writeGate).filter(Boolean);
+}
+
+/* ─── The one place a campaign write actually leaves the building ──────
+   Both the dashboard buttons (guardedWrite) and the autopilot's own
+   executeDecision go through here, so the gate, the classification and the
+   wording of a refusal cannot drift apart between the two paths.           */
+export async function sendPlatformWrite(p, call) {
+  const gate = writeGate(p.id);
+  if (gate) {
+    return {
+      ok: false, gated: true, kind: gate.kind, retryInMinutes: gate.minutes,
+      error: `${p.label}: مقفول مؤقتًا (${gate.kind === "throttled" ? "تخطينا حد النداءات" : gate.kind}) — ${gate.reason}. هنعيد المحاولة بعد ${gate.minutes} دقيقة.`,
+    };
+  }
+  let authed = call;
+  if (p.authorize) {
+    authed = await p.authorize(call);
+    if (!authed || !authed.url) {
+      return { ok: false, kind: "auth", error: authed?.error || "could not obtain an access token" };
+    }
+  }
+  const res = await httpJson(authed.url, { method: authed.method, headers: authed.headers, body: authed.body });
+  const parsed = p.readBatchResult(res, 1);
+  if (parsed.ok) {
+    openWriteGate(p.id);
+    return { ok: true, httpStatus: res.status, raw: parsed.raw ?? null };
+  }
+  const cls = classifyRefusal(p.id, res);
+  if (cls.kind === "throttled") {
+    closeWriteGate(p.id, { ms: cls.retryAfterMs, kind: cls.kind, reason: parsed.error });
+  }
+  return {
+    ok: false, httpStatus: res.status, error: parsed.error, kind: cls.kind,
+    ...(cls.tier ? { accessTier: cls.tier } : {}),
+    retryInMinutes: cls.retryAfterMs ? Math.ceil(cls.retryAfterMs / 60_000) : 0,
+    raw: parsed.raw ?? null,
+  };
 }
 
 /* ═══════════════════════════════════════════════════════════════════════
@@ -319,11 +506,19 @@ const meta = {
       if (typeof j?.events_received === "number") return { ok: true, accepted: j.events_received, raw: j };
       if (j?.success === true || j?.id != null) return { ok: true, accepted: 1, raw: j };
     }
+    /* The subcode is the whole story and it used to be thrown away. Both of
+       these are the same development-tier quota wall:
+         200/4841013  "Permissions error"
+         613/4841018  "Calls to this api have exceeded the rate limit"
+       Printing only "OAuthException 200: Permissions error" sent everyone
+       hunting a token that was never broken. */
     const err = j?.error;
+    if (!err) return { ok: false, error: res.error || `HTTP ${res.status}`, raw: j ?? res.text ?? null };
+    const sub = err.error_subcode != null ? `/${err.error_subcode}` : "";
+    const extra = err.error_user_msg && err.error_user_msg !== err.message ? ` — ${err.error_user_msg}` : "";
     return {
       ok: false,
-      error: err ? `${err.type || "error"} ${err.code ?? ""}: ${err.message || ""}`.trim()
-        : res.error || `HTTP ${res.status}`,
+      error: `${err.type || "error"} ${err.code ?? ""}${sub}: ${err.message || ""}${extra}`.trim(),
       raw: j ?? res.text ?? null,
     };
   },
@@ -675,33 +870,90 @@ const snapchat = {
     };
   },
 
+  /* Snap speaks TWO dialects and this reads both, because the same function
+     judges a CAPI batch and a campaign write:
+
+       CAPI (tr.snapchat.com)   { status: "VALID" | "INVALID", reason }
+       Marketing (adsapi…)      { request_status: "SUCCESS" | "ERROR",
+                                  debug_message, campaigns:[{sub_request_status,
+                                  sub_request_error_reason}] }
+
+     It only knew the first one. A Marketing reply has no `status` field at
+     all, so every campaign write — including the successful ones — fell into
+     the error branch and was logged as `error: ` with nothing after the
+     colon. 87 rejections in a week whose reason was literally the empty
+     string, which is why the 415 below went unread for so long.
+
+     The sub-requests matter as much as the envelope: Snap answers HTTP 200
+     with request_status ERROR when the batch itself was fine but the object
+     was not (`E2006 … startTime is a required field`). Calling that a success
+     would be worse than the old bug. */
   readBatchResult(res, n) {
     const j = res.json;
-    // Snap answers { status: "VALID" | "INVALID", reason: "…" }
+    const isMarketing = !!(j && (j.request_status || j.campaigns || j.segments || j.adaccounts));
+    if (isMarketing) {
+      const subs = [].concat(j.campaigns || [], j.segments || [], j.adaccounts || []);
+      const bad = subs.find((s) => s && s.sub_request_status && s.sub_request_status !== "SUCCESS");
+      if (res.ok && j.request_status === "SUCCESS" && !bad) return { ok: true, accepted: n, raw: j };
+      return {
+        ok: false,
+        error: bad?.sub_request_error_reason || j.debug_message || j.display_message
+          || res.error || `HTTP ${res.status}`,
+        raw: j,
+      };
+    }
     if (res.ok && (!j || j.status === "VALID" || j.status === "SUCCESS")) return { ok: true, accepted: n, raw: j };
+    const said = j ? `${j.status || "error"}: ${j.reason || j.message || ""}`.trim() : "";
     return {
+      // A colon with nothing after it is not a reason. Fall back to the status.
       ok: false,
-      error: j ? `${j.status || "error"}: ${j.reason || j.message || ""}` : res.error || `HTTP ${res.status}`,
+      error: said && !/^\w+:$/.test(said) ? said : (res.error || `HTTP ${res.status}`),
       raw: j ?? res.text ?? null,
     };
   },
 
-  // Marketing API bearer. SNAP_MARKETING_TOKEN short-circuits the OAuth dance.
+  /* Marketing API bearer. SNAP_MARKETING_TOKEN short-circuits the OAuth dance.
+     Snap's access tokens live one hour and it says so in `expires_in`; the
+     old code assumed 25 minutes and ignored what it was told. */
   async token() {
     const direct = env("SNAP_MARKETING_TOKEN");
     if (direct) return direct;
     const id = env("SNAP_CLIENT_ID"), secret = env("SNAP_CLIENT_SECRET"), refresh = env("SNAP_REFRESH_TOKEN");
     if (!id || !secret || !refresh) return null;
-    if (this._tok && Date.now() - this._tokAt < 25 * 60 * 1000) return this._tok;
+    if (this._tok && Date.now() < this._tokExp) return this._tok;
     const res = await httpJson("https://accounts.snapchat.com/login/oauth2/access_token", {
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
       body: new URLSearchParams({ client_id: id, client_secret: secret, refresh_token: refresh, grant_type: "refresh_token" }).toString(),
     });
-    if (!res.ok || !res.json?.access_token) return null;
+    if (!res.ok || !res.json?.access_token) {
+      this._tokErr = res.json?.error_description || res.json?.error || res.error || `HTTP ${res.status}`;
+      return null;
+    }
+    this._tokErr = null;
     this._tok = res.json.access_token;
     this._tokAt = Date.now();
+    // Renew five minutes early so a batch that starts at minute 59 still lands.
+    this._tokExp = Date.now() + Math.max(60, (Number(res.json.expires_in) || 1800) - 300) * 1000;
     return this._tok;
+  },
+
+  /* The CAPI uses SNAP_ACCESS_TOKEN — a long-lived token pasted into the
+     environment by hand. Between 2026-08-06 23:56 and 2026-08-07 05:15 that
+     token was not valid and Snap answered 401 to 590 events, which were
+     silently written off as failures and never resent. A token we cannot
+     renew will do that again the day it lapses.
+
+     We already hold OAuth credentials that can mint a fresh token on demand,
+     so a 401 from the CAPI is now recoverable rather than fatal: drop the
+     static token for this send and retry once with a minted one. */
+  async recoverAndRetry(call, res) {
+    if (!res || res.status !== 401) return null;
+    if (!String(call.url || "").includes("tr.snapchat.com")) return null;
+    const t = await this.token();
+    if (!t) return null;
+    this._capiFellBackAt = Date.now();
+    return { ...call, url: String(call.url).replace(/access_token=[^&]*/, `access_token=${encodeURIComponent(t)}`) };
   },
 
   async accounts() {
@@ -799,30 +1051,77 @@ const snapchat = {
     return { ok: true, rows };
   },
 
-  // PATCH is the partial update. A PUT here would reset every attribute we
-  // omitted back to its default — Snap says so explicitly. Never PUT.
-  stateCall(id, state) {
+  /* ─── WRITE: campaign state / budget ───────────────────────────────────
+     There is no PATCH on a Snap campaign. The old code sent
+       PATCH /adaccounts/{acct}/campaigns/{id}
+     and Snap answered every single time with
+
+       HTTP 415 · E0002
+       "Content type requested by client is not supported: [application/json]"
+
+     — a content-type complaint that is really "this verb does not exist
+     here", which is why it read as a header bug and was never fixed. 87
+     pause/resume orders a week died there, so the 11:00→03:00 window was
+     never enforced on Snap at all.
+
+     The update is PUT on the COLLECTION, body { campaigns: [ … ] }. And it is
+     a FULL replace, not a merge: send only { id, status } and Snap refuses
+     with `E2006 … startTime is a required field`. Send only the fields we
+     care about and it would wipe the rest — the old comment's fear was
+     right about PUT, just wrong about PATCH being available instead.
+
+     So the descriptor below carries the intent, and authorize() reads the
+     campaign back and replays it whole with that one field changed.
+     `_hydrate` sits OUTSIDE url/method/headers/body, which is all
+     safeRequest() ever reads, so the dry-run preview never echoes it. */
+  _campaignWrite(id, patch) {
     const acct = env("SNAP_AD_ACCOUNT_ID");
     return {
-      url: `${this.apiBase}/adaccounts/${acct}/campaigns/${id}`,
-      method: "PATCH",
+      url: `${this.apiBase}/adaccounts/${acct}/campaigns`,
+      method: "PUT",
       headers: { "Content-Type": "application/json", Authorization: "Bearer ***resolved-at-send***" },
-      body: { campaigns: [{ id: String(id), status: state }] },
+      // What a dry run shows. The real body is built at send time from the
+      // campaign as it stands, so nothing we did not name gets reset.
+      body: { campaigns: [{ id: String(id), ...patch, "…": "بقية حقول الحملة بتترجع زي ما هي وقت الإرسال" }] },
+      _hydrate: { id: String(id), patch },
     };
   },
+  stateCall(id, state) { return this._campaignWrite(id, { status: state }); },
   budgetCall(id, dailyBudget) {
-    const acct = env("SNAP_AD_ACCOUNT_ID");
-    return {
-      url: `${this.apiBase}/adaccounts/${acct}/campaigns/${id}`,
-      method: "PATCH",
-      headers: { "Content-Type": "application/json", Authorization: "Bearer ***resolved-at-send***" },
-      body: { campaigns: [{ id: String(id), daily_budget_micro: Math.round(dailyBudget * 1e6) }] },
-    };
+    return this._campaignWrite(id, { daily_budget_micro: Math.round(dailyBudget * 1e6) });
   },
+
+  // Fields Snap writes itself. Replaying them is either refused or meaningless;
+  // everything NOT on this list is preserved verbatim, which is the point.
+  readOnlyFields: [
+    "created_at", "updated_at", "delivery_status", "sub_request_status",
+    "created_by_app_id", "created_by_user", "last_updated_by_app_id", "last_updated_by_user",
+  ],
+
+  async campaignRaw(id, t) {
+    const res = await httpJson(`${this.apiBase}/campaigns/${id}`, { headers: { Authorization: `Bearer ${t}` } });
+    const parsed = this.readBatchResult(res, 1);
+    if (!parsed.ok) return { ok: false, reason: `مقدرناش نقرا حملة سناب ${id}: ${parsed.error}` };
+    const c = res.json?.campaigns?.[0]?.campaign;
+    if (!c) return { ok: false, reason: `سناب رجّع الحملة ${id} فاضية` };
+    return { ok: true, campaign: c };
+  },
+
   async authorize(call) {
     const t = await this.token();
-    if (!t) return null;
-    return { ...call, headers: { ...call.headers, Authorization: `Bearer ${t}` } };
+    if (!t) {
+      return { error: `Snap OAuth refused: ${this._tokErr || "SNAP_CLIENT_ID / SNAP_CLIENT_SECRET / SNAP_REFRESH_TOKEN missing"}` };
+    }
+    const out = { ...call, headers: { ...call.headers, Authorization: `Bearer ${t}` } };
+    delete out._hydrate;
+    if (call._hydrate) {
+      const cur = await this.campaignRaw(call._hydrate.id, t);
+      if (!cur.ok) return { error: cur.reason };
+      const whole = { ...cur.campaign };
+      for (const k of this.readOnlyFields) delete whole[k];
+      out.body = { campaigns: [{ ...whole, ...call._hydrate.patch }] };
+    }
+    return out;
   },
 };
 
@@ -1256,8 +1555,22 @@ export function register(app, ctx, deps = {}) {
         }
         call = authed;
       }
-      const res = await httpJson(call.url, { method: call.method, headers: call.headers, body: call.body });
-      const parsed = p.readBatchResult(res, chunk.length);
+      let res = await httpJson(call.url, { method: call.method, headers: call.headers, body: call.body });
+      let parsed = p.readBatchResult(res, chunk.length);
+      /* One second chance, and only for a credential the adapter can replace
+         by itself. Snap's CAPI token is pasted in by hand and cannot be
+         renewed — when it lapsed on 2026-08-07 it took 590 events with it,
+         because a 401 was recorded as a permanent failure and the batch was
+         never retried. The adapter can mint a fresh token from OAuth, so it
+         gets to try exactly once before we write the loss down. */
+      if (!parsed.ok && p.recoverAndRetry) {
+        const retry = await p.recoverAndRetry(call, res);
+        if (retry) {
+          res = await httpJson(retry.url, { method: retry.method, headers: retry.headers, body: retry.body });
+          parsed = p.readBatchResult(res, chunk.length);
+          if (parsed.ok) out.recoveredAfterAuthFailure = (out.recoveredAfterAuthFailure || 0) + chunk.length;
+        }
+      }
       if (parsed.ok) {
         out.sent += chunk.length;
         await finish(ids, "sent", { httpStatus: res.status, platform: parsed.raw ?? null, sentAt: new Date().toISOString() });
@@ -1523,24 +1836,24 @@ export function register(app, ctx, deps = {}) {
         wouldCall: safeRequest(call),
       });
     }
-    let authed = call;
-    if (p.authorize) {
-      authed = await p.authorize(call);
-      // A refusal with a reason (revoked refresh token, shared Google budget)
-      // is the whole value of this branch — repeat it instead of a generic.
-      if (!authed || !authed.url) {
-        return c.json({ ok: false, applied: false, error: authed?.error || "could not obtain an access token", wouldDo: describe }, 502);
-      }
-    }
-    const res = await httpJson(authed.url, { method: authed.method, headers: authed.headers, body: authed.body });
-    const parsed = p.readBatchResult(res, 1);
+    /* One shared send path with the autopilot's executeDecision — same gate,
+       same classification, same words for a refusal. A button and a robot
+       pressing the same platform should not disagree about what happened. */
+    const r = await sendPlatformWrite(p, call);
     return c.json({
-      ok: parsed.ok,
-      applied: parsed.ok,
+      ok: r.ok,
+      applied: r.ok,
       did: describe,
-      httpStatus: res.status,
-      ...(parsed.ok ? { platform: redact(parsed.raw ?? null) } : { error: parsed.error, platform: redact(parsed.raw ?? null) }),
-    }, parsed.ok ? 200 : 502);
+      httpStatus: r.httpStatus ?? null,
+      ...(r.ok ? { platform: redact(r.raw ?? null) } : {
+        error: r.error,
+        failureKind: r.kind || null,
+        ...(r.gated ? { gated: true } : {}),
+        ...(r.retryInMinutes ? { retryInMinutes: r.retryInMinutes } : {}),
+        ...(r.accessTier ? { accessTier: r.accessTier } : {}),
+        platform: redact(r.raw ?? null),
+      }),
+    }, r.ok ? 200 : 502);
   }
 
   app.post("/api/ads/campaign/:platform/:id/state", async (c) => {

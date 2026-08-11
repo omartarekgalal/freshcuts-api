@@ -183,6 +183,41 @@ export function register(app, ctx, deps = {}) {
     const out = [];
     const push = (p) => out.push(p);
 
+    /* ٠) المطبخ قافل والإعلانات شغالة — أغلى سطر في الصفحة
+       ده الرقم الوحيد اللي بيتقرا من المنصة نفسها مش من جدولنا. يوم ١١
+       أغسطس فضلت أربع حملات على ميتا شغالة من ٣ الفجر لـ ١٠ الصبح لإن
+       ٣٣٧ أمر إيقاف اترفض، ومحدش عرف غير لما حد فتح السجل بإيده. */
+    const dp = d.daypart;
+    if (dp && dp.tone === "bad" && num(dp.mismatchCount) > 0) {
+      const closed = dp.window && dp.window.open === false;
+      push({
+        severity: closed ? 99 : 72,
+        tone: "bad",
+        title: closed ? "المطبخ قافل والإعلانات لسه شغالة" : "المطعم فاتح والإعلانات لسه موقوفة",
+        number: `${ar(dp.mismatchCount)} حملة حالتها على المنصة مش زي ما النافذة بتقول`,
+        why: dp.line,
+        action: closed
+          ? "الإعلان اللي بيشتغل والمطبخ قافل بيتحوّل لطلب محدش هيرد عليه — الصرف بيروح والعميل بيتضايق. صلّح سبب الرفض اللي فوق الأول، وبعدين اضغط «افحص النافذة دلوقتي» في صفحة الطيار عشان تتأكد بنفسك."
+          : "الحملات مش راجعة مع فتح المطعم — يعني بنخسر ساعات البيع الحقيقية. افحص النافذة من صفحة الطيار.",
+        source: "autopilot/daypart-verify",
+      });
+    }
+
+    /* ٠ب) منصة بترفض الكتابة بشكل متكرر — السبب اللي بيخلي اللي فوق يحصل */
+    for (const a of d.writeAlerts || []) {
+      push({
+        severity: a.severity === "bad" ? 88 : 58,
+        tone: a.severity === "bad" ? "bad" : "warn",
+        title: a.title,
+        number: `${ar(a.count)} أمر مرفوض في ٢٤ ساعة`,
+        why: a.text,
+        action: a.blockedForMinutes
+          ? `الطيار قافل الباب على المنصة دي ${ar(a.blockedForMinutes)} دقيقة عشان مايستهلكش الحد اللي محتاجه. لو الرفض بيتكرر كل يوم فالمشكلة في صلاحية الحساب مش في الطيار.`
+          : "افتح صفحة الطيار — نص رد المنصة بالحرف موجود هناك، وهو اللي بيقول إذا كانت مشكلة صلاحيات ولا حد نداءات.",
+        source: "ap_decisions/24h",
+      });
+    }
+
     /* ١) الإعلانات كنسبة من المبيعات — الرقم اللي المالك بيسوق بيه */
     const share = d.ads?.shareOfSalesPct;
     const rule = d.ads?.rulePct;
@@ -340,6 +375,16 @@ export function register(app, ctx, deps = {}) {
       soft("سجل الطيار", () => need(autopilot, "logData", "الطيار")({ from, to, limit: 120 })),
     ]);
 
+    /* هل نافذة الإعلانات متنفّذة فعلاً على المنصات، وهل في رفض متكرر؟
+       بره الـ Promise.all اللي فوق عن قصد: دول بيضربوا المنصات، ولو فشلوا
+       مايصحّش يمنعوا باقي التقرير. */
+    const [dpR, alertsR] = await Promise.all([
+      soft("تنفيذ نافذة الإعلانات", () => need(autopilot, "verifyDaypart", "الطيار")({})),
+      soft("رفض المنصات لأوامر الطيار", () => need(autopilot, "writeFailureAlerts", "الطيار")()),
+    ]);
+    const daypartVerdict = dpR.value || null;
+    const writeAlerts = alertsR.value || [];
+
     const kpis = kpisR.value || null;
     const prevKpis = prevKpisR.value || null;
     const chan = chanR.value || null;
@@ -350,7 +395,7 @@ export function register(app, ctx, deps = {}) {
     const fun = funR.value || null;
     const log = logR.value || null;
 
-    for (const r of [kpisR, prevKpisR, chanR, econR, attR, scoreR, trackR, funR, logR]) {
+    for (const r of [kpisR, prevKpisR, chanR, econR, attR, scoreR, trackR, funR, logR, dpR, alertsR]) {
       if (!r.ok) unavailable.push({ what: r.label, why: r.error });
     }
 
@@ -624,6 +669,9 @@ export function register(app, ctx, deps = {}) {
     const draft = {
       range, sales, customers, ads, attribution: attrib, funnel: funnelOut,
       tracking: tr, autopilot: apc,
+      // حالة نافذة الإعلانات زي ما المنصات قالتها، مش زي ما جدولنا فاكر.
+      daypart: daypartVerdict,
+      writeAlerts,
     };
     const priorities = buildPriorities({
       range,
@@ -634,6 +682,8 @@ export function register(app, ctx, deps = {}) {
       tracking: tr || {},
       autopilot: apc || {},
       funnel: funnelOut || {},
+      daypart: daypartVerdict || {},
+      writeAlerts,
     });
 
     return {

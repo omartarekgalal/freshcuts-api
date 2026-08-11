@@ -28,6 +28,7 @@ import crypto from "node:crypto";
 import {
   PLATFORMS, byId, canSend, canManage, missingOf,
   redact, safeRequest, httpJson, writeAllowed, MAX_DAILY_BUDGET, DEFAULT_CURRENCY,
+  sendPlatformWrite, writeGates,
 } from "./ads.js";
 // قاعدة "العميل الجديد" الواحدة في الـ API كلها. الاقتصاديات تحت مبنية عليها
 // بالحرف — لو حسبنا العملاء الجداد هنا بطريقة تانية هنقول للمالك رقمين
@@ -1553,19 +1554,22 @@ export function register(app, ctx, deps = {}) {
       call = p.budgetCall(dec.campaign_id, to);
     } else return { ok: false, error: `kind ${dec.kind} is not executable` };
 
-    if (p.authorize) {
-      /* authorize() بتحطّ التوكن، وفي حالة جوجل كمان بتحلّ اسم مورد الميزانية
-         اللي مكانش معروف وقت بناء النداء. لو رفضت بترجع سبب — والسبب ده هو
-         اللي بيتكتب في اللوج، مش «مقدرناش نجيب توكن» على طول الخط. */
-      const authed = await p.authorize(call);
-      if (!authed || !authed.url) return { ok: false, error: authed?.error || "could not obtain an access token" };
-      call = authed;
-    }
-    const res = await httpJson(call.url, { method: call.method, headers: call.headers, body: call.body });
-    const parsed = p.readBatchResult(res, 1);
-    return parsed.ok
-      ? { ok: true, httpStatus: res.status, platform: redact(parsed.raw ?? null) }
-      : { ok: false, httpStatus: res.status, error: parsed.error, platform: redact(parsed.raw ?? null) };
+    /* نفس المسار اللي أزرار اللوحة بتمشي فيه (ads.sendPlatformWrite): بيحطّ
+       التوكن، وفي حالة جوجل بيحلّ مورد الميزانية وفي حالة سناب بيقرا الحملة
+       عشان الـ PUT بتاعها استبدال كامل مش تعديل جزئي. وبيقفل باب المنصة لو
+       ردّت بإننا تخطينا حد النداءات — إعادة المحاولة كل ٥ دقايق على حد
+       متخطّي هي اللي بتاكل الحد اللي محتاجينه أصلاً عشان نوقف الحملة. */
+    const r = await sendPlatformWrite(p, call);
+    return r.ok
+      ? { ok: true, httpStatus: r.httpStatus, platform: redact(r.raw ?? null) }
+      : {
+          ok: false, httpStatus: r.httpStatus ?? null, error: r.error,
+          failureKind: r.kind || null,
+          ...(r.gated ? { gated: true } : {}),
+          ...(r.retryInMinutes ? { retryInMinutes: r.retryInMinutes } : {}),
+          ...(r.accessTier ? { accessTier: r.accessTier } : {}),
+          platform: redact(r.raw ?? null),
+        };
   }
 
   /* ── LLM strategist — creative briefs and offers, grounded in the facts ── */
@@ -2285,8 +2289,14 @@ ${focus}
         results.push({ op: a.op, campaign: a.campaignName, status });
       }
 
+      /* «النداء رجع ok» مش نفس «الحملة وقفت». بنقرا الحالة من المنصة نفسها
+         بعد كل دفعة أوامر — ده الفرق بين إننا نعرف إن المطبخ قافل
+         والإعلانات واقفة، وبين إننا نفتكر كده. */
+      const verdict = await verifyDaypart({ force: true }).catch(() => null);
+
       const summary = { trigger, mode: s.mode, kind: "daypart", phase: decision.phase,
-                        window: w.label, clock: w.clock, actions: results };
+                        window: w.label, clock: w.clock, actions: results,
+                        ...(verdict ? { verified: verdict.tone, verdict: verdict.line } : {}) };
       await pool.query(`UPDATE ap_runs SET status='done', finished_at=NOW(), summary=$2 WHERE id=$1`,
         [runId, jb(summary)]);
       return { ok: true, runId, window: w, ...summary };
@@ -2296,6 +2306,165 @@ ${focus}
     } finally {
       daypartRunning = false;
     }
+  }
+
+  /* ═══ التحقق: النافذة اتنفّذت فعلاً ولا إحنا بس فاكرين؟ ═════════════════
+     الدفتر (ap_daypart) بيقول اللي إحنا *أمرنا* بيه. المنصة بتقول اللي
+     *حاصل*. الفرق بين الاتنين هو بالظبط اللي كان بيضيع فلوس: يوم ١١ أغسطس
+     ميتا رفضت ٣٣٧ أمر إيقاف والإعلانات فضلت شغالة من ٣ الفجر لـ ١٠ الصبح،
+     والشاشة مكانتش بتقول غير إن في «قرارات فشلت» في سجل طويل محدش بيقراه.
+
+     فالتحقق ده بيقرا حالة كل حملة من المنصة نفسها — مش من جدولنا — ويقارنها
+     باللي النافذة بتفرضه دلوقتي، ويطلّع سطر واحد صادق. لو الحقيقة تخالف
+     النية، بيتسجّل قرار في اللوج كمان عشان يبان في الشاشة وفي التقرير.
+
+     بيتكلّف نداء قراءة واحد لكل منصة، فبيتخزّن في الذاكرة دقايق قبل ما
+     يتحسب تاني — على حصة تطوير عند ميتا كل نداء بيتحسب.                    */
+
+  let lastVerify = null;
+  const VERIFY_TTL_MS = 4 * 60_000;
+
+  async function verifyDaypart({ force = false } = {}) {
+    if (!force && lastVerify && Date.now() - lastVerify.at < VERIFY_TTL_MS) return lastVerify.value;
+
+    const s = await settingsNow();
+    const w = adsWindow(new Date(), s);
+    const book = await daypartBook().catch(() => new Map());
+
+    const platforms = [];
+    for (const p of PLATFORMS) {
+      if (!canManage(p)) continue;
+      let live;
+      try { live = await p.campaigns(); } catch (e) { live = { ok: false, reason: String(e.message || e) }; }
+      if (!live.ok) {
+        platforms.push({ id: p.id, label: p.label, readable: false, reason: live.reason, mismatches: [] });
+        continue;
+      }
+      /* اللي بيهمنا: الحملات اللي المفروض تكون موقوفة دلوقتي. وقت القفل دي
+         كل حملة شغالة على المنصة (حتى لو مش في دفترنا — حملة اشتغلت بإيد
+         المالك أو ما وقفناهاش أصلاً برضه بتصرف). وقت الفتح دي اللي إحنا
+         وقفناها ولسه ما رجعناهاش. */
+      const running = live.campaigns.filter((c) => String(c.status).toUpperCase() === "ACTIVE");
+      const mismatches = [];
+      if (!w.open) {
+        for (const c of running) {
+          mismatches.push({ id: c.id, name: c.name, expected: "PAUSED", actual: c.status });
+        }
+      } else {
+        for (const [, b] of book) {
+          if (b.platform !== p.id) continue;
+          const c = live.campaigns.find((x) => String(x.id) === String(b.campaignId));
+          if (c && String(c.status).toUpperCase() !== "ACTIVE") {
+            mismatches.push({ id: c.id, name: c.name, expected: "ACTIVE", actual: c.status });
+          }
+        }
+      }
+      platforms.push({
+        id: p.id, label: p.label, readable: true,
+        total: live.campaigns.length, running: running.length,
+        mismatches,
+        ok: mismatches.length === 0,
+      });
+    }
+
+    const readable = platforms.filter((x) => x.readable);
+    const broken = readable.filter((x) => !x.ok);
+    const unreadable = platforms.filter((x) => !x.readable);
+    const gates = writeGates();
+
+    /* السطر. صادق يعني: لو مقدرناش نقرا منصة مابنقولش إنها سليمة. */
+    let line, tone;
+    if (!readable.length) {
+      tone = "unknown";
+      line = "مقدرناش نقرا حالة الحملات من أي منصة دلوقتي — يعني مش عارفين الإعلانات واقفة ولا شغالة.";
+    } else if (broken.length) {
+      tone = "bad";
+      const who = broken.map((x) => `${x.label}: ${ar(x.mismatches.length)} حملة`).join("، ");
+      const why = gates.length
+        ? ` السبب: ${gates.map((g) => g.reason).join(" · ")}`
+        : (broken[0].mismatches[0] ? ` (${broken[0].mismatches.map((m) => m.name).slice(0, 3).join("، ")})` : "");
+      line = w.open
+        ? `⚠️ المطعم فاتح والإعلانات لسه موقوفة على ${who}.${why}`
+        : `🚨 المطبخ قافل والإعلانات لسه شغالة على ${who} — بنصرف على ساعات مفيهاش بيع.${why}`;
+    } else {
+      tone = "good";
+      const names = readable.map((x) => x.label.split(" ")[0]).join(" و");
+      line = w.open
+        ? `الإعلانات شغالة فعلاً على ${names} — زي ما النافذة بتقول.`
+        : `الإعلانات موقوفة فعلاً على ${names} — اتأكدنا من المنصة نفسها مش من جدولنا.`;
+    }
+    if (unreadable.length) {
+      line += ` (${unreadable.map((x) => x.label).join("، ")}: مقدرناش نقرا — ${unreadable[0].reason})`;
+    }
+
+    const value = {
+      at: new Date().toISOString(),
+      window: { open: w.open, label: w.label, clock: w.clock },
+      tone, line, platforms, gates,
+      mismatchCount: broken.reduce((a, x) => a + x.mismatches.length, 0),
+    };
+
+    /* المخالفة بتتسجّل في اللوج مرة كل ساعة بالكتير — عشان تبان في الشاشة
+       وفي التقرير، من غير ما تغرق السجل بنفس الجملة كل ٥ دقايق. */
+    if (tone === "bad") {
+      const seen = await pool.query(
+        `SELECT 1 FROM ap_decisions WHERE kind='daypart' AND status='info'
+           AND detail->>'op' = 'verify-mismatch' AND created_at > NOW() - interval '55 minutes' LIMIT 1`)
+        .catch(() => ({ rowCount: 1 }));
+      if (!seen.rowCount) {
+        await pool.query(
+          `INSERT INTO ap_decisions (id, run_id, platform, campaign_id, campaign_name, kind, detail, reason, status)
+           VALUES ($1,NULL,$2,NULL,NULL,'daypart',$3,$4,'info')`,
+          [crypto.randomUUID(), broken[0]?.id || null,
+           jb({ op: "verify-mismatch", window: w.label, clock: w.clock, open: w.open,
+                mismatches: value.mismatchCount, platforms: broken.map((x) => x.id) }),
+           line]).catch(() => {});
+      }
+    }
+
+    lastVerify = { at: Date.now(), value };
+    return value;
+  }
+
+  /* ═══ الإنذار: المنصة بترفض الكتابة وإحنا ساكتين ═════════════════════════
+     ٣٦١ رفض من ميتا و٨٧ من سناب في أسبوع ماطلعوش على أي شاشة — كانوا بيتكوّموا
+     في سجل القرارات وخلاص. الدالة دي بتحوّل التكرار ده لإنذار صريح.        */
+
+  async function writeFailureAlerts() {
+    const r = await pool.query(
+      `SELECT platform,
+              count(*)::int AS n,
+              max(created_at) AS last_at,
+              (array_agg(result->>'error' ORDER BY created_at DESC))[1] AS last_error,
+              count(*) FILTER (WHERE kind='daypart')::int AS daypart_n
+         FROM ap_decisions
+        WHERE status='failed' AND platform IS NOT NULL
+          AND created_at > NOW() - interval '24 hours'
+        GROUP BY platform
+        HAVING count(*) >= 3
+        ORDER BY n DESC`).catch(() => ({ rows: [] }));
+
+    const gates = writeGates();
+    return r.rows.map((x) => {
+      const g = gates.find((y) => y.platform === x.platform);
+      const label = byId(x.platform)?.label || x.platform;
+      return {
+        platform: x.platform,
+        label,
+        count: x.n,
+        daypartCount: x.daypart_n,
+        lastError: x.last_error,
+        lastAt: x.last_at,
+        blockedForMinutes: g ? g.minutes : 0,
+        severity: x.daypart_n >= 3 ? "bad" : "warn",
+        title: x.daypart_n >= 3
+          ? `${label} بترفض أوامر إيقاف الإعلانات`
+          : `${label} بترفض أوامر الطيار`,
+        text: x.daypart_n >= 3
+          ? `${ar(x.n)} أمر اترفض في آخر ٢٤ ساعة، منهم ${ar(x.daypart_n)} أمر إيقاف وقت ما المطبخ كان قافل — يعني كنا بندفع إعلانات على ساعات مفيهاش بيع. آخر رد من المنصة: «${x.last_error || "بدون سبب"}».`
+          : `${ar(x.n)} أمر اترفض في آخر ٢٤ ساعة. آخر رد من المنصة: «${x.last_error || "بدون سبب"}».`,
+      };
+    });
   }
 
   /* ═══ الإيقاع اليومي — الدورة السريعة ═══════════════════════════════════
@@ -2644,7 +2813,15 @@ ${focus}
         ...w,
         pausedCampaigns: pausedByWindow,
         running: daypartRunning,
+        // الحقيقة من المنصة نفسها، مش من جدولنا. مخزّنة دقايق عشان القراءة
+        // نفسها بتتحسب من حصة النداءات.
+        verified: s.daypart === false ? null : await verifyDaypart().catch((e) => ({
+          tone: "unknown", line: `مقدرناش نتأكد من المنصات: ${String(e.message || e)}`, platforms: [], mismatchCount: 0,
+        })),
       },
+      // المنصة بترفض والطيار بيعيد المحاولة — ده لازم يبقى صوت عالي مش سطر
+      // في سجل. فاضية = مفيش رفض متكرر في آخر ٢٤ ساعة.
+      alerts: await writeFailureAlerts().catch(() => []),
       writeEnabled: writeAllowed(),
       llmConfigured: !!llmProvider(),
       agentEnabled: !!(s.agent && llmProvider()),
@@ -3173,6 +3350,14 @@ ${focus}
     return c.json(r, r.ok ? 200 : 409);
   });
 
+  /* GET /api/autopilot/daypart-verify?force=1
+     «الإعلانات موقوفة فعلاً ولا لأ؟» — بيسأل المنصات نفسها. */
+  app.get("/api/autopilot/daypart-verify", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    const v = await verifyDaypart({ force: c.req.query("force") === "1" });
+    return c.json({ ok: true, ...v, alerts: await writeFailureAlerts().catch(() => []) });
+  });
+
   app.get("/api/autopilot/runs", async (c) => {
     const err = await requireAdmin(c); if (err) return err;
     const limit = Math.min(Number(c.req.query("limit") || 20), 100);
@@ -3181,5 +3366,6 @@ ${focus}
   });
 
   console.log("[autopilot] routes ready");
-  return { runCycle, runEmergencyCheck, runAgent, runPaceCheck, runDaypartCheck, pulseData, economicsData, logData };
+  return { runCycle, runEmergencyCheck, runAgent, runPaceCheck, runDaypartCheck, pulseData, economicsData, logData,
+           verifyDaypart, writeFailureAlerts };
 }
