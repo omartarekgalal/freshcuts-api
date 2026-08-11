@@ -38,7 +38,7 @@ import crypto from "node:crypto";
 import {
   PLATFORMS, byId, canSend, canManage, missingOf,
   redact, safeRequest, httpJson, writeAllowed, MAX_DAILY_BUDGET, DEFAULT_CURRENCY,
-  sendPlatformWrite, writeGates,
+  sendPlatformWrite, writeGates, platformRead, readGate,
 } from "./ads.js";
 // قاعدة "العميل الجديد" الواحدة في الـ API كلها. الاقتصاديات تحت مبنية عليها
 // بالحرف — لو حسبنا العملاء الجداد هنا بطريقة تانية هنقول للمالك رقمين
@@ -1431,6 +1431,10 @@ const OUTCOME = {
   executed: "تم", auto_executed: "تم", approved: "تم",
   proposed: "مستني موافقتك", rejected: "اترفض", refused: "اترفض",
   failed: "فشل", info: "للعلم",
+  /* مؤجّل ≠ فشل. المنصة كانت مخنوقة فما بعتناش الأمر أصلاً عشان ما ناكلش
+     الحصة اللي الأمر نفسه مستنيها — وهيترجع لوحده. المالك لازم يقرا الفرق
+     ده، لإن «فشل» بتخوّف و«مؤجّل» بتوصف الطيار وهو بيتصرّف صح. */
+  deferred: "مؤجّل — هيترجع لوحده",
 };
 
 /* أي معرّف طويل (UUID أو رقم حملة من ١٥ رقم) مالوش لازمة في جملة بيقراها
@@ -1451,6 +1455,34 @@ const clip = (t, n) => {
 
 /* صف واحد من ap_decisions → سطر واحد في الشريط. بترجّع null للصفوف اللي
    مالهاش لازمة في شاشة المالك (دورات تفكير الوكيل الخام مثلاً). */
+/* الحُكم على دعوى واحدة، من غير قاعدة بيانات ولا شبكة — عشان يتختبر.
+
+   ثلاث حقائق بتتحط مع بعض: اللي أمرنا بيه، اللي المنصة بتقوله دلوقتي، وعُمر
+   الأمر. العمر مهم: المنصات بتاخد لحد دقيقة عشان الحالة تستقر، فقراءة بدري
+   بتقول «مختلف» وهي في الحقيقة «لسه». وبعد ساعتين مابنفضلش نقول «مختلف»
+   للأبد — بنقول «مش عارفين»، وده أصدق.
+
+   الميزانية بتتقارن بهامش ريال لإن المنصات بتخزّنها بالسنت وبتقرّب.        */
+export const CLAIM_BUDGET_TOLERANCE = 1;
+export const CLAIM_SETTLE_GRACE_MS = 90_000;
+export const CLAIM_STALE_MS = 2 * 60 * 60_000;
+
+export function claimVerdict({ field, expected, campaign, ageMs = Infinity } = {}) {
+  if (!campaign) return { verdict: "gone", actual: null, wait: false };
+
+  let actual, ok;
+  if (field === "budget") {
+    actual = campaign.dailyBudget == null ? null : String(campaign.dailyBudget);
+    ok = actual != null && Math.abs(Number(actual) - Number(expected)) <= CLAIM_BUDGET_TOLERANCE;
+  } else {
+    actual = String(campaign.status || "").toUpperCase();
+    ok = actual === String(expected).toUpperCase();
+  }
+  if (ok) return { verdict: "confirmed", actual, wait: false };
+  if (ageMs < CLAIM_SETTLE_GRACE_MS) return { verdict: "mismatch", actual, wait: true };
+  return { verdict: ageMs > CLAIM_STALE_MS ? "stale" : "mismatch", actual, wait: false };
+}
+
 export function logLine(row) {
   const kind = String(row.kind || "");
   const status = String(row.status || "");
@@ -1664,6 +1696,29 @@ export function register(app, ctx, deps = {}) {
         high_water NUMERIC NOT NULL DEFAULT 0,
         updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
       );
+      -- دفتر الدعاوى: كل حاجة الطيار *فاكر* إنه عملها على المنصة.
+      --
+      -- «النداء رجع ٢٠٠» مش «الحملة وقفت». الفرق ده أغلى نوع باج عندنا
+      -- وكلّفنا فلوس فعلاً. التحقق بتاع النافذة كان بيغطّي الإيقاف والتشغيل
+      -- بس؛ الدفتر ده بيعمّم نفس الفكرة على أي أمر — الميزانية والتسريع
+      -- كمان. كل كتابة ناجحة بتسجّل دعوى، وقراءة واحدة لكل منصة بتقفل كل
+      -- الدعاوى المفتوحة مرة واحدة، فالتكلفة نداء واحد للمنصة مهما كان عدد
+      -- الأوامر — مش نداء لكل أمر.
+      CREATE TABLE IF NOT EXISTS ap_claims (
+        id TEXT PRIMARY KEY,
+        platform TEXT NOT NULL,
+        campaign_id TEXT NOT NULL,
+        campaign_name TEXT,
+        field TEXT NOT NULL,                      -- status | budget
+        expected TEXT NOT NULL,
+        decision_id TEXT,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        checked_at TIMESTAMPTZ,
+        settled_at TIMESTAMPTZ,
+        verdict TEXT,                             -- confirmed | mismatch | gone | stale | superseded
+        actual TEXT
+      );
+      CREATE INDEX IF NOT EXISTS ap_claims_open_idx ON ap_claims(settled_at, platform);
     `);
   }
   ensureSchema()
@@ -2027,6 +2082,11 @@ export function register(app, ctx, deps = {}) {
          سطر canManage تحت زي أي منصة تانية بنفس رسالة «ناقص كذا». */
       if (s.platforms && s.platforms[p.id] === false) continue;
       if (!canManage(p)) { reasons[p.id] = `غير مربوطة — ناقص ${missingOf(p.manageEnv).join(", ")}`; continue; }
+      /* تلات نداءات قراءة للمنصة الواحدة. لو بابها مقفول دي تلاتة بتتاكل من
+         نفس الحصة اللي أمر الإيقاف مستنيها — والجولة البطيئة بتاخد قرارات
+         على أرقام، فأرقام ناقصة أحسن من إيقاف مايعديش. */
+      const shut = readGate(p.id, "telemetry");
+      if (shut) { reasons[p.id] = shut.error; continue; }
       try {
         const [camps, i3, i7] = await Promise.all([
           p.campaigns(),
@@ -2077,6 +2137,30 @@ export function register(app, ctx, deps = {}) {
     };
   }
 
+  /* «اترفض» و«ما اتبعتش» مش نفس الحاجة. الأمر اللي الباب المقفول منعه من
+     إنه يخرج أصلاً مش رفض من المنصة — لو سجّلناه رفض هنعدّ ٣٦٤ رفض والمنصة
+     ماشافتش منهم غير أربعة، وإنذار «المنصة بترفض أوامرنا» يبقى بيعدّ سكوتنا
+     إحنا. status='deferred' بيفصل الاتنين: العدّاد بيقول الحقيقة، والإنذار
+     بيتكلّم عن رفض حقيقي بس. الأمر المؤجّل بيترجع لوحده الدورة الجاية. */
+  const statusOf = (res) => (res.ok ? "auto_executed" : res.gated ? "deferred" : "failed");
+
+  /* الدعوى بتتسجّل ساعة ما الكتابة تنجح — يعني ساعة ما نبدأ *نفتكر* حاجة.
+     مبتتقفلش من ردّ المنصة على نفس النداء، بتتقفل من قراءة مستقلة بعد كده
+     (settleClaims جوّه verifyDaypart). قيد واحد مفتوح لكل حملة+حقل: أمر
+     أحدث بيلغي اللي قبله، فمابنطاردش نية قديمة اتغيّرت. */
+  async function recordClaim({ platform, campaignId, campaignName, field, expected, decisionId = null }) {
+    if (!platform || !campaignId || expected == null) return;
+    await pool.query(
+      `UPDATE ap_claims SET settled_at=NOW(), verdict='superseded'
+        WHERE platform=$1 AND campaign_id=$2 AND field=$3 AND settled_at IS NULL`,
+      [platform, String(campaignId), field]).catch(() => {});
+    await pool.query(
+      `INSERT INTO ap_claims (id, platform, campaign_id, campaign_name, field, expected, decision_id)
+       VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+      [crypto.randomUUID(), platform, String(campaignId), campaignName || null,
+       field, String(expected), decisionId]).catch(() => {});
+  }
+
   /* ── execution of a single decision (shared by auto mode and approvals) ── */
   async function executeDecision(dec, s) {
     const p = byId(dec.platform);
@@ -2104,6 +2188,18 @@ export function register(app, ctx, deps = {}) {
        ردّت بإننا تخطينا حد النداءات — إعادة المحاولة كل ٥ دقايق على حد
        متخطّي هي اللي بتاكل الحد اللي محتاجينه أصلاً عشان نوقف الحملة. */
     const r = await sendPlatformWrite(p, call);
+    /* من هنا وطالع إحنا "فاكرين" إن حاجة اتغيّرت على المنصة. الدعوى بتتكتب
+       دلوقتي عشان القراءة الجاية تقفلها أو تكشفها — من غيرها الاعتقاد ده
+       عمره ما بيتقاس بالواقع. */
+    if (r.ok) {
+      const field = dec.kind === "budget" || dec.kind === "pace" ? "budget" : "status";
+      await recordClaim({
+        platform: p.id, campaignId: dec.campaign_id, campaignName: dec.campaign_name || null,
+        field,
+        expected: field === "budget" ? Number(dec.detail?.to) : (dec.kind === "pause" ? "PAUSED" : "ACTIVE"),
+        decisionId: dec.id || null,
+      });
+    }
     return r.ok
       ? { ok: true, httpStatus: r.httpStatus, platform: redact(r.raw ?? null) }
       : {
@@ -2225,13 +2321,20 @@ export function register(app, ctx, deps = {}) {
 
   /* لقطة الحملات + أرقام آخر ٣ أيام. بتتاخد مرة في أول الجولة وبتُستعمل في
      كل قرارات الأسوار — عشان ما نضربش المنصات عند كل نداء أداة. */
-  async function perfSnapshot({ from, to, platform = null } = {}) {
+  /* `priority` هو بيت القصيد في التوقيع ده. القراءة عشان الأرقام "تليمتري"
+     وبتتشال أول ما المنصة تتخنق، لإن على حصة ميتا التطويرية الرسم البياني
+     وأمر الإيقاف بيشربوا من نفس الكوباية. المالك الواقف قدام الشاشة بيبعت
+     "owner" وعمره ما بيتشال — القراءة دي بتحصل مرات في اليوم مش ١٢ مرة في
+     الساعة. الشرح الكامل في ads.js/readGate. */
+  async function perfSnapshot({ from, to, platform = null, priority = "telemetry" } = {}) {
     const today = todayISO();
     const f = from || daysAgoISO(2), t = to || today;
     const rows = [], reasons = {};
     for (const p of PLATFORMS) {
       if (platform && p.id !== platform) continue;
       if (!canManage(p)) { reasons[p.id] = `غير مربوطة — ناقص ${missingOf(p.manageEnv).join(", ")}`; continue; }
+      const shut = readGate(p.id, priority);
+      if (shut) { reasons[p.id] = shut.error; continue; }
       try {
         const [camps, ins] = await Promise.all([p.campaigns(), p.insights({ from: f, to: t })]);
         if (!camps.ok) { reasons[p.id] = camps.reason; continue; }
@@ -2717,25 +2820,34 @@ ${focus}
       if (w.open && book.size === 0 && !force) {
         return { ok: true, phase: "open", window: w, actions: 0 };
       }
-      // مقفولة وكل حاجة موقوفة خلاص — مش محتاجين نضرب المنصات كل ٥ دقايق
-      // بالليل. بنبص كل ٢٥ دقيقة عشان لو حملة جديدة اشتغلت نوقفها.
-      if (!w.open && book.size > 0 && !force && Date.now() - lastClosedProbeAt < CLOSED_PROBE_MS) {
+      /* مقفولة وحاولنا من شوية — مش محتاجين نضرب المنصات كل ٥ دقايق بالليل.
+         الشرط بيقيس «آخر مرة حاولنا فيها» مش «الدفتر فيه حاجة»: ليلة ١١
+         أغسطس أوامر الإيقاف كلها اترفضت، فالدفتر فضل فاضي، فالشرط ده
+         مااشتغلش ولا مرة ورجعنا نقرا ونحاول كل ٥ دقايق طول الليل. المحاولة
+         الفاشلة محاولة برضه — لازم تتحسب. */
+      if (!w.open && !force && Date.now() - lastClosedProbeAt < CLOSED_PROBE_MS) {
         return { ok: true, phase: "closed", window: w, skipped: "throttled", paused: book.size };
       }
 
-      /* كل منصة نقدر نكتب عليها بابها مقفول = مفيش حاجة نقدر نعملها الدورة
-         دي، وقراءة الأرقام تحت بتاكل من نفس حصة النداءات اللي اتقفل الباب
-         عشانها أصلاً. ده بالظبط اللي حصل ليلة ١١ أغسطس: أوامر الإيقاف
-         بتترفض، فالدفتر بيفضل فاضي، فالشرط اللي فوق مابيتحققش، فبنرجع كل
-         ٥ دقايق نقرا ونحاول من تاني ونستهلك الحصة اللي كانت هتخلّي الإيقاف
-         ينجح. بنستنى لحد ما الحصة ترجع. */
+      /* الباب المقفول بيتشال من الدورة كلها — مش بس من الكتابة. القراءة تحت
+         (campaigns + insights) بتاكل من نفس حصة النداءات اللي الإيقاف
+         مستنيها، وده اللي خلّى ليلة ١١ أغسطس تكمّل لآخرها: الكتابة كانت
+         بتترد من غير ما تخرج، لكن التليمتري فضلت تضرب ميتا ٣٦ نداء في
+         الساعة وتاكل الحصة. لو كل منصة نقدر نكتب عليها بابها مقفول، مفيش
+         دورة أصلاً.
+
+         الشرط بقى «مفيش ولا منصة مفتوحة» بدل «كل المنصات مقفولة بالعدد»:
+         الشرط القديم كان بيقارن طول القايمتين، وتيك توك وجوجل عمرهم
+         مادخلوا القايمة، فالمخرج ده ماكانش بيشتغل ولا مرة. */
       const managed = PLATFORMS.filter((p) => canManage(p));
       const gated = writeGates();
-      if (managed.length && !force && gated.length >= managed.length
-          && managed.every((p) => gated.some((g) => g.platform === p.id))) {
+      const openPlatforms = managed.filter((p) => !gated.some((g) => g.platform === p.id));
+      if (managed.length && !force && !openPlatforms.length) {
         const soonest = Math.min(...gated.map((g) => g.minutes));
+        if (!w.open) lastClosedProbeAt = Date.now();
         return { ok: true, phase: w.open ? "open" : "closed", window: w, skipped: "platforms rate-limited",
-                 retryInMinutes: soonest, gates: gated.map((g) => ({ platform: g.platform, minutes: g.minutes })) };
+                 retryInMinutes: soonest,
+                 gates: gated.map((g) => ({ platform: g.platform, minutes: g.minutes, kind: g.kind })) };
       }
 
       if (!w.open) lastClosedProbeAt = Date.now();
@@ -2788,7 +2900,7 @@ ${focus}
             const res = await executeDecision(
               { platform: a.platform, campaign_id: a.campaignId, kind: "budget", detail: { to: a.restoreTo } }, s);
             result = res;
-            status = res.ok ? "auto_executed" : "failed";
+            status = statusOf(res);
             executedAt = res.ok ? new Date() : null;
           } else { status = "auto_executed"; executedAt = new Date(); }
           await pool.query(
@@ -2804,7 +2916,7 @@ ${focus}
           const res = await executeDecision(
             { platform: a.platform, campaign_id: a.campaignId, kind: "pause", detail: { state: "PAUSED" } }, s);
           result = res;
-          status = res.ok ? "auto_executed" : "failed";
+          status = statusOf(res);
           executedAt = res.ok ? new Date() : null;
           if (res.ok) {
             await pool.query(
@@ -2819,7 +2931,7 @@ ${focus}
           const res = await executeDecision(
             { platform: a.platform, campaign_id: a.campaignId, kind: "resume", detail: { state: "ACTIVE" } }, s);
           result = res;
-          status = res.ok ? "auto_executed" : "failed";
+          status = statusOf(res);
           executedAt = res.ok ? new Date() : null;
           if (res.ok) {
             if (a.restoreTo != null) {
@@ -2881,10 +2993,50 @@ ${focus}
      بيتكلّف نداء قراءة واحد لكل منصة، فبيتخزّن في الذاكرة دقايق قبل ما
      يتحسب تاني — على حصة تطوير عند ميتا كل نداء بيتحسب.                    */
 
+  /* بتقفل كل الدعاوى المفتوحة لمنصة واحدة من قراءة اتعملت خلاص. الدعوى
+     بتتقارن بالحقل بتاعها بس — الحالة بالحالة والميزانية بالميزانية —
+     والفرق في الميزانية بيتقاس بهامش ريال لإن المنصات بتخزّنها بالسنت
+     وبتقرّب.
+
+     الحملة اللي اختفت من القراءة (اتمسحت أو اتأرشفت) دعواها بتتقفل 'gone'
+     مش 'mismatch': مفيش حاجة نصلّحها ومفيش داعي نفضل نعدّها.
+
+     وعدم التطابق مابيتحكمش عليه من أول قراءة: المنصات بتاخد لحد دقيقة عشان
+     الحالة تستقر، وقراءة بدري بتقول «مختلف» وهي في الحقيقة «لسه». */
+  async function settleClaims(platformId, campaigns) {
+    const open = await pool.query(
+      `SELECT * FROM ap_claims WHERE platform=$1 AND settled_at IS NULL ORDER BY created_at`,
+      [platformId]).catch(() => ({ rows: [] }));
+    if (!open.rows.length) return [];
+
+    const live = new Map((campaigns || []).map((c) => [String(c.id), c]));
+    const broken = [];
+    for (const cl of open.rows) {
+      const { verdict, actual, wait } = claimVerdict({
+        field: cl.field, expected: cl.expected,
+        campaign: live.get(String(cl.campaign_id)) || null,
+        ageMs: Date.now() - new Date(cl.created_at).getTime(),
+      });
+      if (wait) {
+        await pool.query(`UPDATE ap_claims SET checked_at=NOW(), actual=$2 WHERE id=$1`,
+          [cl.id, actual]).catch(() => {});
+        continue;
+      }
+      await pool.query(
+        `UPDATE ap_claims SET settled_at=NOW(), checked_at=NOW(), verdict=$2, actual=$3 WHERE id=$1`,
+        [cl.id, verdict, actual]).catch(() => {});
+      if (verdict === "mismatch") {
+        broken.push({ platform: platformId, campaignId: cl.campaign_id, name: cl.campaign_name,
+                      field: cl.field, expected: cl.expected, actual });
+      }
+    }
+    return broken;
+  }
+
   let lastVerify = null;
   const VERIFY_TTL_MS = 4 * 60_000;
 
-  async function verifyDaypart({ force = false } = {}) {
+  async function verifyDaypart({ force = false, priority = "verify" } = {}) {
     if (!force && lastVerify && Date.now() - lastVerify.at < VERIFY_TTL_MS) return lastVerify.value;
 
     const s = await settingsNow();
@@ -2894,8 +3046,10 @@ ${focus}
     const platforms = [];
     for (const p of PLATFORMS) {
       if (!canManage(p)) continue;
-      let live;
-      try { live = await p.campaigns(); } catch (e) { live = { ok: false, reason: String(e.message || e) }; }
+      /* منصة بابها مقفول مابنقراش منها تلقائيًا: الأمر ما خرجش أصلاً فمفيش
+         حاجة نتأكد منها، والقراءة هتاكل من الحصة اللي الأمر مستنيها.
+         المالك لما يدوس «افحص تاني» بيعدّي (priority=owner). */
+      const live = await platformRead(p, () => p.campaigns(), { priority, empty: { campaigns: [] } });
       if (!live.ok) {
         platforms.push({ id: p.id, label: p.label, readable: false, reason: live.reason, mismatches: [] });
         continue;
@@ -2904,6 +3058,10 @@ ${focus}
          كل حملة شغالة على المنصة (حتى لو مش في دفترنا — حملة اشتغلت بإيد
          المالك أو ما وقفناهاش أصلاً برضه بتصرف). وقت الفتح دي اللي إحنا
          وقفناها ولسه ما رجعناهاش. */
+      /* نفس القراءة دي بتقفل كل الدعاوى المفتوحة على المنصة — الميزانية
+         والتسريع كمان، مش بس الإيقاف والتشغيل. مفيش نداء زيادة. */
+      const brokenClaims = await settleClaims(p.id, live.campaigns);
+
       const running = live.campaigns.filter((c) => String(c.status).toUpperCase() === "ACTIVE");
       const mismatches = [];
       if (!w.open) {
@@ -2919,10 +3077,22 @@ ${focus}
           }
         }
       }
+      /* الأمر اللي المنصة قالت عليه «تمام» وبعدين القراءة لقيته ما اتنفّذش
+         بيتحسب مخالفة زي أي مخالفة — ده بالظبط الاعتقاد الغلط اللي بندوّر
+         عليه. */
+      for (const b of brokenClaims) {
+        mismatches.push({
+          id: b.campaignId, name: b.name || b.campaignId,
+          expected: b.field === "budget" ? `ميزانية ${b.expected}` : b.expected,
+          actual: b.field === "budget" ? `ميزانية ${b.actual ?? "؟"}` : (b.actual ?? "؟"),
+          claim: b.field,
+        });
+      }
       platforms.push({
         id: p.id, label: p.label, readable: true,
         total: live.campaigns.length, running: running.length,
         mismatches,
+        unconfirmed: brokenClaims.length,
         ok: mismatches.length === 0,
       });
     }
@@ -3174,7 +3344,7 @@ ${focus}
           const res = await executeDecision(
             { platform: a.platform, campaign_id: a.campaignId, kind: "pace", detail: { to: a.to } }, s);
           result = res;
-          status = res.ok ? "auto_executed" : "failed";
+          status = statusOf(res);
           executedAt = res.ok ? new Date() : null;
           if (res.ok) {
             if (a.op === "restore") {
@@ -3299,7 +3469,7 @@ ${focus}
           const res = await executeDecision(
             { platform: d.platform, campaign_id: d.campaignId, kind: d.kind, detail: d.detail }, s);
           result = res;
-          status = res.ok ? "auto_executed" : "failed";
+          status = statusOf(res);
           executedAt = res.ok ? new Date() : null;
           if (res.ok) summary.executed++;
         }
@@ -4027,9 +4197,181 @@ ${focus}
 
   /* GET /api/autopilot/daypart-verify?force=1
      «الإعلانات موقوفة فعلاً ولا لأ؟» — بيسأل المنصات نفسها. */
+  /* ═══ سطر الصحة الواحد ═══════════════════════════════════════════════════
+     المالك مش هيقف يراجع مع الوكيل. فالسؤال اللي الشاشة لازم تجاوب عليه
+     واحد: «كل حاجة شغالة؟» — والإجابة سطر واحد، مش أربعين عدّاد.
+
+     ولو السطر أحمر لازم يقول تلات حاجات مع بعض: إيه اللي باظ، وإيه اللي مش
+     بيحصل بسببه، ومين اللي يقدر يصلّحه. «تيك توك بترجّع 40001» مش سطر صحة.
+     «تيك توك مش بتقرا أرقامها، وده مش بيوقف صرف ولا بيع، ومستني موافقة تيك
+     توك نفسها مش موافقتك» — ده سطر الصحة.
+
+     الترتيب بالتكلفة مش بعدد الأسطر في اللوج: حاجة بتخلّي فلوس تتصرف غلط
+     دلوقتي بتيجي فوق أي حاجة تانية مهما كانت بتطبع رسايل أكتر منها.        */
+
+  const OWNER_ACTIONS = {
+    metaTier: {
+      what: "ميتا مدّياها أصغر حصة نداءات (development access)، فأوامر الإيقاف ساعات القفل بتستنّى دورها في الطابور.",
+      screen: "Meta → Business Settings → Accounts → Apps → اختار التطبيق → App Review → Permissions and Features",
+      button: "زرار «Request Advanced Access» جنب ads_management",
+      why: "بالحصة الحالية الطيار بيوقف الإعلانات على مهل. بالحصة الكبيرة بيوقفها فوراً.",
+    },
+    tiktokReview: {
+      what: "تيك توك لسه بتراجع التطبيق بتاعنا، فمابنقدرش نقرا أرقامها ولا نرفع عليها جماهير.",
+      screen: "TikTok for Business → Developers → My Apps",
+      button: "مفيش زرار تدوسه — المراجعة عند تيك توك نفسها. الحالة لازم تبقى Approved.",
+      why: "ده بيأثّر على القراءة والجماهير بس. الصرف والإيقاف والتشغيل على تيك توك شغّالين عادي.",
+    },
+  };
+
+  async function healthNow({ priority = "verify" } = {}) {
+    const s = await settingsNow();
+    const w = adsWindow(new Date(), s);
+    const gates = writeGates();
+
+    /* الرفض الحقيقي بس. الأمر اللي إحنا اللي أجّلناه (deferred) مش رفض من
+       المنصة — لو عددناه هنا هنقيس سكوتنا إحنا ونقول إن المنصة بترفض. */
+    const refusals = await pool.query(
+      `SELECT platform, count(*)::int n,
+              (array_agg(result->>'error' ORDER BY created_at DESC))[1] last_error,
+              count(*) FILTER (WHERE kind='daypart')::int daypart_n
+         FROM ap_decisions
+        WHERE status='failed' AND platform IS NOT NULL
+          AND COALESCE(result->>'failureKind','') <> 'unavailable'
+          AND created_at > NOW() - interval '24 hours'
+        GROUP BY platform HAVING count(*) >= 3`).catch(() => ({ rows: [] }));
+
+    const verdict = await verifyDaypart({ priority }).catch(() => null);
+    const problems = [];
+
+    /* ١ — أغلى حاجة ممكنة: بندفع والمطبخ قافل، أو موقوفين والمطعم فاتح. */
+    if (verdict && verdict.tone === "bad") {
+      problems.push({
+        rank: 1, tone: "bad", who: "agent",
+        line: verdict.line,
+        prevents: w.open
+          ? "الإعلانات موقوفة والمطعم فاتح — بنخسر طلبات دلوقتي."
+          : "بنصرف على ساعات المطبخ فيها قافل — فلوس بتضيع دلوقتي.",
+      });
+    }
+
+    /* ٢ — الطيار متقفل بإيدنا: مايقدرش يعمل حاجة أصلاً. */
+    if (!writeAllowed()) {
+      problems.push({
+        rank: 2, tone: "bad", who: "owner",
+        line: "الكتابة على المنصات مقفولة (ADS_ALLOW_WRITE مش '1') — الطيار بيقرا ويقترح بس.",
+        prevents: "مفيش إيقاف ولا تشغيل ولا تعديل ميزانية. ساعات القفل هتفضل بتصرف.",
+        action: { what: "افتح الكتابة على المنصات", screen: "Coolify → freshcuts-api → Environment Variables", button: "ADS_ALLOW_WRITE = 1 وبعدين Redeploy" },
+      });
+    } else if (s.mode === "off") {
+      problems.push({
+        rank: 2, tone: "warn", who: "owner",
+        line: "الطيار متوقف (الوضع «off») — مش بياخد أي قرار.",
+        prevents: "مفيش إيقاف ساعات القفل ولا تسريع ولا خفض.",
+        action: { what: "شغّل الطيار", screen: "شاشة الطيار الآلي → التحكم", button: "زرار «تلقائي»" },
+      });
+    }
+
+    /* ٣ — المنصة بترفض أوامرنا فعلاً (مش تأجيل مننا). */
+    for (const r of refusals.rows) {
+      const g = gates.find((x) => x.platform === r.platform);
+      if (g && g.kind === "unavailable") continue;
+      const isMeta = r.platform === "meta";
+      problems.push({
+        rank: r.daypart_n >= 3 ? 3 : 6,
+        tone: r.daypart_n >= 3 ? "bad" : "warn",
+        who: isMeta ? "owner" : "agent",
+        line: `${byId(r.platform)?.label || r.platform}: ${ar(r.n)} أمر اترفض في ٢٤ ساعة. آخر رد: «${r.last_error || "بدون سبب"}».`,
+        prevents: r.daypart_n >= 3
+          ? "أوامر إيقاف ساعات القفل بتتأخّر — يعني صرف على ساعات مفيهاش بيع."
+          : "بعض تعديلات الميزانية مش بتوصل.",
+        ...(isMeta ? { action: OWNER_ACTIONS.metaTier } : {}),
+      });
+    }
+
+    /* ٤ — أبواب مقفولة مش من عندنا. المؤقّت منها مش مشكلة أصلاً — ده الطيار
+       بيتصرّف صح — فاللي بيتعرض هنا هو الدايم بس.
+
+       بنسأل المنصة نفسها (lastReadiness) مش الباب بتاع الكتابة: تيك توك
+       بتترفض في القراءة أكتر بكتير مما بتترفض في الكتابة، فلو استنينا
+       أمر كتابة عشان نعرف إنها مش متاحة ممكن نستنى أيام. */
+    const seenUnavailable = new Set();
+    for (const p of PLATFORMS) {
+      const r = p.lastReadiness?.();
+      const g = gates.find((x) => x.platform === p.id && x.kind === "unavailable");
+      if (!r && !g) continue;
+      if (seenUnavailable.has(p.id)) continue;
+      seenUnavailable.add(p.id);
+      const isTikTok = p.id === "tiktok";
+      problems.push({
+        rank: 8, tone: "warn", who: "owner",
+        line: `${p.label}: ${r?.reason || g?.reason}`,
+        prevents: isTikTok
+          ? "قراءة أرقام تيك توك ورفع الجماهير عليها. الصرف والإيقاف شغّالين."
+          : "رفع الطلبات للمنصة دي. القراءة والتحكم في الحملات شغّالين.",
+        ...(isTikTok ? { action: OWNER_ACTIONS.tiktokReview } : {}),
+      });
+    }
+
+    /* ٥ — منصة مش مربوطة أصلاً. */
+    for (const p of PLATFORMS) {
+      const miss = missingOf(p.manageEnv);
+      if (!miss.length) continue;
+      problems.push({
+        rank: 9, tone: "warn", who: "owner",
+        line: `${p.label}: مش مربوطة — ناقص ${miss.join("، ")}.`,
+        prevents: `الطيار مش بيشوف ${p.label} خالص.`,
+        action: { what: `اربط ${p.label}`, screen: "Coolify → freshcuts-api → Environment Variables", button: `ضيف ${miss.join("، ")} وبعدين Redeploy` },
+      });
+    }
+
+    problems.sort((a, b) => a.rank - b.rank);
+    const worst = problems[0] || null;
+    const bad = problems.filter((x) => x.tone === "bad");
+
+    /* السطر نفسه. لو مفيش مشاكل بيقول كده بالبلدي؛ ولو فيه بيقول أخطرها
+       واحدة — مش كلها، عشان السطر يفضل سطر. الباقي تحته في `problems`. */
+    let line, tone;
+    if (!problems.length) {
+      tone = "good";
+      line = w.open
+        ? "كل حاجة شغالة — الإعلانات شغالة والمطعم فاتح، والطيار بيتابع."
+        : "كل حاجة شغالة — المطبخ قافل والإعلانات موقوفة زي ما المفروض.";
+    } else {
+      tone = bad.length ? "bad" : "warn";
+      const rest = problems.length - 1;
+      const act = worst.who === "owner" && worst.action
+        ? ` محتاج منك: ${worst.action.button ? `${worst.action.screen} ← ${worst.action.button}` : worst.action.screen}`
+        : " الطيار بيتصرّف لوحده، مش محتاج حاجة منك.";
+      line = `${bad.length ? "🚨" : "⚠️"} ${worst.line} ${worst.prevents}${act}`
+        + (rest > 0 ? ` (وكمان ${ar(rest)} حاجة أقل خطورة تحت)` : "");
+    }
+
+    return {
+      at: new Date().toISOString(),
+      tone, line,
+      needsOwner: problems.filter((x) => x.who === "owner").length,
+      window: { open: w.open, label: w.label, clock: w.clock },
+      problems,
+      gates: gates.map((g) => ({ platform: g.platform, kind: g.kind, minutes: g.minutes, reason: g.reason })),
+      verified: verdict ? { tone: verdict.tone, line: verdict.line, mismatchCount: verdict.mismatchCount } : null,
+    };
+  }
+
+  /* GET /api/autopilot/health — السطر الواحد. */
+  app.get("/api/autopilot/health", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    const owner = c.req.query("owner") === "1";
+    return c.json({ ok: true, ...(await healthNow({ priority: owner ? "owner" : "verify" })) });
+  });
+
   app.get("/api/autopilot/daypart-verify", async (c) => {
     const err = await requireAdmin(c); if (err) return err;
-    const v = await verifyDaypart({ force: c.req.query("force") === "1" });
+    /* ?force=1 هو زرار «افحص تاني» اللي المالك بيدوسه بإيده وهو قدام
+       الشاشة — ده بيعدّي الباب المقفول عن قصد. أما القراءة الدورية اللي
+       الصفحة بتعملها كل دقيقتين فبتفضل تليمتري وبتتأجّل لو المنصة مخنوقة. */
+    const forced = c.req.query("force") === "1";
+    const v = await verifyDaypart({ force: forced, priority: forced ? "owner" : "verify" });
     return c.json({ ok: true, ...v, alerts: await writeFailureAlerts().catch(() => []) });
   });
 

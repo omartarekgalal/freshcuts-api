@@ -173,20 +173,42 @@ export function register(app, ctx) {
     return { ok: true, audienceId: aud.id, added };
   }
 
-  /* TikTok: multipart file upload → create or APPEND update. */
+  /* TikTok: multipart file upload → create or APPEND update.
+
+     The timeout is the entire point of this wrapper. This was the one HTTP
+     call in the whole service made with a bare `fetch` and no deadline, and
+     it sits inside the nightly audience sweep, which sits inside the hourly
+     autopilot cycle. A TCP connection that hangs here hangs runCycle; the
+     `running` latch is released in a `finally` that never runs; every
+     subsequent hourly tick returns "already running" — and the autopilot is
+     dead, silently, until somebody restarts the container. An audience
+     upload failing is a small thing. It must never be able to take the agent
+     down with it. */
+  const AUD_TIMEOUT_MS = Number(process.env.ADS_HTTP_TIMEOUT_MS || 15000);
+
   async function ttMultipart(url, fields, fileField, fileName, fileContent) {
     const fd = new FormData();
     for (const [k, v] of Object.entries(fields)) fd.append(k, String(v));
     fd.append(fileField, new Blob([fileContent], { type: "text/csv" }), fileName);
-    const res = await fetch(url, {
-      method: "POST",
-      headers: { "Access-Token": env("TIKTOK_ACCESS_TOKEN") },
-      body: fd,
-    });
-    const text = await res.text();
-    let json = null;
-    try { json = JSON.parse(text); } catch { /* not JSON */ }
-    return { ok: res.ok && json?.code === 0, json, status: res.status, text: json ? undefined : text.slice(0, 400) };
+    const ctl = new AbortController();
+    const timer = setTimeout(() => ctl.abort(), AUD_TIMEOUT_MS);
+    try {
+      const res = await fetch(url, {
+        method: "POST",
+        headers: { "Access-Token": env("TIKTOK_ACCESS_TOKEN") },
+        body: fd,
+        signal: ctl.signal,
+      });
+      const text = await res.text();
+      let json = null;
+      try { json = JSON.parse(text); } catch { /* not JSON */ }
+      return { ok: res.ok && json?.code === 0, json, status: res.status, text: json ? undefined : text.slice(0, 400) };
+    } catch (e) {
+      const msg = e && e.name === "AbortError" ? `timeout after ${AUD_TIMEOUT_MS}ms` : String((e && e.message) || e);
+      return { ok: false, json: null, status: 0, text: msg, error: msg };
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   async function syncTiktok(segId, phones) {

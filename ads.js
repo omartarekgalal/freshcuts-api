@@ -244,7 +244,23 @@ async function httpJson(url, { method = "GET", headers = {}, body = null, timeou
    gate below until the bucket resets instead of retrying into it.
    ═══════════════════════════════════════════════════════════════════════ */
 
+/* One sentence, one place. It is what the owner reads on the status tile, in
+   the reports page, in the autopilot health line and in the skipped-event
+   rows — and it says what is true (an app awaiting review), not what the API
+   said (a missing scope, which sounds like a credential someone forgot). */
+const TIKTOK_PENDING_AR =
+  "تيك توك لسه بتراجع تطبيقنا (Pending review) — التوكن مش واخد صلاحيات لحد ما المراجعة تخلص. " +
+  "يعني مش بنقدر نقرا أرقام تيك توك ولا نرفع عليها جماهير. الصرف والإيقاف والتشغيل شغّالين عادي. " +
+  "مفيش حاجة تتعمل من عندنا — المراجعة عند تيك توك نفسها.";
+
 const META_THROTTLE_CODES = new Set([4, 17, 32, 613, 80000, 80001, 80002, 80003, 80004, 80014]);
+
+/* An unclassified refusal is still a refusal. Snap answered 87 pause commands
+   with an empty reason and the old reading — `rejected`, retryAfterMs 0 — put
+   it straight back in the queue five minutes later, forever. Anything we
+   cannot name backs off on a doubling ladder instead, so a reason we have
+   never seen before costs a handful of calls a night rather than 288.       */
+const UNKNOWN_BACKOFF_MS = [2 * 60_000, 5 * 60_000, 15 * 60_000, 45 * 60_000, 90 * 60_000];
 
 function msToTopOfNextHour(now = Date.now()) {
   const d = new Date(now);
@@ -281,10 +297,37 @@ export function metaAccessTier(res) {
   return null;
 }
 
-/* kind: throttled | auth | permission | rejected | transport */
-export function classifyRefusal(platformId, res) {
+/* Three destinies, and every refusal has exactly one of them:
+
+     transient   — retry with backoff. Throttles, timeouts, 5xx.
+     needs-owner — a human must click something. Say it once, loudly, with the
+                   screen and the button. Retrying cannot help.
+     unavailable — the door is shut and not by us. Stop trying, say so, and
+                   stop counting it as a failure of ours.
+
+   `kind` stays the fine-grained label; `destiny` is the thing the rest of the
+   system branches on, so a new platform code cannot accidentally land in the
+   retry-forever bucket by omission.
+
+   kind: throttled | auth | permission | unavailable | rejected | transport */
+const DESTINY = {
+  throttled: "transient",
+  transport: "transient",
+  rejected: "transient",      // unknown → back off, never hammer
+  auth: "needs-owner",
+  permission: "needs-owner",
+  unavailable: "unavailable",
+};
+
+export function destinyOf(kind) { return DESTINY[kind] || "transient"; }
+
+export function classifyRefusal(platformId, res, attempt = 0) {
   const j = res?.json;
   const status = res?.status ?? 0;
+  const unknown = () => ({
+    kind: "rejected",
+    retryAfterMs: UNKNOWN_BACKOFF_MS[Math.min(attempt, UNKNOWN_BACKOFF_MS.length - 1)],
+  });
   if (!status) return { kind: "transport", retryAfterMs: 60_000 };
   if (status === 429) return { kind: "throttled", retryAfterMs: Number(res?.headers?.["retry-after"] || 0) * 1000 || 15 * 60_000 };
 
@@ -301,26 +344,38 @@ export function classifyRefusal(platformId, res) {
         subcode: Number.isFinite(sub) ? sub : null,
       };
     }
+    /* 190 is the one Meta error a machine can sometimes undo by itself, so it
+       is auth (needs-owner) only after a refresh has been tried and failed.
+       The rest of this family cannot be fixed from here at all.             */
     if (code === 190 || code === 102 || code === 463 || code === 467) return { kind: "auth", retryAfterMs: 0 };
     if (code === 200 || code === 10 || code === 3 || code === 294) return { kind: "permission", retryAfterMs: 0 };
-    return { kind: "rejected", retryAfterMs: 0 };
+    return unknown();
   }
 
   if (platformId === "tiktok") {
     const code = Number(j?.code);
+    const msg = String(j?.message || "");
     if (code === 40100 || code === 51021) return { kind: "throttled", retryAfterMs: 10 * 60_000 };
+    /* 40001 + "lacks the required scope" is not a broken token and not a
+       mistake we can correct: the developer app is submitted and Pending, so
+       TikTok grants no scope at all until a human at TikTok approves it. It
+       is retried once every six hours purely so approval is noticed, and it
+       is never counted as the platform refusing our commands.               */
+    if (code === 40001 && /scope|permission/i.test(msg)) {
+      return { kind: "unavailable", retryAfterMs: 6 * 60 * 60_000, reviewPending: true };
+    }
     if (code === 40001 || code === 40105 || code === 40002) return { kind: "auth", retryAfterMs: 0 };
-    return { kind: status === 403 ? "permission" : "rejected", retryAfterMs: 0 };
+    return status === 403 ? { kind: "permission", retryAfterMs: 0 } : unknown();
   }
 
   if (platformId === "snapchat") {
     if (status === 401) return { kind: "auth", retryAfterMs: 0 };
     if (status === 403) return { kind: "permission", retryAfterMs: 0 };
-    return { kind: "rejected", retryAfterMs: 0 };
+    return unknown();
   }
 
   if (status === 401 || status === 403) return { kind: status === 401 ? "auth" : "permission", retryAfterMs: 0 };
-  return { kind: "rejected", retryAfterMs: 0 };
+  return unknown();
 }
 
 /* ─── The gate ─────────────────────────────────────────────────────────
@@ -333,6 +388,14 @@ export function classifyRefusal(platformId, res) {
    truth from the platform rather than inherit a stale block. The durable
    record of what failed and how often already lives in ap_decisions.        */
 const gates = new Map();
+
+/* How many times in a row this platform has refused without naming a wait.
+   It is what turns the unknown-refusal ladder from a constant into a ramp,
+   and the first success resets it. */
+const streaks = new Map();
+function refusalStreak(platformId) { return streaks.get(platformId) || 0; }
+function noteRefusal(platformId) { streaks.set(platformId, refusalStreak(platformId) + 1); }
+function clearRefusals(platformId) { streaks.delete(platformId); }
 
 export function writeGate(platformId) {
   const g = gates.get(platformId);
@@ -355,6 +418,59 @@ export function openWriteGate(platformId) { gates.delete(platformId); }
 
 export function writeGates() {
   return [...gates.keys()].map(writeGate).filter(Boolean);
+}
+
+/* ─── Reads spend the same quota as writes ──────────────────────────────
+   The gate above stopped the retry storm on WRITES, and on the night of
+   11 August that was only half the leak. Meta's development tier meters the
+   whole Marketing API, not the write half of it, and the ads window read
+   `campaigns() + insights()` for every platform on every five-minute tick
+   plus one more read per platform to verify — about thirty-six Meta reads an
+   hour, all night, while the four pause commands it actually needed sat
+   behind a shut gate. The polling was eating the quota the pause was waiting
+   for.
+
+   So reads are ranked, and the rank decides who may spend during a throttle:
+
+     owner     — a person is looking at the screen right now. Always allowed;
+                 it happens a few times a day, not twelve times an hour.
+     verify    — the read-back that proves an order landed. Suppressed while
+                 the gate is shut, because a write that never left the
+                 building has nothing to verify.
+     telemetry — polling for numbers. First thing dropped, every time.
+
+   The rule is one line: while a platform is throttled, nothing automatic
+   reads from it. That is what reserves the next call in the bucket for the
+   pause instead of for a chart.                                            */
+const READ_RANK = { telemetry: 1, verify: 2, owner: 3 };
+
+export function readGate(platformId, priority = "telemetry") {
+  if ((READ_RANK[priority] || 1) >= READ_RANK.owner) return null;
+  const g = writeGate(platformId);
+  if (!g) return null;
+  return {
+    ...g,
+    error: g.kind === "unavailable"
+      ? `${platformId}: مش متاحة دلوقتي — ${g.reason}`
+      : `${platformId}: مقفول مؤقتًا (${g.kind}) — الحصة محجوزة لأوامر الإيقاف والتشغيل، مش للقراءة. بعد ${g.minutes} دقيقة.`,
+  };
+}
+
+/* Every automatic read of a platform goes through here so the priority is
+   declared at the call site and cannot be forgotten. A suppressed read
+   returns the same `{ok:false, reason}` shape the adapters already return,
+   so callers that already handle "could not read" need no new branch.      */
+export async function platformRead(p, fn, { priority = "telemetry", empty = {} } = {}) {
+  const blocked = readGate(p.id, priority);
+  if (blocked) {
+    return { ok: false, reason: blocked.error, gated: true, kind: blocked.kind,
+             retryInMinutes: blocked.minutes, ...empty };
+  }
+  try {
+    return await fn();
+  } catch (e) {
+    return { ok: false, reason: String((e && e.message) || e), ...empty };
+  }
 }
 
 /* ─── The one place a campaign write actually leaves the building ──────
@@ -380,11 +496,20 @@ export async function sendPlatformWrite(p, call) {
   const parsed = p.readBatchResult(res, 1);
   if (parsed.ok) {
     openWriteGate(p.id);
+    clearRefusals(p.id);
     return { ok: true, httpStatus: res.status, raw: parsed.raw ?? null };
   }
-  const cls = classifyRefusal(p.id, res);
-  if (cls.kind === "throttled") {
-    closeWriteGate(p.id, { ms: cls.retryAfterMs, kind: cls.kind, reason: parsed.error });
+  const cls = classifyRefusal(p.id, res, refusalStreak(p.id));
+  /* Any refusal that named a wait closes the door for that long. Reading only
+     `throttled` here was the leak that made the classification cosmetic: a
+     `rejected` with a backoff, or TikTok's `unavailable` with six hours on it,
+     computed a delay and then went straight back into the queue on the next
+     five-minute tick. If the classifier says "not before T", nothing asks
+     again before T. */
+  if (cls.retryAfterMs > 0) {
+    closeWriteGate(p.id, { ms: cls.retryAfterMs, kind: cls.kind, reason: parsed.reason || parsed.error });
+  } else {
+    noteRefusal(p.id);
   }
   return {
     ok: false, httpStatus: res.status, error: parsed.error, kind: cls.kind,
@@ -693,15 +818,44 @@ const tiktok = {
     };
   },
 
+  /* TikTok answers HTTP 200 for everything; the verdict is in `code`.
+
+     `code 40001` with "lacks the required scope" is not a bad batch and not a
+     credential we can fix — the developer app is submitted and Pending, so
+     TikTok grants no scope at all until a human there approves it. Filing
+     that as a plain failure was costing us a permanent drip: failed rows are
+     put back to `pending` by claim() on the next sync, so every order in the
+     window was re-sent every hour into a door that cannot open. Marking it
+     `permanent` routes it to the `skipped` branch instead — the orders stay
+     eligible for the day the review clears, and nothing is retried until
+     then. Same treatment Google's closed service already gets. */
   readBatchResult(res, n) {
     const j = res.json;
     if (res.ok && j && j.code === 0) return { ok: true, accepted: n, raw: j };
+    const code = Number(j?.code);
+    const msg = String(j?.message || "");
+    if (code === 40001 && /scope|permission/i.test(msg)) {
+      this._refusal = { at: Date.now(), code: "APP_REVIEW_PENDING", reason: TIKTOK_PENDING_AR };
+      return { ok: false, permanent: true, code: "APP_REVIEW_PENDING", reason: TIKTOK_PENDING_AR,
+               error: `code ${code}: ${msg}`, raw: j ?? null };
+    }
     return {
       ok: false,
       error: j ? `code ${j.code}: ${j.message || ""}` : res.error || `HTTP ${res.status}`,
       raw: j ?? res.text ?? null,
     };
   },
+
+  /* The pre-flight the sender consults before claiming any order. Once the
+     refusal is latched nothing is claimed at all, so a shut door costs zero
+     rows and zero calls. Re-tested every six hours so approval is noticed
+     without anyone having to redeploy. */
+  lastReadiness() {
+    if (!this._refusal) return null;
+    if (Date.now() - this._refusal.at > 6 * 60 * 60_000) { this._refusal = null; return null; }
+    return { ok: false, code: this._refusal.code, reason: this._refusal.reason };
+  },
+  async preflight() { return this.lastReadiness() || { ok: true }; },
 
   hdr() { return { "Content-Type": "application/json", "Access-Token": env("TIKTOK_ACCESS_TOKEN") }; },
   advId() { return env("TIKTOK_ADVERTISER_ID"); },

@@ -780,10 +780,33 @@ export function createGoogleAdapter({ httpJson, hashEmail, hashPhonePlus, google
         `SELECT conversion_action.id, conversion_action.name, conversion_action.type,
                 conversion_action.status, conversion_action.category
            FROM conversion_action WHERE conversion_action.id = ${wanted || 0}`);
-      // Could not ask (token, version, network). That is NOT "misconfigured" —
-      // refusing to send on a transient read failure would silently stop a
-      // working upload, so we let the send proceed and report the doubt.
-      if (!r.ok) return settle({ ok: true, code: "UNVERIFIED", reason: `مقدرتش أتأكد من إجراء التحويل: ${r.reason}` });
+      /* Could not ask (token, version, network). One blip is NOT
+         "misconfigured" — refusing to send on a transient read failure would
+         silently stop a working upload, so the first few let the send proceed
+         and report the doubt.
+
+         But doubt cached for ten minutes is how a PERMANENT read failure — a
+         sunset API version, a dead token, exactly the scenario this adapter
+         was rewritten for — turns into a stream of `failed` rows: every cycle
+         claims orders on the strength of an `ok:true` that only ever meant
+         "we could not check". So the benefit of the doubt is counted, and it
+         runs out. After three consecutive unverified checks we stop claiming
+         and say plainly that we cannot see the conversion action; and the
+         doubt is cached for one minute, not ten, so recovery is quick. */
+      if (!r.ok) {
+        this._unverified = (this._unverified || 0) + 1;
+        if (this._unverified >= 3) {
+          return settle({
+            ok: false, code: "UNVERIFIABLE",
+            reason: `مقدرناش نقرا إجراء التحويل من جوجل ${this._unverified} مرات ورا بعض (${r.reason}). ` +
+                    `وقّفنا الرفع مؤقتًا بدل ما نبعت طلبات لباب مش عارفين هو مفتوح ولا لأ — الطلبات محفوظة وهترفع لما القراءة ترجع.`,
+          });
+        }
+        const v = settle({ ok: true, code: "UNVERIFIED", reason: `مقدرتش أتأكد من إجراء التحويل: ${r.reason}` });
+        this._readyAt = Date.now() - (10 * 60 * 1000) + 60 * 1000;   // doubt lives one minute, not ten
+        return v;
+      }
+      this._unverified = 0;
 
       const a = r.results[0]?.conversionAction;
       if (!a) {
