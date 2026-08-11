@@ -141,8 +141,10 @@ export function register(app, ctx, deps = {}) {
     return {
       basis: stats?.basis || null,
       firstEventAt: stats?.firstEventAt || null,
+      // pg بيرجّع timestamptz كـ Date، و String(Date) بيطلع "Thu Aug 06 …" —
+      // فالقص على ١٠ حروف كان بيدّي "Thu Aug 06" بدل التاريخ.
       coverageNote: stats?.firstEventAt
-        ? `تتبع الموقع بدأ يسجّل يوم ${String(stats.firstEventAt).slice(0, 10)} — أي فترة قبل التاريخ ده مالهاش أرقام فنل، ومش صفر.`
+        ? `تتبع الموقع بدأ يسجّل يوم ${new Date(stats.firstEventAt).toISOString().slice(0, 10)} — أي فترة قبل التاريخ ده مالهاش أرقام فنل، ومش صفر.`
         : null,
       broken: dead ? {
         step: dead.label, entered: dead.lost,
