@@ -22,9 +22,12 @@
    • campaigns are only judged after settings.minSpend SAR of spend in the
      window — no verdicts on statistical noise.
    • kill rule: CPA > killMultiple × targetCpa (with real spend) → pause.
-   • the total ceiling is 20% of the day's PROJECTED revenue, and the
-     projection is locked until 25% of the day has actually landed — before
-     that the ceiling is 20% of the trailing-7 average (see movingCeiling).
+   • the total ceiling is 20% of the revenue ALREADY IN THE TILL today,
+     floored at 20% of the trailing-7 average so ads can run before sales
+     arrive. Since revenue-so-far ≤ final revenue at every moment, the
+     earned part can never breach the owner's 20% rule (see earnedCeiling).
+     The intraday forecast still exists but is display-only — it never
+     moves a riyal (movingCeiling.outlook).
    • no budget raise once delivery efficiency drops below 35% — money that
      lands after the kitchen closes is waste, not patience (deliveryEfficiency).
    • per-platform steps override the global step downward, never upward:
@@ -941,27 +944,28 @@ export function decideDaypart({ rows = [], book = new Map(), pacing = new Map(),
    المبيعات الفعلية: كل ما المبيعات تكبر، مسموح نصرف أكتر — وده بالظبط اللي
    بيخلي التوسّع ممكن من غير ما المالك يقعد يعدّل رقم بإيده كل أسبوع.
 
-   ── الغلطة اللي كانت هنا وأول ما اتصلّحت ──────────────────────────────
-   كان الأساس متوسط آخر ٧ أيام: رقم بيتحسب أول اليوم ويقعد ثابت. يعني في
-   يوم بيجري ضعف المعتاد الوكيل مقدرش يصرف فيه، وفي يوم ميت كان مسموح له
-   يصرف ميزانية يوم كبير. المالك شاف الناحية الأولى وقال: «مش عايز متوسط
-   عشان منضيعش الفرص اللي ممكن تحصل في نفس اليوم.» والناحية التانية —
-   الحماية في اليوم الميت — طلعت مهمة زيها بالظبط.
+   ── تلات نسخ للقاعدة دي، والتالتة هي الصح ─────────────────────────────
+   (١) متوسط آخر ٧ أيام: رقم بيتحسب أول اليوم ويقعد ثابت. في يوم بيجري ضعف
+       المعتاد الوكيل مقدرش يصرف فيه. ده اللي المالك اشتكى منه.
+   (٢) توقّع مبيعات النهارده: بنى سقف على تخمين. الفكرة كانت شكلها أذكى، بس
+       التخمين ده الساعة ٥ العصر بيغلط ٥١٪ — يعني سقف مربوط بفلوس متخيّلة.
+   (٣) *الدخل اللي دخل فعلاً* — وده اللي المالك كان قاصده من الأول:
+       «مش قصدي إن الصرف بيزوّد النتايج. قصدي إنه بيدّينا فرصة نصرف أكتر في
+       نفس اليوم اللي فيه دخل كبير.» هو مش بيتكلم عن تنبّؤ، هو بيتكلم عن
+       *قدرة على الدفع*: الفلوس دي في الدرج خلاص، وحقّه يصرف نسبتها النهارده
+       مش الأسبوع الجاي. وطول ما مفيش دفع أونلاين ولا توصيل، مفيش ROAS لكل
+       طلب نحسّن عليه أصلاً — فالقاعدة دي هي كل القاعدة.
 
-   دلوقتي الأساس هو *توقّع مبيعات النهارده*: المبيعات اللي دخلت لحد دلوقتي
-   مقسومة على حصة اليوم اللي عدّت فعلاً، مخلوطة بالمتوسط بوزن = نفس الحصة.
-   (شوف projectDayRevenue فوق — والحصة نفسها في buildDayShape.)
+   السقف دلوقتي = أعلى من (الأرضية، ٢٠٪ × دخل النهارده لحد دلوقتي).
+   شوف earnedCeiling تحت — ومعاه الخاصية اللي بتخليه آمن رياضياً.
 
-   والتوقّع مقفول قبل ما ٢٥٪ من اليوم يعدّي — يعني عملياً قبل ٦ المسا تقريباً.
-   ده مش تحفّظ، ده اللي الداتا قالته: الساعة ٥ العصر الارتباط بين اللي حصل
-   واللي هيحصل ٠٫٤٤ والخطأ الوسيط ٥١٪، يعني التوقّع ساعتها أسوأ من مجرد
-   استعمال المتوسط. من الساعة ٧ الارتباط بيبقى ٠٫٨٣ والخطأ ١٢٪.
-
-   والـ stretch (٢٥٪) بيتقفل تلقائياً لما التوقّع الحيّ يشتغل: هو كان موجود
-   عشان المتوسط بيقلّل من قيمة اليوم الشغّال، والتوقّع بيصلّح ده من الأصل.
+   منحنى اليوم (buildDayShape) والتوقّع (projectDayRevenue) لسه موجودين،
+   بس بقوا للعرض بس: بيقولوا للمالك «اليوم رايح على كام» وعمرهم ما بيحرّكوا
+   ريال. سيبناهم لإن السياق ده مفيد وهو بيقرا، وقفلنا عليهم باب الفلوس لإن
+   خطأ ٥١٪ مالوش مكان في سقف المالك فاكره مربوط بدخل حقيقي.
 
    وفوق كل ده سقف مطلق بيحطه المالك (٢٠٠٠ افتراضياً) مفيش أي حساب بيعدّيه،
-   وأرضية (١٥٠) عشان يوم واطي مايطفّيش الإعلانات خالص.
+   وأرضية مطلقة (١٥٠) عشان يوم واطي مايطفّيش الإعلانات خالص.
 ═══════════════════════════════════════════════════════════════════════════ */
 
 export const ECON_DEFAULTS = {
@@ -998,10 +1002,12 @@ export const ECON_DEFAULTS = {
 ═══════════════════════════════════════════════════════════════════════════ */
 
 export const INTRADAY_DEFAULTS = {
-  liveCeiling: true,            // السقف الحيّ شغّال؟ (لو false بنرجع لسقف المتوسط)
+  earnedCeiling: true,          // السقف = ٢٠٪ من دخل النهارده الفعلي (قاعدة المالك)
+  earnedFloorPct: 100,          // الأرضية = كام ٪ من سقف المتوسط (١٠٠ = زي ما كان)
+  showOutlook: true,            // نحسب التوقّع للعرض؟ (مبيحركش فلوس أبداً)
   shapeLookbackDays: 56,        // كام يوم بنبني منهم منحنى اليوم
   shapeMinDowDays: 3,           // أقل عدد أيام من نفس يوم الأسبوع نصدّق منحناه
-  projMinSharePct: 25,          // مانتوقّعش قبل ما ٢٥٪ من اليوم يعدّي فعلاً
+  projMinSharePct: 25,          // ما نعرضش توقّع قبل ما ٢٥٪ من اليوم يعدّي
   projMinOrders: 6,             // ولا قبل ٦ طلبات النهارده
   minDeliveryEfficiencyPct: 35, // أقل نسبة من الزيادة ممكن تتصرف في ساعات بيع
 };
@@ -1129,61 +1135,125 @@ export function deliveryEfficiency({
   };
 }
 
-/* ── السقف الحيّ ────────────────────────────────────────────────────────
-   نفس قاعدة المالك (٢٠٪) بس مضروبة في اليوم اللي بيحصل فعلاً بدل المتوسط.
-   وبيتحرك في الاتجاهين: يوم شغّال بيوسّع السقف، ويوم ميت بيقفّله. المالك
-   وصف الاتجاه الأول بس — التاني هو اللي بيحميه من إنه يصرف ميزانية يوم كبير
-   على يوم صغير.                                                            */
+/* ═══════════════════════════════════════════════════════════════════════════
+   السقف المكتسب — قاعدة المالك بالحرف، من غير أي توقّع
+
+   المالك صحّح الفهم: «انا مش قصدي إن الصرف بيزوّد النتايج. قصدي إنه بيدّينا
+   فرصة إننا نسكيل بشكل أكبر ونصرف أكتر في نفس اليوم اللي فيه دخل كبير —
+   لحد ما نشغّل الدفع الأونلاين والتوصيل.»
+
+   يعني السؤال مش «اليوم ده هيجيب كام؟» — ده سؤال توقّع وإجابته الساعة ٥
+   العصر بتغلط ٥١٪. السؤال هو «أنا استحقيت أصرف كام لحد دلوقتي؟» — وده
+   سؤال حسابي، إجابته الفلوس اللي في الدرج، ومفيهاش خطأ تقدير خالص.
+
+     المسموح دلوقتي = ٢٠٪ × الدخل اللي دخل فعلاً لحد دلوقتي
+
+   ── الخاصية اللي بتخلي القاعدة دي آمنة رياضياً ─────────────────────────
+   دخل النهارده لحد دلوقتي دايماً ≤ دخل النهارده كله. يعني ٢٠٪ من الأول
+   دايماً ≤ ٢٠٪ من التاني. فالصرف المتراكم *مستحيل* يكسر قاعدة الـ ٢٠٪ على
+   اليوم اللي قفل، مهما حصل. السقف بيطلع لوحده مع كل طلب بيدخل، وعمره ما
+   بيتخطى المستحق. صفر مخاطرة تنبّؤ.
+
+   ── الأرضية: ليه مش صفر أول اليوم ────────────────────────────────────
+   الساعة ١١ الصبح الدخل صفر، والإعلان لازم يشتغل *قبل* ما البيع ييجي.
+   فالسقف عمره ما بينزل تحت أرضية = سقف المتوسط القديم (٢٠٪ من متوسط ٧
+   أيام). المكتسب بيرفع بس، عمره ما بينزّل. والأرضية دي هي المكان الوحيد
+   اللي ممكن نصرف فيه فوق الـ ٢٠٪ — ومكتوبة صراحة عشان تتحاسب في التسوية.
+
+   ── الترباس (ratchet) ────────────────────────────────────────────────
+   الدخل جوّه اليوم بيزيد بس، إنما مرتجع أو إلغاء على الكاشير ممكن ينزّله.
+   لو سبنا السقف ينزل معاه كنا هنقصّ ميزانية على فلوس اتصرفت خلاص. فبنمسك
+   أعلى رقم شفناه النهارده (high water) وبنحسب عليه — السقف بيثبت ولا يرجع.
+═══════════════════════════════════════════════════════════════════════════ */
+export function earnedCeiling({
+  revenueSoFar = 0, highWaterRevenue = null, sharePct = 20,
+  floorCeiling = 0, hardMax = 2000, absoluteFloor = 150,
+} = {}) {
+  const seen = Math.max(0, Number(revenueSoFar) || 0);
+  const hw = Math.max(seen, Math.max(0, Number(highWaterRevenue) || 0));
+  const cap = Math.max(0, Number(hardMax) || 0);
+  const earned = Math.round(hw * (Number(sharePct) || 0) / 100);
+  const floorC = Math.max(Math.round(Number(floorCeiling) || 0), Math.max(0, Number(absoluteFloor) || 0));
+
+  let ceiling = Math.max(floorC, earned);
+  let capped = null;
+  if (ceiling > cap) { ceiling = cap; capped = "السقف المطلق"; }
+
+  const binding = earned >= floorC ? "earned" : "floor";
+  const ratcheted = hw > seen + 0.5;
+  return {
+    ceiling, earned, highWater: r2(hw), revenueSoFar: r2(seen), floorCeiling: floorC,
+    binding, capped, ratcheted, sharePct, hardMax: cap,
+    reason: binding === "earned"
+      ? `دخل النهارده لحد دلوقتي ${ar(hw)} ر.س × ${sharePct}٪ = ${ar(earned)} ر.س مسموح تتصرف على الإعلانات — دي فلوس دخلت الدرج فعلاً مش توقّع.` +
+        (ratcheted ? ` (فيه مرتجع نزّل الدخل لـ ${ar(seen)} ر.س، بس السقف مبيرجعش لورا جوّه اليوم عشان ما نقصّش ميزانية على فلوس اتصرفت خلاص.)` : "") +
+        (capped ? ` متقصوص على ${capped} ${ar(ceiling)} ر.س.` : "")
+      : `دخل النهارده لحد دلوقتي ${ar(hw)} ر.س، يعني المستحق بقاعدة الـ ${sharePct}٪ ${ar(earned)} ر.س بس. ` +
+        `السقف واقف على الأرضية ${ar(floorC)} ر.س لإن الإعلان لازم يشتغل قبل ما البيع ييجي — أول ما الدخل يعدّي ${ar(Math.round(floorC * 100 / (Number(sharePct) || 20)))} ر.س السقف يبتدي يطلع لوحده مع كل طلب.`,
+  };
+}
+
+/* ── سقف اليوم ──────────────────────────────────────────────────────────
+   الأرضية (٢٠٪ من متوسط ٧ أيام) + المكتسب فوقها. والتوقّع (projection)
+   بيترجع معاه كـ `outlook` — رقم للعرض بس، عمره ما بيحرّك ريال: خطأه
+   الساعة ٥ العصر ٥١٪، وقاعدة المالك مربوطة بفلوس حقيقية مش بتخمين.       */
 export function movingCeiling({
   trailing7Avg = null, sharePct = 20, stretchPct = 25, pacePct = null,
   hotThresholdPct = 20, hardMax = 2000, floor = 150, fallback = 1000,
-  projection = null, stretchAllowed = true,
+  projection = null, earned = null, floorPct = 100,
 } = {}) {
   const cap = Math.max(0, Number(hardMax) || 0);
-  const live = !!(projection && projection.usable && Number(projection.projected) > 0);
-  const hot = !live && stretchAllowed
-    && pacePct != null && Number.isFinite(Number(pacePct)) && Number(pacePct) >= Number(hotThresholdPct);
   const avg = Number(trailing7Avg);
+  const hasAvg = Number.isFinite(avg) && avg > 0;
+  const outlook = projection && projection.usable ? projection : null;
 
-  if (!live && (!Number.isFinite(avg) || avg <= 0)) {
-    const ceiling = Math.min(Number(fallback) || 0, cap);
-    return {
-      ceiling, base: null, stretch: null, hot: false, live: false, trailing7Avg: null, projection,
-      sharePct, stretchPct, hardMax: cap, floor, source: "fallback",
-      reason: `مفيش مبيعات محسوبة لآخر ٧ أيام، فقاعدة الـ ${sharePct}٪ مالهاش أساس تتحسب عليه. السقف رجع للرقم الاحتياطي ${ar(ceiling)} ر.س/يوم لحد ما المبيعات تبقى مقروءة.`,
-    };
-  }
+  /* الأرضية: سقف المتوسط القديم. لو المبيعات مش مقروءة بنرجع للرقم اليدوي. */
+  const baseline = hasAvg ? Math.round(avg * (Number(sharePct) || 0) / 100) : Math.min(Number(fallback) || 0, cap);
+  const floorCeiling = Math.max(
+    Math.round(baseline * Math.max(0, Math.min(100, Number(floorPct) ?? 100)) / 100),
+    Math.max(0, Number(floor) || 0));
 
-  /* لما التوقّع الحيّ شغّال بنستعمل نسبة المالك الأصلية (٢٠٪) وبس: التوسّع
-     لـ ٢٥٪ كان موجود عشان المتوسط بيقلّل من قيمة اليوم الشغّال — والتوقّع
-     الحيّ بيصلّح ده من الأصل. لو سبناهم مع بعض كنا هنحسب اليوم الحلو مرتين. */
-  const anchor = live ? Number(projection.projected) : avg;
-  const base = Math.round(anchor * (Number(sharePct) || 0) / 100);
-  const stretch = Math.round(anchor * (Number(stretchPct) || 0) / 100);
-  let ceiling = hot ? stretch : base;
-  let capped = null;
-  if (ceiling > cap) { ceiling = cap; capped = "السقف المطلق"; }
-  if (ceiling < Number(floor)) { ceiling = Math.min(Number(floor) || 0, cap); capped = "أرضية السقف"; }
+  const e = earnedCeiling({
+    revenueSoFar: earned?.revenueSoFar ?? 0,
+    highWaterRevenue: earned?.highWater ?? null,
+    sharePct, floorCeiling, hardMax: cap, absoluteFloor: floor,
+  });
 
-  const head = live
-    ? `توقّع مبيعات النهارده ${ar(anchor)} ر.س × ${sharePct}٪ = ${ar(base)} ر.س مسموح للإعلانات. ${projection.reason}`
-    : `متوسط مبيعات آخر ٧ أيام ${ar(avg)} ر.س/يوم × ${sharePct}٪ = ${ar(base)} ر.س مسموح للإعلانات النهارده` +
-      (hot ? `، والنبض فوق خط الأساس بـ ${Math.round(Number(pacePct))}٪ فاتفتح سقف التوسّع ${stretchPct}٪ = ${ar(stretch)} ر.س` : "") +
-      (projection && projection.reason ? ` ${projection.reason}` : "");
+  const known = earned != null;
+  const source = !hasAvg && !known ? "fallback" : e.binding === "earned" ? "earned" : "floor";
+  const head = !known
+    ? (hasAvg
+      ? `متوسط مبيعات آخر ٧ أيام ${ar(avg)} ر.س/يوم × ${sharePct}٪ = ${ar(baseline)} ر.س — ده سقف الأرضية. (مبيعات النهارده لسه مش مقروءة، فالمكتسب ما اتحسبش.)`
+      : `مفيش مبيعات محسوبة لآخر ٧ أيام، فقاعدة الـ ${sharePct}٪ مالهاش أساس تتحسب عليه. السقف رجع للرقم الاحتياطي ${ar(floorCeiling)} ر.س/يوم.`)
+    : e.reason + (e.binding === "floor" && hasAvg
+      ? ` (الأرضية = ٢٠٪ من متوسط آخر ٧ أيام ${ar(avg)} ر.س.)` : "");
 
   return {
-    ceiling, base, stretch, hot, live, anchor: r2(anchor),
-    trailing7Avg: Number.isFinite(avg) && avg > 0 ? r2(avg) : null, projection,
-    sharePct, stretchPct, hardMax: cap, floor, capped,
-    source: live ? "live" : hot ? "stretch" : "base",
-    reason: head + (capped ? ` — متقصوص على ${capped} (${ar(ceiling)} ر.س).` : ` — السقف دلوقتي ${ar(ceiling)} ر.س.`),
+    ceiling: e.ceiling,
+    earned: known ? e.earned : null,
+    revenueSoFar: known ? e.revenueSoFar : null,
+    highWater: known ? e.highWater : null,
+    ratcheted: known ? e.ratcheted : false,
+    binding: known ? e.binding : "floor",
+    floorCeiling, floorPct,
+    base: baseline, trailing7Avg: hasAvg ? r2(avg) : null,
+    sharePct, hardMax: cap, floor, capped: e.capped, source,
+    /* التوقّع باقي كإشارة مساعدة وبس — واضح إنه منفصل، ومش داخل في أي حسبة
+       فلوس. لو رجع يشيل السقف تاني نكون رجّعنا خطأ ٥١٪ من الشباك. */
+    outlook: outlook ? { projected: outlook.projected, share: outlook.share, reason: outlook.reason } : null,
+    projection,
+    reason: head + ` — السقف دلوقتي ${ar(e.ceiling)} ر.س.`,
   };
 }
 
 /* ── تسوية آخر اليوم ────────────────────────────────────────────────────
-   السقف كان مبني على توقّع. آخر اليوم بنعرف الرقم الحقيقي، فبنكتب الفرق:
-   صرفنا كام مقابل الـ ٢٠٪ اللي اليوم استحقّها فعلاً. من غير السطر ده الوكيل
-   بيسرّع كل يوم ومحدش بيعرف كان محق ولا لأ.                                */
+   السقف والمستحق بقوا نفس العملة دلوقتي، فالتسوية بقت أوضح: صرفنا كام
+   مقابل الـ ٢٠٪ اللي اليوم استحقّها فعلاً.
+
+   والمهم: الجزء المكتسب من السقف *مستحيل* يعدّي المستحق (لإن الدخل لحد
+   دلوقتي دايماً أقل من دخل اليوم كله). فأي زيادة في التسوية مصدرها واحد
+   وبس — أرضية السقف، اللي إحنا حاطينها عن قصد عشان الإعلان يشتغل قبل ما
+   البيع ييجي. يعني السطر ده بقى بيقيس تكلفة الأرضية بالظبط، مش دقة توقّع. */
 export function reconcileDay({ realisedRevenue = 0, spend = 0, sharePct = 20, ceilingUsed = null } = {}) {
   const rev = Math.max(0, Number(realisedRevenue) || 0);
   const spent = Math.max(0, Number(spend) || 0);
@@ -1197,7 +1267,7 @@ export function reconcileDay({ realisedRevenue = 0, spend = 0, sharePct = 20, ce
     pctOfSales, ceilingUsed, tone,
     reason: `اليوم قفل على ${ar(rev)} ر.س مبيعات، يعني قاعدة الـ ${sharePct}٪ كانت بتسمح بـ ${ar(entitled)} ر.س إعلانات. ` +
       `صرفنا ${ar(spent)} ر.س${pctOfSales == null ? "" : ` (${pctOfSales}٪ من المبيعات)`} — ` +
-      (tone === "over" ? `يعني زيادة ${ar(Math.abs(variance))} ر.س فوق المستحق. التوقّع كان أعلى من الحقيقة، والمتوسط بكرة هيحسب اليوم ده فالسقف بيتظبط لوحده.`
+      (tone === "over" ? `يعني زيادة ${ar(Math.abs(variance))} ر.س فوق المستحق — ودي كلها جاية من أرضية السقف، مش من حساب غلط: اليوم طلع أقل من المتوسط والإعلانات كانت شغالة قبل ما يبان. لو الأرضية دي غالية عليك، نزّلها من الإعدادات (earnedFloorPct).`
         : tone === "under" ? `يعني أقل بـ ${ar(Math.abs(variance))} ر.س من المستحق — سبنا فرصة على الأرض.`
           : `يعني في حدود المستحق.`),
   };
@@ -1584,6 +1654,16 @@ export function register(app, ctx, deps = {}) {
         PRIMARY KEY (platform, campaign_id, biz_day)
       );
       CREATE INDEX IF NOT EXISTS ap_daypart_open_idx ON ap_daypart(resumed_at, biz_day);
+      -- ترباس السقف المكتسب. الدخل جوّه اليوم بيزيد بس، إنما مرتجع على
+      -- الكاشير ممكن ينزّله — ولو السقف نزل معاه كنا هنقصّ ميزانية على فلوس
+      -- اتصرفت خلاص. بنمسك أعلى رقم شفناه في يوم المطعم ده وبنحسب عليه.
+      -- في قاعدة البيانات مش في الذاكرة عشان إعادة تشغيل نص اليوم ما تفقدش
+      -- الترباس وترجّع السقف لورا.
+      CREATE TABLE IF NOT EXISTS ap_earned (
+        biz_day DATE PRIMARY KEY,
+        high_water NUMERIC NOT NULL DEFAULT 0,
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
     `);
   }
   ensureSchema()
@@ -1680,10 +1760,33 @@ export function register(app, ctx, deps = {}) {
     return shape;
   }
 
+  /* ── ترباس الدخل المكتسب ────────────────────────────────────────────────
+     بيرجّع أعلى دخل شفناه في يوم المطعم ده. الكتابة upsert بـ GREATEST عشان
+     تفضل صح حتى لو دورتين اشتغلوا في نفس اللحظة. مرتجع على الكاشير بينزّل
+     الرقم الجاي من ts_orders — الترباس بيمنع السقف إنه ينزل معاه.
+     ملاحظة: ده مش تجاهل للمرتجع. اليوم اللي بعده بيدخل في متوسط الـ ٧ أيام
+     بقيمته الحقيقية، والتسوية آخر اليوم بتحسب على الرقم النهائي مش على
+     الترباس — فالمرتجع بيتحاسب، بس مش بقطع ميزانية اتصرفت خلاص.           */
+  async function earnedWaterMark(bizDay, revenueSoFar) {
+    const rev = Math.max(0, Number(revenueSoFar) || 0);
+    try {
+      const r = await pool.query(
+        `INSERT INTO ap_earned (biz_day, high_water, updated_at) VALUES ($1::date, $2, NOW())
+         ON CONFLICT (biz_day) DO UPDATE
+           SET high_water = GREATEST(ap_earned.high_water, EXCLUDED.high_water), updated_at = NOW()
+         RETURNING high_water`, [bizDay, rev]);
+      return Number(r.rows[0]?.high_water) || rev;
+    } catch (e) {
+      // الجدول لسه ما اتعملش أو القاعدة مش رادّة — الرقم الحيّ أأمن من صفر
+      console.error("[autopilot] earned water mark failed:", e.message);
+      return rev;
+    }
+  }
+
   /* المتصل يقدر يبعت النبض لو هو قاراه أصلاً (عشان ما نقراهوش مرتين)، وإلا
      بنقراه إحنا. مهم إن كل اللي بيصرف فلوس يشوف *نفس* السقف: لو الجولة
-     البطيئة اشتغلت على سقف المتوسط والإيقاع على السقف الحيّ، اليوم الميت
-     كان هيتقفل من ناحية ويتفتح من التانية. `pulse: false` بيقفل القراءة. */
+     البطيئة اشتغلت على سقف المتوسط والإيقاع على السقف المكتسب، اليوم الشغّال
+     كان هيتفتح من ناحية ويتقفل من التانية. `pulse: false` بيقفل القراءة. */
   async function settingsNow({ pacePct = null, base = null, pulse = null } = {}) {
     const s = base || await getSettings();
     if (pulse === null && s.liveCeiling !== false && s.moveCeilingWithSales !== false) {
@@ -1696,11 +1799,20 @@ export function register(app, ctx, deps = {}) {
     let trailing = { avg: null, days: 0 };
     try { trailing = await trailingDailySales(7); } catch { /* المبيعات مش مقروءة → fallback */ }
 
-    /* التوقّع الحيّ. محتاج النبض (مبيعات النهارده + عدد الساعات اللي عدّت).
-       لو المتصل ما بعتش نبض بنشتغل بالمتوسط زي الأول — ما بنعملش نداء زيادة
-       على قاعدة البيانات من جوّه دالة الإعدادات. */
+    /* ── المكتسب: الرقم الوحيد اللي بيحرّك فلوس ────────────────────────
+       دخل النهارده لحد دلوقتي، مع الترباس. من غير نبض مبنعرفش الدخل، فبنسيب
+       السقف على الأرضية — أأمن من إننا نخمّن.                              */
+    let earned = null;
+    if (s.earnedCeiling !== false && pulse && pulse.today) {
+      const rev = Number(pulse.today.revenue) || 0;
+      earned = { revenueSoFar: rev, highWater: await earnedWaterMark(pulse.day, rev) };
+    }
+
+    /* ── التوقّع: إشارة عرض بس ─────────────────────────────────────────
+       بيتحسب عشان الشاشة تقول «اليوم رايح على كام»، ومبيدخلش في حسبة السقف
+       خالص. خطأه الساعة ٥ العصر ٥١٪، وقاعدة المالك مربوطة بفلوس في الدرج. */
     let projection = null;
-    if (s.liveCeiling !== false && pulse && pulse.today) {
+    if (s.showOutlook !== false && pulse && pulse.today) {
       try {
         projection = projectDayRevenue({
           shape: await dayShape(),
@@ -1710,22 +1822,17 @@ export function register(app, ctx, deps = {}) {
           minSharePct: s.projMinSharePct ?? INTRADAY_DEFAULTS.projMinSharePct,
           minOrders: s.projMinOrders ?? INTRADAY_DEFAULTS.projMinOrders,
         });
-      } catch (e) { projection = null; console.error("[autopilot] projection failed:", e.message); }
+      } catch (e) { projection = null; console.error("[autopilot] outlook failed:", e.message); }
     }
 
     const ceiling = movingCeiling({
       trailing7Avg: trailing.avg,
       sharePct: s.adsShareOfSalesPct,
-      stretchPct: s.adsShareStretchPct,
-      pacePct,
-      hotThresholdPct: s.paceUpThresholdPct,
       hardMax: Math.min(Number(s.absoluteMaxTotalBudget) || ECON_DEFAULTS.absoluteMaxTotalBudget, MAX_DAILY_BUDGET),
       floor: s.minTotalBudget,
       fallback: s.maxTotalBudget,
-      projection,
-      /* التوسّع لـ ٢٥٪ كان بيتفتح على مجرد نسبة إيقاع — والنسبة دي الساعة ٣
-         العصر ممكن تتقلب بطلب واحد. دلوقتي لازم كمان يبقى فيه طلبات كفاية. */
-      stretchAllowed: !pulse || Number(pulse.today?.orders || 0) >= Number(s.paceMinOrders ?? 6),
+      floorPct: s.earnedFloorPct ?? INTRADAY_DEFAULTS.earnedFloorPct,
+      earned, projection,
     });
     return { ...s, maxTotalBudget: ceiling.ceiling, ceiling: { ...ceiling, sampleDays: trailing.days } };
   }
@@ -3514,42 +3621,63 @@ ${focus}
         adsCloseHour: w.closeHour, accountRollHourRiyadh: Number(s.accountRollHourRiyadh ?? 10),
       });
       const minEff = Number(s.minDeliveryEfficiencyPct ?? INTRADAY_DEFAULTS.minDeliveryEfficiencyPct);
-      const ceilingNow = Number(s.ceiling?.ceiling) || 0;
+      const cl = s.ceiling || {};
+      const ceilingNow = Number(cl.ceiling) || 0;
       const headroom = spendToday == null ? null : r2(Math.max(0, ceilingNow - spendToday));
-      const proj = s.ceiling?.projection || null;
+      /* المساحة اللي فاضلة بس الوقت مش سامح نصرفها — دي حقيقة لازم تتقال
+         بدل ما نرفع ميزانية عارفين إنها مش هتتصرف. */
+      const strandedHeadroom = headroom != null && eff.pct < minEff ? headroom : 0;
 
       return c.json({
         ok: true,
         ...pulse,
-        ceiling: s.ceiling,
+        ceiling: cl,
         /* كل الأرقام اللي الشاشة محتاجاها في مكان واحد — الواجهة مبتحسبش
            حاجة، عشان الرقم اللي المالك بيشوفه يبقى هو نفسه الرقم اللي
-           القرار اتاخد بيه. */
+           القرار اتاخد بيه. والسطر اللي بيلخّص الموديل كله:
+             دخل النهارده X → مسموح Y (٢٠٪) → صرفنا Z → فاضل W          */
         budget: {
+          // ١) دخل النهارده — الرقم اللي كل حاجة بتتحسب منه
           revenueToday: pulse.today.revenue,
+          revenueHighWater: cl.highWater ?? null,
+          ratcheted: !!cl.ratcheted,
           ordersToday: pulse.today.orders,
-          normalPaceToday: pulse.baseline.revenue,     // نفس يوم الأسبوع مقصوص عند نفس الساعة
-          pacePct: pulse.pacePct,
-          dayShare: proj?.share ?? null,               // عدّى كام ٪ من اليوم
-          projectedDayRevenue: proj?.projected ?? s.ceiling?.trailing7Avg ?? null,
-          projectionLive: !!(proj && proj.usable),
-          projectionRaw: proj?.raw ?? null,
-          trailingAvg: s.ceiling?.trailing7Avg ?? null,
+          // ٢) المسموح = ٢٠٪ منه، بأرضية
           sharePct: s.adsShareOfSalesPct,
+          earned: cl.earned ?? null,
+          floorCeiling: cl.floorCeiling ?? null,
           ceiling: ceilingNow,
+          binding: cl.binding ?? null,          // "earned" يعني الدخل هو اللي بيحكم
+          trailingAvg: cl.trailing7Avg ?? null,
+          // ٣) صرفنا كام  ٤) فاضل كام
           spendToday, spendReasons,
           headroom,
           headroomPct: spendToday == null || ceilingNow <= 0 ? null
             : Math.max(0, Math.round(((ceilingNow - spendToday) / ceilingNow) * 100)),
+          pctOfRevenueSpent: spendToday != null && pulse.today.revenue > 0
+            ? Math.round((spendToday / pulse.today.revenue) * 1000) / 10 : null,
+          // السطر الواحد اللي المالك يقدر يراجع حسابه بعينه
+          line: `دخل النهارده ${ar(pulse.today.revenue)} ر.س → مسموح تصرف ${ar(ceilingNow)} ر.س` +
+            `${cl.binding === "floor" ? ` (أرضية — المستحق لسه ${ar(cl.earned ?? 0)})` : ` (${s.adsShareOfSalesPct}٪)`}` +
+            `${spendToday == null ? "" : ` → صرفنا ${ar(spendToday)} → فاضل ${ar(headroom)}`}`,
+          // التوصيل: هل الزيادة دلوقتي هتلحق تشتغل أصلاً
           delivery: eff, minDeliveryEfficiencyPct: minEff,
+          strandedHeadroom,
           canRaiseNow: eff.pct >= minEff && w.open && (headroom == null || headroom > 0),
           why: eff.pct < minEff
-            ? `الوقت اتأخر: ${eff.reason} مابنرفعش تحت ${minEff}٪.`
+            ? `${eff.reason} فالـ ${ar(headroom ?? 0)} ر.س الفاضلين دول مستحقين فعلاً، بس رفعهم دلوقتي مش هيتصرف — بنسيبهم.`
             : !w.open ? w.why
               : headroom != null && headroom <= 0
-                ? `صرفنا ${ar(spendToday)} ر.س والسقف ${ar(ceilingNow)} — مفيش مساحة زيادة دلوقتي.`
-                : `${s.ceiling?.reason || ""}`,
-          reconcileNote: `آخر اليوم بنقارن اللي صرفناه بـ ${s.adsShareOfSalesPct}٪ من المبيعات الحقيقية وبنسجّل الفرق — السقف توقّع، والتسوية هي الحقيقة.`,
+                ? `صرفنا ${ar(spendToday)} ر.س والسقف ${ar(ceilingNow)} — مفيش مساحة زيادة لحد ما يدخل دخل جديد.`
+                : `${cl.reason || ""}`,
+          /* التوقّع: للعرض بس. مفصول عن كل اللي فوق عن قصد — عمره ما بيدخل
+             في السقف، عشان رقم خطأه ٥١٪ ما يوسّعش سقف المالك فاكره مربوط
+             بفلوس حقيقية. */
+          outlook: cl.outlook
+            ? { ...cl.outlook, binding: false,
+                note: "ده تقدير لشكل اليوم، مش أساس أي قرار ميزانية — السقف بيتحسب من الدخل اللي دخل فعلاً وبس." }
+            : null,
+          reconcileNote: `آخر اليوم بنقارن اللي صرفناه بـ ${s.adsShareOfSalesPct}٪ من الدخل النهائي وبنسجّل الفرق. الفرق الوحيد الممكن ييجي من الأرضية (${ar(cl.floorCeiling ?? 0)} ر.س) — اللي فوقها مستحيل يعدّي الـ ${s.adsShareOfSalesPct}٪.`,
         },
         adsWindow: w,
         pacing: {

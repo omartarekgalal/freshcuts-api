@@ -13,7 +13,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import {
-  buildDayShape, shareAt, projectDayRevenue, movingCeiling, reconcileDay,
+  buildDayShape, shareAt, projectDayRevenue, movingCeiling, earnedCeiling, reconcileDay,
   deliveryEfficiency, platformScaling, decidePace, PACE_DEFAULTS, INTRADAY_DEFAULTS,
 } from "./autopilot.js";
 
@@ -29,8 +29,9 @@ const shapeFor = (iso) => buildDayShape(before(iso), { lookbackDays: 56, minDowD
 /* offset من يوم المطعم (٠ = ٤ صباحاً) لساعة حائط بالرياض */
 const offsetOf = (clk) => ((Number(clk) - 4) + 24) % 24;
 
-/* السقف زي ما السيرفر بيحسبه بالظبط، بس بمدخلات الاختبار */
-function ceilingAt(iso, clk, { revOverride = null, ordersOverride = null } = {}) {
+/* السقف زي ما السيرفر بيحسبه بالظبط، بس بمدخلات الاختبار.
+   `highWater` بيحاكي الترباس المخزّن في ap_earned. */
+function ceilingAt(iso, clk, { revOverride = null, ordersOverride = null, highWater = null, floorPct = 100 } = {}) {
   const d = byDay.get(iso);
   const e = offsetOf(clk);
   const rev = revOverride ?? d.cum[e - 1];
@@ -42,11 +43,14 @@ function ceilingAt(iso, clk, { revOverride = null, ordersOverride = null } = {})
     minSharePct: INTRADAY_DEFAULTS.projMinSharePct, minOrders: INTRADAY_DEFAULTS.projMinOrders,
   });
   const c = movingCeiling({
-    trailing7Avg: trailing, sharePct: 20, stretchPct: 25, pacePct: null,
-    hardMax: 2000, floor: 150, fallback: 1000, projection,
+    trailing7Avg: trailing, sharePct: 20, hardMax: 2000, floor: 150, fallback: 1000, floorPct,
+    earned: { revenueSoFar: rev, highWater: highWater ?? rev },
+    projection,
   });
   return { ...c, projection, rev, orders, elapsedH: e };
 }
+/* سقف الأرضية لليوم ده — الرقم اللي السقف مبينزلش تحته */
+const floorFor = (iso) => Math.max(150, Math.round(trailing7(iso) * 0.2));
 
 /* ── ١. المنحنى نفسه: فريش كاتس مطعم ليلي ─────────────────────────────── */
 
@@ -69,86 +73,173 @@ test("shareAt بيملّس بين الساعتين مش بيقفز", () => {
   assert.ok(b > a && b < c, `النص ساعة المفروض بين الساعتين: ${a} / ${b} / ${c}`);
 });
 
-/* ── ٢. البوابة: «الساعة ٥ العصر» مقفولة عن قصد ───────────────────────── */
+/* ── ٢. القاعدة نفسها: ٢٠٪ من الدخل اللي دخل فعلاً ───────────────────── */
 
-test("الساعة ٣ العصر: التوقّع مقفول والسقف على المتوسط", () => {
-  const c = ceilingAt("2026-08-07", 15);
-  assert.equal(c.projection.usable, false);
-  assert.equal(c.projection.source, "too-early");
-  assert.equal(c.live, false);
-  assert.match(c.reason, /متوسط مبيعات آخر ٧ أيام/);
+test("السقف = ٢٠٪ من دخل النهارده، بأرضية تحته", () => {
+  const c = earnedCeiling({ revenueSoFar: 3000, sharePct: 20, floorCeiling: 290, hardMax: 2000, absoluteFloor: 150 });
+  assert.equal(c.earned, 600);
+  assert.equal(c.ceiling, 600);
+  assert.equal(c.binding, "earned");
+
+  const low = earnedCeiling({ revenueSoFar: 400, sharePct: 20, floorCeiling: 290, hardMax: 2000, absoluteFloor: 150 });
+  assert.equal(low.earned, 80);
+  assert.equal(low.ceiling, 290, "تحت الأرضية السقف بيقف على الأرضية");
+  assert.equal(low.binding, "floor");
+  assert.match(low.reason, /الإعلان لازم يشتغل قبل ما البيع ييجي/);
 });
 
-test("الساعة ٥ العصر: لسه مقفول — ده الرد على مثال المالك", () => {
-  const c = ceilingAt("2026-08-07", 17);
-  assert.equal(c.projection.usable, false, "الساعة ٥ التوقّع لازم يفضل مقفول");
-  // والسبب لازم يبقى مكتوب بالعربي وفيه رقم المضاعف
-  assert.match(c.projection.reason, /مطعم ليلي/);
+test("الخاصية اللي بتخلي القاعدة آمنة: الجزء المكتسب مستحيل يعدّي المستحق", () => {
+  /* الادعاء: لأي يوم حقيقي وأي ساعة، ٢٠٪ من الدخل لحد دلوقتي ≤ ٢٠٪ من دخل
+     اليوم كله. بنتحقق منه على كل يوم في العيّنة وكل ساعة فيه — من غير أرضية،
+     عشان نقيس الجزء المكتسب لوحده. */
+  for (const d of DAYS) {
+    if (!(d.total > 0)) continue;
+    const entitled = d.total * 0.2;
+    for (let e = 1; e <= 24; e++) {
+      const c = earnedCeiling({
+        revenueSoFar: d.cum[e - 1], sharePct: 20,
+        floorCeiling: 0, hardMax: 2000, absoluteFloor: 0,
+      });
+      assert.ok(c.earned <= entitled + 1,
+        `${d.day} الساعة ${e}: المكتسب ${c.earned} عدّى المستحق ${entitled.toFixed(0)}`);
+    }
+  }
 });
 
-test("طلب ضخم بدري مبيفتحش السقف", () => {
-  // ٨٠٠ ر.س طلب واحد الساعة ٣ العصر على أسوأ يوم
-  const naive = ceilingAt("2026-08-05", 16, { revOverride: 245 + 800, ordersOverride: 5 });
-  assert.equal(naive.projection.usable, false, "٥ طلبات مش عيّنة");
-  assert.equal(naive.ceiling, ceilingAt("2026-08-05", 16).ceiling, "السقف المفروض ما يتغيّرش");
+test("الترباس: مرتجع مبينزّلش السقف جوّه اليوم", () => {
+  const before = earnedCeiling({ revenueSoFar: 2000, sharePct: 20, floorCeiling: 290 });
+  assert.equal(before.ceiling, 400);
+  // اتلغى طلب بـ ٦٠٠ ر.س → الدخل نزل، بس أعلى رقم شفناه لسه ٢٠٠٠
+  const after = earnedCeiling({ revenueSoFar: 1400, highWaterRevenue: 2000, sharePct: 20, floorCeiling: 290 });
+  assert.equal(after.ceiling, 400, "السقف مبيرجعش لورا");
+  assert.equal(after.ratcheted, true);
+  assert.match(after.reason, /مرتجع/);
 });
 
-test("الخلط بيقصّ أثر الطلب الشاذ حتى بعد ما البوابة تفتح", () => {
-  const blended = ceilingAt("2026-08-05", 18, { revOverride: 387 + 800, ordersOverride: 8 });
-  const share = blended.projection.share / 100;
-  const unblended = Math.round((1187 / share) * 0.2);
-  assert.ok(blended.ceiling < unblended * 0.6,
-    `الخلط المفروض يقصّ الرقم للنص على الأقل: ${blended.ceiling} مقابل ${unblended} من غير خلط`);
+test("الترباس مبيقصّش سقف تحت صرف اتعمل خلاص", () => {
+  /* السيناريو الخطر: صرفنا ٣٩٠ ر.س على سقف ٤٠٠، وبعدين اتلغى طلب كبير.
+     من غير ترباس السقف كان هينزل ٢٨٠ والوكيل هيقصّ ميزانيات على فلوس راحت. */
+  const spentAlready = 390;
+  const withRatchet = earnedCeiling({ revenueSoFar: 1400, highWaterRevenue: 2000, sharePct: 20, floorCeiling: 290 });
+  const withoutRatchet = earnedCeiling({ revenueSoFar: 1400, sharePct: 20, floorCeiling: 290 });
+  assert.ok(withRatchet.ceiling >= spentAlready, `السقف ${withRatchet.ceiling} لازم يفضل فوق الصرف ${spentAlready}`);
+  assert.ok(withoutRatchet.ceiling < spentAlready, "ومن غير ترباس كان هينزل تحته — ده سبب وجوده");
+});
+
+test("إعادة تشغيل نص اليوم: الترباس محفوظ في القاعدة مش في الذاكرة", () => {
+  /* بعد الريستارت الخدمة بتقرا ts_orders تاني (نفس الرقم) وبتقرا الترباس من
+     ap_earned. اللي بنختبره هنا إن الدالة نفسها مالهاش ذاكرة داخلية: نفس
+     المدخلات = نفس الناتج، فالحالة كلها جاية من بره وبتتخزّن. */
+  const args = { revenueSoFar: 1400, highWaterRevenue: 2000, sharePct: 20, floorCeiling: 290 };
+  assert.equal(earnedCeiling(args).ceiling, earnedCeiling(args).ceiling);
+  // ولو الترباس ضاع (القاعدة مردّتش)، بنرجع للرقم الحيّ — أوطى بس مش كذّاب
+  const lost = earnedCeiling({ revenueSoFar: 1400, highWaterRevenue: null, sharePct: 20, floorCeiling: 290 });
+  assert.equal(lost.ceiling, 290);
+});
+
+test("التوقّع بقى للعرض بس — عمره ما بيحرّك السقف", () => {
+  const withOutlook = movingCeiling({
+    trailing7Avg: 1500, sharePct: 20, hardMax: 2000, floor: 150,
+    earned: { revenueSoFar: 800, highWater: 800 },
+    projection: { usable: true, projected: 9999, share: 40, reason: "اختبار" },
+  });
+  const without = movingCeiling({
+    trailing7Avg: 1500, sharePct: 20, hardMax: 2000, floor: 150,
+    earned: { revenueSoFar: 800, highWater: 800 },
+    projection: null,
+  });
+  assert.equal(withOutlook.ceiling, without.ceiling, "توقّع ٩٬٩٩٩ ر.س المفروض ما يغيّرش ولا ريال");
+  assert.equal(withOutlook.ceiling, 300, "الأرضية ٣٠٠ = ٢٠٪ من ١٥٠٠");
+  assert.ok(withOutlook.outlook, "وبرضه بيترجع للعرض");
+  assert.equal(withOutlook.outlook.projected, 9999);
+});
+
+test("طلب ضخم بدري بيرفع السقف بمقدار نسبته منه وبس", () => {
+  /* تحت الموديل ده الطلب الشاذ مش خطر أصلاً: ٨٠٠ ر.س بيستحقوا ١٦٠ ر.س
+     إعلانات — نسبتهم بالظبط — مش ٢٬٣٠٩ زي ما التوقّع كان هيطلّعهم. وهنا حتى
+     مش بيحرّك السقف، لإن المكتسب لسه تحت الأرضية. */
+  const plain = ceilingAt("2026-08-05", 16);
+  const freak = ceilingAt("2026-08-05", 16, { revOverride: 245 + 800, ordersOverride: 5 });
+  const floor = floorFor("2026-08-05");
+  const projectionWouldSay = Math.round(((245 + 800) / (freak.projection.share / 100)) * 0.2);
+
+  assert.equal(plain.ceiling, floor, "من غير الطلب الشاذ لسه على الأرضية");
+  assert.equal(freak.ceiling, Math.max(floor, Math.round((245 + 800) * 0.2)));
+  assert.ok(freak.ceiling - plain.ceiling <= 800 * 0.2 + 1,
+    `الزيادة عمرها ما تعدّي ٢٠٪ من الطلب نفسه: +${freak.ceiling - plain.ceiling}`);
+  assert.ok(projectionWouldSay > freak.ceiling * 2,
+    `والتوقّع كان هيقول ${projectionWouldSay} — أضعاف الرقم ده`);
 });
 
 /* ── ٣. إعادة تشغيل اليومين المسمّيين ساعة بساعة ──────────────────────── */
 
-test("أحسن يوم (الجمعة ٧ أغسطس، ٣٬٩١٧ ر.س): السقف بيكبر مع اليوم", () => {
-  const trailing = trailing7("2026-08-07");
-  const oldCeiling = Math.round(trailing * 0.2);          // السقف القديم الثابت
+test("أحسن يوم (الجمعة ٧ أغسطس، ٣٬٩١٧ ر.س): السقف بيفتح مع الدخل", () => {
+  const floor = floorFor("2026-08-07");                  // ٢٩٠
   const path = [15, 17, 19, 21, 23, 1].map((clk) => ({ clk, ...ceilingAt("2026-08-07", clk) }));
 
-  // بدري: زي القديم بالظبط
-  assert.equal(path[0].ceiling, oldCeiling);
-  // بعد ما اليوم يثبت نفسه: بيعدّي القديم بفرق واضح
+  // بدري الدخل لسه صغير → الأرضية
+  assert.equal(path[0].ceiling, floor);
+  assert.equal(path[0].binding, "floor");
+
+  // آخر الليل الدخل هو اللي بيحكم، والسقف تحت المستحق الحقيقي بالظبط
   const late = path.at(-1);
-  assert.ok(late.ceiling > oldCeiling * 2,
-    `آخر الليل السقف المفروض يبقى أكتر من ضعف القديم: ${late.ceiling} مقابل ${oldCeiling}`);
-  // وبيقرب من الاستحقاق الحقيقي (٢٠٪ من ٣٬٩١٧ = ٧٨٣)
-  const entitled = Math.round(3916.93 * 0.2);
-  assert.ok(Math.abs(late.ceiling - entitled) / entitled < 0.15,
-    `السقف آخر الليل ${late.ceiling} المفروض يقرب من المستحق ${entitled}`);
-  // والمسار تصاعدي بعد ما البوابة تفتح
-  const open = path.filter((p) => p.projection.usable);
-  for (let i = 1; i < open.length; i++) {
-    assert.ok(open[i].ceiling >= open[i - 1].ceiling - 5,
-      `السقف نزل من غير سبب: ${open[i - 1].clk}h=${open[i - 1].ceiling} → ${open[i].clk}h=${open[i].ceiling}`);
-  }
-});
+  assert.equal(late.binding, "earned");
+  const entitled = Math.round(3916.93 * 0.2);            // ٧٨٣
+  assert.ok(late.ceiling > floor * 2, `المفروض يعدّي ضعف الأرضية: ${late.ceiling} مقابل ${floor}`);
+  assert.ok(late.ceiling <= entitled, `وعمره ما يعدّي المستحق: ${late.ceiling} > ${entitled}`);
 
-test("أسوأ يوم (الأربعاء ٥ أغسطس، ٨٩٦ ر.س): السقف بينزل ويحمي المالك", () => {
-  const trailing = trailing7("2026-08-05");
-  const oldCeiling = Math.round(trailing * 0.2);
-  const late = ceilingAt("2026-08-05", 1);
-  const entitled = Math.round(896.08 * 0.2);              // ١٧٩ ر.س
-
-  assert.ok(late.ceiling < oldCeiling,
-    `اليوم الميت المفروض السقف ينزل تحت القديم: ${late.ceiling} مقابل ${oldCeiling}`);
-  assert.ok(late.ceiling < oldCeiling * 0.7, "النزول المفروض يبقى محسوس مش تجميلي");
-  assert.ok(late.ceiling >= entitled * 0.9,
-    `وبرضه مش المفروض ينزل تحت المستحق الحقيقي ${entitled}`);
-});
-
-test("انهيار بعد بداية قوية: السقف بيرجع لورا لوحده", () => {
-  const d = byDay.get("2026-08-07");
-  const frozenRev = d.cum[offsetOf(19) - 1], frozenOrd = d.cumOrders[offsetOf(19) - 1];
-  const path = [19, 21, 23, 1].map((clk) =>
-    ceilingAt("2026-08-07", clk, { revOverride: frozenRev, ordersOverride: frozenOrd }).ceiling);
+  // ومبيرجعش لورا ولا مرة على مدار اليوم
   for (let i = 1; i < path.length; i++) {
-    assert.ok(path[i] < path[i - 1], `السقف المفروض ينزل كل ساعة والمبيعات واقفة: ${path}`);
+    assert.ok(path[i].ceiling >= path[i - 1].ceiling,
+      `السقف نزل: ${path[i - 1].clk}h=${path[i - 1].ceiling} → ${path[i].clk}h=${path[i].ceiling}`);
   }
-  assert.ok(path.at(-1) < path[0] * 0.75, `النزول المفروض يبقى حقيقي: ${path}`);
 });
+
+test("أسوأ يوم (الأربعاء ٥ أغسطس، ٨٩٦ ر.س): السقف عمره ما فتح", () => {
+  const floor = floorFor("2026-08-05");                  // ٣٢٣
+  for (const clk of [15, 17, 19, 21, 23, 1]) {
+    const c = ceilingAt("2026-08-05", clk);
+    assert.equal(c.ceiling, floor, `الساعة ${clk} المفروض على الأرضية`);
+    assert.equal(c.binding, "floor");
+  }
+  /* وده بالظبط التنازل اللي الموديل ده بيعمله: المستحق الحقيقي ١٧٩ ر.س
+     والأرضية ٣٢٣ — يعني ١٤٤ ر.س فوق قاعدة الـ ٢٠٪ على يوم ميت. مقصودة
+     (الإعلان بيشتغل قبل ما البيع يبان) ومكتوبة في تسوية آخر اليوم. */
+  const entitled = Math.round(896.08 * 0.2);
+  assert.ok(floor > entitled, "الأرضية أعلى من المستحق في اليوم الميت — ده التنازل");
+  const rec = reconcileDay({ realisedRevenue: 896.08, spend: floor, sharePct: 20 });
+  assert.equal(rec.tone, "over");
+  assert.match(rec.reason, /أرضية السقف/);
+});
+
+test("الأرضية قابلة للتخفيض لما الأرضية دي تبقى غالية", () => {
+  const full = ceilingAt("2026-08-05", 21, { floorPct: 100 }).ceiling;
+  const tight = ceilingAt("2026-08-05", 21, { floorPct: 60 }).ceiling;
+  assert.ok(tight < full, `earnedFloorPct=60 المفروض يقفّل الأرضية: ${tight} مقابل ${full}`);
+  assert.ok(tight >= 150, "بس مش تحت الأرضية المطلقة");
+});
+
+test("انهيار بعد بداية قوية: السقف بيثبت مبينزلش", () => {
+  const d = byDay.get("2026-08-07");
+  const frozenRev = d.cum[offsetOf(19) - 1];
+  const path = [19, 21, 23, 1].map((clk) =>
+    ceilingAt("2026-08-07", clk, { revOverride: frozenRev, highWater: frozenRev }).ceiling);
+  for (let i = 1; i < path.length; i++) {
+    assert.equal(path[i], path[i - 1], `السقف المفروض يثبت والدخل واقف: ${path}`);
+  }
+  /* الفرق عن الموديل اللي قبله: التوقّع كان بينزّل السقف تدريجياً لما اليوم
+     يقع (٣٧٦ → ٢٥٦). المكتسب مبينزلش — الفلوس دخلت خلاص وحقّه يصرف نسبتها.
+     التكلفة إننا فقدنا الحماية دي، والمكسب إننا فقدنا معاها خطأ الـ ٥١٪. */
+  assert.equal(path[0], Math.max(floorFor("2026-08-07"), Math.round(frozenRev * 0.2)));
+});
+
+test("أول ساعة في اليوم: دخل صفر → الأرضية، مش صفر", () => {
+  const c = ceilingAt("2026-08-07", 11, { revOverride: 0, ordersOverride: 0 });
+  assert.equal(c.ceiling, floorFor("2026-08-07"));
+  assert.equal(c.earned, 0);
+  assert.equal(c.binding, "floor");
+});
+
 
 /* ── ٤. حرس آخر الليل ──────────────────────────────────────────────────── */
 
@@ -321,34 +412,40 @@ test("التسوية بتقول الحقيقة في الاتجاهين", () => {
 
 /* ── ٩. الأسوار الصلبة عمرها ما تتكسر ─────────────────────────────────── */
 
-test("السقف المطلق ٢٠٠٠ والأرضية ١٥٠ بيمسكوا مهما كان التوقّع", () => {
+test("السقف المطلق ٢٠٠٠ بيمسك مهما كان الدخل", () => {
+  // يوم بـ ٥٠ ألف ر.س: المستحق ١٠ آلاف، بس رقم المالك ٢٠٠٠ ومفيش حساب بيعدّيه
   const huge = movingCeiling({
     trailing7Avg: 2000, sharePct: 20, hardMax: 2000, floor: 150,
-    projection: { usable: true, projected: 999_999, reason: "اختبار" },
+    earned: { revenueSoFar: 50_000, highWater: 50_000 },
   });
   assert.equal(huge.ceiling, 2000);
   assert.equal(huge.capped, "السقف المطلق");
+});
 
+test("الأرضية المطلقة ١٥٠ بتمسك حتى لو المتوسط والدخل الاتنين على الأرض", () => {
   const tiny = movingCeiling({
-    trailing7Avg: 2000, sharePct: 20, hardMax: 2000, floor: 150,
-    projection: { usable: true, projected: 10, reason: "اختبار" },
+    trailing7Avg: 200, sharePct: 20, hardMax: 2000, floor: 150,
+    earned: { revenueSoFar: 0, highWater: 0 },
   });
-  assert.equal(tiny.ceiling, 150);
-  assert.equal(tiny.capped, "أرضية السقف");
+  assert.equal(tiny.ceiling, 150, "٢٠٪ من ٢٠٠ = ٤٠، بس الأرضية المطلقة ١٥٠");
+  assert.equal(tiny.binding, "floor");
 });
 
-test("التوقّع الحيّ بيقفل التوسّع لـ ٢٥٪ عشان ما نحسبش اليوم الحلو مرتين", () => {
-  const c = movingCeiling({
-    trailing7Avg: 1500, sharePct: 20, stretchPct: 25, pacePct: 90, hotThresholdPct: 20,
-    hardMax: 2000, floor: 150, projection: { usable: true, projected: 3000, reason: "اختبار" },
+test("مبيعات النهارده مش مقروءة → الأرضية، مش تخمين", () => {
+  const blind = movingCeiling({
+    trailing7Avg: 1500, sharePct: 20, hardMax: 2000, floor: 150, earned: null,
+    projection: { usable: true, projected: 5000, share: 60, reason: "اختبار" },
   });
-  assert.equal(c.hot, false, "مع التوقّع الحيّ مفيش stretch");
-  assert.equal(c.ceiling, 600, "٢٠٪ من ٣٠٠٠ = ٦٠٠");
+  assert.equal(blind.ceiling, 300, "٢٠٪ من متوسط ١٥٠٠ — والتوقّع متجاهَل");
+  assert.equal(blind.earned, null);
+  assert.match(blind.reason, /مبيعات النهارده لسه مش مقروءة/);
 });
 
-/* ── ١٠. الدقّة الإجمالية: الموديل لازم يكسب على المتوسط لوحده ────────── */
+/* ── ١٠. جودة رقم العرض (outlook) ─────────────────────────────────────
+   ده مش سور مالي — التوقّع مبيحركش ريال. بس لو هنعرضه للمالك على الشاشة
+   لازم يبقى أحسن من مجرد المتوسط، وإلا نشيله بدل ما نشوّش عليه.        */
 
-test("على ٥٨ يوم حقيقي: خطأ التوقّع أقل من خطأ المتوسط من الساعة ٧", () => {
+test("رقم العرض: خطأ التوقّع أقل من خطأ المتوسط من الساعة ٧", () => {
   const days = DAYS.slice(-58).filter((d) => d.total > 0 && d.orders >= 5);
   for (const clk of [19, 21, 23]) {
     const e = offsetOf(clk);
