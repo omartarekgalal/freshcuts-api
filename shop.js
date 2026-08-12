@@ -66,6 +66,7 @@ export function register(app, ctx, deps = {}) {
   const { pool, requireAdmin, getSettingsData, jb, normPhone } = ctx;
   const pay = deps.pay;
   const delivery = deps.delivery;
+  const notify = deps.notify || null;
 
   async function ensureSchema() {
     await pool.query(`
@@ -118,6 +119,10 @@ export function register(app, ctx, deps = {}) {
       sets.push(`${col}=$${vals.length}`);
     }
     await pool.query(`UPDATE shop_orders SET ${sets.join(", ")} WHERE order_no=$1`, vals);
+    // notify.js decides which stages the customer hears about; a notification
+    // failure must never fail the state change it describes.
+    if (notify) notify.orderStatusChanged(String(orderNo), status).catch((e) =>
+      console.error(`[shop] notify failed for ${orderNo}:`, e.message));
   }
 
   /* ── checkout: cart → locked POS prices → delivery quote → MF session ── */
@@ -334,6 +339,43 @@ export function register(app, ctx, deps = {}) {
               mf_invoice_id, mf_payment_id, refund_id, pos_order_id, pos_approval, created_at, updated_at
          FROM shop_orders ${where} ORDER BY created_at DESC LIMIT $${p.length}`, p)).rows;
     return c.json({ ok: true, orders: rows });
+  });
+
+  /* Reconciliation feed: MyFatoorah collected vs what the POS knows about.
+     The gap (delivery fees + tips) is BY DESIGN — the POS order carries the
+     food total only — so the screen states it instead of hiding it. */
+  app.get("/api/shop/summary", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    const from = c.req.query("from") || null, to = c.req.query("to") || null;
+    const r = (await pool.query(
+      `SELECT
+         count(*) FILTER (WHERE status NOT IN ('pending_payment','expired'))::int AS paid_orders,
+         COALESCE(sum(total) FILTER (WHERE status NOT IN ('pending_payment','expired')),0)::numeric AS gateway_total,
+         COALESCE(sum(subtotal) FILTER (WHERE status NOT IN ('pending_payment','expired')),0)::numeric AS pos_total,
+         COALESCE(sum(delivery_fee) FILTER (WHERE status NOT IN ('pending_payment','expired')),0)::numeric AS delivery_fees,
+         COALESCE(sum(tip) FILTER (WHERE status NOT IN ('pending_payment','expired')),0)::numeric AS tips,
+         count(*) FILTER (WHERE status='rejected_refunded')::int AS refunds,
+         COALESCE(sum(total) FILTER (WHERE status='rejected_refunded'),0)::numeric AS refunded_total,
+         count(*) FILTER (WHERE status='paid_pos_failed')::int AS stuck_orders,
+         count(*) FILTER (WHERE status='pending_payment')::int AS awaiting_payment,
+         count(*) FILTER (WHERE status='delivered')::int AS delivered
+       FROM shop_orders
+       WHERE ($1::date IS NULL OR created_at >= $1::date)
+         AND ($2::date IS NULL OR created_at < ($2::date + 1))`,
+      [from, to])).rows[0];
+    const n = (v) => Number(v) || 0;
+    return c.json({
+      ok: true, from, to,
+      paidOrders: n(r.paid_orders),
+      gatewayTotal: n(r.gateway_total),   // what MyFatoorah collected
+      posTotal: n(r.pos_total),           // what TabSense shows (food only)
+      deliveryFees: n(r.delivery_fees),   // the designed gap, part 1
+      tips: n(r.tips),                    // the designed gap, part 2
+      refunds: n(r.refunds), refundedTotal: n(r.refunded_total),
+      stuckOrders: n(r.stuck_orders),     // paid but not in the POS — needs eyes NOW
+      awaitingPayment: n(r.awaiting_payment),
+      delivered: n(r.delivered),
+    });
   });
 
   /* Shipment webhook events → order stage. Called by delivery.js. */

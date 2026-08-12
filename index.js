@@ -39,6 +39,7 @@ import * as pay from "./pay.js";
 import * as deliveryMod from "./delivery.js";
 import * as shop from "./shop.js";
 import * as accounts from "./accounts.js";
+import * as notify from "./notify.js";
 
 const { Pool } = pg;
 
@@ -2987,7 +2988,10 @@ reports.register(app, moduleCtx, {
 let shopApi = null;
 const payApi = pay.register(app, moduleCtx, { shop: () => shopApi });
 const deliveryApi = deliveryMod.register(app, moduleCtx, { shop: () => shopApi });
-shopApi = shop.register(app, moduleCtx, { pay: payApi, delivery: deliveryApi });
+// إشعارات العميل (متصفح/SMS/واتساب بمفاتيح من لوحة التحكم) — قبل shop
+// عشان كل تغيير حالة يعدّي عليها.
+const notifyApi = notify.register(app, moduleCtx);
+shopApi = shop.register(app, moduleCtx, { pay: payApi, delivery: deliveryApi, notify: notifyApi });
 // ملف العميل: دخول OTP، عناوين محفوظة، تاريخ الطلبات وإعادة الطلب، وربط/إنشاء
 // في دفتر عملاء TabSense (الموجود يتربط، الجديد بس هو اللي يتعمل).
 accounts.register(app, moduleCtx);
