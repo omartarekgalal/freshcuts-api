@@ -402,6 +402,22 @@ export function msToAccountRoll(at = new Date(), tz = ADS_ACCOUNT_TZ) {
   return 86_400_000 - elapsed;
 }
 
+/* ── اليوم اللي بنطلب بيه صرف "النهارده" من المنصات ─────────────────────
+   ميتا بتفسّر time_range بتوقيت الحساب الإعلاني (America/Los_Angeles) —
+   مش UTC ومش جدة. و todayISO() بترجّع تاريخ UTC، وتاريخ UTC بيسبق يوم
+   حساب ميتا من ٠٠:٠٠ UTC (٣ الفجر بجدة) لحد ٠٠:٠٠ في لوس أنجلوس (١٠
+   الصبح بجدة) — سبع ساعات كل يوم (تمانية في الشتا).
+
+   في الساعات السبعة دي كنا بنطلب من ميتا يوم حساب لسه ما ابتداش. وميتا
+   في الحالة دي مبترجّعش خطأ — بترجّع HTTP 200 و data فاضية، وإحنا بنجمع
+   صفر ونقول "صرفنا صفر". ده اللي خلّى سطر التسوية يقول كل يوم إننا سبنا
+   المستحق كله على الأرض.
+
+   والرقم الصح هو يوم الحساب نفسه. وده كمان أنضف لسناب وجوجل في نفس
+   الشباك: نافذة الإعلانات (١١ص → ٣ف بتوقيت جدة) بتقع جوّه يوم الحساب
+   الإعلاني ويوم المطعم بنفس التاريخ، فالتلاتة بيوصفوا نفس ساعات الإعلان. */
+export const spendDayNow = (at = new Date()) => accountDayOf(at);
+
 /* الوسيط — مش المتوسط. يوم واحد شاذ (حفلة، عطلة، عطل في الكاشير) بيلوي
    المتوسط ومبيلويش الوسيط، وإحنا بنقارن بأربع أيام بس. */
 export function medianOf(list) {
@@ -3389,7 +3405,21 @@ ${focus}
       /* ── التسوية: الاسترجاع خلص، نكتب الحساب الحقيقي ────────────────────
          السقف كان توقّع. دلوقتي اليوم اللي صرفنا عليه قفل خلاص وبقى عندنا
          رقمه الحقيقي، فبنسجّل سطر واحد بيقول: اليوم استحق كام، صرفنا كام،
-         والفرق. من غيره الوكيل بيسرّع كل يوم ومحدش بيعرف كان محق ولا لأ. */
+         والفرق. من غيره الوكيل بيسرّع كل يوم ومحدش بيعرف كان محق ولا لأ.
+
+         ⚠️ الصرف لازم يتقرا لليوم اللي بنسوّيه هو بالظبط — مش لـ"النهارده".
+         الحسبة دي بتشتغل حوالي ٩ الصبح بتوقيت جدة، يعني جوّه يوم الحساب
+         الإعلاني اللي على وشك يقفل (بيلف ١٠ صباحاً). و`snap` فوق اتقرا بـ
+         todayISO() اللي هو تاريخ UTC — وتاريخ UTC بيسبق يوم حساب ميتا
+         (America/Los_Angeles) من ٣ الفجر لحد ١٠ الصبح بتوقيت جدة. يعني كنا
+         بنطلب من ميتا يوم حساب لسه ما ابتداش، وميتا بترجّع صفر صفوف بـ
+         HTTP 200 من غير أي خطأ — وإحنا كنا بنقراها "صرفنا صفر". النتيجة
+         سطر بيقول للمالك "سبنا كل المستحق على الأرض" كل يوم، وهو كذب.
+         (اتأكدنا من ميتا: يوم ٢٠٢٦-٠٨-١١ صرفه الحقيقي ٣١١٫١٢ ر.س، والسطر
+         القديم قال صفر.)
+
+         فبنقرا لقطة مخصوصة لليوم اللي بنسوّيه. وبنقراها بأولوية "owner"
+         عشان خنقة المنصات ما تشيلهاش وتسيبنا نقرا صفر تاني.                */
       const restoredOk = results.filter((x) => x.op === "restore" && x.status === "auto_executed");
       if (restoredOk.length) {
         try {
@@ -3399,15 +3429,41 @@ ${focus}
                WHERE calendar_day = $1::date
                  AND (order_type IS NULL OR (order_type NOT ILIKE '%void%' AND order_type NOT ILIKE '%refund%'))`,
             [settledDay]);
-          const spent = snap.rows.reduce((a2, r2r) => a2 + (Number(r2r.spend) || 0), 0);
-          const rec = reconcileDay({
-            realisedRevenue: Number(rev.rows[0]?.rev) || 0, spend: spent,
-            sharePct: s.adsShareOfSalesPct, ceilingUsed: s.ceiling?.ceiling ?? null,
-          });
-          await pool.query(
-            `INSERT INTO ap_decisions (id, run_id, kind, detail, reason, status)
-             VALUES ($1,$2,'reconcile',$3,$4,'info')`,
-            [crypto.randomUUID(), runId, jb({ ...rec, accountDay: settledDay, bizDay: settledDay }), rec.reason]);
+          const paid = await perfSnapshot({ from: settledDay, to: settledDay, priority: "owner" });
+          const spent = paid.rows.reduce((a2, r2r) => a2 + (Number(r2r.spend) || 0), 0);
+
+          /* ولو مقدرناش نقرا الصرف أصلاً — منصة وقعت، توكن باظ، خنقة —
+             الجمع بيطلع صفر وهو مش صفر، هو "مش عارفين". سطر بيقول "سبنا
+             ٥٣٦ ر.س على الأرض" وإحنا أصلاً عميان أسوأ من مفيش سطر: المالك
+             هيتصرف عليه. فبنكتب اللي حصل بالظبط بدل رقم مخترع.            */
+          const blind = Object.entries(paid.reasons || {});
+          if (!paid.rows.length) {
+            await pool.query(
+              `INSERT INTO ap_decisions (id, run_id, kind, detail, reason, status)
+               VALUES ($1,$2,'reconcile',$3,$4,'info')`,
+              [crypto.randomUUID(), runId,
+               jb({ accountDay: settledDay, bizDay: settledDay, spend: null, unreadable: true,
+                    reasons: paid.reasons || {} }),
+               `تسوية يوم ${settledDay}: مقدرناش نقرا الصرف من أي منصة، فمش هنكتب رقم. `
+               + (blind.length ? `السبب: ${blind.map(([p, why]) => `${p} — ${why}`).join(" · ")}. ` : "")
+               + `الفرق بين "صرفنا صفر" و"مش عارفين صرفنا كام" هو الفرق بين تقرير وكذبة — فسبناها فاضية عن قصد.`]);
+          } else {
+            const rec = reconcileDay({
+              realisedRevenue: Number(rev.rows[0]?.rev) || 0, spend: spent,
+              sharePct: s.adsShareOfSalesPct, ceilingUsed: s.ceiling?.ceiling ?? null,
+            });
+            await pool.query(
+              `INSERT INTO ap_decisions (id, run_id, kind, detail, reason, status)
+               VALUES ($1,$2,'reconcile',$3,$4,'info')`,
+              [crypto.randomUUID(), runId,
+               jb({ ...rec, accountDay: settledDay, bizDay: settledDay, spendReadFor: settledDay,
+                    accountTz: ADS_ACCOUNT_TZ, platformsRead: [...new Set(paid.rows.map((x) => x.platform))],
+                    platformsBlind: paid.reasons || {} }),
+               rec.reason
+               + (blind.length
+                 ? ` (ملحوظة: ${blind.map(([p]) => p).join("، ")} مش داخلة في رقم الصرف ده — ${blind.map(([p, why]) => `${p}: ${why}`).join(" · ")}.)`
+                 : "")]);
+          }
         } catch (e) { console.error("[autopilot] reconcile failed:", e.message); }
       }
 
@@ -3570,7 +3626,8 @@ ${focus}
     const eff = await settingsNow({ pacePct, base: s, pulse: statusPulse });
     let todaySpend = null, spendReasons = {};
     try {
-      const snapToday = await perfSnapshot({ from: todayISO(), to: todayISO() });
+      // يوم الحساب الإعلاني مش تاريخ UTC — شوف spendDayNow فوق.
+      const snapToday = await perfSnapshot({ from: spendDayNow(), to: spendDayNow() });
       todaySpend = r2(snapToday.rows.reduce((a, r) => a + (Number(r.spend) || 0), 0));
       spendReasons = snapToday.reasons;
     } catch (e) { spendReasons = { _: String(e.message || e) }; }
@@ -3806,7 +3863,10 @@ ${focus}
          بنقول مش عارفين بدل ما نقول فاضل السقف كله.                        */
       let spendToday = null, spendReasons = {};
       try {
-        const snapToday = await perfSnapshot({ from: todayISO(), to: todayISO() });
+        // يوم الحساب الإعلاني مش تاريخ UTC — شوف spendDayNow فوق. من غير
+        // كده الرقم ده بيقرا صفر كل يوم من ٣ الفجر لحد ١٠ الصبح بتوقيت جدة،
+        // والمالك بيشوف "فاضل السقف كله" وهو مش فاضل.
+        const snapToday = await perfSnapshot({ from: spendDayNow(), to: spendDayNow() });
         spendReasons = snapToday.reasons;
         if (snapToday.rows.length) spendToday = r2(snapToday.rows.reduce((a, r) => a + (Number(r.spend) || 0), 0));
       } catch (e) { spendReasons = { _: String(e.message || e) }; }

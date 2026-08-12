@@ -15,6 +15,7 @@ import fs from "node:fs";
 import {
   buildDayShape, shareAt, projectDayRevenue, movingCeiling, earnedCeiling, reconcileDay,
   deliveryEfficiency, platformScaling, decidePace, PACE_DEFAULTS, INTRADAY_DEFAULTS,
+  spendDayNow, accountDayOf, ADS_ACCOUNT_TZ,
 } from "./autopilot.js";
 
 const DAYS = JSON.parse(fs.readFileSync(new URL("./fixtures/days.json", import.meta.url), "utf8"));
@@ -554,4 +555,52 @@ test("سرعة الوصول: ٣٠٪ في اليوم وتبريد ٢٤ ساعة =
   while (spend < 2000 && days < 60) { spend *= 1.3; days++; }
   assert.equal(days, 8, "تمن أيام على الأقل — والوكيل مش هيقدر يقصّرها من غير ما الأسوار تترخى");
   assert.ok(spend >= 2000);
+});
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   يوم الحساب الإعلاني مقابل تاريخ UTC — السطر اللي كذب على المالك
+
+   في ٢٠٢٦-٠٨-١٢ الساعة ٩:١٩ بتوقيت جدة سجّل الوكيل: «صرفنا ٠ ر.س والمستحق
+   كان ٥٣٦ — سبنا ٥٣٦ ر.س على الأرض». الصرف الحقيقي لنفس اليوم كان ٣١١٫١٢
+   ر.س (مقروء من ميتا).
+
+   السبب: الصرف كان بيتقرا بـ todayISO() = تاريخ UTC، وميتا بتفسّر
+   time_range بتوقيت الحساب (America/Los_Angeles). تاريخ UTC بيسبق يوم
+   الحساب من ٠٠:٠٠ UTC لحد ١٠ الصبح بجدة — فكنا بنطلب يوم لسه ما ابتداش،
+   وميتا بترجّع HTTP 200 و data فاضية من غير أي خطأ.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+test("لحظة السطر الكاذب: تاريخ UTC ≠ يوم الحساب الإعلاني", () => {
+  // ٩:١٩ صباحاً بتوقيت جدة = ٠٦:١٩ UTC — نفس اللحظة اللي التسوية اتكتبت فيها.
+  const at = new Date("2026-08-12T06:19:00Z");
+  assert.equal(at.toISOString().slice(0, 10), "2026-08-12", "todayISO() كانت بترجّع ده");
+  assert.equal(spendDayNow(at), "2026-08-11", "ويوم الحساب الإعلاني كان لسه ٢٠٢٦-٠٨-١١");
+  assert.notEqual(spendDayNow(at), at.toISOString().slice(0, 10),
+    "الاتنين مختلفين — وده بالظبط اللي خلّى ميتا ترجّع صفر صفوف");
+});
+
+test("الشباك المكسور: من ٣ الفجر لحد ١٠ الصبح بتوقيت جدة كل يوم", () => {
+  const broken = [];
+  for (let h = 0; h < 24; h++) {
+    const at = new Date(Date.UTC(2026, 7, 12, h, 30));
+    if (spendDayNow(at) !== at.toISOString().slice(0, 10)) broken.push(h);
+  }
+  // ٠٠:٠٠ → ٠٦:٥٩ UTC = ٣ الفجر → ٩:٥٩ الصبح بجدة (لوس أنجلوس على UTC-7 صيفاً)
+  assert.deepEqual(broken, [0, 1, 2, 3, 4, 5, 6],
+    "سبع ساعات كل يوم كان الصرف فيها بيتقرا صفر — والتسوية بتشتغل جوّاها");
+  assert.ok(broken.length === 7);
+});
+
+test("نفس اليوم بالصرف الصح بيقلب حكم التسوية من كذبة لرقم", () => {
+  const entitled = 536, revenue = 2680;   // ٢٠٪ من ٢٬٦٨٠ ر.س مبيعات يوم ٠٨-١١
+  const lie   = reconcileDay({ realisedRevenue: revenue, spend: 0,      sharePct: 20 });
+  const truth = reconcileDay({ realisedRevenue: revenue, spend: 311.12, sharePct: 20 });
+
+  assert.equal(lie.entitled, entitled);
+  assert.equal(truth.entitled, entitled);
+  assert.equal(lie.variance, -536, "السطر القديم قال سبنا المستحق كله على الأرض");
+  assert.ok(Math.abs(truth.variance - (-224.88)) < 0.01, "الحقيقة: أقل بـ ٢٢٥ ر.س مش ٥٣٦");
+  assert.ok(truth.spend > 0, "وأهم حاجة: مش صفر");
+  // ٥٣٦ مقابل ٢٢٥ — نفس النبرة بس ضعف الرقم. المالك كان هيتصرف على الفرق ده.
+  assert.ok(Math.abs(lie.variance) > Math.abs(truth.variance) * 2);
 });
