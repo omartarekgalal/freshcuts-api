@@ -71,11 +71,36 @@ export async function callStore(path, { method = "GET", branchId, body } = {}) {
   });
 }
 
+/* ── menu (cached) — checkout needs real system prices for helper products ── */
+let _menuCache = { at: 0, data: null };
+export async function fetchMenu(branchId = "1") {
+  if (Date.now() - _menuCache.at < 10 * 60_000 && _menuCache.data) return _menuCache.data;
+  const menuId = env("TABSENSE_EXTERNAL_MENU_ID", "2");
+  const res = await callStore(`stores/${STORE()}/menus/${menuId}`, { branchId });
+  if (res?.data?.pages) _menuCache = { at: Date.now(), data: res.data };
+  return _menuCache.data;
+}
+export async function findProduct(productId, branchId = "1") {
+  const menu = await fetchMenu(branchId);
+  for (const p of menu?.pages || [])
+    for (const it of p.items || [])
+      if (String(it.id) === String(productId)) return it;
+  return null;
+}
+
 /* ── calculate-order ─────────────────────────────────────────────────────────
    purchases: [{product_id, quantity, unit_amount, tax_id?}] in TabSense units
-   (unit_amount already × MULTIPLY, exactly as the storefront cart sends).   */
-export async function calculateOrder({ branchId = "1", orderOptionId = 3, purchases, tipAmount = 0 }) {
+   (unit_amount already × MULTIPLY, exactly as the storefront cart sends).
+   discountPercent (probed 2026-08-12): adjustments.discount MUST be
+   {id, percentage_value} — id:null + a percentage applies pre-VAT and TabSense
+   recomputes the tax itself. Flat charges are silently IGNORED and free-form
+   unit_amounts are rejected, which is why the delivery fee travels as a
+   quantity of a real 1-SAR product instead.                                 */
+export async function calculateOrder({ branchId = "1", orderOptionId = 3, purchases, tipAmount = 0, discountPercent = 0 }) {
   const adjustments = { discount: null, charges: [], product_extra: {} };
+  if (discountPercent > 0) {
+    adjustments.discount = { id: null, percentage_value: Math.min(100, Number(discountPercent)) };
+  }
   if (tipAmount > 0) adjustments.tips = { amount: Math.round(tipAmount * MULTIPLY) };
   const body = {
     order_type: 9,

@@ -100,6 +100,23 @@ export function register(app, ctx, deps = {}) {
       CREATE INDEX IF NOT EXISTS shop_orders_status_idx ON shop_orders(status, created_at DESC);
       CREATE INDEX IF NOT EXISTS shop_orders_phone_idx ON shop_orders(phone_norm, created_at DESC);
       CREATE INDEX IF NOT EXISTS shop_orders_invoice_idx ON shop_orders(mf_invoice_id);
+      -- Coupons (2026-08-12): a percentage flows into the POS invoice itself
+      -- (adjustments.discount {id:null, percentage_value} — probed live), so
+      -- what MyFatoorah charges IS what TabSense books.
+      ALTER TABLE shop_orders ADD COLUMN IF NOT EXISTS coupon TEXT;
+      ALTER TABLE shop_orders ADD COLUMN IF NOT EXISTS discount_percent NUMERIC NOT NULL DEFAULT 0;
+      ALTER TABLE shop_orders ADD COLUMN IF NOT EXISTS discount_amount NUMERIC NOT NULL DEFAULT 0;
+      CREATE TABLE IF NOT EXISTS shop_coupons (
+        code TEXT PRIMARY KEY,
+        percent NUMERIC NOT NULL,
+        active BOOLEAN NOT NULL DEFAULT TRUE,
+        min_total NUMERIC NOT NULL DEFAULT 0,
+        max_uses INT,
+        used_count INT NOT NULL DEFAULT 0,
+        expires_at DATE,
+        note TEXT,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
     `);
   }
   ensureSchema()
@@ -125,6 +142,71 @@ export function register(app, ctx, deps = {}) {
       console.error(`[shop] notify failed for ${orderNo}:`, e.message));
   }
 
+  /* ── coupons ── */
+  async function checkCoupon(codeRaw, subtotal) {
+    const code = String(codeRaw || "").trim().toUpperCase();
+    if (!code) return null;
+    const r = await pool.query("SELECT * FROM shop_coupons WHERE upper(code)=$1", [code]);
+    const cp = r.rows[0];
+    if (!cp || !cp.active) return { ok: false, error: "not_found" };
+    if (cp.expires_at && new Date(cp.expires_at) < new Date(new Date().toDateString())) return { ok: false, error: "expired" };
+    if (cp.max_uses != null && cp.used_count >= cp.max_uses) return { ok: false, error: "maxed" };
+    if (Number(subtotal) < Number(cp.min_total)) return { ok: false, error: "min_total", minTotal: Number(cp.min_total) };
+    return { ok: true, code: cp.code, percent: Number(cp.percent) };
+  }
+
+  // PUBLIC — the cart asks before checkout so the customer sees the discount live.
+  app.post("/api/shop/validate-coupon", async (c) => {
+    const ip = c.req.header("cf-connecting-ip") || c.req.header("x-forwarded-for") || "?";
+    if (rateLimited(ip, 120)) return c.json({ ok: false, error: "rate_limited" }, 429);
+    let b = {};
+    try { b = await c.req.json(); } catch { return c.json({ ok: false, error: "bad json" }, 400); }
+    const res = await checkCoupon(b.code, Number(b.subtotal) || 0);
+    if (!res) return c.json({ ok: false, error: "empty" }, 400);
+    return c.json(res, res.ok ? 200 : 404);
+  });
+
+  // Admin CRUD — the dashboard's coupons pane.
+  app.get("/api/shop/coupons", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    const rows = (await pool.query("SELECT * FROM shop_coupons ORDER BY created_at DESC")).rows;
+    return c.json({ ok: true, coupons: rows });
+  });
+  app.post("/api/shop/coupons", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    const b = await c.req.json();
+    const code = String(b.code || "").trim().toUpperCase();
+    if (!code || !(Number(b.percent) > 0)) return c.json({ ok: false, error: "code and percent required" }, 400);
+    const r = await pool.query(
+      `INSERT INTO shop_coupons(code, percent, active, min_total, max_uses, expires_at, note)
+       VALUES ($1,$2,$3,$4,$5,$6,$7)
+       ON CONFLICT (code) DO UPDATE SET percent=$2, active=$3, min_total=$4, max_uses=$5, expires_at=$6, note=$7
+       RETURNING *`,
+      [code, Math.min(100, Number(b.percent)), b.active !== false, Number(b.min_total) || 0,
+       b.max_uses != null && b.max_uses !== "" ? Number(b.max_uses) : null,
+       b.expires_at || null, String(b.note || "").slice(0, 120)]);
+    return c.json({ ok: true, coupon: r.rows[0] });
+  });
+  app.delete("/api/shop/coupons/:code", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    await pool.query("DELETE FROM shop_coupons WHERE code=$1", [String(c.req.param("code")).toUpperCase()]);
+    return c.json({ ok: true });
+  });
+
+  /* ── storefront appearance + behavior (PUBLIC) — edited from the dashboard.
+     Colors/texts live in settings.storefront so a rebrand (or the coming
+     freshcuts.sa / SaaS skinning) is a settings edit, not a deploy. */
+  app.get("/api/shop/storefront", async (c) => {
+    const s = await getSettingsData();
+    const sf = s.storefront || {};
+    return c.json({
+      ok: true,
+      theme: sf.theme || {},           // {brand, deep, bg, ink, ...} CSS vars
+      texts: sf.texts || {},           // {title, subtitle, banner}
+      allowCash: (s.shop || {}).allowCash === true, // Omar 2026-08-12: online-only by default
+    });
+  });
+
   /* ── checkout: cart → locked POS prices → delivery quote → MF session ── */
   app.post("/api/shop/checkout", async (c) => {
     const ip = c.req.header("cf-connecting-ip") || c.req.header("x-forwarded-for") || "?";
@@ -144,31 +226,86 @@ export function register(app, ctx, deps = {}) {
       return c.json({ ok: false, error: "address_required" }, 400);
     }
 
-    // Lock prices with TabSense NOW; the same calc payload creates the POS
-    // order after payment, so what the customer paid is what the POS gets.
+    // Coupon first — the discount changes every number after it.
+    let coupon = null;
+    if (b.coupon) {
+      // subtotal check happens against the raw cart estimate; the authoritative
+      // re-check against real totals comes right after the first calc.
+      coupon = await checkCoupon(b.coupon, Number.MAX_SAFE_INTEGER);
+      if (coupon && !coupon.ok) return c.json({ ok: false, error: "coupon_" + coupon.error, coupon }, 422);
+    }
+    const discountPercent = coupon?.percent || 0;
+
+    // Pass 1: food only, discounted — this is the subtotal the delivery quote
+    // (free-over / minimum rules) judges against.
     let calc;
     try {
       calc = await tsstore.calculateOrder({
-        branchId, orderOptionId: OPTION_ID[option], purchases: items, tipAmount: Number(b.tip) || 0,
+        branchId, orderOptionId: OPTION_ID[option], purchases: items,
+        tipAmount: Number(b.tip) || 0, discountPercent,
       });
     } catch (e) {
       return c.json({ ok: false, error: "calc_failed", detail: e.message }, 422);
     }
-    const totals = calc.totals || {};
-    const subtotal = r2((totals.tendered_amount || totals.total_amount || 0) / tsstore.MULTIPLY);
+    let totals = calc.totals || {};
+    const foodTotal = r2((totals.tendered_amount || totals.total_amount || 0) / tsstore.MULTIPLY);
+    if (coupon?.ok && Number(coupon.percent) > 0) {
+      const recheck = await checkCoupon(b.coupon, foodTotal);
+      if (!recheck.ok) return c.json({ ok: false, error: "coupon_" + recheck.error, coupon: recheck }, 422);
+    }
 
     let deliveryFee = 0, dq = null;
     if (option === "delivery") {
       dq = await delivery.quote({
-        lat: b.address.latitude, lng: b.address.longitude, orderTotal: subtotal,
+        lat: b.address.latitude, lng: b.address.longitude, orderTotal: foodTotal,
       });
       if (!dq.deliverable) return c.json({ ok: false, error: "not_deliverable", quote: dq }, 422);
       deliveryFee = dq.fee;
     }
+
+    // Pass 2 (Omar's rule: «إجمالي المدفوع يتسجل كله في TabSense بالشكل
+    // المظبوط»): the fee rides INTO the POS invoice as quantity×(1-SAR
+    // delivery product) — TabSense ignores charge adjustments and rejects
+    // free-form prices, so the quantity trick is the one exact channel.
+    // Needs settings.shop.deliveryFeeProductId (a 1.00-SAR menu product);
+    // without it we fall back to charging the fee outside the POS invoice.
+    const feeProductId = ((await getSettingsData()).shop || {}).deliveryFeeProductId;
+    let feeInPos = false;
+    if (deliveryFee > 0 && feeProductId) {
+      const prod = await tsstore.findProduct(feeProductId, branchId).catch(() => null);
+      if (prod) {
+        // The discount percentage applies order-wide, fee line included. To
+        // keep the CUSTOMER's fee equal to the quote, inflate the quantity so
+        // the discounted line lands back on the quoted fee (integer SAR).
+        const qty = discountPercent > 0
+          ? Math.round(deliveryFee / (1 - discountPercent / 100))
+          : deliveryFee;
+        const feeLine = {
+          product_id: Number(feeProductId), quantity: qty,
+          tax_id: prod.tax_id ?? 1,
+          // `price` is the pre-VAT system price — the field calculate-order
+          // validates against (retail_price is the VAT-inclusive display one).
+          unit_amount: Math.round(Number(prod.price) * tsstore.MULTIPLY),
+        };
+        try {
+          calc = await tsstore.calculateOrder({
+            branchId, orderOptionId: OPTION_ID[option], purchases: [...items, feeLine],
+            tipAmount: Number(b.tip) || 0, discountPercent,
+          });
+          totals = calc.totals || {};
+          feeInPos = true;
+        } catch (e) {
+          console.error("[shop] fee-product calc failed, falling back:", e.message);
+        }
+      }
+    }
+
     const tip = r2(b.tip);
-    // subtotal already includes the tip when TabSense returns tendered_amount;
-    // the delivery fee is the only amount TabSense does not know about.
-    const total = r2(subtotal + deliveryFee);
+    const posTotal = r2((totals.tendered_amount || totals.total_amount || 0) / tsstore.MULTIPLY);
+    // When the fee is booked in the POS, the charge == the POS invoice exactly;
+    // otherwise the fee is collected on top (the old designed gap).
+    const total = feeInPos ? posTotal : r2(posTotal + deliveryFee);
+    const discountAmount = r2(((totals.total_amount_discount_excluded || 0) - (totals.total_amount || 0)) / tsstore.MULTIPLY);
 
     const orderNo = "W" + Date.now();
     let session;
@@ -181,17 +318,22 @@ export function register(app, ctx, deps = {}) {
     await pool.query(
       `INSERT INTO shop_orders(order_no, status, option, branch_id, customer, phone_norm,
          address, items, pos_calc, subtotal, delivery_fee, tip, total, delivery_quote,
-         mf_session_id, notes, history)
-       VALUES ($1,'pending_payment',$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)`,
+         mf_session_id, notes, coupon, discount_percent, discount_amount, history)
+       VALUES ($1,'pending_payment',$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)`,
       [orderNo, option, branchId,
        jb({ name: cust.name || "", phone: "+966" + phoneNorm }), phoneNorm,
        jb(b.address || null), jb(items), jb(calc),
-       subtotal, deliveryFee, tip, total, jb(dq),
+       // subtotal = the food part of what was charged (fee booked separately
+       // whether inside or outside the POS invoice).
+       r2(total - deliveryFee), deliveryFee, tip, total, jb(dq ? { ...dq, feeInPos } : null),
        session.SessionId || null, (b.notes || "").slice(0, 200),
+       coupon?.ok ? coupon.code : null, discountPercent, discountAmount,
        jb([{ at: new Date().toISOString(), status: "pending_payment" }])]
     );
     return c.json({
-      ok: true, orderNo, total, subtotal, deliveryFee, tip, currency: "SAR",
+      ok: true, orderNo, total, subtotal: r2(total - deliveryFee), deliveryFee, tip,
+      discount: discountAmount, coupon: coupon?.ok ? coupon.code : null,
+      feeInPos, currency: "SAR",
       sessionId: session.SessionId, countryCode: session.CountryCode || "SAU",
     });
   });
@@ -252,6 +394,12 @@ export function register(app, ctx, deps = {}) {
     await setStatus(row.order_no, "paid", {
       cols: { mf_payment_id: st.paymentId != null ? String(st.paymentId) : null },
     });
+    // The coupon burns exactly when money moved, not at checkout — an
+    // abandoned payment must not eat a limited-use code.
+    if (row.coupon) {
+      pool.query("UPDATE shop_coupons SET used_count = used_count + 1 WHERE code=$1", [row.coupon])
+        .catch((e) => console.error("[shop] coupon count failed:", e.message));
+    }
     await createPosOrder(row.order_no);
     const after = await getOrderRow(row.order_no);
     return { ok: true, status: after.status, orderNo: row.order_no, posOrderId: after.pos_order_id };
@@ -351,7 +499,10 @@ export function register(app, ctx, deps = {}) {
       `SELECT
          count(*) FILTER (WHERE status NOT IN ('pending_payment','expired'))::int AS paid_orders,
          COALESCE(sum(total) FILTER (WHERE status NOT IN ('pending_payment','expired')),0)::numeric AS gateway_total,
-         COALESCE(sum(subtotal) FILTER (WHERE status NOT IN ('pending_payment','expired')),0)::numeric AS pos_total,
+         -- Once the fee rides inside the POS invoice (feeInPos), the POS books
+         -- food + fee; before that it books food only.
+         COALESCE(sum(subtotal + CASE WHEN (delivery_quote->>'feeInPos')::boolean THEN delivery_fee ELSE 0 END)
+           FILTER (WHERE status NOT IN ('pending_payment','expired')),0)::numeric AS pos_total,
          COALESCE(sum(delivery_fee) FILTER (WHERE status NOT IN ('pending_payment','expired')),0)::numeric AS delivery_fees,
          COALESCE(sum(tip) FILTER (WHERE status NOT IN ('pending_payment','expired')),0)::numeric AS tips,
          count(*) FILTER (WHERE status='rejected_refunded')::int AS refunds,

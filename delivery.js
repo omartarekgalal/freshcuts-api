@@ -94,7 +94,10 @@ export function computeDeliveryFee(cfgIn, { distanceKm, orderTotal }) {
     fee = 0;
     breakdown.push(`توصيل مجاني للطلبات فوق ${r2(cfg.freeOverTotal)} ر.س`);
   }
-  return { deliverable: true, fee: r2(fee), distanceKm: r2(dist), breakdown };
+  // Whole riyals only: the fee enters the POS invoice as quantity × a 1-SAR
+  // "رسوم التوصيل" product (TabSense rejects free-form amounts), so a
+  // fractional fee literally cannot be booked.
+  return { deliverable: true, fee: Math.round(fee), distanceKm: r2(dist), breakdown };
 }
 
 const r2 = (v) => Math.round((Number(v) || 0) * 100) / 100;
