@@ -123,6 +123,9 @@ export function register(app, ctx, deps = {}) {
         note TEXT,
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
       );
+      -- «مرة واحدة لكل عميل»: نفس الكود ينفع لمئات العملاء لكن كل رقم جوال
+      -- مرة واحدة بس (بيتحسب من الطلبات المدفوعة فعلاً).
+      ALTER TABLE shop_coupons ADD COLUMN IF NOT EXISTS once_per_customer BOOLEAN NOT NULL DEFAULT FALSE;
     `);
   }
   ensureSchema()
@@ -156,7 +159,7 @@ export function register(app, ctx, deps = {}) {
      and the attribution to its ambassador stays intact for free.
      Caveat (told to Omar): online redemption marks it used HERE — the POS
      cashier flow has its own promotion check and cannot see ours. */
-  async function checkCoupon(codeRaw, subtotal) {
+  async function checkCoupon(codeRaw, subtotal, phoneNorm) {
     const code = String(codeRaw || "").trim().toUpperCase();
     if (!code) return null;
     const r = await pool.query("SELECT * FROM shop_coupons WHERE upper(code)=$1", [code]);
@@ -166,7 +169,19 @@ export function register(app, ctx, deps = {}) {
       if (cp.expires_at && new Date(cp.expires_at) < new Date(new Date().toDateString())) return { ok: false, error: "expired" };
       if (cp.max_uses != null && cp.used_count >= cp.max_uses) return { ok: false, error: "maxed" };
       if (Number(subtotal) < Number(cp.min_total)) return { ok: false, error: "min_total", minTotal: Number(cp.min_total) };
+      if (cp.once_per_customer && phoneNorm) {
+        const used = await pool.query(
+          `SELECT 1 FROM shop_orders
+            WHERE coupon=$1 AND phone_norm=$2 AND status NOT IN ('pending_payment','expired') LIMIT 1`,
+          [cp.code, phoneNorm]);
+        if (used.rowCount) return { ok: false, error: "already_used" };
+      }
       return { ok: true, code: cp.code, percent: Number(cp.percent), kind: "coupon" };
+    }
+    // أكواد السفراء: قابلة للإيقاف من اللوحة لو قلق الاستخدام المزدوج
+    // (أونلاين + كاشير) رجّح كفة الفصل الكامل بين القناتين.
+    if (((await getSettingsData()).shop || {}).acceptAmbassadorCodes === false) {
+      return { ok: false, error: "not_found" };
     }
     const amb = (await pool.query(
       `SELECT c.code, c.redeemed, b.discount_percent, b.validity_date
@@ -186,7 +201,7 @@ export function register(app, ctx, deps = {}) {
     if (rateLimited(ip, 120)) return c.json({ ok: false, error: "rate_limited" }, 429);
     let b = {};
     try { b = await c.req.json(); } catch { return c.json({ ok: false, error: "bad json" }, 400); }
-    const res = await checkCoupon(b.code, Number(b.subtotal) || 0);
+    const res = await checkCoupon(b.code, Number(b.subtotal) || 0, b.phone ? normPhone(b.phone) : null);
     if (!res) return c.json({ ok: false, error: "empty" }, 400);
     return c.json(res, res.ok ? 200 : 404);
   });
@@ -203,13 +218,13 @@ export function register(app, ctx, deps = {}) {
     const code = String(b.code || "").trim().toUpperCase();
     if (!code || !(Number(b.percent) > 0)) return c.json({ ok: false, error: "code and percent required" }, 400);
     const r = await pool.query(
-      `INSERT INTO shop_coupons(code, percent, active, min_total, max_uses, expires_at, note)
-       VALUES ($1,$2,$3,$4,$5,$6,$7)
-       ON CONFLICT (code) DO UPDATE SET percent=$2, active=$3, min_total=$4, max_uses=$5, expires_at=$6, note=$7
+      `INSERT INTO shop_coupons(code, percent, active, min_total, max_uses, expires_at, note, once_per_customer)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+       ON CONFLICT (code) DO UPDATE SET percent=$2, active=$3, min_total=$4, max_uses=$5, expires_at=$6, note=$7, once_per_customer=$8
        RETURNING *`,
       [code, Math.min(100, Number(b.percent)), b.active !== false, Number(b.min_total) || 0,
        b.max_uses != null && b.max_uses !== "" ? Number(b.max_uses) : null,
-       b.expires_at || null, String(b.note || "").slice(0, 120)]);
+       b.expires_at || null, String(b.note || "").slice(0, 120), b.once_per_customer === true]);
     return c.json({ ok: true, coupon: r.rows[0] });
   });
   app.delete("/api/shop/coupons/:code", async (c) => {
@@ -259,7 +274,7 @@ export function register(app, ctx, deps = {}) {
     if (b.coupon) {
       // subtotal check happens against the raw cart estimate; the authoritative
       // re-check against real totals comes right after the first calc.
-      coupon = await checkCoupon(b.coupon, Number.MAX_SAFE_INTEGER);
+      coupon = await checkCoupon(b.coupon, Number.MAX_SAFE_INTEGER, phoneNorm);
       if (coupon && !coupon.ok) return c.json({ ok: false, error: "coupon_" + coupon.error, coupon }, 422);
     }
     // Standing per-customer discount (الملاك): auto-applies by phone alone.
@@ -287,7 +302,7 @@ export function register(app, ctx, deps = {}) {
     let totals = calc.totals || {};
     const foodTotal = r2((totals.tendered_amount || totals.total_amount || 0) / tsstore.MULTIPLY);
     if (coupon?.ok && Number(coupon.percent) > 0) {
-      const recheck = await checkCoupon(b.coupon, foodTotal);
+      const recheck = await checkCoupon(b.coupon, foodTotal, phoneNorm);
       if (!recheck.ok) return c.json({ ok: false, error: "coupon_" + recheck.error, coupon: recheck }, 422);
     }
 
