@@ -207,10 +207,11 @@ export function register(app, ctx) {
       "SELECT customer_id, name FROM ts_customers WHERE phone_norm=$1 LIMIT 1", [phoneNorm]);
     if (known.rowCount) {
       // البيانات الموجودة على TabSense هي الأصل (طلب عمر 2026-08-14): اسم
-      // العميل المسجل هناك بياخد مكان الفراغ، مش العكس.
+      // العميل المسجل هناك بيكسب على اللي اتكتب وقت الدخول — الربط بيحصل
+      // مرة واحدة فمفيش دهس متكرر لاسم اختاره العميل بعدها.
       await pool.query(
         `UPDATE acct_customers SET ts_customer_id=$2, ts_sync=$3,
-                name = COALESCE(name, NULLIF($4,''))
+                name = COALESCE(NULLIF($4,''), name)
           WHERE phone_norm=$1`,
         [phoneNorm, known.rows[0].customer_id,
          jb({ linked: "existing", at: new Date().toISOString() }),
