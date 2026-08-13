@@ -26,31 +26,35 @@
       wall clock, so a Friday-night shift reads as Friday 12:00→03:00.
 ═══════════════════════════════════════════════════════════════════════════ */
 
-const TZ = "Asia/Riyadh";
+/* Everything the rest of the API needs to speak about orders the SAME way is
+   exported from here. scorecard.js reads these instead of keeping its own copy
+   — a second definition of "this order came through Keeta" is exactly how two
+   screens start disagreeing. */
+export const TZ = "Asia/Riyadh";
 // Hour (Riyadh local) at which TabSense rolls the business day over. See note 3.
-const BIZ_DAY_START_HOUR = 4;
+export const BIZ_DAY_START_HOUR = 4;
 
 // SQL fragments. All of these assume the orders table is aliased `o`.
 const LOCAL_TS = `(o.order_date AT TIME ZONE '${TZ}')`;
 const BIZ_TS = `((o.order_date AT TIME ZONE '${TZ}') - interval '${BIZ_DAY_START_HOUR} hours')`;
 // Hours elapsed into the business day the order belongs to (0 → 24).
 const BIZ_ELAPSED_H = `(extract(epoch from (${BIZ_TS} - ${BIZ_TS}::date::timestamp)) / 3600.0)`;
-const LOCAL_HOUR = `(extract(hour from ${LOCAL_TS})::int)`;
+export const LOCAL_HOUR = `(extract(hour from ${LOCAL_TS})::int)`;
 // See business rule 2.
-const SALES_ONLY = `(o.order_type IS NULL OR (o.order_type NOT ILIKE '%void%' AND o.order_type NOT ILIKE '%refund%'))`;
+export const SALES_ONLY = `(o.order_type IS NULL OR (o.order_type NOT ILIKE '%void%' AND o.order_type NOT ILIKE '%refund%'))`;
 
 // An order is a delivery-aggregator order when TabSense typed it 'External'
 // (true from the moment it is created) OR when one of its payment methods is
 // an aggregator wallet (only lands once the order is paid). Both signals are
 // needed: the POS logs aggregator orders as Dine-in, so order_option lies.
-const deliverySql = (appsParam) =>
+export const deliverySql = (appsParam) =>
   `(o.order_type ILIKE '%external%' OR EXISTS (
       SELECT 1 FROM jsonb_object_keys(o.payments) k WHERE lower(k) = ANY(${appsParam})))`;
 
 // Which app an order came through. `order_sources.source_note` is the truth
 // (filled by the FeedUs connector or the cashier); the aggregator payment
 // method is the fallback, and 'external' means "delivery, app unknown".
-const channelSql = (appsParam) => `
+export const channelSql = (appsParam) => `
   CASE WHEN ${deliverySql(appsParam)} THEN
     lower(COALESCE(
       NULLIF(s.source_note, ''),
@@ -61,7 +65,7 @@ const channelSql = (appsParam) => `
 // Identity of the human behind an order. The cashier station's typed phone
 // wins over the POS customer record because it is captured at the counter for
 // orders TabSense attached no customer to.
-const IDENT_SQL = `COALESCE(NULLIF(s.phone_norm, ''), NULLIF(tc.phone_norm, ''))`;
+export const IDENT_SQL = `COALESCE(NULLIF(s.phone_norm, ''), NULLIF(tc.phone_norm, ''))`;
 
 /* ═══════════════════════════════════════════════════════════════════════════
    THE NEW-CUSTOMER RULE — ONE DEFINITION FOR THE WHOLE API.
@@ -135,7 +139,7 @@ export const FIRST_ORDER_DAY_CTE = `
     ) u GROUP BY 1
   )`;
 
-const CHANNEL_LABELS = {
+export const CHANNEL_LABELS = {
   inhouse: "داخل المطعم",
   keeta: "كيتا",
   hungerstation: "هنقرستيشن",
@@ -148,7 +152,7 @@ const CHANNEL_LABELS = {
   external: "توصيل — تطبيق غير محدد",
   delivery: "توصيل",
 };
-const chLabel = (id) => CHANNEL_LABELS[String(id || "").toLowerCase()] || id || "غير معروف";
+export const chLabel = (id) => CHANNEL_LABELS[String(id || "").toLowerCase()] || id || "غير معروف";
 
 // Postgres `extract(dow)`: 0 = Sunday.
 const DOW_AR = ["الأحد", "الإثنين", "الثلاثاء", "الأربعاء", "الخميس", "الجمعة", "السبت"];

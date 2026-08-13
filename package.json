@@ -5,7 +5,7 @@
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
-    "test": "node --test pacing.test.mjs delivery.test.mjs resilience.test.mjs"
+    "test": "node --test pacing.test.mjs delivery.test.mjs resilience.test.mjs scorecard.test.mjs"
   },
   "dependencies": {
     "@hono/node-server": "^1.13.7",

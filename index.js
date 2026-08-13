@@ -35,6 +35,7 @@ import * as hub from "./hub.js";
 import * as content from "./content.js";
 import * as tracking from "./tracking.js";
 import * as reports from "./reports.js";
+import * as scorecard from "./scorecard.js";
 import * as pay from "./pay.js";
 import * as deliveryMod from "./delivery.js";
 import * as shop from "./shop.js";
@@ -2988,6 +2989,13 @@ const contentApi = content.register(app, moduleCtx);
 reports.register(app, moduleCtx, {
   analytics: analyticsApi, attribution: attribApi, autopilot: ap,
   ads: adsApi, tracking: trackingApi, funnel: funnelApi,
+});
+// 🎯 لوحة الأهداف: الحكم على الشغل بنتيجة المطعم — دخل اليوم مقابل هدف الـ
+// ١٠ آلاف، القنوات (صالة/سفري/توصيل المطعم/كل تطبيق لوحده)، العملاء الجدد
+// والرجوع، الإشغال بالساعة، والفئات. أرقام المنصات هامش عليها مش عنوانها.
+// بتتسجّل بعد reports لأنها بتقرا نفس الدوال (الإسناد، الكشف، الاقتصاديات).
+scorecard.register(app, moduleCtx, {
+  analytics: analyticsApi, attribution: attribApi, autopilot: ap, ads: adsApi,
 });
 // الطلب الأونلاين على بوابتنا (MyFatoorah بتاعتنا + توصيل Flying Arrow):
 // pay وdelivery بياخدوا shop كدالة مؤجلة لأن shop بيتسجّل بعدهم — نفس نمط
