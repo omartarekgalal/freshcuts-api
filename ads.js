@@ -687,6 +687,28 @@ export function readMetaResult(row = {}) {
   };
 }
 
+/* ── مرحلة التعلّم ────────────────────────────────────────────────────────
+   ميتا بترجّع `learning_stage_info.status` بواحدة من تلاتة:
+     LEARNING           لسه بتتعلّم — أي تغيير كبير في الميزانية بيصفّر التعلّم.
+     SUCCESS            خلصت التعلّم. دي اللي الريال الزيادة فيها بيتصرف فعلاً.
+     LEARNING_LIMITED   وقفت في التعلّم من غير ما تخلص (مفيش تحويلات كفاية).
+                        دي **متخنقة**: زيادة الميزانية عليها بتزوّد الرقم على
+                        الورق ومبتزوّدش صرف حقيقي.
+
+   ليه الرقم ده مهم عندنا بالذات: تكبير ٣ حملات CBO ليلة ١٢ أغسطس طلّع صفر
+   صرف إضافي لإن مجموعاتها كلها LEARNING، والصرف اليومي فضل ثابت مقابل
+   ٥٠٠ ر.س ميزانية. يعني «رفعنا الميزانية» مش معناها «صرفنا أكتر».          */
+export function readLearning(info) {
+  const st = String(info?.status || "").toUpperCase() || null;
+  return {
+    status: st,
+    done: st === "SUCCESS",                 // خلصت التعلّم — تقدر تستوعب زيادة
+    learning: st === "LEARNING",            // لسه بتتعلّم — التغيير بيصفّرها
+    limited: st === "LEARNING_LIMITED",     // متخنقة — الزيادة مش هتتصرف
+    conversions: info?.conversions == null ? null : Number(info.conversions),
+  };
+}
+
 /* نص الشرح اللي بيروح لشاشة المالك جنب رقم كل منصة. تلات حالات مختلفة
    تماماً، وخلطهم هو اللي كان بيغلّط القارئ:
 
@@ -911,30 +933,89 @@ const meta = {
     };
   },
 
-  /* ميزانيات المجموعات الإعلانية، مجمّعة على مستوى الحملة.
+  /* المجموعات الإعلانية بتفاصيلها + الميزانيات مجمّعة على مستوى الحملة.
 
      ليه دي موجودة: ٣ من ٥ حملات شغّالة عندنا ميزانيتها على مستوى المجموعة
      مش الحملة (fc-wa-orders و fc-leads-contact و fc-sales-purchase)، يعني
      `campaigns()` بترجّع لهم dailyBudget = null. والسقف الكلي في decide()
      كان بيجمع الحملات اللي ليها dailyBudget بس — فكان بيشوف ١١٠ ر.س/يوم
-     والحقيقة ٢٩٠. يعني كان فاكر إن فيه مساحة تحت السقف وهي مش موجودة.
-     الميزانية دي مش بنديرها (الوكيل بيدير ميزانيات الحملات بس) — بنعدّها. */
-  async adsetBudgets() {
+     والحقيقة ٢٩٠.
+
+     ومش بس السقف: الإيقاع كان **مش قادر يوصلهم أصلاً** — بيرفع اللي عنده
+     dailyBudget وبس، فأحسن مجموعتين في الحساب (fc-wa-walkin-5km و
+     fc-wa-delivery-10km، ١٠٦ محادثة بـ ١٫٧٢ ر.س للواحدة) كانوا خارج
+     متناوله تماماً. عشان كده بنرجّع الصفوف كاملة دلوقتي مش مجرد مجموع.
+
+     `learning_stage_info` و`effective_status` مطلوبين بالتحديد: الريال
+     الزيادة على مجموعة لسه في التعلّم أو متخنقة مش بيتصرف — ثبت ده بالتجربة
+     لما تكبير ٣ حملات CBO طلّع صفر صرف إضافي. شوف absorptionOf في
+     autopilot.js.                                                          */
+  async adsets() {
     const token = env("META_CAPI_TOKEN");
     const act = this.actId();
-    if (!token || !act) return { ok: false, reason: "META_AD_ACCOUNT_ID / META_CAPI_TOKEN missing", byCampaign: {} };
+    const empty = { rows: [], byCampaign: {} };
+    if (!token || !act) return { ok: false, reason: "META_AD_ACCOUNT_ID / META_CAPI_TOKEN missing", ...empty };
+    const fields = "id,name,campaign_id,status,effective_status,daily_budget,learning_stage_info";
     const res = await httpJson(
-      `${this.base()}/${act}/adsets?fields=campaign_id,status,daily_budget&limit=500`,
+      `${this.base()}/${act}/adsets?fields=${fields}&limit=500`,
       { headers: { Authorization: `Bearer ${token}` } }
     );
-    if (!res.ok) return { ok: false, reason: this.readBatchResult(res).error, byCampaign: {} };
+    if (!res.ok) return { ok: false, reason: this.readBatchResult(res).error, ...empty };
+    const rows = (res.json?.data || []).map((a) => ({
+      platform: "meta",
+      id: String(a.id),
+      name: a.name || "",
+      campaignId: String(a.campaign_id),
+      status: a.status,
+      effectiveStatus: a.effective_status || null,
+      // halalas → SAR. null = المجموعة مش شايلة ميزانيتها (الحملة CBO).
+      dailyBudget: a.daily_budget == null ? null : Number(a.daily_budget) / 100,
+      learning: readLearning(a.learning_stage_info),
+    }));
     const byCampaign = {};
-    for (const a of res.json?.data || []) {
-      if (a.status !== "ACTIVE" || a.daily_budget == null) continue;
-      const k = String(a.campaign_id);
-      byCampaign[k] = (byCampaign[k] || 0) + Number(a.daily_budget) / 100;   // halalas → SAR
+    for (const a of rows) {
+      if (a.status !== "ACTIVE" || a.dailyBudget == null) continue;
+      byCampaign[a.campaignId] = (byCampaign[a.campaignId] || 0) + a.dailyBudget;
     }
-    return { ok: true, byCampaign };
+    return { ok: true, rows, byCampaign };
+  },
+
+  /* الاسم القديم — لسه متندَه من gatherFacts/perfSnapshot. نفس النداء. */
+  adsetBudgets() { return this.adsets(); },
+
+  /* أرقام المجموعات الإعلانية. نفس قارئ النتيجة بالظبط (readMetaResult) —
+     مفيش تعريف تاني لـ«النتيجة» على مستوى المجموعة، وإلا كنا رجعنا لنفس
+     المرض اللي بنصلّحه. */
+  async adsetInsights({ from, to }) {
+    const token = env("META_CAPI_TOKEN");
+    const act = this.actId();
+    if (!token || !act) return { ok: false, reason: "META_AD_ACCOUNT_ID / META_CAPI_TOKEN missing", rows: [] };
+    const fields = "adset_id,adset_name,campaign_id,spend,impressions,clicks,"
+      + "actions,action_values,conversions,conversion_values";
+    const tr = encodeURIComponent(JSON.stringify({ since: from, until: to }));
+    const res = await httpJson(
+      `${this.base()}/${act}/insights?level=adset&fields=${fields}&time_range=${tr}&limit=500`,
+      { headers: { Authorization: `Bearer ${token}` } }
+    );
+    if (!res.ok) return { ok: false, reason: this.readBatchResult(res).error, rows: [] };
+    return {
+      ok: true,
+      rows: (res.json?.data || []).map((r) => {
+        const g = readMetaResult(r);
+        return {
+          platform: "meta",
+          adsetId: String(r.adset_id),
+          adsetName: r.adset_name || "",
+          campaignId: String(r.campaign_id),
+          spend: Number(r.spend || 0),
+          impressions: Number(r.impressions || 0),
+          clicks: Number(r.clicks || 0),
+          results: g.results,
+          resultValue: g.resultValue,
+          resultBasis: g.resultBasis,
+        };
+      }),
+    };
   },
 
   // POST /{campaign_id}  status=ACTIVE|PAUSED
@@ -2252,6 +2333,42 @@ export function register(app, ctx, deps = {}) {
       }
     }
     return c.json({ ok: true, range: { from, to }, campaigns, reasons, writeEnabled: writeAllowed() });
+  });
+
+  /* GET /api/ads/adsets?platform=meta&from=&to=
+     قراءة فقط. المجموعات الإعلانية بميزانيتها ومرحلة تعلّمها وصرفها —
+     دي الوحدة اللي الإيقاع بيشتغل عليها في حملات ABO، فلازم تبقى مقروءة
+     من بره زي الحملات بالظبط. */
+  app.get("/api/ads/adsets", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    const q = c.req.query();
+    const to = q.to || todayISO();
+    const from = q.from || daysAgoISO(2);
+    const rows = [], reasons = {};
+    for (const p of PLATFORMS) {
+      if (q.platform && p.id !== q.platform) continue;
+      if (typeof p.adsets !== "function") continue;
+      if (!canManage(p)) { reasons[p.id] = `غير مربوطة — ناقص ${missingOf(p.manageEnv).join(", ") || "صلاحيات"}`; continue; }
+      try {
+        const r = await p.adsets();
+        if (!r.ok) { reasons[p.id] = r.reason; continue; }
+        let stats = {};
+        try {
+          const ins = await p.adsetInsights({ from, to });
+          if (ins.ok) stats = Object.fromEntries(ins.rows.map((x) => [String(x.adsetId), x]));
+        } catch { /* الأرقام إضافة، مش شرط */ }
+        for (const a of r.rows) {
+          const s = stats[a.id];
+          rows.push({
+            ...a,
+            recent: s
+              ? { from, to, spend: s.spend, impressions: s.impressions, clicks: s.clicks, results: s.results, resultBasis: s.resultBasis }
+              : { from, to, spend: null, impressions: null, clicks: null, results: null, resultBasis: null },
+          });
+        }
+      } catch (e) { reasons[p.id] = String(e.message || e); }
+    }
+    return c.json({ ok: true, range: { from, to }, adsets: rows, reasons });
   });
 
   /* GET /api/ads/insights?platform=&from=&to= */

@@ -254,9 +254,136 @@ export const killLineOf = (s) =>
    ميزانيات مجموعاتها الإعلانية. الوكيل **بيدير** الأولى بس — لكنه لازم
    **يعدّ** الاتنين، وإلا السقف الكلي بيبقى كذبة. عندنا ٣ من ٥ حملات
    ميزانيتها على مستوى المجموعة (١٨٠ من ٢٩٠ ر.س/يوم كانت خفيّة تماماً). */
-export const effectiveBudgetOf = (r) =>
-  (r.dailyBudget != null ? Number(r.dailyBudget)
-    : r.adsetBudget != null ? Number(r.adsetBudget) : 0);
+/* كل مجموعة شغّالة، بميزانية أو من غير. في حملة CBO المجموعات **مالهاش**
+   ميزانية أصلاً (الرقم على الحملة) — فأي حاجة بتقرا حالة التعلّم لازم
+   تستعمل دي، مش اللي تحتها. */
+export const activeChildrenOf = (r) =>
+  (r.adsets || []).filter((a) => a.status === "ACTIVE");
+
+/* المجموعات **الشايلة ميزانيتها** — دول بس اللي ينفع يبقوا أهداف في ABO. */
+export const activeAdsetsOf = (r) =>
+  (r.adsets || []).filter((a) => a.status === "ACTIVE" && a.dailyBudget != null);
+
+export const effectiveBudgetOf = (r) => {
+  if (r.dailyBudget != null) return Number(r.dailyBudget);
+  const kids = activeAdsetsOf(r);
+  if (kids.length) return kids.reduce((a, x) => a + Number(x.dailyBudget), 0);
+  return r.adsetBudget != null ? Number(r.adsetBudget) : 0;
+};
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   فين الميزانية أصلاً؟ — «الهدف» هو الوحدة اللي بنكتب عليها
+
+   ميتا بتحط الميزانية في مكان من اتنين:
+     • CBO — الرقم على الحملة، والمجموعات بتتقاسمه. الهدف = الحملة.
+     • ABO — كل مجموعة شايلة رقمها، والحملة `daily_budget` بتاعها null.
+             الهدف = كل مجموعة شغّالة لوحدها.
+
+   الإيقاع كان بيشتغل على `r.dailyBudget != null` وبس، يعني الحملات ABO كانت
+   **مالهاش وجود** عنده — لا بيرفعها ولا بيرجّعها. وده مش تفصيلة: أحسن
+   مجموعتين في الحساب كله (fc-wa-walkin-5km و fc-wa-delivery-10km، ١٠٦
+   محادثة على ٣ أيام بـ ١٫٧٢ ر.س للمحادثة) عايشين جوّه حملة ABO. يعني الأداة
+   كانت بتشدّ في الحبال المش متوصّلة بحاجة.
+
+   بنرجّع «أهداف» مسطّحة عشان باقي المنطق (رفع، تراجع، استرجاع، أسوار) يشتغل
+   على وحدة واحدة مش على نوعين.                                             */
+export function paceTargetsOf(rows = []) {
+  const out = [];
+  for (const r of rows) {
+    if (r.status !== "ACTIVE") continue;
+    const common = {
+      platform: r.platform, campaignId: String(r.id), campaignName: r.name,
+      proven: r.proven ?? null,
+    };
+    if (r.dailyBudget != null) {
+      /* حملة CBO: الميزانية عليها، بس **التعلّم عند مجموعاتها**. وده بالظبط
+         اللي وقع ليلة ١٢ أغسطس — كبّرنا ٣ حملات CBO والصرف الإضافي طلع صفر
+         لإن مجموعاتها كلها لسه بتتعلّم. فبنجمّع حالة الأولاد على الحملة:
+         تقدر تستوعب لو **أي** مجموعة خلصت تعلّمها، ومتخنقة لو **كلهم**
+         متخنقين. */
+      /* `activeChildrenOf` مش `activeAdsetsOf`: في CBO المجموعات مالهاش
+         ميزانية، فلو فلترنا على الميزانية مكناش هنلاقي ولا واحدة — وهي
+         بالظبط الحالة اللي التوريث ده اتعمل عشانها. */
+      const kids = activeChildrenOf(r);
+      const known = kids.filter((a) => a.learning);
+      const L = known.length ? {
+        done: known.some((a) => a.learning.done),
+        limited: known.every((a) => a.learning.limited),
+        learning: known.some((a) => a.learning.learning) && !known.some((a) => a.learning.done),
+        status: null,
+      } : (r.learning || null);
+      const hasKidSpend = kids.some((x) => x.spendToday != null);
+      const kidSpend = kids.reduce((a, x) => a + (Number(x.spendToday) || 0), 0);
+      out.push({
+        ...common, level: "campaign", id: String(r.id), name: r.name,
+        dailyBudget: Number(r.dailyBudget),
+        spend: Number(r.spend) || 0, results: r.results ?? null,
+        spendToday: r.spendToday != null ? Number(r.spendToday) : (hasKidSpend ? kidSpend : undefined),
+        learning: L, siblings: 1,
+      });
+      continue;
+    }
+    const kids = activeAdsetsOf(r);
+    for (const a of kids) {
+      out.push({
+        ...common, level: "adset", id: String(a.id), name: a.name || String(a.id),
+        dailyBudget: Number(a.dailyBudget),
+        spend: Number(a.spend) || 0, results: a.results ?? null,
+        spendToday: a.spendToday != null ? Number(a.spendToday) : undefined,
+        learning: a.learning || null, siblings: kids.length,
+      });
+    }
+  }
+  return out;
+}
+
+/* مفتاح الهدف. المستوى جزء منه عن قصد: رقم المجموعة ورقم الحملة مش بيتلخبطوا
+   عند ميتا، بس المفتاح الصريح بيمنع أي التباس في الدفتر وفي التبريد.       */
+export const targetKeyOf = (t) => `${t.platform}:${t.level}:${t.id}`;
+
+/* ── هل الهدف ده يقدر يبلع الفلوس أصلاً؟ ─────────────────────────────────
+   ليلة ١٢ أغسطس أثبتت النقطة دي بالطريقة الوحشة: تكبير ٣ حملات CBO طلّع
+   **صفر** صرف إضافي، لإن مجموعاتها كلها لسه في التعلّم — والصرف اليومي فضل
+   ثابت مقابل ٥٠٠ ر.س ميزانية. يعني الميزانية مش القيد، الاستيعاب هو القيد.
+
+   بنحكم بحاجتين مع بعض:
+     ١. مرحلة التعلّم من ميتا نفسها (ads.js/readLearning).
+     ٢. بيصرف قد إيه من ميزانيته فعلاً (fill) — الدليل العملي.
+
+   والترتيب ده مش تجميل: لو رفعنا اللي متخنق بدل اللي شغّال، بنكون زوّدنا
+   الرقم على الورق وبس.                                                     */
+export function absorptionOf(t, { minFillPct = 60 } = {}) {
+  const budget = Number(t.dailyBudget) || 0;
+  const spent = Number(t.spendToday);
+  const fill = budget > 0 && Number.isFinite(spent) ? (spent / budget) * 100 : null;
+  const L = t.learning || {};
+  const fillTxt = fill == null ? "مفيش قراءة صرف لليوم" : `بيصرف ${ar(Math.round(fill))}٪ من ميزانيته`;
+
+  if (L.limited) {
+    return { absorbs: false, rank: 0,
+      why: `«${t.name}» متخنقة في التعلّم (LEARNING_LIMITED) — ${fillTxt}. زيادة الميزانية عليها بتكبّر الرقم على الورق ومبتزوّدش صرف حقيقي، فسبناها.` };
+  }
+  if (fill != null && fill < minFillPct) {
+    return { absorbs: false, rank: 1,
+      why: `«${t.name}» ${fillTxt} — لسه مش بتاكل اللي معاها، فزيادتها مش هتتصرف. سبناها لحد ما تملى ميزانيتها الحالية.` };
+  }
+  if (L.done) {
+    return { absorbs: true, rank: 3,
+      why: `«${t.name}» خارجة من التعلّم (SUCCESS) و${fillTxt} — دي اللي الريال الزيادة فيها بيتصرف فعلاً، فرفعناها هي.` };
+  }
+  if (L.learning) {
+    return { absorbs: true, rank: 2,
+      why: `«${t.name}» لسه في التعلّم بس ${fillTxt} — بناخد خطوة صغيرة عشان ما نصفّرش التعلّم.` };
+  }
+  return { absorbs: true, rank: 2,
+    why: `«${t.name}» ${fillTxt} ومفيش قراءة لمرحلة التعلّم — بنمشي بالخطوة العادية.` };
+}
+
+/* ميتا بتصفّر التعلّم لو الميزانية نطّت. المجموعتين الوحيدتين اللي خلصوا
+   تعلّم في الحساب كله هما بالظبط اللي بنفتح عليهم دلوقتي — فتصفير تعلّمهم
+   معناه إننا كسّرنا الحاجة الوحيدة الشغّالة. الخطوة على المجموعة مسقوفة
+   عند ١٩٪ مهما قالت الإعدادات. */
+export const ADSET_MAX_STEP_PCT = 19;
 
 /* ── Rules engine — pure function, unit-testable, no I/O ───────────────────────
    Input rows: { platform, id, name, status, dailyBudget, adsetBudget, ageDays,
@@ -395,29 +522,83 @@ export function guardPause({ platform, campaignId }, s, rows, { writeOk }) {
   return null;
 }
 
-export function guardBudget({ platform, campaignId, amount }, s, rows, { writeOk, cooldown, hardCap }) {
+/* الأسوار بقت بتفهم المستويين. القاعدة اللي مشينا عليها: **كل سور يفضل
+   يعني نفس الحاجة**، وأي سور مش بيتقال على مستوى المجموعة بيتقال على
+   **مجموع** مجموعات الحملة — مكتوب صراحة تحت عند كل واحد.
+
+   `campaignId` في التوقيع هو رقم **الهدف** (حملة أو مجموعة). سايبين الاسم
+   زي ما هو عشان ما نكسرش النداءات القديمة (أدوات الوكيل، مسار الإيقاع). */
+export function guardBudget({ platform, campaignId, amount, level = null }, s, rows, { writeOk, cooldown, hardCap }) {
   if (!writeOk) return "ADS_ALLOW_WRITE مش مساوي 1 — الكتابة على المنصات مقفولة من أصلها.";
-  const row = rows.find((r) => r.platform === platform && r.id === String(campaignId));
-  if (!row) return `مفيش حملة بالرقم ${campaignId} على ${platform} في اللقطة الحالية — راجع get_performance الأول.`;
+  const id = String(campaignId);
+  const row = rows.find((r) => r.platform === platform && r.id === id);
+  /* الهدف ممكن يكون مجموعة إعلانية جوّه حملة ABO — مش موجودة في `rows`
+     كصف مستقل، فبندوّر عليها جوّه حملتها. */
+  let parent = null, adset = null;
+  if (!row) {
+    for (const r of rows) {
+      const hit = (r.adsets || []).find((a) => String(a.id) === id);
+      if (hit) { parent = r; adset = hit; break; }
+    }
+  }
+  if (!row && !adset) return `مفيش حملة ولا مجموعة إعلانية بالرقم ${campaignId} على ${platform} في اللقطة الحالية — راجع get_performance الأول.`;
+
   const to = Number(amount);
   if (!Number.isFinite(to) || to <= 0) return "المبلغ لازم يكون رقم موجب بالريال.";
-  if (row.dailyBudget == null) {
-    return `مرفوض: "${row.name}" ميزانيتها متظبطة على مستوى المجموعة الإعلانية مش الحملة — الوكيل بيدير ميزانيات الحملات بس.`;
+
+  const isAdset = !!adset;
+  const name = isAdset ? (adset.name || id) : row.name;
+  const current = isAdset ? Number(adset.dailyBudget) : row.dailyBudget;
+
+  if (level && ((level === "adset") !== isAdset)) {
+    return `مرفوض: الطلب بيقول المستوى "${level}" و"${name}" مستواها "${isAdset ? "adset" : "campaign"}" — الرقم والمستوى لازم يتفقوا.`;
   }
+  if (!isAdset && current == null) {
+    /* حملة ABO نفسها مش هدف صالح: ميزانيتها مش موجودة أصلاً، والكتابة
+       عليها بترجع خطأ من ميتا. الهدف الصح هو مجموعاتها. */
+    const kids = activeAdsetsOf(row);
+    return `مرفوض: "${row.name}" ميزانيتها على مستوى المجموعة الإعلانية مش الحملة — اكتب على المجموعة نفسها. `
+      + (kids.length ? `المجموعات الشغالة: ${kids.map((a) => `${a.name} (${a.id})`).join("، ")}.` : "مفيش مجموعات شغالة فيها دلوقتي.");
+  }
+  if (isAdset && adset.dailyBudget == null) {
+    return `مرفوض: "${name}" مش شايلة ميزانيتها (حملتها CBO) — الميزانية بتتظبط على الحملة.`;
+  }
+
+  /* سقف الحملة الواحدة. على مستوى المجموعة مفيش معنى نطبّقه على مجموعة
+     لوحدها — فبنطبّقه على **مجموع** مجموعات الحملة بعد التغيير، وده بالظبط
+     نفس المعنى اللي كان له على CBO: أقصى صرف يومي للحملة الواحدة. */
   const cap = Math.min(s.maxCampaignBudget, hardCap);
-  if (to > cap) {
+  if (isAdset) {
+    const kids = activeAdsetsOf(parent);
+    const sumAfter = kids.reduce((a, x) => a + (String(x.id) === id ? to : Number(x.dailyBudget)), 0);
+    if (sumAfter > cap) {
+      return `مرفوض: مجموع مجموعات "${parent.name}" هيبقى ${Math.round(sumAfter)} ر.س/يوم وده فوق سقف الحملة الواحدة (${cap} ر.س). السقف بيتقاس على الحملة كلها مش على المجموعة لوحدها.`;
+    }
+  } else if (to > cap) {
     return `مرفوض: ${to} ر.س/يوم فوق سقف الحملة الواحدة (${cap} ر.س). السقف ده إعداد المالك — لو عايز تعدّيه لازم هو يرفعه من الإعدادات، مش انت.`;
   }
-  const changePct = Math.abs(to - row.dailyBudget) / row.dailyBudget * 100;
-  if (changePct > s.maxChangePct) {
-    return `مرفوض: التغيير من ${row.dailyBudget} لـ ${to} ر.س يعني ${Math.round(changePct)}٪ وده فوق أقصى تغيير مسموح في الخطوة الواحدة (${s.maxChangePct}٪). الخوارزمية بتتكسر لو الميزانية نطّت مرة واحدة — كبّر على خطوات.`;
+
+  /* أقصى تغيير في الخطوة الواحدة. على المجموعة السقف أضيق (١٩٪) لإن ميتا
+     بتصفّر التعلّم لو الميزانية نطّت — والمجموعتين اللي بنفتح عليهم دول هما
+     الوحيدين اللي خلصوا تعلّم في الحساب. */
+  const stepCap = isAdset ? Math.min(Number(s.maxChangePct) || 30, ADSET_MAX_STEP_PCT)
+    : Number(s.maxChangePct) || 30;
+  const changePct = Math.abs(to - current) / current * 100;
+  if (changePct > stepCap + 0.001) {
+    return `مرفوض: التغيير من ${current} لـ ${to} ر.س يعني ${Math.round(changePct)}٪ وده فوق أقصى تغيير مسموح في الخطوة الواحدة (${stepCap}٪${isAdset ? " على المجموعة الإعلانية — ميتا بتصفّر التعلّم لو الميزانية نطّت" : ""}). كبّر على خطوات.`;
   }
-  const after = activeBudgetOf(rows) - row.dailyBudget + to;
+
+  /* السقف الكلي بيتقاس على الحساب كله بنفس الحسبة اللي بيتحسب بيها
+     `activeBudgetOf` — وهي بقت بتعدّ الميزانيات على المستويين. */
+  const after = activeBudgetOf(rows) - current + to;
   if (after > s.maxTotalBudget) {
-    return `مرفوض: مجموع ميزانيات الحملات الشغالة هيبقى ${Math.round(after)} ر.س/يوم وده فوق السقف الكلي (${s.maxTotalBudget} ر.س). وقّف أو قلّل حملة تانية الأول.`;
+    return `مرفوض: مجموع الميزانيات الشغالة هيبقى ${Math.round(after)} ر.س/يوم وده فوق السقف الكلي (${s.maxTotalBudget} ر.س). وقّف أو قلّل حاجة تانية الأول.`;
   }
-  if (cooldown.has(`${platform}:${campaignId}`)) {
-    return `مرفوض: "${row.name}" ميزانيتها اتغيّرت خلال آخر ${s.budgetCooldownHours} ساعة — فترة تعلّم لازم تعدّي قبل أي تغيير تاني.`;
+  /* التبريد بيتشاف بمفتاح الهدف وبالمفتاح القديم مع بعض — عشان تبريد
+     اتسجّل قبل التغيير ده ما يضيعش. */
+  if (cooldown.has(`${platform}:${id}`)
+    || cooldown.has(`${platform}:${isAdset ? "adset" : "campaign"}:${id}`)) {
+    return `مرفوض: "${name}" ميزانيتها اتغيّرت خلال آخر ${s.budgetCooldownHours} ساعة — فترة تعلّم لازم تعدّي قبل أي تغيير تاني.`;
   }
   return null;
 }
@@ -704,16 +885,28 @@ export function decidePace(input) {
     if (!stale && !preRoll) continue;
     const base = Number(st.baseBudget);
     if (!Number.isFinite(base) || base <= 0) continue;
-    const row = rows.find((r) => keyOf(r.platform, r.id) === key);
-    const cur = row && row.dailyBudget != null ? Number(row.dailyBudget) : Number(st.currentBudget);
+    /* الاسترجاع لازم يبقى **متماثل** مع الرفع: أي حاجة رفعناها لازم ترجع
+       بنفس المستوى اللي اترفعت بيه. الزيادة على مجموعة إعلانية مبترجعش
+       لوحدها = بتبقى أساس اليوم اللي بعده من غير ما حد ياخد باله — وده
+       بالظبط اللي كان هيحصل الليلة اللي فاتت مع ٤١/١٧.
+       بندوّر على الهدف بمستواه: حملة في `rows`، أو مجموعة جوّه حملتها.   */
+    const lvl = st.level || "campaign";
+    const row = lvl === "adset" ? null : rows.find((r) => keyOf(r.platform, r.id) === key || targetKeyOf({ platform: r.platform, level: "campaign", id: r.id }) === key);
+    const adset = lvl === "adset"
+      ? rows.flatMap((r) => r.adsets || []).find((a) => String(a.id) === String(st.campaignId))
+      : null;
+    const liveNow = adset ? adset.dailyBudget : (row && row.dailyBudget != null ? row.dailyBudget : null);
+    const cur = liveNow != null ? Number(liveNow) : Number(st.currentBudget);
     touched.add(key);
+    const label = adset?.name || row?.name || st.campaignName || key;
     if (!Number.isFinite(cur) || cur <= base + 0.5) {
-      notes.push({ key, op: "restore-noop", text: `"${row?.name || st.campaignName || key}" ميزانيتها ${ar(cur)} ر.س وهي مش أعلى من الأساس (${ar(base)}) — مفيش حاجة ترجع.` });
+      notes.push({ key, op: "restore-noop", text: `"${label}" ميزانيتها ${ar(cur)} ر.س وهي مش أعلى من الأساس (${ar(base)}) — مفيش حاجة ترجع.` });
       continue;
     }
     actions.push({
       op: "restore", platform: st.platform, campaignId: st.campaignId,
-      campaignName: row?.name || st.campaignName || null,
+      level: lvl, parentId: st.parentId || null,
+      campaignName: label,
       from: r2(cur), to: r2(base), base: r2(base), accountDay: st.accountDay,
       reason: stale
         ? `استرجاع متأخر: الزيادة دي كانت على يوم الحساب الإعلاني ${st.accountDay} بتوقيت ${ADS_ACCOUNT_TZ} وهو قفل خلاص (إحنا دلوقتي في ${accountDay}). رجّعنا الميزانية من ${ar(cur)} لـ ${ar(base)} ر.س/يوم زي ما كانت قبل التسريع.`
@@ -748,10 +941,11 @@ export function decidePace(input) {
   }
 
   const pacePct = pulse.pacePct;
-  const activeRows0 = rows.filter((r) => r.status === "ACTIVE" && r.dailyBudget != null);
-  /* اللي بنرفعه = الحملات اللي شايلة ميزانيتها (activeRows0). واللي بنقيس
-     السقف عليه = **كل** الشغّال، بما فيه الميزانيات على مستوى المجموعة
-     الإعلانية — دي ١٨٠ من ٢٩٠ ر.س/يوم عندنا وكانت خفيّة عن السقف تماماً. */
+  /* اللي بنرفعه بقى «الأهداف»: الحملة لو هي شايلة ميزانيتها (CBO)، أو كل
+     مجموعة إعلانية شغّالة لو الحملة ABO. قبل كده كان الفلتر
+     `dailyBudget != null` وبس، يعني حملتين من أهم اللي عندنا كانوا خارج
+     متناول الإيقاع تماماً. واللي بنقيس السقف عليه = مجموع الأهداف كلها. */
+  const activeRows0 = paceTargetsOf(rows);
   const budgetNow = activeBudgetOf(rows);
   const totalCap0 = Number(s.maxTotalBudget) || 1000;
 
@@ -812,10 +1006,21 @@ export function decidePace(input) {
   const evidence = `الدليل اللي بنينا عليه غير المبيعات: ${ar(confirmed.linkedOrders)} طلب اتربط برقم جوال جاي من الإعلان.`;
   const hotNote = hot ? ` اليوم ده شغّال فوق المعتاد بـ ${Math.abs(pacePct)}٪ وفيه مساحة تحت سقف اليوم، فالخطوة اتوسّعت لـ ${step}٪ بدل ${s.paceStepPct}٪ — ده يوم يستاهل نستغله مش نتفرج عليه.` : "";
 
-  for (const r of activeRows.slice().sort((a, b) => (Number(b.spend) || 0) - (Number(a.spend) || 0))) {
-    const key = keyOf(r.platform, r.id);
-    if (touched.has(key)) continue;                        // اترجّعت الجولة دي
-    const st = state.get(key);
+  /* الترتيب بقى بالاستيعاب الأول وبعدين بالصرف. ليه: الفلوس لازم تروح
+     للي **بيصرفها فعلاً**. ليلة ١٢ أغسطس كبّرنا ٣ حملات CBO والصرف الإضافي
+     طلع صفر لإن مجموعاتها كلها لسه في التعلّم. الترتيب ده هو اللي بيمنع
+     تكرار ده. */
+  const ranked = activeRows.slice().map((t) => ({ t, abs: absorptionOf(t, {
+    minFillPct: Number(s.paceMinFillPct ?? 60) }) }))
+    .sort((a, b) => (b.abs.rank - a.abs.rank) || ((Number(b.t.spend) || 0) - (Number(a.t.spend) || 0)));
+
+  for (const { t: r, abs } of ranked) {
+    const key = targetKeyOf(r);
+    /* المفتاح القديم (من غير المستوى) لسه بيتقرا عشان الزيادات المفتوحة
+       اللي اتسجّلت قبل التغيير ده ما تضيعش. */
+    const legacyKey = keyOf(r.platform, r.id);
+    if (touched.has(key) || touched.has(legacyKey)) continue;   // اترجّعت الجولة دي
+    const st = state.get(key) || state.get(legacyKey);
     const mine = st && st.accountDay === accountDay;        // زيادة من عندنا على نفس يوم الحساب
     const base = mine ? Number(st.baseBudget) : Number(r.dailyBudget);
     const cur = Number(r.dailyBudget);
@@ -824,6 +1029,13 @@ export function decidePace(input) {
        العكس: يوم شغّال مش سبب نصفّر تعلّم ad set على ميتا.                 */
     const ps = platformScaling(r.platform, { s, proven: r.proven ?? null });
     const pCooldownMs = Math.max(cooldownMs, Number(ps.cooldownMinutes) * 60_000);
+
+    /* الهدف اللي مش هيبلع الزيادة بنسيبه ونقول ليه بالعربي. ده بيتقال في
+       الرفع بس — التراجع بيلمس اللي رفعناه إحنا مهما كانت مرحلة تعلّمه. */
+    if (up && !abs.absorbs) {
+      notes.push({ key, op: "cant-absorb", text: abs.why });
+      continue;
+    }
 
     if (mine && nowMs - st.lastActionAt < pCooldownMs) {
       notes.push({ key, op: "cooldown", text: `"${r.name}" اتغيّرت من ${Math.round((nowMs - st.lastActionAt) / 60000)} دقيقة — فترة تبريد ${Math.round(pCooldownMs / 60000)} دقيقة على ${r.platform} عشان المنصة تاخد وقتها تصرف الزيادة قبل ما نحكم عليها تاني.` });
@@ -844,13 +1056,27 @@ export function decidePace(input) {
         : ` المنصة مسجّلة ${ar(r.results)} نية طلب النهارده — رقم مساعد، بس القرار مبني على مبيعات الكاشير.`;
 
     if (up) {
-      const pStep = Math.min(step, Number(ps.stepPct) || step);
+      /* الخطوة على المجموعة الإعلانية مسقوفة عند ١٩٪ مهما قالت الإعدادات:
+         ميتا بتصفّر التعلّم لو الميزانية نطّت، والمجموعتين اللي بنفتح عليهم
+         دول هما الوحيدين اللي **خلصوا** تعلّم في الحساب كله — فتصفير
+         تعلّمهم معناه إننا كسّرنا الحاجة الوحيدة الشغّالة عندنا. */
+      const levelStepCap = r.level === "adset" ? ADSET_MAX_STEP_PCT : Infinity;
+      const pStep = Math.min(step, Number(ps.stepPct) || step, levelStepCap);
       const upliftCap = Math.floor(base * (1 + upliftPct / 100));
       let next = Math.round(cur * (1 + pStep / 100));
       let capped = null;
       if (next > upliftCap) { next = upliftCap; capped = `سقف الزيادة اليومية ${upliftPct}٪ فوق أساس ${ar(base)}`; }
       if (ps.cap != null && next > ps.cap) { next = ps.cap; capped = `سقف المنصة غير المثبتة ${ar(ps.cap)} ر.س`; }
-      if (next > perCap) { next = perCap; capped = `سقف الحملة الواحدة ${ar(perCap)} ر.س`; }
+      /* سقف الحملة الواحدة على مستوى المجموعة معناه **مجموع** مجموعات
+         الحملة — نفس معناه بالظبط لما كان على CBO. */
+      if (r.level === "adset") {
+        const sibs = activeRows.filter((x) => x.level === "adset" && x.campaignId === r.campaignId);
+        const others = sibs.reduce((a, x) => a + (x.id === r.id ? 0 : Number(x.dailyBudget)), 0);
+        if (others + next > perCap) {
+          next = Math.floor(perCap - others);
+          capped = `سقف الحملة الواحدة ${ar(perCap)} ر.س على مجموع مجموعات "${r.campaignName}"`;
+        }
+      } else if (next > perCap) { next = perCap; capped = `سقف الحملة الواحدة ${ar(perCap)} ر.س`; }
       const headroom = totalCap - totalActive;
       if (next - cur > headroom) { next = cur + Math.max(0, Math.floor(headroom)); capped = `السقف الكلي ${ar(totalCap)} ر.س/يوم`; }
       if (next <= cur) {
@@ -866,8 +1092,10 @@ export function decidePace(input) {
       totalActive += next - cur;
       actions.push({
         op: "up", platform: r.platform, campaignId: r.id, campaignName: r.name,
+        level: r.level, parentId: r.level === "adset" ? r.campaignId : null,
+        parentName: r.level === "adset" ? r.campaignName : null,
         from: r2(cur), to: r2(next), base: r2(base), accountDay, stepPct: pStep,
-        reason: `${ctx} رفعنا "${r.name}" من ${ar(cur)} لـ ${ar(next)} ر.س/يوم (خطوة ${pStep}٪ على ${r.platform}${capped ? `، متقصوصة على ${capped}` : ""}). ${ps.why}${hotNote}${zero} ${evidence} ${eff.reason} الزيادة دي هترجع لـ ${ar(base)} ر.س قبل ما يوم الحساب الإعلاني ${accountDay} (${ADS_ACCOUNT_TZ}) يقفل — يعني حوالي ١٠ صباحاً بتوقيت جدة.`,
+        reason: `${ctx} رفعنا ${r.level === "adset" ? `المجموعة الإعلانية "${r.name}" (جوّه حملة "${r.campaignName}")` : `"${r.name}"`} من ${ar(cur)} لـ ${ar(next)} ر.س/يوم (خطوة ${pStep}٪ على ${r.platform}${capped ? `، متقصوصة على ${capped}` : ""}). ${abs.why} ${ps.why}${hotNote}${zero} ${evidence} ${eff.reason} الزيادة دي هترجع لـ ${ar(base)} ر.س قبل ما يوم الحساب الإعلاني ${accountDay} (${ADS_ACCOUNT_TZ}) يقفل — يعني حوالي ١٠ صباحاً بتوقيت جدة.`,
       });
     } else {
       /* التراجع بيلمس زيادتنا إحنا بس. الخفض تحت ميزانية المالك شغلانة
@@ -883,8 +1111,10 @@ export function decidePace(input) {
       totalActive += next - cur;
       actions.push({
         op: "down", platform: r.platform, campaignId: r.id, campaignName: r.name,
+        level: r.level, parentId: r.level === "adset" ? r.campaignId : null,
+        parentName: r.level === "adset" ? r.campaignName : null,
         from: r2(cur), to: r2(next), base: r2(base), accountDay, stepPct: downStep, breach,
-        reason: `${ctx}${breachNote} فسحبنا التسريع على "${r.name}" من ${ar(cur)} لـ ${ar(next)} ر.س/يوم (خطوة ${downStep}٪، ومش بننزل تحت ميزانية المالك ${ar(base)} ر.س — الخفض تحتها شغل الجولة اليومية مش الإيقاع).${zero}`,
+        reason: `${ctx}${breachNote} فسحبنا التسريع على ${r.level === "adset" ? `المجموعة الإعلانية "${r.name}"` : `"${r.name}"`} من ${ar(cur)} لـ ${ar(next)} ر.س/يوم (خطوة ${downStep}٪، ومش بننزل تحت ميزانية المالك ${ar(base)} ر.س — الخفض تحتها شغل الجولة اليومية مش الإيقاع).${zero}`,
       });
     }
   }
@@ -1811,6 +2041,11 @@ export function register(app, ctx, deps = {}) {
         PRIMARY KEY (platform, campaign_id, account_day)
       );
       CREATE INDEX IF NOT EXISTS ap_pacing_open_idx ON ap_pacing(restored_at, account_day);
+      -- campaign_id بقى رقم الهدف: حملة (CBO) أو مجموعة إعلانية (ABO).
+      -- من غير level الاسترجاع مبيعرفش يرجّع إيه بأي مستوى، والزيادة على
+      -- مجموعة كانت هتفضل شغالة وتبقى أساس اليوم اللي بعده في صمت.
+      ALTER TABLE ap_pacing ADD COLUMN IF NOT EXISTS level TEXT NOT NULL DEFAULT 'campaign';
+      ALTER TABLE ap_pacing ADD COLUMN IF NOT EXISTS parent_id TEXT;
       -- دفتر نافذة الإعلانات. كل حملة إحنا وقفناها لما المطعم قفل بتتسجّل
       -- هنا لحد ما نشغّلها تاني. الدفتر في قاعدة البيانات مش في الذاكرة عن
       -- قصد: لو الخدمة اترستَرتت وهي مقفولة، أول تشغيلة بعد ١١ صباحاً
@@ -2182,16 +2417,23 @@ export function register(app, ctx, deps = {}) {
   async function pacingState() {
     const r = await pool.query(
       `SELECT platform, campaign_id, campaign_name, account_day::text AS account_day,
-              base_budget, current_budget, steps, last_action_at
+              base_budget, current_budget, steps, last_action_at,
+              COALESCE(level,'campaign') AS level, parent_id
          FROM ap_pacing WHERE restored_at IS NULL`);
     const m = new Map();
     for (const x of r.rows) {
-      m.set(`${x.platform}:${x.campaign_id}`, {
+      const e = {
         platform: x.platform, campaignId: x.campaign_id, campaignName: x.campaign_name,
+        level: x.level || "campaign", parentId: x.parent_id || null,
         accountDay: isoDay(x.account_day),
         baseBudget: Number(x.base_budget), currentBudget: Number(x.current_budget),
         steps: Number(x.steps) || 0, lastActionAt: new Date(x.last_action_at).getTime(),
-      });
+      };
+      /* بالمفتاح الجديد (فيه المستوى) وبالقديم كمان — عشان أي زيادة اتسجّلت
+         قبل عمود `level` تفضل تترجع عادي بدل ما تتوه ويبقى فيه فلوس شغّالة
+         محدش بيرجّعها. */
+      m.set(`${x.platform}:${e.level}:${x.campaign_id}`, e);
+      m.set(`${x.platform}:${x.campaign_id}`, e);
     }
     return m;
   }
@@ -2488,15 +2730,27 @@ export function register(app, ctx, deps = {}) {
       const shut = readGate(p.id, priority);
       if (shut) { reasons[p.id] = shut.error; continue; }
       try {
-        const [camps, ins, ads] = await Promise.all([
+        const [camps, ins, ads, aIns] = await Promise.all([
           p.campaigns(), p.insights({ from: f, to: t }),
-          typeof p.adsetBudgets === "function" ? p.adsetBudgets().catch(() => ({ ok: false, byCampaign: {} }))
-            : Promise.resolve({ ok: false, byCampaign: {} }),
+          typeof p.adsetBudgets === "function" ? p.adsetBudgets().catch(() => ({ ok: false, byCampaign: {}, rows: [] }))
+            : Promise.resolve({ ok: false, byCampaign: {}, rows: [] }),
+          /* أرقام المجموعات — محتاجينها عشان نعرف مين بيصرف ميزانيته فعلاً
+             (absorptionOf). لو الأدابتر مبيوفّرهاش بنكمّل من غيرها. */
+          typeof p.adsetInsights === "function" ? p.adsetInsights({ from: f, to: t }).catch(() => ({ ok: false, rows: [] }))
+            : Promise.resolve({ ok: false, rows: [] }),
         ]);
         if (!camps.ok) { reasons[p.id] = camps.reason; continue; }
         if (!ins.ok) reasons[p.id] = ins.reason;
         const m = new Map((ins.ok ? ins.rows : []).map((x) => [String(x.campaignId), x]));
         const adsetBy = (ads && ads.ok ? ads.byCampaign : null) || {};
+        const aIn = new Map((aIns && aIns.ok ? aIns.rows : []).map((x) => [String(x.adsetId), x]));
+        const adsetsByCampaign = {};
+        for (const a of (ads && ads.ok ? ads.rows : []) || []) {
+          const x = aIn.get(String(a.id));
+          (adsetsByCampaign[a.campaignId] ||= []).push({
+            ...a, spend: x?.spend ?? 0, spendToday: x?.spend ?? null, results: x?.results ?? null,
+          });
+        }
         for (const c of camps.campaigns) {
           const a = m.get(String(c.id));
           const spend = a?.spend || 0, results = a?.results ?? null, revenue = a?.resultValue || 0;
@@ -2504,6 +2758,9 @@ export function register(app, ctx, deps = {}) {
             platform: p.id, id: String(c.id), name: c.name, status: c.status,
             dailyBudget: c.dailyBudget,
             adsetBudget: c.dailyBudget == null ? (adsetBy[String(c.id)] ?? null) : null,
+            /* المجموعات الإعلانية بتفاصيلها — دي اللي paceTargetsOf بتبني
+               عليها أهداف الـ ABO. */
+            adsets: adsetsByCampaign[String(c.id)] || [],
             spend, results, revenue,
             /* من إيه اتجمعت النتيجة (نية من الموقع / محادثة / شرا) — عشان
                الشاشة والموديل يقولوا رقم واحد بنفس المعنى. */
@@ -3512,7 +3769,7 @@ ${focus}
              منع رجوع الفلوس للمالك مش حماية، ده عطل. */
         const forGuard = a.op === "restore" ? { ...s, maxChangePct: 100 } : s;
         const refusal = guardBudget(
-          { platform: a.platform, campaignId: a.campaignId, amount: a.to },
+          { platform: a.platform, campaignId: a.campaignId, amount: a.to, level: a.level || null },
           forGuard, snap.rows, { writeOk: writeAllowed(), cooldown: new Set(), hardCap: MAX_DAILY_BUDGET });
 
         let status = "proposed", result = null, executedAt = null;
@@ -3535,14 +3792,20 @@ ${focus}
                   WHERE platform=$1 AND campaign_id=$2 AND account_day=$3::date`,
                 [a.platform, a.campaignId, a.accountDay, a.to]);
             } else {
+              /* `level` و`parent_id` بيتسجّلوا مع الزيادة عشان الاسترجاع
+                 يرجّع بنفس المستوى. من غيرهم الزيادة على مجموعة إعلانية
+                 مبترجعش، وبتبقى أساس اليوم اللي بعده من غير ما حد يلاحظ. */
               await pool.query(
                 `INSERT INTO ap_pacing (platform, campaign_id, campaign_name, account_day,
-                                        base_budget, current_budget, steps, last_action_at)
-                 VALUES ($1,$2,$3,$4::date,$5,$6,1,NOW())
+                                        base_budget, current_budget, steps, last_action_at,
+                                        level, parent_id)
+                 VALUES ($1,$2,$3,$4::date,$5,$6,1,NOW(),$7,$8)
                  ON CONFLICT (platform, campaign_id, account_day) DO UPDATE
                    SET current_budget=EXCLUDED.current_budget, campaign_name=EXCLUDED.campaign_name,
-                       steps=ap_pacing.steps+1, last_action_at=NOW()`,
-                [a.platform, a.campaignId, a.campaignName, a.accountDay, a.base, a.to]);
+                       steps=ap_pacing.steps+1, last_action_at=NOW(),
+                       level=EXCLUDED.level, parent_id=EXCLUDED.parent_id`,
+                [a.platform, a.campaignId, a.campaignName, a.accountDay, a.base, a.to,
+                 a.level || "campaign", a.parentId || null]);
             }
           }
           /* لو الاسترجاع فشل بنسيب restored_at فاضية عن قصد — الدورة اللي
