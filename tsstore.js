@@ -149,7 +149,13 @@ export async function createPosOrder({
     table_id: null,
   };
   body.table = { table_id: null, guests: null };
+  // pickup_time is REQUIRED for pickup orders (422 on 2026-08-13: "The
+  // payment info.pickup time field is required") and harmless otherwise.
+  // UTC like the Python storefront always sent — TabSense stores UTC.
+  const pickupTime = new Date(Date.now() + 40 * 60_000)
+    .toISOString().slice(0, 19).replace("T", " ");
   body.payment_info = {
+    pickup_time: pickupTime,
     latitude: latitude ?? STORE_LAT(),
     longitude: longitude ?? STORE_LNG(),
     payment_method: paymentMethod,
