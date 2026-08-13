@@ -542,6 +542,183 @@ export async function sendPlatformWrite(p, call) {
 
 const missingOf = (names) => names.filter((n) => !env(n));
 
+/* ═══════════════════════════════════════════════════════════════════════════
+   ما هي «النتيجة» أصلاً؟ — التعريف الوحيد اللي كل الملفات بتقرا منه
+
+   ده كان أخطر باج في النظام كله، وكان صامت. القارئ القديم كان بيعدّ
+   `purchase` وبس:
+
+       actions.find(a => a.action_type === "purchase")
+
+   وميتا **عمرها ما هتقول purchase عندنا**، لأسباب مثبتة مش متوقّعة:
+     • الطلب بيتقفل جوّه المطعم، وبنبعته CAPI بـ action_source=physical_store.
+     • ميتا شالت أنواع الأكشن بتاعة offline conversions في v20.
+     • وحتى حملة OUTCOME_SALES اللي اسمها `fc-sales-purchase` والمُحسّنة على
+       PURCHASE بالنص (promoted_object.custom_event_type = "PURCHASE") صرفت
+       ٤٠٥ ر.س و٢٨٬٣٧٨ ظهور وسجّلت **١٩ lead و صفر purchase**.
+
+   يعني كل حملة بتقرا صفر نتيجة، للأبد. والنتيجة إن قاعدة القتل (صفر نتيجة +
+   صرف ٣ أيام ≥ ١٠٠ ر.س) كانت هتوقّف كل حملات ميتا يوم ١٤ أغسطس ٢٠٢٦ أول ما
+   الحملات تعدّي minAgeDays — مش لإنها فشلت، لكن لإن العدّاد بيقيس حاجة
+   مستحيلة تحصل.
+
+   ── إيه اللي بنعدّه دلوقتي، وليه ─────────────────────────────────────────
+   مفيش دفع أونلاين. فالتحويل الحقيقي عندنا هو **نية الطلب**: العميل يدوس
+   «اطلب على واتساب» أو يفتح محادثة واتساب من الإعلان. ده مش تحايل على
+   الرقم — دي هي الحاجة الوحيدة اللي الإعلان بيقدر يعملها فعلاً، وهي اللي
+   المُحسّن (optimizer) نفسه بيتعلّم عليها.
+
+   الأنواع اللي بنعدّها (اتقررت من لقطة حقيقية للحساب يوم ٢٠٢٦-٠٨-١٢،
+   محفوظة في fixtures/meta-insights.json):
+
+     ١. `offsite_conversion.fb_pixel_custom` = حدث **Contact** من البيكسل.
+        إزاي عرفنا إنه Contact مش أي حدث كاستوم تاني؟ حقل `conversions` في
+        نفس الصف بيرجّع `contact_website` و`contact_total` بنفس الأرقام
+        بالظبط (٤٧/٤٧، ١١/١١، ١٠/١٠، ٢١/٢١، ٨/٨). وحملة `fc-leads-contact`
+        مجموعاتها الإعلانية مُحسّنة على CONTACT بالنص
+        (promoted_object.custom_event_type = "CONTACT") — فلازم نتيجتها
+        تتعدّ، وإلا بنحكم على حملة بمقياس مش مقياسها.
+
+     ٢. `lead` — حدث Lead القياسي.
+
+     ٣. `onsite_conversion.messaging_conversation_started_7d` — محادثة واتساب
+        ابتدت من الإعلان. دي نتيجة `fc-wa-orders` (OUTCOME_ENGAGEMENT،
+        optimization_goal = CONVERSATIONS): ٢٣٠ محادثة في ٣٠ يوم.
+
+     ٤. `purchase` — سايبينها في اللستة لو يوم جه الدفع الأونلاين. النهارده
+        بترجع صفر دايماً، وده متوقّع ومكتوب هنا عشان اللي جاي ما يفتكرش إنها
+        اتنسيت.
+
+   ── ليه مش بنجمعهم ببساطة: الجمع بيعدّ نفس الشخص مرتين ─────────────────
+   صفحة الطلب (tabsense-integration/storefront/static/app.js) بتولّع
+   **Contact و Lead مع بعض في نفس الدالة** على نفس الدوسة على زرار واتساب:
+
+       window.fcTrack("Contact", {...});
+       window.fcTrack("Lead",    {...});
+
+   فالجمع كان هيدّي ضعف الرقم. والأرقام الحقيقية بتأكد ده: Contact دايماً ≥
+   Lead في كل حملة (٤٧ مقابل ٣٧، ١١ مقابل ٦، ١٠ مقابل ٥، ٨ مقابل ٦) — الفرق
+   هو دوسات زرار «اتصل» اللي بتولّع Contact لوحده. يعني Lead ⊆ Contact.
+
+   وكمان ميتا نفسها بترجّع نفس الحدث تحت أكتر من اسم: `lead` و
+   `offsite_conversion.fb_pixel_lead` و `onsite_web_lead` كلهم ٣٧ في نفس
+   الصف. تلات أسامي لحدث واحد.
+
+   فالموديل هو **مجموعات**: جوّه المجموعة بناخد الأكبر (لإنهم أسامي/طبقات
+   لنفس الفعل)، وبين المجموعات بنجمع (لإنهم أسطح مختلفة خالص — اللي بيفتح
+   واتساب من الإعلان عمره ما لمس الموقع، واللي بيدفع أونلاين مش بيدوس زرار
+   واتساب).
+═══════════════════════════════════════════════════════════════════════════ */
+export const META_RESULT_MODEL = [
+  {
+    key: "web_intent",
+    label: "نية طلب من الموقع (Contact / Lead)",
+    /* نفس الدوسة بتولّع الاتنين، وميتا بترجّع الحدث الواحد تحت كذا اسم →
+       الأكبر، مش المجموع. */
+    actions: ["offsite_conversion.fb_pixel_custom", "lead",
+      "offsite_conversion.fb_pixel_lead", "onsite_web_lead"],
+    /* `conversions` بيرجّع الحدث الكاستوم بالاسم بدل ما نفترض إن
+       fb_pixel_custom = Contact. لو موجود بنصدّقه هو الأول. */
+    conversions: ["contact_total", "contact_website"],
+  },
+  {
+    key: "messaging",
+    label: "محادثة واتساب ابتدت من الإعلان",
+    actions: ["onsite_conversion.messaging_conversation_started_7d"],
+    conversions: [],
+  },
+  {
+    key: "purchase",
+    label: "شرا أونلاين",
+    /* فاضية دلوقتي وهتفضل فاضية لحد ما يبقى فيه دفع أونلاين. مش غلطة. */
+    actions: ["purchase", "offsite_conversion.fb_pixel_purchase"],
+    conversions: [],
+  },
+];
+
+/* الإيراد المحقّق. `action_values` بترجّع قيمة لـ lead/Contact كمان، بس دي
+   قيمة **السلة اللي في نية العميل** مش فلوس دخلت الدرج — الطلب ممكن ما
+   يتمّش أصلاً. لو حطيناها في resultValue كان ROAS هيبقى مبني على أمنيات،
+   وشرط "winning" في decide() بيتحقق من ROAS كمان. فالإيراد = الشرا وبس،
+   ونية السلة بترجع منفصلة كـ resultValueIntent للعرض. */
+const META_REVENUE_ACTIONS = ["purchase", "offsite_conversion.fb_pixel_purchase"];
+
+const numOf = (v) => { const n = Number(v); return Number.isFinite(n) ? n : 0; };
+const pickMax = (list, names) => {
+  let best = null;
+  for (const a of list || []) {
+    if (!names.includes(a.action_type)) continue;
+    const v = numOf(a.value);
+    if (best == null || v > best) best = v;
+  }
+  return best;
+};
+
+/* صف insights خام من ميتا → { results, resultValue, resultValueIntent,
+   basis } . دالة نقية عشان تتجرّب على اللقطة المسجّلة من غير شبكة.       */
+export function readMetaResult(row = {}) {
+  const acts = row.actions || [];
+  const convs = row.conversions || [];
+  const basis = {};
+  let results = 0, any = false;
+
+  for (const g of META_RESULT_MODEL) {
+    // الاسم الصريح من `conversions` بيسبق الاستنتاج من fb_pixel_custom.
+    const fromConv = g.conversions.length ? pickMax(convs, g.conversions) : null;
+    const fromAct = pickMax(acts, g.actions);
+    const v = fromConv != null ? Math.max(fromConv, fromAct ?? 0) : fromAct;
+    if (v == null) continue;
+    any = true;
+    basis[g.key] = v;
+    results += v;
+  }
+
+  const rev = pickMax(row.action_values || [], META_REVENUE_ACTIONS);
+  const intent = pickMax(row.action_values || [],
+    META_RESULT_MODEL.find((g) => g.key === "web_intent").actions);
+
+  return {
+    /* null = المنصة ما رجّعتش ولا نوع من أنواعنا خالص (صف من غير أي أكشن).
+       صفر = رجّعت وفعلاً صفر. الفرق ده هو اللي قاعدة القتل بتقف عليه. */
+    results: any ? results : null,
+    resultValue: rev,                 // إيراد محقّق فقط (= صفر عندنا النهارده)
+    resultValueIntent: intent,        // قيمة السلة وقت النية — للعرض بس
+    resultBasis: any ? basis : null,
+  };
+}
+
+/* نص الشرح اللي بيروح لشاشة المالك جنب رقم كل منصة. تلات حالات مختلفة
+   تماماً، وخلطهم هو اللي كان بيغلّط القارئ:
+
+     ١. عمى (`blind`) — المنصة مرجّعتش ولا نوع نتيجة نعرفه على أي حملة.
+        مينفعش نقول «صفر»، ولا بنبني عليه حكم.
+     ٢. صفر حقيقي — المنصة ردّت وقالت صفر نية طلب مع صرف. دي إشارة تستاهل
+        القراءة، ودي المرة الأولى اللي الجملة دي بتبقى صح فيها.
+     ٣. رقم عادي — بنشرح إن «النتيجة» = نية طلب مش شرا.
+
+   ودايماً بنقول لو فيه حملات عميانة جوّه منصة شايفة — عشان الرقم ما يتقريش
+   على إنه شامل الكل.                                                        */
+function platformNoteFor(p, t, campaignCount, blindPlatform) {
+  const tail = t.blind > 0 && !blindPlatform
+    ? ` (${t.blind} من ${campaignCount} حملة مرجّعتش نوع نتيجة نعرفه، فمش داخلة في الرقم ده.)`
+    : "";
+  if (blindPlatform) {
+    return `${p.label} مرجّعتش ولا نوع نتيجة نعرف نقراه على ${campaignCount} حملة رغم صرف `
+      + `${Math.round(t.spend)} ر.س — ده عمى قياس مش صفر أداء، ومفيش أي حكم بيتبني عليه. `
+      + `راجع ربط البيكسل/الأحداث على ${p.label}.`;
+  }
+  if (t.results === 0 && t.spend > 0) {
+    return `${p.label} مسجّلة صفر نتيجة رغم الصرف — ودي المرة دي إشارة حقيقية مش عمى قياس: `
+      + `بنعدّ دلوقتي دوسات «اطلب على واتساب» والمحادثات اللي بتبتدي من الإعلان، مش الشرا. `
+      + `لو الرقم صفر يبقى الإعلان مش بيوصّل حد لخطوة الطلب. (الشرا نفسه بيتقفل جوّه المطعم `
+      + `وبيتبعت بـ action_source=physical_store، فالمنصة عمرها ما هتنسبه لحملة — عشان كده `
+      + `مش بنحكم بيه.)` + tail;
+  }
+  return `«النتيجة» هنا = نية الطلب: دوسة «اطلب على واتساب» أو محادثة واتساب ابتدت من الإعلان. `
+    + `مفيش دفع أونلاين، فالشرا مش رقم المنصة بتقدر تشوفه — قارن بعمود التحويلات المؤكدة جنبه.`
+    + tail;
+}
+
 /* ─── Meta (Facebook / Instagram) ─────────────────────────────────────────
    Conversions API
      POST https://graph.facebook.com/{ver}/{PIXEL_ID}/events
@@ -701,7 +878,11 @@ const meta = {
     const token = env("META_CAPI_TOKEN");
     const act = this.actId();
     if (!token || !act) return { ok: false, reason: "META_AD_ACCOUNT_ID / META_CAPI_TOKEN missing", rows: [] };
-    const fields = "campaign_id,campaign_name,spend,impressions,clicks,ctr,cpc,actions,action_values";
+    /* `conversions` مضاف عن قصد: هو اللي بيسمّي الحدث الكاستوم
+       (contact_website) بدل ما نفترض إن fb_pixel_custom = Contact.
+       شوف META_RESULT_MODEL فوق. */
+    const fields = "campaign_id,campaign_name,objective,spend,impressions,clicks,ctr,cpc,"
+      + "actions,action_values,conversions,conversion_values";
     const tr = encodeURIComponent(JSON.stringify({ since: from, until: to }));
     const res = await httpJson(
       `${this.base()}/${act}/insights?level=campaign&fields=${fields}&time_range=${tr}&limit=500`,
@@ -712,20 +893,48 @@ const meta = {
       ok: true,
       // Meta insights return every metric as a STRING. Parse before use.
       rows: (res.json?.data || []).map((r) => {
-        const purchases = (r.actions || []).find((a) => a.action_type === "purchase" || a.action_type === "offsite_conversion.fb_pixel_purchase");
-        const value = (r.action_values || []).find((a) => a.action_type === "purchase" || a.action_type === "offsite_conversion.fb_pixel_purchase");
+        const g = readMetaResult(r);
         return {
           platform: "meta",
           campaignId: r.campaign_id,
           campaignName: r.campaign_name,
+          objective: r.objective || null,
           spend: Number(r.spend || 0),
           impressions: Number(r.impressions || 0),
           clicks: Number(r.clicks || 0),
-          results: purchases ? Number(purchases.value || 0) : null,
-          resultValue: value ? Number(value.value || 0) : null,
+          results: g.results,
+          resultValue: g.resultValue,
+          resultValueIntent: g.resultValueIntent,
+          resultBasis: g.resultBasis,
         };
       }),
     };
+  },
+
+  /* ميزانيات المجموعات الإعلانية، مجمّعة على مستوى الحملة.
+
+     ليه دي موجودة: ٣ من ٥ حملات شغّالة عندنا ميزانيتها على مستوى المجموعة
+     مش الحملة (fc-wa-orders و fc-leads-contact و fc-sales-purchase)، يعني
+     `campaigns()` بترجّع لهم dailyBudget = null. والسقف الكلي في decide()
+     كان بيجمع الحملات اللي ليها dailyBudget بس — فكان بيشوف ١١٠ ر.س/يوم
+     والحقيقة ٢٩٠. يعني كان فاكر إن فيه مساحة تحت السقف وهي مش موجودة.
+     الميزانية دي مش بنديرها (الوكيل بيدير ميزانيات الحملات بس) — بنعدّها. */
+  async adsetBudgets() {
+    const token = env("META_CAPI_TOKEN");
+    const act = this.actId();
+    if (!token || !act) return { ok: false, reason: "META_AD_ACCOUNT_ID / META_CAPI_TOKEN missing", byCampaign: {} };
+    const res = await httpJson(
+      `${this.base()}/${act}/adsets?fields=campaign_id,status,daily_budget&limit=500`,
+      { headers: { Authorization: `Bearer ${token}` } }
+    );
+    if (!res.ok) return { ok: false, reason: this.readBatchResult(res).error, byCampaign: {} };
+    const byCampaign = {};
+    for (const a of res.json?.data || []) {
+      if (a.status !== "ACTIVE" || a.daily_budget == null) continue;
+      const k = String(a.campaign_id);
+      byCampaign[k] = (byCampaign[k] || 0) + Number(a.daily_budget) / 100;   // halalas → SAR
+    }
+    return { ok: true, byCampaign };
   },
 
   // POST /{campaign_id}  status=ACTIVE|PAUSED
@@ -920,6 +1129,12 @@ const tiktok = {
       report_type: "BASIC",
       data_level: "AUCTION_CAMPAIGN",
       dimensions: JSON.stringify(["campaign_id"]),
+      /* تيك توك سليمة من عمى ميتا بالصدفة: `conversion` عندها = عدد أحداث
+         **هدف التحسين** بتاع الحملة، مش الشرا. يعني لو الحملة محسّنة على
+         SubmitForm (اللي هو Lead عندنا — شوف TT_NAME في funnel.js) الرقم ده
+         هو نفسه اللي إحنا عايزينه. مبنغيّرهاش.
+         `total_purchase_value` سايبينه إيراد محقّق وبس، زي ميتا بالظبط —
+         عشان ROAS ما يتبنيش على قيمة سلة العميل ناويها. */
       metrics: JSON.stringify(["campaign_name", "spend", "impressions", "clicks", "conversion", "total_purchase_value"]),
       start_date: from,
       end_date: to,
@@ -937,7 +1152,15 @@ const tiktok = {
         spend: Number(row.metrics?.spend || 0),
         impressions: Number(row.metrics?.impressions || 0),
         clicks: Number(row.metrics?.clicks || 0),
-        results: Number(row.metrics?.conversion || 0),
+        /* `conversion` عند تيك توك = أحداث **هدف تحسين** الحملة (شوف
+           التعليق فوق عند طلب الميتريكس). بس لو الحقل نفسه مش راجع خالص
+           (تقرير ناقص / ميتريك مش متاح للحساب) `Number(undefined||0)` كان
+           بيدّي **صفر واثق** — وده اللي قاعدة القتل بتوقّف عليه. الحقل
+           الناقص = عمى قياس = null، زي ميتا وسناب بالظبط. */
+        results: row.metrics?.conversion == null ? null : Number(row.metrics.conversion),
+        resultBasis: row.metrics?.conversion == null
+          ? null
+          : { optimisation_event: Number(row.metrics.conversion) },
         resultValue: Number(row.metrics?.total_purchase_value || 0),
       })),
     };
@@ -1189,9 +1412,20 @@ const snapchat = {
       return d.toISOString().slice(0, 10);
     })();
     for (const c of list.campaigns) {
+      /* نفس عمى ميتا كان هنا بالظبط: `conversion_purchases` وبس، والشرا
+         الأونلاين مش موجود عندنا أصلاً. سناب بتسمّي أحداثنا كده (شوف
+         SNAP_NAME في funnel.js): Lead → SIGN_UP، Contact → CUSTOM_EVENT_1.
+         فـ `conversion_sign_ups` هو نفس دوسة «اطلب على واتساب» — وهو اللي
+         بنعدّه دلوقتي.
+
+         تحذير مقصود: سناب **مبتطلّعش حقل إحصائي لـ CUSTOM_EVENT_1** — جرّبناه
+         على الحساب الحقيقي ورجع 400 «Unknown Field, conversion_custom_event_1».
+         يعني دوسة «اتصل» (Contact من غير Lead) مش مرئية على سناب. ومعنى ده إن
+         رقم سناب أقل من الحقيقة دايماً بمقدار غير معروف، مش إنه صفر كاذب:
+         الـ SIGN_UP بيتولّع مع كل دوسة واتساب فالغطاء الأساسي موجود. */
       const params = new URLSearchParams({
         granularity: "TOTAL",
-        fields: "spend,impressions,swipes,conversion_purchases,conversion_purchases_value",
+        fields: "spend,impressions,swipes,conversion_purchases,conversion_purchases_value,conversion_sign_ups",
         start_time: `${from}T00:00:00.000-00:00`,
         end_time: `${endExclusive}T00:00:00.000-00:00`,
       });
@@ -1207,7 +1441,22 @@ const snapchat = {
         spend: s.spend != null ? Number(s.spend) / 1e6 : 0,
         impressions: Number(s.impressions || 0),
         clicks: Number(s.swipes || 0),
-        results: Number(s.conversion_purchases || 0),
+        /* نفس منطق ميتا: أسطح مختلفة بتتجمع. SIGN_UP و PURCHASE مش نفس
+           الفعل (اللي بيدفع أونلاين مش بيدوس زرار واتساب).
+
+           و`res.ok` شرط في العدّ مش في نص الخطأ بس: لو سناب ردّت 4xx، الـ
+           stats بترجع {} والعدّ كان بيطلع **صفر واثق**. وصفر واثق مع صرف
+           حقيقي = بالظبط الحالة اللي قاعدة القتل بتوقّف عليها الحملة. يعني
+           عطل في الـ API كان ممكن يقفل حملة شغّالة. الخطأ = null (عمى قياس)
+           مش صفر — نفس تفرقة readMetaResult بالظبط. */
+        results: res.ok
+          ? Number(s.conversion_sign_ups || 0) + Number(s.conversion_purchases || 0)
+          : null,
+        resultBasis: res.ok
+          ? { web_intent: Number(s.conversion_sign_ups || 0),
+              purchase: Number(s.conversion_purchases || 0) }
+          : null,
+        // الإيراد المحقّق فقط — سناب مبترجّعش قيمة لـ SIGN_UP أصلاً.
         resultValue: s.conversion_purchases_value != null ? Number(s.conversion_purchases_value) / 1e6 : 0,
         ...(res.ok ? {} : { error: res.json?.debug_message || res.error || `HTTP ${res.status}` }),
       });
@@ -2190,10 +2439,12 @@ export function register(app, ctx, deps = {}) {
      صف واحد لكل منصة. الصرف والانطباعات والنقرات لايف من insights بتاعة
      المنصة نفسها. أما التحويلات فبعمودين مختلفين عن قصد:
 
-       platformConversions — الرقم اللي المنصة بتقوله. عندنا ده صفر على
-         طول تقريباً، لإن الشرا بيحصل جوّه المطعم وبيتبعت CAPI بـ
-         action_source=physical_store فميتا مبتنسبهوش لحملة. الرقم ده
-         بيترجع زي ما هو ومعاه تحذير، ومش بيتبني عليه أي حكم.
+       platformConversions — الرقم اللي المنصة بتقوله، وهو دلوقتي **نية
+         الطلب** مش الشرا: دوسة «اطلب على واتساب» (Contact/Lead) + محادثة
+         واتساب ابتدت من الإعلان + أي شرا أونلاين لو حصل. كان بيعدّ الشرا
+         وبس، وده رقم مستحيل يطلع عندنا (physical_store) — فكان صفر أبدي،
+         وقاعدة القتل في autopilot.js كانت هتوقّف الحساب كله عليه.
+         التعريف الواحد لـ«النتيجة» عايش في META_RESULT_MODEL فوق.
        confirmedConversions — دليلنا إحنا من attribution.js: أكواد عروض
          اتنطقت على الكاشير + طلبات اتطابقت برقم جوال. ده الرقم اللي
          costPerConfirmed بيتقسم عليه.
@@ -2224,13 +2475,26 @@ export function register(app, ctx, deps = {}) {
       catch (e) { reasons[p.id] = String(e.message || e); continue; }
       if (!ins.ok) { reasons[p.id] = ins.reason || "insights رجعت خطأ"; continue; }
 
-      const t = ins.rows.reduce((a, r) => ({
-        spend: a.spend + (Number(r.spend) || 0),
-        impressions: a.impressions + (Number(r.impressions) || 0),
-        clicks: a.clicks + (Number(r.clicks) || 0),
-        results: a.results + (Number(r.results) || 0),
-        resultValue: a.resultValue + (Number(r.resultValue) || 0),
-      }), { spend: 0, impressions: 0, clicks: 0, results: 0, resultValue: 0 });
+      /* الجمع بيفرّق بين «صفر» و«عمى». `readable` بيعدّ الصفوف اللي المنصة
+         رجّعت لها نوع نتيجة نعرف نقراه. لو مفيش ولا صف مقروء، المجموع
+         بيرجع null مش صفر — وإلا كنا هنطبع على شاشة المالك «صفر نتيجة، ودي
+         إشارة حقيقية» في نفس الحالة اللي إحنا فيها عميان. ده بالظبط نفس
+         الباج اللي بنصلّحه، بس على مستوى المنصة بدل الحملة. */
+      const t = ins.rows.reduce((a, r) => {
+        for (const [k, v] of Object.entries(r.resultBasis || {})) a.basis[k] = (a.basis[k] || 0) + (Number(v) || 0);
+        return {
+          spend: a.spend + (Number(r.spend) || 0),
+          impressions: a.impressions + (Number(r.impressions) || 0),
+          clicks: a.clicks + (Number(r.clicks) || 0),
+          results: a.results + (r.results == null ? 0 : Number(r.results) || 0),
+          readable: a.readable + (r.results == null ? 0 : 1),
+          blind: a.blind + (r.results == null ? 1 : 0),
+          resultValue: a.resultValue + (Number(r.resultValue) || 0),
+          basis: a.basis,
+        };
+      }, { spend: 0, impressions: 0, clicks: 0, results: 0, readable: 0, blind: 0, resultValue: 0, basis: {} });
+      /* مفيش ولا حملة رجّعت نوع نعرفه → المنصة عمياها علينا، مش صفر. */
+      const blindPlatform = t.readable === 0 && ins.rows.length > 0;
       for (const r of ins.rows) if (r.error) reasons[p.id] = r.error;
 
       const a = attribBy[p.id] || null;
@@ -2252,11 +2516,19 @@ export function register(app, ctx, deps = {}) {
         cpm: t.impressions > 0 ? Math.round((t.spend / t.impressions) * 1000 * 100) / 100 : null,
         ctr: t.impressions > 0 ? Math.round((t.clicks / t.impressions) * 10000) / 100 : null,
         campaigns: ins.rows.length,
-        platformConversions: t.results,
+        platformConversions: blindPlatform ? null : t.results,
         platformConversionValue: Math.round(t.resultValue * 100) / 100,
-        platformNote: t.results === 0 && t.spend > 0
-          ? `${p.label} مسجّلة صفر تحويل رغم الصرف. ده متوقّع عندنا مش مؤشر فشل: الطلب بيتقفل جوّه المطعم و CAPI بيبعته بـ action_source=physical_store، والمنصة مبتنسبش الحدث ده لحملة بعينها. اتفرّج على عمود التحويلات المؤكدة جنبه.`
-          : null,
+        /* «نتيجة» = نية الطلب زي ما المنصة بتشوفها: دوسة «اطلب على واتساب»
+           (Contact/Lead) + محادثة واتساب ابتدت من الإعلان + أي شرا أونلاين.
+           مش الشرا وحده — الشرا بيحصل جوّه المطعم وبيتبعت physical_store
+           فالمنصة عمرها ما هتشوفه. شوف META_RESULT_MODEL.
+           null = المنصة مرجّعتش نوع نعرفه (عمى)، مش صفر. */
+        platformResults: blindPlatform ? null : t.results,
+        platformResultBasis: blindPlatform ? null : t.basis,
+        platformResultsBlind: t.blind,
+        platformCostPerResult: !blindPlatform && t.results > 0
+          ? Math.round((t.spend / t.results) * 100) / 100 : null,
+        platformNote: platformNoteFor(p, t, ins.rows.length, blindPlatform),
         confirmedConversions: confirmed,
         confirmedRevenue: a ? a.revenue : null,
         codeRedemptions: a?.promo?.redemptions ?? null,

@@ -449,9 +449,12 @@ export function register(app, ctx, deps = {}) {
           byChannel[ch] = (byChannel[ch] || 0) + num(row.spend);
           const key = String(row.campaignName || row.campaignId || "").trim();
           if (key) {
-            const cur = byCampaign[key] || { spend: 0, results: 0, platform: p.id, campaignId: row.campaignId };
+            const cur = byCampaign[key] || { spend: 0, results: 0, readable: 0, platform: p.id, campaignId: row.campaignId };
             cur.spend += num(row.spend);
-            cur.results += num(row.results);
+            /* `num(null)` = صفر، وده بيخلط «المنصة قالت صفر» بـ«المنصة
+               مرجّعتش نوع نعرفه». بنعدّ الصفوف المقروءة عشان اللي تحت يعرف
+               يفرّق: صفر من غير ولا صف مقروء = عمى، مش أداء. */
+            if (row.results != null) { cur.results += num(row.results); cur.readable += 1; }
             byCampaign[key] = cur;
           }
         }
@@ -883,6 +886,10 @@ export function register(app, ctx, deps = {}) {
           firstTouch: num(t.first_touch), lastTouch: num(t.last_touch),
           cpa: orders > 0 && total > 0 ? r2(total / orders) : null,
           roas: total > 0 ? r2(revenue / total) : null,
+          /* رقم المنصة جنب رقمنا عشان الفرق يبان بدل ما يتفسّر غلط.
+             «نتيجة» = نية طلب (دوسة واتساب / محادثة) — ads.js/META_RESULT_MODEL. */
+          platformResults: hit ? num(hit.results) : null,
+          costPerResult: hit && num(hit.results) > 0 && total > 0 ? r2(total / num(hit.results)) : null,
           confidence: conf.confidence, confidenceNote: conf.note,
         };
       });
@@ -898,8 +905,18 @@ export function register(app, ctx, deps = {}) {
           leads: 0, orders: 0, revenue: 0, newCustomers: 0, returningOrders: 0,
           firstTouch: 0, lastTouch: 0, cpa: null, roas: null,
           confidence: "تقديري",
-          confidenceNote: "الحملة صارفة بس مفيش ولا طلب اتربط بيها برقم جوال — يا إن الـ utm ناقص في الرابط، يا إن العميل بيجي بطريقة مبنقيسهاش.",
-          platformResults: num(v.results),
+          /* `readable === 0` = المنصة مرجّعتش ولا نوع نتيجة نعرفه لكل صفوف
+             الحملة دي → عمى قياس، مش صفر. الفرق مهم هنا زي ما هو مهم في
+             قاعدة القتل: الجملة اللي بتقول «صفر نتيجة» على حملة إحنا
+             عمياين عنها بتوجّه المالك غلط. */
+          confidenceNote: v.readable === 0
+            ? "الحملة صارفة والمنصة مرجّعتش ولا نوع نتيجة نعرف نقراه — عمى قياس مش صفر أداء. راجع ربط البيكسل/الأحداث قبل ما تحكم عليها."
+            : num(v.results) > 0
+              ? `الحملة صارفة والمنصة مسجّلة ${num(v.results)} نية طلب، بس مفيش ولا طلب اتربط بيها برقم جوال. غالباً الربط هو الناقص مش الحملة — دوسة واتساب مبتعديش على الموقع فمفيش utm نمسكه.`
+              : "الحملة صارفة بس مفيش ولا طلب اتربط بيها برقم جوال — يا إن الـ utm ناقص في الرابط، يا إن العميل بيجي بطريقة مبنقيسهاش.",
+          platformResults: v.readable === 0 ? null : num(v.results),
+          costPerResult: v.readable > 0 && num(v.results) > 0 && num(v.spend) > 0
+            ? r2(num(v.spend) / num(v.results)) : null,
         }));
 
       return c.json({

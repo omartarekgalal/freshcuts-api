@@ -21,7 +21,8 @@
    • at most ONE budget change per campaign per 24h (learning-phase respect).
    • campaigns are only judged after settings.minSpend SAR of spend in the
      window — no verdicts on statistical noise.
-   • kill rule: CPA > killMultiple × targetCpa (with real spend) → pause.
+   • kill rule: CPA > max(killMultiple × targetCpa, killCpa) with real spend → pause,
+     أو صفر نية طلب مع صرف حقيقي. «النتيجة» معرّفة في ads.js/META_RESULT_MODEL.
    • the total ceiling is 20% of the revenue ALREADY IN THE TILL today,
      floored at 20% of the trailing-7 average so ads can run before sales
      arrive. Since revenue-so-far ≤ final revenue at every moment, the
@@ -165,7 +166,51 @@ function toolResultMessages(provider, results) {
 const DEFAULT_SETTINGS = {
   mode: "suggest",            // off | suggest | auto
   goalDailySales: 10000,      // SAR/day — the "سوق جدة كله" target
-  targetCpa: 12,              // SAR per purchase the ads should hit
+  /* ── تكلفة النتيجة المستهدفة — الحساب بالكامل ─────────────────────────
+     «النتيجة» بقت نية طلب (دوسة واتساب أو محادثة)، مش عميل. فمينفعش نحط
+     هنا أقصى تكلفة للعميل الجديد زي ما كان متظبط (٢٢ ر.س) — ده ضمناً
+     بيفترض إن ٨٦٪ من النوايا بتبقى عملاء، ومفيش أي رقم بيقول كده.
+
+     ١. أقصى تكلفة مسموحة للعميل الجديد = قاعدة المالك:
+          القيمة العمرية ١٢٩٫٠٤ ر.س × ٢٠٪ = **٢٥٫٨١ ر.س/عميل**
+          (من /api/autopilot/economics يوم ٢٠٢٦-٠٨-١٣، متأكد منه لايف.
+           الرقم بيتحرك كل يوم مع الأفواج: ٢٥٫٥٤ يوم ١٢، ٢٥٫٧٤ يوم ١١.
+           التلاتة بيدوروا حوالين ٢٥٫٧ فالاشتقاق تحت مش حسّاس للفرق.)
+
+     ٢. النية → عميل: قياسين، وبينهم فرق ٢٠ ضعف:
+          • القاع (المتطابق بالجوال بس، ٣٠ يوم، /api/attribution/campaigns):
+              ٢٠٩ نية ← ١٣ طلب ← ١٠ عملاء جدد = **٤٫٨٪**
+              → المسموح = ٢٥٫٨١ × ٠٫٠٤٨ = **١٫٢٣ ر.س/نتيجة**
+          • السقف (لو نسبنا كل عميل جديد دخل المطعم للإعلان):
+              ٣٦١ عميل جديد ÷ ٣٢٩ نتيجة = **١٠٩٪** (يعني ≥ ١٠٠٪)
+              → المسموح = **٢٥٫٨ ر.س/نتيجة** (سقف قاعدة المالك نفسها)
+
+     ٣. القاع ده **مش نسبة تحويل، ده معدل تطابق**. صفحة الطلب ابتدت تبعت
+        الجوال مع Contact/Lead يوم ٢٠٢٦-٠٨-٠٩ بس؛ قبلها ميتا شافت الـ Lead
+        من غير أي معرّف نربط بيه. وكمان محادثات واتساب (٢٣٠ منهم!) مبتعديش
+        على الموقع أصلاً فمالهاش utm نمسكه — عشان كده fc-wa-orders بتقرا
+        صفر طلب مربوط رغم إنها أرخص حملة عندنا. يعني الـ ٤٫٨٪ دي أثر من نفس
+        عمى القياس اللي بنصلّحه هنا، مش حكم على الحملات.
+
+     فالبيانات **مش كفاية** نشتق منها الرقم — الفرق بين القاع والسقف ٢٠ ضعف،
+     واللي بينهم مسألة قياس مش مسألة أداء. فبنختار عن قصد، والاختيار
+     **محافظ** ومكتوب صراحة عشان محدش يفتكره مشتق:
+
+       targetCpa = ١٢ ر.س/نتيجة  ← اختيار محافظ، مش رقم مشتق
+
+     يعني بنراهن إن ٤٧٪ من النوايا بتبقى عميل جديد (١٢ ÷ ٢٥٫٨١). وأهم من كده:
+       • أقسى ٢٫١ ضعف من الحد المتفائل (٢٥٫٨).
+       • أقسى من الرقم اللي كان شغال (٢٢) — يعني بنضيّق مش بنوسّع.
+       • بيفرّق فعلاً: على لقطة ٣ أيام، ٢ من ٥ حملات بس تحت الـ ١٢
+         (fc-wa-orders ١٫٨٢ و fc-prospect-asc ١١٫١٩)، والتلاتة التانية فوقه
+         وبتتقص. القاعدة رجعت تعرف تقول لأ.
+
+     ٤. وأهم نقطة في الملف ده كله: **الرقم ده مش هو اللي بيحمي الفلوس**.
+        حتى لو طلع متفائل، السقف الكلي بيقف على ٢٠٪ من الإيراد اللي دخل
+        الدرج فعلاً النهارده (movingCeiling) + ٢٬٠٠٠ ر.س حد مطلق. يعني
+        أسوأ حالة إن الوكيل يوزّع الـ ٢٠٪ غلط، مش إنه يعدّيها.
+        اختبار «يوم كل الحملات فيه كاسبة» في results.test.mjs بيثبت ده. */
+  targetCpa: 12,              // SAR per RESULT (نية طلب) — الاشتقاق فوق
   targetRoas: 4,              // revenue / spend the ads should hit
   minSpend: 50,               // SAR spent in the window before we judge at all
   minAgeDays: 2,              // campaign must be at least this old
@@ -173,6 +218,15 @@ const DEFAULT_SETTINGS = {
   cutStepPct: 30,             // budget decrease step for underperformers
   maxChangePct: 30,           // hard cap on any single budget change
   killMultiple: 3,            // CPA > killMultiple × targetCpa → pause
+  /* ── أرضية خط القتل ──────────────────────────────────────────────────
+     الإيقاف هو الفعل الوحيد اللي بيوقّف فلوس ومحدش بيرجّعه. وخط القتل كان
+     مربوط بـ killMultiple × targetCpa، يعني تنزيل المستهدف من ٢٢ لـ ١٢
+     كان هينزّل خط القتل من ٦٦ لـ ٣٦ **كأثر جانبي** ويقتل حملات كانت عايشة
+     امبارح. تضييق خط الإيقاف قرار مالك، مش نتيجة إعادة معايرة هدف التوسّع.
+     فالخط = الأكبر من (killMultiple × targetCpa) و killCpa. والقيمة
+     الافتراضية ٦٦ = بالظبط الخط اللي كان شغال (٣ × ٢٢) — يعني سلوك القتل
+     مبيتغيرش بالتغيير ده ولا خطوة. */
+  killCpa: 66,                // SAR/نتيجة — أرضية خط القتل، مش بتتحرك مع targetCpa
   maxCampaignBudget: 500,     // SAR/day ceiling per campaign
   maxTotalBudget: 1000,       // احتياطي بس — السقف الحقيقي بيتحسب من المبيعات
                               // (شوف movingCeiling تحت). الرقم ده بيُستعمل لما
@@ -190,16 +244,36 @@ const DEFAULT_SETTINGS = {
 /* أقصى عدد دورات مهما قال الإعداد — سياج أخير ضد لوب لا نهائي بيحرق توكنز. */
 const AGENT_TURN_CEILING = 12;
 
+/* خط القتل بالريال للنتيجة الواحدة. أرضية `killCpa` بتمنع إن إعادة معايرة
+   هدف التوسّع تضيّق خط الإيقاف كأثر جانبي — شوف DEFAULT_SETTINGS.killCpa. */
+export const killLineOf = (s) =>
+  Math.max(Number(s.killMultiple || 3) * Number(s.targetCpa || 0),
+           Number(s.killCpa ?? DEFAULT_SETTINGS.killCpa) || 0);
+
+/* الميزانية اليومية الفعلية للحملة: بتاعتها لو هي شايلاها، وإلا مجموع
+   ميزانيات مجموعاتها الإعلانية. الوكيل **بيدير** الأولى بس — لكنه لازم
+   **يعدّ** الاتنين، وإلا السقف الكلي بيبقى كذبة. عندنا ٣ من ٥ حملات
+   ميزانيتها على مستوى المجموعة (١٨٠ من ٢٩٠ ر.س/يوم كانت خفيّة تماماً). */
+export const effectiveBudgetOf = (r) =>
+  (r.dailyBudget != null ? Number(r.dailyBudget)
+    : r.adsetBudget != null ? Number(r.adsetBudget) : 0);
+
 /* ── Rules engine — pure function, unit-testable, no I/O ───────────────────────
-   Input rows: { platform, id, name, status, dailyBudget, ageDays,
+   Input rows: { platform, id, name, status, dailyBudget, adsetBudget, ageDays,
                  w3: {spend, results, revenue}, w7: {spend, results, revenue} }
    Output: decisions [{kind, platform, campaignId, campaignName, detail, reason}]
-   The 3-day window decides; the 7-day window is context in the reason text.  */
+   The 3-day window decides; the 7-day window is context in the reason text.
+
+   `results` هنا = نية الطلب زي ما المنصة بتشوفها (دوسة «اطلب على واتساب»
+   أو محادثة واتساب ابتدت من الإعلان)، مش الشرا. الشرا بيحصل جوّه المطعم
+   وبيتبعت physical_store فالمنصة عمرها ما هتشوفه. التعريف الكامل وسبب
+   استبعاد `purchase` في ads.js/META_RESULT_MODEL.                          */
 export function decide(rows, s, recentBudgetChanges = new Set()) {
   const out = [];
-  const activeBudget = rows
-    .filter((r) => r.status === "ACTIVE" && r.dailyBudget != null)
-    .reduce((a, r) => a + r.dailyBudget, 0);
+  const killLine = killLineOf(s);
+  let activeBudget = rows
+    .filter((r) => r.status === "ACTIVE")
+    .reduce((a, r) => a + effectiveBudgetOf(r), 0);
 
   for (const r of rows) {
     const w = r.w3 || { spend: 0, results: 0, revenue: 0 };
@@ -227,15 +301,25 @@ export function decide(rows, s, recentBudgetChanges = new Set()) {
       continue;
     }
 
-    // ── KILL: burning money with no or terrible results ──────────────────
+    /* ── KILL: burning money with no or terrible results ──────────────────
+       فرق `null` عن `0` هو بيت القصيد. `0` = المنصة ردّت وقالت صفر نية
+       طلب، ودي إشارة حقيقية تستاهل الإيقاف. `null` = القارئ ما لقاش ولا نوع
+       من أنواعنا في الصف أصلاً (المنصة عمياها أو الحقل مش راجع) — والإيقاف
+       على قياس مش موجود هو بالظبط الباج اللي كان هيقفل الحساب كله يوم ١٤
+       أغسطس. فالحالة دي بتطلع ملاحظة للمالك، مش أمر إيقاف. */
+    if (w.results == null && w.spend >= s.minSpend * 2) {
+      out.push({ kind: "note", platform: r.platform, campaignId: r.id, campaignName: r.name,
+        detail: {}, reason: `صرفت ${fmt(w.spend)} ر.س في ٣ أيام والمنصة مرجّعتش ولا نوع نتيجة نعرف نقراه — ده عمى قياس مش فشل حملة، فمش هنوقّفها عليه. راجع ربط البيكسل/الأحداث. ${ctx}` });
+      continue;
+    }
     const killing = (w.results === 0 && w.spend >= s.minSpend * 2)
-      || (cpa != null && cpa > s.killMultiple * s.targetCpa);
+      || (cpa != null && cpa > killLine);
     if (killing) {
       out.push({ kind: "pause", platform: r.platform, campaignId: r.id, campaignName: r.name,
         detail: { state: "PAUSED" },
         reason: w.results === 0
-          ? `صرفت ${fmt(w.spend)} ر.س في ٣ أيام بدون أي نتيجة — قاعدة القتل. ${ctx}`
-          : `تكلفة النتيجة ${fmt(cpa)} ر.س أكتر من ${s.killMultiple}× المستهدف (${s.targetCpa} ر.س) — قاعدة القتل. ${ctx}` });
+          ? `صرفت ${fmt(w.spend)} ر.س في ٣ أيام من غير ولا نية طلب واحدة (ولا دوسة «اطلب على واتساب» ولا محادثة) — قاعدة القتل. ${ctx}`
+          : `تكلفة النتيجة ${fmt(cpa)} ر.س أعلى من خط القتل (${fmt(killLine)} ر.س/نتيجة) — قاعدة القتل. ${ctx}` });
       continue;
     }
 
@@ -252,9 +336,14 @@ export function decide(rows, s, recentBudgetChanges = new Set()) {
       const stepPct = Math.min(s.scaleStepPct, s.maxChangePct);
       let next = Math.round(r.dailyBudget * (1 + stepPct / 100));
       next = Math.min(next, s.maxCampaignBudget);
+      /* المساحة بتتحسب من `activeBudget` الجاري — والرقم ده بيتحدّث بعد كل
+         قرار تحت. من غير التحديث ده كل حملة كاسبة كانت بتشوف نفس المساحة
+         الأصلية، فيوم كل الحملات فيه كويسة كانوا بيعدّوا السقف مع بعض
+         (كل واحدة لوحدها جوّه الحد، ومجموعهم بره). */
       const headroom = s.maxTotalBudget - activeBudget;
       if (next - r.dailyBudget > headroom) next = r.dailyBudget + Math.max(0, Math.floor(headroom));
       if (next > r.dailyBudget) {
+        activeBudget += next - r.dailyBudget;
         out.push({ kind: "budget", platform: r.platform, campaignId: r.id, campaignName: r.name,
           detail: { from: r.dailyBudget, to: next },
           reason: `أداء أحسن من المستهدف${cpa != null ? ` (تكلفة النتيجة ${fmt(cpa)} ≤ ${s.targetCpa} ر.س)` : ` (عائد ${fmt(roas)}x ≥ ${s.targetRoas}x)`} — تكبير تدريجي ${stepPct}٪ عشان الخوارزمية ما تتكسرش. ${ctx}` });
@@ -270,6 +359,7 @@ export function decide(rows, s, recentBudgetChanges = new Set()) {
       const stepPct = Math.min(s.cutStepPct, s.maxChangePct);
       const next = Math.max(20, Math.round(r.dailyBudget * (1 - stepPct / 100)));
       if (next < r.dailyBudget) {
+        activeBudget -= r.dailyBudget - next;
         out.push({ kind: "budget", platform: r.platform, campaignId: r.id, campaignName: r.name,
           detail: { from: r.dailyBudget, to: next },
           reason: `تكلفة النتيجة ${fmt(cpa)} ر.س أعلى من 1.5× المستهدف (${s.targetCpa} ر.س) — تقليل الميزانية ${stepPct}٪ لحد ما الأداء يتحسن. ${ctx}` });
@@ -284,12 +374,14 @@ export function decide(rows, s, recentBudgetChanges = new Set()) {
    بترجّع نص الرفض بالعربي، أو null لو الطلب جوه الحدود. الوكيل بيمر عليها
    قبل أي كتابة، وكل رفض بيترجع للموديل وبيتسجّل في ap_decisions.
 
-   `rows` = لقطة الحملات: { platform, id, name, status, dailyBudget, spend,
-                            results, cpa, roas }                              */
+   `rows` = لقطة الحملات: { platform, id, name, status, dailyBudget,
+                            adsetBudget, spend, results, cpa, roas }          */
 
+/* بيعدّ الميزانيات اللي بندبرها **و** اللي على مستوى المجموعة الإعلانية.
+   لو عدّينا الأولى بس، السقف الكلي بيبقى بيحمي ٣٨٪ من الصرف الحقيقي. */
 export const activeBudgetOf = (rows) => rows
-  .filter((r) => r.status === "ACTIVE" && r.dailyBudget != null)
-  .reduce((a, r) => a + r.dailyBudget, 0);
+  .filter((r) => r.status === "ACTIVE")
+  .reduce((a, r) => a + effectiveBudgetOf(r), 0);
 
 export function guardPause({ platform, campaignId }, s, rows, { writeOk }) {
   if (!writeOk) return "ADS_ALLOW_WRITE مش مساوي 1 — الكتابة على المنصات مقفولة من أصلها.";
@@ -298,7 +390,7 @@ export function guardPause({ platform, campaignId }, s, rows, { writeOk }) {
   if (row.status !== "ACTIVE") return `الحملة "${row.name}" أصلاً ${row.status} — مفيش حاجة تتوقف.`;
   // قاعدة القتل بتحدد إمتى الإيقاف مبرر. حملة بتضرب المستهدف مش بتتقفل.
   if (row.spend >= s.minSpend && row.cpa != null && row.cpa <= s.targetCpa) {
-    return `مرفوض: "${row.name}" تكلفة نتيجتها ${row.cpa} ر.س وهي أقل من المستهدف (${s.targetCpa} ر.س) — دي حملة كاسبة والقواعد بتقول ما توقفش الكاسب. قاعدة القتل بتشتغل عند تكلفة أعلى من ${s.killMultiple}× المستهدف. لو عايز تقلل صرفها استخدم set_budget.`;
+    return `مرفوض: "${row.name}" تكلفة نتيجتها ${row.cpa} ر.س وهي أقل من المستهدف (${s.targetCpa} ر.س) — دي حملة كاسبة والقواعد بتقول ما توقفش الكاسب. قاعدة القتل بتشتغل عند تكلفة أعلى من ${killLineOf(s)} ر.س/نتيجة. لو عايز تقلل صرفها استخدم set_budget.`;
   }
   return null;
 }
@@ -334,16 +426,17 @@ export function guardBudget({ platform, campaignId, amount }, s, rows, { writeOk
    الإيقاع اليومي (INTRADAY PACING) — الجزء النقي
 
    ليه ده موجود أصلاً. decide() فوق بيحكم على الحملة بـ `results` اللي المنصة
-   بتقولها. وميتا بتقول صفر لكل حملة عندنا — مش لإن الحملة فاشلة، لكن لإن
-   الشرا الحقيقي بيحصل جوّه المطعم وبيتبعت CAPI بـ action_source =
-   physical_store، وده مبيرجعش في actions.purchase بتاعة insights. النتيجة:
-   results = 0 → cpa = null → شرط "winning" عمره ما يتحقق → عمر الوكيل ما
-   هيكبّر حملة. كل ساعة بيطلع ٦ ملاحظات وصفر تنفيذ.
+   بتقولها — ولحد ٢٠٢٦-٠٨-١٢ القارئ كان بيعدّ `purchase` وبس، والشرا عندنا
+   بيحصل جوّه المطعم وبيتبعت CAPI بـ action_source = physical_store فميتا
+   عمرها ما هترجّعه. يعني كل حملة كانت بتقرا صفر للأبد: cpa = null → شرط
+   "winning" عمره ما يتحقق → عمر الوكيل ما هيكبّر حملة، وقاعدة القتل كانت
+   هتوقّف الحساب كله يوم ١٤ أغسطس. القارئ اتصلّح (ads.js/META_RESULT_MODEL)
+   وبقى يعدّ نية الطلب: دوسة «اطلب على واتساب» + محادثة واتساب من الإعلان.
 
-   الإشارة الحقيقية الوحيدة اللي عندنا لايف هي مبيعات الكاشير نفسها:
-   ts_orders بتتزامن كل ٥ دقايق. فالتسريع جوّه اليوم بيتبني عليها هي، مش على
-   رقم المنصة. ورقم المنصة الصفر ده بيتقال صراحة في نص السبب عشان اللي بيقرا
-   ما يفتكرش إننا اتجاهلنا إشارة سلبية.
+   بس ده **ما بيلغيش السبب اللي الإيقاع اتعمل عشانه**. نية الطلب إشارة
+   مبكّرة، مش فلوس. والتسريع جوّه اليوم بيصرف فلوس النهارده، فلازم يتعلّق
+   بالفلوس اللي دخلت الدرج فعلاً: ts_orders بتتزامن كل ٥ دقايق. فرقم المنصة
+   فضل سياق في نص السبب، والقرار فضل مبني على الكاشير.
 
    ── تلات ساعات مختلفة، وخلطهم بيكسر كل حاجة ──────────────────────────────
    ١. يوم المطعم بيلف الساعة ٤ فجراً بتوقيت الرياض (طلب ١:٣٠ بليل بيتحسب على
@@ -656,7 +749,10 @@ export function decidePace(input) {
 
   const pacePct = pulse.pacePct;
   const activeRows0 = rows.filter((r) => r.status === "ACTIVE" && r.dailyBudget != null);
-  const budgetNow = activeRows0.reduce((a, r) => a + Number(r.dailyBudget), 0);
+  /* اللي بنرفعه = الحملات اللي شايلة ميزانيتها (activeRows0). واللي بنقيس
+     السقف عليه = **كل** الشغّال، بما فيه الميزانيات على مستوى المجموعة
+     الإعلانية — دي ١٨٠ من ٢٩٠ ر.س/يوم عندنا وكانت خفيّة عن السقف تماماً. */
+  const budgetNow = activeBudgetOf(rows);
   const totalCap0 = Number(s.maxTotalBudget) || 1000;
 
   /* ── ٢ب. خرق السقف. السقف الحيّ بينزل لما اليوم يطلع أقل من المتوقّع، وساعتها
@@ -738,9 +834,14 @@ export function decidePace(input) {
       continue;
     }
 
-    const zero = !Number(r.results)
-      ? ` المنصة مسجّلة ${Number(r.results) || 0} نتيجة للحملة دي النهارده — وده مش دليل فشل: الشرا بيحصل جوّه المطعم وبيتبعت CAPI بـ action_source=physical_store، فمبيرجعش في أرقام المنصة أصلاً. فمابنحكمش بيه لا بالسلب ولا بالإيجاب.`
-      : ` المنصة مسجّلة ${ar(r.results)} نتيجة النهارده — رقم مساعد، بس القرار مبني على مبيعات الكاشير.`;
+    /* «نتيجة» = نية طلب (دوسة «اطلب على واتساب» أو محادثة واتساب من
+       الإعلان)، مش شرا — الشرا بيتبعت physical_store والمنصة مبتنسبهوش
+       لحملة. شوف ads.js/META_RESULT_MODEL. */
+    const zero = r.results == null
+      ? ` المنصة مرجّعتش نوع نتيجة نعرف نقراه للحملة دي النهارده — عمى قياس، فمابنحكمش بيه لا بالسلب ولا بالإيجاب.`
+      : !Number(r.results)
+        ? ` المنصة مسجّلة صفر نية طلب للحملة دي النهارده. الرقم ده حقيقي دلوقتي (بنعدّ دوسات واتساب والمحادثات، مش الشرا) بس اليوم لسه بيمشي — فسياق، مش حكم. القرار مبني على مبيعات الكاشير.`
+        : ` المنصة مسجّلة ${ar(r.results)} نية طلب النهارده — رقم مساعد، بس القرار مبني على مبيعات الكاشير.`;
 
     if (up) {
       const pStep = Math.min(step, Number(ps.stepPct) || step);
@@ -786,6 +887,32 @@ export function decidePace(input) {
         reason: `${ctx}${breachNote} فسحبنا التسريع على "${r.name}" من ${ar(cur)} لـ ${ar(next)} ر.س/يوم (خطوة ${downStep}٪، ومش بننزل تحت ميزانية المالك ${ar(base)} ر.س — الخفض تحتها شغل الجولة اليومية مش الإيقاع).${zero}`,
       });
     }
+  }
+
+  /* ── خرق سقف مش قادرين نصلّحه بنفسنا ────────────────────────────────────
+     التراجع فوق بيلمس **زيادتنا إحنا** بس (شرط `mine`). النزول تحت ميزانية
+     المالك مش شغل الإيقاع عن قصد: ده قرار الجولة اليومية بتبريدها ٢٤ ساعة،
+     ولو الاتنين نزّلوا كنا هنقصّ نفس الحملة مرتين على نفس السبب.
+
+     بس ده بيسيب حالة كانت بتعدّي في صمت تام: الشغّال فوق السقف، ومفيش ولا
+     زيادة من عندنا نسحبها — يعني الفرق كله ميزانيات أساسية. قبل كده كانت
+     decidePace بترجع صفر أكشن وصفر ملاحظة، فالمالك ميعرفش إن سقف يومه
+     مخروق أصلاً. والحالة دي بقت أظهر بعد ما بقينا نعدّ الميزانيات اللي على
+     مستوى المجموعة الإعلانية (١٨٠ من ٢٩٠ ر.س عندنا كانت خفيّة تماماً عن
+     الحسبة).
+
+     ملاحظة للعرض وبس — مفيش أي كتابة على المنصة، والصلاحيات زي ما هي.     */
+  if (breach && !actions.some((a) => a.op === "down")) {
+    const hidden = rows
+      .filter((r) => r.status === "ACTIVE" && r.dailyBudget == null)
+      .reduce((a, r) => a + (Number(r.adsetBudget) || 0), 0);
+    notes.push({
+      key: "ceiling", op: "breach-needs-owner",
+      text: `الميزانية الشغالة ${ar(budgetNow)} ر.س/يوم وسقف النهارده ${ar(totalCap0)} ر.س — `
+        + `يعني فوق السقف بـ ${ar(r2(budgetNow - totalCap0))} ر.س، ومفيش أي تسريع من الإيقاع نقدر نسحبه: `
+        + `الفرق كله ميزانيات أساسية${hidden > 0 ? ` (منها ${ar(hidden)} ر.س على مستوى المجموعات الإعلانية، مش على الحملة)` : ""}. `
+        + `تخفيض الميزانية الأساسية قرار المالك مش قرار الإيقاع — محتاج تدخّل بإيدك.`,
+    });
   }
 
   return { phase: up ? "up" : "down", accountDay, msToRoll, pacePct, hot, step,
@@ -2104,14 +2231,19 @@ export function register(app, ctx, deps = {}) {
       const shut = readGate(p.id, "telemetry");
       if (shut) { reasons[p.id] = shut.error; continue; }
       try {
-        const [camps, i3, i7] = await Promise.all([
+        const [camps, i3, i7, ads] = await Promise.all([
           p.campaigns(),
           p.insights({ from: d3, to: today }),
           p.insights({ from: d7, to: today }),
+          /* الميزانيات على مستوى المجموعة الإعلانية. مش كل أدابتر بيوفّرها؛
+             اللي مبيوفّرهاش بترجع {} والحملة بتتحسب بصفر زي الأول. */
+          typeof p.adsetBudgets === "function" ? p.adsetBudgets().catch(() => ({ ok: false, byCampaign: {} }))
+            : Promise.resolve({ ok: false, byCampaign: {} }),
         ]);
         if (!camps.ok) { reasons[p.id] = camps.reason; continue; }
         const m3 = new Map((i3.ok ? i3.rows : []).map((x) => [String(x.campaignId), x]));
         const m7 = new Map((i7.ok ? i7.rows : []).map((x) => [String(x.campaignId), x]));
+        const adsetBy = (ads && ads.ok ? ads.byCampaign : null) || {};
         for (const c of camps.campaigns) {
           const a = m3.get(String(c.id)), b = m7.get(String(c.id));
           const started = c.startTime ? new Date(c.startTime) : null;
@@ -2119,9 +2251,13 @@ export function register(app, ctx, deps = {}) {
             platform: p.id, id: String(c.id), name: c.name, status: c.status,
             effectiveStatus: c.effectiveStatus || null,
             dailyBudget: c.dailyBudget,
+            /* مش بندبرها — بنعدّها في السقف الكلي وبس. */
+            adsetBudget: c.dailyBudget == null ? (adsetBy[String(c.id)] ?? null) : null,
             ageDays: started && !isNaN(started) ? Math.floor((Date.now() - started.getTime()) / 86400000) : null,
-            w3: { spend: a?.spend || 0, results: a?.results || 0, revenue: a?.resultValue || 0 },
-            w7: { spend: b?.spend || 0, results: b?.results || 0, revenue: b?.resultValue || 0 },
+            /* `?? null` مش `|| 0`: فرق «المنصة قالت صفر» عن «المنصة ما
+               ردّتش بحاجة نعرف نقراها» هو اللي قاعدة القتل واقفة عليه. */
+            w3: { spend: a?.spend || 0, results: a?.results ?? null, revenue: a?.resultValue || 0 },
+            w7: { spend: b?.spend || 0, results: b?.results ?? null, revenue: b?.resultValue || 0 },
           });
         }
       } catch (e) { reasons[p.id] = String(e.message || e); }
@@ -2352,17 +2488,26 @@ export function register(app, ctx, deps = {}) {
       const shut = readGate(p.id, priority);
       if (shut) { reasons[p.id] = shut.error; continue; }
       try {
-        const [camps, ins] = await Promise.all([p.campaigns(), p.insights({ from: f, to: t })]);
+        const [camps, ins, ads] = await Promise.all([
+          p.campaigns(), p.insights({ from: f, to: t }),
+          typeof p.adsetBudgets === "function" ? p.adsetBudgets().catch(() => ({ ok: false, byCampaign: {} }))
+            : Promise.resolve({ ok: false, byCampaign: {} }),
+        ]);
         if (!camps.ok) { reasons[p.id] = camps.reason; continue; }
         if (!ins.ok) reasons[p.id] = ins.reason;
         const m = new Map((ins.ok ? ins.rows : []).map((x) => [String(x.campaignId), x]));
+        const adsetBy = (ads && ads.ok ? ads.byCampaign : null) || {};
         for (const c of camps.campaigns) {
           const a = m.get(String(c.id));
-          const spend = a?.spend || 0, results = a?.results || 0, revenue = a?.resultValue || 0;
+          const spend = a?.spend || 0, results = a?.results ?? null, revenue = a?.resultValue || 0;
           rows.push({
             platform: p.id, id: String(c.id), name: c.name, status: c.status,
             dailyBudget: c.dailyBudget,
+            adsetBudget: c.dailyBudget == null ? (adsetBy[String(c.id)] ?? null) : null,
             spend, results, revenue,
+            /* من إيه اتجمعت النتيجة (نية من الموقع / محادثة / شرا) — عشان
+               الشاشة والموديل يقولوا رقم واحد بنفس المعنى. */
+            resultBasis: a?.resultBasis || null,
             impressions: a?.impressions || 0, clicks: a?.clicks || 0,
             cpa: results > 0 ? Math.round((spend / results) * 100) / 100 : null,
             roas: spend > 0 ? Math.round((revenue / spend) * 100) / 100 : null,
@@ -2601,6 +2746,18 @@ export function register(app, ctx, deps = {}) {
 خط الأساس دلوقتي: متوسط ${baseline.avgDaily} ريال/يوم على آخر ٧ أيام${baseline.progressPct != null ? ` (${baseline.progressPct}٪ من الهدف)` : ""}.
 المستهدف من الإعلانات: تكلفة النتيجة ≤ ${s.targetCpa} ريال، والعائد ≥ ${s.targetRoas}×.
 
+⚠️ «النتيجة» في كل الأرقام اللي بتشوفها معناها **نية طلب**، مش شرا:
+  • دوسة «اطلب على واتساب» من صفحة المتجر (حدث Contact/Lead على البيكسل)، أو
+  • محادثة واتساب ابتدت من الإعلان نفسه، أو
+  • شرا أونلاين لو حصل (مبيحصلش دلوقتي — مفيش دفع أونلاين).
+ميتا **مستحيل** ترجّع لنا purchase: الطلب بيتقفل جوّه المطعم وبيتبعت CAPI بـ
+action_source=physical_store، وميتا شالت أنواع الأوفلاين في v20. حتى حملة
+fc-sales-purchase المحسّنة على PURCHASE بالنص صرفت ٤٠٥ ريال وسجّلت ١٩ lead
+وصفر purchase. فلو شفت صفر شرا ده **مش** دليل فشل ولا تبني عليه أي قرار.
+والعكس كمان: نية الطلب مش فلوس. عشان كده تكلفة النتيجة المستهدفة (${s.targetCpa} ريال)
+أقل بكتير من أقصى تكلفة مسموحة للعميل الجديد — الدليل الحقيقي على الفلوس هو
+get_attribution (طلبات اتطابقت برقم جوال) ومبيعات الكاشير، مش رقم المنصة.
+
 العميل بيوصلنا بخمس طرق، وكل واحدة بتتقاس بشكل مختلف:
   ١. مكالمة تليفون — مفيش أثر رقمي، العد يدوي.
   ٢. ضغطة واتساب من صفحة المتجر — بتتسجل كحدث Contact.
@@ -2613,7 +2770,7 @@ export function register(app, ctx, deps = {}) {
 • التكبير مسموح لحد السقوف لما تكلفة النتيجة تكون تحت المستهدف — ده بالظبط اللي المفروض تعمله لما تلاقي حملة كاسبة.
 • سقف الحملة الواحدة ${s.maxCampaignBudget} ريال/يوم، والسقف الكلي ${s.maxTotalBudget} ريال/يوم، وأقصى تغيير في الخطوة الواحدة ${s.maxChangePct}٪، وفترة تبريد ${s.budgetCooldownHours} ساعة بين تغييرين لنفس الحملة.
 • السقوف دي مش قابلة للتفاوض. لو طلبت حاجة بره الحدود الأداة هترجعلك رفض — اقرا الرفض واشتغل جوه الحد، متحاولش تلف حواليه.
-• قاعدة القتل: حملة تكلفة نتيجتها أعلى من ${s.killMultiple}× المستهدف مع صرف حقيقي تستاهل الإيقاف. حملة تحت المستهدف ممنوع توقفها.
+• قاعدة القتل: حملة تكلفة نتيجتها أعلى من ${killLineOf(s)} ر.س/نتيجة مع صرف حقيقي تستاهل الإيقاف. حملة تحت المستهدف ممنوع توقفها.
 • مفيش حكم على حملة صرفت أقل من ${s.minSpend} ريال في الشباك — ده ضجيج مش أداء.
 
 قواعد الصدق (الأهم):
@@ -2724,17 +2881,18 @@ ${focus}
 
     for (const r of snap.rows) {
       if (r.status !== "ACTIVE") continue;
-      // (١) حملة بتحرق فلوس النهارده من غير أي نتيجة
-      if (r.spend >= s.minSpend * 2 && (r.results || 0) === 0) {
+      /* (١) حملة بتحرق فلوس النهارده من غير أي نية طلب.
+         `results == null` (المنصة عمياها) مش صفر — نفس تفرقة decide(). */
+      if (r.spend >= s.minSpend * 2 && r.results === 0) {
         found.push({ key: `burn:${r.platform}:${r.id}:${today}`, kind: "burn", platform: r.platform,
           campaignId: r.id, campaignName: r.name,
-          text: `"${r.name}" (${r.platform}) صرفت ${Math.round(r.spend)} ر.س النهارده من غير أي نتيجة.` });
+          text: `"${r.name}" (${r.platform}) صرفت ${Math.round(r.spend)} ر.س النهارده من غير ولا نية طلب واحدة (ولا دوسة واتساب ولا محادثة).` });
       }
       // (٢) تكلفة النتيجة النهارده فوق حد القتل
-      if (r.spend >= s.minSpend && r.cpa != null && r.cpa > s.killMultiple * s.targetCpa) {
+      if (r.spend >= s.minSpend && r.cpa != null && r.cpa > killLineOf(s)) {
         found.push({ key: `cpa:${r.platform}:${r.id}:${today}`, kind: "cpa", platform: r.platform,
           campaignId: r.id, campaignName: r.name,
-          text: `"${r.name}" (${r.platform}) تكلفة النتيجة النهارده ${r.cpa} ر.س — أعلى من ${s.killMultiple}× المستهدف (${s.targetCpa} ر.س).` });
+          text: `"${r.name}" (${r.platform}) تكلفة النتيجة النهارده ${r.cpa} ر.س — أعلى من خط القتل (${killLineOf(s)} ر.س/نتيجة).` });
       }
     }
 
