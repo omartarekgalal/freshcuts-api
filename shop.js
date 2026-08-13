@@ -106,6 +106,11 @@ export function register(app, ctx, deps = {}) {
       ALTER TABLE shop_orders ADD COLUMN IF NOT EXISTS coupon TEXT;
       ALTER TABLE shop_orders ADD COLUMN IF NOT EXISTS discount_percent NUMERIC NOT NULL DEFAULT 0;
       ALTER TABLE shop_orders ADD COLUMN IF NOT EXISTS discount_amount NUMERIC NOT NULL DEFAULT 0;
+      -- POS-push audit (2026-08-13, after a paid order stalled with a
+      -- swallowed error): every attempt counts itself and keeps TabSense's
+      -- actual answer, so "وقف ومش عارفين ليه" cannot happen again.
+      ALTER TABLE shop_orders ADD COLUMN IF NOT EXISTS pos_attempts INT NOT NULL DEFAULT 0;
+      ALTER TABLE shop_orders ADD COLUMN IF NOT EXISTS last_pos_error TEXT;
       CREATE TABLE IF NOT EXISTS shop_coupons (
         code TEXT PRIMARY KEY,
         percent NUMERIC NOT NULL,
@@ -438,9 +443,21 @@ export function register(app, ctx, deps = {}) {
       await setStatus(orderNo, "pos_created", {
         cols: { pos_order_id: String(created.id) },
       });
+      await pool.query(
+        "UPDATE shop_orders SET pos_attempts=pos_attempts+1, last_pos_error=NULL WHERE order_no=$1", [orderNo]);
     } catch (e) {
-      console.error(`[shop] POS create failed for ${orderNo}:`, e.message);
-      await setStatus(orderNo, "paid_pos_failed", { note: e.message });
+      // TabSense's actual answer is the diagnosis — "order creation failed"
+      // alone cost us a stalled paid order on 2026-08-13.
+      const detail = e.resp ? JSON.stringify(e.resp).slice(0, 600) : "";
+      const errText = `${e.message}${detail ? " | " + detail : ""}`;
+      console.error(`[shop] POS create failed for ${orderNo}: ${errText}`);
+      await pool.query(
+        "UPDATE shop_orders SET pos_attempts=pos_attempts+1, last_pos_error=$2, updated_at=NOW() WHERE order_no=$1",
+        [orderNo, errText.slice(0, 800)]);
+      // history gets ONE entry per state change, not one per 2-minute retry
+      if (row.status !== "paid_pos_failed") {
+        await setStatus(orderNo, "paid_pos_failed", { note: errText.slice(0, 300) });
+      }
     }
   }
 
@@ -484,9 +501,34 @@ export function register(app, ctx, deps = {}) {
     p.push(Math.min(500, Number(c.req.query("limit")) || 100));
     const rows = (await pool.query(
       `SELECT order_no, status, option, customer, phone_norm, subtotal, delivery_fee, tip, total,
-              mf_invoice_id, mf_payment_id, refund_id, pos_order_id, pos_approval, created_at, updated_at
+              coupon, discount_amount, mf_invoice_id, mf_payment_id, refund_id, pos_order_id,
+              pos_approval, pos_attempts, last_pos_error, created_at, updated_at
          FROM shop_orders ${where} ORDER BY created_at DESC LIMIT $${p.length}`, p)).rows;
     return c.json({ ok: true, orders: rows });
+  });
+
+  /* Full audit of one order: the lifecycle history, the POS-push record, the
+     items — «تراكينج كامل» for the dashboard's order drill-down. */
+  app.get("/api/shop/orders/:orderNo", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    const row = await getOrderRow(c.req.param("orderNo"));
+    if (!row) return c.json({ ok: false, error: "not_found" }, 404);
+    const shipment = row.option === "delivery" ? await delivery.shipmentOf(row.order_no) : null;
+    const { pos_calc, ...rest } = row;
+    return c.json({ ok: true, order: rest, shipment });
+  });
+
+  /* Manual retry from the dashboard — no waiting for the 2-minute sweep. */
+  app.post("/api/shop/orders/:orderNo/retry-pos", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    const row = await getOrderRow(c.req.param("orderNo"));
+    if (!row) return c.json({ ok: false, error: "not_found" }, 404);
+    if (!["paid", "paid_pos_failed"].includes(row.status)) {
+      return c.json({ ok: false, error: "not_retryable", status: row.status }, 409);
+    }
+    await createPosOrder(row.order_no);
+    const after = await getOrderRow(row.order_no);
+    return c.json({ ok: true, status: after.status, posOrderId: after.pos_order_id, lastError: after.last_pos_error });
   });
 
   /* Reconciliation feed: MyFatoorah collected vs what the POS knows about.
