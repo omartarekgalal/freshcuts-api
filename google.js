@@ -890,6 +890,293 @@ export function createGoogleAdapter({ httpJson, hashEmail, hashPhonePlus, google
     },
 
     /* ═══════════════════════════════════════════════════════════════════
+       KEYWORDS — the level below the ad group, and the only level at which
+       "the restaurant's own name" exists as a thing you can add or block.
+
+       Two descriptors, same shape as stateCall/budgetCall so they ride the
+       SAME ADS_ALLOW_WRITE gate, the same dry-run preview and the same
+       redaction. Neither creates a campaign or an ad group; both refuse to
+       invent one, because a mutate with a bad parent resource makes a NEW
+       empty thing rather than erroring in any way the caller would notice.
+
+       Why partialFailure on both: a keyword that already exists comes back
+       as RESOURCE_ALREADY_EXISTS for that ONE operation. Without the flag
+       that single duplicate throws away the other nineteen, so re-running a
+       negatives list after adding two more would add nothing at all.
+       ═══════════════════════════════════════════════════════════════════ */
+
+    /* Google's own limits: 80 characters, 10 words, no line breaks. A text
+       that breaks them is rejected per-row (KeywordError.KEYWORD_TOO_LONG),
+       so they are checked here where the reason can still name the keyword. */
+    normalizeKeyword(text) {
+      const t = String(text ?? "").replace(/[\r\n\t]+/g, " ").replace(/\s+/g, " ").trim();
+      if (!t) return { ok: false, reason: "كلمة فاضية" };
+      if (t.length > 80) return { ok: false, reason: `«${t.slice(0, 30)}…» أطول من 80 حرف` };
+      if (t.split(" ").length > 10) return { ok: false, reason: `«${t}» أكتر من 10 كلمات` };
+      // Google reads these as match-type syntax, not as text. Passing them
+      // through silently changes the match type the caller asked for.
+      if (/["\[\]]/.test(t)) return { ok: false, reason: `«${t}» فيها علامات (" [ ]) — نوع المطابقة بيتحدّد بـ matchType مش بالعلامات` };
+      return { ok: true, text: t };
+    },
+
+    MATCH_TYPES: ["EXACT", "PHRASE", "BROAD"],
+
+    /* Positive keywords into ONE existing ad group.
+       `keywords` = [{ text, matchType, cpcBid? }] or plain strings with a
+       default match type. Returns a descriptor, or throws with the reason —
+       the caller (a route or a script) shows that sentence verbatim. */
+    keywordCall(adGroupId, keywords, { defaultMatchType = "PHRASE" } = {}) {
+      const cust = this.cust();
+      const ag = digitsOnly(adGroupId);
+      if (!ag) throw new Error("adGroupId مطلوب — الكلمات بتتحط جوّه مجموعة إعلانية موجودة، والدالة دي معملهاش مجموعة جديدة.");
+      const rows = (Array.isArray(keywords) ? keywords : [keywords]).filter(Boolean);
+      if (!rows.length) throw new Error("مفيش كلمات مبعوتة.");
+      const ops = rows.map((r) => {
+        const raw = typeof r === "string" ? { text: r } : r;
+        const norm = this.normalizeKeyword(raw.text);
+        if (!norm.ok) throw new Error(norm.reason);
+        const mt = String(raw.matchType || defaultMatchType).toUpperCase();
+        if (!this.MATCH_TYPES.includes(mt)) throw new Error(`نوع مطابقة غير معروف «${mt}» — المسموح: ${this.MATCH_TYPES.join(", ")}`);
+        return {
+          create: {
+            adGroup: `customers/${cust}/adGroups/${ag}`,
+            status: "ENABLED",
+            keyword: { text: norm.text, matchType: mt },
+            ...(raw.cpcBid != null ? { cpcBidMicros: micros(raw.cpcBid) } : {}),
+          },
+          /* THE SECOND HALF OF A REJECTED KEYWORD.
+             A brand keyword can be refused at CREATE time with POLICY_ERROR —
+             «فريش كاتس» was refused under SENSITIVE_EVENTS, because Google's
+             classifier reads "cuts" as an injury rather than a cut of meat.
+             The refusal carries `isExemptible: true`, which means the API is
+             willing to accept the same keyword if we assert the policy does
+             not apply. That assertion is this field, and it is the API
+             equivalent of the UI's "request review" — the same thing Google
+             Support asked for and the previous agent could not click.
+             It is only ever set from a key Google itself returned (see
+             `exemptionKeys()` below), never invented, and only for a
+             violation Google marked exemptible. */
+          ...(raw.exempt?.length ? { exemptPolicyViolationKeys: raw.exempt } : {}),
+        };
+      });
+      return {
+        url: `${this.apiBase()}/customers/${cust}/adGroupCriteria:mutate`,
+        method: "POST",
+        headers: this.hdr(),
+        body: { operations: ops, partialFailure: true, responseContentType: "MUTABLE_RESOURCE" },
+      };
+    },
+
+    /* Campaign-level NEGATIVE keywords — the ones that stop money going to a
+       competitor's brand. Campaign level, not ad group, so one entry covers
+       every ad group in the campaign and there is one list to maintain.
+
+       Match type matters more here than anywhere else:
+         BROAD negative  — blocks the words in any order, with anything else
+                           around them. Right for a competitor's brand name.
+         PHRASE negative — blocks only that sequence. Right for a term that
+                           could legitimately overlap our own traffic.
+       Negative keywords never match close variants, so the exact spelling
+       observed in the search-terms report is the spelling that must go in. */
+    negativeKeywordCall(campaignId, negatives, { defaultMatchType = "BROAD" } = {}) {
+      const cust = this.cust();
+      const camp = digitsOnly(campaignId);
+      if (!camp) throw new Error("campaignId مطلوب.");
+      const rows = (Array.isArray(negatives) ? negatives : [negatives]).filter(Boolean);
+      if (!rows.length) throw new Error("مفيش كلمات سلبية مبعوتة.");
+      const ops = rows.map((r) => {
+        const raw = typeof r === "string" ? { text: r } : r;
+        const norm = this.normalizeKeyword(raw.text);
+        if (!norm.ok) throw new Error(norm.reason);
+        const mt = String(raw.matchType || defaultMatchType).toUpperCase();
+        if (!this.MATCH_TYPES.includes(mt)) throw new Error(`نوع مطابقة غير معروف «${mt}»`);
+        return {
+          create: {
+            campaign: `customers/${cust}/campaigns/${camp}`,
+            negative: true,
+            keyword: { text: norm.text, matchType: mt },
+          },
+        };
+      });
+      return {
+        url: `${this.apiBase()}/customers/${cust}/campaignCriteria:mutate`,
+        method: "POST",
+        headers: this.hdr(),
+        body: { operations: ops, partialFailure: true, responseContentType: "MUTABLE_RESOURCE" },
+      };
+    },
+
+    /* ─── READ: keyword quality, in Google's own three components ─────────
+       `diagnose()` already answers "is anything blocked". This answers the
+       different question the owner asks once things ARE running: "why is a
+       keyword that is approved and enabled still barely shown?"
+
+       Quality Score is one number out of ten, and on its own it is useless —
+       the fix depends entirely on WHICH of the three components is below
+       average. expected CTR → the ad text does not match the query; ad
+       relevance → the ad group is too broad; landing page experience → the
+       page the click lands on. So all three are returned next to the score,
+       plus the impressions that make the score worth acting on at all. */
+
+    /* Pull the exemptible policy keys out of a rejected mutate response.
+       Returns one entry per refused operation, so the caller can re-send ONLY
+       the exemptible ones with `exempt` set from the key verbatim. Reading the
+       key out of Google's own answer instead of hardcoding "SENSITIVE_EVENTS"
+       is the point: the next refusal will name a different policy and the same
+       code has to carry it. */
+    exemptionKeys(raw) {
+      const box = Array.isArray(raw) ? raw.find((x) => x?.partialFailureError || x?.error) : raw;
+      const pf = box?.partialFailureError || box?.error;
+      const errs = pf?.details?.find((d) => Array.isArray(d?.errors))?.errors || [];
+      return errs.map((e) => {
+        const d = e.details?.policyViolationDetails;
+        const idx = e.location?.fieldPathElements?.find((p) => p.fieldName === "operations")?.index;
+        return {
+          index: idx != null ? Number(idx) : null,
+          text: e.trigger?.stringValue || d?.key?.violatingText || null,
+          policyName: d?.key?.policyName || null,
+          externalPolicyName: d?.externalPolicyName || null,
+          description: d?.externalPolicyDescription || null,
+          exemptible: d?.isExemptible === true,
+          key: d?.key || null,
+        };
+      }).filter((x) => x.key);
+    },
+
+    async keywordQuality({ days = 30 } = {}) {
+      const miss = this.missing("manageEnv");
+      if (miss) return { ok: false, reason: miss, keywords: [] };
+      const to = new Date();
+      const from = new Date(to.getTime() - (days - 1) * 86400000);
+
+      const KW = (extra) =>
+        `SELECT campaign.id, campaign.name, ad_group.id, ad_group.name,
+                ad_group_criterion.criterion_id, ad_group_criterion.keyword.text,
+                ad_group_criterion.keyword.match_type, ad_group_criterion.status,
+                ad_group_criterion.system_serving_status,
+                ad_group_criterion.approval_status,
+                ad_group_criterion.disapproval_reasons,
+                ad_group_criterion.effective_cpc_bid_micros${extra}
+           FROM keyword_view
+          WHERE ad_group_criterion.status != 'REMOVED'
+            AND ad_group_criterion.negative = false`;
+      const meta = await this.searchWithFallback(
+        KW(`, ad_group_criterion.quality_info.quality_score,
+             ad_group_criterion.quality_info.creative_quality_score,
+             ad_group_criterion.quality_info.post_click_quality_score,
+             ad_group_criterion.quality_info.search_predicted_ctr`),
+        KW(""));
+
+      if (!meta.ok) return { ok: false, reason: meta.reason, keywords: [] };
+
+      /* Metrics ride a second query on purpose: joining them onto the first
+         adds segments.date, which turns one row per keyword into one row per
+         keyword per day and quietly makes the status columns repeat. */
+      const perf = await this.search(
+        `SELECT ad_group_criterion.criterion_id, ad_group.id,
+                metrics.impressions, metrics.clicks, metrics.cost_micros,
+                metrics.conversions, metrics.average_cpc, metrics.ctr
+           FROM keyword_view
+          WHERE segments.date BETWEEN '${isoDate(from)}' AND '${isoDate(to)}'
+            AND ad_group_criterion.status != 'REMOVED'`);
+      const perfBy = new Map();
+      for (const x of perf.results || []) {
+        const key = `${x.adGroup?.id}~${x.adGroupCriterion?.criterionId}`;
+        const m = x.metrics || {};
+        const c = perfBy.get(key) || { impressions: 0, clicks: 0, spend: 0, conversions: 0 };
+        c.impressions += num(m.impressions);
+        c.clicks += num(m.clicks);
+        c.spend += num(m.costMicros) / 1e6;
+        c.conversions += num(m.conversions);
+        perfBy.set(key, c);
+      }
+
+      return {
+        ok: true,
+        days,
+        degraded: meta.degraded || null,
+        metricsError: perf.ok ? null : perf.reason,
+        keywords: (meta.results || []).map((x) => {
+          const k = x.adGroupCriterion || {}, qi = k.qualityInfo || {};
+          const key = `${x.adGroup?.id}~${k.criterionId}`;
+          const p = perfBy.get(key) || { impressions: 0, clicks: 0, spend: 0, conversions: 0 };
+          return {
+            campaignId: String(x.campaign?.id ?? ""),
+            campaignName: x.campaign?.name || "",
+            adGroupId: String(x.adGroup?.id ?? ""),
+            adGroupName: x.adGroup?.name || "",
+            criterionId: String(k.criterionId ?? ""),
+            text: k.keyword?.text || "",
+            matchType: k.keyword?.matchType || null,
+            status: k.status || null,
+            servingStatus: k.systemServingStatus || null,
+            approvalStatus: k.approvalStatus || null,
+            disapprovalReasons: k.disapprovalReasons || [],
+            cpcBid: fromMicros(k.effectiveCpcBidMicros),
+            qualityScore: qi.qualityScore ?? null,
+            // The three components, named the way Google's UI names them so
+            // the owner can match this line to the column they are looking at.
+            adRelevance: qi.creativeQualityScore || null,          // "Ad relevance"
+            landingPage: qi.postClickQualityScore || null,         // "Landing page experience"
+            expectedCtr: qi.searchPredictedCtr || null,            // "Expected CTR"
+            impressions: p.impressions,
+            clicks: p.clicks,
+            spend: Math.round(p.spend * 100) / 100,
+            conversions: Math.round(p.conversions * 100) / 100,
+            ctr: p.impressions > 0 ? Math.round((p.clicks / p.impressions) * 10000) / 100 : null,
+          };
+        }),
+      };
+    },
+
+    /* ─── READ: search terms — what people ACTUALLY typed ─────────────────
+       The keyword is what we bid on; the search term is what the auction was
+       for. On a Phrase/Broad account the two are not the same thing, and the
+       gap between them is where a restaurant pays for a competitor's brand.
+       This is the evidence a negative-keyword list must be built from. */
+    async searchTerms({ days = 30, minImpressions = 1 } = {}) {
+      const miss = this.missing("manageEnv");
+      if (miss) return { ok: false, reason: miss, terms: [] };
+      const to = new Date();
+      const from = new Date(to.getTime() - (days - 1) * 86400000);
+      const r = await this.search(
+        `SELECT search_term_view.search_term, search_term_view.status,
+                campaign.id, campaign.name, ad_group.id, ad_group.name,
+                segments.keyword.info.text, segments.keyword.info.match_type,
+                metrics.impressions, metrics.clicks, metrics.cost_micros,
+                metrics.conversions
+           FROM search_term_view
+          WHERE segments.date BETWEEN '${isoDate(from)}' AND '${isoDate(to)}'`);
+      if (!r.ok) return { ok: false, reason: r.reason, terms: [] };
+      const by = new Map();
+      for (const x of r.results) {
+        const term = x.searchTermView?.searchTerm || "";
+        const m = x.metrics || {};
+        const cur = by.get(term) || {
+          term,
+          campaignId: String(x.campaign?.id ?? ""),
+          adGroupName: x.adGroup?.name || "",
+          matchedKeyword: x.segments?.keyword?.info?.text || null,
+          matchedKeywordType: x.segments?.keyword?.info?.matchType || null,
+          status: x.searchTermView?.status || null,
+          impressions: 0, clicks: 0, spend: 0, conversions: 0,
+        };
+        cur.impressions += num(m.impressions);
+        cur.clicks += num(m.clicks);
+        cur.spend += num(m.costMicros) / 1e6;
+        cur.conversions += num(m.conversions);
+        by.set(term, cur);
+      }
+      return {
+        ok: true, days,
+        terms: [...by.values()]
+          .filter((t) => t.impressions >= minImpressions)
+          .map((t) => ({ ...t, spend: Math.round(t.spend * 100) / 100 }))
+          .sort((a, b) => b.spend - a.spend || b.impressions - a.impressions),
+      };
+    },
+
+    /* ═══════════════════════════════════════════════════════════════════
        DIAGNOSE — "ليه جوجل مش بيعرض؟" مجاوَب من الـ API
 
        Every section runs its own query and records its own failure, because
