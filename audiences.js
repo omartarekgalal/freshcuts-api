@@ -612,12 +612,18 @@ export function register(app, ctx) {
         reason: res.json?.error?.message || `HTTP ${res.status}`,
       });
     }
+    /* `message` بتاعة ميتا ساعات بتبقى «Failed to create custom audience» وبس
+       — جملة مالهاش أي معنى. السبب الحقيقي بيبقى في `error_user_msg`
+       ("The parameter subtype is not supported in the current API version").
+       ده كلّفنا جولة كاملة يوم ١٤ أغسطس، فالرسالتين بيتقروا مع بعض. */
+    const e = res.json?.error || {};
+    const detail = e.error_user_msg || e.error_user_title;
     return {
       ok: false,
       kind: cls.kind,
-      error: res.json?.error?.message || res.error || `HTTP ${res.status}`,
-      code: res.json?.error?.code ?? null,
-      subcode: res.json?.error?.error_subcode ?? null,
+      error: [e.message || res.error || `HTTP ${res.status}`, detail].filter(Boolean).join(" — "),
+      code: e.code ?? null,
+      subcode: e.error_subcode ?? null,
     };
   }
 
@@ -699,9 +705,14 @@ export function register(app, ctx) {
           lookalike_spec: JSON.stringify({ type: "custom_ratio", ratio: spec.ratio, country: "SA" }),
         };
       } else {
+        /* من غير `subtype` عن قصد. من v25 ميتا بترفض الباراميتر ده مع أي
+           جمهور مبني على قاعدة وبتقول:
+             "The parameter subtype is not supported in the current API version"
+           وبتستنتج النوع من الـ rule نفسها (بيكسل → WEBSITE، صفحة →
+           ENGAGEMENT، حساب إنستجرام → IG_BUSINESS). `spec.subtype` فضل
+           موجود في الكتالوج لإنه بيوصف الجمهور للبني آدم اللي بيقرا. */
         body = {
           name: spec.name,
-          subtype: spec.subtype,
           description: spec.ar,
           rule: JSON.stringify(spec.rule()),
           prefill: true,      // اعبّي بأثر رجعي من بيانات البيكسل الموجودة
