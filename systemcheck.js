@@ -277,21 +277,41 @@ export function register(app, ctx, deps = {}) {
 
   /* روابط تطبيقات التوصيل — بتتقاس من إعدادات المتجر الحيّة، مش من خريطة
      مكتوبة في الكود. الخريطة المكتوبة بتفضل تكدب بعد ما المالك يصلّح الرابط. */
+  /* بنجرّب الرابط نفسه ونشوف بيودّي فين — مش بنقرا خانة في ملف إعدادات.
+
+     أول نسخة قرت `cfg.links` من /api/config وطلعت إن الروابط التلاتة
+     مكسورة. الحقيقة إن /api/config مفيهوش خانة اسمها links أصلاً، فالقراءة
+     رجعت فاضية والكود قرا الفاضي كـ«مكسور». كيتا كانت شغّالة تمام وبتودّي
+     على url.mykeeta.com — يعني الشاشة كانت هتبعت المالك يدوّر على رابط
+     موجود عنده خلاص.
+
+     ودي نفس الغلطة اللي الصفحة اتعملت عشانها بالظبط، بس مقلوبة: غياب
+     الدليل اتقرا كدليل على العطل. فبقينا نقيس الحاجة نفسها — نداء على
+     /go/<app> ونشوف الـ Location راجع فين. ولو النداء نفسه فشل، بنقول
+     «مقدرناش نقيس» — مش «مكسور». */
   async function goLinks() {
-    try {
-      const res = await fetch(`${STORE_BASE}/api/config`, { signal: AbortSignal.timeout(8000) });
-      if (!res.ok) return M(false, null, `من ${STORE_BASE}/api/config`, `رد ${res.status}`);
-      const cfg = await res.json();
-      const links = cfg.links || {};
-      const rows = ["keeta", "hungerstation", "ninja"].map((k) => {
-        const url = String(links[k] || "");
-        const real = !!url && !url.includes("order.o2m8.me");
-        return { app: k, url: url || null, real };
-      });
-      return M(true, rows, `من إعدادات المتجر الحيّة على ${STORE_BASE}`);
-    } catch (e) {
-      return M(false, null, `من ${STORE_BASE}/api/config`, String(e?.message || e).slice(0, 140));
+    const apps = ["keeta", "hungerstation", "ninja"];
+    const rows = [];
+    for (const app of apps) {
+      try {
+        const res = await fetch(`${STORE_BASE}/go/${app}`, {
+          redirect: "manual", signal: AbortSignal.timeout(8000),
+        });
+        const loc = res.headers.get("location") || "";
+        if (res.status === 404) { rows.push({ app, url: null, real: false, why: "الرابط مش متعرّف أصلاً (404)" }); continue; }
+        if (!loc) { rows.push({ app, url: null, real: null, why: `رد ${res.status} من غير وجهة — مقدرناش نقيس` }); continue; }
+        // بيرجّعنا على المتجر نفسه = مفيش رابط حقيقي متركّب.
+        const real = !loc.includes("order.o2m8.me");
+        rows.push({ app, url: loc, real });
+      } catch (e) {
+        rows.push({ app, url: null, real: null, why: String(e?.message || e).slice(0, 90) });
+      }
     }
+    const measured = rows.filter((r) => r.real !== null);
+    if (!measured.length) {
+      return M(false, null, `بنداء /go/* على ${STORE_BASE}`, rows[0]?.why || "كل النداءات فشلت");
+    }
+    return M(true, rows, `بنداء /go/* على ${STORE_BASE} ومتابعة الوجهة`);
   }
 
   /* العرض اللي في الإعلانات ومش في المنيو. بيتقاس من نفس الكتالوج اللي
@@ -525,11 +545,20 @@ export function register(app, ctx, deps = {}) {
           const pct = Math.round(tagRate.value * 1000) / 10;
           row.live = { ok: tagRate.value >= 0.5, line: `التعليم دلوقتي ${pct}٪ — ${taggedN} من ${ordersN} طلب.` };
         }
-        if (t.id === "go-links" && go.ok) {
-          const dead = go.value.filter((x) => !x.real).map((x) => x.app);
-          row.live = dead.length
-            ? { ok: false, line: `لسه راجعة على المتجر نفسه: ${dead.join("، ")}` }
-            : { ok: true, line: "كل الروابط بقت حقيقية ✔" };
+        if (t.id === "go-links") {
+          if (!go.ok) row.live = { ok: false, line: `مقدرناش نقيس — ${go.why}` };
+          else {
+            const dead = go.value.filter((x) => x.real === false).map((x) => x.app);
+            const unknown = go.value.filter((x) => x.real === null).map((x) => x.app);
+            const okd = go.value.filter((x) => x.real === true).map((x) => x.app);
+            const parts = [];
+            if (dead.length) parts.push(`لسه راجعة على المتجر نفسه: ${dead.join("، ")}`);
+            if (unknown.length) parts.push(`مقدرناش نقيس: ${unknown.join("، ")}`);
+            if (okd.length) parts.push(`شغّالة: ${okd.join("، ")}`);
+            row.live = dead.length
+              ? { ok: false, line: parts.join(" · ") }
+              : { ok: !unknown.length, line: parts.join(" · ") || "كل الروابط بقت حقيقية ✔" };
+          }
         }
         if (t.id === "meta-geo") {
           if (!geo.ok) row.live = { ok: false, line: `مقدرناش نفحص — ${geo.why}` };
