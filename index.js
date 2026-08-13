@@ -42,6 +42,7 @@ import * as shop from "./shop.js";
 import * as accounts from "./accounts.js";
 import * as notify from "./notify.js";
 import * as menuplan from "./menuplan.js";
+import * as systemcheck from "./systemcheck.js";
 
 const { Pool } = pg;
 
@@ -3015,6 +3016,10 @@ shopApi = shop.register(app, moduleCtx, {
 // ملف العميل: دخول OTP، عناوين محفوظة، تاريخ الطلبات وإعادة الطلب، وربط/إنشاء
 // في دفتر عملاء TabSense (الموجود يتربط، الجديد بس هو اللي يتعمل).
 accountsApi = accounts.register(app, moduleCtx);
+// حالة النظام — آخر واحد بيتسجّل عن قصد. الموديول ده مجمِّع: بينده المسارات
+// اللي فوق دي بنفسها جوّه العملية (app.request) بدل ما يكتب استعلام تاني
+// لنفس الرقم. فلازم يكونوا كلهم اتسجّلوا قبله.
+systemcheck.register(app, moduleCtx, { tsState: () => tsState });
 console.log("[analytics] routes ready");
 console.log(`[ai] routes ready (provider: ${process.env.ANTHROPIC_API_KEY ? "anthropic" : process.env.LITELLM_KEY ? "litellm" : "NOT CONFIGURED"})`);
 

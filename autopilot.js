@@ -4246,6 +4246,80 @@ ${focus}
     return c.json({ ok: true, id, line: logLine(row.rows[0]) });
   });
 
+  /* ── تصليح السجل ────────────────────────────────────────────────────────
+     ملاحظة اتكتبت من شل بترميز غلط بتتخزن حروف مكسّرة (؟؟؟؟ بدل عربي).
+     الصف ده مش بيتصلّح بـ UPDATE بالإيد على الداتابيز — ده سجل قرارات،
+     والتعديل عليه من برّه الموديول بيكسر أي افتراض جوّاه. فبنعدّي من هنا.
+
+     والحارس مقصود: مسموح نمسح أو نصلّح **الملاحظات اليدوية** بس (اللي
+     detail.manual = true)، أو صف حروفه مكسّرة فعلاً. قرار اتنفّذ على منصة
+     — رفع ميزانية، إيقاف حملة — ده أثر مالي، وميتمسحش أبداً مهما كان.
+
+     الكشف بيدوّر على U+FFFD (الحرف اللي بيطلع لما الترميز يضيع) وعلى
+     علامات الموجيباكي المعروفة، مش على «فيه عربي غريب» — عشان ملاحظة
+     سليمة متتشالش بالغلط. */
+  const CORRUPT_RE = /�|[ØÙ][-¿]|â€/;
+  const isCorrupt = (row) =>
+    CORRUPT_RE.test(String(row?.reason || "")) ||
+    CORRUPT_RE.test(String(row?.campaign_name || ""));
+  const isManualNote = (row) => {
+    const d = row?.detail;
+    return !!(d && typeof d === "object" && d.manual === true);
+  };
+
+  /* بيرجّع الصفوف المكسّرة كلها — عبر التاريخ كله، مش آخر ٣٠٠. */
+  app.get("/api/autopilot/decisions/corrupt", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    // الفلترة في JS مش في SQL عن قصد: تعبير U+FFFD جوّه SQL بيعتمد على
+    // إعدادات ترميز الخادم، والحاجة اللي بندوّر عليها أصلاً هي ترميز باظ —
+    // فمش هنبني الكشف على نفس الطبقة اللي وقعت.
+    const r = await pool.query(
+      `SELECT * FROM ap_decisions WHERE reason IS NOT NULL
+        ORDER BY created_at DESC LIMIT 5000`);
+    const rows = r.rows.filter(isCorrupt).map((row) => ({
+      id: row.id, at: row.created_at, kind: row.kind, status: row.status,
+      manual: isManualNote(row), reason: row.reason,
+      deletable: isManualNote(row) || isCorrupt(row),
+    }));
+    return c.json({ ok: true, count: rows.length, rows });
+  });
+
+  app.patch("/api/autopilot/decisions/:id", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    const id = c.req.param("id");
+    const b = await c.req.json().catch(() => ({}));
+    const reason = String(b.reason || "").trim();
+    if (!reason) return c.json({ ok: false, error: "reason required" }, 400);
+    const cur = await pool.query(`SELECT * FROM ap_decisions WHERE id=$1`, [id]);
+    const row = cur.rows[0];
+    if (!row) return c.json({ ok: false, error: "not found" }, 404);
+    if (!isManualNote(row) && !isCorrupt(row)) {
+      return c.json({
+        ok: false, error: "refused",
+        message: "ده قرار اتنفّذ على منصة، مش ملاحظة يدوية — نصّه مابيتغيّرش.",
+      }, 409);
+    }
+    const r = await pool.query(
+      `UPDATE ap_decisions SET reason=$2 WHERE id=$1 RETURNING *`, [id, reason]);
+    return c.json({ ok: true, id, line: logLine(r.rows[0]) });
+  });
+
+  app.delete("/api/autopilot/decisions/:id", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    const id = c.req.param("id");
+    const cur = await pool.query(`SELECT * FROM ap_decisions WHERE id=$1`, [id]);
+    const row = cur.rows[0];
+    if (!row) return c.json({ ok: false, error: "not found" }, 404);
+    if (!isManualNote(row) && !isCorrupt(row)) {
+      return c.json({
+        ok: false, error: "refused",
+        message: "ده قرار اتنفّذ على منصة — بيفضل في السجل. المسح للملاحظات اليدوية والصفوف المكسّرة بس.",
+      }, 409);
+    }
+    await pool.query(`DELETE FROM ap_decisions WHERE id=$1`, [id]);
+    return c.json({ ok: true, id, deleted: true, wasCorrupt: isCorrupt(row) });
+  });
+
   /* سجل الوكيل — كل دورة تفكير: قال إيه، نده أنهي أداة، رجعله إيه، واتنفّذ
      ولا اترفض. ده اللي بيخلّي المالك يقرا "ليه" مش بس "إيه". */
   app.get("/api/autopilot/agent-log", async (c) => {
