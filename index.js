@@ -40,6 +40,7 @@ import * as deliveryMod from "./delivery.js";
 import * as shop from "./shop.js";
 import * as accounts from "./accounts.js";
 import * as notify from "./notify.js";
+import * as menuplan from "./menuplan.js";
 
 const { Pool } = pg;
 
@@ -2970,6 +2971,12 @@ const ap = autopilot.register(app, moduleCtx, {
 // صفحة المراجعة والموافقة في التسويق: وصف الحملات بالعربي، طابور الموافقات،
 // العروض، وجسر أزرار الحملة على مسار موافقة الطيار (نفس حدود الأمان).
 hub.register(app, moduleCtx);
+// 🍽️ خطة المنيو: نصف هدف الـ١٠٬٠٠٠ اللي الإعلانات ما تجيبهوش — توحيد أسماء
+// الأصناف، تصنيفها على فئات المالك، قواعد الاقتران الحقيقية (lift مش مجرد
+// «اتباعوا مع بعض»)، واقتراحات المتجر وقياسها. بيقرا بس من ts_order_items
+// وبيكتب أهداف الفئات في settings.scorecard.categoryTargets — نفس المخزن
+// اللي بطاقة الأداء بتقرا منه، عشان ما يبقاش في رقمين للهدف الواحد.
+menuplan.register(app, moduleCtx);
 // مركز المحتوى: تقويم واحد لكل القنوات، استيراد اللي موجود على فيسبوك
 // وانستجرام، وناشر انستجرام بتاعنا (المنصة نفسها مالهاش جدولة).
 // register بيرجّع { runPublisher, syncPlatforms } عشان العامل تحت يشغّلهم
