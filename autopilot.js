@@ -4930,13 +4930,22 @@ ${focus}
       if (seenUnavailable.has(p.id)) continue;
       seenUnavailable.add(p.id);
       const isTikTok = p.id === "tiktok";
+      /* السبب ممكن ميكونش موجود: الاستعداد اتسجّل من غير `reason`. قبل كده
+         كان الجمع بيطلع `undefined` والمالك كان بيقرا حرفياً «Google Ads:
+         undefined» على شاشة الحالة. سبب مش معروف مش سبب — فبنقول إننا مش
+         عارفين، ونخفّض النبرة، بدل ما نأكّد عطل مش متأكدين منه. */
+      const reason = r?.reason || g?.reason || null;
       problems.push({
-        rank: 8, tone: "warn", who: "owner",
-        line: `${p.label}: ${r?.reason || g?.reason}`,
+        rank: reason ? 8 : 12,
+        tone: "warn",
+        who: reason ? "owner" : "us",
+        line: reason
+          ? `${p.label}: ${reason}`
+          : `${p.label}: الباب مقفول من المنصة من غير ما تقول السبب — مش متأكدين إيه اللي ناقص.`,
         prevents: isTikTok
           ? "قراءة أرقام تيك توك ورفع الجماهير عليها. الصرف والإيقاف شغّالين."
           : "رفع الطلبات للمنصة دي. القراءة والتحكم في الحملات شغّالين.",
-        ...(isTikTok ? { action: OWNER_ACTIONS.tiktokReview } : {}),
+        ...(isTikTok && reason ? { action: OWNER_ACTIONS.tiktokReview } : {}),
       });
     }
 

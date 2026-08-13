@@ -194,6 +194,74 @@ export function register(app, ctx, deps = {}) {
     } catch { return null; }
   }
 
+  /* ── الاستهداف الجغرافي وتوسيع الجمهور ────────────────────────────────
+     أغلى غلطة في الحساب ده مكانتش في ميزانية ولا في نص إعلان — كانت في
+     خانتين في إعدادات المجموعة الإعلانية، ومفيش لوحة واحدة كانت بتعرضهم:
+
+       geo_locations = { countries: ["SA"] }            ← السعودية كلها مش جدة
+       targeting_relaxation_types.custom_audience = 1   ← توسيع الجمهور مفتوح
+
+     مجموعة fc-retarget-web14-eng30 وصلت 16,707 شخص وجمهورها المقاس أقل من
+     2,000. يعني ~٨٨٪ من صرفها راح لناس لا هي في الجمهور ولا تقدر تطلب من
+     مطعم في جدة أصلاً. وبعدين الرقم اللي طلع (64 ر.س للنتيجة) اتقرا كأنه
+     «الريتارجيت غالي» — وهو مكانش قياس ريتارجيت من أصله.
+
+     مجموعات الاكتساب كلها مظبوطة على دايرة ٥–٢٠ كم، فالفحص بيقارن
+     المجموعات ببعضها مش بمعيار مخترع.
+
+     قراءة بس: الصفحة دي عمرها ما بتغيّر استهداف. بتقول مين مضبوط ومين لأ،
+     والتغيير قرار المالك. */
+  let geoCache = { at: 0, val: null };
+  async function targetingAudit() {
+    if (geoCache.val && Date.now() - geoCache.at < 30 * 60_000) return geoCache.val;
+    const token = (process.env.META_CAPI_TOKEN || "").trim();
+    const raw = (process.env.META_AD_ACCOUNT_ID || "").trim();
+    const act = raw ? (raw.startsWith("act_") ? raw : `act_${raw}`) : "";
+    const ver = (process.env.META_API_VERSION || "v25.0").trim();
+    if (!token || !act) return M(false, null, "من ميتا مباشرة", "مفاتيح ميتا ناقصة");
+    try {
+      const fields = "id,name,campaign_id,effective_status,targeting";
+      const res = await fetch(
+        `https://graph.facebook.com/${ver}/${act}/adsets?fields=${fields}&limit=200`,
+        { headers: { Authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(25_000) });
+      const j = await res.json().catch(() => null);
+      if (!res.ok) {
+        /* حصة ميتا بتقفل الباب بأكواد كتير (17 / 613 / 4841xxx). الفشل
+           بيفضل فشل — مش «صفر مجموعات غلط»، ومش «كله تمام». */
+        const e = j?.error || {};
+        return M(false, null, "من ميتا مباشرة",
+          `${e.type || res.status}${e.code ? ` ${e.code}` : ""}: ${String(e.message || "").slice(0, 120)}`);
+      }
+      const live = (j?.data || []).filter((a) => a.effective_status === "ACTIVE");
+      const rows = live.map((a) => {
+        const t = a.targeting || {};
+        const g = t.geo_locations || {};
+        const countryOnly = Array.isArray(g.countries) && g.countries.length > 0
+          && !(g.custom_locations || []).length && !(g.cities || []).length;
+        const relax = t.targeting_relaxation_types || {};
+        const expanded = Number(relax.custom_audience) === 1 || Number(relax.lookalike) === 1;
+        const radii = (g.custom_locations || []).map((c) => `${c.radius} ${c.distance_unit || "km"}`);
+        return {
+          id: String(a.id), name: a.name || "",
+          countryOnly, expanded, radii,
+          geoLabel: countryOnly ? `دولة كاملة (${g.countries.join("، ")})`
+            : radii.length ? `دايرة ${radii.join("، ")}`
+              : (g.cities || []).length ? "مدن محدّدة" : "غير معروف",
+          bad: countryOnly || expanded,
+        };
+      });
+      const val = M(true, {
+        checked: rows.length,
+        bad: rows.filter((r) => r.bad),
+        good: rows.filter((r) => !r.bad).length,
+      }, `من ميتا مباشرة — ${rows.length} مجموعة شغّالة`);
+      geoCache = { at: Date.now(), val };
+      return val;
+    } catch (e) {
+      return M(false, null, "من ميتا مباشرة", String(e?.message || e).slice(0, 140));
+    }
+  }
+
   /* روابط تطبيقات التوصيل — بتتقاس من إعدادات المتجر الحيّة، مش من خريطة
      مكتوبة في الكود. الخريطة المكتوبة بتفضل تكدب بعد ما المالك يصلّح الرابط. */
   async function goLinks() {
@@ -225,7 +293,7 @@ export function register(app, ctx, deps = {}) {
   }
 
   async function build(auth) {
-    const [ads, apHealth, catalog, content, aud, instore, tracking, go, live, orphans] =
+    const [ads, apHealth, catalog, content, aud, instore, tracking, go, live, orphans, geo] =
       await Promise.all([
         inner("/api/ads/status", auth),
         inner("/api/autopilot/health", auth),
@@ -237,6 +305,7 @@ export function register(app, ctx, deps = {}) {
         goLinks(),
         jobLiveness(),
         orphanRuns(),
+        targetingAudit(),
       ]);
 
     /* ── ١) الشغل الآلي ─────────────────────────────────────────────── */
@@ -365,7 +434,33 @@ export function register(app, ctx, deps = {}) {
     const taggedN = instore.ok ? (instore.data.totals?.tagged ?? null) : null;
     const ordersN = instore.ok ? (instore.data.totals?.orders ?? null) : null;
 
+    /* الاستهداف: مجموعة واحدة على دولة كاملة أو بتوسيع جمهور بتحرق ميزانيتها
+       على ناس مش هيطلبوا. ودي مش «ملاحظة» — دي صرف مباشر. */
+    if (geo.ok && geo.value.bad.length) {
+      problems.push({
+        rank: 4, tone: "bad", who: "owner", from: "الاستهداف",
+        line: `${geo.value.bad.length} مجموعة إعلانية شغّالة مستهدفة غلط — دولة كاملة بدل جدة، أو توسيع الجمهور مفتوح.`,
+        prevents: "إن فلوس الإعلان توصل لناس تقدر تطلب فعلاً. ده بيفسد الأرقام كمان: "
+          + "المجموعة اللي بتوصل لكل السعودية بتطلع «غالية» وهي مش بتقيس اللي إحنا فاكرينه.",
+        detail: geo.value.bad.map((r) => `${r.name}: ${r.geoLabel}${r.expanded ? " + توسيع الجمهور مفتوح" : ""}`),
+        action: {
+          what: "قصّر النطاق على جدة واقفل توسيع الجمهور في المجموعات دي.",
+          screen: "Meta Ads Manager ← المجموعة الإعلانية ← الجمهور ← الموقع",
+          button: "غيّر لـ«دايرة حوالين جدة» + شيل علامة Advantage audience",
+        },
+      });
+    }
+    if (!geo.ok) {
+      problems.push({
+        rank: 11, tone: "warn", who: "us", from: "الاستهداف",
+        line: `مقدرناش نفحص الاستهداف الجغرافي — مش متأكدين إنه مضبوط.`,
+        prevents: "التأكد إن الإعلانات بتوصل لجدة بس.",
+        action: { what: geo.why, screen: "—", button: "—" },
+      });
+    }
+
     const evidence = {
+      geoTargeting: geo,
       combo70: combo,
       cashierTagging: tagRate,
       cashierTaggedOf: instore.ok
@@ -408,6 +503,13 @@ export function register(app, ctx, deps = {}) {
           row.live = dead.length
             ? { ok: false, line: `لسه راجعة على المتجر نفسه: ${dead.join("، ")}` }
             : { ok: true, line: "كل الروابط بقت حقيقية ✔" };
+        }
+        if (t.id === "meta-geo") {
+          row.live = geo.ok
+            ? (geo.value.bad.length
+              ? { ok: false, line: `${geo.value.bad.length} مجموعة لسه مستهدفة غلط: ${geo.value.bad.map((r) => r.name).join("، ")}` }
+              : { ok: true, line: `كل الـ${geo.value.checked} مجموعة الشغّالة مستهدفة صح ✔` })
+            : { ok: false, line: `مقدرناش نفحص — ${geo.why}` };
         }
         if (t.id === "tiktok-oauth" && evidence.tiktokBlocked.ok) {
           row.live = evidence.tiktokBlocked.value === false
@@ -577,6 +679,29 @@ const SEED_TASKS = [
     screen: "Google Ads ← الفوترة (Billing) ← ملخّص",
     button: "سدّد الآن / Fix payment method",
     note: "غير مقيس آليًا.",
+  },
+  {
+    id: "meta-geo", rank: 2, measured: true,
+    title: "صلّح الاستهداف: جدة مش السعودية كلها، وتوسيع الجمهور مقفول",
+    why: "أربع مجموعات ريتارجيت مستهدفة «السعودية» كلها بدل دايرة حوالين جدة، وتوسيع الجمهور مفتوح فيها. "
+      + "واحدة منها وصلت 16,707 شخص وجمهورها أقل من 2,000 — يعني ~٨٨٪ من صرفها راح لناس مش قادرة تطلب "
+      + "من مطعم في جدة أصلاً. مجموعات الاكتساب كلها مظبوطة على ٥–٢٠ كم، فده مش رأي — ده فرق بينهم وبين بعض.",
+    prevents: "إن فلوس الريتارجيت توصل لناس تقدر تطلب. وكمان بيفسد الحكم: الرقم اللي طلع (64 ر.س للنتيجة) "
+      + "اتقرا كأنه «الريتارجيت غالي» وهو مكانش قياس ريتارجيت من أصله.",
+    screen: "Meta Ads Manager ← المجموعة الإعلانية ← الجمهور ← الموقع",
+    button: "غيّر لـ«دايرة حوالين جدة» + شيل علامة Advantage / توسيع الجمهور",
+    note: "بنفحصها بنفسنا كل نص ساعة. الصفحة دي بتقرا الاستهداف ومش بتغيّره أبداً — التغيير قرارك إنت.",
+  },
+  {
+    id: "dpa-purchase", rank: 9, measured: false,
+    title: "غيّر هدف حملة الكتالوج من «شراء» لـ«إضافة للسلة»",
+    why: "الكتالوج بقى سليم — ميتا بتطابق ViewContent وAddToCart ١٠٠٪ من ٩ أغسطس. بس الشراء المطابَق صفر "
+      + "كل يوم، وعندنا طلبين أونلاين بس في ٣٠ يوم. أي حملة كتالوج بتتعلّم على «شراء» مش هتلاقي حاجة "
+      + "تتعلّم منها ولا مرة — مش عشان الإعداد غلط، عشان البيع بيتقفل في المطعم مش على الموقع.",
+    prevents: "إن حملة الكتالوج (DPA) تخرج من فترة التعلّم أصلاً.",
+    screen: "Meta Ads Manager ← fc-dpa-catalog ← تعديل ← حدث التحويل",
+    button: "غيّر من Purchase لـ Add to Cart أو Initiate Checkout",
+    note: "غير مقيس آليًا — الرقم اتقرا من catalog/event_stats ساعة المراجعة.",
   },
   {
     id: "menu-combo70", rank: 5, measured: true,
