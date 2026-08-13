@@ -100,6 +100,16 @@ const KEYWORD_CATS = [
   [/توصيل|delivery|خدمه|رسوم/i, "رسوم"],
 ];
 
+/* pg بيرجّع عمود DATE ككائن Date، و String(date) بيدي "Fri Aug 01 2026"
+   مش "2026-08-01" — يعني .slice(0,7) بيطلع «Fri Aug» ويتحوّل لشهر في
+   التقرير. الـ pg بيبني الـ Date بمكوّنات محلية (new Date(y, m-1, d))،
+   فالقراءة بالمكوّنات المحلية هي الصح؛ toISOString هنا غلط لأنها بتحوّل
+   لـ UTC وممكن ترجّع اليوم اللي فات. */
+const p2 = (n) => String(n).padStart(2, "0");
+export const dayISO = (d) =>
+  d instanceof Date ? `${d.getFullYear()}-${p2(d.getMonth() + 1)}-${p2(d.getDate())}` : String(d ?? "").slice(0, 10);
+export const monthISO = (d) => dayISO(d).slice(0, 7);
+
 /* توحيد الاسم: بيشيل التشكيل، بيوحّد الألف والتاء المربوطة والياء، وبيقصّ
    كل علامات الترقيم. "مياة" و"مياه" بيبقوا واحد، و"Water" بيفضل مختلف
    لحد ما المنيو نفسه يقول إنهم نفس الصنف (اسم عربي + local_name). */
@@ -410,7 +420,7 @@ export function register(app, ctx) {
     const custOrders = new Map();
     for (const o of O) if (o.cust) { if (!custOrders.has(o.cust)) custOrders.set(o.cust, []); custOrders.get(o.cust).push(o); }
 
-    const months = [...new Set(L.rows.map((r) => String(r.calendar_day).slice(0, 7)))].sort();
+    const months = [...new Set(L.rows.map((r) => monthISO(r.calendar_day)))].sort();
 
     const cats = ALL_CATS.map((cat) => {
       const ls = L.rows.filter((r) => r.cat === cat);
@@ -431,12 +441,12 @@ export function register(app, ctx) {
         lines: ls.length, units: R2(ls.reduce((a, r) => a + (r.qty || 1), 0)),
         orders: ords.size, orderPenetrationPct: pct(ords.size, O.length),
         avgLineValue: R2(rev / ls.length),
-        revenuePerDay: R0(rev / Math.max(1, new Set(O.map((o) => String(o.day).slice(0, 10))).size)),
+        revenuePerDay: R0(rev / Math.max(1, new Set(O.map((o) => dayISO(o.day))).size)),
         customers: buyers.length,
         onlyThisCategory: only, onlyPct: isMain ? pct(only, buyers.length) : null,
         repeatCustomers: repeat, repeatRatePct: pct(repeat, buyers.length),
         avgTicketOfTheirOrders: R2(theirOrders.reduce((a, o) => a + o.total, 0) / (theirOrders.length || 1)),
-        monthly: months.map((m) => R0(ls.filter((r) => String(r.calendar_day).slice(0, 7) === m).reduce((a, r) => a + r.rev, 0))),
+        monthly: months.map((m) => R0(ls.filter((r) => monthISO(r.calendar_day) === m).reduce((a, r) => a + r.rev, 0))),
       };
     }).filter(Boolean).sort((a, b) => b.revenue - a.revenue);
 
@@ -444,7 +454,7 @@ export function register(app, ctx) {
       ok: true, from, to, months,
       totalItemRevenue: R0(totalRev),
       orders: O.length,
-      days: new Set(O.map((o) => String(o.day).slice(0, 10))).size,
+      days: new Set(O.map((o) => dayISO(o.day))).size,
       categories: cats,
       customerBasis: {
         linkedCustomers: custOrders.size,
@@ -483,7 +493,7 @@ export function register(app, ctx) {
       byItem.get(r.key).orders.add(r.order_id);
     }
     const oById = new Map(L.orders.map((o) => [o.id, o]));
-    const days = Math.max(1, new Set(L.orders.map((o) => String(o.day).slice(0, 10))).size);
+    const days = Math.max(1, new Set(L.orders.map((o) => dayISO(o.day))).size);
     const naked = [...byItem.values()].filter((m) => m.orders.size >= 12).map((m) => {
       const os = [...m.orders].map((id) => oById.get(id));
       const alone = os.filter((o) => ![...o.cats].some((x) => ATTACH_CATS.includes(x)));
@@ -539,8 +549,8 @@ export function register(app, ctx) {
     const smDr = stat(singleMain.filter((o) => o.cats.has("مشروبات")));
     const smNoDr = stat(singleMain.filter((o) => !o.cats.has("مشروبات")));
 
-    const byMonth = [...new Set(O.map((o) => String(o.day).slice(0, 7)))].sort().map((m) => {
-      const s = O.filter((o) => String(o.day).slice(0, 7) === m);
+    const byMonth = [...new Set(O.map((o) => monthISO(o.day)))].sort().map((m) => {
+      const s = O.filter((o) => monthISO(o.day) === m);
       return { month: m, orders: s.length,
         appetizerAttachPct: pct(s.filter((o) => o.cats.has("مقبلات")).length, s.length),
         drinkAttachPct: pct(s.filter((o) => o.cats.has("مشروبات")).length, s.length),
@@ -584,7 +594,7 @@ export function register(app, ctx) {
     const from = dayArg(c.req.query("from"), daysAgoISO(89));
     const to = dayArg(c.req.query("to"), todayISO());
     const L = await loadLines(pool, from, to);
-    const days = Math.max(1, new Set(L.orders.map((o) => String(o.day).slice(0, 10))).size);
+    const days = Math.max(1, new Set(L.orders.map((o) => dayISO(o.day))).size);
     const hours = [];
     for (let h = 0; h < 24; h++) {
       const s = L.orders.filter((o) => o.hour === h);
@@ -824,7 +834,7 @@ export function register(app, ctx) {
     let actual = null;
     try {
       const L = await loadLines(pool, daysAgoISO(29), todayISO());
-      const days = Math.max(1, new Set(L.orders.map((o) => String(o.day).slice(0, 10))).size);
+      const days = Math.max(1, new Set(L.orders.map((o) => dayISO(o.day))).size);
       const totalItemRev = L.rows.reduce((a, r) => a + r.rev, 0);
       // إيراد الفئة الفعلي بالريال/يوم، متدرّج على إجمالي الفواتير الحقيقي
       // (سطور الأصناف مش مغطية كل الطلبات، فالنسبة أصدق من الرقم الخام)
