@@ -124,7 +124,30 @@ test("اللي مش بياكل ميزانيته الحالية مبنزوّده�
   const starved = absorptionOf({ name: "مش بتصرف", dailyBudget: 100, spendToday: 20,
     learning: { done: true } });
   assert.equal(starved.absorbs, false);
-  assert.match(starved.why, /بيصرف ٢٠٪ من ميزانيته|بيصرف 20٪/);
+  assert.match(starved.why, /لسه مش بتاكل اللي معاها/);
+  assert.match(starved.why, /المفروض يكونوا اتصرفوا/);
+});
+
+test("نسبة الامتلاء بتتقاس على الجزء اللي عدّى من اليوم مش على اليوم كله", () => {
+  /* الساعة اللي عدّى فيها ربع يوم الحساب: مجموعة صارفة ٩ من ٣٥ ر.س بتكون
+     ماشية مظبوط (المفروض ٨٫٧٥). من غير التطبيع كانت هتتقري ٢٦٪ = «متخنقة»
+     وكل رفع الصبح كان هيتقفل. */
+  const t = { name: "ماشية مظبوط", dailyBudget: 35, spendToday: 9, learning: null };
+  assert.equal(absorptionOf(t, { dayFraction: 0.25 }).absorbs, true);
+  assert.equal(absorptionOf(t, { dayFraction: 1 }).absorbs, false);
+
+  /* واللي فعلاً متخنقة بتفضل متخنقة مهما كان الوقت. */
+  const dead = { name: "متخنقة", dailyBudget: 35, spendToday: 1, learning: null };
+  assert.equal(absorptionOf(dead, { dayFraction: 0.25 }).absorbs, false);
+});
+
+test("مفيش قراءة صرف ≠ صفر صرف — البوابة مبتتقفلش على عمى", () => {
+  const blind = { name: "مش مقروءة", dailyBudget: 35, spendToday: null, learning: null };
+  assert.equal(absorptionOf(blind).absorbs, true);
+  assert.match(absorptionOf(blind).why, /مفيش قراءة صرف/);
+
+  const zero = { name: "صفر حقيقي", dailyBudget: 35, spendToday: 0, learning: null };
+  assert.equal(absorptionOf(zero).absorbs, false);
 });
 
 test("حملة CBO بتورث حالة التعلّم من مجموعاتها — درس ليلة ١٢ أغسطس", () => {
@@ -358,6 +381,60 @@ test("يوم كل حاجة فيه ممتازة: المجموع لسه بيقف �
   const total = activeBudgetOf(rows.filter((r) => r.status === "ACTIVE"));
   assert.ok(total > 290, "لازم يكون كبّر فعلاً");
   assert.ok(total <= ceiling + 0.5, `المجموع النهائي ${total} لازم ≤ ${ceiling}`);
+});
+
+/* ═══ ٦. اللقطة التانية — بيانات حقيقية فيها مرحلة التعلّم ═══════════ */
+
+test("اللقطة الحيّة: المجموعتين على أرقام المالك ٣٥ و١٥ بالظبط", () => {
+  /* اتسجّلت من /api/ads/adsets يوم ٢٠٢٦-٠٨-١٣ بعد ما المنسّق رجّعهم —
+     يعني دي قراءة-رجوع حقيقية مش كلام. */
+  const live = FX.adsetsLive.adsets;
+  const walkin = live.find((a) => a.name === "fc-wa-walkin-5km");
+  const delivery = live.find((a) => a.name === "fc-wa-delivery-10km");
+  assert.equal(walkin.dailyBudget, 35);
+  assert.equal(delivery.dailyBudget, 15);
+  assert.equal(walkin.status, "ACTIVE");
+  assert.equal(delivery.status, "ACTIVE");
+  assert.equal(walkin.campaignId, WA);
+});
+
+test("اللقطة الحيّة: الإيقاع بيوصل المجموعتين، والمتعلّمة بتتساب", () => {
+  /* ميتا **مبترجّعش** learning_stage_info للمجموعتين بتوع واتساب (مش في
+     مرحلة تعلّم)، وبترجّع LEARNING لـ fc-leads-broad-8km. فالتفرقة هنا
+     بيانات حقيقية مش تركيب. */
+  const live = FX.adsetsLive.adsets;
+  const byCampaign = {};
+  for (const a of live) (byCampaign[a.campaignId] ||= []).push(a);
+
+  const rows = Object.entries(byCampaign).map(([cid, kids]) => {
+    const c = FX.campaigns.find((x) => x.id === cid);
+    return {
+      platform: "meta", id: cid, name: c?.name || cid, status: "ACTIVE",
+      dailyBudget: c?.daily_budget != null ? Number(c.daily_budget) / 100 : null,
+      spend: 100, results: 20,
+      adsets: kids.map((a) => ({
+        platform: "meta", id: a.id, name: a.name, campaignId: cid, status: a.status,
+        dailyBudget: a.dailyBudget, learning: a.learning,
+        spend: a.recent?.spend ?? 0,
+        /* صرف النهارده مش مقروء في اللقطة دي (الشباك ٣ أيام) — فبنسيبه
+           null عن قصد، واللي بيثبت إن البوابة مبتتقفلش على عمى. */
+        spendToday: null,
+      })),
+    };
+  });
+
+  const targets = paceTargetsOf(rows);
+  const wa = targets.filter((t) => t.campaignId === WA);
+  assert.deepEqual(wa.map((t) => t.name).sort(), ["fc-wa-delivery-10km", "fc-wa-walkin-5km"]);
+  assert.deepEqual(wa.map((t) => t.dailyBudget).sort((a, b) => a - b), [15, 35]);
+  for (const t of wa) assert.equal(absorptionOf(t).absorbs, true, `${t.name} لازم تبقى في المتناول`);
+
+  /* fc-leads-broad-8km مرجّعة LEARNING فعلاً من ميتا — بتتاخد بخطوة صغيرة
+     مش بتتمنع، لإنها بتصرف. اللي بيتمنع هو LEARNING_LIMITED. */
+  const leads = targets.find((t) => t.name === "fc-leads-broad-8km");
+  assert.equal(leads.learning.status, "LEARNING");
+  assert.equal(leads.level, "adset");
+  assert.equal(leads.dailyBudget, 90);
 });
 
 test("مفتاح الهدف بيفرّق بين الحملة والمجموعة", () => {

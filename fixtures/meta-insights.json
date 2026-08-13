@@ -4421,5 +4421,317 @@
     "conversion_page_views": 0
    }
   }
+ },
+ "adsetsLive": {
+  "note": "لقطة تانية حقيقية من /api/ads/adsets يوم ٢٠٢٦-٠٨-١٣ بعد ما المنسّق رجّع المجموعتين لأرقام المالك. فيها learning_stage_info اللي اللقطة الأولى مكانتش بتطلبه، وصرف النهارده.",
+  "recordedAt": "2026-08-13",
+  "range": {
+   "from": "2026-08-11",
+   "to": "2026-08-13"
+  },
+  "adsets": [
+   {
+    "id": "120249970241680593",
+    "name": "fc-leads-lal3",
+    "campaignId": "120249970233140593",
+    "status": "PAUSED",
+    "effectiveStatus": "PAUSED",
+    "dailyBudget": 40,
+    "learning": {
+     "status": null,
+     "done": false,
+     "learning": false,
+     "limited": false,
+     "conversions": null
+    },
+    "recent": {
+     "from": "2026-08-11",
+     "to": "2026-08-13",
+     "spend": 76.64,
+     "impressions": 9138,
+     "clicks": 775,
+     "results": null,
+     "resultBasis": null
+    }
+   },
+   {
+    "id": "120249970240930593",
+    "name": "fc-leads-broad-8km",
+    "campaignId": "120249970233140593",
+    "status": "ACTIVE",
+    "effectiveStatus": "ACTIVE",
+    "dailyBudget": 90,
+    "learning": {
+     "status": "LEARNING",
+     "done": false,
+     "learning": true,
+     "limited": false,
+     "conversions": 9
+    },
+    "recent": {
+     "from": "2026-08-11",
+     "to": "2026-08-13",
+     "spend": 190.92,
+     "impressions": 22648,
+     "clicks": 1669,
+     "results": 8,
+     "resultBasis": {
+      "web_intent": 8
+     }
+    }
+   },
+   {
+    "id": "120249876180010593",
+    "name": "fc-sales-lal3",
+    "campaignId": "120249876178300593",
+    "status": "ACTIVE",
+    "effectiveStatus": "CAMPAIGN_PAUSED",
+    "dailyBudget": 40,
+    "learning": {
+     "status": null,
+     "done": false,
+     "learning": false,
+     "limited": false,
+     "conversions": null
+    },
+    "recent": {
+     "from": "2026-08-11",
+     "to": "2026-08-13",
+     "spend": null,
+     "impressions": null,
+     "clicks": null,
+     "results": null,
+     "resultBasis": null
+    }
+   },
+   {
+    "id": "120249876178950593",
+    "name": "fc-sales-broad-8km",
+    "campaignId": "120249876178300593",
+    "status": "ACTIVE",
+    "effectiveStatus": "CAMPAIGN_PAUSED",
+    "dailyBudget": 90,
+    "learning": {
+     "status": null,
+     "done": false,
+     "learning": false,
+     "limited": false,
+     "conversions": null
+    },
+    "recent": {
+     "from": "2026-08-11",
+     "to": "2026-08-13",
+     "spend": 0,
+     "impressions": 0,
+     "clicks": 0,
+     "results": null,
+     "resultBasis": null
+    }
+   },
+   {
+    "id": "120249876103970593",
+    "name": "fc-wa-winback",
+    "campaignId": "120249876003980593",
+    "status": "PAUSED",
+    "effectiveStatus": "PAUSED",
+    "dailyBudget": 40,
+    "learning": {
+     "status": null,
+     "done": false,
+     "learning": false,
+     "limited": false,
+     "conversions": null
+    },
+    "recent": {
+     "from": "2026-08-11",
+     "to": "2026-08-13",
+     "spend": null,
+     "impressions": null,
+     "clicks": null,
+     "results": null,
+     "resultBasis": null
+    }
+   },
+   {
+    "id": "120249876095170593",
+    "name": "fc-wa-delivery-10km",
+    "campaignId": "120249876003980593",
+    "status": "ACTIVE",
+    "effectiveStatus": "ACTIVE",
+    "dailyBudget": 15,
+    "learning": {
+     "status": null,
+     "done": false,
+     "learning": false,
+     "limited": false,
+     "conversions": null
+    },
+    "recent": {
+     "from": "2026-08-11",
+     "to": "2026-08-13",
+     "spend": 21.49,
+     "impressions": 2074,
+     "clicks": 88,
+     "results": 6,
+     "resultBasis": {
+      "messaging": 6
+     }
+    }
+   },
+   {
+    "id": "120249876093640593",
+    "name": "fc-wa-walkin-5km",
+    "campaignId": "120249876003980593",
+    "status": "ACTIVE",
+    "effectiveStatus": "ACTIVE",
+    "dailyBudget": 35,
+    "learning": {
+     "status": null,
+     "done": false,
+     "learning": false,
+     "limited": false,
+     "conversions": null
+    },
+    "recent": {
+     "from": "2026-08-11",
+     "to": "2026-08-13",
+     "spend": 45.57,
+     "impressions": 7663,
+     "clicks": 422,
+     "results": 37,
+     "resultBasis": {
+      "messaging": 37
+     }
+    }
+   },
+   {
+    "id": "120249864871500593",
+    "name": "fc-retarget-web14-eng30",
+    "campaignId": "120249864871210593",
+    "status": "PAUSED",
+    "effectiveStatus": "PAUSED",
+    "dailyBudget": null,
+    "learning": {
+     "status": null,
+     "done": false,
+     "learning": false,
+     "limited": false,
+     "conversions": null
+    },
+    "recent": {
+     "from": "2026-08-11",
+     "to": "2026-08-13",
+     "spend": 149.57,
+     "impressions": 12550,
+     "clicks": 711,
+     "results": 2,
+     "resultBasis": {
+      "web_intent": 2
+     }
+    }
+   },
+   {
+    "id": "120249864870370593",
+    "name": "fc-winback-lapsed30",
+    "campaignId": "120249864869930593",
+    "status": "ACTIVE",
+    "effectiveStatus": "CAMPAIGN_PAUSED",
+    "dailyBudget": null,
+    "learning": {
+     "status": null,
+     "done": false,
+     "learning": false,
+     "limited": false,
+     "conversions": null
+    },
+    "recent": {
+     "from": "2026-08-11",
+     "to": "2026-08-13",
+     "spend": null,
+     "impressions": null,
+     "clicks": null,
+     "results": null,
+     "resultBasis": null
+    }
+   },
+   {
+    "id": "120249864867050593",
+    "name": "fc-prospect-lal-interests",
+    "campaignId": "120249864865700593",
+    "status": "PAUSED",
+    "effectiveStatus": "PAUSED",
+    "dailyBudget": null,
+    "learning": {
+     "status": null,
+     "done": false,
+     "learning": false,
+     "limited": false,
+     "conversions": null
+    },
+    "recent": {
+     "from": "2026-08-11",
+     "to": "2026-08-13",
+     "spend": 89.03,
+     "impressions": 9748,
+     "clicks": 359,
+     "results": 4,
+     "resultBasis": {
+      "web_intent": 4
+     }
+    }
+   },
+   {
+    "id": "120249864866270593",
+    "name": "fc-prospect-lal-3pct",
+    "campaignId": "120249864865700593",
+    "status": "PAUSED",
+    "effectiveStatus": "PAUSED",
+    "dailyBudget": null,
+    "learning": {
+     "status": null,
+     "done": false,
+     "learning": false,
+     "limited": false,
+     "conversions": null
+    },
+    "recent": {
+     "from": "2026-08-11",
+     "to": "2026-08-13",
+     "spend": 49.32,
+     "impressions": 3928,
+     "clicks": 175,
+     "results": 2,
+     "resultBasis": {
+      "web_intent": 2
+     }
+    }
+   },
+   {
+    "id": "120249864865030593",
+    "name": "fc-prospect-asc-broad-12km",
+    "campaignId": "120249864864250593",
+    "status": "ACTIVE",
+    "effectiveStatus": "ACTIVE",
+    "dailyBudget": null,
+    "learning": {
+     "status": "LEARNING",
+     "done": false,
+     "learning": true,
+     "limited": false,
+     "conversions": 25
+    },
+    "recent": {
+     "from": "2026-08-11",
+     "to": "2026-08-13",
+     "spend": 226.68,
+     "impressions": 43134,
+     "clicks": 1392,
+     "results": 9,
+     "resultBasis": {
+      "web_intent": 9
+     }
+    }
+   }
+  ]
  }
 }

@@ -352,12 +352,23 @@ export const targetKeyOf = (t) => `${t.platform}:${t.level}:${t.id}`;
 
    والترتيب ده مش تجميل: لو رفعنا اللي متخنق بدل اللي شغّال، بنكون زوّدنا
    الرقم على الورق وبس.                                                     */
-export function absorptionOf(t, { minFillPct = 60 } = {}) {
+/* `dayFraction` = قد إيه عدّى من **يوم الحساب الإعلاني** (٠ → ١).
+   من غيره المقارنة غلط: الساعة ٥ العصر مجموعة بتوزّع ميزانيتها مظبوط بتكون
+   صارفة نص الميزانية، فمقارنتها بميزانية يوم كامل بتقول «٥٠٪ — متخنقة»
+   وتقفل البوابة على كل حاجة الصبح. بنقارن باللي **المفروض** يكون اتصرف
+   لحد دلوقتي.                                                              */
+export function absorptionOf(t, { minFillPct = 60, dayFraction = 1 } = {}) {
   const budget = Number(t.dailyBudget) || 0;
-  const spent = Number(t.spendToday);
-  const fill = budget > 0 && Number.isFinite(spent) ? (spent / budget) * 100 : null;
+  /* `Number(null)` = صفر مش NaN — فلازم نتشيّك على null بإيدنا، وإلا «مفيش
+     قراءة» بتتقري «صرف صفر» وتقفل البوابة على مجموعة إحنا أصلاً عميانين
+     عنها. نفس تفرقة null/0 بتاعة قارئ النتايج بالظبط. */
+  const spent = t.spendToday == null ? NaN : Number(t.spendToday);
+  const frac = Math.min(1, Math.max(0.05, Number(dayFraction) || 1));
+  const expected = budget * frac;
+  const fill = expected > 0 && Number.isFinite(spent) ? (spent / expected) * 100 : null;
   const L = t.learning || {};
-  const fillTxt = fill == null ? "مفيش قراءة صرف لليوم" : `بيصرف ${ar(Math.round(fill))}٪ من ميزانيته`;
+  const fillTxt = fill == null ? "مفيش قراءة صرف لليوم"
+    : `صرف ${ar(Math.round(spent))} من ${ar(Math.round(expected))} ر.س المفروض يكونوا اتصرفوا لحد دلوقتي (${ar(Math.round(fill))}٪)`;
 
   if (L.limited) {
     return { absorbs: false, rank: 0,
@@ -1010,8 +1021,11 @@ export function decidePace(input) {
      للي **بيصرفها فعلاً**. ليلة ١٢ أغسطس كبّرنا ٣ حملات CBO والصرف الإضافي
      طلع صفر لإن مجموعاتها كلها لسه في التعلّم. الترتيب ده هو اللي بيمنع
      تكرار ده. */
+  /* الجزء اللي عدّى من يوم الحساب الإعلاني. `msToRoll` هو الفاضل عليه. */
+  const dayFraction = Number.isFinite(msToRoll)
+    ? Math.min(1, Math.max(0.05, 1 - (msToRoll / 86_400_000))) : 1;
   const ranked = activeRows.slice().map((t) => ({ t, abs: absorptionOf(t, {
-    minFillPct: Number(s.paceMinFillPct ?? 60) }) }))
+    minFillPct: Number(s.paceMinFillPct ?? 60), dayFraction }) }))
     .sort((a, b) => (b.abs.rank - a.abs.rank) || ((Number(b.t.spend) || 0) - (Number(a.t.spend) || 0)));
 
   for (const { t: r, abs } of ranked) {
@@ -2730,7 +2744,7 @@ export function register(app, ctx, deps = {}) {
       const shut = readGate(p.id, priority);
       if (shut) { reasons[p.id] = shut.error; continue; }
       try {
-        const [camps, ins, ads, aIns] = await Promise.all([
+        const [camps, ins, ads, aIns, aToday] = await Promise.all([
           p.campaigns(), p.insights({ from: f, to: t }),
           typeof p.adsetBudgets === "function" ? p.adsetBudgets().catch(() => ({ ok: false, byCampaign: {}, rows: [] }))
             : Promise.resolve({ ok: false, byCampaign: {}, rows: [] }),
@@ -2738,17 +2752,28 @@ export function register(app, ctx, deps = {}) {
              (absorptionOf). لو الأدابتر مبيوفّرهاش بنكمّل من غيرها. */
           typeof p.adsetInsights === "function" ? p.adsetInsights({ from: f, to: t }).catch(() => ({ ok: false, rows: [] }))
             : Promise.resolve({ ok: false, rows: [] }),
+          /* وصرف **النهارده** لوحده. نداء منفصل عن قصد: نسبة الامتلاء
+             بتقارن صرف بميزانية **يومية**، فلو حطينا مجموع شباك ٣ أيام
+             جنب ميزانية يوم واحد الرقم بيطلع ٣ أضعاف الحقيقة — ومجموعة
+             متخنقة بتبان مليانة وتعدّي البوابة. */
+          typeof p.adsetInsights === "function" ? p.adsetInsights({ from: today, to: today }).catch(() => ({ ok: false, rows: [] }))
+            : Promise.resolve({ ok: false, rows: [] }),
         ]);
         if (!camps.ok) { reasons[p.id] = camps.reason; continue; }
         if (!ins.ok) reasons[p.id] = ins.reason;
         const m = new Map((ins.ok ? ins.rows : []).map((x) => [String(x.campaignId), x]));
         const adsetBy = (ads && ads.ok ? ads.byCampaign : null) || {};
         const aIn = new Map((aIns && aIns.ok ? aIns.rows : []).map((x) => [String(x.adsetId), x]));
+        const aTd = new Map((aToday && aToday.ok ? aToday.rows : []).map((x) => [String(x.adsetId), x]));
         const adsetsByCampaign = {};
         for (const a of (ads && ads.ok ? ads.rows : []) || []) {
           const x = aIn.get(String(a.id));
+          const td = aTd.get(String(a.id));
           (adsetsByCampaign[a.campaignId] ||= []).push({
-            ...a, spend: x?.spend ?? 0, spendToday: x?.spend ?? null, results: x?.results ?? null,
+            ...a, spend: x?.spend ?? 0, results: x?.results ?? null,
+            /* null = مقدرناش نقرا صرف النهارده (مش صفر). absorptionOf
+               بتفرّق بين الاتنين — الصفر بيقفل البوابة والـ null بيسيبها. */
+            spendToday: aToday && aToday.ok ? (td?.spend ?? 0) : null,
           });
         }
         for (const c of camps.campaigns) {
