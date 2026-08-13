@@ -958,6 +958,13 @@ export function decidePace(input) {
      متناول الإيقاع تماماً. واللي بنقيس السقف عليه = مجموع الأهداف كلها. */
   const activeRows0 = paceTargetsOf(rows);
   const budgetNow = activeBudgetOf(rows);
+
+  /* حملة ABO شغّالة ومقدرناش نقرا مجموعاتها = جزء من الصرف الحقيقي **مش
+     محسوب** في `budgetNow`. الرفع في الحالة دي بيتبني على مساحة وهمية تحت
+     السقف. بنقف عن الرفع ونقول ليه — التراجع والاسترجاع بيفضلوا شغّالين
+     لإنهم بيقلّلوا الصرف مش بيزوّدوه. */
+  const blindAbo = rows.filter((r) => r.status === "ACTIVE" && r.dailyBudget == null
+    && r.adsetsOk === false);
   const totalCap0 = Number(s.maxTotalBudget) || 1000;
 
   /* ── ٢ب. خرق السقف. السقف الحيّ بينزل لما اليوم يطلع أقل من المتوقّع، وساعتها
@@ -969,6 +976,12 @@ export function decidePace(input) {
   const down0 = pacePct <= Number(s.paceDownThresholdPct);
   if (!up0 && !down0 && !breach) {
     return done(`الإيقاع ${pacePct >= 0 ? "+" : ""}${pacePct}٪ مقابل خط الأساس — جوّه المنطقة الطبيعية (${s.paceDownThresholdPct}٪ إلى ${s.paceUpThresholdPct}٪)، فمفيش داعي نلمس أي ميزانية.`);
+  }
+  if (up0 && !breach && blindAbo.length) {
+    return done(`مقدرناش نقرا المجموعات الإعلانية لـ ${blindAbo.map((r) => `"${r.name}"`).join("، ")} — `
+      + `دي حملات ميزانيتها على مستوى المجموعة، فجزء من الصرف الشغّال دلوقتي مش داخل في الحسبة `
+      + `(${ar(budgetNow)} ر.س اللي شايفينها ناقصة). مش هنرفع على مساحة مش متأكدين إنها موجودة — `
+      + `التراجع والاسترجاع شغّالين عادي. غالباً حد ملط ميتا (User request limit)، والدورة الجاية هتقرا تاني.`);
   }
   const up = up0 && !breach;
   const down = down0 || breach;
@@ -2786,6 +2799,11 @@ export function register(app, ctx, deps = {}) {
             /* المجموعات الإعلانية بتفاصيلها — دي اللي paceTargetsOf بتبني
                عليها أهداف الـ ABO. */
             adsets: adsetsByCampaign[String(c.id)] || [],
+            /* قرينا المجموعات فعلاً ولا النداء وقع؟ ميتا بترمي
+               «User request limit reached» بسهولة، وساعتها اللستة بترجع
+               فاضية — واللستة الفاضية على حملة ABO معناها «ميزانيتها صفر»
+               وده كذب بيفتح مساحة تحت السقف مش موجودة. */
+            adsetsOk: !!(ads && ads.ok),
             spend, results, revenue,
             /* من إيه اتجمعت النتيجة (نية من الموقع / محادثة / شرا) — عشان
                الشاشة والموديل يقولوا رقم واحد بنفس المعنى. */

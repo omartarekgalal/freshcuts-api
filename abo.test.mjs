@@ -437,6 +437,27 @@ test("اللقطة الحيّة: الإيقاع بيوصل المجموعتين�
   assert.equal(leads.dailyBudget, 90);
 });
 
+test("قراءة المجموعات وقعت → مبنرفعش على مساحة وهمية", () => {
+  /* حصلت فعلاً وإحنا بنتأكد: ميتا رمت «User request limit reached» فرجعت
+     لستة المجموعات فاضية. اللستة الفاضية على حملة ABO معناها «صفر ميزانية»
+     — يعني ١٨٠ ر.س بتختفي من الحسبة وتفتح مساحة تحت السقف مش موجودة. */
+  const rows = rowsFromFixture().map((r) => (
+    r.dailyBudget == null && r.status === "ACTIVE"
+      ? { ...r, adsets: [], adsetsOk: false }
+      : { ...r, adsetsOk: true }));
+
+  const out = decidePace(paceInput({ rows, state: new Map() }));
+  assert.equal(out.actions.filter((a) => a.op === "up").length, 0, "ممنوع يرفع وهو أعمى");
+  assert.match(out.gate, /مقدرناش نقرا المجموعات الإعلانية/);
+  assert.match(out.gate, /fc-wa-orders/);
+
+  // ولو القراءة نجحت، الرفع بيرجع عادي
+  const ok = rowsFromFixture().map((r) => ({ ...r, adsetsOk: true,
+    adsets: r.adsets.map((a) => ({ ...a, spendToday: a.dailyBudget, learning: { done: true } })) }));
+  const out2 = decidePace(paceInput({ rows: ok, state: new Map() }));
+  assert.ok(out2.actions.filter((a) => a.op === "up").length > 0);
+});
+
 test("مفتاح الهدف بيفرّق بين الحملة والمجموعة", () => {
   assert.equal(targetKeyOf({ platform: "meta", level: "adset", id: "1" }), "meta:adset:1");
   assert.equal(targetKeyOf({ platform: "meta", level: "campaign", id: "1" }), "meta:campaign:1");
