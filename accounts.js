@@ -54,6 +54,19 @@ export async function sendSms({ phoneNorm, body }) {
   return data;
 }
 
+/* A POS name is only worth adopting when it looks like a NAME. TabSense is
+   full of cashier junk («الاسم الكامل 111111», bare digits, placeholders) —
+   copying that over is worse than leaving the field empty for the customer
+   to fill. */
+export function plausibleName(s) {
+  const v = String(s || "").trim();
+  if (v.length < 2 || v.length > 60) return false;
+  if (/^[\d\s\-_.+]+$/.test(v)) return false;               // digits/punctuation only
+  if (/الاسم الكامل|full ?name|unknown|test|بدون اسم/i.test(v)) return false;
+  if (/^عميل( |$)/.test(v)) return false;                   // our own placeholders
+  return true;
+}
+
 const hashOtp = (phoneNorm, code) =>
   crypto.createHash("sha256").update(`${phoneNorm}|${code}|${env("ADMIN_TOKEN", "otp")}`).digest("hex");
 
@@ -209,13 +222,14 @@ export function register(app, ctx) {
       // البيانات الموجودة على TabSense هي الأصل (طلب عمر 2026-08-14): اسم
       // العميل المسجل هناك بيكسب على اللي اتكتب وقت الدخول — الربط بيحصل
       // مرة واحدة فمفيش دهس متكرر لاسم اختاره العميل بعدها.
+      const tsName = String(known.rows[0].name || "").trim();
       await pool.query(
         `UPDATE acct_customers SET ts_customer_id=$2, ts_sync=$3,
                 name = COALESCE(NULLIF($4,''), name)
           WHERE phone_norm=$1`,
         [phoneNorm, known.rows[0].customer_id,
          jb({ linked: "existing", at: new Date().toISOString() }),
-         String(known.rows[0].name || "").trim()]);
+         plausibleName(tsName) ? tsName : ""]);
       return;
     }
     // genuinely new: create — respecting the silent-reject rules inside
