@@ -314,23 +314,33 @@ export function register(app, ctx, deps = {}) {
     return M(true, rows, `بنداء /go/* على ${STORE_BASE} ومتابعة الوجهة`);
   }
 
-  /* العرض اللي في الإعلانات ومش في المنيو. بيتقاس من نفس الكتالوج اللي
-     بيروح للمنصات — لو الصنف مش هناك، الكاشير مش هيقدر يدقّه. */
-  function comboCheck(catalogRes) {
-    if (!catalogRes.ok) return M(false, null, "من /api/catalog/status", catalogRes.why);
-    const d = catalogRes.data || {};
-    const dineIn = Array.isArray(d.dineInOnly) ? d.dineInOnly : [];
-    const has70 = dineIn.some((x) => /٧٠|\b70\b/.test(String(x.title || "")));
-    return M(true, { has70, dineInTitles: dineIn.map((x) => x.title) },
-      "من الكتالوج اللي بيروح للمنصات (/api/catalog/status)");
+  /* عرض الـ٧٠ ريال. مش صنف في نقطة البيع ومش هيبقى — الكاشير بيخصم يدوي على
+     التلات سطور. فاللي بنقيسه اتغيّر: مش «هل الصنف اتضاف للمنيو» (سؤال غلط
+     من الأساس) لكن «هل العرض متسجّل في offers.js وشغّال النهاردة، وهل السعر
+     وصل فعلاً للكتالوج اللي المنصات وحارس الأسعار بيقروا منه». */
+  function comboCheck(catalogRes, offersRes) {
+    if (!offersRes.ok) return M(false, null, "من /api/offers", offersRes.why);
+    const live = (offersRes.data?.offers || []).find((o) => o.id === "combo70") || null;
+    const dineIn = catalogRes.ok && Array.isArray(catalogRes.data?.dineInOnly)
+      ? catalogRes.data.dineInOnly : [];
+    const inCatalog = dineIn.some((x) => /٧٠|\b70\b/.test(String(x.title || "")));
+    return M(true, {
+      has70: !!live && inCatalog,
+      registered: !!live,
+      inCatalog,
+      until: live?.until || null,
+      daysLeft: live?.daysLeft ?? null,
+      dineInTitles: dineIn.map((x) => x.title),
+    }, "من سجلّ العروض (/api/offers) + الكتالوج اللي بيروح للمنصات (/api/catalog/status)");
   }
 
   async function build(auth) {
-    const [ads, apHealth, catalog, content, aud, instore, tracking, go, live, orphans, geo] =
+    const [ads, apHealth, catalog, offersRes, content, aud, instore, tracking, go, live, orphans, geo] =
       await Promise.all([
         inner("/api/ads/status", auth),
         inner("/api/autopilot/health", auth),
         inner("/api/catalog/status", auth),
+        inner("/api/offers", auth),
         inner("/api/content/status", auth),
         inner("/api/audiences/status", auth),
         inner("/api/attribution/instore-health", auth),
@@ -462,7 +472,7 @@ export function register(app, ctx, deps = {}) {
     });
 
     /* ── ٤) قايمة المالك، مقيسة حيثما أمكن ──────────────────────────── */
-    const combo = comboCheck(catalog);
+    const combo = comboCheck(catalog, offersRes);
     const tagRate = instore.ok
       ? M(true, instore.data.totals?.tagRate ?? null, "من /api/attribution/instore-health")
       : M(false, null, "من /api/attribution/instore-health", instore.why);
@@ -537,9 +547,15 @@ export function register(app, ctx, deps = {}) {
         // البنود المقيسة بتتحدّث لوحدها من الواقع — قفلها بالإيد مش بيخفيها
         // لو لسه المشكلة موجودة.
         if (t.id === "menu-combo70" && combo.ok) {
-          row.live = combo.value.has70
-            ? { ok: true, line: "العرض بقى في المنيو ✔" }
-            : { ok: false, line: `لسه مش في المنيو. اللي موجود داخل الصالة: ${combo.value.dineInTitles.join("، ") || "ولا صنف"}` };
+          const v = combo.value;
+          row.live = v.has70
+            ? { ok: true,
+                line: `العرض متسجّل وشغّال، والسعر موثّق في الكتالوج ✔ — بينتهي ${v.until}`
+                  + (v.daysLeft != null ? ` (فاضل ${v.daysLeft} يوم، وبيختفي لوحده)` : "") }
+            : { ok: false,
+                line: !v.registered
+                  ? "العرض مش متسجّل أو تاريخه عدّى — الإعلانات لازم توقف."
+                  : `متسجّل بس لسه مش في الكتالوج. اللي موجود داخل الصالة: ${v.dineInTitles.join("، ") || "ولا صنف"}` };
         }
         if (t.id === "cashier-tagging" && tagRate.ok && tagRate.value != null) {
           const pct = Math.round(tagRate.value * 1000) / 10;
@@ -766,12 +782,16 @@ const SEED_TASKS = [
   },
   {
     id: "menu-combo70", rank: 5, measured: true,
-    title: "ضيف عرض الـ ٧٠ ريال على نقطة البيع",
-    why: "الإعلانات والبوستات بتقول «بيتزا + باستا + كريب — ٧٠ ريال»، والصنف ده مش موجود في المنيو "
-      + "أصلاً. يعني العميل بيدخل يطلبه والكاشير مش لاقيه. بندفع على الضغطة وبنخسر العميل.",
-    prevents: "إن العرض اللي بندفع عليه إعلانات يتباع.",
-    screen: "TabSense ← المنيو ← إضافة صنف (صفحة العروض)",
-    button: "أضف صنف: «بيتزا + باستا + كريب — ٧٠ ريال — داخل الصالة فقط»",
+    title: "عرض الـ ٧٠ ريال — مسجّل ومتحقَّق منه",
+    why: "العرض بيتدق بخصم يدوي على كل سطر لحد ما التلات أصناف يوصلوا ٧٠ — مش صنف في المنيو "
+      + "ومش المفروض يبقى صنف. اللي كان ناقص هو **مصدر موثّق للسعر**: من غيره حارس الأسعار "
+      + "كان بيرفض ينشر تصميم العرض (وكان محق)، والكتالوج اللي بيروح لميتا ماكانش يعرف إن "
+      + "العرض موجود أصلاً. دلوقتي العرض متسجّل في offers.js: الاسم والمكوّنات والسعر "
+      + "و«داخل الصالة فقط» وتاريخ الانتهاء ٣١ أغسطس ٢٠٢٦ — وكل سطح بيقرا من هناك.",
+    prevents: "إننا ندفع إعلانات على عرض مالوش سعر موثّق، أو نفضل نعلنه بعد ما ينتهي.",
+    screen: "لوحة التسويق ← الفحص — والرقم اللي تحت بيتقاس لوحده",
+    button: "مفيش زرار: العرض بيختفي من الكتالوج والمتجر والتصاميم لوحده بعد ٣١ أغسطس",
+    note: "لو العرض هيتمدّ بعد أغسطس، التاريخ بيتغيّر في مكان واحد: offers.js ← OFFERS[combo70].until",
   },
   {
     id: "cashier-tagging", rank: 6, measured: true,

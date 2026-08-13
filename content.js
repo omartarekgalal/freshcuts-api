@@ -31,6 +31,17 @@
 
 import crypto from "node:crypto";
 import { httpJson } from "./ads.js";
+import { activeOffers, offerById } from "./offers.js";
+
+/* أي فكرة محتوى بتبيع عرض له تاريخ انتهاء. الربط بس — تعريف العرض نفسه
+   (السعر، الصالة، التاريخ) عند offers.js ومش بيتكرر هنا.
+
+   ملحوظة مقصودة: `tt_delivery_vs_hall` **مش** هنا. الفيديو ده بيشرح ليه
+   العروض داخل الصالة، وصينية اللمّة عرض دايم — فهو بيفضل صالح بعد ما عرض
+   الـ٧٠ يخلص. */
+const IDEA_OFFER = {
+  tt_70_combo: "combo70",
+};
 
 const newId = (p) => `${p}_${crypto.randomBytes(6).toString("hex")}`;
 
@@ -986,8 +997,23 @@ export function register(app, ctx) {
   app.get("/api/content/tiktok/ideas", async (c) => {
     const err = await requireAdmin(c); if (err) return err;
     const r = await pool.query("SELECT * FROM content_tiktok_ideas ORDER BY sort, created_at");
+    /* فكرة مربوطة بعرض له تاريخ انتهاء بتقع من التقويم يوم ما العرض يخلص.
+       بنقولها بصوت عالي في `hidden` مش بنخفيها بالساكت — فكرة بتختفي من غير
+       سبب بتخلّي حد يفتكر إن فيه باج ويرجّعها بالإيد. */
+    const liveOffers = new Set(activeOffers().map((o) => o.id));
+    const shown = [], hidden = [];
+    for (const row of r.rows) {
+      const offerId = IDEA_OFFER[row.id];
+      const o = offerId ? offerById(offerId) : null;
+      if (o && !liveOffers.has(offerId)) {
+        hidden.push({ id: row.id, title: row.title, offer: offerId, until: o.until });
+      } else shown.push(o ? { ...ideaRow(row), offer: offerId, offerUntil: o.until } : ideaRow(row));
+    }
     return c.json({
-      ok: true, ideas: r.rows.map(ideaRow),
+      ok: true, ideas: shown,
+      hidden: hidden.length
+        ? { count: hidden.length, why: "أفكار لعرض عدّى تاريخه — وقعت من التقويم لوحدها", items: hidden }
+        : null,
       publishing: { auto: false, why: "تطبيق الـ API بتاع حساب تيك توك اترفض — التصوير والنشر بالإيد" },
     });
   });

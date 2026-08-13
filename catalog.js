@@ -14,6 +14,8 @@
    storefront can deep-link into the item sheet.
 ═══════════════════════════════════════════════════════════════════════════ */
 
+import { activeOffers, publicOffer } from "./offers.js";
+
 const STORE_BASE = process.env.CATALOG_MENU_BASE || "https://order.o2m8.me";
 const BRAND = "Fresh Cuts";
 const CACHE_MS = 10 * 60_000;
@@ -61,6 +63,29 @@ let lastPush = { at: null, ids: null, upload: null, error: null, skipped: null }
    and the offers strip — so the pattern is what will catch it if it is ever
    added to the menu. */
 const DINE_IN_NOTE = "داخل الصالة فقط";
+
+/* ── العروض اللي مش أصناف في نقطة البيع ────────────────────────────────────
+   عرض «بيتزا + باستا + كريب ٧٠ ر.س» مالوش صنف في TabSense — الكاشير بيخصم
+   يدوي على التلات سطور لحد ما المجموع يوصل ٧٠. لكنه **عرض حقيقي معلن**،
+   فلازم يبقى في الكتالوج اللي بيروح للمنصات، وبنفس ملاحظة الصالة.
+
+   التعريف عند offers.js (اسم واحد، سعر واحد، تاريخ انتهاء واحد) وإحنا هنا
+   بنقراه بس. `activeOffers()` بتسقط أي عرض عدّى تاريخه، فالصف بيختفي من
+   الـfeed لوحده يوم ١ سبتمبر — ووقتها price-guard يرجع يرفض الرقم ٧٠ تاني،
+   لأنه مبقاش موثّق. مفيش حد محتاج يفتكر يشيله. */
+const offerRow = (o) => ({
+  id: o.productId,
+  title: o.catalogTitle,
+  description: o.desc,
+  price: Number(o.price),
+  // صورة العرض نفسه. **مش** بنستعير صورة من فئة "Offers" لو ناقصة: أقرب
+  // جار هناك هو صينية اللمّة، وكارت DPA بصورة صينية مشاوي على عرض بيتزا
+  // وباستا وكريب كذب بصري — أهون منه صف من غير صورة.
+  image: o.image || "",
+  category: "Offers",
+  dineIn: !!o.dineInOnly,
+  isOffer: true,
+});
 // Dashboard-managed list (settings.catalog.dineInIds) merged over the env
 // default — Omar asked to control dine-in-only items from the panel, and a
 // settings edit must not need a redeploy. Refreshed by register() below.
@@ -124,6 +149,14 @@ async function fetchMenu() {
       rows.push(row);
     }
   }
+  // العروض المسجّلة والشغّالة النهاردة بتتحط بعد أصناف المنيو عشان تاخد صورة
+  // مستعارة من فئة "Offers" لو موجودة (ميتا بترفض صف من غير صورة).
+  for (const o of activeOffers()) {
+    const r = offerRow(o);
+    r.title = withNote(r.title).slice(0, 200);
+    r.description = withNote(r.description).slice(0, 500);
+    rows.push(r);
+  }
   return fillMissingImages(rows);
 }
 
@@ -146,7 +179,7 @@ function fillMissingImages(rows) {
   const withImage = rows.filter((r) => r.image);
   if (!withImage.length) return rows;
   for (const r of rows) {
-    if (r.image) continue;
+    if (r.image || r.isOffer) continue;
     const want = new Set(normName(r.title).split(" ").filter(Boolean));
     let best = null, bestScore = 0;
     for (const cand of withImage) {
@@ -265,7 +298,15 @@ export function register(app, ctx) {
       ids = [...new Set([...ids, ...rows.filter((r) => r.dineIn).map((r) => r.id)])];
     } catch { /* fall back to the configured ids */ }
     c.header("Cache-Control", "public, max-age=300");
-    return c.json({ ok: true, note: DINE_IN_NOTE, ids });
+    // العروض المسجّلة بترجع كمان: مش أصناف في المنيو فمالهاش id تتبادج بيه،
+    // لكن المتجر محتاج يعرضها في شريط العروض بنفس ملاحظة الصالة — ومن نفس
+    // المصدر، عشان ما يبقاش فيه صنف مكتوب عليه صالة في الكتالوج وأونلاين
+    // على الموقع.
+    const now = new Date();
+    return c.json({
+      ok: true, note: DINE_IN_NOTE, ids,
+      offers: activeOffers(now).map((o) => publicOffer(o, now)),
+    });
   });
 
   app.get("/api/catalog/status", async (c) => {

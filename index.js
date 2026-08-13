@@ -30,6 +30,7 @@ import * as audiences from "./audiences.js";
 import * as autopilot from "./autopilot.js";
 import * as attribution from "./attribution.js";
 import * as catalog from "./catalog.js";
+import * as offers from "./offers.js";
 import * as promo from "./promo.js";
 import * as hub from "./hub.js";
 import * as content from "./content.js";
@@ -2960,6 +2961,14 @@ let promoApi = null;
 attribApi = attribution.register(app, moduleCtx, { promo: () => promoApi });
 const funnelApi = funnel.register(app, moduleCtx, { attribution: attribApi });
 catalog.register(app, moduleCtx);
+// العروض اللي مش أصناف في نقطة البيع (عرض الـ٧٠ ريال). التعريف عند offers.js
+// وcatalog.js بيقرا منه — فبيتسجّل بعده. بياخد menuRows في deps بدل ما
+// يستوردها، عشان ما يبقاش فيه استيراد دائري بين الملفين، وdeliveryApps من
+// analytics عشان قياس الاكتساب يستعمل نفس تعريف «ده طلب تطبيق توصيل».
+offers.register(app, moduleCtx, {
+  menuRows: catalog.menuRows,
+  deliveryApps: analyticsApi.deliveryApps,
+});
 const audApi = audiences.register(app, moduleCtx);
 // صحّة التتبع: بيقرا من نفس الجداول اللي الإرسال بيكتب فيها + اعتراف ميتا نفسه.
 // بياخد ads (عشان نفس دالة مطابقة الكاتالوج اللي الحمولة بتستخدمها) والكاتالوج.
