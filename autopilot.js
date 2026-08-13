@@ -2125,6 +2125,19 @@ export function register(app, ctx, deps = {}) {
       );
       CREATE INDEX IF NOT EXISTS ap_claims_open_idx ON ap_claims(settled_at, platform);
     `);
+
+    /* دورات ماتت في نُصّها. النشر بيقتل العملية جوّه الدورة، فالصف بيفضل
+       `running` للأبد — وكل نشرة بتزوّد واحدة. القفل نفسه في الذاكرة مش في
+       الداتابيز، فدول مش بيقفلوا حاجة؛ بس أي شاشة بتقرا «في دورة شغالة
+       دلوقتي» بتفضل تكدب، والعدّاد بيكبر لحد ما يبقى ضوضاء.
+
+       التنضيف وقت التشغيل هو المكان الصح: إحنا لسه بندأ، فأي صف مكتوب
+       `running` من عملية قديمة هو بالتعريف صف اتقطع. بنسميه `interrupted`
+       مش `error` — العملية ماتت، الدورة مافشلتش. */
+    const r = await pool.query(
+      `UPDATE ap_runs SET status='interrupted', finished_at=COALESCE(finished_at, NOW())
+        WHERE status='running' AND started_at < NOW() - interval '30 minutes'`);
+    if (r.rowCount) console.log(`[autopilot] closed ${r.rowCount} interrupted run(s) from a previous process`);
   }
   ensureSchema()
     .then(() => console.log("[autopilot] schema ready"))

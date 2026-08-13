@@ -232,8 +232,17 @@ export function register(app, ctx, deps = {}) {
         return M(false, null, "من ميتا مباشرة",
           `${e.type || res.status}${e.code ? ` ${e.code}` : ""}: ${String(e.message || "").slice(0, 120)}`);
       }
-      const live = (j?.data || []).filter((a) => a.effective_status === "ACTIVE");
-      const rows = live.map((a) => {
+      /* بنفحص الموقوفة كمان، مش الشغّالة بس — وده مقصود.
+
+         أول نسخة فحصت ACTIVE بس وطلعت «٤ من ٤ مضبوطة ✔»، وده كان صح
+         ومضلِّل في نفس الوقت: المجموعات الأربعة الغلط (retarget-web14،
+         winback-lapsed30، dpa-retarget-14d، vip-bundle-weekend) كانت
+         كلها موقوفة ساعة الفحص. يعني الشاشة كانت هتقول «كله تمام» عن
+         حساب فيه أربع قنابل موقوتة — أول ما حد يعيد تشغيلهم يرجع نفس
+         الصرف الضايع من غير أي تحذير.
+
+         فالعطل الموقوف بيتعدّ عطل، بس في خانة لوحده. */
+      const rows = (j?.data || []).map((a) => {
         const t = a.targeting || {};
         const g = t.geo_locations || {};
         const countryOnly = Array.isArray(g.countries) && g.countries.length > 0
@@ -243,6 +252,7 @@ export function register(app, ctx, deps = {}) {
         const radii = (g.custom_locations || []).map((c) => `${c.radius} ${c.distance_unit || "km"}`);
         return {
           id: String(a.id), name: a.name || "",
+          live: a.effective_status === "ACTIVE",
           countryOnly, expanded, radii,
           geoLabel: countryOnly ? `دولة كاملة (${g.countries.join("، ")})`
             : radii.length ? `دايرة ${radii.join("، ")}`
@@ -250,11 +260,14 @@ export function register(app, ctx, deps = {}) {
           bad: countryOnly || expanded,
         };
       });
+      const bad = rows.filter((r) => r.bad);
       const val = M(true, {
         checked: rows.length,
-        bad: rows.filter((r) => r.bad),
-        good: rows.filter((r) => !r.bad).length,
-      }, `من ميتا مباشرة — ${rows.length} مجموعة شغّالة`);
+        liveChecked: rows.filter((r) => r.live).length,
+        bad: bad.filter((r) => r.live),        // بتصرف غلط دلوقتي
+        badPaused: bad.filter((r) => !r.live), // موقوفة، وهترجع تصرف غلط لو اتشغّلت
+        good: rows.length - bad.length,
+      }, `من ميتا مباشرة — ${rows.length} مجموعة (شغّالة وموقوفة)`);
       geoCache = { at: Date.now(), val };
       return val;
     } catch (e) {
@@ -419,11 +432,13 @@ export function register(app, ctx, deps = {}) {
       });
     }
 
-    if (orphans && orphans.n > 0) problems.push({
+    // الدورات المقطوعة بتتقفل لوحدها عند كل تشغيل دلوقتي، فلو لسه فيه
+    // عدد كبير هنا يبقى في حاجة تانية بتسيبهم مفتوحين.
+    if (orphans && orphans.n > 2) problems.push({
       rank: 9, tone: "warn", who: "us", from: "الجدولة",
-      line: `${orphans.n} دورة مسجّلة «شغالة» وهي مماتتش خلاص — النشر قطعها في نُصّها.`,
+      line: `${orphans.n} دورة لسه مسجّلة «شغالة» رغم إن التنضيف بيشتغل عند كل تشغيل — يبقى في حاجة بتفتحهم من غير ما تقفلهم.`,
       prevents: "مش بيأثر على الشغل نفسه، بس بيوسّخ السجل.",
-      action: { what: "تنضيف من عندنا.", screen: "—", button: "—" },
+      action: { what: "فحص من عندنا.", screen: "—", button: "—" },
     });
 
     /* ── ٤) قايمة المالك، مقيسة حيثما أمكن ──────────────────────────── */
@@ -436,18 +451,30 @@ export function register(app, ctx, deps = {}) {
 
     /* الاستهداف: مجموعة واحدة على دولة كاملة أو بتوسيع جمهور بتحرق ميزانيتها
        على ناس مش هيطلبوا. ودي مش «ملاحظة» — دي صرف مباشر. */
+    const geoAct = {
+      what: "قصّر النطاق على جدة واقفل توسيع الجمهور في المجموعات دي.",
+      screen: "Meta Ads Manager ← المجموعة الإعلانية ← الجمهور ← الموقع",
+      button: "غيّر لـ«دايرة حوالين جدة» + شيل علامة Advantage audience",
+    };
     if (geo.ok && geo.value.bad.length) {
       problems.push({
         rank: 4, tone: "bad", who: "owner", from: "الاستهداف",
-        line: `${geo.value.bad.length} مجموعة إعلانية شغّالة مستهدفة غلط — دولة كاملة بدل جدة، أو توسيع الجمهور مفتوح.`,
-        prevents: "إن فلوس الإعلان توصل لناس تقدر تطلب فعلاً. ده بيفسد الأرقام كمان: "
+        line: `${geo.value.bad.length} مجموعة إعلانية شغّالة دلوقتي مستهدفة غلط — دولة كاملة بدل جدة، أو توسيع الجمهور مفتوح.`,
+        prevents: "إن فلوس الإعلان توصل لناس تقدر تطلب فعلاً. وبيفسد الأرقام كمان: "
           + "المجموعة اللي بتوصل لكل السعودية بتطلع «غالية» وهي مش بتقيس اللي إحنا فاكرينه.",
         detail: geo.value.bad.map((r) => `${r.name}: ${r.geoLabel}${r.expanded ? " + توسيع الجمهور مفتوح" : ""}`),
-        action: {
-          what: "قصّر النطاق على جدة واقفل توسيع الجمهور في المجموعات دي.",
-          screen: "Meta Ads Manager ← المجموعة الإعلانية ← الجمهور ← الموقع",
-          button: "غيّر لـ«دايرة حوالين جدة» + شيل علامة Advantage audience",
-        },
+        action: geoAct,
+      });
+    }
+    /* الموقوفة: مش بتصرف دلوقتي، فمش «واقعة» — بس أول ما تتشغّل ترجع تصرف
+       غلط من غير أي تحذير. تحذير مؤجّل أحسن من مفاجأة. */
+    if (geo.ok && geo.value.badPaused.length) {
+      problems.push({
+        rank: 10, tone: "warn", who: "owner", from: "الاستهداف",
+        line: `${geo.value.badPaused.length} مجموعة موقوفة مستهدفة غلط — مش بتصرف دلوقتي، بس لو اتشغّلت هتصرف على السعودية كلها.`,
+        prevents: "مفيش حاجة دلوقتي. ده تحذير قبل ما حد يعيد تشغيلهم.",
+        detail: geo.value.badPaused.map((r) => `${r.name}: ${r.geoLabel}${r.expanded ? " + توسيع الجمهور مفتوح" : ""}`),
+        action: geoAct,
       });
     }
     if (!geo.ok) {
@@ -505,11 +532,16 @@ export function register(app, ctx, deps = {}) {
             : { ok: true, line: "كل الروابط بقت حقيقية ✔" };
         }
         if (t.id === "meta-geo") {
-          row.live = geo.ok
-            ? (geo.value.bad.length
-              ? { ok: false, line: `${geo.value.bad.length} مجموعة لسه مستهدفة غلط: ${geo.value.bad.map((r) => r.name).join("، ")}` }
-              : { ok: true, line: `كل الـ${geo.value.checked} مجموعة الشغّالة مستهدفة صح ✔` })
-            : { ok: false, line: `مقدرناش نفحص — ${geo.why}` };
+          if (!geo.ok) row.live = { ok: false, line: `مقدرناش نفحص — ${geo.why}` };
+          else {
+            const b = geo.value.bad, bp = geo.value.badPaused;
+            const parts = [];
+            if (b.length) parts.push(`${b.length} شغّالة غلط: ${b.map((r) => r.name).join("، ")}`);
+            if (bp.length) parts.push(`${bp.length} موقوفة غلط (هترجع تصرف لو اتشغّلت): ${bp.map((r) => r.name).join("، ")}`);
+            row.live = parts.length
+              ? { ok: false, line: parts.join(" · ") }
+              : { ok: true, line: `كل الـ${geo.value.checked} مجموعة (شغّالة وموقوفة) مستهدفة صح ✔` };
+          }
         }
         if (t.id === "tiktok-oauth" && evidence.tiktokBlocked.ok) {
           row.live = evidence.tiktokBlocked.value === false
