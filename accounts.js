@@ -82,6 +82,10 @@ export function register(app, ctx) {
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
         last_login_at TIMESTAMPTZ
       );
+      -- خصم دائم لعميل بعينه (الملاك 50% مثلاً): بينزل تلقائياً في الشيك أوت
+      -- بمجرد ما رقمه يتكتب — مش محتاج حتى تسجيل دخول.
+      ALTER TABLE acct_customers ADD COLUMN IF NOT EXISTS discount_percent NUMERIC NOT NULL DEFAULT 0;
+      ALTER TABLE acct_customers ADD COLUMN IF NOT EXISTS discount_label TEXT;
       CREATE TABLE IF NOT EXISTS acct_otp (
         phone_norm TEXT PRIMARY KEY,
         code_hash TEXT NOT NULL,
@@ -296,15 +300,46 @@ export function register(app, ctx) {
   app.get("/api/account/admin/list", async (c) => {
     const err = await requireAdmin(c); if (err) return err;
     const rows = (await pool.query(
-      `SELECT a.phone_norm, a.name, a.ts_customer_id, a.created_at, a.last_login_at,
+      `SELECT a.phone_norm, a.name, a.ts_customer_id, a.discount_percent, a.discount_label,
+              a.created_at, a.last_login_at,
               count(o.order_no)::int AS online_orders,
               COALESCE(sum(o.total),0)::numeric AS online_spend
          FROM acct_customers a
          LEFT JOIN shop_orders o ON o.phone_norm = a.phone_norm AND o.status NOT IN ('expired','pending_payment')
         GROUP BY a.phone_norm
-        ORDER BY a.created_at DESC LIMIT 500`)).rows;
+        ORDER BY a.discount_percent DESC, a.created_at DESC LIMIT 500`)).rows;
     return c.json({ ok: true, accounts: rows });
   });
 
-  return { customerOf, sendSms };
+  /* admin: grant/update/remove a standing discount for one phone. Creates the
+     account row if the person never logged in — the discount works from the
+     first order either way. */
+  app.post("/api/account/admin/discount", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    let b = {};
+    try { b = await c.req.json(); } catch { return c.json({ ok: false, error: "bad json" }, 400); }
+    const phone = normPhone(b.phone);
+    if (!/^5\d{8}$/.test(phone)) return c.json({ ok: false, error: "invalid_phone" }, 400);
+    const pct = Math.max(0, Math.min(100, Number(b.percent) || 0));
+    await pool.query(
+      `INSERT INTO acct_customers(phone_norm, name, discount_percent, discount_label)
+       VALUES ($1,$2,$3,$4)
+       ON CONFLICT (phone_norm) DO UPDATE SET
+         discount_percent=$3, discount_label=$4,
+         name = COALESCE(acct_customers.name, EXCLUDED.name)`,
+      [phone, String(b.name || "").trim().slice(0, 60) || null, pct,
+       pct > 0 ? String(b.label || "خصم خاص").slice(0, 40) : null]);
+    return c.json({ ok: true, phone, percent: pct });
+  });
+
+  /* shop.js asks: does this phone carry a standing discount? */
+  async function customerDiscount(phoneNorm) {
+    const r = await pool.query(
+      "SELECT discount_percent, discount_label FROM acct_customers WHERE phone_norm=$1", [phoneNorm]);
+    const row = r.rows[0];
+    if (!row || !(Number(row.discount_percent) > 0)) return null;
+    return { percent: Number(row.discount_percent), label: row.discount_label || "خصم خاص" };
+  }
+
+  return { customerOf, sendSms, customerDiscount };
 }

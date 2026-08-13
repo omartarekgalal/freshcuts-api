@@ -61,8 +61,15 @@ let lastPush = { at: null, ids: null, upload: null, error: null, skipped: null }
    and the offers strip — so the pattern is what will catch it if it is ever
    added to the menu. */
 const DINE_IN_NOTE = "داخل الصالة فقط";
+// Dashboard-managed list (settings.catalog.dineInIds) merged over the env
+// default — Omar asked to control dine-in-only items from the panel, and a
+// settings edit must not need a redeploy. Refreshed by register() below.
+let settingsDineIn = [];
 const dineInIds = () =>
-  new Set(String(process.env.CATALOG_DINE_IN_IDS ?? "121").split(",").map((s) => s.trim()).filter(Boolean));
+  new Set([
+    ...String(process.env.CATALOG_DINE_IN_IDS ?? "121").split(","),
+    ...settingsDineIn.map(String),
+  ].map((s) => s.trim()).filter(Boolean));
 const DINE_IN_NAME_RE = /صيني[ةه]\s*اللم[ةه]|بيتزا\s*\+\s*باستا|باستا\s*\+\s*كريب/;
 
 export function isDineInOnly(item) {
@@ -216,7 +223,19 @@ export async function syncCatalog({ force = false } = {}) {
 }
 
 export function register(app, ctx) {
-  const { requireAdmin } = ctx;
+  const { requireAdmin, getSettingsData } = ctx;
+
+  // keep the dine-in list in step with the dashboard (5-minute refresh, and
+  // a fresh read on every /dine-in request below)
+  async function refreshDineIn() {
+    try {
+      const list = (await getSettingsData()).catalog?.dineInIds;
+      if (Array.isArray(list)) settingsDineIn = list;
+      else if (typeof list === "string") settingsDineIn = list.split(",");
+    } catch { /* keep the last known list */ }
+  }
+  refreshDineIn();
+  setInterval(refreshDineIn, 5 * 60_000);
 
   app.get("/api/catalog/feed.csv", async (c) => {
     let rows;
@@ -239,6 +258,7 @@ export function register(app, ctx) {
      sent. One source of truth with the feed above — a dish cannot be labelled
      dine-in in the catalog and unlabelled on the site. */
   app.get("/api/catalog/dine-in", async (c) => {
+    await refreshDineIn(); // the storefront must see a panel edit immediately
     let ids = [...dineInIds()];
     try {
       const rows = await getRows();

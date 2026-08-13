@@ -2991,10 +2991,15 @@ const deliveryApi = deliveryMod.register(app, moduleCtx, { shop: () => shopApi }
 // إشعارات العميل (متصفح/SMS/واتساب بمفاتيح من لوحة التحكم) — قبل shop
 // عشان كل تغيير حالة يعدّي عليها.
 const notifyApi = notify.register(app, moduleCtx);
-shopApi = shop.register(app, moduleCtx, { pay: payApi, delivery: deliveryApi, notify: notifyApi });
+// accounts بترجع customerDiscount اللي الشيك أوت محتاجه (خصم الملاك الدائم) —
+// بس بتتسجل بعد shop، فالربط late-bound بنفس نمط attribution/ads.
+let accountsApi = null;
+shopApi = shop.register(app, moduleCtx, {
+  pay: payApi, delivery: deliveryApi, notify: notifyApi, accounts: () => accountsApi,
+});
 // ملف العميل: دخول OTP، عناوين محفوظة، تاريخ الطلبات وإعادة الطلب، وربط/إنشاء
 // في دفتر عملاء TabSense (الموجود يتربط، الجديد بس هو اللي يتعمل).
-accounts.register(app, moduleCtx);
+accountsApi = accounts.register(app, moduleCtx);
 console.log("[analytics] routes ready");
 console.log(`[ai] routes ready (provider: ${process.env.ANTHROPIC_API_KEY ? "anthropic" : process.env.LITELLM_KEY ? "litellm" : "NOT CONFIGURED"})`);
 

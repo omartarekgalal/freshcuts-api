@@ -40,12 +40,17 @@ const snapPixel = () => env("SNAP_WEB_PIXEL_ID") || env("SNAP_PIXEL_ID");
 
 const EVENT_NAMES = new Set([
   "PageView", "ViewContent", "AddToCart", "InitiateCheckout", "Purchase", "Lead", "Contact",
+  // أضيفت 2026-08-13 لفلو الدفع الأونلاين: فتح شاشة الدفع + إنشاء حساب —
+  // الاتنين إشارات تحسين قوية لخوارزميات المنصات.
+  "AddPaymentInfo", "CompleteRegistration",
 ]);
 // Meta name → TikTok / Snap vocabulary.
 const TT_NAME = { PageView: "Pageview", ViewContent: "ViewContent", AddToCart: "AddToCart",
-  InitiateCheckout: "InitiateCheckout", Purchase: "CompletePayment", Lead: "SubmitForm", Contact: "Contact" };
+  InitiateCheckout: "InitiateCheckout", Purchase: "CompletePayment", Lead: "SubmitForm", Contact: "Contact",
+  AddPaymentInfo: "AddPaymentInfo", CompleteRegistration: "CompleteRegistration" };
 const SNAP_NAME = { PageView: "PAGE_VIEW", ViewContent: "VIEW_CONTENT", AddToCart: "ADD_CART",
-  InitiateCheckout: "START_CHECKOUT", Purchase: "PURCHASE", Lead: "SIGN_UP", Contact: "CUSTOM_EVENT_1" };
+  InitiateCheckout: "START_CHECKOUT", Purchase: "PURCHASE", Lead: "SIGN_UP", Contact: "CUSTOM_EVENT_1",
+  AddPaymentInfo: "ADD_BILLING", CompleteRegistration: "SIGN_UP" };
 
 /* ── naive per-IP rate limit: 240 events/hour is far above real browsing ── */
 const rl = new Map();

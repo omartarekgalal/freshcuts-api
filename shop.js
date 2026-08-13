@@ -67,6 +67,7 @@ export function register(app, ctx, deps = {}) {
   const pay = deps.pay;
   const delivery = deps.delivery;
   const notify = deps.notify || null;
+  const accounts = deps.accounts || (() => null); // late-bound — accounts registers after us
 
   async function ensureSchema() {
     await pool.query(`
@@ -147,17 +148,36 @@ export function register(app, ctx, deps = {}) {
       console.error(`[shop] notify failed for ${orderNo}:`, e.message));
   }
 
-  /* ── coupons ── */
+  /* ── coupons ──
+     Two pools answer to the same field: shop_coupons (dashboard-made) first,
+     then the AMBASSADOR codes (the invite system) — Omar asked that the codes
+     already living in the system work on the store too. An ambassador code
+     carries its batch's percentage, burns once (redeemed=true at payment),
+     and the attribution to its ambassador stays intact for free.
+     Caveat (told to Omar): online redemption marks it used HERE — the POS
+     cashier flow has its own promotion check and cannot see ours. */
   async function checkCoupon(codeRaw, subtotal) {
     const code = String(codeRaw || "").trim().toUpperCase();
     if (!code) return null;
     const r = await pool.query("SELECT * FROM shop_coupons WHERE upper(code)=$1", [code]);
     const cp = r.rows[0];
-    if (!cp || !cp.active) return { ok: false, error: "not_found" };
-    if (cp.expires_at && new Date(cp.expires_at) < new Date(new Date().toDateString())) return { ok: false, error: "expired" };
-    if (cp.max_uses != null && cp.used_count >= cp.max_uses) return { ok: false, error: "maxed" };
-    if (Number(subtotal) < Number(cp.min_total)) return { ok: false, error: "min_total", minTotal: Number(cp.min_total) };
-    return { ok: true, code: cp.code, percent: Number(cp.percent) };
+    if (cp) {
+      if (!cp.active) return { ok: false, error: "not_found" };
+      if (cp.expires_at && new Date(cp.expires_at) < new Date(new Date().toDateString())) return { ok: false, error: "expired" };
+      if (cp.max_uses != null && cp.used_count >= cp.max_uses) return { ok: false, error: "maxed" };
+      if (Number(subtotal) < Number(cp.min_total)) return { ok: false, error: "min_total", minTotal: Number(cp.min_total) };
+      return { ok: true, code: cp.code, percent: Number(cp.percent), kind: "coupon" };
+    }
+    const amb = (await pool.query(
+      `SELECT c.code, c.redeemed, b.discount_percent, b.validity_date
+         FROM codes c JOIN batches b ON b.id = c.batch_id
+        WHERE upper(c.code)=$1`, [code])).rows[0];
+    if (!amb) return { ok: false, error: "not_found" };
+    if (amb.redeemed) return { ok: false, error: "maxed" };
+    if (amb.validity_date && new Date(amb.validity_date) < new Date(new Date().toDateString())) {
+      return { ok: false, error: "expired" };
+    }
+    return { ok: true, code: amb.code, percent: Number(amb.discount_percent), kind: "ambassador" };
   }
 
   // PUBLIC — the cart asks before checkout so the customer sees the discount live.
@@ -207,7 +227,10 @@ export function register(app, ctx, deps = {}) {
     return c.json({
       ok: true,
       theme: sf.theme || {},           // {brand, deep, bg, ink, ...} CSS vars
-      texts: sf.texts || {},           // {title, subtitle, banner}
+      texts: sf.texts || {},           // {title, subtitle}
+      // بانرات العروض: [{title, desc, emoji, color, target_item?, active}] —
+      // بتترسم في شريط العروض قبل عروض TabSense، وبتتعدل من اللوحة فوراً.
+      banners: (sf.banners || []).filter((x) => x && x.active !== false),
       allowCash: (s.shop || {}).allowCash === true, // Omar 2026-08-12: online-only by default
     });
   });
@@ -239,7 +262,16 @@ export function register(app, ctx, deps = {}) {
       coupon = await checkCoupon(b.coupon, Number.MAX_SAFE_INTEGER);
       if (coupon && !coupon.ok) return c.json({ ok: false, error: "coupon_" + coupon.error, coupon }, 422);
     }
-    const discountPercent = coupon?.percent || 0;
+    // Standing per-customer discount (الملاك): auto-applies by phone alone.
+    // Never stacks with a coupon — the customer gets whichever is bigger.
+    const standing = await (accounts()?.customerDiscount?.(phoneNorm) ?? null);
+    let discountPercent = coupon?.percent || 0;
+    let discountSource = coupon?.ok ? { kind: coupon.kind, code: coupon.code } : null;
+    if (standing && standing.percent > discountPercent) {
+      discountPercent = standing.percent;
+      discountSource = { kind: "customer", label: standing.label };
+      coupon = null; // the code stays unburnt when the standing discount wins
+    }
 
     // Pass 1: food only, discounted — this is the subtotal the delivery quote
     // (free-over / minimum rules) judges against.
@@ -338,7 +370,7 @@ export function register(app, ctx, deps = {}) {
     return c.json({
       ok: true, orderNo, total, subtotal: r2(total - deliveryFee), deliveryFee, tip,
       discount: discountAmount, coupon: coupon?.ok ? coupon.code : null,
-      feeInPos, currency: "SAR",
+      discountSource, feeInPos, currency: "SAR",
       sessionId: session.SessionId, countryCode: session.CountryCode || "SAU",
     });
   });
@@ -400,10 +432,13 @@ export function register(app, ctx, deps = {}) {
       cols: { mf_payment_id: st.paymentId != null ? String(st.paymentId) : null },
     });
     // The coupon burns exactly when money moved, not at checkout — an
-    // abandoned payment must not eat a limited-use code.
+    // abandoned payment must not eat a limited-use code. Ambassador codes
+    // (not in shop_coupons) mark redeemed instead, keeping their attribution.
     if (row.coupon) {
       pool.query("UPDATE shop_coupons SET used_count = used_count + 1 WHERE code=$1", [row.coupon])
-        .catch((e) => console.error("[shop] coupon count failed:", e.message));
+        .then((up) => up.rowCount ? null : pool.query(
+          "UPDATE codes SET redeemed=true, redeemed_at=NOW(), updated_at=NOW() WHERE upper(code)=upper($1)", [row.coupon]))
+        .catch((e) => console.error("[shop] coupon burn failed:", e.message));
     }
     await createPosOrder(row.order_no);
     const after = await getOrderRow(row.order_no);
@@ -431,11 +466,18 @@ export function register(app, ctx, deps = {}) {
           email: null,
           address: { city: null, area: addr.area || null, country_code: null, street: addr.street || null },
         },
-        notes: [
-          row.option === "delivery" ? "توصيل" : "استلام",
-          "مدفوع أونلاين ✅",
-          row.notes || "",
-        ].filter(Boolean).join(" - "),
+        // Omar's rule (2026-08-13): وقت الطلب ووقت الاستلام في الملاحظات
+        // إجباري. Riyadh clock — the cashier reads this, not a machine.
+        notes: (() => {
+          const hm = (t) => new Date(new Date(t).getTime() + 3 * 3600_000).toISOString().slice(11, 16);
+          return [
+            row.option === "delivery" ? "توصيل" : "استلام",
+            `طُلب ${hm(row.created_at)}`,
+            row.option === "pickup" ? `استلام ${hm(Date.now() + 40 * 60_000)}` : "",
+            "مدفوع أونلاين✅",
+            row.notes || "",
+          ].filter(Boolean).join(" - ");
+        })(),
         paymentMethod: settings.posPaymentMethod || "cash", // → "online" after task-#6 probe + POS setting
         deliveryAddress: addr.street || addr.area || (row.option === "delivery" ? "Delivery" : "Pickup"),
         latitude: addr.latitude, longitude: addr.longitude,
@@ -487,6 +529,9 @@ export function register(app, ctx, deps = {}) {
       label: stage.label, step: stage.step, option: row.option,
       total: Number(row.total), subtotal: Number(row.subtotal),
       deliveryFee: Number(row.delivery_fee), courier,
+      // the id the ad pixels must use for Purchase — same id the offline POS
+      // sync reports, so the platforms de-dupe instead of double counting
+      posOrderId: row.pos_order_id || null,
       createdAt: row.created_at,
     });
   });
