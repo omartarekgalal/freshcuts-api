@@ -108,6 +108,17 @@ export function activeOffers(now = new Date()) {
 
 export const offerById = (id) => OFFERS.find((o) => o.id === id) || null;
 
+/* تاريخ الانتهاء بالعربي، جاهز للعرض. بيتحسب هنا مرة واحدة عشان المتجر
+   والتصميم والفحص يقولوا نفس الجملة بالحرف — مش كل واحد يترجم التاريخ
+   بطريقته. */
+const AR_MONTHS = ["يناير", "فبراير", "مارس", "أبريل", "مايو", "يونيو",
+  "يوليو", "أغسطس", "سبتمبر", "أكتوبر", "نوفمبر", "ديسمبر"];
+export function untilText(o) {
+  if (!o?.until) return "";
+  const [, m, d] = o.until.split("-");
+  return `حتى ${Number(d)} ${AR_MONTHS[Number(m) - 1]}`;
+}
+
 /** الشكل اللي بيتبعت لأي واجهة (المتجر، الحارس، الفحص). */
 export function publicOffer(o, now = new Date()) {
   const st = offerState(o, now);
@@ -127,6 +138,7 @@ export function publicOffer(o, now = new Date()) {
     goal: o.goal,
     from: o.from,
     until: o.until,
+    untilText: untilText(o),
     active: st.active,
     expired: st.ended,
     daysLeft: st.daysLeft,
