@@ -46,6 +46,14 @@
 ═══════════════════════════════════════════════════════════════════════════ */
 
 import crypto from "node:crypto";
+/* «إيه اللي يعتبر بيعة» لازم يبقى تعريف واحد في المشروع كله. الملف ده كان
+   بيسأل عن order_status = 2، وده سؤال تاني خالص: TabSense بيقفل المرتجع
+   والملغي بنفس الحالة ٢. فالفلتر ده كان بيعدّي ٣٢ مرتجع و٤ ملغي كأنهم
+   مبيعات (٩٧٩ ر.س في ٣٠ يوم)، وفي نفس الوقت بيرمي ٣ طلبات حقيقية لسه
+   مقفولة بحالة تانية (٢٦٨ ر.س) — خط أساس متضخّم ١.٩٪. القاعدة اتسحبت من
+   analytics.js بدل نسخة تانية منها، عشان ما تحصلش إن شاشتين يقولوا رقمين
+   لنفس اليوم. */
+import { SALES_ONLY } from "./analytics.js";
 
 const MENU_URL = process.env.MENUPLAN_MENU_URL || "https://order.o2m8.me/api/menu?branch_id=1";
 const RULE_WINDOW_DAYS = Number(process.env.MENUPLAN_WINDOW_DAYS || 120);
@@ -187,7 +195,7 @@ async function loadLines(pool, from, to) {
             extract(hour from (o.order_date AT TIME ZONE 'Asia/Riyadh'))::int local_hour
        FROM ts_order_items i
        JOIN ts_orders o ON o.order_id = i.order_id
-      WHERE o.order_status = 2 AND o.calendar_day BETWEEN $1::date AND $2::date`,
+      WHERE ${SALES_ONLY} AND o.calendar_day BETWEEN $1::date AND $2::date`,
     [from, to])).rows;
 
   const unresolved = new Map();
@@ -219,7 +227,7 @@ async function loadLines(pool, from, to) {
   const cov = (await pool.query(
     `SELECT count(*)::int total,
             count(*) FILTER (WHERE EXISTS (SELECT 1 FROM ts_order_items i WHERE i.order_id=o.order_id))::int with_items
-       FROM ts_orders o WHERE o.order_status=2 AND o.calendar_day BETWEEN $1::date AND $2::date`,
+       FROM ts_orders o WHERE ${SALES_ONLY} AND o.calendar_day BETWEEN $1::date AND $2::date`,
     [from, to])).rows[0];
 
   return {
@@ -812,8 +820,8 @@ export function register(app, ctx) {
       // إيراد الفئة الفعلي بالريال/يوم، متدرّج على إجمالي الفواتير الحقيقي
       // (سطور الأصناف مش مغطية كل الطلبات، فالنسبة أصدق من الرقم الخام)
       const realDaily = (await pool.query(
-        `SELECT COALESCE(sum(total),0)::float rev, count(DISTINCT calendar_day)::int d
-           FROM ts_orders WHERE order_status=2 AND calendar_day >= CURRENT_DATE - 29`)).rows[0];
+        `SELECT COALESCE(sum(o.total),0)::float rev, count(DISTINCT o.calendar_day)::int d
+           FROM ts_orders o WHERE ${SALES_ONLY} AND o.calendar_day >= CURRENT_DATE - 29`)).rows[0];
       const scale = totalItemRev ? (Number(realDaily.rev) / Math.max(1, realDaily.d)) / (totalItemRev / days) : 1;
       actual = { days, scaleNote: "نصيب الفئة من سطور الأصناف × إجمالي المبيعات الحقيقي", byCat: {} };
       for (const cat of ALL_CATS) {
