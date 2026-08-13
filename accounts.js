@@ -69,7 +69,7 @@ function rateLimited(ip, max) {
 }
 
 export function register(app, ctx) {
-  const { pool, requireAdmin, getSettingsData, jb, normPhone } = ctx;
+  const { pool, requireAdmin, getSettingsData, jb, normPhone, deliveryAppOf } = ctx;
 
   async function ensureSchema() {
     await pool.query(`
@@ -206,9 +206,15 @@ export function register(app, ctx) {
     const known = await pool.query(
       "SELECT customer_id, name FROM ts_customers WHERE phone_norm=$1 LIMIT 1", [phoneNorm]);
     if (known.rowCount) {
+      // البيانات الموجودة على TabSense هي الأصل (طلب عمر 2026-08-14): اسم
+      // العميل المسجل هناك بياخد مكان الفراغ، مش العكس.
       await pool.query(
-        "UPDATE acct_customers SET ts_customer_id=$2, ts_sync=$3 WHERE phone_norm=$1",
-        [phoneNorm, known.rows[0].customer_id, jb({ linked: "existing", at: new Date().toISOString() })]);
+        `UPDATE acct_customers SET ts_customer_id=$2, ts_sync=$3,
+                name = COALESCE(name, NULLIF($4,''))
+          WHERE phone_norm=$1`,
+        [phoneNorm, known.rows[0].customer_id,
+         jb({ linked: "existing", at: new Date().toISOString() }),
+         String(known.rows[0].name || "").trim()]);
       return;
     }
     // genuinely new: create — respecting the silent-reject rules inside
@@ -276,8 +282,13 @@ export function register(app, ctx) {
     return c.json({ ok: true, addresses: list });
   });
 
-  /* order history + reorder: items carry product ids/quantities exactly as
-     they went to checkout, so the storefront rebuilds the cart from them. */
+  /* order history: the WHOLE relationship, not just the online slice.
+     Omar 2026-08-14: «العميل لما يسجل دخوله يلاقي طلباته اللي طلبها قبل
+     كده سواء صالة/تيك أواي/توصيل». The POS cache (ts_orders) is joined by
+     the same phone identity the analytics use; orders that ARE our online
+     orders are excluded so nothing shows twice. Online rows keep their
+     items (reorder works); POS rows are display-only — TabSense's public
+     surface doesn't give us their line items. */
   app.get("/api/account/orders", async (c) => {
     const acct = await customerOf(c);
     if (!acct) return c.json({ ok: false, error: "unauthorized" }, 401);
@@ -286,7 +297,35 @@ export function register(app, ctx) {
          FROM shop_orders
         WHERE phone_norm=$1 AND status <> 'expired'
         ORDER BY created_at DESC LIMIT 50`, [acct.phone_norm])).rows;
-    return c.json({ ok: true, orders: rows });
+
+    const settings = await getSettingsData();
+    const pos = (await pool.query(
+      `SELECT o.order_id, o.order_date, o.calendar_day, o.order_option, o.order_type,
+              o.total, o.payments
+         FROM ts_orders o
+         LEFT JOIN order_sources s ON s.order_id = o.order_id
+         LEFT JOIN ts_customers tc ON tc.customer_id = o.customer_id
+        WHERE o.order_type NOT ILIKE '%void%' AND o.order_type NOT ILIKE '%refund%'
+          AND COALESCE(NULLIF(s.phone_norm,''), NULLIF(tc.phone_norm,'')) = $1
+          AND o.order_id NOT IN (SELECT pos_order_id FROM shop_orders WHERE pos_order_id IS NOT NULL)
+        ORDER BY o.order_date DESC NULLS LAST LIMIT 50`, [acct.phone_norm])).rows;
+
+    const posOrders = pos.map((r) => {
+      const app = deliveryAppOf(r.payments, settings);
+      const opt = String(r.order_option || "");
+      const label = app ? `توصيل عبر ${app}`
+        : /external/i.test(String(r.order_type || "")) ? "توصيل تطبيقات"
+        : /take/i.test(opt) ? "تيك أواي"
+        : /deliver/i.test(opt) ? "توصيل المطعم"
+        : "في الصالة";
+      return {
+        kind: "pos", order_id: r.order_id, label,
+        total: Number(r.total) || 0,
+        at: r.order_date || r.calendar_day,
+      };
+    });
+
+    return c.json({ ok: true, orders: rows, posOrders });
   });
 
   app.post("/api/account/logout", async (c) => {
