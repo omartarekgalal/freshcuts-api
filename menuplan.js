@@ -43,6 +43,7 @@
    GET  /api/menuplan/targets      أهداف الإيراد اليومي لكل فئة
    PUT  /api/menuplan/targets      تعديلها من اللوحة
    GET  /api/menuplan/hours        الساعات الميتة وإيراد الساعة لكل فئة
+   POST /api/menuplan/merchandise  ترتيب صفحات المنيو بالإيراد (dryRun افتراضي)
 ═══════════════════════════════════════════════════════════════════════════ */
 
 import crypto from "node:crypto";
@@ -585,6 +586,70 @@ export function register(app, ctx) {
       appetizerMenuPlacement: L.menu.pages.map((p) => ({ page: p.title, position: p.position, of: L.menu.pages.length, items: p.count })),
       coverage: L.coverage,
     });
+  });
+
+  /* ── POST /api/menuplan/merchandise ───────────────────────────────────
+     ترتيب صفحات المنيو بحسب مساهمتها الحقيقية في الإيراد.
+
+     الوضع النهارده: «اضافات» — اللي فيها كل المقبلات وكل المشروبات —
+     آخر صفحة من عشرة. يعني العميل لازم يعدّي ٨٢ طبق قبل ما يشوف كولسلو.
+     و«باستا» تاسعة وهي بتعمل ١٦٪ من الإيراد. الاتنين دفن، بس لسببين
+     مختلفين: الباستا بتخسر طلبات، والمقبلات بتخسر رافعة الفاتورة
+     (+٨.٨٢ ر.س على الطلب اللي فيه طبق رئيسي واحد).
+
+     الترتيب الجديد بيحطّ المقبلات في النص مش في الأول — الأطباق
+     الرئيسية تفضل هي اللي بتفتح المنيو، والمقبلات تبقى في الطريق مش
+     في آخر السكة.
+
+     الافتراضي dryRun: الراوت ده بيكتب في منيو العميل الحي، فمحدش
+     بيغيّره بالغلط. لازم apply=1 صريحة. وبيرجّع دايماً أمر التراجع.  */
+  const MERCH_BEFORE = [38, 39, 21, 23, 25, 40, 41, 42, 24, 26];
+  const MERCH_AFTER = [38, 39, 21, 23, 24, 40, 26, 25, 41, 42];
+  app.post("/api/menuplan/merchandise", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    const apply = c.req.query("apply") === "1";
+    let menu;
+    try { menu = await import("./menu.js"); }
+    catch (e) { return c.json({ ok: false, error: `menu module unavailable: ${e.message}` }, 500); }
+
+    let editor;
+    try { editor = await menu.fetchMenuEditor(menu.EXTERNAL_MENU); }
+    catch (e) { return c.json({ ok: false, error: `TabSense read failed: ${e.message}` }, 502); }
+    const curIds = editor.pages.map((p) => p.id);
+    const titleOf = new Map(editor.pages.map((p) => [p.id, p.localTitle || p.title]));
+
+    // لو المالك زوّد أو شال صفحة، الترتيب المحفوظ هنا بقى قديم — نوقف
+    // بدل ما نرتّب على فرضية باظت.
+    const same = JSON.stringify([...curIds].sort((a, b) => a - b)) === JSON.stringify([...MERCH_BEFORE].sort((a, b) => a - b));
+    if (!same) {
+      return c.json({
+        ok: false, error: "page set changed since this plan was written",
+        current: curIds.map((id) => ({ id, title: titleOf.get(id) })),
+        expected: MERCH_BEFORE,
+        hint: "المنيو اتغيّر — راجع الترتيب المقترح قبل ما تطبّقه.",
+      }, 409);
+    }
+
+    const plan = {
+      before: curIds.map((id, i) => ({ position: i + 1, id, title: titleOf.get(id) })),
+      after: MERCH_AFTER.map((id, i) => ({ position: i + 1, id, title: titleOf.get(id) })),
+      rollback: { endpoint: "POST /api/menuplan/merchandise?apply=1&rollback=1", order: MERCH_BEFORE },
+    };
+    if (!apply) return c.json({ ok: true, dryRun: true, applied: false, plan, note: "ضيف apply=1 عشان يتنفّذ فعلاً." });
+
+    const order = c.req.query("rollback") === "1" ? MERCH_BEFORE : MERCH_AFTER;
+    try {
+      await menu.orderPages(menu.EXTERNAL_MENU, order);
+      const after = await menu.fetchMenuEditor(menu.EXTERNAL_MENU);
+      menuCache = { at: 0, data: menuCache.data, error: null };   // اقرا المنيو من الأول
+      return c.json({
+        ok: true, applied: true, rolledBack: c.req.query("rollback") === "1",
+        result: after.pages.map((p, i) => ({ position: i + 1, id: p.id, title: p.localTitle || p.title })),
+        plan,
+      });
+    } catch (e) {
+      return c.json({ ok: false, error: `reorder failed: ${e.message}`, plan }, 502);
+    }
   });
 
   /* ── GET /api/menuplan/hours ──────────────────────────────────────────
