@@ -118,7 +118,7 @@ async function liveMenu() {
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const j = await res.json();
 
-    const byNorm = new Map();   // اسم موحّد → صنف
+    const byNorm = new Map();   // اسم موحّد → رقم الصنف (مش الكائن — شوف التعليق تحت)
     const byId = new Map();     // product id → صنف
     const catItems = new Map(); // فئة → [أصناف]
     let position = 0;
@@ -140,9 +140,16 @@ async function liveMenu() {
         };
         if (!byId.has(rec.id)) byId.set(rec.id, rec);
         else if (c && !byId.get(rec.id).cat) byId.set(rec.id, rec);   // الصفحة الحقيقية تكسب صفحة العرض
+        /* byNorm بيخزّن رقم الصنف مش الكائن نفسه — وده مش تفصيلة.
+           «وجبة نصف دجاجة على الفحم» بتظهر على صفحتين: «الأكثر طلباً»
+           (صفحة عرض، من غير فئة) و«وجبات» (فئتها الحقيقية = مشاوي).
+           صفحة العرض بتتقرا الأول، فلو خزّنّا الكائن هنا الاسم بيفضل
+           مربوط بالنسخة اللي فئتها null حتى بعد ما byId تتصلّح — يعني
+           أكتر ٦ أصناف مبيعاً بيقعوا من التصنيف كله. التخزين بالرقم
+           والقراءة من byId وقت السؤال بيخلّي الترتيب ما يفرقش. */
         for (const nm of [it.name, it.local_name]) {
           const k = norm(nm);
-          if (k && !byNorm.has(k)) byNorm.set(k, byId.get(rec.id));
+          if (k && !byNorm.has(k)) byNorm.set(k, rec.id);
         }
       }
     }
@@ -165,12 +172,14 @@ async function liveMenu() {
    مفتاحية. اللي بيفشل في الأربعة بيرجع بفئة null ويتعدّ في unresolved. */
 function makeResolver(menu) {
   const cache = new Map();
+  // byNorm بيدي رقم الصنف؛ الفئة الحقيقية بتتقرا من byId وقت السؤال.
+  const rec = (k) => (k == null ? null : menu.byId.get(menu.byNorm.get(k)) || null);
   return (raw) => {
     const n = norm(raw);
     if (cache.has(n)) return cache.get(n);
-    let hit = menu.byNorm.get(n) || null;
-    if (!hit) for (const k of menu.keys) { if (n.startsWith(k + " ")) { hit = menu.byNorm.get(k); break; } }
-    if (!hit) for (const k of menu.keys) { if (k.length >= 7 && n.includes(k)) { hit = menu.byNorm.get(k); break; } }
+    let hit = rec(n);
+    if (!hit) for (const k of menu.keys) { if (n.startsWith(k + " ")) { hit = rec(k); break; } }
+    if (!hit) for (const k of menu.keys) { if (k.length >= 7 && n.includes(k)) { hit = rec(k); break; } }
     let out;
     if (hit) out = { key: norm(hit.name), name: hit.name, cat: hit.cat, price: hit.price, id: hit.id, onMenu: true };
     else {
@@ -633,7 +642,7 @@ export function register(app, ctx) {
       const key = norm(rec.name);
       for (const p of rules.partners.get(key) || []) {
         if (cartKeys.has(p.key)) continue;
-        const cand = menu.byNorm.get(p.key);
+        const cand = menu.byId.get(menu.byNorm.get(p.key));
         if (!cand || !cand.cat) continue;              // لازم يكون على المنيو الحية
         if (cand.id === rec.id) continue;
         const boost = ATTACH_CATS.includes(cand.cat) ? 1.6 : 1;
