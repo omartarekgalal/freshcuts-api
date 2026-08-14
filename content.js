@@ -1050,12 +1050,16 @@ export function register(app, ctx) {
     for (const d of decls) {
       const base = String(d.render || "").split("/").pop();
       if (!base) continue;
+      /* الكادر بيتعمله رندر PNG وبيترفع للتقويم JPG (انستجرام بيفضّلها)،
+         فالمطابقة لازم تتجاهل الامتداد — من غير كده الإقرارات بترتفع كلها
+         وماتلاقيش ولا صورة، والحارس يفضل شايف كل حاجة «من غير إقرار». */
+      const stem = base.replace(/\.[a-z0-9]+$/i, "");
       const dish = (d.dishes || []).filter(Boolean).join(" + ");
       const r = await pool.query(
         `UPDATE content_media
             SET dish = $2, dish_claim = $3, provenance = $4, declared_at = NOW()
-          WHERE filename = $1 RETURNING id`,
-        [base, dish, dish ? "" : "none", JSON.stringify({ render: d.render, pipeline: d.pipeline, guard: b.guard || {} })]);
+          WHERE regexp_replace(filename, '\\.[A-Za-z0-9]+$', '') = $1 RETURNING id`,
+        [stem, dish, dish ? "" : "none", JSON.stringify({ render: d.render, pipeline: d.pipeline, guard: b.guard || {} })]);
       if (r.rowCount) matched += r.rowCount; else unmatched.push(base);
     }
     return c.json({ ok: true, received: decls.length, matched, unmatched });
