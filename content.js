@@ -1047,9 +1047,17 @@ export function register(app, ctx) {
       return { verdict: "pass", block: false, declared, named: named.map((d) => d.core),
                reason: `النص بيسمّي «${coreName(declared)}» والصورة مُقَرّة بيه` };
     }
+    /* الصورة مُقَرّة بصنف، والصنف ده **مش** موجود في النص، والنص كمان
+       مافيهوش أي صنف معروف. ده مش «مافيش تعارض» — ده «مش قادرين نتأكد».
+       اتعلّمناها بالطريقة الوحشة: في اختبار للحارس اتبعت كابشن اتحرق ترميزه،
+       فمالقاش أي اسم صنف، فقال no-dish، فعدّى — واتنشر بوست فعلي على
+       انستجرام بصورة غلط. حارس بيفتح لمّا يعجز عن القراءة مش حارس.
+       في strict بيقف؛ في warn بيعدّي وبيتسجّل عشان يبان في الكشف. */
     if (!named.length) {
-      return { verdict: "no-dish", block: false, declared, named: [],
-               reason: "النص مابيسمّيش صنف معروف — مافيش تعارض" };
+      return {
+        verdict: "unverified", block: GUARD_MODE() === "strict", declared, named: [],
+        reason: `الصورة مُقَرّة إنها «${coreName(declared)}» والنص لا بيسمّيها ولا بيسمّي أي صنف معروف — مش قادرين نتأكد`,
+      };
     }
     return {
       verdict: "mismatch",
