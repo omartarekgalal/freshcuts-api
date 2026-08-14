@@ -227,6 +227,19 @@ const DEFAULT_SETTINGS = {
      الافتراضية ٦٦ = بالظبط الخط اللي كان شغال (٣ × ٢٢) — يعني سلوك القتل
      مبيتغيرش بالتغيير ده ولا خطوة. */
   killCpa: 66,                // SAR/نتيجة — أرضية خط القتل، مش بتتحرك مع targetCpa
+  /* ── أقل عدد نتائج نحكم على تكلفتها ──────────────────────────────────
+     تكلفة النتيجة محسوبة على نتيجة واحدة مش قياس، دي ضوضاء. والمنصات
+     بتبلّغ النتائج متأخرة: في ليلة زحمة الصرف بيتسجّل فوراً والنتايج
+     بتوصل بعد ساعات. يعني حملة عندها نتيجة واحدة في ٣ أيام ممكن يطلع
+     عليها cpa فوق خط القتل من غير ما يكون حصل أي حاجة غير إن الليلة
+     لسه بتتحسب — وتتقفل في عزّ الذروة.
+
+     فالمسار المبني على التكلفة محتاج قياس حقيقي تحته. تحت الرقم ده
+     بنطلع ملاحظة للمالك بدل أمر إيقاف.
+
+     المسار التاني (صفر نتائج + صرف كبير) مش متأثر: «صفر» مش عيّنة صغيرة،
+     دي المنصة بتقول مفيش ولا نية طلب واحدة. */
+  minKillResults: 3,          // أقل نتائج في نافذة الـ ٣ أيام قبل ما تكلفتها توقّف حملة
   maxCampaignBudget: 500,     // SAR/day ceiling per campaign
   maxTotalBudget: 1000,       // احتياطي بس — السقف الحقيقي بيتحسب من المبيعات
                               // (شوف movingCeiling تحت). الرقم ده بيُستعمل لما
@@ -448,6 +461,16 @@ export function decide(rows, s, recentBudgetChanges = new Set()) {
     if (w.results == null && w.spend >= s.minSpend * 2) {
       out.push({ kind: "note", platform: r.platform, campaignId: r.id, campaignName: r.name,
         detail: {}, reason: `صرفت ${fmt(w.spend)} ر.س في ٣ أيام والمنصة مرجّعتش ولا نوع نتيجة نعرف نقراه — ده عمى قياس مش فشل حملة، فمش هنوقّفها عليه. راجع ربط البيكسل/الأحداث. ${ctx}` });
+      continue;
+    }
+    /* عيّنة رفيعة: نتيجة أو اتنين في ٣ أيام. التكلفة المحسوبة عليها مش
+       قياس — ونص الليلة الزحمة بيوصل متأخر، فالبسط ناقص والمقام كامل.
+       الإيقاف هنا بيبقى على تأخير تبليغ مش على أداء. */
+    const minResults = Math.max(1, Number(s.minKillResults ?? DEFAULT_SETTINGS.minKillResults) || 1);
+    const thinSample = w.results != null && w.results > 0 && w.results < minResults;
+    if (thinSample && cpa != null && cpa > killLine) {
+      out.push({ kind: "note", platform: r.platform, campaignId: r.id, campaignName: r.name,
+        detail: {}, reason: `تكلفة النتيجة ${fmt(cpa)} ر.س فوق خط القتل (${fmt(killLine)}) — بس دي محسوبة على ${w.results} نتيجة بس في ٣ أيام، وده أقل من ${minResults}. عيّنة زي دي بتتقلب برقم واحد، والمنصات بتبلّغ النتايج متأخر فالليلة اللي لسه شغالة بتطلع أغلى من حقيقتها. مش هنوقّفها على كده — راجعها بنفسك لو فضلت كده بكرة. ${ctx}` });
       continue;
     }
     const killing = (w.results === 0 && w.spend >= s.minSpend * 2)
@@ -2453,6 +2476,93 @@ export function register(app, ctx, deps = {}) {
     };
   }
 
+  /* ── سباق الرقم القياسي ──────────────────────────────────────────────────
+     المالك واقف في المطعم وعايز يعرف حاجة واحدة: إحنا هنكسر الرقم ولا لأ؟
+
+     بنجاوب بمقياسين مختلفين عن قصد، عشان محدش يخلط بينهم:
+       • «لحد دلوقتي» — دخل النهارده مقابل *نفس الساعة* من أحسن يوم زي
+         النهارده. الاتنين مقصوصين عند نفس elapsedH، فالمقارنة أمينة:
+         مبنقارنش يوم لسه في نصه بيوم كامل.
+       • «الترشيح لآخر اليوم» — التوقّع مقابل الرقم القياسي الكامل. ده اللي
+         بيدّي كلمة «متقدّم/متأخّر»، وبيتقال إنه توقّع مش فلوس في الدرج.
+
+     الرقمين القياسيين (أحسن يوم على الإطلاق، وأحسن يوم بنفس اسم اليوم)
+     بيتقروا من قاعدة البيانات مش مكتوبين في الكود — أول ما الرقم يتكسر
+     بكرة يبقى هو الأساس الجديد من غير ما حد يعدّل سطر واحد.               */
+  async function recordWatch({ day, elapsedH, today, projected }) {
+    const rows = (await pool.query(
+      `WITH scoped AS (
+         SELECT o.calendar_day AS day, o.total, ${BIZ_ELAPSED_SQL} AS eh
+           FROM ts_orders o
+          WHERE o.calendar_day < $1::date AND ${SALES_ONLY_SQL}
+       )
+       SELECT day,
+              count(*)::int AS orders,
+              COALESCE(sum(total),0) AS revenue,
+              count(*) FILTER (WHERE eh <= $2::numeric)::int AS orders_sofar,
+              COALESCE(sum(total) FILTER (WHERE eh <= $2::numeric),0) AS revenue_sofar
+         FROM scoped GROUP BY 1`,
+      [day, elapsedH])).rows.map((r) => ({
+        day: isoDay(r.day),
+        dow: new Date(isoDay(r.day) + "T00:00:00Z").getUTCDay(),
+        orders: Number(r.orders) || 0,
+        revenue: r2(Number(r.revenue) || 0),
+        ordersSoFar: Number(r.orders_sofar) || 0,
+        revenueSoFar: r2(Number(r.revenue_sofar) || 0),
+      }));
+    if (!rows.length) return null;
+
+    const dow = new Date(day + "T00:00:00Z").getUTCDay();
+    const best = (list) => list.reduce((a, b) => (b.revenue > a.revenue ? b : a));
+    const allTime = best(rows);
+    const sameDowRows = rows.filter((r) => r.dow === dow);
+    const dowRecord = sameDowRows.length ? best(sameDowRows) : null;
+
+    /* المقارنة الأمينة: نفس الساعة من أحسن يوم زي النهارده. لو مفيش يوم
+       زيه خالص بنقع على الرقم القياسي العام بدل ما نرجّع null ونسيب
+       الشاشة فاضية. */
+    const pacer = dowRecord || allTime;
+    const aheadNow = today.revenue - pacer.revenueSoFar;
+
+    /* الترتيب مهم: بنتحقق من الأصعب للأسهل عشان اليوم اللي هيكسر الاتنين
+       يتقال عليه «قياسي» مش «أحسن جمعة». */
+    const p = Number(projected) || 0;
+    let tone, verdict;
+    if (p >= allTime.revenue) {
+      tone = "record"; verdict = "مترشّح لرقم قياسي في تاريخ المطعم";
+    } else if (dowRecord && p >= dowRecord.revenue) {
+      tone = "good"; verdict = `مترشّح لأحسن ${DOW_AR[dow]} على الإطلاق`;
+    } else if (dowRecord && p >= dowRecord.revenue * 0.9) {
+      tone = "ok"; verdict = `على بُعد خطوة من أحسن ${DOW_AR[dow]}`;
+    } else {
+      tone = "warn"; verdict = `أقل من أحسن ${DOW_AR[dow]}`;
+    }
+
+    const sign = (n) => (n >= 0 ? "+" : "−");
+    return {
+      dow, dowLabel: DOW_AR[dow], tone, verdict,
+      allTime: { day: allTime.day, revenue: allTime.revenue, orders: allTime.orders },
+      dowRecord: dowRecord
+        ? { day: dowRecord.day, revenue: dowRecord.revenue, orders: dowRecord.orders }
+        : null,
+      pacer: {
+        day: pacer.day, revenueSoFar: pacer.revenueSoFar, ordersSoFar: pacer.ordersSoFar,
+        isSameDow: pacer.dow === dow,
+      },
+      aheadNow: r2(aheadNow),
+      aheadNowPct: pacer.revenueSoFar > 0
+        ? Math.round((today.revenue / pacer.revenueSoFar - 1) * 1000) / 10 : null,
+      projected: p || null,
+      /* السطر اللي يتقرا في خمس ثواني وحد واقف. */
+      line: `${ar(today.revenue)} ر.س من ${ar(today.orders)} طلب — ` +
+        `${sign(aheadNow)}${ar(Math.abs(r2(aheadNow)))} ر.س عن أحسن ${pacer.isSameDow ? DOW_AR[dow] : "يوم"} في نفس الساعة` +
+        `${p ? ` · الترشيح لآخر اليوم ${ar(r2(p))} ر.س` : ""}`,
+      note: `الرقم القياسي العام ${ar(allTime.revenue)} ر.س (${allTime.day})` +
+        `${dowRecord ? ` · أحسن ${DOW_AR[dow]} ${ar(dowRecord.revenue)} ر.س (${dowRecord.day})` : ""}` +
+        ` — المقارنة «لحد دلوقتي» مقصوصة عند نفس الساعة من اليومين، والترشيح توقّع مش فلوس دخلت.`,
+    };
+  }
+
   /* الزيادات المفتوحة (اللي لسه ماترجعتش) — دي حالة الإيقاع كلها. */
   async function pacingState() {
     const r = await pool.query(
@@ -4434,10 +4544,22 @@ ${focus}
          بدل ما نرفع ميزانية عارفين إنها مش هتتصرف. */
       const strandedHeadroom = headroom != null && eff.pct < minEff ? headroom : 0;
 
+      /* سباق الرقم القياسي — للعرض بس، زيه زي التوقّع: عمره ما بيدخل في
+         حساب سقف ولا في قرار ميزانية. لو الاستعلام وقع الشاشة بتكمل من
+         غيره بدل ما النبض كله يرجع 500. */
+      const record = await recordWatch({
+        day: pulse.day, elapsedH: pulse.elapsedH, today: pulse.today,
+        projected: cl.projection?.usable ? cl.projection.projected : null,
+      }).catch((e) => {
+        console.error("[autopilot] recordWatch failed:", e.message);
+        return null;
+      });
+
       return c.json({
         ok: true,
         ...pulse,
         ceiling: cl,
+        record,
         /* كل الأرقام اللي الشاشة محتاجاها في مكان واحد — الواجهة مبتحسبش
            حاجة، عشان الرقم اللي المالك بيشوفه يبقى هو نفسه الرقم اللي
            القرار اتاخد بيه. والسطر اللي بيلخّص الموديل كله:

@@ -216,6 +216,41 @@ test("قاعدة القتل مش بتقتل حملة عندها نيات طلب"
   assert.equal(decide(alive, LIVE).filter((d) => d.kind === "pause").length, 0);
 });
 
+/* ── عيّنة رفيعة: ليلة الزحمة ──────────────────────────────────────────────
+   المنصات بتسجّل الصرف فوراً وبتبلّغ النتايج متأخر. في ليلة زحمة، الحملة
+   اللي عندها نتيجة واحدة في ٣ أيام بيطلع عليها cpa فوق خط القتل من غير ما
+   يكون حصل حاجة غير إن الليلة لسه بتتحسب — وتتقفل في عزّ الذروة.          */
+test("عيّنة رفيعة: نتيجة واحدة غالية بتطلع ملاحظة مش إيقاف", () => {
+  const thin = [{
+    platform: "meta", id: "x", name: "نتيجة واحدة", status: "ACTIVE", dailyBudget: 60, ageDays: 30,
+    w3: { spend: 180, results: 1, revenue: 0 }, w7: { spend: 400, results: 2, revenue: 0 },
+  }];
+  const out = decide(thin, LIVE);                       // cpa = ١٨٠ ر.س ≫ خط القتل ٦٦
+  assert.equal(out.filter((d) => d.kind === "pause").length, 0);
+  assert.equal(out[0].kind, "note");
+  assert.match(out[0].reason, /عيّنة زي دي بتتقلب برقم واحد/);
+});
+
+test("عيّنة كافية وغالية: القتل لسه شغّال", () => {
+  /* نفس الحملة، بس ٣ نتايج بدل ١ — بقى فيه قياس، فالحكم بيتاخد. */
+  const solid = [{
+    platform: "meta", id: "x", name: "غالية بجد", status: "ACTIVE", dailyBudget: 60, ageDays: 30,
+    w3: { spend: 300, results: 3, revenue: 0 }, w7: { spend: 600, results: 6, revenue: 0 },
+  }];
+  const out = decide(solid, LIVE);                      // cpa = ١٠٠ ر.س > ٦٦
+  assert.equal(out.filter((d) => d.kind === "pause").length, 1);
+  assert.match(out[0].reason, /خط القتل/);
+});
+
+test("العيّنة الرفيعة مبتحميش حملة بصفر نتايج", () => {
+  /* «صفر» مش عيّنة صغيرة — دي المنصة بتقول مفيش ولا نية طلب واحدة. */
+  const zero = [{
+    platform: "meta", id: "x", name: "صفر", status: "ACTIVE", dailyBudget: 60, ageDays: 30,
+    w3: { spend: 180, results: 0, revenue: 0 }, w7: { spend: 400, results: 0, revenue: 0 },
+  }];
+  assert.equal(decide(zero, LIVE).filter((d) => d.kind === "pause").length, 1);
+});
+
 test("عمى القياس ≠ صفر: null بيطلع ملاحظة مش إيقاف", () => {
   const blind = [{
     platform: "meta", id: "x", name: "منصة عمياها", status: "ACTIVE", dailyBudget: 60, ageDays: 30,
@@ -238,7 +273,25 @@ test("تنزيل المستهدف من ٢٢ لـ ١٢ مبيضيّقش خط ال
   const rows = liveRows().filter((r) => r.name === "fc-retarget-engagers");
   assert.equal(Math.round(rows[0].w3.spend / rows[0].w3.results * 10) / 10, 61.4);
   assert.equal(decide(rows, LIVE).filter((d) => d.kind === "pause").length, 0);
-  assert.equal(decide(rows, { ...LIVE, killCpa: 0 }).filter((d) => d.kind === "pause").length, 1);
+  /* بنطفّي حارس العيّنة الرفيعة هنا عشان نختبر خط القتل لوحده. الحملة دي
+     عندها نتيجتين بس، فبقى عليها حارسين مستقلين — والاختبار ده مسؤول عن
+     الأرضية، والاختبار اللي فوق مسؤول عن العيّنة. */
+  assert.equal(
+    decide(rows, { ...LIVE, killCpa: 0, minKillResults: 1 }).filter((d) => d.kind === "pause").length, 1);
+});
+
+/* fc-retarget-engagers حية دلوقتي بهامش ٤٫٦ ر.س بس تحت خط القتل (٦١٫٤ من
+   ٦٦) وعلى نتيجتين بس. ليلة زحمة: الصرف بيتسجّل فوري والنتايج بتتأخر، يعني
+   البسط ثابت والمقام بيكبر → التكلفة بتعدّي الخط والحملة تتقفل في الذروة.
+   الحارس ده هو اللي بيمنع ده، فالاختبار بيثبّته على أرقامها الحقيقية.     */
+test("الريتارجيت الحية محميّة لو الصرف طلع والنتايج اتأخرت", () => {
+  const [live] = liveRows().filter((r) => r.name === "fc-retarget-engagers");
+  assert.equal(live.w3.results, 2);
+  const rush = [{ ...live, w3: { ...live.w3, spend: live.w3.spend * 2 } }]; // ١٢٢٫٩ → ٢٤٥٫٧، النتايج زي ما هي
+  assert.ok(rush[0].w3.spend / rush[0].w3.results > 66, "المفروض تعدّي خط القتل");
+  const out = decide(rush, LIVE);
+  assert.equal(out.filter((d) => d.kind === "pause").length, 0);
+  assert.equal(out[0].kind, "note");
 });
 
 /* ═══ ٣. السقف ═══════════════════════════════════════════════════════════ */

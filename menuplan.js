@@ -753,6 +753,47 @@ export function register(app, ctx) {
       if (picked.length >= limit) break;
     }
 
+    /* ── ضمان المقبلات ────────────────────────────────────────────────────
+       الرافعة اللي الشريط ده اتعمل عشانها هي المقبلات بالتحديد: الطلب اللي
+       معاه مقبلات بيزيد ٨٫٨٢ ر.س، و٤ من كل ٥ طلبات بتخرج من غير واحدة.
+
+       بس قواعد الأصناف ساعات بتملا الخانات التلاتة بأطباق رئيسية، والنزول
+       لمستوى الفئة (اللي جوّاه شبكة أمان المقبلات) مشروط بـ
+       `if (scored.size < limit)` — يعني بيتخطى بالظبط في الحالة اللي
+       محتاجينه فيها. النتيجة اتشافت حية على صينية اللمة: بيتزا + كريب +
+       مياه — يعني طبقين رئيسيين زيادة لسفرة لسه شارية صينية بتكفّي السفرة
+       كلها. عرض مالوش معنى، وكمان بيوزّع التذكرة الواحدة على تلات محطات في
+       المطبخ فتخرج على سرعة أبطأ محطة — وده في ليلة زحمة بيكلّف أكتر من
+       الـ ٨٫٨٢ اللي بنكسبها.
+
+       فبنضمن مقبلات واحدة على الأقل، وبناخد مكانها من **أضعف طبق رئيسي** —
+       مش من المشروب: المشروب رخيص بس نسبة قبوله عالية، والمقبلات هي
+       الرافعة. لو المرشحين كلهم أصلاً مقبلات/مشروبات مفيش حاجة بتتغير.   */
+    const isMain = (s) => !ATTACH_CATS.includes(s.item.cat);
+    if (limit >= 2 && !picked.some((s) => s.item.cat === "مقبلات")) {
+      let attach = [...scored.values()]
+        .filter((s) => s.item.cat === "مقبلات" && !picked.includes(s))
+        .sort((a, b) => b.score - a.score)[0];
+      /* مفيش شريك مقبلات مثبت لأي صنف في السلة → ننزل لأشهر مقبلات في
+         المنيو. اقتراح ضعيف أحسن من طبق رئيسي تالت. */
+      if (!attach) {
+        for (const top of rules.catTop.get("مقبلات") || []) {
+          const cand = menu.byId.get(String(top.id));
+          if (!cand || !cand.cat || cartKeys.has(norm(cand.name)) || scored.has(cand.id)) continue;
+          attach = { item: cand, score: 0, lift: null, conf: null, together: null,
+                     becauseOf: "مقبلات", source: "attach" };
+          break;
+        }
+      }
+      if (attach) {
+        // picked متسلسلة بالنتيجة نازل، فآخر رئيسي فيها هو أضعف رئيسي.
+        let victim = -1;
+        for (let i = picked.length - 1; i >= 0; i--) if (isMain(picked[i])) { victim = i; break; }
+        if (victim >= 0) picked[victim] = attach;
+        else if (picked.length < limit) picked.push(attach);
+      }
+    }
+
     c.header("Cache-Control", "public, max-age=120");
     return c.json({
       ok: true, surface,
@@ -763,9 +804,10 @@ export function register(app, ctx) {
         becauseOf: s.becauseOf, source: s.source,
         lift: s.lift, confidencePct: s.conf, together: s.together,
         // نص للعميل: نبرة جرسون، من غير أرقام ولا ضغط
-        line: s.source === "item"
-          ? `كتير بيطلبوه مع ${s.becauseOf}`
-          : `يمشي حلو مع ${s.becauseOf}`,
+        line: s.source === "item" ? `كتير بيطلبوه مع ${s.becauseOf}`
+          // شبكة أمان المقبلات: مفيش شريك مثبت نسمّيه، فمفيش ادعاء بيتقال
+          : s.source === "attach" ? "يكمّل السفرة"
+            : `يمشي حلو مع ${s.becauseOf}`,
       })),
     });
   });
