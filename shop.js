@@ -239,6 +239,7 @@ export function register(app, ctx, deps = {}) {
   app.get("/api/shop/storefront", async (c) => {
     const s = await getSettingsData();
     const sf = s.storefront || {};
+    const cat = s.catalog || {};
     return c.json({
       ok: true,
       theme: sf.theme || {},           // {brand, deep, bg, ink, ...} CSS vars
@@ -246,6 +247,12 @@ export function register(app, ctx, deps = {}) {
       // بانرات العروض: [{title, desc, emoji, color, target_item?, active}] —
       // بتترسم في شريط العروض قبل عروض TabSense، وبتتعدل من اللوحة فوراً.
       banners: (sf.banners || []).filter((x) => x && x.active !== false),
+      // أصناف مخفية من العرض (غير نشطة أو تكرارات الأوزان): بتختفي من
+      // القايمة والبحث لكن بتفضل في البيانات — عشان منتقي الوزن يلاقيها.
+      hiddenIds: (cat.hiddenIds || []).map(String),
+      // مجموعات الأوزان: الصنف الأصل بيفتح منتقي (⅓/½/كيلو) وكل اختيار
+      // بيطلب صنف TabSense الحقيقي بتاعه — المطبخ يشوف الوزن الصح دايماً.
+      variantGroups: cat.variantGroups || [],
       allowCash: (s.shop || {}).allowCash === true, // Omar 2026-08-12: online-only by default
     });
   });
