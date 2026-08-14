@@ -716,6 +716,29 @@ export function register(app, ctx) {
             AND external_id IS NOT NULL AND NOT (external_id = ANY($1::text[]))
           RETURNING id`, [[...seenFb]]);
       out.vanished = gone.rowCount;
+
+      /* ونفس الحكاية للبوستات **المنشورة**. الكشف ده كان بيغطي المجدول بس،
+         فبوست اتنشر وبعدين اتمسح من على الصفحة كان بيفضل في التقويم مكتوب
+         عليه «منشور» للأبد. ده مش نظري: بوستر «عرضين… وبس داخل الصالة»
+         اتنشر ١٤ أغسطس بصورة غلط، اتشال من فيسبوك، والتقويم فضل بيقول إنه
+         عايش — وهو أول مكان أي حد هيبص فيه عشان يتأكد إنه اتشال فعلاً.
+
+         الحد الآمن: بنقارن بس البوستات الأحدث من أقدم بوست رجع في الدفعة
+         (limit 50). من غير الحد ده أي بوست قديم خارج الدفعة هيتعلّم «اختفى»
+         وهو موجود. */
+      const batch = (pub.json?.data || []).map((p) => p.created_time).filter(Boolean).sort();
+      const oldest = batch[0];
+      if (oldest) {
+        const goneP = await pool.query(
+          `UPDATE content_posts SET updated_at=NOW(),
+                  notes = CASE WHEN notes = '' THEN 'اختفى من فيسبوك — اتنشر وبعدين اتمسح من هناك' ELSE notes END
+            WHERE channel='facebook' AND origin='imported' AND status='published'
+              AND external_id IS NOT NULL AND published_at >= $2::timestamptz
+              AND NOT (external_id = ANY($1::text[]))
+              AND notes NOT LIKE '%اختفى من فيسبوك%'
+            RETURNING id`, [[...seenFb], oldest]);
+        out.vanishedPublished = goneP.rowCount;
+      }
     }
 
     // ── انستجرام: المنشور ────────────────────────────────────────────
