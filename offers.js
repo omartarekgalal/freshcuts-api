@@ -209,6 +209,44 @@ function categoriseNames(itemNames, catalogRows, wantedCats) {
   return out;
 }
 
+/* ── الرقم ما بيسافرش من غير عدم يقينه ──────────────────────────────────────
+   «٧٠٪ من طلبات العرض جايّة من عملاء جدد» جملة مغرية جدًا لما تكون مبنية على
+   ١٠ طلبات. فبنحسب مع النسبة: فترة ثقة ويلسون ٩٥٪، واحتمال إننا نشوف العدد
+   ده (أو أكتر) من الجدد بالصدفة لو العرض ما بيغيّرش حاجة عن معدّل المطعم.
+   طالما معدّل المطعم لسه جوّه فترة الثقة، الصح إننا نقول «مبشّر، لسه مش
+   مثبت» — مش «العرض نجح».                                                   */
+const choose = (n, k) => { let r = 1; for (let i = 0; i < k; i++) r = (r * (n - i)) / (i + 1); return r; };
+export function confidenceOf(successes, n, baselineRate) {
+  if (!n) return null;
+  const z = 1.96, ph = successes / n, d = 1 + (z * z) / n;
+  const c = (ph + (z * z) / (2 * n)) / d;
+  const h = (z * Math.sqrt((ph * (1 - ph)) / n + (z * z) / (4 * n * n))) / d;
+  const lo = Math.max(0, c - h), hi = Math.min(1, c + h);
+  const pct = (x) => Math.round(x * 1000) / 10;
+  let pValue = null;
+  if (baselineRate != null && baselineRate > 0 && baselineRate < 1) {
+    let t = 0;
+    for (let i = successes; i <= n; i++) {
+      t += choose(n, i) * Math.pow(baselineRate, i) * Math.pow(1 - baselineRate, n - i);
+    }
+    pValue = Math.round(t * 10000) / 10000;
+  }
+  const beatsBaseline = baselineRate != null && lo > baselineRate;
+  return {
+    sample: n,
+    rate: pct(ph),
+    ci95: [pct(lo), pct(hi)],
+    baselineRate: baselineRate == null ? null : pct(baselineRate),
+    pValue,
+    beatsBaseline,
+    verdict: beatsBaseline
+      ? "الفرق عن معدّل المطعم أكبر من عدم اليقين — يعتمد."
+      : `مبشّر لكنه **لسه مش مثبت**: العيّنة ${n} طلب بس، وفترة الثقة `
+        + `(${pct(lo)}٪–${pct(hi)}٪) لسه شاملة معدّل المطعم العادي. `
+        + "متبنيش قرار ميزانية على الرقم ده لوحده لحد ما العيّنة تكبر.",
+  };
+}
+
 export function register(app, ctx, deps = {}) {
   const { pool, requireAdmin, todayISO, DEFAULT_DELIVERY_APPS } = ctx;
   const deliveryApps = deps.deliveryApps || (async () => DEFAULT_DELIVERY_APPS);
@@ -390,6 +428,9 @@ export function register(app, ctx, deps = {}) {
         newCustomerOrders: n(r.hits_new),
         returningCustomerOrders: n(r.hits_returning),
         newShareOfIdentified: ident ? Math.round((n(r.hits_new) / ident) * 1000) / 10 : null,
+        confidence: confidenceOf(
+          n(r.hits_new), ident,
+          allIdent ? n(r.all_inhouse_new) / allIdent : null),
       },
       baseline: {
         label: "كل الطلبات جوّه المطعم في نفس المدة (من غير التطبيقات)",
