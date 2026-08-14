@@ -2522,6 +2522,7 @@ export function register(app, ctx, deps = {}) {
        زيه خالص بنقع على الرقم القياسي العام بدل ما نرجّع null ونسيب
        الشاشة فاضية. */
     const pacer = dowRecord || allTime;
+    const pacerIsSameDow = pacer.dow === dow;
     const aheadNow = today.revenue - pacer.revenueSoFar;
 
     /* الترتيب مهم: بنتحقق من الأصعب للأسهل عشان اليوم اللي هيكسر الاتنين
@@ -2547,7 +2548,7 @@ export function register(app, ctx, deps = {}) {
         : null,
       pacer: {
         day: pacer.day, revenueSoFar: pacer.revenueSoFar, ordersSoFar: pacer.ordersSoFar,
-        isSameDow: pacer.dow === dow,
+        isSameDow: pacerIsSameDow,
       },
       aheadNow: r2(aheadNow),
       aheadNowPct: pacer.revenueSoFar > 0
@@ -2555,7 +2556,7 @@ export function register(app, ctx, deps = {}) {
       projected: p || null,
       /* السطر اللي يتقرا في خمس ثواني وحد واقف. */
       line: `${ar(today.revenue)} ر.س من ${ar(today.orders)} طلب — ` +
-        `${sign(aheadNow)}${ar(Math.abs(r2(aheadNow)))} ر.س عن أحسن ${pacer.isSameDow ? DOW_AR[dow] : "يوم"} في نفس الساعة` +
+        `${sign(aheadNow)}${ar(Math.abs(r2(aheadNow)))} ر.س عن أحسن ${pacerIsSameDow ? DOW_AR[dow] : "يوم"} في نفس الساعة` +
         `${p ? ` · الترشيح لآخر اليوم ${ar(r2(p))} ر.س` : ""}`,
       note: `الرقم القياسي العام ${ar(allTime.revenue)} ر.س (${allTime.day})` +
         `${dowRecord ? ` · أحسن ${DOW_AR[dow]} ${ar(dowRecord.revenue)} ر.س (${dowRecord.day})` : ""}` +
