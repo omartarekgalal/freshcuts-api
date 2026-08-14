@@ -340,6 +340,17 @@ export function register(app, ctx) {
         summary JSONB NOT NULL DEFAULT '{}',
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
       );
+
+      /* ══ إقرار الصنف على الصورة ══════════════════════════════════════
+         يوم ١٤ أغسطس ٢٠٢٦ اتنشر بوستر مكتوب عليه «صينية اللمــة ١٠٠ ريال»
+         وصورته **نص دجاجة على رز** — صنف تاني بـ٢٥ ريال. الصورة ماكانش
+         عليها أي بيان بتقول إنها بتوري إيه، فمافيش فحص كان يقدر يمسكها.
+         الأعمدة دي هي البيان: أنهي صنف، إيه مصادره، واتعمل رندر إمتى.
+         asset-guard.js في مشروع التصاميم هو اللي بيملاها. */
+      ALTER TABLE content_media ADD COLUMN IF NOT EXISTS dish TEXT NOT NULL DEFAULT '';
+      ALTER TABLE content_media ADD COLUMN IF NOT EXISTS dish_claim TEXT NOT NULL DEFAULT '';
+      ALTER TABLE content_media ADD COLUMN IF NOT EXISTS provenance JSONB NOT NULL DEFAULT '{}';
+      ALTER TABLE content_media ADD COLUMN IF NOT EXISTS declared_at TIMESTAMPTZ;
     `);
     for (const i of SEED_IDEAS) {
       await pool.query(
@@ -537,14 +548,58 @@ export function register(app, ctx) {
     return { ok: true, target: "facebook" };
   }
 
-  /* الحذف. لو البوست فيسبوك مجدول و`platform=1` اتبعت، بنحذفه من فيسبوك
-     كمان — من غير كده بنشيله من التقويم بس وبنسيبه على المنصة. */
+  /* التفاعل اللي البوست جمعه — بيتقري من ميتا وقت الطلب، مش متخزّن.
+     محتاجينه قبل أي حذف: لو هنشيل بوست غلط، لازم نعرف كان وصل لكام واحد
+     ونقول الرقم بدل ما يضيع مع الصف. */
+  app.get("/api/content/posts/:id/engagement", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    const row = (await pool.query("SELECT * FROM content_posts WHERE id=$1", [c.req.param("id")])).rows[0];
+    if (!row) return c.json({ ok: false, error: "not_found" }, 404);
+    if (!row.external_id) return c.json({ ok: false, error: "no_external_id", message: "البوست ده لسه ماتنشرش على المنصة" }, 400);
+    const tok = await pageToken();
+    if (!tok) return c.json({ ok: false, error: pageTokenCache.err || "مفيش توكن صفحة" }, 502);
+
+    if (row.channel === "instagram") {
+      const r = await httpJson(`${GRAPH()}/${row.external_id}?fields=like_count,comments_count,permalink,timestamp&access_token=${encodeURIComponent(tok)}`);
+      if (!r.ok) return c.json({ ok: false, error: graphErr(r) }, 502);
+      return c.json({ ok: true, channel: "instagram", likes: r.json?.like_count ?? null,
+                      comments: r.json?.comments_count ?? null, permalink: r.json?.permalink || row.permalink });
+    }
+    const fields = "reactions.summary(total_count).limit(0),comments.summary(total_count).limit(0),shares,created_time,permalink_url";
+    const r = await httpJson(`${GRAPH()}/${row.external_id}?fields=${fields}&access_token=${encodeURIComponent(tok)}`);
+    if (!r.ok) return c.json({ ok: false, error: graphErr(r) }, 502);
+    const j = r.json || {};
+    return c.json({
+      ok: true, channel: "facebook",
+      reactions: j.reactions?.summary?.total_count ?? null,
+      comments: j.comments?.summary?.total_count ?? null,
+      shares: j.shares?.count ?? 0,
+      createdTime: j.created_time || null,
+      permalink: j.permalink_url || row.permalink,
+    });
+  });
+
+  /* الحذف. لو البوست فيسبوك و`platform=1` اتبعت، بنحذفه من فيسبوك كمان —
+     من غير كده بنشيله من التقويم بس وبنسيبه على المنصة.
+     ملحوظة: قبل ١٥ أغسطس ده كان شغّال على البوستات **المجدولة** بس، فبوست
+     اتنشر بالغلط ماكانش فيه أي طريقة تشيله من هنا — التقويم بيفضّى والبوست
+     يفضل عايش على الصفحة، وده أسوأ الاحتمالين. دلوقتي بيشتغل على المنشور
+     كمان (`?published=1` تأكيد إضافي، لأن ده إجراء مالوش رجعة). */
   app.delete("/api/content/posts/:id", async (c) => {
     const err = await requireAdmin(c); if (err) return err;
     const cur = (await pool.query("SELECT * FROM content_posts WHERE id=$1", [c.req.param("id")])).rows[0];
     if (!cur) return c.json({ ok: false, error: "not_found" }, 404);
     let platform = null;
-    if (c.req.query("platform") === "1" && cur.channel === "facebook" && cur.external_id && cur.status === "scheduled") {
+    const wantsPlatform = c.req.query("platform") === "1";
+    const isPublished = cur.status === "published";
+    if (wantsPlatform && isPublished && c.req.query("published") !== "1") {
+      return c.json({
+        ok: false, error: "confirm_published",
+        message: "البوست ده متنشر فعلاً على المنصة. الحذف مالوش رجعة والتفاعل بيروح معاه — " +
+                 "شوف /api/content/posts/:id/engagement الأول، وبعدين ضيف &published=1 لو متأكد.",
+      }, 409);
+    }
+    if (wantsPlatform && cur.channel === "facebook" && cur.external_id && (cur.status === "scheduled" || isPublished)) {
       const tok = await pageToken();
       if (!tok) platform = { ok: false, error: pageTokenCache.err || "مفيش توكن صفحة", target: "facebook" };
       else {
@@ -774,10 +829,16 @@ export function register(app, ctx) {
     mime = info.mime || mime || "application/octet-stream";
     const ext = info.kind === "jpeg" ? "jpg" : info.kind;
     const id = newId("md");
+    /* الإقرار بيتقبل وقت الرفع كمان، مش بس من asset-guard --push: الصورة
+       اللي بتتحط في التقويم من غير ما حد يقول بتوري إيه هي بالظبط اللي
+       اتنشرت غلط يوم ١٤ أغسطس. */
+    const dish = String(b.dish || "").trim();
+    const dishClaim = String(b.dishClaim || "").trim() || (dish ? "" : "");
     await pool.query(
-      `INSERT INTO content_media (id, filename, mime, bytes, size, width, height)
-       VALUES ($1,$2,$3,$4,$5,$6,$7)`,
-      [id, filename || `${id}.${ext}`, mime, buf, buf.length, info.width || null, info.height || null]);
+      `INSERT INTO content_media (id, filename, mime, bytes, size, width, height, dish, dish_claim, provenance, declared_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+      [id, filename || `${id}.${ext}`, mime, buf, buf.length, info.width || null, info.height || null,
+       dish, dishClaim, JSON.stringify(b.provenance || {}), (dish || dishClaim) ? new Date() : null]);
     const url = `${PUBLIC_BASE()}/api/content/media/${id}.${ext}`;
     return c.json({
       ok: true, assetId: id, url, mime, size: buf.length,
@@ -844,6 +905,205 @@ export function register(app, ctx) {
     }
   });
 
+  /* ══ ٥.٥) حارس الصنف — الصورة لازم توري اللي النص بيقوله ══════════════
+     ── ليه ده موجود ──────────────────────────────────────────────────────
+     ١٤ أغسطس ٢٠٢٦، ٥:٤٥ م: اتنشر على فيسبوك بوستر «عرضين… وبس داخل الصالة»
+     مكتوب فيه «صينية اللمــة — ١٠٠ ريال» وجنبها صورة نص دجاجة واحدة على رز
+     (صنف تاني بيتباع بـ٢٥ ريال). العميل شاف طبق واتباع له طبق تاني.
+
+     كان فيه حارس أسعار (price-guard.js) بيرفض أي تصميم بسعر مش موثّق، وكانت
+     فيه مراجعة إبداعية — بس المراجعة غطّت **إعلانات ميتا المدفوعة** بس،
+     والبوستر ده محتوى **عضوي مجدول**. خطّين إنتاج، حارس واحد، والخط اللي
+     مالوش حارس هو اللي نشر الغلط.
+
+     الحارس ده بيقفل نفس النوع من الغلط على الخط العضوي:
+       · الصورة لازم يكون عليها إقرار «بتوري أنهي صنف» (asset-guard بيرفعه)
+       · الصنف المُقَر لازم يكون موجود في نص البوست
+       · لو النص بيسمّي صنف والصورة مُقَرّة بصنف تاني → النشر بيتمنع
+     المبدأ نفس مبدأ price-guard: سعر مش قادرين نتحقق منه = مايتنشرش. */
+
+  const GUARD_MODE = () => (process.env.CONTENT_DISH_GUARD || "warn").toLowerCase();
+
+  const normDish = (s) => String(s || "")
+    .replace(/[ً-ْـ]/g, "")
+    .replace(/[أإآ]/g, "ا").replace(/ة/g, "ه").replace(/[ىئ]/g, "ي")
+    .replace(/[٠-٩]/g, (d) => String(d.charCodeAt(0) - 0x0660))
+    .replace(/[^\p{L}\p{N}\s]/gu, " ")
+    .replace(/\s+/g, " ").trim().toLowerCase();
+
+  /* اسم الصنف «المختصر»: عناوين الكاتالوج بتيجي بالسعر والشروط جواها
+     («صينية اللمة 100 ريال — داخل الصالة فقط») وده عمره ما هيظهر بالحرف في
+     كابشن. بناخد الجزء اللي قبل أول رقم أو فاصل. */
+  const coreName = (title) => String(title || "")
+    .split(/[—·|]/)[0]
+    .replace(/[\d٠-٩].*$/u, "")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  let vocabCache = { at: 0, list: [] };
+  async function dishVocab() {
+    if (vocabCache.list.length && Date.now() - vocabCache.at < 600_000) return vocabCache.list;
+    const list = [];
+    try {
+      const r = await fetch(`${PUBLIC_BASE()}/api/catalog/feed.csv`);
+      if (r.ok) {
+        const lines = (await r.text()).trim().split("\n").slice(1);
+        for (const line of lines) {
+          const m = line.match(/^"[^"]*","([^"]*)"/);
+          if (m) list.push({ title: m[1], core: coreName(m[1]), source: "المنيو" });
+        }
+      }
+      const r2 = await fetch(`${PUBLIC_BASE()}/api/offers/all`);
+      if (r2.ok) {
+        const j = await r2.json();
+        for (const o of j.offers || []) {
+          for (const nm of [o.catalogTitle, o.title]) {
+            if (nm) list.push({ title: nm, core: coreName(nm), source: "سجلّ العروض" });
+          }
+        }
+      }
+    } catch { /* المفردات فاضية = الحارس هيقول «مش قادر أتحقق» بدل ما يخترع */ }
+    const seen = new Set();
+    const out = list.filter((d) => d.core.length >= 4 && !seen.has(normDish(d.core)) && seen.add(normDish(d.core)));
+    if (out.length) vocabCache = { at: Date.now(), list: out };
+    return out;
+  }
+
+  /* الأصناف اللي النص بيسمّيها — أطول تطابق الأول عشان «صينية اللمة» ما
+     تتبلعش جوّه تطابق أقصر. */
+  async function dishesInText(text) {
+    const hay = normDish(text);
+    if (!hay) return [];
+    const vocab = await dishVocab();
+    return vocab
+      .filter((d) => hay.includes(normDish(d.core)))
+      .sort((a, b) => b.core.length - a.core.length);
+  }
+
+  /* الصورة المرتبطة بالبوست: إما asset_id صريح، وإما مستخرج من media_url
+     (البوستات المحلية بتشاور على /api/content/media/md_xxx.jpg). */
+  async function mediaForPost(row) {
+    let id = row.asset_id || "";
+    if (!id) {
+      const m = String(row.media_url || "").match(/\/api\/content\/media\/(md_[a-z0-9]+)/i);
+      if (m) id = m[1];
+    }
+    if (!id) return null;
+    const r = await pool.query(
+      "SELECT id, filename, dish, dish_claim, provenance, declared_at FROM content_media WHERE id=$1", [id]);
+    return r.rows[0] || null;
+  }
+
+  /* الحكم على بوست واحد. بيرجّع verdict:
+       pass        — الصورة مُقَرّة والصنف موجود في النص
+       no-dish     — النص مابيسمّيش صنف (بوست براند/موقع) — مسموح
+       mismatch    — الصورة مُقَرّة بصنف والنص بيسمّي صنف تاني → منع
+       undeclared  — الصورة مالهاش إقرار → منع في الوضع strict */
+  async function dishVerdict(row) {
+    const media = await mediaForPost(row);
+    const named = await dishesInText(fullCaption(row));
+
+    if (!media || (!media.dish && !media.dish_claim)) {
+      return {
+        verdict: "undeclared",
+        block: GUARD_MODE() === "strict",
+        named: named.map((d) => d.core),
+        reason: media
+          ? `الصورة ${media.id} مالهاش إقرار صنف — شغّل asset-guard.js --push`
+          : "البوست مش مربوط بصورة مُقَرّة (رابط خارجي أو صورة مرفوعة من غير إقرار)",
+      };
+    }
+    if (media.dish_claim === "none") {
+      return { verdict: "pass", block: false, declared: null, named: named.map((d) => d.core),
+               reason: "الصورة مُقَرّة إنها بدون صنف معيّن" };
+    }
+    const declared = media.dish;
+    const declaredCore = normDish(coreName(declared));
+    const hay = normDish(fullCaption(row));
+    if (declaredCore && hay.includes(declaredCore)) {
+      return { verdict: "pass", block: false, declared, named: named.map((d) => d.core),
+               reason: `النص بيسمّي «${coreName(declared)}» والصورة مُقَرّة بيه` };
+    }
+    if (!named.length) {
+      return { verdict: "no-dish", block: false, declared, named: [],
+               reason: "النص مابيسمّيش صنف معروف — مافيش تعارض" };
+    }
+    return {
+      verdict: "mismatch",
+      block: true,
+      declared,
+      named: named.map((d) => d.core),
+      reason: `الصورة مُقَرّة إنها «${coreName(declared)}» والنص بيسمّي «${named[0].core}» — دي نفس غلطة ١٤ أغسطس`,
+    };
+  }
+
+  /* استقبال الإقرارات من asset-guard.js --push. الربط بالاسم: الكادر
+     out/v2_d_lamma_p45.png بيتربط بالصورة اللي اترفعت باسم v2_d_lamma_p45.png */
+  app.post("/api/content/declarations", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    const b = await c.req.json().catch(() => ({}));
+    const decls = Array.isArray(b.declarations) ? b.declarations : [];
+    if (!decls.length) return c.json({ ok: false, error: "no declarations" }, 400);
+
+    let matched = 0;
+    const unmatched = [];
+    for (const d of decls) {
+      const base = String(d.render || "").split("/").pop();
+      if (!base) continue;
+      const dish = (d.dishes || []).filter(Boolean).join(" + ");
+      const r = await pool.query(
+        `UPDATE content_media
+            SET dish = $2, dish_claim = $3, provenance = $4, declared_at = NOW()
+          WHERE filename = $1 RETURNING id`,
+        [base, dish, dish ? "" : "none", JSON.stringify({ render: d.render, pipeline: d.pipeline, guard: b.guard || {} })]);
+      if (r.rowCount) matched += r.rowCount; else unmatched.push(base);
+    }
+    return c.json({ ok: true, received: decls.length, matched, unmatched });
+  });
+
+  /* كشف على كل البوستات المجدولة — الخطين مع بعض.
+     مهم: بوستات فيسبوك المجدولة محجوزة عند **فيسبوك** نفسه، والناشر بتاعنا
+     مابيلمسهاش، فمنعها وقت النشر مستحيل من هنا. عشان كده الكشف ده بيمشي
+     على الاتنين، و`?cancel=1` بيلغي المخالف قبل ميعاده. */
+  app.get("/api/content/guard", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    const rows = (await pool.query(
+      `SELECT * FROM content_posts WHERE status IN ('scheduled','draft')
+        ORDER BY scheduled_at NULLS LAST`)).rows;
+    const items = [];
+    for (const row of rows) {
+      const v = await dishVerdict(row);
+      items.push({
+        id: row.id, channel: row.channel, scheduledAt: row.scheduled_at,
+        origin: row.origin, headline: String(row.caption || "").split("\n")[0].slice(0, 70),
+        ...v,
+      });
+    }
+    const tally = items.reduce((a, i) => ((a[i.verdict] = (a[i.verdict] || 0) + 1), a), {});
+    return c.json({ ok: true, mode: GUARD_MODE(), checked: items.length, tally,
+                    blocking: items.filter((i) => i.block).length, items });
+  });
+
+  app.post("/api/content/guard", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    const doCancel = c.req.query("cancel") === "1";
+    const rows = (await pool.query(
+      `SELECT * FROM content_posts WHERE status IN ('scheduled','draft')`)).rows;
+    const acted = [];
+    for (const row of rows) {
+      const v = await dishVerdict(row);
+      if (!v.block) continue;
+      if (doCancel) {
+        await pool.query(
+          `UPDATE content_posts SET status='cancelled', claimed_at=NULL,
+                  error_text=$2, updated_at=NOW() WHERE id=$1`,
+          [row.id, `حارس الصنف: ${v.reason}`]);
+      }
+      acted.push({ id: row.id, channel: row.channel, ...v, cancelled: doCancel });
+    }
+    return c.json({ ok: true, mode: GUARD_MODE(), blocking: acted.length, cancelled: doCancel, items: acted });
+  });
+
   /* ══ ٦) ناشر انستجرام ═════════════════════════════════════════════════
      انستجرام API ملوش جدولة — عشان كده البوستات اتنشرت بالإيد. الجدولة
      بنعملها إحنا: العامل بياخد صف واحد ميعاده جه، يحجزه (claimed_at) عشان
@@ -860,6 +1120,11 @@ export function register(app, ctx) {
     if (!url) return { ok: false, error: "البوست من غير صورة — انستجرام لازم صورة" };
     const problems = igImageProblems({ url });
     if (problems.length) return { ok: false, error: problems.join(" · ") };
+
+    /* حارس الصنف — آخر نقطة قبل ما الصورة تخرج للناس. مش retry: ده مش عطل
+       مؤقت، ده تصميم غلط لازم إيد بني آدم تصلحه. */
+    const dv = await dishVerdict(row);
+    if (dv.block) return { ok: false, error: `حارس الصنف منع النشر: ${dv.reason}` };
 
     const q = await igQuota();
     if (q.ok && q.total && q.used >= q.total) {
