@@ -343,6 +343,45 @@ export function register(app, ctx) {
     return c.json({ ok: true, orders: rows, posOrders });
   });
 
+  /* Line items of ONE past POS order — lazily fetched from the TabSense
+     dashboard (the same fetchOrderProducts the analytics backfill uses) and
+     cached in ts_order_items, so each order costs one upstream call ever.
+     Ownership is checked by the same phone identity as the history list. */
+  app.get("/api/account/orders/:orderId/items", async (c) => {
+    const acct = await customerOf(c);
+    if (!acct) return c.json({ ok: false, error: "unauthorized" }, 401);
+    const orderId = String(c.req.param("orderId"));
+    const own = await pool.query(
+      `SELECT 1 FROM ts_orders o
+         LEFT JOIN order_sources s ON s.order_id = o.order_id
+         LEFT JOIN ts_customers tc ON tc.customer_id = o.customer_id
+        WHERE o.order_id = $2
+          AND COALESCE(NULLIF(s.phone_norm,''), NULLIF(tc.phone_norm,'')) = $1`,
+      [acct.phone_norm, orderId]);
+    if (!own.rowCount) return c.json({ ok: false, error: "not_found" }, 404);
+
+    let items = (await pool.query(
+      "SELECT name, qty, amount, note FROM ts_order_items WHERE order_id=$1 ORDER BY idx",
+      [orderId])).rows;
+    if (!items.length && env("TABSENSE_EMAIL")) {
+      try {
+        const rows = await tabsense.fetchOrderProducts(orderId);
+        for (let i = 0; i < rows.length; i++) {
+          await pool.query(
+            `INSERT INTO ts_order_items (order_id, idx, name, qty, amount, note)
+             VALUES ($1,$2,$3,$4,$5,$6)
+             ON CONFLICT (order_id, idx) DO UPDATE SET
+               name=EXCLUDED.name, qty=EXCLUDED.qty, amount=EXCLUDED.amount, note=EXCLUDED.note`,
+            [orderId, i, rows[i].name, rows[i].qty, rows[i].amount, rows[i].note || ""]);
+        }
+        items = rows;
+      } catch (e) {
+        console.error(`[accounts] order items fetch failed for ${orderId}:`, e.message);
+      }
+    }
+    return c.json({ ok: true, items });
+  });
+
   app.post("/api/account/logout", async (c) => {
     const h = c.req.header("Authorization") || "";
     const m = h.match(/^Bearer cust:([a-f0-9]{48,96})$/i);
