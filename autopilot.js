@@ -240,6 +240,16 @@ const DEFAULT_SETTINGS = {
      المسار التاني (صفر نتائج + صرف كبير) مش متأثر: «صفر» مش عيّنة صغيرة،
      دي المنصة بتقول مفيش ولا نية طلب واحدة. */
   minKillResults: 3,          // أقل نتائج في نافذة الـ ٣ أيام قبل ما تكلفتها توقّف حملة
+  /* ── حملات النقرات: النتيجة هي النقرة ────────────────────────────────
+     حملة هدفها TRAFFIC/CLICK/SWIPES بتشتري **نقرة**. عدّاد التحويلات
+     بتاعها بيفضل صفر للأبد لإن البيكسل ملهوش تاريخ تحويلات أصلاً — يعني
+     الصفر ده مش أداء وحش، ده عدّاد مستحيل يزيد. الحكم عليها بـ killCpa
+     (٦٦ ر.س = سقف تكلفة **شرا**) غلط بمقدار مئتين ضعف: نقرة تيك توك
+     كانت بـ ٠.٢٠ ر.س وسناب ٠.٤٥ ر.س، والقاعدة قفلت الاتنين.
+
+     فحملة النقرات ليها خط بتاعها: تكلفة النقرة مقابل killCpc. */
+  targetCpc: 1.0,             // ر.س/نقرة — تحت كده حملة النقرات كاسبة
+  killCpc: 3.0,               // ر.س/نقرة — فوق كده تستاهل الإيقاف
   maxCampaignBudget: 500,     // SAR/day ceiling per campaign
   maxTotalBudget: 1000,       // احتياطي بس — السقف الحقيقي بيتحسب من المبيعات
                               // (شوف movingCeiling تحت). الرقم ده بيُستعمل لما
@@ -262,6 +272,76 @@ const AGENT_TURN_CEILING = 12;
 export const killLineOf = (s) =>
   Math.max(Number(s.killMultiple || 3) * Number(s.targetCpa || 0),
            Number(s.killCpa ?? DEFAULT_SETTINGS.killCpa) || 0);
+
+/* ═══ إيه هي «النتيجة»؟ الهدف هو اللي بيقرّر ═══════════════════════════════
+   ليلة ١٥ أغسطس قاعدة القتل قفلت تيك توك وسناب لإنها قرت `results = 0`.
+   الحملتين هدفهم نقرات (تيك توك TRAFFIC/CLICK، سناب SWIPES) على بيكسل
+   ملوش أي تاريخ تحويلات — يعني عدّاد النتايج بتاعهم **مستحيل هندسياً**
+   يبقى غير صفر. الصفر ده قياس ناقص مش أداء وحش.
+
+   والدليل: تيك توك جابت ٣٧٩ نقرة بـ ٧٤.٣٠ ر.س = ٠.٢٠ ر.س للنقرة على نسبة
+   نقر ٠.٩١٪ (أحسن رقم تاريخي للحساب ٠.١٢٪)، وسناب ١٧٧ نقرة بـ ٠.٤٥ ر.س.
+   دول أحسن حاجة في الحساب، والقاعدة سمّتهم «حملة ميتة فعلاً».
+
+   ده نفس نوع الباج اللي اتصلح لميتا يوم ١٣ أغسطس (القارئ كان بيعدّ
+   `purchase` بس، واللي عمره ما هيولّع لإن الدفع بيحصل في الكاشير) — بس
+   الإصلاح ساعتها اتعمل في قارئ ميتا لوحده وما اتمدّش للهدف نفسه.        */
+const CLICK_OBJECTIVES = {
+  meta: ["OUTCOME_TRAFFIC", "LINK_CLICKS", "TRAFFIC"],
+  tiktok: ["TRAFFIC", "CLICK"],
+  /* سناب: AWARENESS_AND_ENGAGEMENT مع تحسين SWIPES. الهدف عندها واسع
+     فبنقبله كهدف نقرات — أسوأ حالة إننا منقتلش حملة كان المفروض تتقتل،
+     وده أرخص بكتير من إننا نقتل الكاسب. */
+  snapchat: ["AWARENESS_AND_ENGAGEMENT", "SWIPES", "TRAFFIC", "WEB_VIEW", "WEB_CONVERSION_TRAFFIC"],
+  google: [],
+};
+
+export function isClickObjective(platform, objective) {
+  if (!objective) return false;
+  const o = String(objective).toUpperCase();
+  return (CLICK_OBJECTIVES[platform] || []).some((x) => o === x);
+}
+
+/* الموديل الموحّد للحكم على صف واحد. دالة نقية — مفيش I/O، تتجرّب على
+   اللقطة المسجّلة.
+
+   بترجّع:
+     kind        "click" | "conversion"
+     count       عدد النتايج بالمعنى الصحيح للهدف (نقرات للحملات النقرات)
+     cost        تكلفة النتيجة الواحدة — أو **null** لو مفيش إشارة نحكم بيها
+     killLine    الخط اللي فوقه الحملة تستاهل الإيقاف، بوحدة `cost` نفسها
+     target      الخط اللي تحته الحملة كاسبة
+     blind       مفيش قياس أصلاً → ممنوع أي قرار إيقاف مبني على التكلفة
+     unit        نص عربي للوحدة، عشان الأسباب تتقري صح
+
+   القاعدة اللي اتكسرت: **ممنوع نحسب تكلفة نتيجة لما مفيش إشارة تحويل
+   موصولة**. الحساب ساعتها بيدّي صفر أو ما لا نهاية، والاتنين كذب.        */
+export function resultModelOf(row, s = {}) {
+  const click = isClickObjective(row.platform, row.objective);
+  const w = row.w3 || row;
+  const spend = Number(w.spend) || 0;
+
+  if (click) {
+    /* النقرة هي النتيجة. `null` = المنصة ما رجّعتش عدد نقرات خالص. */
+    const clicks = w.clicks == null ? null : Number(w.clicks);
+    const killLine = Number(s.killCpc ?? DEFAULT_SETTINGS.killCpc) || 0;
+    const target = Number(s.targetCpc ?? DEFAULT_SETTINGS.targetCpc) || 0;
+    return {
+      kind: "click", count: clicks,
+      cost: clicks != null && clicks > 0 ? spend / clicks : null,
+      killLine, target, blind: clicks == null, unit: "نقرة",
+      note: "حملة نقرات — النتيجة هي النقرة، والحكم بتكلفة النقرة مش بسقف تكلفة الشرا.",
+    };
+  }
+
+  const results = w.results == null ? null : Number(w.results);
+  return {
+    kind: "conversion", count: results,
+    cost: results != null && results > 0 ? spend / results : null,
+    killLine: killLineOf(s), target: Number(s.targetCpa) || 0,
+    blind: results == null, unit: "نتيجة", note: null,
+  };
+}
 
 /* الميزانية اليومية الفعلية للحملة: بتاعتها لو هي شايلاها، وإلا مجموع
    ميزانيات مجموعاتها الإعلانية. الوكيل **بيدير** الأولى بس — لكنه لازم
@@ -429,13 +509,17 @@ export function decide(rows, s, recentBudgetChanges = new Set()) {
   for (const r of rows) {
     const w = r.w3 || { spend: 0, results: 0, revenue: 0 };
     const w7 = r.w7 || { spend: 0, results: 0, revenue: 0 };
-    const cpa = w.results > 0 ? w.spend / w.results : null;
+    /* الهدف هو اللي بيقرّر إيه هي «النتيجة» — شوف resultModelOf فوق. */
+    const rm = resultModelOf(r, s);
+    const cpa = rm.cost;
+    const killLineHere = rm.killLine;
     const roas = w.spend > 0 ? w.revenue / w.spend : null;
     const fmt = (n) => (n == null ? "—" : Math.round(n * 100) / 100);
-    const ctx = `آخر ٣ أيام: صرف ${fmt(w.spend)} ر.س، ${w.results ?? 0} نتيجة` +
-      (cpa != null ? `، تكلفة النتيجة ${fmt(cpa)} ر.س` : "") +
+    const ctx = `آخر ٣ أيام: صرف ${fmt(w.spend)} ر.س، ${rm.count ?? 0} ${rm.unit}` +
+      (cpa != null ? `، تكلفة الـ${rm.unit} ${fmt(cpa)} ر.س` : "") +
       (roas != null ? `، العائد ${fmt(roas)}x` : "") +
-      ` · آخر ٧ أيام: صرف ${fmt(w7.spend)} ر.س، ${w7.results ?? 0} نتيجة`;
+      ` · آخر ٧ أيام: صرف ${fmt(w7.spend)} ر.س، ` +
+      `${(rm.kind === "click" ? w7.clicks : w7.results) ?? 0} ${rm.unit}`;
 
     if (r.status !== "ACTIVE") continue;                       // paused → not ours to judge
     if ((r.ageDays ?? 99) < s.minAgeDays) {
@@ -458,29 +542,49 @@ export function decide(rows, s, recentBudgetChanges = new Set()) {
        من أنواعنا في الصف أصلاً (المنصة عمياها أو الحقل مش راجع) — والإيقاف
        على قياس مش موجود هو بالظبط الباج اللي كان هيقفل الحساب كله يوم ١٤
        أغسطس. فالحالة دي بتطلع ملاحظة للمالك، مش أمر إيقاف. */
-    if (w.results == null && w.spend >= s.minSpend * 2) {
+    if (rm.blind && w.spend >= s.minSpend * 2) {
       out.push({ kind: "note", platform: r.platform, campaignId: r.id, campaignName: r.name,
-        detail: {}, reason: `صرفت ${fmt(w.spend)} ر.س في ٣ أيام والمنصة مرجّعتش ولا نوع نتيجة نعرف نقراه — ده عمى قياس مش فشل حملة، فمش هنوقّفها عليه. راجع ربط البيكسل/الأحداث. ${ctx}` });
+        detail: {}, reason: `صرفت ${fmt(w.spend)} ر.س في ٣ أيام والمنصة مرجّعتش ولا ${rm.unit} نعرف نقراها — ده عمى قياس مش فشل حملة، فمش هنوقّفها عليه. راجع ربط البيكسل/الأحداث. ${ctx}` });
+      continue;
+    }
+    /* ── الأرقام لسه بتستقر ────────────────────────────────────────────
+       يوم الحساب الإعلاني بيلف بتوقيت America/Los_Angeles (حوالي ١٠ص
+       بتوقيت جدة)، والقتل بيحصل في ساعات الفجر — يعني في نص اليوم
+       المحاسبي. ليلة ١٥ أغسطس القرار اتاخد على صرف ٥٤.٦٧ ر.س والرقم
+       النهائي طلع ٧٤.٣٠ — فرق ٣٦٪ جاي من تأخير التبليغ وبس.
+
+       الإيقاف مالوش رجعة، فما بيتاخدش على رقم لسه بيتحرك. الملاحظة
+       بتطلع للمالك والقرار بيستنى الأرقام المستقرة.                   */
+    if (r.settling) {
+      out.push({ kind: "note", platform: r.platform, campaignId: r.id, campaignName: r.name,
+        detail: {}, reason: `الأرقام دي لسه بتستقر (يوم الحساب الإعلاني ما لفّش) — مش هناخد قرار إيقاف عليها. ${ctx}` });
       continue;
     }
     /* عيّنة رفيعة: نتيجة أو اتنين في ٣ أيام. التكلفة المحسوبة عليها مش
        قياس — ونص الليلة الزحمة بيوصل متأخر، فالبسط ناقص والمقام كامل.
        الإيقاف هنا بيبقى على تأخير تبليغ مش على أداء. */
     const minResults = Math.max(1, Number(s.minKillResults ?? DEFAULT_SETTINGS.minKillResults) || 1);
-    const thinSample = w.results != null && w.results > 0 && w.results < minResults;
-    if (thinSample && cpa != null && cpa > killLine) {
+    /* العيّنة الرفيعة قاعدة تحويلات: النقرات بتيجي بالمئات فمفيش «عيّنة
+       رفيعة» فيها أصلاً. */
+    const thinSample = rm.kind === "conversion"
+      && rm.count != null && rm.count > 0 && rm.count < minResults;
+    if (thinSample && cpa != null && cpa > killLineHere) {
       out.push({ kind: "note", platform: r.platform, campaignId: r.id, campaignName: r.name,
-        detail: {}, reason: `تكلفة النتيجة ${fmt(cpa)} ر.س فوق خط القتل (${fmt(killLine)}) — بس دي محسوبة على ${w.results} نتيجة بس في ٣ أيام، وده أقل من ${minResults}. عيّنة زي دي بتتقلب برقم واحد، والمنصات بتبلّغ النتايج متأخر فالليلة اللي لسه شغالة بتطلع أغلى من حقيقتها. مش هنوقّفها على كده — راجعها بنفسك لو فضلت كده بكرة. ${ctx}` });
+        detail: {}, reason: `تكلفة النتيجة ${fmt(cpa)} ر.س فوق خط القتل (${fmt(killLineHere)}) — بس دي محسوبة على ${rm.count} نتيجة بس في ٣ أيام، وده أقل من ${minResults}. عيّنة زي دي بتتقلب برقم واحد، والمنصات بتبلّغ النتايج متأخر فالليلة اللي لسه شغالة بتطلع أغلى من حقيقتها. مش هنوقّفها على كده — راجعها بنفسك لو فضلت كده بكرة. ${ctx}` });
       continue;
     }
-    const killing = (w.results === 0 && w.spend >= s.minSpend * 2)
-      || (cpa != null && cpa > killLine);
+    /* صفر بالمعنى الصحيح للهدف: صفر **نقرة** لحملة نقرات، صفر **نية طلب**
+       لحملة تحويلات. حملة نقرات جابت ٣٧٩ نقرة مش بتوصل هنا خالص. */
+    const killing = (rm.count === 0 && w.spend >= s.minSpend * 2)
+      || (cpa != null && cpa > killLineHere);
     if (killing) {
       out.push({ kind: "pause", platform: r.platform, campaignId: r.id, campaignName: r.name,
         detail: { state: "PAUSED" },
-        reason: w.results === 0
-          ? `صرفت ${fmt(w.spend)} ر.س في ٣ أيام من غير ولا نية طلب واحدة (ولا دوسة «اطلب على واتساب» ولا محادثة) — قاعدة القتل. ${ctx}`
-          : `تكلفة النتيجة ${fmt(cpa)} ر.س أعلى من خط القتل (${fmt(killLine)} ر.س/نتيجة) — قاعدة القتل. ${ctx}` });
+        reason: rm.count === 0
+          ? (rm.kind === "click"
+            ? `صرفت ${fmt(w.spend)} ر.س في ٣ أيام من غير ولا نقرة واحدة — قاعدة القتل. ${ctx}`
+            : `صرفت ${fmt(w.spend)} ر.س في ٣ أيام من غير ولا نية طلب واحدة (ولا دوسة «اطلب على واتساب» ولا محادثة) — قاعدة القتل. ${ctx}`)
+          : `تكلفة الـ${rm.unit} ${fmt(cpa)} ر.س أعلى من خط القتل (${fmt(killLineHere)} ر.س/${rm.unit}) — قاعدة القتل. ${ctx}` });
       continue;
     }
 
@@ -492,7 +596,16 @@ export function decide(rows, s, recentBudgetChanges = new Set()) {
     if (recentBudgetChanges.has(`${r.platform}:${r.id}`)) continue; // cooldown
 
     // ── SCALE: beating target → step the budget up, capped twice over ─────
-    const winning = (cpa != null && cpa <= s.targetCpa) || (roas != null && roas >= s.targetRoas);
+    const winning = (cpa != null && cpa <= rm.target) || (roas != null && roas >= s.targetRoas);
+    /* حملة نقرات كاسبة مبتتكبّرش أوتوماتيك. النقرة الرخيصة بتقول إن
+       الكرياتيف شغّال، مش إن الريال الزيادة هيرجع طلبات — التحويل من
+       نقرة لطلب لسه مش مقيس أصلاً (ده سبب الباج من أوله). فالتكبير هنا
+       قرار مالك، والوكيل بيقول الرقم وبس. */
+    if (winning && rm.kind === "click") {
+      out.push({ kind: "note", platform: r.platform, campaignId: r.id, campaignName: r.name,
+        detail: {}, reason: `حملة نقرات بتجيب النقرة بـ ${fmt(cpa)} ر.س (تحت المستهدف ${rm.target} ر.س) — دي حملة كويسة ومش هنوقّفها. بس مش هنكبّرها أوتوماتيك كمان: النقرة الرخيصة مش دليل على طلبات لحد ما التحويل يتقاس. لو عايز تكبّرها زوّدها بنفسك. ${ctx}` });
+      continue;
+    }
     if (winning) {
       const stepPct = Math.min(s.scaleStepPct, s.maxChangePct);
       let next = Math.round(r.dailyBudget * (1 + stepPct / 100));
@@ -507,7 +620,7 @@ export function decide(rows, s, recentBudgetChanges = new Set()) {
         activeBudget += next - r.dailyBudget;
         out.push({ kind: "budget", platform: r.platform, campaignId: r.id, campaignName: r.name,
           detail: { from: r.dailyBudget, to: next },
-          reason: `أداء أحسن من المستهدف${cpa != null ? ` (تكلفة النتيجة ${fmt(cpa)} ≤ ${s.targetCpa} ر.س)` : ` (عائد ${fmt(roas)}x ≥ ${s.targetRoas}x)`} — تكبير تدريجي ${stepPct}٪ عشان الخوارزمية ما تتكسرش. ${ctx}` });
+          reason: `أداء أحسن من المستهدف${cpa != null ? ` (تكلفة النتيجة ${fmt(cpa)} ≤ ${rm.target} ر.س)` : ` (عائد ${fmt(roas)}x ≥ ${s.targetRoas}x)`} — تكبير تدريجي ${stepPct}٪ عشان الخوارزمية ما تتكسرش. ${ctx}` });
       } else if (r.dailyBudget >= s.maxCampaignBudget) {
         out.push({ kind: "note", platform: r.platform, campaignId: r.id, campaignName: r.name,
           detail: {}, reason: `الحملة كاسبة بس وصلت سقف الميزانية (${s.maxCampaignBudget} ر.س/يوم). لو عايز توسّع أكتر ارفع السقف من الإعدادات — أو الأحسن: انسخ الحملة بجمهور جديد. ${ctx}` });
@@ -516,14 +629,14 @@ export function decide(rows, s, recentBudgetChanges = new Set()) {
     }
 
     // ── CUT: worse than 1.5× target but not kill-worthy → step down ───────
-    if (cpa != null && cpa > 1.5 * s.targetCpa) {
+    if (cpa != null && cpa > 1.5 * rm.target) {
       const stepPct = Math.min(s.cutStepPct, s.maxChangePct);
       const next = Math.max(20, Math.round(r.dailyBudget * (1 - stepPct / 100)));
       if (next < r.dailyBudget) {
         activeBudget -= r.dailyBudget - next;
         out.push({ kind: "budget", platform: r.platform, campaignId: r.id, campaignName: r.name,
           detail: { from: r.dailyBudget, to: next },
-          reason: `تكلفة النتيجة ${fmt(cpa)} ر.س أعلى من 1.5× المستهدف (${s.targetCpa} ر.س) — تقليل الميزانية ${stepPct}٪ لحد ما الأداء يتحسن. ${ctx}` });
+          reason: `تكلفة الـ${rm.unit} ${fmt(cpa)} ر.س أعلى من 1.5× المستهدف (${rm.target} ر.س) — تقليل الميزانية ${stepPct}٪ لحد ما الأداء يتحسن. ${ctx}` });
       }
     }
   }
@@ -549,9 +662,22 @@ export function guardPause({ platform, campaignId }, s, rows, { writeOk }) {
   const row = rows.find((r) => r.platform === platform && r.id === String(campaignId));
   if (!row) return `مفيش حملة بالرقم ${campaignId} على ${platform} في اللقطة الحالية — راجع get_performance الأول.`;
   if (row.status !== "ACTIVE") return `الحملة "${row.name}" أصلاً ${row.status} — مفيش حاجة تتوقف.`;
-  // قاعدة القتل بتحدد إمتى الإيقاف مبرر. حملة بتضرب المستهدف مش بتتقفل.
-  if (row.spend >= s.minSpend && row.cpa != null && row.cpa <= s.targetCpa) {
-    return `مرفوض: "${row.name}" تكلفة نتيجتها ${row.cpa} ر.س وهي أقل من المستهدف (${s.targetCpa} ر.س) — دي حملة كاسبة والقواعد بتقول ما توقفش الكاسب. قاعدة القتل بتشتغل عند تكلفة أعلى من ${killLineOf(s)} ر.س/نتيجة. لو عايز تقلل صرفها استخدم set_budget.`;
+
+  /* السور ده هو اللي **ما اشتغلش** ليلة ١٥ أغسطس. الوكيل (مش قواعد
+     التشغيل) هو اللي قفل تيك توك وسناب، والسور سابه يعدّي لإن الشرط كان
+     `row.cpa != null` — وحملة النقرات cpa بتاعها null بحكم التعريف، لإن
+     المقام (عدّاد التحويلات) صفر مستحيل يزيد. يعني السور كان بيحمي
+     الحملات اللي القياس شايفها بس، وبيسيب اللي القياس أعماها.
+
+     دلوقتي السور بيتكلم بلغة الهدف: حملة نقرات بتتحاكم بتكلفة النقرة. */
+  const rm = resultModelOf(row, s);
+  if (row.spend >= s.minSpend && rm.cost != null && rm.cost <= rm.target) {
+    return `مرفوض: "${row.name}" تكلفة الـ${rm.unit} ${Math.round(rm.cost * 100) / 100} ر.س وهي أقل من المستهدف (${rm.target} ر.س) — دي حملة كاسبة والقواعد بتقول ما توقفش الكاسب. قاعدة القتل بتشتغل عند تكلفة أعلى من ${rm.killLine} ر.س/${rm.unit}. لو عايز تقلل صرفها استخدم set_budget.`;
+  }
+  /* حملة نقرات شغّالة وبتجيب نقرات: ممنوع تتقفل بحجة «صفر تحويلات».
+     ده بالظبط نص قرار ليلة ١٥ أغسطس. */
+  if (rm.kind === "click" && row.spend >= s.minSpend && rm.count > 0 && rm.cost != null && rm.cost <= rm.killLine) {
+    return `مرفوض: "${row.name}" حملة نقرات جابت ${rm.count} نقرة بتكلفة ${Math.round(rm.cost * 100) / 100} ر.س للنقرة — تحت خط القتل (${rm.killLine} ر.س/نقرة). عدّاد التحويلات بتاعها صفر لإن البيكسل ملوش تاريخ تحويلات، مش لإن الحملة فاشلة. ما توقفش حملة على قياس مش موصول.`;
   }
   return null;
 }
@@ -708,6 +834,20 @@ export function msToAccountRoll(at = new Date(), tz = ADS_ACCOUNT_TZ) {
   const c = tzClock(at, tz);
   const elapsed = ((c.hour * 60 + c.minute) * 60 + c.second) * 1000 + Math.max(0, at.getTime() % 1000);
   return 86_400_000 - elapsed;
+}
+
+/* ── الأرقام لسه بتستقر؟ ──────────────────────────────────────────────────
+   ليلة ١٥ أغسطس الطيار قفل تيك توك الساعة ٠١:٤٣ على قراية صرف ٥٤.٦٧ ر.س،
+   والرقم النهائي بعد ما التقارير استقرت طلع ٧٤.٣٠ — فرق ٣٦٪ تأخير تبليغ
+   وبس. وسناب اتقفلت ٠٠:٥٦، يعني في عزّ أحسن ساعة ونص في نافذتها.
+
+   الإيقاف هو الفعل الوحيد اللي مالوش رجعة. فما بيتاخدش وإحنا جوّه
+   النافذة والفلوس لسه بتتحرك والتقارير لسه بتلحق — الحملة الميتة فعلاً
+   هتفضل ميتة بعد ما المطعم يقفل، والقرار ساعتها بيتاخد على أرقام مستقرة.
+
+   يعني: القتل بيحصل والمطعم قافل، مش في نص الخدمة.                     */
+export function numbersSettling(at = new Date(), s = {}) {
+  return adsWindow(at, s).open;
 }
 
 /* ── اليوم اللي بنطلب بيه صرف "النهارده" من المنصات ─────────────────────
@@ -2643,14 +2783,23 @@ export function register(app, ctx, deps = {}) {
           rows.push({
             platform: p.id, id: String(c.id), name: c.name, status: c.status,
             effectiveStatus: c.effectiveStatus || null,
+            /* الهدف بيقرّر إيه هي «النتيجة» — من غيره قاعدة القتل بتحكم
+               على حملة نقرات بعدّاد تحويلات. شوف resultModelOf. */
+            objective: c.objective || null,
             dailyBudget: c.dailyBudget,
             /* مش بندبرها — بنعدّها في السقف الكلي وبس. */
             adsetBudget: c.dailyBudget == null ? (adsetBy[String(c.id)] ?? null) : null,
             ageDays: started && !isNaN(started) ? Math.floor((Date.now() - started.getTime()) / 86400000) : null,
             /* `?? null` مش `|| 0`: فرق «المنصة قالت صفر» عن «المنصة ما
                ردّتش بحاجة نعرف نقراها» هو اللي قاعدة القتل واقفة عليه. */
-            w3: { spend: a?.spend || 0, results: a?.results ?? null, revenue: a?.resultValue || 0 },
-            w7: { spend: b?.spend || 0, results: b?.results ?? null, revenue: b?.resultValue || 0 },
+            w3: { spend: a?.spend || 0, results: a?.results ?? null, revenue: a?.resultValue || 0,
+                  clicks: a?.clicks ?? null },
+            w7: { spend: b?.spend || 0, results: b?.results ?? null, revenue: b?.resultValue || 0,
+                  clicks: b?.clicks ?? null },
+            /* يوم الحساب الإعلاني بيلف بتوقيت America/Los_Angeles، يعني
+               قبل ما يلف الأرقام لسه بتتحرك — وقرار الإيقاف مالوش رجعة.
+               شوف قاعدة `settling` في decide(). */
+            settling: numbersSettling(new Date(), s),
           });
         }
       } catch (e) { reasons[p.id] = String(e.message || e); }
@@ -2918,6 +3067,7 @@ export function register(app, ctx, deps = {}) {
           const spend = a?.spend || 0, results = a?.results ?? null, revenue = a?.resultValue || 0;
           rows.push({
             platform: p.id, id: String(c.id), name: c.name, status: c.status,
+            objective: c.objective || null,
             dailyBudget: c.dailyBudget,
             adsetBudget: c.dailyBudget == null ? (adsetBy[String(c.id)] ?? null) : null,
             /* المجموعات الإعلانية بتفاصيلها — دي اللي paceTargetsOf بتبني
@@ -3307,16 +3457,21 @@ ${focus}
       if (r.status !== "ACTIVE") continue;
       /* (١) حملة بتحرق فلوس النهارده من غير أي نية طلب.
          `results == null` (المنصة عمياها) مش صفر — نفس تفرقة decide(). */
-      if (r.spend >= s.minSpend * 2 && r.results === 0) {
+      /* بلغة الهدف: حملة نقرات بتجيب نقرات مش «بتحرق فلوس». الإشارة دي
+         هي اللي كانت بتنده الوكيل، والوكيل هو اللي قفل الحملتين. */
+      const rm = resultModelOf(r, s);
+      if (r.spend >= s.minSpend * 2 && rm.count === 0) {
         found.push({ key: `burn:${r.platform}:${r.id}:${today}`, kind: "burn", platform: r.platform,
           campaignId: r.id, campaignName: r.name,
-          text: `"${r.name}" (${r.platform}) صرفت ${Math.round(r.spend)} ر.س النهارده من غير ولا نية طلب واحدة (ولا دوسة واتساب ولا محادثة).` });
+          text: rm.kind === "click"
+            ? `"${r.name}" (${r.platform}) صرفت ${Math.round(r.spend)} ر.س النهارده من غير ولا نقرة واحدة.`
+            : `"${r.name}" (${r.platform}) صرفت ${Math.round(r.spend)} ر.س النهارده من غير ولا نية طلب واحدة (ولا دوسة واتساب ولا محادثة).` });
       }
-      // (٢) تكلفة النتيجة النهارده فوق حد القتل
-      if (r.spend >= s.minSpend && r.cpa != null && r.cpa > killLineOf(s)) {
+      // (٢) تكلفة النتيجة النهارده فوق حد القتل — بوحدة الهدف
+      if (r.spend >= s.minSpend && rm.cost != null && rm.cost > rm.killLine) {
         found.push({ key: `cpa:${r.platform}:${r.id}:${today}`, kind: "cpa", platform: r.platform,
           campaignId: r.id, campaignName: r.name,
-          text: `"${r.name}" (${r.platform}) تكلفة النتيجة النهارده ${r.cpa} ر.س — أعلى من خط القتل (${killLineOf(s)} ر.س/نتيجة).` });
+          text: `"${r.name}" (${r.platform}) تكلفة الـ${rm.unit} النهارده ${Math.round(rm.cost * 100) / 100} ر.س — أعلى من خط القتل (${rm.killLine} ر.س/${rm.unit}).` });
       }
     }
 
