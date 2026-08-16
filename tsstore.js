@@ -114,6 +114,9 @@ export async function calculateOrder({ branchId = "1", orderOptionId = 3, purcha
       unit_amount: Number(p.unit_amount),
       modifiers: [],
       parent_product: { meta: { notes: null } },
+      // weight/size variants (ثلث/نصف/كيلو) — probed 2026-08-16: TabSense
+      // accepts `variant_option:{id}` and prices the chosen option itself
+      ...(p.variant_option_id ? { variant_option: { id: Number(p.variant_option_id) } } : {}),
     })),
     adjustments,
   };
