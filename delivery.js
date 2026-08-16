@@ -187,8 +187,18 @@ export function register(app, ctx, deps = {}) {
     const cfg = { ...DEFAULT_POLICY, ...pol.config };
     const straight = haversineKm(STORE_LAT(), STORE_LNG(), Number(lat), Number(lng));
     const res = computeDeliveryFee(cfg, { distanceKm: straight * (cfg.routeFactor || 1), orderTotal });
-    return { ...res, policyId: pol.id, policyName: pol.name };
+    // The storefront's incentives (progress bar to free delivery, min-order
+    // nudge) need the thresholds, not just the verdict.
+    return { ...res, policyId: pol.id, policyName: pol.name, policy: publicPolicy(cfg), ...gaps(cfg, orderTotal) };
   }
+  const publicPolicy = (cfg) => ({
+    baseFee: cfg.baseFee, baseKm: cfg.baseKm, perKm: cfg.perKm, maxKm: cfg.maxKm,
+    freeOverTotal: cfg.freeOverTotal ?? null, minOrderTotal: cfg.minOrderTotal || 0,
+  });
+  const gaps = (cfg, total) => ({
+    toFree: cfg.freeOverTotal != null ? Math.max(0, Math.round((cfg.freeOverTotal - (Number(total) || 0)) * 100) / 100) : null,
+    toMin: Math.max(0, Math.round(((cfg.minOrderTotal || 0) - (Number(total) || 0)) * 100) / 100),
+  });
 
   /* dispatch(order) — create the Flying Arrow order once the cashier accepts.
      city_id / service_vehicle_id come from settings.delivery (their support
@@ -248,6 +258,17 @@ export function register(app, ctx, deps = {}) {
   }
 
   /* ── routes ── */
+
+  // PUBLIC — the active policy's thresholds, for the cart BEFORE a location
+  // exists («التوصيل من 10 ر.س», «ضيف 22 ر.س وتوصيلك مجاني»).
+  app.get("/api/delivery/policy", async (c) => {
+    const pol = await activePolicy();
+    if (!pol) return c.json({ ok: true, policy: null });
+    const cfg = { ...DEFAULT_POLICY, ...pol.config };
+    const total = Number(c.req.query("total")) || 0;
+    c.header("Cache-Control", "public, max-age=60");
+    return c.json({ ok: true, policy: publicPolicy(cfg), ...gaps(cfg, total) });
+  });
 
   // PUBLIC — the storefront asks for a fee as the customer moves the map pin.
   app.get("/api/delivery/quote", async (c) => {
