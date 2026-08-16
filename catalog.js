@@ -16,7 +16,7 @@
 
 import { activeOffers, publicOffer } from "./offers.js";
 
-const STORE_BASE = process.env.CATALOG_MENU_BASE || "https://order.o2m8.me";
+const STORE_BASE = process.env.CATALOG_MENU_BASE || process.env.STOREFRONT_PUBLIC_URL || "https://freshcuts.sa";
 const BRAND = "Fresh Cuts";
 const CACHE_MS = 10 * 60_000;
 
@@ -278,7 +278,7 @@ export function register(app, ctx) {
     const lines = rows.map((r) => [
       q(r.id), q(r.title), q(r.description), "in stock", "new",
       q(`${r.price.toFixed(2)} SAR`),
-      q(`https://order.o2m8.me/#item-${r.id}`),
+      q(`${STORE_BASE}/#item-${r.id}`),
       q(r.image), q(BRAND), q(r.category),
     ].join(","));
     c.header("Content-Type", "text/csv; charset=utf-8");

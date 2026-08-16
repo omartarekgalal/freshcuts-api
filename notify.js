@@ -143,7 +143,7 @@ export function register(app, ctx) {
       if (subs.length) {
         sendPushTo(subs, {
           title: "فريش كتس 🍔", body: text,
-          url: `https://order.o2m8.me/track/${order.order_no}`,
+          url: `${env("STOREFRONT_PUBLIC_URL", "https://freshcuts.sa")}/track/${order.order_no}`,
         }).catch(() => {});
       }
     }
@@ -230,7 +230,7 @@ export function register(app, ctx) {
       } else {
         const subs = (await pool.query(
           "SELECT id, sub FROM push_subs WHERE NOT disabled ORDER BY id DESC LIMIT 5")).rows;
-        const sent = await sendPushTo(subs, { title: "فريش كتس 🍔", body: text, url: "https://order.o2m8.me" });
+        const sent = await sendPushTo(subs, { title: "فريش كتس 🍔", body: text, url: env("STOREFRONT_PUBLIC_URL", "https://freshcuts.sa") });
         return c.json({ ok: true, sent, of: subs.length });
       }
       return c.json({ ok: true });

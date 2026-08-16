@@ -407,7 +407,7 @@ export function register(app, ctx, deps = {}) {
     if (!row) return c.json({ ok: false, error: "order_not_found" }, 404);
     if (row.status !== "pending_payment") return c.json({ ok: false, error: "already_processed" }, 409);
 
-    const publicUrl = env("STOREFRONT_PUBLIC_URL", "https://order.o2m8.me");
+    const publicUrl = env("STOREFRONT_PUBLIC_URL", "https://freshcuts.sa");
     let res;
     try {
       res = await pay.executePayment({

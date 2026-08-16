@@ -67,7 +67,7 @@ export const OFFERS = [
        "Offers" (أقرب جار هناك صينية اللمّة — صورة مشاوي على عرض بيتزا
        وباستا وكريب كذب بصري). فالصورة هي بوستر العرض نفسه، والميزة إن
        «داخل الصالة فقط» متحروقة جوّه البكسل — يعني المنصة ما تقدرش تقصّها. */
-    image: "https://order.o2m8.me/static/social/offer-combo70.png",
+    image: (process.env.STOREFRONT_PUBLIC_URL || "https://freshcuts.sa") + "/static/social/offer-combo70.png",
     price: 70,
     currency: "SAR",
     /* داخل الصالة فقط. مش قابل للتوصيل، ومش قابل للطلب أونلاين — المتجر
