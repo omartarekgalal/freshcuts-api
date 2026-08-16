@@ -253,6 +253,10 @@ export function register(app, ctx, deps = {}) {
       // أصناف مخفية من العرض (غير نشطة أو تكرارات الأوزان): بتختفي من
       // القايمة والبحث لكن بتفضل في البيانات — عشان منتقي الوزن يلاقيها.
       hiddenIds: (cat.hiddenIds || []).map(String),
+      // مواعيد العمل من اللوحة: {enabled, days:{sat..fri:{open,close}}, note}
+      // «close» أصغر من «open» معناها بعد منتصف الليل (12:00 → 02:00).
+      // المتجر بيمنع الطلب بره المواعيد (وTabSense كمان بتقول pos_available).
+      hours: s.hours || null,
       // مجموعات الأوزان: الصنف الأصل بيفتح منتقي (⅓/½/كيلو) وكل اختيار
       // بيطلب صنف TabSense الحقيقي بتاعه — المطبخ يشوف الوزن الصح دايماً.
       variantGroups: cat.variantGroups || [],
