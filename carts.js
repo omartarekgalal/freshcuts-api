@@ -87,6 +87,7 @@ export function register(app, ctx, deps = {}) {
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
         updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
       );
+      ALTER TABLE shop_carts ADD COLUMN IF NOT EXISTS in_webview TEXT;
       CREATE INDEX IF NOT EXISTS shop_carts_phone_idx ON shop_carts(phone_norm) WHERE phone_norm IS NOT NULL;
       CREATE INDEX IF NOT EXISTS shop_carts_open_idx ON shop_carts(updated_at DESC) WHERE recovered_order IS NULL;
     `);
@@ -111,8 +112,8 @@ export function register(app, ctx, deps = {}) {
 
     await pool.query(
       `INSERT INTO shop_carts(device_id, phone_norm, stage, max_stage, items, item_count, subtotal,
-                              option, has_location, installed, push_ready, ua)
-       VALUES ($1,$2,$3,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+                              option, has_location, installed, push_ready, ua, in_webview)
+       VALUES ($1,$2,$3,$3,$4,$5,$6,$7,$8,$9,$10,$11,$13)
        ON CONFLICT (device_id) DO UPDATE SET
          phone_norm = COALESCE(EXCLUDED.phone_norm, shop_carts.phone_norm),
          stage = EXCLUDED.stage,
@@ -126,6 +127,7 @@ export function register(app, ctx, deps = {}) {
          installed = COALESCE(EXCLUDED.installed, shop_carts.installed),
          push_ready = COALESCE(EXCLUDED.push_ready, shop_carts.push_ready),
          ua = EXCLUDED.ua,
+         in_webview = COALESCE(EXCLUDED.in_webview, shop_carts.in_webview),
          -- سلة اتفتحت من جديد بعد ما اتسجلت مستردة: تبقى سلة جديدة
          recovered_order = CASE WHEN EXCLUDED.stage <> 'ordered' AND shop_carts.recovered_order IS NOT NULL
                                 THEN NULL ELSE shop_carts.recovered_order END,
@@ -138,7 +140,8 @@ export function register(app, ctx, deps = {}) {
        Number(b.subtotal) || 0, b.option ? String(b.option).slice(0, 12) : null,
        Boolean(b.hasLocation), typeof b.installed === "boolean" ? b.installed : null,
        typeof b.pushReady === "boolean" ? b.pushReady : null,
-       String(c.req.header("user-agent") || "").slice(0, 200), rank(stage)]
+       String(c.req.header("user-agent") || "").slice(0, 200), rank(stage),
+       b.inWebview ? String(b.inWebview).slice(0, 16) : null]
     );
     return c.json({ ok: true });
   });
@@ -252,6 +255,10 @@ export function register(app, ctx, deps = {}) {
          count(*) FILTER (WHERE max_stage='address')::int AS s_address,
          count(*) FILTER (WHERE max_stage='payment')::int AS s_payment,
          count(*) FILTER (WHERE max_stage='ordered')::int AS s_ordered,
+         count(*) FILTER (WHERE in_webview IS NOT NULL)::int AS in_webview,
+         count(*) FILTER (WHERE in_webview IS NOT NULL AND recovered_order IS NOT NULL)::int AS wv_ordered,
+         count(*) FILTER (WHERE in_webview IS NULL AND recovered_order IS NOT NULL)::int AS br_ordered,
+         count(*) FILTER (WHERE installed IS TRUE AND recovered_order IS NOT NULL)::int AS inst_ordered,
          count(*) FILTER (WHERE installed IS TRUE)::int AS installed,
          count(*) FILTER (WHERE push_ready IS TRUE)::int AS push_ready,
          count(*) FILTER (WHERE nudges @> '["push1"]'::jsonb)::int AS nudged_push,
@@ -268,15 +275,34 @@ export function register(app, ctx, deps = {}) {
       openCarts: n(r.open_carts), openValue: n(r.open_value), reachable: n(r.reachable),
       funnel: { cart: n(r.s_cart), checkout: n(r.s_checkout), address: n(r.s_address), payment: n(r.s_payment), ordered: n(r.s_ordered) },
       installed: n(r.installed), pushReady: n(r.push_ready),
+      // الرقمين دول هما اللي بيبرروا (أو يلغوا) شغل التثبيت والهروب من
+      // متصفح التطبيق: لو المثبّتين ما بيحوّلوش أحسن، نبطّل ندفعهم يثبتوا.
+      inWebview: n(r.in_webview),
+      webviewConv: n(r.in_webview) ? n(r.wv_ordered) / n(r.in_webview) : null,
+      browserConv: (carts - n(r.in_webview)) ? n(r.br_ordered) / (carts - n(r.in_webview)) : null,
+      installedConv: n(r.installed) ? n(r.inst_ordered) / n(r.installed) : null,
       nudgedPush: n(r.nudged_push), nudgedSms: n(r.nudged_sms), recoveredAfterNudge: n(r.recovered_after_nudge),
     });
+  });
+
+  /* السلة بتلحق الجهاز لما يخرج من متصفح إنستقرام للمتصفح الكامل (بيوصل
+     بـ ?d=<deviceId>). من غير ده «افتح في المتصفح» بتبدأ من سلة فاضية —
+     وساعتها الحركة بتخسر أكتر ما بتكسب. */
+  app.get("/api/carts/mine", async (c) => {
+    const device = String(c.req.query("deviceId") || "").slice(0, 64);
+    if (!/^[a-z0-9_-]{8,64}$/i.test(device)) return c.json({ ok: false }, 400);
+    const r = await pool.query(
+      `SELECT items, option, subtotal FROM shop_carts
+        WHERE device_id=$1 AND recovered_order IS NULL AND item_count > 0
+          AND updated_at > NOW() - INTERVAL '2 days'`, [device]);
+    return c.json({ ok: true, cart: r.rows[0] || null });
   });
 
   app.get("/api/carts/list", async (c) => {
     const err = await requireAdmin(c); if (err) return err;
     const rows = (await pool.query(
       `SELECT device_id, phone_norm, stage, max_stage, item_count, subtotal, option, has_location,
-              installed, push_ready, nudges, recovered_order, created_at, updated_at, items
+              installed, push_ready, in_webview, nudges, recovered_order, created_at, updated_at, items
          FROM shop_carts
         WHERE recovered_order IS NULL AND item_count > 0
         ORDER BY subtotal DESC, updated_at DESC LIMIT 100`)).rows;

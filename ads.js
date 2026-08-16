@@ -111,6 +111,12 @@ const MAX_DAILY_BUDGET = Number(process.env.ADS_MAX_DAILY_BUDGET || 5000);
 const DEFAULT_CURRENCY = process.env.ADS_CURRENCY || "SAR";
 const BATCH_SIZE = 500;
 
+/* توقيت حساب ميتا الإعلاني. اليوم عنده بيلف ٠٠:٠٠ بتوقيت لوس أنجلوس — اللي
+   هي ١٠ صباحاً بتوقيت جدة، مش نص الليل. أي رقم بيخلط صرف بمبيعات لازم يقول
+   الحد ده بصوت عالي. التعريف عايش هنا (الموديول الأدنى) و autopilot.js
+   بيعيد تصديره — تعريف واحد بس في الـ API كلها. */
+export const ADS_ACCOUNT_TZ = process.env.ADS_ACCOUNT_TZ || "America/Los_Angeles";
+
 const env = (k) => (process.env[k] || "").trim();
 const writeAllowed = () => process.env.ADS_ALLOW_WRITE === "1";
 
@@ -933,6 +939,36 @@ const meta = {
     };
   },
 
+  /* نفس الاستعلام بس مقطّع يوم بيوم: `time_increment=1` بيخلي ميتا ترجّع صف
+     لكل حملة لكل يوم ومعاه `date_start`. اليوم ده **يوم الحساب الإعلاني**
+     (America/Los_Angeles) مش يوم المطعم — الفرق مكتوب في dailySpend() تحت. */
+  async dailySpend({ from, to }) {
+    const token = env("META_CAPI_TOKEN");
+    const act = this.actId();
+    if (!token || !act) return { ok: false, reason: "META_AD_ACCOUNT_ID / META_CAPI_TOKEN missing", rows: [] };
+    const fields = "campaign_id,campaign_name,spend,impressions,clicks";
+    const tr = encodeURIComponent(JSON.stringify({ since: from, until: to }));
+    const res = await httpJson(
+      `${this.base()}/${act}/insights?level=campaign&fields=${fields}&time_range=${tr}`
+      + `&time_increment=1&limit=500`,
+      { headers: { Authorization: `Bearer ${token}` } }
+    );
+    if (!res.ok) return { ok: false, reason: this.readBatchResult(res).error, rows: [] };
+    return {
+      ok: true,
+      accountTz: ADS_ACCOUNT_TZ,
+      rows: (res.json?.data || []).map((r) => ({
+        platform: "meta",
+        day: String(r.date_start || "").slice(0, 10),
+        campaignId: r.campaign_id,
+        campaignName: r.campaign_name,
+        spend: Number(r.spend || 0),
+        impressions: Number(r.impressions || 0),
+        clicks: Number(r.clicks || 0),
+      })),
+    };
+  },
+
   /* المجموعات الإعلانية بتفاصيلها + الميزانيات مجمّعة على مستوى الحملة.
 
      ليه دي موجودة: ٣ من ٥ حملات شغّالة عندنا ميزانيتها على مستوى المجموعة
@@ -1247,6 +1283,39 @@ const tiktok = {
     };
   },
 
+  /* نفس التقرير بس بُعد `stat_time_day` زيادة — تيك توك بترجّع وقتها صف لكل
+     حملة لكل يوم. اليوم بتوقيت المعلن (توقيت الحساب على تيك توك). */
+  async dailySpend({ from, to }) {
+    const token = env("TIKTOK_ACCESS_TOKEN");
+    const adv = this.advId();
+    if (!token || !adv) return { ok: false, reason: "TIKTOK_ADVERTISER_ID / TIKTOK_ACCESS_TOKEN missing", rows: [] };
+    const params = new URLSearchParams({
+      advertiser_id: adv,
+      report_type: "BASIC",
+      data_level: "AUCTION_CAMPAIGN",
+      dimensions: JSON.stringify(["campaign_id", "stat_time_day"]),
+      metrics: JSON.stringify(["campaign_name", "spend", "impressions", "clicks"]),
+      start_date: from,
+      end_date: to,
+      page_size: "1000",
+    });
+    const res = await httpJson(`${this.base}/report/integrated/get/?${params}`, { headers: this.hdr() });
+    const r = this.readBatchResult(res, 0);
+    if (!r.ok) return { ok: false, reason: r.reason || r.error, rows: [] };
+    return {
+      ok: true,
+      rows: (res.json?.data?.list || []).map((row) => ({
+        platform: "tiktok",
+        day: String(row.dimensions?.stat_time_day || "").slice(0, 10),
+        campaignId: String(row.dimensions?.campaign_id ?? ""),
+        campaignName: row.metrics?.campaign_name || "",
+        spend: Number(row.metrics?.spend || 0),
+        impressions: Number(row.metrics?.impressions || 0),
+        clicks: Number(row.metrics?.clicks || 0),
+      })),
+    };
+  },
+
   stateCall(id, state) {
     return {
       url: `${this.base}/campaign/status/update/`,
@@ -1543,6 +1612,64 @@ const snapchat = {
       });
     }
     return { ok: true, rows };
+  },
+
+  /* الصرف يوم بيوم. سناب بتفرض حاجتين هنا اتعلمناهم من ردودها الحقيقية:
+     ١) على مستوى الحساب مسموح بحقل `spend` وبس — أي حقل زيادة بيرجع
+        E1008 «Only field 'spend' should be used when querying AdAccount stats».
+     ٢) مع granularity=DAY لازم البداية تكون نص الليل **بتوقيت الحساب**، مش
+        UTC: «must have a start time that is the start of day (00:00:00) for
+        the account's timezone». فبنقرا توقيت الحساب من سناب نفسها بدل ما
+        نفترضه، وبنبني الإزاحة منه.
+     ملحوظة على الحدود: يوم سناب بيلف نص الليل بتوقيت الحساب (الرياض عندنا)،
+     ويوم المطعم بيلف ٤ الفجر — يعني ساعات ٠٠:٠٠–٠٤:٠٠ بتقع على يوم سناب
+     التالي وعلى يوم المطعم السابق. الفرق ده مكتوب في الكشف. */
+  async dailySpend({ from, to }) {
+    const t = await this.token();
+    const acct = env("SNAP_AD_ACCOUNT_ID");
+    if (!t || !acct) return { ok: false, reason: "SNAP_AD_ACCOUNT_ID / Snap OAuth credentials missing", rows: [] };
+    const hdr = { headers: { Authorization: `Bearer ${t}` } };
+    const meta = await httpJson(`${this.apiBase}/adaccounts/${acct}`, hdr);
+    const tz = meta.json?.adaccounts?.[0]?.adaccount?.timezone || "Asia/Riyadh";
+    // إزاحة التوقيت بصيغة ±HH:MM زي ما سناب عايزاها.
+    const offset = (() => {
+      try {
+        const p = new Intl.DateTimeFormat("en-US", { timeZone: tz, timeZoneName: "longOffset" })
+          .formatToParts(new Date(`${from}T12:00:00Z`))
+          .find((x) => x.type === "timeZoneName")?.value || "GMT+03:00";
+        const m = /GMT([+-])(\d{2}):(\d{2})/.exec(p);
+        return m ? `${m[1]}${m[2]}:${m[3]}` : "+03:00";
+      } catch { return "+03:00"; }
+    })();
+    const endExclusive = (() => {
+      const d = new Date(`${to}T00:00:00Z`);
+      d.setUTCDate(d.getUTCDate() + 1);
+      return d.toISOString().slice(0, 10);
+    })();
+    const params = new URLSearchParams({
+      granularity: "DAY",
+      fields: "spend",
+      start_time: `${from}T00:00:00.000${offset}`,
+      end_time: `${endExclusive}T00:00:00.000${offset}`,
+    });
+    const res = await httpJson(`${this.apiBase}/adaccounts/${acct}/stats?${params}`, hdr);
+    if (!res.ok) {
+      return { ok: false, reason: res.json?.debug_message || res.error || `HTTP ${res.status}`, rows: [] };
+    }
+    const series = res.json?.timeseries_stats?.[0]?.timeseries_stat?.timeseries || [];
+    return {
+      ok: true,
+      accountTz: tz,
+      rows: series.map((x) => ({
+        platform: "snapchat",
+        day: String(x.start_time || "").slice(0, 10),
+        campaignId: null,
+        campaignName: null,                       // مستوى الحساب — سناب مبتسمحش بتفصيل هنا
+        spend: x.stats?.spend != null ? Number(x.stats.spend) / 1e6 : 0,
+        impressions: null,
+        clicks: null,
+      })),
+    };
   },
 
   /* ─── WRITE: campaign state / budget ───────────────────────────────────

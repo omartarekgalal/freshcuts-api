@@ -794,7 +794,12 @@ export function guardBudget({ platform, campaignId, amount, level = null }, s, r
    كل اللي تحت دوال نقية: مفيش I/O، فبتتجرّب من غير سيرفر ولا قاعدة بيانات.
 ═══════════════════════════════════════════════════════════════════════════ */
 
-export const ADS_ACCOUNT_TZ = process.env.ADS_ACCOUNT_TZ || "America/Los_Angeles";
+/* تعريف ADS_ACCOUNT_TZ اتنقل لـ ads.js (الموديول الأدنى) عشان ads.js نفسه
+   بقى محتاجه في dailySpend()، وما ينفعش يستورده من هنا — ده هيعمل دايرة
+   استيراد (autopilot بيستورد من ads أصلاً). بنعيد تصديره عشان كل اللي
+   بيستورده من autopilot.js يفضل شغّال، ويفضل تعريف واحد بس في الـ API كلها. */
+export { ADS_ACCOUNT_TZ } from "./ads.js";
+import { ADS_ACCOUNT_TZ } from "./ads.js";
 export const RIYADH_TZ = "Asia/Riyadh";
 export const BIZ_DAY_START_HOUR = 4;      // نفس رقم analytics.js — يوم المطعم
 
