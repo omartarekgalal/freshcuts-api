@@ -1090,7 +1090,216 @@ export function register(app, ctx, deps = {}) {
     };
   }
 
+  /* ═══════════════════════════════════════════════════════════════════════
+     الكشف اليومي — صف لكل يوم: الصرف مقسوم على المنصات، والإيراد مقسوم على
+     القنوات، والعملاء الجدد والراجعين، ونسبة الصرف من المبيعات.
+
+     ── ليه ده مضاف هنا مش في شاشة رابعة ──────────────────────────────────
+     نفس التعريفات بالحرف اللي بيقرا بيها buildScorecard: SALES_ONLY و
+     FIRST_ORDER_DAY_CTE و LANE_SQL و deliverySql — كلها مستوردة من
+     analytics.js. نسخة تانية من أي واحد فيهم = شاشتين بيختلفوا على نفس
+     اليوم، وده حصل قبل كده وكلّفنا فرق ١.٩٪.
+
+     ── محاذاة الصرف على يوم المبيعات (اقرا ده قبل أي نسبة) ────────────────
+     • المبيعات على **يوم المطعم**: بيلف ٤ الفجر بتوقيت جدة.
+     • صرف ميتا على **يوم الحساب الإعلاني**: بيلف ٠٠:٠٠ بتوقيت
+       America/Los_Angeles — اللي هي ١٠ صباحاً بتوقيت جدة.
+     • يعني يوم ميتا «د» = من ١٠ صباح «د» لـ ١٠ صباح «د+١» بتوقيت جدة،
+       ويوم المطعم «د» = من ٤ فجر «د» لـ ٤ فجر «د+١». الاختلاف هو نافذة
+       ٤ صباحاً → ١٠ صباحاً.
+     • النافذة دي المطعم فيها **مقفول والحملات موقوفة** (الطيار بيوقفها
+       ~٣–٤ الفجر وبيرجّعها ~١١ صباحاً — مسجّل في ap_daypart). يعني الصرف
+       فيها ≈ صفر، وبالتالي **يوم ميتا ≈ يوم المطعم بالظبط** عملياً.
+       الفرضية دي مكتوبة هنا عشان تتراجع لو مواعيد الإيقاف اتغيّرت.
+     • سناب بتقطع يومها على توقيت الحساب (الرياض) — نص الليل مش ٤ الفجر —
+       فساعات ٠٠:٠٠–٠٤:٠٠ بتقع على يوم سناب التالي. الصرف عندنا على سناب
+       صغير، بس الفرق مكتوب مش مسكوت عنه.
+     • مبنعملش أي إعادة توزيع للصرف على الساعات: ده هيبقى اختراع رقم. اللي
+       فوق وصف للحدود، مش تصحيح ليها.
+  ═══════════════════════════════════════════════════════════════════════ */
+  async function buildLedger(from, to) {
+    const apps = await deliveryApps();
+    const days = spanDays(from, to);
+    const unavailable = [];
+
+    /* (١) المبيعات: صف لكل يوم لكل قناة — نفس lanes بتاعة buildScorecard. */
+    const laneRows = (await pool.query(
+      `WITH scoped AS (
+         SELECT o.order_id, o.calendar_day, o.total, o.order_option, o.order_type,
+                ${deliverySql("$3::text[]")} AS is_delivery,
+                ${channelSql("$3::text[]")} AS ch,
+                ${IDENT_SQL} AS ident
+           FROM ts_orders o
+           LEFT JOIN order_sources s ON s.order_id = o.order_id
+           LEFT JOIN ts_customers tc ON tc.customer_id = o.customer_id
+          WHERE o.calendar_day BETWEEN $1::date AND $2::date AND ${SALES_ONLY}
+       ),
+       lanes AS (SELECT sc.*, ${LANE_SQL} AS lane FROM scoped sc),
+       ${FIRST_ORDER_DAY_CTE}
+       SELECT l.calendar_day AS day, l.lane,
+              count(*)::int AS orders,
+              COALESCE(sum(l.total),0) AS revenue,
+              count(*) FILTER (WHERE l.ident IS NOT NULL)::int AS identified_orders,
+              -- «جديد في اليوم ده» = أول يوم طلب له هو اليوم ده بالظبط. نفس
+              -- قاعدة FIRST_ORDER_DAY_CTE، بس النافذة يوم واحد.
+              count(DISTINCT l.ident) FILTER (WHERE f.first_day = l.calendar_day)::int AS new_customers,
+              count(DISTINCT l.ident) FILTER (WHERE f.first_day < l.calendar_day)::int AS returning_customers,
+              count(*) FILTER (WHERE l.ident IS NOT NULL AND f.first_day < l.calendar_day)::int AS returning_orders
+         FROM lanes l LEFT JOIN firsts f ON f.pn = l.ident
+        GROUP BY 1,2 ORDER BY 1,2`, [from, to, apps])).rows;
+
+    /* (٢) الصرف يوم بيوم من المنصات. منصة وقعت = null مش صفر. */
+    let spendByDay = new Map(), spendMeta = null;
+    if (adsApi?.dailySpendData) {
+      try {
+        const d = await adsApi.dailySpendData(from, to);
+        spendMeta = d;
+        spendByDay = new Map(d.days.map((x) => [x.day, x]));
+        for (const u of d.unavailable) unavailable.push({ what: `صرف ${u.platform}`, why: u.why });
+      } catch (e) {
+        unavailable.push({ what: "الصرف اليومي", why: String(e?.message || e) });
+      }
+    } else {
+      unavailable.push({ what: "الصرف اليومي", why: "موديول الإعلانات مش مربوط في هذه النسخة" });
+    }
+
+    /* (٣) دمج. الأيام بتتولّد من المدى نفسه عشان اليوم اللي مبعناش فيه
+           يفضل ظاهر بصفر — يوم ناقص من الجدول بيقرا غلط. */
+    const byDay = new Map();
+    for (const r of laneRows) {
+      const d = isoDay(r.day);
+      const e = byDay.get(d) || { lanes: {}, orders: 0, revenue: 0, identified: 0 };
+      e.lanes[r.lane] = {
+        orders: num(r.orders), revenue: money(r.revenue),
+        avgTicket: num(r.orders) > 0 ? money(num(r.revenue) / num(r.orders)) : null,
+      };
+      e.orders += num(r.orders);
+      e.revenue += num(r.revenue);
+      e.identified += num(r.identified_orders);
+      byDay.set(d, e);
+    }
+    /* العملاء الجدد/الراجعين لليوم كله لازم يتحسبوا على مستوى اليوم، مش
+       بجمع القنوات: العميل اللي طلب صالة وسفري في نفس اليوم واحد مش اتنين. */
+    const custRows = (await pool.query(
+      `WITH scoped AS (
+         SELECT o.calendar_day, ${IDENT_SQL} AS ident
+           FROM ts_orders o
+           LEFT JOIN order_sources s ON s.order_id = o.order_id
+           LEFT JOIN ts_customers tc ON tc.customer_id = o.customer_id
+          WHERE o.calendar_day BETWEEN $1::date AND $2::date AND ${SALES_ONLY}
+       ),
+       ${FIRST_ORDER_DAY_CTE}
+       SELECT sc.calendar_day AS day,
+              count(DISTINCT sc.ident)::int AS customers,
+              count(DISTINCT sc.ident) FILTER (WHERE f.first_day = sc.calendar_day)::int AS new_customers,
+              count(DISTINCT sc.ident) FILTER (WHERE f.first_day < sc.calendar_day)::int AS returning_customers
+         FROM scoped sc LEFT JOIN firsts f ON f.pn = sc.ident
+        WHERE sc.ident IS NOT NULL
+        GROUP BY 1`, [from, to])).rows;
+    const custByDay = new Map(custRows.map((r) => [isoDay(r.day), r]));
+
+    const laneIds = ["dinein", "takeaway", "own_delivery", "inhouse_unknown",
+      "keeta", "hungerstation", "ninja"];
+    const rows = [];
+    for (let i = 0; i < days; i++) {
+      const d = shiftDay(from, i);
+      const e = byDay.get(d) || { lanes: {}, orders: 0, revenue: 0, identified: 0 };
+      const cu = custByDay.get(d) || {};
+      const sp = spendByDay.get(d) || null;
+      const revenue = money(e.revenue);
+      const spend = sp ? num(sp.total) : null;
+      const newC = num(cu.new_customers), retC = num(cu.returning_customers);
+      const channels = {};
+      for (const id of laneIds) channels[id] = e.lanes[id] || { orders: 0, revenue: 0, avgTicket: null };
+      // أي قناة تانية ظهرت في الداتا ومش في القايمة (تطبيق جديد) بتتضاف زي ما هي.
+      for (const [k, v] of Object.entries(e.lanes)) if (!channels[k]) channels[k] = v;
+      rows.push({
+        day: d,
+        dow: DOW_AR[dowOf(d)],
+        spend: {
+          meta: sp ? sp.meta : null, snapchat: sp ? sp.snapchat : null,
+          tiktok: sp ? sp.tiktok : null, google: sp ? sp.google : null,
+          total: spend,
+        },
+        revenue,
+        orders: e.orders,
+        avgTicket: e.orders > 0 ? money(revenue / e.orders) : null,
+        channels,
+        customers: num(cu.customers),
+        newCustomers: newC,
+        returningCustomers: retC,
+        // نسبة الرجوع بتتحسب على العملاء المعروفين بس — الطلب الكاش من غير
+        // رقم مش جديد ولا راجع، وحطه في المقام بيكدب النسبة لتحت.
+        repeatShare: newC + retC > 0 ? rate(retC / (newC + retC)) : null,
+        identifiedOrders: e.identified,
+        identifiedCoverage: ratio(e.identified, e.orders),
+        spendPctOfRevenue: spend != null && revenue > 0 ? r2((spend / revenue) * 100) : null,
+        spendPerNewCustomer: spend != null && spend > 0 && newC > 0 ? money(spend / newC) : null,
+      });
+    }
+
+    const sum = (k) => rows.reduce((a, r) => a + num(r[k]), 0);
+    const spendTotal = rows.reduce((a, r) => a + (r.spend.total == null ? 0 : r.spend.total), 0);
+    const revTotal = money(sum("revenue"));
+    const totals = {
+      days,
+      spend: money(spendTotal),
+      revenue: revTotal,
+      orders: sum("orders"),
+      newCustomers: sum("newCustomers"),
+      avgTicket: sum("orders") > 0 ? money(revTotal / sum("orders")) : null,
+      spendPctOfRevenue: revTotal > 0 ? r2((spendTotal / revTotal) * 100) : null,
+      spendPerNewCustomer: spendTotal > 0 && sum("newCustomers") > 0
+        ? money(spendTotal / sum("newCustomers")) : null,
+    };
+
+    return {
+      range: { from, to },
+      rows,
+      totals,
+      unavailable,
+      laneLabels: Object.fromEntries(laneIds.map((id) => [id, laneLabel(id)])),
+      alignment: {
+        salesDay: `يوم المطعم — بيلف الساعة ${BIZ_DAY_START_HOUR}:00 صباحاً بتوقيت جدة.`,
+        adsDay: spendMeta?.accountTz?.meta
+          ? `صرف ميتا على يوم الحساب الإعلاني (${spendMeta.accountTz.meta}) — بيلف ١٠ صباحاً بتوقيت جدة.`
+          : "صرف ميتا على يوم الحساب الإعلاني (America/Los_Angeles) — بيلف ١٠ صباحاً بتوقيت جدة.",
+        howAligned:
+          "حطّينا يوم المنصة على يوم المطعم زي ما هو من غير أي إعادة توزيع. الفرق بين اليومين هو "
+          + "نافذة ٤ صباحاً → ١٠ صباحاً بتوقيت جدة، والمطعم فيها مقفول والحملات موقوفة من الطيار "
+          + "(مسجّل في ap_daypart: إيقاف ~٣–٤ الفجر، رجوع ~١١ صباحاً) — فالصرف في النافذة دي ≈ صفر "
+          + "وبالتالي اليومين بيتطابقوا عملياً. لو مواعيد الإيقاف اتغيّرت، الفرضية دي لازم تتراجع.",
+        snapchat: spendMeta?.accountTz?.snapchat
+          ? `سناب بتقطع يومها على توقيت الحساب (${spendMeta.accountTz.snapchat}) — نص الليل مش ٤ الفجر، `
+            + "فساعات ٠٠:٠٠–٠٤:٠٠ بتقع على يوم سناب التالي."
+          : null,
+        caveat:
+          "على اليوم الواحد النسب دي تقريبية بحدود الفرق ده. على مدى أسبوع أو أكتر الفرق بيتلاشى.",
+      },
+      notes: [
+        "كل مبلغ شامل الضريبة. الطلبات الملغية والمرتجعة مستبعدة.",
+        "«عميل جديد» = أول يوم طلب ليه هو اليوم ده. نفس التعريف في كل شاشات النظام.",
+        "منصة قراءتها فشلت بترجع null مش صفر — والسبب مكتوب في unavailable.",
+        "نسبة الرجوع محسوبة على العملاء اللي عرفنا أرقامهم بس؛ تغطية التعريف في العمود جنبها.",
+      ],
+    };
+  }
+
   /* ═══ ROUTES ═══════════════════════════════════════════════════════════ */
+  app.get("/api/scorecard/ledger", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    let from = isDay(c.req.query("from")) ? c.req.query("from") : shiftDay(bizToday(), -29);
+    let to = isDay(c.req.query("to")) ? c.req.query("to") : bizToday();
+    if (from > to) { const t = from; from = to; to = t; }
+    if (spanDays(from, to) > 180) from = shiftDay(to, -179);
+    try {
+      return c.json({ ok: true, ...(await buildLedger(from, to)) });
+    } catch (ex) {
+      console.error("[scorecard] ledger failed:", ex.message);
+      return c.json({ ok: false, error: String(ex.message || ex) }, 500);
+    }
+  });
+
   app.get("/api/scorecard/day", async (c) => {
     const err = await requireAdmin(c); if (err) return err;
     const date = isDay(c.req.query("date")) ? c.req.query("date") : bizToday();
@@ -1118,7 +1327,7 @@ export function register(app, ctx, deps = {}) {
   });
 
   console.log("[scorecard] routes ready");
-  return { buildScorecard };
+  return { buildScorecard, buildLedger };
 }
 
 export default { register };

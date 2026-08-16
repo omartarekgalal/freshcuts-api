@@ -2951,6 +2951,69 @@ export function register(app, ctx, deps = {}) {
     // function → the report and the screen can never quote two different
     // spends for the same week.
     scorecardData,
+    // الصرف يوم بيوم لكل منصة — الكشف اليومي في scorecard.js بيقراها.
+    dailySpendData,
+  };
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   الصرف يوم بيوم عبر المنصات الأربعة.
+
+   ليه دي منفصلة عن scorecardData: دي بترجّع **صف لكل يوم**، وscorecardData
+   بترجّع مجموع المدى كله. المدى بيداري فرق حدود اليوم، واليوم لأ — فكل
+   منصة بترجّع معاها التوقيت اللي يومها بيلف عليه، والكشف بيكتبه على الشاشة
+   بدل ما يسكت عنه.
+
+   القاعدة اللي مش بتتكسر: **منصة وقعت ≠ صرف صفر**. لو قراءة منصة فشلت
+   بترجع في `unavailable` بالسبب ويومها بيرجع null — عشان ما نطبعش «صرفنا
+   صفر» في نفس الحالة اللي إحنا فيها عميان. صفر معناه قرينا ولقينا صفر.
+═══════════════════════════════════════════════════════════════════════════ */
+export async function dailySpendData(from, to) {
+  const byDay = new Map();        // day → { meta, tiktok, snapchat, google }
+  const unavailable = [];
+  const accountTz = {};
+  const readOk = [];
+
+  const add = (day, platform, spend) => {
+    if (!day) return;
+    const cur = byDay.get(day) || {};
+    cur[platform] = (cur[platform] || 0) + (Number(spend) || 0);
+    byDay.set(day, cur);
+  };
+
+  for (const p of PLATFORMS) {
+    if (!canManage(p)) {
+      unavailable.push({ platform: p.id, why: `غير مربوطة — ناقص ${missingOf(p.manageEnv).join(", ") || "صلاحيات"}` });
+      continue;
+    }
+    if (typeof p.dailySpend !== "function") {
+      unavailable.push({ platform: p.id, why: "الموصل بتاع المنصة دي مش بيدعم تقطيع يوم بيوم" });
+      continue;
+    }
+    let r;
+    try { r = await p.dailySpend({ from, to }); }
+    catch (e) { unavailable.push({ platform: p.id, why: String(e?.message || e) }); continue; }
+    if (!r?.ok) { unavailable.push({ platform: p.id, why: r?.reason || "المنصة رجّعت خطأ" }); continue; }
+    readOk.push(p.id);
+    if (r.accountTz) accountTz[p.id] = r.accountTz;
+    for (const row of r.rows || []) add(row.day, p.id, row.spend);
+  }
+
+  const days = [...byDay.entries()]
+    .sort((a, b) => (a[0] < b[0] ? -1 : 1))
+    .map(([day, v]) => {
+      const per = {};
+      for (const p of PLATFORMS) per[p.id] = readOk.includes(p.id) ? Math.round((v[p.id] || 0) * 100) / 100 : null;
+      const total = readOk.reduce((a, id) => a + (v[id] || 0), 0);
+      return { day, ...per, total: Math.round(total * 100) / 100 };
+    });
+
+  return {
+    range: { from, to }, days, unavailable,
+    platformsRead: readOk,
+    accountTz,
+    // كل منصة بتقطع يومها على توقيت حسابها هي — مش على يوم المطعم.
+    partial: readOk.length > 0 && readOk.length < PLATFORMS.length,
   };
 }
 
