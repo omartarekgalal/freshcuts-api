@@ -272,6 +272,17 @@ export function register(app, ctx, deps = {}) {
     const branchId = String(b.branch_id || "1");
     const items = Array.isArray(b.items) ? b.items : [];
     if (!items.length) return c.json({ ok: false, error: "empty_cart" }, 400);
+    // dine-in-only offers (صينية اللمة …) cannot be delivered/picked up: refuse
+    // BEFORE a payment session exists. Same list the storefront + catalog use.
+    {
+      const s0 = await getSettingsData();
+      const dine = new Set([
+        ...String(process.env.CATALOG_DINE_IN_IDS ?? "121").split(","),
+        ...((s0.catalog || {}).dineInIds || []).map(String),
+      ].map((x) => String(x).trim()).filter(Boolean));
+      const bad = items.filter((it) => dine.has(String(it.product_id)));
+      if (bad.length) return c.json({ ok: false, error: "dine_in_only", items: bad.map((x) => x.product_id) }, 422);
+    }
     const cust = b.customer || {};
     const phoneNorm = normPhone(cust.phone);
     if (!/^5\d{8}$/.test(phoneNorm)) return c.json({ ok: false, error: "invalid_phone" }, 400);
