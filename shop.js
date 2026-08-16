@@ -244,6 +244,9 @@ export function register(app, ctx, deps = {}) {
       ok: true,
       theme: sf.theme || {},           // {brand, deep, bg, ink, ...} CSS vars
       texts: sf.texts || {},           // {title, subtitle}
+      // الفوتر: {line1, line2, links:[{label,url}]} — من اللوحة، من غير أي
+      // ذكر لمزوّد خارجي (طلب عمر 2026-08-16: TabSense ما يظهرش)
+      footer: sf.footer || {},
       // بانرات العروض: [{title, desc, emoji, color, target_item?, active}] —
       // بتترسم في شريط العروض قبل عروض TabSense، وبتتعدل من اللوحة فوراً.
       banners: (sf.banners || []).filter((x) => x && x.active !== false),
