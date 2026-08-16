@@ -481,6 +481,13 @@ export function register(app, ctx, deps = {}) {
           "UPDATE codes SET redeemed=true, redeemed_at=NOW(), updated_at=NOW() WHERE upper(code)=upper($1)", [row.coupon]))
         .catch((e) => console.error("[shop] coupon burn failed:", e.message));
     }
+    // العنوان يتحفظ في دفتر العميل بمجرد ما الفلوس تتحرك — بغض النظر عن كونه
+    // مسجل دخول وقت الطلب أو لأ. من غير ده، اللي طلب كضيف النهاردة وسجّل
+    // دخول بكرة يلاقي دفتر عناوين فاضي، ويبقى وعدنا ليه بالدخول كلام فاضي.
+    if (row.option === "delivery" && row.address) {
+      Promise.resolve(accounts()?.saveAddressFor?.(row.phone_norm, row.address))
+        .catch((e) => console.error("[shop] address autosave failed:", e.message));
+    }
     // السلة المتروكة اتقفلت: الطلب اتم فعلاً
     const cartsApi = carts();
     if (cartsApi) cartsApi.markOrdered({

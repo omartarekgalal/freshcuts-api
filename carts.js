@@ -33,6 +33,25 @@ function riyadhHour() {
 }
 const QUIET_FROM = 1, QUIET_TO = 10; // 01:00 → 10:00 صمت
 
+/* المطعم مفتوح دلوقتي؟ نسخة سيرفر من نفس منطق الواجهة (بيراعي ما بعد
+   منتصف الليل). رسالة «كمّل طلبك» ومطبخنا مقفول أسوأ من السكوت. */
+function isOpenNow(hours) {
+  if (!hours || hours.enabled === false || !hours.days) return true; // مش معرّف = ما نمنعش
+  const DAYS = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"];
+  const now = new Date(new Date().toLocaleString("en-US", { timeZone: "Asia/Riyadh" }));
+  const mins = now.getHours() * 60 + now.getMinutes();
+  const hhmm = (s) => { const [h, m] = String(s || "0:0").split(":").map(Number); return (h || 0) * 60 + (m || 0); };
+  const inWindow = (key, mm) => {
+    const d = hours.days[key];
+    if (!d || d.closed || !d.open || !d.close) return false;
+    const o = hhmm(d.open), c = hhmm(d.close);
+    return c > o ? (mm >= o && mm < c) : (mm >= o || mm < c);
+  };
+  const today = DAYS[now.getDay()], yest = DAYS[(now.getDay() + 6) % 7];
+  const y = hours.days[yest] || {};
+  return inWindow(today, mins) || (hhmm(y.close) < hhmm(y.open) && inWindow(yest, mins));
+}
+
 const rl = new Map();
 function rateLimited(ip, max = 240) {
   const now = Date.now();
@@ -148,19 +167,26 @@ export function register(app, ctx, deps = {}) {
     const cfg = s.abandonedCarts || {};
     if (cfg.enabled === false) return;
     const h = riyadhHour();
-    if (h >= QUIET_FROM && h < QUIET_TO) return; // ساعات الصمت
+    // ساعات الصمت = تأجيل مش إلغاء. الصف بيفضل مستني وبيتبعت أول ما نفتح —
+    // بس السلة اللي بقالها أكتر من ١٢ ساعة بتسقط من رتبة الإشعار (الرسالة
+    // «كمّل طلبك في دقيقة» بعد نص يوم بتبقى مزعجة مش مفيدة).
+    if (h >= QUIET_FROM && h < QUIET_TO) return;
+    // ومقفولين = ساكتين. إشعار الساعة ١٠ صباحاً ومطبخنا بيفتح ١ الظهر
+    // بيخسّرنا اشتراك الإشعارات نفسه.
+    if (!isOpenNow(s.hours)) return;
     const pushAfter = Number(cfg.pushAfterMinutes) || 45;
     const smsAfter = Number(cfg.smsAfterMinutes) || 240;
     const minSubtotal = Number(cfg.minSubtotal) || 0;
+    const STALE_H = Number(cfg.staleAfterHours) || 12;
 
     // المرحلة ١: إشعار متصفح
     const p1 = (await pool.query(
       `SELECT * FROM shop_carts
         WHERE recovered_order IS NULL AND item_count > 0 AND subtotal >= $2
           AND updated_at < NOW() - ($1 || ' minutes')::interval
-          AND updated_at > NOW() - INTERVAL '3 days'
+          AND updated_at > NOW() - ($3 || ' hours')::interval
           AND NOT (nudges @> '["push1"]'::jsonb)
-        LIMIT 50`, [String(pushAfter), minSubtotal])).rows;
+        LIMIT 50`, [String(pushAfter), minSubtotal, String(STALE_H)])).rows;
     for (const row of p1) {
       let sent = false;
       if (notify && cfg.pushEnabled !== false) {
@@ -174,14 +200,23 @@ export function register(app, ctx, deps = {}) {
         [row.device_id, jb(["push1", ...(sent ? [] : ["push1_nosub"])])]);
     }
 
-    // المرحلة ٢: SMS/واتساب — للي عندنا رقمه بس
+    // المرحلة ٢: SMS — للي عندنا رقمه، **ووصل الشيك أوت على الأقل**.
+    // اللي ضاف صنف واحد وخرج ده متفرّج مش عميل ترك سلة، والرسالة بفلوس.
+    // وكمان: رسالة واحدة لكل رقم كل ٧٢ ساعة مهما فتح سلات من أجهزة كتير.
     const p2 = (await pool.query(
-      `SELECT * FROM shop_carts
-        WHERE recovered_order IS NULL AND item_count > 0 AND phone_norm IS NOT NULL
-          AND subtotal >= $2
-          AND updated_at < NOW() - ($1 || ' minutes')::interval
-          AND updated_at > NOW() - INTERVAL '3 days'
-          AND NOT (nudges @> '["sms1"]'::jsonb)
+      `SELECT c.* FROM shop_carts c
+        WHERE c.recovered_order IS NULL AND c.item_count > 0 AND c.phone_norm IS NOT NULL
+          AND c.subtotal >= $2
+          AND (CASE c.max_stage WHEN 'cart' THEN 0 WHEN 'checkout' THEN 1 WHEN 'address' THEN 2
+                                WHEN 'payment' THEN 3 WHEN 'ordered' THEN 4 ELSE 0 END) >= 1
+          AND c.updated_at < NOW() - ($1 || ' minutes')::interval
+          AND c.updated_at > NOW() - INTERVAL '3 days'
+          AND NOT (c.nudges @> '["sms1"]'::jsonb)
+          AND NOT EXISTS (
+            SELECT 1 FROM shop_carts o
+             WHERE o.phone_norm = c.phone_norm AND o.device_id <> c.device_id
+               AND o.nudges @> '["sms1"]'::jsonb
+               AND o.updated_at > NOW() - INTERVAL '72 hours')
         LIMIT 25`, [String(smsAfter), minSubtotal])).rows;
     for (const row of p2) {
       const code = cfg.couponCode || null;

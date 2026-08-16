@@ -124,13 +124,71 @@ export function register(app, ctx) {
     const h = c.req.header("Authorization") || "";
     const m = h.match(/^Bearer cust:([a-f0-9]{48,96})$/i);
     if (!m) return null;
+    // نافذة منزلقة: العميل النشط عمره ما يتسجل خروجه. الشرط على آخر ظهور
+    // مش على تاريخ الدخول — واحد بيطلب كل أسبوع يفضل داخل للأبد، واللي
+    // اختفى ١٨٠ يوم بس هو اللي بيطلع.
     const r = await pool.query(
       `UPDATE acct_sessions SET last_seen_at=NOW()
-        WHERE token=$1 AND created_at > NOW() - INTERVAL '${SESSION_DAYS} days'
+        WHERE token=$1 AND last_seen_at > NOW() - INTERVAL '${SESSION_DAYS} days'
         RETURNING phone_norm`, [m[1]]);
     if (!r.rowCount) return null;
     const a = await pool.query("SELECT * FROM acct_customers WHERE phone_norm=$1", [r.rows[0].phone_norm]);
     return a.rows[0] || null;
+  }
+
+  /* ── POST /api/account/recognise {phone} ────────────────────────────────
+     العميل كتب رقمه في الشيك أوت. لو الرقم معروف عندنا، بنعرض شريط صغير:
+     «أهلاً محمد ع. — عندك ٣ عناوين محفوظة و١٢ طلب سابق» وجنبه زرار دخول.
+     ده أقوى نداء تسجيل دخول عندنا، لأن العميل بيشوف تاريخه الحقيقي قبل ما
+     يدفع تمن الدخول.
+
+     أمان: الرد ده عملياً «هل الرقم ده عميل عندكم؟» — فبيرجع أرقام بس،
+     والاسم مقنّع (اسم أول + حرف)، ومحدود بـ 20 طلب/ساعة لكل IP، وشكل الرد
+     واحد للمعروف وغير المعروف عشان ما يتقاسش بالفرق. */
+  app.post("/api/account/recognise", async (c) => {
+    const ip = c.req.header("cf-connecting-ip") || c.req.header("x-forwarded-for") || "?";
+    if (rateLimited(ip, 20)) return c.json({ ok: true, known: false }, 200);
+    let b = {};
+    try { b = await c.req.json(); } catch { return c.json({ ok: true, known: false }); }
+    const phoneNorm = normPhone(b.phone);
+    if (!/^5\d{8}$/.test(phoneNorm)) return c.json({ ok: true, known: false });
+
+    const acct = (await pool.query(
+      "SELECT name, addresses FROM acct_customers WHERE phone_norm=$1", [phoneNorm])).rows[0];
+    const online = (await pool.query(
+      `SELECT count(*)::int AS n FROM shop_orders
+        WHERE phone_norm=$1 AND status NOT IN ('expired','pending_payment')`, [phoneNorm])).rows[0].n;
+    const pos = (await pool.query(
+      `SELECT count(*)::int AS n FROM ts_orders o
+         LEFT JOIN order_sources s ON s.order_id = o.order_id
+         LEFT JOIN ts_customers tc ON tc.customer_id = o.customer_id
+        WHERE o.order_type NOT ILIKE '%void%' AND o.order_type NOT ILIKE '%refund%'
+          AND COALESCE(NULLIF(s.phone_norm,''), NULLIF(tc.phone_norm,'')) = $1`, [phoneNorm])).rows[0].n;
+    // الاسم من دفتر تاب سينس لو مالناش صف حساب — ده بيخلي عميل الصالة
+    // القديم يتعرف عليه من أول طلب أونلاين.
+    let name = acct && acct.name;
+    if (!name) {
+      const ts = (await pool.query(
+        "SELECT name FROM ts_customers WHERE phone_norm=$1 LIMIT 1", [phoneNorm])).rows[0];
+      if (ts && plausibleName(ts.name)) name = ts.name;
+    }
+    const addresses = ((acct && acct.addresses) || []).length;
+    const known = Boolean(acct || online || pos);
+    return c.json({
+      ok: true, known,
+      name: known && name ? maskName(name) : null,
+      hasAccount: Boolean(acct),
+      addresses, orders: online, posVisits: pos,
+    });
+  });
+
+  /* «محمد عبدالله السالم» → «محمد ع.» — كفاية إن العميل يتعرف على نفسه،
+     ومش كفاية إن حد تاني يعرف مين صاحب الرقم. */
+  function maskName(s) {
+    const parts = String(s || "").trim().split(/\s+/).filter(Boolean);
+    if (!parts.length) return null;
+    if (parts.length === 1) return parts[0];
+    return `${parts[0]} ${parts[1].charAt(0)}.`;
   }
 
   /* ── POST /api/account/otp/request {phone} ── */
@@ -267,34 +325,89 @@ export function register(app, ctx) {
     return c.json({ ok: true, name });
   });
 
-  /* addresses: [{label, street, area, latitude, longitude, notes}] */
-  app.post("/api/account/addresses", async (c) => {
-    const acct = await customerOf(c);
-    if (!acct) return c.json({ ok: false, error: "unauthorized" }, 401);
-    let b = {};
-    try { b = await c.req.json(); } catch { return c.json({ ok: false, error: "bad json" }, 400); }
-    if (!(b.latitude && b.longitude)) return c.json({ ok: false, error: "location_required" }, 400);
-    const addr = {
+  /* addresses: [{id, label, street, area, latitude, longitude, notes}]
+
+     كل عنوان بمعرّف ثابت. قبل كده كان الحذف بالترتيب في المصفوفة — تبويبتين
+     مفتوحتين، كل واحدة تحذف عنوان، والنتيجة إن عنوان تالت غلط هو اللي يطير.
+     التعديل بالمعرّف بيمنع ده تماماً. */
+  function cleanAddress(b, keepId) {
+    return {
+      id: keepId || crypto.randomUUID(),
       label: String(b.label || "عنواني").slice(0, 40),
       street: String(b.street || "").slice(0, 120),
       area: String(b.area || "").slice(0, 60),
       latitude: Number(b.latitude), longitude: Number(b.longitude),
       notes: String(b.notes || "").slice(0, 120),
     };
-    const list = [...(acct.addresses || []), addr].slice(-10); // keep the last 10
+  }
+  const sameSpot = (a, b) =>
+    Math.abs(Number(a.latitude) - Number(b.latitude)) < 0.0005 &&
+    Math.abs(Number(a.longitude) - Number(b.longitude)) < 0.0005;
+
+  /* يستخدمها الراوت وكمان shop.js لما طلب توصيل يتأكد دفعه — عشان العميل
+     اللي طلب كضيف يلاقي عنوانه جاهز أول ما يسجل دخول. من غير ده وعد تسجيل
+     الدخول («عناوينك محفوظة») بيبقى كلام مش صحيح. */
+  async function saveAddressFor(phoneNorm, raw) {
+    if (!/^5\d{8}$/.test(String(phoneNorm || ""))) return null;
+    if (!(raw && Number(raw.latitude) && Number(raw.longitude))) return null;
+    const acct = (await pool.query(
+      "SELECT addresses FROM acct_customers WHERE phone_norm=$1", [phoneNorm])).rows[0];
+    if (!acct) return null; // من غير حساب مفيش دفتر عناوين نحفظ فيه
+    const list = (acct.addresses || []).map((a) => (a.id ? a : { ...a, id: crypto.randomUUID() }));
+    const addr = cleanAddress(raw);
+    if (list.some((a) => sameSpot(a, addr))) return list; // نفس المكان — مش عنوان جديد
+    const next = [...list, addr].slice(-10);
+    await pool.query("UPDATE acct_customers SET addresses=$2 WHERE phone_norm=$1",
+      [phoneNorm, jb(next)]);
+    return next;
+  }
+
+  app.post("/api/account/addresses", async (c) => {
+    const acct = await customerOf(c);
+    if (!acct) return c.json({ ok: false, error: "unauthorized" }, 401);
+    let b = {};
+    try { b = await c.req.json(); } catch { return c.json({ ok: false, error: "bad json" }, 400); }
+    if (!(b.latitude && b.longitude)) return c.json({ ok: false, error: "location_required" }, 400);
+    const list = (acct.addresses || []).map((a) => (a.id ? a : { ...a, id: crypto.randomUUID() }));
+    const addr = cleanAddress(b);
+    const dup = list.findIndex((a) => sameSpot(a, addr));
+    if (dup >= 0) list[dup] = { ...addr, id: list[dup].id };   // نفس المكان = تحديث
+    else list.push(addr);
+    const next = list.slice(-10);
+    await pool.query("UPDATE acct_customers SET addresses=$2 WHERE phone_norm=$1",
+      [acct.phone_norm, jb(next)]);
+    return c.json({ ok: true, addresses: next });
+  });
+
+  /* تعديل عنوان قائم — قبل كده كان لازم العميل يمسح ويحدد الدبوس من الأول
+     عشان رقم مبنى غلط. */
+  app.put("/api/account/addresses/:id", async (c) => {
+    const acct = await customerOf(c);
+    if (!acct) return c.json({ ok: false, error: "unauthorized" }, 401);
+    let b = {};
+    try { b = await c.req.json(); } catch { return c.json({ ok: false, error: "bad json" }, 400); }
+    const id = String(c.req.param("id"));
+    const list = (acct.addresses || []).map((a) => (a.id ? a : { ...a, id: crypto.randomUUID() }));
+    const i = list.findIndex((a) => a.id === id);
+    if (i < 0) return c.json({ ok: false, error: "not_found" }, 404);
+    list[i] = cleanAddress({ ...list[i], ...b }, id);
     await pool.query("UPDATE acct_customers SET addresses=$2 WHERE phone_norm=$1",
       [acct.phone_norm, jb(list)]);
     return c.json({ ok: true, addresses: list });
   });
 
-  app.delete("/api/account/addresses/:idx", async (c) => {
+  /* بالمعرّف — والترتيب مقبول مؤقتاً للنسخ القديمة من الواجهة */
+  app.delete("/api/account/addresses/:id", async (c) => {
     const acct = await customerOf(c);
     if (!acct) return c.json({ ok: false, error: "unauthorized" }, 401);
-    const idx = Number(c.req.param("idx"));
-    const list = (acct.addresses || []).filter((_, i) => i !== idx);
+    const id = String(c.req.param("id"));
+    const list = (acct.addresses || []).map((a) => (a.id ? a : { ...a, id: crypto.randomUUID() }));
+    const next = /^\d+$/.test(id)
+      ? list.filter((_, i) => i !== Number(id))
+      : list.filter((a) => a.id !== id);
     await pool.query("UPDATE acct_customers SET addresses=$2 WHERE phone_norm=$1",
-      [acct.phone_norm, jb(list)]);
-    return c.json({ ok: true, addresses: list });
+      [acct.phone_norm, jb(next)]);
+    return c.json({ ok: true, addresses: next });
   });
 
   /* order history: the WHOLE relationship, not just the online slice.
@@ -434,5 +547,11 @@ export function register(app, ctx) {
     return { percent: Number(row.discount_percent), label: row.discount_label || "خصم خاص" };
   }
 
-  return { customerOf, sendSms, customerDiscount };
+  /* الجلسات المنتهية بتتراكم للأبد من غير ده */
+  setInterval(() => {
+    pool.query(`DELETE FROM acct_sessions WHERE last_seen_at < NOW() - INTERVAL '200 days'`)
+      .catch(() => {});
+  }, 24 * 3600_000).unref?.();
+
+  return { customerOf, sendSms, customerDiscount, saveAddressFor };
 }
