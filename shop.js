@@ -68,6 +68,7 @@ export function register(app, ctx, deps = {}) {
   const delivery = deps.delivery;
   const notify = deps.notify || null;
   const accounts = deps.accounts || (() => null); // late-bound — accounts registers after us
+  const carts = deps.carts || (() => null);       // late-bound — abandoned-cart tracker
 
   async function ensureSchema() {
     await pool.query(`
@@ -398,7 +399,7 @@ export function register(app, ctx, deps = {}) {
          mf_session_id, notes, coupon, discount_percent, discount_amount, history)
        VALUES ($1,'pending_payment',$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)`,
       [orderNo, option, branchId,
-       jb({ name: cust.name || "", phone: "+966" + phoneNorm }), phoneNorm,
+       jb({ name: cust.name || "", phone: "+966" + phoneNorm, deviceId: b.deviceId ? String(b.deviceId).slice(0, 64) : null }), phoneNorm,
        jb(b.address || null), jb(items), jb(calc),
        // subtotal = the food part of what was charged (fee booked separately
        // whether inside or outside the POS invoice).
@@ -480,6 +481,11 @@ export function register(app, ctx, deps = {}) {
           "UPDATE codes SET redeemed=true, redeemed_at=NOW(), updated_at=NOW() WHERE upper(code)=upper($1)", [row.coupon]))
         .catch((e) => console.error("[shop] coupon burn failed:", e.message));
     }
+    // السلة المتروكة اتقفلت: الطلب اتم فعلاً
+    const cartsApi = carts();
+    if (cartsApi) cartsApi.markOrdered({
+      phoneNorm: row.phone_norm, deviceId: (row.customer || {}).deviceId, orderNo: row.order_no,
+    }).catch(() => {});
     await createPosOrder(row.order_no);
     const after = await getOrderRow(row.order_no);
     return { ok: true, status: after.status, orderNo: row.order_no, posOrderId: after.pos_order_id };
@@ -611,6 +617,11 @@ export function register(app, ctx, deps = {}) {
     if (!["paid", "paid_pos_failed"].includes(row.status)) {
       return c.json({ ok: false, error: "not_retryable", status: row.status }, 409);
     }
+    // السلة المتروكة اتقفلت: الطلب اتم فعلاً
+    const cartsApi = carts();
+    if (cartsApi) cartsApi.markOrdered({
+      phoneNorm: row.phone_norm, deviceId: (row.customer || {}).deviceId, orderNo: row.order_no,
+    }).catch(() => {});
     await createPosOrder(row.order_no);
     const after = await getOrderRow(row.order_no);
     return c.json({ ok: true, status: after.status, posOrderId: after.pos_order_id, lastError: after.last_pos_error });

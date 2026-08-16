@@ -42,6 +42,7 @@ import * as deliveryMod from "./delivery.js";
 import * as shop from "./shop.js";
 import * as accounts from "./accounts.js";
 import * as notify from "./notify.js";
+import * as carts from "./carts.js";
 import * as menuplan from "./menuplan.js";
 import * as systemcheck from "./systemcheck.js";
 
@@ -3016,11 +3017,14 @@ const deliveryApi = deliveryMod.register(app, moduleCtx, { shop: () => shopApi }
 // إشعارات العميل (متصفح/SMS/واتساب بمفاتيح من لوحة التحكم) — قبل shop
 // عشان كل تغيير حالة يعدّي عليها.
 const notifyApi = notify.register(app, moduleCtx);
+// السلات المتروكة: لقطات من المتجر + سلّم استرداد (إشعار ثم SMS) + أرقام اللوحة
+const cartsApi = carts.register(app, moduleCtx, { notify: notifyApi });
 // accounts بترجع customerDiscount اللي الشيك أوت محتاجه (خصم الملاك الدائم) —
 // بس بتتسجل بعد shop، فالربط late-bound بنفس نمط attribution/ads.
 let accountsApi = null;
 shopApi = shop.register(app, moduleCtx, {
   pay: payApi, delivery: deliveryApi, notify: notifyApi, accounts: () => accountsApi,
+  carts: () => cartsApi,
 });
 // ملف العميل: دخول OTP، عناوين محفوظة، تاريخ الطلبات وإعادة الطلب، وربط/إنشاء
 // في دفتر عملاء TabSense (الموجود يتربط، الجديد بس هو اللي يتعمل).

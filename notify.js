@@ -69,6 +69,9 @@ export function register(app, ctx) {
       );
       CREATE INDEX IF NOT EXISTS push_subs_phone_idx ON push_subs(phone_norm) WHERE NOT disabled;
       CREATE INDEX IF NOT EXISTS push_subs_order_idx ON push_subs(order_no) WHERE NOT disabled;
+      -- الجهاز: عشان سلة متروكة من غير جوال تفضل قابلة للتنبيه
+      ALTER TABLE push_subs ADD COLUMN IF NOT EXISTS device_id TEXT;
+      CREATE INDEX IF NOT EXISTS push_subs_device_idx ON push_subs(device_id) WHERE NOT disabled;
     `);
     // VAPID keys: settings-persisted, generated exactly once.
     const s = await getSettingsData();
@@ -178,15 +181,17 @@ export function register(app, ctx) {
     if (!sub?.endpoint || !sub?.keys) return c.json({ ok: false, error: "bad subscription" }, 400);
     const phone = b.phone ? normPhone(b.phone) : null;
     await pool.query(
-      `INSERT INTO push_subs(phone_norm, order_no, endpoint, sub)
-       VALUES ($1,$2,$3,$4)
+      `INSERT INTO push_subs(phone_norm, order_no, endpoint, sub, device_id)
+       VALUES ($1,$2,$3,$4,$5)
        ON CONFLICT (endpoint) DO UPDATE SET
          phone_norm = COALESCE(EXCLUDED.phone_norm, push_subs.phone_norm),
          order_no = COALESCE(EXCLUDED.order_no, push_subs.order_no),
+         device_id = COALESCE(EXCLUDED.device_id, push_subs.device_id),
          sub = EXCLUDED.sub, disabled = FALSE`,
       [/^5\d{8}$/.test(phone || "") ? phone : null,
        b.orderNo ? String(b.orderNo).slice(0, 30) : null,
-       String(sub.endpoint), jb(sub)]
+       String(sub.endpoint), jb(sub),
+       b.deviceId ? String(b.deviceId).slice(0, 64) : null]
     );
     return c.json({ ok: true });
   });
@@ -239,5 +244,25 @@ export function register(app, ctx) {
     }
   });
 
-  return { orderStatusChanged };
+  /* ── senders reusable by other modules (carts.js recovery) ──
+     نفس قنوات إشعارات الطلب، بس بجمهور محدد بالجوال أو الجهاز. */
+  async function sendToAudience({ phoneNorm, deviceId, title, body, url }) {
+    const cfg = (await getSettingsData()).notifications || {};
+    if (cfg.pushEnabled === false) return false;
+    const subs = (await pool.query(
+      `SELECT id, sub FROM push_subs
+        WHERE NOT disabled AND ((phone_norm IS NOT NULL AND phone_norm=$1) OR device_id=$2) LIMIT 10`,
+      [phoneNorm || null, deviceId || ""])).rows;
+    if (!subs.length) return false;
+    const ok = await sendPushTo(subs, { title, body, url: url || env("STOREFRONT_PUBLIC_URL", "https://freshcuts.sa") });
+    return ok > 0;
+  }
+  async function sendSmsTo(phoneNorm, body) {
+    const cfg = (await getSettingsData()).notifications || {};
+    if (cfg.smsEnabled !== true) return false;
+    await sendSms({ phoneNorm, body });
+    return true;
+  }
+
+  return { orderStatusChanged, sendToAudience, sendSmsTo };
 }
