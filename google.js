@@ -571,6 +571,35 @@ export function createGoogleAdapter({ httpJson, hashEmail, hashPhonePlus, google
       };
     },
 
+    /* Daily spend. `segments.date` moves from the WHERE clause into the SELECT
+       list — that is the whole difference. GAQL then returns one row per
+       (campaign × day) instead of rolling the range into one row per campaign.
+       The day is in the Google Ads CUSTOMER's time zone (readable via
+       `customer.time_zone`, surfaced by diagnose()), not UTC. */
+    async dailySpend({ from, to }) {
+      const miss = this.missing("manageEnv");
+      if (miss) return { ok: false, reason: miss, rows: [] };
+      const r = await this.search(
+        `SELECT campaign.id, campaign.name, segments.date,
+                metrics.impressions, metrics.clicks, metrics.cost_micros
+           FROM campaign
+          WHERE segments.date BETWEEN '${isoDate(from)}' AND '${isoDate(to)}'
+            AND campaign.status != 'REMOVED'`);
+      if (!r.ok) return { ok: false, reason: r.reason, rows: [] };
+      return {
+        ok: true,
+        rows: r.results.map((x) => ({
+          platform: "google",
+          day: String(x.segments?.date || "").slice(0, 10),
+          campaignId: String(x.campaign?.id ?? ""),
+          campaignName: x.campaign?.name || "",
+          spend: Math.round((num(x.metrics?.costMicros) / 1e6) * 100) / 100,
+          impressions: num(x.metrics?.impressions),
+          clicks: num(x.metrics?.clicks),
+        })),
+      };
+    },
+
     /* Which CampaignBudget does this campaign use, and is it shared? */
     async budgetOf(campaignId) {
       const r = await this.search(

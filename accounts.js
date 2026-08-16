@@ -217,7 +217,12 @@ export function register(app, ctx) {
     const smsOn = (settings.notifications || {}).smsEnabled !== false && env("TAQNYAT_API_KEY");
     if (smsOn) {
       try {
-        await sendSms({ phoneNorm, body: `رمز الدخول لفريش كتس: ${code}\nصالح ${OTP_TTL_MIN} دقائق.` });
+        // السطر الأخير (@domain #code) هو عقد WebOTP: من غيره كروم على أندرويد
+        // بيتجاهل الرسالة تماماً وما بيملاش الرمز لوحده.
+        const origin = env("STOREFRONT_PUBLIC_URL", "https://freshcuts.sa")
+          .replace(/^https?:\/\//, "").replace(/\/$/, "");
+        await sendSms({ phoneNorm,
+          body: `رمز الدخول لفريش كتس: ${code}\nصالح ${OTP_TTL_MIN} دقائق.\n\n@${origin} #${code}` });
         return c.json({ ok: true, sent: "sms" });
       } catch (e) {
         console.error("[accounts] OTP SMS failed:", e.message);
