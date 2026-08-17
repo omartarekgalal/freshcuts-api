@@ -251,6 +251,18 @@ export function register(app, ctx, deps = {}) {
       // بانرات العروض: [{title, desc, emoji, color, target_item?, active}] —
       // بتترسم في شريط العروض قبل عروض TabSense، وبتتعدل من اللوحة فوراً.
       banners: (sf.banners || []).filter((x) => x && x.active !== false),
+      // نافذة ترويجية: بتظهر مرة كل X ساعة لكل جهاز، وبتتقفل من اللوحة
+      // بضغطة. {enabled,title,body,image,ctaLabel,ctaTarget,everyHours,
+      //          delaySeconds,firstVisitOnly,couponCode}
+      popup: (sf.popup && sf.popup.enabled) ? {
+        id: String(sf.popup.id || "p1"),           // تغييره بيرجّع العرض للكل
+        title: sf.popup.title || "", body: sf.popup.body || "",
+        image: sf.popup.image || "", couponCode: sf.popup.couponCode || "",
+        ctaLabel: sf.popup.ctaLabel || "", ctaTarget: sf.popup.ctaTarget || "",
+        everyHours: Number(sf.popup.everyHours) || 24,
+        delaySeconds: Number(sf.popup.delaySeconds) || 3,
+        firstVisitOnly: sf.popup.firstVisitOnly === true,
+      } : null,
       // أصناف مخفية من العرض (غير نشطة أو تكرارات الأوزان): بتختفي من
       // القايمة والبحث لكن بتفضل في البيانات — عشان منتقي الوزن يلاقيها.
       hiddenIds: (cat.hiddenIds || []).map(String),
