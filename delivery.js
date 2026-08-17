@@ -163,6 +163,8 @@ export function register(app, ctx, deps = {}) {
       -- طلب توصيل، لأن اللي بنحصّله من العميل سياستنا إحنا.
       ALTER TABLE dl_shipments ADD COLUMN IF NOT EXISTS fa_order_number TEXT;
       ALTER TABLE dl_shipments ADD COLUMN IF NOT EXISTS cost NUMERIC;
+      -- نتيجة التوزيع: هل اتعيّن كابتن فعلاً ولا الطلب اتصعّد لمشرف؟
+      ALTER TABLE dl_shipments ADD COLUMN IF NOT EXISTS dispatch JSONB;
       CREATE INDEX IF NOT EXISTS dl_shipments_order_idx ON dl_shipments(shop_order_no);
       CREATE INDEX IF NOT EXISTS dl_shipments_fa_idx ON dl_shipments(fa_order_id);
     `);
@@ -263,17 +265,51 @@ export function register(app, ctx, deps = {}) {
     const created = await fa("/orders", { method: "POST", body: faBody });
     const o = created?.data?.order || {};
     const faId = o.id ?? created?.data?.id ?? null;
-    const pricing = o.pricing || null;
+    // التكلفة بترجع بشكلين حسب الرد: total_amount على مستوى الطلب، أو
+    // pricing.total. بناخد أول قيمة موجودة.
+    const cost = o.total_amount != null ? Number(o.total_amount)
+      : (o.pricing && o.pricing.total != null ? Number(o.pricing.total) : null);
+    /* 201 مش معناها إن في كابتن جاي! ردهم ممكن يكون
+       dispatch_result.status = "escalated_to_supervisor" ومعاه
+       «No eligible drivers are online in the zone». الطلب اتسجّل عندهم بس
+       محدش استلمه — ولازم ده يبان في اللوحة بدل ما نفتكر إن كله تمام
+       والعميل مستني أكله. */
+    const dr = created?.dispatch_result || {};
+    const assigned = Boolean(dr.driver_id) || dr.status === "dispatched";
     await pool.query(
-      `INSERT INTO dl_shipments(shop_order_no, fa_order_id, fa_order_number, status, driver, cost, events)
-       VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+      `INSERT INTO dl_shipments(shop_order_no, fa_order_id, fa_order_number, status, driver, cost, dispatch, events)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
       [order.order_no, faId != null ? String(faId) : null, o.order_number || null,
        (o.status && o.status.value) || "created",
-       o.driver ? jb(o.driver) : null,
-       pricing && pricing.total != null ? Number(pricing.total) : null,
+       o.driver ? jb(o.driver) : null, cost,
+       jb({ status: dr.status || null, driverId: dr.driver_id ?? null, zoneId: dr.zone_id ?? null,
+            message: dr.message || null, assigned }),
        jb([{ at: new Date().toISOString(), event: "created", resp: created }])]
     );
-    return { faOrderId: faId, orderNumber: o.order_number || null, cost: pricing?.total ?? null, raw: created };
+    if (!assigned) {
+      console.error(`[delivery] ${order.order_no}: order accepted by Flying Arrow but NO DRIVER — ${dr.status || "?"}: ${dr.message || ""}`);
+    }
+    return { faOrderId: faId, orderNumber: o.order_number || null, cost, assigned, dispatch: dr, raw: created };
+  }
+
+  /* تسعيرة المركبة عندهم (١٥ ر.س أساسي + ٢ ر.س/كم + ضريبة وقت كتابة ده).
+     بتتخزّن ساعة في الذاكرة — القيم دي بتتغير عندهم مش كل دقيقة، وبنحتاجها
+     في كل حساب هامش. */
+  let _vehCache = { at: 0, byId: {} };
+  async function faVehicles() {
+    if (Date.now() - _vehCache.at < 3600_000 && Object.keys(_vehCache.byId).length) return _vehCache.byId;
+    const r = await fa("/service-vehicles");
+    const byId = {};
+    for (const v of r?.data?.service_vehicles || []) byId[String(v.id)] = v;
+    _vehCache = { at: Date.now(), byId };
+    return byId;
+  }
+  const VAT = 1.15;
+  function faCost(veh, km) {
+    const p = (veh && veh.pricing) || {};
+    const base = Number(p.base_price) || 0, per = Number(p.price_per_km) || 0;
+    const min = Number(p.minimum_fare) || 0;
+    return Math.max(min, base + per * (Number(km) || 0)) * VAT;
   }
 
   /* تتبع الشحنة من عندهم — شبكة أمان تحت الويبهوك. الويبهوك ممكن يضيع
@@ -401,6 +437,45 @@ export function register(app, ctx, deps = {}) {
     }
   });
 
+  /* ADMIN — الهامش: اللي بنحصّله من العميل مقابل اللي بندفعه لـFlying Arrow،
+     على مسافات مختلفة. من غير الشاشة دي التسعيرة بتتحدد بالحدس — والفرق
+     بيطلع من جيب المطعم في كل طلب من غير ما حد ياخد باله. */
+  app.get("/api/delivery/margin", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    const pol = await activePolicy();
+    if (!pol) return c.json({ ok: false, error: "no_policy" });
+    const cfg = { ...DEFAULT_POLICY, ...pol.config };
+    let veh = null, vehErr = null;
+    if (FA_LIVE()) {
+      try {
+        const byId = await faVehicles();
+        veh = byId[String((await getSettingsData()).delivery?.faVehicleId || 3)] || null;
+      } catch (e) { vehErr = e.message; }
+    }
+    const rows = [2, 3, 5, 8, 10, 12, 15].filter((km) => km <= (cfg.maxKm || 15)).map((km) => {
+      const charged = computeDeliveryFee(cfg, { distanceKm: km, orderTotal: 0 });
+      const cost = veh ? faCost(veh, km) : null;
+      return {
+        km,
+        charged: charged.deliverable ? charged.fee : null,
+        cost: cost != null ? r2(cost) : null,
+        margin: charged.deliverable && cost != null ? r2(charged.fee - cost) : null,
+      };
+    });
+    const p = (veh && veh.pricing) || {};
+    // سعر التعادل: أقل قيمة تخلي كل توصيلة ما تخسرش
+    const breakEven = veh
+      ? { baseFee: r2((Number(p.base_price) || 0) * VAT), perKm: r2((Number(p.price_per_km) || 0) * VAT), baseKm: 0 }
+      : null;
+    return c.json({
+      ok: true, policyName: pol.name, policy: publicPolicy(cfg), routeFactor: cfg.routeFactor || 1,
+      vendor: veh ? { id: veh.id, service: veh.service?.name_ar || veh.service?.name_en, pricing: p, limits: veh.limits || null } : null,
+      vendorError: vehErr, vat: VAT, rows, breakEven,
+      // «مجاني فوق مبلغ» معناها إننا بندفع التوصيلة كاملة من جيبنا
+      freeDeliveryCostsUs: cfg.freeOverTotal != null,
+    });
+  });
+
   /* PUBLIC — Flying Arrow's webhook. Their four events (order.driver_assigned,
      order.pickup_completed, order.delivered, order.cancelled) drive both the
      shipment row and the customer-facing order stage via shop. There is no
@@ -486,5 +561,5 @@ export function register(app, ctx, deps = {}) {
       POLL_MIN * 60_000);
   }
 
-  return { quote, dispatch, shipmentOf, trackShipment, cancelShipment, isLive: FA_LIVE };
+  return { quote, dispatch, shipmentOf, trackShipment, cancelShipment, isLive: FA_LIVE, faCost, faVehicles };
 }
