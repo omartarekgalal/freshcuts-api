@@ -380,7 +380,10 @@ export function register(app, ctx, deps = {}) {
      يتختاروا من قائمة حقيقية بدل ما نحزر رقم ونكتشف الغلط وقت أول طلب. */
   app.get("/api/delivery/fa/reference", async (c) => {
     const err = await requireAdmin(c); if (err) return err;
-    if (!FA_LIVE()) return c.json({ ok: false, error: "no_api_key" }, 503);
+    // ملاحظة مهمة: الرد دايماً 200 حتى لو الاتصال بيهم فشل. كلاودفلير
+    // بيستبدل أي 5xx جاي من السيرفر بصفحة خطأ من عنده، فالرسالة الحقيقية
+    // («المفتاح غير نشط») كانت بتضيع واللوحة تقول «تعذّر الاتصال» بس.
+    if (!FA_LIVE()) return c.json({ ok: false, error: "no_api_key" });
     try {
       const [cities, vehicles] = await Promise.all([fa("/cities"), fa("/service-vehicles")]);
       return c.json({
@@ -389,7 +392,12 @@ export function register(app, ctx, deps = {}) {
         vehicles: vehicles?.data?.service_vehicles || [],
       });
     } catch (e) {
-      return c.json({ ok: false, error: e.message, status: e.status || null }, 502);
+      return c.json({
+        ok: false,
+        error: e.message,
+        status: e.status || null,
+        vendor: (e.resp && (e.resp.error_code || e.resp.message)) || null,
+      });
     }
   });
 
