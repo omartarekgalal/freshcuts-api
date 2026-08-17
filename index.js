@@ -43,6 +43,7 @@ import * as shop from "./shop.js";
 import * as accounts from "./accounts.js";
 import * as notify from "./notify.js";
 import * as carts from "./carts.js";
+import * as selftest from "./selftest.js";
 import * as menuplan from "./menuplan.js";
 import * as systemcheck from "./systemcheck.js";
 
@@ -3019,6 +3020,8 @@ const deliveryApi = deliveryMod.register(app, moduleCtx, { shop: () => shopApi }
 const notifyApi = notify.register(app, moduleCtx);
 // السلات المتروكة: لقطات من المتجر + سلّم استرداد (إشعار ثم SMS) + أرقام اللوحة
 const cartsApi = carts.register(app, moduleCtx, { notify: notifyApi });
+// فحص السلسلة كاملة: كل حلقة في طريق الطلب بتترد عليها ok/warn/fail
+selftest.register(app, moduleCtx, { delivery: () => deliveryApi });
 // accounts بترجع customerDiscount اللي الشيك أوت محتاجه (خصم الملاك الدائم) —
 // بس بتتسجل بعد shop، فالربط late-bound بنفس نمط attribution/ads.
 let accountsApi = null;
