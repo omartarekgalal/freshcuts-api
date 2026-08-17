@@ -452,8 +452,13 @@ export function register(app, ctx, deps = {}) {
         veh = byId[String((await getSettingsData()).delivery?.faVehicleId || 3)] || null;
       } catch (e) { vehErr = e.message; }
     }
+    // لازم سلة نموذجية فوق الحد الأدنى، وإلا السياسة بترد «مش قابل للتوصيل»
+    // والجدول كله يطلع فاضي. وبتفضل تحت حد التوصيل المجاني عشان نشوف
+    // الأجرة الحقيقية مش صفر.
+    const sample = Number(c.req.query("total")) ||
+      Math.max((cfg.minOrderTotal || 0) + 5, 40);
     const rows = [2, 3, 5, 8, 10, 12, 15].filter((km) => km <= (cfg.maxKm || 15)).map((km) => {
-      const charged = computeDeliveryFee(cfg, { distanceKm: km, orderTotal: 0 });
+      const charged = computeDeliveryFee(cfg, { distanceKm: km, orderTotal: sample });
       const cost = veh ? faCost(veh, km) : null;
       return {
         km,
@@ -469,6 +474,7 @@ export function register(app, ctx, deps = {}) {
       : null;
     return c.json({
       ok: true, policyName: pol.name, policy: publicPolicy(cfg), routeFactor: cfg.routeFactor || 1,
+      sampleTotal: sample,
       vendor: veh ? { id: veh.id, service: veh.service?.name_ar || veh.service?.name_en, pricing: p, limits: veh.limits || null } : null,
       vendorError: vehErr, vat: VAT, rows, breakEven,
       // «مجاني فوق مبلغ» معناها إننا بندفع التوصيلة كاملة من جيبنا
