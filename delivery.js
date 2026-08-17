@@ -471,14 +471,27 @@ export function register(app, ctx, deps = {}) {
     // (مستقيم × routeFactor) زي ما quote() بتعمل بالظبط، وهم بيحاسبونا على
     // المستقيم. مقارنة الرقمين من غير الفرق ده بتوري ربح مش موجود.
     const rf = cfg.routeFactor || 1;
+    /* السعر المتفق عليه مع Flying Arrow (عمر 2026-08-17): ٩ ر.س تغطي أول
+       ٤ كم، وبعدها ١٫٨ ر.س لكل كم. لسه **مش مطبّق** على الحساب — بيحاسبوا
+       بالتسعيرة المعلنة. العمود ده بيوري الفرق بالظبط عشان يبقى في رقم
+       نتفاوض بيه، مش إحساس. */
+    const ag = (await getSettingsData()).delivery?.agreed ||
+      { base: 9, includedKm: 4, perKm: 1.8 };
+    const agreedCost = (km) =>
+      (Number(ag.base) + Math.max(0, km - Number(ag.includedKm)) * Number(ag.perKm)) * VAT;
+
     const rows = [2, 3, 5, 8, 10, 12, 15].filter((km) => km <= (cfg.maxKm || 15)).map((km) => {
       const charged = computeDeliveryFee(cfg, { distanceKm: km * rf, orderTotal: sample });
       const cost = veh ? faCost(veh, km) : null;
+      const agreed = r2(agreedCost(km));
+      const fee = charged.deliverable ? charged.fee : null;
       return {
-        km,
-        charged: charged.deliverable ? charged.fee : null,
+        km, charged: fee,
         cost: cost != null ? r2(cost) : null,
-        margin: charged.deliverable && cost != null ? r2(charged.fee - cost) : null,
+        margin: fee != null && cost != null ? r2(fee - cost) : null,
+        agreedCost: agreed,
+        agreedMargin: fee != null ? r2(fee - agreed) : null,
+        overcharge: cost != null ? r2(cost - agreed) : null,
       };
     });
     const p = (veh && veh.pricing) || {};
@@ -494,6 +507,8 @@ export function register(app, ctx, deps = {}) {
       sampleTotal: sample,
       vendor: veh ? { id: veh.id, service: veh.service?.name_ar || veh.service?.name_en, pricing: p, limits: veh.limits || null } : null,
       vendorError: vehErr, vat: VAT, rows, breakEven,
+      agreed: { ...ag, applied: rows.every((r) => r.overcharge != null && Math.abs(r.overcharge) < 0.05) },
+      includedKm: FA_INCLUDED_KM(),
       // «مجاني فوق مبلغ» معناها إننا بندفع التوصيلة كاملة من جيبنا
       freeDeliveryCostsUs: cfg.freeOverTotal != null,
     });
