@@ -180,7 +180,16 @@ export function register(app, ctx, deps = {}) {
   async function checkShopConfig() {
     const s = await getSettingsData();
     const shop = s.shop || {}, notes = [];
-    if (shop.otpDevMode === true) notes.push("🚨 وضع تجربة رمز الدخول شغال — الرمز بيظهر على الشاشة لأي حد");
+    /* وضع تجربة الرمز: خطر حقيقي لو الرسائل شغالة (الرمز بيتعرض على الشاشة
+       لأي حد)، لكن قبل ما تقنيات تتفعّل هو **الطريقة الوحيدة** اللي بيها حد
+       يقدر يسجّل دخول أصلاً. فالتقييم بيتغير على حسب حالة الرسائل بدل ما
+       نقول «اقفله» ونحن عارفين إن قفله بيكسر الدخول. */
+    const smsLive = Boolean(env("TAQNYAT_API_KEY") && env("TAQNYAT_SENDER"));
+    if (shop.otpDevMode === true && smsLive) {
+      notes.push("🚨 وضع تجربة رمز الدخول شغال والرسائل شغالة — الرمز بيظهر على الشاشة لأي حد");
+    } else if (shop.otpDevMode === true) {
+      notes.push("وضع تجربة رمز الدخول شغال (مقبول مؤقتاً — هو الطريقة الوحيدة للدخول لحد ما تقنيات تتفعّل، ولازم يتقفل نفس يوم التفعيل)");
+    }
     if (!s.hours || s.hours.enabled === false) notes.push("مواعيد العمل مش مفعّلة — المتجر هيقبل طلبات في أي وقت");
     const pol = (await pool.query("SELECT count(*)::int AS n FROM dl_policies WHERE active")).rows[0].n;
     if (!pol) notes.push("مفيش سياسة تسعير توصيل مفعّلة");
