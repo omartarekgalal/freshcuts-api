@@ -678,6 +678,7 @@ export function register(app, ctx, deps = {}) {
   /* المفاتيح دي بتغطي مصدرين: أسماء أحداث الويبهوك (driver_assigned…) وقيم
      الحالة اللي بترجع من GET /orders/{id} وقت الاستطلاع (in_transit…). */
   const SHIP_STAGE = {
+    created: null,                      // اتسجّل عندهم فقط
     confirmed: null,                    // courier accepted the job; stage unchanged
     pending: null,
     driver_assigned: "courier_assigned",
