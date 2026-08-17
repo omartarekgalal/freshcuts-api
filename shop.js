@@ -63,7 +63,7 @@ function rateLimited(ip, max = 60) {
 }
 
 export function register(app, ctx, deps = {}) {
-  const { pool, requireAdmin, getSettingsData, jb, normPhone } = ctx;
+  const { pool, requireAdmin, requireCashierOrAdmin, getSettingsData, jb, normPhone } = ctx;
   const pay = deps.pay;
   const delivery = deps.delivery;
   const notify = deps.notify || null;
@@ -590,6 +590,69 @@ export function register(app, ctx, deps = {}) {
   });
 
   /* Dashboard monitor + reconciliation feed. */
+  /* ── بورتال الكاشير ────────────────────────────────────────────────────
+     شاشة الطلبات الحية اللي بتفتح على تابلت في المطبخ. بتستخدم نفس دخول
+     الكاشير (رقم سري) — مش توكن الأدمن، عشان ما نديش موظف الكاشير مفتاح
+     اللوحة كلها.
+
+     اللي بترجعه مقصود ومحدود: اللي الكاشير محتاجه عشان يشتغل، ومفيش أرقام
+     فلوس اللوحة ولا بيانات تانية. */
+  app.get("/api/shop/board", async (c) => {
+    const err = await requireCashierOrAdmin(c); if (err) return err;
+    const hours = Math.min(48, Math.max(1, Number(c.req.query("hours")) || 12));
+    const rows = (await pool.query(
+      `SELECT o.order_no, o.status, o.option, o.customer, o.phone_norm, o.address,
+              o.items, o.subtotal, o.delivery_fee, o.tip, o.total, o.coupon,
+              o.pos_order_id, o.notes, o.created_at, o.updated_at, o.last_pos_error,
+              s.status AS ship_status, s.driver AS ship_driver, s.fa_order_number, s.dispatch
+         FROM shop_orders o
+         LEFT JOIN LATERAL (
+           SELECT status, driver, fa_order_number, dispatch FROM dl_shipments
+            WHERE shop_order_no = o.order_no ORDER BY id DESC LIMIT 1) s ON TRUE
+        WHERE o.status NOT IN ('pending_payment','expired')
+          AND o.created_at > NOW() - ($1 || ' hours')::interval
+        ORDER BY o.created_at DESC LIMIT 80`, [String(hours)])).rows;
+    return c.json({
+      ok: true, at: new Date().toISOString(),
+      orders: rows.map((r) => ({
+        orderNo: r.order_no, status: r.status, option: r.option,
+        name: (r.customer || {}).name || null, phone: r.phone_norm,
+        address: r.address || null, items: r.items || [],
+        subtotal: Number(r.subtotal), deliveryFee: Number(r.delivery_fee),
+        tip: Number(r.tip), total: Number(r.total), coupon: r.coupon,
+        posOrderId: r.pos_order_id, notes: r.notes,
+        createdAt: r.created_at, updatedAt: r.updated_at,
+        posError: r.last_pos_error,
+        courier: r.ship_status ? {
+          status: r.ship_status, driver: r.ship_driver || null,
+          orderNumber: r.fa_order_number || null,
+          // «اتقبل الطلب» مش معناها «في كابتن» — الشاشة لازم تفرّق
+          assigned: Boolean((r.dispatch || {}).assigned),
+          note: (r.dispatch || {}).message || null,
+        } : null,
+      })),
+    });
+  });
+
+  /* الكاشير بيطلب مندوب بنفسه — لما التلقائي يكون مقفول، أو التوزيع فشل
+     لأن مفيش كباتن ساعتها وبقى في كباتن دلوقتي. */
+  app.post("/api/shop/board/:orderNo/courier", async (c) => {
+    const err = await requireCashierOrAdmin(c); if (err) return err;
+    const row = await getOrderRow(c.req.param("orderNo"));
+    if (!row) return c.json({ ok: false, error: "not_found" }, 404);
+    if (row.option !== "delivery") return c.json({ ok: false, error: "not_delivery" }, 400);
+    if (!["accepted", "pos_created", "courier_requested"].includes(row.status)) {
+      return c.json({ ok: false, error: "not_ready", status: row.status }, 409);
+    }
+    try {
+      const res = await delivery.dispatch(row);
+      if (row.status !== "courier_requested") await setStatus(row.order_no, "courier_requested");
+      return c.json({ ok: true, assigned: res.assigned, orderNumber: res.orderNumber, note: res.dispatch?.message || null });
+    } catch (e) {
+      return c.json({ ok: false, error: e.message });
+    }
+  });
+
   app.get("/api/shop/orders", async (c) => {
     const err = await requireAdmin(c); if (err) return err;
     const status = c.req.query("status");
