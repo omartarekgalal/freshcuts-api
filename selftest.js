@@ -59,7 +59,9 @@ export function register(app, ctx, deps = {}) {
           unit_amount: Math.round(pre * tsstore.MULTIPLY),
         }],
       });
-      const total = calc?.data?.totals?.total_amount;
+      // calculateOrder بترجع `data` مفكوكة وبترمي استثناء لو فاضية —
+      // فالقراءة من calc.totals مباشرة، مش calc.data.totals
+      const total = calc?.totals?.total_amount;
       if (total == null) return fail("حساب السلة", "تاب سينس ما رجّعش إجمالي", "جرّب تاني، ولو فضلت كلّم دعم تاب سينس", { raw: calc });
       return ok("المنيو وحساب السلة", `شغال — جرّبنا «${item.name || item.local_name}» والإجمالي رجع صح`);
     } catch (e) {
