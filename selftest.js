@@ -43,10 +43,21 @@ export function register(app, ctx, deps = {}) {
         if (!item && Number(it.retail_price ?? it.price) > 0) item = it;
       }
       if (!item) return warn("المنيو", "القائمة رجعت من غير أصناف بأسعار", "راجع المنيو على تاب سينس");
+      // بنجيب الصنف بتفاصيله عشان ناخد `price` (السعر قبل الضريبة) — دي
+      // الخانة اللي تاب سينس بيتحقق منها، مش retail_price المعروض للعميل.
+      // ونفس المصدر اللي الشيك أوت الحقيقي بيقرا منه، عشان الفحص يجرّب
+      // المسار الفعلي مش مسار تاني شبهه.
+      const prod = await tsstore.findProduct(item.id, "1");
+      const pre = Number(prod?.price ?? item.price);
+      if (!(pre > 0)) return warn("المنيو", "الصنف رجع من غير سعر قبل الضريبة", "راجع المنيو على تاب سينس");
       // سلة وهمية: بنحسبها بس، مفيش أي طلب بيتعمل
       const calc = await tsstore.calculateOrder({
         branchId: "1", orderOptionId: 3,
-        purchases: [{ product_id: item.id, quantity: 1, unit_amount: Number(item.retail_price ?? item.price) }],
+        purchases: [{
+          product_id: item.id, quantity: 1,
+          tax_id: prod?.tax_id ?? 1,
+          unit_amount: Math.round(pre * tsstore.MULTIPLY),
+        }],
       });
       const total = calc?.data?.totals?.total_amount;
       if (total == null) return fail("حساب السلة", "تاب سينس ما رجّعش إجمالي", "جرّب تاني، ولو فضلت كلّم دعم تاب سينس", { raw: calc });
