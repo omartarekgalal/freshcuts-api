@@ -305,11 +305,21 @@ export function register(app, ctx, deps = {}) {
     return byId;
   }
   const VAT = 1.15;
+  /* تسعيرتهم مش (أساسي + سعر×كل كم) زي ما الأرقام بتوحي. من طلب تجريبي
+     حقيقي على 4.99 كم: أساسي 15، ومسافة 1.98 = 0.99 كم × 2 — يعني
+     **الأساسي بيغطي أول 4 كم** والزيادة بعدها بس هي اللي بتتحاسب. وده نفس
+     تركيبة اتفاق عمر (٩ ر.س لأول ٤ كم + ١٫٨ بعدها)، فالحساب واحد للاتنين.
+
+     ومهم كمان: `total_distance_km` في ردهم = المسافة المستقيمة بالظبط
+     (4.99)، مش مسافة الطريق — فهم بيحاسبوا على الخط المستقيم بينما إحنا
+     بنحاسب العميل على مسافة مضروبة في routeFactor. */
+  const FA_INCLUDED_KM = () => Number(env("FA_INCLUDED_KM", "4"));
   function faCost(veh, km) {
     const p = (veh && veh.pricing) || {};
     const base = Number(p.base_price) || 0, per = Number(p.price_per_km) || 0;
     const min = Number(p.minimum_fare) || 0;
-    return Math.max(min, base + per * (Number(km) || 0)) * VAT;
+    const extra = Math.max(0, (Number(km) || 0) - FA_INCLUDED_KM());
+    return Math.max(min, base + per * extra) * VAT;
   }
 
   /* تتبع الشحنة من عندهم — شبكة أمان تحت الويبهوك. الويبهوك ممكن يضيع
@@ -457,8 +467,12 @@ export function register(app, ctx, deps = {}) {
     // الأجرة الحقيقية مش صفر.
     const sample = Number(c.req.query("total")) ||
       Math.max((cfg.minOrderTotal || 0) + 5, 40);
+    // المقارنة لازم تكون على نفس المسافة الحقيقية: إحنا بنحاسب العميل على
+    // (مستقيم × routeFactor) زي ما quote() بتعمل بالظبط، وهم بيحاسبونا على
+    // المستقيم. مقارنة الرقمين من غير الفرق ده بتوري ربح مش موجود.
+    const rf = cfg.routeFactor || 1;
     const rows = [2, 3, 5, 8, 10, 12, 15].filter((km) => km <= (cfg.maxKm || 15)).map((km) => {
-      const charged = computeDeliveryFee(cfg, { distanceKm: km, orderTotal: sample });
+      const charged = computeDeliveryFee(cfg, { distanceKm: km * rf, orderTotal: sample });
       const cost = veh ? faCost(veh, km) : null;
       return {
         km,
@@ -468,9 +482,12 @@ export function register(app, ctx, deps = {}) {
       };
     });
     const p = (veh && veh.pricing) || {};
-    // سعر التعادل: أقل قيمة تخلي كل توصيلة ما تخسرش
+    // سعر التعادل بنفس تركيبتهم: أساسي يغطي أول N كم، وبعدها لكل كم.
+    // وبنقسم على routeFactor لأن اللي بنكتبه في السياسة بيتضرب فيه.
     const breakEven = veh
-      ? { baseFee: r2((Number(p.base_price) || 0) * VAT), perKm: r2((Number(p.price_per_km) || 0) * VAT), baseKm: 0 }
+      ? { baseFee: r2((Number(p.base_price) || 0) * VAT),
+          baseKm: r2(FA_INCLUDED_KM() * rf),
+          perKm: r2(((Number(p.price_per_km) || 0) * VAT) / rf) }
       : null;
     return c.json({
       ok: true, policyName: pol.name, policy: publicPolicy(cfg), routeFactor: cfg.routeFactor || 1,
