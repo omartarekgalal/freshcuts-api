@@ -675,12 +675,22 @@ export function register(app, ctx, deps = {}) {
   });
 
   /* Shipment webhook events → order stage. Called by delivery.js. */
+  /* المفاتيح دي بتغطي مصدرين: أسماء أحداث الويبهوك (driver_assigned…) وقيم
+     الحالة اللي بترجع من GET /orders/{id} وقت الاستطلاع (in_transit…). */
   const SHIP_STAGE = {
     confirmed: null,                    // courier accepted the job; stage unchanged
+    pending: null,
     driver_assigned: "courier_assigned",
+    assigned: "courier_assigned",
+    accepted: "courier_assigned",
     pickup_completed: "on_the_way",
+    picked_up: "on_the_way",
+    in_transit: "on_the_way",
+    on_the_way: "on_the_way",
     delivered: "delivered",
+    completed: "delivered",
     cancelled: "courier_cancelled",
+    canceled: "courier_cancelled",
   };
   async function onShipmentEvent(orderNo, event, _payload) {
     const next = SHIP_STAGE[event];
@@ -731,6 +741,12 @@ export function register(app, ctx, deps = {}) {
           }
         }
       } else if (a.includes("reject")) {
+        // لو كنا طلبنا كابتن قبل الرفض، نلغي عندهم — رسوم الإلغاء أرخص من
+        // توصيلة كاملة لطلب المطعم اعتذر عنه.
+        if (r.option === "delivery" && delivery.cancelShipment) {
+          delivery.cancelShipment(r.order_no, `order ${r.order_no} rejected by restaurant`)
+            .catch((e) => console.error(`[shop] courier cancel failed for ${r.order_no}:`, e.message));
+        }
         // Omar's rule: automatic refund, exactly once.
         if (!r.refund_id && r.mf_payment_id) {
           try {
