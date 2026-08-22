@@ -443,9 +443,17 @@ export function register(app, ctx) {
 
     // TikTok wants the '+' inside the hash for phones.
     const fileContent = phones.map((d) => hashPhonePlus(d)).join("\n");
+    /* `file_signature` is the MD5 of the exact bytes we upload, and TikTok
+       treats it as REQUIRED: without it every upload comes back
+       "file_signature: Missing data for required field." and no TikTok
+       audience is ever created. It is their integrity check — they hash what
+       arrived and compare — so it must be computed from `fileContent`
+       itself, never from the phone list or the file name. */
+    const fileSignature = crypto.createHash("md5").update(fileContent, "utf8").digest("hex");
     const up = await ttMultipart(`${TT_BASE}/dmp/custom_audience/file/upload/`, {
       advertiser_id: adv,
       calculate_type: "PHONE_SHA256",
+      file_signature: fileSignature,
     }, "file", `freshcuts_${segId}.csv`, fileContent);
     if (!up.ok) return { ok: false, error: up.json?.message || up.text || `HTTP ${up.status}` };
     const filePath = up.json?.data?.file_path;

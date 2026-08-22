@@ -264,7 +264,7 @@ export function createGoogleAdapter({ httpJson, hashEmail, hashPhonePlus, google
       "GOOGLE_ADS_REFRESH_TOKEN", "GOOGLE_ADS_CUSTOMER_ID",
     ],
     eventName: "Purchase",
-    note: "المطعم مفيهوش دفع أونلاين، فالشراء عمره ما بيحصل على الويب. اللي بيترفع لجوجل هو الطلبات اللي معاها معرّف حقيقي: gclid من ضغطة إعلان على المتجر، أو رقم جوال/إيميل مشفّر. الطلب اللي مامعهوش أي معرّف مابيتبعتش أصلاً. ⚠️ جوجل قفلت ConversionUploadService على التكاملات الجديدة (لازم Data Manager API)، فالرفع نفسه متوقّف حاليًا — القراءة والتشخيص والتحكم في الحملات شغّالين.",
+    note: "المطعم مفيهوش دفع أونلاين، فالشراء عمره ما بيحصل على الويب. اللي بيترفع لجوجل هو الطلبات اللي معاها معرّف حقيقي: gclid من ضغطة إعلان على المتجر، أو رقم جوال/إيميل مشفّر. الطلب اللي مامعهوش أي معرّف مابيتبعتش أصلاً. ⚠️ جوجل قفلت ConversionUploadService على التكاملات الجديدة (لازم Data Manager API)، فالرفع نفسه متوقّف حاليًا. القراءة والتحكم في الحملات بيمشوا على توكن OAuth منفصل تمامًا، فلو السطر اللي فوق بيقول إن التوكن مرفوض يبقى دول واقفين هما كمان — مش بس الرفع.",
 
     ver: () => env("GOOGLE_ADS_API_VERSION") || DEFAULT_API_VERSION,
     apiBase() { return `https://googleads.googleapis.com/${this.ver()}`; },
