@@ -46,22 +46,99 @@ import {
 // مختلفين لنفس السؤال من نفس الداتا.
 import { FIRST_ORDER_DAY_CTE } from "./analytics.js";
 
-/* ── LLM (same provider chain as ai.js — Anthropic direct, else LiteLLM) ──── */
+/* ═══════════════════════════════════════════════════════════════════════════
+   LLM — نفس سلسلة المزوّدين بتاعة ai.js (أنثروبيك مباشر، وإلا LiteLLM)
+
+   ── ليه الملف ده اتغيّر يوم ٢٤ أغسطس ─────────────────────────────────────
+   المالك شاف الفاتورة: ~١٫٥ مليون توكن في اليوم، و٢ مليون يوم ١٣ أغسطس.
+   الحساب اللي طلع من ap_decisions:
+     • الجولة الكاملة كل ساعة، وكل جولة كانت بتنده الموديل مرتين:
+       المستشار (runStrategist) + الوكيل (runAgent) بأدواته.
+     • ٢٤–٤٦ نداء مستشار و٥٠–١٠٠ **دورة** وكيل في اليوم (١٢–١٣ أغسطس).
+     • كل دورة وكيل بتبعت المحادثة **من أولها**: الـ system + الأدوات +
+       نتايج كل الأدوات اللي فاتت. نتيجة get_performance لوحدها كانت
+       مقصوصة عند ٢٤٬٠٠٠ حرف. يعني الدورة التانية بتدفع تمن الأولى تاني،
+       والتالتة تمن الاتنين، وهكذا.
+     • ومفيش أي prompt caching، فالجزء الثابت (الـ system والأدوات) كان
+       بيتحاسب بالكامل في كل نداء.
+
+   الإصلاح تلات طبقات، من الأرخص للأغلى:
+     ١. **مانندهش أصلاً.** القواعد الصمّاء بتتصرّف لوحدها؛ الموديل بينده بس
+        لما الوضع يتغيّر فعلاً (بصمة) أو يبقى فيه حاجة ملتبسة. شوف llmGate.
+     ٢. **نبعت ملخّص مش كومة.** الحمولات اتقصّت (شوف TOOL_RESULT_MAX و
+        compactPerf).
+     ٣. **اللي بنبعته تاني يتخزّن.** cache_control على الجزء الثابت.
+   وفوق ده كله ميزانية توكنز يومية بمفتاح قفل (tokenBudget) عشان الفاتورة
+   ما تجريش في الضلمة تاني.
+═══════════════════════════════════════════════════════════════════════════ */
 const ANTHROPIC_URL = "https://api.anthropic.com/v1/messages";
 const ANTHROPIC_VERSION = "2023-06-01";
 const LITELLM_BASE = (process.env.LITELLM_BASE || "https://llm.o2m8.me/v1").replace(/\/+$/, "");
 const AI_MODEL = process.env.AI_MODEL || "claude-sonnet-5";
+/* الموديل الرخيص للشغل الروتيني. الوكيل بيقرا أرقام وبينفّذ قرار محسوم
+   بالقواعد — ده تصنيف مش استراتيجية، وهايكو بيعمله بخُمس التمن
+   (١$/٥$ للمليون مقابل ٣$/١٥$ لسونيت). المستشار (الكرياتيف والعروض) هو
+   الوحيد اللي فعلاً محتاج الموديل الكبير، وهو بينده مرة في اليوم دلوقتي. */
+const AI_MODEL_FAST = process.env.AI_MODEL_FAST || "claude-haiku-4-5";
 const LLM_TIMEOUT_MS = 180000;
 
-function llmProvider() {
+/* الكاش بيتقفل لوحده لو المزوّد رفض الشكل — مرة واحدة للعملية كلها، مش
+   محاولة تانية في كل نداء. */
+let cacheSupported = process.env.AI_PROMPT_CACHE !== "0";
+const CACHE_MARK = { type: "ephemeral" };
+
+/* عدّاد التوكنز. بيتكتب في ap_llm_usage عشان يعيش بعد كل نشرة، والنسخة
+   اللي في الذاكرة عشان البوابة تقرا من غير ما تضرب الداتابيز كل نداء. */
+const usageMem = { day: null, total: 0 };
+let usageSink = null;    // بيتظبط من register() — (purpose, model, usage) => void
+
+function llmProvider({ tier = "smart" } = {}) {
+  const wanted = tier === "fast" ? AI_MODEL_FAST : AI_MODEL;
   if (process.env.ANTHROPIC_API_KEY) {
-    return { kind: "anthropic", key: process.env.ANTHROPIC_API_KEY, model: AI_MODEL };
+    return { kind: "anthropic", key: process.env.ANTHROPIC_API_KEY, model: wanted, tier };
   }
   if (process.env.LITELLM_KEY) {
-    const model = AI_MODEL.includes("/") ? AI_MODEL : `anthropic/${AI_MODEL}`;
-    return { kind: "litellm", key: process.env.LITELLM_KEY, model };
+    const model = wanted.includes("/") ? wanted : `anthropic/${wanted}`;
+    return { kind: "litellm", key: process.env.LITELLM_KEY, model, tier };
   }
   return null;
+}
+
+/* الاستخدام بيرجع بشكلين حسب المزوّد. بنوحّده هنا مرة واحدة عشان كل
+   الحسابات فوق تقرا نفس الأسماء. */
+export function normaliseUsage(raw, kind) {
+  const u = raw || {};
+  if (kind === "anthropic") {
+    return {
+      input: Number(u.input_tokens) || 0,
+      output: Number(u.output_tokens) || 0,
+      cacheRead: Number(u.cache_read_input_tokens) || 0,
+      cacheWrite: Number(u.cache_creation_input_tokens) || 0,
+    };
+  }
+  const cached = Number(u.prompt_tokens_details?.cached_tokens) || 0;
+  return {
+    input: Math.max(0, (Number(u.prompt_tokens) || 0) - cached),
+    output: Number(u.completion_tokens) || 0,
+    cacheRead: cached,
+    cacheWrite: Number(u.cache_creation_input_tokens) || 0,
+  };
+}
+
+/* التوكنز اللي بتتحاسب فعلاً: الكاش بيتقرا بعُشر التمن والكتابة بـ ١٫٢٥،
+   بس الميزانية اليومية بتعدّ **التوكنز** مش الفلوس عشان تفضل بسيطة
+   ومقروءة. الوزن بيخلّي النداء المكاشّي ما ياكلش الميزانية بالغلط. */
+export const billableTokens = (u) =>
+  (u.input || 0) + (u.output || 0) + Math.round((u.cacheRead || 0) * 0.1) + Math.round((u.cacheWrite || 0) * 1.25);
+
+function recordUsage(purpose, provider, raw) {
+  const u = normaliseUsage(raw, provider.kind);
+  const billed = billableTokens(u);
+  const day = new Date().toISOString().slice(0, 10);
+  if (usageMem.day !== day) { usageMem.day = day; usageMem.total = 0; }
+  usageMem.total += billed;
+  if (usageSink) { try { usageSink(purpose, provider, u, billed, day); } catch { /* المحاسبة عمرها ما توقّف الشغل */ } }
+  return u;
 }
 
 async function llmPost(url, headers, body) {
@@ -75,34 +152,64 @@ async function llmPost(url, headers, body) {
       signal: ctl.signal,
     });
     const text = await res.text();
-    if (!res.ok) throw new Error(`LLM ${res.status}: ${text.slice(0, 300)}`);
+    if (!res.ok) {
+      const err = new Error(`LLM ${res.status}: ${text.slice(0, 300)}`);
+      err.httpStatus = res.status;
+      throw err;
+    }
     return JSON.parse(text);
   } finally { clearTimeout(timer); }
 }
 
-async function llmTool(provider, { system, user, tool, maxTokens = 8000 }) {
-  const post = llmPost;
+/* نداء واحد مع إمكانية إطفاء الكاش لو المزوّد رفض شكله. المحاولة التانية
+   بتحصل **مرة واحدة للعملية كلها**: أول رفض بيقفل الكاش لكل النداءات
+   اللي بعده، فمفيش مضاعفة نداءات مستمرة. */
+async function llmPostCached(url, headers, build) {
+  const useCache = cacheSupported;
+  try {
+    return await llmPost(url, headers, build(useCache));
+  } catch (e) {
+    if (!useCache || e.httpStatus !== 400) throw e;
+    cacheSupported = false;
+    console.warn("[autopilot] prompt caching rejected by the provider — turned off for this process:", e.message);
+    return llmPost(url, headers, build(false));
+  }
+}
+
+/* الـ system بيترسل كبلوك واحد عليه علامة كاش. أنثروبيك بتقبل مصفوفة
+   بلوكات في `system`، و LiteLLM بتمرّر نفس الشكل جوّه رسالة الـ system.
+   الحد الأدنى للكاش ~١٠٢٤ توكن — الـ system بتاعنا فوقها بكتير. */
+const cachedSystem = (system, on) =>
+  on ? [{ type: "text", text: system, cache_control: CACHE_MARK }] : system;
+const cachedSystemMsg = (system, on) => ({
+  role: "system",
+  content: on ? [{ type: "text", text: system, cache_control: CACHE_MARK }] : system,
+});
+
+async function llmTool(provider, { system, user, tool, maxTokens = 8000, purpose = "tool" }) {
   if (provider.kind === "anthropic") {
-    const data = await post(ANTHROPIC_URL,
+    const data = await llmPostCached(ANTHROPIC_URL,
       { "x-api-key": provider.key, "anthropic-version": ANTHROPIC_VERSION },
-      {
-        model: provider.model, max_tokens: maxTokens, system,
+      (on) => ({
+        model: provider.model, max_tokens: maxTokens, system: cachedSystem(system, on),
         messages: [{ role: "user", content: user }],
         tools: [{ name: tool.name, description: tool.description, input_schema: tool.schema }],
         tool_choice: { type: "tool", name: tool.name },
-      });
+      }));
+    recordUsage(purpose, provider, data.usage);
     const block = (data.content || []).find((b) => b.type === "tool_use");
     if (!block) throw new Error("model returned no tool_use block");
     return block.input;
   }
-  const data = await post(`${LITELLM_BASE}/chat/completions`,
+  const data = await llmPostCached(`${LITELLM_BASE}/chat/completions`,
     { authorization: `Bearer ${provider.key}` },
-    {
+    (on) => ({
       model: provider.model, max_tokens: maxTokens,
-      messages: [{ role: "system", content: system }, { role: "user", content: user }],
+      messages: [cachedSystemMsg(system, on), { role: "user", content: user }],
       tools: [{ type: "function", function: { name: tool.name, description: tool.description, parameters: tool.schema } }],
       tool_choice: { type: "function", function: { name: tool.name } },
-    });
+    }));
+  recordUsage(purpose, provider, data.usage);
   const call = ((data.choices || [])[0]?.message?.tool_calls || [])[0];
   if (!call) throw new Error("model returned no tool call");
   return JSON.parse(call.function.arguments || "{}");
@@ -113,17 +220,24 @@ async function llmTool(provider, { system, user, tool, maxTokens = 8000 }) {
    أدوات وبنسيبه يقرر — وبنرجّع الرد بشكل موحّد مهما كان المزوّد.
    `native` هو رسالة المساعد بصيغة المزوّد نفسه عشان تترجّع في المحادثة زي
    ما هي (مينفعش نعيد تركيبها بإيدينا — هنكسر تسلسل الـ tool ids).          */
-function toolSpecs(provider, tools) {
-  return provider.kind === "anthropic"
+/* الأدوات ثابتة في كل نداء، فهي أول حاجة تستاهل تتخزّن. ترتيب الرندر عند
+   أنثروبيك هو tools → system → messages، فعلامة الكاش بتتحط على **آخر**
+   أداة عشان تغطّي اللستة كلها. */
+function toolSpecs(provider, tools, cache = false) {
+  const out = provider.kind === "anthropic"
     ? tools.map((t) => ({ name: t.name, description: t.description, input_schema: t.schema }))
     : tools.map((t) => ({ type: "function", function: { name: t.name, description: t.description, parameters: t.schema } }));
+  if (cache && out.length) out[out.length - 1] = { ...out[out.length - 1], cache_control: CACHE_MARK };
+  return out;
 }
 
-async function llmTurn(provider, { system, messages, tools, maxTokens = 4000 }) {
+async function llmTurn(provider, { system, messages, tools, maxTokens = 4000, purpose = "agent" }) {
   if (provider.kind === "anthropic") {
-    const data = await llmPost(ANTHROPIC_URL,
+    const data = await llmPostCached(ANTHROPIC_URL,
       { "x-api-key": provider.key, "anthropic-version": ANTHROPIC_VERSION },
-      { model: provider.model, max_tokens: maxTokens, system, messages, tools: toolSpecs(provider, tools) });
+      (on) => ({ model: provider.model, max_tokens: maxTokens, system: cachedSystem(system, on),
+                 messages, tools: toolSpecs(provider, tools, on) }));
+    recordUsage(purpose, provider, data.usage);
     const blocks = data.content || [];
     return {
       native: { role: "assistant", content: blocks },
@@ -133,13 +247,14 @@ async function llmTurn(provider, { system, messages, tools, maxTokens = 4000 }) 
       usage: data.usage || null,
     };
   }
-  const data = await llmPost(`${LITELLM_BASE}/chat/completions`,
+  const data = await llmPostCached(`${LITELLM_BASE}/chat/completions`,
     { authorization: `Bearer ${provider.key}` },
-    {
+    (on) => ({
       model: provider.model, max_tokens: maxTokens,
-      messages: [{ role: "system", content: system }, ...messages],
-      tools: toolSpecs(provider, tools),
-    });
+      messages: [cachedSystemMsg(system, on), ...messages],
+      tools: toolSpecs(provider, tools, on),
+    }));
+  recordUsage(purpose, provider, data.usage);
   const msg = (data.choices || [])[0]?.message || {};
   return {
     native: msg,
@@ -259,13 +374,37 @@ const DEFAULT_SETTINGS = {
   syncAudiences: true,        // refresh retargeting audiences nightly
   useLlm: true,               // creative briefs + strategy notes
   agent: true,                // الوكيل الذكي (تفكير + أدوات) — غير قواعد التشغيل
-  agentMaxTurns: 8,           // سقف دورات المحادثة في الجولة الواحدة
+  agentMaxTurns: 6,           // سقف دورات المحادثة في الجولة الواحدة
+  /* ── سياج الفاتورة ────────────────────────────────────────────────────
+     الأرقام دي مش تجميل، دي اللي بتخلّي الفرق بين ~١٫٥ مليون توكن في اليوم
+     و~٦٠ ألف. الاشتقاق:
+       • الوكيل كان بينده كل ساعة (٢٤ جولة) + كل طوارئ. دلوقتي بينده لما
+         يكون فيه **سبب**: قرار من القواعد، أو طوارئ، أو الوضع اتغيّر
+         وعدّى `agentMinHours` من آخر جولة. اليوم الهادي = صفر نداء.
+       • المستشار (كرياتيف وعروض) كان بينده كل ساعة برضه، وهو بيطلع نفس
+         نوع الخطة. مرة في اليوم كفاية — `strategyEveryHours`.
+       • الميزانية اليومية قفل نهائي: لو اتعدّت، أي نداء بيترفض ويتسجّل.
+         الرقم الافتراضي (٣٠٠ ألف) أعلى من الاستهلاك المتوقّع (~٦٠ ألف)
+         بخمس مرات، فهو سقف أمان مش خنّاق. */
+  llmDailyTokenBudget: 300000, // توكنز/يوم (محسوبة) — فوقها كل النداءات بتتقفل
+  agentMinHours: 6,            // أقل فاصل بين جولتين وكيل لما مفيش سبب جديد
+  strategyEveryHours: 24,      // المستشار بينده كل كام ساعة على الأكتر
+  agentAlwaysOnDecision: true, // قرار جديد من القواعد الصمّاء = سبب كافي ينده الوكيل
   emergencyCooldownHours: 6,  // نفس الطوارئ ما تتفتحش تاني قبل كده
+  dayLog: true,               // نسأل «ليه اليوم ده كان كده؟» على الأيام الشاذة
+  dayLogDeviationPct: 25,     // الانحراف عن وسيط نفس يوم الأسبوع اللي يستاهل سؤال
   platforms: { meta: true, tiktok: true, snapchat: true },
 };
 
 /* أقصى عدد دورات مهما قال الإعداد — سياج أخير ضد لوب لا نهائي بيحرق توكنز. */
 const AGENT_TURN_CEILING = 12;
+
+/* ── أقصى حجم نتيجة أداة بترجع للموديل ───────────────────────────────────
+   كان ٢٤٬٠٠٠ حرف. ده مش سقف حماية، ده كان **الحجم الفعلي** للقطة الأداء:
+   والمحادثة بتتبعت من أولها كل دورة، فنتيجة واحدة بحجم ده بتتحاسب مرة في
+   كل دورة بعدها. ٦٬٠٠٠ حرف كفاية بعد ضغط اللقطة (compactPerf) — أي حاجة
+   أكبر من كده الموديل مش بيقراها بجد، بيقرا أول شوية ويستنتج. */
+const TOOL_RESULT_MAX = Math.max(2000, Number(process.env.AUTOPILOT_TOOL_RESULT_MAX) || 6000);
 
 /* خط القتل بالريال للنتيجة الواحدة. أرضية `killCpa` بتمنع إن إعادة معايرة
    هدف التوسّع تضيّق خط الإيقاف كأثر جانبي — شوف DEFAULT_SETTINGS.killCpa. */
@@ -932,9 +1071,26 @@ export const PACE_DEFAULTS = {
   paceLastRaiseHour: 1,        // آخر ساعة رياض نرفع فيها (بعد نص الليل بساعة)
   paceUpThresholdPct: 20,      // أسرع من خط الأساس بالنسبة دي → تسريع
   paceDownThresholdPct: -15,   // أبطأ منه بالنسبة دي → تراجع للأساس
-  paceStepPct: 15,             // خطوة الرفع/الخفض جوّه اليوم
+  /* ── ليه ١٩٪ مش ١٥٪، وليه ٣ خطوات مش تسعة ─────────────────────────────
+     الدليل من الدفتر نفسه (ap_pacing + ap_decisions + سجل الصرف):
+       • ١١ أغسطس: ٦ خطوات، صرف ميتا ٣١٢٫٢١ ر.س.
+       • ١٢ أغسطس: ٨ خطوات، الميزانية اتحركت من ١٦٠ لـ ٢٤٠ ر.س، صرف ميتا
+         **٣٠٤٫٣٩** ر.س.
+       • ١٣ أغسطس: ٥ خطوات، الميزانية وصلت ٢٨٠ ر.س، صرف ميتا **٣٠٦٫٩١** ر.س.
+     تلات أيام، تسعة عشر رفعة، والصرف واقف عند ٣٠٥–٣١٢ ر.س. يعني الرفعات
+     دي **ما حرّكتش ولا ريال**. اللي حرّك الصرف فعلاً كان يوم ١٤: إيقاف ٤
+     مجموعات ميتة (١٣ أغسطس ٧:١٩ م) + رجوع حملة الريتارجيت + رفعة واحدة
+     كبيرة — الصرف طلع ٥٩٤٫٢٨.
+
+     الاستنتاج: الخطوة الصغيرة المتكرّرة مش «حذر»، دي **مجهود من غير أثر**
+     بتكلفة حقيقية — كل لمسة على ad set في ميتا فيها خطر تصفير تعلّم.
+     فالخطوة بقت ١٩٪ (أكبر رقم ميتا لسه بتعتبره «مش جوهري»، وهو نفس سقف
+     PLATFORM_SCALING.meta.maxStepPct — يعني السقف مابيتخرقش)، والتبريد
+     اتوسّع، وفيه سقف صريح لعدد اللمسات في اليوم.                          */
+  paceStepPct: 19,             // خطوة الرفع/الخفض جوّه اليوم (تحت عتبة ٢٠٪ بتاعة ميتا)
   paceMaxUpliftPct: 60,        // أقصى زيادة تراكمية فوق ميزانية المالك
-  paceCooldownMinutes: 45,     // أقل فاصل بين حركتين على نفس الحملة
+  paceCooldownMinutes: 90,     // أقل فاصل بين حركتين على نفس الحملة
+  paceMaxStepsPerDay: 3,       // أقصى عدد رفعات على نفس الهدف في يوم الحساب الواحد
   paceMinBaselineDays: 2,      // أقل عدد أيام مقارنة نقبل نحكم بيها
   paceMinOrders: 6,            // أقل عدد طلبات النهارده قبل ما نصدّق الإيقاع
   paceRestoreBeforeMin: 45,    // نرجّع الميزانية قبل قفل يوم الحساب بكام دقيقة
@@ -983,7 +1139,18 @@ export const PACE_DEFAULTS = {
 
 export const PLATFORM_SCALING = {
   meta: {
-    stepPct: 15, maxStepPct: 19, cooldownMinutes: 60, allowed: true,
+    /* ٢٤ أغسطس — الخطوة اتوسّعت من ١٥٪ لـ ١٩٪ والتبريد من ٦٠ لـ ٩٠ دقيقة.
+       الدليل من الدفتر: ١١–١٣ أغسطس أخدت ١٩ رفعة بـ ١٥٪ على ميتا وصرف
+       ميتا فضل ٣١٢٫٢١ / ٣٠٤٫٣٩ / ٣٠٦٫٩١ ر.س — تلات أيام على نفس الرقم.
+       الخطوة الصغيرة المتكرّرة مانقلتش فلوس، وكل لمسة فيها خطر تصفير
+       تعلّم. ١٩٪ هي أكبر خطوة ميتا **لسه** مابتعتبرهاش تعديل جوهري، فإحنا
+       بنكبّر الأثر من غير ما نلمس السور. ومع سقف ٣ لمسات في اليوم
+       (paceMaxStepsPerDay) الزيادة التراكمية بتفضل تحت نفس سقف
+       paceMaxUpliftPct زي ما كانت — يعني الفلوس مازادتش، اللمس هو اللي قلّ.
+       الرقمين دول في الكود مش في الإعدادات عن قصد: صف الإعدادات المخزّن
+       مثبّت على ١٥/٤٥ من قبل التغيير، والقاعدة دي مبنية على قياس مش على
+       تفضيل، فمكانها هنا مع سببها. */
+    stepPct: 19, maxStepPct: 19, cooldownMinutes: 90, allowed: true,
     why: "ميتا بتعتبر أي تعديل ميزانية ٢٠٪ أو أكتر «تعديل جوهري» وبتصفّر مرحلة التعلّم. كل الـ ad sets عندنا لسه في التعلّم، فالخطوة بتفضل تحت ٢٠٪ عشان نكبّر من غير ما نرجّع الحملة لأول السطر.",
     duplicateAtUpliftPct: 100,
     duplicateWhy: "لما الميزانية توصل ضعف رقم المالك، التوسّع الصح بيبقى نسخة جديدة من الـ ad set بجمهور مختلف مش ضغط أكتر على نفس المزاد — الضغط الزيادة على نفس الجمهور بيرفع الـ CPM من غير ما يجيب ناس جداد.",
@@ -1205,9 +1372,25 @@ export function decidePace(input) {
   /* الجزء اللي عدّى من يوم الحساب الإعلاني. `msToRoll` هو الفاضل عليه. */
   const dayFraction = Number.isFinite(msToRoll)
     ? Math.min(1, Math.max(0.05, 1 - (msToRoll / 86_400_000))) : 1;
+  /* ── والأرخص قبل الأغلى ────────────────────────────────────────────────
+     الترتيب كان: استيعاب، وبعدين **الأكتر صرفاً**. والنتيجة في الدفتر إن
+     كل زيادات ١١–١٣ أغسطس راحت لـ fc-prospect-asc و fc-prospect-lal و
+     fc-retarget-engagers — تكلفة النتيجة عندهم ١٦٫١٤ و٣٣٫٧٦ و٣٣٫١٢ ر.س.
+     وفي نفس الشهر fc-wa-orders كانت بتجيب النتيجة بـ **٢٫٧٥** ر.س
+     (٩٩٣ نتيجة من ١٬١٤٠ في الحساب كله على ٤١٪ من الصرف) ومخدتش ولا رفعة.
+     «الأكتر صرفاً» بيوصف اللي بيصرف، مش اللي بيكسب — والسقف الكلي لما
+     يخلص بيخلص على أول واحد في اللستة. فالترتيب بقى بتكلفة النتيجة
+     الأرخص الأول، والصرف بقى فاصل التعادل بس.
+
+     الهدف اللي لسه ملوش نتايج (results null أو صفر) بيتحط بعد اللي ليه
+     رقم — مش لإنه وحش، لإننا مش عارفين، ومعرفتش ≠ رخيص.                  */
+  const cprOf = (t) => (Number(t.results) > 0 && Number(t.spend) > 0)
+    ? Number(t.spend) / Number(t.results) : Infinity;
   const ranked = activeRows.slice().map((t) => ({ t, abs: absorptionOf(t, {
     minFillPct: Number(s.paceMinFillPct ?? 60), dayFraction }) }))
-    .sort((a, b) => (b.abs.rank - a.abs.rank) || ((Number(b.t.spend) || 0) - (Number(a.t.spend) || 0)));
+    .sort((a, b) => (b.abs.rank - a.abs.rank)
+      || (cprOf(a.t) - cprOf(b.t))
+      || ((Number(b.t.spend) || 0) - (Number(a.t.spend) || 0)));
 
   for (const { t: r, abs } of ranked) {
     const key = targetKeyOf(r);
@@ -1229,6 +1412,15 @@ export function decidePace(input) {
        الرفع بس — التراجع بيلمس اللي رفعناه إحنا مهما كانت مرحلة تعلّمه. */
     if (up && !abs.absorbs) {
       notes.push({ key, op: "cant-absorb", text: abs.why });
+      continue;
+    }
+
+    /* سقف اللمسات اليومي. تسعة رفعات ١٥٪ يوم ١٢ أغسطس طلّعت صفر صرف
+       إضافي؛ كل لمسة زيادة على ميتا خطر تصفير تعلّم من غير مقابل. تلات
+       رفعات بـ ١٩٪ بتوصل لنفس السقف التراكمي (١٫١٩³ = +٦٨٪) بتلت اللمس. */
+    const maxSteps = Math.max(1, Number(s.paceMaxStepsPerDay) || 3);
+    if (up && mine && Number(st.steps) >= maxSteps) {
+      notes.push({ key, op: "step-budget", text: `"${r.name}" خدت ${ar(st.steps)} رفعات النهارده وده سقف اليوم (${ar(maxSteps)}). الرفعات الصغيرة المتكرّرة مابتحرّكش صرف — يوم ١٢ أغسطس ٨ رفعات طلّعوا صفر ريال زيادة. لو الحملة مستحقة أكتر من كده، ده قرار ميزانية أساسية مش تسريع.` });
       continue;
     }
 
@@ -1258,7 +1450,12 @@ export function decidePace(input) {
       const levelStepCap = r.level === "adset" ? ADSET_MAX_STEP_PCT : Infinity;
       const pStep = Math.min(step, Number(ps.stepPct) || step, levelStepCap);
       const upliftCap = Math.floor(base * (1 + upliftPct / 100));
-      let next = Math.round(cur * (1 + pStep / 100));
+      /* التقريب لتحت مش لأقرب رقم. الفرق ده كان تفصيلة وهي الخطوة ١٥٪،
+         وبقى فرق حقيقي وهي ١٩٪: ٣٥ × ١٫١٩ = ٤١٫٦٥، والتقريب لأقرب رقم
+         بيطلّعها ٤٢ — يعني **٢٠٪** بالظبط، وهي العتبة اللي ميتا بتصفّر
+         عندها التعلّم. يعني كنا هنكسر السور بالتقريب. floor بيضمن إن
+         الخطوة المتنفّذة عمرها ما تعدّي الخطوة المسموحة. */
+      let next = Math.floor(cur * (1 + pStep / 100));
       let capped = null;
       if (next > upliftCap) { next = upliftCap; capped = `سقف الزيادة اليومية ${upliftPct}٪ فوق أساس ${ar(base)}`; }
       if (ps.cap != null && next > ps.cap) { next = ps.cap; capped = `سقف المنصة غير المثبتة ${ar(ps.cap)} ر.س`; }
@@ -2063,6 +2260,11 @@ export function logLine(row) {
   // بس الرفض — إن الوكيل حاول يعمل حاجة واتمنع ده حدث المالك لازم يشوفه.
   if (kind === "agent" && status !== "refused" && status !== "failed") return null;
 
+  /* «مانديناش الموديل» مش قرار إعلاني — ده محاسبة. بيتسجّل في ap_decisions
+     عشان يكون فيه أثر، وبيتقرا من /api/autopilot/llm-usage، بس مالوش مكان
+     في شريط المالك: هو بيتكرّر كل ساعة وهيغرق القرارات الحقيقية. */
+  if (kind === "llm_skip") return null;
+
   let type = "note", title = "", why = "";
 
   if (kind === "daypart") {
@@ -2184,6 +2386,7 @@ export function register(app, ctx, deps = {}) {
   let running = false;
   let emergencyRunning = false;
   let lastNightlyAudienceDay = null;
+  let lastDayLogDay = null;
   const platformFails = {};
 
   /* ── schema ── */
@@ -2292,6 +2495,40 @@ export function register(app, ctx, deps = {}) {
         actual TEXT
       );
       CREATE INDEX IF NOT EXISTS ap_claims_open_idx ON ap_claims(settled_at, platform);
+      /* دفتر التوكنز. صف لكل (يوم، غرض، موديل) — بيخلّي السؤال «راحت فين؟»
+         سؤال SQL مش تخمين. عمود billed_tokens هو التوكنز الموزونة (الكاش بعُشر التمن)
+         وهي اللي الميزانية اليومية بتتقاس بيها. */
+      CREATE TABLE IF NOT EXISTS ap_llm_usage (
+        day DATE NOT NULL,
+        purpose TEXT NOT NULL,
+        model TEXT NOT NULL,
+        calls INT NOT NULL DEFAULT 0,
+        input_tokens BIGINT NOT NULL DEFAULT 0,
+        output_tokens BIGINT NOT NULL DEFAULT 0,
+        cache_read_tokens BIGINT NOT NULL DEFAULT 0,
+        cache_write_tokens BIGINT NOT NULL DEFAULT 0,
+        billed_tokens BIGINT NOT NULL DEFAULT 0,
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        PRIMARY KEY (day, purpose, model)
+      );
+      /* دفتر «ليه اليوم ده كان كويس». النظام كله بيسجّل «كام» و«إمتى»
+         ومحدش بيسجّل «ليه» — يوم ١٣ و١٤ أغسطس عملوا ٤٬١٩٧ و٤٬٦٣٧ ر.س على
+         صرف عادي ومحدش يعرف السبب. الجدول ده هو أصغر حاجة مفيدة تمسك ده. */
+      CREATE TABLE IF NOT EXISTS ap_daylog (
+        biz_day DATE PRIMARY KEY,
+        revenue NUMERIC,
+        orders INT,
+        avg_ticket NUMERIC,
+        items_per_order NUMERIC,
+        spend NUMERIC,
+        dev_pct NUMERIC,                          -- انحراف الإيراد عن وسيط نفس يوم الأسبوع
+        driver TEXT,                              -- الرقم اللي اتحرك: ticket | traffic | both | none
+        tags TEXT[] NOT NULL DEFAULT '{}',         -- عرض / بندل / مؤثّر / كرياتيف جديد / مناسبة / ...
+        note TEXT,
+        answered_by TEXT,
+        asked_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        answered_at TIMESTAMPTZ
+      );
     `);
 
     /* دورات ماتت في نُصّها. النشر بيقتل العملية جوّه الدورة، فالصف بيفضل
@@ -2310,6 +2547,130 @@ export function register(app, ctx, deps = {}) {
   ensureSchema()
     .then(() => console.log("[autopilot] schema ready"))
     .catch((e) => console.error("[autopilot] schema failed:", e.message));
+
+  /* ═══ محاسبة التوكنز ═══════════════════════════════════════════════════
+     كل نداء بيكتب صفه. الكتابة fire-and-forget عن قصد: المحاسبة عمرها ما
+     توقّف قرار إعلاني، ولو الصف ضاع الرقم بيبان في الجولة اللي بعدها. */
+  usageSink = (purpose, provider, u, billed, day) => {
+    pool.query(
+      `INSERT INTO ap_llm_usage (day, purpose, model, calls, input_tokens, output_tokens,
+                                 cache_read_tokens, cache_write_tokens, billed_tokens, updated_at)
+       VALUES ($1,$2,$3,1,$4,$5,$6,$7,$8,NOW())
+       ON CONFLICT (day, purpose, model) DO UPDATE SET
+         calls = ap_llm_usage.calls + 1,
+         input_tokens = ap_llm_usage.input_tokens + $4,
+         output_tokens = ap_llm_usage.output_tokens + $5,
+         cache_read_tokens = ap_llm_usage.cache_read_tokens + $6,
+         cache_write_tokens = ap_llm_usage.cache_write_tokens + $7,
+         billed_tokens = ap_llm_usage.billed_tokens + $8,
+         updated_at = NOW()`,
+      [day, purpose, provider.model, u.input, u.output, u.cacheRead, u.cacheWrite, billed]
+    ).catch((e) => console.error("[autopilot] llm usage log failed:", e.message));
+  };
+
+  /* استهلاك النهارده. بنقرا من الداتابيز مش من الذاكرة عشان النشرة
+     (اللي بتقتل العملية) ما تصفّرش العدّاد وتفتح الميزانية من أول وجديد. */
+  async function tokensUsedToday() {
+    const day = new Date().toISOString().slice(0, 10);
+    const r = await pool.query(
+      `SELECT COALESCE(sum(billed_tokens),0)::bigint AS n FROM ap_llm_usage WHERE day=$1`, [day])
+      .catch(() => null);
+    const db = r ? Number(r.rows[0].n) : 0;
+    if (usageMem.day !== day) { usageMem.day = day; usageMem.total = 0; }
+    return Math.max(db, usageMem.total);
+  }
+
+  /* البوابة اللي بتتنده قبل **أي** نداء موديل. بترجّع سبب مكتوب لما تقفل،
+     عشان اللوج يقول للمالك «مانديناش الموديل لإن كذا» بدل صمت. */
+  async function tokenBudget(s) {
+    const cap = Math.max(0, Number(s.llmDailyTokenBudget) || 0);
+    const used = await tokensUsedToday();
+    const left = cap > 0 ? cap - used : Infinity;
+    return {
+      cap, used, left: Number.isFinite(left) ? left : null,
+      pct: cap > 0 ? Math.round((used / cap) * 100) : null,
+      blocked: cap > 0 && used >= cap,
+      why: cap > 0 && used >= cap
+        ? `ميزانية التوكنز اليومية خلصت (${used.toLocaleString("en")} من ${cap.toLocaleString("en")}). الموديل مقفول لحد بكرة — القواعد الصمّاء شغّالة عادي.`
+        : null,
+    };
+  }
+
+  /* ── بصمة الوضع ────────────────────────────────────────────────────────
+     السؤال اللي البوابة بتجاوب عليه: «اتغيّر إيه من آخر مرة ندهنا فيها؟»
+     البصمة بتاخد اللي بيهم قرار بس — الحملات الشغّالة وحالتها وميزانيتها
+     وشريحة تكلفة النتيجة بتاعتها، وقرارات القواعد الصمّاء، وشريحة التقدّم
+     ناحية الهدف. الأرقام بتتقرّب لشرايح عن قصد: تكلفة نتيجة اتحركت من
+     ١٦٫١٤ لـ ١٦٫٢١ مش «وضع جديد»، دي نفس اللقطة بضوضاء.                  */
+  const cpaBand = (v) => v == null ? "?" : v < 3 ? "a" : v < 8 ? "b" : v < 15 ? "c" : v < 30 ? "d" : "e";
+  function situationFingerprint(facts, decisions, s) {
+    const camps = (facts.campaigns || [])
+      .map((c) => [c.platform, c.id, c.status, Math.round(Number(effectiveBudgetOf(c)) || 0),
+                   cpaBand(c.w3?.spend > 0 && c.w3?.results > 0 ? c.w3.spend / c.w3.results : null)].join(":"))
+      .sort();
+    const kinds = (decisions || []).filter((d) => d.kind !== "note")
+      .map((d) => `${d.kind}:${d.platform}:${d.campaignId}`).sort();
+    const goal = Math.round((Number(facts.sales?.progressPct) || 0) / 10);
+    const blocked = Object.keys(facts.reasons || {}).sort().join(",");
+    return crypto.createHash("sha1")
+      .update(JSON.stringify([camps, kinds, goal, blocked, s.mode, s.targetCpa]))
+      .digest("hex").slice(0, 16);
+  }
+
+  /* آخر مرة ندهنا فيها الموديل لغرض معيّن، وبأي بصمة. بيتقرا من
+     ap_decisions عشان يعيش بعد النشرة. */
+  async function lastLlmRun(kind) {
+    const r = await pool.query(
+      `SELECT created_at, detail->>'fingerprint' AS fp FROM ap_decisions
+        WHERE kind=$1 AND status <> 'failed' ORDER BY created_at DESC LIMIT 1`, [kind])
+      .catch(() => ({ rows: [] }));
+    const row = r.rows[0];
+    return row ? { at: new Date(row.created_at), fp: row.fp || null } : { at: null, fp: null };
+  }
+
+  /* ── القرار: نندهه ولا لأ؟ ────────────────────────────────────────────
+     الترتيب مقصود — الأرخص الأول:
+       ١. الميزانية خلصت → لأ، مهما كان السبب.
+       ٢. المالك دوس بإيده (manual/force) → أيوه دايماً.
+       ٣. القواعد الصمّاء خدت قرار، أو فيه طوارئ → أيوه، ده الموقف الملتبس
+          اللي الموديل موجود عشانه.
+       ٤. البصمة زي ما هي **و** لسه ما عدّاش الفاصل الأدنى → لأ.
+     أي «لأ» بترجع بسبب مكتوب بيتسجّل في اللوج.                            */
+  async function llmGate({ kind, s, fingerprint, force = false, reason = null }) {
+    const budget = await tokenBudget(s);
+    if (budget.blocked) return { run: false, why: budget.why, budget };
+    if (force) return { run: true, why: reason || "نداء يدوي", budget };
+    const minHours = kind === "strategy"
+      ? Math.max(1, Number(s.strategyEveryHours) || 24)
+      : Math.max(0, Number(s.agentMinHours) || 6);
+    const last = await lastLlmRun(kind === "strategy" ? "strategy" : "agent");
+    const hoursSince = last.at ? (Date.now() - last.at.getTime()) / 3_600_000 : Infinity;
+    if (reason && kind !== "strategy") {
+      /* سبب حقيقي (قرار جديد / طوارئ) بيعدّي الفاصل — بس مش الميزانية.
+         وبرضه بنمنع الرشّ: نص ساعة على الأقل بين جولتين. */
+      if (hoursSince < 0.5) {
+        return { run: false, why: `فيه سبب (${reason}) بس آخر جولة بقالها ${Math.round(hoursSince * 60)} دقيقة — بنستنى نص ساعة على الأقل.`, budget };
+      }
+      return { run: true, why: reason, budget };
+    }
+    if (hoursSince < minHours) {
+      return { run: false, why: `آخر ${kind === "strategy" ? "خطة" : "جولة وكيل"} بقالها ${hoursSince.toFixed(1)} ساعة والفاصل الأدنى ${minHours} — مفيش داعي نسأل الموديل تاني.`, budget };
+    }
+    if (fingerprint && last.fp && last.fp === fingerprint) {
+      return { run: false, why: `الوضع زي ما هو بالظبط من آخر نداء (نفس الحملات، نفس الحالات، نفس شرايح التكلفة) — مفيش سؤال جديد نسأله.`, budget };
+    }
+    return { run: true, why: last.at ? "الوضع اتغيّر وعدّى الفاصل الأدنى" : "أول جولة", budget };
+  }
+
+  /* «مانديناش الموديل» لازم تتكتب زي ما القرار بيتكتب — من غير كده المالك
+     بيشوف صمت ويفتكر إن الأوتوبايلوت واقف. */
+  async function logLlmSkip(runId, kind, gate) {
+    await pool.query(
+      `INSERT INTO ap_decisions (id, run_id, platform, campaign_id, campaign_name, kind, detail, reason, status)
+       VALUES ($1,$2,NULL,NULL,NULL,'llm_skip',$3,$4,'info')`,
+      [crypto.randomUUID(), runId, jb({ target: kind, budget: gate.budget }), String(gate.why || "").slice(0, 2000)]
+    ).catch(() => {});
+  }
 
   async function getSettings() {
     const r = await pool.query(`SELECT data FROM ap_settings WHERE id=1`);
@@ -2961,24 +3322,39 @@ export function register(app, ctx, deps = {}) {
 4. اتكلم عربي واضح بلهجة بيزنس مباشرة.`;
 
   async function runStrategist(facts, decisions, s) {
-    const provider = llmProvider();
+    /* المستشار هو النداء الاستراتيجي الوحيد — كرياتيف وعروض — فبياخد
+       الموديل الكبير. وهو بينده مرة في اليوم دلوقتي مش ٢٤–٤٦ مرة، فالتمن
+       الأعلى للنداء الواحد بيفضل أرخص بكتير من اللي كان. */
+    const provider = llmProvider({ tier: "smart" });
     if (!provider || !s.useLlm) return null;
+    /* الحملات اللي مصرفتش ولا ريال مالهاش رأي في خطة كرياتيف — بتاكل توكنز
+       وبس. والباقي بيتقال بالعدد بدل ما يتعدّد صف صف. */
+    const live = facts.campaigns.filter((c) => c.status === "ACTIVE" || Number(c.w7?.spend) > 0);
     const compact = {
       goalDailySales: s.goalDailySales,
       salesLast7d: facts.sales,
       sourceMix7d: facts.sources,
-      campaigns: facts.campaigns.map((c) => ({
+      campaigns: live.map((c) => ({
         platform: c.platform, name: c.name, status: c.status, dailyBudget: c.dailyBudget,
-        last3d: c.w3, last7d: c.w7,
+        objective: c.objective || null,
+        /* ملخّص مش كومة: الصرف والنتايج وتكلفة النتيجة — ده اللي بيتبني
+           عليه قرار كرياتيف، والباقي كان بيتبعت من غير ما حد يقراه. */
+        d7: { spend: r2(c.w7?.spend || 0), results: c.w7?.results ?? null,
+              cpa: c.w7?.results > 0 ? r2(c.w7.spend / c.w7.results) : null },
+        d3: { spend: r2(c.w3?.spend || 0), results: c.w3?.results ?? null,
+              cpa: c.w3?.results > 0 ? r2(c.w3.spend / c.w3.results) : null },
       })),
+      idleCampaigns: facts.campaigns.length - live.length,
       platformIssues: facts.reasons,
-      ruleDecisions: decisions.map((d) => ({ kind: d.kind, campaign: d.campaignName, reason: d.reason })),
+      ruleDecisions: decisions.filter((d) => d.kind !== "note")
+        .map((d) => ({ kind: d.kind, campaign: d.campaignName })),
       targets: { cpa: s.targetCpa, roas: s.targetRoas },
     };
     return llmTool(provider, {
       system: STRATEGIST_SYSTEM,
-      user: `دي البيانات الحقيقية (JSON):\n\n${JSON.stringify(compact, null, 1)}\n\nحلّل الوضع واطلع: كرياتيفات جديدة للمنصات اللي محتاجة، عروض مقترحة، وخطوات الأسبوع الجاي. استخدم أداة submit_ads_strategy.`,
+      user: `دي البيانات الحقيقية (JSON):\n\n${JSON.stringify(compact)}\n\nحلّل الوضع واطلع: كرياتيفات جديدة للمنصات اللي محتاجة، عروض مقترحة، وخطوات الأسبوع الجاي. استخدم أداة submit_ads_strategy.`,
       tool: STRATEGIST_TOOL,
+      purpose: "strategy",
     });
   }
 
@@ -3097,6 +3473,45 @@ export function register(app, ctx, deps = {}) {
     return { range: { from: f, to: t }, rows, reasons };
   }
 
+  /* ── لقطة مضغوطة للموديل ──────────────────────────────────────────────
+     `perfSnapshot` بترجّع كل حقل قرأناه من المنصة عشان الأسوار تشتغل
+     عليه — وده صح للكود. بس إحنا كنا بنرمي **نفس الكومة دي** للموديل في
+     كل دورة محادثة، والنتيجة اتقصّت عند ٢٤٬٠٠٠ حرف. مقاس اللقطة الحقيقي
+     كان بين ١٢ و١٨ ألف حرف (قِسناها من /api/ads/campaigns + /adsets)،
+     يعني ~٥–٧ آلاف توكن **متكرّرين في كل دورة**.
+
+     الموديل مش محتاج كل ده. محتاج: مين شغّال، بكام، جاب إيه، وبتكلفة كام.
+     المجموعات الموقوفة مالهاش لازمة خالص، والحملات اللي مصرفتش ولا ريال
+     برضه. اللي بيتشال بيتقال بالعدد في السطر الأخير عشان الموديل يعرف إن
+     فيه حاجة اتشالت — مش يفتكر إنها مش موجودة.                            */
+  function compactPerf(r) {
+    const rows = (r.rows || []).filter((x) => x.status === "ACTIVE" || Number(x.spend) > 0);
+    const dropped = (r.rows || []).length - rows.length;
+    return {
+      range: r.range,
+      campaigns: rows.map((x) => {
+        const o = {
+          p: x.platform, id: x.id, name: x.name, status: x.status,
+          budget: x.dailyBudget != null ? x.dailyBudget : (x.adsetBudget ?? null),
+          spend: r2(x.spend), results: x.results, cpa: x.cpa, roas: x.roas, clicks: x.clicks,
+        };
+        if (x.objective) o.objective = x.objective;
+        const kids = (x.adsets || []).filter((a) => a.status === "ACTIVE");
+        if (kids.length) {
+          o.adsets = kids.map((a) => ({
+            id: String(a.id), name: a.name, budget: a.dailyBudget ?? null,
+            spend: r2(a.spend), results: a.results ?? null,
+          }));
+        }
+        return o;
+      }),
+      blocked: r.reasons && Object.keys(r.reasons).length ? r.reasons : undefined,
+      omitted: dropped > 0
+        ? `${dropped} حملة موقوفة ومصرفتش في المدى ده — اتشالت من اللستة عشان توفير، مش لإنها مش موجودة.`
+        : undefined,
+    };
+  }
+
   /* ── تعريفات الأدوات ──────────────────────────────────────────────────── */
   const AGENT_TOOLS = [
     {
@@ -3198,7 +3613,7 @@ export function register(app, ctx, deps = {}) {
       const { from, to } = rg;
       const only = ["meta", "tiktok", "snapchat"].includes(input.platform) ? input.platform : null;
       const r = await perfSnapshot({ from, to, platform: only });
-      return { ok: true, ...r };
+      return { ok: true, ...compactPerf(r) };
     }
 
     if (name === "get_sales") {
@@ -3367,8 +3782,11 @@ ${focus}
   const FOCUS_EMERGENCY = `دي جولة طوارئ سريعة (كل ربع ساعة) — مش مراجعة عامة. ركّز على المشكلة المذكورة تحت بس واتصرف فيها لو مستاهلة، وسيب أي حاجة تانية للجولة الكاملة. لو اتضح إن مفيش مشكلة حقيقية، قول كده وما تعملش أي كتابة.`;
 
   /* ── الجولة ───────────────────────────────────────────────────────────── */
-  async function runAgent({ runId, s, trigger = "cycle", task, focus = FOCUS_FULL, snap = null }) {
-    const provider = llmProvider();
+  async function runAgent({ runId, s, trigger = "cycle", task, focus = FOCUS_FULL, snap = null, fingerprint = null }) {
+    /* الوكيل بيقرا أرقام وبيطبّق قرار محسوم بالقواعد والأسوار — ده تصنيف
+       مش تأليف استراتيجية، فبيمشي على الموديل الرخيص. المستشار
+       (runStrategist) هو اللي بياخد الموديل الكبير، وهو بينده مرة في اليوم. */
+    const provider = llmProvider({ tier: s.agentModelTier === "smart" ? "smart" : "fast" });
     if (!provider) return { ok: false, skipped: "مفيش مزوّد LLM مضبوط (ANTHROPIC_API_KEY أو LITELLM_KEY)" };
     if (!s.agent) return { ok: false, skipped: "الوكيل مقفول من الإعدادات" };
 
@@ -3397,10 +3815,10 @@ ${focus}
     for (let turn = 1; turn <= maxTurns; turn++) {
       let reply;
       try {
-        reply = await llmTurn(provider, { system, messages, tools: AGENT_TOOLS });
+        reply = await llmTurn(provider, { system, messages, tools: AGENT_TOOLS, purpose: `agent:${trigger}` });
       } catch (e) {
         // الموديل مش موجود → الوكيل بس هو اللي بيقف. القواعد الصمّاء خلصت خلاص.
-        await logAgentTurn(runId, trigger, turn, { error: String(e.message || e) }, "failed");
+        await logAgentTurn(runId, trigger, turn, { error: String(e.message || e), fingerprint }, "failed");
         return { ok: false, error: String(e.message || e), turns: turns.length,
                  executed: agentCtx.executed, queued: agentCtx.queued, refusals: agentCtx.refusals.length };
       }
@@ -3409,7 +3827,7 @@ ${focus}
       if (!reply.calls.length) {
         final = reply.text || final;
         turns.push({ turn, text: reply.text, tools: [] });
-        await logAgentTurn(runId, trigger, turn, { text: reply.text, tools: [], stop: reply.stop, final: true }, "info");
+        await logAgentTurn(runId, trigger, turn, { text: reply.text, tools: [], stop: reply.stop, final: true, fingerprint }, "info");
         break;
       }
 
@@ -3419,12 +3837,12 @@ ${focus}
         let output;
         try { output = await runAgentTool(call.name, call.input, agentCtx); }
         catch (e) { output = { ok: false, error: String(e.message || e) }; }
-        const text = JSON.stringify(output).slice(0, 24000);
+        const text = JSON.stringify(output).slice(0, TOOL_RESULT_MAX);
         results.push({ id: call.id, text });
         logged.push({ name: call.name, input: call.input, output: trim(output) });
       }
       turns.push({ turn, text: reply.text, tools: logged });
-      await logAgentTurn(runId, trigger, turn, { text: reply.text, tools: logged, stop: reply.stop }, "info");
+      await logAgentTurn(runId, trigger, turn, { text: reply.text, tools: logged, stop: reply.stop, fingerprint }, "info");
       messages.push(...toolResultMessages(provider, results));
       final = reply.text || final;
     }
@@ -3533,6 +3951,17 @@ ${focus}
       }
 
       const task = `طوارئ. الفحص السريع لقى المشاكل دي النهارده:\n\n${fresh.map((e, i) => `${i + 1}. [${e.kind}] ${e.text}`).join("\n")}\n\nاتأكد بالأرقام الأول (get_performance على النهارده وعلى آخر ٣ أيام) قبل ما تتصرف — ممكن تكون الحملة لسه بتتعلم أو النتايج متأخرة في التسجيل. بعدين اتصرف في اللي يستاهل بس.`;
+      /* الطوارئ سبب حقيقي — بتعدّي الفاصل الزمني، بس مش الميزانية اليومية.
+         لو الميزانية خلصت بنسجّل المشاكل من غير ما نستشير الموديل: القواعد
+         الصمّاء والكشف الرخيص شغّالين، واللي ناقص هو الرأي بس. */
+      const gate = await llmGate({ kind: "agent", s, fingerprint: null,
+        reason: `طوارئ: ${fresh.length} مشكلة (${fresh.map((e) => e.kind).join("، ")})` });
+      if (!gate.run) {
+        await logLlmSkip(runId, "agent", gate);
+        const summary0 = { trigger, mode: s.mode, kind: "emergency", emergencies: fresh.length, agent: { skipped: gate.why } };
+        await pool.query(`UPDATE ap_runs SET status='done', finished_at=NOW(), summary=$2 WHERE id=$1`, [runId, jb(summary0)]);
+        return { ok: true, runId, emergencies: fresh.length, agent: { skipped: gate.why } };
+      }
       const agent = await runAgent({ runId, s, trigger: "emergency", task, focus: FOCUS_EMERGENCY, snap });
 
       const summary = { trigger, mode: s.mode, kind: "emergency", emergencies: fresh.length, agent };
@@ -4292,16 +4721,23 @@ ${focus}
         summary.decisions++;
       }
 
-      // 5. LLM strategist — at most once per cycle, only when there is signal
+      /* بصمة الوضع — بتتحسب مرة وبيستعملها المستشار والوكيل. */
+      const fingerprint = situationFingerprint(facts, decisions, s);
+
+      // 5. المستشار — خطة كرياتيف وعروض. مرة في اليوم، مش كل ساعة.
       if (s.useLlm && (facts.campaigns.length > 0 || Object.keys(facts.reasons).length < 3)) {
-        try {
+        const gate = await llmGate({ kind: "strategy", s, fingerprint, force });
+        if (!gate.run) {
+          summary.llm = { skipped: gate.why, tokensToday: gate.budget.used };
+          await logLlmSkip(runId, "strategy", gate);
+        } else try {
           const plan = await runStrategist(facts, decisions, s);
           if (plan) {
             summary.llm = { creatives: plan.creatives?.length || 0, offers: plan.offers?.length || 0 };
             await pool.query(
               `INSERT INTO ap_decisions (id, run_id, platform, campaign_id, campaign_name, kind, detail, reason, status)
                VALUES ($1,$2,NULL,NULL,NULL,'strategy',$3,$4,'info')`,
-              [crypto.randomUUID(), runId, jb(plan), plan.summary || ""]);
+              [crypto.randomUUID(), runId, jb({ ...plan, fingerprint }), plan.summary || ""]);
           }
         } catch (e) { summary.llm = { error: e.message }; }
       }
@@ -4316,7 +4752,19 @@ ${focus}
       // 7. الوكيل — بيجري بعد القواعد الصمّاء عمداً: لو وقع، القرارات
       //    الحتمية تكون خلاص اتسجّلت واتنفّذت. مفيش اعتماد عليه.
       if (s.agent) {
-        try {
+        /* السبب اللي يستاهل ندهة: القواعد الصمّاء خدت قرار حقيقي (مش
+           ملاحظة). ده بالظبط الموقف الملتبس اللي الوكيل موجود عشانه —
+           «القواعد قررت كذا، شوف لو ده صح». اليوم اللي مفيهوش قرار مفيش
+           فيه سؤال، والقواعد شغّالة فيه لوحدها زي ما هي. */
+        const realDecisions = decisions.filter((d) => d.kind !== "note");
+        const cause = (s.agentAlwaysOnDecision !== false && realDecisions.length)
+          ? `القواعد الصمّاء خدت ${realDecisions.length} قرار الجولة دي — محتاج مراجعة`
+          : null;
+        const gate = await llmGate({ kind: "agent", s, fingerprint, force, reason: cause });
+        if (!gate.run) {
+          summary.agent = { skipped: gate.why, tokensToday: gate.budget.used };
+          await logLlmSkip(runId, "agent", gate);
+        } else try {
           const task = `جولة كاملة. الوضع باختصار: ${facts.campaigns.length} حملة على المنصات، ` +
             `متوسط المبيعات ${facts.sales.avgDaily} ر.س/يوم (الهدف ${s.goalDailySales}). ` +
             (decisions.length
@@ -4325,12 +4773,19 @@ ${focus}
             `\n\nراجع الوضع بنفسك بالأدوات: أداء الحملات، مردود القنوات (get_attribution) والمبيعات. ` +
             `دوّر على حاجتين بالذات: (أ) حملة كاسبة تستاهل تكبير جوه السقوف، (ب) صرف بيروح على قناة مردودها ضعيف. ` +
             `نفّذ اللي يستاهل، وسجّل بـ create_note أي حاجة مهمة مش من صلاحياتك.`;
-          summary.agent = await runAgent({ runId, s, trigger, task, focus: FOCUS_FULL });
+          summary.agent = await runAgent({ runId, s, trigger, task, focus: FOCUS_FULL, fingerprint });
         } catch (e) { summary.agent = { error: e.message }; }
       }
 
       // 8. nightly audience refresh (once per calendar day, after midnight Riyadh)
       const riyadhDay = new Date(Date.now() + 3 * 3600_000).toISOString().slice(0, 10);
+      /* سؤال «ليه اليوم اللي فات كان كده؟» — مرة في اليوم، ولمّا اليوم
+         يكون شاذ فعلاً. مفيش نداء موديل هنا خالص: الحسبة SQL والسؤال نص
+         جاهز، والرد بييجي من إنسان. */
+      if (s.dayLog !== false && lastDayLogDay !== riyadhDay) {
+        try { summary.dayLog = await askDayLog({}); lastDayLogDay = riyadhDay; }
+        catch (e) { summary.dayLog = { error: e.message }; }
+      }
       if (s.syncAudiences && audiencesSync && lastNightlyAudienceDay !== riyadhDay) {
         try {
           summary.audiences = await audiencesSync.syncAll({ trigger: "autopilot" });
@@ -4648,6 +5103,11 @@ ${focus}
     const err = await requireAdmin(c); if (err) return err;
     const s = await settingsNow();
     if (!llmProvider()) return c.json({ ok: false, error: "مفيش مزوّد LLM مضبوط" }, 503);
+    /* الزرار اليدوي بيعدّي البوابة الزمنية والبصمة — المالك واقف قدام
+       الشاشة وعايز رأي دلوقتي. بس الميزانية اليومية سقف مطلق حتى عليه:
+       الرقم ده هو اللي بيمنع الفاتورة تجري تاني. */
+    const budget0 = await tokenBudget(s);
+    if (budget0.blocked) return c.json({ ok: false, error: budget0.why, budget: budget0 }, 429);
     let b = {};
     try { b = await c.req.json(); } catch { b = {}; }
     const runId = crypto.randomUUID();
@@ -5279,9 +5739,18 @@ ${focus}
         + (rest > 0 ? ` (وكمان ${ar(rest)} حاجة أقل خطورة تحت)` : "");
     }
 
+    /* استهلاك الموديل النهارده — بيطلع في نفس السطر اللي المالك بيقراه.
+       ده اللي مانعه يجري في الضلمة تاني: الرقم قدام عينه كل ما يفتح. */
+    let llm = null;
+    try {
+      const b = await tokenBudget(await getSettings());
+      llm = { usedToday: b.used, cap: b.cap, pct: b.pct, blocked: b.blocked };
+    } catch { /* المحاسبة مش سبب يوقّع السطر */ }
+
     return {
       at: new Date().toISOString(),
       tone, line,
+      llm,
       needsOwner: problems.filter((x) => x.who === "owner").length,
       window: { open: w.open, label: w.label, clock: w.clock },
       problems,
@@ -5307,6 +5776,185 @@ ${focus}
     return c.json({ ok: true, ...v, alerts: await writeFailureAlerts().catch(() => []) });
   });
 
+  /* ═══════════════════════════════════════════════════════════════════════
+     «ليه اليوم ده كان كويس؟» — أصغر حاجة مفيدة
+
+     المشكلة اللي المالك حطّ إيده عليها: النظام بيسجّل «كام» و«إمتى» بدقة،
+     ومحدش بيسجّل **«ليه»**. يوم ١٣ و١٤ أغسطس عملوا ٤٬١٩٧ و٤٬٦٣٧ ر.س على
+     صرف عادي (٣٠٩ و٦٠٨ ر.س) ومحدش يعرف السبب.
+
+     ── الداتا لوحدها بتقول نص الجواب ────────────────────────────────────
+     قِسنا الأيام الكويسة من ts_order_items، والنمط واضح:
+       ٧ أغسطس:  ٤٫٠٤ صنف/طلب، متوسط الفاتورة ٨٥٫٢ ر.س، إيراد ٣٬٩١٧
+       ١٣ أغسطس: ٣٫٨٢ صنف/طلب، متوسط الفاتورة ٨٥٫٧ ر.س، إيراد ٤٬١٩٧
+       ١٤ أغسطس: ٣٫١٢ صنف/طلب، متوسط الفاتورة ٧٨٫٦ ر.س، إيراد ٤٬٦٣٧
+       اليوم العادي: ٢٫٤–٢٫٩ صنف/طلب، متوسط الفاتورة ٥٥–٦٣ ر.س
+     وسعر الصنف الواحد فضل ثابت (٢٠–٢٥ ر.س) في كل الأيام. يعني الأيام
+     الكويسة **مش أيام زحمة، دي أيام سلّة أكبر**. الإعلانات بتجيب طلبات؛
+     السلّة الأكبر بتيجي من حاجة تانية خالص — عرض، بندل، مؤثّر، مناسبة.
+
+     ── والنص التاني لازم إنسان يقوله ────────────────────────────────────
+     فالتصميم: النظام بيحسب الانحراف والسبب **الرقمي** لوحده (سلّة ولا
+     زحمة)، وبيسأل سؤال واحد بس، ولمّا يكون فيه سبب يسأله — يوم شاذ فعلاً.
+     الرد اختيار من لستة قصيرة ثابتة (عشان يتحوّل لقاعدة بعدين) + سطر حر.
+     يوم عادي مبيتسألش أصلاً؛ من غير الشرط ده السؤال بيبقى ضجيج والرد
+     بيبقى فاضي.                                                          */
+  const DAYLOG_TAGS = [
+    "عرض/خصم شغّال", "بندل أو كومبو جديد", "منشور مؤثّر/كرياتيف اشتغل",
+    "مناسبة أو إجازة", "عرض على تطبيق توصيل", "طلب كبير/مناسبة خاصة",
+    "الطقس", "صنف جديد في المنيو", "تغيير سعر", "زحمة المنطقة", "مش عارف",
+  ];
+
+  /* أرقام يوم واحد + خط أساس من نفس يوم الأسبوع. نفس منطق النبض بالظبط
+     (وسيط نفس يوم الأسبوع) عشان الرقمين يتكلموا نفس اللغة. */
+  async function dayShapeOf(day) {
+    const r = await pool.query(
+      `WITH o AS (
+         SELECT order_id, calendar_day, total FROM ts_orders
+          WHERE calendar_day <= $1::date AND calendar_day > $1::date - 42
+            AND (order_type IS NULL OR (order_type NOT ILIKE '%void%' AND order_type NOT ILIKE '%refund%'))
+       ), it AS (SELECT order_id, sum(qty) AS q FROM ts_order_items GROUP BY 1)
+       SELECT o.calendar_day::text AS day, count(*)::int AS orders,
+              round(sum(o.total),2)::float8 AS revenue,
+              round(avg(o.total),2)::float8 AS avg_ticket,
+              round(sum(COALESCE(it.q,0))::numeric / NULLIF(count(*),0), 2)::float8 AS items_per_order
+         FROM o LEFT JOIN it ON it.order_id = o.order_id
+        GROUP BY 1 ORDER BY 1`, [day]);
+    const rows = r.rows;
+    const today = rows.find((x) => x.day === day);
+    if (!today) return null;
+    const dow = new Date(`${day}T00:00:00Z`).getUTCDay();
+    const same = rows.filter((x) => x.day !== day
+      && new Date(`${x.day}T00:00:00Z`).getUTCDay() === dow).slice(-4);
+    const base = {
+      revenue: medianOf(same.map((x) => x.revenue)),
+      orders: medianOf(same.map((x) => x.orders)),
+      avgTicket: medianOf(same.map((x) => x.avg_ticket)),
+      itemsPerOrder: medianOf(same.map((x) => x.items_per_order)),
+      days: same.length,
+    };
+    const pct = (a, b) => (b > 0 ? Math.round(((a - b) / b) * 100) : null);
+    const devRev = pct(today.revenue, base.revenue);
+    const devTicket = pct(today.avg_ticket, base.avgTicket);
+    const devOrders = pct(today.orders, base.orders);
+    /* أي رقم اتحرك؟ ده الجزء اللي الداتا بتجاوبه لوحدها، والسؤال اللي
+       بنسأله للإنسان بيتبني عليه. */
+    const driver = devTicket == null || devOrders == null ? "none"
+      : Math.abs(devTicket) >= 12 && Math.abs(devOrders) >= 12 ? "both"
+      : Math.abs(devTicket) > Math.abs(devOrders) ? "ticket"
+      : Math.abs(devOrders) > 12 ? "traffic" : "none";
+    return { day, today, base, devRev, devTicket, devOrders, driver };
+  }
+
+  /* بيتنده مرة في اليوم. بيسأل عن اليوم اللي فات لما يكون شاذ فعلاً. */
+  async function askDayLog({ day = null, force = false } = {}) {
+    const target = day || new Date(Date.now() - 24 * 3600_000).toISOString().slice(0, 10);
+    const already = await pool.query(`SELECT biz_day FROM ap_daylog WHERE biz_day=$1::date`, [target]);
+    if (already.rows.length && !force) return { ok: true, skipped: "اليوم ده مسجّل خلاص" };
+    const sh = await dayShapeOf(target);
+    if (!sh) return { ok: false, error: `مفيش طلبات ليوم ${target}` };
+    if (sh.base.days < 2 && !force) return { ok: true, skipped: "مفيش خط أساس كفاية لنفس يوم الأسبوع" };
+    const s = await getSettings();
+    const th = Math.max(10, Number(s.dayLogDeviationPct) || 25);
+    if (Math.abs(Number(sh.devRev) || 0) < th && !force) {
+      return { ok: true, skipped: `يوم عادي (${sh.devRev}٪ عن الوسيط) — مفيش سؤال يستاهل` };
+    }
+    let spend = null;
+    try {
+      const snap = await perfSnapshot({ from: target, to: target });
+      spend = r2(snap.rows.reduce((a, x) => a + (Number(x.spend) || 0), 0));
+    } catch { /* الصرف مش شرط عشان نسأل */ }
+    await pool.query(
+      `INSERT INTO ap_daylog (biz_day, revenue, orders, avg_ticket, items_per_order, spend, dev_pct, driver)
+       VALUES ($1::date,$2,$3,$4,$5,$6,$7,$8)
+       ON CONFLICT (biz_day) DO UPDATE SET revenue=$2, orders=$3, avg_ticket=$4,
+         items_per_order=$5, spend=$6, dev_pct=$7, driver=$8`,
+      [target, sh.today.revenue, sh.today.orders, sh.today.avg_ticket,
+       sh.today.items_per_order, spend, sh.devRev, sh.driver]);
+    return { ok: true, asked: target, ...sh, spend };
+  }
+
+  /* السؤال بالعربي — الشاشة بتعرضه زي ما هو. الصياغة بتقول للمالك اللي
+     إحنا عارفينه بالفعل، فهو بيكمّل الناقص بس مش بيعيد الحسبة. */
+  function dayLogQuestion(row) {
+    const up = Number(row.dev_pct) >= 0;
+    const head = `${row.biz_day}: ${Math.round(Number(row.revenue)).toLocaleString("en")} ر.س — ${up ? "أعلى" : "أقل"} من المعتاد بـ ${Math.abs(Math.round(Number(row.dev_pct)))}٪.`;
+    const why = row.driver === "ticket"
+      ? `عدد الطلبات عادي بس متوسط الفاتورة ${Number(row.avg_ticket).toFixed(0)} ر.س و${Number(row.items_per_order).toFixed(1)} صنف في الطلب — يعني الناس اشترت أكتر، مش إن ناس أكتر جت.`
+      : row.driver === "traffic"
+        ? `متوسط الفاتورة عادي بس عدد الطلبات ${row.orders} — يعني ناس أكتر جت، والسلّة زي ما هي.`
+        : row.driver === "both"
+          ? `الاتنين اتحركوا: ${row.orders} طلب ومتوسط فاتورة ${Number(row.avg_ticket).toFixed(0)} ر.س.`
+          : `الأرقام اتحركت من غير نمط واضح في السلّة ولا عدد الطلبات.`;
+    return `${head} ${why} كان فيه إيه اليوم ده؟`;
+  }
+
+  /* GET /api/autopilot/daylog — الأيام الشاذة وردودها. */
+  app.get("/api/autopilot/daylog", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    const days = Math.min(Math.max(Number(c.req.query("days") || 60), 1), 365);
+    const r = await pool.query(
+      `SELECT biz_day::text AS biz_day, revenue, orders, avg_ticket, items_per_order, spend,
+              dev_pct, driver, tags, note, answered_by, asked_at, answered_at
+         FROM ap_daylog WHERE biz_day > (NOW() AT TIME ZONE 'utc')::date - $1::int
+        ORDER BY biz_day DESC`, [days]);
+    return c.json({
+      ok: true, tags: DAYLOG_TAGS,
+      rows: r.rows.map((x) => ({ ...x, question: dayLogQuestion(x), answered: !!x.answered_at })),
+      pending: r.rows.filter((x) => !x.answered_at).length,
+    });
+  });
+
+  /* POST /api/autopilot/daylog — الرد. {day, tags[], note, by} */
+  app.post("/api/autopilot/daylog", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    let b = {}; try { b = await c.req.json(); } catch { b = {}; }
+    const day = String(b.day || "").slice(0, 10);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) return c.json({ ok: false, error: "day لازم يكون YYYY-MM-DD" }, 400);
+    const tags = Array.isArray(b.tags) ? b.tags.map((t) => String(t).slice(0, 60)).slice(0, 6) : [];
+    const note = String(b.note || "").slice(0, 2000);
+    if (!tags.length && !note) return c.json({ ok: false, error: "محتاجين على الأقل تصنيف واحد أو سطر شرح" }, 400);
+    /* الصف ممكن ما يكونش موجود لو المالك قرر يشرح يوم النظام ماسألش عنه —
+       ده مسموح، وبنملّي الأرقام من نفس الحسبة عشان الصف يفضل مقروء. */
+    const sh = await dayShapeOf(day).catch(() => null);
+    await pool.query(
+      `INSERT INTO ap_daylog (biz_day, revenue, orders, avg_ticket, items_per_order, dev_pct, driver, tags, note, answered_by, answered_at)
+       VALUES ($1::date,$2,$3,$4,$5,$6,$7,$8,$9,$10,NOW())
+       ON CONFLICT (biz_day) DO UPDATE SET tags=$8, note=$9, answered_by=$10, answered_at=NOW()`,
+      [day, sh?.today.revenue ?? null, sh?.today.orders ?? null, sh?.today.avg_ticket ?? null,
+       sh?.today.items_per_order ?? null, sh?.devRev ?? null, sh?.driver ?? null,
+       tags, note, String(b.by || "owner").slice(0, 60)]);
+    return c.json({ ok: true, day, tags, note });
+  });
+
+  /* POST /api/autopilot/daylog/ask — تشغيل الفحص بإيدك (force=true يسأل عن أي يوم). */
+  app.post("/api/autopilot/daylog/ask", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    let b = {}; try { b = await c.req.json(); } catch { b = {}; }
+    return c.json(await askDayLog({ day: b.day || null, force: b.force === true }));
+  });
+
+  /* GET /api/autopilot/llm-usage — «التوكنز راحت فين؟» جواب بالأرقام.
+     بيرجّع كل يوم مقسوم على الغرض والموديل، عشان السؤال ما يفضلش تخمين. */
+  app.get("/api/autopilot/llm-usage", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    const days = Math.min(Math.max(Number(c.req.query("days") || 14), 1), 90);
+    const rows = await pool.query(
+      `SELECT day::text AS day, purpose, model, calls,
+              input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, billed_tokens
+         FROM ap_llm_usage WHERE day > (NOW() AT TIME ZONE 'utc')::date - $1::int
+        ORDER BY day DESC, billed_tokens DESC`, [days]);
+    const byDay = {};
+    for (const r of rows.rows) {
+      const d = (byDay[r.day] ||= { day: r.day, calls: 0, billed: 0, purposes: {} });
+      d.calls += Number(r.calls); d.billed += Number(r.billed_tokens);
+      d.purposes[r.purpose] = (d.purposes[r.purpose] || 0) + Number(r.billed_tokens);
+    }
+    const s0 = await getSettings();
+    return c.json({ ok: true, budget: await tokenBudget(s0),
+      days: Object.values(byDay), rows: rows.rows });
+  });
+
   app.get("/api/autopilot/runs", async (c) => {
     const err = await requireAdmin(c); if (err) return err;
     const limit = Math.min(Number(c.req.query("limit") || 20), 100);
@@ -5316,5 +5964,5 @@ ${focus}
 
   console.log("[autopilot] routes ready");
   return { runCycle, runEmergencyCheck, runAgent, runPaceCheck, runDaypartCheck, pulseData, economicsData, logData,
-           verifyDaypart, writeFailureAlerts };
+           verifyDaypart, writeFailureAlerts, askDayLog, dayShapeOf, tokenBudget };
 }
