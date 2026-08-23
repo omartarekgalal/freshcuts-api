@@ -752,20 +752,27 @@ export function register(app, ctx, deps = {}) {
   /* Shipment webhook events → order stage. Called by delivery.js. */
   /* المفاتيح دي بتغطي مصدرين: أسماء أحداث الويبهوك (driver_assigned…) وقيم
      الحالة اللي بترجع من GET /orders/{id} وقت الاستطلاع (in_transit…). */
+  /* الحالات دي **موحّدة** جاية من طبقة المزوّدين (couriers.js)، مش بلغة
+     شركة بعينها. ترجمة مصطلحات كل شركة بتحصل جوّاها، فلو بدّلنا من Flying
+     Arrow لـ Leajlak الجدول ده ما يتغيّرش ولا العميل يحس بفرق.
+     ولسه بنقبل الأسماء القديمة عشان ويبهوك متأخر من شحنة قديمة ما يضيعش. */
   const SHIP_STAGE = {
-    created: null,                      // اتسجّل عندهم فقط
-    confirmed: null,                    // courier accepted the job; stage unchanged
-    pending: null,
-    driver_assigned: "courier_assigned",
+    // الموحّدة
+    pending: null,                      // اتسجّل عندهم، لسه مفيش كابتن
     assigned: "courier_assigned",
+    picked: "on_the_way",
+    delivered: "delivered",
+    cancelled: "courier_cancelled",
+    // أسماء قديمة (Flying Arrow خام) — للتوافق مع صفوف قبل التوحيد
+    created: null,
+    confirmed: null,
+    driver_assigned: "courier_assigned",
     accepted: "courier_assigned",
     pickup_completed: "on_the_way",
     picked_up: "on_the_way",
     in_transit: "on_the_way",
     on_the_way: "on_the_way",
-    delivered: "delivered",
     completed: "delivered",
-    cancelled: "courier_cancelled",
     canceled: "courier_cancelled",
   };
   async function onShipmentEvent(orderNo, event, _payload) {

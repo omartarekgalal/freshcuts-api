@@ -23,6 +23,7 @@
 ═══════════════════════════════════════════════════════════════════════════ */
 
 import { STORE_LAT, STORE_LNG } from "./tsstore.js";
+import { PROVIDERS, activeProvider } from "./couriers.js";
 
 const env = (k, d) => (process.env[k] || d || "").toString().trim();
 /* Flying Arrow — الوثائق الإنتاجية (2026-08-17). القاعدة هي مسار التكامل
@@ -163,6 +164,14 @@ export function register(app, ctx, deps = {}) {
       -- طلب توصيل، لأن اللي بنحصّله من العميل سياستنا إحنا.
       ALTER TABLE dl_shipments ADD COLUMN IF NOT EXISTS fa_order_number TEXT;
       ALTER TABLE dl_shipments ADD COLUMN IF NOT EXISTS cost NUMERIC;
+      -- المزوّد بقى قابل للتبديل، فكل شحنة بتفتكر مين ودّاها: من غير ده،
+      -- لو بدّلنا شركة، الشحنات القديمة هتتتبّع بالـAPI الغلط.
+      -- provider_ref = مرجع الشحنة عند المزوّد (رقمهم في Flying Arrow،
+      -- ورقم طلبنا في Leajlak لأن تتبعهم برقمنا).
+      ALTER TABLE dl_shipments ADD COLUMN IF NOT EXISTS provider TEXT NOT NULL DEFAULT 'flyingarrow';
+      ALTER TABLE dl_shipments ADD COLUMN IF NOT EXISTS provider_ref TEXT;
+      UPDATE dl_shipments SET provider_ref = fa_order_id
+        WHERE provider_ref IS NULL AND fa_order_id IS NOT NULL;
       -- نتيجة التوزيع: هل اتعيّن كابتن فعلاً ولا الطلب اتصعّد لمشرف؟
       ALTER TABLE dl_shipments ADD COLUMN IF NOT EXISTS dispatch JSONB;
       CREATE INDEX IF NOT EXISTS dl_shipments_order_idx ON dl_shipments(shop_order_no);
@@ -227,69 +236,48 @@ export function register(app, ctx, deps = {}) {
      المطعم أو العميل. `cash` معناها إن حد في الفرع هيدفع للكابتن نقدي كل
      طلب. القيمة قابلة للتغيير من الإعدادات، والافتراضي wallet. */
   async function dispatch(order) {
-    const settings = (await getSettingsData()).delivery || {};
-    const addr = order.address || {};
-    const faBody = {
-      service_vehicle_id: Number(settings.faVehicleId || 3),  // 3 = دباب، 4 = سيارة
-      city_id: Number(settings.faCityId || 20),               // 20 = جدة
-      payment_method: settings.faPaymentMethod || "wallet",
-      external_order_id: order.order_no,
-      webhook_url: `${env("PUBLIC_API_URL", "https://freshcuts-api.o2m8.me")}/api/delivery/courier-webhook`,
-      notes: String(order.notes || "").slice(0, 200) || "الطلب مدفوع مسبقاً — لا يُحصَّل من العميل",
-      locations: [
-        {
-          type: "pickup",
-          address: settings.pickupAddress || "فريش كتس — جدة",
-          lat: STORE_LAT(),
-          lng: STORE_LNG(),
-          contact_name: settings.pickupContactName || "فريش كتس",
-          contact_phone: e164(settings.pickupContactPhone || ""),
-        },
-        {
-          type: "dropoff",
-          // كل اللي كتبه العميل، بالترتيب اللي السائق بيقراه بيه:
-          // الشارع → المبنى → الدور → علامة مميزة → الحي.
-          address: [
-            addr.street,
-            addr.building && `مبنى ${addr.building}`,
-            addr.floor,
-            addr.landmark && `بجوار ${addr.landmark}`,
-            addr.area && `حي ${addr.area}`,
-          ].filter(Boolean).join("، ") || "موقع العميل",
-          lat: Number(addr.latitude), lng: Number(addr.longitude),
-          contact_name: order.customer?.name || "العميل",
-          contact_phone: e164(order.customer?.phone || ""),
-        },
-      ],
+    const all = await getSettingsData();
+    const settings = all.delivery || {};
+    const provider = activeProvider(all);
+    if (!provider.configured()) {
+      throw Object.assign(
+        new Error(`${provider.label}: مفاتيح ناقصة (${provider.missing().join(", ")})`),
+        { code: "COURIER_UNCONFIGURED", provider: provider.id });
+    }
+    const cfg = {
+      ...settings,
+      storeLat: STORE_LAT(), storeLng: STORE_LNG(),
+      webhookUrl: `${env("PUBLIC_API_URL", "https://freshcuts-api.o2m8.me")}/api/delivery/courier-webhook`,
     };
-    const created = await fa("/orders", { method: "POST", body: faBody });
-    const o = created?.data?.order || {};
-    const faId = o.id ?? created?.data?.id ?? null;
-    // التكلفة بترجع بشكلين حسب الرد: total_amount على مستوى الطلب، أو
-    // pricing.total. بناخد أول قيمة موجودة.
-    const cost = o.total_amount != null ? Number(o.total_amount)
-      : (o.pricing && o.pricing.total != null ? Number(o.pricing.total) : null);
-    /* 201 مش معناها إن في كابتن جاي! ردهم ممكن يكون
-       dispatch_result.status = "escalated_to_supervisor" ومعاه
-       «No eligible drivers are online in the zone». الطلب اتسجّل عندهم بس
-       محدش استلمه — ولازم ده يبان في اللوحة بدل ما نفتكر إن كله تمام
-       والعميل مستني أكله. */
-    const dr = created?.dispatch_result || {};
-    const assigned = Boolean(dr.driver_id) || dr.status === "dispatched";
+    const res = await provider.dispatch(order, cfg);
+
+    /* نجاح الإنشاء مش معناه إن في كابتن جاي. Flying Arrow ممكن ترجّع
+       dispatch_result.status = "escalated_to_supervisor" ومعاها «No eligible
+       drivers are online in the zone»: الطلب اتسجّل بس محدش استلمه — ولازم
+       ده يبان في اللوحة بدل ما نفتكر إن كله تمام والعميل مستني أكله. */
+    const dr = (res.raw && res.raw.dispatch_result) || {};
+    const assigned = Boolean(dr.driver_id) || dr.status === "dispatched" ||
+      Boolean(res.driver) || res.status === "assigned";
+
     await pool.query(
-      `INSERT INTO dl_shipments(shop_order_no, fa_order_id, fa_order_number, status, driver, cost, dispatch, events)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
-      [order.order_no, faId != null ? String(faId) : null, o.order_number || null,
-       (o.status && o.status.value) || "created",
-       o.driver ? jb(o.driver) : null, cost,
+      `INSERT INTO dl_shipments(shop_order_no, provider, provider_ref, fa_order_id, fa_order_number,
+                                status, driver, cost, dispatch, events)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+      [order.order_no, provider.id, res.ref,
+       provider.id === "flyingarrow" ? res.ref : null,
+       res.orderNumber, res.status || "pending",
+       res.driver ? jb(res.driver) : null, res.cost,
        jb({ status: dr.status || null, driverId: dr.driver_id ?? null, zoneId: dr.zone_id ?? null,
             message: dr.message || null, assigned }),
-       jb([{ at: new Date().toISOString(), event: "created", resp: created }])]
+       jb([{ at: new Date().toISOString(), event: "created", provider: provider.id, resp: res.raw }])]
     );
     if (!assigned) {
-      console.error(`[delivery] ${order.order_no}: order accepted by Flying Arrow but NO DRIVER — ${dr.status || "?"}: ${dr.message || ""}`);
+      console.error(`[delivery] ${order.order_no}: ${provider.label} accepted the order but NO DRIVER — ${dr.status || res.status || "?"}: ${dr.message || ""}`);
     }
-    return { faOrderId: faId, orderNumber: o.order_number || null, cost, assigned, dispatch: dr, raw: created };
+    return {
+      provider: provider.id, faOrderId: res.ref, orderNumber: res.orderNumber,
+      cost: res.cost, assigned, dispatch: dr, raw: res.raw,
+    };
   }
 
   /* تسعيرة المركبة عندهم (١٥ ر.س أساسي + ٢ ر.س/كم + ضريبة وقت كتابة ده).
@@ -324,30 +312,32 @@ export function register(app, ctx, deps = {}) {
 
   /* تتبع الشحنة من عندهم — شبكة أمان تحت الويبهوك. الويبهوك ممكن يضيع
      (نشر، انقطاع، خطأ عندهم) والعميل ساعتها بيفضل شايف حالة قديمة. */
-  async function trackShipment(faOrderId) {
-    const r = await fa(`/orders/${encodeURIComponent(faOrderId)}`);
-    return r?.data?.order || null;
+  async function trackShipment(sh) {
+    const p = PROVIDERS[sh.provider] || PROVIDERS.flyingarrow;
+    return p.track(sh);
   }
 
   /* إلغاء الشحنة — بيرجع رسوم الإلغاء والمبلغ المسترد. بنستخدمها لما الطلب
      يتلغي بعد ما الكابتن اتعيّن، عشان ما ندفعش توصيلة لطلب مش هيتوصل. */
   async function cancelShipment(orderNo, reason) {
     const sh = await shipmentOf(orderNo);
-    if (!sh || !sh.fa_order_id) return null;
+    if (!sh) return null;
     if (["delivered", "cancelled"].includes(String(sh.status))) return null;
+    const p = PROVIDERS[sh.provider] || PROVIDERS.flyingarrow;
+    if (!p.configured()) return null;
     try {
-      const r = await fa(`/orders/${encodeURIComponent(sh.fa_order_id)}/cancel`,
-        { method: "POST", body: { reason: String(reason || "order cancelled by restaurant").slice(0, 200) } });
+      const r = await p.cancel(sh, reason || "order cancelled by restaurant");
       await pool.query(
         `UPDATE dl_shipments SET status='cancelled', events = events || $2::jsonb, updated_at=NOW()
           WHERE id=$1`,
-        [sh.id, jb([{ at: new Date().toISOString(), event: "cancel", resp: r }])]);
-      return r?.data || null;
+        [sh.id, jb([{ at: new Date().toISOString(), event: "cancel", provider: p.id, resp: r.raw,
+                      fee: r.fee, refund: r.refund }])]);
+      return r;
     } catch (e) {
-      console.error(`[delivery] cancel failed for ${orderNo}:`, e.message);
+      console.error(`[delivery] cancel failed for ${orderNo} (${p.id}):`, e.message);
       await pool.query(
         `UPDATE dl_shipments SET events = events || $2::jsonb, updated_at=NOW() WHERE id=$1`,
-        [sh.id, jb([{ at: new Date().toISOString(), event: "cancel_failed", error: e.message }])]);
+        [sh.id, jb([{ at: new Date().toISOString(), event: "cancel_failed", provider: p.id, error: e.message }])]);
       return null;
     }
   }
@@ -426,92 +416,32 @@ export function register(app, ctx, deps = {}) {
      يتختاروا من قائمة حقيقية بدل ما نحزر رقم ونكتشف الغلط وقت أول طلب. */
   app.get("/api/delivery/fa/reference", async (c) => {
     const err = await requireAdmin(c); if (err) return err;
-    // ملاحظة مهمة: الرد دايماً 200 حتى لو الاتصال بيهم فشل. كلاودفلير
-    // بيستبدل أي 5xx جاي من السيرفر بصفحة خطأ من عنده، فالرسالة الحقيقية
-    // («المفتاح غير نشط») كانت بتضيع واللوحة تقول «تعذّر الاتصال» بس.
-    if (!FA_LIVE()) return c.json({ ok: false, error: "no_api_key" });
+    const all = await getSettingsData();
+    const provider = activeProvider(all);
+    /* الرد دايماً 200 حتى لو الاتصال فشل: كلاودفلير بيستبدل أي 5xx بصفحة
+       خطأ من عنده، فرسالة الشركة الحقيقية («المفتاح غير نشط») كانت بتضيع
+       واللوحة تقول «تعذّر الاتصال» وبس. */
+    const base = {
+      ok: false,
+      provider: provider.id, providerLabel: provider.label,
+      needsRef: provider.needsRef,
+      providers: Object.values(PROVIDERS).map((p) => ({
+        id: p.id, label: p.label, configured: p.configured(), missing: p.missing(),
+      })),
+      cities: [], vehicles: [],
+    };
+    if (!provider.configured()) {
+      return c.json({ ...base, error: "no_api_key", missing: provider.missing() });
+    }
     try {
-      const [cities, vehicles] = await Promise.all([fa("/cities"), fa("/service-vehicles")]);
-      return c.json({
-        ok: true,
-        cities: cities?.data?.cities || [],
-        vehicles: vehicles?.data?.service_vehicles || [],
-      });
+      const ref = await provider.reference();
+      return c.json({ ...base, ok: true, ...ref });
     } catch (e) {
       return c.json({
-        ok: false,
-        error: e.message,
-        status: e.status || null,
+        ...base, error: e.message, status: e.status || null,
         vendor: (e.resp && (e.resp.error_code || e.resp.message)) || null,
       });
     }
-  });
-
-  /* ADMIN — الهامش: اللي بنحصّله من العميل مقابل اللي بندفعه لـFlying Arrow،
-     على مسافات مختلفة. من غير الشاشة دي التسعيرة بتتحدد بالحدس — والفرق
-     بيطلع من جيب المطعم في كل طلب من غير ما حد ياخد باله. */
-  app.get("/api/delivery/margin", async (c) => {
-    const err = await requireAdmin(c); if (err) return err;
-    const pol = await activePolicy();
-    if (!pol) return c.json({ ok: false, error: "no_policy" });
-    const cfg = { ...DEFAULT_POLICY, ...pol.config };
-    let veh = null, vehErr = null;
-    if (FA_LIVE()) {
-      try {
-        const byId = await faVehicles();
-        veh = byId[String((await getSettingsData()).delivery?.faVehicleId || 3)] || null;
-      } catch (e) { vehErr = e.message; }
-    }
-    // لازم سلة نموذجية فوق الحد الأدنى، وإلا السياسة بترد «مش قابل للتوصيل»
-    // والجدول كله يطلع فاضي. وبتفضل تحت حد التوصيل المجاني عشان نشوف
-    // الأجرة الحقيقية مش صفر.
-    const sample = Number(c.req.query("total")) ||
-      Math.max((cfg.minOrderTotal || 0) + 5, 40);
-    // المقارنة لازم تكون على نفس المسافة الحقيقية: إحنا بنحاسب العميل على
-    // (مستقيم × routeFactor) زي ما quote() بتعمل بالظبط، وهم بيحاسبونا على
-    // المستقيم. مقارنة الرقمين من غير الفرق ده بتوري ربح مش موجود.
-    const rf = cfg.routeFactor || 1;
-    /* السعر المتفق عليه مع Flying Arrow (عمر 2026-08-17): ٩ ر.س تغطي أول
-       ٤ كم، وبعدها ١٫٨ ر.س لكل كم. لسه **مش مطبّق** على الحساب — بيحاسبوا
-       بالتسعيرة المعلنة. العمود ده بيوري الفرق بالظبط عشان يبقى في رقم
-       نتفاوض بيه، مش إحساس. */
-    const ag = (await getSettingsData()).delivery?.agreed ||
-      { base: 9, includedKm: 4, perKm: 1.8 };
-    const agreedCost = (km) =>
-      (Number(ag.base) + Math.max(0, km - Number(ag.includedKm)) * Number(ag.perKm)) * VAT;
-
-    const rows = [2, 3, 5, 8, 10, 12, 15].filter((km) => km <= (cfg.maxKm || 15)).map((km) => {
-      const charged = computeDeliveryFee(cfg, { distanceKm: km * rf, orderTotal: sample });
-      const cost = veh ? faCost(veh, km) : null;
-      const agreed = r2(agreedCost(km));
-      const fee = charged.deliverable ? charged.fee : null;
-      return {
-        km, charged: fee,
-        cost: cost != null ? r2(cost) : null,
-        margin: fee != null && cost != null ? r2(fee - cost) : null,
-        agreedCost: agreed,
-        agreedMargin: fee != null ? r2(fee - agreed) : null,
-        overcharge: cost != null ? r2(cost - agreed) : null,
-      };
-    });
-    const p = (veh && veh.pricing) || {};
-    // سعر التعادل بنفس تركيبتهم: أساسي يغطي أول N كم، وبعدها لكل كم.
-    // وبنقسم على routeFactor لأن اللي بنكتبه في السياسة بيتضرب فيه.
-    const breakEven = veh
-      ? { baseFee: r2((Number(p.base_price) || 0) * VAT),
-          baseKm: r2(FA_INCLUDED_KM() * rf),
-          perKm: r2(((Number(p.price_per_km) || 0) * VAT) / rf) }
-      : null;
-    return c.json({
-      ok: true, policyName: pol.name, policy: publicPolicy(cfg), routeFactor: cfg.routeFactor || 1,
-      sampleTotal: sample,
-      vendor: veh ? { id: veh.id, service: veh.service?.name_ar || veh.service?.name_en, pricing: p, limits: veh.limits || null } : null,
-      vendorError: vehErr, vat: VAT, rows, breakEven,
-      agreed: { ...ag, applied: rows.every((r) => r.overcharge != null && Math.abs(r.overcharge) < 0.05) },
-      includedKm: FA_INCLUDED_KM(),
-      // «مجاني فوق مبلغ» معناها إننا بندفع التوصيلة كاملة من جيبنا
-      freeDeliveryCostsUs: cfg.freeOverTotal != null,
-    });
   });
 
   /* PUBLIC — Flying Arrow's webhook. Their four events (order.driver_assigned,
@@ -522,31 +452,43 @@ export function register(app, ctx, deps = {}) {
   app.post("/api/delivery/courier-webhook", async (c) => {
     let b = {};
     try { b = await c.req.json(); } catch { return c.json({ ok: false }, 400); }
-    const orderNo = b.external_order_id || null;
-    const event = String(b.event || b.status || "");
-    if (!orderNo || !event) return c.json({ ok: true, ignored: true });
-    // بياناتهم بتيجي متعشّشة في data.order — بيانات الكابتن والتكلفة جوّاها.
-    const inner = (b.data && b.data.order) || {};
-    const driver = b.driver || inner.driver || null;
+
+    /* شكل الويبهوك بيختلف من شركة للتانية: Flying Arrow بتبعت
+       external_order_id + event، و Leajlak بتبعت id + status. فبنسأل كل
+       مزوّد «ده بتاعك؟» وأول واحد يفهم الرسالة هو صاحبها. بنبدأ بالفعّال
+       عشان الحالة الشائعة تتحل من أول محاولة، وبنكمّل على الباقي عشان
+       شحنة قديمة من شركة قديمة تفضل تتحدّث صح بعد التبديل. */
+    const all = await getSettingsData();
+    const active = activeProvider(all);
+    const order = [active, ...Object.values(PROVIDERS).filter((x) => x.id !== active.id)];
+    let ev = null, from = null;
+    for (const p of order) {
+      const parsed = p.parseWebhook(b);
+      if (parsed && parsed.orderNo) { ev = parsed; from = p; break; }
+    }
+    if (!ev) return c.json({ ok: true, ignored: true });
+
     const upd = await pool.query(
       `UPDATE dl_shipments SET
-         status = $2,
+         status = COALESCE($2, status),
          driver = COALESCE($3, driver),
          cost = COALESCE($5, cost),
          events = events || $4::jsonb,
          updated_at = NOW()
        WHERE shop_order_no = $1
-       RETURNING id`,
-      [String(orderNo), event.replace(/^order\./, ""),
-       driver ? jb(driver) : null,
-       jb([{ at: new Date().toISOString(), event, payload: b }]),
-       inner.total_amount != null ? Number(inner.total_amount) : null]
+       RETURNING id, status`,
+      [ev.orderNo, ev.status,
+       ev.driver ? jb(ev.driver) : null,
+       jb([{ at: new Date().toISOString(), provider: from.id, event: ev.rawStatus, payload: b }]),
+       ev.cost]
     );
-    if (!upd.rowCount) return c.json({ ok: true, ignored: true }); // unknown order — do nothing
-    const api = shop();
-    if (api) {
-      api.onShipmentEvent(String(orderNo), event.replace(/^order\./, ""), b).catch((e) =>
-        console.error("[delivery] shipment event handler failed:", e.message));
+    if (!upd.rowCount) return c.json({ ok: true, ignored: true }); // طلب مش عندنا
+    if (ev.status) {
+      const api = shop();
+      if (api) {
+        api.onShipmentEvent(ev.orderNo, ev.status, b).catch((e) =>
+          console.error("[delivery] shipment event handler failed:", e.message));
+      }
     }
     return c.json({ ok: true });
   });
@@ -562,33 +504,31 @@ export function register(app, ctx, deps = {}) {
      الويبهوك ممكن يضيع وقت نشر أو انقطاع، والعميل ساعتها بيفضل قاعد على
      شاشة تتبع واقفة — وده أسوأ إحساس ممكن نديهوله بعد ما دفع. */
   async function pollInFlight() {
-    if (!FA_LIVE()) return;
     const rows = (await pool.query(
-      `SELECT id, shop_order_no, fa_order_id, status FROM dl_shipments
-        WHERE fa_order_id IS NOT NULL
+      `SELECT id, shop_order_no, provider, provider_ref, status FROM dl_shipments
+        WHERE provider_ref IS NOT NULL
           AND status NOT IN ('delivered','cancelled')
           AND updated_at < NOW() - INTERVAL '3 minutes'
           AND created_at > NOW() - INTERVAL '12 hours'
         LIMIT 20`)).rows;
     for (const r of rows) {
+      const p = PROVIDERS[r.provider] || PROVIDERS.flyingarrow;
+      if (!p.configured()) continue;
       let o;
-      try { o = await trackShipment(r.fa_order_id); } catch { continue; }
-      if (!o) continue;
-      const st = (o.status && o.status.value) || null;
-      if (!st || st === r.status) {
+      try { o = await p.track(r); } catch { continue; }
+      if (!o || !o.status || o.status === r.status) {
         await pool.query("UPDATE dl_shipments SET updated_at=NOW() WHERE id=$1", [r.id]);
         continue;
       }
       await pool.query(
-        `UPDATE dl_shipments SET status=$2, driver=COALESCE($3, driver),
+        `UPDATE dl_shipments SET status=$2, driver=COALESCE($3, driver), cost=COALESCE($5, cost),
                 events = events || $4::jsonb, updated_at=NOW() WHERE id=$1`,
-        [r.id, st, o.driver ? jb(o.driver) : null,
-         jb([{ at: new Date().toISOString(), event: "poll", status: st }])]);
+        [r.id, o.status, o.driver ? jb(o.driver) : null,
+         jb([{ at: new Date().toISOString(), provider: p.id, event: "poll", status: o.status }]),
+         o.cost]);
       const api = shop();
       if (api) {
-        // نفس التحويل اللي بيعمله الويبهوك — حالتهم بتوصل بأسماء زي
-        // in_transit/picked_up، والخريطة في shop.js بتترجمها لمرحلة العميل.
-        api.onShipmentEvent(r.shop_order_no, st, { source: "poll", order: o })
+        api.onShipmentEvent(r.shop_order_no, o.status, { source: "poll", order: o.raw })
           .catch((e) => console.error("[delivery] poll handler failed:", e.message));
       }
     }
@@ -599,5 +539,6 @@ export function register(app, ctx, deps = {}) {
       POLL_MIN * 60_000);
   }
 
-  return { quote, dispatch, shipmentOf, trackShipment, cancelShipment, isLive: FA_LIVE, faCost, faVehicles };
+  return { quote, dispatch, shipmentOf, trackShipment, cancelShipment,
+           isLive: () => activeProvider({}).configured(), faCost, faVehicles, PROVIDERS };
 }
