@@ -20,7 +20,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
-  normaliseUsage, billableTokens, decidePace, PACE_DEFAULTS,
+  normaliseUsage, billableTokens, isCacheShapeError, decidePace, PACE_DEFAULTS,
 } from "./autopilot.js";
 
 /* ── ١. المحاسبة ─────────────────────────────────────────────────────── */
@@ -163,4 +163,21 @@ test("التقريب مايكسرش سور الـ ١٩٪ — ٣٥ × ١٫١٩ ل
   assert.equal(up.to, 41);
   assert.ok((up.to - up.from) / up.from * 100 < 20,
     `الخطوة المتنفّذة ${((up.to - up.from) / up.from * 100).toFixed(1)}٪ لازم تفضل تحت ٢٠`);
+});
+
+/* ── ٤. رفض الكاش ≠ أي رفض ───────────────────────────────────────────── */
+
+test("رسالة الرصيد الخالص مش رفض كاش — مايتعملهاش نداء تاني", () => {
+  /* اللي حصل فعلاً على السيرفر: أنثروبيك بترجّع 400 لما الرصيد يخلص، وأول
+     نسخة من كود الكاش كانت بتعيد المحاولة على أي 400 — يعني نداءين بدل
+     واحد، والكاش بيتقفل غلط لباقي عمر العملية. */
+  assert.equal(isCacheShapeError(
+    'litellm.BadRequestError: AnthropicException - {"type":"error","error":{"type":"invalid_request_error","message":"Your credit balance is too low to access the Anthropic API"}}'), false);
+  assert.equal(isCacheShapeError("LLM 400: rate limit"), false);
+  assert.equal(isCacheShapeError(""), false);
+});
+
+test("رفض شكل الكاش بيتعرف ويتعمله محاولة من غير كاش", () => {
+  assert.equal(isCacheShapeError('Extra inputs are not permitted: tools.0.cache_control'), true);
+  assert.equal(isCacheShapeError('unexpected field "ephemeral"'), true);
 });

@@ -161,6 +161,13 @@ async function llmPost(url, headers, body) {
   } finally { clearTimeout(timer); }
 }
 
+/* رفض بسبب **شكل** الكاش، مش أي رفض. الفرق ده مهم: أول نسخة من الكود ده
+   كانت بتعيد المحاولة على أي 400، فرسالة «رصيدك خلص» (وهي 400 برضه) كانت
+   بتتقري «الكاش مرفوض» — يعني نداءين بدل واحد، والكاش بيتقفل غلط لباقي
+   عمر العملية. بندوّر على اسم الحقل نفسه في الرسالة. */
+export const isCacheShapeError = (msg = "") =>
+  /cache_control|cache-control|ephemeral|prompt.?cach/i.test(String(msg));
+
 /* نداء واحد مع إمكانية إطفاء الكاش لو المزوّد رفض شكله. المحاولة التانية
    بتحصل **مرة واحدة للعملية كلها**: أول رفض بيقفل الكاش لكل النداءات
    اللي بعده، فمفيش مضاعفة نداءات مستمرة. */
@@ -169,7 +176,7 @@ async function llmPostCached(url, headers, build) {
   try {
     return await llmPost(url, headers, build(useCache));
   } catch (e) {
-    if (!useCache || e.httpStatus !== 400) throw e;
+    if (!useCache || e.httpStatus !== 400 || !isCacheShapeError(e.message)) throw e;
     cacheSupported = false;
     console.warn("[autopilot] prompt caching rejected by the provider — turned off for this process:", e.message);
     return llmPost(url, headers, build(false));
