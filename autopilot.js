@@ -5855,7 +5855,17 @@ ${focus}
 
   /* بيتنده مرة في اليوم. بيسأل عن اليوم اللي فات لما يكون شاذ فعلاً. */
   async function askDayLog({ day = null, force = false } = {}) {
-    const target = day || new Date(Date.now() - 24 * 3600_000).toISOString().slice(0, 10);
+    /* «امبارح» بتوقيت الرياض مش بتوقيت UTC. الفرق مش تجميل: الدورة اللي
+       بتجري ٢٣:٥٦ UTC هي ٠٢:٥٦ فجر اليوم اللي بعده في جدة، فـ UTC-٢٤
+       ساعة بترجّع يوم قبل اللي إحنا عايزينه بيوم كامل.
+       وكمان: المطبخ بيقفل ٣ الفجر، فيوم المطعم مبيخلصش بنص الليل. بنستنى
+       لحد ٦ صباحاً بالرياض عشان نسأل عن يوم **خلص** فعلاً مش يوم لسه
+       بيتقفل — غير كده بنقارن يوم ناقص بأيام كاملة ونطلّع انحراف كاذب. */
+    const ryd = new Date(Date.now() + 3 * 3600_000);
+    if (!day && !force && ryd.getUTCHours() < 6) {
+      return { ok: true, skipped: "لسه بدري — يوم المطعم مبيقفلش قبل ٣ الفجر، بنسأل بعد ٦ صباحاً" };
+    }
+    const target = day || new Date(ryd.getTime() - 24 * 3600_000).toISOString().slice(0, 10);
     const already = await pool.query(`SELECT biz_day FROM ap_daylog WHERE biz_day=$1::date`, [target]);
     if (already.rows.length && !force) return { ok: true, skipped: "اليوم ده مسجّل خلاص" };
     const sh = await dayShapeOf(target);
