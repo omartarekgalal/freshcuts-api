@@ -142,10 +142,10 @@ export function register(app, ctx, deps = {}) {
     const s = (await getSettingsData()).delivery || {};
     try {
       const byId = await api.faVehicles();
-      const vid = String(s.faVehicleId || 3);
+      const vid = String(s.faVehicleId || 8);
       const veh = byId[vid];
       const notes = [];
-      if (!veh) notes.push(`نوع الخدمة رقم ${vid} مش موجود عندهم`);
+      if (!veh) notes.push(`نوع الخدمة رقم ${vid} مش متاح على حسابنا — الحساب للسيارات السيدان بس`);
       if (!s.faCityId) notes.push("المدينة مش متحددة — هيستخدم جدة (٢٠) افتراضياً");
       if ((s.faPaymentMethod || "wallet") === "cash") notes.push("الدفع للمندوب «نقدي» — الفرع هيدفع كاش كل طلب");
       if (!s.pickupContactPhone) notes.push("تليفون الفرع مش متسجّل — الكابتن مش هيعرف يتصل");

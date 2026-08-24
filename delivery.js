@@ -293,22 +293,36 @@ export function register(app, ctx, deps = {}) {
     return byId;
   }
   const VAT = 1.15;
-  /* تسعيرتهم مش (أساسي + سعر×كل كم) زي ما الأرقام بتوحي. من طلب تجريبي
-     حقيقي على 4.99 كم: أساسي 15، ومسافة 1.98 = 0.99 كم × 2 — يعني
-     **الأساسي بيغطي أول 4 كم** والزيادة بعدها بس هي اللي بتتحاسب. وده نفس
-     تركيبة اتفاق عمر (٩ ر.س لأول ٤ كم + ١٫٨ بعدها)، فالحساب واحد للاتنين.
+  /* تكلفة التوصيلة علينا.
 
-     ومهم كمان: `total_distance_km` في ردهم = المسافة المستقيمة بالظبط
-     (4.99)، مش مسافة الطريق — فهم بيحاسبوا على الخط المستقيم بينما إحنا
-     بنحاسب العميل على مسافة مضروبة في routeFactor. */
+     مهم: القايمة العامة عندهم (GET /service-vehicles) بتقول 25 ر.س أساسي +
+     2.5/كم — ودي **مش** تسعيرتنا. الاتفاق المطبّق على حسابنا 9 ر.س لأول 4
+     كم + 1.8 لكل كم بعدها، واتأكدنا منه من طلب حقيقي على 4.99 كم رجع 12.40
+     شامل الضريبة (9 + 0.99×1.8 = 10.78 ← ضريبة 1.62 ← 12.40). لو حسبنا
+     الهامش بالقايمة العامة هنشوف خسارة وهمية في كل طلب.
+
+     القيم قابلة للتعديل من الإعدادات لو الاتفاق اتغيّر، وبنرجع للقايمة
+     بتاعتهم بس لو محدش حدّد حاجة. */
   const FA_INCLUDED_KM = () => Number(env("FA_INCLUDED_KM", "4"));
-  function faCost(veh, km) {
-    const p = (veh && veh.pricing) || {};
-    const base = Number(p.base_price) || 0, per = Number(p.price_per_km) || 0;
-    const min = Number(p.minimum_fare) || 0;
-    const extra = Math.max(0, (Number(km) || 0) - FA_INCLUDED_KM());
+  function faCost(veh, km, contract) {
+    const c = contract || {};
+    const includedKm = Number(c.includedKm) || FA_INCLUDED_KM();
+    const base = c.baseFee != null ? Number(c.baseFee)
+      : (veh && veh.pricing && Number(veh.pricing.base_price)) || 0;
+    const per = c.perKm != null ? Number(c.perKm)
+      : (veh && veh.pricing && Number(veh.pricing.price_per_km)) || 0;
+    const min = c.minFare != null ? Number(c.minFare)
+      : (veh && veh.pricing && Number(veh.pricing.minimum_fare)) || 0;
+    const extra = Math.max(0, (Number(km) || 0) - includedKm);
     return Math.max(min, base + per * extra) * VAT;
   }
+  /* الاتفاق المطبّق فعلاً — الافتراضي هو اللي اتأكدنا منه بطلب حقيقي. */
+  const courierContract = (settings) => ({
+    baseFee: Number(settings?.contractBaseFee ?? 9),
+    perKm: Number(settings?.contractPerKm ?? 1.8),
+    includedKm: Number(settings?.contractIncludedKm ?? 4),
+    minFare: settings?.contractMinFare != null ? Number(settings.contractMinFare) : 0,
+  });
 
   /* تتبع الشحنة من عندهم — شبكة أمان تحت الويبهوك. الويبهوك ممكن يضيع
      (نشر، انقطاع، خطأ عندهم) والعميل ساعتها بيفضل شايف حالة قديمة. */
@@ -540,5 +554,5 @@ export function register(app, ctx, deps = {}) {
   }
 
   return { quote, dispatch, shipmentOf, trackShipment, cancelShipment,
-           isLive: () => activeProvider({}).configured(), faCost, faVehicles, PROVIDERS };
+           isLive: () => activeProvider({}).configured(), faCost, faVehicles, courierContract, PROVIDERS };
 }

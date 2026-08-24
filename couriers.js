@@ -119,7 +119,9 @@ const flyingarrow = {
     const created = await this.call("/orders", {
       method: "POST",
       body: {
-        service_vehicle_id: Number(cfg.faVehicleId || 3),
+        // 8 = «التوصيل المبرد والساخن» (سيدان). الدباب (3) بيترفض على حسابنا
+        // بـ VEHICLE_TYPE_NOT_ALLOWED — الحساب مخصص للسيدان.
+        service_vehicle_id: Number(cfg.faVehicleId || 8),
         city_id: Number(cfg.faCityId || 20),
         payment_method: cfg.faPaymentMethod || "wallet",
         external_order_id: order.order_no,
