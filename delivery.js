@@ -482,6 +482,8 @@ export function register(app, ctx, deps = {}) {
     }
     if (!ev) return c.json({ ok: true, ignored: true });
 
+    /* المطابقة برقمنا أولاً، وبمرجع المزوّد لو رقمنا مش في الرسالة —
+       Flying Arrow بيرجّع external_order_id فاضي أحياناً. */
     const upd = await pool.query(
       `UPDATE dl_shipments SET
          status = COALESCE($2, status),
@@ -489,18 +491,20 @@ export function register(app, ctx, deps = {}) {
          cost = COALESCE($5, cost),
          events = events || $4::jsonb,
          updated_at = NOW()
-       WHERE shop_order_no = $1
-       RETURNING id, status`,
+       WHERE (($1::text IS NOT NULL AND shop_order_no = $1)
+           OR ($6::text IS NOT NULL AND provider = $7 AND provider_ref = $6))
+       RETURNING id, shop_order_no, status`,
       [ev.orderNo, ev.status,
        ev.driver ? jb(ev.driver) : null,
        jb([{ at: new Date().toISOString(), provider: from.id, event: ev.rawStatus, payload: b }]),
-       ev.cost]
+       ev.cost, ev.ref || null, from.id]
     );
     if (!upd.rowCount) return c.json({ ok: true, ignored: true }); // طلب مش عندنا
+    const matchedNo = upd.rows[0].shop_order_no;
     if (ev.status) {
       const api = shop();
       if (api) {
-        api.onShipmentEvent(ev.orderNo, ev.status, b).catch((e) =>
+        api.onShipmentEvent(matchedNo, ev.status, b).catch((e) =>
           console.error("[delivery] shipment event handler failed:", e.message));
       }
     }

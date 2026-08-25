@@ -181,12 +181,20 @@ const flyingarrow = {
   },
 
   parseWebhook(b) {
-    const orderNo = b.external_order_id || null;
     const ev = String(b.event || b.status || "").replace(/^order\./, "");
-    if (!orderNo || !ev) return null;
+    if (!ev) return null;
     const inner = (b.data && b.data.order) || {};
+    /* مهم: GET /orders/{id} عندهم بيرجّع external_order_id = null حتى لما
+       نبعته — يعني مش مضمون إن الويبهوك هيحمل رقمنا. فبنرجع لرقمهم
+       (order_id / data.order.id) كمفتاح احتياطي، وdelivery.js بيدوّر بيه
+       في provider_ref. من غير ده، ويبهوك من غير رقمنا كان هيتضاع بالكامل
+       والعميل يفضل شايف حالة قديمة. */
+    const orderNo = b.external_order_id || inner.external_order_id || null;
+    const ref = b.order_id ?? inner.id ?? null;
+    if (!orderNo && ref == null) return null;
     return {
-      orderNo: String(orderNo),
+      orderNo: orderNo != null ? String(orderNo) : null,
+      ref: ref != null ? String(ref) : null,
       status: FA_STATUS[ev] || null,
       rawStatus: ev,
       driver: b.driver || inner.driver || null,
@@ -308,10 +316,12 @@ const leajlak = {
   parseWebhook(b) {
     // ويبهوكهم بيرجّع رقم طلبنا في `id`، ومرجعهم في dsp_order_id.
     const orderNo = b.id || b.client_order_id || b.external_order_id || null;
-    if (!orderNo) return null;
+    const ref = b.dsp_order_id ?? null;
+    if (!orderNo && ref == null) return null;
     const raw = b.status || b.event || "";
     return {
-      orderNo: String(orderNo),
+      orderNo: orderNo != null ? String(orderNo) : null,
+      ref: ref != null ? String(ref) : null,
       status: LJ_STATUS[ljNorm(raw)] || null,
       rawStatus: String(raw),
       driver: b.driver || null,
