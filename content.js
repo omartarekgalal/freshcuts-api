@@ -31,16 +31,24 @@
 
 import crypto from "node:crypto";
 import { httpJson } from "./ads.js";
-import { activeOffers, offerById } from "./offers.js";
+import { OFFERS, activeOffers, offerById, offerState, riyadhDay } from "./offers.js";
 
 /* أي فكرة محتوى بتبيع عرض له تاريخ انتهاء. الربط بس — تعريف العرض نفسه
    (السعر، الصالة، التاريخ) عند offers.js ومش بيتكرر هنا.
 
-   ملحوظة مقصودة: `tt_delivery_vs_hall` **مش** هنا. الفيديو ده بيشرح ليه
-   العروض داخل الصالة، وصينية اللمّة عرض دايم — فهو بيفضل صالح بعد ما عرض
-   الـ٧٠ يخلص. */
+   الملحوظة اللي كانت هنا قبل كده قالت إن صينية اللمّة «عرض دايم» فأفكارها
+   مش محتاجة ربط. ده بقى غلط: عمر قال إن **العرضين** آخرهم ٣١ أغسطس، والصينية
+   اتسجّلت في offers.js بتاريخ انتهاء زي عرض الـ٧٠. فالأفكار اللي بتبيع
+   الصينية اتربطت — عشان تقع من التقويم يوم ١ سبتمبر بدل ما تفضل معروضة
+   للتصوير وهي بتبيع حاجة مش معلن عنها.
+
+   `tt_delivery_vs_hall` (فيديو «ليه العرض داخل الصالة؟») مربوط بالاتنين
+   ضمنيًا — بيتربط بـcombo70 لأن الاتنين بينتهوا نفس اليوم. */
 const IDEA_OFFER = {
   tt_70_combo: "combo70",
+  tt_lamma_pour: "lamma",
+  tt_family_reaction: "lamma",
+  tt_delivery_vs_hall: "combo70",
 };
 
 const newId = (p) => `${p}_${crypto.randomBytes(6).toString("hex")}`;
@@ -1139,6 +1147,152 @@ export function register(app, ctx) {
     return c.json({ ok: true, mode: GUARD_MODE(), blocking: acted.length, cancelled: doCancel, items: acted });
   });
 
+  /* ══ ٥.٦) حارس التاريخ — بوست مايتنشرش بعد ما العرض يخلص ══════════════
+     ── ليه ده موجود ──────────────────────────────────────────────────────
+     يوم ٢٦ أغسطس ٢٠٢٦، وفاضل ٥ أيام على انتهاء عرضين الصالة، كان لسه فيه
+     بوست فيسبوك **مجدول يوم ٧ سبتمبر** بيقول «بيتزا + باستا + كريب — ٧٠
+     ريال فقط. داخل الصالة». يعني بعد ٧ أيام من انتهاء العرض، صفحة المطعم
+     كانت هتعلن سعر الكاشير مش هيقبله.
+
+     الغلط ده مش غلط الشخص اللي جدول البوست: يوم ما جدوله كان العرض شغّال.
+     الغلط إن **الزمن** مالوش حارس. عندنا حارس أسعار (السعر لازم يكون موثّق)
+     وحارس صنف (الصورة لازم توري اللي النص بيقوله)، وماكانش عندنا حارس
+     بيسأل السؤال التالت: العرض ده هيكون لسه شغّال يوم ما البوست ده يطلع؟
+
+     الحارس ده بيسأله. لكل بوست مجدول: هل النص بيسمّي عرض متسجّل في
+     offers.js؟ ولو أيوة، هل ميعاد البوست بعد `until` بتاع العرض؟ لو أيوة
+     → البوست بيتمنع (لو انستجرام) وبيتعلّم في الكشف (لو فيسبوك).
+
+     ── حدود الحارس، بصراحة ───────────────────────────────────────────────
+     بوستات فيسبوك المجدولة محجوزة عند **فيسبوك نفسه** — الناشر بتاعنا
+     مابيلمسهاش، فمنعها وقت النشر مستحيل من هنا (نفس حدود حارس الصنف).
+     كل اللي نقدر عليه إننا نبيّنها ونسيب `?cancel=1` يلغيها بقرار بني آدم.
+     يعني الحارس ده **بيمنع** على انستجرام و**بيحذّر** على فيسبوك. */
+
+  /* الاسم اللي المفروض نلاقيه في الكابشن. بناخد الشكلين — عنوان الكتالوج
+     وعنوان العرض — عشان كابشن كتب «بيتزا + باستا + كريب» أو كتب العنوان
+     الكامل الاتنين يتمسكوا. */
+  const offerNeedles = (o) => [...new Set([o.title, o.catalogTitle].filter(Boolean)
+    .map((t) => normDish(coreName(t))).filter((t) => t.length >= 6))];
+
+  /* ميعاد البوست الفعلي: المجدول ميعاده، والمنشور وقت نشره. المسودة اللي
+     مالهاش ميعاد لسه ماتقررش لها يوم — فمش بنحكم عليها. */
+  const postWhen = (row) => row.scheduled_at || row.published_at || null;
+
+  /* يوم شغل الرياض اللي البوست بيقع فيه — نفس تعريف offers.js بالظبط، عشان
+     بوست ١٢ بليل ٣١ أغسطس ما يتحسبش «بعد الانتهاء» وهو جوّه آخر ليلة. */
+  const postDay = (when) => riyadhDay(new Date(when));
+
+  function offerVerdict(row) {
+    const when = postWhen(row);
+    const hay = normDish(fullCaption(row));
+    const named = OFFERS.filter((o) => offerNeedles(o).some((n) => hay.includes(n)));
+    if (!named.length) return { verdict: "no-offer", block: false, offers: [] };
+    if (!when) {
+      return {
+        verdict: "undated", block: false,
+        offers: named.map((o) => o.id),
+        reason: `البوست بيسمّي ${named.map((o) => `«${o.title}»`).join(" و")} ومالوش ميعاد لسه —`
+          + ` لازم يتجدول قبل ${named.map((o) => o.until).sort()[0]}.`,
+      };
+    }
+    const day = postDay(when);
+    const late = named.filter((o) => o.until && day > o.until);
+    if (!late.length) {
+      return { verdict: "pass", block: false, offers: named.map((o) => o.id), day };
+    }
+    return {
+      verdict: "expired",
+      // انستجرام بنقدر نمنعه فعلاً؛ فيسبوك بنحذّر بس (البوست محجوز عندهم)
+      block: row.channel === "instagram",
+      offers: late.map((o) => o.id),
+      day,
+      reason: late.map((o) =>
+        `البوست ميعاده ${day} وبيعلن «${o.title}» اللي بينتهي ${o.until}`
+        + ` — يعني هيعلن سعر ${o.price} ر.س بعد ${Math.round(
+          (Date.parse(`${day}T00:00:00Z`) - Date.parse(`${o.until}T00:00:00Z`)) / 86400000)} يوم من انتهائه.`
+      ).join(" · "),
+    };
+  }
+
+  /* الكشف: كل المجدول والمسودات، ومعاهم المنشور بميعاد في المستقبل (بوست
+     فيسبوك مستورد بيتسجّل عندنا «مجدول»، بس لو المزامنة اتأخرت ممكن يبان
+     بشكل تاني — فبنكشف على الاتنين). */
+  app.get("/api/content/offer-guard", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    const rows = (await pool.query(
+      `SELECT * FROM content_posts
+        WHERE status IN ('scheduled','draft')
+           OR (status='published' AND published_at > NOW())
+        ORDER BY COALESCE(scheduled_at, published_at) NULLS LAST`)).rows;
+    const items = rows.map((row) => {
+      const v = offerVerdict(row);
+      return {
+        id: row.id, channel: row.channel, status: row.status,
+        scheduledAt: row.scheduled_at, origin: row.origin,
+        externalId: row.external_id || "",
+        headline: String(row.caption || "").split("\n")[0].slice(0, 70),
+        ...v,
+      };
+    });
+    const tally = items.reduce((a, i) => ((a[i.verdict] = (a[i.verdict] || 0) + 1), a), {});
+    const expired = items.filter((i) => i.verdict === "expired");
+    return c.json({
+      ok: true,
+      today: riyadhDay(),
+      offers: OFFERS.map((o) => ({ id: o.id, title: o.title, until: o.until, ...offerState(o) })),
+      checked: items.length,
+      tally,
+      expired: expired.length,
+      /* فيسبوك مش بيتمنع من هنا — لازم يتقال بصوت عالي، مش يتفهم من غياب
+         كلمة «block». */
+      needsHuman: expired.filter((i) => !i.block).map((i) => ({
+        id: i.id, channel: i.channel, externalId: i.externalId, scheduledAt: i.scheduledAt,
+        why: "بوست فيسبوك مجدول عند فيسبوك نفسه — الإلغاء لازم يتعمل بقرار،"
+          + " من POST /api/content/offer-guard?cancel=1&platform=1 أو من الصفحة",
+      })),
+      items,
+    });
+  });
+
+  /* الإلغاء. `cancel=1` بيلغي محليًا؛ `platform=1` بيشيله من فيسبوك كمان —
+     وده اللي بيوقّف النشر فعلاً، فمفصول عن بعضه عن قصد: إلغاء محلي لوحده
+     بيسيب البوست عايش على فيسبوك، وده أسوأ من إننا ما نعملش حاجة لأنه
+     بيخلّي التقويم يقول إنه اتلغى وهو لأ. */
+  app.post("/api/content/offer-guard", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    const doCancel = c.req.query("cancel") === "1";
+    const doPlatform = c.req.query("platform") === "1";
+    const only = c.req.query("id") || "";
+    const rows = (await pool.query(
+      `SELECT * FROM content_posts WHERE status IN ('scheduled','draft')
+        ${only ? "AND id = $1" : ""}`, only ? [only] : [])).rows;
+    const acted = [];
+    for (const row of rows) {
+      const v = offerVerdict(row);
+      if (v.verdict !== "expired") continue;
+      let platform = null;
+      if (doCancel && doPlatform && row.channel === "facebook" && row.external_id) {
+        const tok = await pageToken();
+        if (!tok) platform = { ok: false, error: pageTokenCache.err || "مفيش توكن صفحة" };
+        else {
+          const r = await httpJson(
+            `${GRAPH()}/${row.external_id}?access_token=${encodeURIComponent(tok)}`, { method: "DELETE" });
+          platform = (r.ok && r.json?.success !== false)
+            ? { ok: true } : { ok: false, error: graphErr(r) };
+        }
+      }
+      if (doCancel && platform?.ok !== false) {
+        await pool.query(
+          `UPDATE content_posts SET status='cancelled', claimed_at=NULL,
+                  error_text=$2, updated_at=NOW() WHERE id=$1`,
+          [row.id, `حارس التاريخ: ${v.reason}`]);
+      }
+      acted.push({ id: row.id, channel: row.channel, ...v, cancelled: doCancel && platform?.ok !== false, platform });
+    }
+    return c.json({ ok: true, expired: acted.length, cancelled: doCancel, items: acted });
+  });
+
   /* ══ ٦) ناشر انستجرام ═════════════════════════════════════════════════
      انستجرام API ملوش جدولة — عشان كده البوستات اتنشرت بالإيد. الجدولة
      بنعملها إحنا: العامل بياخد صف واحد ميعاده جه، يحجزه (claimed_at) عشان
@@ -1160,6 +1314,12 @@ export function register(app, ctx) {
        مؤقت، ده تصميم غلط لازم إيد بني آدم تصلحه. */
     const dv = await dishVerdict(row);
     if (dv.block) return { ok: false, error: `حارس الصنف منع النشر: ${dv.reason}` };
+
+    /* وحارس التاريخ. نفس المنطق: مش retry — عرض خلص مش بيرجع يشتغل لو
+       استنينا ٥ دقايق. البوست بيتعلّم failed عشان يبان في الكشف بدل ما
+       يفضل مجدول ويحاول كل دورة. */
+    const ov = offerVerdict(row);
+    if (ov.block) return { ok: false, error: `حارس التاريخ منع النشر: ${ov.reason}` };
 
     const q = await igQuota();
     if (q.ok && q.total && q.used >= q.total) {

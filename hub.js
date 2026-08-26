@@ -27,31 +27,56 @@
 ═══════════════════════════════════════════════════════════════════════════ */
 
 import crypto from "node:crypto";
+import { OFFERS, offerById, offerState, untilText } from "./offers.js";
 
 const newId = (p) => `${p}_${crypto.randomBytes(5).toString("hex")}`;
 
 /* العرضين اللي شغالين في المطعم دلوقتي — بيتزرعوا مرة واحدة وبعد كده
-   الجدول هو المرجع (لو عمر عدّل السعر، الزرع مش بيرجّعه). */
+   الجدول هو المرجع (لو عمر عدّل السعر أو المكوّنات، الزرع مش بيرجّعهم).
+
+   ── إلا **تاريخ الانتهاء** ───────────────────────────────────────────────
+   الصفين دول كانوا مكتوب فيهم «سارٍ حاليًا — من غير تاريخ انتهاء» وهو كلام
+   ماكانش صحيح: عمر قال إن العرضين آخرهم ٣١ أغسطس. والأسوأ إن الجدول ده
+   معروف في الصفحة إنه «مصدر الحقيقة» اللي أي تصميم أو نص إعلان ينقل منه —
+   يعني نسخة تانية من العرض بتاريخ مختلف، والنسخة اللي من غير تاريخ هي اللي
+   تحت إيد الناس اللي بتكتب الإعلانات.
+
+   الحل مش إننا نصحّح النص مرة ونمشي؛ ده بيرجع يفرق تاني أول مرة يتغيّر
+   التاريخ. الحل إن الصف يتربط بالعرض في offers.js (`offer_id`) والصلاحية
+   تتحسب من هناك في كل قراءة — فمفيش مكان تاني يقدر يقول تاريخ تاني. */
 const SEED_OFFERS = [
   {
     id: "of_lamma",
+    offerId: "lamma",
     name: "صينية اللمة",
     price: 100,
     contents: "٦ قطع كفتة، ٣ قطع طرب، ٤ قطع شيش طاووق، ٢ صدور دجاج مشوية، حواوشي مصري — مع بطاطس وأرز وسلطة وطحينة",
-    validity: "سارٍ حاليًا — من غير تاريخ انتهاء",
     channels: "all",
     sort: 1,
   },
   {
     id: "of_pizza_pasta_crepe",
+    offerId: "combo70",
     name: "بيتزا + باستا + كريب",
     price: 70,
     contents: "بيتزا + باستا + كريب",
-    validity: "سارٍ حاليًا — من غير تاريخ انتهاء",
     channels: "all",
     sort: 2,
   },
 ];
+
+/* جملة الصلاحية بتتكتب من offers.js — مش بإيد حد. */
+function validityText(offerId) {
+  const o = offerById(offerId);
+  if (!o) return "";
+  const st = offerState(o);
+  if (st.ended) return `انتهى ${untilText(o).replace(/^حتى /, "")} — ما يتعلنش`;
+  if (st.daysLeft === 0) return `${untilText(o)} — النهاردة آخر يوم، داخل الصالة فقط`;
+  if (st.daysLeft != null && st.daysLeft <= 7) {
+    return `${untilText(o)} — فاضل ${st.daysLeft} يوم، داخل الصالة فقط`;
+  }
+  return `${untilText(o)}${o.dineInOnly ? " — داخل الصالة فقط" : ""}`;
+}
 
 export function register(app, ctx) {
   const { pool, requireAdmin, jb } = ctx;
@@ -95,15 +120,44 @@ export function register(app, ctx) {
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
         updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
       );
+      -- الربط بـ offers.js. NULL = عرض كتبه عمر بإيده ومالوش تسجيل في الكود،
+      -- وساعتها جملة الصلاحية بتاعته هي اللي كتبها وإحنا ما بنلمسهاش.
+      ALTER TABLE mk_offers ADD COLUMN IF NOT EXISTS offer_id TEXT;
     `);
     for (const o of SEED_OFFERS) {
       await pool.query(
-        `INSERT INTO mk_offers (id, name, price, contents, validity, channels, sort)
-         VALUES ($1,$2,$3,$4,$5,$6,$7) ON CONFLICT (id) DO NOTHING`,
-        [o.id, o.name, o.price, o.contents, o.validity, o.channels, o.sort]
+        `INSERT INTO mk_offers (id, offer_id, name, price, contents, validity, channels, sort)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT (id) DO NOTHING`,
+        [o.id, o.offerId, o.name, o.price, o.contents, validityText(o.offerId), o.channels, o.sort]
+      );
+    }
+    /* الصفوف اللي اتزرعت قبل ما العمود ده يبقى موجود لسه شايلة الجملة القديمة
+       («من غير تاريخ انتهاء»). بنربطها، وبس. باقي القراءة بتتصحّح من offers.js
+       في offerRow() — يعني حتى لو الـUPDATE ده فشل، الـAPI مش هيقول التاريخ
+       الغلط. */
+    for (const o of SEED_OFFERS) {
+      await pool.query(
+        `UPDATE mk_offers SET offer_id = $2 WHERE id = $1 AND offer_id IS DISTINCT FROM $2`,
+        [o.id, o.offerId]
+      );
+    }
+    await reconcileValidity();
+  }
+
+  /* بنكتب الجملة الصحيحة في الجدول كمان — مش عشان الـAPI (ده بيتصحّح في
+     القراءة)، لكن عشان أي حد يفتح الجدول بنفسه ما يقراش كلام منتهي. وبيتنده
+     عند الإقلاع وكل ساعة، عشان يوم الانتهاء نفسه يعدّي والجملة تتغيّر. */
+  async function reconcileValidity() {
+    for (const o of OFFERS) {
+      const st = offerState(o);
+      await pool.query(
+        `UPDATE mk_offers SET validity = $2, active = $3, updated_at = NOW()
+          WHERE offer_id = $1 AND (validity IS DISTINCT FROM $2 OR active IS DISTINCT FROM $3)`,
+        [o.id, validityText(o.id), st.active]
       );
     }
   }
+  setInterval(() => { reconcileValidity().catch(() => {}); }, 3600_000).unref?.();
   ensureSchema()
     .then(() => console.log("[hub] schema ready"))
     .catch((e) => console.error("[hub] schema failed:", e.message));
@@ -224,12 +278,30 @@ export function register(app, ctx) {
   });
 
   /* ═══ ٣) العروض ═════════════════════════════════════════════════════════ */
-  const offerRow = (r) => ({
-    id: r.id, name: r.name, price: Number(r.price) || 0,
-    contents: r.contents || "", validity: r.validity || "",
-    channels: r.channels || "all", active: r.active !== false,
-    sort: r.sort || 0, updatedAt: r.updated_at,
-  });
+  /* الصلاحية بتتقرا من offers.js لو الصف مربوط بعرض متسجّل هناك — مش من
+     العمود. العمود ممكن يبقى قديم (زرع قديم، أو تعديل يدوي)؛ offers.js
+     مش ممكن، لأنه هو اللي كل السطوح التانية بتقرا منه. */
+  const offerRow = (r) => {
+    const reg = r.offer_id ? offerById(r.offer_id) : null;
+    const st = reg ? offerState(reg) : null;
+    return {
+      id: r.id, name: r.name, price: Number(r.price) || 0,
+      contents: r.contents || "",
+      validity: reg ? validityText(reg.id) : (r.validity || ""),
+      channels: r.channels || "all",
+      active: st ? st.active : r.active !== false,
+      sort: r.sort || 0, updatedAt: r.updated_at,
+      // الحقول دي بتخلي الواجهة تقدر تعرض «فاضل كذا يوم» أو تشطب العرض
+      // المنتهي، بدل ما تعتمد على قراءة جملة عربية.
+      offerId: r.offer_id || "",
+      until: reg?.until || null,
+      daysLeft: st ? st.daysLeft : null,
+      expired: st ? st.ended : false,
+      dineInOnly: reg ? !!reg.dineInOnly : null,
+      // مصدر التاريخ — عشان اللي بيكتب الإعلان يعرف إنه مش قابل للتعديل هنا.
+      validityLocked: !!reg,
+    };
+  };
 
   app.get("/api/marketing/offers", async (c) => {
     const err = await requireAdmin(c); if (err) return err;

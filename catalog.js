@@ -14,7 +14,7 @@
    storefront can deep-link into the item sheet.
 ═══════════════════════════════════════════════════════════════════════════ */
 
-import { activeOffers, publicOffer } from "./offers.js";
+import { activeOffers, catalogOffers, publicOffer } from "./offers.js";
 
 const STORE_BASE = process.env.CATALOG_MENU_BASE || process.env.STOREFRONT_PUBLIC_URL || "https://freshcuts.sa";
 const BRAND = "Fresh Cuts";
@@ -151,7 +151,9 @@ async function fetchMenu() {
   }
   // العروض المسجّلة والشغّالة النهاردة بتتحط بعد أصناف المنيو عشان تاخد صورة
   // مستعارة من فئة "Offers" لو موجودة (ميتا بترفض صف من غير صورة).
-  for (const o of activeOffers()) {
+  // catalogOffers() مش activeOffers(): صينية اللمة عرض شغّال لكنه **صنف في
+  // المنيو** أصلاً (id 121)، فصف تاني ليه هنا = id مكرر في الـfeed.
+  for (const o of catalogOffers()) {
     const r = offerRow(o);
     r.title = withNote(r.title).slice(0, 200);
     r.description = withNote(r.description).slice(0, 500);

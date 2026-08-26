@@ -1,5 +1,5 @@
 /* ═══════════════════════════════════════════════════════════════════════════
-   OFFERS — التعريف الوحيد للعروض اللي مش أصناف في نقطة البيع.
+   OFFERS — التعريف الوحيد لعروض الصالة: سعرها، تاريخ انتهائها، وإزاي تتقاس.
 
    ── ليه الملف ده موجود ───────────────────────────────────────────────────
    عرض «بيتزا + باستا + كريب بـ٧٠ ر.س» مش صنف في TabSense ومش هيبقى صنف:
@@ -17,6 +17,19 @@
      • شريط العروض في المتجر order.o2m8.me     → server.py بينده /api/offers
      • تقويم المحتوى content.js                 → أفكار العرض بتختفي بعد انتهائه
      • فحص النظام systemcheck.js                → بيقيس إن العرض متسجّل وشغّال
+     • جدول mk_offers في مركز التسويق          → hub.js بيقرا التاريخ من هنا
+
+   ── نوعين من العروض، بصمتين مختلفتين ─────────────────────────────────────
+   بعد ما عمر قال إن **العرضين** آخرهم ٣١ أغسطس، بقى في الملف ده عرضين:
+
+     • combo70 — مش صنف في نقطة البيع. محتاج صف كتالوج خاص بيه، وبصمته
+       تركيبة (`detect.mode = "components"`).
+     • lamma (صينية اللمة) — **صنف حقيقي** في نقطة البيع (id 121). الكتالوج
+       بياخده من المنيو لوحده فمالوش صف هنا (`catalogRow: false`)، وبصمته
+       اسم السطر في الفاتورة (`detect.mode = "item"`) — دقيقة مش تقريبية.
+
+   يعني وجود عرض هنا **مش** معناه إنه مش صنف في نقطة البيع؛ معناه إن ده
+   المكان اللي بيتقرر فيه إمتى يقع، وإزاي يتقاس.
 
    ── الانتهاء بيتنفّذ لوحده ────────────────────────────────────────────────
    العرض شغّال في الصالة **لحد آخر أغسطس ٢٠٢٦**. مفيش سطح بيتحكم في ده بإيده:
@@ -29,7 +42,7 @@
    غرض العرض المعلن هو **اكتساب عملاء جدد**، فالغرض ده لازم يتقاس مش يتفترض.
    العرض مش صنف، فمالوش سطر باسمه في الفاتورة — لكن ليه بصمة: طلب فيه صنف من
    البيتزا وصنف من الباستا وصنف من الكريب، ومجموع التلات سطور **بعد خصم
-   الفاتورة** يساوي ٧٠. شوف comboImpact() تحت لحدود الطريقة دي بالظبط.
+   الفاتورة** يساوي ٧٠. شوف offerImpact() تحت لحدود الطريقة دي بالظبط.
 ═══════════════════════════════════════════════════════════════════════════ */
 
 /* بنستورد قواعد الأعمال من analytics.js بدل ما نكتب نسخة تانية منها. تعريفين
@@ -86,10 +99,57 @@ export const OFFERS = [
        المجموع يوصل ٧٠. مفيش صنف اسمه كده في المنيو ومش المفروض يتعمل —
        التسجيل هنا هو اللي بيوثّق السعر، مش صنف وهمي في نقطة البيع. */
     ringsAs: "manual_line_discount",
+    /* صف مستقل في feed.csv: العرض ده **مش** صنف في نقطة البيع، فلو ماحطناش
+       صفه بإيدينا مش هيبقى موجود في الكتالوج أصلاً. */
+    catalogRow: true,
+    detect: { mode: "components" },
     components: [
       { category: "Pizza", label: "بيتزا" },
       { category: "Pasta", label: "باستا" },
       { category: "crepes", label: "كريب" },
+    ],
+  },
+  /* ── صينية اللمة ────────────────────────────────────────────────────────
+     العرض ده **صنف حقيقي** في نقطة البيع (product id 121، فئة "Offers")،
+     على عكس عرض الـ٧٠. يعني الكتالوج بياخده من المنيو لوحده — فلو زوّدنا
+     له صف تاني هنا الـfeed هيبقى فيه id مكرّر وميتا بترفض المكرر. عشان كده
+     `catalogRow: false`: العرض متسجّل هنا عشان **التاريخ** و**القياس**، مش
+     عشان صف كتالوج.
+
+     ليه اتسجّل هنا أصلاً؟ لأن عمر قال بالنص إن العرضين آخرهم ٣١ أغسطس. قبل
+     كده كان مكتوب في جدول mk_offers إنه «سارٍ حاليًا — من غير تاريخ انتهاء»،
+     وده بقى غلط من ساعة ما اتقال الكلام ده. لمّا العرض يبقى متسجّل هنا،
+     `activeOffers()` بتسقطه يوم ١ سبتمبر من الشريط ومن التقويم ومن حارس
+     الأسعار — من غير ما حد يفتكر.
+
+     ⚠️ ملحوظة تشغيلية: الصنف نفسه هيفضل في المنيو وفي نقطة البيع بعد ٣١
+     أغسطس لحد ما عمر يشيله أو يغيّر سعره — إسقاطه من هنا بيوقّف **الإعلان**
+     عنه، مش بيعه. ده مقصود: إحنا ما بنعدّلش منيو المطعم من هنا. */
+  {
+    id: "lamma",
+    productId: "121",
+    // نفس الاسم بالحرف اللي في المنيو ونقطة البيع. أي فرق حرف = حارس الأسعار
+    // مش هيلاقي الصنف، والقياس تحت مش هيشوف ولا طلب.
+    catalogTitle: "صينية اللمة 100 ريال",
+    title: "صينية اللمة",
+    desc: "١٥ قطعة مشوية — ٦ كفتة + ٣ طرب + ٤ شيش طاووق + ٢ صدور مشوية، ومعاهم حواوشي وبطاطس وأرز وسلطة وطحينة. داخل الصالة فقط",
+    emoji: "🍖",
+    image: "",                 // صورة الصنف بتيجي من المنيو نفسه
+    price: 100,
+    currency: "SAR",
+    dineInOnly: true,
+    goal: "acquisition",
+    from: null,
+    until: "2026-08-31",
+    ringsAs: "pos_item",
+    catalogRow: false,
+    /* البصمة هنا أبسط بكتير من عرض الـ٧٠: سطر باسم الصنف في الفاتورة. مفيش
+       تخمين ولا شباك سعر — يا موجود يا لأ. */
+    detect: { mode: "item", names: ["صينية اللمة 100 ريال"] },
+    components: [
+      { label: "٦ كفتة" }, { label: "٣ طرب" }, { label: "٤ شيش طاووق" },
+      { label: "٢ صدور مشوية" }, { label: "حواوشي" },
+      { label: "بطاطس وأرز وسلطة وطحينة" },
     ],
   },
 ];
@@ -119,6 +179,12 @@ export function offerState(o, now = new Date()) {
 export function activeOffers(now = new Date()) {
   return OFFERS.filter((o) => offerState(o, now).active);
 }
+
+/* العروض اللي محتاجة **صف خاص بيها** في feed.csv. العرض اللي هو أصلاً صنف
+   في المنيو (صينية اللمة) بيتسحب من المنيو، فصف تاني ليه هنا معناه id مكرر
+   في الـfeed — وميتا بترفض المكرر وبتسيب واحد منهم بالعشوائي. */
+export const catalogOffers = (now = new Date()) =>
+  activeOffers(now).filter((o) => o.catalogRow !== false);
 
 export const offerById = (id) => OFFERS.find((o) => o.id === id) || null;
 
@@ -300,72 +366,150 @@ export function register(app, ctx, deps = {}) {
        سطور من تلات فئات بعينها) من غير ما نخسر ولا طلب حقيقي. */
     const tol = Math.abs(Number(c.req.query("tolerance") || 0.5)) || 0.5;
     try {
-      return c.json({ ok: true, ...(await comboImpact(offer, { from, to, tol })) });
+      return c.json({ ok: true, ...(await offerImpact(offer, { from, to, tol })) });
     } catch (e) {
       return c.json({ ok: false, error: String(e.message || e) }, 500);
     }
   });
 
-  async function comboImpact(offer, { from, to, tol }) {
-    const wantedCats = offer.components.map((x) => x.category);
+  /* ── بصمة العرض في سطور الفواتير ────────────────────────────────────────
+     العرضين بصمتهم مختلفة اختلاف جوهري، فالدالة دي بترجّع الجزء المتغيّر بس
+     (CTE اسمه `picked` فيه عمود order_id) والباقي مشترك:
+
+       • mode "components" — عرض **مش** صنف في نقطة البيع (عرض الـ٧٠).
+         بندوّر على تركيبة: صنف واحد من كل فئة، والمجموع ناقص خصم الفاتورة
+         يساوي السعر ± شباك. تقريبية بطبيعتها — شوف caveats.
+
+       • mode "item" — عرض **هو** صنف في نقطة البيع (صينية اللمة، id 121).
+         السطر موجود باسمه في الفاتورة، فالبصمة هي الاسم نفسه. مفيش شباك سعر
+         ولا خصم يتحسب: العميل يقدر يزوّد مشروبات وحلو على نفس الفاتورة
+         والطلب يفضل «طلب صينية». ده مش تساهل — ده الصح: إحنا بنعدّ الطلبات
+         اللي فيها العرض، مش الفواتير اللي قيمتها ١٠٠ بالظبط. */
+  function detectPicked(offer, { catalogRows, itemNames, push, tol }) {
+    const mode = offer.detect?.mode || "components";
+
+    if (mode === "item") {
+      /* الأسماء المعلنة في التسجيل + اسم الكتالوج، وبنطابق بالبادئة عشان
+         «صينية اللمة 100 ريال - كبيرة» تتحسب. بنطابق على أسماء موجودة فعلاً
+         في الفواتير بس، فلو الصنف اتسمّى بشكل تاني خالص الرد بيقول
+         measurable: false بدل ما يرجّع صفر ويسيب القارئ يفهمه «فشل». */
+      const wanted = [...new Set([...(offer.detect.names || []), offer.catalogTitle])]
+        .map(norm).filter(Boolean);
+      const matched = itemNames.filter((raw) => {
+        const n = norm(raw);
+        return wanted.some((w) => n === w || n.startsWith(`${w} `));
+      });
+      if (!matched.length) {
+        return {
+          error: `مفيش ولا سطر في الفواتير اسمه «${offer.catalogTitle}» — يا إما الصنف`
+            + " اتسمّى بشكل تاني في نقطة البيع، يا إما لسه ماتباعش. القياس مش هيبقى صادق.",
+        };
+      }
+      const pNames = push(matched);
+      return {
+        itemsUsed: { [offer.catalogTitle]: matched.length },
+        matchedNames: matched,
+        cte: `picked AS (
+          SELECT i.order_id, sum(i.qty) AS units
+            FROM ts_order_items i
+           WHERE i.amount > 0 AND i.name = ANY(${pNames}::text[])
+           GROUP BY 1
+        )`,
+        method:
+          `طلب جوّه المطعم (مش تطبيق توصيل) فيه سطر باسم «${offer.catalogTitle}» في الفاتورة.`
+          + " الاسم متطابق مع صنف حقيقي في نقطة البيع، فمفيش استنتاج ولا شباك سعر هنا.",
+        caveats: [
+          "الطلب بيتعدّ لو فيه الصنف — حتى لو الفاتورة فيها أصناف تانية معاه. ده مقصود:"
+          + " متوسط الفاتورة تحت بيقيس **قيمة الطلب اللي فيه العرض**، مش سعر العرض.",
+          "سطور الفواتير محفوظة من ٢٠٢٦-٠٥ وطالع؛ أي طلب قبل كده غير قابل للقياس أصلاً.",
+          "سطر بقيمة صفر (ضيافة أو تصحيح) مش داخل في العد.",
+        ],
+      };
+    }
+
+    // ── الوضع الافتراضي: التركيبة ──────────────────────────────────────
+    const wantedCats = offer.components.map((x) => x.category).filter(Boolean);
+    const byCat = categoriseNames(itemNames, catalogRows, wantedCats);
+    const lists = wantedCats.map((cat) => byCat.get(cat) || []);
+    if (lists.some((l) => !l.length)) {
+      return {
+        error: `مفيش أصناف متطابقة في الفواتير لواحدة من فئات العرض (${wantedCats
+          .map((cat, i) => `${cat}: ${lists[i].length}`).join("، ")}) — القياس مش هيبقى صادق.`,
+      };
+    }
+    const partCase = wantedCats
+      .map((cat, i) => `WHEN i.name = ANY(${push(lists[i])}::text[]) THEN '${cat}'`).join(" ");
+    const pTol = push(tol);
+    const pPrice = push(offer.price);
+    return {
+      itemsUsed: Object.fromEntries(wantedCats.map((cat, i) => [cat, lists[i].length])),
+      cte: `parts AS (
+          SELECT i.order_id, CASE ${partCase} END AS part, i.qty, i.amount
+            FROM ts_order_items i WHERE i.amount > 0
+        ),
+        combo AS (
+          SELECT order_id, count(DISTINCT part)::int AS parts,
+                 sum(qty) AS part_qty, sum(amount) AS part_amount
+            FROM parts WHERE part IS NOT NULL GROUP BY 1
+        ),
+        picked AS (
+          SELECT cb.order_id, cb.part_qty AS units
+            FROM combo cb JOIN ts_orders po ON po.order_id = cb.order_id
+           WHERE cb.parts = ${wantedCats.length}
+             AND cb.part_qty = ${wantedCats.length}
+             AND abs((cb.part_amount - po.discount_incl) - ${pPrice}::numeric) <= ${pTol}::numeric
+        )`,
+      method:
+        "طلب جوّه المطعم (مش تطبيق توصيل) فيه صنف واحد بالظبط من كل فئة من فئات العرض، "
+        + `ومجموع التلات سطور بسعر المنيو ناقص خصم الفاتورة = ${offer.price} ± ${tol} ر.س. `
+        + "الأصناف متعرّفة من الكتالوج الحي، مش من قايمة أسماء مكتوبة بالإيد.",
+      caveats: [
+        "خصم الفاتورة رقم واحد للطلب كله. لو الكاشير خصم على العرض وعلى صنف تاني في نفس"
+        + " الفاتورة، المعادلة بتقع تحت السعر والطلب بيضيع من العد — يعني الرقم ده **حد أدنى**.",
+        "سطور الفواتير محفوظة من ٢٠٢٦-٠٥ وطالع؛ أي طلب قبل كده غير قابل للقياس أصلاً.",
+        "موجب كاذب ممكن لو طلب جمع التلات أصناف صدفة وخصم غير مرتبط وقع في نفس الشباك.",
+      ],
+    };
+  }
+
+  async function offerImpact(offer, { from, to, tol }) {
     const [catalogRows, nameRows, apps] = await Promise.all([
       menuRows(),
       pool.query(`SELECT DISTINCT name FROM ts_order_items WHERE amount > 0`),
       deliveryApps(),
     ]);
-    const byCat = categoriseNames(nameRows.rows.map((r) => r.name), catalogRows, wantedCats);
-    const lists = wantedCats.map((cat) => byCat.get(cat) || []);
-    if (lists.some((l) => !l.length)) {
-      return {
-        measurable: false,
-        why: `مفيش أصناف متطابقة في الفواتير لواحدة من فئات العرض (${wantedCats
-          .map((cat, i) => `${cat}: ${lists[i].length}`).join("، ")}) — القياس مش هيبقى صادق.`,
-      };
-    }
 
-    // كل سطر بينتمي لفئة واحدة من فئات العرض (أو لا شيء).
-    const partCase = wantedCats
-      .map((cat, i) => `WHEN i.name = ANY($${i + 3}::text[]) THEN '${cat}'`).join(" ");
-    const nParams = wantedCats.length + 2;      // $1 from, $2 to, ثم القوايم
-    const pApps = `$${nParams + 1}::text[]`;
-    const pTol = `$${nParams + 2}::numeric`;
-    const pPrice = `$${nParams + 3}::numeric`;
-    const params = [from, to, ...lists, apps, tol, offer.price];
+    /* ترقيم البارامترات بيتبني وإحنا ماشيين بدل ما يتعدّ بالإيد — العدّ
+       اليدوي هو اللي بيكسر أول ما يتزوّد وضع تاني للبصمة. */
+    const params = [from, to];
+    const push = (v) => { params.push(v); return `$${params.length}`; };
+
+    const det = detectPicked(offer, {
+      catalogRows, itemNames: nameRows.rows.map((r) => r.name), push, tol,
+    });
+    if (det.error) return { measurable: false, why: det.error };
+    const pApps = `${push(apps)}::text[]`;
 
     const sql = `
-      WITH parts AS (
-        SELECT i.order_id,
-               CASE ${partCase} END AS part,
-               i.qty, i.amount
-          FROM ts_order_items i
-         WHERE i.amount > 0
-      ),
-      combo AS (
-        SELECT order_id,
-               count(DISTINCT part)::int AS parts,
-               sum(qty) AS part_qty,
-               sum(amount) AS part_amount
-          FROM parts WHERE part IS NOT NULL GROUP BY 1
-      ),
+      WITH ${det.cte},
       hits AS (
-        SELECT o.order_id, o.calendar_day, o.total, o.order_option,
+        SELECT o.order_id, o.calendar_day, o.total, o.order_option, pk.units,
                ${IDENT_SQL} AS ident
           FROM ts_orders o
-          JOIN combo cb ON cb.order_id = o.order_id
+          JOIN picked pk ON pk.order_id = o.order_id
           LEFT JOIN order_sources s ON s.order_id = o.order_id
           LEFT JOIN ts_customers tc ON tc.customer_id = o.customer_id
          WHERE o.calendar_day BETWEEN $1::date AND $2::date AND ${SALES_ONLY}
-           AND cb.parts = ${wantedCats.length}
-           AND cb.part_qty = ${wantedCats.length}
            AND NOT ${deliverySql(pApps)}
-           AND abs((cb.part_amount - o.discount_incl) - ${pPrice}) <= ${pTol}
       ),
       ${FIRST_ORDER_DAY_CTE}
       SELECT
         (SELECT count(*) FROM hits)::int AS hits,
+        (SELECT COALESCE(sum(units), 0) FROM hits) AS units,
         (SELECT count(*) FROM hits WHERE order_option ILIKE '%dine%')::int AS dine_in_hits,
         (SELECT COALESCE(sum(total), 0) FROM hits) AS hits_revenue,
         (SELECT count(*) FROM hits WHERE ident IS NOT NULL)::int AS hits_identified,
+        (SELECT count(DISTINCT ident) FROM hits WHERE ident IS NOT NULL)::int AS hits_people,
         (SELECT count(*) FROM hits h JOIN firsts f ON f.pn = h.ident
           WHERE f.first_day = h.calendar_day)::int AS hits_new,
         (SELECT count(*) FROM hits h JOIN firsts f ON f.pn = h.ident
@@ -393,44 +537,41 @@ export function register(app, ctx, deps = {}) {
             AND ${IDENT_SQL} IS NOT NULL)::int AS all_inhouse_identified`;
 
     const r = (await pool.query(sql, params)).rows[0];
-    const days = (await pool.query(
-      `WITH parts AS (
-         SELECT i.order_id, CASE ${partCase} END AS part, i.qty, i.amount
-           FROM ts_order_items i WHERE i.amount > 0
-       ),
-       combo AS (
-         SELECT order_id, count(DISTINCT part)::int AS parts, sum(qty) AS part_qty,
-                sum(amount) AS part_amount
-           FROM parts WHERE part IS NOT NULL GROUP BY 1
-       )
-       SELECT o.calendar_day AS day, count(*)::int AS orders,
-              COALESCE(sum(o.total), 0) AS revenue
-         FROM ts_orders o JOIN combo cb ON cb.order_id = o.order_id
-        WHERE o.calendar_day BETWEEN $1::date AND $2::date AND ${SALES_ONLY}
-          AND cb.parts = ${wantedCats.length} AND cb.part_qty = ${wantedCats.length}
-          AND NOT ${deliverySql(pApps)}
-          AND abs((cb.part_amount - o.discount_incl) - ${pPrice}) <= ${pTol}
-        GROUP BY 1 ORDER BY 1`, params
-    )).rows;
+
+    const days = (await pool.query(`
+      WITH ${det.cte}
+      SELECT o.calendar_day AS day, count(*)::int AS orders,
+             COALESCE(sum(pk.units), 0) AS units,
+             COALESCE(sum(o.total), 0) AS revenue
+        FROM ts_orders o JOIN picked pk ON pk.order_id = o.order_id
+       WHERE o.calendar_day BETWEEN $1::date AND $2::date AND ${SALES_ONLY}
+         AND NOT ${deliverySql(pApps)}
+       GROUP BY 1 ORDER BY 1`, params)).rows;
 
     const n = (v) => { const x = Number(v); return Number.isFinite(x) ? x : 0; };
     const money = (v) => Math.round(n(v) * 100) / 100;
     const hits = n(r.hits);
     const ident = n(r.hits_identified);
     const allIdent = n(r.all_inhouse_identified);
+    const st = offerState(offer);
 
     return {
       measurable: true,
       offer: publicOffer(offer),
-      window: { from, to, tolerance: tol },
-      itemsUsed: Object.fromEntries(wantedCats.map((cat, i) => [cat, lists[i].length])),
+      window: { from, to, tolerance: offer.detect?.mode === "item" ? null : tol },
+      itemsUsed: det.itemsUsed,
+      matchedNames: det.matchedNames || undefined,
       found: {
         orders: hits,
+        // «قطع مباعة» ليها معنى في وضع الصنف بس. في وضع التركيبة الرقم ده
+        // بيبقى دايمًا عدد الفئات (٣) — يعني مش معلومة، فبنسكت بدل ما نقوله.
+        units: offer.detect?.mode === "item" ? n(r.units) : null,
         dineInTagged: n(r.dine_in_hits),
         takeAwayTagged: hits - n(r.dine_in_hits),
         revenue: money(r.hits_revenue),
         avgTicket: hits ? money(n(r.hits_revenue) / hits) : null,
         identified: ident,
+        people: n(r.hits_people),
         newCustomerOrders: n(r.hits_new),
         returningCustomerOrders: n(r.hits_returning),
         newShareOfIdentified: ident ? Math.round((n(r.hits_new) / ident) * 1000) / 10 : null,
@@ -447,9 +588,16 @@ export function register(app, ctx, deps = {}) {
         newShareOfIdentified: allIdent
           ? Math.round((n(r.all_inhouse_new) / allIdent) * 1000) / 10 : null,
       },
+      /* الفرق في متوسط الفاتورة — الرقم اللي المالك بيسأل عنه فعلاً:
+         «الطلب اللي فيه العرض بيفرق قد إيه عن الطلب العادي؟» */
+      lift: hits && n(r.all_inhouse_avg) ? {
+        avgTicketVsNormal: money(n(r.hits_revenue) / hits - n(r.all_inhouse_avg)),
+        avgTicketMultiple: Math.round((n(r.hits_revenue) / hits / n(r.all_inhouse_avg)) * 100) / 100,
+      } : null,
       daily: days.map((d) => ({
         day: d.day instanceof Date ? d.day.toISOString().slice(0, 10) : String(d.day).slice(0, 10),
         orders: n(d.orders),
+        units: offer.detect?.mode === "item" ? n(d.units) : null,
         revenue: money(d.revenue),
       })),
       /* حاجات الرقم بيقولها والمالك المفروض يشوفها، مش استنتاجات إحنا
@@ -464,16 +612,16 @@ export function register(app, ctx, deps = {}) {
           ? ["مفيش ولا طلب بالبصمة دي في المدة — يا إما العرض مش بيتباع، يا إما الكاشير"
              + " بيدقّه بطريقة تانية خالص. متقولش إنه فشل قبل ما تسأل الكاشير."]
           : []),
+        ...(st.ended
+          ? [`العرض ده انتهى يوم ${offer.until} — الأرقام دي تاريخ، مش حالة شغّالة.`]
+          : st.daysLeft != null && st.daysLeft <= 7
+            ? [`فاضل ${st.daysLeft} يوم على انتهاء العرض (${offer.until}).`
+               + " قرار التمديد أو الإيقاف لازم يتاخد قبل اليوم ده، مش بعده."]
+            : []),
       ],
-      method:
-        "طلب جوّه المطعم (مش تطبيق توصيل) فيه صنف واحد بالظبط من كل فئة من فئات العرض، "
-        + `ومجموع التلات سطور بسعر المنيو ناقص خصم الفاتورة = ${offer.price} ± ${tol} ر.س. `
-        + "الأصناف متعرّفة من الكتالوج الحي، مش من قايمة أسماء مكتوبة بالإيد.",
+      method: det.method,
       caveats: [
-        "خصم الفاتورة رقم واحد للطلب كله. لو الكاشير خصم على العرض وعلى صنف تاني في نفس"
-        + " الفاتورة، المعادلة بتقع تحت السعر والطلب بيضيع من العد — يعني الرقم ده **حد أدنى**.",
-        "سطور الفواتير محفوظة من ٢٠٢٦-٠٥ وطالع؛ أي طلب قبل كده غير قابل للقياس أصلاً.",
-        "موجب كاذب ممكن لو طلب جمع التلات أصناف صدفة وخصم غير مرتبط وقع في نفس الشباك.",
+        ...det.caveats,
         "«جديد» هنا بتعريف analytics.js نفسه: طلب في المدة و أول يوم طلب له = يوم الطلب."
         + " الطلبات اللي مالهاش رقم موبايل مش داخلة في نسبة الجدد (اتحسبت على المعرَّفين بس).",
       ],
@@ -481,5 +629,5 @@ export function register(app, ctx, deps = {}) {
   }
 
   console.log(`[offers] routes ready — ${activeOffers().length}/${OFFERS.length} عرض شغّال`);
-  return { activeOffers, offerById, publicOffer, comboImpact };
+  return { activeOffers, catalogOffers, offerById, publicOffer, offerImpact };
 }
