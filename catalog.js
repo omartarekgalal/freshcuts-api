@@ -15,6 +15,7 @@
 ═══════════════════════════════════════════════════════════════════════════ */
 
 import { activeOffers, catalogOffers, publicOffer } from "./offers.js";
+import { applyCopy, auditRows, pendingDashboardEdits, OPEN_QUESTIONS } from "./menu-rules.js";
 
 const STORE_BASE = process.env.CATALOG_MENU_BASE || process.env.STOREFRONT_PUBLIC_URL || "https://freshcuts.sa";
 const BRAND = "Fresh Cuts";
@@ -141,6 +142,17 @@ async function fetchMenu() {
         image: it.image || "",
         category,
       };
+      /* قواعد عمر عن الكاتيجوري (menu-rules.js). أوصاف نقطة البيع مش قابلة
+         للتعديل من أي API عندنا — /products مابيرجّعش حقل الوصف و
+         /products/{id}/edit بيرجّع 500 — فلحد ما عمر يصلّحها في الداشبورد،
+         الطبقة دي بتخلّي الكاتالوج اللي رايح لميتا/تيك توك/سناب يقول الصح.
+         بتشفى نفسها: أول ما وصف نقطة البيع يتصلّح، الشرط يفشل والطبقة تسيبه. */
+      const copy = applyCopy(row);
+      if (copy.overlaid) {
+        row.description = copy.description.slice(0, 500);
+        row.copyOverlay = { source: copy.source, posSays: (it.description || it.local_description || "").trim() };
+      }
+
       if (isDineInOnly({ ...it, title: row.title })) {
         row.dineIn = true;
         row.title = withNote(row.title).slice(0, 200);
@@ -327,6 +339,30 @@ export function register(app, ctx) {
       error: e || cache.error,
       feedUrl: FEED_URL,
       metaPush: lastPush,
+    });
+  });
+
+  /* فحص المنيو ضد قواعد عمر عن الكاتيجوري (menu-rules.js).
+     عام بقصد: الحُرّاس بتوع مجلد التصميم بتقراه من بره، ومحتاجينه من غير
+     توكن زي feed.csv بالظبط. مفيهوش أي حاجة مش منشورة أصلاً في الفيد. */
+  app.get("/api/catalog/audit", async (c) => {
+    let rows;
+    try { rows = await getRows(); }
+    catch (e) { return c.json({ ok: false, error: e.message }, 503); }
+    const findings = auditRows(rows);
+    const pending = pendingDashboardEdits(rows);
+    c.header("Cache-Control", "public, max-age=300");
+    return c.json({
+      ok: findings.filter((f) => f.level === "error").length === 0,
+      items: rows.length,
+      errors: findings.filter((f) => f.level === "error").length,
+      warnings: findings.filter((f) => f.level === "warn").length,
+      findings,
+      /* الأصناف اللي الكاتالوج بيصلّحها دلوقتي بطبقة النصوص = بالظبط اللستة
+         اللي عمر لازم يلصقها في داشبورد TabSense عشان المتجر ونقطة البيع
+         يقولوا نفس الكلام. */
+      pendingDashboardEdits: pending,
+      openQuestions: OPEN_QUESTIONS,
     });
   });
 
