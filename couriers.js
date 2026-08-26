@@ -330,7 +330,39 @@ const leajlak = {
   },
 };
 
-export const PROVIDERS = { flyingarrow, leajlak };
+/* ═══ MANUAL — المرحلة الأولى: المزوّد هو الكاشير ═══════════════════════════
+   قرار عمر (2026-08-26): «العميل هيدخل يطلب ويدفع، ويرجع الكاشير يدخل الأوردر
+   بشكل يدوي على الداشبورد عشان المندوب يجي المطعم ويوصل الطلب».
+
+   فالمرحلة دي مفيهاش API توصيل خالص. بنسجّل المزوّد ده عشان حاجتين:
+
+   1) `dispatch` بترمي دايماً. مفيش أي طريق في الكود يقدر يبعت طلب لشركة
+      توصيل وإحنا في الوضع اليدوي — حتى لو حد غلط في الإعدادات.
+   2) الرجوع الافتراضي في delivery.js هو `PROVIDERS[sh.provider] ||
+      PROVIDERS.flyingarrow`. من غير المزوّد ده، شحنة يدوية (والمرجع فيها
+      رقم كتبه الكاشير بإيده من لوحة «أجلك») كانت هتتتبّع وتتلغى على API
+      Flying Arrow برقم مش بتاعهم أصلاً. دلوقتي بترجع null بهدوء.           */
+const manual = {
+  id: "manual",
+  label: "يدوي (الكاشير)",
+  configured: () => true,      // مفيش مفاتيح تنقص — الكاشير موجود
+  missing: () => [],
+  needsRef: false,
+  manual: true,
+  async dispatch() {
+    throw Object.assign(
+      new Error("الوضع اليدوي: الكاشير هو اللي بيدخّل الطلب على لوحة شركة التوصيل — مفيش إرسال آلي"),
+      { code: "MANUAL_DISPATCH_ONLY" });
+  },
+  async track() { return null; },   // مفيش عندهم API نسأله
+  async cancel() { return { fee: null, refund: null, raw: { manual: true } }; },
+  parseWebhook() { return null; },  // مفيش ويبهوك ييجي لشحنة يدوية
+  async reference() {
+    return { cities: [], vehicles: [], note: "الوضع اليدوي — مفيش تكامل مع شركة توصيل." };
+  },
+};
+
+export const PROVIDERS = { flyingarrow, leajlak, manual };
 
 /* المزوّد الفعّال. الإعدادات هي المرجع والمتغيّر البيئي احتياطي.
 

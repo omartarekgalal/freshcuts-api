@@ -29,6 +29,7 @@
 ═══════════════════════════════════════════════════════════════════════════ */
 
 import * as tsstore from "./tsstore.js";
+import { msisdn, readableAddress } from "./couriers.js";
 
 const env = (k, d) => (process.env[k] || d || "").toString().trim();
 const r2 = (v) => Math.round((Number(v) || 0) * 100) / 100;
@@ -46,10 +47,152 @@ export const STAGES = {
   on_the_way: { label: "طلبك في الطريق إليك", step: 4 },
   delivered: { label: "تم التوصيل — بالهنا والشفا", step: 5 },
   rejected_refunded: { label: "اعتذر المطعم عن الطلب — تم استرجاع المبلغ", step: -1 },
+  /* ما نقولش «تم الاسترجاع» والاسترجاع فشل.
+     كان في الكود القديم مسار بيحط الطلب على rejected_refunded حتى لما
+     MakeRefund بترمي — يعني العميل ياخد رسالة «تم استرجاع المبلغ كاملاً
+     لبطاقتك» وفلوسه لسه معانا. ده أسوأ من عطل تقني: ده وعد كاذب بفلوس.
+     الحالة دي بتفصل الحقيقة، وبتفضل ظاهرة كإنذار أحمر في اللوحة لحد ما
+     حد يسترجع بإيده. */
+  refund_failed: { label: "جاري استرجاع مبلغك — فريقنا بيتابع معك", step: -1 },
   courier_cancelled: { label: "تعثر التوصيل — جاري المتابعة", step: -1 },
   paid_pos_failed: { label: "تم الدفع — جاري تأكيد الطلب", step: 1 },
   expired: { label: "انتهت صلاحية الطلب", step: -1 },
 };
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   الاسترجاع — القرار متفصّل عن التنفيذ
+
+   قاعدة عمر (2026-08-11): الكاشير يرفض طلب مدفوع ⇒ استرجاع تلقائي من غير
+   موافقة. والفلوس دي فلوس عملاء حقيقيين، فالمنطق لازم يتجرّب أوفلاين من
+   غير MyFatoorah ولا قاعدة بيانات — عشان كده القرار دالة صافية.
+
+   القواعد:
+     • مرة واحدة بس. refund_id موجود ⇒ خلاص. (MakeRefund مش idempotent —
+       نداءان معناهم فلوس مرتين.)
+     • من غير mf_payment_id مفيش حاجة تترجع: الطلب ما وصلش لدفع أصلاً.
+     • المبلغ = `total` (أكل + توصيل + بقشيش) — اللي العميل دفعه بالظبط،
+       مش `subtotal`. غلطة هنا معناها إن العميل بيدفع تمن التوصيلة على
+       طلب اعتذرنا عنه.                                                     */
+export function refundDecision(row, { maxAttempts = 3 } = {}) {
+  if (!row) return { act: false, reason: "no_order" };
+  if (row.refund_id) return { act: false, reason: "already_refunded", refundId: row.refund_id };
+  if (!row.mf_payment_id) return { act: false, reason: "never_paid" };
+  const amount = Number(row.total) || 0;
+  if (!(amount > 0)) return { act: false, reason: "zero_amount" };
+  /* بعد محاولات فاشلة متكررة بنبطّل نجرّب: كل محاولة فيها احتمال إن
+     الاسترجاع نجح عندهم والرد ضاع في الطريق. بعد الحد ده الطلب بيفضل
+     أحمر في اللوحة عشان بني آدم يشوفه ويسترجع بإيده. */
+  if (Number(row.refund_attempts || 0) >= maxAttempts) {
+    return { act: false, reason: "max_attempts", attempts: Number(row.refund_attempts) };
+  }
+  return { act: true, paymentId: String(row.mf_payment_id), amount };
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   مراقب المهل (SLA) — شبكة الأمان للمرحلة اليدوية
+
+   المرحلة الأولى فيها بني آدم في النص: الكاشير لازم يفتح لوحة شركة التوصيل
+   ويكتب الطلب. والكاشير في عز الخدمة ممكن ينسى، أو ما يشوفش الشاشة، أو
+   يكون واقف على الكاسة. **والفلوس اتاخدت خلاص** — فطلب بيقع هنا مش
+   إزعاج، ده استرجاع وعميل ضايع.
+
+   الدالة صافية عن قصد: بتاخد صورة الطلب وترجّع درجة الخطورة والخطوة
+   المطلوبة، من غير قاعدة بيانات — فكل حالة اتفحصت في الاختبارات.
+
+   الدرجات:
+     1 = متأخر، الشاشة تولّع أحمر
+     2 = تجاوز، رسالة للمدير على جواله
+     3 = انتهى الوقت، تدخّل مالي (استرجاع)
+
+   ليه الاسترجاع التلقائي بيحصل في حالة واحدة بس؟
+   لو المطعم **ما قبلش** الطلب أصلاً، يبقى مفيش أكل اتعمل ومفيش كابتن
+   اتبعت — العميل قاعد مستني على الفاضي، والاسترجاع هو الحل الصح والآمن.
+   لكن لو المطعم قبل وجهّز الأكل، الاسترجاع التلقائي ممكن يرجّع فلوس طلب
+   الكابتن ماسكه في إيده. الحالة دي بتروح لبني آدم، مش لكود.               */
+export const DEFAULT_SLA = {
+  posFailMinutes: 5,          // مدفوع وما وصلش النظام
+  acceptMinutes: 8,           // في صندوق الطلبات الخارجية ومحدش قبله
+  acceptBreachMinutes: 15,
+  autoRefundNoAcceptMinutes: 25,  // ما اتقبلش خالص ⇒ استرجاع تلقائي
+  handoffMinutes: 10,         // اتقبل، والكاشير ما دخّلوش على لوحة الشركة
+  handoffBreachMinutes: 20,
+  pickupMinutes: 25,          // اتدخّل على اللوحة، والكابتن ما جاش
+  pickupBreachMinutes: 45,
+  deliverMinutes: 45,         // خرج للعميل وما وصلش
+  deliverBreachMinutes: 75,
+};
+
+export function slaCheck(o, cfg = {}, now = Date.now()) {
+  const s = { ...DEFAULT_SLA, ...(cfg || {}) };
+  const mins = (t) => (t ? Math.floor((now - new Date(t).getTime()) / 60000) : 0);
+  const age = mins(o.created_at);
+  const inStatus = mins(o.updated_at || o.created_at);
+  const none = { level: 0, code: null, minutes: age };
+
+  const at = (level, code, message, minutes, action) => ({ level, code, message, minutes, action: action || null });
+
+  switch (o.status) {
+    case "paid":
+    case "paid_pos_failed":
+      if (age >= s.posFailMinutes) {
+        return at(2, "pos_stuck", `مدفوع من ${age} دقيقة ولسه ما وصلش النظام`, age, "retry_pos");
+      }
+      return none;
+
+    case "pos_created":
+      if (age >= s.autoRefundNoAcceptMinutes) {
+        return at(3, "never_accepted",
+          `${age} دقيقة والطلب ما اتقبلش — استرجاع تلقائي`, age, "auto_refund");
+      }
+      if (age >= s.acceptBreachMinutes) {
+        return at(2, "accept_breach", `${age} دقيقة ومحدش قبل الطلب`, age, "accept_now");
+      }
+      if (age >= s.acceptMinutes) {
+        return at(1, "accept_late", `${age} دقيقة في انتظار القبول`, age, "accept_now");
+      }
+      return none;
+
+    case "accepted":
+      if (o.option !== "delivery") return none;
+      if (inStatus >= s.handoffBreachMinutes) {
+        return at(2, "handoff_breach",
+          `${inStatus} دقيقة من القبول والطلب لسه ما اتدخّلش على لوحة شركة التوصيل`, inStatus, "manual_handoff");
+      }
+      if (inStatus >= s.handoffMinutes) {
+        return at(1, "handoff_late",
+          `${inStatus} دقيقة — ادخّل الطلب على لوحة شركة التوصيل`, inStatus, "manual_handoff");
+      }
+      return none;
+
+    case "courier_requested":
+    case "courier_assigned":
+      if (inStatus >= s.pickupBreachMinutes) {
+        return at(2, "pickup_breach", `${inStatus} دقيقة والكابتن ما استلمش الطلب`, inStatus, "chase_courier");
+      }
+      if (inStatus >= s.pickupMinutes) {
+        return at(1, "pickup_late", `${inStatus} دقيقة في انتظار الكابتن`, inStatus, "chase_courier");
+      }
+      return none;
+
+    case "on_the_way":
+      if (inStatus >= s.deliverBreachMinutes) {
+        return at(2, "deliver_breach", `${inStatus} دقيقة والطلب لسه ما وصلش العميل`, inStatus, "chase_courier");
+      }
+      if (inStatus >= s.deliverMinutes) {
+        return at(1, "deliver_late", `${inStatus} دقيقة في الطريق`, inStatus, "chase_courier");
+      }
+      return none;
+
+    case "refund_failed":
+      return at(3, "refund_failed", "فشل استرجاع مبلغ العميل — استرجع يدوياً من لوحة ماي فاتورة", inStatus, "manual_refund");
+
+    case "courier_cancelled":
+      return at(2, "delivery_failed", "تعثّر التوصيل — قرّر: إعادة إرسال ولا استرجاع", inStatus, "decide");
+
+    default:
+      return none;
+  }
+}
 
 /* naive per-IP limiter, same shape as funnel.js — checkout is not a hot path */
 const rl = new Map();
@@ -113,6 +256,13 @@ export function register(app, ctx, deps = {}) {
       -- actual answer, so "وقف ومش عارفين ليه" cannot happen again.
       ALTER TABLE shop_orders ADD COLUMN IF NOT EXISTS pos_attempts INT NOT NULL DEFAULT 0;
       ALTER TABLE shop_orders ADD COLUMN IF NOT EXISTS last_pos_error TEXT;
+      -- الاسترجاع (2026-08-26): عدّاد المحاولات عشان ما نفضلش نضرب على
+      -- MyFatoorah لما ترفض — MakeRefund مش idempotent، ومحاولة زيادة
+      -- ممكن ترجّع فلوس مرتين لو الرد الأول ضاع في الطريق بس نجح عندهم.
+      ALTER TABLE shop_orders ADD COLUMN IF NOT EXISTS refund_attempts INT NOT NULL DEFAULT 0;
+      -- سجل الإنذارات: كل درجة تصعيد تتبعت مرة واحدة لكل طلب، عشان المدير
+      -- ما يصحاش على عشرين رسالة عن نفس الطلب.
+      ALTER TABLE shop_orders ADD COLUMN IF NOT EXISTS alerts JSONB NOT NULL DEFAULT '{}'::jsonb;
       CREATE TABLE IF NOT EXISTS shop_coupons (
         code TEXT PRIMARY KEY,
         percent NUMERIC NOT NULL,
@@ -616,16 +766,39 @@ export function register(app, ctx, deps = {}) {
       `SELECT o.order_no, o.status, o.option, o.customer, o.phone_norm, o.address,
               o.items, o.subtotal, o.delivery_fee, o.tip, o.total, o.coupon,
               o.pos_order_id, o.notes, o.created_at, o.updated_at, o.last_pos_error,
-              s.status AS ship_status, s.driver AS ship_driver, s.fa_order_number, s.dispatch
+              o.alerts, o.refund_attempts,
+              s.status AS ship_status, s.driver AS ship_driver, s.fa_order_number, s.dispatch,
+              s.provider AS ship_provider, s.provider_ref AS ship_ref, s.cost AS ship_cost
          FROM shop_orders o
          LEFT JOIN LATERAL (
-           SELECT status, driver, fa_order_number, dispatch FROM dl_shipments
+           SELECT status, driver, fa_order_number, dispatch, provider, provider_ref, cost
+             FROM dl_shipments
             WHERE shop_order_no = o.order_no ORDER BY id DESC LIMIT 1) s ON TRUE
         WHERE o.status NOT IN ('pending_payment','expired')
           AND o.created_at > NOW() - ($1 || ' hours')::interval
         ORDER BY o.created_at DESC LIMIT 80`, [String(hours)])).rows;
+
+    /* الوضع + مهل التصعيد بيرجعوا مع كل تحديث: الشاشة لازم تعرف إحنا في
+       المرحلة اليدوية ولا الآلية عشان تعرض الأزرار الصح — مش تفترض. */
+    const settings = await getSettingsData();
+    const gate = await delivery.dispatchGate();
+    const sla = (settings.delivery || {}).sla || {};
+
     return c.json({
       ok: true, at: new Date().toISOString(),
+      mode: gate.mode, modeForced: gate.forced, modeSource: gate.source,
+      /* بيانات المرحلة اليدوية اللي الكاشير محتاجها في اللوحة الخارجية */
+      manualTarget: {
+        provider: (settings.delivery || {}).manualProviderLabel || "أجلك (4U)",
+        dashboardUrl: (settings.delivery || {}).manualDashboardUrl || null,
+        pickup: {
+          name: (settings.delivery || {}).pickupContactName || "فريش كتس",
+          phone: msisdn((settings.delivery || {}).pickupContactPhone || ""),
+          address: (settings.delivery || {}).pickupAddress || "فريش كتس — حي السلامة، دوار رامي، جدة",
+          lat: Number(process.env.TABSENSE_STORE_LAT || 21.5881404),
+          lng: Number(process.env.TABSENSE_STORE_LNG || 39.1521236),
+        },
+      },
       orders: rows.map((r) => ({
         orderNo: r.order_no, status: r.status, option: r.option,
         name: (r.customer || {}).name || null, phone: r.phone_norm,
@@ -635,12 +808,48 @@ export function register(app, ctx, deps = {}) {
         posOrderId: r.pos_order_id, notes: r.notes,
         createdAt: r.created_at, updatedAt: r.updated_at,
         posError: r.last_pos_error,
+        refundAttempts: Number(r.refund_attempts) || 0,
+
+        /* درجة التأخير — الشاشة بتلوّن وترتّب بيها، والرسالة مكتوبة
+           للكاشير مش للمبرمج. */
+        sla: slaCheck(r, sla),
+
+        /* ── حزمة النقل اليدوي ───────────────────────────────────────
+           كل حاجة الكاشير محتاج ينقلها للوحة «أجلك»، **بصيغتها النهائية**،
+           عشان ما يقعدش يحوّل أرقام في دماغه وهو واقف في عز الخدمة:
+             • الجوال بصيغة أجلك بالظبط: 9665XXXXXXXX من غير +
+             • الجوال المحلي للاتصال بالعميل
+             • العنوان سطر واحد جاهز للّصق
+             • الإحداثيات «lat,lng» — نسخة واحدة تتلزق في خانة الموقع
+           كل واحدة فيهم حقل مستقل عشان زرار «انسخ» ينسخ الحاجة لوحدها. */
+        handoff: r.option !== "delivery" ? null : {
+          name: (r.customer || {}).name || "عميل فريش كتس",
+          phone: msisdn(r.phone_norm),                    // 9665XXXXXXXX
+          phoneLocal: r.phone_norm ? "0" + r.phone_norm : null,
+          address: readableAddress(r.address || {}),
+          coords: (r.address || {}).latitude && (r.address || {}).longitude
+            ? `${(r.address).latitude},${(r.address).longitude}` : null,
+          mapsUrl: (r.address || {}).latitude && (r.address || {}).longitude
+            ? `https://www.google.com/maps/dir/?api=1&destination=${(r.address).latitude},${(r.address).longitude}`
+            : null,
+          total: Number(r.total),
+          // الكابتن ما بيحصّلش — الطلب مدفوع. أهم سطر في الشاشة كلها.
+          paid: true,
+          payNote: "مدفوع أونلاين — لا يُحصَّل من العميل",
+          notes: r.notes || "",
+          orderNo: r.order_no,
+        },
+
         courier: r.ship_status ? {
           status: r.ship_status, driver: r.ship_driver || null,
           orderNumber: r.fa_order_number || null,
           // «اتقبل الطلب» مش معناها «في كابتن» — الشاشة لازم تفرّق
           assigned: Boolean((r.dispatch || {}).assigned),
           note: (r.dispatch || {}).message || null,
+          provider: r.ship_provider || null,
+          manual: r.ship_provider === "manual",
+          ref: r.ship_ref || null,                 // رقم الطلب في لوحة الشركة
+          cost: r.ship_cost != null ? Number(r.ship_cost) : null,
         } : null,
       })),
     });
@@ -656,6 +865,16 @@ export function register(app, ctx, deps = {}) {
     if (!["accepted", "pos_created", "courier_requested"].includes(row.status)) {
       return c.json({ ok: false, error: "not_ready", status: row.status }, 409);
     }
+    /* في المرحلة اليدوية الزرار ده مقفول. delivery.dispatch() بترمي برضه
+       (البوابة الحقيقية)، بس بنرد رد واضح هنا عشان الشاشة تعرف تقول
+       للكاشير «ادخّل الطلب على لوحة الشركة» بدل رسالة خطأ عامة. */
+    const gate = await delivery.dispatchGate();
+    if (gate.mode !== "auto") {
+      return c.json({
+        ok: false, error: "manual_mode", mode: gate.mode, source: gate.source,
+        message: "المرحلة اليدوية: ادخّل الطلب على لوحة شركة التوصيل، وبعدين سجّله من زرار «سجّلت الطلب»",
+      }, 409);
+    }
     try {
       const res = await delivery.dispatch(row);
       if (row.status !== "courier_requested") await setStatus(row.order_no, "courier_requested");
@@ -663,6 +882,119 @@ export function register(app, ctx, deps = {}) {
     } catch (e) {
       return c.json({ ok: false, error: e.message });
     }
+  });
+
+  /* ═══ المرحلة الأولى: الكاشير بيقول للسيستم عمل إيه ═══════════════════
+     الكاشير بيفتح لوحة «أجلك»، يكتب الطلب، وبعدين يرجع هنا يسجّل الخطوة.
+     كل خطوة بتحرّك حالة الطلب اللي العميل شايفها — والقاعدة اللي محكومين
+     بيها: **ما نقولش للعميل حاجة ما حصلتش**.
+
+       handoff   → courier_requested  «بنطلب لك مندوب»  (صح: طلبنا فعلاً)
+       assigned  → courier_assigned   «المندوب في الطريق للمطعم»
+                   الزرار ده بيتضغط لما الكاشير يشوف الكابتن اتعيّن في
+                   لوحتهم — مش بيتحط تلقائي. عمر كان واضح إن ما ينفعش
+                   نقول «اتعيّن مندوب» ومحدش اتعيّن.
+       picked    → on_the_way         «طلبك في الطريق إليك»
+       delivered → delivered
+       failed    → courier_cancelled  + الطلب بيبان أحمر للإدارة
+
+     مفيش أي خطوة فيهم بتتحرك لوحدها. الوقت وحده ما بيرقّيش حالة. */
+  const MANUAL_TO_ORDER = {
+    handoff: "courier_requested",
+    assigned: "courier_assigned",
+    picked: "on_the_way",
+    delivered: "delivered",
+    cancelled: "courier_cancelled",
+  };
+
+  app.post("/api/shop/board/:orderNo/manual/:stage", async (c) => {
+    const err = await requireCashierOrAdmin(c); if (err) return err;
+    const stage = String(c.req.param("stage"));
+    const next = MANUAL_TO_ORDER[stage];
+    if (!next) return c.json({ ok: false, error: "bad_stage" }, 400);
+
+    const row = await getOrderRow(c.req.param("orderNo"));
+    if (!row) return c.json({ ok: false, error: "not_found" }, 404);
+    if (row.option !== "delivery") return c.json({ ok: false, error: "not_delivery" }, 400);
+
+    /* الطلب لازم يكون المطعم قبله قبل ما ندخّله على شركة التوصيل — الكابتن
+       ما يجيش لطلب لسه ما اتعملش. (بنسمح بـ pos_created عشان الكاشير
+       اللي بيقبل من شاشة الـPOS وبيسجّل هنا قبل ما الكنس يلحق يشوف.) */
+    const OK_FROM = {
+      handoff: ["pos_created", "accepted", "courier_requested"],
+      assigned: ["courier_requested", "courier_assigned"],
+      picked: ["courier_requested", "courier_assigned", "on_the_way"],
+      delivered: ["courier_requested", "courier_assigned", "on_the_way"],
+      cancelled: ["pos_created", "accepted", "courier_requested", "courier_assigned", "on_the_way"],
+    };
+    if (!OK_FROM[stage].includes(row.status)) {
+      return c.json({ ok: false, error: "wrong_stage", status: row.status }, 409);
+    }
+
+    const b = await c.req.json().catch(() => ({}));
+    let shipment;
+    try {
+      shipment = await delivery.manualEvent(row.order_no, stage, {
+        ref: b.ref ? String(b.ref).slice(0, 64) : null,       // رقم الطلب في لوحتهم
+        cost: b.cost != null && b.cost !== "" ? Number(b.cost) : null,
+        driverName: b.driverName ? String(b.driverName).slice(0, 80) : null,
+        driverPhone: b.driverPhone ? String(b.driverPhone).slice(0, 20) : null,
+        note: b.note ? String(b.note).slice(0, 200) : null,
+        by: "cashier",
+      });
+    } catch (e) {
+      return c.json({ ok: false, error: e.message }, 400);
+    }
+    if (row.status !== next) await setStatus(row.order_no, next, { note: `يدوي: ${stage}` });
+    return c.json({ ok: true, status: next, shipment: { status: shipment.status, ref: shipment.provider_ref } });
+  });
+
+  /* استرجاع بضغطة من اللوحة — لما التوصيل يتعثّر والقرار يبقى «رجّع فلوسه».
+     أدمن بس: دي فلوس بتخرج، مش خطوة تشغيلية. */
+  app.post("/api/shop/orders/:orderNo/refund", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    const row = await getOrderRow(c.req.param("orderNo"));
+    if (!row) return c.json({ ok: false, error: "not_found" }, 404);
+    const b = await c.req.json().catch(() => ({}));
+    const res = await refundOrder(row, String(b.reason || "refunded from dashboard").slice(0, 120));
+    return c.json(res, res.ok ? 200 : 502);
+  });
+
+  /* أداء أكواد التحويل — قياس كارت «اطلب مباشرة» اللي بيتحط في طلبات
+     تطبيقات التوصيل. طلبات التطبيقات بتوصل من غير رقم عميل، فالكود ده هو
+     الجسر الوحيد بين عميل التطبيق والعميل المباشر. من غير الشاشة دي
+     الكارت بيبقى صرف تاني من غير قياس. */
+  app.get("/api/shop/coupons/performance", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    const rows = (await pool.query(
+      `WITH used AS (
+         SELECT coupon, phone_norm, total, created_at
+           FROM shop_orders
+          WHERE coupon IS NOT NULL AND status NOT IN ('pending_payment','expired')
+       )
+       SELECT u.coupon,
+              count(*)::int                        AS redemptions,
+              count(DISTINCT u.phone_norm)::int    AS customers,
+              COALESCE(sum(u.total),0)::numeric    AS revenue,
+              COALESCE(avg(u.total),0)::numeric    AS avg_order,
+              min(u.created_at)                    AS first_use,
+              max(u.created_at)                    AS last_use,
+              -- عملاء رجعوا وطلبوا تاني من غير الكود = التحويل نجح فعلاً
+              (SELECT count(DISTINCT o2.phone_norm)::int FROM shop_orders o2
+                WHERE o2.phone_norm IN (SELECT phone_norm FROM used WHERE coupon = u.coupon)
+                  AND (o2.coupon IS DISTINCT FROM u.coupon)
+                  AND o2.status NOT IN ('pending_payment','expired')) AS repeat_customers
+         FROM used u GROUP BY u.coupon ORDER BY redemptions DESC`)).rows;
+    return c.json({
+      ok: true,
+      coupons: rows.map((r) => ({
+        code: r.coupon, redemptions: r.redemptions, customers: r.customers,
+        revenue: Number(r.revenue), avgOrder: Number(r.avg_order),
+        repeatCustomers: r.repeat_customers,
+        repeatRate: r.customers ? Math.round((r.repeat_customers / r.customers) * 100) : 0,
+        firstUse: r.first_use, lastUse: r.last_use,
+      })),
+    });
   });
 
   app.get("/api/shop/orders", async (c) => {
@@ -787,6 +1119,92 @@ export function register(app, ctx, deps = {}) {
     await setStatus(orderNo, next);
   }
 
+  /* ── تنفيذ الاسترجاع ──────────────────────────────────────────────────
+     القرار في refundDecision (صافي ومُختبر)، والتنفيذ هنا. الفرق المهم عن
+     النسخة القديمة: فشل الاسترجاع بيروح لحالة `refund_failed` مش
+     `rejected_refunded`. الحالة القديمة كانت بتبعت للعميل رسالة «تم
+     استرجاع المبلغ كاملاً لبطاقتك» وفلوسه لسه معانا. */
+  async function refundOrder(row, reason) {
+    if (!row) return { ok: false, error: "no_order" };
+    const d = refundDecision(row);
+    if (!d.act) {
+      if (d.reason === "already_refunded") return { ok: true, skipped: d.reason };
+      if (d.reason === "max_attempts") return { ok: false, error: "max_attempts" };
+      // مفيش دفعة نسترجعها — الطلب بيتقفل من غير ما نوعد بفلوس
+      await setStatus(row.order_no, "rejected_refunded", { note: `لا يوجد مبلغ للاسترجاع (${d.reason})` });
+      return { ok: true, skipped: d.reason };
+    }
+    await pool.query("UPDATE shop_orders SET refund_attempts = refund_attempts + 1 WHERE order_no=$1",
+      [row.order_no]);
+    try {
+      const ref = await pay.makeRefund({
+        paymentId: d.paymentId, amount: d.amount,
+        comment: `FreshCuts ${row.order_no} ${reason || "refund"}`,
+      });
+      await setStatus(row.order_no, "rejected_refunded", {
+        cols: { refund_id: String(ref.RefundId ?? ref.RefundReference ?? "requested"), refund: jb(ref) },
+      });
+      return { ok: true, refundId: String(ref.RefundId ?? ref.RefundReference ?? "requested") };
+    } catch (e) {
+      console.error(`[shop] AUTO-REFUND FAILED for ${row.order_no}:`, e.message);
+      await setStatus(row.order_no, "refund_failed", {
+        note: `REFUND FAILED: ${e.message}`.slice(0, 300),
+        cols: { refund: jb({ error: e.message, at: new Date().toISOString(), amount: d.amount }) },
+      });
+      return { ok: false, error: e.message };
+    }
+  }
+
+  /* ── مراقب المهل: الطلبات اللي وقعت من إيد بني آدم ────────────────────
+     بيلف على كل طلب حي، يسأل slaCheck عن درجته، وبيصعّد **مرة واحدة** لكل
+     درجة (العمود alerts بيفتكر مين اتبعت). درجة 3 بتعمل تدخّل مالي. */
+  async function watchdog() {
+    const settings = await getSettingsData();
+    const sla = (settings.delivery || {}).sla || {};
+    const managers = ((settings.delivery || {}).alertPhones || [])
+      .map((p) => normPhone(p)).filter((p) => /^5\d{8}$/.test(p));
+    const autoRefundOn = (settings.delivery || {}).autoRefundOnNoAccept !== false;
+
+    const rows = (await pool.query(
+      `SELECT order_no, status, option, total, mf_payment_id, refund_id, refund_attempts,
+              customer, alerts, created_at, updated_at
+         FROM shop_orders
+        WHERE status NOT IN ('pending_payment','expired','delivered','rejected_refunded')
+          AND created_at > NOW() - INTERVAL '24 hours'`)).rows;
+
+    for (const row of rows) {
+      const v = slaCheck(row, sla);
+      if (!v.level) continue;
+      const seen = row.alerts || {};
+      const key = `${v.code}:${v.level}`;
+      if (seen[key]) continue;
+
+      // نسجّل الإنذار الأول قبل أي تصعيد — لو التصعيد نفسه وقع، ما نكررش
+      await pool.query(
+        "UPDATE shop_orders SET alerts = COALESCE(alerts,'{}'::jsonb) || $2::jsonb WHERE order_no=$1",
+        [row.order_no, jb({ [key]: new Date().toISOString() })]);
+
+      if (v.level >= 2) {
+        console.error(`[shop] SLA ${v.level} — ${row.order_no}: ${v.message}`);
+        const text = `فريش كتس ⚠️ الطلب ${row.order_no}: ${v.message}`;
+        for (const p of managers) {
+          if (notify?.sendSmsTo) notify.sendSmsTo(p, text).catch((e) =>
+            console.error("[shop] SLA sms failed:", e.message));
+        }
+      }
+      if (v.level >= 3 && v.action === "auto_refund" && autoRefundOn) {
+        /* المطعم ما قبلش الطلب خالص: مفيش أكل اتعمل ومفيش كابتن اتبعت،
+           والعميل قاعد مستني على الفاضي. الاسترجاع هنا هو الصح.
+           بنلغي الطلب من الـPOS الأول لو ينفع، وبعدين نسترجع. */
+        console.error(`[shop] AUTO-REFUND (never accepted) — ${row.order_no}`);
+        if (row.option === "delivery" && delivery.cancelShipment) {
+          delivery.cancelShipment(row.order_no, `order ${row.order_no} never accepted`).catch(() => {});
+        }
+        await refundOrder(await getOrderRow(row.order_no), "never accepted by restaurant");
+      }
+    }
+  }
+
   /* ── the sweep: retries, acceptance watch, auto-refund, dispatch ── */
   async function sweep() {
     // 1) paid but the POS never got the order — retry the create.
@@ -813,7 +1231,13 @@ export function register(app, ctx, deps = {}) {
       if (a.includes("accept")) {
         await setStatus(r.order_no, "accepted");
         const settings = (await getSettingsData()).shop || {};
-        if (r.option === "delivery" && settings.autoDispatch !== false) {
+        /* الطبقة الأولى من طبقتين. البوابة الحقيقية جوّه delivery.dispatch()
+           وبترمي في الوضع اليدوي مهما نادى عليها مين — دي بس بتمنع
+           المحاولة أصلاً عشان ما نملاش اللوج بأخطاء متوقعة.
+           لاحظ إن الشرط بقى «لازم auto» بدل «مش false»: الافتراضي القديم
+           كان بيرسل لو الإعداد ناقص، والافتراضي دلوقتي بيسكت. */
+        const autoOk = await delivery.canAutoDispatch();
+        if (r.option === "delivery" && autoOk && settings.autoDispatch !== false) {
           try {
             await delivery.dispatch(await getOrderRow(r.order_no));
             await setStatus(r.order_no, "courier_requested");
@@ -831,22 +1255,7 @@ export function register(app, ctx, deps = {}) {
             .catch((e) => console.error(`[shop] courier cancel failed for ${r.order_no}:`, e.message));
         }
         // Omar's rule: automatic refund, exactly once.
-        if (!r.refund_id && r.mf_payment_id) {
-          try {
-            const ref = await pay.makeRefund({
-              paymentId: r.mf_payment_id, amount: Number(r.total),
-              comment: `FreshCuts ${r.order_no} rejected by cashier`,
-            });
-            await setStatus(r.order_no, "rejected_refunded", {
-              cols: { refund_id: String(ref.RefundId ?? ref.RefundReference ?? "requested"), refund: jb(ref) },
-            });
-          } catch (e) {
-            console.error(`[shop] AUTO-REFUND FAILED for ${r.order_no}:`, e.message);
-            await setStatus(r.order_no, "rejected_refunded", { note: `REFUND FAILED: ${e.message}` });
-          }
-        } else {
-          await setStatus(r.order_no, "rejected_refunded");
-        }
+        await refundOrder(await getOrderRow(r.order_no), `rejected by cashier`);
       }
     }
 
@@ -854,6 +1263,16 @@ export function register(app, ctx, deps = {}) {
     await pool.query(
       `UPDATE shop_orders SET status='expired', updated_at=NOW()
         WHERE status='pending_payment' AND created_at < NOW() - INTERVAL '6 hours'`);
+
+    // 4) إعادة محاولة الاسترجاعات الفاشلة — لحد سقف المحاولات، وبعدين بشر.
+    const stuckRefunds = (await pool.query(
+      `SELECT * FROM shop_orders
+        WHERE status='refund_failed' AND refund_attempts < 3
+          AND created_at > NOW() - INTERVAL '48 hours'`)).rows;
+    for (const row of stuckRefunds) await refundOrder(row, "retry after failure");
+
+    // 5) شبكة الأمان: الطلبات اللي بني آدم اتأخر عليها.
+    await watchdog().catch((e) => console.error("[shop] watchdog failed:", e.message));
   }
 
   const sweepSec = Number(env("SHOP_SWEEP_SECONDS", "120"));
@@ -861,5 +1280,5 @@ export function register(app, ctx, deps = {}) {
     setInterval(() => sweep().catch((e) => console.error("[shop] sweep failed:", e.message)), sweepSec * 1000);
   }
 
-  return { confirmOrder, onShipmentEvent, sweep };
+  return { confirmOrder, onShipmentEvent, sweep, refundOrder, watchdog };
 }
