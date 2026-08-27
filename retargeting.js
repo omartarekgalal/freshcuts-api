@@ -1568,9 +1568,13 @@ export function register(app, ctx, deps = {}) {
      الـ1000 حقيقية على تيك توك وسناب — بس دي أرضية **الاستهداف**، وعلى
      تيك توك أرضية مصدر الشبيه كمان. */
   async function lookalikeHandoff() {
-    const buckets = summarise(await ladder());
-    const all = buckets.reduce((a, b) => a + b.n, 0);
-    const vip = buckets.find((b) => b.key === "rt:vip")?.n || 0;
+    const rows = await ladder();
+    const all = rows.length;
+    /* البذرة مش درجة في السلّم. درجة rt:vip حصرية — الـVIP اللي طلب امبارح
+       بيقع في hold:justordered، فلو قرينا العدد من الدرجة هنقلّل البذرة من
+       غير سبب. البذرة تعريفها الأصلي: صرف ≥٣٠٠ أو ≥٤ طلبات، بغض النظر عن
+       آخر مرة جه فيها. */
+    const vip = rows.filter((x) => x.spend >= 300 || x.orders >= 4).length;
     const seeds = [
       { key: "all", ar: "كل العملاء", n: all },
       { key: "vip", ar: "الأوفياء — أغلى بذرة عندنا", n: vip },
@@ -1689,6 +1693,34 @@ export function register(app, ctx, deps = {}) {
       account: { meta: metaAct() || null, tz: "Asia/Riyadh" },
       status: "PAUSED — مفيش حملة اتعملت، ومفيش ميزانية اتحطت. الملف ده بيوصف بس.",
       economics: ECON,
+      /* ═══ الحكم الأول، قبل أي جدول ═══════════════════════════════════════
+         الخطة بتطلّع رقمين لكل درجة: أقل ميزانية تخرّجها من التعلّم
+         (7.14 × تكلفة النتيجة)، وأكبر ميزانية تقدر تستحملها من غير ما
+         تتحرق (حجمها × التكرار المسموح × CPM). لما الأول يبقى أكبر من
+         التاني بمئات المرات، مفيش ضبط ميزانية بينفع — الشريحة نفسها
+         أصغر من أي ميزانية قابلة للتعلّم.
+
+         وده بالظبط تفسير الـ64 ر.س: عشان الحملة تصرف كفاية تتعلّم، نظام
+         التوزيع لازم يخرج برّه الجمهور. «السعودية كلها مع توسيع الجمهور»
+         مكانتش غلطة إعداد — دي النتيجة الحتمية لمحاولة صرف ميزانية
+         تعلّم على جمهور مايستحملهاش. هيحصل تاني كل مرة، إلا لو اتمنع. */
+      viability: (() => {
+        const bad = adSets.filter((a) => a.budget.viableAsOwnAdSet === false);
+        const worst = adSets.reduce((m, a) => {
+          const g = a.budget.minDailyBudget && a.budget.maxDailyBudget
+            ? a.budget.minDailyBudget / a.budget.maxDailyBudget : 0;
+          return g > m.ratio ? { ratio: g, name: a.name } : m;
+        }, { ratio: 0, name: null });
+        return {
+          adSetsThatCannotStandAlone: bad.length,
+          adSetsTotal: adSets.length,
+          worstGapMultiple: worst.ratio ? Math.round(worst.ratio) : null,
+          verdict: bad.length === adSets.length
+            ? `مفيش ولا درجة تقدر تبقى مجموعة إعلانية لوحدها. أقل ميزانية تعلّم أعلى من سقف الحرق بحوالي ${Math.round(worst.ratio)}× في أسوأ حالة. الاستنتاج مش «زوّد الميزانية» ولا «قلّلها» — الاستنتاج إن الريتارجيت المدفوع على قاعدة بالحجم ده مش أداة صالحة. القوايم قيمتها الحقيقية: استبعاد (بيوفّر فلوس من أول يوم)، بذرة شبيه، وقياس.`
+            : `${bad.length} من ${adSets.length} درجة ما تنفعش لوحدها — لازم تتلم مع اللي جنبها أو تتشال.`,
+          whatItExplains: "الـ64 ر.س للنتيجة اللي اتقالت «ريتارجيت»: الجمهور كان لازم يتوسّع للسعودية كلها عشان يستحمل ميزانية تتعلّم. الفجوة دي هي السبب، مش الإعداد.",
+        };
+      })(),
       adSets,
       suppressOnly,
       /* طبقة البيكسل جنب السلّم مش جوّاه — عن قصد. دي ناس تانية خالص:
@@ -1707,9 +1739,17 @@ export function register(app, ctx, deps = {}) {
   async function blockers() {
     const out = [];
     const act = metaAct();
+    /* لازم نفرّق بين الحسابين بالاسم. البيئة لسه شايلة الحساب القديم، وأي
+       كلام عن «الحساب الجديد» وهو مش مضبوط في META_AD_ACCOUNT_ID معناه إن
+       أي نداء هيروح للقديم — وده اللي بيخلّي جمهور يتعمل في المكان الغلط. */
+    const NEW_ACT = "act_1823242198869775";
+    const pointingAtNew = act === NEW_ACT;
     out.push({
       id: "meta.assetshare",
-      what: `حساب ميتا الجديد ${act || "(مش متظبّط في البيئة)"} — مستني شير الأصول (بيكسل + صفحة + إنستجرام + الجماهير)`,
+      what: `الحساب الجديد ${NEW_ACT} مستني شير الأصول (بيكسل + صفحة + إنستجرام + الجماهير). البيئة دلوقتي مضبوطة على ${act || "(مفيش)"} — يعني ${pointingAtNew ? "الجديد" : "**القديم**"}.`,
+      envPointsAtNewAccount: pointingAtNew,
+      switchAction: pointingAtNew ? null
+        : `لحد ما الشير يخلص، أي إنشاء جمهور من هنا هيروح للحساب القديم. لما يخلص: غيّر META_AD_ACCOUNT_ID لـ ${NEW_ACT} في Coolify واعمل Redeploy، وبعدها امسح rt_audiences عشان الجماهير تتعمل من أول وجديد على الحساب الصح.`,
       blocks: "أي جمهور ريتارجيت على الحساب الجديد، وأي حملة تتبني عليه",
       who: "الأخ اللي على الكروم — بينفّذ الشير من الـBusiness Manager دلوقتي",
       weCanWorkAround: false,
