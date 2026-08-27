@@ -182,3 +182,31 @@ test("مصدر التوقيت بيتقال، مش بس التوقيت", () => {
   assert.equal(i.trusted, i.source === "meta");
   assert.equal(i.fallback, ADS_ACCOUNT_TZ_FALLBACK);
 });
+
+test("شبيه ماينفعش يبقى بذرة لشبيه تاني", () => {
+  const lal = audienceSizeVerdict({
+    name: "FreshCuts LAL 3% SA (seed: all)", subtype: "LOOKALIKE",
+    approximate_count_lower_bound: 660900, approximate_count_upper_bound: 777500,
+    delivery_status: { code: 200 },
+  });
+  assert.equal(lal.measured, true);        // الحجم متقاس فعلاً
+  assert.equal(lal.lalReady, false);       // ومع ذلك مايصلحش بذرة
+  assert.match(lal.why, /شبيه الشبيه/);
+});
+
+test("الحكم الحقيقي على جماهير الحساب زي ما ميتا رجّعتها", () => {
+  // ٣٢ جمهور مقروءين فعلياً من act_210662083554074 يوم ٢٧ أغسطس ٢٠٢٦.
+  const real = [
+    { id: "a", name: "FreshCuts LAL 1% SA (seed: VIP)", subtype: "LOOKALIKE", approximate_count_lower_bound: 262900, approximate_count_upper_bound: 309300, delivery_status: { code: 200 } },
+    { id: "b", name: "FreshCuts FB Page Engagers 365d", subtype: "ENGAGEMENT", approximate_count_lower_bound: 6300, approximate_count_upper_bound: 7400, delivery_status: { code: 200 } },
+    { id: "c", name: "FreshCuts Page Engagers 30d", subtype: "ENGAGEMENT", approximate_count_lower_bound: 5700, approximate_count_upper_bound: 6800, delivery_status: { code: 200 } },
+    { id: "d", name: "FreshCuts عملاء VIP", subtype: "CUSTOM", approximate_count_lower_bound: 1000, approximate_count_upper_bound: 1000, delivery_status: { code: 200 } },
+    { id: "e", name: "FreshCuts Web Visitors 7d", subtype: "WEBSITE", approximate_count_lower_bound: 20, approximate_count_upper_bound: 20, delivery_status: { code: 200 } },
+    { id: "f", name: "FreshCuts Video Viewers 30d", subtype: "ENGAGEMENT", approximate_count_lower_bound: 1000, approximate_count_upper_bound: 1000, delivery_status: { code: 300 } },
+  ];
+  const gate = lookalikeGate(real);
+  assert.equal(gate.open, true);
+  // البذرتين الوحيدتين الصالحتين: جماهير تفاعل الصفحة. مش الـ VIP ولا الـ LAL.
+  assert.deepEqual(gate.readySeeds.map((r) => r.name).sort(),
+    ["FreshCuts FB Page Engagers 365d", "FreshCuts Page Engagers 30d"]);
+});

@@ -350,9 +350,15 @@ export function audienceSizeVerdict(a = {}) {
       lalReady: false, adSetReady: dc === 200,
       why: `"${name}" — ميتا بتقول ${lo} في الحد الأدنى **والأعلى مع بعض**، وده رقم أرضية مش عدد. المعنى الوحيد المضمون: «عند الأرضية أو تحتها». بذرة «عملاء VIP» طلعت بنفس الشكل (١٠٠٠/١٠٠٠) وهي في الحقيقة ٧٧ شخص. ${dc === 200 ? "ينفع يتحط في استهداف/استبعاد، بس" : ""} **ماينفعش يبقى بذرة LAL** — العدد الحقيقي لازم ييجي من داتانا إحنا (شرائح audiences.js)، مش من الرقم ده.` };
   }
-  const lalReady = measured && lo >= LAL_MIN_SEED;
+  /* بذرة LAL ماتكونش LAL. ميتا بتسمح تقنياً، بس ده بيراكم خطأ النمذجة على
+     خطأ النمذجة — بتعمل شبيه لشبيه. والحساب عنده ٣ LALs حجمهم متقاس
+     (٢٤٦ألف–٧٧٧ألف) فهيعدّوا السور الرقمي من غير الشرط ده. */
+  const isLookalike = String(a.subtype || "").toUpperCase() === "LOOKALIKE";
+  const lalReady = measured && lo >= LAL_MIN_SEED && !isLookalike;
   return { measured: true, sentinel: false, size: { lower: lo, upper: hi }, lalReady, adSetReady: dc === 200,
-    why: lalReady
+    why: isLookalike
+      ? `"${name}" — حجم متقاس (${lo}–${hi}) بس ده نفسه جمهور شبيه (LOOKALIKE). ماينفعش يبقى بذرة لشبيه تاني — شبيه الشبيه بيراكم خطأ النمذجة.`
+      : lalReady
       ? `"${name}" — حجم **متقاس فعلاً** (${lo}–${hi}، الحدّين مختلفين يعني ميتا قاست مش رجّعت أرضية) وفوق حد الـ ${LAL_MIN_SEED}. ✅ صالح كبذرة LAL.`
       : `"${name}" — حجم متقاس (${lo}–${hi}) بس تحت حد الـ ${LAL_MIN_SEED}. ماينفعش بذرة LAL.` };
 }
