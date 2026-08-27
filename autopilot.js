@@ -945,7 +945,7 @@ export function guardBudget({ platform, campaignId, amount, level = null }, s, r
    استيراد (autopilot بيستورد من ads أصلاً). بنعيد تصديره عشان كل اللي
    بيستورده من autopilot.js يفضل شغّال، ويفضل تعريف واحد بس في الـ API كلها. */
 export { ADS_ACCOUNT_TZ } from "./ads.js";
-import { ADS_ACCOUNT_TZ } from "./ads.js";
+import { ADS_ACCOUNT_TZ, accountRollNote, accountRollInLocal } from "./ads.js";
 export const RIYADH_TZ = "Asia/Riyadh";
 export const BIZ_DAY_START_HOUR = 4;      // نفس رقم analytics.js — يوم المطعم
 
@@ -1263,7 +1263,7 @@ export function decidePace(input) {
       from: r2(cur), to: r2(base), base: r2(base), accountDay: st.accountDay,
       reason: stale
         ? `استرجاع متأخر: الزيادة دي كانت على يوم الحساب الإعلاني ${st.accountDay} بتوقيت ${ADS_ACCOUNT_TZ} وهو قفل خلاص (إحنا دلوقتي في ${accountDay}). رجّعنا الميزانية من ${ar(cur)} لـ ${ar(base)} ر.س/يوم زي ما كانت قبل التسريع.`
-        : `يوم الحساب الإعلاني ${st.accountDay} (بتوقيت ${ADS_ACCOUNT_TZ}) بيقفل بعد ${Math.round(msToRoll / 60000)} دقيقة — ده الساعة ١٠ صباحاً بتوقيت جدة مش نص الليل. رجّعنا الميزانية من ${ar(cur)} لـ ${ar(base)} ر.س/يوم زي ما اتفقنا: نسرّع النهارده ونرجّع الميزانية قبل ما اليوم يخلص.`,
+        : `يوم الحساب الإعلاني ${st.accountDay} (بتوقيت ${ADS_ACCOUNT_TZ}) بيقفل بعد ${Math.round(msToRoll / 60000)} دقيقة — ${accountRollNote()} رجّعنا الميزانية من ${ar(cur)} لـ ${ar(base)} ر.س/يوم زي ما اتفقنا: نسرّع النهارده ونرجّع الميزانية قبل ما اليوم يخلص.`,
     });
   }
 
@@ -1332,7 +1332,9 @@ export function decidePace(input) {
     : "";
 
   /* ── ٢ج. حرس آخر الليل. الميزانية اليومية عند المنصات بتتوزّع على يوم
-     الحساب الإعلاني (بيلف ١٠ صباحاً بتوقيت جدة)، لكن الإعلانات بتتقفل ٣
+     الحساب الإعلاني (وقت لفّته بتوقيت جدة بيتحسب من accountRollNote()
+     — كان ١٠ صباحاً على حساب لوس أنجلوس، وبقى نص الليل على حساب الرياض)،
+     لكن الإعلانات بتتقفل ٣
      الفجر. يعني كل ما الوقت يتأخر، الجزء اللي ممكن يتصرف والمطعم فاتح
      يقلّ. رفع الساعة ١ بالليل معناه إن ٢٢٪ بس من الزيادة ليها فرصة تشتغل.  */
   const eff = deliveryEfficiency({
@@ -1340,7 +1342,7 @@ export function decidePace(input) {
     adsCloseHour: (s.adsLateNightDows || DAYPART_DEFAULTS.adsLateNightDows).map(Number).includes(pulse.dow)
       ? Number(s.adsLateCloseHour ?? DAYPART_DEFAULTS.adsLateCloseHour)
       : Number(s.adsCloseHour ?? DAYPART_DEFAULTS.adsCloseHour),
-    accountRollHourRiyadh: Number(s.accountRollHourRiyadh ?? 10),
+    accountRollHourRiyadh: Number(s.accountRollHourRiyadh ?? accountRollHourRiyadhNow()),
   });
   const minEff = Number(s.minDeliveryEfficiencyPct ?? INTRADAY_DEFAULTS.minDeliveryEfficiencyPct);
   if (up && eff.pct < minEff) {
@@ -1494,7 +1496,7 @@ export function decidePace(input) {
         level: r.level, parentId: r.level === "adset" ? r.campaignId : null,
         parentName: r.level === "adset" ? r.campaignName : null,
         from: r2(cur), to: r2(next), base: r2(base), accountDay, stepPct: pStep,
-        reason: `${ctx} رفعنا ${r.level === "adset" ? `المجموعة الإعلانية "${r.name}" (جوّه حملة "${r.campaignName}")` : `"${r.name}"`} من ${ar(cur)} لـ ${ar(next)} ر.س/يوم (خطوة ${pStep}٪ على ${r.platform}${capped ? `، متقصوصة على ${capped}` : ""}). ${abs.why} ${ps.why}${hotNote}${zero} ${evidence} ${eff.reason} الزيادة دي هترجع لـ ${ar(base)} ر.س قبل ما يوم الحساب الإعلاني ${accountDay} (${ADS_ACCOUNT_TZ}) يقفل — يعني حوالي ١٠ صباحاً بتوقيت جدة.`,
+        reason: `${ctx} رفعنا ${r.level === "adset" ? `المجموعة الإعلانية "${r.name}" (جوّه حملة "${r.campaignName}")` : `"${r.name}"`} من ${ar(cur)} لـ ${ar(next)} ر.س/يوم (خطوة ${pStep}٪ على ${r.platform}${capped ? `، متقصوصة على ${capped}` : ""}). ${abs.why} ${ps.why}${hotNote}${zero} ${evidence} ${eff.reason} الزيادة دي هترجع لـ ${ar(base)} ر.س قبل ما يوم الحساب الإعلاني ${accountDay} (${ADS_ACCOUNT_TZ}) يقفل — ${accountRollNote()}`,
       });
     } else {
       /* التراجع بيلمس زيادتنا إحنا بس. الخفض تحت ميزانية المالك شغلانة
@@ -1654,7 +1656,7 @@ export function decideDaypart({ rows = [], book = new Map(), pacing = new Map(),
       const key = keyOf(r.platform, r.id);
       if (book.has(key)) continue;                       // موقوفة من عندنا أصلاً
       /* ميزانية المالك مش بالضرورة اللي على الشاشة دلوقتي: لو التسريع
-         اليومي رافعها والاسترجاع لسه ما جاش (بيحصل ١٠ صباحاً بتوقيت جدة،
+         اليومي رافعها والاسترجاع لسه ما جاش (بيحصل وقت لفّة يوم الحساب،
          يعني جوّه ساعات القفل)، الرقم اللي قدامنا مؤقت. بنسجّل الأساس
          الحقيقي عشان التشغيل ١١ يرجّعها لرقم المالك مش لرقم التسريع. */
       const up = pacing.get(key);
@@ -1884,7 +1886,8 @@ export function projectDayRevenue({
 
 /* ── كفاءة التوصيل: الزيادة دي هتلحق تتصرف في ساعات بيع ولا لأ؟ ─────────
    الميزانية اليومية عند ميتا بتتوزّع على *يوم الحساب الإعلاني* اللي بيلف
-   ١٠ صباحاً بتوقيت جدة. لكن الإعلانات بتتقفل ٣ الفجر لما المطبخ يقفل. يعني
+   وقت لفّة يوم الحساب (مش ثابت — بيتحسب من توقيت الحساب اللي ميتا
+   بتقوله). لكن الإعلانات بتتقفل ٣ الفجر لما المطبخ يقفل. يعني
    لو رفعنا الساعة ١١ بالليل، المنصة قدامها ١١ ساعة توزّع فيهم، إحنا هنستفيد
    بـ ٤ منهم بس — والباقي يا بيتصرف والمطعم قافل يا مبيتصرفش أصلاً.
 
@@ -1892,8 +1895,17 @@ export function projectDayRevenue({
    والصرف الفعلي زاد ١٨٪ بس (٤٦١ بدل ٣٩١ ر.س). ويوم ١٠ أغسطس ضاعفناها ١٠٠٪
    والصرف طلع ٣٦٤ — أقل من يوم عادي. الرافعة موجودة بس ضعيفة، وبتضعف كل ما
    الوقت يتأخر.                                                             */
+/* الساعة (بتوقيت جدة) اللي يوم الحساب الإعلاني بيلف فيها — **محسوبة** من
+   توقيت الحساب اللي ميتا بتقوله، مش مكتوبة. كانت ١٠ مكتوبة بالإيد في تلات
+   مواضع، وهي رقم حساب لوس أنجلوس. على حساب الرياض بتساوي ٠. */
+export function accountRollHourRiyadhNow() {
+  const m = accountRollInLocal().minutesIntoLocalDay;
+  return m == null ? 10 : m / 60;      // الـ ١٠ فضلت fallback لو التوقيت نفسه مش معروف
+}
+
 export function deliveryEfficiency({
-  riyadhHour = 0, riyadhMinute = 0, adsCloseHour = 3, accountRollHourRiyadh = 10,
+  riyadhHour = 0, riyadhMinute = 0, adsCloseHour = 3,
+  accountRollHourRiyadh = accountRollHourRiyadhNow(),
 } = {}) {
   const now = Number(riyadhHour) * 60 + Number(riyadhMinute);
   const ahead = (h) => { const d = Number(h) * 60 - now; return d > 0 ? d : d + 1440; };
@@ -1902,7 +1914,7 @@ export function deliveryEfficiency({
   const pct = accountMin > 0 ? Math.round((Math.min(sellingMin, accountMin) / accountMin) * 100) : 0;
   return {
     pct, sellingMinutes: sellingMin, accountMinutes: accountMin,
-    reason: `فاضل ${Math.round(sellingMin / 60)} ساعة بيع قبل ما الإعلانات تقفل ${adsCloseHour}:00، و${Math.round(accountMin / 60)} ساعة قبل ما يوم الحساب الإعلاني يلف (${accountRollHourRiyadh}:00 بتوقيت جدة). ` +
+    reason: `فاضل ${Math.round(sellingMin / 60)} ساعة بيع قبل ما الإعلانات تقفل ${adsCloseHour}:00، و${Math.round(accountMin / 60)} ساعة قبل ما يوم الحساب الإعلاني يلف (${Number(accountRollHourRiyadh) === 0 ? "منتصف الليل" : `${accountRollHourRiyadh}:00`} بتوقيت جدة). ` +
       `يعني ${pct}٪ بس من أي زيادة دلوقتي ممكن تتصرف والمطعم فاتح — الباقي بيروح على ساعات مفيش فيها بيع.`,
   };
 }
@@ -2984,7 +2996,7 @@ export function register(app, ctx, deps = {}) {
         accountDay: accountDayOf(now),
         accountTz: ADS_ACCOUNT_TZ,
         minutesToAccountRoll: Math.round(msToAccountRoll(now) / 60000),
-        note: `يوم الحساب الإعلاني بيلف الساعة ٠٠:٠٠ بتوقيت ${ADS_ACCOUNT_TZ} — اللي هي حوالي ١٠ صباحاً بتوقيت جدة، مش نص الليل. الاسترجاع بيتعلّق بالتوقيت ده.`,
+        note: `${accountRollNote()} الاسترجاع بيتعلّق بالتوقيت ده.`,
       },
     };
   }
@@ -4593,7 +4605,7 @@ ${focus}
 
          ⚠️ الصرف لازم يتقرا لليوم اللي بنسوّيه هو بالظبط — مش لـ"النهارده".
          الحسبة دي بتشتغل حوالي ٩ الصبح بتوقيت جدة، يعني جوّه يوم الحساب
-         الإعلاني اللي على وشك يقفل (بيلف ١٠ صباحاً). و`snap` فوق اتقرا بـ
+         الإعلاني اللي على وشك يقفل. و`snap` فوق اتقرا بـ
          todayISO() اللي هو تاريخ UTC — وتاريخ UTC بيسبق يوم حساب ميتا
          (America/Los_Angeles) من ٣ الفجر لحد ١٠ الصبح بتوقيت جدة. يعني كنا
          بنطلب من ميتا يوم حساب لسه ما ابتداش، وميتا بترجّع صفر صفوف بـ
@@ -5162,7 +5174,7 @@ ${focus}
 
       const eff = deliveryEfficiency({
         riyadhHour: pulse.riyadhHour, riyadhMinute: pulse.riyadhMinute || 0,
-        adsCloseHour: w.closeHour, accountRollHourRiyadh: Number(s.accountRollHourRiyadh ?? 10),
+        adsCloseHour: w.closeHour, accountRollHourRiyadh: Number(s.accountRollHourRiyadh ?? accountRollHourRiyadhNow()),
       });
       const minEff = Number(s.minDeliveryEfficiencyPct ?? INTRADAY_DEFAULTS.minDeliveryEfficiencyPct);
       const cl = s.ceiling || {};

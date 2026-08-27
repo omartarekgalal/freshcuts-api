@@ -111,11 +111,266 @@ const MAX_DAILY_BUDGET = Number(process.env.ADS_MAX_DAILY_BUDGET || 5000);
 const DEFAULT_CURRENCY = process.env.ADS_CURRENCY || "SAR";
 const BATCH_SIZE = 500;
 
-/* توقيت حساب ميتا الإعلاني. اليوم عنده بيلف ٠٠:٠٠ بتوقيت لوس أنجلوس — اللي
-   هي ١٠ صباحاً بتوقيت جدة، مش نص الليل. أي رقم بيخلط صرف بمبيعات لازم يقول
-   الحد ده بصوت عالي. التعريف عايش هنا (الموديول الأدنى) و autopilot.js
-   بيعيد تصديره — تعريف واحد بس في الـ API كلها. */
-export const ADS_ACCOUNT_TZ = process.env.ADS_ACCOUNT_TZ || "America/Los_Angeles";
+/* ═══ توقيت حساب ميتا الإعلاني ═══════════════════════════════════════════
+   اليوم الإعلاني بيلف ٠٠:٠٠ بتوقيت **الحساب**، مش بتوقيت جدة ولا UTC. أي
+   رقم بيخلط صرف بمبيعات لازم يقول الحد ده بصوت عالي.
+
+   ⚠️ الفخ اللي وقعنا فيه: الكود كان بيقرا التوقيت من متغيّر بيئة
+   (`ADS_ACCOUNT_TZ`) والمتغيّر ده **مش مضبوط أصلاً**، فكان بيقع على قيمة
+   مكتوبة بالإيد `America/Los_Angeles`. الكود عمره ما سأل ميتا. ده اشتغل
+   بالصدفة طول ما الحساب القديم (act_210662083554074) فعلاً على توقيت لوس
+   أنجلوس — الليبل الغلط كان صح بالصدفة. لحظة ما نبدّل الحساب لواحد على
+   `Asia/Riyadh` من غير ما نغيّر المتغيّر، كل تقرير يبقى **أسوأ** من دلوقتي:
+   بيقول لوس أنجلوس وهو رياض، والاسترجاع بيتحسب على يوم غلط.
+
+   العلاج: **نسأل ميتا**. `act_X?fields=timezone_name` بترجّع الحقيقة. النتيجة
+   بتتخزّن في كاش وبتحدّث الـ binding المصدَّر — و`export let` في ES modules
+   binding حيّ، يعني كل مكان بيستورد `ADS_ACCOUNT_TZ` (١٣ موضع في
+   autopilot.js) بيشوف القيمة الجديدة من غير ما نلمسه. المتغيّر البيئي بقى
+   **fallback** بس: لو ميتا مردّتش، مش لو ميتا ردّت.               */
+
+/** الترتيب لما ميتا تكون ساكتة: متغيّر البيئة، وبعدين القيمة المكتوبة. */
+export const ADS_ACCOUNT_TZ_FALLBACK = process.env.ADS_ACCOUNT_TZ || "America/Los_Angeles";
+
+/** binding حيّ — بيتحدّث من refreshAccountTz(). مش const عن قصد. */
+export let ADS_ACCOUNT_TZ = ADS_ACCOUNT_TZ_FALLBACK;
+
+const ACCOUNT_TZ_TTL_MS = 6 * 60 * 60 * 1000;
+let tzState = {
+  tz: null,            // اللي ميتا قالته بالظبط — null يعني لسه ماسألناش أو فشلنا
+  source: process.env.ADS_ACCOUNT_TZ ? "env" : "hardcoded-fallback",
+  checkedAt: null,
+  accountId: null,
+  error: null,
+};
+
+/** التوقيت المستعمَل دلوقتي (sync). ميتا لو ردّت، وإلا الـ fallback. */
+export function accountTz() { return tzState.tz || ADS_ACCOUNT_TZ_FALLBACK; }
+
+/** التوقيت + **من فين جه**. أي تقرير بيطبع يوم حساب لازم يطبع ده جنبه، عشان
+    «رياض» من ميتا و«رياض» من متغيّر بيئة مش نفس درجة الثقة. */
+export function accountTzInfo() {
+  return {
+    tz: accountTz(),
+    source: tzState.source,          // "meta" | "env" | "hardcoded-fallback"
+    trusted: tzState.source === "meta",
+    checkedAt: tzState.checkedAt,
+    accountId: tzState.accountId,
+    fallback: ADS_ACCOUNT_TZ_FALLBACK,
+    ...(tzState.error ? { error: tzState.error } : {}),
+    ...(tzState.tz && process.env.ADS_ACCOUNT_TZ && tzState.tz !== process.env.ADS_ACCOUNT_TZ
+      ? { envMismatch: `ADS_ACCOUNT_TZ=${process.env.ADS_ACCOUNT_TZ} بس ميتا بتقول ${tzState.tz} — المتغيّر البيئي غلط ولازم يتصلّح أو يتشال.` }
+      : {}),
+  };
+}
+
+/** امتى يوم الحساب بيلف بتوقيت المطعم (جدة). بندوّرها بدل ما نكتبها —
+    الجملة «يعني حوالي ١٠ صباحاً بتوقيت جدة» كانت مكتوبة بالإيد في نص
+    التقارير، وهي بتبقى كذبة صريحة أول ما الحساب يتغيّر. */
+export function accountRollInLocal(tz = accountTz(), localTz = "Asia/Riyadh") {
+  try {
+    // نص الليل بتوقيت الحساب في يوم مرجعي، مترجم لساعة جدة.
+    const probe = new Date();
+    const off = (zone) => {
+      const p = new Intl.DateTimeFormat("en-US", { timeZone: zone, timeZoneName: "longOffset" })
+        .formatToParts(probe).find((x) => x.type === "timeZoneName")?.value || "GMT+00:00";
+      const m = /GMT([+-])(\d{2}):(\d{2})/.exec(p);
+      return m ? (m[1] === "-" ? -1 : 1) * (Number(m[2]) * 60 + Number(m[3])) : 0;
+    };
+    const diffMin = off(localTz) - off(tz);          // جدة ناقص الحساب
+    const mins = ((diffMin % 1440) + 1440) % 1440;   // ساعة جدة وقت لفّة الحساب
+    const hh = String(Math.floor(mins / 60)).padStart(2, "0");
+    const mm = String(mins % 60).padStart(2, "0");
+    return { minutesIntoLocalDay: mins, label: `${hh}:${mm}`, sameAsLocal: mins === 0 };
+  } catch { return { minutesIntoLocalDay: null, label: "غير معروف", sameAsLocal: false }; }
+}
+
+/** جملة عربية جاهزة تتحط في أي تقرير — مشتقّة، مش مكتوبة بالإيد. */
+export function accountRollNote(tz = accountTz()) {
+  const r = accountRollInLocal(tz);
+  return r.sameAsLocal
+    ? `يوم الحساب الإعلاني بيلف ٠٠:٠٠ بتوقيت ${tz} — وده نفس نص الليل بتوقيت جدة، فيوم الحساب ويوم المطعم بيمشوا مع بعض.`
+    : `يوم الحساب الإعلاني بيلف ٠٠:٠٠ بتوقيت ${tz} — اللي هي الساعة ${r.label} بتوقيت جدة، مش نص الليل.`;
+}
+
+/** بنسأل ميتا نفسها. بتتندَه عند الإقلاع وكل ٦ ساعات وقبل أي قرار ميزانية. */
+export async function refreshAccountTz({ force = false } = {}) {
+  const fresh = tzState.checkedAt && (Date.now() - tzState.checkedAt) < ACCOUNT_TZ_TTL_MS;
+  if (!force && fresh && tzState.tz) return accountTzInfo();
+  const token = env("META_CAPI_TOKEN");
+  const act = meta.actId();
+  if (!token || !act) {
+    tzState = { ...tzState, checkedAt: Date.now(), error: "META_AD_ACCOUNT_ID / META_CAPI_TOKEN missing" };
+    return accountTzInfo();
+  }
+  const res = await httpJson(
+    `${meta.base()}/${act}?fields=timezone_name,currency,account_status`,
+    { headers: { Authorization: `Bearer ${token}` } }
+  );
+  const tz = res.json?.timezone_name;
+  if (res.ok && typeof tz === "string" && tz.includes("/")) {
+    tzState = { tz, source: "meta", checkedAt: Date.now(), accountId: act, error: null };
+    ADS_ACCOUNT_TZ = tz;                       // ← الـ binding الحيّ: كل المستوردين بيشوفوها
+  } else {
+    /* فشل القراءة **مش** سبب نغيّر التوقيت. بنسيب آخر قيمة معروفة ونقول إن
+       دي آخر قيمة معروفة — نداء فاشل عمره ما يترفع كأنه رقم. */
+    const parsed = meta.readBatchResult(res);
+    tzState = { ...tzState, checkedAt: Date.now(), error: parsed.error || `HTTP ${res.status}` };
+  }
+  return accountTzInfo();
+}
+
+/* ═══ الحد الأدنى للميزانية القابلة للحياة ════════════════════════════════
+   ميتا بتخرج المجموعة الإعلانية من مرحلة التعلّم عند **٥٠ نتيجة في ٧ أيام**.
+   يعني ٥٠ ÷ ٧ = ٧٫١٤ نتيجة في اليوم. والميزانية اللي بتشتري ٧٫١٤ نتيجة هي
+
+       الحد الأدنى للميزانية اليومية = ٧٫١٤ × تكلفة النتيجة
+
+   ده مش رأي، ده قسمة. وهو التفسير الكامل لفشل الحساب القديم: ٢٤ مجموعة
+   إعلانية على ميزانيات ٨–٦٠ ر.س ضد أحداث بتكلّف ٢١–٩٠ ر.س (والشرا وصل
+   ٢٥٠). يعني كل واحدة فيهم كانت مقفولة في التعلّم **بالحساب**، مش بسبب
+   استهداف وحش ولا كرييتيف وحش. الأرقام المقيسة على ٣٠ يوم:
+
+     المجموعة                  ميزانية   تكلفة النتيجة   الحد الأدنى   التمويل
+     fc-wa-walkin-5km            ٢٥٠        ٢٫٧١            ١٩٫٣        ×١٢٫٩  ✅
+     fc-wa-delivery-10km          ١٧        ٣٫١٠            ٢٢٫١        ×٠٫٧٧  ⚠️
+     fc-sales-lal3                ٤٠       ٣١٫٣٥           ٢٢٣٫٩        ×٠٫١٨  ❌
+     fc-leads-broad-8km           ٥٠       ٤٥٫١١           ٣٢٢٫١        ×٠٫١٦  ❌
+     fc-rt-warm-30d               ٤٨       ٤٧٫٢٦           ٣٣٧٫٤        ×٠٫١٤  ❌
+     fc-sales-ic-broad-8km        ٦٠       ٧٦٫٠٣           ٥٤٢٫٩        ×٠٫١١  ❌
+     fc-leads-lal3                ٤٠       ٨٩٫٨٧           ٦٤١٫٧        ×٠٫٠٦  ❌
+     fc-sales-broad-8km           ٥٠      ٢٥٠٫٦٦          ١٧٨٩٫٧        ×٠٫٠٣  ❌
+
+   الوحيدة اللي كانت فوق السور اشتغلت. والباقي كله كان بيدفع تمن التعلّم من
+   غير ما يخلصه أبداً. عشان كده القاعدة عايشة في الكود دلوقتي: أي تغيير
+   ميزانية بيتقاس عليها ويترد جوابها في الرد.                            */
+export const LEARNING_RESULTS_PER_WEEK = 50;
+export const MIN_BUDGET_MULTIPLE = LEARNING_RESULTS_PER_WEEK / 7;   // 7.142857…
+
+/** أقل ميزانية يومية تقدر تطلّع ٥٠ نتيجة/أسبوع عند تكلفة النتيجة دي. */
+export function minViableDailyBudget(costPerResult) {
+  const cpr = Number(costPerResult);
+  if (!Number.isFinite(cpr) || cpr <= 0) return null;
+  return Math.ceil(cpr * MIN_BUDGET_MULTIPLE * 100) / 100;
+}
+
+/* off  = مش بنحسبها أصلاً (مش مستحسن)
+   warn = بنحسبها وبنقولها وبنعدّي  ← الافتراضي: مابنكسرش تراجع الأوتوبايلوت
+   block= بنرفض أي ميزانية تحت السور إلا مع force */
+const MIN_BUDGET_MODE = ["off", "warn", "block"].includes(process.env.ADS_MIN_BUDGET_ENFORCE)
+  ? process.env.ADS_MIN_BUDGET_ENFORCE : "warn";
+
+/**
+ * بيتقاس عليه أي تغيير ميزانية.
+ * @param {{dailyBudget:number, costPerResult:number|null, name?:string,
+ *          resultsWindowDays?:number}} x
+ * @returns {{mode:string, ok:boolean, blocked:boolean, minViable:number|null,
+ *            ratio:number|null, expectedResultsPerWeek:number|null, why:string}}
+ */
+export function learningBudgetCheck({ dailyBudget, costPerResult, name = "المجموعة", resultsWindowDays = null }) {
+  const budget = Number(dailyBudget);
+  const min = minViableDailyBudget(costPerResult);
+  const base = { mode: MIN_BUDGET_MODE, minViable: min, ratio: null, expectedResultsPerWeek: null };
+
+  if (MIN_BUDGET_MODE === "off") {
+    return { ...base, ok: true, blocked: false, why: "فحص الحد الأدنى مقفول (ADS_MIN_BUDGET_ENFORCE=off)." };
+  }
+  if (min == null) {
+    /* مفيش تكلفة نتيجة مقيسة = **مابنعرفش**، مش «تمام». عمى قياس بيتقال
+       بصوته، ماينفعش يترفع كأنه موافقة. */
+    return {
+      ...base, ok: true, blocked: false,
+      why: `مفيش تكلفة نتيجة مقيسة لـ "${name}" — يعني مانقدرش نحسب الحد الأدنى (٧٫١٤ × تكلفة النتيجة). ده عمى قياس مش ضوء أخضر: أول ما تيجي أول ٧ أيام صرف، اتأكد إن الميزانية فوق السور.`,
+    };
+  }
+  const ratio = budget / min;
+  const perWeek = (budget / Number(costPerResult)) * 7;
+  const shaped = {
+    ...base, ratio: Math.round(ratio * 100) / 100,
+    expectedResultsPerWeek: Math.round(perWeek * 10) / 10,
+  };
+  const w = resultsWindowDays ? ` (متقاسة على آخر ${resultsWindowDays} يوم)` : "";
+  if (ratio >= 1) {
+    return {
+      ...shaped, ok: true, blocked: false,
+      why: `"${name}" بـ ${budget} ر.س/يوم ضد تكلفة نتيجة ${costPerResult} ر.س${w} — الحد الأدنى ${min} ر.س، فإحنا عند ×${shaped.ratio} منه (≈ ${shaped.expectedResultsPerWeek} نتيجة/أسبوع مقابل ٥٠ المطلوبة للخروج من التعلّم). ✅`,
+    };
+  }
+  const why = `"${name}" بـ ${budget} ر.س/يوم ضد تكلفة نتيجة ${costPerResult} ر.س${w} بتشتري ≈ ${shaped.expectedResultsPerWeek} نتيجة/أسبوع بس — وميتا عايزة ٥٠ عشان تخرج من التعلّم. الحد الأدنى ${min} ر.س/يوم (٧٫١٤ × ${costPerResult}) وإحنا عند ×${shaped.ratio} منه. ده بالظبط اللي قتل الحساب القديم: بندفع تمن التعلّم ومابنخلّصهوش أبداً. إمّا ترفع الميزانية للحد الأدنى، أو تغيّر الحدث لواحد أرخص (محادثة واتساب بـ ٣ ر.س بدل شرا بـ ٢٥٠)، أو تقفلها — بس ماتسيبهاش تحت السور.`;
+  return { ...shaped, ok: false, blocked: MIN_BUDGET_MODE === "block", why };
+}
+
+/* ═══ حجم الجمهور: الرقم اللي ميتا بتقوله مش عدد ══════════════════════════
+   `approximate_count_lower_bound` **مش قياس**. ميتا بترجّع رقم أرضية ثابت
+   لأي جمهور تحت الحد، وبتحطّه في lower **و** upper مع بعض. القياس الحقيقي
+   بيبان لما الاتنين يختلفوا.
+
+   ده اتقاس على حساب فريش كتس نفسه، ٣٢ جمهور:
+     lower === upper === 20    ست جماهير موقع → «تحت أرضية الويب»، مش ٢٠ شخص
+     lower === upper === 1000  تلتاشر جمهور، منهم بذرة «عملاء VIP» اللي إحنا
+                               عارفين من داتانا إنها **٧٧ شخص** — وميتا
+                               بتقول ١٠٠٠. ونفس البذرة دي طلّعت LAL بـ ٤٣٫٦٦
+                               ر.س للنتيجة، لأنه ٢٦٢ ألف شخص متبنيين على ٧٧.
+     lower ≠ upper             ستة بس: FB Page Engagers 365d (٦٣٠٠–٧٤٠٠)،
+                               Page Engagers 30d (٥٧٠٠–٦٨٠٠)، والـ LALs.
+
+   يعني السور «lower >= 1000» — اللي هو أول حاجة أي حد هيكتبها — **بتعدّي
+   بذرة الـ ٧٧ شخص**، وهي بالظبط البذرة اللي فشلت. السور الصح لازم يشترط إن
+   الرقم متقاس أصلاً.
+
+   وكمان: delivery_status 200 «جاهز للاستخدام» **مش دليل حجم**. الجماهير
+   اللي بـ ٢٠/٢٠ كلها راجعة ٢٠٠. اللي بيقول «صغير» هو ٣٠٠ بس.           */
+const META_SIZE_SENTINELS = new Set([20, 1000, 100, 500]);
+export const LAL_MIN_SEED = 1000;                 // الحد الرسمي من ميتا
+
+/**
+ * @param {{approximate_count_lower_bound?:number, approximate_count_upper_bound?:number,
+ *          delivery_status?:{code:number}, name?:string, subtype?:string}} a
+ */
+export function audienceSizeVerdict(a = {}) {
+  const lo = a.approximate_count_lower_bound;
+  const hi = a.approximate_count_upper_bound;
+  const dc = a.delivery_status?.code ?? null;
+  const name = a.name || "الجمهور";
+  const known = Number.isFinite(lo) && Number.isFinite(hi);
+  const sentinel = known && lo === hi;
+  const measured = known && lo !== hi;
+
+  if (dc === 300) {
+    return { measured: false, sentinel, size: null, lalReady: false, adSetReady: false,
+      why: `"${name}" — ميتا بتقول صراحةً إنه صغير جداً للتوصيل (delivery_status 300). مايتستخدمش لوحده ولا كبذرة.` };
+  }
+  if (!known) {
+    return { measured: false, sentinel: false, size: null, lalReady: false, adSetReady: false,
+      why: `"${name}" — ميتا مرجّعتش حجم خالص. ده **مش عارفين**، مش «تمام».` };
+  }
+  if (sentinel) {
+    return { measured: false, sentinel: true, size: null, floor: lo,
+      knownMetaFloor: META_SIZE_SENTINELS.has(lo),   // ٢٠ و١٠٠٠ أرضيات موثّقة عندنا
+      lalReady: false, adSetReady: dc === 200,
+      why: `"${name}" — ميتا بتقول ${lo} في الحد الأدنى **والأعلى مع بعض**، وده رقم أرضية مش عدد. المعنى الوحيد المضمون: «عند الأرضية أو تحتها». بذرة «عملاء VIP» طلعت بنفس الشكل (١٠٠٠/١٠٠٠) وهي في الحقيقة ٧٧ شخص. ${dc === 200 ? "ينفع يتحط في استهداف/استبعاد، بس" : ""} **ماينفعش يبقى بذرة LAL** — العدد الحقيقي لازم ييجي من داتانا إحنا (شرائح audiences.js)، مش من الرقم ده.` };
+  }
+  const lalReady = measured && lo >= LAL_MIN_SEED;
+  return { measured: true, sentinel: false, size: { lower: lo, upper: hi }, lalReady, adSetReady: dc === 200,
+    why: lalReady
+      ? `"${name}" — حجم **متقاس فعلاً** (${lo}–${hi}، الحدّين مختلفين يعني ميتا قاست مش رجّعت أرضية) وفوق حد الـ ${LAL_MIN_SEED}. ✅ صالح كبذرة LAL.`
+      : `"${name}" — حجم متقاس (${lo}–${hi}) بس تحت حد الـ ${LAL_MIN_SEED}. ماينفعش بذرة LAL.` };
+}
+
+/** يرد على السؤال الواحد: نبني LAL دلوقتي ولا لأ؟ ومحتاج إيه عشان يبقى ينفع. */
+export function lookalikeGate(audiences = []) {
+  const rows = audiences.map((a) => ({ id: a.id, name: a.name, subtype: a.subtype, ...audienceSizeVerdict(a) }));
+  const ready = rows.filter((r) => r.lalReady);
+  const blockedBySentinel = rows.filter((r) => r.sentinel);
+  return {
+    open: ready.length > 0,
+    readySeeds: ready.map((r) => ({ id: r.id, name: r.name, size: r.size })),
+    why: ready.length
+      ? `فيه ${ready.length} بذرة حجمها متقاس وفوق ${LAL_MIN_SEED}: ${ready.map((r) => `"${r.name}" (${r.size.lower}–${r.size.upper})`).join("، ")}. الـ LAL بقى مفتوح.`
+      : `مفيش ولا بذرة واحدة حجمها **متقاس** وفوق ${LAL_MIN_SEED}. ${blockedBySentinel.length} جمهور راجع برقم أرضية (lower === upper) — والرقم ده مش عدد، فمابنبنيش عليه. الـ LAL يفضل مقفول. عشان يتفتح: كبّر شريحة حقيقية (رفع أرقام العملاء من audiences.js) لحد ما ميتا ترجّع حدّين **مختلفين** فوق ${LAL_MIN_SEED} — ساعتها بس. آخر مرة اتبنى LAL على بذرة ٧٧ شخص كلّف ٤٣٫٦٦ ر.س للنتيجة.`,
+    audiences: rows,
+  };
+}
 
 const env = (k) => (process.env[k] || "").trim();
 const writeAllowed = () => process.env.ADS_ALLOW_WRITE === "1";
@@ -1054,6 +1309,21 @@ const meta = {
     };
   },
 
+  /* الجماهير المخصّصة. `approximate_count_upper_bound` مطلوب بالتحديد —
+     من غيره مفيش طريقة تفرّق بين رقم متقاس ورقم أرضية. شوف
+     audienceSizeVerdict فوق. */
+  async customAudiences() {
+    const token = env("META_CAPI_TOKEN");
+    const act = this.actId();
+    if (!token || !act) return { ok: false, reason: "META_AD_ACCOUNT_ID / META_CAPI_TOKEN missing", audiences: [] };
+    const fields = "id,name,subtype,account_id,approximate_count_lower_bound,"
+      + "approximate_count_upper_bound,delivery_status,operation_status,time_updated";
+    const res = await httpJson(`${this.base()}/${act}/customaudiences?fields=${fields}&limit=200`,
+      { headers: { Authorization: `Bearer ${token}` } });
+    if (!res.ok) return { ok: false, reason: this.readBatchResult(res).error, audiences: [] };
+    return { ok: true, audiences: res.json?.data || [] };
+  },
+
   // POST /{campaign_id}  status=ACTIVE|PAUSED
   stateCall(id, state) {
     return {
@@ -1776,6 +2046,52 @@ function googleDateTime(d) {
 const PLATFORMS = [meta, tiktok, snapchat, google];
 const byId = (id) => PLATFORMS.find((p) => p.id === String(id || "").toLowerCase());
 
+/* تكلفة النتيجة المقيسة لحملة أو مجموعة إعلانية على آخر N يوم — من المنصة
+   نفسها، مش من تخمين. بندوّر على مستوى الحملة الأول وبعدين المجموعة، لأن
+   الـ id اللي بييجي للراوت ممكن يكون الاتنين.
+
+   ⚠️ نداء فاشل بيرجّع { ok:false, reason } — **مش صفر ولا null متلبّس
+   كرقم**. القاعدة اللي انكسرت في المشروع ده أكتر من مرة: فشل قراءة اتحوّل
+   لرقم، والرقم اتبني عليه قرار فلوس. */
+async function measuredCostPerResult(platformId, objectId, days = 7) {
+  const p = byId(platformId);
+  if (!p) return { ok: false, reason: `unknown platform ${platformId}` };
+  const to = new Date();
+  const from = new Date(to.getTime() - days * 86_400_000);
+  const range = { from: from.toISOString().slice(0, 10), to: to.toISOString().slice(0, 10) };
+  const id = String(objectId);
+
+  const pick = (rows, keyA, keyB) => rows.find((r) => String(r[keyA]) === id || String(r[keyB] ?? "") === id);
+  const cprOf = (row) => {
+    if (!row) return null;
+    // results === null معناه المنصة مرجّعتش نوع نتيجة نعرف نقراه = عمى قياس.
+    if (row.results == null) return { blind: true };
+    const res = Number(row.results), spend = Number(row.spend || 0);
+    if (!(res > 0) || !(spend > 0)) return null;
+    return { costPerResult: Math.round((spend / res) * 100) / 100 };
+  };
+
+  try {
+    if (typeof p.insights === "function") {
+      const r = await p.insights(range);
+      if (!r.ok) return { ok: false, reason: r.reason || "insights call failed" };
+      const hit = cprOf(pick(r.rows || [], "campaignId", "id"));
+      if (hit?.blind) return { ok: false, reason: "المنصة مرجّعتش نوع نتيجة نعرف نقراه (عمى قياس)" };
+      if (hit) return { ok: true, level: `campaign-${days}d`, ...hit };
+    }
+    if (typeof p.adsetInsights === "function") {
+      const r = await p.adsetInsights(range);
+      if (!r.ok) return { ok: false, reason: r.reason || "adset insights call failed" };
+      const hit = cprOf(pick(r.rows || [], "adsetId", "id"));
+      if (hit?.blind) return { ok: false, reason: "المنصة مرجّعتش نوع نتيجة نعرف نقراه (عمى قياس)" };
+      if (hit) return { ok: true, level: `adset-${days}d`, ...hit };
+    }
+    return { ok: false, reason: `مفيش صرف/نتايج مسجّلة لـ ${id} في آخر ${days} أيام` };
+  } catch (e) {
+    return { ok: false, reason: String(e?.message || e) };
+  }
+}
+
 /* One rule for four platforms: you can send if you hold the credentials to
    send, and you can manage if you hold the credentials to manage. Google used
    to be excluded from `canManage` by name because its adapter was a stub; the
@@ -2314,6 +2630,17 @@ export function register(app, ctx, deps = {}) {
       ok: true,
       writeEnabled: writeAllowed(),
       maxDailyBudget: MAX_DAILY_BUDGET,
+      /* توقيت الحساب الإعلاني **من ميتا نفسها**، ومعاه مصدره. `trusted:false`
+         معناها إحنا شغّالين على fallback ولسه ماسألناش المنصة — تفرقة لازم
+         تفضل ظاهرة، لأن الليبل الغلط ممكن يكون صح بالصدفة. */
+      accountTz: await refreshAccountTz().then((i) => ({ ...i, rollNote: accountRollNote(i.tz) }))
+        .catch(() => ({ ...accountTzInfo(), rollNote: accountRollNote() })),
+      minBudgetRule: {
+        formula: "minDailyBudget = 7.14 × costPerResult",
+        resultsPerWeek: LEARNING_RESULTS_PER_WEEK,
+        multiple: Math.round(MIN_BUDGET_MULTIPLE * 10000) / 10000,
+        enforcement: MIN_BUDGET_MODE,
+      },
       platforms: PLATFORMS.map((p) => {
         const s = stats[p.id] || {};
         const missConv = missingOf(p.conversionEnv);
@@ -2570,6 +2897,28 @@ export function register(app, ctx, deps = {}) {
     }, r.ok ? 200 : 502);
   }
 
+  /* GET /api/ads/audiences/readiness
+     كل جمهور + حكم على حجمه + جواب واحد: الـ LAL مفتوح ولا مقفول.
+     ⚠️ نداء فاشل بيرجّع ok:false بسببه — **مش لستة فاضية**. لستة فاضية
+     بتتقرا «مفيش جماهير» وهي في الحقيقة «مقدرناش نقرا». */
+  app.get("/api/ads/audiences/readiness", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    const p = byId(c.req.query("platform") || "meta");
+    if (!p || typeof p.customAudiences !== "function") {
+      return c.json({ ok: false, error: `platform does not expose custom audiences` }, 400);
+    }
+    const r = await p.customAudiences();
+    if (!r.ok) return c.json({ ok: false, error: r.reason, lookalike: null, audiences: null }, 502);
+    const gate = lookalikeGate(r.audiences);
+    return c.json({
+      ok: true,
+      accountId: meta.actId(),
+      lookalike: { open: gate.open, readySeeds: gate.readySeeds, why: gate.why, minSeed: LAL_MIN_SEED },
+      sentinelRule: "lower === upper ⇒ رقم أرضية من ميتا، مش عدد. القياس الحقيقي = الحدّين مختلفين.",
+      audiences: gate.audiences,
+    });
+  });
+
   app.post("/api/ads/campaign/:platform/:id/state", async (c) => {
     const err = await requireAdmin(c); if (err) return err;
     const platform = c.req.param("platform");
@@ -2600,8 +2949,43 @@ export function register(app, ctx, deps = {}) {
         error: `dailyBudget ${amount} exceeds ADS_MAX_DAILY_BUDGET (${MAX_DAILY_BUDGET}). Raise the ceiling deliberately if this is intended.`,
       }, 400);
     }
-    return guardedWrite(c, platform, (p) => p.budgetCall(id, amount),
+
+    /* ── سور الحد الأدنى ─────────────────────────────────────────────────
+       أي ميزانية بتتقاس على ٧٫١٤ × تكلفة النتيجة المقيسة قبل ما تتنفّذ.
+       تكلفة النتيجة بتتقاس من المنصة نفسها على آخر ٧ أيام إلا لو المتصل
+       بعتها. الرد بيرجّع `learning` دايماً — حتى لما نعدّي — عشان الرقم
+       يبقى مكتوب مش محفوظ في دماغ حد.                                    */
+    const cprWindowDays = 7;
+    let cpr = Number(b.costPerResult);
+    let cprSource = "caller";
+    if (!Number.isFinite(cpr) || cpr <= 0) {
+      cpr = null; cprSource = "unmeasured";
+      const m = await measuredCostPerResult(platform, id, cprWindowDays);
+      if (m.ok) { cpr = m.costPerResult; cprSource = m.level; }
+      else cprSource = `unmeasured (${m.reason})`;
+    }
+    const learning = {
+      ...learningBudgetCheck({
+        dailyBudget: amount, costPerResult: cpr,
+        name: b.name || `${platform}:${id}`,
+        resultsWindowDays: cpr == null ? null : cprWindowDays,
+      }),
+      costPerResult: cpr, costPerResultSource: cprSource,
+    };
+    if (learning.blocked && b.force !== true) {
+      return c.json({
+        ok: false, applied: false, learning,
+        error: `الميزانية تحت الحد الأدنى للخروج من التعلّم. ${learning.why} (ابعت force:true لو ده مقصود، أو ADS_MIN_BUDGET_ENFORCE=warn.)`,
+      }, 409);
+    }
+
+    const res = await guardedWrite(c, platform, (p) => p.budgetCall(id, amount),
       `set ${platform} campaign ${id} daily budget to ${amount} ${DEFAULT_CURRENCY}`);
+    /* بنحقن الفحص في رد guardedWrite من غير ما نلمس شكله. */
+    try {
+      const body = await res.clone().json();
+      return c.json({ ...body, learning }, res.status);
+    } catch { return res; }
   });
 
   /* GET /api/ads/google/fields?prefix=ad_group_criterion&selectable=1
