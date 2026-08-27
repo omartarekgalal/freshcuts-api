@@ -742,9 +742,19 @@ export function register(app, ctx, deps = {}) {
     let ev = null, from = null;
     for (const p of order) {
       const parsed = p.parseWebhook(b);
-      if (parsed && parsed.orderNo) { ev = parsed; from = p; break; }
+      if (parsed && (parsed.orderNo || parsed.ref)) { ev = parsed; from = p; break; }
     }
     if (!ev) return c.json({ ok: true, ignored: true });
+    /* لو المزوّد بيدعم سرّ مشترك وإحنا مفعّلينه، الرسالة اللي مالهاش سرّ
+       صحيح بترفض — الراوت ده عام، فمن غير كده أي حد يقدر يحرّك حالة طلب. */
+    if (from.verifyWebhook) {
+      const headers = {};
+      try { c.req.raw.headers.forEach((v, k) => { headers[k] = v; }); } catch {}
+      if (!from.verifyWebhook(headers, b)) {
+        console.error(`[delivery] ${from.id} webhook rejected: bad secret`);
+        return c.json({ ok: false, error: "bad_secret" }, 401);
+      }
+    }
 
     /* المطابقة برقمنا أولاً، وبمرجع المزوّد لو رقمنا مش في الرسالة —
        Flying Arrow بيرجّع external_order_id فاضي أحياناً. */

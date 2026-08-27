@@ -209,9 +209,14 @@ const flyingarrow = {
      المحل يتسجّل مرة واحدة من لوحتهم (أو POST /api/partner/shops).
    • التتبع والإلغاء **برقم طلبنا إحنا**، فمش مستنيين رقم منهم عشان نعرف
      نتتبع — وده فعلياً أمتن من Flying Arrow. */
-const LJ_BASE = () => env("LEAJLAK_BASE", "https://app.leajlak.com").replace(/\/+$/, "");
+/* وثيقتهم بتقول «Base_URL/orders» وده مضلّل: المسار الحقيقي تحت
+   /api/partner. الدليل — /api/partner/orders بيقرا التوكن ويرد برسالة
+   الحساب، بينما /orders على الجذر بيرد «Unauthenticated» يعني التوكن ما
+   وصلوش أصلاً. */
+const LJ_BASE = () => env("LEAJLAK_BASE", "https://app.leajlak.com/api/partner").replace(/\/+$/, "");
 const LJ_TOKEN = () => env("LEAJLAK_TOKEN", "");
 const LJ_SHOP = () => env("LEAJLAK_SHOP_ID", "");
+const LJ_WH_SECRET = () => env("LEAJLAK_WEBHOOK_SECRET", "");
 
 /* حالاتهم نصية زي ما هي في وثيقتهم («New Order» / «Order Accept»)، فبنطبّع
    أي صيغة (مسافات/شرط سفلي/حالة أحرف) قبل المقارنة. */
@@ -242,15 +247,40 @@ const leajlak = {
   /* مالهمش قوايم مدن ولا مركبات. بنتأكد من التوكن بسؤال عن طلب مش موجود:
      ٤٠٤ = التوكن سليم والمسار شغال؛ ٤٠١ = التوكن غلط. */
   async reference() {
+    /* مالهمش قوايم مدن ولا مركبات، فبنسأل عن طلب مش موجود ونقرا الرد:
+         404  → التوكن سليم والمسار سليم (دي الحالة الصحية)
+         401 «Client is not active…» → التوكن سليم بس الحساب لسه مش مفعّل
+         401 «Unauthenticated»       → التوكن مرفوض أو المسار غلط
+       التفرقة دي مهمة: «فعّلوا حسابنا» شغل مختلف تماماً عن «التوكن غلط». */
     try {
       await this.call(`/orders/${encodeURIComponent("healthcheck-000")}`);
     } catch (e) {
+      const msg = String((e.resp && e.resp.message) || e.message || "");
+      if (e.status === 401 && /not active|suspended/i.test(msg)) {
+        throw Object.assign(new Error("الحساب عند لاجلك لسه غير مفعّل — كلّمهم يفعّلوه"),
+          { status: 401, resp: e.resp, code: "CLIENT_INACTIVE" });
+      }
       if (e.status && e.status !== 404) throw e;
     }
     return {
       cities: [], vehicles: [],
       note: "Leajlak ما بيوفّرش قوائم مدن أو مركبات — الاستلام من المحل المسجّل بـ shop_id.",
     };
+  },
+
+  /* سرّ الويبهوك: لوحتهم بتطلب مفتاح سرّي مع الرابط. مش موثّق فين بيحطوه
+     بالظبط، فبندوّر عليه في الأماكن المعتادة ونقبل أي واحد يطابق. لو
+     ما حددناش سرّ أصلاً بنعدّي — عشان تفعيل التحقق ما يكسرش الاستقبال. */
+  verifyWebhook(headers, body) {
+    const secret = LJ_WH_SECRET();
+    if (!secret) return true;
+    const h = (k) => String(headers[k] || headers[k.toLowerCase()] || "");
+    const candidates = [
+      h("x-webhook-secret"), h("x-secret"), h("x-api-key"),
+      h("authorization").replace(/^Bearer\s+/i, ""),
+      String(body.secret || ""), String(body.webhook_secret || ""), String(body.key || ""),
+    ];
+    return candidates.some((v) => v && v === secret);
   },
 
   async dispatch(order, cfg) {
