@@ -433,10 +433,11 @@ export function register(app, ctx, deps = {}) {
          مزامنة بتضيف وبين مزامنة بتزامن: من غيره مش عارفين مين نشيل. */
       CREATE TABLE IF NOT EXISTS rt_members (
         platform TEXT NOT NULL,
+        account TEXT NOT NULL DEFAULT '',
         rung TEXT NOT NULL,
         phone_hash TEXT NOT NULL,
         added_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-        PRIMARY KEY (platform, rung, phone_hash)
+        PRIMARY KEY (platform, account, rung, phone_hash)
       );
       CREATE INDEX IF NOT EXISTS rt_members_rung_idx ON rt_members(rung);
 
@@ -444,12 +445,42 @@ export function register(app, ctx, deps = {}) {
          سبب يخلّيه يعرف رقم حد. */
       CREATE TABLE IF NOT EXISTS rt_audiences (
         platform TEXT NOT NULL,
+        account TEXT NOT NULL DEFAULT '',
         rung TEXT NOT NULL,
         audience_id TEXT NOT NULL,
         name TEXT,
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-        PRIMARY KEY (platform, rung)
+        PRIMARY KEY (platform, account, rung)
       );
+
+      /* هجرة للنسخ اللي اتعملت قبل ما عمود الحساب يتضاف. الجدولين دول
+         كانوا بيتعرّفوا بـ(platform, rung) بس — نفس العيب اللي اتكشف في
+         aud_audiences: مفيش بُعد للحساب الإعلاني. النتيجة إن تبديل الحساب
+         بيخلّي الصفوف القديمة تتقرا كإنها بتاعة الحساب الجديد، فالجمهور
+         بيفضل يتغذّي في المكان القديم للأبد، والفرق بيقول «كله مرفوع
+         خلاص» فما يبعتش ولا اسم للحساب الجديد. */
+      ALTER TABLE rt_audiences ADD COLUMN IF NOT EXISTS account TEXT NOT NULL DEFAULT '';
+      ALTER TABLE rt_members   ADD COLUMN IF NOT EXISTS account TEXT NOT NULL DEFAULT '';
+      DO $mig$
+      BEGIN
+        IF EXISTS (
+          SELECT 1 FROM pg_constraint c JOIN pg_class t ON t.oid = c.conrelid
+           WHERE t.relname = 'rt_audiences' AND c.contype = 'p'
+             AND array_length(c.conkey, 1) = 2
+        ) THEN
+          ALTER TABLE rt_audiences DROP CONSTRAINT rt_audiences_pkey;
+          ALTER TABLE rt_audiences ADD PRIMARY KEY (platform, account, rung);
+        END IF;
+        IF EXISTS (
+          SELECT 1 FROM pg_constraint c JOIN pg_class t ON t.oid = c.conrelid
+           WHERE t.relname = 'rt_members' AND c.contype = 'p'
+             AND array_length(c.conkey, 1) = 3
+        ) THEN
+          ALTER TABLE rt_members DROP CONSTRAINT rt_members_pkey;
+          ALTER TABLE rt_members ADD PRIMARY KEY (platform, account, rung, phone_hash);
+        END IF;
+      END
+      $mig$;
 
       /* الهولد أوت. الذراع بتتحدد مرة واحدة وبتفضل ثابتة للأبد: عميل بيقفز
          بين تجربة وضابطة مش هولد أوت، ده ضوضاء. الثبات ده هو كل قيمة
@@ -641,7 +672,8 @@ export function register(app, ctx, deps = {}) {
     if (!token) return { ok: false, error: "META_CAPI_TOKEN missing", rows: [] };
     const blocked = readGate("meta", "telemetry");
     if (blocked) return { ok: false, error: blocked.error, gated: true, rows: [] };
-    const q = await pool.query(`SELECT rung, audience_id FROM rt_audiences WHERE platform='meta'`);
+    const q = await pool.query(
+      `SELECT rung, audience_id FROM rt_audiences WHERE platform='meta' AND account=$1`, [metaAct()]);
     const rows = [];
     for (const a of q.rows) {
       const res = await httpJson(
@@ -716,7 +748,8 @@ export function register(app, ctx, deps = {}) {
 
   async function storedHashes(platform, rung) {
     const q = await pool.query(
-      `SELECT phone_hash FROM rt_members WHERE platform=$1 AND rung=$2`, [platform, rung]);
+      `SELECT phone_hash FROM rt_members WHERE platform=$1 AND account=$2 AND rung=$3`,
+      [platform, accountOf(platform), rung]);
     return new Set(q.rows.map((x) => x.phone_hash));
   }
 
@@ -844,7 +877,8 @@ export function register(app, ctx, deps = {}) {
 
   async function audienceFor(platform, rung) {
     const q = await pool.query(
-      `SELECT audience_id FROM rt_audiences WHERE platform=$1 AND rung=$2`, [platform, rung]);
+      `SELECT audience_id FROM rt_audiences WHERE platform=$1 AND account=$2 AND rung=$3`,
+      [platform, accountOf(platform), rung]);
     if (q.rows[0]) return { ok: true, id: q.rows[0].audience_id, created: false };
 
     const name = rungName(rung);
@@ -896,14 +930,124 @@ export function register(app, ctx, deps = {}) {
 
     if (!id) return { ok: false, error: error || "no audience id returned" };
     await pool.query(
-      `INSERT INTO rt_audiences (platform, rung, audience_id, name) VALUES ($1,$2,$3,$4)
-       ON CONFLICT (platform, rung) DO UPDATE SET audience_id=EXCLUDED.audience_id, name=EXCLUDED.name`,
-      [platform, rung, id, name]);
+      `INSERT INTO rt_audiences (platform, account, rung, audience_id, name) VALUES ($1,$2,$3,$4,$5)
+       ON CONFLICT (platform, account, rung) DO UPDATE SET audience_id=EXCLUDED.audience_id, name=EXCLUDED.name`,
+      [platform, accountOf(platform), rung, id, name]);
     return { ok: true, id, created: true };
   }
 
   /* ── دورة مزامنة واحدة لكل (منصة × درجة) ─────────────────────────────── */
   const PLATFORMS = ["meta", "tiktok", "snapchat"];
+
+  /* الحساب الإعلاني اللي الكتابة بتروح له فعلاً. ده مش تفصيلة تسجيل — ده
+     جزء من مفتاح كل صف بيتخزّن، عشان تبديل الحساب يبقى تبديل حقيقي مش
+     استمرار صامت على القديم. */
+  const accountOf = (platform) =>
+    platform === "meta" ? (metaAct() || "")
+      : platform === "tiktok" ? env("TIKTOK_ADVERTISER_ID")
+        : platform === "snapchat" ? env("SNAP_AD_ACCOUNT_ID") : "";
+
+  /* ═══ الفحص القبلي — بنسأل المنصة «إحنا بنكتب فين؟» قبل أول كتابة ═══════
+     العيب اللي اتكشف في aud_audiences (مفتاح من غير بُعد للحساب) معناه إن
+     مزامنة ممكن تفضل تغذّي حساب قديم من غير ما حد ياخد باله. عمود الحساب
+     فوق بيمنع ده بنيويًا. الفحص ده بيمنعه سلوكيًا كمان — حزامين، لإن
+     الغلطة دي مش بتطلّع خطأ، بتطلّع شغل بيروح لمكان غلط بهدوء.
+
+     تلات أسئلة لازم كلها تعدّي قبل أي كتابة:
+       ١. فيه حساب متظبّط أصلاً؟
+       ٢. لو فيه دبّوس (RT_EXPECT_*) — الحساب المتظبّط هو هو؟
+       ٣. المنصة نفسها بتأكّد إن التوكن بيشوف الحساب ده؟
+
+     وأي سؤال ما نعرفش إجابته = وقوف. «مش متأكدين» بتتعامل زي «لأ» بالظبط،
+     لإن تكلفة إننا نستنى دورة تانية = صفر، وتكلفة إننا نكتب في الحساب
+     الغلط = جماهير في مكان محدش هيستخدمه وأرقام عملاء اترفعت من غير داعي. */
+  const EXPECT = {
+    meta: env("RT_EXPECT_META_ACCOUNT"),
+    tiktok: env("RT_EXPECT_TIKTOK_ADVERTISER"),
+    snapchat: env("RT_EXPECT_SNAP_ACCOUNT"),
+  };
+
+  async function verifyAccount(platform) {
+    const want = accountOf(platform);
+    const pin = (EXPECT[platform] || "").trim();
+    const norm = (v) => String(v || "").replace(/^act_/, "").trim();
+
+    if (!want) return { ok: false, platform, account: null, reason: "مفيش حساب متظبّط في البيئة" };
+    if (pin && norm(pin) !== norm(want)) {
+      return {
+        ok: false, platform, account: want, pinned: pin,
+        reason: `الحساب المتظبّط (${want}) مش هو المتوقّع (${pin}). الكتابة وقفت عن قصد — ده دبّوس أمان مش عطل.`,
+      };
+    }
+
+    if (platform === "meta") {
+      const token = env("META_CAPI_TOKEN");
+      if (!token) return { ok: false, platform, account: want, reason: "META_CAPI_TOKEN missing" };
+      const gate = readGate("meta", "telemetry");
+      if (gate) return { ok: false, platform, account: want, reason: `ميتا مقفولة مؤقتًا: ${gate.error}`, gated: true };
+      const res = await httpJson(
+        `${metaBase()}/${want}?fields=id,account_id,name&access_token=${encodeURIComponent(token)}`,
+        { method: "GET" });
+      if (!res.ok || res.json?.error) {
+        const e = res.json?.error || {};
+        return { ok: false, platform, account: want, reason: e.message || res.error || `HTTP ${res.status}` };
+      }
+      const got = `act_${norm(res.json?.account_id ?? res.json?.id)}`;
+      if (norm(got) !== norm(want)) {
+        return { ok: false, platform, account: want, confirmed: got, reason: `ميتا ردّت بحساب مختلف (${got})` };
+      }
+      return { ok: true, platform, account: got, name: res.json?.name || null, confirmedBy: "GET /{act}" };
+    }
+
+    if (platform === "tiktok") {
+      const token = env("TIKTOK_ACCESS_TOKEN");
+      if (!token) return { ok: false, platform, account: want, reason: "TIKTOK_ACCESS_TOKEN missing" };
+      /* بنتحقق بنفس الصلاحية اللي هنكتب بيها، مش بصلاحية تانية.
+         `/advertiser/info/` بيرجع "the access token lacks the required
+         scope" على التوكن ده — والتوكن ده بيرفع جماهير من شهور وشغّال.
+         يعني الفحص كان هيوقف منصة مساراها سليم، وده فحص بيضر مش بينفع.
+         التحقق الصح: نداء على نفس عيلة الـDMP اللي المزامنة نفسها بتستعملها.
+         لو ردّت code:0 للمعلن ده، يبقى التوكن بيشوفه ويقدر يشتغل عليه. */
+      const res = await httpJson(
+        `${TT_BASE}/dmp/custom_audience/list/?advertiser_id=${encodeURIComponent(want)}&page_size=1`,
+        { method: "GET", headers: { "Access-Token": token } });
+      if (!(res.ok && res.json?.code === 0)) {
+        return { ok: false, platform, account: want, reason: res.json?.message || res.error || `HTTP ${res.status}` };
+      }
+      return {
+        ok: true, platform, account: String(want),
+        confirmedBy: "GET /dmp/custom_audience/list/ — نفس الصلاحية اللي المزامنة بتكتب بيها",
+      };
+    }
+
+    if (platform === "snapchat") {
+      const snap = byId("snapchat");
+      const t = await snap?.token?.();
+      if (!t) return { ok: false, platform, account: want, reason: "Snap OAuth credentials missing" };
+      const res = await httpJson(`${SNAP_BASE}/adaccounts/${want}`, {
+        method: "GET", headers: { Authorization: `Bearer ${t}` } });
+      const acc = res.json?.adaccounts?.[0]?.adaccount;
+      if (!res.ok || !acc?.id) {
+        return { ok: false, platform, account: want, reason: res.json?.debug_message || res.error || `HTTP ${res.status}` };
+      }
+      if (String(acc.id) !== String(want)) return { ok: false, platform, account: want, confirmed: acc.id, reason: "سناب ردّت بحساب مختلف" };
+      return { ok: true, platform, account: acc.id, name: acc.name || null, confirmedBy: "GET /adaccounts/{id}" };
+    }
+    return { ok: false, platform, account: want, reason: "منصة مش معروفة" };
+  }
+
+  async function preflight(platforms = null) {
+    const out = { ok: true, checked: [], blocked: [] };
+    for (const p of (platforms || PLATFORMS)) {
+      const r = await verifyAccount(p);
+      out.checked.push(r);
+      if (!r.ok) { out.ok = false; out.blocked.push(p); }
+    }
+    out.line = out.ok
+      ? `كل المنصات أكّدت الحساب: ${out.checked.map((x) => `${x.platform}=${x.account}`).join(" · ")}`
+      : `الكتابة وقفت على: ${out.blocked.join("، ")} — ${out.checked.filter((x) => !x.ok).map((x) => `${x.platform}: ${x.reason}`).join(" | ")}`;
+    return out;
+  }
 
   async function syncRung(platform, rung, rows, runId) {
     /* ذراع الضابطة ما بتترفعش خالص. ده هو الميكانيزم — مش علامة في جدول،
@@ -937,7 +1081,8 @@ export function register(app, ctx, deps = {}) {
       audienceId = a.id;
     } else {
       const q = await pool.query(
-        `SELECT audience_id FROM rt_audiences WHERE platform='tiktok' AND rung=$1`, [rung]);
+        `SELECT audience_id FROM rt_audiences WHERE platform='tiktok' AND account=$1 AND rung=$2`,
+        [accountOf("tiktok"), rung]);
       audienceId = q.rows[0]?.audience_id || null;
     }
 
@@ -953,8 +1098,8 @@ export function register(app, ctx, deps = {}) {
         out.added = toAdd.size;
         for (const h of toAdd) {
           await pool.query(
-            `INSERT INTO rt_members (platform, rung, phone_hash) VALUES ($1,$2,$3)
-             ON CONFLICT DO NOTHING`, [platform, rung, h]).catch(() => {});
+            `INSERT INTO rt_members (platform, account, rung, phone_hash) VALUES ($1,$2,$3,$4)
+             ON CONFLICT DO NOTHING`, [platform, accountOf(platform), rung, h]).catch(() => {});
         }
       } else { out.ok = false; out.error = r.error; }
     }
@@ -969,8 +1114,8 @@ export function register(app, ctx, deps = {}) {
       if (r.ok) {
         out.removed = toRemove.size;
         await pool.query(
-          `DELETE FROM rt_members WHERE platform=$1 AND rung=$2 AND phone_hash = ANY($3::text[])`,
-          [platform, rung, [...toRemove]]).catch(() => {});
+          `DELETE FROM rt_members WHERE platform=$1 AND account=$2 AND rung=$3 AND phone_hash = ANY($4::text[])`,
+          [platform, accountOf(platform), rung, [...toRemove]]).catch(() => {});
       } else { out.ok = false; out.error = out.error || r.error; }
     }
     return out;
@@ -1027,9 +1172,9 @@ export function register(app, ctx, deps = {}) {
     }
     const id = String(res.json.data.custom_audience_id);
     await pool.query(
-      `INSERT INTO rt_audiences (platform, rung, audience_id, name) VALUES ('tiktok',$1,$2,$3)
-       ON CONFLICT (platform, rung) DO UPDATE SET audience_id=EXCLUDED.audience_id`,
-      [rung, id, rungName(rung)]).catch(() => {});
+      `INSERT INTO rt_audiences (platform, account, rung, audience_id, name) VALUES ('tiktok',$1,$2,$3,$4)
+       ON CONFLICT (platform, account, rung) DO UPDATE SET audience_id=EXCLUDED.audience_id`,
+      [accountOf("tiktok"), rung, id, rungName(rung)]).catch(() => {});
     return { ok: true, done: hashes.size, created: true };
   }
 
@@ -1065,8 +1210,24 @@ export function register(app, ctx, deps = {}) {
       /* في الوضع الجاف بنحسب الفرق كامل وبنقوله — الدورة الجافة المفروض
          تعلّمك حاجة، مش تقول «مبعتش حاجة» وتسكت. */
       const preview = dry ? await previewDiff(rows) : null;
+
+      /* الفحص القبلي بيتنفّذ قبل أول كتابة، والمنصة اللي ما تأكّدتش
+         بتتشال من الدورة — مش بتتكتب «على أمل». */
+      let pre = null;
       if (!dry) {
-        for (const p of (platforms || PLATFORMS)) {
+        pre = await preflight(platforms);
+        for (const b of pre.checked.filter((x) => !x.ok)) {
+          await pool.query(
+            `INSERT INTO rt_ops (id, run_id, platform, rung, op, size, status, error, detail)
+             VALUES ($1,$2,$3,NULL,'preflight',0,'skipped',$4,$5)`,
+            [crypto.randomUUID(), runId, b.platform, String(b.reason || "").slice(0, 400),
+             jb(redact(b))]).catch(() => {});
+        }
+      }
+      const allowed = dry ? [] : (platforms || PLATFORMS).filter((p) => !pre.blocked.includes(p));
+
+      if (!dry) {
+        for (const p of allowed) {
           results[p] = {};
           for (const spec of RUNGS) {
             /* الدرجات المستبعَدة بتترفع هي كمان — لإنها استبعاد، والاستبعاد
@@ -1082,6 +1243,7 @@ export function register(app, ctx, deps = {}) {
         rungs: buckets.map((b) => ({ key: b.key, n: b.n, test: b.nTest, control: b.nControl })),
         dryRun: dry,
         platforms: Object.keys(results),
+        preflight: pre ? { ok: pre.ok, line: pre.line, blocked: pre.blocked } : null,
         preview: preview ? {
           totalAdds: preview.totalAdds, totalRemoves: preview.totalRemoves,
           wouldRemoveRecentBuyers: preview.wouldRemoveFresh,
@@ -1478,8 +1640,27 @@ export function register(app, ctx, deps = {}) {
           ? pct(trueConverts.length / (pool193.length + converted.length)) : null,
         definition: "«اتحوّل» = طلبين مباشرين على الأقل، وواحد منهم على الأقل من غير استرجاع كود. استرجاع مرة واحدة مش تحوّل — دي زيارة مدفوعة.",
       },
+      /* ═══ أرخص إصلاح في التقرير كله ══════════════════════════════════════
+         صفر استرجاع متسجّل. يعني إما الكروت مش بتتحط في الأكياس، أو
+         بتتحط والكاشير مش بيدوس. الفرق بين الاتنين مهم — الأول مشكلة
+         مطبعة، والتاني مشكلة تعليمة — بس النتيجة واحدة: القياس مش موجود.
+
+         ومن غيره، لو ٢٠ عميل تطبيقات جم المطعم الشهر الجاي، مفيش طريقة
+         نعرف الكرت جاب كام منهم. و52.8٪ منهم كانوا جايين أصلاً. يعني
+         هندفع تمن التوصيل المجاني ونحسبه نجاح من غير دليل.
+
+         الإصلاح مش تطوير — تعليمة واحدة للطاقم. */
+      cashierFix: {
+        problem: "صفر استرجاع كود متسجّل لعملاء التطبيقات.",
+        whyItMatters: "من غير الاسترجاع، العميل اللي جه بالكرت والعميل اللي كان جاي أصلاً بيبانوا نفس الشيء بالظبط. والتوصيل المجاني بيتدفع للاتنين.",
+        whatToCheckFirst: "اسأل سؤال واحد: الكروت أصلاً بتتحط في أكياس التطبيقات؟ لو لأ، دي مشكلة مطبعة مش مشكلة كاشير، والتعليمة تحت مالهاش لازمة لحد ما الكروت تتوزّع.",
+        instructionToStaff: "أي عميل يجي ومعاه كرت فريش كتس أو يقول كود: قبل ما تقفل الفاتورة، افتح محطة الكاشير ودوس «استخدام كود»، اكتب الكود اللي على الكرت، واربطه برقم الطلب. لو العميل نسي الكرت بس قال إنه طلب مننا قبل كده من التطبيق — خد رقم جواله وسجّله. الكرت من غير تسجيل = الكرت ما اتحسبش، وكأننا ما وزّعناهوش.",
+        whatGetsRecorded: "كل استرجاع بيتكتب في promo_redemptions بـ(الكود، رقم الطلب، رقم الجوال، التاريخ) — التلاتة دول هما اللي بيخلّوا القياس ممكن. رقم الطلب هو اللي بيربط الكرت بفاتورة حقيقية؛ من غيره الاسترجاع بيفضل معلّق ومش بيتحسب تحويل.",
+        oneLineForOwner: "«أي حد يجي بكرت أو يقول كود — سجّله على الكاشير قبل ما تقفل الفاتورة، واربطه برقم الطلب.»",
+        thenWhat: "بعد أول ٢٠ استرجاع مربوط بطلب، /api/retargeting/delivery-app هيبقى يقدر يفرّق بين «جرّب بالحافز» و«رجع من غير حافز» — وده الرقم الوحيد اللي بيقيس التحويل الحقيقي.",
+      },
       measurementGap: redemptions.rows.length === 0
-        ? "مفيش أي استرجاع كود متسجّل لعملاء التطبيقات لحد دلوقتي — يعني الكروت لسه ما اتوزعتش أو الكاشير مش بيسجّل. من غير الاسترجاع مش هنعرف نفرّق بين اللي جه بالكرت واللي كان جاي أصلاً."
+        ? "مفيش أي استرجاع كود متسجّل لعملاء التطبيقات لحد دلوقتي — القياس ده متوقّف لحد ما التعليمة اللي في cashierFix تتنفّذ."
         : null,
       window,
     };
@@ -1523,30 +1704,48 @@ export function register(app, ctx, deps = {}) {
       const s = byKey.get(p.key);
       const measured = !!s?.ok;
       const low = measured ? Number(s.low) : null;
+      const high = measured ? Number(s.high) : null;
+      /* ══ الاختبار الصح: الحدّين يختلفوا ══════════════════════════════════
+         كان عندي هنا شرط `low <= 1000`، وهو ناقص. الأخ اللي على الكروم
+         لقى إن ميتا بترجع قيمة الأرضية في **الحدّين مع بعض** للجمهور
+         الأصغر من اللازم — يعني `1000/1000` بتظهر لجمهور فيه ٧٧ واحد
+         بالظبط زي ما بتظهر لجمهور فيه ٩٠٠. فقراءة الحدّ الأدنى لوحده
+         بتخلّي السنتينل يعدّي كإنه قياس.
+
+         العلامة الحقيقية إن الرقم قياس مش أرضية هي إن **الحدّين مختلفين**.
+         low === high معناها ميتا بتقول «مش هقول لك»، مش «الحجم كده». */
+      const boundsDiffer = measured && high != null && high > low;
       return {
         ...p,
         measured,
-        /* الرقم ده تقدير وصول شهري من ميتا، مش عدد أعضاء. والأهم: بيقف عند
-           1000 من تحت — يعني «1000» هنا ممكن تكون 40. مالوش لازمة كدليل
-           إن الجمهور كبير كفاية. */
-        monthlyReach: measured ? { low, high: Number(s.high), method: s.method } : null,
-        sizeNote: measured
-          ? (low <= 1000
-              ? "⚠️ التقدير واقف عند الأرضية (1000) — ده معناه «1000 أو أقل»، مش «1000». ما ينفعش يتقرا كدليل على حجم."
-              : null)
-          : (s?.error ? `مقدرناش نقيس: ${String(s.error).slice(0, 120)}` : "لسه ما اتقاسش"),
+        monthlyReach: measured ? { low, high, method: s.method } : null,
+        isSentinel: measured && !boundsDiffer,
+        sizeNote: !measured
+          ? (s?.error ? `مقدرناش نقيس: ${String(s.error).slice(0, 120)}` : "لسه ما اتقاسش")
+          : !boundsDiffer
+            ? `⚠️ الحدّ الأدنى والأعلى متساويين (${low}/${high}) — دي قيمة أرضية بترجّعها ميتا للجمهور الأصغر من اللازم، مش قياس. الجمهور ده ممكن يكون فيه ٤٠ واحد.`
+            : null,
         measuredAt: s?.measured_at || null,
-        usable: measured && Number(s.low) > 1000,
+        usable: boundsDiffer && low > 1000,
         /* السطر ده هو اللي بيمنع إن الطبقة دي تتخلط بالقياس الأمين. */
         measurable: false,
         measurementNote: "مفيش أرقام جوالات للناس دي — مينفعش يتربطوا بطلب في نقطة البيع، ومينفعش يدخلوا الهولد أوت. أي «نتيجة» عليهم هتبقى من تتبع المنصة، وده مش مقبول كدليل هنا.",
       };
     });
-    const anyMeasured = rows.some((r) => r.measured);
+    const anyMeasured = rows.some((r) => r.measured && !r.isSentinel);
     return {
       available: anyMeasured,
       rows,
       dependsOn: "شير أصول الحساب القديم للجديد (بيكسل + صفحة + إنستجرام) — شغل الأخ اللي على الكروم",
+      /* أول جمهور في الحساب ده يطلّع رقم حقيقي بحدّين مختلفين. ده بيفتح
+         باب الشبيه من جديد على بذرة مالهاش علاقة باللي فشل بـ٤٣.٦٦ ر.س. */
+      confirmedLargeSeed: {
+        audience: "المتفاعلين مع الصفحة",
+        monthlyReach: { low: 6300, high: 7400 },
+        boundsDiffer: true,
+        why: "الحدّين مختلفين، يعني ده قياس مش أرضية. وده أكبر بذرة مؤكّدة عندنا — أكبر من قاعدة العملاء كلها بـ٨×.",
+        soWhat: "الشبيه اللي فشل بـ٤٣.٦٦ ر.س كان مبني على بذرة ٧٧ (واللي كانت بتقرا 1000/1000 فبانت كبيرة وهي مش كده). البذرة دي مختلفة تمامًا وتستاهل تتجرّب من أول وجديد بعد الشير.",
+      },
       note: anyMeasured
         ? "الأرقام دي من delivery_estimate على الحساب اللي القياس اتعمل عليه. بعد الشير لازم تتقاس تاني على الحساب الجديد — الجمهور بيتبع الحساب."
         : "لسه مفيش ولا قياس ناجح لطبقة البيكسل. مش بنكتب صفر ومش بنكتب تقدير — بنقول ما اتقاسش.",
@@ -1586,6 +1785,7 @@ export function register(app, ctx, deps = {}) {
         truth: `الموثّق ${META_LAL_SEED_FLOOR}: "If you have a Custom Audience with at least 100 people, you can build lookalike audiences based on it."`,
         source: "https://developers.facebook.com/docs/marketing-api/audiences/guides/lookalike-audiences/",
         consequence: "البذرة اللي فيها 77 فشلت على أرضية 100 مش 1000. وبذرة الأوفياء دلوقتي فوق الأرضية — الشبيه على ميتا مش مستني كبر القايمة، مستني الحساب الجديد بس.",
+        alsoWhyItLookedFine: "والبذرة دي كانت بتقرا 1000/1000 في تقدير الوصول، فبانت كأنها ألف واحد وهي ٧٧. ميتا بترجّع الأرضية في الحدّين مع بعض للجمهور الصغير — العلامة الوحيدة إن الرقم قياس هي إن الحدّين مختلفين.",
       },
       seeds: seeds.map((s) => ({
         ...s,
@@ -1633,7 +1833,8 @@ export function register(app, ctx, deps = {}) {
       const audIds = {};
       for (const p of PLATFORMS) {
         const q = await pool.query(
-          `SELECT audience_id FROM rt_audiences WHERE platform=$1 AND rung=$2`, [p, spec.key]);
+          `SELECT audience_id FROM rt_audiences WHERE platform=$1 AND account=$2 AND rung=$3`,
+          [p, accountOf(p), spec.key]);
         audIds[p] = q.rows[0]?.audience_id || null;
       }
       adSets.push({
@@ -1919,6 +2120,17 @@ export function register(app, ctx, deps = {}) {
     }));
   });
 
+  /* «إحنا بنكتب فين؟» — سؤال يتسأل قبل التشغيل مش بعده. */
+  app.get("/api/retargeting/preflight", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    const r = await preflight();
+    return c.json({
+      ok: r.ok, ...r,
+      pins: EXPECT,
+      note: "الفحص ده بيتنفّذ لوحده قبل أي كتابة في كل دورة. المنصة اللي ما تأكّدتش بتتشال من الدورة.",
+    });
+  });
+
   app.get("/api/retargeting/status", async (c) => {
     const err = await requireAdmin(c); if (err) return err;
     const runs = await pool.query(
@@ -1955,5 +2167,6 @@ export function register(app, ctx, deps = {}) {
     ladder, summarise, verify, plan, blockers, metaFloors,
     baselines, incrementality, costPerIncremental, deliveryAppProgramme,
     runCycle, reachability, exclusionsFor, pixelLayer, lookalikeHandoff, previewDiff,
+    preflight, verifyAccount, accountOf,
   };
 }
