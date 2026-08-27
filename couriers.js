@@ -209,7 +209,7 @@ const flyingarrow = {
      المحل يتسجّل مرة واحدة من لوحتهم (أو POST /api/partner/shops).
    • التتبع والإلغاء **برقم طلبنا إحنا**، فمش مستنيين رقم منهم عشان نعرف
      نتتبع — وده فعلياً أمتن من Flying Arrow. */
-const LJ_BASE = () => env("LEAJLAK_BASE", "https://staging.4ulogistic.com").replace(/\/+$/, "");
+const LJ_BASE = () => env("LEAJLAK_BASE", "https://app.leajlak.com").replace(/\/+$/, "");
 const LJ_TOKEN = () => env("LEAJLAK_TOKEN", "");
 const LJ_SHOP = () => env("LEAJLAK_SHOP_ID", "");
 
