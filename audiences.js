@@ -66,6 +66,10 @@ import {
   httpJson, redact, classifyRefusal, closeWriteGate, openWriteGate, readGate,
   readMetaResult,
 } from "./ads.js";
+/* السلّم بيتسجّل من جوّه الموديول ده مش من index.js عن قصد: هو امتداد لنفس
+   الشغل (نفس البيانات، نفس المنصات، نفس المؤقّت)، وربطه من هنا معناه إن
+   الفرع ده ما بيلمسش ملف مشترك حد تاني شغال عليه دلوقتي. */
+import * as retargeting from "./retargeting.js";
 
 const META_VER = () => (process.env.META_API_VERSION || "v25.0").trim();
 const TT_BASE = "https://business-api.tiktok.com/open_api/v1.3";
@@ -847,7 +851,15 @@ export function register(app, ctx) {
     lists: Number(env("AUD_LISTS_HOURS") || 6) * 3600_000,
     ensure: Number(env("AUD_ENSURE_HOURS") || 24) * 3600_000,
     measure: Number(env("AUD_MEASURE_HOURS") || 24) * 3600_000,
+    /* السلّم أسرع من الباقي عن قصد — كل ٣ ساعات. المدة دي مش ذوق: هي
+       بالظبط أطول وقت ممكن يفضل فيه عميل طلب النهاردة شايف إعلان «رجعلنا».
+       كل ساعة زيادة هنا = ساعة بندفع فيها عشان نطارد واحد قاعد جوّه
+       المطعم. باقي المهام تقيلة على حصة ميتا، دي رخيصة: استعلام واحد
+       وفروق صغيرة. */
+    ladder: Number(env("RT_LADDER_HOURS") || 3) * 3600_000,
   };
+  /* بيتملى بعد ما الموديول يتسجّل تحت — refresh بيقراه من الكلوجر. */
+  let rtApi = null;
 
   async function jobDue(job) {
     const r = await pool.query(`SELECT last_run_at FROM aud_jobs WHERE job=$1`, [job]).catch(() => ({ rows: [] }));
@@ -960,6 +972,22 @@ export function register(app, ctx) {
             detail: { created: r.created },
           });
         }
+      }
+
+      /* السلّم: بيحسب الدرجات، بيضم الجداد، وبيشيل الخارجين. ده الجزء
+         اللي كان ناقص خالص — المزامنة القديمة بتضيف بس، فاللي طلب
+         النهاردة بيفضل في «نايمين» على المنصة لشهور. */
+      if (force === "ladder" || (force == null && await jobDue("ladder"))) {
+        const r = rtApi
+          ? await rtApi.runCycle({ trigger })
+          : { ok: false, error: "موديول الريتارجيت ما اتسجّلش" };
+        await markTask("ladder:rt", !!r.ok, {
+          error: r.error,
+          line: `سلّم الريتارجيت وقف — «${String(r.error || "").slice(0, 140)}». يعني الشرايح مش بتتحدّث على المنصات: اللي طلب النهاردة ممكن يفضل يشوف إعلان رجوع، واللي في الضابطة ممكن يتسرّب للاستهداف.`,
+        });
+        await jobDone("ladder", !!r.ok, r);
+        out.ran.push({ job: "ladder", customers: r.customers ?? null, dryRun: r.dryRun ?? null });
+        out.ladder = r;
       }
 
       if (force === "measure" || (force == null && await jobDue("measure"))) {
@@ -1155,10 +1183,20 @@ export function register(app, ctx) {
   }
 
   console.log(`[audiences] routes ready — ${META_AUDIENCES.length} platform audiences in the catalogue`);
-  return {
+  const api = {
     syncAll, segmentSizes, SEGMENTS,
     // العمود الفقري — الطيار وأي موديول تاني بيقرا منها بدل ما يعيد كتابتها.
     META_AUDIENCES, refresh, ensureMetaAudiences, measureMetaAudiences,
     statusLine, retargetEconomics, exclusionIds, audienceId: savedId,
   };
+
+  /* السلّم. فشل تسجيله ما ينفعش يوقّع الموديول كله — الجماهير والاستبعادات
+     أهم من إنها تقع كلها لو حاجة في السلّم غلطت. */
+  try {
+    rtApi = retargeting.register(app, ctx, { audiences: api });
+    api.retargeting = rtApi;
+  } catch (e) {
+    console.error("[audiences] retargeting register failed:", e.message);
+  }
+  return api;
 }
