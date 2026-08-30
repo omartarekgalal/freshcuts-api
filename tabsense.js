@@ -936,6 +936,7 @@ async function ping() {
 
 export {
   getSession,
+  authGet,   // للاستكشاف: قراءة صفحات اللوحة زي ما الكاشير بيشوفها
   listPromocodeBatches,
   fetchBatchCodes,
   fetchAllRedeemedCodes,
