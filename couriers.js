@@ -62,15 +62,30 @@ async function httpJson(url, { method = "GET", headers = {}, body, label = "cour
   return data;
 }
 
-/* عنوان مقروء لسائق: الشارع → المبنى → الدور → علامة مميزة → الحي */
+/* عنوان مقروء لسائق: الحي → الشارع → المبنى → علامة مميزة.
+
+   الحي الأول لأن السائق بيوجّه نفسه بيه قبل أي حاجة.
+
+   ودي مش تجميعة نصوص ساذجة: من طلب حقيقي وصل السائق بـ«مبنى المبتى والدور،
+   🏠 بيت، بجوار علامة مميزة» — لأن العميل ساب الحقول فاضية والواجهة بعتت
+   نص الـplaceholder نفسه، وحقل «الدور» أصلاً بيحمل نوع السكن مش رقم دور.
+   فبنرمي أي قيمة شكلها placeholder، وبنشيل الإيموجي، وبنسيب الدور بره —
+   عنوان قصير صح أنفع للسائق من عنوان طويل نصه كلام فاضي. */
+const ADDR_PLACEHOLDERS = /^(المبن?ى|المبتى)?\s*(و?الدور)?$|^علامة مميزة$|^رقم المبنى$|^اسم الشارع$|^الحي$|^بيت$|^شقة$|^عنواني$|^-+$/;
+const cleanBit = (v) => {
+  const t = String(v || "").replace(/[\p{Extended_Pictographic}\uFE0F]/gu, "").trim();
+  if (!t || ADDR_PLACEHOLDERS.test(t)) return "";
+  return t;
+};
 export function readableAddress(addr) {
+  const area = cleanBit(addr.area), street = cleanBit(addr.street);
+  const building = cleanBit(addr.building), landmark = cleanBit(addr.landmark);
   return [
-    addr.street,
-    addr.building && `مبنى ${addr.building}`,
-    addr.floor,
-    addr.landmark && `بجوار ${addr.landmark}`,
-    addr.area && `حي ${addr.area}`,
-  ].filter(Boolean).join("، ") || "موقع العميل";
+    area && `حي ${area}`,
+    street,
+    building && `مبنى ${building}`,
+    landmark && `بجوار ${landmark}`,
+  ].filter(Boolean).join("، ") || "موقع العميل — اتبع الإحداثيات";
 }
 
 const PREPAID_NOTE = "الطلب مدفوع مسبقاً — لا يُحصَّل من العميل";
@@ -226,10 +241,25 @@ const LJ_STATUS = {
   assigned: "assigned", riderassigned: "assigned", driverassigned: "assigned",
   orderpicked: "picked", picked: "picked", pickedup: "picked",
   intransit: "picked", ontheway: "picked", ordertransit: "picked",
+  // «Shipped» رجعت من طلب حقيقي والكابتن كان ماسك الأكل فعلاً — وما كانتش
+  // في الخريطة، فالحارس فضل يتجاهلها والعميل قاعد على «جاري إسناد مندوب».
+  shipped: "picked", ordershipped: "picked", outfordelivery: "picked",
   delivered: "delivered", completed: "delivered", ordercompleted: "delivered", orderdelivered: "delivered",
   cancelled: "cancelled", canceled: "cancelled", ordercancelled: "cancelled", rejected: "cancelled",
 };
 const ljNorm = (s) => String(s || "").toLowerCase().replace(/[^a-z]/g, "");
+/* حالة مش في الخريطة = العميل هيقف على شاشة قديمة من غير ما حد يعرف ليه.
+   بنقولها في اللوج مرة واحدة لكل قيمة بدل ما تختفي في صمت. */
+const _seenUnknown = new Set();
+function ljStage(raw) {
+  const k = ljNorm(raw);
+  const mapped = LJ_STATUS[k];
+  if (!mapped && k && !_seenUnknown.has(k)) {
+    _seenUnknown.add(k);
+    console.error(`[couriers] Leajlak حالة غير معروفة: "${raw}" — محتاجة تتضاف للخريطة`);
+  }
+  return mapped || null;
+}
 
 const leajlak = {
   id: "leajlak",
@@ -315,7 +345,7 @@ const leajlak = {
       orderNumber: d.dsp_order_id != null ? String(d.dsp_order_id) : null,
       cost: d.total != null ? Number(d.total) : null,
       driver: d.driver || null,
-      status: LJ_STATUS[ljNorm(d.status)] || "pending",
+      status: ljStage(d.status) || "pending",
       raw: created,
     };
   },
@@ -326,7 +356,7 @@ const leajlak = {
     const d = (r && r.data) || r || {};
     if (!d.status && !d.driver) return null;
     return {
-      status: LJ_STATUS[ljNorm(d.status)] || null,
+      status: ljStage(d.status),
       driver: d.driver || null,
       cost: d.total != null ? Number(d.total) : null,
       raw: d,
@@ -352,7 +382,7 @@ const leajlak = {
     return {
       orderNo: orderNo != null ? String(orderNo) : null,
       ref: ref != null ? String(ref) : null,
-      status: LJ_STATUS[ljNorm(raw)] || null,
+      status: ljStage(raw),
       rawStatus: String(raw),
       driver: b.driver || null,
       cost: b.total != null ? Number(b.total) : null,

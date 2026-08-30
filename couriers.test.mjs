@@ -42,8 +42,16 @@ t("بيرتب الشارع والمبنى والحي", () => {
   const a = readableAddress(ORDER.address);
   assert.ok(a.includes("شارع صاري") && a.includes("مبنى 12") && a.includes("حي السلامة"), a);
 });
-t("عنوان فاضي بيرجع نص افتراضي", () =>
-  assert.equal(readableAddress({}), "موقع العميل"));
+t("عنوان فاضي بيوجّه السائق للإحداثيات", () =>
+  assert.ok(readableAddress({}).includes("الإحداثيات")));
+t("نصوص الـplaceholder ما توصلش السائق", () => {
+  const a = readableAddress({ area: "الزهراء", street: "شارع حلمى كتبى",
+    building: "المبتى والدور", floor: "🏠 بيت", landmark: "علامة مميزة" });
+  assert.ok(!a.includes("المبتى"), a);
+  assert.ok(!a.includes("علامة مميزة"), a);
+  assert.ok(!/\p{Extended_Pictographic}/u.test(a), "فيه إيموجي: " + a);
+  assert.ok(a.includes("حي الزهراء") && a.includes("شارع حلمى كتبى"), a);
+});
 
 console.log("\nFlying Arrow — شكل الطلب:");
 {
