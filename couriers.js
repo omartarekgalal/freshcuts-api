@@ -77,15 +77,27 @@ const cleanBit = (v) => {
   if (!t || ADDR_PLACEHOLDERS.test(t)) return "";
   return t;
 };
-export function readableAddress(addr) {
+export function readableAddress(addr, { withPin = false } = {}) {
   const area = cleanBit(addr.area), street = cleanBit(addr.street);
   const building = cleanBit(addr.building), landmark = cleanBit(addr.landmark);
-  return [
+  const text = [
     area && `حي ${area}`,
     street,
     building && `مبنى ${building}`,
     landmark && `بجوار ${landmark}`,
-  ].filter(Boolean).join("، ") || "موقع العميل — اتبع الإحداثيات";
+  ].filter(Boolean).join("، ");
+
+  /* ملاحظة عمر من طلب حقيقي (2026-08-30): تطبيق المندوب بيفتح جوجل ماب
+     و**يبحث بنص العنوان** بدل ما يفتح الدبوس — فالسائق بيلف على عنوان
+     تقريبي. الحل إن الإحداثيات تبقى جزء من النص نفسه: جوجل ماب بيفهم
+     "21.592080,39.143515" كنقطة بالظبط، فسواء التطبيق فتح الدبوس أو بحث
+     بالنص، الاتنين بيوصلوا نفس المكان.
+     ٦ خانات عشرية ≈ ١١ سم — أدق من أي عنوان مكتوب. */
+  const lat = Number(addr.latitude), lng = Number(addr.longitude);
+  const pin = withPin && isFinite(lat) && isFinite(lng) && lat && lng
+    ? `${lat.toFixed(6)},${lng.toFixed(6)}` : "";
+  if (!text) return pin || "موقع العميل — اتبع الإحداثيات";
+  return pin ? `${text} — ${pin}` : text;
 }
 
 const PREPAID_NOTE = "الطلب مدفوع مسبقاً — لا يُحصَّل من العميل";
@@ -152,7 +164,7 @@ const flyingarrow = {
           },
           {
             type: "dropoff",
-            address: readableAddress(addr),
+            address: readableAddress(addr, { withPin: true }),
             lat: Number(addr.latitude), lng: Number(addr.longitude),
             contact_name: order.customer?.name || "العميل",
             contact_phone: e164(order.customer?.phone || ""),
@@ -324,7 +336,7 @@ const leajlak = {
           name: order.customer?.name || "العميل",
           phone: msisdn(order.customer?.phone || ""),
           coordinate: { latitude: Number(addr.latitude), longitude: Number(addr.longitude) },
-          address: readableAddress(addr),
+          address: readableAddress(addr, { withPin: true }),
         },
         order: {
           // 0 = مدفوع مسبقاً. العميل دفع لنا أونلاين فالكابتن ما بيحصّلش.
