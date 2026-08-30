@@ -79,7 +79,7 @@ console.log("\nFlying Arrow — شكل الطلب:");
 console.log("\nLeajlak — شكل الطلب:");
 {
   const lj = PROVIDERS.leajlak;
-  const { seen, restore } = capture(lj, { data: { dsp_order_id: 400069217, status: "New Order" } });
+  const { seen, restore } = capture(lj, { dsp_order_id: 400069217, status: "New Order" });
   const res = await lj.dispatch(ORDER, CFG);
   restore();
   const b = seen.opts.body;
@@ -96,7 +96,7 @@ console.log("\nLeajlak — شكل الطلب:");
   t("payment_type = 0 (مدفوع مسبقاً)", () => assert.equal(b.order.payment_type, 0));
   t("الإجمالي بيتبعت", () => assert.equal(b.order.total, 128.5));
   t("الرقم من غير +", () => assert.equal(b.delivery_details.phone, "966546715683"));
-  t("المرجع = رقمنا (تتبعهم برقمنا)", () => assert.equal(res.ref, "W1756000000"));
+  t("المرجع = رقمهم (dsp_order_id) مش رقمنا", () => assert.equal(res.ref, "400069217"));
   t("بيمسك رقمهم كمان", () => assert.equal(res.orderNumber, "400069217"));
   t("«New Order» → pending", () => assert.equal(res.status, "pending"));
 }

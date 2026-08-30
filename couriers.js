@@ -305,10 +305,13 @@ const leajlak = {
       },
     });
     const d = created?.data || created || {};
+    /* وثيقتهم بتقول إن التتبع برقم طلبنا — وده **غلط**، مجرّب على اللايف:
+       GET /orders/<رقمنا> بيرد «There is no order with this order id»، بينما
+       GET /orders/<dsp_order_id> بيرد الطلب كامل. فالمرجع التشغيلي هو
+       الـUUID بتاعهم، ورقمنا بيفضل في shop_order_no وبيرجع في حقل `id`
+       بتاع ردهم (وده اللي بنطابق بيه الويبهوك). */
     return {
-      // التتبع عندهم برقمنا، فبنخزّن رقمنا كمرجع تشغيلي — كده track/cancel
-      // بيشتغلوا حتى لو ردهم ما فيهوش رقم مرجعي أصلاً.
-      ref: String(order.order_no),
+      ref: String(d.dsp_order_id || order.order_no),
       orderNumber: d.dsp_order_id != null ? String(d.dsp_order_id) : null,
       cost: d.total != null ? Number(d.total) : null,
       driver: d.driver || null,
@@ -318,8 +321,9 @@ const leajlak = {
   },
 
   async track(sh) {
+    // ردهم مسطّح: {id, status, dsp_order_id, driver?} — مش متعشّش تحت data
     const r = await this.call(`/orders/${encodeURIComponent(sh.provider_ref || sh.shop_order_no)}`);
-    const d = r?.data || r || {};
+    const d = (r && r.data) || r || {};
     if (!d.status && !d.driver) return null;
     return {
       status: LJ_STATUS[ljNorm(d.status)] || null,
@@ -330,17 +334,13 @@ const leajlak = {
   },
 
   async cancel(sh, reason) {
-    // وثيقتهم بتسمّي العملية CANCEL وصفحتها اسمها DeleteOrder — يعني DELETE
-    // هو الأرجح. بنجرّبها، ولو الخادم رفض الفعل نرجع لـ POST /cancel بدل ما
-    // نسيب شحنة شغالة ونتفرج عليها.
+    /* مجرّب على اللايف: DELETE /orders/<dsp_order_id> بيرد 202 بجسم فاضي —
+       وده اللي وثيقتهم بتسمّيه «CANCEL» وصفحتها اسمها DeleteOrder. مفيش
+       مسار /cancel عندهم أصلاً (بيرد route not found)، ومفيش رسوم إلغاء
+       ولا مبلغ مسترد في الرد. */
     const path = `/orders/${encodeURIComponent(sh.provider_ref || sh.shop_order_no)}`;
     const body = { reason: String(reason || "cancelled by restaurant").slice(0, 200) };
-    try {
-      return { fee: null, refund: null, raw: await this.call(path, { method: "DELETE", body }) };
-    } catch (e) {
-      if (e.status !== 405 && e.status !== 404) throw e;
-      return { fee: null, refund: null, raw: await this.call(`${path}/cancel`, { method: "POST", body }) };
-    }
+    return { fee: null, refund: null, raw: await this.call(path, { method: "DELETE", body }) };
   },
 
   parseWebhook(b) {
