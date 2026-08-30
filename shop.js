@@ -1047,6 +1047,30 @@ export function register(app, ctx, deps = {}) {
     return c.json({ ok: true, status: after.status, posOrderId: after.pos_order_id, lastError: after.last_pos_error });
   });
 
+  /* اطلب مندوب يدوياً — احتياطي للتلقائي: لو الإرسال التلقائي فشل (لاجلك
+     وقعت لحظة القبول، أو الطلب قديم من قبل ما نفعّل التلقائي)، الكاشير
+     يبعت المندوب بضغطة بدل ما الطلب يفضل معلّق. */
+  app.post("/api/shop/orders/:orderNo/dispatch", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    const row = await getOrderRow(c.req.param("orderNo"));
+    if (!row) return c.json({ ok: false, error: "not_found" }, 404);
+    if (row.option !== "delivery") return c.json({ ok: false, error: "not_delivery" }, 409);
+    if (!["accepted", "pos_created", "paid"].includes(row.status)) {
+      return c.json({ ok: false, error: "not_dispatchable", status: row.status }, 409);
+    }
+    const existing = await delivery.shipmentOf(row.order_no);
+    if (existing && !["cancelled"].includes(String(existing.status))) {
+      return c.json({ ok: false, error: "already_dispatched", ref: existing.provider_ref }, 409);
+    }
+    try {
+      const res = await delivery.dispatch(row);
+      await setStatus(row.order_no, "courier_requested");
+      return c.json({ ok: true, provider: res.provider, ref: res.faOrderId, assigned: res.assigned });
+    } catch (e) {
+      return c.json({ ok: false, error: e.message }, 502);
+    }
+  });
+
   /* Reconciliation feed: MyFatoorah collected vs what the POS knows about.
      The gap (delivery fees + tips) is BY DESIGN — the POS order carries the
      food total only — so the screen states it instead of hiding it. */
