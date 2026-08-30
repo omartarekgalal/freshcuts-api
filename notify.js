@@ -37,8 +37,12 @@ const MESSAGES = {
   on_the_way: () => `فريش كتس: طلبك في الطريق إليك الآن 🛵💨`,
   delivered: () => `فريش كتس: تم توصيل طلبك — بالهنا والشفا 🌟`,
   rejected_refunded: (o) => `فريش كتس: نعتذر، تعذّر تنفيذ طلبك ${o.order_no} وتم استرجاع المبلغ كاملاً لبطاقتك 💳`,
+  /* الاسترجاع اتأخر — ما نقولش «تم» وهو ما تمّش. الرسالة دي بتعترف
+     بالمشكلة وبتوعد بمتابعة، والوعد ده مدعوم بإنذار درجة 3 في اللوحة
+     بيفضل ولّع لحد ما حد يسترجع فعلاً. */
+  refund_failed: (o) => `فريش كتس: نعتذر عن طلبك ${o.order_no}. استرجاع المبلغ جارٍ وفريقنا بيتابعه — هنتواصل معك للتأكيد 🙏`,
 };
-const DEFAULT_SMS_STAGES = ["pos_created", "rejected_refunded"];
+const DEFAULT_SMS_STAGES = ["pos_created", "rejected_refunded", "refund_failed"];
 
 const rl = new Map();
 function rateLimited(ip, max = 60) {

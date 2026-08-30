@@ -32,6 +32,7 @@
 import crypto from "node:crypto";
 import { httpJson } from "./ads.js";
 import { OFFERS, activeOffers, offerById, offerState, riyadhDay } from "./offers.js";
+import { registerSocial } from "./social.js";
 
 /* أي فكرة محتوى بتبيع عرض له تاريخ انتهاء. الربط بس — تعريف العرض نفسه
    (السعر، الصالة، التاريخ) عند offers.js ومش بيتكرر هنا.
@@ -1432,15 +1433,52 @@ export function register(app, ctx) {
     return c.json(await runPublisher({ trigger: "manual" }));
   });
 
-  /* نشر بوست انستجرام دلوقتي حالاً، من غير انتظار الميعاد. */
+  /* نشر بوست انستجرام دلوقتي حالاً، من غير انتظار الميعاد.
+
+     ── القفل اللي اتزوّد هنا ─────────────────────────────────────────────
+     المسار ده كان بينشر بمجرد ما يتنده — `{}` في الـbody وخلاص. وده معناه
+     إن ضغطة واحدة بالغلط (أو نداء أوتوماتيكي بيجرّب حاجة تانية) بتخرج بوست
+     حقيقي للناس، من غير رجعة. حصل فعلاً قبل كده: بوست انستجرام اتنشر وهو
+     لسه مسودة، ولسه موجود.
+
+     بقى فيه قفلين، والاتنين **بيفشلوا مقفولين** (مايعدّوش لو الطالب سكت):
+
+       ١) `confirm: true` لازم تيجي في الـbody. أي نداء قديم بيبعت `{}`
+          هيتقفل بـ٤٢٨ ورسالة بتقول يعمل إيه — مش هينشر بالغلط.
+       ٢) المسودة مايتنشرش منها أصلاً إلا بـ`publishDraft: true` كمان.
+          «مسودة» معناها الحرفي إنها لسه ماتوافقش عليها؛ لو النشر منها
+          بنفس سهولة المجدول، يبقى كلمة «مسودة» مالهاش أي معنى.
+
+     الحراس (الصنف والتاريخ والحصة) شغّالين جوّه publishInstagram زي ما هم —
+     الزيادة دي فوقيهم مش بدالهم. */
   app.post("/api/content/posts/:id/publish", async (c) => {
     const err = await requireAdmin(c); if (err) return err;
+    const body = await c.req.json().catch(() => ({}));
     const row = (await pool.query("SELECT * FROM content_posts WHERE id=$1", [c.req.param("id")])).rows[0];
     if (!row) return c.json({ ok: false, error: "not_found" }, 404);
     if (row.channel !== "instagram") {
       return c.json({ ok: false, error: "instagram only", message: "النشر الفوري من هنا لانستجرام بس — فيسبوك بيتجدول من عنده وتيك توك بالإيد" }, 400);
     }
     if (row.status === "published") return c.json({ ok: false, error: "already", message: "البوست ده اتنشر خلاص" }, 409);
+
+    if (body.confirm !== true) {
+      return c.json({
+        ok: false, error: "confirm_required", published: false,
+        message: "النشر الفوري محتاج تأكيد صريح — ابعت \"confirm\": true مع الطلب",
+        preview: {
+          channel: row.channel, status: row.status,
+          headline: String(row.caption || "").split("\n")[0].slice(0, 90),
+          mediaUrl: row.media_url || "",
+        },
+      }, 428);
+    }
+    if (row.status === "draft" && body.publishDraft !== true) {
+      return c.json({
+        ok: false, error: "draft_blocked", published: false,
+        message: "ده لسه **مسودة** مش بوست موافَق عليه. لو متأكد، ابعت \"publishDraft\": true كمان — أو حوّله لـ«مجدول» الأول",
+      }, 409);
+    }
+
     const res = await publishInstagram(row);
     if (!res.ok) {
       await pool.query("UPDATE content_posts SET status='failed', error_text=$2, updated_at=NOW() WHERE id=$1", [row.id, res.error]);
@@ -1507,6 +1545,11 @@ export function register(app, ctx) {
     await pool.query("DELETE FROM content_tiktok_ideas WHERE id=$1", [c.req.param("id")]);
     return c.json({ ok: true });
   });
+
+  /* جاهزية الصفحات وبنك التريندات وتقويم المناسبات. اتحطّت في ملف منفصل
+     عشان الملف ده مايكبرش، وبتتسجّل من هنا عشان index.js مايتلمسش خالص
+     (ملف مشترك، وسطر فيه بيخبط مع شغل حد تاني). الملف ده مالوش أي مسار نشر. */
+  registerSocial(app, ctx);
 
   console.log("[content] routes ready");
   return { runPublisher, syncPlatforms, publishInstagram };

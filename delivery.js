@@ -49,25 +49,55 @@ export const DEFAULT_POLICY = {
   perKm: 2,           // «وكل كم زيادة بـ 2 ريال» (charged per started km)
   feeCap: null,       // never charge more than this (null = no cap)
   freeOverTotal: null,// order total that earns free delivery (null = never)
+  freeCoverMax: null, // ↓ أقصى مبلغ من الرسوم بيتنازل عنه «التوصيل المجاني»
   minOrderTotal: 0,   // below this the quote refuses the order
-  maxKm: 15,          // beyond this we don't deliver
+  maxKm: 15,          // beyond this we don't deliver (ROUTE km)
+  maxStraightKm: null,// ↓ سقف مستقل على المسافة الهوائية
   routeFactor: 1.3,   // haversine → road-distance correction
   discount: { mode: "none", value: 0, label: "" }, // none|flat|percent on the FEE
 };
+
+/* ── لماذا سقفان لا سقف واحد ──────────────────────────────────────────────
+   عمر حدّد شرطين مختلفين (2026-08-26): «دائرة 7 كيلو حول المطعم، بحيث يكون
+   المشوار على الخريطة لا يتعدى 10 كيلومتر».
+
+   دول رقمان مش رقم واحد:
+     • 7 كم = مسافة هوائية (haversine) — دي اللي بترسم الدايرة على الخريطة،
+       ودي كمان اللي Flying Arrow بترجّعها في total_distance_km.
+     • 10 كم = طول المشوار الحقيقي على الأسفلت — بنقدّره بـ haversine ×
+       routeFactor لحد ما يبقى عندنا API مسارات.
+
+   بمعامل 1.3 الافتراضي: 7 هوائي ← 9.1 مشوار، فالسقف الهوائي هو المُلزِم.
+   لكن لو عمر رفع المعامل لـ 1.45 (شوارع جدة وقت الزحمة)، 7 هوائي ← 10.15
+   مشوار، وساعتها سقف المشوار هو المُلزِم. عشان كده الاتنين بيتفحصوا كل مرة
+   بشكل مستقل — سقف واحد بس كان هيسيب حالة من التنتين مكشوفة.               */
 
 /* computeDeliveryFee(config, {distanceKm, orderTotal}) → one of:
    {deliverable:false, reason}  — out of range / under minimum
    {deliverable:true, fee, distanceKm, breakdown[]} — fee in SAR, rounded to
    2dp, never negative; breakdown lines are Arabic strings the storefront can
    show so the customer sees WHY the fee is what it is. */
-export function computeDeliveryFee(cfgIn, { distanceKm, orderTotal }) {
+export function computeDeliveryFee(cfgIn, { distanceKm, straightKm, orderTotal }) {
   const cfg = { ...DEFAULT_POLICY, ...(cfgIn || {}) };
   const dist = Number(distanceKm) || 0;
+  const straight = straightKm != null ? Number(straightKm) : null;
   const total = Number(orderTotal) || 0;
   const breakdown = [];
 
+  /* الدايرة الهوائية أولاً — دي حدود المنطقة اللي عمر رسمها، ومرفوض بره
+     الدايرة يعني مرفوض حتى لو الطريق قصير. `straightKm` اختياري: لو
+     المتصل ما بعتهاش (اختبارات قديمة) بنعدّي للفحص التاني بس. */
+  if (cfg.maxStraightKm != null && straight != null && straight > cfg.maxStraightKm) {
+    return {
+      deliverable: false, reason: "out_of_zone",
+      maxStraightKm: cfg.maxStraightKm, straightKm: r2(straight), distanceKm: r2(dist),
+    };
+  }
   if (cfg.maxKm != null && dist > cfg.maxKm) {
-    return { deliverable: false, reason: "out_of_range", maxKm: cfg.maxKm, distanceKm: r2(dist) };
+    return {
+      deliverable: false, reason: "out_of_range", maxKm: cfg.maxKm,
+      distanceKm: r2(dist), ...(straight != null ? { straightKm: r2(straight) } : {}),
+    };
   }
   if (total < (cfg.minOrderTotal || 0)) {
     return { deliverable: false, reason: "under_minimum", minOrderTotal: cfg.minOrderTotal, distanceKm: r2(dist) };
@@ -94,9 +124,21 @@ export function computeDeliveryFee(cfgIn, { distanceKm, orderTotal }) {
     fee = Math.max(0, fee - cut);
     breakdown.push(`${d.label || "خصم"} ${d.value}%: -${r2(cut)} ر.س`);
   }
+  /* «توصيل مجاني فوق مبلغ» — مع سقف اختياري لحجم التنازل.
+
+     من غير سقف، المطعم بيتحمّل التوصيلة كاملة مهما بعدت، والحساب بيقول إن
+     العتبة لازم تبقى ١١٠ ر.س عشان طلب على حافة المنطقة يفضل أحسن من كيتا.
+     بسقف تنازل (مثلاً ١٢ ر.س = الباقة الأساسية)، تعرّض المطعم بيبقى ثابت
+     تقريباً مهما بعدت المسافة، والعتبة بتنزل لـ ٧٥ ر.س بنفس الأمان.
+     التفاصيل في freeThresholdFor() تحت.
+
+     freeCoverMax = null → تنازل كامل (السلوك القديم، ومازال مدعوم). */
   if (cfg.freeOverTotal != null && total >= cfg.freeOverTotal) {
-    fee = 0;
-    breakdown.push(`توصيل مجاني للطلبات فوق ${r2(cfg.freeOverTotal)} ر.س`);
+    const cover = cfg.freeCoverMax != null ? Math.min(fee, Number(cfg.freeCoverMax)) : fee;
+    fee = Math.max(0, fee - cover);
+    breakdown.push(fee === 0
+      ? `توصيل مجاني للطلبات فوق ${r2(cfg.freeOverTotal)} ر.س`
+      : `خصم توصيل ${r2(cover)} ر.س للطلبات فوق ${r2(cfg.freeOverTotal)} ر.س`);
   }
   // Whole riyals only: the fee enters the POS invoice as quantity × a 1-SAR
   // "رسوم التوصيل" product (TabSense rejects free-form amounts), so a
@@ -105,6 +147,148 @@ export function computeDeliveryFee(cfgIn, { distanceKm, orderTotal }) {
 }
 
 const r2 = (v) => Math.round((Number(v) || 0) * 100) / 100;
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   بوابة الإرسال — المرحلة الأولى يدوية بالكامل
+
+   قرار عمر (2026-08-26): «هنشتغل معاهم في البداية على dashboard لحد ما
+   الانتجريشن يخلص بالكامل. العميل هيدخل يطلب ويدفع، ويرجع الكاشير يدخل
+   الأوردر بشكل يدوي على الداشبورد». وكمان: «مش هنعلن على التوصيل غير لما
+   نتأكد إن كل حاجة تمام».
+
+   يعني: **ممنوع منعاً باتاً** إن أي سطر كود يبعت طلب حقيقي لشركة توصيل
+   دلوقتي. الضمانة مش «متنساش تقفل الزرار» — الضمانة إن في مكان واحد كل
+   إرسال بيعدّي منه، وفي الوضع اليدوي بيرمي قبل أي اتصال بالشبكة.
+
+   ثلاث طبقات، الأقوى بتكسب:
+     1. DELIVERY_FORCE_MANUAL=1  ← قفل صلب. يدوي مهما قالت الإعدادات.
+                                   ده اللي بيتحط في Coolify لحد ما نتأكد.
+     2. settings.delivery.dispatchMode = "manual" | "auto"
+     3. DELIVERY_DISPATCH_MODE (متغيّر بيئي) ← احتياطي لو الإعدادات فاضية
+   الافتراضي في غياب الكل: **manual**. أي إعداد غلط أو ناقص أو مكتوب غلط
+   بينتهي عند اليدوي — الفشل بيميل ناحية «ما نبعتش»، مش «نبعت».         */
+export const DISPATCH_MODES = ["manual", "auto"];
+
+export function dispatchMode(settings, envRead = (k) => (process.env[k] || "").trim()) {
+  const forced = envRead("DELIVERY_FORCE_MANUAL");
+  if (forced === "1" || forced.toLowerCase() === "true") {
+    return { mode: "manual", forced: true, source: "env:DELIVERY_FORCE_MANUAL",
+             reason: "قفل يدوي صلب من متغيّرات البيئة" };
+  }
+  const fromSettings = String(((settings || {}).delivery || {}).dispatchMode || "").toLowerCase();
+  if (DISPATCH_MODES.includes(fromSettings)) {
+    return { mode: fromSettings, forced: false, source: "settings.delivery.dispatchMode" };
+  }
+  const fromEnv = envRead("DELIVERY_DISPATCH_MODE").toLowerCase();
+  if (DISPATCH_MODES.includes(fromEnv)) {
+    return { mode: fromEnv, forced: false, source: "env:DELIVERY_DISPATCH_MODE" };
+  }
+  return { mode: "manual", forced: false, source: "default",
+           reason: "مفيش إعداد صريح — الافتراضي يدوي" };
+}
+
+export const canAutoDispatch = (settings, envRead) => dispatchMode(settings, envRead).mode === "auto";
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   اقتصاديات الطلب الواحد — الأرقام اللي العتبة بتتبني عليها
+
+   المعطيات (من دفتر عمر):
+     • هامش المساهمة للصالة  = 45.2% من قيمة الأكل
+     • كيتا بتطلع 24.5% صافي بعد عمولة 46.8%
+     • اتفاق Flying Arrow المطبّق = 9 ر.س لأول 4 كم + 1.8/كم + ضريبة 15%
+
+   طلب التوصيل المباشر بيقع بين الاتنين، ومكانه بالظبط بيتحدد بالفرق بين
+   اللي بنحصّله من العميل واللي بندفعه للكابتن.                            */
+export const BENCHMARKS = {
+  dineInContribution: 0.452,   // هامش المساهمة في الصالة
+  keetaNet: 0.245,             // صافي كيتا بعد عمولة 46.8%
+  keetaCommission: 0.468,
+};
+
+/* تكلفة التوصيلة علينا بالاتفاق (شاملة الضريبة). دالة صافية — نفس معادلة
+   faCost تحت بس من غير الاعتماد على قايمة المركبات، عشان تتجرب أوفلاين. */
+export function contractCourierCost(routeKm, contract = {}) {
+  const base = Number(contract.baseFee ?? 9);
+  const per = Number(contract.perKm ?? 1.8);
+  const included = Number(contract.includedKm ?? 4);
+  const minFare = Number(contract.minFare ?? 0);
+  const vat = Number(contract.vat ?? 1.15);
+  const extra = Math.max(0, (Number(routeKm) || 0) - included);
+  return r2(Math.max(minFare, base + per * extra) * vat);
+}
+
+/* اقتصاديات طلب واحد: إيه اللي بيتبقى للمطعم بعد التوصيلة.
+
+   contribution = (هامش الصالة × قيمة الأكل) + الرسوم المحصّلة − تكلفة الكابتن
+   والنسبة دي هي اللي بتتقارن بـ 45.2% (صالة) و 24.5% (كيتا).            */
+export function orderEconomics({ foodTotal, feeCharged, routeKm, contract, benchmarks } = {}) {
+  const B = { ...BENCHMARKS, ...(benchmarks || {}) };
+  const food = Number(foodTotal) || 0;
+  const fee = Number(feeCharged) || 0;
+  const cost = contractCourierCost(routeKm, contract);
+  const grossMargin = food * B.dineInContribution;
+  const courierGap = r2(fee - cost);               // موجب = الرسوم غطّت الكابتن
+  const contribution = r2(grossMargin + fee - cost);
+  return {
+    foodTotal: r2(food), feeCharged: r2(fee), routeKm: r2(routeKm),
+    courierCost: cost, courierGap,
+    grossMargin: r2(grossMargin), contribution,
+    contributionPct: food > 0 ? r2((contribution / food) * 100) : 0,
+    vsDineIn: r2((B.dineInContribution * 100) - (food > 0 ? (contribution / food) * 100 : 0)),
+    beatsKeeta: food > 0 ? (contribution / food) >= B.keetaNet : false,
+    keetaNetPct: r2(B.keetaNet * 100),
+    dineInPct: r2(B.dineInContribution * 100),
+  };
+}
+
+/* أقل عتبة «توصيل مجاني» تحافظ على هامش مستهدف عند **أسوأ نقطة في المنطقة**.
+
+   الاشتقاق:
+     عند العتبة T، مساهمة الطلب = 0.452·T + (الرسوم المحصّلة − تكلفة الكابتن)
+     خلي E = أقصى تعرّض = max(تكلفة الكابتن − الرسوم المحصّلة) على كل المسافات
+     النسبة = 0.452 − E/T  ≥  الهدف
+     ⇒  T ≥ E / (0.452 − الهدف)
+
+   بنمشّط كل مسافة في المنطقة بدل ما نفترض إن الأبعد هو الأسوأ: مع سقف
+   للرسوم (feeCap) وسقف للتنازل (freeCoverMax)، أسوأ نقطة ممكن تكون في
+   النص مش على الحافة.                                                     */
+export function freeThresholdFor({ policy, contract, target, benchmarks, stepKm = 0.5 } = {}) {
+  const cfg = { ...DEFAULT_POLICY, ...(policy || {}) };
+  const B = { ...BENCHMARKS, ...(benchmarks || {}) };
+  const goal = target != null ? Number(target) : B.keetaNet;
+  const maxRoute = Math.min(
+    cfg.maxKm != null ? cfg.maxKm : Infinity,
+    cfg.maxStraightKm != null ? cfg.maxStraightKm * (cfg.routeFactor || 1) : Infinity
+  );
+  if (!isFinite(maxRoute)) return { ok: false, reason: "no_zone_limit" };
+
+  let worst = { km: 0, exposure: -Infinity };
+  const points = [];
+  for (let km = stepKm; km <= maxRoute + 1e-9; km = r2(km + stepKm)) {
+    // الرسوم قبل قاعدة المجاني: نفس محرك التسعير، بطلب كبير عشان القاعدة تشتغل
+    const full = computeDeliveryFee({ ...cfg, freeOverTotal: null }, { distanceKm: km, orderTotal: 1e9 });
+    const grossFee = full.deliverable ? full.fee : 0;
+    const cover = cfg.freeCoverMax != null ? Math.min(grossFee, Number(cfg.freeCoverMax)) : grossFee;
+    const collected = Math.max(0, grossFee - cover);
+    const cost = contractCourierCost(km, contract);
+    const exposure = r2(cost - collected);   // اللي المطعم بيتحمّله فوق الرسوم
+    points.push({ routeKm: km, grossFee, waived: r2(cover), collected: r2(collected), courierCost: cost, exposure });
+    if (exposure > worst.exposure) worst = { km, exposure, grossFee, collected, courierCost: cost };
+  }
+  const headroom = B.dineInContribution - goal;
+  if (headroom <= 0) return { ok: false, reason: "target_above_dine_in", target: goal };
+  const raw = worst.exposure / headroom;
+  return {
+    ok: true,
+    threshold: Math.max(0, Math.ceil(raw / 5) * 5),   // مقرّبة لأعلى لأقرب 5 ر.س
+    exactThreshold: r2(raw),
+    worstPoint: worst,
+    target: goal, targetPct: r2(goal * 100),
+    headroom: r2(headroom),
+    maxRouteKm: r2(maxRoute),
+    curve: points,
+  };
+}
 
 /* ── Flying Arrow client ────────────────────────────────────────────────── */
 
@@ -205,14 +389,20 @@ export function register(app, ctx, deps = {}) {
     if (!pol) return { deliverable: false, reason: "no_policy" };
     const cfg = { ...DEFAULT_POLICY, ...pol.config };
     const straight = haversineKm(STORE_LAT(), STORE_LNG(), Number(lat), Number(lng));
-    const res = computeDeliveryFee(cfg, { distanceKm: straight * (cfg.routeFactor || 1), orderTotal });
+    const route = straight * (cfg.routeFactor || 1);
+    const res = computeDeliveryFee(cfg, { distanceKm: route, straightKm: straight, orderTotal });
     // The storefront's incentives (progress bar to free delivery, min-order
     // nudge) need the thresholds, not just the verdict.
-    return { ...res, policyId: pol.id, policyName: pol.name, policy: publicPolicy(cfg), ...gaps(cfg, orderTotal) };
+    return {
+      ...res, straightKm: r2(straight), routeKm: r2(route),
+      policyId: pol.id, policyName: pol.name, policy: publicPolicy(cfg), ...gaps(cfg, orderTotal),
+    };
   }
   const publicPolicy = (cfg) => ({
     baseFee: cfg.baseFee, baseKm: cfg.baseKm, perKm: cfg.perKm, maxKm: cfg.maxKm,
-    freeOverTotal: cfg.freeOverTotal ?? null, minOrderTotal: cfg.minOrderTotal || 0,
+    maxStraightKm: cfg.maxStraightKm ?? null,
+    freeOverTotal: cfg.freeOverTotal ?? null, freeCoverMax: cfg.freeCoverMax ?? null,
+    minOrderTotal: cfg.minOrderTotal || 0,
   });
   const gaps = (cfg, total) => ({
     toFree: cfg.freeOverTotal != null ? Math.max(0, Math.round((cfg.freeOverTotal - (Number(total) || 0)) * 100) / 100) : null,
@@ -238,7 +428,29 @@ export function register(app, ctx, deps = {}) {
   async function dispatch(order) {
     const all = await getSettingsData();
     const settings = all.delivery || {};
+
+    /* ── البوابة قبل أي حاجة تانية ──────────────────────────────────────
+       دي أول سطر فعّال في الدالة، وقبل أي `fetch`. الوضع اليدوي بيرمي هنا،
+       فمفيش أي مسار في السيستم — لا الكنس التلقائي ولا زرار الكاشير ولا
+       نداء يدوي من الكونسول — يقدر يوصل لشركة توصيل.
+
+       ملحوظة عن الترتيب: البوابة قبل فحص `configured()` عن قصد. لو حصل
+       العكس، مفاتيح ناقصة كانت هترمي خطأ «مفاتيح ناقصة» بدل «الوضع
+       يدوي» — والرسالة الغلط هنا معناها إن حد يحط المفاتيح ويفتكر إنه
+       حلّ المشكلة، وأول طلب حقيقي يروح لشركة إحنا لسه ما اتأكدناش منها. */
+    const gate = dispatchMode(all, env);
+    if (gate.mode !== "auto") {
+      throw Object.assign(
+        new Error("الوضع اليدوي: الكاشير بيدخّل الطلب على لوحة شركة التوصيل — الإرسال الآلي مقفول"),
+        { code: "MANUAL_MODE", gate });
+    }
+
     const provider = activeProvider(all);
+    if (provider.manual) {
+      throw Object.assign(
+        new Error("المزوّد المختار «يدوي» — مفيش إرسال آلي"),
+        { code: "MANUAL_MODE", gate });
+    }
     if (!provider.configured()) {
       throw Object.assign(
         new Error(`${provider.label}: مفاتيح ناقصة (${provider.missing().join(", ")})`),
@@ -360,6 +572,58 @@ export function register(app, ctx, deps = {}) {
     const r = await pool.query(
       "SELECT * FROM dl_shipments WHERE shop_order_no=$1 ORDER BY id DESC LIMIT 1", [orderNo]);
     return r.rows[0] || null;
+  }
+
+  /* ── الشحنة اليدوية ───────────────────────────────────────────────────
+     في المرحلة الأولى الكاشير هو المزوّد: بيفتح لوحة «أجلك»، يكتب الطلب
+     بإيده، وبعدين يرجع يقول للسيستم عمل إيه. الخطوات دي بتتسجّل في نفس
+     جدول dl_shipments بـ provider='manual' — مش جدول تاني — عشان الشاشة
+     والتتبع والتقارير كلها تفضل تقرأ من مصدر واحد لمكان الطلب، سواء
+     الكابتن جه من API ولا من موظف بيكتب على كيبورد.
+
+     provider_ref = رقم الطلب في لوحة الشركة، بيكتبه الكاشير. ده اللي
+     بيخلينا نقدر نرجع نسأل «أجلك» عن طلب بعينه لما حاجة تغلط.
+     cost = اللي الشركة حاسبته فعلاً — من غيره مفيش هامش حقيقي نحسبه.   */
+  const MANUAL_STAGES = { handoff: "pending", assigned: "assigned", picked: "picked",
+                          delivered: "delivered", cancelled: "cancelled" };
+
+  async function manualEvent(orderNo, stage, data = {}) {
+    const status = MANUAL_STAGES[stage];
+    if (!status) throw Object.assign(new Error("مرحلة غير معروفة"), { code: "BAD_STAGE" });
+    const sh = await shipmentOf(orderNo);
+    const ev = {
+      at: new Date().toISOString(), provider: "manual", event: stage,
+      by: data.by || "cashier", ref: data.ref || null, note: data.note || null,
+    };
+    const driver = data.driverName || data.driverPhone
+      ? { name: data.driverName || null, phone: data.driverPhone || null, source: "manual" }
+      : null;
+
+    if (!sh || sh.provider !== "manual") {
+      const r = await pool.query(
+        `INSERT INTO dl_shipments(shop_order_no, provider, provider_ref, status, driver, cost, dispatch, events)
+         VALUES ($1,'manual',$2,$3,$4,$5,$6,$7) RETURNING *`,
+        [String(orderNo), data.ref ? String(data.ref) : null, status,
+         driver ? jb(driver) : null, data.cost != null ? Number(data.cost) : null,
+         jb({ status: "manual", assigned: status === "assigned" || status === "picked",
+              message: "أُدخل يدوياً على لوحة شركة التوصيل", by: ev.by }),
+         jb([ev])]);
+      return r.rows[0];
+    }
+    const r = await pool.query(
+      `UPDATE dl_shipments SET
+         status=$2,
+         provider_ref = COALESCE($3, provider_ref),
+         driver = COALESCE($4, driver),
+         cost = COALESCE($5, cost),
+         dispatch = COALESCE(dispatch,'{}'::jsonb) || $6::jsonb,
+         events = events || $7::jsonb,
+         updated_at = NOW()
+       WHERE id=$1 RETURNING *`,
+      [sh.id, status, data.ref ? String(data.ref) : null,
+       driver ? jb(driver) : null, data.cost != null ? Number(data.cost) : null,
+       jb({ assigned: ["assigned", "picked", "delivered"].includes(status) }), jb([ev])]);
+    return r.rows[0];
   }
 
   /* ── routes ── */
@@ -521,6 +785,32 @@ export function register(app, ctx, deps = {}) {
     return c.json({ ok: true });
   });
 
+  /* ADMIN — «وريني الأرقام». اقتصاديات كل مسافة في المنطقة على السياسة
+     الفعّالة، وأقل عتبة توصيل مجاني بتحافظ على الهامش المستهدف. اللوحة
+     بتعرض ده كجدول، وعمر بيغيّر الهدف ويشوف العتبة بتتحرك فوراً. */
+  app.get("/api/delivery/economics", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    const all = await getSettingsData();
+    const pol = await activePolicy();
+    const cfg = { ...DEFAULT_POLICY, ...(pol ? pol.config : {}) };
+    const contract = courierContract(all.delivery || {});
+    const target = c.req.query("target") != null ? Number(c.req.query("target")) : null;
+    const basket = Number(c.req.query("basket")) || 90;
+
+    const free = freeThresholdFor({ policy: cfg, contract, target });
+    const rows = (free.curve || []).map((p) => ({
+      ...p,
+      paidOrder: orderEconomics({ foodTotal: basket, feeCharged: p.grossFee, routeKm: p.routeKm, contract }),
+      freeOrder: orderEconomics({ foodTotal: basket, feeCharged: p.collected, routeKm: p.routeKm, contract }),
+    }));
+    return c.json({
+      ok: true, basket, contract, benchmarks: BENCHMARKS,
+      policy: { ...cfg }, policyName: pol ? pol.name : null,
+      freeThreshold: free, rows,
+      dispatch: dispatchMode(all, env),
+    });
+  });
+
   app.get("/api/delivery/shipments", async (c) => {
     const err = await requireAdmin(c); if (err) return err;
     const rows = (await pool.query(
@@ -533,8 +823,12 @@ export function register(app, ctx, deps = {}) {
      شاشة تتبع واقفة — وده أسوأ إحساس ممكن نديهوله بعد ما دفع. */
   async function pollInFlight() {
     const rows = (await pool.query(
+      /* الشحنات اليدوية مستثناة: مرجعها رقم كتبه الكاشير من لوحة شركة
+         تانية، ومحدش عنده API نسأله. سؤال Flying Arrow عنه كان هيرجع
+         خطأ في أحسن الأحوال، أو بيانات طلب غريب في أسوأها. */
       `SELECT id, shop_order_no, provider, provider_ref, status FROM dl_shipments
         WHERE provider_ref IS NOT NULL
+          AND provider <> 'manual'
           AND status NOT IN ('delivered','cancelled')
           AND updated_at < NOW() - INTERVAL '3 minutes'
           AND created_at > NOW() - INTERVAL '12 hours'
@@ -567,6 +861,11 @@ export function register(app, ctx, deps = {}) {
       POLL_MIN * 60_000);
   }
 
-  return { quote, dispatch, shipmentOf, trackShipment, cancelShipment,
-           isLive: () => activeProvider({}).configured(), faCost, faVehicles, courierContract, PROVIDERS };
+  return { quote, dispatch, shipmentOf, trackShipment, cancelShipment, manualEvent,
+           isLive: () => activeProvider({}).configured(), faCost, faVehicles, courierContract, PROVIDERS,
+           /* shop.js بيسأل قبل ما يفكّر في الإرسال التلقائي. البوابة اللي
+              جوّه dispatch() هي الضمانة الحقيقية، ودي بتمنع حتى المحاولة. */
+           dispatchGate: async () => dispatchMode(await getSettingsData(), env),
+           canAutoDispatch: async () => canAutoDispatch(await getSettingsData(), env),
+           activePolicy };
 }
