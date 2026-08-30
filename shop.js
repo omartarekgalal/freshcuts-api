@@ -260,6 +260,7 @@ export function register(app, ctx, deps = {}) {
       -- MyFatoorah لما ترفض — MakeRefund مش idempotent، ومحاولة زيادة
       -- ممكن ترجّع فلوس مرتين لو الرد الأول ضاع في الطريق بس نجح عندهم.
       ALTER TABLE shop_orders ADD COLUMN IF NOT EXISTS refund_attempts INT NOT NULL DEFAULT 0;
+      ALTER TABLE shop_orders ADD COLUMN IF NOT EXISTS pay_gateway TEXT;
       -- سجل الإنذارات: كل درجة تصعيد تتبعت مرة واحدة لكل طلب، عشان المدير
       -- ما يصحاش على عشرين رسالة عن نفس الطلب.
       ALTER TABLE shop_orders ADD COLUMN IF NOT EXISTS alerts JSONB NOT NULL DEFAULT '{}'::jsonb;
@@ -632,7 +633,12 @@ export function register(app, ctx, deps = {}) {
       return { ok: false, error: "reference_mismatch" };
     }
     await setStatus(row.order_no, "paid", {
-      cols: { mf_payment_id: st.paymentId != null ? String(st.paymentId) : null },
+      cols: {
+        mf_payment_id: st.paymentId != null ? String(st.paymentId) : null,
+        // بوابة ماي فاتورة الفعلية (ap / md / vm …) — منها بنعرف نسجّل وسيلة
+        // الدفع الصح في تاب سينس بدل ما نكتب «كاش» على طلب مدفوع بالبطاقة.
+        pay_gateway: st.gateway || null,
+      },
     });
     // The coupon burns exactly when money moved, not at checkout — an
     // abandoned payment must not eat a limited-use code. Ambassador codes
@@ -693,7 +699,7 @@ export function register(app, ctx, deps = {}) {
             row.notes || "",
           ].filter(Boolean).join(" - ");
         })(),
-        paymentMethod: settings.posPaymentMethod || "cash", // → "online" after task-#6 probe + POS setting
+        paymentMethod: posPaymentMethodFor(row.pay_gateway, settings),
         deliveryAddress: addr.street || addr.area || (row.option === "delivery" ? "Delivery" : "Pickup"),
         latitude: addr.latitude, longitude: addr.longitude,
       });
@@ -1203,6 +1209,32 @@ export function register(app, ctx, deps = {}) {
         await refundOrder(await getOrderRow(row.order_no), "never accepted by restaurant");
       }
     }
+  }
+
+  /* ── وسيلة الدفع اللي تتسجّل في تاب سينس ────────────────────────────────
+     الأسماء دي مش مخترعة — دي اللي تاب سينس نفسه بيسجّل بيها، مستخرجة من
+     طلبات حقيقية في ts_orders:
+       TABsense Pay · Cash · Feedus · Mada · Visa · Mastercard
+       e-Credit Card · e-Apple Pay Credit · e-Apple Pay Mada
+     الـ«e-» معناها إلكتروني (مدفوع أونلاين)، وهي اللي تخصّنا.
+
+     كنا بنبعت "cash" لكل طلب أونلاين — يعني فاتورة المطعم بتقول إن العميل
+     دفع كاش في حين إنه دفع بالبطاقة، والتسوية اليومية بتطلع غلط.
+
+     البوابة الحقيقية بتيجي من ماي فاتورة في GetPaymentStatus.PaymentGateway،
+     فبنترجمها بدل ما نحزر. */
+  const POS_PAY_BY_GATEWAY = [
+    [/apple.*mada|mada.*apple/i, "e-Apple Pay Mada"],
+    [/apple/i,                   "e-Apple Pay Credit"],
+    [/mada|md/i,                 "Mada"],
+    [/visa|master|credit|vm|cc/i, "e-Credit Card"],
+  ];
+  function posPaymentMethodFor(gateway, settings) {
+    // إعداد صريح من اللوحة بيكسب على أي استنتاج
+    if (settings.posPaymentMethod) return settings.posPaymentMethod;
+    const g = String(gateway || "");
+    for (const [re, name] of POS_PAY_BY_GATEWAY) if (re.test(g)) return name;
+    return "e-Credit Card"; // مدفوع أونلاين مهما كانت الوسيلة — مش كاش أبداً
   }
 
   /* ── the sweep: retries, acceptance watch, auto-refund, dispatch ── */
