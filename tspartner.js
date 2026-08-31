@@ -103,12 +103,12 @@ export function register(app, ctx) {
   }
 
   /* بادل الـcode بتوكن. `unique_id` بيتبعت لو محدّد في البيئة. */
-  async function exchangeCode(code) {
+  async function exchangeCode(code, redirectUri) {
     const body = {
       grant_type: "authorization_code",
       client_id: CLIENT_ID(),
       client_secret: CLIENT_SECRET(),
-      redirect_uri: CALLBACK(),
+      redirect_uri: redirectUri || CALLBACK(),
       code,
     };
     if (UNIQUE_ID()) body.unique_id = UNIQUE_ID();
@@ -196,6 +196,31 @@ export function register(app, ctx) {
       return c.html(`<div dir="rtl" style="font-family:sans-serif;padding:40px;text-align:center">
         <h2>❌ تعذّر إتمام الربط</h2><p>${String(e.message).slice(0, 200)}</p>
         <p style="color:#888;font-size:12px">${e.resp ? String(JSON.stringify(e.resp)).slice(0, 200) : ""}</p></div>`, 502);
+    }
+  });
+
+  /* ربط عبر صفحة Postman: الـclient مسجّل عندهم على oauth.pstmn.io، فبنستخدمها
+     — عمر يوافق، الصفحة بتعرض الكود، وبيتبادل هنا. */
+  const PSTMN = "https://oauth.pstmn.io/v1/callback";
+  app.get("/api/tabsense/connect-pstmn", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    const q = new URLSearchParams({
+      client_id: CLIENT_ID(), redirect_uri: PSTMN, response_type: "code",
+      state: `fc${Date.now().toString(36)}`,
+    });
+    return c.json({ ok: true, url: `${APP_BASE()}/3rdparty/v1/oauth/authorize?${q.toString()}`, redirect_uri: PSTMN });
+  });
+  // تبادل يدوي: بنستقبل الكود اللي عمر نسخه من صفحة Postman
+  app.post("/api/tabsense/exchange", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    let b = {}; try { b = await c.req.json(); } catch {}
+    const code = String(b.code || "").trim();
+    if (!code) return c.json({ ok: false, error: "no_code" }, 400);
+    try {
+      const tok = await exchangeCode(code, b.redirect_uri || PSTMN);
+      return c.json({ ok: true, expiresIn: tok.expires_in, hasRefresh: Boolean(tok.refresh_token) });
+    } catch (e) {
+      return c.json({ ok: false, error: e.message, resp: e.resp || null }, 502);
     }
   });
 
