@@ -41,6 +41,7 @@ import * as pay from "./pay.js";
 import * as deliveryMod from "./delivery.js";
 import * as shop from "./shop.js";
 import * as accounts from "./accounts.js";
+import * as tspartner from "./tspartner.js";
 import * as notify from "./notify.js";
 import * as carts from "./carts.js";
 import * as selftest from "./selftest.js";
@@ -3032,6 +3033,7 @@ shopApi = shop.register(app, moduleCtx, {
 // ملف العميل: دخول OTP، عناوين محفوظة، تاريخ الطلبات وإعادة الطلب، وربط/إنشاء
 // في دفتر عملاء TabSense (الموجود يتربط، الجديد بس هو اللي يتعمل).
 accountsApi = accounts.register(app, moduleCtx);
+const tspApi = tspartner.register(app, moduleCtx);
 // حالة النظام — آخر واحد بيتسجّل عن قصد. الموديول ده مجمِّع: بينده المسارات
 // اللي فوق دي بنفسها جوّه العملية (app.request) بدل ما يكتب استعلام تاني
 // لنفس الرقم. فلازم يكونوا كلهم اتسجّلوا قبله.
