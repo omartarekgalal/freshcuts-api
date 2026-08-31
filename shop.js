@@ -212,6 +212,7 @@ export function register(app, ctx, deps = {}) {
   const notify = deps.notify || null;
   const accounts = deps.accounts || (() => null); // late-bound — accounts registers after us
   const carts = deps.carts || (() => null);       // late-bound — abandoned-cart tracker
+  const tsp = deps.tsp || (() => null);           // late-bound — TabSense partner (paid orders)
 
   async function ensureSchema() {
     await pool.query(`
@@ -669,11 +670,73 @@ export function register(app, ctx, deps = {}) {
   /* Create the POS external order from the locked calc. Failure is a STATE
      (paid_pos_failed), not an exception — the sweep retries and the dashboard
      shows it; the customer's money is never in limbo silently. */
+  /* المسار الجديد المدفوع مسبقاً: يبني طلب الشريك من صفوف الأوردر.
+     الأصناف بأسعارها الصافية (unit_amount ÷ MULTIPLY = ريال قبل الضريبة، زي
+     ما تاب سينس بيخزّنها)، والشريك بيعيد حساب الضريبة من tax_id بتاع المنتج.
+     رسوم التوصيل بتتحط في الملاحظات (الطلب already_paid فالكاشير مش بيحصّل).
+     TODO الإنتاج: بعد وصول مفاتيح الإنتاج، تأكّد إن إجمالي طلب الشريك بيطابق
+     اللي العميل دفعه (خصوصاً الخصومات ورسوم التوصيل) قبل تشغيل TSP_AUTO_ORDER. */
+  function buildPartnerOrder(row, settings) {
+    const addr = row.address || {};
+    const hm = (t) => new Date(new Date(t).getTime() + 3 * 3600_000).toISOString().slice(11, 16);
+    const feeNote = Number(row.delivery_fee) > 0 ? `توصيل ${Number(row.delivery_fee)}ر` : "";
+    const notes = [
+      row.option === "delivery" ? "توصيل" : "استلام",
+      `طُلب ${hm(row.created_at)}`,
+      row.option === "pickup" ? `استلام ${hm(Date.now() + 40 * 60_000)}` : "",
+      feeNote, "مدفوع أونلاين✅", row.notes || "",
+    ].filter(Boolean).join(" - ");
+    const items = (row.items || []).map((it) => ({
+      productId: it.product_id,
+      quantity: Number(it.quantity) || 1,
+      unitPrice: Number(it.unit_amount) / tsstore.MULTIPLY, // ريال صافي قبل الضريبة
+    }));
+    return {
+      externalOrderNo: row.order_no,
+      paymentMethod: posPaymentMethodFor(row.pay_gateway, settings),
+      notes,
+      customer: {
+        name: row.customer?.name || null,
+        phone: row.customer?.phone || null,
+        address: { city: null, area: addr.area || null, street: addr.street || null },
+      },
+      deliveryAddress: {
+        line: addr.street || addr.area || (row.option === "delivery" ? "توصيل" : "استلام"),
+        city: null,
+      },
+      items,
+    };
+  }
+
   async function createPosOrder(orderNo) {
     const row = await getOrderRow(orderNo);
     if (!row || row.pos_order_id) return;
     const settings = (await getSettingsData()).shop || {};
     const addr = row.address || {};
+
+    // المسار المفضّل: طلب مدفوع مسبقاً عبر API الشريك (يلغي تحصيل الكاشير).
+    // بيتفعّل فقط لما TSP_AUTO_ORDER=1 والربط شغّال. أي فشل بيرجع للمسار القديم
+    // (المتجر) فالطلب مايتعطّلش أبداً.
+    if (process.env.TSP_AUTO_ORDER === "1" && (row.items || []).length) {
+      const partner = tsp();
+      let connected = false;
+      try { connected = partner && (await partner.status()).connected; } catch {}
+      if (partner && connected) {
+        try {
+          const out = await partner.createExternalOrder(buildPartnerOrder(row, settings));
+          await setStatus(orderNo, "pos_created", { cols: { pos_order_id: String(out.id) } });
+          await pool.query(
+            "UPDATE shop_orders SET pos_attempts=pos_attempts+1, last_pos_error=NULL WHERE order_no=$1", [orderNo]);
+          console.log(`[shop] ${orderNo}: partner paid order ${out.id} (linkedCustomer=${out.linkedCustomer})`);
+          return;
+        } catch (e) {
+          const detail = e.resp ? " | " + JSON.stringify(e.resp).slice(0, 300) : "";
+          console.error(`[shop] partner order failed for ${orderNo}, falling back to store path: ${e.message}${detail}`);
+          // نكمل للمسار القديم تحت
+        }
+      }
+    }
+
     try {
       const created = await tsstore.createPosOrder({
         branchId: row.branch_id,

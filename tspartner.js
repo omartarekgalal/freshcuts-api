@@ -155,6 +155,142 @@ export function register(app, ctx) {
     });
   }
 
+  /* ── إنشاء طلب أونلاين مدفوع مسبقاً (يلغي تحصيل الكاشير) ─────────────────
+     الوصفة مثبتة على الساندبوكس — شوف الذاكرة freshcuts-tabsense-partner-order.
+     الطلب بينزل External + already_paid:true، الكاشير يقبله وبس، والفلوس
+     تفضل في ماي فاتورة بتاعتنا. المبالغ بالريال × 100.
+
+     order = {
+       externalOrderNo, paymentMethod("visa"|"mada"|"applepay"...), notes,
+       customer:{ name, phone, address:{ city, area, street, countryCode } },
+       deliveryAddress:{ line, city, country, street, postalCode, extra },
+       items:[{ productId | partnerProductId, taxId?, quantity, unitPrice(بالريال) }],
+     }
+  */
+  const sarToUnit = (v) => Math.round(Number(v || 0) * 100);
+
+  // كاش قايمة الشريك (فرع/خيار/ضرايب) — 5 دقايق
+  let _cat = { at: 0 };
+  async function catalog() {
+    if (_cat.at && Date.now() - _cat.at < 300_000) return _cat;
+    const [branches, options, taxes] = await Promise.all([
+      api("/branches"), api("/order-options"), api("/taxes"),
+    ]);
+    const bl = branches.data || branches || [];
+    const ol = options.data || options || [];
+    const tl = taxes.data || taxes || [];
+    _cat = {
+      at: Date.now(),
+      branch: bl[0],
+      option: (Array.isArray(ol) && ol.find((o) => o.default)) || ol[0],
+      taxes: tl,
+      defaultTax: (Array.isArray(tl) && tl.find((t) => t.default)) || tl[0],
+    };
+    return _cat;
+  }
+
+  // يطابق منتج المتجر بمنتج الشريك: tenant_product_id = "{store}-{internalId}"
+  async function resolvePartnerProduct(ref) {
+    const want = `${STORE()}-${ref}`;
+    let page = 1, found = null;
+    while (page <= 10 && !found) {
+      const r = await api(`/products?per_page=200&page=${page}`);
+      const list = r.data || [];
+      found = list.find((p) =>
+        p.tenant_product_id === want ||
+        String(p.tenant_product_id) === String(ref) ||
+        String(p.id) === String(ref));
+      if (found || !r.links || !r.links.next || list.length === 0) break;
+      page++;
+    }
+    return found;
+  }
+
+  async function createExternalOrder(order) {
+    const cat = await catalog();
+    if (!cat.branch || !cat.option) throw new Error("partner catalog empty (branch/option)");
+    const purchases = [];
+    for (const it of order.items || []) {
+      let pid = it.partnerProductId;
+      let ptax = it.taxId;
+      if (!pid) {
+        const p = await resolvePartnerProduct(it.productId);
+        if (!p) throw Object.assign(new Error(`product not in partner catalog: ${it.productId}`), { code: "TSP_NO_PRODUCT" });
+        pid = p.id; ptax = ptax || p.tax_id;
+      }
+      purchases.push({
+        product_id: pid,
+        quantity: Number(it.quantity) || 1,
+        tax_id: ptax || (cat.defaultTax && cat.defaultTax.id),
+        unit_amount: sarToUnit(it.unitPrice),
+        modifiers: [],
+      });
+    }
+    if (!purchases.length) throw new Error("order has no items");
+
+    const calc = await api("/orders/calculation", {
+      method: "POST",
+      body: { order_option_id: cat.option.id, branch_id: cat.branch.id, multiply_factor: 100, purchases },
+    });
+    const cd = calc.data || calc;
+
+    const c = order.customer || {};
+    const a = c.address || {};
+    const da = order.deliveryAddress || {};
+    const phone = c.phone || c.phone_number || null;
+    // بيانات العميل بتتحط كمان في الـnotes عشان الكاشير يشوفها مهما حصل،
+    // لأن ربط العميل عبر API الشريك ممكن يفشل لأرقام جديدة (شوف تحت).
+    const contactNote = [c.name, phone].filter(Boolean).join(" · ");
+    const notes = [order.notes, contactNote].filter(Boolean).join(" — ") || "طلب أونلاين";
+
+    const buildBody = (withPhone) => ({
+      ...cd,
+      order_type: 6,
+      timestamp: Math.floor(Date.now() / 1000),
+      customer: {
+        ...(cd.customer || {}),
+        name: c.name || null,
+        phone_number: withPhone ? phone : null,
+        address: {
+          ...((cd.customer && cd.customer.address) || {}),
+          city: a.city || null, area: a.area || null,
+          country_code: a.countryCode || "SA", street: a.street || null,
+        },
+      },
+      meta: {
+        version: 2,
+        notes,
+        external_order_no: String(order.externalOrderNo),
+        source_channel: "freshcuts_online",
+        external_payment_method: order.paymentMethod || "visa",
+        already_paid: true,
+        delivery_address: {
+          address_line: da.line || null, city: da.city || null, country: da.country || "SA",
+          street: da.street || null, postal_code: da.postalCode || null, extra_address_info: da.extra || null,
+        },
+      },
+    });
+
+    // إنشاء العميل عبر API الشريك بيعمل 500 لأرقام جوال جديدة (اتأكدنا على
+    // الساندبوكس — شوف الذاكرة). فبنجرّب بالجوال؛ لو فشل، نعيد من غير جوال
+    // عشان الطلب مايضيعش — الجوال محفوظ في الـnotes والمندوب بياخده من التوصيل.
+    let created, linkedCustomer = Boolean(phone);
+    try {
+      const res = await api("/orders", { method: "POST", body: buildBody(Boolean(phone)) });
+      created = res.data || res;
+    } catch (e) {
+      if (phone && (e.status === 500 || e.status >= 500)) {
+        console.warn(`[tspartner] order ${order.externalOrderNo}: customer-link failed for phone, retrying without`);
+        const res = await api("/orders", { method: "POST", body: buildBody(false) });
+        created = res.data || res;
+        linkedCustomer = false;
+      } else {
+        throw e;
+      }
+    }
+    return { id: created.id, external: created.orders_external, total: created.due, linkedCustomer, raw: created };
+  }
+
   async function status() {
     const r = await pool.query("SELECT env, expires_at, connected_at, scope FROM tsp_tokens WHERE id=1");
     const row = r.rows[0];
@@ -242,5 +378,27 @@ export function register(app, ctx) {
     return c.json({ ok: true, ...out });
   });
 
-  return { api, accessToken, status, authorizeUrl, exchangeCode, refresh };
+  // اختبار الطلب المدفوع من اللوحة — بينشئ طلب تجريبي على الشريك ويعرض نتيجته
+  app.post("/api/tabsense/test-order", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    try {
+      const cat = await catalog();
+      const prods = (await api("/products?per_page=1")).data || [];
+      if (!prods.length) return c.json({ ok: false, error: "no_products" });
+      const out = await createExternalOrder({
+        externalOrderNo: "FC-TEST-" + Date.now(),
+        paymentMethod: "visa",
+        notes: "اختبار الربط من اللوحة",
+        customer: { name: "عميل اختبار", phone: "+966546715683",
+          address: { city: "جدة", area: "السلامة", street: "شارع الاختبار" } },
+        deliveryAddress: { line: "حي السلامة، جدة", city: "جدة" },
+        items: [{ partnerProductId: prods[0].id, taxId: cat.defaultTax && cat.defaultTax.id, quantity: 1, unitPrice: 10 }],
+      });
+      return c.json({ ok: true, orderId: out.id, total: out.total, external: out.external });
+    } catch (e) {
+      return c.json({ ok: false, error: e.message, resp: e.resp || null });
+    }
+  });
+
+  return { api, accessToken, status, authorizeUrl, exchangeCode, refresh, createExternalOrder, catalog };
 }

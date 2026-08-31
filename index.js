@@ -3028,7 +3028,7 @@ selftest.register(app, moduleCtx, { delivery: () => deliveryApi });
 let accountsApi = null;
 shopApi = shop.register(app, moduleCtx, {
   pay: payApi, delivery: deliveryApi, notify: notifyApi, accounts: () => accountsApi,
-  carts: () => cartsApi,
+  carts: () => cartsApi, tsp: () => tspApi,
 });
 // ملف العميل: دخول OTP، عناوين محفوظة، تاريخ الطلبات وإعادة الطلب، وربط/إنشاء
 // في دفتر عملاء TabSense (الموجود يتربط، الجديد بس هو اللي يتعمل).
