@@ -220,7 +220,8 @@ export function register(app, ctx) {
       const tok = await exchangeCode(code, b.redirect_uri || PSTMN);
       return c.json({ ok: true, expiresIn: tok.expires_in, hasRefresh: Boolean(tok.refresh_token) });
     } catch (e) {
-      return c.json({ ok: false, error: e.message, resp: e.resp || null }, 502);
+      // 200 مقصود: كلاودفلير بيستبدل أي 5xx بصفحته، فالخطأ الحقيقي بيضيع
+      return c.json({ ok: false, error: e.message, resp: e.resp || null });
     }
   });
 
