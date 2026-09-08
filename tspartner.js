@@ -24,6 +24,10 @@ const env = (k, d) => (process.env[k] || d || "").toString().trim();
 
 const APP_BASE = () => env("TSP_APP_BASE", "https://sandbox-app.tabsense.ai").replace(/\/+$/, "");
 const API_BASE = () => env("TSP_API_BASE", "https://sandbox-api.tabsense.ai").replace(/\/+$/, "");
+// صفحة الموافقة (تسجيل الدخول) ممكن تكون على هوست غير الـtoken. في الإنتاج:
+// authorize على app.tabsense.ai، والـtoken/API على thirdparty-api.tabsense.ai.
+// بترجع لـAPP_BASE لو مش محددة (زي الساندبوكس حيث الهوست واحد).
+const AUTHZ_BASE = () => env("TSP_AUTHZ_BASE", "").replace(/\/+$/, "") || APP_BASE();
 const STORE = () => env("TSP_STORE", "freshcuts");
 const CLIENT_ID = () => env("TSP_CLIENT_ID");
 const CLIENT_SECRET = () => env("TSP_CLIENT_SECRET");
@@ -84,7 +88,20 @@ export function register(app, ctx) {
       response_type: "code",
       state,
     });
-    return `${APP_BASE()}/3rdparty/v1/oauth/authorize?${q.toString()}`;
+    return `${AUTHZ_BASE()}/3rdparty/v1/oauth/authorize?${q.toString()}`;
+  }
+
+  /* بوست على نقطة التوكن — بنجرّب APP_BASE (auth_base_url) الأول، ولو فشلت
+     نجرّب AUTHZ_BASE، عشان اختلاف الهوستات بين البيئات مايوقّعناش. */
+  async function postToken(body, label) {
+    const hosts = [...new Set([APP_BASE(), AUTHZ_BASE()])];
+    let lastErr;
+    for (const h of hosts) {
+      try {
+        return await httpJson(`${h}/${STORE()}/v1/oauth/token`, { method: "POST", body, label });
+      } catch (e) { lastErr = e; }
+    }
+    throw lastErr;
   }
 
   async function saveTokens(tok) {
@@ -112,8 +129,7 @@ export function register(app, ctx) {
       code,
     };
     if (UNIQUE_ID()) body.unique_id = UNIQUE_ID();
-    const tok = await httpJson(`${APP_BASE()}/${STORE()}/v1/oauth/token`,
-      { method: "POST", body, label: "oauth exchange" });
+    const tok = await postToken(body, "oauth exchange");
     await saveTokens(tok);
     return tok;
   }
@@ -126,8 +142,7 @@ export function register(app, ctx) {
       client_secret: CLIENT_SECRET(),
     };
     if (UNIQUE_ID()) body.unique_id = UNIQUE_ID();
-    const tok = await httpJson(`${APP_BASE()}/${STORE()}/v1/oauth/token`,
-      { method: "POST", body, label: "oauth refresh" });
+    const tok = await postToken(body, "oauth refresh");
     await saveTokens(tok);
     return tok;
   }
