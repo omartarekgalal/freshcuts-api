@@ -279,6 +279,9 @@ export function register(app, ctx, deps = {}) {
       -- «مرة واحدة لكل عميل»: نفس الكود ينفع لمئات العملاء لكن كل رقم جوال
       -- مرة واحدة بس (بيتحسب من الطلبات المدفوعة فعلاً).
       ALTER TABLE shop_coupons ADD COLUMN IF NOT EXISTS once_per_customer BOOLEAN NOT NULL DEFAULT FALSE;
+      -- «توصيل مجاني بالكوبون» (2026-09-11): الكوبون يتنازل عن رسم التوصيل
+      -- كامل بدل (أو مع) خصم النسبة. كوبون أول طلب = free_delivery + once_per_customer.
+      ALTER TABLE shop_coupons ADD COLUMN IF NOT EXISTS free_delivery BOOLEAN NOT NULL DEFAULT FALSE;
     `);
   }
   ensureSchema()
@@ -329,7 +332,7 @@ export function register(app, ctx, deps = {}) {
           [cp.code, phoneNorm]);
         if (used.rowCount) return { ok: false, error: "already_used" };
       }
-      return { ok: true, code: cp.code, percent: Number(cp.percent), kind: "coupon" };
+      return { ok: true, code: cp.code, percent: Number(cp.percent) || 0, freeDelivery: cp.free_delivery === true, kind: "coupon" };
     }
     // أكواد السفراء: قابلة للإيقاف من اللوحة لو قلق الاستخدام المزدوج
     // (أونلاين + كاشير) رجّح كفة الفصل الكامل بين القناتين.
@@ -345,7 +348,7 @@ export function register(app, ctx, deps = {}) {
     if (amb.validity_date && new Date(amb.validity_date) < new Date(new Date().toDateString())) {
       return { ok: false, error: "expired" };
     }
-    return { ok: true, code: amb.code, percent: Number(amb.discount_percent), kind: "ambassador" };
+    return { ok: true, code: amb.code, percent: Number(amb.discount_percent), freeDelivery: false, kind: "ambassador" };
   }
 
   // PUBLIC — the cart asks before checkout so the customer sees the discount live.
@@ -369,15 +372,18 @@ export function register(app, ctx, deps = {}) {
     const err = await requireAdmin(c); if (err) return err;
     const b = await c.req.json();
     const code = String(b.code || "").trim().toUpperCase();
-    if (!code || !(Number(b.percent) > 0)) return c.json({ ok: false, error: "code and percent required" }, 400);
+    const freeDelivery = b.free_delivery === true;
+    // كوبون لازم يعمل حاجة: يا خصم نسبة يا توصيل مجاني (أو الاتنين).
+    if (!code || !(Number(b.percent) > 0 || freeDelivery))
+      return c.json({ ok: false, error: "code and (percent or free_delivery) required" }, 400);
     const r = await pool.query(
-      `INSERT INTO shop_coupons(code, percent, active, min_total, max_uses, expires_at, note, once_per_customer)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
-       ON CONFLICT (code) DO UPDATE SET percent=$2, active=$3, min_total=$4, max_uses=$5, expires_at=$6, note=$7, once_per_customer=$8
+      `INSERT INTO shop_coupons(code, percent, active, min_total, max_uses, expires_at, note, once_per_customer, free_delivery)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+       ON CONFLICT (code) DO UPDATE SET percent=$2, active=$3, min_total=$4, max_uses=$5, expires_at=$6, note=$7, once_per_customer=$8, free_delivery=$9
        RETURNING *`,
-      [code, Math.min(100, Number(b.percent)), b.active !== false, Number(b.min_total) || 0,
+      [code, Math.min(100, Number(b.percent) || 0), b.active !== false, Number(b.min_total) || 0,
        b.max_uses != null && b.max_uses !== "" ? Number(b.max_uses) : null,
-       b.expires_at || null, String(b.note || "").slice(0, 120), b.once_per_customer === true]);
+       b.expires_at || null, String(b.note || "").slice(0, 120), b.once_per_customer === true, freeDelivery]);
     return c.json({ ok: true, coupon: r.rows[0] });
   });
   app.delete("/api/shop/coupons/:code", async (c) => {
@@ -484,7 +490,10 @@ export function register(app, ctx, deps = {}) {
     if (standing && standing.percent > discountPercent) {
       discountPercent = standing.percent;
       discountSource = { kind: "customer", label: standing.label };
-      coupon = null; // the code stays unburnt when the standing discount wins
+      // الخصم الثابت بيغلب نسبة الكوبون، لكن لو الكوبون بيديك توصيل مجاني
+      // بنسيبه شغّال عشان التنازل يتطبّق (وبيتحرق عادي). كوبون النسبة الصِّرف
+      // بيفضل غير محروق لما الخصم الثابت يكسب.
+      if (coupon && !coupon.freeDelivery) coupon = null;
     }
 
     // Pass 1: food only, discounted — this is the subtotal the delivery quote
@@ -500,18 +509,26 @@ export function register(app, ctx, deps = {}) {
     }
     let totals = calc.totals || {};
     const foodTotal = r2((totals.tendered_amount || totals.total_amount || 0) / tsstore.MULTIPLY);
-    if (coupon?.ok && Number(coupon.percent) > 0) {
+    // إعادة التحقق ضد الإجمالي الحقيقي — لأي كوبون فعّال (مش بس كوبون النسبة):
+    // كوبون التوصيل المجاني كمان له حد أدنى و«مرة لكل عميل» لازم يتأكدوا هنا.
+    if (coupon?.ok) {
       const recheck = await checkCoupon(b.coupon, foodTotal, phoneNorm);
       if (!recheck.ok) return c.json({ ok: false, error: "coupon_" + recheck.error, coupon: recheck }, 422);
     }
 
-    let deliveryFee = 0, dq = null;
+    let deliveryFee = 0, dq = null, freeDeliveryByCoupon = false;
     if (option === "delivery") {
       dq = await delivery.quote({
         lat: b.address.latitude, lng: b.address.longitude, orderTotal: foodTotal,
       });
       if (!dq.deliverable) return c.json({ ok: false, error: "not_deliverable", quote: dq }, 422);
       deliveryFee = dq.fee;
+      // كوبون توصيل مجاني: بنتنازل عن الرسم كامل (المطعم بيتحمّل الكابتن —
+      // تكلفة اكتساب العميل). الطلب بيتسجّل والكوبون بيتحرق زي أي كوبون.
+      if (coupon?.ok && coupon.freeDelivery && deliveryFee > 0) {
+        freeDeliveryByCoupon = true;
+        deliveryFee = 0;
+      }
     }
 
     // Pass 2 (Omar's rule: «إجمالي المدفوع يتسجل كله في TabSense بالشكل
@@ -576,7 +593,7 @@ export function register(app, ctx, deps = {}) {
        jb(b.address || null), jb(items), jb(calc),
        // subtotal = the food part of what was charged (fee booked separately
        // whether inside or outside the POS invoice).
-       r2(total - deliveryFee), deliveryFee, tip, total, jb(dq ? { ...dq, feeInPos } : null),
+       r2(total - deliveryFee), deliveryFee, tip, total, jb(dq ? { ...dq, feeInPos, freeDeliveryByCoupon } : null),
        session.SessionId || null, (b.notes || "").slice(0, 200),
        coupon?.ok ? coupon.code : null, discountPercent, discountAmount,
        jb([{ at: new Date().toISOString(), status: "pending_payment" }])]

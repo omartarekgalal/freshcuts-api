@@ -103,8 +103,25 @@ export function computeDeliveryFee(cfgIn, { distanceKm, straightKm, orderTotal }
     return { deliverable: false, reason: "under_minimum", minOrderTotal: cfg.minOrderTotal, distanceKm: r2(dist) };
   }
 
+  /* الرسم الأساسي: إما رقم ثابت (baseFee) أو «سلّم حسب قيمة السلة»
+     (feeByTotal) — مصفوفة [{over, fee}] بنختار منها أعلى شريحة قيمتها ≤ الطلب.
+     السلّم بيغلب baseFee لو موجود، وبيفضل perKm للمسافة الإضافية شغّال فوقه. */
   let fee = Number(cfg.baseFee) || 0;
-  breakdown.push(`أول ${cfg.baseKm} كم: ${r2(fee)} ر.س`);
+  const ladder = Array.isArray(cfg.feeByTotal)
+    ? cfg.feeByTotal.filter((t) => t && t.over != null && t.fee != null)
+        .map((t) => ({ over: Number(t.over), fee: Number(t.fee) }))
+        .sort((a, b) => a.over - b.over)
+    : null;
+  if (ladder && ladder.length) {
+    let picked = ladder[0];
+    for (const t of ladder) if (total >= t.over) picked = t;
+    fee = picked.fee;
+    breakdown.push(picked.fee === 0
+      ? `توصيل مجاني للطلبات فوق ${r2(picked.over)} ر.س`
+      : `رسم السلة (فوق ${r2(picked.over)} ر.س): ${r2(fee)} ر.س`);
+  } else {
+    breakdown.push(`أول ${cfg.baseKm} كم: ${r2(fee)} ر.س`);
+  }
   const extraKm = Math.max(0, Math.ceil(dist - cfg.baseKm)); // per STARTED km
   if (extraKm > 0) {
     const extra = extraKm * (Number(cfg.perKm) || 0);
@@ -139,6 +156,22 @@ export function computeDeliveryFee(cfgIn, { distanceKm, straightKm, orderTotal }
     breakdown.push(fee === 0
       ? `توصيل مجاني للطلبات فوق ${r2(cfg.freeOverTotal)} ر.س`
       : `خصم توصيل ${r2(cover)} ر.س للطلبات فوق ${r2(cfg.freeOverTotal)} ر.س`);
+  }
+  /* ضمان «العميل مايلاقيش التطبيقات أرخص» (قرار عمر 2026-09-11): الأسعار على
+     كيتا/هنقر مرفوعة بنسبة (appMarkupPct) عن سعر المنيو، فلو الرسم خلّى إجمالي
+     متجرنا يعدّي سعر التطبيق، بنقصّه. السقف = (السلة × النسبة) − هامش أمان
+     (minCheaperBy)، فإجمالي متجرنا يفضل دايماً أرخص بالهامش ده على الأقل.
+     آخر خطوة عشان الضمان يغلب أي قاعدة قبله. floor مش round عشان ما نكسرش
+     الضمان بنص ريال. */
+  const guard = cfg.neverBeatenByApps || null;
+  if (guard && guard.enabled && total > 0) {
+    const markup = Number(guard.appMarkupPct) || 0;
+    const minBy = Number(guard.minCheaperBy) || 0;
+    const maxFee = Math.floor(total * (markup / 100) - minBy);
+    if (fee > maxFee) {
+      fee = Math.max(0, maxFee);
+      breakdown.push(`مضمون أرخص من التطبيقات: الرسوم ≤ ${r2(fee)} ر.س`);
+    }
   }
   // Whole riyals only: the fee enters the POS invoice as quantity × a 1-SAR
   // "رسوم التوصيل" product (TabSense rejects free-form amounts), so a
@@ -403,11 +436,25 @@ export function register(app, ctx, deps = {}) {
     maxStraightKm: cfg.maxStraightKm ?? null,
     freeOverTotal: cfg.freeOverTotal ?? null, freeCoverMax: cfg.freeCoverMax ?? null,
     minOrderTotal: cfg.minOrderTotal || 0,
+    feeByTotal: Array.isArray(cfg.feeByTotal) ? cfg.feeByTotal : null,
+    neverBeatenByApps: cfg.neverBeatenByApps ?? null,
   });
-  const gaps = (cfg, total) => ({
-    toFree: cfg.freeOverTotal != null ? Math.max(0, Math.round((cfg.freeOverTotal - (Number(total) || 0)) * 100) / 100) : null,
-    toMin: Math.max(0, Math.round(((cfg.minOrderTotal || 0) - (Number(total) || 0)) * 100) / 100),
-  });
+  const gaps = (cfg, total) => {
+    const t = Number(total) || 0;
+    // مع السلّم: العتبة اللي بعدها بيقلّ الرسم (أو يبقى مجاني) — دي اللي
+    // شريط التقدّم بيشجّع العميل يوصلها. من غير سلّم بنرجع لقاعدة المجاني.
+    let toFree = cfg.freeOverTotal != null ? Math.max(0, r2(cfg.freeOverTotal - t)) : null;
+    let toNextTier = null, nextTierFee = null, nextTierOver = null;
+    const ladder = Array.isArray(cfg.feeByTotal)
+      ? cfg.feeByTotal.map((x) => ({ over: Number(x.over), fee: Number(x.fee) })).sort((a, b) => a.over - b.over) : null;
+    if (ladder && ladder.length) {
+      const next = ladder.find((x) => x.over > t);
+      if (next) { toNextTier = r2(next.over - t); nextTierFee = next.fee; nextTierOver = next.over; }
+      const free = ladder.find((x) => x.fee === 0);
+      if (free) toFree = Math.max(0, r2(free.over - t));
+    }
+    return { toFree, toMin: Math.max(0, r2((cfg.minOrderTotal || 0) - t)), toNextTier, nextTierFee, nextTierOver };
+  };
 
   /* رقم الجوال بصيغة E.164 اللي وثيقتهم بتستخدمها (+9665XXXXXXXX). بنبعت
      أرقام محلية في كل حتة تانية، فالتحويل بيحصل هنا مرة واحدة. */
