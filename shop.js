@@ -831,6 +831,19 @@ export function register(app, ctx, deps = {}) {
     const row = await getOrderRow(c.req.param("orderNo"));
     if (!row) return c.json({ ok: false, found: false }, 404);
     const stage = STAGES[row.status] || { label: row.status, step: 0 };
+    let label = stage.label, step = stage.step;
+    // الاستلام (سفري): الـPOS مابيبعتش إشارة «جاهز»، فبنقدّرها بالوقت — بعد وقت
+    // التحضير من القبول نعرض «جاهز للاستلام من الفرع» بدل ما العميل يفضل على
+    // «جاري التحضير» للأبد. قبلها بنطمنه إنه بيتجهّز.
+    if (row.option === "pickup" && row.status === "accepted") {
+      const acceptedAt = new Date(row.updated_at || row.created_at).getTime();
+      const readyAfterMin = Number(((await getSettingsData()).shop || {}).pickupReadyMinutes) || 20;
+      if (Date.now() - acceptedAt >= readyAfterMin * 60_000) {
+        label = "جاهز للاستلام من الفرع 📍"; step = 4;
+      } else {
+        label = "جاري تجهيز طلبك — جاهز للاستلام قريباً"; step = 2;
+      }
+    }
     let courier = null;
     if (row.option === "delivery" && ["courier_requested", "courier_assigned", "on_the_way", "delivered"].includes(row.status)) {
       const sh = await delivery.shipmentOf(row.order_no);
@@ -838,7 +851,7 @@ export function register(app, ctx, deps = {}) {
     }
     return c.json({
       ok: true, found: true, orderNo: row.order_no, status: row.status,
-      label: stage.label, step: stage.step, option: row.option,
+      label, step, option: row.option,
       total: Number(row.total), subtotal: Number(row.subtotal),
       deliveryFee: Number(row.delivery_fee), courier,
       // the id the ad pixels must use for Purchase — same id the offline POS
