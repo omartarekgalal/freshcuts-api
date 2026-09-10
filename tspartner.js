@@ -200,11 +200,22 @@ export function register(app, ctx) {
     _cat = {
       at: Date.now(),
       branch: bl[0],
+      options: Array.isArray(ol) ? ol : [],
       option: (Array.isArray(ol) && ol.find((o) => o.default)) || ol[0],
       taxes: tl,
       defaultTax: (Array.isArray(tl) && tl.find((t) => t.default)) || tl[0],
     };
     return _cat;
+  }
+
+  // يختار خيار الطلب الصح حسب نوعه عشان التقارير تطلع مظبوطة:
+  // delivery→«توصيل Delivery» · pickup/takeaway→«Take away» · dine_in→«Dine in».
+  function optionFor(cat, kind) {
+    const opts = cat.options || [];
+    const pat = kind === "pickup" || kind === "takeaway" ? /take.?away|سفري/i
+      : kind === "dine_in" || kind === "dinein" ? /dine|محلي/i
+      : /deliver|توصيل/i; // الافتراضي توصيل
+    return opts.find((o) => pat.test(o.name || "")) || cat.option;
   }
 
   // كاش كل منتجات الشريك (فهرس بالـtenant_product_id) — 5 دقايق.
@@ -253,9 +264,12 @@ export function register(app, ctx) {
     }
     if (!purchases.length) throw new Error("order has no items");
 
+    // خيار الطلب حسب اختيار العميل (توصيل/سفري/محلي) — مهم للتقارير في تاب سينس.
+    const opt = optionFor(cat, order.orderOption);
+
     const calc = await api("/orders/calculation", {
       method: "POST",
-      body: { order_option_id: cat.option.id, branch_id: cat.branch.id, multiply_factor: 100, purchases },
+      body: { order_option_id: opt.id, branch_id: cat.branch.id, multiply_factor: 100, purchases },
     });
     const cd = calc.data || calc;
 

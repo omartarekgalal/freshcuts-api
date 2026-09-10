@@ -711,6 +711,7 @@ export function register(app, ctx, deps = {}) {
     }));
     return {
       externalOrderNo: row.order_no,
+      orderOption: row.option, // delivery→توصيل · pickup→سفري (Take away) للتقارير
       paymentMethod: posPaymentMethodFor(row.pay_gateway, settings),
       notes,
       customer: {
