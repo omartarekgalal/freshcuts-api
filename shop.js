@@ -458,6 +458,15 @@ export function register(app, ctx, deps = {}) {
     if (option === "delivery" && !(b.address?.latitude && b.address?.longitude)) {
       return c.json({ ok: false, error: "address_required" }, 400);
     }
+    // OTP إجباري لتأكيد الطلب: لازم نفس الجوال يكون متأكّد بجلسة حساب سارية.
+    // العميل بيبعت Authorization: Bearer cust:<token> بعد ما يتحقق برمز الجوال.
+    // لو غير متأكّد (أو التوكن لرقم تاني) → otp_required، والستورفرونت يعرض التحقق.
+    {
+      const verified = await (accounts()?.customerOf?.(c) ?? null);
+      if (!verified || String(verified.phone_norm) !== String(phoneNorm)) {
+        return c.json({ ok: false, error: "otp_required" }, 401);
+      }
+    }
 
     // Coupon first — the discount changes every number after it.
     let coupon = null;
