@@ -709,6 +709,15 @@ export function register(app, ctx, deps = {}) {
       quantity: Number(it.quantity) || 1,
       unitPrice: Number(it.unit_amount) / tsstore.MULTIPLY, // ريال صافي قبل الضريبة
     }));
+    // رسوم التوصيل تنزل في الفاتورة كسطر منتج «رسوم التوصيل» (فئة رسوم، ضريبة 15%).
+    // بنبعت الرقم صافي (fee/1.15) عشان الإجمالي في تاب سينس يطلع شامل الضريبة =
+    // اللي العميل دفعه بالظبط. أي سياسة (مجاني/مخصوم/حسب المسافة) بتنعكس تلقائياً
+    // لأننا بنبعت delivery_fee الفعلي؛ لو صفر مفيش سطر. تكلفة لاجلك بتتسجّل منفصلة.
+    const feeProductId = settings.deliveryFeeProductId;
+    const fee = Number(row.delivery_fee) || 0;
+    if (fee > 0 && feeProductId) {
+      items.push({ productId: feeProductId, quantity: 1, unitPrice: fee / 1.15 });
+    }
     return {
       externalOrderNo: row.order_no,
       orderOption: row.option, // delivery→توصيل · pickup→سفري (Take away) للتقارير
