@@ -1412,7 +1412,21 @@ export function register(app, ctx, deps = {}) {
       }
     }
 
-    // 3) housekeeping: a payment session nobody completed.
+    // 2.5) شبكة أمان للدفع: طلب معلّق وله فاتورة وعدّى عليه كذا دقيقة — نراجع
+    // ماي فاتورة بنفسنا (GetPaymentStatus عبر confirmOrder) قبل ما ننهيه. من غير
+    // ده، لو الـwebhook ضاع والعميل قفل صفحة العودة، طلب مدفوع فعلاً بيتلغى
+    // والفلوس تعلّق. confirmOrder idempotent وذري، فآمن نناديه كل دورة.
+    const stalePending = (await pool.query(
+      `SELECT order_no FROM shop_orders
+        WHERE status='pending_payment' AND mf_invoice_id IS NOT NULL
+          AND created_at < NOW() - INTERVAL '8 minutes'
+          AND created_at > NOW() - INTERVAL '7 hours'`)).rows;
+    for (const r of stalePending) {
+      await confirmOrder({ orderNo: r.order_no }).catch((e) =>
+        console.error(`[shop] payment reconcile failed for ${r.order_no}: ${e.message}`));
+    }
+
+    // 3) housekeeping: a payment session nobody completed (بعد مراجعة الدفع فوق).
     await pool.query(
       `UPDATE shop_orders SET status='expired', updated_at=NOW()
         WHERE status='pending_payment' AND created_at < NOW() - INTERVAL '6 hours'`);

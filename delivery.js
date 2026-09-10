@@ -818,6 +818,45 @@ export function register(app, ctx, deps = {}) {
     return c.json({ ok: true, shipments: rows });
   });
 
+  /* مطابقة شركة التوصيل: الفرق بين اللي العميل دفعه للتوصيل (سياسة المطعم —
+     ممكن مجاني/مخصوم) واللي المطعم مدين بيه للاجلك فعلاً (تكلفتهم من الـAPI).
+     الاتنين منفصلين — عشان لما لاجلك يبعتوا فاتورة آخر الشهر يبقى عندنا مرجع
+     نطابق بيه. summary = مجاميع شهرية، rows = تفصيل طلبات شهر محدّد. */
+  app.get("/api/delivery/reconciliation", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    const month = c.req.query("month"); // YYYY-MM أو فاضي = ملخص كل الشهور
+    const base = `FROM shop_orders s
+        LEFT JOIN dl_shipments sh ON sh.shop_order_no = s.order_no
+       WHERE s.option='delivery' AND s.status NOT IN ('pending_payment','expired')`;
+    const summary = (await pool.query(
+      `SELECT to_char(date_trunc('month', s.created_at), 'YYYY-MM') AS month,
+              COUNT(*)::int AS orders,
+              COALESCE(SUM(s.delivery_fee),0)::numeric AS customer_fees,
+              COALESCE(SUM(sh.cost),0)::numeric AS courier_cost,
+              COUNT(*) FILTER (WHERE sh.cost IS NULL)::int AS missing_cost
+         ${base}
+       GROUP BY 1 ORDER BY 1 DESC`)).rows.map((r) => ({
+      month: r.month, orders: r.orders,
+      customerFees: Number(r.customer_fees), courierCost: Number(r.courier_cost),
+      net: Number(r.customer_fees) - Number(r.courier_cost), missingCost: r.missing_cost,
+    }));
+    let rows = [];
+    if (month) {
+      rows = (await pool.query(
+        `SELECT s.order_no, s.created_at, s.delivery_fee AS customer_fee,
+                sh.cost AS courier_cost, sh.provider, sh.provider_ref, sh.status AS ship_status
+           ${base} AND to_char(date_trunc('month', s.created_at),'YYYY-MM') = $1
+          ORDER BY s.created_at DESC`, [month])).rows.map((r) => ({
+        orderNo: r.order_no, at: r.created_at,
+        customerFee: Number(r.customer_fee) || 0,
+        courierCost: r.courier_cost != null ? Number(r.courier_cost) : null,
+        diff: (Number(r.customer_fee) || 0) - (r.courier_cost != null ? Number(r.courier_cost) : 0),
+        provider: r.provider, providerRef: r.provider_ref, shipStatus: r.ship_status,
+      }));
+    }
+    return c.json({ ok: true, summary, month: month || null, rows });
+  });
+
   /* شبكة أمان الويبهوك: كل دقيقتين بنسأل عن الشحنات اللي لسه في الطريق.
      الويبهوك ممكن يضيع وقت نشر أو انقطاع، والعميل ساعتها بيفضل قاعد على
      شاشة تتبع واقفة — وده أسوأ إحساس ممكن نديهوله بعد ما دفع. */
