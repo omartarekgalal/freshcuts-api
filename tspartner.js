@@ -32,7 +32,10 @@ const STORE = () => env("TSP_STORE", "freshcuts");
 const CLIENT_ID = () => env("TSP_CLIENT_ID");
 const CLIENT_SECRET = () => env("TSP_CLIENT_SECRET");
 const UNIQUE_ID = () => env("TSP_UNIQUE_ID");   // بعض التركيبات بتطلبه في الـtoken
-const CALLBACK = () => `${env("PUBLIC_API_URL", "https://freshcuts-api.o2m8.me")}/api/tabsense/oauth-callback`;
+// الـcallback لازم يطابق اللي تاب سينس مسجّلينه للتطبيق. عمر بعتلهم
+// freshcutspos.o2m8.me/oauth/callback، فبنخلّي نفس الدومين يوصل لتطبيقنا
+// (wildcard DNS) ونستقبله على المسار /oauth/callback تحت.
+const CALLBACK = () => env("TSP_CALLBACK", "https://freshcutspos.o2m8.me/oauth/callback");
 
 async function httpJson(url, { method = "GET", headers = {}, body, label = "tsp" } = {}) {
   const ctl = new AbortController();
@@ -349,6 +352,48 @@ export function register(app, ctx) {
         <p style="color:#888;font-size:12px">${e.resp ? String(JSON.stringify(e.resp)).slice(0, 200) : ""}</p></div>`, 502);
     }
   });
+
+  /* الـcallback المسجّل عند تاب سينس على دومين freshcutspos.o2m8.me
+     (اللي بيوصل لتطبيقنا عبر wildcard DNS). نفس منطق oauth-callback فوق. */
+  const successHtml = `<div dir="rtl" style="font-family:sans-serif;padding:40px;text-align:center;background:#0c1c12;color:#d6f5e0;min-height:90vh">
+    <h1 style="font-size:56px;margin:0">✅</h1>
+    <h2>اتربط متجرك بتاب سينس بنجاح</h2>
+    <p style="color:#9ccbad">تقدر تقفل الصفحة دي وترجع للوحة التحكم.</p></div>`;
+  app.get("/oauth/callback", async (c) => {
+    const code = c.req.query("code");
+    const oerr = c.req.query("error");
+    if (oerr) return c.html(`<div dir="rtl" style="font-family:sans-serif;padding:40px;text-align:center">
+      <h2>❌ الربط اترفض</h2><p>${String(oerr).slice(0, 200)}</p></div>`);
+    if (!code) return c.html(`<div dir="rtl" style="font-family:sans-serif;padding:40px;text-align:center">
+      <h2>⚠️ مفيش كود</h2></div>`);
+    try {
+      await exchangeCode(code, CALLBACK());
+      return c.html(successHtml);
+    } catch (e) {
+      console.error("[tspartner] /oauth/callback exchange failed:", e.message, e.resp ? JSON.stringify(e.resp).slice(0, 300) : "");
+      return c.html(`<div dir="rtl" style="font-family:sans-serif;padding:40px;text-align:center">
+        <h2>❌ تعذّر إتمام الربط</h2><p>${String(e.message).slice(0, 200)}</p>
+        <p style="color:#888;font-size:12px">${e.resp ? String(JSON.stringify(e.resp)).slice(0, 200) : ""}</p></div>`, 502);
+    }
+  });
+
+  /* استقبال إشعارات تاب سينس بحالة الطلبات (order-paid/updated/refunded…).
+     المسجّل عندهم: freshcutspos.o2m8.me/webhooks/. بنسجّل ونرجّع 200 دايماً
+     عشان مايعيدوش الإرسال. الربط بحالة shop_orders بيتبني بعد أول payload حقيقي. */
+  const webhook = async (c) => {
+    let body = null;
+    try { body = await c.req.json(); } catch { try { body = await c.req.text(); } catch {} }
+    try {
+      await pool.query(
+        `CREATE TABLE IF NOT EXISTS tsp_webhooks (id BIGSERIAL PRIMARY KEY, received_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), event TEXT, payload JSONB)`);
+      const ev = (body && (body.event || body.type || body.event_type)) || null;
+      await pool.query("INSERT INTO tsp_webhooks(event, payload) VALUES ($1,$2)", [ev, jb(body)]);
+      console.log(`[tspartner] webhook: ${ev || "?"} ${JSON.stringify(body).slice(0, 200)}`);
+    } catch (e) { console.error("[tspartner] webhook store failed:", e.message); }
+    return c.json({ ok: true });
+  };
+  app.post("/webhooks/", webhook);
+  app.post("/webhooks", webhook);
 
   /* ربط عبر صفحة Postman: الـclient مسجّل عندهم على oauth.pstmn.io، فبنستخدمها
      — عمر يوافق، الصفحة بتعرض الكود، وبيتبادل هنا. */
