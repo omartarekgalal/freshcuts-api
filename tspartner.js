@@ -207,21 +207,28 @@ export function register(app, ctx) {
     return _cat;
   }
 
-  // يطابق منتج المتجر بمنتج الشريك: tenant_product_id = "{store}-{internalId}"
-  async function resolvePartnerProduct(ref) {
-    const want = `${STORE()}-${ref}`;
-    let page = 1, found = null;
-    while (page <= 10 && !found) {
-      const r = await api(`/products?per_page=200&page=${page}`);
+  // كاش كل منتجات الشريك (فهرس بالـtenant_product_id) — 5 دقايق.
+  // per_page الأقصى 100؛ 200 بيرجّع صفر (اتأكدنا على الإنتاج).
+  let _prod = { at: 0, byTenant: new Map() };
+  async function loadProducts() {
+    if (_prod.at && Date.now() - _prod.at < 300_000 && _prod.byTenant.size) return _prod;
+    const byTenant = new Map();
+    let page = 1;
+    while (page <= 20) {
+      const r = await api(`/products?per_page=100&page=${page}`);
       const list = r.data || [];
-      found = list.find((p) =>
-        p.tenant_product_id === want ||
-        String(p.tenant_product_id) === String(ref) ||
-        String(p.id) === String(ref));
-      if (found || !r.links || !r.links.next || list.length === 0) break;
+      for (const p of list) byTenant.set(String(p.tenant_product_id), p);
+      if (!r.links || !r.links.next || list.length === 0) break;
       page++;
     }
-    return found;
+    _prod = { at: Date.now(), byTenant };
+    return _prod;
+  }
+
+  // يطابق منتج المتجر بمنتج الشريك: tenant_product_id = "{store}-{internalId}"
+  async function resolvePartnerProduct(ref) {
+    const { byTenant } = await loadProducts();
+    return byTenant.get(`${STORE()}-${ref}`) || byTenant.get(String(ref)) || null;
   }
 
   async function createExternalOrder(order) {
