@@ -236,6 +236,26 @@ export function register(app, ctx) {
     return _prod;
   }
 
+  /* كاش وسائل الدفع (بالاسم → الـid) — ساعة. تاب سينس بتعرّف الوسيلة بالـid،
+     فبنبعت الاسم والـid مع بعض في meta عشان الوسيلة تنزل تلقائياً على الطلب
+     (الأسماء زي "e-Apple Pay Credit" مطابقة لقائمتهم بالظبط). */
+  let _pm = { at: 0, byName: new Map() };
+  async function loadPaymentMethods() {
+    if (_pm.at && Date.now() - _pm.at < 3600_000 && _pm.byName.size) return _pm;
+    const byName = new Map();
+    try {
+      const r = await api("/payment-methods");
+      for (const m of (r.data || r || [])) if (m && m.name) byName.set(String(m.name).toLowerCase(), m.id);
+      _pm = { at: Date.now(), byName };
+    } catch (e) { console.error("[tspartner] payment-methods load failed:", e.message); }
+    return _pm;
+  }
+  async function paymentMethodId(name) {
+    if (!name) return null;
+    const pm = await loadPaymentMethods();
+    return pm.byName.get(String(name).toLowerCase()) || null;
+  }
+
   // يطابق منتج المتجر بمنتج الشريك: tenant_product_id = "{store}-{internalId}"
   async function resolvePartnerProduct(ref) {
     const { byTenant } = await loadProducts();
@@ -282,6 +302,11 @@ export function register(app, ctx) {
     const contactNote = [c.name, phone].filter(Boolean).join(" · ");
     const notes = [order.notes, contactNote].filter(Boolean).join(" — ") || "طلب أونلاين";
 
+    // وسيلة الدفع: بنبعت الاسم زي ما هو + الـid المقابل من قائمة الشريك، عشان
+    // الوسيلة تنزل تلقائياً على الطلب من غير تدخّل الكاشير.
+    const payName = order.paymentMethod || "visa";
+    const payId = await paymentMethodId(payName).catch(() => null);
+
     const buildBody = (withPhone) => ({
       ...cd,
       order_type: 6,
@@ -301,7 +326,9 @@ export function register(app, ctx) {
         notes,
         external_order_no: String(order.externalOrderNo),
         source_channel: "freshcuts_online",
-        external_payment_method: order.paymentMethod || "visa",
+        external_payment_method: payName,
+        external_payment_method_id: payId || undefined,
+        payment_method_id: payId || undefined,
         already_paid: true,
         delivery_address: {
           address_line: da.line || null, city: da.city || null, country: da.country || "SA",

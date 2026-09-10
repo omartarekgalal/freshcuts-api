@@ -1403,15 +1403,33 @@ export function register(app, ctx, deps = {}) {
         WHERE status='pos_created' AND pos_order_id IS NOT NULL
           AND created_at > NOW() - INTERVAL '24 hours'`)).rows;
     for (const r of watching) {
-      let posOrder;
-      try { posOrder = await tsstore.getOrder(r.pos_order_id, r.branch_id); } catch { continue; }
-      const approval = tsstore.approvalOf(posOrder);
-      if (approval) {
-        await pool.query("UPDATE shop_orders SET pos_approval=$2, updated_at=NOW() WHERE order_no=$1",
-          [r.order_no, approval]);
+      let approval = null;
+      try {
+        const posOrder = await tsstore.getOrder(r.pos_order_id, r.branch_id);
+        approval = tsstore.approvalOf(posOrder);
+      } catch { /* طلبات API الشريك (مدفوعة مسبقاً) مالهاش getOrder — بنقرا من الـwebhook تحت */ }
+      // طلبات الشريك (already_paid) بتبلّغ حالتها عبر webhook مش عبر getOrder،
+      // فبنقرا آخر approval_status اتسجّل لنفس رقم طلب الـPOS من tsp_webhooks.
+      if (!approval) {
+        try {
+          const wh = await pool.query(
+            `SELECT payload->'resource'->'statuses_slugs'->>'approval_status' AS a
+               FROM tsp_webhooks
+              WHERE payload->'resource'->'order'->>'id' = $1
+              ORDER BY received_at DESC LIMIT 1`, [r.pos_order_id]);
+          approval = wh.rows[0]?.a || null;
+        } catch { /* tsp_webhooks لسه ماتعملتش */ }
       }
+      if (!approval) continue;
+      await pool.query("UPDATE shop_orders SET pos_approval=$2, updated_at=NOW() WHERE order_no=$1",
+        [r.order_no, approval]);
       const a = String(approval || "").toLowerCase();
-      if (a.includes("accept")) {
+      // «مقبول» عند الشريك بيمر بمراحل: accepted → pickup_ready → …؛ كلها
+      // معناها إن الكاشير قَبِل الطلب، فنطلب الكابتن. «rejected/cancelled» رفض.
+      const acceptedLike = a.includes("accept") || a.includes("pickup_ready")
+        || a.includes("preparing") || a.includes("processing") || a.includes("ready");
+      const rejectedLike = a.includes("reject") || a.includes("cancel");
+      if (acceptedLike) {
         await setStatus(r.order_no, "accepted");
         const settings = (await getSettingsData()).shop || {};
         /* الطبقة الأولى من طبقتين. البوابة الحقيقية جوّه delivery.dispatch()
@@ -1430,8 +1448,8 @@ export function register(app, ctx, deps = {}) {
             // dispatch failures need eyes, the dashboard shows the stall.
           }
         }
-      } else if (a.includes("reject")) {
-        // لو كنا طلبنا كابتن قبل الرفض، نلغي عندهم — رسوم الإلغاء أرخص من
+      } else if (rejectedLike) {
+        // لو كنا طلبنا كابتن قبل الرفض, نلغي عندهم — رسوم الإلغاء أرخص من
         // توصيلة كاملة لطلب المطعم اعتذر عنه.
         if (r.option === "delivery" && delivery.cancelShipment) {
           delivery.cancelShipment(r.order_no, `order ${r.order_no} rejected by restaurant`)
