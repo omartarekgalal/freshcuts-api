@@ -1310,10 +1310,16 @@ export function register(app, ctx, deps = {}) {
 
      البوابة الحقيقية بتيجي من ماي فاتورة في GetPaymentStatus.PaymentGateway،
      فبنترجمها بدل ما نحزر. */
+  // بنطابق بوابة ماي فاتورة بوسيلة تاب سينس الإلكترونية الصح (كلها «e-» —
+  // دي وسائل الدفع الأونلاين الموجودة في تاب سينس إنتاج). الترتيب مهم:
+  // الأكثر تحديداً الأول (أبل+مدى قبل أبل، مدى قبل الافتراضي).
   const POS_PAY_BY_GATEWAY = [
-    [/apple.*mada|mada.*apple/i, "e-Apple Pay Mada"],
-    [/apple/i,                   "e-Apple Pay Credit"],
-    [/mada|md/i,                 "Mada"],
+    [/apple.*mada|mada.*apple/i,  "e-Apple Pay Mada"],
+    [/apple/i,                    "e-Apple Pay Credit"],
+    [/google|g[-\s]?pay/i,        "e-Google Pay"],
+    [/stc/i,                      "e-STC Pay"],
+    [/amex|american\s*express/i,  "e-Amex"],
+    [/mada|md\b/i,                "e-Mada"],
     [/visa|master|credit|vm|cc/i, "e-Credit Card"],
   ];
   function posPaymentMethodFor(gateway, settings) {
