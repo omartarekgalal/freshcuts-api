@@ -29,7 +29,18 @@ const env = (k, d) => (process.env[k] || d || "").toString().trim();
 const OTP_TTL_MIN = 5;
 const OTP_RESEND_SECONDS = 60;
 const OTP_MAX_ATTEMPTS = 5;
+const OTP_MAX_PER_DAY = 6;          // حد يومي لكل رقم — يمنع ضخّ الرسائل على رقم واحد
 const SESSION_DAYS = 180;
+
+/* قاطع دائرة لحماية رصيد الرسائل: سقف إجمالي لكل ساعة عبر كل الأرقام. لو
+   حصل هجوم موزّع (أرقام كتير من IPs كتير) ده بيوقفه قبل ما يحرق الرصيد.
+   قابل للضبط بـ OTP_SMS_HOUR_CAP (افتراضي 300 رسالة/ساعة). */
+let _smsHour = { start: Date.now(), n: 0 };
+function smsBudgetOk() {
+  const cap = Number((process.env.OTP_SMS_HOUR_CAP || "").trim()) || 300;
+  if (Date.now() - _smsHour.start > 3600_000) _smsHour = { start: Date.now(), n: 0 };
+  return _smsHour.n < cap;
+}
 
 /* ── Taqnyat SMS (the one place SMS leaves this API; notify.js will reuse) ── */
 export async function sendSms({ phoneNorm, body }) {
@@ -104,8 +115,12 @@ export function register(app, ctx) {
         code_hash TEXT NOT NULL,
         attempts INT NOT NULL DEFAULT 0,
         expires_at TIMESTAMPTZ NOT NULL,
-        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        day_count INT NOT NULL DEFAULT 0,
+        day_start TIMESTAMPTZ
       );
+      ALTER TABLE acct_otp ADD COLUMN IF NOT EXISTS day_count INT NOT NULL DEFAULT 0;
+      ALTER TABLE acct_otp ADD COLUMN IF NOT EXISTS day_start TIMESTAMPTZ;
       CREATE TABLE IF NOT EXISTS acct_sessions (
         token TEXT PRIMARY KEY,
         phone_norm TEXT NOT NULL,
@@ -200,17 +215,28 @@ export function register(app, ctx) {
     const phoneNorm = normPhone(b.phone);
     if (!/^5\d{8}$/.test(phoneNorm)) return c.json({ ok: false, error: "invalid_phone" }, 400);
 
-    const prev = await pool.query("SELECT created_at FROM acct_otp WHERE phone_norm=$1", [phoneNorm]);
+    const prev = await pool.query(
+      "SELECT created_at, day_count, day_start FROM acct_otp WHERE phone_norm=$1", [phoneNorm]);
     if (prev.rowCount && Date.now() - new Date(prev.rows[0].created_at).getTime() < OTP_RESEND_SECONDS * 1000) {
       return c.json({ ok: false, error: "resend_too_soon", retryAfter: OTP_RESEND_SECONDS }, 429);
     }
+    // حد يومي لكل رقم: يمنع ضخّ 60 رسالة/ساعة على رقم واحد.
+    if (prev.rowCount && prev.rows[0].day_start
+        && Date.now() - new Date(prev.rows[0].day_start).getTime() < 86400_000
+        && (prev.rows[0].day_count || 0) >= OTP_MAX_PER_DAY) {
+      return c.json({ ok: false, error: "daily_limit" }, 429);
+    }
+    // قاطع دائرة الرصيد: يوقف هجوم موزّع قبل ما يحرق رصيد الرسائل.
+    if (!smsBudgetOk()) return c.json({ ok: false, error: "temporarily_unavailable" }, 429);
 
     const code = String(crypto.randomInt(1000, 10000));
     await pool.query(
-      `INSERT INTO acct_otp(phone_norm, code_hash, attempts, expires_at, created_at)
-       VALUES ($1,$2,0,NOW() + INTERVAL '${OTP_TTL_MIN} minutes',NOW())
+      `INSERT INTO acct_otp(phone_norm, code_hash, attempts, expires_at, created_at, day_count, day_start)
+       VALUES ($1,$2,0,NOW() + INTERVAL '${OTP_TTL_MIN} minutes',NOW(),1,NOW())
        ON CONFLICT (phone_norm) DO UPDATE
-         SET code_hash=$2, attempts=0, expires_at=NOW() + INTERVAL '${OTP_TTL_MIN} minutes', created_at=NOW()`,
+         SET code_hash=$2, attempts=0, expires_at=NOW() + INTERVAL '${OTP_TTL_MIN} minutes', created_at=NOW(),
+             day_count = CASE WHEN acct_otp.day_start > NOW() - INTERVAL '24 hours' THEN acct_otp.day_count + 1 ELSE 1 END,
+             day_start = CASE WHEN acct_otp.day_start > NOW() - INTERVAL '24 hours' THEN acct_otp.day_start ELSE NOW() END`,
       [phoneNorm, hashOtp(phoneNorm, code)]);
 
     const settings = await getSettingsData();
@@ -223,6 +249,7 @@ export function register(app, ctx) {
           .replace(/^https?:\/\//, "").replace(/\/$/, "");
         await sendSms({ phoneNorm,
           body: `رمز الدخول لفريش كتس: ${code}\nصالح ${OTP_TTL_MIN} دقائق.\n\n@${origin} #${code}` });
+        _smsHour.n++; // اصرف من ميزانية الساعة بعد إرسال فعلي
         return c.json({ ok: true, sent: "sms" });
       } catch (e) {
         console.error("[accounts] OTP SMS failed:", e.message);
