@@ -642,14 +642,23 @@ export function register(app, ctx, deps = {}) {
     if (st.orderNo && st.orderNo !== row.order_no) {
       return { ok: false, error: "reference_mismatch" };
     }
-    await setStatus(row.order_no, "paid", {
-      cols: {
-        mf_payment_id: st.paymentId != null ? String(st.paymentId) : null,
-        // بوابة ماي فاتورة الفعلية (ap / md / vm …) — منها بنعرف نسجّل وسيلة
-        // الدفع الصح في تاب سينس بدل ما نكتب «كاش» على طلب مدفوع بالبطاقة.
-        pay_gateway: st.gateway || null,
-      },
-    });
+    // انتقال ذري: بس المنادي اللي يكسب pending_payment→paid يكمّل. من غير ده
+    // الـwebhook والمتصفح ممكن يعدّوا الشرط مع بعض ويعملوا طلبين في نقطة البيع.
+    // بوابة ماي فاتورة الفعلية (ap/md/vm…) بتتسجّل هنا عشان وسيلة الدفع الصح.
+    const won = await pool.query(
+      `UPDATE shop_orders SET status='paid', updated_at=NOW(),
+          history = history || $2::jsonb, mf_payment_id=$3, pay_gateway=$4
+        WHERE order_no=$1 AND status='pending_payment'
+        RETURNING order_no`,
+      [row.order_no, jb([{ at: new Date().toISOString(), status: "paid" }]),
+       st.paymentId != null ? String(st.paymentId) : null, st.gateway || null]);
+    if (!won.rowCount) {
+      // منادي تاني كسب السباق — نجاح idempotent من غير ما نكرّر أي شغل
+      const after = await getOrderRow(row.order_no);
+      return { ok: true, status: after ? after.status : "paid", orderNo: row.order_no };
+    }
+    if (notify) notify.orderStatusChanged(String(row.order_no), "paid").catch((e) =>
+      console.error(`[shop] notify failed for ${row.order_no}:`, e.message));
     // The coupon burns exactly when money moved, not at checkout — an
     // abandoned payment must not eat a limited-use code. Ambassador codes
     // (not in shop_coupons) mark redeemed instead, keeping their attribution.
