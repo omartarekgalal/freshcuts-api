@@ -69,8 +69,8 @@ export const DEFAULT_PERMS = {
 const PATH_SECTIONS = [
   [/^\/api\/cms\/(users|roles|audit)/, "settings"],
   [/^\/api\/cms\/home/, "home"],
-  [/^\/api\/cms\/(products|catalog)/, "products"],
-  [/^\/api\/cms\/growth/, "growth"],
+  [/^\/api\/cms\/(products|catalog|collections)/, "products"],
+  [/^\/api\/cms\/(growth|links)/, "growth"],
   [/^\/api\/cms\/(customers|segments|loyalty|campaigns)/, "customers"],
   [/^\/api\/cms\/(analytics|exec)/, "analytics"],
   [/^\/api\/cms\/(ops|sla)/, "orders"],
@@ -156,6 +156,45 @@ export function register(app, ctx) {
         note TEXT
       );
       CREATE INDEX IF NOT EXISTS cms_audit_at_idx ON cms_audit(at DESC);
+      -- الطبقة التسويقية فوق كتالوج تاب سينس (الأسماء والأسعار منهم، مابنلمسهاش)
+      CREATE TABLE IF NOT EXISTS cms_products (
+        product_id TEXT PRIMARY KEY,
+        image TEXT,
+        description TEXT,
+        description_en TEXT,
+        badge TEXT,
+        seo_title TEXT,
+        seo_description TEXT,
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_by TEXT
+      );
+      CREATE TABLE IF NOT EXISTS cms_collections (
+        id SERIAL PRIMARY KEY,
+        name TEXT NOT NULL,
+        name_en TEXT,
+        product_ids JSONB NOT NULL DEFAULT '[]'::jsonb,
+        sort INT NOT NULL DEFAULT 0,
+        active BOOLEAN NOT NULL DEFAULT TRUE,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+      -- روابط الحملات: freshcuts.sa/l/<slug>
+      CREATE TABLE IF NOT EXISTS cms_links (
+        id SERIAL PRIMARY KEY,
+        slug TEXT UNIQUE NOT NULL,
+        label TEXT,
+        target_type TEXT NOT NULL DEFAULT 'home',
+        target_id TEXT,
+        coupon TEXT,
+        utm_source TEXT,
+        utm_medium TEXT,
+        utm_campaign TEXT,
+        active BOOLEAN NOT NULL DEFAULT TRUE,
+        clicks INT NOT NULL DEFAULT 0,
+        last_click_at TIMESTAMPTZ,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        created_by TEXT
+      );
     `);
     const r = await pool.query(
       `SELECT s.token_hash, s.expires_at, u.id, u.username, u.name, u.role, u.active
@@ -441,6 +480,269 @@ export function register(app, ctx) {
       `SELECT id, at, actor_id, actor_name, role, method, path, section, note
          FROM cms_audit ORDER BY at DESC LIMIT $1`, [limit])).rows;
     return c.json({ ok: true, rows });
+  });
+
+  /* ═══ المرحلة ٢: المنتجات (طبقة تسويقية) + التجميعات + روابط الحملات ═══
+
+     المنتجات: تاب سينس هو المصدر للأسماء والأسعار. إحنا بنخزّن «اللبس» بس
+     (صورة/وصف/شارة/SEO)، والبروكسي بيدمجه في /api/menu — فبيوصل للموقع
+     ولكتالوج ميتا (catalog.js بيقرا من هناك) في نفس الوقت.
+     الإخفاء بيتكتب في settings.catalog.hiddenIds — نفس المكان اللي المتجر
+     بيقرا منه أصلاً، عشان مايبقاش فيه مفتاحين إخفاء بيتخانقوا. */
+  const STORE_BASE = () => (process.env.CATALOG_MENU_BASE || process.env.STOREFRONT_PUBLIC_URL || "https://freshcuts.sa").replace(/\/+$/, "");
+  const clip = (v, n) => { const s = String(v ?? "").trim(); return s ? s.slice(0, n) : null; };
+  const okImage = (u) => !u || /^https:\/\/[^\s"'<>]+$/i.test(u);
+  const who = async (c) => {
+    const t = bearer(c);
+    if (t.startsWith("cms:")) { const u = await sessionUser(t); if (u) return u.name; }
+    return "المالك";
+  };
+
+  // المنيو الخام من البروكسي (raw=1 = من غير طبقتنا) — كاش دقيقة
+  let rawMenu = { at: 0, items: null };
+  async function menuItems() {
+    if (rawMenu.items && Date.now() - rawMenu.at < 60_000) return rawMenu.items;
+    const r = await fetch(`${STORE_BASE()}/api/menu?branch_id=1&raw=1`, {
+      signal: AbortSignal.timeout(15000), headers: { "User-Agent": "freshcuts-cms" } });
+    if (!r.ok) throw new Error(`menu HTTP ${r.status}`);
+    const pages = (await r.json())?.data?.pages || [];
+    // صفحات «الأكثر طلباً/العروض» بتكرر أصناف موجودة في قسمها الحقيقي — نقرا
+    // الأقسام الحقيقية الأول عشان الصنف ياخد قسمه الصح.
+    const MERCH = /best|الأكثر|offers|العروض/i;
+    const rank = (p) => (MERCH.test(`${p.title || ""} ${p.local_title || ""}`) ? 1 : 0);
+    const seen = new Set(), items = [];
+    for (const p of [...pages].sort((a, b) => rank(a) - rank(b))) {
+      const category = p.local_title || p.title || "";
+      for (const it of p.items || []) {
+        const id = String(it.id);
+        if (seen.has(id)) continue;
+        seen.add(id);
+        items.push({
+          id, name: it.name || it.local_name || "", name_en: it.local_name || "", category,
+          price: Number(it.retail_price != null ? it.retail_price : it.price) || 0,
+          image: it.image || "", description: it.description || "", description_en: it.local_description || "",
+        });
+      }
+    }
+    rawMenu = { at: Date.now(), items };
+    return items;
+  }
+
+  let overlayCache = { at: 0, data: null };
+  const bustOverlay = () => { overlayCache = { at: 0, data: null }; };
+  async function buildOverlay() {
+    if (overlayCache.data && Date.now() - overlayCache.at < 30_000) return overlayCache.data;
+    const [p, cl] = await Promise.all([
+      pool.query("SELECT product_id, image, description, description_en, badge FROM cms_products"),
+      pool.query("SELECT id, name, name_en, product_ids FROM cms_collections WHERE active ORDER BY sort, id"),
+    ]);
+    const items = {};
+    for (const r of p.rows) {
+      const o = {};
+      if (r.image) o.image = r.image;
+      if (r.description) o.description = r.description;
+      if (r.description_en) o.description_en = r.description_en;
+      if (r.badge) o.badge = r.badge;
+      if (Object.keys(o).length) items[r.product_id] = o;
+    }
+    const collections = cl.rows.map((r) => ({
+      id: r.id, name: r.name, name_en: r.name_en || "", product_ids: (r.product_ids || []).map(String) }));
+    overlayCache = { at: Date.now(), data: { ok: true, items, collections } };
+    return overlayCache.data;
+  }
+
+  // عام عن قصد: البروكسي بيقراه من غير توكن ويدمجه في /api/menu.
+  app.get("/api/cms/catalog-overlay", async (c) => {
+    try { return c.json(await buildOverlay()); }
+    catch (e) { return c.json({ ok: false, items: {}, collections: [], error: e.message }); }
+  });
+
+  app.get("/api/cms/products", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    let items;
+    try { items = await menuItems(); }
+    catch (e) { return c.json({ ok: false, error: "menu_unavailable", message: e.message, items: [], collections: [] }); }
+    const [ov, cl, s] = await Promise.all([
+      pool.query("SELECT * FROM cms_products"),
+      pool.query("SELECT * FROM cms_collections ORDER BY sort, id"),
+      getSettingsData(),
+    ]);
+    const byId = Object.fromEntries(ov.rows.map((r) => [r.product_id, r]));
+    const hidden = new Set(((s?.catalog || {}).hiddenIds || []).map(String));
+    return c.json({
+      ok: true,
+      items: items.map((it) => {
+        const o = byId[it.id];
+        return {
+          ...it, hidden: hidden.has(it.id),
+          overlay: o ? {
+            image: o.image || "", description: o.description || "", description_en: o.description_en || "",
+            badge: o.badge || "", seo_title: o.seo_title || "", seo_description: o.seo_description || "",
+          } : null,
+        };
+      }),
+      collections: cl.rows.map((r) => ({ ...r, product_ids: (r.product_ids || []).map(String) })),
+    });
+  });
+
+  app.put("/api/cms/products/:id", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    const id = String(c.req.param("id")).slice(0, 64);
+    let b = {};
+    try { b = await c.req.json(); } catch { return c.json({ ok: false, error: "bad json" }, 400); }
+    const f = {
+      image: clip(b.image, 500), description: clip(b.description, 600), description_en: clip(b.description_en, 600),
+      badge: clip(b.badge, 40), seo_title: clip(b.seo_title, 120), seo_description: clip(b.seo_description, 300),
+    };
+    if (!okImage(f.image)) return c.json({ ok: false, error: "bad_image_url" }, 400);
+    if (Object.values(f).some(Boolean)) {
+      await pool.query(
+        `INSERT INTO cms_products(product_id, image, description, description_en, badge, seo_title, seo_description, updated_at, updated_by)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,NOW(),$8)
+         ON CONFLICT (product_id) DO UPDATE SET image=$2, description=$3, description_en=$4, badge=$5,
+           seo_title=$6, seo_description=$7, updated_at=NOW(), updated_by=$8`,
+        [id, f.image, f.description, f.description_en, f.badge, f.seo_title, f.seo_description, await who(c)]);
+    } else {
+      // كل الحقول فاضية = رجوع كامل لتاب سينس
+      await pool.query("DELETE FROM cms_products WHERE product_id=$1", [id]);
+    }
+    if (typeof b.hidden === "boolean") {
+      const s = await getSettingsData();
+      const cur = new Set(((s?.catalog || {}).hiddenIds || []).map(String));
+      if (b.hidden) cur.add(id); else cur.delete(id);
+      await pool.query(
+        `UPDATE settings SET data = jsonb_set(
+           CASE WHEN data ? 'catalog' THEN data ELSE jsonb_set(data,'{catalog}','{}'::jsonb,true) END,
+           '{catalog,hiddenIds}', $1::jsonb, true) WHERE id=1`, [jb([...cur])]);
+    }
+    bustOverlay();
+    return c.json({ ok: true });
+  });
+
+  const cleanIds = (a) => (Array.isArray(a) ? a : []).map((x) => String(x).slice(0, 64)).filter(Boolean).slice(0, 60);
+  app.post("/api/cms/collections", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    let b = {};
+    try { b = await c.req.json(); } catch { return c.json({ ok: false, error: "bad json" }, 400); }
+    const name = clip(b.name, 60);
+    if (!name) return c.json({ ok: false, error: "name_required" }, 400);
+    const r = await pool.query(
+      `INSERT INTO cms_collections(name, name_en, product_ids, sort, active) VALUES ($1,$2,$3,$4,$5) RETURNING *`,
+      [name, clip(b.name_en, 60), jb(cleanIds(b.product_ids)), Number(b.sort) || 0, b.active !== false]);
+    bustOverlay();
+    return c.json({ ok: true, collection: r.rows[0] });
+  });
+  app.put("/api/cms/collections/:id", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    let b = {};
+    try { b = await c.req.json(); } catch { return c.json({ ok: false, error: "bad json" }, 400); }
+    const name = clip(b.name, 60);
+    if (!name) return c.json({ ok: false, error: "name_required" }, 400);
+    const r = await pool.query(
+      `UPDATE cms_collections SET name=$2, name_en=$3, product_ids=$4, sort=$5, active=$6, updated_at=NOW()
+        WHERE id=$1 RETURNING *`,
+      [Number(c.req.param("id")), name, clip(b.name_en, 60), jb(cleanIds(b.product_ids)), Number(b.sort) || 0, b.active !== false]);
+    if (!r.rowCount) return c.json({ ok: false, error: "not_found" }, 404);
+    bustOverlay();
+    return c.json({ ok: true, collection: r.rows[0] });
+  });
+  app.delete("/api/cms/collections/:id", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    await pool.query("DELETE FROM cms_collections WHERE id=$1", [Number(c.req.param("id"))]);
+    bustOverlay();
+    return c.json({ ok: true });
+  });
+
+  /* روابط الحملات — freshcuts.sa/l/<slug>. البروكسي بينادي resolve (عام)
+     اللي بيعدّ الضغطة ويبني رابط الهبوط، فالقواعد في مكان واحد. */
+  const MEDIUM = { influencer: "influencer", whatsapp: "message", sms: "message", qr: "offline" };
+  const slugOk = (s) => /^[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?$/.test(s);
+  function linkBody(b) {
+    const target_type = ["home", "collection", "product"].includes(b.target_type) ? b.target_type : "home";
+    const utm_source = clip(b.utm_source, 30) || "other";
+    return {
+      label: clip(b.label, 80), target_type,
+      target_id: target_type === "home" ? null : clip(b.target_id, 64),
+      coupon: clip(String(b.coupon || "").toUpperCase(), 40),
+      utm_source, utm_medium: MEDIUM[utm_source] || "paid",
+      utm_campaign: clip(b.utm_campaign, 80),
+    };
+  }
+
+  app.get("/api/cms/links", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    const rows = (await pool.query("SELECT * FROM cms_links ORDER BY active DESC, created_at DESC")).rows;
+    return c.json({ ok: true, links: rows });
+  });
+  app.post("/api/cms/links", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    let b = {};
+    try { b = await c.req.json(); } catch { return c.json({ ok: false, error: "bad json" }, 400); }
+    const slug = String(b.slug || "").toLowerCase().trim();
+    if (!slugOk(slug)) return c.json({ ok: false, error: "bad_slug" }, 400);
+    const x = linkBody(b);
+    try {
+      const r = await pool.query(
+        `INSERT INTO cms_links(slug, label, target_type, target_id, coupon, utm_source, utm_medium, utm_campaign, active, created_by)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING *`,
+        [slug, x.label, x.target_type, x.target_id, x.coupon, x.utm_source, x.utm_medium, x.utm_campaign, b.active !== false, await who(c)]);
+      return c.json({ ok: true, link: r.rows[0] });
+    } catch (e) {
+      if (String(e.message).includes("duplicate")) return c.json({ ok: false, error: "slug_taken" }, 409);
+      throw e;
+    }
+  });
+  app.put("/api/cms/links/:id", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    const id = Number(c.req.param("id"));
+    let b = {};
+    try { b = await c.req.json(); } catch { return c.json({ ok: false, error: "bad json" }, 400); }
+    // تشغيل/إيقاف بس (زرار في القائمة)
+    if (Object.keys(b).length === 1 && typeof b.active === "boolean") {
+      await pool.query("UPDATE cms_links SET active=$2 WHERE id=$1", [id, b.active]);
+      return c.json({ ok: true });
+    }
+    const slug = String(b.slug || "").toLowerCase().trim();
+    if (!slugOk(slug)) return c.json({ ok: false, error: "bad_slug" }, 400);
+    const x = linkBody(b);
+    try {
+      const r = await pool.query(
+        `UPDATE cms_links SET slug=$2, label=$3, target_type=$4, target_id=$5, coupon=$6, utm_source=$7,
+                utm_medium=$8, utm_campaign=$9, active=$10 WHERE id=$1 RETURNING *`,
+        [id, slug, x.label, x.target_type, x.target_id, x.coupon, x.utm_source, x.utm_medium, x.utm_campaign, b.active !== false]);
+      if (!r.rowCount) return c.json({ ok: false, error: "not_found" }, 404);
+      return c.json({ ok: true, link: r.rows[0] });
+    } catch (e) {
+      if (String(e.message).includes("duplicate")) return c.json({ ok: false, error: "slug_taken" }, 409);
+      throw e;
+    }
+  });
+  app.delete("/api/cms/links/:id", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    await pool.query("DELETE FROM cms_links WHERE id=$1", [Number(c.req.param("id"))]);
+    return c.json({ ok: true });
+  });
+
+  // عام: البروكسي بيناديه لما حد يضغط /l/<slug>. رابط موقوف/مش موجود = 404،
+  // والبروكسي ساعتها بيودّي على الرئيسية (الإعلان الشغّال عمره ما يقع).
+  app.post("/api/cms/links/resolve/:slug", async (c) => {
+    const slug = String(c.req.param("slug") || "").toLowerCase();
+    if (!slugOk(slug)) return c.json({ ok: false }, 404);
+    const r = await pool.query(
+      `UPDATE cms_links SET clicks = clicks + 1, last_click_at = NOW()
+        WHERE slug=$1 AND active RETURNING *`, [slug]);
+    const l = r.rows[0];
+    if (!l) return c.json({ ok: false }, 404);
+    const q = new URLSearchParams();
+    q.set("utm_source", l.utm_source || "other");
+    q.set("utm_medium", l.utm_medium || "paid");
+    if (l.utm_campaign) q.set("utm_campaign", l.utm_campaign);
+    q.set("utm_content", l.slug);
+    if (l.coupon) q.set("c", l.coupon);
+    if (l.target_type === "collection" && l.target_id) q.set("col", l.target_id);
+    if (l.target_type === "product" && l.target_id) q.set("p", l.target_id);
+    q.set("fc_link", l.slug);
+    return c.json({ ok: true, url: "/?" + q.toString() });
   });
 
   console.log("[cms] routes ready");
