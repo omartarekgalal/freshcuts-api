@@ -240,6 +240,12 @@ export function register(app, ctx) {
       [phoneNorm, hashOtp(phoneNorm, code)]);
 
     const settings = await getSettingsData();
+    // وضع التجربة (توجّل واحد من اللوحة): بيرجّع الرمز في الرد وما بيبعتش SMS
+    // حقيقي مهما كانت قناة الرسائل مفعّلة — عشان الزرار يشتغل لوحده من غير ما
+    // تحتاج تطفّي SMS كمان. قبل الإطلاق لازم يتقفل.
+    if ((settings.shop || {}).otpDevMode === true) {
+      return c.json({ ok: true, sent: "dev", devCode: code });
+    }
     const smsOn = (settings.notifications || {}).smsEnabled !== false && env("TAQNYAT_API_KEY");
     if (smsOn) {
       try {
@@ -256,11 +262,7 @@ export function register(app, ctx) {
         // fall through — dev mode may still save the flow, otherwise honest error
       }
     }
-    if ((settings.shop || {}).otpDevMode === true) {
-      // PRE-LAUNCH ONLY: lets us test the whole flow before Taqnyat activates.
-      // The dashboard toggle must be off the day real customers arrive.
-      return c.json({ ok: true, sent: "dev", devCode: code });
-    }
+    // (وضع التجربة اتفحص فوق قبل محاولة الإرسال)
     return c.json({ ok: false, error: "sms_not_configured" }, 503);
   });
 
