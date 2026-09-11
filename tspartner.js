@@ -256,6 +256,24 @@ export function register(app, ctx) {
     return pm.byName.get(String(name).toLowerCase()) || null;
   }
 
+  /* تسوية الطلب تلقائياً (يلغي تحصيل الكاشير) عبر POST /orders/:id/checkout.
+     تاب سينس بيسوّي على طريقة الدفع المخصصة لتطبيقنا "FreshCuts" (زي ما فيد اس
+     بيسوّي على "Feedus"). دلوقتي الطريقة دي **غير مفعّلة** عندهم فالنداء بيرجّع
+     403 والطلب بيفضل مستحق (الكاشير يقدر يسوّيه يدوي مؤقتاً). أول ما تاب سينس
+     يفعّلوا طريقة "FreshCuts" النداء ده هيسوّي كل طلب تلقائياً من غير أي تدخّل.
+     amount بالريال (نفس وحدة due اللي بيرجّعها إنشاء الطلب). */
+  async function settleOrder(orderId, amount) {
+    try {
+      const r = await api(`/orders/${orderId}/checkout`, { method: "POST", body: { amount: Number(amount) } });
+      console.log(`[tspartner] auto-settled ${orderId} (${amount})`);
+      return { settled: true, raw: r };
+    } catch (e) {
+      console.warn(`[tspartner] auto-checkout ${orderId} pending (${e.status || "?"}): ${e.message}` +
+        (e.resp ? " " + JSON.stringify(e.resp).slice(0, 160) : ""));
+      return { settled: false, error: e.message, status: e.status || null };
+    }
+  }
+
   // يطابق منتج المتجر بمنتج الشريك: tenant_product_id = "{store}-{internalId}"
   async function resolvePartnerProduct(ref) {
     const { byTenant } = await loadProducts();
@@ -354,7 +372,10 @@ export function register(app, ctx) {
         throw e;
       }
     }
-    return { id: created.id, external: created.orders_external, total: created.due, linkedCustomer, raw: created };
+    // نحاول نسوّي الطلب فوراً (تلقائي). لو طريقة "FreshCuts" لسه غير مفعّلة
+    // بيرجع settled:false والطلب يفضل مستحق — بيتسوّى أول ما تاب سينس يفعّلوها.
+    const settle = await settleOrder(created.id, created.due);
+    return { id: created.id, external: created.orders_external, total: created.due, linkedCustomer, settled: settle.settled, raw: created };
   }
 
   async function status() {
