@@ -262,6 +262,10 @@ export function register(app, ctx, deps = {}) {
       -- ممكن ترجّع فلوس مرتين لو الرد الأول ضاع في الطريق بس نجح عندهم.
       ALTER TABLE shop_orders ADD COLUMN IF NOT EXISTS refund_attempts INT NOT NULL DEFAULT 0;
       ALTER TABLE shop_orders ADD COLUMN IF NOT EXISTS pay_gateway TEXT;
+      -- «الأكل جاهز» (2026-09-11): وقت ما الكاشير يسجّل الطلب جاهز للاستلام
+      -- (approval_status=pickup_ready من الشريك). التتبع بيفضل «بيجهّز» لحد ما
+      -- يتسجّل، وبعدها بس بنعرض حالة المندوب — «المطعم أولاً».
+      ALTER TABLE shop_orders ADD COLUMN IF NOT EXISTS pos_ready_at TIMESTAMPTZ;
       -- سجل الإنذارات: كل درجة تصعيد تتبعت مرة واحدة لكل طلب، عشان المدير
       -- ما يصحاش على عشرين رسالة عن نفس الطلب.
       ALTER TABLE shop_orders ADD COLUMN IF NOT EXISTS alerts JSONB NOT NULL DEFAULT '{}'::jsonb;
@@ -856,22 +860,43 @@ export function register(app, ctx, deps = {}) {
     if (!row) return c.json({ ok: false, found: false }, 404);
     const stage = STAGES[row.status] || { label: row.status, step: 0 };
     let label = stage.label, step = stage.step;
-    // الاستلام (سفري): الـPOS مابيبعتش إشارة «جاهز»، فبنقدّرها بالوقت — بعد وقت
-    // التحضير من القبول نعرض «جاهز للاستلام من الفرع» بدل ما العميل يفضل على
-    // «جاري التحضير» للأبد. قبلها بنطمنه إنه بيتجهّز.
-    if (row.option === "pickup" && row.status === "accepted") {
-      const acceptedAt = new Date(row.updated_at || row.created_at).getTime();
-      const readyAfterMin = Number(((await getSettingsData()).shop || {}).pickupReadyMinutes) || 20;
-      if (Date.now() - acceptedAt >= readyAfterMin * 60_000) {
-        label = "جاهز للاستلام من الفرع 📍"; step = 4;
-      } else {
-        label = "جاري تجهيز طلبك — جاهز للاستلام قريباً"; step = 2;
-      }
-    }
     let courier = null;
-    if (row.option === "delivery" && ["courier_requested", "courier_assigned", "on_the_way", "delivered"].includes(row.status)) {
-      const sh = await delivery.shipmentOf(row.order_no);
-      if (sh) courier = { status: sh.status, driver: sh.driver || null };
+    const ready = Boolean(row.pos_ready_at);
+
+    if (row.option === "pickup") {
+      // الاستلام (سفري): «جاهز» بتيجي من الكاشير (pos_ready_at)؛ لو ماوصلتش،
+      // بنقدّرها بالوقت بعد القبول عشان العميل مايفضلش على «بيجهّز» للأبد.
+      if (row.status === "accepted" || row.status === "pos_created") {
+        const acceptedAt = new Date(row.updated_at || row.created_at).getTime();
+        const readyAfterMin = Number(((await getSettingsData()).shop || {}).pickupReadyMinutes) || 20;
+        if (ready || Date.now() - acceptedAt >= readyAfterMin * 60_000) {
+          label = "جاهز للاستلام من الفرع 📍"; step = 4;
+        } else {
+          label = "جاري تجهيز طلبك — جاهز للاستلام قريباً"; step = 2;
+        }
+      }
+    } else if (row.option === "delivery") {
+      /* «المطعم أولاً» (قرار عمر): مانعرضش أي كلام عن المندوب لحد ما الكاشير
+         يسجّل الطلب جاهز (pos_ready_at). قبلها التتبع بيفضل «المطعم بيجهّز»
+         حتى لو المندوب اتعيّن فعلاً — عشان العميل مايفتكرش إن الأكل جاهز
+         واحنا بندوّر على مندوب. */
+      if (row.status === "delivered") {
+        label = "تم توصيل طلبك — بالهنا والشفا 🌟"; step = 5;
+      } else if (row.status === "on_the_way") {
+        label = "طلبك في الطريق إليك الآن 🛵💨"; step = 4;
+      } else if (ready) {
+        label = "طلبك جاهز وبنسلّمه للمندوب 🛵"; step = 3;
+      } else if (["paid", "pos_created"].includes(row.status)) {
+        label = "تم الدفع واستلمنا طلبك ✅"; step = 1;
+      } else {
+        // accepted / courier_requested / courier_assigned بس الأكل لسه بيتجهّز
+        label = "المطعم بيجهّز طلبك 👨‍🍳"; step = 2;
+      }
+      // حالة المندوب بتظهر بس بعد ما الأكل يجهز (أو وهو في الطريق/اتسلّم)
+      if (ready || ["on_the_way", "delivered"].includes(row.status)) {
+        const sh = await delivery.shipmentOf(row.order_no);
+        if (sh) courier = { status: sh.status, driver: sh.driver || null };
+      }
     }
     return c.json({
       ok: true, found: true, orderNo: row.order_no, status: row.status,
@@ -1436,6 +1461,13 @@ export function register(app, ctx, deps = {}) {
       const acceptedLike = a.includes("accept") || a.includes("pickup_ready")
         || a.includes("preparing") || a.includes("processing") || a.includes("ready");
       const rejectedLike = a.includes("reject") || a.includes("cancel");
+      // «جاهز للاستلام»: أول ما الكاشير يسجّلها، بنثبّت وقت الجهوزية مرة واحدة.
+      // ("pickup_ready" وأي "ready" تدخل؛ accepted/preparing/processing مش منها.)
+      if (a.includes("ready")) {
+        await pool.query(
+          "UPDATE shop_orders SET pos_ready_at = COALESCE(pos_ready_at, NOW()), updated_at=NOW() WHERE order_no=$1",
+          [r.order_no]);
+      }
       if (acceptedLike) {
         await setStatus(r.order_no, "accepted");
         const settings = (await getSettingsData()).shop || {};
