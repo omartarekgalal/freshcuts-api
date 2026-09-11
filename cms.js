@@ -26,6 +26,8 @@ import crypto from "node:crypto";
 import { promisify } from "node:util";
 // نفس قواعد الهوية والقناة اللي المؤشرات بتستخدمها — مفيش نسخة تانية
 import { IDENT_SQL, SALES_ONLY, deliverySql } from "./analytics.js";
+// نفس قواعد الـSLA بتاعة الـwatchdog — لوحة التشغيل مابتكتبش كتاب قواعد تاني
+import { slaCheck, DEFAULT_SLA } from "./shop.js";
 
 const scryptAsync = promisify(crypto.scrypt);
 const SESSION_DAYS = 30;
@@ -73,7 +75,7 @@ const PATH_SECTIONS = [
   [/^\/api\/cms\/home/, "home"],
   [/^\/api\/cms\/(products|catalog|collections)/, "products"],
   [/^\/api\/cms\/(growth|links)/, "growth"],
-  [/^\/api\/cms\/(customers|segments|loyalty|campaigns)/, "customers"],
+  [/^\/api\/cms\/(customers|segments|loyalty|campaigns|flows)/, "customers"],
   [/^\/api\/cms\/(analytics|exec)/, "analytics"],
   [/^\/api\/cms\/(ops|sla)/, "orders"],
   [/^\/api\/(shop\/coupons|discounts)/, "discounts"],
@@ -233,6 +235,33 @@ export function register(app, ctx, deps = {}) {
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
         PRIMARY KEY (phone_norm, reward_no)
       );
+      -- الأتمتة: رسالة للي «بيدخل» شريحة (مش للموجودين فيها — دول بالحملات)
+      CREATE TABLE IF NOT EXISTS cms_flows (
+        id SERIAL PRIMARY KEY,
+        name TEXT NOT NULL,
+        segment TEXT NOT NULL,
+        channel TEXT NOT NULL DEFAULT 'push',
+        message TEXT NOT NULL,
+        coupon TEXT,
+        active BOOLEAN NOT NULL DEFAULT FALSE,
+        sent_total INT NOT NULL DEFAULT 0,
+        last_run_at TIMESTAMPTZ,
+        created_by TEXT,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+      -- مين جوّه الشريحة دلوقتي (عشان نعرف مين «دخل» من آخر دورة)
+      CREATE TABLE IF NOT EXISTS cms_flow_members (
+        flow_id INT NOT NULL,
+        phone_norm TEXT NOT NULL,
+        entered_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        PRIMARY KEY (flow_id, phone_norm)
+      );
+      CREATE TABLE IF NOT EXISTS cms_flow_log (
+        flow_id INT NOT NULL,
+        phone_norm TEXT NOT NULL,
+        sent_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS cms_flow_log_idx ON cms_flow_log(phone_norm, sent_at DESC);
     `);
     const r = await pool.query(
       `SELECT s.token_hash, s.expires_at, u.id, u.username, u.name, u.role, u.active
@@ -355,7 +384,8 @@ export function register(app, ctx, deps = {}) {
       user = OWNER_KEY;
     }
     const perms = (await effectivePerms())[user.role] || all(N);
-    return c.json({ ok: true, user, perms, sections: SECTIONS, roles: ROLES });
+    const dailyTarget = Number((((await getSettingsData()) || {}).cms || {}).dailyTarget) || 200;
+    return c.json({ ok: true, user, perms, sections: SECTIONS, roles: ROLES, dailyTarget });
   });
 
   app.post("/api/cms/login", async (c) => {
@@ -1198,6 +1228,195 @@ export function register(app, ctx, deps = {}) {
          CASE WHEN data ? 'cms' THEN data ELSE jsonb_set(data,'{cms}','{}'::jsonb,true) END,
          '{cms,loyalty}', $1::jsonb, true) WHERE id=1`, [jb(val)]);
     return c.json({ ok: true, config: val });
+  });
+
+  /* ═══ المرحلة ٤: لوحة التشغيل (SLA) + الهدف اليومي + الأتمتة ═══════════ */
+
+  // لوحة التشغيل: كل طلب أونلاين شغّال + حالته مقابل الـSLA (نفس slaCheck
+  // ونفس إعدادات settings.delivery.sla اللي الـwatchdog بيصعّد بيها).
+  app.get("/api/cms/ops/live", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    const s = await getSettingsData();
+    const sla = { ...DEFAULT_SLA, ...(((s || {}).delivery || {}).sla || {}) };
+    const [rows, today] = await Promise.all([
+      pool.query(`
+        SELECT o.order_no, o.status, o.option, o.total, o.customer, o.created_at, o.updated_at, o.pos_ready_at,
+               sh.provider AS ship_provider, sh.status AS ship_status, sh.driver AS ship_driver
+          FROM shop_orders o
+          LEFT JOIN LATERAL (SELECT provider, status, driver FROM dl_shipments
+                              WHERE shop_order_no = o.order_no ORDER BY id DESC LIMIT 1) sh ON TRUE
+         WHERE o.status NOT IN ('pending_payment','expired','delivered','rejected_refunded')
+           AND o.created_at > NOW() - INTERVAL '24 hours'
+         ORDER BY o.created_at`),
+      pool.query(`
+        SELECT count(*) FILTER (WHERE status NOT IN ('pending_payment','expired'))::int AS paid,
+               count(*) FILTER (WHERE status = 'delivered')::int AS delivered,
+               avg(EXTRACT(EPOCH FROM (updated_at - created_at)) / 60) FILTER (WHERE status = 'delivered')::float AS avg_minutes
+          FROM shop_orders
+         WHERE created_at > (date_trunc('day', NOW() AT TIME ZONE 'Asia/Riyadh') AT TIME ZONE 'Asia/Riyadh')`),
+    ]);
+    const now = Date.now();
+    const orders = rows.rows.map((o) => ({
+      orderNo: o.order_no, status: o.status, option: o.option, total: Number(o.total) || 0,
+      name: (o.customer && o.customer.name) || "", ageMin: Math.floor((now - new Date(o.created_at).getTime()) / 60000),
+      ready: Boolean(o.pos_ready_at),
+      courier: o.ship_status ? { provider: o.ship_provider, status: o.ship_status, driver: (o.ship_driver && o.ship_driver.name) || null } : null,
+      sla: slaCheck(o, sla, now),
+    }));
+    return c.json({ ok: true, sla, orders, breaches: orders.filter((o) => o.sla.level >= 2).length,
+      late: orders.filter((o) => o.sla.level === 1).length, today: today.rows[0] });
+  });
+
+  // الهدف اليومي لطلبات الموقع (المالك — المسار بيقع على «الإعدادات»)
+  app.put("/api/cms/settings", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    let b = {};
+    try { b = await c.req.json(); } catch { return bad(c, "bad json"); }
+    const t = Math.round(Number(b.dailyTarget));
+    if (!(t >= 1 && t <= 100000)) return bad(c, "bad_target");
+    await pool.query(
+      `UPDATE settings SET data = jsonb_set(
+         CASE WHEN data ? 'cms' THEN data ELSE jsonb_set(data,'{cms}','{}'::jsonb,true) END,
+         '{cms,dailyTarget}', $1::jsonb, true) WHERE id=1`, [jb(t)]);
+    return c.json({ ok: true, dailyTarget: t });
+  });
+
+  /* الأتمتة: كل ساعة (١٢ الضهر لـ١٠ بالليل بتوقيت الرياض — مفيش رسايل بالليل)
+     بنقارن أعضاء الشريحة دلوقتي بآخر مرة. اللي «دخل» جديد بياخد الرسالة، واللي
+     خرج بيتشال عشان لو رجع يدخل تاني ياخدها. وقت التشغيل بنسجّل الموجودين
+     كنقطة بداية من غير ما نبعتلهم — غير كده تشغيل «النايمين» كان هيبعت لـ١٨٧
+     واحد مرة واحدة. ومفيش عميل بياخد رسالة أتمتة أكتر من مرة كل ٢١ يوم. */
+  const FLOW_GAP_DAYS = 21;
+  const FLOW_RUN_CAP = 200;
+  const riyadhHour = () => Number(new Date(Date.now() + 3 * 3600_000).toISOString().slice(11, 13));
+
+  async function flowBaseline(flow) {
+    const seg = segById[flow.segment];
+    if (!seg) return 0;
+    const m = (await customerRows()).filter(seg.test).map((x) => x.pn);
+    await pool.query("DELETE FROM cms_flow_members WHERE flow_id=$1", [flow.id]);
+    if (m.length) {
+      await pool.query(
+        `INSERT INTO cms_flow_members(flow_id, phone_norm) SELECT $1, p FROM unnest($2::text[]) p ON CONFLICT DO NOTHING`,
+        [flow.id, m]);
+    }
+    return m.length;
+  }
+
+  async function runFlow(flow, cfg) {
+    const seg = segById[flow.segment];
+    if (!seg) return;
+    const rows = (await customerRows()).filter(seg.test);
+    const now = new Set(rows.map((x) => x.pn));
+    const seen = (await pool.query("SELECT phone_norm FROM cms_flow_members WHERE flow_id=$1", [flow.id])).rows.map((r) => r.phone_norm);
+    const seenSet = new Set(seen);
+    const left = seen.filter((p) => !now.has(p));
+    if (left.length) await pool.query("DELETE FROM cms_flow_members WHERE flow_id=$1 AND phone_norm = ANY($2)", [flow.id, left]);
+    const entrants = rows.filter((x) => !seenSet.has(x.pn));
+    if (!entrants.length) return;
+    // بنسجّلهم دخلوا حتى لو مش هنقدر نوصلهم — عشان مانعيدش كل ساعة
+    await pool.query(
+      `INSERT INTO cms_flow_members(flow_id, phone_norm) SELECT $1, p FROM unnest($2::text[]) p ON CONFLICT DO NOTHING`,
+      [flow.id, entrants.map((x) => x.pn)]);
+    const recent = new Set((await pool.query(
+      `SELECT DISTINCT phone_norm FROM cms_flow_log WHERE phone_norm = ANY($1) AND sent_at > NOW() - ($2 || ' days')::interval`,
+      [entrants.map((x) => x.pn), String(FLOW_GAP_DAYS)])).rows.map((r) => r.phone_norm));
+    let targets = entrants.filter((x) => !recent.has(x.pn));
+    if (flow.channel === "push") targets = targets.filter((x) => x.push);
+    else {
+      if (cfg.smsEnabled !== true) return;
+      const codes = await optoutCodes(targets.map((x) => x.pn));
+      targets = targets.filter((x) => !codes.get(x.pn)?.opted_out_at).map((x) => ({ ...x, code: codes.get(x.pn)?.optout_code }));
+      const room = Math.max(0, Number(cfg.dailySmsCap || 0) - (await smsToday()));
+      targets = targets.slice(0, room);
+    }
+    targets = targets.slice(0, FLOW_RUN_CAP);
+    let sent = 0;
+    const url = flow.coupon ? `${STORE_PUBLIC()}/?c=${encodeURIComponent(flow.coupon)}` : STORE_PUBLIC();
+    for (const p of targets) {
+      try {
+        let ok = false;
+        if (flow.channel === "sms") { await sendMarketingSms(p.pn, smsBody(flow, p)); ok = true; }
+        else ok = await notify()?.sendToAudience({ phoneNorm: p.pn, title: "فريش كاتس 🍔",
+          body: renderMsg(flow.message, { name: p.name, coupon: flow.coupon }), url });
+        if (ok) {
+          sent++;
+          await pool.query("INSERT INTO cms_flow_log(flow_id, phone_norm) VALUES ($1,$2)", [flow.id, p.pn]);
+        }
+      } catch (e) { console.error(`[cms] flow ${flow.id} → ${p.pn.slice(-4)}:`, e.message); }
+    }
+    await pool.query("UPDATE cms_flows SET sent_total = sent_total + $2, last_run_at = NOW() WHERE id=$1", [flow.id, sent]);
+    if (sent) console.log(`[cms] flow ${flow.id} (${flow.segment}/${flow.channel}) → ${sent} new entrant(s)`);
+  }
+
+  async function flowsTick() {
+    const h = riyadhHour();
+    if (h < 12 || h >= 22) return;
+    const flows = (await pool.query("SELECT * FROM cms_flows WHERE active")).rows;
+    if (!flows.length) return;
+    segCache = { at: 0, rows: null }; // أعضاء طازة كل دورة
+    const cfg = await campaignCfg();
+    for (const f of flows) await runFlow(f, cfg).catch((e) => console.error(`[cms] flow ${f.id}:`, e.message));
+  }
+  setInterval(() => flowsTick().catch((e) => console.error("[cms] flows:", e.message)), 60 * 60_000);
+
+  function flowBody(b) {
+    return {
+      name: clip(b.name, 80), segment: segById[b.segment] ? b.segment : null,
+      channel: b.channel === "sms" ? "sms" : "push", message: clip(b.message, 600),
+      coupon: clip(String(b.coupon || "").toUpperCase(), 40),
+    };
+  }
+
+  app.get("/api/cms/flows", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    const rows = (await pool.query(
+      `SELECT f.*, (SELECT count(*)::int FROM cms_flow_members m WHERE m.flow_id = f.id) AS tracked
+         FROM cms_flows f ORDER BY f.created_at DESC`)).rows;
+    return c.json({ ok: true, flows: rows, quietHours: "22:00–12:00", gapDays: FLOW_GAP_DAYS });
+  });
+  app.post("/api/cms/flows", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    let b = {};
+    try { b = await c.req.json(); } catch { return bad(c, "bad json"); }
+    const x = flowBody(b);
+    if (!x.name || !x.segment || !x.message) return bad(c, "name_segment_message_required");
+    const r = await pool.query(
+      `INSERT INTO cms_flows(name, segment, channel, message, coupon, created_by)
+       VALUES ($1,$2,$3,$4,$5,$6) RETURNING *`, [x.name, x.segment, x.channel, x.message, x.coupon, await who(c)]);
+    return c.json({ ok: true, flow: r.rows[0] });
+  });
+  app.put("/api/cms/flows/:id", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    const id = Number(c.req.param("id"));
+    let b = {};
+    try { b = await c.req.json(); } catch { return bad(c, "bad json"); }
+    const cur = (await pool.query("SELECT * FROM cms_flows WHERE id=$1", [id])).rows[0];
+    if (!cur) return bad(c, "not_found", 404);
+    if (Object.keys(b).length === 1 && typeof b.active === "boolean") {
+      if (b.active && !cur.active) {
+        const n = await flowBaseline(cur); // الموجودين دلوقتي = نقطة البداية، من غير إرسال
+        await pool.query("UPDATE cms_flows SET active=TRUE WHERE id=$1", [id]);
+        return c.json({ ok: true, active: true, baseline: n });
+      }
+      await pool.query("UPDATE cms_flows SET active=$2 WHERE id=$1", [id, b.active]);
+      return c.json({ ok: true, active: b.active });
+    }
+    const x = flowBody(b);
+    if (!x.name || !x.segment || !x.message) return bad(c, "name_segment_message_required");
+    const r = await pool.query(
+      `UPDATE cms_flows SET name=$2, segment=$3, channel=$4, message=$5, coupon=$6 WHERE id=$1 RETURNING *`,
+      [id, x.name, x.segment, x.channel, x.message, x.coupon]);
+    // الشريحة اتغيّرت وهي شغّالة → نقطة بداية جديدة عشان مانبعتش لكل أعضاء الشريحة الجديدة
+    if (cur.active && cur.segment !== x.segment) await flowBaseline(r.rows[0]);
+    return c.json({ ok: true, flow: r.rows[0] });
+  });
+  app.delete("/api/cms/flows/:id", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    const id = Number(c.req.param("id"));
+    await pool.query("DELETE FROM cms_flow_members WHERE flow_id=$1", [id]);
+    await pool.query("DELETE FROM cms_flows WHERE id=$1", [id]);
+    return c.json({ ok: true });
   });
 
   console.log("[cms] routes ready");
