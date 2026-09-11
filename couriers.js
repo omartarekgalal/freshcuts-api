@@ -157,9 +157,9 @@ const flyingarrow = {
         locations: [
           {
             type: "pickup",
-            address: cfg.pickupAddress || "فريش كتس — جدة",
+            address: cfg.pickupAddress || "فريش كاتس — جدة",
             lat: cfg.storeLat, lng: cfg.storeLng,
-            contact_name: cfg.pickupContactName || "فريش كتس",
+            contact_name: cfg.pickupContactName || "فريش كاتس",
             contact_phone: e164(cfg.pickupContactPhone || ""),
           },
           {

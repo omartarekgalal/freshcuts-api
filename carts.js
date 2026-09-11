@@ -161,8 +161,8 @@ export function register(app, ctx, deps = {}) {
   const MSG = {
     push1: (n) => ({ title: "سلتك لسه مستنياك 🛒", body: `${n} صنف في سلتك — كمّل طلبك في دقيقة وهيوصلك سخن 🔥` }),
     sms1: (n, code) => code
-      ? `فريش كتس: سلتك فيها ${n} صنف 🛒 كمّل طلبك دلوقتي واستخدم كود ${code} وخصمك جاهز: freshcuts.sa`
-      : `فريش كتس: سلتك فيها ${n} صنف 🛒 كمّل طلبك ويوصلك سخن: freshcuts.sa`,
+      ? `فريش كاتس: سلتك فيها ${n} صنف 🛒 كمّل طلبك دلوقتي واستخدم كود ${code} وخصمك جاهز: freshcuts.sa`
+      : `فريش كاتس: سلتك فيها ${n} صنف 🛒 كمّل طلبك ويوصلك سخن: freshcuts.sa`,
   };
 
   async function runRecovery() {

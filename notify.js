@@ -31,16 +31,16 @@ const env = (k, d) => (process.env[k] || d || "").toString().trim();
 /* What we tell the customer at each stage. Stages missing here are internal
    and never notify (pending_payment, expired, paid_pos_failed...). */
 const MESSAGES = {
-  pos_created: (o) => `فريش كتس: استلمنا طلبك ${o.order_no} وتم الدفع بنجاح ✅`,
-  accepted: (o) => `فريش كتس: المطعم بدأ تجهيز طلبك ${o.order_no} 👨‍🍳`,
-  courier_assigned: () => `فريش كتس: المندوب في الطريق لاستلام طلبك 🛵`,
-  on_the_way: () => `فريش كتس: طلبك في الطريق إليك الآن 🛵💨`,
-  delivered: () => `فريش كتس: تم توصيل طلبك — بالهنا والشفا 🌟`,
-  rejected_refunded: (o) => `فريش كتس: نعتذر، تعذّر تنفيذ طلبك ${o.order_no} وتم استرجاع المبلغ كاملاً لبطاقتك 💳`,
+  pos_created: (o) => `فريش كاتس: استلمنا طلبك ${o.order_no} وتم الدفع بنجاح ✅`,
+  accepted: (o) => `فريش كاتس: المطعم بدأ تجهيز طلبك ${o.order_no} 👨‍🍳`,
+  courier_assigned: () => `فريش كاتس: المندوب في الطريق لاستلام طلبك 🛵`,
+  on_the_way: () => `فريش كاتس: طلبك في الطريق إليك الآن 🛵💨`,
+  delivered: () => `فريش كاتس: تم توصيل طلبك — بالهنا والشفا 🌟`,
+  rejected_refunded: (o) => `فريش كاتس: نعتذر، تعذّر تنفيذ طلبك ${o.order_no} وتم استرجاع المبلغ كاملاً لبطاقتك 💳`,
   /* الاسترجاع اتأخر — ما نقولش «تم» وهو ما تمّش. الرسالة دي بتعترف
      بالمشكلة وبتوعد بمتابعة، والوعد ده مدعوم بإنذار درجة 3 في اللوحة
      بيفضل ولّع لحد ما حد يسترجع فعلاً. */
-  refund_failed: (o) => `فريش كتس: نعتذر عن طلبك ${o.order_no}. استرجاع المبلغ جارٍ وفريقنا بيتابعه — هنتواصل معك للتأكيد 🙏`,
+  refund_failed: (o) => `فريش كاتس: نعتذر عن طلبك ${o.order_no}. استرجاع المبلغ جارٍ وفريقنا بيتابعه — هنتواصل معك للتأكيد 🙏`,
 };
 const DEFAULT_SMS_STAGES = ["pos_created", "rejected_refunded", "refund_failed"];
 
@@ -149,7 +149,7 @@ export function register(app, ctx) {
         [order.phone_norm, order.order_no])).rows;
       if (subs.length) {
         sendPushTo(subs, {
-          title: "فريش كتس 🍔", body: text,
+          title: "فريش كاتس 🍔", body: text,
           url: `${env("STOREFRONT_PUBLIC_URL", "https://freshcuts.sa")}/track/${order.order_no}`,
         }).catch(() => {});
       }
@@ -226,7 +226,7 @@ export function register(app, ctx) {
     const err = await requireAdmin(c); if (err) return err;
     let b = {};
     try { b = await c.req.json(); } catch { return c.json({ ok: false, error: "bad json" }, 400); }
-    const text = b.text || "رسالة تجريبية من فريش كتس ✅";
+    const text = b.text || "رسالة تجريبية من فريش كاتس ✅";
     try {
       if (b.channel === "sms") {
         const phone = normPhone(b.phone);
@@ -239,7 +239,7 @@ export function register(app, ctx) {
       } else {
         const subs = (await pool.query(
           "SELECT id, sub FROM push_subs WHERE NOT disabled ORDER BY id DESC LIMIT 5")).rows;
-        const sent = await sendPushTo(subs, { title: "فريش كتس 🍔", body: text, url: env("STOREFRONT_PUBLIC_URL", "https://freshcuts.sa") });
+        const sent = await sendPushTo(subs, { title: "فريش كاتس 🍔", body: text, url: env("STOREFRONT_PUBLIC_URL", "https://freshcuts.sa") });
         return c.json({ ok: true, sent, of: subs.length });
       }
       return c.json({ ok: true });

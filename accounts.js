@@ -254,7 +254,7 @@ export function register(app, ctx) {
         const origin = env("STOREFRONT_PUBLIC_URL", "https://freshcuts.sa")
           .replace(/^https?:\/\//, "").replace(/\/$/, "");
         await sendSms({ phoneNorm,
-          body: `رمز الدخول لفريش كتس: ${code}\nصالح ${OTP_TTL_MIN} دقائق.\n\n@${origin} #${code}` });
+          body: `رمز الدخول لفريش كاتس: ${code}\nصالح ${OTP_TTL_MIN} دقائق.\n\n@${origin} #${code}` });
         _smsHour.n++; // اصرف من ميزانية الساعة بعد إرسال فعلي
         return c.json({ ok: true, sent: "sms" });
       } catch (e) {

@@ -432,6 +432,13 @@ export function register(app, ctx, deps = {}) {
       // بيطلب صنف TabSense الحقيقي بتاعه — المطبخ يشوف الوزن الصح دايماً.
       variantGroups: cat.variantGroups || [],
       allowCash: (s.shop || {}).allowCash === true, // Omar 2026-08-12: online-only by default
+      // نصوص وروابط صفحات الـSEO في المتجر (/menu, /about, /faq, الرئيسية):
+      // {home:{h1,intro,h1_en,intro_en,showIntro}, rating, links:{maps,review,
+      //  instagram,tiktok,snapchat,facebook,hungerstation,keeta,ninja},
+      //  menu:{intro,intro_en}, about:{text,text_en}, faq:[{q,a,q_en,a_en}],
+      //  categories:{slug:{title,h1,meta,intro,…_en}}} — أي حقل فاضي بياخد
+      // الافتراضي المكتوب في المتجر (storefront/seo.py).
+      seo: sf.seo || {},
     });
   });
 
@@ -919,9 +926,9 @@ export function register(app, ctx, deps = {}) {
         provider: (settings.delivery || {}).manualProviderLabel || "أجلك (4U)",
         dashboardUrl: (settings.delivery || {}).manualDashboardUrl || null,
         pickup: {
-          name: (settings.delivery || {}).pickupContactName || "فريش كتس",
+          name: (settings.delivery || {}).pickupContactName || "فريش كاتس",
           phone: msisdn((settings.delivery || {}).pickupContactPhone || ""),
-          address: (settings.delivery || {}).pickupAddress || "فريش كتس — حي السلامة، دوار رامي، جدة",
+          address: (settings.delivery || {}).pickupAddress || "فريش كاتس — حي السلامة، دوار رامي، جدة",
           lat: Number(process.env.TABSENSE_STORE_LAT || 21.5881404),
           lng: Number(process.env.TABSENSE_STORE_LNG || 39.1521236),
         },
@@ -950,7 +957,7 @@ export function register(app, ctx, deps = {}) {
              • الإحداثيات «lat,lng» — نسخة واحدة تتلزق في خانة الموقع
            كل واحدة فيهم حقل مستقل عشان زرار «انسخ» ينسخ الحاجة لوحدها. */
         handoff: r.option !== "delivery" ? null : {
-          name: (r.customer || {}).name || "عميل فريش كتس",
+          name: (r.customer || {}).name || "عميل فريش كاتس",
           phone: msisdn(r.phone_norm),                    // 9665XXXXXXXX
           phoneLocal: r.phone_norm ? "0" + r.phone_norm : null,
           address: readableAddress(r.address || {}),
@@ -1337,7 +1344,7 @@ export function register(app, ctx, deps = {}) {
 
       if (v.level >= 2) {
         console.error(`[shop] SLA ${v.level} — ${row.order_no}: ${v.message}`);
-        const text = `فريش كتس ⚠️ الطلب ${row.order_no}: ${v.message}`;
+        const text = `فريش كاتس ⚠️ الطلب ${row.order_no}: ${v.message}`;
         for (const p of managers) {
           if (notify?.sendSmsTo) notify.sendSmsTo(p, text).catch((e) =>
             console.error("[shop] SLA sms failed:", e.message));
