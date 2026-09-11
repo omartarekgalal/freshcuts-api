@@ -35,7 +35,8 @@ const MESSAGES = {
   accepted: (o) => `فريش كاتس: المطعم بدأ تجهيز طلبك ${o.order_no} 👨‍🍳`,
   courier_assigned: () => `فريش كاتس: رتّبنا لك مندوب توصيل 🛵`,
   on_the_way: () => `فريش كاتس: طلبك في الطريق إليك الآن 🛵💨`,
-  delivered: () => `فريش كاتس: تم توصيل طلبك — بالهنا والشفا 🌟`,
+  // Google Business review link (settings.storefront.seo.links.review overrides the env/default).
+  delivered: () => `فريش كاتس: تم توصيل طلبك — بالهنا والشفا 🌟 عجبك الأكل؟ قيّمنا على جوجل: ${env("GOOGLE_REVIEW_URL", "https://g.page/r/CSG0gPAqlvHMEBM/review")}`,
   rejected_refunded: (o) => `فريش كاتس: نعتذر، تعذّر تنفيذ طلبك ${o.order_no} وتم استرجاع المبلغ كاملاً لبطاقتك 💳`,
   /* الاسترجاع اتأخر — ما نقولش «تم» وهو ما تمّش. الرسالة دي بتعترف
      بالمشكلة وبتوعد بمتابعة، والوعد ده مدعوم بإنذار درجة 3 في اللوحة
@@ -148,10 +149,12 @@ export function register(app, ctx) {
           WHERE NOT disabled AND (phone_norm=$1 OR order_no=$2) LIMIT 20`,
         [order.phone_norm, order.order_no])).rows;
       if (subs.length) {
-        sendPushTo(subs, {
-          title: "فريش كاتس 🍔", body: text,
-          url: `${env("STOREFRONT_PUBLIC_URL", "https://freshcuts.sa")}/track/${order.order_no}`,
-        }).catch(() => {});
+        // بعد التوصيل الضغطة تروح لصفحة التقييم على جوجل مباشرة — أقصر طريق
+        // للمراجعة وهي أهم إشارة لترتيب الخرائط. باقي المراحل تفتح التتبع.
+        const url = status === "delivered"
+          ? env("GOOGLE_REVIEW_URL", "https://g.page/r/CSG0gPAqlvHMEBM/review")
+          : `${env("STOREFRONT_PUBLIC_URL", "https://freshcuts.sa")}/track/${order.order_no}`;
+        sendPushTo(subs, { title: "فريش كاتس 🍔", body: text, url }).catch(() => {});
       }
     }
 
