@@ -3051,7 +3051,7 @@ const tspApi = tspartner.register(app, moduleCtx);
 // اللي فوق دي بنفسها جوّه العملية (app.request) بدل ما يكتب استعلام تاني
 // لنفس الرقم. فلازم يكونوا كلهم اتسجّلوا قبله.
 // لوحة المتجر: فريق وأدوار وصلاحيات وسجل نشاط — لازم قبل systemcheck.
-cms.register(app, moduleCtx);
+cms.register(app, moduleCtx, { notify: () => notifyApi });
 systemcheck.register(app, moduleCtx, { tsState: () => tsState });
 console.log("[analytics] routes ready");
 console.log(`[ai] routes ready (provider: ${process.env.ANTHROPIC_API_KEY ? "anthropic" : process.env.LITELLM_KEY ? "litellm" : "NOT CONFIGURED"})`);

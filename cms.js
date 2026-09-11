@@ -24,6 +24,8 @@
 
 import crypto from "node:crypto";
 import { promisify } from "node:util";
+// نفس قواعد الهوية والقناة اللي المؤشرات بتستخدمها — مفيش نسخة تانية
+import { IDENT_SQL, SALES_ONLY, deliverySql } from "./analytics.js";
 
 const scryptAsync = promisify(crypto.scrypt);
 const SESSION_DAYS = 30;
@@ -114,8 +116,8 @@ function loginLimited(ip) {
   return slot.n > 10;
 }
 
-export function register(app, ctx) {
-  const { pool, requireAdmin, getSettingsData, jb } = ctx;
+export function register(app, ctx, deps = {}) {
+  const { pool, requireAdmin, getSettingsData, jb, DEFAULT_DELIVERY_APPS } = ctx;
 
   /* جلسات في الذاكرة: token_hash → { user, exp }. مليانة وقت الإقلاع بكل
      الجلسات السارية، فـ isOwnerSync بتشتغل حتى بعد أي نشر/إعادة تشغيل. */
@@ -194,6 +196,42 @@ export function register(app, ctx) {
         last_click_at TIMESTAMPTZ,
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
         created_by TEXT
+      );
+      -- الحملات: رسالة لشريحة (إشعار مجاني أو SMS تسويقي)
+      CREATE TABLE IF NOT EXISTS cms_campaigns (
+        id SERIAL PRIMARY KEY,
+        name TEXT NOT NULL,
+        segment TEXT NOT NULL,
+        channel TEXT NOT NULL DEFAULT 'push',
+        message TEXT NOT NULL,
+        coupon TEXT,
+        status TEXT NOT NULL DEFAULT 'draft',
+        audience INT,
+        sent INT NOT NULL DEFAULT 0,
+        failed INT NOT NULL DEFAULT 0,
+        created_by TEXT,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        sent_at TIMESTAMPTZ,
+        sent_by TEXT,
+        last_error TEXT
+      );
+      -- كود إلغاء الاشتراك لكل رقم (شرط هيئة الاتصالات لرسائل الإعلانات)
+      CREATE TABLE IF NOT EXISTS cms_contacts (
+        phone_norm TEXT PRIMARY KEY,
+        optout_code TEXT UNIQUE NOT NULL,
+        opted_out_at TIMESTAMPTZ
+      );
+      CREATE TABLE IF NOT EXISTS cms_sms_daily (
+        day DATE PRIMARY KEY,
+        n INT NOT NULL DEFAULT 0
+      );
+      -- دفتر مكافآت الولاء: مكافأة واحدة لكل (رقم، رقم المكافأة) — مفيش تكرار
+      CREATE TABLE IF NOT EXISTS cms_loyalty (
+        phone_norm TEXT NOT NULL,
+        reward_no INT NOT NULL,
+        coupon TEXT NOT NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        PRIMARY KEY (phone_norm, reward_no)
       );
     `);
     const r = await pool.query(
@@ -743,6 +781,423 @@ export function register(app, ctx) {
     if (l.target_type === "product" && l.target_id) q.set("p", l.target_id);
     q.set("fc_link", l.slug);
     return c.json({ ok: true, url: "/?" + q.toString() });
+  });
+
+  /* ═══ المرحلة ٣: الشرائح + الحملات + الولاء ═══════════════════════════ */
+  const STORE_PUBLIC = () => (process.env.STOREFRONT_PUBLIC_URL || "https://freshcuts.sa").replace(/\/+$/, "");
+  const notify = () => (typeof deps.notify === "function" ? deps.notify() : null);
+  const PHONE_RE = "^5[0-9]{8}$";
+  const PAID_ONLINE = "status NOT IN ('pending_payment','expired','rejected_refunded','refund_failed','paid_pos_failed')";
+
+  /* عميل واحد = رقم جوال واحد، محسوب من كل الطلبات (نفس IDENT_SQL بتاع
+     المؤشرات) + عملاء الموقع اللي طلباتهم لسه مانزلتش نقطة البيع. */
+  let segCache = { at: 0, rows: null };
+  async function customerRows() {
+    if (segCache.rows && Date.now() - segCache.at < 5 * 60_000) return segCache.rows;
+    const s = await getSettingsData();
+    const apps = (Array.isArray(s?.deliveryAppMethods) && s.deliveryAppMethods.length
+      ? s.deliveryAppMethods : (DEFAULT_DELIVERY_APPS || [])).map((x) => String(x).toLowerCase());
+    const [pos, online, push, names] = await Promise.all([
+      pool.query(`
+        WITH x AS (
+          SELECT ${IDENT_SQL} AS pn, o.total, o.calendar_day AS day, NULLIF(tc.name, '') AS name,
+                 ${deliverySql("$1::text[]")} AS is_app
+            FROM ts_orders o
+            LEFT JOIN order_sources s ON s.order_id = o.order_id
+            LEFT JOIN ts_customers tc ON tc.customer_id = o.customer_id
+           WHERE ${SALES_ONLY}
+        )
+        SELECT pn, count(*)::int AS orders, COALESCE(sum(total), 0)::float AS spend,
+               max(day) AS last_day, max(name) AS name, count(*) FILTER (WHERE is_app)::int AS app_orders
+          FROM x WHERE pn ~ '${PHONE_RE}' GROUP BY pn`, [apps]),
+      pool.query(`SELECT phone_norm AS pn, count(*)::int AS n, COALESCE(sum(total), 0)::float AS spend,
+                         max(created_at)::date AS last_day
+                    FROM shop_orders WHERE ${PAID_ONLINE} AND phone_norm ~ '${PHONE_RE}' GROUP BY 1`),
+      pool.query("SELECT DISTINCT phone_norm AS pn FROM push_subs WHERE NOT disabled AND phone_norm IS NOT NULL"),
+      pool.query("SELECT phone_norm AS pn, NULLIF(name, '') AS name FROM acct_customers"),
+    ]);
+    const onl = new Map(online.rows.map((r) => [r.pn, r]));
+    const pushSet = new Set(push.rows.map((r) => r.pn));
+    const nameOf = new Map(names.rows.map((r) => [r.pn, r.name]));
+    const today = new Date(new Date().toISOString().slice(0, 10));
+    const daysSince = (d) => (d ? Math.max(0, Math.round((today - new Date(d)) / 86400000)) : 9999);
+    const rows = pos.rows.map((r) => {
+      const o = onl.get(r.pn);
+      const last = o && o.last_day > r.last_day ? o.last_day : r.last_day;
+      return { pn: r.pn, name: r.name || nameOf.get(r.pn) || "", orders: r.orders, spend: r.spend,
+        appOrders: r.app_orders, online: o ? o.n : 0, push: pushSet.has(r.pn), lastDay: last, daysSince: daysSince(last) };
+    });
+    // عملاء طلبوا من الموقع بس ولسه طلبهم مادخلش سجل نقطة البيع
+    const seen = new Set(rows.map((r) => r.pn));
+    for (const o of online.rows) {
+      if (seen.has(o.pn)) continue;
+      rows.push({ pn: o.pn, name: nameOf.get(o.pn) || "", orders: o.n, spend: o.spend, appOrders: 0,
+        online: o.n, push: pushSet.has(o.pn), lastDay: o.last_day, daysSince: daysSince(o.last_day) });
+    }
+    // VIP = أعلى ٢٠٪ إنفاق (نفس نسبة المؤشرات)
+    const spends = rows.map((r) => r.spend).sort((a, b) => a - b);
+    const cut = spends.length ? spends[Math.floor(spends.length * 0.8)] : Infinity;
+    for (const r of rows) r.vip = r.spend >= cut && r.spend > 0;
+    rows.sort((a, b) => a.daysSince - b.daysSince);
+    segCache = { at: Date.now(), rows };
+    return rows;
+  }
+
+  /* الشرائح عدسات متداخلة عن قصد. أول اتنين هما «الفرص الذهبية»: عملاء
+     بيطلبوا فعلاً بس مش من متجرنا — تحويلهم أرخص من أي إعلان. ٢١ يوم = نفس
+     حد «متوقف» في المؤشرات. */
+  const SEGMENTS = [
+    { id: "never_online", icon: "🎯", label: "نشطين ومجربوش الموقع", hint: "طلبوا خلال ٦٠ يوم (صالة/تطبيقات) ولسه ماطلبوش من متجرنا — أرخص تحويل ممكن",
+      test: (c) => c.online === 0 && c.daysSince <= 60 },
+    { id: "apps_only", icon: "🛵", label: "عملاء التطبيقات بس", hint: "كل طلباتهم من كيتا/هنقر — كل طلب بيدفع عمولة ~٤٠٪. حوّلهم لمتجرك بكوبون",
+      test: (c) => c.orders > 0 && c.appOrders === c.orders && c.online === 0 },
+    { id: "new", icon: "🌱", label: "جداد", hint: "أول طلب خلال آخر ١٤ يوم", test: (c) => c.orders === 1 && c.daysSince <= 14 },
+    { id: "one_timer", icon: "1️⃣", label: "جربوا مرة ومرجعوش", hint: "طلب واحد من ١٥ لـ٦٠ يوم — محتاجين دفعة", test: (c) => c.orders === 1 && c.daysSince >= 15 && c.daysSince <= 60 },
+    { id: "loyal", icon: "💎", label: "مخلصين", hint: "٣ طلبات أو أكتر وآخر طلب خلال ٢١ يوم", test: (c) => c.orders >= 3 && c.daysSince <= 21 },
+    { id: "vip", icon: "⭐", label: "VIP", hint: "أعلى ٢٠٪ إنفاق ولسه نشطين (٤٥ يوم)", test: (c) => c.vip && c.daysSince <= 45 },
+    { id: "at_risk", icon: "⚠️", label: "في خطر", hint: "كانوا بيرجعوا وبقالهم ٢٢–٤٥ يوم", test: (c) => c.orders >= 2 && c.daysSince >= 22 && c.daysSince <= 45 },
+    { id: "dormant", icon: "😴", label: "نايمين", hint: "آخر طلب من ٤٦ لـ٩٠ يوم", test: (c) => c.daysSince >= 46 && c.daysSince <= 90 },
+    { id: "lost", icon: "👻", label: "ضايعين", hint: "أكتر من ٩٠ يوم من غير طلب", test: (c) => c.daysSince > 90 },
+    { id: "online_buyers", icon: "🛒", label: "عملاء الموقع", hint: "طلبوا من متجرنا مرة على الأقل", test: (c) => c.online > 0 },
+  ];
+  const segById = Object.fromEntries(SEGMENTS.map((s) => [s.id, s]));
+  const pub = (s) => ({ id: s.id, icon: s.icon, label: s.label, hint: s.hint });
+
+  app.get("/api/cms/segments", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    const rows = await customerRows();
+    return c.json({
+      ok: true, asOf: new Date(segCache.at).toISOString(), customers: rows.length,
+      segments: SEGMENTS.map((s) => {
+        const m = rows.filter(s.test);
+        return { ...pub(s), count: m.length, reachablePush: m.filter((x) => x.push).length };
+      }),
+    });
+  });
+
+  app.get("/api/cms/segments/:id", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    const s = segById[c.req.param("id")];
+    if (!s) return c.json({ ok: false, error: "not_found" }, 404);
+    const limit = Math.min(500, Math.max(1, Number(c.req.query("limit")) || 100));
+    const offset = Math.max(0, Number(c.req.query("offset")) || 0);
+    const m = (await customerRows()).filter(s.test);
+    return c.json({
+      ok: true, ...pub(s), total: m.length,
+      members: m.slice(offset, offset + limit).map((x) => ({
+        phone: x.pn, name: x.name, orders: x.orders, spend: Math.round(x.spend), lastDay: x.lastDay,
+        daysSince: x.daysSince, appOrders: x.appOrders, onlineOrders: x.online, vip: x.vip, push: x.push })),
+    });
+  });
+
+  /* ── الحملات ── */
+  const CAMP_DEFAULT = { smsEnabled: false, dailySmsCap: 1000 };
+  async function campaignCfg() {
+    const s = await getSettingsData();
+    return { ...CAMP_DEFAULT, ...(((s || {}).cms || {}).campaigns || {}) };
+  }
+  const smsPartsOf = (t) => { const n = [...String(t || "")].length; return n <= 70 ? 1 : Math.ceil(n / 67); };
+  async function smsToday() {
+    const r = await pool.query("SELECT n FROM cms_sms_daily WHERE day = CURRENT_DATE");
+    return r.rows[0]?.n || 0;
+  }
+  const bumpSms = (parts) => pool.query(
+    `INSERT INTO cms_sms_daily(day, n) VALUES (CURRENT_DATE, $1)
+     ON CONFLICT (day) DO UPDATE SET n = cms_sms_daily.n + $1`, [parts]).catch(() => {});
+  const renderMsg = (tpl, { name, coupon }) => String(tpl || "")
+    .replaceAll("{name}", String(name || "").split(/\s+/)[0] || "")
+    .replaceAll("{coupon}", coupon || "")
+    .replace(/[ \t]{2,}/g, " ").trim();
+
+  async function optoutCodes(phones) {
+    if (!phones.length) return new Map();
+    await pool.query(
+      `INSERT INTO cms_contacts(phone_norm, optout_code)
+       SELECT p, substr(md5(random()::text || p || clock_timestamp()::text), 1, 10) FROM unnest($1::text[]) p
+       ON CONFLICT (phone_norm) DO NOTHING`, [phones]);
+    const r = await pool.query(
+      "SELECT phone_norm, optout_code, opted_out_at FROM cms_contacts WHERE phone_norm = ANY($1)", [phones]);
+    return new Map(r.rows.map((x) => [x.phone_norm, x]));
+  }
+
+  // الجمهور الفعلي: إشعار = اللي مفعّل إشعارات بس، SMS = الكل ناقص اللي ألغى
+  async function audienceFor(camp) {
+    const s = segById[camp.segment];
+    if (!s) return { list: [], segmentSize: 0, optedOut: 0 };
+    const m = (await customerRows()).filter(s.test);
+    if (camp.channel === "push") return { list: m.filter((x) => x.push), segmentSize: m.length, optedOut: 0 };
+    const codes = await optoutCodes(m.map((x) => x.pn));
+    const list = m.filter((x) => !codes.get(x.pn)?.opted_out_at).map((x) => ({ ...x, code: codes.get(x.pn)?.optout_code }));
+    return { list, segmentSize: m.length, optedOut: m.length - list.length };
+  }
+
+  const smsBody = (camp, person) =>
+    `${renderMsg(camp.message, { name: person.name, coupon: camp.coupon })}\nإيقاف: ${STORE_PUBLIC().replace(/^https?:\/\//, "")}/u/${person.code}`;
+
+  async function sendMarketingSms(pn, body) {
+    const key = process.env.TAQNYAT_API_KEY, sender = process.env.TAQNYAT_SENDER_AD;
+    if (!key || !sender) throw Object.assign(new Error("ad sender not configured"), { code: "sms_failed" });
+    const resp = await fetch("https://api.taqnyat.sa/v1/messages", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ recipients: [`966${pn}`], body, sender }),
+      signal: AbortSignal.timeout(15000),
+    });
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok || (data.statusCode && data.statusCode >= 400)) {
+      throw Object.assign(new Error(`Taqnyat: ${data.message || resp.status}`), { code: "sms_failed" });
+    }
+    bumpSms(smsPartsOf(body));
+    return data;
+  }
+
+  async function couponOk(code) {
+    if (!code) return true;
+    const r = await pool.query("SELECT 1 FROM shop_coupons WHERE upper(code)=upper($1) AND active", [code]);
+    return r.rowCount > 0;
+  }
+  const bad = (c, error, status = 400) => c.json({ ok: false, error }, status);
+  function campBody(b) {
+    return {
+      name: clip(b.name, 80), segment: segById[b.segment] ? b.segment : null,
+      channel: b.channel === "sms" ? "sms" : "push", message: clip(b.message, 600),
+      coupon: clip(String(b.coupon || "").toUpperCase(), 40),
+    };
+  }
+
+  app.get("/api/cms/campaigns", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    const [rows, cfg, today] = await Promise.all([
+      pool.query("SELECT * FROM cms_campaigns ORDER BY created_at DESC LIMIT 100"), campaignCfg(), smsToday()]);
+    return c.json({ ok: true, campaigns: rows.rows, smsEnabled: cfg.smsEnabled === true,
+      dailySmsCap: cfg.dailySmsCap, smsSentToday: today, smsSender: process.env.TAQNYAT_SENDER_AD || null });
+  });
+
+  app.post("/api/cms/campaigns", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    let b = {};
+    try { b = await c.req.json(); } catch { return bad(c, "bad json"); }
+    const x = campBody(b);
+    if (!x.name || !x.segment || !x.message) return bad(c, "name_segment_message_required");
+    const r = await pool.query(
+      `INSERT INTO cms_campaigns(name, segment, channel, message, coupon, created_by)
+       VALUES ($1,$2,$3,$4,$5,$6) RETURNING *`, [x.name, x.segment, x.channel, x.message, x.coupon, await who(c)]);
+    return c.json({ ok: true, campaign: r.rows[0] });
+  });
+
+  app.put("/api/cms/campaigns/:id", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    let b = {};
+    try { b = await c.req.json(); } catch { return bad(c, "bad json"); }
+    const x = campBody(b);
+    if (!x.name || !x.segment || !x.message) return bad(c, "name_segment_message_required");
+    const r = await pool.query(
+      `UPDATE cms_campaigns SET name=$2, segment=$3, channel=$4, message=$5, coupon=$6
+        WHERE id=$1 AND status='draft' RETURNING *`,
+      [Number(c.req.param("id")), x.name, x.segment, x.channel, x.message, x.coupon]);
+    if (!r.rowCount) return bad(c, "already_sent", 409);
+    return c.json({ ok: true, campaign: r.rows[0] });
+  });
+
+  app.delete("/api/cms/campaigns/:id", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    const r = await pool.query("DELETE FROM cms_campaigns WHERE id=$1 AND status='draft'", [Number(c.req.param("id"))]);
+    if (!r.rowCount) return bad(c, "already_sent", 409);
+    return c.json({ ok: true });
+  });
+
+  app.get("/api/cms/campaigns/:id/preview", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    const camp = (await pool.query("SELECT * FROM cms_campaigns WHERE id=$1", [Number(c.req.param("id"))])).rows[0];
+    if (!camp) return bad(c, "not_found", 404);
+    const aud = await audienceFor(camp);
+    const first = aud.list[0];
+    const sample = first
+      ? (camp.channel === "sms" ? smsBody(camp, first) : renderMsg(camp.message, { name: first.name, coupon: camp.coupon }))
+      : "";
+    const parts = camp.channel === "sms" ? smsPartsOf(sample || camp.message) : 0;
+    return c.json({ ok: true, audience: aud.list.length, segmentSize: aud.segmentSize, optedOut: aud.optedOut,
+      costEstimate: Math.round(aud.list.length * parts * 0.075 * 100) / 100, sampleBody: sample });
+  });
+
+  app.post("/api/cms/campaigns/:id/test", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    let b = {};
+    try { b = await c.req.json(); } catch { return bad(c, "bad json"); }
+    const pn = String(b.phone || "").replace(/\D/g, "").replace(/^966/, "").replace(/^0/, "");
+    if (!/^5\d{8}$/.test(pn)) return bad(c, "bad_phone");
+    const camp = (await pool.query("SELECT * FROM cms_campaigns WHERE id=$1", [Number(c.req.param("id"))])).rows[0];
+    if (!camp) return bad(c, "not_found", 404);
+    const person = { pn, name: "", code: (await optoutCodes([pn])).get(pn)?.optout_code };
+    try {
+      if (camp.channel === "sms") {
+        await sendMarketingSms(pn, "[تجربة] " + smsBody(camp, person));
+      } else {
+        const ok = await notify()?.sendToAudience({ phoneNorm: pn, title: "فريش كاتس 🍔 [تجربة]",
+          body: renderMsg(camp.message, { coupon: camp.coupon }), url: camp.coupon ? `${STORE_PUBLIC()}/?c=${camp.coupon}` : STORE_PUBLIC() });
+        if (!ok) return bad(c, "no_push_for_phone");
+      }
+    } catch (e) { return c.json({ ok: false, error: "sms_failed", message: e.message }, 502); }
+    return c.json({ ok: true, channel: camp.channel });
+  });
+
+  async function runSend(camp, list, actor) {
+    let sent = 0, failed = 0, lastError = null;
+    const url = camp.coupon ? `${STORE_PUBLIC()}/?c=${encodeURIComponent(camp.coupon)}` : STORE_PUBLIC();
+    const one = async (p) => {
+      try {
+        if (camp.channel === "sms") { await sendMarketingSms(p.pn, smsBody(camp, p)); sent++; }
+        else if (await notify()?.sendToAudience({ phoneNorm: p.pn, title: "فريش كاتس 🍔",
+          body: renderMsg(camp.message, { name: p.name, coupon: camp.coupon }), url })) sent++;
+        else failed++;
+      } catch (e) { failed++; lastError = e.message; }
+    };
+    // ٥ في نفس الوقت — تقنيات وخوادم الإشعارات مابتحبش الانفجار
+    for (let i = 0; i < list.length; i += 5) {
+      await Promise.all(list.slice(i, i + 5).map(one));
+      if (camp.channel === "sms") await new Promise((r) => setTimeout(r, 300));
+    }
+    await pool.query(
+      `UPDATE cms_campaigns SET status='sent', sent=$2, failed=$3, audience=$4, sent_at=NOW(), sent_by=$5, last_error=$6
+        WHERE id=$1`, [camp.id, sent, failed, list.length, actor, lastError]);
+    console.log(`[cms] campaign ${camp.id} (${camp.channel}) → sent ${sent}, failed ${failed}`);
+  }
+
+  app.post("/api/cms/campaigns/:id/send", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    let b = {};
+    try { b = await c.req.json(); } catch { return bad(c, "bad json"); }
+    const id = Number(c.req.param("id"));
+    // انتقال ذرّي من مسودة لـ«بتتبعت» — ضغطتين مايبعتوش مرتين
+    const r = await pool.query("UPDATE cms_campaigns SET status='sending' WHERE id=$1 AND status='draft' RETURNING *", [id]);
+    if (!r.rowCount) return bad(c, "already_sent", 409);
+    const camp = r.rows[0];
+    const revert = () => pool.query("UPDATE cms_campaigns SET status='draft' WHERE id=$1 AND status='sending'", [id]);
+    try {
+      const aud = await audienceFor(camp);
+      if (!aud.list.length) { await revert(); return bad(c, "empty_audience"); }
+      if (Number(b.confirm) !== aud.list.length) { await revert(); return bad(c, "confirm_mismatch"); }
+      if (!(await couponOk(camp.coupon))) { await revert(); return bad(c, "coupon_invalid"); }
+      if (camp.channel === "sms") {
+        const cfg = await campaignCfg();
+        if (cfg.smsEnabled !== true) { await revert(); return bad(c, "sms_disabled", 403); }
+        const parts = smsPartsOf(smsBody(camp, aud.list[0]));
+        if ((await smsToday()) + aud.list.length * parts > Number(cfg.dailySmsCap || 0)) { await revert(); return bad(c, "daily_cap"); }
+      }
+      const actor = await who(c);
+      setImmediate(() => runSend(camp, aud.list, actor).catch(async (e) => {
+        console.error(`[cms] campaign ${id} failed:`, e.message);
+        await pool.query("UPDATE cms_campaigns SET status='draft', last_error=$2 WHERE id=$1", [id, e.message]).catch(() => {});
+      }));
+      return c.json({ ok: true, queued: true, audience: aud.list.length });
+    } catch (e) { await revert(); throw e; }
+  });
+
+  // المالك بس (المسار مش تحت «customers» في خريطة الأقسام عن قصد): SMS بفلوس
+  app.put("/api/cms/campaign-settings", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    let b = {};
+    try { b = await c.req.json(); } catch { return bad(c, "bad json"); }
+    const val = { smsEnabled: b.smsEnabled === true, dailySmsCap: Math.min(20000, Math.max(0, Number(b.dailySmsCap) || 0)) };
+    await pool.query(
+      `UPDATE settings SET data = jsonb_set(
+         CASE WHEN data ? 'cms' THEN data ELSE jsonb_set(data,'{cms}','{}'::jsonb,true) END,
+         '{cms,campaigns}', $1::jsonb, true) WHERE id=1`, [jb(val)]);
+    return c.json({ ok: true, ...val });
+  });
+
+  // عام: صفحة /u/<code> على المتجر بتناديه
+  app.post("/api/cms/optout/:code", async (c) => {
+    const code = String(c.req.param("code") || "").slice(0, 20);
+    if (!/^[a-f0-9]{6,20}$/.test(code)) return c.json({ ok: false }, 404);
+    const r = await pool.query(
+      "UPDATE cms_contacts SET opted_out_at = COALESCE(opted_out_at, NOW()) WHERE optout_code=$1 RETURNING 1", [code]);
+    return r.rowCount ? c.json({ ok: true }) : c.json({ ok: false }, 404);
+  });
+
+  /* ── الولاء: كل N طلبات من الموقع = كوبون شخصي ──
+     بيعدّ من لحظة التفعيل بس (startedAt) — لو عدّ التاريخ كله، التفعيل كان
+     هيطلّع كوبونات لكل العملاء القدام مرة واحدة كتكلفة مفاجئة. */
+  const LOYALTY_DEFAULT = { enabled: false, every: 5, reward: "free_delivery", percent: 10, validDays: 14, startedAt: null };
+  async function loyaltyCfg() {
+    const s = await getSettingsData();
+    return { ...LOYALTY_DEFAULT, ...(((s || {}).cms || {}).loyalty || {}) };
+  }
+  async function loyaltyCounts(cfg) {
+    const since = cfg.startedAt || "1970-01-01";
+    return (await pool.query(
+      `SELECT o.phone_norm AS pn, count(*)::int AS n,
+              (SELECT count(*)::int FROM cms_loyalty l WHERE l.phone_norm = o.phone_norm) AS issued
+         FROM shop_orders o
+        WHERE ${PAID_ONLINE} AND o.phone_norm ~ '${PHONE_RE}' AND o.created_at >= $1::timestamptz
+        GROUP BY 1`, [since])).rows;
+  }
+  async function loyaltyRun() {
+    const cfg = await loyaltyCfg();
+    if (!cfg.enabled || !cfg.startedAt) return;
+    const every = Math.max(2, Number(cfg.every) || 5);
+    for (const r of await loyaltyCounts(cfg)) {
+      for (let k = r.issued + 1; k <= Math.floor(r.n / every); k++) {
+        const code = "FC" + crypto.randomBytes(4).toString("hex").toUpperCase();
+        const ins = await pool.query(
+          "INSERT INTO cms_loyalty(phone_norm, reward_no, coupon) VALUES ($1,$2,$3) ON CONFLICT DO NOTHING RETURNING 1",
+          [r.pn, k, code]);
+        if (!ins.rowCount) continue;
+        const expires = new Date(Date.now() + (Number(cfg.validDays) || 14) * 86400000).toISOString().slice(0, 10);
+        const isFree = cfg.reward !== "percent";
+        await pool.query(
+          `INSERT INTO shop_coupons(code, percent, active, min_total, max_uses, expires_at, note, once_per_customer, free_delivery)
+           VALUES ($1,$2,true,0,1,$3,$4,true,$5)`,
+          [code, isFree ? 0 : Math.min(50, Number(cfg.percent) || 10), expires, `مكافأة ولاء #${k} — ${r.pn.slice(-4)}`, isFree]);
+        const what = isFree ? "توصيل مجاني" : `خصم ${Number(cfg.percent) || 10}٪`;
+        notify()?.sendToAudience({ phoneNorm: r.pn, title: "مبروك! 🎁",
+          body: `كمّلت ${every * k} طلبات من فريش كاتس — كوبونك ${code}: ${what} لحد ${expires}`,
+          url: `${STORE_PUBLIC()}/?c=${code}` }).catch(() => {});
+        console.log(`[cms] loyalty reward ${code} → ${r.pn.slice(-4)} (#${k})`);
+      }
+    }
+  }
+  setTimeout(() => loyaltyRun().catch((e) => console.error("[cms] loyalty:", e.message)), 60_000);
+  setInterval(() => loyaltyRun().catch((e) => console.error("[cms] loyalty:", e.message)), 15 * 60_000);
+
+  app.get("/api/cms/loyalty", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    const cfg = await loyaltyCfg();
+    const every = Math.max(2, Number(cfg.every) || 5);
+    const counts = await loyaltyCounts(cfg);
+    const [issued, used, recent] = await Promise.all([
+      pool.query("SELECT count(*)::int AS n FROM cms_loyalty"),
+      pool.query("SELECT count(*)::int AS n FROM cms_loyalty l JOIN shop_coupons s ON s.code = l.coupon WHERE s.used_count > 0"),
+      pool.query(`SELECT l.phone_norm AS phone, l.reward_no, l.coupon, l.created_at, COALESCE(s.used_count,0) > 0 AS used
+                    FROM cms_loyalty l LEFT JOIN shop_coupons s ON s.code = l.coupon ORDER BY l.created_at DESC LIMIT 10`),
+    ]);
+    return c.json({ ok: true, config: cfg, stats: {
+      members: counts.length,
+      eligibleSoon: counts.filter((r) => r.n % every === every - 1).length,
+      rewardsIssued: issued.rows[0].n, rewardsUsed: used.rows[0].n, recent: recent.rows,
+    } });
+  });
+
+  app.put("/api/cms/loyalty", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    let b = {};
+    try { b = await c.req.json(); } catch { return bad(c, "bad json"); }
+    const prev = await loyaltyCfg();
+    const enabled = b.enabled === true;
+    const val = {
+      enabled,
+      every: Math.min(20, Math.max(2, Number(b.every) || 5)),
+      reward: b.reward === "percent" ? "percent" : "free_delivery",
+      percent: Math.min(50, Math.max(5, Number(b.percent) || 10)),
+      validDays: Math.min(90, Math.max(3, Number(b.validDays) || 14)),
+      // أول تفعيل بيثبّت نقطة البداية؛ الإيقاف والتشغيل تاني مابيعدّش التاريخ
+      startedAt: enabled ? (prev.startedAt || new Date().toISOString()) : prev.startedAt,
+    };
+    await pool.query(
+      `UPDATE settings SET data = jsonb_set(
+         CASE WHEN data ? 'cms' THEN data ELSE jsonb_set(data,'{cms}','{}'::jsonb,true) END,
+         '{cms,loyalty}', $1::jsonb, true) WHERE id=1`, [jb(val)]);
+    return c.json({ ok: true, config: val });
   });
 
   console.log("[cms] routes ready");
