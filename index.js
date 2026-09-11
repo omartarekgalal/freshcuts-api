@@ -42,6 +42,7 @@ import * as deliveryMod from "./delivery.js";
 import * as shop from "./shop.js";
 import * as accounts from "./accounts.js";
 import * as tspartner from "./tspartner.js";
+import * as cms from "./cms.js";
 import * as notify from "./notify.js";
 import * as carts from "./carts.js";
 import * as selftest from "./selftest.js";
@@ -109,6 +110,8 @@ function getAuth(c) {
   if (!h.startsWith("Bearer ")) return null;
   const token = h.slice(7);
   if (token === ADMIN_TOKEN) return { kind: "admin" };
+  // مستخدم فريق بدور «مالك» في لوحة المتجر = أدمن كامل (cms.js بيحفظ جلساته في الذاكرة)
+  if (token.startsWith("cms:") && _cmsHooks && _cmsHooks.isOwnerSync(token)) return { kind: "admin", cms: true };
   // Ambassador token format: "amb:<id>:<password>"
   if (token.startsWith("amb:")) {
     const [, id, pw] = token.split(":");
@@ -116,10 +119,19 @@ function getAuth(c) {
   }
   return null;
 }
+// لوحة المتجر (cms.js): أدوار الفريق. مفتاح الأدمن بيعدّي زي ما هو (المالك)،
+// ومستخدمي الفريق (cms:) بيتفحصوا حسب قسم المسار وصلاحية دورهم. تغيير واحد
+// هنا بيخلّي كل الموديولات القديمة واعية بالأدوار من غير ما نلمسها.
+let _cmsHooks = null;
 async function requireAdmin(c) {
   const a = getAuth(c);
-  if (!a || a.kind !== "admin") return c.json({ error: "Unauthorized" }, 401);
-  return null;
+  if (a && a.kind === "admin") { if (_cmsHooks) _cmsHooks.audit(c, a); return null; }
+  if (_cmsHooks) {
+    const r = await _cmsHooks.resolve(c);
+    if (r === true) return null;
+    if (r) return r;
+  }
+  return c.json({ error: "Unauthorized" }, 401);
 }
 async function requireAmbassadorOrAdmin(c) {
   const a = getAuth(c);
@@ -2919,6 +2931,7 @@ const moduleCtx = {
   pool, requireAdmin, requireCashierOrAdmin, getSettingsData, jb,
   todayISO, daysAgoISO, normPhone, ts, deliveryAppOf, DEFAULT_DELIVERY_APPS,
   sourceRank,
+  setCmsHooks: (h) => { _cmsHooks = h; },
 };
 // analytics.register hands back { periodKpis, channelsData, deliveryApps } so
 // reports.js can quote the SAME sales figures the analytics screens quote
@@ -3037,6 +3050,8 @@ const tspApi = tspartner.register(app, moduleCtx);
 // حالة النظام — آخر واحد بيتسجّل عن قصد. الموديول ده مجمِّع: بينده المسارات
 // اللي فوق دي بنفسها جوّه العملية (app.request) بدل ما يكتب استعلام تاني
 // لنفس الرقم. فلازم يكونوا كلهم اتسجّلوا قبله.
+// لوحة المتجر: فريق وأدوار وصلاحيات وسجل نشاط — لازم قبل systemcheck.
+cms.register(app, moduleCtx);
 systemcheck.register(app, moduleCtx, { tsState: () => tsState });
 console.log("[analytics] routes ready");
 console.log(`[ai] routes ready (provider: ${process.env.ANTHROPIC_API_KEY ? "anthropic" : process.env.LITELLM_KEY ? "litellm" : "NOT CONFIGURED"})`);
