@@ -67,7 +67,8 @@ const deliverySql = (appsParam) =>
 // (FeedUs connector or cashier); the aggregator payment method is the
 // fallback; 'external' means "delivery, app unknown".
 const channelSql = (appsParam) => `
-  CASE WHEN ${deliverySql(appsParam)} THEN
+  CASE WHEN (o.order_type ILIKE '%qr-menu%') THEN 'website'
+       WHEN ${deliverySql(appsParam)} THEN
     lower(COALESCE(
       NULLIF(s.source_note, ''),
       (SELECT k FROM jsonb_object_keys(o.payments) k WHERE lower(k) = ANY(${appsParam}) LIMIT 1),
@@ -93,6 +94,7 @@ const DEFAULT_DELIVERY_APPS = ["ninja", "feedus", "keeta", "hungerstation", "jah
 
 const CHANNEL_LABELS = {
   inhouse: "داخل المطعم",
+  website: "متجرنا (الموقع)",
   keeta: "كيتا",
   hungerstation: "هنقرستيشن",
   ninja: "نينجا",

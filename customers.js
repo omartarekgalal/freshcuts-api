@@ -133,7 +133,11 @@ export function register(app, ctx) {
                 sum(o.total)::numeric AS spend,
                 min(o.calendar_day) AS first_day,
                 max(o.calendar_day) AS last_day,
-                max(COALESCE(NULLIF(s.customer_name,''), tc.name)) AS name
+                -- الاسم بالجوال آخر ملجأ: ٢٤٩ عميل عندهم سجل في تاب سينس
+                -- لكن طلباتهم مش مربوطة بيه (الكاشير كتب الجوال بس)
+                max(COALESCE(NULLIF(s.customer_name,''), NULLIF(tc.name,''),
+                             (SELECT NULLIF(btrim(c2.name),'') FROM ts_customers c2
+                               WHERE c2.phone_norm = ${IDENTITY} LIMIT 1))) AS name
            FROM ts_orders o ${IDENTITY_JOIN}
           WHERE ${NOT_VOID} AND ${IDENTITY} IS NOT NULL AND ${IDENTITY} <> ''
           GROUP BY 1

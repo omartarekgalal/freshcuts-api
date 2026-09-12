@@ -25,7 +25,7 @@
 import crypto from "node:crypto";
 import { promisify } from "node:util";
 // نفس قواعد الهوية والقناة اللي المؤشرات بتستخدمها — مفيش نسخة تانية
-import { IDENT_SQL, SALES_ONLY, deliverySql } from "./analytics.js";
+import { IDENT_SQL, SALES_ONLY, deliverySql, WEBSITE_SQL } from "./analytics.js";
 // نفس قواعد الـSLA بتاعة الـwatchdog — لوحة التشغيل مابتكتبش كتاب قواعد تاني
 import { slaCheck, DEFAULT_SLA } from "./shop.js";
 
@@ -827,10 +827,11 @@ export function register(app, ctx, deps = {}) {
     const s = await getSettingsData();
     const apps = (Array.isArray(s?.deliveryAppMethods) && s.deliveryAppMethods.length
       ? s.deliveryAppMethods : (DEFAULT_DELIVERY_APPS || [])).map((x) => String(x).toLowerCase());
-    const [pos, online, push, names] = await Promise.all([
+    const [pos, online, push, names, tsPhone, shopNames] = await Promise.all([
       pool.query(`
         WITH x AS (
-          SELECT ${IDENT_SQL} AS pn, o.total, o.calendar_day AS day, NULLIF(tc.name, '') AS name,
+          SELECT ${IDENT_SQL} AS pn, o.total, o.calendar_day AS day,
+                 COALESCE(NULLIF(btrim(s.customer_name), ''), NULLIF(btrim(tc.name), '')) AS name,
                  ${deliverySql("$1::text[]")} AS is_app
             FROM ts_orders o
             LEFT JOIN order_sources s ON s.order_id = o.order_id
@@ -845,23 +846,36 @@ export function register(app, ctx, deps = {}) {
                     FROM shop_orders WHERE ${PAID_ONLINE} AND phone_norm ~ '${PHONE_RE}' GROUP BY 1`),
       pool.query("SELECT DISTINCT phone_norm AS pn FROM push_subs WHERE NOT disabled AND phone_norm IS NOT NULL"),
       pool.query("SELECT phone_norm AS pn, NULLIF(name, '') AS name FROM acct_customers"),
+      // ٢٥٪ من العملاء كانوا بيظهروا من غير اسم: الاسم موجود في تاب سينس بس
+      // الطلب نفسه مش مربوط بسجل العميل (الكاشير كتب الجوال بس، أو طلب تطبيق).
+      // فبنلحق بالجوال.
+      pool.query(`SELECT phone_norm AS pn, max(NULLIF(btrim(name), '')) AS name FROM ts_customers
+                   WHERE phone_norm ~ '${PHONE_RE}' GROUP BY 1`),
+      pool.query(`SELECT phone_norm AS pn, max(NULLIF(btrim(customer->>'name'), '')) AS name FROM shop_orders
+                   WHERE phone_norm ~ '${PHONE_RE}' GROUP BY 1`),
     ]);
     const onl = new Map(online.rows.map((r) => [r.pn, r]));
     const pushSet = new Set(push.rows.map((r) => r.pn));
     const nameOf = new Map(names.rows.map((r) => [r.pn, r.name]));
+    // ترتيب مصادر الاسم: اسم على الطلب نفسه ← سجل تاب سينس بالجوال ←
+    // حساب الموقع ← اسم كتبه العميل في شيك أوت
+    const tsName = new Map(tsPhone.rows.filter((r) => r.name).map((r) => [r.pn, r.name]));
+    const shopName = new Map(shopNames.rows.filter((r) => r.name).map((r) => [r.pn, r.name]));
+    const pickName = (pn, onOrder) =>
+      onOrder || tsName.get(pn) || nameOf.get(pn) || shopName.get(pn) || "";
     const today = new Date(new Date().toISOString().slice(0, 10));
     const daysSince = (d) => (d ? Math.max(0, Math.round((today - new Date(d)) / 86400000)) : 9999);
     const rows = pos.rows.map((r) => {
       const o = onl.get(r.pn);
       const last = o && o.last_day > r.last_day ? o.last_day : r.last_day;
-      return { pn: r.pn, name: r.name || nameOf.get(r.pn) || "", orders: r.orders, spend: r.spend,
+      return { pn: r.pn, name: pickName(r.pn, r.name), orders: r.orders, spend: r.spend,
         appOrders: r.app_orders, online: o ? o.n : 0, push: pushSet.has(r.pn), lastDay: last, daysSince: daysSince(last) };
     });
     // عملاء طلبوا من الموقع بس ولسه طلبهم مادخلش سجل نقطة البيع
     const seen = new Set(rows.map((r) => r.pn));
     for (const o of online.rows) {
       if (seen.has(o.pn)) continue;
-      rows.push({ pn: o.pn, name: nameOf.get(o.pn) || "", orders: o.n, spend: o.spend, appOrders: 0,
+      rows.push({ pn: o.pn, name: pickName(o.pn, null), orders: o.n, spend: o.spend, appOrders: 0,
         online: o.n, push: pushSet.has(o.pn), lastDay: o.last_day, daysSince: daysSince(o.last_day) });
     }
     // VIP = أعلى ٢٠٪ إنفاق (نفس نسبة المؤشرات)
@@ -1417,6 +1431,115 @@ export function register(app, ctx, deps = {}) {
     await pool.query("DELETE FROM cms_flow_members WHERE flow_id=$1", [id]);
     await pool.query("DELETE FROM cms_flows WHERE id=$1", [id]);
     return c.json({ ok: true });
+  });
+
+  /* ═══ تقرير المتجر — أرقام الموقع لوحده ════════════════════════════════
+     كل التقارير التانية بتقرا من نقطة البيع، وتاب سينس بيسجّل طلبات موقعنا
+     بنوع "QR-Menu Orders" — يعني كانت بتتحسب ضمن «داخل المطعم» ومافيش شاشة
+     بتقول «الموقع عمل كام». التقرير ده مصدره shop_orders نفسه (مصدرنا
+     الأصلي: الجمرك، الرسوم، الكوبون، وقت التوصيل)، وبيقارنه بباقي القنوات. */
+  const riyadhDay = (d = Date.now()) => new Date(d + 3 * 3600_000).toISOString().slice(0, 10);
+  const RIYADH_DAY = "(o.created_at AT TIME ZONE 'Asia/Riyadh')::date";
+
+  app.get("/api/cms/analytics/store", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    const to = /^\d{4}-\d{2}-\d{2}$/.test(c.req.query("to") || "") ? c.req.query("to") : riyadhDay();
+    const from = /^\d{4}-\d{2}-\d{2}$/.test(c.req.query("from") || "")
+      ? c.req.query("from") : riyadhDay(Date.now() - 29 * 86400_000);
+    const s = await getSettingsData();
+    const apps = (Array.isArray(s?.deliveryAppMethods) && s.deliveryAppMethods.length
+      ? s.deliveryAppMethods : (DEFAULT_DELIVERY_APPS || [])).map((x) => String(x).toLowerCase());
+    const W = `${PAID_ONLINE} AND ${RIYADH_DAY} BETWEEN $1::date AND $2::date`;
+    const P = [from, to];
+
+    const [tot, daily, items, coupons, hours, nvr, channels, courier] = await Promise.all([
+      pool.query(`
+        SELECT count(*)::int AS orders,
+               COALESCE(sum(total), 0)::float AS revenue,
+               COALESCE(sum(subtotal), 0)::float AS food,
+               COALESCE(sum(delivery_fee), 0)::float AS fees,
+               COALESCE(sum(tip), 0)::float AS tips,
+               COALESCE(sum(discount_amount), 0)::float AS discounts,
+               count(*) FILTER (WHERE option = 'delivery')::int AS delivery_orders,
+               count(*) FILTER (WHERE status = 'delivered')::int AS delivered,
+               count(DISTINCT phone_norm)::int AS customers,
+               avg(EXTRACT(EPOCH FROM (updated_at - created_at)) / 60)
+                 FILTER (WHERE status = 'delivered')::float AS avg_minutes
+          FROM shop_orders o WHERE ${W}`, P),
+      pool.query(`
+        SELECT ${RIYADH_DAY} AS day, count(*)::int AS orders, COALESCE(sum(total), 0)::float AS revenue
+          FROM shop_orders o WHERE ${W} GROUP BY 1 ORDER BY 1`, P),
+      pool.query(`
+        SELECT it->>'product_id' AS pid,
+               sum((it->>'quantity')::numeric)::float AS qty,
+               sum((it->>'quantity')::numeric * COALESCE((it->>'unit_amount')::numeric, 0) / 1e9)::float AS revenue
+          FROM shop_orders o, jsonb_array_elements(o.items) it
+         WHERE ${W} AND it->>'product_id' IS NOT NULL
+         GROUP BY 1 ORDER BY qty DESC LIMIT 12`, P),
+      pool.query(`
+        SELECT upper(coupon) AS code, count(*)::int AS uses,
+               COALESCE(sum(discount_amount), 0)::float AS discount,
+               COALESCE(sum(total), 0)::float AS revenue
+          FROM shop_orders o WHERE ${W} AND NULLIF(btrim(coupon), '') IS NOT NULL
+         GROUP BY 1 ORDER BY uses DESC LIMIT 10`, P),
+      pool.query(`
+        SELECT EXTRACT(HOUR FROM (o.created_at AT TIME ZONE 'Asia/Riyadh'))::int AS h, count(*)::int AS orders
+          FROM shop_orders o WHERE ${W} GROUP BY 1 ORDER BY 1`, P),
+      // جديد = أول طلب ليه من الموقع وقع جوّه الفترة
+      pool.query(`
+        WITH firsts AS (
+          SELECT phone_norm, min(created_at) AS f FROM shop_orders o
+           WHERE ${PAID_ONLINE} AND phone_norm IS NOT NULL GROUP BY 1)
+        SELECT count(*) FILTER (WHERE (f.f AT TIME ZONE 'Asia/Riyadh')::date >= $1::date)::int AS new_customers,
+               count(*) FILTER (WHERE (f.f AT TIME ZONE 'Asia/Riyadh')::date <  $1::date)::int AS returning_customers
+          FROM firsts f
+         WHERE EXISTS (SELECT 1 FROM shop_orders o
+                        WHERE o.phone_norm = f.phone_norm AND ${W})`, P),
+      // نفس فترة التقرير من نقطة البيع: الموقع مقابل التطبيقات مقابل المطعم
+      pool.query(`
+        SELECT CASE WHEN ${WEBSITE_SQL} THEN 'website'
+                    WHEN ${deliverySql("$3::text[]")} THEN 'apps' ELSE 'inhouse' END AS ch,
+               count(*)::int AS orders, COALESCE(sum(o.total), 0)::float AS revenue
+          FROM ts_orders o
+          LEFT JOIN order_sources s ON s.order_id = o.order_id
+          LEFT JOIN ts_customers tc ON tc.customer_id = o.customer_id
+         WHERE ${SALES_ONLY} AND o.calendar_day BETWEEN $1::date AND $2::date
+         GROUP BY 1`, [...P, apps]),
+      pool.query(`
+        SELECT count(*)::int AS shipments, COALESCE(sum(sh.cost), 0)::float AS cost
+          FROM dl_shipments sh JOIN shop_orders o ON o.order_no = sh.shop_order_no
+         WHERE ${W}`, P),
+    ]);
+
+    let names = new Map();
+    try { names = new Map((await menuItems()).map((i) => [String(i.id), i.name])); } catch { /* المنيو مش متاح — نعرض الرقم */ }
+    const t = tot.rows[0];
+    const chan = Object.fromEntries(channels.rows.map((r) => [r.ch, { orders: r.orders, revenue: r.revenue }]));
+    const n = (v) => Number(v) || 0;
+
+    return c.json({
+      ok: true, from, to,
+      totals: {
+        orders: t.orders, revenue: n(t.revenue), food: n(t.food), fees: n(t.fees), tips: n(t.tips),
+        discounts: n(t.discounts), customers: t.customers, delivered: t.delivered,
+        deliveryOrders: t.delivery_orders, pickupOrders: t.orders - t.delivery_orders,
+        avgOrder: t.orders ? n(t.revenue) / t.orders : 0,
+        avgMinutes: t.avg_minutes == null ? null : n(t.avg_minutes),
+      },
+      // الرسوم اللي حصّلناها من العميل مقابل اللي دفعناه للمندوب
+      delivery: { feesCollected: n(t.fees), courierCost: n(courier.rows[0].cost), shipments: courier.rows[0].shipments },
+      customers: { new: nvr.rows[0].new_customers, returning: nvr.rows[0].returning_customers },
+      daily: daily.rows.map((r) => ({ day: r.day instanceof Date ? r.day.toISOString().slice(0, 10) : r.day, orders: r.orders, revenue: n(r.revenue) })),
+      hours: hours.rows.map((r) => ({ hour: r.h, orders: r.orders })),
+      topItems: items.rows.map((r) => ({ id: r.pid, name: names.get(String(r.pid)) || `صنف ${r.pid}`, qty: n(r.qty), revenue: n(r.revenue) })),
+      coupons: coupons.rows.map((r) => ({ code: r.code, uses: r.uses, discount: n(r.discount), revenue: n(r.revenue) })),
+      channels: {
+        website: chan.website || { orders: 0, revenue: 0 },
+        apps: chan.apps || { orders: 0, revenue: 0 },
+        inhouse: chan.inhouse || { orders: 0, revenue: 0 },
+      },
+      note: "أرقام الموقع من نظام المتجر نفسه. المقارنة بين القنوات من نقطة البيع.",
+    });
   });
 
   console.log("[cms] routes ready");

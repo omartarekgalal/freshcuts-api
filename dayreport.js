@@ -71,7 +71,8 @@ const deliverySql = (appsParam, a = "o") =>
 // method is the fallback, and 'external' means "delivery, app unknown".
 // Requires an `order_sources s` join.
 const channelSql = (appsParam, a = "o") => `
-  CASE WHEN ${deliverySql(appsParam, a)} THEN
+  CASE WHEN (${a}.order_type ILIKE '%qr-menu%') THEN 'website'
+       WHEN ${deliverySql(appsParam, a)} THEN
     lower(COALESCE(
       NULLIF(s.source_note, ''),
       (SELECT k FROM jsonb_object_keys(${a}.payments) k WHERE lower(k) = ANY(${appsParam}) LIMIT 1),
@@ -98,6 +99,7 @@ const IDENT_SQL = `COALESCE(NULLIF(s.phone_norm, ''), NULLIF(tc.phone_norm, ''))
 
 const CHANNEL_LABELS = {
   inhouse: "داخل المطعم",
+  website: "متجرنا (الموقع)",
   keeta: "كيتا",
   hungerstation: "هنقرستيشن",
   ninja: "نينجا",

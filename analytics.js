@@ -43,6 +43,13 @@ export const LOCAL_HOUR = `(extract(hour from ${LOCAL_TS})::int)`;
 // See business rule 2.
 export const SALES_ONLY = `(o.order_type IS NULL OR (o.order_type NOT ILIKE '%void%' AND o.order_type NOT ILIKE '%refund%'))`;
 
+// طلبات متجرنا (freshcuts.sa). تاب سينس بيسجّلها بنوع "QR-Menu Orders"، وهي
+// مش External ولا بتتدفع بمحفظة تطبيق — يعني كانت بتقع في سلة «داخل المطعم»
+// وتختفي كقناة. القناة الوحيدة اللي بندفع فيها إعلانات ومش بندفع عنها عمولة
+// لازم تبان لوحدها، وإلا مافيش طريقة نعرف بيها هل الإعلان رجّع فلوسه.
+export const WEBSITE_SQL = `(o.order_type ILIKE '%qr-menu%')`;
+export const websiteSql = (a = "o") => `(${a}.order_type ILIKE '%qr-menu%')`
+
 // An order is a delivery-aggregator order when TabSense typed it 'External'
 // (true from the moment it is created) OR when one of its payment methods is
 // an aggregator wallet (only lands once the order is paid). Both signals are
@@ -55,7 +62,8 @@ export const deliverySql = (appsParam) =>
 // (filled by the FeedUs connector or the cashier); the aggregator payment
 // method is the fallback, and 'external' means "delivery, app unknown".
 export const channelSql = (appsParam) => `
-  CASE WHEN ${deliverySql(appsParam)} THEN
+  CASE WHEN ${WEBSITE_SQL} THEN 'website'
+       WHEN ${deliverySql(appsParam)} THEN
     lower(COALESCE(
       NULLIF(s.source_note, ''),
       (SELECT k FROM jsonb_object_keys(o.payments) k WHERE lower(k) = ANY(${appsParam}) LIMIT 1),
@@ -141,6 +149,7 @@ export const FIRST_ORDER_DAY_CTE = `
 
 export const CHANNEL_LABELS = {
   inhouse: "داخل المطعم",
+  website: "متجرنا (الموقع)",
   keeta: "كيتا",
   hungerstation: "هنقرستيشن",
   ninja: "نينجا",
@@ -646,7 +655,8 @@ export function register(app, ctx) {
 
     const chan = (await pool.query(
       `WITH agg AS (
-         SELECT CASE WHEN ${deliverySql("$3::text[]")} THEN 'delivery' ELSE 'inhouse' END AS ch,
+         SELECT CASE WHEN ${WEBSITE_SQL} THEN 'website'
+                     WHEN ${deliverySql("$3::text[]")} THEN 'delivery' ELSE 'inhouse' END AS ch,
                 i.name, sum(i.qty) AS qty, sum(i.amount) AS revenue
            FROM ts_order_items i
            JOIN ts_orders o ON o.order_id = i.order_id
@@ -658,7 +668,7 @@ export function register(app, ctx) {
        ) t WHERE rn <= $4::int`,
       [from, to, apps, limit]
     )).rows;
-    const byChannel = { delivery: [], inhouse: [] };
+    const byChannel = { delivery: [], inhouse: [], website: [] };
     for (const r of chan) {
       (byChannel[r.ch] ||= []).push({ name: r.name, qty: qty(r.qty), revenue: money(r.revenue) });
     }
@@ -778,7 +788,7 @@ export function register(app, ctx) {
       return {
         id: r.ch,
         label: chLabel(r.ch),
-        isDelivery: r.ch !== "inhouse",
+        isDelivery: r.ch !== "inhouse" && r.ch !== "website",
         orders,
         revenue,
         avgOrder: orders > 0 ? money(revenue / orders) : 0,
