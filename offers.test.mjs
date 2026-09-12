@@ -84,12 +84,15 @@ test("تاريخ النهاية قيمة واحدة بتحكم العرضين، 
   for (const o of OFFERS) assert.equal(typeof o.until, "string", o.id);
 });
 
-test("الكيلو من غير بيبسي، والبوكس معاه بيبسي لتر", () => {
+test("العرضين من غير بيبسي، والسي فود مستثنى من البوكس", () => {
   const kilo = offerById("nd96_kilo"), box = offerById("nd96_box");
   assert.equal(kilo.components.some((c) => /بيبسي/.test(c.label)), false);
   assert.deepEqual(kilo.excludes, ["بيبسي"]);
-  assert.equal(box.components.some((c) => /بيبسي لتر/.test(c.label)), true);
-  assert.equal(/بحريات/.test(box.desc), true);     // البحريات مستثناة من الاختيار
+  // عمر شال البيبسي من البوكس (2026-09-13)
+  assert.equal(box.components.some((c) => /بيبسي/.test(c.label)), false);
+  // «سي فود» بدل «بحريات» بطلب عمر
+  assert.equal(/سي فود/.test(box.desc), true);
+  assert.equal(/بحريات/.test(box.desc), false);
 });
 
 test("مفيش عرض من العروض دي على تطبيقات التوصيل", () => {
