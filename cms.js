@@ -75,7 +75,7 @@ const PATH_SECTIONS = [
   [/^\/api\/cms\/home/, "home"],
   [/^\/api\/cms\/(products|catalog|collections)/, "products"],
   [/^\/api\/cms\/(growth|links)/, "growth"],
-  [/^\/api\/cms\/(customers|segments|loyalty|campaigns|flows)/, "customers"],
+  [/^\/api\/cms\/(customers|segments|loyalty|campaigns|flows|reviews)/, "customers"],
   [/^\/api\/cms\/(analytics|exec)/, "analytics"],
   [/^\/api\/cms\/(ops|sla)/, "orders"],
   [/^\/api\/(shop\/coupons|discounts)/, "discounts"],

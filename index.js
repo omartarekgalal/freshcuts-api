@@ -43,6 +43,7 @@ import * as shop from "./shop.js";
 import * as accounts from "./accounts.js";
 import * as tspartner from "./tspartner.js";
 import * as cms from "./cms.js";
+import * as reviews from "./reviews.js";
 import * as notify from "./notify.js";
 import * as carts from "./carts.js";
 import * as selftest from "./selftest.js";
@@ -3051,7 +3052,8 @@ const tspApi = tspartner.register(app, moduleCtx);
 // اللي فوق دي بنفسها جوّه العملية (app.request) بدل ما يكتب استعلام تاني
 // لنفس الرقم. فلازم يكونوا كلهم اتسجّلوا قبله.
 // لوحة المتجر: فريق وأدوار وصلاحيات وسجل نشاط — لازم قبل systemcheck.
-cms.register(app, moduleCtx, { notify: () => notifyApi });
+const cmsApi = cms.register(app, moduleCtx, { notify: () => notifyApi });
+reviews.register(app, moduleCtx, { notify: () => notifyApi, sessionUser: cmsApi.sessionUser });
 systemcheck.register(app, moduleCtx, { tsState: () => tsState });
 console.log("[analytics] routes ready");
 console.log(`[ai] routes ready (provider: ${process.env.ANTHROPIC_API_KEY ? "anthropic" : process.env.LITELLM_KEY ? "litellm" : "NOT CONFIGURED"})`);
