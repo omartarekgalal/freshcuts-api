@@ -160,7 +160,7 @@ export function register(app, ctx, deps = {}) {
 
   app.get("/api/cms/reviews", async (c) => {
     const err = await requireAdmin(c); if (err) return err;
-    const q = c.req.query;
+    const q = (k) => c.req.query(k);
     const where = ["1=1"], p = [];
     if (q("filter") === "open") where.push("resolved=FALSE AND rating < 4");
     else if (q("filter") === "negative") where.push("rating < 4");
