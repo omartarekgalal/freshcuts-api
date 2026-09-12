@@ -30,6 +30,8 @@
 
 import * as tsstore from "./tsstore.js";
 import { msisdn, readableAddress } from "./couriers.js";
+// ضريبة سطور الباقة — نفس الثابت اللي التوزيع اتعمل بيه، عشان الإجمالي يرجع للسعر بالظبط
+import { VAT_RATE as BUNDLE_VAT } from "./bundles.js";
 
 const env = (k, d) => (process.env[k] || d || "").toString().trim();
 const r2 = (v) => Math.round((Number(v) || 0) * 100) / 100;
@@ -574,19 +576,47 @@ export function register(app, ctx, deps = {}) {
       if (coupon && !coupon.freeDelivery) coupon = null;
     }
 
+    /* ── الباقات بتتسعّر عندنا، مش على حساب المتجر ────────────────────────
+       تاب سينس **بترفض** أي unit_amount مختلف عن سعر النظام
+       («The purchases.N.unit_amount and purchases.N.system price must match»
+        — اتأكدنا بالمجسّ 2026-09-12). وده بالظبط اللي الباقة محتاجاه: أسعار
+       احنا بنحددها. فبنفصل المسارين:
+         • الأصناف العادية  → حساب تاب سينس زي ما هو (هو اللي بيتحقق من السعر)
+         • سطور الباقة      → سعرها سعر الباقة، واحنا اللي بنحسبه (بالظبط)
+       الإجمالي المحصّل = الاتنين. الخصومات والكوبونات بتتطبّق على الأصناف
+       العادية بس — الباقة سعرها مخفّض أصلاً فمابنخصمش عليها تاني. */
+    const bundleItems = items.filter((it) => it && it.bundle);
+    const plainItems = items.filter((it) => !(it && it.bundle));
+    // إجمالي الباقات شامل الضريبة — من التعريف نفسه، مش من أي حساب خارجي
+    let bundleTotal = 0;
+    if (bundleItems.length) {
+      const seen = new Set();
+      for (const it of bundleItems) {
+        if (seen.has(it.bundle_line)) continue;
+        seen.add(it.bundle_line);
+        const ex = bundleItems.filter((x) => x.bundle_line === it.bundle_line)
+          .reduce((a, x) => a + Number(x.unit_amount) * Number(x.quantity), 0);
+        bundleTotal += ex * (1 + BUNDLE_VAT) / tsstore.MULTIPLY;
+      }
+      bundleTotal = r2(bundleTotal);
+    }
+
     // Pass 1: food only, discounted — this is the subtotal the delivery quote
     // (free-over / minimum rules) judges against.
-    let calc;
-    try {
-      calc = await tsstore.calculateOrder({
-        branchId, orderOptionId: OPTION_ID[option], purchases: items,
-        tipAmount: Number(b.tip) || 0, discountPercent,
-      });
-    } catch (e) {
-      return c.json({ ok: false, error: "calc_failed", detail: e.message }, 422);
+    let calc = null;
+    if (plainItems.length) {
+      try {
+        calc = await tsstore.calculateOrder({
+          branchId, orderOptionId: OPTION_ID[option], purchases: plainItems,
+          tipAmount: Number(b.tip) || 0, discountPercent,
+        });
+      } catch (e) {
+        return c.json({ ok: false, error: "calc_failed", detail: e.message }, 422);
+      }
     }
-    let totals = calc.totals || {};
-    const foodTotal = r2((totals.tendered_amount || totals.total_amount || 0) / tsstore.MULTIPLY);
+    let totals = (calc && calc.totals) || {};
+    const plainTotal = r2((totals.tendered_amount || totals.total_amount || 0) / tsstore.MULTIPLY);
+    const foodTotal = r2(plainTotal + bundleTotal);
     // إعادة التحقق ضد الإجمالي الحقيقي — لأي كوبون فعّال (مش بس كوبون النسبة):
     // كوبون التوصيل المجاني كمان له حد أدنى و«مرة لكل عميل» لازم يتأكدوا هنا.
     if (coupon?.ok) {
@@ -635,7 +665,7 @@ export function register(app, ctx, deps = {}) {
         };
         try {
           calc = await tsstore.calculateOrder({
-            branchId, orderOptionId: OPTION_ID[option], purchases: [...items, feeLine],
+            branchId, orderOptionId: OPTION_ID[option], purchases: [...plainItems, feeLine],
             tipAmount: Number(b.tip) || 0, discountPercent,
           });
           totals = calc.totals || {};
@@ -647,7 +677,11 @@ export function register(app, ctx, deps = {}) {
     }
 
     const tip = r2(b.tip);
-    const posTotal = r2((totals.tendered_amount || totals.total_amount || 0) / tsstore.MULTIPLY);
+    // إجمالي نقطة البيع = حساب تاب سينس للأصناف العادية + سعر الباقات بتاعنا.
+    // سلة باقات بس (من غير أصناف عادية ولا سطر توصيل) مالهاش حساب تاب سينس،
+    // فالبقشيش اللي كان بيتضاف جوّه الحساب لازم يتضاف هنا بإيدنا.
+    const tipOutsideCalc = !calc && tip > 0 ? tip : 0;
+    const posTotal = r2((totals.tendered_amount || totals.total_amount || 0) / tsstore.MULTIPLY + bundleTotal + tipOutsideCalc);
     // When the fee is booked in the POS, the charge == the POS invoice exactly;
     // otherwise the fee is collected on top (the old designed gap).
     const total = feeInPos ? posTotal : r2(posTotal + deliveryFee);
@@ -854,6 +888,20 @@ export function register(app, ctx, deps = {}) {
           // نكمل للمسار القديم تحت
         }
       }
+    }
+
+    // المسار القديم (API المتجر) بيبعت pos_calc زي ما هو — وده مافيهوش سطور
+    // الباقة (تاب سينس بترفض أسعارها على المتجر). لو كملنا، الطلب هينزل من
+    // غير أكل الباقة والعميل دافع تمنها. فبنوقف بصوت عالي: الطلب يفضل
+    // paid_pos_failed ظاهر في اللوحة، والكاشير يدخّله يدوي — أحسن من أكل ناقص.
+    if ((row.items || []).some((it) => it && it.bundle)) {
+      const errText = "bundle order needs the partner path (TSP_AUTO_ORDER=1 + connected); store path cannot carry bundle prices";
+      console.error(`[shop] ${orderNo}: ${errText}`);
+      await pool.query(
+        "UPDATE shop_orders SET pos_attempts=pos_attempts+1, last_pos_error=$2, updated_at=NOW() WHERE order_no=$1",
+        [orderNo, errText]);
+      if (row.status !== "paid_pos_failed") await setStatus(orderNo, "paid_pos_failed", { note: "باقة — محتاجة مسار الشريك" });
+      return;
     }
 
     try {
