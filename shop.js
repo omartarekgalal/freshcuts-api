@@ -73,6 +73,45 @@ export const STAGES = {
      • المبلغ = `total` (أكل + توصيل + بقشيش) — اللي العميل دفعه بالظبط،
        مش `subtotal`. غلطة هنا معناها إن العميل بيدفع تمن التوصيلة على
        طلب اعتذرنا عنه.                                                     */
+/* ═══════════════════════════════════════════════════════════════════════════
+   صفوف الطلب → أصناف طلب الشريك. دالة صافية عشان تتجرّب أوفلاين.
+
+   الباج (اتصلّح 2026-09-12): العميل يختار «كيلو» على المتجر، الفلوس تطلع
+   صح، لكن **سطر نقطة البيع بينزل من غير وزن** والمطبخ مايعرفش يشوي كام.
+   السبب إن الدالة دي كانت بترمي `variant_option_id` وهي بتحوّل الصفوف.
+
+   الاختيار متخزّن أصلاً في `shop_orders.items` (اتأكدنا من الداتابيز: طلبات
+   حقيقية مقبولة فيها variant_option_id = ٤٤/٤٥/٤٨/٥١/٥٦)، فهو بيعيش عبر
+   إعادة المحاولات وبيظهر في اللوحة — كان بيضيع في آخر خطوة بس.
+
+   `variant_name` و`bundle_name` بيتخزّنوا كمان عشان الكاشير والتقارير
+   يقروا كلام مفهوم من غير ما يرجعوا يسألوا القايمة تاني.
+═══════════════════════════════════════════════════════════════════════════ */
+/* وسوم الباقة (bundle*) بيكتبها السيرفر وهو بيوسّع الباقة — أي صنف عادي
+   جاي من المتصفح بتتشال منه، فالتقارير مايتزوّرش فيها عدد الباقات. */
+export function stripBundleTags(it) {
+  if (!it || typeof it !== "object") return it;
+  const { bundle, bundle_name, bundle_slot, bundle_line, ...rest } = it;
+  if (rest.variant_name != null) rest.variant_name = String(rest.variant_name).slice(0, 40);
+  if (rest.name != null) rest.name = String(rest.name).slice(0, 120);
+  return rest;
+}
+
+export function partnerItemsOf(row) {
+  return (row?.items || []).map((it) => {
+    const vo = Number(it.variant_option_id);
+    const note = it.bundle ? `ضمن: ${it.bundle_name || it.bundle}` : null;
+    return {
+      productId: it.product_id,
+      quantity: Number(it.quantity) || 1,
+      unitPrice: Number(it.unit_amount) / tsstore.MULTIPLY, // ريال صافي قبل الضريبة
+      ...(Number.isInteger(vo) && vo > 0 ? { variantOptionId: vo } : {}),
+      ...(it.variant_name ? { variantName: it.variant_name } : {}),
+      ...(note ? { lineNote: note } : {}),
+    };
+  });
+}
+
 export function refundDecision(row, { maxAttempts = 3 } = {}) {
   if (!row) return { act: false, reason: "no_order" };
   if (row.refund_id) return { act: false, reason: "already_refunded", refundId: row.refund_id };
@@ -213,6 +252,7 @@ export function register(app, ctx, deps = {}) {
   const accounts = deps.accounts || (() => null); // late-bound — accounts registers after us
   const carts = deps.carts || (() => null);       // late-bound — abandoned-cart tracker
   const tsp = deps.tsp || (() => null);           // late-bound — TabSense partner (paid orders)
+  const bundles = deps.bundles || (() => null);   // late-bound — «باقة بخيارات» (cms.js)
 
   async function ensureSchema() {
     await pool.query(`
@@ -456,8 +496,35 @@ export function register(app, ctx, deps = {}) {
     try { b = await c.req.json(); } catch { return c.json({ ok: false, error: "bad json" }, 400); }
     const option = b.option === "pickup" ? "pickup" : "delivery";
     const branchId = String(b.branch_id || "1");
-    const items = Array.isArray(b.items) ? b.items : [];
+    let items = Array.isArray(b.items) ? b.items : [];
     if (!items.length) return c.json({ ok: false, error: "empty_cart" }, 400);
+
+    /* ── الباقات: بنوسّعها **هنا على السيرفر** لمنتجاتها الحقيقية ──────────
+       سطر الباقة في السلة بيوصل كـ{bundle, quantity, choices} — من غير أي
+       سعر. السيرفر بيجيب التعريف من الداتابيز، يتأكد إن الاختيارات مسموحة،
+       ويوزّع السعر بالقواعد الصافية في bundles.js. يعني العميل يقدر يختار
+       المكوّنات بس، مايقدرش يحدد سعرها — لو بعت سعر بنتجاهله تماماً.
+       أي فشل بيرجع ٤٢٢ واضحة **قبل** ما يتعمل أي جلسة دفع. */
+    if (items.some((it) => it && it.bundle)) {
+      const cms = bundles();
+      if (!cms || !cms.expandBundle) return c.json({ ok: false, error: "bundles_unavailable" }, 503);
+      const expanded = [];
+      for (const it of items) {
+        // وسوم الباقة بيحطّها السيرفر بس. لو المتصفح بعتها على صنف عادي
+        // بنشيلها، عشان حد مايقدرش يزوّر تقارير «كام باقة اتباعت».
+        if (!it || !it.bundle) { expanded.push(stripBundleTags(it)); continue; }
+        let r;
+        try {
+          r = await cms.expandBundle(String(it.bundle), it.choices || {}, it.quantity || 1, option);
+        } catch (e) {
+          console.error(`[shop] bundle expand threw for ${it.bundle}:`, e.message);
+          return c.json({ ok: false, error: "bundle_expand_failed", bundle: it.bundle }, 422);
+        }
+        if (!r.ok) return c.json({ ok: false, error: "bundle_" + r.error, bundle: it.bundle, detail: r }, 422);
+        expanded.push(...r.lines);
+      }
+      items = expanded;
+    }
     // dine-in-only offers (صينية اللمة …) cannot be delivered/picked up: refuse
     // BEFORE a payment session exists. Same list the storefront + catalog use.
     {
@@ -732,11 +799,7 @@ export function register(app, ctx, deps = {}) {
       row.option === "pickup" ? `استلام ${hm(Date.now() + 40 * 60_000)}` : "",
       feeNote, "مدفوع أونلاين✅", row.notes || "",
     ].filter(Boolean).join(" - ");
-    const items = (row.items || []).map((it) => ({
-      productId: it.product_id,
-      quantity: Number(it.quantity) || 1,
-      unitPrice: Number(it.unit_amount) / tsstore.MULTIPLY, // ريال صافي قبل الضريبة
-    }));
+    const items = partnerItemsOf(row);
     // رسوم التوصيل تنزل في الفاتورة كسطر منتج «رسوم التوصيل» (فئة رسوم، ضريبة 15%).
     // بنبعت الرقم صافي (fee/1.15) عشان الإجمالي في تاب سينس يطلع شامل الضريبة =
     // اللي العميل دفعه بالظبط. أي سياسة (مجاني/مخصوم/حسب المسافة) بتنعكس تلقائياً

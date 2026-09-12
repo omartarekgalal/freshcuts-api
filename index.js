@@ -3043,6 +3043,9 @@ let accountsApi = null;
 shopApi = shop.register(app, moduleCtx, {
   pay: payApi, delivery: deliveryApi, notify: notifyApi, accounts: () => accountsApi,
   carts: () => cartsApi, tsp: () => tspApi,
+  // الباقات بتتعرّف في الـCMS (اللي بيتسجّل بعدنا) — الشيك أوت بيوسّعها
+  // بنفس الدالة اللي المتجر بيعاين بيها، فالمعروض = المحسوب.
+  bundles: () => cmsApi,
 });
 // ملف العميل: دخول OTP، عناوين محفوظة، تاريخ الطلبات وإعادة الطلب، وربط/إنشاء
 // في دفتر عملاء TabSense (الموجود يتربط، الجديد بس هو اللي يتعمل).

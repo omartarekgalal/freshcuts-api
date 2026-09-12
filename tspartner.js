@@ -59,6 +59,42 @@ async function httpJson(url, { method = "GET", headers = {}, body, label = "tsp"
   return data;
 }
 
+/* ═══════════════════════════════════════════════════════════════════════════
+   سطر الشراء على API الشركاء — دالة صافية عشان تتجرّب أوفلاين.
+
+   الباج اللي اتصلّح هنا (2026-09-12): الوزن (ثلث/نصف/كيلو) كان **بيضيع**.
+   العميل يختار «كيلو» على المتجر، السعر ينزل صح، لكن سطر نقطة البيع بينزل
+   من غير وزن — وتذكرة المطبخ ماتقولش كيلو. السبب إننا كنا بنبني السطر من
+   غير `variant_option` خالص.
+
+   المجسّ على **الإنتاج** (2026-09-12) أثبت:
+     • `variant_option:{id:49}` على منتج ٩٤  → بيرجع {"id":"Z5yoQN6g6j","name":"كيلو"}
+     • من غيره                                → بيرجع variant_option: null
+     • الـid الرقمي بتاعنا (٤٤…٧٠) **مقبول** وبيتحوّل عندهم للـid المقنّع.
+       اتأكدنا من ١٢ اختيار (٤ منتجات × ٣ أوزان) — كلهم طابقوا الاسم الصح.
+
+   `lineNote` بينزل في meta.notes بتاع السطر (اتأكدنا إنه بيرجع في الحساب)،
+   وبنستخدمه عشان الكاشير يشوف إن السطر ده جزء من باقة.
+═══════════════════════════════════════════════════════════════════════════ */
+const sarToUnitAmount = (v) => Math.round(Number(v || 0) * 100);
+
+export function partnerPurchase(it, defaultTax) {
+  // الوزن لازم يكون رقم صحيح موجب — أي حاجة تانية (٠/فاضي/نص) مابتتبعتش
+  // خالص، عشان صنف من غير وزن يفضل يشتغل بالظبط زي النهارده.
+  const vo = Number(it.variantOptionId);
+  const hasVariant = Number.isInteger(vo) && vo > 0;
+  const note = it.lineNote ? String(it.lineNote).slice(0, 100) : null;
+  return {
+    product_id: it.partnerProductId,
+    quantity: Number(it.quantity) || 1,
+    tax_id: it.taxId || (defaultTax && defaultTax.id),
+    unit_amount: sarToUnitAmount(it.unitPrice),
+    modifiers: [],
+    ...(hasVariant ? { variant_option: { id: vo } } : {}),
+    ...(note ? { meta: { notes: note } } : {}),
+  };
+}
+
 export function register(app, ctx) {
   const { pool, requireAdmin, jb } = ctx;
 
@@ -182,10 +218,11 @@ export function register(app, ctx) {
        externalOrderNo, paymentMethod("visa"|"mada"|"applepay"...), notes,
        customer:{ name, phone, address:{ city, area, street, countryCode } },
        deliveryAddress:{ line, city, country, street, postalCode, extra },
-       items:[{ productId | partnerProductId, taxId?, quantity, unitPrice(بالريال) }],
+       items:[{ productId | partnerProductId, taxId?, quantity, unitPrice(بالريال),
+                variantOptionId?(رقم الوزن ٤٤…٧٠), lineNote? }],
      }
   */
-  const sarToUnit = (v) => Math.round(Number(v || 0) * 100);
+  const sarToUnit = sarToUnitAmount;
 
   // كاش قايمة الشريك (فرع/خيار/ضرايب) — 5 دقايق
   let _cat = { at: 0 };
@@ -292,13 +329,7 @@ export function register(app, ctx) {
         if (!p) throw Object.assign(new Error(`product not in partner catalog: ${it.productId}`), { code: "TSP_NO_PRODUCT" });
         pid = p.id; ptax = ptax || p.tax_id;
       }
-      purchases.push({
-        product_id: pid,
-        quantity: Number(it.quantity) || 1,
-        tax_id: ptax || (cat.defaultTax && cat.defaultTax.id),
-        unit_amount: sarToUnit(it.unitPrice),
-        modifiers: [],
-      });
+      purchases.push(partnerPurchase({ ...it, partnerProductId: pid, taxId: ptax }, cat.defaultTax));
     }
     if (!purchases.length) throw new Error("order has no items");
 

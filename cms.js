@@ -28,6 +28,10 @@ import { promisify } from "node:util";
 import { IDENT_SQL, SALES_ONLY, deliverySql, WEBSITE_SQL } from "./analytics.js";
 // نفس قواعد الـSLA بتاعة الـwatchdog — لوحة التشغيل مابتكتبش كتاب قواعد تاني
 import { slaCheck, DEFAULT_SLA } from "./shop.js";
+// قواعد الباقات (توزيع السعر والتوسيع) — صافية ومتجرّبة أوفلاين في bundles.test.mjs
+import * as bundlesLib from "./bundles.js";
+// كتالوج تاب سينس: الأسعار الحقيقية للباقات (العميل مابيبعتش سعر أبداً)
+import * as tsstore from "./tsstore.js";
 
 const scryptAsync = promisify(crypto.scrypt);
 const SESSION_DAYS = 30;
@@ -73,7 +77,7 @@ export const DEFAULT_PERMS = {
 const PATH_SECTIONS = [
   [/^\/api\/cms\/(users|roles|audit)/, "settings"],
   [/^\/api\/cms\/home/, "home"],
-  [/^\/api\/cms\/(products|catalog|collections)/, "products"],
+  [/^\/api\/cms\/(products|catalog|collections|bundles)/, "products"],
   [/^\/api\/cms\/(growth|links)/, "growth"],
   [/^\/api\/cms\/(customers|segments|loyalty|campaigns|flows|reviews)/, "customers"],
   [/^\/api\/cms\/(analytics|exec)/, "analytics"],
@@ -183,6 +187,26 @@ export function register(app, ctx, deps = {}) {
         updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
       );
       -- روابط الحملات: freshcuts.sa/l/<slug>
+      -- «باقة بخيارات» (2026-09-12): باقة بسعر واحد متعرّفة **عندنا**، بتنزل
+      -- نقطة البيع كمنتجات حقيقية بأسعار موزّعة — عشان الريسبي يفضل مظبوط
+      -- ومانعملش منتج جديد في نقطة البيع. القواعد في bundles.js.
+      CREATE TABLE IF NOT EXISTS cms_bundles (
+        id SERIAL PRIMARY KEY,
+        slug TEXT UNIQUE NOT NULL,
+        name TEXT NOT NULL,
+        name_en TEXT,
+        description TEXT,
+        image TEXT,
+        badge TEXT,
+        price NUMERIC NOT NULL DEFAULT 0,     -- سعر العميل شامل الضريبة
+        slots JSONB NOT NULL DEFAULT '[]'::jsonb,
+        order_kinds JSONB NOT NULL DEFAULT '["delivery","pickup","dine_in"]'::jsonb,
+        active BOOLEAN NOT NULL DEFAULT FALSE, -- مسوّدة بالافتراضي — مايظهرش غير بقرار
+        sort INT NOT NULL DEFAULT 0,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_by TEXT
+      );
       CREATE TABLE IF NOT EXISTS cms_links (
         id SERIAL PRIMARY KEY,
         slug TEXT UNIQUE NOT NULL,
@@ -719,6 +743,347 @@ export function register(app, ctx, deps = {}) {
     await pool.query("DELETE FROM cms_collections WHERE id=$1", [Number(c.req.param("id"))]);
     bustOverlay();
     return c.json({ ok: true });
+  });
+
+  /* ═════════════════════════════════════════════════════════════════════════
+     الباقات «باقة بخيارات» — التعريف والتوسيع والتقارير
+
+     الباقة بتتعرّف من اللوحة (من غير نشر)، ولما تتطلب بنوسّعها لمنتجاتها
+     الحقيقية بأسعار موزّعة تجمع على سعر الباقة بالظبط — فنقطة البيع بتستقبل
+     أصناف عادية، وكل صنف بيستهلك الريسبي بتاعه، ومفيش منتج باقة جديد.
+
+     السعر مصدره **هنا دايماً**: العميل بيبعت الاختيارات بس، والسيرفر بيوسّع
+     ويسعّر. أي سعر جاي من المتصفح مابيتصدّقش أبداً.
+  ═════════════════════════════════════════════════════════════════════════ */
+
+  /* ── أسعار الكتالوج الحقيقية (قبل الضريبة) ──────────────────────────────
+     مهم: باقة ممكن تحتوي صنف **مش على المنيو** — «بيبسي لتر» (١٣٢) و«طبق أرز
+     بسمتي» (١٢٣) الاتنين خارج صفحات المنيو عن قصد (اتأكدنا بالمجسّ 2026-09-12).
+     فمصدر السعر هو **تفاصيل الصنف** (stores/…/products/{id}) مش المنيو؛
+     المنيو بيدّينا الصورة وبس. من غير كده الباقتين كانوا هيتكسروا في صمت. */
+  let _menuIdx = { at: 0, byId: null };
+  const _prod = new Map(); // productId → {name, priceEx, priceIncl, taxId, variants[]} | null
+  async function menuIndex() {
+    if (_menuIdx.byId && Date.now() - _menuIdx.at < 300_000) return _menuIdx.byId;
+    const menu = await tsstore.fetchMenu("1");
+    const byId = new Map();
+    for (const p of menu?.pages || [])
+      for (const it of p.items || [])
+        if (!byId.has(String(it.id))) byId.set(String(it.id), it);
+    _menuIdx = { at: Date.now(), byId };
+    return byId;
+  }
+  async function productDetail(productId) {
+    const k = String(productId);
+    if (_prod.has(k)) return _prod.get(k);
+    let out = null;
+    try {
+      const r = await tsstore.callStore(`stores/${tsstore.STORE()}/products/${k}`, { branchId: "1" });
+      const d = r?.data;
+      if (d && d.id != null) {
+        const raw = d.variant;
+        out = {
+          id: k, name: d.name || d.local_name || "",
+          priceEx: Number(d.price != null ? d.price : d.retail_price) || 0,
+          priceIncl: Number(d.retail_price != null ? d.retail_price : d.price) || 0,
+          taxId: d.tax_id ?? 1,
+          variants: (raw && Array.isArray(raw.options) ? raw.options : []).map((o) => ({
+            id: Number(o.id), name: o.name || "",
+            priceEx: Number(o.price) || 0, priceIncl: Number(o.retail_price) || 0,
+          })),
+        };
+      }
+    } catch (e) { out = null; }
+    // الفشل المؤقت مايتخزّنش — تاب سينس ممكن تكون واقعة لحظة واحدة بس
+    if (out) _prod.set(k, out);
+    return out;
+  }
+  const productIdsOf = (slots) => {
+    const ids = new Set();
+    for (const s of slots || []) {
+      if (s.type === "choice") for (const ch of s.choices || []) ids.add(ch.product_id);
+      else if (s.product_id) ids.add(s.product_id);
+    }
+    return [...ids];
+  };
+
+  /* الدالة اللي bundles.expandBundle بتستخدمها: (productId, variantId) → سعر.
+     بترجّع null لو الصنف أو الوزن مش موجود — وساعتها الباقة بتترفض بدل ما
+     تتسعّر بسعر مخترع. بنحمّل كل التفاصيل مقدماً عشان الدالة الصافية متزامنة. */
+  async function makeResolver(bundle) {
+    await Promise.all(productIdsOf(bundle.slots).map((p) => productDetail(p)));
+    return (productId, variantId) => {
+      const d = _prod.get(String(productId));
+      if (!d) return null;
+      if (!variantId) return { name: d.name, priceEx: d.priceEx, taxId: d.taxId };
+      const opt = d.variants.find((o) => o.id === Number(variantId));
+      if (!opt) return null; // الوزن اتشال ⇒ نفشل بصوت عالي
+      return { name: d.name, variantName: opt.name, priceEx: opt.priceEx, taxId: d.taxId };
+    };
+  }
+
+  function bundleRow(r) {
+    return {
+      id: r.id, slug: r.slug, name: r.name, name_en: r.name_en || "",
+      description: r.description || "", image: r.image || "", badge: r.badge || "",
+      price: Number(r.price) || 0, slots: r.slots || [],
+      order_kinds: bundlesLib.normalizeKinds(r.order_kinds),
+      active: r.active, sort: r.sort, updated_at: r.updated_at, updated_by: r.updated_by || "",
+    };
+  }
+  async function getBundle(idOrSlug) {
+    const s = String(idOrSlug);
+    const r = await pool.query(
+      /^\d+$/.test(s) ? "SELECT * FROM cms_bundles WHERE id=$1" : "SELECT * FROM cms_bundles WHERE slug=$1",
+      [/^\d+$/.test(s) ? Number(s) : s]);
+    return r.rows[0] ? bundleRow(r.rows[0]) : null;
+  }
+
+  /* ── لوحة التحكم: تعريف وتعديل الباقات من غير نشر ─────────────────────── */
+  app.get("/api/cms/bundles", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    const r = await pool.query("SELECT * FROM cms_bundles ORDER BY sort, id");
+    const list = r.rows.map(bundleRow);
+    // نرفق أسماء المنتجات عشان اللوحة تعرض كلام مفهوم من غير نداء تاني
+    let names = {};
+    try {
+      const ids = [...new Set(list.flatMap((b) => productIdsOf(b.slots)))];
+      await Promise.all(ids.map((p) => productDetail(p)));
+      for (const id of ids) { const d = _prod.get(String(id)); if (d) names[String(id)] = d.name; }
+    } catch (e) { names = {}; }
+    // معاينة التسعير الحالية لكل باقة — المالك يشوف التوزيع قبل ما يفعّلها
+    const preview = {};
+    for (const b of list) {
+      try {
+        const resolve = await makeResolver(b);
+        const choices = {};
+        for (const s of b.slots || []) if (s.type === "choice" && (s.choices || []).length) {
+          choices[s.key] = s.choices[0].product_id;
+        }
+        const ex = bundlesLib.expandBundle(b, choices, 1, resolve);
+        preview[b.slug] = ex.ok
+          ? { ok: true, lines: ex.lines.map((l) => ({
+              product_id: l.product_id, name: l.name, variant_name: l.variant_name || null,
+              quantity: l.quantity, slot: l.bundle_slot,
+              unit_ex: l.unit_amount / bundlesLib.MULTIPLY,
+              line_incl: l.unit_amount * l.quantity * 1.15 / bundlesLib.MULTIPLY })),
+              total_incl: ex.totalEx * 1.15 / bundlesLib.MULTIPLY }
+          : { ok: false, error: ex.error, slot: ex.slot || null, missing: ex.missing || null };
+      } catch (e) { preview[b.slug] = { ok: false, error: e.message }; }
+    }
+    return c.json({ ok: true, bundles: list, productNames: names, preview });
+  });
+
+  // كتالوج مبسّط للوحة: المنتجات + أوزانها، عشان بناء الخانات بالضغط
+  app.get("/api/cms/bundles/catalog", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    try {
+      const byId = await menuIndex();
+      const ids = [...byId.keys()];
+      // بنجيب تفاصيل كل صنف (فيها الأوزان والسعر الصافي) على دفعات صغيرة
+      for (let i = 0; i < ids.length; i += 8) await Promise.all(ids.slice(i, i + 8).map((p) => productDetail(p)));
+      const items = ids.map((id) => {
+        const d = _prod.get(id); if (!d) return null;
+        return { id, name: d.name, price_incl: d.priceIncl, price_ex: d.priceEx,
+          image: (byId.get(id) || {}).image || "",
+          category: "", variants: d.variants.map((o) => ({ id: o.id, name: o.name, price_incl: o.priceIncl })) };
+      }).filter(Boolean);
+      // الأصناف اللي برّه المنيو (زي بيبسي لتر ١٣٢) بتتضاف لو اتسألنا عنها
+      const extra = String(c.req.query("extra") || "").split(",").map((x) => x.trim()).filter((x) => /^\d+$/.test(x));
+      for (const id of extra) {
+        if (items.some((x) => x.id === id)) continue;
+        const d = await productDetail(id);
+        if (d) items.push({ id, name: d.name, price_incl: d.priceIncl, price_ex: d.priceEx, image: "",
+          category: "خارج المنيو", variants: d.variants.map((o) => ({ id: o.id, name: o.name, price_incl: o.priceIncl })) });
+      }
+      return c.json({ ok: true, items });
+    } catch (e) {
+      return c.json({ ok: false, error: "catalog_unavailable", message: e.message, items: [] });
+    }
+  });
+
+  const slugOkB = (s) => /^[a-z0-9](?:[a-z0-9-]{0,46}[a-z0-9])?$/.test(s);
+  function bundleBody(b) {
+    return {
+      name: clip(b.name, 80), name_en: clip(b.name_en, 80), description: clip(b.description, 600),
+      image: clip(b.image, 500), badge: clip(b.badge, 40),
+      price: Math.max(0, Math.round((Number(b.price) || 0) * 100) / 100),
+      slots: bundlesLib.normalizeSlots(b.slots),
+      order_kinds: bundlesLib.normalizeKinds(b.order_kinds),
+      active: b.active === true, sort: Number(b.sort) || 0,
+    };
+  }
+
+  app.post("/api/cms/bundles", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    let b = {}; try { b = await c.req.json(); } catch { return c.json({ ok: false, error: "bad json" }, 400); }
+    const slug = String(b.slug || "").trim().toLowerCase();
+    if (!slugOkB(slug)) return c.json({ ok: false, error: "bad_slug" }, 400);
+    const f = bundleBody(b);
+    if (!f.name) return c.json({ ok: false, error: "name_required" }, 400);
+    if (!okImage(f.image)) return c.json({ ok: false, error: "bad_image_url" }, 400);
+    if (!(f.price > 0)) return c.json({ ok: false, error: "price_required" }, 400);
+    if (!f.slots.length) return c.json({ ok: false, error: "slots_required" }, 400);
+    try {
+      const r = await pool.query(
+        `INSERT INTO cms_bundles(slug,name,name_en,description,image,badge,price,slots,order_kinds,active,sort,updated_by)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING *`,
+        [slug, f.name, f.name_en, f.description, f.image, f.badge, f.price,
+         jb(f.slots), jb(f.order_kinds), f.active, f.sort, await who(c)]);
+      return c.json({ ok: true, bundle: bundleRow(r.rows[0]) });
+    } catch (e) {
+      if (e.code === "23505") return c.json({ ok: false, error: "slug_taken" }, 409);
+      throw e;
+    }
+  });
+
+  app.put("/api/cms/bundles/:id", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    let b = {}; try { b = await c.req.json(); } catch { return c.json({ ok: false, error: "bad json" }, 400); }
+    const f = bundleBody(b);
+    if (!f.name) return c.json({ ok: false, error: "name_required" }, 400);
+    if (!okImage(f.image)) return c.json({ ok: false, error: "bad_image_url" }, 400);
+    if (!(f.price > 0)) return c.json({ ok: false, error: "price_required" }, 400);
+    if (!f.slots.length) return c.json({ ok: false, error: "slots_required" }, 400);
+    // تفعيل باقة لازم تكون قابلة للتسعير — مانسمحش بباقة حيّة بتفشل عند الطلب
+    if (f.active) {
+      const probe = { slug: "probe", name: f.name, price: f.price, slots: f.slots };
+      try {
+        const resolve = await makeResolver(probe);
+        const choices = {};
+        for (const s of f.slots) if (s.type === "choice") choices[s.key] = s.choices[0].product_id;
+        const ex = bundlesLib.expandBundle(probe, choices, 1, resolve);
+        if (!ex.ok) return c.json({ ok: false, error: "not_priceable", detail: ex }, 422);
+      } catch (e) { return c.json({ ok: false, error: "catalog_unavailable", message: e.message }, 422); }
+    }
+    const r = await pool.query(
+      `UPDATE cms_bundles SET name=$2,name_en=$3,description=$4,image=$5,badge=$6,price=$7,
+         slots=$8,order_kinds=$9,active=$10,sort=$11,updated_at=NOW(),updated_by=$12
+       WHERE id=$1 RETURNING *`,
+      [Number(c.req.param("id")), f.name, f.name_en, f.description, f.image, f.badge, f.price,
+       jb(f.slots), jb(f.order_kinds), f.active, f.sort, await who(c)]);
+    if (!r.rowCount) return c.json({ ok: false, error: "not_found" }, 404);
+    return c.json({ ok: true, bundle: bundleRow(r.rows[0]) });
+  });
+
+  app.delete("/api/cms/bundles/:id", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    await pool.query("DELETE FROM cms_bundles WHERE id=$1", [Number(c.req.param("id"))]);
+    return c.json({ ok: true });
+  });
+
+  /* ── عام: المتجر بيقرا الباقات المفعّلة بس ────────────────────────────── */
+  app.get("/api/shop/bundles", async (c) => {
+    const kind = String(c.req.query("option") || "").trim();
+    try {
+      const r = await pool.query("SELECT * FROM cms_bundles WHERE active ORDER BY sort, id");
+      const menu = await menuIndex();
+      const out = [];
+      for (const row of r.rows) {
+        const b = bundleRow(row);
+        if (kind && !b.order_kinds.includes(kind)) continue;
+        // تفاصيل كل صنف (سعر + أوزان) — بتشتغل كمان للأصناف اللي برّه المنيو
+        await Promise.all(productIdsOf(b.slots).map((p) => productDetail(p)));
+        const dress = (productId, variantId, label) => {
+          const d = _prod.get(String(productId));
+          if (!d) return null; // صنف مش موجود ⇒ مايتعرضش
+          const opt = variantId && d.variants.find((o) => o.id === Number(variantId));
+          if (variantId && !opt) return null;
+          return {
+            product_id: String(productId), variant_option_id: variantId || null,
+            name: label || d.name, variant_name: opt ? opt.name : null,
+            image: (menu.get(String(productId)) || {}).image || "",
+            price_incl: opt ? opt.priceIncl : d.priceIncl,
+          };
+        };
+        const slots = [];
+        let broken = false;
+        for (const s of b.slots) {
+          if (s.type === "choice") {
+            const choices = s.choices.map((ch) => dress(ch.product_id, ch.variant_option_id, ch.label)).filter(Boolean);
+            if (!choices.length) { broken = true; break; }
+            slots.push({ key: s.key, label: s.label, type: "choice", quantity: s.quantity, choices });
+          } else {
+            const item = dress(s.product_id, s.variant_option_id, "");
+            if (!item) { broken = true; break; }
+            slots.push({ key: s.key, label: s.label, type: "fixed", quantity: s.quantity, item });
+          }
+        }
+        if (broken) continue; // باقة مكسورة مابتتعرضش أبداً — أحسن من طلب بيفشل
+        out.push({ slug: b.slug, name: b.name, name_en: b.name_en, description: b.description,
+          image: b.image, badge: b.badge, price: b.price, order_kinds: b.order_kinds, slots });
+      }
+      return c.json({ ok: true, bundles: out });
+    } catch (e) {
+      // ٢٠٠ مقصود: كلاودفلير بيبلع الـ5xx، والمتجر لازم يفضل شغّال من غير باقات
+      return c.json({ ok: false, error: "bundles_unavailable", message: e.message, bundles: [] });
+    }
+  });
+
+  /* التوسيع — المصدر الوحيد للحقيقة. المتجر بينده عليه للمعاينة، والـcheckout
+     بينده على **نفس** الدالة، فاللي العميل شافه هو اللي اتحسب بالظبط. */
+  async function expand(slug, choices, quantity, orderKind) {
+    const b = await getBundle(slug);
+    if (!b) return { ok: false, error: "bundle_not_found" };
+    if (!b.active) return { ok: false, error: "bundle_inactive" };
+    if (orderKind && !b.order_kinds.includes(orderKind)) return { ok: false, error: "bundle_not_available_for_option", kinds: b.order_kinds };
+    const resolve = await makeResolver(b);
+    return bundlesLib.expandBundle(b, choices, quantity, resolve);
+  }
+
+  app.post("/api/shop/bundles/expand", async (c) => {
+    let b = {}; try { b = await c.req.json(); } catch { return c.json({ ok: false, error: "bad json" }, 400); }
+    try {
+      const r = await expand(String(b.slug || ""), b.choices || {}, b.quantity || 1, b.option || null);
+      if (!r.ok) return c.json(r, 200); // ٢٠٠ عشان الخطأ الحقيقي يوصل للمتصفح
+      return c.json({ ok: true, lines: r.lines, picks: r.picks, quantity: r.quantity,
+        total_incl: Math.round(r.totalEx * 1.15 / bundlesLib.MULTIPLY * 100) / 100 });
+    } catch (e) { return c.json({ ok: false, error: "expand_failed", message: e.message }); }
+  });
+
+  /* ── التقارير: كام باقة اتباعت، وأنهي اختيار العملاء بيحبوه ───────────────
+     بتتحسب من shop_orders مباشرة (مصدر الحقيقة) — مفيش جدول تاني ممكن
+     يختلف معاه. بنعدّ سطور الباقة الفريدة (bundle_line) مش عدد المكوّنات. */
+  app.get("/api/cms/bundles/report", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    const days = Math.min(365, Math.max(1, Number(c.req.query("days")) || 30));
+    const PAID = "('paid','pos_created','accepted','courier_requested','courier_assigned','on_the_way','delivered')";
+    const sold = await pool.query(
+      `SELECT it->>'bundle' AS slug,
+              max(it->>'bundle_name') AS name,
+              count(DISTINCT it->>'bundle_line')::int AS sold,
+              count(DISTINCT o.order_no)::int AS orders
+         FROM shop_orders o, LATERAL jsonb_array_elements(o.items) it
+        WHERE o.created_at > NOW() - ($1 || ' days')::interval
+          AND o.status IN ${PAID} AND it->>'bundle' IS NOT NULL
+        GROUP BY 1 ORDER BY sold DESC`, [String(days)]);
+    const picks = await pool.query(
+      `SELECT it->>'bundle' AS slug, it->>'bundle_slot' AS slot,
+              it->>'product_id' AS product_id,
+              max(it->>'name') AS name, max(it->>'variant_name') AS variant_name,
+              count(DISTINCT it->>'bundle_line')::int AS picked
+         FROM shop_orders o, LATERAL jsonb_array_elements(o.items) it
+        WHERE o.created_at > NOW() - ($1 || ' days')::interval
+          AND o.status IN ${PAID} AND it->>'bundle' IS NOT NULL
+        GROUP BY 1,2,3 ORDER BY picked DESC`, [String(days)]);
+    const defs = await pool.query("SELECT slug, name, price, slots FROM cms_bundles");
+    const slotType = new Map();
+    for (const d of defs.rows) for (const s of d.slots || []) slotType.set(`${d.slug}/${s.key}`, s);
+    return c.json({
+      ok: true, days,
+      bundles: sold.rows.map((r) => {
+        const def = defs.rows.find((d) => d.slug === r.slug);
+        return { slug: r.slug, name: r.name || (def && def.name) || r.slug, sold: r.sold, orders: r.orders,
+          price: def ? Number(def.price) : null,
+          revenue: def ? Math.round(Number(def.price) * r.sold * 100) / 100 : null };
+      }),
+      // مزيج الاختيارات — الخانات من نوع «اختيار» بس (المثبّتة مالهاش معنى)
+      choices: picks.rows.filter((r) => {
+        const s = slotType.get(`${r.slug}/${r.slot}`);
+        return !s || s.type === "choice";
+      }).map((r) => ({ bundle: r.slug, slot: r.slot, product_id: r.product_id,
+        name: [r.name, r.variant_name].filter(Boolean).join(" · ") || `صنف ${r.product_id}`, picked: r.picked })),
+    });
   });
 
   /* روابط الحملات — freshcuts.sa/l/<slug>. البروكسي بينادي resolve (عام)
@@ -1546,5 +1911,7 @@ export function register(app, ctx, deps = {}) {
   });
 
   console.log("[cms] routes ready");
-  return { sectionOf, effectivePerms, sessionUser, whoami };
+  // `expand` بيتصدّر عشان الـcheckout في shop.js يوسّع الباقة بنفس القواعد
+  // بالظبط اللي المتجر عرضها — مفيش نسخة تانية من التسعير في أي مكان.
+  return { sectionOf, effectivePerms, sessionUser, whoami, expandBundle: expand, getBundle };
 }
