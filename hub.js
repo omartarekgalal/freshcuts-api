@@ -27,7 +27,7 @@
 ═══════════════════════════════════════════════════════════════════════════ */
 
 import crypto from "node:crypto";
-import { OFFERS, offerById, offerState, untilText } from "./offers.js";
+import { OFFERS, offerById, offerState, untilText, onOffersChanged } from "./offers.js";
 
 const newId = (p) => `${p}_${crypto.randomBytes(5).toString("hex")}`;
 
@@ -66,10 +66,12 @@ const SEED_OFFERS = [
 ];
 
 /* جملة الصلاحية بتتكتب من offers.js — مش بإيد حد. */
-function validityText(offerId) {
+export function validityText(offerId) {
   const o = offerById(offerId);
   if (!o) return "";
   const st = offerState(o);
+  if (!st.enabled) return "موقوف من لوحة العروض — ما يتعلنش";
+  if (!st.started) return `يبدأ ${o.from} — ${untilText(o)}، ما يتعلنش قبلها`;
   if (st.ended) return `انتهى ${untilText(o).replace(/^حتى /, "")} — ما يتعلنش`;
   if (st.daysLeft === 0) return `${untilText(o)} — النهاردة آخر يوم، داخل الصالة فقط`;
   if (st.daysLeft != null && st.daysLeft <= 7) {
@@ -158,6 +160,8 @@ export function register(app, ctx) {
     }
   }
   setInterval(() => { reconcileValidity().catch(() => {}); }, 3600_000).unref?.();
+  // تعديل من لوحة العروض → الجملة في الجدول بتتصحّح فوراً مش بعد ساعة
+  onOffersChanged(() => { reconcileValidity().catch(() => {}); });
   ensureSchema()
     .then(() => console.log("[hub] schema ready"))
     .catch((e) => console.error("[hub] schema failed:", e.message));

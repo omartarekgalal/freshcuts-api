@@ -182,6 +182,58 @@ export function normalizeKinds(raw) {
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
+   ربط الباقة بالعرض — «مفتاح واحد» (٢٠٢٦-٠٩-١٢)
+
+   باقة مربوطة بعرض (`offer_id`) بتاخد **مدتها وحالتها وقنواتها من العرض**:
+     • العرض موقوف / لسه مابدأش / انتهى  ⇒ الباقة مش قابلة للطلب، مهما كان
+       `active` بتاعها.
+     • أنواع الطلب = قنوات العرض (صالة→dine_in، تيك أواي→pickup، توصيل→delivery)
+       — مش order_kinds المكتوبة على الباقة، عشان مايبقاش فيه مكانين للقنوات.
+   `active` على الباقة فضل له معنى واحد بس: «جاهزة للبيع أونلاين» — بوابة
+   الإطلاق اللي المالك بيفتحها بعد طلب اختبار حقيقي. يعني الباقة تتباع لما
+   الاتنين يبقوا صح، والحساب ده في الدالة دي بس (المتجر والشيك أوت واللوحة
+   كلهم بينادوها).
+
+   offer = شكل publicOffer() من offers.js (أو null لو الباقة مش مربوطة).
+═══════════════════════════════════════════════════════════════════════════ */
+export const KIND_OF_CHANNEL = { dineIn: "dine_in", takeaway: "pickup", delivery: "delivery" };
+
+export function kindsFromOffer(offer) {
+  if (!offer) return [];
+  if (offer.channels) {
+    return Object.entries(KIND_OF_CHANNEL).filter(([k]) => offer.channels[k] === true).map(([, v]) => v);
+  }
+  return offer.dineInOnly ? ["dine_in"] : [...ORDER_KINDS];
+}
+
+export function bundleAvailability(bundle, offer) {
+  const reasons = [];
+  const linked = Boolean(bundle && bundle.offer_id);
+  let kinds = normalizeKinds(bundle && bundle.order_kinds);
+  let offerStatus = null;
+  if (linked) {
+    if (!offer) {
+      reasons.push({ code: "offer_missing", message: `الباقة مربوطة بعرض «${bundle.offer_id}» مش موجود في سجل العروض` });
+      kinds = [];
+    } else {
+      kinds = kindsFromOffer(offer);
+      offerStatus = offer.status
+        || (offer.enabled === false ? "disabled" : offer.expired ? "ended" : offer.started === false ? "upcoming" : "live");
+      if (offerStatus === "disabled") reasons.push({ code: "offer_disabled", message: `العرض «${offer.title}» موقوف من لوحة العروض` });
+      else if (offerStatus === "upcoming") reasons.push({ code: "offer_upcoming", message: `العرض «${offer.title}» لسه مابدأش — بيبدأ ${offer.from}` });
+      else if (offerStatus === "ended") reasons.push({ code: "offer_ended", message: `العرض «${offer.title}» انتهى ${offer.until}` });
+    }
+  }
+  if (!bundle || bundle.active !== true) {
+    reasons.push({ code: "bundle_draft", message: "الباقة مسودة — مش مفعّلة للبيع أونلاين" });
+  }
+  if (linked && offer && !kinds.length) {
+    reasons.push({ code: "no_order_kind", message: "العرض مالوش ولا قناة طلب مفتوحة" });
+  }
+  return { orderable: reasons.length === 0, linked, offerStatus, kinds, reasons };
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
    توسيع الباقة لسطور حقيقية.
 
    bundle  : { slug, name, price, slots, vat_rate? }

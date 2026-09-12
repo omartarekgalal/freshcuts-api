@@ -1198,7 +1198,8 @@ export function register(app, ctx) {
       };
     }
     const day = postDay(when);
-    const late = named.filter((o) => o.until && day > o.until);
+    // عرض موقوف من لوحة العروض = زي المنتهي: البوست هيعلن حاجة الكاشير مش هيقبلها
+    const late = named.filter((o) => o.enabled === false || (o.until && day > o.until));
     if (!late.length) {
       return { verdict: "pass", block: false, offers: named.map((o) => o.id), day };
     }
@@ -1208,8 +1209,9 @@ export function register(app, ctx) {
       block: row.channel === "instagram",
       offers: late.map((o) => o.id),
       day,
-      reason: late.map((o) =>
-        `البوست ميعاده ${day} وبيعلن «${o.title}» اللي بينتهي ${o.until}`
+      reason: late.map((o) => o.enabled === false && !(o.until && day > o.until)
+        ? `البوست ميعاده ${day} وبيعلن «${o.title}» اللي موقوف من لوحة العروض.`
+        : `البوست ميعاده ${day} وبيعلن «${o.title}» اللي بينتهي ${o.until}`
         + ` — يعني هيعلن سعر ${o.price} ر.س بعد ${Math.round(
           (Date.parse(`${day}T00:00:00Z`) - Date.parse(`${o.until}T00:00:00Z`)) / 86400000)} يوم من انتهائه.`
       ).join(" · "),

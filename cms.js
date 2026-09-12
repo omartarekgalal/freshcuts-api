@@ -32,6 +32,10 @@ import { slaCheck, DEFAULT_SLA } from "./shop.js";
 import * as bundlesLib from "./bundles.js";
 // كتالوج تاب سينس: الأسعار الحقيقية للباقات (العميل مابيبعتش سعر أبداً)
 import * as tsstore from "./tsstore.js";
+// سجل العروض الحي (جدول offer_registry) — نفس المصدر اللي الكتالوج والمتجر بيقروا منه
+import {
+  OFFERS, offerById, publicOffer, saveOffer, offersSource, riyadhDay, EDITABLE_OFFER_FIELDS,
+} from "./offers.js";
 
 const scryptAsync = promisify(crypto.scrypt);
 const SESSION_DAYS = 30;
@@ -77,7 +81,8 @@ export const DEFAULT_PERMS = {
 const PATH_SECTIONS = [
   [/^\/api\/cms\/(users|roles|audit)/, "settings"],
   [/^\/api\/cms\/home/, "home"],
-  [/^\/api\/cms\/(products|catalog|collections|bundles)/, "products"],
+  // العروض والباقات جوّه «المنتجات»: نفس صلاحية تعريف الباقة وتعديل العرض
+  [/^\/api\/cms\/(products|catalog|collections|bundles|offers)/, "products"],
   [/^\/api\/cms\/(growth|links)/, "growth"],
   [/^\/api\/cms\/(customers|segments|loyalty|campaigns|flows|reviews)/, "customers"],
   [/^\/api\/cms\/(analytics|exec)/, "analytics"],
@@ -287,6 +292,19 @@ export function register(app, ctx, deps = {}) {
       );
       CREATE INDEX IF NOT EXISTS cms_flow_log_idx ON cms_flow_log(phone_norm, sent_at DESC);
     `);
+    /* ربط الباقة بالعرض (٢٠٢٦-٠٩-١٢). الزرع مرة واحدة بس (cms_migrations)
+       عشان لو المالك غيّر الربط بعدين، الإقلاع مايرجّعهوش. INSERT والـUPDATE
+       في جملة واحدة: يا الاتنين يحصلوا يا ولا واحد. */
+    await pool.query(`
+      ALTER TABLE cms_bundles ADD COLUMN IF NOT EXISTS offer_id TEXT;
+      CREATE TABLE IF NOT EXISTS cms_migrations (id TEXT PRIMARY KEY, at TIMESTAMPTZ NOT NULL DEFAULT NOW());
+    `);
+    await pool.query(`
+      WITH m AS (INSERT INTO cms_migrations(id) VALUES ('bundle_offer_link_v1') ON CONFLICT DO NOTHING RETURNING id)
+      UPDATE cms_bundles
+         SET offer_id = CASE slug WHEN 'national96-grill' THEN 'nd96_kilo' WHEN 'national96-box' THEN 'nd96_box' END
+       WHERE slug IN ('national96-grill', 'national96-box') AND offer_id IS NULL
+         AND EXISTS (SELECT 1 FROM m)`);
     const r = await pool.query(
       `SELECT s.token_hash, s.expires_at, u.id, u.username, u.name, u.role, u.active
          FROM cms_sessions s JOIN cms_users u ON u.id = s.user_id
@@ -351,13 +369,24 @@ export function register(app, ctx, deps = {}) {
 
   const isWrite = (c) => !["GET", "HEAD", "OPTIONS"].includes(c.req.method);
 
+  /* بترجّع promise برقم السطر — الهوك بيحطه على الطلب (c.set)، والمسار اللي
+     عايز يكتب «إيه اللي اتغيّر» بيكمّل نفس السطر بـ auditNote بدل سطر تاني. */
   function writeAudit(actor, c, section, note) {
-    pool.query(
+    return pool.query(
       `INSERT INTO cms_audit(actor_id, actor_name, role, method, path, section, note)
-       VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+       VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id`,
       [actor.id || null, actor.name || null, actor.role || null, c.req.method,
        String(c.req.path).slice(0, 300), section, note || null])
-      .catch(() => {});
+      .then((r) => r.rows[0]?.id || null)
+      .catch(() => null);
+  }
+  const stashAudit = (c, p) => { try { c.set("cmsAudit", p); } catch { /* */ } };
+  async function auditNote(c, note) {
+    try {
+      const p = c.get("cmsAudit");
+      const id = p ? await p : null;
+      if (id) await pool.query("UPDATE cms_audit SET note=$2 WHERE id=$1", [id, String(note || "").slice(0, 500)]);
+    } catch { /* السجل مايوقعش الحفظ */ }
   }
 
   /* هوك requireAdmin: رجوع true = مسموح، Response = رفض، null = مش توكن فريق. */
@@ -374,7 +403,7 @@ export function register(app, ctx, deps = {}) {
       return c.json({ error: "forbidden", section, need,
         message: `دورك (${user.role}) مالوش صلاحية ${need === E ? "تعديل" : "عرض"} في «${section}»` }, 403);
     }
-    if (need === E) writeAudit(user, c, section);
+    if (need === E) stashAudit(c, writeAudit(user, c, section));
     return true;
   }
 
@@ -384,7 +413,7 @@ export function register(app, ctx, deps = {}) {
     const token = bearer(c);
     const hit = auth && auth.cms ? sessions.get(sha(token)) : null;
     const actor = hit ? hit.user : { id: null, name: "المالك (مفتاح الأدمن)", role: "owner" };
-    writeAudit(actor, c, sectionOf(c.req.path));
+    stashAudit(c, writeAudit(actor, c, sectionOf(c.req.path)));
   }
 
   ctx.setCmsHooks?.({ resolve, audit: auditHook, isOwnerSync });
@@ -829,7 +858,107 @@ export function register(app, ctx, deps = {}) {
       price: Number(r.price) || 0, slots: r.slots || [],
       order_kinds: bundlesLib.normalizeKinds(r.order_kinds),
       active: r.active, sort: r.sort, updated_at: r.updated_at, updated_by: r.updated_by || "",
+      offer_id: r.offer_id || null,
     };
+  }
+
+  /* ── الباقة ↔ العرض: حساب واحد لـ«هل تتطلب؟» ─────────────────────────────
+     المتجر (/api/shop/bundles) والشيك أوت (expand) واللوحة بينادوا نفس
+     الدالة — bundlesLib.bundleAvailability — بحالة العرض من السجل الحي. */
+  const offerFor = (b, now = new Date()) => {
+    if (!b || !b.offer_id) return null;
+    const o = offerById(b.offer_id);
+    return o ? publicOffer(o, now) : null;
+  };
+  const availabilityOf = (b, now = new Date()) => bundlesLib.bundleAvailability(b, offerFor(b, now));
+
+  const r2m = (x) => Math.round(x * 100) / 100;
+  const inclOf = (units) => r2m(units * (1 + bundlesLib.VAT_RATE) / bundlesLib.MULTIPLY);
+  function menuInclOf(productId, variantId) {
+    const d = _prod.get(String(productId));
+    if (!d) return null;
+    if (!variantId) return d.priceIncl;
+    const o = d.variants.find((v) => v.id === Number(variantId));
+    return o ? o.priceIncl : null;
+  }
+
+  function bundleErrorAr(ex, slots) {
+    const slot = (slots || []).find((s) => s.key === ex.slot);
+    const sl = slot ? `«${slot.label || slot.key}»` : "";
+    const nm = ex.product_id ? `«${_prod.get(String(ex.product_id))?.name || `صنف ${ex.product_id}`}»` : "";
+    switch (ex.error) {
+      case "product_unavailable":
+        return `الصنف ${nm} في خانة ${sl} مش موجود في تاب سينس أو الوزن بتاعه اتشال — الباقة مش هتتسعّر.`;
+      case "choice_required": return `لازم اختيار في الخانات: ${(ex.missing || []).join("، ")}`;
+      case "choice_not_allowed": return `الاختيار ${nm} مش من ضمن خانة ${sl}.`;
+      case "bundle_has_no_slots": return "الباقة مفيهاش خانات.";
+      case "distribution_mismatch": return "توزيع السعر مطلعش مضبوط على الهللة — الباقة اتمنعت. بلّغ المطوّر.";
+      default: return `الباقة مش قابلة للتسعير (${ex.error}).`;
+    }
+  }
+
+  /* التسعير الكامل: التركيبة الأساسية (أول اختيار في كل خانة) + كل اختيار في
+     كل خانة لوحده. قبل كده التفعيل كان بيجرّب أول اختيار بس — يعني صنف
+     اتشال من تاني خانة كان هيعدّي التفعيل ويفشل عند العميل. */
+  async function priceCheck(b) {
+    const probe = { slug: b.slug || "probe", name: b.name || "", price: b.price, slots: b.slots || [] };
+    if (!(Number(probe.price) > 0)) return { ok: false, error: "price_required", message: "سعر الباقة مطلوب." };
+    if (!probe.slots.length) return { ok: false, error: "bundle_has_no_slots", message: "الباقة مفيهاش خانات." };
+    let resolve;
+    try { resolve = await makeResolver(probe); }
+    catch (e) { return { ok: false, error: "catalog_unavailable", message: "تعذر قراءة أسعار تاب سينس دلوقتي — جرّب تاني بعد دقيقة." }; }
+    const pickOf = (ch) => ({ product_id: ch.product_id, variant_option_id: ch.variant_option_id });
+    const base = {};
+    for (const s of probe.slots) if (s.type === "choice") base[s.key] = pickOf(s.choices[0]);
+    const fmt = (ex) => ({
+      lines: ex.lines.map((l) => ({
+        slot: l.bundle_slot, product_id: String(l.product_id), name: l.name,
+        variant_name: l.variant_name || null, quantity: l.quantity,
+        line_incl: inclOf(l.unit_amount * l.quantity),
+        menu_incl: menuInclOf(l.product_id, l.variant_option_id),
+      })),
+      total_incl: inclOf(ex.totalEx),
+    });
+    const ex0 = bundlesLib.expandBundle(probe, base, 1, resolve);
+    if (!ex0.ok) return { ok: false, error: ex0.error, detail: ex0, message: bundleErrorAr(ex0, probe.slots) };
+    const choiceShares = {};
+    const problems = [];
+    for (const s of probe.slots) {
+      if (s.type !== "choice") continue;
+      choiceShares[s.key] = s.choices.map((ch) => {
+        const ex = bundlesLib.expandBundle(probe, { ...base, [s.key]: pickOf(ch) }, 1, resolve);
+        const row = { product_id: ch.product_id, variant_option_id: ch.variant_option_id || null,
+          name: _prod.get(String(ch.product_id))?.name || `صنف ${ch.product_id}`,
+          variant_name: ch.variant_option_id
+            ? (_prod.get(String(ch.product_id))?.variants.find((v) => v.id === Number(ch.variant_option_id))?.name || null) : null,
+          menu_incl: menuInclOf(ch.product_id, ch.variant_option_id) };
+        if (!ex.ok) {
+          const message = bundleErrorAr(ex, probe.slots);
+          problems.push(message);
+          return { ...row, ok: false, message };
+        }
+        const mine = ex.lines.filter((l) => l.bundle_slot === s.key);
+        return { ...row, ok: true, share_incl: inclOf(mine.reduce((a, l) => a + l.unit_amount * l.quantity, 0)) };
+      });
+    }
+    if (problems.length) {
+      return { ok: false, error: "product_unavailable", message: problems[0], problems, base: fmt(ex0), choiceShares };
+    }
+    return { ok: true, base: fmt(ex0), choiceShares };
+  }
+
+  /* الباقة المربوطة بعرض لازم يبقى سعرها = سعر العرض: السعر المعلن في
+     الكتالوج والإعلانات والشريط جاي من العرض، ومايصحّش العميل يشوف ٩٦ في
+     الإعلان ويدفع رقم تاني. */
+  function linkCheck(f) {
+    if (!f.offer_id) return null;
+    const o = offerById(f.offer_id);
+    if (!o) return { ok: false, error: "unknown_offer", message: `العرض «${f.offer_id}» مش موجود في سجل العروض.` };
+    if (Number(o.price) !== Number(f.price)) {
+      return { ok: false, error: "price_mismatch_offer",
+        message: `الباقة مربوطة بعرض «${o.title}» سعره ${o.price} ر.س — سعر الباقة (${f.price}) لازم يبقى نفس الرقم، لأن ده السعر المعلن في الكتالوج والإعلانات.` };
+    }
+    return null;
   }
   async function getBundle(idOrSlug) {
     const s = String(idOrSlug);
@@ -851,27 +980,39 @@ export function register(app, ctx, deps = {}) {
       await Promise.all(ids.map((p) => productDetail(p)));
       for (const id of ids) { const d = _prod.get(String(id)); if (d) names[String(id)] = d.name; }
     } catch (e) { names = {}; }
-    // معاينة التسعير الحالية لكل باقة — المالك يشوف التوزيع قبل ما يفعّلها
-    const preview = {};
+    // معاينة التسعير لكل باقة (كل اختيار في كل خانة) + هل تتطلب دلوقتي ولي لأ
+    const now = new Date();
+    const preview = {}, availability = {};
     for (const b of list) {
-      try {
-        const resolve = await makeResolver(b);
-        const choices = {};
-        for (const s of b.slots || []) if (s.type === "choice" && (s.choices || []).length) {
-          choices[s.key] = s.choices[0].product_id;
-        }
-        const ex = bundlesLib.expandBundle(b, choices, 1, resolve);
-        preview[b.slug] = ex.ok
-          ? { ok: true, lines: ex.lines.map((l) => ({
-              product_id: l.product_id, name: l.name, variant_name: l.variant_name || null,
-              quantity: l.quantity, slot: l.bundle_slot,
-              unit_ex: l.unit_amount / bundlesLib.MULTIPLY,
-              line_incl: l.unit_amount * l.quantity * 1.15 / bundlesLib.MULTIPLY })),
-              total_incl: ex.totalEx * 1.15 / bundlesLib.MULTIPLY }
-          : { ok: false, error: ex.error, slot: ex.slot || null, missing: ex.missing || null };
-      } catch (e) { preview[b.slug] = { ok: false, error: e.message }; }
+      try { preview[b.slug] = await priceCheck(b); }
+      catch (e) { preview[b.slug] = { ok: false, error: "preview_failed", message: `تعذر حساب المعاينة: ${e.message}` }; }
+      availability[b.slug] = availabilityOf(b, now);
     }
-    return c.json({ ok: true, bundles: list, productNames: names, preview });
+    const offers = OFFERS.map((o) => {
+      const p = publicOffer(o, now);
+      return { id: p.id, title: p.title, price: p.price, status: p.status, statusLabel: p.statusLabel,
+        from: p.from, until: p.until, untilProvisional: p.untilProvisional, channels: p.channels, dineInOnly: p.dineInOnly };
+    });
+    return c.json({ ok: true, bundles: list, productNames: names, preview, availability, offers });
+  });
+
+  /* معاينة مسودة قبل الحفظ — GET عشان المعاينة مش تعديل ومايتسجّلش في السجل.
+     ?draft=<JSON {price, slots, offer_id}> */
+  app.get("/api/cms/bundles/preview", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    let d = {};
+    try { d = JSON.parse(c.req.query("draft") || "{}"); }
+    catch { return c.json({ ok: false, error: "bad_draft", message: "بيانات المعاينة مش مفهومة." }); }
+    const f = bundleBody(d || {});
+    const warnings = [];
+    const link = linkCheck(f);
+    if (link) warnings.push(link.message);
+    try {
+      return c.json({ ...(await priceCheck({ ...f, slug: "preview" })), warnings,
+        availability: availabilityOf({ ...f, active: true }) });
+    } catch (e) {
+      return c.json({ ok: false, error: "preview_failed", message: e.message, warnings });
+    }
   });
 
   // كتالوج مبسّط للوحة: المنتجات + أوزانها، عشان بناء الخانات بالضغط
@@ -911,28 +1052,67 @@ export function register(app, ctx, deps = {}) {
       slots: bundlesLib.normalizeSlots(b.slots),
       order_kinds: bundlesLib.normalizeKinds(b.order_kinds),
       active: b.active === true, sort: Number(b.sort) || 0,
+      offer_id: clip(b.offer_id, 40),
     };
+  }
+
+  const BUNDLE_MSG = {
+    bad_slug: "المعرّف (slug) لازم حروف إنجليزي صغيرة وأرقام وشرطة بس.",
+    name_required: "اسم الباقة مطلوب.",
+    bad_image_url: "رابط الصورة لازم يبدأ بـ https://",
+    price_required: "سعر الباقة مطلوب.",
+    slots_required: "الباقة محتاجة خانة واحدة على الأقل (وكل خانة اختيار محتاجة منتج واحد على الأقل).",
+    slug_taken: "المعرّف ده مستعمل لباقة تانية.",
+  };
+  const bundleFail = (c, error, status = 400, extra = {}) =>
+    c.json({ ok: false, error, message: BUNDLE_MSG[error] || error, ...extra }, status);
+
+  // تفعيل باقة لازم تكون قابلة للتسعير بكل اختياراتها — مانسمحش بباقة حيّة بتفشل عند الطلب
+  async function activationBlock(f) {
+    const pc = await priceCheck(f);
+    if (pc.ok) return null;
+    return { ok: false, error: "not_priceable", message: `مينفعش تتفعّل: ${pc.message}`, detail: pc };
+  }
+
+  function bundleChangeNote(before, after) {
+    const parts = [];
+    const cmp = (k, label, fmt = (v) => v) => {
+      if (JSON.stringify(before?.[k] ?? null) !== JSON.stringify(after?.[k] ?? null)) {
+        parts.push(`${label} ${fmt(before?.[k] ?? "—")}→${fmt(after?.[k] ?? "—")}`);
+      }
+    };
+    cmp("name", "الاسم"); cmp("price", "السعر"); cmp("active", "مفعّلة");
+    cmp("offer_id", "العرض"); cmp("image", "الصورة", (v) => (v ? "صورة" : "—"));
+    cmp("description", "الوصف", () => "…");
+    const shape = (slots) => (slots || []).map((s) => `${s.key}:${s.type === "choice" ? (s.choices || []).length + "اختيار" : s.product_id}`).join(" ");
+    if (shape(before?.slots) !== shape(after?.slots)) parts.push(`الخانات ${shape(before?.slots) || "—"}→${shape(after?.slots)}`);
+    return parts.length ? parts.join("، ") : "حفظ من غير تغيير";
   }
 
   app.post("/api/cms/bundles", async (c) => {
     const err = await requireAdmin(c); if (err) return err;
     let b = {}; try { b = await c.req.json(); } catch { return c.json({ ok: false, error: "bad json" }, 400); }
     const slug = String(b.slug || "").trim().toLowerCase();
-    if (!slugOkB(slug)) return c.json({ ok: false, error: "bad_slug" }, 400);
+    if (!slugOkB(slug)) return bundleFail(c, "bad_slug");
     const f = bundleBody(b);
-    if (!f.name) return c.json({ ok: false, error: "name_required" }, 400);
-    if (!okImage(f.image)) return c.json({ ok: false, error: "bad_image_url" }, 400);
-    if (!(f.price > 0)) return c.json({ ok: false, error: "price_required" }, 400);
-    if (!f.slots.length) return c.json({ ok: false, error: "slots_required" }, 400);
+    if (!f.name) return bundleFail(c, "name_required");
+    if (!okImage(f.image)) return bundleFail(c, "bad_image_url");
+    if (!(f.price > 0)) return bundleFail(c, "price_required");
+    if (!f.slots.length) return bundleFail(c, "slots_required");
+    const link = linkCheck(f);
+    if (link) return c.json(link, 400);
+    if (f.active) { const blk = await activationBlock({ ...f, slug }); if (blk) return c.json(blk, 422); }
     try {
       const r = await pool.query(
-        `INSERT INTO cms_bundles(slug,name,name_en,description,image,badge,price,slots,order_kinds,active,sort,updated_by)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING *`,
+        `INSERT INTO cms_bundles(slug,name,name_en,description,image,badge,price,slots,order_kinds,active,sort,updated_by,offer_id)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING *`,
         [slug, f.name, f.name_en, f.description, f.image, f.badge, f.price,
-         jb(f.slots), jb(f.order_kinds), f.active, f.sort, await who(c)]);
-      return c.json({ ok: true, bundle: bundleRow(r.rows[0]) });
+         jb(f.slots), jb(f.order_kinds), f.active, f.sort, await who(c), f.offer_id]);
+      const bundle = bundleRow(r.rows[0]);
+      auditNote(c, `باقة جديدة ${slug}: ${bundleChangeNote(null, bundle)}`);
+      return c.json({ ok: true, bundle, availability: availabilityOf(bundle) });
     } catch (e) {
-      if (e.code === "23505") return c.json({ ok: false, error: "slug_taken" }, 409);
+      if (e.code === "23505") return bundleFail(c, "slug_taken", 409);
       throw e;
     }
   });
@@ -940,36 +1120,93 @@ export function register(app, ctx, deps = {}) {
   app.put("/api/cms/bundles/:id", async (c) => {
     const err = await requireAdmin(c); if (err) return err;
     let b = {}; try { b = await c.req.json(); } catch { return c.json({ ok: false, error: "bad json" }, 400); }
+    const before = await getBundle(Number(c.req.param("id")));
+    if (!before) return c.json({ ok: false, error: "not_found", message: "الباقة مش موجودة." }, 404);
     const f = bundleBody(b);
-    if (!f.name) return c.json({ ok: false, error: "name_required" }, 400);
-    if (!okImage(f.image)) return c.json({ ok: false, error: "bad_image_url" }, 400);
-    if (!(f.price > 0)) return c.json({ ok: false, error: "price_required" }, 400);
-    if (!f.slots.length) return c.json({ ok: false, error: "slots_required" }, 400);
-    // تفعيل باقة لازم تكون قابلة للتسعير — مانسمحش بباقة حيّة بتفشل عند الطلب
-    if (f.active) {
-      const probe = { slug: "probe", name: f.name, price: f.price, slots: f.slots };
-      try {
-        const resolve = await makeResolver(probe);
-        const choices = {};
-        for (const s of f.slots) if (s.type === "choice") choices[s.key] = s.choices[0].product_id;
-        const ex = bundlesLib.expandBundle(probe, choices, 1, resolve);
-        if (!ex.ok) return c.json({ ok: false, error: "not_priceable", detail: ex }, 422);
-      } catch (e) { return c.json({ ok: false, error: "catalog_unavailable", message: e.message }, 422); }
-    }
+    if (!f.name) return bundleFail(c, "name_required");
+    if (!okImage(f.image)) return bundleFail(c, "bad_image_url");
+    if (!(f.price > 0)) return bundleFail(c, "price_required");
+    if (!f.slots.length) return bundleFail(c, "slots_required");
+    const link = linkCheck(f);
+    if (link) return c.json(link, 400);
+    if (f.active) { const blk = await activationBlock({ ...f, slug: before.slug }); if (blk) return c.json(blk, 422); }
     const r = await pool.query(
       `UPDATE cms_bundles SET name=$2,name_en=$3,description=$4,image=$5,badge=$6,price=$7,
-         slots=$8,order_kinds=$9,active=$10,sort=$11,updated_at=NOW(),updated_by=$12
+         slots=$8,order_kinds=$9,active=$10,sort=$11,updated_at=NOW(),updated_by=$12,offer_id=$13
        WHERE id=$1 RETURNING *`,
-      [Number(c.req.param("id")), f.name, f.name_en, f.description, f.image, f.badge, f.price,
-       jb(f.slots), jb(f.order_kinds), f.active, f.sort, await who(c)]);
+      [before.id, f.name, f.name_en, f.description, f.image, f.badge, f.price,
+       jb(f.slots), jb(f.order_kinds), f.active, f.sort, await who(c), f.offer_id]);
     if (!r.rowCount) return c.json({ ok: false, error: "not_found" }, 404);
-    return c.json({ ok: true, bundle: bundleRow(r.rows[0]) });
+    const bundle = bundleRow(r.rows[0]);
+    auditNote(c, `باقة ${bundle.slug}: ${bundleChangeNote(before, bundle)}`);
+    const availability = availabilityOf(bundle);
+    const warnings = bundle.active && !availability.orderable
+      ? [`الباقة اتفعّلت بس مش هتظهر للعميل دلوقتي: ${availability.reasons.map((x) => x.message).join("، ")}`] : [];
+    return c.json({ ok: true, bundle, availability, warnings });
   });
 
   app.delete("/api/cms/bundles/:id", async (c) => {
     const err = await requireAdmin(c); if (err) return err;
+    const before = await getBundle(Number(c.req.param("id")));
     await pool.query("DELETE FROM cms_bundles WHERE id=$1", [Number(c.req.param("id"))]);
+    if (before) auditNote(c, `حذف باقة ${before.slug} (${before.name})`);
     return c.json({ ok: true });
+  });
+
+  /* ═══ العروض — التحكم من اللوحة (السجل الحي في offers.js) ═══════════════
+     الحالة والتواريخ والاسم والنص والقنوات. السعر، اسم الكتالوج، ومنع
+     «التوفير» ومنع تطبيقات التوصيل مقفولين في الكود ومايتعدّلوش من هنا. */
+  async function offersPayload(now = new Date()) {
+    let meta = new Map();
+    try {
+      meta = new Map((await pool.query("SELECT id, updated_at, updated_by FROM offer_registry")).rows.map((r) => [r.id, r]));
+    } catch { /* الجدول لسه ماتعملش — الشاشة بتقول source=seed */ }
+    const linked = (await pool.query("SELECT * FROM cms_bundles WHERE offer_id IS NOT NULL ORDER BY sort, id")).rows.map(bundleRow);
+    return OFFERS.map((o) => {
+      const p = publicOffer(o, now);
+      const m = meta.get(o.id);
+      return {
+        ...p,
+        locked: { price: o.price, catalogTitle: o.catalogTitle, savingsClaim: false, deliveryApps: false },
+        updatedAt: m?.updated_at || null,
+        updatedBy: m?.updated_by || null,
+        bundles: linked.filter((b) => b.offer_id === o.id).map((b) => ({
+          id: b.id, slug: b.slug, name: b.name, price: b.price, active: b.active,
+          availability: availabilityOf(b, now),
+        })),
+      };
+    });
+  }
+
+  app.get("/api/cms/offers", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    const now = new Date();
+    return c.json({ ok: true, today: riyadhDay(now), ...offersSource(), editable: EDITABLE_OFFER_FIELDS,
+      offers: await offersPayload(now) });
+  });
+
+  app.put("/api/cms/offers/:id", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    let b = {}; try { b = await c.req.json(); } catch { return c.json({ ok: false, error: "bad json" }, 400); }
+    const id = c.req.param("id");
+    if (!offerById(id)) return c.json({ ok: false, error: "unknown_offer", message: "عرض غير معروف." }, 404);
+    // مانحفظش فوق نسخة البذرة — لو الجدول ماتقراش، الحفظ ممكن يمسح تعديل سابق
+    if (offersSource().source !== "db") {
+      return c.json({ ok: false, error: "registry_not_loaded",
+        message: "سجل العروض لسه ماتحمّلش من الداتابيز — الحفظ اتمنع عشان مانكتبش فوق تعديل سابق. جرّب بعد دقيقة." }, 409);
+    }
+    const r = await saveOffer(pool, id, b, await who(c));
+    if (!r.ok) return c.json(r, 400);
+    const fmt = (v) => (v == null ? "—" : typeof v === "object"
+      ? Object.entries(v).filter(([, x]) => x === true).map(([k]) => k).join("+") || "—" : String(v));
+    auditNote(c, r.changed.length
+      ? `عرض ${id}: ${r.changed.map((k) => `${k} ${fmt(r.before[k])}→${fmt(r.after[k])}`).join("، ")}`
+      : `عرض ${id}: حفظ من غير تغيير`);
+    const now = new Date();
+    const offer = (await offersPayload(now)).find((o) => o.id === id);
+    const warnings = [];
+    if (offer.expired) warnings.push(`تاريخ النهاية (${offer.until}) عدّى — العرض وقف في كل مكان.`);
+    return c.json({ ok: true, offer, changed: r.changed, warnings });
   });
 
   /* ── عام: المتجر بيقرا الباقات المفعّلة بس ────────────────────────────── */
@@ -977,10 +1214,14 @@ export function register(app, ctx, deps = {}) {
     const kind = String(c.req.query("option") || "").trim();
     try {
       const r = await pool.query("SELECT * FROM cms_bundles WHERE active ORDER BY sort, id");
-      const menu = await menuIndex();
       const out = [];
-      for (const row of r.rows) {
-        const b = bundleRow(row);
+      const now = new Date();
+      // العرض المربوط موقوف/مابدأش/انتهى ⇒ الباقة مابتتعرضش. القنوات من العرض.
+      // الفلترة قبل قراءة المنيو: مفيش باقة تتطلب ⇒ مفيش نداء لتاب سينس أصلاً.
+      const live = r.rows.map(bundleRow).map((b) => ({ b, av: availabilityOf(b, now) })).filter((x) => x.av.orderable);
+      const menu = live.length ? await menuIndex() : new Map();
+      for (const { b, av } of live) {
+        b.order_kinds = av.kinds;
         if (kind && !b.order_kinds.includes(kind)) continue;
         // تفاصيل كل صنف (سعر + أوزان) — بتشتغل كمان للأصناف اللي برّه المنيو
         await Promise.all(productIdsOf(b.slots).map((p) => productDetail(p)));
@@ -1025,8 +1266,14 @@ export function register(app, ctx, deps = {}) {
   async function expand(slug, choices, quantity, orderKind) {
     const b = await getBundle(slug);
     if (!b) return { ok: false, error: "bundle_not_found" };
-    if (!b.active) return { ok: false, error: "bundle_inactive" };
-    if (orderKind && !b.order_kinds.includes(orderKind)) return { ok: false, error: "bundle_not_available_for_option", kinds: b.order_kinds };
+    // نفس حساب المتجر واللوحة: الباقة مسودة، أو عرضها موقوف/مابدأش/انتهى ⇒ مرفوضة
+    const av = availabilityOf(b);
+    if (!av.orderable) {
+      const draft = av.reasons.every((x) => x.code === "bundle_draft");
+      return { ok: false, error: draft ? "bundle_inactive" : "offer_not_active",
+        reasons: av.reasons, message: av.reasons.map((x) => x.message).join("، ") };
+    }
+    if (orderKind && !av.kinds.includes(orderKind)) return { ok: false, error: "bundle_not_available_for_option", kinds: av.kinds };
     const resolve = await makeResolver(b);
     return bundlesLib.expandBundle(b, choices, quantity, resolve);
   }

@@ -161,18 +161,33 @@ async function fetchMenu() {
       rows.push(row);
     }
   }
-  // العروض المسجّلة والشغّالة النهاردة بتتحط بعد أصناف المنيو عشان تاخد صورة
-  // مستعارة من فئة "Offers" لو موجودة (ميتا بترفض صف من غير صورة).
-  // catalogOffers() مش activeOffers(): صينية اللمة عرض شغّال لكنه **صنف في
-  // المنيو** أصلاً (id 121)، فصف تاني ليه هنا = id مكرر في الـfeed.
-  for (const o of catalogOffers()) {
-    const r = offerRow(o);
-    r.title = withNote(r.title).slice(0, 200);
-    r.description = withNote(r.description).slice(0, 500);
-    rows.push(r);
-  }
   return fillMissingImages(rows);
 }
+
+/* ── صفوف العروض بتتضاف وقت القراءة، مش جوّه كاش المنيو ─────────────────────
+   قبل ٢٠٢٦-٠٩-١٢ صفوف العروض كانت بتتبني جوّه fetchMenu() وبتتخزّن مع المنيو
+   ١٠ دقايق. لما العروض بقت تتعدّل من اللوحة، ده كان معناه إن تغيير تاريخ
+   النهاية ممكن ياخد لحد ١٠ دقايق عشان يوصل الـfeed. دلوقتي الكاش للمنيو بس،
+   والعروض بتتحسب من السجل الحي في كل قراءة.
+   catalogOffers() مش activeOffers(): صينية اللمة عرض شغّال لكنه **صنف في
+   المنيو** أصلاً (id 121)، فصف تاني ليه هنا = id مكرر في الـfeed.
+   ملاحظة «داخل الصالة فقط» بتتكتب على العرض اللي هو فعلاً صالة بس — عروض
+   اليوم الوطني متاحة تيك أواي وتوصيل من المتجر، فالملاحظة عليها كانت هتبقى
+   كلام غلط في الإعلان. */
+export function withOfferRows(menu, now = new Date()) {
+  const out = [...(menu || [])];
+  for (const o of catalogOffers(now)) {
+    const r = offerRow(o);
+    if (o.dineInOnly) {
+      r.title = withNote(r.title).slice(0, 200);
+      r.description = withNote(r.description).slice(0, 500);
+    }
+    out.push(r);
+  }
+  return out;
+}
+/** صفوف الـfeed الإعلاني من منيو معيّن — صافية، للاختبارات. */
+export const catalogFeedRows = (menu, now = new Date()) => adRows(withOfferRows(menu, now), now);
 
 /* Meta drops (and warns about) any product row with an empty image_link, and a
    DPA carousel cannot render a card without one. 18 of the 72 menu items — the
@@ -209,14 +224,15 @@ function fillMissingImages(rows) {
 }
 
 async function getRows() {
-  if (cache.rows && Date.now() - cache.at < CACHE_MS) return cache.rows;
-  try {
-    cache = { at: Date.now(), rows: await fetchMenu(), error: null };
-  } catch (e) {
-    cache.error = String(e.message || e);
-    if (!cache.rows) throw e;         // no stale copy to fall back on
+  if (!(cache.rows && Date.now() - cache.at < CACHE_MS)) {
+    try {
+      cache = { at: Date.now(), rows: await fetchMenu(), error: null };
+    } catch (e) {
+      cache.error = String(e.message || e);
+      if (!cache.rows) throw e;         // no stale copy to fall back on
+    }
   }
-  return cache.rows;
+  return withOfferRows(cache.rows);
 }
 
 // CSV per Meta's product-feed spec. Quotes doubled, commas safe.

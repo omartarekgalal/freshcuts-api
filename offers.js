@@ -80,11 +80,17 @@ export const DINE_IN_NOTE = "داخل الصالة فقط";
    دلوقتي. الرقم هنا آخر سبتمبر عشان ما يبقاش في عرض بلا نهاية (ده بالظبط
    الغلط اللي الملف ده اتكتب عشانه)، ومتعلّم `untilProvisional` عشان أي سطح
    يفرّق بين تاريخ قرّره صاحبه وتاريخ مؤقت. أول ما عمر يقول اليوم، غيّر
-   السطر ده وبس — العرضين وكل السطوح بتقرا منه.                             */
-export const OLD_OFFERS_UNTIL = "2026-09-14";
-export const ND96_FROM = "2026-09-15";
-export const ND96_UNTIL = "2026-09-30";
-export const ND96_UNTIL_PROVISIONAL = true;
+   السطر ده وبس — العرضين وكل السطوح بتقرا منه.
+
+   ⚠️ تحديث ٢٠٢٦-٠٩-١٢: الأرقام دي بقت **بذرة أول تشغيل بس** (SEED_*).
+   الحالة والتواريخ والأسماء والنص والقنوات بقت في جدول `offer_registry`،
+   وبتتعدّل من لوحة المتجر ← المنتجات ← العروض والباقات — من غير نشر.
+   تغيير الأرقام هنا بعد أول تشغيل **مالوش أي أثر** (الصف موجود في الجدول)،
+   وده مقصود: نسخة واحدة بس للحقيقة. شوف «السجل الحي» تحت.               */
+export const SEED_OLD_OFFERS_UNTIL = "2026-09-14";
+export const SEED_ND96_FROM = "2026-09-15";
+export const SEED_ND96_UNTIL = "2026-09-30";
+export const SEED_ND96_UNTIL_PROVISIONAL = true;
 // أول يوم فيه سطور فواتير محفوظة (ts_order_items). قبله القياس مستحيل مش
 // ضعيف — الطلبات موجودة لكن من غير أصنافها.
 export const ITEMS_FROM = "2026-05-01";
@@ -95,8 +101,12 @@ export const ITEMS_FROM = "2026-05-01";
    وده تصرف صح منه. خلّي الاسمين واحد.
    `components[].category` لازم تكون نفس قيمة `product_type` في الكتالوج
    (اللي جاية من صفحات المنيو في TabSense) — عشان قياس الاكتساب تحت يعرف
-   الأصناف من نفس المصدر مش من قايمة تانية مكتوبة بالإيد.                  */
-export const OFFERS = [
+   الأصناف من نفس المصدر مش من قايمة تانية مكتوبة بالإيد.
+
+   البذرة: الحقول القابلة للتعديل هنا (from/until/untilProvisional/title/
+   desc/channels) بتتنسخ للجدول مرة واحدة بس. باقي الحقول (السعر، البصمة،
+   المكوّنات، savingsClaim…) **بتفضل في الكود عن قصد** ومش قابلة للتعديل. */
+export const OFFER_SEED = [
   {
     id: "combo70",
     // id المنتج في كتالوج المنصات. بادئة offer- عشان ما يصطدمش بأي product id
@@ -125,7 +135,7 @@ export const OFFERS = [
        بيتحوّل بعد شهر لحقيقة. اللي بيتحكم في الظهور هو تاريخ **النهاية**
        بس، وهو الرقم الوحيد اللي عندنا من صاحبه. */
     from: null,
-    until: OLD_OFFERS_UNTIL,
+    until: SEED_OLD_OFFERS_UNTIL,
     /* إزاي بيتدق على نقطة البيع: خصم يدوي على كل سطر من التلاتة لحد ما
        المجموع يوصل ٧٠. مفيش صنف اسمه كده في المنيو ومش المفروض يتعمل —
        التسجيل هنا هو اللي بيوثّق السعر، مش صنف وهمي في نقطة البيع. */
@@ -171,7 +181,7 @@ export const OFFERS = [
     dineInOnly: true,
     goal: "acquisition",
     from: null,
-    until: OLD_OFFERS_UNTIL,
+    until: SEED_OLD_OFFERS_UNTIL,
     ringsAs: "pos_item",
     catalogRow: false,
     /* الصنف ده **موجود في منيو نقطة البيع** (id 121)، فالكتالوج الإعلاني
@@ -238,9 +248,9 @@ export const OFFERS = [
        نسخة إعلانية يلاقي المنع مكتوب مش يستنتجه من غياب السطر. */
     excludes: ["بيبسي"],
     goal: "basket",
-    from: ND96_FROM,
-    until: ND96_UNTIL,
-    untilProvisional: ND96_UNTIL_PROVISIONAL,
+    from: SEED_ND96_FROM,
+    until: SEED_ND96_UNTIL,
+    untilProvisional: SEED_ND96_UNTIL_PROVISIONAL,
     /* لسه مش متقرر: صنف في نقطة البيع بـ٩٦ ولا خصم يدوي. لحد ما يتقرر،
        البصمة تحت بترجّع `measurable:false` برسالة واضحة بدل ما ترجّع صفر
        وتسيب القارئ يفهمه «العرض فشل». */
@@ -277,9 +287,9 @@ export const OFFERS = [
     savingsClaim: false,
     excludes: ["البحريات"],        // مستثناة من اختيار البيتزا/الباستا/الكريب
     goal: "basket",
-    from: ND96_FROM,
-    until: ND96_UNTIL,
-    untilProvisional: ND96_UNTIL_PROVISIONAL,
+    from: SEED_ND96_FROM,
+    until: SEED_ND96_UNTIL,
+    untilProvisional: SEED_ND96_UNTIL_PROVISIONAL,
     ringsAs: "pos_item",
     opsTodo: "صنف في نقطة البيع اسمه بالحرف «بوكس اليوم الوطني ٩٦ ريال» بسعر ٩٦ ر.س.",
     orderable: false,
@@ -303,6 +313,246 @@ export const OFFERS = [
   },
 ];
 
+/* ═══════════════════════════════════════════════════════════════════════════
+   السجل الحي — العروض بقت داتا مش كود (٢٠٢٦-٠٩-١٢)
+
+   سؤال عمر: «هل خليتني أقدر أتحكم في العروض من لوحة التحكم؟» — كانت الإجابة
+   لأ: تغيير تاريخ نهاية كان محتاج تعديل كود ونشر. دلوقتي:
+
+     • جدول `offer_registry` = المصدر الوحيد للحقول القابلة للتعديل:
+       التشغيل/الإيقاف، from، until (إجباري)، هل التاريخ مبدئي، الاسم، الوصف،
+       والقنوات (صالة/تيك أواي/توصيل المتجر).
+     • `OFFER_SEED` فوق = بذرة أول تشغيل: الصف بيتزرع لو مش موجود، وبعد كده
+       الكود مابيتقراش للحقول دي أبداً.
+     • `OFFERS` = مصفوفة **حيّة واحدة** (نفس المرجع دايماً — بتتملّى في مكانها)،
+       فكل موديول استوردها (catalog/content/hub) بيشوف التعديل فوراً من غير
+       ما يعرف إن فيه داتابيز.
+
+   ── اللي **فضل في الكود عن قصد** ومش قابل للتعديل من اللوحة ─────────────
+     • canClaimSavings()/compareAt: كيلو صدور ٩٠ + أرز ٦ = ٩٦ بالظبط، فأي
+       «وفّر» كذب. الدمج تحت مابينسخش savingsClaim ولا compareAt من الصف، والنص
+       اللي فيه «وفّر/خصم/٪» بيترفض عند الحفظ.
+     • deliveryApps = false دايماً — عروض السجل ممنوعة على تطبيقات التوصيل.
+     • السعر، اسم الكتالوج (لازم يطابق نقطة البيع والتصميم بالحرف)، البصمة،
+       المكوّنات، productId/posItemId.
+
+   ── قبل ما الداتابيز تتقري ───────────────────────────────────────────────
+   لحظة الإقلاع (أو لو الداتابيز واقعة) السجل = البذرة، و`offersSource()`
+   بترجّع "seed" عشان التشخيص يقولها بصوت عالي. التحميل بيتعاد كل ٣٠ ثانية
+   لحد ما ينجح.
+═══════════════════════════════════════════════════════════════════════════ */
+
+// الحقول اللي اللوحة تقدر تغيّرها — أي حاجة برّه القايمة دي بتفضل من الكود
+export const EDITABLE_OFFER_FIELDS = ["enabled", "from", "until", "untilProvisional", "title", "desc", "channels"];
+export const LOCKED_OFFER_FIELDS = ["price", "catalogTitle", "savingsClaim", "compareAt", "compareAtPrice", "productId", "posItemId"];
+
+const CHANNEL_LABELS = [["dineIn", "صالة"], ["takeaway", "تيك أواي"], ["delivery", "توصيل من المتجر"]];
+const NO_APPS_NOTE = "غير متاح على تطبيقات التوصيل";
+
+function normChannels(ch) {
+  if (!ch || typeof ch !== "object") return null;
+  return {
+    dineIn: ch.dineIn === true, takeaway: ch.takeaway === true, delivery: ch.delivery === true,
+    deliveryApps: false, // مقفول في الكود — مش بيتقرا من الصف أبداً
+  };
+}
+
+/* عرض حي = البذرة (الحقول المقفولة) + صف الجدول (الحقول القابلة للتعديل). */
+export function mergeOffer(seed, row) {
+  const o = { ...seed, enabled: true };
+  if (row) {
+    o.enabled = row.enabled !== false;
+    o.from = row.from_day || null;
+    o.until = row.until_day || null;
+    o.untilProvisional = row.until_provisional === true;
+    o.title = row.title || seed.title;
+    o.desc = row.description ?? seed.desc;
+    o.channels = row.channels == null ? (seed.channels ? { ...seed.channels } : null) : row.channels;
+  }
+  o.channels = normChannels(o.channels);
+  if (o.channels) {
+    // الصالة لوحدها = «داخل الصالة فقط»؛ غير كده الملاحظة بتتبني من القنوات
+    const on = CHANNEL_LABELS.filter(([k]) => o.channels[k]).map(([, l]) => l);
+    o.dineInOnly = o.channels.dineIn && !o.channels.takeaway && !o.channels.delivery;
+    o.note = o.dineInOnly ? DINE_IN_NOTE : `${on.join(" · ")} — ${NO_APPS_NOTE}`;
+  }
+  // الحقول المقفولة: من البذرة دايماً، مهما كان في الصف
+  o.savingsClaim = seed.savingsClaim;
+  o.compareAt = seed.compareAt;
+  o.price = seed.price;
+  o.catalogTitle = seed.catalogTitle;
+  return o;
+}
+
+/* الصف اللي بيتزرع أول تشغيل — نفس قيم البذرة بالظبط. */
+export function seedRow(seed) {
+  return {
+    id: seed.id,
+    enabled: true,
+    from_day: seed.from || null,
+    until_day: seed.until,
+    until_provisional: seed.untilProvisional === true,
+    title: seed.title,
+    description: seed.desc,
+    channels: seed.channels ? normChannels(seed.channels) : null,
+  };
+}
+
+export const OFFERS = OFFER_SEED.map((s) => mergeOffer(s, null));
+let _source = "seed";
+let _loadedAt = null;
+let _lastError = null;
+const _listeners = new Set();
+
+/** موديول عايز يعرف إن العروض اتغيّرت (كاش الكتالوج مثلاً). */
+export function onOffersChanged(fn) { _listeners.add(fn); return () => _listeners.delete(fn); }
+export const offersSource = () => ({ source: _source, loadedAt: _loadedAt, lastError: _lastError, count: OFFERS.length });
+
+/** بيملّى السجل الحي من صفوف الجدول — في نفس المصفوفة (نفس المرجع). */
+export function applyOfferRows(rows) {
+  const byId = new Map((rows || []).map((r) => [String(r.id), r]));
+  const merged = OFFER_SEED.map((s) => mergeOffer(s, byId.get(s.id) || null));
+  OFFERS.splice(0, OFFERS.length, ...merged);
+  _source = "db";
+  _loadedAt = new Date().toISOString();
+  _lastError = null;
+  for (const fn of _listeners) { try { fn(); } catch { /* المستمع مايوقعش السجل */ } }
+  return OFFERS;
+}
+/** للاختبارات: رجوع للبذرة. */
+export function resetOffersToSeed() {
+  OFFERS.splice(0, OFFERS.length, ...OFFER_SEED.map((s) => mergeOffer(s, null)));
+  _source = "seed"; _loadedAt = null; _lastError = null;
+  for (const fn of _listeners) { try { fn(); } catch { /* */ } }
+}
+
+const DAY_RE = /^\d{4}-\d{2}-\d{2}$/;
+const validDay = (s) => DAY_RE.test(s) && new Date(`${s}T00:00:00Z`).toISOString().slice(0, 10) === s;
+// نص فيه وعد بتوفير — ممنوع على أي عرض مالوش سعر «قبل» موثّق
+// بداية كلمة بس — «متوفر» و«مخصوص» مش وعد بتوفير
+const SAVINGS_RE = /(^|[\s(«"'،,.:\-])(ال|و|ب|ف)?(وفّر|وفر|توفير|خصم|تخفيض)|٪|%|بدلاً?\s+من/;
+
+/* تحقق من تعديل جاي من اللوحة. صافية — متجرّبة في offers-db.test.mjs.
+   بترجّع { ok, row } أو { ok:false, error, message } برسالة عربي. */
+export function validateOfferPatch(offer, body) {
+  const bad = (error, message) => ({ ok: false, error, message });
+  if (!offer) return bad("unknown_offer", "عرض غير معروف");
+  const b = body && typeof body === "object" ? body : {};
+  for (const k of LOCKED_OFFER_FIELDS) {
+    if (!(k in b)) continue;
+    const cur = k === "compareAtPrice" ? null : offer[k] ?? null;
+    if (JSON.stringify(b[k] ?? null) !== JSON.stringify(cur)) {
+      return bad("locked_field", `«${k}» مقفول في الكود ومايتعدّلش من اللوحة`
+        + (k === "price" ? " — السعر جزء من العرض نفسه (٩٦ = اليوم الوطني)." : "")
+        + (/savings|compare/i.test(k) ? " — كيلو صدور ٩٠ + أرز ٦ = ٩٦، فأي «توفير» كلام غير صحيح." : ""));
+    }
+  }
+  const pick = (k, d) => (k in b ? b[k] : d);
+  const until = String(pick("until", offer.until) ?? "").trim();
+  if (!until) return bad("until_required", "لازم تحدد تاريخ نهاية — مفيش عرض من غير نهاية.");
+  if (!validDay(until)) return bad("bad_until", "تاريخ النهاية مش صحيح (YYYY-MM-DD).");
+  const fromRaw = pick("from", offer.from);
+  const from = fromRaw == null || String(fromRaw).trim() === "" ? null : String(fromRaw).trim();
+  if (from && !validDay(from)) return bad("bad_from", "تاريخ البداية مش صحيح (YYYY-MM-DD).");
+  if (from && from > until) return bad("from_after_until", "تاريخ البداية بعد تاريخ النهاية.");
+  const title = String(pick("title", offer.title) ?? "").trim();
+  if (!title) return bad("title_required", "اسم العرض مطلوب.");
+  if (title.length > 120) return bad("title_too_long", "اسم العرض أطول من ١٢٠ حرف.");
+  const desc = String(pick("desc", offer.desc) ?? "").trim();
+  if (desc.length > 600) return bad("desc_too_long", "الوصف أطول من ٦٠٠ حرف.");
+  if (!canClaimSavings(offer) && SAVINGS_RE.test(`${title} ${desc}`)) {
+    return bad("savings_claim_forbidden",
+      "النص فيه كلام عن توفير/خصم/نسبة. ممنوع على العرض ده: السعر مش خصم على سعر «قبل» موثّق"
+      + " (كيلو صدور ٩٠ + أرز ٦ = ٩٦ بالظبط).");
+  }
+  let channels = offer.channels ? { ...offer.channels } : null;
+  if ("channels" in b && b.channels != null) {
+    const c = b.channels;
+    if (typeof c !== "object") return bad("bad_channels", "القنوات مش صحيحة.");
+    if (c.deliveryApps === true) {
+      return bad("delivery_apps_locked", "العروض دي ممنوعة على تطبيقات التوصيل — القرار مقفول في الكود.");
+    }
+    channels = normChannels({ ...(channels || {}), ...c });
+    if (!channels.dineIn && !channels.takeaway && !channels.delivery) {
+      return bad("no_channel", "لازم قناة واحدة على الأقل. لو عايز توقف العرض استعمل زرار الإيقاف.");
+    }
+  }
+  const enabled = "enabled" in b ? b.enabled === true : offer.enabled !== false;
+  const untilProvisional = "untilProvisional" in b ? b.untilProvisional === true : !!offer.untilProvisional;
+  return {
+    ok: true,
+    row: {
+      id: offer.id, enabled, from_day: from, until_day: until, until_provisional: untilProvisional,
+      title, description: desc, channels,
+    },
+  };
+}
+
+/* ── الداتابيز ─────────────────────────────────────────────────────────────
+   التواريخ TEXT مش DATE عن قصد: pg بيحوّل DATE لـJS Date على نص ليل السيرفر،
+   وده بيزحلق اليوم في المنطقة الزمنية. النص + CHECK = يوم الرياض زي ما اتكتب. */
+export async function ensureOffersSchema(pool) {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS offer_registry (
+      id TEXT PRIMARY KEY,
+      enabled BOOLEAN NOT NULL DEFAULT TRUE,
+      from_day TEXT CHECK (from_day IS NULL OR from_day ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'),
+      until_day TEXT NOT NULL CHECK (until_day ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'),
+      until_provisional BOOLEAN NOT NULL DEFAULT FALSE,
+      title TEXT NOT NULL,
+      description TEXT NOT NULL DEFAULT '',
+      channels JSONB,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_by TEXT
+    )`);
+  let seeded = 0;
+  for (const s of OFFER_SEED) {
+    const r = seedRow(s);
+    const res = await pool.query(
+      `INSERT INTO offer_registry (id, enabled, from_day, until_day, until_provisional, title, description, channels, updated_by)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'seed') ON CONFLICT (id) DO NOTHING`,
+      [r.id, r.enabled, r.from_day, r.until_day, r.until_provisional, r.title, r.description,
+       r.channels == null ? null : JSON.stringify(r.channels)]);
+    seeded += res.rowCount || 0;
+  }
+  return { seeded };
+}
+
+export async function loadOffers(pool) {
+  try {
+    const r = await pool.query("SELECT * FROM offer_registry");
+    applyOfferRows(r.rows);
+    return { ok: true, rows: r.rows.length };
+  } catch (e) {
+    _lastError = String(e.message || e);
+    throw e;
+  }
+}
+
+/* حفظ تعديل من اللوحة: تحقق → UPDATE → إعادة تحميل السجل الحي قبل الرد،
+   فأول نداء بعد الحفظ (من أي موديول) بيشوف القيمة الجديدة. */
+export async function saveOffer(pool, id, body, who) {
+  const before = offerById(id);
+  const v = validateOfferPatch(before, body);
+  if (!v.ok) return v;
+  const r = v.row;
+  const res = await pool.query(
+    `UPDATE offer_registry SET enabled=$2, from_day=$3, until_day=$4, until_provisional=$5,
+       title=$6, description=$7, channels=$8, updated_at=NOW(), updated_by=$9
+     WHERE id=$1 RETURNING *`,
+    [r.id, r.enabled, r.from_day, r.until_day, r.until_provisional, r.title, r.description,
+     r.channels == null ? null : JSON.stringify(r.channels), who || null]);
+  if (!res.rowCount) return { ok: false, error: "not_found", message: "العرض مش موجود في الجدول" };
+  const snapshot = (o) => o && ({ enabled: o.enabled, from: o.from, until: o.until,
+    untilProvisional: !!o.untilProvisional, title: o.title, desc: o.desc, channels: o.channels });
+  const old = snapshot(before);
+  await loadOffers(pool);
+  const now = snapshot(offerById(id));
+  const changed = Object.keys(now).filter((k) => JSON.stringify(old[k]) !== JSON.stringify(now[k]));
+  return { ok: true, offer: offerById(id), before: old, after: now, changed };
+}
+
 /* ── «وفّر كذا» ممنوعة بالتصميم ────────────────────────────────────────────
    السطح الوحيد اللي يقدر يكتب نسبة توفير لازم يعدّي من هنا، والافتراضي لأ.
    عرض اليوم الوطني بالذات: كيلو صدور (٩٠) + أرز (٦) = ٩٦ بالظبط، يعني
@@ -324,13 +574,19 @@ export const riyadhDay = (now = new Date()) =>
 
 export function offerState(o, now = new Date()) {
   const today = riyadhDay(now);
+  const enabled = o.enabled !== false;
   const started = !o.from || today >= o.from;
   const ended = !!o.until && today > o.until;
   const daysLeft = o.until
     ? Math.round((Date.parse(`${o.until}T00:00:00Z`) - Date.parse(`${today}T00:00:00Z`)) / 86400000)
     : null;
-  return { today, started, ended, active: started && !ended, daysLeft };
+  /* الإيقاف من اللوحة بيغلب التواريخ: عرض موقوف مش شغّال حتى جوّه مدته.
+     `status` واحد للشاشة: disabled / upcoming / live / ended. */
+  const status = !enabled ? "disabled" : ended ? "ended" : !started ? "upcoming" : "live";
+  return { today, enabled, started, ended, active: enabled && started && !ended, daysLeft, status };
 }
+
+export const STATUS_LABELS = { disabled: "موقوف", upcoming: "قادم", live: "شغّال", ended: "منتهي" };
 
 /** العروض الشغّالة النهاردة فقط. ده اللي كل سطح المفروض يقرا منه. */
 export function activeOffers(now = new Date()) {
@@ -441,6 +697,10 @@ export function publicOffer(o, now = new Date()) {
       : null,
     expired: st.ended,
     daysLeft: st.daysLeft,
+    /* جديد (السجل الحي): الإيقاف من اللوحة + حالة واحدة للشاشات. */
+    enabled: st.enabled,
+    status: st.status,
+    statusLabel: STATUS_LABELS[st.status],
   };
 }
 
@@ -542,6 +802,24 @@ export function register(app, ctx, deps = {}) {
   const { pool, requireAdmin, todayISO, DEFAULT_DELIVERY_APPS } = ctx;
   const deliveryApps = deps.deliveryApps || (async () => DEFAULT_DELIVERY_APPS);
   const menuRows = deps.menuRows;
+
+  /* السجل الحي: زرع أول تشغيل + تحميل. لو فشل بنعيد كل ٣٠ ثانية لحد ما
+     ينجح، وبعد كده تحديث كل ٥ دقايق (يلقط أي تعديل مباشر في الجدول). */
+  let bootTimer = null;
+  async function boot() {
+    try {
+      const { seeded } = await ensureOffersSchema(pool);
+      const r = await loadOffers(pool);
+      console.log(`[offers] registry from DB — ${r.rows} row(s), seeded ${seeded}, ${activeOffers().length} live`);
+      bootTimer = setInterval(() => { loadOffers(pool).catch(() => {}); }, 5 * 60_000);
+      bootTimer.unref?.();
+    } catch (e) {
+      _lastError = String(e.message || e);
+      console.error("[offers] registry load failed — serving seed:", _lastError);
+      setTimeout(boot, 30_000).unref?.();
+    }
+  }
+  const ready = deps.skipBoot ? Promise.resolve() : boot();
 
   /* ── العروض الشغّالة (عام) ────────────────────────────────────────────────
      المتجر بينده المسار ده كل ما يفتح. عام عن قصد: العرض نفسه معلن في الشارع
@@ -931,6 +1209,23 @@ export function register(app, ctx, deps = {}) {
     };
   }
 
-  console.log(`[offers] routes ready — ${activeOffers().length}/${OFFERS.length} عرض شغّال`);
-  return { activeOffers, catalogOffers, offerById, publicOffer, offerImpact };
+  /* تشخيص النشر: بيثبت إن الكود الجديد شغّال فعلاً وإن السجل جاي من الجدول
+     مش من البذرة. ٢٠٠ دايماً (كلاودفلير بيبلع الـ5xx) و ok:false لو فيه مشكلة. */
+  app.get("/api/cms/offers/diag", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    const src = offersSource();
+    let dbRows = null, dbError = null;
+    try { dbRows = (await pool.query("SELECT id, enabled, from_day, until_day, until_provisional, updated_at, updated_by FROM offer_registry ORDER BY id")).rows; }
+    catch (e) { dbError = String(e.message || e); }
+    return c.json({
+      ok: src.source === "db" && !dbError,
+      build: "offers-registry-v1",
+      commit: process.env.SOURCE_COMMIT || process.env.COOLIFY_COMMIT || null,
+      ...src, dbRows, dbError,
+      today: riyadhDay(),
+    });
+  });
+
+  console.log(`[offers] routes ready — ${activeOffers().length}/${OFFERS.length} عرض شغّال (source: ${_source})`);
+  return { activeOffers, catalogOffers, offerById, publicOffer, offerImpact, ready };
 }

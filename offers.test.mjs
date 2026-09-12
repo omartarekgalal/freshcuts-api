@@ -14,7 +14,8 @@ import assert from "node:assert/strict";
 import {
   OFFERS, offerById, offerState, activeOffers, catalogOffers, publicOffer,
   hiddenOfferItemIds, canClaimSavings, untilText,
-  OLD_OFFERS_UNTIL, ND96_FROM, ND96_UNTIL, ND96_UNTIL_PROVISIONAL,
+  SEED_OLD_OFFERS_UNTIL as OLD_OFFERS_UNTIL, SEED_ND96_FROM as ND96_FROM,
+  SEED_ND96_UNTIL as ND96_UNTIL, SEED_ND96_UNTIL_PROVISIONAL as ND96_UNTIL_PROVISIONAL,
 } from "./offers.js";
 
 // نص النهار UTC = نفس اليوم في الرياض بعد إزاحة يوم الشغل (٤ص) — تاريخ مضمون
