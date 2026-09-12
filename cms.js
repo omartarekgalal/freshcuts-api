@@ -1449,7 +1449,10 @@ export function register(app, ctx, deps = {}) {
     const s = await getSettingsData();
     const apps = (Array.isArray(s?.deliveryAppMethods) && s.deliveryAppMethods.length
       ? s.deliveryAppMethods : (DEFAULT_DELIVERY_APPS || [])).map((x) => String(x).toLowerCase());
-    const W = `${PAID_ONLINE} AND ${RIYADH_DAY} BETWEEN $1::date AND $2::date`;
+    // دي بتتحط جوّه وصلات فيها dl_shipments (وعندها عمود status هي كمان)،
+    // فلازم العمود يبقى محدّد بالجدول
+    const PAID_O = PAID_ONLINE.replace(/\bstatus\b/, "o.status");
+    const W = `${PAID_O} AND ${RIYADH_DAY} BETWEEN $1::date AND $2::date`;
     const P = [from, to];
 
     const [tot, daily, items, coupons, hours, nvr, channels, courier] = await Promise.all([
@@ -1489,7 +1492,7 @@ export function register(app, ctx, deps = {}) {
       pool.query(`
         WITH firsts AS (
           SELECT phone_norm, min(created_at) AS f FROM shop_orders o
-           WHERE ${PAID_ONLINE} AND phone_norm IS NOT NULL GROUP BY 1)
+           WHERE ${PAID_O} AND phone_norm IS NOT NULL GROUP BY 1)
         SELECT count(*) FILTER (WHERE (f.f AT TIME ZONE 'Asia/Riyadh')::date >= $1::date)::int AS new_customers,
                count(*) FILTER (WHERE (f.f AT TIME ZONE 'Asia/Riyadh')::date <  $1::date)::int AS returning_customers
           FROM firsts f
