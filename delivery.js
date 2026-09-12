@@ -107,15 +107,21 @@ export function computeDeliveryFee(cfgIn, { distanceKm, straightKm, orderTotal }
      (feeByTotal) — مصفوفة [{over, fee}] بنختار منها أعلى شريحة قيمتها ≤ الطلب.
      السلّم بيغلب baseFee لو موجود، وبيفضل perKm للمسافة الإضافية شغّال فوقه. */
   let fee = Number(cfg.baseFee) || 0;
+  let nextTierFee = 0;              // أرضية الضمان، بتتحدد من السلّم تحت
   const ladder = Array.isArray(cfg.feeByTotal)
     ? cfg.feeByTotal.filter((t) => t && t.over != null && t.fee != null)
         .map((t) => ({ over: Number(t.over), fee: Number(t.fee) }))
         .sort((a, b) => a.over - b.over)
     : null;
   if (ladder && ladder.length) {
-    let picked = ladder[0];
-    for (const t of ladder) if (total >= t.over) picked = t;
+    let picked = ladder[0], pickedAt = 0;
+    for (let i = 0; i < ladder.length; i++) if (total >= ladder[i].over) { picked = ladder[i]; pickedAt = i; }
     fee = picked.fee;
+    /* رسم **الشريحة اللي بعدها** — أرضية الضمان تحت. السلّم نازل مع كبر
+       السلة (٢٠ ← ١٥ ← ١٠ ← ٥ ← ٠)، فلو الضمان نزّل سلة صغيرة تحت الرقم
+       ده بيبقى الترتيب اتقلب: سلة ٤٠ بتدفع أقل من سلة ٦٠، والحافز اللي
+       السلّم مبني عليه (كبّر السلة يرخص التوصيل) بيتلغي. */
+    nextTierFee = ladder[pickedAt + 1] ? Number(ladder[pickedAt + 1].fee) || 0 : 0;
     breakdown.push(picked.fee === 0
       ? `توصيل مجاني للطلبات فوق ${r2(picked.over)} ر.س`
       : `رسم السلة (فوق ${r2(picked.over)} ر.س): ${r2(fee)} ر.س`);
@@ -157,29 +163,119 @@ export function computeDeliveryFee(cfgIn, { distanceKm, straightKm, orderTotal }
       ? `توصيل مجاني للطلبات فوق ${r2(cfg.freeOverTotal)} ر.س`
       : `خصم توصيل ${r2(cover)} ر.س للطلبات فوق ${r2(cfg.freeOverTotal)} ر.س`);
   }
-  /* ضمان «العميل مايلاقيش التطبيقات أرخص» (قرار عمر 2026-09-11): الأسعار على
-     كيتا/هنقر مرفوعة بنسبة (appMarkupPct) عن سعر المنيو، فلو الرسم خلّى إجمالي
-     متجرنا يعدّي سعر التطبيق، بنقصّه. السقف = (السلة × النسبة) − هامش أمان
-     (minCheaperBy)، فإجمالي متجرنا يفضل دايماً أرخص بالهامش ده على الأقل.
-     آخر خطوة عشان الضمان يغلب أي قاعدة قبله. floor مش round عشان ما نكسرش
-     الضمان بنص ريال. */
-  const guard = cfg.neverBeatenByApps || null;
-  if (guard && guard.enabled && total > 0) {
-    const markup = Number(guard.appMarkupPct) || 0;
-    const minBy = Number(guard.minCheaperBy) || 0;
-    const maxFee = Math.floor(total * (markup / 100) - minBy);
-    if (fee > maxFee) {
-      fee = Math.max(0, maxFee);
-      breakdown.push(`مضمون أرخص من التطبيقات: الرسوم ≤ ${r2(fee)} ر.س`);
-    }
-  }
+  /* ضمان «العميل مايلاقيش التطبيقات أرخص» — آخر خطوة عشان يغلب أي قاعدة قبله.
+     الحساب كله في appsGuard() تحت (دالة صافية، متجرَّبة لوحدها). */
+  const g = appsGuard({ total, fee, nextTierFee, guard: cfg.neverBeatenByApps });
+  fee = g.fee;
+  if (g.applied) breakdown.push(`مضمون أرخص من التطبيقات: الرسوم ≤ ${r2(fee)} ر.س`);
+  /* `guard` بيرجع في الرد نفسه مش في الـbreakdown: لما الضمان ما ينفعش
+     (سلة صغيرة)، الحقيقة إن التطبيق أرخص — وده كلام **مايتكتبش للعميل** على
+     شاشة الدفع. بيرجع للواجهة عشان تنده العميل يزوّد السلة، وللوحة عشان
+     عمر يشوف إمتى الضمان بيقف عاجز. */
   // Whole riyals only: the fee enters the POS invoice as quantity × a 1-SAR
   // "رسوم التوصيل" product (TabSense rejects free-form amounts), so a
   // fractional fee literally cannot be booked.
-  return { deliverable: true, fee: Math.round(fee), distanceKm: r2(dist), breakdown };
+  return { deliverable: true, fee: Math.round(fee), distanceKm: r2(dist), breakdown, guard: g };
 }
 
 const r2 = (v) => Math.round((Number(v) || 0) * 100) / 100;
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   ضمان «العميل مايلاقيش التطبيقات أرخص»
+
+   ── الثغرة اللي عمر وقّف الضمان بسببها (2026-09-12) ───────────────────────
+   «جربت أطلب ١ مياه لقيت التوصيل ٠». النسخة الأولى كانت بتحسب السقف كده:
+
+       السقف = floor(السلة × النسبة − هامش الأمان)
+
+   على سلة بريال واحد ونسبة ٣٣٪: floor(0.33 − 1) = −1 → الرسم صفر. والمياه
+   بريال بتروح ببلاش بينما الكابتن بيتكلّف **١٩٫٥٥ ر.س ثابت** (لعجلك، أي
+   مسافة جوّه ١٠ كم). صافي الطلب ده: 0.452×1 + 0 − 19.55 = **−١٩٫١٠ ر.س**
+   خسارة صافية على كل طلب.
+
+   ── المقارنة نفسها كانت غلط، مش بس مفتوحة من تحت ──────────────────────────
+   الطرف التاني في المقارنة **مش** سعر الأكل المرفوع لوحده. العميل اللي
+   هيطلب من كيتا هيدفع: الأكل مرفوع بالنسبة **زائد رسوم توصيل التطبيق**.
+   فالمقارنة الصح بين إجماليين:
+
+       إجمالينا      = السلة + رسم التوصيل بتاعنا
+       إجمالي التطبيق = السلة × (1 + النسبة/100) + رسم توصيل التطبيق
+       الشرط          = إجمالينا ≤ إجمالي التطبيق − هامش الأمان
+       ⇒ السقف       = floor(السلة × النسبة/100 + رسم التطبيق − هامش الأمان)
+
+   ⚠️ **افتراض، مش حقيقة:** `appDeliveryFee` هو الرقم الوحيد هنا اللي مش
+   بنتحكم فيه ولا بنقيسه — كيتا وهنقر بيغيّروا رسوم التوصيل بالمنطقة
+   وبالعرض وبالاشتراك، وساعات بتبقى صفر. الافتراضي **صفر** عن قصد: ده
+   **أسوأ حالة لينا** (يعني أضيق سقف)، فالضمان يفضل صادق حتى لو التطبيق
+   عمل عرض «توصيل مجاني». لو عمر رصد رقم حقيقي (مثلاً ٦ ر.س على كيتا في
+   حي المطعم) يحطه من اللوحة والسقف بيتوسّع بيه — وساعتها الضمان بيبقى
+   مبني على رقم مرصود مش على افتراض محافظ.
+
+   ── أرضيتان، والضمان ما بينزلش تحتهم ──────────────────────────────────────
+   ١) **أرضية الشريحة** (`respectLadder`): رسم الشريحة اللي بعدها في السلّم.
+      السلّم نازل مع كبر السلة، فلو الضمان نزّل سلة ٤٠ تحت رسم شريحة الـ٦٠،
+      سلة صغيرة بقت بتدفع أقل من سلة أكبر والحافز اتقلب.
+   ٢) **أرضية عدم الخسارة**: أقل رسم يخلّي الطلب ما يخسرش صافي:
+         مساهمة الأكل (٤٥٫٢٪ × السلة) + الرسم − تكلفة الكابتن ≥ 0
+         ⇒ الرسم ≥ تكلفة الكابتن − 0.452 × السلة
+      عند سلة ١ ر.س دي ١٩٫١٠ ر.س؛ عند ٤٣٫٣ ر.س بتوصل صفر لوحدها.
+
+   ── ولو السقف نزل تحت الأرضية؟ ───────────────────────────────────────────
+   يبقى **مفيش رسم** يحقق الوعد من غير ما ناكل خسارة أو نكسر السلّم — يعني
+   على السلة دي التطبيق فعلاً أرخص وإحنا مش قادرين نلحقه. الرد الصح مش إننا
+   نوصّل بالخسارة: بنسيب رسم السلّم زي ما هو ونرجّع `capped:true` + `shortfall`
+   عشان الواجهة تنده العميل يكبّر السلة (ساعتها الضمان بيشتغل لوحده).
+   **مفيش قص جزئي**: قص من ٢٠ لـ١٥ على سلة ٤٥ بيدفع ٥ ر.س من غير ما يحقق
+   الوعد (التطبيق لسه أرخص) — فلوس بتتحرق من غير مقابل.
+═══════════════════════════════════════════════════════════════════════════ */
+
+export const APPS_GUARD_DEFAULTS = {
+  enabled: false,
+  /* كل ريال في المنيو بيتباع بـ١٫٣٣ على كيتا/هنقر — من فاتورة حقيقية لعمر:
+     سلة منيوهــا ٥٧ ر.س، العميل دفع ٧٦ على كيتا (76/57 = 1.333). */
+  appMarkupPct: 33,
+  appDeliveryFee: 0,        // ← افتراض محافظ. شوف التعليق فوق.
+  minCheaperBy: 1,          // إجمالينا أقل بريال على الأقل
+  /* لعجلك: ١٩٫٥٥ ر.س شامل الضريبة، **ثابتة** لأي مسافة جوّه ١٠ كم (العقد،
+     مادة ١٢). مش بتتحسب من contractCourierCost لأن دي معادلة Flying Arrow. */
+  courierCost: 19.55,
+  contributionPct: 0.452,   // = BENCHMARKS.dineInContribution (متجرَّب تحت)
+  minFee: null,             // أرضية مطلقة اختيارية من اللوحة
+  respectLadder: true,      // ما ينزلش تحت رسم الشريحة اللي بعدها
+};
+
+/** الضمان كدالة صافية. `nextTierFee` = رسم الشريحة اللي بعد شريحة السلة دي
+ *  (صفر لو مفيش سلّم). بيرجّع الرسم بعد الضمان + ليه. */
+export function appsGuard({ total, fee, nextTierFee = 0, guard } = {}) {
+  const g = { ...APPS_GUARD_DEFAULTS, ...(guard || {}) };
+  const t = Number(total) || 0;
+  const feeIn = Math.max(0, Number(fee) || 0);
+  const off = (reason) => ({ fee: feeIn, applied: false, capped: false, reason });
+  if (!g.enabled) return off("disabled");
+  if (t <= 0) return off("no_basket");
+
+  const appTotal = r2(t * (1 + (Number(g.appMarkupPct) || 0) / 100) + (Number(g.appDeliveryFee) || 0));
+  // floor مش round: نص ريال في الاتجاه الغلط بيكسر الوعد.
+  const ceiling = Math.floor(appTotal - t - (Number(g.minCheaperBy) || 0));
+
+  const breakEven = Math.max(0, r2((Number(g.courierCost) || 0) - (Number(g.contributionPct) || 0) * t));
+  const ladderFloor = g.respectLadder ? Math.max(0, Number(nextTierFee) || 0) : 0;
+  const floor = Math.ceil(Math.max(breakEven, ladderFloor, Number(g.minFee) || 0));
+
+  const out = (fee2, extra) => ({
+    fee: fee2, ceiling, floor, breakEven, ladderFloor,
+    appTotal, ourTotal: r2(t + fee2), cheaperBy: r2(appTotal - (t + fee2)),
+    assumedAppDeliveryFee: Number(g.appDeliveryFee) || 0, ...extra,
+  });
+
+  if (feeIn <= ceiling) return out(feeIn, { applied: false, capped: false, reason: "already_cheaper" });
+  if (ceiling >= floor) return out(ceiling, { applied: true, capped: false, reason: "capped_to_ceiling" });
+  /* الوعد مش ممكن على السلة دي. الرسم بيفضل زي ما هو، والفرق بيترجع صريح. */
+  return out(feeIn, {
+    applied: false, capped: true, reason: "floor_blocks",
+    shortfall: r2((t + feeIn) - appTotal + (Number(g.minCheaperBy) || 0)),
+  });
+}
 
 /* ═══════════════════════════════════════════════════════════════════════════
    بوابة الإرسال — المرحلة الأولى يدوية بالكامل
