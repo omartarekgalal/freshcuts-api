@@ -14,7 +14,7 @@
    storefront can deep-link into the item sheet.
 ═══════════════════════════════════════════════════════════════════════════ */
 
-import { activeOffers, catalogOffers, publicOffer } from "./offers.js";
+import { activeOffers, catalogOffers, publicOffer, hiddenOfferItemIds } from "./offers.js";
 import { applyCopy, auditRows, pendingDashboardEdits, OPEN_QUESTIONS } from "./menu-rules.js";
 
 const STORE_BASE = process.env.CATALOG_MENU_BASE || process.env.STOREFRONT_PUBLIC_URL || "https://freshcuts.sa";
@@ -228,6 +228,19 @@ export async function menuRows() {
   return getRows();
 }
 
+/* ── صفوف الإعلانات = صفوف المنيو ناقص العروض المنتهية ─────────────────────
+   صينية اللمة (id 121) عرض بينتهي، لكنها كمان **صنف في المنيو**، فصفها بيتولد
+   من المنيو مش من offers.js — وعشان كده تاريخ انتهائها ماكانش بيسقّطها من
+   الـfeed (فضلت فيه من ١ سبتمبر لـ١٢ سبتمبر). offers.hiddenOfferItemIds()
+   بترجّع أرقام الأصناف اللي عرضها مش شغّال النهاردة، وبنشيلها من **الكتالوج
+   الإعلاني بس**: menuRows() فوق بتفضل كاملة عشان قياس الطلبات القديمة وربط
+   الأسماء بالأرقام ما يتكسرش. والصنف نفسه بيفضل في المنيو ونقطة البيع —
+   إحنا بنوقف الإعلان مش البيع. */
+const adRows = (rows, now = new Date()) => {
+  const hide = hiddenOfferItemIds(now);
+  return hide.size ? rows.filter((r) => !hide.has(String(r.id))) : rows;
+};
+
 /* Ask Meta to fetch the feed now. `force` skips the "did anything change?"
    test — the scheduled sweep uses the test, the admin route does not. */
 export async function syncCatalog({ force = false } = {}) {
@@ -237,7 +250,7 @@ export async function syncCatalog({ force = false } = {}) {
     return lastPush;
   }
   let rows;
-  try { rows = await getRows(); }
+  try { rows = adRows(await getRows()); }
   catch (e) {
     lastPush = { ...lastPush, error: `menu unavailable: ${e.message}` };
     return lastPush;
@@ -286,7 +299,7 @@ export function register(app, ctx) {
 
   app.get("/api/catalog/feed.csv", async (c) => {
     let rows;
-    try { rows = await getRows(); }
+    try { rows = adRows(await getRows()); }
     catch (e) { return c.text(`# feed unavailable: ${e.message}`, 503); }
     const header = "id,title,description,availability,condition,price,link,image_link,brand,product_type";
     const lines = rows.map((r) => [
@@ -329,7 +342,14 @@ export function register(app, ctx) {
     try { rows = await getRows(); } catch (x) { e = String(x.message || x); }
     return c.json({
       ok: !e,
-      items: rows ? rows.length : 0,
+      items: rows ? adRows(rows).length : 0,
+      menuItems: rows ? rows.length : 0,
+      /* أصناف نقطة البيع المشيلة من الكتالوج الإعلاني لأن عرضها مش شغّال
+         (لسه في المنيو، بس مش بيتعلن). عدد أكبر من صفر هنا **حالة سليمة**
+         بعد انتهاء عرض، مش مشكلة. */
+      hiddenExpiredOfferItems: rows
+        ? rows.filter((r) => hiddenOfferItemIds().has(String(r.id))).map((r) => ({ id: r.id, title: r.title }))
+        : [],
       withImage: rows ? rows.filter((r) => r.image).length : 0,
       ownImage: rows ? rows.filter((r) => r.image && !r.imageFrom).length : 0,
       borrowedImage: rows ? rows.filter((r) => r.imageFrom).length : 0,
