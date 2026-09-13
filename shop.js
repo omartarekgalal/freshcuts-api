@@ -33,6 +33,7 @@ import { msisdn, readableAddress } from "./couriers.js";
 // ضريبة سطور الباقة — نفس الثابت اللي التوزيع اتعمل بيه، عشان الإجمالي يرجع للسعر بالظبط
 import { VAT_RATE as BUNDLE_VAT } from "./bundles.js";
 import { isOpenNow } from "./carts.js";
+import { dispatchDue, dispatchDelayOf } from "./delivery.js";
 
 const env = (k, d) => (process.env[k] || d || "").toString().trim();
 const r2 = (v) => Math.round((Number(v) || 0) * 100) / 100;
@@ -194,17 +195,21 @@ export function slaCheck(o, cfg = {}, now = Date.now()) {
       }
       return none;
 
-    case "accepted":
+    case "accepted": {
       if (o.option !== "delivery") return none;
-      if (inStatus >= s.handoffBreachMinutes) {
+      // مهلة التحضير مش تأخير: الطلب مستني «جاهز» أو المهلة قبل ما نطلب الكابتن
+      const hold = o.pos_ready_at ? 0 : Math.max(0, Number(s.dispatchDelayMin) || 0);
+      const late = inStatus - hold;
+      if (late >= s.handoffBreachMinutes) {
         return at(2, "handoff_breach",
           `${inStatus} دقيقة من القبول والطلب لسه ما اتدخّلش على لوحة شركة التوصيل`, inStatus, "manual_handoff");
       }
-      if (inStatus >= s.handoffMinutes) {
+      if (late >= s.handoffMinutes) {
         return at(1, "handoff_late",
           `${inStatus} دقيقة — ادخّل الطلب على لوحة شركة التوصيل`, inStatus, "manual_handoff");
       }
       return none;
+    }
 
     case "courier_requested":
     case "courier_assigned":
@@ -309,6 +314,18 @@ export function register(app, ctx, deps = {}) {
       -- (approval_status=pickup_ready من الشريك). التتبع بيفضل «بيجهّز» لحد ما
       -- يتسجّل، وبعدها بس بنعرض حالة المندوب — «المطعم أولاً».
       ALTER TABLE shop_orders ADD COLUMN IF NOT EXISTS pos_ready_at TIMESTAMPTZ;
+      -- حجز طلب المندوب (13 سبتمبر): المندوب بقى بيتطلب بعد «جاهز» أو بعد مهلة،
+      -- مش لحظة القبول. العمود بيضمن إن كل طلب يتبعت لشركة التوصيل مرة واحدة.
+      -- أول مرة بس: كل طلب عدّى مرحلة القبول بيتعلّم محجوز، عشان النشر ده
+      -- ما يبعتش كابتن لطلبات قديمة اتعاملت يدوي.
+      DO $$ BEGIN
+        IF NOT EXISTS (SELECT 1 FROM information_schema.columns
+                        WHERE table_name='shop_orders' AND column_name='dispatch_claimed_at') THEN
+          ALTER TABLE shop_orders ADD COLUMN dispatch_claimed_at TIMESTAMPTZ;
+          UPDATE shop_orders SET dispatch_claimed_at = updated_at
+           WHERE status NOT IN ('pending_payment','paid','paid_pos_failed','pos_created');
+        END IF;
+      END $$;
       -- سجل الإنذارات: كل درجة تصعيد تتبعت مرة واحدة لكل طلب، عشان المدير
       -- ما يصحاش على عشرين رسالة عن نفس الطلب.
       ALTER TABLE shop_orders ADD COLUMN IF NOT EXISTS alerts JSONB NOT NULL DEFAULT '{}'::jsonb;
@@ -1060,7 +1077,8 @@ export function register(app, ctx, deps = {}) {
        المرحلة اليدوية ولا الآلية عشان تعرض الأزرار الصح — مش تفترض. */
     const settings = await getSettingsData();
     const gate = await delivery.dispatchGate();
-    const sla = (settings.delivery || {}).sla || {};
+    const sla = { ...((settings.delivery || {}).sla || {}),
+      dispatchDelayMin: (await delivery.dispatchGate()).mode === "auto" ? dispatchDelayOf(settings) : 0 };
 
     return c.json({
       ok: true, at: new Date().toISOString(),
@@ -1154,6 +1172,7 @@ export function register(app, ctx, deps = {}) {
       }, 409);
     }
     try {
+      await pool.query("UPDATE shop_orders SET dispatch_claimed_at = COALESCE(dispatch_claimed_at, NOW()) WHERE order_no=$1", [row.order_no]);
       const res = await delivery.dispatch(row);
       if (row.status !== "courier_requested") await setStatus(row.order_no, "courier_requested");
       return c.json({ ok: true, assigned: res.assigned, orderNumber: res.orderNumber, note: res.dispatch?.message || null });
@@ -1335,6 +1354,7 @@ export function register(app, ctx, deps = {}) {
       return c.json({ ok: false, error: "already_dispatched", ref: existing.provider_ref }, 409);
     }
     try {
+      await pool.query("UPDATE shop_orders SET dispatch_claimed_at = COALESCE(dispatch_claimed_at, NOW()) WHERE order_no=$1", [row.order_no]);
       const res = await delivery.dispatch(row);
       await setStatus(row.order_no, "courier_requested");
       return c.json({ ok: true, provider: res.provider, ref: res.faOrderId, assigned: res.assigned });
@@ -1462,14 +1482,15 @@ export function register(app, ctx, deps = {}) {
      درجة (العمود alerts بيفتكر مين اتبعت). درجة 3 بتعمل تدخّل مالي. */
   async function watchdog() {
     const settings = await getSettingsData();
-    const sla = (settings.delivery || {}).sla || {};
+    const sla = { ...((settings.delivery || {}).sla || {}),
+      dispatchDelayMin: (await delivery.dispatchGate()).mode === "auto" ? dispatchDelayOf(settings) : 0 };
     const managers = ((settings.delivery || {}).alertPhones || [])
       .map((p) => normPhone(p)).filter((p) => /^5\d{8}$/.test(p));
     const autoRefundOn = (settings.delivery || {}).autoRefundOnNoAccept !== false;
 
     const rows = (await pool.query(
       `SELECT order_no, status, option, total, mf_payment_id, refund_id, refund_attempts,
-              customer, alerts, created_at, updated_at
+              customer, alerts, created_at, updated_at, pos_ready_at
          FROM shop_orders
         WHERE status NOT IN ('pending_payment','expired','delivered','rejected_refunded')
           AND created_at > NOW() - INTERVAL '24 hours'`)).rows;
@@ -1616,23 +1637,7 @@ export function register(app, ctx, deps = {}) {
       }
       if (acceptedLike) {
         await setStatus(r.order_no, "accepted");
-        const settings = (await getSettingsData()).shop || {};
-        /* الطبقة الأولى من طبقتين. البوابة الحقيقية جوّه delivery.dispatch()
-           وبترمي في الوضع اليدوي مهما نادى عليها مين — دي بس بتمنع
-           المحاولة أصلاً عشان ما نملاش اللوج بأخطاء متوقعة.
-           لاحظ إن الشرط بقى «لازم auto» بدل «مش false»: الافتراضي القديم
-           كان بيرسل لو الإعداد ناقص، والافتراضي دلوقتي بيسكت. */
-        const autoOk = await delivery.canAutoDispatch();
-        if (r.option === "delivery" && autoOk && settings.autoDispatch !== false) {
-          try {
-            await delivery.dispatch(await getOrderRow(r.order_no));
-            await setStatus(r.order_no, "courier_requested");
-          } catch (e) {
-            console.error(`[shop] courier dispatch failed for ${r.order_no}:`, e.message);
-            // stays 'accepted'; next sweep will NOT retry automatically —
-            // dispatch failures need eyes, the dashboard shows the stall.
-          }
-        }
+        // طلب الكابتن اتنقل للخطوة 2b تحت: بعد «جاهز» أو بعد مهلة التحضير.
       } else if (rejectedLike) {
         // لو كنا طلبنا كابتن قبل الرفض, نلغي عندهم — رسوم الإلغاء أرخص من
         // توصيلة كاملة لطلب المطعم اعتذر عنه.
@@ -1643,6 +1648,39 @@ export function register(app, ctx, deps = {}) {
         // Omar's rule: automatic refund, exactly once.
         await refundOrder(await getOrderRow(r.order_no), `rejected by cashier`);
       }
+    }
+
+    // 2b) طلب المندوب في وقته — بعد ما الكاشير يسجّل «جاهز» (الخطوة 1b بتقراها)
+    // أو بعد مهلة التحضير من القبول، أيهما أسبق. الحجز الذري بيمنع التكرار.
+    try {
+      const allSettings = await getSettingsData();
+      if ((allSettings.shop || {}).autoDispatch !== false && await delivery.canAutoDispatch()) {
+        const delayMin = dispatchDelayOf(allSettings);
+        const waiting = (await pool.query(
+          `SELECT order_no, pos_ready_at, history FROM shop_orders
+            WHERE status='accepted' AND option='delivery' AND dispatch_claimed_at IS NULL
+              AND created_at > NOW() - INTERVAL '24 hours'`)).rows;
+        for (const r of waiting) {
+          const acceptedAt = (r.history || []).find((h) => h.status === "accepted")?.at || null;
+          const v = dispatchDue({ delayMin, acceptedAt, readyAt: r.pos_ready_at });
+          if (!v.due) continue;
+          const claim = await pool.query(
+            `UPDATE shop_orders SET dispatch_claimed_at=NOW()
+              WHERE order_no=$1 AND dispatch_claimed_at IS NULL AND status='accepted'
+              RETURNING order_no`, [r.order_no]);
+          if (!claim.rowCount) continue;
+          try {
+            await delivery.dispatch(await getOrderRow(r.order_no));
+            await setStatus(r.order_no, "courier_requested",
+              { note: v.reason === "ready" ? "المطبخ سجّل جاهز" : `مهلة التحضير (${delayMin} د)` });
+          } catch (e) {
+            console.error(`[shop] courier dispatch failed for ${r.order_no}:`, e.message);
+            // مش بنعيد تلقائي — فشل الإرسال محتاج عين، واللوحة بتبيّن الوقفة.
+          }
+        }
+      }
+    } catch (e) {
+      console.error("[shop] timed dispatch failed:", e.message);
     }
 
     // 2.5) شبكة أمان للدفع: طلب معلّق وله فاتورة وعدّى عليه كذا دقيقة — نراجع

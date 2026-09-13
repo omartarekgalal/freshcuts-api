@@ -296,6 +296,36 @@ export function appsGuard({ total, fee, nextTierFee = 0, guard } = {}) {
      3. DELIVERY_DISPATCH_MODE (متغيّر بيئي) ← احتياطي لو الإعدادات فاضية
    الافتراضي في غياب الكل: **manual**. أي إعداد غلط أو ناقص أو مكتوب غلط
    بينتهي عند اليدوي — الفشل بيميل ناحية «ما نبعتش»، مش «نبعت».         */
+/* ── مهلة طلب المندوب (قرار عمر، 13 سبتمبر 2026) ─────────────────────────
+   كنا بنطلب الكابتن لحظة قبول الكاشير. الكابتن بيوصل في ~10 دقايق، والمطبخ
+   بيجهّز في ~19 دقيقة (الوسيط على 47 طلب: ربعهم ≤13، و75% ≤25) — فالكابتن
+   كان بيقف مستني. دلوقتي بنطلبه في أول لحظة من اتنين:
+     ١) الكاشير يسجّل «جاهز» على نقطة البيع  → فوراً
+     ٢) عدّت dispatchDelayMin دقيقة على القبول ولسه مش جاهز → برضه (احتياطي
+        لو الكاشير نسي، عشان العميل ما يستناش على الفاضي)
+   0 = الطريقة القديمة (فوراً مع القبول). الافتراضي 15. */
+export const DEFAULT_DISPATCH_DELAY_MIN = 15;
+
+export function dispatchDelayOf(settings) {
+  const v = ((settings || {}).delivery || {}).dispatchDelayMin;
+  if (v === undefined || v === null || v === "") return DEFAULT_DISPATCH_DELAY_MIN;
+  const n = Number(v);
+  return Number.isFinite(n) && n >= 0 ? Math.min(n, 90) : DEFAULT_DISPATCH_DELAY_MIN;
+}
+
+export function dispatchDue({ delayMin, acceptedAt, readyAt, now = Date.now() }) {
+  if (readyAt) return { due: true, reason: "ready" };
+  const d = Number(delayMin) || 0;
+  if (d <= 0) return { due: true, reason: "immediate" };
+  const t = acceptedAt ? new Date(acceptedAt).getTime() : NaN;
+  // مش عارفين اتقبل إمتى = ما نحبسش الطلب على مهلة مش قادرين نحسبها
+  if (!Number.isFinite(t)) return { due: true, reason: "no_accept_time" };
+  const waited = (Number(now) - t) / 60000;
+  return waited >= d
+    ? { due: true, reason: "timeout" }
+    : { due: false, reason: "waiting", leftMin: Math.ceil(d - waited) };
+}
+
 export const DISPATCH_MODES = ["manual", "auto"];
 
 export function dispatchMode(settings, envRead = (k) => (process.env[k] || "").trim()) {
