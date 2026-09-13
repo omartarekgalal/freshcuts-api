@@ -1012,7 +1012,7 @@ export function register(app, ctx, deps = {}) {
         WHERE provider_ref IS NOT NULL
           AND provider <> 'manual'
           AND status NOT IN ('delivered','cancelled')
-          AND updated_at < NOW() - INTERVAL '3 minutes'
+          AND updated_at < NOW() - INTERVAL '45 seconds'
           AND created_at > NOW() - INTERVAL '12 hours'
         LIMIT 20`)).rows;
     for (const r of rows) {
@@ -1037,7 +1037,12 @@ export function register(app, ctx, deps = {}) {
       }
     }
   }
-  const POLL_MIN = Number(env("FA_POLL_MINUTES", "2"));
+  /* كل دقيقة، مش كل دقيقتين ببوابة ٣ دقايق. لاجلك ما بعتتش ولا ويبهوك
+     واحد من أول شحنة (١٣ سبتمبر: كل الأحداث poll)، فالسؤال ده هو الطريق
+     الوحيد. البوابة القديمة + تحديث updated_at في كل سؤال من غير تغيير
+     كانوا بيخلّوا الشحنة تتسأل كل ~٤ دقايق، والكابتن استلم والعميل لسه
+     شايف «جاهز». دلوقتي أقصى تأخير ~دقيقتين. */
+  const POLL_MIN = Number(env("FA_POLL_MINUTES", "1"));
   if (POLL_MIN > 0) {
     setInterval(() => pollInFlight().catch((e) => console.error("[delivery] poll failed:", e.message)),
       POLL_MIN * 60_000);
