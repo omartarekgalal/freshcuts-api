@@ -1547,6 +1547,33 @@ export function register(app, ctx, deps = {}) {
         WHERE status='paid_pos_failed' AND created_at > NOW() - INTERVAL '24 hours'`)).rows;
     for (const r of failed) await createPosOrder(r.order_no);
 
+    // 1b) «جاهز» بعد القبول. الكنس اللي تحت بيراقب pos_created بس، وأول ما
+    // الطلب يتقبل (ويتطلب له مندوب) بيخرج من المراقبة — فتسجيل الكاشير «جاهز»
+    // بعدها كان بيضيع، والتتبع يفضل «المطعم بيجهّز» للأبد (طلب 13 سبتمبر:
+    // التنبيه pickup_ready وصل 12:44 ومحدش قراه). هنا بنقرا آخر approval_status
+    // من تنبيهات تاب سينس للطلبات المقبولة اللي لسه مالهاش pos_ready_at —
+    // من غير أي تغيير في الحالة ولا طلب مندوب تاني.
+    const awaitingReady = (await pool.query(
+      `SELECT order_no, pos_order_id FROM shop_orders
+        WHERE pos_order_id IS NOT NULL AND pos_ready_at IS NULL
+          AND status IN ('accepted','courier_requested','courier_assigned')
+          AND created_at > NOW() - INTERVAL '24 hours'`)).rows;
+    for (const r of awaitingReady) {
+      try {
+        const wh = await pool.query(
+          `SELECT payload->'resource'->'statuses_slugs'->>'approval_status' AS a
+             FROM tsp_webhooks
+            WHERE payload->'resource'->'order'->>'id' = $1
+            ORDER BY received_at DESC LIMIT 1`, [r.pos_order_id]);
+        const a = String(wh.rows[0]?.a || "").toLowerCase();
+        if (a.includes("ready")) {
+          await pool.query(
+            `UPDATE shop_orders SET pos_approval=$2, pos_ready_at = COALESCE(pos_ready_at, NOW()),
+                    updated_at=NOW() WHERE order_no=$1`, [r.order_no, a]);
+        }
+      } catch { /* tsp_webhooks مش متاح — نجرّب الدورة الجاية */ }
+    }
+
     // 2) orders sitting in the POS inbox — did the cashier accept or reject?
     const watching = (await pool.query(
       `SELECT order_no, branch_id, pos_order_id, option, total, mf_payment_id, refund_id
