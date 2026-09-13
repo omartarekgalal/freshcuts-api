@@ -62,9 +62,12 @@ const USER_TOKEN = () => (process.env.META_CAPI_TOKEN || "").trim();
 
 /* الرابط العام اللي انستجرام هيجيب منه الصورة. لازم يكون من برّه — سيرفرات
    ميتا بتحمّل الصورة بنفسها، فـ localhost مش هينفع. */
+/* COOLIFY_URL بيجي قايمة مفصولة بفاصلة (كل دومينات التطبيق)، فبناخد أول واحد —
+   من غير كده الرابط كان بيطلع «freshcuts-api.o2m8.me,https…» وروابط الصور
+   المرفوعة وقراية مفردات حارس الصنف كانوا بايظين (13 سبتمبر). */
 const PUBLIC_BASE = () =>
-  (process.env.CONTENT_PUBLIC_BASE || process.env.COOLIFY_URL || "https://freshcuts-api.o2m8.me")
-    .trim().replace(/\/+$/, "");
+  String(process.env.CONTENT_PUBLIC_BASE || process.env.COOLIFY_URL || "https://freshcuts-api.o2m8.me")
+    .split(",")[0].trim().replace(/\/+$/, "");
 
 const CHANNELS = ["facebook", "instagram", "tiktok", "snapchat"];
 const STATUSES = ["draft", "scheduled", "published", "failed", "cancelled"];
