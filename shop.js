@@ -32,6 +32,7 @@ import * as tsstore from "./tsstore.js";
 import { msisdn, readableAddress } from "./couriers.js";
 // ضريبة سطور الباقة — نفس الثابت اللي التوزيع اتعمل بيه، عشان الإجمالي يرجع للسعر بالظبط
 import { VAT_RATE as BUNDLE_VAT } from "./bundles.js";
+import { isOpenNow } from "./carts.js";
 
 const env = (k, d) => (process.env[k] || d || "").toString().trim();
 const r2 = (v) => Math.round((Number(v) || 0) * 100) / 100;
@@ -493,6 +494,13 @@ export function register(app, ctx, deps = {}) {
     const ip = c.req.header("cf-connecting-ip") || c.req.header("x-forwarded-for") || "?";
     if (rateLimited(ip)) return c.json({ ok: false, error: "rate_limited" }, 429);
     if (!pay.configured()) return c.json({ ok: false, error: "payments_not_configured" }, 503);
+    // المطعم مقفول؟ الواجهة بتمنع قبل الدفع، بس لازم السيرفر يمنع كمان: صفحة
+    // قديمة مفتوحة، أو شارة كانت غلط، كانت بتخلّي العميل يدفع والمطبخ مقفول.
+    // المواعيد من اللوحة (settings.hours) — نفس مصدر الواجهة بالظبط.
+    if (!isOpenNow((await getSettingsData()).hours)) {
+      return c.json({ ok: false, error: "store_closed",
+        message: "المطعم مغلق حالياً 🌙 — تقدر تجهّز سلتك وتطلب أول ما نفتح." }, 409);
+    }
 
     let b = {};
     try { b = await c.req.json(); } catch { return c.json({ ok: false, error: "bad json" }, 400); }

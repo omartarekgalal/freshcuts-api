@@ -35,10 +35,10 @@ const QUIET_FROM = 1, QUIET_TO = 10; // 01:00 → 10:00 صمت
 
 /* المطعم مفتوح دلوقتي؟ نسخة سيرفر من نفس منطق الواجهة (بيراعي ما بعد
    منتصف الليل). رسالة «كمّل طلبك» ومطبخنا مقفول أسوأ من السكوت. */
-function isOpenNow(hours) {
+export function isOpenNow(hours, now = new Date()) {
   if (!hours || hours.enabled === false || !hours.days) return true; // مش معرّف = ما نمنعش
   const DAYS = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"];
-  const now = new Date(new Date().toLocaleString("en-US", { timeZone: "Asia/Riyadh" }));
+  now = new Date(now.toLocaleString("en-US", { timeZone: "Asia/Riyadh" }));
   const mins = now.getHours() * 60 + now.getMinutes();
   const hhmm = (s) => { const [h, m] = String(s || "0:0").split(":").map(Number); return (h || 0) * 60 + (m || 0); };
   const inWindow = (key, mm) => {
