@@ -42,22 +42,36 @@ function smsBudgetOk() {
   return _smsHour.n < cap;
 }
 
+/* أعطال شبكة قبل ما الطلب يوصل تقنيات أصلاً (DNS/اتصال) — آمن نعيد فيها من
+   غير خوف من رسالتين. 14 سبتمبر: DNS الحاوية فشل في api.taqnyat.sa (EAI_AGAIN)
+   وعميل وقف على «أرسل رمز جديد بعد شوي» والرسالة عمرها ما خرجت. مهلة الرد
+   (AbortError) مش منهم: الطلب ممكن يكون وصل، والإعادة تبعت رمزين. */
+const SMS_TRANSIENT = new Set(["EAI_AGAIN", "ENOTFOUND", "ECONNREFUSED", "ENETUNREACH", "EHOSTUNREACH", "UND_ERR_CONNECT_TIMEOUT"]);
+export const smsRetryable = (e) => SMS_TRANSIENT.has((e && e.cause && e.cause.code) || (e && e.code));
+
 /* ── Taqnyat SMS (the one place SMS leaves this API; notify.js will reuse) ── */
-export async function sendSms({ phoneNorm, body }) {
+export async function sendSms({ phoneNorm, body }, { attempts = 3, backoffMs = 700 } = {}) {
   const key = env("TAQNYAT_API_KEY");
   const sender = env("TAQNYAT_SENDER");
   if (!key || !sender) throw Object.assign(new Error("Taqnyat not configured"), { code: "SMS_UNCONFIGURED" });
-  const ctl = new AbortController();
-  const t = setTimeout(() => ctl.abort(), 15000);
   let resp;
-  try {
-    resp = await fetch("https://api.taqnyat.sa/v1/messages", {
-      method: "POST",
-      headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
-      body: JSON.stringify({ recipients: [`966${phoneNorm}`], body, sender }),
-      signal: ctl.signal,
-    });
-  } finally { clearTimeout(t); }
+  for (let attempt = 1; ; attempt++) {
+    const ctl = new AbortController();
+    const t = setTimeout(() => ctl.abort(), 15000);
+    try {
+      resp = await fetch("https://api.taqnyat.sa/v1/messages", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ recipients: [`966${phoneNorm}`], body, sender }),
+        signal: ctl.signal,
+      });
+      break;
+    } catch (e) {
+      if (attempt >= attempts || !smsRetryable(e)) throw e;
+      console.error(`[accounts] SMS network error (${(e.cause && e.cause.code) || e.code}) — retry ${attempt}/${attempts - 1}`);
+      await new Promise((r) => setTimeout(r, backoffMs * attempt));
+    } finally { clearTimeout(t); }
+  }
   const data = await resp.json().catch(() => ({}));
   if (!resp.ok || (data.statusCode && data.statusCode >= 400)) {
     throw Object.assign(new Error(`Taqnyat: ${data.message || resp.status}`), { code: "SMS_FAILED", resp: data });
@@ -258,7 +272,13 @@ export function register(app, ctx) {
         _smsHour.n++; // اصرف من ميزانية الساعة بعد إرسال فعلي
         return c.json({ ok: true, sent: "sms" });
       } catch (e) {
-        console.error("[accounts] OTP SMS failed:", e.message);
+        console.error("[accounts] OTP SMS failed:", e.message, (e.cause && e.cause.code) || "");
+        // الرسالة ماخرجتش ⇒ مانحبسش العميل ٦٠ ثانية على «أرسل رمز جديد بعد شوي»
+        // ولا نحسبها من حده اليومي — يقدر يدوس «إرسال» تاني على طول.
+        await pool.query(
+          `UPDATE acct_otp SET created_at = NOW() - INTERVAL '1 hour',
+                  day_count = GREATEST(COALESCE(day_count, 1) - 1, 0)
+            WHERE phone_norm=$1`, [phoneNorm]).catch(() => {});
         // fall through — dev mode may still save the flow, otherwise honest error
       }
     }
