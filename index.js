@@ -1,3 +1,4 @@
+import "./dns-fallback.js"; // لازم أول سطر: DNS احتياطي قبل أي اتصال (14 سبتمبر — EAI_AGAIN في الحاوية)
 import { Hono } from "hono";
 import { serve } from "@hono/node-server";
 import { cors } from "hono/cors";
