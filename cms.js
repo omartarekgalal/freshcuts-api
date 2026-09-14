@@ -1338,13 +1338,15 @@ export function register(app, ctx, deps = {}) {
   const MEDIUM = { influencer: "influencer", whatsapp: "message", sms: "message", qr: "offline" };
   const slugOk = (s) => /^[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?$/.test(s);
   function linkBody(b) {
-    const target_type = ["home", "collection", "product"].includes(b.target_type) ? b.target_type : "home";
+    // «offer» (14 سبتمبر): رابط يفتح عرض واحد على طول — /l/96-kilo و /l/96-box
+    const target_type = ["home", "collection", "product", "offer"].includes(b.target_type) ? b.target_type : "home";
     const utm_source = clip(b.utm_source, 30) || "other";
     return {
       label: clip(b.label, 80), target_type,
       target_id: target_type === "home" ? null : clip(b.target_id, 64),
       coupon: clip(String(b.coupon || "").toUpperCase(), 40),
-      utm_source, utm_medium: MEDIUM[utm_source] || "paid",
+      // الوسيط الصريح بيكسب — من غيره بوستات السوشال العضوية كانت بتتسجّل «paid»
+      utm_source, utm_medium: clip(b.utm_medium, 30) || MEDIUM[utm_source] || "paid",
       utm_campaign: clip(b.utm_campaign, 80),
     };
   }
@@ -1421,6 +1423,7 @@ export function register(app, ctx, deps = {}) {
     if (l.coupon) q.set("c", l.coupon);
     if (l.target_type === "collection" && l.target_id) q.set("col", l.target_id);
     if (l.target_type === "product" && l.target_id) q.set("p", l.target_id);
+    if (l.target_type === "offer" && l.target_id) q.set("offer", l.target_id);
     q.set("fc_link", l.slug);
     return c.json({ ok: true, url: "/?" + q.toString() });
   });
