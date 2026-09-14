@@ -1193,7 +1193,16 @@ export function register(app, ctx) {
     }
     const day = postDay(when);
     // عرض موقوف من لوحة العروض = زي المنتهي: البوست هيعلن حاجة الكاشير مش هيقبلها
-    const late = named.filter((o) => o.enabled === false || (o.until && day > o.until));
+    const isLate = (o) => o.enabled === false || (o.until && day > o.until);
+    /* عرض موقوف اسمه جزء من وصف عرض شغّال مايتحسبش. «بيتزا + باستا + كريب» كان
+       اسم عرض الـ٧٠ الموقوف، وهو نفسه مكونات بوكس ٩٦ — فبوست إطلاق البوكس على
+       انستجرام اتمنع يوم 14 سبتمبر بالغلط. الموقوف بيمنع بس لو فيه اسم منه مش
+       متغطّي بعرض شغّال مذكور في نفس البوست. */
+    const liveText = named.filter((o) => !isLate(o))
+      .map((o) => normDish(`${o.title || ""} ${o.catalogTitle || ""} ${o.desc || ""}`));
+    const late = named.filter(isLate).filter((o) => offerNeedles(o)
+      .filter((n) => hay.includes(n))
+      .some((n) => !liveText.some((t) => t.includes(n))));
     if (!late.length) {
       return { verdict: "pass", block: false, offers: named.map((o) => o.id), day };
     }
