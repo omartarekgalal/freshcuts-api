@@ -1238,7 +1238,9 @@ export function register(app, ctx, deps = {}) {
     let courier = null;
     const ready = Boolean(row.pos_ready_at);
 
-    if (row.option === "pickup") {
+    if (row.option === "pickup" && row.status === "delivered") {
+      label = "استلمت طلبك — بالهنا والشفا 🌟"; step = 5;
+    } else if (row.option === "pickup") {
       // الاستلام (سفري): «جاهز» بتيجي من الكاشير (pos_ready_at)؛ لو ماوصلتش،
       // بنقدّرها بالوقت بعد القبول عشان العميل مايفضلش على «بيجهّز» للأبد.
       if (row.status === "accepted" || row.status === "pos_created") {
@@ -1866,6 +1868,34 @@ export function register(app, ctx, deps = {}) {
           emitOrder("pos_ready", { orderNo: r.order_no, source: "shop", data: { source: "pos", by: null, approval: a } });
         }
       } catch { /* tsp_webhooks مش متاح — نجرّب الدورة الجاية */ }
+    }
+
+    // 1c) طلبات الاستلام اللي الكاشير سلّمها على تاب سينس (17 سبتمبر): تاب سينس
+    // بيبعت approval_status=delivered / order_status=completed لما الطلب يتقفل،
+    // واحنا ماكناش بنقراهم — فالطلب W1789590376537 فضل «مقبول» في شاشة المتابعة
+    // بعد ما العميل استلمه. التوصيل مش هنا: الطلب بيتقفل بتحديثات المندوب.
+    const pickupOpen = (await pool.query(
+      `SELECT order_no, pos_order_id FROM shop_orders
+        WHERE option='pickup' AND pos_order_id IS NOT NULL
+          AND status IN ('pos_created','accepted')
+          AND created_at > NOW() - INTERVAL '48 hours'`)).rows;
+    for (const r of pickupOpen) {
+      try {
+        const wh = await pool.query(
+          `SELECT payload->'resource'->'statuses_slugs'->>'approval_status' AS a,
+                  payload->'resource'->'statuses_slugs'->>'order_status' AS o
+             FROM tsp_webhooks
+            WHERE payload->'resource'->'order'->>'id' = $1
+            ORDER BY received_at DESC LIMIT 1`, [r.pos_order_id]);
+        const a = String(wh.rows[0]?.a || "").toLowerCase();
+        const o = String(wh.rows[0]?.o || "").toLowerCase();
+        if (a.includes("delivered") || o === "completed") {
+          await pool.query(
+            "UPDATE shop_orders SET pos_approval=$2, pos_ready_at = COALESCE(pos_ready_at, NOW()) WHERE order_no=$1",
+            [r.order_no, a || o]);
+          await setStatus(r.order_no, "delivered", { note: "الكاشير سلّم الطلب (تاب سينس)" });
+        }
+      } catch { /* الدورة الجاية */ }
     }
 
     // 2) orders sitting in the POS inbox — did the cashier accept or reject?
