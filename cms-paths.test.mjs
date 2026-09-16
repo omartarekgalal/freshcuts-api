@@ -38,3 +38,50 @@ test("kitchen role cannot touch finance; owner and accounting can edit it", () =
   // operations عندهم orders: edit بس مالهمش المالية — الاسترجاع مقفول عليهم كمان
   assert.equal(DEFAULT_PERMS.operations.finance, "none");
 });
+
+/* W1-03 — التسجيل المسبق لمسارات الموجات الجاية (خطة ٢٠٢٦-٠٩ §٤-٦). */
+test("§4-6: every pre-registered pattern maps to its section", () => {
+  const cases = [
+    // الاسترجاع يفضل مالية حتى بعد إضافة cms/orders العام
+    ["/api/shop/orders/W1234/refund", "finance"],
+    ["/api/cms/orders/W1234/refund", "finance"],
+    ["/api/cms/orders/W1234/courier/cancel", "delivery"],
+    ["/api/cms/orders/W1234/courier/dispatch", "delivery"],
+    ["/api/cms/orders", "orders"],
+    ["/api/cms/orders/W1234", "orders"],
+    ["/api/cms/orders/W1234/note", "orders"],
+    ["/api/cms/orders/W1234/courier", "orders"], // من غير «/» بعدها = مش فعل مندوب
+    ["/api/cms/order-views", "orders"],
+    ["/api/cms/order-views/3", "orders"],
+    ["/api/cms/offer-pages", "products"],
+    ["/api/cms/offer-pages/nd96_kilo", "products"],
+    ["/api/cms/search", "home"],
+    ["/api/cms/search?q=kilo", "home"],
+    ["/api/cms/nav-event", "home"],
+    ["/api/journey/customer/5xxxxxxxx", "customers"],
+    ["/api/journey/order/W1234", "orders"],
+    ["/api/journey/settings", "settings"],
+    ["/api/journey/funnel", "analytics"],
+    ["/api/journey/sessions", "analytics"],
+    ["/api/portal/summary", "orders"],
+    ["/api/portal/issues", "orders"],
+    ["/api/portal/devices/2", "orders"],
+    ["/api/app/config", "growth"],
+    // بيفضلوا على الموجود
+    ["/api/system/health", "settings"],
+    ["/api/ads/plan", "growth"],
+  ];
+  for (const [path, section] of cases) assert.equal(sectionOf(path), section, path);
+});
+
+test("§4-6: pre-registration didn't move existing cms routes", () => {
+  assert.equal(sectionOf("/api/cms/offers"), "products");
+  assert.equal(sectionOf("/api/cms/offers/nd96_kilo"), "products");
+  assert.equal(sectionOf("/api/cms/bundles"), "products");
+  assert.equal(sectionOf("/api/cms/home"), "home");
+  assert.equal(sectionOf("/api/cms/links"), "growth");
+  assert.equal(sectionOf("/api/cms/ops/live"), "orders");
+  assert.equal(sectionOf("/api/cms/audit"), "settings");
+  assert.equal(sectionOf("/api/portal/login"), "settings"); // مش في القايمة ⇒ الافتراضي المقفول
+  assert.equal(sectionOf("/api/apps"), "settings");         // ^/api/app/ بالشرطة بس
+});

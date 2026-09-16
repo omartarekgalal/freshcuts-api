@@ -35,6 +35,8 @@ import * as tsstore from "./tsstore.js";
 // سجل العروض الحي (جدول offer_registry) — نفس المصدر اللي الكتالوج والمتجر بيقروا منه
 import {
   OFFERS, offerById, publicOffer, saveOffer, offersSource, riyadhDay, EDITABLE_OFFER_FIELDS,
+  // يوم الشغل (٤ الفجر) — باسم تاني لأن register فيها riyadhDay محلية بمعنى يوم التقويم
+  SAVINGS_RE, riyadhDay as bizDay,
 } from "./offers.js";
 
 const scryptAsync = promisify(crypto.scrypt);
@@ -81,6 +83,10 @@ export const DEFAULT_PERMS = {
 const PATH_SECTIONS = [
   [/^\/api\/cms\/(users|roles|audit)/, "settings"],
   [/^\/api\/cms\/home/, "home"],
+  // البحث في اللوحة (Ctrl+K) وتسجيل التنقّل — تسجيل مسبق (خطة ٢٠٢٦-٠٩ §٤-٦)
+  [/^\/api\/cms\/(search|nav-event)/, "home"],
+  // صفحات البحث للعروض (freshcuts.sa/offers/<slug>) — نفس قسم العرض نفسه
+  [/^\/api\/cms\/offer-pages/, "products"],
   // العروض والباقات جوّه «المنتجات»: نفس صلاحية تعريف الباقة وتعديل العرض
   [/^\/api\/cms\/(products|catalog|collections|bundles|offers)/, "products"],
   [/^\/api\/cms\/(growth|links)/, "growth"],
@@ -94,6 +100,16 @@ const PATH_SECTIONS = [
   // الاسترجاع فلوس بتخرج → «المالية»، ولازم يسبق سطر shop/orders العام
   // (غير كده دور المطبخ اللي عنده orders: edit كان يقدر يرجّع فلوس)
   [/^\/api\/(shop|cms)\/orders\/[^/]+\/refund$/, "finance"],
+  /* تسجيل مسبق لمسارات الموجات الجاية (خطة ٢٠٢٦-٠٩ §٤-٦) — الأدق قبل العام،
+     وكلهم بعد سطر الاسترجاع عشان cms/orders/<n>/refund يفضل «مالية». */
+  [/^\/api\/cms\/orders\/[^/]+\/courier\//, "delivery"],
+  [/^\/api\/cms\/(orders|order-views)/, "orders"],
+  [/^\/api\/journey\/customer/, "customers"],
+  [/^\/api\/journey\/order/, "orders"],
+  [/^\/api\/journey\/settings/, "settings"],
+  [/^\/api\/journey/, "analytics"],
+  [/^\/api\/portal\/(summary|issues|devices)/, "orders"],
+  [/^\/api\/app\//, "growth"],
   [/^\/api\/(shop\/(orders|board|summary)|day\b|day\/|staff\/|cashier|chef|notifications)/, "orders"],
   [/^\/api\/(ads|autopilot|attribution|funnel|audiences|retargeting|retarget|marketing|content|social|promo|catalog|tracking|offers|carts|menuplan|scorecard|ai\/|chat)/, "growth"],
   [/^\/api\/(customers|account\/admin)/, "customers"],
@@ -128,6 +144,124 @@ function loginLimited(ip) {
   slot.n++;
   if (rl.size > 5000) rl.clear();
   return slot.n > 10;
+}
+
+/* ═══ صفحات البحث للعروض (offer_pages) — تحقق صافي ═══════════════════════
+   متجرّب أوفلاين في offerpages.test.mjs. قواعد رسالة ٩٦: الرقم هو الرسالة،
+   ممنوع «وفّر/خصم/٪» بالعربي والإنجليزي، وممنوع إيموجي العلم. */
+export const OFFER_PAGE_SLUG_RE = /^[a-z0-9](?:[a-z0-9-]{0,58}[a-z0-9])?$/;
+export const OFFER_PAGE_LIMITS = {
+  seo_title: 70, seo_title_en: 70, meta: 170, meta_en: 170, h1: 90, h1_en: 90,
+  title_en: 120, desc_en: 600, faqMax: 8, faqQ: 200, faqA: 800,
+};
+const OFFER_PAGE_TEXT = ["h1", "h1_en", "seo_title", "seo_title_en", "meta", "meta_en", "title_en", "desc_en"];
+const OFFER_PAGE_IMAGES = ["image_web", "image_wide", "image_og"];
+const OFFER_PAGE_NUMBERED = ["h1", "h1_en", "seo_title", "seo_title_en", "meta", "meta_en"];
+export const EN_SAVINGS_RE = /\b(save|saves|saved|saving|savings|discount|discounts|discounted|off|percent)\b|%/i;
+const FLAG_RE = /[\u{1F1E6}-\u{1F1FF}]/u;
+const okPageImage = (u) => /^(https:\/\/|\/static\/)[^\s"'<>]+$/i.test(u);
+const latinDigits = (s) => String(s).replace(/[٠-٩]/g, (d) => String(d.charCodeAt(0) - 0x0660))
+  .replace(/[۰-۹]/g, (d) => String(d.charCodeAt(0) - 0x06f0));
+
+/* existing = صف offer_pages الحالي (أو null). بترجّع
+   { ok, row, changed, warnings } أو { ok:false, status, error, message }. */
+export function validateOfferPagePatch(existing, body, { price = null, slugLocked = false } = {}) {
+  const bad = (status, error, message) => ({ ok: false, status, error, message });
+  if (!body || typeof body !== "object" || Array.isArray(body)) return bad(400, "bad_body", "البيانات مش صحيحة.");
+  const b = body;
+  const cur = existing || {};
+  const row = {
+    slug: cur.slug || null,
+    ...Object.fromEntries(OFFER_PAGE_TEXT.map((k) => [k, cur[k] || null])),
+    ...Object.fromEntries(OFFER_PAGE_IMAGES.map((k) => [k, cur[k] || null])),
+    faq: Array.isArray(cur.faq) ? cur.faq : [],
+    sort: Number(cur.sort) || 0,
+    indexable: cur.indexable !== false,
+  };
+
+  if ("slug" in b) {
+    const slug = typeof b.slug === "string" ? b.slug.trim() : "";
+    if (!OFFER_PAGE_SLUG_RE.test(slug)) {
+      return bad(400, "bad_slug", "الرابط لازم يبقى حروف إنجليزي صغيرة وأرقام وشَرطة (-) بس، لحد ٦٠ حرف — مثلاً kilo-grills-96.");
+    }
+    if (slugLocked && cur.slug && slug !== cur.slug) {
+      return bad(409, "slug_locked", "الرابط اتنشر خلاص — تغييره بيكسر الروابط القديمة.");
+    }
+    row.slug = slug;
+  }
+  if (!row.slug) return bad(400, "slug_required", "لازم تحدد رابط للصفحة (slug).");
+
+  for (const k of OFFER_PAGE_TEXT) {
+    if (!(k in b)) continue;
+    if (b[k] != null && typeof b[k] !== "string") return bad(400, "bad_field", `«${k}» لازم يبقى نص.`);
+    const v = String(b[k] ?? "").trim();
+    if (v.length > OFFER_PAGE_LIMITS[k]) return bad(400, "too_long", `«${k}» أطول من ${OFFER_PAGE_LIMITS[k]} حرف.`);
+    row[k] = v || null;
+  }
+  for (const k of OFFER_PAGE_IMAGES) {
+    if (!(k in b)) continue;
+    const v = b[k] == null ? "" : typeof b[k] === "string" ? b[k].trim() : null;
+    if (v === null || (v && (v.length > 500 || !okPageImage(v)))) {
+      return bad(400, "bad_image", `«${k}» لازم يبدأ بـ https:// أو /static/.`);
+    }
+    row[k] = v || null;
+  }
+  if ("faq" in b) {
+    if (!Array.isArray(b.faq)) return bad(400, "bad_faq", "الأسئلة لازم تبقى قايمة.");
+    const faq = [];
+    for (const f of b.faq) {
+      if (!f || typeof f !== "object") return bad(400, "bad_faq", "سؤال مش صحيح.");
+      const t = (x) => (typeof x === "string" ? x.trim() : x == null ? "" : null);
+      const item = { q: t(f.q), a: t(f.a), q_en: t(f.q_en), a_en: t(f.a_en) };
+      if (Object.values(item).some((x) => x === null)) return bad(400, "bad_faq", "السؤال والإجابة لازم يبقوا نص.");
+      if (!item.q && !item.a && !item.q_en && !item.a_en) continue;
+      if (!item.q || !item.a) return bad(400, "faq_incomplete", "كل سؤال محتاج سؤال وإجابة بالعربي.");
+      if ([item.q, item.q_en].some((x) => x.length > OFFER_PAGE_LIMITS.faqQ)
+        || [item.a, item.a_en].some((x) => x.length > OFFER_PAGE_LIMITS.faqA)) {
+        return bad(400, "too_long", `السؤال لحد ${OFFER_PAGE_LIMITS.faqQ} حرف والإجابة لحد ${OFFER_PAGE_LIMITS.faqA}.`);
+      }
+      faq.push(item);
+    }
+    if (faq.length > OFFER_PAGE_LIMITS.faqMax) return bad(400, "faq_too_many", `أقصى حاجة ${OFFER_PAGE_LIMITS.faqMax} أسئلة.`);
+    row.faq = faq;
+  }
+  if ("sort" in b) {
+    const n = Number(b.sort);
+    if (!Number.isInteger(n) || Math.abs(n) > 10000) return bad(400, "bad_sort", "الترتيب لازم يبقى رقم صحيح.");
+    row.sort = n;
+  }
+  if ("indexable" in b) {
+    if (typeof b.indexable !== "boolean") return bad(400, "bad_indexable", "«indexable» لازم true أو false.");
+    row.indexable = b.indexable;
+  }
+
+  // قواعد الرسالة على كل النصوص (العربي والإنجليزي والأسئلة)
+  const texts = [
+    ...OFFER_PAGE_TEXT.map((k) => row[k]),
+    ...row.faq.flatMap((f) => [f.q, f.a, f.q_en, f.a_en]),
+  ].filter(Boolean);
+  if (texts.some((t) => FLAG_RE.test(t))) {
+    return bad(400, "flag_forbidden", "ممنوع إيموجي العلم في نصوص العروض.");
+  }
+  // التشكيل والتطويل («وفِّر»، «خـصم») مايعدّوش من الفلتر: بنشيلهم قبل الفحص
+  const bare = (t) => String(t).replace(/[ؐ-ًؚ-ٰٟۖ-ۭـ​-‏]/g, "");
+  if (texts.some((t) => [t, bare(t)].some((x) => SAVINGS_RE.test(x) || EN_SAVINGS_RE.test(x)))) {
+    return bad(400, "savings_claim_forbidden",
+      "النص فيه كلام عن توفير/خصم/نسبة (أو save/discount/off/%). ممنوع على العروض دي: الرسالة هي الرقم ٩٦ بس.");
+  }
+
+  const warnings = [];
+  for (const k of OFFER_PAGE_NUMBERED) {
+    const nums = (latinDigits(row[k] || "").match(/\d+(?:[.,]\d+)?/g) || []).filter((x) => price == null || Number(x.replace(",", ".")) !== Number(price));
+    if (nums.length) warnings.push(`«${k}» فيه رقم (${[...new Set(nums)].join("، ")}) غير سعر العرض — اتأكد إنه مش سعر قديم.`);
+  }
+  const keys = ["slug", ...OFFER_PAGE_TEXT, ...OFFER_PAGE_IMAGES, "faq", "sort", "indexable"];
+  const before = existing
+    ? { ...row, ...Object.fromEntries(keys.map((k) => [k, k === "faq" ? (Array.isArray(cur.faq) ? cur.faq : [])
+      : k === "sort" ? Number(cur.sort) || 0 : k === "indexable" ? cur.indexable !== false : cur[k] || null])) }
+    : {};
+  const changed = keys.filter((k) => JSON.stringify(before[k] ?? null) !== JSON.stringify(row[k] ?? null));
+  return { ok: true, row, changed, warnings };
 }
 
 export function register(app, ctx, deps = {}) {
@@ -308,6 +442,35 @@ export function register(app, ctx, deps = {}) {
          SET offer_id = CASE slug WHEN 'national96-grill' THEN 'nd96_kilo' WHEN 'national96-box' THEN 'nd96_box' END
        WHERE slug IN ('national96-grill', 'national96-box') AND offer_id IS NULL
          AND EXISTS (SELECT 1 FROM m)`);
+    /* صفحات البحث للعروض (مسار ٠١، ٢٠٢٦-٠٩): جدول منفصل عن offer_registry عن
+       قصد — السجل ومنطق تحققه مابيتلمسوش. الـslug بيتقفل بعد أول ظهور live
+       (published_at). محاط بـtry عشان أي فشل هنا مايوقفش تحميل جلسات الفريق. */
+    try {
+      await pool.query(`
+        CREATE TABLE IF NOT EXISTS offer_pages (
+          offer_id     TEXT PRIMARY KEY,
+          slug         TEXT UNIQUE NOT NULL
+                       CHECK (slug ~ '^[a-z0-9](?:[a-z0-9-]{0,58}[a-z0-9])?$'),
+          h1           TEXT, h1_en        TEXT,
+          seo_title    TEXT, seo_title_en TEXT,
+          meta         TEXT, meta_en      TEXT,
+          title_en     TEXT, desc_en      TEXT,
+          image_web    TEXT, image_wide   TEXT, image_og TEXT,
+          faq          JSONB NOT NULL DEFAULT '[]'::jsonb,
+          sort         INT NOT NULL DEFAULT 0,
+          indexable    BOOLEAN NOT NULL DEFAULT TRUE,
+          published_at TIMESTAMPTZ,
+          updated_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          updated_by   TEXT
+        )`);
+      await pool.query(`
+        WITH m AS (INSERT INTO cms_migrations(id) VALUES ('offer-pages-v1') ON CONFLICT DO NOTHING RETURNING id)
+        INSERT INTO offer_pages(offer_id, slug, sort, updated_by)
+        SELECT v.offer_id, v.slug, v.sort, 'seed'
+          FROM (VALUES ('nd96_kilo', 'kilo-grills-96', 0), ('nd96_box', 'national-day-box-96', 1)) AS v(offer_id, slug, sort)
+         WHERE EXISTS (SELECT 1 FROM m)
+        ON CONFLICT DO NOTHING`);
+    } catch (e) { console.error("[cms] offer_pages schema failed:", e.message); }
     const r = await pool.query(
       `SELECT s.token_hash, s.expires_at, u.id, u.username, u.name, u.role, u.active
          FROM cms_sessions s JOIN cms_users u ON u.id = s.user_id
@@ -793,11 +956,13 @@ export function register(app, ctx, deps = {}) {
      بسمتي» (١٢٣) الاتنين خارج صفحات المنيو عن قصد (اتأكدنا بالمجسّ 2026-09-12).
      فمصدر السعر هو **تفاصيل الصنف** (stores/…/products/{id}) مش المنيو؛
      المنيو بيدّينا الصورة وبس. من غير كده الباقتين كانوا هيتكسروا في صمت. */
+  // deps.tsstore: للاختبارات بس (أوفلاين) — الإنتاج بيستعمل tsstore الحقيقي
+  const ts = deps.tsstore || tsstore;
   let _menuIdx = { at: 0, byId: null };
   const _prod = new Map(); // productId → {name, priceEx, priceIncl, taxId, variants[]} | null
   async function menuIndex() {
     if (_menuIdx.byId && Date.now() - _menuIdx.at < 300_000) return _menuIdx.byId;
-    const menu = await tsstore.fetchMenu("1");
+    const menu = await ts.fetchMenu("1");
     const byId = new Map();
     for (const p of menu?.pages || [])
       for (const it of p.items || [])
@@ -810,7 +975,7 @@ export function register(app, ctx, deps = {}) {
     if (_prod.has(k)) return _prod.get(k);
     let out = null;
     try {
-      const r = await tsstore.callStore(`stores/${tsstore.STORE()}/products/${k}`, { branchId: "1" });
+      const r = await ts.callStore(`stores/${ts.STORE()}/products/${k}`, { branchId: "1" });
       const d = r?.data;
       if (d && d.id != null) {
         const raw = d.variant;
@@ -1212,6 +1377,40 @@ export function register(app, ctx, deps = {}) {
     return c.json({ ok: true, offer, changed: r.changed, warnings });
   });
 
+  /* ── تلبيس الباقة: أسماء وصور وأسعار الأصناف الحقيقية ─────────────────────
+     دالة واحدة لـ/api/shop/bundles و/api/shop/offers-page — مفيش نسخة تانية.
+     بترجّع null لو أي خانة اتكسرت (صنف أو وزن اتشال): الباقة المكسورة
+     مابتتعرضش أبداً — أحسن من طلب بيفشل. */
+  async function dressSlots(b, menu) {
+    // تفاصيل كل صنف (سعر + أوزان) — بتشتغل كمان للأصناف اللي برّه المنيو
+    await Promise.all(productIdsOf(b.slots).map((p) => productDetail(p)));
+    const dress = (productId, variantId, label) => {
+      const d = _prod.get(String(productId));
+      if (!d) return null; // صنف مش موجود ⇒ مايتعرضش
+      const opt = variantId && d.variants.find((o) => o.id === Number(variantId));
+      if (variantId && !opt) return null;
+      return {
+        product_id: String(productId), variant_option_id: variantId || null,
+        name: label || d.name, variant_name: opt ? opt.name : null,
+        image: (menu.get(String(productId)) || {}).image || "",
+        price_incl: opt ? opt.priceIncl : d.priceIncl,
+      };
+    };
+    const slots = [];
+    for (const s of b.slots) {
+      if (s.type === "choice") {
+        const choices = s.choices.map((ch) => dress(ch.product_id, ch.variant_option_id, ch.label)).filter(Boolean);
+        if (!choices.length) return null;
+        slots.push({ key: s.key, label: s.label, type: "choice", quantity: s.quantity, choices });
+      } else {
+        const item = dress(s.product_id, s.variant_option_id, "");
+        if (!item) return null;
+        slots.push({ key: s.key, label: s.label, type: "fixed", quantity: s.quantity, item });
+      }
+    }
+    return slots;
+  }
+
   /* ── عام: المتجر بيقرا الباقات المفعّلة بس ────────────────────────────── */
   app.get("/api/shop/bundles", async (c) => {
     const kind = String(c.req.query("option") || "").trim();
@@ -1226,42 +1425,206 @@ export function register(app, ctx, deps = {}) {
       for (const { b, av } of live) {
         b.order_kinds = av.kinds;
         if (kind && !b.order_kinds.includes(kind)) continue;
-        // تفاصيل كل صنف (سعر + أوزان) — بتشتغل كمان للأصناف اللي برّه المنيو
-        await Promise.all(productIdsOf(b.slots).map((p) => productDetail(p)));
-        const dress = (productId, variantId, label) => {
-          const d = _prod.get(String(productId));
-          if (!d) return null; // صنف مش موجود ⇒ مايتعرضش
-          const opt = variantId && d.variants.find((o) => o.id === Number(variantId));
-          if (variantId && !opt) return null;
-          return {
-            product_id: String(productId), variant_option_id: variantId || null,
-            name: label || d.name, variant_name: opt ? opt.name : null,
-            image: (menu.get(String(productId)) || {}).image || "",
-            price_incl: opt ? opt.priceIncl : d.priceIncl,
-          };
-        };
-        const slots = [];
-        let broken = false;
-        for (const s of b.slots) {
-          if (s.type === "choice") {
-            const choices = s.choices.map((ch) => dress(ch.product_id, ch.variant_option_id, ch.label)).filter(Boolean);
-            if (!choices.length) { broken = true; break; }
-            slots.push({ key: s.key, label: s.label, type: "choice", quantity: s.quantity, choices });
-          } else {
-            const item = dress(s.product_id, s.variant_option_id, "");
-            if (!item) { broken = true; break; }
-            slots.push({ key: s.key, label: s.label, type: "fixed", quantity: s.quantity, item });
-          }
-        }
-        if (broken) continue; // باقة مكسورة مابتتعرضش أبداً — أحسن من طلب بيفشل
+        const slots = await dressSlots(b, menu);
+        if (!slots) continue; // باقة مكسورة مابتتعرضش أبداً — أحسن من طلب بيفشل
+        // offer_id (مسار ٠١): المتجر بيربط الباقة بعرضها من هنا بدل جدول مكتوب في app.js
         out.push({ slug: b.slug, name: b.name, name_en: b.name_en, description: b.description,
-          image: b.image, badge: b.badge, price: b.price, order_kinds: b.order_kinds, slots });
+          image: b.image, badge: b.badge, price: b.price, order_kinds: b.order_kinds, offer_id: b.offer_id || null, slots });
       }
       return c.json({ ok: true, bundles: out });
     } catch (e) {
       // ٢٠٠ مقصود: كلاودفلير بيبلع الـ5xx، والمتجر لازم يفضل شغّال من غير باقات
       return c.json({ ok: false, error: "bundles_unavailable", message: e.message, bundles: [] });
     }
+  });
+
+  /* ═══ صفحة العروض لمحركات البحث — freshcuts.sa/offers (مسار ٠١) ══════════
+
+     المتجر (seo.py) بيرندر /offers و/offers/<slug> من الرد ده بس. القواعد:
+       • العروض الـlive بس (بيوم شغل الرياض + ٤ الفجر، من offerState).
+       • order_kinds = delivery/pickup بس — مفيش «صالة» أونلاين.
+       • مفيش price_incl ولا compareAt ولا note القديم («داخل الصالة فقط»):
+         سعر المكوّن جنب ٩٦ بيتقري «قيمته كذا»، يعني ادعاء توفير غير مباشر.
+       • onlineOnly = !channels.dineIn (البوكس). عرض أونلاين بس باقته مش قابلة
+         للطلب بيتشال من الرد — مالوش مكان تاني يتطلب منه.
+       • دايماً HTTP 200 (كلاودفلير بيبلع الـ5xx) و ok:false عند أي خطأ.
+     الـslug بيتقفل أول ما العرض يظهر live (published_at). */
+  const PUBLIC_KINDS = ["delivery", "pickup"];
+  const isoOf = (v) => {
+    if (!v) return null;
+    const d = v instanceof Date ? v : new Date(v);
+    return Number.isNaN(d.getTime()) ? null : d.toISOString();
+  };
+  const OFFERS_SITE = () => (process.env.STOREFRONT_PUBLIC_URL || "https://freshcuts.sa").replace(/\/+$/, "");
+  async function offerPageRows() {
+    return new Map((await pool.query("SELECT * FROM offer_pages")).rows.map((r) => [String(r.offer_id), r]));
+  }
+  // ختم أول ظهور live — fire-and-forget: فشل الختم مايوقعش الصفحة العامة
+  function stampPublished(offerId) {
+    try {
+      Promise.resolve(pool.query(
+        "UPDATE offer_pages SET published_at = NOW() WHERE offer_id = $1 AND published_at IS NULL", [offerId]))
+        .catch(() => {});
+    } catch { /* */ }
+  }
+  const publicPick = (x) => ({ product_id: x.product_id, name: x.name, variant_name: x.variant_name, image: x.image });
+  const publicSlot = (s) => (s.type === "choice"
+    ? { key: s.key, label: s.label, type: "choice", quantity: s.quantity, choices: s.choices.map(publicPick) }
+    : { key: s.key, label: s.label, type: "fixed", quantity: s.quantity, item: publicPick(s.item) });
+  const pageSeo = (p) => ({
+    h1: p.h1 || null, h1_en: p.h1_en || null, seo_title: p.seo_title || null, seo_title_en: p.seo_title_en || null,
+    meta: p.meta || null, meta_en: p.meta_en || null,
+    faq: Array.isArray(p.faq) ? p.faq : [], indexable: p.indexable !== false,
+  });
+  const channelsOf = (p) => {
+    const ch = p.channels || { dineIn: true, takeaway: !p.dineInOnly, delivery: !p.dineInOnly };
+    return { dineIn: ch.dineIn === true, takeaway: ch.takeaway === true, delivery: ch.delivery === true, deliveryApps: false };
+  };
+
+  async function offersPagePayload(now = new Date()) {
+    const pages = await offerPageRows();
+    const regAt = new Map((await pool.query("SELECT id, updated_at FROM offer_registry")).rows
+      .map((r) => [String(r.id), r.updated_at]));
+    const linked = (await pool.query("SELECT * FROM cms_bundles WHERE offer_id IS NOT NULL ORDER BY sort, id")).rows.map(bundleRow);
+    let menu = null;
+    let lastmod = 0;
+    const out = [];
+    for (const o of OFFERS) {
+      const page = pages.get(o.id);
+      if (!page || !page.slug) continue; // عرض من غير صفحة = مالوش رابط
+      const p = publicOffer(o, now);
+      if (p.status !== "live") continue;
+      const channels = channelsOf(p);
+      const onlineOnly = !channels.dineIn;
+      let offerMod = 0;
+      const bump = (v) => { const t = Date.parse(isoOf(v) || ""); if (t > offerMod) offerMod = t; };
+      let bundle = null;
+      for (const b of linked.filter((x) => x.offer_id === o.id)) {
+        const av = availabilityOf(b, now);
+        const kinds = av.kinds.filter((k) => PUBLIC_KINDS.includes(k));
+        if (!av.orderable || !kinds.length) continue;
+        // المنيو للصور بس — لو تاب سينس واقعة الصفحة تفضل شغّالة من غير صور
+        if (!menu) menu = await menuIndex().catch(() => new Map());
+        const slots = await dressSlots(b, menu);
+        if (!slots) continue;
+        bundle = { slug: b.slug, name: b.name, name_en: b.name_en, description: b.description, image: b.image,
+          order_kinds: kinds, slots: slots.map(publicSlot) };
+        bump(b.updated_at);
+        break;
+      }
+      const orderableOnline = Boolean(bundle);
+      if (onlineOnly && !orderableOnline) continue;
+      if (!page.published_at) stampPublished(o.id);
+      bump(regAt.get(o.id));
+      bump(page.updated_at);
+      if (offerMod > lastmod) lastmod = offerMod;
+      out.push({
+        id: o.id, slug: page.slug, sort: Number(page.sort) || 0, status: p.status,
+        title: p.title, desc: p.desc || "", title_en: page.title_en || "", desc_en: page.desc_en || "",
+        components: p.components || [], excludes: p.excludes || [],
+        price: p.price, currency: p.currency || "SAR", priceRole: p.priceRole || "price",
+        from: p.from || null, until: p.until, untilProvisional: !!p.untilProvisional, untilText: p.untilText,
+        channels, onlineOnly, orderableOnline, bundle,
+        seo: pageSeo(page),
+        images: { web: page.image_web || null, wide: page.image_wide || null, og: page.image_og || null },
+        updated_at: offerMod ? new Date(offerMod).toISOString() : null,
+      });
+    }
+    out.sort((a, b) => a.sort - b.sort || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+    return { ok: true, today: bizDay(now), lastmod: lastmod ? new Date(lastmod).toISOString() : null, offers: out };
+  }
+
+  app.get("/api/shop/offers-page", async (c) => {
+    try {
+      const body = await offersPagePayload(new Date());
+      c.header("Cache-Control", "public, max-age=60");
+      return c.json(body);
+    } catch (e) {
+      console.error("[cms] offers-page failed:", e.message);
+      c.header("Cache-Control", "no-store");
+      return c.json({ ok: false, error: "offers_page_unavailable", offers: [] });
+    }
+  });
+
+  /* اللوحة: صفحة البحث لكل عرض (حتى اللي مالوش صف لسه). الـslug مقفول لو
+     العرض اتنشر مرة (published_at) أو شغّال دلوقتي. */
+  const slugLockedOf = (page, p) => Boolean(page && (page.published_at || p.status === "live"));
+  function offerPageView(o, page, now) {
+    const p = publicOffer(o, now);
+    return {
+      offer_id: o.id, title: p.title, status: p.status, statusLabel: p.statusLabel,
+      from: p.from || null, until: p.until, untilProvisional: !!p.untilProvisional, price: p.price,
+      onlineOnly: !channelsOf(p).dineIn,
+      page: page ? {
+        slug: page.slug, title_en: page.title_en || null, desc_en: page.desc_en || null, ...pageSeo(page),
+        image_web: page.image_web || null, image_wide: page.image_wide || null, image_og: page.image_og || null,
+        sort: Number(page.sort) || 0, updated_at: isoOf(page.updated_at), updated_by: page.updated_by || null,
+      } : null,
+      published_at: isoOf(page?.published_at),
+      slugLocked: slugLockedOf(page, p),
+      url: page ? `${OFFERS_SITE()}/offers/${page.slug}` : null,
+    };
+  }
+
+  app.get("/api/cms/offer-pages", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    const now = new Date();
+    try {
+      const pages = await offerPageRows();
+      return c.json({ ok: true, today: bizDay(now), site: OFFERS_SITE(), limits: OFFER_PAGE_LIMITS,
+        pages: OFFERS.map((o) => offerPageView(o, pages.get(o.id) || null, now)) });
+    } catch (e) {
+      // كلاودفلير بيبلع الـ5xx — اللوحة تشوف رسالة بدل صفحة خطأ
+      console.error("[cms] offer-pages list failed:", e.message);
+      return c.json({ ok: false, error: "offer_pages_unavailable", message: "صفحات البحث مش متاحة دلوقتي.", pages: [] });
+    }
+  });
+
+  app.put("/api/cms/offer-pages/:offerId", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    let b = {}; try { b = await c.req.json(); } catch { return c.json({ ok: false, error: "bad json" }, 400); }
+    const id = c.req.param("offerId");
+    const o = offerById(id);
+    if (!o) return c.json({ ok: false, error: "unknown_offer", message: "عرض غير معروف." }, 404);
+    const now = new Date();
+    const cur = (await pool.query("SELECT * FROM offer_pages WHERE offer_id=$1", [id])).rows[0] || null;
+    const locked = slugLockedOf(cur, publicOffer(o, now));
+    const v = validateOfferPagePatch(cur, b, { price: o.price, slugLocked: locked });
+    if (!v.ok) return c.json({ ok: false, error: v.error, message: v.message }, v.status);
+    const r = v.row;
+    let saved;
+    try {
+      /* الـWHERE في الـUPDATE حارس تاني ضد السباق: لو الصفحة اتنشرت بين
+         القراءة والحفظ، تغيير الـslug مايعدّيش. */
+      const res = await pool.query(
+        `INSERT INTO offer_pages (offer_id, slug, h1, h1_en, seo_title, seo_title_en, meta, meta_en, title_en, desc_en,
+                                 image_web, image_wide, image_og, faq, sort, indexable, updated_at, updated_by)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14::jsonb,$15,$16,NOW(),$17)
+         ON CONFLICT (offer_id) DO UPDATE SET
+           slug=EXCLUDED.slug, h1=EXCLUDED.h1, h1_en=EXCLUDED.h1_en, seo_title=EXCLUDED.seo_title,
+           seo_title_en=EXCLUDED.seo_title_en, meta=EXCLUDED.meta, meta_en=EXCLUDED.meta_en,
+           title_en=EXCLUDED.title_en, desc_en=EXCLUDED.desc_en, image_web=EXCLUDED.image_web,
+           image_wide=EXCLUDED.image_wide, image_og=EXCLUDED.image_og, faq=EXCLUDED.faq, sort=EXCLUDED.sort,
+           indexable=EXCLUDED.indexable, updated_at=NOW(), updated_by=EXCLUDED.updated_by
+         WHERE offer_pages.published_at IS NULL OR offer_pages.slug = EXCLUDED.slug
+         RETURNING *`,
+        [id, r.slug, r.h1, r.h1_en, r.seo_title, r.seo_title_en, r.meta, r.meta_en, r.title_en, r.desc_en,
+         r.image_web, r.image_wide, r.image_og, jb(r.faq), r.sort, r.indexable, await who(c)]);
+      saved = res.rows[0];
+    } catch (e) {
+      if (e.code === "23505" || /duplicate|unique/i.test(String(e.message))) {
+        return c.json({ ok: false, error: "slug_taken", message: "الرابط ده مستخدم لعرض تاني." }, 409);
+      }
+      if (e.code === "23514") return c.json({ ok: false, error: "bad_slug", message: "الرابط مش صحيح." }, 400);
+      throw e;
+    }
+    if (!saved) {
+      return c.json({ ok: false, error: "slug_locked", message: "الرابط اتنشر خلاص — تغييره بيكسر الروابط القديمة." }, 409);
+    }
+    auditNote(c, v.changed.length
+      ? `صفحة بحث ${id}: ${v.changed.map((k) => (k === "slug" && cur?.slug ? `slug ${cur.slug}→${r.slug}` : k)).join("، ")}`
+      : `صفحة بحث ${id}: حفظ من غير تغيير`);
+    return c.json({ ok: true, page: offerPageView(o, saved, now), changed: v.changed, warnings: v.warnings });
   });
 
   /* التوسيع — المصدر الوحيد للحقيقة. المتجر بينده عليه للمعاينة، والـcheckout
@@ -1426,7 +1789,8 @@ export function register(app, ctx, deps = {}) {
     if (l.coupon) q.set("c", l.coupon);
     if (l.target_type === "collection" && l.target_id) q.set("col", l.target_id);
     if (l.target_type === "product" && l.target_id) q.set("p", l.target_id);
-    if (l.target_type === "offer" && l.target_id) q.set("offer", l.target_id);
+    // عرض: ?go=offers&offer=<id> — المتجر بيفتح منتقي العرض على طول (مسار ٠١)
+    if (l.target_type === "offer" && l.target_id) { q.set("go", "offers"); q.set("offer", l.target_id); }
     q.set("fc_link", l.slug);
     return c.json({ ok: true, url: "/?" + q.toString() });
   });
@@ -2166,5 +2530,5 @@ export function register(app, ctx, deps = {}) {
   console.log("[cms] routes ready");
   // `expand` بيتصدّر عشان الـcheckout في shop.js يوسّع الباقة بنفس القواعد
   // بالظبط اللي المتجر عرضها — مفيش نسخة تانية من التسعير في أي مكان.
-  return { sectionOf, effectivePerms, sessionUser, whoami, expandBundle: expand, getBundle };
+  return { sectionOf, effectivePerms, sessionUser, whoami, expandBundle: expand, getBundle, offersPagePayload };
 }
