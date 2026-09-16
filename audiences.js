@@ -234,6 +234,19 @@ const SEGMENTS = [
   { id: "delivery", label: "عملاء تطبيقات التوصيل",  desc: "جالنا منهم رقم عن طريق FeedUs/الكاشير" },
 ];
 
+/* ── قرار O6 (PDPL): رفع قوايم الجوال بيتقفل من الإعدادات ─────────────────
+   مفتاح `syncAudiences` في ap_settings كان بيقفل النداء الليلي بتاع الطيار
+   بس، والمجدول بتاع الموديول ده (lists كل ٦ ساعات) كان بيرفع برضه. فالمفتاح
+   بقى بيحكم الاتنين. `v` = قيمة data->>'syncAudiences' من الداتابيز:
+     null/undefined (مفيش صف أو المفتاح مش متسجّل) → الافتراضي (شغّال)
+     false / "false"                               → مقفول
+   لو القراءة نفسها فشلت المتصل بيبعت `readFailed` ونقفل (الخصوصية أولى من
+   رفعة متأخرة ٦ ساعات). */
+export function listsUploadAllowed(v, { readFailed = false } = {}) {
+  if (readFailed) return false;
+  return !(v === false || String(v).toLowerCase() === "false");
+}
+
 export function register(app, ctx) {
   const { pool, requireAdmin, jb } = ctx;
 
@@ -935,7 +948,15 @@ export function register(app, ctx) {
     refreshing = true;
     const out = { trigger, at: new Date().toISOString(), ran: [] };
     try {
-      if (force === "lists" || (force == null && await jobDue("lists"))) {
+      let listsOk = true;
+      if (force == null && await jobDue("lists")) {
+        const s = await pool.query(`SELECT data->>'syncAudiences' AS v FROM ap_settings WHERE id=1`)
+          .then((r) => ({ v: r.rows[0]?.v ?? null, failed: false }))
+          .catch(() => ({ v: null, failed: true }));
+        listsOk = listsUploadAllowed(s.v, { readFailed: s.failed });
+        if (!listsOk) out.ran.push({ job: "lists", skipped: s.failed ? "settings unreadable" : "syncAudiences=false (O6)" });
+      }
+      if (force === "lists" || (force == null && listsOk && await jobDue("lists"))) {
         const r = await syncAll({ trigger });
         const failures = [];
         for (const [p, segs] of Object.entries(r.results || {})) {

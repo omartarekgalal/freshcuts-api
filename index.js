@@ -51,6 +51,7 @@ import * as carts from "./carts.js";
 import * as selftest from "./selftest.js";
 import * as menuplan from "./menuplan.js";
 import * as systemcheck from "./systemcheck.js";
+import * as portal from "./portal.js";
 
 const { Pool } = pg;
 
@@ -3048,6 +3049,7 @@ shopApi = shop.register(app, moduleCtx, {
   // الباقات بتتعرّف في الـCMS (اللي بيتسجّل بعدنا) — الشيك أوت بيوسّعها
   // بنفس الدالة اللي المتجر بيعاين بيها، فالمعروض = المحسوب.
   bundles: () => cmsApi,
+  portal: () => portalApi,
 });
 // «تحب تضيف؟» — اقتراحات السلة من سلوك العملاء الحقيقي (rec_pairs محسوب كل ليلة)
 recs.register(app, moduleCtx);
@@ -3061,6 +3063,9 @@ const tspApi = tspartner.register(app, moduleCtx);
 // لوحة المتجر: فريق وأدوار وصلاحيات وسجل نشاط — لازم قبل systemcheck.
 const cmsApi = cms.register(app, moduleCtx, { notify: () => notifyApi });
 reviews.register(app, moduleCtx, { notify: () => notifyApi, sessionUser: cmsApi.sessionUser });
+// بوابة المطعم (كاشير + مدير): PIN، طلبات حيّة (SSE)، خط زمني، طلب/إلغاء مندوب، Push للفريق، تقارير.
+// بعد shop/delivery/cms — بيستخدم دوالهم نفسها (مفيش نسخة تانية من القواعد).
+const portalApi = portal.register(app, moduleCtx, { shop: () => shopApi, delivery: () => deliveryApi });
 systemcheck.register(app, moduleCtx, { tsState: () => tsState });
 console.log("[analytics] routes ready");
 console.log(`[ai] routes ready (provider: ${process.env.ANTHROPIC_API_KEY ? "anthropic" : process.env.LITELLM_KEY ? "litellm" : "NOT CONFIGURED"})`);

@@ -1825,6 +1825,8 @@ export function register(app, ctx, deps = {}) {
           console.error(`[shop] TABSENSE DOWN: ${down}`);
           staff.critical((lang) => tabsenseDownText(down, lang), "tabsense-down")
             .catch((e) => console.error("[shop] tabsense-down sms:", e.message));
+          // بوابة المطعم (portal.js): Web Push لأجهزة الفريق — fire-and-forget
+          try { deps.portal?.()?.tabsenseDown?.(down); } catch { /* ignore */ }
         }
       } catch (e) { console.error("[shop] tabsense health check:", e.message); }
     }
