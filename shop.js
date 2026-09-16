@@ -114,8 +114,11 @@ export function partnerItemsOf(row) {
   return (row?.items || []).map((it) => {
     const vo = Number(it.variant_option_id);
     const discounted = pct > 0 && !it.bundle;
-    const note = [it.bundle ? `ضمن: ${it.bundle_name || it.bundle}` : null, discounted ? `خصم ${pct}%` : null]
-      .filter(Boolean).join(" · ") || null;
+    /* ملاحظة السطر في تذكرة المطبخ = اللي العميل كتبه بنفسه بس (16 سبتمبر). عمر
+       بعت صورة التذكرة: «ضمن: بوكس اليوم الوطني ٩٦» تحت كل صنف — «الملاحظة نفسها
+       تحت كل صنف مش مهمة طالما مش العميل الى كتبها». الخصم بيفضل مرة واحدة في
+       ملاحظات الطلب فوق للكاشير. */
+    const note = String(it.note || it.customer_note || "").trim().slice(0, 100) || null;
     const base = Number(it.unit_amount) / tsstore.MULTIPLY; // ريال صافي قبل الضريبة
     return {
       productId: it.product_id,

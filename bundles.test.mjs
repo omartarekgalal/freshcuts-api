@@ -241,12 +241,12 @@ t("partnerItemsOf: variant_option_id بينتقل من صف الطلب", () => {
   assert.strictEqual(items[1].quantity, 2);
 });
 
-t("partnerItemsOf: وسم الباقة بينتقل كملاحظة على السطر", () => {
+t("partnerItemsOf: مفيش «ضمن: الباقة» تحت كل صنف في تذكرة المطبخ (قرار عمر 16 سبتمبر)", () => {
   const items = partnerItemsOf({
     items: [{ product_id: 94, quantity: 1, unit_amount: 1, variant_option_id: 49,
               bundle: "national96-grill", bundle_name: "كيلو مشاوي — اليوم الوطني ٩٦" }],
   });
-  assert.ok(String(items[0].lineNote).includes("كيلو مشاوي"), "اسم الباقة لازم يوصل الكاشير");
+  assert.strictEqual(items[0].lineNote, undefined, "ملاحظة السطر للمطبخ = اللي العميل كتبه بس");
 });
 
 t("partnerPurchase: بيبعت variant_option:{id} لما يكون في وزن", () => {

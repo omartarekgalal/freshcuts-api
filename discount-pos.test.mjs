@@ -14,11 +14,11 @@ test("من غير خصم: الأسعار زي ما هي ومفيش ملاحظة"
   assert.equal(out[0].lineNote, undefined);
 });
 
-test("خصم ٥٠٪: سعر السطر نص السعر، والملاحظة «خصم 50%»", () => {
+test("خصم ٥٠٪: سعر السطر نص السعر، ومفيش ملاحظة تحت الصنف (الخصم في ملاحظات الطلب)", () => {
   const out = partnerItemsOf({ discount_percent: 50, items: [line(1, 3, 26.08695652), line(3, 1, 25.2173913)] });
   assert.ok(Math.abs(out[0].unitPrice - 13.04347826) < 1e-6);
   assert.ok(Math.abs(out[1].unitPrice - 12.60869565) < 1e-6);
-  assert.equal(out[0].lineNote, "خصم 50%");
+  assert.equal(out[0].lineNote, undefined);
   // الإجمالي شامل الضريبة = نص طلب W1789555412320 (119 ر.س أكل) ⇒ 59.5
   const total = out.reduce((a, x) => a + x.unitPrice * x.quantity, 0) * 1.15;
   assert.ok(Math.abs(total - 59.5) < 0.01, `total ${total}`);
@@ -28,8 +28,13 @@ test("الباقات مابيتخصمش عليها (سعرها محسوب أصل
   const bundleLine = { ...line(48, 1, 30), bundle: "national96-box", bundle_name: "بوكس ٩٦" };
   const out = partnerItemsOf({ discount_percent: 50, items: [bundleLine, line(1, 1, 20)] });
   assert.equal(out[0].unitPrice, 30);
-  assert.equal(out[0].lineNote, "ضمن: بوكس ٩٦");
+  assert.equal(out[0].lineNote, undefined); // مفيش «ضمن: …» في تذكرة المطبخ
   assert.equal(out[1].unitPrice, 10);
+});
+
+test("ملاحظة العميل نفسه على الصنف بتوصل المطبخ زي ما هي", () => {
+  const out = partnerItemsOf({ discount_percent: 50, items: [{ ...line(1, 1, 20), note: "من غير بصل", bundle: "national96-box" }] });
+  assert.equal(out[0].lineNote, "من غير بصل");
 });
 
 test("نسب غريبة بتتقفل بين ٠ و١٠٠", () => {
