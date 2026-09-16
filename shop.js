@@ -34,6 +34,8 @@ import { msisdn, readableAddress } from "./couriers.js";
 import { VAT_RATE as BUNDLE_VAT } from "./bundles.js";
 import { isOpenNow } from "./carts.js";
 import { dispatchDue, dispatchDelayOf } from "./delivery.js";
+import { makeStaffNotifier, slaAlertText, posFailedText, tabsenseDownText } from "./staffalerts.js";
+import { sendSms as sendStaffSms } from "./accounts.js";
 
 const env = (k, d) => (process.env[k] || d || "").toString().trim();
 const r2 = (v) => Math.round((Number(v) || 0) * 100) / 100;
@@ -260,6 +262,19 @@ export function register(app, ctx, deps = {}) {
   const accounts = deps.accounts || (() => null); // late-bound — accounts registers after us
   const carts = deps.carts || (() => null);       // late-bound — abandoned-cart tracker
   const tsp = deps.tsp || (() => null);           // late-bound — TabSense partner (paid orders)
+
+  /* رسايل الإدارة (16 سبتمبر) — مباشرة لتقنيات، مستقلة عن رسايل العملاء.
+     الأرقام واللغة من اللوحة (settings.delivery). شوف staffalerts.js. */
+  const staff = makeStaffNotifier({ getSettingsData, sendSms: sendStaffSms });
+  let _tspDownAlertAt = 0;
+  // كل رسالة لكل طلب مرة واحدة بس — الحجز ذري في عمود alerts
+  async function claimAlert(orderNo, key) {
+    const r = await pool.query(
+      `UPDATE shop_orders SET alerts = COALESCE(alerts,'{}'::jsonb) || $2::jsonb
+        WHERE order_no=$1 AND NOT (COALESCE(alerts,'{}'::jsonb) ? $3) RETURNING order_no`,
+      [String(orderNo), jb({ [key]: new Date().toISOString() }), key]);
+    return r.rowCount > 0;
+  }
   const bundles = deps.bundles || (() => null);   // late-bound — «باقة بخيارات» (cms.js)
 
   async function ensureSchema() {
@@ -369,6 +384,13 @@ export function register(app, ctx, deps = {}) {
     // failure must never fail the state change it describes.
     if (notify) notify.orderStatusChanged(String(orderNo), status).catch((e) =>
       console.error(`[shop] notify failed for ${orderNo}:`, e.message));
+    if (status === "paid_pos_failed") {
+      claimAlert(orderNo, "staff:pos_failed").then(async (ok) => {
+        if (!ok) return;
+        const row = await getOrderRow(orderNo);
+        if (row) await staff.critical((lang) => posFailedText(row, lang), `pos-failed ${orderNo}`);
+      }).catch((e) => console.error(`[shop] staff pos-failed sms ${orderNo}:`, e.message));
+    }
   }
 
   /* ── coupons ──
@@ -813,6 +835,12 @@ export function register(app, ctx, deps = {}) {
     }
     if (notify) notify.orderStatusChanged(String(row.order_no), "paid").catch((e) =>
       console.error(`[shop] notify failed for ${row.order_no}:`, e.message));
+    // رسالة لمدير المطعم مع كل طلب مدفوع (مرة واحدة لكل طلب)
+    claimAlert(row.order_no, "staff:new_order").then(async (ok) => {
+      if (!ok) return;
+      const fresh = await getOrderRow(row.order_no);
+      if (fresh) await staff.newOrder(fresh);
+    }).catch((e) => console.error(`[shop] staff new-order sms ${row.order_no}:`, e.message));
     // The coupon burns exactly when money moved, not at checkout — an
     // abandoned payment must not eat a limited-use code. Ambassador codes
     // (not in shop_coupons) mark redeemed instead, keeping their attribution.
@@ -1079,6 +1107,13 @@ export function register(app, ctx, deps = {}) {
 
      اللي بترجعه مقصود ومحدود: اللي الكاشير محتاجه عشان يشتغل، ومفيش أرقام
      فلوس اللوحة ولا بيانات تانية. */
+  // زرار «ابعت رسالة تجربة» في اللوحة
+  app.post("/api/shop/staff-sms/test", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    try { return c.json({ ok: true, ...(await staff.test()) }); }
+    catch (e) { return c.json({ ok: false, error: e.message }); }
+  });
+
   app.get("/api/shop/board", async (c) => {
     const err = await requireCashierOrAdmin(c); if (err) return err;
     const hours = Math.min(48, Math.max(1, Number(c.req.query("hours")) || 12));
@@ -1509,8 +1544,6 @@ export function register(app, ctx, deps = {}) {
     const settings = await getSettingsData();
     const sla = { ...((settings.delivery || {}).sla || {}),
       dispatchDelayMin: (await delivery.dispatchGate()).mode === "auto" ? dispatchDelayOf(settings) : 0 };
-    const managers = ((settings.delivery || {}).alertPhones || [])
-      .map((p) => normPhone(p)).filter((p) => /^5\d{8}$/.test(p));
     const autoRefundOn = (settings.delivery || {}).autoRefundOnNoAccept !== false;
 
     const rows = (await pool.query(
@@ -1534,11 +1567,8 @@ export function register(app, ctx, deps = {}) {
 
       if (v.level >= 2) {
         console.error(`[shop] SLA ${v.level} — ${row.order_no}: ${v.message}`);
-        const text = `فريش كاتس ⚠️ الطلب ${row.order_no}: ${v.message}`;
-        for (const p of managers) {
-          if (notify?.sendSmsTo) notify.sendSmsTo(p, text).catch((e) =>
-            console.error("[shop] SLA sms failed:", e.message));
-        }
+        staff.critical((lang) => slaAlertText(row.order_no, v, lang), `sla ${row.order_no} ${v.code}`)
+          .catch((e) => console.error("[shop] SLA sms failed:", e.message));
       }
       if (v.level >= 3 && v.action === "auto_refund" && autoRefundOn) {
         /* المطعم ما قبلش الطلب خالص: مفيش أكل اتعمل ومفيش كابتن اتبعت،
@@ -1587,6 +1617,23 @@ export function register(app, ctx, deps = {}) {
 
   /* ── the sweep: retries, acceptance watch, auto-refund, dispatch ── */
   async function sweep() {
+    // 0) ربط تاب سينس للطلبات الخارجية سليم؟ لو واقع، الطلبات الجاية مش هتوصل
+    // نقطة البيع — الإدارة تعرف دلوقتي، مش لما عميل يستنى (مرة كل ساعة بالكتير).
+    if (process.env.TSP_AUTO_ORDER === "1") {
+      try {
+        const partner = tsp();
+        const st = partner ? await partner.status() : { connected: false };
+        const expired = st.expiresAt && new Date(st.expiresAt).getTime() < Date.now() - 5 * 60_000;
+        const down = !partner ? "partner module missing" : !st.connected ? "not connected" : expired ? "token expired and refresh failing" : null;
+        if (down && Date.now() - _tspDownAlertAt > 60 * 60_000) {
+          _tspDownAlertAt = Date.now();
+          console.error(`[shop] TABSENSE DOWN: ${down}`);
+          staff.critical((lang) => tabsenseDownText(down, lang), "tabsense-down")
+            .catch((e) => console.error("[shop] tabsense-down sms:", e.message));
+        }
+      } catch (e) { console.error("[shop] tabsense health check:", e.message); }
+    }
+
     // 1) paid but the POS never got the order — retry the create.
     const failed = (await pool.query(
       `SELECT order_no FROM shop_orders
