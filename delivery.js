@@ -477,6 +477,53 @@ async function fa(path, { method = "GET", body } = {}) {
   return data;
 }
 
+/* ═══ سجل ويبهوك المندوب ══════════════════════════════════════════════════
+   الرسالة بتتخزّن زي ما هي عشان نعرف شكلها الحقيقي (التوثيق عندهم ناقص)،
+   بس من غير أي قيمة شكلها سرّ، ومقصوصة لو كبيرة. */
+const WEBHOOK_LOG_MAX = 8000;
+const SECRET_KEY_RE = /secret|token|password|passwd|api[_-]?key|^key$|authorization|signature/i;
+
+function redactSecrets(v, depth = 0) {
+  if (v == null || typeof v !== "object") return v;
+  // أعمق من كده مش هنفتّش جوّه — فبنخفيه كله بدل ما سرّ يعدّي من غير فحص
+  if (depth > 6) return "[too-deep]";
+  if (Array.isArray(v)) return v.map((x) => redactSecrets(x, depth + 1));
+  const out = {};
+  for (const [k, val] of Object.entries(v)) {
+    out[k] = SECRET_KEY_RE.test(k) ? "[redacted]" : redactSecrets(val, depth + 1);
+  }
+  return out;
+}
+
+export function webhookLogBody(body) {
+  let v = body;
+  if (v && typeof v === "object" && typeof v._unparsed === "string") {
+    // رسالة مش JSON (ممكن form-encoded): بنخفي أي key=value شكله سرّ
+    v = { _unparsed: v._unparsed
+      .replace(/((?:secret|token|password|api[_-]?key|key|signature)[^=&\s]*=)[^&\s]*/gi, "$1[redacted]")
+      // JSON مكسور ("secret":"..." من غير قفلة) — نفس الإخفاء بصيغة JSON
+      .replace(/("[^"]*(?:secret|token|password|passwd|api[_-]?key|key|authorization|signature)[^"]*"\s*:\s*)("(?:[^"\\]|\\.)*"?|[^,}\s]*)/gi, '$1"[redacted]"')
+      .replace(/(authorization\s*[:=]\s*)(?:bearer\s+)?[^&\s,]*/gi, "$1[redacted]")
+      .slice(0, WEBHOOK_LOG_MAX) };
+    return v;
+  }
+  // قيمة JSON مش كائن (نص/رقم): jb() بيعتبر النص JSON جاهز فالـINSERT يقع — نلفّها
+  if (v != null && typeof v !== "object") return { _value: v };
+  v = redactSecrets(v);
+  let text;
+  try { text = JSON.stringify(v); } catch { return { _unserializable: true }; }
+  if (text === undefined) return null;
+  if (text.length > WEBHOOK_LOG_MAX) return { _truncated: true, _length: text.length, head: text.slice(0, WEBHOOK_LOG_MAX) };
+  return v;
+}
+
+/* هل فيه سرّ متسجّل للمزوّد ده؟ من غيره verifyWebhook بترجع true دايماً،
+   فالسجل يكتب verified=null بدل true عشان مانضحكش على نفسنا. */
+function webhookSecretSet(providerId) {
+  if (providerId === "leajlak") return Boolean(env("LEAJLAK_WEBHOOK_SECRET"));
+  return false;
+}
+
 export function register(app, ctx, deps = {}) {
   const { pool, requireAdmin, getSettingsData, jb } = ctx;
   const shop = deps.shop || (() => null);   // late-bound: shipment status → order status
@@ -519,6 +566,20 @@ export function register(app, ctx, deps = {}) {
       ALTER TABLE dl_shipments ADD COLUMN IF NOT EXISTS dispatch JSONB;
       CREATE INDEX IF NOT EXISTS dl_shipments_order_idx ON dl_shipments(shop_order_no);
       CREATE INDEX IF NOT EXISTS dl_shipments_fa_idx ON dl_shipments(fa_order_id);
+      -- كل ويبهوك مندوب بيوصل (حتى المرفوض واللي مش متطابق). لاجلك عمرها
+      -- ما بعتت ويبهوك واحد لحد النهارده، والجدول ده هو إثبات وصولهم من عدمه.
+      -- الهيدرز بالأسماء بس، من غير قيم — مفيش سرّ بيتخزّن هنا.
+      CREATE TABLE IF NOT EXISTS dl_webhook_log (
+        id BIGSERIAL PRIMARY KEY,
+        received_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        provider TEXT,
+        verified BOOL,
+        matched BOOL NOT NULL DEFAULT false,
+        http_status INT NOT NULL,
+        body JSONB,
+        header_keys TEXT[]
+      );
+      CREATE INDEX IF NOT EXISTS dl_webhook_log_time_idx ON dl_webhook_log(received_at DESC);
     `);
     // Seed one sensible policy so the quote endpoint works before Omar edits
     // anything — inactive until he flips it on from the dashboard.
@@ -901,8 +962,31 @@ export function register(app, ctx, deps = {}) {
      signature in their guide, so we match strictly on our own
      external_order_id and treat the payload as untrusted data. */
   app.post("/api/delivery/courier-webhook", async (c) => {
+    /* سجل الويبهوك: كل فرع رد بيكتب صف قبل ما يرجع، والرد نفسه ما اتغيرش.
+       الكتابة ملفوفة في try — لو الجدول وقع، الويبهوك يكمّل عادي. */
+    let headerKeys = [];
+    try { c.req.raw.headers.forEach((_v, k) => { headerKeys.push(String(k).toLowerCase()); }); } catch {}
+    const logHit = async (row) => {
+      try {
+        await pool.query(
+          `INSERT INTO dl_webhook_log(provider, verified, matched, http_status, body, header_keys)
+           VALUES ($1,$2,$3,$4,$5,$6)`,
+          [row.provider || null, row.verified ?? null, Boolean(row.matched), row.status,
+           jb(webhookLogBody(row.body)), headerKeys]);
+      } catch (e) {
+        console.error("[delivery] webhook log failed:", e.message);
+      }
+    };
+
     let b = {};
-    try { b = await c.req.json(); } catch { return c.json({ ok: false }, 400); }
+    let rawText = null;
+    try {
+      rawText = await c.req.text();
+      b = JSON.parse(rawText);
+    } catch {
+      await logHit({ status: 400, body: { _unparsed: String(rawText ?? "") } });
+      return c.json({ ok: false }, 400);
+    }
 
     /* شكل الويبهوك بيختلف من شركة للتانية: Flying Arrow بتبعت
        external_order_id + event، و Leajlak بتبعت id + status. فبنسأل كل
@@ -917,14 +1001,22 @@ export function register(app, ctx, deps = {}) {
       const parsed = p.parseWebhook(b);
       if (parsed && (parsed.orderNo || parsed.ref)) { ev = parsed; from = p; break; }
     }
-    if (!ev) return c.json({ ok: true, ignored: true });
+    if (!ev) {
+      await logHit({ status: 200, body: b });
+      return c.json({ ok: true, ignored: true });
+    }
     /* لو المزوّد بيدعم سرّ مشترك وإحنا مفعّلينه، الرسالة اللي مالهاش سرّ
-       صحيح بترفض — الراوت ده عام، فمن غير كده أي حد يقدر يحرّك حالة طلب. */
+       صحيح بترفض — الراوت ده عام، فمن غير كده أي حد يقدر يحرّك حالة طلب.
+       verified في السجل: null = مفيش سرّ متسجّل (أو المزوّد مالوش تحقق). */
+    let verified = null;
     if (from.verifyWebhook) {
       const headers = {};
       try { c.req.raw.headers.forEach((v, k) => { headers[k] = v; }); } catch {}
-      if (!from.verifyWebhook(headers, b)) {
+      const pass = from.verifyWebhook(headers, b);
+      if (webhookSecretSet(from.id)) verified = Boolean(pass);
+      if (!pass) {
         console.error(`[delivery] ${from.id} webhook rejected: bad secret`);
+        await logHit({ provider: from.id, verified: false, status: 401, body: b });
         return c.json({ ok: false, error: "bad_secret" }, 401);
       }
     }
@@ -946,7 +1038,10 @@ export function register(app, ctx, deps = {}) {
        jb([{ at: new Date().toISOString(), provider: from.id, event: ev.rawStatus, payload: b }]),
        ev.cost, ev.ref || null, from.id]
     );
-    if (!upd.rowCount) return c.json({ ok: true, ignored: true }); // طلب مش عندنا
+    if (!upd.rowCount) { // طلب مش عندنا
+      await logHit({ provider: from.id, verified, matched: false, status: 200, body: b });
+      return c.json({ ok: true, ignored: true });
+    }
     const matchedNo = upd.rows[0].shop_order_no;
     if (ev.status) {
       const api = shop();
@@ -955,6 +1050,7 @@ export function register(app, ctx, deps = {}) {
           console.error("[delivery] shipment event handler failed:", e.message));
       }
     }
+    await logHit({ provider: from.id, verified, matched: true, status: 200, body: b });
     return c.json({ ok: true });
   });
 
@@ -1084,7 +1180,11 @@ export function register(app, ctx, deps = {}) {
   }
 
   return { quote, dispatch, shipmentOf, trackShipment, cancelShipment, manualEvent,
-           isLive: () => activeProvider({}).configured(), faCost, faVehicles, courierContract, PROVIDERS,
+           /* المزوّد المختار في الإعدادات، مش الافتراضي من البيئة: من غير
+              الإعدادات كان بيرجع flyingarrow والشغل الحقيقي على لاجلك. */
+           isLive: async () => activeProvider(await getSettingsData()).configured(),
+           activeProviderId: async () => activeProvider(await getSettingsData()).id,
+           faCost, faVehicles, courierContract, PROVIDERS,
            /* shop.js بيسأل قبل ما يفكّر في الإرسال التلقائي. البوابة اللي
               جوّه dispatch() هي الضمانة الحقيقية، ودي بتمنع حتى المحاولة. */
            dispatchGate: async () => dispatchMode(await getSettingsData(), env),

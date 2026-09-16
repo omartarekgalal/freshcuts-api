@@ -189,7 +189,9 @@ export function register(app, ctx, deps = {}) {
       }));
       return c.json({ ok: true, configured: true, base: MF_BASE(), methods });
     } catch (e) {
-      return c.json({ ok: false, configured: true, base: MF_BASE(), error: e.message }, 502);
+      /* 200 مش 502: كلاودفلير بيبدّل أي 5xx بصفحته، فرسالة ماي فاتورة
+         الحقيقية كانت بتضيع. ok:false كفاية تقول إن فيه مشكلة. */
+      return c.json({ ok: false, configured: true, base: MF_BASE(), error: e.message });
     }
   });
 

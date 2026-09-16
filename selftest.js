@@ -131,15 +131,52 @@ export function register(app, ctx, deps = {}) {
     return ok("رد الكاشير", "مفيش طلبات متعلّقة");
   }
 
-  /* ٥) شركة الشحن */
+  /* ٥) شركة الشحن — بنفحص المزوّد **المختار في الإعدادات**. قبل كده كان
+     بيسأل Flying Arrow دايماً والشغل الحقيقي على لاجلك، فالشاشة كانت
+     بتقول «تمام/واقفة» على شركة مش شغالين معاها. */
   async function checkCourier() {
     const api = delivery();
     if (!api) return warn("شركة الشحن", "وحدة التوصيل مش محمّلة", "—");
-    if (!api.isLive()) {
+    const all = await getSettingsData();
+    const PROVIDERS = api.PROVIDERS || {};
+    const want = api.activeProviderId ? await api.activeProviderId() : "flyingarrow";
+    const provider = PROVIDERS[want];
+
+    if (want === "manual") {
+      return ok("شركة الشحن", "التوصيل يدوي — الكاشير بيطلب المندوب بنفسه");
+    }
+
+    if (want === "leajlak" && provider) {
+      if (!(await api.isLive())) {
+        const miss = (provider.missing && provider.missing()) || [];
+        return fail("شركة الشحن", `مفاتيح لاجلك مش متسجّلة${miss.length ? ` (${miss.join("، ")})` : ""}`,
+          "ضيف LEAJLAK_TOKEN و LEAJLAK_SHOP_ID في إعدادات السيرفر");
+      }
+      try {
+        // reference() بتسأل عن طلب مش موجود: 404 عندهم = التوكن سليم.
+        // بس reference() بتبلع أي خطأ مالوش status (DNS/timeout/شبكة) وترجع
+        // «سليم» — فبنلفّ call عشان خطأ الشبكة يبان هنا «فشل» مش «تمام».
+        const probe = Object.create(provider, {
+          call: { value: async (...a) => {
+            try { return await provider.call(...a); } catch (e) {
+              if (!e.status) throw Object.assign(new Error(`مش قادرين نوصل لهم (${e.message})`), { status: 599, code: "NETWORK" });
+              throw e;
+            }
+          } },
+        });
+        await probe.reference();
+        return ok("شركة الشحن", "لاجلك: الاتصال شغال والتوكن سليم");
+      } catch (e) {
+        return fail("شركة الشحن", `لاجلك: ${e.message}`,
+          e.code === "CLIENT_INACTIVE" ? "كلّم لاجلك يفعّلوا الحساب" : "التوكن مرفوض أو الخدمة عندهم واقفة");
+      }
+    }
+
+    if (!(await api.isLive())) {
       return fail("شركة الشحن", "مفتاح Flying Arrow مش متسجّل",
         "ضيف FLYINGARROW_API_KEY في إعدادات السيرفر");
     }
-    const s = (await getSettingsData()).delivery || {};
+    const s = all.delivery || {};
     try {
       const byId = await api.faVehicles();
       const vid = String(s.faVehicleId || 8);
@@ -221,4 +258,6 @@ export function register(app, ctx, deps = {}) {
   });
 
   console.log("[selftest] ready");
+  // للاختبارات (ولـhealthcheck بعدين): نفس الفحوص من غير الراوت
+  return { checks: { checkMenu, checkPay, checkPos, checkCashier, checkCourier, checkNotify, checkShopConfig } };
 }
