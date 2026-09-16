@@ -91,6 +91,9 @@ const PATH_SECTIONS = [
   [/^\/api\/(finance|keeta-payouts|costing|staff-meals|staff_meals|pay\/|influencer-payments)/, "finance"],
   [/^\/api\/delivery/, "delivery"],
   [/^\/api\/groups/, "customers"],
+  // الاسترجاع فلوس بتخرج → «المالية»، ولازم يسبق سطر shop/orders العام
+  // (غير كده دور المطبخ اللي عنده orders: edit كان يقدر يرجّع فلوس)
+  [/^\/api\/(shop|cms)\/orders\/[^/]+\/refund$/, "finance"],
   [/^\/api\/(shop\/(orders|board|summary)|day\b|day\/|staff\/|cashier|chef|notifications)/, "orders"],
   [/^\/api\/(ads|autopilot|attribution|funnel|audiences|retargeting|retarget|marketing|content|social|promo|catalog|tracking|offers|carts|menuplan|scorecard|ai\/|chat)/, "growth"],
   [/^\/api\/(customers|account\/admin)/, "customers"],
