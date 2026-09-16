@@ -1200,6 +1200,203 @@ export function platformScaling(platform, { s = {}, proven = null } = {}) {
   };
 }
 
+/* ═══════════════════════════════════════════════════════════════════════════
+   قاعدة المتجر — decideStoreAdset (W1-08 · ٠٩ §3.6)
+
+   decide() فوق بيحكم على الحملات بنية الطلب اللي المنصة بتشوفها (محادثة/دوسة
+   واتساب). خطوط المتجر (M2/M3/M4/G1/TT) بتتحاكم بحاجة تانية خالص: طلبات
+   shop_orders **المربوطة** بالإعلان (attribution->>'fc_link' أو click id) —
+   مش عمود المنصة. فدي دالة جديدة جنب decide()، مش تعديل فيها.
+
+   row = سطر من /api/ads/plan/performance (by=line) + إثراء من الدورة:
+     { key, platform, spend, orders, atc, cpa, roas,
+       days,                 طول الشباك بالأيام (قواعد الـCPA محتاجة ≥ ٣)
+       adsetId, campaignId, name, dailyBudget,   المجموعة المسجّلة على الخط
+       learning,             readLearning() من ads.js — {done, learning, limited}
+       ageHours | ageDays, expectedCpr, baseBudget, lastBudgetChangeAt, settling }
+   s    = إعدادات الطيار (minSpend, maxChangePct, maxCampaignBudget,
+          maxTotalBudget, budgetCooldownHours)
+   opts = { now, rows, cooldown:Set, hardCap, emergency } — rows/cooldown/hardCap
+          هما نفس مدخلات guardBudget، ولو rows موجودة الاقتراح بيعدّي عليه.
+
+   الناتج: { kind:"store_rule", action, platform, line, adsetId, campaignId,
+             name, detail, reason }
+     action: kill | cut | scale | note | hold | none
+   مفيش I/O ومفيش كتابة على منصة. التسجيل (pending، في suggest بس) في الدورة.
+
+   سقوف الخطوة مابتتعدّاش هنا: ١٩٪ (ADSET_MAX_STEP_PCT) ∩ PLATFORM_SCALING ∩
+   maxChangePct، والمنصة اللي allowed:false مالهاش أي تغيير ميزانية.        */
+export const STORE_RULES = {
+  lines: ["M2", "M3", "M4", "G1", "TT"],   // M1 محادثة — decide() بيحكم عليها
+  killSpend: 240, killAtc: 10,              // صرف ≥ ٢٤٠ وصفر طلب وATC < ١٠ → إيقاف
+  killCpa: 80,                              // CPA مربوط > ٨٠ على ٣ أيام → إيقاف
+  cutCpaMin: 45,                            // ٤٥–٨٠ → قص
+  scaleCpaMax: 30, scaleMinOrders: 3, scaleMinRoas: 3,
+  minDays: 3,
+  minAgeHours: 72,                          // حكم مبكر ممنوع
+  minSpendMultiple: 50 / 7,                 // ٧٫١٤ × CPR المتوقع (نفس MIN_BUDGET_MULTIPLE)
+  defaultExpectedCpr: 12,                   // ~١٢ ر.س/ATC (٠٩ §3.1 M2)
+  stepPct: 19,
+  scaleEveryHours: 48,                      // +١٩٪ كل ٤٨ ساعة على الأكتر
+  minBudget: 20,
+  /* مفيش توسيع في الأيام دي (٠٩ §3.6) — يوم الرياض. */
+  scaleFreeze: [{ from: "2026-09-22", to: "2026-09-24" }],
+};
+
+const storeRiyadhDay = (at) => new Date(at.getTime() + 3 * 3600_000).toISOString().slice(0, 10);
+const storeNum = (v) => (v == null || v === "" || !Number.isFinite(Number(v)) ? null : Number(v));
+
+export function decideStoreAdset(row, s = {}, opts = {}) {
+  const r = row || {};
+  const R = STORE_RULES;
+  const now = opts.now != null ? new Date(opts.now) : new Date();
+  const fmt = (n) => (n == null ? "—" : Math.round(n * 100) / 100);
+  const platform = String(r.platform || "").toLowerCase() || null;
+  const adsetRaw = r.adsetId ?? r.platform_adset_id ?? null;
+  const adsetId = adsetRaw == null || adsetRaw === "" ? null : String(adsetRaw);
+  const campRaw = r.campaignId ?? r.platform_campaign_id ?? null;
+  const line = r.key ?? r.line ?? null;
+
+  const spend = storeNum(r.spend);
+  const orders = storeNum(r.orders) ?? 0;
+  const atc = storeNum(r.atc) ?? 0;
+  const cpa = storeNum(r.cpa) ?? (spend != null && orders > 0 ? spend / orders : null);
+  const roas = storeNum(r.roas);
+  const days = storeNum(r.days);
+  const metrics = { spend, orders, atc, cpa: cpa == null ? null : fmt(cpa), roas, days };
+  const ctxText = `صرف ${fmt(spend)} ر.س · ${orders} طلب مربوط · ATC ${atc}` +
+    (cpa != null ? ` · CPA ${fmt(cpa)}` : "") + (roas != null ? ` · ROAS ${fmt(roas)}` : "") +
+    (days != null ? ` · ${days} أيام` : "");
+  const out = (action, reason, detail = {}) => ({
+    kind: "store_rule", action, platform, line, adsetId,
+    campaignId: campRaw == null ? null : String(campRaw),
+    name: r.name || line || adsetId || null,
+    detail: { action, line, level: "adset", target: adsetId, ...detail, metrics },
+    reason: `${reason} — ${ctxText}`,
+  });
+
+  if (line != null && !R.lines.includes(String(line))) {
+    return out("none", `الخط ${line} مش خط متجر — قاعدة المتجر مابتحكمش عليه`);
+  }
+  /* null = القراءة فشلت. مش صفر، ومفيش حكم عليه (فرملة الطوارئ بتجمّد). */
+  if (spend == null) return out("none", "الصرف غير مقروء — مفيش حكم على قياس مش موجود");
+
+  /* ── حكم مبكر ممنوع ── */
+  const ageHours = storeNum(r.ageHours) ?? (storeNum(r.ageDays) != null ? Number(r.ageDays) * 24 : null);
+  if (ageHours != null && ageHours < R.minAgeHours) {
+    return out("note", `المجموعة عمرها ${fmt(ageHours)} ساعة — أقل من ${R.minAgeHours}، مفيش حكم قبلها`);
+  }
+  const expectedCpr = storeNum(r.expectedCpr) > 0 ? Number(r.expectedCpr) : R.defaultExpectedCpr;
+  const minJudge = Math.max(Number(s.minSpend) || 0, R.minSpendMultiple * expectedCpr);
+  if (spend < minJudge) {
+    return out("note", `الصرف أقل من ${fmt(minJudge)} ر.س (٧٫١٤ × تكلفة النتيجة المتوقعة ${fmt(expectedCpr)}) — لسه بدري على أي حكم`);
+  }
+
+  /* ── إيقاف ── الإيقاف مالوش رجعة، فمايتاخدش على أرقام لسه بتستقر. */
+  const kill = (reason) => (r.settling || opts.settling
+    ? out("note", `${reason} — بس الأرقام لسه بتستقر (يوم الحساب ما لفّش)، فالإيقاف مستني`)
+    : out("kill", reason, { state: "PAUSED" }));
+  if (spend >= R.killSpend && orders === 0 && atc < R.killAtc) {
+    return kill(`صرف ${fmt(spend)} ≥ ${R.killSpend} ر.س من غير ولا طلب مربوط وATC أقل من ${R.killAtc} — قاعدة قتل المتجر`);
+  }
+  if (cpa == null) return out("hold", "مفيش طلبات مربوطة كفاية نحسب عليها CPA");
+  if (days == null || days < R.minDays) {
+    return out("note", `الشباك ${days ?? "—"} يوم — قواعد الـCPA محتاجة ${R.minDays} أيام على الأقل`);
+  }
+  /* عيّنة رفيعة (نفس minKillResults بتاع decide()): CPA على طلب أو اتنين
+     بيتقلب بطلب واحد — مفيش قتل ولا قص عليه، ملاحظة بس. */
+  const minOrders = Math.max(1, Number(s.minKillResults ?? DEFAULT_SETTINGS.minKillResults) || 1);
+  /* بس لو الصرف لسه تحت حد القتل: مجموعة صرفت ≥ ٢٤٠ على طلب أو اتنين
+     (CPA ≥ ١٢٠) مش «عيّنة رفيعة» — دي فلوس بتتحرق، والقتل يفضل قائم. */
+  if (cpa >= R.cutCpaMin && orders < minOrders && spend < R.killSpend) {
+    return out("note", `CPA مربوط ${fmt(cpa)} محسوب على ${orders} طلب بس (أقل من ${minOrders}) — عيّنة رفيعة، مفيش قتل ولا قص عليها`);
+  }
+  if (cpa > R.killCpa) return kill(`CPA مربوط ${fmt(cpa)} فوق ${R.killCpa} ر.س على ${days} أيام — قاعدة قتل المتجر`);
+
+  const cutting = cpa >= R.cutCpaMin;
+  const scaling = !cutting && cpa <= R.scaleCpaMax && orders >= R.scaleMinOrders
+    && roas != null && roas >= R.scaleMinRoas;
+  if (!cutting && !scaling) return out("hold", "جوّه الحدود — مفيش قص ولا توسيع");
+
+  /* ── تغيير ميزانية (قص/توسيع) — كل الأسوار ── */
+  const action = cutting ? "cut" : "scale";
+  const verb = cutting ? "القص" : "التوسيع";
+  const why = cutting
+    ? `CPA مربوط ${fmt(cpa)} بين ${R.cutCpaMin} و${R.killCpa} على ${days} أيام`
+    : `CPA مربوط ${fmt(cpa)} ≤ ${R.scaleCpaMax} على ${orders} طلبات وROAS ${fmt(roas)} ≥ ${R.scaleMinRoas}`;
+
+  const p = platform ? PLATFORM_SCALING[platform] : null;
+  if (p && p.allowed === false) {
+    return out("note", `${why} — بس ${verb} ممنوع على ${platform} (PLATFORM_SCALING): ${p.why}`);
+  }
+  if (!adsetId) return out("note", `${why} — مفيش platform_adset_id مسجّل على الخط، فمفيش هدف لـ${verb}`);
+  const current = storeNum(r.dailyBudget);
+  if (!(current > 0)) return out("note", `${why} — ميزانية المجموعة مش مقروءة (أو CBO)، فمفيش ${verb} محسوب`);
+
+  if (scaling) {
+    if (opts.emergency) return out("note", `${why} — فرملة الطوارئ شغّالة، أي زيادة متجمّدة`);
+    const today = storeRiyadhDay(now);
+    const frozen = R.scaleFreeze.find((f) => today >= f.from && today <= f.to);
+    if (frozen) return out("note", `${why} — مفيش توسيع من ${frozen.from} لـ${frozen.to}`);
+    const lr = r.learning && typeof r.learning === "object" ? r.learning : null;
+    const inLearning = r.inLearning === true || r.learning === true || !!(lr && (lr.learning || lr.limited));
+    const exited = lr ? lr.done === true : r.learning === false || r.inLearning === false;
+    if (inLearning || (platform === "meta" && !exited)) {
+      return out("note", `${why} — بس المجموعة ما خرجتش من التعلّم${lr?.status ? ` (${lr.status})` : ""}، والزيادة بتصفّرها`);
+    }
+  }
+
+  /* التبريد: القص على budgetCooldownHours (أو تبريد المنصة لو أطول)،
+     والتوسيع كمان مش أقل من ٤٨ ساعة بين زيادتين. */
+  const baseCd = Number(s.budgetCooldownHours) || 24;
+  const platformCd = p ? (Number(p.cooldownMinutes) || 0) / 60 : 0;
+  const cdHours = Math.max(baseCd, platformCd, scaling ? R.scaleEveryHours : 0);
+  const lastAt = r.lastBudgetChangeAt ? new Date(r.lastBudgetChangeAt) : null;
+  if (lastAt && !isNaN(lastAt) && now.getTime() - lastAt.getTime() < cdHours * 3600_000) {
+    const ago = (now.getTime() - lastAt.getTime()) / 3600_000;
+    return out("note", `${why} — ميزانية المجموعة اتغيّرت من ${fmt(ago)} ساعة، وأقل فاصل ${cdHours} ساعة`);
+  }
+  const cooldown = opts.cooldown instanceof Set ? opts.cooldown : null;
+  if (cooldown && platform && (cooldown.has(`${platform}:${adsetId}`) || cooldown.has(`${platform}:adset:${adsetId}`))) {
+    return out("note", `${why} — المجموعة في فترة تبريد بعد تغيير ميزانية`);
+  }
+
+  const stepPct = Math.min(R.stepPct, ADSET_MAX_STEP_PCT,
+    p && Number.isFinite(Number(p.maxStepPct)) ? Number(p.maxStepPct) : R.stepPct,
+    Number(s.maxChangePct) || 30);
+  if (!(stepPct > 0)) return out("note", `${why} — خطوة ${verb} على ${platform} صفر`);
+
+  let to;
+  if (scaling) {
+    to = Math.floor(current * (1 + stepPct / 100));
+    const cap = Math.min(Number(s.maxCampaignBudget) || Infinity, storeNum(opts.hardCap) ?? Infinity);
+    if (to > cap) to = Math.floor(cap);
+    if (p?.duplicateAtUpliftPct && storeNum(r.baseBudget) > 0
+      && current >= Number(r.baseBudget) * (1 + p.duplicateAtUpliftPct / 100)) {
+      return out("note", `${why} — الميزانية وصلت ضعف الأساس (${fmt(r.baseBudget)}): انسخ المجموعة بجمهور/إعلان مختلف بدل الضغط. ${p.duplicateWhy || ""}`.trim());
+    }
+    if (to <= current) return out("note", `${why} — المجموعة على سقف الميزانية (${fmt(cap)} ر.س)، التوسيع الصح نسخة جديدة`);
+  } else {
+    to = Math.max(R.minBudget, Math.ceil(current * (1 - stepPct / 100)));
+    if (to >= current) return out("note", `${why} — الميزانية على الأرضية (${R.minBudget} ر.س)، مفيش قص أكتر`);
+  }
+
+  /* نفس سور الوكيل. writeOk:true عن قصد — ده اقتراح مش كتابة؛
+     ADS_ALLOW_WRITE بيتشاف وقت التنفيذ مش وقت الاقتراح. */
+  if (Array.isArray(opts.rows)) {
+    /* القص بيقلّل الصرف — سقف الحملة والسقف الكلي مايرفضوهوش (لو الحساب
+       أصلاً فوق السقف، القص هو الحل مش المشكلة). باقي الأسوار زي ما هي. */
+    const gs = cutting ? { ...s, maxCampaignBudget: Infinity, maxTotalBudget: Infinity } : s;
+    const refusal = guardBudget({ platform, campaignId: adsetId, amount: to, level: "adset" }, gs, opts.rows,
+      { writeOk: true, cooldown: cooldown || new Set(), hardCap: cutting ? Infinity : (storeNum(opts.hardCap) ?? Infinity) });
+    if (refusal) return out("note", `${why} — السور رفض ${verb}: ${refusal}`, { refusal });
+  }
+
+  const pct = Math.round(Math.abs(to - current) / current * 1000) / 10;
+  return out(action, `${why} — ${cutting ? "تقليل" : "زيادة"} ${pct}٪ (سقف الخطوة ${stepPct}٪)`,
+    { from: current, to, stepPct, pct });
+}
+
 /* ── القرار ──────────────────────────────────────────────────────────────
    input:
      rows        لقطة الحملات: { platform, id, name, status, dailyBudget, spend, results }
@@ -4679,6 +4876,99 @@ ${focus}
 
   /* ── THE CYCLE ─────────────────────────────────────────────────────────── */
 
+  /* ═══ قاعدة المتجر في الدورة (W1-08) ═════════════════════════════════════
+     بتقرا أداء خطوط الخطة (adsplan.performance، ٣ أيام) وبتسجّل قرار
+     decideStoreAdset كـ kind='store_rule' بحالة 'pending' — في mode=suggest
+     **بس**، ومابتنفّذش أبداً (مسار approve بيقبل 'proposed' بس، فالـpending
+     مستحيل يتنفّذ أوتوماتيك). مفيش أي نداء على منصة هنا: الميزانيات
+     والتعلّم من لقطة gatherFacts اللي الدورة قرتها أصلاً.
+     deps.adsplan = قيمة adsplan.register() (أو دالة بترجّعها). */
+  async function runStoreRules(runId, s, facts, cooldown) {
+    const res = { considered: 0, recorded: 0, decisions: [] };
+    if (s.mode !== "suggest") return { ...res, skipped: `mode=${s.mode}` };
+    const ap = typeof deps.adsplan === "function" ? deps.adsplan() : deps.adsplan;
+    if (!ap?.performance) return { ...res, skipped: "adsplan غير مربوط" };
+
+    const from = daysAgoISO(2), to = todayISO();
+    const days = Math.round((Date.parse(to) - Date.parse(from)) / 86400000) + 1;
+    /* الأداء بيقرا صرف المنصات — سقف وقت عشان الدورة ماتعلقش وراه. */
+    let timer;
+    const perf = await Promise.race([
+      ap.performance({ from, to, by: "line" }),
+      new Promise((_, rej) => { timer = setTimeout(() => rej(new Error("adsplan.performance timeout")), 60_000); }),
+    ]).finally(() => clearTimeout(timer));
+    const lines = await pool.query(
+      `SELECT id, platform, platform_campaign_id, platform_adset_id FROM ads_plan_lines`)
+      .catch(() => ({ rows: [] }));
+    const lineBy = new Map(lines.rows.map((l) => [String(l.id), l]));
+    const adsetBy = new Map();
+    for (const c of facts?.campaigns || []) {
+      for (const a of c.adsets || []) adsetBy.set(`${c.platform}:${a.id}`, a);
+    }
+    const lastRes = await pool.query(
+      `SELECT platform, campaign_id, MAX(COALESCE(executed_at, created_at)) AS at FROM ap_decisions
+        WHERE ((kind IN ('budget','pace') AND status IN ('executed','auto_executed'))
+            OR (kind='store_rule' AND status IN ('executed','approved')))
+          AND created_at > NOW() - INTERVAL '7 days'
+        GROUP BY platform, campaign_id`).catch(() => ({ rows: [] }));
+    const lastBy = new Map(lastRes.rows.map((x) => [`${x.platform}:${x.campaign_id}`, x.at]));
+    const openRes = await pool.query(
+      `SELECT platform, campaign_id, detail->>'action' AS action FROM ap_decisions
+        WHERE kind='store_rule' AND status='pending' AND created_at > NOW() - INTERVAL '24 hours'`)
+      .catch(() => ({ rows: [] }));
+    const openSet = new Set(openRes.rows.map((x) => `${x.platform}:${x.campaign_id}:${x.action}`));
+    /* فرملة الطوارئ (٠٩ §3.6): طوارئ اتفتحت خلال emergencyCooldownHours = تجميد أي زيادة. */
+    const emRes = await pool.query(
+      `SELECT 1 FROM ap_decisions WHERE kind='emergency'
+        AND created_at > NOW() - ($1 || ' hours')::interval LIMIT 1`,
+      [String(Number(s.emergencyCooldownHours) || 6)]).catch(() => ({ rows: [] }));
+    const emergency = emRes.rows.length > 0;
+    /* التوسيع شرطه ROAS ٧ أيام (٠٩ §3.6) — بنقرا الشباك ده مرة واحدة بس
+       لو فيه مرشّح توسيع، عشان مانزوّدش قراءات المنصات كل ساعة. */
+    let roas7 = null;
+    const roas7Of = async (key) => {
+      if (!roas7) {
+        let t7;
+        const p7 = await Promise.race([
+          ap.performance({ from: daysAgoISO(6), to, by: "line" }),
+          new Promise((_, rej) => { t7 = setTimeout(() => rej(new Error("adsplan.performance(7d) timeout")), 60_000); }),
+        ]).finally(() => clearTimeout(t7)).catch(() => null);
+        roas7 = new Map((p7?.rows || []).map((x) => [String(x.key), storeNum(x.roas)]));
+      }
+      return roas7.get(String(key)) ?? null;
+    };
+
+    for (const pr of perf?.rows || []) {
+      const l = lineBy.get(String(pr.key));
+      const platform = pr.platform || l?.platform || null;
+      const adsetId = l?.platform_adset_id ? String(l.platform_adset_id) : null;
+      const a = adsetId ? adsetBy.get(`${platform}:${adsetId}`) : null;
+      const row = {
+        ...pr, platform, days, adsetId,
+        campaignId: l?.platform_campaign_id || a?.campaignId || null,
+        name: a?.name || pr.key,
+        dailyBudget: a?.dailyBudget ?? null,
+        learning: a?.learning ?? null,
+        lastBudgetChangeAt: adsetId ? (lastBy.get(`${platform}:${adsetId}`) || null) : null,
+      };
+      const dOpts = { rows: facts?.campaigns || [], cooldown, hardCap: MAX_DAILY_BUDGET, emergency };
+      let d = decideStoreAdset(row, s, dOpts);
+      if (d.action === "scale") d = decideStoreAdset({ ...row, roas: await roas7Of(pr.key) }, s, dOpts);
+      res.considered++;
+      res.decisions.push({ line: d.line, action: d.action });
+      if (!["kill", "cut", "scale"].includes(d.action)) continue;
+      const target = d.adsetId || d.line;
+      if (openSet.has(`${d.platform}:${target}:${d.action}`)) continue;
+      await pool.query(
+        `INSERT INTO ap_decisions (id, run_id, platform, campaign_id, campaign_name, kind, detail, reason, status)
+         VALUES ($1,$2,$3,$4,$5,'store_rule',$6,$7,'pending')`,
+        [crypto.randomUUID(), runId, d.platform, target, d.name, jb(d.detail), String(d.reason).slice(0, 2000)]);
+      openSet.add(`${d.platform}:${target}:${d.action}`);
+      res.recorded++;
+    }
+    return res;
+  }
+
   async function runCycle({ force = false, trigger = "cron" } = {}) {
     if (running) return { ok: false, error: "already running" };
     const s = await settingsNow();
@@ -4739,6 +5029,10 @@ ${focus}
           [id, runId, d.platform, d.campaignId, d.campaignName, d.kind, jb(d.detail), d.reason, status, jb(result), executedAt]);
         summary.decisions++;
       }
+
+      /* قاعدة المتجر (W1-08): اقتراحات pending في suggest بس — مابتوقعش الدورة. */
+      try { summary.storeRules = await runStoreRules(runId, s, facts, cooldown); }
+      catch (e) { summary.storeRules = { error: String(e?.message || e) }; }
 
       /* بصمة الوضع — بتتحسب مرة وبيستعملها المستشار والوكيل. */
       const fingerprint = situationFingerprint(facts, decisions, s);
@@ -5993,5 +6287,5 @@ ${focus}
 
   console.log("[autopilot] routes ready");
   return { runCycle, runEmergencyCheck, runAgent, runPaceCheck, runDaypartCheck, pulseData, economicsData, logData,
-           verifyDaypart, writeFailureAlerts, askDayLog, dayShapeOf, tokenBudget };
+           verifyDaypart, writeFailureAlerts, askDayLog, dayShapeOf, tokenBudget, runStoreRules };
 }
