@@ -103,14 +103,23 @@ export function stripBundleTags(it) {
   return rest;
 }
 
+/* الخصم لازم يوصل نقطة البيع (16 سبتمبر). قبل كده طلب الشريك كان بينزل بالسعر
+   الكامل حتى لو العميل دفع بخصم (خصم دائم لرقم معيّن أو كوبون نسبة) — فإجمالي
+   تاب سينس يطلع أكبر من اللي اتدفع والتسوية تبوظ. الشريك بيقبل أسعار السطور
+   اللي بنحددها (زي الباقات)، فبنطبّق نفس النسبة اللي checkout طبّقها على
+   الأصناف العادية بس — الباقات سعرها محسوب أصلاً ومابيتخصمش عليها. */
 export function partnerItemsOf(row) {
+  const pct = Math.max(0, Math.min(100, Number(row?.discount_percent) || 0));
   return (row?.items || []).map((it) => {
     const vo = Number(it.variant_option_id);
-    const note = it.bundle ? `ضمن: ${it.bundle_name || it.bundle}` : null;
+    const discounted = pct > 0 && !it.bundle;
+    const note = [it.bundle ? `ضمن: ${it.bundle_name || it.bundle}` : null, discounted ? `خصم ${pct}%` : null]
+      .filter(Boolean).join(" · ") || null;
+    const base = Number(it.unit_amount) / tsstore.MULTIPLY; // ريال صافي قبل الضريبة
     return {
       productId: it.product_id,
       quantity: Number(it.quantity) || 1,
-      unitPrice: Number(it.unit_amount) / tsstore.MULTIPLY, // ريال صافي قبل الضريبة
+      unitPrice: discounted ? Math.round(base * (1 - pct / 100) * 1e6) / 1e6 : base,
       ...(Number.isInteger(vo) && vo > 0 ? { variantOptionId: vo } : {}),
       ...(it.variant_name ? { variantName: it.variant_name } : {}),
       ...(note ? { lineNote: note } : {}),
@@ -884,7 +893,8 @@ export function register(app, ctx, deps = {}) {
       row.option === "delivery" ? "توصيل" : "استلام",
       `طُلب ${hm(row.created_at)}`,
       row.option === "pickup" ? `استلام ${hm(Date.now() + 40 * 60_000)}` : "",
-      feeNote, "مدفوع أونلاين✅", row.notes || "",
+      feeNote, Number(row.discount_percent) > 0 ? `خصم ${Number(row.discount_percent)}%` : "",
+      "مدفوع أونلاين✅", row.notes || "",
     ].filter(Boolean).join(" - ");
     const items = partnerItemsOf(row);
     // رسوم التوصيل تنزل في الفاتورة كسطر منتج «رسوم التوصيل» (فئة رسوم، ضريبة 15%).
@@ -942,6 +952,17 @@ export function register(app, ctx, deps = {}) {
           await pool.query(
             "UPDATE shop_orders SET pos_attempts=pos_attempts+1, last_pos_error=NULL WHERE order_no=$1", [orderNo]);
           console.log(`[shop] ${orderNo}: partner paid order ${out.id} (linkedCustomer=${out.linkedCustomer}, attempt ${attempt})`);
+          // شبكة أمان: إجمالي نقطة البيع لازم يساوي اللي العميل دفعه (فرق > ١ ر.س = إنذار)
+          const posTotal = Number(out.total), paid = Number(row.total) - (Number(row.tip) || 0);
+          if (Number.isFinite(posTotal) && posTotal > 0 && Math.abs(posTotal - paid) > 1) {
+            console.error(`[shop] ${orderNo}: POS TOTAL MISMATCH pos=${posTotal} paid=${paid}`);
+            if (await claimAlert(orderNo, "staff:total_mismatch")) {
+              staff.critical((lang) => lang === "ar"
+                ? `فريش كاتس مراجعة ${orderNo}: نقطة البيع ${Math.round(posTotal * 100) / 100} والمدفوع ${paid}`
+                : `Fresh Cuts CHECK ${orderNo}: POS total ${Math.round(posTotal * 100) / 100} SAR but customer paid ${paid} SAR. Fix the POS order.`,
+                `total-mismatch ${orderNo}`).catch(() => {});
+            }
+          }
           return;
         } catch (e) {
           lastErr = e;
