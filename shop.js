@@ -1028,7 +1028,7 @@ export function register(app, ctx, deps = {}) {
       row.option === "delivery" ? "توصيل" : "استلام",
       `طُلب ${hm(row.created_at)}`,
       row.option === "pickup" ? `استلام ${hm(Date.now() + 40 * 60_000)}` : "",
-      feeNote, Number(row.discount_percent) > 0 ? `خصم ${Number(row.discount_percent)}%` : "",
+      feeNote, // الخصم مابيتكتبش للكاشير/المطبخ (عمر 16 سبتمبر) — سعر السطور بعد الخصم كفاية
       "مدفوع أونلاين✅", row.notes || "",
     ].filter(Boolean).join(" - ");
     const items = partnerItemsOf(row);
