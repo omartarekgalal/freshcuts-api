@@ -2111,6 +2111,42 @@ const canManage = (p) => missingOf(p.manageEnv).length === 0;
    REGISTER
    ═══════════════════════════════════════════════════════════════════════ */
 
+/* ─── طلبات الموقع في المزامنة الأوفلاين (W0-02، 16 سبتمبر) ──────────────
+   طلب المتجر بينزل ts_orders زي أي طلب كاشير (عن طريق الشريك)، فالمزامنة كانت
+   بتحجزه physical_store قبل ما funnel.serverPurchase يلحق يبعته website بالـfbc
+   والمنتجات — والحجز مفتاحه (order_id, platform, Purchase)، فالويب كان بيخسر
+   دايماً. الحل: المزامنة تسيب طلب الموقع ٦ ساعات. لو serverPurchase اشتغل،
+   الحجز موجود والمزامنة بتتخطاه عادي؛ لو فشل، بعد ٦ ساعات الأوفلاين بيبعته زي
+   الأول (شبكة أمان). النوعين TEXT: ts_orders.order_id وshop_orders.pos_order_id
+   (String(created.id)) — فالمقارنة مباشرة من غير cast. */
+export const WEB_ORDER_HOLD_HOURS = 6;
+export const SALES_ONLY = `(o.order_type IS NULL OR (o.order_type NOT ILIKE '%void%' AND o.order_type NOT ILIKE '%refund%'))`;
+
+/** Pure SQL builder for the offline sync's order read — exported so the hold
+ *  window is tested without a database. */
+export function loadOrdersQuery(from, to, limit = 5000, { holdHours = WEB_ORDER_HOLD_HOURS } = {}) {
+  return {
+    text: `SELECT o.order_id, o.order_date, o.calendar_day, o.order_type, o.order_option,
+              o.total, o.customer_id, o.branch,
+              COALESCE(NULLIF(s.phone_norm,''), NULLIF(tc.phone_norm,'')) AS phone_norm,
+              NULLIF(tc.email,'') AS email,
+              s.source AS src, s.source_note AS src_note
+         FROM ts_orders o
+         LEFT JOIN ts_customers tc ON tc.customer_id = o.customer_id
+         LEFT JOIN order_sources s ON s.order_id = o.order_id
+        WHERE ${SALES_ONLY}
+          AND o.calendar_day >= $1::date AND o.calendar_day <= $2::date
+          AND COALESCE(o.total, 0) > 0
+          AND NOT EXISTS (
+                SELECT 1 FROM shop_orders so
+                 WHERE so.pos_order_id = o.order_id
+                   AND so.created_at > NOW() - ($4 || ' hours')::interval)
+        ORDER BY o.order_date ASC
+        LIMIT $3`,
+    values: [from, to, limit, String(holdHours)],
+  };
+}
+
 export function register(app, ctx, deps = {}) {
   const { pool, requireAdmin, jb, todayISO, daysAgoISO, normPhone } = ctx;
   /* attribution.register بتتنده بعدنا (محتاجة تقرا PLATFORMS مننا)، فالمرجع
@@ -2163,25 +2199,9 @@ export function register(app, ctx, deps = {}) {
      (rule A). Identity comes from ts_customers first (POS customer record)
      and the cashier station second (order_sources.phone_norm), which is the
      only identity our aggregator orders could ever gain.                  */
-  const SALES_ONLY = `(o.order_type IS NULL OR (o.order_type NOT ILIKE '%void%' AND o.order_type NOT ILIKE '%refund%'))`;
-
   async function loadOrders(from, to, limit = 5000) {
-    const r = await pool.query(
-      `SELECT o.order_id, o.order_date, o.calendar_day, o.order_type, o.order_option,
-              o.total, o.customer_id, o.branch,
-              COALESCE(NULLIF(s.phone_norm,''), NULLIF(tc.phone_norm,'')) AS phone_norm,
-              NULLIF(tc.email,'') AS email,
-              s.source AS src, s.source_note AS src_note
-         FROM ts_orders o
-         LEFT JOIN ts_customers tc ON tc.customer_id = o.customer_id
-         LEFT JOIN order_sources s ON s.order_id = o.order_id
-        WHERE ${SALES_ONLY}
-          AND o.calendar_day >= $1::date AND o.calendar_day <= $2::date
-          AND COALESCE(o.total, 0) > 0
-        ORDER BY o.order_date ASC
-        LIMIT $3`,
-      [from, to, limit]
-    );
+    const q = loadOrdersQuery(from, to, limit);
+    const r = await pool.query(q.text, q.values);
     return r.rows;
   }
 

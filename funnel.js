@@ -25,10 +25,26 @@
    PRIVACY. Phone/email are hashed before any payload leaves this process;
    raw identifiers are stored only as phone_norm (same policy as the rest of
    the API). Click ids and UTMs are not secrets.
+
+   PURCHASE من السيرفر (W0-02، 16 سبتمبر). funnel_events كان فيه ٣٧ Purchase
+   قصاد أقل من ٥ طلبات حقيقية مدفوعة. الأسباب من الكود:
+     ١) track.html بيطلق Purchase مع كل تحميل فيه ?new=1/?paid=1 — كل ريفريش
+        أو رجوع للصفحة = صف جديد (والقيمة من fc_last_value، ساعات صفر).
+     ٢) نفس الطلب بيتطلق مرتين من المتصفح: مرة من app.js لحظة الدفع ومرة من
+        صفحة التتبع — والـroute كان بيدخّل صف لكل واحدة من غير أي فحص.
+     ٣) طلبات الاختبار (أرقام الموظفين) بتتحسب زي أي طلب.
+     ٤) ads.loadOrders كان بيحجز الطلب كـphysical_store قبل ما المتصفح يوصل،
+        فالـPurchase بتاع الويب ماكانش بيوصل المنصة كـwebsite أبداً.
+   الإصلاح هنا: serverPurchase({orderNo}) بيبني الحدث من shop_orders نفسه
+   (الإجمالي الحقيقي + المنتجات بمعرّفات الكتالوج + fbc/fbp/ip/ua من
+   attribution) وبيحجز بـrequest.source='website'، و/api/funnel/event بيرجّع
+   {duplicate:true} لأي Purchase لنفس الطلب خلال ٢٤ ساعة من غير ما يدخّل صف،
+   وads.loadOrders بيستنى ٦ ساعات قبل ما يلمس طلب موقع.
 ═══════════════════════════════════════════════════════════════════════════ */
 
 import crypto from "node:crypto";
 import { hashEmail, hashPhoneDigits, hashPhonePlus, phoneDigits, httpJson } from "./ads.js";
+import { MULTIPLY } from "./tsstore.js";
 
 const env = (k) => (process.env[k] || "").trim();
 const META_VER = () => env("META_API_VERSION") || "v25.0";
@@ -63,9 +79,92 @@ function rateLimited(ip) {
   return slot.n > 240;
 }
 
+/* ── server-side Purchase helpers (pure — مفيش DB ولا شبكة، عشان الاختبارات) ── */
+
+// Purchase لنفس الطلب خلال المدة دي = تكرار (ريفريش صفحة التتبع، أو المتصفح
+// بعد السيرفر). بعدها بيتعامل كحدث جديد — عمر ما طلب واحد يتدفع مرتين في يوم.
+export const PURCHASE_DEDUP_HOURS = 24;
+
+// حالات مالهاش شراء حقيقي: لسه مادفعش، انتهى، أو اترفض واترجّعت فلوسه.
+const NO_PURCHASE_STATUS = /pending_payment|expired|refund|reject|cancel/;
+const VAT = 0.15;
+const r2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
+
+/** shop_orders.items → contents بمعرّفات الكتالوج.
+ *  المتجر بيبعت product_id بتاع تاب سينس — هو نفسه الـid اللي فيد الكتالوج
+ *  بينشره — فمش محتاجين نطابق بالاسم إلا لسطر ناقصه product_id (match اختياري،
+ *  ads.matchToCatalog). سعر السطر: unit_amount صافي × MULTIPLY، فبنرجّعه ريال
+ *  شامل الضريبة وبعد خصم الطلب (الباقات سعرها محسوب أصلاً فمابتتخصمش). السطور
+ *  المتكررة لنفس المنتج (الباقة بتتفرد لأكتر من سطر) بتتجمع في سطر واحد. */
+export async function purchaseContentsOf(items, discountPercent = 0, match = null) {
+  const pct = Math.max(0, Math.min(100, Number(discountPercent) || 0));
+  const byId = new Map();
+  for (const it of Array.isArray(items) ? items : []) {
+    if (!it || typeof it !== "object") continue;
+    let id = it.product_id != null && it.product_id !== "" ? String(it.product_id) : null;
+    if (!id && match && it.name) {
+      const hit = await Promise.resolve(match(it.name)).catch(() => null);
+      if (hit && hit !== "__fee__") id = String(hit);
+    }
+    if (!id) continue;
+    const quantity = Math.max(1, Math.round(Number(it.quantity) || 1));
+    const net = (Number(it.unit_amount) || 0) / MULTIPLY;
+    const gross = net * (1 + VAT) * (pct > 0 && !it.bundle ? 1 - pct / 100 : 1);
+    const cur = byId.get(id);
+    if (cur) {
+      // متوسط مرجّح عشان quantity × item_price يفضل مساوي لمجموع السطور
+      const total = cur.itemPrice * cur.quantity + gross * quantity;
+      cur.quantity += quantity;
+      cur.itemPrice = r2(total / cur.quantity);
+    } else {
+      byId.set(id, { id: id.slice(0, 64), name: it.name ? String(it.name).slice(0, 120) : null, quantity, itemPrice: r2(gross) });
+    }
+  }
+  return [...byId.values()].slice(0, 50);
+}
+
+/** صف shop_orders (+ contents جاهزة) → الحدث بنفس شكل /api/funnel/event.
+ *  event_id = pos_order_id — نفس المفتاح اللي المتصفح وads.js بيستعملوه،
+ *  فالمنصة بتشيل التكرار بين البكسل والسيرفر. */
+export function serverPurchaseEvent(order, { contents = [], digits = null, now = Date.now(), baseUrl = "" } = {}) {
+  const a = order?.attribution && typeof order.attribution === "object" ? order.attribution : {};
+  const click = a.click && typeof a.click === "object" ? a.click : {};
+  const s = (v, n) => (v == null || v === "" ? null : String(v).slice(0, n));
+  const posId = String(order.pos_order_id);
+  return {
+    name: "Purchase",
+    eventId: posId,
+    orderId: posId,
+    value: r2(order.total),
+    contents,
+    numItems: contents.reduce((acc, i) => acc + i.quantity, 0),
+    currency: "SAR",
+    time: Math.floor(now / 1000),
+    url: baseUrl ? `${baseUrl}/track/${encodeURIComponent(order.order_no)}` : "",
+    referrer: "",
+    ip: s(a.ip, 64),
+    ua: s(a.ua, 400) || "",
+    digits,
+    email: null,
+    utm: a.utm && typeof a.utm === "object" ? a.utm : {},
+    click: {
+      fbp: s(click.fbp, 200), fbc: s(click.fbc, 300),
+      ttclid: s(click.ttclid, 300), ttp: s(click.ttp, 200),
+      // سناب بيسمّيه ScCid في الرابط وscid في pixels.js
+      scid: s(click.scid ?? click.ScCid, 300),
+      gclid: s(click.gclid, 300), gbraid: s(click.gbraid, 300), wbraid: s(click.wbraid, 300),
+    },
+  };
+}
+
 export function register(app, ctx, deps = {}) {
   const { pool, requireAdmin, jb, normPhone } = ctx;
   const attribution = deps.attribution || null;   // attribution.register() return value
+  // الاختبارات بتحقن http بدل الشبكة؛ الإنتاج بيستعمل httpJson بتاع ads.js.
+  const http = deps.httpJson || httpJson;
+  // ads.matchToCatalog اختياري (late-bound زي باقي الموديولات) — للسطور اللي
+  // ناقصها product_id بس.
+  const adsOf = typeof deps.ads === "function" ? deps.ads : () => deps.ads || null;
 
   async function ensureSchema() {
     await pool.query(`
@@ -240,20 +339,131 @@ export function register(app, ctx, deps = {}) {
   ];
 
   // Claim the (order, platform, Purchase) slot shared with ads.js's offline sync.
-  async function claimPurchase(orderId, platform, e) {
+  // source: 'website' لطلب موجود في shop_orders (المتجر)، و'funnel' لأي حاجة تانية.
+  async function claimPurchase(orderId, platform, e, source = "funnel") {
     const r = await pool.query(
       `INSERT INTO ads_events (id, order_id, event_name, event_time, value, currency, platform, status, request, attempts)
        VALUES ($1,$2,'Purchase',to_timestamp($3),$4,$5,$6,'pending',$7,1)
        ON CONFLICT (order_id, platform, event_name) DO NOTHING
        RETURNING id`,
       [`${platform}:Purchase:${orderId}`, String(orderId), e.time, e.value, e.currency, platform,
-       jb({ source: "funnel", eventId: e.eventId })]);
+       jb({ source, eventId: e.eventId })]);
     return r.rowCount > 0 ? r.rows[0].id : null;
   }
   async function finishPurchase(rowId, ok, response) {
     if (!rowId) return;
     await pool.query(`UPDATE ads_events SET status=$2, response=$3 WHERE id=$1`,
       [rowId, ok ? "sent" : "failed", jb(response)]).catch(() => {});
+  }
+
+  /* يبعت الحدث للمنصات المضبوطة. الـPurchase بيعدّي على الحجز المشترك الأول —
+     لو claimPurchase رجّع null (الطلب اتبعت قبل كده للمنصة دي) مفيش HTTP خالص. */
+  async function forwardAll(e, { claimSource = "funnel" } = {}) {
+    const results = {};
+    for (const f of FORWARDS) {
+      const call = f.build(e);
+      if (!call) { results[f.id] = { skipped: "not configured" }; continue; }
+      let rowId = null;
+      if (e.name === "Purchase" && e.orderId) {
+        try { rowId = await claimPurchase(e.orderId, f.id, e, claimSource); }
+        catch (err) { results[f.id] = { error: `claim: ${err.message}` }; continue; }
+        if (!rowId) { results[f.id] = { skipped: "already reported for this order" }; continue; }
+      }
+      try {
+        const res = await http(call.url, { method: "POST", headers: call.headers, body: call.body, timeout: 10000 });
+        const ok = f.okOf(res);
+        results[f.id] = ok ? { sent: true } : { error: res.json?.error?.message || res.json?.message || res.error || `HTTP ${res.status}` };
+        await finishPurchase(rowId, ok, { via: claimSource, httpStatus: res.status });
+      } catch (err) {
+        results[f.id] = { error: String(err.message || err) };
+        await finishPurchase(rowId, false, { via: claimSource, error: String(err.message || err) });
+      }
+    }
+    return results;
+  }
+
+  /* طلب المتجر اللي الـid ده بيشاور عليه (رقم نقطة البيع أو W…). null لو مش
+     طلب متجر أو الجدول مش موجود — عمر الحدث ما يقع بسبب البحث ده. */
+  async function findShopOrder(id) {
+    if (!id) return null;
+    try {
+      const r = await pool.query(
+        `SELECT order_no, pos_order_id, total FROM shop_orders
+          WHERE pos_order_id = $1 OR order_no = $1
+          ORDER BY created_at DESC LIMIT 1`, [String(id)]);
+      return r.rows[0] || null;
+    } catch { return null; }
+  }
+
+  /* فيه Purchase متسجّل لأي id من دول خلال ٢٤ ساعة؟ (G3: ريفريش التتبع +
+     إطلاق مزدوج). لو الفحص نفسه فشل بنكمّل — الحجز في ads_events لسه بيمنع
+     الإرسال المزدوج للمنصات، واللي بيضيع بس دقة العدّاد. */
+  async function recentPurchase(ids) {
+    const list = [...new Set(ids.filter(Boolean).map(String))];
+    if (!list.length) return false;
+    try {
+      const r = await pool.query(
+        `SELECT 1 FROM funnel_events
+          WHERE event_name = 'Purchase' AND order_id = ANY($1::text[])
+            AND created_at > NOW() - ($2 || ' hours')::interval
+          LIMIT 1`, [list, String(PURCHASE_DEDUP_HOURS)]);
+      return r.rowCount > 0;
+    } catch (err) {
+      console.error("[funnel] dedup check failed:", err.message);
+      return false;
+    }
+  }
+
+  async function storeEvent(e, { pnLocal = null, results = {} } = {}) {
+    await pool.query(
+      `INSERT INTO funnel_events (id, event_name, event_id, order_id, value, currency, url, referrer, utm, click_ids, phone_norm, ip, ua, results, contents)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`,
+      [crypto.randomUUID(), e.name, e.eventId, e.orderId, e.value, e.currency, e.url, e.referrer,
+       jb(e.utm || {}), jb(e.click), pnLocal || null, e.ip, e.ua, jb(results),
+       e.contents.length ? jb(e.contents) : null]).catch((err) => {
+        console.error("[funnel] store failed:", err.message);
+      });
+  }
+
+  /* ═══ serverPurchase ══════════════════════════════════════════════════
+     الشراء الموثوق: بيتنده من shop.js بعد ما طلب مدفوع ينزل نقطة البيع
+     (W0-03). بيقرا الطلب من shop_orders — مش من المتصفح — فالقيمة هي اللي
+     اتدفعت فعلاً، والمنتجات موجودة، والـfbc/fbp/ip/ua من attribution اللي
+     اتسجّلت وقت الـcheckout. مابيرميش على حالات الطلب: كل حالة بترجع كنتيجة.
+       { ok:true, orderId, results }       اتبعت (أو اتخطّى per-platform)
+       { ok:true, duplicate:true }         Purchase لنفس الطلب خلال ٢٤ ساعة
+       { ok:false, skipped:"…" }           طلب مش مؤهل (مش موجود/اختبار/…)   */
+  async function serverPurchase({ orderNo } = {}) {
+    if (!orderNo) return { ok: false, skipped: "no_order_no" };
+    // to_jsonb(o) عشان attribution وis_test بيتضافوا في وحدات تانية (W0-03/W1-01):
+    // لو العمود لسه مش موجود القراءة ماتقعش، القيمة بس بتبقى null.
+    const r = await pool.query(`SELECT to_jsonb(o) AS o FROM shop_orders o WHERE o.order_no = $1`, [String(orderNo)]);
+    const order = r.rows[0]?.o;
+    if (!order) return { ok: false, skipped: "not_found" };
+    if (!order.pos_order_id) return { ok: false, skipped: "no_pos_order" };
+    if (order.is_test === true) return { ok: false, skipped: "test_order" };
+    if (NO_PURCHASE_STATUS.test(String(order.status || ""))) return { ok: false, skipped: `status:${order.status}` };
+    if (!(Number(order.total) > 0)) return { ok: false, skipped: "zero_total" };
+
+    if (await recentPurchase([order.pos_order_id, order.order_no])) {
+      return { ok: true, duplicate: true, orderId: String(order.pos_order_id) };
+    }
+
+    const match = adsOf()?.matchToCatalog || null;
+    const contents = await purchaseContentsOf(order.items, order.discount_percent, match);
+    const pnLocal = order.phone_norm ? normPhone(order.phone_norm) : "";
+    const digits = pnLocal ? phoneDigits(pnLocal, normPhone) : null;
+    const baseUrl = (env("STOREFRONT_PUBLIC_URL") || "https://freshcuts.sa").split(",")[0].trim().replace(/\/+$/, "");
+    const e = serverPurchaseEvent(order, { contents, digits, baseUrl });
+
+    const results = await forwardAll(e, { claimSource: "website" });
+    await storeEvent(e, { pnLocal, results });
+    if (attribution?.linkOrder) {
+      attribution.linkOrder({ orderId: e.orderId }).catch((err) => {
+        console.error("[funnel] link-lead failed:", err.message);
+      });
+    }
+    return { ok: true, orderId: e.orderId, results };
   }
 
   /* ═══ ROUTES ═══════════════════════════════════════════════════════════ */
@@ -282,10 +492,32 @@ export function register(app, ctx, deps = {}) {
     const name = String(b.eventName || "");
     if (!EVENT_NAMES.has(name)) return c.json({ ok: false, error: "unknown eventName" }, 400);
 
-    const value = Math.round((Number(b.value) || 0) * 100) / 100;
+    let value = Math.round((Number(b.value) || 0) * 100) / 100;
     if (value < 0 || value > 100000) return c.json({ ok: false, error: "value out of range" }, 400);
-    const orderId = b.orderId ? String(b.orderId).slice(0, 64) : null;
+    let orderId = b.orderId ? String(b.orderId).slice(0, 64) : null;
     const eventId = String(b.eventId || orderId || crypto.randomUUID()).slice(0, 64);
+
+    /* Purchase لطلب متجر: الـid الرسمي هو رقم نقطة البيع (نفس مفتاح ads.js
+       وserverPurchase)، والحجز بيتسجّل website. لو نفس الطلب اتسجّل Purchase
+       خلال ٢٤ ساعة (ريفريش التتبع، app.js + track.html، أو السيرفر سبق) →
+       duplicate من غير إدراج ولا إرسال. */
+    let claimSource = "funnel";
+    if (name === "Purchase" && orderId) {
+      const shop = await findShopOrder(orderId);
+      if (shop) {
+        claimSource = "website";
+        // الطلب لسه مانزلش نقطة البيع: حجز بـW… هيبقى مفتاح تاني غير رقم
+        // نقطة البيع = إرسال مزدوج بعدين. serverPurchase هيبلّغ عنه لما ينزل.
+        if (!shop.pos_order_id) return c.json({ ok: true, deferred: true });
+        orderId = String(shop.pos_order_id);
+        // القيمة من shop_orders.total (اللي اتدفع فعلاً) مش من المتصفح — الراوت
+        // عام، والمتصفح ساعات بيبعت صفر أو قيمة قديمة من fc_last_value.
+        if (Number(shop.total) > 0) value = r2(shop.total);
+      }
+      if (await recentPurchase([orderId, b.orderId, shop?.order_no])) {
+        return c.json({ ok: true, duplicate: true });
+      }
+    }
     const url = String(b.url || "").slice(0, 500);
     const clicks = b.clickIds && typeof b.clickIds === "object" ? b.clickIds : {};
     const utm = b.utm && typeof b.utm === "object" ? b.utm : {};
@@ -310,6 +542,7 @@ export function register(app, ctx, deps = {}) {
       currency: String(b.currency || "SAR").slice(0, 3).toUpperCase(),
       time: Math.floor(Date.now() / 1000),
       url, referrer: String(b.referrer || "").slice(0, 500),
+      utm,
       ip: ip || null,
       ua: String(c.req.header("user-agent") || "").slice(0, 400),
       digits, email: b.email ? String(b.email).slice(0, 200) : null,
@@ -331,36 +564,9 @@ export function register(app, ctx, deps = {}) {
       },
     };
 
-    const results = {};
-    for (const f of FORWARDS) {
-      const call = f.build(e);
-      if (!call) { results[f.id] = { skipped: "not configured" }; continue; }
-      // Purchases go through the cross-pipeline dedup claim.
-      let rowId = null;
-      if (name === "Purchase" && orderId) {
-        try { rowId = await claimPurchase(orderId, f.id, e); }
-        catch (err) { results[f.id] = { error: `claim: ${err.message}` }; continue; }
-        if (!rowId) { results[f.id] = { skipped: "already reported for this order" }; continue; }
-      }
-      try {
-        const res = await httpJson(call.url, { method: "POST", headers: call.headers, body: call.body, timeout: 10000 });
-        const ok = f.okOf(res);
-        results[f.id] = ok ? { sent: true } : { error: res.json?.error?.message || res.json?.message || res.error || `HTTP ${res.status}` };
-        await finishPurchase(rowId, ok, { via: "funnel", httpStatus: res.status });
-      } catch (err) {
-        results[f.id] = { error: String(err.message || err) };
-        await finishPurchase(rowId, false, { via: "funnel", error: String(err.message || err) });
-      }
-    }
 
-    await pool.query(
-      `INSERT INTO funnel_events (id, event_name, event_id, order_id, value, currency, url, referrer, utm, click_ids, phone_norm, ip, ua, results, contents)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`,
-      [crypto.randomUUID(), name, eventId, orderId, value, e.currency, url, e.referrer,
-       jb(utm), jb(e.click), pnLocal || null, e.ip, e.ua, jb(results),
-       contents.length ? jb(contents) : null]).catch((err) => {
-        console.error("[funnel] store failed:", err.message);
-      });
+    const results = await forwardAll(e, { claimSource });
+    await storeEvent(e, { pnLocal, results });
 
     // A Purchase with an order id closes the loop: the same phone (or the same
     // order id) may already be sitting in this table as a Lead from an ad. Link
@@ -541,5 +747,5 @@ export function register(app, ctx, deps = {}) {
   });
 
   console.log(`[funnel] routes ready (pixels: meta=${metaPixel() ? "set" : "—"} tiktok=${ttPixel() ? "set" : "—"} snap=${snapPixel() ? "set" : "—"})`);
-  return { funnelStats };
+  return { funnelStats, serverPurchase };
 }

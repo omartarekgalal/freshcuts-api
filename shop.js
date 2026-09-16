@@ -36,6 +36,7 @@ import { isOpenNow } from "./carts.js";
 import { dispatchDue, dispatchDelayOf } from "./delivery.js";
 import { makeStaffNotifier, slaAlertText, posFailedText, tabsenseDownText } from "./staffalerts.js";
 import { sendSms as sendStaffSms } from "./accounts.js";
+import { parseCheckoutMeta, fireServerPurchase } from "./checkout-meta.js";
 
 const env = (k, d) => (process.env[k] || d || "").toString().trim();
 const r2 = (v) => Math.round((Number(v) || 0) * 100) / 100;
@@ -370,6 +371,11 @@ export function register(app, ctx, deps = {}) {
       -- «توصيل مجاني بالكوبون» (2026-09-11): الكوبون يتنازل عن رسم التوصيل
       -- كامل بدل (أو مع) خصم النسبة. كوبون أول طلب = free_delivery + once_per_customer.
       ALTER TABLE shop_coupons ADD COLUMN IF NOT EXISTS free_delivery BOOLEAN NOT NULL DEFAULT FALSE;
+      -- مصدر الطلب (W0-03، checkout-meta.js): رابط الحملة/UTM/click ids + ip/ua
+      -- من الهيدر، بيتسجّل وقت الـcheckout. الفهرس عشان خطة الإعلانات بتربط
+      -- الطلبات بالروابط (attribution->>'fc_link').
+      ALTER TABLE shop_orders ADD COLUMN IF NOT EXISTS attribution JSONB;
+      CREATE INDEX IF NOT EXISTS shop_orders_attr_link_idx ON shop_orders ((attribution->>'fc_link'));
     `);
   }
   ensureSchema()
@@ -751,11 +757,16 @@ export function register(app, ctx, deps = {}) {
       return c.json({ ok: false, error: "payment_init_failed", detail: e.message }, 502);
     }
 
+    // مصدر الطلب — قايمة مفاتيح مسموحة، وip/ua من الهيدر بس. عمره ما يوقّع الطلب.
+    let attribution = null;
+    try { attribution = parseCheckoutMeta(b, (n) => c.req.header(n)).attribution; }
+    catch (e) { console.error(`[shop] ${orderNo}: checkout meta parse failed: ${e.message}`); }
+
     await pool.query(
       `INSERT INTO shop_orders(order_no, status, option, branch_id, customer, phone_norm,
          address, items, pos_calc, subtotal, delivery_fee, tip, total, delivery_quote,
-         mf_session_id, notes, coupon, discount_percent, discount_amount, history)
-       VALUES ($1,'pending_payment',$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)`,
+         mf_session_id, notes, coupon, discount_percent, discount_amount, history, attribution)
+       VALUES ($1,'pending_payment',$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)`,
       [orderNo, option, branchId,
        jb({ name: cust.name || "", phone: "+966" + phoneNorm, deviceId: b.deviceId ? String(b.deviceId).slice(0, 64) : null }), phoneNorm,
        jb(b.address || null), jb(items), jb(calc),
@@ -764,7 +775,7 @@ export function register(app, ctx, deps = {}) {
        r2(total - deliveryFee), deliveryFee, tip, total, jb(dq ? { ...dq, feeInPos, freeDeliveryByCoupon } : null),
        session.SessionId || null, (b.notes || "").slice(0, 200),
        coupon?.ok ? coupon.code : null, discountPercent, discountAmount,
-       jb([{ at: new Date().toISOString(), status: "pending_payment" }])]
+       jb([{ at: new Date().toISOString(), status: "pending_payment" }]), jb(attribution)]
     );
     return c.json({
       ok: true, orderNo, total, subtotal: r2(total - deliveryFee), deliveryFee, tip,
@@ -952,6 +963,8 @@ export function register(app, ctx, deps = {}) {
           await pool.query(
             "UPDATE shop_orders SET pos_attempts=pos_attempts+1, last_pos_error=NULL WHERE order_no=$1", [orderNo]);
           console.log(`[shop] ${orderNo}: partner paid order ${out.id} (linkedCustomer=${out.linkedCustomer}, attempt ${attempt})`);
+          // Purchase من السيرفر (W0-03) — من غير انتظار، وفشله مايلمسش الطلب
+          fireServerPurchase(deps.funnel, orderNo);
           // شبكة أمان: إجمالي نقطة البيع لازم يساوي اللي العميل دفعه (فرق > ١ ر.س = إنذار)
           const posTotal = Number(out.total), paid = Number(row.total) - (Number(row.tip) || 0);
           if (Number.isFinite(posTotal) && posTotal > 0 && Math.abs(posTotal - paid) > 1) {
@@ -1033,6 +1046,7 @@ export function register(app, ctx, deps = {}) {
       });
       await pool.query(
         "UPDATE shop_orders SET pos_attempts=pos_attempts+1, last_pos_error=NULL WHERE order_no=$1", [orderNo]);
+      fireServerPurchase(deps.funnel, orderNo); // Purchase من السيرفر (W0-03) — fire-and-forget
     } catch (e) {
       // TabSense's actual answer is the diagnosis — "order creation failed"
       // alone cost us a stalled paid order on 2026-08-13.

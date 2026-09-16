@@ -3043,7 +3043,7 @@ selftest.register(app, moduleCtx, { delivery: () => deliveryApi });
 let accountsApi = null;
 shopApi = shop.register(app, moduleCtx, {
   pay: payApi, delivery: deliveryApi, notify: notifyApi, accounts: () => accountsApi,
-  carts: () => cartsApi, tsp: () => tspApi,
+  carts: () => cartsApi, tsp: () => tspApi, funnel: () => funnelApi,
   // الباقات بتتعرّف في الـCMS (اللي بيتسجّل بعدنا) — الشيك أوت بيوسّعها
   // بنفس الدالة اللي المتجر بيعاين بيها، فالمعروض = المحسوب.
   bundles: () => cmsApi,
