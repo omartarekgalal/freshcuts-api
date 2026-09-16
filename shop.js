@@ -603,6 +603,8 @@ export function register(app, ctx, deps = {}) {
       // بيطلب صنف TabSense الحقيقي بتاعه — المطبخ يشوف الوزن الصح دايماً.
       variantGroups: cat.variantGroups || [],
       allowCash: (s.shop || {}).allowCash === true, // Omar 2026-08-12: online-only by default
+      // تجربة الطلب الجديدة لكل العملاء (مفتاح في شاشة الاقتراحات باللوحة)؛ الافتراضي مقفولة
+      checkout2Default: (s.shop || {}).checkout2Default === true,
       // نصوص وروابط صفحات الـSEO في المتجر (/menu, /about, /faq, الرئيسية):
       // {home:{h1,intro,h1_en,intro_en,showIntro}, rating, links:{maps,review,
       //  instagram,tiktok,snapchat,facebook,hungerstation,keeta,ninja},
