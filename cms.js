@@ -88,7 +88,8 @@ const PATH_SECTIONS = [
   // صفحات البحث للعروض (freshcuts.sa/offers/<slug>) — نفس قسم العرض نفسه
   [/^\/api\/cms\/offer-pages/, "products"],
   // العروض والباقات جوّه «المنتجات»: نفس صلاحية تعريف الباقة وتعديل العرض
-  [/^\/api\/cms\/(products|catalog|collections|bundles|offers)/, "products"],
+  // recommendations = إعدادات ومعاينة «تحب تضيف؟» (recs.js)
+  [/^\/api\/cms\/(products|catalog|collections|bundles|offers|recommendations)/, "products"],
   [/^\/api\/cms\/(growth|links)/, "growth"],
   [/^\/api\/cms\/(customers|segments|loyalty|campaigns|flows|reviews)/, "customers"],
   [/^\/api\/cms\/(analytics|exec)/, "analytics"],

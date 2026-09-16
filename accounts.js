@@ -106,6 +106,189 @@ function rateLimited(ip, max) {
   return slot.n > max;
 }
 
+/* ── دفتر العناوين (الشيك أوت الجديد) ────────────────────────────────────
+   شكل العنوان: {id, label, area, street, building, floor, landmark, notes,
+   latitude, longitude, is_default, created_at, used_at}
+
+   - label نص حر ٣٠ حرف (الواجهة بتقترح المنزل/العمل/بيت الأهل/آخر).
+   - عنوان افتراضي واحد بس لكل عميل؛ أول عنوان بيبقى افتراضي تلقائياً،
+     وتعيين واحد بيشيل العلامة من الباقي، وحذف الافتراضي بيرقّي الأحدث
+     استخداماً.
+   - العناوين القديمة المخزّنة (من غير id/is_default/تواريخ) بتتقري زي ما هي:
+     أول واحد في الترتيب المخزّن بيبقى الافتراضي — نفس اللي كانت الواجهة
+     القديمة بتختاره (index 0) — فمفيش حاجة بتتغيّر قدام العميل.
+   - الترتيب الراجع: الافتراضي أولاً، بعدين الأحدث استخداماً. */
+export const ADDR_MAX = 10;
+// <> بيتشالوا: المتجر الحالي بيعرض الاسم/الحي/الشارع جوا innerHTML من غير escape
+const txt = (v, n) => String(v == null ? "" : v).replace(/[<>]/g, "").trim().slice(0, n);
+const coord = (v) => (v === "" || v == null ? NaN : Number(v));
+const validLat = (v) => Number.isFinite(v) && v !== 0 && Math.abs(v) <= 90;
+const validLng = (v) => Number.isFinite(v) && v !== 0 && Math.abs(v) <= 180;
+const truthy = (v) => v === true || v === 1 || v === "1" || v === "true";
+const tsOf = (a) => Date.parse((a && (a.used_at || a.created_at)) || "") || 0;
+
+/* يدمج المدخلات فوق عنوان قائم (أو فاضي). الحقول اللي مش مبعوتة بتفضل زي
+   ما هي — فالواجهة القديمة اللي بتبعت label/area/street/notes بس ماتمسحش
+   الدور والمبنى. */
+export function cleanAddress(input, prev = null, now = new Date().toISOString()) {
+  const b = input || {};
+  const p = prev || {};
+  const pick = (k, n, legacyN = n) =>
+    (b[k] !== undefined ? txt(b[k], n) : txt(p[k], legacyN));
+  const lat = b.latitude !== undefined ? coord(b.latitude) : coord(p.latitude);
+  const lng = b.longitude !== undefined ? coord(b.longitude) : coord(p.longitude);
+  return {
+    id: p.id || crypto.randomUUID(),
+    // ٣٠ حرف للجديد؛ اسم قديم أطول (كان الحد ٤٠) مابيتقصّش لو ماتعدّلش
+    label: pick("label", 30, 40) || "عنواني",
+    area: pick("area", 60),
+    street: pick("street", 120),
+    building: pick("building", 30),
+    floor: pick("floor", 30),
+    landmark: pick("landmark", 80),
+    notes: pick("notes", 120),
+    latitude: lat, longitude: lng,
+    is_default: Boolean(p.is_default),
+    created_at: p.created_at || now,
+    used_at: p.used_at || p.created_at || now,
+  };
+}
+
+export const validCoords = (a) => validLat(coord(a && a.latitude)) && validLng(coord(a && a.longitude));
+
+export const sameSpot = (a, b) =>
+  Math.abs(Number(a.latitude) - Number(b.latitude)) < 0.0005 &&
+  Math.abs(Number(a.longitude) - Number(b.longitude)) < 0.0005;
+
+/* نفس المكان ونفس المبنى/الدور = نفس العنوان (تحديث مش إضافة). الواجهة
+   القديمة مابتبعتش مبنى/دور فبتفضل تتصرف زي الأول؛ الجديدة تقدر تحفظ «بيت
+   الأهل» في نفس العمارة بدور تاني كعنوان منفصل.
+   المبنى/الدور بيتقارنوا بس لو المدخل بعتهم فعلاً — طلب من الواجهة القديمة
+   (من غير مبنى/دور) على نفس الدبوس بيحدّث العنوان بدل ما يكرره. */
+const sameAddress = (a, b, input = {}) =>
+  sameSpot(a, b) &&
+  (input.building === undefined || txt(a.building, 30) === txt(b.building, 30)) &&
+  (input.floor === undefined || txt(a.floor, 30) === txt(b.floor, 30));
+
+/* id لكل عنوان + افتراضي واحد بالظبط (لو القائمة مش فاضية). */
+export function normalizeAddresses(raw) {
+  const list = (Array.isArray(raw) ? raw : [])
+    .filter((a) => a && typeof a === "object")
+    .map((a) => ({ ...a, id: a.id ? String(a.id) : crypto.randomUUID() }));
+  let seen = false;
+  for (const a of list) {
+    if (a.is_default && !seen) { a.is_default = true; seen = true; }
+    else a.is_default = false;
+  }
+  if (!seen && list.length) list[0].is_default = true;
+  return list;
+}
+
+/* الافتراضي أولاً، بعدين الأحدث استخداماً. القديم من غير تواريخ بيتحط بعد
+   المؤرّخ بترتيبه المخزّن. الترتيب لازم يكون ثابت (idempotent): ترتيب عكسي
+   للتعادل كان بيقلب القائمة مع كل قراءة/كتابة. */
+export function sortAddresses(list) {
+  return list
+    .map((a, i) => ({ a, i }))
+    .sort((x, y) =>
+      (Number(Boolean(y.a.is_default)) - Number(Boolean(x.a.is_default))) ||
+      (tsOf(y.a) - tsOf(x.a)) ||
+      (x.i - y.i))
+    .map((x) => x.a);
+}
+
+function setDefault(list, id) {
+  for (const a of list) a.is_default = a.id === id;
+}
+
+/* الأحدث استخداماً بين الباقيين بيبقى الافتراضي لو مفيش افتراضي */
+function ensureDefault(list) {
+  if (!list.length || list.some((a) => a.is_default)) return list;
+  const best = sortAddresses(list)[0];
+  setDefault(list, best.id);
+  return list;
+}
+
+/* فوق الحد: نشيل الأقدم استخداماً — عمر الافتراضي ما يتشال */
+function capList(list) {
+  while (list.length > ADDR_MAX) {
+    // الأقدم استخداماً؛ التعادل (قديم من غير تواريخ) = الأقدم في الترتيب المخزّن
+    let victim = null;
+    for (const a of list) if (!a.is_default && (!victim || tsOf(a) < tsOf(victim))) victim = a;
+    if (!victim) break;
+    list.splice(list.indexOf(victim), 1);
+  }
+  return list;
+}
+
+/* إضافة (أو تحديث لو نفس العنوان). يرجّع {list, address}. */
+export function addAddress(stored, input, { now = new Date().toISOString(), touch = true } = {}) {
+  const list = normalizeAddresses(stored);
+  const draft = cleanAddress(input, null, now);
+  const i = list.findIndex((a) => sameAddress(a, draft, input || {}));
+  let addr;
+  if (i >= 0) {
+    addr = cleanAddress(input, list[i], now);
+    if (touch) addr.used_at = now;
+    list[i] = addr;
+  } else {
+    addr = draft;
+    list.push(addr);
+  }
+  if (truthy(input && input.is_default) || list.length === 1) setDefault(list, addr.id);
+  ensureDefault(list);
+  capList(list);
+  return { list: sortAddresses(list), address: addr };
+}
+
+/* تعديل بالمعرّف. is_default:false على الافتراضي بيرقّي غيره (لو فيه). */
+export function updateAddress(stored, id, input, { now = new Date().toISOString() } = {}) {
+  const list = normalizeAddresses(stored);
+  const i = list.findIndex((a) => a.id === String(id));
+  if (i < 0) return null;
+  const next = cleanAddress(input, list[i], now);
+  if (!validCoords(next)) return { error: "location_required" };
+  list[i] = next;
+  const b = input || {};
+  if (truthy(b.is_default)) setDefault(list, next.id);
+  else if (b.is_default !== undefined && next.is_default && list.length > 1) {
+    next.is_default = false;
+    const other = sortAddresses(list.filter((a) => a.id !== next.id))[0];
+    setDefault(list, other.id);
+  }
+  ensureDefault(list);
+  return { list: sortAddresses(list), address: next };
+}
+
+/* حذف بالمعرّف (أو بالترتيب المخزّن للنسخ القديمة من الواجهة). */
+export function removeAddress(stored, id) {
+  const list = normalizeAddresses(stored);
+  const key = String(id);
+  const byIndex = /^\d+$/.test(key) && !list.some((a) => a.id === key);
+  const next = byIndex
+    ? list.filter((_, i) => i !== Number(key))
+    : list.filter((a) => a.id !== key);
+  ensureDefault(next);
+  return sortAddresses(next);
+}
+
+/* طلب توصيل اتدفع: لو المكان محفوظ نحدّث «آخر استخدام» بس (عنوان الطلب
+   مركّب «شارع …، مبنى …» ومايصحش يدوس على اللي العميل كتبه بإيده)؛ لو جديد
+   يتضاف. يرجّع null لو مفيش تغيير يستاهل كتابة. */
+export function recordUsedAddress(stored, raw, { now = new Date().toISOString() } = {}) {
+  if (!validCoords(raw)) return null;
+  const list = normalizeAddresses(stored);
+  const hit = list.find((a) => sameSpot(a, { latitude: coord(raw.latitude), longitude: coord(raw.longitude) }));
+  if (hit) {
+    hit.used_at = now;
+    return sortAddresses(list);
+  }
+  return addAddress(list, {
+    area: raw.area, street: raw.street, notes: raw.notes, label: raw.label,
+    latitude: raw.latitude, longitude: raw.longitude,
+  }, { now }).list;
+}
+
 export function register(app, ctx) {
   const { pool, requireAdmin, getSettingsData, jb, normPhone, deliveryAppOf } = ctx;
 
@@ -363,7 +546,7 @@ export function register(app, ctx) {
     return c.json({
       ok: true,
       phone: acct.phone_norm, name: acct.name,
-      addresses: acct.addresses || [],
+      addresses: await addressesOf(acct),
       linkedToPos: Boolean(acct.ts_customer_id),
     });
   });
@@ -379,58 +562,61 @@ export function register(app, ctx) {
     return c.json({ ok: true, name });
   });
 
-  /* addresses: [{id, label, street, area, latitude, longitude, notes}]
+  /* addresses — الشكل والقواعد فوق عند cleanAddress/normalizeAddresses.
 
      كل عنوان بمعرّف ثابت. قبل كده كان الحذف بالترتيب في المصفوفة — تبويبتين
      مفتوحتين، كل واحدة تحذف عنوان، والنتيجة إن عنوان تالت غلط هو اللي يطير.
-     التعديل بالمعرّف بيمنع ده تماماً. */
-  function cleanAddress(b, keepId) {
-    return {
-      id: keepId || crypto.randomUUID(),
-      label: String(b.label || "عنواني").slice(0, 40),
-      street: String(b.street || "").slice(0, 120),
-      area: String(b.area || "").slice(0, 60),
-      latitude: Number(b.latitude), longitude: Number(b.longitude),
-      notes: String(b.notes || "").slice(0, 120),
-    };
-  }
-  const sameSpot = (a, b) =>
-    Math.abs(Number(a.latitude) - Number(b.latitude)) < 0.0005 &&
-    Math.abs(Number(a.longitude) - Number(b.longitude)) < 0.0005;
+     التعديل بالمعرّف بيمنع ده تماماً. القائمة بتتخزن مترتّبة (الافتراضي
+     أولاً) فالترتيب المخزّن = اللي راجع للواجهة. */
+  const writeAddresses = (phoneNorm, list) =>
+    pool.query("UPDATE acct_customers SET addresses=$2 WHERE phone_norm=$1", [phoneNorm, jb(list)]);
 
-  /* يستخدمها الراوت وكمان shop.js لما طلب توصيل يتأكد دفعه — عشان العميل
-     اللي طلب كضيف يلاقي عنوانه جاهز أول ما يسجل دخول. من غير ده وعد تسجيل
-     الدخول («عناوينك محفوظة») بيبقى كلام مش صحيح. */
+  /* عناوين قديمة من غير id/is_default: نثبّتها مرة واحدة، عشان المعرّفات
+     اللي الواجهة شافتها هي نفسها اللي هتبعتها في التعديل/الحذف. */
+  async function addressesOf(acct) {
+    const raw = Array.isArray(acct.addresses) ? acct.addresses : [];
+    const list = sortAddresses(normalizeAddresses(raw));
+    const legacy = raw.some((a) => !a || !a.id || typeof a.is_default !== "boolean");
+    if (legacy && list.length) {
+      await writeAddresses(acct.phone_norm, list).catch((e) =>
+        console.error("[accounts] address normalize failed:", e.message));
+    }
+    return list;
+  }
+
+  /* يستخدمها shop.js لما طلب توصيل يتأكد دفعه — عشان العميل اللي طلب كضيف
+     يلاقي عنوانه جاهز أول ما يسجل دخول، واللي عنده العنوان أصلاً يطلع له
+     فوق (الأحدث استخداماً). من غير ده وعد تسجيل الدخول («عناوينك محفوظة»)
+     بيبقى كلام مش صحيح. */
   async function saveAddressFor(phoneNorm, raw) {
     if (!/^5\d{8}$/.test(String(phoneNorm || ""))) return null;
-    if (!(raw && Number(raw.latitude) && Number(raw.longitude))) return null;
+    if (!(raw && validCoords(raw))) return null;
     const acct = (await pool.query(
       "SELECT addresses FROM acct_customers WHERE phone_norm=$1", [phoneNorm])).rows[0];
     if (!acct) return null; // من غير حساب مفيش دفتر عناوين نحفظ فيه
-    const list = (acct.addresses || []).map((a) => (a.id ? a : { ...a, id: crypto.randomUUID() }));
-    const addr = cleanAddress(raw);
-    if (list.some((a) => sameSpot(a, addr))) return list; // نفس المكان — مش عنوان جديد
-    const next = [...list, addr].slice(-10);
-    await pool.query("UPDATE acct_customers SET addresses=$2 WHERE phone_norm=$1",
-      [phoneNorm, jb(next)]);
+    const next = recordUsedAddress(acct.addresses || [], raw);
+    if (!next) return null;
+    await writeAddresses(phoneNorm, next);
     return next;
   }
+
+  app.get("/api/account/addresses", async (c) => {
+    const acct = await customerOf(c);
+    if (!acct) return c.json({ ok: false, error: "unauthorized" }, 401);
+    return c.json({ ok: true, addresses: await addressesOf(acct) });
+  });
 
   app.post("/api/account/addresses", async (c) => {
     const acct = await customerOf(c);
     if (!acct) return c.json({ ok: false, error: "unauthorized" }, 401);
     let b = {};
     try { b = await c.req.json(); } catch { return c.json({ ok: false, error: "bad json" }, 400); }
-    if (!(b.latitude && b.longitude)) return c.json({ ok: false, error: "location_required" }, 400);
-    const list = (acct.addresses || []).map((a) => (a.id ? a : { ...a, id: crypto.randomUUID() }));
-    const addr = cleanAddress(b);
-    const dup = list.findIndex((a) => sameSpot(a, addr));
-    if (dup >= 0) list[dup] = { ...addr, id: list[dup].id };   // نفس المكان = تحديث
-    else list.push(addr);
-    const next = list.slice(-10);
-    await pool.query("UPDATE acct_customers SET addresses=$2 WHERE phone_norm=$1",
-      [acct.phone_norm, jb(next)]);
-    return c.json({ ok: true, addresses: next });
+    if (!b || typeof b !== "object" || !validCoords(b)) {
+      return c.json({ ok: false, error: "location_required" }, 400);
+    }
+    const { list, address } = addAddress(acct.addresses || [], b);
+    await writeAddresses(acct.phone_norm, list);
+    return c.json({ ok: true, address, addresses: list });
   });
 
   /* تعديل عنوان قائم — قبل كده كان لازم العميل يمسح ويحدد الدبوس من الأول
@@ -440,27 +626,21 @@ export function register(app, ctx) {
     if (!acct) return c.json({ ok: false, error: "unauthorized" }, 401);
     let b = {};
     try { b = await c.req.json(); } catch { return c.json({ ok: false, error: "bad json" }, 400); }
-    const id = String(c.req.param("id"));
-    const list = (acct.addresses || []).map((a) => (a.id ? a : { ...a, id: crypto.randomUUID() }));
-    const i = list.findIndex((a) => a.id === id);
-    if (i < 0) return c.json({ ok: false, error: "not_found" }, 404);
-    list[i] = cleanAddress({ ...list[i], ...b }, id);
-    await pool.query("UPDATE acct_customers SET addresses=$2 WHERE phone_norm=$1",
-      [acct.phone_norm, jb(list)]);
-    return c.json({ ok: true, addresses: list });
+    if (!b || typeof b !== "object") return c.json({ ok: false, error: "bad json" }, 400);
+    const r = updateAddress(acct.addresses || [], String(c.req.param("id")), b);
+    if (!r) return c.json({ ok: false, error: "not_found" }, 404);
+    if (r.error) return c.json({ ok: false, error: r.error }, 400);
+    await writeAddresses(acct.phone_norm, r.list);
+    return c.json({ ok: true, address: r.address, addresses: r.list });
   });
 
-  /* بالمعرّف — والترتيب مقبول مؤقتاً للنسخ القديمة من الواجهة */
+  /* بالمعرّف — والترتيب مقبول مؤقتاً للنسخ القديمة من الواجهة. حذف الافتراضي
+     بيرقّي الأحدث استخداماً. */
   app.delete("/api/account/addresses/:id", async (c) => {
     const acct = await customerOf(c);
     if (!acct) return c.json({ ok: false, error: "unauthorized" }, 401);
-    const id = String(c.req.param("id"));
-    const list = (acct.addresses || []).map((a) => (a.id ? a : { ...a, id: crypto.randomUUID() }));
-    const next = /^\d+$/.test(id)
-      ? list.filter((_, i) => i !== Number(id))
-      : list.filter((a) => a.id !== id);
-    await pool.query("UPDATE acct_customers SET addresses=$2 WHERE phone_norm=$1",
-      [acct.phone_norm, jb(next)]);
+    const next = removeAddress(acct.addresses || [], String(c.req.param("id")));
+    await writeAddresses(acct.phone_norm, next);
     return c.json({ ok: true, addresses: next });
   });
 

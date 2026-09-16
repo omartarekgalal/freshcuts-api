@@ -41,6 +41,7 @@ import * as scorecard from "./scorecard.js";
 import * as pay from "./pay.js";
 import * as deliveryMod from "./delivery.js";
 import * as shop from "./shop.js";
+import * as recs from "./recs.js";
 import * as accounts from "./accounts.js";
 import * as tspartner from "./tspartner.js";
 import * as cms from "./cms.js";
@@ -3048,6 +3049,8 @@ shopApi = shop.register(app, moduleCtx, {
   // بنفس الدالة اللي المتجر بيعاين بيها، فالمعروض = المحسوب.
   bundles: () => cmsApi,
 });
+// «تحب تضيف؟» — اقتراحات السلة من سلوك العملاء الحقيقي (rec_pairs محسوب كل ليلة)
+recs.register(app, moduleCtx);
 // ملف العميل: دخول OTP، عناوين محفوظة، تاريخ الطلبات وإعادة الطلب، وربط/إنشاء
 // في دفتر عملاء TabSense (الموجود يتربط، الجديد بس هو اللي يتعمل).
 accountsApi = accounts.register(app, moduleCtx);
