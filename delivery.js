@@ -24,6 +24,47 @@
 
 import { STORE_LAT, STORE_LNG } from "./tsstore.js";
 import { PROVIDERS, activeProvider } from "./couriers.js";
+import { emitOrder } from "./order-events.js";
+
+/* ── أحداث المندوب على ناقل الطلب (W1-05، الخطة §٤-١) ─────────────────────
+   courier_dispatch / courier_update / courier_manual / courier_cancel.
+   fire-and-forget: emitOrder مابترميش، وكمان ملفوفة هنا في try — الحدث
+   عمره ما يأثر على الإرسال للمندوب ولا على رد أي راوت. مفيش جوال ولا
+   عنوان في data (order-events بينضّف كمان). */
+function courierEvent(name, orderNo, opts = {}) {
+  try {
+    if (!orderNo) return null;
+    return emitOrder(name, { orderNo: String(orderNo), ...opts });
+  } catch {
+    return null;
+  }
+}
+
+/* بصمة هوية الكابتن (مش موقعه): الموقع بيتغيّر كل poll، وتغيّر الموقع مش
+   «سائق جديد». بنقارن بالمعرّف لو موجود، وإلا بالاسم + الجوال. */
+export function driverKey(d) {
+  try {
+    if (d == null) return null;
+    let v = d;
+    if (typeof v === "string") {
+      try { v = JSON.parse(v); } catch { return v.trim() || null; }
+    }
+    if (typeof v !== "object") return String(v);
+    const id = v.id ?? v.driver_id ?? v.driverId ?? null;
+    if (id != null && String(id) !== "") return `id:${id}`;
+    const name = String(v.name ?? v.driver_name ?? v.full_name ?? "").trim();
+    const phone = String(v.phone ?? v.mobile ?? v.driver_phone ?? "").replace(/\D/g, "");
+    if (!name && !phone) return null;
+    return `np:${name}|${phone}`;
+  } catch {
+    return null;
+  }
+}
+
+export const driverChanged = (prev, next) => {
+  const n = driverKey(next);
+  return n != null && n !== driverKey(prev);
+};
 
 const env = (k, d) => (process.env[k] || d || "").toString().trim();
 /* Flying Arrow — الوثائق الإنتاجية (2026-08-17). القاعدة هي مسار التكامل
@@ -660,6 +701,37 @@ export function register(app, ctx, deps = {}) {
      المطعم أو العميل. `cash` معناها إن حد في الفرع هيدفع للكابتن نقدي كل
      طلب. القيمة قابلة للتغيير من الإعدادات، والافتراضي wallet. */
   async function dispatch(order) {
+    const orderNo = order && order.order_no;
+    let res;
+    try {
+      res = await dispatchInner(order);
+    } catch (e) {
+      try {
+        courierEvent("courier_dispatch", orderNo, {
+          source: "delivery", ok: false,
+          summary: "فشل طلب المندوب",
+          data: { provider: (e && e.provider) || null, reason: (e && e.code) || "error",
+                  error: String((e && e.message) || e).slice(0, 200) },
+        });
+      } catch {}
+      throw e;
+    }
+    /* بناء الحدث نفسه جوّه try: المزوّد قبل الطلب خلاص، وأي رمية هنا كانت
+       هتخلّي اللي نادى يفتكر إن الإرسال فشل ويعيده = مندوبين. */
+    try {
+      courierEvent("courier_dispatch", orderNo, {
+        source: "delivery", ok: true,
+        summary: res && res.assigned ? "طلب مندوب — اتعيّن كابتن" : "طلب مندوب — لسه مفيش كابتن",
+        data: { provider: res && res.provider, ref: (res && res.faOrderId) ?? null,
+                assigned: Boolean(res && res.assigned),
+                dispatch_status: (res && res.dispatch && res.dispatch.status) || null,
+                cost: (res && res.cost) ?? null },
+      });
+    } catch {}
+    return res;
+  }
+
+  async function dispatchInner(order) {
     const all = await getSettingsData();
     const settings = all.delivery || {};
 
@@ -792,9 +864,18 @@ export function register(app, ctx, deps = {}) {
           WHERE id=$1`,
         [sh.id, jb([{ at: new Date().toISOString(), event: "cancel", provider: p.id, resp: r.raw,
                       fee: r.fee, refund: r.refund }])]);
+      courierEvent("courier_cancel", sh.shop_order_no || orderNo, {
+        source: "delivery", ok: true,
+        data: { provider: p.id, from: sh.status || null, fee: r.fee ?? null, refund: r.refund ?? null,
+                reason: reason ? String(reason).slice(0, 200) : null },
+      });
       return r;
     } catch (e) {
       console.error(`[delivery] cancel failed for ${orderNo} (${p.id}):`, e.message);
+      courierEvent("courier_cancel", sh.shop_order_no || orderNo, {
+        source: "delivery", ok: false, summary: "فشل إلغاء المندوب",
+        data: { provider: p.id, from: sh.status || null, error: String(e.message || e).slice(0, 200) },
+      });
       await pool.query(
         `UPDATE dl_shipments SET events = events || $2::jsonb, updated_at=NOW() WHERE id=$1`,
         [sh.id, jb([{ at: new Date().toISOString(), event: "cancel_failed", provider: p.id, error: e.message }])]);
@@ -842,6 +923,7 @@ export function register(app, ctx, deps = {}) {
          jb({ status: "manual", assigned: status === "assigned" || status === "picked",
               message: "أُدخل يدوياً على لوحة شركة التوصيل", by: ev.by }),
          jb([ev])]);
+      emitManual(orderNo, stage, status, sh, r.rows[0], driver, data, ev);
       return r.rows[0];
     }
     const r = await pool.query(
@@ -857,7 +939,25 @@ export function register(app, ctx, deps = {}) {
       [sh.id, status, data.ref ? String(data.ref) : null,
        driver ? jb(driver) : null, data.cost != null ? Number(data.cost) : null,
        jb({ assigned: ["assigned", "picked", "delivered"].includes(status) }), jb([ev])]);
+    emitManual(orderNo, stage, status, sh, r.rows[0], driver, data, ev);
     return r.rows[0];
+  }
+
+  function emitManual(orderNo, stage, status, prev, row, driver, data, ev) {
+    try {
+      const prevManual = prev && prev.provider === "manual" ? prev : null;
+      courierEvent("courier_manual", orderNo, {
+        source: "staff", ok: Boolean(row),
+        actor: { name: typeof ev.by === "string" ? ev.by : null },
+        data: {
+          stage, status, from: prevManual ? prevManual.status || null : null,
+          ref: data.ref ? String(data.ref).slice(0, 80) : null,
+          cost: data.cost != null && Number.isFinite(Number(data.cost)) ? Number(data.cost) : null,
+          driver_changed: driver ? driverChanged(prevManual && prevManual.driver, driver) : false,
+          note: data.note ? String(data.note).slice(0, 200) : null,
+        },
+      });
+    } catch {}
   }
 
   /* ── routes ── */
@@ -1043,6 +1143,14 @@ export function register(app, ctx, deps = {}) {
       return c.json({ ok: true, ignored: true });
     }
     const matchedNo = upd.rows[0].shop_order_no;
+    /* «courier_webhook» مش اسم في ORDER_EVENTS (§٤-١ مقفولة)، فالتحديث
+       الجاي من الويبهوك بيتسجّل courier_update بمصدر courier_webhook. */
+    courierEvent("courier_update", matchedNo, {
+      source: "courier_webhook", ok: true, summary: "تحديث المندوب (ويبهوك)",
+      data: { via: "webhook", provider: from.id, status: ev.status || null,
+              raw_status: ev.rawStatus != null ? String(ev.rawStatus).slice(0, 60) : null,
+              has_driver: Boolean(ev.driver), verified },
+    });
     if (ev.status) {
       const api = shop();
       if (api) {
@@ -1134,7 +1242,7 @@ export function register(app, ctx, deps = {}) {
       /* الشحنات اليدوية مستثناة: مرجعها رقم كتبه الكاشير من لوحة شركة
          تانية، ومحدش عنده API نسأله. سؤال Flying Arrow عنه كان هيرجع
          خطأ في أحسن الأحوال، أو بيانات طلب غريب في أسوأها. */
-      `SELECT id, shop_order_no, provider, provider_ref, status FROM dl_shipments
+      `SELECT id, shop_order_no, provider, provider_ref, status, driver FROM dl_shipments
         WHERE provider_ref IS NOT NULL
           AND provider <> 'manual'
           AND status NOT IN ('delivered','cancelled')
@@ -1148,11 +1256,19 @@ export function register(app, ctx, deps = {}) {
       try { o = await p.track(r); } catch { continue; }
       // بيانات الكابتن (اسم/جوال/موقع) بتتحفظ حتى لو الحالة ما اتغيرتش أو مش معروفة —
       // 16 سبتمبر: الكابتن كان متعيّن فعلاً ومابانش للعميل ولا للكاشير.
+      const drvChanged = Boolean(o && o.driver) && driverChanged(r.driver, o.driver);
       if (o && o.driver) {
         await pool.query("UPDATE dl_shipments SET driver=$2 WHERE id=$1", [r.id, jb(o.driver)]);
       }
       if (!o || !o.status || o.status === r.status) {
         await pool.query("UPDATE dl_shipments SET updated_at=NOW() WHERE id=$1", [r.id]);
+        if (drvChanged) {
+          courierEvent("courier_update", r.shop_order_no, {
+            source: "courier_poll", ok: true, summary: "تحديث المندوب — كابتن اتعيّن/اتغيّر",
+            data: { via: "poll", provider: p.id, status: r.status || null, from: r.status || null,
+                    driver_changed: true },
+          });
+        }
         continue;
       }
       await pool.query(
@@ -1161,6 +1277,11 @@ export function register(app, ctx, deps = {}) {
         [r.id, o.status, o.driver ? jb(o.driver) : null,
          jb([{ at: new Date().toISOString(), provider: p.id, event: "poll", status: o.status }]),
          o.cost]);
+      courierEvent("courier_update", r.shop_order_no, {
+        source: "courier_poll", ok: true,
+        data: { via: "poll", provider: p.id, status: o.status, from: r.status || null,
+                driver_changed: drvChanged },
+      });
       const api = shop();
       if (api) {
         api.onShipmentEvent(r.shop_order_no, o.status, { source: "poll", order: o.raw })
@@ -1179,7 +1300,7 @@ export function register(app, ctx, deps = {}) {
       POLL_MIN * 60_000);
   }
 
-  return { quote, dispatch, shipmentOf, trackShipment, cancelShipment, manualEvent,
+  return { quote, dispatch, shipmentOf, trackShipment, cancelShipment, manualEvent, pollInFlight,
            /* المزوّد المختار في الإعدادات، مش الافتراضي من البيئة: من غير
               الإعدادات كان بيرجع flyingarrow والشغل الحقيقي على لاجلك. */
            isLive: async () => activeProvider(await getSettingsData()).configured(),

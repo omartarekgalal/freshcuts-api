@@ -37,6 +37,56 @@ import { dispatchDue, dispatchDelayOf } from "./delivery.js";
 import { makeStaffNotifier, slaAlertText, posFailedText, tabsenseDownText } from "./staffalerts.js";
 import { sendSms as sendStaffSms } from "./accounts.js";
 import { parseCheckoutMeta, fireServerPurchase } from "./checkout-meta.js";
+import { resumeKey } from "./resume-key.js";
+
+/* ناقل أحداث الطلب (W1-01) وترحيل أعمدة shop_orders — تحميل كسول ودفاعي (W1-02):
+   لو الملفات مش موجودة أو الـimport وقع، shop.js بيشتغل عادي والأحداث بتتجاهل.
+   الإطلاق fire-and-forget وعمره ما يرمي في وش المنادي. */
+let _orderEvents = null;
+const _orderEventsReady = import("./order-events.js")
+  .then((m) => { _orderEvents = m; return m; })
+  .catch((e) => { console.error("[shop] order-events unavailable:", e.message); return null; });
+const _ordersSchemaReady = import("./orders-schema.js")
+  .catch((e) => { console.error("[shop] orders-schema unavailable:", e.message); return null; });
+
+export function makeOrderEmitter(override) {
+  return function emitOrderEvent(name, opts) {
+    try {
+      if (typeof override === "function") {
+        const p = override(name, opts);
+        if (p && typeof p.catch === "function") p.catch(() => {});
+        return;
+      }
+      if (_orderEvents) { _orderEvents.emitOrder?.(name, opts); return; }
+      _orderEventsReady.then((m) => { try { m?.emitOrder?.(name, opts); } catch {} }).catch(() => {});
+    } catch { /* الأحداث عمرها ما توقّع الطلب */ }
+  };
+}
+
+/* فشل الشريك بعد كل المحاولات (مفيش مسار احتياطي). الاسم partner_failed لو
+   ORDER_EVENTS بيعرفه، وإلا null ومابيطلعش حدث منفصل (pos_push outcome:"failed"
+   + order_status→paid_pos_failed كفاية). ماينفعش نستعير partner_fallback: معناه
+   «مسار بديل» اللي مابقاش موجود، وفحص الصحة (٠٧) بيعدّه كرجوع للمسار القديم. */
+export const PARTNER_FAILED_EVENT = () => {
+  try { return _orderEvents?.isOrderEvent?.("partner_failed") ? "partner_failed" : null; }
+  catch { return null; }
+};
+
+/* آخر approval_status في ويب هوك تاب سينس (order-updated / order-paid …).
+   المسار: resource.statuses_slugs.approval_status. دالة صافية: بترجع القيمة
+   زي ما هي (نص مقصوص) أو null لو المسار مش موجود/اتغيّر — مابترميش. */
+export function approvalFromWebhook(payload) {
+  try {
+    let p = payload;
+    if (typeof p === "string") { try { p = JSON.parse(p); } catch { return null; } }
+    const v = p?.resource?.statuses_slugs?.approval_status;
+    if (v == null || typeof v === "object") return null;
+    const s = String(v).trim();
+    return s || null;
+  } catch {
+    return null;
+  }
+}
 
 const env = (k, d) => (process.env[k] || d || "").toString().trim();
 const r2 = (v) => Math.round((Number(v) || 0) * 100) / 100;
@@ -275,6 +325,15 @@ export function register(app, ctx, deps = {}) {
   const accounts = deps.accounts || (() => null); // late-bound — accounts registers after us
   const carts = deps.carts || (() => null);       // late-bound — abandoned-cart tracker
   const tsp = deps.tsp || (() => null);           // late-bound — TabSense partner (paid orders)
+  const journey = typeof deps.journey === "function" ? deps.journey : () => null; // late-bound — ٠٢
+  const emitOrder = makeOrderEmitter(deps.emitOrder);
+  // checkout_result لرحلة العميل (٠٢) — fire-and-forget، مابيغيّرش أي رد
+  const journeyEmit = (name, props) => {
+    try {
+      const p = journey()?.emit?.(name, props);
+      if (p && typeof p.catch === "function") p.catch(() => {});
+    } catch { /* ignore */ }
+  };
 
   /* رسايل الإدارة (16 سبتمبر) — مباشرة لتقنيات، مستقلة عن رسايل العملاء.
      الأرقام واللغة من اللوحة (settings.delivery). شوف staffalerts.js. */
@@ -383,6 +442,9 @@ export function register(app, ctx, deps = {}) {
   }
   ensureSchema()
     .then(() => console.log("[shop] schema ready"))
+    // أعمدة §٤-٢ (W1-01) بعد جدول shop_orders — كلها IF NOT EXISTS ومابتوقفش الإقلاع
+    .then(() => _ordersSchemaReady)
+    .then((m) => (m && typeof m.ensureOrderColumns === "function" ? m.ensureOrderColumns(pool) : null))
     .catch((e) => console.error("[shop] schema failed:", e.message));
 
   async function getOrderRow(orderNo) {
@@ -398,6 +460,11 @@ export function register(app, ctx, deps = {}) {
       sets.push(`${col}=$${vals.length}`);
     }
     await pool.query(`UPDATE shop_orders SET ${sets.join(", ")} WHERE order_no=$1`, vals);
+    // حدث واحد لكل تغيير حالة (§٤-١). from اختياري: المنادي اللي معاه الصف بيبعته.
+    emitOrder("order_status", {
+      orderNo: String(orderNo), source: extra.source || "shop",
+      data: { from: extra.from ?? null, to: status, note: extra.note || null },
+    });
     // notify.js decides which stages the customer hears about; a notification
     // failure must never fail the state change it describes.
     if (notify) notify.orderStatusChanged(String(orderNo), status).catch((e) =>
@@ -548,23 +615,40 @@ export function register(app, ctx, deps = {}) {
 
   /* ── checkout: cart → locked POS prices → delivery quote → MF session ── */
   app.post("/api/shop/checkout", async (c) => {
+    const t0 = Date.now();
+    let b = {};
+    // fail(): نفس الـJSON والـstatus بالظبط زي قبل W1-02، + checkout_result لرحلة العميل (٠٢)
+    const fail = (code, status, extra = {}) => {
+      try {
+        let meta = null;
+        try { meta = parseCheckoutMeta(b || {}, (n) => c.req.header(n)); } catch { /* ignore */ }
+        journeyEmit("checkout_result", {
+          ok: false, error_code: String(code).replace(/\s+/g, "_"), http_status: status,
+          option: b && b.option === "pickup" ? "pickup" : (b && b.option ? "delivery" : null),
+          items_count: Array.isArray(b?.items) ? b.items.length : 0,
+          has_bundle: Array.isArray(b?.items) && b.items.some((it) => it && it.bundle),
+          journey_sid: meta?.journey_sid || null, client: meta?.client || null,
+          ms: Date.now() - t0,
+        });
+      } catch { /* ignore */ }
+      return c.json({ ok: false, error: code, ...extra }, status);
+    };
     const ip = c.req.header("cf-connecting-ip") || c.req.header("x-forwarded-for") || "?";
-    if (rateLimited(ip)) return c.json({ ok: false, error: "rate_limited" }, 429);
-    if (!pay.configured()) return c.json({ ok: false, error: "payments_not_configured" }, 503);
+    if (rateLimited(ip)) return fail("rate_limited", 429);
+    if (!pay.configured()) return fail("payments_not_configured", 503);
     // المطعم مقفول؟ الواجهة بتمنع قبل الدفع، بس لازم السيرفر يمنع كمان: صفحة
     // قديمة مفتوحة، أو شارة كانت غلط، كانت بتخلّي العميل يدفع والمطبخ مقفول.
     // المواعيد من اللوحة (settings.hours) — نفس مصدر الواجهة بالظبط.
     if (!isOpenNow((await getSettingsData()).hours)) {
-      return c.json({ ok: false, error: "store_closed",
-        message: "المطعم مغلق حالياً 🌙 — تقدر تجهّز سلتك وتطلب أول ما نفتح." }, 409);
+      return fail("store_closed", 409,
+        { message: "المطعم مغلق حالياً 🌙 — تقدر تجهّز سلتك وتطلب أول ما نفتح." });
     }
 
-    let b = {};
-    try { b = await c.req.json(); } catch { return c.json({ ok: false, error: "bad json" }, 400); }
+    try { b = await c.req.json(); } catch { b = {}; return fail("bad json", 400); }
     const option = b.option === "pickup" ? "pickup" : "delivery";
     const branchId = String(b.branch_id || "1");
     let items = Array.isArray(b.items) ? b.items : [];
-    if (!items.length) return c.json({ ok: false, error: "empty_cart" }, 400);
+    if (!items.length) return fail("empty_cart", 400);
 
     /* ── الباقات: بنوسّعها **هنا على السيرفر** لمنتجاتها الحقيقية ──────────
        سطر الباقة في السلة بيوصل كـ{bundle, quantity, choices} — من غير أي
@@ -574,7 +658,7 @@ export function register(app, ctx, deps = {}) {
        أي فشل بيرجع ٤٢٢ واضحة **قبل** ما يتعمل أي جلسة دفع. */
     if (items.some((it) => it && it.bundle)) {
       const cms = bundles();
-      if (!cms || !cms.expandBundle) return c.json({ ok: false, error: "bundles_unavailable" }, 503);
+      if (!cms || !cms.expandBundle) return fail("bundles_unavailable", 503);
       const expanded = [];
       for (const it of items) {
         // وسوم الباقة بيحطّها السيرفر بس. لو المتصفح بعتها على صنف عادي
@@ -585,9 +669,9 @@ export function register(app, ctx, deps = {}) {
           r = await cms.expandBundle(String(it.bundle), it.choices || {}, it.quantity || 1, option);
         } catch (e) {
           console.error(`[shop] bundle expand threw for ${it.bundle}:`, e.message);
-          return c.json({ ok: false, error: "bundle_expand_failed", bundle: it.bundle }, 422);
+          return fail("bundle_expand_failed", 422, { bundle: it.bundle });
         }
-        if (!r.ok) return c.json({ ok: false, error: "bundle_" + r.error, bundle: it.bundle, detail: r }, 422);
+        if (!r.ok) return fail("bundle_" + r.error, 422, { bundle: it.bundle, detail: r });
         expanded.push(...r.lines);
       }
       items = expanded;
@@ -601,13 +685,13 @@ export function register(app, ctx, deps = {}) {
         ...((s0.catalog || {}).dineInIds || []).map(String),
       ].map((x) => String(x).trim()).filter(Boolean));
       const bad = items.filter((it) => dine.has(String(it.product_id)));
-      if (bad.length) return c.json({ ok: false, error: "dine_in_only", items: bad.map((x) => x.product_id) }, 422);
+      if (bad.length) return fail("dine_in_only", 422, { items: bad.map((x) => x.product_id) });
     }
     const cust = b.customer || {};
     const phoneNorm = normPhone(cust.phone);
-    if (!/^5\d{8}$/.test(phoneNorm)) return c.json({ ok: false, error: "invalid_phone" }, 400);
+    if (!/^5\d{8}$/.test(phoneNorm)) return fail("invalid_phone", 400);
     if (option === "delivery" && !(b.address?.latitude && b.address?.longitude)) {
-      return c.json({ ok: false, error: "address_required" }, 400);
+      return fail("address_required", 400);
     }
     // OTP إجباري لتأكيد الطلب: لازم نفس الجوال يكون متأكّد بجلسة حساب سارية.
     // العميل بيبعت Authorization: Bearer cust:<token> بعد ما يتحقق برمز الجوال.
@@ -615,7 +699,7 @@ export function register(app, ctx, deps = {}) {
     {
       const verified = await (accounts()?.customerOf?.(c) ?? null);
       if (!verified || String(verified.phone_norm) !== String(phoneNorm)) {
-        return c.json({ ok: false, error: "otp_required" }, 401);
+        return fail("otp_required", 401);
       }
     }
 
@@ -625,7 +709,7 @@ export function register(app, ctx, deps = {}) {
       // subtotal check happens against the raw cart estimate; the authoritative
       // re-check against real totals comes right after the first calc.
       coupon = await checkCoupon(b.coupon, Number.MAX_SAFE_INTEGER, phoneNorm);
-      if (coupon && !coupon.ok) return c.json({ ok: false, error: "coupon_" + coupon.error, coupon }, 422);
+      if (coupon && !coupon.ok) return fail("coupon_" + coupon.error, 422, { coupon });
     }
     // Standing per-customer discount (الملاك): auto-applies by phone alone.
     // Never stacks with a coupon — the customer gets whichever is bigger.
@@ -676,7 +760,7 @@ export function register(app, ctx, deps = {}) {
           tipAmount: Number(b.tip) || 0, discountPercent,
         });
       } catch (e) {
-        return c.json({ ok: false, error: "calc_failed", detail: e.message }, 422);
+        return fail("calc_failed", 422, { detail: e.message });
       }
     }
     let totals = (calc && calc.totals) || {};
@@ -686,7 +770,7 @@ export function register(app, ctx, deps = {}) {
     // كوبون التوصيل المجاني كمان له حد أدنى و«مرة لكل عميل» لازم يتأكدوا هنا.
     if (coupon?.ok) {
       const recheck = await checkCoupon(b.coupon, foodTotal, phoneNorm);
-      if (!recheck.ok) return c.json({ ok: false, error: "coupon_" + recheck.error, coupon: recheck }, 422);
+      if (!recheck.ok) return fail("coupon_" + recheck.error, 422, { coupon: recheck });
     }
 
     let deliveryFee = 0, dq = null, freeDeliveryByCoupon = false;
@@ -694,7 +778,7 @@ export function register(app, ctx, deps = {}) {
       dq = await delivery.quote({
         lat: b.address.latitude, lng: b.address.longitude, orderTotal: foodTotal,
       });
-      if (!dq.deliverable) return c.json({ ok: false, error: "not_deliverable", quote: dq }, 422);
+      if (!dq.deliverable) return fail("not_deliverable", 422, { quote: dq });
       deliveryFee = dq.fee;
       // كوبون توصيل مجاني: بنتنازل عن الرسم كامل (المطعم بيتحمّل الكابتن —
       // تكلفة اكتساب العميل). الطلب بيتسجّل والكوبون بيتحرق زي أي كوبون.
@@ -757,19 +841,20 @@ export function register(app, ctx, deps = {}) {
     try {
       session = await pay.initiateSession(phoneNorm);
     } catch (e) {
-      return c.json({ ok: false, error: "payment_init_failed", detail: e.message }, 502);
+      return fail("payment_init_failed", 502, { detail: e.message });
     }
 
     // مصدر الطلب — قايمة مفاتيح مسموحة، وip/ua من الهيدر بس. عمره ما يوقّع الطلب.
-    let attribution = null;
-    try { attribution = parseCheckoutMeta(b, (n) => c.req.header(n)).attribution; }
+    let attribution = null, meta = null;
+    try { meta = parseCheckoutMeta(b, (n) => c.req.header(n)); attribution = meta.attribution; }
     catch (e) { console.error(`[shop] ${orderNo}: checkout meta parse failed: ${e.message}`); }
 
-    await pool.query(
+    const inserted = await pool.query(
       `INSERT INTO shop_orders(order_no, status, option, branch_id, customer, phone_norm,
          address, items, pos_calc, subtotal, delivery_fee, tip, total, delivery_quote,
          mf_session_id, notes, coupon, discount_percent, discount_amount, history, attribution)
-       VALUES ($1,'pending_payment',$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)`,
+       VALUES ($1,'pending_payment',$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)
+       RETURNING created_at`,
       [orderNo, option, branchId,
        jb({ name: cust.name || "", phone: "+966" + phoneNorm, deviceId: b.deviceId ? String(b.deviceId).slice(0, 64) : null }), phoneNorm,
        jb(b.address || null), jb(items), jb(calc),
@@ -780,11 +865,28 @@ export function register(app, ctx, deps = {}) {
        coupon?.ok ? coupon.code : null, discountPercent, discountAmount,
        jb([{ at: new Date().toISOString(), status: "pending_payment" }]), jb(attribution)]
     );
+    // journey_sid/client/app_version (W1-02) — تحديث منفصل fire-and-forget: لو
+    // الأعمدة لسه ماتضافتش (ensureOrderColumns) الطلب نفسه مايتأثرش.
+    if (meta) {
+      pool.query("UPDATE shop_orders SET journey_sid=$2, client=$3, app_version=$4 WHERE order_no=$1",
+        [orderNo, meta.journey_sid || null, meta.client || null, meta.app_version || null])
+        .catch((e) => console.error(`[shop] ${orderNo}: checkout meta save failed: ${e.message}`));
+    }
+    // مفتاح الاستكمال/التتبع (٠٣ A3/A9) — null لو SHOP_RESUME_SECRET مش متظبط
+    const k = resumeKey({ orderNo, createdAt: inserted?.rows?.[0]?.created_at });
+    journeyEmit("checkout_result", {
+      ok: true, error_code: null, http_status: 200, order_no: orderNo,
+      total, subtotal: r2(total - deliveryFee), delivery_fee: deliveryFee, discount: discountAmount,
+      coupon: coupon?.ok ? coupon.code : null, option, items_count: items.length,
+      has_bundle: bundleItems.length > 0, journey_sid: meta?.journey_sid || null, client: meta?.client || null,
+      ms: Date.now() - t0,
+    });
     return c.json({
       ok: true, orderNo, total, subtotal: r2(total - deliveryFee), deliveryFee, tip,
       discount: discountAmount, coupon: coupon?.ok ? coupon.code : null,
       discountSource, feeInPos, currency: "SAR",
       sessionId: session.SessionId, countryCode: session.CountryCode || "SAU",
+      resumeKey: k, trackKey: k,
     });
   });
 
@@ -821,7 +923,7 @@ export function register(app, ctx, deps = {}) {
   });
 
   /* ── confirmOrder — the one door to "paid" (webhook / browser / sweep) ── */
-  async function confirmOrder({ orderNo, invoiceId }) {
+  async function confirmOrder({ orderNo, invoiceId, via = null }) {
     let row = orderNo ? await getOrderRow(orderNo) : null;
     if (!row && invoiceId) {
       const r = await pool.query("SELECT * FROM shop_orders WHERE mf_invoice_id=$1", [String(invoiceId)]);
@@ -835,7 +937,22 @@ export function register(app, ctx, deps = {}) {
     const key = row.mf_invoice_id || String(invoiceId || "");
     if (!key) return { ok: false, error: "no_invoice" };
 
-    const st = await pay.paymentStatus({ key, keyType: "InvoiceId" });
+    let st;
+    try {
+      st = await pay.paymentStatus({ key, keyType: "InvoiceId" });
+    } catch (e) {
+      emitOrder("payment_check", { orderNo: row.order_no, source: "shop", ok: false,
+        data: { via, is_paid: null, error: String(e?.message || e).slice(0, 200) } });
+      throw e;
+    }
+    {
+      // آخر معاملة (أسماء الحقول من رد ماي فاتورة — TransactionStatus/ErrorCode لسه مش متأكدة من رد حقيقي)
+      const txs = Array.isArray(st?.raw?.InvoiceTransactions) ? st.raw.InvoiceTransactions : [];
+      const last = txs.length ? txs[txs.length - 1] : null;
+      emitOrder("payment_check", { orderNo: row.order_no, source: "shop", ok: Boolean(st.isPaid),
+        data: { via, is_paid: Boolean(st.isPaid), invoice_status: st.invoiceStatus ?? null,
+                mf_tx_status: last?.TransactionStatus ?? null, mf_error_code: last?.ErrorCode ?? null } });
+    }
     if (!st.isPaid) return { ok: false, status: "unpaid", invoiceStatus: st.invoiceStatus };
     // Belt-and-braces: the invoice must be OUR order's invoice for OUR amount.
     if (st.orderNo && st.orderNo !== row.order_no) {
@@ -856,6 +973,8 @@ export function register(app, ctx, deps = {}) {
       const after = await getOrderRow(row.order_no);
       return { ok: true, status: after ? after.status : "paid", orderNo: row.order_no };
     }
+    emitOrder("order_paid", { orderNo: row.order_no, source: "shop", ok: true,
+      data: { via, total: Number(row.total) || 0, gateway: st.gateway || null, option: row.option || null } });
     if (notify) notify.orderStatusChanged(String(row.order_no), "paid").catch((e) =>
       console.error(`[shop] notify failed for ${row.order_no}:`, e.message));
     // رسالة لمدير المطعم مع كل طلب مدفوع (مرة واحدة لكل طلب)
@@ -956,13 +1075,18 @@ export function register(app, ctx, deps = {}) {
          في البورتال + إنذار المهل — والكنس بيعيد على الشريك كل دورة. */
       const partner = tsp();
       let lastErr = null;
+      // الكنس بيعيد كل دقيقتين لمدة ٢٤ ساعة: فشل بنفس الخطأ المسجّل مايتكررش كحدث
+      const sameFailure = (msg) => row.status === "paid_pos_failed"
+        && String(row.last_pos_error || "") === String(msg || "").slice(0, 500);
       for (let attempt = 1; attempt <= 3; attempt++) {
         try {
           if (!partner || !(await partner.status()).connected) {
             throw Object.assign(new Error("partner not connected"), { retryable: true });
           }
           const out = await partner.createExternalOrder(buildPartnerOrder(row, settings));
-          await setStatus(orderNo, "pos_created", { cols: { pos_order_id: String(out.id) } });
+          emitOrder("pos_push", { orderNo: String(orderNo), source: "shop", ok: true,
+            data: { ok: true, path: "partner", attempt, outcome: "pos_created", fallback: false, pos_order_id: String(out.id) } });
+          await setStatus(orderNo, "pos_created", { cols: { pos_order_id: String(out.id) }, from: row.status });
           await pool.query(
             "UPDATE shop_orders SET pos_attempts=pos_attempts+1, last_pos_error=NULL WHERE order_no=$1", [orderNo]);
           console.log(`[shop] ${orderNo}: partner paid order ${out.id} (linkedCustomer=${out.linkedCustomer}, attempt ${attempt})`);
@@ -988,6 +1112,11 @@ export function register(app, ctx, deps = {}) {
           // يكون اتعمل فعلاً والإعادة تعمل طلب مكرر؛ دي بتستنى الكنس + عين بني آدم.
           const early = e.retryable || e.status === 401
             || /Unauthenticated|not connected|fetch failed|EAI_AGAIN|ECONN|ETIMEDOUT|socket/i.test(String(e.message));
+          if (!sameFailure(e?.message)) {
+            emitOrder("pos_push", { orderNo: String(orderNo), source: "shop", ok: false,
+              data: { ok: false, path: "partner", attempt, error: String(e?.message || e).slice(0, 300),
+                      retryable: Boolean(early), outcome: early && attempt < 3 ? "retry" : "failed", fallback: false } });
+          }
           if (!early || attempt === 3) break;
           await new Promise((r) => setTimeout(r, attempt * 2500));
         }
@@ -995,8 +1124,16 @@ export function register(app, ctx, deps = {}) {
       await pool.query(
         "UPDATE shop_orders SET pos_attempts=pos_attempts+1, last_pos_error=$2, updated_at=NOW() WHERE order_no=$1",
         [orderNo, String((lastErr && lastErr.message) || "partner order failed").slice(0, 500)]);
+      // مفيش رجوع لمسار المتجر (16 سبتمبر) — بدل partner_fallback في الخطة بنسجّل إن الشريك فشل
+      // مرة واحدة عند الانتقال لـpaid_pos_failed، مش كل دورة كنس
+      const failedEvt = row.status !== "paid_pos_failed" ? PARTNER_FAILED_EVENT() : null;
+      if (failedEvt) {
+        emitOrder(failedEvt, { orderNo: String(orderNo), source: "shop", ok: false,
+          data: { partner_failed: true, fallback: false, outcome: "paid_pos_failed",
+                  error: String((lastErr && lastErr.message) || "partner order failed").slice(0, 300) } });
+      }
       if (row.status !== "paid_pos_failed") {
-        await setStatus(orderNo, "paid_pos_failed", { note: "نقطة البيع رفضت/مش متاحة — بنعيد تلقائي على الشريك" });
+        await setStatus(orderNo, "paid_pos_failed", { note: "نقطة البيع رفضت/مش متاحة — بنعيد تلقائي على الشريك", from: row.status });
       }
       return;
     }
@@ -1011,7 +1148,12 @@ export function register(app, ctx, deps = {}) {
       await pool.query(
         "UPDATE shop_orders SET pos_attempts=pos_attempts+1, last_pos_error=$2, updated_at=NOW() WHERE order_no=$1",
         [orderNo, errText]);
-      if (row.status !== "paid_pos_failed") await setStatus(orderNo, "paid_pos_failed", { note: "باقة — محتاجة مسار الشريك" });
+      if (row.status !== "paid_pos_failed" || String(row.last_pos_error || "") !== errText) {
+        emitOrder("pos_push", { orderNo: String(orderNo), source: "shop", ok: false,
+          data: { ok: false, path: "store", attempt: (Number(row.pos_attempts) || 0) + 1, error: "bundle_needs_partner",
+                  outcome: "paid_pos_failed", fallback: false } });
+      }
+      if (row.status !== "paid_pos_failed") await setStatus(orderNo, "paid_pos_failed", { note: "باقة — محتاجة مسار الشريك", from: row.status });
       return;
     }
 
@@ -1044,8 +1186,11 @@ export function register(app, ctx, deps = {}) {
         deliveryAddress: addr.street || addr.area || (row.option === "delivery" ? "Delivery" : "Pickup"),
         latitude: addr.latitude, longitude: addr.longitude,
       });
+      emitOrder("pos_push", { orderNo: String(orderNo), source: "shop", ok: true,
+        data: { ok: true, path: "store", attempt: (Number(row.pos_attempts) || 0) + 1, outcome: "pos_created",
+                fallback: false, pos_order_id: String(created.id) } });
       await setStatus(orderNo, "pos_created", {
-        cols: { pos_order_id: String(created.id) },
+        cols: { pos_order_id: String(created.id) }, from: row.status,
       });
       await pool.query(
         "UPDATE shop_orders SET pos_attempts=pos_attempts+1, last_pos_error=NULL WHERE order_no=$1", [orderNo]);
@@ -1060,8 +1205,13 @@ export function register(app, ctx, deps = {}) {
         "UPDATE shop_orders SET pos_attempts=pos_attempts+1, last_pos_error=$2, updated_at=NOW() WHERE order_no=$1",
         [orderNo, errText.slice(0, 800)]);
       // history gets ONE entry per state change, not one per 2-minute retry
+      if (row.status !== "paid_pos_failed" || String(row.last_pos_error || "") !== errText.slice(0, 800)) {
+        emitOrder("pos_push", { orderNo: String(orderNo), source: "shop", ok: false,
+          data: { ok: false, path: "store", attempt: (Number(row.pos_attempts) || 0) + 1, error: String(e?.message || e).slice(0, 300),
+                  outcome: "paid_pos_failed", fallback: false } });
+      }
       if (row.status !== "paid_pos_failed") {
-        await setStatus(orderNo, "paid_pos_failed", { note: errText.slice(0, 300) });
+        await setStatus(orderNo, "paid_pos_failed", { note: errText.slice(0, 300), from: row.status });
       }
     }
   }
@@ -1073,7 +1223,7 @@ export function register(app, ctx, deps = {}) {
     let b = {};
     try { b = await c.req.json(); } catch { return c.json({ ok: false, error: "bad json" }, 400); }
     if (!b.orderNo) return c.json({ ok: false, error: "orderNo required" }, 400);
-    const res = await confirmOrder({ orderNo: String(b.orderNo), invoiceId: b.invoiceId });
+    const res = await confirmOrder({ orderNo: String(b.orderNo), invoiceId: b.invoiceId, via: "browser" });
     return c.json(res, res.ok ? 200 : 402);
   });
 
@@ -1340,7 +1490,7 @@ export function register(app, ctx, deps = {}) {
     } catch (e) {
       return c.json({ ok: false, error: e.message }, 400);
     }
-    if (row.status !== next) await setStatus(row.order_no, next, { note: `يدوي: ${stage}` });
+    if (row.status !== next) await setStatus(row.order_no, next, { note: `يدوي: ${stage}`, from: row.status });
     return c.json({ ok: true, status: next, shipment: { status: shipment.status, ref: shipment.provider_ref } });
   });
 
@@ -1536,7 +1686,7 @@ export function register(app, ctx, deps = {}) {
     const order = ["courier_requested", "courier_assigned", "on_the_way", "delivered"];
     if (next !== "courier_cancelled" &&
         order.indexOf(next) <= order.indexOf(row.status)) return;
-    await setStatus(orderNo, next);
+    await setStatus(orderNo, next, { from: row.status });
   }
 
   /* ── تنفيذ الاسترجاع ──────────────────────────────────────────────────
@@ -1602,6 +1752,9 @@ export function register(app, ctx, deps = {}) {
       await pool.query(
         "UPDATE shop_orders SET alerts = COALESCE(alerts,'{}'::jsonb) || $2::jsonb WHERE order_no=$1",
         [row.order_no, jb({ [key]: new Date().toISOString() })]);
+      emitOrder("sla_alert", { orderNo: row.order_no, source: "shop", ok: null,
+        data: { code: v.code, level: v.level, notified: v.level >= 2, action: v.action || null,
+                minutes: v.minutes ?? null, status: row.status } });
 
       if (v.level >= 2) {
         console.error(`[shop] SLA ${v.level} — ${row.order_no}: ${v.message}`);
@@ -1692,11 +1845,12 @@ export function register(app, ctx, deps = {}) {
     for (const r of awaitingReady) {
       try {
         const wh = await pool.query(
-          `SELECT payload->'resource'->'statuses_slugs'->>'approval_status' AS a
+          `SELECT jsonb_build_object('resource', jsonb_build_object('statuses_slugs',
+                    payload->'resource'->'statuses_slugs')) AS payload
              FROM tsp_webhooks
             WHERE payload->'resource'->'order'->>'id' = $1
             ORDER BY received_at DESC LIMIT 1`, [r.pos_order_id]);
-        let a = String(wh.rows[0]?.a || "").toLowerCase();
+        let a = String(approvalFromWebhook(wh.rows[0]?.payload) || "").toLowerCase();
         // طلب نزل من مسار المتجر العادي (الاحتياطي لما الشريك يفشل) مالوش webhooks
         // شريك — «جاهز» بتاعه بيتقرا من getOrder زي الكنس الأصلي (16 سبتمبر).
         if (!a) {
@@ -1707,13 +1861,14 @@ export function register(app, ctx, deps = {}) {
           await pool.query(
             `UPDATE shop_orders SET pos_approval=$2, pos_ready_at = COALESCE(pos_ready_at, NOW()),
                     updated_at=NOW() WHERE order_no=$1`, [r.order_no, a]);
+          emitOrder("pos_ready", { orderNo: r.order_no, source: "shop", data: { source: "pos", by: null, approval: a } });
         }
       } catch { /* tsp_webhooks مش متاح — نجرّب الدورة الجاية */ }
     }
 
     // 2) orders sitting in the POS inbox — did the cashier accept or reject?
     const watching = (await pool.query(
-      `SELECT order_no, branch_id, pos_order_id, option, total, mf_payment_id, refund_id
+      `SELECT order_no, branch_id, pos_order_id, option, total, mf_payment_id, refund_id, pos_ready_at
          FROM shop_orders
         WHERE status='pos_created' AND pos_order_id IS NOT NULL
           AND created_at > NOW() - INTERVAL '24 hours'`)).rows;
@@ -1728,11 +1883,12 @@ export function register(app, ctx, deps = {}) {
       if (!approval) {
         try {
           const wh = await pool.query(
-            `SELECT payload->'resource'->'statuses_slugs'->>'approval_status' AS a
+            `SELECT jsonb_build_object('resource', jsonb_build_object('statuses_slugs',
+                      payload->'resource'->'statuses_slugs')) AS payload
                FROM tsp_webhooks
               WHERE payload->'resource'->'order'->>'id' = $1
               ORDER BY received_at DESC LIMIT 1`, [r.pos_order_id]);
-          approval = wh.rows[0]?.a || null;
+          approval = approvalFromWebhook(wh.rows[0]?.payload);
         } catch { /* tsp_webhooks لسه ماتعملتش */ }
       }
       if (!approval) continue;
@@ -1750,9 +1906,10 @@ export function register(app, ctx, deps = {}) {
         await pool.query(
           "UPDATE shop_orders SET pos_ready_at = COALESCE(pos_ready_at, NOW()), updated_at=NOW() WHERE order_no=$1",
           [r.order_no]);
+        if (!r.pos_ready_at) emitOrder("pos_ready", { orderNo: r.order_no, source: "shop", data: { source: "pos", by: null, approval: a } });
       }
       if (acceptedLike) {
-        await setStatus(r.order_no, "accepted");
+        await setStatus(r.order_no, "accepted", { from: "pos_created" });
         // طلب الكابتن اتنقل للخطوة 2b تحت: بعد «جاهز» أو بعد مهلة التحضير.
       } else if (rejectedLike) {
         // لو كنا طلبنا كابتن قبل الرفض, نلغي عندهم — رسوم الإلغاء أرخص من
@@ -1809,14 +1966,18 @@ export function register(app, ctx, deps = {}) {
           AND created_at < NOW() - INTERVAL '8 minutes'
           AND created_at > NOW() - INTERVAL '7 hours'`)).rows;
     for (const r of stalePending) {
-      await confirmOrder({ orderNo: r.order_no }).catch((e) =>
+      await confirmOrder({ orderNo: r.order_no, via: "sweep" }).catch((e) =>
         console.error(`[shop] payment reconcile failed for ${r.order_no}: ${e.message}`));
     }
 
     // 3) housekeeping: a payment session nobody completed (بعد مراجعة الدفع فوق).
-    await pool.query(
+    const expiredRows = await pool.query(
       `UPDATE shop_orders SET status='expired', updated_at=NOW()
-        WHERE status='pending_payment' AND created_at < NOW() - INTERVAL '6 hours'`);
+        WHERE status='pending_payment' AND created_at < NOW() - INTERVAL '6 hours'
+        RETURNING order_no, mf_invoice_id`);
+    for (const x of (expiredRows?.rows || [])) {
+      emitOrder("order_expired", { orderNo: x.order_no, source: "shop", data: { executed: Boolean(x.mf_invoice_id) } });
+    }
 
     // 4) إعادة محاولة الاسترجاعات الفاشلة — لحد سقف المحاولات، وبعدين بشر.
     const stuckRefunds = (await pool.query(
@@ -1834,5 +1995,5 @@ export function register(app, ctx, deps = {}) {
     setInterval(() => sweep().catch((e) => console.error("[shop] sweep failed:", e.message)), sweepSec * 1000);
   }
 
-  return { confirmOrder, onShipmentEvent, sweep, refundOrder, watchdog };
+  return { confirmOrder, onShipmentEvent, sweep, refundOrder, watchdog, setStatus, getOrderRow, createPosOrder };
 }

@@ -25,6 +25,7 @@
 
 import webpush from "web-push";
 import { sendSms } from "./accounts.js";
+import { emitOrder } from "./order-events.js";
 
 const env = (k, d) => (process.env[k] || d || "").toString().trim();
 
@@ -55,8 +56,23 @@ function rateLimited(ip, max = 60) {
   return slot.n > max;
 }
 
+/* notify_sent (§٤-١): حدث واحد لكل قناة بعد المحاولة، و«none» لو مفيش قناة
+   اتجرّبت. emitOrder مابترميش، والـtry هنا حزام أمان زيادة — الإشعار
+   عمره ما يوقف انتقال الحالة. */
+function emitNotify(orderNo, stage, channel, ok, extra = {}) {
+  try {
+    emitOrder("notify_sent", {
+      orderNo: String(orderNo), source: "notify", channel, ok: Boolean(ok),
+      data: { stage, channel, ok: Boolean(ok), ...extra },
+    });
+  } catch { /* never */ }
+}
+
 export function register(app, ctx) {
   const { pool, requireAdmin, getSettingsData, jb, normPhone } = ctx;
+  // حقن للاختبارات بس — الإنتاج بيستخدم web-push وTaqnyat الحقيقيين.
+  const push = ctx.webpush || webpush;
+  const smsSend = ctx.sendSms || sendSms;
 
   let vapid = null; // {publicKey, privateKey} — resolved during ensureSchema
 
@@ -83,14 +99,14 @@ export function register(app, ctx) {
     if (s.webPushKeys?.publicKey && s.webPushKeys?.privateKey) {
       vapid = s.webPushKeys;
     } else {
-      vapid = webpush.generateVAPIDKeys();
+      vapid = push.generateVAPIDKeys();
       await pool.query(
         `UPDATE settings SET data = data || $1::jsonb WHERE id=1`,
         [jb({ webPushKeys: vapid })]
       );
       console.log("[notify] generated new VAPID key pair");
     }
-    webpush.setVapidDetails("mailto:otg1194@gmail.com", vapid.publicKey, vapid.privateKey);
+    push.setVapidDetails("mailto:otg1194@gmail.com", vapid.publicKey, vapid.privateKey);
   }
   ensureSchema()
     .then(() => console.log("[notify] ready"))
@@ -98,11 +114,12 @@ export function register(app, ctx) {
 
   /* ── channel senders ── */
 
+  /* بيرجّع عدد الاشتراكات اللي وصلها الإشعار فعلاً (0 لو ولا واحد). */
   async function sendPushTo(subs, payload) {
     let ok = 0;
-    for (const row of subs) {
+    for (const row of subs || []) {
       try {
-        await webpush.sendNotification(row.sub, JSON.stringify(payload), { TTL: 3600 });
+        await push.sendNotification(row.sub, JSON.stringify(payload), { TTL: 3600 });
         ok++;
         pool.query("UPDATE push_subs SET last_ok_at=NOW() WHERE id=$1", [row.id]).catch(() => {});
       } catch (e) {
@@ -131,6 +148,47 @@ export function register(app, ctx) {
     return data;
   }
 
+  const orderSubs = async (phoneNorm, orderNo) => (await pool.query(
+    `SELECT id, sub FROM push_subs
+      WHERE NOT disabled AND (phone_norm=$1 OR order_no=$2) LIMIT 20`,
+    [phoneNorm, orderNo])).rows;
+
+  /* Push لطلب واحد (البوابة/مركز الطلبات): كل اشتراك حي لجوال الطلب أو رقمه.
+     بيرجّع عدد المرسل وبيطلق notify_sent (stage = payload.stage أو "custom").
+     مابترميش — أي فشل = اللي اتبعت لحد دلوقتي. */
+  async function sendOrderPush(orderNo, payload = {}) {
+    const stage = String(payload?.stage || "custom").slice(0, 40);
+    let sent = 0, of = 0;
+    try {
+      const cfg = (await getSettingsData()).notifications || {};
+      if (cfg.pushEnabled === false) {
+        emitNotify(orderNo, stage, "none", false, { reason: "push_disabled" });
+        return 0;
+      }
+      const r = await pool.query("SELECT order_no, phone_norm FROM shop_orders WHERE order_no=$1", [String(orderNo)]);
+      const order = r.rows[0];
+      if (!order) return 0;
+      const subs = await orderSubs(order.phone_norm, order.order_no);
+      of = subs.length;
+      if (!of) {
+        emitNotify(orderNo, stage, "none", false, { reason: "no_subscriptions" });
+        return 0;
+      }
+      const { stage: _stage, ...body } = payload || {};
+      sent = await sendPushTo(subs, {
+        title: "فريش كاتس 🍔",
+        url: `${env("STOREFRONT_PUBLIC_URL", "https://freshcuts.sa")}/track/${order.order_no}`,
+        ...body,
+      });
+      emitNotify(orderNo, stage, "push", sent > 0, { sent, of });
+      return sent;
+    } catch (e) {
+      console.error(`[notify] order push failed for ${orderNo}:`, e?.message);
+      emitNotify(orderNo, stage, "push", false, { sent, of, error: "send_failed" });
+      return sent;
+    }
+  }
+
   /* ── the one entry point shop.js calls on every status change ── */
   async function orderStatusChanged(orderNo, status) {
     const make = MESSAGES[status];
@@ -140,36 +198,61 @@ export function register(app, ctx) {
     const order = r.rows[0];
     if (!order) return;
     const text = make(order);
-    const cfg = (await getSettingsData()).notifications || {};
+    let cfg;
+    try { cfg = (await getSettingsData()).notifications || {}; }
+    catch (e) {
+      emitNotify(orderNo, status, "none", false, { reason: "settings_failed" });
+      throw e;
+    }
+    const attempts = [];
 
     // Push (default ON): to every live subscription for this phone or order.
     if (cfg.pushEnabled !== false) {
-      const subs = (await pool.query(
-        `SELECT id, sub FROM push_subs
-          WHERE NOT disabled AND (phone_norm=$1 OR order_no=$2) LIMIT 20`,
-        [order.phone_norm, order.order_no])).rows;
+      let subs = [];
+      try { subs = await orderSubs(order.phone_norm, order.order_no); }
+      catch (e) {
+        console.error(`[notify] push lookup failed for ${orderNo}:`, e?.message);
+        emitNotify(orderNo, status, "push", false, { sent: 0, of: 0, error: "lookup_failed" });
+        attempts.push(Promise.resolve());
+      }
       if (subs.length) {
         // بعد التوصيل الضغطة تروح لصفحة التقييم على جوجل مباشرة — أقصر طريق
         // للمراجعة وهي أهم إشارة لترتيب الخرائط. باقي المراحل تفتح التتبع.
         const url = status === "delivered"
           ? env("GOOGLE_REVIEW_URL", "https://g.page/r/CSG0gPAqlvHMEBM/review")
           : `${env("STOREFRONT_PUBLIC_URL", "https://freshcuts.sa")}/track/${order.order_no}`;
-        sendPushTo(subs, { title: "فريش كاتس 🍔", body: text, url }).catch(() => {});
+        attempts.push(sendPushTo(subs, { title: "فريش كاتس 🍔", body: text, url }).then(
+          (sent) => emitNotify(orderNo, status, "push", sent > 0, { sent, of: subs.length }),
+          () => emitNotify(orderNo, status, "push", false, { sent: 0, of: subs.length })));
       }
     }
 
     // SMS (default OFF, stage-filtered — each message costs money).
     const smsStages = Array.isArray(cfg.smsStages) && cfg.smsStages.length ? cfg.smsStages : DEFAULT_SMS_STAGES;
     if (cfg.smsEnabled === true && smsStages.includes(status)) {
-      sendSms({ phoneNorm: order.phone_norm, body: text }).catch((e) =>
-        console.error(`[notify] SMS failed for ${orderNo}:`, e.message));
+      attempts.push(Promise.resolve().then(() => smsSend({ phoneNorm: order.phone_norm, body: text })).then(
+        () => emitNotify(orderNo, status, "sms", true),
+        (e) => {
+          console.error(`[notify] SMS failed for ${orderNo}:`, e?.message);
+          emitNotify(orderNo, status, "sms", false, { error: String(e?.code || "send_failed").slice(0, 60) });
+        }));
     }
 
     // WhatsApp (default OFF; needs the coexistence step + an approved template).
     if (cfg.whatsappEnabled === true) {
-      sendWhatsApp(order.phone_norm, text).catch((e) =>
-        console.error(`[notify] WhatsApp failed for ${orderNo}:`, e.message));
+      attempts.push(sendWhatsApp(order.phone_norm, text).then(
+        () => emitNotify(orderNo, status, "whatsapp", true),
+        (e) => {
+          console.error(`[notify] WhatsApp failed for ${orderNo}:`, e?.message);
+          emitNotify(orderNo, status, "whatsapp", false, { error: String(e?.code || "send_failed").slice(0, 60) });
+        }));
     }
+
+    // مفيش ولا قناة اتجرّبت (Push مقفول أو مفيش اشتراكات، وSMS/واتساب مقفولين).
+    if (!attempts.length) emitNotify(orderNo, status, "none", false, { reason: "no_channel" });
+    // القنوات شغالة مع بعض (زي الأول)؛ بنستنى نتايجها بس عشان الحدث يتطلق.
+    // shop.js أصلاً مابيستناش orderStatusChanged — بيعمل .catch بس.
+    await Promise.allSettled(attempts);
   }
 
   /* ── routes ── */
@@ -271,5 +354,5 @@ export function register(app, ctx) {
     return true;
   }
 
-  return { orderStatusChanged, sendToAudience, sendSmsTo };
+  return { orderStatusChanged, sendToAudience, sendSmsTo, sendPushTo, sendOrderPush };
 }
