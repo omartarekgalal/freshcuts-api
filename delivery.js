@@ -1050,6 +1050,11 @@ export function register(app, ctx, deps = {}) {
       if (!p.configured()) continue;
       let o;
       try { o = await p.track(r); } catch { continue; }
+      // بيانات الكابتن (اسم/جوال/موقع) بتتحفظ حتى لو الحالة ما اتغيرتش أو مش معروفة —
+      // 16 سبتمبر: الكابتن كان متعيّن فعلاً ومابانش للعميل ولا للكاشير.
+      if (o && o.driver) {
+        await pool.query("UPDATE dl_shipments SET driver=$2 WHERE id=$1", [r.id, jb(o.driver)]);
+      }
       if (!o || !o.status || o.status === r.status) {
         await pool.query("UPDATE dl_shipments SET updated_at=NOW() WHERE id=$1", [r.id]);
         continue;

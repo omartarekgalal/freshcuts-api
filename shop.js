@@ -1575,7 +1575,7 @@ export function register(app, ctx, deps = {}) {
     // من تنبيهات تاب سينس للطلبات المقبولة اللي لسه مالهاش pos_ready_at —
     // من غير أي تغيير في الحالة ولا طلب مندوب تاني.
     const awaitingReady = (await pool.query(
-      `SELECT order_no, pos_order_id FROM shop_orders
+      `SELECT order_no, pos_order_id, branch_id FROM shop_orders
         WHERE pos_order_id IS NOT NULL AND pos_ready_at IS NULL
           AND status IN ('accepted','courier_requested','courier_assigned')
           AND created_at > NOW() - INTERVAL '24 hours'`)).rows;
@@ -1586,7 +1586,13 @@ export function register(app, ctx, deps = {}) {
              FROM tsp_webhooks
             WHERE payload->'resource'->'order'->>'id' = $1
             ORDER BY received_at DESC LIMIT 1`, [r.pos_order_id]);
-        const a = String(wh.rows[0]?.a || "").toLowerCase();
+        let a = String(wh.rows[0]?.a || "").toLowerCase();
+        // طلب نزل من مسار المتجر العادي (الاحتياطي لما الشريك يفشل) مالوش webhooks
+        // شريك — «جاهز» بتاعه بيتقرا من getOrder زي الكنس الأصلي (16 سبتمبر).
+        if (!a) {
+          try { a = String(tsstore.approvalOf(await tsstore.getOrder(r.pos_order_id, r.branch_id)) || "").toLowerCase(); }
+          catch { /* مش متاح — الدورة الجاية */ }
+        }
         if (a.includes("ready")) {
           await pool.query(
             `UPDATE shop_orders SET pos_approval=$2, pos_ready_at = COALESCE(pos_ready_at, NOW()),

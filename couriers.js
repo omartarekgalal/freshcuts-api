@@ -251,6 +251,9 @@ const LJ_STATUS = {
   neworder: "pending", new: "pending", pending: "pending", created: "pending",
   orderaccept: "assigned", orderaccepted: "assigned", accepted: "assigned",
   assigned: "assigned", riderassigned: "assigned", driverassigned: "assigned",
+  // «Start Ride» (16 سبتمبر، طلب حقيقي): الكابتن اتحرك بعد القبول ولسه ما استلمش —
+  // ماكانتش في الخريطة، فالحالة اتجاهلت وبيانات الكابتن مابانتش.
+  startride: "assigned", ridestarted: "assigned",
   orderpicked: "picked", picked: "picked", pickedup: "picked",
   intransit: "picked", ontheway: "picked", ordertransit: "picked",
   // «Shipped» رجعت من طلب حقيقي والكابتن كان ماسك الأكل فعلاً — وما كانتش

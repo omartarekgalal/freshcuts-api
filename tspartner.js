@@ -186,6 +186,13 @@ export function register(app, ctx) {
     return tok;
   }
 
+  /* تجديد واحد في نفس اللحظة (16 سبتمبر): createExternalOrder بيبعت ٣ نداءات مع
+     بعض (branches/order-options/taxes)، والتوكن كان منتهي، فالتلاتة جددوا بنفس
+     الـrefresh_token. واحد نجح والباقي اترفض «The refresh token is invalid»،
+     والطلب W1789555412320 نزل من مسار المتجر العادي بدل طلب مدفوع مسبقاً.
+     دلوقتي أي نداء بيلاقي تجديد شغّال بيستنى نفس الوعد. */
+  let _refreshing = null;
+
   /* توكن صالح دايماً: بيجدّد لوحده قبل انتهاء الصلاحية بدقيقة. */
   async function accessToken() {
     const r = await pool.query("SELECT access_token, refresh_token, expires_at FROM tsp_tokens WHERE id=1");
@@ -194,8 +201,18 @@ export function register(app, ctx) {
     const soon = new Date(Date.now() + 60_000);
     if (row.expires_at && new Date(row.expires_at) <= soon) {
       if (!row.refresh_token) return row.access_token; // مفيش refresh — نرجّع الحالي ونسيب النداء يفشل لو انتهى
-      try { const tok = await refresh(row.refresh_token); return tok.access_token; }
-      catch (e) { console.error("[tspartner] refresh failed:", e.message); return row.access_token; }
+      if (!_refreshing) {
+        _refreshing = (async () => {
+          try { return (await refresh(row.refresh_token)).access_token; }
+          catch (e) {
+            console.error("[tspartner] refresh failed:", e.message);
+            // يمكن تجديد تاني سبقنا وحفظ توكن جديد — نقرا الأحدث بدل القديم المنتهي
+            const again = (await pool.query("SELECT access_token FROM tsp_tokens WHERE id=1")).rows[0];
+            return (again && again.access_token) || row.access_token;
+          } finally { _refreshing = null; }
+        })();
+      }
+      return _refreshing;
     }
     return row.access_token;
   }
