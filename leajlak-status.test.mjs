@@ -9,9 +9,16 @@ const stage = (status) => PROVIDERS.leajlak.parseWebhook({ id: "W1", status }).s
 test("«Start Ride» (16 سبتمبر) = الكابتن اتحرك ولسه ما استلمش ⇒ assigned", () => {
   assert.equal(stage("Start Ride"), "assigned");
 });
+test("«Reached Shop» (16 سبتمبر) = الكابتن في المطعم ولسه ما استلمش ⇒ assigned", () => {
+  assert.equal(stage("Reached Shop"), "assigned");
+});
+test("«Reached Customer» = الأكل لسه مع الكابتن ⇒ picked", () => {
+  assert.equal(stage("Reached Customer"), "picked");
+});
 test("الحالات المعروفة من قبل لسه زي ما هي", () => {
   assert.equal(stage("New Order"), "pending");
   assert.equal(stage("Order Accept"), "assigned");
+  assert.equal(stage("Order Picked"), "picked");
   assert.equal(stage("Shipped"), "picked");
   assert.equal(stage("Delivered"), "delivered");
 });

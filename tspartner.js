@@ -194,22 +194,35 @@ export function register(app, ctx) {
   let _refreshing = null;
 
   /* توكن صالح دايماً: بيجدّد لوحده قبل انتهاء الصلاحية بدقيقة. */
-  async function accessToken() {
+  async function accessToken({ minValidMs = 60_000 } = {}) {
     const r = await pool.query("SELECT access_token, refresh_token, expires_at FROM tsp_tokens WHERE id=1");
     const row = r.rows[0];
     if (!row || !row.access_token) return null;
-    const soon = new Date(Date.now() + 60_000);
+    const soon = new Date(Date.now() + minValidMs);
     if (row.expires_at && new Date(row.expires_at) <= soon) {
       if (!row.refresh_token) return row.access_token; // مفيش refresh — نرجّع الحالي ونسيب النداء يفشل لو انتهى
       if (!_refreshing) {
         _refreshing = (async () => {
-          try { return (await refresh(row.refresh_token)).access_token; }
+          const lock = await pool.connect();
+          try {
+            // قفل على مستوى الداتابيز: وقت النشر بيبقى فيه حاويتين شغالين مع بعض،
+            // والقفل اللي جوّه العملية لوحده مش كفاية.
+            await lock.query("SELECT pg_advisory_lock(815501)");
+            const cur = (await lock.query(
+              "SELECT access_token, refresh_token, expires_at FROM tsp_tokens WHERE id=1")).rows[0];
+            if (cur && cur.expires_at && new Date(cur.expires_at) > soon) return cur.access_token; // حد تاني جدّد خلاص
+            return (await refresh((cur && cur.refresh_token) || row.refresh_token)).access_token;
+          }
           catch (e) {
             console.error("[tspartner] refresh failed:", e.message);
             // يمكن تجديد تاني سبقنا وحفظ توكن جديد — نقرا الأحدث بدل القديم المنتهي
             const again = (await pool.query("SELECT access_token FROM tsp_tokens WHERE id=1")).rows[0];
             return (again && again.access_token) || row.access_token;
-          } finally { _refreshing = null; }
+          } finally {
+            _refreshing = null;
+            try { await lock.query("SELECT pg_advisory_unlock(815501)"); } catch { /* الاتصال اتقفل = القفل اتفك */ }
+            lock.release();
+          }
         })();
       }
       return _refreshing;
@@ -577,5 +590,26 @@ export function register(app, ctx) {
     }
   });
 
-  return { api, accessToken, status, authorizeUrl, exchangeCode, refresh, createExternalOrder, catalog };
+  /* تجديد استباقي (16 سبتمبر): التوكن مايستناش لحد ما عميل يدفع عشان يتجدد —
+     التجديد وقت الدفع هو اللي وقّع طلب W1789555412320. كل ٢٠ دقيقة: لو فاضل
+     أقل من ٦ ساعات على الانتهاء، بنجدّد دلوقتي (نفس مسار التجديد الواحد). */
+  async function keepTokenFresh() {
+    try {
+      const r = (await pool.query(
+        "SELECT expires_at, refresh_token IS NOT NULL AS has_refresh FROM tsp_tokens WHERE id=1")).rows[0];
+      if (!r || !r.has_refresh || !r.expires_at) return;
+      if (new Date(r.expires_at).getTime() - Date.now() > 6 * 3600_000) return;
+      await accessToken({ minValidMs: 6 * 3600_000 });
+      const after = (await pool.query("SELECT expires_at FROM tsp_tokens WHERE id=1")).rows[0];
+      console.log(`[tspartner] proactive refresh → expires ${after && after.expires_at && new Date(after.expires_at).toISOString()}`);
+    } catch (e) {
+      console.error("[tspartner] proactive refresh failed:", e.message);
+    }
+  }
+  if (process.env.TSP_KEEPALIVE !== "0") {
+    setTimeout(() => { keepTokenFresh(); }, 30_000);
+    setInterval(() => { keepTokenFresh(); }, 20 * 60_000);
+  }
+
+  return { api, accessToken, status, authorizeUrl, exchangeCode, refresh, createExternalOrder, catalog, keepTokenFresh };
 }

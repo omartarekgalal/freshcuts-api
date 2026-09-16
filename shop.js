@@ -896,23 +896,44 @@ export function register(app, ctx, deps = {}) {
     // بيتفعّل فقط لما TSP_AUTO_ORDER=1 والربط شغّال. أي فشل بيرجع للمسار القديم
     // (المتجر) فالطلب مايتعطّلش أبداً.
     if (process.env.TSP_AUTO_ORDER === "1" && (row.items || []).length) {
+      /* ممنوع الرجوع لمسار المتجر العادي (16 سبتمبر 2026). طلب W1789555412320
+         (124 ر.س مدفوع Apple Pay) نزل منه كطلب QR «غير مدفوع» من غير عميل ولا
+         عنوان ولا رسوم التوصيل — الكاشير اتلخبط والتتبع اتلخبط. عمر: «المشكلة دي
+         مينفعش تتكرر». دلوقتي: لحد ٣ محاولات على الشريك (بس لو العطل قبل إنشاء
+         الطلب: توكن/اتصال)، ولو فشلوا الطلب بيفضل paid_pos_failed — أحمر وبصوت
+         في البورتال + إنذار المهل — والكنس بيعيد على الشريك كل دورة. */
       const partner = tsp();
-      let connected = false;
-      try { connected = partner && (await partner.status()).connected; } catch {}
-      if (partner && connected) {
+      let lastErr = null;
+      for (let attempt = 1; attempt <= 3; attempt++) {
         try {
+          if (!partner || !(await partner.status()).connected) {
+            throw Object.assign(new Error("partner not connected"), { retryable: true });
+          }
           const out = await partner.createExternalOrder(buildPartnerOrder(row, settings));
           await setStatus(orderNo, "pos_created", { cols: { pos_order_id: String(out.id) } });
           await pool.query(
             "UPDATE shop_orders SET pos_attempts=pos_attempts+1, last_pos_error=NULL WHERE order_no=$1", [orderNo]);
-          console.log(`[shop] ${orderNo}: partner paid order ${out.id} (linkedCustomer=${out.linkedCustomer})`);
+          console.log(`[shop] ${orderNo}: partner paid order ${out.id} (linkedCustomer=${out.linkedCustomer}, attempt ${attempt})`);
           return;
         } catch (e) {
+          lastErr = e;
           const detail = e.resp ? " | " + JSON.stringify(e.resp).slice(0, 300) : "";
-          console.error(`[shop] partner order failed for ${orderNo}, falling back to store path: ${e.message}${detail}`);
-          // نكمل للمسار القديم تحت
+          console.error(`[shop] partner order attempt ${attempt}/3 failed for ${orderNo}: ${e.message}${detail}`);
+          // إعادة فورية بس لأعطال قبل الإنشاء (توكن/اتصال) — غير كده ممكن الطلب
+          // يكون اتعمل فعلاً والإعادة تعمل طلب مكرر؛ دي بتستنى الكنس + عين بني آدم.
+          const early = e.retryable || e.status === 401
+            || /Unauthenticated|not connected|fetch failed|EAI_AGAIN|ECONN|ETIMEDOUT|socket/i.test(String(e.message));
+          if (!early || attempt === 3) break;
+          await new Promise((r) => setTimeout(r, attempt * 2500));
         }
       }
+      await pool.query(
+        "UPDATE shop_orders SET pos_attempts=pos_attempts+1, last_pos_error=$2, updated_at=NOW() WHERE order_no=$1",
+        [orderNo, String((lastErr && lastErr.message) || "partner order failed").slice(0, 500)]);
+      if (row.status !== "paid_pos_failed") {
+        await setStatus(orderNo, "paid_pos_failed", { note: "نقطة البيع رفضت/مش متاحة — بنعيد تلقائي على الشريك" });
+      }
+      return;
     }
 
     // المسار القديم (API المتجر) بيبعت pos_calc زي ما هو — وده مافيهوش سطور
@@ -1024,12 +1045,16 @@ export function register(app, ctx, deps = {}) {
         label = "طلبك جاهز وبنسلّمه للمندوب 🛵"; step = 3;
       } else if (["paid", "pos_created"].includes(row.status)) {
         label = "تم الدفع واستلمنا طلبك ✅"; step = 1;
+      } else if (row.status === "courier_assigned") {
+        // 16 سبتمبر: الكابتن كان واصل المطعم والعميل شايف «بيجهّز» من غير أي أثر
+        // للمندوب. الأكل لسه بيتجهّز، بس المندوب اتعيّن فعلاً — فبنقول الاتنين.
+        label = "المطعم بيجهّز طلبك — والمندوب في الطريق للمطعم 🛵"; step = 2;
       } else {
-        // accepted / courier_requested / courier_assigned بس الأكل لسه بيتجهّز
+        // accepted / courier_requested والأكل لسه بيتجهّز
         label = "المطعم بيجهّز طلبك 👨‍🍳"; step = 2;
       }
-      // حالة المندوب بتظهر بس بعد ما الأكل يجهز (أو وهو في الطريق/اتسلّم)
-      if (ready || ["on_the_way", "delivered"].includes(row.status)) {
+      // المندوب بيظهر أول ما يتعيّن (مش بس بعد «جاهز»)
+      if (ready || ["courier_assigned", "on_the_way", "delivered"].includes(row.status)) {
         const sh = await delivery.shipmentOf(row.order_no);
         if (sh) courier = { status: sh.status, driver: sh.driver || null };
       }

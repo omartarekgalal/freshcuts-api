@@ -254,6 +254,10 @@ const LJ_STATUS = {
   // «Start Ride» (16 سبتمبر، طلب حقيقي): الكابتن اتحرك بعد القبول ولسه ما استلمش —
   // ماكانتش في الخريطة، فالحالة اتجاهلت وبيانات الكابتن مابانتش.
   startride: "assigned", ridestarted: "assigned",
+  // «Reached Shop» (16 سبتمبر): الكابتن وصل المطعم ولسه ما استلمش.
+  reachedshop: "assigned", arrivedshop: "assigned", arrivedatshop: "assigned", reachedpickup: "assigned",
+  // الكابتن وصل للعميل = لسه معاه الأكل.
+  reachedcustomer: "picked", arrivedcustomer: "picked", reacheddropoff: "picked",
   orderpicked: "picked", picked: "picked", pickedup: "picked",
   intransit: "picked", ontheway: "picked", ordertransit: "picked",
   // «Shipped» رجعت من طلب حقيقي والكابتن كان ماسك الأكل فعلاً — وما كانتش
