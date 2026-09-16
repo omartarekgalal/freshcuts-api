@@ -548,6 +548,9 @@ export function register(app, ctx) {
       phone: acct.phone_norm, name: acct.name,
       addresses: await addressesOf(acct),
       linkedToPos: Boolean(acct.ts_customer_id),
+      // الخصم الدائم للرقم (مثلاً «خصم الملاك ٥٠٪») — عشان المتجر يعرضه في السلة قبل الدفع.
+      // الحساب النهائي بيفضل على السيرفر وقت الـcheckout (مابيتطبقش على العروض).
+      discount: await customerDiscount(acct.phone_norm),
     });
   });
 
