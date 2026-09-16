@@ -1883,13 +1883,20 @@ export function register(app, ctx, deps = {}) {
       try {
         const wh = await pool.query(
           `SELECT payload->'resource'->'statuses_slugs'->>'approval_status' AS a,
-                  payload->'resource'->'statuses_slugs'->>'order_status' AS o
+                  payload->'resource'->'statuses_slugs'->>'order_status' AS o,
+                  payload->'resource'->'statuses_slugs'->>'payment_status' AS pay,
+                  event
              FROM tsp_webhooks
             WHERE payload->'resource'->'order'->>'id' = $1
             ORDER BY received_at DESC LIMIT 1`, [r.pos_order_id]);
         const a = String(wh.rows[0]?.a || "").toLowerCase();
         const o = String(wh.rows[0]?.o || "").toLowerCase();
-        if (a.includes("delivered") || o === "completed") {
+        const pay = String(wh.rows[0]?.pay || "").toLowerCase();
+        /* عمر (17 سبتمبر): «استلمت طلبك» تظهر بعد ما الطلب يتدفع على نقطة البيع —
+           ده دليل إن العميل استلم (الكاشير بيقفل الفاتورة وقت التسليم) — مش مجرد
+           «جاهز». فالإشارة هي payment_status=fully_paid (حدث order-paid) أو
+           order_status=completed؛ approval «delivered» لوحده مابيكفيش. */
+        if (pay === "fully_paid" || o === "completed" || wh.rows[0]?.event === "order-paid") {
           await pool.query(
             "UPDATE shop_orders SET pos_approval=$2, pos_ready_at = COALESCE(pos_ready_at, NOW()) WHERE order_no=$1",
             [r.order_no, a || o]);
