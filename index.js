@@ -53,6 +53,7 @@ import * as selftest from "./selftest.js";
 import * as menuplan from "./menuplan.js";
 import * as systemcheck from "./systemcheck.js";
 import * as portal from "./portal.js";
+import * as adsreport from "./adsreport.js";
 
 const { Pool } = pg;
 
@@ -3070,6 +3071,8 @@ reviews.register(app, moduleCtx, { notify: () => notifyApi, sessionUser: cmsApi.
 // بوابة المطعم (كاشير + مدير): PIN، طلبات حيّة (SSE)، خط زمني، طلب/إلغاء مندوب، Push للفريق، تقارير.
 // بعد shop/delivery/cms — بيستخدم دوالهم نفسها (مفيش نسخة تانية من القواعد).
 const portalApi = portal.register(app, moduleCtx, { shop: () => shopApi, delivery: () => deliveryApi });
+// تقرير الدخل اليومي + صرف الإعلانات (١٧ سبتمبر): جدول mk_daily_reports + SMS واحدة لعمر بعد القفل
+adsreport.register(app, moduleCtx, { sendSms: (m) => accounts.sendSms(m) });
 systemcheck.register(app, moduleCtx, { tsState: () => tsState });
 console.log("[analytics] routes ready");
 console.log(`[ai] routes ready (provider: ${process.env.ANTHROPIC_API_KEY ? "anthropic" : process.env.LITELLM_KEY ? "litellm" : "NOT CONFIGURED"})`);
