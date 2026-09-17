@@ -704,6 +704,81 @@ export function register(app, ctx, deps = {}) {
     }
   });
 
+  /* ── «مش عايز رسايل» (١٧ سبتمبر ٢٠٢٦، طلب عمر) ──
+     الكاشير/المدير بيسجّل رقم العميل اللي قال مايبيش عروض. نفس جدول الإيقاف
+     (cms_contacts) اللي الحملات والأتمتة واسترداد السلة بيستبعدوا منه.
+     الشيل مسموح بس للي اتسجّل من البوابة (غلطة كاشير) — اللي العميل أوقفه
+     بنفسه من الرابط مابيرجعش غير بطلبه هو. العرض دايماً بالرقم مخفي. */
+  let optoutReady = null;
+  const ensureOptout = () => (optoutReady ||= pool.query(`
+    CREATE TABLE IF NOT EXISTS cms_contacts (phone_norm TEXT PRIMARY KEY, optout_code TEXT UNIQUE NOT NULL, opted_out_at TIMESTAMPTZ);
+    ALTER TABLE cms_contacts ADD COLUMN IF NOT EXISTS optout_source TEXT;
+    ALTER TABLE cms_contacts ADD COLUMN IF NOT EXISTS optout_reason TEXT;
+    ALTER TABLE cms_contacts ADD COLUMN IF NOT EXISTS optout_by TEXT;
+    CREATE TABLE IF NOT EXISTS cms_optout_log (
+      id SERIAL PRIMARY KEY, phone_norm TEXT NOT NULL, action TEXT NOT NULL, source TEXT, reason TEXT, actor TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW());
+    ALTER TABLE cms_optout_log ADD COLUMN IF NOT EXISTS ua TEXT;
+  `).catch((e) => { optoutReady = null; throw e; }));
+  const normPn = (p) => {
+    const d = String(p || "").replace(/[٠-٩]/g, (x) => "٠١٢٣٤٥٦٧٨٩".indexOf(x)).replace(/\D/g, "")
+      .replace(/^00/, "").replace(/^966/, "").replace(/^0/, "");
+    return /^5\d{8}$/.test(d) ? d : null;
+  };
+  const maskPn = (pn) => `05${"•".repeat(5)}${String(pn).slice(-2)}`;
+
+  app.get("/api/portal/sms-optout", async (c) => {
+    const a = await requirePortal(c); if (a.res) return a.res;
+    await ensureOptout();
+    const r = await pool.query(
+      `SELECT phone_norm, opted_out_at, optout_source, optout_reason, optout_by FROM cms_contacts
+        WHERE opted_out_at IS NOT NULL ORDER BY opted_out_at DESC LIMIT 200`);
+    const total = (await pool.query("SELECT count(*)::int n FROM cms_contacts WHERE opted_out_at IS NOT NULL")).rows[0].n;
+    return c.json({ ok: true, total, list: r.rows.map((x) => ({
+      key: crypto.createHash("sha1").update("optout:" + x.phone_norm).digest("hex").slice(0, 12),
+      phone: maskPn(x.phone_norm), at: x.opted_out_at, source: x.optout_source || "link",
+      reason: x.optout_reason || "", by: x.optout_by || "", removable: x.optout_source === "staff" })) });
+  });
+
+  app.post("/api/portal/sms-optout", async (c) => {
+    const a = await requirePortal(c); if (a.res) return a.res;
+    const b = await c.req.json().catch(() => ({}));
+    const pn = normPn(b?.phone);
+    if (!pn) return c.json({ ok: false, error: "bad_phone", message: "رقم الجوال مش صحيح" }, 400);
+    const reason = String(b?.reason || "").trim().slice(0, 120) || null;
+    await ensureOptout();
+    const r = await pool.query(
+      `INSERT INTO cms_contacts(phone_norm, optout_code, opted_out_at, optout_source, optout_reason, optout_by)
+       VALUES ($1, substr(md5(random()::text || $1 || clock_timestamp()::text), 1, 10), NOW(), 'staff', $2, $3)
+       ON CONFLICT (phone_norm) DO UPDATE SET
+         opted_out_at = COALESCE(cms_contacts.opted_out_at, NOW()),
+         optout_source = CASE WHEN cms_contacts.opted_out_at IS NULL THEN 'staff' ELSE cms_contacts.optout_source END,
+         optout_reason = COALESCE($2, cms_contacts.optout_reason),
+         optout_by = CASE WHEN cms_contacts.opted_out_at IS NULL THEN $3 ELSE cms_contacts.optout_by END
+       RETURNING (xmax = 0) AS inserted`, [pn, reason, a.user.name || a.user.id]);
+    await pool.query("INSERT INTO cms_optout_log(phone_norm, action, source, reason, actor) VALUES ($1,'optout','staff',$2,$3)",
+      [pn, reason, a.user.name || a.user.id]).catch(() => {});
+    audit(a.user, "sms_optout", null, true, { phone: maskPn(pn) }, clientIp((n) => c.req.header(n)), { emit: false });
+    return c.json({ ok: true, phone: maskPn(pn) });
+  });
+
+  app.delete("/api/portal/sms-optout/:key", async (c) => {
+    const a = await requirePortal(c); if (a.res) return a.res;
+    const key = String(c.req.param("key") || "").slice(0, 20);
+    await ensureOptout();
+    const rows = (await pool.query("SELECT phone_norm, optout_source FROM cms_contacts WHERE opted_out_at IS NOT NULL")).rows;
+    const hit = rows.find((x) => crypto.createHash("sha1").update("optout:" + x.phone_norm).digest("hex").slice(0, 12) === key);
+    if (!hit) return c.json({ ok: false, error: "not_found" }, 404);
+    if (hit.optout_source !== "staff") {
+      return c.json({ ok: false, error: "customer_optout", message: "العميل أوقف الرسايل بنفسه من الرابط — مايرجعش غير بطلبه" }, 409);
+    }
+    await pool.query("UPDATE cms_contacts SET opted_out_at=NULL, optout_source=NULL, optout_reason=NULL, optout_by=NULL WHERE phone_norm=$1", [hit.phone_norm]);
+    await pool.query("INSERT INTO cms_optout_log(phone_norm, action, source, actor) VALUES ($1,'remove','staff',$2)",
+      [hit.phone_norm, a.user.name || a.user.id]).catch(() => {});
+    audit(a.user, "sms_optout_remove", null, true, { phone: maskPn(hit.phone_norm) }, clientIp((n) => c.req.header(n)), { emit: false });
+    return c.json({ ok: true });
+  });
+
   /* ── حالة البوابة (مدير) ── */
   app.get("/api/portal/health", async (c) => {
     const a = await requirePortal(c, "manager"); if (a.res) return a.res;

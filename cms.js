@@ -448,6 +448,13 @@ export function register(app, ctx, deps = {}) {
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
         PRIMARY KEY (campaign_id, phone_norm)
       );
+      ALTER TABLE cms_contacts ADD COLUMN IF NOT EXISTS optout_source TEXT;
+      ALTER TABLE cms_contacts ADD COLUMN IF NOT EXISTS optout_reason TEXT;
+      ALTER TABLE cms_contacts ADD COLUMN IF NOT EXISTS optout_by TEXT;
+      CREATE TABLE IF NOT EXISTS cms_optout_log (
+        id SERIAL PRIMARY KEY, phone_norm TEXT NOT NULL, action TEXT NOT NULL, source TEXT, reason TEXT, actor TEXT,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW());
+      ALTER TABLE cms_optout_log ADD COLUMN IF NOT EXISTS ua TEXT;
       CREATE INDEX IF NOT EXISTS cms_campaign_sends_phone_idx ON cms_campaign_sends(phone_norm, created_at DESC);
     `);
     /* ربط الباقة بالعرض (٢٠٢٦-٠٩-١٢). الزرع مرة واحدة بس (cms_migrations)
@@ -2065,6 +2072,7 @@ export function register(app, ctx, deps = {}) {
   async function smsPreflight(camp, aud) {
     const cfg = await campaignCfg();
     if (cfg.smsEnabled !== true) return "sms_disabled";
+    if (cfg.brake) return "brake_optout";
     if (smsRules.inQuietHours()) return "quiet_hours";
     const parts = smsPartsOf(smsBody(camp, aud.list[0]));
     if (parts > MAX_PARTS) return "too_long";
@@ -2332,6 +2340,7 @@ export function register(app, ctx, deps = {}) {
     if (b.minGapDays != null) val.minGapDays = Math.min(90, Math.max(0, Math.round(Number(b.minGapDays) || 0)));
     if (b.budgetSar != null) val.budgetSar = Math.max(0, Number(b.budgetSar) || 0);
     if (b.budgetSince !== undefined) val.budgetSince = b.budgetSince ? new Date(b.budgetSince).toISOString() : null;
+    if (b.clearBrake === true) delete val.brake;
     if (Array.isArray(b.excludePhones)) val.excludePhones = b.excludePhones.map(smsRules.normLocal).filter(Boolean).slice(0, 200);
     await pool.query(
       `UPDATE settings SET data = jsonb_set(
@@ -2344,10 +2353,54 @@ export function register(app, ctx, deps = {}) {
   app.post("/api/cms/optout/:code", async (c) => {
     const code = String(c.req.param("code") || "").slice(0, 20);
     if (!/^[a-f0-9]{6,20}$/.test(code)) return c.json({ ok: false }, 404);
+    let b = {};
+    try { b = await c.req.json(); } catch {}
+    const ua = String(b.ua || c.req.header("user-agent") || "").slice(0, 200) || null;
+    // ١٧/٩: فتح الرابط (GET على المتجر) بقى «view» بس — الإيقاف بزرار التأكيد (POST)
+    if (b.view === true) {
+      const v = await pool.query("SELECT phone_norm FROM cms_contacts WHERE optout_code=$1", [code]);
+      if (v.rowCount) pool.query("INSERT INTO cms_optout_log(phone_norm, action, source, ua) VALUES ($1,'view','link',$2)", [v.rows[0].phone_norm, ua]).catch(() => {});
+      return c.json({ ok: v.rowCount > 0 });
+    }
     const r = await pool.query(
-      "UPDATE cms_contacts SET opted_out_at = COALESCE(opted_out_at, NOW()) WHERE optout_code=$1 RETURNING 1", [code]);
+      `UPDATE cms_contacts SET optout_source = CASE WHEN opted_out_at IS NULL THEN 'link' ELSE optout_source END,
+              opted_out_at = COALESCE(opted_out_at, NOW()) WHERE optout_code=$1 RETURNING phone_norm`, [code]);
+    if (r.rowCount) pool.query("INSERT INTO cms_optout_log(phone_norm, action, source, ua) VALUES ($1,'optout','link',$2)", [r.rows[0].phone_norm, ua]).catch(() => {});
     return r.rowCount ? c.json({ ok: true }) : c.json({ ok: false }, 404);
   });
+
+  /* فرملة الإيقاف (قرار ١٧/٩): لو الإيقاف المؤكد (زرار التأكيد) من مستلمي موجة
+     عدّى ٥٪ من المُرسل خلال ٣٠ دقيقة من إرسالها → كل الموجات المجدولة بتتعلّق
+     «held»، والإرسال بيترفض لحد ما المالك يفك الفرملة، ورسالة للإدارة. */
+  const BRAKE_PCT = 5, BRAKE_MIN = 30;
+  async function brakeCheck() {
+    const cfg = await campaignCfg();
+    if (cfg.brake) return;
+    const rows = (await pool.query(
+      `SELECT s.campaign_id, count(DISTINCT s.phone_norm) FILTER (WHERE s.status='sent')::int AS sent,
+              count(DISTINCT l.phone_norm)::int AS optouts
+         FROM cms_campaign_sends s
+         LEFT JOIN cms_optout_log l ON l.phone_norm = s.phone_norm AND l.action='optout' AND l.source='link'
+              AND l.created_at >= s.created_at AND l.created_at < s.created_at + ($1 || ' minutes')::interval
+        WHERE s.created_at > NOW() - INTERVAL '2 hours'
+        GROUP BY 1`, [String(BRAKE_MIN)])).rows;
+    const hit = rows.find((r) => r.sent >= 20 && r.optouts * 100 > r.sent * BRAKE_PCT);
+    if (!hit) return;
+    const brake = { at: new Date().toISOString(), campaignId: hit.campaign_id, sent: hit.sent, optouts: hit.optouts };
+    await pool.query(
+      `UPDATE settings SET data = jsonb_set(data, '{cms,campaigns,brake}', $1::jsonb, true) WHERE id=1`, [jb(brake)]);
+    const held = await pool.query(
+      "UPDATE cms_campaigns SET status='held', last_error='brake_optout' WHERE status='scheduled' RETURNING id");
+    console.error(`[cms] OPT-OUT BRAKE: campaign ${hit.campaign_id} ${hit.optouts}/${hit.sent} → held ${held.rowCount}`);
+    try {
+      const s = await getSettingsData();
+      const phones = [...smsRules.staffPhoneSet({ delivery: { alertPhones: s?.delivery?.alertPhones } })];
+      const { sendSms } = await import("./accounts.js");
+      const msg = `FreshCuts ALERT: SMS campaign ${hit.campaign_id} opt-outs ${hit.optouts}/${hit.sent} in 30 min. ${held.rowCount} scheduled wave(s) paused.`;
+      for (const pn of phones) await sendSms({ phoneNorm: pn, body: msg.slice(0, 160) }).catch(() => {});
+    } catch (e) { console.error("[cms] brake alert:", e.message); }
+  }
+  setInterval(() => brakeCheck().catch((e) => console.error("[cms] brake:", e.message)), 60_000);
 
   /* ── الولاء: كل N طلبات من الموقع = كوبون شخصي ──
      بيعدّ من لحظة التفعيل بس (startedAt) — لو عدّ التاريخ كله، التفعيل كان
