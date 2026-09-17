@@ -430,7 +430,9 @@ export function register(app, ctx, deps = {}) {
               count(*) FILTER (WHERE went_google)::int AS to_google,
               count(*) FILTER (WHERE sent_at IS NULL AND skip_reason IS NULL)::int AS waiting,
               count(*) FILTER (WHERE skip_reason IS NOT NULL)::int AS skipped
-         FROM review_invites WHERE created_at > NOW() - ($1||' days')::interval`, [String(days)])).rows[0];
+         FROM review_invites
+        WHERE created_at > NOW() - ($1||' days')::interval
+          AND order_no NOT LIKE 'TEST-%'`, [String(days)])).rows[0];
     return c.json({
       ok: true, days,
       total: t.n, avg: t.avg == null ? null : Number(t.avg),
@@ -487,6 +489,26 @@ export function register(app, ctx, deps = {}) {
   app.post("/api/cms/reviews/invites/run", async (c) => {
     const err = await requireAdmin(c); if (err) return err;
     return c.json({ ok: true, result: await runInvites() });
+  });
+  /* رسالة تجريبية لرقم واحد بنفس النص وبكود حقيقي (بيتسجّل باسم طلب TEST-)،
+     عشان نشوف الرسالة ونجرّب التوجيه من غير ما نستنى طلب حقيقي يتسلّم. */
+  app.post("/api/cms/reviews/invites/test", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    let b = {}; try { b = await c.req.json(); } catch { return bad(c, "bad json"); }
+    const phone = norm(b.phone);
+    if (!/^5\d{8}$/.test(phone || "")) return bad(c, "bad_phone");
+    const cf = await cfg();
+    const code = inviteCode();
+    await pool.query(
+      `INSERT INTO review_invites(order_no, code, phone_norm, option, due_at, sent_at, channel)
+       VALUES ($1,$2,$3,'test',NOW(),NOW(),'sms')`,
+      [`TEST-${Date.now()}`, code, phone]);
+    const link = `${STORE_PUBLIC()}/r?c=${code}`;
+    const body = askBody(cf.askText, link);
+    try {
+      const ok = await notify()?.sendSmsTo?.(phone, body);
+      return c.json({ ok: Boolean(ok), sent: Boolean(ok), body, link, code, reason: ok ? null : "sms_disabled" });
+    } catch (e) { return c.json({ ok: false, error: String(e.message).slice(0, 160), body, link }, 502); }
   });
 
   app.post("/api/cms/reviews/:id/resolve", async (c) => {

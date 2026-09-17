@@ -249,6 +249,30 @@ export function register(app, ctx, deps = {}) {
     return c.json({ ok: true, result: await runOpenWait() });
   });
 
+  /* رسالة تجريبية لرقم واحد بنص الفتح الحقيقي — بتتخطى نافذة الفتح عشان
+     نقدر نشوف الرسالة والرابط من غير ما نستنى ١٢ الضهر. مابتلمسش القايمة. */
+  app.post("/api/cms/openwait/test", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    let b = {}; try { b = await c.req.json(); } catch { return bad(c, "bad json"); }
+    const phone = norm(b.phone);
+    if (!/^5\d{8}$/.test(phone || "")) return bad(c, "bad_phone");
+    const s = await getSettingsData();
+    const cfg = openWaitCfg(s);
+    let code = null;
+    if (b.withCart !== false) {
+      const w = (await pool.query(
+        "SELECT code FROM open_waitlist WHERE phone_norm=$1 AND code IS NOT NULL ORDER BY created_at DESC LIMIT 1",
+        [phone])).rows[0];
+      code = w?.code || null;
+    }
+    const link = `${storeHost()}/${code ? `c/${code}` : "?utm_source=sms&utm_medium=crm&utm_campaign=open_now"}`;
+    const body = waitBody(cfg.text, link);
+    try {
+      const ok = await notify()?.sendSmsTo?.(phone, body);
+      return c.json({ ok: Boolean(ok), sent: Boolean(ok), body, link, reason: ok ? null : "sms_disabled" });
+    } catch (e) { return c.json({ ok: false, error: String(e.message).slice(0, 160), body }, 502); }
+  });
+
   console.log("[openwait] routes registered");
   return { runOpenWait };
 }
