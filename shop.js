@@ -384,6 +384,7 @@ export function register(app, ctx, deps = {}) {
   const carts = deps.carts || (() => null);       // late-bound — abandoned-cart tracker
   const tsp = deps.tsp || (() => null);           // late-bound — TabSense partner (paid orders)
   const journey = typeof deps.journey === "function" ? deps.journey : () => null; // late-bound — ٠٢
+  const wa = typeof deps.wa === "function" ? deps.wa : () => null; // واتساب: موافقة الشيك أوت
   const emitOrder = makeOrderEmitter(deps.emitOrder);
   /* أسماء الأصناف (بلاغ عمر ١٧ سبتمبر ٢٠٢٦): السلة الجاية من المتصفح فيها
      product_id وكمية وسعر بس — من غير اسم. الاسم بيتحل هنا من قايمة تاب
@@ -1046,6 +1047,15 @@ export function register(app, ctx, deps = {}) {
         phoneNorm, orderNo, raw: b.marketing_consent,
         ip: c.req.header("cf-connecting-ip") || null, ua: c.req.header("user-agent") || null,
       }).catch(() => {});
+    }
+    // موافقة واتساب من الشيك أوت («وصّلني تحديثات الطلب على واتساب») — fire-and-forget.
+    // بتتسجّل بس لو المتجر بعت الحقل صراحةً؛ غيابه مايغيّرش موافقة قديمة.
+    if (wa() && (typeof b.waUpdates === "boolean" || typeof b.waMarketing === "boolean")) {
+      Promise.resolve().then(() => wa().recordOptIn({ phone: phoneNorm,
+        updates: typeof b.waUpdates === "boolean" ? b.waUpdates : undefined,
+        marketing: typeof b.waMarketing === "boolean" ? b.waMarketing : undefined,
+        source: "checkout", orderNo }))
+        .catch((e) => console.error(`[shop] ${orderNo}: wa opt-in save failed: ${e.message}`));
     }
     // مفتاح الاستكمال/التتبع (٠٣ A3/A9) — null لو SHOP_RESUME_SECRET مش متظبط
     const k = resumeKey({ orderNo, createdAt: inserted?.rows?.[0]?.created_at });
