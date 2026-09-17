@@ -37,7 +37,10 @@ import { isOpenNow } from "./carts.js";
 import { dispatchDue, dispatchDelayOf } from "./delivery.js";
 import { makeStaffNotifier, slaAlertText, posFailedText, tabsenseDownText } from "./staffalerts.js";
 import { sendSms as sendStaffSms } from "./accounts.js";
-import { parseCheckoutMeta, fireServerPurchase } from "./checkout-meta.js";
+import {
+  parseCheckoutMeta, fireServerPurchase,
+  classifySource, mergeSessionAttribution, SESSION_ATTR_SQL,
+} from "./checkout-meta.js";
 import { resumeKey } from "./resume-key.js";
 import { makeNameResolver } from "./product-names.js";
 
@@ -928,12 +931,26 @@ export function register(app, ctx, deps = {}) {
        coupon?.ok ? coupon.code : null, discountPercent, discountAmount,
        jb([{ at: new Date().toISOString(), status: "pending_payment" }]), jb(attribution)]
     );
-    // journey_sid/client/app_version (W1-02) — تحديث منفصل fire-and-forget: لو
-    // الأعمدة لسه ماتضافتش (ensureOrderColumns) الطلب نفسه مايتأثرش.
+    // journey_sid/client/app_version (W1-02) + attrib_source (W4-02) — تحديث
+    // منفصل fire-and-forget: لو الأعمدة لسه ماتضافتش (ensureOrderColumns) الطلب
+    // نفسه مايتأثرش. وهنا كمان بنكمّل الـutm الناقص من جلسة الرحلة: المتصفّح
+    // الداخلي بتاع فيسبوك بيمسح الـlocalStorage، فطلبات جاية من إعلان كانت
+    // بتتسجّل "direct". الجلسة اتسجّلت على السيرفر ساعة الهبوط، فهي المصدر.
     if (meta) {
-      pool.query("UPDATE shop_orders SET journey_sid=$2, client=$3, app_version=$4 WHERE order_no=$1",
-        [orderNo, meta.journey_sid || null, meta.client || null, meta.app_version || null])
-        .catch((e) => console.error(`[shop] ${orderNo}: checkout meta save failed: ${e.message}`));
+      (async () => {
+        let attr = meta.attribution || {};
+        const utmEmpty = !attr.utm || Object.keys(attr.utm).length === 0;
+        if (meta.journey_sid && (utmEmpty || !attr.fc_link)) {
+          const s = await pool.query(SESSION_ATTR_SQL, [meta.journey_sid]).catch(() => null);
+          const merged = mergeSessionAttribution(attr, s?.rows?.[0] || null);
+          if (merged.enriched) attr = merged.attribution;
+        }
+        await pool.query(
+          `UPDATE shop_orders SET journey_sid=$2, client=$3, app_version=$4,
+             attrib_source=$5, attribution=COALESCE($6::jsonb, attribution) WHERE order_no=$1`,
+          [orderNo, meta.journey_sid || null, meta.client || null, meta.app_version || null,
+           classifySource(attr), attr === meta.attribution ? null : jb(attr)]);
+      })().catch((e) => console.error(`[shop] ${orderNo}: checkout meta save failed: ${e.message}`));
     }
     // مفتاح الاستكمال/التتبع (٠٣ A3/A9) — null لو SHOP_RESUME_SECRET مش متظبط
     const k = resumeKey({ orderNo, createdAt: inserted?.rows?.[0]?.created_at });

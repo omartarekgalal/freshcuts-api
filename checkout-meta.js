@@ -96,6 +96,92 @@ export function parseCheckoutMeta(body, headers) {
   return { attribution, journey_sid, client, app_version };
 }
 
+/* ── مصدر الطلب في عمود واحد (attrib_source) ───────────────────────────────
+   العمود موجود في orders-schema من W4-02 وماكانش بيتكتب أبداً، فأي تقرير
+   «الطلبات دي جت منين» كان لازم يفتح jsonb لكل صف. دلوقتي بنكتب توكن واحد.
+
+   الترتيب: utm_source صريح > click id (fbclid/ttclid/ScCid/gclid) > سلاج رابط
+   fc_link > قناة الجلسة (journey) > referrer > direct. أي حاجة مش معروفة
+   بترجع نفسها منضّفة (حروف صغيرة/أرقام/شرطة) بدل ما نلزقها في "other" —
+   اسم غلط أحسن من تصنيف مخترع. */
+const SOURCE_ALIASES = {
+  meta: "meta", facebook: "meta", fb: "meta", instagram: "meta", ig: "meta", messenger: "meta",
+  meta_ads: "meta", facebook_ads: "meta",
+  snapchat: "snapchat", snap: "snapchat", sc: "snapchat", snap_ads: "snapchat", snapchat_ads: "snapchat",
+  tiktok: "tiktok", tt: "tiktok", bytedance: "tiktok", tiktok_ads: "tiktok",
+  campaign_link: "link", link: "link", referral: "referral",
+  google: "google", googleads: "google", gads: "google", maps: "google",
+  sms: "sms", taqnyat: "sms",
+  whatsapp: "whatsapp", wa: "whatsapp",
+  qr: "offline", sticker: "offline", print: "offline", bag: "offline", offline: "offline",
+  push: "push", webpush: "push",
+  email: "email", newsletter: "email",
+  direct: "direct", none: "direct", "(direct)": "direct",
+};
+const REF_HOSTS = [
+  [/(^|\.)(facebook|instagram|fb|messenger)\./, "meta"],
+  [/(^|\.)(snapchat)\./, "snapchat"],
+  [/(^|\.)(tiktok)\./, "tiktok"],
+  [/(^|\.)(google|googleadservices|gstatic)\./, "google"],
+  [/(^|\.)(whatsapp|wa\.me)/, "whatsapp"],
+];
+
+const slugish = (v) => String(v || "").toLowerCase().trim().replace(/[^a-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40) || null;
+
+export function normalizeSource(raw) {
+  const s = String(raw || "").toLowerCase().trim();
+  if (!s) return null;
+  return SOURCE_ALIASES[s] || slugish(s);
+}
+
+/* attribution = العمود زي ما هو متخزن. session = صف journey_sessions أو null. */
+export function classifySource(attribution, session = null) {
+  const a = attribution && typeof attribution === "object" ? attribution : {};
+  const utm = a.utm && typeof a.utm === "object" ? a.utm : {};
+  const click = a.click && typeof a.click === "object" ? a.click : {};
+
+  const fromUtm = normalizeSource(utm.utm_source);
+  if (fromUtm) return fromUtm;
+  if (click.fbclid || click.fbc) return "meta";
+  if (click.ttclid) return "tiktok";
+  if (click.ScCid || click.scid) return "snapchat";
+  if (click.gclid || click.gbraid || click.wbraid) return "google";
+  if (a.fc_link) return "link";
+
+  if (session) {
+    const fromSession = normalizeSource(session.utm_source) || normalizeSource(session.channel);
+    if (fromSession && fromSession !== "direct") return fromSession;
+    const host = String(session.referrer_host || "").toLowerCase();
+    for (const [re, id] of REF_HOSTS) if (re.test(host)) return id;
+  }
+  return "direct";
+}
+
+/* الجلسة بتتسجّل على السيرفر ساعة الهبوط (utm + سلاج الرابط)، والـcheckout
+   بيبعت اللي في الـlocalStorage. المتصفّح الداخلي بتاع فيسبوك بيمسح التخزين
+   كتير، فالطلب بيوصل بـ utm فاضي وهو أصلاً جاي من إعلان. الدالة دي بتكمّل
+   الناقص من الجلسة **من غير ما تدوس** على أي قيمة بعتها المتصفّح. */
+export function mergeSessionAttribution(attribution, session) {
+  const a = attribution && typeof attribution === "object" ? { ...attribution } : {};
+  if (!session) return { attribution: a, enriched: false };
+  const utm = { ...(a.utm && typeof a.utm === "object" ? a.utm : {}) };
+  let enriched = false;
+  for (const k of UTM_KEYS) {
+    if (utm[k] == null && session[k] != null) { const v = clip(session[k]); if (v) { utm[k] = v; enriched = true; } }
+  }
+  if (!a.fc_link && session.link_slug) { const v = clip(session.link_slug); if (v) { a.fc_link = v; enriched = true; } }
+  if (!a.landing_at && session.started_at) {
+    const d = session.started_at instanceof Date ? session.started_at.toISOString() : clip(session.started_at);
+    if (d && !Number.isNaN(Date.parse(d))) { a.landing_at = d; enriched = true; }
+  }
+  if (enriched) { a.utm = utm; a.captured = a.captured ? `${a.captured}+journey` : "journey"; }
+  return { attribution: a, enriched };
+}
+
+export const SESSION_ATTR_SQL =
+  "SELECT utm_source, utm_medium, utm_campaign, utm_content, utm_term, link_slug, channel, referrer_host, started_at" +
+  " FROM journey_sessions WHERE session_id = $1";
+
 /* بعد ما طلب مدفوع ينزل نقطة البيع: Purchase من السيرفر (funnel.serverPurchase).
    fire-and-forget — عمره ما يوقف أو يوقّع الطلب، لا sync ولا async. */
 export function fireServerPurchase(funnelDep, orderNo, log = console) {

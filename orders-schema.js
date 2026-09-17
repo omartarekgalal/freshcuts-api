@@ -14,6 +14,8 @@
    ensureOrderColumns(pool) مابترميش أبداً — بترجع تقرير.
 ═══════════════════════════════════════════════════════════════════════════ */
 
+import { classifySource, mergeSessionAttribution } from "./checkout-meta.js";
+
 export const ORDER_COLUMNS = Object.freeze([
   // ٠٩ — W0-03 (موجود؛ مكرر عشان الترحيل يبقى كامل ومستقل)
   { name: "attribution", type: "JSONB" },
@@ -65,6 +67,52 @@ export const BACKFILL_ACCEPTED_SQL = `UPDATE shop_orders o SET accepted_at = (
     AND EXISTS (SELECT 1 FROM jsonb_array_elements(o.history) h2
                  WHERE h2->>'status' = 'accepted' AND (h2->>'at') ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}[T ][0-9]{2}:[0-9]{2}')`;
 
+/* backfill: attrib_source للطلبات القديمة. العمود اتعرّف في W4-02 وماكانش
+   بيتكتب، فكل الطلبات اللي قبل النهاردة مالهاش مصدر. بنقرا الصفوف الناقصة
+   ونحسبها بنفس دالة الـcheckout (classifySource) — مفيش نسخة تانية من المنطق
+   في SQL عشان ما تفرقش عن اللايف. لو الطلب عنده journey_sid بنكمّل الـutm من
+   الجلسة الأول. idempotent: بس الصفوف اللي attrib_source فيها NULL. */
+export const ATTRIB_BACKFILL_SELECT =
+  `SELECT o.order_no, o.attribution, o.journey_sid,
+          s.utm_source, s.utm_medium, s.utm_campaign, s.utm_content, s.utm_term,
+          s.link_slug, s.channel, s.referrer_host, s.started_at
+     FROM shop_orders o
+     LEFT JOIN journey_sessions s ON s.session_id = o.journey_sid
+    WHERE o.attrib_source IS NULL
+    ORDER BY o.created_at DESC
+    LIMIT $1`;
+
+/* نفس الاستعلام من غير الـJOIN — لو جدول الرحلة لسه مش موجود (قاعدة جديدة)،
+   الترحيل مايفشلش، بنصنّف من الـattribution اللي في الطلب بس. */
+export const ATTRIB_BACKFILL_SELECT_NOJOIN =
+  `SELECT order_no, attribution, journey_sid FROM shop_orders
+    WHERE attrib_source IS NULL ORDER BY created_at DESC LIMIT $1`;
+
+export async function backfillAttribSource(pool, { limit = 5000, log = console } = {}) {
+  const out = { ok: true, scanned: 0, updated: 0, enriched: 0, error: null };
+  try {
+    const hasJourney = await pool.query("SELECT to_regclass('public.journey_sessions') AS t")
+      .then((r) => !!r?.rows?.[0]?.t).catch(() => false);
+    const { rows } = await pool.query(hasJourney ? ATTRIB_BACKFILL_SELECT : ATTRIB_BACKFILL_SELECT_NOJOIN, [limit]);
+    out.scanned = rows.length;
+    for (const r of rows) {
+      const session = r.journey_sid && (r.utm_source || r.link_slug || r.channel) ? r : null;
+      const { attribution, enriched } = mergeSessionAttribution(r.attribution || {}, session);
+      const src = classifySource(attribution, session);
+      await pool.query(
+        "UPDATE shop_orders SET attrib_source=$2, attribution=COALESCE($3::jsonb, attribution) WHERE order_no=$1",
+        [r.order_no, src, enriched ? JSON.stringify(attribution) : null]);
+      out.updated += 1;
+      if (enriched) out.enriched += 1;
+    }
+  } catch (e) {
+    out.ok = false;
+    out.error = String(e?.message || e).slice(0, 200);
+    try { log.error(`[orders-schema] backfill:attrib_source failed: ${out.error}`); } catch {}
+  }
+  return out;
+}
+
 /* كل الـSQL اللي الترحيل ممكن يبعته (للاختبار/المراجعة) */
 export function migrationStatements() {
   return [
@@ -88,7 +136,7 @@ export function ensureOrderColumns(pool, { log = console, backfill = true } = {}
 }
 
 async function run(pool, { log, backfill }) {
-  const report = { ok: true, skipped: null, added: [], indexes: [], view: false, backfilled: 0, errors: [] };
+  const report = { ok: true, skipped: null, added: [], indexes: [], view: false, backfilled: 0, attribSource: null, errors: [] };
   const fail = (step, e) => {
     report.ok = false;
     report.errors.push({ step, error: String(e?.message || e).slice(0, 200) });
@@ -149,12 +197,18 @@ async function run(pool, { log, backfill }) {
         report.backfilled = Number(r?.rowCount) || 0;
       } catch (e) { fail("backfill:accepted_at", e); }
     }
+
+    if (backfill && haveCols.has("attrib_source") && haveCols.has("attribution")) {
+      const r = await backfillAttribSource(pool, { log });
+      report.attribSource = r;
+      if (!r.ok) fail("backfill:attrib_source", r.error);
+    }
   } catch (e) {
     fail("migrate", e);
   }
-  if (report.added.length || report.indexes.length || report.backfilled) {
+  if (report.added.length || report.indexes.length || report.backfilled || report.attribSource?.updated) {
     try {
-      console.log(`[orders-schema] added=${report.added.join(",") || "-"} indexes=${report.indexes.join(",") || "-"} backfilled=${report.backfilled}`);
+      console.log(`[orders-schema] added=${report.added.join(",") || "-"} indexes=${report.indexes.join(",") || "-"} backfilled=${report.backfilled} attrib_source=${report.attribSource?.updated || 0}`);
     } catch {}
   }
   return report;

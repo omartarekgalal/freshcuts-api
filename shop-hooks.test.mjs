@@ -288,7 +288,9 @@ test("checkout ناجح: resumeKey/trackKey + checkout_result + حفظ journey_s
     const ins = s.queries.find((q) => /INSERT INTO shop_orders/.test(q.sql));
     assert.match(ins.sql, /RETURNING created_at/);
     const upd = s.queries.find((q) => /SET journey_sid=\$2, client=\$3, app_version=\$4/.test(q.sql));
-    assert.deepEqual(upd.vals, [orderNo, "j_abc-1", "android", "1.0.3"]);
+    // + attrib_source: مافيش utm ولا click id ولا جلسة في الموك → "direct"،
+    //   والـattribution مااتغيّرتش فبنبعت null عشان COALESCE يسيبها زي ما هي
+    assert.deepEqual(upd.vals, [orderNo, "j_abc-1", "android", "1.0.3", "direct", null]);
     const jr = s.journeyEvents.filter((e) => e.name === "checkout_result");
     assert.equal(jr.length, 1);
     assert.equal(jr[0].ok, true);
