@@ -152,6 +152,10 @@ export function cleanAddress(input, prev = null, now = new Date().toISOString())
     latitude: lat, longitude: lng,
     // «اترك الطلب عند الباب» — تفضيل محفوظ مع العنوان
     leave_at_door: b.leave_at_door !== undefined ? truthy(b.leave_at_door) : Boolean(p.leave_at_door),
+    /* موافقة العميل على رسوم المسافة الإضافية («المنطقة البعيدة»). محفوظة مع
+       العنوان نفسه لأنها خاصة بالمكان ده بالظبط — عنوان تاني قريب لازم
+       موافقة جديدة، والعميل مايتفاجئش برسم وافق عليه مرة في مكان تاني. */
+    far_zone_accepted: b.far_zone_accepted !== undefined ? truthy(b.far_zone_accepted) : Boolean(p.far_zone_accepted),
     is_default: Boolean(p.is_default),
     created_at: p.created_at || now,
     used_at: p.used_at || p.created_at || now,

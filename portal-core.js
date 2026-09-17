@@ -192,6 +192,15 @@ export function clientIp(header) {
 /* ── الطلب → شكل العقد ───────────────────────────────────────────────────── */
 
 const num = (v) => (v == null || v === "" || !Number.isFinite(Number(v)) ? null : Number(v));
+
+/* delivery_quote->'farZone' زي ما التسعيرة سجّلته → {km, extraKm, surcharge}
+   أو null. مصدر واحد للرقم: اللي العميل شافه ودفعه. */
+export function farZoneOf(v) {
+  let f = v;
+  if (typeof f === "string") { try { f = JSON.parse(f); } catch { f = null; } }
+  if (!f || typeof f !== "object" || !(Number(f.extraKm) > 0)) return null;
+  return { km: num(f.km), extraKm: Number(f.extraKm), surcharge: Number(f.surcharge) || 0 };
+}
 const iso = (v) => {
   if (!v) return null;
   const d = v instanceof Date ? v : new Date(v);
@@ -375,6 +384,9 @@ export function toPortalOrder(r, slaCfg = {}, now = Date.now()) {
     total: num(r.total) ?? 0,
     subtotal: num(r.subtotal) ?? 0,
     deliveryFee: num(r.delivery_fee) ?? 0,
+    /* «توصيل بعيد»: العميل بره النطاق العادي ووافق على رسوم مسافة إضافية.
+       الكاشير لازم يشوفها على الكارت — المشوار أطول والمندوب هياخد وقت. */
+    farZone: farZoneOf(r.far_zone),
     // عنوان الباقة مش صنف — المكوّنات تحته هي الأكل الحقيقي
     itemsCount: items.reduce((a, x) => a + (x.kind === "bundle" ? 0 : Number(x.qty) || 0), 0),
     items,

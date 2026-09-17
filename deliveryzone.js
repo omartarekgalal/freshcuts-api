@@ -41,6 +41,40 @@ export function circlePolygon(center, radiusKm, n = 72) {
   return ringOf(center, new Array(n).fill(radiusKm));
 }
 
+/* ── حزام «المنطقة البعيدة» على الخريطة ──────────────────────────────────
+   العميل اللي دبّوسه بره المنطقة لازم يشوف بعينه إنه في الحزام اللي لسه
+   بنوصّله برسوم إضافية، مش بس يقرا رسالة. الحزام = نفس شكل المنطقة
+   مكبَّر بنسبة farZoneMaxKm/maxKm.
+
+   ليه تكبير نسبي مش حساب حقيقي: المضلّع الحقيقي بيتكلّف ٧٢٠ عنصر من جوجل،
+   والحزام ده للعرض بس — التسعيرة لكل عنوان (/api/delivery/quote) هي اللي
+   بتقرّر وبتقيس المشوار الحقيقي. زي المضلّع الأصلي: approx. */
+/* النقط الأصلية اتولدت بحساب كروي صح (destPoint)، فضرب الفرق عن المركز في
+   نسبة واحدة بيدّي نقطة على ~نسبة× نفس المسافة وبنفس الاتجاه. */
+export function scalePolygon(center, polygon, ratio) {
+  if (!center || !Array.isArray(polygon) || polygon.length < 3 || !(ratio > 0)) return null;
+  return polygon.map(([la, ln]) => [
+    r5(center.lat + (Number(la) - center.lat) * ratio),
+    r5(center.lng + (Number(ln) - center.lng) * ratio),
+  ]);
+}
+
+/* farOut(cfg, store, polygon) → الحقول الزيادة في ردّ /api/delivery/zone. */
+export function farOut(cfg, center, polygon) {
+  const maxKm = Number(cfg && cfg.maxKm);
+  const farMax = Number(cfg && cfg.farZoneMaxKm);
+  if (!cfg || cfg.farZoneEnabled === false) return { farZone: null };
+  if (!isFinite(maxKm) || maxKm <= 0 || !isFinite(farMax) || farMax <= maxKm) return { farZone: null };
+  const far = {
+    maxKm: farMax,
+    fromKm: Number(cfg.farZoneFromKm) > 0 ? Number(cfg.farZoneFromKm) : maxKm,
+    perKm: Number(cfg.farZonePerKm) || 0,
+    polygon: scalePolygon(center, polygon, farMax / maxKm),
+    approx: true,
+  };
+  return far.polygon ? { farZone: far } : { farZone: null };
+}
+
 /* السقف الفعلي على الشعاع: maxKm (مشوار) و maxStraightKm (هوائي) لو موجود. */
 export function rayCapKm(cfg) {
   const caps = [Number(cfg.maxKm)];
@@ -236,13 +270,14 @@ export function makeZoneService({
     if (!cfg) return { store: storeOut, maxKm: null, polygon: null, approx: true, source: "none", computedAt: null };
     let rw = row;
     try { if (!rowLoaded) rw = await loadRow(); } catch { rw = null; }
+    const withFar = (out) => ({ ...out, ...farOut(cfg, st, out.polygon) });
     if (cfg.useDrivingDistance !== false && rw && rw.zone_key === zoneKey(cfg, st, rays) && Array.isArray(rw.polygon)) {
-      return { store: storeOut, maxKm: Number(cfg.maxKm), polygon: rw.polygon, approx: true,
+      return withFar({ store: storeOut, maxKm: Number(cfg.maxKm), polygon: rw.polygon, approx: true,
                source: "drive", computedAt: new Date(rw.computed_at).toISOString(),
-               rays: Array.isArray(rw.polygon) ? rw.polygon.length : null };
+               rays: Array.isArray(rw.polygon) ? rw.polygon.length : null });
     }
-    return { store: storeOut, maxKm: Number(cfg.maxKm), polygon: circlePolygon(st, fallbackRadiusKm(cfg)),
-             approx: true, source: "straight", computedAt: null };
+    return withFar({ store: storeOut, maxKm: Number(cfg.maxKm), polygon: circlePolygon(st, fallbackRadiusKm(cfg)),
+             approx: true, source: "straight", computedAt: null });
   }
 
   function schedule({ firstDelayMs = 90_000, everyMs = 30 * 60_000 } = {}) {

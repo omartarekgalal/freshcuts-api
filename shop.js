@@ -29,7 +29,7 @@
 ═══════════════════════════════════════════════════════════════════════════ */
 
 import * as tsstore from "./tsstore.js";
-import { msisdn, readableAddress, leaveAtDoor } from "./couriers.js";
+import { msisdn, readableAddress, leaveAtDoor, farZoneOfRow } from "./couriers.js";
 // ضريبة سطور الباقة — نفس الثابت اللي التوزيع اتعمل بيه، عشان الإجمالي يرجع للسعر بالظبط
 import { VAT_RATE as BUNDLE_VAT } from "./bundles.js";
 import { MULTIPLY as MONEY_MULTIPLY, rescaleItems, stampMf, scaleOf } from "./money.js";
@@ -196,8 +196,12 @@ export function posNotesOf(row, { withFee = false, now = Date.now() } = {}) {
   const hm = (t) => new Date(new Date(t).getTime() + 3 * 3600_000).toISOString().slice(11, 16);
   const delivery = row.option === "delivery";
   const feeNote = withFee && Number(row.delivery_fee) > 0 ? `توصيل ${Number(row.delivery_fee)}ر` : "";
+  const far = farZoneOfRow(row);
   return [
     delivery ? "توصيل" : "استلام",
+    // المطبخ والكاشير لازم يعرفوا إن المشوار أطول من المعتاد (العميل وافق ودفع
+    // رسوم مسافة إضافية) — بيأثر على وقت التجهيز وعلى طلب المندوب.
+    far ? `مشوار بعيد ${far.km} كم🛵` : "",
     delivery && leaveAtDoor(row.address) ? "اتركه عند الباب🚪" : "",
     `طُلب ${hm(row.created_at)}`,
     row.option === "pickup" ? `استلام ${hm(now + 40 * 60_000)}` : "",
@@ -853,16 +857,26 @@ export function register(app, ctx, deps = {}) {
 
     let deliveryFee = 0, dq = null, freeDeliveryByCoupon = false;
     if (option === "delivery") {
+      /* «المنطقة البعيدة»: العميل اللي عنوانه بره النطاق شاف العرض ووافق
+         على رسوم المسافة الإضافية. من غير الموافقة دي التسعيرة بترفض زي
+         الأول — يعني مستحيل حد يتحاسب على رسم إضافي ما وافقش عليه. */
+      const farOk = b.address.far_zone_accepted === true || b.farZoneAccepted === true;
       dq = await delivery.quote({
         lat: b.address.latitude, lng: b.address.longitude, orderTotal: foodTotal,
+        farZoneAccepted: farOk,
       });
       if (!dq.deliverable) return fail("not_deliverable", 422, { quote: dq });
       deliveryFee = dq.fee;
       // كوبون توصيل مجاني: بنتنازل عن الرسم كامل (المطعم بيتحمّل الكابتن —
       // تكلفة اكتساب العميل). الطلب بيتسجّل والكوبون بيتحرق زي أي كوبون.
+      // **بس** رسوم المسافة الإضافية مش داخلة في التنازل: دي تكلفة كابتن
+      // حقيقية فوق المشوار العادي، والعميل وافق عليها لوحدها.
       if (coupon?.ok && coupon.freeDelivery && deliveryFee > 0) {
-        freeDeliveryByCoupon = true;
-        deliveryFee = 0;
+        const keep = dq.farZone ? Number(dq.farZone.surcharge) || 0 : 0;
+        if (deliveryFee > keep) {
+          freeDeliveryByCoupon = true;
+          deliveryFee = keep;
+        }
       }
     }
 
@@ -1371,6 +1385,9 @@ export function register(app, ctx, deps = {}) {
       label, step, option: row.option,
       total: Number(row.total), subtotal: Number(row.subtotal),
       deliveryFee: Number(row.delivery_fee), courier,
+      /* «توصيل بعيد»: العميل وافق على رسوم مسافة إضافية — بيشوفها في صفحة
+         التتبع زي ما شافها في الدفع بالظبط، مش رقم بيختفي بعد الطلب. */
+      farZone: farZoneOfRow(row),
       // the id the ad pixels must use for Purchase — same id the offline POS
       // sync reports, so the platforms de-dupe instead of double counting
       posOrderId: row.pos_order_id || null,

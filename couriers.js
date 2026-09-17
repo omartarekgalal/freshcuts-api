@@ -174,11 +174,35 @@ export function readableAddress(addr, { withPin = false } = {}) {
 
 const PREPAID_NOTE = "الطلب مدفوع مسبقاً — لا يُحصَّل من العميل";
 
+/* ── «المنطقة البعيدة» على صفّ الطلب ─────────────────────────────────────
+   العميل وافق على رسوم مسافة إضافية (delivery.js). التفاصيل محفوظة جوّه
+   `delivery_quote.farZone` — مفيش عمود جديد، عشان مصدر الرقم يفضل واحد:
+   نفس التسعيرة اللي العميل شافها ودفعها.
+
+   لعجلك بتحاسبنا +٢٫٥ ر.س لكل كيلو فوق ١٠، واحنا بناخد ٣ — فالمندوب
+   والكاشير لازم يشوفوا إن ده مشوار طويل، والتقرير يقارن الفرق. */
+export function farZoneOfRow(order = {}) {
+  let q = order && order.delivery_quote;
+  if (typeof q === "string") { try { q = JSON.parse(q); } catch { q = null; } }
+  const f = q && q.farZone;
+  if (!f || !(Number(f.extraKm) > 0)) return null;
+  return {
+    km: Number(f.km) || null,
+    extraKm: Number(f.extraKm) || 0,
+    surcharge: Number(f.surcharge) || 0,
+  };
+}
+
 /* ملاحظات المندوب: «اترك الطلب عند الباب» أولاً (لو العميل اختارها)، بعدها
    ملاحظة الطلب. ٢٠٠ حرف حد الشركتين. */
 export function courierNotes(order = {}) {
-  const n = [leaveAtDoor(order.address) ? DOOR_NOTE : "", String(order.notes || "").trim()]
-    .filter(Boolean).join(" — ");
+  const far = farZoneOfRow(order);
+  const n = [
+    // المندوب لازم يعرف إن ده مشوار بعيد قبل ما يقبل — والمسافة بتفرق في أجره
+    far ? `مشوار بعيد ${far.km} كم` : "",
+    leaveAtDoor(order.address) ? DOOR_NOTE : "",
+    String(order.notes || "").trim(),
+  ].filter(Boolean).join(" — ");
   return n.slice(0, 200) || PREPAID_NOTE;
 }
 

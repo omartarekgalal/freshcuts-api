@@ -261,7 +261,13 @@ export async function resolveRouteKm({ cfg, straightKm, from, to, drive }) {
   if (!drive || cfg.useDrivingDistance === false) return fallback;
   /* المشوار عمره ما يبقى أقصر من الخط المستقيم — لو الهوائي فات السقف، الطلب
      مرفوض كده كده، فمش هندفع لجوجل علشان يقولنا كده. */
-  if (cfg.maxKm != null && straightKm > Number(cfg.maxKm)) return fallback;
+  /* السقف هنا هو أبعد مسافة ممكن نوصّلها فعلاً — ولو «المنطقة البعيدة»
+     شغّالة ده farZoneMaxKm مش maxKm، وإلا كل عنوان في المنطقة البعيدة كان
+     هيتسعّر بتقدير هوائي بدل المشوار الحقيقي اللي الرسم الإضافي مبني عليه. */
+  const reachKm = cfg.farZoneEnabled && Number(cfg.farZoneMaxKm) > 0
+    ? Math.max(Number(cfg.maxKm) || 0, Number(cfg.farZoneMaxKm))
+    : Number(cfg.maxKm);
+  if (cfg.maxKm != null && isFinite(reachKm) && straightKm > reachKm) return fallback;
   if (cfg.maxStraightKm != null && straightKm > Number(cfg.maxStraightKm)) return fallback;
   const d = await drive.get(from, to);
   if (!d || !isFinite(d.km)) return fallback;

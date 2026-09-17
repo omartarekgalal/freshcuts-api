@@ -116,7 +116,60 @@ export const DEFAULT_POLICY = {
   maxStraightKm: null,// ↓ سقف مستقل على المسافة الهوائية
   routeFactor: 1.3,   // haversine → road-distance correction
   discount: { mode: "none", value: 0, label: "" }, // none|flat|percent on the FEE
+  /* ── المنطقة البعيدة (قرار عمر 2026-09-17) ── شوف التعليق الكبير تحت */
+  farZoneEnabled: true,
+  farZoneMaxKm: 15,   // أبعد من كده: مرفوض نهائي (استلام من الفرع)
+  farZoneFromKm: 10,  // الرسم الإضافي بيتحسب من الكيلو ده
+  farZonePerKm: 3,    // ٣ ر.س لكل كيلو بدأ فوق farZoneFromKm
 };
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   المنطقة البعيدة — «ممكن نوصلك برسوم إضافية»
+
+   عمر (2026-09-17): «لو العميل عنوانه مش مغطي يجيله زرار: ممكن نوصلك برسوم
+   اضافية — وهو هيكون شايف بنفسه انه في الريد زون، لو وافق يتحسبله رسوم ٣
+   ريال على كل كيلو فوق العشرة».
+
+   ثلاث قواعد بتخرج من الجملة دي، وكلها متجرَّبة تحت:
+
+   ١) **الموافقة شرط.** من غير موافقة صريحة من العميل، التسعيرة بترجع نفس
+      الرد القديم (`deliverable:false`, `out_of_range`) — بالظبط عشان أي كود
+      قديم (الزرار، الدفع، إنشاء الطلب) يفضل رافض زي ما هو. الجديد بس إن
+      معاه `farZoneOffer` عشان الواجهة تعرض العرض. الموافقة بتوصل كـ
+      `farZoneAccepted:true` وساعتها بس `deliverable:true`.
+
+   ٢) **الرسم بيتحسب من ١٠ كم بالظبط**، مش من سقف المنطقة (١٠٫٩ دلوقتي).
+      عمر قال «فوق العشرة» — والفرق بين ١٠ و١٠٫٩ لصالح العميل جوّه المنطقة
+      وضدّه لو حسبناه من ١٠٫٩ بره. ولكل كيلو **بدأ** (ceil) زي perKm.
+
+   ٣) **مفيش خصم بيلمسه.** السلّم، والتوصيل المجاني فوق مبلغ، وضمان
+      التطبيقات، وكوبونات FIRST/free_delivery — كلهم بيشتغلوا على الرسم
+      الأساسي وبس. الرسم الإضافي بيتضاف **بعدهم كلهم** كسطر مستقل، لأنه مش
+      ربح: ده تكلفة كابتن حقيقية (لعجلك +٢٫٥ ر.س/كم فوق ١٠). لو خصم صفّره
+      كنا بندفع من جيبنا مشوار أطول من غير مقابل — وده بالظبط اللي الميزة
+      دي موجودة عشان تمنعه.
+
+   وعشان مانحاسبش العميل مرتين على نفس الكيلومترات: الرسم الأساسي بيتحسب
+   على مسافة مقصوصة عند `farZoneFromKm`، فـ perKm مابيشتغلش فوق ١٠ كم
+   والرسم الإضافي هو اللي بيغطّي المسافة دي لوحده.
+═══════════════════════════════════════════════════════════════════════════ */
+
+/* farZoneOf(cfg, distKm) → null (مش منطقة بعيدة) أو {km, extraKm, surcharge, maxKm}. */
+export function farZoneOf(cfgIn, distanceKm) {
+  const cfg = { ...DEFAULT_POLICY, ...(cfgIn || {}) };
+  const dist = Number(distanceKm) || 0;
+  const maxKm = Number(cfg.maxKm);
+  const farMax = Number(cfg.farZoneMaxKm);
+  if (!cfg.farZoneEnabled) return null;
+  if (!isFinite(farMax) || farMax <= 0) return null;
+  if (!isFinite(maxKm) || dist <= maxKm) return null;   // جوّه المنطقة العادية
+  if (dist > farMax) return null;                        // أبعد من السقف النهائي
+  const from = Number(cfg.farZoneFromKm);
+  const fromKm = isFinite(from) && from > 0 ? from : maxKm;
+  const perKm = Number(cfg.farZonePerKm) || 0;
+  const extraKm = Math.max(1, Math.ceil(dist - fromKm - 1e-9)); // كل كيلو بدأ
+  return { km: r2(dist), extraKm, perKm, surcharge: Math.round(extraKm * perKm), maxKm: farMax, fromKm };
+}
 
 /* ── لماذا سقفان لا سقف واحد ──────────────────────────────────────────────
    عمر حدّد شرطين مختلفين (2026-08-26): «دائرة 7 كيلو حول المطعم، بحيث يكون
@@ -138,12 +191,13 @@ export const DEFAULT_POLICY = {
    {deliverable:true, fee, distanceKm, breakdown[]} — fee in SAR, rounded to
    2dp, never negative; breakdown lines are Arabic strings the storefront can
    show so the customer sees WHY the fee is what it is. */
-export function computeDeliveryFee(cfgIn, { distanceKm, straightKm, orderTotal }) {
+export function computeDeliveryFee(cfgIn, { distanceKm, straightKm, orderTotal, farZoneAccepted = false }) {
   const cfg = { ...DEFAULT_POLICY, ...(cfgIn || {}) };
   const dist = Number(distanceKm) || 0;
   const straight = straightKm != null ? Number(straightKm) : null;
   const total = Number(orderTotal) || 0;
   const breakdown = [];
+  const far = farZoneOf(cfg, dist);
 
   /* الدايرة الهوائية أولاً — دي حدود المنطقة اللي عمر رسمها، ومرفوض بره
      الدايرة يعني مرفوض حتى لو الطريق قصير. `straightKm` اختياري: لو
@@ -154,10 +208,13 @@ export function computeDeliveryFee(cfgIn, { distanceKm, straightKm, orderTotal }
       maxStraightKm: cfg.maxStraightKm, straightKm: r2(straight), distanceKm: r2(dist),
     };
   }
-  if (cfg.maxKm != null && dist > cfg.maxKm) {
+  /* بره المنطقة: يا إما عرض «نوصلك برسوم إضافية» (لو جوّه السقف البعيد
+     والعميل لسه ماوافقش) يا إما رفض زي الأول. الموافقة بتعدّي من هنا. */
+  if (cfg.maxKm != null && dist > cfg.maxKm && !(far && farZoneAccepted)) {
     return {
       deliverable: false, reason: "out_of_range", maxKm: cfg.maxKm,
       distanceKm: r2(dist), ...(straight != null ? { straightKm: r2(straight) } : {}),
+      ...(far ? { farZoneOffer: far } : {}),
     };
   }
   if (total < (cfg.minOrderTotal || 0)) {
@@ -189,7 +246,11 @@ export function computeDeliveryFee(cfgIn, { distanceKm, straightKm, orderTotal }
   } else {
     breakdown.push(`أول ${cfg.baseKm} كم: ${r2(fee)} ر.س`);
   }
-  const extraKm = Math.max(0, Math.ceil(dist - cfg.baseKm)); // per STARTED km
+  /* في المنطقة البعيدة الرسم الأساسي بيتحسب على مسافة مقصوصة عند بداية
+     الرسم الإضافي — من غير كده perKm والرسم الإضافي هيحاسبوا العميل مرتين
+     على نفس الكيلومترات. */
+  const feeDist = far ? Math.min(dist, far.fromKm) : dist;
+  const extraKm = Math.max(0, Math.ceil(feeDist - cfg.baseKm)); // per STARTED km
   if (extraKm > 0) {
     const extra = extraKm * (Number(cfg.perKm) || 0);
     fee += extra;
@@ -236,7 +297,17 @@ export function computeDeliveryFee(cfgIn, { distanceKm, straightKm, orderTotal }
   // Whole riyals only: the fee enters the POS invoice as quantity × a 1-SAR
   // "رسوم التوصيل" product (TabSense rejects free-form amounts), so a
   // fractional fee literally cannot be booked.
-  return { deliverable: true, fee: Math.round(fee), distanceKm: r2(dist), breakdown, guard: g };
+  const feeBase = Math.round(fee);
+  /* الرسم الإضافي للمسافة — آخر سطر خالص، بعد كل خصم. أي كوبون أو ضمان أو
+     توصيل مجاني بيشتغل على feeBase وبس، والرقم ده بيفضل زي ما هو. */
+  if (far) {
+    breakdown.push(`رسوم مسافة إضافية (${far.extraKm} كم × ${r2(far.perKm)} ر.س): ${r2(far.surcharge)} ر.س`);
+  }
+  return {
+    deliverable: true, fee: feeBase + (far ? far.surcharge : 0), feeBase,
+    distanceKm: r2(dist), breakdown, guard: g,
+    ...(far ? { farZone: far } : {}),
+  };
 }
 
 const r2 = (v) => Math.round((Number(v) || 0) * 100) / 100;
@@ -731,7 +802,7 @@ export function register(app, ctx, deps = {}) {
   /* quote({lat, lng, orderTotal}) — the ONE entry point storefront + shop.js
      both use, so the customer can never be quoted one fee and charged
      another. */
-  async function quote({ lat, lng, orderTotal }) {
+  async function quote({ lat, lng, orderTotal, farZoneAccepted = false }) {
     const pol = await activePolicy();
     if (!pol) return { deliverable: false, reason: "no_policy" };
     const cfg = { ...DEFAULT_POLICY, ...pol.config };
@@ -743,7 +814,7 @@ export function register(app, ctx, deps = {}) {
       from: { lat: STORE_LAT(), lng: STORE_LNG() }, to: { lat: Number(lat), lng: Number(lng) },
     });
     const route = rk.routeKm;
-    const res = computeDeliveryFee(cfg, { distanceKm: route, straightKm: straight, orderTotal });
+    const res = computeDeliveryFee(cfg, { distanceKm: route, straightKm: straight, orderTotal, farZoneAccepted });
     // The storefront's incentives (progress bar to free delivery, min-order
     // nudge) need the thresholds, not just the verdict.
     return {
@@ -759,6 +830,12 @@ export function register(app, ctx, deps = {}) {
     minOrderTotal: cfg.minOrderTotal || 0,
     feeByTotal: Array.isArray(cfg.feeByTotal) ? cfg.feeByTotal : null,
     neverBeatenByApps: cfg.neverBeatenByApps ?? null,
+    farZone: {
+      enabled: cfg.farZoneEnabled !== false,
+      maxKm: cfg.farZoneMaxKm ?? null,
+      fromKm: cfg.farZoneFromKm ?? null,
+      perKm: cfg.farZonePerKm ?? null,
+    },
   });
   const gaps = (cfg, total) => {
     const t = Number(total) || 0;
@@ -1073,7 +1150,10 @@ export function register(app, ctx, deps = {}) {
     if (!isFinite(lat) || !isFinite(lng) || !lat || !lng) {
       return c.json({ ok: false, error: "lat/lng required" }, 400);
     }
-    return c.json({ ok: true, ...(await quote({ lat, lng, orderTotal: total })) });
+    /* far=1 → العميل شاف عرض «المنطقة البعيدة» ووافق على الرسم الإضافي.
+       من غيرها الرد بيفضل رفض + العرض، فأي واجهة قديمة مابتتغيرش. */
+    const far = ["1", "true", "yes"].includes(String(c.req.query("far") || "").toLowerCase());
+    return c.json({ ok: true, ...(await quote({ lat, lng, orderTotal: total, farZoneAccepted: far })) });
   });
 
   // PUBLIC — المنطقة المغطاة (مضلّع تقريبي) عشان الخريطة تضلّل برّه التوصيل بالأحمر.

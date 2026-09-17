@@ -51,6 +51,9 @@ export const BASE_CTE = `WITH base AS (
   SELECT o.order_no, o.status, o.option, o.total, o.subtotal, o.delivery_fee, o.tip,
          o.discount_amount, o.coupon, o.phone_norm, o.created_at, o.pay_gateway, o.attribution,
          o.attrib_source, o.items, o.alerts, o.history, o.pos_ready_at, o.accepted_at,
+         /* «المنطقة البعيدة» — محفوظة جوّه تسعيرة الطلب نفسها، مفيش عمود تاني
+            يتعارض معاها. NULL = طلب عادي جوّه النطاق. */
+         (o.delivery_quote->'farZone') AS far_zone,
          (o.created_at AT TIME ZONE 'Asia/Riyadh') AS local_at,
          o.status NOT IN ('pending_payment','expired') AS is_paid,
          o.status NOT IN ('pending_payment','expired','rejected_refunded','refund_failed') AS is_net
@@ -82,6 +85,14 @@ SELECT
   COALESCE(sum(total) FILTER (WHERE is_net AND option='delivery'),0)::float AS delivery_revenue,
   COALESCE(sum(total) FILTER (WHERE is_net AND option='pickup'),0)::float AS pickup_revenue,
   COALESCE(sum(delivery_fee) FILTER (WHERE is_net AND option='delivery'),0)::float AS delivery_fees,
+  /* المنطقة البعيدة: كام طلب، وإيرادهم، والرسم الإضافي المحصّل، ومتوسط
+     الكيلومترات الزيادة — عمر عايز يشوف هل المشوار الطويل بيدفع تمن نفسه.
+     لعجلك بتاخد ٢٫٥ ر.س/كم فوق العشرة واحنا بناخد ٣، والفرق بيتحسب فوق. */
+  count(*) FILTER (WHERE is_net AND far_zone IS NOT NULL)::int AS far_zone_orders,
+  COALESCE(sum(total) FILTER (WHERE is_net AND far_zone IS NOT NULL),0)::float AS far_zone_revenue,
+  COALESCE(sum((far_zone->>'surcharge')::numeric) FILTER (WHERE is_net AND far_zone IS NOT NULL),0)::float AS far_zone_surcharge,
+  COALESCE(sum((far_zone->>'extraKm')::numeric) FILTER (WHERE is_net AND far_zone IS NOT NULL),0)::float AS far_zone_extra_km,
+  COALESCE(max((far_zone->>'km')::numeric) FILTER (WHERE is_net AND far_zone IS NOT NULL),0)::float AS far_zone_max_km,
   COALESCE(sum(tip) FILTER (WHERE is_net),0)::float AS tips,
   COALESCE(sum(discount_amount) FILTER (WHERE is_net),0)::float AS discounts,
   count(*) FILTER (WHERE is_net AND (coupon IS NOT NULL OR discount_amount > 0))::int AS discounted_orders,
@@ -260,6 +271,30 @@ SELECT COALESCE(NULLIF(pay_gateway,''), 'unknown') AS method, count(*)::int AS o
 const r2 = (v) => Math.round((Number(v) || 0) * 100) / 100;
 const r1 = (v) => (v == null || !Number.isFinite(Number(v)) ? null : Math.round(Number(v) * 10) / 10);
 
+/* تكلفة الكيلو الزيادة عند لعجلك فوق ١٠ كم — العقد بيقول ٢ ر.س قبل الضريبة
+   (٢٫٣٠ شامل)، وعمر بيتكلم عن ٢٫٥. بنحسب بـ٢٫٥ (الأسوأ لينا) عشان الفرق
+   اللي بيظهر لعمر يبقى محافظ مش متفائل. احنا بناخد ٣ من العميل. */
+export const FAR_ZONE_COURIER_PER_KM = Number(process.env.FAR_ZONE_COURIER_PER_KM) || 2.5;
+
+/* كتلة «المنطقة البعيدة» في التقرير: هل المشوار الطويل بيدفع تمن نفسه؟ */
+export function farZoneBlock(t = {}) {
+  const orders = Number(t.far_zone_orders) || 0;
+  const extraKm = Number(t.far_zone_extra_km) || 0;
+  const surcharge = r2(t.far_zone_surcharge);
+  const courierExtra = r2(extraKm * FAR_ZONE_COURIER_PER_KM);
+  return {
+    orders,
+    revenue: r2(t.far_zone_revenue),
+    surcharge,                                   // اللي حصّلناه من العميل
+    extraKm: r2(extraKm),
+    avgExtraKm: orders ? r1(extraKm / orders) : 0,
+    maxKm: r1(t.far_zone_max_km) || 0,
+    courierExtraCost: courierExtra,              // تقدير تكلفة المندوب الزيادة
+    gap: r2(surcharge - courierExtra),           // + يعني الرسم بيغطي ويزيد
+    courierPerKm: FAR_ZONE_COURIER_PER_KM,
+  };
+}
+
 const TIME_LABELS = {
   paid_to_accepted: "من الدفع للقبول",
   accepted_to_ready: "من القبول لـ«جاهز»",
@@ -318,6 +353,7 @@ export function shapeReport({ range, totals = {}, courier = {}, daily = [], hour
       feesCollected: fees,
       courierCost: cost,
       margin: r2(fees - cost),
+      farZone: farZoneBlock(t),
       shipments: Number(courier.shipments) || 0,
       shipmentsWithoutCost: Number(courier.shipments_without_cost) || 0,
       cancelledShipments: Number(courier.cancelled_shipments) || 0,
