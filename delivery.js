@@ -25,6 +25,7 @@
 import { STORE_LAT, STORE_LNG } from "./tsstore.js";
 import { PROVIDERS, activeProvider } from "./couriers.js";
 import { emitOrder } from "./order-events.js";
+import { makeDriveDistance, resolveRouteKm } from "./drivedist.js";
 
 /* ── أحداث المندوب على ناقل الطلب (W1-05، الخطة §٤-١) ─────────────────────
    courier_dispatch / courier_update / courier_manual / courier_cancel.
@@ -636,6 +637,9 @@ export function register(app, ctx, deps = {}) {
     .then(() => console.log("[delivery] schema ready"))
     .catch((e) => console.error("[delivery] schema failed:", e.message));
 
+  const drive = deps.drive || makeDriveDistance({ pool });
+  drive.ensureSchema().catch((e) => console.error("[delivery] geo_drive_cache schema failed:", e.message));
+
   async function activePolicy() {
     const r = await pool.query(
       "SELECT id, name, config FROM dl_policies WHERE active ORDER BY priority DESC, id LIMIT 1");
@@ -650,12 +654,19 @@ export function register(app, ctx, deps = {}) {
     if (!pol) return { deliverable: false, reason: "no_policy" };
     const cfg = { ...DEFAULT_POLICY, ...pol.config };
     const straight = haversineKm(STORE_LAT(), STORE_LNG(), Number(lat), Number(lng));
-    const route = straight * (cfg.routeFactor || 1);
+    /* المشوار الحقيقي بالعربية من جوجل (drivedist.js)، ولو فشل لأي سبب
+       بنرجع لتقدير هوائي × routeFactor زي الأول بالظبط. maxKm = سقف المشوار. */
+    const rk = await resolveRouteKm({
+      cfg, straightKm: straight, drive,
+      from: { lat: STORE_LAT(), lng: STORE_LNG() }, to: { lat: Number(lat), lng: Number(lng) },
+    });
+    const route = rk.routeKm;
     const res = computeDeliveryFee(cfg, { distanceKm: route, straightKm: straight, orderTotal });
     // The storefront's incentives (progress bar to free delivery, min-order
     // nudge) need the thresholds, not just the verdict.
     return {
       ...res, straightKm: r2(straight), routeKm: r2(route),
+      driveKm: rk.driveKm != null ? r2(rk.driveKm) : null, distanceSource: rk.distanceSource,
       policyId: pol.id, policyName: pol.name, policy: publicPolicy(cfg), ...gaps(cfg, orderTotal),
     };
   }
