@@ -25,6 +25,7 @@
 import {
   PLATFORMS as ADS_PLATFORMS, canManage as adsCanManage, dailySpendData as adsDailySpend, SALES_ONLY,
 } from "./ads.js";
+import { BOT_SQL } from "./botfilter.js";
 
 const r2 = (v) => Math.round((Number(v) || 0) * 100) / 100;
 const num = (v) => (v == null || v === "" ? 0 : Number(v) || 0);
@@ -642,6 +643,7 @@ export function register(app, ctx, deps = {}) {
          FROM funnel_events
         WHERE (created_at AT TIME ZONE 'Asia/Riyadh')::date BETWEEN $1::date AND $2::date
           AND COALESCE(utm->>'utm_content','') <> ''
+          AND NOT ${BOT_SQL()}   -- زاحف مراجعة ميتا مش «جلسة» (١٧ سبتمبر)
         GROUP BY 1, 2`, [from, to]);
     return r.rows;
   }

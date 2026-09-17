@@ -40,11 +40,21 @@
    attribution) وبيحجز بـrequest.source='website'، و/api/funnel/event بيرجّع
    {duplicate:true} لأي Purchase لنفس الطلب خلال ٢٤ ساعة من غير ما يدخّل صف،
    وads.loadOrders بيستنى ٦ ساعات قبل ما يلمس طلب موقع.
+
+   مراجعة النمو (١٧ سبتمبر):
+     • Purchase مرة واحدة للطلب **للأبد** مش ٢٤ ساعة، والحجز ذرّي: عمود
+       dedup_key عليه unique index، فطلبين في نفس اللحظة (app.js + track.html
+       + serverPurchase) مايدخلوش صفين. الصف بيتحجز الأول وبعدين الإرسال.
+     • البوتات (زاحف مراجعة إعلانات ميتا وأخواته، botfilter.js) وزيارات QA
+       (utm_source=qa) مابيتسجّلوش ومابيتبعتوش للمنصات خالص.
+     • Purchase بيوصل بـfbc: لو الـcookie مااتكتبش بنبنيه من fbclid اللي
+       اتحفظ وقت الهبوط، ولو المتصفح مابعتهوش بناخده من attribution الطلب.
 ═══════════════════════════════════════════════════════════════════════════ */
 
 import crypto from "node:crypto";
 import { hashEmail, hashPhoneDigits, hashPhonePlus, phoneDigits, httpJson } from "./ads.js";
 import { MULTIPLY } from "./tsstore.js";
+import { isBotRequest, BOT_SQL } from "./botfilter.js";
 
 const env = (k) => (process.env[k] || "").trim();
 const META_VER = () => env("META_API_VERSION") || "v25.0";
@@ -81,9 +91,19 @@ function rateLimited(ip) {
 
 /* ── server-side Purchase helpers (pure — مفيش DB ولا شبكة، عشان الاختبارات) ── */
 
-// Purchase لنفس الطلب خلال المدة دي = تكرار (ريفريش صفحة التتبع، أو المتصفح
-// بعد السيرفر). بعدها بيتعامل كحدث جديد — عمر ما طلب واحد يتدفع مرتين في يوم.
-export const PURCHASE_DEDUP_HOURS = 24;
+// Purchase لنفس الطلب = تكرار مهما عدّى وقت (ريفريش صفحة التتبع بعد يومين،
+// المتصفح بعد السيرفر، إعادة محاولة). الطلب الواحد بيتدفع مرة واحدة.
+export const purchaseDedupKey = (orderId) => (orderId ? `Purchase:${String(orderId).slice(0, 64)}` : null);
+
+/* fbc = fb.1.<ms>.<fbclid>. لو الـ_fbc cookie مااتكتبش (متصفح التطبيق، مانع
+   إعلانات) بس fbclid اتحفظ، بنبنيه — ميتا بتقبل ده رسمياً. */
+export function fbcOf(click = {}, landingAt = null) {
+  if (click && click.fbc) return String(click.fbc).slice(0, 300);
+  const id = click && click.fbclid ? String(click.fbclid).trim() : "";
+  if (!id) return null;
+  const t = Date.parse(landingAt || "");
+  return `fb.1.${Number.isFinite(t) ? t : Date.now()}.${id}`.slice(0, 300);
+}
 
 // حالات مالهاش شراء حقيقي: لسه مادفعش، انتهى، أو اترفض واترجّعت فلوسه.
 const NO_PURCHASE_STATUS = /pending_payment|expired|refund|reject|cancel/;
@@ -148,7 +168,7 @@ export function serverPurchaseEvent(order, { contents = [], digits = null, now =
     email: null,
     utm: a.utm && typeof a.utm === "object" ? a.utm : {},
     click: {
-      fbp: s(click.fbp, 200), fbc: s(click.fbc, 300),
+      fbp: s(click.fbp, 200), fbc: fbcOf(click, a.landing_at),
       ttclid: s(click.ttclid, 300), ttp: s(click.ttp, 200),
       // سناب بيسمّيه ScCid في الرابط وscid في pixels.js
       scid: s(click.scid ?? click.ScCid, 300),
@@ -207,6 +227,10 @@ export function register(app, ctx, deps = {}) {
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
       );
       CREATE INDEX IF NOT EXISTS go_clicks_time_idx ON go_clicks(target, created_at DESC);
+
+      -- Purchase مرة واحدة للطلب (١٧ سبتمبر): حجز ذرّي. الصفوف القديمة null.
+      ALTER TABLE funnel_events ADD COLUMN IF NOT EXISTS dedup_key TEXT;
+      CREATE UNIQUE INDEX IF NOT EXISTS funnel_events_dedup_uq ON funnel_events(dedup_key) WHERE dedup_key IS NOT NULL;
     `);
   }
   ensureSchema()
@@ -388,16 +412,16 @@ export function register(app, ctx, deps = {}) {
     if (!id) return null;
     try {
       const r = await pool.query(
-        `SELECT order_no, pos_order_id, total FROM shop_orders
+        `SELECT order_no, pos_order_id, total, attribution FROM shop_orders
           WHERE pos_order_id = $1 OR order_no = $1
           ORDER BY created_at DESC LIMIT 1`, [String(id)]);
       return r.rows[0] || null;
     } catch { return null; }
   }
 
-  /* فيه Purchase متسجّل لأي id من دول خلال ٢٤ ساعة؟ (G3: ريفريش التتبع +
-     إطلاق مزدوج). لو الفحص نفسه فشل بنكمّل — الحجز في ads_events لسه بيمنع
-     الإرسال المزدوج للمنصات، واللي بيضيع بس دقة العدّاد. */
+  /* فيه Purchase متسجّل لأي id من دول؟ (ريفريش التتبع + إطلاق مزدوج + صفوف
+     قبل dedup_key). لو الفحص نفسه فشل بنكمّل — الحجز الذرّي (claimPurchaseRow)
+     والحجز في ads_events لسه بيمنعوا التكرار. */
   async function recentPurchase(ids) {
     const list = [...new Set(ids.filter(Boolean).map(String))];
     if (!list.length) return false;
@@ -405,8 +429,7 @@ export function register(app, ctx, deps = {}) {
       const r = await pool.query(
         `SELECT 1 FROM funnel_events
           WHERE event_name = 'Purchase' AND order_id = ANY($1::text[])
-            AND created_at > NOW() - ($2 || ' hours')::interval
-          LIMIT 1`, [list, String(PURCHASE_DEDUP_HOURS)]);
+          LIMIT 1`, [list]);
       return r.rowCount > 0;
     } catch (err) {
       console.error("[funnel] dedup check failed:", err.message);
@@ -423,6 +446,33 @@ export function register(app, ctx, deps = {}) {
        e.contents.length ? jb(e.contents) : null]).catch((err) => {
         console.error("[funnel] store failed:", err.message);
       });
+  }
+
+  /* Purchase: الصف بيتحجز **قبل** الإرسال بمفتاح dedup_key الفريد. رجوع null =
+     الطلب اتسجّل قبل كده (أو بيتسجّل دلوقتي من مسار تاني) → duplicate.
+     لو الحجز نفسه وقع لسبب تاني (الداتابيز)، بنرجّع "unclaimed" ونكمّل زي
+     الأول — ads_events لسه بيمنع الإرسال المزدوج للمنصة. */
+  async function claimPurchaseRow(e, pnLocal) {
+    const id = crypto.randomUUID();
+    try {
+      const r = await pool.query(
+        `INSERT INTO funnel_events (id, event_name, event_id, order_id, value, currency, url, referrer, utm, click_ids, phone_norm, ip, ua, results, contents, dedup_key)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
+         ON CONFLICT (dedup_key) WHERE dedup_key IS NOT NULL DO NOTHING
+         RETURNING id`,
+        [id, e.name, e.eventId, e.orderId, e.value, e.currency, e.url, e.referrer,
+         jb(e.utm || {}), jb(e.click), pnLocal || null, e.ip, e.ua, jb({ pending: true }),
+         e.contents.length ? jb(e.contents) : null, purchaseDedupKey(e.orderId)]);
+      return r.rowCount > 0 ? id : null;
+    } catch (err) {
+      console.error("[funnel] purchase claim failed:", err.message);
+      return "unclaimed";
+    }
+  }
+  async function finishPurchaseRow(rowId, e, pnLocal, results) {
+    if (rowId === "unclaimed") return storeEvent(e, { pnLocal, results });
+    await pool.query(`UPDATE funnel_events SET results=$2 WHERE id=$1`, [rowId, jb(results)])
+      .catch((err) => console.error("[funnel] purchase results update failed:", err.message));
   }
 
   /* ═══ serverPurchase ══════════════════════════════════════════════════
@@ -456,8 +506,10 @@ export function register(app, ctx, deps = {}) {
     const baseUrl = (env("STOREFRONT_PUBLIC_URL") || "https://freshcuts.sa").split(",")[0].trim().replace(/\/+$/, "");
     const e = serverPurchaseEvent(order, { contents, digits, baseUrl });
 
+    const rowId = await claimPurchaseRow(e, pnLocal);
+    if (!rowId) return { ok: true, duplicate: true, orderId: String(order.pos_order_id) };
     const results = await forwardAll(e, { claimSource: "website" });
-    await storeEvent(e, { pnLocal, results });
+    await finishPurchaseRow(rowId, e, pnLocal, results);
     if (attribution?.linkOrder) {
       attribution.linkOrder({ orderId: e.orderId }).catch((err) => {
         console.error("[funnel] link-lead failed:", err.message);
@@ -492,6 +544,11 @@ export function register(app, ctx, deps = {}) {
     const name = String(b.eventName || "");
     if (!EVENT_NAMES.has(name)) return c.json({ ok: false, error: "unknown eventName" }, 400);
 
+    // زاحف/معاينة رابط/زيارة QA: مابيتسجّلش ومابيتبعتش لأي منصة (botfilter.js)
+    const bot = isBotRequest({ ua: c.req.header("user-agent"), ip });
+    if (bot) return c.json({ ok: true, ignored: `bot:${bot}` });
+    if (String((b.utm && b.utm.utm_source) || "").toLowerCase() === "qa") return c.json({ ok: true, ignored: "qa" });
+
     let value = Math.round((Number(b.value) || 0) * 100) / 100;
     if (value < 0 || value > 100000) return c.json({ ok: false, error: "value out of range" }, 400);
     let orderId = b.orderId ? String(b.orderId).slice(0, 64) : null;
@@ -501,7 +558,7 @@ export function register(app, ctx, deps = {}) {
        وserverPurchase)، والحجز بيتسجّل website. لو نفس الطلب اتسجّل Purchase
        خلال ٢٤ ساعة (ريفريش التتبع، app.js + track.html، أو السيرفر سبق) →
        duplicate من غير إدراج ولا إرسال. */
-    let claimSource = "funnel";
+    let claimSource = "funnel", shopAttr = null;
     if (name === "Purchase" && orderId) {
       const shop = await findShopOrder(orderId);
       if (shop) {
@@ -513,13 +570,18 @@ export function register(app, ctx, deps = {}) {
         // القيمة من shop_orders.total (اللي اتدفع فعلاً) مش من المتصفح — الراوت
         // عام، والمتصفح ساعات بيبعت صفر أو قيمة قديمة من fc_last_value.
         if (Number(shop.total) > 0) value = r2(shop.total);
+        shopAttr = shop.attribution && typeof shop.attribution === "object" ? shop.attribution : null;
       }
       if (await recentPurchase([orderId, b.orderId, shop?.order_no])) {
         return c.json({ ok: true, duplicate: true });
       }
     }
     const url = String(b.url || "").slice(0, 500);
-    const clicks = b.clickIds && typeof b.clickIds === "object" ? b.clickIds : {};
+    // Purchase لطلب متجر: الـclick ids اللي اتسجّلت على الطلب وقت الـcheckout
+    // بتسد اللي المتصفح مابعتهوش (صفحة التتبع ساعات بتفتح في متصفح تاني).
+    const orderClicks = shopAttr && shopAttr.click && typeof shopAttr.click === "object" ? shopAttr.click : {};
+    const bodyClicks = b.clickIds && typeof b.clickIds === "object" ? b.clickIds : {};
+    const clicks = { ...orderClicks, ...Object.fromEntries(Object.entries(bodyClicks).filter(([, v]) => v)) };
     const utm = b.utm && typeof b.utm === "object" ? b.utm : {};
     const pnLocal = b.phone ? normPhone(b.phone) : "";
     const digits = pnLocal ? phoneDigits(pnLocal, normPhone) : null;
@@ -548,7 +610,8 @@ export function register(app, ctx, deps = {}) {
       digits, email: b.email ? String(b.email).slice(0, 200) : null,
       click: {
         fbp: String(clicks.fbp || "").slice(0, 200) || null,
-        fbc: String(clicks.fbc || "").slice(0, 300) || null,
+        fbc: fbcOf({ fbc: clicks.fbc, fbclid: clicks.fbclid ? String(clicks.fbclid).slice(0, 250) : null },
+          shopAttr ? shopAttr.landing_at : null) || null,
         ttclid: String(clicks.ttclid || "").slice(0, 300) || null,
         ttp: String(clicks.ttp || "").slice(0, 200) || null,
         scid: String(clicks.scid || "").slice(0, 300) || null,
@@ -565,8 +628,16 @@ export function register(app, ctx, deps = {}) {
     };
 
 
-    const results = await forwardAll(e, { claimSource });
-    await storeEvent(e, { pnLocal, results });
+    let results;
+    if (name === "Purchase" && orderId) {
+      const rowId = await claimPurchaseRow(e, pnLocal);
+      if (!rowId) return c.json({ ok: true, duplicate: true });
+      results = await forwardAll(e, { claimSource });
+      await finishPurchaseRow(rowId, e, pnLocal, results);
+    } else {
+      results = await forwardAll(e, { claimSource });
+      await storeEvent(e, { pnLocal, results });
+    }
 
     // A Purchase with an order id closes the loop: the same phone (or the same
     // order id) may already be sitting in this table as a Lead from an ad. Link
@@ -597,6 +668,8 @@ export function register(app, ctx, deps = {}) {
     try { b = await c.req.json(); } catch { return c.json({ ok: false, error: "invalid JSON" }, 400); }
     const target = String(b.target || "").toLowerCase().slice(0, 32);
     if (!GO_TARGETS.has(target)) return c.json({ ok: false, error: "unknown target" }, 400);
+    // storefront /go بيبعت ua/ip بتوع العميل (الهيدر هنا بتاع python-httpx)
+    if (isBotRequest({ ua: b.ua != null ? b.ua : c.req.header("user-agent"), ip: b.ip != null ? b.ip : ip })) return c.json({ ok: true, ignored: "bot" });
     await pool.query(
       `INSERT INTO go_clicks (id, target, utm, referrer, ip, ua) VALUES ($1,$2,$3,$4,$5,$6)`,
       [crypto.randomUUID(), target,
@@ -713,9 +786,10 @@ export function register(app, ctx, deps = {}) {
 
   async function funnelStats({ days = 7, from = null, to = null } = {}) {
     const ranged = !!(from && to);
-    const where = ranged
+    // صفوف الزواحف اللي اتسجّلت قبل botfilter (١٧ سبتمبر) مابتدخلش الأرقام
+    const where = (ranged
       ? `${BIZ_DAY} BETWEEN $1::date AND $2::date`
-      : `created_at > NOW() - ($1 || ' days')::interval`;
+      : `created_at > NOW() - ($1 || ' days')::interval`) + ` AND NOT ${BOT_SQL()}`;
     const params = ranged ? [from, to] : [String(days)];
 
     const r = await pool.query(

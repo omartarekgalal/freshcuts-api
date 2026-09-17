@@ -28,6 +28,7 @@ import { promisify } from "node:util";
 import { IDENT_SQL, SALES_ONLY, deliverySql, WEBSITE_SQL } from "./analytics.js";
 // نفس قواعد الـSLA بتاعة الـwatchdog — لوحة التشغيل مابتكتبش كتاب قواعد تاني
 import { slaCheck, DEFAULT_SLA } from "./shop.js";
+import { isBotRequest } from "./botfilter.js";
 // قواعد الباقات (توزيع السعر والتوسيع) — صافية ومتجرّبة أوفلاين في bundles.test.mjs
 import * as bundlesLib from "./bundles.js";
 // كتالوج تاب سينس: الأسعار الحقيقية للباقات (العميل مابيبعتش سعر أبداً)
@@ -1700,6 +1701,19 @@ export function register(app, ctx, deps = {}) {
     });
   });
 
+  const _linkSeen = new Map();   // "slug|ip" → آخر ضغطة اتعدّت (ms)
+  function linkClickCounts({ slug, ua, ip, qa }, now = Date.now()) {
+    if (qa || isBotRequest({ ua, ip })) return false;
+    const ipS = String(ip || "").trim();
+    if (!ipS) return true;                     // بروكسي قديم مابيبعتش IP: نعدّ زي الأول
+    const k = `${slug}|${ipS}`;
+    const last = _linkSeen.get(k);
+    if (last && now - last < 30 * 60_000) return false;
+    if (_linkSeen.size > 20000) _linkSeen.clear();
+    _linkSeen.set(k, now);
+    return true;
+  }
+
   /* روابط الحملات — freshcuts.sa/l/<slug>. البروكسي بينادي resolve (عام)
      اللي بيعدّ الضغطة ويبني رابط الهبوط، فالقواعد في مكان واحد. */
   const MEDIUM = { influencer: "influencer", whatsapp: "message", sms: "message", qr: "offline" };
@@ -1774,12 +1788,20 @@ export function register(app, ctx, deps = {}) {
 
   // عام: البروكسي بيناديه لما حد يضغط /l/<slug>. رابط موقوف/مش موجود = 404،
   // والبروكسي ساعتها بيودّي على الرئيسية (الإعلان الشغّال عمره ما يقع).
+  // العدّاد (١٧ سبتمبر): كان ×١٢ من الحقيقة (زاحف مراجعة ميتا + تكرار نفس
+  // الشخص). دلوقتي: البوت وزيارة QA مابيتعدّوش، ونفس الـIP على نفس الرابط
+  // بيتعد مرة واحدة كل ٣٠ دقيقة. الرابط نفسه بيرجع عادي في كل الحالات.
   app.post("/api/cms/links/resolve/:slug", async (c) => {
     const slug = String(c.req.param("slug") || "").toLowerCase();
     if (!slugOk(slug)) return c.json({ ok: false }, 404);
-    const r = await pool.query(
-      `UPDATE cms_links SET clicks = clicks + 1, last_click_at = NOW()
-        WHERE slug=$1 AND active RETURNING *`, [slug]);
+    let body = {};
+    try { body = await c.req.json(); } catch { body = {}; }
+    const count = linkClickCounts({ slug, ua: body.ua, ip: body.ip, qa: body.qa === true });
+    const r = count
+      ? await pool.query(
+        `UPDATE cms_links SET clicks = clicks + 1, last_click_at = NOW()
+          WHERE slug=$1 AND active RETURNING *`, [slug])
+      : await pool.query(`SELECT * FROM cms_links WHERE slug=$1 AND active`, [slug]);
     const l = r.rows[0];
     if (!l) return c.json({ ok: false }, 404);
     const q = new URLSearchParams();

@@ -7,7 +7,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { Hono } from "hono";
 import * as tsstore from "./tsstore.js";
-import { register, purchaseContentsOf, serverPurchaseEvent, PURCHASE_DEDUP_HOURS } from "./funnel.js";
+import { register, purchaseContentsOf, serverPurchaseEvent, purchaseDedupKey, fbcOf } from "./funnel.js";
+import { isBotRequest, isMetaIp, BOT_SQL } from "./botfilter.js";
 import { loadOrdersQuery, WEB_ORDER_HOLD_HOURS } from "./ads.js";
 
 const M = tsstore.MULTIPLY;
@@ -38,21 +39,28 @@ function fakeDb({ shopOrders = [] } = {}) {
         const o = db.shopOrders.find((x) => x.order_no === params[0]);
         return { rows: o ? [{ o }] : [], rowCount: o ? 1 : 0 };
       }
-      if (s.includes("SELECT order_no, pos_order_id, total FROM shop_orders")) {
+      if (s.includes("SELECT order_no, pos_order_id, total, attribution FROM shop_orders")) {
         const o = db.shopOrders.find((x) => x.pos_order_id === params[0] || x.order_no === params[0]);
-        return { rows: o ? [{ order_no: o.order_no, pos_order_id: o.pos_order_id, total: o.total }] : [], rowCount: o ? 1 : 0 };
+        return { rows: o ? [{ order_no: o.order_no, pos_order_id: o.pos_order_id, total: o.total, attribution: o.attribution }] : [], rowCount: o ? 1 : 0 };
       }
       if (s.includes("FROM funnel_events") && s.includes("event_name = 'Purchase'")) {
-        const ids = params[0], hours = Number(params[1]);
-        const hit = db.funnel.find((r) => r.event_name === "Purchase" && ids.includes(r.order_id)
-          && r.created_at > db.now() - hours * HOUR);
+        assert.equal(params.length, 1, "no time window any more — one Purchase per order, ever");
+        const ids = params[0];
+        const hit = db.funnel.find((r) => r.event_name === "Purchase" && ids.includes(r.order_id));
         return { rows: hit ? [{ "?column?": 1 }] : [], rowCount: hit ? 1 : 0 };
       }
       if (s.includes("INSERT INTO funnel_events")) {
+        const dedup = s.includes("dedup_key") ? params[15] : null;
+        if (dedup && db.funnel.some((r) => r.dedup_key === dedup)) return { rows: [], rowCount: 0 };
         db.funnel.push({ id: params[0], event_name: params[1], event_id: params[2], order_id: params[3],
           value: params[4], url: params[6], utm: params[8], click_ids: params[9], phone_norm: params[10],
-          ip: params[11], ua: params[12], results: params[13], contents: params[14], created_at: db.now() });
-        return { rows: [], rowCount: 1 };
+          ip: params[11], ua: params[12], results: params[13], contents: params[14], dedup_key: dedup, created_at: db.now() });
+        return { rows: dedup ? [{ id: params[0] }] : [], rowCount: 1 };
+      }
+      if (s.includes("UPDATE funnel_events SET results")) {
+        const row = db.funnel.find((r) => r.id === params[0]);
+        if (row) row.results = params[1];
+        return { rows: [], rowCount: row ? 1 : 0 };
       }
       if (s.includes("INSERT INTO ads_events")) {
         const key = `${params[1]}|${params[5]}|Purchase`;
@@ -249,13 +257,94 @@ test("route: Purchase بنفس orderId مرتين خلال ٢٤ ساعة → ا�
   assert.equal(db.ads.get("9001|meta|Purchase").request.source, "funnel");
 });
 
-test("route: بعد ٢٤ ساعة نفس الـorderId مابيتعتبرش تكرار في funnel_events", async () => {
-  const { db, post } = setup({ ipBase: 6 });
+test("route: نفس الـorderId بعد أيام لسه duplicate — Purchase مرة واحدة للطلب (١٧ سبتمبر)", async () => {
+  const { db, calls, post } = setup({ ipBase: 6 });
   await post({ eventName: "Purchase", orderId: "9002", value: 50 });
-  db.funnel[0].created_at -= (PURCHASE_DEDUP_HOURS + 1) * HOUR;
+  db.funnel[0].created_at -= 72 * HOUR;
   const again = await post({ eventName: "Purchase", orderId: "9002", value: 50 });
-  assert.equal(again.duplicate, undefined);
-  assert.equal(db.funnel.length, 2);
+  assert.deepEqual(again, { ok: true, duplicate: true });
+  assert.equal(db.funnel.length, 1);
+  assert.equal(calls.length, 1);
+  assert.equal(db.funnel[0].dedup_key, purchaseDedupKey("9002"));
+  assert.equal(JSON.parse(db.funnel[0].results).meta.sent, true, "results filled in after the send");
+});
+
+test("route: ٥ Purchase لنفس الطلب في نفس اللحظة (متصفح + تتبع + سيرفر) → صف واحد وإرسال واحد", async () => {
+  const { db, calls, api, post } = setup({ shopOrders: [paidOrder()], ipBase: 11 });
+  const outs = await Promise.all([
+    post({ eventName: "Purchase", orderId: "4017", value: 119 }),
+    post({ eventName: "Purchase", orderId: "W1789000000001", value: 119 }),
+    post({ eventName: "Purchase", orderId: "4017", value: 119 }),
+    api.serverPurchase({ orderNo: "W1789000000001" }),
+    api.serverPurchase({ orderNo: "W1789000000001" }),
+  ]);
+  assert.equal(db.funnel.filter((r) => r.event_name === "Purchase").length, 1);
+  assert.equal(calls.length, 1);
+  assert.equal(outs.filter((o) => o.duplicate).length, 4);
+});
+
+/* ── بوتات + QA + fbc ─────────────────────────────────────────────────── */
+
+test("botfilter: زاحف ميتا بالـUA أو بالـIP، والناس العادية لأ", () => {
+  assert.equal(isBotRequest({ ua: "facebookexternalhit/1.1 (+http://www.facebook.com/externalhit_uatext.php)" }), "ua");
+  assert.equal(isBotRequest({ ua: "meta-externalagent/1.1 (+https://developers.facebook.com/docs/sharing/webmasters/crawler)" }), "ua");
+  assert.equal(isBotRequest({ ua: "Mozilla/5.0 (compatible; Facebot)" }), "ua");
+  assert.equal(isBotRequest({ ua: "Mozilla/5.0 (Windows NT 10.0) AppleWebKit/537.36 HeadlessChrome/120.0 Safari/537.36" }), "ua");
+  assert.equal(isBotRequest({ ua: "Mozilla/5.0 (compatible; bingbot/2.0) BingPreview/1.0b" }), "ua");
+  // مراجعة الإعلان: UA موبايل عادي بس من شبكة ميتا
+  const reviewUa = "Mozilla/5.0 (iPhone; CPU iPhone OS 18_7 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148";
+  assert.equal(isBotRequest({ ua: reviewUa, ip: "2a03:2880:f806:1::" }), "meta_ip");
+  assert.equal(isBotRequest({ ua: reviewUa, ip: "69.171.249.12" }), "meta_ip");
+  assert.equal(isBotRequest({ ua: reviewUa, ip: "173.252.107.3" }), "meta_ip");
+  assert.equal(isBotRequest({ ua: reviewUa, ip: "57.141.0.9" }), "meta_ip");
+  assert.equal(isMetaIp("::ffff:31.13.103.5"), true);
+  // عميل حقيقي جوّه متصفح فيسبوك من شبكة STC/موبايلي
+  const fbIab = "Mozilla/5.0 (iPhone; CPU iPhone OS 18_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 [FBAN/FBIOS;FBAV/500.0]";
+  assert.equal(isBotRequest({ ua: fbIab, ip: "51.36.12.4" }), false);
+  assert.equal(isBotRequest({ ua: "Mozilla/5.0 (Linux; Android 14; SM-S918B) Chrome/140 Mobile Instagram 350.0", ip: "2001:16a2:c0a1::5" }), false);
+  assert.equal(isMetaIp("69.171.0.1"), false, "خارج /19 بتاع ميتا");
+  assert.equal(isMetaIp("not-an-ip"), false);
+  assert.match(BOT_SQL("f"), /f\.ua/);
+});
+
+test("route: البوت والـQA مابيتسجّلوش ومابيتبعتوش", async () => {
+  const { db, calls, app } = setup({ ipBase: 12 });
+  const send = (headers, body) => app.request("/api/funnel/event", {
+    method: "POST", headers: { "Content-Type": "application/json", ...headers }, body: JSON.stringify(body),
+  }).then((r) => r.json());
+  const pv = { eventName: "PageView", utm: { utm_source: "meta", utm_content: "96-m2-kilo-a" }, clickIds: { fbclid: "x" } };
+  assert.deepEqual(await send({ "cf-connecting-ip": "2a03:2880:f806::1", "user-agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 18_7)" }, pv),
+    { ok: true, ignored: "bot:meta_ip" });
+  assert.deepEqual(await send({ "cf-connecting-ip": "5.5.5.5", "user-agent": "facebookexternalhit/1.1" }, { eventName: "Contact" }),
+    { ok: true, ignored: "bot:ua" });
+  assert.deepEqual(await send({ "cf-connecting-ip": "5.5.5.6", "user-agent": "Mozilla/5.0 (iPhone)" }, { eventName: "PageView", utm: { utm_source: "qa" } }),
+    { ok: true, ignored: "qa" });
+  assert.equal(db.funnel.length, 0);
+  assert.equal(calls.length, 0);
+});
+
+test("fbcOf: الكوكي بيكسب، وإلا بيتبني من fbclid بوقت الهبوط", () => {
+  assert.equal(fbcOf({ fbc: "fb.1.1.A", fbclid: "B" }), "fb.1.1.A");
+  assert.equal(fbcOf({ fbclid: "B" }, "2026-09-17T08:00:00.000Z"), `fb.1.${Date.parse("2026-09-17T08:00:00.000Z")}.B`);
+  assert.match(fbcOf({ fbclid: "B" }), /^fb\.1\.\d+\.B$/);
+  assert.equal(fbcOf({}), null);
+  assert.equal(fbcOf(null), null);
+});
+
+test("serverPurchase: attribution فيها fbclid بس (من غير _fbc) → Purchase بيروح بـfbc", async () => {
+  const order = paidOrder({ attribution: { fc_link: "96-m2-box-b", utm: { utm_source: "meta" }, click: { fbclid: "IwAR-XYZ", fbp: "fb.1.2.3" }, landing_at: "2026-09-17T08:31:00.000Z", ip: "5.6.7.8", ua: "UA" } });
+  const { calls, api } = setup({ shopOrders: [order], ipBase: 13 });
+  await api.serverPurchase({ orderNo: "W1789000000001" });
+  assert.equal(calls[0].init.body.data[0].user_data.fbc, `fb.1.${Date.parse("2026-09-17T08:31:00.000Z")}.IwAR-XYZ`);
+  assert.equal(calls[0].init.body.data[0].user_data.fbp, "fb.1.2.3");
+});
+
+test("route: Purchase من صفحة تتبع من غير click ids → بياخد fbc/fbp من attribution الطلب", async () => {
+  const { calls, post } = setup({ shopOrders: [paidOrder()], ipBase: 14 });
+  await post({ eventName: "Purchase", orderId: "W1789000000001", value: 119, clickIds: { fbp: null, fbc: null } });
+  const ud = calls[0].init.body.data[0].user_data;
+  assert.equal(ud.fbc, "fb.1.1726400000000.TEST123");
+  assert.equal(ud.fbp, "fb.1.1726400000000.999");
 });
 
 test("route: السيرفر سبق المتصفح → Purchase المتصفح (ولو بـW…) duplicate", async () => {

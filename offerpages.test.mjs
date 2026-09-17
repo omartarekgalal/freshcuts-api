@@ -144,7 +144,8 @@ function fakePool({ bundleRows = bundles(), pages = null, failPages = false } = 
         return { rows: [{ id: this.audit.length }] };
       }
       if (/^UPDATE cms_audit SET note/i.test(s)) { this.audit[p[0] - 1].note = p[1]; return { rows: [], rowCount: 1 }; }
-      if (/^UPDATE cms_links SET clicks/i.test(s)) {
+      if (/^UPDATE cms_links SET clicks/i.test(s) || /^SELECT \* FROM cms_links WHERE slug=\$1 AND active/i.test(s)) {
+        if (/^UPDATE/i.test(s)) this.linkClicks = (this.linkClicks || 0) + 1;
         return { rows: p[0] === "96-kilo" ? [{ slug: "96-kilo", target_type: "offer", target_id: "nd96_kilo",
           utm_source: "tiktok", utm_medium: "paid", utm_campaign: "nd96", coupon: null }] : [] };
       }
@@ -457,6 +458,29 @@ test("resolve لرابط target_type=offer بيرجع /?…go=offers&offer=nd96_
   assert.equal(u.searchParams.get("utm_source"), "tiktok");
   assert.equal(u.searchParams.get("fc_link"), "96-kilo");
   assert.equal(u.searchParams.get("p"), null);
+});
+
+/* ٩ب */
+test("resolve: زاحف ميتا وQA مابيتعدّوش، ونفس الـIP بيتعد مرة كل ٣٠ دقيقة — والرابط بيرجع في كل الحالات", async () => {
+  const { call, pool } = makeApp();
+  const hit = (body) => call("POST", "/api/cms/links/resolve/96-kilo", body);
+  const iphone = "Mozilla/5.0 (iPhone; CPU iPhone OS 18_7 like Mac OS X) Mobile/15E148 [FBAN/FBIOS]";
+  for (const body of [
+    { ua: "facebookexternalhit/1.1", ip: "5.5.5.5" },
+    { ua: iphone, ip: "2a03:2880:f806::7" },               // مراجعة الإعلان من شبكة ميتا
+    { ua: iphone, ip: "51.36.1.1", qa: true },
+  ]) {
+    const r = await hit(body);
+    assert.equal(r.status, 200);
+    assert.equal(new URL(r.body.url, "https://freshcuts.sa").searchParams.get("offer"), "nd96_kilo");
+  }
+  assert.equal(pool.linkClicks || 0, 0);
+  await hit({ ua: iphone, ip: "51.36.1.2" });
+  await hit({ ua: iphone, ip: "51.36.1.2" });               // نفس الشخص ضغط تاني
+  await hit({ ua: iphone, ip: "51.36.1.3" });
+  assert.equal(pool.linkClicks, 2);
+  await hit();                                              // بروكسي قديم من غير جسم: بيتعد زي الأول
+  assert.equal(pool.linkClicks, 3);
 });
 
 /* ١٠ */

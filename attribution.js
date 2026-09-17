@@ -39,6 +39,7 @@
 
 import crypto from "node:crypto";
 import { PLATFORMS, canManage, missingOf } from "./ads.js";
+import { BOT_SQL } from "./botfilter.js";
 
 /* ── القنوات ────────────────────────────────────────────────────────────────
    التسعة الأساسيين بيرجعوا دايماً حتى لو أصفار. influencer و referral
@@ -201,6 +202,7 @@ export const SQL_ROLL_LEADS = `
     FROM funnel_events
    WHERE event_name IN ('Contact','Lead')
      AND (created_at AT TIME ZONE 'Asia/Riyadh')::date BETWEEN $1::date AND $2::date
+     AND NOT ${BOT_SQL()}
    GROUP BY 1,2,3
   ON CONFLICT (day, channel, campaign) DO UPDATE SET leads=EXCLUDED.leads`;
 
