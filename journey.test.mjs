@@ -135,7 +135,7 @@ function fakePool() {
       calls.push({ sql: String(sql), params });
       if (/INSERT INTO journey_events/.test(sql)) {
         const rows = [];
-        for (let i = 0; i < params.length; i += 8) {
+        for (let i = 0; i < params.length; i += 9) {
           rows.push({ name: params[i + 2], step: params[i + 3], props: JSON.parse(params[i + 6]), order_no: params[i + 7] });
         }
         return { rows, rowCount: rows.length };
