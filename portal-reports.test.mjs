@@ -91,3 +91,49 @@ test("SQL: مفيش كلمة محجوزة في Postgres مستخدمة كاسم 
     }
   }
 });
+
+/* ═══ أداء شركة التوصيل — محطّتا المندوب (١٧ سبتمبر) ═════════════════════ */
+
+test("shapeReport: أوقات محطّات المندوب + عدّ «وصل قبل/بعد ما الأكل يجهز»", () => {
+  const r = shapeReport({
+    range: { from: "2026-09-16", to: "2026-09-17", days: 2 },
+    courierTimes: [
+      { k: "ready_to_arrived", n: 8, avg: -3.44, median: -2.1, p90: 6.77 },
+      { k: "arrived_to_picked", n: 8, avg: 4.25, median: 3.9, p90: 9.1 },
+      { k: "courier_picked_to_delivered", n: 7, avg: 21.36, median: 20, p90: 33.2 },
+    ],
+    courierMilestones: { shipments: 10, with_arrived: 8, with_picked: 9,
+      arrived_before_ready: 5, arrived_after_ready: 3, providers: 1, provider: "leajlak" },
+    courierDaily: [{ day: "2026-09-17", shipments: 6, with_arrived: 5, ready_to_arrived: -2.55,
+      arrived_to_picked: 4.4, picked_to_delivered: 19.9, arrived_before_ready: 3, arrived_after_ready: 2 }],
+  });
+  assert.deepEqual(r.times.ready_to_arrived,
+    { label: "من «جاهز» لوصول المندوب المطعم", n: 8, avgMin: -3.4, medianMin: -2.1, p90Min: 6.8 });
+  assert.equal(r.times.arrived_to_picked.avgMin, 4.3);
+  assert.equal(r.times.courier_picked_to_delivered.n, 7);
+  assert.equal(r.courierPerf.shipments, 10);
+  assert.equal(r.courierPerf.withArrived, 8);
+  assert.equal(r.courierPerf.arrivedBeforeReady, 5, "المندوب استنّى المطعم");
+  assert.equal(r.courierPerf.arrivedAfterReady, 3, "المطعم استنّى المندوب");
+  assert.equal(r.courierPerf.coveragePct, 80);
+  assert.equal(r.courierPerf.provider, "leajlak");
+  assert.equal(r.courierPerf.daily[0].readyToArrivedMin, -2.5);
+  assert.equal(r.courierPerf.daily[0].arrivedBeforeReady, 3);
+});
+
+test("shapeReport: مافيش شحنات = مفيش تغطية مخترعة", () => {
+  const r = shapeReport({ range: { from: "2026-09-17", to: "2026-09-17", days: 1 } });
+  assert.equal(r.courierPerf.shipments, 0);
+  assert.equal(r.courierPerf.coveragePct, null, "مش صفر% — إحنا مش عارفين أصلاً");
+  assert.deepEqual(r.courierPerf.daily, []);
+  assert.equal(r.times.ready_to_arrived.n, 0);
+});
+
+test("SQL: استعلامات المندوب بتستبعد اليدوي والملغي", () => {
+  for (const k of ["courierTimes", "courierMilestones", "courierDaily"]) {
+    const sql = SQL[k];
+    assert.match(sql, /provider <> 'manual'/, `${k}: الشحنة اليدوية مالهاش إشارات`);
+    assert.match(sql, /status <> 'cancelled'/, `${k}: الملغي مش أداء`);
+    assert.match(sql, /option = 'delivery'/, `${k}: الاستلام مالوش مندوب`);
+  }
+});

@@ -258,17 +258,105 @@ export function stageLabel(row) {
   }
 }
 
+/* ═══════════════════════════════════════════════════════════════════════════
+   أسماء الأصناف في الشاشة (١٧ سبتمبر ٢٠٢٦ — بلاغ عمر: «بعضها بيظهر برقم»).
+
+   السلة اللي جاية من المتصفح فيها product_id وكمية وسعر بس — الاسم مابيوصلش.
+   قبل كده الشاشة كانت بتكتب «منتج ١٠٥»، وده رقم مالوش أي معنى للكاشير.
+   الحل بيشتغل على ٣ طبقات:
+     ١) الاسم بيتحل **وقت الشيك أوت** من قايمة تاب سينس ويتخزّن في الطلب
+        (product-names.js) — فالتقارير والمطبخ والبورتال يشوفوه من غير شبكة.
+     ٢) الطلبات القديمة اتعمل لها backfill بنفس المحلّل.
+     ٣) والبورتال بيحلّ أي اسم ناقص وقت القراية كمان (حزام وحمّالة).
+   ولو الصنف فعلاً مجهول (اتشال من القايمة مثلاً) بيظهر «صنف #١٠٥» — واضح
+   إنه مرجع داخلي، مش اسم أكل.
+
+   الباقة: سطورها في الداتابيز أصناف حقيقية متوسّعة. الشاشة بتلمّهم تحت
+   عنوان واحد باسم الباقة، ومكوّناتها متزاحة تحته (level = 1).
+═══════════════════════════════════════════════════════════════════════════ */
+export const UNKNOWN_ITEM = (id) => (id == null || id === "" ? "صنف غير معروف" : `صنف #${id}`);
+
+/* اسم سطر واحد: الاسم + الوزن/الحجم («كفتة مشوية بالوزن — كيلو») */
+export function lineName(it) {
+  const raw = String(it?.name ?? it?.product_name ?? "").trim();
+  const base = (raw || UNKNOWN_ITEM(it?.product_id ?? null)).slice(0, 120);
+  const variant = String(it?.variant_name ?? "").trim();
+  return variant ? `${base} — ${variant.slice(0, 40)}` : base;
+}
+
+/* سطر باسم حقيقي؟ (عكسه = لسه محتاج يتحل من القايمة) */
+export const hasRealName = (it) =>
+  Boolean(String(it?.name ?? it?.product_name ?? "").trim());
+
+const lineNote = (it) => {
+  const raw = it?.note ?? it?.notes ?? it?.comment ?? it?.customer_note ?? null;
+  return raw ? String(raw).slice(0, 200) : null;
+};
+
 export function itemsOf(items) {
   if (!Array.isArray(items)) return [];
-  return items.slice(0, 100).map((it) => {
-    const base = String(it?.name || it?.product_name || (it?.product_id != null ? `منتج ${it.product_id}` : "صنف")).slice(0, 120);
-    const variant = it?.variant_name ? ` (${String(it.variant_name).slice(0, 40)})` : "";
-    const qty = num(it?.qty ?? it?.quantity) ?? 1;
-    const noteRaw = it?.note ?? it?.notes ?? it?.comment ?? null;
-    const note = [it?.bundle_name ? `باقة: ${String(it.bundle_name).slice(0, 60)}` : null,
-      noteRaw ? String(noteRaw).slice(0, 200) : null].filter(Boolean).join(" — ") || null;
-    return { name: base + variant, qty, note };
-  });
+  const list = items.slice(0, 100);
+  const out = [];
+  const doneBundles = new Set();
+  for (const it of list) {
+    if (!it || typeof it !== "object") continue;
+    const bl = it.bundle_line != null ? String(it.bundle_line) : null;
+    /* سطور الباقة: عنوان واحد + المكوّنات تحته. المفتاح bundle_line (سطر
+       السلة)، ولو مش موجود بنرجع لـ bundle (اسم الباقة) عشان طلبات قديمة. */
+    if (it.bundle || it.bundle_name) {
+      const key = bl || `b:${it.bundle || it.bundle_name}`;
+      if (doneBundles.has(key)) continue;
+      doneBundles.add(key);
+      const parts = list.filter((x) => x && (bl ? String(x.bundle_line) === bl
+        : (x.bundle || x.bundle_name) && String(x.bundle || x.bundle_name) === String(it.bundle || it.bundle_name)));
+      const qty = num(it.bundle_qty) ?? 1;
+      out.push({
+        name: String(it.bundle_name || it.bundle || "باقة").slice(0, 120),
+        qty, note: null, kind: "bundle", level: 0,
+      });
+      for (const p of parts) {
+        const raw = num(p.qty ?? p.quantity) ?? 1;
+        // كمية السطر متخزّنة مضروبة في عدد الباقات — بنرجّعها «لكل باقة»
+        const per = qty > 1 && raw % qty === 0 ? raw / qty : raw;
+        out.push({ name: lineName(p), qty: per, note: lineNote(p), kind: "component", level: 1 });
+      }
+      continue;
+    }
+    out.push({ name: lineName(it), qty: num(it.qty ?? it.quantity) ?? 1, note: lineNote(it), kind: "item", level: 0 });
+  }
+  return out;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   محطّات المندوب (١٧ سبتمبر ٢٠٢٦ — طلب عمر: «لازم يتسجّل إن المندوب وصل
+   المطعم وإنه أخد الطلب — الاتنين ناقصين عشان نقيس أداء الشركة»).
+
+   لاجلك بتبعت الحالتين فعلاً: «Reached Shop» = وصل المطعم، و«Order Picked /
+   Shipped» = استلم. قبل كده الاتنين كانوا بيتلموا في حالة واحدة موحّدة
+   (assigned/picked) فالفرق بينهم كان بيضيع. دلوقتي الوقتين متخزّنين في
+   dl_shipments.arrived_at / picked_at وبيتحسب منهم:
+     الأكل جاهز → المندوب وصل   (سالب = وصل قبل ما الأكل يجهز — ده استنّى علينا)
+     وصل        → استلم         (كام دقيقة قعد في المطعم)
+     استلم      → اتوصّل        (الطريق للعميل)
+═══════════════════════════════════════════════════════════════════════════ */
+const minsBetween = (a, b) => {
+  const t1 = a ? new Date(a).getTime() : NaN, t2 = b ? new Date(b).getTime() : NaN;
+  if (!Number.isFinite(t1) || !Number.isFinite(t2)) return null;
+  const m = (t2 - t1) / 60_000;
+  return Math.abs(m) > 720 ? null : Math.round(m * 10) / 10;
+};
+export function courierDurations(r = {}) {
+  const readyAt = r.pos_ready_at || null;
+  const arrived = r.ship_arrived_at || null;
+  const picked = r.ship_picked_at || null;
+  const delivered = r.ship_status === "delivered" ? (r.ship_updated_at || null) : null;
+  return {
+    readyToArrivedMin: minsBetween(readyAt, arrived),
+    arrivedToPickedMin: minsBetween(arrived, picked),
+    pickedToDeliveredMin: minsBetween(picked, delivered),
+    // وصل قبل ما الأكل يجهز؟ (المندوب استنّى المطعم، مش العكس)
+    arrivedBeforeReady: readyAt && arrived ? new Date(arrived) < new Date(readyAt) : null,
+  };
 }
 
 /* صف (shop_orders + آخر شحنة) → طلب البوابة */
@@ -287,7 +375,8 @@ export function toPortalOrder(r, slaCfg = {}, now = Date.now()) {
     total: num(r.total) ?? 0,
     subtotal: num(r.subtotal) ?? 0,
     deliveryFee: num(r.delivery_fee) ?? 0,
-    itemsCount: items.reduce((a, x) => a + (Number(x.qty) || 0), 0),
+    // عنوان الباقة مش صنف — المكوّنات تحته هي الأكل الحقيقي
+    itemsCount: items.reduce((a, x) => a + (x.kind === "bundle" ? 0 : Number(x.qty) || 0), 0),
     items,
     notes: r.notes || null,
     customer: { name: cust.name || null, phone: localPhone(r.phone_norm || cust.phone) },
@@ -314,6 +403,10 @@ export function toPortalOrder(r, slaCfg = {}, now = Date.now()) {
       provider: r.ship_provider || null,
       ref: r.ship_ref || null,
       assigned: Boolean(r.ship_dispatch?.assigned) || Boolean(drv?.name),
+      /* محطتا المندوب (١٧ سبتمبر — طلب عمر عشان نقيس أداء الشركة) */
+      arrivedAt: iso(r.ship_arrived_at),
+      pickedAt: iso(r.ship_picked_at),
+      ...courierDurations(r),
     } : null,
     sla: { level: sla.level || 0, code: sla.code || null, message: sla.message || null },
     posOrderId: r.pos_order_id || null,
@@ -380,6 +473,7 @@ const SLA_CODE_AR = {
 const PUSH_KIND_AR = {
   new: "إشعار للبوابة: طلب جديد", pos_failed: "إشعار للبوابة: فشل نقطة البيع",
   courier_assigned: "إشعار للبوابة: اتعيّن كابتن", courier_picked: "إشعار للبوابة: الكابتن استلم",
+  courier_arrived: "إشعار للبوابة: المندوب وصل المطعم",
   delivered: "إشعار للبوابة: اتوصّل",
 };
 const ACTION_AR = {
@@ -412,6 +506,8 @@ function evLabel(e) {
     case "sla_alert": return `تنبيه تأخير (${d.level ?? "?"}): ${SLA_CODE_AR[d.code] || d.code || ""}`.trim();
     case "notify_sent": return `إشعار للعميل (${d.channel || e.channel || "—"})${e.ok === false ? " — ما وصلش" : ""}`;
     case "courier_update": return d.status ? `المندوب: ${COURIER_STATUS_AR[d.status] || d.status}` : (e.summary || "تحديث المندوب");
+    case "courier_arrived": return "🏪 المندوب وصل المطعم";
+    case "courier_picked": return "📦 المندوب استلم الطلب";
     case "staff_action": return ACTION_AR[d.action] ? `${ACTION_AR[d.action]}${e.actor_name ? ` — ${e.actor_name}` : ""}` : (e.summary || "إجراء من الفريق");
     default: return e.summary || e.name;
   }
@@ -531,6 +627,9 @@ export function pushPayload(kind, info = {}, baseUrl = "") {
         body: info.driverName ? `الكابتن ${info.driverName} جاي للمطعم` : "الكابتن جاي للمطعم — جهّز الشنطة" };
     case "courier_picked":
       return { ...common, urgency: "normal", ttl: 900, title: `📦 الكابتن استلم ${no}`, body: "الطلب في الطريق للعميل" };
+    case "courier_arrived":
+      return { ...common, urgency: "high", ttl: 600, title: `🏪 المندوب وصل المطعم — ${no}`,
+        body: "الكابتن مستني الطلب — سلّمه لما يجهز" };
     case "delivered":
       return { ...common, urgency: "low", ttl: 900, title: `✅ اتوصّل ${no}`, body: "تم توصيل الطلب للعميل" };
     case "sla":
@@ -559,6 +658,9 @@ export function pushKindForEvent(evt) {
     if (d.to === "delivered") return { kind: "delivered", key: "delivered" };
     return null;
   }
+  /* «المندوب وصل المطعم» — أهم إشعار للكاشير: الكابتن واقف بيستنى.
+     بيتبعت من حدثه الخاص مش من تغيّر الحالة، لأن الحالة مابتتغيّرش أصلاً. */
+  if (evt.name === "courier_arrived") return { kind: "courier_arrived", key: "courier_arrived" };
   if (evt.name === "sla_alert" && Number(d.level) >= 2) {
     return { kind: "sla", key: `sla:${String(d.code || "x").slice(0, 30)}:${Number(d.level)}` };
   }

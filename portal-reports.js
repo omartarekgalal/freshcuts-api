@@ -152,6 +152,65 @@ SELECT k, count(*)::int AS n, avg(mins)::float AS avg,
   FROM m WHERE mins IS NOT NULL AND mins >= 0 AND mins < 720
  GROUP BY k`,
 
+  /* ═══ أداء شركة التوصيل (١٧ سبتمبر — طلب عمر) ═══════════════════════
+     المحطّتان الجداد (وصل المطعم / استلم) متخزّنين على الشحنة نفسها، فالأوقات
+     دي بتتحسب من dl_shipments مش من history الطلب. الشحنة الملغية مستبعدة،
+     والشحنة اليدوية كمان (المزوّد فيها هو الكاشير، مفيش إشارات).
+     ready_to_arrived سالب = المندوب وصل **قبل** ما الأكل يجهز. */
+  courierTimes: `${BASE_CTE},
+cs AS (
+  SELECT s.*, b.pos_ready_at
+    FROM dl_shipments s
+    JOIN base b ON b.order_no = s.shop_order_no AND b.is_net AND b.option = 'delivery'
+   WHERE s.provider <> 'manual' AND s.status <> 'cancelled'
+),
+cm AS (
+  SELECT 'ready_to_arrived' AS k, (EXTRACT(EPOCH FROM (arrived_at - pos_ready_at))/60)::float8 AS mins FROM cs
+  UNION ALL SELECT 'arrived_to_picked', (EXTRACT(EPOCH FROM (picked_at - arrived_at))/60)::float8 FROM cs
+  UNION ALL SELECT 'courier_picked_to_delivered',
+                   (EXTRACT(EPOCH FROM (updated_at - picked_at))/60)::float8 FROM cs WHERE status='delivered'
+)
+SELECT k, count(*)::int AS n, avg(mins)::float AS avg,
+       percentile_cont(0.5) WITHIN GROUP (ORDER BY mins)::float AS median,
+       percentile_cont(0.9) WITHIN GROUP (ORDER BY mins)::float AS p90
+  FROM cm WHERE mins IS NOT NULL AND mins > -720 AND mins < 720
+ GROUP BY k`,
+
+  /* العدّ: كام مرة المندوب وصل قبل ما الأكل يجهز (استنّانا) وكام مرة بعده
+     (احنا استنّيناه) — ده اللي عمر بيحكم بيه على لاجلك. */
+  courierMilestones: `${BASE_CTE}
+SELECT count(*)::int AS shipments,
+       count(*) FILTER (WHERE s.arrived_at IS NOT NULL)::int AS with_arrived,
+       count(*) FILTER (WHERE s.picked_at IS NOT NULL)::int AS with_picked,
+       count(*) FILTER (WHERE s.arrived_at IS NOT NULL AND b.pos_ready_at IS NOT NULL
+                          AND s.arrived_at <= b.pos_ready_at)::int AS arrived_before_ready,
+       count(*) FILTER (WHERE s.arrived_at IS NOT NULL AND b.pos_ready_at IS NOT NULL
+                          AND s.arrived_at >  b.pos_ready_at)::int AS arrived_after_ready,
+       count(DISTINCT s.provider)::int AS providers,
+       max(s.provider) AS provider
+  FROM dl_shipments s
+  JOIN base b ON b.order_no = s.shop_order_no AND b.is_net AND b.option = 'delivery'
+ WHERE s.provider <> 'manual' AND s.status <> 'cancelled'`,
+
+  courierDaily: `${BASE_CTE}
+SELECT to_char(b.local_at, 'YYYY-MM-DD') AS day,
+       count(*)::int AS shipments,
+       count(*) FILTER (WHERE s.arrived_at IS NOT NULL)::int AS with_arrived,
+       avg(EXTRACT(EPOCH FROM (s.arrived_at - b.pos_ready_at))/60)
+         FILTER (WHERE s.arrived_at IS NOT NULL AND b.pos_ready_at IS NOT NULL)::float AS ready_to_arrived,
+       avg(EXTRACT(EPOCH FROM (s.picked_at - s.arrived_at))/60)
+         FILTER (WHERE s.picked_at IS NOT NULL AND s.arrived_at IS NOT NULL)::float AS arrived_to_picked,
+       avg(EXTRACT(EPOCH FROM (s.updated_at - s.picked_at))/60)
+         FILTER (WHERE s.picked_at IS NOT NULL AND s.status='delivered')::float AS picked_to_delivered,
+       count(*) FILTER (WHERE s.arrived_at IS NOT NULL AND b.pos_ready_at IS NOT NULL
+                          AND s.arrived_at <= b.pos_ready_at)::int AS arrived_before_ready,
+       count(*) FILTER (WHERE s.arrived_at IS NOT NULL AND b.pos_ready_at IS NOT NULL
+                          AND s.arrived_at >  b.pos_ready_at)::int AS arrived_after_ready
+  FROM dl_shipments s
+  JOIN base b ON b.order_no = s.shop_order_no AND b.is_net AND b.option = 'delivery'
+ WHERE s.provider <> 'manual' AND s.status <> 'cancelled'
+ GROUP BY 1 ORDER BY 1`,
+
   slaCodes: `${BASE_CTE}
 SELECT k AS key, count(*)::int AS orders
   FROM base b, jsonb_object_keys(CASE WHEN jsonb_typeof(b.alerts)='object' THEN b.alerts ELSE '{}'::jsonb END) k
@@ -159,7 +218,7 @@ SELECT k AS key, count(*)::int AS orders
  GROUP BY k ORDER BY orders DESC LIMIT 30`,
 
   topItems: `${BASE_CTE}
-SELECT COALESCE(NULLIF(it->>'name',''), NULLIF(it->>'product_name',''), 'منتج ' || COALESCE(it->>'product_id','?')) AS name,
+SELECT COALESCE(NULLIF(it->>'name',''), NULLIF(it->>'product_name',''), 'صنف #' || COALESCE(it->>'product_id','?')) AS name,
        sum(CASE WHEN COALESCE(it->>'quantity', it->>'qty') ~ '^[0-9]+(\\.[0-9]+)?$'
                 THEN COALESCE(it->>'quantity', it->>'qty')::numeric ELSE 1 END)::float AS qty,
        count(DISTINCT b.order_no)::int AS orders
@@ -207,11 +266,16 @@ const TIME_LABELS = {
   ready_to_courier_assigned: "من «جاهز» لتعيين الكابتن",
   picked_to_delivered: "من استلام الكابتن للتوصيل",
   paid_to_delivered: "من الدفع للتوصيل",
+  // محطّات المندوب (من إشارات شركة التوصيل نفسها)
+  ready_to_arrived: "من «جاهز» لوصول المندوب المطعم",
+  arrived_to_picked: "من وصول المندوب لاستلامه الطلب",
+  courier_picked_to_delivered: "من استلام المندوب لتسليمه للعميل",
 };
 
 /* تشكيل النتايج (صافي — بيتجرّب من غير قاعدة) */
 export function shapeReport({ range, totals = {}, courier = {}, daily = [], hourly = [], times = [], slaCodes = [],
-  topItems = [], customers = {}, sources = [], links = [], payments = [] }) {
+  topItems = [], customers = {}, sources = [], links = [], payments = [],
+  courierTimes = [], courierMilestones = {}, courierDaily = [] }) {
   const t = totals || {};
   const revenue = r2(t.revenue);
   const netOrders = Number(t.net_orders) || 0;
@@ -221,7 +285,7 @@ export function shapeReport({ range, totals = {}, courier = {}, daily = [], hour
   const byHour = new Map((hourly || []).map((h) => [Number(h.hour), h]));
   const timeMap = {};
   for (const k of Object.keys(TIME_LABELS)) timeMap[k] = { label: TIME_LABELS[k], n: 0, avgMin: null, medianMin: null, p90Min: null };
-  for (const x of times || []) {
+  for (const x of [...(times || []), ...(courierTimes || [])]) {
     if (!timeMap[x.k]) continue;
     timeMap[x.k] = { label: TIME_LABELS[x.k], n: Number(x.n) || 0, avgMin: r1(x.avg), medianMin: r1(x.median), p90Min: r1(x.p90) };
   }
@@ -274,6 +338,29 @@ export function shapeReport({ range, totals = {}, courier = {}, daily = [], hour
       byCode: Object.values(slaByCode).sort((a, b) => b.orders - a.orders),
     },
     times: timeMap,
+    /* أداء شركة التوصيل — «وصل المطعم» و«استلم» جايين من إشارات الشركة نفسها.
+       coverage = نسبة الشحنات اللي وصلتنا فيها إشارة وصول: لو صفر فالشركة
+       مش بتبعتها أصلاً، والشاشة بتقول كده بدل ما تعرض متوسطات على الفاضي. */
+    courierPerf: {
+      shipments: Number(courierMilestones.shipments) || 0,
+      withArrived: Number(courierMilestones.with_arrived) || 0,
+      withPicked: Number(courierMilestones.with_picked) || 0,
+      arrivedBeforeReady: Number(courierMilestones.arrived_before_ready) || 0,
+      arrivedAfterReady: Number(courierMilestones.arrived_after_ready) || 0,
+      provider: (Number(courierMilestones.providers) || 0) === 1 ? courierMilestones.provider || null : null,
+      coveragePct: Number(courierMilestones.shipments)
+        ? r1(((Number(courierMilestones.with_arrived) || 0) / Number(courierMilestones.shipments)) * 100) : null,
+      daily: (courierDaily || []).map((d) => ({
+        day: d.day,
+        shipments: Number(d.shipments) || 0,
+        withArrived: Number(d.with_arrived) || 0,
+        readyToArrivedMin: r1(d.ready_to_arrived),
+        arrivedToPickedMin: r1(d.arrived_to_picked),
+        pickedToDeliveredMin: r1(d.picked_to_delivered),
+        arrivedBeforeReady: Number(d.arrived_before_ready) || 0,
+        arrivedAfterReady: Number(d.arrived_after_ready) || 0,
+      })),
+    },
     series: {
       daily: daysBetween(range.from, range.to).map((day) => {
         const d = byDay.get(day) || {};
@@ -323,7 +410,11 @@ export async function buildReport(pool, range, log = console) {
   const sources = await q("sources");
   const links = await q("links");
   const payments = await q("payments");
-  const report = shapeReport({ range, totals, courier, daily, hourly, times, slaCodes, topItems, customers, sources, links, payments });
+  const courierTimes = await q("courierTimes");
+  const courierMilestones = (await q("courierMilestones"))[0] || {};
+  const courierDaily = await q("courierDaily");
+  const report = shapeReport({ range, totals, courier, daily, hourly, times, slaCodes, topItems, customers, sources, links, payments,
+    courierTimes, courierMilestones, courierDaily });
   if (errors.length) report.partial = errors;
   return report;
 }

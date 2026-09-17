@@ -2,7 +2,7 @@
    الهدف: نتأكد إن نفس الطلب بيتحول لشكلين صحيحين حسب الشركة، وإن حالات
    الشركتين بتترجم لنفس المصطلحات الموحّدة. */
 import assert from "node:assert";
-import { PROVIDERS, activeProvider, e164, msisdn, readableAddress } from "./couriers.js";
+import { PROVIDERS, activeProvider, e164, msisdn, readableAddress, courierMilestone, PROVIDER_REPORTS_ARRIVAL } from "./couriers.js";
 
 let pass = 0, fail = 0;
 const t = (name, fn) => {
@@ -142,6 +142,33 @@ console.log("\nاختيار المزوّد:");
 t("الافتراضي Flying Arrow", () => assert.equal(activeProvider({}).id, "flyingarrow"));
 t("الإعدادات بتبدّل", () => assert.equal(activeProvider({ delivery: { provider: "leajlak" } }).id, "leajlak"));
 t("اسم غلط ما يكسرش الدنيا", () => assert.equal(activeProvider({ delivery: { provider: "nope" } }).id, "flyingarrow"));
+
+console.log("\nمحطّات المندوب:");
+/* ═══ محطّات المندوب (١٧ سبتمبر — أداء شركة التوصيل) ══════════════════════ */
+
+t("courierMilestone: لاجلك بتقول «وصل المطعم» و«استلم» بكل الصيغ", () => {
+  const lj = (x) => courierMilestone("leajlak", x);
+  assert.equal(lj("Reached Shop"), "arrived");
+  assert.equal(lj("reached_shop"), "arrived");
+  assert.equal(lj("ARRIVED AT SHOP"), "arrived");
+  assert.equal(lj("Order Picked"), "picked");
+  assert.equal(lj("Shipped"), "picked");
+  assert.equal(lj("Reached Customer"), "picked");
+  assert.equal(lj("Order Accept"), null);
+  assert.equal(lj("Start Ride"), null, "اتحرّك ≠ وصل");
+  assert.equal(lj("New Order"), null);
+  assert.equal(lj("Delivered"), null, "التوصيل محطة تانية، مش وصول للمطعم");
+  assert.equal(lj(""), null);
+  assert.equal(courierMilestone("unknown_provider", "Reached Shop"), null);
+});
+
+t("Flying Arrow: مافيش إشارة «وصل المطعم» موثّقة، والاستلام موجود", () => {
+  assert.equal(PROVIDER_REPORTS_ARRIVAL.leajlak, true);
+  assert.equal(PROVIDER_REPORTS_ARRIVAL.flyingarrow, false);
+  assert.equal(PROVIDER_REPORTS_ARRIVAL.manual, false);
+  assert.equal(courierMilestone("flyingarrow", "pickup_completed"), "picked");
+  assert.equal(courierMilestone("flyingarrow", "driver_assigned"), null);
+});
 
 console.log(`\n${pass} نجحت، ${fail} فشلت\n`);
 process.exit(fail ? 1 : 0);

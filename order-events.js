@@ -31,6 +31,9 @@ export const ORDER_EVENTS = Object.freeze([
   "portal_ack",        // {by}
   "courier_dispatch",  //                            delivery.js
   "courier_update",    // {status,driver_changed}
+  // محطّتا المندوب (١٧ سبتمبر) — وقت واحد لكل طلب، بيتقاسوا لأداء الشركة
+  "courier_arrived",   // {provider,raw_status,via}   delivery.js
+  "courier_picked",    // {provider,raw_status,via}   delivery.js
   "courier_cancel",
   "courier_manual",
   "sla_alert",         // {code,level,notified}      shop.watchdog
@@ -56,6 +59,8 @@ export const DEFAULT_SUMMARY = Object.freeze({
   portal_ack: "المطعم استلم الطلب",
   courier_dispatch: "طلب مندوب",
   courier_update: "تحديث المندوب",
+  courier_arrived: "المندوب وصل المطعم",
+  courier_picked: "المندوب استلم الطلب",
   courier_cancel: "إلغاء المندوب",
   courier_manual: "تحديث يدوي للمندوب",
   sla_alert: "تنبيه تأخير",

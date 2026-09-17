@@ -68,7 +68,7 @@ function build({ settings, shipment = null, pollRows = [], updRows = 1 } = {}) {
       if (/SELECT \* FROM dl_shipments WHERE shop_order_no/i.test(s)) {
         return { rows: shipment ? [shipment] : [], rowCount: shipment ? 1 : 0 };
       }
-      if (/SELECT id, shop_order_no, provider, provider_ref, status, driver FROM dl_shipments/i.test(s)) {
+      if (/SELECT id, shop_order_no, provider, provider_ref, status, driver[\s\S]*FROM dl_shipments/i.test(s)) {
         return { rows: pollRows, rowCount: pollRows.length };
       }
       if (/INSERT INTO dl_shipments\(shop_order_no, provider, provider_ref, status, driver, cost, dispatch, events\)/i.test(s)) {
@@ -76,6 +76,14 @@ function build({ settings, shipment = null, pollRows = [], updRows = 1 } = {}) {
       }
       if (/UPDATE dl_shipments SET\s+status=\$2,\s+provider_ref/i.test(s)) {
         return { rows: [{ ...(shipment || {}), status: vals[1] }], rowCount: 1 };
+      }
+      // محطّتا المندوب (arrived_at / picked_at): بتتكتب مرة واحدة بس
+      if (/UPDATE dl_shipments SET (arrived_at|picked_at) = NOW\(\)/i.test(s)) {
+        const col = /arrived_at/.test(s) ? "arrived_at" : "picked_at";
+        const row = pollRows.find((r) => r.id === vals[0]) || shipment || {};
+        if (row[col]) return { rows: [], rowCount: 0 };
+        row[col] = new Date().toISOString();
+        return { rows: [{ shop_order_no: row.shop_order_no || "W1", at: row[col] }], rowCount: 1 };
       }
       if (/UPDATE dl_shipments SET\s+status = COALESCE/i.test(s)) {
         return updRows
@@ -380,4 +388,68 @@ test("cancelShipment: شحنة متوصّلة → مفيش إلغاء ولا ح�
     assert.equal(await api.cancelShipment("FC-502"), null);
     assert.equal(cap.events.length, 0);
   } finally { cap.stop(); restoreEnv(); }
+});
+
+/* ── محطّتا المندوب: وصل المطعم / استلم الطلب (١٧ سبتمبر) ───────────────── */
+
+test("poll: «Reached Shop» بيسجّل courier_arrived حتى والحالة الموحّدة ما اتغيرتش", async () => {
+  const restoreP = patchProvider("leajlak", {
+    configured: () => true,
+    // نفس الحالة الموحّدة (assigned) — الفرق في الحالة الخام بس
+    track: async () => ({ status: "assigned", rawStatus: "Reached Shop", driver: { id: 5 }, cost: null, raw: {} }),
+  });
+  const cap = capture();
+  const row = { id: 1, shop_order_no: "FC-300", provider: "leajlak", provider_ref: "d", status: "assigned",
+    driver: { id: 5 }, arrived_at: null, picked_at: null };
+  const { api, restoreEnv } = build({ settings: AUTO_LJ, pollRows: [row] });
+  try {
+    await api.pollInFlight();
+    const arr = cap.events.filter((e) => e.name === "courier_arrived");
+    assert.equal(arr.length, 1, "الحالة ما اتغيرتش لكن المحطة اتسجّلت");
+    assert.equal(arr[0].orderNo, "FC-300");
+    assert.equal(arr[0].data.raw_status, "Reached Shop");
+    assert.equal(arr[0].data.provider, "leajlak");
+    assert.equal(arr[0].source, "courier_poll");
+    assert.ok(row.arrived_at, "الوقت اتكتب على الشحنة");
+    assert.equal(cap.events.filter((e) => e.name === "courier_update").length, 0, "مفيش تحديث حالة — ما اتغيرتش");
+    // الاستطلاع الجاي بنفس الحالة مايكرّرش الحدث
+    cap.events.length = 0;
+    await api.pollInFlight();
+    assert.equal(cap.events.filter((e) => e.name === "courier_arrived").length, 0, "مرة واحدة بس");
+  } finally { cap.stop(); restoreP(); restoreEnv(); }
+});
+
+test("poll: «Order Picked» بيسجّل courier_picked مرة واحدة", async () => {
+  const restoreP = patchProvider("leajlak", {
+    configured: () => true,
+    track: async () => ({ status: "picked", rawStatus: "Order Picked", driver: { id: 5 }, cost: null, raw: {} }),
+  });
+  const cap = capture();
+  const row = { id: 1, shop_order_no: "FC-301", provider: "leajlak", provider_ref: "d", status: "assigned",
+    driver: { id: 5 }, arrived_at: new Date().toISOString(), picked_at: null };
+  const { api, restoreEnv } = build({ settings: AUTO_LJ, pollRows: [row] });
+  try {
+    await api.pollInFlight();
+    assert.equal(cap.events.filter((e) => e.name === "courier_picked").length, 1);
+    assert.ok(row.picked_at);
+    assert.equal(cap.events.filter((e) => e.name === "courier_arrived").length, 0, "الوصول كان متسجّل قبل كده");
+    assert.equal(cap.events.filter((e) => e.name === "courier_update").length, 1, "الحالة اتغيّرت كمان");
+  } finally { cap.stop(); restoreP(); restoreEnv(); }
+});
+
+test("poll: حالة خام مش في الخريطة مابتسجّلش محطة من الهوا", async () => {
+  const restoreP = patchProvider("leajlak", {
+    configured: () => true,
+    track: async () => ({ status: "assigned", rawStatus: "Start Ride", driver: { id: 5 }, cost: null, raw: {} }),
+  });
+  const cap = capture();
+  const row = { id: 1, shop_order_no: "FC-302", provider: "leajlak", provider_ref: "d", status: "assigned",
+    driver: { id: 5 }, arrived_at: null, picked_at: null };
+  const { api, restoreEnv } = build({ settings: AUTO_LJ, pollRows: [row] });
+  try {
+    await api.pollInFlight();
+    assert.equal(cap.events.filter((e) => e.name === "courier_arrived").length, 0);
+    assert.equal(cap.events.filter((e) => e.name === "courier_picked").length, 0);
+    assert.equal(row.arrived_at, null, "اتحرّك ≠ وصل");
+  } finally { cap.stop(); restoreP(); restoreEnv(); }
 });

@@ -39,6 +39,7 @@ import { makeStaffNotifier, slaAlertText, posFailedText, tabsenseDownText } from
 import { sendSms as sendStaffSms } from "./accounts.js";
 import { parseCheckoutMeta, fireServerPurchase } from "./checkout-meta.js";
 import { resumeKey } from "./resume-key.js";
+import { makeNameResolver } from "./product-names.js";
 
 /* ناقل أحداث الطلب (W1-01) وترحيل أعمدة shop_orders — تحميل كسول ودفاعي (W1-02):
    لو الملفات مش موجودة أو الـimport وقع، shop.js بيشتغل عادي والأحداث بتتجاهل.
@@ -149,7 +150,7 @@ export const STAGES = {
    جاي من المتصفح بتتشال منه، فالتقارير مايتزوّرش فيها عدد الباقات. */
 export function stripBundleTags(it) {
   if (!it || typeof it !== "object") return it;
-  const { bundle, bundle_name, bundle_slot, bundle_line, ...rest } = it;
+  const { bundle, bundle_name, bundle_slot, bundle_line, bundle_qty, ...rest } = it;
   if (rest.variant_name != null) rest.variant_name = String(rest.variant_name).slice(0, 40);
   if (rest.name != null) rest.name = String(rest.name).slice(0, 120);
   return rest;
@@ -357,6 +358,24 @@ export function register(app, ctx, deps = {}) {
   const tsp = deps.tsp || (() => null);           // late-bound — TabSense partner (paid orders)
   const journey = typeof deps.journey === "function" ? deps.journey : () => null; // late-bound — ٠٢
   const emitOrder = makeOrderEmitter(deps.emitOrder);
+  /* أسماء الأصناف (بلاغ عمر ١٧ سبتمبر ٢٠٢٦): السلة الجاية من المتصفح فيها
+     product_id وكمية وسعر بس — من غير اسم. الاسم بيتحل هنا من قايمة تاب
+     سينس وبيتخزّن مع الطلب، فالكاشير والمطبخ والتقارير يشوفوا «كفتة مشوية
+     بالوزن — كيلو» مش «منتج ١٠٥». حقل عرض بحت: مافيش أي رقم فلوس بيتلمس،
+     والفشل بيعدّي في صمت (البورتال بيحلّ الاسم وقت القراية كمان). */
+  const productNames = deps.productNames || makeNameResolver({ pool, log: console });
+  const NAMES_TIMEOUT_MS = Number(process.env.ITEM_NAMES_TIMEOUT_MS || 2000);
+  const namedItems = async (items) => {
+    try {
+      /* الشيك أوت ماينتظرش تاب سينس. لو القايمة بطيئة بنكمّل من غير أسماء —
+         الـbackfill والبورتال بيصلّحوا السطر بعدين، والطلب نفسه مايتأخرش. */
+      const r = await Promise.race([
+        productNames.fillNames(items),
+        new Promise((res) => setTimeout(() => res(null), NAMES_TIMEOUT_MS).unref?.()),
+      ]);
+      return r ? r.items : items;
+    } catch (e) { console.error("[shop] item names failed:", e.message); return items; }
+  };
   // checkout_result لرحلة العميل (٠٢) — fire-and-forget، مابيغيّرش أي رد
   const journeyEmit = (name, props) => {
     try {
@@ -901,7 +920,7 @@ export function register(app, ctx, deps = {}) {
        RETURNING created_at`,
       [orderNo, option, branchId,
        jb({ name: cust.name || "", phone: "+966" + phoneNorm, deviceId: b.deviceId ? String(b.deviceId).slice(0, 64) : null }), phoneNorm,
-       jb(b.address || null), jb(items), jb(calc),
+       jb(b.address || null), jb(await namedItems(items)), jb(calc),
        // subtotal = the food part of what was charged (fee booked separately
        // whether inside or outside the POS invoice).
        r2(total - deliveryFee), deliveryFee, tip, total, jb(dq ? { ...dq, feeInPos, freeDeliveryByCoupon } : null),
@@ -1302,7 +1321,19 @@ export function register(app, ctx, deps = {}) {
       // المندوب بيظهر أول ما يتعيّن (مش بس بعد «جاهز»)
       if (ready || ["courier_assigned", "on_the_way", "delivered"].includes(row.status)) {
         const sh = await delivery.shipmentOf(row.order_no);
-        if (sh) courier = { status: sh.status, driver: sh.driver || null };
+        if (sh) {
+          courier = {
+            status: sh.status, driver: sh.driver || null,
+            // محطّتا المندوب (١٧ سبتمبر) — العميل بيشوف إن الكابتن واصل فعلاً
+            arrivedAt: sh.arrived_at || null, pickedAt: sh.picked_at || null,
+          };
+          /* «الكابتن في المطعم» أوضح بكتير من «بيجهّز» وهو واقف عندنا فعلاً.
+             بيتعرض بس لما الشركة تقول وصل ولسه ما استلمش. */
+          if (sh.arrived_at && !sh.picked_at && !["on_the_way", "delivered"].includes(row.status)) {
+            label = ready ? "المندوب في المطعم وبيستلم طلبك 🛵" : "المندوب وصل المطعم — طلبك بيتجهّز 👨‍🍳";
+            step = ready ? 3 : 2;
+          }
+        }
       }
     }
     return c.json({

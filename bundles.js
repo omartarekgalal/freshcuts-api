@@ -307,6 +307,9 @@ export function expandBundle(bundle, choices, quantity, resolve, opts = {}) {
       bundle_name: bundle.name,
       bundle_slot: p.slot.key,
       bundle_line: lineUid,
+      // عدد الباقات في السطر — الشاشة بتعرض «٢× بوكس اليوم الوطني ٩٦»
+      // والمكوّنات تحته بكميتها «لكل باقة» مش مضروبة
+      bundle_qty: qty,
       name: p.info.name || "",
       ...(p.info.variantName ? { variant_name: p.info.variantName } : {}),
     };

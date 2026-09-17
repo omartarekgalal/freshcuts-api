@@ -40,6 +40,52 @@ export const msisdn = (v) => {
 /* الحالات الموحّدة اللي السيستم كله بيتكلم بيها */
 export const STAGES = ["pending", "assigned", "picked", "delivered", "cancelled"];
 
+/* ═══════════════════════════════════════════════════════════════════════════
+   محطّات المندوب (١٧ سبتمبر ٢٠٢٦ — طلب عمر: «لازم في التتبع يتسجّل إن المندوب
+   وصل المطعم وإن المندوب أخد الطلب — الاتنين دول ناقصين عشان نقيس أداء
+   الشركة»).
+
+   الحالات الموحّدة الخمسة مش كفاية هنا: «وصل المطعم» و«لسه في الطريق
+   للمطعم» الاتنين assigned، فالفرق بينهم — وهو بالظبط اللي بنقيسه — كان
+   بيضيع. فبنقرا الحالة الخام من المزوّد مرة تانية ونطلّع منها «محطة»:
+
+     arrived → المندوب واقف في المطعم        picked → استلم الطلب وخرج
+
+   لاجلك (المزوّد الشغّال): «Reached Shop» = وصل، و«Order Picked / Shipped»
+   = استلم — الاتنين متأكدين من طلبات حقيقية (١٦ سبتمبر).
+   Flying Arrow: عندهم استلام (`pickup_completed`) لكن **مالهمش** حالة معلنة
+   لـ«وصل نقطة الاستلام» في التوثيق اللي شفناه. بنقبل الأسماء المتوقّعة لو
+   ظهرت، ولو ماظهرتش المحطة الأولى بتفضل فاضية والشاشة بتقولها صراحة.
+═══════════════════════════════════════════════════════════════════════════ */
+const normStatus = (s) => String(s || "").toLowerCase().replace(/[^a-z]/g, "");
+
+const MILESTONES = {
+  leajlak: {
+    reachedshop: "arrived", arrivedshop: "arrived", arrivedatshop: "arrived",
+    reachedpickup: "arrived", reachedrestaurant: "arrived", arrivedatrestaurant: "arrived",
+    orderpicked: "picked", picked: "picked", pickedup: "picked", ordershipped: "picked",
+    shipped: "picked", intransit: "picked", ontheway: "picked", ordertransit: "picked",
+    reachedcustomer: "picked", arrivedcustomer: "picked", reacheddropoff: "picked",
+    outfordelivery: "picked",
+  },
+  flyingarrow: {
+    // مش موثّقة عندهم — مقبولة لو ظهرت يوم ما يضيفوها
+    arrivedpickup: "arrived", atpickup: "arrived", arrivedatpickup: "arrived",
+    reachedpickup: "arrived", driverarrived: "arrived",
+    pickupcompleted: "picked", pickedup: "picked", intransit: "picked", onthewa: "picked",
+    ontheway: "picked", outfordelivery: "picked",
+  },
+};
+/* هل المزوّد ده بيقول لنا «وصل المطعم» أصلاً؟ الشاشة بتستعمل ده عشان تفرّق
+   بين «لسه ما وصلش» و«الشركة مابتبعتش الإشارة دي». */
+export const PROVIDER_REPORTS_ARRIVAL = Object.freeze({ leajlak: true, flyingarrow: false, manual: false });
+
+/* الحالة الخام → محطة ("arrived" | "picked" | null) */
+export function courierMilestone(providerId, rawStatus) {
+  const map = MILESTONES[String(providerId || "")] || {};
+  return map[normStatus(rawStatus)] || null;
+}
+
 async function httpJson(url, { method = "GET", headers = {}, body, label = "courier" } = {}) {
   const ctl = new AbortController();
   const t = setTimeout(() => ctl.abort(), 25000);
@@ -224,6 +270,8 @@ const flyingarrow = {
     if (!o) return null;
     return {
       status: FA_STATUS[(o.status && o.status.value) || ""] || null,
+      // الحالة الخام كمان: محطّات المندوب (وصل/استلم) بتتقرا منها
+      rawStatus: (o.status && o.status.value) != null ? String(o.status.value) : null,
       driver: o.driver || null,
       cost: o.total_amount != null ? Number(o.total_amount) : null,
       raw: o,
@@ -410,6 +458,9 @@ const leajlak = {
     if (!d.status && !d.driver) return null;
     return {
       status: ljStage(d.status),
+      // «Reached Shop» بتتلمّ في assigned، فالحالة الخام هي الطريق الوحيد
+      // اللي نعرف بيه إن المندوب واقف في المطعم فعلاً
+      rawStatus: d.status != null ? String(d.status) : null,
       driver: d.driver || null,
       cost: d.total != null ? Number(d.total) : null,
       raw: d,

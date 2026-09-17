@@ -6,6 +6,7 @@ import {
   hashPin, verifyPin, validPin, signToken, verifyToken, tokenSecret, identitiesFrom, matchLogin,
   currentFingerprint, makeLoginLimiter, toPortalOrder, orderSignature, sseFrame, buildTimeline,
   pushKindForEvent, pushPayload, driverLatLng, localPhone, stageLabel, normStaffList, clientIp,
+  itemsOf, courierDurations, lineName, UNKNOWN_ITEM,
 } from "./portal-core.js";
 import { makePortalPush, validSubscription } from "./portal-push.js";
 
@@ -151,9 +152,10 @@ test("toPortalOrder: نفس شكل العقد بالظبط", () => {
     "itemsCount", "notes", "option", "orderNo", "paidAt", "paidWith", "posOrderId", "readyAt", "sla", "stageLabel",
     "status", "subtotal", "total", "updatedAt"].sort());
   assert.equal(o.total, 95.5);
-  assert.equal(o.itemsCount, 3);
-  assert.deepEqual(o.items[0], { name: "برجر (دبل)", qty: 2, note: "بدون بصل" });
-  assert.deepEqual(o.items[1], { name: "منتج 55", qty: 1, note: "باقة: باقة العيلة" });
+  assert.equal(o.itemsCount, 3, "عنوان الباقة مش صنف");
+  assert.deepEqual(o.items[0], { name: "برجر — دبل", qty: 2, note: "بدون بصل", kind: "item", level: 0 });
+  assert.deepEqual(o.items[1], { name: "باقة العيلة", qty: 1, note: null, kind: "bundle", level: 0 });
+  assert.deepEqual(o.items[2], { name: "صنف #55", qty: 1, note: null, kind: "component", level: 1 });
   assert.deepEqual(o.customer, { name: "محمد", phone: "0512345678" });
   assert.deepEqual(o.address, { area: "السلامة", street: "شارع ١", building: "12", floor: "2", apartment: null, landmark: "جنب البنك", leaveAtDoor: false, lat: 21.58, lng: 39.15 });
   assert.equal(o.paidWith, "Apple Pay (Mada)");
@@ -161,7 +163,9 @@ test("toPortalOrder: نفس شكل العقد بالظبط", () => {
   assert.equal(o.paidAt, new Date(NOW - 19 * 60_000).toISOString());
   assert.equal(o.readyAt, null);
   assert.deepEqual({ ...o.courier, updatedAt: undefined }, { status: "assigned", name: "كابتن سعيد", phone: "0555000111", lat: 21.6, lng: 39.2,
-    updatedAt: undefined, provider: "leajlak", ref: "W1758100000000", assigned: true });
+    updatedAt: undefined, provider: "leajlak", ref: "W1758100000000", assigned: true,
+    arrivedAt: null, pickedAt: null, readyToArrivedMin: null, arrivedToPickedMin: null,
+    pickedToDeliveredMin: null, arrivedBeforeReady: null });
   assert.deepEqual(Object.keys(o.sla).sort(), ["code", "level", "message"]);
   assert.equal(o.stageLabel, "بيتجهّز");
   assert.equal(o.posOrderId, "9001");
@@ -372,4 +376,76 @@ test("validSubscription", () => {
   assert.equal(validSubscription({ endpoint: "http://insecure/x", keys: { p256dh: "B".repeat(87), auth: "a".repeat(22) } }), false);
   assert.equal(validSubscription({ endpoint: "https://x.y/z" }), false);
   assert.equal(validSubscription(null), false);
+});
+
+/* ═══ أسماء الأصناف + محطّات المندوب (١٧ سبتمبر) ═════════════════════════ */
+
+test("itemsOf: الاسم + الوزن، والفولباك «صنف #رقم» مش «منتج رقم»", () => {
+  const items = itemsOf([
+    { product_id: 105, name: "سجق مشوي بالوزن", variant_name: "ثلث كيلو", quantity: 1 },
+    { product_id: 79, quantity: 2 },                       // اسم ناقص خالص
+    { product_id: 3, product_name: "كبدة", qty: 1, note: "حار" },
+    { quantity: 1 },                                        // لا اسم ولا رقم
+  ]);
+  assert.equal(items[0].name, "سجق مشوي بالوزن — ثلث كيلو");
+  assert.equal(items[1].name, "صنف #79");
+  assert.equal(items[2].name, "كبدة");
+  assert.equal(items[2].note, "حار");
+  assert.equal(items[3].name, "صنف غير معروف");
+  assert.ok(items.every((x) => x.kind === "item" && x.level === 0));
+});
+
+test("itemsOf: الباقة عنوان واحد ومكوّناتها متزاحة تحته بكميتها لكل باقة", () => {
+  const b = (slot, name, qty) => ({ product_id: 1, name, quantity: qty, bundle: "nd96",
+    bundle_name: "بوكس اليوم الوطني ٩٦", bundle_line: "nd96-abc", bundle_slot: slot, bundle_qty: 2 });
+  const items = itemsOf([
+    { product_id: 9, name: "بيبسي", quantity: 1 },
+    b("grill", "كفتة مشوية بالوزن", 2), b("rice", "رز", 4),
+  ]);
+  assert.deepEqual(items.map((x) => [x.kind, x.level, x.name, x.qty]), [
+    ["item", 0, "بيبسي", 1],
+    ["bundle", 0, "بوكس اليوم الوطني ٩٦", 2],
+    ["component", 1, "كفتة مشوية بالوزن", 1],
+    ["component", 1, "رز", 2],
+  ]);
+  // سطر الباقة بيتكتب مرة واحدة مهما كان عدد مكوّناتها
+  assert.equal(items.filter((x) => x.kind === "bundle").length, 1);
+});
+
+test("courierDurations: «جاهز→وصل» سالبة لما المندوب يسبق الأكل", () => {
+  const t = (m) => new Date(NOW + m * 60_000).toISOString();
+  const d = courierDurations({ pos_ready_at: t(10), ship_arrived_at: t(4), ship_picked_at: t(12),
+    ship_status: "delivered", ship_updated_at: t(30) });
+  assert.equal(d.readyToArrivedMin, -6, "وصل قبل ما الأكل يجهز بـ٦ دقايق");
+  assert.equal(d.arrivedToPickedMin, 8);
+  assert.equal(d.pickedToDeliveredMin, 18);
+  assert.equal(d.arrivedBeforeReady, true);
+  // مفيش إشارة وصول = مفيش رقم مخترع
+  const none = courierDurations({ pos_ready_at: t(10), ship_arrived_at: null, ship_picked_at: t(12) });
+  assert.equal(none.readyToArrivedMin, null);
+  assert.equal(none.arrivedBeforeReady, null);
+  assert.equal(courierDurations({}).pickedToDeliveredMin, null);
+});
+
+test("toPortalOrder + الخط الزمني: المحطتين بيوصلوا الشاشة بالعربي", () => {
+  const t = (m) => new Date(NOW + m * 60_000);
+  const o = toPortalOrder({ ...baseRow(), pos_ready_at: t(-8), ship_arrived_at: t(-10), ship_picked_at: t(-3) }, {}, NOW);
+  assert.equal(o.courier.arrivedAt, t(-10).toISOString());
+  assert.equal(o.courier.pickedAt, t(-3).toISOString());
+  assert.equal(o.courier.readyToArrivedMin, -2);
+  assert.equal(o.courier.arrivedToPickedMin, 7);
+  const tl = buildTimeline({ order: { created_at: new Date(NOW - 60_000) }, events: [
+    { at: t(-10).toISOString(), name: "courier_arrived", source: "courier_poll", data: { provider: "leajlak", raw_status: "Reached Shop" } },
+    { at: t(-3).toISOString(), name: "courier_picked", source: "courier_poll", data: { provider: "leajlak", raw_status: "Order Picked" } },
+  ] });
+  assert.ok(tl.some((x) => x.label_ar.includes("المندوب وصل المطعم")));
+  assert.ok(tl.some((x) => x.label_ar.includes("المندوب استلم الطلب")));
+});
+
+test("pushKindForEvent/pushPayload: «المندوب وصل المطعم» إشعار مستقل للكاشير", () => {
+  const m = pushKindForEvent({ orderNo: "W1", name: "courier_arrived", data: { provider: "leajlak" } });
+  assert.deepEqual(m, { kind: "courier_arrived", key: "courier_arrived" });
+  const p = pushPayload("courier_arrived", { orderNo: "W1" }, "https://x/portal/");
+  assert.match(p.title, /المندوب وصل المطعم/);
+  assert.equal(p.urgency, "high");
 });

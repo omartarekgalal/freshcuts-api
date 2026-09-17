@@ -23,7 +23,7 @@
 ═══════════════════════════════════════════════════════════════════════════ */
 
 import { STORE_LAT, STORE_LNG } from "./tsstore.js";
-import { PROVIDERS, activeProvider } from "./couriers.js";
+import { PROVIDERS, activeProvider, courierMilestone } from "./couriers.js";
 import { emitOrder } from "./order-events.js";
 import { makeDriveDistance, resolveRouteKm } from "./drivedist.js";
 import { makeZoneService } from "./deliveryzone.js";
@@ -41,6 +41,24 @@ function courierEvent(name, orderNo, opts = {}) {
     return null;
   }
 }
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   محطّتا المندوب (١٧ سبتمبر ٢٠٢٦ — طلب عمر).
+
+   `recordMilestone` بتكتب الوقت **مرة واحدة بس** لكل محطة (أول إشارة هي
+   الصح: الاستطلاع كل دقيقة بيرجّع نفس الحالة ٥–٦ مرات). الكتابة مشروطة
+   في نفس جملة الـUPDATE (`arrived_at IS NULL`) فحتى لو حاويتين شغالين مع
+   بعض وقت النشر، الحدث بيتبعت مرة واحدة.
+
+   «استلم» بيلزم «وصل» ضمنياً: لو الشركة ما بعتتش «وصل المطعم» أصلاً
+   (أو ضاعت بين استطلاعين) بنسيبها فاضية بدل ما نخترع وقت — الشاشة
+   بتقول «الشركة ما سجّلتش وصول» بدل ما تكدب على عمر في قياس الأداء.
+═══════════════════════════════════════════════════════════════════════════ */
+export const MILESTONE_COL = Object.freeze({ arrived: "arrived_at", picked: "picked_at" });
+export const MILESTONE_EVENT = Object.freeze({ arrived: "courier_arrived", picked: "courier_picked" });
+export const MILESTONE_AR = Object.freeze({
+  arrived: "المندوب وصل المطعم", picked: "المندوب استلم الطلب",
+});
 
 /* بصمة هوية الكابتن (مش موقعه): الموقع بيتغيّر كل poll، وتغيّر الموقع مش
    «سائق جديد». بنقارن بالمعرّف لو موجود، وإلا بالاسم + الجوال. */
@@ -607,6 +625,12 @@ export function register(app, ctx, deps = {}) {
         WHERE provider_ref IS NULL AND fa_order_id IS NOT NULL;
       -- نتيجة التوزيع: هل اتعيّن كابتن فعلاً ولا الطلب اتصعّد لمشرف؟
       ALTER TABLE dl_shipments ADD COLUMN IF NOT EXISTS dispatch JSONB;
+      -- محطّتا المندوب (١٧ سبتمبر — طلب عمر عشان نقيس أداء شركة التوصيل).
+      -- «وصل المطعم» و«استلم الطلب» كانوا الاتنين بيتلمّوا في حالة موحّدة
+      -- واحدة، فمافيش طريقة نقيس بيها كام دقيقة قعد المندوب في المطعم ولا
+      -- إذا كان بيستنانا ولا احنا بنستناه.
+      ALTER TABLE dl_shipments ADD COLUMN IF NOT EXISTS arrived_at TIMESTAMPTZ;
+      ALTER TABLE dl_shipments ADD COLUMN IF NOT EXISTS picked_at TIMESTAMPTZ;
       CREATE INDEX IF NOT EXISTS dl_shipments_order_idx ON dl_shipments(shop_order_no);
       CREATE INDEX IF NOT EXISTS dl_shipments_fa_idx ON dl_shipments(fa_order_id);
       -- كل ويبهوك مندوب بيوصل (حتى المرفوض واللي مش متطابق). لاجلك عمرها
@@ -637,6 +661,49 @@ export function register(app, ctx, deps = {}) {
   ensureSchema()
     .then(() => console.log("[delivery] schema ready"))
     .catch((e) => console.error("[delivery] schema failed:", e.message));
+
+  /* محطّات المندوب: بتتكتب مرة واحدة لكل شحنة، وبتطلق حدث على ناقل الطلب
+     أول مرة بس. بترجّع المحطة لو اتسجّلت دلوقتي، وnull لو كانت متسجّلة قبل
+     كده أو الإشارة مش موجودة. عمرها ما ترمي — التتبع مايقعش عشان سطر عرض. */
+  async function recordMilestone(shipment, milestone, meta = {}) {
+    try {
+      const col = MILESTONE_COL[milestone];
+      if (!col || !shipment?.id) return null;
+      const upd = await pool.query(
+        `UPDATE dl_shipments SET ${col} = NOW(), updated_at = NOW()
+          WHERE id = $1 AND ${col} IS NULL RETURNING shop_order_no, ${col} AS at`, [shipment.id]);
+      if (!upd.rowCount || !upd.rows[0]) return null;
+      const orderNo = upd.rows[0].shop_order_no;
+      courierEvent(MILESTONE_EVENT[milestone], orderNo, {
+        source: meta.source || "courier_poll", ok: true, summary: MILESTONE_AR[milestone],
+        data: {
+          provider: meta.provider || shipment.provider || null,
+          raw_status: meta.rawStatus != null ? String(meta.rawStatus).slice(0, 60) : null,
+          via: meta.via || "poll",
+        },
+      });
+      return { milestone, at: upd.rows[0].at, orderNo };
+    } catch (e) {
+      console.error(`[delivery] milestone ${milestone} failed:`, e.message);
+      return null;
+    }
+  }
+  /* إشارة واحدة ممكن تقول «استلم» من غير ما «وصل» توصل أصلاً. بنسجّل
+     المحطتين بالترتيب عشان «وصل» ما تضيعش لو الشركة بعتت الاتنين مع بعض،
+     لكن من غير ما نخترع وقت وصول من الهوا: لو ما وصلتش إشارة وصول خالص
+     الخانة بتفضل فاضية والتقارير بتستبعد الطلب ده. */
+  async function applyMilestones(shipment, { rawStatus, status, provider, source, via }) {
+    const p = provider || shipment?.provider || null;
+    const m = courierMilestone(p, rawStatus)
+      // احتياطي: الحالة الموحّدة picked معناها استلم حتى لو الاسم الخام جديد علينا
+      || (status === "picked" ? "picked" : null)
+      || (status === "delivered" ? "picked" : null);
+    if (!m) return [];
+    const out = [];
+    const done = await recordMilestone(shipment, m, { rawStatus, provider: p, source, via });
+    if (done) out.push(done);
+    return out;
+  }
 
   const drive = deps.drive || makeDriveDistance({ pool });
   drive.ensureSchema().catch((e) => console.error("[delivery] geo_drive_cache schema failed:", e.message));
@@ -1174,7 +1241,7 @@ export function register(app, ctx, deps = {}) {
          updated_at = NOW()
        WHERE (($1::text IS NOT NULL AND shop_order_no = $1)
            OR ($6::text IS NOT NULL AND provider = $7 AND provider_ref = $6))
-       RETURNING id, shop_order_no, status`,
+       RETURNING id, shop_order_no, status, provider, arrived_at, picked_at`,
       [ev.orderNo, ev.status,
        ev.driver ? jb(ev.driver) : null,
        jb([{ at: new Date().toISOString(), provider: from.id, event: ev.rawStatus, payload: b }]),
@@ -1185,6 +1252,14 @@ export function register(app, ctx, deps = {}) {
       return c.json({ ok: true, ignored: true });
     }
     const matchedNo = upd.rows[0].shop_order_no;
+    /* محطّات المندوب من الويبهوك كمان — لاجلك عمرها ما بعتت ويبهوك لحد
+       النهارده، بس لو بعتت بكرة المحطة لازم تتسجّل من غير ما نستنى الاستطلاع. */
+    try {
+      await applyMilestones(upd.rows[0], {
+        rawStatus: ev.rawStatus, status: ev.status, provider: from.id,
+        source: "courier_webhook", via: "webhook",
+      });
+    } catch { /* الويبهوك مايفشلش عشان محطة */ }
     /* «courier_webhook» مش اسم في ORDER_EVENTS (§٤-١ مقفولة)، فالتحديث
        الجاي من الويبهوك بيتسجّل courier_update بمصدر courier_webhook. */
     courierEvent("courier_update", matchedNo, {
@@ -1284,7 +1359,8 @@ export function register(app, ctx, deps = {}) {
       /* الشحنات اليدوية مستثناة: مرجعها رقم كتبه الكاشير من لوحة شركة
          تانية، ومحدش عنده API نسأله. سؤال Flying Arrow عنه كان هيرجع
          خطأ في أحسن الأحوال، أو بيانات طلب غريب في أسوأها. */
-      `SELECT id, shop_order_no, provider, provider_ref, status, driver FROM dl_shipments
+      `SELECT id, shop_order_no, provider, provider_ref, status, driver, arrived_at, picked_at
+         FROM dl_shipments
         WHERE provider_ref IS NOT NULL
           AND provider <> 'manual'
           AND status NOT IN ('delivered','cancelled')
@@ -1302,6 +1378,12 @@ export function register(app, ctx, deps = {}) {
       if (o && o.driver) {
         await pool.query("UPDATE dl_shipments SET driver=$2 WHERE id=$1", [r.id, jb(o.driver)]);
       }
+      /* المحطّات قبل أي شرط على الحالة الموحّدة: «Reached Shop» بتتلمّ في
+         assigned، يعني الحالة **ما بتتغيّرش** لما المندوب يوصل المطعم —
+         وده بالظبط اللي كان بيخلّي المحطة دي مختفية من التتبع. */
+      try {
+        await applyMilestones(r, { rawStatus: o?.rawStatus, status: o?.status, provider: p.id, source: "courier_poll", via: "poll" });
+      } catch { /* التتبع مايقعش عشان محطة */ }
       if (!o || !o.status || o.status === r.status) {
         await pool.query("UPDATE dl_shipments SET updated_at=NOW() WHERE id=$1", [r.id]);
         if (drvChanged) {

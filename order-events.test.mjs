@@ -33,11 +33,14 @@ function fakePool({ failInsert = false } = {}) {
   };
 }
 
-test("ORDER_EVENTS matches master plan §4-1 exactly", () => {
+test("ORDER_EVENTS matches master plan §4-1 (+ محطّتا المندوب، ١٧ سبتمبر)", () => {
   assert.deepEqual([...ORDER_EVENTS].sort(), [
     "order_status", "payment_execute", "payment_check", "order_paid", "order_expired",
     "pos_push", "partner_fallback", "pos_ready", "portal_ack",
     "courier_dispatch", "courier_update", "courier_cancel", "courier_manual",
+    // زيادة على §٤-١: «وصل المطعم» و«استلم الطلب» — الحالة الموحّدة
+    // مابتفرّقش بينهم، والاتنين لازم يتقاسوا لأداء شركة التوصيل
+    "courier_arrived", "courier_picked",
     "sla_alert", "notify_sent", "refund", "staff_note", "staff_call", "staff_action",
   ].sort());
   assert.equal(new Set(ORDER_EVENTS).size, ORDER_EVENTS.length);

@@ -25,6 +25,7 @@ import {
 } from "./portal-core.js";
 import { makePortalPush, validSubscription } from "./portal-push.js";
 import { parseRange, buildReport } from "./portal-reports.js";
+import { makeNameResolver, backfillItemNames } from "./product-names.js";
 
 export const AUDIT_DDL = Object.freeze([
   `CREATE TABLE IF NOT EXISTS portal_audit (
@@ -49,9 +50,10 @@ const ORDER_COLS = `o.order_no, o.status, o.option, o.customer, o.phone_norm, o.
   o.history, o.alerts, o.pos_ready_at, o.accepted_at, o.portal_ack_at, o.portal_ack_by, o.pay_gateway,
   o.is_test, o.dispatch_claimed_at::text AS dispatch_claimed_at,
   s.status AS ship_status, s.driver AS ship_driver, s.provider AS ship_provider, s.provider_ref AS ship_ref,
-  s.updated_at AS ship_updated_at, s.dispatch AS ship_dispatch`;
+  s.updated_at AS ship_updated_at, s.dispatch AS ship_dispatch,
+  s.arrived_at AS ship_arrived_at, s.picked_at AS ship_picked_at`;
 const SHIP_JOIN = `LEFT JOIN LATERAL (
-    SELECT status, driver, provider, provider_ref, updated_at, dispatch
+    SELECT status, driver, provider, provider_ref, updated_at, dispatch, arrived_at, picked_at
       FROM dl_shipments WHERE shop_order_no = o.order_no ORDER BY id DESC LIMIT 1) s ON TRUE`;
 export const FEED_SQL = `SELECT ${ORDER_COLS} FROM shop_orders o ${SHIP_JOIN}
   WHERE o.status NOT IN ('pending_payment','expired')
@@ -192,8 +194,26 @@ export function register(app, ctx, deps = {}) {
     slaCache = { at: now(), cfg };
     return cfg;
   }
+  /* أسماء الأصناف (بلاغ عمر ١٧ سبتمبر): السلة بتوصل بـproduct_id بس، فالشاشة
+     كانت بتكتب رقم. بنحلّ الاسم من قايمة تاب سينس قبل ما الصف يتحوّل للعرض —
+     حزام إضافي فوق الحل وقت الشيك أوت والـbackfill. أي فشل بيتبلع: الأسوأ
+     إن السطر يفضل «صنف #<رقم>» زي ما كان. */
+  const names = deps.names || makeNameResolver({ pool, tsstore: deps.tsstore, log });
+  const withNames = async (rows) => {
+    try { return await names.fillRows(rows); } catch { return rows; }
+  };
+  /* الطلبات اللي اتخزّنت قبل التصليح لسه بأرقام — بنصلّحها مرة واحدة بعد
+     الإقلاع بشوية (مش وقته، عشان الإقلاع مايتأخرش ولا نضرب تاب سينس وقت
+     الزحمة). حقل العرض بس، والسطر اللي اسمه فعلاً مش معروف بيفضل زي ما هو. */
+  if (deps.backfill !== false && timers && env.ITEM_NAMES_BACKFILL !== "0") {
+    const t = setTimeout(() => {
+      backfillItemNames(pool, names, { days: Number(env.ITEM_NAMES_BACKFILL_DAYS || 90), limit: 400, log })
+        .catch((e) => { try { log.error(`[portal] item-name backfill failed: ${e?.message || e}`); } catch {} });
+    }, Number(env.ITEM_NAMES_BACKFILL_DELAY_MS || 25_000));
+    t.unref?.();
+  }
   async function loadFeed(hours) {
-    const rows = (await pool.query(FEED_SQL, [hours])).rows || [];
+    const rows = await withNames((await pool.query(FEED_SQL, [hours])).rows || []);
     const cfg = await slaCfg();
     const t = now();
     return rows.map((r) => toPortalOrder(r, cfg, t));
@@ -201,7 +221,7 @@ export function register(app, ctx, deps = {}) {
   async function loadByNos(nos) {
     const list = [...new Set((nos || []).map(String))].slice(0, 100);
     if (!list.length) return { orders: [], rows: [] };
-    const rows = (await pool.query(BY_NO_SQL, [list])).rows || [];
+    const rows = await withNames((await pool.query(BY_NO_SQL, [list])).rows || []);
     const cfg = await slaCfg();
     const t = now();
     return { rows, orders: rows.map((r) => toPortalOrder(r, cfg, t)) };
@@ -726,6 +746,20 @@ export function register(app, ctx, deps = {}) {
     return /^5\d{8}$/.test(d) ? d : null;
   };
   const maskPn = (pn) => `05${"•".repeat(5)}${String(pn).slice(-2)}`;
+
+  /* تشغيل يدوي لتصليح أسماء الأصناف (للمدير) — بيتنفّذ تلقائي بعد كل نشر
+     كمان. بيرجّع كام طلب وكام سطر اتصلّحوا. */
+  app.post("/api/portal/item-names/backfill", async (c) => {
+    const a = await requirePortal(c, "manager"); if (a.res) return a.res;
+    const days = Math.min(365, Math.max(1, Number(c.req.query("days")) || 90));
+    try {
+      const r = await backfillItemNames(pool, names, { days, limit: 1000, log });
+      return c.json({ ok: true, days, ...r, cached: names.size() });
+    } catch (e) {
+      try { log.error(`[portal] backfill failed: ${e?.message || e}`); } catch {}
+      return c.json({ ok: false, error: "backfill_failed" }, 500);
+    }
+  });
 
   app.get("/api/portal/sms-optout", async (c) => {
     const a = await requirePortal(c); if (a.res) return a.res;
