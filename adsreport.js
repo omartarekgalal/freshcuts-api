@@ -71,7 +71,7 @@ export function previousBizDay(now = new Date()) {
 }
 
 /* Did this online order come from a paid ad? Returns "meta" | "snapchat" | null. */
-export function adSourceOf(attr) {
+export function adSourceOf(attr, attribSource = null) {
   const a = attr || {};
   const utm = a.utm || {};
   const src = String(utm.utm_source || "").toLowerCase();
@@ -79,9 +79,28 @@ export function adSourceOf(attr) {
   const link = String(a.fc_link || utm.utm_content || "").toLowerCase();
   const click = a.click || {};
   if (/^96-(m2|m3|meta)-/.test(link) || click.fbc || click.fbclid) return "meta";
-  if (["meta", "facebook", "instagram", "fb", "ig"].includes(src) && med === "paid") return "meta";
-  if (click.ScCid || click.sccid || (src === "snapchat" && med === "paid")) return "snapchat";
+  if (/^96-snap-/.test(link) || click.ScCid || click.sccid) return "snapchat";
+  if (med === "paid") {
+    if (["meta", "facebook", "instagram", "fb", "ig"].includes(src)) return "meta";
+    if (src === "snapchat") return "snapchat";
+  }
+  // classifySource() (checkout-meta.js) writes shop_orders.attrib_source from the SAME
+  // attribution blob plus the server-side journey session, so it catches the in-app-browser
+  // orders whose localStorage was wiped. Platform + a paid medium/link is still required.
+  const cls = String(attribSource || "").toLowerCase();
+  if ((cls === "meta" || cls === "snapchat") && (med === "paid" || /^96-(m2|m3|meta|snap)-/.test(link))) return cls;
   return null;
+}
+
+/* Where did every paid-for online order come from, by OUR own data (attrib_source
+   first, attribution blob second). Reported next to Meta's own count, never replaced
+   by it — Meta counts a purchase it merely thinks it caused. */
+export function sourceOf(o) {
+  const cls = String(o.attrib_source || "").toLowerCase();
+  if (cls) return cls;
+  const a = o.attribution || {};
+  const src = String(a.utm?.utm_source || "").toLowerCase();
+  return src || (a.fc_link ? "link" : "direct");
 }
 
 export function recommend(ads) {
@@ -115,13 +134,16 @@ export function smsText(rep) {
 export function buildReport({ day, pos, shop, meta, snap = null, guardLog = [], now = new Date() }) {
   const onlineDelivery = { orders: 0, revenue: 0 }, onlinePickup = { orders: 0, revenue: 0 };
   let testOrders = 0, ours = 0, oursMeta = 0, oursSnap = 0, adsRevenue = 0;
-  const byLink = {};
+  const byLink = {}, bySource = {};
   for (const o of shop) {
     if (o.is_test || TEST_COUPONS.includes(String(o.coupon || "").toUpperCase())) { testOrders++; continue; }
     const bucket = o.option === "pickup" ? onlinePickup : onlineDelivery;
     bucket.orders++; bucket.revenue += num(o.total);
-    const src = adSourceOf(o.attribution);
+    const src = adSourceOf(o.attribution, o.attrib_source);
     if (src) { ours++; adsRevenue += num(o.total); if (src === "meta") oursMeta++; else oursSnap++; }
+    const s = sourceOf(o);
+    bySource[s] = bySource[s] || { orders: 0, revenue: 0, paid: 0 };
+    bySource[s].orders++; bySource[s].revenue = r2(bySource[s].revenue + num(o.total)); if (src) bySource[s].paid++;
     const link = o.attribution?.fc_link;
     if (link) byLink[link] = (byLink[link] || 0) + 1;
   }
@@ -137,7 +159,10 @@ export function buildReport({ day, pos, shop, meta, snap = null, guardLog = [], 
   const spendTotal = r2(spendMeta + spendSnap);
   const spendWeb = r2(spendTotal - spendWhatsapp);
   const metaPurchases = camps.reduce((s, c) => s + num(c.purchases), 0);
-  const ordersFromAds = Math.max(ours, metaPurchases);
+  // OUR paid orders decide, not Meta's. Since the storefront attribution fix (17/9) the
+  // utm/fbclid/session survive checkout, so `ours` is the honest number; Meta's own count
+  // stays visible beside it (metaPurchases) but never drives a budget decision.
+  const ordersFromAds = ours;
   const ads = {
     spendTotal, spendMeta, spendSnap, spendWeb, spendWhatsapp,
     byCampaign: camps.sort((a, b) => b.spend - a.spend),
@@ -157,7 +182,7 @@ export function buildReport({ day, pos, shop, meta, snap = null, guardLog = [], 
       total, hall: pos.hall, deliveryApps: pos.deliveryApps, onlineDelivery, onlinePickup,
       onlineInPos: pos.onlineInPos, // reconciliation only — not added to total
     },
-    online: { orders: onlineOrders, revenue: onlineRevenue, aov: onlineOrders ? r2(onlineRevenue / onlineOrders) : null, testOrdersExcluded: testOrders, byLink },
+    online: { orders: onlineOrders, revenue: onlineRevenue, aov: onlineOrders ? r2(onlineRevenue / onlineOrders) : null, testOrdersExcluded: testOrders, byLink, bySource },
     ads,
     thresholds: THRESH,
     guard: guardLog,
@@ -234,7 +259,7 @@ export function register(app, ctx, deps = {}) {
 
   async function shopPart(day) {
     return (await pool.query(`
-      SELECT order_no, option, total, coupon, is_test, attribution, status
+      SELECT order_no, option, total, coupon, is_test, attribution, attrib_source, status
         FROM shop_orders
        WHERE ((created_at AT TIME ZONE '${TZ}') - interval '4 hours')::date = $1::date
          AND status <> ALL($2::text[])`, [day, NOT_PAID])).rows;

@@ -2,7 +2,7 @@
      node --test adsreport.test.mjs */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { reportDayAt, previousBizDay, adSourceOf, recommend, smsText, buildReport } from "./adsreport.js";
+import { reportDayAt, previousBizDay, adSourceOf, sourceOf, recommend, smsText, buildReport } from "./adsreport.js";
 import { smsInfo } from "./staffalerts.js";
 
 const at = (iso) => new Date(iso);
@@ -25,7 +25,18 @@ test("مصدر الطلب: روابط 96-m2/m3/meta و fbc = ميتا، UTM مد
   assert.equal(adSourceOf({ utm: { utm_source: "instagram", utm_medium: "story" } }), null); // organic
   assert.equal(adSourceOf({ utm: { utm_source: "direct", utm_medium: "offer-link", utm_content: "96-box" } }), null);
   assert.equal(adSourceOf({ click: { ScCid: "x" } }), "snapchat");
+  // attrib_source (classifySource on the server session) rescues the in-app-browser orders
+  assert.equal(adSourceOf({ utm: { utm_medium: "paid" } }, "meta"), "meta");
+  assert.equal(adSourceOf({ fc_link: "96-snap-kilo" }, "snapchat"), "snapchat");
+  assert.equal(adSourceOf({ utm: { utm_medium: "story" } }, "meta"), null); // organic post
   assert.equal(adSourceOf(null), null);
+});
+
+test("مصدر الطلب للعرض: attrib_source الأول، وبعده utm، وبعده الرابط", () => {
+  assert.equal(sourceOf({ attrib_source: "meta", attribution: {} }), "meta");
+  assert.equal(sourceOf({ attribution: { utm: { utm_source: "instagram" } } }), "instagram");
+  assert.equal(sourceOf({ attribution: { fc_link: "96-qr-hall" } }), "link");
+  assert.equal(sourceOf({ attribution: null }), "direct");
 });
 
 test("التوصية بنفس حدود الحارس", () => {
@@ -40,9 +51,9 @@ test("التوصية بنفس حدود الحارس", () => {
 
 const pos = { hall: { orders: 30, revenue: 1500.5 }, deliveryApps: { orders: 12, revenue: 800.25, byApp: {} }, onlineInPos: { orders: 4, revenue: 380 } };
 const shop = [
-  { order_no: "W1", option: "delivery", total: "96", coupon: "FIRST", is_test: false, attribution: { fc_link: "96-m3-box-b" } },
-  { order_no: "W2", option: "pickup", total: "120", coupon: null, is_test: false, attribution: { utm: {} } },
-  { order_no: "W3", option: "delivery", total: "106", coupon: null, is_test: false, attribution: null },
+  { order_no: "W1", option: "delivery", total: "96", coupon: "FIRST", is_test: false, attrib_source: "meta", attribution: { fc_link: "96-m3-box-b" } },
+  { order_no: "W2", option: "pickup", total: "120", coupon: null, is_test: false, attrib_source: "direct", attribution: { utm: {} } },
+  { order_no: "W3", option: "delivery", total: "106", coupon: null, is_test: false, attrib_source: "direct", attribution: null },
   { order_no: "W4", option: "delivery", total: "32.5", coupon: "OMAR-9X4T", is_test: false, attribution: null },
   { order_no: "W5", option: "delivery", total: "50", coupon: null, is_test: true, attribution: null },
 ];
@@ -61,7 +72,9 @@ test("بناء التقرير: الأونلاين من shop_orders بس (مفي�
   assert.equal(r.ads.spendTotal, 450);
   assert.equal(r.ads.spendWeb, 300);
   assert.equal(r.ads.ordersFromAdsOurs, 1);
-  assert.equal(r.ads.ordersFromAds, 2);                           // max(ours, meta)
+  assert.equal(r.ads.ordersFromAds, 1);                           // OUR paid orders decide, not Meta's 2
+  assert.equal(r.online.bySource.meta.orders, 1);
+  assert.equal(r.online.bySource.direct.orders, 2);
   assert.equal(r.ads.cpaOnline, 100);                             // 300 / 3
   assert.equal(r.ads.roasOnline, 1.07);                           // 322 / 300
   assert.equal(r.ads.spendShareOfRevenue, Math.round(450 / 2622.75 * 10000) / 10000);
