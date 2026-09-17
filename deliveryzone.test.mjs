@@ -3,7 +3,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
-  buildDriveZone, clampSpikes, spikeWindow, circlePolygon, destPoint, fallbackRadiusKm, rayCapKm, makeZoneService, zoneKey,
+  buildDriveZone, clampSpikes, spikeWindow, flattenLoneRays, circlePolygon, destPoint, fallbackRadiusKm, rayCapKm, makeZoneService, zoneKey,
 } from "./deliveryzone.js";
 import { makeDriveDistance, googleDriveMatrix } from "./drivedist.js";
 import { haversineKm } from "./delivery.js";
@@ -86,6 +86,11 @@ test("القصّ على قراءة الإنتاج (١٢٠ شعاع): لسان ا
   assert.ok(out[86] < 6.5 && out[89] < 7, `sea tongue clamped: 258°=${out[86]} 267°=${out[89]}`);
   const changed = out.map((r, i) => (Math.abs(r - live[i]) > 1e-9 ? i : null)).filter((x) => x != null);
   assert.ok(changed.every((i) => i >= 85 && i <= 91), `only the western sea rays change: ${changed.map((i) => i * 3)}`);
+});
+
+test("شعاع لوحده داخل في البحر بعد القصّ بيتساوى بأطول جار، والباقي مابيتلمسش", () => {
+  assert.deepEqual(flattenLoneRays([6.2, 6.7, 9.3, 4.4, 4.8]), [6.2, 6.7, 6.7, 4.4, 4.8]);
+  assert.deepEqual(flattenLoneRays([7.5, 7.8, 7.2, 5.1]), [7.5, 7.8, 7.2, 5.1]);
 });
 
 test("مفيش طريق (noRoute) = برّه", async () => {

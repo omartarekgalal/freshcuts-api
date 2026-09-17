@@ -105,7 +105,7 @@ export async function buildDriveZone({
     done++;
   }
   if (done < 3) throw Object.assign(new Error("zone_budget"), { elements });
-  const radii = clampSpikes(lo, 1.4, spikeWindow(rays)).map((l) => Math.max(l, minKm));
+  const radii = flattenLoneRays(clampSpikes(lo, 1.4, spikeWindow(rays))).map((l) => Math.max(l, minKm));
   return { polygon: ringOf(center, radii), radiiKm: radii.map((x) => Math.round(x * 100) / 100), elements, iterations: done };
 }
 
@@ -129,6 +129,17 @@ export function clampSpikes(radii, ratio = 1.4, halfWindow = 1, q = 0) {
     for (let d = 1; d <= w; d++) { left.push(radii[(i - d + n) % n]); right.push(radii[(i + d) % n]); }
     // الجانبين لازم يبقوا واطيين الاتنين؛ حافة حقيقية (جانب عالي وجانب واطي) مابتتقصّش
     return Math.min(r, Math.max(quant(left), quant(right)) * ratio);
+  });
+}
+
+/* بعد القصّ ممكن يفضل شعاع واحد لوحده داخل في البحر (اتشاف: 270° = 9.3 كم وجيرانه
+   6.7/4.4 — لسان رفيع باين على الخريطة). شعاع أطول من ratio × أطول جار مباشر
+   بيتساوى بأطول جار. على قراءة الإنتاج ده بيلمس الشعاع ده بس. */
+export function flattenLoneRays(radii, ratio = 1.2) {
+  const n = radii.length;
+  return radii.map((r, i) => {
+    const m = Math.max(radii[(i - 1 + n) % n], radii[(i + 1) % n]);
+    return r > ratio * m ? m : r;
   });
 }
 
