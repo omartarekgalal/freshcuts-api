@@ -11,6 +11,7 @@
 
 import crypto from "node:crypto";
 import { STAGES, slaCheck } from "./shop.js";
+import { leaveAtDoor } from "./couriers.js";
 
 export const ROLES = Object.freeze(["cashier", "manager"]);
 export const TOKEN_TTL_MS = 12 * 60 * 60 * 1000;
@@ -292,7 +293,8 @@ export function toPortalOrder(r, slaCfg = {}, now = Date.now()) {
     customer: { name: cust.name || null, phone: localPhone(r.phone_norm || cust.phone) },
     address: r.option === "delivery" && addr ? {
       area: addr.area || null, street: addr.street || null, building: addr.building || null,
-      floor: addr.floor || null, landmark: addr.landmark || null,
+      floor: addr.floor || null, apartment: addr.apartment || null, landmark: addr.landmark || null,
+      leaveAtDoor: leaveAtDoor(addr),
       lat: num(addr.latitude ?? addr.lat), lng: num(addr.longitude ?? addr.lng),
     } : null,
     paidWith: r.pay_gateway || null,

@@ -29,7 +29,7 @@
 ═══════════════════════════════════════════════════════════════════════════ */
 
 import * as tsstore from "./tsstore.js";
-import { msisdn, readableAddress } from "./couriers.js";
+import { msisdn, readableAddress, leaveAtDoor } from "./couriers.js";
 // ضريبة سطور الباقة — نفس الثابت اللي التوزيع اتعمل بيه، عشان الإجمالي يرجع للسعر بالظبط
 import { VAT_RATE as BUNDLE_VAT } from "./bundles.js";
 import { isOpenNow } from "./carts.js";
@@ -179,6 +179,33 @@ export function partnerItemsOf(row) {
       ...(note ? { lineNote: note } : {}),
     };
   });
+}
+
+/* ملاحظات طلب نقطة البيع (الكاشير + المطبخ). عمر 2026-08-13: وقت الطلب ووقت
+   الاستلام إجباري (بتوقيت الرياض). withFee = مسار الشريك (رسوم التوصيل كنص).
+   الخصم مابيتكتبش (عمر 16 سبتمبر). «اتركه عند الباب🚪» لو العميل اختارها
+   (عمر 18 سبتمبر) — قصيرة وجنب «توصيل» عشان تتشاف. */
+export function posNotesOf(row, { withFee = false, now = Date.now() } = {}) {
+  const hm = (t) => new Date(new Date(t).getTime() + 3 * 3600_000).toISOString().slice(11, 16);
+  const delivery = row.option === "delivery";
+  const feeNote = withFee && Number(row.delivery_fee) > 0 ? `توصيل ${Number(row.delivery_fee)}ر` : "";
+  return [
+    delivery ? "توصيل" : "استلام",
+    delivery && leaveAtDoor(row.address) ? "اتركه عند الباب🚪" : "",
+    `طُلب ${hm(row.created_at)}`,
+    row.option === "pickup" ? `استلام ${hm(now + 40 * 60_000)}` : "",
+    feeNote,
+    "مدفوع أونلاين✅", row.notes || "",
+  ].filter(Boolean).join(" - ");
+}
+
+/* سطر عنوان التوصيل في نقطة البيع: نفس نص المندوب من غير الإحداثيات
+   (الحي، الشارع، المبنى، الدور، الشقة، العلامة، «اترك الطلب عند الباب»). */
+export function posAddressLine(row) {
+  const addr = row.address || {};
+  if (row.option !== "delivery") return "استلام";
+  const hasText = ["area", "street", "building"].some((k) => String(addr[k] || "").trim());
+  return hasText ? readableAddress(addr).slice(0, 250) : "توصيل";
 }
 
 export function refundDecision(row, { maxAttempts = 3 } = {}) {
@@ -1022,15 +1049,8 @@ export function register(app, ctx, deps = {}) {
      اللي العميل دفعه (خصوصاً الخصومات ورسوم التوصيل) قبل تشغيل TSP_AUTO_ORDER. */
   function buildPartnerOrder(row, settings) {
     const addr = row.address || {};
-    const hm = (t) => new Date(new Date(t).getTime() + 3 * 3600_000).toISOString().slice(11, 16);
-    const feeNote = Number(row.delivery_fee) > 0 ? `توصيل ${Number(row.delivery_fee)}ر` : "";
-    const notes = [
-      row.option === "delivery" ? "توصيل" : "استلام",
-      `طُلب ${hm(row.created_at)}`,
-      row.option === "pickup" ? `استلام ${hm(Date.now() + 40 * 60_000)}` : "",
-      feeNote, // الخصم مابيتكتبش للكاشير/المطبخ (عمر 16 سبتمبر) — سعر السطور بعد الخصم كفاية
-      "مدفوع أونلاين✅", row.notes || "",
-    ].filter(Boolean).join(" - ");
+    // الخصم مابيتكتبش للكاشير/المطبخ (عمر 16 سبتمبر) — سعر السطور بعد الخصم كفاية
+    const notes = posNotesOf(row, { withFee: true });
     const items = partnerItemsOf(row);
     // رسوم التوصيل تنزل في الفاتورة كسطر منتج «رسوم التوصيل» (فئة رسوم، ضريبة 15%).
     // بنبعت الرقم صافي (fee/1.15) عشان الإجمالي في تاب سينس يطلع شامل الضريبة =
@@ -1052,7 +1072,7 @@ export function register(app, ctx, deps = {}) {
         address: { city: null, area: addr.area || null, street: addr.street || null },
       },
       deliveryAddress: {
-        line: addr.street || addr.area || (row.option === "delivery" ? "توصيل" : "استلام"),
+        line: posAddressLine(row),
         city: null,
       },
       items,
@@ -1174,16 +1194,7 @@ export function register(app, ctx, deps = {}) {
         },
         // Omar's rule (2026-08-13): وقت الطلب ووقت الاستلام في الملاحظات
         // إجباري. Riyadh clock — the cashier reads this, not a machine.
-        notes: (() => {
-          const hm = (t) => new Date(new Date(t).getTime() + 3 * 3600_000).toISOString().slice(11, 16);
-          return [
-            row.option === "delivery" ? "توصيل" : "استلام",
-            `طُلب ${hm(row.created_at)}`,
-            row.option === "pickup" ? `استلام ${hm(Date.now() + 40 * 60_000)}` : "",
-            "مدفوع أونلاين✅",
-            row.notes || "",
-          ].filter(Boolean).join(" - ");
-        })(),
+        notes: posNotesOf(row),
         paymentMethod: posPaymentMethodFor(row.pay_gateway, settings),
         deliveryAddress: addr.street || addr.area || (row.option === "delivery" ? "Delivery" : "Pickup"),
         latitude: addr.latitude, longitude: addr.longitude,

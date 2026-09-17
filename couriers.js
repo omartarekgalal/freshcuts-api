@@ -69,14 +69,37 @@ async function httpJson(url, { method = "GET", headers = {}, body, label = "cour
    ودي مش تجميعة نصوص ساذجة: من طلب حقيقي وصل السائق بـ«مبنى المبتى والدور،
    🏠 بيت، بجوار علامة مميزة» — لأن العميل ساب الحقول فاضية والواجهة بعتت
    نص الـplaceholder نفسه، وحقل «الدور» أصلاً بيحمل نوع السكن مش رقم دور.
-   فبنرمي أي قيمة شكلها placeholder، وبنشيل الإيموجي، وبنسيب الدور بره —
+   فبنرمي أي قيمة شكلها placeholder، وبنشيل الإيموجي، ونوع المكان («بيت/شقة») اللي في خانة الدور مابيوصلش —
    عنوان قصير صح أنفع للسائق من عنوان طويل نصه كلام فاضي. */
 const ADDR_PLACEHOLDERS = /^(المبن?ى|المبتى)?\s*(و?الدور)?$|^علامة مميزة$|^رقم المبنى$|^اسم الشارع$|^الحي$|^بيت$|^شقة$|^عنواني$|^-+$/;
+// الواجهة القديمة (ورقة العنوان في app.js) بتحط «نوع المكان» في خانة الدور
+const PLACE_TYPES = /^(بيت|شقة|مكتب|أخرى|اخرى|فيلا)$/;
 const cleanBit = (v) => {
   const t = String(v || "").replace(/[\p{Extended_Pictographic}\uFE0F]/gu, "").trim();
   if (!t || ADDR_PLACEHOLDERS.test(t)) return "";
   return t;
 };
+const isDigits = (v) => /^[0-9٠-٩]+$/.test(v);
+
+/* «اترك الطلب عند الباب» — اختيار العميل في الشيك أوت (عمر 18 سبتمبر).
+   بيوصل للمندوب (العنوان + الملاحظات) وللكاشير/المطبخ (ملاحظات نقطة البيع). */
+export const DOOR_NOTE = "اترك الطلب عند الباب";
+export const leaveAtDoor = (addr) => {
+  const v = addr && addr.leave_at_door;
+  return v === true || v === 1 || v === "1" || v === "true";
+};
+
+/* الدور والشقة كخانتين منفصلتين (عمر 18 سبتمبر). رقم لوحده بياخد «الدور»/«شقة»
+   قبله؛ نص (قديم: «الدور ٣ شقة ٧» في خانة واحدة) بيتكتب زي ما هو. */
+export function floorAptText(addr = {}) {
+  const f = cleanBit(addr.floor), ap = cleanBit(addr.apartment);
+  // عنوان قديم (قبل ما الشقة تبقى خانة) رقمه ممكن يكون دور أو شقة
+  const fl = addr.apartment === undefined ? "الدور/الشقة" : "الدور";
+  const floor = f && !PLACE_TYPES.test(f) ? (isDigits(f) ? `${fl} ${f}` : f) : "";
+  const apt = ap ? (isDigits(ap) ? `شقة ${ap}` : ap) : "";
+  return [floor, apt].filter(Boolean).join("، ");
+}
+
 export function readableAddress(addr, { withPin = false } = {}) {
   const area = cleanBit(addr.area), street = cleanBit(addr.street);
   const building = cleanBit(addr.building), landmark = cleanBit(addr.landmark);
@@ -84,7 +107,10 @@ export function readableAddress(addr, { withPin = false } = {}) {
     area && `حي ${area}`,
     street,
     building && `مبنى ${building}`,
-    landmark && `بجوار ${landmark}`,
+    floorAptText(addr),
+    // «جنب النهدي» مايبقاش «بجوار جنب النهدي»
+    landmark && (/^(جنب|بجوار|بجانب|قدام|أمام|امام|مقابل|خلف|ورا)\s/.test(landmark) ? landmark : `بجوار ${landmark}`),
+    leaveAtDoor(addr) && DOOR_NOTE,
   ].filter(Boolean).join("، ");
 
   /* ملاحظة عمر من طلب حقيقي (2026-08-30): تطبيق المندوب بيفتح جوجل ماب
@@ -101,6 +127,14 @@ export function readableAddress(addr, { withPin = false } = {}) {
 }
 
 const PREPAID_NOTE = "الطلب مدفوع مسبقاً — لا يُحصَّل من العميل";
+
+/* ملاحظات المندوب: «اترك الطلب عند الباب» أولاً (لو العميل اختارها)، بعدها
+   ملاحظة الطلب. ٢٠٠ حرف حد الشركتين. */
+export function courierNotes(order = {}) {
+  const n = [leaveAtDoor(order.address) ? DOOR_NOTE : "", String(order.notes || "").trim()]
+    .filter(Boolean).join(" — ");
+  return n.slice(0, 200) || PREPAID_NOTE;
+}
 
 /* ═══ Flying Arrow ═══════════════════════════════════════════════════════ */
 const FA_BASE = () => env("FLYINGARROW_BASE", "https://flyingarrow-backend.com/api/v1/integration").replace(/\/+$/, "");
@@ -153,7 +187,7 @@ const flyingarrow = {
         payment_method: cfg.faPaymentMethod || "wallet",
         external_order_id: order.order_no,
         webhook_url: cfg.webhookUrl,
-        notes: String(order.notes || "").slice(0, 200) || PREPAID_NOTE,
+        notes: courierNotes(order),
         locations: [
           {
             type: "pickup",
@@ -349,7 +383,7 @@ const leajlak = {
           // 0 = مدفوع مسبقاً. العميل دفع لنا أونلاين فالكابتن ما بيحصّلش.
           payment_type: 0,
           total: Number(order.total) || 0,
-          notes: String(order.notes || "").slice(0, 200) || PREPAID_NOTE,
+          notes: courierNotes(order),
         },
       },
     });

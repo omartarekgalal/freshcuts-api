@@ -145,9 +145,13 @@ export function cleanAddress(input, prev = null, now = new Date().toISOString())
     street: pick("street", 120),
     building: pick("building", 30),
     floor: pick("floor", 30),
+    // الشقة خانة لوحدها من 18 سبتمبر (قبلها الدور والشقة كانوا في floor)
+    apartment: pick("apartment", 30),
     landmark: pick("landmark", 80),
     notes: pick("notes", 120),
     latitude: lat, longitude: lng,
+    // «اترك الطلب عند الباب» — تفضيل محفوظ مع العنوان
+    leave_at_door: b.leave_at_door !== undefined ? truthy(b.leave_at_door) : Boolean(p.leave_at_door),
     is_default: Boolean(p.is_default),
     created_at: p.created_at || now,
     used_at: p.used_at || p.created_at || now,
@@ -168,7 +172,8 @@ export const sameSpot = (a, b) =>
 const sameAddress = (a, b, input = {}) =>
   sameSpot(a, b) &&
   (input.building === undefined || txt(a.building, 30) === txt(b.building, 30)) &&
-  (input.floor === undefined || txt(a.floor, 30) === txt(b.floor, 30));
+  (input.floor === undefined || txt(a.floor, 30) === txt(b.floor, 30)) &&
+  (input.apartment === undefined || txt(a.apartment, 30) === txt(b.apartment, 30));
 
 /* id لكل عنوان + افتراضي واحد بالظبط (لو القائمة مش فاضية). */
 export function normalizeAddresses(raw) {
