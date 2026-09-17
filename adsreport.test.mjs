@@ -2,7 +2,7 @@
      node --test adsreport.test.mjs */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { reportDayAt, previousBizDay, adSourceOf, sourceOf, recommend, smsText, buildReport } from "./adsreport.js";
+import { reportDayAt, previousBizDay, adSourceOf, sourceOf, recommend, smsText, buildReport, NOTES, COMPARE_FROM } from "./adsreport.js";
 import { smsInfo } from "./staffalerts.js";
 
 const at = (iso) => new Date(iso);
@@ -99,4 +99,24 @@ test("رسالة عمر: إنجليزي، رسالة واحدة GSM-7، حتى �
   assert.equal(empty.ads.spendShareOfRevenue, null);
   assert.equal(empty.recommendation.code, "NO_SPEND");
   assert.equal(smsInfo(empty.sms).segments, 1);
+});
+
+test("ملاحظات التقرير: مقارنة من ١٧/٩، والواتساب مايتحاسبش بالبكسل", () => {
+  const before = NOTES("2026-09-10"), after = NOTES(COMPARE_FROM);
+  assert.match(before[0], /مش مقارنة عادلة/);
+  assert.match(after[0], /المقارنة بتبدأ/);
+  assert.equal(before.length, 3);
+  assert.ok(after.some((n) => n.includes("96-wa-")));
+});
+
+test("الواتساب في التقرير: صرف ومحادثات وتكلفة المحادثة وزيارات الروابط", () => {
+  const r = buildReport({ day: "2026-09-18", pos, shop, meta, whatsapp: { linkLandings: 12, ordersFromLinks: 2, revenueFromLinks: 180 } });
+  assert.equal(r.whatsapp.spend, 150);
+  assert.equal(r.whatsapp.conversations, 40);
+  assert.equal(r.whatsapp.costPerConversation, 3.75);
+  assert.equal(r.whatsapp.linkLandings, 12);
+  assert.equal(r.whatsapp.ordersFromLinks, 2);
+  const empty = buildReport({ day: "2026-09-18", pos, shop, meta: { campaigns: [] } });
+  assert.equal(empty.whatsapp.costPerConversation, null);
+  assert.equal(empty.whatsapp.linkLandings, 0);
 });

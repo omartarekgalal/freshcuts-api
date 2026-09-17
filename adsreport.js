@@ -103,6 +103,22 @@ export function sourceOf(o) {
   return src || (a.fc_link ? "link" : "direct");
 }
 
+/* Reading notes that belong ON the report, not in someone's head:
+   - campaigns before 17/9 optimised for calls / WhatsApp chats / menu views, never for a
+     store purchase, so their "0 purchases" is not comparable with the store campaigns
+   - WhatsApp orders arrive by walking in or calling, so only the quick-reply link slugs
+     and the cashier's «من وين عرفتنا؟» can attribute them
+   - online orders from the owner's own phone are flagged is_test and excluded */
+export const COMPARE_FROM = "2026-09-17";
+export function NOTES(day) {
+  const n = [];
+  if (day < COMPARE_FROM) n.push(`الحملات قبل ${COMPARE_FROM} كانت متحسّنة على مكالمات/محادثات واتساب/مشاهدة منيو، مش على شراء من المتجر — «صفر شراء» فيها مش مقارنة عادلة.`);
+  else n.push(`المقارنة بتبدأ من ${COMPARE_FROM}: قبل كده الحملات كانت على مكالمات ومحادثات واتساب، مش على طلبات المتجر.`);
+  n.push("الواتساب: العميل بيكلّم ويجي المحل أو يتصل، فالمنسوب ليه = زيارات روابط 96-wa-* والطلبات اللي عليها الـslug + سؤال الكاشير «من وين عرفتنا؟».");
+  n.push("طلبات المالك التجريبية متعلّمة is_test ومتشالة من الأرقام.");
+  return n;
+}
+
 export function recommend(ads) {
   const { spendTotal, spendShareOfRevenue: share, cpaOnline: cpa, ordersFromAds } = ads;
   if (!spendTotal) return { code: "NO_SPEND", en: "NO SPEND", ar: "مفيش صرف إعلانات" };
@@ -131,7 +147,7 @@ export function smsText(rep) {
 }
 
 /* Pure assembly — unit-tested. */
-export function buildReport({ day, pos, shop, meta, snap = null, guardLog = [], now = new Date() }) {
+export function buildReport({ day, pos, shop, meta, snap = null, guardLog = [], whatsapp = null, now = new Date() }) {
   const onlineDelivery = { orders: 0, revenue: 0 }, onlinePickup = { orders: 0, revenue: 0 };
   let testOrders = 0, ours = 0, oursMeta = 0, oursSnap = 0, adsRevenue = 0;
   const byLink = {}, bySource = {};
@@ -184,8 +200,15 @@ export function buildReport({ day, pos, shop, meta, snap = null, guardLog = [], 
     },
     online: { orders: onlineOrders, revenue: onlineRevenue, aov: onlineOrders ? r2(onlineRevenue / onlineOrders) : null, testOrdersExcluded: testOrders, byLink, bySource },
     ads,
+    whatsapp: {
+      spend: spendWhatsapp,
+      conversations: ads.whatsappConversations,
+      costPerConversation: ads.whatsappConversations ? r2(spendWhatsapp / ads.whatsappConversations) : null,
+      ...(whatsapp || { linkLandings: 0, ordersFromLinks: 0, revenueFromLinks: 0 }),
+    },
     thresholds: THRESH,
     guard: guardLog,
+    notes: NOTES(day),
   };
   rep.recommendation = recommend(ads);
   rep.sms = smsText(rep);
@@ -303,9 +326,27 @@ export function register(app, ctx, deps = {}) {
     } catch { return []; } // table is created by the guard job
   }
 
+  /* WhatsApp ads can't be attributed by a pixel: the customer chats, then walks in or
+     calls. So we measure what we CAN — conversations (Meta), landings on the WhatsApp
+     quick-reply links (96-wa-*), and orders that carry one of those slugs. */
+  async function whatsappPart(day) {
+    const q = async (sql, args) => { try { return (await pool.query(sql, args)).rows; } catch { return []; } };
+    const landings = await q(
+      `SELECT count(*)::int n FROM funnel_events
+        WHERE event_name = 'PageView'
+          AND ((created_at AT TIME ZONE '${TZ}') - interval '4 hours')::date = $1::date
+          AND COALESCE(utm->>'utm_content', '') LIKE '96-wa-%'`, [day]);
+    const orders = await q(
+      `SELECT count(*)::int n, COALESCE(sum(total),0) rev FROM shop_orders
+        WHERE ((created_at AT TIME ZONE '${TZ}') - interval '4 hours')::date = $1::date
+          AND is_test IS NOT TRUE AND status <> ALL($2::text[])
+          AND COALESCE(attribution->>'fc_link', '') LIKE '96-wa-%'`, [day, NOT_PAID]);
+    return { linkLandings: landings[0]?.n || 0, ordersFromLinks: orders[0]?.n || 0, revenueFromLinks: r2(orders[0]?.rev) };
+  }
+
   async function compute(day) {
-    const [pos, shop, meta, guardLog] = await Promise.all([posPart(day), shopPart(day), metaPart(day), guardPart(day)]);
-    return buildReport({ day, pos, shop, meta, guardLog });
+    const [pos, shop, meta, guardLog, whatsapp] = await Promise.all([posPart(day), shopPart(day), metaPart(day), guardPart(day), whatsappPart(day)]);
+    return buildReport({ day, pos, shop, meta, guardLog, whatsapp });
   }
 
   async function store(rep) {
