@@ -234,3 +234,15 @@ test("isVideoUrl", () => {
   assert.equal(isVideoUrl("https://x/api/content/media/md_1.mp4"), true);
   assert.equal(isVideoUrl("https://x/a.jpg"), false);
 });
+
+test("FB pin: options.pin => is_pinned بعد النشر، وفشله مايفشّلش", async () => {
+  const { http, calls } = fakeMeta((url, m, b) => {
+    if (url.endsWith("/p1/photos")) return { id: "ph1", post_id: "p1_5" };
+    if (url.endsWith("/p1_5") && b.is_pinned) return { status: 400, json: { error: { message: "nope" } } };
+    return { permalink_url: "https://www.facebook.com/p1/posts/5" };
+  });
+  const out = await publishFacebook({ http, graph: G, pageId: "p1", token: "t", urls: ["https://a/1.jpg"], options: { pin: true } });
+  assert.equal(out.externalId, "p1_5");
+  assert.equal(out.pinned, false);
+  assert.ok(calls.some((c) => c.body.is_pinned === "true"));
+});

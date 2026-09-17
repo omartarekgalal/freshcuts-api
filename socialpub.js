@@ -171,7 +171,22 @@ async function fbPermalink({ http, graph, token, id }) {
   return p && !/^https?:/i.test(p) ? `https://www.facebook.com${p}` : p;
 }
 
-export async function publishFacebook({
+/* options.pin = يتثبّت أول الصفحة بعد النشر (١٧/٩: «ثبّت أحسن بوست اطلب من الموقع»).
+   التثبيت فشله مايفشّلش النشر — البوست نزل خلاص. */
+export async function publishFacebook(args) {
+  const res = await publishFacebookRaw(args);
+  if (args.options?.pin && res.externalId && String(args.type || "").toUpperCase() !== "STORIES") {
+    const http = args.http || plainHttp;
+    const r = await http(`${args.graph}/${res.externalId}`, {
+      method: "POST", headers: FORM_H, body: form({ is_pinned: "true", access_token: args.token }),
+    });
+    res.pinned = !!(r.ok && r.json?.success !== false);
+    if (!res.pinned) res.pinError = graphErr(r);
+  }
+  return res;
+}
+
+async function publishFacebookRaw({
   http = plainHttp, graph, pageId, token, type = "IMAGE", urls = [], caption = "", options = {},
 }) {
   if (!token) throw new PubError("مفيش توكن صفحة", { retry: true });
