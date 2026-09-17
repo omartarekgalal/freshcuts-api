@@ -65,5 +65,6 @@ test("holdout is deterministic and near the percentage", () => {
 test("audience drift tolerance", () => {
   assert.equal(R.audienceDriftOk(100, 118), true);
   assert.equal(R.audienceDriftOk(100, 125), false);
+  assert.equal(R.audienceDriftOk(634, 80), true, "shrinking is fine");
   assert.equal(R.audienceDriftOk(20, 29), true);
 });

@@ -103,6 +103,25 @@ export function filterAudience(members, { staff = new Set(), optedOut = new Set(
   return { list, excluded };
 }
 
-/* سماحية تغيّر الجمهور بين التأكيد ووقت الإرسال المجدول */
+/* سماحية تغيّر الجمهور بين التأكيد ووقت الإرسال المجدول: الزيادة بس هي الخطر
+   (تكلفة ماحدش وافق عليها). النقصان طبيعي — الفاصل ٢١ يوم والإيقاف بيشيلوا ناس. */
 export const audienceDriftOk = (confirmed, now) =>
-  Math.abs(Number(now) - Number(confirmed)) <= Math.max(10, Math.round(Number(confirmed) * 0.2));
+  Number(now) - Number(confirmed) <= Math.max(10, Math.round(Number(confirmed) * 0.2));
+
+/* إرسال تسويقي واحد عبر تقنيات (المُرسل الإعلاني) — نفس المسار للحملات والسلة */
+export async function sendAdSms(pn, body) {
+  const key = process.env.TAQNYAT_API_KEY, sender = process.env.TAQNYAT_SENDER_AD;
+  if (!key || !sender) throw Object.assign(new Error("ad sender not configured"), { code: "sms_failed" });
+  if (smsParts(body) > 2) throw Object.assign(new Error("too_long"), { code: "sms_failed" });
+  const resp = await fetch("https://api.taqnyat.sa/v1/messages", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ recipients: [`966${pn}`], body, sender }),
+    signal: AbortSignal.timeout(15000),
+  });
+  const data = await resp.json().catch(() => ({}));
+  if (!resp.ok || (data.statusCode && data.statusCode >= 400)) {
+    throw Object.assign(new Error(`Taqnyat: ${data.message || resp.status}`), { code: "sms_failed" });
+  }
+  return { messageId: data.messageId != null ? String(data.messageId) : null, cost: Number(data.cost) || 0, parts: Number(data.msgLength) || smsParts(body) };
+}

@@ -22,16 +22,59 @@
      مرة واحدة لكل سلة، وبس في ساعات مسموحة (مش ٣ الفجر).
 ═══════════════════════════════════════════════════════════════════════════ */
 
+import crypto from "node:crypto";
+import * as smsRules from "./smsrules.js";
+const sendAdSms = (pn, body) => smsRules.sendAdSms(pn, body);
+
 const env = (k, d) => (process.env[k] || d || "").toString().trim();
 const STAGES = ["cart", "checkout", "address", "payment", "ordered"];
 const rank = (s) => Math.max(0, STAGES.indexOf(String(s || "cart")));
 
-/* ساعات مسموح فيها التواصل بتوقيت الرياض — المطعم بيقفل ٢-٣ فجراً،
-   ورسالة الساعة ٤ الفجر بتخسر عميل مش بترجّعه. */
-function riyadhHour() {
-  return Number(new Date().toLocaleString("en-US", { timeZone: "Asia/Riyadh", hour: "2-digit", hour12: false }));
+/* ── إعدادات الاسترداد (settings.abandonedCarts) — بتتعدّل من اللوحة ── */
+export const CART_DEFAULTS = {
+  enabled: true,             // المحرك كله
+  pushEnabled: true,         // خطوة ١ بإشعار لو العميل مشترك (ببلاش)
+  smsEnabled: false,         // SMS من المُرسل التسويقي — قرار المالك
+  sms1AfterMinutes: 35,      // السلة «متروكة» بعد ٣٠ دقيقة من غير طلب؛ الرسالة بعد ٣٥
+  sms1WindowMinutes: 120,    // فاتت النافذة (ساعات هدوء/مقفولين) ⇒ مفيش خطوة ١
+  sms2Enabled: true,
+  sms2Hour: 17,              // تاني يوم من الساعة دي (الرياض)
+  sms2MinSubtotal: 60,       // خطوة ٢ للسلة اللي تستاهل بس
+  cooldownDays: 7,           // فلو واحد لكل جوال
+  minSubtotal: 0,
+  autoFirst: true,           // FIRST (توصيل مجاني) لو مالوش طلب أونلاين مدفوع
+  requireVerifiedPhone: true,// جوال اتأكد بـOTP أو عنده حساب — مش رقم مكتوب غلط
+  respectOpenHours: true,    // مطبخ مقفول = سكوت
+};
+const clampN = (v, lo, hi, d) => { const n = Number(v); return Number.isFinite(n) ? Math.min(hi, Math.max(lo, n)) : d; };
+export function cartCfg(settings) {
+  const x = { ...CART_DEFAULTS, ...(((settings || {}).abandonedCarts) || {}) };
+  const bool = (k) => (typeof x[k] === "boolean" ? x[k] : CART_DEFAULTS[k]);
+  return {
+    enabled: bool("enabled"), pushEnabled: bool("pushEnabled"), smsEnabled: x.smsEnabled === true,
+    sms1AfterMinutes: clampN(x.sms1AfterMinutes, 30, 240, 35),
+    sms1WindowMinutes: clampN(x.sms1WindowMinutes, 15, 600, 120),
+    sms2Enabled: bool("sms2Enabled"), sms2Hour: Math.round(clampN(x.sms2Hour, 12, 21, 17)),
+    sms2MinSubtotal: clampN(x.sms2MinSubtotal, 0, 10000, 60),
+    cooldownDays: Math.round(clampN(x.cooldownDays, 1, 60, 7)),
+    minSubtotal: clampN(x.minSubtotal, 0, 10000, 0),
+    autoFirst: bool("autoFirst"), requireVerifiedPhone: bool("requireVerifiedPhone"), respectOpenHours: bool("respectOpenHours"),
+  };
 }
-const QUIET_FROM = 1, QUIET_TO = 10; // 01:00 → 10:00 صمت
+
+/* النصوص بلهجة سعودية بيضا. الـSMS جزئين بالكتير بسطر الإيقاف (اختبار بيتأكد). */
+export const cartMessages = {
+  push1: (n, first) => ({
+    title: "سلتك محفوظة 🛒",
+    body: first ? `${n} صنف بانتظارك، والتوصيل مجاني لأول طلب. كمّل طلبك بضغطة` : `${n} صنف بانتظارك في فريش كاتس، كمّل طلبك بضغطة`,
+  }),
+  sms1: (first) => first ? "فريش كاتس: سلتك محفوظة والتوصيل مجاني لأول طلب، كمّل طلبك بضغطة" : "فريش كاتس: سلتك للحين محفوظة، كمّل طلبك بضغطة",
+  sms2: (first) => first ? "طلبك من فريش كاتس للحين في السلة، والتوصيل مجاني لأول طلب" : "طلبك من فريش كاتس للحين في السلة، تقدر تكمّله الحين",
+};
+export const cartSmsBody = (step, first, link, optoutLink) =>
+  `${step === 2 ? cartMessages.sms2(first) : cartMessages.sms1(first)} ${link}\nإيقاف: ${optoutLink}`;
+const storeHost = () => (process.env.STOREFRONT_PUBLIC_URL || "https://freshcuts.sa").replace(/\/+$/, "").replace(/^https?:\/\//, "");
+const PAID_SQL = "status NOT IN ('pending_payment','expired','rejected_refunded','refund_failed','paid_pos_failed')";
 
 /* المطعم مفتوح دلوقتي؟ نسخة سيرفر من نفس منطق الواجهة (بيراعي ما بعد
    منتصف الليل). رسالة «كمّل طلبك» ومطبخنا مقفول أسوأ من السكوت. */
@@ -62,6 +105,18 @@ function rateLimited(ip, max = 240) {
   return slot.n > max;
 }
 
+/* السلة الخام من المتجر (state.cart) — عشان رابط الاسترداد يرجّع نفس السطور
+   بالظبط (الأوزان والباقات واختياراتها والملاحظات). بنقصّها ٤٠KB. */
+export function rawCart(raw) {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const keys = Object.keys(raw).slice(0, 60);
+  if (!keys.length) return null;
+  const out = {};
+  for (const k of keys) { const v = raw[k]; if (v && typeof v === "object") out[String(k).slice(0, 200)] = v; }
+  const txt = JSON.stringify(out);
+  return txt.length <= 40000 ? txt : null;
+}
+
 export function register(app, ctx, deps = {}) {
   const { pool, requireAdmin, getSettingsData, jb, normPhone } = ctx;
   const notify = deps.notify || null;
@@ -88,6 +143,30 @@ export function register(app, ctx, deps = {}) {
         updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
       );
       ALTER TABLE shop_carts ADD COLUMN IF NOT EXISTS in_webview TEXT;
+      ALTER TABLE shop_carts ADD COLUMN IF NOT EXISTS cart_raw JSONB;
+      ALTER TABLE shop_carts ADD COLUMN IF NOT EXISTS rec_step INT NOT NULL DEFAULT 0;
+      ALTER TABLE shop_carts ADD COLUMN IF NOT EXISTS rec_note TEXT;
+      ALTER TABLE shop_carts ADD COLUMN IF NOT EXISTS rec_flow INT;
+      -- فلو استرداد واحد = رسالة/إشعار لجوال، برابط /c/<code> بيرجّع السلة
+      CREATE TABLE IF NOT EXISTS cart_recovery (
+        id SERIAL PRIMARY KEY,
+        code TEXT UNIQUE NOT NULL,
+        phone_norm TEXT NOT NULL,
+        device_id TEXT,
+        subtotal NUMERIC NOT NULL DEFAULT 0,
+        item_count INT NOT NULL DEFAULT 0,
+        items JSONB,
+        cart_raw JSONB,
+        option TEXT,
+        started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        step1_channel TEXT, step1_at TIMESTAMPTZ, step1_msg_id TEXT, step1_cost NUMERIC,
+        step2_channel TEXT, step2_at TIMESTAMPTZ, step2_msg_id TEXT, step2_cost NUMERIC,
+        opened_at TIMESTAMPTZ, open_count INT NOT NULL DEFAULT 0,
+        order_no TEXT, order_total NUMERIC, recovered_at TIMESTAMPTZ
+      );
+      CREATE INDEX IF NOT EXISTS cart_recovery_phone_idx ON cart_recovery(phone_norm, started_at DESC);
+      -- الباج القديم كبّر nudges لمئات النسخ من sms1_skipped — تنضيف مرة واحدة
+      UPDATE shop_carts SET nudges = '[]'::jsonb WHERE jsonb_array_length(nudges) > 5;
       CREATE INDEX IF NOT EXISTS shop_carts_phone_idx ON shop_carts(phone_norm) WHERE phone_norm IS NOT NULL;
       CREATE INDEX IF NOT EXISTS shop_carts_open_idx ON shop_carts(updated_at DESC) WHERE recovered_order IS NULL;
     `);
@@ -112,8 +191,8 @@ export function register(app, ctx, deps = {}) {
 
     await pool.query(
       `INSERT INTO shop_carts(device_id, phone_norm, stage, max_stage, items, item_count, subtotal,
-                              option, has_location, installed, push_ready, ua, in_webview)
-       VALUES ($1,$2,$3,$3,$4,$5,$6,$7,$8,$9,$10,$11,$13)
+                              option, has_location, installed, push_ready, ua, in_webview, cart_raw)
+       VALUES ($1,$2,$3,$3,$4,$5,$6,$7,$8,$9,$10,$11,$13,$14)
        ON CONFLICT (device_id) DO UPDATE SET
          phone_norm = COALESCE(EXCLUDED.phone_norm, shop_carts.phone_norm),
          stage = EXCLUDED.stage,
@@ -128,6 +207,11 @@ export function register(app, ctx, deps = {}) {
          push_ready = COALESCE(EXCLUDED.push_ready, shop_carts.push_ready),
          ua = EXCLUDED.ua,
          in_webview = COALESCE(EXCLUDED.in_webview, shop_carts.in_webview),
+         cart_raw = COALESCE(EXCLUDED.cart_raw, shop_carts.cart_raw),
+         rec_step = CASE WHEN EXCLUDED.stage <> 'ordered' AND shop_carts.recovered_order IS NOT NULL
+                         THEN 0 ELSE shop_carts.rec_step END,
+         rec_flow = CASE WHEN EXCLUDED.stage <> 'ordered' AND shop_carts.recovered_order IS NOT NULL
+                         THEN NULL ELSE shop_carts.rec_flow END,
          -- سلة اتفتحت من جديد بعد ما اتسجلت مستردة: تبقى سلة جديدة
          recovered_order = CASE WHEN EXCLUDED.stage <> 'ordered' AND shop_carts.recovered_order IS NOT NULL
                                 THEN NULL ELSE shop_carts.recovered_order END,
@@ -141,7 +225,8 @@ export function register(app, ctx, deps = {}) {
        Boolean(b.hasLocation), typeof b.installed === "boolean" ? b.installed : null,
        typeof b.pushReady === "boolean" ? b.pushReady : null,
        String(c.req.header("user-agent") || "").slice(0, 200), rank(stage),
-       b.inWebview ? String(b.inWebview).slice(0, 16) : null]
+       b.inWebview ? String(b.inWebview).slice(0, 16) : null,
+       rawCart(b.raw)]
     );
     return c.json({ ok: true });
   });
@@ -155,88 +240,277 @@ export function register(app, ctx, deps = {}) {
           AND recovered_order IS NULL`,
       [phoneNorm || null, deviceId || "", String(orderNo)]
     ).catch((e) => console.error("[carts] markOrdered failed:", e.message));
+    // استرداد: أي فلو اتبعت للجوال ده خلال ٧٢ ساعة ولسه مالوش طلب = الطلب ده رجع بيه
+    if (phoneNorm) {
+      await pool.query(
+        `UPDATE cart_recovery f SET order_no=$2, recovered_at=NOW(),
+                order_total=(SELECT total FROM shop_orders WHERE order_no=$2)
+          WHERE f.id = (SELECT id FROM cart_recovery WHERE phone_norm=$1 AND order_no IS NULL
+                         AND COALESCE(step2_at, step1_at) > NOW() - INTERVAL '72 hours'
+                        ORDER BY started_at DESC LIMIT 1)`, [phoneNorm, String(orderNo)]
+      ).catch((e) => console.error("[carts] recovery attribution failed:", e.message));
+    }
   }
 
-  /* ── الحارس: سلّم الاسترداد ────────────────────────────────────────── */
-  const MSG = {
-    push1: (n) => ({ title: "سلتك لسه مستنياك 🛒", body: `${n} صنف في سلتك — كمّل طلبك في دقيقة وهيوصلك سخن 🔥` }),
-    sms1: (n, code) => code
-      ? `فريش كاتس: سلتك فيها ${n} صنف 🛒 كمّل طلبك دلوقتي واستخدم كود ${code} وخصمك جاهز: freshcuts.sa`
-      : `فريش كاتس: سلتك فيها ${n} صنف 🛒 كمّل طلبك ويوصلك سخن: freshcuts.sa`,
-  };
+  /* ── الحارس: استرداد السلة المتروكة (إعادة بناء ١٧ سبتمبر ٢٠٢٦) ─────────
+     طلب عمر: «عايزين نشوف حل كويس للسلات المتروكة».
 
-  async function runRecovery() {
-    const s = await getSettingsData();
-    const cfg = s.abandonedCarts || {};
-    if (cfg.enabled === false) return;
-    const h = riyadhHour();
-    // ساعات الصمت = تأجيل مش إلغاء. الصف بيفضل مستني وبيتبعت أول ما نفتح —
-    // بس السلة اللي بقالها أكتر من ١٢ ساعة بتسقط من رتبة الإشعار (الرسالة
-    // «كمّل طلبك في دقيقة» بعد نص يوم بتبقى مزعجة مش مفيدة).
-    if (h >= QUIET_FROM && h < QUIET_TO) return;
-    // ومقفولين = ساكتين. إشعار الساعة ١٠ صباحاً ومطبخنا بيفتح ١ الظهر
-    // بيخسّرنا اشتراك الإشعارات نفسه.
-    if (!isOpenNow(s.hours)) return;
-    const pushAfter = Number(cfg.pushAfterMinutes) || 45;
-    const smsAfter = Number(cfg.smsAfterMinutes) || 240;
-    const minSubtotal = Number(cfg.minSubtotal) || 0;
-    const STALE_H = Number(cfg.staleAfterHours) || 12;
+     السلة «متروكة» = جوال موثّق (OTP/حساب) + أصناف + مفيش طلب مدفوع خلال ٣٠ دقيقة.
+       خطوة ١ (~٣٥ دقيقة): إشعار لو مشترك، وإلا SMS «سلتك محفوظة» برابط /c/<code>
+                         بيرجّع نفس السلة بالظبط + FIRST لو أول طلب أونلاين.
+       خطوة ٢ (تاني يوم ١٧:٠٠): SMS بس لو السلة ≥ ٦٠ ر.س ولسه ماطلبش.
+     ممنوع في ساعات الهدوء (٢٢–١٢) — خطوة ١ اللي فاتها ميعادها بتتنط لخطوة ٢.
+     فلو واحد بس لكل جوال كل ٧ أيام، بيقف فوراً لو طلب، والإيقاف /u/ محترم.
+     كل الأرقام من settings.abandonedCarts (بتتعدّل من اللوحة).
 
-    // المرحلة ١: إشعار متصفح
-    const p1 = (await pool.query(
-      `SELECT * FROM shop_carts
-        WHERE recovered_order IS NULL AND item_count > 0 AND subtotal >= $2
-          AND updated_at < NOW() - ($1 || ' minutes')::interval
-          AND updated_at > NOW() - ($3 || ' hours')::interval
-          AND NOT (nudges @> '["push1"]'::jsonb)
-        LIMIT 50`, [String(pushAfter), minSubtotal, String(STALE_H)])).rows;
-    for (const row of p1) {
-      let sent = false;
-      if (notify && cfg.pushEnabled !== false) {
-        sent = await notify.sendToAudience({
-          phoneNorm: row.phone_norm, deviceId: row.device_id,
-          ...MSG.push1(row.item_count), url: env("STOREFRONT_PUBLIC_URL", "https://freshcuts.sa"),
-        }).catch(() => false);
-      }
-      await pool.query(
-        "UPDATE shop_carts SET nudges = nudges || $2::jsonb WHERE device_id=$1",
-        [row.device_id, jb(["push1", ...(sent ? [] : ["push1_nosub"])])]);
+     الباج القديم: السطر بتاع «sms1_skipped» كان بيتضاف كل ٥ دقايق لنفس الصف
+     (الاستعلام مابيستبعدوش) لحد ٨٤٠ نسخة. دلوقتي الحالة في عمود rec_step
+     بيتحدّث في نفس الدورة مهما كانت النتيجة، والنوافذ الزمنية بتقفل الباقي. */
+  let running = false;
+  async function runRecovery(now = new Date()) {
+    if (running) return { skipped: "running" };
+    running = true;
+    try { return await recoveryTick(now); } finally { running = false; }
+  }
+
+  async function firstEligible(pn) {
+    const r = await pool.query(
+      `SELECT (SELECT count(*)::int FROM shop_orders WHERE phone_norm=$1 AND ${PAID_SQL}) AS paid,
+              (SELECT count(*)::int FROM shop_coupons WHERE upper(code)='FIRST' AND active
+                 AND (expires_at IS NULL OR expires_at >= CURRENT_DATE)) AS coupon`, [pn]);
+    return r.rows[0].paid === 0 && r.rows[0].coupon > 0;
+  }
+  async function optout(pn) {
+    await pool.query(
+      `INSERT INTO cms_contacts(phone_norm, optout_code)
+       VALUES ($1, substr(md5(random()::text || $1 || clock_timestamp()::text), 1, 10))
+       ON CONFLICT (phone_norm) DO NOTHING`, [pn]);
+    return (await pool.query("SELECT optout_code, opted_out_at FROM cms_contacts WHERE phone_norm=$1", [pn])).rows[0];
+  }
+  const newCode = () => crypto.randomBytes(6).toString("base64url").replace(/[-_]/g, "").toLowerCase().slice(0, 8).padEnd(8, "x");
+
+  async function orderedSince(pn, since) {
+    const r = await pool.query(
+      `SELECT order_no, total FROM shop_orders WHERE phone_norm=$1 AND ${PAID_SQL} AND created_at > $2
+        ORDER BY created_at LIMIT 1`, [pn, since]);
+    return r.rows[0] || null;
+  }
+
+  async function smsRoomToday(parts, cfgCms) {
+    const cap = Number(((cfgCms || {}).campaigns || {}).dailySmsCap) || 1000;
+    const r = await pool.query("SELECT n FROM cms_sms_daily WHERE day = CURRENT_DATE").catch(() => ({ rows: [] }));
+    return (r.rows[0]?.n || 0) + parts <= cap;
+  }
+
+  async function sendStep(row, step, cfg, s, flow) {
+    const pn = row.phone_norm;
+    const eligibleFirst = cfg.autoFirst !== false && (await firstEligible(pn));
+    const link = `${storeHost()}/c/${flow.code}`;
+    // خطوة ١: الإشعار ببلاش — لو مشترك ناخده بدل الـSMS
+    if (step === 1 && cfg.pushEnabled !== false && notify) {
+      const m = cartMessages.push1(row.item_count, eligibleFirst);
+      const ok = await notify.sendToAudience({ phoneNorm: pn, deviceId: row.device_id, ...m, url: `https://${link}?s=push` }).catch(() => false);
+      if (ok) return { channel: "push" };
     }
+    if (cfg.smsEnabled !== true) return { channel: null, reason: "sms_disabled" };
+    const oc = await optout(pn);
+    if (oc.opted_out_at) return { channel: null, reason: "opted_out" };
+    const body = cartSmsBody(step, eligibleFirst, link, `${storeHost()}/u/${oc.optout_code}`);
+    const parts = smsRules.smsParts(body);
+    if (parts > 2) return { channel: null, reason: "too_long" };
+    if (!(await smsRoomToday(parts, s.cms))) return { channel: null, reason: "daily_cap" };
+    try {
+      const info = await sendAdSms(pn, body);
+      pool.query(`INSERT INTO cms_sms_daily(day, n) VALUES (CURRENT_DATE, $1)
+                  ON CONFLICT (day) DO UPDATE SET n = cms_sms_daily.n + $1`, [parts]).catch(() => {});
+      return { channel: "sms", ...info };
+    } catch (e) {
+      return { channel: null, reason: "sms_failed: " + String(e.message).slice(0, 120) };
+    }
+  }
 
-    // المرحلة ٢: SMS — للي عندنا رقمه، **ووصل الشيك أوت على الأقل**.
-    // اللي ضاف صنف واحد وخرج ده متفرّج مش عميل ترك سلة، والرسالة بفلوس.
-    // وكمان: رسالة واحدة لكل رقم كل ٧٢ ساعة مهما فتح سلات من أجهزة كتير.
-    const p2 = (await pool.query(
+  async function recoveryTick(now) {
+    const s = await getSettingsData();
+    const cfg = cartCfg(s);
+    if (!cfg.enabled) return { skipped: "disabled" };
+    if (smsRules.inQuietHours(now)) return { skipped: "quiet_hours" };
+    if (cfg.respectOpenHours && !isOpenNow(s.hours, now)) return { skipped: "closed" };
+    const out = { step1: 0, step2: 0, skipped: 0 };
+    const verified = cfg.requireVerifiedPhone
+      ? `AND (EXISTS (SELECT 1 FROM acct_customers a WHERE a.phone_norm = c.phone_norm)
+              OR EXISTS (SELECT 1 FROM shop_orders o WHERE o.phone_norm = c.phone_norm AND o.phone_verified_at IS NOT NULL))`
+      : "";
+    const mark = (device, step, reason, flowId) => pool.query(
+      "UPDATE shop_carts SET rec_step=$2, rec_note=$3, rec_flow=COALESCE($4, rec_flow) WHERE device_id=$1",
+      [device, step, reason || null, flowId || null]);
+
+    /* خطوة ١ — السلة سكتت من sms1AfterMinutes ولسه جوّه نافذتها */
+    const s1 = (await pool.query(
       `SELECT c.* FROM shop_carts c
         WHERE c.recovered_order IS NULL AND c.item_count > 0 AND c.phone_norm IS NOT NULL
-          AND c.subtotal >= $2
-          AND (CASE c.max_stage WHEN 'cart' THEN 0 WHEN 'checkout' THEN 1 WHEN 'address' THEN 2
-                                WHEN 'payment' THEN 3 WHEN 'ordered' THEN 4 ELSE 0 END) >= 1
-          AND c.updated_at < NOW() - ($1 || ' minutes')::interval
-          AND c.updated_at > NOW() - INTERVAL '3 days'
-          AND NOT (c.nudges @> '["sms1"]'::jsonb)
-          AND NOT EXISTS (
-            SELECT 1 FROM shop_carts o
-             WHERE o.phone_norm = c.phone_norm AND o.device_id <> c.device_id
-               AND o.nudges @> '["sms1"]'::jsonb
-               AND o.updated_at > NOW() - INTERVAL '72 hours')
-        LIMIT 25`, [String(smsAfter), minSubtotal])).rows;
-    for (const row of p2) {
-      const code = cfg.couponCode || null;
-      let sent = false;
-      if (notify && cfg.smsEnabled === true) {
-        sent = await notify.sendSmsTo(row.phone_norm, MSG.sms1(row.item_count, code)).catch(() => false);
+          AND c.rec_step = 0 AND c.subtotal >= $1
+          AND c.updated_at < $2::timestamptz - ($3 || ' minutes')::interval
+          AND c.updated_at > $2::timestamptz - INTERVAL '3 days'
+          ${verified}
+        ORDER BY c.updated_at LIMIT 40`,
+      [cfg.minSubtotal, now.toISOString(), String(cfg.sms1AfterMinutes)])).rows;
+    for (const row of s1) {
+      const ageMin = (now - new Date(row.updated_at)) / 60000;
+      const paid = await orderedSince(row.phone_norm, new Date(new Date(row.updated_at).getTime() - 30 * 60000));
+      if (paid) { await mark(row.device_id, 9, "ordered"); out.skipped++; continue; }
+      if (ageMin > cfg.sms1AfterMinutes + cfg.sms1WindowMinutes) {
+        await mark(row.device_id, -2, "step1_window_missed"); out.skipped++; continue; // خطوة ٢ ممكن تلحقه
+      }
+      if (await inCooldown(row.phone_norm, cfg.cooldownDays, now)) { await mark(row.device_id, -1, "cooldown"); out.skipped++; continue; }
+      const flow = await createFlow(row);
+      const res = await sendStep(row, 1, cfg, s, flow);
+      if (!res.channel) {
+        await pool.query("DELETE FROM cart_recovery WHERE id=$1", [flow.id]); // مااتبعتش حاجة = مايستهلكش الـ٧ أيام
+        await mark(row.device_id, -2, res.reason); out.skipped++; continue;
       }
       await pool.query(
-        "UPDATE shop_carts SET nudges = nudges || $2::jsonb WHERE device_id=$1",
-        [row.device_id, jb([sent ? "sms1" : "sms1_skipped"])]);
+        `UPDATE cart_recovery SET step1_channel=$2, step1_at=NOW(), step1_msg_id=$3, step1_cost=$4 WHERE id=$1`,
+        [flow.id, res.channel, res.messageId || null, res.cost || 0]);
+      await mark(row.device_id, 1, res.channel, flow.id);
+      out.step1++;
     }
+
+    /* خطوة ٢ — تاني يوم (بتوقيت الرياض) من sms2Hour، SMS بس، السلة ≥ sms2MinSubtotal */
+    const rp = smsRules.riyadhParts(now);
+    if (cfg.sms2Enabled && rp.hour >= cfg.sms2Hour) {
+      const s2 = (await pool.query(
+        `SELECT c.*, f.code AS flow_code, f.started_at AS flow_started FROM shop_carts c
+           LEFT JOIN cart_recovery f ON f.id = c.rec_flow
+          WHERE c.recovered_order IS NULL AND c.item_count > 0 AND c.phone_norm IS NOT NULL
+            AND c.rec_step IN (1, -2) AND c.subtotal >= $1
+            AND ((c.updated_at AT TIME ZONE 'Asia/Riyadh')::date + 1) = $2::date
+            ${verified}
+          ORDER BY c.updated_at LIMIT 40`, [cfg.sms2MinSubtotal, rp.day])).rows;
+      for (const row of s2) {
+        const paid = await orderedSince(row.phone_norm, new Date(new Date(row.updated_at).getTime() - 30 * 60000));
+        if (paid) { await mark(row.device_id, 9, "ordered"); out.skipped++; continue; }
+        let flow = row.rec_flow && row.flow_code ? { id: row.rec_flow, code: row.flow_code } : null;
+        if (!flow) {
+          if (await inCooldown(row.phone_norm, cfg.cooldownDays, now)) { await mark(row.device_id, -1, "cooldown"); out.skipped++; continue; }
+          flow = await createFlow(row);
+        }
+        const res = await sendStep(row, 2, cfg, s, flow);
+        if (!res.channel) {
+          if (!row.rec_flow) await pool.query("DELETE FROM cart_recovery WHERE id=$1", [flow.id]);
+          await mark(row.device_id, -3, res.reason); out.skipped++; continue;
+        }
+        await pool.query(
+          `UPDATE cart_recovery SET step2_channel=$2, step2_at=NOW(), step2_msg_id=$3, step2_cost=$4 WHERE id=$1`,
+          [flow.id, res.channel, res.messageId || null, res.cost || 0]);
+        await mark(row.device_id, 2, res.channel, flow.id);
+        out.step2++;
+      }
+    }
+    if (out.step1 || out.step2) console.log(`[carts] recovery → step1 ${out.step1}, step2 ${out.step2}, skipped ${out.skipped}`);
+    return out;
   }
+
+  async function inCooldown(pn, days, now) {
+    const r = await pool.query(
+      `SELECT 1 FROM cart_recovery WHERE phone_norm=$1 AND started_at > $2::timestamptz - ($3 || ' days')::interval LIMIT 1`,
+      [pn, now.toISOString(), String(days)]);
+    return r.rowCount > 0;
+  }
+  async function createFlow(row) {
+    for (let i = 0; i < 5; i++) {
+      const code = newCode();
+      const r = await pool.query(
+        `INSERT INTO cart_recovery(code, phone_norm, device_id, subtotal, item_count, items, cart_raw, option)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT (code) DO NOTHING RETURNING id, code`,
+        [code, row.phone_norm, row.device_id, row.subtotal, row.item_count, jb(row.items || []), row.cart_raw ? jb(row.cart_raw) : null, row.option]);
+      if (r.rowCount) return r.rows[0];
+    }
+    throw new Error("code collision");
+  }
+
   const RECOVERY_MIN = Number(env("CART_RECOVERY_MINUTES", "5"));
   if (RECOVERY_MIN > 0) {
     setInterval(() => runRecovery().catch((e) => console.error("[carts] recovery failed:", e.message)),
       RECOVERY_MIN * 60_000);
   }
+
+  /* ── رابط الاسترداد: freshcuts.sa/c/<code> ──
+     البروكسي بينادي open (بيعدّ + بيبني رابط الهبوط)، والمتجر بينادي GET عشان
+     يرجّع السلة بالظبط. الكود ٨ حروف عشوائية، صالح ٧ أيام، ومابيرجّعش الجوال. */
+  const codeOk = (x) => /^[a-z0-9]{6,16}$/.test(String(x || ""));
+  app.post("/api/carts/restore/:code/open", async (c) => {
+    const code = String(c.req.param("code") || "").toLowerCase();
+    if (!codeOk(code)) return c.json({ ok: false }, 404);
+    let b = {};
+    try { b = await c.req.json(); } catch {}
+    const r = await pool.query(
+      `UPDATE cart_recovery SET open_count = open_count + 1, opened_at = COALESCE(opened_at, NOW())
+        WHERE code=$1 AND started_at > NOW() - INTERVAL '7 days'
+        RETURNING phone_norm, step1_channel, step2_at`, [code]);
+    const f = r.rows[0];
+    if (!f) return c.json({ ok: false }, 404);
+    const cfg = cartCfg(await getSettingsData());
+    const q = new URLSearchParams();
+    q.set("cart", code);
+    q.set("utm_source", b.s === "push" ? "push" : "sms");
+    q.set("utm_medium", "crm");
+    q.set("utm_campaign", "cart_recovery");
+    q.set("utm_content", f.step2_at ? "step2" : "step1");
+    q.set("fc_link", "cart-recovery");
+    if (cfg.autoFirst !== false && (await firstEligible(f.phone_norm))) q.set("c", "FIRST");
+    return c.json({ ok: true, url: "/?" + q.toString() });
+  });
+
+  app.get("/api/carts/restore/:code", async (c) => {
+    const ip = c.req.header("cf-connecting-ip") || c.req.header("x-forwarded-for") || "?";
+    if (rateLimited("restore:" + ip, 120)) return c.json({ ok: false, error: "rate_limited" }, 429);
+    const code = String(c.req.param("code") || "").toLowerCase();
+    if (!codeOk(code)) return c.json({ ok: false }, 404);
+    const f = (await pool.query(
+      `SELECT items, cart_raw, option, subtotal, order_no FROM cart_recovery
+        WHERE code=$1 AND started_at > NOW() - INTERVAL '7 days'`, [code])).rows[0];
+    if (!f) return c.json({ ok: false, error: "expired" }, 404);
+    return c.json({ ok: true, items: f.items || [], raw: f.cart_raw || null, option: f.option,
+      subtotal: Number(f.subtotal) || 0, ordered: Boolean(f.order_no) });
+  });
+
+  /* ── اللوحة: إعدادات + أرقام «السلات المتروكة» ── */
+  app.get("/api/carts/recovery", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    const cfg = cartCfg(await getSettingsData());
+    const win = (col, days) => `${col} > (date_trunc('day', NOW() AT TIME ZONE 'Asia/Riyadh') AT TIME ZONE 'Asia/Riyadh') - INTERVAL '${days} days'`;
+    const one = async (days) => {
+      const [ab, fl] = await Promise.all([
+        pool.query(
+          `SELECT count(*)::int AS n, COALESCE(sum(subtotal),0)::float AS value FROM shop_carts
+            WHERE phone_norm IS NOT NULL AND item_count > 0 AND ${win("updated_at", days)}
+              AND updated_at < NOW() - INTERVAL '30 minutes'
+              AND (recovered_order IS NULL OR recovered_at > updated_at + INTERVAL '30 minutes')`),
+        pool.query(
+          `SELECT count(*)::int AS flows,
+                  count(*) FILTER (WHERE step1_channel='sms')::int + count(*) FILTER (WHERE step2_channel='sms')::int AS sms,
+                  count(*) FILTER (WHERE step1_channel='push')::int AS push,
+                  count(*) FILTER (WHERE opened_at IS NOT NULL)::int AS opened,
+                  count(*) FILTER (WHERE order_no IS NOT NULL)::int AS recovered,
+                  COALESCE(sum(order_total) FILTER (WHERE order_no IS NOT NULL),0)::float AS revenue,
+                  COALESCE(sum(COALESCE(step1_cost,0) + COALESCE(step2_cost,0)),0)::float AS cost
+             FROM cart_recovery WHERE ${win("started_at", days)}`),
+      ]);
+      return { abandoned: ab.rows[0].n, abandonedValue: Math.round(ab.rows[0].value), ...fl.rows[0] };
+    };
+    const [today, d7] = await Promise.all([one(0), one(6)]);
+    return c.json({ ok: true, config: cfg, defaults: CART_DEFAULTS, today, d7 });
+  });
+
+  app.put("/api/carts/recovery", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    let b = {};
+    try { b = await c.req.json(); } catch { return c.json({ ok: false, error: "bad json" }, 400); }
+    const val = cartCfg({ abandonedCarts: b });
+    await pool.query(
+      `UPDATE settings SET data = jsonb_set(data, '{abandonedCarts}', $1::jsonb, true) WHERE id=1`, [jb(val)]);
+    return c.json({ ok: true, config: val });
+  });
 
   /* ── ADMIN: الأرقام اللي بتتقال في اللوحة ─────────────────────────── */
   app.get("/api/carts/stats", async (c) => {
