@@ -694,10 +694,12 @@ export function register(app, ctx, deps = {}) {
      الخانة بتفضل فاضية والتقارير بتستبعد الطلب ده. */
   async function applyMilestones(shipment, { rawStatus, status, provider, source, via }) {
     const p = provider || shipment?.provider || null;
-    const m = courierMilestone(p, rawStatus)
-      // احتياطي: الحالة الموحّدة picked معناها استلم حتى لو الاسم الخام جديد علينا
-      || (status === "picked" ? "picked" : null)
-      || (status === "delivered" ? "picked" : null);
+    /* احتياطي واحد بس: الحالة الموحّدة picked معناها استلم فعلاً حتى لو
+       الاسم الخام جديد علينا. «delivered» **مش** احتياطي للاستلام — لو أول
+       استطلاع لقاه متوصّل خلاص، ختم وقت الاستلام بوقت التوصيل كان هيدّي
+       «الطريق = صفر دقيقة» ويكدب على عمر في قياس الأداء. أحسن نسيبها فاضية
+       والتقرير يستبعد الطلب ده. */
+    const m = courierMilestone(p, rawStatus) || (status === "picked" ? "picked" : null);
     if (!m) return [];
     const out = [];
     const done = await recordMilestone(shipment, m, { rawStatus, provider: p, source, via });
@@ -1399,7 +1401,11 @@ export function register(app, ctx, deps = {}) {
         `UPDATE dl_shipments SET status=$2, driver=COALESCE($3, driver), cost=COALESCE($5, cost),
                 events = events || $4::jsonb, updated_at=NOW() WHERE id=$1`,
         [r.id, o.status, o.driver ? jb(o.driver) : null,
-         jb([{ at: new Date().toISOString(), provider: p.id, event: "poll", status: o.status }]),
+         /* الحالة الخام كمان (١٧ سبتمبر): قبل كده السجل كان بيحفظ الحالة
+            الموحّدة بس، فلو لاجلك غيّرت اسم «Reached Shop» بكرة المحطة
+            هتضيع في صمت ومحدش هيعرف ليه. دلوقتي الأثر موجود. */
+         jb([{ at: new Date().toISOString(), provider: p.id, event: "poll", status: o.status,
+               raw: o.rawStatus != null ? String(o.rawStatus).slice(0, 60) : null }]),
          o.cost]);
       courierEvent("courier_update", r.shop_order_no, {
         source: "courier_poll", ok: true,
