@@ -23,6 +23,7 @@
 ═══════════════════════════════════════════════════════════════════════════ */
 
 import crypto from "node:crypto";
+import * as smsRules from "./smsrules.js";
 import { promisify } from "node:util";
 // نفس قواعد الهوية والقناة اللي المؤشرات بتستخدمها — مفيش نسخة تانية
 import { IDENT_SQL, SALES_ONLY, deliverySql, WEBSITE_SQL } from "./analytics.js";
@@ -430,6 +431,24 @@ export function register(app, ctx, deps = {}) {
         sent_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
       );
       CREATE INDEX IF NOT EXISTS cms_flow_log_idx ON cms_flow_log(phone_norm, sent_at DESC);
+      -- ١٧ سبتمبر: جدولة الحملة + holdout + دفتر لكل مستلم (نتيجة ونسب وفاصل ٢١ يوم)
+      ALTER TABLE cms_campaigns ADD COLUMN IF NOT EXISTS scheduled_at TIMESTAMPTZ;
+      ALTER TABLE cms_campaigns ADD COLUMN IF NOT EXISTS confirm_audience INT;
+      ALTER TABLE cms_campaigns ADD COLUMN IF NOT EXISTS holdout_pct INT NOT NULL DEFAULT 0;
+      ALTER TABLE cms_campaigns ADD COLUMN IF NOT EXISTS cost NUMERIC NOT NULL DEFAULT 0;
+      ALTER TABLE cms_campaigns ADD COLUMN IF NOT EXISTS excluded JSONB;
+      CREATE TABLE IF NOT EXISTS cms_campaign_sends (
+        campaign_id INT NOT NULL,
+        phone_norm TEXT NOT NULL,
+        status TEXT NOT NULL,            -- sent | failed | holdout
+        msg_id TEXT,
+        parts INT NOT NULL DEFAULT 0,
+        cost NUMERIC NOT NULL DEFAULT 0,
+        error TEXT,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        PRIMARY KEY (campaign_id, phone_norm)
+      );
+      CREATE INDEX IF NOT EXISTS cms_campaign_sends_phone_idx ON cms_campaign_sends(phone_norm, created_at DESC);
     `);
     /* ربط الباقة بالعرض (٢٠٢٦-٠٩-١٢). الزرع مرة واحدة بس (cms_migrations)
        عشان لو المالك غيّر الربط بعدين، الإقلاع مايرجّعهوش. INSERT والـUPDATE
@@ -1908,6 +1927,7 @@ export function register(app, ctx, deps = {}) {
     { id: "dormant", icon: "😴", label: "نايمين", hint: "آخر طلب من ٤٦ لـ٩٠ يوم", test: (c) => c.daysSince >= 46 && c.daysSince <= 90 },
     { id: "lost", icon: "👻", label: "ضايعين", hint: "أكتر من ٩٠ يوم من غير طلب", test: (c) => c.daysSince > 90 },
     { id: "online_buyers", icon: "🛒", label: "عملاء الموقع", hint: "طلبوا من متجرنا مرة على الأقل", test: (c) => c.online > 0 },
+    ...smsRules.WAVE_SEGMENTS,
   ];
   const segById = Object.fromEntries(SEGMENTS.map((s) => [s.id, s]));
   const pub = (s) => ({ id: s.id, icon: s.icon, label: s.label, hint: s.hint });
@@ -1939,13 +1959,19 @@ export function register(app, ctx, deps = {}) {
     });
   });
 
-  /* ── الحملات ── */
-  const CAMP_DEFAULT = { smsEnabled: false, dailySmsCap: 1000 };
+  /* ── الحملات ──
+     ١٧ سبتمبر (موافقة عمر على تشغيل الـSMS): كل رسالة تسويقية بتعدّي على
+     smsrules.js — علاقة مباشرة بس، الموظفين برا، الإيقاف، فاصل ٢١ يوم،
+     مفيش طلب أونلاين آخر ٣ أيام، ساعات الهدوء، سقف يومي وسقف ميزانية.
+     وكل مستلم بيتسجّل في cms_campaign_sends (رقم رسالة تقنيات + التكلفة) عشان
+     النتيجة والنسب والفاصل يتحسبوا من الحقيقة مش من تقدير. */
+  const CAMP_DEFAULT = { smsEnabled: false, dailySmsCap: 1000, minGapDays: 21, budgetSar: 0, budgetSince: null, excludePhones: [] };
   async function campaignCfg() {
     const s = await getSettingsData();
     return { ...CAMP_DEFAULT, ...(((s || {}).cms || {}).campaigns || {}) };
   }
-  const smsPartsOf = (t) => { const n = [...String(t || "")].length; return n <= 70 ? 1 : Math.ceil(n / 67); };
+  const smsPartsOf = (t) => smsRules.smsParts(t);
+  const MAX_PARTS = 2;
   async function smsToday() {
     const r = await pool.query("SELECT n FROM cms_sms_daily WHERE day = CURRENT_DATE");
     return r.rows[0]?.n || 0;
@@ -1969,15 +1995,40 @@ export function register(app, ctx, deps = {}) {
     return new Map(r.rows.map((x) => [x.phone_norm, x]));
   }
 
-  // الجمهور الفعلي: إشعار = اللي مفعّل إشعارات بس، SMS = الكل ناقص اللي ألغى
+  /* مين اتبعتله رسالة تسويقية (حملة أو أتمتة) خلال آخر N يوم */
+  async function recentlyMessaged(phones, days) {
+    if (!phones.length || !(days > 0)) return new Set();
+    const r = await pool.query(
+      `SELECT phone_norm FROM cms_campaign_sends
+        WHERE phone_norm = ANY($1) AND status = 'sent' AND created_at > NOW() - ($2 || ' days')::interval
+       UNION
+       SELECT phone_norm FROM cms_flow_log
+        WHERE phone_norm = ANY($1) AND sent_at > NOW() - ($2 || ' days')::interval`, [phones, String(days)]);
+    return new Set(r.rows.map((x) => x.phone_norm));
+  }
+
+  // الجمهور الفعلي: إشعار = اللي مفعّل إشعارات بس، SMS = بعد كل قواعد smsrules
   async function audienceFor(camp) {
     const s = segById[camp.segment];
-    if (!s) return { list: [], segmentSize: 0, optedOut: 0 };
+    if (!s) return { list: [], holdout: [], segmentSize: 0, optedOut: 0, excluded: {} };
     const m = (await customerRows()).filter(s.test);
-    if (camp.channel === "push") return { list: m.filter((x) => x.push), segmentSize: m.length, optedOut: 0 };
-    const codes = await optoutCodes(m.map((x) => x.pn));
-    const list = m.filter((x) => !codes.get(x.pn)?.opted_out_at).map((x) => ({ ...x, code: codes.get(x.pn)?.optout_code }));
-    return { list, segmentSize: m.length, optedOut: m.length - list.length };
+    if (camp.channel === "push") return { list: m.filter((x) => x.push), holdout: [], segmentSize: m.length, optedOut: 0, excluded: {} };
+    const cfg = await campaignCfg();
+    const pns = m.map((x) => x.pn);
+    const [codes, gap, recentOnline] = await Promise.all([
+      optoutCodes(pns),
+      recentlyMessaged(pns, Number(cfg.minGapDays) || 0),
+      pool.query(`SELECT DISTINCT phone_norm FROM shop_orders WHERE ${PAID_ONLINE} AND phone_norm = ANY($1)
+                   AND created_at > NOW() - INTERVAL '3 days'`, [pns]).then((r) => new Set(r.rows.map((x) => x.phone_norm))),
+    ]);
+    const optedOut = new Set([...codes.values()].filter((x) => x.opted_out_at).map((x) => x.phone_norm));
+    const f = smsRules.filterAudience(m, {
+      staff: smsRules.staffPhoneSet(await getSettingsData()), optedOut, recentlyMessaged: gap, recentOnline });
+    const withCode = f.list.map((x) => ({ ...x, code: codes.get(x.pn)?.optout_code }));
+    const holdout = withCode.filter((x) => smsRules.inHoldout(camp.id, x.pn, camp.holdout_pct));
+    const hold = new Set(holdout.map((x) => x.pn));
+    return { list: withCode.filter((x) => !hold.has(x.pn)), holdout, segmentSize: m.length,
+      optedOut: f.excluded.opted_out, excluded: f.excluded };
   }
 
   const smsBody = (camp, person) =>
@@ -1986,6 +2037,7 @@ export function register(app, ctx, deps = {}) {
   async function sendMarketingSms(pn, body) {
     const key = process.env.TAQNYAT_API_KEY, sender = process.env.TAQNYAT_SENDER_AD;
     if (!key || !sender) throw Object.assign(new Error("ad sender not configured"), { code: "sms_failed" });
+    if (smsPartsOf(body) > MAX_PARTS) throw Object.assign(new Error("too_long"), { code: "sms_failed" });
     const resp = await fetch("https://api.taqnyat.sa/v1/messages", {
       method: "POST",
       headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
@@ -1997,7 +2049,28 @@ export function register(app, ctx, deps = {}) {
       throw Object.assign(new Error(`Taqnyat: ${data.message || resp.status}`), { code: "sms_failed" });
     }
     bumpSms(smsPartsOf(body));
-    return data;
+    return { messageId: data.messageId != null ? String(data.messageId) : null, cost: Number(data.cost) || 0, parts: Number(data.msgLength) || smsPartsOf(body) };
+  }
+
+  async function budgetLeft(cfg) {
+    const cap = Number(cfg.budgetSar) || 0;
+    if (cap <= 0) return Infinity;
+    const r = await pool.query(
+      `SELECT COALESCE(sum(cost),0)::float AS spent FROM cms_campaign_sends
+        WHERE status='sent' AND created_at >= COALESCE($1::timestamptz, '1970-01-01')`, [cfg.budgetSince || null]);
+    return cap - r.rows[0].spent;
+  }
+
+  /* فحوصات ما قبل إرسال SMS — نفس الفحص للإرسال الفوري والمجدول */
+  async function smsPreflight(camp, aud) {
+    const cfg = await campaignCfg();
+    if (cfg.smsEnabled !== true) return "sms_disabled";
+    if (smsRules.inQuietHours()) return "quiet_hours";
+    const parts = smsPartsOf(smsBody(camp, aud.list[0]));
+    if (parts > MAX_PARTS) return "too_long";
+    if ((await smsToday()) + aud.list.length * parts > Number(cfg.dailySmsCap || 0)) return "daily_cap";
+    if (aud.list.length * parts * 0.075 > (await budgetLeft(cfg))) return "budget_cap";
+    return null;
   }
 
   async function couponOk(code) {
@@ -2011,6 +2084,7 @@ export function register(app, ctx, deps = {}) {
       name: clip(b.name, 80), segment: segById[b.segment] ? b.segment : null,
       channel: b.channel === "sms" ? "sms" : "push", message: clip(b.message, 600),
       coupon: clip(String(b.coupon || "").toUpperCase(), 40),
+      holdout_pct: Math.min(50, Math.max(0, Math.round(Number(b.holdout_pct) || 0))),
     };
   }
 
@@ -2019,7 +2093,8 @@ export function register(app, ctx, deps = {}) {
     const [rows, cfg, today] = await Promise.all([
       pool.query("SELECT * FROM cms_campaigns ORDER BY created_at DESC LIMIT 100"), campaignCfg(), smsToday()]);
     return c.json({ ok: true, campaigns: rows.rows, smsEnabled: cfg.smsEnabled === true,
-      dailySmsCap: cfg.dailySmsCap, smsSentToday: today, smsSender: process.env.TAQNYAT_SENDER_AD || null });
+      dailySmsCap: cfg.dailySmsCap, smsSentToday: today, smsSender: process.env.TAQNYAT_SENDER_AD || null,
+      minGapDays: cfg.minGapDays, budgetSar: cfg.budgetSar, budgetLeft: Number.isFinite(await budgetLeft(cfg)) ? await budgetLeft(cfg) : null });
   });
 
   app.post("/api/cms/campaigns", async (c) => {
@@ -2029,8 +2104,8 @@ export function register(app, ctx, deps = {}) {
     const x = campBody(b);
     if (!x.name || !x.segment || !x.message) return bad(c, "name_segment_message_required");
     const r = await pool.query(
-      `INSERT INTO cms_campaigns(name, segment, channel, message, coupon, created_by)
-       VALUES ($1,$2,$3,$4,$5,$6) RETURNING *`, [x.name, x.segment, x.channel, x.message, x.coupon, await who(c)]);
+      `INSERT INTO cms_campaigns(name, segment, channel, message, coupon, holdout_pct, created_by)
+       VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *`, [x.name, x.segment, x.channel, x.message, x.coupon, x.holdout_pct, await who(c)]);
     return c.json({ ok: true, campaign: r.rows[0] });
   });
 
@@ -2041,9 +2116,9 @@ export function register(app, ctx, deps = {}) {
     const x = campBody(b);
     if (!x.name || !x.segment || !x.message) return bad(c, "name_segment_message_required");
     const r = await pool.query(
-      `UPDATE cms_campaigns SET name=$2, segment=$3, channel=$4, message=$5, coupon=$6
+      `UPDATE cms_campaigns SET name=$2, segment=$3, channel=$4, message=$5, coupon=$6, holdout_pct=$7
         WHERE id=$1 AND status='draft' RETURNING *`,
-      [Number(c.req.param("id")), x.name, x.segment, x.channel, x.message, x.coupon]);
+      [Number(c.req.param("id")), x.name, x.segment, x.channel, x.message, x.coupon, x.holdout_pct]);
     if (!r.rowCount) return bad(c, "already_sent", 409);
     return c.json({ ok: true, campaign: r.rows[0] });
   });
@@ -2064,9 +2139,12 @@ export function register(app, ctx, deps = {}) {
     const sample = first
       ? (camp.channel === "sms" ? smsBody(camp, first) : renderMsg(camp.message, { name: first.name, coupon: camp.coupon }))
       : "";
-    const parts = camp.channel === "sms" ? smsPartsOf(sample || camp.message) : 0;
-    return c.json({ ok: true, audience: aud.list.length, segmentSize: aud.segmentSize, optedOut: aud.optedOut,
-      costEstimate: Math.round(aud.list.length * parts * 0.075 * 100) / 100, sampleBody: sample });
+    // الطول بأطول كود إيقاف (١٠ حروف) حتى لو الجمهور فاضي
+    const parts = camp.channel === "sms" ? smsPartsOf(sample || smsBody(camp, { name: "", code: "xxxxxxxxxx" })) : 0;
+    return c.json({ ok: true, audience: aud.list.length, holdout: aud.holdout.length, segmentSize: aud.segmentSize,
+      optedOut: aud.optedOut, excluded: aud.excluded, parts, tooLong: parts > MAX_PARTS,
+      quietHours: smsRules.inQuietHours(),
+      costEstimate: Math.round(aud.list.length * parts * 0.075 * 100) / 100, sampleBody: sample.replace(/\/u\/[a-f0-9]+/, "/u/••••") });
   });
 
   app.post("/api/cms/campaigns/:id/test", async (c) => {
@@ -2078,28 +2156,39 @@ export function register(app, ctx, deps = {}) {
     const camp = (await pool.query("SELECT * FROM cms_campaigns WHERE id=$1", [Number(c.req.param("id"))])).rows[0];
     if (!camp) return bad(c, "not_found", 404);
     const person = { pn, name: "", code: (await optoutCodes([pn])).get(pn)?.optout_code };
+    let info = null;
     try {
       if (camp.channel === "sms") {
-        await sendMarketingSms(pn, "[تجربة] " + smsBody(camp, person));
+        info = await sendMarketingSms(pn, smsBody(camp, person));
       } else {
         const ok = await notify()?.sendToAudience({ phoneNorm: pn, title: "فريش كاتس 🍔 [تجربة]",
           body: renderMsg(camp.message, { coupon: camp.coupon }), url: camp.coupon ? `${STORE_PUBLIC()}/?c=${camp.coupon}` : STORE_PUBLIC() });
         if (!ok) return bad(c, "no_push_for_phone");
       }
-    } catch (e) { return c.json({ ok: false, error: "sms_failed", message: e.message }, 502); }
-    return c.json({ ok: true, channel: camp.channel });
+    } catch (e) { return c.json({ ok: false, error: "sms_failed", message: e.message }); }
+    return c.json({ ok: true, channel: camp.channel, messageId: info?.messageId || null, cost: info?.cost ?? null, parts: info?.parts ?? null });
   });
 
-  async function runSend(camp, list, actor) {
-    let sent = 0, failed = 0, lastError = null;
+  async function runSend(camp, aud, actor) {
+    const list = aud.list;
+    let sent = 0, failed = 0, lastError = null, cost = 0;
     const url = camp.coupon ? `${STORE_PUBLIC()}/?c=${encodeURIComponent(camp.coupon)}` : STORE_PUBLIC();
+    const log = (pn, status, x = {}) => pool.query(
+      `INSERT INTO cms_campaign_sends(campaign_id, phone_norm, status, msg_id, parts, cost, error)
+       VALUES ($1,$2,$3,$4,$5,$6,$7) ON CONFLICT (campaign_id, phone_norm) DO NOTHING`,
+      [camp.id, pn, status, x.messageId || null, x.parts || 0, x.cost || 0, x.error || null]).catch(() => {});
+    for (const h of aud.holdout || []) await log(h.pn, "holdout");
     const one = async (p) => {
       try {
-        if (camp.channel === "sms") { await sendMarketingSms(p.pn, smsBody(camp, p)); sent++; }
-        else if (await notify()?.sendToAudience({ phoneNorm: p.pn, title: "فريش كاتس 🍔",
-          body: renderMsg(camp.message, { name: p.name, coupon: camp.coupon }), url })) sent++;
-        else failed++;
-      } catch (e) { failed++; lastError = e.message; }
+        if (camp.channel === "sms") {
+          // ساعات الهدوء ممكن تبدأ في نص حملة كبيرة — نوقف الباقي
+          if (smsRules.inQuietHours()) { failed++; lastError = "quiet_hours"; await log(p.pn, "failed", { error: "quiet_hours" }); return; }
+          const info = await sendMarketingSms(p.pn, smsBody(camp, p));
+          sent++; cost += info.cost; await log(p.pn, "sent", info);
+        } else if (await notify()?.sendToAudience({ phoneNorm: p.pn, title: "فريش كاتس 🍔",
+          body: renderMsg(camp.message, { name: p.name, coupon: camp.coupon }), url })) { sent++; await log(p.pn, "sent"); }
+        else { failed++; await log(p.pn, "failed", { error: "no_push" }); }
+      } catch (e) { failed++; lastError = e.message; await log(p.pn, "failed", { error: String(e.message).slice(0, 200) }); }
     };
     // ٥ في نفس الوقت — تقنيات وخوادم الإشعارات مابتحبش الانفجار
     for (let i = 0; i < list.length; i += 5) {
@@ -2107,9 +2196,10 @@ export function register(app, ctx, deps = {}) {
       if (camp.channel === "sms") await new Promise((r) => setTimeout(r, 300));
     }
     await pool.query(
-      `UPDATE cms_campaigns SET status='sent', sent=$2, failed=$3, audience=$4, sent_at=NOW(), sent_by=$5, last_error=$6
-        WHERE id=$1`, [camp.id, sent, failed, list.length, actor, lastError]);
-    console.log(`[cms] campaign ${camp.id} (${camp.channel}) → sent ${sent}, failed ${failed}`);
+      `UPDATE cms_campaigns SET status='sent', sent=$2, failed=$3, audience=$4, sent_at=NOW(), sent_by=$5, last_error=$6,
+              cost=$7, excluded=$8 WHERE id=$1`,
+      [camp.id, sent, failed, list.length, actor, lastError, Math.round(cost * 100) / 100, jb({ ...(aud.excluded || {}), holdout: (aud.holdout || []).length })]);
+    console.log(`[cms] campaign ${camp.id} (${camp.channel}) → sent ${sent}, failed ${failed}, cost ${cost.toFixed(2)}`);
   }
 
   app.post("/api/cms/campaigns/:id/send", async (c) => {
@@ -2128,18 +2218,104 @@ export function register(app, ctx, deps = {}) {
       if (Number(b.confirm) !== aud.list.length) { await revert(); return bad(c, "confirm_mismatch"); }
       if (!(await couponOk(camp.coupon))) { await revert(); return bad(c, "coupon_invalid"); }
       if (camp.channel === "sms") {
-        const cfg = await campaignCfg();
-        if (cfg.smsEnabled !== true) { await revert(); return bad(c, "sms_disabled", 403); }
-        const parts = smsPartsOf(smsBody(camp, aud.list[0]));
-        if ((await smsToday()) + aud.list.length * parts > Number(cfg.dailySmsCap || 0)) { await revert(); return bad(c, "daily_cap"); }
+        const why = await smsPreflight(camp, aud);
+        if (why) { await revert(); return bad(c, why, why === "sms_disabled" ? 403 : 400); }
       }
       const actor = await who(c);
-      setImmediate(() => runSend(camp, aud.list, actor).catch(async (e) => {
+      setImmediate(() => runSend(camp, aud, actor).catch(async (e) => {
         console.error(`[cms] campaign ${id} failed:`, e.message);
         await pool.query("UPDATE cms_campaigns SET status='draft', last_error=$2 WHERE id=$1", [id, e.message]).catch(() => {});
       }));
-      return c.json({ ok: true, queued: true, audience: aud.list.length });
+      return c.json({ ok: true, queued: true, audience: aud.list.length, holdout: aud.holdout.length });
     } catch (e) { await revert(); throw e; }
+  });
+
+  /* جدولة: التأكيد بالعدد بيتاخد دلوقتي، والإرسال بيحصل في الميعاد لو الجمهور
+     ماتغيّرش أكتر من ٢٠٪ (أو ١٠ أشخاص) — غير كده الحملة بتتعلّق «held» ومحدش
+     بياخد حاجة لحد ما حد يراجع. */
+  app.post("/api/cms/campaigns/:id/schedule", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    let b = {};
+    try { b = await c.req.json(); } catch { return bad(c, "bad json"); }
+    const id = Number(c.req.param("id"));
+    const at = new Date(b.at);
+    if (isNaN(at) || at.getTime() < Date.now() - 60_000) return bad(c, "bad_time");
+    if (smsRules.inQuietHours(at)) return bad(c, "quiet_hours");
+    const camp = (await pool.query("SELECT * FROM cms_campaigns WHERE id=$1 AND status IN ('draft','held')", [id])).rows[0];
+    if (!camp) return bad(c, "not_draft", 409);
+    const aud = await audienceFor(camp);
+    if (Number(b.confirm) !== aud.list.length) return bad(c, "confirm_mismatch");
+    await pool.query(
+      "UPDATE cms_campaigns SET status='scheduled', scheduled_at=$2, confirm_audience=$3, last_error=NULL WHERE id=$1",
+      [id, at.toISOString(), aud.list.length]);
+    return c.json({ ok: true, scheduledAt: at.toISOString(), audience: aud.list.length });
+  });
+  app.post("/api/cms/campaigns/:id/unschedule", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    const r = await pool.query(
+      "UPDATE cms_campaigns SET status='draft', scheduled_at=NULL WHERE id=$1 AND status IN ('scheduled','held') RETURNING id",
+      [Number(c.req.param("id"))]);
+    return r.rowCount ? c.json({ ok: true }) : bad(c, "not_scheduled", 409);
+  });
+
+  async function scheduledTick() {
+    const due = (await pool.query(
+      `UPDATE cms_campaigns SET status='sending'
+        WHERE id = (SELECT id FROM cms_campaigns WHERE status='scheduled' AND scheduled_at <= NOW()
+                     ORDER BY scheduled_at LIMIT 1 FOR UPDATE SKIP LOCKED)
+        RETURNING *`)).rows[0];
+    if (!due) return;
+    const hold = (why) => pool.query("UPDATE cms_campaigns SET status='held', last_error=$2 WHERE id=$1", [due.id, why]);
+    try {
+      segCache = { at: 0, rows: null };
+      const aud = await audienceFor(due);
+      if (!aud.list.length) return void (await hold("empty_audience"));
+      if (!smsRules.audienceDriftOk(due.confirm_audience, aud.list.length)) {
+        return void (await hold(`audience_changed ${due.confirm_audience}→${aud.list.length}`));
+      }
+      if (!(await couponOk(due.coupon))) return void (await hold("coupon_invalid"));
+      if (due.channel === "sms") {
+        const why = await smsPreflight(due, aud);
+        if (why) return void (await hold(why));
+      }
+      console.log(`[cms] scheduled campaign ${due.id} firing → ${aud.list.length} (+${aud.holdout.length} holdout)`);
+      await runSend(due, aud, "schedule");
+    } catch (e) {
+      console.error(`[cms] scheduled campaign ${due.id}:`, e.message);
+      await hold(String(e.message).slice(0, 200)).catch(() => {});
+    }
+  }
+  setInterval(() => scheduledTick().catch((e) => console.error("[cms] schedule tick:", e.message)), 60_000);
+
+  /* نتيجة الحملة: مُرسل / فشل / تكلفة / ضغطات الرابط / طلبات أونلاين من
+     المستلمين خلال ٧٢ ساعة مقابل مجموعة الـholdout / طلبات جات من الرابط نفسه */
+  app.get("/api/cms/campaigns/:id/results", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    const camp = (await pool.query("SELECT * FROM cms_campaigns WHERE id=$1", [Number(c.req.param("id"))])).rows[0];
+    if (!camp) return bad(c, "not_found", 404);
+    const slug = (String(camp.message).match(/\/l\/([a-z0-9-]+)/i) || [])[1] || null;
+    const [agg, orders, link, byLink] = await Promise.all([
+      pool.query(`SELECT count(*) FILTER (WHERE status='sent')::int AS sent, count(*) FILTER (WHERE status='failed')::int AS failed,
+                         count(*) FILTER (WHERE status='holdout')::int AS holdout, COALESCE(sum(cost),0)::float AS cost,
+                         COALESCE(sum(parts),0)::int AS parts
+                    FROM cms_campaign_sends WHERE campaign_id=$1`, [camp.id]),
+      pool.query(`SELECT s.status, count(DISTINCT o.order_no)::int AS orders, COALESCE(sum(o.total),0)::float AS revenue
+                    FROM cms_campaign_sends s
+                    JOIN shop_orders o ON o.phone_norm = s.phone_norm AND ${PAID_ONLINE.replaceAll("status", "o.status")}
+                         AND o.created_at >= s.created_at AND o.created_at < s.created_at + INTERVAL '72 hours'
+                   WHERE s.campaign_id=$1 AND s.status IN ('sent','holdout') GROUP BY 1`, [camp.id]),
+      slug ? pool.query("SELECT clicks, last_click_at FROM cms_links WHERE slug=$1", [slug]) : Promise.resolve({ rows: [] }),
+      slug ? pool.query(`SELECT count(*)::int AS orders, COALESCE(sum(total),0)::float AS revenue FROM shop_orders
+                          WHERE attribution->>'fc_link' = $1 AND ${PAID_ONLINE}`, [slug]) : Promise.resolve({ rows: [] }),
+    ]);
+    const a = agg.rows[0];
+    const g = Object.fromEntries(orders.rows.map((r) => [r.status, r]));
+    return c.json({ ok: true, id: camp.id, name: camp.name, status: camp.status, sentAt: camp.sent_at, scheduledAt: camp.scheduled_at,
+      sent: a.sent, failed: a.failed, holdout: a.holdout, parts: a.parts, cost: Math.round(a.cost * 100) / 100,
+      excluded: camp.excluded, slug, clicks: link.rows[0]?.clicks ?? null,
+      linkOrders: byLink.rows[0] || null,
+      recipientsOrders72h: g.sent || { orders: 0, revenue: 0 }, holdoutOrders72h: g.holdout || { orders: 0, revenue: 0 },
+      delivery: "Taqnyat API has no delivery-report endpoint; messageIds stored per recipient" });
   });
 
   // المالك بس (المسار مش تحت «customers» في خريطة الأقسام عن قصد): SMS بفلوس
@@ -2147,7 +2323,16 @@ export function register(app, ctx, deps = {}) {
     const err = await requireAdmin(c); if (err) return err;
     let b = {};
     try { b = await c.req.json(); } catch { return bad(c, "bad json"); }
-    const val = { smsEnabled: b.smsEnabled === true, dailySmsCap: Math.min(20000, Math.max(0, Number(b.dailySmsCap) || 0)) };
+    const prev = await campaignCfg();
+    const val = {
+      ...prev,
+      smsEnabled: b.smsEnabled === true,
+      dailySmsCap: Math.min(20000, Math.max(0, Number(b.dailySmsCap) || 0)),
+    };
+    if (b.minGapDays != null) val.minGapDays = Math.min(90, Math.max(0, Math.round(Number(b.minGapDays) || 0)));
+    if (b.budgetSar != null) val.budgetSar = Math.max(0, Number(b.budgetSar) || 0);
+    if (b.budgetSince !== undefined) val.budgetSince = b.budgetSince ? new Date(b.budgetSince).toISOString() : null;
+    if (Array.isArray(b.excludePhones)) val.excludePhones = b.excludePhones.map(smsRules.normLocal).filter(Boolean).slice(0, 200);
     await pool.query(
       `UPDATE settings SET data = jsonb_set(
          CASE WHEN data ? 'cms' THEN data ELSE jsonb_set(data,'{cms}','{}'::jsonb,true) END,
@@ -2337,17 +2522,17 @@ export function register(app, ctx, deps = {}) {
     await pool.query(
       `INSERT INTO cms_flow_members(flow_id, phone_norm) SELECT $1, p FROM unnest($2::text[]) p ON CONFLICT DO NOTHING`,
       [flow.id, entrants.map((x) => x.pn)]);
-    const recent = new Set((await pool.query(
-      `SELECT DISTINCT phone_norm FROM cms_flow_log WHERE phone_norm = ANY($1) AND sent_at > NOW() - ($2 || ' days')::interval`,
-      [entrants.map((x) => x.pn), String(FLOW_GAP_DAYS)])).rows.map((r) => r.phone_norm));
+    const recent = await recentlyMessaged(entrants.map((x) => x.pn), Math.max(FLOW_GAP_DAYS, Number(cfg.minGapDays) || 0));
     let targets = entrants.filter((x) => !recent.has(x.pn));
     if (flow.channel === "push") targets = targets.filter((x) => x.push);
     else {
       if (cfg.smsEnabled !== true) return;
       const codes = await optoutCodes(targets.map((x) => x.pn));
-      targets = targets.filter((x) => !codes.get(x.pn)?.opted_out_at).map((x) => ({ ...x, code: codes.get(x.pn)?.optout_code }));
+      const optedOut = new Set(targets.filter((x) => codes.get(x.pn)?.opted_out_at).map((x) => x.pn));
+      targets = smsRules.filterAudience(targets, { staff: smsRules.staffPhoneSet(await getSettingsData()), optedOut }).list
+        .map((x) => ({ ...x, code: codes.get(x.pn)?.optout_code }));
       const room = Math.max(0, Number(cfg.dailySmsCap || 0) - (await smsToday()));
-      targets = targets.slice(0, room);
+      targets = targets.slice(0, Math.floor(room / 2));
     }
     targets = targets.slice(0, FLOW_RUN_CAP);
     let sent = 0;
