@@ -20,6 +20,8 @@
 ═══════════════════════════════════════════════════════════════════════════ */
 
 const ROUTES_URL = "https://routes.googleapis.com/directions/v2:computeRoutes";
+const MATRIX_URL = "https://routes.googleapis.com/distanceMatrix/v2:computeRouteMatrix";
+const MATRIX_CHUNK = 50;
 
 export const roundCoord = (v) => Math.round(Number(v) * 1e4) / 1e4;
 export const cacheKey = (lat, lng) => `${roundCoord(lat).toFixed(4)},${roundCoord(lng).toFixed(4)}`;
@@ -55,6 +57,54 @@ export async function googleDriveKm({ from, to, key, fetchImpl = fetch, timeoutM
     if (!isFinite(m) || m <= 0) throw new Error("routes_no_route");
     const secs = j.routes[0].duration ? parseInt(String(j.routes[0].duration), 10) : null;
     return { km: m / 1000, durationSec: isFinite(secs) ? secs : null };
+  } finally {
+    clearTimeout(t);
+  }
+}
+
+/* مصفوفة: مصدر واحد → نقط كتير في طلب واحد (Compute Route Matrix **Essentials**:
+   originIndex/destinationIndex/distanceMeters/duration/status/condition بس).
+   بيرجّع مصفوفة بنفس ترتيب `tos`: {km, durationSec} | {noRoute:true} | null (فشل العنصر ده).
+   فشل الطلب كله → رمي خطأ. */
+export async function googleDriveMatrix({ from, tos, key, fetchImpl = fetch, timeoutMs = 10000 }) {
+  const ctl = new AbortController();
+  const t = setTimeout(() => ctl.abort(), timeoutMs);
+  const wp = (p) => ({ waypoint: { location: { latLng: { latitude: p.lat, longitude: p.lng } } } });
+  try {
+    const resp = await fetchImpl(MATRIX_URL, {
+      method: "POST",
+      signal: ctl.signal,
+      headers: {
+        "Content-Type": "application/json",
+        "X-Goog-Api-Key": key,
+        "X-Goog-FieldMask": "originIndex,destinationIndex,distanceMeters,duration,status,condition",
+      },
+      body: JSON.stringify({
+        origins: [wp(from)],
+        destinations: tos.map(wp),
+        travelMode: "DRIVE",
+        routingPreference: "TRAFFIC_UNAWARE",
+      }),
+    });
+    if (!resp.ok) {
+      const e = new Error(`matrix_http_${resp.status}`);
+      e.status = resp.status;
+      throw e;
+    }
+    const arr = await resp.json();
+    if (!Array.isArray(arr)) throw new Error("matrix_bad_body");
+    const out = tos.map(() => null);
+    for (const el of arr) {
+      const i = Number(el && el.destinationIndex) || 0; // proto3: الصفر بيتشال من الـJSON
+      if (i < 0 || i >= out.length) continue;
+      if (el.status && el.status.code) continue;
+      if (el.condition === "ROUTE_NOT_FOUND") { out[i] = { noRoute: true }; continue; }
+      const m = Number(el.distanceMeters);
+      if (!isFinite(m) || m < 0) continue;
+      const secs = el.duration ? parseInt(String(el.duration), 10) : null;
+      out[i] = { km: m / 1000, durationSec: isFinite(secs) ? secs : null };
+    }
+    return out;
   } finally {
     clearTimeout(t);
   }
@@ -156,7 +206,48 @@ export function makeDriveDistance({
     }
   }
 
-  return { ensureSchema, get, stats, configured: () => Boolean(keyFn()) };
+  /* getMany(from, tos) — للخلفية بس (رسم منطقة التوصيل)، مش لمسار العميل:
+     الكاش الأول، والباقي في طلبات مصفوفة (٥٠ نقطة للطلب).
+     → {results:[{km,source}|{noRoute:true}|null], billed} — عمرها ما ترمي. */
+  async function getMany(from, tos, { timeoutMs: tmo = 10000 } = {}) {
+    const results = tos.map(() => null);
+    let billed = 0;
+    const miss = [];
+    for (let i = 0; i < tos.length; i++) {
+      const hit = await fromCache(cacheKey(tos[i].lat, tos[i].lng));
+      if (hit) { stats.cache++; results[i] = { km: hit.km, durationSec: hit.durationSec, source: "cache" }; }
+      else miss.push(i);
+    }
+    const key = keyFn();
+    if (!miss.length || !key || now() < pausedUntil) {
+      if (miss.length) stats.skipped += miss.length;
+      return { results, billed };
+    }
+    for (let c = 0; c < miss.length; c += MATRIX_CHUNK) {
+      const idx = miss.slice(c, c + MATRIX_CHUNK);
+      const dests = idx.map((i) => ({ lat: roundCoord(tos[i].lat), lng: roundCoord(tos[i].lng) }));
+      try {
+        billed += dests.length;
+        const res = await googleDriveMatrix({ from, tos: dests, key, fetchImpl, timeoutMs: tmo });
+        for (let j = 0; j < idx.length; j++) {
+          const v = res[j];
+          if (!v) continue;
+          if (v.noRoute) { results[idx[j]] = { noRoute: true }; continue; }
+          stats.google++;
+          await toCache(cacheKey(dests[j].lat, dests[j].lng), { ...v, at: now() });
+          results[idx[j]] = { ...v, source: "google" };
+        }
+      } catch (e) {
+        stats.fail++;
+        pausedUntil = now() + cooldownMs;
+        log("[drivedist] matrix failed:", e.name === "AbortError" ? "timeout" : e.message);
+        break;
+      }
+    }
+    return { results, billed };
+  }
+
+  return { ensureSchema, get, getMany, stats, configured: () => Boolean(keyFn()) };
 }
 
 /* resolveRouteKm — القرار كله في دالة واحدة عشان quote() تفضل بسيطة:

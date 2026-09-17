@@ -26,6 +26,7 @@ import { STORE_LAT, STORE_LNG } from "./tsstore.js";
 import { PROVIDERS, activeProvider } from "./couriers.js";
 import { emitOrder } from "./order-events.js";
 import { makeDriveDistance, resolveRouteKm } from "./drivedist.js";
+import { makeZoneService } from "./deliveryzone.js";
 
 /* ── أحداث المندوب على ناقل الطلب (W1-05، الخطة §٤-١) ─────────────────────
    courier_dispatch / courier_update / courier_manual / courier_cancel.
@@ -646,6 +647,18 @@ export function register(app, ctx, deps = {}) {
     return r.rows[0] || null;
   }
 
+  /* منطقة التوصيل على خريطة المتجر (deliveryzone.js) — تقريبية، للعرض بس. */
+  const zone = deps.zone || makeZoneService({
+    pool, drive,
+    getCfg: async () => { const p = await activePolicy(); return p ? { ...DEFAULT_POLICY, ...p.config } : null; },
+    store: () => ({ lat: STORE_LAT(), lng: STORE_LNG() }),
+  });
+  if (!deps.zone) {
+    zone.ensureSchema()
+      .then(() => zone.schedule())
+      .catch((e) => console.error("[delivery] zone schema failed:", e.message));
+  }
+
   /* quote({lat, lng, orderTotal}) — the ONE entry point storefront + shop.js
      both use, so the customer can never be quoted one fee and charged
      another. */
@@ -992,6 +1005,24 @@ export function register(app, ctx, deps = {}) {
       return c.json({ ok: false, error: "lat/lng required" }, 400);
     }
     return c.json({ ok: true, ...(await quote({ lat, lng, orderTotal: total })) });
+  });
+
+  // PUBLIC — المنطقة المغطاة (مضلّع تقريبي) عشان الخريطة تضلّل برّه التوصيل بالأحمر.
+  // مابتسألش جوجل أبداً: الحساب في الخلفية، ولو مش جاهز → دايرة هوائية.
+  app.get("/api/delivery/zone", async (c) => {
+    try {
+      c.header("Cache-Control", "public, max-age=600");
+      return c.json({ ok: true, ...(await zone.current()) });
+    } catch (e) {
+      return c.json({ ok: false, error: "zone_unavailable" }, 500);
+    }
+  });
+
+  // ADMIN — إعادة حساب المنطقة يدوياً (?force=1 يتجاهل الصلاحية).
+  app.post("/api/delivery/zone/rebuild", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    const r = await zone.refresh({ force: c.req.query("force") === "1" });
+    return c.json({ ok: true, result: r });
   });
 
   // Admin CRUD for policies — the dashboard's pricing editor.
