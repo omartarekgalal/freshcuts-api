@@ -668,6 +668,9 @@ export function register(app, ctx, deps = {}) {
       //  categories:{slug:{title,h1,meta,intro,…_en}}} — أي حقل فاضي بياخد
       // الافتراضي المكتوب في المتجر (storefront/seo.py).
       seo: sf.seo || {},
+      /* ⏰ «نبّهني لما تفتحوا» شغّال؟ المتجر مابيوريش الزرار وهو مقفول
+         (openwait.js بيرفض التسجيل برضه — ده عشان الواجهة تبقى صادقة). */
+      openWaitEnabled: (s.openWait || {}).enabled !== false,
       /* ⭐ تقييم جوجل الحقيقي (reviews.js بيحدّثه كل ١٢ ساعة من Places API).
          الشارة على المتجر وschema.org بيقروا من هنا — **رقم حقيقي أو ولا
          حاجة**، عمرنا ما نكتب تقييم من دماغنا. */
