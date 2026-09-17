@@ -1858,7 +1858,7 @@ export function register(app, ctx, deps = {}) {
     const s = await getSettingsData();
     const apps = (Array.isArray(s?.deliveryAppMethods) && s.deliveryAppMethods.length
       ? s.deliveryAppMethods : (DEFAULT_DELIVERY_APPS || [])).map((x) => String(x).toLowerCase());
-    const [pos, online, push, names, tsPhone, shopNames] = await Promise.all([
+    const [pos, online, push, names, tsPhone, shopNames, keeta] = await Promise.all([
       pool.query(`
         WITH x AS (
           SELECT ${IDENT_SQL} AS pn, o.total, o.calendar_day AS day,
@@ -1884,6 +1884,15 @@ export function register(app, ctx, deps = {}) {
                    WHERE phone_norm ~ '${PHONE_RE}' GROUP BY 1`),
       pool.query(`SELECT phone_norm AS pn, max(NULLIF(btrim(customer->>'name'), '')) AS name FROM shop_orders
                    WHERE phone_norm ~ '${PHONE_RE}' GROUP BY 1`),
+      // عملاء كيتا: عدد طلباتهم هناك + أصناف الطلبات دي (للتفضيل مشاوي/بوكس)
+      pool.query(`
+        WITH k AS (
+          SELECT s.phone_norm AS pn, o.order_id FROM order_sources s JOIN ts_orders o ON o.order_id = s.order_id
+           WHERE s.source_note ILIKE 'keeta' AND s.phone_norm ~ '${PHONE_RE}' AND ${SALES_ONLY}),
+        n AS (SELECT pn, count(*)::int AS orders FROM k GROUP BY 1)
+        SELECT k.pn, n.orders, i.name, COALESCE(sum(i.amount), 0)::float AS amount
+          FROM k JOIN n ON n.pn = k.pn LEFT JOIN ts_order_items i ON i.order_id = k.order_id
+         GROUP BY k.pn, n.orders, i.name`),
     ]);
     const onl = new Map(online.rows.map((r) => [r.pn, r]));
     const pushSet = new Set(push.rows.map((r) => r.pn));
@@ -1896,18 +1905,32 @@ export function register(app, ctx, deps = {}) {
       onOrder || tsName.get(pn) || nameOf.get(pn) || shopName.get(pn) || "";
     const today = new Date(new Date().toISOString().slice(0, 10));
     const daysSince = (d) => (d ? Math.max(0, Math.round((today - new Date(d)) / 86400000)) : 9999);
+    const kMap = new Map();
+    for (const k of keeta.rows) {
+      const e = kMap.get(k.pn) || { orders: 0, grill: 0, box: 0 };
+      e.orders = Math.max(e.orders, k.orders);
+      const fam = smsRules.itemFamily(k.name);
+      if (fam !== "other") e[fam] += k.amount;
+      kMap.set(k.pn, e);
+    }
+    const kOf = (pn) => {
+      const e = kMap.get(pn);
+      return e ? { keetaOrders: e.orders, keetaLean: smsRules.leanOf(e.grill, e.box) } : { keetaOrders: 0, keetaLean: null };
+    };
     const rows = pos.rows.map((r) => {
       const o = onl.get(r.pn);
       const last = o && o.last_day > r.last_day ? o.last_day : r.last_day;
       return { pn: r.pn, name: pickName(r.pn, r.name), orders: r.orders, spend: r.spend,
-        appOrders: r.app_orders, online: o ? o.n : 0, push: pushSet.has(r.pn), lastDay: last, daysSince: daysSince(last) };
+        appOrders: r.app_orders, online: o ? o.n : 0, onlineDaysSince: o ? daysSince(o.last_day) : 9999,
+        push: pushSet.has(r.pn), lastDay: last, daysSince: daysSince(last), ...kOf(r.pn) };
     });
     // عملاء طلبوا من الموقع بس ولسه طلبهم مادخلش سجل نقطة البيع
     const seen = new Set(rows.map((r) => r.pn));
     for (const o of online.rows) {
       if (seen.has(o.pn)) continue;
       rows.push({ pn: o.pn, name: pickName(o.pn, null), orders: o.n, spend: o.spend, appOrders: 0,
-        online: o.n, push: pushSet.has(o.pn), lastDay: o.last_day, daysSince: daysSince(o.last_day) });
+        online: o.n, onlineDaysSince: daysSince(o.last_day), push: pushSet.has(o.pn), lastDay: o.last_day,
+        daysSince: daysSince(o.last_day), ...kOf(o.pn) });
     }
     // VIP = أعلى ٢٠٪ إنفاق (نفس نسبة المؤشرات)
     const spends = rows.map((r) => r.spend).sort((a, b) => a - b);
@@ -1935,9 +1958,10 @@ export function register(app, ctx, deps = {}) {
     { id: "lost", icon: "👻", label: "ضايعين", hint: "أكتر من ٩٠ يوم من غير طلب", test: (c) => c.daysSince > 90 },
     { id: "online_buyers", icon: "🛒", label: "عملاء الموقع", hint: "طلبوا من متجرنا مرة على الأقل", test: (c) => c.online > 0 },
     ...smsRules.WAVE_SEGMENTS,
+    ...smsRules.KEETA_SEGMENTS,
   ];
   const segById = Object.fromEntries(SEGMENTS.map((s) => [s.id, s]));
-  const pub = (s) => ({ id: s.id, icon: s.icon, label: s.label, hint: s.hint });
+  const pub = (s) => ({ id: s.id, icon: s.icon, label: s.label, hint: s.hint, ...(s.allowApps ? { allowApps: true } : {}) });
 
   app.get("/api/cms/segments", async (c) => {
     const err = await requireAdmin(c); if (err) return err;
@@ -1962,7 +1986,8 @@ export function register(app, ctx, deps = {}) {
       ok: true, ...pub(s), total: m.length,
       members: m.slice(offset, offset + limit).map((x) => ({
         phone: x.pn, name: x.name, orders: x.orders, spend: Math.round(x.spend), lastDay: x.lastDay,
-        daysSince: x.daysSince, appOrders: x.appOrders, onlineOrders: x.online, vip: x.vip, push: x.push })),
+        daysSince: x.daysSince, appOrders: x.appOrders, onlineOrders: x.online, vip: x.vip, push: x.push,
+        keetaOrders: x.keetaOrders, keetaLean: x.keetaLean })),
     });
   });
 
@@ -2030,7 +2055,8 @@ export function register(app, ctx, deps = {}) {
     ]);
     const optedOut = new Set([...codes.values()].filter((x) => x.opted_out_at).map((x) => x.phone_norm));
     const f = smsRules.filterAudience(m, {
-      staff: smsRules.staffPhoneSet(await getSettingsData()), optedOut, recentlyMessaged: gap, recentOnline });
+      staff: smsRules.staffPhoneSet(await getSettingsData()), optedOut, recentlyMessaged: gap, recentOnline,
+      allowApps: s.allowApps === true });
     const withCode = f.list.map((x) => ({ ...x, code: codes.get(x.pn)?.optout_code }));
     const holdout = withCode.filter((x) => smsRules.inHoldout(camp.id, x.pn, camp.holdout_pct));
     const hold = new Set(holdout.map((x) => x.pn));

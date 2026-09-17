@@ -28,6 +28,7 @@ import { sendSms } from "./accounts.js";
 import { emitOrder } from "./order-events.js";
 
 const env = (k, d) => (process.env[k] || d || "").toString().trim();
+const trackHost = () => env("STOREFRONT_PUBLIC_URL", "https://freshcuts.sa").replace(/^https?:\/\//, "").replace(/\/+$/, "");
 
 /* What we tell the customer at each stage. Stages missing here are internal
    and never notify (pending_payment, expired, paid_pos_failed...). */
@@ -35,7 +36,13 @@ const MESSAGES = {
   pos_created: (o) => `فريش كاتس: استلمنا طلبك ${o.order_no} وتم الدفع بنجاح ✅`,
   accepted: (o) => `فريش كاتس: المطعم بدأ تجهيز طلبك ${o.order_no} 👨‍🍳`,
   courier_assigned: () => `فريش كاتس: رتّبنا لك مندوب توصيل 🛵`,
-  on_the_way: () => `فريش كاتس: طلبك في الطريق إليك الآن 🛵💨`,
+  /* ١٧/٩ (عمر): «المندوب في الطريق» هي رسالة الحالة الوحيدة بالـSMS — فبرابط
+     التتبع، وجزء UCS-2 واحد (≤٧٠) — رقم الطلب ١٤ حرف فالإيموجي بيتشال لو هيعدّي. */
+  on_the_way: (o) => {
+    const url = `${trackHost()}/track/${o.order_no}`;
+    const full = `فريش كاتس: طلبك مع المندوب بالطريق 🛵 ${url}`;
+    return full.length <= 70 ? full : `فريش كاتس: طلبك مع المندوب بالطريق ${url}`;
+  },
   // Google Business review link (settings.storefront.seo.links.review overrides the env/default).
   delivered: () => `فريش كاتس: تم توصيل طلبك — بالهنا والشفا 🌟 عجبك الأكل؟ قيّمنا على جوجل: ${env("GOOGLE_REVIEW_URL", "https://g.page/r/CSG0gPAqlvHMEBM/review")}`,
   rejected_refunded: (o) => `فريش كاتس: نعتذر، تعذّر تنفيذ طلبك ${o.order_no} وتم استرجاع المبلغ كاملاً لبطاقتك 💳`,
@@ -45,6 +52,14 @@ const MESSAGES = {
   refund_failed: (o) => `فريش كاتس: نعتذر عن طلبك ${o.order_no}. استرجاع المبلغ جارٍ وفريقنا بيتابعه — هنتواصل معك للتأكيد 🙏`,
 };
 const DEFAULT_SMS_STAGES = ["pos_created", "rejected_refunded", "refund_failed"];
+/* رسايل الاسترجاع مش اختيارية: العميل دفع ولازم يعرف إن فلوسه راجعة. بتتبعت
+   طول ما SMS مفعّل، حتى لو smsStages في الإعدادات ماذكرتهاش. */
+export const MANDATORY_SMS_STAGES = ["rejected_refunded", "refund_failed"];
+export const smsStagesOf = (cfg = {}) => {
+  const base = Array.isArray(cfg.smsStages) && cfg.smsStages.length ? cfg.smsStages : DEFAULT_SMS_STAGES;
+  return [...new Set([...base, ...MANDATORY_SMS_STAGES])];
+};
+export const statusSmsText = (status, order) => (MESSAGES[status] ? MESSAGES[status](order) : null);
 
 const rl = new Map();
 function rateLimited(ip, max = 60) {
@@ -228,8 +243,7 @@ export function register(app, ctx) {
     }
 
     // SMS (default OFF, stage-filtered — each message costs money).
-    const smsStages = Array.isArray(cfg.smsStages) && cfg.smsStages.length ? cfg.smsStages : DEFAULT_SMS_STAGES;
-    if (cfg.smsEnabled === true && smsStages.includes(status)) {
+    if (cfg.smsEnabled === true && smsStagesOf(cfg).includes(status)) {
       attempts.push(Promise.resolve().then(() => smsSend({ phoneNorm: order.phone_norm, body: text })).then(
         () => emitNotify(orderNo, status, "sms", true),
         (e) => {
@@ -298,12 +312,36 @@ export function register(app, ctx) {
       sms: {
         configured: Boolean(env("TAQNYAT_API_KEY") && env("TAQNYAT_SENDER")),
         enabled: cfg.smsEnabled === true,
-        stages: cfg.smsStages || DEFAULT_SMS_STAGES,
+        stages: smsStagesOf(cfg),
+        mandatoryStages: MANDATORY_SMS_STAGES,
       },
       whatsapp: {
         configured: Boolean(env("WHATSAPP_TOKEN") && env("WHATSAPP_PHONE_ID")),
         enabled: cfg.whatsappEnabled === true,
       },
+    });
+  });
+
+  /* Admin (dry-run، مفيش إرسال): لكل مرحلة — هل هتتبعت SMS؟ ونصها وعدد أجزائها.
+     ?orderNo= بياخد رقم طلب حقيقي، غير كده رقم تجريبي بطول رقم الطلب الحالي. */
+  app.get("/api/notify/sms-preview", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    const cfg = (await getSettingsData()).notifications || {};
+    let order = null;
+    const no = String(c.req.query("orderNo") || "").slice(0, 30);
+    if (no) order = (await pool.query("SELECT order_no, phone_norm, option, total FROM shop_orders WHERE order_no=$1", [no])).rows[0] || null;
+    if (!order) {
+      const last = (await pool.query("SELECT order_no FROM shop_orders ORDER BY created_at DESC LIMIT 1")).rows[0];
+      order = { order_no: last?.order_no || "FC-000000", option: "delivery", total: 96 };
+    }
+    const { smsParts } = await import("./smsrules.js");
+    const stages = smsStagesOf(cfg);
+    return c.json({
+      ok: true, smsEnabled: cfg.smsEnabled === true, sender: env("TAQNYAT_SENDER") || null, stages,
+      preview: Object.keys(MESSAGES).map((st) => {
+        const text = MESSAGES[st](order);
+        return { stage: st, willSms: cfg.smsEnabled === true && stages.includes(st), text, chars: text.length, parts: smsParts(text) };
+      }),
     });
   });
 

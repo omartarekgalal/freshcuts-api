@@ -559,6 +559,31 @@ export function register(app, ctx) {
     });
   });
 
+  /* ── رسايل العروض: رجوع الاشتراك من الشيك أوت (١٧/٩) ──
+     المتجر بيسأل «موقوف؟» لعميل متحقق بالـOTP بس، ولو موقوف بيعرض مربع
+     «تبي توصلك عروض فريش كاتس؟» فاضي. الرجوع بيحصل بس لو العميل علّم عليه. */
+  app.get("/api/account/marketing", async (c) => {
+    const acct = await customerOf(c);
+    if (!acct) return c.json({ ok: false, error: "unauthorized" }, 401);
+    const r = await pool.query("SELECT opted_out_at FROM cms_contacts WHERE phone_norm=$1", [acct.phone_norm]).catch(() => ({ rows: [] }));
+    return c.json({ ok: true, optedOut: Boolean(r.rows[0]?.opted_out_at) });
+  });
+  app.post("/api/account/marketing", async (c) => {
+    const acct = await customerOf(c);
+    if (!acct) return c.json({ ok: false, error: "unauthorized" }, 401);
+    let b = {};
+    try { b = await c.req.json(); } catch {}
+    if (b.subscribe !== true) return c.json({ ok: false, error: "subscribe_must_be_true" }, 400);
+    const r = await pool.query(
+      `UPDATE cms_contacts SET opted_out_at=NULL, optout_source=NULL, optout_reason=NULL, optout_by=NULL
+        WHERE phone_norm=$1 AND opted_out_at IS NOT NULL RETURNING 1`, [acct.phone_norm]);
+    if (r.rowCount) {
+      await pool.query("INSERT INTO cms_optout_log(phone_norm, action, source, ua) VALUES ($1,'resubscribe','checkout_optin',$2)",
+        [acct.phone_norm, String(c.req.header("user-agent") || "").slice(0, 200) || null]).catch(() => {});
+    }
+    return c.json({ ok: true, changed: r.rowCount > 0 });
+  });
+
   app.put("/api/account/me", async (c) => {
     const acct = await customerOf(c);
     if (!acct) return c.json({ ok: false, error: "unauthorized" }, 401);

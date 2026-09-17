@@ -68,3 +68,29 @@ test("audience drift tolerance", () => {
   assert.equal(R.audienceDriftOk(634, 80), true, "shrinking is fine");
   assert.equal(R.audienceDriftOk(20, 29), true);
 });
+
+test("keeta segments: lean from items, allowApps only unlocks keeta segments, 14-day online exclusion", () => {
+  assert.equal(R.itemFamily("كفتة مشوية بالوزن"), "grill");
+  assert.equal(R.itemFamily("وجبة نصف دجاجة على الفحم"), "grill");
+  assert.equal(R.itemFamily("باستا بشاميل"), "box");
+  assert.equal(R.itemFamily("حواوشي كيري بسطرمة"), "box");
+  assert.equal(R.itemFamily("مشروبات غازية"), "other");
+  assert.equal(R.leanOf(100, 50), "grill");
+  assert.equal(R.leanOf(40, 100), "box");
+  assert.equal(R.leanOf(60, 50), "mixed");
+  assert.equal(R.leanOf(0, 0), "mixed");
+  const [kilo, box] = R.KEETA_SEGMENTS;
+  const g = { pn: "500000011", orders: 2, appOrders: 2, online: 0, keetaOrders: 2, keetaLean: "grill", onlineDaysSince: 9999 };
+  const b = { ...g, pn: "500000012", keetaLean: "mixed" };
+  const recentWeb = { ...g, pn: "500000013", online: 1, onlineDaysSince: 5 };
+  const oldWeb = { ...g, pn: "500000014", online: 1, onlineDaysSince: 30 };
+  const notKeeta = { ...g, pn: "500000015", keetaOrders: 0, keetaLean: null };
+  assert.equal(kilo.test(g), true); assert.equal(box.test(g), false);
+  assert.equal(box.test(b), true); assert.equal(kilo.test(b), false);
+  assert.equal(kilo.test(recentWeb), false);
+  assert.equal(kilo.test(oldWeb), true);
+  assert.equal(kilo.test(notKeeta) || box.test(notKeeta), false);
+  assert.equal(R.filterAudience([g]).list.length, 0);
+  assert.equal(R.filterAudience([g], { allowApps: true }).list.length, 1);
+  assert.equal(R.filterAudience([g], { allowApps: true, optedOut: new Set([g.pn]) }).list.length, 0);
+});

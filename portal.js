@@ -779,6 +779,34 @@ export function register(app, ctx, deps = {}) {
     return c.json({ ok: true });
   });
 
+  /* «رجّع الاشتراك (العميل وافق)» — ١٧/٩: اللي أوقف بنفسه مايرجعش غير بموافقته.
+     الموظف لازم يأكد إن العميل وافق شفهياً (consent=true) ويكتب ملاحظة (مين/إمتى).
+     بالمفتاح (صف في القايمة) أو بالرقم (العميل قدّامه ومش في أول ٢٠٠). */
+  app.post("/api/portal/sms-optout/resubscribe", async (c) => {
+    const a = await requirePortal(c); if (a.res) return a.res;
+    const b = await c.req.json().catch(() => ({}));
+    const note = String(b?.note || "").trim().slice(0, 200);
+    if (b?.consent !== true) return c.json({ ok: false, error: "consent_required", message: "لازم تأكد إن العميل وافق" }, 400);
+    if (note.length < 3) return c.json({ ok: false, error: "note_required", message: "اكتب ملاحظة: العميل وافق إزاي وإمتى" }, 400);
+    await ensureOptout();
+    let pn = null;
+    if (b?.key) {
+      const key = String(b.key).slice(0, 20);
+      const rows = (await pool.query("SELECT phone_norm FROM cms_contacts WHERE opted_out_at IS NOT NULL")).rows;
+      pn = rows.find((x) => crypto.createHash("sha1").update("optout:" + x.phone_norm).digest("hex").slice(0, 12) === key)?.phone_norm || null;
+    } else pn = normPn(b?.phone);
+    if (!pn) return c.json({ ok: false, error: "not_found", message: "الرقم مش موجود في قايمة الموقوفين" }, 404);
+    const r = await pool.query(
+      `UPDATE cms_contacts SET opted_out_at=NULL, optout_source=NULL, optout_reason=NULL, optout_by=NULL
+        WHERE phone_norm=$1 AND opted_out_at IS NOT NULL RETURNING 1`, [pn]);
+    if (!r.rowCount) return c.json({ ok: false, error: "not_opted_out", message: "الرقم ده مشترك أصلاً" }, 409);
+    const actor = a.user.name || a.user.id;
+    await pool.query("INSERT INTO cms_optout_log(phone_norm, action, source, reason, actor) VALUES ($1,'resubscribe','staff_verbal',$2,$3)",
+      [pn, note, actor]).catch(() => {});
+    audit(a.user, "sms_resubscribe", null, true, { phone: maskPn(pn), note }, clientIp((n) => c.req.header(n)), { emit: false });
+    return c.json({ ok: true, phone: maskPn(pn) });
+  });
+
   /* ── حالة البوابة (مدير) ── */
   app.get("/api/portal/health", async (c) => {
     const a = await requirePortal(c, "manager"); if (a.res) return a.res;

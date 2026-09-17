@@ -88,12 +88,42 @@ export const WAVE_SEGMENTS = [
     test: (c) => directRelationship(c) && c.online === 0 && c.daysSince <= 90 },
 ];
 
+/* ── عملاء كيتا (قرار عمر ١٧/٩ مساءً: «بالنسبة لارقام عملاء كيتا انا واخد موافقة
+   باستخدامهم») — شرائح بالتفضيل من أصناف طلبات كيتا نفسها:
+     مشاوي غالبة → كيلو ٩٦، بيتزا/باستا/كريب/حواوشي غالبة أو مختلط → بوكس ٩٦.
+   «غالبة» = مشترياتها ≥ ١٫٥ ضعف التانية. باقي قواعد الامتثال زي ما هي (إيقاف،
+   موظفين، فاصل ٢١ يوم، ساعات هدوء، سقف) + مفيش طلب أونلاين آخر ١٤ يوم.
+   allowApps على الشريحة بيفك شرط «العلاقة المباشرة» ليها هي بس. */
+const BOX_WORDS = ["بيتزا", "باستا", "بشاميل", "الفريدو", "كازرول", "كريب", "حواوشي", "ماك اند تشيز", "نجرسكو", "كريمي مشروم", "ورقة سجق"];
+const GRILL_WORDS = ["مشوي", "بالوزن", "وجبة", "كفتة", "طرب", "ريش", "كباب", "شيش", "مشكل", "على الفحم"];
+export function itemFamily(name) {
+  const n = String(name || "");
+  if (BOX_WORDS.some((w) => n.includes(w))) return "box";
+  if (GRILL_WORDS.some((w) => n.includes(w))) return "grill";
+  return "other";
+}
+export function leanOf(grill, box) {
+  const g = Number(grill) || 0, b = Number(box) || 0;
+  if (g > b * 1.5) return "grill";
+  if (b > g * 1.5) return "box";
+  return "mixed";
+}
+const keetaFresh = (c) => (c.keetaOrders || 0) > 0 && !((c.onlineDaysSince ?? 9999) <= 14);
+export const KEETA_SEGMENTS = [
+  { id: "k_keeta_kilo", icon: "🛵", label: "عملاء كيتا — بيميلوا للمشاوي (كيلو ٩٦)", allowApps: true,
+    hint: "طلبوا من كيتا وأغلب مشترياتهم هناك مشاوي. مش طالبين من الموقع آخر ١٤ يوم (موافقة عمر ١٧/٩)",
+    test: (c) => keetaFresh(c) && c.keetaLean === "grill" },
+  { id: "k_keeta_box", icon: "🛵", label: "عملاء كيتا — بيتزا/باستا/كريب/حواوشي أو مختلط (بوكس ٩٦)", allowApps: true,
+    hint: "طلبوا من كيتا وأغلبهم بيتزا/باستا/كريب/حواوشي أو مختلط. مش طالبين من الموقع آخر ١٤ يوم (موافقة عمر ١٧/٩)",
+    test: (c) => keetaFresh(c) && c.keetaLean !== "grill" },
+];
+
 /* فلترة الجمهور: بترجع القايمة + سبب كل استبعاد (بيتسجّل مع الحملة) */
-export function filterAudience(members, { staff = new Set(), optedOut = new Set(), recentlyMessaged = new Set(), recentOnline = new Set() } = {}) {
+export function filterAudience(members, { staff = new Set(), optedOut = new Set(), recentlyMessaged = new Set(), recentOnline = new Set(), allowApps = false } = {}) {
   const excluded = { apps_only: 0, staff: 0, opted_out: 0, gap: 0, recent_online_order: 0 };
   const list = [];
   for (const m of members) {
-    if (!directRelationship(m)) { excluded.apps_only++; continue; }
+    if (!allowApps && !directRelationship(m)) { excluded.apps_only++; continue; }
     if (staff.has(m.pn)) { excluded.staff++; continue; }
     if (optedOut.has(m.pn)) { excluded.opted_out++; continue; }
     if (recentOnline.has(m.pn)) { excluded.recent_online_order++; continue; }
