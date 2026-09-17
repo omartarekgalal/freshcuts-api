@@ -33,6 +33,12 @@ import crypto from "node:crypto";
 import { httpJson } from "./ads.js";
 import { OFFERS, activeOffers, offerById, offerState, riyadhDay } from "./offers.js";
 import { registerSocial } from "./social.js";
+import {
+  MEDIA_TYPES, isVideoUrl, normDish, coreName, offerGuard, copyIssues, retryPlan,
+  publishInstagram as igPublish, publishFacebook as fbPublish, failAlertText, healthAlertText,
+} from "./socialpub.js";
+import { sendSms } from "./accounts.js";
+import { fitOneSms, staffPhones } from "./staffalerts.js";
 
 /* أي فكرة محتوى بتبيع عرض له تاريخ انتهاء. الربط بس — تعريف العرض نفسه
    (السعر، الصالة، التاريخ) عند offers.js ومش بيتكرر هنا.
@@ -73,6 +79,14 @@ const CHANNELS = ["facebook", "instagram", "tiktok", "snapchat"];
 const STATUSES = ["draft", "scheduled", "published", "failed", "cancelled"];
 
 const MAX_UPLOAD_BYTES = 8 * 1024 * 1024;
+/* الفيديو (ريلز) أكبر بطبيعته — ميتا بتقبل لحد ٣٠٠ ميجا للريل، واحنا بنحط ١٠٠. */
+const MAX_VIDEO_BYTES = 100 * 1024 * 1024;
+
+/* الطابور (١٧/٩): رقم التنبيه لو بوست فشل نهائياً. عمر طلب 0544775082. */
+const ALERT_PHONES = () => staffPhones(process.env.CONTENT_ALERT_PHONES || "0544775082");
+/* بوست فات ميعاده بأكتر من كده (السيرفر كان واقع مثلاً) مابيتنشرش متأخر —
+   بوست «عشا الليلة» الساعة ٩ الصبح أسوأ من إنه مايتنشرش. بيفشل ويتنبّه. */
+const LATE_WINDOW_MIN = () => Math.max(30, Number(process.env.CONTENT_LATE_WINDOW_MIN || 180));
 
 /* كل قد إيه العامل بيلف. ٥ دقايق = أسوأ تأخير عن الميعاد ٥ دقايق، وده
    مقبول لبوست مطعم ورخيص في عدد النداءات على ميتا. المزامنة أبطأ (ساعة)
@@ -233,6 +247,11 @@ function imageInfo(buf) {
   if (buf.slice(0, 4).toString("latin1") === "RIFF" && buf.slice(8, 12).toString("latin1") === "WEBP") {
     return { kind: "webp", mime: "image/webp" };
   }
+  /* فيديو الريلز/الستوري (١٧/٩): MP4/MOV بيبدأ بصندوق ftyp عند البايت ٤. */
+  if (buf.slice(4, 8).toString("latin1") === "ftyp") {
+    const brand = buf.slice(8, 12).toString("latin1");
+    return brand.startsWith("qt") ? { kind: "mov", mime: "video/quicktime" } : { kind: "mp4", mime: "video/mp4" };
+  }
   return { kind: "unknown" };
 }
 
@@ -354,6 +373,29 @@ export function register(app, ctx) {
       ALTER TABLE content_media ADD COLUMN IF NOT EXISTS dish_claim TEXT NOT NULL DEFAULT '';
       ALTER TABLE content_media ADD COLUMN IF NOT EXISTS provenance JSONB NOT NULL DEFAULT '{}';
       ALTER TABLE content_media ADD COLUMN IF NOT EXISTS declared_at TIMESTAMPTZ;
+
+      /* ══ الطابور (١٧ سبتمبر ٢٠٢٦) ══════════════════════════════════════
+         نفس الجدول بقى طابور لكل الأنواع: صورة/كاروسيل/ريل/ستوري/فيديو،
+         على انستجرام وفيسبوك، بإعادة محاولة وتنبيه. origin='queue' = صف
+         الناشر بتاعنا بينشره في ميعاده (فيسبوك كمان، مش جدولة ميتا).
+         queue_key = مفتاح التحميل من التقويم (تحميل تاني مايكررش). */
+      ALTER TABLE content_posts ADD COLUMN IF NOT EXISTS media_type TEXT NOT NULL DEFAULT 'IMAGE';
+      ALTER TABLE content_posts ADD COLUMN IF NOT EXISTS media_urls JSONB NOT NULL DEFAULT '[]';
+      ALTER TABLE content_posts ADD COLUMN IF NOT EXISTS options JSONB NOT NULL DEFAULT '{}';
+      ALTER TABLE content_posts ADD COLUMN IF NOT EXISTS attempts INT NOT NULL DEFAULT 0;
+      ALTER TABLE content_posts ADD COLUMN IF NOT EXISTS max_attempts INT NOT NULL DEFAULT 3;
+      ALTER TABLE content_posts ADD COLUMN IF NOT EXISTS next_attempt_at TIMESTAMPTZ;
+      ALTER TABLE content_posts ADD COLUMN IF NOT EXISTS pub_state JSONB NOT NULL DEFAULT '{}';
+      ALTER TABLE content_posts ADD COLUMN IF NOT EXISTS alerted_at TIMESTAMPTZ;
+      ALTER TABLE content_posts ADD COLUMN IF NOT EXISTS queue_key TEXT;
+      CREATE UNIQUE INDEX IF NOT EXISTS content_posts_qkey_idx ON content_posts(queue_key) WHERE queue_key IS NOT NULL;
+
+      CREATE TABLE IF NOT EXISTS content_health_runs (
+        day TEXT PRIMARY KEY,
+        summary JSONB NOT NULL DEFAULT '{}',
+        alerted BOOL NOT NULL DEFAULT false,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
     `);
     for (const i of SEED_IDEAS) {
       await pool.query(
@@ -404,6 +446,12 @@ export function register(app, ctx) {
     errorText: r.error_text || "",
     notes: r.notes || "",
     origin: r.origin || "local",
+    mediaType: r.media_type || "IMAGE",
+    mediaUrls: Array.isArray(r.media_urls) ? r.media_urls : [],
+    options: r.options || {},
+    attempts: r.attempts || 0,
+    nextAttemptAt: r.next_attempt_at || null,
+    queueKey: r.queue_key || "",
     createdAt: r.created_at,
     updatedAt: r.updated_at,
   });
@@ -474,13 +522,19 @@ export function register(app, ctx) {
     if (status === "scheduled" && !b.scheduledAt) {
       return c.json({ ok: false, error: "scheduledAt required", message: "لازم تحدّد ميعاد النشر" }, 400);
     }
+    // الطابور (١٧/٩): النوع + روابط متعددة + خيارات، وqueue=true = الناشر بتاعنا ينشره (فيسبوك كمان)
+    const mediaType = MEDIA_TYPES.includes(String(b.mediaType || "").toUpperCase()) ? String(b.mediaType).toUpperCase() : "IMAGE";
+    const mediaUrls = Array.isArray(b.mediaUrls) ? b.mediaUrls.map(String).filter(Boolean).slice(0, 10) : [];
     const r = await pool.query(
       `INSERT INTO content_posts
-         (id, channel, status, scheduled_at, caption, hashtags, media_url, media_local_path, asset_id, notes, origin)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'local') RETURNING *`,
+         (id, channel, status, scheduled_at, caption, hashtags, media_url, media_local_path, asset_id, notes, origin,
+          media_type, media_urls, options, queue_key)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) RETURNING *`,
       [newId("cp"), channel, status, b.scheduledAt || null,
-       String(b.caption || ""), String(b.hashtags || ""), String(b.mediaUrl || ""),
-       String(b.mediaLocalPath || ""), b.assetId ? String(b.assetId) : null, String(b.notes || "")]
+       String(b.caption || ""), String(b.hashtags || ""), String(b.mediaUrl || mediaUrls[0] || ""),
+       String(b.mediaLocalPath || ""), b.assetId ? String(b.assetId) : null, String(b.notes || ""),
+       b.queue === true ? "queue" : "local", mediaType, JSON.stringify(mediaUrls),
+       JSON.stringify(b.options && typeof b.options === "object" ? b.options : {}), b.queueKey ? String(b.queueKey) : null]
     );
     return c.json({ ok: true, post: postRow(r.rows[0]) });
   });
@@ -503,6 +557,9 @@ export function register(app, ctx) {
       media_local_path: b.mediaLocalPath !== undefined ? String(b.mediaLocalPath) : cur.media_local_path,
       asset_id: b.assetId !== undefined ? (b.assetId || null) : cur.asset_id,
       notes: b.notes !== undefined ? String(b.notes) : cur.notes,
+      media_type: b.mediaType !== undefined && MEDIA_TYPES.includes(String(b.mediaType).toUpperCase()) ? String(b.mediaType).toUpperCase() : cur.media_type,
+      media_urls: Array.isArray(b.mediaUrls) ? b.mediaUrls.map(String).filter(Boolean).slice(0, 10) : cur.media_urls,
+      options: b.options && typeof b.options === "object" ? b.options : cur.options,
     };
 
     // هل فيه حاجة تخصّ فيسبوك اتغيّرت فعلاً؟
@@ -519,18 +576,24 @@ export function register(app, ctx) {
         next.error_text = `فيسبوك رفض التعديل: ${platform.error}`;
       }
     }
-    if (cur.channel === "instagram" && cur.status === "failed" && (capChanged || timeChanged || b.status)) {
+    if ((cur.channel === "instagram" || cur.origin === "queue") && cur.status === "failed" && (capChanged || timeChanged || b.status)) {
       next.error_text = ""; // إعادة الجدولة بتمسح سبب الفشل القديم
     }
 
     const r = await pool.query(
       `UPDATE content_posts SET status=$2, scheduled_at=$3, caption=$4, hashtags=$5,
               media_url=$6, media_local_path=$7, asset_id=$8, notes=$9,
-              error_text=$10, claimed_at=NULL, updated_at=NOW()
+              error_text=$10, claimed_at=NULL, media_type=$11, media_urls=$12, options=$13,
+              attempts = CASE WHEN $14::bool THEN 0 ELSE attempts END,
+              next_attempt_at = CASE WHEN $14::bool THEN NULL ELSE next_attempt_at END,
+              updated_at=NOW()
         WHERE id=$1 RETURNING *`,
       [cur.id, next.status, next.scheduled_at, next.caption, next.hashtags,
        next.media_url, next.media_local_path, next.asset_id, next.notes,
-       next.error_text !== undefined ? next.error_text : cur.error_text]
+       next.error_text !== undefined ? next.error_text : cur.error_text,
+       next.media_type || "IMAGE", JSON.stringify(next.media_urls || []), JSON.stringify(next.options || {}),
+       // إعادة جدولة بوست فاشل = عداد محاولات جديد
+       cur.status === "failed" && next.status === "scheduled"]
     );
     return c.json({ ok: true, post: postRow(r.rows[0]), platform });
   });
@@ -847,11 +910,12 @@ export function register(app, ctx) {
     }
 
     if (!buf || !buf.length) return c.json({ ok: false, error: "empty", message: "الملف فاضي" }, 400);
-    if (buf.length > MAX_UPLOAD_BYTES) {
-      return c.json({ ok: false, error: "too large", message: `الصورة ${(buf.length / 1048576).toFixed(1)} ميجا — الحد ٨ ميجا` }, 413);
-    }
     const info = imageInfo(buf);
-    if (info.kind === "unknown") return c.json({ ok: false, error: "not an image", message: "الملف ده مش صورة معروفة (JPEG/PNG/GIF/WEBP)" }, 400);
+    const isVid = info.kind === "mp4" || info.kind === "mov";
+    if (buf.length > (isVid ? MAX_VIDEO_BYTES : MAX_UPLOAD_BYTES)) {
+      return c.json({ ok: false, error: "too large", message: `الملف ${(buf.length / 1048576).toFixed(1)} ميجا — الحد ${isVid ? 100 : 8} ميجا` }, 413);
+    }
+    if (info.kind === "unknown") return c.json({ ok: false, error: "not an image", message: "الملف ده مش صورة أو فيديو معروف (JPEG/PNG/GIF/WEBP/MP4)" }, 400);
     mime = info.mime || mime || "application/octet-stream";
     const ext = info.kind === "jpeg" ? "jpg" : info.kind;
     const id = newId("md");
@@ -877,7 +941,7 @@ export function register(app, ctx) {
      توكن. المعرّف عشوائي، والرد مفيهوش أي بيانات غير الصورة. */
   app.get("/api/content/media/:id", async (c) => {
     const raw = c.req.param("id");
-    const id = raw.replace(/\.(jpg|jpeg|png|gif|webp)$/i, "");
+    const id = raw.replace(/\.(jpg|jpeg|png|gif|webp|mp4|mov)$/i, "");
     const r = await pool.query("SELECT mime, bytes FROM content_media WHERE id=$1", [id]);
     if (!r.rowCount) return c.json({ error: "not_found" }, 404);
     return c.body(new Uint8Array(r.rows[0].bytes), 200, {
@@ -950,21 +1014,8 @@ export function register(app, ctx) {
 
   const GUARD_MODE = () => (process.env.CONTENT_DISH_GUARD || "warn").toLowerCase();
 
-  const normDish = (s) => String(s || "")
-    .replace(/[ً-ْـ]/g, "")
-    .replace(/[أإآ]/g, "ا").replace(/ة/g, "ه").replace(/[ىئ]/g, "ي")
-    .replace(/[٠-٩]/g, (d) => String(d.charCodeAt(0) - 0x0660))
-    .replace(/[^\p{L}\p{N}\s]/gu, " ")
-    .replace(/\s+/g, " ").trim().toLowerCase();
-
-  /* اسم الصنف «المختصر»: عناوين الكاتالوج بتيجي بالسعر والشروط جواها
-     («صينية اللمة 100 ريال — داخل الصالة فقط») وده عمره ما هيظهر بالحرف في
-     كابشن. بناخد الجزء اللي قبل أول رقم أو فاصل. */
-  const coreName = (title) => String(title || "")
-    .split(/[—·|]/)[0]
-    .replace(/[\d٠-٩].*$/u, "")
-    .replace(/\s+/g, " ")
-    .trim();
+  /* normDish / coreName اتنقلوا لـsocialpub.js (١٧/٩) عشان حارس التاريخ
+     يتختبر من غير داتابيز. coreName = اسم الصنف «المختصر» قبل أول رقم أو فاصل. */
 
   let vocabCache = { at: 0, list: [] };
   async function dishVocab() {
@@ -1167,8 +1218,6 @@ export function register(app, ctx) {
   /* الاسم اللي المفروض نلاقيه في الكابشن. بناخد الشكلين — عنوان الكتالوج
      وعنوان العرض — عشان كابشن كتب «بيتزا + باستا + كريب» أو كتب العنوان
      الكامل الاتنين يتمسكوا. */
-  const offerNeedles = (o) => [...new Set([o.title, o.catalogTitle].filter(Boolean)
-    .map((t) => normDish(coreName(t))).filter((t) => t.length >= 6))];
 
   /* ميعاد البوست الفعلي: المجدول ميعاده، والمنشور وقت نشره. المسودة اللي
      مالهاش ميعاد لسه ماتقررش لها يوم — فمش بنحكم عليها. */
@@ -1178,47 +1227,17 @@ export function register(app, ctx) {
      بوست ١٢ بليل ٣١ أغسطس ما يتحسبش «بعد الانتهاء» وهو جوّه آخر ليلة. */
   const postDay = (when) => riyadhDay(new Date(when));
 
+  /* الحكم نفسه بقى في socialpub.offerGuard (١٧/٩): بيمنع بس بوست بعد نهاية
+     عرض بيعلنه، أو «N ريال» مش سعر عرض شغّال يومها. الكلام اللي جزء من وصف
+     عرض شغّال يومها (بيتزا/باستا/كريب في بوكس ٩٦) مابقاش بيتمنع. الوسوم
+     الصريحة (options.offers) بتتحسب زي ذكر الاسم — مهمة للستوري (مالهاش كابشن). */
   function offerVerdict(row) {
     const when = postWhen(row);
-    const hay = normDish(fullCaption(row));
-    const named = OFFERS.filter((o) => offerNeedles(o).some((n) => hay.includes(n)));
-    if (!named.length) return { verdict: "no-offer", block: false, offers: [] };
-    if (!when) {
-      return {
-        verdict: "undated", block: false,
-        offers: named.map((o) => o.id),
-        reason: `البوست بيسمّي ${named.map((o) => `«${o.title}»`).join(" و")} ومالوش ميعاد لسه —`
-          + ` لازم يتجدول قبل ${named.map((o) => o.until).sort()[0]}.`,
-      };
-    }
-    const day = postDay(when);
-    // عرض موقوف من لوحة العروض = زي المنتهي: البوست هيعلن حاجة الكاشير مش هيقبلها
-    const isLate = (o) => o.enabled === false || (o.until && day > o.until);
-    /* عرض موقوف اسمه جزء من وصف عرض شغّال مايتحسبش. «بيتزا + باستا + كريب» كان
-       اسم عرض الـ٧٠ الموقوف، وهو نفسه مكونات بوكس ٩٦ — فبوست إطلاق البوكس على
-       انستجرام اتمنع يوم 14 سبتمبر بالغلط. الموقوف بيمنع بس لو فيه اسم منه مش
-       متغطّي بعرض شغّال مذكور في نفس البوست. */
-    const liveText = named.filter((o) => !isLate(o))
-      .map((o) => normDish(`${o.title || ""} ${o.catalogTitle || ""} ${o.desc || ""}`));
-    const late = named.filter(isLate).filter((o) => offerNeedles(o)
-      .filter((n) => hay.includes(n))
-      .some((n) => !liveText.some((t) => t.includes(n))));
-    if (!late.length) {
-      return { verdict: "pass", block: false, offers: named.map((o) => o.id), day };
-    }
-    return {
-      verdict: "expired",
-      // انستجرام بنقدر نمنعه فعلاً؛ فيسبوك بنحذّر بس (البوست محجوز عندهم)
-      block: row.channel === "instagram",
-      offers: late.map((o) => o.id),
-      day,
-      reason: late.map((o) => o.enabled === false && !(o.until && day > o.until)
-        ? `البوست ميعاده ${day} وبيعلن «${o.title}» اللي موقوف من لوحة العروض.`
-        : `البوست ميعاده ${day} وبيعلن «${o.title}» اللي بينتهي ${o.until}`
-        + ` — يعني هيعلن سعر ${o.price} ر.س بعد ${Math.round(
-          (Date.parse(`${day}T00:00:00Z`) - Date.parse(`${o.until}T00:00:00Z`)) / 86400000)} يوم من انتهائه.`
-      ).join(" · "),
-    };
+    const tags = Array.isArray(row.options?.offers) ? row.options.offers : [];
+    return offerGuard({
+      text: fullCaption(row), day: when ? postDay(when) : null,
+      channel: row.channel, origin: row.origin, tags,
+    }, OFFERS);
   }
 
   /* الكشف: كل المجدول والمسودات، ومعاهم المنشور بميعاد في المستقبل (بوست
@@ -1299,88 +1318,97 @@ export function register(app, ctx) {
     return c.json({ ok: true, expired: acted.length, cancelled: doCancel, items: acted });
   });
 
-  /* ══ ٦) ناشر انستجرام ═════════════════════════════════════════════════
-     انستجرام API ملوش جدولة — عشان كده البوستات اتنشرت بالإيد. الجدولة
-     بنعملها إحنا: العامل بياخد صف واحد ميعاده جه، يحجزه (claimed_at) عشان
-     ما يتنشرش مرتين، ينشره على خطوتين، ويكتب النتيجة في نفس الصف.
+  /* ══ ٦) الناشر — طابور لكل الأنواع (١٧ سبتمبر ٢٠٢٦) ═══════════════════
+     كان ناشر انستجرام صورة واحدة بس. دلوقتي:
+       • انستجرام: صورة · كاروسيل · ريل · ستوري (صورة/فيديو)
+       • فيسبوك (صفوف origin='queue' بس): صورة · ألبوم · ريل · فيديو · ستوري
+     التفاصيل مع ميتا في socialpub.js. هنا: الحراس، الحجز، الإعادة، التنبيه.
 
-     مسار ميتا: POST /{ig}/media {image_url, caption} → creation_id
-                ثم انتظار حتى status_code = FINISHED
-                ثم POST /{ig}/media_publish {creation_id} → media id */
-  async function publishInstagram(row) {
+     بوستات فيسبوك القديمة (local/imported) متجدولة عند ميتا نفسها —
+     الناشر ده مابيلمسهاش أبداً (external_id مش فاضي أو origin مش queue). */
+  const rowUrls = (row) => {
+    const list = Array.isArray(row.media_urls) && row.media_urls.length ? row.media_urls : [row.media_url];
+    return list.map((u) => String(u || "").trim()).filter(Boolean);
+  };
+  const rowType = (row) => {
+    const t = String(row.media_type || "IMAGE").toUpperCase();
+    return MEDIA_TYPES.includes(t) ? t : "IMAGE";
+  };
+
+  async function publishRow(row) {
     const tok = await pageToken();
-    if (!tok) return { ok: false, error: pageTokenCache.err || "مفيش توكن صفحة" };
+    if (!tok) return { ok: false, retry: true, error: pageTokenCache.err || "مفيش توكن صفحة" };
+    const type = rowType(row);
+    const urls = rowUrls(row);
+    if (!urls.length) return { ok: false, error: "البوست من غير ميديا" };
+    if (row.channel === "instagram" && type === "IMAGE") {
+      const problems = igImageProblems({ url: urls[0] });
+      if (problems.length) return { ok: false, error: problems.join(" · ") };
+    }
+    if (row.channel === "facebook" && row.origin !== "queue") {
+      return { ok: false, error: "بوست فيسبوك مش من الطابور — متجدول عند ميتا نفسها" };
+    }
 
-    const url = String(row.media_url || "").trim();
-    if (!url) return { ok: false, error: "البوست من غير صورة — انستجرام لازم صورة" };
-    const problems = igImageProblems({ url });
-    if (problems.length) return { ok: false, error: problems.join(" · ") };
-
-    /* حارس الصنف — آخر نقطة قبل ما الصورة تخرج للناس. مش retry: ده مش عطل
-       مؤقت، ده تصميم غلط لازم إيد بني آدم تصلحه. */
+    /* الحراس — مش retry: غلط في المحتوى مش بيتصلّح لو استنينا. */
+    const bad = copyIssues(fullCaption(row));
+    if (bad.length) return { ok: false, error: `حارس الكلام منع النشر: ${bad.join("، ")}` };
     const dv = await dishVerdict(row);
     if (dv.block) return { ok: false, error: `حارس الصنف منع النشر: ${dv.reason}` };
-
-    /* وحارس التاريخ. نفس المنطق: مش retry — عرض خلص مش بيرجع يشتغل لو
-       استنينا ٥ دقايق. البوست بيتعلّم failed عشان يبان في الكشف بدل ما
-       يفضل مجدول ويحاول كل دورة. */
     const ov = offerVerdict(row);
     if (ov.block) return { ok: false, error: `حارس التاريخ منع النشر: ${ov.reason}` };
 
-    const q = await igQuota();
-    if (q.ok && q.total && q.used >= q.total) {
-      return { ok: false, retry: true, error: `حصة النشر خلصت (${q.used}/${q.total} خلال ${q.windowHours} ساعة) — هنعيد المحاولة` };
-    }
-
-    const create = await httpJson(`${GRAPH()}/${IG_USER_ID()}/media`, {
-      method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
-      body: new URLSearchParams({ image_url: url, caption: fullCaption(row), access_token: tok }).toString(),
-    });
-    const creationId = create.json?.id;
-    if (!creationId) return { ok: false, error: graphErr(create) };
-
-    // الحاوية بتاخد ثواني لحد ما ميتا تحمّل الصورة وتفحصها
-    let state = "";
-    for (let i = 0; i < 10; i++) {
-      const st = await httpJson(
-        `${GRAPH()}/${creationId}?fields=status_code,status&access_token=${encodeURIComponent(tok)}`);
-      state = st.json?.status_code || "";
-      if (state === "FINISHED") break;
-      if (state === "ERROR" || state === "EXPIRED") {
-        return { ok: false, error: `ميتا رفضت الصورة: ${st.json?.status || state}` };
+    if (row.channel === "instagram") {
+      const q = await igQuota();
+      if (q.ok && q.total && q.used >= q.total) {
+        return { ok: false, retry: true, error: `حصة النشر خلصت (${q.used}/${q.total} خلال ${q.windowHours} ساعة)` };
       }
-      await new Promise((r) => setTimeout(r, 3000));
     }
-    if (state !== "FINISHED") return { ok: false, retry: true, error: `الصورة لسه بتتجهّز عند ميتا (${state || "غير معروف"}) — هنعيد المحاولة` };
+    const caption = type === "STORIES" ? "" : fullCaption(row);
+    try {
+      const res = row.channel === "instagram"
+        ? await igPublish({ graph: GRAPH(), igUserId: IG_USER_ID(), token: tok, type, urls, caption,
+                            options: row.options || {}, state: row.pub_state || {} })
+        : await fbPublish({ graph: GRAPH(), pageId: FB_PAGE_ID(), token: tok, type, urls, caption,
+                            options: row.options || {} });
+      return { ok: true, ...res };
+    } catch (e) {
+      return { ok: false, retry: !!e.retry, uncertain: !!e.uncertain, state: e.state || null, error: String(e.message || e) };
+    }
+  }
+  /* الاسم القديم — /publish وindex.js بينادوه */
+  const publishInstagram = publishRow;
 
-    const pubRes = await httpJson(`${GRAPH()}/${IG_USER_ID()}/media_publish`, {
-      method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
-      body: new URLSearchParams({ creation_id: String(creationId), access_token: tok }).toString(),
-    });
-    const mediaId = pubRes.json?.id;
-    if (!mediaId) return { ok: false, error: graphErr(pubRes) };
+  async function alertStaff(text) {
+    const phones = ALERT_PHONES();
+    const body = fitOneSms(text);
+    const sent = [];
+    for (const phoneNorm of phones) {
+      try { await sendSms({ phoneNorm, body }); sent.push(phoneNorm); }
+      catch (e) { console.error("[content] alert SMS failed:", e.message); }
+    }
+    return { sent: sent.length, body };
+  }
 
-    const perma = await httpJson(
-      `${GRAPH()}/${mediaId}?fields=permalink,timestamp&access_token=${encodeURIComponent(tok)}`);
-    return {
-      ok: true, externalId: String(mediaId),
-      permalink: perma.json?.permalink || "",
-      publishedAt: perma.json?.timestamp || new Date().toISOString(),
-    };
+  async function markFinalFailure(row, error, attempts) {
+    await pool.query(
+      `UPDATE content_posts SET status='failed', error_text=$2, attempts=$3, claimed_at=NULL,
+              next_attempt_at=NULL, updated_at=NOW() WHERE id=$1`,
+      [row.id, error, attempts]);
+    const a = await alertStaff(failAlertText(row, error)).catch(() => ({ sent: 0 }));
+    if (a.sent) await pool.query("UPDATE content_posts SET alerted_at=NOW() WHERE id=$1", [row.id]);
   }
 
   /* الحجز: صف واحد في المرة، بـ FOR UPDATE SKIP LOCKED، وحجز أقدم من ١٥
-     دقيقة بيتعتبر ميت (لو العملية ماتت في النص). ده اللي بيمنع النشر
-     مرتين حتى لو العامل اتنده مرتين في نفس اللحظة. */
-  async function claimDueInstagram() {
+     دقيقة بيتعتبر ميت. next_attempt_at = مهلة الإعادة. */
+  async function claimDue() {
     const r = await pool.query(
       `UPDATE content_posts SET claimed_at = NOW(), updated_at = NOW()
         WHERE id = (
           SELECT id FROM content_posts
-           WHERE channel='instagram' AND status='scheduled'
-             AND scheduled_at IS NOT NULL AND scheduled_at <= NOW()
+           WHERE status='scheduled' AND scheduled_at IS NOT NULL AND scheduled_at <= NOW()
+             AND (channel='instagram'
+                  OR (channel='facebook' AND origin='queue' AND external_id IS NULL))
+             AND (next_attempt_at IS NULL OR next_attempt_at <= NOW())
              AND (claimed_at IS NULL OR claimed_at < NOW() - INTERVAL '15 minutes')
            ORDER BY scheduled_at
            FOR UPDATE SKIP LOCKED
@@ -1397,29 +1425,38 @@ export function register(app, ctx) {
     workerBusy = true;
     const out = { published: 0, failed: 0, retried: 0, items: [] };
     try {
-      // ٥ بوستات كحد أقصى في الدورة — الباقي في الدورة اللي بعدها
       for (let i = 0; i < 5; i++) {
-        const row = await claimDueInstagram();
+        const row = await claimDue();
         if (!row) break;
-        const res = await publishInstagram(row);
+        const lateMin = (Date.now() - new Date(row.scheduled_at).getTime()) / 60000;
+        if (!row.attempts && lateMin > LATE_WINDOW_MIN()) {
+          const msg = `فات ميعاده بـ${Math.round(lateMin)} دقيقة (الناشر كان واقف؟) — مااتنشرش متأخر`;
+          await markFinalFailure(row, msg, 0);
+          out.failed++; out.items.push({ id: row.id, ok: false, error: msg });
+          continue;
+        }
+        const res = await publishRow(row);
         if (res.ok) {
           await pool.query(
             `UPDATE content_posts SET status='published', published_at=$2, external_id=$3,
-                    permalink=$4, error_text='', claimed_at=NULL, updated_at=NOW() WHERE id=$1`,
+                    permalink=$4, error_text='', claimed_at=NULL, next_attempt_at=NULL,
+                    attempts=attempts+1, pub_state='{}', updated_at=NOW() WHERE id=$1`,
             [row.id, res.publishedAt, res.externalId, res.permalink]);
           out.published++;
           out.items.push({ id: row.id, ok: true, permalink: res.permalink });
-        } else if (res.retry) {
-          // مش فشل نهائي — بنسيبه مجدول ونشيل الحجز عشان الدورة الجاية تاخده
+          continue;
+        }
+        const plan = retryPlan({ attempts: row.attempts, maxAttempts: row.max_attempts || 3,
+                                 retryable: res.retry, uncertain: res.uncertain });
+        if (!plan.final) {
           await pool.query(
-            `UPDATE content_posts SET error_text=$2, claimed_at=NULL, updated_at=NOW() WHERE id=$1`,
-            [row.id, res.error]);
+            `UPDATE content_posts SET error_text=$2, attempts=$3, next_attempt_at=$4, claimed_at=NULL,
+                    pub_state = COALESCE($5::jsonb, pub_state), updated_at=NOW() WHERE id=$1`,
+            [row.id, res.error, plan.attempts, plan.nextAttemptAt, res.state ? JSON.stringify(res.state) : null]);
           out.retried++;
           out.items.push({ id: row.id, ok: false, retry: true, error: res.error });
         } else {
-          await pool.query(
-            `UPDATE content_posts SET status='failed', error_text=$2, claimed_at=NULL, updated_at=NOW() WHERE id=$1`,
-            [row.id, res.error]);
+          await markFinalFailure(row, res.uncertain ? `غير مؤكد — راجع المنصة قبل أي إعادة: ${res.error}` : res.error, plan.attempts);
           out.failed++;
           out.items.push({ id: row.id, ok: false, error: res.error });
         }
@@ -1430,8 +1467,74 @@ export function register(app, ctx) {
       workerBusy = false;
       lastWorker = { at: new Date().toISOString(), published: out.published, failed: out.failed, note: out.error || trigger };
     }
+    // فحص الصحة اليومي (مرة في اليوم بعد ١٠ الصبح بتوقيت الرياض)
+    if (trigger !== "manual") dailyHealth().catch((e) => console.error("[content] health:", e.message));
     return { ok: true, ...out };
   }
+
+  /* ══ ٦.٥) فحص الصحة اليومي ══════════════════════════════════════════════
+     كل يوم ١٠:٠٠ الرياض: فاشل آخر ٢٤ ساعة، متأخر عن ميعاده، توكن ميتا،
+     وبوستات فيسبوك متجدولة عند ميتا **مش من الطابور** وقرّب ميعادها (زي
+     الـ٦ القديمة اللي اتأجلت لـ١٦/١٠). لو فيه أي حاجة → SMS واحدة لعمر. */
+  async function healthCheck({ send = true } = {}) {
+    const failed = (await pool.query(
+      `SELECT id, channel, media_type, scheduled_at, error_text FROM content_posts
+        WHERE status='failed' AND updated_at > NOW() - INTERVAL '24 hours'
+          AND (origin='queue' OR channel='instagram')`)).rows;
+    const overdue = (await pool.query(
+      `SELECT id, channel, media_type, scheduled_at, attempts FROM content_posts
+        WHERE status='scheduled' AND scheduled_at < NOW() - INTERVAL '30 minutes'
+          AND (next_attempt_at IS NULL OR next_attempt_at < NOW() - INTERVAL '30 minutes')
+          AND (channel='instagram' OR (channel='facebook' AND origin='queue'))`)).rows;
+    const next24 = (await pool.query(
+      `SELECT channel, media_type, count(*)::int AS n FROM content_posts
+        WHERE status='scheduled' AND scheduled_at BETWEEN NOW() AND NOW() + INTERVAL '24 hours'
+        GROUP BY channel, media_type`)).rows;
+    const tok = await pageToken();
+    let foreign = [], foreignErr = "";
+    if (tok) {
+      const r = await httpJson(`${GRAPH()}/${FB_PAGE_ID()}/scheduled_posts?fields=id,scheduled_publish_time&limit=100&access_token=${encodeURIComponent(tok)}`);
+      if (r.ok) {
+        foreign = (r.json?.data || []).map((p) => ({ id: p.id, at: new Date(p.scheduled_publish_time * 1000).toISOString() }));
+      } else foreignErr = graphErr(r);
+    }
+    const soon = foreign.filter((p) => Date.parse(p.at) - Date.now() < 72 * 3600_000);
+    const summary = {
+      at: new Date().toISOString(), tokenOk: !!tok, failed, overdue, next24,
+      metaScheduled: foreign, metaScheduledSoon: soon.length, metaError: foreignErr,
+      worker: lastWorker,
+    };
+    const issues = failed.length || overdue.length || soon.length || !tok;
+    let alert = null;
+    if (send && issues) {
+      alert = await alertStaff(healthAlertText({ failed: failed.length, overdue: overdue.length, foreign: soon.length, tokenBad: !tok }));
+    }
+    return { ok: true, issues: !!issues, alert, summary };
+  }
+
+  async function dailyHealth() {
+    const hour = Number(new Date().toLocaleString("en-GB", { timeZone: "Asia/Riyadh", hour: "2-digit", hour12: false }));
+    if (hour < 10) return;
+    const day = riyadhDay();
+    const claim = await pool.query(
+      "INSERT INTO content_health_runs (day) VALUES ($1) ON CONFLICT (day) DO NOTHING RETURNING day", [day]);
+    if (!claim.rowCount) return;               // اتعمل النهارده خلاص
+    const res = await healthCheck({ send: true });
+    await pool.query("UPDATE content_health_runs SET summary=$2, alerted=$3 WHERE day=$1",
+      [day, JSON.stringify(res.summary), !!res.alert?.sent]);
+  }
+
+  /* الطابور للقراءة + الفحص يدوي */
+  app.get("/api/content/queue", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    const r = await pool.query(
+      `SELECT * FROM content_posts WHERE origin='queue' ORDER BY scheduled_at NULLS LAST, channel LIMIT 500`);
+    return c.json({ ok: true, posts: r.rows.map(postRow), worker: lastWorker });
+  });
+  app.get("/api/content/queue/health", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    return c.json(await healthCheck({ send: c.req.query("send") === "1" }));
+  });
 
   app.post("/api/content/run-publisher", async (c) => {
     const err = await requireAdmin(c); if (err) return err;
@@ -1461,8 +1564,8 @@ export function register(app, ctx) {
     const body = await c.req.json().catch(() => ({}));
     const row = (await pool.query("SELECT * FROM content_posts WHERE id=$1", [c.req.param("id")])).rows[0];
     if (!row) return c.json({ ok: false, error: "not_found" }, 404);
-    if (row.channel !== "instagram") {
-      return c.json({ ok: false, error: "instagram only", message: "النشر الفوري من هنا لانستجرام بس — فيسبوك بيتجدول من عنده وتيك توك بالإيد" }, 400);
+    if (row.channel !== "instagram" && !(row.channel === "facebook" && row.origin === "queue")) {
+      return c.json({ ok: false, error: "instagram only", message: "النشر الفوري من هنا لانستجرام أو صفوف طابور فيسبوك بس — بوستات فيسبوك القديمة متجدولة عند ميتا وتيك توك بالإيد" }, 400);
     }
     if (row.status === "published") return c.json({ ok: false, error: "already", message: "البوست ده اتنشر خلاص" }, 409);
 
@@ -1557,5 +1660,5 @@ export function register(app, ctx) {
   registerSocial(app, ctx);
 
   console.log("[content] routes ready");
-  return { runPublisher, syncPlatforms, publishInstagram };
+  return { runPublisher, syncPlatforms, publishInstagram, publishRow, healthCheck };
 }
