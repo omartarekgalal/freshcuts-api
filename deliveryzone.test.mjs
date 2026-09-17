@@ -3,7 +3,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
-  buildDriveZone, clampSpikes, circlePolygon, destPoint, fallbackRadiusKm, rayCapKm, makeZoneService, zoneKey,
+  buildDriveZone, clampSpikes, spikeWindow, snapped, circlePolygon, destPoint, fallbackRadiusKm, rayCapKm, makeZoneService, zoneKey,
 } from "./deliveryzone.js";
 import { makeDriveDistance, googleDriveMatrix } from "./drivedist.js";
 import { haversineKm } from "./delivery.js";
@@ -57,33 +57,45 @@ test("بحث الأشعة: رتيب — الاتجاه اللي شوارعه أ�
   assert.ok(!selfIntersects(z.polygon));
 });
 
-test("شعاع شاذ (نقطة بحر لزقت على الكورنيش) بيتقصّ لـ×1.25 من أطول جار", () => {
+test("شعاع شاذ (نقطة بحر لزقت على الكورنيش) بيتقصّ", () => {
   assert.deepEqual(clampSpikes([4.1, 9.7, 4.4, 4.4]), [4.1, 5.5, 4.4, 4.4]);
   assert.deepEqual(clampSpikes([5, 5, 5]), [5, 5, 5]);
 });
 
-test("أشعة كثيفة: شذوذ عرضه ٣ أشعة (≈٩°) بيتقصّ، والتغيّر التدريجي مابيتلمسش", () => {
-  const n = 120, k = 4;
-  const base = new Array(n).fill(4.2);
-  base[89] = 9.5; base[90] = 10.1; base[91] = 9.8; // الغرب: نقط بحر لزقت على الكورنيش
-  const out = clampSpikes(base, 1.25, k);
-  assert.ok([89, 90, 91].every((i) => out[i] <= 4.2 * 1.25 + 1e-9), "spike clamped");
-  // الجار المباشر عالي → بالمقارنة ±١ بس ماكانش هيتقص
-  assert.ok(clampSpikes(base, 1.25, 1)[90] > 9, "±1 alone misses a wide spike");
+test("أشعة كثيفة: شذوذ عرضه كذا شعاع بيتقصّ، والحافة الحقيقية (جانب عالي وجانب واطي) مابتتلمسش", () => {
+  const n = 120, w = spikeWindow(n);
+  const radii = new Array(n).fill(4.6);
+  [9.5, 5.7, 6.0, 8.3, 9.7].forEach((v, k) => { radii[86 + k] = v; });
+  const out = clampSpikes(radii, 1.25, w);
+  assert.ok(out.slice(86, 91).every((r) => r <= 4.6 * 1.25 + 1e-9), `clamped: ${out.slice(86, 91)}`);
+  // حافة: ٧٫٥ لحد شعاع ٥٨ وبعدين ٤٫٩ — الأشعة العالية جنب الحافة تفضل زي ما هي
+  const edge = Array.from({ length: n }, (_, i) => (i < 59 ? 7.5 : 4.9));
+  edge[57] = 7.8; edge[58] = 7.2;
+  const eo = clampSpikes(edge, 1.25, w);
+  assert.equal(eo[57], 7.8);
+  assert.equal(eo[58], 7.2);
   const smooth = Array.from({ length: n }, (_, i) => 6 + 3 * Math.sin((i / n) * 2 * Math.PI));
-  assert.deepEqual(clampSpikes(smooth, 1.25, k), smooth);
+  clampSpikes(smooth, 1.25, w).forEach((r, i) => assert.ok(Math.abs(r - smooth[i]) < 1e-9));
 });
 
-test("١٢٠ شعاع: شذوذ بحر عريض في الغرب بيتقص جوّه البناء، والمضلّع مابيقطعش نفسه", async () => {
-  // غرب المطعم (bearing ~264–276): جوجل بيلزق النقطة على الكورنيش → مشوار قصير مهما بعدت
-  const f = (p) => {
-    const west = p.lng < STORE.lng - 0.02 && Math.abs(p.lat - STORE.lat) < 0.004 + (STORE.lng - p.lng) * 0.1;
-    return west ? 0.4 : 1.4;
-  };
-  const z = await buildDriveZone({ center: STORE, maxKm: 10.9, distMany: fakeMany(f) });
-  assert.equal(z.polygon.length, 120);
-  const normal = z.radiiKm[30];
-  assert.ok(z.radiiKm[90] <= normal * 1.25 + 0.01, `west ${z.radiiKm[90]} clamped near ${normal}`);
+test("snapped: المشوار ثابت وانت بتبعد = نقطة ملزوقة على طريق (بحر)", () => {
+  assert.equal(snapped(8.17 - 5.45, 9.71 - 9.71), true);   // قراءة الإنتاج على 267°
+  assert.equal(snapped(1.36, 1.5), false);                // أرض عادية
+  assert.equal(snapped(0.2, 0), false);                   // خطوة صغيرة: دقة جوجل
+});
+
+test("بناء: شعاع بحر (المشوار ثابت بعد الساحل) بيقف عند الساحل مش عند السقف", async () => {
+  const coastKm = 4.5;
+  // غرب المطعم: أبعد من الساحل → جوجل بيرجّع مشوار الساحل (ثابت)
+  const f = async (pts) => ({ billed: pts.length, results: pts.map((p) => {
+    const st = kmFrom(p);
+    const west = p.lng < STORE.lng && Math.abs(p.lat - STORE.lat) < 0.03;
+    return { km: west ? Math.min(st, coastKm) * 1.3 + (st > coastKm ? 0.02 : 0) : st * 1.2 };
+  }) });
+  const z = await buildDriveZone({ center: STORE, maxKm: 10.9, distMany: f });
+  // أول نقطة (5.45) نفسها في البحر ومشوارها شكله طبيعي، فمانقدرش نكتشفها — بس مابنوصلش للسقف 10.9
+  assert.ok(z.radiiKm[90] <= 6.2, `west ray stops near the coast: ${z.radiiKm[90]}`);
+  assert.ok(z.radiiKm[30] > 8.5, `east untouched: ${z.radiiKm[30]}`);
   assert.ok(!selfIntersects(z.polygon));
 });
 
