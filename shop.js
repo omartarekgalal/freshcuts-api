@@ -32,6 +32,7 @@ import * as tsstore from "./tsstore.js";
 import { msisdn, readableAddress, leaveAtDoor } from "./couriers.js";
 // ضريبة سطور الباقة — نفس الثابت اللي التوزيع اتعمل بيه، عشان الإجمالي يرجع للسعر بالظبط
 import { VAT_RATE as BUNDLE_VAT } from "./bundles.js";
+import { MULTIPLY as MONEY_MULTIPLY, rescaleItems, stampMf, scaleOf } from "./money.js";
 import { isOpenNow } from "./carts.js";
 import { dispatchDue, dispatchDelayOf } from "./delivery.js";
 import { makeStaffNotifier, slaAlertText, posFailedText, tabsenseDownText } from "./staffalerts.js";
@@ -169,7 +170,9 @@ export function partnerItemsOf(row) {
        تحت كل صنف مش مهمة طالما مش العميل الى كتبها». الخصم بيفضل مرة واحدة في
        ملاحظات الطلب فوق للكاشير. */
     const note = String(it.note || it.customer_note || "").trim().slice(0, 100) || null;
-    const base = Number(it.unit_amount) / tsstore.MULTIPLY; // ريال صافي قبل الضريبة
+    // ريال صافي قبل الضريبة — الوحدة من وسم السطر نفسه (`mf`)، فالطلبات
+    // القديمة المتخزّنة بالنانو تفضل تتقرا صح بعد النزول للميكرو.
+    const base = Number(it.unit_amount) / scaleOf(it);
     return {
       productId: it.product_id,
       quantity: Number(it.quantity) || 1,
@@ -678,6 +681,11 @@ export function register(app, ctx, deps = {}) {
     const branchId = String(b.branch_id || "1");
     let items = Array.isArray(b.items) ? b.items : [];
     if (!items.length) return fail("empty_cart", 400);
+    /* وحدة الفلوس اللي المتصفح سعّر بيها. من ١٧ سبتمبر ٢٠٢٦ احنا على
+       الميكرو-ريال (money.js)، لكن ممكن يكون في المتصفح نسخة قديمة مكاشّة
+       لسه بتبعت بالنانو — فبنحوّل بدل ما نرفض (ولو ماقالش، النانو القديم هو
+       الافتراضي). من غير ده تاب سينس بترد «system price must match». */
+    items = rescaleItems(items, b.multiply_factor, MONEY_MULTIPLY);
 
     /* ── الباقات: بنوسّعها **هنا على السيرفر** لمنتجاتها الحقيقية ──────────
        سطر الباقة في السلة بيوصل كـ{bundle, quantity, choices} — من غير أي
@@ -705,6 +713,10 @@ export function register(app, ctx, deps = {}) {
       }
       items = expanded;
     }
+    /* وسم الوحدة على كل سطر قبل أي حساب أو تخزين: من دلوقت أي قارئ
+       (partnerItemsOf، التقارير، بكسل الشراء) بيعرف وحدة السطر من السطر نفسه
+       بدل ما يفترض وحدة ثابتة — فتغيير الوحدة تاني مابيكسرش التاريخ. */
+    items = stampMf(items, MONEY_MULTIPLY);
     // dine-in-only offers (صينية اللمة …) cannot be delivered/picked up: refuse
     // BEFORE a payment session exists. Same list the storefront + catalog use.
     {
@@ -773,8 +785,8 @@ export function register(app, ctx, deps = {}) {
         if (seen.has(it.bundle_line)) continue;
         seen.add(it.bundle_line);
         const ex = bundleItems.filter((x) => x.bundle_line === it.bundle_line)
-          .reduce((a, x) => a + Number(x.unit_amount) * Number(x.quantity), 0);
-        bundleTotal += ex * (1 + BUNDLE_VAT) / tsstore.MULTIPLY;
+          .reduce((a, x) => a + (Number(x.unit_amount) / scaleOf(x)) * Number(x.quantity), 0);
+        bundleTotal += ex * (1 + BUNDLE_VAT);
       }
       bundleTotal = r2(bundleTotal);
     }
@@ -793,7 +805,9 @@ export function register(app, ctx, deps = {}) {
       }
     }
     let totals = (calc && calc.totals) || {};
-    const plainTotal = r2((totals.tendered_amount || totals.total_amount || 0) / tsstore.MULTIPLY);
+    // وحدة الحساب من الرد نفسه — حزام الأمان في tsstore ممكن يكون نزل درجة.
+    const calcMf = tsstore.calcMultiply(calc);
+    const plainTotal = r2((totals.tendered_amount || totals.total_amount || 0) / calcMf);
     const foodTotal = r2(plainTotal + bundleTotal);
     // إعادة التحقق ضد الإجمالي الحقيقي — لأي كوبون فعّال (مش بس كوبون النسبة):
     // كوبون التوصيل المجاني كمان له حد أدنى و«مرة لكل عميل» لازم يتأكدوا هنا.
@@ -859,11 +873,12 @@ export function register(app, ctx, deps = {}) {
     // سلة باقات بس (من غير أصناف عادية ولا سطر توصيل) مالهاش حساب تاب سينس،
     // فالبقشيش اللي كان بيتضاف جوّه الحساب لازم يتضاف هنا بإيدنا.
     const tipOutsideCalc = !calc && tip > 0 ? tip : 0;
-    const posTotal = r2((totals.tendered_amount || totals.total_amount || 0) / tsstore.MULTIPLY + bundleTotal + tipOutsideCalc);
+    const calcMf2 = tsstore.calcMultiply(calc);
+    const posTotal = r2((totals.tendered_amount || totals.total_amount || 0) / calcMf2 + bundleTotal + tipOutsideCalc);
     // When the fee is booked in the POS, the charge == the POS invoice exactly;
     // otherwise the fee is collected on top (the old designed gap).
     const total = feeInPos ? posTotal : r2(posTotal + deliveryFee);
-    const discountAmount = r2(((totals.total_amount_discount_excluded || 0) - (totals.total_amount || 0)) / tsstore.MULTIPLY);
+    const discountAmount = r2(((totals.total_amount_discount_excluded || 0) - (totals.total_amount || 0)) / calcMf2);
 
     const orderNo = "W" + Date.now();
     let session;
@@ -1042,7 +1057,7 @@ export function register(app, ctx, deps = {}) {
      (paid_pos_failed), not an exception — the sweep retries and the dashboard
      shows it; the customer's money is never in limbo silently. */
   /* المسار الجديد المدفوع مسبقاً: يبني طلب الشريك من صفوف الأوردر.
-     الأصناف بأسعارها الصافية (unit_amount ÷ MULTIPLY = ريال قبل الضريبة، زي
+     الأصناف بأسعارها الصافية (unit_amount ÷ وحدة السطر mf = ريال قبل الضريبة، زي
      ما تاب سينس بيخزّنها)، والشريك بيعيد حساب الضريبة من tax_id بتاع المنتج.
      رسوم التوصيل بتتحط في الملاحظات (الطلب already_paid فالكاشير مش بيحصّل).
      TODO الإنتاج: بعد وصول مفاتيح الإنتاج، تأكّد إن إجمالي طلب الشريك بيطابق

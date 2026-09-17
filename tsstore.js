@@ -17,14 +17,19 @@
    that retries only on read-only paths.
 ═══════════════════════════════════════════════════════════════════════════ */
 
+import { MULTIPLY as MONEY_MULTIPLY, isUnitLimitError, nextFactorDown } from "./money.js";
+
 const env = (k, d) => (process.env[k] || d || "").toString().trim();
 
 export const STORE = () => env("TABSENSE_STORE", "freshcuts");
 const UPSTREAM = () => env("TABSENSE_UPSTREAM", "https://qr.tabsense.ai/api/__api_party/myApi");
 export const STORE_LAT = () => Number(env("TABSENSE_STORE_LAT", "21.5881404"));
 export const STORE_LNG = () => Number(env("TABSENSE_STORE_LNG", "39.1521236"));
-// TabSense money integers are SAR × this factor.
-export const MULTIPLY = 1000000000;
+// TabSense money integers are SAR × this factor. Micro-riyal since 2026-09-17:
+// TabSense rejects any unit_amount ≥ 1e11, so nano-riyal (1e9) blew up on every
+// line priced ≥ 100 SAR ex-VAT — i.e. every 1-kilo grill. See money.js.
+export const MULTIPLY = MONEY_MULTIPLY;
+export { LEGACY_MULTIPLY, TS_UNIT_LIMIT } from "./money.js";
 
 const SAFE_RETRY = ["calculate-order", "payments/status", "check-stocks", "pos-availability"];
 const safeToRetry = (path, method) => method === "GET" || SAFE_RETRY.some((m) => path.includes(m));
@@ -97,38 +102,61 @@ export async function findProduct(productId, branchId = "1") {
    unit_amounts are rejected, which is why the delivery fee travels as a
    quantity of a real 1-SAR product instead.                                 */
 export async function calculateOrder({ branchId = "1", orderOptionId = 3, purchases, tipAmount = 0, discountPercent = 0 }) {
-  const adjustments = { discount: null, charges: [], product_extra: {} };
-  if (discountPercent > 0) {
-    adjustments.discount = { id: null, percentage_value: Math.min(100, Number(discountPercent)) };
-  }
-  if (tipAmount > 0) adjustments.tips = { amount: Math.round(tipAmount * MULTIPLY) };
-  const body = {
-    order_type: 9,
-    order_option_id: orderOptionId,
-    branch_id: Number(branchId),
-    multiply_factor: MULTIPLY,
-    purchases: purchases.map((p) => ({
-      product_id: Number(p.product_id),
-      quantity: Number(p.quantity),
-      tax_id: p.tax_id ?? 1,
-      unit_amount: Number(p.unit_amount),
-      modifiers: [],
-      parent_product: { meta: { notes: null } },
-      // weight/size variants (ثلث/نصف/كيلو) — probed 2026-08-16: TabSense
-      // accepts `variant_option:{id}` and prices the chosen option itself
-      ...(p.variant_option_id ? { variant_option: { id: Number(p.variant_option_id) } } : {}),
-    })),
-    adjustments,
+  /* جسم الحساب بمعامل ضرب معيّن. السطور الجايّة دايماً بوحدة MULTIPLY، فلو
+     نزلنا درجة بنقسّم عليها (حزام أمان — المفروض ماينفّذش أبداً مع 1e6). */
+  const buildBody = (mf) => {
+    const ratio = mf / MULTIPLY;
+    const adjustments = { discount: null, charges: [], product_extra: {} };
+    if (discountPercent > 0) {
+      adjustments.discount = { id: null, percentage_value: Math.min(100, Number(discountPercent)) };
+    }
+    if (tipAmount > 0) adjustments.tips = { amount: Math.round(tipAmount * mf) };
+    return {
+      order_type: 9,
+      order_option_id: orderOptionId,
+      branch_id: Number(branchId),
+      multiply_factor: mf,
+      purchases: purchases.map((p) => ({
+        product_id: Number(p.product_id),
+        quantity: Number(p.quantity),
+        tax_id: p.tax_id ?? 1,
+        unit_amount: Math.round(Number(p.unit_amount) * ratio),
+        modifiers: [],
+        parent_product: { meta: { notes: null } },
+        // weight/size variants (ثلث/نصف/كيلو) — probed 2026-08-16: TabSense
+        // accepts `variant_option:{id}` and prices the chosen option itself
+        ...(p.variant_option_id ? { variant_option: { id: Number(p.variant_option_id) } } : {}),
+      })),
+      adjustments,
+    };
   };
-  const calc = await callStore(`stores/${STORE()}/calculate-order`, { method: "POST", branchId, body });
-  const data = calc?.data || {};
-  if (!data.purchases?.length || !data.totals?.total_amount) {
+
+  /* حزام أمان ضد حد تاب سينس (1e11): لو رجعت «must be less than …» بننزل
+     درجة في سلّم المعاملات ونعيد مرة واحدة بدل ما السلة تعلّق على «جاري
+     تحديث الإجمالي…» زي ما حصل ١٧ سبتمبر. الوحدة اللي نجحت بترجع في `_mf`
+     (غير قابلة للتعداد، فمابتتسربش لجسم إنشاء الطلب). */
+  let mf = MULTIPLY, lastErr = null;
+  for (let attempt = 0; attempt < 3 && mf; attempt++) {
+    const calc = await callStore(`stores/${STORE()}/calculate-order`,
+      { method: "POST", branchId, body: buildBody(mf) });
+    const data = calc?.data || {};
+    if (data.purchases?.length && data.totals?.total_amount) {
+      for (const p of data.purchases) p.meta = p.meta || { notes: null };
+      Object.defineProperty(data, "_mf", { value: mf, enumerable: false });
+      return data;
+    }
     const err = calc?.meta?.error_message || "calculate-order returned no data";
-    throw Object.assign(new Error(err), { code: "TS_CALC_EMPTY", resp: calc });
+    lastErr = Object.assign(new Error(err), { code: "TS_CALC_EMPTY", resp: calc, mf });
+    if (!isUnitLimitError(err)) break;
+    const next = nextFactorDown(mf);
+    console.warn(`[tsstore] calculate rejected at multiply_factor ${mf} (${err.trim()}) — retrying at ${next}`);
+    mf = next;
   }
-  for (const p of data.purchases) p.meta = p.meta || { notes: null };
-  return data;
+  throw lastErr || Object.assign(new Error("calculate-order returned no data"), { code: "TS_CALC_EMPTY" });
 }
+
+/** وحدة الفلوس اللي حساب معيّن رجع بيها (بتفرق بس لو حزام الأمان اشتغل). */
+export const calcMultiply = (calcData) => Number(calcData?._mf) || MULTIPLY;
 
 /* ── direct order creation (the proven "cash-path" shape) ────────────────────
    Creates the order in the POS immediately. payment_method is what shows on

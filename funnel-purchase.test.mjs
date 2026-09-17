@@ -94,7 +94,8 @@ function setup(opts = {}) {
   return { db, calls, app, api, post };
 }
 
-const line = (productId, qty, net, extra = {}) => ({ product_id: productId, quantity: qty, unit_amount: Math.round(net * M), ...extra });
+// زي ما shop.js بيخزّنها: وحدة الفلوس موسومة على السطر (`mf`).
+const line = (productId, qty, net, extra = {}) => ({ product_id: productId, quantity: qty, unit_amount: Math.round(net * M), mf: M, ...extra });
 
 const paidOrder = (over = {}) => ({
   order_no: "W1789000000001",
@@ -140,9 +141,9 @@ test("contents: الخصم على الأصناف العادية بس، والس�
 test("contents: سطر من غير product_id بيتطابق بالاسم، والرسوم بتتشال", async () => {
   const match = async (name) => (name === "كفتة" ? "77" : name === "توصيل" ? "__fee__" : null);
   const c = await purchaseContentsOf([
-    { name: "كفتة", quantity: 1, unit_amount: 10 * M },
-    { name: "توصيل", quantity: 1, unit_amount: 5 * M },
-    { name: "مجهول", quantity: 1, unit_amount: 5 * M },
+    { name: "كفتة", quantity: 1, unit_amount: 10 * M, mf: M },
+    { name: "توصيل", quantity: 1, unit_amount: 5 * M, mf: M },
+    { name: "مجهول", quantity: 1, unit_amount: 5 * M, mf: M },
   ], 0, match);
   assert.deepEqual(c.map((i) => i.id), ["77"]);
 });

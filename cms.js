@@ -32,6 +32,7 @@ import { slaCheck, DEFAULT_SLA } from "./shop.js";
 import { isBotRequest } from "./botfilter.js";
 // قواعد الباقات (توزيع السعر والتوسيع) — صافية ومتجرّبة أوفلاين في bundles.test.mjs
 import * as bundlesLib from "./bundles.js";
+import { LEGACY_MULTIPLY } from "./money.js";
 // كتالوج تاب سينس: الأسعار الحقيقية للباقات (العميل مابيبعتش سعر أبداً)
 import * as tsstore from "./tsstore.js";
 // سجل العروض الحي (جدول offer_registry) — نفس المصدر اللي الكتالوج والمتجر بيقروا منه
@@ -1677,7 +1678,14 @@ export function register(app, ctx, deps = {}) {
     try {
       const r = await expand(String(b.slug || ""), b.choices || {}, b.quantity || 1, b.option || null);
       if (!r.ok) return c.json(r, 200); // ٢٠٠ عشان الخطأ الحقيقي يوصل للمتصفح
-      return c.json({ ok: true, lines: r.lines, picks: r.picks, quantity: r.quantity,
+      /* السطور بترجع بوحدة الفلوس اللي المتصفح طلبها: السلة بتجمعها مع حساب
+         تاب سينس في نفس الإجمالي، فلو الوحدتين اختلفوا سعر الباقة يبان غلط
+         ×١٠٠٠. نسخة قديمة مكاشّة مابتبعتش الحقل ⇒ النانو القديم. (الدفع
+         بيعيد التوسيع على السيرفر، فالمحصّل صح في كل الحالات.) */
+      const mfOut = Number(b.multiply_factor) > 0 ? Number(b.multiply_factor) : LEGACY_MULTIPLY;
+      const lines = mfOut === bundlesLib.MULTIPLY ? r.lines
+        : r.lines.map((l) => ({ ...l, unit_amount: Math.round(l.unit_amount * mfOut / bundlesLib.MULTIPLY) }));
+      return c.json({ ok: true, lines, picks: r.picks, quantity: r.quantity, multiply_factor: mfOut,
         total_incl: Math.round(r.totalEx * 1.15 / bundlesLib.MULTIPLY * 100) / 100 });
     } catch (e) { return c.json({ ok: false, error: "expand_failed", message: e.message }); }
   });
@@ -2744,7 +2752,10 @@ export function register(app, ctx, deps = {}) {
       pool.query(`
         SELECT it->>'product_id' AS pid,
                sum((it->>'quantity')::numeric)::float AS qty,
-               sum((it->>'quantity')::numeric * COALESCE((it->>'unit_amount')::numeric, 0) / 1e9)::float AS revenue
+               -- وحدة الفلوس بتتخزّن على السطر نفسه (mf) من ١٧ سبتمبر ٢٠٢٦؛
+               -- السطور الأقدم من كده كانت كلها نانو-ريال (1e9).
+               sum((it->>'quantity')::numeric * COALESCE((it->>'unit_amount')::numeric, 0)
+                   / COALESCE(NULLIF((it->>'mf')::numeric, 0), 1e9))::float AS revenue
           FROM shop_orders o, jsonb_array_elements(o.items) it
          WHERE ${W} AND it->>'product_id' IS NOT NULL
          GROUP BY 1 ORDER BY qty DESC LIMIT 12`, P),

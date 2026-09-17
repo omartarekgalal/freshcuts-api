@@ -6,11 +6,14 @@ import { partnerItemsOf } from "./shop.js";
 import * as tsstore from "./tsstore.js";
 
 const M = tsstore.MULTIPLY;
-const line = (productId, qty, net) => ({ product_id: productId, quantity: qty, unit_amount: Math.round(net * M) });
+// زي ما shop.js بيخزّنها بالظبط: وحدة الفلوس موسومة على السطر نفسه (`mf`).
+const line = (productId, qty, net) => ({ product_id: productId, quantity: qty, unit_amount: Math.round(net * M), mf: M });
 
 test("من غير خصم: الأسعار زي ما هي ومفيش ملاحظة", () => {
   const out = partnerItemsOf({ discount_percent: 0, items: [line(1, 3, 26.08695652)] });
-  assert.equal(out[0].unitPrice, 26.08695652);
+  // ميكرو-ريال ⇒ ٦ خانات عشرية (الفرق أقل من واحد على المليون من الريال،
+  // وبيختفي خالص لما الشريك يقرّب لهللتين).
+  assert.ok(Math.abs(out[0].unitPrice - 26.08695652) < 1e-6);
   assert.equal(out[0].lineNote, undefined);
 });
 

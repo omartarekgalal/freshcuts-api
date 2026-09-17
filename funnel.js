@@ -53,7 +53,7 @@
 
 import crypto from "node:crypto";
 import { hashEmail, hashPhoneDigits, hashPhonePlus, phoneDigits, httpJson } from "./ads.js";
-import { MULTIPLY } from "./tsstore.js";
+import { scaleOf } from "./money.js";
 import { isBotRequest, BOT_SQL } from "./botfilter.js";
 
 const env = (k) => (process.env[k] || "").trim();
@@ -113,7 +113,7 @@ const r2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
 /** shop_orders.items → contents بمعرّفات الكتالوج.
  *  المتجر بيبعت product_id بتاع تاب سينس — هو نفسه الـid اللي فيد الكتالوج
  *  بينشره — فمش محتاجين نطابق بالاسم إلا لسطر ناقصه product_id (match اختياري،
- *  ads.matchToCatalog). سعر السطر: unit_amount صافي × MULTIPLY، فبنرجّعه ريال
+ *  ads.matchToCatalog). سعر السطر: unit_amount صافي × وحدة السطر (mf)، فبنرجّعه ريال
  *  شامل الضريبة وبعد خصم الطلب (الباقات سعرها محسوب أصلاً فمابتتخصمش). السطور
  *  المتكررة لنفس المنتج (الباقة بتتفرد لأكتر من سطر) بتتجمع في سطر واحد. */
 export async function purchaseContentsOf(items, discountPercent = 0, match = null) {
@@ -128,7 +128,7 @@ export async function purchaseContentsOf(items, discountPercent = 0, match = nul
     }
     if (!id) continue;
     const quantity = Math.max(1, Math.round(Number(it.quantity) || 1));
-    const net = (Number(it.unit_amount) || 0) / MULTIPLY;
+    const net = (Number(it.unit_amount) || 0) / scaleOf(it);
     const gross = net * (1 + VAT) * (pct > 0 && !it.bundle ? 1 - pct / 100 : 1);
     const cur = byId.get(id);
     if (cur) {
