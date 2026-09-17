@@ -664,6 +664,19 @@ export function register(app, ctx, deps = {}) {
       //  categories:{slug:{title,h1,meta,intro,…_en}}} — أي حقل فاضي بياخد
       // الافتراضي المكتوب في المتجر (storefront/seo.py).
       seo: sf.seo || {},
+      /* ⭐ تقييم جوجل الحقيقي (reviews.js بيحدّثه كل ١٢ ساعة من Places API).
+         الشارة على المتجر وschema.org بيقروا من هنا — **رقم حقيقي أو ولا
+         حاجة**، عمرنا ما نكتب تقييم من دماغنا. */
+      googleRating: (() => {
+        const g = s.googlePlace;
+        const on = (s.reviews || {}).showBadge !== false;
+        if (!on || !g || !(Number(g.rating) > 0) || !(Number(g.count) >= 1)) return null;
+        return {
+          rating: Number(g.rating), count: Number(g.count),
+          url: g.mapsUrl || "", at: g.at || null,
+          reviewUrl: (s.reviews || {}).googleUrl || "",
+        };
+      })(),
     });
   });
 

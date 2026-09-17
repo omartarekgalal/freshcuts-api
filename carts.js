@@ -583,5 +583,22 @@ export function register(app, ctx, deps = {}) {
     return c.json({ ok: true, carts: rows });
   });
 
-  return { markOrdered, runRecovery };
+  /* رابط استرداد لأي موديول تاني (openwait.js: «نبّهني لما تفتحوا»).
+     نفس جدول cart_recovery ونفس صفحة /c/<code> — مفيش نسخة تانية من
+     منطق «رجّع السلة زي ما هي». */
+  async function createRestoreFlow({ phoneNorm, deviceId, subtotal, itemCount, items, raw, option }) {
+    if (!/^5\d{8}$/.test(String(phoneNorm || ""))) throw new Error("bad_phone");
+    // rawCart بترجّع نص JSON (زي اللقطة)؛ createFlow بتعمل jb() فبنرجّعه كائن
+    const rawTxt = rawCart(raw);
+    let rawObj = null;
+    try { rawObj = rawTxt ? JSON.parse(rawTxt) : null; } catch { rawObj = null; }
+    return createFlow({
+      phone_norm: phoneNorm, device_id: deviceId || null,
+      subtotal: Number(subtotal) || 0, item_count: Number(itemCount) || 0,
+      items: Array.isArray(items) ? items.slice(0, 60) : [],
+      cart_raw: rawObj, option: option ? String(option).slice(0, 12) : null,
+    });
+  }
+
+  return { markOrdered, runRecovery, createRestoreFlow };
 }

@@ -48,6 +48,7 @@ import * as cms from "./cms.js";
 import * as reviews from "./reviews.js";
 import * as notify from "./notify.js";
 import * as carts from "./carts.js";
+import * as openwait from "./openwait.js";
 import * as journey from "./journey.js";
 import * as selftest from "./selftest.js";
 import * as menuplan from "./menuplan.js";
@@ -3068,6 +3069,9 @@ const tspApi = tspartner.register(app, moduleCtx);
 // لوحة المتجر: فريق وأدوار وصلاحيات وسجل نشاط — لازم قبل systemcheck.
 const cmsApi = cms.register(app, moduleCtx, { notify: () => notifyApi });
 reviews.register(app, moduleCtx, { notify: () => notifyApi, sessionUser: cmsApi.sessionUser });
+// «نبّهني لما تفتحوا»: العميل اللي جه والمطعم مقفول بيسيب رقمه، وسلته بتتحفظ
+// ورا نفس رابط الاسترداد بتاع carts، والرسالة بتتبعت وقت الفتح بس.
+openwait.register(app, moduleCtx, { notify: () => notifyApi, carts: () => cartsApi });
 // بوابة المطعم (كاشير + مدير): PIN، طلبات حيّة (SSE)، خط زمني، طلب/إلغاء مندوب، Push للفريق، تقارير.
 // بعد shop/delivery/cms — بيستخدم دوالهم نفسها (مفيش نسخة تانية من القواعد).
 const portalApi = portal.register(app, moduleCtx, { shop: () => shopApi, delivery: () => deliveryApi });

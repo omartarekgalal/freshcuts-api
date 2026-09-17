@@ -85,3 +85,13 @@ test("§4-6: pre-registration didn't move existing cms routes", () => {
   assert.equal(sectionOf("/api/portal/login"), "settings"); // مش في القايمة ⇒ الافتراضي المقفول
   assert.equal(sectionOf("/api/apps"), "settings");         // ^/api/app/ بالشرطة بس
 });
+
+test("«منتظرين الفتح» والتقييمات في قسمهم الصح", () => {
+  // استرداد طلب ضايع = نمو، زي السلات المتروكة بالظبط
+  assert.equal(sectionOf("/api/cms/openwait"), "growth");
+  assert.equal(sectionOf("/api/openwait/join"), "growth");
+  assert.equal(sectionOf("/api/carts/stats"), "growth");
+  // التقييمات (بما فيها جوجل والدعوات) تحت العملاء
+  assert.equal(sectionOf("/api/cms/reviews/google"), "customers");
+  assert.equal(sectionOf("/api/cms/reviews/invites"), "customers");
+});
