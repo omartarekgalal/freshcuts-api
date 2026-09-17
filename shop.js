@@ -353,6 +353,7 @@ export function register(app, ctx, deps = {}) {
   const carts = deps.carts || (() => null);       // late-bound — abandoned-cart tracker
   const tsp = deps.tsp || (() => null);           // late-bound — TabSense partner (paid orders)
   const journey = typeof deps.journey === "function" ? deps.journey : () => null; // late-bound — ٠٢
+  const wa = typeof deps.wa === "function" ? deps.wa : () => null; // واتساب: موافقة الشيك أوت
   const emitOrder = makeOrderEmitter(deps.emitOrder);
   // checkout_result لرحلة العميل (٠٢) — fire-and-forget، مابيغيّرش أي رد
   const journeyEmit = (name, props) => {
@@ -900,6 +901,15 @@ export function register(app, ctx, deps = {}) {
       pool.query("UPDATE shop_orders SET journey_sid=$2, client=$3, app_version=$4 WHERE order_no=$1",
         [orderNo, meta.journey_sid || null, meta.client || null, meta.app_version || null])
         .catch((e) => console.error(`[shop] ${orderNo}: checkout meta save failed: ${e.message}`));
+    }
+    // موافقة واتساب من الشيك أوت («وصّلني تحديثات الطلب على واتساب») — fire-and-forget.
+    // بتتسجّل بس لو المتجر بعت الحقل صراحةً؛ غيابه مايغيّرش موافقة قديمة.
+    if (wa() && (typeof b.waUpdates === "boolean" || typeof b.waMarketing === "boolean")) {
+      Promise.resolve().then(() => wa().recordOptIn({ phone: phoneNorm,
+        updates: typeof b.waUpdates === "boolean" ? b.waUpdates : undefined,
+        marketing: typeof b.waMarketing === "boolean" ? b.waMarketing : undefined,
+        source: "checkout", orderNo }))
+        .catch((e) => console.error(`[shop] ${orderNo}: wa opt-in save failed: ${e.message}`));
     }
     // مفتاح الاستكمال/التتبع (٠٣ A3/A9) — null لو SHOP_RESUME_SECRET مش متظبط
     const k = resumeKey({ orderNo, createdAt: inserted?.rows?.[0]?.created_at });

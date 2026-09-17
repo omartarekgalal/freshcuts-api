@@ -68,8 +68,10 @@ function emitNotify(orderNo, stage, channel, ok, extra = {}) {
   } catch { /* never */ }
 }
 
-export function register(app, ctx) {
+export function register(app, ctx, deps = {}) {
   const { pool, requireAdmin, getSettingsData, jb, normPhone } = ctx;
+  // whatsapp.js (Cloud API بقوالب معتمدة). لو مش متمرّر = السلوك القديم.
+  const wa = deps.wa || null;
   // حقن للاختبارات بس — الإنتاج بيستخدم web-push وTaqnyat الحقيقيين.
   const push = ctx.webpush || webpush;
   const smsSend = ctx.sendSms || sendSms;
@@ -227,9 +229,28 @@ export function register(app, ctx) {
       }
     }
 
-    // SMS (default OFF, stage-filtered — each message costs money).
     const smsStages = Array.isArray(cfg.smsStages) && cfg.smsStages.length ? cfg.smsStages : DEFAULT_SMS_STAGES;
-    if (cfg.smsEnabled === true && smsStages.includes(status)) {
+
+    // WhatsApp بالقوالب (whatsapp.js): بيتجرّب الأول عشان نعرف نستغنى عن SMS ولا لأ.
+    // whatsappReplacesSms=true → لو اتقبل على واتساب مابنبعتش SMS، ولو فشل
+    // لاحقاً (ويب هوك failed) whatsapp.js بيبعت نفس النص SMS.
+    let waResult = null;
+    if (wa && cfg.whatsappEnabled === true) {
+      const replaces = cfg.whatsappReplacesSms === true;
+      try {
+        waResult = await wa.sendOrderUpdate(order, status, {
+          fallbackSms: replaces && cfg.smsEnabled === true && smsStages.includes(status) ? text : null });
+      } catch (e) { waResult = { ok: false, error: "send_failed" }; }
+      if (!(waResult.skipped === "no_template_for_stage")) {
+        emitNotify(orderNo, status, "whatsapp", waResult.ok === true,
+          waResult.ok ? {} : { error: String(waResult.skipped || waResult.error || "send_failed").slice(0, 60) });
+        attempts.push(Promise.resolve());
+      }
+    }
+    const smsSkippedForWa = Boolean(waResult?.ok && cfg.whatsappReplacesSms === true);
+
+    // SMS (default OFF, stage-filtered — each message costs money).
+    if (cfg.smsEnabled === true && smsStages.includes(status) && !smsSkippedForWa) {
       attempts.push(Promise.resolve().then(() => smsSend({ phoneNorm: order.phone_norm, body: text })).then(
         () => emitNotify(orderNo, status, "sms", true),
         (e) => {
@@ -239,7 +260,7 @@ export function register(app, ctx) {
     }
 
     // WhatsApp (default OFF; needs the coexistence step + an approved template).
-    if (cfg.whatsappEnabled === true) {
+    if (!wa && cfg.whatsappEnabled === true) {
       attempts.push(sendWhatsApp(order.phone_norm, text).then(
         () => emitNotify(orderNo, status, "whatsapp", true),
         (e) => {

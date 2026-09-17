@@ -47,6 +47,7 @@ import * as tspartner from "./tspartner.js";
 import * as cms from "./cms.js";
 import * as reviews from "./reviews.js";
 import * as notify from "./notify.js";
+import * as whatsapp from "./whatsapp.js";
 import * as carts from "./carts.js";
 import * as journey from "./journey.js";
 import * as selftest from "./selftest.js";
@@ -3037,7 +3038,9 @@ const payApi = pay.register(app, moduleCtx, { shop: () => shopApi });
 const deliveryApi = deliveryMod.register(app, moduleCtx, { shop: () => shopApi });
 // إشعارات العميل (متصفح/SMS/واتساب بمفاتيح من لوحة التحكم) — قبل shop
 // عشان كل تغيير حالة يعدّي عليها.
-const notifyApi = notify.register(app, moduleCtx);
+// واتساب Cloud API (قوالب + ويب هوك + موافقات) — مقفول لحد WHATSAPP_ENABLED=1.
+const waApi = whatsapp.register(app, moduleCtx);
+const notifyApi = notify.register(app, moduleCtx, { wa: waApi });
 // السلات المتروكة: لقطات من المتجر + سلّم استرداد (إشعار ثم SMS) + أرقام اللوحة
 const cartsApi = carts.register(app, moduleCtx, { notify: notifyApi });
 // رحلة العميل (٠٢): دفعات أحداث المتجر + checkout_result/order_paid من السيرفر + تقرير #store/analytics/journey
@@ -3048,7 +3051,7 @@ selftest.register(app, moduleCtx, { delivery: () => deliveryApi });
 // بس بتتسجل بعد shop، فالربط late-bound بنفس نمط attribution/ads.
 let accountsApi = null;
 shopApi = shop.register(app, moduleCtx, {
-  pay: payApi, delivery: deliveryApi, notify: notifyApi, accounts: () => accountsApi,
+  pay: payApi, delivery: deliveryApi, notify: notifyApi, accounts: () => accountsApi, wa: () => waApi,
   carts: () => cartsApi, tsp: () => tspApi, funnel: () => funnelApi,
   journey: () => journeyApi,
   // الباقات بتتعرّف في الـCMS (اللي بيتسجّل بعدنا) — الشيك أوت بيوسّعها
