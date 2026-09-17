@@ -37,7 +37,7 @@ export const TEMPLATES = {
     category: "UTILITY", stage: "pos_created",
     components: [
       { type: "BODY",
-        text: "أهلاً {{1}} 👋\nاستلمنا طلبك رقم {{2}} من فريش كاتس وتم الدفع بنجاح ✅\nالإجمالي: {{3}} ر.س\nهنبلغك هنا أول ما المطبخ يبدأ التجهيز.",
+        text: "أهلاً {{1}} 👋\nاستلمنا طلبك رقم {{2}} من فريش كاتس وتم الدفع بنجاح ✅\nالإجمالي: {{3}} ر.س\nبنبلغك هنا أول ما يبدأ التجهيز.",
         example: { body_text: [["محمد", "W1726500000000", "96.00"]] } },
       { type: "BUTTONS", buttons: [
         { type: "URL", text: "تتبّع طلبك", url: "https://freshcuts.sa/track/{{1}}", example: ["W1726500000000"] },
@@ -49,7 +49,7 @@ export const TEMPLATES = {
     category: "UTILITY", stage: "accepted",
     components: [
       { type: "BODY",
-        text: "طلبك رقم {{1}} دخل المطبخ 👨‍🍳 وبنجهّزه على الفحم دلوقتي.\nهنبلغك أول ما يطلع.",
+        text: "طلبك رقم {{1}} صار في المطبخ 👨‍🍳 ونجهّزه الحين.\nبنبلغك أول ما يطلع.",
         example: { body_text: [["W1726500000000"]] } },
       { type: "BUTTONS", buttons: [
         { type: "URL", text: "تتبّع طلبك", url: "https://freshcuts.sa/track/{{1}}", example: ["W1726500000000"] },
@@ -61,7 +61,7 @@ export const TEMPLATES = {
     category: "UTILITY", stage: "on_the_way",
     components: [
       { type: "BODY",
-        text: "طلبك رقم {{1}} في الطريق إليك الآن 🛵\nجهّز جوالك عشان المندوب ممكن يتصل عند الوصول.",
+        text: "طلبك رقم {{1}} في الطريق إليك الآن 🛵\nخلّ جوالك قريب، المندوب ممكن يتصل عند الوصول.",
         example: { body_text: [["W1726500000000"]] } },
       { type: "BUTTONS", buttons: [
         { type: "URL", text: "تتبّع طلبك", url: "https://freshcuts.sa/track/{{1}}", example: ["W1726500000000"] },
@@ -73,7 +73,7 @@ export const TEMPLATES = {
     category: "UTILITY", stage: "pickup_ready",
     components: [
       { type: "BODY",
-        text: "طلبك رقم {{1}} جاهز للاستلام من فرع فريش كاتس ✅\nوريّ رقم الطلب للكاشير.",
+        text: "طلبك رقم {{1}} جاهز للاستلام من فرع فريش كاتس ✅\nاعرض رقم الطلب على الكاشير.",
         example: { body_text: [["W1726500000000"]] } },
     ],
     bind: (o) => ({ body: [o.order_no] }),
@@ -82,7 +82,7 @@ export const TEMPLATES = {
     category: "UTILITY", stage: "delivered",
     components: [
       { type: "BODY",
-        text: "تم توصيل طلبك رقم {{1}} ✅ بالهنا والشفا.\nلو في أي ملاحظة على الطلب رد على الرسالة دي وهنتابع معك.",
+        text: "تم توصيل طلبك رقم {{1}} ✅ بالعافية.\nإذا عندك أي ملاحظة على الطلب رد على هذه الرسالة ونتابع معك.",
         example: { body_text: [["W1726500000000"]] } },
     ],
     bind: (o) => ({ body: [o.order_no] }),
@@ -91,7 +91,7 @@ export const TEMPLATES = {
     category: "UTILITY", stage: "rejected_refunded",
     components: [
       { type: "BODY",
-        text: "نعتذر منك، تعذّر تنفيذ طلبك رقم {{1}} وتم استرجاع المبلغ كاملاً لوسيلة الدفع 💳\nالمبلغ بيظهر حسب البنك خلال أيام العمل.",
+        text: "نعتذر منك، ما قدرنا ننفّذ طلبك رقم {{1}} وتم استرجاع المبلغ كاملاً لوسيلة الدفع 💳\nيظهر المبلغ حسب البنك خلال أيام العمل.",
         example: { body_text: [["W1726500000000"]] } },
     ],
     bind: (o) => ({ body: [o.order_no] }),
@@ -100,7 +100,7 @@ export const TEMPLATES = {
     category: "UTILITY", stage: "refund_failed",
     components: [
       { type: "BODY",
-        text: "نعتذر منك بخصوص طلبك رقم {{1}}. استرجاع المبلغ جارٍ وفريقنا بيتابعه، وهنتواصل معك للتأكيد 🙏",
+        text: "نعتذر منك بخصوص طلبك رقم {{1}}. استرجاع المبلغ جاري وفريقنا يتابعه، وبنتواصل معك للتأكيد 🙏",
         example: { body_text: [["W1726500000000"]] } },
     ],
     bind: (o) => ({ body: [o.order_no] }),
@@ -109,9 +109,9 @@ export const TEMPLATES = {
     category: "MARKETING",
     components: [
       { type: "BODY",
-        text: "أهلاً {{1}} 👋 سلتك في فريش كاتس لسه مستنياك 🔥\nكمّل طلبك في دقيقة والمشاوي توصلك سخنة.",
+        text: "أهلاً {{1}} 👋 سلتك في فريش كاتس لسا تنتظرك 🔥\nكمّل طلبك في دقيقة وتوصلك المشاوي حارّة.",
         example: { body_text: [["محمد"]] } },
-      { type: "FOOTER", text: "للإيقاف اكتب: إيقاف" },
+      { type: "FOOTER", text: "لإيقاف الرسائل أرسل: إيقاف" },
       { type: "BUTTONS", buttons: [
         { type: "URL", text: "كمّل طلبك", url: "https://freshcuts.sa/{{1}}", example: ["?resume=abc123"] },
       ] },
@@ -123,9 +123,9 @@ export const TEMPLATES = {
     components: [
       { type: "HEADER", format: "IMAGE", example: { header_handle: ["<upload handle — يتجاب وقت التقديم>"] } },
       { type: "BODY",
-        text: "أهلاً {{1}} 👋\n{{2}} بـ{{3}} ر.س بس في فريش كاتس 🔥\nالعرض لفترة محدودة — اطلب من المتجر مباشرة.",
+        text: "أهلاً {{1}} 👋\n{{2}} بـ{{3}} ر.س فقط في فريش كاتس 🔥\nالعرض لفترة محدودة، اطلب من المتجر مباشرة.",
         example: { body_text: [["محمد", "كيلو مشاوي على الفحم مع طبق رز مجاناً", "96"]] } },
-      { type: "FOOTER", text: "للإيقاف اكتب: إيقاف" },
+      { type: "FOOTER", text: "لإيقاف الرسائل أرسل: إيقاف" },
       { type: "BUTTONS", buttons: [
         { type: "URL", text: "اطلب الآن", url: "https://freshcuts.sa/l/{{1}}", example: ["96-wa-kilo"] },
         { type: "QUICK_REPLY", text: "إيقاف العروض" },
@@ -137,9 +137,9 @@ export const TEMPLATES = {
     category: "MARKETING",
     components: [
       { type: "BODY",
-        text: "وحشتنا يا {{1}} 🙌\nعاملينلك خصم {{2}}٪ على طلبك الجاي من المتجر بكود {{3}}.",
+        text: "اشتقنا لك يا {{1}} 🙌\nجهّزنا لك خصم {{2}}٪ على طلبك الجاي من المتجر بكود {{3}}.",
         example: { body_text: [["محمد", "15", "BACK15"]] } },
-      { type: "FOOTER", text: "للإيقاف اكتب: إيقاف" },
+      { type: "FOOTER", text: "لإيقاف الرسائل أرسل: إيقاف" },
       { type: "BUTTONS", buttons: [
         { type: "URL", text: "اطلب الآن", url: "https://freshcuts.sa/{{1}}", example: ["?coupon=BACK15"] },
         { type: "QUICK_REPLY", text: "إيقاف العروض" },
@@ -456,7 +456,7 @@ export function register(app, ctx, deps = {}) {
     const cfg = (await getSettingsData().catch(() => ({})))?.notifications || {};
     if (cfg.whatsappAutoReply === true && !m.intent) {
       const text = cfg.whatsappAutoReplyText ||
-        `أهلاً بك في فريش كاتس 🔥\nاطلب أونلاين وادفع في دقيقة: ${STORE()}/?utm_source=whatsapp&utm_medium=message\nولو محتاج مساعدة اكتب سؤالك وفريقنا يرد عليك.`;
+        `أهلاً بك في فريش كاتس 🔥\nاطلب أونلاين وادفع في دقيقة: ${STORE()}/?utm_source=whatsapp&utm_medium=message\nوإذا تحتاج مساعدة اكتب سؤالك ويرد عليك فريقنا.`;
       await sendText({ phoneNorm: pn, text });
     }
   }
