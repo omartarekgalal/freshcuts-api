@@ -5,10 +5,13 @@
    وللعرض بس — التسعيرة لكل عنوان (/api/delivery/quote) هي اللي بتقرّر، ومفيش
    حاجة بتتقفل بسبب المضلّع.
 
-   الطريقة: ٣٦ شعاع (كل ١٠°) من المطعم. على كل شعاع بحث ثنائي بين 0 و السقف
-   الهوائي (المشوار عمره ما يبقى أقصر من الخط المستقيم، فأبعد نقطة ممكنة =
-   maxKm). كل لفّة = طلب مصفوفة واحد (٣٦ عنصر) من drivedist.getMany (بكاش
-   geo_drive_cache). ٦ لفّات = ٢١٦ عنصر كحد أقصى، ودقة ~١٦٠ م على سقف ١٠ كم.
+   الطريقة: ١٢٠ شعاع (كل ٣°، عدد الأشعة قابل للتغيير — ZONE_RAYS) من المطعم.
+   على كل شعاع بحث ثنائي بين 0 و السقف الهوائي (المشوار عمره ما يبقى أقصر من
+   الخط المستقيم، فأبعد نقطة ممكنة = maxKm). كل لفّة = ١٢٠ عنصر من
+   drivedist.getMany (مصفوفة ٥٠/طلب، بكاش geo_drive_cache ٣٠ يوم). ٦ لفّات =
+   ٧٢٠ عنصر كحد أقصى (سقف ٩٠٠ للبناء)، ودقة ~١٧٠ م على سقف ١٠٫٩ كم.
+   حصة جوجل اليومية ١٥٠٠ عنصر: فيه كمان سقف يومي للبناء التلقائي (٩٠٠/٢٤ ساعة)
+   عشان فشل متكرر مايخلّصش الحصة على العملاء.
 
    بيتحسب في الخلفية بس (بعد الإقلاع + كل ٣٠ دقيقة بنشوف — من غير جوجل لو لسه صالح): لو السقف اتغيّر أو
    الحساب أقدم من ٣٠ يوم. عمره ما بيتحسب على طلب عميل. لو لسه ماتحسبش أو
@@ -55,9 +58,10 @@ export function fallbackRadiusKm(cfg) {
   return r;
 }
 
-export const ZONE_ALGO = "v2"; // غيّره لما طريقة الرسم تتغيّر → إعادة بناء (من الكاش، ببلاش)
-export const zoneKey = (cfg, store) =>
-  [ZONE_ALGO, Number(cfg.maxKm), cfg.maxStraightKm == null ? "-" : Number(cfg.maxStraightKm),
+export const ZONE_ALGO = "v3"; // غيّره لما طريقة الرسم تتغيّر → إعادة بناء (من الكاش، ببلاش)
+export const DEFAULT_RAYS = 120;
+export const zoneKey = (cfg, store, rays = DEFAULT_RAYS) =>
+  [ZONE_ALGO, rays, Number(cfg.maxKm), cfg.maxStraightKm == null ? "-" : Number(cfg.maxStraightKm),
    Number(store.lat).toFixed(5), Number(store.lng).toFixed(5)].join("|");
 
 /* buildDriveZone — البحث الثنائي على الأشعة.
@@ -65,8 +69,9 @@ export const zoneKey = (cfg, store) =>
    بيرمي zone_google_failed لو أكتر من نص الأشعة مالهاش إجابة في لفّة، أو
    zone_budget لو الميزانية ماتكفيش ولا ٣ لفّات. */
 export async function buildDriveZone({
-  center, maxKm, capKm = maxKm, distMany, rays = 36, iterations = 6, maxElements = 300, minKm = 0.3,
+  center, maxKm, capKm = maxKm, distMany, rays = DEFAULT_RAYS, iterations = 6, maxElements = 900, minKm = 0.3,
 }) {
+  rays = Math.max(8, Math.round(Number(rays) || DEFAULT_RAYS));
   const lo = new Array(rays).fill(0), hi = new Array(rays).fill(capKm);
   let elements = 0, done = 0;
   for (let it = 0; it < iterations; it++) {
@@ -86,24 +91,41 @@ export async function buildDriveZone({
     done++;
   }
   if (done < 3) throw Object.assign(new Error("zone_budget"), { elements });
-  const radii = clampSpikes(lo).map((l) => Math.max(l, minKm));
+  const radii = clampSpikes(lo, 1.25, spikeSpan(rays)).map((l) => Math.max(l, minKm));
   return { polygon: ringOf(center, radii), radiiKm: radii.map((x) => Math.round(x * 100) / 100), elements, iterations: done };
 }
 
 /* شعاع واحد أطول بكتير من جيرانه = غالباً نقطة في البحر جوجل «لزقها» على
    الكورنيش (اتشاف فعلاً: الغرب 9.7 كم وجيرانه 4.1/4.4)، أو طريق سريع ضيق.
-   على الخريطة بيبان مثلث غريب، فبنقصّه لـ×1.25 من أطول جار. التسعيرة مش متأثرة. */
-export function clampSpikes(radii, ratio = 1.25) {
+   على الخريطة بيبان مثلث غريب، فبنقصّه لـ×1.25 من أطول جار. التسعيرة مش متأثرة.
+   مع أشعة كتير (كل ٣°) الشذوذ بيبقى عرضه كذا شعاع، فالمقارنة بتبقى مع الأشعة
+   اللي على بُعد span (≈١٠° زي الأول) مش اللي جنبه على طول — span = ceil(n/36).
+   الأشعة بتفضل مرتّبة بالزاوية ونصف قطرها > 0 ⇒ المضلّع نجمي حوالين المطعم
+   ومستحيل يقطع نفسه. */
+export const spikeSpan = (n) => Math.max(1, Math.ceil(n / 36));
+export function clampSpikes(radii, ratio = 1.25, span = 1) {
   const n = radii.length;
-  return radii.map((r, i) => Math.min(r, Math.max(radii[(i - 1 + n) % n], radii[(i + 1) % n]) * ratio));
+  const k = Math.max(1, Math.min(span, Math.floor((n - 1) / 2) || 1));
+  return radii.map((r, i) => Math.min(r, Math.max(radii[(i - k + n) % n], radii[(i + k) % n]) * ratio));
 }
 
 /* makeZoneService — الجدول + الجدولة + ردّ الـendpoint. */
 export function makeZoneService({
   pool, drive, getCfg, store, now = () => Date.now(), log = (...a) => console.error(...a),
-  ttlDays = 30, retryMs = 6 * 3600_000, maxElements = 300,
+  ttlDays = 30, retryMs = 12 * 3600_000,
+  rays = Number(process.env.ZONE_RAYS) || DEFAULT_RAYS,
+  maxElements = Number(process.env.ZONE_MAX_ELEMENTS) || 900,
+  dailyElements = Number(process.env.ZONE_DAILY_ELEMENTS) || 900,
 }) {
   let inflight = null, lastFailAt = -Infinity, row = null, rowLoaded = false;
+  /* العناصر المدفوعة في آخر ٢٤ ساعة (للبناء التلقائي بس؛ force من الأدمن بيعدّي
+     بس برضه مقفول بـmaxElements). */
+  let spent = [];
+  const spentToday = () => {
+    const t = now() - 86400_000;
+    spent = spent.filter((x) => x.at > t);
+    return spent.reduce((a, x) => a + x.n, 0);
+  };
 
   async function ensureSchema() {
     await pool.query(`
@@ -134,17 +156,25 @@ export function makeZoneService({
       const cfg = await getCfg();
       if (!cfg || cfg.useDrivingDistance === false) return { skipped: "no_policy_or_straight_mode" };
       const st = store();
-      const key = zoneKey(cfg, st);
+      const key = zoneKey(cfg, st, rays);
       const cur = rowLoaded ? row : await loadRow();
       if (!force && fresh(cur, key)) return { skipped: "fresh" };
       if (!force && now() - lastFailAt < retryMs) return { skipped: "retry_later" };
       if (!drive || !drive.getMany || !drive.configured()) return { skipped: "google_not_configured" };
+      if (!force && spentToday() + Math.min(maxElements, rays * 6) > dailyElements) return { skipped: "daily_budget", spentToday: spentToday() };
+      let used = 0;
       try {
         const z = await buildDriveZone({
-          center: st, maxKm: Number(cfg.maxKm), capKm: rayCapKm(cfg), maxElements,
-          distMany: (pts) => drive.getMany(st, pts),
+          center: st, maxKm: Number(cfg.maxKm), capKm: rayCapKm(cfg), maxElements, rays,
+          distMany: async (pts) => {
+            const r = await drive.getMany(st, pts);
+            used += Number(r && r.billed) || 0;
+            return r;
+          },
         });
-        const meta = { radiiKm: z.radiiKm, elements: z.elements, iterations: z.iterations, rays: z.radiiKm.length };
+        spent.push({ at: now(), n: used });
+        const meta = { radiiKm: z.radiiKm, elements: z.elements, iterations: z.iterations, rays: z.radiiKm.length,
+          minRadiusKm: Math.min(...z.radiiKm), maxRadiusKm: Math.max(...z.radiiKm) };
         await pool.query(
           `INSERT INTO dl_delivery_zone(id, zone_key, max_km, polygon, meta, computed_at)
            VALUES (1,$1,$2,$3::jsonb,$4::jsonb,NOW())
@@ -152,12 +182,13 @@ export function makeZoneService({
              polygon=EXCLUDED.polygon, meta=EXCLUDED.meta, computed_at=NOW()`,
           [key, Number(cfg.maxKm), JSON.stringify(z.polygon), JSON.stringify(meta)]);
         await loadRow();
-        log(`[zone] built: ${z.iterations} iterations, ${z.elements} route elements`);
+        log(`[zone] built: ${z.radiiKm.length} rays × ${z.iterations} iterations, ${z.elements} route elements`);
         return { built: true, ...meta };
       } catch (e) {
+        if (used) spent.push({ at: now(), n: used });
         lastFailAt = now();
         log("[zone] build failed, keeping previous/circle:", e.message);
-        return { failed: e.message };
+        return { failed: e.message, elements: used };
       }
     })().finally(() => { inflight = null; });
     return inflight;
@@ -171,9 +202,10 @@ export function makeZoneService({
     if (!cfg) return { store: storeOut, maxKm: null, polygon: null, approx: true, source: "none", computedAt: null };
     let rw = row;
     try { if (!rowLoaded) rw = await loadRow(); } catch { rw = null; }
-    if (cfg.useDrivingDistance !== false && rw && rw.zone_key === zoneKey(cfg, st) && Array.isArray(rw.polygon)) {
+    if (cfg.useDrivingDistance !== false && rw && rw.zone_key === zoneKey(cfg, st, rays) && Array.isArray(rw.polygon)) {
       return { store: storeOut, maxKm: Number(cfg.maxKm), polygon: rw.polygon, approx: true,
-               source: "drive", computedAt: new Date(rw.computed_at).toISOString() };
+               source: "drive", computedAt: new Date(rw.computed_at).toISOString(),
+               rays: Array.isArray(rw.polygon) ? rw.polygon.length : null };
     }
     return { store: storeOut, maxKm: Number(cfg.maxKm), polygon: circlePolygon(st, fallbackRadiusKm(cfg)),
              approx: true, source: "straight", computedAt: null };

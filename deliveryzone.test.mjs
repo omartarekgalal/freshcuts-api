@@ -39,7 +39,7 @@ test("destPoint: 5 كم شمال/شرق بيرجع 5 كم هوائي", () => {
 
 test("بحث الأشعة: معامل 1.3 → نصف القطر ≈ 10/1.3 على كل شعاع، مضلّع بسيط", async () => {
   const z = await buildDriveZone({ center: STORE, maxKm: 10, distMany: fakeMany(() => 1.3) });
-  assert.equal(z.polygon.length, 36);
+  assert.equal(z.polygon.length, 120);
   assert.equal(z.iterations, 6);
   for (const r of z.radiiKm) {
     assert.ok(r <= 10 / 1.3 + 1e-9, `radius ${r} must never overshoot`);
@@ -52,13 +52,39 @@ test("بحث الأشعة: رتيب — الاتجاه اللي شوارعه أ�
   // الغرب (bearing 270) بحر/لفّة طويلة: معامل 2.5، الباقي 1.2
   const f = (p) => (p.lng < STORE.lng - 0.01 && Math.abs(p.lat - STORE.lat) < 0.02 ? 2.5 : 1.2);
   const z = await buildDriveZone({ center: STORE, maxKm: 10, distMany: fakeMany(f) });
-  assert.ok(z.radiiKm[27] < z.radiiKm[9], "west shorter than east");
-  assert.ok(z.radiiKm[9] > 7.9 && z.radiiKm[9] <= 10 / 1.2);
+  assert.ok(z.radiiKm[90] < z.radiiKm[30], "west shorter than east");
+  assert.ok(z.radiiKm[30] > 7.9 && z.radiiKm[30] <= 10 / 1.2);
+  assert.ok(!selfIntersects(z.polygon));
 });
 
 test("شعاع شاذ (نقطة بحر لزقت على الكورنيش) بيتقصّ لـ×1.25 من أطول جار", () => {
   assert.deepEqual(clampSpikes([4.1, 9.7, 4.4, 4.4]), [4.1, 5.5, 4.4, 4.4]);
   assert.deepEqual(clampSpikes([5, 5, 5]), [5, 5, 5]);
+});
+
+test("أشعة كثيفة: شذوذ عرضه ٣ أشعة (≈٩°) بيتقصّ، والتغيّر التدريجي مابيتلمسش", () => {
+  const n = 120, k = 4;
+  const base = new Array(n).fill(4.2);
+  base[89] = 9.5; base[90] = 10.1; base[91] = 9.8; // الغرب: نقط بحر لزقت على الكورنيش
+  const out = clampSpikes(base, 1.25, k);
+  assert.ok([89, 90, 91].every((i) => out[i] <= 4.2 * 1.25 + 1e-9), "spike clamped");
+  // الجار المباشر عالي → بالمقارنة ±١ بس ماكانش هيتقص
+  assert.ok(clampSpikes(base, 1.25, 1)[90] > 9, "±1 alone misses a wide spike");
+  const smooth = Array.from({ length: n }, (_, i) => 6 + 3 * Math.sin((i / n) * 2 * Math.PI));
+  assert.deepEqual(clampSpikes(smooth, 1.25, k), smooth);
+});
+
+test("١٢٠ شعاع: شذوذ بحر عريض في الغرب بيتقص جوّه البناء، والمضلّع مابيقطعش نفسه", async () => {
+  // غرب المطعم (bearing ~264–276): جوجل بيلزق النقطة على الكورنيش → مشوار قصير مهما بعدت
+  const f = (p) => {
+    const west = p.lng < STORE.lng - 0.02 && Math.abs(p.lat - STORE.lat) < 0.004 + (STORE.lng - p.lng) * 0.1;
+    return west ? 0.4 : 1.4;
+  };
+  const z = await buildDriveZone({ center: STORE, maxKm: 10.9, distMany: fakeMany(f) });
+  assert.equal(z.polygon.length, 120);
+  const normal = z.radiiKm[30];
+  assert.ok(z.radiiKm[90] <= normal * 1.25 + 0.01, `west ${z.radiiKm[90]} clamped near ${normal}`);
+  assert.ok(!selfIntersects(z.polygon));
 });
 
 test("مفيش طريق (noRoute) = برّه", async () => {
@@ -71,19 +97,26 @@ test("مفيش طريق (noRoute) = برّه", async () => {
 
 test("الميزانية: عمرها ما تتعدّى، ولو ماتكفيش ٣ لفّات → zone_budget", async () => {
   const log = [];
-  const z = await buildDriveZone({ center: STORE, maxKm: 10, maxElements: 150, distMany: fakeMany(() => 1.3, log) });
+  const z = await buildDriveZone({ center: STORE, maxKm: 10, rays: 36, maxElements: 150, distMany: fakeMany(() => 1.3, log) });
   assert.equal(z.iterations, 4); // 4×36 = 144 ≤ 150
   assert.ok(z.elements <= 150);
   await assert.rejects(
-    buildDriveZone({ center: STORE, maxKm: 10, maxElements: 100, distMany: fakeMany(() => 1.3) }),
+    buildDriveZone({ center: STORE, maxKm: 10, maxElements: 300, distMany: fakeMany(() => 1.3) }),
     /zone_budget/);
 });
 
-test("الافتراضي: البناء كله ≤ ٢١٦ عنصر", async () => {
+test("الافتراضي: ١٢٠ شعاع × ٦ = ٧٢٠ عنصر ≤ ٩٠٠ (حصة جوجل اليومية ١٥٠٠)", async () => {
   const log = [];
-  const z = await buildDriveZone({ center: STORE, maxKm: 10, distMany: fakeMany(() => 1.3, log) });
-  assert.equal(log.reduce((a, b) => a + b, 0), 216);
-  assert.equal(z.elements, 216);
+  const z = await buildDriveZone({ center: STORE, maxKm: 10.9, distMany: fakeMany(() => 1.3, log) });
+  assert.equal(log.reduce((a, b) => a + b, 0), 720);
+  assert.equal(z.elements, 720);
+  assert.equal(z.iterations, 6);
+});
+
+test("عدد الأشعة قابل للتغيير", async () => {
+  const z = await buildDriveZone({ center: STORE, maxKm: 10, rays: 72, distMany: fakeMany(() => 1.3) });
+  assert.equal(z.polygon.length, 72);
+  assert.equal(z.elements, 432);
 });
 
 test("جوجل واقع (أغلب النتايج null) → zone_google_failed", async () => {
@@ -134,28 +167,35 @@ test("الخدمة: قبل الحساب → دايرة هوائية؛ بعده �
   const after = await svc.current();
   assert.equal(after.source, "drive");
   assert.equal(after.maxKm, 10);
-  assert.equal(after.polygon.length, 36);
+  assert.equal(after.polygon.length, 120);
+  assert.equal(after.rays, 120);
   assert.ok(after.computedAt);
   assert.deepEqual(after.store, STORE);
   const again = await svc.refresh();
   assert.equal(again.skipped, "fresh");
-  assert.equal(calls, 216);
+  assert.equal(calls, 720);
 });
 
 test("الخدمة: تغيير maxKm → دايرة لحد ما يتحسب من جديد", async () => {
   const pool = fakePool();
   let cfg = { ...CFG };
   const drive = { configured: () => true, getMany: (from, pts) => fakeMany(() => 1.3)(pts) };
-  const svc = makeZoneService({ pool, drive, getCfg: async () => cfg, store: () => STORE, log: quiet });
+  const svc = makeZoneService({ pool, drive, getCfg: async () => cfg, store: () => STORE, log: quiet, dailyElements: 2000 });
   await svc.refresh();
   cfg = { ...CFG, maxKm: 12 };
   assert.equal((await svc.current()).source, "straight");
   assert.equal(zoneKey(cfg, STORE) === pool.db.row.zone_key, false);
   assert.equal((await svc.refresh()).built, true);
   assert.equal((await svc.current()).source, "drive");
+  // بالسقف اليومي الافتراضي (٩٠٠): بناء تاني في نفس اليوم مابيحصلش تلقائياً، الأدمن يقدر يعمل force
+  const svc2 = makeZoneService({ pool: fakePool(), drive, getCfg: async () => cfg, store: () => STORE, log: quiet });
+  await svc2.refresh();
+  cfg = { ...CFG, maxKm: 10.9 };
+  assert.equal((await svc2.refresh()).skipped, "daily_budget");
+  assert.equal((await svc2.refresh({ force: true })).built, true);
 });
 
-test("الخدمة: فشل جوجل → دايرة، ومفيش محاولة تانية قبل ٦ ساعات", async () => {
+test("الخدمة: فشل جوجل → دايرة، ومفيش محاولة تانية قبل ١٢ ساعة", async () => {
   const pool = fakePool();
   let n = 0, t = 1_000_000;
   const drive = { configured: () => true, getMany: async (from, pts) => { n++; return { results: pts.map(() => null), billed: 0 }; } };
@@ -164,7 +204,7 @@ test("الخدمة: فشل جوجل → دايرة، ومفيش محاولة ت�
   assert.equal((await svc.current()).source, "straight");
   assert.equal((await svc.refresh()).skipped, "retry_later");
   assert.equal(n, 1);
-  t += 6 * 3600_000 + 1;
+  t += 12 * 3600_000 + 1;
   await svc.refresh();
   assert.equal(n, 2);
 });
@@ -175,6 +215,34 @@ test("الخدمة: مفتاح جوجل ناقص → مابتحاولش", async 
     getCfg: async () => CFG, store: () => STORE, log: quiet,
   });
   assert.equal((await svc.refresh()).skipped, "google_not_configured");
+});
+
+test("الخدمة: سقف يومي — فشل بعد ما صرف عناصر مايتكررش تلقائياً، و force بيعدّي", async () => {
+  const pool = fakePool();
+  let t = 1_000_000, billedTotal = 0;
+  // جوجل بيرد على أول لفّة وبعدين يقع → صرف ١٢٠ عنصر وفشل
+  let round = 0;
+  const drive = { configured: () => true, getMany: async (from, pts) => {
+    round++;
+    billedTotal += pts.length;
+    return round === 1 ? fakeMany(() => 1.3)(pts) : { results: pts.map(() => null), billed: pts.length };
+  } };
+  const svc = makeZoneService({ pool, drive, getCfg: async () => CFG, store: () => STORE, log: quiet, now: () => t,
+    retryMs: 1000, maxElements: 900, dailyElements: 900 });
+  const r1 = await svc.refresh();
+  assert.match(r1.failed, /zone_google_failed/);
+  assert.equal(r1.elements, 240);
+  t += 2000; // الـretry فات، بس ٢٤٠ + ٩٠٠ > ٩٠٠
+  assert.equal((await svc.refresh()).skipped, "daily_budget");
+  assert.equal(billedTotal, 240);
+  t += 86400_000;
+  round = 0;
+  await svc.refresh();
+  assert.equal(billedTotal, 480);
+});
+
+test("الخدمة: تغيير عدد الأشعة = مفتاح جديد", () => {
+  assert.notEqual(zoneKey(CFG, STORE, 36), zoneKey(CFG, STORE, 120));
 });
 
 /* ── drivedist.getMany: مصفوفة + كاش ── */
