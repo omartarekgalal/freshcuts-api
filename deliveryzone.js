@@ -55,8 +55,9 @@ export function fallbackRadiusKm(cfg) {
   return r;
 }
 
+export const ZONE_ALGO = "v2"; // غيّره لما طريقة الرسم تتغيّر → إعادة بناء (من الكاش، ببلاش)
 export const zoneKey = (cfg, store) =>
-  [Number(cfg.maxKm), cfg.maxStraightKm == null ? "-" : Number(cfg.maxStraightKm),
+  [ZONE_ALGO, Number(cfg.maxKm), cfg.maxStraightKm == null ? "-" : Number(cfg.maxStraightKm),
    Number(store.lat).toFixed(5), Number(store.lng).toFixed(5)].join("|");
 
 /* buildDriveZone — البحث الثنائي على الأشعة.
@@ -85,8 +86,16 @@ export async function buildDriveZone({
     done++;
   }
   if (done < 3) throw Object.assign(new Error("zone_budget"), { elements });
-  const radii = lo.map((l) => Math.max(l, minKm));
+  const radii = clampSpikes(lo).map((l) => Math.max(l, minKm));
   return { polygon: ringOf(center, radii), radiiKm: radii.map((x) => Math.round(x * 100) / 100), elements, iterations: done };
+}
+
+/* شعاع واحد أطول بكتير من جيرانه = غالباً نقطة في البحر جوجل «لزقها» على
+   الكورنيش (اتشاف فعلاً: الغرب 9.7 كم وجيرانه 4.1/4.4)، أو طريق سريع ضيق.
+   على الخريطة بيبان مثلث غريب، فبنقصّه لـ×1.25 من أطول جار. التسعيرة مش متأثرة. */
+export function clampSpikes(radii, ratio = 1.25) {
+  const n = radii.length;
+  return radii.map((r, i) => Math.min(r, Math.max(radii[(i - 1 + n) % n], radii[(i + 1) % n]) * ratio));
 }
 
 /* makeZoneService — الجدول + الجدولة + ردّ الـendpoint. */

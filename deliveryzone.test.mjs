@@ -3,7 +3,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
-  buildDriveZone, circlePolygon, destPoint, fallbackRadiusKm, rayCapKm, makeZoneService, zoneKey,
+  buildDriveZone, clampSpikes, circlePolygon, destPoint, fallbackRadiusKm, rayCapKm, makeZoneService, zoneKey,
 } from "./deliveryzone.js";
 import { makeDriveDistance, googleDriveMatrix } from "./drivedist.js";
 import { haversineKm } from "./delivery.js";
@@ -54,6 +54,11 @@ test("بحث الأشعة: رتيب — الاتجاه اللي شوارعه أ�
   const z = await buildDriveZone({ center: STORE, maxKm: 10, distMany: fakeMany(f) });
   assert.ok(z.radiiKm[27] < z.radiiKm[9], "west shorter than east");
   assert.ok(z.radiiKm[9] > 7.9 && z.radiiKm[9] <= 10 / 1.2);
+});
+
+test("شعاع شاذ (نقطة بحر لزقت على الكورنيش) بيتقصّ لـ×1.25 من أطول جار", () => {
+  assert.deepEqual(clampSpikes([4.1, 9.7, 4.4, 4.4]), [4.1, 5.5, 4.4, 4.4]);
+  assert.deepEqual(clampSpikes([5, 5, 5]), [5, 5, 5]);
 });
 
 test("مفيش طريق (noRoute) = برّه", async () => {
