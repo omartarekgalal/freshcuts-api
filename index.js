@@ -48,6 +48,7 @@ import * as cms from "./cms.js";
 import * as reviews from "./reviews.js";
 import * as notify from "./notify.js";
 import * as carts from "./carts.js";
+import * as journey from "./journey.js";
 import * as selftest from "./selftest.js";
 import * as menuplan from "./menuplan.js";
 import * as systemcheck from "./systemcheck.js";
@@ -3038,6 +3039,8 @@ const deliveryApi = deliveryMod.register(app, moduleCtx, { shop: () => shopApi }
 const notifyApi = notify.register(app, moduleCtx);
 // السلات المتروكة: لقطات من المتجر + سلّم استرداد (إشعار ثم SMS) + أرقام اللوحة
 const cartsApi = carts.register(app, moduleCtx, { notify: notifyApi });
+// رحلة العميل (٠٢): دفعات أحداث المتجر + checkout_result/order_paid من السيرفر + تقرير #store/analytics/journey
+const journeyApi = journey.register(app, moduleCtx, { analytics: analyticsApi });
 // فحص السلسلة كاملة: كل حلقة في طريق الطلب بتترد عليها ok/warn/fail
 selftest.register(app, moduleCtx, { delivery: () => deliveryApi });
 // accounts بترجع customerDiscount اللي الشيك أوت محتاجه (خصم الملاك الدائم) —
@@ -3046,6 +3049,7 @@ let accountsApi = null;
 shopApi = shop.register(app, moduleCtx, {
   pay: payApi, delivery: deliveryApi, notify: notifyApi, accounts: () => accountsApi,
   carts: () => cartsApi, tsp: () => tspApi, funnel: () => funnelApi,
+  journey: () => journeyApi,
   // الباقات بتتعرّف في الـCMS (اللي بيتسجّل بعدنا) — الشيك أوت بيوسّعها
   // بنفس الدالة اللي المتجر بيعاين بيها، فالمعروض = المحسوب.
   bundles: () => cmsApi,
