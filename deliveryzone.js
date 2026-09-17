@@ -73,7 +73,6 @@ export async function buildDriveZone({
 }) {
   rays = Math.max(8, Math.round(Number(rays) || DEFAULT_RAYS));
   const lo = new Array(rays).fill(0), hi = new Array(rays).fill(capKm);
-  const loKm = new Array(rays).fill(0); // مسافة المشوار لنقطة lo على كل شعاع
   let elements = 0, done = 0;
   for (let it = 0; it < iterations; it++) {
     if (elements + rays > maxElements) break; // أسوأ حالة: كل النقط مش في الكاش
@@ -95,9 +94,8 @@ export async function buildDriveZone({
     for (let i = 0; i < rays; i++) {
       const r = results[i];
       if (!r) { unknown++; continue; }
-      if (!r.noRoute && isFinite(r.km) && r.km <= maxKm && !snapped(mids[i] - lo[i], r.km - loKm[i])) {
-        lo[i] = mids[i]; loKm[i] = r.km;
-      } else hi[i] = mids[i];
+      if (!r.noRoute && isFinite(r.km) && r.km <= maxKm) lo[i] = mids[i];
+      else hi[i] = mids[i];
     }
     if (unknown > rays / 2) {
       // عندنا دقة كفاية من اللفّات اللي فاتت (الحدود lo/hi لسه صحيحة) → نقف هنا بدل ما نرمي
@@ -107,29 +105,22 @@ export async function buildDriveZone({
     done++;
   }
   if (done < 3) throw Object.assign(new Error("zone_budget"), { elements });
-  const radii = clampSpikes(lo, 1.25, spikeWindow(rays)).map((l) => Math.max(l, minKm));
+  const radii = clampSpikes(lo, 1.4, spikeWindow(rays)).map((l) => Math.max(l, minKm));
   return { polygon: ringOf(center, radii), radiiKm: radii.map((x) => Math.round(x * 100) / 100), elements, iterations: done };
-}
-
-/* «لزق» على الطريق: نقطة في البحر (أو أرض من غير طرق) جوجل بيحسب المشوار لأقرب
-   طريق، فمهما بعدت على نفس الشعاع المشوار بيفضل ثابت. اتشاف في الإنتاج
-   (2026-09-17) على ٢٥٥–٢٧٠°: هوائي 5.45 / 8.17 / 9.54 كم → مشوار 9.71 / 9.71 / 9.71.
-   على الأرض الحقيقية لو بعدت d كم هوائي المشوار بيزيد تقريباً d أو أكتر، فلو زاد
-   أقل من ربعها على مسافة ≥ 0.4 كم → النقطة الأبعد «ملزوقة» = برّه. */
-export function snapped(straightStepKm, driveStepKm, { minStepKm = 0.4, ratio = 0.25 } = {}) {
-  return straightStepKm >= minStepKm && driveStepKm < ratio * straightStepKm;
 }
 
 /* شعاع أطول بكتير من اللي حواليه = غالباً نقطة في البحر جوجل «لزقها» على
    الكورنيش (اتشاف فعلاً: الغرب 9.7 كم وجيرانه 4.1/4.4)، أو طريق سريع ضيق.
    على الخريطة بيبان مثلث غريب. مع ١٢٠ شعاع (كل ٣°) الشذوذ في البحر بقى عرضه
-   كذا شعاع ومتقطّع (snapped فوق بتمسك أغلبه)، فالمقارنة بالجار المباشر
-   مابتنفعش: لكل جانب (±halfWindow ≈ ±١٥°) بناخد أوطى قيمة (q=0)، والمرجع =
-   الأعلى بين الجانبين، والشعاع بيتقصّ لـ ratio × المرجع. للعرض بس — التسعيرة
+   كذا شعاع ومتقطّع (9.5، 5.7، 6.0، 8.3، 9.7 على ٢٥٥–٢٧٠°)، فالمقارنة بالجار
+   المباشر مابتنفعش: لكل جانب (±halfWindow ≈ ±١٥°) بناخد أوطى قيمة (q=0)، والمرجع
+   = الأعلى بين الجانبين، والشعاع بيتقصّ لـ ratio (1.4) × المرجع.
+   ملحوظة: جرّبنا نكشف البحر من «المشوار ثابت وانت بتبعد» — مانفعش: مشاوير جدة
+   جوّه الأحياء مش رتيبة (5.45 هوائي → 9.88، 6.13 → 8.89) فكان بيقصّ أرض بنوصلها. للعرض بس — التسعيرة
    لكل عنوان مش متأثرة. الأشعة مرتّبة بالزاوية ونصف قطرها > 0 ⇒ المضلّع نجمي
    حوالين المطعم ومستحيل يقطع نفسه. */
 export const spikeWindow = (n) => Math.max(1, Math.ceil(n / 24));
-export function clampSpikes(radii, ratio = 1.25, halfWindow = 1, q = 0) {
+export function clampSpikes(radii, ratio = 1.4, halfWindow = 1, q = 0) {
   const n = radii.length;
   const w = Math.max(1, Math.min(halfWindow, Math.floor((n - 1) / 2) || 1));
   const quant = (arr) => { arr.sort((a, b) => a - b); return arr[Math.floor((arr.length - 1) * q)]; };

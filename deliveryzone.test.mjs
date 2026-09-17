@@ -3,7 +3,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
-  buildDriveZone, clampSpikes, spikeWindow, snapped, circlePolygon, destPoint, fallbackRadiusKm, rayCapKm, makeZoneService, zoneKey,
+  buildDriveZone, clampSpikes, spikeWindow, circlePolygon, destPoint, fallbackRadiusKm, rayCapKm, makeZoneService, zoneKey,
 } from "./deliveryzone.js";
 import { makeDriveDistance, googleDriveMatrix } from "./drivedist.js";
 import { haversineKm } from "./delivery.js";
@@ -58,7 +58,7 @@ test("بحث الأشعة: رتيب — الاتجاه اللي شوارعه أ�
 });
 
 test("شعاع شاذ (نقطة بحر لزقت على الكورنيش) بيتقصّ", () => {
-  assert.deepEqual(clampSpikes([4.1, 9.7, 4.4, 4.4]), [4.1, 5.5, 4.4, 4.4]);
+  assert.deepEqual(clampSpikes([4.1, 9.7, 4.4, 4.4], 1.25), [4.1, 5.5, 4.4, 4.4]);
   assert.deepEqual(clampSpikes([5, 5, 5]), [5, 5, 5]);
 });
 
@@ -66,37 +66,26 @@ test("أشعة كثيفة: شذوذ عرضه كذا شعاع بيتقصّ، وا
   const n = 120, w = spikeWindow(n);
   const radii = new Array(n).fill(4.6);
   [9.5, 5.7, 6.0, 8.3, 9.7].forEach((v, k) => { radii[86 + k] = v; });
-  const out = clampSpikes(radii, 1.25, w);
-  assert.ok(out.slice(86, 91).every((r) => r <= 4.6 * 1.25 + 1e-9), `clamped: ${out.slice(86, 91)}`);
+  const out = clampSpikes(radii, 1.4, w);
+  assert.ok(out.slice(86, 91).every((r) => r <= 4.6 * 1.4 + 1e-9), `clamped: ${out.slice(86, 91)}`);
   // حافة: ٧٫٥ لحد شعاع ٥٨ وبعدين ٤٫٩ — الأشعة العالية جنب الحافة تفضل زي ما هي
   const edge = Array.from({ length: n }, (_, i) => (i < 59 ? 7.5 : 4.9));
   edge[57] = 7.8; edge[58] = 7.2;
-  const eo = clampSpikes(edge, 1.25, w);
+  const eo = clampSpikes(edge, 1.4, w);
   assert.equal(eo[57], 7.8);
   assert.equal(eo[58], 7.2);
   const smooth = Array.from({ length: n }, (_, i) => 6 + 3 * Math.sin((i / n) * 2 * Math.PI));
-  clampSpikes(smooth, 1.25, w).forEach((r, i) => assert.ok(Math.abs(r - smooth[i]) < 1e-9));
+  clampSpikes(smooth, 1.4, w).forEach((r, i) => assert.ok(Math.abs(r - smooth[i]) < 1e-9));
 });
 
-test("snapped: المشوار ثابت وانت بتبعد = نقطة ملزوقة على طريق (بحر)", () => {
-  assert.equal(snapped(8.17 - 5.45, 9.71 - 9.71), true);   // قراءة الإنتاج على 267°
-  assert.equal(snapped(1.36, 1.5), false);                // أرض عادية
-  assert.equal(snapped(0.2, 0), false);                   // خطوة صغيرة: دقة جوجل
-});
-
-test("بناء: شعاع بحر (المشوار ثابت بعد الساحل) بيقف عند الساحل مش عند السقف", async () => {
-  const coastKm = 4.5;
-  // غرب المطعم: أبعد من الساحل → جوجل بيرجّع مشوار الساحل (ثابت)
-  const f = async (pts) => ({ billed: pts.length, results: pts.map((p) => {
-    const st = kmFrom(p);
-    const west = p.lng < STORE.lng && Math.abs(p.lat - STORE.lat) < 0.03;
-    return { km: west ? Math.min(st, coastKm) * 1.3 + (st > coastKm ? 0.02 : 0) : st * 1.2 };
-  }) });
-  const z = await buildDriveZone({ center: STORE, maxKm: 10.9, distMany: f });
-  // أول نقطة (5.45) نفسها في البحر ومشوارها شكله طبيعي، فمانقدرش نكتشفها — بس مابنوصلش للسقف 10.9
-  assert.ok(z.radiiKm[90] <= 6.2, `west ray stops near the coast: ${z.radiiKm[90]}`);
-  assert.ok(z.radiiKm[30] > 8.5, `east untouched: ${z.radiiKm[30]}`);
-  assert.ok(!selfIntersects(z.polygon));
+test("القصّ على قراءة الإنتاج (١٢٠ شعاع): لسان البحر بيتقصّ، والأرض اللي حواليه مابتتلمسش", () => {
+  // نصف أقطار حقيقية 2026-09-17 (كل ٣°)
+  const live = [8.0,5.1,5.1,7.2,6.6,5.3,7.5,7.3,5.6,5.8,6.8,5.8,6.1,6.6,6.8,5.3,5.3,4.8,4.9,4.9,4.9,5.3,6.0,5.8,5.8,6.5,6.5,7.0,7.5,7.5,7.7,7.8,7.8,8.0,6.8,7.0,6.8,6.8,6.6,7.2,7.3,6.6,7.8,7.8,7.5,7.7,6.6,8.2,8.0,7.5,8.3,8.0,9.0,9.0,9.0,8.0,7.5,7.8,7.2,5.1,4.9,4.9,4.9,4.8,4.9,5.1,5.1,5.1,4.9,5.1,4.9,4.9,4.8,4.4,4.4,4.3,4.6,4.6,4.4,4.4,3.6,4.4,4.4,4.6,4.8,6.6,9.5,5.7,6.0,8.3,9.7,4.4,4.8,4.8,4.8,4.8,4.8,4.8,4.6,3.9,4.6,4.9,5.6,5.8,5.6,5.4,5.8,6.6,7.0,7.7,7.8,5.6,6.8,8.9,9.4,8.3,7.7,7.3,7.3,8.9];
+  assert.equal(live.length, 120);
+  const out = clampSpikes(live, 1.4, spikeWindow(120));
+  assert.ok(out[86] < 6.5 && out[89] < 7, `sea tongue clamped: 258°=${out[86]} 267°=${out[89]}`);
+  const changed = out.map((r, i) => (Math.abs(r - live[i]) > 1e-9 ? i : null)).filter((x) => x != null);
+  assert.ok(changed.every((i) => i >= 85 && i <= 91), `only the western sea rays change: ${changed.map((i) => i * 3)}`);
 });
 
 test("مفيش طريق (noRoute) = برّه", async () => {
