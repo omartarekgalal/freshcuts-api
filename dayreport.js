@@ -121,6 +121,7 @@ const SOURCE_LABELS = {
   instagram: "انستقرام",
   tiktok: "تيك توك",
   snapchat: "سناب شات",
+  whatsapp: "واتساب",
   google_maps: "خرائط قوقل",
   influencer: "مشهور / مؤثر",
   friend: "صديق",

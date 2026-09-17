@@ -2241,7 +2241,7 @@ app.get("/api/cashier/queue", async (c) => {
   return c.json({ ok: true, pending, stats, sourceRank: await sourceRank(), lastSyncAt: insightsState.lastOrdersSyncAt });
 });
 
-const CASHIER_SOURCES = ["facebook", "instagram", "tiktok", "snapchat", "google_maps", "influencer", "friend", "walkin", "old_customer", "delivery_app", "other", "skipped"];
+const CASHIER_SOURCES = ["facebook", "instagram", "tiktok", "snapchat", "whatsapp", "google_maps", "influencer", "friend", "walkin", "old_customer", "delivery_app", "other", "skipped"];
 app.post("/api/cashier/submit", async (c) => {
   const err = await requireCashierOrAdmin(c); if (err) return err;
   const b = await c.req.json().catch(() => ({}));

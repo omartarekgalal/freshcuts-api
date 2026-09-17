@@ -43,7 +43,7 @@ const BIZ_TODAY = `(((now() AT TIME ZONE '${TZ}') - interval '${BIZ_DAY_START_HO
 // Same vocabulary the shared cashier station posts, so a station switched over
 // to per-employee login produces rows analytics already understands.
 const STAFF_SOURCES = [
-  "facebook", "instagram", "tiktok", "snapchat", "google_maps", "influencer",
+  "facebook", "instagram", "tiktok", "snapchat", "whatsapp", "google_maps", "influencer",
   "friend", "walkin", "old_customer", "delivery_app", "other", "skipped",
 ];
 const ROLES = ["cashier", "manager"];
