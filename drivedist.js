@@ -209,7 +209,9 @@ export function makeDriveDistance({
   /* getMany(from, tos) — للخلفية بس (رسم منطقة التوصيل)، مش لمسار العميل:
      الكاش الأول، والباقي في طلبات مصفوفة (٥٠ نقطة للطلب).
      → {results:[{km,source}|{noRoute:true}|null], billed} — عمرها ما ترمي. */
-  async function getMany(from, tos, { timeoutMs: tmo = 10000 } = {}) {
+  /* الخيارات للخلفية: chunk أصغر + مهلة أطول، و
+     pauseOnFail:false = فشل رسم المنطقة مايوقفش جوجل على تسعير العملاء ٦٠ ثانية. */
+  async function getMany(from, tos, { timeoutMs: tmo = 10000, chunk = MATRIX_CHUNK, pauseOnFail = true } = {}) {
     const results = tos.map(() => null);
     let billed = 0;
     const miss = [];
@@ -223,8 +225,9 @@ export function makeDriveDistance({
       if (miss.length) stats.skipped += miss.length;
       return { results, billed };
     }
-    for (let c = 0; c < miss.length; c += MATRIX_CHUNK) {
-      const idx = miss.slice(c, c + MATRIX_CHUNK);
+    const size = Math.max(1, Math.min(MATRIX_CHUNK, Number(chunk) || MATRIX_CHUNK));
+    for (let c = 0; c < miss.length; c += size) {
+      const idx = miss.slice(c, c + size);
       const dests = idx.map((i) => ({ lat: roundCoord(tos[i].lat), lng: roundCoord(tos[i].lng) }));
       try {
         billed += dests.length;
@@ -239,9 +242,9 @@ export function makeDriveDistance({
         }
       } catch (e) {
         stats.fail++;
-        pausedUntil = now() + cooldownMs;
         log("[drivedist] matrix failed:", e.name === "AbortError" ? "timeout" : e.message);
-        break;
+        if (pauseOnFail) { pausedUntil = now() + cooldownMs; break; }
+        // الخلفية: نكمّل باقي الأجزاء، والنقط اللي فشلت بترجع null
       }
     }
     return { results, billed };

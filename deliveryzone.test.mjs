@@ -203,10 +203,10 @@ test("الخدمة: فشل جوجل → دايرة، ومفيش محاولة ت�
   assert.match((await svc.refresh()).failed, /zone_google_failed/);
   assert.equal((await svc.current()).source, "straight");
   assert.equal((await svc.refresh()).skipped, "retry_later");
-  assert.equal(n, 1);
+  assert.equal(n, 2, "one round + one retry of the missing points");
   t += 12 * 3600_000 + 1;
   await svc.refresh();
-  assert.equal(n, 2);
+  assert.equal(n, 4);
 });
 
 test("الخدمة: مفتاح جوجل ناقص → مابتحاولش", async () => {
@@ -220,7 +220,7 @@ test("الخدمة: مفتاح جوجل ناقص → مابتحاولش", async 
 test("الخدمة: سقف يومي — فشل بعد ما صرف عناصر مايتكررش تلقائياً، و force بيعدّي", async () => {
   const pool = fakePool();
   let t = 1_000_000, billedTotal = 0;
-  // جوجل بيرد على أول لفّة وبعدين يقع → صرف ١٢٠ عنصر وفشل
+  // جوجل بيرد على أول لفّة وبعدين يقع (والإعادة كمان) → صرف ٣٦٠ عنصر وفشل
   let round = 0;
   const drive = { configured: () => true, getMany: async (from, pts) => {
     round++;
@@ -231,18 +231,51 @@ test("الخدمة: سقف يومي — فشل بعد ما صرف عناصر م�
     retryMs: 1000, maxElements: 900, dailyElements: 900 });
   const r1 = await svc.refresh();
   assert.match(r1.failed, /zone_google_failed/);
-  assert.equal(r1.elements, 240);
-  t += 2000; // الـretry فات، بس ٢٤٠ + ٩٠٠ > ٩٠٠
+  assert.equal(r1.elements, 360);
+  t += 2000; // الـretry فات، بس ٣٦٠ + ٧٢٠ > ٩٠٠
   assert.equal((await svc.refresh()).skipped, "daily_budget");
-  assert.equal(billedTotal, 240);
+  assert.equal(billedTotal, 360);
   t += 86400_000;
   round = 0;
   await svc.refresh();
-  assert.equal(billedTotal, 480);
+  assert.equal(billedTotal, 720);
 });
 
 test("الخدمة: تغيير عدد الأشعة = مفتاح جديد", () => {
   assert.notEqual(zoneKey(CFG, STORE, 36), zoneKey(CFG, STORE, 120));
+});
+
+test("لفّة فيها نقط من غير إجابة (مهلة) → بنسأل الناقص بس مرة تانية، والميزانية محترمة", async () => {
+  let call = 0, billedTotal = 0;
+  const distMany = async (pts) => {
+    call++;
+    billedTotal += pts.length;
+    // أول طلب في كل لفّة: ٧٠ نقطة من ١٢٠ مالهاش إجابة
+    const flaky = pts.length === 120;
+    return { results: pts.map((p, i) => (flaky && i < 70 ? null : { km: kmFrom(p) * 1.3 })), billed: pts.length };
+  };
+  const z = await buildDriveZone({ center: STORE, maxKm: 10, distMany });
+  assert.equal(z.iterations, 4); // ٤ × ١٩٠ = ٧٦٠؛ الخامسة من غير ميزانية إعادة → وقفنا على دقة ٤ لفّات
+  assert.equal(z.elements, billedTotal);
+  assert.ok(z.elements <= 900);
+  // ٦ لفّات × (١٢٠ + ٧٠) = ١١٤٠ > ٩٠٠ ⇒ الإعادة بتقف لما الميزانية تخلص، والباقي بيتحسب بالدقة المتاحة
+  assert.ok(z.radiiKm.every((r) => r <= 10 / 1.3 + 1e-9));
+});
+
+test("getMany (خلفية): فشل جزء مايوقفش جوجل ولا باقي الأجزاء، وchunk أصغر", async () => {
+  const calls = [];
+  let n = 0;
+  const base = matrixFetch((p) => kmFrom(p) * 1.3, calls);
+  const fetchImpl = async (url, init) => { n++; if (n === 1) throw Object.assign(new Error("t"), { name: "AbortError" }); return base(url, init); };
+  const drive = makeDriveDistance({ fetchImpl, keyFn: () => "k", log: quiet });
+  const pts = Array.from({ length: 30 }, (_, i) => destPoint(STORE.lat, STORE.lng, i * 12, 3));
+  const r = await drive.getMany(STORE, pts, { chunk: 25, pauseOnFail: false });
+  assert.equal(r.billed, 30);
+  assert.ok(r.results.slice(0, 25).every((x) => x === null));
+  assert.ok(r.results.slice(25).every((x) => x && x.source === "google"));
+  // مش متوقف: طلب العميل بعدها بيروح لجوجل عادي
+  const again = await drive.getMany(STORE, pts.slice(0, 2));
+  assert.equal(again.results[0].source, "google");
 });
 
 /* ── drivedist.getMany: مصفوفة + كاش ── */

@@ -78,8 +78,18 @@ export async function buildDriveZone({
     if (elements + rays > maxElements) break; // أسوأ حالة: كل النقط مش في الكاش
     const mids = lo.map((l, i) => (l + hi[i]) / 2);
     const pts = mids.map((km, i) => destPoint(center.lat, center.lng, (360 / rays) * i, km));
-    const { results, billed } = await distMany(pts);
-    elements += Number(billed) || 0;
+    const got = await distMany(pts);
+    const results = got.results.slice();
+    elements += Number(got.billed) || 0;
+    /* النقط اللي مارجعلهاش إجابة (مهلة/عطل مؤقت) بنسألها تاني مرة واحدة — اللي
+       نجح اتخزّن في الكاش، فالمحاولة بتدفع تمن الناقص بس. */
+    const miss = [];
+    for (let i = 0; i < rays; i++) if (!results[i]) miss.push(i);
+    if (miss.length && elements + miss.length <= maxElements) {
+      const again = await distMany(miss.map((i) => pts[i]));
+      elements += Number(again.billed) || 0;
+      miss.forEach((i, j) => { if (again.results[j]) results[i] = again.results[j]; });
+    }
     let unknown = 0;
     for (let i = 0; i < rays; i++) {
       const r = results[i];
@@ -87,7 +97,11 @@ export async function buildDriveZone({
       if (!r.noRoute && isFinite(r.km) && r.km <= maxKm) lo[i] = mids[i];
       else hi[i] = mids[i];
     }
-    if (unknown > rays / 2) throw Object.assign(new Error("zone_google_failed"), { elements });
+    if (unknown > rays / 2) {
+      // عندنا دقة كفاية من اللفّات اللي فاتت (الحدود lo/hi لسه صحيحة) → نقف هنا بدل ما نرمي
+      if (done >= 3) break;
+      throw Object.assign(new Error("zone_google_failed"), { elements });
+    }
     done++;
   }
   if (done < 3) throw Object.assign(new Error("zone_budget"), { elements });
@@ -167,7 +181,7 @@ export function makeZoneService({
         const z = await buildDriveZone({
           center: st, maxKm: Number(cfg.maxKm), capKm: rayCapKm(cfg), maxElements, rays,
           distMany: async (pts) => {
-            const r = await drive.getMany(st, pts);
+            const r = await drive.getMany(st, pts, { chunk: 25, timeoutMs: 20000, pauseOnFail: false });
             used += Number(r && r.billed) || 0;
             return r;
           },
