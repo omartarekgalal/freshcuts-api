@@ -236,3 +236,16 @@ test("classifyJsError: كودنا ولا دخيل", () => {
   assert.equal(J.classifyJsError({ msg: "x", kind: "third_party", src: "/beacon.min.js" }), "third_party");
   assert.ok(J.isOurError("first_party") && J.isOurError("inline") && !J.isOurError("iab_bridge"));
 });
+
+test("19/9: auto_cart_* and geo_* events are accepted and carry no funnel step", () => {
+  for (const n of ["auto_cart_open", "auto_cart_back", "geo_prompt", "geo_granted", "geo_denied", "geo_timeout", "geo_unavailable", "geo_skipped"]) {
+    assert.ok(J.WEB_EVENTS.includes(n), n);
+    assert.equal(J.stepOf(n, {}), null, n);
+  }
+  const p = J.parseBatch(JSON.stringify({ sessionId: "sabcdefgh123", anonId: "dabcdefgh123", events: [
+    { n: "geo_granted", t: Date.now(), seq: 1, p: { surface: "co2_edit", auto: true, perm: "prompt", ms: 2100, acc: 14 } },
+    { n: "auto_cart_open", t: Date.now(), seq: 2, p: { kind: "bundle", ui: "co2", cart_count: 1 } },
+  ] }));
+  assert.equal(p.events.length, 2);
+  assert.equal(p.events[0].props.surface, "co2_edit");
+});

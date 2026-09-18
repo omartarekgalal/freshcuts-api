@@ -70,6 +70,9 @@ export const WEB_EVENTS = Object.freeze([
   // ١٩/٩ (تحليل CRO): المنتقي + قفل الأوراق + أخطاء الفورم + أول لمسة + الهروب من متصفح التطبيق
   "picker_choice", "picker_add_blocked", "picker_close", "sheet_close", "form_error",
   "first_input", "page_visible", "iab_escape", "iab_stay",
+  // ١٩/٩ (قرار المالك): فتح السلة لزائر الإعلان بعد العرض + طلب الموقع أول ما خطوة العنوان تتفتح
+  "auto_cart_open", "auto_cart_back",
+  "geo_prompt", "geo_granted", "geo_denied", "geo_timeout", "geo_unavailable", "geo_skipped",
 ]);
 
 /* نوع خطأ الـJS. المتصفح بيبعت kind من ١٩/٩؛ القديم بنصنّفه من الرسالة والملف.
