@@ -26,6 +26,7 @@ import {
 import { makePortalPush, validSubscription } from "./portal-push.js";
 import { parseRange, buildReport } from "./portal-reports.js";
 import { makeNameResolver, backfillItemNames } from "./product-names.js";
+import { register as registerSoldOut } from "./soldout.js";
 
 export const AUDIT_DDL = Object.freeze([
   `CREATE TABLE IF NOT EXISTS portal_audit (
@@ -963,7 +964,14 @@ export function register(app, ctx, deps = {}) {
     return c.json({ ok: true, staff: next.map(({ pinHash, ...x }) => x) });
   });
 
+  /* «الأصناف»: المدير يقفل/يفتح صنف خلص (soldout.js). القراية للكل. */
+  const soldOut = registerSoldOut(app, {
+    pool, getSettingsData, requireAdmin, requirePortal, audit, log, now, fetchMenu: deps.fetchMenu,
+    cmsWho: async (c) => { try { const u = await deps.cmsWhoami?.(c); return u?.name || u?.username || null; } catch { return null; } },
+  });
+
   return {
+    soldOut,
     tabsenseDown: (detail) => push.tabsenseDown(detail).catch(() => null),
     pollNewOrders, scan, refresh, loadFeed, loadInfo, push, hub, limiter,
     stop() {

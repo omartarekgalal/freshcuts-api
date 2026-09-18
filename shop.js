@@ -34,6 +34,7 @@ import { msisdn, readableAddress, leaveAtDoor, farZoneOfRow } from "./couriers.j
 import { VAT_RATE as BUNDLE_VAT } from "./bundles.js";
 import { MULTIPLY as MONEY_MULTIPLY, rescaleItems, stampMf, scaleOf } from "./money.js";
 import { isOpenNow } from "./carts.js";
+import { soldOutOf, soldOutLines, soldOutMessage } from "./soldout.js";
 import { dispatchDue, dispatchDelayOf } from "./delivery.js";
 import { makeStaffNotifier, slaAlertText, posFailedText, tabsenseDownText } from "./staffalerts.js";
 import { sendSms as sendStaffSms } from "./accounts.js";
@@ -750,6 +751,9 @@ export function register(app, ctx, deps = {}) {
           console.error(`[shop] bundle expand threw for ${it.bundle}:`, e.message);
           return fail("bundle_expand_failed", 422, { bundle: it.bundle });
         }
+        if (!r.ok && r.error === "sold_out") {
+          return fail("item_sold_out", 409, { bundle: it.bundle, items: r.items || [], message: r.message });
+        }
         if (!r.ok) return fail("bundle_" + r.error, 422, { bundle: it.bundle, detail: r });
         expanded.push(...r.lines);
       }
@@ -759,6 +763,17 @@ export function register(app, ctx, deps = {}) {
        (partnerItemsOf، التقارير، بكسل الشراء) بيعرف وحدة السطر من السطر نفسه
        بدل ما يفترض وحدة ثابتة — فتغيير الوحدة تاني مابيكسرش التاريخ. */
     items = stampMf(items, MONEY_MULTIPLY);
+    /* «خلص النهارده» (soldout.js): المدير قفل الصنف من البورتال. بنرفض قبل
+       الـOTP وقبل أي جلسة دفع — ومن غير ما نشيله من السلة بصمت: المتجر
+       بيعلّم السطر ويطلب من العميل يشيله. */
+    {
+      let act = {};
+      try { act = soldOutOf(await getSettingsData()); } catch { /* fail-open */ }
+      const bad = soldOutLines(items, act);
+      if (bad.length) {
+        return fail("item_sold_out", 409, { items: bad, message: soldOutMessage(bad.map((x) => x.name)) });
+      }
+    }
     // dine-in-only offers (صينية اللمة …) cannot be delivered/picked up: refuse
     // BEFORE a payment session exists. Same list the storefront + catalog use.
     {

@@ -41,6 +41,7 @@ import {
   // يوم الشغل (٤ الفجر) — باسم تاني لأن register فيها riyadhDay محلية بمعنى يوم التقويم
   SAVINGS_RE, riyadhDay as bizDay,
 } from "./offers.js";
+import { soldOutOf, soldOutLines, soldOutMessage } from "./soldout.js";
 
 const scryptAsync = promisify(crypto.scrypt);
 const SESSION_DAYS = 30;
@@ -92,7 +93,7 @@ const PATH_SECTIONS = [
   [/^\/api\/cms\/offer-pages/, "products"],
   // العروض والباقات جوّه «المنتجات»: نفس صلاحية تعريف الباقة وتعديل العرض
   // recommendations = إعدادات ومعاينة «تحب تضيف؟» (recs.js)
-  [/^\/api\/cms\/(products|catalog|collections|bundles|offers|recommendations)/, "products"],
+  [/^\/api\/cms\/(products|catalog|collections|bundles|offers|recommendations|menu-availability)/, "products"],
   [/^\/api\/cms\/(growth|links)/, "growth"],
   // sms-optout = قايمة «مش عايز رسايل» (نفس دوال البوابة، portal.js)
   [/^\/api\/cms\/(customers|segments|loyalty|campaigns|flows|reviews|sms-optout)/, "customers"],
@@ -875,8 +876,11 @@ export function register(app, ctx, deps = {}) {
 
   // عام عن قصد: البروكسي بيقراه من غير توكن ويدمجه في /api/menu.
   app.get("/api/cms/catalog-overlay", async (c) => {
-    try { return c.json(await buildOverlay()); }
-    catch (e) { return c.json({ ok: false, items: {}, collections: [], error: e.message }); }
+    // sold_out بره كاش الطبقة: «خلص» لازم يوصل المتجر في ثواني (soldout.js)
+    let sold_out = {};
+    try { sold_out = soldOutOf(await getSettingsData()); } catch { /* fail-open */ }
+    try { return c.json({ ...(await buildOverlay()), sold_out }); }
+    catch (e) { return c.json({ ok: false, items: {}, collections: [], sold_out, error: e.message }); }
   });
 
   app.get("/api/cms/products", async (c) => {
@@ -1676,7 +1680,15 @@ export function register(app, ctx, deps = {}) {
     }
     if (orderKind && !av.kinds.includes(orderKind)) return { ok: false, error: "bundle_not_available_for_option", kinds: av.kinds };
     const resolve = await makeResolver(b);
-    return bundlesLib.expandBundle(b, choices, quantity, resolve);
+    const r = bundlesLib.expandBundle(b, choices, quantity, resolve);
+    // «خلص النهارده»: اختيار خلصان في الباقة ⇒ رفض واضح قبل أي دفع
+    if (r && r.ok) {
+      let act = {};
+      try { act = soldOutOf(await getSettingsData()); } catch { /* fail-open */ }
+      const bad = soldOutLines(r.lines, act);
+      if (bad.length) return { ok: false, error: "sold_out", items: bad, message: soldOutMessage(bad.map((x) => x.name)) };
+    }
+    return r;
   }
 
   app.post("/api/shop/bundles/expand", async (c) => {
