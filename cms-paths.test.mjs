@@ -95,3 +95,22 @@ test("«منتظرين الفتح» والتقييمات في قسمهم الص�
   assert.equal(sectionOf("/api/cms/reviews/google"), "customers");
   assert.equal(sectionOf("/api/cms/reviews/invites"), "customers");
 });
+
+/* ١٨/٩ — «طلبات نقطة البيع» كانت 403 لأي دور غير المالك: /api/manager/* مكانش
+   متصنّف فكان بيقع على «الإعدادات». دلوقتي «الطلبات» (قراءة). */
+test("POS orders explorer (/api/manager/*) maps to orders, so ops/kitchen/marketing roles can view", () => {
+  assert.equal(sectionOf("/api/manager/orders"), "orders");
+  assert.equal(sectionOf("/api/manager/order/123456/items"), "orders");
+  assert.notEqual(sectionOf("/api/managerx/orders"), "orders"); // الـprefix لازم يكون بالظبط
+  // الدور اللي عنده orders عرض على الأقل يعدّي، والمحاسبة بتقرا كمان
+  for (const role of ["owner", "operations", "kitchen"]) assert.notEqual(DEFAULT_PERMS[role].orders, "none", role);
+});
+
+test("dashboard SMS opt-out + courier report map to customers / orders", () => {
+  assert.equal(sectionOf("/api/cms/sms-optout"), "customers");
+  assert.equal(sectionOf("/api/cms/sms-optout/abc123"), "customers");
+  assert.equal(sectionOf("/api/cms/sms-optout/resubscribe"), "customers");
+  assert.equal(sectionOf("/api/cms/ops/courier-report"), "orders");
+  assert.equal(sectionOf("/api/content/posts/cp_1/pause"), "growth");
+  assert.equal(sectionOf("/api/content/queue"), "growth");
+});

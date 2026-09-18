@@ -35,7 +35,7 @@ import { OFFERS, activeOffers, offerById, offerState, riyadhDay } from "./offers
 import { registerSocial } from "./social.js";
 import {
   MEDIA_TYPES, isVideoUrl, normDish, coreName, offerGuard, copyIssues, retryPlan,
-  publishInstagram as igPublish, publishFacebook as fbPublish, failAlertText, healthAlertText,
+  publishInstagram as igPublish, publishFacebook as fbPublish, failAlertText, healthAlertText, queueToggle,
 } from "./socialpub.js";
 import { sendSms } from "./accounts.js";
 import { fitOneSms, staffPhones } from "./staffalerts.js";
@@ -76,7 +76,8 @@ const PUBLIC_BASE = () =>
     .split(",")[0].trim().replace(/\/+$/, "");
 
 const CHANNELS = ["facebook", "instagram", "tiktok", "snapchat"];
-const STATUSES = ["draft", "scheduled", "published", "failed", "cancelled"];
+// paused = اتوقف من شاشة الطابور (socialpub.queueToggle) — العامل مابيلمسوش
+const STATUSES = ["draft", "scheduled", "published", "failed", "cancelled", "paused"];
 
 const MAX_UPLOAD_BYTES = 8 * 1024 * 1024;
 /* الفيديو (ريلز) أكبر بطبيعته — ميتا بتقبل لحد ٣٠٠ ميجا للريل، واحنا بنحط ١٠٠. */
@@ -1531,6 +1532,24 @@ export function register(app, ctx) {
       `SELECT * FROM content_posts WHERE origin='queue' ORDER BY scheduled_at NULLS LAST, channel LIMIT 500`);
     return c.json({ ok: true, posts: r.rows.map(postRow), worker: lastWorker });
   });
+  /* إيقاف/تشغيل بوست من شاشة الطابور — القواعد في socialpub.queueToggle.
+     الـUPDATE مشروط بالحالة القديمة (والحجز للإيقاف) عشان سباق مع العامل
+     مايخرّجش بوست موقوف. */
+  for (const action of ["pause", "unpause"]) {
+    app.post(`/api/content/posts/:id/${action}`, async (c) => {
+      const err = await requireAdmin(c); if (err) return err;
+      const b = await c.req.json().catch(() => ({}));
+      const row = (await pool.query("SELECT * FROM content_posts WHERE id=$1", [c.req.param("id")])).rows[0];
+      const v = queueToggle(row, action, { confirmOverdue: b.confirmOverdue === true });
+      if (!v.ok) return c.json({ ok: false, error: v.error, message: v.message, overdue: v.overdue || undefined }, v.status);
+      const r = await pool.query(
+        `UPDATE content_posts SET status=$2, next_attempt_at=NULL, updated_at=NOW()
+          WHERE id=$1 AND status=$3 ${action === "pause" ? "AND (claimed_at IS NULL OR claimed_at < NOW() - INTERVAL '15 minutes')" : ""}
+          RETURNING *`, [row.id, v.to, v.from]);
+      if (!r.rowCount) return c.json({ ok: false, error: "changed", message: "حالة البوست اتغيّرت — حدّث الصفحة" }, 409);
+      return c.json({ ok: true, post: postRow(r.rows[0]) });
+    });
+  }
   app.get("/api/content/queue/health", async (c) => {
     const err = await requireAdmin(c); if (err) return err;
     return c.json(await healthCheck({ send: c.req.query("send") === "1" }));

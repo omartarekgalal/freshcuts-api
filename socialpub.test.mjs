@@ -246,3 +246,35 @@ test("FB pin: options.pin => is_pinned بعد النشر، وفشله مايفش
   assert.equal(out.pinned, false);
   assert.ok(calls.some((c) => c.body.is_pinned === "true"));
 });
+
+/* ١٨/٩ — إيقاف/تشغيل بوست من شاشة الطابور */
+test("queueToggle: pause المجدول بتاعنا بس، والمنشور مايتلمسش", async () => {
+  const { queueToggle } = await import("./socialpub.js");
+  const NOW = Date.parse("2026-09-18T12:00:00Z");
+  const ig = { id: "a", channel: "instagram", origin: "local", status: "scheduled", scheduled_at: "2026-09-19T10:00:00Z" };
+  assert.deepEqual(queueToggle(ig, "pause", { now: NOW }), { ok: true, to: "paused", from: "scheduled" });
+  assert.equal(queueToggle({ ...ig, channel: "facebook", origin: "queue" }, "pause", { now: NOW }).ok, true);
+  // فيسبوك متجدول عند ميتا (مستورد) — مش بتاعنا
+  assert.equal(queueToggle({ ...ig, channel: "facebook", origin: "imported" }, "pause", { now: NOW }).error, "not_ours");
+  assert.equal(queueToggle({ ...ig, channel: "tiktok" }, "pause", { now: NOW }).error, "not_ours");
+  assert.equal(queueToggle({ ...ig, status: "published" }, "pause", { now: NOW }).error, "published");
+  assert.equal(queueToggle({ ...ig, status: "published" }, "unpause", { now: NOW }).error, "published");
+  assert.equal(queueToggle({ ...ig, status: "draft" }, "pause", { now: NOW }).error, "not_scheduled");
+  // العامل حاجزه دلوقتي
+  assert.equal(queueToggle({ ...ig, claimed_at: new Date(NOW - 60_000).toISOString() }, "pause", { now: NOW }).error, "publishing_now");
+  assert.equal(queueToggle({ ...ig, claimed_at: new Date(NOW - 20 * 60_000).toISOString() }, "pause", { now: NOW }).ok, true);
+  assert.equal(queueToggle(null, "pause").status, 404);
+});
+
+test("queueToggle: unpause لبوست ميعاده عدّى محتاج تأكيد صريح", async () => {
+  const { queueToggle } = await import("./socialpub.js");
+  const NOW = Date.parse("2026-09-18T12:00:00Z");
+  const p = { channel: "instagram", origin: "queue", status: "paused", scheduled_at: "2026-09-19T10:00:00Z" };
+  assert.deepEqual(queueToggle(p, "unpause", { now: NOW }), { ok: true, to: "scheduled", from: "paused" });
+  const late = { ...p, scheduled_at: "2026-09-18T09:00:00Z" };
+  const r = queueToggle(late, "unpause", { now: NOW });
+  assert.equal(r.error, "overdue_confirm");
+  assert.equal(r.overdue, true);
+  assert.equal(queueToggle(late, "unpause", { now: NOW, confirmOverdue: true }).ok, true);
+  assert.equal(queueToggle({ ...p, status: "scheduled" }, "unpause", { now: NOW }).error, "not_paused");
+});

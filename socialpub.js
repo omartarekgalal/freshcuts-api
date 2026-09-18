@@ -365,3 +365,37 @@ export function healthAlertText({ failed = 0, overdue = 0, foreign = 0, tokenBad
   if (foreign) parts.push(`${foreign} old FB scheduled posts publish soon`);
   return `FreshCuts social daily check: ${parts.join(", ")}. Check #marketing queue.`.slice(0, 160);
 }
+
+/* ══ إيقاف/تشغيل بوست في الطابور (١٨ سبتمبر ٢٠٢٦ — شاشة الطابور في اللوحة) ══
+   «موقوف» = status 'paused': العامل مابيحجزش غير 'scheduled'، وفحص الصحة
+   (المتأخر) كمان على 'scheduled' بس — فالإيقاف مابيحتاجش أي شرط إضافي.
+   • نوقف بس اللي الناشر بتاعنا هو اللي هينشره (انستجرام، أو فيسبوك من
+     الطابور). بوست متجدول عند ميتا نفسها مابيقفش من هنا — لازم من المنصة.
+   • المنشور مايتوقفش ولا يتعدّل (مفيش رجوع في النشر).
+   • التشغيل تاني لبوست ميعاده عدّى = هيتنشر في أول دورة للعامل، فلازم
+     تأكيد صريح (confirmOverdue) بدل ما يخرج للناس بضغطة. */
+export function queueToggle(row, action, { now = Date.now(), confirmOverdue = false } = {}) {
+  if (!row) return { ok: false, status: 404, error: "not_found", message: "البوست مش موجود" };
+  if (row.status === "published") {
+    return { ok: false, status: 409, error: "published", message: "البوست ده اتنشر خلاص — مايتوقفش ولا يتعدّل" };
+  }
+  const ours = row.channel === "instagram" || (row.channel === "facebook" && row.origin === "queue");
+  if (action === "pause") {
+    if (!ours) return { ok: false, status: 409, error: "not_ours", message: "ده مش من طابور الناشر بتاعنا (متجدول عند المنصة أو بالإيد) — وقفه من المنصة نفسها" };
+    if (row.status !== "scheduled") return { ok: false, status: 409, error: "not_scheduled", message: `الإيقاف للمجدول بس — حالته دلوقتي «${row.status}»` };
+    if (row.claimed_at && now - new Date(row.claimed_at).getTime() < 15 * 60_000) {
+      return { ok: false, status: 409, error: "publishing_now", message: "الناشر شغّال على البوست ده دلوقتي — استنى دقيقة وحدّث" };
+    }
+    return { ok: true, to: "paused", from: "scheduled" };
+  }
+  if (action === "unpause") {
+    if (row.status !== "paused") return { ok: false, status: 409, error: "not_paused", message: "البوست ده مش موقوف" };
+    const at = row.scheduled_at ? new Date(row.scheduled_at).getTime() : NaN;
+    if (Number.isFinite(at) && at <= now && confirmOverdue !== true) {
+      return { ok: false, status: 409, error: "overdue_confirm", overdue: true,
+        message: "ميعاده عدّى — لو رجّعته هيتنشر في أول دورة للناشر (خلال دقايق). أكّد لو ده المطلوب" };
+    }
+    return { ok: true, to: "scheduled", from: "paused" };
+  }
+  return { ok: false, status: 400, error: "bad_action" };
+}

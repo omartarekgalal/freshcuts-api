@@ -94,7 +94,8 @@ const PATH_SECTIONS = [
   // recommendations = إعدادات ومعاينة «تحب تضيف؟» (recs.js)
   [/^\/api\/cms\/(products|catalog|collections|bundles|offers|recommendations)/, "products"],
   [/^\/api\/cms\/(growth|links)/, "growth"],
-  [/^\/api\/cms\/(customers|segments|loyalty|campaigns|flows|reviews)/, "customers"],
+  // sms-optout = قايمة «مش عايز رسايل» (نفس دوال البوابة، portal.js)
+  [/^\/api\/cms\/(customers|segments|loyalty|campaigns|flows|reviews|sms-optout)/, "customers"],
   [/^\/api\/cms\/(analytics|exec)/, "analytics"],
   [/^\/api\/cms\/(ops|sla)/, "orders"],
   [/^\/api\/(shop\/coupons|discounts)/, "discounts"],
@@ -113,6 +114,9 @@ const PATH_SECTIONS = [
   [/^\/api\/journey\/settings/, "settings"],
   [/^\/api\/journey/, "analytics"],
   [/^\/api\/portal\/(summary|issues|devices)/, "orders"],
+  // «طلبات نقطة البيع» (index.js: /api/manager/orders + /api/manager/order/:id/items)
+  // — قراءة بس من كاش تاب سينس. كانت بتقع على «الإعدادات» فأي دور غير المالك 403.
+  [/^\/api\/manager\//, "orders"],
   [/^\/api\/app\//, "growth"],
   [/^\/api\/(shop\/(orders|board|summary)|day\b|day\/|staff\/|cashier|chef|notifications)/, "orders"],
   // «منتظرين الفتح» — نفس قسم السلات المتروكة (نمو): استرداد طلب ضايع
@@ -2534,9 +2538,10 @@ export function register(app, ctx, deps = {}) {
     const [rows, today] = await Promise.all([
       pool.query(`
         SELECT o.order_no, o.status, o.option, o.total, o.customer, o.created_at, o.updated_at, o.pos_ready_at,
-               sh.provider AS ship_provider, sh.status AS ship_status, sh.driver AS ship_driver
+               sh.provider AS ship_provider, sh.status AS ship_status, sh.driver AS ship_driver,
+               sh.arrived_at AS ship_arrived_at, sh.picked_at AS ship_picked_at
           FROM shop_orders o
-          LEFT JOIN LATERAL (SELECT provider, status, driver FROM dl_shipments
+          LEFT JOIN LATERAL (SELECT provider, status, driver, arrived_at, picked_at FROM dl_shipments
                               WHERE shop_order_no = o.order_no ORDER BY id DESC LIMIT 1) sh ON TRUE
          WHERE o.status NOT IN ('pending_payment','expired','delivered','rejected_refunded')
            AND o.created_at > NOW() - INTERVAL '24 hours'
@@ -2553,7 +2558,10 @@ export function register(app, ctx, deps = {}) {
       orderNo: o.order_no, status: o.status, option: o.option, total: Number(o.total) || 0,
       name: (o.customer && o.customer.name) || "", ageMin: Math.floor((now - new Date(o.created_at).getTime()) / 60000),
       ready: Boolean(o.pos_ready_at),
-      courier: o.ship_status ? { provider: o.ship_provider, status: o.ship_status, driver: (o.ship_driver && o.ship_driver.name) || null } : null,
+      // محطتا المندوب (وصل المطعم / استلم) — نفس أعمدة البوابة (dl_shipments)
+      courier: o.ship_status ? { provider: o.ship_provider, status: o.ship_status, driver: (o.ship_driver && o.ship_driver.name) || null,
+        arrivedAt: o.ship_arrived_at || null, pickedAt: o.ship_picked_at || null } : null,
+      readyAt: o.pos_ready_at || null,
       sla: slaCheck(o, sla, now),
     }));
     return c.json({ ok: true, sla, orders, breaches: orders.filter((o) => o.sla.level >= 2).length,

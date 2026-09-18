@@ -762,27 +762,39 @@ export function register(app, ctx, deps = {}) {
     }
   });
 
-  app.get("/api/portal/sms-optout", async (c) => {
-    const a = await requirePortal(c); if (a.res) return a.res;
+  /* المنطق المشترك بين البوابة (requirePortal) واللوحة (requireAdmin، قسم
+     «العملاء») — نفس القواعد بالظبط، والفرق الوحيد مين الفاعل. كل دالة بترجّع
+     { status, body }. */
+  const optKey = (pn) => crypto.createHash("sha1").update("optout:" + pn).digest("hex").slice(0, 12);
+  const actorName = (user) => user?.name || user?.id || "—";
+  async function optoutList() {
     await ensureOptout();
     const r = await pool.query(
       `SELECT phone_norm, opted_out_at, optout_source, optout_reason, optout_by FROM cms_contacts
         WHERE opted_out_at IS NOT NULL ORDER BY opted_out_at DESC LIMIT 200`);
-    const total = (await pool.query("SELECT count(*)::int n FROM cms_contacts WHERE opted_out_at IS NOT NULL")).rows[0].n;
-    return c.json({ ok: true, total, list: r.rows.map((x) => ({
-      key: crypto.createHash("sha1").update("optout:" + x.phone_norm).digest("hex").slice(0, 12),
+    const total = (await pool.query("SELECT count(*)::int n FROM cms_contacts WHERE opted_out_at IS NOT NULL")).rows[0]?.n || 0;
+    /* آخر التغييرات (إيقاف/رجوع/شيل) من السجل — عشان «رجع من الشيك أوت»
+       (checkout_optin) و«رجّعه موظف» يبانوا كمان، مش بس الموقوفين دلوقتي.
+       فشل السجل مايوقّعش القايمة. */
+    let recent = [];
+    try {
+      recent = (await pool.query(
+        `SELECT phone_norm, action, source, reason, actor, created_at FROM cms_optout_log
+          WHERE action <> 'view' ORDER BY created_at DESC LIMIT 50`)).rows.map((x) => ({
+        phone: maskPn(x.phone_norm), action: x.action, source: x.source || "", note: x.reason || "",
+        by: x.actor || "", at: x.created_at }));
+    } catch { /* السجل اختياري */ }
+    return { status: 200, body: { ok: true, total, list: r.rows.map((x) => ({
+      key: optKey(x.phone_norm),
       phone: maskPn(x.phone_norm), at: x.opted_out_at, source: x.optout_source || "link",
-      reason: x.optout_reason || "", by: x.optout_by || "", removable: x.optout_source === "staff" })) });
-  });
-
-  app.post("/api/portal/sms-optout", async (c) => {
-    const a = await requirePortal(c); if (a.res) return a.res;
-    const b = await c.req.json().catch(() => ({}));
+      reason: x.optout_reason || "", by: x.optout_by || "", removable: x.optout_source === "staff" })), recent } };
+  }
+  async function optoutAdd(user, b, ip) {
     const pn = normPn(b?.phone);
-    if (!pn) return c.json({ ok: false, error: "bad_phone", message: "رقم الجوال مش صحيح" }, 400);
+    if (!pn) return { status: 400, body: { ok: false, error: "bad_phone", message: "رقم الجوال مش صحيح" } };
     const reason = String(b?.reason || "").trim().slice(0, 120) || null;
     await ensureOptout();
-    const r = await pool.query(
+    await pool.query(
       `INSERT INTO cms_contacts(phone_norm, optout_code, opted_out_at, optout_source, optout_reason, optout_by)
        VALUES ($1, substr(md5(random()::text || $1 || clock_timestamp()::text), 1, 10), NOW(), 'staff', $2, $3)
        ON CONFLICT (phone_norm) DO UPDATE SET
@@ -790,56 +802,111 @@ export function register(app, ctx, deps = {}) {
          optout_source = CASE WHEN cms_contacts.opted_out_at IS NULL THEN 'staff' ELSE cms_contacts.optout_source END,
          optout_reason = COALESCE($2, cms_contacts.optout_reason),
          optout_by = CASE WHEN cms_contacts.opted_out_at IS NULL THEN $3 ELSE cms_contacts.optout_by END
-       RETURNING (xmax = 0) AS inserted`, [pn, reason, a.user.name || a.user.id]);
+       RETURNING (xmax = 0) AS inserted`, [pn, reason, actorName(user)]);
     await pool.query("INSERT INTO cms_optout_log(phone_norm, action, source, reason, actor) VALUES ($1,'optout','staff',$2,$3)",
-      [pn, reason, a.user.name || a.user.id]).catch(() => {});
-    audit(a.user, "sms_optout", null, true, { phone: maskPn(pn) }, clientIp((n) => c.req.header(n)), { emit: false });
-    return c.json({ ok: true, phone: maskPn(pn) });
-  });
-
-  app.delete("/api/portal/sms-optout/:key", async (c) => {
-    const a = await requirePortal(c); if (a.res) return a.res;
-    const key = String(c.req.param("key") || "").slice(0, 20);
+      [pn, reason, actorName(user)]).catch(() => {});
+    audit(user, "sms_optout", null, true, { phone: maskPn(pn) }, ip, { emit: false });
+    return { status: 200, body: { ok: true, phone: maskPn(pn) } };
+  }
+  async function optoutRemove(user, keyRaw, ip) {
+    const key = String(keyRaw || "").slice(0, 20);
     await ensureOptout();
     const rows = (await pool.query("SELECT phone_norm, optout_source FROM cms_contacts WHERE opted_out_at IS NOT NULL")).rows;
-    const hit = rows.find((x) => crypto.createHash("sha1").update("optout:" + x.phone_norm).digest("hex").slice(0, 12) === key);
-    if (!hit) return c.json({ ok: false, error: "not_found" }, 404);
+    const hit = rows.find((x) => optKey(x.phone_norm) === key);
+    if (!hit) return { status: 404, body: { ok: false, error: "not_found" } };
     if (hit.optout_source !== "staff") {
-      return c.json({ ok: false, error: "customer_optout", message: "العميل أوقف الرسايل بنفسه من الرابط — مايرجعش غير بطلبه" }, 409);
+      return { status: 409, body: { ok: false, error: "customer_optout", message: "العميل أوقف الرسايل بنفسه من الرابط — مايرجعش غير بطلبه" } };
     }
     await pool.query("UPDATE cms_contacts SET opted_out_at=NULL, optout_source=NULL, optout_reason=NULL, optout_by=NULL WHERE phone_norm=$1", [hit.phone_norm]);
     await pool.query("INSERT INTO cms_optout_log(phone_norm, action, source, actor) VALUES ($1,'remove','staff',$2)",
-      [hit.phone_norm, a.user.name || a.user.id]).catch(() => {});
-    audit(a.user, "sms_optout_remove", null, true, { phone: maskPn(hit.phone_norm) }, clientIp((n) => c.req.header(n)), { emit: false });
-    return c.json({ ok: true });
-  });
-
-  /* «رجّع الاشتراك (العميل وافق)» — ١٧/٩: اللي أوقف بنفسه مايرجعش غير بموافقته.
-     الموظف لازم يأكد إن العميل وافق شفهياً (consent=true) ويكتب ملاحظة (مين/إمتى).
-     بالمفتاح (صف في القايمة) أو بالرقم (العميل قدّامه ومش في أول ٢٠٠). */
-  app.post("/api/portal/sms-optout/resubscribe", async (c) => {
-    const a = await requirePortal(c); if (a.res) return a.res;
-    const b = await c.req.json().catch(() => ({}));
+      [hit.phone_norm, actorName(user)]).catch(() => {});
+    audit(user, "sms_optout_remove", null, true, { phone: maskPn(hit.phone_norm) }, ip, { emit: false });
+    return { status: 200, body: { ok: true } };
+  }
+  async function optoutResubscribe(user, b, ip) {
     const note = String(b?.note || "").trim().slice(0, 200);
-    if (b?.consent !== true) return c.json({ ok: false, error: "consent_required", message: "لازم تأكد إن العميل وافق" }, 400);
-    if (note.length < 3) return c.json({ ok: false, error: "note_required", message: "اكتب ملاحظة: العميل وافق إزاي وإمتى" }, 400);
+    if (b?.consent !== true) return { status: 400, body: { ok: false, error: "consent_required", message: "لازم تأكد إن العميل وافق" } };
+    if (note.length < 3) return { status: 400, body: { ok: false, error: "note_required", message: "اكتب ملاحظة: العميل وافق إزاي وإمتى" } };
     await ensureOptout();
     let pn = null;
     if (b?.key) {
       const key = String(b.key).slice(0, 20);
       const rows = (await pool.query("SELECT phone_norm FROM cms_contacts WHERE opted_out_at IS NOT NULL")).rows;
-      pn = rows.find((x) => crypto.createHash("sha1").update("optout:" + x.phone_norm).digest("hex").slice(0, 12) === key)?.phone_norm || null;
+      pn = rows.find((x) => optKey(x.phone_norm) === key)?.phone_norm || null;
     } else pn = normPn(b?.phone);
-    if (!pn) return c.json({ ok: false, error: "not_found", message: "الرقم مش موجود في قايمة الموقوفين" }, 404);
+    if (!pn) return { status: 404, body: { ok: false, error: "not_found", message: "الرقم مش موجود في قايمة الموقوفين" } };
     const r = await pool.query(
       `UPDATE cms_contacts SET opted_out_at=NULL, optout_source=NULL, optout_reason=NULL, optout_by=NULL
         WHERE phone_norm=$1 AND opted_out_at IS NOT NULL RETURNING 1`, [pn]);
-    if (!r.rowCount) return c.json({ ok: false, error: "not_opted_out", message: "الرقم ده مشترك أصلاً" }, 409);
-    const actor = a.user.name || a.user.id;
+    if (!r.rowCount) return { status: 409, body: { ok: false, error: "not_opted_out", message: "الرقم ده مشترك أصلاً" } };
     await pool.query("INSERT INTO cms_optout_log(phone_norm, action, source, reason, actor) VALUES ($1,'resubscribe','staff_verbal',$2,$3)",
-      [pn, note, actor]).catch(() => {});
-    audit(a.user, "sms_resubscribe", null, true, { phone: maskPn(pn), note }, clientIp((n) => c.req.header(n)), { emit: false });
-    return c.json({ ok: true, phone: maskPn(pn) });
+      [pn, note, actorName(user)]).catch(() => {});
+    audit(user, "sms_resubscribe", null, true, { phone: maskPn(pn), note }, ip, { emit: false });
+    return { status: 200, body: { ok: true, phone: maskPn(pn) } };
+  }
+  const send = (c, r) => c.json(r.body, r.status);
+  const ipOf = (c) => clientIp((n) => c.req.header(n));
+
+  app.get("/api/portal/sms-optout", async (c) => {
+    const a = await requirePortal(c); if (a.res) return a.res;
+    return send(c, await optoutList());
+  });
+  app.post("/api/portal/sms-optout", async (c) => {
+    const a = await requirePortal(c); if (a.res) return a.res;
+    return send(c, await optoutAdd(a.user, await c.req.json().catch(() => ({})), ipOf(c)));
+  });
+  app.delete("/api/portal/sms-optout/:key", async (c) => {
+    const a = await requirePortal(c); if (a.res) return a.res;
+    return send(c, await optoutRemove(a.user, c.req.param("key"), ipOf(c)));
+  });
+  /* «رجّع الاشتراك (العميل وافق)» — ١٧/٩: اللي أوقف بنفسه مايرجعش غير بموافقته.
+     الموظف لازم يأكد إن العميل وافق شفهياً (consent=true) ويكتب ملاحظة (مين/إمتى).
+     بالمفتاح (صف في القايمة) أو بالرقم (العميل قدّامه ومش في أول ٢٠٠). */
+  app.post("/api/portal/sms-optout/resubscribe", async (c) => {
+    const a = await requirePortal(c); if (a.res) return a.res;
+    return send(c, await optoutResubscribe(a.user, await c.req.json().catch(() => ({})), ipOf(c)));
+  });
+
+  /* نفس القايمة من لوحة المتجر (١٨/٩) — requireAdmin، وcms.js بيصنّف
+     /api/cms/sms-optout «عملاء»: العرض محتاج «عرض»، والتسجيل/الإرجاع «تعديل».
+     نفس الدوال اللي فوق بالحرف — الفرق الوحيد إن الفاعل عضو فريق اللوحة. */
+  const dashUser = async (c) => {
+    let u = null;
+    try { u = await deps.cmsWhoami?.(c); } catch { /* */ }
+    return { id: u?.id != null ? `cms:${u.id}` : "admin", name: u?.name || u?.username || "اللوحة", role: "dashboard" };
+  };
+  app.get("/api/cms/sms-optout", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    return send(c, await optoutList());
+  });
+  app.post("/api/cms/sms-optout", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    return send(c, await optoutAdd(await dashUser(c), await c.req.json().catch(() => ({})), ipOf(c)));
+  });
+  app.delete("/api/cms/sms-optout/:key", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    return send(c, await optoutRemove(await dashUser(c), c.req.param("key"), ipOf(c)));
+  });
+  app.post("/api/cms/sms-optout/resubscribe", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    return send(c, await optoutResubscribe(await dashUser(c), await c.req.json().catch(() => ({})), ipOf(c)));
+  });
+
+  /* أداء المندوب + أزمنة الأونلاين للوحة (تقرير المتجر ومراقب الطلبات) — نفس
+     buildReport بتاع تقارير البوابة بالحرف، مفيش نسخة تانية من الاستعلامات.
+     /api/cms/ops/* = قسم «الطلبات» (عرض). */
+  app.get("/api/cms/ops/courier-report", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    const range = parseRange(c.req.query("from"), c.req.query("to"), now());
+    if (!range.ok) return c.json({ ok: false, ...range }, 400);
+    try {
+      const report = await buildReport(pool, range, log);
+      return c.json({ ok: true, range: report.range, times: report.times, courierPerf: report.courierPerf,
+        delivery: report.delivery, ...(report.partial ? { partial: report.partial } : {}) });
+    } catch (e) {
+      try { log.error(`[portal] courier-report failed: ${e?.message || e}`); } catch {}
+      return c.json({ ok: false, error: "report_failed" }, 500);
+    }
   });
 
   /* ── حالة البوابة (مدير) ── */

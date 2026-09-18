@@ -3077,7 +3077,7 @@ reviews.register(app, moduleCtx, { notify: () => notifyApi, sessionUser: cmsApi.
 openwait.register(app, moduleCtx, { notify: () => notifyApi, carts: () => cartsApi });
 // بوابة المطعم (كاشير + مدير): PIN، طلبات حيّة (SSE)، خط زمني، طلب/إلغاء مندوب، Push للفريق، تقارير.
 // بعد shop/delivery/cms — بيستخدم دوالهم نفسها (مفيش نسخة تانية من القواعد).
-const portalApi = portal.register(app, moduleCtx, { shop: () => shopApi, delivery: () => deliveryApi });
+const portalApi = portal.register(app, moduleCtx, { shop: () => shopApi, delivery: () => deliveryApi, cmsWhoami: (c) => cmsApi.whoami(c) });
 // تقرير الدخل اليومي + صرف الإعلانات (١٧ سبتمبر): جدول mk_daily_reports + SMS واحدة لعمر بعد القفل
 adsreport.register(app, moduleCtx, { sendSms: (m) => accounts.sendSms(m) });
 systemcheck.register(app, moduleCtx, { tsState: () => tsState });

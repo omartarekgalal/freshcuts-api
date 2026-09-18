@@ -606,3 +606,50 @@ test("push: جهاز موظف اتشال مايستقبلش، والكاشير �
   assert.equal(d.body.removed, 0);
   assert.equal((await s.json("DELETE", "/api/portal/push/subscribe", { token: tc, body: { endpoint: "https://a.b/ok" } })).body.removed, 1);
 });
+
+/* ═══ ١٨/٩ — نفس قايمة «مش عايز رسايل» وتقرير المندوب من لوحة المتجر ═══════ */
+test("dashboard sms-optout: requireAdmin، نفس القواعد، والفاعل = عضو اللوحة", async () => {
+  const s = build({ settings: { portal: { staff: STAFF() } } });
+  assert.equal((await s.json("GET", "/api/cms/sms-optout")).status, 401);
+  // توكن البوابة مايفتحش مسار اللوحة
+  const t = (await login(s, "2468")).body.token;
+  assert.equal((await s.json("GET", "/api/cms/sms-optout", { token: t })).status, 401);
+  const A = `Bearer ${ADMIN}`;
+  const list = await s.json("GET", "/api/cms/sms-optout", { token: A });
+  assert.equal(list.status, 200);
+  assert.deepEqual(list.body, { ok: true, total: 0, list: [], recent: [] });
+  assert.equal((await s.json("POST", "/api/cms/sms-optout", { token: A, body: { phone: "123" } })).body.error, "bad_phone");
+  const add = await s.json("POST", "/api/cms/sms-optout", { token: A, body: { phone: "0551234567", reason: "طلب في الفرع" } });
+  assert.equal(add.status, 200);
+  assert.equal(add.body.phone, "05•••••67");
+  const ins = s.db.queries.find((q) => /INSERT INTO cms_contacts/.test(q.sql));
+  assert.deepEqual(ins.vals, ["551234567", "طلب في الفرع", "اللوحة"]);
+  const au = s.db.audit.find((x) => x.action === "sms_optout");
+  assert.equal(au.role, "dashboard");
+  // الإرجاع: موافقة + ملاحظة إجباريين زي البوابة
+  assert.equal((await s.json("POST", "/api/cms/sms-optout/resubscribe", { token: A, body: { phone: "0551234567", note: "وافق" } })).body.error, "consent_required");
+  assert.equal((await s.json("POST", "/api/cms/sms-optout/resubscribe", { token: A, body: { phone: "0551234567", consent: true, note: "" } })).body.error, "note_required");
+  assert.equal((await s.json("DELETE", "/api/cms/sms-optout/nope", { token: A })).status, 404);
+});
+
+test("portal sms-optout لسه شغّال بعد نقل المنطق لدوال مشتركة", async () => {
+  const s = build({ settings: { portal: { staff: STAFF() } } });
+  const t = (await login(s, "2468")).body.token;
+  assert.equal((await s.json("GET", "/api/portal/sms-optout", { token: t })).status, 200);
+  const add = await s.json("POST", "/api/portal/sms-optout", { token: t, body: { phone: "+966 55 123 4567" } });
+  assert.equal(add.status, 200);
+  const ins = s.db.queries.find((q) => /INSERT INTO cms_contacts/.test(q.sql));
+  assert.deepEqual(ins.vals, ["551234567", null, "علي"]);
+});
+
+test("dashboard courier-report: requireAdmin + نفس buildReport (courierPerf + times)", async () => {
+  const s = build();
+  assert.equal((await s.json("GET", "/api/cms/ops/courier-report?from=2026-09-10&to=2026-09-16")).status, 401);
+  const A = `Bearer ${ADMIN}`;
+  assert.equal((await s.json("GET", "/api/cms/ops/courier-report?from=2026-09-10&to=2026-09-01", { token: A })).status, 400);
+  const r = await s.json("GET", "/api/cms/ops/courier-report?from=2026-09-10&to=2026-09-16", { token: A });
+  assert.equal(r.status, 200);
+  for (const k of ["courierPerf", "times", "delivery", "range"]) assert.ok(k in r.body, k);
+  for (const k of ["ready_to_arrived", "arrived_to_picked", "courier_picked_to_delivered"]) assert.ok(k in r.body.times, k);
+  assert.ok(Array.isArray(r.body.courierPerf.daily));
+});
