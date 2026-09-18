@@ -50,6 +50,7 @@ import * as notify from "./notify.js";
 import * as carts from "./carts.js";
 import * as openwait from "./openwait.js";
 import * as journey from "./journey.js";
+import * as clarity from "./clarity.js";
 import * as selftest from "./selftest.js";
 import * as menuplan from "./menuplan.js";
 import * as systemcheck from "./systemcheck.js";
@@ -3043,6 +3044,8 @@ const notifyApi = notify.register(app, moduleCtx);
 const cartsApi = carts.register(app, moduleCtx, { notify: notifyApi });
 // رحلة العميل (٠٢): دفعات أحداث المتجر + checkout_result/order_paid من السيرفر + تقرير #store/analytics/journey
 const journeyApi = journey.register(app, moduleCtx, { analytics: analyticsApi });
+// Clarity (١٨ سبتمبر): سحب يومي لإشارات الإحباط (rage/dead/quickback/أخطاء) → لوحة جوه رحلة العميل
+clarity.register(app, moduleCtx);
 // فحص السلسلة كاملة: كل حلقة في طريق الطلب بتترد عليها ok/warn/fail
 selftest.register(app, moduleCtx, { delivery: () => deliveryApi });
 // accounts بترجع customerDiscount اللي الشيك أوت محتاجه (خصم الملاك الدائم) —
