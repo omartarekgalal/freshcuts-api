@@ -146,6 +146,58 @@ export function smsText(rep) {
   return fitOneSms(short);
 }
 
+/* The daily ADS line (18/9, CRO review): a SECOND one-segment English SMS right after
+   the revenue one, so the owner sees in one glance where the orders came from, what an
+   order cost and what the guard changed yesterday. Example (≈140 chars):
+   FC ADS 17/09 Ord M2 S0 SMS1 D5 | CPA 24 (ads 104) | Spend M220 S0 WA74 | Chg: pace ATC 435, boost WA 125, 2 alerts */
+const SRC_ABBR = { meta: "M", snapchat: "S", snap: "S", sms: "SMS", whatsapp: "WA", direct: "D", google: "G", tiktok: "T", link: "L", instagram: "IG", facebook: "FB" };
+const CHANGE_ACTIONS = {
+  pace_lifetime_budget: (d, l) => `pace ${short(l)} ${r0(d.pace ?? d.to)}`,
+  boost_evening: (d, l) => `boost ${short(l)} ${r0(d.to)}`,
+  scale_up: (d) => `scale x${d.to}`,
+  scale_cut: (d) => `cut x${d.to}`,
+  retired: (d, l) => `retired ${short(l)}`,
+  hard_cap_hit: () => "HIT 3000 CAP",
+  needs_decision: () => "NEEDS DECISION",
+};
+function short(label) {
+  const l = String(label || "");
+  if (/WA|whatsapp/i.test(l)) return "WA";
+  if (/RT/i.test(l)) return "RT";
+  if (/SNAP/i.test(l)) return "Snap";
+  if (/ATC|PUR|SALES/i.test(l)) return "ATC";
+  return l.replace(/[^ -~]/g, "").slice(0, 8);
+}
+export function changesText(guard = []) {
+  const out = [];
+  let alerts = 0, errors = 0;
+  for (const g of guard || []) {
+    const f = CHANGE_ACTIONS[g.action];
+    if (f) { const t = f(g.detail || {}, g.label); if (t && !out.includes(t)) out.push(t); }
+    else if (g.action === "health_alert") alerts++;
+    else if (g.action === "error") errors++;
+    else if (/^(setup_|switch_|pause_|reenable|budget_)/.test(g.action || "")) { const t = `${short(g.label)} ${String(g.action).split("_")[0]}`; if (!out.includes(t)) out.push(t); }
+  }
+  if (alerts) out.push(`${alerts} alert${alerts > 1 ? "s" : ""}`);
+  if (errors) out.push(`${errors} err`);
+  return out.length ? out.join(", ") : "none";
+}
+export function smsAdsText(rep) {
+  const d = String(rep.day || "").slice(5).split("-").reverse().join("/");
+  const O = rep.online || {}, A = rep.ads || {};
+  const src = Object.entries(O.bySource || {}).sort((a, b) => (b[1].orders || 0) - (a[1].orders || 0))
+    .map(([k, v]) => `${SRC_ABBR[k] || k.replace(/[^A-Za-z]/g, "").slice(0, 3).toUpperCase()}${v.orders || 0}`);
+  // ad orders are always shown, even when zero — the point of the line
+  if (!src.some((x) => /^M\d/.test(x))) src.unshift(`M${A.ordersFromAdsOursMeta || 0}`);
+  if (A.spendSnap && !src.some((x) => /^S\d/.test(x))) src.splice(1, 0, `S${A.ordersFromAdsOursSnap || 0}`);
+  const cpa = A.cpaOnline == null ? "-" : r0(A.cpaOnline);
+  const cpaAds = A.cpaAds == null ? "-" : r0(A.cpaAds);
+  const spend = `M${r0(A.spendMeta - (A.spendWhatsapp || 0))} S${r0(A.spendSnap)} WA${r0(A.spendWhatsapp)}`;
+  const chg = changesText(rep.guard);
+  const full = `FC ADS ${d} Ord ${src.join(" ")} | CPA ${cpa} (ads ${cpaAds}) | Spend ${spend} | Chg: ${chg}`;
+  return fitOneSms(full);
+}
+
 /* Pure assembly — unit-tested. */
 export function buildReport({ day, pos, shop, meta, snap = null, guardLog = [], whatsapp = null, now = new Date() }) {
   const onlineDelivery = { orders: 0, revenue: 0 }, onlinePickup = { orders: 0, revenue: 0 };
@@ -212,6 +264,7 @@ export function buildReport({ day, pos, shop, meta, snap = null, guardLog = [], 
   };
   rep.recommendation = recommend(ads);
   rep.sms = smsText(rep);
+  rep.smsAds = smsAdsText(rep);
   return rep;
 }
 
@@ -320,6 +373,26 @@ export function register(app, ctx, deps = {}) {
     };
   }
 
+  /* Snapchat spend for the Riyadh calendar day (the Snap account runs on Asia/Riyadh and
+     bills in USD → SAR at the 3.75 peg). Before 18/9 the report never asked Snap, so its
+     spend was silently 0 in the share-of-revenue and CPA gates. */
+  async function snapPart(day) {
+    const E = process.env;
+    if (!E.SNAP_AD_ACCOUNT_ID || !E.SNAP_REFRESH_TOKEN || !E.SNAP_CLIENT_ID) return null;
+    try {
+      const b = new URLSearchParams({ grant_type: "refresh_token", client_id: E.SNAP_CLIENT_ID, client_secret: E.SNAP_CLIENT_SECRET || "", refresh_token: E.SNAP_REFRESH_TOKEN });
+      const tok = (await (await fetchImpl("https://accounts.snapchat.com/login/oauth2/access_token", { method: "POST", body: b })).json()).access_token;
+      if (!tok) return { spend: 0, error: "snap token" };
+      const next = new Date(`${day}T12:00:00Z`); next.setUTCDate(next.getUTCDate() + 1);
+      const u = `https://adsapi.snapchat.com/v1/adaccounts/${E.SNAP_AD_ACCOUNT_ID}/stats?granularity=DAY&fields=spend`
+        + `&start_time=${day}T00:00:00.000%2B03:00&end_time=${next.toISOString().slice(0, 10)}T00:00:00.000%2B03:00`;
+      const j = await (await fetchImpl(u, { headers: { Authorization: `Bearer ${tok}` } })).json();
+      if (j.request_status !== "SUCCESS") return { spend: 0, error: `snap: ${j.debug_message || j.request_status}` };
+      const micro = (j.timeseries_stats?.[0]?.timeseries_stat?.timeseries || []).reduce((s, t) => s + num(t.stats?.spend), 0);
+      return { spend: r2((micro / 1e6) * 3.75) };
+    } catch (e) { return { spend: 0, error: `snap: ${e.message}` }; }
+  }
+
   async function guardPart(day) {
     try {
       return (await pool.query(`SELECT at, object_id, label, action, detail FROM ads_guard_log WHERE bizday = $1::date AND action NOT LIKE 'dry:%' ORDER BY at`, [day])).rows;
@@ -345,8 +418,8 @@ export function register(app, ctx, deps = {}) {
   }
 
   async function compute(day) {
-    const [pos, shop, meta, guardLog, whatsapp] = await Promise.all([posPart(day), shopPart(day), metaPart(day), guardPart(day), whatsappPart(day)]);
-    return buildReport({ day, pos, shop, meta, guardLog, whatsapp });
+    const [pos, shop, meta, guardLog, whatsapp, snap] = await Promise.all([posPart(day), shopPart(day), metaPart(day), guardPart(day), whatsappPart(day), snapPart(day)]);
+    return buildReport({ day, pos, shop, meta, snap, guardLog, whatsapp });
   }
 
   async function store(rep) {
@@ -366,12 +439,15 @@ export function register(app, ctx, deps = {}) {
     if (!cfg.phones.length) return { ok: false, error: "no phones" };
     const claim = await pool.query(
       `UPDATE mk_daily_reports SET sms_sent_at=now(), sms_to=$2, sms_error=NULL
-        WHERE day=$1::date ${force ? "" : "AND sms_sent_at IS NULL"} RETURNING sms_text`, [day, cfg.phones.join(",")]);
+        WHERE day=$1::date ${force ? "" : "AND sms_sent_at IS NULL"} RETURNING sms_text, data->>'smsAds' AS sms_ads`, [day, cfg.phones.join(",")]);
     if (!claim.rowCount) return { ok: false, skipped: "already sent" };
     const text = fitOneSms(claim.rows[0].sms_text || "");
     const errors = [];
     for (const p of staffPhones(cfg.phones)) {
       try { await sendSms({ phoneNorm: p, body: text }); } catch (e) { errors.push(`${p}: ${e.message}`); }
+      // second segment-sized SMS: orders by source, CPA, what the guard changed
+      const adsLine = fitOneSms(claim.rows[0].sms_ads || "");
+      if (adsLine) { try { await sendSms({ phoneNorm: p, body: adsLine }); } catch (e) { errors.push(`${p} ads: ${e.message}`); } }
     }
     if (errors.length) await pool.query(`UPDATE mk_daily_reports SET sms_error=$2 WHERE day=$1::date`, [day, errors.join("; ").slice(0, 500)]);
     return { ok: !errors.length, text, info: smsInfo(text), to: cfg.phones, errors };

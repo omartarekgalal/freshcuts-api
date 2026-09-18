@@ -2,7 +2,7 @@
      node --test adsreport.test.mjs */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { reportDayAt, previousBizDay, adSourceOf, sourceOf, recommend, smsText, buildReport, NOTES, COMPARE_FROM } from "./adsreport.js";
+import { reportDayAt, previousBizDay, adSourceOf, sourceOf, recommend, smsText, smsAdsText, changesText, buildReport, NOTES, COMPARE_FROM } from "./adsreport.js";
 import { smsInfo } from "./staffalerts.js";
 
 const at = (iso) => new Date(iso);
@@ -119,4 +119,37 @@ test("الواتساب في التقرير: صرف ومحادثات وتكلفة
   const empty = buildReport({ day: "2026-09-18", pos, shop, meta: { campaigns: [] } });
   assert.equal(empty.whatsapp.costPerConversation, null);
   assert.equal(empty.whatsapp.linkLandings, 0);
+});
+
+test("سطر الإعلانات اليومي (١٨/٩): الطلبات حسب المصدر، تكلفة الطلب، واللي الحارس غيّره — رسالة واحدة GSM-7", () => {
+  const pos = { hall: { orders: 20, revenue: 1400 }, deliveryApps: { orders: 10, revenue: 850, byApp: {} }, onlineInPos: { orders: 0, revenue: 0 } };
+  const shop = [
+    { option: "delivery", total: "96", attrib_source: "meta", attribution: { fc_link: "96-m3-kilo-a", utm: { utm_source: "meta", utm_medium: "paid" } } },
+    { option: "pickup", total: "99", attrib_source: "sms", attribution: { fc_link: "cv" } },
+    { option: "delivery", total: "121", attrib_source: "direct", attribution: {} },
+  ];
+  const meta = { campaigns: [
+    { name: "FC96-SALES-PUR", objective: "OUTCOME_SALES", kind: "web", spend: 300, purchases: 1 },
+    { name: "fc-wa-orders", objective: "OUTCOME_ENGAGEMENT", kind: "whatsapp", spend: 100, conversations: 30 },
+  ] };
+  const guardLog = [
+    { action: "set_ACTIVE", label: "WA fc-wa-walkin-5km (100/day)", detail: {} },
+    { action: "pace_lifetime_budget", label: "FC96-SALES-ATC", detail: { pace: 435, to: 5655 } },
+    { action: "boost_evening", label: "WA fc-wa-walkin-5km (100/day)", detail: { from: 100, to: 125 } },
+    { action: "health_alert", label: "health", detail: {} },
+    { action: "health_alert", label: "health", detail: {} },
+  ];
+  const r = buildReport({ day: "2026-09-18", pos, shop, meta, snap: { spend: 100 }, guardLog });
+  assert.equal(r.ads.spendSnap, 100);
+  assert.equal(r.ads.spendTotal, 500);
+  assert.equal(smsInfo(r.smsAds).encoding, "GSM-7");
+  assert.equal(smsInfo(r.smsAds).segments, 1);
+  assert.match(r.smsAds, /^FC ADS 18\/09 Ord M1 S0 SMS1 D1 \| CPA 133 \(ads 400\) \| Spend M300 S100 WA100 \| Chg: pace ATC 435, boost WA 125, 2 alerts$/);
+  assert.equal(changesText([]), "none");
+  assert.equal(changesText([{ action: "hard_cap_hit", label: "account" }, { action: "error" }]), "HIT 3000 CAP, 1 err");
+  // worst case still one segment
+  const many = Array.from({ length: 40 }, (_, i) => ({ action: "setup_create", label: `X${i}`, detail: {} }));
+  const big = buildReport({ day: "2026-09-18", pos, shop, meta, guardLog: many });
+  assert.equal(smsInfo(big.smsAds).segments, 1);
+  assert.equal(smsInfo(big.smsAds).encoding, "GSM-7");
 });
