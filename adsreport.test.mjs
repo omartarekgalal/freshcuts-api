@@ -153,3 +153,13 @@ test("سطر الإعلانات اليومي (١٨/٩): الطلبات حسب ا
   assert.equal(smsInfo(big.smsAds).segments, 1);
   assert.equal(smsInfo(big.smsAds).encoding, "GSM-7");
 });
+
+test("تغييرات الحارس: الإعداد بيتجمّع «+N edits» والأهم الأول", () => {
+  const g = [
+    { action: "setup_create", label: "FC96-SALES-PUR" }, { action: "setup_create", label: "FC-RT-WEB-96" },
+    { action: "pause_whatsapp", label: "WA fc-wa-walkin-5km" }, { action: "budget_up_from_whatsapp", label: "FC-RT-WEB-96", detail: { toDaily: 120 } },
+    { action: "switch_to_add_to_cart", label: "FC96-SALES-ATC-8KM-ADV" }, { action: "reenable_whatsapp_tracked", label: "WA fc-wa-walkin-5km" },
+    { action: "pause_ad_ai_video", label: "x" }, { action: "pause_ad_ai_video", label: "y" },
+  ];
+  assert.equal(changesText(g), "WA off, RT 120, WA on, 2 AI vids off, +3 edits");
+});

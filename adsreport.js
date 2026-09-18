@@ -170,16 +170,24 @@ function short(label) {
 }
 export function changesText(guard = []) {
   const out = [];
-  let alerts = 0, errors = 0;
+  let alerts = 0, errors = 0, edits = 0, vids = 0;
+  const add = (t) => { if (t && !out.includes(t)) out.push(t); };
   for (const g of guard || []) {
+    const d = g.detail || {};
     const f = CHANGE_ACTIONS[g.action];
-    if (f) { const t = f(g.detail || {}, g.label); if (t && !out.includes(t)) out.push(t); }
+    if (f) add(f(d, g.label));
     else if (g.action === "health_alert") alerts++;
     else if (g.action === "error") errors++;
-    else if (/^(setup_|switch_|pause_|reenable|budget_)/.test(g.action || "")) { const t = `${short(g.label)} ${String(g.action).split("_")[0]}`; if (!out.includes(t)) out.push(t); }
+    else if (g.action === "pause_ad_ai_video") vids++;
+    else if (g.action === "pause_whatsapp") add("WA off");
+    else if (/^reenable/.test(g.action || "")) add(`${short(g.label)} on`);
+    else if (g.action === "budget_up_from_whatsapp") add(`RT ${r0(d.toDaily)}`);
+    else if (/^(setup_|switch_|budget_|pause_)/.test(g.action || "")) edits++;
   }
-  if (alerts) out.push(`${alerts} alert${alerts > 1 ? "s" : ""}`);
-  if (errors) out.push(`${errors} err`);
+  if (vids) add(`${vids} AI vids off`);
+  if (alerts) add(`${alerts} alert${alerts > 1 ? "s" : ""}`);
+  if (errors) add(`${errors} err`);
+  if (edits) add(`+${edits} edits`);
   return out.length ? out.join(", ") : "none";
 }
 export function smsAdsText(rep) {
