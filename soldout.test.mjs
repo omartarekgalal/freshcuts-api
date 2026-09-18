@@ -167,6 +167,11 @@ test("checkout: صنف خلصان ← 409 item_sold_out بالاسم، من غي
   assert.equal(res.body.items[0].product_id, 108);
   assert.match(res.body.message, /كبدة مشوية بالوزن/);
   assert.equal(s.paid(), 0);
+  // من غير اسم في السطر ⇒ الاسم المتخزّن وقت القفل
+  const s2 = shop({ catalog: { soldOut: { 108: { at: "a", until: future, name: "كبدة مشوية بالوزن" } } } });
+  const r2 = await s2.app.routes["POST /api/shop/checkout"](ctx({
+    option: "pickup", items: [{ product_id: 108, quantity: 1, unit_amount: 45000000 }], customer: { phone: "0512345678" } }));
+  assert.match(r2.body.message, /كبدة مشوية بالوزن/);
 });
 
 test("checkout: القفل اللي وقته عدّى مابيمنعش (بيكمل لحد الـOTP)", async () => {

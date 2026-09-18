@@ -41,7 +41,7 @@ export function activeSoldOut(map, nowMs = Date.now()) {
   for (const [id, e] of Object.entries(map)) {
     if (!e || typeof e !== "object") continue;
     if (e.until && Date.parse(e.until) <= nowMs) continue;
-    out[String(id)] = { at: e.at || null, by: e.by || null, until: e.until || null };
+    out[String(id)] = { at: e.at || null, by: e.by || null, until: e.until || null, name: e.name || null };
   }
   return out;
 }
@@ -56,7 +56,7 @@ export function soldOutLines(items, active) {
     const id = String(it?.product_id ?? "");
     if (!id || !active[id] || seen.has(id)) continue;
     seen.add(id);
-    bad.push({ product_id: Number(id), name: it.name || it.bundle_name || null });
+    bad.push({ product_id: Number(id), name: it.name || active[id].name || null });
   }
   return bad;
 }
@@ -72,7 +72,7 @@ export const soldOutMessage = (names) => {
    (jsonb_set / #-) عشان تعديلين في نفس اللحظة مايمسحوش بعض. */
 export function makeSoldOutStore({ pool, getSettingsData, now = () => Date.now(), onChange = () => {} }) {
   async function active() { return soldOutOf(await getSettingsData(), now()); }
-  async function set(productId, { soldOut, until = "reopen_next_open", by = null } = {}) {
+  async function set(productId, { soldOut, until = "reopen_next_open", by = null, name = null } = {}) {
     const id = String(productId ?? "").trim();
     if (!/^\d{1,12}$/.test(id)) return { ok: false, error: "bad_product_id" };
     if (soldOut) {
@@ -81,7 +81,8 @@ export function makeSoldOutStore({ pool, getSettingsData, now = () => Date.now()
         : (typeof until === "string" && until !== "reopen_next_open" && !Number.isNaN(Date.parse(until)) && Date.parse(until) > now()
           ? new Date(Date.parse(until)).toISOString()
           : nextOpening(s?.hours, now()));
-      const entry = { at: new Date(now()).toISOString(), by: by ? String(by).slice(0, 60) : null, until: untilIso };
+      const entry = { at: new Date(now()).toISOString(), by: by ? String(by).slice(0, 60) : null, until: untilIso,
+        name: name ? String(name).slice(0, 80) : null };
       await pool.query(
         `UPDATE settings SET data = jsonb_set(
            jsonb_set(
@@ -144,13 +145,13 @@ export function register(app, { pool, getSettingsData, requireAdmin, requirePort
     let menuError = null;
     try { groups = groupMenu(await getMenu(), act); } catch (e) { menuError = e.message; }
     const names = Object.fromEntries(groups.flatMap((g) => g.items.map((i) => [i.id, i.name])));
-    const closed = Object.entries(act).map(([id, e]) => ({ id, name: names[id] || `#${id}`, ...e }));
+    const closed = Object.entries(act).map(([id, e]) => ({ id, ...e, name: names[id] || e.name || `#${id}` }));
     return { ok: true, groups, closed, count: closed.length, menuError };
   }
   async function change(body, by) {
     const soldOut = body?.soldOut === true;
     const until = body?.until === null || body?.until === "manual" ? null : (body?.until || "reopen_next_open");
-    return store.set(body?.productId, { soldOut, until, by });
+    return store.set(body?.productId, { soldOut, until, by, name: body?.name || null });
   }
 
   async function portalGate(c) {
