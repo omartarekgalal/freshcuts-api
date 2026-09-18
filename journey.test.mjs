@@ -212,3 +212,27 @@ test("التقرير محمي", async () => {
   const r = await app.request("/api/journey/report?range=today");
   assert.equal(r.status, 401);
 });
+
+test("١٩/٩: أحداث المنتقي/الأوراق/الفورم/أول لمسة مقبولة ومفيهاش خطوة", () => {
+  for (const n of ["picker_choice", "picker_add_blocked", "picker_close", "sheet_close", "form_error", "first_input", "page_visible", "iab_escape", "iab_stay"]) {
+    assert.ok(J.WEB_EVENTS.includes(n), n);
+    assert.equal(J.stepOf(n, {}), null, n);
+  }
+  const p = J.parseBatch(JSON.stringify({ sessionId: "sabcdefgh123", anonId: "dabcdefgh123", events: [
+    { n: "picker_choice", t: Date.now(), seq: 1, p: { title: "كيلو مشاوي بـ٩٦", choice: "كفتة مشوية بالوزن", idx: 0, of: 4 } },
+    { n: "sheet_close", t: Date.now(), seq: 2, p: { sheet: "co2EditSheet", reason: "x", dwell_ms: 42000, bld_ok: false } },
+  ] }));
+  assert.equal(p.events.length, 2);
+  assert.equal(p.events[0].props.choice, "كفتة مشوية بالوزن");
+  assert.equal(p.events[1].props.bld_ok, false);
+});
+
+test("classifyJsError: كودنا ولا دخيل", () => {
+  assert.equal(J.classifyJsError({ msg: "Uncaught Error: Error invoking postMessage: Java object is gone", line: 1 }), "iab_bridge");
+  assert.equal(J.classifyJsError({ msg: "TypeError: undefined is not an object (evaluating 'window.webkit.messageHandlers')", src: "/" }), "iab_bridge");
+  assert.equal(J.classifyJsError({ msg: "Script error." }), "cross_origin");
+  assert.equal(J.classifyJsError({ msg: "Uncaught SyntaxError: Unexpected end of input", line: 37 }), "injected");
+  assert.equal(J.classifyJsError({ msg: "Uncaught SyntaxError: Unexpected token .", src: "/static/app.js", line: 821 }), "first_party");
+  assert.equal(J.classifyJsError({ msg: "x", kind: "third_party", src: "/beacon.min.js" }), "third_party");
+  assert.ok(J.isOurError("first_party") && J.isOurError("inline") && !J.isOurError("iab_bridge"));
+});
