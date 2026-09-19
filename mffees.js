@@ -65,7 +65,7 @@ export function register(app, ctx) {
                OR (f.error IS NOT NULL AND f.fetched_at < now() - interval '1 hour')
                OR (COALESCE(f.deposit_status,'') NOT ILIKE 'deposited' AND f.fetched_at < now() - interval '1 day'))
         ORDER BY o.created_at DESC LIMIT $2`, [days, limit])).rows;
-    let ok = 0, failed = 0;
+    let fetched = 0, failed = 0;
     for (const r of rows) {
       try {
         const st = await paymentStatus({ key: r.mf_invoice_id, keyType: "InvoiceId" });
@@ -77,14 +77,14 @@ export function register(app, ctx) {
              fee_vat=EXCLUDED.fee_vat, customer_charge=EXCLUDED.customer_charge, due_deposit=EXCLUDED.due_deposit,
              deposit_status=EXCLUDED.deposit_status, error=EXCLUDED.error, fetched_at=now()`,
           [r.order_no, r.mf_invoice_id, f?.gateway, f?.brand, f?.value, f?.fee || 0, f?.feeVat || 0, f?.customerCharge || 0, f?.dueDeposit, f?.depositStatus, f ? null : "no successful transaction"]);
-        ok++;
+        fetched++;
       } catch (e) {
         failed++;
         await pool.query(`INSERT INTO shop_order_fees(order_no, invoice_id, error) VALUES ($1,$2,$3)
                           ON CONFLICT (order_no) DO UPDATE SET error=EXCLUDED.error, fetched_at=now()`, [r.order_no, r.mf_invoice_id, String(e.message).slice(0, 300)]).catch(() => {});
       }
     }
-    return { checked: rows.length, ok, failed };
+    return { checked: rows.length, fetched, failed };
   }
 
   app.post("/api/reports/biz/mf-fees/sync", async (c) => {
