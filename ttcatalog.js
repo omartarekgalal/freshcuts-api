@@ -33,6 +33,8 @@ export const CATALOG_NAME = "Fresh Cuts Menu";
 const API_BASE = env("PUBLIC_API_URL") || "https://freshcuts-api.o2m8.me";
 export const TT_FEED_URL = env("TIKTOK_CATALOG_FEED_URL") || `${API_BASE}/api/catalog/tiktok.csv`;
 const BRAND = "Fresh Cuts";
+/* Google taxonomy 422 = Food, Beverages & Tobacco > Food Items — من غيره تيك توك بتحط تحذير على كل منتج. */
+const GPC = "422";
 const K = "tt_catalog";
 const SYNC_EVERY_MS = 30 * 60_000;
 const FORCE_EVERY_MS = 6 * 3600e3;
@@ -55,14 +57,15 @@ export function toTtProduct(r) {
     price_info: { price: Math.round(Number(r.price) * 100) / 100 },
     landing_page: { landing_page_url: catalogLink(r) },
     product_detail: { condition: "NEW" },
+    google_product_category: GPC,
   };
 }
 const q = (s) => `"${String(s ?? "").replace(/"/g, '""').replace(/[\r\n]+/g, " ")}"`;
 export function ttCsv(rows) {
-  const header = "sku_id,title,description,availability,condition,price,link,image_link,brand,product_type";
+  const header = "sku_id,title,description,availability,condition,price,link,image_link,brand,product_type,google_product_category";
   return [header, ...rows.map((r) => [
     q(r.id), q(r.title), q(r.description || r.title), "in stock", "new",
-    q(`${Number(r.price).toFixed(2)} SAR`), q(catalogLink(r)), q(r.image), q(BRAND), q(r.category),
+    q(`${Number(r.price).toFixed(2)} SAR`), q(catalogLink(r)), q(r.image), q(BRAND), q(r.category), GPC,
   ].join(","))].join("\n");
 }
 /** ids اللي لازم تتمسح = كانت مرفوعة ومبقتش في الفيد. */
