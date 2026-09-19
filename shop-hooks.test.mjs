@@ -192,11 +192,11 @@ const CASES = [
     expect: { status: 400, body: { ok: false, error: "invalid_phone" } },
   },
   {
-    name: "invalid_name (اسم واحد — الاسم الثنائي إجباري)", code: "invalid_name", opts: { deps: { bundles: okBundles } },
-    ctx: { body: { ...CART, customer: { name: "عميل", phone: "0512345678" } } },
-    expect: { status: 400, body: { ok: false, error: "invalid_name", reason: "name_two_words",
-      message: "اكتب اسمك الثنائي (الاسم واسم العائلة) بالحروف", message_en: "Please enter your first and last name (letters only)",
-      detail: "اكتب اسمك الثنائي (الاسم واسم العائلة) بالحروف" } },
+    name: "invalid_name (فاضي — الاسم مطلوب من غير شروط)", code: "invalid_name", opts: { deps: { bundles: okBundles } },
+    ctx: { body: { ...CART, customer: { name: "   ", phone: "0512345678" } } },
+    expect: { status: 400, body: { ok: false, error: "invalid_name", reason: "name_required",
+      message: "اكتب اسمك", message_en: "Please enter your name",
+      detail: "اكتب اسمك" } },
   },
   {
     name: "address_required", opts: { deps: { bundles: okBundles } },

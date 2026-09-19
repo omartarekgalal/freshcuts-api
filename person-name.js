@@ -18,19 +18,15 @@ const WORD = /^[A-Za-zء-غف-يٱ-ۓۺ-ۼً-ْـ]+(?:['’-][A-Za-zء-غف-يٱ
 const LETTERS = /[A-Za-zء-غف-يٱ-ۓۺ-ۼ]/g;
 
 export const NAME_MSG = {
-  ar: "اكتب اسمك الثنائي (الاسم واسم العائلة) بالحروف",
-  en: "Please enter your first and last name (letters only)",
+  ar: "اكتب اسمك",
+  en: "Please enter your name",
 };
 
-/* يرجّع {ok, name, error}. name = الاسم بعد تنظيف المسافات. */
+/* يرجّع {ok, name, error}. name = الاسم بعد تنظيف المسافات.
+   عمر (١٩/٩ مساءً): «اطلب الاسم الثنائي بس مش لازم تحط شروط لقبول الاسم» —
+   الشروط كانت بتوقّف عملاء في الدفع. القاعدة الوحيدة: مايبقاش فاضي. */
 export function checkPersonName(raw) {
-  const name = String(raw == null ? "" : raw).replace(/[‌-‏‪-‮]/g, "").replace(/\s+/g, " ").trim();
+  const name = String(raw == null ? "" : raw).replace(/[‌-‏‪-‮]/g, "").replace(/\s+/g, " ").trim().slice(0, 60);
   if (!name) return { ok: false, name, error: "name_required" };
-  if (name.length > NAME_MAX) return { ok: false, name, error: "name_too_long" };
-  const words = name.split(" ");
-  if (!words.every((w) => WORD.test(w))) return { ok: false, name, error: "name_letters" };
-  if (words.length < 2) return { ok: false, name, error: "name_two_words" };
-  if (!words.every((w) => (w.match(LETTERS) || []).length >= 2)) return { ok: false, name, error: "name_two_words" };
-  if (name.length < NAME_MIN) return { ok: false, name, error: "name_two_words" };
   return { ok: true, name, error: null };
 }

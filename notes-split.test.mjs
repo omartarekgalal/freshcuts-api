@@ -94,17 +94,11 @@ test("دفتر العناوين: delivery_notes بتتحفظ وتتعدّل، و
   assert.equal(same[0].delivery_notes, ADDR.delivery_notes, "طلب من غير المفتاح مايمسحش");
 });
 
-test("الاسم الثنائي: كلمتين حروف عربي/إنجليزي، طول معقول", () => {
-  for (const ok of ["محمد الغامدي", "Mohammed Alghamdi", "عبدالرحمن بن سعيد", "Sara Al-Qahtani", "  نورة   العتيبي  ", "Ali Hassan"]) {
-    assert.equal(checkPersonName(ok).ok, true, ok);
-  }
+test("الاسم: مطلوب بس من غير شروط (عمر ١٩/٩)", () => {
+  for (const ok of ["محمد", "عميل", "Omar", "محمد 123", "م ع", "a@b c", "محمد الغامدي"]) assert.equal(checkPersonName(ok).ok, true, ok);
   assert.equal(checkPersonName("  نورة   العتيبي ").name, "نورة العتيبي");
-  const bad = {
-    "": "name_required", "محمد": "name_two_words", "عميل": "name_two_words", "Omar": "name_two_words",
-    "م ع": "name_two_words", "محمد 123": "name_letters", "محمد ٥٥": "name_letters", "a@b c": "name_letters",
-    "محمد 🙂": "name_letters",
-  };
-  bad["ا".repeat(25) + " " + "ب".repeat(20)] = "name_too_long";
-  for (const [v, err] of Object.entries(bad)) assert.equal(checkPersonName(v).error, err, v);
+  assert.equal(checkPersonName("").error, "name_required");
+  assert.equal(checkPersonName("   ").error, "name_required");
   assert.equal(checkPersonName(null).ok, false);
+  assert.equal(checkPersonName("ا".repeat(80)).name.length, 60);
 });
