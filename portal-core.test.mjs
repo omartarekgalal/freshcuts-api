@@ -157,7 +157,7 @@ test("toPortalOrder: نفس شكل العقد بالظبط", () => {
   assert.deepEqual(o.items[1], { name: "باقة العيلة", qty: 1, note: null, kind: "bundle", level: 0 });
   assert.deepEqual(o.items[2], { name: "صنف #55", qty: 1, note: null, kind: "component", level: 1 });
   assert.deepEqual(o.customer, { name: "محمد", phone: "0512345678" });
-  assert.deepEqual(o.address, { area: "السلامة", street: "شارع ١", building: "12", floor: "2", apartment: null, landmark: "جنب البنك", leaveAtDoor: false, lat: 21.58, lng: 39.15 });
+  assert.deepEqual(o.address, { area: "السلامة", street: "شارع ١", building: "12", floor: "2", apartment: null, landmark: "جنب البنك", leaveAtDoor: false, deliveryNotes: null, lat: 21.58, lng: 39.15 });
   assert.equal(o.paidWith, "Apple Pay (Mada)");
   assert.equal(o.acceptedAt, new Date(NOW - 12 * 60_000).toISOString(), "من history لو العمود فاضي");
   assert.equal(o.paidAt, new Date(NOW - 19 * 60_000).toISOString());

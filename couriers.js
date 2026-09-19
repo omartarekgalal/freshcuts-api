@@ -180,19 +180,38 @@ export function readableAddress(addr, { withPin = false } = {}) {
 
 const PREPAID_NOTE = "الطلب مدفوع مسبقاً — لا يُحصَّل من العميل";
 
-/* ── لاجلك: العنوان ≠ الملاحظات (١٩ سبتمبر — طلب لاجلك عن طريق عمر) ─────
-   كنا بنحط كل التفاصيل (المبنى/الدور/الشقة/علامة مميزة/«اترك عند الباب»)
-   جوّه delivery_details.address، ولاجلك قالت إن العربي في الحقل ده بيوصل
-   مكسّر عندهم وطلبوا order.notes. فالعنوان بقى «المكان» بس (الحي + الشارع +
-   الإحداثيات)، والتفاصيل كلها في الملاحظات. Flying Arrow مالهاش دعوة — لسه
-   بتاخد readableAddress كاملة. */
+/* ── لاجلك: العنوان = النقطة بس، وكل الباقي في order.notes ───────────────
+   ١٩/٩ (أول مرة): لاجلك قالت إن العربي في delivery_details.address بيوصل
+   مكسّر، فالتفاصيل اتنقلت لـorder.notes والعنوان بقى «الحي + الشارع + النقطة».
+   ١٩/٩ (عمر، تاني مرة): تطبيق الكابتن بيفتح جوجل ماب **بنص حقل العنوان** على
+   طول — فأي كلام قبل الإحداثيات بيخلّي جوجل يدوّر على نص بدل ما يفتح النقطة.
+   فالحقل بقى النقطة بس «lat,lng» (٦ خانات ≈ ١١ سم). ده الشكل اللي جوجل ماب
+   بيفهمه كنقطة سواء اتبحث بيه في التطبيق، أو اتحط في رابط ‎?q=‎ أو geo:‎ —
+   رابط كامل جوّه الحقل كان هيبوظ لو تطبيقهم بيعمل بحث بالنص. ولو حبّينا
+   الرابط: settings.delivery.ljAddressFormat = "link".
+   العنوان المكتوب كامل (حي/شارع/مبنى/دور/شقة/علامة/«اترك عند الباب») +
+   «ملاحظات التوصيل» بتاعة العنوان بيروحوا order.notes. ملاحظات الأكل لأ.
+   Flying Arrow مالهاش دعوة — لسه بتاخد readableAddress كاملة. */
+export function mapPoint(addr = {}, format = "coords") {
+  const lat = Number(addr.latitude), lng = Number(addr.longitude);
+  if (!(isFinite(lat) && isFinite(lng) && lat && lng)) return "";
+  const p = `${lat.toFixed(6)},${lng.toFixed(6)}`;
+  return format === "link" ? `https://maps.google.com/?q=${p}` : p;
+}
 export function locationText(addr = {}, { withPin = true } = {}) {
   const area = cleanBit(addr.area), street = cleanBit(addr.street);
   const text = [areaText(area), street].filter(Boolean).join("، ");
-  const lat = Number(addr.latitude), lng = Number(addr.longitude);
-  const pin = withPin && isFinite(lat) && isFinite(lng) && lat && lng ? `${lat.toFixed(6)},${lng.toFixed(6)}` : "";
+  const pin = withPin ? mapPoint(addr) : "";
   if (!text) return pin || "موقع العميل — اتبع الإحداثيات";
   return pin ? `${text} — ${pin}` : text;
+}
+/* العنوان المكتوب كامل من غير «اترك عند الباب» (بتتكتب لوحدها أول الملاحظات) */
+export function fullAddressText(addr = {}) {
+  const area = cleanBit(addr.area), street = cleanBit(addr.street);
+  const building = cleanBit(addr.building), landmark = cleanBit(addr.landmark);
+  return [
+    areaText(area), street, building && `مبنى ${building}`, floorAptText(addr), landmarkText(landmark),
+  ].filter(Boolean).join("، ");
 }
 export function deliveryDetailsText(addr = {}) {
   const building = cleanBit(addr.building), landmark = cleanBit(addr.landmark);
@@ -203,19 +222,44 @@ export function deliveryDetailsText(addr = {}) {
     landmarkText(landmark),
   ].filter(Boolean).join("، ");
 }
-/* order.notes لاجلك: مشوار بعيد ← تفاصيل التوصيل ← ملاحظة العميل */
+
+/* ── «ملاحظات التوصيل» ≠ «ملاحظات الأكل» (عمر ١٩/٩) ──────────────────────
+   ملاحظات التوصيل بتاعة العنوان (address.delivery_notes — محفوظة في دفتر
+   العناوين وبتتنقل مع الطلب): للمندوب والبوابة بس.
+   ملاحظات الأكل بتاعة الطلب (shop_orders.notes): لنقطة البيع والمطبخ بس.
+   طلب قديم (قبل الفصل — العنوان مافيهوش المفتاح delivery_notes أصلاً) كانت
+   ملاحظته الوحيدة بتروح للاتنين، فبيفضل ياخدها المندوب زي الأول عشان
+   تعليمات توصيل مكتوبة هناك ماتضيعش. */
+export const notesSplit = (order = {}) => {
+  const a = order.address;
+  return Boolean(a && typeof a === "object" && Object.prototype.hasOwnProperty.call(a, "delivery_notes"));
+};
+export function deliveryNotesOf(order = {}) {
+  const a = order.address || {};
+  return String(a.delivery_notes || "").replace(/\s+/g, " ").trim();
+}
+/* ملاحظة الطلب القديمة اللي لسه بتوصل المندوب (قبل الفصل بس) */
+const legacyCourierNote = (order) => (notesSplit(order) ? "" : String(order.notes || "").trim());
+
+/* order.notes لاجلك: مشوار بعيد ← اترك عند الباب ← العنوان كامل ← ملاحظات التوصيل */
 export const LJ_NOTES_MAX = 300;
 export function leajlakNotes(order = {}) {
+  const addr = order.address || {};
   const far = farZoneOfRow(order);
+  const full = fullAddressText(addr);
+  const dn = deliveryNotesOf(order);
+  const old = legacyCourierNote(order);
   const n = [
     far ? `مشوار بعيد ${far.km} كم` : "",
-    deliveryDetailsText(order.address || {}),
-    String(order.notes || "").trim() && `ملاحظة العميل: ${String(order.notes).trim()}`,
+    leaveAtDoor(addr) ? DOOR_NOTE : "",
+    full && `العنوان: ${full}`,
+    dn && `ملاحظات التوصيل: ${dn}`,
+    old && `ملاحظة العميل: ${old}`,
   ].filter(Boolean).join(" — ");
   return n.slice(0, LJ_NOTES_MAX) || PREPAID_NOTE;
 }
 /* جسم POST /orders لاجلك — دالة صافية عشان يتجرّب من غير شبكة */
-export function leajlakPayload(order = {}, shopId = "") {
+export function leajlakPayload(order = {}, shopId = "", { addressFormat = "coords" } = {}) {
   const addr = order.address || {};
   return {
     id: String(order.order_no),
@@ -224,7 +268,8 @@ export function leajlakPayload(order = {}, shopId = "") {
       name: order.customer?.name || "العميل",
       phone: msisdn(order.customer?.phone || order.phone_norm || ""),
       coordinate: { latitude: Number(addr.latitude), longitude: Number(addr.longitude) },
-      address: locationText(addr, { withPin: true }),
+      // النقطة بس — ولو (مستحيل في توصيل) مفيش إحداثيات، الحي والشارع
+      address: mapPoint(addr, addressFormat === "link" ? "link" : "coords") || locationText(addr, { withPin: false }),
     },
     order: {
       // 0 = مدفوع مسبقاً (1 = كاش عند الاستلام، 10 = مكينة شبكة). كل طلبات الموقع مدفوعة أونلاين.
@@ -254,15 +299,17 @@ export function farZoneOfRow(order = {}) {
   };
 }
 
-/* ملاحظات المندوب: «اترك الطلب عند الباب» أولاً (لو العميل اختارها)، بعدها
-   ملاحظة الطلب. ٢٠٠ حرف حد الشركتين. */
+/* ملاحظات المندوب (Flying Arrow): «اترك الطلب عند الباب» أولاً، بعدها
+   «ملاحظات التوصيل» بتاعة العنوان — ملاحظات الأكل مابتوصلش المندوب (عمر ١٩/٩).
+   ٢٠٠ حرف حد الشركتين. */
 export function courierNotes(order = {}) {
   const far = farZoneOfRow(order);
   const n = [
     // المندوب لازم يعرف إن ده مشوار بعيد قبل ما يقبل — والمسافة بتفرق في أجره
     far ? `مشوار بعيد ${far.km} كم` : "",
     leaveAtDoor(order.address) ? DOOR_NOTE : "",
-    String(order.notes || "").trim(),
+    deliveryNotesOf(order),
+    legacyCourierNote(order),
   ].filter(Boolean).join(" — ");
   return n.slice(0, 200) || PREPAID_NOTE;
 }
@@ -502,7 +549,7 @@ const leajlak = {
   async dispatch(order, cfg) {
     const created = await this.call("/orders", {
       method: "POST",
-      body: leajlakPayload(order, cfg.ljShopId || LJ_SHOP()),
+      body: leajlakPayload(order, cfg.ljShopId || LJ_SHOP(), { addressFormat: cfg.ljAddressFormat }),
     });
     const d = created?.data || created || {};
     /* وثيقتهم بتقول إن التتبع برقم طلبنا — وده **غلط**، مجرّب على اللايف:

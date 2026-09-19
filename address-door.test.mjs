@@ -53,21 +53,20 @@ test("لاجلك: الباب في العنوان والملاحظات", async ()
   lj.call = async (path, opts) => { body = opts.body; return { data: { dsp_order_id: "u1" } }; };
   try { await lj.dispatch(ROW, { ljShopId: "1" }); } catch { /* الشكل هو اللي يهمنا */ } finally { lj.call = orig; }
   assert.ok(body, "مااتبعتش حاجة");
-  // ١٩/٩ (لاجلك): العنوان = المكان بس، والتفاصيل كلها في order.notes
-  assert.doesNotMatch(body.delivery_details.address, /الدور|شقة|الباب|مبنى/);
-  assert.match(body.delivery_details.address, /حي السلامة، صاري — 21\.588100,39\.152100/);
-  assert.match(body.order.notes, /^اترك الطلب عند الباب، مبنى 12، الدور 3، شقة 7/);
-  assert.match(body.order.notes, /ملاحظة العميل: بدون بصل$/);
+  // ١٩/٩ (عمر): العنوان = النقطة بس، والتفاصيل كلها في order.notes
+  assert.equal(body.delivery_details.address, "21.588100,39.152100");
+  assert.match(body.order.notes, /^اترك الطلب عند الباب — العنوان: حي السلامة، صاري، مبنى 12، الدور 3، شقة 7، جنب النهدي/);
+  assert.match(body.order.notes, /ملاحظة العميل: بدون بصل$/, "طلب قديم (قبل الفصل) ملاحظته بتفضل توصل");
   assert.equal(body.order.payment_type, 0);
 });
 
 test("ملاحظات نقطة البيع: «اتركه عند الباب🚪» جنب «توصيل» ومفيش خصم", () => {
   const n = posNotesOf({ ...ROW, discount_percent: 50 }, { withFee: true });
-  assert.equal(n, "توصيل - اتركه عند الباب🚪 - طُلب 13:00 - توصيل 9ر - مدفوع أونلاين✅ - بدون بصل");
+  assert.equal(n, "توصيل - اتركه عند الباب🚪 - طُلب 13:00 - توصيل 9ر - مدفوع أونلاين✅ - 📝 بدون بصل");
   assert.ok(!n.includes("خصم"));
   // من غير الاختيار: نفس شكل النهارده بالظبط
   assert.equal(posNotesOf({ ...ROW, address: { ...JED } }, { withFee: true }),
-    "توصيل - طُلب 13:00 - توصيل 9ر - مدفوع أونلاين✅ - بدون بصل");
+    "توصيل - طُلب 13:00 - توصيل 9ر - مدفوع أونلاين✅ - 📝 بدون بصل");
   // استلام مابيكتبش الباب حتى لو جه في الجسم
   const now = Date.parse("2026-09-18T10:05:00Z");
   assert.equal(posNotesOf({ ...ROW, option: "pickup", delivery_fee: 0, notes: "" }, { now }),
@@ -128,8 +127,8 @@ test("لاجلك (١٩/٩): leajlakPayload — العنوان مكان بس، ا
   assert.equal(p.delivery_details.phone, "966551234567");
   assert.equal(p.order.payment_type, 0);
   assert.equal(p.order.total, 101);
-  assert.equal(p.delivery_details.address, "حي السلامة، صاري — 21.588100,39.152100");
-  assert.equal(p.order.notes, "مشوار بعيد 13.47 كم — اترك الطلب عند الباب، مبنى 12، الدور 3، شقة 7، جنب النهدي — ملاحظة العميل: رجاء الاتصال قبل الوصول");
+  assert.equal(p.delivery_details.address, "21.588100,39.152100");
+  assert.equal(p.order.notes, "مشوار بعيد 13.47 كم — اترك الطلب عند الباب — العنوان: حي السلامة، صاري، مبنى 12، الدور 3، شقة 7، جنب النهدي — ملاحظة العميل: رجاء الاتصال قبل الوصول");
   // UTF-8 سليم: الجسم بيرجع زي ما هو بعد encode/decode
   const bytes = new TextEncoder().encode(JSON.stringify(p));
   assert.deepEqual(JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)), p);
@@ -143,6 +142,6 @@ test("لاجلك (١٩/٩): leajlakPayload — العنوان مكان بس، ا
 test("لاجلك: «حي» و«قبل/أمام» مايتكرروش (طلبات ١٩/٩ الحقيقية)", async () => {
   const { leajlakPayload } = await import("./couriers.js");
   const p = leajlakPayload({ order_no: "W3", address: { ...JED, area: "حي السلامة", street: "شجاع بن وهب", landmark: "قبل صيدلية المهدي" }, notes: "" }, "1");
-  assert.equal(p.delivery_details.address, "حي السلامة، شجاع بن وهب — 21.588100,39.152100");
-  assert.equal(p.order.notes, "قبل صيدلية المهدي");
+  assert.equal(p.delivery_details.address, "21.588100,39.152100");
+  assert.equal(p.order.notes, "العنوان: حي السلامة، شجاع بن وهب، قبل صيدلية المهدي");
 });

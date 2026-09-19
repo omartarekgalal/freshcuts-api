@@ -29,7 +29,8 @@
 ═══════════════════════════════════════════════════════════════════════════ */
 
 import * as tsstore from "./tsstore.js";
-import { msisdn, readableAddress, leaveAtDoor, farZoneOfRow } from "./couriers.js";
+import { msisdn, readableAddress, leaveAtDoor, farZoneOfRow, deliveryNotesOf, courierNotes } from "./couriers.js";
+import { checkPersonName, NAME_MSG, NAME_MAX } from "./person-name.js";
 // ضريبة سطور الباقة — نفس الثابت اللي التوزيع اتعمل بيه، عشان الإجمالي يرجع للسعر بالظبط
 import { VAT_RATE as BUNDLE_VAT } from "./bundles.js";
 import { MULTIPLY as MONEY_MULTIPLY, rescaleItems, stampMf, scaleOf } from "./money.js";
@@ -208,7 +209,9 @@ export function posNotesOf(row, { withFee = false, now = Date.now() } = {}) {
     `طُلب ${hm(row.created_at)}`,
     row.option === "pickup" ? `استلام ${hm(now + 40 * 60_000)}` : "",
     feeNote,
-    "مدفوع أونلاين✅", row.notes || "",
+    "مدفوع أونلاين✅",
+    // ملاحظات الأكل بس (بتاعة الطلب) — ملاحظات التوصيل بتروح قسم التوصيل/المندوب (عمر ١٩/٩)
+    String(row.notes || "").trim() ? `📝 ${String(row.notes).trim()}` : "",
   ].filter(Boolean).join(" - ");
 }
 
@@ -219,6 +222,21 @@ export function posAddressLine(row) {
   if (row.option !== "delivery") return "استلام";
   const hasText = ["area", "street", "building"].some((k) => String(addr[k] || "").trim());
   return hasText ? readableAddress(addr).slice(0, 250) : "توصيل";
+}
+
+/* عنوان الطلب كما يتخزّن: «ملاحظات التوصيل» بتاعة العنوان (delivery_notes)
+   بتتنضّف وبتتخزّن جوّه العنوان نفسه — المندوب والبوابة بيقروها من هناك.
+   المفتاح بيفضل موجود لو المتجر بعته (حتى فاضي): ده اللي بيقول إن الطلب
+   اتعمل بعد فصل الملاحظات (couriers.notesSplit). */
+export function orderAddress(raw, option = "delivery") {
+  if (!raw || typeof raw !== "object") return null;
+  const a = { ...raw };
+  if (option !== "delivery") delete a.delivery_notes;
+  else if (a.delivery_notes !== undefined) {
+    a.delivery_notes = String(a.delivery_notes == null ? "" : a.delivery_notes)
+      .replace(/[<>]/g, "").replace(/\s+/g, " ").trim().slice(0, 150);
+  }
+  return a;
 }
 
 export function refundDecision(row, { maxAttempts = 3 } = {}) {
@@ -801,6 +819,12 @@ export function register(app, ctx, deps = {}) {
     const cust = b.customer || {};
     const phoneNorm = normPhone(cust.phone);
     if (!/^5\d{8}$/.test(phoneNorm)) return fail("invalid_phone", 400);
+    /* الاسم الثنائي إجباري تاني (عمر ١٩/٩ — رجوع عن «عميل» الافتراضي). detail =
+       نفس الرسالة، عشان نسخة متجر قديمة في الكاش بتعرض detail تحت زرار الدفع. */
+    const nameChk = checkPersonName(cust.name);
+    if (!nameChk.ok) {
+      return fail("invalid_name", 400, { reason: nameChk.error, message: NAME_MSG.ar, message_en: NAME_MSG.en, detail: NAME_MSG.ar });
+    }
     if (option === "delivery" && !(b.address?.latitude && b.address?.longitude)) {
       return fail("address_required", 400);
     }
@@ -811,6 +835,11 @@ export function register(app, ctx, deps = {}) {
       const verified = await (accounts()?.customerOf?.(c) ?? null);
       if (!verified || String(verified.phone_norm) !== String(phoneNorm)) {
         return fail("otp_required", 401);
+      }
+      // الاسم الثنائي الصح بيتحفظ على الحساب — المرة الجاية بيتملى لوحده
+      if (verified.name !== nameChk.name) {
+        pool.query("UPDATE acct_customers SET name=$2 WHERE phone_norm=$1", [phoneNorm, nameChk.name.slice(0, 60)])
+          .catch((e) => console.error("[shop] account name save failed:", e.message));
       }
     }
 
@@ -980,8 +1009,8 @@ export function register(app, ctx, deps = {}) {
        VALUES ($1,'pending_payment',$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)
        RETURNING created_at`,
       [orderNo, option, branchId,
-       jb({ name: cust.name || "", phone: "+966" + phoneNorm, deviceId: b.deviceId ? String(b.deviceId).slice(0, 64) : null }), phoneNorm,
-       jb(b.address || null), jb(await namedItems(items)), jb(calc),
+       jb({ name: nameChk.name.slice(0, NAME_MAX), phone: "+966" + phoneNorm, deviceId: b.deviceId ? String(b.deviceId).slice(0, 64) : null }), phoneNorm,
+       jb(orderAddress(b.address, option)), jb(await namedItems(items)), jb(calc),
        // subtotal = the food part of what was charged (fee booked separately
        // whether inside or outside the POS invoice).
        r2(total - deliveryFee), deliveryFee, tip, total, jb(dq ? { ...dq, feeInPos, freeDeliveryByCoupon } : null),
@@ -1191,6 +1220,8 @@ export function register(app, ctx, deps = {}) {
       deliveryAddress: {
         line: posAddressLine(row),
         city: null,
+        // «ملاحظات التوصيل» بتاعة العنوان في قسم التوصيل — مش مع ملاحظات الأكل (عمر ١٩/٩)
+        extra: row.option === "delivery" ? (deliveryNotesOf(row).slice(0, 200) || null) : null,
       },
       items,
     };
@@ -1527,7 +1558,8 @@ export function register(app, ctx, deps = {}) {
           // الكابتن ما بيحصّلش — الطلب مدفوع. أهم سطر في الشاشة كلها.
           paid: true,
           payNote: "مدفوع أونلاين — لا يُحصَّل من العميل",
-          notes: r.notes || "",
+          // للمندوب: الباب + ملاحظات التوصيل بتاعة العنوان — مش ملاحظات الأكل (عمر ١٩/٩)
+          notes: courierNotes(r),
           orderNo: r.order_no,
         },
 

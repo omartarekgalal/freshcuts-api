@@ -161,7 +161,7 @@ test("checkout: صنف خلصان ← 409 item_sold_out بالاسم، من غي
   const s = shop({ catalog: { soldOut: { 108: { at: "a", by: "أحمد", until: future } } } });
   const res = await s.app.routes["POST /api/shop/checkout"](ctx({
     option: "pickup", items: [{ product_id: 108, quantity: 1, unit_amount: 45000000, name: "كبدة مشوية بالوزن" }],
-    customer: { phone: "0512345678" } }));
+    customer: { name: "تجربة عميل", phone: "0512345678" } }));
   assert.equal(res.status, 409);
   assert.equal(res.body.error, "item_sold_out");
   assert.equal(res.body.items[0].product_id, 108);
@@ -170,14 +170,14 @@ test("checkout: صنف خلصان ← 409 item_sold_out بالاسم، من غي
   // من غير اسم في السطر ⇒ الاسم المتخزّن وقت القفل
   const s2 = shop({ catalog: { soldOut: { 108: { at: "a", until: future, name: "كبدة مشوية بالوزن" } } } });
   const r2 = await s2.app.routes["POST /api/shop/checkout"](ctx({
-    option: "pickup", items: [{ product_id: 108, quantity: 1, unit_amount: 45000000 }], customer: { phone: "0512345678" } }));
+    option: "pickup", items: [{ product_id: 108, quantity: 1, unit_amount: 45000000 }], customer: { name: "تجربة عميل", phone: "0512345678" } }));
   assert.match(r2.body.message, /كبدة مشوية بالوزن/);
 });
 
 test("checkout: القفل اللي وقته عدّى مابيمنعش (بيكمل لحد الـOTP)", async () => {
   const s = shop({ catalog: { soldOut: { 108: { at: "a", until: "2020-01-01T00:00:00Z" } } } });
   const res = await s.app.routes["POST /api/shop/checkout"](ctx({
-    option: "pickup", items: [{ product_id: 108, quantity: 1, unit_amount: 45000000 }], customer: { phone: "0512345678" } }));
+    option: "pickup", items: [{ product_id: 108, quantity: 1, unit_amount: 45000000 }], customer: { name: "تجربة عميل", phone: "0512345678" } }));
   assert.equal(res.body.error, "otp_required");
 });
 
@@ -185,7 +185,7 @@ test("checkout: باقة باختيار خلصان ← item_sold_out برسال�
   const bundles = () => ({ expandBundle: async () => ({ ok: false, error: "sold_out", items: [{ product_id: 91, name: "كفتة مشوية بالوزن" }], message: "للأسف كفتة مشوية بالوزن خلص النهارده" }) });
   const s = shop({}, bundles);
   const res = await s.app.routes["POST /api/shop/checkout"](ctx({
-    option: "pickup", items: [{ bundle: "national96-grill", quantity: 1, choices: { grill: { product_id: 91 } } }], customer: { phone: "0512345678" } }));
+    option: "pickup", items: [{ bundle: "national96-grill", quantity: 1, choices: { grill: { product_id: 91 } } }], customer: { name: "تجربة عميل", phone: "0512345678" } }));
   assert.equal(res.status, 409);
   assert.equal(res.body.error, "item_sold_out");
   assert.equal(res.body.bundle, "national96-grill");

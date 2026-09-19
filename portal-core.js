@@ -401,6 +401,8 @@ export function toPortalOrder(r, slaCfg = {}, now = Date.now()) {
       area: addr.area || null, street: addr.street || null, building: addr.building || null,
       floor: addr.floor || null, apartment: addr.apartment || null, landmark: addr.landmark || null,
       leaveAtDoor: leaveAtDoor(addr),
+      // «ملاحظات التوصيل» بتاعة العنوان (للمندوب) — مش ملاحظات الأكل (notes فوق)
+      deliveryNotes: String(addr.delivery_notes || "").trim() || null,
       lat: num(addr.latitude ?? addr.lat), lng: num(addr.longitude ?? addr.lng),
     } : null,
     paidWith: r.pay_gateway || null,

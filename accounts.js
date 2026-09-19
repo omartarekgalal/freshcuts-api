@@ -123,7 +123,7 @@ function rateLimited(ip, max) {
 }
 
 /* ── دفتر العناوين (الشيك أوت الجديد) ────────────────────────────────────
-   شكل العنوان: {id, label, area, street, building, floor, landmark, notes,
+   شكل العنوان: {id, label, area, street, building, floor, landmark, notes, delivery_notes,
    latitude, longitude, is_default, created_at, used_at}
 
    - label نص حر ٣٠ حرف (الواجهة بتقترح المنزل/العمل/بيت الأهل/آخر).
@@ -164,7 +164,13 @@ export function cleanAddress(input, prev = null, now = new Date().toISOString())
     // الشقة خانة لوحدها من 18 سبتمبر (قبلها الدور والشقة كانوا في floor)
     apartment: pick("apartment", 30),
     landmark: pick("landmark", 80),
+    // notes = نص تفاصيل قديم من الواجهة القديمة (مبنى/دور/علامة في سطر واحد) —
+    // بيفضل زي ما هو وبيتقري كـ«مبنى» لو مفيش خانات. مش ملاحظات التوصيل.
     notes: pick("notes", 120),
+    /* «ملاحظات التوصيل» (عمر ١٩/٩): بتاعة العنوان نفسه — «اتصل قبل ما توصل»،
+       «البوابة الشرقية»… بتتحفظ هنا وبتروح للمندوب مع كل طلب على العنوان ده.
+       مالهاش علاقة بملاحظات الأكل (دي بتاعة الطلب). */
+    delivery_notes: pick("delivery_notes", 150),
     latitude: lat, longitude: lng,
     // «اترك الطلب عند الباب» — تفضيل محفوظ مع العنوان
     leave_at_door: b.leave_at_door !== undefined ? truthy(b.leave_at_door) : Boolean(p.leave_at_door),
@@ -306,10 +312,13 @@ export function recordUsedAddress(stored, raw, { now = new Date().toISOString() 
   const hit = list.find((a) => sameSpot(a, { latitude: coord(raw.latitude), longitude: coord(raw.longitude) }));
   if (hit) {
     hit.used_at = now;
+    // ملاحظات التوصيل اللي اتبعتت مع الطلب = أحدث نسخة للعنوان ده
+    if (raw.delivery_notes !== undefined) hit.delivery_notes = txt(raw.delivery_notes, 150);
     return sortAddresses(list);
   }
   return addAddress(list, {
     area: raw.area, street: raw.street, notes: raw.notes, label: raw.label,
+    ...(raw.delivery_notes !== undefined ? { delivery_notes: raw.delivery_notes } : {}),
     latitude: raw.latitude, longitude: raw.longitude,
   }, { now }).list;
 }

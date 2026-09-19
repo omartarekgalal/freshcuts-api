@@ -142,7 +142,7 @@ test("makeOrderEmitter: override بيرمي أو بيرفض → مفيش است�
 const BUNDLE_LINE = { product_id: 501, quantity: 1, unit_amount: 50 * 1e9, bundle: "b96", bundle_line: 1, bundle_name: "بوكس", tax_id: 1 };
 const okBundles = () => ({ expandBundle: async () => ({ ok: true, lines: [{ ...BUNDLE_LINE }] }) });
 const verified = (phone = "512345678") => () => ({ customerOf: async () => ({ phone_norm: phone }), customerDiscount: async () => null });
-const CART = { option: "pickup", items: [{ bundle: "b96", quantity: 1, choices: {} }], customer: { name: "T", phone: "0512345678" } };
+const CART = { option: "pickup", items: [{ bundle: "b96", quantity: 1, choices: {} }], customer: { name: "Test Customer", phone: "0512345678" } };
 
 async function checkout(opts, ctxOpts) {
   const s = build(opts);
@@ -190,6 +190,13 @@ const CASES = [
     name: "invalid_phone", opts: { deps: { bundles: okBundles } },
     ctx: { body: { ...CART, customer: { phone: "123" } } },
     expect: { status: 400, body: { ok: false, error: "invalid_phone" } },
+  },
+  {
+    name: "invalid_name (اسم واحد — الاسم الثنائي إجباري)", code: "invalid_name", opts: { deps: { bundles: okBundles } },
+    ctx: { body: { ...CART, customer: { name: "عميل", phone: "0512345678" } } },
+    expect: { status: 400, body: { ok: false, error: "invalid_name", reason: "name_two_words",
+      message: "اكتب اسمك الثنائي (الاسم واسم العائلة) بالحروف", message_en: "Please enter your first and last name (letters only)",
+      detail: "اكتب اسمك الثنائي (الاسم واسم العائلة) بالحروف" } },
   },
   {
     name: "address_required", opts: { deps: { bundles: okBundles } },
@@ -345,7 +352,7 @@ function orderDb(initial) {
 
 const PENDING = {
   order_no: "W100", status: "pending_payment", option: "pickup", mf_invoice_id: "INV-1", total: 96, tip: 0,
-  items: [{ product_id: 501, quantity: 1, unit_amount: 50 * 1e9 }], customer: { name: "T", phone: "+966512345678" },
+  items: [{ product_id: 501, quantity: 1, unit_amount: 50 * 1e9 }], customer: { name: "Test Customer", phone: "+966512345678" },
   phone_norm: "512345678", created_at: new Date().toISOString(), pos_attempts: 0,
 };
 
