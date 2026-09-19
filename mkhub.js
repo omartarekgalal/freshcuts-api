@@ -502,7 +502,7 @@ export function register(app, ctx, deps = {}) {
     const rows = await q(`
       WITH s AS (
         SELECT anon_id, biz_day, min(started_at) AS first_at, max(last_seen_at) AS last_at, max(max_step) AS step,
-               max(cart_max) AS cart, bool_or(paid) AS paid_same_day,
+               max(CASE WHEN cart_max <= 5000 THEN cart_max END) AS cart, -- storefront sometimes reports ×1000 (micro-riyal) — dropped bool_or(paid) AS paid_same_day,
                (array_agg(channel ORDER BY started_at))[1] AS channel,
                (array_agg(utm_campaign ORDER BY started_at))[1] AS campaign,
                (array_agg(utm_content ORDER BY started_at))[1] AS content,
