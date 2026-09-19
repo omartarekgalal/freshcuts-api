@@ -8,6 +8,8 @@ import { posNotesOf, orderAddress } from "./shop.js";
 import { toPortalOrder } from "./portal-core.js";
 import { cleanAddress, addAddress, recordUsedAddress } from "./accounts.js";
 import { checkPersonName } from "./person-name.js";
+const AR = (x) => String(x).split(" || ").slice(1).join(" || "); // الجزء العربي بعد السطر الإنجليزي
+const ARN = (...a) => AR(leajlakNotes(...a));
 
 const JED = { latitude: 21.58814, longitude: 39.15212 };
 const ADDR = { ...JED, area: "السلامة", street: "صاري", building: "12", floor: "3", apartment: "7",
@@ -28,13 +30,13 @@ test("لاجلك: address = النقطة بس، notes = العنوان كامل 
   const p = leajlakPayload(ROW, "15882");
   assert.equal(p.delivery_details.address, "21.588140,39.152120");
   assert.deepEqual(p.delivery_details.coordinate, { latitude: 21.58814, longitude: 39.15212 });
-  assert.equal(p.order.notes,
+  assert.equal(AR(p.order.notes),
     "اترك الطلب عند الباب — العنوان: حي السلامة، صاري، مبنى 12، الدور 3، شقة 7، جنب النهدي — ملاحظات التوصيل: اتصل قبل ما توصل، البوابة الشرقية");
-  assert.ok(!p.order.notes.includes("بصل"), "ملاحظات الأكل مابتوصلش المندوب");
+  assert.ok(!AR(p.order.notes).includes("بصل"), "ملاحظات الأكل مابتوصلش المندوب");
   assert.equal(leajlakPayload(ROW, "1", { addressFormat: "link" }).delivery_details.address,
     "https://maps.google.com/?q=21.588140,39.152120");
   // ملاحظات توصيل فاضية بعد الفصل ⇒ مفيش «ملاحظة العميل» حتى لو فيه ملاحظة أكل
-  const noDn = leajlakNotes({ ...ROW, address: { ...ADDR, delivery_notes: "", leave_at_door: false } });
+  const noDn = ARN({ ...ROW, address: { ...ADDR, delivery_notes: "", leave_at_door: false } });
   assert.equal(noDn, "العنوان: حي السلامة، صاري، مبنى 12، الدور 3، شقة 7، جنب النهدي");
 });
 
@@ -101,4 +103,10 @@ test("الاسم: مطلوب بس من غير شروط (عمر ١٩/٩)", () => 
   assert.equal(checkPersonName("   ").error, "name_required");
   assert.equal(checkPersonName(null).ok, false);
   assert.equal(checkPersonName("ا".repeat(80)).name.length, 60);
+});
+
+test("لاجلك (١٩/٩ مساءً): سطر إنجليزي بالأرقام في أول الملاحظات عشان تطبيق الكابتن بيبوّظ العربي", () => {
+  const n = leajlakNotes({ order_no: "W1", address: { latitude: 21.5, longitude: 39.1, building: "٨٣٤٢", floor: "2", apartment: "9", leave_at_door: true, delivery_notes: "" } });
+  assert.match(n, /^PREPAID - do not collect \| Bldg 8342 \| Floor 2 \| Apt 9 \| LEAVE AT DOOR \| Call customer on arrival \|\| /);
+  assert.ok(/^[\x20-\x7e]+$/.test(n.split(" || ")[0]), "السطر الأول ASCII بس");
 });

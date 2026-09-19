@@ -243,6 +243,23 @@ const legacyCourierNote = (order) => (notesSplit(order) ? "" : String(order.note
 
 /* order.notes لاجلك: مشوار بعيد ← اترك عند الباب ← العنوان كامل ← ملاحظات التوصيل */
 export const LJ_NOTES_MAX = 300;
+/* ١٩/٩ مساءً: تطبيق كابتن لاجلك بيعرض العربي في الملاحظات أكواد ا…
+   (بيعيدوا ترميز النص عندهم — إحنا بنبعت UTF-8 سليم). لحد ما يصلّحوا: سطر
+   إنجليزي بالأرقام في الأول (مبنى/دور/شقة/عند الباب/مشوار بعيد/الدفع) يتقري
+   في كل الأحوال، وبعده النص العربي كامل زي ما هو. */
+const digitsOnly = (v) => { const t = String(v == null ? "" : v).replace(/[٠-٩]/g, (d) => "٠١٢٣٤٥٦٧٨٩".indexOf(d)).trim(); return /^[0-9]{1,6}$/.test(t) ? t : ""; };
+export function leajlakAsciiLine(order = {}) {
+  const addr = order.address || {};
+  const far = farZoneOfRow(order);
+  const b = digitsOnly(addr.building), f = digitsOnly(addr.floor), ap = digitsOnly(addr.apartment);
+  return [
+    "PREPAID - do not collect",
+    far ? `FAR TRIP ${far.km} km` : "",
+    b && `Bldg ${b}`, f && `Floor ${f}`, ap && `Apt ${ap}`,
+    leaveAtDoor(addr) ? "LEAVE AT DOOR" : "",
+    "Call customer on arrival",
+  ].filter(Boolean).join(" | ");
+}
 export function leajlakNotes(order = {}) {
   const addr = order.address || {};
   const far = farZoneOfRow(order);
@@ -256,7 +273,8 @@ export function leajlakNotes(order = {}) {
     dn && `ملاحظات التوصيل: ${dn}`,
     old && `ملاحظة العميل: ${old}`,
   ].filter(Boolean).join(" — ");
-  return n.slice(0, LJ_NOTES_MAX) || PREPAID_NOTE;
+  const en = leajlakAsciiLine(order);
+  return `${en} || ${n || PREPAID_NOTE}`.slice(0, LJ_NOTES_MAX);
 }
 /* جسم POST /orders لاجلك — دالة صافية عشان يتجرّب من غير شبكة */
 export function leajlakPayload(order = {}, shopId = "", { addressFormat = "coords" } = {}) {

@@ -8,6 +8,8 @@ import { PROVIDERS, readableAddress, courierNotes, floorAptText, leaveAtDoor } f
 import { posNotesOf, posAddressLine } from "./shop.js";
 import { toPortalOrder } from "./portal-core.js";
 import { cleanAddress, addAddress, updateAddress } from "./accounts.js";
+const AR = (x) => String(x).split(" || ").slice(1).join(" || "); // الجزء العربي بعد السطر الإنجليزي
+const ARN = (...a) => AR(leajlakNotes(...a));
 
 const JED = { latitude: 21.5881, longitude: 39.1521 };
 const NEW_ADDR = { ...JED, area: "السلامة", street: "صاري", building: "12", floor: "3", apartment: "7",
@@ -55,8 +57,8 @@ test("لاجلك: الباب في العنوان والملاحظات", async ()
   assert.ok(body, "مااتبعتش حاجة");
   // ١٩/٩ (عمر): العنوان = النقطة بس، والتفاصيل كلها في order.notes
   assert.equal(body.delivery_details.address, "21.588100,39.152100");
-  assert.match(body.order.notes, /^اترك الطلب عند الباب — العنوان: حي السلامة، صاري، مبنى 12، الدور 3، شقة 7، جنب النهدي/);
-  assert.match(body.order.notes, /ملاحظة العميل: بدون بصل$/, "طلب قديم (قبل الفصل) ملاحظته بتفضل توصل");
+  assert.match(AR(body.order.notes), /^اترك الطلب عند الباب — العنوان: حي السلامة، صاري، مبنى 12، الدور 3، شقة 7، جنب النهدي/);
+  assert.match(AR(body.order.notes), /ملاحظة العميل: بدون بصل$/, "طلب قديم (قبل الفصل) ملاحظته بتفضل توصل");
   assert.equal(body.order.payment_type, 0);
 });
 
@@ -128,7 +130,7 @@ test("لاجلك (١٩/٩): leajlakPayload — العنوان مكان بس، ا
   assert.equal(p.order.payment_type, 0);
   assert.equal(p.order.total, 101);
   assert.equal(p.delivery_details.address, "21.588100,39.152100");
-  assert.equal(p.order.notes, "مشوار بعيد 13.47 كم — اترك الطلب عند الباب — العنوان: حي السلامة، صاري، مبنى 12، الدور 3، شقة 7، جنب النهدي — ملاحظة العميل: رجاء الاتصال قبل الوصول");
+  assert.equal(AR(p.order.notes), "مشوار بعيد 13.47 كم — اترك الطلب عند الباب — العنوان: حي السلامة، صاري، مبنى 12، الدور 3، شقة 7، جنب النهدي — ملاحظة العميل: رجاء الاتصال قبل الوصول");
   // UTF-8 سليم: الجسم بيرجع زي ما هو بعد encode/decode
   const bytes = new TextEncoder().encode(JSON.stringify(p));
   assert.deepEqual(JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)), p);
@@ -136,12 +138,12 @@ test("لاجلك (١٩/٩): leajlakPayload — العنوان مكان بس، ا
   // عنوان فاضي ⇒ الإحداثيات بس، وملاحظات فاضية ⇒ «مدفوع مسبقاً»
   const bare = leajlakPayload({ order_no: "W2", address: { ...JED }, notes: "" }, "1");
   assert.equal(bare.delivery_details.address, "21.588100,39.152100");
-  assert.match(bare.order.notes, /مدفوع مسبقاً/);
+  assert.match(AR(bare.order.notes), /مدفوع مسبقاً/);
 });
 
 test("لاجلك: «حي» و«قبل/أمام» مايتكرروش (طلبات ١٩/٩ الحقيقية)", async () => {
   const { leajlakPayload } = await import("./couriers.js");
   const p = leajlakPayload({ order_no: "W3", address: { ...JED, area: "حي السلامة", street: "شجاع بن وهب", landmark: "قبل صيدلية المهدي" }, notes: "" }, "1");
   assert.equal(p.delivery_details.address, "21.588100,39.152100");
-  assert.equal(p.order.notes, "العنوان: حي السلامة، شجاع بن وهب، قبل صيدلية المهدي");
+  assert.equal(AR(p.order.notes), "العنوان: حي السلامة، شجاع بن وهب، قبل صيدلية المهدي");
 });
