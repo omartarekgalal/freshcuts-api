@@ -107,8 +107,9 @@ function build({ settings = {}, orders = [], shipments = [], gate = "auto", disp
   const delivery = {
     dispatchGate: async () => ({ mode: gate }),
     shipmentOf: async (no) => db.shipments.filter((s) => s.shop_order_no === no).at(-1) || null,
-    dispatch: async (row) => {
+    dispatch: async (row, opts) => {
       calls.dispatch++;
+      calls.dispatchOpts = opts;
       await wait(15);
       if (dispatchImpl) return dispatchImpl(row);
       db.shipments.push({ shop_order_no: row.order_no, status: "pending", provider: "leajlak", provider_ref: row.order_no });
@@ -308,6 +309,18 @@ test("courier: شحنة قديمة ملغية + حجز قديم ← إعادة �
   const r = await s.json("POST", "/api/portal/orders/W1/courier", { token: body.token });
   assert.equal(r.status, 200);
   assert.equal(s.calls.dispatch, 1);
+});
+
+test("courier: بعد رفض لاجلك (courier_cancelled) ← «بدّل الشركة» بيبعت provider لـdispatch", async () => {
+  const s = build({ settings: { portal: { staff: STAFF() } },
+    orders: [orderRow("W1", { status: "courier_cancelled", dispatch_claimed_at: new Date(Date.now() - 600_000).toISOString() })],
+    shipments: [{ shop_order_no: "W1", status: "cancelled", provider: "leajlak" }] });
+  const { body } = await login(s, "7777");
+  const r = await s.json("POST", "/api/portal/orders/W1/courier", { token: body.token, body: { provider: "flyingarrow" } });
+  assert.equal(r.status, 200);
+  assert.deepEqual(s.calls.dispatchOpts, { provider: "flyingarrow" });
+  const r2 = await s.json("POST", "/api/portal/orders/W1/courier", { token: body.token });
+  assert.equal(r2.status, 409); // فيه شحنة حية دلوقتي
 });
 
 test("courier: الوضع اليدوي / pos_created / استلام / فيه كابتن ← رفض واضح من غير dispatch", async () => {

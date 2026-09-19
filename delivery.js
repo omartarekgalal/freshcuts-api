@@ -24,7 +24,7 @@
 
 import { ljContract } from "./leajlakrecon.js";
 import { STORE_LAT, STORE_LNG } from "./tsstore.js";
-import { PROVIDERS, activeProvider, courierMilestone } from "./couriers.js";
+import { PROVIDERS, activeProvider, courierMilestone, API_PROVIDER_IDS } from "./couriers.js";
 import { emitOrder } from "./order-events.js";
 import { makeDriveDistance, resolveRouteKm } from "./drivedist.js";
 import { makeZoneService } from "./deliveryzone.js";
@@ -732,6 +732,10 @@ export function register(app, ctx, deps = {}) {
       -- إذا كان بيستنانا ولا احنا بنستناه.
       ALTER TABLE dl_shipments ADD COLUMN IF NOT EXISTS arrived_at TIMESTAMPTZ;
       ALTER TABLE dl_shipments ADD COLUMN IF NOT EXISTS picked_at TIMESTAMPTZ;
+      -- ١٩ سبتمبر (SLA المندوب — courierops.js): وقت التعيين ووقت التوصيل
+      -- بيتسجّلوا مرة واحدة من سجل الأحداث، عشان مخالفات لاجلك تتقاس بالدقيقة.
+      ALTER TABLE dl_shipments ADD COLUMN IF NOT EXISTS assigned_at TIMESTAMPTZ;
+      ALTER TABLE dl_shipments ADD COLUMN IF NOT EXISTS delivered_at TIMESTAMPTZ;
       CREATE INDEX IF NOT EXISTS dl_shipments_order_idx ON dl_shipments(shop_order_no);
       CREATE INDEX IF NOT EXISTS dl_shipments_fa_idx ON dl_shipments(fa_order_id);
       -- كل ويبهوك مندوب بيوصل (حتى المرفوض واللي مش متطابق). لاجلك عمرها
@@ -909,11 +913,11 @@ export function register(app, ctx, deps = {}) {
      `wallet` (تتخصم من رصيدنا عندهم) عشان الكابتن ما يجيش يحصّل فلوس من
      المطعم أو العميل. `cash` معناها إن حد في الفرع هيدفع للكابتن نقدي كل
      طلب. القيمة قابلة للتغيير من الإعدادات، والافتراضي wallet. */
-  async function dispatch(order) {
+  async function dispatch(order, opts = {}) {
     const orderNo = order && order.order_no;
     let res;
     try {
-      res = await dispatchInner(order);
+      res = await dispatchInner(order, opts);
     } catch (e) {
       try {
         courierEvent("courier_dispatch", orderNo, {
@@ -940,7 +944,7 @@ export function register(app, ctx, deps = {}) {
     return res;
   }
 
-  async function dispatchInner(order) {
+  async function dispatchInner(order, opts = {}) {
     const all = await getSettingsData();
     const settings = all.delivery || {};
 
@@ -960,7 +964,14 @@ export function register(app, ctx, deps = {}) {
         { code: "MANUAL_MODE", gate });
     }
 
-    const provider = activeProvider(all);
+    /* «بدّل الشركة» (١٩ سبتمبر — لاجلك رفضت طلب بعيد): المدير يختار مزوّد
+       بـAPI غير الفعّال لطلب واحد بس. اختيار صريح من بني آدم، مش تبديل
+       صامت — ولسه لازم يكون متظبّط (مفاتيحه موجودة) وإلا بيرمي. */
+    const want = opts && opts.provider ? String(opts.provider).toLowerCase() : null;
+    if (want && !API_PROVIDER_IDS.includes(want)) {
+      throw Object.assign(new Error(`مزوّد غير معروف: ${want}`), { code: "BAD_PROVIDER" });
+    }
+    const provider = want ? PROVIDERS[want] : activeProvider(all);
     if (provider.manual) {
       throw Object.assign(
         new Error("المزوّد المختار «يدوي» — مفيش إرسال آلي"),

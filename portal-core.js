@@ -428,6 +428,9 @@ export function toPortalOrder(r, slaCfg = {}, now = Date.now()) {
     sla: { level: sla.level || 0, code: sla.code || null, message: sla.message || null },
     posOrderId: r.pos_order_id || null,
     isTest: r.is_test === true,
+    /* ١٩ سبتمبر (courierops.js): ETA + مهل المندوب + حادثة رفض/إلغاء + حارس البعيد.
+       null لو التزيين ما اشتغلش — الشاشة بتشتغل من غيره. */
+    courierOps: r.courier_ops || null,
   };
 }
 
@@ -463,6 +466,7 @@ const SHIP_LABEL = {
   webhook: "تحديث من شركة التوصيل",
   cancel: "اتلغى المندوب",
   cancel_failed: "فشل إلغاء المندوب",
+  cost: "اتسجّلت تكلفة المندوب الخارجي",
   handoff: "اتدخّل الطلب يدوياً على لوحة الشركة",
   assigned: "اتعيّن كابتن (يدوي)",
   picked: "الكابتن استلم (يدوي)",
@@ -486,6 +490,11 @@ const SLA_CODE_AR = {
   accept_late: "القبول متأخر", handoff_breach: "ما اتدخّلش لشركة التوصيل", handoff_late: "إدخال التوصيل متأخر",
   pickup_breach: "الكابتن ما استلمش", pickup_late: "الكابتن متأخر", deliver_breach: "ما وصلش العميل",
   deliver_late: "التوصيل متأخر", refund_failed: "فشل الاسترجاع", delivery_failed: "تعثّر التوصيل",
+  // courierops.js (١٩ سبتمبر)
+  courier_provider_cancelled: "شركة التوصيل لغت الطلب — قرّر", courier_refused_far: "شركة التوصيل رفضت المشوار البعيد — قرّر",
+  courier_no_assignment: "مفيش كابتن اتعيّن", courier_far_hold: "مشوار بعيد — مستني قرارك", courier_far_risk: "مشوار بعيد — ممكن يترفض",
+  courier_assign_late: "تعيين الكابتن اتأخر", courier_arrive_late: "الكابتن اتأخر يوصل المطعم (العقد ٢٠ د)",
+  courier_deliver_late: "التوصيل اتأخر بعد الاستلام",
 };
 const PUSH_KIND_AR = {
   new: "إشعار للبوابة: طلب جديد", pos_failed: "إشعار للبوابة: فشل نقطة البيع",
@@ -496,6 +505,8 @@ const PUSH_KIND_AR = {
 const ACTION_AR = {
   courier_request: "طلب مندوب من البوابة", courier_cancel: "إلغاء المندوب من البوابة",
   ack: "شاف الطلب في البوابة", handed_to_courier: "سلّم الطلب للمندوب",
+  courier_external: "🛵 مندوب خارجي", courier_external_picked: "المندوب الخارجي استلم", courier_external_delivered: "المندوب الخارجي وصّل",
+  courier_external_cost: "تكلفة المندوب الخارجي", courier_to_pickup: "اتحوّل لاستلام من المطعم", courier_incident_dismiss: "قفل مشكلة التوصيل",
   kitchen_prep: "المطبخ: بدأ التحضير", kitchen_ready: "المطبخ: الطلب جاهز ✅",
 };
 

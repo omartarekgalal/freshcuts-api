@@ -62,6 +62,7 @@ import * as menuplan from "./menuplan.js";
 import * as systemcheck from "./systemcheck.js";
 import * as syshealth from "./syshealth.js";
 import * as portal from "./portal.js";
+import * as courierops from "./courierops.js";
 import * as kitchen from "./kitchen.js";
 import * as adsreport from "./adsreport.js";
 import * as mkhub from "./mkhub.js";
@@ -3076,6 +3077,8 @@ shopApi = shop.register(app, moduleCtx, {
   // بنفس الدالة اللي المتجر بيعاين بيها، فالمعروض = المحسوب.
   bundles: () => cmsApi,
   portal: () => portalApi,
+  // حارس المشوار البعيد قبل الإرسال التلقائي (courierops.js — بيتسجّل بعد البوابة)
+  courierOps: () => courierOpsApi,
 });
 // «تحب تضيف؟» — اقتراحات السلة من سلوك العملاء الحقيقي (rec_pairs محسوب كل ليلة)
 recs.register(app, moduleCtx);
@@ -3096,7 +3099,11 @@ customer360.register(app, moduleCtx, { whoami: (c) => cmsApi.whoami(c) });
 openwait.register(app, moduleCtx, { notify: () => notifyApi, carts: () => cartsApi });
 // بوابة المطعم (كاشير + مدير): PIN، طلبات حيّة (SSE)، خط زمني، طلب/إلغاء مندوب، Push للفريق، تقارير.
 // بعد shop/delivery/cms — بيستخدم دوالهم نفسها (مفيش نسخة تانية من القواعد).
-const portalApi = portal.register(app, moduleCtx, { shop: () => shopApi, delivery: () => deliveryApi, cmsWhoami: (c) => cmsApi.whoami(c) });
+let courierOpsApi = null;
+const portalApi = portal.register(app, moduleCtx, { shop: () => shopApi, delivery: () => deliveryApi, cmsWhoami: (c) => cmsApi.whoami(c), courierOps: () => courierOpsApi });
+// لما المندوب مايجيش (١٩ سبتمبر): رفض/إلغاء لاجلك، مفيش كابتن، مخالفات SLA، مندوب خارجي،
+// تحويل لاستلام، حارس المشوار البعيد، وتقرير «مخالفات لاجلك» للمطالبات.
+courierOpsApi = courierops.register(app, moduleCtx, { shop: () => shopApi, delivery: () => deliveryApi, portal: () => portalApi, notify: () => notifyApi });
 // شاشة المطبخ (KDS) للمطعم كله: webhooks تاب سينس + استطلاع API الشريك + طلبات المتجر.
 // دخول بحساب «مطبخ» من «فريق البورتال» — نفس توكن البورتال ومقفول على /api/kitchen/*.
 kitchen.register(app, moduleCtx, { portal: () => portalApi, tsp: () => tspApi });

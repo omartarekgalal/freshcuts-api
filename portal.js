@@ -50,7 +50,7 @@ const ORDER_COLS = `o.order_no, o.status, o.option, o.customer, o.phone_norm, o.
   o.subtotal, o.delivery_fee, o.tip, o.total, o.notes, o.pos_order_id, o.created_at, o.updated_at,
   o.history, o.alerts, o.pos_ready_at, o.accepted_at, o.portal_ack_at, o.portal_ack_by, o.pay_gateway,
   o.is_test, o.dispatch_claimed_at::text AS dispatch_claimed_at,
-  o.delivery_quote->'farZone' AS far_zone,
+  o.delivery_quote->'farZone' AS far_zone, o.delivery_quote->>'routeKm' AS route_km,
   s.status AS ship_status, s.driver AS ship_driver, s.provider AS ship_provider, s.provider_ref AS ship_ref,
   s.updated_at AS ship_updated_at, s.dispatch AS ship_dispatch,
   s.arrived_at AS ship_arrived_at, s.picked_at AS ship_picked_at`;
@@ -77,6 +77,7 @@ export function register(app, ctx, deps = {}) {
   const env = deps.env || process.env;
   const shop = typeof deps.shop === "function" ? deps.shop : () => deps.shop || null;
   const delivery = typeof deps.delivery === "function" ? deps.delivery : () => deps.delivery || null;
+  const courierOps = typeof deps.courierOps === "function" ? deps.courierOps : () => deps.courierOps || null;
   const emitOrder = deps.emitOrder || orderEvents.emitOrder;
   const subscribe = deps.subscribe || orderEvents.subscribe;
   const now = deps.now || (() => Date.now());
@@ -207,7 +208,12 @@ export function register(app, ctx, deps = {}) {
      إن السطر يفضل «صنف #<رقم>» زي ما كان. */
   const names = deps.names || makeNameResolver({ pool, tsstore: deps.tsstore, log });
   const withNames = async (rows) => {
-    try { return await names.fillRows(rows); } catch { return rows; }
+    let out = rows;
+    try { out = await names.fillRows(rows); } catch { out = rows; }
+    /* حوادث المندوب + المهل + الـETA (courierops.js، ١٩ سبتمبر). أي فشل
+       بيتبلع جوّه decorate — الشاشة تفضل شغّالة من غيرها. */
+    try { const ops = courierOps(); if (ops?.decorate) out = await ops.decorate(out); } catch { /* ignore */ }
+    return out;
   };
   /* الطلبات اللي اتخزّنت قبل التصليح لسه بأرقام — بنصلّحها مرة واحدة بعد
      الإقلاع بشوية (مش وقته، عشان الإقلاع مايتأخرش ولا نضرب تاب سينس وقت
@@ -528,6 +534,10 @@ export function register(app, ctx, deps = {}) {
     if (inflight.has(orderNo)) return c.json({ ok: false, error: "in_progress", message: "الطلب بيتبعت دلوقتي" }, 409);
     inflight.add(orderNo);
     try {
+      /* {provider}: «بدّل الشركة» لطلب واحد (لاجلك رفضت → Flying Arrow مثلاً).
+         من غيره = المزوّد الفعّال زي الأول. */
+      const body = await c.req.json().catch(() => ({}));
+      const wantProvider = body && body.provider ? String(body.provider).toLowerCase().slice(0, 20) : null;
       const row = await sh.getOrderRow(orderNo);
       if (!row) return c.json({ ok: false, error: "not_found" }, 404);
       if (row.option !== "delivery") return c.json({ ok: false, error: "not_delivery" }, 400);
@@ -567,11 +577,13 @@ export function register(app, ctx, deps = {}) {
         claimed = c2.rows[0].claimed;
       }
       try {
-        const res = await dl.dispatch(await sh.getOrderRow(orderNo));
+        const res = await dl.dispatch(await sh.getOrderRow(orderNo), wantProvider ? { provider: wantProvider } : {});
         if (row.status !== "courier_requested") {
-          await sh.setStatus(orderNo, "courier_requested", { note: `المدير ${user.name} طلب مندوب من البوابة`, from: row.status, source: "portal" });
+          await sh.setStatus(orderNo, "courier_requested", { note: `المدير ${user.name} طلب مندوب من البوابة${wantProvider ? ` (${wantProvider})` : ""}`, from: row.status, source: "portal" });
         }
-        audit(user, "courier_request", orderNo, true, { provider: res?.provider || null, assigned: Boolean(res?.assigned) }, ip);
+        audit(user, "courier_request", orderNo, true, { provider: res?.provider || null, assigned: Boolean(res?.assigned), switched: Boolean(wantProvider) }, ip);
+        // لو كان فيه رفض/إلغاء/حجز بعيد مفتوح على الطلب ← اتحلّ بالإعادة/التبديل
+        try { courierOps()?.onRedispatch?.(orderNo, { provider: res?.provider || wantProvider, by: user.name, switched: Boolean(wantProvider) }); } catch {}
         scheduleRefresh(orderNo);
         return c.json({ ok: true, provider: res?.provider || null, ref: res?.faOrderId ?? null, assigned: Boolean(res?.assigned),
           note: res?.dispatch?.message || null });
@@ -582,7 +594,7 @@ export function register(app, ctx, deps = {}) {
            ماوصلناش الرد — إعادة فورية = كابتنين. فالحجز يفضل حديث (إعادة بعد ٩٠ ث)
            والرسالة بتقول للمدير يراجع لوحة الشركة الأول. */
         const st = Number(e?.status);
-        const certain = ["COURIER_UNCONFIGURED", "MANUAL_MODE", "BAD_STAGE"].includes(e?.code)
+        const certain = ["COURIER_UNCONFIGURED", "MANUAL_MODE", "BAD_STAGE", "BAD_PROVIDER"].includes(e?.code)
           || (Number.isFinite(st) && st >= 400 && st < 500 && st !== 408 && st !== 409);
         if (certain) {
           pool.query(
@@ -989,7 +1001,7 @@ export function register(app, ctx, deps = {}) {
     soldOut,
     requirePortal, audit,
     tabsenseDown: (detail) => push.tabsenseDown(detail).catch(() => null),
-    pollNewOrders, scan, refresh, loadFeed, loadInfo, push, hub, limiter,
+    pollNewOrders, scan, refresh, loadFeed, loadInfo, push, hub, limiter, scheduleRefresh,
     stop() {
       try { unsub?.(); } catch {}
       clearInterval(pollTimer);

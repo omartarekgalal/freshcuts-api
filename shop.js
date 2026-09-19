@@ -2114,13 +2114,19 @@ export function register(app, ctx, deps = {}) {
       if ((allSettings.shop || {}).autoDispatch !== false && await delivery.canAutoDispatch()) {
         const delayMin = dispatchDelayOf(allSettings);
         const waiting = (await pool.query(
-          `SELECT order_no, pos_ready_at, history FROM shop_orders
+          `SELECT order_no, pos_ready_at, history, delivery_quote, is_test FROM shop_orders
             WHERE status='accepted' AND option='delivery' AND dispatch_claimed_at IS NULL
               AND created_at > NOW() - INTERVAL '24 hours'`)).rows;
         for (const r of waiting) {
           const acceptedAt = (r.history || []).find((h) => h.status === "accepted")?.at || null;
           const v = dispatchDue({ delayMin, acceptedAt, readyAt: r.pos_ready_at });
           if (!v.due) continue;
+          /* حارس المشوار البعيد (١٩ سبتمبر — لاجلك رفضت طلب ١٣ كم): فوق ١٠ كم
+             عقدهم بيدّيهم حق الرفض. في وضع «تأكيد» الطلب بيستنى قرار المدير
+             في البوابة (اطلب لاجلك برضه / مندوب خارجي) بدل ما يتبعت ويترفض.
+             الحارس نفسه لو وقع مابيوقفش التوصيل (farCheck بترجّع hold:false). */
+          const fg = await deps.courierOps?.()?.farCheck?.(r).catch?.(() => null);
+          if (fg && fg.hold) continue;
           const claim = await pool.query(
             `UPDATE shop_orders SET dispatch_claimed_at=NOW()
               WHERE order_no=$1 AND dispatch_claimed_at IS NULL AND status='accepted'

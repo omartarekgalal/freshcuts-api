@@ -80,7 +80,7 @@ const MILESTONES = {
 };
 /* هل المزوّد ده بيقول لنا «وصل المطعم» أصلاً؟ الشاشة بتستعمل ده عشان تفرّق
    بين «لسه ما وصلش» و«الشركة مابتبعتش الإشارة دي». */
-export const PROVIDER_REPORTS_ARRIVAL = Object.freeze({ leajlak: true, flyingarrow: false, manual: false });
+export const PROVIDER_REPORTS_ARRIVAL = Object.freeze({ leajlak: true, flyingarrow: false, manual: false, external: false });
 
 /* الحالة الخام → محطة ("arrived" | "picked" | null) */
 export function courierMilestone(providerId, rawStatus) {
@@ -554,7 +554,28 @@ const manual = {
   },
 };
 
-export const PROVIDERS = { flyingarrow, leajlak, manual };
+/* ═══ EXTERNAL — «مندوب خارجي» (١٩ سبتمبر ٢٠٢٦) ════════════════════════════
+   لاجلك رفضت طلب ١٣ كم والفريق بعته مع مندوب من بره، ومفيش حاجة في السيستم
+   كانت بتسجّل ده. الشحنة دي بيدخلها المدير من البوابة (courierops.js):
+   اسم/جوال اختياري، تكلفة، ملاحظات، والحالات (استلم/وصّل) بإيده. مفيش API،
+   فالمزوّد هنا زي «اليدوي»: الإرسال بيرمي، والتتبع/الويبهوك null، والإلغاء
+   محلي — ومن غيره الرجوع الافتراضي `PROVIDERS[sh.provider] || flyingarrow`
+   كان هيسأل Flying Arrow عن شحنة مش بتاعتها. */
+const external = {
+  ...manual,
+  id: "external",
+  label: "مندوب خارجي",
+  async dispatch() {
+    throw Object.assign(new Error("المندوب الخارجي بيتسجّل من البوابة — مفيش إرسال آلي"),
+      { code: "MANUAL_DISPATCH_ONLY" });
+  },
+  async cancel() { return { fee: null, refund: null, raw: { external: true } }; },
+  async reference() { return { cities: [], vehicles: [], note: "مندوب خارجي — بيتسجّل يدوي من البوابة." }; },
+};
+
+export const PROVIDERS = { flyingarrow, leajlak, manual, external };
+/* مزوّدين بـAPI حقيقي (ينفع «بدّل الشركة» يبعت لهم) */
+export const API_PROVIDER_IDS = Object.freeze(["leajlak", "flyingarrow"]);
 
 /* المزوّد الفعّال. الإعدادات هي المرجع والمتغيّر البيئي احتياطي.
 
