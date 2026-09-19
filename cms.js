@@ -32,6 +32,7 @@ import { logSms } from "./smslog.js";
 // نفس قواعد الـSLA بتاعة الـwatchdog — لوحة التشغيل مابتكتبش كتاب قواعد تاني
 import { slaCheck, DEFAULT_SLA } from "./shop.js";
 import { dispatchDelayOf, canAutoDispatch } from "./delivery.js";
+import { bizRange, rangeJson, bizDaySql } from "./bizday.js";
 import { isBotRequest } from "./botfilter.js";
 // قواعد الباقات (توزيع السعر والتوسيع) — صافية ومتجرّبة أوفلاين في bundles.test.mjs
 import * as bundlesLib from "./bundles.js";
@@ -91,6 +92,10 @@ export const DEFAULT_PERMS = {
 const PATH_SECTIONS = [
   [/^\/api\/cms\/(users|roles|audit)/, "settings"],
   [/^\/api\/cms\/home/, "home"],
+  // قلب التقارير (bizreports.js): النبض للرئيسية، المبيعات للطلبات، المؤشرات للتحليلات (السطر العام تحت)
+  [/^\/api\/reports\/biz\/pulse/, "home"],
+  [/^\/api\/reports\/biz\/(sales|reconcile|range)/, "orders"],
+  [/^\/api\/reports\/biz\/spend/, "growth"],
   // البحث في اللوحة (Ctrl+K) وتسجيل التنقّل — تسجيل مسبق (خطة ٢٠٢٦-٠٩ §٤-٦)
   [/^\/api\/cms\/(search|nav-event)/, "home"],
   // صفحات البحث للعروض (freshcuts.sa/offers/<slug>) — نفس قسم العرض نفسه
@@ -2813,21 +2818,28 @@ export function register(app, ctx, deps = {}) {
      بنوع "QR-Menu Orders" — يعني كانت بتتحسب ضمن «داخل المطعم» ومافيش شاشة
      بتقول «الموقع عمل كام». التقرير ده مصدره shop_orders نفسه (مصدرنا
      الأصلي: الجمرك، الرسوم، الكوبون، وقت التوصيل)، وبيقارنه بباقي القنوات. */
-  const riyadhDay = (d = Date.now()) => new Date(d + 3 * 3600_000).toISOString().slice(0, 10);
-  const RIYADH_DAY = "(o.created_at AT TIME ZONE 'Asia/Riyadh')::date";
+  // اليوم التشغيلي (١١ الصبح ← ٣ الفجر، القطع ٤ الفجر) — bizday.js، مش اليوم الميلادي
+  const RIYADH_DAY = bizDaySql("o.created_at");
 
   app.get("/api/cms/analytics/store", async (c) => {
     const err = await requireAdmin(c); if (err) return err;
-    const to = /^\d{4}-\d{2}-\d{2}$/.test(c.req.query("to") || "") ? c.req.query("to") : riyadhDay();
-    const from = /^\d{4}-\d{2}-\d{2}$/.test(c.req.query("from") || "")
-      ? c.req.query("from") : riyadhDay(Date.now() - 29 * 86400_000);
     const s = await getSettingsData();
+    const ws = Number(s?.reportWeekStart);
+    // ?preset= أو ?from=&to= (نفس عقد كل التقارير). الافتراضي آخر ٣٠ يوم.
+    const range = bizRange({
+      preset: c.req.query("preset") || (c.req.query("from") ? undefined : "last30"),
+      from: c.req.query("from"), to: c.req.query("to"),
+      weekStart: Number.isInteger(ws) && ws >= 0 && ws <= 6 ? ws : undefined,
+    });
+    const { from, to } = range;
     const apps = (Array.isArray(s?.deliveryAppMethods) && s.deliveryAppMethods.length
       ? s.deliveryAppMethods : (DEFAULT_DELIVERY_APPS || [])).map((x) => String(x).toLowerCase());
     // دي بتتحط جوّه وصلات فيها dl_shipments (وعندها عمود status هي كمان)،
     // فلازم العمود يبقى محدّد بالجدول
     const PAID_O = PAID_ONLINE.replace(/\bstatus\b/, "o.status");
-    const W = `${PAID_O} AND ${RIYADH_DAY} BETWEEN $1::date AND $2::date`;
+    // طلبات الاختبار (is_test + كوبون المالك التجريبي) برّه أرقام التقرير
+    const PAID_REAL = `${PAID_O} AND o.is_test IS NOT TRUE AND upper(COALESCE(o.coupon,'')) <> 'OMAR-9X4T'`;
+    const W = `${PAID_REAL} AND ${RIYADH_DAY} BETWEEN $1::date AND $2::date`;
     const P = [from, to];
 
     const [tot, daily, items, coupons, hours, nvr, channels, courier] = await Promise.all([
@@ -2874,24 +2886,28 @@ export function register(app, ctx, deps = {}) {
         WITH ${FIRST_ORDER_CTE},
         wf AS (
           SELECT phone_norm, min(created_at) AS f FROM shop_orders o
-           WHERE ${PAID_O} AND phone_norm IS NOT NULL GROUP BY 1),
+           WHERE ${PAID_REAL} AND phone_norm IS NOT NULL GROUP BY 1),
         inw AS (SELECT DISTINCT o.phone_norm FROM shop_orders o WHERE o.phone_norm IS NOT NULL AND ${W})
         SELECT count(*) FILTER (WHERE fa.first_day >= $1::date)::int AS new_customers,
                count(*) FILTER (WHERE fa.first_day IS NULL OR fa.first_day < $1::date)::int AS returning_customers,
                count(*) FILTER (WHERE (fa.first_day IS NULL OR fa.first_day < $1::date)
-                                  AND (wf.f AT TIME ZONE 'Asia/Riyadh')::date >= $1::date)::int AS existing_first_online
+                                  AND ${bizDaySql("wf.f")} >= $1::date)::int AS existing_first_online
           FROM inw
           JOIN wf ON wf.phone_norm = inw.phone_norm
           LEFT JOIN firsts fa ON fa.pn = inw.phone_norm`, P),
       // نفس فترة التقرير من نقطة البيع: الموقع مقابل التطبيقات مقابل المطعم
       pool.query(`
-        SELECT CASE WHEN ${WEBSITE_SQL} THEN 'website'
-                    WHEN ${deliverySql("$3::text[]")} THEN 'apps' ELSE 'inhouse' END AS ch,
+        SELECT CASE WHEN COALESCE(s.source,'') = 'delivery_app'
+                      OR EXISTS (SELECT 1 FROM jsonb_object_keys(COALESCE(o.payments,'{}'::jsonb)) k WHERE lower(k) = ANY($3::text[]))
+                      THEN 'apps'
+                    -- طلبات الموقع: QR-Menu (قديم) أو External من غير محفظة/تاج تطبيق (ربط الشريك)
+                    WHEN ${WEBSITE_SQL} OR o.order_type ILIKE '%external%' THEN 'website'
+                    ELSE 'inhouse' END AS ch,
                count(*)::int AS orders, COALESCE(sum(o.total), 0)::float AS revenue
           FROM ts_orders o
           LEFT JOIN order_sources s ON s.order_id = o.order_id
           LEFT JOIN ts_customers tc ON tc.customer_id = o.customer_id
-         WHERE ${SALES_ONLY} AND o.calendar_day BETWEEN $1::date AND $2::date
+         WHERE ${SALES_ONLY} AND ${bizDaySql("o.order_date")} BETWEEN $1::date AND $2::date
          GROUP BY 1`, [...P, apps]),
       pool.query(`
         SELECT count(*)::int AS shipments, COALESCE(sum(sh.cost), 0)::float AS cost
@@ -2906,7 +2922,7 @@ export function register(app, ctx, deps = {}) {
     const n = (v) => Number(v) || 0;
 
     return c.json({
-      ok: true, from, to,
+      ok: true, from, to, range: rangeJson(range),
       totals: {
         orders: t.orders, revenue: n(t.revenue), food: n(t.food), fees: n(t.fees), tips: n(t.tips),
         discounts: n(t.discounts), customers: t.customers, delivered: t.delivered,
@@ -2927,7 +2943,7 @@ export function register(app, ctx, deps = {}) {
         apps: chan.apps || { orders: 0, revenue: 0 },
         inhouse: chan.inhouse || { orders: 0, revenue: 0 },
       },
-      note: "أرقام الموقع من نظام المتجر نفسه. المقارنة بين القنوات من نقطة البيع.",
+      note: "أرقام الموقع من نظام المتجر نفسه (من غير طلبات الاختبار)، على اليوم التشغيلي ١١ الصبح ← ٣ الفجر. المقارنة بين القنوات من نقطة البيع.",
     });
   });
 

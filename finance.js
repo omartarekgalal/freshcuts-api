@@ -41,7 +41,8 @@
       blended rate is applied to GROSS_EX (pre-discount, VAT-exclusive) and the
       discount lands where it belongs — on the revenue side.
 
-   5. THE BUSINESS DAY IS `calendar_day`. TabSense rolls the day at 04:00
+   5. THE BUSINESS DAY comes from bizday.js (order_date, 04:00 Riyadh cut —
+      the owner's 11:00→03:00 day; same as TabSense `calendar_day`). Was: `calendar_day`. TabSense rolls the day at 04:00
       Riyadh; it is never re-derived here. Voids and refunds are excluded.
 
    ── FOOD COST: MEASURED VS ASSUMED ─────────────────────────────────────────
@@ -69,6 +70,12 @@
 ═══════════════════════════════════════════════════════════════════════════ */
 
 import crypto from "node:crypto";
+import { bizDaySql } from "./bizday.js";
+
+/* اليوم التشغيلي (١١ الصبح ← ٣ الفجر، القطع ٤ الفجر) — bizday.js. بيطابق
+   calendar_day بتاع تاب سينس في ٩٨٪+ من الطلبات، بس القاعدة بقت واحدة للـAPI كله. */
+const BIZ_O = bizDaySql("o.order_date");
+const BIZ_O2 = bizDaySql("o2.order_date");
 
 const VAT_RATE = 0.15;              // measured, see rule 1
 const DEFAULT_FOOD_COST_PCT = 0.43; // Omar's TabSense blended figure
@@ -201,6 +208,22 @@ export const DEFAULT_RATES = {
     ],
   },
 
+  // متجرنا (freshcuts.sa): مفيش عمولة تطبيق. رسوم بوابة الدفع (ماي فاتورة)
+  // مش في أي عقد عندنا، فالافتراضي 0 ومتعلّم كتحذير — عدّلها من الإعدادات.
+  store: {
+    label: "متجرنا (الموقع)",
+    labelEn: "Store",
+    bands: [{ from: "2000-01-01", to: null, delivery: 0, pickup: 0, note: "لا توجد عمولة منصة" }],
+    paymentFeePct: 0,
+    minServiceFeeSar: 0,
+    monthlySubscriptionSar: 0,
+    subscriptionFrom: null,
+    subsidyTiers: [],
+    subsidyAboveTopSar: 0,
+    subsidyConfirmed: true,
+    caveats: ["رسوم بوابة الدفع (ماي فاتورة) لطلبات الموقع مش محسوبة لسه — ضيف النسبة في الإعدادات. تكلفة المندوب في «تقرير المتجر»."],
+  },
+
   // In-restaurant orders. Card-machine fees are NOT in any contract we hold,
   // so the default is 0 rather than a guess; set it once Omar has the rate.
   restaurant: {
@@ -223,9 +246,9 @@ export const DEFAULT_RATES = {
    and their count ships in `warnings`, never quietly folded into the total. */
 const UNKNOWN_APP = "other_delivery";
 
-const CHANNEL_ORDER = ["keeta", "hungerstation", "ninja", UNKNOWN_APP, "restaurant"];
+const CHANNEL_ORDER = ["store", "keeta", "hungerstation", "ninja", UNKNOWN_APP, "restaurant"];
 const CHANNEL_LABEL = {
-  keeta: "كيتا", hungerstation: "هنقرستيشن", ninja: "نينجا",
+  store: "متجرنا (الموقع)", keeta: "كيتا", hungerstation: "هنقرستيشن", ninja: "نينجا",
   [UNKNOWN_APP]: "توصيل — تطبيق غير محدد", restaurant: "المطعم (بدون تطبيقات)",
 };
 
@@ -1082,10 +1105,10 @@ function shapeAgg(a) {
 ═══════════════════════════════════════════════════════════════════════════ */
 export const ORDERS_SQL = `
   WITH ic AS (
-    SELECT i.order_id, o2.calendar_day, i.name, i.qty, i.amount
+    SELECT i.order_id, ${BIZ_O2} AS calendar_day, i.name, i.qty, i.amount
       FROM ts_order_items i
       JOIN ts_orders o2 ON o2.order_id = i.order_id
-     WHERE o2.calendar_day BETWEEN $1::date AND $2::date
+     WHERE ${BIZ_O2} BETWEEN $1::date AND $2::date
   ),
   items AS (
     SELECT ic.order_id,
@@ -1101,7 +1124,7 @@ export const ORDERS_SQL = `
       ) c ON true
      GROUP BY 1
   )
-  SELECT o.order_id, o.receipt, o.calendar_day, o.order_type, o.order_option,
+  SELECT o.order_id, o.receipt, ${BIZ_O} AS calendar_day, o.order_type, o.order_option,
          o.total, o.staff_name,
          ${NET_EX}   AS net_ex,
          ${GROSS_EX} AS gross_ex,
@@ -1110,6 +1133,13 @@ export const ORDERS_SQL = `
            WHEN lower(COALESCE(s.source_note,'')) = 'keeta'         THEN 'keeta'
            WHEN lower(COALESCE(s.source_note,'')) = 'hungerstation' THEN 'hungerstation'
            WHEN lower(COALESCE(s.source_note,'')) = 'ninja'         THEN 'ninja'
+           -- طلبات متجرنا: تاب سينس بيسجّلها External (ربط الشريك) أو QR-Menu
+           -- (قبله) من غير محفظة تطبيق ولا تاج تطبيق — مالهاش عمولة تطبيقات.
+           WHEN o.order_type ILIKE '%qr-menu%'
+             OR (o.order_type ILIKE '%external%'
+                 AND COALESCE(s.source, '') <> 'delivery_app'
+                 AND NOT EXISTS (SELECT 1 FROM jsonb_object_keys(COALESCE(o.payments,'{}'::jsonb)) k
+                                  WHERE lower(k) = ANY($3::text[])))  THEN 'store'
            -- Delivery we can see but cannot attribute: no commission is
            -- modelled for it, so it must not hide inside 'restaurant'.
            WHEN o.order_type ILIKE '%external%'
@@ -1124,8 +1154,8 @@ export const ORDERS_SQL = `
     FROM ts_orders o
     LEFT JOIN order_sources s ON s.order_id = o.order_id
     LEFT JOIN items it ON it.order_id = o.order_id
-   WHERE o.calendar_day BETWEEN $1::date AND $2::date AND ${SALES_ONLY}
-   ORDER BY o.calendar_day, o.order_id`;
+   WHERE ${BIZ_O} BETWEEN $1::date AND $2::date AND ${SALES_ONLY}
+   ORDER BY o.order_date, o.order_id`;
 
 /* Payment-method names that mean "delivery aggregator" — same list index.js
    uses for DEFAULT_DELIVERY_APPS. Only a FALLBACK signal here: `source_note`
@@ -1201,8 +1231,30 @@ export function register(app, ctx) {
     return rows.map((r) => orderEconomics(r, cfg.rates, cfg.foodCostPct, cfg.commissionBasis));
   }
 
-  /** Ad spend from the marketing module, keyed by plain calendar day. */
+  /** صرف الإعلانات: من ad_spend_hourly (adspend.js) متقسّم على اليوم التشغيلي —
+   *  نفس نافذة الطلبات. لو الجدول فاضي للفترة دي نرجع للتسجيل اليدوي (mk_entries). */
   async function adSpend(from, to) {
+    try {
+      const rows = (await pool.query(
+        `SELECT CASE WHEN platform='meta' AND kind='whatsapp' THEN 'meta_whatsapp' ELSE platform END AS platform,
+                COALESCE(sum(spend),0) AS spend, count(DISTINCT campaign_id)::int AS campaigns
+           FROM ad_spend_hourly WHERE ${bizDaySql("hour_start")} BETWEEN $1::date AND $2::date
+          GROUP BY 1 ORDER BY 2 DESC`, [from, to])).rows;
+      const total = rows.reduce((a, r) => a + num(r.spend), 0);
+      if (total > 0) {
+        return {
+          total: money(total), entries: rows.length, campaigns: rows.reduce((a, r) => a + num(r.campaigns), 0),
+          byPlatform: rows.map((x) => ({ platform: x.platform, spend: money(x.spend) })),
+          source: "hourly", allocation: "unallocated",
+          note: "من منصات الإعلانات ساعة بساعة، متقسّم على اليوم التشغيلي (١١ الصبح ← ٣ الفجر).",
+        };
+      }
+    } catch { /* الجدول لسه ماتعملش — نكمّل بالطريقة القديمة */ }
+    return adSpendManual(from, to);
+  }
+
+  /** Ad spend from the marketing module, keyed by plain calendar day. */
+  async function adSpendManual(from, to) {
     const r = await pool.query(
       `SELECT COALESCE(sum(spend),0) AS spend, count(*)::int AS entries,
               count(DISTINCT campaign_id)::int AS campaigns
@@ -1688,7 +1740,7 @@ export function register(app, ctx) {
                 count(DISTINCT i.order_id)::int AS orders
            FROM ts_order_items i
            JOIN ts_orders o ON o.order_id = i.order_id
-          WHERE o.calendar_day BETWEEN $1::date AND $2::date AND ${SALES_ONLY}
+          WHERE ${BIZ_O} BETWEEN $1::date AND $2::date AND ${SALES_ONLY}
           GROUP BY 1 ORDER BY value_incl DESC`, [from, to])).rows;
 
       const costByName = new Map();
@@ -2010,7 +2062,7 @@ export function register(app, ctx) {
       `SELECT i.name, sum(i.qty) AS qty, sum(i.amount) AS value_incl,
               count(DISTINCT i.order_id)::int AS orders
          FROM ts_order_items i JOIN ts_orders o ON o.order_id = i.order_id
-        WHERE o.calendar_day BETWEEN $1::date AND $2::date AND ${SALES_ONLY}
+        WHERE ${BIZ_O} BETWEEN $1::date AND $2::date AND ${SALES_ONLY}
         GROUP BY 1 ORDER BY value_incl DESC LIMIT 25`, [from, to])).rows.map((r) => {
       const valueEx = num(r.value_incl) / (1 + VAT_RATE);
       return {

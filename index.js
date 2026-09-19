@@ -25,6 +25,8 @@ import * as keetaPayouts from "./keeta_payouts.js";
 import * as ninja from "./ninja.js";
 import * as chat from "./chat.js";
 import * as dayreport from "./dayreport.js";
+import * as adspend from "./adspend.js";
+import * as bizreports from "./bizreports.js";
 import * as ads from "./ads.js";
 import * as keeta from "./keeta.js";
 import * as funnel from "./funnel.js";
@@ -3095,7 +3097,18 @@ const portalApi = portal.register(app, moduleCtx, { shop: () => shopApi, deliver
 // دخول بحساب «مطبخ» من «فريق البورتال» — نفس توكن البورتال ومقفول على /api/kitchen/*.
 kitchen.register(app, moduleCtx, { portal: () => portalApi, tsp: () => tspApi });
 // تقرير الدخل اليومي + صرف الإعلانات (١٧ سبتمبر): جدول mk_daily_reports + SMS واحدة لعمر بعد القفل
-adsreport.register(app, moduleCtx, { sendSms: (m) => accounts.sendSms(m) });
+// صرف الإعلانات بالساعة (ad_spend_hourly) + قلب التقارير على اليوم التشغيلي
+const adspendApi = adspend.register(app, moduleCtx);
+const bizApi = bizreports.register(app, moduleCtx, { adspend: adspendApi });
+adsreport.register(app, moduleCtx, { sendSms: (m) => accounts.sendSms(m), adspend: adspendApi, biz: bizApi });
+// mkhub بيقرا الصرف المتطابق مع اليوم التشغيلي من هنا (عقد: {days:[{day, meta, whatsapp, snapchat, tiktok}]}، meta شامل الواتساب)
+globalThis.__fcAlignedSpend = async (from, to) => ({
+  source: "ad_spend_hourly",
+  days: (await adspendApi.spendByBizDay(from, to)).map((d) => ({
+    day: d.day, meta: (d.meta || 0) + (d.meta_whatsapp || 0), whatsapp: d.meta_whatsapp || 0,
+    snapchat: d.snapchat ?? null, tiktok: d.tiktok ?? null, total: d.total,
+  })),
+});
 // «الحملات كلها في مكان واحد» + تقرير السلات المتروكة (قراءة بس) — mkhub.js
 const mkhubApi = mkhub.register(app, moduleCtx, { alignedSpend: () => (globalThis.__fcAlignedSpend || null) });
 growthnow.register(app, moduleCtx);   // «إيه اللي نعمله دلوقتي» — /api/cms/growth/now

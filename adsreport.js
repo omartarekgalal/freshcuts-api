@@ -35,6 +35,7 @@
 ═══════════════════════════════════════════════════════════════════════════ */
 
 import { smsInfo, fitOneSms, staffPhones } from "./staffalerts.js";
+import { bizStart, bizEnd, shiftDay } from "./bizday.js";
 
 const TZ = "Asia/Riyadh";
 const DEFAULT_CFG = { enabled: true, phones: ["0544775082"], at: "03:40" };
@@ -425,9 +426,72 @@ export function register(app, ctx, deps = {}) {
     return { linkLandings: landings[0]?.n || 0, ordersFromLinks: orders[0]?.n || 0, revenueFromLinks: r2(orders[0]?.rev) };
   }
 
+  /* نقطة البيع بقواعد bizreports.js (اليوم التشغيلي بالطابع الزمني + فصل
+     طلبات المتجر المنعكسة + كل تطبيق لوحده). posPart القديم احتياطي بس. */
+  async function posPartBiz(day) {
+    const biz = deps.biz;
+    if (!biz) return posPart(day);
+    try {
+      const cfg = await biz.settings();
+      const { rows, stats } = await biz.loadWindow(bizStart(day), bizEnd(day), cfg);
+      const part = { hall: { orders: 0, revenue: 0 }, deliveryApps: { orders: 0, revenue: 0, byApp: {} }, onlineInPos: { orders: stats.mirrors, revenue: null } };
+      for (const r of rows) {
+        if (r.ch === "store") continue; // المتجر بييجي من shop_orders
+        if (r.ch.startsWith("app:")) {
+          const a = r.ch.slice(4);
+          part.deliveryApps.orders++; part.deliveryApps.revenue = r2(part.deliveryApps.revenue + r.total);
+          const b = (part.deliveryApps.byApp[a] ||= { orders: 0, revenue: 0 });
+          b.orders++; b.revenue = r2(b.revenue + r.total);
+        } else { part.hall.orders++; part.hall.revenue = r2(part.hall.revenue + r.total); }
+      }
+      return part;
+    } catch (e) { console.error("[adsreport] posPartBiz:", e.message); return posPart(day); }
+  }
+
+  /* الصرف في نفس نافذة اليوم التشغيلي (٤ الفجر ← ٤ الفجر الرياض) من
+     ad_spend_hourly — مش يوم ميتا (لوس أنجلوس). بنزامن اليوم الأول عشان
+     الرقم يبقى طازة، ولو الجدول فاضي/وقع بنرجع للطريقة القديمة. */
+  async function spendParts(day, metaLa, snapOld) {
+    const sp = deps.adspend;
+    if (!sp) return { meta: metaLa, snap: snapOld, aligned: false };
+    try {
+      await sp.syncBizDays(day, day);
+      const camps = await sp.campaignsInWindow(bizStart(day), bizEnd(day));
+      const metaC = camps.filter((x) => x.platform === "meta");
+      const snapC = camps.filter((x) => x.platform === "snapchat");
+      if (!metaC.length && !snapC.length && !metaLa?.error) return { meta: metaLa, snap: snapOld, aligned: false };
+      const la = new Map((metaLa?.campaigns || []).map((x) => [String(x.id), x]));
+      return {
+        aligned: true,
+        meta: {
+          error: metaC.length ? null : metaLa?.error || null,
+          campaigns: metaC.map((x) => ({
+            id: x.id, name: x.name, kind: x.kind, spend: r2(x.spend), impressions: x.impressions, clicks: x.clicks,
+            purchases: num(x.purchases), conversations: num(x.conversations),
+            purchaseValue: num(la.get(String(x.id))?.purchaseValue),
+            spendMetaDay: la.has(String(x.id)) ? r2(la.get(String(x.id)).spend) : null,
+          })),
+        },
+        snap: { spend: r2(snapC.reduce((s, x) => s + num(x.spend), 0)) },
+        metaDaySpend: r2((metaLa?.campaigns || []).reduce((s, x) => s + num(x.spend), 0)),
+        snapDaySpend: snapOld ? r2(snapOld.spend) : null,
+      };
+    } catch (e) {
+      console.error("[adsreport] spendParts:", e.message);
+      return { meta: metaLa, snap: snapOld, aligned: false };
+    }
+  }
+
   async function compute(day) {
-    const [pos, shop, meta, guardLog, whatsapp, snap] = await Promise.all([posPart(day), shopPart(day), metaPart(day), guardPart(day), whatsappPart(day), snapPart(day)]);
-    return buildReport({ day, pos, shop, meta, snap, guardLog, whatsapp });
+    const [pos, shop, metaLa, guardLog, whatsapp, snapOld] = await Promise.all([posPartBiz(day), shopPart(day), metaPart(day), guardPart(day), whatsappPart(day), snapPart(day)]);
+    const sp = await spendParts(day, metaLa, snapOld);
+    const rep = buildReport({ day, pos, shop, meta: sp.meta, snap: sp.snap, guardLog, whatsapp });
+    rep.spendAlignment = sp.aligned
+      ? { aligned: true, window: `${day} 04:00 → ${shiftDay(day, 1)} 04:00 (الرياض)`, metaAccountDaySpend: sp.metaDaySpend, snapCalendarDaySpend: sp.snapDaySpend,
+          note: "الصرف محسوب ساعة بساعة جوّه اليوم التشغيلي نفسه (مش يوم ميتا على توقيت لوس أنجلوس)." }
+      : { aligned: false, note: "الصرف من يوم ميتا (توقيت لوس أنجلوس) — جدول الساعات مش متاح." };
+    rep.businessDay = { day, window: "11:00 → 03:00 Riyadh (hard cut 04:00)" };
+    return rep;
   }
 
   async function store(rep) {
@@ -471,8 +535,16 @@ export function register(app, ctx, deps = {}) {
       const day = reportDayAt(now, cfg.at);
       if (!day) return;
       await ensureSchema();
-      const ex = (await pool.query(`SELECT sms_sent_at FROM mk_daily_reports WHERE day=$1::date`, [day])).rows[0];
-      if (ex && ex.sms_sent_at) return;
+      const ex = (await pool.query(`SELECT sms_sent_at, (data->>'final') AS final FROM mk_daily_reports WHERE day=$1::date`, [day])).rows[0];
+      if (ex && ex.sms_sent_at) {
+        // بعد ١٠ الصبح: نعيد حساب امبارح مرة واحدة (تاجات فيدأس المتأخرة + صرف ميتا اللي استقر) من غير SMS
+        const h = Number(new Intl.DateTimeFormat("en-GB", { timeZone: TZ, hour: "2-digit", hour12: false }).format(now));
+        if (h >= 10 && ex.final !== "true") {
+          const rep = await compute(day); rep.final = true; await store(rep);
+          console.log(`[adsreport] ${day} refreshed (final)`);
+        }
+        return;
+      }
       if (!ex) await store(await compute(day));
       const r = await sendOnce(day);
       console.log(`[adsreport] ${day} stored; sms ${r.ok ? "sent" : JSON.stringify(r.skipped || r.error || r.errors)}`);
