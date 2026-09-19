@@ -54,7 +54,7 @@
 import crypto from "node:crypto";
 import { menuRows } from "./catalog.js";
 import { createGoogleAdapter } from "./google.js";
-import { gateOfflineRows } from "./uploadgate.js";
+import { gateOfflineRows, uploadPolicy, filterPhones, logUpload } from "./uploadgate.js";
 import { ttMktToken, ttAdvertiserId } from "./ttconnect.js";
 
 /* ─────────────────────────────────────────────────────────────────────────
@@ -2248,7 +2248,9 @@ export function register(app, ctx, deps = {}) {
 
   // Lines that are not products at all. Sending a delivery fee to a catalog
   // as if it were a dish teaches the optimiser nothing and pollutes DPA.
-  const NOT_A_PRODUCT = /^(توصيل|رسوم توصيل|رسوم|خدمة|ضريبه|ضريبة|تيك اوي|delivery|service|tax)$/;
+  // «رسوم التوصيل» (٧ سطور/٣٠ يوم) و«تامين صينيه» (عربون الصينية) كانوا بيعدّوا
+  // كأصناف n:… — مش منتجات. arNorm بيحوّل ة→ه فـ«خدمه» لازم تتكتب كده.
+  const NOT_A_PRODUCT = /^(توصيل|رسوم توصيل|رسوم التوصيل|رسوم|خدمة|خدمه|رسوم خدمه|ضريبه|ضريبة|تيك اوي|delivery|delivery fee|service|tax|تامين.*)$/;
 
   // Progressively shorter candidates for one till name, longest first.
   function nameCandidates(raw) {
@@ -2482,7 +2484,11 @@ export function register(app, ctx, deps = {}) {
       let pre;
       try { pre = await p.preflight(); }
       catch (e) { pre = { ok: true, note: `preflight itself failed: ${e.message}` }; }  // never let the check block a working send
-      if (pre && pre.ok === false) {
+      if (pre && pre.ok === false && dryRun) {
+        // المعاينة لسه مفيدة: بتورّي الـpayload اللي هيتبعت أول ما الباب يتفتح.
+        out.notReady = pre.reason;
+        out.notReadyCode = pre.code || null;
+      } else if (pre && pre.ok === false) {
         out.attempted = 0;
         out.skipped = events.length;
         out.notReady = pre.reason;
@@ -2722,6 +2728,12 @@ export function register(app, ctx, deps = {}) {
     } catch (e) {
       return c.json({ ok: false, error: `could not read ts_orders: ${e.message}` }, 500);
     }
+    /* نفس بوابة syncOrders (uploadgate.js): طلبات الصالة بتعدّي بس لو posConversions
+       مفتوح، ومن غير أرقام الفريق/الاختبار/اللاغيين (وغير الموافقين لو مطلوب).
+       الراوت ده كان بيتخطاها — يعني باك‌فيل يدوي كان ممكن يرفع رقم لاغي. */
+    const gate = await gateOfflineRows(pool, rows, { trigger: dryRun ? "route-dry" : "route" })
+      .catch(() => ({ rows: [], stats: null, policy: null }));
+    rows = gate.rows;
     const ids = rows.map((r) => String(r.order_id));
     let itemsByOrder = new Map();
     try { itemsByOrder = await loadItems(ids); }
@@ -2747,9 +2759,86 @@ export function register(app, ctx, deps = {}) {
       orders: events.length,
       dryRun,
       matchQuality: matchQuality(events),
+      offlineGate: gate.stats ? { ...gate.stats, enabled: !!gate.policy?.offline, requireConsent: !!gate.policy?.requireConsent, web: gate.web } : null,
       ...(dryRun ? { samplePayloads: Object.fromEntries(Object.entries(results).map(([k, v]) => [k, v.samplePayload || null])) } : {}),
       platforms: results,
     });
+  });
+
+  /* ═══ Google Customer Match عن طريق Data Manager (١٩/٩) ═══════════════════
+     POST /api/ads/google/customer-match { dryRun?: true(default), acceptTerms?: bool }
+     قايمة واحدة «Fresh Cuts - All customers (CM)» (CRM_BASED / CONTACT_INFO) فيها كل
+     جوال عميل طلب مننا (نقطة البيع + المتجر) — SHA-256 لـ‎+966… بس، ومن نفس بوابة
+     uploadgate: لازم syncAudiences=true، ومن غير اللاغيين/الفريق/الاختبار (وغير
+     الموافقين لو consentOnly مش false صريح). OfflineUserDataJob مقفول على أي
+     توكن ماعملش Customer Match قبل ١/٤/٢٠٢٦ ⇒ Data Manager audienceMembers:ingest.
+     شروط Customer Match (termsOfService) مابتتبعتش ACCEPTED غير لو acceptTerms=true
+     صريح — ده قرار المالك مش قرار الكود. */
+  app.post("/api/ads/google/customer-match", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    let b = {};
+    try { b = await c.req.json(); } catch { b = {}; }
+    const dryRun = b.dryRun !== false;
+    const g = byId("google");
+    const policy = await uploadPolicy(pool);
+    const r = await pool.query(`
+      SELECT DISTINCT phone_norm FROM (
+        SELECT tc.phone_norm FROM ts_customers tc WHERE COALESCE(tc.phone_norm,'') <> ''
+        UNION SELECT so.phone_norm FROM shop_orders so WHERE COALESCE(so.phone_norm,'') <> '' AND so.is_test IS NOT TRUE
+      ) x`);
+    const all = r.rows.map((x) => x.phone_norm);
+    const f = await filterPhones(pool, all, policy);
+    if (f.blocked) return c.json({ ok: false, error: f.blocked }, 503);
+    const hashed = [...new Set(f.phones.map((p) => hashPhonePlus(phoneDigits(p, normPhone))).filter(Boolean))];
+    const out = { ok: true, dryRun, policy, stats: f.stats, hashed: hashed.length };
+    if (!policy.lists) {
+      out.blocked = "syncAudiences مقفول في إعدادات الطيار — مفيش رفع قوايم.";
+      await logUpload(pool, { kind: "lists", platform: "google", segment: "all_customers_cm", trigger: "route", enabled: false, ...f.stats, status: "blocked", note: out.blocked });
+      return c.json(out);
+    }
+    const NAME = "Fresh Cuts - All customers (CM)";
+    const found = await g.search(`SELECT user_list.id, user_list.name, user_list.size_for_search, user_list.size_for_display, user_list.membership_status FROM user_list WHERE user_list.name = '${NAME}' AND user_list.type = 'CRM_BASED'`);
+    let listId = found.ok && found.results[0]?.userList?.id ? String(found.results[0].userList.id) : null;
+    out.list = listId ? { id: listId, ...found.results[0].userList } : null;
+    if (dryRun) {
+      out.sample = { destinations: [{ operatingAccount: { accountType: "GOOGLE_ADS", accountId: g.cust() }, productDestinationId: listId || "‹created on real run›" }],
+        encoding: "HEX", audienceMembers: hashed.slice(0, 2).map((h) => ({ userData: { userIdentifiers: [{ phoneNumber: h.slice(0, 12) + "…" }] } })) };
+      await logUpload(pool, { kind: "lists", platform: "google", segment: "all_customers_cm", trigger: "route-dry", enabled: true, ...f.stats, status: "dry" });
+      return c.json(out);
+    }
+    const sc = await g.dmScopeOk();
+    if (!sc.ok) return c.json({ ...out, ok: false, error: sc.reason, code: sc.code }, 409);
+    if (!listId) {
+      const t = await g.token();
+      const res = await httpJson(`${g.apiBase()}/customers/${g.cust()}/userLists:mutate`, {
+        method: "POST", headers: { ...g.hdr(), Authorization: `Bearer ${t}` },
+        body: { operations: [{ create: { name: NAME, description: "كل عملاء فريش كاتس (صالة + تطبيقات + متجر) — جوال مشفّر، من uploadgate", membershipLifeSpan: "540",
+          crmBasedUserList: { uploadKeyType: "CONTACT_INFO", dataSourceType: "FIRST_PARTY" } } }] },
+      });
+      const rn = res.json?.results?.[0]?.resourceName;
+      if (!rn) return c.json({ ...out, ok: false, error: `user list create failed: ${JSON.stringify(res.json || res.error).slice(0, 400)}` }, 502);
+      listId = rn.split("/").pop();
+      out.created = listId;
+    }
+    const tok = await g.dmToken();
+    let sent = 0; const errors = [];
+    for (let i = 0; i < hashed.length; i += 10000) {
+      const chunk = hashed.slice(i, i + 10000);
+      const res = await httpJson("https://datamanager.googleapis.com/v1/audienceMembers:ingest", {
+        method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${tok}` },
+        body: {
+          destinations: [{ operatingAccount: { accountType: "GOOGLE_ADS", accountId: g.cust() }, productDestinationId: listId }],
+          encoding: "HEX",
+          ...(b.acceptTerms === true ? { termsOfService: { customerMatchTermsOfServiceStatus: "ACCEPTED" } } : {}),
+          audienceMembers: chunk.map((h) => ({ userData: { userIdentifiers: [{ phoneNumber: h }] } })),
+        },
+      });
+      if (res.ok) { sent += chunk.length; out.requestIds = [...(out.requestIds || []), res.json?.requestId]; }
+      else errors.push(JSON.stringify(res.json || res.error).slice(0, 500));
+    }
+    out.sent = sent; out.errors = errors; out.listId = listId; out.ok = !errors.length;
+    await logUpload(pool, { kind: "lists", platform: "google", segment: "all_customers_cm", trigger: "route", enabled: true, ...f.stats, sent, status: errors.length ? "failed" : "sent", note: errors[0] || null });
+    return c.json(out);
   });
 
   /* POST /api/ads/event — one event, for firing in real time later. */

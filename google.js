@@ -264,7 +264,7 @@ export function createGoogleAdapter({ httpJson, hashEmail, hashPhonePlus, google
       "GOOGLE_ADS_REFRESH_TOKEN", "GOOGLE_ADS_CUSTOMER_ID",
     ],
     eventName: "Purchase",
-    note: "المطعم مفيهوش دفع أونلاين، فالشراء عمره ما بيحصل على الويب. اللي بيترفع لجوجل هو الطلبات اللي معاها معرّف حقيقي: gclid من ضغطة إعلان على المتجر، أو رقم جوال/إيميل مشفّر. الطلب اللي مامعهوش أي معرّف مابيتبعتش أصلاً. ⚠️ جوجل قفلت ConversionUploadService على التكاملات الجديدة (لازم Data Manager API)، فالرفع نفسه متوقّف حاليًا. القراءة والتحكم في الحملات بيمشوا على توكن OAuth منفصل تمامًا، فلو السطر اللي فوق بيقول إن التوكن مرفوض يبقى دول واقفين هما كمان — مش بس الرفع.",
+    note: "المطعم مفيهوش دفع أونلاين، فالشراء عمره ما بيحصل على الويب. اللي بيترفع لجوجل هو الطلبات اللي معاها معرّف حقيقي: gclid من ضغطة إعلان على المتجر، أو رقم جوال/إيميل مشفّر. الطلب اللي مامعهوش أي معرّف مابيتبعتش أصلاً. جوجل قفلت ConversionUploadService على التكاملات الجديدة، فالرفع بقى عن طريق Data Manager API (events:ingest) على نفس إجراء «Till Orders (Import)» — ومحتاج توكن بصلاحية datamanager (GOOGLE_DM_REFRESH_TOKEN). القراءة والتحكم في الحملات بيمشوا على توكن OAuth منفصل تمامًا، فلو السطر اللي فوق بيقول إن التوكن مرفوض يبقى دول واقفين هما كمان — مش بس الرفع.",
 
     ver: () => env("GOOGLE_ADS_API_VERSION") || DEFAULT_API_VERSION,
     apiBase() { return `https://googleads.googleapis.com/${this.ver()}`; },
@@ -319,6 +319,13 @@ export function createGoogleAdapter({ httpJson, hashEmail, hashPhonePlus, google
        On failure it returns { error } instead of null so the caller can repeat
        Google's own words instead of guessing "token exchange failed". */
     async authorize(call) {
+      if (call._dm) {
+        const t = await this.dmToken();
+        if (!t) return { error: `Google OAuth refused (Data Manager): ${this._dmErr}` };
+        const out = { ...call, headers: { ...call.headers, Authorization: `Bearer ${t}` } };
+        delete out._dm;
+        return out;
+      }
       const t = await this.token();
       if (!t) return { error: `Google OAuth refused: ${this._tokErr || "missing client id / secret / refresh token"}` };
       const out = { ...call, headers: { ...call.headers, Authorization: `Bearer ${t}` } };
@@ -677,42 +684,117 @@ export function createGoogleAdapter({ httpJson, hashEmail, hashPhonePlus, google
       return !!(e.gclid || e.gbraid || e.wbraid || e.phoneDigits || e.email);
     },
 
-    buildBatch(events) {
+    /* ─── Data Manager API (١٩/٩) ─────────────────────────────────────────
+       ConversionUploadService قفلت على التكاملات الجديدة
+       (CUSTOMER_NOT_ALLOWLISTED_FOR_THIS_FEATURE — «should use the Data
+       Manager API»)، فالطلبات بتروح لـ datamanager.googleapis.com/v1/events:ingest
+       على نفس إجراء التحويل (نوع UPLOAD_CLICKS = «Import from clicks»،
+       productDestinationId = رقم الإجراء). الجوال E.164 بالـ'+' ثم SHA-256 hex
+       (encoding HEX)، gclid/gbraid/wbraid لو موجود، transactionId = رقم الطلب في
+       نقطة البيع (نفس dedup بتاع ads_events)، eventSource IN_STORE للصالة/
+       التطبيقات و WEB لطلب المتجر. القناة (instore / delivery:keeta …) بتروح
+       كمتغيّر تحويل لو GOOGLE_DM_CHANNEL_VAR متعرّف في الحساب.
+       التوكن لازم يكون فيه scope ‏auth/datamanager — GOOGLE_DM_REFRESH_TOKEN لو
+       موجود، وإلا GOOGLE_ADS_REFRESH_TOKEN (readiness بيتأكد من الـscope قبل أي
+       حجز، فمفيش طلب بيتحرق لو التوكن ناقص). */
+    DM_URL: "https://datamanager.googleapis.com/v1/events:ingest",
+
+    dmDestination() {
       const cust = this.cust();
+      const login = this.loginCust();
       const action = digitsOnly(env("GOOGLE_ADS_CONVERSION_ACTION_ID"));
       if (!cust || !action) return null;
+      return {
+        operatingAccount: { accountType: "GOOGLE_ADS", accountId: cust },
+        ...(login && login !== cust ? { loginAccount: { accountType: "GOOGLE_ADS", accountId: login } } : {}),
+        productDestinationId: action,
+      };
+    },
+
+    /** event (ads.js toEvent) → Data Manager Event. صافية — للاختبار. */
+    dmEvent(e) {
+      const ids = [];
+      const em = hashEmail(e.email);
+      const ph = hashPhonePlus(e.phoneDigits);   // sha256("+9665…") hex
+      if (em) ids.push({ emailAddress: em });
+      if (ph) ids.push({ phoneNumber: ph });
+      const click = e.gclid ? { gclid: e.gclid } : e.gbraid ? { gbraid: e.gbraid } : e.wbraid ? { wbraid: e.wbraid } : null;
+      const chanVar = env("GOOGLE_DM_CHANNEL_VAR");
+      const t = e.eventTime instanceof Date ? e.eventTime : new Date(e.eventTime);
+      /* cartData بس لو فيه Merchant Center مربوط (GOOGLE_MERCHANT_ID): جوجل
+         بتقرا merchantProductId كـ offer id في الميرشنت سنتر، ومن غيره الأصناف
+         مالهاش معنى عندها. المعرّفات نفسها هي معرّفات feed.csv. */
+      const merchant = digitsOnly(env("GOOGLE_MERCHANT_ID"));
+      const items = merchant && Array.isArray(e.contents)
+        ? e.contents.filter((i) => i.matched && i.id && !String(i.id).startsWith("n:"))
+            .map((i) => ({ merchantProductId: String(i.id), quantity: String(i.quantity || 1), unitPrice: Number(i.unitPrice) || 0 }))
+        : [];
+      return {
+        ...(e.orderId ? { transactionId: String(e.orderId) } : {}),
+        eventTimestamp: (Number.isFinite(t.getTime()) ? t : new Date()).toISOString(),
+        eventSource: e.actionSource === "website" ? "WEB" : "IN_STORE",
+        conversionValue: Number(e.value) || 0,
+        currency: e.currency || "SAR",
+        ...(ids.length ? { userData: { userIdentifiers: ids } } : {}),
+        ...(click ? { adIdentifiers: click } : {}),
+        ...(items.length ? { cartData: { merchantId: merchant, items } } : {}),
+        ...(chanVar && e.contentCategory ? { customVariables: [{ variable: chanVar, value: String(e.contentCategory) }] } : {}),
+      };
+    },
+
+    buildBatch(events, { validateOnly = false } = {}) {
+      const dest = this.dmDestination();
+      if (!dest) return null;
       const rows = events.filter((e) => this.usable(e));
       if (!rows.length) return null;
       return {
-        url: `${this.apiBase()}/customers/${cust}:uploadClickConversions`,
+        url: this.DM_URL,
         method: "POST",
-        headers: this.hdr(),
+        headers: { "Content-Type": "application/json", Authorization: "Bearer ***resolved-at-send***" },
+        _dm: true,
         body: {
-          conversions: rows.map((e) => {
-            const ident = [];
-            const em = hashEmail(e.email);
-            const ph = hashPhonePlus(e.phoneDigits);   // Google wants the '+' hashed in
-            if (em) ident.push({ hashedEmail: em });
-            if (ph) ident.push({ hashedPhoneNumber: ph });
-            return {
-              conversionAction: `customers/${cust}/conversionActions/${action}`,
-              conversionDateTime: googleDateTime(e.eventTime),
-              conversionValue: e.value,
-              currencyCode: e.currency,
-              ...(e.orderId ? { orderId: String(e.orderId) } : {}),
-              /* EXACTLY ONE click id, or none at all. Sending two is an
-                 outright rejection, and inventing one is a lie. */
-              ...(e.gclid ? { gclid: e.gclid }
-                : e.gbraid ? { gbraid: e.gbraid }
-                : e.wbraid ? { wbraid: e.wbraid } : {}),
-              ...(ident.length ? { userIdentifiers: ident } : {}),
-            };
-          }),
-          // Google grades each row on its own; one bad phone must not throw
-          // away the other 499.
-          partialFailure: true,
+          destinations: [dest],
+          encoding: "HEX",
+          events: rows.map((e) => this.dmEvent(e)),
+          ...(validateOnly ? { validateOnly: true } : {}),
         },
       };
+    },
+
+    /* توكن Data Manager: refresh token منفصل لو موجود. الـscope بييجي مع رد
+       التوكن ويتخزّن — readiness بيرفض بجملة واحدة لو ناقص. */
+    _dmTok: null, _dmTokAt: 0, _dmScopes: null, _dmErr: null,
+    async dmToken() {
+      const id = env("GOOGLE_ADS_CLIENT_ID");
+      const secret = env("GOOGLE_ADS_CLIENT_SECRET");
+      const refresh = env("GOOGLE_DM_REFRESH_TOKEN") || env("GOOGLE_ADS_REFRESH_TOKEN");
+      if (!id || !secret || !refresh) { this._dmErr = "missing client id / secret / refresh token"; return null; }
+      if (this._dmTok && Date.now() - this._dmTokAt < 25 * 60 * 1000) return this._dmTok;
+      const res = await httpJson("https://oauth2.googleapis.com/token", {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({ client_id: id, client_secret: secret, refresh_token: refresh, grant_type: "refresh_token" }).toString(),
+      });
+      if (!res.ok || !res.json?.access_token) {
+        this._dmErr = res.json?.error_description || res.json?.error || res.error || `HTTP ${res.status}`;
+        return null;
+      }
+      this._dmErr = null;
+      this._dmTok = res.json.access_token;
+      this._dmTokAt = Date.now();
+      this._dmScopes = String(res.json.scope || "");
+      return this._dmTok;
+    },
+    async dmScopeOk() {
+      const t = await this.dmToken();
+      if (!t) return { ok: false, code: "DM_TOKEN", reason: `Google OAuth refused (Data Manager): ${this._dmErr}` };
+      if (!/auth\/datamanager/.test(this._dmScopes || "")) {
+        return {
+          ok: false, code: "DM_SCOPE_MISSING",
+          reason: "التوكن اللي معانا لجوجل صلاحيته Google Ads بس (scope adwords)، ورفع الطلبات بقى لازم يعدّي من Data Manager API اللي محتاج صلاحية datamanager. المطلوب مرة واحدة: عمر يوافق على شاشة إذن جوجل بالصلاحيتين (adwords + datamanager) ونحط التوكن الجديد في GOOGLE_DM_REFRESH_TOKEN. لحد كده مفيش طلب بيتحجز ولا بيتحرق — كلها هتترفع بتاريخها الحقيقي أول ما التوكن يتحط.",
+        };
+      }
+      return { ok: true };
     },
 
     readBatchResult(res, n) {
@@ -722,6 +804,17 @@ export function createGoogleAdapter({ httpJson, hashEmail, hashPhonePlus, google
         const accepted = Array.isArray(j?.results) ? j.results.length : n;
         this._refusal = null;               // it worked; forget any old latch
         return { ok: true, accepted, raw: j ?? null };
+      }
+      const raw = JSON.stringify(res.json || "");
+      if (/ACCESS_TOKEN_SCOPE_INSUFFICIENT|SERVICE_DISABLED|accessNotConfigured/.test(raw)) {
+        const code = /SCOPE/.test(raw) ? "DM_SCOPE_MISSING" : "DM_API_DISABLED";
+        const reason = code === "DM_SCOPE_MISSING"
+          ? "التوكن مالوش صلاحية datamanager — محتاجين GOOGLE_DM_REFRESH_TOKEN جديد بالصلاحيتين (adwords + datamanager)."
+          : "Data Manager API مش متفعّل على مشروع Google Cloud (freshcuts-ads).";
+        this._refusal = { at: Date.now(), code, reason, google: err };
+        this._ready = { ok: false, code, reason, googleSaid: err, checkedAt: new Date().toISOString() };
+        this._readyAt = Date.now();
+        return { ok: false, permanent: true, reason, error: err, raw: res.json ?? null };
       }
       const message = err || res.error || `HTTP ${res.status}`;
       // `permanent` tells ads.js to file these rows as skipped, not failed:
@@ -797,6 +890,10 @@ export function createGoogleAdapter({ httpJson, hashEmail, hashPhonePlus, google
 
       const miss = this.missing("conversionEnv");
       if (miss) return settle({ ok: false, code: "NOT_CONFIGURED", reason: miss });
+
+      // Data Manager محتاج scope datamanager — من غيره مانحجزش ولا طلب.
+      const sc = await this.dmScopeOk();
+      if (!sc.ok) return settle({ ok: false, code: sc.code, reason: sc.reason });
 
       /* A door Google shut outranks anything a query can tell us: the
          conversion action can be perfect and the upload still refused. */
