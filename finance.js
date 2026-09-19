@@ -174,6 +174,9 @@ export const DEFAULT_RATES = {
       { from: "2027-07-01", to: null, delivery: 0.21, pickup: 0.21, note: "٢١٪ من ٠١/٠٧/٢٠٢٧" },
     ],
     paymentFeePct: 0.025,
+    // قرار عمر ١٩/٩: هنقرستيشن بتتحسب بنفس طريقة كيتا — النسبة على المبلغ شامل
+    // الضريبة بعد العروض (total)، مش على الصافي بدون ضريبة.
+    commissionBase: "total_after_promo",
     minServiceFeeSar: 0,
     monthlySubscriptionSar: 200,
     subscriptionFrom: "2026-07-01",
@@ -221,7 +224,8 @@ export const DEFAULT_RATES = {
     subsidyTiers: [],
     subsidyAboveTopSar: 0,
     subsidyConfirmed: true,
-    caveats: ["رسوم بوابة الدفع (ماي فاتورة) لطلبات الموقع مش محسوبة لسه — ضيف النسبة في الإعدادات. تكلفة المندوب في «تقرير المتجر»."],
+    // رسوم ماي فاتورة الفعلية بتتخصم في /pnl من shop_order_fees (مش نسبة مفترضة)
+    caveats: ["رسوم الدفع هنا فعلية من ماي فاتورة لكل طلب. تكلفة المندوب في «تقرير المتجر»."],
   },
 
   // In-restaurant orders. Card-machine fees are NOT in any contract we hold,
@@ -1373,6 +1377,24 @@ export function register(app, ctx) {
         accumulate(byDay.get(e.day), e);
       }
 
+      /* رسوم ماي فاتورة الفعلية على طلبات الموقع (mffees.js ← GetPaymentStatus).
+         بتتخصم من قناة «متجرنا» كرسوم دفع (من غير ضريبة الرسوم — المالية كلها
+         بدون ضريبة). لو الجدول لسه مش موجود، بنسيبها صفر ونقول كده. */
+      let gateway = { fee: 0, feeVat: 0, orders: 0, missing: 0, source: "none" };
+      try {
+        const g = (await pool.query(
+          `SELECT COALESCE(sum(f.fee),0) AS fee, COALESCE(sum(f.fee_vat),0) AS vat,
+                  count(f.order_no) FILTER (WHERE f.error IS NULL)::int AS n,
+                  count(*) FILTER (WHERE f.order_no IS NULL OR f.error IS NOT NULL)::int AS missing
+             FROM shop_orders so LEFT JOIN shop_order_fees f ON f.order_no = so.order_no
+            WHERE so.mf_invoice_id IS NOT NULL AND so.is_test IS NOT TRUE
+              AND so.status NOT IN ('pending_payment','expired','rejected_refunded','refund_failed')
+              AND ${bizDaySql("so.created_at")} BETWEEN $1::date AND $2::date`, [from, to])).rows[0];
+        gateway = { fee: money(g.fee), feeVat: money(g.vat), orders: num(g.n), missing: num(g.missing), source: "myfatoorah" };
+        const st = byChannel.store || (byChannel.store = emptyAgg());
+        for (const a of [st, overallAgg]) { a.paymentFee += gateway.fee; a.platformCost += gateway.fee; a.netProfit -= gateway.fee; }
+      } catch { /* shop_order_fees لسه ماتعملش */ }
+
       const subs = subscriptionsFor(cfg.rates, from, to);
       const subsTotal = Object.values(subs).reduce((a, s) => a + num(s.amount), 0);
 
@@ -1447,6 +1469,7 @@ export function register(app, ctx) {
           .map(([id, s]) => ({ id, label: CHANNEL_LABEL[id] || id, ...s })),
         oneOffs,
         adSpend: spend,
+        storeGatewayFees: gateway,
         assumptions: assumptionsBlock(cfg, {
           ordersPriced: list.length,
           ordersWithEstimatedNet: list.filter((e) => e.netEstimated).length,

@@ -38,7 +38,11 @@ import { smsInfo, fitOneSms, staffPhones } from "./staffalerts.js";
 import { bizStart, bizEnd, shiftDay } from "./bizday.js";
 
 const TZ = "Asia/Riyadh";
-const DEFAULT_CFG = { enabled: true, phones: ["0544775082"], at: "03:40" };
+/* قرار عمر ١٩/٩: الرسالة الساعة ٣:٠٠ الفجر، إلا بعد ليلة الخميس والجمعة (اليوم
+   التشغيلي خميس/جمعة، بنقفل ٣ الفجر) → ٤:٠٠ الفجر. lateDays = أيام الأسبوع
+   للـ«يوم التشغيلي» نفسه (0=الأحد … 4=الخميس، 5=الجمعة). */
+const DEFAULT_CFG = { enabled: true, phones: ["0544775082"], at: "03:00", atLate: "04:00", lateDays: [4, 5] };
+const TIME_RE = /^\d{1,2}:\d{2}$/;
 const NOT_PAID = ["pending_payment", "expired", "rejected_refunded", "refunded", "refund_failed", "cancelled", "canceled", "payment_failed", "failed", "unpaid"];
 const TEST_COUPONS = ["OMAR-9X4T"];
 const THRESH = { upMaxShare: 0.30, upMaxCpa: 60, cutShare: 0.35, cutCpa: 90 };
@@ -49,18 +53,28 @@ const r2 = (v) => Math.round(num(v) * 100) / 100;
 const DAY_RE = /^\d{4}-\d{2}-\d{2}$/;
 
 /* Which business day should the scheduled run report on at `now`?
-   From the configured time (default 03:40) until 12:00 → the day that just
-   ended (now − 12h). Outside that window → null (nothing to do). */
-export function reportDayAt(now = new Date(), at = DEFAULT_CFG.at) {
+   The day that just ended (now − 12h), once the send time for THAT day has
+   passed and until 12:00. Send time = atLate (04:00) when the business day is a
+   Thursday or Friday (late close), else at (03:00). `at` may be a string (old
+   callers/tests) or the whole config object. */
+export function sendTimeFor(day, cfg = DEFAULT_CFG) {
+  const lateDays = Array.isArray(cfg.lateDays) ? cfg.lateDays.map(Number) : DEFAULT_CFG.lateDays;
+  const dow = new Date(`${day}T00:00:00Z`).getUTCDay();
+  const t = lateDays.includes(dow) ? (cfg.atLate || DEFAULT_CFG.atLate) : (cfg.at || DEFAULT_CFG.at);
+  return TIME_RE.test(String(t)) ? String(t) : DEFAULT_CFG.at;
+}
+export function reportDayAt(now = new Date(), at = DEFAULT_CFG) {
+  const cfg = at && typeof at === "object" ? at : { ...DEFAULT_CFG, at: at || DEFAULT_CFG.at, atLate: at || DEFAULT_CFG.atLate };
   const p = Object.fromEntries(new Intl.DateTimeFormat("en-CA", { timeZone: TZ, year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false })
     .formatToParts(now).map((x) => [x.type, x.value]));
   const mins = (Number(p.hour) % 24) * 60 + Number(p.minute);
-  const [ah, am] = String(at || DEFAULT_CFG.at).split(":").map(Number);
-  const start = (ah || 0) * 60 + (am || 0);
-  if (mins < start || mins >= 12 * 60) return null;
   const q = Object.fromEntries(new Intl.DateTimeFormat("en-CA", { timeZone: TZ, year: "numeric", month: "2-digit", day: "2-digit" })
     .formatToParts(new Date(now.getTime() - 12 * 3600e3)).map((x) => [x.type, x.value]));
-  return `${q.year}-${q.month}-${q.day}`;
+  const day = `${q.year}-${q.month}-${q.day}`;
+  const [ah, am] = sendTimeFor(day, cfg).split(":").map(Number);
+  const start = (ah || 0) * 60 + (am || 0);
+  if (mins < start || mins >= 12 * 60) return null;
+  return day;
 }
 
 /* The business day that ended most recently (TabSense rolls at 04:00 Riyadh):
@@ -299,7 +313,10 @@ export function register(app, ctx, deps = {}) {
     const s = (await getSettingsData()) || {};
     const c = { ...DEFAULT_CFG, ...(s.adsReport || {}) };
     c.phones = staffPhones(c.phones).map((p) => `0${p}`);
-    if (!/^\d{1,2}:\d{2}$/.test(String(c.at))) c.at = DEFAULT_CFG.at;
+    // «03:40» كان الافتراضي القديم — القرار الجديد ٣:٠٠ (و٤:٠٠ خميس/جمعة)
+    if (!TIME_RE.test(String(c.at)) || c.at === "03:40") c.at = DEFAULT_CFG.at;
+    if (!TIME_RE.test(String(c.atLate))) c.atLate = DEFAULT_CFG.atLate;
+    if (!Array.isArray(c.lateDays)) c.lateDays = DEFAULT_CFG.lateDays;
     c.enabled = c.enabled !== false;
     return c;
   }
@@ -532,7 +549,7 @@ export function register(app, ctx, deps = {}) {
     try {
       const cfg = await config();
       if (!cfg.enabled) return;
-      const day = reportDayAt(now, cfg.at);
+      const day = reportDayAt(now, cfg);
       if (!day) return;
       await ensureSchema();
       const ex = (await pool.query(`SELECT sms_sent_at, (data->>'final') AS final FROM mk_daily_reports WHERE day=$1::date`, [day])).rows[0];
@@ -563,7 +580,9 @@ export function register(app, ctx, deps = {}) {
     const next = {
       enabled: b.enabled !== false,
       phones: staffPhones(b.phones).map((p) => `0${p}`),
-      at: /^\d{1,2}:\d{2}$/.test(String(b.at)) ? String(b.at) : DEFAULT_CFG.at,
+      at: TIME_RE.test(String(b.at)) ? String(b.at) : DEFAULT_CFG.at,
+      atLate: TIME_RE.test(String(b.atLate)) ? String(b.atLate) : DEFAULT_CFG.atLate,
+      lateDays: Array.isArray(b.lateDays) ? b.lateDays.map(Number).filter((x) => x >= 0 && x <= 6) : DEFAULT_CFG.lateDays,
     };
     await pool.query(`UPDATE settings SET data = jsonb_set(COALESCE(data,'{}'::jsonb), '{adsReport}', $1::jsonb, true) WHERE id=1`, [JSON.stringify(next)]);
     return c.json({ ok: true, config: await config() });

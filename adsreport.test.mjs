@@ -7,11 +7,19 @@ import { smsInfo } from "./staffalerts.js";
 
 const at = (iso) => new Date(iso);
 
-test("يوم التقرير: من ٠٣:٤٠ لحد ١٢:٠٠ الرياض = يوم الشغل اللي خلص، وبره كده ولا حاجة", () => {
-  assert.equal(reportDayAt(at("2026-09-18T00:39:00Z")), null);            // 03:39 Riyadh
-  assert.equal(reportDayAt(at("2026-09-18T00:40:00Z")), "2026-09-17");    // 03:40
+test("يوم التقرير: ٣:٠٠ الفجر عادةً، ٤:٠٠ بعد ليلة الخميس والجمعة، لحد ١٢:٠٠", () => {
+  // يوم ١٦/٩ أربعاء → ٣:٠٠ يوم الخميس ١٧
+  assert.equal(reportDayAt(at("2026-09-16T23:59:00Z")), null);            // 02:59 Riyadh
+  assert.equal(reportDayAt(at("2026-09-17T00:00:00Z")), "2026-09-16");    // 03:00
+  // يوم ١٧/٩ خميس → ٤:٠٠ يوم الجمعة ١٨
+  assert.equal(reportDayAt(at("2026-09-18T00:40:00Z")), null);            // 03:40
+  assert.equal(reportDayAt(at("2026-09-18T01:00:00Z")), "2026-09-17");    // 04:00
   assert.equal(reportDayAt(at("2026-09-18T08:59:00Z")), "2026-09-17");    // 11:59
   assert.equal(reportDayAt(at("2026-09-18T09:00:00Z")), null);            // 12:00
+  // يوم ١٨/٩ جمعة → ٤:٠٠ السبت ١٩ ؛ يوم ١٩/٩ سبت → ٣:٠٠ الأحد
+  assert.equal(reportDayAt(at("2026-09-19T00:30:00Z")), null);
+  assert.equal(reportDayAt(at("2026-09-19T01:00:00Z")), "2026-09-18");
+  assert.equal(reportDayAt(at("2026-09-20T00:00:00Z")), "2026-09-19");
   assert.equal(reportDayAt(at("2026-09-17T22:30:00Z"), "01:30"), "2026-09-17"); // 01:30 config
   assert.equal(previousBizDay(at("2026-09-18T00:30:00Z")), "2026-09-16"); // 03:30 → still inside 17th → previous = 16th
   assert.equal(previousBizDay(at("2026-09-18T02:00:00Z")), "2026-09-17"); // 05:00 → 17th ended

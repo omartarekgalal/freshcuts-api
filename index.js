@@ -27,6 +27,7 @@ import * as chat from "./chat.js";
 import * as dayreport from "./dayreport.js";
 import * as adspend from "./adspend.js";
 import * as bizreports from "./bizreports.js";
+import * as mffees from "./mffees.js";
 import * as ads from "./ads.js";
 import * as keeta from "./keeta.js";
 import * as funnel from "./funnel.js";
@@ -3102,7 +3103,9 @@ consent.register(app, moduleCtx, { requirePortal: portalApi.requirePortal });
 // تقرير الدخل اليومي + صرف الإعلانات (١٧ سبتمبر): جدول mk_daily_reports + SMS واحدة لعمر بعد القفل
 // صرف الإعلانات بالساعة (ad_spend_hourly) + قلب التقارير على اليوم التشغيلي
 const adspendApi = adspend.register(app, moduleCtx);
-const bizApi = bizreports.register(app, moduleCtx, { adspend: adspendApi });
+// رسوم ماي فاتورة الفعلية لكل طلب موقع (shop_order_fees)
+const mffeesApi = mffees.register(app, moduleCtx);
+const bizApi = bizreports.register(app, moduleCtx, { adspend: adspendApi, mffees: mffeesApi });
 adsreport.register(app, moduleCtx, { sendSms: (m) => accounts.sendSms(m), adspend: adspendApi, biz: bizApi });
 // mkhub بيقرا الصرف المتطابق مع اليوم التشغيلي من هنا (عقد: {days:[{day, meta, whatsapp, snapchat, tiktok}]}، meta شامل الواتساب)
 globalThis.__fcAlignedSpend = async (from, to) => ({

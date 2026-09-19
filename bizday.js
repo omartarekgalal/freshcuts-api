@@ -79,8 +79,8 @@ export const PRESETS = [
   { id: "lastMonth", label: "الشهر الماضي" },
 ];
 const PRESET_IDS = new Set(PRESETS.map((p) => p.id));
-// الأسبوع بيبدأ الأحد افتراضياً (أسبوع العمل في السعودية) — settings.reportWeekStart يغيّره (0=الأحد … 6=السبت)
-export const DEFAULT_WEEK_START = 0;
+// الأسبوع بيبدأ السبت (قرار عمر ١٩/٩) — settings.reportWeekStart يغيّره (0=الأحد … 6=السبت)
+export const DEFAULT_WEEK_START = 6;
 
 function weekStartOf(day, weekStart) {
   const back = (weekdayOf(day) - weekStart + 7) % 7;

@@ -41,7 +41,8 @@ test("appEconomics uses the contract band of the order's own day", () => {
   const rates = mergeRates(null);
   const hs1 = appEconomics("hungerstation", "2026-09-18", 115, 100, rates, "net");
   assert.equal(hs1.rate, 0.10);
-  assert.equal(Math.round(hs1.commission * 100) / 100, 10);
+  assert.equal(hs1.base, 115); // same basis as Keeta: total incl. VAT after promo
+  assert.equal(Math.round(hs1.commission * 100) / 100, 11.5);
   const hs2 = appEconomics("hungerstation", "2026-10-02", 115, 100, rates, "net");
   assert.equal(hs2.rate, 0.18);
   const k = appEconomics("keeta", "2026-09-18", 100, 86.96, rates, "net");

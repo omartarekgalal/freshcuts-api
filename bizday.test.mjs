@@ -45,9 +45,11 @@ test("yesterday is a full day, not partial", () => {
   assert.equal(r.cutUtc.toISOString(), "2026-09-19T01:00:00.000Z");
 });
 
-test("presets resolve with Sunday week start", () => {
+test("presets resolve (Saturday default week start, Sunday optional)", () => {
   const now = new Date("2026-09-19T10:00:00Z"); // Saturday 19/9 biz day
-  const p = (id, ws) => { const r = bizRange({ preset: id, now, weekStart: ws }); return [r.from, r.to]; };
+  const p = (id, ws = 0) => { const r = bizRange({ preset: id, now, weekStart: ws }); return [r.from, r.to]; };
+  assert.deepEqual(bizRange({ preset: "wtd", now }).from, "2026-09-19"); // default = Saturday
+  assert.deepEqual([bizRange({ preset: "lastWeek", now }).from, bizRange({ preset: "lastWeek", now }).to], ["2026-09-12", "2026-09-18"]);
   assert.deepEqual(p("last7"), ["2026-09-13", "2026-09-19"]);
   assert.deepEqual(p("last30"), ["2026-08-21", "2026-09-19"]);
   assert.deepEqual(p("mtd"), ["2026-09-01", "2026-09-19"]);

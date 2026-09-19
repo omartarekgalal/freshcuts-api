@@ -144,6 +144,7 @@ export function appAssumptions(app, rates, basis, day) {
   if (cfg.commissionBase !== "total_after_promo") {
     out.push(basis === "total" ? "العمولة محسوبة على المبلغ شامل الضريبة (إعداد يدوي)." : "افتراض: العمولة على المبلغ بدون ضريبة — العقد مابيحددش؛ لو شامل الضريبة العمولة تزيد ١٥٪.");
   }
+  if (app === "hungerstation") out.push("هنقرستيشن بتتحسب زي كيتا (النسبة على المبلغ شامل الضريبة بعد العروض) بقرار المالك ١٩/٩ — لسه محتاج كشف تسوية يأكد.");
   if (cfg.subsidyTiers?.length && cfg.subsidyConfirmed === false) out.push("دعم التوصيل (كيتا) مقدّر من طلبات فعلية ولسه مش متأكد من العقد.");
   for (const cv of cfg.caveats || []) out.push(cv);
   out.push("التطبيقات بتنزل نقطة البيع من غير ما نفرّق توصيل/استلام، فكلها بعمولة التوصيل.");
@@ -165,6 +166,7 @@ export function aggregate(rows, { firsts = new Map(), range, rates = null, basis
     orders: 0, revenue: 0, idents: new Map(), unknownOrders: 0,
     hourly: emptyHourly(),
     split: ch === "store" ? { delivery: { orders: 0, revenue: 0 }, pickup: { orders: 0, revenue: 0 } } : null,
+    gw: ch === "store" ? { fee: 0, vat: 0, known: 0, missing: 0 } : null,
     econ: ch.startsWith("app:") ? { base: 0, commission: 0, paymentFee: 0, subsidy: 0, known: true, rates: new Set(), outOfContract: 0 } : null,
   });
   for (const r of rows) {
@@ -175,6 +177,7 @@ export function aggregate(rows, { firsts = new Map(), range, rates = null, basis
     const hi = bizHourIndex(riyadhHour(r.ts));
     c.hourly[hi].orders++; c.hourly[hi].revenue += t;
     if (c.split) { const s = r.opt === "pickup" ? c.split.pickup : c.split.delivery; s.orders++; s.revenue += t; }
+    if (c.gw && r.gw) { if (r.gw.known) { c.gw.fee += r.gw.fee; c.gw.vat += r.gw.vat; c.gw.known++; } else if (r.gw.online) c.gw.missing++; }
     if (r.ident) c.idents.set(r.ident, (c.idents.get(r.ident) || 0) + 1); else c.unknownOrders++;
     if (c.econ) {
       const e = appEconomics(r.ch.slice(4), r.day, t, r.net, rates, basis);
@@ -207,6 +210,14 @@ export function aggregate(rows, { firsts = new Map(), range, rates = null, basis
       }
       card.split = c.split;
     }
+    if (c.gw) {
+      const tot = c.gw.fee + c.gw.vat;
+      card.gateway = {
+        fee: r2(c.gw.fee), feeVat: r2(c.gw.vat), total: r2(tot), knownOrders: c.gw.known, missingOrders: c.gw.missing,
+        pctOfRevenue: ratio(tot, c.revenue), net: r2(c.revenue - tot),
+        note: "رسوم ماي فاتورة الفعلية لكل طلب (GetPaymentStatus): مدى ≈ ٠٫٨٥٪، فيزا/ماستر/أبل باي بالبطاقة الائتمانية ≈ ٢٫٢٥٪، + ١٥٪ ضريبة على الرسوم.",
+      };
+    }
     if (c.econ) {
       const deductions = c.econ.commission + c.econ.paymentFee + c.econ.subsidy;
       card.commission = {
@@ -235,6 +246,7 @@ export function totalsOf(cards) {
   const groups = { store: { orders: 0, revenue: 0 }, apps: { orders: 0, revenue: 0 }, restaurant: { orders: 0, revenue: 0 } };
   const hourly = emptyHourly();
   for (const c of cards) {
+    if (c.gateway) t.appDeductions += c.gateway.total; // رسوم بوابة الدفع جزء من «الصافي بعد الاستقطاعات»
     t.orders += c.orders; t.revenue += c.revenue;
     t.newCustomers += c.customers.new; t.returning += c.customers.returning;
     if (c.commission) t.appDeductions += c.commission.deductions;
@@ -278,6 +290,7 @@ export function register(app, ctx, deps = {}) {
 
   /* ── تحميل الطلبات الموحّدة لنافذة زمنية ─────────────────────────────── */
   async function loadWindow(startUtc, endUtc, cfg) {
+    if (deps.mffees) await deps.mffees.ensure().catch(() => {});
     const pad = 30 * 60e3; // طلبات متجر حوالين الحدود عشان مطابقة المرايا
     const [pos, shop] = await Promise.all([
       pool.query(
@@ -294,12 +307,16 @@ export function register(app, ctx, deps = {}) {
           WHERE o.order_date >= $1 AND o.order_date < $2`, [startUtc, endUtc]),
       pool.query(
         // طلبات الاختبار بتتحمّل برضه — عشان مرآيتها في نقطة البيع تتشال — بس مابتتحسبش
-        `SELECT order_no, created_at AS ts, option, total, subtotal, delivery_fee, tip, coupon,
-                NULLIF(phone_norm, '') AS ident, status, attrib_source,
-                (is_test IS TRUE OR upper(COALESCE(coupon, '')) = ANY($4::text[])) AS test
-           FROM shop_orders
-          WHERE created_at >= $1 AND created_at < $2
-            AND status <> ALL($3::text[])`,
+        `SELECT so.order_no, so.created_at AS ts, so.option, so.total, so.subtotal, so.delivery_fee, so.tip, so.coupon,
+                NULLIF(so.phone_norm, '') AS ident, so.status, so.attrib_source,
+                (so.is_test IS TRUE OR upper(COALESCE(so.coupon, '')) = ANY($4::text[])) AS test,
+                -- رسوم ماي فاتورة الفعلية (mffees.js)
+                COALESCE(mf.fee, 0) AS gw_fee, COALESCE(mf.fee_vat, 0) AS gw_fee_vat,
+                (mf.order_no IS NOT NULL AND mf.error IS NULL) AS gw_known, (so.mf_invoice_id IS NOT NULL) AS gw_online
+           FROM shop_orders so
+           LEFT JOIN shop_order_fees mf ON mf.order_no = so.order_no
+          WHERE so.created_at >= $1 AND so.created_at < $2
+            AND so.status <> ALL($3::text[])`,
         [new Date(startUtc.getTime() - pad), new Date(endUtc.getTime() + pad), NOT_PAID, TEST_COUPONS]),
     ]);
     return unify(pos.rows, shop.rows, startUtc, endUtc, cfg);
@@ -326,7 +343,8 @@ export function register(app, ctx, deps = {}) {
       if (t < s0 || t >= s1) continue;
       if (s.test) { stats.testExcluded = (stats.testExcluded || 0) + 1; continue; }
       rows.push({ src: "store", id: s.order_no, ch: "store", ts: s.ts, day: bizDay(s.ts), total: num(s.total), net: num(s.total) / (1 + VAT),
-        ident: s.ident || null, opt: s.option === "pickup" ? "pickup" : "delivery", attrib: s.attrib_source || null });
+        ident: s.ident || null, opt: s.option === "pickup" ? "pickup" : "delivery", attrib: s.attrib_source || null,
+        gw: { fee: num(s.gw_fee), vat: num(s.gw_fee_vat), known: !!s.gw_known, online: !!s.gw_online } });
     }
     return { rows, stats };
   }
