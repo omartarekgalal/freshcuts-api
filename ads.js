@@ -386,6 +386,8 @@ export function lookalikeGate(audiences = []) {
 }
 
 const env = (k) => (process.env[k] || "").trim();
+// Marketing API token (reports/campaigns/dmp/catalog) - kept separate from the Events API token used by event/track.
+const ttMktToken = () => env("TIKTOK_MARKETING_TOKEN") || env("TIKTOK_ACCESS_TOKEN");
 const writeAllowed = () => process.env.ADS_ALLOW_WRITE === "1";
 
 /* ─── crypto / normalisation ──────────────────────────────────────────── */

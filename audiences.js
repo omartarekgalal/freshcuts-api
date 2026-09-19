@@ -78,6 +78,8 @@ const META_VER = () => (process.env.META_API_VERSION || "v25.0").trim();
 const TT_BASE = "https://business-api.tiktok.com/open_api/v1.3";
 const SNAP_BASE = "https://adsapi.snapchat.com/v1";
 const env = (k) => (process.env[k] || "").trim();
+// Marketing API token (reports/campaigns/dmp/catalog) - kept separate from the Events API token used by event/track.
+const ttMktToken = () => env("TIKTOK_MARKETING_TOKEN") || env("TIKTOK_ACCESS_TOKEN");
 
 /* ── the account's fixed ids ──────────────────────────────────────────────
    Read from env when present, otherwise the values verified live against
@@ -488,7 +490,7 @@ export function register(app, ctx) {
     try {
       const res = await fetch(url, {
         method: "POST",
-        headers: { "Access-Token": (env("TIKTOK_MARKETING_TOKEN") || env("TIKTOK_ACCESS_TOKEN")) },
+        headers: { "Access-Token": ttMktToken() },
         body: fd,
         signal: ctl.signal,
       });
@@ -505,7 +507,7 @@ export function register(app, ctx) {
   }
 
   async function syncTiktok(segId, phones) {
-    const token = env("TIKTOK_MARKETING_TOKEN") || env("TIKTOK_ACCESS_TOKEN");
+    const token = ttMktToken();
     const adv = env("TIKTOK_ADVERTISER_ID");
     if (!token || !adv) return { ok: false, error: "TIKTOK_ADVERTISER_ID / TIKTOK_ACCESS_TOKEN missing" };
 

@@ -72,6 +72,8 @@ import {
 import { uploadPolicy } from "./uploadgate.js";
 
 const env = (k) => (process.env[k] || "").trim();
+// Marketing API token (reports/campaigns/dmp/catalog) - kept separate from the Events API token used by event/track.
+const ttMktToken = () => env("TIKTOK_MARKETING_TOKEN") || env("TIKTOK_ACCESS_TOKEN");
 const META_VER = () => (env("META_API_VERSION") || "v25.0").trim();
 const TT_BASE = "https://business-api.tiktok.com/open_api/v1.3";
 const SNAP_BASE = "https://adsapi.snapchat.com/v1";
@@ -811,7 +813,7 @@ export function register(app, ctx, deps = {}) {
     try {
       const res = await fetch(`${TT_BASE}/dmp/custom_audience/file/upload/`, {
         method: "POST",
-        headers: { "Access-Token": env("TIKTOK_ACCESS_TOKEN") },
+        headers: { "Access-Token": ttMktToken() },
         body: fd,
         signal: ctl.signal,
       });
@@ -833,7 +835,7 @@ export function register(app, ctx, deps = {}) {
   }
 
   async function ttUpdate(audienceId, hashes, action) {
-    const token = env("TIKTOK_ACCESS_TOKEN");
+    const token = ttMktToken();
     const adv = env("TIKTOK_ADVERTISER_ID");
     if (!token || !adv) return { ok: false, error: "TIKTOK_ADVERTISER_ID / TIKTOK_ACCESS_TOKEN missing" };
     const up = await ttUploadFile([...hashes].join("\n"));
@@ -1001,7 +1003,7 @@ export function register(app, ctx, deps = {}) {
     }
 
     if (platform === "tiktok") {
-      const token = env("TIKTOK_ACCESS_TOKEN");
+      const token = ttMktToken();
       if (!token) return { ok: false, platform, account: want, reason: "TIKTOK_ACCESS_TOKEN missing" };
       /* بنتحقق بنفس الصلاحية اللي هنكتب بيها، مش بصلاحية تانية.
          `/advertiser/info/` بيرجع "the access token lacks the required
@@ -1153,7 +1155,7 @@ export function register(app, ctx, deps = {}) {
 
   /* تيك توك: أول رفع بيعمل الجمهور، اللي بعده APPEND. */
   async function ttAppend(rung, audienceId, hashes) {
-    const token = env("TIKTOK_ACCESS_TOKEN");
+    const token = ttMktToken();
     const adv = env("TIKTOK_ADVERTISER_ID");
     if (!token || !adv) return { ok: false, error: "TIKTOK_ADVERTISER_ID / TIKTOK_ACCESS_TOKEN missing" };
     if (audienceId) return ttUpdate(audienceId, hashes, "APPEND");
