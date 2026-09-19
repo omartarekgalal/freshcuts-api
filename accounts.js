@@ -24,6 +24,7 @@
 import crypto from "node:crypto";
 import * as tabsense from "./tabsense.js";
 import { logSms } from "./smslog.js";
+import { customerId } from "./customer-id.js";
 
 const env = (k, d) => (process.env[k] || d || "").toString().trim();
 
@@ -570,6 +571,8 @@ export function register(app, ctx) {
     return c.json({
       ok: true,
       phone: acct.phone_norm, name: acct.name,
+      // customer_id (customer-id.js): GA4 user_id / Clarity identify / التطبيق — مش الجوال
+      uid: await customerId(pool, acct.phone_norm),
       addresses: await addressesOf(acct),
       linkedToPos: Boolean(acct.ts_customer_id),
       // الخصم الدائم للرقم (مثلاً «خصم الملاك ٥٠٪») — عشان المتجر يعرضه في السلة قبل الدفع.

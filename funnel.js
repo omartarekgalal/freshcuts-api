@@ -211,6 +211,10 @@ export function register(app, ctx, deps = {}) {
       -- carried no product ids at all, so the catalog could not retarget a
       -- browser that had already looked at a specific dish.
       ALTER TABLE funnel_events ADD COLUMN IF NOT EXISTS contents JSONB;
+      -- ١٩/٩ (tracking-architecture.md): نفس session_id/anon_id بتوع رحلة العميل،
+      -- عشان حدث المنصة (event_id) يترتبط بالجلسة والعميل من غير تخمين
+      ALTER TABLE funnel_events ADD COLUMN IF NOT EXISTS session_id TEXT;
+      ALTER TABLE funnel_events ADD COLUMN IF NOT EXISTS anon_id TEXT;
 
       -- Clicks on /go/keeta | /go/hungerstation | /go/ninja. These leave our
       -- site for a delivery app we cannot instrument, so the click is the last
@@ -439,11 +443,11 @@ export function register(app, ctx, deps = {}) {
 
   async function storeEvent(e, { pnLocal = null, results = {} } = {}) {
     await pool.query(
-      `INSERT INTO funnel_events (id, event_name, event_id, order_id, value, currency, url, referrer, utm, click_ids, phone_norm, ip, ua, results, contents)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`,
+      `INSERT INTO funnel_events (id, event_name, event_id, order_id, value, currency, url, referrer, utm, click_ids, phone_norm, ip, ua, results, contents, session_id, anon_id)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)`,
       [crypto.randomUUID(), e.name, e.eventId, e.orderId, e.value, e.currency, e.url, e.referrer,
        jb(e.utm || {}), jb(e.click), pnLocal || null, e.ip, e.ua, jb(results),
-       e.contents.length ? jb(e.contents) : null]).catch((err) => {
+       e.contents.length ? jb(e.contents) : null, e.sessionId || null, e.anonId || null]).catch((err) => {
         console.error("[funnel] store failed:", err.message);
       });
   }
@@ -456,13 +460,13 @@ export function register(app, ctx, deps = {}) {
     const id = crypto.randomUUID();
     try {
       const r = await pool.query(
-        `INSERT INTO funnel_events (id, event_name, event_id, order_id, value, currency, url, referrer, utm, click_ids, phone_norm, ip, ua, results, contents, dedup_key)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
+        `INSERT INTO funnel_events (id, event_name, event_id, order_id, value, currency, url, referrer, utm, click_ids, phone_norm, ip, ua, results, contents, dedup_key, session_id, anon_id)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
          ON CONFLICT (dedup_key) WHERE dedup_key IS NOT NULL DO NOTHING
          RETURNING id`,
         [id, e.name, e.eventId, e.orderId, e.value, e.currency, e.url, e.referrer,
          jb(e.utm || {}), jb(e.click), pnLocal || null, e.ip, e.ua, jb({ pending: true }),
-         e.contents.length ? jb(e.contents) : null, purchaseDedupKey(e.orderId)]);
+         e.contents.length ? jb(e.contents) : null, purchaseDedupKey(e.orderId), e.sessionId || null, e.anonId || null]);
       return r.rowCount > 0 ? id : null;
     } catch (err) {
       console.error("[funnel] purchase claim failed:", err.message);
@@ -597,8 +601,13 @@ export function register(app, ctx, deps = {}) {
       itemPrice: Math.round((Number(i?.item_price ?? i?.itemPrice) || 0) * 100) / 100,
     })).filter((i) => i.id);
 
+    // رحلة العميل (journey.js في المتجر): نفس معرّفات الجلسة والجهاز — للربط بس،
+    // مابتروحش لأي منصة
+    const sessionId = /^s[a-z0-9]{8,40}$/.test(String(b.sessionId || "")) ? String(b.sessionId) : null;
+    const anonId = /^[a-z0-9_-]{8,64}$/i.test(String(b.anonId || "")) ? String(b.anonId) : null;
     const e = {
       name, eventId, orderId, value,
+      sessionId, anonId,
       contents,
       numItems: contents.reduce((a, i) => a + i.quantity, 0),
       currency: String(b.currency || "SAR").slice(0, 3).toUpperCase(),

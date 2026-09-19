@@ -40,6 +40,7 @@
 ═══════════════════════════════════════════════════════════════════════════ */
 
 import crypto from "node:crypto";
+import { customerId } from "./customer-id.js";
 
 /* ═══ pure lib (متجرّب في journey.test.mjs) ═════════════════════════════ */
 
@@ -73,6 +74,8 @@ export const WEB_EVENTS = Object.freeze([
   // ١٩/٩ (قرار المالك): فتح السلة لزائر الإعلان بعد العرض + طلب الموقع أول ما خطوة العنوان تتفتح
   "auto_cart_open", "auto_cart_back",
   "geo_prompt", "geo_granted", "geo_denied", "geo_timeout", "geo_unavailable", "geo_skipped",
+  // ١٩/٩: شرح «ازاي أفعّل الموقع» (حالة المتصفح denied) + تبديل لغة الواجهة
+  "geo_help", "lang_switch",
 ]);
 
 /* نوع خطأ الـJS. المتصفح بيبعت kind من ١٩/٩؛ القديم بنصنّفه من الرسالة والملف.
@@ -261,6 +264,7 @@ export function parseBatch(raw, { now = Date.now(), maxEvents = 50 } = {}) {
     click_ids: Array.isArray(s.click_ids) ? s.click_ids.map((x) => String(x).replace(/[^a-zA-Z]/g, "").slice(0, 12)).filter(Boolean).slice(0, 6) : [],
     app_version: clip(s.app_version, 30), lang: clip(s.lang, 10), vw: Number.isFinite(Number(s.vw)) ? Math.round(Number(s.vw)) : null,
     pwa: s.pwa === true,
+    ui_lang: s.ui_lang === "en" || s.ui_lang === "ar" ? s.ui_lang : null,
   } : null;
   const events = [];
   const rejected = {};
@@ -474,6 +478,13 @@ export function register(app, ctx, deps = {}) {
         PRIMARY KEY (anon_id, phone_norm)
       );
       ALTER TABLE shop_orders ADD COLUMN IF NOT EXISTS journey_sid TEXT;
+      -- ١٩/٩ (tracking-architecture.md): معرّف العميل الموحّد + لغة الواجهة + إزاي اتعرف
+      ALTER TABLE journey_sessions ADD COLUMN IF NOT EXISTS customer_id TEXT;
+      ALTER TABLE journey_sessions ADD COLUMN IF NOT EXISTS ui_lang TEXT;
+      ALTER TABLE journey_sessions ADD COLUMN IF NOT EXISTS identified_via TEXT;
+      CREATE INDEX IF NOT EXISTS journey_sessions_phone_idx ON journey_sessions(phone_norm, started_at DESC) WHERE phone_norm IS NOT NULL;
+      CREATE INDEX IF NOT EXISTS journey_sessions_cid_idx ON journey_sessions(customer_id) WHERE customer_id IS NOT NULL;
+      CREATE INDEX IF NOT EXISTS journey_identities_phone_idx ON journey_identities(phone_norm);
     `);
     ready = true;
   }
@@ -578,8 +589,8 @@ export function register(app, ctx, deps = {}) {
       await pool.query(
         `INSERT INTO journey_sessions (session_id, anon_id, biz_day, start_hour, landing_path, referrer_host,
             utm_source, utm_medium, utm_campaign, utm_content, utm_term, link_slug, coupon_param, click_ids,
-            channel, device, in_app, app_version, store_open, is_bot, is_qa)
-         VALUES ($1,$2,$3::date,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)
+            channel, device, in_app, app_version, store_open, is_bot, is_qa, ui_lang)
+         VALUES ($1,$2,$3::date,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)
          ON CONFLICT (session_id) DO UPDATE SET
             is_qa = journey_sessions.is_qa OR EXCLUDED.is_qa,
             is_bot = journey_sessions.is_bot OR EXCLUDED.is_bot,
@@ -592,11 +603,12 @@ export function register(app, ctx, deps = {}) {
             utm_content = COALESCE(journey_sessions.utm_content, EXCLUDED.utm_content),
             link_slug = COALESCE(journey_sessions.link_slug, EXCLUDED.link_slug),
             click_ids = CASE WHEN cardinality(journey_sessions.click_ids) = 0 THEN EXCLUDED.click_ids ELSE journey_sessions.click_ids END,
-            channel = CASE WHEN journey_sessions.channel = 'direct' THEN EXCLUDED.channel ELSE journey_sessions.channel END`,
+            channel = CASE WHEN journey_sessions.channel = 'direct' THEN EXCLUDED.channel ELSE journey_sessions.channel END,
+            ui_lang = COALESCE(EXCLUDED.ui_lang, journey_sessions.ui_lang)`,
         [p.sessionId, p.anonId, bizDayOf(now), riyadhHourOf(now), meta.landing_path || null, meta.referrer_host || null,
          meta.utm_source || null, meta.utm_medium || null, meta.utm_campaign || null, meta.utm_content || null,
          meta.utm_term || null, meta.link_slug || null, meta.coupon_param || null, meta.click_ids || [],
-         channel, deviceOf(ua), inApp, meta.app_version || null, open, bot, qa]);
+         channel, deviceOf(ua), inApp, meta.app_version || null, open, bot, qa, meta.ui_lang || null]);
       const accepted = await applyEvents(p.sessionId, p.events, "web");
       return c.json({ ok: true, accepted, rejected: Object.values(p.rejected).reduce((a, b) => a + b, 0) });
     } catch (e) {
@@ -614,29 +626,59 @@ export function register(app, ctx, deps = {}) {
       let b = {};
       try { b = JSON.parse(await c.req.text()); } catch { b = {}; }
       const sid = String(b.sessionId || "");
+      // otp = بعد رمز التحقق مباشرة؛ token = جلسة جديدة لعميل داخل بحسابه من قبل
+      const method = b.method === "token" ? "token" : "otp";
       if (!m || !validSid(sid)) return c.json({ ok: false, error: "bad_request" });
       if (limited(`i:${ipOf(c)}`, 1, 60)) return c.json({ ok: false, error: "rate_limited" });
       const r = await pool.query(`SELECT phone_norm FROM acct_sessions WHERE token=$1`, [m[1]]);
       const pn = r.rows[0]?.phone_norm;
       if (!pn) return c.json({ ok: false, error: "unknown_token" });
       const staff = (await staffPhones()).has(pn);
+      const cid = await customerId(pool, pn);
       const up = await pool.query(
-        `UPDATE journey_sessions SET phone_norm=$2, identified_at=COALESCE(identified_at, NOW()),
+        `UPDATE journey_sessions SET phone_norm=$2, customer_id=COALESCE($4, customer_id),
+                identified_at=COALESCE(identified_at, NOW()), identified_via=COALESCE(identified_via, $5),
                 is_staff = is_staff OR $3
-          WHERE session_id=$1 RETURNING anon_id`, [sid, pn, staff]);
+          WHERE session_id=$1 RETURNING anon_id, started_at`, [sid, pn, staff, cid, method]);
       const anon = up.rows[0]?.anon_id;
+      let backfilled = 0;
       if (anon) {
         await pool.query(
-          `INSERT INTO journey_identities (anon_id, phone_norm, method) VALUES ($1,$2,'otp')
-           ON CONFLICT (anon_id, phone_norm) DO UPDATE SET last_at=NOW()`, [anon, pn]);
-        await applyEvents(sid, [{ name: "identified", step: null, seq: null, props: { method: "otp", staff } }], "server");
+          `INSERT INTO journey_identities (anon_id, phone_norm, method) VALUES ($1,$2,$3)
+           ON CONFLICT (anon_id, phone_norm) DO UPDATE SET last_at=NOW()`, [anon, pn, method]);
+        backfilled = await backfillDevice(anon, pn, cid, up.rows[0].started_at, staff);
+        await applyEvents(sid, [{ name: "identified", step: null, seq: null, props: { method, staff, backfilled } }], "server");
       }
-      return c.json({ ok: true, linked: Boolean(anon) });
+      return c.json({ ok: true, linked: Boolean(anon), backfilled });
     } catch (e) {
       console.error("[journey] identify failed:", e.message);
       return c.json({ ok: false, error: "server" });
     }
   });
+
+  /* ── ربط جلسات الجهاز اللي قبل الـOTP بنفس العميل ──
+     «دخل من إعلان امبارح، اتفرّج ومشي، ورجع النهارده أكّد رقمه» = نفس العميل.
+     بنربط جلسات نفس الجهاز (anon_id) من غير جوال في آخر ٣٠ يوم، ولحد الجلسة
+     الحالية بس — مش اللي بعدها (جهاز العيلة ممكن يتسلّم لحد تاني). الجهاز اللي
+     اتربط بأكتر من رقم مابيتعملهوش backfill (مش عارفين مين). أحداث الجلسة نفسها
+     مربوطة بالـsession_id، فربط الجلسة = ربط كل أحداثها اللي قبل الـOTP. */
+  async function backfillDevice(anon, pn, cid, uptoTs, staff = false) {
+    try {
+      const multi = await pool.query(
+        `SELECT count(DISTINCT phone_norm)::int AS n FROM journey_identities WHERE anon_id=$1`, [anon]);
+      if ((multi.rows[0]?.n || 0) > 1) return 0;
+      const r = await pool.query(
+        `UPDATE journey_sessions SET phone_norm=$2, customer_id=COALESCE($3, customer_id),
+                identified_via='device_backfill', is_staff = is_staff OR $5
+          WHERE anon_id=$1 AND phone_norm IS NULL
+            AND started_at > NOW() - INTERVAL '30 days' AND started_at <= COALESCE($4::timestamptz, NOW())`,
+        [anon, pn, cid, uptoTs || null, staff]);
+      return r.rowCount || 0;
+    } catch (e) {
+      console.error("[journey] backfill failed:", e.message);
+      return 0;
+    }
+  }
 
   /* ═══ أحداث السيرفر ═══ */
   async function emit(name, props = {}) {
@@ -657,10 +699,22 @@ export function register(app, ctx, deps = {}) {
       const o = r.rows[0];
       if (!o || !validSid(o.journey_sid)) return;
       const staff = o.is_test === true || STAFF_COUPONS.has(String(o.coupon || "").toUpperCase()) || (await staffPhones()).has(o.phone_norm);
-      await pool.query(
+      const cid = o.phone_norm ? await customerId(pool, o.phone_norm) : null;
+      const up = await pool.query(
         `UPDATE journey_sessions SET paid=TRUE, revenue=$2, order_no=$3, max_step=GREATEST(max_step, ${PAID_STEP}),
-                phone_norm=COALESCE(phone_norm, $4), is_staff = is_staff OR $5
-          WHERE session_id=$1`, [o.journey_sid, Number(o.total) || 0, o.order_no, o.phone_norm || null, staff]);
+                phone_norm=COALESCE(phone_norm, $4), customer_id=COALESCE(customer_id, $6),
+                identified_via=COALESCE(identified_via, CASE WHEN $4::text IS NOT NULL THEN 'order' END),
+                is_staff = is_staff OR $5
+          WHERE session_id=$1 RETURNING anon_id, started_at`,
+        [o.journey_sid, Number(o.total) || 0, o.order_no, o.phone_norm || null, staff, cid]);
+      // الدفع = هوية مؤكدة للجهاز ده (حتى لو الـOTP اتخطّى) → ربط جلساته اللي قبل كده
+      const anon = up.rows[0]?.anon_id;
+      if (anon && o.phone_norm) {
+        await pool.query(
+          `INSERT INTO journey_identities (anon_id, phone_norm, method) VALUES ($1,$2,'order')
+           ON CONFLICT (anon_id, phone_norm) DO UPDATE SET last_at=NOW()`, [anon, o.phone_norm]).catch(() => {});
+        await backfillDevice(anon, o.phone_norm, cid, up.rows[0].started_at, staff);
+      }
       await pool.query(
         `INSERT INTO journey_events (session_id, source, name, step, props, order_no) VALUES ($1,'server','order_paid',$2,$3::jsonb,$4)`,
         [o.journey_sid, PAID_STEP, J({ total: Number(o.total) || 0, gateway: evt.data?.gateway || null }), o.order_no]);
@@ -686,6 +740,7 @@ export function register(app, ctx, deps = {}) {
             AND o.created_at > NOW() - INTERVAL '3 days'
             AND (s.order_no IS DISTINCT FROM o.order_no OR (NOT s.paid AND ${PAID_SQL}))`,
         [[...STAFF_COUPONS]]);
+      await linkSweep();
       const staff = [...(await staffPhones())];
       if (staff.length) {
         await pool.query(
@@ -699,6 +754,48 @@ export function register(app, ctx, deps = {}) {
       }
     } catch (e) { console.error("[journey] sweep failed:", e.message); }
   }
+  /* ── ربط دوري (tracking-architecture.md §٤) ──
+     ١) طلب من غير journey_sid (journey.js ماتحمّلش/اتحجب) ⇒ آخر جلسة لنفس
+        الجهاز (customer.deviceId = fc_dev = anon_id) بدأت قبل الطلب بـ٣ ساعات.
+     ٢) طلب مدفوع بجهاز ⇒ هوية الجهاز (method 'order').
+     ٣) جلسة جديدة من جهاز معروف برقم واحد بس ⇒ نفس العميل (identified_via 'device').
+     ٤) customer_id للجلسات اللي عندها جوال ومن غير معرّف (Node — الـHMAC مش في SQL). */
+  async function linkSweep() {
+    await pool.query(
+      `WITH m AS (
+         SELECT o.order_no, (SELECT js.session_id FROM journey_sessions js
+                  WHERE js.anon_id = o.customer->>'deviceId'
+                    AND js.started_at BETWEEN o.created_at - INTERVAL '3 hours' AND o.created_at + INTERVAL '1 minute'
+                  ORDER BY js.started_at DESC LIMIT 1) AS sid
+           FROM shop_orders o
+          WHERE o.journey_sid IS NULL AND o.created_at > NOW() - INTERVAL '3 days'
+            AND COALESCE(o.customer->>'deviceId','') ~ '^[a-z0-9_-]{8,64}$')
+       UPDATE shop_orders o SET journey_sid = m.sid FROM m
+        WHERE o.order_no = m.order_no AND m.sid IS NOT NULL AND o.journey_sid IS NULL`).catch((e) => console.error("[journey] order sid link:", e.message));
+    await pool.query(
+      `INSERT INTO journey_identities (anon_id, phone_norm, method)
+       SELECT DISTINCT o.customer->>'deviceId', o.phone_norm, 'order' FROM shop_orders o
+        WHERE o.created_at > NOW() - INTERVAL '3 days' AND ${PAID_SQL} AND o.phone_norm IS NOT NULL
+          AND COALESCE(o.is_test, false) = false
+          AND COALESCE(o.customer->>'deviceId','') ~ '^[a-z0-9_-]{8,64}$'
+       ON CONFLICT (anon_id, phone_norm) DO NOTHING`).catch((e) => console.error("[journey] order identities:", e.message));
+    await pool.query(
+      `UPDATE journey_sessions s SET phone_norm = i.phone_norm, identified_via = 'device'
+         FROM (SELECT anon_id, min(phone_norm) AS phone_norm FROM journey_identities
+                WHERE last_at > NOW() - INTERVAL '180 days' GROUP BY anon_id HAVING count(DISTINCT phone_norm) = 1) i
+        WHERE s.anon_id = i.anon_id AND s.phone_norm IS NULL AND NOT s.is_bot
+          AND s.started_at > NOW() - INTERVAL '3 days'`).catch((e) => console.error("[journey] device link:", e.message));
+    try {
+      const r = await pool.query(
+        `SELECT DISTINCT phone_norm FROM journey_sessions
+          WHERE customer_id IS NULL AND phone_norm IS NOT NULL LIMIT 300`);
+      for (const { phone_norm: pn } of r.rows) {
+        const cid = await customerId(pool, pn);
+        if (cid) await pool.query(`UPDATE journey_sessions SET customer_id=$2 WHERE phone_norm=$1 AND customer_id IS NULL`, [pn, cid]);
+      }
+    } catch (e) { console.error("[journey] cid fill:", e.message); }
+  }
+
   let lastRetention = 0;
   async function retention() {
     if (!ready || Date.now() - lastRetention < 12 * 3600_000) return;
