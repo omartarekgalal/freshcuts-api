@@ -352,13 +352,18 @@ export function register(app, ctx, deps = {}) {
     const cf = await cfg();
     if (cf.askAfterDelivery === false) return { ok: false, reason: "disabled" };
     const r = await pool.query(
-      "SELECT order_no, phone_norm, option, is_test FROM shop_orders WHERE order_no=$1", [String(orderNo)]);
+      "SELECT order_no, phone_norm, option, is_test, created_at FROM shop_orders WHERE order_no=$1", [String(orderNo)]);
     const o = r.rows[0];
     if (!o) return { ok: false, reason: "no_order" };
     if (o.is_test) return { ok: false, reason: "test_order" };
     if (!/^5\d{8}$/.test(o.phone_norm || "")) return { ok: false, reason: "no_phone" };
     const mins = Math.min(720, Math.max(1, Number(cf.askAfterMinutes) || 30));
-    const due = new Date(at.getTime() + mins * 60_000);
+    let due = new Date(at.getTime() + mins * 60_000);
+    // الاستلام: عمره ما يتبعت قبل ساعة من الطلب (تجهيز + وصول العميل + الأكل) — أمان ضد «استلم» بدري
+    if (o.option === "pickup" && o.created_at) {
+      const floor = new Date(new Date(o.created_at).getTime() + Math.max(60, mins) * 60_000);
+      if (floor > due) due = floor;
+    }
     const ins = await pool.query(
       `INSERT INTO review_invites(order_no, code, phone_norm, option, due_at)
        VALUES ($1,$2,$3,$4,$5) ON CONFLICT (order_no) DO NOTHING RETURNING code`,

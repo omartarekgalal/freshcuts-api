@@ -2073,7 +2073,12 @@ export function register(app, ctx, deps = {}) {
            ده دليل إن العميل استلم (الكاشير بيقفل الفاتورة وقت التسليم) — مش مجرد
            «جاهز». فالإشارة هي payment_status=fully_paid (حدث order-paid) أو
            order_status=completed؛ approval «delivered» لوحده مابيكفيش. */
-        if (pay === "fully_paid" || o === "completed" || wh.rows[0]?.event === "order-paid") {
+        /* ١٩/٩ مساءً: طلبات الموقع بتنزل تاب سينس «مدفوعة مسبقاً» (already_paid)
+           فـfully_paid/order-paid بيوصلوا لحظة إنشاء الطلب — الطلب W1789839510561
+           اتعلّم «استلم» بعد دقيقتين من الدفع ورسالة التقييم وصلت قبل ما العميل
+           يستلم. الإشارة الوحيدة الصح دلوقتي: الكاشير قفل الطلب (completed). */
+        void pay;
+        if (o === "completed") {
           await pool.query(
             "UPDATE shop_orders SET pos_approval=$2, pos_ready_at = COALESCE(pos_ready_at, NOW()) WHERE order_no=$1",
             [r.order_no, a || o]);
