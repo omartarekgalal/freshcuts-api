@@ -22,6 +22,7 @@
    the same computeDeliveryFee interface.
 ═══════════════════════════════════════════════════════════════════════════ */
 
+import { ljContract } from "./leajlakrecon.js";
 import { STORE_LAT, STORE_LNG } from "./tsstore.js";
 import { PROVIDERS, activeProvider, courierMilestone } from "./couriers.js";
 import { emitOrder } from "./order-events.js";
@@ -370,7 +371,7 @@ export const APPS_GUARD_DEFAULTS = {
   minCheaperBy: 1,          // إجمالينا أقل بريال على الأقل
   /* لعجلك: ١٩٫٥٥ ر.س شامل الضريبة، **ثابتة** لأي مسافة جوّه ١٠ كم (العقد،
      مادة ١٢). مش بتتحسب من contractCourierCost لأن دي معادلة Flying Arrow. */
-  courierCost: 19.55,
+  courierCost: 19.55,        // احتياطي بس — quote() بيحسبها من activeCourierContract
   contributionPct: 0.452,   // = BENCHMARKS.dineInContribution (متجرَّب تحت)
   minFee: null,             // أرضية مطلقة اختيارية من اللوحة
   respectLadder: true,      // ما ينزلش تحت رسم الشريحة اللي بعدها
@@ -499,6 +500,14 @@ export const BENCHMARKS = {
 /* تكلفة التوصيلة علينا بالاتفاق (شاملة الضريبة). دالة صافية — نفس معادلة
    faCost تحت بس من غير الاعتماد على قايمة المركبات، عشان تتجرب أوفلاين. */
 export function contractCourierCost(routeKm, contract = {}) {
+  /* لأجلك (المزوّد الفعلي من ٢٠٢٦-٠٨): ثابت لحد includedKm وبعدها لكل كيلو —
+     نفس عقد «مطابقة فاتورة لاجلك» (leajlakrecon.ljContract، settings.delivery.leajlakContract). */
+  if (contract && (contract.provider === "leajlak" || contract.flatExVat != null)) {
+    const c = ljContract({ leajlakContract: contract });
+    const over = Math.max(0, (Number(routeKm) || 0) - c.includedKm);
+    const extraKm = c.kmRounding === "exact" ? over : Math.ceil(over - 1e-9);
+    return r2((c.flatExVat + c.perKmExVat * extraKm) * (1 + c.vatPct / 100));
+  }
   const base = Number(contract.baseFee ?? 9);
   const per = Number(contract.perKm ?? 1.8);
   const included = Number(contract.includedKm ?? 4);
@@ -506,6 +515,27 @@ export function contractCourierCost(routeKm, contract = {}) {
   const vat = Number(contract.vat ?? 1.15);
   const extra = Math.max(0, (Number(routeKm) || 0) - included);
   return r2(Math.max(minFare, base + per * extra) * vat);
+}
+
+/* عقد المزوّد الفعلي — مصدر واحد لكل الحسابات (الاقتصاديات، عتبة المجاني،
+   ضمان التطبيقات). settings.delivery.provider = "leajlak" (الافتراضي) ⇒
+   settings.delivery.leajlakContract (بيتعدّل من شاشة «مطابقة فاتورة لاجلك»)؛
+   flyingarrow ⇒ contractBaseFee/contractPerKm/contractIncludedKm القديمة. */
+export function activeCourierContract(deliverySettings = {}) {
+  const d = deliverySettings || {};
+  const provider = String(d.provider || "leajlak").toLowerCase();
+  if (provider === "leajlak") {
+    const c = ljContract(d);
+    return { provider: "leajlak", label: "لأجلك", ...c,
+      flatInclVat: r2(c.flatExVat * (1 + c.vatPct / 100)), perKmInclVat: r2(c.perKmExVat * (1 + c.vatPct / 100)) };
+  }
+  return {
+    provider, label: "Flying Arrow",
+    baseFee: Number(d.contractBaseFee ?? 9),
+    perKm: Number(d.contractPerKm ?? 1.8),
+    includedKm: Number(d.contractIncludedKm ?? 4),
+    minFare: d.contractMinFare != null ? Number(d.contractMinFare) : 0,
+  };
 }
 
 /* اقتصاديات طلب واحد: إيه اللي بيتبقى للمطعم بعد التوصيلة.
@@ -814,6 +844,15 @@ export function register(app, ctx, deps = {}) {
       from: { lat: STORE_LAT(), lng: STORE_LNG() }, to: { lat: Number(lat), lng: Number(lng) },
     });
     const route = rk.routeKm;
+    /* ضمان التطبيقات: تكلفة الكابتن من عقد المزوّد الفعلي على المسافة دي
+       (مش رقم ١٩٫٥٥ مكتوب) — إلا لو السياسة كاتبة courierCost صريح. */
+    const g0 = cfg.neverBeatenByApps;
+    if (g0 && g0.enabled && g0.courierCost == null) {
+      try {
+        const all = await getSettingsData();
+        cfg.neverBeatenByApps = { ...g0, courierCost: contractCourierCost(Math.min(route, Number(cfg.maxKm) || route), courierContract(all.delivery || {})) };
+      } catch { /* الافتراضي في APPS_GUARD_DEFAULTS */ }
+    }
     const res = computeDeliveryFee(cfg, { distanceKm: route, straightKm: straight, orderTotal, farZoneAccepted });
     // The storefront's incentives (progress bar to free delivery, min-order
     // nudge) need the thresholds, not just the verdict.
@@ -1005,12 +1044,8 @@ export function register(app, ctx, deps = {}) {
     return Math.max(min, base + per * extra) * VAT;
   }
   /* الاتفاق المطبّق فعلاً — الافتراضي هو اللي اتأكدنا منه بطلب حقيقي. */
-  const courierContract = (settings) => ({
-    baseFee: Number(settings?.contractBaseFee ?? 9),
-    perKm: Number(settings?.contractPerKm ?? 1.8),
-    includedKm: Number(settings?.contractIncludedKm ?? 4),
-    minFare: settings?.contractMinFare != null ? Number(settings.contractMinFare) : 0,
-  });
+  // عقد المزوّد الفعلي (لأجلك) — نفس مصدر شاشة مطابقة الفاتورة
+  const courierContract = (settings) => activeCourierContract(settings || {});
 
   /* تتبع الشحنة من عندهم — شبكة أمان تحت الويبهوك. الويبهوك ممكن يضيع
      (نشر، انقطاع، خطأ عندهم) والعميل ساعتها بيفضل شايف حالة قديمة. */

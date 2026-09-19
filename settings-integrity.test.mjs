@@ -201,3 +201,26 @@ test("حالة النظام: الحداثة والخلاصة", () => {
   assert.equal(bad.counts.bad, 1);
   assert.ok(c("good").checkedAt);
 });
+
+test("عقد المندوب: المزوّد الفعلي (لأجلك) مصدر واحد — ١٧+ضريبة لحد ١٠ كم وبعدها ٢+ضريبة/كم", async () => {
+  const d = await import("./delivery.js");
+  const lj = d.activeCourierContract({ provider: "leajlak" });
+  assert.equal(lj.provider, "leajlak");
+  assert.equal(lj.flatInclVat, 19.55);
+  assert.equal(d.contractCourierCost(3, lj), 19.55);
+  assert.equal(d.contractCourierCost(10, lj), 19.55);
+  assert.equal(d.contractCourierCost(10.2, lj), 21.85);
+  assert.equal(d.contractCourierCost(12, lj), 24.15);
+  // الافتراضي من غير provider = لأجلك
+  assert.equal(d.activeCourierContract({}).provider, "leajlak");
+  // تعديل العقد من شاشة المطابقة بيوصل للحساب
+  const edited = d.activeCourierContract({ leajlakContract: { flatExVat: 16, perKmExVat: 2.5 } });
+  assert.equal(d.contractCourierCost(11, edited), Math.round((16 + 2.5) * 1.15 * 100) / 100);
+  // Flying Arrow القديم لسه شغّال لو اتختار
+  const fa = d.activeCourierContract({ provider: "flyingarrow" });
+  assert.equal(d.contractCourierCost(4, fa), 10.35);
+  // عتبة المجاني بتتحسب على عقد لأجلك
+  const free = d.freeThresholdFor({ policy: { maxKm: 10, baseKm: 10, baseFee: 20, perKm: 0, freeOverTotal: null }, contract: lj });
+  assert.equal(free.ok, true);
+  assert.equal(free.worstPoint.courierCost, 19.55);
+});
