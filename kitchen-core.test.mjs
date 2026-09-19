@@ -182,3 +182,31 @@ test("رقم قصير: رقم التطبيق للتوصيل، رقم الفات�
   assert.equal(shortRef(tsOrder("a")), "4027");
   assert.equal(shortRef({ id: "abc", orders_external: { external_order_number: "123456789", source_channel: "Keeta" } }), "456789");
 });
+
+test("عمر ١٩/٩: البرجر والطاسات على محطة الباستا", () => {
+  assert.equal(stationOf({ name: "برجر لحم كلاسيك", category: "برجر" }, DEFAULT_CONFIG), "pasta");
+  assert.equal(stationOf({ name: "طاسة الاكيلة", category: "طاسات" }, DEFAULT_CONFIG), "pasta");
+  assert.equal(stationOf({ name: "وجبة كفتة", category: "وجبات" }, DEFAULT_CONFIG), "grill");
+});
+
+test("العروض: مكوّنات العرض بتتوزّع كل واحد على محطته، والعرض من غير تعريف ظاهر", () => {
+  const catMap = { cg: "وجبات", cs: "مقبلات", co: "العروض" };
+  const prodCat = { "مشكل مخصوص بالوزن": "cg", "طبق ارز بسمتي": "cs" };
+  const cfg = normConfig({ offers: { "صينية اللمة 100 ريال": [{ name: "مشكل مخصوص بالوزن — نصف كيلو", qty: 1 }, { name: "طبق أرز بسمتي", qty: 2 }] } });
+  const [it] = itemsFromPurchases([{ name: "صينية اللمة 100 ريال", quantity: 1, category_id: "co", modifiers: [] }], catMap, cfg, { prodCat });
+  assert.equal(it.bundle, true);
+  assert.deepEqual(it.mods.map((m) => [m.name, m.qty, m.station]), [["مشكل مخصوص بالوزن — نصف كيلو", 1, "grill"], ["طبق أرز بسمتي", 2, "sides"]]);
+  const [u] = itemsFromPurchases([{ name: "عرض جديد", quantity: 1, category_id: "co", modifiers: [] }], catMap, cfg, { prodCat });
+  assert.deepEqual([u.bundle, u.offerUndefined, u.mods.length], [true, true, 0]);
+  const b = buildBoard({ tsOrders: [{ order: { id: "O1", order_type_name: "created", created_at: new Date(NOW - 60000).toISOString(), purchases: [{ name: "صينية اللمة 100 ريال", quantity: 1, category_id: "co", modifiers: [] }], meta: {} }, slugs: {}, firstSeenAt: iso(1), lastAt: iso(1) }],
+    catMap, prodCat, cfg, now: NOW });
+  assert.deepEqual(b[0].stations.sort(), ["grill", "sides"]);
+});
+
+test("الوضع: display + مسح تلقائي في الإعدادات", () => {
+  const c = normConfig({ defaultMode: "display", autoClearMin: 3 });
+  assert.equal(c.defaultMode, "display");
+  assert.equal(c.autoClearMin, 30);
+  assert.equal(normConfig({ defaultMode: "x" }).defaultMode, "touch");
+  assert.equal(normConfig({ autoClearMin: 45 }).autoClearMin, 45);
+});

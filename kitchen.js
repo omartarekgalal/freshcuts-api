@@ -313,7 +313,20 @@ export function register(app, ctx, deps = {}) {
     const a = await requireKitchen(c, { manager: true }); if (a.res) return a.res;
     const cfg = await config();
     const m = await Promise.race([loadMeta(), new Promise((r) => setTimeout(() => r(meta), 2500))]);
-    return c.json({ ok: true, config: cfg, categories: m.categories || [], products: m.products || [], channels: CHANNELS });
+    /* أسماء العروض اللي اتباعت فعلاً على نقطة البيع (آخر ٦٠ يوم) — عشان عمر
+       يعرّف مكوّنات كل واحد. القسم في الـpayload بالـid بس، فبنطابق بالأقسام. */
+    let offerNames = [];
+    try {
+      const rows = (await pool.query(
+        `SELECT DISTINCT pu->>'name' AS name, pu->>'category_id' AS cat
+           FROM tsp_webhooks, jsonb_array_elements(payload->'resource'->'order'->'purchases') pu
+          WHERE received_at > NOW() - INTERVAL '60 days' LIMIT 2000`)).rows || [];
+      const cats = cfg.offerCategories || [];
+      const isOffer = (id) => cats.some((c) => c === id || (m.catMap?.[id] && normName(c) === normName(m.catMap[id])));
+      offerNames = [...new Set(rows.filter((r) => r.name && isOffer(r.cat)).map((r) => r.name))];
+    } catch { /* الجدول مش متاح */ }
+    for (const n of Object.keys(cfg.offers || {})) if (!offerNames.includes(n)) offerNames.push(n);
+    return c.json({ ok: true, config: cfg, categories: m.categories || [], products: m.products || [], offerNames, channels: CHANNELS });
   });
 
   app.put("/api/kitchen/config", async (c) => {

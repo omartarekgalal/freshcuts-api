@@ -39,10 +39,11 @@ export const isStage = (s) => STAGES.includes(s);
    في تاب سينس (الأقسام ليها أسماء مكررة ومضللة — «Crepes» فيه الإضافات). */
 export const UNMAPPED = "_none";
 export const DEFAULT_STATIONS = Object.freeze([
-  { id: "grill", name: "مشاوي وحواوشي ووجبات", categories: ["وجبات", "سندوتشات", "برجر", "طاسات"], products: [] },
+  { id: "grill", name: "مشاوي وحواوشي ووجبات", categories: ["وجبات", "سندوتشات"], products: [] },
   { id: "crepe", name: "كريب", categories: ["كريبات"], products: [] },
   { id: "pizza", name: "بيتزا", categories: ["بيتزا"], products: [] },
-  { id: "pasta", name: "باستا", categories: ["باستا"], products: [] },
+  // عمر (١٩ سبتمبر): البرجر والطاسات بيتعملوا في محطة الباستا مش المشاوي
+  { id: "pasta", name: "باستا", categories: ["باستا", "برجر", "طاسات"], products: [] },
   // eQr8vxoyBE = قسم «Crepes» في تاب سينس وفيه (جبنة/حشو أطراف/شوربة) — إضافات
   { id: "sides", name: "مقبلات وإضافات", categories: ["مقبلات", "مشروبات", "eQr8vxoyBE"], products: [] },
 ]);
@@ -57,6 +58,16 @@ export const DEFAULT_CONFIG = Object.freeze({
   allowBump: true,      // التقديم المحلي (مابيلمسش تاب سينس)
   stations: DEFAULT_STATIONS,
   hideCategories: ["رسوم التوصيل"],
+  /* العروض (عمر ١٩ سبتمبر): العرض = نفس الأصناف متجمّعة، فمكوّناته بتتوزّع كل
+     واحد على محطته. عرض نقطة البيع بينزل سطر واحد من غير مكوّنات، فمكوّناته
+     بتتعرّف من «محطات المطبخ»: offers = { "اسم العرض": [{ name, qty }] } */
+  offerCategories: ["العروض", "Vpd8lWgk5P"],
+  offers: {},
+  /* الوضع (عمر ١٩ سبتمبر): touch = تابلت على الطاولة بيقدّم باللمس. display =
+     تلفزيون على الحيطة من غير أي لمس: الطلب بيتحرك من إشارات حقيقية بس
+     (تاب سينس/المندوب/التسليم) واللي مالوش إشارة بيختفي بعد autoClearMin. */
+  defaultMode: "touch",
+  autoClearMin: 30,
 });
 
 const clampInt = (v, lo, hi, def) => {
@@ -64,6 +75,21 @@ const clampInt = (v, lo, hi, def) => {
   return Number.isFinite(n) && n >= lo && n <= hi ? n : def;
 };
 const strList = (v, max = 60) => (Array.isArray(v) ? v.map((x) => String(x ?? "").trim().slice(0, 60)).filter(Boolean).slice(0, max) : null);
+
+export function normOffers(raw) {
+  const out = {};
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return out;
+  for (const [name, list] of Object.entries(raw).slice(0, 40)) {
+    const n = String(name || "").trim().slice(0, 80);
+    if (!n || !Array.isArray(list)) continue;
+    const items = list.slice(0, 15).map((c) => ({
+      name: String(c?.name || "").trim().slice(0, 80),
+      qty: Math.max(0.01, Math.min(50, Number(c?.qty) || 1)),
+    })).filter((c) => c.name);
+    if (items.length) out[n] = items;
+  }
+  return out;
+}
 
 export function normConfig(raw) {
   const k = raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {};
@@ -94,6 +120,10 @@ export function normConfig(raw) {
     allowBump: k.allowBump !== false,
     stations,
     hideCategories: strList(k.hideCategories) || d.hideCategories.slice(),
+    offerCategories: strList(k.offerCategories) || d.offerCategories.slice(),
+    offers: normOffers(k.offers),
+    defaultMode: k.defaultMode === "display" ? "display" : "touch",
+    autoClearMin: clampInt(k.autoClearMin, 5, 240, d.autoClearMin),
   };
 }
 
@@ -201,8 +231,14 @@ const txt = (v, n = 120) => { const s = String(v ?? "").trim(); return s ? s.sli
 
 /* purchases بتاعة تاب سينس → سطور المطبخ. الإضافات (modifiers) = مكوّنات
    متزاحة تحت الصنف (زي «حشو أطراف كيري» أو مكوّنات صينية العروض). */
-export function itemsFromPurchases(purchases, catMap = {}, cfg = DEFAULT_CONFIG) {
+export function itemsFromPurchases(purchases, catMap = {}, cfg = DEFAULT_CONFIG, { prodCat = {} } = {}) {
   const hideIds = new Set((cfg.hideCategories || []).map(String));
+  const offerCats = cfg.offerCategories || DEFAULT_CONFIG.offerCategories;
+  const offers = new Map(Object.entries(cfg.offers || {}).map(([k, v]) => [norm(k), v]));
+  const withCat = (name) => {
+    const categoryId = prodCat[norm(name)] || null;
+    return { name, categoryId, category: categoryId ? catMap[categoryId] || null : null };
+  };
   if (!Array.isArray(purchases)) return [];
   const hide = new Set((cfg.hideCategories || []).map(norm));
   const out = [];
@@ -224,7 +260,23 @@ export function itemsFromPurchases(purchases, catMap = {}, cfg = DEFAULT_CONFIG)
         qty: num(m?.quantity) ?? 1,
       })),
     };
-    it.station = stationOf(it, cfg);
+    const isOfferCat = offerCats.some((c) => String(c) === String(p.category_id || "") || (category && norm(c) === norm(category)));
+    const def = offers.get(norm(name));
+    if (def || isOfferCat) {
+      /* عرض: عنوان + مكوّناته، كل مكوّن على محطة صنفه (الأرز ← المقبلات…) */
+      it.bundle = true;
+      it.station = null;
+      it.mods = [
+        ...(def || []).map((c) => {
+          const [cn, cv] = String(c.name).split(" — ");
+          return { name: c.name, qty: c.qty, station: stationOf(withCat(cn), cfg), variant: cv || null };
+        }),
+        ...it.mods.map((m) => ({ ...m, station: stationOf(withCat(m.name), cfg) })),
+      ];
+      if (!def) it.offerUndefined = true;
+    } else {
+      it.station = stationOf(it, cfg);
+    }
     it.noteLevel = noteLevel(it.note);
     out.push(it);
   }
@@ -415,7 +467,7 @@ export function buildBoard({ tsOrders = [], shopRows = [], bumps = new Map(), ca
       sourceStage,
       sourceAt: sourceStage !== "new" ? isoOf(t.lastAt) : null,
       table: tables.join("، ") || null,
-      items: itemsFromPurchases(o.purchases, catMap, cfg),
+      items: itemsFromPurchases(o.purchases, catMap, cfg, { prodCat }),
       notes,
       flags: {},
       courier: null,
@@ -477,6 +529,8 @@ export function publicConfig(cfg) {
   return {
     slaAmberMin: cfg.slaAmberMin, slaRedMin: cfg.slaRedMin, doneKeepMin: cfg.doneKeepMin,
     allowBump: cfg.allowBump,
+    defaultMode: cfg.defaultMode,
+    autoClearMin: cfg.autoClearMin,
     stations: cfg.stations.map((s) => ({ id: s.id, name: s.name })),
     unmapped: UNMAPPED,
   };
