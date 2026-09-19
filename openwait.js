@@ -197,7 +197,7 @@ export function register(app, ctx, deps = {}) {
         if (dup.rowCount) { await close("dup_today"); out.skipped++; continue; }
         const link = `${storeHost()}/${w.code ? `c/${w.code}` : "?utm_source=sms&utm_medium=crm&utm_campaign=open_now"}`;
         try {
-          const ok = await n?.sendSmsTo?.(w.phone_norm, waitBody(cfg.text, link));
+          const ok = await n?.sendSmsTo?.(w.phone_norm, waitBody(cfg.text, link), { kind: "waitlist", ref: `wait:${w.id}` });
           if (!ok) { await close("sms_disabled"); out.skipped++; continue; }
           await pool.query("UPDATE open_waitlist SET notified_at=NOW(), channel='sms' WHERE id=$1", [w.id]);
           out.sent++;
@@ -268,7 +268,7 @@ export function register(app, ctx, deps = {}) {
     const link = `${storeHost()}/${code ? `c/${code}` : "?utm_source=sms&utm_medium=crm&utm_campaign=open_now"}`;
     const body = waitBody(cfg.text, link);
     try {
-      const ok = await notify()?.sendSmsTo?.(phone, body);
+      const ok = await notify()?.sendSmsTo?.(phone, body, { kind: "test", ref: "waitlist_test" });
       return c.json({ ok: Boolean(ok), sent: Boolean(ok), body, link, reason: ok ? null : "sms_disabled" });
     } catch (e) { return c.json({ ok: false, error: String(e.message).slice(0, 160), body }, 502); }
   });

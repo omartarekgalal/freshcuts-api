@@ -13,6 +13,15 @@
    الحل الداخلي هو الأسهل والأجذب للزعلان بس.
 
    كل تقييم بيتسجّل بمصدره (أي كود) عشان تعرف المشاكل جاية منين.
+
+   ⚠️ تحديث قرار المالك (١٢/٩، ومتأكَّد تاني ١٩/٩): توجيه صارم — ≤٣★ يشوفوا
+   الفورم الداخلي بس (من غير أي رابط جوجل)، و٤–٥★ يروحوا جوجل. العتبة ٤.
+   الكلام اللي فوق عن «رابط جوجل ظاهر» اتلغى بقرار عمر وهو عارف المخاطرة.
+   routeFor() هي القاعدة، ومتجرّبة في reviews-360.test.mjs.
+
+   ١٩/٩ (Customer 360): كل تقييم مربوط بطلبه وعميله (order_no + phone_norm من
+   دعوة الطلب)، وفيه حذف ناعم: is_test / hidden_at — مستبعدين من الوارد
+   والإحصائيات. كل التقييمات قبل ١٨/٩ اتعلّمت تجربة (عمر: «كلها كانت تيست»).
 ═══════════════════════════════════════════════════════════════════════════ */
 import crypto from "node:crypto";
 import * as places from "./places.js";
@@ -53,6 +62,16 @@ export function askBody(text, link) {
   const t = String(text || DEFAULTS.askText).trim().slice(0, 200);
   return t.includes("{link}") ? t.replace("{link}", link) : `${t} ${link}`;
 }
+
+/* قرار عمر: ≥ العتبة (٤) ومعانا رابط جوجل → جوجل؛ غير كده → فورم داخلي بس. */
+export function routeFor(rating, threshold = DEFAULTS.threshold, googleUrl = "") {
+  const r = Math.round(Number(rating));
+  const t = Number(threshold) || DEFAULTS.threshold;
+  return r >= t && googleUrl ? "google" : "internal";
+}
+
+/* الوارد والإحصائيات: التجارب والمخفي بره */
+export const REAL_REVIEW_SQL = "(NOT COALESCE(is_test, false) AND hidden_at IS NULL)";
 
 export function register(app, ctx, deps = {}) {
   const { pool, requireAdmin, getSettingsData, jb, normPhone } = ctx;
@@ -110,7 +129,34 @@ export function register(app, ctx, deps = {}) {
       CREATE INDEX IF NOT EXISTS review_invites_due_idx ON review_invites(due_at)
         WHERE sent_at IS NULL AND skip_reason IS NULL;
       CREATE INDEX IF NOT EXISTS review_invites_created_idx ON review_invites(created_at DESC);
+      -- ١٩/٩: ربط بالطلب/العميل + حذف ناعم (التجارب مابتتمسحش، بتستخبى)
+      ALTER TABLE reviews ADD COLUMN IF NOT EXISTS order_no TEXT;
+      ALTER TABLE reviews ADD COLUMN IF NOT EXISTS is_test BOOLEAN NOT NULL DEFAULT FALSE;
+      ALTER TABLE reviews ADD COLUMN IF NOT EXISTS hidden_at TIMESTAMPTZ;
+      ALTER TABLE reviews ADD COLUMN IF NOT EXISTS hidden_reason TEXT;
+      ALTER TABLE reviews ADD COLUMN IF NOT EXISTS hidden_by TEXT;
+      CREATE INDEX IF NOT EXISTS reviews_order_idx ON reviews(order_no);
+      CREATE INDEX IF NOT EXISTS reviews_phone_idx ON reviews(phone_norm);
+      CREATE TABLE IF NOT EXISTS cms_migrations (id TEXT PRIMARY KEY, at TIMESTAMPTZ NOT NULL DEFAULT NOW());
     `);
+    // ربط التقييمات القديمة بطلبها (من الدعوة) وبجوال الطلب — كل إقلاع، idempotent
+    await pool.query(`
+      UPDATE reviews r SET order_no = iv.order_no
+        FROM review_invites iv WHERE (iv.review_id = r.id OR (r.code IS NOT NULL AND iv.code = r.code))
+         AND r.order_no IS NULL`);
+    await pool.query(`
+      UPDATE reviews r SET phone_norm = COALESCE(iv.phone_norm, so.phone_norm)
+        FROM review_invites iv LEFT JOIN shop_orders so ON so.order_no = iv.order_no
+       WHERE iv.order_no = r.order_no AND r.phone_norm IS NULL
+         AND COALESCE(iv.phone_norm, so.phone_norm) IS NOT NULL`);
+    await pool.query(`UPDATE reviews SET is_test = TRUE WHERE NOT is_test AND (order_no LIKE 'TEST-%' OR code = 'test')`);
+    /* عمر ١٩/٩: «كل التقييمات قبل ١٨/٩ كانت تيست» — مرة واحدة بس (لو رجّع
+       واحد بإيده من اللوحة مانرجعش نخبّيه). ١٨/٩ = بداية يوم العمل ٤ الفجر. */
+    await pool.query(`
+      WITH m AS (INSERT INTO cms_migrations(id) VALUES ('reviews_pre_0918_test_v1') ON CONFLICT DO NOTHING RETURNING id)
+      UPDATE reviews SET is_test = TRUE, hidden_at = COALESCE(hidden_at, NOW()),
+             hidden_reason = COALESCE(hidden_reason, 'owner_19_9_all_before_18_9_were_tests'), hidden_by = 'migration'
+       WHERE created_at < '2026-09-18T01:00:00Z' AND EXISTS (SELECT 1 FROM m)`);
   }
   ensureSchema().then(() => console.log("[reviews] ready"))
     .catch((e) => console.error("[reviews] init failed:", e.message));
@@ -220,24 +266,31 @@ export function register(app, ctx, deps = {}) {
     const cf = await cfg();
     if (cf.active === false) return bad(c, "inactive", 403);
     const code = clip(b.code, 40);
-    let label = null, kind = "link";
+    let label = null, kind = "link", orderNo = null, invitePhone = null;
     if (code) {
       const r = await pool.query("SELECT label, kind FROM review_codes WHERE code=$1", [code]);
       if (r.rows[0]) { label = r.rows[0].label; kind = r.rows[0].kind; }
       else {
-        const iv = await pool.query("SELECT order_no, option FROM review_invites WHERE code=$1", [code]);
-        if (iv.rows[0]) { kind = "sms"; label = iv.rows[0].option === "pickup" ? "استلام من الفرع" : "توصيل"; }
+        const iv = await pool.query(
+          `SELECT iv.order_no, iv.option, COALESCE(iv.phone_norm, so.phone_norm) AS phone_norm
+             FROM review_invites iv LEFT JOIN shop_orders so ON so.order_no = iv.order_no WHERE iv.code=$1`, [code]);
+        if (iv.rows[0]) {
+          kind = "sms"; label = iv.rows[0].option === "pickup" ? "استلام من الفرع" : "توصيل";
+          orderNo = iv.rows[0].order_no; invitePhone = iv.rows[0].phone_norm || null;
+        }
       }
     }
     const ins = await pool.query(
-      `INSERT INTO reviews(rating, code, code_label, channel, ip) VALUES ($1,$2,$3,$4,$5) RETURNING id`,
-      [rating, code, label, kind, ip.slice(0, 60)]);
+      `INSERT INTO reviews(rating, code, code_label, channel, ip, order_no, phone_norm, is_test)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id`,
+      [rating, code, label, kind, ip.slice(0, 60), orderNo, invitePhone,
+        Boolean((orderNo && orderNo.startsWith("TEST-")) || code === "test")]);
     const id = ins.rows[0].id;
     // كود طلب؟ نربط التقييم بالدعوة عشان نقيس «اتبعت ↔ قيّم» بجد
     if (code) await pool.query(
       "UPDATE review_invites SET review_id=$2, rating=$3 WHERE code=$1 AND review_id IS NULL", [code, id, rating]
     ).catch(() => {});
-    const route = rating >= cf.threshold && cf.googleUrl ? "google" : "internal";
+    const route = routeFor(rating, cf.threshold, cf.googleUrl);
     return c.json({ ok: true, id, route, googleUrl: cf.googleUrl || "", threshold: cf.threshold });
   });
 
@@ -253,7 +306,7 @@ export function register(app, ctx, deps = {}) {
     const name = clip(b.name, 80);
     const r = await pool.query(
       `UPDATE reviews SET comment=$2, categories=$3,
-              phone_norm=$4, name=$5
+              phone_norm=COALESCE($4, phone_norm), name=COALESCE($5, name)
         WHERE id=$1 AND comment IS NULL RETURNING rating, code_label`,
       [id, comment, cats, /^5\d{8}$/.test(phone || "") ? phone : null, name]);
     if (!r.rowCount) return c.json({ ok: true, dup: true }); // اتبعت قبل كده
@@ -266,7 +319,7 @@ export function register(app, ctx, deps = {}) {
       const where = rv.code_label ? ` (${rv.code_label})` : "";
       const text = `⚠️ تقييم ${rv.rating}★${where}: ${comment || "بدون تعليق"}${cats.length ? ` — ${cats.join("، ")}` : ""}${phone ? ` — ${phone}` : ""}`;
       const n = notify();
-      for (const p of managers) n?.sendSmsTo?.(p, text).catch(() => {});
+      for (const p of managers) n?.sendSmsTo?.(p, text, { kind: "staff", ref: `review:${id}` }).catch(() => {});
     }
     return c.json({ ok: true });
   });
@@ -367,7 +420,7 @@ export function register(app, ctx, deps = {}) {
         if (oo?.opted_out_at) { await mark("skip_reason", "opted_out"); out.skipped++; continue; }
         const body = askBody(cf.askText, `${STORE_PUBLIC()}/r?c=${iv.code}`);
         try {
-          const ok = await n?.sendSmsTo?.(iv.phone_norm, body);
+          const ok = await n?.sendSmsTo?.(iv.phone_norm, body, { kind: "review_invite", ref: iv.order_no });
           if (!ok) { await mark("skip_reason", "sms_disabled"); out.skipped++; continue; }
           await pool.query("UPDATE review_invites SET sent_at=NOW(), channel='sms' WHERE order_no=$1", [iv.order_no]);
           out.sent++;
@@ -392,6 +445,9 @@ export function register(app, ctx, deps = {}) {
     const err = await requireAdmin(c); if (err) return err;
     const q = (k) => c.req.query(k);
     const where = ["1=1"], p = [];
+    // التجارب/المخفي مابيظهروش غير لو طلبتهم صراحة (?filter=hidden)
+    if (q("filter") === "hidden") where.push(`NOT ${REAL_REVIEW_SQL}`);
+    else where.push(REAL_REVIEW_SQL);
     if (q("filter") === "open") where.push("resolved=FALSE AND rating < 4");
     else if (q("filter") === "negative") where.push("rating < 4");
     else if (q("filter") === "positive") where.push("rating >= 4");
@@ -399,9 +455,11 @@ export function register(app, ctx, deps = {}) {
     if (/^\d{4}-\d{2}-\d{2}$/.test(q("to") || "")) { p.push(q("to")); where.push(`created_at < ($${p.length}::date + 1)`); }
     const rows = (await pool.query(
       `SELECT id, rating, comment, categories, code_label, channel, phone_norm, name,
-              went_google, resolved, resolved_by, resolved_at, resolution_note, created_at
+              went_google, resolved, resolved_by, resolved_at, resolution_note, created_at,
+              order_no, is_test, hidden_at, hidden_reason
          FROM reviews WHERE ${where.join(" AND ")} ORDER BY created_at DESC LIMIT 300`, p)).rows;
-    return c.json({ ok: true, reviews: rows });
+    const hiddenCount = (await pool.query(`SELECT count(*)::int AS n FROM reviews WHERE NOT ${REAL_REVIEW_SQL}`)).rows[0].n;
+    return c.json({ ok: true, reviews: rows, hiddenCount });
   });
 
   app.get("/api/cms/reviews/stats", async (c) => {
@@ -412,10 +470,10 @@ export function register(app, ctx, deps = {}) {
                          count(*) FILTER (WHERE rating >= 4)::int AS positive,
                          count(*) FILTER (WHERE rating < 4)::int AS negative,
                          count(*) FILTER (WHERE went_google)::int AS to_google
-                    FROM reviews WHERE created_at > NOW() - ($1||' days')::interval`, [String(days)]),
+                    FROM reviews WHERE ${REAL_REVIEW_SQL} AND created_at > NOW() - ($1||' days')::interval`, [String(days)]),
       pool.query(`SELECT rating, count(*)::int AS n FROM reviews
-                   WHERE created_at > NOW() - ($1||' days')::interval GROUP BY 1`, [String(days)]),
-      pool.query(`SELECT count(*)::int AS n FROM reviews WHERE resolved=FALSE AND rating < 4`),
+                   WHERE ${REAL_REVIEW_SQL} AND created_at > NOW() - ($1||' days')::interval GROUP BY 1`, [String(days)]),
+      pool.query(`SELECT count(*)::int AS n FROM reviews WHERE ${REAL_REVIEW_SQL} AND resolved=FALSE AND rating < 4`),
     ]);
     const t = tot.rows[0];
     const distribution = {};
@@ -506,7 +564,7 @@ export function register(app, ctx, deps = {}) {
     const link = `${STORE_PUBLIC()}/r?c=${code}`;
     const body = askBody(cf.askText, link);
     try {
-      const ok = await notify()?.sendSmsTo?.(phone, body);
+      const ok = await notify()?.sendSmsTo?.(phone, body, { kind: "test", ref: "review_invite_test" });
       return c.json({ ok: Boolean(ok), sent: Boolean(ok), body, link, code, reason: ok ? null : "sms_disabled" });
     } catch (e) { return c.json({ ok: false, error: String(e.message).slice(0, 160), body, link }, 502); }
   });
@@ -522,6 +580,26 @@ export function register(app, ctx, deps = {}) {
     return c.json({ ok: true });
   });
 
+  /* ١٩/٩ حذف ناعم: إخفاء (تجربة/مش حقيقي) أو إرجاع. الصف مابيتمسحش. */
+  app.post("/api/cms/reviews/:id/hide", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    const id = Number(c.req.param("id"));
+    if (!(id > 0)) return bad(c, "bad_id");
+    let b = {}; try { b = await c.req.json(); } catch { /* لا شيء */ }
+    const r = await pool.query(
+      `UPDATE reviews SET hidden_at=NOW(), is_test=$2, hidden_reason=$3, hidden_by=$4 WHERE id=$1 RETURNING id`,
+      [id, b.test !== false, clip(b.reason, 200) || (b.test !== false ? "test" : "hidden"), await whoName(c)]);
+    return r.rowCount ? c.json({ ok: true }) : bad(c, "not_found", 404);
+  });
+  app.post("/api/cms/reviews/:id/unhide", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    const id = Number(c.req.param("id"));
+    const r = await pool.query(
+      `UPDATE reviews SET hidden_at=NULL, is_test=FALSE, hidden_reason=NULL, hidden_by=$2 WHERE id=$1 RETURNING id`,
+      [id, await whoName(c)]);
+    return r.rowCount ? c.json({ ok: true }) : bad(c, "not_found", 404);
+  });
+
   // رد على العميل اللي ساب رقمه (SMS من المرسل المعاملاتي)
   app.post("/api/cms/reviews/:id/reply", async (c) => {
     const err = await requireAdmin(c); if (err) return err;
@@ -532,7 +610,7 @@ export function register(app, ctx, deps = {}) {
     const r = await pool.query("SELECT phone_norm FROM reviews WHERE id=$1", [id]);
     const ph = r.rows[0]?.phone_norm;
     if (!/^5\d{8}$/.test(ph || "")) return bad(c, "no_phone");
-    try { await notify()?.sendSmsTo?.(ph, text); } catch (e) { return bad(c, "sms_failed", 502); }
+    try { await notify()?.sendSmsTo?.(ph, text, { kind: "review_reply", ref: `review:${id}` }); } catch (e) { return bad(c, "sms_failed", 502); }
     return c.json({ ok: true });
   });
 

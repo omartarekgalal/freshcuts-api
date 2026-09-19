@@ -24,7 +24,7 @@
 
 import crypto from "node:crypto";
 import * as smsRules from "./smsrules.js";
-const sendAdSms = (pn, body) => smsRules.sendAdSms(pn, body);
+const sendAdSms = (pn, body, meta) => smsRules.sendAdSms(pn, body, meta);
 
 const env = (k, d) => (process.env[k] || d || "").toString().trim();
 const STAGES = ["cart", "checkout", "address", "payment", "ordered"];
@@ -320,7 +320,7 @@ export function register(app, ctx, deps = {}) {
     if (parts > 2) return { channel: null, reason: "too_long" };
     if (!(await smsRoomToday(parts, s.cms))) return { channel: null, reason: "daily_cap" };
     try {
-      const info = await sendAdSms(pn, body);
+      const info = await sendAdSms(pn, body, { kind: "cart_recovery", ref: `${flow.code}:${step}` });
       pool.query(`INSERT INTO cms_sms_daily(day, n) VALUES (CURRENT_DATE, $1)
                   ON CONFLICT (day) DO UPDATE SET n = cms_sms_daily.n + $1`, [parts]).catch(() => {});
       return { channel: "sms", ...info };

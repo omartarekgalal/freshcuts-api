@@ -23,6 +23,7 @@
 
 import crypto from "node:crypto";
 import * as tabsense from "./tabsense.js";
+import { logSms } from "./smslog.js";
 
 const env = (k, d) => (process.env[k] || d || "").toString().trim();
 
@@ -50,7 +51,21 @@ const SMS_TRANSIENT = new Set(["EAI_AGAIN", "ENOTFOUND", "ECONNREFUSED", "ENETUN
 export const smsRetryable = (e) => SMS_TRANSIENT.has((e && e.cause && e.cause.code) || (e && e.code));
 
 /* ── Taqnyat SMS (the one place SMS leaves this API; notify.js will reuse) ── */
-export async function sendSms({ phoneNorm, body }, { attempts = 3, backoffMs = 700 } = {}) {
+/* kind/ref (اختياري) بيروحوا لسجل الرسايل الموحّد (smslog.js) — مين بعت إيه
+   ولمين. التسجيل مابيأثرش على الإرسال خالص. */
+export async function sendSms({ phoneNorm, body, kind, ref }, opts = {}) {
+  try {
+    const data = await sendSmsRaw({ phoneNorm, body }, opts);
+    logSms({ phoneNorm, kind: kind || "other", sender: env("TAQNYAT_SENDER") || null, ref, body, status: "sent",
+      msgId: data && data.messageId, cost: data && data.cost, parts: data && data.msgLength });
+    return data;
+  } catch (e) {
+    logSms({ phoneNorm, kind: kind || "other", sender: env("TAQNYAT_SENDER") || null, ref, body, status: "failed", error: e && (e.code || e.message) });
+    throw e;
+  }
+}
+
+async function sendSmsRaw({ phoneNorm, body }, { attempts = 3, backoffMs = 700 } = {}) {
   const key = env("TAQNYAT_API_KEY");
   const sender = env("TAQNYAT_SENDER");
   if (!key || !sender) throw Object.assign(new Error("Taqnyat not configured"), { code: "SMS_UNCONFIGURED" });
@@ -459,7 +474,7 @@ export function register(app, ctx) {
         // بيتجاهل الرسالة تماماً وما بيملاش الرمز لوحده.
         const origin = env("STOREFRONT_PUBLIC_URL", "https://freshcuts.sa")
           .replace(/^https?:\/\//, "").replace(/\/$/, "");
-        await sendSms({ phoneNorm,
+        await sendSms({ phoneNorm, kind: "otp",
           body: `رمز الدخول لفريش كاتس: ${code}\nصالح ${OTP_TTL_MIN} دقائق.\n\n@${origin} #${code}` });
         _smsHour.n++; // اصرف من ميزانية الساعة بعد إرسال فعلي
         return c.json({ ok: true, sent: "sms" });

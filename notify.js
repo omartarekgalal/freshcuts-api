@@ -244,7 +244,7 @@ export function register(app, ctx) {
 
     // SMS (default OFF, stage-filtered — each message costs money).
     if (cfg.smsEnabled === true && smsStagesOf(cfg).includes(status)) {
-      attempts.push(Promise.resolve().then(() => smsSend({ phoneNorm: order.phone_norm, body: text })).then(
+      attempts.push(Promise.resolve().then(() => smsSend({ phoneNorm: order.phone_norm, body: text, kind: "order_status", ref: `${orderNo}:${status}` })).then(
         () => emitNotify(orderNo, status, "sms", true),
         (e) => {
           console.error(`[notify] SMS failed for ${orderNo}:`, e?.message);
@@ -355,7 +355,7 @@ export function register(app, ctx) {
       if (b.channel === "sms") {
         const phone = normPhone(b.phone);
         if (!/^5\d{8}$/.test(phone)) return c.json({ ok: false, error: "invalid_phone" }, 400);
-        await sendSms({ phoneNorm: phone, body: text });
+        await sendSms({ phoneNorm: phone, body: text, kind: "test" });
       } else if (b.channel === "whatsapp") {
         const phone = normPhone(b.phone);
         if (!/^5\d{8}$/.test(phone)) return c.json({ ok: false, error: "invalid_phone" }, 400);
@@ -385,10 +385,11 @@ export function register(app, ctx) {
     const ok = await sendPushTo(subs, { title, body, url: url || env("STOREFRONT_PUBLIC_URL", "https://freshcuts.sa") });
     return ok > 0;
   }
-  async function sendSmsTo(phoneNorm, body) {
+  /* meta = {kind, ref} لسجل الرسايل (smslog.js) — اختياري */
+  async function sendSmsTo(phoneNorm, body, meta = {}) {
     const cfg = (await getSettingsData()).notifications || {};
     if (cfg.smsEnabled !== true) return false;
-    await sendSms({ phoneNorm, body });
+    await sendSms({ phoneNorm, body, kind: meta.kind, ref: meta.ref });
     return true;
   }
 

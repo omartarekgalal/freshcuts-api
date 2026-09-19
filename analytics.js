@@ -30,6 +30,7 @@
    exported from here. scorecard.js reads these instead of keeping its own copy
    — a second definition of "this order came through Keeta" is exactly how two
    screens start disagreeing. */
+import { FIRST_ORDER_CTE } from "./identity.js";
 export const TZ = "Asia/Riyadh";
 // Hour (Riyadh local) at which TabSense rolls the business day over. See note 3.
 export const BIZ_DAY_START_HOUR = 4;
@@ -97,9 +98,9 @@ export const IDENT_SQL = `COALESCE(NULLIF(s.phone_norm, ''), NULLIF(tc.phone_nor
    time a backfill runs. So first-seen is the earliest `ts_orders.calendar_day`
    of the orders behind the identity — via the order each order_sources row
    belongs to, and via the customer record the POS attached to the order — with
-   the customer record's own first_order_at (falling back to registered_at only
-   when there is no first order) folded onto the business day as a third
-   source, so a customer whose real first order predates our order cache is not
+   the customer record's own first_order_at (NOT registered_at — since 19/9:
+   a sign-up is not an order) folded onto the business day as a third source,
+   plus paid shop_orders as a fourth (see identity.js), so a customer whose real first order predates our order cache is not
    mistaken for new. Being a min(), that third source can only pull first_day
    EARLIER; it can never invent a first day after an order we actually hold.
 
@@ -115,37 +116,11 @@ export const IDENT_SQL = `COALESCE(NULLIF(s.phone_norm, ''), NULLIF(tc.phone_nor
    Aliases inside are deliberately fs/fo/fc so the fragment can be pasted into
    any query without capturing an outer `o` / `s` / `tc`.
 ═══════════════════════════════════════════════════════════════════════════ */
-export const FIRST_ORDER_DAY_CTE = `
-  firsts AS (
-    SELECT pn, min(first_day) AS first_day FROM (
-      -- (a) the phone the cashier station / FeedUs connector typed on the order
-      SELECT fs.phone_norm AS pn, min(fo.calendar_day) AS first_day
-        FROM order_sources fs
-        JOIN ts_orders fo ON fo.order_id = fs.order_id
-       WHERE fs.phone_norm <> ''
-         AND (fo.order_type IS NULL
-              OR (fo.order_type NOT ILIKE '%void%' AND fo.order_type NOT ILIKE '%refund%'))
-       GROUP BY 1
-      UNION ALL
-      -- (b) the customer record the POS attached to the order
-      SELECT fc.phone_norm AS pn, min(fo.calendar_day) AS first_day
-        FROM ts_orders fo
-        JOIN ts_customers fc ON fc.customer_id = fo.customer_id
-       WHERE COALESCE(fc.phone_norm, '') <> ''
-         AND (fo.order_type IS NULL
-              OR (fo.order_type NOT ILIKE '%void%' AND fo.order_type NOT ILIKE '%refund%'))
-       GROUP BY 1
-      UNION ALL
-      -- (c) history older than our order cache, straight off the customer record
-      SELECT fc.phone_norm AS pn,
-             min(((COALESCE(fc.first_order_at, fc.registered_at) AT TIME ZONE '${TZ}')
-                  - interval '${BIZ_DAY_START_HOUR} hours')::date) AS first_day
-        FROM ts_customers fc
-       WHERE COALESCE(fc.phone_norm, '') <> ''
-         AND COALESCE(fc.first_order_at, fc.registered_at) IS NOT NULL
-       GROUP BY 1
-    ) u GROUP BY 1
-  )`;
+/* ١٩/٩ (Customer 360): القاعدة اتنقلت لـ identity.js وبقت عبر كل القنوات —
+   زوّدنا (d) طلبات متجرنا المدفوعة، و(c) بقت first_order_at بس (registered_at
+   مش طلب: عميل اتسجّل من الموقع/الكاشير ومطلبش مايبقاش «قديم»). نفس الاسم
+   ونفس الشكل firsts(pn, first_day) — كل اللي بيستورده مايتغيّرش. */
+export const FIRST_ORDER_DAY_CTE = FIRST_ORDER_CTE;
 
 export const CHANNEL_LABELS = {
   inhouse: "داخل المطعم",

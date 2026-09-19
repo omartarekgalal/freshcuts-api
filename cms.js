@@ -27,6 +27,8 @@ import * as smsRules from "./smsrules.js";
 import { promisify } from "node:util";
 // نفس قواعد الهوية والقناة اللي المؤشرات بتستخدمها — مفيش نسخة تانية
 import { IDENT_SQL, SALES_ONLY, deliverySql, WEBSITE_SQL } from "./analytics.js";
+import { FIRST_ORDER_CTE } from "./identity.js";
+import { logSms } from "./smslog.js";
 // نفس قواعد الـSLA بتاعة الـwatchdog — لوحة التشغيل مابتكتبش كتاب قواعد تاني
 import { slaCheck, DEFAULT_SLA } from "./shop.js";
 import { dispatchDelayOf, canAutoDispatch } from "./delivery.js";
@@ -2514,7 +2516,7 @@ export function register(app, ctx, deps = {}) {
       const phones = [...smsRules.staffPhoneSet({ delivery: { alertPhones: s?.delivery?.alertPhones } })];
       const { sendSms } = await import("./accounts.js");
       const msg = `FreshCuts ALERT: SMS campaign ${hit.campaign_id} opt-outs ${hit.optouts}/${hit.sent} in 30 min. ${held.rowCount} scheduled wave(s) paused.`;
-      for (const pn of phones) await sendSms({ phoneNorm: pn, body: msg.slice(0, 160) }).catch(() => {});
+      for (const pn of phones) await sendSms({ phoneNorm: pn, body: msg.slice(0, 160), kind: "staff", ref: "optout_brake" }).catch(() => {});
     } catch (e) { console.error("[cms] brake alert:", e.message); }
   }
   setInterval(() => brakeCheck().catch((e) => console.error("[cms] brake:", e.message)), 60_000);
@@ -2716,7 +2718,12 @@ export function register(app, ctx, deps = {}) {
     for (const p of targets) {
       try {
         let ok = false;
-        if (flow.channel === "sms") { await sendMarketingSms(p.pn, smsBody(flow, p)); ok = true; }
+        if (flow.channel === "sms") {
+          const fb = smsBody(flow, p);
+          const info = await sendMarketingSms(p.pn, fb); ok = true;
+          logSms({ phoneNorm: p.pn, kind: "flow", ref: `flow:${flow.id}`, sender: process.env.TAQNYAT_SENDER_AD || null,
+            body: fb, msgId: info && info.messageId, cost: info && info.cost, parts: info && info.parts });
+        }
         else ok = await notify()?.sendToAudience({ phoneNorm: p.pn, title: "فريش كاتس 🍔",
           body: renderMsg(flow.message, { name: p.name, coupon: flow.coupon }), url });
         if (ok) {
@@ -2859,16 +2866,23 @@ export function register(app, ctx, deps = {}) {
       pool.query(`
         SELECT EXTRACT(HOUR FROM (o.created_at AT TIME ZONE 'Asia/Riyadh'))::int AS h, count(*)::int AS orders
           FROM shop_orders o WHERE ${W} GROUP BY 1 ORDER BY 1`, P),
-      // جديد = أول طلب ليه من الموقع وقع جوّه الفترة
+      /* جديد = أول طلب ليه **على الإطلاق من أي قناة** وقع جوّه الفترة (identity.js).
+         قبل ١٩/٩ كان «أول طلب من الموقع» — فعميل صالة/كيتا قديم أول مرة يطلب
+         أونلاين كان بيتعدّ جديد (٨ من ٢٥ من أول سبتمبر). دلوقتي هو «قديم —
+         أول مرة على الموقع» (existingFirstOnline) ومحسوب ضمن returning. */
       pool.query(`
-        WITH firsts AS (
+        WITH ${FIRST_ORDER_CTE},
+        wf AS (
           SELECT phone_norm, min(created_at) AS f FROM shop_orders o
-           WHERE ${PAID_O} AND phone_norm IS NOT NULL GROUP BY 1)
-        SELECT count(*) FILTER (WHERE (f.f AT TIME ZONE 'Asia/Riyadh')::date >= $1::date)::int AS new_customers,
-               count(*) FILTER (WHERE (f.f AT TIME ZONE 'Asia/Riyadh')::date <  $1::date)::int AS returning_customers
-          FROM firsts f
-         WHERE EXISTS (SELECT 1 FROM shop_orders o
-                        WHERE o.phone_norm = f.phone_norm AND ${W})`, P),
+           WHERE ${PAID_O} AND phone_norm IS NOT NULL GROUP BY 1),
+        inw AS (SELECT DISTINCT o.phone_norm FROM shop_orders o WHERE o.phone_norm IS NOT NULL AND ${W})
+        SELECT count(*) FILTER (WHERE fa.first_day >= $1::date)::int AS new_customers,
+               count(*) FILTER (WHERE fa.first_day IS NULL OR fa.first_day < $1::date)::int AS returning_customers,
+               count(*) FILTER (WHERE (fa.first_day IS NULL OR fa.first_day < $1::date)
+                                  AND (wf.f AT TIME ZONE 'Asia/Riyadh')::date >= $1::date)::int AS existing_first_online
+          FROM inw
+          JOIN wf ON wf.phone_norm = inw.phone_norm
+          LEFT JOIN firsts fa ON fa.pn = inw.phone_norm`, P),
       // نفس فترة التقرير من نقطة البيع: الموقع مقابل التطبيقات مقابل المطعم
       pool.query(`
         SELECT CASE WHEN ${WEBSITE_SQL} THEN 'website'
@@ -2902,7 +2916,8 @@ export function register(app, ctx, deps = {}) {
       },
       // الرسوم اللي حصّلناها من العميل مقابل اللي دفعناه للمندوب
       delivery: { feesCollected: n(t.fees), courierCost: n(courier.rows[0].cost), shipments: courier.rows[0].shipments },
-      customers: { new: nvr.rows[0].new_customers, returning: nvr.rows[0].returning_customers },
+      customers: { new: nvr.rows[0].new_customers, returning: nvr.rows[0].returning_customers,
+        existingFirstOnline: nvr.rows[0].existing_first_online, rule: "first_order_any_channel" },
       daily: daily.rows.map((r) => ({ day: r.day instanceof Date ? r.day.toISOString().slice(0, 10) : r.day, orders: r.orders, revenue: n(r.revenue) })),
       hours: hours.rows.map((r) => ({ hour: r.h, orders: r.orders })),
       topItems: items.rows.map((r) => ({ id: r.pid, name: names.get(String(r.pid)) || `صنف ${r.pid}`, qty: n(r.qty), revenue: n(r.revenue) })),

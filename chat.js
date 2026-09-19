@@ -75,18 +75,12 @@ const channelSql = (appsParam) => `
       'external'))
   ELSE 'inhouse' END`;
 
+import { FIRST_ORDER_CTE } from "./identity.js";
 // First time we ever saw each phone, across BOTH identity sources: the
 // TabSense directory and the cashier station's typed phone.
-const FIRSTS_CTE = `
-  firsts AS (
-    SELECT pn, min(first_at) AS first_at FROM (
-      SELECT phone_norm AS pn, min(filled_at) AS first_at
-        FROM order_sources WHERE phone_norm <> '' GROUP BY 1
-      UNION ALL
-      SELECT phone_norm AS pn, min(COALESCE(first_order_at, registered_at)) AS first_at
-        FROM ts_customers WHERE phone_norm IS NOT NULL AND phone_norm <> '' GROUP BY 1
-    ) u GROUP BY 1
-  )`;
+// ١٩/٩: نفس قاعدة «أول طلب على الإطلاق» المشتركة (identity.js) — قبل كده
+// كانت filled_at (وقت ما الكاشير كتب الصف) وregistered_at (تسجيل مش طلب).
+const FIRSTS_CTE = FIRST_ORDER_CTE;
 // Identity of the human behind an order; the cashier's typed phone wins.
 const IDENT_SQL = `COALESCE(NULLIF(s.phone_norm, ''), NULLIF(tc.phone_norm, ''))`;
 
@@ -750,8 +744,8 @@ export function register(app, ctx) {
               COALESCE(sum(scoped.total) FILTER (WHERE scoped.pn IS NOT NULL), 0) AS known_revenue,
               count(DISTINCT scoped.pn)::int                                    AS customers,
               count(DISTINCT scoped.pn) FILTER (
-                WHERE f.first_at IS NOT NULL
-                  AND ((f.first_at AT TIME ZONE '${TZ}') - interval '${BIZ_DAY_START_HOUR} hours')::date
+                WHERE f.first_day IS NOT NULL
+                  AND f.first_day
                       BETWEEN $1::date AND $2::date)::int                       AS new_customers
          FROM scoped LEFT JOIN firsts f ON f.pn = scoped.pn`,
       [from, to]

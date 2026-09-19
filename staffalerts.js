@@ -154,7 +154,7 @@ export function makeStaffNotifier({ getSettingsData, sendSms, log = console.erro
     const text = fitOneSms(body);
     let sent = 0;
     for (const phoneNorm of phones) {
-      try { await sendSms({ phoneNorm, body: text }); sent++; }
+      try { await sendSms({ phoneNorm, body: text, kind: "staff", ref: tag }); sent++; }
       catch (e) { log(`[staff-sms] ${tag} → ${phoneNorm.slice(-4)} failed: ${e.message}`); }
     }
     return sent;

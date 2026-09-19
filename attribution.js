@@ -40,6 +40,7 @@
 import crypto from "node:crypto";
 import { PLATFORMS, canManage, missingOf } from "./ads.js";
 import { BOT_SQL } from "./botfilter.js";
+import { FIRST_ORDER_CTE } from "./identity.js";
 
 /* ── القنوات ────────────────────────────────────────────────────────────────
    التسعة الأساسيين بيرجعوا دايماً حتى لو أصفار. influencer و referral
@@ -143,9 +144,9 @@ export const ORDERS_CTE = `
      WHERE o.calendar_day IS NOT NULL
        AND (o.order_type IS NULL OR (o.order_type NOT ILIKE '%void%' AND o.order_type NOT ILIKE '%refund%'))
   ),
-  firsts AS (
-    SELECT pn, min(day) AS first_day FROM ord WHERE pn IS NOT NULL GROUP BY pn
-  ),
+  -- ١٩/٩: «أول طلب على الإطلاق» من كل القنوات (identity.js) — مش من كاش
+  -- نقطة البيع لوحده (طلبات الموقع + تاريخ العميل الأقدم من الكاش).
+  ${FIRST_ORDER_CTE},
   lt AS (
     SELECT DISTINCT ON (l.order_id) l.order_id, l.utm_source, l.utm_campaign
       FROM attrib_links l JOIN funnel_events f ON f.id = l.lead_event_id

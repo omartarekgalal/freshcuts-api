@@ -672,10 +672,13 @@ export function register(app, ctx, deps = {}) {
               CASE WHEN COALESCE(o.phone_norm,'') = '' THEN NULL ELSE (
                 EXISTS (SELECT 1 FROM shop_orders p WHERE p.phone_norm = o.phone_norm
                           AND p.created_at < o.created_at AND p.status = ANY($3::text[]))
+                -- ١٩/٩ (identity.js): طلب حقيقي قبل كده — مش تسجيل (registered_at)
+                -- ولا وقت كتابة الكاشير للصف (filled_at)
                 OR EXISTS (SELECT 1 FROM ts_customers tc WHERE tc.phone_norm = o.phone_norm
-                          AND COALESCE(tc.first_order_at, tc.registered_at) < o.created_at)
-                OR EXISTS (SELECT 1 FROM order_sources s WHERE s.phone_norm = o.phone_norm
-                          AND s.filled_at < o.created_at)
+                          AND tc.first_order_at < o.created_at)
+                OR EXISTS (SELECT 1 FROM order_sources s JOIN ts_orders t ON t.order_id = s.order_id
+                            WHERE s.phone_norm = o.phone_norm AND t.order_date < o.created_at
+                              AND (t.order_type IS NULL OR (t.order_type NOT ILIKE '%void%' AND t.order_type NOT ILIKE '%refund%')))
               ) END AS seen_before
          FROM shop_orders o
          LEFT JOIN LATERAL (

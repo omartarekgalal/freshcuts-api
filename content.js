@@ -1384,7 +1384,7 @@ export function register(app, ctx) {
     const body = fitOneSms(text);
     const sent = [];
     for (const phoneNorm of phones) {
-      try { await sendSms({ phoneNorm, body }); sent.push(phoneNorm); }
+      try { await sendSms({ phoneNorm, body, kind: "staff", ref: "content_alert" }); sent.push(phoneNorm); }
       catch (e) { console.error("[content] alert SMS failed:", e.message); }
     }
     return { sent: sent.length, body };

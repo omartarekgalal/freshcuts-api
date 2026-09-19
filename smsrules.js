@@ -12,6 +12,8 @@
 ═══════════════════════════════════════════════════════════════════════════ */
 import crypto from "node:crypto";
 
+import { logSms } from "./smslog.js";
+
 export const QUIET_START = 22; // من ١٠ بالليل
 export const QUIET_END = 12;   // لحد ١٢ الضهر
 
@@ -153,7 +155,21 @@ export const audienceDriftOk = (confirmed, now) =>
   Number(now) - Number(confirmed) <= Math.max(10, Math.round(Number(confirmed) * 0.2));
 
 /* إرسال تسويقي واحد عبر تقنيات (المُرسل الإعلاني) — نفس المسار للحملات والسلة */
-export async function sendAdSms(pn, body) {
+/* meta = {kind, ref} لسجل الرسايل الموحّد (smslog.js). الحملات (cms.js) ليها
+   سجلها الخاص cms_campaign_sends ومابتعدّيش من هنا. */
+export async function sendAdSms(pn, body, meta = {}) {
+  const sender = process.env.TAQNYAT_SENDER_AD || null;
+  try {
+    const out = await sendAdSmsRaw(pn, body);
+    logSms({ phoneNorm: pn, kind: meta.kind || "other", ref: meta.ref, sender, body, status: "sent",
+      msgId: out.messageId, cost: out.cost, parts: out.parts });
+    return out;
+  } catch (e) {
+    logSms({ phoneNorm: pn, kind: meta.kind || "other", ref: meta.ref, sender, body, status: "failed", error: e && e.message });
+    throw e;
+  }
+}
+async function sendAdSmsRaw(pn, body) {
   const key = process.env.TAQNYAT_API_KEY, sender = process.env.TAQNYAT_SENDER_AD;
   if (!key || !sender) throw Object.assign(new Error("ad sender not configured"), { code: "sms_failed" });
   if (smsParts(body) > 2) throw Object.assign(new Error("too_long"), { code: "sms_failed" });

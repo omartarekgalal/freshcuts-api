@@ -8,6 +8,7 @@ import * as ts from "./tabsense.js";
 import * as feedus from "./feedus.js";
 import * as portals from "./portals.js";
 import * as analytics from "./analytics.js";
+import { FIRST_ORDER_CTE } from "./identity.js";
 import * as ai from "./ai.js";
 import * as staff from "./staff.js";
 import * as customers from "./customers.js";
@@ -47,6 +48,7 @@ import * as accounts from "./accounts.js";
 import * as tspartner from "./tspartner.js";
 import * as cms from "./cms.js";
 import * as reviews from "./reviews.js";
+import * as customer360 from "./customer360.js";
 import * as notify from "./notify.js";
 import * as carts from "./carts.js";
 import * as openwait from "./openwait.js";
@@ -2704,8 +2706,8 @@ app.get("/api/insights/staff", async (c) => {
     sourceTagged: a.sourceTagged + r.sourceTagged, revenue: a.revenue + r.revenue,
   }), { orders: 0, identified: 0, sourceTagged: 0, revenue: 0 });
 
-  // New vs returning on in-restaurant orders, using every phone we know:
-  // TabSense customer registration date OR the first time the cashier typed it.
+  // New vs returning on in-restaurant orders — THE shared first-order rule
+  // (identity.js, 19/9). Was registration date / cashier typing time.
   const nvr = (await pool.query(
     `WITH inhouse AS (
        SELECT o.order_id, o.calendar_day,
@@ -2717,19 +2719,11 @@ app.get("/api/insights/staff", async (c) => {
           AND o.order_type NOT ILIKE '%external%'
           AND o.order_type NOT ILIKE '%void%'
           AND o.order_type NOT ILIKE '%refund%'
-     ), firsts AS (
-       SELECT pn, min(first_at) AS first_at FROM (
-         SELECT phone_norm AS pn, min(filled_at) AS first_at FROM order_sources
-          WHERE phone_norm <> '' GROUP BY 1
-         UNION ALL
-         SELECT phone_norm AS pn, min(COALESCE(first_order_at, registered_at)) AS first_at
-           FROM ts_customers WHERE phone_norm <> '' GROUP BY 1
-       ) u GROUP BY pn
-     )
+     ), ${FIRST_ORDER_CTE}
      SELECT count(*)::int AS total,
             count(*) FILTER (WHERE i.pn IS NULL OR i.pn = '')::int AS unknown,
-            count(*) FILTER (WHERE i.pn <> '' AND f.first_at::date >= i.calendar_day)::int AS new_customers,
-            count(*) FILTER (WHERE i.pn <> '' AND f.first_at::date < i.calendar_day)::int AS returning_customers
+            count(*) FILTER (WHERE i.pn <> '' AND f.first_day >= i.calendar_day)::int AS new_customers,
+            count(*) FILTER (WHERE i.pn <> '' AND f.first_day < i.calendar_day)::int AS returning_customers
        FROM inhouse i LEFT JOIN firsts f ON f.pn = i.pn`, [from, to]
   )).rows[0];
 
@@ -2764,9 +2758,22 @@ app.get("/api/insights/summary", async (c) => {
       WHERE calendar_day BETWEEN $1::date AND $2::date
         AND order_type NOT ILIKE '%void%' AND order_type NOT ILIKE '%refund%'`, [from, to]
   )).rows;
+  /* ١٩/٩ (identity.js): «عميل جديد» = أول طلب على الإطلاق من أي قناة وقع في
+     الفترة — قبل كده كان «اتسجّل في تاب سينس في الفترة»، يعني أي حد الكاشير
+     أو الموقع (OTP) عمله سجل من غير ما يطلب كان بيتعدّ عميل جديد. */
   const newCust = (await pool.query(
-    `SELECT customer_id, registered_at::date AS reg_day FROM ts_customers
-      WHERE registered_at::date BETWEEN $1::date AND $2::date`, [from, to]
+    `WITH ${FIRST_ORDER_CTE},
+     ident AS (
+       SELECT o.total, COALESCE(NULLIF(s.phone_norm,''), NULLIF(tc.phone_norm,'')) AS pn
+         FROM ts_orders o
+         LEFT JOIN order_sources s ON s.order_id = o.order_id
+         LEFT JOIN ts_customers tc ON tc.customer_id = o.customer_id
+        WHERE o.calendar_day BETWEEN $1::date AND $2::date
+          AND (o.order_type IS NULL OR (o.order_type NOT ILIKE '%void%' AND o.order_type NOT ILIKE '%refund%')))
+     SELECT f.pn, f.first_day AS first_day, COALESCE(sum(i.total), 0)::float AS value
+       FROM firsts f LEFT JOIN ident i ON i.pn = f.pn
+      WHERE f.first_day BETWEEN $1::date AND $2::date
+      GROUP BY 1, 2`, [from, to]
   )).rows;
   const custOrders = (await pool.query(
     `SELECT customer_id, order_date, calendar_day, total FROM ts_orders
@@ -2822,18 +2829,12 @@ app.get("/api/insights/summary", async (c) => {
   }
 
   // New customers per day + the value they spent inside the range
-  const newCustSet = new Map(newCust.map((r) => [String(r.customer_id), dayKey(r.reg_day)]));
-  for (const [, regDay] of newCustSet) { if (daily[regDay]) daily[regDay].newCustomers++; }
+  const newCustSet = new Map(newCust.map((r) => [r.pn, dayKey(r.first_day)]));
   let newCustomerValue = 0;
-  for (const o of custOrders) {
-    const regDay = newCustSet.get(String(o.customer_id));
-    if (!regDay) continue;
-    const od = dayKey(o.calendar_day);
-    if (od >= from && od <= to) {
-      const t = Number(o.total) || 0;
-      newCustomerValue += t;
-      if (daily[regDay]) daily[regDay].newCustomerValue += t;
-    }
+  for (const r of newCust) {
+    const d = daily[dayKey(r.first_day)];
+    if (d) { d.newCustomers++; d.newCustomerValue += Number(r.value) || 0; }
+    newCustomerValue += Number(r.value) || 0;
   }
 
   // Retention — per-customer order timeline (linked orders only)
@@ -3079,6 +3080,8 @@ const tspApi = tspartner.register(app, moduleCtx);
 // لوحة المتجر: فريق وأدوار وصلاحيات وسجل نشاط — لازم قبل systemcheck.
 const cmsApi = cms.register(app, moduleCtx, { notify: () => notifyApi });
 reviews.register(app, moduleCtx, { notify: () => notifyApi, sessionUser: cmsApi.sessionUser });
+// 👥 Customer 360 — ملف العميل + سجل الرسايل + قايمة الإيقاف (identity.js = قاعدة العميل الجديد)
+customer360.register(app, moduleCtx, { whoami: (c) => cmsApi.whoami(c) });
 // «نبّهني لما تفتحوا»: العميل اللي جه والمطعم مقفول بيسيب رقمه، وسلته بتتحفظ
 // ورا نفس رابط الاسترداد بتاع carts، والرسالة بتتبعت وقت الفتح بس.
 openwait.register(app, moduleCtx, { notify: () => notifyApi, carts: () => cartsApi });

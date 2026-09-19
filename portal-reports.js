@@ -47,6 +47,8 @@ export function daysBetween(from, to) {
 }
 
 /* الطلبات في المدى — $1=from، $2=to (تواريخ الرياض) */
+import { FIRST_ORDER_CTE, bizDaySql } from "./identity.js";
+
 export const BASE_CTE = `WITH base AS (
   SELECT o.order_no, o.status, o.option, o.total, o.subtotal, o.delivery_fee, o.tip,
          o.discount_amount, o.coupon, o.phone_norm, o.created_at, o.pay_gateway, o.attribution,
@@ -238,9 +240,13 @@ SELECT COALESCE(NULLIF(it->>'name',''), NULLIF(it->>'product_name',''), 'صنف 
  GROUP BY 1 ORDER BY qty DESC, orders DESC LIMIT 20`,
 
   customers: `${BASE_CTE},
+${FIRST_ORDER_CTE},
 x AS (
+  /* ١٩/٩: «راجع» = طلب قبل كده من أي قناة (identity.js) — مش من الموقع بس.
+     عميل صالة/كيتا أول مرة يطلب أونلاين = راجع مش جديد. */
   SELECT b.order_no, b.phone_norm,
-         EXISTS (SELECT 1 FROM shop_orders p
+         COALESCE((SELECT fa.first_day FROM firsts fa WHERE fa.pn = b.phone_norm) < ${bizDaySql("b.created_at")}, false)
+         OR EXISTS (SELECT 1 FROM shop_orders p
                   WHERE p.phone_norm = b.phone_norm AND p.created_at < b.created_at
                     AND p.status NOT IN ('pending_payment','expired','rejected_refunded','refund_failed')
                     AND NOT COALESCE(p.is_test, false)) AS is_returning

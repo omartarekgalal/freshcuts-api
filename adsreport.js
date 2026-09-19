@@ -452,10 +452,10 @@ export function register(app, ctx, deps = {}) {
     const text = fitOneSms(claim.rows[0].sms_text || "");
     const errors = [];
     for (const p of staffPhones(cfg.phones)) {
-      try { await sendSms({ phoneNorm: p, body: text }); } catch (e) { errors.push(`${p}: ${e.message}`); }
+      try { await sendSms({ phoneNorm: p, body: text, kind: "staff", ref: "daily_report" }); } catch (e) { errors.push(`${p}: ${e.message}`); }
       // second segment-sized SMS: orders by source, CPA, what the guard changed
       const adsLine = fitOneSms(claim.rows[0].sms_ads || "");
-      if (adsLine) { try { await sendSms({ phoneNorm: p, body: adsLine }); } catch (e) { errors.push(`${p} ads: ${e.message}`); } }
+      if (adsLine) { try { await sendSms({ phoneNorm: p, body: adsLine, kind: "staff", ref: "daily_report" }); } catch (e) { errors.push(`${p} ads: ${e.message}`); } }
     }
     if (errors.length) await pool.query(`UPDATE mk_daily_reports SET sms_error=$2 WHERE day=$1::date`, [day, errors.join("; ").slice(0, 500)]);
     return { ok: !errors.length, text, info: smsInfo(text), to: cfg.phones, errors };

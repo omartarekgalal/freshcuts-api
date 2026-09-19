@@ -16,6 +16,7 @@
 // human reads must come from the *_incl / total columns, so that is all we use.
 
 import crypto from "node:crypto";
+import { FIRST_ORDER_CTE } from "./identity.js";
 
 /* ── LLM provider config ──────────────────────────────────────────────────────
    Preference order:
@@ -205,19 +206,11 @@ async function buildFacts(pool, from, to) {
            LEFT JOIN order_sources s  ON s.order_id = o.order_id
            LEFT JOIN ts_customers tc  ON tc.customer_id = o.customer_id
           WHERE o.calendar_day BETWEEN $1::date AND $2::date AND ${valid('o.')}
-       ), firsts AS (
-         SELECT pn, min(first_at) AS first_at FROM (
-           SELECT phone_norm AS pn, min(filled_at) AS first_at
-             FROM order_sources WHERE phone_norm <> '' GROUP BY 1
-           UNION ALL
-           SELECT phone_norm AS pn, min(COALESCE(first_order_at, registered_at)) AS first_at
-             FROM ts_customers WHERE phone_norm <> '' GROUP BY 1
-         ) u GROUP BY pn
-       ), agg AS (
+       ), ${FIRST_ORDER_CTE}, agg AS (
          SELECT count(*)::int AS total_orders,
                 count(*) FILTER (WHERE sc.pn IS NULL)::int AS unidentified_orders,
-                count(*) FILTER (WHERE sc.pn IS NOT NULL AND f.first_at::date >= sc.calendar_day)::int AS new_customer_orders,
-                count(*) FILTER (WHERE sc.pn IS NOT NULL AND f.first_at::date <  sc.calendar_day)::int AS returning_orders
+                count(*) FILTER (WHERE sc.pn IS NOT NULL AND f.first_day >= sc.calendar_day)::int AS new_customer_orders,
+                count(*) FILTER (WHERE sc.pn IS NOT NULL AND f.first_day <  sc.calendar_day)::int AS returning_orders
            FROM scoped sc LEFT JOIN firsts f ON f.pn = sc.pn
        ), rep AS (
          SELECT count(*)::int AS identified_customers,
