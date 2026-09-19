@@ -181,7 +181,7 @@ export function mapInvoiceRow(obj, contractIn) {
    shipments: صفوف dl_shipments (+ بيانات الطلب)، orphanOrders: طلبات توصيل
    اتوصّلت من غير شحنة، lines: سطور الفاتورة المستوردة للشهر. */
 const CANCEL_RX = /cancel|ملغ|الغاء|إلغاء|rejected|مرفوض/i;
-export function reconcile({ shipments = [], orphanOrders = [], lines = [], contract } = {}) {
+export function reconcile({ shipments = [], orphanOrders = [], lines = [], contract, invoice = null } = {}) {
   const c = contract || ljContract();
   const tol = c.tolerance;
   const byOrder = new Map();
@@ -231,6 +231,9 @@ export function reconcile({ shipments = [], orphanOrders = [], lines = [], contr
     if (s.ourKm == null) flags.push("no_distance");
     if (ls.some((l) => l.status && CANCEL_RX.test(l.status)) && s.status !== "cancelled") flags.push("status_mismatch");
     if (s.status !== "cancelled" && s.status !== "delivered") flags.push("in_flight");
+    // الفاتورة اتستوردت والشحنة الموصّلة مش فيها — لصالحنا، بس ممكن تيجي الشهر الجاي
+    if (lines.length && !ls.length && s.status === "delivered" && s.feeActual == null) flags.push("missing_from_invoice");
+    const invoicedEx = ls.length && ls.every((l) => l.exVat != null) ? r2(ls.reduce((a, l) => a + Number(l.exVat), 0)) : null;
     const customerFee = r2(s.customerFee);
     return {
       id: s.id, orderNo: s.orderNo, providerRef: s.providerRef, at: s.createdAt, period: s.period,
@@ -238,6 +241,10 @@ export function reconcile({ shipments = [], orphanOrders = [], lines = [], contr
       ourKm: s.ourKm != null ? r2(s.ourKm) : null, distanceSource: s.distanceSource || null,
       theirKm: theirKm != null ? r2(theirKm) : null,
       expected: exp, charged, chargedSource, invoiceLines: ls.length,
+      chargedExVat: invoicedEx != null ? invoicedEx : (charged != null ? r2(charged / (1 + c.vatPct / 100)) : null),
+      line: ls[0] ? { date: ls[0].date, theirNo: ls[0].theirNo || null, status: ls[0].status || null, shop: ls[0].shop || null,
+                      client: ls[0].client || null, paymentType: ls[0].paymentType || null } : null,
+      theirNo: (ls[0] && ls[0].theirNo) || s.providerOrderNo || null,
       diff: charged != null ? r2(charged - exp.total) : null,
       customerFee, margin: r2(customerFee - cost), marginBasis: charged != null ? "charged" : "expected",
       farSurcharge: s.farSurcharge != null ? r2(s.farSurcharge) : null,
@@ -291,7 +298,8 @@ export function reconcile({ shipments = [], orphanOrders = [], lines = [], contr
   const anomalies = {};
   for (const r of rows) for (const f of r.flags) anomalies[f] = (anomalies[f] || 0) + 1;
   for (const l of unmatched) for (const f of l.flags) anomalies[f] = (anomalies[f] || 0) + 1;
-  return { contract: c, totals, anomalies, rows, unmatched };
+  totals.chargedExVat = sum(real, (r) => r.chargedExVat);
+  return { contract: c, totals, anomalies, rows, unmatched, invoice };
 }
 
 export const FLAG_AR = {
@@ -307,46 +315,222 @@ export const FLAG_AR = {
   missing_shipment: "طلب توصيل من غير شحنة",
   invoice_line_unmatched: "سطر في الفاتورة مش لاقيين طلبه",
   invoice_line_other_month: "سطر لشحنة من شهر تاني",
+  missing_from_invoice: "موصّلة ومش في فاتورتهم",
 };
 
 const STATUS_AR = { delivered: "تم التوصيل", cancelled: "ملغية", pending: "جديد", assigned: "مع كابتن", picked: "في الطريق" };
 
-/* CSV بترتيب الفاتورة (بالتاريخ) + BOM عشان إكسل يقرا العربي. */
-export function toCsv(rec, { month } = {}) {
+/* ── ملف لاجلك الشهري «<CLIENT> <Month> Order Details.xlsx» ─────────────────
+   الشكل الحقيقي (فاتورة أغسطس ٢٠٢٦، INV/2026/00598):
+     Order Date | Order No | Client Name | Shop Name | AWB | Dist. b/w Shop & Dlvry | Order Status | Payment Type
+     8/30/26    | 3142728  | FRESH CUTS  | FRESH CUTS-JED-SALAMAH | W1788110759469 | 0.017 | Delivered | Pre Paid
+   وتحت الجدول ملخص (مش سطور):
+     Total Order Delivered 1 · Financial request for delivery SAR 17.00 · COD Charge ·
+     Cash in Hand · Extra km 0.00 · Financial request Extra km · Payment SAR 17.00
+   • AWB = رقم طلبنا (W…). Order No = رقمهم الداخلي (مش الـdsp_order_id).
+   • مفيش سعر لكل سطر — الفلوس في الملخص قبل الضريبة، والفاتورة الضريبية
+     (PDF) = Delivered 3PL كمية × ١٧ + ١٥٪.
+   فسعر السطر = (Financial request for delivery ÷ Total Order Delivered) للموصّل
+   + الكم الإضافي من مسافتهم × سعر الكم (من الملخص لو موجود، وإلا العقد). */
+export const LJ_EXPORT_COLS = ["Order Date", "Order No", "Client Name", "Shop Name", "AWB",
+  "Dist. b/w Shop & Dlvry", "Order Status", "Payment Type"];
+const SUMMARY_KEYS = [
+  ["delivered", /total order delivered/],
+  ["extraKmExVat", /financial request extra ?km/],
+  ["deliveryExVat", /financial request for delivery/],
+  ["codCharge", /cod charge/],
+  ["cashInHand", /cash in hand/],
+  ["extraKm", /^extra ?km$/],
+  ["paymentExVat", /^payment$/],
+];
+
+/* "8/30/26" (M/D/YY زي ملفهم) / "2026-08-30" / "30/08/2026" → YYYY-MM-DD */
+export function parseLjDate(v) {
+  if (v == null || v === "") return null;
+  if (typeof v === "number" && v > 20000 && v < 80000) {           // رقم تاريخ إكسل
+    return new Date(Math.round((v - 25569) * 86400000)).toISOString().slice(0, 10);
+  }
+  const s = String(v).trim();
+  let m = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
+  if (m) return `${m[1]}-${m[2].padStart(2, "0")}-${m[3].padStart(2, "0")}`;
+  m = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})/);
+  if (m) {
+    let [, a, b, y] = m;
+    y = y.length === 2 ? `20${y}` : y;
+    // ملفهم M/D/YY؛ لو الأول > ١٢ يبقى D/M
+    let mo = Number(a), d = Number(b);
+    if (mo > 12 && d <= 12) [mo, d] = [d, mo];
+    return `${y}-${String(mo).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
+  }
+  return null;
+}
+
+/* شبكة الشيت (صفوف × خلايا) → سطور + ملخص. بيتعرّف على ملف لاجلك
+   الحقيقي؛ لو الملف شكل تاني (فيه عمود سعر) بيرجع للمطابقة العامة. */
+export function parseLeajlakSheet(grid, contractIn) {
+  const c = contractIn || ljContract();
+  const vatRate = c.vatPct / 100;
+  const cell = (x) => (x == null ? "" : String(x).trim());
+  const hi = (grid || []).findIndex((r) => (r || []).some((x) => /^awb$/i.test(cell(x)))
+    || ((r || []).some((x) => /order ?no|رقم الطلب/i.test(cell(x))) && (r || []).filter((x) => cell(x)).length >= 3));
+  if (hi < 0) return { format: "unknown", lines: [], summary: null, checks: null };
+  const head = grid[hi].map((h, i) => cell(h) || `col${i + 1}`);
+  const col = (rx) => head.findIndex((h) => rx.test(normKey(h)));
+  const iAwb = col(/^awb$/), iNo = col(/^order no$|^order number$/), iDate = col(/date/),
+    iDist = col(/dist/), iStatus = col(/status/), iPay = col(/payment type/), iShop = col(/shop name/),
+    iClient = col(/client name/);
+  const body = [];
+  let k = hi + 1;
+  for (; k < grid.length; k += 1) {
+    const r = grid[k] || [];
+    if (!r.some((x) => cell(x))) break;             // أول سطر فاضي = نهاية الجدول
+    body.push(r);
+  }
+  // الملخص: أي صف بعد الجدول فيه عنوان معروف — القيمة = آخر خلية مش فاضية
+  const summary = {};
+  for (; k < grid.length; k += 1) {
+    const r = (grid[k] || []).map(cell);
+    const labelIdx = r.findIndex((x) => x && SUMMARY_KEYS.some(([, rx]) => rx.test(normKey(x))));
+    if (labelIdx < 0) continue;
+    const key = SUMMARY_KEYS.find(([, rx]) => rx.test(normKey(r[labelIdx])))[0];
+    const vals = r.slice(labelIdx + 1).filter((x) => x);
+    const v = vals.length ? num(vals[vals.length - 1]) : null;
+    summary[key] = v == null ? 0 : v;               // «SAR -» = صفر
+  }
+  const hasSummary = Object.keys(summary).length > 0;
+  const priceCol = head.findIndex((h) => /fee|price|amount|total|charge|cost|رسوم|المبلغ|الإجمالي|السعر/i.test(h));
+  if (iAwb < 0 || priceCol >= 0) {
+    // شكل تاني فيه سعر لكل سطر → المطابقة العامة بالأسماء
+    const rows = body.map((r) => Object.fromEntries(head.map((h, i) => [h, r[i] ?? ""])));
+    const lines = rows.map((o) => ({ ...mapInvoiceRow(o, c), raw: o })).filter((l) => l.ref || l.total != null)
+      .map((l) => ({ ...l, date: parseLjDate(l.date) || l.date }));
+    return { format: "generic", lines, summary: hasSummary ? summary : null, checks: null, header: head };
+  }
+  const isDelivered = (s) => /deliver|تم التوصيل|موصل/i.test(s);
+  const delivered = body.filter((r) => isDelivered(cell(r[iStatus])));
+  const nDel = summary.delivered || delivered.length;
+  const rate = summary.deliveryExVat > 0 && nDel > 0 ? r2(summary.deliveryExVat / nDel) : c.flatExVat;
+  const extraRate = summary.extraKm > 0 && summary.extraKmExVat > 0 ? summary.extraKmExVat / summary.extraKm : c.perKmExVat;
+  const lines = body.map((r) => {
+    const status = cell(r[iStatus]);
+    const dist = iDist >= 0 ? num(r[iDist]) : null;
+    const over = dist == null ? 0 : Math.max(0, dist - c.includedKm);
+    const extraKm = over <= 0 ? 0 : (c.kmRounding === "ceil" ? Math.ceil(over - 1e-9) : r2(over));
+    const billed = isDelivered(status);
+    const ex = billed ? r2(rate + extraKm * extraRate) : 0;
+    return {
+      ref: iAwb >= 0 ? cell(r[iAwb]) : "", theirNo: iNo >= 0 ? cell(r[iNo]) : null,
+      date: parseLjDate(iDate >= 0 ? r[iDate] : null), status, distanceKm: dist, extraKm: billed ? extraKm : 0,
+      exVat: ex, vat: r2(ex * vatRate), total: r2(ex * (1 + vatRate)), extraKmCharge: billed && extraKm ? r2(extraKm * extraRate) : null,
+      cancelFee: null, shop: iShop >= 0 ? cell(r[iShop]) : null, client: iClient >= 0 ? cell(r[iClient]) : null,
+      paymentType: iPay >= 0 ? cell(r[iPay]) : null,
+      raw: Object.fromEntries(head.map((h, i) => [h, r[i] ?? ""])),
+    };
+  });
+  const linesExVat = r2(lines.reduce((a, l) => a + l.exVat, 0));
+  const expectedPayment = hasSummary
+    ? r2((summary.deliveryExVat || 0) + (summary.codCharge || 0) + (summary.extraKmExVat || 0) - (summary.cashInHand || 0)) : null;
+  const checks = {
+    rows: lines.length, deliveredRows: delivered.length, perOrderExVat: rate, extraKmRate: r2(extraRate),
+    linesExVat,
+    deliveredCountMatches: summary.delivered == null ? null : summary.delivered === delivered.length,
+    paymentMatchesSummary: expectedPayment == null || summary.paymentExVat == null ? null : Math.abs(expectedPayment - summary.paymentExVat) < 0.01,
+    linesMatchPayment: summary.paymentExVat == null ? null : Math.abs(linesExVat - (summary.paymentExVat + (summary.cashInHand || 0) - (summary.codCharge || 0))) < 0.05,
+    rateMatchesContract: Math.abs(rate - c.flatExVat) < 0.01,
+  };
+  return { format: "leajlak_order_details", lines, summary: hasSummary ? summary : null, checks, header: head };
+}
+
+/* الشهر الغالب في تواريخ السطور — عشان ملف أغسطس مايتحطّش على سبتمبر غلط. */
+export function dominantMonth(lines) {
+  const n = {};
+  for (const l of lines || []) { const m = /^\d{4}-\d{2}/.exec(String(l.date || "")); if (m) n[m[0]] = (n[m[0]] || 0) + 1; }
+  const best = Object.entries(n).sort((a, b) => b[1] - a[1])[0];
+  return best ? best[0] : null;
+}
+
+const STATUS_EN = { delivered: "Delivered", cancelled: "Cancelled", pending: "New Order", assigned: "Order Accept", picked: "Shipped" };
+const mdY = (iso) => {                               // نفس شكل تاريخهم: 8/30/26
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(iso || ""));
+  return m ? `${Number(m[2])}/${Number(m[3])}/${m[1].slice(2)}` : "";
+};
+const riyadhDate = (d) => {
+  try { return new Date(d).toLocaleString("sv-SE", { timeZone: "Asia/Riyadh" }).slice(0, 10); } catch { return null; }
+};
+
+/* جدول التصدير: نفس أعمدة ملفهم بالظبط (بنفس الترتيب) + أعمدتنا جنبها،
+   وتحت نفس ملخصهم بعمودين «لاجلك» و«إحنا» — آخر الشهر تحط الملفين جنب
+   بعض وتعلّم سطر سطر. */
+export function exportTable(rec, { shopName = "FRESH CUTS-JED-SALAMAH", clientName = "FRESH CUTS" } = {}) {
+  const L = FLAG_AR;
+  const rows = rec.rows.map((r) => {
+    const ln = r.line || {};
+    return {
+      "Order Date": ln.date ? mdY(ln.date) : mdY(riyadhDate(r.at)),
+      "Order No": r.theirNo || ln.theirNo || "",
+      "Client Name": ln.client || clientName,
+      "Shop Name": ln.shop || shopName,
+      "AWB": r.orderNo,
+      "Dist. b/w Shop & Dlvry": r.theirKm ?? "",
+      "Order Status": ln.status || (r.status ? STATUS_EN[r.status] || r.status : ""),
+      "Payment Type": ln.paymentType || "Pre Paid",
+      "✓": r.ticked ? "✓" : "",
+      "مسافتنا كم": r.ourKm ?? "",
+      "كم إضافي": r.expected?.extraKm ?? "",
+      "المتوقع قبل الضريبة": r.expected?.exVat ?? "",
+      "المفوتر قبل الضريبة": r.chargedExVat ?? "",
+      "الفرق قبل الضريبة": r.chargedExVat != null && r.expected ? r2(r.chargedExVat - r.expected.exVat) : "",
+      "المفوتر شامل": r.charged ?? "",
+      "رسوم العميل": r.customerFee,
+      "الهامش": r.margin ?? "",
+      "مرجع لاجلك (dsp)": r.providerRef || "",
+      "ملاحظات": [r.isTest ? "طلب تجريبي" : "", ...r.flags.map((f) => L[f] || f)].filter(Boolean).join(" · "),
+    };
+  });
+  for (const l of rec.unmatched || []) {
+    rows.push({
+      "Order Date": mdY(l.date), "Order No": l.theirNo || "", "Client Name": l.client || clientName,
+      "Shop Name": l.shop || shopName, "AWB": l.ref || "", "Dist. b/w Shop & Dlvry": l.distanceKm ?? "",
+      "Order Status": l.status || "", "Payment Type": l.paymentType || "",
+      "✓": "", "مسافتنا كم": "", "كم إضافي": l.extraKm ?? "", "المتوقع قبل الضريبة": "",
+      "المفوتر قبل الضريبة": l.exVat ?? "", "الفرق قبل الضريبة": "", "المفوتر شامل": l.total ?? "",
+      "رسوم العميل": "", "الهامش": "", "مرجع لاجلك (dsp)": "",
+      "ملاحظات": l.flags.map((f) => L[f] || f).join(" · "),
+    });
+  }
+  const t = rec.totals; const s = rec.invoice?.summary || {};
+  const ours = rec.rows.filter((r) => r.status === "delivered");
+  const ourExtraKm = r2(ours.reduce((a, r) => a + (r.expected?.extraKm || 0), 0));
+  const ourExtraEx = r2(ours.reduce((a, r) => a + (r.expected?.extraExVat || 0), 0));
+  const ourDelEx = r2(ours.reduce((a, r) => a + ((r.expected?.exVat || 0) - (r.expected?.extraExVat || 0)), 0));
+  const summary = [
+    { label: "Total Order Delivered", leajlak: s.delivered ?? "", ours: ours.length },
+    { label: "Financial request for delivery", leajlak: s.deliveryExVat ?? "", ours: ourDelEx },
+    { label: "COD Charge", leajlak: s.codCharge ?? "", ours: 0 },
+    { label: "Cash in Hand", leajlak: s.cashInHand ?? "", ours: 0 },
+    { label: "Extra km", leajlak: s.extraKm ?? "", ours: ourExtraKm },
+    { label: "Financial request Extra km", leajlak: s.extraKmExVat ?? "", ours: ourExtraEx },
+    { label: "Payment", leajlak: s.paymentExVat ?? "", ours: r2(ourDelEx + ourExtraEx) },
+    { label: "VAT 15%", leajlak: rec.invoice?.taxInvoice?.vat ?? "", ours: r2((ourDelEx + ourExtraEx) * (rec.contract.vatPct / 100)) },
+    { label: "Invoice Total (incl. VAT)", leajlak: rec.invoice?.taxInvoice?.total ?? "", ours: r2((ourDelEx + ourExtraEx) * (1 + rec.contract.vatPct / 100)) },
+  ];
+  return { columns: rows.length ? Object.keys(rows[0]) : [...LJ_EXPORT_COLS], rows, summary, totals: t };
+}
+
+export function toCsv(rec, opts = {}) {
   const esc = (v) => {
     if (v == null) return "";
     const s = String(v);
     return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
   };
-  const head = ["#", "مرجع لاجلك (dsp_order_id)", "رقم طلبنا", "التاريخ (الرياض)", "الحالة", "تجريبي",
-    "مسافتنا كم", "مسافتهم كم", "كم إضافي", "المتوقع قبل الضريبة", "ضريبة المتوقع", "المتوقع شامل",
-    "المفوتر شامل", "مصدر المفوتر", "الفرق", "رسوم العميل", "الهامش", "ملاحظات", "✓ مطابق"];
-  const fmtDate = (d) => {
-    if (!d) return "";
-    try {
-      return new Date(d).toLocaleString("sv-SE", { timeZone: "Asia/Riyadh" }).slice(0, 16);
-    } catch { return String(d); }
-  };
-  const lines = [head.map(esc).join(",")];
-  let i = 0;
-  for (const r of rec.rows) {
-    i += 1;
-    lines.push([i, r.providerRef || "", r.orderNo, fmtDate(r.at), r.status ? (STATUS_AR[r.status] || r.status) : "—",
-      r.isTest ? "نعم" : "", r.ourKm ?? "", r.theirKm ?? "", r.expected?.extraKm ?? "",
-      r.expected?.exVat ?? "", r.expected?.vat ?? "", r.expected?.total ?? "",
-      r.charged ?? "", r.chargedSource || "", r.diff ?? "", r.customerFee, r.margin ?? "",
-      r.flags.map((f) => FLAG_AR[f] || f).join(" · "), r.ticked ? "✓" : ""].map(esc).join(","));
-  }
-  for (const l of rec.unmatched || []) {
-    i += 1;
-    lines.push([i, l.ref, "", l.date || "", l.status || "", "", "", l.distanceKm ?? "", "", "", "", "",
-      l.total ?? "", "invoice", "", "", "", l.flags.map((f) => FLAG_AR[f] || f).join(" · "), ""].map(esc).join(","));
-  }
-  const t = rec.totals;
-  lines.push("");
-  lines.push(["", "الإجمالي", month || "", "", `${t.shipments} شحنة`, "", "", "", t.extraKmTotal,
-    t.expectedExVat, t.expectedVat, t.expectedTotal, t.charged + t.unmatchedTotal, "", "", t.customerFees, t.margin, "", ""].map(esc).join(","));
-  return "﻿" + lines.join("\r\n") + "\r\n";
+  const tb = exportTable(rec, opts);
+  const cols = tb.columns;
+  const out = [cols.map(esc).join(",")];
+  for (const r of tb.rows) out.push(cols.map((k) => esc(r[k])).join(","));
+  out.push("");
+  out.push(["", "", "", "", "", "", "Leajlak", "Fresh Cuts (expected)"].map(esc).join(","));
+  for (const s of tb.summary) out.push(["", "", "", s.label, "", "", s.leajlak, s.ours].map(esc).join(","));
+  return "﻿" + out.join("\r\n") + "\r\n";
 }
 
 /* ═══ التسجيل ═════════════════════════════════════════════════════════════ */
@@ -395,6 +579,23 @@ export function register(app, ctx, deps = {}) {
         imported_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
       );
       CREATE INDEX IF NOT EXISTS dl_invoice_lines_period_idx ON dl_invoice_lines(provider, period);
+      -- «Order No» في ملفهم = رقمهم الداخلي (مش الـdsp uuid)، AWB = رقم طلبنا
+      ALTER TABLE dl_invoice_lines ADD COLUMN IF NOT EXISTS their_no TEXT;
+      ALTER TABLE dl_invoice_lines ADD COLUMN IF NOT EXISTS extra_km NUMERIC;
+      ALTER TABLE dl_invoice_lines ADD COLUMN IF NOT EXISTS match_by TEXT;
+      ALTER TABLE dl_shipments ADD COLUMN IF NOT EXISTS provider_order_no TEXT;
+      -- رأس فاتورة الشهر: ملخص ملف Order Details + الفاتورة الضريبية (PDF)
+      CREATE TABLE IF NOT EXISTS dl_invoices (
+        provider TEXT NOT NULL DEFAULT 'leajlak',
+        period TEXT NOT NULL,
+        format TEXT,
+        file_name TEXT,
+        summary JSONB,
+        checks JSONB,
+        tax_invoice JSONB,
+        imported_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        PRIMARY KEY (provider, period)
+      );
     `);
   }
 
@@ -441,7 +642,7 @@ export function register(app, ctx, deps = {}) {
       customerFee: Number(r.customer_fee) || 0, farSurcharge: r.far_surcharge,
       feeActual: r.fee_actual != null ? Number(r.fee_actual) : null, feeSource: r.fee_source,
       feeDistanceKm: r.fee_distance_km != null ? Number(r.fee_distance_km) : null,
-      reconOk: r.recon_ok, feeNote: r.fee_note,
+      reconOk: r.recon_ok, feeNote: r.fee_note, providerOrderNo: r.provider_order_no,
     }));
     // طلب توصيل اتوصّل/في الطريق من غير أي شحنة لاجلك = يا اتدخّل يدوي على
     // لوحتهم (وهيظهر في الفاتورة من غير ما نعرفه) يا مندوب تاني.
@@ -465,8 +666,13 @@ export function register(app, ctx, deps = {}) {
       total: l.total != null ? Number(l.total) : null, exVat: l.ex_vat != null ? Number(l.ex_vat) : null,
       vat: l.vat != null ? Number(l.vat) : null, distanceKm: l.distance_km != null ? Number(l.distance_km) : null,
       cancelFee: l.cancel_fee != null ? Number(l.cancel_fee) : null, status: l.status, date: l.line_date,
+      theirNo: l.their_no, extraKm: l.extra_km != null ? Number(l.extra_km) : null, matchBy: l.match_by,
+      shop: l.raw?.["Shop Name"] || null, client: l.raw?.["Client Name"] || null, paymentType: l.raw?.["Payment Type"] || null,
     }));
-    return reconcile({ shipments, orphanOrders, lines, contract: c });
+    const inv = (await pool.query(`SELECT * FROM dl_invoices WHERE provider='leajlak' AND period=$1`, [month])).rows[0];
+    const invoice = inv ? { format: inv.format, fileName: inv.file_name, summary: inv.summary, checks: inv.checks,
+                            taxInvoice: inv.tax_invoice, importedAt: inv.imported_at } : null;
+    return reconcile({ shipments, orphanOrders, lines, contract: c, invoice });
   }
 
   const monthOk = (m) => /^\d{4}-\d{2}$/.test(String(m || ""));
@@ -508,7 +714,7 @@ export function register(app, ctx, deps = {}) {
     if (!monthOk(month)) return c.json({ ok: false, error: "month لازم YYYY-MM" }, 400);
     await backfill().catch(() => {});
     const rec = await load(month);
-    return c.json({ ok: true, month, flagLabels: FLAG_AR, ...rec,
+    return c.json({ ok: true, month, flagLabels: FLAG_AR, ...rec, export: exportTable(rec),
       apiFacts: {
         feeInApi: false,
         note: "API الشركاء عند لاجلك مابيرجّعش رسوم ولا مسافة (مجرّب ١٩/٩ على POST/GET/DELETE والويبهوك). المفوتَر بييجي من ملف الفاتورة أو تصدير لوحتهم أو إدخال يدوي.",
@@ -520,46 +726,61 @@ export function register(app, ctx, deps = {}) {
     const month = c.req.query("month") || riyadhMonth();
     if (!monthOk(month)) return c.text("bad month", 400);
     await backfill().catch(() => {});
-    const csv = toCsv(await load(month), { month });
+    const csv = toCsv(await load(month));
     return new Response(csv, { headers: {
       "Content-Type": "text/csv; charset=utf-8",
       "Content-Disposition": `attachment; filename="leajlak-recon-${month}.csv"`,
     } });
   });
 
-  /* استيراد الفاتورة: اللوحة بتقرا الملف (CSV/XLSX) وبتبعت الصفوف خام.
-     استيراد نفس الشهر تاني بيستبدل سطوره — آمن تعيده. */
-  app.post("/api/delivery/leajlak/import", async (c) => {
-    const err = await requireAdmin(c); if (err) return err;
-    const b = await c.req.json().catch(() => ({}));
-    const month = String(b.month || "");
-    if (!monthOk(month)) return c.json({ ok: false, error: "month لازم YYYY-MM" });
-    const raw = Array.isArray(b.rows) ? b.rows.slice(0, 5000) : [];
-    if (!raw.length) return c.json({ ok: false, error: "الملف فاضي" });
+  /* استيراد ملف لاجلك الشهري (Order Details.xlsx أو CSV). اللوحة بتبعت
+     الشيت خام كشبكة (grid) عشان الملخص اللي تحت الجدول يوصل كمان.
+     month = "auto" → الشهر الغالب في تواريخ السطور. إعادة الاستيراد لنفس
+     الشهر بتستبدل سطوره — آمنة.
+     المطابقة: AWB/رقم طلبنا/الـuuid → رقمهم (Order No) المحفوظ → نفس اليوم
+     لو فيه شحنة واحدة بس موصّلة ومش متطابقة في اليوم ده. */
+  async function importSheet({ month, grid, rows, fileName, source }) {
     const cfg = ljContract((await getSettingsData())?.delivery || {});
-    const mapped = raw.map((r) => ({ ...mapInvoiceRow(r, cfg), raw: r }))
-      .filter((l) => l.ref || l.total != null);
-    const withRef = mapped.filter((l) => l.ref);
-    if (!withRef.length) {
-      return c.json({ ok: false, error: "مالقيناش عمود رقم الطلب في الملف", sampleColumns: Object.keys(raw[0] || {}) });
-    }
-    if (!mapped.some((l) => l.total != null)) {
-      return c.json({ ok: false, error: "مالقيناش عمود المبلغ/الرسوم في الملف", sampleColumns: Object.keys(raw[0] || {}) });
-    }
-    // مطابقة المرجع: رقم طلبنا (W…) أو الـUUID بتاعهم — على كل الشهور، مش
-    // الشهر ده بس (طلب ١١:٥٩ بالليل ممكن يقع في فاتورة الشهر اللي بعده).
-    const refs = [...new Set(withRef.map((l) => l.ref))];
+    let parsed;
+    if (Array.isArray(grid) && grid.length) parsed = parseLeajlakSheet(grid.slice(0, 6000), cfg);
+    else if (Array.isArray(rows) && rows.length) {
+      const lines = rows.slice(0, 5000).map((r) => ({ ...mapInvoiceRow(r, cfg), raw: r }))
+        .filter((l) => l.ref || l.total != null).map((l) => ({ ...l, date: parseLjDate(l.date) || l.date }));
+      parsed = { format: "generic", lines, summary: null, checks: null };
+    } else return { ok: false, error: "الملف فاضي" };
+    const lines = parsed.lines;
+    if (!lines.length) return { ok: false, error: "مالقيناش جدول طلبات في الملف (عمود AWB / Order No)", header: parsed.header || null };
+    if (!lines.some((l) => l.ref)) return { ok: false, error: "مالقيناش عمود رقم الطلب (AWB)", header: parsed.header || null };
+    if (!lines.some((l) => l.total != null)) return { ok: false, error: "مالقيناش مبالغ في الملف", header: parsed.header || null };
+    const detected = dominantMonth(lines);
+    const period = month === "auto" || !monthOk(month) ? (detected || riyadhMonth()) : month;
+
+    const refs = [...new Set(lines.flatMap((l) => [l.ref, l.theirNo]).filter(Boolean))];
     const sh = (await pool.query(
-      `SELECT id, shop_order_no, provider_ref, status FROM dl_shipments
-        WHERE provider='leajlak' AND (provider_ref = ANY($1) OR shop_order_no = ANY($1))
-        ORDER BY (status='cancelled'), id DESC`, [refs])).rows;
+      `SELECT id, shop_order_no, provider_ref, provider_order_no, status,
+              to_char(created_at AT TIME ZONE 'Asia/Riyadh','YYYY-MM-DD') AS day
+         FROM dl_shipments
+        WHERE provider='leajlak' AND (provider_ref = ANY($1) OR shop_order_no = ANY($1) OR provider_order_no = ANY($1)
+              OR invoice_period = $2)
+        ORDER BY (status='cancelled'), id DESC`, [refs, period])).rows;
     const idx = new Map();
-    for (const s of sh) {
-      if (s.provider_ref && !idx.has(s.provider_ref)) idx.set(s.provider_ref, Number(s.id));
-      if (!idx.has(s.shop_order_no)) idx.set(s.shop_order_no, Number(s.id));
+    for (const x of sh) {
+      for (const k of [x.provider_ref, x.shop_order_no, x.provider_order_no]) if (k && !idx.has(k)) idx.set(k, Number(x.id));
     }
+    const used = new Set();
+    for (const l of lines) {
+      let sid = (l.ref && idx.get(l.ref)) ?? null; let by = sid != null ? "awb" : null;
+      if (sid == null && l.theirNo && idx.has(l.theirNo)) { sid = idx.get(l.theirNo); by = "their_no"; }
+      l.shipmentId = sid; l.matchBy = by;
+      if (sid != null) used.add(sid);
+    }
+    for (const l of lines) {
+      if (l.shipmentId != null || !l.date) continue;
+      const cands = sh.filter((x) => x.day === l.date && !used.has(Number(x.id)) && x.status !== "cancelled");
+      if (cands.length === 1) { l.shipmentId = Number(cands[0].id); l.matchBy = "date"; used.add(l.shipmentId); }
+    }
+
     const client = await pool.connect();
-    let matched = 0;
     try {
       await client.query("BEGIN");
       // سطور الشهر القديمة هتتمسح → الرسوم اللي جت منها على الشحنات ترجع فاضية
@@ -567,43 +788,75 @@ export function register(app, ctx, deps = {}) {
         `UPDATE dl_shipments SET fee_actual=NULL, fee_vat=NULL, fee_distance_km=NULL, fee_extra_km_charge=NULL,
                 fee_cancel=NULL, fee_source=NULL, fee_updated_at=NOW()
           WHERE provider='leajlak' AND fee_source='invoice'
-            AND id IN (SELECT shipment_id FROM dl_invoice_lines WHERE provider='leajlak' AND period=$1 AND shipment_id IS NOT NULL)`, [month]);
-      await client.query("DELETE FROM dl_invoice_lines WHERE provider='leajlak' AND period=$1", [month]);
+            AND id IN (SELECT shipment_id FROM dl_invoice_lines WHERE provider='leajlak' AND period=$1 AND shipment_id IS NOT NULL)`, [period]);
+      await client.query("DELETE FROM dl_invoice_lines WHERE provider='leajlak' AND period=$1", [period]);
       const agg = new Map();
-      for (const l of mapped) {
-        const sid = l.ref ? idx.get(l.ref) ?? null : null;
-        if (sid != null) {
-          matched += 1;
-          const a = agg.get(sid) || { total: 0, vat: 0, km: null, extra: null, cancel: null };
+      for (const l of lines) {
+        if (l.shipmentId != null) {
+          const a = agg.get(l.shipmentId) || { total: 0, vat: 0, km: null, extra: null, cancel: null, theirNo: null };
           a.total += Number(l.total) || 0; a.vat += Number(l.vat) || 0;
           if (l.distanceKm != null) a.km = l.distanceKm;
           if (l.extraKmCharge != null) a.extra = (a.extra || 0) + l.extraKmCharge;
           if (l.cancelFee != null) a.cancel = (a.cancel || 0) + l.cancelFee;
-          agg.set(sid, a);
+          if (l.theirNo) a.theirNo = l.theirNo;
+          agg.set(l.shipmentId, a);
         }
         await client.query(
           `INSERT INTO dl_invoice_lines(provider, period, ref, shipment_id, total, ex_vat, vat, distance_km,
-                                        extra_km_charge, cancel_fee, status, line_date, raw, source)
-           VALUES ('leajlak',$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
-          [month, l.ref || null, sid, l.total, l.exVat, l.vat, l.distanceKm, l.extraKmCharge, l.cancelFee,
-           l.status, l.date, jb(l.raw), String(b.source || "invoice").slice(0, 30)]);
+                                        extra_km_charge, cancel_fee, status, line_date, raw, source, their_no, extra_km, match_by)
+           VALUES ('leajlak',$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)`,
+          [period, l.ref || null, l.shipmentId, l.total, l.exVat, l.vat, l.distanceKm, l.extraKmCharge ?? null, l.cancelFee ?? null,
+           l.status, l.date, jb(l.raw || {}), String(source || "invoice").slice(0, 30), l.theirNo || null, l.extraKm ?? null, l.matchBy]);
       }
       for (const [sid, a] of agg) {
         await client.query(
           `UPDATE dl_shipments SET fee_actual=$2, fee_vat=$3, fee_distance_km=$4, fee_extra_km_charge=$5,
-                  fee_cancel=$6, fee_source='invoice', fee_updated_at=NOW() WHERE id=$1`,
-          [sid, r2(a.total), r2(a.vat), a.km, a.extra, a.cancel]);
+                  fee_cancel=$6, fee_source='invoice', fee_updated_at=NOW(),
+                  provider_order_no=COALESCE($7, provider_order_no) WHERE id=$1`,
+          [sid, r2(a.total), r2(a.vat), a.km, a.extra, a.cancel, a.theirNo]);
       }
+      await client.query(
+        `INSERT INTO dl_invoices(provider, period, format, file_name, summary, checks, imported_at)
+         VALUES ('leajlak',$1,$2,$3,$4,$5,NOW())
+         ON CONFLICT (provider, period) DO UPDATE SET format=EXCLUDED.format, file_name=EXCLUDED.file_name,
+           summary=EXCLUDED.summary, checks=EXCLUDED.checks, imported_at=NOW()`,
+        [period, parsed.format, fileName ? String(fileName).slice(0, 200) : null, jb(parsed.summary), jb(parsed.checks)]);
       await client.query("COMMIT");
     } catch (e) {
       await client.query("ROLLBACK").catch(() => {});
       client.release();
-      return c.json({ ok: false, error: `فشل الحفظ: ${e.message}` });
+      return { ok: false, error: `فشل الحفظ: ${e.message}` };
     }
     client.release();
-    return c.json({ ok: true, month, lines: mapped.length, matched, unmatched: mapped.length - matched,
-                    columns: mapped[0]?.columns || null });
+    const matched = lines.filter((l) => l.shipmentId != null).length;
+    return { ok: true, month: period, detectedMonth: detected, format: parsed.format, lines: lines.length, matched,
+             unmatched: lines.length - matched, byMethod: lines.reduce((a, l) => { if (l.matchBy) a[l.matchBy] = (a[l.matchBy] || 0) + 1; return a; }, {}),
+             summary: parsed.summary, checks: parsed.checks };
+  }
+
+  app.post("/api/delivery/leajlak/import", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    const b = await c.req.json().catch(() => ({}));
+    return c.json(await importSheet(b));
   });
+
+  /* الفاتورة الضريبية (PDF) — أرقامها بتتكتب من اللوحة: رقم الفاتورة، الخاضع
+     للضريبة، الضريبة، الإجمالي، تاريخ الاستحقاق. بتتقارن بملخص الملف وبالمتوقَّع. */
+  app.post("/api/delivery/leajlak/invoice", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    const b = await c.req.json().catch(() => ({}));
+    if (!monthOk(b.month)) return c.json({ ok: false, error: "month لازم YYYY-MM" });
+    const ti = {
+      no: b.no ? String(b.no).slice(0, 60) : null, taxable: num(b.taxable), vat: num(b.vat), total: num(b.total),
+      qty: num(b.qty), date: b.date ? String(b.date).slice(0, 20) : null, due: b.due ? String(b.due).slice(0, 20) : null,
+      paid: Boolean(b.paid),
+    };
+    await pool.query(
+      `INSERT INTO dl_invoices(provider, period, tax_invoice) VALUES ('leajlak',$1,$2)
+       ON CONFLICT (provider, period) DO UPDATE SET tax_invoice=EXCLUDED.tax_invoice`, [b.month, jb(ti)]);
+    return c.json({ ok: true, taxInvoice: ti });
+  });
+
 
   /* تعديل شحنة واحدة: رسوم يدوي (من لوحتهم)، ملاحظة، علامة «مطابق». */
   app.post("/api/delivery/leajlak/shipment/:id", async (c) => {
@@ -661,5 +914,5 @@ export function register(app, ctx, deps = {}) {
     return c.json({ ok: true, feeFound: out.some((o) => o.fee != null), results: out });
   });
 
-  return { backfill, load };
+  return { backfill, load, importSheet };
 }

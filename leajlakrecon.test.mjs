@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { expectedLeajlakFee, ljContract, feeFromApi, mapInvoiceRow, reconcile, toCsv } from "./leajlakrecon.js";
+import { expectedLeajlakFee, ljContract, feeFromApi, mapInvoiceRow, reconcile, toCsv, parseLeajlakSheet, parseLjDate, dominantMonth, exportTable, LJ_EXPORT_COLS } from "./leajlakrecon.js";
 
 const C = ljContract({});
 
@@ -107,11 +107,73 @@ test("reconcile: manual fee used when no invoice, distance gap flagged", () => {
   assert.ok(r.rows[0].flags.includes("distance_gap"));
 });
 
-test("toCsv: BOM, header, one line per row + totals, quotes escaped", () => {
-  const r = reconcile({ shipments: [ship({ feeNote: 'a,"b"' })], lines: [{ ref: "zzz", total: 5 }], contract: C });
-  const csv = toCsv(r, { month: "2026-09" });
-  assert.ok(csv.startsWith("﻿#,"));
-  const lines = csv.trim().split("\r\n");
-  assert.equal(lines.length, 1 + 1 + 1 + 2);
-  assert.ok(lines[1].includes("W1") && lines[1].includes("19.55"));
+// ملف أغسطس الحقيقي من لاجلك (FRESH CUTS August 2026 Order Details.xlsx) كما يقراه xlsx بـ header:1
+const AUG = [
+  ["Order Date", "Order No", "Client Name", "Shop Name", "AWB", "Dist. b/w Shop & Dlvry", "Order Status", "Payment Type"],
+  ["8/30/26", "3142728", "FRESH CUTS", "FRESH CUTS-JED-SALAMAH", "W1788110759469", "0.017", "Delivered", "Pre Paid"],
+  ["", "", "", "", "", "", "", ""], ["", "", "", "", "", "", "", ""], ["", "", "", "", "", "", "", ""],
+  ["", "", "", "FRESH CUTS", "", "", "", ""],
+  ["", "", "", "Total Order Delivered ", "", "", "1", ""],
+  ["", "", "", "Financial request for delivery", "", "", "SAR 17.00 ", ""],
+  ["", "", "", "COD Charge", "", "", "SAR 0.00 ", ""],
+  ["", "", "", "Cash in Hand ", "", "", "SAR 0", ""],
+  ["", "", "", "Extra km", "", "", "0.00", ""],
+  ["", "", "", "Financial request Extra km", "", "", " SAR -   ", ""],
+  ["", "", "", "Payment", "", "", "SAR 17.00 ", ""],
+];
+
+test("parseLeajlakSheet: real August Order Details file", () => {
+  const p = parseLeajlakSheet(AUG, C);
+  assert.equal(p.format, "leajlak_order_details");
+  assert.equal(p.lines.length, 1);
+  const l = p.lines[0];
+  assert.equal(l.ref, "W1788110759469"); assert.equal(l.theirNo, "3142728"); assert.equal(l.date, "2026-08-30");
+  assert.equal(l.distanceKm, 0.017); assert.equal(l.exVat, 17); assert.equal(l.vat, 2.55); assert.equal(l.total, 19.55);
+  assert.deepEqual(p.summary, { delivered: 1, deliveryExVat: 17, codCharge: 0, cashInHand: 0, extraKm: 0, extraKmExVat: 0, paymentExVat: 17 });
+  assert.equal(p.checks.deliveredCountMatches, true); assert.equal(p.checks.paymentMatchesSummary, true);
+  assert.equal(p.checks.linesMatchPayment, true); assert.equal(p.checks.rateMatchesContract, true);
+  assert.equal(dominantMonth(p.lines), "2026-08");
+});
+
+test("parseLeajlakSheet: extra km billed from their distance, cancelled rows free", () => {
+  const g = [AUG[0],
+    ["9/2/26", "1", "FRESH CUTS", "S", "W1", "12.4", "Delivered", "Pre Paid"],
+    ["9/3/26", "2", "FRESH CUTS", "S", "W2", "3", "Cancelled", "Pre Paid"], [],
+    ["", "", "", "Total Order Delivered", "", "", "1"], ["", "", "", "Financial request for delivery", "", "", "SAR 17.00"],
+    ["", "", "", "Extra km", "", "", "3.00"], ["", "", "", "Financial request Extra km", "", "", "SAR 6.00"],
+    ["", "", "", "Payment", "", "", "SAR 23.00"]];
+  const p = parseLeajlakSheet(g, C);
+  assert.equal(p.lines[0].extraKm, 3); assert.equal(p.lines[0].exVat, 23);
+  assert.equal(p.lines[1].exVat, 0);
+  assert.equal(p.checks.linesMatchPayment, true);
+});
+
+test("parseLjDate: their M/D/YY and ISO", () => {
+  assert.equal(parseLjDate("8/30/26"), "2026-08-30");
+  assert.equal(parseLjDate("2026-09-01 10:00"), "2026-09-01");
+  assert.equal(parseLjDate("30/08/2026"), "2026-08-30");
+});
+
+test("export mirrors their columns in order, with their summary beside ours", () => {
+  const p = parseLeajlakSheet(AUG, C);
+  const line = { ...p.lines[0], shipmentId: 1 };
+  const r = reconcile({ shipments: [ship({ orderNo: "W1788110759469", ourKm: 1.29, isTest: true })], lines: [line], contract: C,
+    invoice: { summary: p.summary, taxInvoice: { no: "INV/2026/00598", taxable: 17, vat: 2.55, total: 19.55 } } });
+  assert.equal(r.rows[0].charged, 19.55); assert.equal(r.rows[0].chargedExVat, 17);
+  assert.ok(!r.rows[0].flags.includes("over_expected"));
+  const t = exportTable(r);
+  assert.deepEqual(t.columns.slice(0, 8), LJ_EXPORT_COLS);
+  assert.equal(t.rows[0]["Order Date"], "8/30/26"); assert.equal(t.rows[0]["Order No"], "3142728");
+  assert.equal(t.rows[0]["AWB"], "W1788110759469"); assert.equal(t.rows[0]["Order Status"], "Delivered");
+  const pay = t.summary.find((x) => x.label === "Payment");
+  assert.equal(pay.leajlak, 17); assert.equal(pay.ours, 17);
+  assert.equal(t.summary.find((x) => x.label.startsWith("Invoice Total")).ours, 19.55);
+  const csv = toCsv(r);
+  assert.ok(csv.startsWith("﻿Order Date,Order No,Client Name,Shop Name,AWB,"));
+});
+
+test("reconcile: delivered shipment absent from an imported invoice is flagged (not bad)", () => {
+  const r = reconcile({ shipments: [ship({ id: 1 }), ship({ id: 2, orderNo: "W2", providerRef: "u2" })],
+    lines: [{ ref: "W1", total: 19.55, exVat: 17 }], contract: C });
+  assert.ok(r.rows.find((x) => x.orderNo === "W2").flags.includes("missing_from_invoice"));
 });
