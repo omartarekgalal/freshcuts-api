@@ -208,15 +208,19 @@ export function register(app, ctx, deps = {}) {
       const keyOk = Boolean(process.env.MYFATOORAH_API_KEY);
       const w = await q1(`SELECT max(created_at) AS last, count(*) FILTER (WHERE NOT signature_ok AND created_at > NOW() - interval '24 hours')::int AS badsig
                             FROM pay_webhook_log`);
-      const e = await q1(`SELECT count(*) FILTER (WHERE ok)::int AS ok, count(*) FILTER (WHERE NOT ok)::int AS fail
+      /* «Failed/InProgress» من ماي فاتورة = العميل رفض/لسه بيدفع — مش عطل. العطل = نداء
+         مارجعش حالة أصلاً (مفيش mf_tx_status). */
+      const e = await q1(`SELECT count(*) FILTER (WHERE ok)::int AS ok,
+                                 count(*) FILTER (WHERE NOT ok AND coalesce(data->>'mf_tx_status','') = '')::int AS fail,
+                                 count(*) FILTER (WHERE NOT ok AND data->>'mf_tx_status' = 'Failed')::int AS declined
                             FROM shop_order_events WHERE name='payment_check' AND at > NOW() - interval '24 hours'`);
       const paid = await q1(`SELECT max(created_at) AS last, count(*)::int AS n FROM shop_orders
                               WHERE mf_payment_id IS NOT NULL AND coalesce(is_test,false)=false AND created_at > NOW() - interval '7 days'`);
       let st = !keyOk ? "bad" : e.fail > e.ok && e.fail >= 3 ? "bad" : e.fail || w.badsig ? "warn" : "good";
       return comp("myfatoorah", "ops", "ماي فاتورة (الدفع)", st,
         !keyOk ? "مفتاح ماي فاتورة مش موجود — الدفع واقف."
-          : `آخر دفعة ناجحة ${ago(minsSince(paid.last))} (${ar(paid.n)} في ٧ أيام)؛ فحوص الدفع ٢٤ ساعة: ${ar(e.ok)} تمام / ${ar(e.fail)} فشل؛ آخر webhook ${ago(minsSince(w.last))}.`,
-        { last: paid.last, detail: { keyConfigured: keyOk, checksOk24: e.ok, checksFail24: e.fail, badSignature24: w.badsig, lastWebhook: iso(w.last) } });
+          : `آخر دفعة ناجحة ${ago(minsSince(paid.last))} (${ar(paid.n)} في ٧ أيام)؛ ٢٤ ساعة: ${ar(e.ok)} دفعة اتأكدت، ${ar(e.fail)} نداء فشل، ${ar(e.declined)} فحص لمحاولة مرفوضة من البنك (مش عطل).`,
+        { last: paid.last, detail: { keyConfigured: keyOk, checksOk24: e.ok, apiFail24: e.fail, declinedChecks24: e.declined, badSignature24: w.badsig, lastWebhook: iso(w.last) } });
     });
 
     add("google", "ops", "جوجل — Routes (مسافة التوصيل) وPlaces (التقييم)", async () => {
@@ -268,11 +272,15 @@ export function register(app, ctx, deps = {}) {
 
     add("analytics", "marketing", "Clarity + جوجل أناليتكس (التتبّع)", async () => {
       const c = await q1(`SELECT max(pulled_at) FILTER (WHERE ok) AS last_ok, max(pulled_at) FILTER (WHERE NOT ok) AS last_fail FROM clarity_pulls`);
+      // التاجات بيحمّلها static/analytics.js من /api/config (GA4_ID/CLARITY_ID في .env بتاع المتجر)
       const html = (await getHome()).text;
-      const clarityTag = /clarity\.ms/.test(html), gaTag = /googletagmanager\.com|gtag\(/.test(html);
+      let cfgJ = null;
+      try { cfgJ = await (await fetch(`${STOREFRONT()}/api/config`, { signal: AbortSignal.timeout(8000) })).json(); } catch { cfgJ = null; }
+      const loader = /analytics\.js/.test(html);
+      const clarityTag = loader && !!(cfgJ && cfgJ.clarity_id), gaTag = loader && !!(cfgJ && (cfgJ.ga4_id || cfgJ.gtag_loader_id));
       const token = Boolean(process.env.CLARITY_API_TOKEN);
       const pullFresh = freshness(c.last_ok, { warnMin: 36 * 60, badMin: 72 * 60, open: true });
-      const st = !html ? "unknown" : !clarityTag ? "bad" : !token || pullFresh !== "good" || !gaTag ? "warn" : "good";
+      const st = !html || !cfgJ ? "unknown" : !clarityTag ? "bad" : !token || pullFresh !== "good" || !gaTag ? "warn" : "good";
       return comp("analytics", "marketing", "Clarity + جوجل أناليتكس (التتبّع)", st,
         `على المتجر: Clarity ${clarityTag ? "✓" : "✗"} · GA ${gaTag ? "✓" : "✗"}. سحب تقارير Clarity: ${token ? `آخر نجاح ${ago(minsSince(c.last_ok))}` : "مفيش توكن"}.`,
         { last: c.last_ok, detail: { clarityTag, gaTag, clarityToken: token, lastPullOk: iso(c.last_ok), lastPullFail: iso(c.last_fail) } });
