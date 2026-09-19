@@ -463,8 +463,9 @@ export function register(app, ctx, deps = {}) {
     if (aligned && Array.isArray(aligned.days)) {
       spendSource = "aligned";
       for (const F of families) {
-        const tot = aligned.days.reduce((s0, d) => s0 + (d[F.id] == null ? 0 : num(d[F.id])), 0);
-        if (aligned.days.some((d) => d[F.id] != null) && F.id !== "whatsapp") F.alignedSpend = r2(F.id === "meta" ? tot - num(waFam.spend) : tot);
+        // contract: meta includes WhatsApp; whatsapp is its own column
+        const val = (d) => (F.id === "meta" ? (d.meta == null ? null : num(d.meta) - num(d.whatsapp)) : d[F.id]);
+        if (aligned.days.some((d) => val(d) != null)) F.alignedSpend = r2(aligned.days.reduce((s0, d) => s0 + num(val(d)), 0));
       }
     }
 
