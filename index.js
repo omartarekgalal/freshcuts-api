@@ -57,6 +57,7 @@ import * as menuplan from "./menuplan.js";
 import * as systemcheck from "./systemcheck.js";
 import * as portal from "./portal.js";
 import * as adsreport from "./adsreport.js";
+import * as mkhub from "./mkhub.js";
 
 const { Pool } = pg;
 
@@ -3003,6 +3004,8 @@ promoApi = promo.register(app, moduleCtx, {
 });
 const ap = autopilot.register(app, moduleCtx, {
   adsSync: adsApi, audiencesSync: audApi, attribution: attribApi,
+  // late-bound: mkhub is registered further down (after adsreport)
+  mkhub: () => { try { return mkhubApi; } catch { return null; } },
 });
 // صفحة المراجعة والموافقة في التسويق: وصف الحملات بالعربي، طابور الموافقات،
 // العروض، وجسر أزرار الحملة على مسار موافقة الطيار (نفس حدود الأمان).
@@ -3083,6 +3086,8 @@ openwait.register(app, moduleCtx, { notify: () => notifyApi, carts: () => cartsA
 const portalApi = portal.register(app, moduleCtx, { shop: () => shopApi, delivery: () => deliveryApi, cmsWhoami: (c) => cmsApi.whoami(c) });
 // تقرير الدخل اليومي + صرف الإعلانات (١٧ سبتمبر): جدول mk_daily_reports + SMS واحدة لعمر بعد القفل
 adsreport.register(app, moduleCtx, { sendSms: (m) => accounts.sendSms(m) });
+// «الحملات كلها في مكان واحد» + تقرير السلات المتروكة (قراءة بس) — mkhub.js
+const mkhubApi = mkhub.register(app, moduleCtx, { alignedSpend: () => (globalThis.__fcAlignedSpend || null) });
 systemcheck.register(app, moduleCtx, { tsState: () => tsState });
 console.log("[analytics] routes ready");
 console.log(`[ai] routes ready (provider: ${process.env.ANTHROPIC_API_KEY ? "anthropic" : process.env.LITELLM_KEY ? "litellm" : "NOT CONFIGURED"})`);

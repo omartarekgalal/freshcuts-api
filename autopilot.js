@@ -35,6 +35,7 @@
      Meta stays under 20% so the learning phase is not reset (PLATFORM_SCALING).
 ═══════════════════════════════════════════════════════════════════════════ */
 
+import { playbookPrompt } from "./playbook.js";
 import crypto from "node:crypto";
 import {
   PLATFORMS, byId, canSend, canManage, missingOf,
@@ -2597,6 +2598,9 @@ export function register(app, ctx, deps = {}) {
   const adsSync = deps.adsSync || null;          // ads.register() return value
   const audiencesSync = deps.audiencesSync || null;
   const attribution = deps.attribution || null;  // attribution.register() return value
+  /* mkhub.register() — late-bound (registered after us in index.js): our paid
+     orders per ad + the playbook verdicts. «احكم بطلباتنا مش برقم المنصة». */
+  const mkhub = () => (typeof deps.mkhub === "function" ? deps.mkhub() : deps.mkhub) || null;
 
   // حالة الدورات — معرّفة هنا عشان الوكيل والدورة الكاملة يشوفوا نفس الأقفال.
   let running = false;
@@ -3535,7 +3539,10 @@ export function register(app, ctx, deps = {}) {
 1. كل توصية لازم تكون مبنية على رقم حقيقي من البيانات المرفقة — ممنوع اختراع أرقام.
 2. الكرياتيف لازم يكون قابل للتصوير بموبايل داخل المطعم (مفيش إنتاج ضخم).
 3. العروض لازم تكون قابلة للتنفيذ في نظام الكاشير (خصم نسبة/مبلغ أو وجبة مجمعة).
-4. اتكلم عربي واضح بلهجة بيزنس مباشرة.`;
+4. اتكلم عربي واضح بلهجة بيزنس مباشرة.
+5. احكم على الإعلانات بطلباتنا المدفوعة (ourResults في البيانات) مش بشرا المنصة، والتزم بكتاب القواعد تحت حرفياً (الكلمات الممنوعة، مفيش AI، ٣–٥ إعلانات للمجموعة).
+
+${playbookPrompt()}`;
 
   async function runStrategist(facts, decisions, s) {
     /* المستشار هو النداء الاستراتيجي الوحيد — كرياتيف وعروض — فبياخد
@@ -3566,6 +3573,16 @@ export function register(app, ctx, deps = {}) {
         .map((d) => ({ kind: d.kind, campaign: d.campaignName })),
       targets: { cpa: s.targetCpa, roas: s.targetRoas },
     };
+    /* طلباتنا المدفوعة لكل إعلان (آخر ٣ أيام) + حكم كتاب القواعد + نصيحة ATC→Purchase */
+    try {
+      const mk = mkhub();
+      if (mk?.adVerdicts) {
+        const v = await mk.adVerdicts({ range: "3d" });
+        compact.ourResults = { range: v.range, optimization: v.optimization.text,
+          ads: v.ads.slice(0, 20).map((a) => ({ platform: a.family, campaign: a.campaign, ad: a.ad, spend: a.spend, ctr: a.ctr, freq: a.frequency,
+            ourAdds: a.ourAdds, ourOrders: a.ourOrders, ourRevenue: a.ourRevenue, cpa: a.cpa, platformPurchases: a.platformPurchases, verdict: a.verdict })) };
+      }
+    } catch (e) { compact.ourResults = { error: String(e.message || e).slice(0, 120) }; }
     return llmTool(provider, {
       system: STRATEGIST_SYSTEM,
       user: `دي البيانات الحقيقية (JSON):\n\n${JSON.stringify(compact)}\n\nحلّل الوضع واطلع: كرياتيفات جديدة للمنصات اللي محتاجة، عروض مقترحة، وخطوات الأسبوع الجاي. استخدم أداة submit_ads_strategy.`,
@@ -3743,6 +3760,11 @@ export function register(app, ctx, deps = {}) {
       },
     },
     {
+      name: "get_our_results",
+      description: "لكل إعلان/حملة شغالة: الصرف والـCTR والتكرار من المنصة، وجنبهم جلساتنا وإضافاتنا للسلة وطلباتنا المدفوعة وإيرادنا وتكلفة الطلب عندنا، وحكم كتاب القواعد (winner/kill/refresh/keep) + نصيحة التحويل من ATC لـPurchase. ده الأساس لأي قرار إيقاف/تكبير. range: today|yesterday|3d|7d (الافتراضي 3d).",
+      schema: { type: "object", properties: { range: { type: "string", enum: ["today", "yesterday", "3d", "7d"] } } },
+    },
+    {
       name: "get_attribution",
       description: "مردود كل قناة: صرف ← عملاء محتملين ← طلبات ← إيراد ← عملاء جداد/راجعين، مع درجة ثقة لكل صف (مؤكد/مرجّح/تقديري). ده المصدر الوحيد اللي بيربط الإعلان بمبيعات الكاشير الحقيقية. سيب التواريخ فاضية وهتاخد آخر ٣٠ يوم.",
       schema: {
@@ -3853,6 +3875,14 @@ export function register(app, ctx, deps = {}) {
       };
     }
 
+    if (name === "get_our_results") {
+      const mk = mkhub();
+      if (!mk?.adVerdicts) return { ok: false, error: "موديول الحملات (mkhub) مش مربوط — مفيش أرقام طلبات لكل إعلان. متخترعش." };
+      const v = await mk.adVerdicts({ range: ["today", "yesterday", "3d", "7d"].includes(input?.range) ? input.range : "3d" });
+      return { ok: true, range: v.range, optimization: v.optimization, dailyPaidOrders: v.dailyPaidOrders, spendSource: v.spendSource,
+        ads: v.ads.slice(0, 25) };
+    }
+
     if (name === "get_attribution") {
       if (!attribution?.overviewData) {
         return { ok: false, error: "موديول الإسناد مش مربوط في النسخة دي — مفيش أرقام إسناد أقدر أوريهالك. متخترعش أرقام بدالها." };
@@ -3956,17 +3986,11 @@ export function register(app, ctx, deps = {}) {
 خط الأساس دلوقتي: متوسط ${baseline.avgDaily} ريال/يوم على آخر ٧ أيام${baseline.progressPct != null ? ` (${baseline.progressPct}٪ من الهدف)` : ""}.
 المستهدف من الإعلانات: تكلفة النتيجة ≤ ${s.targetCpa} ريال، والعائد ≥ ${s.targetRoas}×.
 
-⚠️ «النتيجة» في كل الأرقام اللي بتشوفها معناها **نية طلب**، مش شرا:
-  • دوسة «اطلب على واتساب» من صفحة المتجر (حدث Contact/Lead على البيكسل)، أو
-  • محادثة واتساب ابتدت من الإعلان نفسه، أو
-  • شرا أونلاين لو حصل (مبيحصلش دلوقتي — مفيش دفع أونلاين).
-ميتا **مستحيل** ترجّع لنا purchase: الطلب بيتقفل جوّه المطعم وبيتبعت CAPI بـ
-action_source=physical_store، وميتا شالت أنواع الأوفلاين في v20. حتى حملة
-fc-sales-purchase المحسّنة على PURCHASE بالنص صرفت ٤٠٥ ريال وسجّلت ١٩ lead
-وصفر purchase. فلو شفت صفر شرا ده **مش** دليل فشل ولا تبني عليه أي قرار.
-والعكس كمان: نية الطلب مش فلوس. عشان كده تكلفة النتيجة المستهدفة (${s.targetCpa} ريال)
-أقل بكتير من أقصى تكلفة مسموحة للعميل الجديد — الدليل الحقيقي على الفلوس هو
-get_attribution (طلبات اتطابقت برقم جوال) ومبيعات الكاشير، مش رقم المنصة.
+⚠️ «النتيجة» على المنصة مش فلوس. من ١٧/٩ عندنا متجر أونلاين بدفع إلكتروني (freshcuts.sa)، والحملات
+الحالية (FC96-*) متحسّنة على إضافة للسلة وبتتقاس بطلبات مدفوعة **عندنا**: أداة get_our_results بترجّع
+لكل إعلان جلساتنا وإضافاتنا وطلباتنا المدفوعة وإيرادنا جنب رقم المنصة، ومعاها حكم كتاب القواعد.
+المنصة بتنسب لنفسها أي شرا بعد مشاهدة، فرقمها للمقارنة بس. حملات قبل ١٧/٩ كانت على مكالمات/واتساب —
+صفر شرا فيها مش حكم عليها. وإعلانات الواتساب بتجيب عملاء صالة مش متتبعين أونلاين: متوقفهاش بطلبات الموقع.
 
 العميل بيوصلنا بخمس طرق، وكل واحدة بتتقاس بشكل مختلف:
   ١. مكالمة تليفون — مفيش أثر رقمي، العد يدوي.
@@ -3988,6 +4012,8 @@ get_attribution (طلبات اتطابقت برقم جوال) ومبيعات ا�
 • لو الأداة رجعت خطأ أو داتا ناقصة، قول كده بصراحة. "مش عارف" إجابة مقبولة، الرقم المخترع لأ.
 • أرقام الإسناد ليها درجة ثقة: مؤكد (مطابقة رقم جوال) / مرجّح (تصنيف الكاشير) / تقديري (استنتاج). لما تبني قرار على "تقديري" قول كده في السبب.
 • متقولش إن حاجة اتنفّذت غير لما الأداة ترجعلك executed:true.
+
+${playbookPrompt()}
 
 ${focus}
 

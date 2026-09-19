@@ -122,7 +122,7 @@ const PATH_SECTIONS = [
   [/^\/api\/(shop\/(orders|board|summary)|day\b|day\/|staff\/|cashier|chef|notifications)/, "orders"],
   // «منتظرين الفتح» — نفس قسم السلات المتروكة (نمو): استرداد طلب ضايع
   [/^\/api\/(cms\/)?openwait/, "growth"],
-  [/^\/api\/(ads|autopilot|attribution|funnel|audiences|retargeting|retarget|marketing|content|social|promo|catalog|tracking|offers|carts|menuplan|scorecard|ai\/|chat)/, "growth"],
+  [/^\/api\/(ads|autopilot|attribution|funnel|audiences|retargeting|retarget|marketing|mkhub|content|social|promo|catalog|tracking|offers|carts|menuplan|scorecard|ai\/|chat)/, "growth"],
   [/^\/api\/(customers|account\/admin)/, "customers"],
   [/^\/api\/(analytics|reports|insights|keeta-reports|hungerstation|ninja|keeta\b|keeta\/)/, "analytics"],
 ];
