@@ -12,9 +12,9 @@ delete process.env.SNAP_ACCESS_TOKEN;
 
 const { listsUploadAllowed, register } = await import("./audiences.js");
 
-test("listsUploadAllowed: الافتراضي شغّال، false مقفول، فشل القراءة مقفول", () => {
-  assert.equal(listsUploadAllowed(null), true);
-  assert.equal(listsUploadAllowed(undefined), true);
+test("listsUploadAllowed (١٩/٩): الافتراضي مقفول، true صريح بس بيفتح، فشل القراءة مقفول", () => {
+  assert.equal(listsUploadAllowed(null), false);
+  assert.equal(listsUploadAllowed(undefined), false);
   assert.equal(listsUploadAllowed("true"), true);
   assert.equal(listsUploadAllowed(true), true);
   assert.equal(listsUploadAllowed("false"), false);
@@ -62,15 +62,24 @@ test("المجدول: قراءة الإعدادات فشلت → مقفول (ا�
   assert.equal(r.lists, undefined);
 });
 
-test("المجدول: من غير إعداد (الافتراضي) → الرفع بيشتغل زي الأول", async () => {
+test("المجدول (١٩/٩): من غير إعداد (الافتراضي) → الرفع مقفول", async () => {
   const h = harness(undefined);
   const r = await h.api.refresh({ trigger: "cron" });
+  assert.match(String(h.listsRan(r)?.skipped), /syncAudiences/);
+  assert.equal(h.uploads(), 0);
+});
+
+test("المجدول: syncAudiences=true → syncAll بيتنده", async () => {
+  const h = harness(true);
+  const r = await h.api.refresh({ trigger: "cron" });
   assert.ok(r.lists, "syncAll اتنده");
-  assert.equal(h.listsRan(r)?.skipped, undefined);
 });
 
 test("force=lists (أمر يدوي صريح) مابيتقفلش بالإعداد", async () => {
   const h = harness(false);
   const r = await h.api.refresh({ force: "lists", trigger: "manual" });
   assert.ok(r.lists, "الأمر اليدوي بيعدّي");
+  // بس syncAll نفسها بتقفل الرفع (البوابة) — مفيش ولا صف aud_syncs
+  assert.equal(r.lists.enabled, false);
+  assert.equal(h.uploads(), 0);
 });

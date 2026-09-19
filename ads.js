@@ -54,6 +54,7 @@
 import crypto from "node:crypto";
 import { menuRows } from "./catalog.js";
 import { createGoogleAdapter } from "./google.js";
+import { gateOfflineRows } from "./uploadgate.js";
 
 /* ─────────────────────────────────────────────────────────────────────────
    CONFIG — every environment variable this module reads.
@@ -3338,7 +3339,13 @@ export function register(app, ctx, deps = {}) {
     async syncOrders({ from, to, limit = 5000 } = {}) {
       const f = from || daysAgoISO(2);
       const t = to || todayISO();
-      const rows = await loadOrders(f, t, limit);
+      const loaded = await loadOrders(f, t, limit);
+      /* O6 / PDPL (١٩/٩): طلبات الصالة (رقم جوال مشفّر + قيمة) مابتطلعش لأي منصة
+         غير لو posConversions=true في إعدادات الطيار — ولما تتفتح، بتتفلتر على
+         الموافقين وغير اللاغيين. طلبات المتجر بتعدّي عادي. uploadgate.js. */
+      const gate = await gateOfflineRows(pool, loaded, { trigger: "syncOrders" })
+        .catch(() => ({ rows: [], stats: null, policy: null }));
+      const rows = gate.rows;
       const ids = rows.map((r) => String(r.order_id));
       let itemsByOrder = new Map();
       try { itemsByOrder = await loadItems(ids); } catch { /* bonus */ }
@@ -3352,7 +3359,7 @@ export function register(app, ctx, deps = {}) {
         try { results[p.id] = await sendToPlatform(p, events); }
         catch (e) { results[p.id] = { platform: p.id, failed: events.length, errors: [String(e.message || e)] }; }
       }
-      return { from: f, to: t, orders: events.length, platforms: results };
+      return { from: f, to: t, orders: events.length, platforms: results, offlineGate: gate.stats ? { ...gate.stats, enabled: !!gate.policy?.offline, web: gate.web } : null };
     },
     // tracking.js asks "does this till name reach a catalog id?" — same code
     // path the real Purchase payload uses, so the reported rate is the truth.

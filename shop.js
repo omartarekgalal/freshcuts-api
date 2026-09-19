@@ -43,6 +43,7 @@ import {
   classifySource, mergeSessionAttribution, SESSION_ATTR_SQL,
 } from "./checkout-meta.js";
 import { resumeKey } from "./resume-key.js";
+import { recordCheckoutConsent } from "./consent.js";
 import { makeNameResolver } from "./product-names.js";
 
 /* ناقل أحداث الطلب (W1-01) وترحيل أعمدة shop_orders — تحميل كسول ودفاعي (W1-02):
@@ -1008,6 +1009,14 @@ export function register(app, ctx, deps = {}) {
           [orderNo, meta.journey_sid || null, meta.client || null, meta.app_version || null,
            classifySource(attr), attr === meta.attribution ? null : jb(attr)]);
       })().catch((e) => console.error(`[shop] ${orderNo}: checkout meta save failed: ${e.message}`));
+    }
+    // موافقة الإعلانات (PDPL — consent.js): خانة اختيارية في الشيك أوت. fire-and-forget،
+    // عمرها ما توقّع الطلب، والرقم هنا متأكد بالـOTP.
+    if (b && b.marketing_consent) {
+      recordCheckoutConsent(pool, {
+        phoneNorm, orderNo, raw: b.marketing_consent,
+        ip: c.req.header("cf-connecting-ip") || null, ua: c.req.header("user-agent") || null,
+      }).catch(() => {});
     }
     // مفتاح الاستكمال/التتبع (٠٣ A3/A9) — null لو SHOP_RESUME_SECRET مش متظبط
     const k = resumeKey({ orderNo, createdAt: inserted?.rows?.[0]?.created_at });

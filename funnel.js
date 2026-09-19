@@ -55,6 +55,7 @@ import crypto from "node:crypto";
 import { hashEmail, hashPhoneDigits, hashPhonePlus, phoneDigits, httpJson } from "./ads.js";
 import { scaleOf } from "./money.js";
 import { isBotRequest, BOT_SQL } from "./botfilter.js";
+import { offerById } from "./offers.js";
 
 const env = (k) => (process.env[k] || "").trim();
 const META_VER = () => env("META_API_VERSION") || "v25.0";
@@ -110,17 +111,45 @@ const NO_PURCHASE_STATUS = /pending_payment|expired|refund|reject|cancel/;
 const VAT = 0.15;
 const r2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
 
+/* ── معرّف الكتالوج لسطر «باقة» (١٩/٩) ────────────────────────────────────
+   الباقة في السلة id بتاعها «b:<slug>» (b:national96-grill)، وفي الكتالوج
+   صفّها «offer-nd96-kilo». الفرق ده كان بيطلّع InitiateCheckout/AddPaymentInfo
+   بمعرّف مش موجود في الكتالوج (١٣٣ حدث في ٣ أيام) ⇒ إعلانات الكتالوج الديناميكية
+   ماكانتش تعرف إن العميل ده بصّ على عرض اليوم الوطني. والشراء من السيرفر كان
+   بيفرد الباقة لأصنافها (كفتة بالوزن + طبق أرز id 123 اللي مش في الكتالوج).
+   bundleMap = { slug: productId } من cms_bundles.offer_id + offers.js. */
+export function canonicalContentId(id, bundleMap = null) {
+  const s = String(id ?? "");
+  if (s.startsWith("b:") && bundleMap) return bundleMap[s.slice(2)] || s;
+  return s;
+}
+
 /** shop_orders.items → contents بمعرّفات الكتالوج.
  *  المتجر بيبعت product_id بتاع تاب سينس — هو نفسه الـid اللي فيد الكتالوج
  *  بينشره — فمش محتاجين نطابق بالاسم إلا لسطر ناقصه product_id (match اختياري،
  *  ads.matchToCatalog). سعر السطر: unit_amount صافي × وحدة السطر (mf)، فبنرجّعه ريال
  *  شامل الضريبة وبعد خصم الطلب (الباقات سعرها محسوب أصلاً فمابتتخصمش). السطور
  *  المتكررة لنفس المنتج (الباقة بتتفرد لأكتر من سطر) بتتجمع في سطر واحد. */
-export async function purchaseContentsOf(items, discountPercent = 0, match = null) {
+export async function purchaseContentsOf(items, discountPercent = 0, match = null, bundleMap = null) {
   const pct = Math.max(0, Math.min(100, Number(discountPercent) || 0));
   const byId = new Map();
+  const bundleLines = new Set();
+  const totals = new Map();
   for (const it of Array.isArray(items) ? items : []) {
     if (!it || typeof it !== "object") continue;
+    // سطر من باقة معروفة ⇒ صف العرض في الكتالوج، مرة لكل باقة (bundle_line)، بسعرها الكامل.
+    const bid = it.bundle && bundleMap ? bundleMap[String(it.bundle)] : null;
+    if (bid) {
+      const q = Math.max(1, Math.round(Number(it.quantity) || 1));
+      const gross = ((Number(it.unit_amount) || 0) / scaleOf(it)) * (1 + VAT) * q;
+      const cur = byId.get(bid) || { id: String(bid).slice(0, 64), name: it.bundle_name ? String(it.bundle_name).slice(0, 120) : null, quantity: 0, itemPrice: 0 };
+      const lk = `${bid}|${it.bundle_line ?? it.bundle}`;
+      if (!bundleLines.has(lk)) { bundleLines.add(lk); cur.quantity += Math.max(1, Math.round(Number(it.bundle_qty) || 1)); }
+      totals.set(bid, (totals.get(bid) || 0) + gross);
+      cur.itemPrice = r2(totals.get(bid) / cur.quantity);
+      byId.set(bid, cur);
+      continue;
+    }
     let id = it.product_id != null && it.product_id !== "" ? String(it.product_id) : null;
     if (!id && match && it.name) {
       const hit = await Promise.resolve(match(it.name)).catch(() => null);
@@ -185,6 +214,20 @@ export function register(app, ctx, deps = {}) {
   // ads.matchToCatalog اختياري (late-bound زي باقي الموديولات) — للسطور اللي
   // ناقصها product_id بس.
   const adsOf = typeof deps.ads === "function" ? deps.ads : () => deps.ads || null;
+
+  /* slug الباقة → معرّف صف العرض في الكتالوج (canonicalContentId فوق). كاش ١٠ دقايق؛
+     فشل القراءة ⇒ آخر خريطة معروفة (أو فاضية ⇒ المعرّف بيعدّي زي ما هو). */
+  let bmap = { at: 0, map: {} };
+  async function bundleIdMap() {
+    if (Date.now() - bmap.at < 10 * 60_000) return bmap.map;
+    try {
+      const r = await pool.query(`SELECT slug, offer_id FROM cms_bundles WHERE offer_id IS NOT NULL`);
+      const map = {};
+      for (const x of r.rows) { const pid = offerById(x.offer_id)?.productId; if (pid) map[x.slug] = pid; }
+      bmap = { at: Date.now(), map };
+    } catch { bmap = { ...bmap, at: Date.now() - 9 * 60_000 }; }
+    return bmap.map;
+  }
 
   async function ensureSchema() {
     await pool.query(`
@@ -504,7 +547,7 @@ export function register(app, ctx, deps = {}) {
     }
 
     const match = adsOf()?.matchToCatalog || null;
-    const contents = await purchaseContentsOf(order.items, order.discount_percent, match);
+    const contents = await purchaseContentsOf(order.items, order.discount_percent, match, await bundleIdMap());
     const pnLocal = order.phone_norm ? normPhone(order.phone_norm) : "";
     const digits = pnLocal ? phoneDigits(pnLocal, normPhone) : null;
     const baseUrl = (env("STOREFRONT_PUBLIC_URL") || "https://freshcuts.sa").split(",")[0].trim().replace(/\/+$/, "");
@@ -526,8 +569,12 @@ export function register(app, ctx, deps = {}) {
 
   /* Pixel ids for the storefront loader. Public by design — pixel ids are
      visible in the HTML of every site that uses them. Tokens NEVER here. */
-  app.get("/api/funnel/config", (c) => {
+  app.get("/api/funnel/config", async (c) => {
+    // «b:<slug>» → معرّف الكتالوج، عشان البيكسل في المتصفح يبعت نفس المعرّف اللي CAPI بيبعته
+    const contentIds = {};
+    for (const [slug, pid] of Object.entries(await bundleIdMap())) contentIds[`b:${slug}`] = pid;
     return c.json({
+      contentIds,
       ok: true,
       meta: metaPixel() || null,
       tiktok: ttPixel() || null,
@@ -594,8 +641,9 @@ export function register(app, ctx, deps = {}) {
        feed publishes (both come from the TabSense menu), so a browser that
        viewed a dish can be retargeted with that exact dish. Capped and coerced
        here because this route is public. */
+    const bm = await bundleIdMap();
     const contents = (Array.isArray(b.contents) ? b.contents : []).slice(0, 50).map((i) => ({
-      id: String(i?.id ?? "").slice(0, 64),
+      id: canonicalContentId(i?.id, bm).slice(0, 64),
       name: i?.name ? String(i.name).slice(0, 120) : null,
       quantity: Math.max(1, Math.min(999, Math.round(Number(i?.quantity) || 1))),
       itemPrice: Math.round((Number(i?.item_price ?? i?.itemPrice) || 0) * 100) / 100,

@@ -70,6 +70,9 @@ import {
    الشغل (نفس البيانات، نفس المنصات، نفس المؤقّت)، وربطه من هنا معناه إن
    الفرع ده ما بيلمسش ملف مشترك حد تاني شغال عليه دلوقتي. */
 import * as retargeting from "./retargeting.js";
+/* جماهير البيكسل على سناب وجوجل (١٩/٩) + بوابة الرفع (O6/PDPL). */
+import * as webaudiences from "./webaudiences.js";
+import { uploadPolicy, filterPhones, logUpload } from "./uploadgate.js";
 
 const META_VER = () => (process.env.META_API_VERSION || "v25.0").trim();
 const TT_BASE = "https://business-api.tiktok.com/open_api/v1.3";
@@ -130,6 +133,29 @@ const websiteRule = (events, days, excludeEvents = null, excludeDays = days) => 
 };
 const engagementRule = (events, days, source = "page") =>
   ({ inclusions: { operator: "or", rules: pageRules(events, days, source) } });
+
+/* «شاف عرض»: ViewContent/AddToCart معرّف المنتج فيه «offer-» (صفوف العروض في
+   الكتالوج — offer-nd96-kilo/box …) أو صفحة فيها «offer=» (رابط الإعلان /?offer=). */
+const offerRule = (days) => ({
+  inclusions: {
+    operator: "or",
+    rules: [
+      ...["ViewContent", "AddToCart"].map((ev) => ({
+        event_sources: [{ id: metaPixelId(), type: "pixel" }],
+        retention_seconds: DAYS(days),
+        filter: { operator: "and", filters: [
+          { field: "event", operator: "eq", value: ev },
+          { field: "content_ids", operator: "i_contains", value: "offer-" },
+        ] },
+      })),
+      {
+        event_sources: [{ id: metaPixelId(), type: "pixel" }],
+        retention_seconds: DAYS(days),
+        filter: { operator: "and", filters: [{ field: "url", operator: "i_contains", value: "offer=" }] },
+      },
+    ],
+  },
+});
 
 /* الأحداث اللي معناها «العميل كلّمنا خلاص» — لو دخلت في جمهور ريتارجيت
    يبقى إحنا بندفع عشان نوصل لواحد جالنا أصلاً. بتستخدم كاستبعاد جوّه
@@ -193,6 +219,30 @@ const META_AUDIENCES = [
     ar: "اشترى أو ساب بياناته آخر ٧ أيام — بيتستبعد من كل حاجة",
     rule: () => websiteRule(["Purchase", "Lead"], 7) },
 
+  /* ── ريتارجيت دايم (١٩/٩): نوافذ ٧/٣٠/١٨٠، عارضين العرض، وشاريين للاستبعاد ──
+     «net» هنا = ناقص Purchase بس (مش Lead/Contact زي نسخ الـ١٤ يوم) — ده تعريف
+     «ماشتراش» اللي الحملة الدايمة محتاجاه. */
+  { key: "web:visitors180", name: "FreshCuts Web Visitors 180d", subtype: "WEBSITE", tier: "prospect",
+    ar: "زار الموقع آخر ١٨٠ يوم — واسع، للاستبعاد أو الاكتساب الرخيص", rule: () => websiteRule(["PageView"], 180) },
+  { key: "web:offer7", name: "FreshCuts Offer Viewers 7d", subtype: "WEBSITE", tier: "hot",
+    ar: "فتح عرض (اليوم الوطني/باقة) آخر ٧ أيام", rule: () => offerRule(7) },
+  { key: "web:offer30", name: "FreshCuts Offer Viewers 30d", subtype: "WEBSITE", tier: "warm",
+    ar: "فتح عرض آخر ٣٠ يوم", rule: () => offerRule(30) },
+  { key: "web:atc-np7", name: "FreshCuts ATC no purchase 7d", subtype: "WEBSITE", tier: "hot",
+    ar: "حط في السلة ومااشتراش — ٧ أيام", rule: () => websiteRule(["AddToCart"], 7, ["Purchase"], 7) },
+  { key: "web:atc-np30", name: "FreshCuts ATC no purchase 30d", subtype: "WEBSITE", tier: "warm",
+    ar: "حط في السلة ومااشتراش — ٣٠ يوم", rule: () => websiteRule(["AddToCart"], 30, ["Purchase"], 30) },
+  { key: "web:ic-np7", name: "FreshCuts Checkout no purchase 7d", subtype: "WEBSITE", tier: "hot",
+    ar: "بدأ الشيك أوت ومااشتراش — ٧ أيام", rule: () => websiteRule(["InitiateCheckout"], 7, ["Purchase"], 7) },
+  { key: "web:ic-np30", name: "FreshCuts Checkout no purchase 30d", subtype: "WEBSITE", tier: "warm",
+    ar: "بدأ الشيك أوت ومااشتراش — ٣٠ يوم", rule: () => websiteRule(["InitiateCheckout"], 30, ["Purchase"], 30) },
+  { key: "web:buyers7", name: "FreshCuts Web Purchasers 7d", subtype: "WEBSITE", tier: "exclude",
+    ar: "اشترى من الموقع آخر ٧ أيام — استبعاد من الريتارجيت", rule: () => websiteRule(["Purchase"], 7) },
+  { key: "web:buyers30", name: "FreshCuts Web Purchasers 30d", subtype: "WEBSITE", tier: "exclude",
+    ar: "اشترى من الموقع آخر ٣٠ يوم", rule: () => websiteRule(["Purchase"], 30) },
+  { key: "web:buyers180", name: "FreshCuts Web Purchasers 180d", subtype: "WEBSITE", tier: "exclude",
+    ar: "اشترى من الموقع آخر ١٨٠ يوم", rule: () => websiteRule(["Purchase"], 180) },
+
   /* ── page / IG / video engagement ────────────────────────────────────── */
   { key: "eng:page30", name: "FreshCuts Page Engagers 30d", subtype: "ENGAGEMENT", tier: "warm",
     ar: "تفاعل مع صفحة فيسبوك آخر ٣٠ يوم", rule: () => engagementRule(["page_engaged"], 30) },
@@ -244,7 +294,8 @@ const SEGMENTS = [
    رفعة متأخرة ٦ ساعات). */
 export function listsUploadAllowed(v, { readFailed = false } = {}) {
   if (readFailed) return false;
-  return !(v === false || String(v).toLowerCase() === "false");
+  /* ١٩/٩: الافتراضي بقى **مقفول** — true صريح بس بيفتح (uploadgate.policyOf). */
+  return v === true || String(v).toLowerCase() === "true";
 }
 
 export function register(app, ctx) {
@@ -562,15 +613,41 @@ export function register(app, ctx) {
   const SENDERS = { meta: syncMeta, tiktok: syncTiktok, snapchat: syncSnap };
 
   /* ── the sync driver — every (platform × segment) pair, never throws ──── */
-  async function syncAll({ platforms, segments, trigger = "manual" } = {}) {
+  /* ── البوابة (O6/PDPL، ١٩/٩) ────────────────────────────────────────────
+     syncAll هي نقطة الخروج الوحيدة لقوايم الجوال. قبل أي رفع:
+       • ap_settings.syncAudiences لازم تبقى true صريح — أو apply:true من
+         سكربت upload_audiences.mjs اللي بيشغّله إنسان بـAPPLY=1.
+       • dryRun:true ⇒ بيحسب ويسجّل الأعداد بس، ومابيندهش أي منصة.
+       • كل شريحة بتتفلتر (uploadgate.filterPhones): إلغاء الاشتراك، الفريق/
+         السفراء/أرقام الاختبار، ومن غير موافقة (لو consentOnly مش false صريح).
+       • كل (منصة × شريحة) بتتسجّل في aud_upload_log بالأعداد بس. */
+  async function syncAll({ platforms, segments, trigger = "manual", dryRun = false, apply = false } = {}) {
     const wantP = platforms?.length ? platforms : Object.keys(SENDERS);
     const wantS = segments?.length ? segments : SEGMENTS.map((s) => s.id);
-    const out = { trigger, results: {} };
+    const policy = await uploadPolicy(pool);
+    const enabled = !!(policy.lists || apply);
+    const out = { trigger, results: {}, policy, dryRun: !!dryRun, enabled, counts: {} };
     // Compute each segment once, reuse across platforms.
     const phonesBySeg = {};
     for (const segId of wantS) {
-      try { phonesBySeg[segId] = await segmentPhones(segId); }
-      catch (e) { phonesBySeg[segId] = { error: e.message }; }
+      try {
+        const raw = await segmentPhones(segId);
+        const f = await filterPhones(pool, raw, policy);
+        if (f.blocked) phonesBySeg[segId] = { error: f.blocked };
+        else { phonesBySeg[segId] = f.phones; out.counts[segId] = f.stats; }
+      } catch (e) { phonesBySeg[segId] = { error: e.message }; }
+    }
+    if (dryRun || !enabled) {
+      for (const pid of wantP) {
+        out.results[pid] = {};
+        for (const segId of wantS) {
+          const st = out.counts[segId] || {};
+          out.results[pid][segId] = { ok: true, skipped: dryRun ? "dry run" : "رفع القوايم مقفول (O6)", wouldSend: st.kept ?? null };
+          await logUpload(pool, { kind: "lists", platform: pid, segment: segId, trigger, enabled, ...st,
+            status: dryRun ? "dry" : "blocked", note: phonesBySeg[segId]?.error || null });
+        }
+      }
+      return out;
     }
     for (const pid of wantP) {
       const sender = SENDERS[pid];
@@ -586,6 +663,9 @@ export function register(app, ctx) {
           catch (e) { r = { ok: false, error: String(e.message || e) }; }
         }
         out.results[pid][segId] = r;
+        await logUpload(pool, { kind: "lists", platform: pid, segment: segId, trigger, enabled, ...(out.counts[segId] || {}),
+          sent: r.ok ? (r.added ?? 0) : 0, status: r.ok ? (r.skipped ? "skipped" : "sent") : "failed",
+          note: r.ok ? null : String(r.error || "").slice(0, 200) });
         await pool.query(
           `INSERT INTO aud_syncs (id, platform, segment, size, status, response)
            VALUES ($1,$2,$3,$4,$5,$6)`,
@@ -870,9 +950,13 @@ export function register(app, ctx) {
        المطعم. باقي المهام تقيلة على حصة ميتا، دي رخيصة: استعلام واحد
        وفروق صغيرة. */
     ladder: Number(env("RT_LADDER_HOURS") || 3) * 3600_000,
+    /* جماهير البيكسل على سناب وجوجل (webaudiences.js): إنشاء الناقص + قياس. */
+    web: Number(env("AUD_WEB_HOURS") || 12) * 3600_000,
   };
   /* بيتملى بعد ما الموديول يتسجّل تحت — refresh بيقراه من الكلوجر. */
   let rtApi = null;
+  let webApi = null;
+  try { webApi = webaudiences.register(ctx); } catch (e) { console.error("[audiences] web register failed:", e.message); }
 
   async function jobDue(job) {
     const r = await pool.query(`SELECT last_run_at FROM aud_jobs WHERE job=$1`, [job]).catch(() => ({ rows: [] }));
@@ -1011,6 +1095,18 @@ export function register(app, ctx) {
         out.ladder = r;
       }
 
+      if (webApi && (force === "web" || (force == null && await jobDue("web")))) {
+        const e = await webApi.ensureAll().catch((x) => ({ ok: false, error: x.message }));
+        const m = await webApi.measureAll().catch((x) => ({ ok: false, error: x.message }));
+        for (const p of ["snapchat", "google"]) {
+          const ok = !!(e[p]?.ok && m[p]?.ok);
+          await markTask(`web:${p}`, ok, { platform: p, error: e[p]?.error || e[p]?.failed?.[0]?.error || m[p]?.error });
+        }
+        await jobDone("web", !!(e.ok && m.ok), { ensure: e, measure: m });
+        out.ran.push({ job: "web", ok: !!(e.ok && m.ok) });
+        out.web = { ensure: e, measure: m };
+      }
+
       if (force === "measure" || (force == null && await jobDue("measure"))) {
         const r = await measureMetaAudiences({ priority: trigger === "manual" ? "owner" : "telemetry" });
         await markTask("measure:meta", r.measured > 0 && !r.stoppedEarly, {
@@ -1115,6 +1211,8 @@ export function register(app, ctx) {
           key: a.key, name: a.name, tier: a.tier, ar: a.ar, subtype: a.subtype,
           id: s?.audience_id || null,
           size: s?.ok ? { low: s.low, high: s.high, method: s.method } : null,
+          /* delivery_estimate بترجع 1000/1000 لأي جمهور أصغر من ١٠٠٠ — ده أرضية مش مقاس. */
+          floor: !!(s?.ok && Number(s.low) <= 1000 && Number(s.high) <= 1000),
           /* مش صفر. مش رقم قديم. «مقدرناش نقيس» — وده اللي بيمنع الغلطة. */
           sizeNote: s?.ok ? null : (s?.error ? `مقدرناش نقيس: ${s.error}` : "لسه ما اتقاسش"),
           measuredAt: s?.measured_at || null,
@@ -1136,6 +1234,21 @@ export function register(app, ctx) {
     const s = await statusLine();
     const econ = await retargetEconomics(7);
     return c.json({ ok: true, ...s, economics: econ, exclusions: EXCLUSION_SETS });
+  });
+
+  /* جماهير البيكسل على كل المنصات في صف واحد لكل جمهور — للوحة (قسم الجماهير في الطيار). */
+  app.get("/api/audiences/web", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    const meta = await statusLine();
+    const web = webApi ? await webApi.status() : { rows: [], catalogue: [] };
+    const logs = (await pool.query(
+      `SELECT kind, platform, segment, trigger, enabled, candidates, excluded_optout, excluded_staff, excluded_no_consent, kept, sent, status, created_at
+         FROM aud_upload_log ORDER BY created_at DESC LIMIT 30`).catch(() => ({ rows: [] }))).rows;
+    return c.json({ ok: true, meta: meta.audiences, web, uploadPolicy: await uploadPolicy(pool), uploadLog: logs });
+  });
+  app.post("/api/audiences/web/ensure", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    return c.json(await refresh({ trigger: "manual", force: "web" }));
   });
 
   app.post("/api/audiences/ensure", async (c) => {
@@ -1205,7 +1318,7 @@ export function register(app, ctx) {
 
   console.log(`[audiences] routes ready — ${META_AUDIENCES.length} platform audiences in the catalogue`);
   const api = {
-    syncAll, segmentSizes, SEGMENTS,
+    syncAll, segmentSizes, segmentPhones, SEGMENTS,
     // العمود الفقري — الطيار وأي موديول تاني بيقرا منها بدل ما يعيد كتابتها.
     META_AUDIENCES, refresh, ensureMetaAudiences, measureMetaAudiences,
     statusLine, retargetEconomics, exclusionIds, audienceId: savedId,

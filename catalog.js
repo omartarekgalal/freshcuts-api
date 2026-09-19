@@ -74,15 +74,25 @@ const DINE_IN_NOTE = "داخل الصالة فقط";
    بنقراه بس. `activeOffers()` بتسقط أي عرض عدّى تاريخه، فالصف بيختفي من
    الـfeed لوحده يوم ١ سبتمبر — ووقتها price-guard يرجع يرفض الرقم ٧٠ تاني،
    لأنه مبقاش موثّق. مفيش حد محتاج يفتكر يشيله. */
+/* بانرات العروض المرندرة على المتجر (static/offers/<offer>-web.jpg). ميتا كانت
+   رافضة صفّي اليوم الوطني (MUST_FIX: image_link ناقص) ⇒ مابيظهروش في إعلانات
+   الكتالوج خالص، وهما أهم صفّين فيه. الصورة الحقيقية دي موجودة ومتراجعة
+   (guards passed 2026-09-13)، فبنستخدمها لو العرض نفسه مالوش image. */
+const OFFER_ART_IDS = new Set(String(process.env.CATALOG_OFFER_ART_IDS ?? "nd96_kilo,nd96_box").split(",").map((s) => s.trim()).filter(Boolean));
+const offerArtUrl = (o) => (OFFER_ART_IDS.has(o.id) ? `${STORE_BASE}/static/offers/${o.id}-web.jpg` : "");
+/* رابط صف العرض: «/?offer=<id>» بيفتح منتقي العرض على طول (handleCampaignParams في
+   المتجر). «/#item-offer-…» ماكانش بيفتح حاجة — المتجر بيقبل #item-<رقم> بس. */
+export const catalogLink = (r) => (r.offerId ? `${STORE_BASE}/?offer=${encodeURIComponent(r.offerId)}` : `${STORE_BASE}/#item-${r.id}`);
 const offerRow = (o) => ({
   id: o.productId,
+  offerId: o.id,
   title: o.catalogTitle,
   description: o.desc,
   price: Number(o.price),
   // صورة العرض نفسه. **مش** بنستعير صورة من فئة "Offers" لو ناقصة: أقرب
   // جار هناك هو صينية اللمّة، وكارت DPA بصورة صينية مشاوي على عرض بيتزا
   // وباستا وكريب كذب بصري — أهون منه صف من غير صورة.
-  image: o.image || "",
+  image: o.image || offerArtUrl(o),
   category: "Offers",
   dineIn: !!o.dineInOnly,
   isOffer: true,
@@ -321,7 +331,7 @@ export function register(app, ctx) {
     const lines = rows.map((r) => [
       q(r.id), q(r.title), q(r.description), "in stock", "new",
       q(`${r.price.toFixed(2)} SAR`),
-      q(`${STORE_BASE}/#item-${r.id}`),
+      q(catalogLink(r)),
       q(r.image), q(BRAND), q(r.category),
     ].join(","));
     c.header("Content-Type", "text/csv; charset=utf-8");

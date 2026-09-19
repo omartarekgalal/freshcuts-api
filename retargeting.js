@@ -69,6 +69,7 @@ import {
   byId, hashPhoneDigits, hashPhonePlus, httpJson, redact,
   classifyRefusal, closeWriteGate, openWriteGate, readGate,
 } from "./ads.js";
+import { uploadPolicy } from "./uploadgate.js";
 
 const env = (k) => (process.env[k] || "").trim();
 const META_VER = () => (env("META_API_VERSION") || "v25.0").trim();
@@ -1184,7 +1185,10 @@ export function register(app, ctx, deps = {}) {
     if (running) return { ok: true, skipped: "already running" };
     running = true;
     const runId = crypto.randomUUID();
-    const dry = dryRun == null ? env("RT_SYNC") !== "1" : !!dryRun;
+    let dry = dryRun == null ? env("RT_SYNC") !== "1" : !!dryRun;
+    /* O6/PDPL (١٩/٩): السلّم بيرفع أرقام — يبقى تجربة جافة لحد ما رفع القوايم
+       يتفتح صريح (syncAudiences=true). RT_SYNC=1 لوحده مابقاش كفاية. */
+    if (!dry && !(await uploadPolicy(pool)).lists) dry = true;
     await pool.query(`INSERT INTO rt_runs (id, trigger, status) VALUES ($1,$2,'running')`,
       [runId, trigger]).catch(() => {});
     try {

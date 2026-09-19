@@ -66,6 +66,7 @@ import * as adsreport from "./adsreport.js";
 import * as mkhub from "./mkhub.js";
 import * as growthnow from "./growthnow.js";
 import * as readiness from "./readiness.js";
+import * as consent from "./consent.js";
 
 const { Pool } = pg;
 
@@ -3096,6 +3097,8 @@ const portalApi = portal.register(app, moduleCtx, { shop: () => shopApi, deliver
 // شاشة المطبخ (KDS) للمطعم كله: webhooks تاب سينس + استطلاع API الشريك + طلبات المتجر.
 // دخول بحساب «مطبخ» من «فريق البورتال» — نفس توكن البورتال ومقفول على /api/kitchen/*.
 kitchen.register(app, moduleCtx, { portal: () => portalApi, tsp: () => tspApi });
+// موافقة العميل على الإعلانات (PDPL): خانة الشيك أوت + سؤال الكاشير في البوابة. مابيرفعش حاجة لأي منصة.
+consent.register(app, moduleCtx, { requirePortal: portalApi.requirePortal });
 // تقرير الدخل اليومي + صرف الإعلانات (١٧ سبتمبر): جدول mk_daily_reports + SMS واحدة لعمر بعد القفل
 // صرف الإعلانات بالساعة (ad_spend_hourly) + قلب التقارير على اليوم التشغيلي
 const adspendApi = adspend.register(app, moduleCtx);
