@@ -351,3 +351,16 @@ test("route: external stages — picked then cost", async () => {
   const bad = await h.post("/api/portal/orders/W1/courier/external/cost", { cost: 9999 });
   assert.equal(bad.status, 400);
 });
+
+test("staffCourierNames: portal staff minus kitchen/inactive, no pins", async () => {
+  const { staffCourierNames } = await import("./courierops.js");
+  const out = staffCourierNames({ portal: { staff: [
+    { id: "a", name: "أحمد", role: "cashier", pinHash: "s1$x" },
+    { id: "b", name: "مطبخ", role: "kitchen", pinHash: "s1$y" },
+    { id: "c", name: "سعيد", role: "manager", active: false },
+    { id: "d", name: " محمد ", role: "manager" },
+    { id: "e", name: "أحمد", role: "manager" },
+  ] } });
+  assert.deepEqual(out, [{ id: "a", name: "أحمد", role: "cashier" }, { id: "d", name: "محمد", role: "manager" }]);
+  assert.deepEqual(staffCourierNames({}), []);
+});

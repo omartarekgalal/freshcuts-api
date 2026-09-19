@@ -276,6 +276,21 @@ export function distanceBadge(row = {}, cfg = DEFAULT_COURIER_SLA) {
   if (st != null && st <= cfg.nearKm) return { kind: "near", km: r1(km ?? st), walkMin: Math.max(1, Math.round(st * 1000 / 80)) };
   return null;
 }
+/* «توصيل بموظف»: أسماء فريق البورتال (من غير المطبخ ولا أرقام سرية) عشان
+   المدير يختار من قايمة بدل ما يكتب الاسم. */
+export function staffCourierNames(settings = {}) {
+  const list = ((settings || {}).portal || {}).staff;
+  if (!Array.isArray(list)) return [];
+  const seen = new Set(), out = [];
+  for (const s of list) {
+    if (!s || typeof s !== "object" || s.active === false || s.role === "kitchen") continue;
+    const name = String(s.name || "").trim().slice(0, 60);
+    if (!name || seen.has(name)) continue;
+    seen.add(name);
+    out.push({ id: String(s.id || name).slice(0, 40), name, role: s.role === "manager" ? "manager" : "cashier" });
+  }
+  return out;
+}
 export function farGuardDecision(row = {}, cfg = DEFAULT_COURIER_SLA) {
   const km = routeKmOf(row);
   const fg = cfg.farGuard || DEFAULT_COURIER_SLA.farGuard;
@@ -955,6 +970,11 @@ export function register(app, ctx, deps = {}) {
   app.get("/api/portal/courier/violation-types", async (c) => {
     const a = await mgr(c); if (a.res) return a.res;
     return c.json({ ok: true, types: MANUAL_VIOLATIONS.map((k) => ({ code: k, label: VIOLATIONS[k].label, clause: VIOLATIONS[k].clause })) });
+  });
+
+  app.get("/api/portal/courier/staff", async (c) => {
+    const a = await mgr(c); if (a.res) return a.res;
+    return c.json({ ok: true, staff: staffCourierNames(await getSettingsData()) });
   });
 
   // ٤) قفل الحادثة من غير إجراء (مثلاً اتحلّت بالتليفون)
