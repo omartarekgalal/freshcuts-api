@@ -112,7 +112,7 @@ export const DEFAULT_POLICY = {
   freeOverTotal: null,// order total that earns free delivery (null = never)
   freeCoverMax: null, // ↓ أقصى مبلغ من الرسوم بيتنازل عنه «التوصيل المجاني»
   minOrderTotal: 0,   // below this the quote refuses the order
-  maxKm: 15,          // beyond this we don't deliver (ROUTE km)
+  maxKm: 10,          // beyond this = far zone (farZone*) then refusal. Was 15 = farZoneMaxKm, which made the far zone unreachable by default (2026-09-19)
   maxStraightKm: null,// ↓ سقف مستقل على المسافة الهوائية
   routeFactor: 1.3,   // haversine → road-distance correction
   discount: { mode: "none", value: 0, label: "" }, // none|flat|percent on the FEE

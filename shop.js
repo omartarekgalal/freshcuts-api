@@ -685,6 +685,18 @@ export function register(app, ctx, deps = {}) {
           reviewUrl: (s.reviews || {}).googleUrl || "",
         };
       })(),
+      /* 🎟️ كوبون «أول طلب» (FIRST) — الحد الأدنى كان مكتوب ٤٠ في app.js.
+         دلوقتي من shop_coupons نفسه: تعديل الكوبون من اللوحة بيوصل المتجر. */
+      firstCoupon: await (async () => {
+        try {
+          const r = await pool.query(
+            `SELECT code, min_total, free_delivery, active, expires_at FROM shop_coupons WHERE upper(code)='FIRST' LIMIT 1`);
+          const x = r.rows[0];
+          if (!x) return null;
+          const live = x.active !== false && (!x.expires_at || new Date(x.expires_at) > new Date());
+          return { code: "FIRST", active: live, minTotal: Number(x.min_total) || 0, freeDelivery: x.free_delivery === true };
+        } catch { return null; }
+      })(),
     });
   });
 

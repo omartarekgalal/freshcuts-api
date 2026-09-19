@@ -259,6 +259,17 @@ export const OFFER_SEED = [
       + " بسعر ٩٦ ر.س، وإلا الكاشير هيخصم بإيده والقياس مش هيشوف العرض.",
     orderable: false,
     orderableVia: "store_bundle",   // shop.js/cms.js — مش هنا
+    /* العرض على المتجر (٢٠٢٦-٠٩-١٩): كان مكتوب في static/app.js
+       (OFFER_COPY / OFFER_ART / OFFER_ITEMS) — دلوقتي بذرة هنا وبيتعدّل من
+       اللوحة (عمود offer_registry.extra). شوف normExtra تحت. */
+    extra: {
+      copy: { title: "كيلو مشاوي بـ٩٦", line: "كفتة أو طرب أو شيش طاووق أو صدور + طبق أرز مجاناً", cta: "اختار المشوي ←" },
+      art: { web: "/static/offers/nd96_kilo-web.jpg?v=4", wide: "/static/offers/nd96_kilo-wide.jpg?v=4" },
+      badgeItems: { items: ["91", "94", "114", "111"], variant: "كيلو" },
+      includes: ["سلطة وطحينة وخبز مع المشاوي"],
+      gifts: ["طبق أرز بسمتي"],
+      bundleSlug: "national96-grill",
+    },
     catalogRow: true,
     detect: { mode: "item", names: ["كيلو مشاوي + أرز — اليوم الوطني ٩٦ ريال", "اليوم الوطني ٩٦ كيلو"] },
     components: [
@@ -294,6 +305,12 @@ export const OFFER_SEED = [
     opsTodo: "صنف في نقطة البيع اسمه بالحرف «بوكس اليوم الوطني ٩٦ ريال» بسعر ٩٦ ر.س.",
     orderable: false,
     orderableVia: "store_bundle",
+    extra: {
+      copy: { title: "بوكس اليوم الوطني ٩٦", line: "بيتزا + باستا + كريب على اختيارك + حواوشي + بطاطس + كلوسلو", cta: "كوّن البوكس ←" },
+      art: { web: "/static/offers/nd96_box-web.jpg?v=4", wide: "/static/offers/nd96_box-wide.jpg?v=4" },
+      gifts: ["بطاطس محمرة", "كلوسلو"],
+      bundleSlug: "national96-box",
+    },
     catalogRow: true,
     /* ⚠️ ليه البصمة «صنف» مش «تركيبة»: تركيبة البوكس (بيتزا + باستا + كريب)
        هي **نفس** تركيبة كومبو الـ٧٠ بالظبط — الفرق الوحيد بينهم الرقم اللي
@@ -342,7 +359,10 @@ export const OFFER_SEED = [
 ═══════════════════════════════════════════════════════════════════════════ */
 
 // الحقول اللي اللوحة تقدر تغيّرها — أي حاجة برّه القايمة دي بتفضل من الكود
-export const EDITABLE_OFFER_FIELDS = ["enabled", "from", "until", "untilProvisional", "title", "desc", "channels"];
+export const EDITABLE_OFFER_FIELDS = ["enabled", "from", "until", "untilProvisional", "title", "desc", "channels", "extra"];
+/* عرض «مخصّص» (اتعمل من اللوحة، مالوش بذرة في الكود) بيتعدّل فيه كمان السعر
+   واسم الكتالوج والمكوّنات — مفيش كود يحرسهم، فاللوحة هي المصدر. */
+export const CUSTOM_EDITABLE_FIELDS = [...EDITABLE_OFFER_FIELDS, "price", "catalogTitle", "components"];
 export const LOCKED_OFFER_FIELDS = ["price", "catalogTitle", "savingsClaim", "compareAt", "compareAtPrice", "productId", "posItemId"];
 
 const CHANNEL_LABELS = [["dineIn", "صالة"], ["takeaway", "تيك أواي"], ["delivery", "توصيل من المتجر"]];
@@ -356,9 +376,95 @@ function normChannels(ch) {
   };
 }
 
+/* ═══ العرض على المتجر — `extra` (٢٠٢٦-٠٩-١٩) ════════════════════════════
+   قبل كده المتجر كان فيه أربع جداول مكتوبة بالإيد في static/app.js:
+   OFFER_COPY (عنوان/سطر/زرار الكارت)، OFFER_ART (صور البانر)، OFFER_ITEMS
+   (أصناف المنيو اللي عليها بادج «عرض ٩٦» والوزن)، OFFER_BUNDLE (ربط العرض
+   بالباقة). يعني عرض جديد بعد اليوم الوطني = تعديل كود ونشر. دلوقتي كلهم
+   حقل واحد في السجل بيتعدّل من اللوحة، والمتجر بيقراه من /api/catalog/dine-in.
+     copy       {title, line, cta}   نص الكارت والبانر وعنوان المنتقي
+     art        {web, wide}          صور البانر (https:// أو /static/…)
+     image      صورة صف الكتالوج الإعلاني (https:// بس)
+     badgeItems {items[], variant}   أصناف المنيو اللي بتاخد بادج العرض + الوزن
+     includes   []                   «معاه» — حاجات بتيجي مع العرض ومش سطر في نقطة البيع
+     gifts      []                   الهدايا (للعرض بس — الهدية الحقيقية خانة ثابتة في الباقة)
+     badge      نص البادج (الافتراضي «عرض <السعر>»)
+     emoji
+     bundleSlug الباقة الافتراضية (لو الباقة نفسها مش مربوطة بـoffer_id)
+     components [] (المخصّص بس) مكوّنات العرض كنص
+     catalogRow  false = مايتحطّش صف في كتالوج الإعلانات
+   كل نص بيعدّي على نفس منع «التوفير» (SAVINGS_RE). */
+const EXTRA_KEYS = ["copy", "art", "image", "badgeItems", "includes", "gifts", "badge", "emoji", "bundleSlug", "components", "catalogRow"];
+const okArt = (u) => u === "" || (/^https:\/\/[^\s"'<>]{4,490}$/.test(u)) || (/^\/static\/[\w\-./?=&]{1,200}$/.test(u) && !u.includes(".."));
+const clipS = (v, n) => String(v == null ? "" : v).replace(/[<>]/g, "").trim().slice(0, n);
+const strList = (v, max, n) => (Array.isArray(v) ? v : []).map((x) => clipS(x, n)).filter(Boolean).slice(0, max);
+
+/** تحقق/تنضيف `extra` — صافية. بترجّع { ok, extra } أو { ok:false, error, message }. */
+export function normExtra(raw, { custom = false } = {}) {
+  const bad = (error, message) => ({ ok: false, error, message });
+  if (raw == null) return { ok: true, extra: null };
+  if (typeof raw !== "object" || Array.isArray(raw)) return bad("bad_extra", "بيانات العرض على المتجر مش صحيحة.");
+  const out = {};
+  if (raw.copy && typeof raw.copy === "object") {
+    const c = { title: clipS(raw.copy.title, 60), line: clipS(raw.copy.line, 160), cta: clipS(raw.copy.cta, 30) };
+    if (c.title || c.line || c.cta) out.copy = c;
+  }
+  if (raw.art && typeof raw.art === "object") {
+    const a = { web: clipS(raw.art.web, 500), wide: clipS(raw.art.wide, 500) };
+    if (!okArt(a.web) || !okArt(a.wide)) return bad("bad_art_url", "صورة البانر لازم تبدأ بـ https:// أو /static/");
+    if (a.web || a.wide) out.art = a;
+  }
+  if (raw.image != null && raw.image !== "") {
+    const u = clipS(raw.image, 500);
+    if (!/^https:\/\/[^\s"'<>]{4,490}$/.test(u)) return bad("bad_image_url", "صورة الكتالوج لازم تبدأ بـ https://");
+    out.image = u;
+  }
+  if (raw.badgeItems && typeof raw.badgeItems === "object") {
+    const items = [...new Set((Array.isArray(raw.badgeItems.items) ? raw.badgeItems.items : [])
+      .map((x) => String(x).trim()).filter((x) => /^\d{1,12}$/.test(x)))].slice(0, 40);
+    const variant = clipS(raw.badgeItems.variant, 30);
+    if (items.length) out.badgeItems = { items, variant };
+  }
+  const inc = strList(raw.includes, 8, 80); if (inc.length) out.includes = inc;
+  const gifts = strList(raw.gifts, 8, 80); if (gifts.length) out.gifts = gifts;
+  const badge = clipS(raw.badge, 30); if (badge) out.badge = badge;
+  const emoji = clipS(raw.emoji, 8); if (emoji) out.emoji = emoji;
+  const slug = clipS(raw.bundleSlug, 48).toLowerCase();
+  if (slug) {
+    if (!/^[a-z0-9](?:[a-z0-9-]{0,46}[a-z0-9])?$/.test(slug)) return bad("bad_bundle_slug", "معرّف الباقة مش صحيح.");
+    out.bundleSlug = slug;
+  }
+  if (custom) {
+    const comps = strList(raw.components, 12, 80); if (comps.length) out.components = comps;
+  }
+  if (raw.catalogRow === false) out.catalogRow = false;
+  const text = [out.copy?.title, out.copy?.line, out.copy?.cta, out.badge, ...(out.includes || []), ...(out.gifts || []),
+    ...(out.components || [])].filter(Boolean).join(" ");
+  if (SAVINGS_RE.test(text)) {
+    return bad("savings_claim_forbidden", "نص العرض على المتجر فيه كلام عن توفير/خصم/نسبة — ممنوع (السعر مش خصم على سعر «قبل» موثّق).");
+  }
+  return { ok: true, extra: out };
+}
+
+function applyExtra(o, extra) {
+  const x = extra && typeof extra === "object" ? extra : {};
+  o.copy = x.copy || null;
+  o.art = x.art || null;
+  o.badgeItems = x.badgeItems || null;
+  o.includes = x.includes || [];
+  o.gifts = x.gifts || [];
+  o.badge = x.badge || "";
+  o.bundleSlug = x.bundleSlug || null;
+  if (x.emoji) o.emoji = x.emoji;
+  if (x.image) o.image = x.image;
+  if (x.catalogRow === false) o.catalogRow = false;
+  o.extra = x;
+  return o;
+}
+
 /* عرض حي = البذرة (الحقول المقفولة) + صف الجدول (الحقول القابلة للتعديل). */
 export function mergeOffer(seed, row) {
-  const o = { ...seed, enabled: true };
+  const o = { ...seed, enabled: true, custom: false };
   if (row) {
     o.enabled = row.enabled !== false;
     o.from = row.from_day || null;
@@ -375,11 +481,50 @@ export function mergeOffer(seed, row) {
     o.dineInOnly = o.channels.dineIn && !o.channels.takeaway && !o.channels.delivery;
     o.note = o.dineInOnly ? DINE_IN_NOTE : `${on.join(" · ")} — ${NO_APPS_NOTE}`;
   }
+  // العرض على المتجر: صف الجدول لو اتعدّل، وإلا البذرة
+  applyExtra(o, row && row.extra ? row.extra : seed.extra);
   // الحقول المقفولة: من البذرة دايماً، مهما كان في الصف
   o.savingsClaim = seed.savingsClaim;
   o.compareAt = seed.compareAt;
   o.price = seed.price;
   o.catalogTitle = seed.catalogTitle;
+  return o;
+}
+
+/* عرض مخصّص (اتعمل من اللوحة) — مالوش بذرة، فالهيكل الثابت هنا والباقي من الصف.
+   آليّته دايماً «باقة المتجر»: بيتباع من باقة مربوطة بـoffer_id، وبيتقاس
+   باسم الكتالوج لو الكاشير سجّله صنف. */
+export function customOffer(row) {
+  const title = String(row.title || row.id);
+  const catalogTitle = String(row.catalog_title || title);
+  const extra = row.extra && typeof row.extra === "object" ? row.extra : {};
+  const base = {
+    id: String(row.id),
+    productId: `offer-${row.id}`,
+    catalogTitle,
+    title,
+    desc: row.description || "",
+    emoji: "🔥",
+    image: "",
+    price: Math.round((Number(row.price) || 0) * 100) / 100,
+    currency: "SAR",
+    priceRole: "price",
+    mechanic: "bundle",
+    savingsClaim: false,
+    goal: "basket",
+    ringsAs: "store_bundle",
+    orderable: false,
+    orderableVia: "store_bundle",
+    catalogRow: true,
+    detect: { mode: "item", names: [catalogTitle] },
+    components: (Array.isArray(extra.components) ? extra.components : []).map((label) => ({ label: String(label) })),
+    channels: { dineIn: true, takeaway: true, delivery: true, deliveryApps: false },
+  };
+  const o = mergeOffer(base, row);
+  o.custom = true;
+  o.price = base.price;          // المخصّص: السعر من الصف (mergeOffer بيرجّعه من «البذرة» = base)
+  o.catalogTitle = catalogTitle;
+  o.createdAt = row.created_at || null;
   return o;
 }
 
@@ -407,11 +552,18 @@ const _listeners = new Set();
 export function onOffersChanged(fn) { _listeners.add(fn); return () => _listeners.delete(fn); }
 export const offersSource = () => ({ source: _source, loadedAt: _loadedAt, lastError: _lastError, count: OFFERS.length });
 
+const SEED_IDS = new Set(OFFER_SEED.map((s) => s.id));
+export const isSeedOffer = (id) => SEED_IDS.has(String(id));
+
 /** بيملّى السجل الحي من صفوف الجدول — في نفس المصفوفة (نفس المرجع). */
 export function applyOfferRows(rows) {
   const byId = new Map((rows || []).map((r) => [String(r.id), r]));
   const merged = OFFER_SEED.map((s) => mergeOffer(s, byId.get(s.id) || null));
-  OFFERS.splice(0, OFFERS.length, ...merged);
+  const customs = (rows || [])
+    .filter((r) => r && r.custom === true && !SEED_IDS.has(String(r.id)))
+    .sort((a, b) => String(a.created_at || "").localeCompare(String(b.created_at || "")) || String(a.id).localeCompare(String(b.id)))
+    .map(customOffer);
+  OFFERS.splice(0, OFFERS.length, ...merged, ...customs);
   _source = "db";
   _loadedAt = new Date().toISOString();
   _lastError = null;
@@ -437,8 +589,10 @@ export function validateOfferPatch(offer, body) {
   const bad = (error, message) => ({ ok: false, error, message });
   if (!offer) return bad("unknown_offer", "عرض غير معروف");
   const b = body && typeof body === "object" ? body : {};
+  const custom = offer.custom === true;
   for (const k of LOCKED_OFFER_FIELDS) {
     if (!(k in b)) continue;
+    if (custom && (k === "price" || k === "catalogTitle")) continue; // المخصّص: اللوحة هي المصدر
     const cur = k === "compareAtPrice" ? null : offer[k] ?? null;
     if (JSON.stringify(b[k] ?? null) !== JSON.stringify(cur)) {
       return bad("locked_field", `«${k}» مقفول في الكود ومايتعدّلش من اللوحة`
@@ -478,13 +632,32 @@ export function validateOfferPatch(offer, body) {
   }
   const enabled = "enabled" in b ? b.enabled === true : offer.enabled !== false;
   const untilProvisional = "untilProvisional" in b ? b.untilProvisional === true : !!offer.untilProvisional;
-  return {
-    ok: true,
-    row: {
-      id: offer.id, enabled, from_day: from, until_day: until, until_provisional: untilProvisional,
-      title, description: desc, channels,
-    },
+  const row = {
+    id: offer.id, enabled, from_day: from, until_day: until, until_provisional: untilProvisional,
+    title, description: desc, channels,
   };
+  // العرض على المتجر — «extra» بيتبعت كامل (مش دمج): اللوحة بتبعت الشكل كله
+  if ("extra" in b) {
+    let raw = b.extra;
+    if (custom && "components" in b) raw = { ...(raw || {}), components: b.components };
+    const x = normExtra(raw, { custom });
+    if (!x.ok) return x;
+    row.extra = x.extra;
+  } else if (custom && "components" in b) {
+    const x = normExtra({ ...(offer.extra || {}), components: b.components }, { custom });
+    if (!x.ok) return x;
+    row.extra = x.extra;
+  }
+  if (custom) {
+    const price = Math.round((Number(pick("price", offer.price)) || 0) * 100) / 100;
+    if (!(price > 0) || price > 5000) return bad("bad_price", "سعر العرض لازم يكون رقم أكبر من صفر.");
+    const catalogTitle = String(pick("catalogTitle", offer.catalogTitle) ?? "").trim() || title;
+    if (catalogTitle.length > 150) return bad("catalog_title_too_long", "اسم الكتالوج أطول من ١٥٠ حرف.");
+    if (SAVINGS_RE.test(catalogTitle)) return bad("savings_claim_forbidden", "اسم الكتالوج فيه كلام عن توفير/خصم.");
+    row.price = price;
+    row.catalog_title = catalogTitle;
+  }
+  return { ok: true, row };
 }
 
 /* ── الداتابيز ─────────────────────────────────────────────────────────────
@@ -505,6 +678,14 @@ export async function ensureOffersSchema(pool) {
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       updated_by TEXT
     )`);
+  /* ٢٠٢٦-٠٩-١٩: عروض مخصّصة من اللوحة + العرض على المتجر.
+     custom=true ⇒ مالوش بذرة: السعر واسم الكتالوج من الصف.
+     extra = النص/الصور/البادجات (null = قيم البذرة). */
+  await pool.query(`ALTER TABLE offer_registry
+      ADD COLUMN IF NOT EXISTS custom BOOLEAN NOT NULL DEFAULT FALSE,
+      ADD COLUMN IF NOT EXISTS price NUMERIC(10,2),
+      ADD COLUMN IF NOT EXISTS catalog_title TEXT,
+      ADD COLUMN IF NOT EXISTS extra JSONB`);
   let seeded = 0;
   for (const s of OFFER_SEED) {
     const r = seedRow(s);
@@ -529,6 +710,10 @@ export async function loadOffers(pool) {
   }
 }
 
+const snapshotOf = (o) => o && ({ enabled: o.enabled, from: o.from, until: o.until,
+  untilProvisional: !!o.untilProvisional, title: o.title, desc: o.desc, channels: o.channels,
+  price: o.price, catalogTitle: o.catalogTitle, extra: o.extra || {} });
+
 /* حفظ تعديل من اللوحة: تحقق → UPDATE → إعادة تحميل السجل الحي قبل الرد،
    فأول نداء بعد الحفظ (من أي موديول) بيشوف القيمة الجديدة. */
 export async function saveOffer(pool, id, body, who) {
@@ -543,13 +728,63 @@ export async function saveOffer(pool, id, body, who) {
     [r.id, r.enabled, r.from_day, r.until_day, r.until_provisional, r.title, r.description,
      r.channels == null ? null : JSON.stringify(r.channels), who || null]);
   if (!res.rowCount) return { ok: false, error: "not_found", message: "العرض مش موجود في الجدول" };
-  const snapshot = (o) => o && ({ enabled: o.enabled, from: o.from, until: o.until,
-    untilProvisional: !!o.untilProvisional, title: o.title, desc: o.desc, channels: o.channels });
-  const old = snapshot(before);
+  if ("extra" in r || "price" in r) {
+    await pool.query(
+      `UPDATE offer_registry SET extra = CASE WHEN $2::boolean THEN $3::jsonb ELSE extra END,
+         price = COALESCE($4::numeric, price), catalog_title = COALESCE($5, catalog_title)
+       WHERE id=$1`,
+      [r.id, "extra" in r, "extra" in r && r.extra != null ? JSON.stringify(r.extra) : null,
+       "price" in r ? r.price : null, "catalog_title" in r ? r.catalog_title : null]);
+  }
+  const old = snapshotOf(before);
   await loadOffers(pool);
-  const now = snapshot(offerById(id));
+  const now = snapshotOf(offerById(id));
   const changed = Object.keys(now).filter((k) => JSON.stringify(old[k]) !== JSON.stringify(now[k]));
   return { ok: true, offer: offerById(id), before: old, after: now, changed };
+}
+
+/* عرض جديد من اللوحة. المعرّف إنجليزي صغير (بيبقى جزء من productId في
+   الكتالوج الإعلاني offer-<id>) ومايتغيّرش بعد كده. */
+export const OFFER_ID_RE = /^[a-z][a-z0-9_]{2,39}$/;
+export async function createOffer(pool, body, who) {
+  const b = body && typeof body === "object" ? body : {};
+  const id = String(b.id || "").trim().toLowerCase();
+  if (!OFFER_ID_RE.test(id)) return { ok: false, error: "bad_id", message: "معرّف العرض لازم حروف إنجليزي صغيرة وأرقام و_ (٣–٤٠)، ويبدأ بحرف." };
+  if (offerById(id) || SEED_IDS.has(id)) return { ok: false, error: "id_taken", message: "المعرّف ده مستعمل لعرض تاني." };
+  const draft = customOffer({ id, title: b.title || id, description: "", price: b.price, extra: {},
+    until_day: b.until, from_day: b.from, enabled: false,
+    channels: b.channels || { dineIn: true, takeaway: true, delivery: true } });
+  const v = validateOfferPatch(draft, { enabled: false, ...b, extra: b.extra || {} });
+  if (!v.ok) return v;
+  const r = v.row;
+  try {
+    await pool.query(
+      `INSERT INTO offer_registry (id, enabled, from_day, until_day, until_provisional, title, description, channels,
+         updated_by, custom, price, catalog_title, extra)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,TRUE,$10,$11,$12)`,
+      [id, r.enabled, r.from_day, r.until_day, r.until_provisional, r.title, r.description,
+       r.channels == null ? null : JSON.stringify(r.channels), who || null, r.price, r.catalog_title,
+       JSON.stringify(r.extra || {})]);
+  } catch (e) {
+    if (e.code === "23505") return { ok: false, error: "id_taken", message: "المعرّف ده مستعمل لعرض تاني." };
+    throw e;
+  }
+  await loadOffers(pool);
+  return { ok: true, offer: offerById(id) };
+}
+
+/* حذف عرض مخصّص — بس لو عمره ما اتنشر (مالوش صفحة منشورة) ومش شغّال. العرض
+   اللي اتباع مرة بيتوقف مش بيتمسح: الطلبات القديمة لازم تفضل قابلة للقياس. */
+export async function deleteOffer(pool, id) {
+  const o = offerById(id);
+  if (!o) return { ok: false, error: "unknown_offer", message: "عرض غير معروف." };
+  if (!o.custom) return { ok: false, error: "seed_offer", message: "العرض ده من الكود — تقدر توقفه بس، مش تمسحه." };
+  if (offerState(o).status === "live") return { ok: false, error: "offer_live", message: "العرض شغّال — أوقفه الأول." };
+  const pub = await pool.query("SELECT 1 FROM offer_pages WHERE offer_id=$1 AND published_at IS NOT NULL", [id]).catch(() => ({ rows: [] }));
+  if (pub.rows.length) return { ok: false, error: "offer_published", message: "صفحة العرض اتنشرت قبل كده — أوقفه بدل ما تمسحه عشان الروابط والتقارير." };
+  await pool.query("DELETE FROM offer_registry WHERE id=$1 AND custom", [id]);
+  await loadOffers(pool);
+  return { ok: true };
 }
 
 /* ── «وفّر كذا» ممنوعة بالتصميم ────────────────────────────────────────────
@@ -700,6 +935,17 @@ export function publicOffer(o, now = new Date()) {
     enabled: st.enabled,
     status: st.status,
     statusLabel: STATUS_LABELS[st.status],
+    /* العرض على المتجر (extra) — المتجر مابقاش فيه جداول عروض مكتوبة بالإيد. */
+    custom: o.custom === true,
+    onlineOnly: !!(o.channels && !o.channels.dineIn),
+    image: o.image || "",
+    copy: o.copy || null,
+    art: o.art || null,
+    badgeItems: o.badgeItems || null,
+    includes: o.includes || [],
+    gifts: o.gifts || [],
+    badge: o.badge || "",
+    bundleSlug: o.bundleSlug || null,
   };
 }
 

@@ -333,7 +333,7 @@ export function register(app, ctx, deps = {}) {
     const s = await getSettingsData();
     const cfg = cartCfg(s);
     if (!cfg.enabled) return { skipped: "disabled" };
-    if (smsRules.inQuietHours(now)) return { skipped: "quiet_hours" };
+    if (smsRules.inQuietFor(s, now)) return { skipped: "quiet_hours" };
     if (cfg.respectOpenHours && !isOpenNow(s.hours, now)) return { skipped: "closed" };
     const out = { step1: 0, step2: 0, skipped: 0 };
     const verified = cfg.requireVerifiedPhone

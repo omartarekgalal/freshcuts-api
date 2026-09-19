@@ -55,6 +55,7 @@ import * as clarity from "./clarity.js";
 import * as selftest from "./selftest.js";
 import * as menuplan from "./menuplan.js";
 import * as systemcheck from "./systemcheck.js";
+import * as syshealth from "./syshealth.js";
 import * as portal from "./portal.js";
 import * as adsreport from "./adsreport.js";
 import * as mkhub from "./mkhub.js";
@@ -3089,6 +3090,8 @@ adsreport.register(app, moduleCtx, { sendSms: (m) => accounts.sendSms(m) });
 // «الحملات كلها في مكان واحد» + تقرير السلات المتروكة (قراءة بس) — mkhub.js
 const mkhubApi = mkhub.register(app, moduleCtx, { alignedSpend: () => (globalThis.__fcAlignedSpend || null) });
 systemcheck.register(app, moduleCtx, { tsState: () => tsState });
+// «حالة النظام» بمكوّنات النهارده (تاب سينس/لأجلك/SMS/الدفع/جوجل/النشر/الرحلة/النسخ الاحتياطي…)
+syshealth.register(app, moduleCtx, { tsp: () => tspApi, tsState: () => tsState, insightsState: () => insightsState });
 console.log("[analytics] routes ready");
 console.log(`[ai] routes ready (provider: ${process.env.ANTHROPIC_API_KEY ? "anthropic" : process.env.LITELLM_KEY ? "litellm" : "NOT CONFIGURED"})`);
 

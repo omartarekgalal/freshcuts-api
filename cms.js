@@ -29,6 +29,7 @@ import { promisify } from "node:util";
 import { IDENT_SQL, SALES_ONLY, deliverySql, WEBSITE_SQL } from "./analytics.js";
 // نفس قواعد الـSLA بتاعة الـwatchdog — لوحة التشغيل مابتكتبش كتاب قواعد تاني
 import { slaCheck, DEFAULT_SLA } from "./shop.js";
+import { dispatchDelayOf, canAutoDispatch } from "./delivery.js";
 import { isBotRequest } from "./botfilter.js";
 // قواعد الباقات (توزيع السعر والتوسيع) — صافية ومتجرّبة أوفلاين في bundles.test.mjs
 import * as bundlesLib from "./bundles.js";
@@ -38,6 +39,7 @@ import * as tsstore from "./tsstore.js";
 // سجل العروض الحي (جدول offer_registry) — نفس المصدر اللي الكتالوج والمتجر بيقروا منه
 import {
   OFFERS, offerById, publicOffer, saveOffer, offersSource, riyadhDay, EDITABLE_OFFER_FIELDS,
+  CUSTOM_EDITABLE_FIELDS, createOffer, deleteOffer,
   // يوم الشغل (٤ الفجر) — باسم تاني لأن register فيها riyadhDay محلية بمعنى يوم التقويم
   SAVINGS_RE, riyadhDay as bizDay,
 } from "./offers.js";
@@ -895,12 +897,20 @@ export function register(app, ctx, deps = {}) {
     ]);
     const byId = Object.fromEntries(ov.rows.map((r) => [r.product_id, r]));
     const hidden = new Set(((s?.catalog || {}).hiddenIds || []).map(String));
+    // «خلص النهارده» — نفس settings.catalog.soldOut اللي البورتال («الأصناف») بيكتبه
+    let so = {};
+    try { so = soldOutOf(s); } catch { so = {}; }
     return c.json({
       ok: true,
+      soldOutCount: Object.keys(so).length,
       items: items.map((it) => {
         const o = byId[it.id];
+        const sold = so[it.id] || null;
         return {
           ...it, hidden: hidden.has(it.id),
+          // رقم الصنف في تاب سينس (tenant product id) — نفس الرقم في البورتال والباقات والكتالوج
+          tabsense_id: it.id,
+          soldOut: !!sold, soldOutUntil: sold?.until || null, soldOutBy: sold?.by || null, soldOutAt: sold?.at || null,
           overlay: o ? {
             image: o.image || "", description: o.description || "", description_en: o.description_en || "",
             badge: o.badge || "", seo_title: o.seo_title || "", seo_description: o.seo_description || "",
@@ -1200,7 +1210,9 @@ export function register(app, ctx, deps = {}) {
       return { id: p.id, title: p.title, price: p.price, status: p.status, statusLabel: p.statusLabel,
         from: p.from, until: p.until, untilProvisional: p.untilProvisional, channels: p.channels, dineInOnly: p.dineInOnly };
     });
-    return c.json({ ok: true, bundles: list, productNames: names, preview, availability, offers });
+    let soldOut = {};
+    try { soldOut = soldOutOf(await getSettingsData()); } catch { soldOut = {}; }
+    return c.json({ ok: true, bundles: list, productNames: names, preview, availability, offers, soldOut });
   });
 
   /* معاينة مسودة قبل الحفظ — GET عشان المعاينة مش تعديل ومايتسجّلش في السجل.
@@ -1244,6 +1256,10 @@ export function register(app, ctx, deps = {}) {
         if (d) items.push({ id, name: d.name, price_incl: d.priceIncl, price_ex: d.priceEx, image: "",
           category: "خارج المنيو", variants: d.variants.map((o) => ({ id: o.id, name: o.name, price_incl: o.priceIncl })) });
       }
+      // «خلص النهارده» في المنتقي — نفس المصدر بتاع البورتال
+      let so = {};
+      try { so = soldOutOf(await getSettingsData()); } catch { so = {}; }
+      for (const it of items) { it.soldOut = !!so[it.id]; it.soldOutUntil = so[it.id]?.until || null; }
       return c.json({ ok: true, items });
     } catch (e) {
       return c.json({ ok: false, error: "catalog_unavailable", message: e.message, items: [] });
@@ -1374,7 +1390,11 @@ export function register(app, ctx, deps = {}) {
       const m = meta.get(o.id);
       return {
         ...p,
-        locked: { price: o.price, catalogTitle: o.catalogTitle, savingsClaim: false, deliveryApps: false },
+        locked: o.custom
+          ? { savingsClaim: false, deliveryApps: false }
+          : { price: o.price, catalogTitle: o.catalogTitle, savingsClaim: false, deliveryApps: false },
+        editable: o.custom ? CUSTOM_EDITABLE_FIELDS : EDITABLE_OFFER_FIELDS,
+        extra: o.extra || {},
         updatedAt: m?.updated_at || null,
         updatedBy: m?.updated_by || null,
         bundles: linked.filter((b) => b.offer_id === o.id).map((b) => ({
@@ -1407,13 +1427,53 @@ export function register(app, ctx, deps = {}) {
     const fmt = (v) => (v == null ? "—" : typeof v === "object"
       ? Object.entries(v).filter(([, x]) => x === true).map(([k]) => k).join("+") || "—" : String(v));
     auditNote(c, r.changed.length
-      ? `عرض ${id}: ${r.changed.map((k) => `${k} ${fmt(r.before[k])}→${fmt(r.after[k])}`).join("، ")}`
+      ? `عرض ${id}: ${r.changed.map((k) => (k === "extra" ? "العرض على المتجر (نص/صور/بادج)" : `${k} ${fmt(r.before[k])}→${fmt(r.after[k])}`)).join("، ")}`
       : `عرض ${id}: حفظ من غير تغيير`);
+    const warnings = [];
+    /* عرض مخصّص اتغيّر سعره ⇒ الباقات المربوطة بتاخد نفس السعر (السعر المعلن
+       واحد في كل مكان — linkCheck بيرفض أي فرق). */
+    if (r.changed.includes("price")) {
+      const up = await pool.query(
+        "UPDATE cms_bundles SET price=$2, updated_at=NOW(), updated_by=$3 WHERE offer_id=$1 AND price<>$2 RETURNING slug",
+        [id, r.after.price, await who(c)]);
+      if (up.rowCount) {
+        auditNote(c, `باقات العرض ${id} اتعدّل سعرها لـ${r.after.price}: ${up.rows.map((x) => x.slug).join("، ")}`);
+        warnings.push(`سعر ${up.rowCount} باقة مربوطة اتعدّل لـ${r.after.price} ر.س تلقائياً.`);
+      }
+    }
     const now = new Date();
     const offer = (await offersPayload(now)).find((o) => o.id === id);
-    const warnings = [];
     if (offer.expired) warnings.push(`تاريخ النهاية (${offer.until}) عدّى — العرض وقف في كل مكان.`);
     return c.json({ ok: true, offer, changed: r.changed, warnings });
+  });
+
+  /* عرض جديد من اللوحة (بعد اليوم الوطني): بيتعمل «موقوف» لحد ما المالك
+     يربطه بباقة ويشغّله. المتجر بيلقطه من /api/catalog/dine-in من غير كود. */
+  app.post("/api/cms/offers", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    let b = {}; try { b = await c.req.json(); } catch { return c.json({ ok: false, error: "bad json" }, 400); }
+    if (offersSource().source !== "db") {
+      return c.json({ ok: false, error: "registry_not_loaded", message: "سجل العروض لسه ماتحمّلش — جرّب بعد دقيقة." }, 409);
+    }
+    const r = await createOffer(pool, b, await who(c));
+    if (!r.ok) return c.json(r, 400);
+    auditNote(c, `عرض جديد ${r.offer.id}: ${r.offer.title} — ${r.offer.price} ر.س (${r.offer.from || "—"}→${r.offer.until})`);
+    const offer = (await offersPayload(new Date())).find((o) => o.id === r.offer.id);
+    return c.json({ ok: true, offer });
+  });
+
+  app.delete("/api/cms/offers/:id", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    const id = c.req.param("id");
+    const linked = await pool.query("SELECT slug FROM cms_bundles WHERE offer_id=$1", [id]);
+    if (linked.rowCount) {
+      return c.json({ ok: false, error: "has_bundles",
+        message: `العرض مربوط بباقة (${linked.rows.map((x) => x.slug).join("، ")}) — فك الربط أو امسح الباقة الأول.` }, 400);
+    }
+    const r = await deleteOffer(pool, id);
+    if (!r.ok) return c.json(r, 400);
+    auditNote(c, `حذف عرض ${id}`);
+    return c.json({ ok: true });
   });
 
   /* ── تلبيس الباقة: أسماء وصور وأسعار الأصناف الحقيقية ─────────────────────
@@ -2125,7 +2185,7 @@ export function register(app, ctx, deps = {}) {
     const cfg = await campaignCfg();
     if (cfg.smsEnabled !== true) return "sms_disabled";
     if (cfg.brake) return "brake_optout";
-    if (smsRules.inQuietHours()) return "quiet_hours";
+    if (smsRules.inQuietFor(await getSettingsData())) return "quiet_hours";
     const parts = smsPartsOf(smsBody(camp, aud.list[0]));
     if (parts > MAX_PARTS) return "too_long";
     if ((await smsToday()) + aud.list.length * parts > Number(cfg.dailySmsCap || 0)) return "daily_cap";
@@ -2203,7 +2263,7 @@ export function register(app, ctx, deps = {}) {
     const parts = camp.channel === "sms" ? smsPartsOf(sample || smsBody(camp, { name: "", code: "xxxxxxxxxx" })) : 0;
     return c.json({ ok: true, audience: aud.list.length, holdout: aud.holdout.length, segmentSize: aud.segmentSize,
       optedOut: aud.optedOut, excluded: aud.excluded, parts, tooLong: parts > MAX_PARTS,
-      quietHours: smsRules.inQuietHours(),
+      quietHours: smsRules.inQuietFor(await getSettingsData()),
       costEstimate: Math.round(aud.list.length * parts * 0.075 * 100) / 100, sampleBody: sample.replace(/\/u\/[a-f0-9]+/, "/u/••••") });
   });
 
@@ -2242,7 +2302,7 @@ export function register(app, ctx, deps = {}) {
       try {
         if (camp.channel === "sms") {
           // ساعات الهدوء ممكن تبدأ في نص حملة كبيرة — نوقف الباقي
-          if (smsRules.inQuietHours()) { failed++; lastError = "quiet_hours"; await log(p.pn, "failed", { error: "quiet_hours" }); return; }
+          if (smsRules.inQuietFor(await getSettingsData())) { failed++; lastError = "quiet_hours"; await log(p.pn, "failed", { error: "quiet_hours" }); return; }
           const info = await sendMarketingSms(p.pn, smsBody(camp, p));
           sent++; cost += info.cost; await log(p.pn, "sent", info);
         } else if (await notify()?.sendToAudience({ phoneNorm: p.pn, title: "فريش كاتس 🍔",
@@ -2300,7 +2360,7 @@ export function register(app, ctx, deps = {}) {
     const id = Number(c.req.param("id"));
     const at = new Date(b.at);
     if (isNaN(at) || at.getTime() < Date.now() - 60_000) return bad(c, "bad_time");
-    if (smsRules.inQuietHours(at)) return bad(c, "quiet_hours");
+    if (smsRules.inQuietFor(await getSettingsData(), at)) return bad(c, "quiet_hours");
     const camp = (await pool.query("SELECT * FROM cms_campaigns WHERE id=$1 AND status IN ('draft','held')", [id])).rows[0];
     if (!camp) return bad(c, "not_draft", 409);
     const aud = await audienceFor(camp);
@@ -2390,6 +2450,11 @@ export function register(app, ctx, deps = {}) {
       dailySmsCap: Math.min(20000, Math.max(0, Number(b.dailySmsCap) || 0)),
     };
     if (b.minGapDays != null) val.minGapDays = Math.min(90, Math.max(0, Math.round(Number(b.minGapDays) || 0)));
+    // ساعات الهدوء + فاصل الأتمتة — مصدر واحد لكل رسايل التسويق (smsrules.quietOf)
+    const hr = (v) => { const n = Number(v); return Number.isInteger(n) && n >= 0 && n <= 23 ? n : null; };
+    if (b.quietStart != null && hr(b.quietStart) != null) val.quietStart = hr(b.quietStart);
+    if (b.quietEnd != null && hr(b.quietEnd) != null) val.quietEnd = hr(b.quietEnd);
+    if (b.flowGapDays != null) val.flowGapDays = Math.min(180, Math.max(7, Math.round(Number(b.flowGapDays) || 21)));
     if (b.budgetSar != null) val.budgetSar = Math.max(0, Number(b.budgetSar) || 0);
     if (b.budgetSince !== undefined) val.budgetSince = b.budgetSince ? new Date(b.budgetSince).toISOString() : null;
     if (b.clearBrake === true) delete val.brake;
@@ -2546,7 +2611,9 @@ export function register(app, ctx, deps = {}) {
   app.get("/api/cms/ops/live", async (c) => {
     const err = await requireAdmin(c); if (err) return err;
     const s = await getSettingsData();
-    const sla = { ...DEFAULT_SLA, ...(((s || {}).delivery || {}).sla || {}) };
+    // نفس حساب الحارس والبورتال: مهلة طلب المندوب (dispatchDelayMin) جزء من الـSLA
+    const sla = { ...DEFAULT_SLA, ...(((s || {}).delivery || {}).sla || {}),
+      dispatchDelayMin: canAutoDispatch(s) ? dispatchDelayOf(s) : 0 };
     const [rows, today] = await Promise.all([
       pool.query(`
         SELECT o.order_no, o.status, o.option, o.total, o.customer, o.created_at, o.updated_at, o.pos_ready_at,
@@ -2601,7 +2668,6 @@ export function register(app, ctx, deps = {}) {
      واحد مرة واحدة. ومفيش عميل بياخد رسالة أتمتة أكتر من مرة كل ٢١ يوم. */
   const FLOW_GAP_DAYS = 21;
   const FLOW_RUN_CAP = 200;
-  const riyadhHour = () => Number(new Date(Date.now() + 3 * 3600_000).toISOString().slice(11, 13));
 
   async function flowBaseline(flow) {
     const seg = segById[flow.segment];
@@ -2631,7 +2697,8 @@ export function register(app, ctx, deps = {}) {
     await pool.query(
       `INSERT INTO cms_flow_members(flow_id, phone_norm) SELECT $1, p FROM unnest($2::text[]) p ON CONFLICT DO NOTHING`,
       [flow.id, entrants.map((x) => x.pn)]);
-    const recent = await recentlyMessaged(entrants.map((x) => x.pn), Math.max(FLOW_GAP_DAYS, Number(cfg.minGapDays) || 0));
+    const recent = await recentlyMessaged(entrants.map((x) => x.pn),
+      Math.max(Number(cfg.flowGapDays) || FLOW_GAP_DAYS, Number(cfg.minGapDays) || 0));
     let targets = entrants.filter((x) => !recent.has(x.pn));
     if (flow.channel === "push") targets = targets.filter((x) => x.push);
     else {
@@ -2663,8 +2730,8 @@ export function register(app, ctx, deps = {}) {
   }
 
   async function flowsTick() {
-    const h = riyadhHour();
-    if (h < 12 || h >= 22) return;
+    // نفس ساعات الهدوء بتاعة الحملات (smsrules.quietOf) — مش نسخة تانية
+    if (smsRules.inQuietFor(await getSettingsData())) return;
     const flows = (await pool.query("SELECT * FROM cms_flows WHERE active")).rows;
     if (!flows.length) return;
     segCache = { at: 0, rows: null }; // أعضاء طازة كل دورة
@@ -2686,7 +2753,9 @@ export function register(app, ctx, deps = {}) {
     const rows = (await pool.query(
       `SELECT f.*, (SELECT count(*)::int FROM cms_flow_members m WHERE m.flow_id = f.id) AS tracked
          FROM cms_flows f ORDER BY f.created_at DESC`)).rows;
-    return c.json({ ok: true, flows: rows, quietHours: "22:00–12:00", gapDays: FLOW_GAP_DAYS });
+    const cfgF = await campaignCfg();
+    return c.json({ ok: true, flows: rows, quietHours: smsRules.quietText(smsRules.quietOf(await getSettingsData())),
+      gapDays: Math.max(Number(cfgF.flowGapDays) || FLOW_GAP_DAYS, Number(cfgF.minGapDays) || 0) });
   });
   app.post("/api/cms/flows", async (c) => {
     const err = await requireAdmin(c); if (err) return err;

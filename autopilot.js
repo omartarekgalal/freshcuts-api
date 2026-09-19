@@ -1777,7 +1777,28 @@ export const DAYPART_DEFAULTS = {
   adsCloseHour: 3,            // نقفلها (المطبخ بيقفل ٢)
   adsLateCloseHour: 4,        // ليالي الخميس والجمعة (المطبخ بيقفل ٣)
   adsLateNightDows: [4, 5],   // يوم المطعم: ٤ = الخميس، ٥ = الجمعة
+  /* ٢٠٢٦-٠٩-١٩ — مصدر واحد للمواعيد: النافذة بتتحسب من مواعيد المطعم
+     (settings.hours — نفس اللي المتجر وقايمة الانتظار و«خلص» بيقروا منها)،
+     الفتح قبلها بـadsLeadHours والقفل بعدها بـadsTailHours. الأرقام اليدوية
+     فوق بتشتغل بس لو adsFollowStoreHours=false أو المواعيد مش متعرّفة.
+     ١ و٠ = نفس الأرقام اللي كانت متسجّلة (١١ → ٢، الخميس/الجمعة ٣). */
+  adsFollowStoreHours: true,
+  adsLeadHours: 1,
+  adsTailHours: 0,
 };
+
+const HOURS_DAY_KEYS = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"];
+const hm = (v) => { const [h, m] = String(v || "").split(":").map(Number); return (Number.isFinite(h) ? h : 0) * 60 + (Number.isFinite(m) ? m : 0); };
+/* نافذة يوم معيّن من مواعيد المطعم ← { openHour, closeHour, closed } أو null (مفيش مواعيد). صافية. */
+export function storeHoursWindow(hours, dow, { lead = 1, tail = 0 } = {}) {
+  if (!hours || hours.enabled === false || !hours.days) return null;
+  const d = hours.days[HOURS_DAY_KEYS[dow]];
+  if (!d || d.closed || !d.open || !d.close) return { closed: true, openHour: null, closeHour: null };
+  const L = Math.max(0, Math.min(6, Number(lead) || 0)), T = Math.max(0, Math.min(6, Number(tail) || 0));
+  const openHour = (((Math.floor(hm(d.open) / 60) - L) % 24) + 24) % 24;
+  const closeHour = (Math.ceil(hm(d.close) / 60) + T) % 24;
+  return { closed: false, openHour, closeHour };
+}
 
 const DOW_AR = ["الأحد", "الاثنين", "الثلاثاء", "الأربعاء", "الخميس", "الجمعة", "السبت"];
 
@@ -1802,9 +1823,29 @@ export function adsWindow(at = new Date(), s = {}) {
   const c = tzClock(at, RIYADH_TZ);
   const bizDay = bizDayOf(at);
   const dow = new Date(bizDay + "T00:00:00Z").getUTCDay();
-  const late = (cfg.adsLateNightDows || []).map(Number).includes(dow);
-  const openHour = Math.max(0, Math.min(23, Number(cfg.adsOpenHour)));
-  const closeHour = Math.max(0, Math.min(23, Number(late ? cfg.adsLateCloseHour : cfg.adsCloseHour)));
+  let late = (cfg.adsLateNightDows || []).map(Number).includes(dow);
+  let openHour = Math.max(0, Math.min(23, Number(cfg.adsOpenHour)));
+  let closeHour = Math.max(0, Math.min(23, Number(late ? cfg.adsLateCloseHour : cfg.adsCloseHour)));
+  // مواعيد المطعم هي المصدر (لو متعرّفة) — شوف DAYPART_DEFAULTS
+  const sw = cfg.adsFollowStoreHours !== false
+    ? storeHoursWindow(cfg.storeHours, dow, { lead: cfg.adsLeadHours, tail: cfg.adsTailHours }) : null;
+  const source = sw ? "store_hours" : "manual";
+  if (sw && sw.closed) {
+    return {
+      open: false, bizDay, dow, dowLabel: DOW_AR[dow], late: false, openHour: null, closeHour: null, source,
+      riyadhHour: c.hour, riyadhMinute: c.minute,
+      clock: `${String(c.hour).padStart(2, "0")}:${String(c.minute).padStart(2, "0")}`,
+      minutesToChange: null, label: `${DOW_AR[dow]}: المطعم قافل طول اليوم (مواعيد المطعم)`,
+      why: `يوم ${DOW_AR[dow]} مقفول في مواعيد المطعم — الإعلانات مقفولة طول اليوم.`,
+    };
+  }
+  if (sw) {
+    openHour = sw.openHour;
+    closeHour = sw.closeHour;
+    // «ليلة متأخرة» = القفل بعد القفل العادي بتاع باقي الأيام (للنص بس)
+    const std = storeHoursWindow(cfg.storeHours, (dow + 3) % 7, { lead: cfg.adsLeadHours, tail: cfg.adsTailHours });
+    late = !!(std && !std.closed && std.closeHour !== closeHour && ((closeHour - std.closeHour + 24) % 24) < 6);
+  }
 
   // النافذة الطبيعية بتعدّي نص الليل (١١ص → ٣ف). لو حد ظبط إعدادات نافذة
   // مابتعديش نص الليل، الشرط بيتقلب — من غير الفرع ده النافذة القصيرة
@@ -1818,7 +1859,7 @@ export function adsWindow(at = new Date(), s = {}) {
 
   return {
     open, bizDay, dow, dowLabel: DOW_AR[dow], late,
-    openHour, closeHour,
+    openHour, closeHour, source,
     riyadhHour: c.hour, riyadhMinute: c.minute,
     clock: `${String(c.hour).padStart(2, "0")}:${String(c.minute).padStart(2, "0")}`,
     minutesToChange: open ? untilHour(closeHour) : untilHour(openHour),
@@ -2898,12 +2939,18 @@ export function register(app, ctx, deps = {}) {
     // الحقول المحسوبة عمرها ما بتتخزن — لو صف قديم فيه واحد منهم بيتشال هنا
     // عشان ما يتثبّتش سقف اتحسب من مبيعات أسبوع فات.
     delete stored.ceiling;
-    return { ...DEFAULT_SETTINGS, ...PACE_DEFAULTS, ...DAYPART_DEFAULTS, ...ECON_DEFAULTS, ...INTRADAY_DEFAULTS, ...stored };
+    delete stored.storeHours;
+    // مواعيد المطعم (settings.hours) — مصدر نافذة الإعلانات. فشل القراية ⇒ الأرقام اليدوية.
+    let storeHours = null;
+    try { storeHours = (await pool.query(`SELECT data->'hours' AS h FROM settings WHERE id=1`)).rows[0]?.h || null; }
+    catch { storeHours = null; }
+    return { ...DEFAULT_SETTINGS, ...PACE_DEFAULTS, ...DAYPART_DEFAULTS, ...ECON_DEFAULTS, ...INTRADAY_DEFAULTS, ...stored, storeHours };
   }
   async function saveSettings(patch) {
     const cur = await getSettings();
     const next = { ...cur, ...patch };
     delete next.ceiling;
+    delete next.storeHours; // مش بتتخزن هنا — مصدرها settings.hours
     // Never let the UI push the ceilings above the ads.js hard cap.
     next.maxCampaignBudget = Math.min(Number(next.maxCampaignBudget) || DEFAULT_SETTINGS.maxCampaignBudget, MAX_DAILY_BUDGET);
     next.absoluteMaxTotalBudget = Math.min(

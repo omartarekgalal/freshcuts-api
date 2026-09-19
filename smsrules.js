@@ -19,6 +19,20 @@ export function riyadhParts(now = new Date()) {
   const d = new Date(now.getTime() + 3 * 3600_000); // الرياض UTC+3 طول السنة
   return { hour: d.getUTCHours(), minute: d.getUTCMinutes(), day: d.toISOString().slice(0, 10) };
 }
+/* ساعات الهدوء — مصدر واحد (٢٠٢٦-٠٩-١٩): settings.cms.campaigns.quietStart/quietEnd
+   (من شاشة الحملات)، والافتراضي ٢٢ → ١٢. الحملات والأتمتة واسترجاع السلة
+   بيقروا من هنا بس. (رسايل التقييم ليها ساعاتها لوحدها في settings.reviews
+   لأنها رسالة معاملة بعد طلب، مش تسويق.) */
+export function quietOf(settings) {
+  const c = ((settings || {}).cms || {}).campaigns || {};
+  const h = (v, d) => { const n = Number(v); return Number.isInteger(n) && n >= 0 && n <= 23 ? n : d; };
+  return { start: h(c.quietStart, QUIET_START), end: h(c.quietEnd, QUIET_END) };
+}
+export const quietText = (q) => `${String(q.start).padStart(2, "0")}:00–${String(q.end).padStart(2, "0")}:00`;
+export function inQuietFor(settings, now = new Date()) {
+  const q = quietOf(settings);
+  return inQuietHours(now, q.start, q.end);
+}
 export function inQuietHours(now = new Date(), start = QUIET_START, end = QUIET_END) {
   const { hour } = riyadhParts(now);
   return start > end ? (hour >= start || hour < end) : (hour >= start && hour < end);
