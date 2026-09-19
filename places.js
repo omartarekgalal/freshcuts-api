@@ -32,8 +32,8 @@ export const PLACES_SKU = Object.freeze({
 });
 
 /* تكلفة متوقعة بالدولار في الشهر لتحديث كل refreshHours ساعة */
-export function monthlyCost(refreshHours = 12, sku = PLACES_SKU.details) {
-  const h = Math.max(1, Number(refreshHours) || 12);
+export function monthlyCost(refreshHours = 6, sku = PLACES_SKU.details) {
+  const h = Math.max(1, Number(refreshHours) || 6);
   const calls = Math.ceil((30 * 24) / h);
   const billable = Math.max(0, calls - sku.freePerMonth);
   return { calls, billable, usd: Math.round((billable / 1000) * sku.usd1000 * 100) / 100 };
@@ -126,5 +126,5 @@ export async function searchPlaces(textQuery, { key = placesKey(), fetchFn = fet
 export const staleAfter = (at, hours) => {
   if (!at) return true;
   const ms = Date.parse(at);
-  return !Number.isFinite(ms) || Date.now() - ms > Math.max(1, Number(hours) || 12) * 3600_000;
+  return !Number.isFinite(ms) || Date.now() - ms > Math.max(1, Number(hours) || 6) * 3600_000;
 };

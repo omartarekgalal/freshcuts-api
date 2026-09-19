@@ -27,13 +27,14 @@ import crypto from "node:crypto";
 import * as places from "./places.js";
 import { staffPhoneSet } from "./smsrules.js";
 import { subscribe } from "./order-events.js";
+import { setLiveGoogleRating } from "./playbook.js";
 
 const CATEGORIES = ["الأكل", "التوصيل", "الخدمة", "السعر", "النظافة", "الوقت"];
 export const DEFAULTS = {
   active: true, threshold: 4, googleUrl: "", brand: "فريش كاتس", alertNegative: true,
   /* ⭐ التقييم الحقيقي من جوجل (places.js) — معرّف المكان بيتحفظ هنا، مش
      مكتوب في الكود، عشان يتغيّر من اللوحة لو فتح فرع تاني. */
-  placeId: "", googleRefreshHours: 12, showBadge: true,
+  placeId: "", googleRefreshHours: 6, showBadge: true, // ٦ ساعات = ١٢٠ نداء/شهر ⇒ جوّه الـ١٠٠٠ المجانية (عمر ١٩/٩: «الرقم بيتغيّر»)
   /* 📩 طلب التقييم بعد التوصيل (عمر ١٧ سبتمبر): «بعد ما العميل يستلم الطلب
      نبعتله لينك التقييم بنص ساعة». رسالة واحدة لكل طلب، بالمُرسل المعاملاتي،
      وبتحترم نافذة سكوت (ما نصحّيش حد الفجر عشان نقييم). */
@@ -173,7 +174,7 @@ export function register(app, ctx, deps = {}) {
   const ipOf = (c) => c.req.header("cf-connecting-ip") || c.req.header("x-forwarded-for") || "";
 
   /* ═══ ⭐ تقييم جوجل الحقيقي — نسخة واحدة في settings.googlePlace ═════════
-     بيتحدّث كل googleRefreshHours (١٢ افتراضياً) من جوب في الخلفية، والمتجر
+     بيتحدّث كل googleRefreshHours (٦ افتراضياً) من جوب في الخلفية، والمتجر
      بيقراه من الإعدادات. **مافيش نداء لجوجل في عرض صفحة أبداً** — ده اللي
      بيخلّي التكلفة صفر (شوف places.js للـSKU والحساب). */
   const placeCache = async () => ((await getSettingsData()) || {}).googlePlace || null;
@@ -187,11 +188,13 @@ export function register(app, ctx, deps = {}) {
     const cur = await placeCache();
     const placeId = cf.placeId || cur?.placeId || "";
     if (!places.validPlaceId(placeId)) return { ok: false, error: "no_place_id" };
+    if (cur) setLiveGoogleRating(cur);   // كتاب قواعد الإعلانات بيقرا الرقم الحي من هنا
     if (!force && cur && !places.staleAfter(cur.at, cf.googleRefreshHours)) return { ok: true, cached: true, place: cur };
     try {
       const p = await places.fetchPlaceDetails(placeId);
       if (!p) return { ok: false, error: "no_rating" };            // مفيش تقييم = مانكتبش رقم مخترع
       const saved = await savePlace(p);
+      setLiveGoogleRating(saved);
       console.log(`[reviews] google rating ${saved.rating}★ / ${saved.count}`);
       return { ok: true, place: saved };
     } catch (e) {

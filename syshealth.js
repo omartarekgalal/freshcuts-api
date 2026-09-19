@@ -228,7 +228,7 @@ export function register(app, ctx, deps = {}) {
       const r = await q1(`SELECT count(*) FILTER (WHERE created_at > date_trunc('day', NOW() AT TIME ZONE 'Asia/Riyadh') AT TIME ZONE 'Asia/Riyadh')::int AS today,
                                  count(*) FILTER (WHERE created_at > NOW() - interval '30 days')::int AS d30, max(created_at) AS last FROM geo_drive_cache`);
       const g = s.googlePlace || {};
-      const refreshH = Number((s.reviews || {}).googleRefreshHours) || 12;
+      const refreshH = Number((s.reviews || {}).googleRefreshHours) || 6;
       const placeAge = minsSince(g.at);
       let st = "good";
       if (!routesKey) st = "bad";

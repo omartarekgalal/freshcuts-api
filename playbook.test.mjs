@@ -27,3 +27,16 @@ test("prompt carries the hard rules", () => {
   for (const k of ["3000", "12:30", "01:30", "ستيك", "اقتراح"]) assert.ok(p.includes(k), k);
   assert.equal(PLAYBOOK.optimization.switchToPurchaseAt, 10);
 });
+
+/* ⭐ تقييم جوجل الحي (عمر ١٩/٩: «الرقم بيتغيّر — عايزه ديناميكي») */
+import { setLiveGoogleRating, googleRatingText, PLAYBOOK as PB2, playbookPrompt as pp2 } from "./playbook.js";
+test("playbook google rating is live, not hardcoded", () => {
+  assert.doesNotMatch(JSON.stringify(PB2), /٤٫٨|١٨١/);
+  setLiveGoogleRating({ rating: 4.9, count: 186 });
+  assert.equal(googleRatingText(), "⭐٤٫٩ على جوجل (+١٨٠ تقييم)");
+  assert.match(PB2.creative.winners, /٤٫٩ على جوجل \(\+١٨٠ تقييم\)/);
+  assert.match(JSON.stringify(PB2), /٤٫٩/);          // getters survive JSON (mkhub → dashboard)
+  assert.match(pp2(), /٤٫٩ على جوجل/);
+  setLiveGoogleRating({ rating: 0, count: 5 });         // bad data ignored — keeps last good
+  assert.match(googleRatingText(), /٤٫٩/);
+});
