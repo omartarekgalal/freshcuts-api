@@ -209,7 +209,9 @@ test("عقد المندوب: المزوّد الفعلي (لأجلك) مصدر �
   assert.equal(lj.flatInclVat, 19.55);
   assert.equal(d.contractCourierCost(3, lj), 19.55);
   assert.equal(d.contractCourierCost(10, lj), 19.55);
-  assert.equal(d.contractCourierCost(10.2, lj), 21.85);
+  // الكسر بيتحسب كسر (عمر ١٩/٩ + لوحتهم: 10.4 كم → 17.80 قبل الضريبة)
+  assert.equal(d.contractCourierCost(10.2, lj), 20.01);
+  assert.equal(d.contractCourierCost(10.4, lj), 20.47);
   assert.equal(d.contractCourierCost(12, lj), 24.15);
   // الافتراضي من غير provider = لأجلك
   assert.equal(d.activeCourierContract({}).provider, "leajlak");

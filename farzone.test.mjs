@@ -273,7 +273,12 @@ test("التقرير: عدد الطلبات البعيدة وإيرادها وا
   assert.equal(b.orders, 4);
   assert.equal(b.surcharge, 36);
   assert.equal(b.avgExtraKm, 3);
-  assert.equal(b.courierExtraCost, 30);   // ١٢ كم × ٢٫٥
-  assert.equal(b.gap, 6);                 // بناخد ٣ وبيتكلّف ٢٫٥ ⇒ نص ريال للكيلو
+  assert.equal(b.courierExtraCost, 27.6); // ١٢ كم × ٢٫٣٠ (مفيش far_zone_courier_km → المقرّبة)
+  assert.equal(b.gap, 8.4);               // بناخد ٣ وبيتكلّف ٢٫٣٠ ⇒ ٧٠ هللة للكيلو
+  // لاجلك بتحاسب بالكسر على المسافة الفعلية − ١٠ (٤ طلبات × ٢٫٥٥ كم فعلي = ١٠٫٢)
+  const e = farZoneBlock({ far_zone_orders: 4, far_zone_surcharge: 36, far_zone_extra_km: 12, far_zone_courier_km: 10.2 });
+  assert.equal(e.courierKm, 10.2);
+  assert.equal(e.courierExtraCost, 23.46);
+  assert.equal(e.gap, 12.54);
   assert.equal(farZoneBlock({}).orders, 0);
 });

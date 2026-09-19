@@ -40,30 +40,55 @@ const num = (v) => {
   return Number.isFinite(n) ? n : null;
 };
 
-/* العقد (On Demand Contract — Standard، ٢٤/٨): ١٧ ر.س قبل الضريبة لأي طلب
-   لحد ١٠ كم، وبعدها ٢ ر.س/كم قبل الضريبة (مادة ١٢). عمر قال مرة ٢٫٥ —
-   فالقيم كلها قابلة للتعديل من اللوحة (settings.delivery.leajlakContract).
-   kmRounding: «ceil» = كل جزء من كيلو بيتحسب كيلو (الأحوط — مابيطلّعش شذوذ
-   وهمي)، «exact» = بالكسور. */
+/* العقد (On Demand Contract — Standard، ٢٤/٨) + تأكيد عمر ١٩/٩ + تصدير
+   لوحتهم (client-order-export، ٢٧ سطر، ٣٠/٨→١٨/٩):
+     • ١٧ ر.س قبل الضريبة (١٩٫٥٥ شامل) لأي طلب لحد ١٠ كم.
+     • بعد ١٠ كم: ٢ ر.س/كم قبل الضريبة = **٢٫٣٠ شامل** (عمر: «٢٫٣ شامل الضريبة»).
+     • الكسر بيتحسب كسر (مش تقريب لفوق): 17.80 = 17 + 0.40كم×2،
+       17.78 = 17 + 0.39كم×2، 28.52 = 17 + 5.76كم×2 — بدقة ٠٫٠١ كم.
+     • مفيش رسوم إلغاء (الملغي في لوحتهم 0.00).
+     • السعر بيتحسب بعد التوصيل على مسافتهم هم (بتفرق عن جوجل بتاعتنا
+       ±٠٫٠٥ كم) — عشان كده kmTolerance تحت.
+   كل القيم بتتعدّل من اللوحة (settings.delivery.leajlakContract). */
 export const DEFAULT_LJ_CONTRACT = Object.freeze({
   flatExVat: 17,
   includedKm: 10,
   perKmExVat: 2,
   vatPct: 15,
-  kmRounding: "ceil",
-  cancelFeeExVat: 0,          // مش مذكورة في العقد — الإلغاء قبل الاستلام مجاني لحد ما يثبت العكس
+  kmRounding: "exact",
+  cancelFeeExVat: 0,          // عمر ١٩/٩: «غالباً مفيش رسوم إلغاء» — والملغي في لوحتهم 0.00
   tolerance: 0.1,             // فرق هللات مايتعدّش شذوذ
+  kmTolerance: 0.2,           // مسافتهم ≠ مسافتنا بشوية — فوق ١٠ كم بنسمح بالفرق ده قبل ما نقول «أغلى من العقد»
   distanceGapKm: 2,           // فرق مسافتهم عن مسافتنا اللي يستاهل ننبّه عليه
 });
 
 export function ljContract(settings) {
   const c = { ...DEFAULT_LJ_CONTRACT, ...((settings && settings.leajlakContract) || {}) };
-  for (const k of ["flatExVat", "includedKm", "perKmExVat", "vatPct", "cancelFeeExVat", "tolerance", "distanceGapKm"]) {
+  for (const k of ["flatExVat", "includedKm", "perKmExVat", "vatPct", "cancelFeeExVat", "tolerance", "kmTolerance", "distanceGapKm"]) {
     const n = num(c[k]);
     c[k] = n == null ? DEFAULT_LJ_CONTRACT[k] : n;
   }
-  c.kmRounding = c.kmRounding === "exact" ? "exact" : "ceil";
+  c.kmRounding = c.kmRounding === "ceil" ? "ceil" : "exact";
+  c.flatInclVat = r2(c.flatExVat * (1 + c.vatPct / 100));
+  c.perKmInclVat = r2(c.perKmExVat * (1 + c.vatPct / 100));
   return c;
+}
+
+/* الكم اللي لاجلك حاسباه، مستنتج من الرسوم في لوحتهم (هي مابتطلّعش
+   المسافة): 17.80 → 10.40. للأجرة الثابتة مانقدرش نعرف (أي مسافة ≤ ١٠). */
+export function impliedKmFromFee(exVat, contractIn) {
+  const c = contractIn || ljContract();
+  const ex = num(exVat);
+  if (ex == null || !(c.perKmExVat > 0) || ex <= c.flatExVat + 0.005) return null;
+  return Math.round((c.includedKm + (ex - c.flatExVat) / c.perKmExVat) * 100) / 100;
+}
+
+/* السماح قبل ما نقول «مفوتَر أكتر/أقل من العقد»: هللات + فرق مسافة بسيط
+   لو المشوار حوالين/فوق الـ١٠ كم (مسافتهم مش مسافتنا بالظبط). */
+export function feeSlack(ourKm, c) {
+  const km = num(ourKm);
+  const nearEdge = km != null && km + c.kmTolerance > c.includedKm;
+  return r2(c.tolerance + (nearEdge ? c.kmTolerance * c.perKmExVat * (1 + c.vatPct / 100) : 0));
 }
 
 /* الرسوم المتوقعة لشحنة واحدة حسب العقد.
@@ -181,7 +206,7 @@ export function mapInvoiceRow(obj, contractIn) {
    shipments: صفوف dl_shipments (+ بيانات الطلب)، orphanOrders: طلبات توصيل
    اتوصّلت من غير شحنة، lines: سطور الفاتورة المستوردة للشهر. */
 const CANCEL_RX = /cancel|ملغ|الغاء|إلغاء|rejected|مرفوض/i;
-export function reconcile({ shipments = [], orphanOrders = [], lines = [], contract, invoice = null } = {}) {
+export function reconcile({ shipments = [], orphanOrders = [], lines = [], dashLines = [], contract, invoice = null } = {}) {
   const c = contract || ljContract();
   const tol = c.tolerance;
   const byOrder = new Map();
@@ -210,20 +235,38 @@ export function reconcile({ shipments = [], orphanOrders = [], lines = [], contr
     if (!lineOf.has(sid)) lineOf.set(sid, []);
     lineOf.get(sid).push(l);
   }
+  /* تصدير لوحتهم (سعر كل طلب بعد التوصيل) — مصدر تاني للمفوتَر، أقل من
+     الفاتورة وأعلى من «المتوقَّع». السطور الملغية بصفر اللي مش بتاعتنا
+     (تجارب التفعيل ٣٠/٨) مابتتعرضش. */
+  const dashOf = new Map();
+  for (const l of dashLines) {
+    const sid = l.shipmentId;
+    if (sid == null || !ids.has(sid)) {
+      if ((Number(l.total) || 0) > tol) unmatched.push({ ...l, flags: [sid == null ? "dashboard_line_unmatched" : "invoice_line_other_month"] });
+      continue;
+    }
+    if (!dashOf.has(sid)) dashOf.set(sid, []);
+    dashOf.get(sid).push(l);
+  }
 
   const rows = shipments.map((s) => {
     const picked = Boolean(s.pickedAt) || s.status === "delivered";
     const exp = expectedLeajlakFee({ km: s.ourKm, status: s.status, picked }, c);
     const ls = lineOf.get(s.id) || [];
     const invoiced = ls.length ? r2(ls.reduce((a, l) => a + (Number(l.total) || 0) + (Number(l.cancelFee) || 0), 0)) : null;
-    // المفوتَر: الفاتورة أولاً، بعدها المسجّل يدوي/من الـAPI على الشحنة
-    const charged = invoiced != null ? invoiced : (s.feeActual != null ? r2(s.feeActual) : null);
-    const chargedSource = invoiced != null ? "invoice" : (s.feeActual != null ? (s.feeSource || "manual") : null);
-    const theirKm = ls.find((l) => l.distanceKm != null)?.distanceKm ?? s.feeDistanceKm ?? null;
+    const dl = dashOf.get(s.id) || [];
+    const dash = dl.length ? r2(dl.reduce((a, l) => a + (Number(l.total) || 0), 0)) : null;
+    // المفوتَر: الفاتورة أولاً، بعدها المسجّل يدوي/من الـAPI، بعدها لوحتهم
+    const charged = invoiced != null ? invoiced : (s.feeActual != null ? r2(s.feeActual) : dash);
+    const chargedSource = invoiced != null ? "invoice" : (s.feeActual != null ? (s.feeSource || "manual") : (dash != null ? "dashboard" : null));
+    const theirKm = ls.find((l) => l.distanceKm != null)?.distanceKm ?? dl.find((l) => l.distanceKm != null)?.distanceKm
+      ?? s.feeDistanceKm ?? null;
     const cost = charged != null ? charged : exp.total;
+    const slack = feeSlack(s.ourKm, c);
     const flags = [];
-    if (charged != null && charged > exp.total + tol) flags.push("over_expected");
-    if (charged != null && charged < exp.total - tol) flags.push("under_expected");
+    if (charged != null && charged > exp.total + slack) flags.push("over_expected");
+    if (charged != null && charged < exp.total - slack) flags.push("under_expected");
+    if (invoiced != null && dash != null && Math.abs(invoiced - dash) > tol) flags.push("dashboard_vs_invoice");
     if (s.status === "cancelled" && charged != null && charged > tol) flags.push("charged_cancelled");
     if (ls.length > 1 || ls.some((l) => (lineCount.get(l.ref) || 0) > 1)) flags.push("duplicate_invoice_line");
     if ((byOrder.get(s.orderNo) || 0) > 1 && s.status !== "cancelled") flags.push("duplicate_shipment");
@@ -241,11 +284,11 @@ export function reconcile({ shipments = [], orphanOrders = [], lines = [], contr
       ourKm: s.ourKm != null ? r2(s.ourKm) : null, distanceSource: s.distanceSource || null,
       // مسافتهم بـ٣ خانات زي ملفهم (0.017) — r2 كانت هتخليها 0.02
       theirKm: theirKm != null ? Math.round(Number(theirKm) * 1000) / 1000 : null,
-      expected: exp, charged, chargedSource, invoiceLines: ls.length,
+      expected: exp, charged, chargedSource, invoiceLines: ls.length, dashboard: dash,
       chargedExVat: invoicedEx != null ? invoicedEx : (charged != null ? r2(charged / (1 + c.vatPct / 100)) : null),
       line: ls[0] ? { date: ls[0].date, theirNo: ls[0].theirNo || null, status: ls[0].status || null, shop: ls[0].shop || null,
                       client: ls[0].client || null, paymentType: ls[0].paymentType || null } : null,
-      theirNo: (ls[0] && ls[0].theirNo) || s.providerOrderNo || null,
+      theirNo: (ls[0] && ls[0].theirNo) || (dl[0] && dl[0].theirNo) || s.providerOrderNo || null,
       diff: charged != null ? r2(charged - exp.total) : null,
       customerFee, margin: r2(customerFee - cost), marginBasis: charged != null ? "charged" : "expected",
       farSurcharge: s.farSurcharge != null ? r2(s.farSurcharge) : null,
@@ -284,6 +327,9 @@ export function reconcile({ shipments = [], orphanOrders = [], lines = [], contr
     unmatchedLines: unmatched.length,
     unmatchedTotal: sum(unmatched, (l) => (Number(l.total) || 0) + (Number(l.cancelFee) || 0)),
     strayTotal: sum(unmatched.filter((l) => l.flags.includes("invoice_line_unmatched")), (l) => (Number(l.total) || 0) + (Number(l.cancelFee) || 0)),
+    dashboardLines: dashLines.length,
+    dashboardCount: real.filter((r) => r.dashboard != null).length,
+    dashboardStray: sum(unmatched.filter((l) => l.flags.includes("dashboard_line_unmatched")), (l) => l.total),
     customerFees: sum(real, (r) => r.customerFee),
     // الهامش على المفوتَر لو موجود وإلا المتوقَّع — عشان الرقم مايبقاش صفر قبل الفاتورة
     margin: sum(real, (r) => r.margin),
@@ -294,7 +340,9 @@ export function reconcile({ shipments = [], orphanOrders = [], lines = [], contr
   const dispute = r2(
     real.reduce((a, r) => a + (r.flags.includes("charged_cancelled") ? (r.charged || 0)
       : r.flags.includes("over_expected") ? (r.diff || 0) : 0), 0)
-    + totals.strayTotal);
+    + totals.strayTotal
+    // طلب متسعّر في لوحتهم ومش بتاعنا — لحد ما الفاتورة توصل هو المرشّح للسؤال
+    + (lines.length ? 0 : totals.dashboardStray));
   totals.disputeCandidate = dispute;
   const anomalies = {};
   for (const r of rows) for (const f of r.flags) anomalies[f] = (anomalies[f] || 0) + 1;
@@ -316,6 +364,8 @@ export const FLAG_AR = {
   missing_shipment: "طلب توصيل من غير شحنة",
   invoice_line_unmatched: "سطر في الفاتورة مش لاقيين طلبه",
   invoice_line_other_month: "سطر لشحنة من شهر تاني",
+  dashboard_line_unmatched: "متسعّر في لوحتهم ومش لاقيين طلبه",
+  dashboard_vs_invoice: "سعر لوحتهم ≠ الفاتورة",
   missing_from_invoice: "موصّلة ومش في فاتورتهم",
 };
 
@@ -366,11 +416,77 @@ export function parseLjDate(v) {
   return null;
 }
 
+/* ── تصدير لوحة لاجلك «client-order-export-<client>.csv» ───────────────────
+   الشكل الحقيقي (عمر صدّره ١٩/٩):
+     Order ID | Client ID | Shop Name | Area | Zone | Amount | Delivery Charge | Order Date | Status | Assigned Captain
+     OR#3245496 | #W1789733313648 | FRESH CUTS-JED-SALAMAH | NORTH JEDDAH | AL SALAMAH(JED) | 96.00 SAR | 17.80 SAR | 2026-09-18 | Delivered | …
+   • Client ID = «#» + رقم طلبنا. Order ID = «OR#» + رقمهم الداخلي (نفس Order No في ملف الفاتورة).
+   • Amount = إجمالي طلبنا اللي بعتناه (order.total) — **مش** رسوم.
+   • Delivery Charge = رسوم التوصيل **قبل الضريبة**، بتتحسب بعد التوصيل (الملغي 0.00).
+   • مفيش مسافة — بنستنتجها من الرسوم لما تعدّي الأجرة الثابتة (impliedKmFromFee).
+   • اسم الكابتن مابنخزّنوش (مش محتاجينه للمطابقة). */
+export function isDashboardExportHeader(row) {
+  const h = (row || []).map((x) => normKey(x));
+  return h.includes("client id") && h.some((x) => /^delivery charge$/.test(x));
+}
+export function parseLeajlakDashboardExport(grid, contractIn) {
+  const c = contractIn || ljContract();
+  const vatRate = c.vatPct / 100;
+  const cell = (x) => (x == null ? "" : String(x).trim());
+  const hi = (grid || []).findIndex((r) => isDashboardExportHeader(r));
+  if (hi < 0) return null;
+  const head = grid[hi].map((h, i) => cell(h) || `col${i + 1}`);
+  const col = (rx) => head.findIndex((h) => rx.test(normKey(h)));
+  const iNo = col(/^order id$/), iRef = col(/^client id$/), iAmt = col(/^amount$/), iFee = col(/^delivery charge$/),
+    iDate = col(/^order date$|date/), iStatus = col(/^status$/), iShop = col(/^shop name$/), iArea = col(/^area$/), iZone = col(/^zone$/);
+  const lines = [];
+  for (let k = hi + 1; k < grid.length; k += 1) {
+    const r = grid[k] || [];
+    if (!r.some((x) => cell(x))) continue;
+    const ref = cell(r[iRef]).replace(/^#+/, "").trim();
+    const theirNo = iNo >= 0 ? cell(r[iNo]).replace(/^OR#?/i, "").replace(/^#/, "").trim() || null : null;
+    const ex = num(r[iFee]);
+    const status = iStatus >= 0 ? cell(r[iStatus]) : null;
+    const exVat = ex == null ? null : r2(ex);
+    lines.push({
+      ref, theirNo, status, date: parseLjDate(iDate >= 0 ? r[iDate] : null),
+      exVat, vat: exVat == null ? null : r2(exVat * vatRate), total: exVat == null ? null : r2(exVat * (1 + vatRate)),
+      distanceKm: impliedKmFromFee(exVat, c), distanceImplied: true,
+      extraKm: exVat != null && exVat > c.flatExVat ? r2((exVat - c.flatExVat) / (c.perKmExVat || 1)) : 0,
+      extraKmCharge: exVat != null && exVat > c.flatExVat ? r2((exVat - c.flatExVat) * (1 + vatRate)) : null,
+      cancelFee: null, orderAmount: iAmt >= 0 ? num(r[iAmt]) : null,
+      shop: iShop >= 0 ? cell(r[iShop]) : null,
+      raw: { "Order ID": iNo >= 0 ? cell(r[iNo]) : "", "Client ID": iRef >= 0 ? cell(r[iRef]) : "",
+             "Shop Name": iShop >= 0 ? cell(r[iShop]) : "", Area: iArea >= 0 ? cell(r[iArea]) : "", Zone: iZone >= 0 ? cell(r[iZone]) : "",
+             Amount: iAmt >= 0 ? cell(r[iAmt]) : "", "Delivery Charge": iFee >= 0 ? cell(r[iFee]) : "",
+             "Order Date": iDate >= 0 ? cell(r[iDate]) : "", Status: status || "" },
+    });
+  }
+  // «بيفسّر» كل سطر بالعقد: الأجرة الثابتة، أو ثابتة + كسر كيلو، أو صفر للملغي
+  const fits = (l) => {
+    if (l.exVat == null) return false;
+    if (CANCEL_RX.test(l.status || "")) return Math.abs(l.exVat - c.cancelFeeExVat) < 0.01;
+    return l.exVat >= c.flatExVat - 0.005;
+  };
+  const checks = {
+    rows: lines.length,
+    delivered: lines.filter((l) => /deliver/i.test(l.status || "")).length,
+    cancelled: lines.filter((l) => CANCEL_RX.test(l.status || "")).length,
+    flatRows: lines.filter((l) => l.exVat != null && Math.abs(l.exVat - c.flatExVat) < 0.005).length,
+    extraRows: lines.filter((l) => l.exVat != null && l.exVat > c.flatExVat + 0.005).length,
+    notFitting: lines.filter((l) => !fits(l)).map((l) => ({ ref: l.ref, theirNo: l.theirNo, exVat: l.exVat, status: l.status })),
+    exVatTotal: r2(lines.reduce((a, l) => a + (l.exVat || 0), 0)),
+  };
+  return { format: "leajlak_dashboard_export", lines, summary: null, checks, header: head };
+}
+
 /* شبكة الشيت (صفوف × خلايا) → سطور + ملخص. بيتعرّف على ملف لاجلك
    الحقيقي؛ لو الملف شكل تاني (فيه عمود سعر) بيرجع للمطابقة العامة. */
 export function parseLeajlakSheet(grid, contractIn) {
   const c = contractIn || ljContract();
   const vatRate = c.vatPct / 100;
+  const dash = parseLeajlakDashboardExport(grid, c);
+  if (dash) return dash;
   const cell = (x) => (x == null ? "" : String(x).trim());
   const hi = (grid || []).findIndex((r) => (r || []).some((x) => /^awb$/i.test(cell(x)))
     || ((r || []).some((x) => /order ?no|رقم الطلب/i.test(cell(x))) && (r || []).filter((x) => cell(x)).length >= 3));
@@ -534,6 +650,9 @@ export function toCsv(rec, opts = {}) {
   return "﻿" + out.join("\r\n") + "\r\n";
 }
 
+/* مصدر سطور «تصدير لوحة لاجلك» في dl_invoice_lines — منفصلة عن سطور الفاتورة */
+export const DASH_SOURCE = "dashboard_export";
+
 /* ═══ التسجيل ═════════════════════════════════════════════════════════════ */
 export function register(app, ctx, deps = {}) {
   const { pool, requireAdmin, getSettingsData, jb } = ctx;
@@ -585,6 +704,14 @@ export function register(app, ctx, deps = {}) {
       ALTER TABLE dl_invoice_lines ADD COLUMN IF NOT EXISTS extra_km NUMERIC;
       ALTER TABLE dl_invoice_lines ADD COLUMN IF NOT EXISTS match_by TEXT;
       ALTER TABLE dl_shipments ADD COLUMN IF NOT EXISTS provider_order_no TEXT;
+      -- سعر الطلب من تصدير لوحتهم (بعد التوصيل) — منفصل عن fee_actual
+      -- (فاتورة/يدوي) عشان إعادة استيراد الفاتورة ماتمسحوش والعكس.
+      ALTER TABLE dl_shipments ADD COLUMN IF NOT EXISTS fee_dash NUMERIC;
+      ALTER TABLE dl_shipments ADD COLUMN IF NOT EXISTS fee_dash_ex NUMERIC;
+      ALTER TABLE dl_shipments ADD COLUMN IF NOT EXISTS fee_dash_km NUMERIC;
+      ALTER TABLE dl_shipments ADD COLUMN IF NOT EXISTS fee_dash_at TIMESTAMPTZ;
+      -- cost (اللي التقارير/المالية بتجمعه) = أحسن رقم معروف؛ ده مصدره
+      ALTER TABLE dl_shipments ADD COLUMN IF NOT EXISTS cost_basis TEXT;
       -- رأس فاتورة الشهر: ملخص ملف Order Details + الفاتورة الضريبية (PDF)
       CREATE TABLE IF NOT EXISTS dl_invoices (
         provider TEXT NOT NULL DEFAULT 'leajlak',
@@ -605,7 +732,7 @@ export function register(app, ctx, deps = {}) {
   async function backfill() {
     const c = ljContract((await getSettingsData())?.delivery || {});
     const rows = (await pool.query(
-      `SELECT sh.id, sh.status, sh.picked_at, sh.created_at,
+      `SELECT sh.id, sh.status, sh.picked_at, sh.created_at, sh.fee_actual, sh.fee_source, sh.fee_dash, sh.cost, sh.cost_basis,
               NULLIF(s.delivery_quote->>'routeKm','')::numeric AS route_km
          FROM dl_shipments sh LEFT JOIN shop_orders s ON s.order_no = sh.shop_order_no
         WHERE sh.provider = 'leajlak'`)).rows;
@@ -613,11 +740,18 @@ export function register(app, ctx, deps = {}) {
     for (const r of rows) {
       const km = r.route_km != null ? Number(r.route_km) : null;
       const exp = expectedLeajlakFee({ km, status: r.status, picked: Boolean(r.picked_at) || r.status === "delivered" }, c);
+      /* تكلفة الشحنة اللي المالية/تقرير المدير/الاقتصاديات بتجمعها (sh.cost):
+         الفاتورة/اليدوي ← سعر لوحتهم ← العقد على مسافتنا. قبل كده كانت
+         فاضية لكل شحنات لاجلك فتكلفة التوصيل في التقارير كانت صفر. */
+      const [cost, basis] = r.fee_actual != null ? [Number(r.fee_actual), r.fee_source || "manual"]
+        : r.fee_dash != null ? [Number(r.fee_dash), "dashboard"]
+        : r.status === "cancelled" || r.status === "delivered" || r.picked_at ? [exp.total, "expected"] : [null, null];
       const u = await pool.query(
-        `UPDATE dl_shipments SET our_km = $2, expected_fee = $3,
+        `UPDATE dl_shipments SET our_km = $2, expected_fee = $3, cost = $4, cost_basis = $5,
                 invoice_period = COALESCE(invoice_period, to_char(created_at AT TIME ZONE 'Asia/Riyadh', 'YYYY-MM'))
-          WHERE id = $1 AND (our_km IS DISTINCT FROM $2 OR expected_fee IS DISTINCT FROM $3 OR invoice_period IS NULL)`,
-        [r.id, km, exp.total]);
+          WHERE id = $1 AND (our_km IS DISTINCT FROM $2 OR expected_fee IS DISTINCT FROM $3 OR invoice_period IS NULL
+                OR cost IS DISTINCT FROM $4 OR cost_basis IS DISTINCT FROM $5)`,
+        [r.id, km, exp.total, cost, basis]);
       n += u.rowCount;
     }
     return { scanned: rows.length, updated: n };
@@ -627,6 +761,11 @@ export function register(app, ctx, deps = {}) {
     .then(() => backfill())
     .then((r) => console.log(`[ljrecon] schema ready, backfill ${r.updated}/${r.scanned}`))
     .catch((e) => console.error("[ljrecon] schema/backfill failed:", e.message));
+  // الشحنات الجديدة تاخد تكلفتها من غير ما حد يفتح الشاشة (التقارير بتقرا sh.cost)
+  if (!deps.noTimer) {
+    const t = setInterval(() => { backfill().catch(() => {}); }, 20 * 60_000);
+    if (t.unref) t.unref();
+  }
 
   async function load(month) {
     const c = ljContract((await getSettingsData())?.delivery || {});
@@ -662,7 +801,7 @@ export function register(app, ctx, deps = {}) {
       customerFee: Number(r.delivery_fee) || 0, ourKm: r.route_km != null ? Number(r.route_km) : null,
       distanceSource: r.distance_source, period: month,
     }));
-    const lines = (await pool.query(
+    const allLines = (await pool.query(
       `SELECT * FROM dl_invoice_lines WHERE provider='leajlak' AND period=$1 ORDER BY id`, [month])).rows.map((l) => ({
       id: Number(l.id), ref: l.ref, shipmentId: l.shipment_id != null ? Number(l.shipment_id) : null,
       total: l.total != null ? Number(l.total) : null, exVat: l.ex_vat != null ? Number(l.ex_vat) : null,
@@ -670,11 +809,14 @@ export function register(app, ctx, deps = {}) {
       cancelFee: l.cancel_fee != null ? Number(l.cancel_fee) : null, status: l.status, date: l.line_date,
       theirNo: l.their_no, extraKm: l.extra_km != null ? Number(l.extra_km) : null, matchBy: l.match_by,
       shop: l.raw?.["Shop Name"] || null, client: l.raw?.["Client Name"] || null, paymentType: l.raw?.["Payment Type"] || null,
+      source: l.source,
     }));
+    const lines = allLines.filter((l) => l.source !== DASH_SOURCE);
+    const dashLines = allLines.filter((l) => l.source === DASH_SOURCE);
     const inv = (await pool.query(`SELECT * FROM dl_invoices WHERE provider='leajlak' AND period=$1`, [month])).rows[0];
     const invoice = inv ? { format: inv.format, fileName: inv.file_name, summary: inv.summary, checks: inv.checks,
                             taxInvoice: inv.tax_invoice, importedAt: inv.imported_at } : null;
-    return reconcile({ shipments, orphanOrders, lines, contract: c, invoice });
+    return reconcile({ shipments, orphanOrders, lines, dashLines, contract: c, invoice });
   }
 
   const monthOk = (m) => /^\d{4}-\d{2}$/.test(String(m || ""));
@@ -697,7 +839,11 @@ export function register(app, ctx, deps = {}) {
     const inv = (await pool.query(
       `SELECT period, count(*)::int n, COALESCE(sum(COALESCE(total,0)+COALESCE(cancel_fee,0)),0)::numeric t,
               max(imported_at) at
-         FROM dl_invoice_lines WHERE provider='leajlak' GROUP BY 1`)).rows;
+         FROM dl_invoice_lines WHERE provider='leajlak' AND source IS DISTINCT FROM '${DASH_SOURCE}' GROUP BY 1`)).rows;
+    const dsh = (await pool.query(
+      `SELECT period, count(*)::int n, COALESCE(sum(total),0)::numeric t FROM dl_invoice_lines
+        WHERE provider='leajlak' AND source = '${DASH_SOURCE}' GROUP BY 1`)).rows;
+    const dshBy = Object.fromEntries(dsh.map((x) => [x.period, x]));
     const invBy = Object.fromEntries(inv.map((x) => [x.period, x]));
     return c.json({
       ok: true, current: riyadhMonth(),
@@ -706,6 +852,7 @@ export function register(app, ctx, deps = {}) {
         expected: r2(x.expected), withFee: x.with_fee, ticked: x.ticked,
         invoiceLines: invBy[x.month]?.n || 0, invoiceTotal: r2(invBy[x.month]?.t || 0),
         invoiceImportedAt: invBy[x.month]?.at || null,
+        dashboardLines: dshBy[x.month]?.n || 0, dashboardTotal: r2(dshBy[x.month]?.t || 0),
       })),
     });
   });
@@ -719,7 +866,7 @@ export function register(app, ctx, deps = {}) {
     return c.json({ ok: true, month, flagLabels: FLAG_AR, ...rec, export: exportTable(rec),
       apiFacts: {
         feeInApi: false,
-        note: "API الشركاء عند لاجلك مابيرجّعش رسوم ولا مسافة (مجرّب ١٩/٩ على POST/GET/DELETE والويبهوك). المفوتَر بييجي من ملف الفاتورة أو تصدير لوحتهم أو إدخال يدوي.",
+        note: "API الشركاء عند لاجلك مابيرجّعش رسوم ولا مسافة — حتى بعد التوصيل (مجرّب تاني ١٩/٩ على طلب موصّل بـ17.80 في لوحتهم: GET رجّع id/status/dsp_order_id/driver بس، ومفيش مسارات history/details/price/invoice). السعر بعد التوصيل بييجي من تصدير لوحتهم (client-order-export CSV) أو الفاتورة أو إدخال يدوي.",
       } });
   });
 
@@ -750,6 +897,7 @@ export function register(app, ctx, deps = {}) {
         .filter((l) => l.ref || l.total != null).map((l) => ({ ...l, date: parseLjDate(l.date) || l.date }));
       parsed = { format: "generic", lines, summary: null, checks: null };
     } else return { ok: false, error: "الملف فاضي" };
+    if (parsed.format === "leajlak_dashboard_export") return importDashboard(parsed, fileName, cfg);
     const lines = parsed.lines;
     if (!lines.length) return { ok: false, error: "مالقيناش جدول طلبات في الملف (عمود AWB / Order No)", header: parsed.header || null };
     if (!lines.some((l) => l.ref)) return { ok: false, error: "مالقيناش عمود رقم الطلب (AWB)", header: parsed.header || null };
@@ -790,8 +938,9 @@ export function register(app, ctx, deps = {}) {
         `UPDATE dl_shipments SET fee_actual=NULL, fee_vat=NULL, fee_distance_km=NULL, fee_extra_km_charge=NULL,
                 fee_cancel=NULL, fee_source=NULL, fee_updated_at=NOW()
           WHERE provider='leajlak' AND fee_source='invoice'
-            AND id IN (SELECT shipment_id FROM dl_invoice_lines WHERE provider='leajlak' AND period=$1 AND shipment_id IS NOT NULL)`, [period]);
-      await client.query("DELETE FROM dl_invoice_lines WHERE provider='leajlak' AND period=$1", [period]);
+            AND id IN (SELECT shipment_id FROM dl_invoice_lines WHERE provider='leajlak' AND period=$1 AND shipment_id IS NOT NULL
+                          AND source IS DISTINCT FROM '${DASH_SOURCE}')`, [period]);
+      await client.query(`DELETE FROM dl_invoice_lines WHERE provider='leajlak' AND period=$1 AND source IS DISTINCT FROM '${DASH_SOURCE}'`, [period]);
       const agg = new Map();
       for (const l of lines) {
         if (l.shipmentId != null) {
@@ -808,7 +957,8 @@ export function register(app, ctx, deps = {}) {
                                         extra_km_charge, cancel_fee, status, line_date, raw, source, their_no, extra_km, match_by)
            VALUES ('leajlak',$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)`,
           [period, l.ref || null, l.shipmentId, l.total, l.exVat, l.vat, l.distanceKm, l.extraKmCharge ?? null, l.cancelFee ?? null,
-           l.status, l.date, jb(l.raw || {}), String(source || "invoice").slice(0, 30), l.theirNo || null, l.extraKm ?? null, l.matchBy]);
+           l.status, l.date, jb(l.raw || {}), (String(source || "invoice") === DASH_SOURCE ? "invoice" : String(source || "invoice")).slice(0, 30),
+           l.theirNo || null, l.extraKm ?? null, l.matchBy]);
       }
       for (const [sid, a] of agg) {
         await client.query(
@@ -834,6 +984,82 @@ export function register(app, ctx, deps = {}) {
     return { ok: true, month: period, detectedMonth: detected, format: parsed.format, lines: lines.length, matched,
              unmatched: lines.length - matched, byMethod: lines.reduce((a, l) => { if (l.matchBy) a[l.matchBy] = (a[l.matchBy] || 0) + 1; return a; }, {}),
              summary: parsed.summary, checks: parsed.checks };
+  }
+
+  /* تصدير لوحتهم: سعر كل طلب بعد التوصيل. الملف ممكن يغطي كذا شهر → كل
+     شهر لوحده، وإعادة الاستيراد بتستبدل سطور اللوحة بس (الفاتورة مابتتلمسش).
+     الرد فيه المطابقة على العقد: أي طلب سعره بعيد عن المتوقَّع على مسافتنا. */
+  async function importDashboard(parsed, fileName, cfg) {
+    const lines = parsed.lines.filter((l) => l.ref || l.theirNo);
+    if (!lines.length) return { ok: false, error: "مالقيناش طلبات في تصدير لوحة لاجلك", header: parsed.header || null };
+    const refs = [...new Set(lines.flatMap((l) => [l.ref, l.theirNo]).filter(Boolean))];
+    const sh = (await pool.query(
+      `SELECT id, shop_order_no, provider_ref, provider_order_no, status, invoice_period
+         FROM dl_shipments WHERE provider='leajlak'
+          AND (shop_order_no = ANY($1) OR provider_ref = ANY($1) OR provider_order_no = ANY($1))
+        ORDER BY (status='cancelled'), id DESC`, [refs])).rows;
+    const idx = new Map();
+    for (const x of sh) for (const k of [x.shop_order_no, x.provider_ref, x.provider_order_no]) if (k && !idx.has(k)) idx.set(k, x);
+    const byMonth = new Map();
+    for (const l of lines) {
+      const x = (l.ref && idx.get(l.ref)) || (l.theirNo && idx.get(l.theirNo)) || null;
+      l.shipmentId = x ? Number(x.id) : null;
+      l.matchBy = x ? (idx.get(l.ref) === x ? "awb" : "their_no") : null;
+      // الشهر = شهر الشحنة عندنا (نفس مفتاح الفاتورة)، وإلا تاريخ السطر
+      const m = (x && x.invoice_period) || (/^\d{4}-\d{2}/.exec(l.date || "") || [])[0] || riyadhMonth();
+      if (!byMonth.has(m)) byMonth.set(m, []);
+      byMonth.get(m).push(l);
+    }
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+      for (const [m, ls] of byMonth) {
+        await client.query(
+          `UPDATE dl_shipments SET fee_dash=NULL, fee_dash_ex=NULL, fee_dash_km=NULL, fee_dash_at=NULL
+            WHERE provider='leajlak' AND id IN (SELECT shipment_id FROM dl_invoice_lines
+                   WHERE provider='leajlak' AND period=$1 AND source=$2 AND shipment_id IS NOT NULL)`, [m, DASH_SOURCE]);
+        await client.query("DELETE FROM dl_invoice_lines WHERE provider='leajlak' AND period=$1 AND source=$2", [m, DASH_SOURCE]);
+        for (const l of ls) {
+          await client.query(
+            `INSERT INTO dl_invoice_lines(provider, period, ref, shipment_id, total, ex_vat, vat, distance_km,
+                                          extra_km_charge, cancel_fee, status, line_date, raw, source, their_no, extra_km, match_by)
+             VALUES ('leajlak',$1,$2,$3,$4,$5,$6,$7,$8,NULL,$9,$10,$11,$12,$13,$14,$15)`,
+            [m, l.ref || null, l.shipmentId, l.total, l.exVat, l.vat, l.distanceKm, l.extraKmCharge ?? null,
+             l.status, l.date, jb(l.raw || {}), DASH_SOURCE, l.theirNo || null, l.extraKm ?? null, l.matchBy]);
+          if (l.shipmentId != null) {
+            await client.query(
+              `UPDATE dl_shipments SET fee_dash=$2, fee_dash_ex=$3, fee_dash_km=$4, fee_dash_at=NOW(),
+                      provider_order_no=COALESCE(provider_order_no, $5) WHERE id=$1`,
+              [l.shipmentId, l.total, l.exVat, l.distanceKm, l.theirNo || null]);
+          }
+        }
+      }
+      await client.query("COMMIT");
+    } catch (e) {
+      await client.query("ROLLBACK").catch(() => {});
+      client.release();
+      return { ok: false, error: `فشل الحفظ: ${e.message}` };
+    }
+    client.release();
+    await backfill().catch(() => {});
+    // المطابقة على العقد لكل شهر اتلمس
+    const months = [];
+    const mismatches = [];
+    for (const m of [...byMonth.keys()].sort()) {
+      const rec = await load(m);
+      const bad = rec.rows.filter((r) => r.chargedSource === "dashboard"
+        && (r.flags.includes("over_expected") || r.flags.includes("under_expected")));
+      for (const r of bad) mismatches.push({ month: m, orderNo: r.orderNo, theirNo: r.theirNo, ourKm: r.ourKm, theirKm: r.theirKm,
+        charged: r.charged, expected: r.expected?.total, diff: r.diff, flags: r.flags });
+      const stray = rec.unmatched.filter((l) => l.flags.includes("dashboard_line_unmatched"));
+      for (const l of stray) mismatches.push({ month: m, orderNo: l.ref || null, theirNo: l.theirNo || null, theirKm: l.distanceKm,
+        charged: l.total, expected: null, diff: null, flags: l.flags });
+      months.push({ month: m, lines: byMonth.get(m).length, matched: byMonth.get(m).filter((l) => l.shipmentId != null).length,
+        dashboardTotal: r2(byMonth.get(m).reduce((a, l) => a + (l.total || 0), 0)), expectedTotal: rec.totals.expectedTotal });
+    }
+    const matched = lines.filter((l) => l.shipmentId != null).length;
+    return { ok: true, format: parsed.format, month: [...byMonth.keys()].sort().pop(), months, lines: lines.length, matched,
+             unmatched: lines.length - matched, checks: parsed.checks, mismatches };
   }
 
   app.post("/api/delivery/leajlak/import", async (c) => {

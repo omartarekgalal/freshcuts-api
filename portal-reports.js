@@ -89,12 +89,15 @@ SELECT
   COALESCE(sum(delivery_fee) FILTER (WHERE is_net AND option='delivery'),0)::float AS delivery_fees,
   /* المنطقة البعيدة: كام طلب، وإيرادهم، والرسم الإضافي المحصّل، ومتوسط
      الكيلومترات الزيادة — عمر عايز يشوف هل المشوار الطويل بيدفع تمن نفسه.
-     لعجلك بتاخد ٢٫٥ ر.س/كم فوق العشرة واحنا بناخد ٣، والفرق بيتحسب فوق. */
+     لعجلك بتاخد ٢٫٣٠ ر.س/كم شامل فوق العشرة **بالكسر** (عمر ١٩/٩ + تصدير
+     لوحتهم)، واحنا بناخد ٣/كم لكل كيلو بدأ — فالكيلومترات اللي بتتحاسب علينا
+     = المسافة الفعلية − ١٠ (مش extraKm المقرّب لفوق اللي العميل دفعه). */
   count(*) FILTER (WHERE is_net AND far_zone IS NOT NULL)::int AS far_zone_orders,
   COALESCE(sum(total) FILTER (WHERE is_net AND far_zone IS NOT NULL),0)::float AS far_zone_revenue,
   COALESCE(sum((far_zone->>'surcharge')::numeric) FILTER (WHERE is_net AND far_zone IS NOT NULL),0)::float AS far_zone_surcharge,
   COALESCE(sum((far_zone->>'extraKm')::numeric) FILTER (WHERE is_net AND far_zone IS NOT NULL),0)::float AS far_zone_extra_km,
   COALESCE(max((far_zone->>'km')::numeric) FILTER (WHERE is_net AND far_zone IS NOT NULL),0)::float AS far_zone_max_km,
+  COALESCE(sum(GREATEST(0, (far_zone->>'km')::numeric - 10)) FILTER (WHERE is_net AND far_zone IS NOT NULL),0)::float AS far_zone_courier_km,
   COALESCE(sum(tip) FILTER (WHERE is_net),0)::float AS tips,
   COALESCE(sum(discount_amount) FILTER (WHERE is_net),0)::float AS discounts,
   count(*) FILTER (WHERE is_net AND (coupon IS NOT NULL OR discount_amount > 0))::int AS discounted_orders,
@@ -277,17 +280,19 @@ SELECT COALESCE(NULLIF(pay_gateway,''), 'unknown') AS method, count(*)::int AS o
 const r2 = (v) => Math.round((Number(v) || 0) * 100) / 100;
 const r1 = (v) => (v == null || !Number.isFinite(Number(v)) ? null : Math.round(Number(v) * 10) / 10);
 
-/* تكلفة الكيلو الزيادة عند لعجلك فوق ١٠ كم — العقد بيقول ٢ ر.س قبل الضريبة
-   (٢٫٣٠ شامل)، وعمر بيتكلم عن ٢٫٥. بنحسب بـ٢٫٥ (الأسوأ لينا) عشان الفرق
-   اللي بيظهر لعمر يبقى محافظ مش متفائل. احنا بناخد ٣ من العميل. */
-export const FAR_ZONE_COURIER_PER_KM = Number(process.env.FAR_ZONE_COURIER_PER_KM) || 2.5;
+/* تكلفة الكيلو الزيادة عند لعجلك فوق ١٠ كم = ٢ قبل الضريبة = **٢٫٣٠ شامل**
+   بالكسر (عمر أكّد ١٩/٩، ومطابق لتصدير لوحتهم: 17.80 = 17 + 0.40×2).
+   احنا بناخد ٣ من العميل لكل كيلو بدأ. التكلفة الفعلية لكل شحنة في sh.cost. */
+export const FAR_ZONE_COURIER_PER_KM = Number(process.env.FAR_ZONE_COURIER_PER_KM) || 2.3;
 
 /* كتلة «المنطقة البعيدة» في التقرير: هل المشوار الطويل بيدفع تمن نفسه؟ */
 export function farZoneBlock(t = {}) {
   const orders = Number(t.far_zone_orders) || 0;
   const extraKm = Number(t.far_zone_extra_km) || 0;
   const surcharge = r2(t.far_zone_surcharge);
-  const courierExtra = r2(extraKm * FAR_ZONE_COURIER_PER_KM);
+  // الكيلومترات الفعلية فوق ١٠ (لو الاستعلام القديم مارجّعهاش → المقرّبة)
+  const courierKm = t.far_zone_courier_km != null ? Number(t.far_zone_courier_km) || 0 : extraKm;
+  const courierExtra = r2(courierKm * FAR_ZONE_COURIER_PER_KM);
   return {
     orders,
     revenue: r2(t.far_zone_revenue),
@@ -297,6 +302,7 @@ export function farZoneBlock(t = {}) {
     maxKm: r1(t.far_zone_max_km) || 0,
     courierExtraCost: courierExtra,              // تقدير تكلفة المندوب الزيادة
     gap: r2(surcharge - courierExtra),           // + يعني الرسم بيغطي ويزيد
+    courierKm: r2(courierKm),                   // الكيلومترات اللي لاجلك بتحاسب عليها (بالكسر)
     courierPerKm: FAR_ZONE_COURIER_PER_KM,
   };
 }
