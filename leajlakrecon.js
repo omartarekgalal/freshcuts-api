@@ -239,7 +239,8 @@ export function reconcile({ shipments = [], orphanOrders = [], lines = [], contr
       id: s.id, orderNo: s.orderNo, providerRef: s.providerRef, at: s.createdAt, period: s.period,
       status: s.status, orderStatus: s.orderStatus || null, isTest: Boolean(s.isTest),
       ourKm: s.ourKm != null ? r2(s.ourKm) : null, distanceSource: s.distanceSource || null,
-      theirKm: theirKm != null ? r2(theirKm) : null,
+      // مسافتهم بـ٣ خانات زي ملفهم (0.017) — r2 كانت هتخليها 0.02
+      theirKm: theirKm != null ? Math.round(Number(theirKm) * 1000) / 1000 : null,
       expected: exp, charged, chargedSource, invoiceLines: ls.length,
       chargedExVat: invoicedEx != null ? invoicedEx : (charged != null ? r2(charged / (1 + c.vatPct / 100)) : null),
       line: ls[0] ? { date: ls[0].date, theirNo: ls[0].theirNo || null, status: ls[0].status || null, shop: ls[0].shop || null,
@@ -654,7 +655,8 @@ export function register(app, ctx, deps = {}) {
         WHERE s.option = 'delivery'
           AND s.status IN ('courier_requested','courier_assigned','on_the_way','delivered')
           AND to_char(s.created_at AT TIME ZONE 'Asia/Riyadh','YYYY-MM') = $1
-          AND NOT EXISTS (SELECT 1 FROM dl_shipments sh WHERE sh.shop_order_no = s.order_no AND sh.provider = 'leajlak')`,
+          -- أي شحنة (حتى مع شركة تانية زي Flying Arrow) = مش «من غير شحنة»
+          AND NOT EXISTS (SELECT 1 FROM dl_shipments sh WHERE sh.shop_order_no = s.order_no)`,
       [month])).rows.map((r) => ({
       orderNo: r.order_no, createdAt: r.created_at, orderStatus: r.status, isTest: r.is_test,
       customerFee: Number(r.delivery_fee) || 0, ourKm: r.route_km != null ? Number(r.route_km) : null,
