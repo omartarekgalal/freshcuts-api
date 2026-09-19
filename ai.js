@@ -408,6 +408,138 @@ async function buildFacts(pool, from, to) {
   return { facts, orderCount: curOrders };
 }
 
+/* ── المتجر الأونلاين (freshcuts.sa) — سياق «الأفكار الذكية» (١٩ سبتمبر) ──────
+   قبل كده الموديل كان شايف نقطة البيع بس، فكان بيقترح أفكار لمطعم «من غير
+   موقع» وبيقترح توصيل ببلاش وخصومات. هنا أرقام المتجر الحقيقية لآخر ٧ أيام
+   شغل من جداول محسوبة أصلاً (shop_orders / journey_sessions / shop_carts /
+   cart_recovery / cms_campaigns / mk_daily_reports) + العروض من السجل الحي +
+   قرارات عمر اللي الأفكار لازم تحترمها. كل استعلام لوحده: لو واحد وقع الباقي
+   بيوصل، والجزء الناقص بيتكتب «غير متاح» بدل ما الموديل يخمّنه. */
+export const STORE_FACTS_VERSION = "store-v1";
+const STORE_BIZ = `((created_at AT TIME ZONE 'Asia/Riyadh') - interval '4 hours')::date`;
+
+export const OWNER_PLAYBOOK = {
+  goal: "هدف المالك: ٢٠٠ طلب يومياً من المتجر freshcuts.sa (توصيل من المطعم + استلام). التشغيل جاهز؛ الاختناق الوحيد هو جلب العملاء.",
+  store: [
+    "المتجر freshcuts.sa (نفس order.o2m8.me): منيو تاب سينس، دفع أونلاين (مدى/أبل باي)، تأكيد الجوال بـOTP قبل الدفع، تتبع الطلب.",
+    "كوبون FIRST = توصيل ببلاش لأول طلب من الموقع — بيتحط لوحده على روابط الإعلانات (freshcuts.sa/l/<slug> بـUTM).",
+    "استرداد السلات المتروكة: رسالة بعد ٣٥ دقيقة ورابط /c/<code> بيرجّع السلة — بس لازم العميل يكون كتب جواله (أغلب السلات مالهاش جوال).",
+    "رسايل SMS تسويقية شغّالة (مُرسل FreshCut-AD): ساعات هدوء ١٠م–١٢ظ، فاصل ٧ أيام للرقم، holdout ١٥٪، فرامل عند إلغاء اشتراك >٥٪.",
+    "الصالة والتطبيقات (كيتا/هنقرستيشن/نينجا/جاهز) شغّالين جنب المتجر؛ عروض ٩٦ مش متاحة على التطبيقات.",
+  ],
+  ads: [
+    "ميتا: حملة شراء FC96-SALES-PUR (موزّعة على اليوم) + حملة ATC للمتجر + ريتارجت زوار الموقع FC-RT-WEB-96 (~١٢٠/يوم) + إعلان واتساب (~١٠٠/يوم، +٢٥٪ مساءً لو فيه طلبات).",
+    "سناب: تجربة شراء لحد ٢٢/٩ ثم تقييم.",
+    "حارس على السيرفر: الإعلانات شغّالة ١٢:٣٠ ← ١:٣٠ (الخميس/الجمعة ← ٢:٣٠)، سقف صلب ٣٬٠٠٠ ر.س/يوم.",
+    "قاعدة الصرف: ≈ ٢٥–٣٠٪ من الدخل اليومي ومستمرة، وتكلفة طلب الموقع ≤ ٦٠ للتكبير. التركيز الخميس/الجمعة/السبت.",
+    "المراجعة الجاية: الاتنين ٢١/٩ — تكلفة الطلب ≤ ٦٠ والدخل طالع ← كبّر، غير كده ← ~٤٥٠/يوم على أحسن إعلانين.",
+  ],
+  ownerRules: [
+    "ممنوع كلمات «وفّر» و«خصم» و«٪» و«بدلاً من» في نص الإعلانات والعروض — السعر والمحتوى بس.",
+    "ممنوع أي ادعاء عن الستيك.",
+    "التوصيل: تكلفة المندوب ~٢٠ ر.س ثابتة من أول كيلو، فمفيش توصيل ببلاش على السلات الصغيرة — الحل رفع متوسط الفاتورة (AOV) مش منافسة كيتا على التوصيل المجاني.",
+    "الولاء بعدين (كل ٥ طلبات) — مش دلوقتي.",
+    "إعلانات الواتساب بتجيب عملاء للصالة مابيتتبعوش أونلاين — ماتحكمش عليها بطلبات الموقع؛ اقترح طرق تتبع (رسالة ترحيب لكل إعلان، رابط المتجر في الرد الآلي، سؤال الكاشير «من وين عرفتنا؟»).",
+    "صور وفيديو حقيقي بس في الإعلانات (عمر رفض فيديوهات الذكاء الاصطناعي). صور أكل بالذكاء الاصطناعي مسموحة للمود من غير سعر/نص.",
+    "البوكس = أصناف منفصلة في شنطة عليها ستيكر (مش علبة). كيلو ٩٦: نوع مشاوي واحد + خبز وسلطة وطحينة، والأرز هدية.",
+    "المالك بيوافق قبل أي نشر أو صرف جديد؛ الأفكار اقتراحات.",
+  ],
+  apps: "تطبيقات أندرويد وآيفون بتتبني بالتوازي من ١٧/٩ (Capacitor فوق freshcuts.sa، تحديث من غير رفع نسخة) — لسه مانزلتش: مستنية حسابات Apple/Google/D-U-N-S من عمر. التطبيق أداة رجوع واحتفاظ (إشعارات، إعادة طلب)، مش أداة اكتساب.",
+};
+
+export async function buildStoreFacts(pool, now = new Date()) {
+  const { OFFERS, offerState, riyadhDay } = await import("./offers.js");
+  const { PAID_STATUSES, EXCLUDED_COUPONS } = await import("./adsplan.js");
+  const to = riyadhDay(now);
+  const from = shiftISO(to, -6);
+  const safe = async (fn) => { try { return await fn(); } catch (e) { console.error("[ai] storeFacts:", e.message); return "غير متاح"; } };
+  const REAL = `status = ANY($3::text[]) AND NOT COALESCE(is_test,false) AND upper(COALESCE(coupon,'')) <> ALL($4::text[])`;
+  const P = [from, to, PAID_STATUSES, EXCLUDED_COUPONS];
+
+  const [orders, bySource, funnel, carts, sms, daily] = await Promise.all([
+    safe(async () => {
+      const r = (await pool.query(
+        `SELECT count(*)::int AS orders, COALESCE(sum(total),0)::float AS revenue,
+                count(*) FILTER (WHERE option='pickup')::int AS pickup,
+                count(*) FILTER (WHERE upper(COALESCE(coupon,''))='FIRST')::int AS first_coupon,
+                count(*) FILTER (WHERE NOT EXISTS (SELECT 1 FROM shop_orders p WHERE p.phone_norm = o.phone_norm
+                   AND p.created_at < o.created_at AND p.status = ANY($3::text[]) AND NOT COALESCE(p.is_test,false)))::int AS first_time
+           FROM shop_orders o
+          WHERE ${STORE_BIZ} BETWEEN $1::date AND $2::date AND ${REAL}`, P)).rows[0];
+      const days = (await pool.query(
+        `SELECT ${STORE_BIZ} AS day, count(*)::int AS orders, COALESCE(sum(total),0)::float AS revenue
+           FROM shop_orders WHERE ${STORE_BIZ} BETWEEN $1::date AND $2::date AND ${REAL} GROUP BY 1 ORDER BY 1`, P)).rows;
+      return {
+        orders: r.orders, revenueSAR: round(r.revenue), aovSAR: div(r.revenue, r.orders, 2),
+        pickupOrders: r.pickup, deliveryOrders: r.orders - r.pickup,
+        firstTimeCustomers: r.first_time, ordersWithFIRST: r.first_coupon,
+        daily: days.map((d) => ({ day: d.day instanceof Date ? d.day.toISOString().slice(0, 10) : String(d.day), orders: d.orders, revenueSAR: round(d.revenue) })),
+      };
+    }),
+    safe(async () => (await pool.query(
+      `SELECT COALESCE(attrib_source,'unknown') AS source, count(*)::int AS orders, COALESCE(sum(total),0)::float AS revenue
+         FROM shop_orders WHERE ${STORE_BIZ} BETWEEN $1::date AND $2::date AND ${REAL} GROUP BY 1 ORDER BY 2 DESC`, P))
+      .rows.map((r) => ({ source: r.source, orders: r.orders, revenueSAR: round(r.revenue) }))),
+    safe(async () => {
+      const r = (await pool.query(
+        `SELECT count(*)::int AS sessions, count(*) FILTER (WHERE max_step >= 1)::int AS viewed_item,
+                count(*) FILTER (WHERE max_step >= 2)::int AS added_to_cart, count(*) FILTER (WHERE max_step >= 3)::int AS checkout,
+                count(*) FILTER (WHERE max_step >= 6)::int AS payment, count(*) FILTER (WHERE paid)::int AS paid,
+                count(*) FILTER (WHERE in_app IS NOT NULL)::int AS in_app_browser, count(*) FILTER (WHERE in_app IS NOT NULL AND paid)::int AS in_app_paid
+           FROM journey_sessions WHERE biz_day BETWEEN $1::date AND $2::date AND NOT is_bot AND NOT is_qa AND NOT is_staff`, [from, to])).rows[0];
+      return { ...r, conversion: div(r.paid, r.sessions, 4), note: "جلسات حقيقية (من غير بوتات/اختبار/موظفين). max_step: ١ شاف صنف، ٢ سلة، ٣ شيك أوت، ٦ دفع" };
+    }),
+    safe(async () => {
+      const c = (await pool.query(
+        `SELECT count(*)::int AS carts, count(*) FILTER (WHERE recovered_order IS NULL AND item_count > 0)::int AS abandoned,
+                count(*) FILTER (WHERE recovered_order IS NULL AND item_count > 0 AND phone_norm IS NOT NULL)::int AS abandoned_with_phone,
+                COALESCE(sum(subtotal) FILTER (WHERE recovered_order IS NULL AND item_count > 0 AND subtotal < 5000),0)::float AS abandoned_value
+           FROM shop_carts WHERE updated_at > NOW() - interval '7 days'`)).rows[0];
+      const r = (await pool.query(
+        `SELECT count(*)::int AS flows, count(opened_at)::int AS opened, count(order_no)::int AS recovered,
+                COALESCE(sum(order_total),0)::float AS recovered_value
+           FROM cart_recovery WHERE started_at > NOW() - interval '7 days'`)).rows[0];
+      return { ...c, abandoned_value: round(c.abandoned_value), recovery: { ...r, recovered_value: round(r.recovered_value) } };
+    }),
+    safe(async () => {
+      const camps = (await pool.query(
+        `SELECT id, name, status, sent, cost, sent_at, scheduled_at FROM cms_campaigns
+          WHERE channel='sms' AND created_at > NOW() - interval '30 days' ORDER BY id DESC LIMIT 12`)).rows;
+      const smsOrders = (await pool.query(
+        `SELECT count(*)::int AS n, COALESCE(sum(total),0)::float AS rev FROM shop_orders
+          WHERE attrib_source='sms' AND created_at > NOW() - interval '30 days' AND ${REAL.replace(/\$3/g, "$1").replace(/\$4/g, "$2")}`,
+        [PAID_STATUSES, EXCLUDED_COUPONS])).rows[0];
+      const optouts = (await pool.query(
+        `SELECT count(*)::int AS n FROM cms_contacts WHERE opted_out_at > NOW() - interval '30 days'`)).rows[0];
+      return {
+        campaigns: camps.map((x) => ({ name: x.name, status: x.status, sent: x.sent, costSAR: round(x.cost),
+          at: (x.sent_at || x.scheduled_at) ? new Date(x.sent_at || x.scheduled_at).toISOString().slice(0, 10) : null })),
+        storeOrdersTaggedSms30d: smsOrders.n, storeRevenueTaggedSms30dSAR: round(smsOrders.rev), optOuts30d: optouts.n,
+      };
+    }),
+    safe(async () => (await pool.query(`SELECT data FROM mk_daily_reports ORDER BY day DESC LIMIT 5`)).rows.map(({ data: d }) => ({
+      day: d.day, revenueTotalSAR: round(d.revenue?.total), hallSAR: round(d.revenue?.hall?.revenue), appsSAR: round(d.revenue?.deliveryApps?.revenue),
+      storeOrders: d.online?.orders, storeRevenueSAR: round(d.online?.revenue), storeAovSAR: d.online?.aov,
+      adSpendSAR: round(d.ads?.spendTotal), adSpendShareOfRevenue: d.ads?.spendShareOfRevenue, ordersFromAds: d.ads?.ordersFromAds,
+      cpaOnlineSAR: d.ads?.cpaOnline, roasOnline: d.ads?.roasOnline, whatsappConversations: d.whatsapp?.conversations,
+      recommendation: d.recommendation?.ar,
+    }))),
+  ]);
+
+  const offers = OFFERS.map((o) => ({ o, st: offerState(o, now) }))
+    .filter(({ st }) => st.status === "live" || st.status === "upcoming")
+    .map(({ o, st }) => ({ id: o.id, title: o.title, priceSAR: o.price ?? null, desc: o.desc, from: o.from || null, until: o.until,
+      untilProvisional: !!o.untilProvisional, daysLeft: st.daysLeft, status: st.status,
+      channels: o.channels ? Object.entries(o.channels).filter(([, v]) => v).map(([k]) => k) : null }));
+
+  return {
+    _v: STORE_FACTS_VERSION,
+    window: { from, to, note: "آخر ٧ أيام شغل (اليوم بيدوّر ٤ الفجر). طلبات المالك التجريبية مستبعدة." },
+    storeOrders: orders, storeOrdersBySource: bySource, storeFunnel: funnel, abandonedCarts: carts,
+    smsCampaigns: sms, dailyReports: daily, liveOffers: offers, playbook: OWNER_PLAYBOOK,
+  };
+}
+
 /** Trim the biggest arrays until the serialized pack fits the budget. Cost guard:
  *  the pack is the bulk of every prompt, so an unusually wide menu must not turn
  *  into an unbounded bill. */
@@ -500,7 +632,7 @@ async function callTool(provider, { system, user, tool }) {
 }
 
 /* ── Prompts (Arabic — the owner reads these answers) ───────────────────────── */
-const SYSTEM_PROMPT = `أنت مستشار أعمال لمطعم "فريش كتس" في جدة بالسعودية.
+const SYSTEM_PROMPT = `أنت مستشار أعمال لمطعم "فريش كتس" في جدة بالسعودية. المطعم عنده صالة، وبيبيع على تطبيقات التوصيل، وعنده متجر أونلاين خاص بيه freshcuts.sa (توصيل من المطعم + استلام) — والمتجر هو أولوية النمو.
 
 قواعد صارمة لا يجوز كسرها:
 1. تتكلم بالعربية فقط، بلهجة أعمال مصرية/خليجية واضحة ومباشرة — كأنك بتكلم صاحب المطعم شخصيًا.
@@ -512,11 +644,22 @@ const SYSTEM_PROMPT = `أنت مستشار أعمال لمطعم "فريش كت�
 7. رتّب النتائج بحيث priority = 1 هي الأعلى أثرًا وأسرع تنفيذًا.`;
 
 function ideasUser(facts, focus) {
-  return `دي بيانات المطعم الحقيقية للفترة المطلوبة (JSON):
+  const { store, ...pos } = facts;
+  return `دي بيانات نقطة البيع الحقيقية (الصالة + تطبيقات التوصيل + طلبات الموقع اللي نزلت الكاشير) للفترة المطلوبة (JSON):
 
-${JSON.stringify(facts, null, 1)}
+${JSON.stringify(pos, null, 1)}
+${store ? `
+ودي بيانات المتجر الأونلاين بتاعنا freshcuts.sa لآخر ٧ أيام + العروض الشغّالة + خطة الإعلانات + قرارات المالك (JSON — قرارات المالك في playbook ملزمة):
 
-${focus ? `تركيز خاص طلبه صاحب المطعم: ${focus}\n\n` : ""}اقترح من 5 إلى 8 أفكار تسويقية وإعلانية قابلة للتنفيذ خلال الأسبوعين الجايين، مستخرَجة من الأرقام دي بالذات: سلوك العملاء، الأصناف الأكثر والأقل مبيعًا، الأصناف الصاعدة والهابطة، أداء القنوات (تطبيقات التوصيل مقابل داخل المطعم)، الساعات المزدحمة والميتة، ونسبة العملاء العائدين، وصرف الإعلانات المدفوعة لو موجود.
+${JSON.stringify(store, null, 1)}
+` : ""}
+${focus ? `تركيز خاص طلبه صاحب المطعم: ${focus}\n\n` : ""}الهدف الأول: ${store ? store.playbook.goal : "زيادة الطلبات"}
+اقترح من 6 إلى 8 أفكار تسويقية وإعلانية قابلة للتنفيذ خلال الأسبوعين الجايين:
+- على الأقل ٤ أفكار للمتجر الأونلاين (رفع الزيارات، سد الفجوات في القمع storeFunnel، استرجاع السلات المتروكة، رفع متوسط الفاتورة، استغلال العروض الشغّالة liveOffers قبل ما تخلص، حملات SMS، الريتارجت)، وعلى الأقل فكرة للصالة.
+- كل فكرة مبنية على رقم من البيانات: قمع المتجر، مصادر الطلبات، السلات المتروكة، نتايج حملات SMS، تقارير الدخل اليومية (نسبة الصرف من الدخل وتكلفة الطلب)، الأصناف، الساعات، القنوات، العملاء العائدين.
+- احترم قرارات المالك حرفيًا: من غير «وفّر/خصم/٪» في أي نص إعلان، من غير ادعاءات ستيك، من غير توصيل ببلاش للسلات الصغيرة (FIRST لأول طلب بس)، الولاء مؤجل، وماتحكمش على الواتساب بطلبات الموقع.
+- الإعلانات ضمن سقف ٣٬٠٠٠/يوم وقاعدة ٢٥–٣٠٪ من الدخل. لو اقترحت صرف زيادة قول هيتقاس بإيه.
+- القناة: website = المتجر نفسه (صفحة/تجربة شراء/سلة)، sms = رسايل تسويقية، والباقي زي ما هو.
 
 لكل فكرة: عنوان واضح، سبب مبني على رقم، خطوات تنفيذ عملية (٢ إلى ٥ خطوات)، الأثر المتوقع، الجهد المطلوب، والقناة الأنسب. استخدم أداة submit_marketing_ideas للإجابة.`;
 }
@@ -532,7 +675,8 @@ ${JSON.stringify(facts, null, 1)}
 }
 
 /* ── Tool schemas ───────────────────────────────────────────────────────────── */
-const CHANNELS = ["tiktok", "meta", "snapchat", "whatsapp", "instore", "delivery_apps", "google"];
+// website = المتجر freshcuts.sa، sms = الرسايل التسويقية (أُضيفوا ١٩/٩ — الواجهة عندها اسم لكل واحد)
+const CHANNELS = ["tiktok", "meta", "snapchat", "whatsapp", "instore", "delivery_apps", "google", "website", "sms"];
 const AREAS = ["pricing", "menu", "staffing", "channels", "operations", "marketing"];
 const EFFORTS = ["low", "medium", "high"];
 
@@ -700,7 +844,7 @@ export function register(app, ctx) {
   }
 
   /** Shared body for both advisors — they differ only in prompt, tool and validator. */
-  async function run(c, kind, buildTool) {
+  async function run(c, kind, buildTool, extraFacts = null) {
     const err = await requireAdmin(c); if (err) return err;
     try {
       const body = await c.req.json().catch(() => ({}));
@@ -714,7 +858,8 @@ export function register(app, ctx) {
           `SELECT * FROM ai_reports
             WHERE kind=$1 AND from_date=$2::date AND to_date=$3::date
               AND created_at > NOW() - INTERVAL '${CACHE_HOURS} hours'
-            ORDER BY created_at DESC LIMIT 1`, [kind, from, to]);
+              AND ($4::text IS NULL OR facts->'store'->>'_v' = $4)
+            ORDER BY created_at DESC LIMIT 1`, [kind, from, to, extraFacts ? STORE_FACTS_VERSION : null]);
         if (hit.rowCount) return c.json({ ...envelope(hit.rows[0]), cached: true });
       }
 
@@ -732,6 +877,8 @@ export function register(app, ctx) {
       if (orderCount === 0) return c.json({ ok: false, error: "no_data", dataWindow: { from, to } }, 200);
 
       capFacts(facts);
+      // سياق المتجر بعد القصّ — صغير (~٣ ك.ب) وأهم من أي صف أصناف زيادة
+      if (extraFacts) facts.store = await extraFacts();
       const { tool, user, validate } = buildTool(facts, body);
       const result = await generate(provider, { system: SYSTEM_PROMPT, user, tool, validate });
 
@@ -757,7 +904,7 @@ export function register(app, ctx) {
     tool: IDEAS_TOOL,
     user: ideasUser(facts, str(body?.focus)),
     validate: validateIdeas,
-  })));
+  }), () => buildStoreFacts(pool)));
 
   app.post("/api/ai/decisions", (c) => run(c, "decisions", (facts) => ({
     tool: DECISIONS_TOOL,
