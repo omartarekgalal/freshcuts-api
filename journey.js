@@ -53,8 +53,11 @@ export const STEPS = Object.freeze([
   { step: 1, key: "viewed", label: "فتح عرض أو صنف" },
   { step: 2, key: "cart", label: "أضاف للسلة" },
   { step: 3, key: "checkout", label: "فتح إتمام الطلب" },
-  { step: 4, key: "address", label: "حدّد عنوان مقبول (أو استلام)" },
-  { step: 5, key: "otp", label: "أكّد جواله" },
+  /* ١٩/٩ مساءً (عمر: «زي تطبيقات التوصيل»): الدخول برقم الجوال بقى أول خطوة
+     بعد «إتمام الطلب» والعنوان بعده — فالترتيب اتبدّل. جلسات قبل ١٩/٩: ٤ كانت
+     «العنوان» و٥ «الجوال». */
+  { step: 4, key: "otp", label: "سجّل دخوله برقم الجوال (OTP)" },
+  { step: 5, key: "address", label: "حدّد عنوان مقبول (أو استلام)" },
   { step: 6, key: "payment", label: "وصل لصفحة الدفع" },
   { step: 7, key: "paid", label: "دفع" },
 ]);
@@ -76,6 +79,8 @@ export const WEB_EVENTS = Object.freeze([
   "geo_prompt", "geo_granted", "geo_denied", "geo_timeout", "geo_unavailable", "geo_skipped",
   // ١٩/٩: شرح «ازاي أفعّل الموقع» (حالة المتصفح denied) + تبديل لغة الواجهة
   "geo_help", "lang_switch",
+  // ١٩/٩ مساءً: الشيك أوت «الدخول الأول» — شاشة الدخول، الرمز اتأكد، اختيار عنوان محفوظ، عنوان جديد
+  "login_start", "otp_ok", "address_pick", "address_new",
 ]);
 
 /* نوع خطأ الـJS. المتصفح بيبعت kind من ١٩/٩؛ القديم بنصنّفه من الرسالة والملف.
@@ -116,10 +121,16 @@ export function stepOf(name, props = {}, source = "web") {
     case "session_start": case "page_view": return 0;
     case "offer_view": case "picker_open": case "item_view": return 1;
     case "item_add": return 2;
-    case "checkout_view": case "address_step_open": return 3;
-    case "address_set": return p.deliverable === true ? 4 : 3;
+    case "checkout_view": case "address_step_open": case "login_start": return 3;
+    /* address_set: prov = الموقع التقريبي اللي بيتحدد أول ما الصفحة تفتح،
+       ctx=menu = عنوان اتختار لوحده وهو لسه في المنيو — الاتنين مش خطوة في
+       إتمام الطلب. */
+    case "address_set":
+      if (p.prov === true || p.ctx === "menu") return null;
+      return p.deliverable === true ? 5 : 3;
+    case "address_pick": case "address_new": return p.deliverable === false ? 3 : 5;
     case "pickup_selected": return 3;
-    case "otp_verified": return 5;
+    case "otp_verified": case "otp_ok": return 4;
     case "payment_sheet_open": case "payment_redirect": case "payment_method_selected": case "order_created": return 6;
     case "checkout_result": return p.ok === true ? 6 : null;
     case "order_paid": return source === "server" ? PAID_STEP : null;
@@ -369,16 +380,16 @@ export function leaksFrom(funnel, ctx = {}) {
         fix = "زرار السلة والإجمالي لازم يبانوا واضحين";
         break;
       case "checkout":
-        title = `${arInt(f.lost)} فتحوا إتمام الطلب ووقفوا عند العنوان (${arPct(f.dropPct)})`;
+        title = `${arInt(f.lost)} فتحوا إتمام الطلب ووقفوا عند الدخول برقم الجوال (${arPct(f.dropPct)})`;
+        fix = "راجع وصول رسالة الرمز والتعبئة التلقائية على الآيفون";
+        break;
+      case "otp":
+        title = `${arInt(f.lost)} أكّدوا جوالهم ووقفوا عند العنوان (${arPct(f.dropPct)})`;
         if (ctx.outOfZone > 0) why = `${arInt(ctx.outOfZone)} عنوان طلع خارج نطاق التوصيل${ctx.avgKm ? ` (متوسط ${arInt(ctx.avgKm)} كم)` : ""}`;
         fix = "اعرض الاستلام من الفرع بديل واضح، وسهّل تحديد الموقع";
         break;
       case "address":
-        title = `${arInt(f.lost)} حدّدوا العنوان ووقفوا عند تأكيد الجوال (${arPct(f.dropPct)})`;
-        fix = "راجع وصول رسالة الرمز والتعبئة التلقائية على الآيفون";
-        break;
-      case "otp":
-        title = `${arInt(f.lost)} أكّدوا جوالهم ووصلوش لصفحة الدفع (${arPct(f.dropPct)})`;
+        title = `${arInt(f.lost)} حدّدوا العنوان ووصلوش لصفحة الدفع (${arPct(f.dropPct)})`;
         fix = "راجع رسايل الخطأ في إتمام الطلب";
         break;
       case "payment":

@@ -20,9 +20,9 @@ test("stepOf: الخطوات والمتصفح مايقدرش يعلن الدفع
   assert.equal(J.stepOf("picker_open"), 1);
   assert.equal(J.stepOf("item_add"), 2);
   assert.equal(J.stepOf("checkout_view"), 3);
-  assert.equal(J.stepOf("address_set", { deliverable: true }), 4);
+  assert.equal(J.stepOf("address_set", { deliverable: true }), 5);
   assert.equal(J.stepOf("address_set", { deliverable: false }), 3);
-  assert.equal(J.stepOf("otp_verified"), 5);
+  assert.equal(J.stepOf("otp_verified"), 4);
   assert.equal(J.stepOf("payment_sheet_open"), 6);
   assert.equal(J.stepOf("order_paid", {}, "web"), null);
   assert.equal(J.stepOf("order_paid", {}, "server"), 7);
@@ -248,4 +248,17 @@ test("19/9: auto_cart_* and geo_* events are accepted and carry no funnel step",
   ] }));
   assert.equal(p.events.length, 2);
   assert.equal(p.events[0].props.surface, "co2_edit");
+});
+
+test("19/9 evening: login-first checkout — login → OTP → address, provisional location is no step", () => {
+  for (const n of ["login_start", "otp_ok", "address_pick", "address_new"]) assert.ok(J.WEB_EVENTS.includes(n), n);
+  assert.equal(J.stepOf("login_start"), 3);
+  assert.equal(J.stepOf("otp_ok"), 4);
+  assert.equal(J.stepOf("address_pick", { deliverable: true }), 5);
+  assert.equal(J.stepOf("address_pick", { mode: "pickup" }), 5);
+  assert.equal(J.stepOf("address_new", { deliverable: false }), 3);
+  assert.equal(J.stepOf("address_set", { deliverable: true, prov: true }), null);
+  assert.equal(J.stepOf("address_set", { deliverable: true, ctx: "menu" }), null);
+  assert.equal(J.stepOf("address_set", { deliverable: true, ctx: "checkout" }), 5);
+  assert.deepEqual(J.STEPS.map((s) => s.key), ["landed", "viewed", "cart", "checkout", "otp", "address", "payment", "paid"]);
 });
