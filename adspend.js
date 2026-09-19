@@ -323,8 +323,10 @@ export function register(app, ctx, deps = {}) {
     try {
       if (!ttInfo) {
         const j = await getJson(`${base}/advertiser/info/?advertiser_ids=${encodeURIComponent(JSON.stringify([adv]))}&fields=${encodeURIComponent(JSON.stringify(["timezone", "display_timezone", "currency"]))}`, H, 2);
-        if (j.code !== 0) throw new Error(`tiktok: ${j.message || j.code}`);
-        const a = j.data?.list?.[0] || {};
+        // advertiser/info محتاج صلاحية «Ad account management» (تحت المراجعة ١٩/٩): من غيرها
+        // بنكمّل بتوقيت الرياض والريال (حساب تيك توك سعودي) بدل ما سحب الصرف كله يقف.
+        if (j.code !== 0 && j.code !== 40001) throw new Error(`tiktok: ${j.message || j.code}`);
+        const a = j.code === 0 ? (j.data?.list?.[0] || {}) : { timezone: process.env.TIKTOK_TIMEZONE || "Asia/Riyadh", currency: process.env.TIKTOK_CURRENCY || "SAR" };
         ttInfo = { tz: a.display_timezone || (/^Etc|^[A-Z][a-z]+\//.test(a.timezone || "") ? a.timezone : null) || "Asia/Riyadh", currency: a.currency || "SAR" };
       }
       const m = metaDaysFor(fromBiz, toBiz, ttInfo.tz);
