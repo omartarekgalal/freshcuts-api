@@ -574,9 +574,31 @@ export function register(app, ctx) {
   }
 
   /* ── profile ── */
+  /* عمر (١٩/٩): «خلي الرقم الأول قبل الاسم عشان لو مسجل قبل كدا يجيب الاسم».
+     الحساب مالوش اسم؟ ناخده من آخر طلب أونلاين، وإلا من سجل نقطة البيع (تاب سينس). */
+  async function knownName(phoneNorm) {
+    const q = async (sql) => {
+      try { return String((await pool.query(sql, [phoneNorm])).rows[0]?.n || "").trim(); } catch { return ""; }
+    };
+    const bad = (n) => !n || n === "عميل" || /^\d+$/.test(n);
+    let n = await q(`SELECT customer->>'name' AS n FROM shop_orders
+      WHERE right(regexp_replace(customer->>'phone', '[^0-9]', '', 'g'), 9) = $1
+        AND coalesce(customer->>'name', '') NOT IN ('', 'عميل') ORDER BY created_at DESC LIMIT 1`);
+    if (bad(n)) n = await q(`SELECT name AS n FROM ts_customers WHERE phone_norm = $1 AND coalesce(name, '') <> '' ORDER BY updated_at DESC NULLS LAST LIMIT 1`);
+    return bad(n) ? null : n.slice(0, 60);
+  }
+
   app.get("/api/account/me", async (c) => {
     const acct = await customerOf(c);
     if (!acct) return c.json({ ok: false, error: "unauthorized" }, 401);
+    if (!acct.name) {
+      const n = await knownName(acct.phone_norm);
+      if (n) {
+        acct.name = n;
+        pool.query("UPDATE acct_customers SET name=$2 WHERE phone_norm=$1 AND coalesce(name,'')=''", [acct.phone_norm, n])
+          .catch((e) => console.error("[accounts] name backfill failed:", e.message));
+      }
+    }
     return c.json({
       ok: true,
       phone: acct.phone_norm, name: acct.name,
