@@ -40,6 +40,7 @@ import * as reports from "./reports.js";
 import * as scorecard from "./scorecard.js";
 import * as pay from "./pay.js";
 import * as deliveryMod from "./delivery.js";
+import * as ljRecon from "./leajlakrecon.js";
 import * as shop from "./shop.js";
 import * as recs from "./recs.js";
 import * as accounts from "./accounts.js";
@@ -3037,6 +3038,8 @@ scorecard.register(app, moduleCtx, {
 let shopApi = null;
 const payApi = pay.register(app, moduleCtx, { shop: () => shopApi });
 const deliveryApi = deliveryMod.register(app, moduleCtx, { shop: () => shopApi });
+// مطابقة فاتورة لاجلك (١٩/٩): المتوقَّع من العقد × المفوتَر من الفاتورة + الشذوذ + تصدير
+ljRecon.register(app, moduleCtx, { providers: () => deliveryApi.PROVIDERS });
 // إشعارات العميل (متصفح/SMS/واتساب بمفاتيح من لوحة التحكم) — قبل shop
 // عشان كل تغيير حالة يعدّي عليها.
 const notifyApi = notify.register(app, moduleCtx);

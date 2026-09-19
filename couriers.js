@@ -24,6 +24,8 @@
        والتتبع والإلغاء **برقم طلبنا إحنا**، ومفيش مدينة ولا نوع مركبة.
 ═══════════════════════════════════════════════════════════════════════════ */
 
+import { feeFromApi } from "./leajlakrecon.js";
+
 const env = (k, d) => (process.env[k] || d || "").toString().trim();
 
 /* رقم سعودي بصيغة E.164 — Flying Arrow بتطلبها كده. */
@@ -468,7 +470,9 @@ const leajlak = {
     return {
       ref: String(d.dsp_order_id || order.order_no),
       orderNumber: d.dsp_order_id != null ? String(d.dsp_order_id) : null,
-      cost: d.total != null ? Number(d.total) : null,
+      // `total` في ردّهم (لو رجع) = إجمالي طلبنا اللي باعتينه، مش أجرة المندوب.
+      // رسوم لاجلك مش في الـAPI أصلاً (١٩/٩) — بتتلقط هنا لو ضافوها.
+      cost: feeFromApi(d).fee,
       driver: d.driver || null,
       status: ljStage(d.status) || "pending",
       raw: created,
@@ -486,7 +490,7 @@ const leajlak = {
       // اللي نعرف بيه إن المندوب واقف في المطعم فعلاً
       rawStatus: d.status != null ? String(d.status) : null,
       driver: d.driver || null,
-      cost: d.total != null ? Number(d.total) : null,
+      cost: feeFromApi(d).fee,
       raw: d,
     };
   },
@@ -513,7 +517,7 @@ const leajlak = {
       status: ljStage(raw),
       rawStatus: String(raw),
       driver: b.driver || null,
-      cost: b.total != null ? Number(b.total) : null,
+      cost: feeFromApi(b).fee,
     };
   },
 };
