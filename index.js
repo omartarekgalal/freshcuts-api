@@ -68,6 +68,7 @@ import * as adsreport from "./adsreport.js";
 import * as mkhub from "./mkhub.js";
 import * as adconnect from "./adconnect.js";
 import * as ttconnect from "./ttconnect.js";
+import * as ttcatalog from "./ttcatalog.js";
 import * as growthnow from "./growthnow.js";
 import * as readiness from "./readiness.js";
 import * as consent from "./consent.js";
@@ -3129,6 +3130,8 @@ const mkhubApi = mkhub.register(app, moduleCtx, { alignedSpend: () => (globalThi
 // ربط منصات الإعلانات الأربعة: فحص كل ٣ ساعات + SMS للإدارة لو ربط وقع/توكن هيخلص — adconnect.js
 // ربط تيك توك من اللوحة (App Secret + OAuth، مشفّر في الداتابيز) — ttconnect.js
 ttconnect.register(app, moduleCtx);
+// كتالوج تيك توك (Fresh Cuts Menu في الـBC) — ttcatalog.js
+ttcatalog.register(app, moduleCtx);
 adconnect.register(app, moduleCtx, { sendSms: (m) => accounts.sendSms(m) });
 growthnow.register(app, moduleCtx);   // «إيه اللي نعمله دلوقتي» — /api/cms/growth/now
 readiness.register(app, moduleCtx);   // الجاهزية: مهام الأدوار + تقويم المواسم — /api/social/ready

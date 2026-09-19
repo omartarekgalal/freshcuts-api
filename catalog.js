@@ -253,6 +253,10 @@ const q = (s) => `"${String(s ?? "").replace(/"/g, '""').replace(/[\r\n]+/g, " "
 export async function menuRows() {
   return getRows();
 }
+/** صفوف الكتالوج الإعلاني بالظبط زي feed.csv (ttcatalog.js بيرفعها لتيك توك). */
+export async function adFeedRows() {
+  return adRows(await getRows());
+}
 
 /* ── صفوف الإعلانات = صفوف المنيو ناقص العروض المنتهية ─────────────────────
    صينية اللمة (id 121) عرض بينتهي، لكنها كمان **صنف في المنيو**، فصفها بيتولد

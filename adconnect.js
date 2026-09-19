@@ -28,6 +28,7 @@
 
 import { makeStaffNotifier } from "./staffalerts.js";
 import { ttMktToken, ttMktTokenSource, ttAdvertiserId, checkScopes } from "./ttconnect.js";
+import { ttCatalogStatus } from "./ttcatalog.js";
 
 /* set by register(): true when a DB token row exists but can't be decrypted */
 let ttDbTokenLost = null;
@@ -93,11 +94,14 @@ export async function probeTiktok() {
   const sc = await checkScopes(tok, adv);
   const mgmtOk = sc.advertiser?.ok && sc.campaigns?.ok && sc.reporting?.ok;
   const bad = Object.entries(sc).filter(([, v]) => !v.ok).map(([k, v]) => `${k}: ${v.message || v.code}`);
+  // كتالوج Fresh Cuts Menu (ttcatalog.js) — معلومة بس، مابيوقعش الربط.
+  let catalog = null;
+  try { catalog = await ttCatalogStatus(); } catch (e) { catalog = { error: String(e.message || e).slice(0, 200) }; }
   return {
     // events-only = management not set up yet (warn, no SMS); a marketing token that fails = broken (alert)
     ok: Boolean(mgmtOk), configured: mk || Boolean(mgmtOk),
     token: { kind: src === "db" ? "Marketing API (مربوط من اللوحة)" : mk ? "Marketing API (TIKTOK_MARKETING_TOKEN)" : "Events token فقط (TIKTOK_ACCESS_TOKEN)", source: src, refresh: "طويل العمر — مفيش تجديد، بيقف لو اتلغى التفويض", never: true },
-    management: Boolean(mgmtOk), eventsToken: Boolean(ev), scopeCheck: sc,
+    management: Boolean(mgmtOk), eventsToken: Boolean(ev), scopeCheck: sc, catalog,
     reason: mgmtOk ? (bad.length ? `شغّال — صلاحيات لسه مش متاحة: ${bad.join(" · ")}` : null)
       : mk ? `الإدارة/التقارير: ${bad.join(" · ")} — ${how} تاني` : `مفيش توكن Marketing API — التقارير والحملات والجماهير واقفة (${bad[0] || ""}) — ${how}`,
   };
