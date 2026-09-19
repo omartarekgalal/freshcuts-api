@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   courierSlaCfg, DEFAULT_COURIER_SLA, shipmentTimes, providerCancelled, expectedDriveMin, evalCourierSla,
   farGuardDecision, routeKmOf, courierAlertText, violationsCsv, preDispatchEta, CUSTOMER_TEXT, eventStatus,
+  distanceBadge, VIOLATIONS, MANUAL_VIOLATIONS,
 } from "./courierops.js";
 import { smsInfo } from "./staffalerts.js";
 import { PROVIDERS, API_PROVIDER_IDS } from "./couriers.js";
@@ -30,17 +31,18 @@ const late = {
   ],
 };
 
-test("defaults + editable settings (clamped, bad values ignored)", () => {
-  assert.equal(cfg.assignMin, 12);
+test("defaults (عمر ١٩/٩) + editable settings (clamped, bad values ignored)", () => {
+  assert.equal(cfg.assignMin, 2);
+  assert.equal(cfg.arriveTargetMin, 15);
   assert.equal(cfg.arriveMin, 20);
   assert.equal(cfg.deliverGraceMin, 2);
-  assert.equal(cfg.farGuard.mode, "confirm");
-  const c = courierSlaCfg({ delivery: { courierSla: { assignMin: "8", arriveMin: -3, alertStaff: false, farGuard: { mode: "suggest", fromKm: 12 } } } });
-  assert.equal(c.assignMin, 8);
+  assert.equal(cfg.farGuard.mode, "suggest");   // «زي النهارده»: لاجلك بتتطلب عادي + تنبيه
+  const c = courierSlaCfg({ delivery: { courierSla: { assignMin: "3", arriveMin: -3, alertStaff: false, farGuard: { mode: "confirm", fromKm: 12 } } } });
+  assert.equal(c.assignMin, 3);
   assert.equal(c.arriveMin, 20);
   assert.equal(c.alertStaff, false);
-  assert.deepEqual(c.farGuard, { enabled: true, fromKm: 12, mode: "suggest" });
-  assert.equal(courierSlaCfg({ delivery: { courierSla: { farGuard: { mode: "weird" } } } }).farGuard.mode, "confirm");
+  assert.deepEqual(c.farGuard, { enabled: true, fromKm: 12, mode: "confirm" });
+  assert.equal(courierSlaCfg({ delivery: { courierSla: { farGuard: { mode: "weird" } } } }).farGuard.mode, "suggest");
 });
 
 test("shipmentTimes: first time per stage from the event log", () => {
@@ -68,10 +70,10 @@ test("eventStatus: webhook raw names + manual/external stages", () => {
   assert.equal(eventStatus({ event: "cost", provider: "external" }, "external"), null);
 });
 
-test("expectedDriveMin: max(model, google) rounded up", () => {
-  assert.equal(expectedDriveMin({ km: 0.32 }, cfg), 6);         // 5 + 0.8
-  assert.equal(expectedDriveMin({ km: 7.29, durationSec: 600 }, cfg), 24); // model 23.2 > google 10
-  assert.equal(expectedDriveMin({ km: 2, durationSec: 1800 }, cfg), 30);
+test("expectedDriveMin: Google duration when cached, else distance model", () => {
+  assert.equal(expectedDriveMin({ km: 0.32 }, cfg), 5);          // 4 + 0.64
+  assert.equal(expectedDriveMin({ km: 7.29, durationSec: 600 }, cfg), 10);
+  assert.equal(expectedDriveMin({ km: 7.29 }, cfg), 19);
   assert.equal(expectedDriveMin({}, cfg), null);
 });
 
@@ -83,12 +85,15 @@ test("late order: deliver_late open breach, ETA from pickup", () => {
   const b = r.breaches[0];
   assert.equal(b.open, true);
   assert.equal(b.deadlineAt, "2026-09-19T14:52:23.155Z"); // picked + 6 + 2
+  assert.equal(r.deadlines.deliver.start, late.picked_at);
   assert.ok(b.overMin > 28 && b.overMin < 29);
   assert.equal(b.claimable, true);
   assert.equal(r.eta, "2026-09-19T14:50:23.155Z");
   assert.equal(r.etaBasis, "picked");
-  // الوصول ١٦ د < ٢٠ (العقد) والتعيين دقيقة < ١٢ ⇒ مفيش مخالفة
+  // التعيين دقيقة (≤٢)، الوصول ١٥ د بعد التعيين (≤١٥) و١٦ د من الطلب (≤٢٠) ⇒ مفيش مخالفة
   assert.equal(r.deadlines.arrive.done, "2026-09-19T14:41:23.122Z");
+  assert.equal(r.deadlines.arrive.start, "2026-09-19T14:26:23.221Z");
+  assert.equal(r.deadlines.arriveMax.target, 20);
 });
 
 test("refused order: no SLA breach counted (incident handles it), no ETA", () => {
@@ -97,13 +102,34 @@ test("refused order: no SLA breach counted (incident handles it), no ETA", () =>
   assert.equal(r.eta, null);
 });
 
-test("no captain after 12 min ⇒ open assign_late; contract arrive_late at 20", () => {
+test("no captain after 2 min ⇒ assign_late; contract arrive_late at 20 from request", () => {
   const sh = { provider: "leajlak", status: "pending", created_at: "2026-09-19T14:00:00Z", events: [{ at: "2026-09-19T14:00:00Z", event: "created" }] };
-  const at13 = evalCourierSla({ sh, expectedMin: 10, cfg, now: Date.parse("2026-09-19T14:13:00Z") });
-  assert.deepEqual(at13.breaches.map((b) => b.code), ["assign_late"]);
+  const at3 = evalCourierSla({ sh, expectedMin: 10, cfg, now: Date.parse("2026-09-19T14:03:00Z") });
+  assert.deepEqual(at3.breaches.map((b) => b.code), ["assign_late"]);
+  assert.equal(at3.breaches[0].claimable, false);       // معيار داخلي، مش بند في العقد
   const at21 = evalCourierSla({ sh, expectedMin: 10, cfg, now: Date.parse("2026-09-19T14:21:00Z") });
   assert.deepEqual(at21.breaches.map((b) => b.code).sort(), ["arrive_late", "assign_late"]);
-  assert.equal(at21.breaches.find((b) => b.code === "arrive_late").basis, "not_arrived");
+  const al = at21.breaches.find((b) => b.code === "arrive_late");
+  assert.equal(al.basis, "not_arrived");
+  assert.equal(al.claimable, false);                     // أقل من دقيقتين تأخير
+});
+
+test("arrive_slow: assigned then >15 min to reach the shop (internal) while contract 20 from request still OK", () => {
+  const sh = { provider: "leajlak", status: "picked", created_at: "2026-09-19T14:00:00Z", arrived_at: "2026-09-19T14:18:00Z",
+    picked_at: "2026-09-19T14:19:00Z", events: [{ at: "2026-09-19T14:01:00Z", event: "poll", status: "assigned" }] };
+  const r = evalCourierSla({ sh, expectedMin: 10, cfg, now: Date.parse("2026-09-19T14:20:00Z") });
+  assert.deepEqual(r.breaches.map((b) => b.code), ["arrive_slow"]);
+  assert.equal(r.breaches[0].overMin, 2);
+});
+
+test("our_handover_late: captain waited at the shop (our side, never claimable)", () => {
+  const sh = { provider: "leajlak", status: "delivered", created_at: "2026-09-19T14:00:00Z", arrived_at: "2026-09-19T14:08:00Z",
+    picked_at: "2026-09-19T14:25:00Z", delivered_at: "2026-09-19T14:35:00Z", events: [{ at: "2026-09-19T14:01:00Z", event: "poll", status: "assigned" }] };
+  const r = evalCourierSla({ sh, expectedMin: 10, cfg });
+  const o = r.breaches.find((b) => b.code === "our_handover_late");
+  assert.ok(o);
+  assert.equal(o.overMin, 15);        // من الدقيقة ١٠ للاستلام ٢٥
+  assert.equal(o.claimable, false);
 });
 
 test("no arrival signal: pickup time is the upper bound for arrival", () => {
@@ -132,26 +158,44 @@ test("delivered in time: no breach, claimable only over threshold", () => {
 
 test("pre-dispatch ETA: later of food ready and courier at shop", () => {
   const eta = preDispatchEta({ acceptedAt: "2026-09-19T14:00:00Z", expectedMin: 10, dispatchDelayMin: 15, cfg });
-  // ready ~14:19, courier ~14:29 (15+14) → +2 +10 = 14:41
-  assert.equal(eta, "2026-09-19T14:41:00.000Z");
+  // ready ~14:19, courier ~14:27 (15+12) → +2 +10 = 14:39
+  assert.equal(eta, "2026-09-19T14:39:00.000Z");
   assert.equal(preDispatchEta({ acceptedAt: null, expectedMin: 10, cfg }), null);
 });
 
-test("far guard: >10 km route ⇒ hold in confirm mode, flag in suggest, nothing when off", () => {
-  const row = { delivery_quote: { routeKm: 13.47, farZone: { km: 13.47 } } };
-  assert.deepEqual(farGuardDecision(row, cfg), { far: true, km: 13.5, fromKm: 10, mode: "confirm", hold: true });
-  const sug = courierSlaCfg({ delivery: { courierSla: { farGuard: { mode: "suggest" } } } });
-  assert.equal(farGuardDecision(row, sug).hold, false);
-  assert.equal(farGuardDecision(row, sug).far, true);
+test("far guard: >10 km ⇒ flag (suggest = default, no hold); confirm holds; off = nothing; near badge", () => {
+  const row = { delivery_quote: { routeKm: 13.47, straightKm: 6.9, farZone: { km: 13.47 } } };
+  assert.deepEqual(farGuardDecision(row, cfg), { far: true, km: 13.5, fromKm: 10, mode: "suggest", hold: false });
+  const conf = courierSlaCfg({ delivery: { courierSla: { farGuard: { mode: "confirm" } } } });
+  assert.equal(farGuardDecision(row, conf).hold, true);
   const off = courierSlaCfg({ delivery: { courierSla: { farGuard: { mode: "off" } } } });
   assert.equal(farGuardDecision(row, off).far, false);
   assert.equal(farGuardDecision({ delivery_quote: { routeKm: 9.9 } }, cfg).far, false);
   assert.equal(routeKmOf({ delivery_quote: JSON.stringify({ routeKm: "10.4" }) }), 10.4);
   assert.equal(routeKmOf({}), null);
+  assert.deepEqual(distanceBadge(row, cfg), { kind: "far", km: 13.5 });
+  assert.deepEqual(distanceBadge({ route_km: "0.32", straight_km: "0.23" }, cfg), { kind: "near", km: 0.3, walkMin: 3 });
+  assert.equal(distanceBadge({ route_km: "1.2", straight_km: "0.9" }, cfg), null);
+});
+
+test("contract catalog: every type has a clause; manual list; CSV has side + claimable", () => {
+  for (const [k, v] of Object.entries(VIOLATIONS)) {
+    assert.ok(v.label && v.clause && v.side, k);
+  }
+  for (const k of ["arrive_late", "provider_cancelled", "refused_far", "cancel_rate", "deliver_late", "damaged", "lost_theft",
+    "wrong_location", "not_verified", "driver_unreachable", "driver_conduct", "no_tracking_updates", "refused_return_late", "our_handover_late"]) {
+    assert.ok(VIOLATIONS[k], k);
+  }
+  assert.ok(MANUAL_VIOLATIONS.includes("damaged"));
+  assert.ok(!MANUAL_VIOLATIONS.includes("arrive_late"));
+  assert.match(VIOLATIONS.arrive_late.clause, /٢٠ د/);
+  const csv = violationsCsv([{ orderNo: "W9", code: "our_handover_late", claimable: false }]);
+  assert.match(csv.split("\n")[1], /علينا/);
+  assert.match(csv.split("\n")[1], /,لا,/);
 });
 
 test("staff SMS fit one segment (EN ≤160 GSM, AR ≤70)", () => {
-  for (const code of ["refused_far", "provider_cancelled", "no_assignment", "far_hold", "assign_late", "arrive_late", "deliver_late"]) {
+  for (const code of ["refused_far", "provider_cancelled", "no_assignment", "far_hold", "far_risk", "assign_late", "arrive_slow", "arrive_late", "deliver_late"]) {
     const en = courierAlertText("W1789825687099", code, { km: 13.47, over: 28.6, target: 8, min: 12 }, "en");
     assert.equal(smsInfo(en).segments, 1, en);
     assert.equal(smsInfo(en).encoding, "GSM-7", en);
@@ -264,14 +308,35 @@ test("route: retro record = delivered silently (no setStatus, no SMS, review inv
   assert.equal(ins.vals[9], null);   // وقت التوصيل مش معروف — مانخترعوش
 });
 
-test("route: convert to pickup flags delivery-fee refund, never moves money", async () => {
-  const h = harness({ row: baseRow, current: { id: 29, provider: "leajlak", status: "cancelled" } });
-  const r = await h.post("/api/portal/orders/W1/courier/pickup", { reason: "العميل هييجي" });
-  const j = await r.json();
+test("route: «أوقف لاجلك» before the captain arrives → cancel at Leajlak + claim held + back to accepted; blocked once he's here", async () => {
+  const h = harness({ row: { ...baseRow, status: "courier_assigned" }, current: { id: 40, provider: "leajlak", status: "assigned", arrived_at: null } });
+  const r = await h.post("/api/portal/orders/W1/courier/hold", { reason: "هنبعته مع موظف" });
   assert.equal(r.status, 200);
-  assert.equal(j.refundDeliveryFee, 12);
-  assert.ok(h.q.some((x) => /SET option='pickup', status='accepted'/.test(x.sql)));
-  assert.ok(!h.q.some((x) => /refund_id|makeRefund/i.test(x.sql)));
+  assert.equal(h.calls.cancel, 1);
+  assert.ok(h.q.some((x) => /dispatch_claimed_at = NOW\(\) - INTERVAL '5 minutes'/.test(x.sql)));
+  assert.ok(h.q.some((x) => /SET status='accepted'/.test(x.sql)));
+  assert.ok(h.q.some((x) => /INSERT INTO dl_courier_incidents/.test(x.sql) && x.vals[3] === "held"));
+  const h2 = harness({ row: { ...baseRow, status: "courier_assigned" }, current: { id: 41, provider: "leajlak", status: "assigned", arrived_at: "2026-09-19T14:00:00Z" } });
+  const r2 = await h2.post("/api/portal/orders/W1/courier/hold", {});
+  assert.equal(r2.status, 409);
+  assert.equal(h2.calls.cancel, 0);
+  // لسه ماتطلبش مندوب ⇒ بيمنع الطلب التلقائي بس
+  const h3 = harness({ row: { ...baseRow, status: "accepted" }, current: null });
+  assert.equal((await h3.post("/api/portal/orders/W1/courier/hold", {})).status, 200);
+  assert.equal(h3.calls.cancel, 0);
+});
+
+test("route: staff courier (cost 0) + asked flag + manual violation", async () => {
+  const h = harness({ row: { ...baseRow, status: "accepted" }, current: null });
+  const r = await h.post("/api/portal/orders/W1/courier/external", { kind: "staff", name: "أحمد" });
+  assert.equal(r.status, 200);
+  const ins = h.q.find((x) => /INSERT INTO dl_shipments/.test(x.sql));
+  assert.equal(ins.vals[3], 0);
+  assert.match(ins.vals[2], /"source":"staff"/);
+  assert.equal((await h.post("/api/portal/orders/W1/courier/asked", { note: "قالوا هيبعتوا" })).status, 200);
+  assert.ok(h.q.some((x) => /'asked_leajlak'/.test(x.sql)));
+  assert.equal((await h.post("/api/portal/orders/W1/courier/violation", { code: "nope" })).status, 400);
+  assert.equal((await h.post("/api/portal/orders/W1/courier/pickup", {})).status, 404);   // اتشالت (عمر ١٩/٩)
 });
 
 test("route: external stages — picked then cost", async () => {

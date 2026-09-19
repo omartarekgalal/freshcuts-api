@@ -38,19 +38,28 @@ import { sendSms as sendStaffSms } from "./accounts.js";
 
 /* ── الإعدادات (settings.delivery.courierSla — بتتعدّل من «مطابقة لاجلك») ── */
 export const DEFAULT_COURIER_SLA = Object.freeze({
-  assignMin: 12,          // عمر: كابتن يتعيّن خلال ١٢ د من طلب المندوب
+  /* عمر (١٩ سبتمبر، بعد أول نسخة):
+     • الكابتن يتعيّن خلال ١–٢ د من طلبنا (أكتر من ٢ = مخالفة)
+     • بعد التعيين يوصل المطعم في ١٠–١٥ د (الهدف)، وأقصى حد ٢٠ د (العقد م٣ — من الطلب)
+     • من الاستلام للتوصيل = مدة المشوار (جوجل/المسافة) + ٢ د سماح */
+  assignMin: 2,
+  arriveTargetMin: 15,    // من التعيين — هدف داخلي (١٠–١٥)
+  arriveWarnMin: 10,      //   بداية الأصفر
   arriveMin: 20,          // العقد م٣: الكابتن في الفرع خلال ٢٠ د من إسناد الطلب لنظامهم
-  deliverGraceMin: 2,     // عمر: بعد الاستلام = المدة المتوقعة + ٢ د سماح
-  baseMin: 5,             // المدة المتوقعة لو مفيش مدة من جوجل: ٥ + ٢٫٥ د/كم
-  minPerKm: 2.5,          //   (متوسط طلباتنا الحقيقية ١٧–١٩ سبتمبر)
+  deliverGraceMin: 2,
+  handoverMaxMin: 10,     // العقد م٣ (علينا): نسلّم خلال ١٠ د من الإسناد — للأمانة في التقرير
+  baseMin: 4,             // لو مفيش مدة من جوجل: ٤ + ٢ د/كم
+  minPerKm: 2,
   prepMin: 19,            // تقدير التحضير لحساب الـETA قبل «جاهز» (وسيط ٤٧ طلب)
-  assignTypMin: 1,        // المعتاد: لاجلك بتعيّن خلال ~دقيقة
-  arriveTypMin: 14,       // المعتاد: الكابتن في المطعم بعد ~١٤ د من الطلب
+  arriveTypMin: 12,       // المعتاد: الكابتن في المطعم بعد ~١٢ د من الطلب
   handoverMin: 2,         // تسليم الشنطة
   claimMinOverMin: 2,     // المخالفة «قابلة للمطالبة» لو التأخير ≥ ده (الاستطلاع كل دقيقة ± ١)
+  alertOverMin: 1,        // SMS بس لو التأخير ≥ ده (دقة الاستطلاع دقيقة)
+  nearKm: 0.4,            // «قريب»: ≤ ٥ د مشي (~٨٠ م/د) خط مستقيم
   alertStaff: true,       // SMS للإدارة عند كل مخالفة/رفض
   customerSms: true,      // رسالة للعميل لما المدير يغيّر طريقة التوصيل
-  farGuard: { enabled: true, fromKm: 10, mode: "confirm" }, // confirm | suggest | off
+  // عمر: «كل حاجة تفضل شغالة زي النهارده» — لاجلك بتتطلب عادي، والبعيد تنبيه بس
+  farGuard: { enabled: true, fromKm: 10, mode: "suggest" }, // confirm | suggest | off
 });
 
 export function courierSlaCfg(settings = {}) {
@@ -67,7 +76,7 @@ export function courierSlaCfg(settings = {}) {
   const fg = { ...DEFAULT_COURIER_SLA.farGuard, ...(raw.farGuard || {}) };
   fg.enabled = fg.enabled !== false;
   fg.fromKm = Number.isFinite(Number(fg.fromKm)) && Number(fg.fromKm) > 0 ? Number(fg.fromKm) : 10;
-  fg.mode = ["confirm", "suggest", "off"].includes(fg.mode) ? fg.mode : "confirm";
+  fg.mode = ["confirm", "suggest", "off"].includes(fg.mode) ? fg.mode : "suggest";
   out.farGuard = fg;
   return out;
 }
@@ -143,16 +152,17 @@ export function providerCancelled(sh = {}, times = shipmentTimes(sh)) {
    جوجل المخزّنة وقت التسعير (geo_drive_cache) — وبما إن جوجل من غير زحمة
    بيقلّل، بناخد الأكبر بينه وبين نموذج من طلباتنا الحقيقية. */
 export function expectedDriveMin({ km, durationSec } = {}, cfg = DEFAULT_COURIER_SLA) {
-  const k = Number(km);
-  const model = Number.isFinite(k) && k > 0 ? cfg.baseMin + cfg.minPerKm * k : null;
+  /* عمر: «مدة المشوار (جوجل/المسافة)». مدة جوجل المخزّنة وقت التسعير لو
+     موجودة، وإلا نموذج المسافة. */
   const g = Number(durationSec) > 0 ? Number(durationSec) / 60 : null;
-  const v = Math.max(model || 0, g || 0);
-  return v > 0 ? Math.ceil(v) : null;
+  if (g) return Math.max(1, Math.ceil(g));
+  const k = Number(km);
+  return Number.isFinite(k) && k > 0 ? Math.ceil(cfg.baseMin + cfg.minPerKm * k) : null;
 }
 
 /* ── تقييم الشحنة: المهل + المخالفات + الـETA ───────────────────────────
-   مفيش `now` في أي حاجة بترجع للبوابة غير breach.open — عشان بصمة الطلب
-   ماتتغيرش كل دقيقة. المؤقتات الحية بتتحسب في المتصفح من المواعيد. */
+   كل مهلة = {start, at, done, target}. المؤقتات الحية بتتحسب في المتصفح
+   من start/target — السيرفر مابيبعتش «فاضل كام» عشان بصمة الطلب ماتتغيرش. */
 export function evalCourierSla({ sh, times, km = null, expectedMin = null, readyAt = null, acceptedAt = null, cfg = DEFAULT_COURIER_SLA, now = Date.now() } = {}) {
   const t = times || shipmentTimes(sh || {});
   const provider = String((sh && sh.provider) || "");
@@ -168,36 +178,51 @@ export function evalCourierSla({ sh, times, km = null, expectedMin = null, ready
   const add = (code, startedAt, deadlineAt, actualAt, basis) => {
     const o = over(deadlineAt, actualAt);
     if (o == null || o <= 0) return;
+    const v = VIOLATIONS[code] || {};
     breaches.push({ code, startedAt, deadlineAt, actualAt: actualAt || null, overMin: o, basis: basis || null, open: !actualAt,
-      claimable: api && o >= (Number(cfg.claimMinOverMin) || 0) });
+      claimable: api && v.side === "leajlak" && Boolean(v.contract) && o >= (Number(cfg.claimMinOverMin) || 0) });
   };
+  const arrivedOrPicked = t.arrivedAt || t.pickedAt || null;
 
-  // ١) التعيين — عمر: ≤ assignMin من طلب المندوب
+  // ١) التعيين ≤ assignMin من طلبنا (عمر)
   if (t.requestedAt) {
     const dl = addMin(t.requestedAt, cfg.assignMin);
-    deadlines.assign = { at: dl, done: t.assignedAt || null, target: cfg.assignMin };
+    deadlines.assign = { start: t.requestedAt, at: dl, done: t.assignedAt || null, target: cfg.assignMin };
     if (api) {
       if (t.assignedAt) add("assign_late", t.requestedAt, dl, t.assignedAt, "assigned");
       else if (!cancelled) add("assign_late", t.requestedAt, dl, null, "still_pending");
     }
   }
-  // ٢) الوصول للمطعم — العقد م٣: ≤ ٢٠ د من إسناد الطلب لنظامهم
+  // ٢أ) الوصول بعد التعيين — الهدف الداخلي (١٠–١٥ د)
+  if (t.assignedAt) {
+    const dl = addMin(t.assignedAt, cfg.arriveTargetMin);
+    deadlines.arrive = { start: t.assignedAt, at: dl, done: arrivedOrPicked, target: cfg.arriveTargetMin, warn: cfg.arriveWarnMin,
+      basis: t.arrivedAt ? "arrived" : t.pickedAt ? "picked" : null };
+    if (api && !(cancelled && !arrivedOrPicked)) add("arrive_slow", t.assignedAt, dl, arrivedOrPicked, t.arrivedAt ? "arrived" : arrivedOrPicked ? "picked_no_arrival_signal" : "not_arrived");
+  }
+  // ٢ب) الوصول — حد العقد م٣: ≤ ٢٠ د من إسناد الطلب لنظامهم (= طلبنا)
   if (t.requestedAt) {
     const dl = addMin(t.requestedAt, cfg.arriveMin);
-    const done = t.arrivedAt || t.pickedAt || null;
-    deadlines.arrive = { at: dl, done, target: cfg.arriveMin, basis: t.arrivedAt ? "arrived" : t.pickedAt ? "picked" : null };
-    if (api && !(cancelled && !done)) {
-      // مفيش إشارة «وصل» (Flying Arrow مثلاً): وقت الاستلام حد أقصى للوصول
-      if (done) add("arrive_late", t.requestedAt, dl, done, t.arrivedAt ? "arrived" : "picked_no_arrival_signal");
-      else add("arrive_late", t.requestedAt, dl, null, "not_arrived");
+    deadlines.arriveMax = { start: t.requestedAt, at: dl, done: arrivedOrPicked, target: cfg.arriveMin, basis: t.arrivedAt ? "arrived" : t.pickedAt ? "picked" : null };
+    if (api && !(cancelled && !arrivedOrPicked)) {
+      add("arrive_late", t.requestedAt, dl, arrivedOrPicked, t.arrivedAt ? "arrived" : arrivedOrPicked ? "picked_no_arrival_signal" : "not_arrived");
     }
   }
-  // ٣) التوصيل — عمر: المدة المتوقعة + سماح بعد الاستلام
+  // ٣) التوصيل = مدة المشوار + سماح بعد الاستلام
   if (t.pickedAt && expectedMin) {
     const target = expectedMin + (Number(cfg.deliverGraceMin) || 0);
     const dl = addMin(t.pickedAt, target);
-    deadlines.deliver = { at: dl, done: t.deliveredAt || null, target, expectedMin };
+    deadlines.deliver = { start: t.pickedAt, at: dl, done: t.deliveredAt || null, target, expectedMin };
     if (api && !cancelled) add("deliver_late", t.pickedAt, dl, t.deliveredAt || null, t.deliveredAt ? "delivered" : "not_delivered");
+  }
+  // ٤) علينا (العقد م٣ ثانياً): التسليم خلال ١٠ د من الإسناد — لو الكابتن استنّانا.
+  //    مش قابلة للمطالبة، بس لازم تبان: لاجلك هتحتج بيها.
+  if (api && t.requestedAt && t.pickedAt && t.arrivedAt) {
+    const dl = addMin(t.requestedAt, cfg.handoverMaxMin);
+    const from = ms(t.arrivedAt) > ms(dl) ? t.arrivedAt : dl;   // التأخير اللي علينا بيبدأ من وصوله أو الـ١٠ د، أيهما أبعد
+    const o = over(from, t.pickedAt);
+    if (o != null && o > 5) breaches.push({ code: "our_handover_late", startedAt: t.requestedAt, deadlineAt: from, actualAt: t.pickedAt,
+      overMin: o, basis: "captain_waited", open: false, claimable: false });
   }
 
   // الـETA (تقديري — الشركة مابتدّيش واحد)
@@ -207,7 +232,7 @@ export function evalCourierSla({ sh, times, km = null, expectedMin = null, ready
     if (t.pickedAt) { eta = addMin(t.pickedAt, expectedMin); etaBasis = "picked"; }
     else {
       const readyEst = readyAt || (acceptedAt ? addMin(acceptedAt, cfg.prepMin) : null);
-      const atShop = t.arrivedAt || (t.assignedAt ? addMin(t.assignedAt, Math.max(0, cfg.arriveTypMin - cfg.assignTypMin))
+      const atShop = t.arrivedAt || (t.assignedAt ? addMin(t.assignedAt, cfg.arriveTargetMin)
         : t.requestedAt ? addMin(t.requestedAt, cfg.arriveTypMin) : null);
       const base = [readyEst, atShop].filter(Boolean).map(ms).reduce((a, b) => Math.max(a, b), 0);
       if (base) { eta = addMin(new Date(base).toISOString(), cfg.handoverMin + expectedMin); etaBasis = t.arrivedAt ? "arrived" : t.assignedAt ? "assigned" : "requested"; }
@@ -237,6 +262,20 @@ export function routeKmOf(row = {}) {
   for (const v of cand) { const n = Number(v); if (v != null && v !== "" && Number.isFinite(n) && n > 0) return n; }
   return null;
 }
+/* «قريب» = ≤ ٥ د مشي: المسافة المستقيمة من التسعيرة (straightKm) */
+export function straightKmOf(row = {}) {
+  let q = row.delivery_quote;
+  if (typeof q === "string") { try { q = JSON.parse(q); } catch { q = null; } }
+  const n = Number(row.straight_km ?? (q && q.straightKm));
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+export function distanceBadge(row = {}, cfg = DEFAULT_COURIER_SLA) {
+  const km = routeKmOf(row), st = straightKmOf(row);
+  const fromKm = (cfg.farGuard && cfg.farGuard.fromKm) || 10;
+  if (km != null && km > fromKm) return { kind: "far", km: r1(km) };
+  if (st != null && st <= cfg.nearKm) return { kind: "near", km: r1(km ?? st), walkMin: Math.max(1, Math.round(st * 1000 / 80)) };
+  return null;
+}
 export function farGuardDecision(row = {}, cfg = DEFAULT_COURIER_SLA) {
   const km = routeKmOf(row);
   const fg = cfg.farGuard || DEFAULT_COURIER_SLA.farGuard;
@@ -245,32 +284,64 @@ export function farGuardDecision(row = {}, cfg = DEFAULT_COURIER_SLA) {
 }
 
 /* ── النصوص ─────────────────────────────────────────────────────────────── */
+/* ═══ كتالوج المخالفات — كل التزام قابل للقياس في العقد ببنده ═══════════
+   العقد: Logistics Services Agreement بتاريخ 24/8/2026 (On Demand Contract - Standard).
+   side: leajlak = التزام عليهم (قابل للمطالبة) · ours = التزام علينا (للأمانة —
+   هيحتجوا بيه) · internal = معيار عمر مش مكتوب في العقد.
+   auto: السيستم بيكشفها لوحده · manual: المدير بيبلّغ عنها من البوابة. */
+export const VIOLATIONS = Object.freeze({
+  arrive_late: { label: "الكابتن ما وصلش الفرع خلال ٢٠ د", clause: "م٣ أولاً: الوصول للفرع خلال ٢٠ د من إسناد الطلب لنظام الطرف الأول", side: "leajlak", contract: true, auto: true },
+  no_assignment: { label: "مفيش كابتن خالص", clause: "م٣ أولاً (٢٠ د للوصول) + م٥ (استلام الطلبات حسب المحدد في النظام)", side: "leajlak", contract: true, auto: true },
+  provider_cancelled: { label: "لغوا طلب داخل نطاق ١٠ كم", clause: "م٣ أولاً: التوصيل داخل ١٠ كم + نسبة الإلغاء ≤ ٥٪", side: "leajlak", contract: true, auto: true },
+  refused_far: { label: "رفض طلب فوق ١٠ كم", clause: "م٣ أولاً: حق الرفض فوق ١٠ كم مسموح — بس بيتحسب في نسبة الإلغاء ≤ ٥٪", side: "leajlak", contract: true, auto: true, rateOnly: true },
+  cancel_rate: { label: "نسبة الإلغاء عدّت ٥٪ في الشهر", clause: "م٣ أولاً: نسبة الإلغاء ≤ ٥٪ من الطلبات المسندة", side: "leajlak", contract: true, auto: true },
+  deliver_late: { label: "التوصيل اتأخر بعد الاستلام", clause: "م٥: خدمة توصيل دقيقة وفي الوقت + م٧: تعويض ٤٠٪ عند خطأ/إهمال (سقف ٣٪ من فاتورة الشهر)", side: "leajlak", contract: true, auto: true },
+  damaged: { label: "الطلب وصل تالف/متغيّر", clause: "م٣ أولاً: التسليم بحالة ممتازة كما استُلم بدون تلف أو تغيير + م٧: المسؤولية عن التلف", side: "leajlak", contract: true, manual: true },
+  lost_theft: { label: "ضياع/سرقة الطلب", clause: "م٧: مسؤولية الطرف الأول عن قيمة الطلب عند الفقد/التلف/السرقة (تحقيق مشترك)", side: "leajlak", contract: true, manual: true },
+  customer_refused_driver: { label: "العميل رفض الاستلام بسبب الكابتن", clause: "م٧: قيمة الطلب المرفوض لأسباب تخص سائق الطرف الأول", side: "leajlak", contract: true, manual: true },
+  wrong_location: { label: "وصّل لمكان غلط/ما التزمش بالخريطة", clause: "م٥: التحقق من توفر الخريطة المطلوبة لضمان التوصيل للموقع المحدد", side: "leajlak", contract: true, manual: true },
+  not_verified: { label: "الكابتن ماراجعش الطلب قبل ما يمشي", clause: "م٥: التحقق المشترك من الطلبات قبل مغادرة الفرع", side: "leajlak", contract: true, manual: true },
+  not_per_instructions: { label: "ماالتزمش بتعليمات الطلب/المطعم", clause: "م٥: الاستلام وفق تعليمات الطرف الثاني", side: "leajlak", contract: true, manual: true },
+  driver_unreachable: { label: "الكابتن مابيردش/مالوش جوال شغال", clause: "م٣ أولاً: جوال مخصص بشريحة وإنترنت للتواصل والتتبع", side: "leajlak", contract: true, manual: true },
+  driver_conduct: { label: "الزي/النظافة/السلامة", clause: "م٣ أولاً: الزي الرسمي والنظافة الشخصية ومعدات السلامة", side: "leajlak", contract: true, manual: true },
+  vehicle_noncompliant: { label: "المركبة مش مطابقة", clause: "م٣ أولاً: مطابقة المركبة للاشتراطات النظامية", side: "leajlak", contract: true, manual: true },
+  no_tracking_updates: { label: "مفيش تتبع/تحديث للعميل بالوقت المتوقع", clause: "م٤: نظام تتبع لحظي + تحديث العملاء بوقت الوصول المتوقع", side: "leajlak", contract: true, manual: true },
+  refused_return_late: { label: "المرفوض ما رجعش خلال ٦٠ د", clause: "م٧: إرجاع الطلب المرفوض خلال ٦٠ د", side: "leajlak", contract: true, manual: true },
+  cod_not_remitted: { label: "مبلغ كاش ما اتسلّمش للفرع", clause: "م٦: تحصيل الدفع عند الاستلام وتسليمه للفرع مباشرة", side: "leajlak", contract: true, manual: true },
+  overcharge: { label: "سعر أعلى من العقد", clause: "م١٢: ١٧ ر.س + ضريبة لحد ١٠ كم، ٢ ر.س/كم بعدها (شوف «مطابقة الفاتورة»)", side: "leajlak", contract: true, manual: true },
+  assign_late: { label: "تعيين الكابتن اتأخر (> ٢ د)", clause: "معيار داخلي (عمر: ١–٢ د) — مش بند صريح في العقد", side: "internal", contract: false, auto: true },
+  arrive_slow: { label: "الوصول بعد التعيين عدّى الهدف (١٥ د)", clause: "معيار داخلي (عمر: ١٠–١٥ د من التعيين) — حد العقد ٢٠ د", side: "internal", contract: false, auto: true },
+  our_handover_late: { label: "الكابتن استنّانا (علينا)", clause: "م٣ ثانياً (علينا): تجهيز وتسليم الطلب خلال ١٠ د من الإسناد", side: "ours", contract: true, auto: true },
+  other: { label: "مخالفة تانية", clause: "—", side: "leajlak", contract: false, manual: true },
+});
+export const MANUAL_VIOLATIONS = Object.freeze(Object.keys(VIOLATIONS).filter((k) => VIOLATIONS[k].manual));
 export const CODE_AR = Object.freeze({
-  provider_cancelled: "شركة التوصيل لغت الطلب",
-  refused_far: "شركة التوصيل رفضت (مشوار بعيد)",
-  no_assignment: "مفيش كابتن اتعيّن",
+  ...Object.fromEntries(Object.entries(VIOLATIONS).map(([k, v]) => [k, v.label])),
   far_hold: "مشوار بعيد — مستني قرار المدير",
   far_risk: "مشوار بعيد — ممكن الشركة ترفضه",
-  assign_late: "تأخير تعيين الكابتن",
-  arrive_late: "الكابتن اتأخر يوصل المطعم (العقد ٢٠ د)",
-  deliver_late: "التوصيل اتأخر بعد الاستلام",
+  held: "المدير وقّف طلب لاجلك",
+  asked_leajlak: "سألنا لاجلك",
 });
 const EN = {
-  provider_cancelled: (x) => `courier company CANCELLED the order${x.km ? ` (${x.km}km)` : ""}. Portal: retry/other/external/pickup`,
-  refused_far: (x) => `courier REFUSED far order ${x.km}km. Portal: retry/other/external courier/pickup`,
+  provider_cancelled: (x) => `courier company CANCELLED the order${x.km ? ` (${x.km}km)` : ""}. Portal: retry/other/external`,
+  refused_far: (x) => `courier REFUSED far order ${x.km}km. Portal: retry/other/external courier`,
   no_assignment: (x) => `no captain assigned after ${x.min}min. Portal: retry/other/external`,
   far_hold: (x) => `far order ${x.km}km HELD (courier may refuse). Portal: confirm courier or external`,
-  assign_late: (x) => `captain assigned late (+${x.over}min)`,
-  arrive_late: (x) => `captain not at shop ${x.target}min after request (+${x.over}min)`,
-  deliver_late: (x) => `delivery late +${x.over}min after pickup (expected ${x.target}min)`,
+  far_risk: (x) => `far order ${x.km}km sent to courier - they may refuse. Have a backup courier ready`,
+  assign_late: (x) => `no captain ${x.target}min after request (+${x.over}min)`,
+  arrive_slow: (x) => `captain not at shop ${x.target}min after assignment (+${x.over}min)`,
+  arrive_late: (x) => `captain not at shop ${x.target}min after request - CONTRACT (+${x.over}min)`,
+  deliver_late: (x) => `delivery late +${x.over}min after pickup (route ${x.target}min)`,
 };
 const AR = {
   provider_cancelled: () => "شركة التوصيل لغت - افتح البوابة",
   refused_far: (x) => `المندوب رفض مشوار ${x.km}كم - افتح البوابة`,
   no_assignment: (x) => `مفيش كابتن بعد ${x.min}د - افتح البوابة`,
   far_hold: (x) => `مشوار ${x.km}كم مستني قرارك في البوابة`,
-  assign_late: (x) => `تعيين الكابتن اتأخر ${x.over}د`,
-  arrive_late: (x) => `الكابتن اتأخر عن المطعم ${x.over}د`,
+  far_risk: (x) => `مشوار ${x.km}كم - لاجلك ممكن ترفض`,
+  assign_late: (x) => `مفيش كابتن بعد ${x.target}د`,
+  arrive_slow: (x) => `الكابتن اتأخر عن المطعم ${x.over}د`,
+  arrive_late: (x) => `الكابتن عدّى ٢٠د ومش في المطعم`,
   deliver_late: (x) => `التوصيل متأخر ${x.over}د`,
 };
 export function courierAlertText(orderNo, code, x = {}, lang = "en") {
@@ -282,7 +353,6 @@ export function courierAlertText(orderNo, code, x = {}, lang = "en") {
 export const CUSTOMER_TEXT = Object.freeze({
   external: (no) => `فريش كاتس: رتّبنا مندوب بديل لطلبك ${no} 🛵`,
   switched: (no) => `فريش كاتس: بنرتّب مندوب لطلبك ${no} - نعتذر عن التأخير`,
-  pickup: (no) => `فريش كاتس: طلبك ${no} جاهز للاستلام من المطعم`,
 });
 
 /* ── التقرير: CSV بنفس ترتيب الشاشة ─────────────────────────────────────── */
@@ -298,16 +368,11 @@ const riyadh = (iso) => {
 export const VIOLATION_COLS = [
   ["orderNo", "رقم الطلب (AWB)"], ["providerRef", "مرجع لاجلك"], ["provider", "الشركة"], ["type", "المخالفة"],
   ["startedAt", "بداية المهلة"], ["deadlineAt", "آخر موعد"], ["actualAt", "الوقت الفعلي"], ["overMin", "دقايق التأخير"],
-  ["km", "المسافة كم"], ["driver", "الكابتن"], ["contractRef", "مرجع العقد"], ["claimStatus", "حالة المطالبة"], ["note", "ملاحظات"],
+  ["km", "المسافة كم"], ["driver", "الكابتن"], ["side", "على مين"], ["contractRef", "مرجع العقد"], ["claimable", "قابلة للمطالبة"],
+  ["claimStatus", "حالة المطالبة"], ["note", "ملاحظات"],
 ];
-export const CONTRACT_REF = Object.freeze({
-  arrive_late: "م٣ أولاً: الوصول للفرع خلال ٢٠ د من الإسناد",
-  provider_cancelled: "م٣ أولاً: نسبة الإلغاء ≤ ٥٪ من الطلبات المسندة",
-  refused_far: "م٣ أولاً: حق رفض ما فوق ١٠ كم (بس بيتحسب في نسبة الإلغاء)",
-  deliver_late: "م٥: توصيل دقيق وفي الوقت + م٧: تعويض ٤٠٪ عند خطأ/إهمال",
-  assign_late: "معيار داخلي (١٢ د) — مش بند صريح في العقد",
-  no_assignment: "م٣ أولاً: الوصول للفرع خلال ٢٠ د",
-});
+export const CONTRACT_REF = Object.freeze(Object.fromEntries(Object.entries(VIOLATIONS).map(([k, v]) => [k, v.clause])));
+const SIDE_AR = { leajlak: "على لاجلك", ours: "علينا", internal: "معيار داخلي" };
 export function violationsCsv(rows = []) {
   const head = VIOLATION_COLS.map(([, h]) => csvCell(h)).join(",");
   const body = rows.map((r) => VIOLATION_COLS.map(([k]) => {
@@ -315,6 +380,8 @@ export function violationsCsv(rows = []) {
     if (k === "type") v = CODE_AR[r.code] || r.code;
     if (["startedAt", "deadlineAt", "actualAt"].includes(k)) v = riyadh(v);
     if (k === "contractRef") v = CONTRACT_REF[r.code] || "";
+    if (k === "side") v = SIDE_AR[(VIOLATIONS[r.code] || {}).side] || "";
+    if (k === "claimable") v = r.claimable ? "نعم" : "لا";
     return csvCell(v);
   }).join(","));
   return "﻿" + [head, ...body].join("\n");
@@ -363,9 +430,10 @@ export const OPS_DDL = Object.freeze([
 ]);
 
 const INCIDENT_KINDS = new Set(["provider_cancelled", "refused_far", "no_assignment", "far_hold", "far_risk"]);
-const RESOLUTIONS = new Set(["retry", "switch", "external", "pickup", "dismissed", "auto"]);
+const RESOLUTIONS = new Set(["retry", "switch", "external", "staff", "dismissed", "auto"]);
 // تنبيه «حي» بس: مانبعتش SMS لمخالفة قديمة اتكشفت أول مرة بعد نشر
 const FRESH_MS = 45 * 60_000;
+const NO_ASSIGN_INCIDENT_MIN = 8;
 
 export function register(app, ctx, deps = {}) {
   const { pool, getSettingsData, requireAdmin, jb } = ctx;
@@ -429,15 +497,16 @@ export function register(app, ctx, deps = {}) {
   }
 
   /* ── الحوادث ── */
-  async function openIncident(orderNo, kind, { shipmentId = 0, provider = null, reason = null, detail = {}, alert = true } = {}) {
+  async function openIncident(orderNo, kind, { shipmentId = 0, provider = null, reason = null, detail = {}, alert = true, resolved = null, by = null } = {}) {
     await ensureSchema();
     const ins = await pool.query(
-      `INSERT INTO dl_courier_incidents(order_no, shipment_id, provider, kind, reason, detail)
-       VALUES ($1,$2,$3,$4,$5,$6::jsonb) ON CONFLICT (order_no, shipment_id, kind) DO NOTHING RETURNING id`,
-      [String(orderNo), Number(shipmentId) || 0, provider, kind, reason, J(detail || {})]);
+      `INSERT INTO dl_courier_incidents(order_no, shipment_id, provider, kind, reason, detail, resolved_at, resolution, resolved_by)
+       VALUES ($1,$2,$3,$4,$5,$6::jsonb, CASE WHEN $7::text IS NULL THEN NULL ELSE NOW() END, $7, $8)
+       ON CONFLICT (order_no, shipment_id, kind) DO NOTHING RETURNING id`,
+      [String(orderNo), Number(shipmentId) || 0, provider, kind, reason, J(detail || {}), resolved, by]);
     if (!ins.rowCount) return null;
     const id = ins.rows[0].id;
-    if (alert && kind !== "far_risk") {
+    if (alert) {
       await pool.query("UPDATE dl_courier_incidents SET alerted_at=NOW() WHERE id=$1", [id]);
       sendStaff(orderNo, kind, detail, `courier ${kind} ${orderNo}`);
       slaEvent(orderNo, kind, 2, { km: detail.km ?? null, provider });
@@ -485,7 +554,8 @@ export function register(app, ctx, deps = {}) {
         const ev = evalCourierSla({ sh, times, km, expectedMin, readyAt: sh.pos_ready_at, cfg, now: t });
         const drv = driverKey(sh.driver);
         for (const b of ev.breaches) {
-          const detail = { expectedMin, km: km != null ? r1(km) : null, target: (ev.deadlines[b.code.split("_")[0]] || {}).target ?? null,
+          const dkey = { assign_late: "assign", arrive_slow: "arrive", arrive_late: "arriveMax", deliver_late: "deliver" }[b.code];
+          const detail = { expectedMin, km: km != null ? r1(km) : null, target: dkey ? (ev.deadlines[dkey] || {}).target ?? null : null,
             driver: sh.driver && sh.driver.name ? String(sh.driver.name).slice(0, 80) : null, driverKey: drv };
           // «الكابتن كان شايل طلب تاني» — دليل للمطالبة (زي W1789826771169)
           if (b.code === "deliver_late" && drv) {
@@ -509,7 +579,8 @@ export function register(app, ctx, deps = {}) {
           if (!row) continue;
           if (row.inserted) out.breaches++;
           const fresh = t - ms(b.deadlineAt) < FRESH_MS;
-          if (!row.alerted_at && fresh && !sh.is_test) {
+          const alertable = (VIOLATIONS[b.code] || {}).side !== "ours" && b.overMin >= (Number(cfg.alertOverMin) || 0);
+          if (!row.alerted_at && fresh && alertable && !sh.is_test) {
             const claim = await pool.query("UPDATE dl_sla_breaches SET alerted_at=NOW() WHERE id=$1 AND alerted_at IS NULL RETURNING id", [row.id]);
             if (claim.rowCount) {
               sendStaff(sh.shop_order_no, b.code, { over: b.overMin, target: detail.target, km: detail.km }, `courier ${b.code} ${sh.shop_order_no}`);
@@ -517,9 +588,10 @@ export function register(app, ctx, deps = {}) {
             }
           }
           // مفيش كابتن = مشكلة بتحتاج قرار، مش بس رقم في تقرير
-          if (b.code === "assign_late" && b.open && !sh.is_test) {
+          // (بعد ٨ د من غير كابتن — التعيين الطبيعي دقيقة، والمخالفة نفسها بتتسجّل من ٢ د)
+          if (b.code === "assign_late" && b.open && !sh.is_test && b.overMin + cfg.assignMin >= NO_ASSIGN_INCIDENT_MIN) {
             await openIncident(sh.shop_order_no, "no_assignment", { shipmentId: sh.id, provider: sh.provider,
-              reason: `مفيش كابتن بعد ${cfg.assignMin} د`, detail: { km: detail.km, min: cfg.assignMin }, alert: false });
+              reason: `مفيش كابتن بعد ${NO_ASSIGN_INCIDENT_MIN} د من الطلب`, detail: { km: detail.km, min: NO_ASSIGN_INCIDENT_MIN }, alert: false });
           }
         }
         // الشركة لغت/رفضت
@@ -565,10 +637,14 @@ export function register(app, ctx, deps = {}) {
       const cfg = await cfgOf();
       const d = farGuardDecision(row, cfg);
       if (!d.far) return d;
+      /* «تنبيه بس» (الافتراضي — عمر: «كل حاجة تفضل شغالة زي النهارده»): لاجلك
+         بتتطلب عادي، والإدارة بتاخد SMS + علامة «بعيد» على الكارت. الحادثة
+         بتتسجّل مقفولة عشان ماتقعدش في شريط المشاكل من غير سبب. */
       await openIncident(row.order_no, d.hold ? "far_hold" : "far_risk", {
         reason: d.hold ? `مشوار ${d.km} كم > ${d.fromKm} — مستني تأكيد المدير قبل طلب المندوب`
           : `مشوار ${d.km} كم > ${d.fromKm} — لاجلك ممكن ترفض؛ جهّز مندوب خارجي احتياطي`,
-        detail: { km: d.km, fromKm: d.fromKm, mode: d.mode }, alert: d.hold && !row.is_test,
+        detail: { km: d.km, fromKm: d.fromKm, mode: d.mode }, alert: !row.is_test,
+        resolved: d.hold ? null : "auto", by: d.hold ? null : "system",
       });
       return d;
     } catch (e) {
@@ -595,6 +671,10 @@ export function register(app, ctx, deps = {}) {
                 picked_at, delivered_at, cost, driver
            FROM dl_shipments WHERE shop_order_no = ANY($1::text[]) ORDER BY shop_order_no, id DESC`, [nos])).rows;
       const shBy = new Map(shRows.map((s) => [s.shop_order_no, s]));
+      const asked = (await pool.query(
+        `SELECT DISTINCT ON (order_no) order_no, detected_at, resolved_by, detail FROM dl_courier_incidents
+          WHERE order_no = ANY($1::text[]) AND kind='asked_leajlak' ORDER BY order_no, id DESC`, [nos])).rows;
+      const askedBy = new Map(asked.map((a) => [a.order_no, a]));
       const t = now();
       for (const r of rows) {
         if (r.option !== "delivery") continue;
@@ -603,6 +683,8 @@ export function register(app, ctx, deps = {}) {
         const expectedMin = expectedDriveMin({ km, durationSec: await durationSecOf(r.address) }, cfg);
         const i = incBy.get(r.order_no) || null;
         const fg = farGuardDecision({ delivery_quote: r.delivery_quote, route_km: r.route_km }, cfg);
+        const badge = distanceBadge({ delivery_quote: r.delivery_quote, route_km: r.route_km, straight_km: r.straight_km }, cfg);
+        const ak = askedBy.get(r.order_no);
         let ev = null;
         if (sh) ev = evalCourierSla({ sh, km, expectedMin, readyAt: r.pos_ready_at, acceptedAt: r.accepted_at, cfg, now: t });
         const acceptedAt = r.accepted_at || null;
@@ -618,12 +700,15 @@ export function register(app, ctx, deps = {}) {
           provider: sh ? sh.provider : null,
           external: sh && sh.provider === "external" ? { cost: sh.cost != null ? Number(sh.cost) : null } : null,
           far: fg.far ? { km: fg.km, fromKm: fg.fromKm, mode: fg.mode } : null,
+          badge,
+          askedLeajlak: ak ? { at: isoOf(ak.detected_at), by: ak.resolved_by || null, note: (ak.detail && ak.detail.note) || null } : null,
+          staffCourier: sh && sh.provider === "external" && sh.driver && sh.driver.source === "staff" ? (sh.driver.name || "موظف") : null,
           incident: i ? {
             id: Number(i.id), kind: i.kind, label: CODE_AR[i.kind] || i.kind, reason: i.reason || null, provider: i.provider || null,
             at: isoOf(i.detected_at), open: !i.resolved_at, resolution: i.resolution || null, resolvedBy: i.resolved_by || null,
             resolvedAt: isoOf(i.resolved_at), needsCost: Boolean(i.detail && i.detail.needsCost),
           } : null,
-          sla: { assignMin: cfg.assignMin, arriveMin: cfg.arriveMin, graceMin: cfg.deliverGraceMin },
+          sla: { assignMin: cfg.assignMin, arriveTargetMin: cfg.arriveTargetMin, arriveMin: cfg.arriveMin, graceMin: cfg.deliverGraceMin },
         };
       }
     } catch (e) {
@@ -720,7 +805,9 @@ export function register(app, ctx, deps = {}) {
     const rel = await releaseActive(dl, orderNo, `switched to external courier by ${user.name}`);
     if (!rel.ok) return c.json({ ok: false, error: rel.error, message: rel.message }, 409);
     const name = clean(b.name, 80), phone = clean(b.phone, 20), notes = clean(b.notes, 300), reason = clean(b.reason, 160);
-    const cost = num(b.cost);
+    // «موظف من عندنا» بدل مندوب من بره: نفس الشحنة اليدوية، والتكلفة صفر لو ماتكتبتش
+    const staffRun = b.kind === "staff";
+    const cost = num(b.cost) ?? (staffRun ? 0 : null);
     if (cost != null && (cost < 0 || cost > 500)) return c.json({ ok: false, error: "bad_cost", message: "التكلفة لازم بين ٠ و٥٠٠" }, 400);
     const stage = ["picked", "delivered"].includes(b.stage) ? b.stage : "assigned";
     const at = new Date(now()).toISOString();
@@ -728,13 +815,13 @@ export function register(app, ctx, deps = {}) {
       `INSERT INTO dl_shipments(shop_order_no, provider, provider_ref, status, driver, cost, cost_basis, dispatch, events,
                                 assigned_at, picked_at, delivered_at)
        VALUES ($1,'external',NULL,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING id`,
-      [orderNo, stage, name || phone ? J({ name, phone, source: "external" }) : null, cost, cost != null ? "manual" : null,
+      [orderNo, stage, name || phone || staffRun ? J({ name: name || (staffRun ? "موظف" : null), phone, source: staffRun ? "staff" : "external" }) : null, cost, cost != null ? "manual" : null,
        J({ status: "external", assigned: true, by: user.name, reason, notes, retro: Boolean(b.retro) }),
        J([{ at, provider: "external", event: stage === "assigned" ? "assigned" : stage, by: `portal:${user.name}`, note: notes || reason }]),
        at, stage !== "assigned" && !b.retro ? at : null, stage === "delivered" && !b.retro ? at : null]);
     await pool.query("UPDATE shop_orders SET dispatch_claimed_at = COALESCE(dispatch_claimed_at, NOW()) WHERE order_no=$1", [orderNo]);
     const next = stage === "delivered" ? "delivered" : stage === "picked" ? "on_the_way" : "courier_assigned";
-    const note = `مندوب خارجي — ${user.name}${reason ? ` — ${reason}` : ""}`;
+    const note = `${staffRun ? `توصيل بموظف (${name || "موظف"})` : "مندوب خارجي"} — ${user.name}${reason ? ` — ${reason}` : ""}`;
     if (b.retro) {
       // تسجيل بأثر رجعي: من غير أي رسالة للعميل ولا دعوة تقييم
       await pool.query(
@@ -755,7 +842,7 @@ export function register(app, ctx, deps = {}) {
         data: { stage, status: stage, provider: "external", cost, reason, note: notes } });
     } catch {}
     const needsCost = cost == null;
-    await resolveIncidents(orderNo, "external", user.name, { externalShipmentId: Number(ins.rows[0].id), needsCost, cost });
+    await resolveIncidents(orderNo, staffRun ? "staff" : "external", user.name, { externalShipmentId: Number(ins.rows[0].id), needsCost, cost });
     // لو مفيش حادثة مفتوحة (المدير اختار خارجي من الأول) بنسجّل واحدة محلولة للأثر
     await pool.query(
       `INSERT INTO dl_courier_incidents(order_no, shipment_id, provider, kind, reason, resolved_at, resolution, resolved_by, detail)
@@ -763,7 +850,7 @@ export function register(app, ctx, deps = {}) {
         WHERE NOT EXISTS (SELECT 1 FROM dl_courier_incidents WHERE order_no=$1)`,
       [orderNo, Number(ins.rows[0].id), reason || "المدير اختار مندوب خارجي", user.name, J({ needsCost, cost, manualChoice: true })]).catch(() => {});
     if (!b.retro) customerSms(orderNo, "external");
-    audit(user, "courier_external", orderNo, true, { cost, stage, reason, retro: Boolean(b.retro) }, c);
+    audit(user, staffRun ? "courier_staff" : "courier_external", orderNo, true, { cost, stage, reason, retro: Boolean(b.retro) }, c);
     return c.json({ ok: true, shipmentId: Number(ins.rows[0].id), status: next, needsCost });
   }));
 
@@ -802,32 +889,73 @@ export function register(app, ctx, deps = {}) {
     return c.json({ ok: true, status: next });
   }));
 
-  // ٣) تحويل لاستلام من المطعم (بعد ما المدير يتفق مع العميل)
-  app.post("/api/portal/orders/:orderNo/courier/pickup", (c) => withOrder(c, async ({ user, row, b, dl, orderNo }) => {
-    if (!["accepted", "courier_requested", "courier_assigned", "courier_cancelled"].includes(row.status)) {
-      return c.json({ ok: false, error: "wrong_stage", message: "التحويل لاستلام قبل ما الكابتن يستلم بس" }, 409);
+  /* ٣) «أوقف لاجلك» (عمر ١٩ سبتمبر): المدير يوقف طلب لاجلك لأي طلب قبل ما
+     الكابتن يوصلنا — يلغيه عندهم لو اتطلب، أو يمنع الطلب التلقائي لو لسه.
+     بعدها يختار: موظف / مندوب خارجي / يطلب لاجلك تاني (بعد ما يسأل). */
+  app.post("/api/portal/orders/:orderNo/courier/hold", (c) => withOrder(c, async ({ user, row, b, dl, orderNo }) => {
+    if (!["accepted", "courier_requested", "courier_assigned", "courier_cancelled", "pos_created"].includes(row.status)) {
+      return c.json({ ok: false, error: "wrong_stage", message: "الإيقاف قبل ما الكابتن يستلم بس" }, 409);
     }
-    const rel = await releaseActive(dl, orderNo, `converted to pickup by ${user.name}`);
-    if (!rel.ok) return c.json({ ok: false, error: rel.error, message: rel.message }, 409);
+    const cur = await dl.shipmentOf(orderNo);
+    if (cur && API_PROVIDER_IDS.includes(cur.provider) && !["cancelled", "delivered"].includes(String(cur.status))) {
+      if (cur.arrived_at || String(cur.status) === "picked") {
+        return c.json({ ok: false, error: "captain_here", message: "الكابتن وصل المطعم خلاص — كلّمه أو كلّم لاجلك" }, 409);
+      }
+    }
     const reason = clean(b.reason, 160);
-    const fee = Number(row.delivery_fee) || 0;
+    const rel = await releaseActive(dl, orderNo, `held by ${user.name}${reason ? `: ${reason}` : ""}`);
+    if (!rel.ok) return c.json({ ok: false, error: rel.error, message: rel.message }, 409);
+    // الحجز بيمنع الكنس من طلب مندوب لوحده؛ «اطلب لاجلك» من البوابة بتعدّيه
+    await pool.query("UPDATE shop_orders SET dispatch_claimed_at = NOW() - INTERVAL '5 minutes' WHERE order_no=$1", [orderNo]);
     const at = new Date(now()).toISOString();
-    const note = `اتحوّل لاستلام من المطعم — ${user.name}${reason ? ` — ${reason}` : ""}${fee ? ` — راجع استرجاع رسوم التوصيل ${fee} ر.س` : ""}`;
-    await pool.query(
-      `UPDATE shop_orders SET option='pickup', status='accepted', dispatch_claimed_at = COALESCE(dispatch_claimed_at, NOW()),
-              history = history || $2::jsonb, updated_at=NOW() WHERE order_no=$1`,
-      [orderNo, J([{ at, status: "accepted", note }])]);
-    try { emit("order_status", { orderNo, source: "portal", data: { from: row.status, to: "accepted", note } }); } catch {}
-    await resolveIncidents(orderNo, "pickup", user.name, { refundDeliveryFee: fee || 0 });
+    if (["courier_requested", "courier_assigned"].includes(row.status)) {
+      const note = `المدير ${user.name} وقّف لاجلك${reason ? ` — ${reason}` : ""}`;
+      const u = await pool.query(
+        `UPDATE shop_orders SET status='accepted', history = history || $2::jsonb, updated_at=NOW()
+          WHERE order_no=$1 AND status IN ('courier_requested','courier_assigned') RETURNING order_no`,
+        [orderNo, J([{ at, status: "accepted", note }])]);
+      if (u.rowCount) { try { emit("order_status", { orderNo, source: "portal", data: { from: row.status, to: "accepted", note } }); } catch {} }
+    }
+    await openIncident(orderNo, "held", { shipmentId: rel.cur ? Number(rel.cur.id) : 0, provider: rel.cur ? rel.cur.provider : null,
+      reason: reason || "المدير وقّف لاجلك", detail: { by: user.name }, alert: false });
+    audit(user, "courier_hold", orderNo, true, { reason, cancelled: Boolean(rel.cur && API_PROVIDER_IDS.includes(rel.cur.provider)) }, c);
+    return c.json({ ok: true, cancelledShipment: Boolean(rel.cur && !["cancelled", "delivered"].includes(String(rel.cur.status))) });
+  }));
+
+  // «سألنا لاجلك» — علامة على الطلب (مثلاً قبل مشوار بعيد) + ملاحظة
+  app.post("/api/portal/orders/:orderNo/courier/asked", (c) => withOrder(c, async ({ user, b, orderNo }) => {
+    const note = clean(b.note, 200);
     await pool.query(
       `INSERT INTO dl_courier_incidents(order_no, shipment_id, provider, kind, reason, resolved_at, resolution, resolved_by, detail)
-       SELECT $1, 0, NULL, 'provider_cancelled', $2, NOW(), 'pickup', $3, $4::jsonb
-        WHERE NOT EXISTS (SELECT 1 FROM dl_courier_incidents WHERE order_no=$1)`,
-      [orderNo, reason || "اتحوّل لاستلام", user.name, J({ refundDeliveryFee: fee || 0, manualChoice: true })]).catch(() => {});
-    if (b.notifyCustomer !== false) customerSms(orderNo, "pickup");
-    audit(user, "courier_to_pickup", orderNo, true, { reason, refundDeliveryFee: fee }, c);
-    return c.json({ ok: true, refundDeliveryFee: fee, message: fee ? `راجع استرجاع رسوم التوصيل ${fee} ر.س من ماي فاتورة لو اتفقت مع العميل` : null });
+       VALUES ($1, $2, 'leajlak', 'asked_leajlak', $3, NOW(), 'dismissed', $4, $5::jsonb)`,
+      [orderNo, -Date.now() % 2147483647, note || "سألنا لاجلك", user.name, J({ note })]);
+    audit(user, "courier_asked_leajlak", orderNo, true, { note }, c);
+    return c.json({ ok: true });
   }));
+
+  // بلاغ مخالفة يدوي (تلف/ضياع/مكان غلط/مابيردش/…) — ببند العقد، للمطالبة
+  app.post("/api/portal/orders/:orderNo/courier/violation", (c) => withOrder(c, async ({ user, b, dl, orderNo }) => {
+    const code = String(b.code || "");
+    if (!MANUAL_VIOLATIONS.includes(code)) return c.json({ ok: false, error: "bad_code", message: "نوع مخالفة غير معروف" }, 400);
+    const note = clean(b.note, 300);
+    const all = (await pool.query("SELECT id, provider, created_at FROM dl_shipments WHERE shop_order_no=$1 ORDER BY id DESC", [orderNo])).rows;
+    const sh = all.find((x) => API_PROVIDER_IDS.includes(x.provider)) || null;
+    if (!sh) return c.json({ ok: false, error: "no_shipment", message: "مفيش شحنة شركة توصيل على الطلب" }, 409);
+    const v = VIOLATIONS[code];
+    const r = await pool.query(
+      `INSERT INTO dl_sla_breaches(order_no, shipment_id, provider, code, basis, started_at, actual_at, claimable, note, detail)
+       VALUES ($1,$2,$3,$4,'manual',$5,NOW(),$6,$7,$8::jsonb)
+       ON CONFLICT (shipment_id, code) DO UPDATE SET note = EXCLUDED.note, detail = dl_sla_breaches.detail || EXCLUDED.detail
+       RETURNING id`,
+      [orderNo, sh.id, sh.provider, code, sh.created_at, Boolean(v.contract && v.side === "leajlak"), note, J({ by: user.name, clause: v.clause })]);
+    audit(user, "courier_violation", orderNo, true, { code, note }, c);
+    return c.json({ ok: true, id: Number(r.rows[0].id) });
+  }));
+
+  app.get("/api/portal/courier/violation-types", async (c) => {
+    const a = await mgr(c); if (a.res) return a.res;
+    return c.json({ ok: true, types: MANUAL_VIOLATIONS.map((k) => ({ code: k, label: VIOLATIONS[k].label, clause: VIOLATIONS[k].clause })) });
+  });
 
   // ٤) قفل الحادثة من غير إجراء (مثلاً اتحلّت بالتليفون)
   app.post("/api/portal/orders/:orderNo/courier/incident/dismiss", (c) => withOrder(c, async ({ user, b, orderNo }) => {
@@ -867,7 +995,7 @@ export function register(app, ctx, deps = {}) {
          FROM dl_sla_breaches b LEFT JOIN dl_shipments sh ON sh.id = b.shipment_id
         WHERE ${where} ORDER BY b.started_at DESC LIMIT 2000`, vals)).rows;
     const iv = [provider];
-    let iw = "i.provider = $1 AND i.kind IN ('provider_cancelled','refused_far')";
+    let iw = "i.provider = $1 AND i.kind IN ('provider_cancelled','refused_far','no_assignment')";
     if (month) { iv.push(month); iw += ` AND to_char(i.detected_at AT TIME ZONE 'Asia/Riyadh','YYYY-MM') = $${iv.length}`; }
     const incs = (await pool.query(
       `SELECT i.*, sh.provider_ref, sh.created_at AS requested_at, s.is_test
@@ -886,11 +1014,21 @@ export function register(app, ctx, deps = {}) {
       ...incs.map((i) => ({
         id: Number(i.id), kind: "incident", orderNo: i.order_no, providerRef: i.provider_ref || null, provider: i.provider,
         code: i.kind, startedAt: isoOf(i.requested_at), deadlineAt: null, actualAt: isoOf((i.detail && i.detail.cancelledAt) || i.detected_at),
-        overMin: null, basis: null, claimable: true, open: false, km: i.detail && i.detail.km != null ? Number(i.detail.km) : null,
+        overMin: null, basis: null, claimable: !(VIOLATIONS[i.kind] || {}).rateOnly, open: false, km: i.detail && i.detail.km != null ? Number(i.detail.km) : null,
         driver: null, claimStatus: (i.detail && i.detail.claimStatus) || "open",
         note: [i.reason, i.resolution ? `الحل: ${i.resolution}${i.resolved_by ? ` (${i.resolved_by})` : ""}` : null].filter(Boolean).join(" — "),
       })),
     ].sort((a, b) => String(b.startedAt || "").localeCompare(String(a.startedAt || "")));
+    // ساعات الخدمة في العقد (م١٢): ١٠ ص – ٣ الفجر. بره كده مفيش التزام عليهم.
+    for (const x of list) {
+      const h = x.startedAt ? new Date(ms(x.startedAt) + 3 * 3600_000).getUTCHours() : null;
+      if (h != null && h >= 3 && h < 10 && (VIOLATIONS[x.code] || {}).side === "leajlak") {
+        x.claimable = false;
+        x.note = [x.note, "خارج ساعات الخدمة في العقد (١٠ ص–٣ الفجر)"].filter(Boolean).join(" — ");
+      }
+      x.side = (VIOLATIONS[x.code] || {}).side || null;
+      x.clause = CONTRACT_REF[x.code] || null;
+    }
     // نسبة الإلغاء (العقد: ≤ ٥٪ من الطلبات المسندة)
     const sv = [provider];
     let sw = "sh.provider = $1 AND NOT COALESCE(s.is_test,false)";
@@ -906,6 +1044,13 @@ export function register(app, ctx, deps = {}) {
       byCode: list.reduce((m, x) => { m[x.code] = (m[x.code] || 0) + 1; return m; }, {}),
       claimable: list.filter((x) => x.claimable).length,
     };
+    // نسبة الإلغاء كسطر في التصدير لو عدّت الحد (م٣ ≤ ٥٪)
+    if (summary.cancelRatePct > 5) {
+      list.unshift({ id: 0, kind: "summary", orderNo: month || "—", providerRef: null, provider, code: "cancel_rate",
+        startedAt: null, deadlineAt: null, actualAt: null, overMin: null, claimable: true, open: false, km: null, driver: null,
+        side: "leajlak", clause: CONTRACT_REF.cancel_rate, claimStatus: "open",
+        note: `${provCancels} إلغاء/رفض من ${summary.shipments} شحنة = ${summary.cancelRatePct}٪ (الحد ٥٪)` });
+    }
     return { list, summary };
   }
 
@@ -919,7 +1064,7 @@ export function register(app, ctx, deps = {}) {
       c.header("Content-Disposition", `attachment; filename="leajlak-violations-${month || "all"}.csv"`);
       return c.body(violationsCsv(r.list));
     }
-    return c.json({ ok: true, month, provider, cfg: await cfgOf(), ...r });
+    return c.json({ ok: true, month, provider, cfg: await cfgOf(), catalog: VIOLATIONS, ...r });
   });
 
   app.put("/api/delivery/courier-sla/:kind/:id", async (c) => {

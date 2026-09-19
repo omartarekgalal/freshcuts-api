@@ -494,7 +494,7 @@ const SLA_CODE_AR = {
   courier_provider_cancelled: "شركة التوصيل لغت الطلب — قرّر", courier_refused_far: "شركة التوصيل رفضت المشوار البعيد — قرّر",
   courier_no_assignment: "مفيش كابتن اتعيّن", courier_far_hold: "مشوار بعيد — مستني قرارك", courier_far_risk: "مشوار بعيد — ممكن يترفض",
   courier_assign_late: "تعيين الكابتن اتأخر", courier_arrive_late: "الكابتن اتأخر يوصل المطعم (العقد ٢٠ د)",
-  courier_deliver_late: "التوصيل اتأخر بعد الاستلام",
+  courier_deliver_late: "التوصيل اتأخر بعد الاستلام", courier_arrive_slow: "الكابتن عدّى هدف الوصول (١٥ د من التعيين)",
 };
 const PUSH_KIND_AR = {
   new: "إشعار للبوابة: طلب جديد", pos_failed: "إشعار للبوابة: فشل نقطة البيع",
@@ -506,7 +506,8 @@ const ACTION_AR = {
   courier_request: "طلب مندوب من البوابة", courier_cancel: "إلغاء المندوب من البوابة",
   ack: "شاف الطلب في البوابة", handed_to_courier: "سلّم الطلب للمندوب",
   courier_external: "🛵 مندوب خارجي", courier_external_picked: "المندوب الخارجي استلم", courier_external_delivered: "المندوب الخارجي وصّل",
-  courier_external_cost: "تكلفة المندوب الخارجي", courier_to_pickup: "اتحوّل لاستلام من المطعم", courier_incident_dismiss: "قفل مشكلة التوصيل",
+  courier_external_cost: "تكلفة المندوب الخارجي", courier_incident_dismiss: "قفل مشكلة التوصيل",
+  courier_staff: "🛵 توصيل بموظف", courier_hold: "⏸ وقّف لاجلك", courier_asked_leajlak: "📞 سألنا لاجلك", courier_violation: "🚨 بلاغ مخالفة شركة التوصيل",
   kitchen_prep: "المطبخ: بدأ التحضير", kitchen_ready: "المطبخ: الطلب جاهز ✅",
 };
 

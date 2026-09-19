@@ -95,7 +95,7 @@ async function httpJson(url, { method = "GET", headers = {}, body, label = "cour
   try {
     resp = await fetch(url, {
       method,
-      headers: { Accept: "application/json", ...(body ? { "Content-Type": "application/json" } : {}), ...headers },
+      headers: { Accept: "application/json", ...(body ? { "Content-Type": "application/json; charset=utf-8" } : {}), ...headers },
       body: body ? JSON.stringify(body) : undefined,
       signal: ctl.signal,
     });
@@ -148,16 +148,20 @@ export function floorAptText(addr = {}) {
   return [floor, apt].filter(Boolean).join("، ");
 }
 
+/* «حي حي السلامة» / «بجوار قبل الصيدلية» — العميل ساعات بيكتب الكلمة بنفسه */
+const areaText = (a) => (a ? (/^حي\s/.test(a) ? a : `حي ${a}`) : "");
+const landmarkText = (l) => (l ? (/^(جنب|بجوار|بجانب|قدام|أمام|امام|مقابل|خلف|ورا|قبل|بعد|عند|قريب|بالقرب|على|مع)\s/.test(l) ? l : `بجوار ${l}`) : "");
+
 export function readableAddress(addr, { withPin = false } = {}) {
   const area = cleanBit(addr.area), street = cleanBit(addr.street);
   const building = cleanBit(addr.building), landmark = cleanBit(addr.landmark);
   const text = [
-    area && `حي ${area}`,
+    areaText(area),
     street,
     building && `مبنى ${building}`,
     floorAptText(addr),
     // «جنب النهدي» مايبقاش «بجوار جنب النهدي»
-    landmark && (/^(جنب|بجوار|بجانب|قدام|أمام|امام|مقابل|خلف|ورا)\s/.test(landmark) ? landmark : `بجوار ${landmark}`),
+    landmarkText(landmark),
     leaveAtDoor(addr) && DOOR_NOTE,
   ].filter(Boolean).join("، ");
 
@@ -175,6 +179,61 @@ export function readableAddress(addr, { withPin = false } = {}) {
 }
 
 const PREPAID_NOTE = "الطلب مدفوع مسبقاً — لا يُحصَّل من العميل";
+
+/* ── لاجلك: العنوان ≠ الملاحظات (١٩ سبتمبر — طلب لاجلك عن طريق عمر) ─────
+   كنا بنحط كل التفاصيل (المبنى/الدور/الشقة/علامة مميزة/«اترك عند الباب»)
+   جوّه delivery_details.address، ولاجلك قالت إن العربي في الحقل ده بيوصل
+   مكسّر عندهم وطلبوا order.notes. فالعنوان بقى «المكان» بس (الحي + الشارع +
+   الإحداثيات)، والتفاصيل كلها في الملاحظات. Flying Arrow مالهاش دعوة — لسه
+   بتاخد readableAddress كاملة. */
+export function locationText(addr = {}, { withPin = true } = {}) {
+  const area = cleanBit(addr.area), street = cleanBit(addr.street);
+  const text = [areaText(area), street].filter(Boolean).join("، ");
+  const lat = Number(addr.latitude), lng = Number(addr.longitude);
+  const pin = withPin && isFinite(lat) && isFinite(lng) && lat && lng ? `${lat.toFixed(6)},${lng.toFixed(6)}` : "";
+  if (!text) return pin || "موقع العميل — اتبع الإحداثيات";
+  return pin ? `${text} — ${pin}` : text;
+}
+export function deliveryDetailsText(addr = {}) {
+  const building = cleanBit(addr.building), landmark = cleanBit(addr.landmark);
+  return [
+    leaveAtDoor(addr) && DOOR_NOTE,
+    building && `مبنى ${building}`,
+    floorAptText(addr),
+    landmarkText(landmark),
+  ].filter(Boolean).join("، ");
+}
+/* order.notes لاجلك: مشوار بعيد ← تفاصيل التوصيل ← ملاحظة العميل */
+export const LJ_NOTES_MAX = 300;
+export function leajlakNotes(order = {}) {
+  const far = farZoneOfRow(order);
+  const n = [
+    far ? `مشوار بعيد ${far.km} كم` : "",
+    deliveryDetailsText(order.address || {}),
+    String(order.notes || "").trim() && `ملاحظة العميل: ${String(order.notes).trim()}`,
+  ].filter(Boolean).join(" — ");
+  return n.slice(0, LJ_NOTES_MAX) || PREPAID_NOTE;
+}
+/* جسم POST /orders لاجلك — دالة صافية عشان يتجرّب من غير شبكة */
+export function leajlakPayload(order = {}, shopId = "") {
+  const addr = order.address || {};
+  return {
+    id: String(order.order_no),
+    shop_id: String(shopId),
+    delivery_details: {
+      name: order.customer?.name || "العميل",
+      phone: msisdn(order.customer?.phone || order.phone_norm || ""),
+      coordinate: { latitude: Number(addr.latitude), longitude: Number(addr.longitude) },
+      address: locationText(addr, { withPin: true }),
+    },
+    order: {
+      // 0 = مدفوع مسبقاً (1 = كاش عند الاستلام، 10 = مكينة شبكة). كل طلبات الموقع مدفوعة أونلاين.
+      payment_type: 0,
+      total: Number(order.total) || 0,
+      notes: leajlakNotes(order),
+    },
+  };
+}
 
 /* ── «المنطقة البعيدة» على صفّ الطلب ─────────────────────────────────────
    العميل وافق على رسوم مسافة إضافية (delivery.js). التفاصيل محفوظة جوّه
@@ -441,25 +500,9 @@ const leajlak = {
   },
 
   async dispatch(order, cfg) {
-    const addr = order.address || {};
     const created = await this.call("/orders", {
       method: "POST",
-      body: {
-        id: String(order.order_no),
-        shop_id: String(cfg.ljShopId || LJ_SHOP()),
-        delivery_details: {
-          name: order.customer?.name || "العميل",
-          phone: msisdn(order.customer?.phone || ""),
-          coordinate: { latitude: Number(addr.latitude), longitude: Number(addr.longitude) },
-          address: readableAddress(addr, { withPin: true }),
-        },
-        order: {
-          // 0 = مدفوع مسبقاً. العميل دفع لنا أونلاين فالكابتن ما بيحصّلش.
-          payment_type: 0,
-          total: Number(order.total) || 0,
-          notes: courierNotes(order),
-        },
-      },
+      body: leajlakPayload(order, cfg.ljShopId || LJ_SHOP()),
     });
     const d = created?.data || created || {};
     /* وثيقتهم بتقول إن التتبع برقم طلبنا — وده **غلط**، مجرّب على اللايف:
