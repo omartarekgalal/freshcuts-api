@@ -21,7 +21,7 @@ import { dispatchDelayOf } from "./delivery.js";
 import {
   identitiesFrom, matchLogin, currentFingerprint, signToken, verifyToken, tokenSecret,
   makeLoginLimiter, clientIp, toPortalOrder, orderSignature, sseFrame, SSE_HEADERS,
-  buildTimeline, hashPin, verifyPin, validPin, normStaffList, ROLES, TOKEN_TTL_MS, TOKEN_PREFIX,
+  buildTimeline, hashPin, verifyPin, validPin, normStaffList, ROLES, TOKEN_TTL_MS, TOKEN_PREFIX, KITCHEN_TOKEN_TTL_MS,
 } from "./portal-core.js";
 import { makePortalPush, validSubscription } from "./portal-push.js";
 import { parseRange, buildReport } from "./portal-reports.js";
@@ -156,6 +156,11 @@ export function register(app, ctx, deps = {}) {
   async function requirePortal(c, role = null, opts) {
     const a = await authenticate(c, opts);
     if (a.res) return a;
+    /* حساب المطبخ مايدخلش أي مسار بورتال (فيه جوالات عملاء ومندوب) — مسارات
+       /api/kitchen/* بس هي اللي بتقول kitchen:true. */
+    if (a.user.role === "kitchen" && !opts?.kitchen) {
+      return { res: c.json({ ok: false, error: "kitchen_only", message: "حساب المطبخ لشاشة المطبخ بس" }, 403) };
+    }
     if (role === "manager" && a.user.role !== "manager") {
       return { res: c.json({ ok: false, error: "forbidden", message: "الإجراء ده للمدير بس" }, 403) };
     }
@@ -358,16 +363,26 @@ export function register(app, ctx, deps = {}) {
     try { ids = await identities(true); }
     catch { return c.json({ ok: false, error: "unavailable" }, 503); }
     const user = matchLogin(ids, b?.pin, b?.staffId || null);
+    /* شاشة المطبخ (/kitchen/) بتبعت app:"kitchen": تقبل مطبخ + مدير (والمالك).
+       البورتال مايقبلش حساب مطبخ — رقم صح بس للشاشة التانية، فمش محاولة غلط. */
+    const kitchenApp = b?.app === "kitchen";
+    if (user && kitchenApp && !["kitchen", "manager"].includes(user.role)) {
+      return c.json({ ok: false, error: "wrong_app", message: "الرقم ده لبورتال الكاشير — شاشة المطبخ بحساب «مطبخ» أو «مدير»" }, 403);
+    }
+    if (user && !kitchenApp && user.role === "kitchen") {
+      return c.json({ ok: false, error: "wrong_app", message: "ده حساب مطبخ — افتح شاشة المطبخ /kitchen/" }, 403);
+    }
     if (!user) {
       globalLimiter.fail("all", now());
       const f = limiter.fail(key, now());
       return c.json({ ok: false, error: "wrong_pin", remaining: f.remaining, locked: f.locked }, f.locked ? 429 : 401);
     }
     limiter.success(key);
-    const token = signToken({ ...user, pv: keyPv(user.pv) }, sec, now());
-    audit(user, "login", null, true, {}, ip);
+    const ttl = kitchenApp ? KITCHEN_TOKEN_TTL_MS : TOKEN_TTL_MS;
+    const token = signToken({ ...user, pv: keyPv(user.pv) }, sec, now(), ttl);
+    audit(user, "login", null, true, kitchenApp ? { app: "kitchen" } : {}, ip);
     return c.json({ ok: true, token, role: user.role, name: user.name, staffId: user.id,
-      expiresAt: new Date(now() + TOKEN_TTL_MS).toISOString() });
+      expiresAt: new Date(now() + ttl).toISOString() });
   });
 
   app.get("/api/portal/me", async (c) => {
@@ -939,7 +954,7 @@ export function register(app, ctx, deps = {}) {
     for (const e of b.staff) {
       const name = String(e?.name || "").trim().slice(0, 60);
       const role = ROLES.includes(e?.role) ? e.role : null;
-      if (!name || !role) return c.json({ ok: false, error: "bad_staff", message: "كل موظف محتاج اسم ودور (cashier/manager)" }, 400);
+      if (!name || !role) return c.json({ ok: false, error: "bad_staff", message: "كل موظف محتاج اسم ودور (cashier/manager/kitchen)" }, 400);
       const id = e?.id && old.has(String(e.id)) ? String(e.id) : `st_${crypto.randomBytes(4).toString("hex")}`;
       let pinHash = old.get(id)?.pinHash || null;
       if (e?.pin != null && e.pin !== "") {
@@ -972,6 +987,7 @@ export function register(app, ctx, deps = {}) {
 
   return {
     soldOut,
+    requirePortal, audit,
     tabsenseDown: (detail) => push.tabsenseDown(detail).catch(() => null),
     pollNewOrders, scan, refresh, loadFeed, loadInfo, push, hub, limiter,
     stop() {

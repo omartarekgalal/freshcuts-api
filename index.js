@@ -59,6 +59,7 @@ import * as menuplan from "./menuplan.js";
 import * as systemcheck from "./systemcheck.js";
 import * as syshealth from "./syshealth.js";
 import * as portal from "./portal.js";
+import * as kitchen from "./kitchen.js";
 import * as adsreport from "./adsreport.js";
 import * as mkhub from "./mkhub.js";
 
@@ -3088,6 +3089,9 @@ openwait.register(app, moduleCtx, { notify: () => notifyApi, carts: () => cartsA
 // بوابة المطعم (كاشير + مدير): PIN، طلبات حيّة (SSE)، خط زمني، طلب/إلغاء مندوب، Push للفريق، تقارير.
 // بعد shop/delivery/cms — بيستخدم دوالهم نفسها (مفيش نسخة تانية من القواعد).
 const portalApi = portal.register(app, moduleCtx, { shop: () => shopApi, delivery: () => deliveryApi, cmsWhoami: (c) => cmsApi.whoami(c) });
+// شاشة المطبخ (KDS) للمطعم كله: webhooks تاب سينس + استطلاع API الشريك + طلبات المتجر.
+// دخول بحساب «مطبخ» من «فريق البورتال» — نفس توكن البورتال ومقفول على /api/kitchen/*.
+kitchen.register(app, moduleCtx, { portal: () => portalApi, tsp: () => tspApi });
 // تقرير الدخل اليومي + صرف الإعلانات (١٧ سبتمبر): جدول mk_daily_reports + SMS واحدة لعمر بعد القفل
 adsreport.register(app, moduleCtx, { sendSms: (m) => accounts.sendSms(m) });
 // «الحملات كلها في مكان واحد» + تقرير السلات المتروكة (قراءة بس) — mkhub.js

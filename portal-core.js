@@ -13,8 +13,13 @@ import crypto from "node:crypto";
 import { STAGES, slaCheck } from "./shop.js";
 import { leaveAtDoor } from "./couriers.js";
 
-export const ROLES = Object.freeze(["cashier", "manager"]);
+/* kitchen (١٩ سبتمبر) = شاشة المطبخ (/kitchen/) بس — قراية + «تقديم» محلي للمرحلة.
+   ممنوع من كل مسارات البورتال (requirePortal بيرفضه إلا لو المسار قال kitchen). */
+export const ROLES = Object.freeze(["cashier", "manager", "kitchen"]);
 export const TOKEN_TTL_MS = 12 * 60 * 60 * 1000;
+/* شاشة المطبخ جهاز ثابت على الحيطة — ١٢ ساعة كانت هتطلّعها كل يوم وسط الشغل.
+   التوكن برضه بيتقفل فوراً لو الرقم/الدور اتغيّر أو الموظف اتشال (البصمة). */
+export const KITCHEN_TOKEN_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 export const TOKEN_PREFIX = "portal:";
 
 /* ── PIN ─────────────────────────────────────────────────────────────────── */
@@ -491,6 +496,7 @@ const PUSH_KIND_AR = {
 const ACTION_AR = {
   courier_request: "طلب مندوب من البوابة", courier_cancel: "إلغاء المندوب من البوابة",
   ack: "شاف الطلب في البوابة", handed_to_courier: "سلّم الطلب للمندوب",
+  kitchen_prep: "المطبخ: بدأ التحضير", kitchen_ready: "المطبخ: الطلب جاهز ✅",
 };
 
 /* بيشيل أي بيانات خام/حساسة من data قبل ما توصل الشاشة */
