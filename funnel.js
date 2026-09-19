@@ -579,10 +579,15 @@ export function register(app, ctx, deps = {}) {
       meta: metaPixel() || null,
       tiktok: ttPixel() || null,
       snapchat: snapPixel() || null,
-      // Google Ads gtag: the conversion id loads the tag, the label routes the
-      // WhatsApp-click conversion. Both are public page values, like a pixel id.
+      // Google Ads gtag: the conversion id loads the tag; each label routes ONE
+      // conversion action. Public page values, like a pixel id.
+      //   googleLabel         → «WhatsApp Order Click» (CONTACT) — Contact only
+      //   googlePurchaseLabel → «Fresh Cuts purchase (tag)» (PURCHASE, secondary;
+      //     the imported GA4 purchase stays the only primary) — Purchase only.
+      // (١٩/٩: الـPurchase كان بيتبعت على label الواتساب فبيتحسب «ضغطة واتساب».)
       google: env("GOOGLE_ADS_CONVERSION_ID") || null,
       googleLabel: env("GOOGLE_ADS_CONVERSION_LABEL") || null,
+      googlePurchaseLabel: env("GOOGLE_ADS_PURCHASE_LABEL") || null,
     });
   });
 
