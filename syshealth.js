@@ -341,6 +341,20 @@ export function register(app, ctx, deps = {}) {
         `${ar(r.active)} مشترك (${ar(r.linked)} مربوط برقم) — آخر إرسال ناجح ${ago(minsSince(r.last))}.`, { last: r.last, detail: r });
     });
 
+    /* ── ربط منصات الإعلانات (adconnect.js، فحص كل ٣ ساعات) ───────────── */
+    add("ads_connect", "marketing", "ربط منصات الإعلانات (ميتا/سناب/تيك توك/جوجل)", async () => {
+      const rows = (await pool.query(`SELECT platform, ok, configured, detail, checked_at FROM ad_connect_state`).catch(() => ({ rows: [] }))).rows;
+      if (!rows.length) return comp("ads_connect", "marketing", "ربط منصات الإعلانات (ميتا/سناب/تيك توك/جوجل)", "unknown", "لسه مفيش فحص — أول فحص بعد النشر بدقيقتين.");
+      const bad = rows.filter((r) => r.configured && !r.ok), off = rows.filter((r) => !r.configured);
+      const last = rows.map((r) => r.checked_at).sort().slice(-1)[0];
+      const st = bad.length ? "bad" : off.length ? "warn" : freshness(last, { warnMin: 7 * 60, badMin: 24 * 60, open: true });
+      const line = bad.length ? `واقف: ${bad.map((r) => `${r.platform} (${String(r.detail?.reason || "").slice(0, 60)})`).join("، ")}`
+        : `${ar(rows.length - off.length)} من ${ar(rows.length)} متوصّلين${off.length ? ` — مش متظبط: ${off.map((r) => r.platform).join("، ")}` : ""}.`;
+      return comp("ads_connect", "marketing", "ربط منصات الإعلانات (ميتا/سناب/تيك توك/جوجل)", st, line,
+        { last, detail: rows.map((r) => ({ platform: r.platform, ok: r.ok, configured: r.configured, token: r.detail?.token || null, reason: r.detail?.reason || null })),
+          fix: bad.length ? "أعد تفويض المنصة الواقفة وحط التوكن الجديد في env الـapi ثم deploy — GET /api/ads/connections?fresh=1 للتأكد." : null });
+    });
+
     /* ── النسخ الاحتياطي (نبضة من السكربت على السيرفر) ──────────────────── */
     add("backups", "core", "النسخ الاحتياطي (Restic يومي)", async () => {
       const r = await q1(`SELECT at, ok, note FROM sys_heartbeats WHERE name='backup'`);

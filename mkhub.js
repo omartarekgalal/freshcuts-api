@@ -99,6 +99,11 @@ export function classify(x = {}) {
     const f = { meta: "meta", snap: "snapchat", snapchat: "snapchat", tiktok: "tiktok", google: "google" }[ch.replace(/_ads$/, "")];
     if (f) return { family: f, paid: true };
   }
+  // click ids with no utm (auto-tagging): gclid/wbraid/gbraid → Google, ttclid → TikTok, ScCid → Snap
+  const ck = (Array.isArray(x.click_ids) ? x.click_ids : Object.keys(x.click_ids || {})).map((k) => lc(String(k).split("=")[0]));
+  if (!src && ck.some((k) => ["gclid", "wbraid", "gbraid", "gclsrc"].includes(k))) return { family: "google", paid: true };
+  if (!src && ck.includes("ttclid")) return { family: "tiktok", paid: true };
+  if (!src && ck.includes("sccid")) return { family: "snapchat", paid: true };
   // in-app browser visits that lost their utm but kept Meta's {{ad.name}} tag
   if (!src && /^fc/i.test(term) && ["facebook", "instagram", "meta_ads", ""].includes(ch)) return { family: "meta", paid: true };
   if (["facebook", "instagram", "tiktok", "snapchat"].includes(ch) && !src) return { family: "organic", paid: false, platform: plat(ch) };
@@ -165,7 +170,7 @@ export function register(app, ctx, deps = {}) {
   async function ourData(from, to) {
     const sessions = await q(`
       SELECT session_id, anon_id, biz_day::text AS day, utm_source, utm_medium, utm_campaign, utm_content, utm_term,
-             link_slug, channel, max_step, paid, order_no, cart_max
+             link_slug, channel, click_ids, max_step, paid, order_no, cart_max
         FROM journey_sessions
        WHERE biz_day BETWEEN $1::date AND $2::date
          AND NOT COALESCE(is_bot,false) AND NOT COALESCE(is_qa,false) AND NOT COALESCE(is_staff,false)`, [from, to]) || [];
@@ -198,6 +203,7 @@ export function register(app, ctx, deps = {}) {
       utm_campaign: u.utm_campaign || o.s_camp, utm_content: u.utm_content || o.attribution?.fc_link || o.s_cont,
       utm_term: u.utm_term || o.s_term, utm_id: u.utm_id || null,
       channel: o.s_ch, link_slug: o.attribution?.fc_link || o.s_slug, attrib_source: o.attrib_source,
+      click_ids: Object.keys(o.attribution?.click || {}).filter((k) => !["fbp", "ttp"].includes(k)),
     };
   }
 

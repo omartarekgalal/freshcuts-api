@@ -65,6 +65,7 @@ import * as portal from "./portal.js";
 import * as kitchen from "./kitchen.js";
 import * as adsreport from "./adsreport.js";
 import * as mkhub from "./mkhub.js";
+import * as adconnect from "./adconnect.js";
 import * as growthnow from "./growthnow.js";
 import * as readiness from "./readiness.js";
 import * as consent from "./consent.js";
@@ -3117,6 +3118,8 @@ globalThis.__fcAlignedSpend = async (from, to) => ({
 });
 // «الحملات كلها في مكان واحد» + تقرير السلات المتروكة (قراءة بس) — mkhub.js
 const mkhubApi = mkhub.register(app, moduleCtx, { alignedSpend: () => (globalThis.__fcAlignedSpend || null) });
+// ربط منصات الإعلانات الأربعة: فحص كل ٣ ساعات + SMS للإدارة لو ربط وقع/توكن هيخلص — adconnect.js
+adconnect.register(app, moduleCtx, { sendSms: (m) => accounts.sendSms(m) });
 growthnow.register(app, moduleCtx);   // «إيه اللي نعمله دلوقتي» — /api/cms/growth/now
 readiness.register(app, moduleCtx);   // الجاهزية: مهام الأدوار + تقويم المواسم — /api/social/ready
 systemcheck.register(app, moduleCtx, { tsState: () => tsState });

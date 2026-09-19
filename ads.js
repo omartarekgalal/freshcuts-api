@@ -131,6 +131,12 @@ const BATCH_SIZE = 500;
    **fallback** بس: لو ميتا مردّتش، مش لو ميتا ردّت.               */
 
 /** الترتيب لما ميتا تكون ساكتة: متغيّر البيئة، وبعدين القيمة المكتوبة. */
+/* TikTok (19/9): management/reporting/audiences use the Marketing API token
+   (TIKTOK_MARKETING_TOKEN, app with Ads/Audience/Reporting scopes). The Events
+   API token (TIKTOK_ACCESS_TOKEN) keeps feeding the pixel/CAPI and is only a
+   fallback here. */
+export const ttMgmtToken = () => (process.env.TIKTOK_MARKETING_TOKEN || process.env.TIKTOK_ACCESS_TOKEN || "").trim();
+
 export const ADS_ACCOUNT_TZ_FALLBACK = process.env.ADS_ACCOUNT_TZ || "America/Los_Angeles";
 
 /** binding حيّ — بيتحدّث من refreshAccountTz(). مش const عن قصد. */
@@ -1465,11 +1471,11 @@ const tiktok = {
   },
   async preflight() { return this.lastReadiness() || { ok: true }; },
 
-  hdr() { return { "Content-Type": "application/json", "Access-Token": env("TIKTOK_ACCESS_TOKEN") }; },
+  hdr() { return { "Content-Type": "application/json", "Access-Token": ttMgmtToken() }; },
   advId() { return env("TIKTOK_ADVERTISER_ID"); },
 
   async accounts() {
-    const token = env("TIKTOK_ACCESS_TOKEN");
+    const token = ttMgmtToken();
     const adv = this.advId();
     if (!token || !adv) return { ok: false, reason: "TIKTOK_ADVERTISER_ID / TIKTOK_ACCESS_TOKEN missing", accounts: [] };
     const q = `advertiser_ids=${encodeURIComponent(JSON.stringify(adv.split(",").map((s) => s.trim())))}`;
@@ -1486,7 +1492,7 @@ const tiktok = {
   },
 
   async campaigns() {
-    const token = env("TIKTOK_ACCESS_TOKEN");
+    const token = ttMgmtToken();
     const adv = this.advId();
     if (!token || !adv) return { ok: false, reason: "TIKTOK_ADVERTISER_ID / TIKTOK_ACCESS_TOKEN missing", campaigns: [] };
     const res = await httpJson(`${this.base}/campaign/get/?advertiser_id=${encodeURIComponent(adv)}&page_size=100`, {
@@ -1515,7 +1521,7 @@ const tiktok = {
   },
 
   async insights({ from, to }) {
-    const token = env("TIKTOK_ACCESS_TOKEN");
+    const token = ttMgmtToken();
     const adv = this.advId();
     if (!token || !adv) return { ok: false, reason: "TIKTOK_ADVERTISER_ID / TIKTOK_ACCESS_TOKEN missing", rows: [] };
     const params = new URLSearchParams({
@@ -1563,7 +1569,7 @@ const tiktok = {
   /* نفس التقرير بس بُعد `stat_time_day` زيادة — تيك توك بترجّع وقتها صف لكل
      حملة لكل يوم. اليوم بتوقيت المعلن (توقيت الحساب على تيك توك). */
   async dailySpend({ from, to }) {
-    const token = env("TIKTOK_ACCESS_TOKEN");
+    const token = ttMgmtToken();
     const adv = this.advId();
     if (!token || !adv) return { ok: false, reason: "TIKTOK_ADVERTISER_ID / TIKTOK_ACCESS_TOKEN missing", rows: [] };
     const params = new URLSearchParams({

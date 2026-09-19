@@ -488,7 +488,7 @@ export function register(app, ctx) {
     try {
       const res = await fetch(url, {
         method: "POST",
-        headers: { "Access-Token": env("TIKTOK_ACCESS_TOKEN") },
+        headers: { "Access-Token": (env("TIKTOK_MARKETING_TOKEN") || env("TIKTOK_ACCESS_TOKEN")) },
         body: fd,
         signal: ctl.signal,
       });
@@ -505,7 +505,7 @@ export function register(app, ctx) {
   }
 
   async function syncTiktok(segId, phones) {
-    const token = env("TIKTOK_ACCESS_TOKEN");
+    const token = env("TIKTOK_MARKETING_TOKEN") || env("TIKTOK_ACCESS_TOKEN");
     const adv = env("TIKTOK_ADVERTISER_ID");
     if (!token || !adv) return { ok: false, error: "TIKTOK_ADVERTISER_ID / TIKTOK_ACCESS_TOKEN missing" };
 

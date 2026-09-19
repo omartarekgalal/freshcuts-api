@@ -42,3 +42,10 @@ test("ratios never divide by zero", () => {
   assert.equal(r.cpa, null); assert.equal(r.roas, 0);
   assert.equal(ratios({ spend: null, ours: { sessions: 10, orders: 2, revenue: 200, adds: 3, newCustomers: 1 } }).cpa, null);
 });
+
+test("classify: auto-tagged click ids without utm", () => {
+  assert.equal(classify({ channel: "google", click_ids: ["gclid"] }).family, "google");
+  assert.equal(classify({ channel: "google", click_ids: ["gclid"] }).paid, true);
+  assert.equal(classify({ channel: "tiktok", click_ids: ["ttclid"] }).family, "tiktok");
+  assert.equal(classify({ click_ids: { ScCid: "x" } }).family, "snapchat");
+});

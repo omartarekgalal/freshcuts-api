@@ -26,7 +26,7 @@ import { bizDay, bizDaySql, bizStart, bizEnd, shiftDay, DAY_RE } from "./bizday.
 const num = (v) => { const n = Number(v); return Number.isFinite(n) ? n : 0; };
 const r2 = (v) => Math.round(num(v) * 100) / 100;
 export const SNAP_USD_SAR = 3.75;
-export const PLATFORM_LABELS = { meta: "ميتا (فيسبوك/انستقرام)", meta_whatsapp: "ميتا — واتساب", snapchat: "سناب شات", tiktok: "تيك توك" };
+export const PLATFORM_LABELS = { meta: "ميتا (فيسبوك/انستقرام)", meta_whatsapp: "ميتا — واتساب", snapchat: "سناب شات", tiktok: "تيك توك", google: "جوجل" };
 
 /* نفس قاعدة adsreport.js: حملة واتساب = اسمها/هدفها فيه whatsapp/wa-/engagement ومش SALES. */
 export const campaignKind = (name, objective) =>
@@ -277,14 +277,89 @@ export function register(app, ctx, deps = {}) {
     }
   }
 
+  /* ── جوجل (١٩/٩): GAQL بالساعة (segments.date + segments.hour) بتوقيت العميل ── */
+  let gTz = null, gCur = null;
+  async function syncGoogle(fromBiz, toBiz) {
+    let p;
+    try { p = (await import("./ads.js")).byId("google"); } catch { p = null; }
+    if (!p || typeof p.search !== "function" || p.missing?.("manageEnv")) return { platform: "google", skipped: "not configured" };
+    try {
+      if (!gTz) {
+        const c = await p.search("SELECT customer.time_zone, customer.currency_code FROM customer LIMIT 1");
+        if (!c.ok) throw new Error(`google: ${c.reason}`);
+        gTz = c.results[0]?.customer?.timeZone || "Asia/Riyadh"; gCur = c.results[0]?.customer?.currencyCode || "SAR";
+      }
+      const m = metaDaysFor(fromBiz, toBiz, gTz);
+      const days = []; for (let d = m.since; d <= m.until; d = shiftDay(d, 1)) days.push(d);
+      const r = await p.search(`SELECT campaign.id, campaign.name, segments.date, segments.hour, metrics.cost_micros, metrics.impressions, metrics.clicks, metrics.conversions
+          FROM campaign WHERE segments.date BETWEEN '${m.since}' AND '${m.until}' AND metrics.impressions > 0`);
+      if (!r.ok) throw new Error(`google: ${r.reason}`);
+      const fx = gCur === "USD" ? SNAP_USD_SAR : 1;
+      const rows = [];
+      for (const x of r.results) {
+        const day = String(x.segments?.date || "").slice(0, 10), h = Number(x.segments?.hour);
+        if (!DAY_RE.test(day) || !Number.isFinite(h)) continue;
+        const hs = zonedHourToUtc(day, h, gTz);
+        rows.push({ platform: "google", campaign_id: String(x.campaign?.id ?? "_account"), campaign_name: x.campaign?.name || "", kind: "web",
+          hour_start: hs, biz_day: bizDay(hs), spend: r2((num(x.metrics?.costMicros) / 1e6) * fx), impressions: Math.round(num(x.metrics?.impressions)),
+          clicks: Math.round(num(x.metrics?.clicks)), purchases: num(x.metrics?.conversions), conversations: 0, currency: gCur, src_tz: gTz, src_day: day, src_hour: h });
+      }
+      await saveRows("google", days, rows);
+      return { platform: "google", tz: gTz, days: days.length, rows: rows.length, spend: r2(rows.reduce((a, b) => a + b.spend, 0)) };
+    } catch (e) { return { platform: "google", error: String(e.message || e).slice(0, 300) }; }
+  }
+
+  /* ── تيك توك (١٩/٩): report/integrated/get بالساعة (يوم واحد لكل نداء) ──
+     الإدارة/التقارير محتاجة توكن Marketing API (TIKTOK_MARKETING_TOKEN)؛ توكن
+     الأحداث (TIKTOK_ACCESS_TOKEN) بيتجرّب كاحتياطي ولو اترفض بنقول كده. */
+  let ttInfo = null;
+  async function syncTiktok(fromBiz, toBiz) {
+    const E = process.env;
+    const token = (E.TIKTOK_MARKETING_TOKEN || E.TIKTOK_ACCESS_TOKEN || "").trim(), adv = (E.TIKTOK_ADVERTISER_ID || "").trim();
+    if (!token || !adv) return { platform: "tiktok", skipped: "not configured" };
+    const base = "https://business-api.tiktok.com/open_api/v1.3";
+    const H = { headers: { "Access-Token": token } };
+    try {
+      if (!ttInfo) {
+        const j = await getJson(`${base}/advertiser/info/?advertiser_ids=${encodeURIComponent(JSON.stringify([adv]))}&fields=${encodeURIComponent(JSON.stringify(["timezone", "display_timezone", "currency"]))}`, H, 2);
+        if (j.code !== 0) throw new Error(`tiktok: ${j.message || j.code}`);
+        const a = j.data?.list?.[0] || {};
+        ttInfo = { tz: a.display_timezone || (/^Etc|^[A-Z][a-z]+\//.test(a.timezone || "") ? a.timezone : null) || "Asia/Riyadh", currency: a.currency || "SAR" };
+      }
+      const m = metaDaysFor(fromBiz, toBiz, ttInfo.tz);
+      const days = []; for (let d = m.since; d <= m.until; d = shiftDay(d, 1)) days.push(d);
+      const fx = ttInfo.currency === "USD" ? SNAP_USD_SAR : 1;
+      const rows = [];
+      for (const d of days) {
+        const q = new URLSearchParams({ advertiser_id: adv, report_type: "BASIC", data_level: "AUCTION_CAMPAIGN",
+          dimensions: JSON.stringify(["campaign_id", "stat_time_hour"]), metrics: JSON.stringify(["spend", "impressions", "clicks", "campaign_name", "complete_payment"]),
+          start_date: d, end_date: d, page_size: "1000" });
+        const j = await getJson(`${base}/report/integrated/get/?${q}`, H, 2);
+        if (j.code !== 0) throw new Error(`tiktok: ${j.message || j.code}`);
+        for (const x of j.data?.list || []) {
+          const t = String(x.dimensions?.stat_time_hour || ""); const h = Number(t.slice(11, 13));
+          if (!DAY_RE.test(t.slice(0, 10)) || !Number.isFinite(h)) continue;
+          const hs = zonedHourToUtc(t.slice(0, 10), h, ttInfo.tz);
+          const sp = num(x.metrics?.spend);
+          if (!sp && !num(x.metrics?.impressions)) continue;
+          rows.push({ platform: "tiktok", campaign_id: String(x.dimensions?.campaign_id || "_account"), campaign_name: x.metrics?.campaign_name || "", kind: "web",
+            hour_start: hs, biz_day: bizDay(hs), spend: r2(sp * fx), impressions: Math.round(num(x.metrics?.impressions)), clicks: Math.round(num(x.metrics?.clicks)),
+            purchases: num(x.metrics?.complete_payment), conversations: 0, currency: ttInfo.currency, src_tz: ttInfo.tz, src_day: d, src_hour: h });
+        }
+      }
+      await saveRows("tiktok", days, rows);
+      return { platform: "tiktok", tz: ttInfo.tz, days: days.length, rows: rows.length, spend: r2(rows.reduce((a, b) => a + b.spend, 0)) };
+    } catch (e) { return { platform: "tiktok", error: String(e.message || e).slice(0, 300) }; }
+  }
+
   /** يزامن الأيام التشغيلية from..to لكل المنصات. */
   async function syncBizDays(fromBiz, toBiz) {
     await ensure();
     const acc = await metaAccount();
     const tz = acc?.tz || "America/Los_Angeles";
     const m = metaDaysFor(fromBiz, toBiz, tz);
-    const [meta, snap] = await Promise.all([syncMeta(m.since, m.until), syncSnap(fromBiz, toBiz)]);
-    return { from: fromBiz, to: toBiz, meta, snap };
+    const [meta, snap, google, tiktok] = await Promise.all([syncMeta(m.since, m.until), syncSnap(fromBiz, toBiz), syncGoogle(fromBiz, toBiz), syncTiktok(fromBiz, toBiz)]);
+    return { from: fromBiz, to: toBiz, meta, snap, google, tiktok };
   }
 
   /* ── القراءة ─────────────────────────────────────────────────────────── */
@@ -297,13 +372,14 @@ export function register(app, ctx, deps = {}) {
               COALESCE(sum(conversations),0) AS conversations, COALESCE(sum(clicks),0) AS clicks, COALESCE(sum(impressions),0) AS impressions
          FROM ad_spend_hourly WHERE hour_start >= $1 AND hour_start < $2
         GROUP BY 1,2`, [startUtc, endUtc])).rows;
-    const out = { total: 0, meta: 0, metaWeb: 0, metaWhatsapp: 0, snapchat: 0, tiktok: 0, metaPurchases: 0, whatsappConversations: 0, clicks: 0, impressions: 0 };
+    const out = { total: 0, meta: 0, metaWeb: 0, metaWhatsapp: 0, snapchat: 0, tiktok: 0, google: 0, metaPurchases: 0, whatsappConversations: 0, clicks: 0, impressions: 0 };
     for (const r of rows) {
       const s = num(r.spend);
       out.total += s;
       if (r.platform === "meta") { out.meta += s; if (r.kind === "whatsapp") out.metaWhatsapp += s; else out.metaWeb += s; }
       else if (r.platform === "snapchat") out.snapchat += s;
       else if (r.platform === "tiktok") out.tiktok += s;
+      else if (r.platform === "google") out.google = (out.google || 0) + s;
       out.metaPurchases += num(r.purchases); out.whatsappConversations += num(r.conversations);
       out.clicks += num(r.clicks); out.impressions += num(r.impressions);
     }
@@ -360,7 +436,7 @@ export function register(app, ctx, deps = {}) {
     try {
       const today = bizDay(new Date());
       const r = await syncBizDays(shiftDay(today, -1), today);
-      if (r.meta?.error || r.snap?.error) console.error("[adspend] sync:", r.meta?.error || "", r.snap?.error || "");
+      if (r.meta?.error || r.snap?.error || r.google?.error || r.tiktok?.error) console.error("[adspend] sync:", r.meta?.error || "", r.snap?.error || "", r.google?.error || "", r.tiktok?.error || "");
     } catch (e) { console.error("[adspend] tick:", e.message); }
     finally { busy = false; }
   }
