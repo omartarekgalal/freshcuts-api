@@ -21,6 +21,7 @@
    الدوال الصافية (تحويل التوقيت، تفكيك الساعة) متختبرة في adspend.test.mjs.
 ═══════════════════════════════════════════════════════════════════════════ */
 
+import { ttMktToken, ttAdvertiserId } from "./ttconnect.js";
 import { bizDay, bizDaySql, bizStart, bizEnd, shiftDay, DAY_RE } from "./bizday.js";
 
 const num = (v) => { const n = Number(v); return Number.isFinite(n) ? n : 0; };
@@ -315,7 +316,7 @@ export function register(app, ctx, deps = {}) {
   let ttInfo = null;
   async function syncTiktok(fromBiz, toBiz) {
     const E = process.env;
-    const token = (E.TIKTOK_MARKETING_TOKEN || E.TIKTOK_ACCESS_TOKEN || "").trim(), adv = (E.TIKTOK_ADVERTISER_ID || "").trim();
+    const token = ttMktToken(), adv = ttAdvertiserId();
     if (!token || !adv) return { platform: "tiktok", skipped: "not configured" };
     const base = "https://business-api.tiktok.com/open_api/v1.3";
     const H = { headers: { "Access-Token": token } };

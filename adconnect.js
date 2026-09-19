@@ -27,6 +27,10 @@
 ═══════════════════════════════════════════════════════════════════════════ */
 
 import { makeStaffNotifier } from "./staffalerts.js";
+import { ttMktToken, ttMktTokenSource, ttAdvertiserId, checkScopes } from "./ttconnect.js";
+
+/* set by register(): true when a DB token row exists but can't be decrypted */
+let ttDbTokenLost = null;
 
 const PLATFORMS = ["meta", "snapchat", "tiktok", "google"];
 const LABEL = { meta: "Meta", snapchat: "Snapchat", tiktok: "TikTok", google: "Google Ads" };
@@ -74,19 +78,28 @@ export async function probeSnap() {
 }
 
 export async function probeTiktok() {
-  const adv = env("TIKTOK_ADVERTISER_ID"), mk = env("TIKTOK_MARKETING_TOKEN"), ev = env("TIKTOK_ACCESS_TOKEN");
-  if (!adv || (!mk && !ev)) return { ok: false, configured: false, reason: "TIKTOK_ADVERTISER_ID / توكن مش موجود" };
-  const tryTok = async (tok) => {
-    const r = await getJson(`https://business-api.tiktok.com/open_api/v1.3/advertiser/info/?advertiser_ids=${encodeURIComponent(JSON.stringify([adv]))}`, { headers: { "Access-Token": tok } });
-    return { ok: r.json?.code === 0, reason: r.json?.code === 0 ? null : `${r.json?.message || `HTTP ${r.status}`} (code ${r.json?.code})`, status: r.json?.data?.list?.[0]?.status || null };
-  };
-  const mgmt = mk ? await tryTok(mk) : ev ? await tryTok(ev) : { ok: false, reason: "مفيش توكن" };
+  /* (19/9 مساءً) التوكن من ttconnect: الداتابيز (المالك ربط من «حالة النظام») ← env.
+     «مش مربوط خالص» = تحذير من غير SMS؛ توكن Marketing موجود (داتابيز/env) ووقع
+     أو اتخزّن ومابقاش يتقري (مفتاح السيرفر اتغيّر) = عطل → SMS بعد فشلتين. */
+  const adv = ttAdvertiserId(), ev = env("TIKTOK_ACCESS_TOKEN");
+  const src = ttMktTokenSource(), tok = ttMktToken();
+  const mk = src === "db" || src.startsWith("env:TIKTOK_MARKETING");
+  let dbLost = false;
+  try { dbLost = Boolean(await ttDbTokenLost?.()); } catch { /* */ }
+  const how = "اربطه من حالة النظام ← «ربط تيك توك»";
+  if (dbLost && !mk) return { ok: false, configured: true, eventsToken: Boolean(ev), token: { kind: "Marketing API (مخزّن في الداتابيز)", never: true },
+    reason: `توكن تيك توك المتخزّن مابقاش يتقري (مفتاح السيرفر اتغيّر؟) — ${how}` };
+  if (!adv || !tok) return { ok: false, configured: false, reason: `TIKTOK_ADVERTISER_ID / توكن مش موجود — ${how}` };
+  const sc = await checkScopes(tok, adv);
+  const mgmtOk = sc.advertiser?.ok && sc.campaigns?.ok && sc.reporting?.ok;
+  const bad = Object.entries(sc).filter(([, v]) => !v.ok).map(([k, v]) => `${k}: ${v.message || v.code}`);
   return {
     // events-only = management not set up yet (warn, no SMS); a marketing token that fails = broken (alert)
-    ok: mgmt.ok, configured: Boolean(mk) || mgmt.ok,
-    token: { kind: mk ? "Marketing API (TIKTOK_MARKETING_TOKEN)" : "Events token فقط (TIKTOK_ACCESS_TOKEN)", refresh: "طويل العمر — مفيش تجديد، بيقف لو اتلغى التفويض", never: true },
-    management: mgmt.ok, eventsToken: Boolean(ev),
-    reason: mgmt.ok ? null : mk ? `الإدارة/التقارير: ${mgmt.reason}` : `مفيش توكن Marketing API — التقارير والحملات والجماهير واقفة (${mgmt.reason})`,
+    ok: Boolean(mgmtOk), configured: mk || Boolean(mgmtOk),
+    token: { kind: src === "db" ? "Marketing API (مربوط من اللوحة)" : mk ? "Marketing API (TIKTOK_MARKETING_TOKEN)" : "Events token فقط (TIKTOK_ACCESS_TOKEN)", source: src, refresh: "طويل العمر — مفيش تجديد، بيقف لو اتلغى التفويض", never: true },
+    management: Boolean(mgmtOk), eventsToken: Boolean(ev), scopeCheck: sc,
+    reason: mgmtOk ? (bad.length ? `شغّال — صلاحيات لسه مش متاحة: ${bad.join(" · ")}` : null)
+      : mk ? `الإدارة/التقارير: ${bad.join(" · ")} — ${how} تاني` : `مفيش توكن Marketing API — التقارير والحملات والجماهير واقفة (${bad[0] || ""}) — ${how}`,
   };
 }
 
@@ -121,6 +134,10 @@ export function alertDecision(prev, cur, now = Date.now()) {
 
 export function register(app, ctx, deps = {}) {
   const { pool, requireAdmin, getSettingsData } = ctx;
+  ttDbTokenLost = async () => {
+    const r = await pool.query("SELECT access_token_enc FROM tt_connect WHERE id=1").catch(() => ({ rows: [] }));
+    return Boolean(r.rows[0]?.access_token_enc) && ttMktTokenSource() !== "db";
+  };
   const staff = deps.sendSms ? makeStaffNotifier({ getSettingsData, sendSms: deps.sendSms }) : null;
   let ready = null;
   const ensure = () => (ready ||= pool.query(`CREATE TABLE IF NOT EXISTS ad_connect_state (

@@ -72,8 +72,8 @@ import {
 import { uploadPolicy } from "./uploadgate.js";
 
 const env = (k) => (process.env[k] || "").trim();
-// Marketing API token (reports/campaigns/dmp/catalog) - kept separate from the Events API token used by event/track.
-const ttMktToken = () => env("TIKTOK_MARKETING_TOKEN") || env("TIKTOK_ACCESS_TOKEN");
+// Marketing API token (reports/campaigns/dmp/catalog): DB (dashboard-connected) → env — ttconnect.js. Events token (event/track) stays TIKTOK_ACCESS_TOKEN.
+import { ttMktToken, ttAdvertiserId } from "./ttconnect.js";
 const META_VER = () => (env("META_API_VERSION") || "v25.0").trim();
 const TT_BASE = "https://business-api.tiktok.com/open_api/v1.3";
 const SNAP_BASE = "https://adsapi.snapchat.com/v1";
@@ -804,7 +804,7 @@ export function register(app, ctx, deps = {}) {
   async function ttUploadFile(hashesText) {
     const fd = new FormData();
     const signature = crypto.createHash("md5").update(hashesText, "utf8").digest("hex");
-    fd.append("advertiser_id", env("TIKTOK_ADVERTISER_ID"));
+    fd.append("advertiser_id", ttAdvertiserId());
     fd.append("calculate_type", "PHONE_SHA256");
     fd.append("file_signature", signature);
     fd.append("file", new Blob([hashesText], { type: "text/csv" }), "freshcuts_rt.csv");
@@ -836,7 +836,7 @@ export function register(app, ctx, deps = {}) {
 
   async function ttUpdate(audienceId, hashes, action) {
     const token = ttMktToken();
-    const adv = env("TIKTOK_ADVERTISER_ID");
+    const adv = ttAdvertiserId();
     if (!token || !adv) return { ok: false, error: "TIKTOK_ADVERTISER_ID / TIKTOK_ACCESS_TOKEN missing" };
     const up = await ttUploadFile([...hashes].join("\n"));
     if (!up.ok) return up;
@@ -947,7 +947,7 @@ export function register(app, ctx, deps = {}) {
      استمرار صامت على القديم. */
   const accountOf = (platform) =>
     platform === "meta" ? (metaAct() || "")
-      : platform === "tiktok" ? env("TIKTOK_ADVERTISER_ID")
+      : platform === "tiktok" ? ttAdvertiserId()
         : platform === "snapchat" ? env("SNAP_AD_ACCOUNT_ID") : "";
 
   /* ═══ الفحص القبلي — بنسأل المنصة «إحنا بنكتب فين؟» قبل أول كتابة ═══════
@@ -1156,7 +1156,7 @@ export function register(app, ctx, deps = {}) {
   /* تيك توك: أول رفع بيعمل الجمهور، اللي بعده APPEND. */
   async function ttAppend(rung, audienceId, hashes) {
     const token = ttMktToken();
-    const adv = env("TIKTOK_ADVERTISER_ID");
+    const adv = ttAdvertiserId();
     if (!token || !adv) return { ok: false, error: "TIKTOK_ADVERTISER_ID / TIKTOK_ACCESS_TOKEN missing" };
     if (audienceId) return ttUpdate(audienceId, hashes, "APPEND");
 

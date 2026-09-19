@@ -55,6 +55,7 @@ import crypto from "node:crypto";
 import { menuRows } from "./catalog.js";
 import { createGoogleAdapter } from "./google.js";
 import { gateOfflineRows } from "./uploadgate.js";
+import { ttMktToken, ttAdvertiserId } from "./ttconnect.js";
 
 /* ─────────────────────────────────────────────────────────────────────────
    CONFIG — every environment variable this module reads.
@@ -135,7 +136,9 @@ const BATCH_SIZE = 500;
    (TIKTOK_MARKETING_TOKEN, app with Ads/Audience/Reporting scopes). The Events
    API token (TIKTOK_ACCESS_TOKEN) keeps feeding the pixel/CAPI and is only a
    fallback here. */
-export const ttMgmtToken = () => (process.env.TIKTOK_MARKETING_TOKEN || process.env.TIKTOK_ACCESS_TOKEN || "").trim();
+/* (19/9 مساءً) the token now comes from ttconnect.js: DB (owner-connected via the
+   dashboard) → TIKTOK_MARKETING_TOKEN → TIKTOK_ACCESS_TOKEN. */
+export const ttMgmtToken = () => ttMktToken();
 
 export const ADS_ACCOUNT_TZ_FALLBACK = process.env.ADS_ACCOUNT_TZ || "America/Los_Angeles";
 
@@ -386,8 +389,6 @@ export function lookalikeGate(audiences = []) {
 }
 
 const env = (k) => (process.env[k] || "").trim();
-// Marketing API token (reports/campaigns/dmp/catalog) - kept separate from the Events API token used by event/track.
-const ttMktToken = () => env("TIKTOK_MARKETING_TOKEN") || env("TIKTOK_ACCESS_TOKEN");
 const writeAllowed = () => process.env.ADS_ALLOW_WRITE === "1";
 
 /* ─── crypto / normalisation ──────────────────────────────────────────── */
@@ -1474,7 +1475,7 @@ const tiktok = {
   async preflight() { return this.lastReadiness() || { ok: true }; },
 
   hdr() { return { "Content-Type": "application/json", "Access-Token": ttMgmtToken() }; },
-  advId() { return env("TIKTOK_ADVERTISER_ID"); },
+  advId() { return ttAdvertiserId(); },
 
   async accounts() {
     const token = ttMgmtToken();
