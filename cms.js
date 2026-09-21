@@ -2472,14 +2472,16 @@ export function register(app, ctx, deps = {}) {
 
   app.get("/api/cms/campaigns", async (c) => {
     const err = await requireAdmin(c); if (err) return err;
-    const [rows, cfg, today] = await Promise.all([
+    const [rows, cfg, today, pr] = await Promise.all([
       // وصل/اتفتح للحملات الإشعارية — من push_log مش من تقدير
       pool.query(`SELECT c.*,
              (SELECT count(*) FILTER (WHERE l.delivered_at IS NOT NULL)::int FROM push_log l WHERE l.campaign_id = c.id) AS push_delivered,
              (SELECT count(*) FILTER (WHERE l.clicked_at IS NOT NULL)::int FROM push_log l WHERE l.campaign_id = c.id) AS push_clicked
-         FROM cms_campaigns c ORDER BY c.created_at DESC LIMIT 100`), campaignCfg(), smsToday()]);
+         FROM cms_campaigns c ORDER BY c.created_at DESC LIMIT 100`), campaignCfg(), smsToday(),
+      // الوصول = عملاء (أرقام جوال) مفعّلين إشعارات، مش أجهزة
+      pool.query("SELECT count(DISTINCT phone_norm)::int n FROM push_subs WHERE NOT disabled AND phone_norm IS NOT NULL")]);
     return c.json({ ok: true, campaigns: rows.rows, smsEnabled: cfg.smsEnabled === true,
-      pushGapDays: PUSH_GAP_DAYS(cfg),
+      pushGapDays: PUSH_GAP_DAYS(cfg), pushReach: pr.rows[0].n,
       dailySmsCap: cfg.dailySmsCap, smsSentToday: today, smsSender: process.env.TAQNYAT_SENDER_AD || null,
       ...smsRules.gapOf(cfg), gapTiers: smsRules.GAP_TIERS, gapDefault: smsRules.GAP_DEFAULT,
       optoutMode: smsRules.optoutMode(cfg),
