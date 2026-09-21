@@ -149,3 +149,31 @@ test("قيم مش صالحة لـJSONB (NUL / surrogate يتيم / قص في ن�
   assert.ok(!/\u0000|\ud[89ab][0-9a-f]{2}(?!\ud[c-f])|\ud[c-f][0-9a-f]{2}/i.test(json), json);
   assert.equal(parseCheckoutMeta({ attribution: { utm: { utm_term: "ok" + emoji } } }, H).attribution.utm.utm_term, "ok" + emoji);
 });
+
+/* ── التطبيق (Capacitor) بيتعرّف من اليوزر-إيجنت ───────────────────────────
+   من غير ده كل طلبات التطبيق بتتسجّل "web" لأن المتجر لسه مابيبعتش client. */
+const APP_H = { "cf-connecting-ip": "5.6.7.8", "user-agent": "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 Chrome/128 Mobile Safari/537.36 FreshCutsApp/android/1.0.0" };
+const APP_IOS_H = { "cf-connecting-ip": "5.6.7.8", "user-agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5) FreshCutsApp/ios/1.0.2" };
+
+test("UA التطبيق بيدّي client/app_version من غير ما المتجر يبعت حاجة", () => {
+  const m = parseCheckoutMeta({}, APP_H);
+  assert.equal(m.client, "android");
+  assert.equal(m.app_version, "1.0.0");
+  const i = parseCheckoutMeta({}, APP_IOS_H);
+  assert.equal(i.client, "ios");
+  assert.equal(i.app_version, "1.0.2");
+});
+
+test("الـbody بيكسب الـUA لما يبعت قيمة مسموحة، والقيمة الغلط بترجع للـUA", () => {
+  assert.equal(parseCheckoutMeta({ client: "pwa" }, APP_H).client, "pwa");
+  // قيمة مش في القايمة ⇒ مانرجعش "web" ونضيّع إن ده تطبيق
+  assert.equal(parseCheckoutMeta({ client: "hacker" }, APP_H).client, "android");
+  assert.equal(parseCheckoutMeta({ app_version: "9.9.9" }, APP_H).app_version, "9.9.9");
+});
+
+test("متصفح عادي يفضل web — مفيش تصنيف بالغلط", () => {
+  assert.equal(parseCheckoutMeta({}, H).client, "web");
+  assert.equal(parseCheckoutMeta({}, H).app_version, null);
+  const fake = { "user-agent": "Mozilla/5.0 FreshCutsApp/desktop/1.0.0" };
+  assert.equal(parseCheckoutMeta({}, fake).client, "web");
+});

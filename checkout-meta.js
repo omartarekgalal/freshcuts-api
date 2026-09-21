@@ -20,6 +20,17 @@ export const UTM_KEYS = ["utm_source", "utm_medium", "utm_campaign", "utm_conten
 export const CLICK_KEYS = ["fbc", "fbp", "fbclid", "ttclid", "ttp", "ScCid", "scid", "gclid", "gbraid", "wbraid"];
 export const CLIENTS = ["web", "webview", "pwa", "ios", "android"];
 
+/* تطبيق فريش كاتس (Capacitor) بيضيف لليوزر-إيجنت: "FreshCutsApp/android/1.0.0".
+   الهيدر ده أوثق من الـbody، والأهم إنه بيشتغل **من غير أي نشر على المتجر**:
+   التطبيق بيفتح نفس صفحات freshcuts.sa، فمن غير القراءة دي كل طلبات التطبيق
+   بتتسجّل "web" وتقارير «طلبات التطبيق» بتفضل صفر.
+   بيرجع { client, app_version } أو null لو مش تطبيقنا. */
+const APP_UA_RE = /FreshCutsApp\/(ios|android)\/([0-9][0-9A-Za-z.\-]{0,19})/i;
+export function clientFromUa(ua) {
+  const m = APP_UA_RE.exec(String(ua || ""));
+  return m ? { client: m[1].toLowerCase(), app_version: m[2] } : null;
+}
+
 /* قيمة نصية نضيفة أو null — أرقام بتتحول نص، وobjects/arrays بتتشال.
    مهم: Postgres JSONB بيرفض \u0000 وأي surrogate يتيم ("\ud83d") — ولو ده حصل
    الـINSERT بتاع الطلب كله بيقع بعد ما جلسة الدفع اتعملت. فبنشيل حروف التحكم
@@ -87,9 +98,12 @@ export function parseCheckoutMeta(body, headers) {
     captured: "checkout",
   };
 
+  // ترتيب الثقة: الـbody لو بعت قيمة مسموحة (المتجر عارف لو هو PWA مثلاً)،
+  // وإلا اليوزر-إيجنت بتاع التطبيق، وإلا "web".
+  const fromUa = clientFromUa(attribution.ua);
   const clientRaw = String(b.client || "").trim().toLowerCase();
-  const client = CLIENTS.includes(clientRaw) ? clientRaw : "web";
-  const app_version = clip(b.app_version, 20);
+  const client = CLIENTS.includes(clientRaw) ? clientRaw : (fromUa ? fromUa.client : "web");
+  const app_version = clip(b.app_version, 20) || (fromUa ? fromUa.app_version : null);
   const sid = String(b.journey_sid ?? "").trim();
   const journey_sid = sid && sid.length <= 64 && /^[a-z0-9_-]+$/.test(sid) ? sid : null;
 
