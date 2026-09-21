@@ -51,6 +51,7 @@ function ensureSchema(pool) {
       );
       CREATE INDEX IF NOT EXISTS aud_upload_log_time_idx ON aud_upload_log(created_at DESC);
       ALTER TABLE aud_upload_log ADD COLUMN IF NOT EXISTS excluded_staff INT NOT NULL DEFAULT 0;
+      ALTER TABLE aud_upload_log ADD COLUMN IF NOT EXISTS excluded_no_phone INT NOT NULL DEFAULT 0;
     `).catch((e) => { schemaP = null; throw e; });
   }
   return schemaP;
@@ -127,11 +128,14 @@ export async function filterPhones(pool, phones, policy) {
   if (policy.requireConsent) {
     try { consent = await consentedSet(pool); } catch { return { blocked: "مقدرناش نقرا الموافقات" }; }
   }
-  const stats = { candidates: phones.length, excluded_optout: 0, excluded_staff: 0, excluded_no_consent: 0, kept: 0 };
+  /* ٢١/٩ — الطلب اللي مامعهوش جوال أصلاً (هنقرستيشن/نينجا بيخفوا الرقم، أو
+     كاشير ماكتبش) كان بيتعدّ «من غير موافقة». الرقمين مختلفين تماماً: الأول
+     مشكلة بيانات بنقدر نصلّحها، والتاني قرار العميل. عدّاد لوحده لكل واحد. */
+  const stats = { candidates: phones.length, excluded_optout: 0, excluded_staff: 0, excluded_no_consent: 0, excluded_no_phone: 0, kept: 0 };
   const keep = [];
   for (const p of phones) {
     const n = nine(p);
-    if (!/^5\d{8}$/.test(n)) { stats.excluded_no_consent++; continue; }
+    if (!/^5\d{8}$/.test(n)) { stats.excluded_no_phone++; continue; }
     if (out.has(n)) { stats.excluded_optout++; continue; }
     if (staff.has(n)) { stats.excluded_staff++; continue; }
     if (consent && !consent.has(n)) { stats.excluded_no_consent++; continue; }
@@ -145,11 +149,12 @@ export async function logUpload(pool, row) {
   try {
     await ensureSchema(pool);
     await pool.query(
-      `INSERT INTO aud_upload_log (id, kind, platform, segment, trigger, enabled, candidates, excluded_optout, excluded_no_consent, kept, sent, status, note, excluded_staff)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
+      `INSERT INTO aud_upload_log (id, kind, platform, segment, trigger, enabled, candidates, excluded_optout, excluded_no_consent, kept, sent, status, note, excluded_staff, excluded_no_phone)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`,
       [crypto.randomUUID(), row.kind, row.platform || null, row.segment || null, row.trigger || null, !!row.enabled,
        row.candidates || 0, row.excluded_optout || 0, row.excluded_no_consent || 0, row.kept || 0,
-       row.sent ?? null, row.status || null, row.note ? String(row.note).slice(0, 300) : null, row.excluded_staff || 0]);
+       row.sent ?? null, row.status || null, row.note ? String(row.note).slice(0, 300) : null, row.excluded_staff || 0,
+       row.excluded_no_phone || 0]);
   } catch (e) { console.error("[uploadgate] log failed:", e.message); }
 }
 
@@ -168,7 +173,7 @@ export async function gateOfflineRows(pool, rows, { trigger = "sync" } = {}) {
   }
   const webRows = rows.filter((r) => web.has(String(r.order_id)));
   const pos = rows.filter((r) => !web.has(String(r.order_id)));
-  const stats = { candidates: pos.length, excluded_optout: 0, excluded_no_consent: 0, kept: 0 };
+  const stats = { candidates: pos.length, excluded_optout: 0, excluded_no_consent: 0, excluded_no_phone: 0, kept: 0 };
   let keptPos = [];
   let status = "blocked", note = "posConversions مقفول (O6)";
   if (policy.offline && pos.length) {
@@ -180,6 +185,7 @@ export async function gateOfflineRows(pool, rows, { trigger = "sync" } = {}) {
       stats.excluded_optout = f.stats.excluded_optout;
       stats.excluded_staff = f.stats.excluded_staff;
       stats.excluded_no_consent = f.stats.excluded_no_consent;
+      stats.excluded_no_phone = f.stats.excluded_no_phone;
       status = "sent"; note = null;
     }
   }

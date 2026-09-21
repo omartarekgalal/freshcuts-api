@@ -1332,7 +1332,7 @@ export function register(app, ctx) {
     const meta = await statusLine();
     const web = webApi ? await webApi.status() : { rows: [], catalogue: [] };
     const logs = (await pool.query(
-      `SELECT kind, platform, segment, trigger, enabled, candidates, excluded_optout, excluded_staff, excluded_no_consent, kept, sent, status, created_at
+      `SELECT kind, platform, segment, trigger, enabled, candidates, excluded_optout, excluded_staff, excluded_no_consent, excluded_no_phone, kept, sent, status, created_at
          FROM aud_upload_log ORDER BY created_at DESC LIMIT 30`).catch(() => ({ rows: [] }))).rows;
     return c.json({ ok: true, meta: meta.audiences, web, uploadPolicy: await uploadPolicy(pool), uploadLog: logs });
   });
