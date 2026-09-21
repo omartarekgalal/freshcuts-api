@@ -34,7 +34,7 @@ test("apps-only customers and staff/opted-out/gap are excluded", () => {
   ];
   const f = R.filterAudience(m, { staff: new Set(["500000003"]), optedOut: new Set(["500000004"]), recentlyMessaged: new Set(["500000005"]) });
   assert.deepEqual(f.list.map((x) => x.pn), ["500000002", "500000006"]);
-  assert.deepEqual(f.excluded, { apps_only: 1, staff: 1, opted_out: 1, gap: 1, recent_online_order: 0 });
+  assert.deepEqual(f.excluded, { apps_only: 1, staff: 1, opted_out: 1, gap: 1, cap_week: 0, cap_month: 0, recent_online_order: 0 });
 });
 
 test("staff phones come from alert/new-order/exclude lists in any format", () => {

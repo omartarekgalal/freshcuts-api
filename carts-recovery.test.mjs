@@ -25,10 +25,17 @@ test("settings are clamped (never under 30 min, SMS2 never inside quiet hours)",
 
 test("every recovery SMS fits 2 UCS-2 parts with link + opt-out, no Egyptian wording, no discount claims", () => {
   for (const step of [1, 2]) for (const first of [true, false]) {
-    const b = cartSmsBody(step, first, "freshcuts.sa/c/abcdefgh", "freshcuts.sa/u/0123456789");
+    const o = { code: "0123456789", host: "freshcuts.sa", sender: "FreshCut-AD" };
+    const b = cartSmsBody(step, first, "freshcuts.sa/c/abcdefgh", o);
     assert.ok(smsParts(b) <= 2, `${step}/${first}: ${b.length}`);
     assert.match(b, /\/c\/abcdefgh/);
-    assert.match(b, /إيقاف: freshcuts\.sa\/u\//);
+    // الافتراضي (٢١/٩): كلمة مش رابط — رابط السلة هو الوحيد اللي يتضغط
+    assert.match(b, /إيقاف: أرسل FreshCut-AD لـ801001/);
+    assert.equal(b.match(/freshcuts\.sa/g).length, 1);
+    // ولسه الرابط شغّال لو المالك اختاره
+    const withLink = cartSmsBody(step, first, "freshcuts.sa/c/abcdefgh", { ...o, cfg: { optoutMode: "link" } });
+    assert.match(withLink, /إيقاف: freshcuts\.sa\/u\/0123456789/);
+    assert.ok(smsParts(withLink) <= 2);
     assert.doesNotMatch(b, /دلوقتي|عشان|وفّر|وفر|%|٪/);
   }
   const p = cartMessages.push1(3, true);

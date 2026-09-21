@@ -3,9 +3,10 @@
 
    قرار عمر: «اسم المرسل مفعل وكله تمام ابدا … حملات الsms». الشروط اللي
    بتحكم أي رسالة تسويقية (حملة / أتمتة / سلة متروكة):
-     • من المُرسل التسويقي بس، ومعاها رابط الإيقاف /u/<code>
+     • من المُرسل التسويقي بس، ومعاها سطر الإيقاف (optoutLine تحت)
      • مفيش إرسال في ساعات الهدوء (قبل ١٢ الضهر وبعد ١٠ بالليل بتوقيت الرياض)
-     • ٢١ يوم بين أي رسالتين تسويقيتين لنفس الرقم (الحملات والأتمتة)
+     • فاصل متدرّج بين أي رسالتين تسويقيتين لنفس الرقم + سقف أسبوعي/شهري
+       (٢١/٩ — بدل الرقم الواحد اللي كان ٢١ وبقى ٧؛ شوف GAP_DEFAULT تحت)
      • لازم يكون طلب مننا مباشرة (صالة/سفري/موقع) — أرقام التطبيقات بس ممنوعة
      • الموظفين وأرقام التجارب برا
      • جزئين UCS-2 كحد أقصى
@@ -134,23 +135,134 @@ export const KEETA_SEGMENTS = [
     test: (c) => keetaFresh(c) && c.keetaLean !== "grill" },
 ];
 
-/* فلترة الجمهور: بترجع القايمة + سبب كل استبعاد (بيتسجّل مع الحملة) */
-export function filterAudience(members, { staff = new Set(), optedOut = new Set(), recentlyMessaged = new Set(), recentOnline = new Set(), allowApps = false } = {}) {
-  const excluded = { apps_only: 0, staff: 0, opted_out: 0, gap: 0, recent_online_order: 0 };
+/* ═══ الفاصل بين الرسايل التسويقية — قاعدة متدرّجة (قرار عمر ٢١/٩) ═══════
+   عمر: «حاسس ان قاعدة منكلمش العميل ٧ ايام دي قاعدة مش حلوة».
+   الـ٧ (والـ٢١ قبلها) كانت رقم واحد على كل الناس: نفس الفاصل للزبون اللي
+   طلب امبارح واللي رقمه جاي من كيتا من سنة. النتيجة إن الموجة التالتة
+   لقت ٤٢ شخص من ٢٤٣.
+
+   بدل رقم واحد، تلات طبقات + سقف تكرار:
+     • recent  — آخر طلب ≤٣٠ يوم  → ٣ أيام. بيعرفنا، بيطلب، وأقل حد يزعل.
+     • lapsed  — ٣١–٩٠ يوم        → ٧ أيام.
+     • cold    — >٩٠ يوم أو رقم من تطبيق (ماطلبش مننا مباشرة أبداً)
+                                   → ١٤ يوم. أضعف علاقة = أعلى خطر شكوى.
+     • سقف: ٢ رسالة/٧ أيام و٤ رسايل/٣٠ يوم لأي رقم مهما كانت الطبقة.
+
+   ليه ٣ أساس مش ١؟ دورة العروض عندنا أسبوعية، والسقف الشهري (٤) هو
+   الفرملة الحقيقية — الفاصل بيمنع رسالتين ورا بعض بس. ٣×٤ = أقصى تكرار
+   مستدام ~رسالة كل ٧.٥ يوم للزبون النشط، وده أوسع بكتير من ٧ الحالية
+   من غير ما نحرق القايمة. كله بيتعدّل من شاشة الحملات. */
+export const GAP_DEFAULT = Object.freeze({
+  minGapDays: 3,      // recent — الاسم القديم عشان الإعدادات المحفوظة ماتتكسرش
+  gapLapsedDays: 7,
+  gapColdDays: 14,
+  maxPerWeek: 2,
+  maxPerMonth: 4,
+});
+const intIn = (v, lo, hi, d) => {
+  const n = Math.round(Number(v));
+  return Number.isFinite(n) && n >= lo && n <= hi ? n : d;
+};
+export function gapOf(cfg) {
+  const c = cfg || {};
+  return {
+    minGapDays: intIn(c.minGapDays, 0, 90, GAP_DEFAULT.minGapDays),
+    gapLapsedDays: intIn(c.gapLapsedDays, 0, 90, GAP_DEFAULT.gapLapsedDays),
+    gapColdDays: intIn(c.gapColdDays, 0, 180, GAP_DEFAULT.gapColdDays),
+    maxPerWeek: intIn(c.maxPerWeek, 0, 14, GAP_DEFAULT.maxPerWeek),
+    maxPerMonth: intIn(c.maxPerMonth, 0, 60, GAP_DEFAULT.maxPerMonth),
+  };
+}
+export const GAP_TIERS = [
+  { id: "recent", key: "minGapDays", label: "طلب آخر ٣٠ يوم" },
+  { id: "lapsed", key: "gapLapsedDays", label: "آخر طلب ٣١–٩٠ يوم" },
+  { id: "cold", key: "gapColdDays", label: "أكتر من ٩٠ يوم أو رقم من تطبيق" },
+];
+/* الطبقة من بيانات العميل نفسه (customerRows) — مفيش استعلام زيادة */
+export function gapTier(m) {
+  if (!directRelationship(m)) return "cold";          // رقم تطبيق = ماطلبش مننا
+  const d = Number(m.daysSince);
+  if (!Number.isFinite(d) || d > 90) return "cold";
+  return d <= 30 ? "recent" : "lapsed";
+}
+export const gapDaysFor = (tier, g) => g[(GAP_TIERS.find((t) => t.id === tier) || GAP_TIERS[2]).key];
+
+/* h = {days, in7, in30} من سجل الإرسال. بترجع سبب الاستبعاد أو null */
+export function gapReason(m, h, g) {
+  if (!h) return null;
+  if (g.maxPerWeek > 0 && (h.in7 || 0) >= g.maxPerWeek) return "cap_week";
+  if (g.maxPerMonth > 0 && (h.in30 || 0) >= g.maxPerMonth) return "cap_month";
+  const need = gapDaysFor(gapTier(m), g);
+  if (need > 0 && Number.isFinite(h.days) && h.days < need) return "gap";
+  return null;
+}
+
+/* فلترة الجمهور: بترجع القايمة + سبب كل استبعاد (بيتسجّل مع الحملة).
+   history = Map(رقم → {days, in7, in30}); لو مش موجودة بنرجع للطريقة
+   القديمة (Set لمين اتبعتله) عشان الأتمتة القديمة ماتقعش. */
+export function filterAudience(members, { staff = new Set(), optedOut = new Set(), recentlyMessaged = new Set(), recentOnline = new Set(), allowApps = false, history = null, gap = null } = {}) {
+  const excluded = { apps_only: 0, staff: 0, opted_out: 0, gap: 0, cap_week: 0, cap_month: 0, recent_online_order: 0 };
+  const g = history ? gapOf(gap) : null;
   const list = [];
   for (const m of members) {
     if (!allowApps && !directRelationship(m)) { excluded.apps_only++; continue; }
     if (staff.has(m.pn)) { excluded.staff++; continue; }
     if (optedOut.has(m.pn)) { excluded.opted_out++; continue; }
     if (recentOnline.has(m.pn)) { excluded.recent_online_order++; continue; }
-    if (recentlyMessaged.has(m.pn)) { excluded.gap++; continue; }
+    if (history) {
+      const why = gapReason(m, history.get(m.pn), g);
+      if (why) { excluded[why]++; continue; }
+    } else if (recentlyMessaged.has(m.pn)) { excluded.gap++; continue; }
     list.push(m);
   }
   return { list, excluded };
 }
+export const EXCLUDE_LABELS = Object.freeze({
+  apps_only: "رقمه من تطبيق توصيل بس (ماطلبش مننا مباشرة)",
+  staff: "موظف أو رقم مستبعد",
+  opted_out: "أوقف الرسائل الإعلانية",
+  recent_online_order: "طلب من الموقع آخر ٣ أيام",
+  gap: "لسه ماعدّاش الفاصل بين رسالتين",
+  cap_week: "وصل سقف رسايل الأسبوع",
+  cap_month: "وصل سقف رسايل الشهر",
+  holdout: "المجموعة المحجوزة (للمقارنة)",
+});
+
+/* ═══ سطر الإيقاف ═══════════════════════════════════════════════════════
+   عمر ٢١/٩: «بلاش رابط ايقاف الرسالة يكون طويل وكبير في الرسالة اعمله غير
+   قابل للضغط عشان العميل ميضغطش عليه بدل رابط العرض».
+
+   الأساس النظامي (تنظيمات الحد من الرسائل والمكالمات الاقتحامية — هيئة
+   الاتصالات والفضاء والتقنية، النسخة التالتة أكتوبر ٢٠٢٢، قرار ٤٩٣/١٤٤٤):
+     ٤-٦-٦-٢ «تمكين المستخدم النهائي من طلب إيقاف استقبال الرسائل الدعائية
+              في أي وقت، وعبر القنوات التقليدية والإلكترونية»
+     ٤-٦-٦-٣ التوقف خلال ٢٤ ساعة من الطلب
+     ٤-٦-٦-٤ إشعار يؤكد الإيقاف بعد الطلب
+   **مفيش مادة بتفرض رابط جوّه نص الرسالة.** المطلوب إن الآلية موجودة
+   ومتاحة في أي وقت. واللائحة نفسها (ملحق الرسائل الدعائية) بتنص على
+   الآلية الوطنية: «لحجب الرسائل الدعائية من مرسل معين؛ أرسل اسم المرسل»
+   إلى ٨٠١٠٠١ (وفك الحجب ٨٠١٠٠٢) — مجانية وفورية على مستوى المشغل.
+
+   فالافتراضي بقى keyword: «إيقاف: أرسل FreshCut-AD لـ801001» — نفس طول
+   سطر الرابط القديم بالظبط، ومفيش فيه أي حاجة تنافس رابط العرض.
+   ومسار /u/<code> بتاعنا فضل شغّال بالكامل (الصفحة + البوابة + الشيك أوت)
+   عشان القناة الإلكترونية بتاعتنا تفضل متاحة في أي وقت، ولأنه المسار
+   الوحيد اللي بيسجّل عندنا ويوقف الفلوس. المالك يقدر يرجّع الرابط أو
+   يحط الاتنين من شاشة الحملات (optoutMode). */
+export const OPTOUT_MODES = Object.freeze(["keyword", "link", "both"]);
+export const OPTOUT_SHORTCODE = "801001";
+export const optoutMode = (cfg) => (OPTOUT_MODES.includes((cfg || {}).optoutMode) ? cfg.optoutMode : "keyword");
+export function optoutLine(cfg, { code, host, sender } = {}) {
+  const mode = optoutMode(cfg);
+  const kw = `إيقاف: أرسل ${sender || "FreshCut-AD"} لـ${OPTOUT_SHORTCODE}`;
+  const ln = code ? `إيقاف: ${String(host || "freshcuts.sa").replace(/^https?:\/\//, "").replace(/\/+$/, "")}/u/${code}` : "";
+  if (mode === "link") return ln || kw;
+  if (mode === "both" && ln) return `${kw} · ${ln}`;
+  return kw;
+}
 
 /* سماحية تغيّر الجمهور بين التأكيد ووقت الإرسال المجدول: الزيادة بس هي الخطر
-   (تكلفة ماحدش وافق عليها). النقصان طبيعي — الفاصل ٢١ يوم والإيقاف بيشيلوا ناس. */
+   (تكلفة ماحدش وافق عليها). النقصان طبيعي — الفاصل والإيقاف بيشيلوا ناس. */
 export const audienceDriftOk = (confirmed, now) =>
   Number(now) - Number(confirmed) <= Math.max(10, Math.round(Number(confirmed) * 0.2));
 

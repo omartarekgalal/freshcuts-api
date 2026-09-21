@@ -2084,13 +2084,28 @@ export function register(app, ctx, deps = {}) {
     });
   });
 
+  /* الوصول الحقيقي لشريحة قبل ما تعمل حملة أصلاً — «مين هيوصله ومين لأ وليه».
+     بيستعمل نفس audienceFor بحملة وهمية عشان الرقم اللي بتشوفه هنا هو نفسه
+     اللي هيتبعت. (٢١/٩ — عمر كان بيبص على عدد الشريحة ويلاقي الإرسال أقل
+     بكتير من غير ما يعرف السبب.) */
+  app.get("/api/cms/segments/:id/reach", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    const id = c.req.param("id");
+    if (!segById[id]) return c.json({ ok: false, error: "not_found" }, 404);
+    const cfg = await campaignCfg();
+    const aud = await audienceFor({ id: 0, segment: id, channel: c.req.query("channel") === "push" ? "push" : "sms", holdout_pct: 0 });
+    return c.json({ ok: true, segment: id, segmentSize: aud.segmentSize, audience: aud.list.length,
+      excluded: aud.excluded, excludeLabels: smsRules.EXCLUDE_LABELS, tiers: aud.tiers,
+      gap: smsRules.gapOf(cfg), gapTiers: smsRules.GAP_TIERS });
+  });
+
   /* ── الحملات ──
      ١٧ سبتمبر (موافقة عمر على تشغيل الـSMS): كل رسالة تسويقية بتعدّي على
      smsrules.js — علاقة مباشرة بس، الموظفين برا، الإيقاف، فاصل ٢١ يوم،
      مفيش طلب أونلاين آخر ٣ أيام، ساعات الهدوء، سقف يومي وسقف ميزانية.
      وكل مستلم بيتسجّل في cms_campaign_sends (رقم رسالة تقنيات + التكلفة) عشان
      النتيجة والنسب والفاصل يتحسبوا من الحقيقة مش من تقدير. */
-  const CAMP_DEFAULT = { smsEnabled: false, dailySmsCap: 1000, minGapDays: 21, budgetSar: 0, budgetSince: null, excludePhones: [] };
+  const CAMP_DEFAULT = { smsEnabled: false, dailySmsCap: 1000, ...smsRules.GAP_DEFAULT, budgetSar: 0, budgetSince: null, excludePhones: [] };
   async function campaignCfg() {
     const s = await getSettingsData();
     return { ...CAMP_DEFAULT, ...(((s || {}).cms || {}).campaigns || {}) };
@@ -2120,16 +2135,23 @@ export function register(app, ctx, deps = {}) {
     return new Map(r.rows.map((x) => [x.phone_norm, x]));
   }
 
-  /* مين اتبعتله رسالة تسويقية (حملة أو أتمتة) خلال آخر N يوم */
-  async function recentlyMessaged(phones, days) {
-    if (!phones.length || !(days > 0)) return new Set();
+  /* تاريخ الرسايل التسويقية لكل رقم: آخر واحدة كام يوم، وكام في آخر ٧ و٣٠.
+     استعلام واحد بيغذّي الفاصل المتدرّج والسقوف (smsrules.gapReason). */
+  async function messageHistory(phones) {
+    if (!phones.length) return new Map();
     const r = await pool.query(
-      `SELECT phone_norm FROM cms_campaign_sends
-        WHERE phone_norm = ANY($1) AND status = 'sent' AND created_at > NOW() - ($2 || ' days')::interval
-       UNION
-       SELECT phone_norm FROM cms_flow_log
-        WHERE phone_norm = ANY($1) AND sent_at > NOW() - ($2 || ' days')::interval`, [phones, String(days)]);
-    return new Set(r.rows.map((x) => x.phone_norm));
+      `WITH m AS (
+         SELECT phone_norm, created_at AS at FROM cms_campaign_sends
+          WHERE phone_norm = ANY($1) AND status = 'sent' AND created_at > NOW() - INTERVAL '60 days'
+         UNION ALL
+         SELECT phone_norm, sent_at AS at FROM cms_flow_log
+          WHERE phone_norm = ANY($1) AND sent_at > NOW() - INTERVAL '60 days')
+       SELECT phone_norm,
+              EXTRACT(EPOCH FROM (NOW() - max(at))) / 86400 AS days,
+              count(*) FILTER (WHERE at > NOW() - INTERVAL '7 days')::int AS in7,
+              count(*) FILTER (WHERE at > NOW() - INTERVAL '30 days')::int AS in30
+         FROM m GROUP BY phone_norm`, [phones]);
+    return new Map(r.rows.map((x) => [x.phone_norm, { days: Number(x.days), in7: x.in7, in30: x.in30 }]));
   }
 
   // الجمهور الفعلي: إشعار = اللي مفعّل إشعارات بس، SMS = بعد كل قواعد smsrules
@@ -2140,25 +2162,28 @@ export function register(app, ctx, deps = {}) {
     if (camp.channel === "push") return { list: m.filter((x) => x.push), holdout: [], segmentSize: m.length, optedOut: 0, excluded: {} };
     const cfg = await campaignCfg();
     const pns = m.map((x) => x.pn);
-    const [codes, gap, recentOnline] = await Promise.all([
+    const [codes, history, recentOnline] = await Promise.all([
       optoutCodes(pns),
-      recentlyMessaged(pns, Number(cfg.minGapDays) || 0),
+      messageHistory(pns),
       pool.query(`SELECT DISTINCT phone_norm FROM shop_orders WHERE ${PAID_ONLINE} AND phone_norm = ANY($1)
                    AND created_at > NOW() - INTERVAL '3 days'`, [pns]).then((r) => new Set(r.rows.map((x) => x.phone_norm))),
     ]);
     const optedOut = new Set([...codes.values()].filter((x) => x.opted_out_at).map((x) => x.phone_norm));
     const f = smsRules.filterAudience(m, {
-      staff: smsRules.staffPhoneSet(await getSettingsData()), optedOut, recentlyMessaged: gap, recentOnline,
+      staff: smsRules.staffPhoneSet(await getSettingsData()), optedOut, history, gap: cfg, recentOnline,
       allowApps: s.allowApps === true });
     const withCode = f.list.map((x) => ({ ...x, code: codes.get(x.pn)?.optout_code }));
     const holdout = withCode.filter((x) => smsRules.inHoldout(camp.id, x.pn, camp.holdout_pct));
     const hold = new Set(holdout.map((x) => x.pn));
+    const tiers = { recent: 0, lapsed: 0, cold: 0 };
+    for (const x of m) tiers[smsRules.gapTier(x)]++;
     return { list: withCode.filter((x) => !hold.has(x.pn)), holdout, segmentSize: m.length,
-      optedOut: f.excluded.opted_out, excluded: f.excluded };
+      optedOut: f.excluded.opted_out, excluded: f.excluded, tiers };
   }
 
-  const smsBody = (camp, person) =>
-    `${renderMsg(camp.message, { name: person.name, coupon: camp.coupon })}\nإيقاف: ${STORE_PUBLIC().replace(/^https?:\/\//, "")}/u/${person.code}`;
+  const smsBody = (camp, person, cfg) =>
+    `${renderMsg(camp.message, { name: person.name, coupon: camp.coupon })}\n${smsRules.optoutLine(cfg, {
+      code: person.code, host: STORE_PUBLIC(), sender: process.env.TAQNYAT_SENDER_AD })}`;
 
   async function sendMarketingSms(pn, body) {
     const key = process.env.TAQNYAT_API_KEY, sender = process.env.TAQNYAT_SENDER_AD;
@@ -2193,7 +2218,7 @@ export function register(app, ctx, deps = {}) {
     if (cfg.smsEnabled !== true) return "sms_disabled";
     if (cfg.brake) return "brake_optout";
     if (smsRules.inQuietFor(await getSettingsData())) return "quiet_hours";
-    const parts = smsPartsOf(smsBody(camp, aud.list[0]));
+    const parts = smsPartsOf(smsBody(camp, aud.list[0], cfg));
     if (parts > MAX_PARTS) return "too_long";
     if ((await smsToday()) + aud.list.length * parts > Number(cfg.dailySmsCap || 0)) return "daily_cap";
     if (aud.list.length * parts * 0.075 > (await budgetLeft(cfg))) return "budget_cap";
@@ -2221,7 +2246,11 @@ export function register(app, ctx, deps = {}) {
       pool.query("SELECT * FROM cms_campaigns ORDER BY created_at DESC LIMIT 100"), campaignCfg(), smsToday()]);
     return c.json({ ok: true, campaigns: rows.rows, smsEnabled: cfg.smsEnabled === true,
       dailySmsCap: cfg.dailySmsCap, smsSentToday: today, smsSender: process.env.TAQNYAT_SENDER_AD || null,
-      minGapDays: cfg.minGapDays, budgetSar: cfg.budgetSar, budgetLeft: Number.isFinite(await budgetLeft(cfg)) ? await budgetLeft(cfg) : null });
+      ...smsRules.gapOf(cfg), gapTiers: smsRules.GAP_TIERS, gapDefault: smsRules.GAP_DEFAULT,
+      optoutMode: smsRules.optoutMode(cfg),
+      optoutSample: smsRules.optoutLine(cfg, { code: "ab12cd34ef", host: STORE_PUBLIC(), sender: process.env.TAQNYAT_SENDER_AD }),
+      excludeLabels: smsRules.EXCLUDE_LABELS,
+      budgetSar: cfg.budgetSar, budgetLeft: Number.isFinite(await budgetLeft(cfg)) ? await budgetLeft(cfg) : null });
   });
 
   app.post("/api/cms/campaigns", async (c) => {
@@ -2261,15 +2290,17 @@ export function register(app, ctx, deps = {}) {
     const err = await requireAdmin(c); if (err) return err;
     const camp = (await pool.query("SELECT * FROM cms_campaigns WHERE id=$1", [Number(c.req.param("id"))])).rows[0];
     if (!camp) return bad(c, "not_found", 404);
-    const aud = await audienceFor(camp);
+    const [aud, cfg] = await Promise.all([audienceFor(camp), campaignCfg()]);
     const first = aud.list[0];
     const sample = first
-      ? (camp.channel === "sms" ? smsBody(camp, first) : renderMsg(camp.message, { name: first.name, coupon: camp.coupon }))
+      ? (camp.channel === "sms" ? smsBody(camp, first, cfg) : renderMsg(camp.message, { name: first.name, coupon: camp.coupon }))
       : "";
     // الطول بأطول كود إيقاف (١٠ حروف) حتى لو الجمهور فاضي
-    const parts = camp.channel === "sms" ? smsPartsOf(sample || smsBody(camp, { name: "", code: "xxxxxxxxxx" })) : 0;
+    const parts = camp.channel === "sms" ? smsPartsOf(sample || smsBody(camp, { name: "", code: "xxxxxxxxxx" }, cfg)) : 0;
     return c.json({ ok: true, audience: aud.list.length, holdout: aud.holdout.length, segmentSize: aud.segmentSize,
-      optedOut: aud.optedOut, excluded: aud.excluded, parts, tooLong: parts > MAX_PARTS,
+      optedOut: aud.optedOut, excluded: aud.excluded, excludeLabels: smsRules.EXCLUDE_LABELS,
+      tiers: aud.tiers, gap: smsRules.gapOf(cfg), optoutMode: smsRules.optoutMode(cfg),
+      parts, tooLong: parts > MAX_PARTS,
       quietHours: smsRules.inQuietFor(await getSettingsData()),
       costEstimate: Math.round(aud.list.length * parts * 0.075 * 100) / 100, sampleBody: sample.replace(/\/u\/[a-f0-9]+/, "/u/••••") });
   });
@@ -2286,7 +2317,7 @@ export function register(app, ctx, deps = {}) {
     let info = null;
     try {
       if (camp.channel === "sms") {
-        info = await sendMarketingSms(pn, smsBody(camp, person));
+        info = await sendMarketingSms(pn, smsBody(camp, person, await campaignCfg()));
       } else {
         const ok = await notify()?.sendToAudience({ phoneNorm: pn, title: "فريش كاتس 🍔 [تجربة]",
           body: renderMsg(camp.message, { coupon: camp.coupon }), url: camp.coupon ? `${STORE_PUBLIC()}/?c=${camp.coupon}` : STORE_PUBLIC() });
@@ -2297,6 +2328,7 @@ export function register(app, ctx, deps = {}) {
   });
 
   async function runSend(camp, aud, actor) {
+    const cfg = await campaignCfg();
     const list = aud.list;
     let sent = 0, failed = 0, lastError = null, cost = 0;
     const url = camp.coupon ? `${STORE_PUBLIC()}/?c=${encodeURIComponent(camp.coupon)}` : STORE_PUBLIC();
@@ -2310,7 +2342,7 @@ export function register(app, ctx, deps = {}) {
         if (camp.channel === "sms") {
           // ساعات الهدوء ممكن تبدأ في نص حملة كبيرة — نوقف الباقي
           if (smsRules.inQuietFor(await getSettingsData())) { failed++; lastError = "quiet_hours"; await log(p.pn, "failed", { error: "quiet_hours" }); return; }
-          const info = await sendMarketingSms(p.pn, smsBody(camp, p));
+          const info = await sendMarketingSms(p.pn, smsBody(camp, p, cfg));
           sent++; cost += info.cost; await log(p.pn, "sent", info);
         } else if (await notify()?.sendToAudience({ phoneNorm: p.pn, title: "فريش كاتس 🍔",
           body: renderMsg(camp.message, { name: p.name, coupon: camp.coupon }), url })) { sent++; await log(p.pn, "sent"); }
@@ -2385,6 +2417,28 @@ export function register(app, ctx, deps = {}) {
     return r.rowCount ? c.json({ ok: true }) : bad(c, "not_scheduled", 409);
   });
 
+  /* إلغاء نهائي (٢١/٩): «متوقفة» و«مسودة» ممكن حد يبعتهم بالغلط بعد شهر.
+     «ملغية» حالة مقفولة — /send و/schedule بيقبلوا draft بس. والسبب بيتسجّل
+     في last_error عشان يفضل باين في الشاشة. الرجوع بـ/unschedule مش شغّال
+     عليها عن قصد؛ اللي عايز يرجّعها يعمل POST /restore. */
+  app.post("/api/cms/campaigns/:id/cancel", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    let b = {};
+    try { b = await c.req.json(); } catch {}
+    const r = await pool.query(
+      `UPDATE cms_campaigns SET status='cancelled', scheduled_at=NULL, last_error=$2
+        WHERE id=$1 AND status IN ('draft','scheduled','held') RETURNING id`,
+      [Number(c.req.param("id")), clip(b.reason, 200) || "اتلغت يدوياً"]);
+    return r.rowCount ? c.json({ ok: true }) : bad(c, "already_sent", 409);
+  });
+  app.post("/api/cms/campaigns/:id/restore", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    const r = await pool.query(
+      "UPDATE cms_campaigns SET status='draft', last_error=NULL WHERE id=$1 AND status='cancelled' RETURNING id",
+      [Number(c.req.param("id"))]);
+    return r.rowCount ? c.json({ ok: true }) : bad(c, "not_cancelled", 409);
+  });
+
   async function scheduledTick() {
     const due = (await pool.query(
       `UPDATE cms_campaigns SET status='sending'
@@ -2456,7 +2510,12 @@ export function register(app, ctx, deps = {}) {
       smsEnabled: b.smsEnabled === true,
       dailySmsCap: Math.min(20000, Math.max(0, Number(b.dailySmsCap) || 0)),
     };
-    if (b.minGapDays != null) val.minGapDays = Math.min(90, Math.max(0, Math.round(Number(b.minGapDays) || 0)));
+    /* الفاصل المتدرّج + السقوف (٢١/٩). كل حقل لوحده عشان اللوحة تقدر تعدّل
+       واحد من غير ما تبعت الباقي. smsrules.gapOf بيضبط المدى والافتراضي. */
+    for (const k of ["minGapDays", "gapLapsedDays", "gapColdDays", "maxPerWeek", "maxPerMonth"]) {
+      if (b[k] != null) val[k] = smsRules.gapOf({ ...val, [k]: b[k] })[k];
+    }
+    if (b.optoutMode != null && smsRules.OPTOUT_MODES.includes(b.optoutMode)) val.optoutMode = b.optoutMode;
     // ساعات الهدوء + فاصل الأتمتة — مصدر واحد لكل رسايل التسويق (smsrules.quietOf)
     const hr = (v) => { const n = Number(v); return Number.isInteger(n) && n >= 0 && n <= 23 ? n : null; };
     if (b.quietStart != null && hr(b.quietStart) != null) val.quietStart = hr(b.quietStart);
@@ -2704,9 +2763,14 @@ export function register(app, ctx, deps = {}) {
     await pool.query(
       `INSERT INTO cms_flow_members(flow_id, phone_norm) SELECT $1, p FROM unnest($2::text[]) p ON CONFLICT DO NOTHING`,
       [flow.id, entrants.map((x) => x.pn)]);
-    const recent = await recentlyMessaged(entrants.map((x) => x.pn),
-      Math.max(Number(cfg.flowGapDays) || FLOW_GAP_DAYS, Number(cfg.minGapDays) || 0));
-    let targets = entrants.filter((x) => !recent.has(x.pn));
+    /* الأتمتة أهدى من الحملات: flowGapDays أرضية تحت كل طبقة من طبقات
+       الفاصل، والسقف الأسبوعي/الشهري بيتطبّق زي ما هو. */
+    const floor = Number(cfg.flowGapDays) || FLOW_GAP_DAYS;
+    const g = smsRules.gapOf(cfg);
+    const flowGap = { ...g, minGapDays: Math.max(floor, g.minGapDays),
+      gapLapsedDays: Math.max(floor, g.gapLapsedDays), gapColdDays: Math.max(floor, g.gapColdDays) };
+    const history = await messageHistory(entrants.map((x) => x.pn));
+    let targets = entrants.filter((x) => !smsRules.gapReason(x, history.get(x.pn), flowGap));
     if (flow.channel === "push") targets = targets.filter((x) => x.push);
     else {
       if (cfg.smsEnabled !== true) return;
@@ -2724,7 +2788,7 @@ export function register(app, ctx, deps = {}) {
       try {
         let ok = false;
         if (flow.channel === "sms") {
-          const fb = smsBody(flow, p);
+          const fb = smsBody(flow, p, cfg);
           const info = await sendMarketingSms(p.pn, fb); ok = true;
           logSms({ phoneNorm: p.pn, kind: "flow", ref: `flow:${flow.id}`, sender: process.env.TAQNYAT_SENDER_AD || null,
             body: fb, msgId: info && info.messageId, cost: info && info.cost, parts: info && info.parts });
@@ -2767,7 +2831,8 @@ export function register(app, ctx, deps = {}) {
          FROM cms_flows f ORDER BY f.created_at DESC`)).rows;
     const cfgF = await campaignCfg();
     return c.json({ ok: true, flows: rows, quietHours: smsRules.quietText(smsRules.quietOf(await getSettingsData())),
-      gapDays: Math.max(Number(cfgF.flowGapDays) || FLOW_GAP_DAYS, Number(cfgF.minGapDays) || 0) });
+      gapDays: Math.max(Number(cfgF.flowGapDays) || FLOW_GAP_DAYS, smsRules.gapOf(cfgF).minGapDays),
+      gap: smsRules.gapOf(cfgF), gapTiers: smsRules.GAP_TIERS });
   });
   app.post("/api/cms/flows", async (c) => {
     const err = await requireAdmin(c); if (err) return err;

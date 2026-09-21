@@ -71,8 +71,12 @@ export const cartMessages = {
   sms1: (first) => first ? "فريش كاتس: سلتك محفوظة والتوصيل مجاني لأول طلب، كمّل طلبك بضغطة" : "فريش كاتس: سلتك للحين محفوظة، كمّل طلبك بضغطة",
   sms2: (first) => first ? "طلبك من فريش كاتس للحين في السلة، والتوصيل مجاني لأول طلب" : "طلبك من فريش كاتس للحين في السلة، تقدر تكمّله الحين",
 };
-export const cartSmsBody = (step, first, link, optoutLink) =>
-  `${step === 2 ? cartMessages.sms2(first) : cartMessages.sms1(first)} ${link}\nإيقاف: ${optoutLink}`;
+/* سطر الإيقاف واحد لكل الرسايل التسويقية (smsrules.optoutLine) — من ٢١/٩
+   الافتراضي كلمة مش رابط، عشان رابط استرداد السلة يفضل هو الوحيد اللي
+   يتضغط. `optout` = سطر جاهز، أو {cfg, code, host, sender} وإحنا نبنيه. */
+export const cartSmsBody = (step, first, link, optout) =>
+  `${step === 2 ? cartMessages.sms2(first) : cartMessages.sms1(first)} ${link}\n${
+    typeof optout === "string" ? optout : smsRules.optoutLine((optout || {}).cfg, optout || {})}`;
 const storeHost = () => (process.env.STOREFRONT_PUBLIC_URL || "https://freshcuts.sa").replace(/\/+$/, "").replace(/^https?:\/\//, "");
 const PAID_SQL = "status NOT IN ('pending_payment','expired','rejected_refunded','refund_failed','paid_pos_failed')";
 
@@ -315,7 +319,8 @@ export function register(app, ctx, deps = {}) {
     if (cfg.smsEnabled !== true) return { channel: null, reason: "sms_disabled" };
     const oc = await optout(pn);
     if (oc.opted_out_at) return { channel: null, reason: "opted_out" };
-    const body = cartSmsBody(step, eligibleFirst, link, `${storeHost()}/u/${oc.optout_code}`);
+    const body = cartSmsBody(step, eligibleFirst, link,
+      { cfg: (s.cms || {}).campaigns, code: oc.optout_code, host: storeHost(), sender: process.env.TAQNYAT_SENDER_AD });
     const parts = smsRules.smsParts(body);
     if (parts > 2) return { channel: null, reason: "too_long" };
     if (!(await smsRoomToday(parts, s.cms))) return { channel: null, reason: "daily_cap" };
