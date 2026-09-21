@@ -48,11 +48,19 @@ export function plausibleName(s) {
 
 /* تاب سينس بترفض اسم أول أقل من ٣ حروف، وترفض لقب من حرف أو حرفين — واللقب
    الفاضي مقبول. فبنقسم ونرمي اللقب القصير بدل ما نخسر الصف كله. */
+const letters = (s) => (String(s || "").match(/\p{L}/gu) || []).length;
+
 export function splitName(s) {
   const parts = String(s || "").replace(/\s+/g, " ").trim().split(" ").filter(Boolean);
   if (!parts.length) return { first: "", last: "" };
-  const first = parts[0].slice(0, 30);
-  const rest = parts.slice(1).join(" ").slice(0, 30);
+  /* لقب قصير في الأول («د.» / «ام») بيخلي الاسم الأول أقل من ٣ حروف وتاب
+     سينس بترفض الصف بصمت — فبنضم الكلمة اللي بعده بدل ما نخسر الاسم كله.
+     «د. هاني السيد» ← «د. هاني» + «السيد». */
+  const head = [parts[0]];
+  let i = 1;
+  while (i < parts.length && letters(head.join(" ")) < 3) { head.push(parts[i]); i++; }
+  const first = head.join(" ").slice(0, 30);
+  const rest = parts.slice(i).join(" ").slice(0, 30);
   return { first, last: rest.length >= 3 ? rest : "" };
 }
 
@@ -61,7 +69,9 @@ export function splitName(s) {
 export function writableName(s) {
   if (!plausibleName(s)) return null;
   const { first, last } = splitName(s);
-  if (first.length < 3) return null;
+  // ٣ حروف على الأقل في الاسم الأول (شرط تاب سينس)، وحروف حقيقية مش رموز:
+  // «M E» طوله ٣ بس فيه حرفين — ده مش اسم.
+  if (first.length < 3 || letters(first) < 3) return null;
   return { first, last, full: `${first} ${last}`.trim() };
 }
 
@@ -136,6 +146,20 @@ export function register(app, ctx, deps = {}) {
 
   /* ── كنس الأسماء المؤقتة القديمة ─────────────────────────────────────
      كل صف في الدفتر اسمه مش اسم واحنا عارفين اسمه الحقيقي من أي مصدر. */
+  /* نص مؤقت اتخزّن على الحساب (رجع من كاش الجهاز قبل ما نقفل الباب): بنفضّيه
+     عشان الشيك أوت يسأل العميل عن اسمه الحقيقي المرة الجاية، وعشان ما يمشيش
+     لدفتر نقطة البيع. بنفضّي بس اللي فعلاً نص مؤقت. */
+  async function clearPlaceholderAccountNames() {
+    const rows = (await pool.query(
+      "SELECT phone_norm, name FROM acct_customers WHERE COALESCE(btrim(name),'') <> ''"
+    ).catch(() => ({ rows: [] }))).rows;
+    const bad = rows.filter((r) => !plausibleName(r.name)).map((r) => r.phone_norm);
+    if (!bad.length) return 0;
+    const r = await pool.query(
+      "UPDATE acct_customers SET name=NULL WHERE phone_norm = ANY($1::text[])", [bad]).catch(() => ({ rowCount: 0 }));
+    return r.rowCount || 0;
+  }
+
   async function sweepNames({ limit = 40, dryRun = false } = {}) {
     if (!enabled()) return { ok: false, error: "tabsense_off" };
     const rows = (await pool.query(
@@ -158,7 +182,8 @@ export function register(app, ctx, deps = {}) {
         LIMIT 2000`)).rows;
 
     const todo = rows.filter((r) => !plausibleName(r.name) && writableName(r.best));
-    const out = { ok: true, candidates: todo.length, fixed: 0, failed: 0, skipped: rows.length - todo.length, details: [] };
+    const out = { ok: true, candidates: todo.length, fixed: 0, failed: 0, skipped: rows.length - todo.length,
+                  accountNamesCleared: dryRun ? null : await clearPlaceholderAccountNames(), details: [] };
     if (dryRun) {
       out.details = todo.slice(0, limit).map((r) => ({ customerId: r.customer_id, from: r.name, to: writableName(r.best).full }));
       return out;
@@ -296,5 +321,5 @@ export function register(app, ctx, deps = {}) {
     setInterval(runCycle, 30 * 60_000);
   }
 
-  return { plausibleName, writableName, bestNameFor, ensurePosName, sweepNames, linkPosOrders, tenantOrderIdOf, runCycle };
+  return { plausibleName, writableName, bestNameFor, ensurePosName, sweepNames, linkPosOrders, tenantOrderIdOf, clearPlaceholderAccountNames, runCycle };
 }

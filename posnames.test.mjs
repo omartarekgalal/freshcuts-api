@@ -40,6 +40,13 @@ test("اللقب القصير بيتشال بدل ما الصف كله يتـر�
   assert.deepEqual(splitName("  زياد   محمد  علي "), { first: "زياد", last: "محمد علي" });
 });
 
+test("لقب قصير في أول الاسم بينضم للكلمة اللي بعده (تاب سينس بترفض أقل من ٣ حروف)", () => {
+  assert.deepEqual(splitName("د. هاني السيد"), { first: "د. هاني", last: "السيد" });
+  assert.deepEqual(splitName("ام ماريا"), { first: "ام ماريا", last: "" });
+  assert.equal(writableName("د. هاني السيد").full, "د. هاني السيد");
+  assert.equal(writableName("ام ماريا").full, "ام ماريا");
+});
+
 test("اسم أول أقل من ٣ حروف = مش قابل للكتابة (تاب سينس بترفضه بصمت)", () => {
   assert.equal(writableName("M E"), null);
   assert.equal(writableName("لي"), null);
