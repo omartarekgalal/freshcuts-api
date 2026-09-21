@@ -487,8 +487,13 @@ export function register(app, ctx, deps = {}) {
        يكون اتأخر ساعة في الزحمة، ومنعه معناه إن الطلب يفضل «في الطريق» للأبد
        والعميل ياخد رسالة غلط. */
     if (run.revoked_at) return c.json({ ok: false, error: "revoked", message: "الرابط اتلغى من المطعم", done: false }, 410);
+    /* بعد التسليم التوكن ميّت: من غير الشرط ده كان أي حد معاه الرابط يقدر
+       يرجّع الطلب لـ«في الطريق» بعد ما اتسلّم (اتكشف في اختبار ٢١/٩). */
+    if (needLive && run.delivered_at) {
+      return c.json({ ok: false, error: "done", message: "الطلب اتسجّل متسلّم خلاص", done: true }, 410);
+    }
     const st = runState(run);
-    if (needLive && !st.ok && !run.delivered_at) return c.json({ ...st, done: false }, 410);
+    if (needLive && !st.ok) return c.json({ ...st, done: false }, 410);
     const b = await c.req.json().catch(() => ({}));
     return fn({ run, b: b || {} });
   }
