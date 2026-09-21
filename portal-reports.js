@@ -56,6 +56,8 @@ export const BASE_CTE = `WITH base AS (
          /* «المنطقة البعيدة» — محفوظة جوّه تسعيرة الطلب نفسها، مفيش عمود تاني
             يتعارض معاها. NULL = طلب عادي جوّه النطاق. */
          (o.delivery_quote->'farZone') AS far_zone,
+         /* «التوصيل بالحي» — نفس الحكاية: جوّه التسعيرة، مفيش عمود تاني */
+         (o.delivery_quote->'districtDelivery') AS district_delivery,
          (o.created_at AT TIME ZONE 'Asia/Riyadh') AS local_at,
          o.status NOT IN ('pending_payment','expired') AS is_paid,
          o.status NOT IN ('pending_payment','expired','rejected_refunded','refund_failed') AS is_net
@@ -98,6 +100,12 @@ SELECT
   COALESCE(sum((far_zone->>'extraKm')::numeric) FILTER (WHERE is_net AND far_zone IS NOT NULL),0)::float AS far_zone_extra_km,
   COALESCE(max((far_zone->>'km')::numeric) FILTER (WHERE is_net AND far_zone IS NOT NULL),0)::float AS far_zone_max_km,
   COALESCE(sum(GREATEST(0, (far_zone->>'km')::numeric - 10)) FILTER (WHERE is_net AND far_zone IS NOT NULL),0)::float AS far_zone_courier_km,
+  /* التوصيل بالحي: الرسم اللي حصّلناه مقابل التكلفة اللي اتفقنا عليها مع
+     المندوب — عمر عايز يشوف الهامش لكل طلب، مش مخلوط مع لاجلك. */
+  count(*) FILTER (WHERE is_net AND district_delivery IS NOT NULL)::int AS district_orders,
+  COALESCE(sum(total) FILTER (WHERE is_net AND district_delivery IS NOT NULL),0)::float AS district_revenue,
+  COALESCE(sum((district_delivery->>'fee')::numeric) FILTER (WHERE is_net AND district_delivery IS NOT NULL),0)::float AS district_fees,
+  COALESCE(sum((district_delivery->>'cost')::numeric) FILTER (WHERE is_net AND district_delivery IS NOT NULL),0)::float AS district_cost,
   COALESCE(sum(tip) FILTER (WHERE is_net),0)::float AS tips,
   COALESCE(sum(discount_amount) FILTER (WHERE is_net),0)::float AS discounts,
   count(*) FILTER (WHERE is_net AND (coupon IS NOT NULL OR discount_amount > 0))::int AS discounted_orders,
@@ -285,6 +293,25 @@ const r1 = (v) => (v == null || !Number.isFinite(Number(v)) ? null : Math.round(
    احنا بناخد ٣ من العميل لكل كيلو بدأ. التكلفة الفعلية لكل شحنة في sh.cost. */
 export const FAR_ZONE_COURIER_PER_KM = Number(process.env.FAR_ZONE_COURIER_PER_KM) || 2.3;
 
+/* كتلة «التوصيل بالحي»: الرسم المحصّل − تكلفة المندوب = الهامش.
+   منفصلة عن لاجلك عن قصد — دي مشاوير مابتعدّيش على شركة التوصيل أصلاً،
+   فخلطها مع `courierCost` كانت هتخلي مطابقة فاتورة لاجلك تطلع غلط. */
+export function districtBlock(t = {}) {
+  const orders = Number(t.district_orders) || 0;
+  const fees = r2(t.district_fees);
+  const cost = r2(t.district_cost);
+  return {
+    orders,
+    revenue: r2(t.district_revenue),
+    feesCollected: fees,
+    courierCost: cost,
+    margin: r2(fees - cost),
+    marginPerOrder: orders ? r2((fees - cost) / orders) : 0,
+    avgFee: orders ? r2(fees / orders) : 0,
+    avgCost: orders ? r2(cost / orders) : 0,
+  };
+}
+
 /* كتلة «المنطقة البعيدة» في التقرير: هل المشوار الطويل بيدفع تمن نفسه؟ */
 export function farZoneBlock(t = {}) {
   const orders = Number(t.far_zone_orders) || 0;
@@ -366,6 +393,7 @@ export function shapeReport({ range, totals = {}, courier = {}, daily = [], hour
       courierCost: cost,
       margin: r2(fees - cost),
       farZone: farZoneBlock(t),
+      district: districtBlock(t),
       shipments: Number(courier.shipments) || 0,
       shipmentsWithoutCost: Number(courier.shipments_without_cost) || 0,
       cancelledShipments: Number(courier.cancelled_shipments) || 0,

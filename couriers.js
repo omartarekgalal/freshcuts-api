@@ -25,6 +25,7 @@
 ═══════════════════════════════════════════════════════════════════════════ */
 
 import { feeFromApi } from "./leajlakrecon.js";
+import { districtOfRow } from "./districts.js";
 
 const env = (k, d) => (process.env[k] || d || "").toString().trim();
 
@@ -322,9 +323,12 @@ export function farZoneOfRow(order = {}) {
    ٢٠٠ حرف حد الشركتين. */
 export function courierNotes(order = {}) {
   const far = farZoneOfRow(order);
+  const dd = districtOfRow(order);
   const n = [
     // المندوب لازم يعرف إن ده مشوار بعيد قبل ما يقبل — والمسافة بتفرق في أجره
     far ? `مشوار بعيد ${far.km} كم` : "",
+    // توصيل بالحي: المندوب اتفق على سعر الحي ده قبل ما يستلم
+    dd ? `توصيل حي ${dd.district}` : "",
     leaveAtDoor(order.address) ? DOOR_NOTE : "",
     deliveryNotesOf(order),
     legacyCourierNote(order),

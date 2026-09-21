@@ -30,6 +30,7 @@
 
 import * as tsstore from "./tsstore.js";
 import { msisdn, readableAddress, leaveAtDoor, farZoneOfRow, deliveryNotesOf, courierNotes } from "./couriers.js";
+import { districtOfRow } from "./districts.js";
 import { checkPersonName, NAME_MSG, NAME_MAX } from "./person-name.js";
 // ضريبة سطور الباقة — نفس الثابت اللي التوزيع اتعمل بيه، عشان الإجمالي يرجع للسعر بالظبط
 import { VAT_RATE as BUNDLE_VAT } from "./bundles.js";
@@ -200,8 +201,12 @@ export function posNotesOf(row, { withFee = false, now = Date.now() } = {}) {
   const delivery = row.option === "delivery";
   const feeNote = withFee && Number(row.delivery_fee) > 0 ? `توصيل ${Number(row.delivery_fee)}ر` : "";
   const far = farZoneOfRow(row);
+  const dd = districtOfRow(row);
   return [
     delivery ? "توصيل" : "استلام",
+    // «التوصيل بالحي»: مندوب بره لاجلك بيستلم الطلب — الكاشير لازم يعرف
+    // إن مفيش كابتن جاي من الشركة، والمدير هو اللي هيرتّب من البوابة.
+    dd ? `توصيل بالحي ${dd.district}${dd.provider ? ` (${dd.provider.name})` : ""}🛵` : "",
     // المطبخ والكاشير لازم يعرفوا إن المشوار أطول من المعتاد (العميل وافق ودفع
     // رسوم مسافة إضافية) — بيأثر على وقت التجهيز وعلى طلب المندوب.
     far ? `مشوار بعيد ${far.km} كم🛵` : "",
@@ -922,9 +927,13 @@ export function register(app, ctx, deps = {}) {
          على رسوم المسافة الإضافية. من غير الموافقة دي التسعيرة بترفض زي
          الأول — يعني مستحيل حد يتحاسب على رسم إضافي ما وافقش عليه. */
       const farOk = b.address.far_zone_accepted === true || b.farZoneAccepted === true;
+      /* «التوصيل بالحي»: نفس الحي اللي العميل شاف عليه السعر — بنبعته
+         للتسعيرة تاني هنا عشان الرقم اللي بيتحاسب عليه يطلع من نفس
+         المصدر، مش من التسعيرة اللي الواجهة شايفاها. */
       dq = await delivery.quote({
         lat: b.address.latitude, lng: b.address.longitude, orderTotal: foodTotal,
         farZoneAccepted: farOk,
+        district: b.address.district || b.address.area || null,
       });
       if (!dq.deliverable) return fail("not_deliverable", 422, { quote: dq });
       deliveryFee = dq.fee;
@@ -932,8 +941,11 @@ export function register(app, ctx, deps = {}) {
       // تكلفة اكتساب العميل). الطلب بيتسجّل والكوبون بيتحرق زي أي كوبون.
       // **بس** رسوم المسافة الإضافية مش داخلة في التنازل: دي تكلفة كابتن
       // حقيقية فوق المشوار العادي، والعميل وافق عليها لوحدها.
+      // ورسم «التوصيل بالحي» زيّه بالظبط: ده سعر مندوب حقيقي من جدول
+      // الأحياء، مش رسم ربح — كوبون مجاني مايلغيهوش.
       if (coupon?.ok && coupon.freeDelivery && deliveryFee > 0) {
-        const keep = dq.farZone ? Number(dq.farZone.surcharge) || 0 : 0;
+        const keep = dq.districtDelivery ? Number(dq.districtDelivery.fee) || 0
+          : dq.farZone ? Number(dq.farZone.surcharge) || 0 : 0;
         if (deliveryFee > keep) {
           freeDeliveryByCoupon = true;
           deliveryFee = keep;

@@ -65,6 +65,7 @@ import * as syshealth from "./syshealth.js";
 import * as portal from "./portal.js";
 import * as courierops from "./courierops.js";
 import * as courierlive from "./courierlive.js";
+import * as districts from "./districts.js";
 import * as kitchen from "./kitchen.js";
 import * as adsreport from "./adsreport.js";
 import * as mkhub from "./mkhub.js";
@@ -3057,6 +3058,9 @@ scorecard.register(app, moduleCtx, {
 let shopApi = null;
 const payApi = pay.register(app, moduleCtx, { shop: () => shopApi });
 const deliveryApi = deliveryMod.register(app, moduleCtx, { shop: () => shopApi });
+// التوصيل بالحي (٢١/٩): جدول أسعار بالحي لمندوبين بره لاجلك — بيفتح المناطق
+// اللي فوق سقف المسافة بدل ما يشوفها العميل «خارج النطاق».
+districts.register(app, moduleCtx);
 // مطابقة فاتورة لاجلك (١٩/٩): المتوقَّع من العقد × المفوتَر من الفاتورة + الشذوذ + تصدير
 ljRecon.register(app, moduleCtx, { providers: () => deliveryApi.PROVIDERS });
 // إشعارات العميل (متصفح/SMS/واتساب بمفاتيح من لوحة التحكم) — قبل shop

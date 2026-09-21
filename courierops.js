@@ -29,6 +29,7 @@
 ═══════════════════════════════════════════════════════════════════════════ */
 
 import { STORE_LAT, STORE_LNG } from "./tsstore.js";
+import { districtOfRow } from "./districts.js";
 import { cacheKey } from "./drivedist.js";
 import { PROVIDERS, API_PROVIDER_IDS } from "./couriers.js";
 import { driverKey, dispatchDelayOf } from "./delivery.js";
@@ -334,6 +335,7 @@ export const CODE_AR = Object.freeze({
   ...Object.fromEntries(Object.entries(VIOLATIONS).map(([k, v]) => [k, v.label])),
   far_hold: "مشوار بعيد — مستني قرار المدير",
   far_risk: "مشوار بعيد — ممكن الشركة ترفضه",
+  district_courier: "توصيل بالحي — ابعت للمندوب",
   held: "المدير وقّف طلب لاجلك",
   asked_leajlak: "سألنا لاجلك",
 });
@@ -343,6 +345,7 @@ const EN = {
   no_assignment: (x) => `no captain assigned after ${x.min}min. Portal: retry/other/external`,
   far_hold: (x) => `far order ${x.km}km HELD (courier may refuse). Portal: confirm courier or external`,
   far_risk: (x) => `far order ${x.km}km sent to courier - they may refuse. Have a backup courier ready`,
+  district_courier: (x) => `DISTRICT delivery ${x.district}${x.provider ? ` (${x.provider})` : ""} - ${x.fee} SAR. Portal: send WhatsApp to the courier`,
   assign_late: (x) => `no captain ${x.target}min after request (+${x.over}min)`,
   arrive_slow: (x) => `captain not at shop ${x.target}min after assignment (+${x.over}min)`,
   arrive_late: (x) => `captain not at shop ${x.target}min after request - CONTRACT (+${x.over}min)`,
@@ -354,6 +357,7 @@ const AR = {
   no_assignment: (x) => `مفيش كابتن بعد ${x.min}د - افتح البوابة`,
   far_hold: (x) => `مشوار ${x.km}كم مستني قرارك في البوابة`,
   far_risk: (x) => `مشوار ${x.km}كم - لاجلك ممكن ترفض`,
+  district_courier: (x) => `توصيل بالحي ${x.district} - ابعت للمندوب من البوابة`,
   assign_late: (x) => `مفيش كابتن بعد ${x.target}د`,
   arrive_slow: (x) => `الكابتن اتأخر عن المطعم ${x.over}د`,
   arrive_late: (x) => `الكابتن عدّى ٢٠د ومش في المطعم`,
@@ -444,7 +448,7 @@ export const OPS_DDL = Object.freeze([
   `CREATE INDEX IF NOT EXISTS dl_sla_breaches_order_idx ON dl_sla_breaches(order_no)`,
 ]);
 
-const INCIDENT_KINDS = new Set(["provider_cancelled", "refused_far", "no_assignment", "far_hold", "far_risk"]);
+const INCIDENT_KINDS = new Set(["provider_cancelled", "refused_far", "no_assignment", "far_hold", "far_risk", "district_courier"]);
 const RESOLUTIONS = new Set(["retry", "switch", "external", "staff", "dismissed", "auto"]);
 // تنبيه «حي» بس: مانبعتش SMS لمخالفة قديمة اتكشفت أول مرة بعد نشر
 const FRESH_MS = 45 * 60_000;
@@ -652,6 +656,20 @@ export function register(app, ctx, deps = {}) {
   async function farCheck(row) {
     try {
       const cfg = await cfgOf();
+      /* ── «التوصيل بالحي» بيوقف الإرسال التلقائي تماماً ────────────────
+         العميل دفع رسم حي من جدول مندوب تاني (districts.js). لو بعتنا
+         لاجلك هنا، هنكون دافعين مرتين — مرة لاجلك ومرة للمندوب اللي المدير
+         هيكلّمه — وغالباً لاجلك هترفض المشوار أصلاً (فوق ١٠ كم، العقد م٣).
+         فالطلب بيستنى المدير في البوابة، وهو بيبعت واتساب للمندوب. */
+      const dd = districtOfRow(row);
+      if (dd) {
+        await openIncident(row.order_no, "district_courier", {
+          reason: `توصيل بالحي: ${dd.district}${dd.provider ? ` — ${dd.provider.name}` : ""} بـ${dd.fee} ر.س — ابعت للمندوب من «مندوب خارجي»`,
+          detail: { district: dd.district, provider: dd.provider ? dd.provider.name : null, fee: dd.fee, cost: dd.cost, km: dd.km },
+          alert: !row.is_test,
+        });
+        return { far: true, hold: true, district: dd, km: dd.km != null ? r1(dd.km) : null, mode: "district" };
+      }
       const d = farGuardDecision(row, cfg);
       if (!d.far) return d;
       /* «تنبيه بس» (الافتراضي — عمر: «كل حاجة تفضل شغالة زي النهارده»): لاجلك
@@ -738,6 +756,20 @@ export function register(app, ctx, deps = {}) {
             };
           })() : null,
           far: fg.far ? { km: fg.km, fromKm: fg.fromKm, mode: fg.mode } : null,
+          /* «توصيل بالحي»: الكارت بيقول الحي والمندوب والتكلفة اللي اتفقنا
+             عليها والرسم اللي العميل دفعه — والمدير بيبعت واتساب من نفس
+             زرار «مندوب خارجي». مفيش إرسال تلقائي للاجلك على الطلب ده. */
+          district: (() => {
+            const d = districtOfRow({ delivery_quote: r.delivery_quote });
+            if (!d) return null;
+            return {
+              district: d.district, fee: Number(d.fee) || 0, cost: d.cost != null ? Number(d.cost) : null,
+              margin: d.margin != null ? Number(d.margin) : null,
+              provider: d.provider ? { name: d.provider.name, phone: d.provider.phone || null } : null,
+              km: d.km != null ? Number(d.km) : null,
+              sent: Boolean(sh && sh.provider === "external"),
+            };
+          })(),
           badge,
           askedLeajlak: ak ? { at: isoOf(ak.detected_at), by: ak.resolved_by || null, note: (ak.detail && ak.detail.note) || null } : null,
           staffCourier: sh && sh.provider === "external" && sh.driver && sh.driver.source === "staff" ? (sh.driver.name || "موظف") : null,
@@ -845,7 +877,11 @@ export function register(app, ctx, deps = {}) {
     const name = clean(b.name, 80), phone = clean(b.phone, 20), notes = clean(b.notes, 300), reason = clean(b.reason, 160);
     // «موظف من عندنا» بدل مندوب من بره: نفس الشحنة اليدوية، والتكلفة صفر لو ماتكتبتش
     const staffRun = b.kind === "staff";
-    const cost = num(b.cost) ?? (staffRun ? 0 : null);
+    /* «التوصيل بالحي»: التكلفة معروفة من جدول الأحياء قبل ما الطلب يتعمل،
+       فبنحطها لوحدها بدل ما المدير يكتبها — ويقدر يدوس عليها لو المندوب
+       طلب غير كده. `name` كمان بيتملّى باسم الشركة لو المدير ماكتبش. */
+    const dd = districtOfRow(row);
+    const cost = num(b.cost) ?? (staffRun ? 0 : (dd && dd.cost != null ? Number(dd.cost) : null));
     if (cost != null && (cost < 0 || cost > 500)) return c.json({ ok: false, error: "bad_cost", message: "التكلفة لازم بين ٠ و٥٠٠" }, 400);
     const stage = ["picked", "delivered"].includes(b.stage) ? b.stage : "assigned";
     const at = new Date(now()).toISOString();
@@ -853,7 +889,12 @@ export function register(app, ctx, deps = {}) {
       `INSERT INTO dl_shipments(shop_order_no, provider, provider_ref, status, driver, cost, cost_basis, dispatch, events,
                                 assigned_at, picked_at, delivered_at)
        VALUES ($1,'external',NULL,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING id`,
-      [orderNo, stage, name || phone || staffRun ? J({ name: name || (staffRun ? "موظف" : null), phone, source: staffRun ? "staff" : "external" }) : null, cost, cost != null ? "manual" : null,
+      [orderNo, stage, name || phone || staffRun || dd
+         ? J({ name: name || (staffRun ? "موظف" : (dd && dd.provider ? dd.provider.name : null)),
+               phone: phone || (dd && dd.provider ? dd.provider.phone : null) || null,
+               source: staffRun ? "staff" : "external",
+               ...(dd ? { district: dd.district, districtFee: dd.fee } : {}) })
+         : null, cost, cost != null ? (dd && num(b.cost) == null && !staffRun ? "district" : "manual") : null,
        J({ status: "external", assigned: true, by: user.name, reason, notes, retro: Boolean(b.retro) }),
        J([{ at, provider: "external", event: stage === "assigned" ? "assigned" : stage, by: `portal:${user.name}`, note: notes || reason }]),
        at, stage !== "assigned" && !b.retro ? at : null, stage === "delivered" && !b.retro ? at : null]);

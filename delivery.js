@@ -28,6 +28,7 @@ import { PROVIDERS, activeProvider, courierMilestone, API_PROVIDER_IDS } from ".
 import { emitOrder } from "./order-events.js";
 import { makeDriveDistance, resolveRouteKm } from "./drivedist.js";
 import { makeZoneService } from "./deliveryzone.js";
+import { districtCfg, districtQuote, activeDistrictNames } from "./districts.js";
 
 /* ── أحداث المندوب على ناقل الطلب (W1-05، الخطة §٤-١) ─────────────────────
    courier_dispatch / courier_update / courier_manual / courier_cancel.
@@ -155,6 +156,11 @@ export const DEFAULT_POLICY = {
    والرسم الإضافي هو اللي بيغطّي المسافة دي لوحده.
 ═══════════════════════════════════════════════════════════════════════════ */
 
+/* فيه أحياء مفعّلة نقدر نعرضها على العميل لو الجيوكودر ما عرفش حيّه؟ */
+function districtsOffered(dcfg) {
+  return Boolean(dcfg && dcfg.enabled && activeDistrictNames(dcfg).length);
+}
+
 /* farZoneOf(cfg, distKm) → null (مش منطقة بعيدة) أو {km, extraKm, surcharge, maxKm}. */
 export function farZoneOf(cfgIn, distanceKm) {
   const cfg = { ...DEFAULT_POLICY, ...(cfgIn || {}) };
@@ -192,7 +198,7 @@ export function farZoneOf(cfgIn, distanceKm) {
    {deliverable:true, fee, distanceKm, breakdown[]} — fee in SAR, rounded to
    2dp, never negative; breakdown lines are Arabic strings the storefront can
    show so the customer sees WHY the fee is what it is. */
-export function computeDeliveryFee(cfgIn, { distanceKm, straightKm, orderTotal, farZoneAccepted = false }) {
+export function computeDeliveryFee(cfgIn, { distanceKm, straightKm, orderTotal, farZoneAccepted = false, district, districts }) {
   const cfg = { ...DEFAULT_POLICY, ...(cfgIn || {}) };
   const dist = Number(distanceKm) || 0;
   const straight = straightKm != null ? Number(straightKm) : null;
@@ -200,22 +206,57 @@ export function computeDeliveryFee(cfgIn, { distanceKm, straightKm, orderTotal, 
   const breakdown = [];
   const far = farZoneOf(cfg, dist);
 
+  /* ── التوصيل بالحي (districts.js) ────────────────────────────────────
+     تسعيرة ثابتة للحي من مندوب بيسعّر بالحي مش بالمسافة. بتشتغل بس لما
+     المسار العادي كان هيرفض العنوان، وبتغلب المنطقة البعيدة **لو** عمر
+     شغّل `overrideFarZone` — غير كده المنطقة البعيدة (أرخص، ولاجلك
+     بتغطيها) هي اللي بتاخد الأولوية. */
+  const dcfg = districts || null;
+  const outOfZone = cfg.maxStraightKm != null && straight != null && straight > cfg.maxStraightKm;
+  const outOfRange = cfg.maxKm != null && dist > cfg.maxKm;
+  const farCovers = Boolean(far) && !(dcfg && dcfg.overrideFarZone);
+  const dq = (outOfZone || outOfRange) && !farCovers ? districtQuote(dcfg, district) : null;
+  if (dq) {
+    if (!farZoneAccepted) {
+      return {
+        deliverable: false, reason: outOfZone ? "out_of_zone" : "out_of_range",
+        maxKm: cfg.maxKm, distanceKm: r2(dist),
+        ...(straight != null ? { straightKm: r2(straight) } : {}),
+        districtOffer: { ...dq, km: r2(dist) },
+      };
+    }
+    if (total < (cfg.minOrderTotal || 0)) {
+      return { deliverable: false, reason: "under_minimum", minOrderTotal: cfg.minOrderTotal, distanceKm: r2(dist) };
+    }
+    /* الرسم كله محمي: `feeBase:0` معناها إن كوبون التوصيل المجاني، والسلّم،
+       والضمان — مفيش فيهم حاجة بتلمس الرقم ده. تكلفة مندوب حقيقية، مش ربح. */
+    return {
+      deliverable: true, fee: dq.fee, feeBase: 0,
+      distanceKm: r2(dist), ...(straight != null ? { straightKm: r2(straight) } : {}),
+      breakdown: [`توصيل حي ${dq.district}${dq.provider ? ` — ${dq.provider.name}` : ""}: ${r2(dq.fee)} ر.س`],
+      guard: { applied: false, fee: dq.fee },
+      districtDelivery: { ...dq, km: r2(dist) },
+    };
+  }
+
   /* الدايرة الهوائية أولاً — دي حدود المنطقة اللي عمر رسمها، ومرفوض بره
      الدايرة يعني مرفوض حتى لو الطريق قصير. `straightKm` اختياري: لو
      المتصل ما بعتهاش (اختبارات قديمة) بنعدّي للفحص التاني بس. */
-  if (cfg.maxStraightKm != null && straight != null && straight > cfg.maxStraightKm) {
+  if (outOfZone) {
     return {
       deliverable: false, reason: "out_of_zone",
       maxStraightKm: cfg.maxStraightKm, straightKm: r2(straight), distanceKm: r2(dist),
+      ...(districtsOffered(dcfg) ? { districtChoices: activeDistrictNames(dcfg) } : {}),
     };
   }
   /* بره المنطقة: يا إما عرض «نوصلك برسوم إضافية» (لو جوّه السقف البعيد
      والعميل لسه ماوافقش) يا إما رفض زي الأول. الموافقة بتعدّي من هنا. */
-  if (cfg.maxKm != null && dist > cfg.maxKm && !(far && farZoneAccepted)) {
+  if (outOfRange && !(far && farZoneAccepted)) {
     return {
       deliverable: false, reason: "out_of_range", maxKm: cfg.maxKm,
       distanceKm: r2(dist), ...(straight != null ? { straightKm: r2(straight) } : {}),
       ...(far ? { farZoneOffer: far } : {}),
+      ...(!far && districtsOffered(dcfg) ? { districtChoices: activeDistrictNames(dcfg) } : {}),
     };
   }
   if (total < (cfg.minOrderTotal || 0)) {
@@ -836,10 +877,15 @@ export function register(app, ctx, deps = {}) {
   /* quote({lat, lng, orderTotal}) — the ONE entry point storefront + shop.js
      both use, so the customer can never be quoted one fee and charged
      another. */
-  async function quote({ lat, lng, orderTotal, farZoneAccepted = false }) {
+  async function quote({ lat, lng, orderTotal, farZoneAccepted = false, district = null }) {
     const pol = await activePolicy();
     if (!pol) return { deliverable: false, reason: "no_policy" };
     const cfg = { ...DEFAULT_POLICY, ...pol.config };
+    /* جدول التوصيل بالحي (districts.js) — بيتقرا من الإعدادات كل تسعيرة
+       عشان أي تعديل من اللوحة يبان فوراً من غير إعادة تشغيل. عطل في
+       قراءة الإعدادات = الجدول مقفول، مش سعر عشوائي. */
+    let dcfg = null;
+    try { dcfg = districtCfg(await getSettingsData()); } catch { dcfg = null; }
     const straight = haversineKm(STORE_LAT(), STORE_LNG(), Number(lat), Number(lng));
     /* المشوار الحقيقي بالعربية من جوجل (drivedist.js)، ولو فشل لأي سبب
        بنرجع لتقدير هوائي × routeFactor زي الأول بالظبط. maxKm = سقف المشوار. */
@@ -857,16 +903,16 @@ export function register(app, ctx, deps = {}) {
         cfg.neverBeatenByApps = { ...g0, courierCost: contractCourierCost(Math.min(route, Number(cfg.maxKm) || route), courierContract(all.delivery || {})) };
       } catch { /* الافتراضي في APPS_GUARD_DEFAULTS */ }
     }
-    const res = computeDeliveryFee(cfg, { distanceKm: route, straightKm: straight, orderTotal, farZoneAccepted });
+    const res = computeDeliveryFee(cfg, { distanceKm: route, straightKm: straight, orderTotal, farZoneAccepted, district, districts: dcfg });
     // The storefront's incentives (progress bar to free delivery, min-order
     // nudge) need the thresholds, not just the verdict.
     return {
       ...res, straightKm: r2(straight), routeKm: r2(route),
       driveKm: rk.driveKm != null ? r2(rk.driveKm) : null, distanceSource: rk.distanceSource,
-      policyId: pol.id, policyName: pol.name, policy: publicPolicy(cfg), ...gaps(cfg, orderTotal),
+      policyId: pol.id, policyName: pol.name, policy: publicPolicy(cfg, dcfg), ...gaps(cfg, orderTotal),
     };
   }
-  const publicPolicy = (cfg) => ({
+  const publicPolicy = (cfg, dcfg = null) => ({
     baseFee: cfg.baseFee, baseKm: cfg.baseKm, perKm: cfg.perKm, maxKm: cfg.maxKm,
     maxStraightKm: cfg.maxStraightKm ?? null,
     freeOverTotal: cfg.freeOverTotal ?? null, freeCoverMax: cfg.freeCoverMax ?? null,
@@ -879,6 +925,12 @@ export function register(app, ctx, deps = {}) {
       fromKm: cfg.farZoneFromKm ?? null,
       perKm: cfg.farZonePerKm ?? null,
     },
+    /* التوصيل بالحي — الواجهة محتاجة تعرف إن فيه قايمة أحياء تعرضها لما
+       العنوان يطلع برّه النطاق والجيوكودر ما عرفش الحي. الأسعار (تكلفتنا)
+       مابتطلعش هنا — الرسم بس بيرجع في `districtOffer`. */
+    districtDelivery: dcfg && dcfg.enabled
+      ? { enabled: true, districts: activeDistrictNames(dcfg) }
+      : { enabled: false, districts: [] },
   });
   const gaps = (cfg, total) => {
     const t = Number(total) || 0;
@@ -1199,7 +1251,10 @@ export function register(app, ctx, deps = {}) {
     /* far=1 → العميل شاف عرض «المنطقة البعيدة» ووافق على الرسم الإضافي.
        من غيرها الرد بيفضل رفض + العرض، فأي واجهة قديمة مابتتغيرش. */
     const far = ["1", "true", "yes"].includes(String(c.req.query("far") || "").toLowerCase());
-    return c.json({ ok: true, ...(await quote({ lat, lng, orderTotal: total, farZoneAccepted: far })) });
+    /* اسم الحي — من الجيوكودر أو من اختيار العميل. بيتستعمل بس لما العنوان
+       يطلع برّه النطاق وجدول «التوصيل بالحي» مفتوح. */
+    const district = String(c.req.query("district") || "").slice(0, 80) || null;
+    return c.json({ ok: true, ...(await quote({ lat, lng, orderTotal: total, farZoneAccepted: far, district })) });
   });
 
   // PUBLIC — المنطقة المغطاة (مضلّع تقريبي) عشان الخريطة تضلّل برّه التوصيل بالأحمر.
