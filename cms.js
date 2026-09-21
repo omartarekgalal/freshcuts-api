@@ -1972,7 +1972,7 @@ export function register(app, ctx, deps = {}) {
     const s = await getSettingsData();
     const apps = (Array.isArray(s?.deliveryAppMethods) && s.deliveryAppMethods.length
       ? s.deliveryAppMethods : (DEFAULT_DELIVERY_APPS || [])).map((x) => String(x).toLowerCase());
-    const [pos, online, push, names, tsPhone, shopNames, keeta, contacts] = await Promise.all([
+    const [pos, online, push, names, tsPhone, shopNames, keeta, contacts, catalog] = await Promise.all([
       pool.query(`
         WITH x AS (
           SELECT ${IDENT_SQL} AS pn, o.total, o.calendar_day AS day,
@@ -2008,7 +2008,8 @@ export function register(app, ctx, deps = {}) {
             FROM order_sources s JOIN ts_orders o ON o.order_id = s.order_id
            WHERE btrim(COALESCE(s.source_note, '')) <> '' AND s.phone_norm ~ '${PHONE_RE}' AND ${SALES_ONLY}),
         n AS (SELECT pn, count(*)::int AS orders, string_agg(DISTINCT app, ',') AS apps FROM k GROUP BY 1)
-        SELECT k.pn, n.orders, n.apps, i.name, COALESCE(sum(i.amount), 0)::float AS amount
+        SELECT k.pn, n.orders, n.apps, i.name, COALESCE(sum(i.amount), 0)::float AS amount,
+               COALESCE(sum(i.qty), 0)::float AS qty
           FROM k JOIN n ON n.pn = k.pn LEFT JOIN ts_order_items i ON i.order_id = k.order_id
          GROUP BY k.pn, n.orders, n.apps, i.name`),
       // قاعدة العملاء (syncContacts): بتضيف اللي مسجّل في نقطة البيع ومالوش
@@ -2016,6 +2017,8 @@ export function register(app, ctx, deps = {}) {
       pool.query(`SELECT phone_norm AS pn, name FROM cms_contacts
                    WHERE in_pos AND orders = 0 AND online_orders = 0 AND phone_norm ~ '${PHONE_RE}'`)
         .catch(() => ({ rows: [] })),
+      // كتالوج نقطة البيع — عشان نسعّر سطور البيتزا اللي بتيجي بصفر
+      pool.query("SELECT name_ar, price_incl FROM cw_pos_products WHERE active AND price_incl > 0"),
     ]);
     const onl = new Map(online.rows.map((r) => [r.pn, r]));
     const pushSet = new Set(push.rows.map((r) => r.pn));
@@ -2030,14 +2033,16 @@ export function register(app, ctx, deps = {}) {
     const daysSince = (d) => (d ? Math.max(0, Math.round((today - new Date(d)) / 86400000)) : 9999);
     /* لكل رقم تطبيق: الميل القديم (مشاوي/بوكس) + الإنفاق الحقيقي لكل مجموعة
        أكل (٦ مجموعات) عشان الرسالة تتكلم عن اللي بياكله فعلاً. */
+    const priceOf = smsRules.priceMatcher(catalog.rows);
     const kMap = new Map();
     for (const k of keeta.rows) {
       const e = kMap.get(k.pn) || { orders: 0, apps: k.apps || "", grill: 0, box: 0, food: {} };
       e.orders = Math.max(e.orders, k.orders);
+      const val = smsRules.lineValue(k, priceOf); // سطر البيتزا بصفر بيتسعّر من الكتالوج
       const fam = smsRules.itemFamily(k.name);
-      if (fam !== "other") e[fam] += k.amount;
+      if (fam !== "other") e[fam] += val;
       const g = smsRules.foodGroup(k.name);
-      if (g) e.food[g] = (e.food[g] || 0) + k.amount;
+      if (g) e.food[g] = (e.food[g] || 0) + val;
       kMap.set(k.pn, e);
     }
     const kOf = (pn) => {

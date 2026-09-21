@@ -5,7 +5,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { foodGroup, topFoodGroup, FOOD_GROUPS, FOOD_GROUP_IDS, foodGroupOf, APP_FOOD_SEGMENTS, smsParts, optoutLine } from "./smsrules.js";
+import { foodGroup, topFoodGroup, FOOD_GROUPS, FOOD_GROUP_IDS, foodGroupOf, APP_FOOD_SEGMENTS, smsParts, optoutLine, priceMatcher, lineValue } from "./smsrules.js";
 
 test("كل صنف في المنيو الحي بيروح لمجموعته الصح", () => {
   const cases = {
@@ -50,6 +50,49 @@ test("أعلى مجموعة بالإنفاق، والتعادل بيترتّب �
   assert.equal(topFoodGroup({}), null);
   assert.equal(topFoodGroup(null), null);
   assert.equal(topFoodGroup({ pizza: 0 }), null);
+});
+
+/* سطر البيتزا اللي عليه حشو أطراف بيتسجّل بصفر في نقطة البيع. من غير
+   التسعير من الكتالوج شريحة «بيتزا» بتطلع صفر بني آدم بينما فيه ١٤. */
+const CATALOG = [
+  { name_ar: "بيتزا", price_incl: 99 }, // فخ: اسم أقصر لازم يخسر
+  { name_ar: "بيتزا تشيكن رانش", price_incl: 28 },
+  { name_ar: "بيتزا مارجريتا", price_incl: 20 },
+  { name_ar: "كريب ميكس لحوم", price_incl: 30 },
+  { name_ar: "طحينه", price_incl: 0 }, // سعر صفر مايدخلش القايمة
+];
+
+test("التسعير من الكتالوج بياخد أطول اسم بيطابق البداية", () => {
+  const p = priceMatcher(CATALOG);
+  assert.equal(p("بيتزا تشيكن رانش - وسط 1.0 حشو اطراف كيري"), 28);
+  assert.equal(p("بيتزا مارجريتا 1.0 بدون حشو اطراف"), 20);
+  assert.equal(p("بيتزا حاجة متعرفهاش"), 99); // بترجع للاسم العام
+  assert.equal(p("حاجة مش في الكتالوج"), 0);
+  assert.equal(p("طحينه"), 0);
+});
+
+test("سطر بسعر بيفضل بسعره، وسطر بصفر بيتسعّر × الكمية", () => {
+  const p = priceMatcher(CATALOG);
+  assert.equal(lineValue({ name: "بيتزا مارجريتا - وسط", amount: 25, qty: 1 }, p), 25);
+  assert.equal(lineValue({ name: "بيتزا تشيكن رانش 1.0 حشو اطراف كيري", amount: 0, qty: 2 }, p), 56);
+  assert.equal(lineValue({ name: "بيتزا تشيكن رانش 1.0 حشو اطراف كيري", amount: 0 }, p), 28); // كمية ناقصة = ١
+  assert.equal(lineValue({ name: "مش موجود", amount: 0, qty: 3 }, p), 0);
+});
+
+test("عميل كل بيتزته بصفر لازم يبقى «بيتزا» مش بلا تفضيل", () => {
+  const p = priceMatcher(CATALOG);
+  const lines = [
+    { name: "بيتزا تشيكن رانش 1.0 حشو اطراف كيري", amount: 0, qty: 1 },
+    { name: "بيتزا مارجريتا 1.0 بدون حشو اطراف", amount: 0, qty: 1 },
+    { name: "كريب ميكس لحوم", amount: 30, qty: 1 },
+  ];
+  const food = {};
+  for (const l of lines) { const g = foodGroup(l.name); if (g) food[g] = (food[g] || 0) + lineValue(l, p); }
+  assert.equal(topFoodGroup(food), "pizza"); // ٤٨ بيتزا مقابل ٣٠ كريب
+  // من غير التسعير كان هيطلع كريب — ده بالظبط الباج
+  const naive = {};
+  for (const l of lines) { const g = foodGroup(l.name); if (g) naive[g] = (naive[g] || 0) + (Number(l.amount) || 0); }
+  assert.equal(topFoodGroup(naive), "crepe");
 });
 
 test("المشاوي بتروح للكيلو والباقي للبوكس", () => {

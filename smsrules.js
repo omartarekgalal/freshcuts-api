@@ -178,6 +178,33 @@ export function foodGroup(name) {
   for (const r of FOOD_RULES) if (r.re.test(n)) return r.g;
   return null; // مقبلات/مشروبات/طاسات — مش إشارة تفضيل
 }
+/* ── فخ: نقطة البيع بتكتب سعر ٠ لسطر البيتزا اللي عليه اختيار حشو أطراف ──
+   «بيتزا تشيكن رانش - وسط 1.0 حشو اطراف كيري» → amount = 0 (السعر بيتحسب
+   في حتة تانية). ٢٢٢ سطر بيتزا من ٥٤٥ كده، وفي طلبات كيتا **كل** الـ٦٨ سطر
+   بيتزا صفر. النتيجة كانت إن شريحة «عملاء التطبيقات — بيتزا» طلعت ٠ بني آدم
+   بينما فيه ١٤ واحد أغلب أكلهم بيتزا.
+   الحل: لو السطر بصفر، نسعّره من كتالوج نقطة البيع بأطول اسم بيطابق البداية
+   («بيتزا تشيكن رانش» بتكسب «بيتزا»)، وده بيرجّع السعر الحقيقي مش تخمين. */
+export function priceMatcher(catalog) {
+  // الأطول الأول — أول مطابقة بداية هي الأدق
+  const list = (catalog || [])
+    .map((p) => ({ n: String(p.name_ar || p.name || ""), price: Number(p.price_incl ?? p.price) || 0 }))
+    .filter((p) => p.n && p.price > 0)
+    .sort((a, b) => b.n.length - a.n.length);
+  return (name) => {
+    const s = String(name || "");
+    for (const p of list) if (s.startsWith(p.n)) return p.price;
+    return 0;
+  };
+}
+/* سطر بسعر → سعره. سطر بصفر → سعر الكتالوج × الكمية. */
+export function lineValue(line, priceOf) {
+  const amt = Number(line?.amount) || 0;
+  if (amt > 0) return amt;
+  const qty = Number(line?.qty) || 1;
+  return (priceOf ? priceOf(line?.name) : 0) * qty;
+}
+
 /* أعلى مجموعة بالإنفاق. التعادل بيترتّب بترتيب FOOD_GROUPS عشان النتيجة
    تبقى ثابتة (نفس العميل مايتنقلش بين شريحتين كل ما نعيد الحساب). */
 export function topFoodGroup(amounts) {
