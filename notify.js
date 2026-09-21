@@ -444,6 +444,19 @@ export function register(app, ctx, deps = {}) {
       const p = r?.rows?.[0]?.phone_norm;
       if (/^5\d{8}$/.test(p || "")) phone = p;
     }
+    /* المتصفح دوّر التوكن (pushsubscriptionchange): الاشتراك الجديد ملوش
+       جوال ولا جهاز — بنورّثهم من القديم وبنقفله، وإلا كل تدوير بيرمي عميل
+       من جمهور الحملات وهو فاكر نفسه لسه مشترك. */
+    let inherited = null;
+    if (b.oldEndpoint && String(b.oldEndpoint) !== endpoint) {
+      const o = await pool.query(
+        "SELECT phone_norm, order_no, device_id FROM push_subs WHERE endpoint=$1", [String(b.oldEndpoint).slice(0, 1000)]).catch(() => null);
+      inherited = o?.rows?.[0] || null;
+      if (inherited) {
+        pool.query("UPDATE push_subs SET disabled=TRUE WHERE endpoint=$1", [String(b.oldEndpoint).slice(0, 1000)]).catch(() => {});
+        if (!phone && /^5\d{8}$/.test(inherited.phone_norm || "")) phone = inherited.phone_norm;
+      }
+    }
     await pool.query(
       `INSERT INTO push_subs(phone_norm, order_no, endpoint, sub, device_id, kind, platform, app_version, last_seen_at)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,NOW())
@@ -455,8 +468,8 @@ export function register(app, ctx, deps = {}) {
          app_version = COALESCE(EXCLUDED.app_version, push_subs.app_version),
          kind = EXCLUDED.kind, last_seen_at = NOW(),
          sub = EXCLUDED.sub, disabled = FALSE`,
-      [phone, orderNo, endpoint, jb(stored),
-       b.deviceId ? String(b.deviceId).slice(0, 64) : null,
+      [phone, orderNo || inherited?.order_no || null, endpoint, jb(stored),
+       b.deviceId ? String(b.deviceId).slice(0, 64) : (inherited?.device_id || null),
        kind,
        b.platform ? String(b.platform).slice(0, 16) : null,
        b.appVersion ? String(b.appVersion).slice(0, 24) : null]
