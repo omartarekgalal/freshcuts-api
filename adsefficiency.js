@@ -93,7 +93,20 @@ export function paceVerdict({ spend, revenue, target = DEFAULT_TARGET, share, ba
 }
 
 export function register(app, ctx, deps = {}) {
-  const { pool, requireAdmin, getSettingsData } = ctx;
+  const { pool, requireAdmin, getSettingsData, DEFAULT_DELIVERY_APPS } = ctx;
+  /* طلب تطبيق توصيل؟ نفس قاعدة adsreport.js: محفظة تطبيق في الدفع
+     أو تاج order_sources.source = delivery_app. الـPOS بيسجّلهم Dine-in فالـorder_option
+     مابينفعش دليل. واللي مش تطبيق وExternal/QR = انعكاس طلب متجر — بيتشال. */
+  const appsList = async () => {
+    try {
+      const s = await getSettingsData();
+      const list = Array.isArray(s?.deliveryAppMethods) && s.deliveryAppMethods.length ? s.deliveryAppMethods : (DEFAULT_DELIVERY_APPS || []);
+      return list.map((x) => String(x).toLowerCase());
+    } catch { return (DEFAULT_DELIVERY_APPS || []).map((x) => String(x).toLowerCase()); }
+  };
+  const APP_PAY = `EXISTS (SELECT 1 FROM jsonb_object_keys(COALESCE(o.payments,'{}'::jsonb)) k WHERE lower(k) = ANY($3::text[]))`;
+  const APP_SRC = `EXISTS (SELECT 1 FROM order_sources x WHERE x.order_id = o.order_id AND x.source = 'delivery_app')`;
+  const POS_LIVE = `(o.order_type IS NULL OR (o.order_type NOT ILIKE '%void%' AND o.order_type NOT ILIKE '%refund%'))`;
   const cache = new Map();
   const cached = async (key, fn, ms = CACHE_MS) => {
     const h = cache.get(key);
@@ -145,16 +158,16 @@ export function register(app, ctx, deps = {}) {
      طلبات المتجر بتنزل POS كـExternal من غير محفظة تطبيق — بنستبعدها من ناحية
      الـPOS عشان مانعدّهاش مرتين (نفس قاعدة adsreport.js). */
   async function revenuePart(day) {
+    const apps = await appsList();
     const [pos, shop] = await Promise.all([
       q(`
         SELECT (extract(hour from (o.order_date AT TIME ZONE '${TZ}'))::int) AS h,
                (o.order_type ILIKE '%external%' OR o.order_type ILIKE '%qr-menu%') AS mirror,
-               EXISTS (SELECT 1 FROM order_sources s WHERE s.order_id = o.order_id AND s.source = 'delivery_app') AS app_src,
+               (${APP_PAY} OR ${APP_SRC}) AS app_src,
                count(*)::int AS n, COALESCE(sum(o.total),0) AS rev
           FROM ts_orders o
-         WHERE o.order_date >= $1 AND o.order_date < $2
-           AND (o.order_type IS NULL OR (o.order_type NOT ILIKE '%void%' AND o.order_type NOT ILIKE '%refund%'))
-         GROUP BY 1,2,3`, [bizStart(day).toISOString(), bizEnd(day).toISOString()]),
+         WHERE o.order_date >= $1 AND o.order_date < $2 AND ${POS_LIVE}
+         GROUP BY 1,2,3`, [bizStart(day).toISOString(), bizEnd(day).toISOString(), apps]),
       q(`
         SELECT order_no, total, option, coupon, is_test, attribution, attrib_source, created_at,
                (extract(hour from (created_at AT TIME ZONE '${TZ}'))::int) AS h
@@ -311,11 +324,10 @@ export function register(app, ctx, deps = {}) {
       q(`SELECT ((hour_start AT TIME ZONE '${TZ}') - interval '4 hours')::date::text AS day, sum(spend) AS spend
            FROM ad_spend_hourly WHERE hour_start >= $1 AND hour_start < $2 GROUP BY 1`, [bizStart(from).toISOString(), bizEnd(to).toISOString()]),
       q(`SELECT ((o.order_date AT TIME ZONE '${TZ}') - interval '4 hours')::date::text AS day,
-                count(*) FILTER (WHERE NOT (o.order_type ILIKE '%external%' OR o.order_type ILIKE '%qr-menu%'))::int AS n,
-                COALESCE(sum(o.total) FILTER (WHERE NOT (o.order_type ILIKE '%external%' OR o.order_type ILIKE '%qr-menu%')),0) AS rev
-           FROM ts_orders o WHERE o.order_date >= $1 AND o.order_date < $2
-             AND (o.order_type IS NULL OR (o.order_type NOT ILIKE '%void%' AND o.order_type NOT ILIKE '%refund%'))
-          GROUP BY 1`, [bizStart(from).toISOString(), bizEnd(to).toISOString()]),
+                count(*)::int AS n, COALESCE(sum(o.total),0) AS rev
+           FROM ts_orders o WHERE o.order_date >= $1 AND o.order_date < $2 AND ${POS_LIVE}
+             AND NOT ((o.order_type ILIKE '%external%' OR o.order_type ILIKE '%qr-menu%') AND NOT (${APP_PAY} OR ${APP_SRC}))
+          GROUP BY 1`, [bizStart(from).toISOString(), bizEnd(to).toISOString(), await appsList()]),
       q(`SELECT ((created_at AT TIME ZONE '${TZ}') - interval '4 hours')::date::text AS day, count(*)::int AS n, COALESCE(sum(total),0) AS rev
            FROM shop_orders WHERE created_at >= $1 AND created_at < $2 AND status <> ALL($3::text[])
              AND NOT COALESCE(is_test,false) AND COALESCE(upper(coupon),'') <> ALL($4::text[])
