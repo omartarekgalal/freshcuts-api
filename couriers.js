@@ -178,7 +178,7 @@ export function readableAddress(addr, { withPin = false } = {}) {
   return pin ? `${text} — ${pin}` : text;
 }
 
-const PREPAID_NOTE = "الطلب مدفوع مسبقاً — لا يُحصَّل من العميل";
+export const PREPAID_NOTE = "الطلب مدفوع مسبقاً — لا يُحصَّل من العميل";
 
 /* ── لاجلك: العنوان = النقطة بس، وكل الباقي في order.notes ───────────────
    ١٩/٩ (أول مرة): لاجلك قالت إن العربي في delivery_details.address بيوصل

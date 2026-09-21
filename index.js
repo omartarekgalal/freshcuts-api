@@ -63,6 +63,7 @@ import * as systemcheck from "./systemcheck.js";
 import * as syshealth from "./syshealth.js";
 import * as portal from "./portal.js";
 import * as courierops from "./courierops.js";
+import * as courierlive from "./courierlive.js";
 import * as kitchen from "./kitchen.js";
 import * as adsreport from "./adsreport.js";
 import * as mkhub from "./mkhub.js";
@@ -3104,7 +3105,11 @@ let courierOpsApi = null;
 const portalApi = portal.register(app, moduleCtx, { shop: () => shopApi, delivery: () => deliveryApi, cmsWhoami: (c) => cmsApi.whoami(c), courierOps: () => courierOpsApi });
 // لما المندوب مايجيش (١٩ سبتمبر): رفض/إلغاء لاجلك، مفيش كابتن، مخالفات SLA، مندوب خارجي،
 // تحويل لاستلام، حارس المشوار البعيد، وتقرير «مخالفات لاجلك» للمطالبات.
-courierOpsApi = courierops.register(app, moduleCtx, { shop: () => shopApi, delivery: () => deliveryApi, portal: () => portalApi, notify: () => notifyApi });
+let courierLiveApi = null;
+courierOpsApi = courierops.register(app, moduleCtx, { shop: () => shopApi, delivery: () => deliveryApi, portal: () => portalApi, notify: () => notifyApi, courierLive: () => courierLiveApi });
+// 🗺️ التتبّع الحي (٢١ سبتمبر): أثر الكابتن على الخريطة (لاجلك بترجّع إحداثيات)،
+// ورابط المندوب الخارجي لمرة واحدة (/d/<token>) اللي بيبعت موقعه ويسجّل التسليم.
+courierLiveApi = courierlive.register(app, moduleCtx, { shop: () => shopApi, delivery: () => deliveryApi, portal: () => portalApi });
 // شاشة المطبخ (KDS) للمطعم كله: webhooks تاب سينس + استطلاع API الشريك + طلبات المتجر.
 // دخول بحساب «مطبخ» من «فريق البورتال» — نفس توكن البورتال ومقفول على /api/kitchen/*.
 kitchen.register(app, moduleCtx, { portal: () => portalApi, tsp: () => tspApi });

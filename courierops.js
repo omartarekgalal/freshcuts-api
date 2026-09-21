@@ -457,6 +457,8 @@ export function register(app, ctx, deps = {}) {
   const delivery = typeof deps.delivery === "function" ? deps.delivery : () => deps.delivery || null;
   const portal = typeof deps.portal === "function" ? deps.portal : () => deps.portal || null;
   const notify = typeof deps.notify === "function" ? deps.notify : () => deps.notify || null;
+  // التتبّع الحي (٢١ سبتمبر): رابط المندوب الخارجي بيتعمل في نفس الطلبة
+  const courierLive = typeof deps.courierLive === "function" ? deps.courierLive : () => deps.courierLive || null;
   const emit = deps.emitOrder || emitOrder;
   const now = deps.now || (() => Date.now());
   const J = jb || ((v) => JSON.stringify(v));
@@ -690,6 +692,15 @@ export function register(app, ctx, deps = {}) {
         `SELECT DISTINCT ON (order_no) order_no, detected_at, resolved_by, detail FROM dl_courier_incidents
           WHERE order_no = ANY($1::text[]) AND kind='asked_leajlak' ORDER BY order_no, id DESC`, [nos])).rows;
       const askedBy = new Map(asked.map((a) => [a.order_no, a]));
+      /* رابط المندوب الخارجي (courierlive): الكارت لازم يقول «الرابط اتفتح /
+         بدأ / وصل» — من غيره المدير مش عارف هو بعت في الفراغ ولا لأ. */
+      let runBy = new Map();
+      try {
+        const runs = (await pool.query(
+          `SELECT r.order_no, r.opened_at, r.started_at, r.arrived_at, r.delivered_at, r.expires_at, r.revoked_at, r.pings, r.last_at, r.courier_name
+             FROM dl_ext_runs r WHERE r.order_no = ANY($1::text[])`, [nos])).rows;
+        runBy = new Map(runs.map((x) => [x.order_no, x]));
+      } catch { /* الجدول لسه ما اتعملش — الشاشة بتشتغل من غيره */ }
       const t = now();
       for (const r of rows) {
         if (r.option !== "delivery") continue;
@@ -713,7 +724,19 @@ export function register(app, ctx, deps = {}) {
           deadlines: ev ? ev.deadlines : null,
           breaches: ev ? ev.breaches.map((b) => b.code) : [],
           provider: sh ? sh.provider : null,
-          external: sh && sh.provider === "external" ? { cost: sh.cost != null ? Number(sh.cost) : null } : null,
+          external: sh && sh.provider === "external" ? (() => {
+            const rn = runBy.get(r.order_no) || null;
+            return {
+              cost: sh.cost != null ? Number(sh.cost) : null,
+              link: rn ? {
+                name: rn.courier_name || null,
+                openedAt: isoOf(rn.opened_at), startedAt: isoOf(rn.started_at), arrivedAt: isoOf(rn.arrived_at),
+                deliveredAt: isoOf(rn.delivered_at), lastAt: isoOf(rn.last_at), pings: Number(rn.pings) || 0,
+                live: !rn.delivered_at && !rn.revoked_at && new Date(rn.expires_at).getTime() > t,
+                expiresAt: isoOf(rn.expires_at),
+              } : null,
+            };
+          })() : null,
           far: fg.far ? { km: fg.km, fromKm: fg.fromKm, mode: fg.mode } : null,
           badge,
           askedLeajlak: ak ? { at: isoOf(ak.detected_at), by: ak.resolved_by || null, note: (ak.detail && ak.detail.note) || null } : null,
@@ -866,7 +889,17 @@ export function register(app, ctx, deps = {}) {
       [orderNo, Number(ins.rows[0].id), reason || "المدير اختار مندوب خارجي", user.name, J({ needsCost, cost, manualChoice: true })]).catch(() => {});
     if (!b.retro) customerSms(orderNo, "external");
     audit(user, staffRun ? "courier_staff" : "courier_external", orderNo, true, { cost, stage, reason, retro: Boolean(b.retro) }, c);
-    return c.json({ ok: true, shipmentId: Number(ins.rows[0].id), status: next, needsCost });
+    /* ضغطة واحدة (عمر ٢١/٩): التسجيل بيرجّع معاه رسالة الواتساب الجاهزة
+       ورابط المندوب لمرة واحدة، فالمدير مايعملش خطوة تانية. فشل التحضير
+       ما يوقّعش التسجيل — الشحنة اتسجّلت فعلاً والرابط له زرار لوحده. */
+    let handoff = null;
+    if (b.handoff !== false && !b.retro && stage !== "delivered") {
+      try {
+        const h = await courierLive()?.makeHandoff?.(orderNo, { name, phone, by: user.name });
+        if (h && h.ok) handoff = h;
+      } catch (e) { try { log.error(`[courierops] handoff ${orderNo}: ${e?.message || e}`); } catch {} }
+    }
+    return c.json({ ok: true, shipmentId: Number(ins.rows[0].id), status: next, needsCost, handoff });
   }));
 
   // ٢) حالات المندوب الخارجي + التكلفة
