@@ -49,6 +49,7 @@ import * as shop from "./shop.js";
 import * as recs from "./recs.js";
 import * as accounts from "./accounts.js";
 import * as tspartner from "./tspartner.js";
+import * as posnames from "./posnames.js";
 import * as cms from "./cms.js";
 import * as reviews from "./reviews.js";
 import * as customer360 from "./customer360.js";
@@ -2613,7 +2614,7 @@ app.get("/api/manager/orders", async (c) => {
   const rows = (await pool.query(
     `SELECT o.order_id, o.receipt, o.order_date, o.calendar_day, o.order_option, o.order_type,
             o.total, o.gross_incl, o.discount_incl, o.payments, o.staff_name, o.customer_id,
-            COALESCE(NULLIF(tc.name,''), s.customer_name) AS customer_name,
+            COALESCE(NULLIF(CASE WHEN tc.name ~ '^عميل( |$)' THEN '' ELSE tc.name END,''), s.customer_name) AS customer_name,
             COALESCE(NULLIF(tc.phone,''), s.customer_phone) AS customer_phone,
             s.source, s.source_note, s.filled_by, s.customer_kind
      ${base} ORDER BY ${order} LIMIT ${limit} OFFSET ${offset}`, p
@@ -3085,6 +3086,7 @@ selftest.register(app, moduleCtx, { delivery: () => deliveryApi });
 let accountsApi = null;
 shopApi = shop.register(app, moduleCtx, {
   pay: payApi, delivery: deliveryApi, notify: notifyApi, accounts: () => accountsApi, wa: () => waApi,
+  posNames: () => posNamesApi,
   carts: () => cartsApi, tsp: () => tspApi, funnel: () => funnelApi,
   journey: () => journeyApi,
   // الباقات بتتعرّف في الـCMS (اللي بيتسجّل بعدنا) — الشيك أوت بيوسّعها
@@ -3098,8 +3100,13 @@ shopApi = shop.register(app, moduleCtx, {
 recs.register(app, moduleCtx);
 // ملف العميل: دخول OTP، عناوين محفوظة، تاريخ الطلبات وإعادة الطلب، وربط/إنشاء
 // في دفتر عملاء TabSense (الموجود يتربط، الجديد بس هو اللي يتعمل).
-accountsApi = accounts.register(app, moduleCtx);
+let posNamesApi = null;
+accountsApi = accounts.register(app, moduleCtx, { posNames: () => posNamesApi });
 const tspApi = tspartner.register(app, moduleCtx);
+/* اسم العميل الحقيقي في نقطة البيع + ربط مرآة الطلب بطلب الموقع — posnames.js.
+   بيتسجّل بعد tspartner لأنه بيقرا tenant_order_id من API الشركاء، وshop/accounts
+   بيوصلوا له بربط متأخّر (نفس نمط attribution/ads). */
+posNamesApi = posnames.register(app, moduleCtx, { tsp: () => tspApi });
 // حالة النظام — آخر واحد بيتسجّل عن قصد. الموديول ده مجمِّع: بينده المسارات
 // اللي فوق دي بنفسها جوّه العملية (app.request) بدل ما يكتب استعلام تاني
 // لنفس الرقم. فلازم يكونوا كلهم اتسجّلوا قبله.

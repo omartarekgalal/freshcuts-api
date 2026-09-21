@@ -32,6 +32,7 @@ import * as tsstore from "./tsstore.js";
 import { msisdn, readableAddress, leaveAtDoor, farZoneOfRow, deliveryNotesOf, courierNotes } from "./couriers.js";
 import { districtOfRow } from "./districts.js";
 import { checkPersonName, NAME_MSG, NAME_MAX } from "./person-name.js";
+import { plausibleName } from "./posnames.js";
 // ضريبة سطور الباقة — نفس الثابت اللي التوزيع اتعمل بيه، عشان الإجمالي يرجع للسعر بالظبط
 import { VAT_RATE as BUNDLE_VAT } from "./bundles.js";
 import { MULTIPLY as MONEY_MULTIPLY, rescaleItems, stampMf, scaleOf } from "./money.js";
@@ -388,6 +389,7 @@ export function register(app, ctx, deps = {}) {
   const accounts = deps.accounts || (() => null); // late-bound — accounts registers after us
   const carts = deps.carts || (() => null);       // late-bound — abandoned-cart tracker
   const tsp = deps.tsp || (() => null);           // late-bound — TabSense partner (paid orders)
+  const posNames = deps.posNames || (() => null); // late-bound — أسماء عملاء نقطة البيع + ربط المرايا
   const journey = typeof deps.journey === "function" ? deps.journey : () => null; // late-bound — ٠٢
   const wa = typeof deps.wa === "function" ? deps.wa : () => null; // واتساب: موافقة الشيك أوت
   const emitOrder = makeOrderEmitter(deps.emitOrder);
@@ -828,8 +830,12 @@ export function register(app, ctx, deps = {}) {
     /* الاسم الثنائي إجباري تاني (عمر ١٩/٩ — رجوع عن «عميل» الافتراضي). detail =
        نفس الرسالة، عشان نسخة متجر قديمة في الكاش بتعرض detail تحت زرار الدفع. */
     const nameChk = checkPersonName(cust.name);
-    if (!nameChk.ok) {
-      return fail("invalid_name", 400, { reason: nameChk.error, message: NAME_MSG.ar, message_en: NAME_MSG.en, detail: NAME_MSG.ar });
+    /* ٢١/٩ — النص المؤقت مش اسم. «عميل» / «عميل أونلاين» كانوا بيتسجّلوا
+       على الطلب وبيمشوا لدفتر نقطة البيع، وبعدين بيبقوا اسم العميل الدائم
+       على كل فاتورة. المتجر بيمسحهم، بس نسخة قديمة في كاش الجهاز ممكن
+       تبعتهم، فالسيرفر هو الحَكَم. */
+    if (!nameChk.ok || !plausibleName(nameChk.name)) {
+      return fail("invalid_name", 400, { reason: nameChk.error || "name_placeholder", message: NAME_MSG.ar, message_en: NAME_MSG.en, detail: NAME_MSG.ar });
     }
     if (option === "delivery" && !(b.address?.latitude && b.address?.longitude)) {
       return fail("address_required", 400);
@@ -847,6 +853,10 @@ export function register(app, ctx, deps = {}) {
         pool.query("UPDATE acct_customers SET name=$2 WHERE phone_norm=$1", [phoneNorm, nameChk.name.slice(0, 60)])
           .catch((e) => console.error("[shop] account name save failed:", e.message));
       }
+      /* ونفس الاسم يمشي لدفتر نقطة البيع: هو اللي بيبان على شاشة الكاشير
+         والفاتورة وتذكرة المطبخ — تاب سينس بتتجاهل الاسم اللي جوه الطلب
+         وبتعرض اسم الدفتر (اتأكدنا ٢١/٩). fire-and-forget. */
+      accounts()?.syncPosIdentity?.(phoneNorm, nameChk.name);
     }
 
     // Coupon first — the discount changes every number after it.
@@ -1215,6 +1225,16 @@ export function register(app, ctx, deps = {}) {
      رسوم التوصيل بتتحط في الملاحظات (الطلب already_paid فالكاشير مش بيحصّل).
      TODO الإنتاج: بعد وصول مفاتيح الإنتاج، تأكّد إن إجمالي طلب الشريك بيطابق
      اللي العميل دفعه (خصوصاً الخصومات ورسوم التوصيل) قبل تشغيل TSP_AUTO_ORDER. */
+  /* اسم العميل اللي بيروح لنقطة البيع وللمندوب: اسم الطلب لو اسم حقيقي، وإلا
+     الاسم اللي على الحساب (الاسم المؤقت مابيتحسبش خالص). row.acct_name بيجي
+     من createPosOrder اللي بيقراه مع الصف. */
+  function bestOrderName(row) {
+    for (const cand of [row.customer?.name, row.acct_name]) {
+      if (plausibleName(cand)) return String(cand).trim().slice(0, NAME_MAX);
+    }
+    return null;
+  }
+
   function buildPartnerOrder(row, settings) {
     const addr = row.address || {};
     // الخصم مابيتكتبش للكاشير/المطبخ (عمر 16 سبتمبر) — سعر السطور بعد الخصم كفاية
@@ -1235,7 +1255,11 @@ export function register(app, ctx, deps = {}) {
       paymentMethod: posPaymentMethodFor(row.pay_gateway, settings),
       notes,
       customer: {
-        name: row.customer?.name || null,
+        /* الاسم اللي بيتبعت هنا بيظهر في ملاحظات الطلب بس — نقطة البيع بتعرض
+           اسم دفتر العملاء للرقم ده على الشاشة والفاتورة (اتأكدنا ٢١/٩)،
+           وده اللي ensurePosName بيصلّحه قبل الإنشاء. بنبعت الاسم الحقيقي
+           برضه عشان الملاحظات تبقى مقروءة للكاشير مهما حصل. */
+        name: bestOrderName(row),
         phone: row.customer?.phone || null,
         address: { city: null, area: addr.area || null, street: addr.street || null },
       },
@@ -1254,6 +1278,22 @@ export function register(app, ctx, deps = {}) {
     if (!row || row.pos_order_id) return;
     const settings = (await getSettingsData()).shop || {};
     const addr = row.address || {};
+
+    /* ── الاسم اللي هيتشاف على شاشة الكاشير ─────────────────────────────
+       نقطة البيع بتعرض اسم **دفتر العملاء** للرقم، مش الاسم اللي جوه الطلب.
+       فقبل ما ننشئ الطلب بنتأكد إن صف الدفتر عليه الاسم الحقيقي — ده اللي
+       بيمنع «عميل أونلاين» من أول لحظة. عمره ما يعطّل الطلب: أي فشل أو بطء
+       بنعدّيه (الكنس الدوري بيصلّحه بعدين). */
+    row.acct_name = (await pool.query(
+      "SELECT name FROM acct_customers WHERE phone_norm=$1", [row.phone_norm]
+    ).catch(() => ({ rows: [] }))).rows[0]?.name || null;
+    const pn = posNames();
+    if (pn && row.phone_norm) {
+      await Promise.race([
+        pn.ensurePosName(row.phone_norm, bestOrderName(row)).catch(() => null),
+        new Promise((r) => setTimeout(r, 6000)),
+      ]).catch(() => {});
+    }
 
     // المسار المفضّل: طلب مدفوع مسبقاً عبر API الشريك (يلغي تحصيل الكاشير).
     // بيتفعّل فقط لما TSP_AUTO_ORDER=1 والربط شغّال. أي فشل بيرجع للمسار القديم
@@ -1281,6 +1321,14 @@ export function register(app, ctx, deps = {}) {
           await setStatus(orderNo, "pos_created", { cols: { pos_order_id: String(out.id) }, from: row.status });
           await pool.query(
             "UPDATE shop_orders SET pos_attempts=pos_attempts+1, last_pos_error=NULL WHERE order_no=$1", [orderNo]);
+          /* رقم الطلب الرقمي في تاب سينس + ربط المرآة بالعميل الحقيقي.
+             من غير ده الطلب بيتعد في التقارير كطلب نقطة بيع بلا صاحب،
+             و«جديد ولا راجع» وملف العميل بيطلعوا غلط. كله fire-and-forget. */
+          if (out.tenantOrderId) {
+            pool.query("UPDATE shop_orders SET pos_tenant_order_id=$2 WHERE order_no=$1",
+              [orderNo, String(out.tenantOrderId)]).catch(() => {});
+          }
+          if (pn) pn.linkPosOrders({ limit: 5 }).catch(() => {});
           console.log(`[shop] ${orderNo}: partner paid order ${out.id} (linkedCustomer=${out.linkedCustomer}, attempt ${attempt})`);
           // Purchase من السيرفر (W0-03) — من غير انتظار، وفشله مايلمسش الطلب
           fireServerPurchase(deps.funnel, orderNo);

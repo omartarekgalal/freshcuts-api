@@ -37,6 +37,11 @@ export const ORDER_COLUMNS = Object.freeze([
   { name: "portal_ack_at", type: "TIMESTAMPTZ" },
   { name: "portal_ack_by", type: "TEXT" },
   { name: "collected_at", type: "TIMESTAMPTZ" },
+  /* ٢١/٩ — رقم الطلب الرقمي في تاب سينس (tenant_order_id من API الشركاء بدون
+     بادئة المتجر). pos_order_id هو الـid المقنّع اللي بيرجّعه الشريك، وهو
+     **مش** نفس ts_orders.order_id، فمن غير العمود ده مفيش طريقة نربط مرآة
+     الطلب في نقطة البيع بطلب الموقع — والتقارير وملف العميل بيضيعوا. */
+  { name: "pos_tenant_order_id", type: "TEXT" },
 ]);
 
 export const ORDER_INDEXES = Object.freeze([

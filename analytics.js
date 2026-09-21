@@ -31,6 +31,7 @@
    — a second definition of "this order came through Keeta" is exactly how two
    screens start disagreeing. */
 import { FIRST_ORDER_CTE } from "./identity.js";
+import { POS_NAME_SQL } from "./posnames.js";
 export const TZ = "Asia/Riyadh";
 // Hour (Riyadh local) at which TabSense rolls the business day over. See note 3.
 export const BIZ_DAY_START_HOUR = 4;
@@ -850,7 +851,7 @@ export function register(app, ctx) {
         SELECT ${IDENT_SQL} AS ident,
                o.order_id, o.order_date, o.calendar_day, o.total,
                ${channelSql(appsParam)} AS ch,
-               COALESCE(NULLIF(tc.name, ''), NULLIF(s.customer_name, '')) AS cname,
+               ${POS_NAME_SQL("tc", "s")} AS cname,
                COALESCE(NULLIF(tc.phone, ''), NULLIF(s.customer_phone, '')) AS cphone
           FROM ts_orders o
           LEFT JOIN order_sources s ON s.order_id = o.order_id

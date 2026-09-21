@@ -57,6 +57,9 @@ test("every §4-2 column is declared with the planned type", () => {
     portal_ack_at: "TIMESTAMPTZ",
     portal_ack_by: "TEXT",
     collected_at: "TIMESTAMPTZ",
+    // ٢١/٩ — ts_orders.order_id بتاع مرآة الطلب في نقطة البيع (من
+    // tenant_order_id بتاع API الشركاء). pos_order_id المقنّع مالوش علاقة بيه.
+    pos_tenant_order_id: "TEXT",
   });
 });
 

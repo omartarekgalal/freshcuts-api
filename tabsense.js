@@ -880,12 +880,24 @@ async function fetchProducts({ search = "", pageSize = 1000 } = {}) {
 //   • phone that is not a 9-digit Saudi mobile  → rejected
 // FeedUs names like "Fawaz H" or "M E" hit the second rule, which is why 5 of
 // 12 pushed records never appeared while the API reported all 12 created.
-async function createCustomer({ firstName, lastName = "", phone, countryCode = "+966" }) {
+//
+// ⚠️ 21/9/2026 — NEVER invent a name here. The POS shows the DIRECTORY name on
+// every order, receipt and KDS ticket for that phone, and it IGNORES the name
+// the partner API sends with the order. A placeholder written once ("عميل
+// أونلاين", "عميل توصيل") therefore becomes the customer's name forever, on
+// every future order. So a too-short/absent first name is now a REFUSAL
+// (`name_too_short`) unless the caller explicitly opts in with
+// `allowPlaceholder:true`. Callers without a real name should wait until they
+// have one instead of creating a record.
+async function createCustomer({ firstName, lastName = "", phone, countryCode = "+966", allowPlaceholder = false }) {
   if (!phone) throw new Error("createCustomer: phone required");
   const cc = String(countryCode).startsWith("+") ? String(countryCode) : `+${countryCode}`;
   const digits = String(phone).replace(/\D/g, "").replace(/^966/, "").replace(/^0/, "");
   if (cc === "+966" && !/^5\d{8}$/.test(digits)) {
     return { ok: false, created: false, error: "invalid_saudi_mobile", detail: digits };
+  }
+  if (!allowPlaceholder && String(firstName || "").trim().length < 3) {
+    return { ok: false, created: false, error: "name_too_short", detail: String(firstName || "") };
   }
   const s = await getSession();
   const page = await authGet("/customers");
@@ -928,6 +940,102 @@ async function createCustomer({ firstName, lastName = "", phone, countryCode = "
   return { ok: false, created: false, error: `HTTP ${res.status}` };
 }
 
+/* ── تصليح اسم عميل في دفتر تاب سينس ─────────────────────────────────────
+   ليه ده مهم: نقطة البيع بتعرض **اسم الدفتر** على كل طلب وفاتورة وتذكرة مطبخ
+   للرقم ده، وبتتجاهل الاسم اللي بنبعته مع الطلب في API الشركاء (اتأكدنا
+   ٢١/٩ على الإنتاج). فالاسم الغلط في الدفتر = اسم غلط على كل الطلبات،
+   القديمة والجديدة. والعكس صحيح: أول ما نصلّح الاسم في الدفتر، **الطلبات
+   القديمة بتتصلّح كمان** لأن العرض بيقرا من الدفتر (متأكد عملياً).
+
+   API الشركاء بيقرا بس (`PUT/PATCH /customers/:id` = 405)، فبنعدّل من نفس
+   فورم اللوحة اللي الكاشير بيستخدمه: POST /customers/{id} مع _method=PATCH.
+   جرّبناه بأقل الحقول الممكنة واتأكدنا إن باقي البيانات (الإيميل، الجروبات،
+   المحفظة، العناوين، النقاط) ما اتغيرتش.
+
+   بنرجّع {ok, changed} بعد **إعادة قراءة** الصفحة — تاب سينس بترد 302 على
+   النجاح والرفض بنفس الشكل (شوف ذاكرة tabsense-create-customer-rules)،
+   فالرد نفسه مش دليل. */
+async function updateCustomerName({ customerId, firstName, lastName = "" }) {
+  const id = String(customerId || "").trim();
+  if (!/^\d+$/.test(id)) throw new Error("updateCustomerName: numeric dashboard id required");
+  const first = String(firstName || "").trim().slice(0, 30);
+  // نفس قواعد الرفض الصامت: الاسم الأول أقل من ٣ حروف مرفوض، واللقب من حرف
+  // أو حرفين مرفوض — واللقب الفاضي مقبول، فبنشيله بدل ما نخسر الصف كله.
+  if (first.length < 3) return { ok: false, changed: false, error: "name_too_short" };
+  const lastRaw = String(lastName || "").trim().slice(0, 30);
+  const last = lastRaw.length >= 3 ? lastRaw : "";
+
+  const readForm = async () => {
+    const res = await authGet(`/customers/${id}`);
+    if (res.status !== 200) throw new Error(`updateCustomerName: HTTP ${res.status}`);
+    const html = await res.text();
+    const i = html.indexOf('id="edit-customer"');
+    if (i < 0) throw new Error("updateCustomerName: edit form not found");
+    const form = html.slice(i, html.indexOf("</form>", i));
+    const pick = (re) => { const m = form.match(re); return m ? m[1] : ""; };
+    const cc = (form.match(/<option selected\s+value="(\+\d+)"/) || [])[1] || "+966";
+    return {
+      token: matchToken(html),
+      first: pick(/name="first_name"[\s\S]{0,300}?value="([^"]*)"/),
+      last: pick(/name="last_name"[\s\S]{0,300}?value="([^"]*)"/),
+      phone: pick(/x-init="inputValue='(\d+)'"/),
+      countryCode: cc,
+    };
+  };
+
+  const before = await readForm();
+  if (!before.token) throw new Error("updateCustomerName: CSRF token not found");
+  if (before.first === first && before.last === last) return { ok: true, changed: false, already: true };
+  if (!before.phone) throw new Error("updateCustomerName: phone not found on the form");
+
+  const s = await getSession();
+  const body = new URLSearchParams({
+    _token: before.token, _method: "PATCH",
+    phone_country_code: before.countryCode, phone: before.phone,
+    first_name: first, last_name: last,
+    // الفورم بيبعتهم فاضيين لعميل من غير بيانات إضافية؛ بنسيبهم زي ما هم
+    email: "", birth_date: "", gender: "", status: "",
+  });
+  const res = await fetch(dash(`/customers/${id}`), {
+    method: "POST",
+    headers: {
+      "User-Agent": UA,
+      "Content-Type": "application/x-www-form-urlencoded",
+      Accept: "text/html,application/json",
+      Referer: dash(`/customers/${id}`),
+      Cookie: s.jar.header(),
+    },
+    body,
+    redirect: "manual",
+  });
+  await res.text().catch(() => "");
+  // الدليل الوحيد = نقرا الصفحة تاني
+  const after = await readForm();
+  const ok = after.first === first && after.last === last;
+  return { ok, changed: ok, status: res.status, name: `${after.first} ${after.last}`.trim() };
+}
+
+/* الـid الرقمي بتاع عميل برقم جواله — من بحث الـDataTables في دفتر اللوحة.
+   بنستخدمه لما يكون عندنا الرقم بس (مثلاً صف اتعمل حالاً ولسه ماوصلش
+   لكاش ts_customers). */
+async function findCustomerIdByPhone(phone) {
+  const digits = String(phone || "").replace(/\D/g, "").replace(/^966/, "").replace(/^0/, "");
+  if (!/^5\d{8}$/.test(digits)) return null;
+  const cols = ["id", "first_name", "last_name", "phone"];
+  const qs = new URLSearchParams();
+  qs.set("draw", "1");
+  cols.forEach((c, i) => qs.set(`columns[${i}][data]`, c));
+  qs.set("start", "0");
+  qs.set("length", "10");
+  qs.set("search[value]", digits);
+  const res = await authGet(`/customers?${qs.toString()}`, { json: true });
+  if (!res.ok) return null;
+  const data = await res.json().catch(() => null);
+  const rows = Array.isArray(data && data.data) ? data.data : [];
+  const hit = rows.find((r) => String(r.phone || "").replace(/\D/g, "").endsWith(digits));
+  return hit ? String(hit.id) : null;
+}
+
 async function ping() {
   await getSession(true);
   const b = await listPromocodeBatches();
@@ -958,6 +1066,8 @@ export {
   fetchOrderProducts,
   fetchProducts,
   createCustomer,
+  updateCustomerName,
+  findCustomerIdByPhone,
   ping,
   BASE,
   STORE,

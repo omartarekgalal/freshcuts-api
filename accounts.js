@@ -23,6 +23,7 @@
 
 import crypto from "node:crypto";
 import * as tabsense from "./tabsense.js";
+import { plausibleName, writableName } from "./posnames.js";
 import { logSms } from "./smslog.js";
 import { customerId } from "./customer-id.js";
 
@@ -95,18 +96,11 @@ async function sendSmsRaw({ phoneNorm, body }, { attempts = 3, backoffMs = 700 }
   return data;
 }
 
-/* A POS name is only worth adopting when it looks like a NAME. TabSense is
-   full of cashier junk («الاسم الكامل 111111», bare digits, placeholders) —
-   copying that over is worse than leaving the field empty for the customer
-   to fill. */
-export function plausibleName(s) {
-  const v = String(s || "").trim();
-  if (v.length < 2 || v.length > 60) return false;
-  if (/^[\d\s\-_.+]+$/.test(v)) return false;               // digits/punctuation only
-  if (/الاسم الكامل|full ?name|unknown|test|بدون اسم/i.test(v)) return false;
-  if (/^عميل( |$)/.test(v)) return false;                   // our own placeholders
-  return true;
-}
+/* A POS name is only worth adopting when it looks like a NAME. The rule lives
+   in posnames.js now — it is the same rule that decides what we are allowed to
+   WRITE into the POS directory, and one rule beats two. Re-exported because
+   customer360.js and others import it from here. */
+export { plausibleName };
 
 const hashOtp = (phoneNorm, code) =>
   crypto.createHash("sha256").update(`${phoneNorm}|${code}|${env("ADMIN_TOKEN", "otp")}`).digest("hex");
@@ -323,8 +317,10 @@ export function recordUsedAddress(stored, raw, { now = new Date().toISOString() 
   }, { now }).list;
 }
 
-export function register(app, ctx) {
+export function register(app, ctx, deps = {}) {
   const { pool, requireAdmin, getSettingsData, jb, normPhone, deliveryAppOf } = ctx;
+  // posnames.js بيتسجّل بعدنا (محتاج tspartner)، فالربط متأخّر زي attribution/ads
+  const posNames = deps.posNames || (() => null);
 
   async function ensureSchema() {
     await pool.query(`
@@ -523,7 +519,11 @@ export function register(app, ctx) {
     }
     await pool.query("DELETE FROM acct_otp WHERE phone_norm=$1", [phoneNorm]);
 
-    const name = String(b.name || "").trim().slice(0, 60) || null;
+    /* الاسم اللي بيوصل هنا بيتخزّن ويمشي بعد كده لنقطة البيع وللفواتير، فنص
+       مؤقت («عميل»، «عميل أونلاين» — اللي رجع لنا من كاش الجهاز) مابيتخزّنش:
+       بنسيب الخانة فاضية والشيك أوت بيسأل عن الاسم الحقيقي. */
+    const nameRaw = String(b.name || "").trim().slice(0, 60);
+    const name = plausibleName(nameRaw) ? nameRaw : null;
     await pool.query(
       `INSERT INTO acct_customers(phone_norm, name, last_login_at) VALUES ($1,$2,NOW())
        ON CONFLICT (phone_norm) DO UPDATE
@@ -559,18 +559,45 @@ export function register(app, ctx) {
         [phoneNorm, known.rows[0].customer_id,
          jb({ linked: "existing", at: new Date().toISOString() }),
          plausibleName(tsName) ? tsName : ""]);
+      /* اسم الدفتر مؤقت واحنا عارفين اسمه الحقيقي؟ نصلّحه. نقطة البيع بتعرض
+         اسم الدفتر على كل طلباته (القديمة والجديدة)، فده بيصلّح الشاشة
+         والفاتورة مرة واحدة. مابيدهسش اسم حقيقي كتبه الكاشير. */
+      if (!plausibleName(tsName)) {
+        posNames()?.ensurePosName(phoneNorm).catch((e) =>
+          console.error("[accounts] POS name fix failed:", e.message));
+      }
       return;
     }
-    // genuinely new: create — respecting the silent-reject rules inside
-    // tabsense.createCustomer. The answer is recorded, not trusted; the
-    // ts_customers worker sync is what proves the record exists.
+    /* رقم جديد على الدفتر. **ممنوع نخترع اسم**: نقطة البيع بتخلي اسم الدفتر
+       اسم العميل للأبد على كل طلب وفاتورة، والاسم المؤقت «عميل أونلاين» هو
+       بالظبط اللي عمر شافه على الشاشة (٢١/٩). فلو لسه مش عارفين اسمه
+       الحقيقي بنستنى — الشيك أوت بيسأل عن الاسم، وساعتها بنعمل الصف. */
     if (!env("TABSENSE_EMAIL")) return; // dashboard connector not configured
+    const want = writableName(acct.name);
+    if (!want) return;                  // لسه مفيش اسم حقيقي — نأجّل
     const res = await tabsense.createCustomer({
-      firstName: acct.name || "عميل أونلاين",
-      phone: phoneNorm,
+      firstName: want.first, lastName: want.last, phone: phoneNorm,
     });
     await pool.query("UPDATE acct_customers SET ts_sync=$2 WHERE phone_norm=$1",
       [phoneNorm, jb({ create: res, at: new Date().toISOString() })]);
+  }
+
+  /* أول ما نعرف اسم العميل الحقيقي (شيك أوت / تعديل الاسم): خلي دفتر نقطة
+     البيع يمشي وراه — لو الصف موجود باسم مؤقت يتصلّح، ولو مش موجود يتعمل.
+     fire-and-forget: ده تحسين عرض، عمره ما يعطّل طلب أو رد. */
+  function syncPosIdentity(phoneNorm, name) {
+    (async () => {
+      const pn = String(phoneNorm || "");
+      if (!/^5\d{8}$/.test(pn) || !env("TABSENSE_EMAIL")) return;
+      if (name && !plausibleName(name)) return;
+      const api = posNames();
+      const res = api ? await api.ensurePosName(pn, name || null) : null;
+      // مش في الدفتر أصلاً → اعمله دلوقتي باسمه الحقيقي
+      if (res && res.reason === "not_in_directory") {
+        const want = writableName(name) || writableName(res.name);
+        if (want) await tabsense.createCustomer({ firstName: want.first, lastName: want.last, phone: pn });
+      }
+    })().catch((e) => console.error("[accounts] POS identity sync failed:", e.message));
   }
 
   /* ── profile ── */
@@ -644,7 +671,12 @@ export function register(app, ctx) {
     try { b = await c.req.json(); } catch { return c.json({ ok: false, error: "bad json" }, 400); }
     const name = String(b.name || "").trim().slice(0, 60);
     if (!name) return c.json({ ok: false, error: "name_required" }, 400);
+    // نص مؤقت مش اسم — مارفضوش بصمت، قول للعميل يكتب اسمه
+    if (!plausibleName(name)) return c.json({ ok: false, error: "name_required" }, 400);
     await pool.query("UPDATE acct_customers SET name=$2 WHERE phone_norm=$1", [acct.phone_norm, name]);
+    // الاسم الحقيقي بقى معروف: يمشي لنقطة البيع كمان (الدفتر هو اللي بيبان
+    // على الطلبات والفواتير)، من غير ما يعطّل الرد.
+    syncPosIdentity(acct.phone_norm, name);
     return c.json({ ok: true, name });
   });
 
@@ -873,5 +905,5 @@ export function register(app, ctx) {
       .catch(() => {});
   }, 24 * 3600_000).unref?.();
 
-  return { customerOf, sendSms, customerDiscount, saveAddressFor };
+  return { customerOf, sendSms, customerDiscount, saveAddressFor, syncPosIdentity };
 }

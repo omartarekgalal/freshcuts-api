@@ -379,7 +379,7 @@ export function register(app, ctx) {
                 COALESCE(o.order_option, '') AS order_option,
                 COALESCE(o.order_type, '') AS order_type,
                 ${channelSql("$3::text[]")} AS channel,
-                COALESCE(NULLIF(tc.name, ''), NULLIF(s.customer_name, ''), '') AS customer_name,
+                COALESCE(NULLIF(CASE WHEN tc.name ~ '^عميل( |$)' THEN '' ELSE tc.name END, ''), NULLIF(s.customer_name, ''), '') AS customer_name,
                 (${IDENT_SQL} IS NOT NULL) AS has_customer,
                 COALESCE(NULLIF(btrim(o.staff_name), ''), '') AS staff_name,
                 COALESCE(s.source, '') AS source
@@ -488,7 +488,7 @@ export function register(app, ctx) {
         `WITH scoped AS (
            SELECT o.order_id, o.total,
                   ${IDENT_SQL} AS ident,
-                  COALESCE(NULLIF(tc.name, ''), NULLIF(s.customer_name, '')) AS cname,
+                  COALESCE(NULLIF(CASE WHEN tc.name ~ '^عميل( |$)' THEN '' ELSE tc.name END, ''), NULLIF(s.customer_name, '')) AS cname,
                   COALESCE(NULLIF(tc.phone, ''), NULLIF(s.customer_phone, '')) AS cphone
              FROM ts_orders o
              LEFT JOIN order_sources s ON s.order_id = o.order_id

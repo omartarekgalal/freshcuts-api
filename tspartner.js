@@ -436,7 +436,11 @@ export function register(app, ctx) {
     // نحاول نسوّي الطلب فوراً (تلقائي). لو طريقة "FreshCuts" لسه غير مفعّلة
     // بيرجع settled:false والطلب يفضل مستحق — بيتسوّى أول ما تاب سينس يفعّلوها.
     const settle = await settleOrder(created.id, created.due);
-    return { id: created.id, external: created.orders_external, total: created.due, linkedCustomer, settled: settle.settled, raw: created };
+    /* tenant_order_id = "<store>-<id>" والـid ده هو بالظبط ts_orders.order_id.
+       `created.id` المقنّع مالوش أي علاقة بيه، فمن غيره مفيش ربط بين مرآة
+       الطلب في نقطة البيع وطلب الموقع (التقارير وملف العميل بيضيعوا). */
+    const tenantOrderId = (String(created.tenant_order_id || "").match(/(\d+)\s*$/) || [])[1] || null;
+    return { id: created.id, tenantOrderId, external: created.orders_external, total: created.due, linkedCustomer, settled: settle.settled, raw: created };
   }
 
   async function status() {
