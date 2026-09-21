@@ -46,6 +46,8 @@ import {
 // بالحرف — لو حسبنا العملاء الجداد هنا بطريقة تانية هنقول للمالك رقمين
 // مختلفين لنفس السؤال من نفس الداتا.
 import { FIRST_ORDER_DAY_CTE } from "./analytics.js";
+// بوابة رفع أرقام العملاء (O6) — بنقراها عشان نقول «اتبعت كام» مع حالتها
+import { uploadPolicy } from "./uploadgate.js";
 
 /* ═══════════════════════════════════════════════════════════════════════════
    LLM — نفس سلسلة المزوّدين بتاعة ai.js (أنثروبيك مباشر، وإلا LiteLLM)
@@ -5843,9 +5845,20 @@ ${focus}
         `SELECT DISTINCT ON (platform, segment) platform, segment, size, status, created_at
            FROM aud_syncs ORDER BY platform, segment, created_at DESC`)).rows;
     } catch { retarget.lastSyncs = []; }
-    retarget.reached = retarget.lastSyncs
-      .filter((x) => x.status === "sent")
-      .reduce((a, x) => a + (Number(x.size) || 0), 0);
+    /* «اتبعت للمنصات فعلاً» = مجموع آخر رفعة ناجحة لكل (منصة × شريحة).
+       الرقم ده بيتجمّد لو الرفع مقفول (بوابة O6) — فبنرجّع معاه تاريخ آخر
+       رفعة وحالة البوابة، عشان مايتقريش كأنه رقم النهارده. */
+    const sent = retarget.lastSyncs.filter((x) => x.status === "sent");
+    retarget.reached = sent.reduce((a, x) => a + (Number(x.size) || 0), 0);
+    retarget.reachedAt = sent.length
+      ? sent.map((x) => x.created_at).sort().at(-1)
+      : null;
+    retarget.uploadsOpen = await uploadPolicy(pool).then((p) => !!p.lists).catch(() => null);
+    retarget.reachedNote = !sent.length
+      ? "مفيش ولا رفعة ناجحة لحد دلوقتي."
+      : retarget.uploadsOpen === false
+        ? "الرفع مقفول دلوقتي (بوابة O6) — الرقم ده آخر رفعة نجحت، مش عدد النهارده."
+        : null;
     retarget.returningCustomers = Number(win.returning_customers) || 0;
     retarget.returningRevenue = r2(win.returning_revenue);
 

@@ -207,6 +207,9 @@ export function register(ctx) {
         return {
           platform: x.platform, key: x.segment, id: x.audience_id,
           size: s?.ok ? { low: s.low, high: s.high, method: s.method } : null,
+          /* الحدّين متساويين = ميتا/سناب بترجّع رقم أرضية مش قياس — نفس قاعدة
+             audiences.js. من غير الحقل ده اللوحة كانت بترسم الأرضية كإنها عدد. */
+          floor: s?.ok && Number(s.low) === Number(s.high) ? Number(s.low) : null,
           sizeNote: s?.ok ? null : (s?.error || "لسه ما اتقاسش"),
           measuredAt: s?.measured_at || null,
         };
