@@ -266,6 +266,19 @@ export function optoutLine(cfg, { code, host, sender } = {}) {
 export const audienceDriftOk = (confirmed, now) =>
   Number(now) - Number(confirmed) <= Math.max(10, Math.round(Number(confirmed) * 0.2));
 
+/* سقف الجمهور (٢١/٩) — بديل حارس الـ٢٠٪ للموجات اللي متجدولة بعد أيام.
+   موجة يوم ٣٠/٩ جمهورها النهارده صغير لأن نص الناس لسه في الفاصل؛ يوم ٣٠
+   بيبقى كبير. الحارس القديم كان بيوقفها (held) والمالك لازم يعيد التأكيد.
+   بالسقف: «ابعت لكل اللي هيبقى مؤهّل وقتها، بس مايزيدش عن N».
+   بترجع null لو تمام، أو سبب الإيقاف. */
+export function audienceGateReason(confirmed, max, now) {
+  const n = Number(now);
+  if (max != null && Number.isFinite(Number(max))) {
+    return n > Number(max) ? `audience_over_max ${n}>${max}` : null;
+  }
+  return audienceDriftOk(confirmed, n) ? null : `audience_changed ${confirmed}→${n}`;
+}
+
 /* إرسال تسويقي واحد عبر تقنيات (المُرسل الإعلاني) — نفس المسار للحملات والسلة */
 /* meta = {kind, ref} لسجل الرسايل الموحّد (smslog.js). الحملات (cms.js) ليها
    سجلها الخاص cms_campaign_sends ومابتعدّيش من هنا. */

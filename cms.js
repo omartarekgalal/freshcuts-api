@@ -454,6 +454,10 @@ export function register(app, ctx, deps = {}) {
       ALTER TABLE cms_campaigns ADD COLUMN IF NOT EXISTS holdout_pct INT NOT NULL DEFAULT 0;
       ALTER TABLE cms_campaigns ADD COLUMN IF NOT EXISTS cost NUMERIC NOT NULL DEFAULT 0;
       ALTER TABLE cms_campaigns ADD COLUMN IF NOT EXISTS excluded JSONB;
+      -- ٢١ سبتمبر: سقف جمهور بدل تثبيت العدد. موجة مجدولة بعد أسبوع جمهورها
+      -- بيكبر لوحده (الفاصل بيخلص) — حارس الـ٢٠٪ كان بيوقفها كلها. بالسقف
+      -- بتتبعت لكل اللي بقى مؤهّل طول ما العدد تحت السقف اللي المالك أكّده.
+      ALTER TABLE cms_campaigns ADD COLUMN IF NOT EXISTS max_audience INT;
       CREATE TABLE IF NOT EXISTS cms_campaign_sends (
         campaign_id INT NOT NULL,
         phone_norm TEXT NOT NULL,
@@ -2404,15 +2408,21 @@ export function register(app, ctx, deps = {}) {
     if (!camp) return bad(c, "not_draft", 409);
     const aud = await audienceFor(camp);
     if (Number(b.confirm) !== aud.list.length) return bad(c, "confirm_mismatch");
+    /* سقف الجمهور (اختياري، ٢١/٩): موجة مجدولة بعد أيام جمهورها بيكبر لوحده
+       لما الفاصل يخلص على ناس تانية. من غير سقف بنفضل على حارس الـ٢٠٪ (العدد
+       المؤكّد). مع سقف المالك بيقول «ابعت لكل اللي هيبقى مؤهّل، بس مايزيدش
+       عن N» — وده اللي بيخلي الموجة توصل لكل حد من غير ما يعيد التأكيد. */
+    const maxAud = b.maxAudience == null ? null
+      : Math.max(aud.list.length, Math.min(20000, Math.round(Number(b.maxAudience) || 0)));
     await pool.query(
-      "UPDATE cms_campaigns SET status='scheduled', scheduled_at=$2, confirm_audience=$3, last_error=NULL WHERE id=$1",
-      [id, at.toISOString(), aud.list.length]);
-    return c.json({ ok: true, scheduledAt: at.toISOString(), audience: aud.list.length });
+      "UPDATE cms_campaigns SET status='scheduled', scheduled_at=$2, confirm_audience=$3, max_audience=$4, last_error=NULL WHERE id=$1",
+      [id, at.toISOString(), aud.list.length, maxAud]);
+    return c.json({ ok: true, scheduledAt: at.toISOString(), audience: aud.list.length, maxAudience: maxAud });
   });
   app.post("/api/cms/campaigns/:id/unschedule", async (c) => {
     const err = await requireAdmin(c); if (err) return err;
     const r = await pool.query(
-      "UPDATE cms_campaigns SET status='draft', scheduled_at=NULL WHERE id=$1 AND status IN ('scheduled','held') RETURNING id",
+      "UPDATE cms_campaigns SET status='draft', scheduled_at=NULL, max_audience=NULL WHERE id=$1 AND status IN ('scheduled','held') RETURNING id",
       [Number(c.req.param("id"))]);
     return r.rowCount ? c.json({ ok: true }) : bad(c, "not_scheduled", 409);
   });
@@ -2451,9 +2461,8 @@ export function register(app, ctx, deps = {}) {
       segCache = { at: 0, rows: null };
       const aud = await audienceFor(due);
       if (!aud.list.length) return void (await hold("empty_audience"));
-      if (!smsRules.audienceDriftOk(due.confirm_audience, aud.list.length)) {
-        return void (await hold(`audience_changed ${due.confirm_audience}→${aud.list.length}`));
-      }
+      const gate = smsRules.audienceGateReason(due.confirm_audience, due.max_audience, aud.list.length);
+      if (gate) return void (await hold(gate));
       if (!(await couponOk(due.coupon))) return void (await hold("coupon_invalid"));
       if (due.channel === "sms") {
         const why = await smsPreflight(due, aud);

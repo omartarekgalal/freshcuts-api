@@ -114,3 +114,22 @@ test("وضع الرابط من غير كود بيرجع للكلمة بدل سط
   assert.equal(R.optoutLine({ optoutMode: "link" }, { host: "freshcuts.sa", sender: "FreshCut-AD" }),
     "إيقاف: أرسل FreshCut-AD لـ801001");
 });
+
+/* ═══ سقف الجمهور للموجات المجدولة (٢١/٩) ═══ */
+test("من غير سقف: الحارس القديم — الزيادة فوق ٢٠٪ بتوقف الموجة", () => {
+  assert.equal(R.audienceGateReason(370, null, 300), null);      // نقصان تمام
+  assert.equal(R.audienceGateReason(370, null, 420), null);      // +١٣٪ تمام
+  assert.match(String(R.audienceGateReason(370, null, 700)), /^audience_changed/);
+});
+
+test("بسقف: الزيادة مسموحة تحت السقف، وفوقه بس بتوقف", () => {
+  assert.equal(R.audienceGateReason(370, 700, 690), null);       // كبر لوحده — يبعت
+  assert.equal(R.audienceGateReason(370, 700, 700), null);       // على السقف بالظبط
+  assert.match(String(R.audienceGateReason(370, 700, 701)), /^audience_over_max 701>700/);
+});
+
+test("السقف بيلغي حارس الـ٢٠٪ مش بيتجمع معاه", () => {
+  // ٣٧٠ → ٦٠٠ كان هيتوقف بالحارس القديم، والسقف ٨٠٠ بيمشّيه
+  assert.match(String(R.audienceGateReason(370, null, 600)), /^audience_changed/);
+  assert.equal(R.audienceGateReason(370, 800, 600), null);
+});
