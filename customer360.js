@@ -17,7 +17,10 @@
      واحدة: نفس الجوال + فرق الإجمالي < ١٫٥ ر.س + في خلال −١ → +٦ ساعات
      من طلب الموقع (matchWebToPos) — نفس القاعدة في SQL قائمة (quickStats).
 
-   الجوال مخفي دايماً (٠٥•••••٨٢)؛ «إظهار» للمالك بس وبيتسجّل في cms_audit.
+   ٢١/٩ — قرار عمر: «الرقم ميظهرش مشفر في لوحة التحكم». بقى بيرجع كامل في
+   حقل `phone` لأي حد دوره يشوف قسم «العملاء» (phones.js)، والنسخة المقنّعة
+   `phoneMasked` فاضلة fallback للأدوار اللي مالهاش. مسار /reveal فاضل شغّال
+   (متسجّل في cms_audit) للتوافق، وسجل الوصول بيتكتب لأعضاء الفريق.
    الرابط بين الشاشات «ref» — بصمة HMAC مش الرقم — فالجوال مايظهرش في الـURL.
 ═══════════════════════════════════════════════════════════════════════════ */
 
@@ -29,6 +32,8 @@ import {
 import { initSmsLog, SMS_KINDS, partsOf } from "./smslog.js";
 import { staffPhoneSet, itemFamily } from "./smsrules.js";
 import { plausibleName } from "./accounts.js";
+// 👁 قاعدة إظهار الجوال الكاملة — مصدر واحد للوحة كلها
+import { phoneOut } from "./phones.js";
 
 export const MATCH_TOTAL_TOL = 1.5;      // ر.س — تقريب تاب سينس
 export const MATCH_BEFORE_MS = 3600_000; // ساعة قبل طلب الموقع
@@ -252,6 +257,8 @@ export function register(app, ctx, deps = {}) {
   async function isOwner(c) {
     try { const u = await whoami(c); return Boolean(u && u.role === "owner"); } catch { return false; }
   }
+  /* هل الطلب ده يشوف الأرقام كاملة؟ (phones.js عبر moduleCtx) */
+  const fullPhones = async (c) => { try { return ctx.canSeePhones ? await ctx.canSeePhones(c) : true; } catch { return false; } };
   async function quickStats(pns) {
     const list = [...new Set(pns.filter(Boolean))];
     if (!list.length) return new Map();
@@ -279,6 +286,7 @@ export function register(app, ctx, deps = {}) {
     const err = await requireAdmin(c); if (err) return err;
     const raw = String(c.req.query("q") || "").trim().slice(0, 60);
     if (raw.length < 2) return c.json({ ok: true, results: [] });
+    const full = await fullPhones(c);
     const hits = new Map(); // pn → matched
     const add = (pn, how) => { if (pn && !hits.has(pn)) hits.set(pn, how); };
     const dg = digitsOf(raw);
@@ -313,12 +321,12 @@ export function register(app, ctx, deps = {}) {
     const results = pns.map((pn) => {
       const st = stats.get(pn) || {}, nm = names.get(pn) || {};
       return {
-        ref: refOf(pn), name: nm.name || null, phoneMasked: maskPhone(pn), matched: hits.get(pn),
+        ref: refOf(pn), name: nm.name || null, ...phoneOut(pn, full), matched: hits.get(pn),
         orders: st.orders || 0, spend: Math.round((st.spend || 0) * 100) / 100, lastOrderAt: st.last_at || null,
         sources: nm.sources || [],
       };
     }).sort((a, b) => b.orders - a.orders || String(b.lastOrderAt || "").localeCompare(String(a.lastOrderAt || "")));
-    return c.json({ ok: true, results });
+    return c.json({ ok: true, results, fullPhones: full });
   });
 
   /* ═══ 👤 الملف الكامل ═══════════════════════════════════════════════════ */
@@ -327,7 +335,9 @@ export function register(app, ctx, deps = {}) {
     const pn = await pnOfRef(c.req.param("ref"));
     if (!pn) return bad(c, "not_found", 404);
     try {
-      return c.json({ ok: true, ...(await buildProfile(pn)), canReveal: await isOwner(c) });
+      const [profile, full, owner] = await Promise.all([buildProfile(pn), fullPhones(c), isOwner(c)]);
+      if (full) profile.identity = { ...profile.identity, ...phoneOut(pn, true) };
+      return c.json({ ok: true, ...profile, canReveal: owner, fullPhones: full });
     } catch (e) {
       console.error("[c360] profile failed:", e.message);
       return c.json({ ok: false, error: String(e.message).slice(0, 200) }, 500);
@@ -612,6 +622,7 @@ export function register(app, ctx, deps = {}) {
     const q = (k) => c.req.query(k);
     const tab = q("tab") === "otp" ? "otp" : "all";
     const settings = await getSettingsData().catch(() => ({}));
+    const full = await fullPhones(c);
     const staff = [...staffPhoneSet(settings || {})];
     const where = [], p = [staff];
     const P = (v) => { p.push(v); return `$${p.length}`; };
@@ -672,12 +683,12 @@ export function register(app, ctx, deps = {}) {
       rows: rows.rows.map((r) => ({
         id: r.rid, at: r.at, kind: r.kind, kindLabel: SMS_KINDS[r.kind] || r.kind, ref: r.ref,
         campaignId: r.campaign_id, campaignName: r.campaign_name, sender: r.sender,
-        cref: refOf(r.pn), phoneMasked: maskPhone(r.pn), name: names.get(r.pn)?.name || null,
+        cref: refOf(r.pn), ...phoneOut(r.pn, full), name: names.get(r.pn)?.name || null,
         body: r.body, bodyIsTemplate: r.kind === "campaign", parts: r.parts,
         cost: r.cost == null ? null : Number(r.cost), costEst: r.cost == null ? Math.round(Number(r.parts || 1) * SMS_PART_PRICE * 1000) / 1000 : null,
         status: r.status, msgId: r.msg_id, error: r.error, origin: r.origin,
       })),
-      limit, offset,
+      limit, offset, fullPhones: full,
       note: "تقنيات مابتدّيش تقارير تسليم — «اتبعتت» = تقنيات قبلت الرسالة. التكلفة الفعلية من رد تقنيات؛ «تقديري» = الأجزاء × ٠٫٠٧٥ ر.س.",
     });
   });
@@ -686,6 +697,7 @@ export function register(app, ctx, deps = {}) {
   app.get("/api/cms/customers/optouts", async (c) => {
     const err = await requireAdmin(c); if (err) return err;
     await ready;
+    const full = await fullPhones(c);
     const cur = (await pool.query(
       `SELECT phone_norm, opted_out_at, optout_source, optout_reason, optout_by FROM cms_contacts
         WHERE opted_out_at IS NOT NULL ORDER BY opted_out_at DESC LIMIT 1000`)).rows;
@@ -715,9 +727,9 @@ export function register(app, ctx, deps = {}) {
       const a = histBy.get(h.phone_norm) || []; a.push({ action: h.action, source: h.source, reason: h.reason, actor: h.actor, at: h.created_at });
       histBy.set(h.phone_norm, a);
     }
-    const row = (pn) => ({ ref: refOf(pn), phoneMasked: maskPhone(pn), name: names.get(pn)?.name || null });
+    const row = (pn) => ({ ref: refOf(pn), ...phoneOut(pn, full), name: names.get(pn)?.name || null });
     return c.json({
-      ok: true,
+      ok: true, fullPhones: full,
       current: cur.map((x) => {
         const st = stats.get(x.phone_norm) || {};
         return { ...row(x.phone_norm), at: x.opted_out_at, source: x.optout_source || "link", reason: x.optout_reason || null, by: x.optout_by || null,

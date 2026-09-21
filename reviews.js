@@ -467,7 +467,12 @@ export function register(app, ctx, deps = {}) {
               order_no, is_test, hidden_at, hidden_reason
          FROM reviews WHERE ${where.join(" AND ")} ORDER BY created_at DESC LIMIT 300`, p)).rows;
     const hiddenCount = (await pool.query(`SELECT count(*)::int AS n FROM reviews WHERE NOT ${REAL_REVIEW_SQL}`)).rows[0].n;
-    return c.json({ ok: true, reviews: rows, hiddenCount });
+    // ٢١/٩: الجوال كامل للي دوره يشوف «العملاء» (phones.js) — غير كده بيتشال خالص
+    const full = ctx.canSeePhones ? await ctx.canSeePhones(c).catch(() => false) : false;
+    return c.json({
+      ok: true, hiddenCount, fullPhones: full,
+      reviews: rows.map((r) => ({ ...r, phone: full && r.phone_norm ? "0" + r.phone_norm : null })),
+    });
   });
 
   app.get("/api/cms/reviews/stats", async (c) => {

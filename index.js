@@ -52,6 +52,9 @@ import * as tspartner from "./tspartner.js";
 import * as cms from "./cms.js";
 import * as reviews from "./reviews.js";
 import * as customer360 from "./customer360.js";
+// 🔎 البحث الشامل في اللوحة (Ctrl+K) + 👁 قاعدة إظهار الجوال الكاملة
+import * as searchMod from "./search.js";
+import { makePhoneGate } from "./phones.js";
 import * as notify from "./notify.js";
 import * as whatsapp from "./whatsapp.js";
 import * as carts from "./carts.js";
@@ -3104,7 +3107,18 @@ const tspApi = tspartner.register(app, moduleCtx);
 const cmsApi = cms.register(app, moduleCtx, { notify: () => notifyApi });
 reviews.register(app, moduleCtx, { notify: () => notifyApi, sessionUser: cmsApi.sessionUser });
 // 👥 Customer 360 — ملف العميل + سجل الرسايل + قايمة الإيقاف (identity.js = قاعدة العميل الجديد)
-customer360.register(app, moduleCtx, { whoami: (c) => cmsApi.whoami(c) });
+const c360Api = customer360.register(app, moduleCtx, { whoami: (c) => cmsApi.whoami(c) });
+/* 👁 قاعدة واحدة لإظهار جوال العميل كامل في اللوحة (phones.js): المالك دايماً،
+   وعضو الفريق لو دوره عنده «عرض» على قسم العملاء. بتتحط على moduleCtx بعد ما
+   الـCMS يتسجّل، والموديولات بتناديها وقت الطلب (ctx.canSeePhones) مش وقت التسجيل. */
+moduleCtx.canSeePhones = makePhoneGate({
+  pool,
+  whoami: (c) => cmsApi.whoami(c),
+  effectivePerms: () => cmsApi.effectivePerms(),
+  isAdminToken: (c) => { const a = getAuth(c); return Boolean(a && a.kind === "admin" && !a.cms); },
+});
+/* 🔎 البحث الشامل: عميل/طلب/فاتورة/صنف/عنوان/كوبون/حملة/رابط/تقييم/شحنة */
+searchMod.register(app, moduleCtx, { cms: () => cmsApi, c360: () => c360Api });
 // «نبّهني لما تفتحوا»: العميل اللي جه والمطعم مقفول بيسيب رقمه، وسلته بتتحفظ
 // ورا نفس رابط الاسترداد بتاع carts، والرسالة بتتبعت وقت الفتح بس.
 openwait.register(app, moduleCtx, { notify: () => notifyApi, carts: () => cartsApi });

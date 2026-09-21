@@ -1118,7 +1118,9 @@ export function register(app, ctx, deps = {}) {
     if (s.order_no) return { kind: "order", label: "اتعمل طلب ومادفعش" };
     return { kind: "dropped", label: `وقف بعد: ${st.label}` };
   }
-  function sessionRow(s) {
+  /* ٢١/٩: الرقم بيظهر كامل للي دوره يشوف «العملاء» (phones.js عبر ctx) —
+     المقنّع فاضل fallback للأدوار التانية (المحاسبة مثلاً بتشوف رحلة العميل). */
+  function sessionRow(s, full = false) {
     return {
       sessionId: s.session_id, startedAt: s.started_at, lastSeenAt: s.last_seen_at,
       channel: s.channel, channelLabel: CHANNEL_LABELS[s.channel] || s.channel,
@@ -1126,6 +1128,7 @@ export function register(app, ctx, deps = {}) {
       device: s.device, inApp: s.in_app, storeOpen: s.store_open, hour: s.start_hour,
       maxStep: s.max_step, maxStepLabel: STEPS[Math.min(s.max_step, 7)].label,
       cart: r2(s.cart_max), orderNo: s.order_no, paid: s.paid, revenue: r2(s.revenue),
+      phone: full && s.phone_norm ? "0" + String(s.phone_norm).replace(/\D/g, "") : null,
       phoneMasked: maskPhone(s.phone_norm), events: s.events, lastEvent: s.last_event,
       tags: [s.is_qa && "QA", s.is_staff && "موظف", s.is_bot && "بوت"].filter(Boolean),
       result: resultOf(s), steps: s.steps || [],
@@ -1166,7 +1169,8 @@ export function register(app, ctx, deps = {}) {
            FROM journey_sessions s
           WHERE ${where.join(" AND ")}
           ORDER BY s.started_at DESC LIMIT $${params.length}`, params)).rows;
-      return c.json({ ok: true, range: rg.key, rows: rows.map(sessionRow) });
+      const full = ctx.canSeePhones ? await ctx.canSeePhones(c).catch(() => false) : false;
+      return c.json({ ok: true, range: rg.key, fullPhones: full, rows: rows.map((r) => sessionRow(r, full)) });
     } catch (e) {
       console.error("[journey] sessions failed:", e.message);
       return c.json({ ok: false, error: String(e.message || e).slice(0, 200) });
@@ -1198,7 +1202,7 @@ export function register(app, ctx, deps = {}) {
         `SELECT session_id, started_at, channel, max_step, paid FROM journey_sessions
           WHERE anon_id=$1 AND session_id<>$2 ORDER BY started_at DESC LIMIT 10`, [s.anon_id, sid])).rows;
       return c.json({
-        ok: true, session: sessionRow(s),
+        ok: true, session: sessionRow(s, ctx.canSeePhones ? await ctx.canSeePhones(c).catch(() => false) : false),
         events: events.map((e) => ({ at: e.client_ts || e.at, source: e.source, name: e.name, step: e.step, path: e.path, props: e.props })),
         order, orderEvents,
         otherSessions: other.map((x) => ({ sessionId: x.session_id, startedAt: x.started_at, channel: CHANNEL_LABELS[x.channel] || x.channel, maxStep: x.max_step, paid: x.paid })),
