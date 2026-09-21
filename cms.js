@@ -2107,7 +2107,12 @@ export function register(app, ctx, deps = {}) {
     { id: "lost", icon: "👻", label: "ضايعين", hint: "طلبوا قبل كده وبقالهم أكتر من ٩٠ يوم",
       test: (c) => (c.orders + (c.online || 0)) > 0 && c.daysSince > 90 },
     { id: "online_buyers", icon: "🛒", label: "عملاء الموقع", hint: "طلبوا من متجرنا مرة على الأقل", test: (c) => c.online > 0 },
-    { id: "registered_only", icon: "🪪", label: "مسجّلين وماطلبوش", hint: "اسمهم وجوالهم في دليل نقطة البيع بس مافيش ولا طلب مربوط بيهم — فرصة أول طلب",
+    /* allowApps هنا مش عشان دول عملاء تطبيقات — بالعكس: دول اتسجّلوا على
+       الكاونتر بنفسهم. بس filterAudience بتستبعد أي حد مالوش «علاقة مباشرة»
+       محسوبة من الطلبات، ودول طلباتهم مش مربوطة بسجلهم أصلاً — ده سبب
+       اختفائهم من الأساس. من غير الفلاج دي شريحة عمرها ما هتوصلها رسالة. */
+    { id: "registered_only", icon: "🪪", label: "مسجّلين وماطلبوش", allowApps: true,
+      hint: "اسمهم وجوالهم في دليل نقطة البيع بس مافيش ولا طلب مربوط بيهم — فرصة أول طلب",
       test: (c) => (c.orders + (c.online || 0)) === 0 },
     ...smsRules.WAVE_SEGMENTS,
     ...smsRules.KEETA_SEGMENTS,
