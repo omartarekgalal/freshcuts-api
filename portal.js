@@ -577,7 +577,13 @@ export function register(app, ctx, deps = {}) {
         claimed = c2.rows[0].claimed;
       }
       try {
-        const res = await dl.dispatch(await sh.getOrderRow(orderNo), wantProvider ? { provider: wantProvider } : {});
+        const res = await dl.dispatch(await sh.getOrderRow(orderNo), {
+          ...(wantProvider ? { provider: wantProvider } : {}),
+          trigger: "portal", actor: user.name,
+          /* «أنا راجعت لوحتهم وابعت تاني» — تجاوز يدوي واضح من المدير
+             بعد ما القفل يكون اتحط. مش الافتراضي أبداً. */
+          force: body && (body.force === true || body.force === 1 || body.force === "1"),
+        });
         if (row.status !== "courier_requested") {
           await sh.setStatus(orderNo, "courier_requested", { note: `المدير ${user.name} طلب مندوب من البوابة${wantProvider ? ` (${wantProvider})` : ""}`, from: row.status, source: "portal" });
         }
@@ -594,6 +600,24 @@ export function register(app, ctx, deps = {}) {
            ماوصلناش الرد — إعادة فورية = كابتنين. فالحجز يفضل حديث (إعادة بعد ٩٠ ث)
            والرسالة بتقول للمدير يراجع لوحة الشركة الأول. */
         const st = Number(e?.status);
+        /* ٢١ سبتمبر — «الطلب موجود عندهم بالفعل»: ده مش رفض، ده معناه إن
+           المحاولة الأولى وصلتهم وإحنا ضيّعنا المرجع. الإعادة مستحيل
+           تنجح (نفس الرد للأبد) وممكن تبقى كابتن تاني على نفس الطلب،
+           فبنوقف الإعادة التلقائية والحجز بيفضل، والمدير بياخد جملة واحدة
+           واضحة + زرار تجاوز. نفس الكلام للقفل والمحاولة الضايعة. */
+        const STOP = ["COURIER_DUPLICATE", "DISPATCH_BLOCKED", "DISPATCH_LOST", "DISPATCH_IN_PROGRESS", "ALREADY_DISPATCHED"];
+        if (STOP.includes(e?.code)) {
+          audit(user, "courier_request", orderNo, false,
+            { error: e.code, providerMessage: String(e?.providerMessage || "").slice(0, 160) }, ip);
+          scheduleRefresh(orderNo);
+          const msg = e?.code === "COURIER_DUPLICATE"
+            ? "الطلب اتسجّل عند لاجلك بالفعل — ماينفعش يتبعت تاني. تابعه معاهم/كلّمهم، ولو متأكد إنه مش عندهم دوس «ابعت برغم التحذير»."
+            : String(e?.message || "الإرسال متوقف لحد المراجعة");
+          return c.json({ ok: false, error: e.code.toLowerCase(), code: e.code, blocked: true,
+            canForce: e?.code !== "DISPATCH_IN_PROGRESS" && e?.code !== "ALREADY_DISPATCHED",
+            recover: e?.recover || null, providerMessage: e?.providerMessage || null,
+            message: msg }, 409);
+        }
         const certain = ["COURIER_UNCONFIGURED", "MANUAL_MODE", "BAD_STAGE", "BAD_PROVIDER"].includes(e?.code)
           || (Number.isFinite(st) && st >= 400 && st < 500 && st !== 408 && st !== 409);
         if (certain) {

@@ -1670,7 +1670,7 @@ export function register(app, ctx, deps = {}) {
     }
     try {
       await pool.query("UPDATE shop_orders SET dispatch_claimed_at = COALESCE(dispatch_claimed_at, NOW()) WHERE order_no=$1", [row.order_no]);
-      const res = await delivery.dispatch(row);
+      const res = await delivery.dispatch(row, { trigger: "cashier" });
       if (row.status !== "courier_requested") await setStatus(row.order_no, "courier_requested");
       return c.json({ ok: true, assigned: res.assigned, orderNumber: res.orderNumber, note: res.dispatch?.message || null });
     } catch (e) {
@@ -1852,7 +1852,7 @@ export function register(app, ctx, deps = {}) {
     }
     try {
       await pool.query("UPDATE shop_orders SET dispatch_claimed_at = COALESCE(dispatch_claimed_at, NOW()) WHERE order_no=$1", [row.order_no]);
-      const res = await delivery.dispatch(row);
+      const res = await delivery.dispatch(row, { trigger: "admin" });
       await setStatus(row.order_no, "courier_requested");
       return c.json({ ok: true, provider: res.provider, ref: res.faOrderId, assigned: res.assigned });
     } catch (e) {
@@ -2240,7 +2240,7 @@ export function register(app, ctx, deps = {}) {
               RETURNING order_no`, [r.order_no]);
           if (!claim.rowCount) continue;
           try {
-            await delivery.dispatch(await getOrderRow(r.order_no));
+            await delivery.dispatch(await getOrderRow(r.order_no), { trigger: "sweep" });
             await setStatus(r.order_no, "courier_requested",
               { note: v.reason === "ready" ? "المطبخ سجّل جاهز" : `مهلة التحضير (${delayMin} د)` });
           } catch (e) {

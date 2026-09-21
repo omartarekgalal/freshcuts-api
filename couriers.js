@@ -443,6 +443,9 @@ const flyingarrow = {
     };
   },
 
+  /* مالهمش بحث برقمنا (GET بتاعهم بيرجّع external_order_id = null أصلاً). */
+  async lookup() { return { found: false, unsupported: true, tried: [] }; },
+
   parseWebhook(b) {
     const ev = String(b.event || b.status || "").replace(/^order\./, "");
     if (!ev) return null;
@@ -503,6 +506,24 @@ const LJ_STATUS = {
   cancelled: "cancelled", canceled: "cancelled", ordercancelled: "cancelled", rejected: "cancelled",
 };
 const ljNorm = (s) => String(s || "").toLowerCase().replace(/[^a-z]/g, "");
+
+/* ردّهم ممكن يبقى الطلب نفسه، أو تحت data، أو قايمة. بندوّر على الصف اللي
+   `id` بتاعه = رقم طلبنا (هو ده المفتاح اللي بيردّوه، مش الـuuid). */
+export function pickLjOrder(resp, orderNo) {
+  const want = String(orderNo);
+  const seen = new Set();
+  const walk = (v, depth = 0) => {
+    if (!v || typeof v !== "object" || depth > 4 || seen.has(v)) return null;
+    seen.add(v);
+    if (Array.isArray(v)) { for (const x of v) { const h = walk(x, depth + 1); if (h) return h; } return null; }
+    if (v.dsp_order_id && String(v.id ?? v.client_order_id ?? v.order_id ?? "") === want) return v;
+    for (const k of ["data", "order", "orders", "result", "results", "items"]) {
+      if (v[k]) { const h = walk(v[k], depth + 1); if (h) return h; }
+    }
+    return null;
+  };
+  return walk(resp);
+}
 /* حالة مش في الخريطة = العميل هيقف على شاشة قديمة من غير ما حد يعرف ليه.
    بنقولها في اللوج مرة واحدة لكل قيمة بدل ما تختفي في صمت. */
 const _seenUnknown = new Set();
@@ -515,6 +536,15 @@ function ljStage(raw) {
   }
   return mapped || null;
 }
+
+/* ── «الطلب ده موجود عندنا بالفعل» ────────────────────────────────────────
+   ٢١ سبتمبر: ردّهم الحرفي على POST /orders برقم اتبعت قبل كده:
+     "With this W17900… client order id an order is already exist in our system"
+   ده **مش** فشل — ده معناه إن الطلب مسجّل عندهم وإحنا اللي ضيعنا المرجع.
+   إعادة المحاولة بتجيب نفس الرد للأبد، فلازم يتفرز كنوع خطأ لوحده عشان
+   delivery.js يحاول يسترجع بدل ما يعيد. */
+const LJ_DUP_RE = /already\s*exist|already\s*exists|duplicate|مسجّل|موجود بالفعل/i;
+export const isDuplicateMsg = (m) => LJ_DUP_RE.test(String(m || ""));
 
 const leajlak = {
   id: "leajlak",
@@ -569,10 +599,23 @@ const leajlak = {
   },
 
   async dispatch(order, cfg) {
-    const created = await this.call("/orders", {
-      method: "POST",
-      body: leajlakPayload(order, cfg.ljShopId || LJ_SHOP(), { addressFormat: cfg.ljAddressFormat }),
-    });
+    let created;
+    try {
+      created = await this.call("/orders", {
+        method: "POST",
+        body: leajlakPayload(order, cfg.ljShopId || LJ_SHOP(), { addressFormat: cfg.ljAddressFormat }),
+      });
+    } catch (e) {
+      /* «موجود عندهم بالفعل» = الطلب اتسجّل في محاولة سابقة ضاعت منّا.
+         بيترمي بكود مختلف عشان الطبقة اللي فوق تسترجع بدل ما تعيد. */
+      const msg = String((e && e.resp && (e.resp.message || e.resp.error)) || (e && e.message) || "");
+      if (isDuplicateMsg(msg)) {
+        throw Object.assign(new Error(`الطلب ${order.order_no} مسجّل عند لاجلك بالفعل — مايتبعتش تاني`),
+          { code: "COURIER_DUPLICATE", provider: "leajlak", status: e && e.status, resp: e && e.resp,
+            providerMessage: msg.slice(0, 300) });
+      }
+      throw e;
+    }
     const d = created?.data || created || {};
     /* وثيقتهم بتقول إن التتبع برقم طلبنا — وده **غلط**، مجرّب على اللايف:
        GET /orders/<رقمنا> بيرد «There is no order with this order id»، بينما
@@ -589,6 +632,47 @@ const leajlak = {
       status: ljStage(d.status) || "pending",
       raw: created,
     };
+  },
+
+  /* ── استرجاع طلب ضايع برقمنا إحنا ──────────────────────────────────────
+     لما يردّوا «الطلب موجود بالفعل» بيبقى عندهم طلب حيّ إحنا مش ماسكين
+     مرجعه (dsp_order_id). وثيقتهم بتقول التتبع برقمنا — وده متجرّب وغلط
+     (بيرد «There is no order with this order id»). فبنجرّب كل الأشكال
+     المعقولة بالترتيب ونرجّع **كل** اللي اتجرّب ورده، عشان لو محصلش
+     استرجاع نقدر نقول لعمر بالظبط إن الـAPI بتاعهم مافيهوش طريق. */
+  async lookup(orderNo, cfg = {}) {
+    const id = String(orderNo || "");
+    if (!id) return { found: false, tried: [] };
+    const shopId = String(cfg.ljShopId || LJ_SHOP() || "");
+    const paths = [
+      `/orders/${encodeURIComponent(id)}`,
+      `/orders?client_order_id=${encodeURIComponent(id)}`,
+      `/orders?id=${encodeURIComponent(id)}`,
+      `/orders?order_id=${encodeURIComponent(id)}`,
+      `/orders?search=${encodeURIComponent(id)}`,
+      `/orders?q=${encodeURIComponent(id)}`,
+      shopId ? `/shops/${encodeURIComponent(shopId)}/orders?search=${encodeURIComponent(id)}` : null,
+      `/orders`,
+    ].filter(Boolean);
+    const tried = [];
+    for (const p of paths) {
+      try {
+        const r = await this.call(p);
+        const hit = pickLjOrder(r, id);
+        tried.push({ path: p.split("?")[0] + (p.includes("?") ? "?…" : ""), status: 200, matched: Boolean(hit) });
+        if (hit && hit.dsp_order_id) {
+          return {
+            found: true, ref: String(hit.dsp_order_id), via: p,
+            status: ljStage(hit.status), rawStatus: hit.status != null ? String(hit.status) : null,
+            driver: hit.driver || null, raw: hit, tried,
+          };
+        }
+      } catch (e) {
+        tried.push({ path: p.split("?")[0] + (p.includes("?") ? "?…" : ""), status: (e && e.status) || null,
+          message: String((e && e.resp && e.resp.message) || (e && e.message) || "").slice(0, 120) });
+      }
+    }
+    return { found: false, tried };
   },
 
   async track(sh) {
@@ -659,6 +743,7 @@ const manual = {
       { code: "MANUAL_DISPATCH_ONLY" });
   },
   async track() { return null; },   // مفيش عندهم API نسأله
+  async lookup() { return { found: false, unsupported: true, tried: [] }; },
   async cancel() { return { fee: null, refund: null, raw: { manual: true } }; },
   parseWebhook() { return null; },  // مفيش ويبهوك ييجي لشحنة يدوية
   async reference() {

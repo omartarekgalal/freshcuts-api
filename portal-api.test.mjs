@@ -318,7 +318,8 @@ test("courier: بعد رفض لاجلك (courier_cancelled) ← «بدّل ال�
   const { body } = await login(s, "7777");
   const r = await s.json("POST", "/api/portal/orders/W1/courier", { token: body.token, body: { provider: "flyingarrow" } });
   assert.equal(r.status, 200);
-  assert.deepEqual(s.calls.dispatchOpts, { provider: "flyingarrow" });
+  // كل إرسال بقى موسوم بمين طلبه (٢١ سبتمبر) عشان سجل المحاولات يبان في البوابة
+  assert.deepEqual(s.calls.dispatchOpts, { provider: "flyingarrow", trigger: "portal", actor: "سارة", force: false });
   const r2 = await s.json("POST", "/api/portal/orders/W1/courier", { token: body.token });
   assert.equal(r2.status, 409); // فيه شحنة حية دلوقتي
 });

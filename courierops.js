@@ -332,6 +332,15 @@ export const VIOLATIONS = Object.freeze({
   other: { label: "مخالفة تانية", clause: "—", side: "leajlak", contract: false, manual: true },
 });
 export const MANUAL_VIOLATIONS = Object.freeze(Object.keys(VIOLATIONS).filter((k) => VIOLATIONS[k].manual));
+/* نتيجة محاولة الإرسال بالعربي — الكارت بيعرضها زي ما هي. */
+export const DISPATCH_AR = Object.freeze({
+  created: "اتبعت للشركة",
+  adopted: "كان مسجّل عندهم واسترجعناه",
+  duplicate: "الشركة بتقول إنه مسجّل عندها بالفعل — ما يتبعتش تاني",
+  lost: "محاولة إرسال ضاعت (الخدمة اتقطعت) — راجع لوحتهم قبل الإعادة",
+  error: "الإرسال فشل",
+});
+
 export const CODE_AR = Object.freeze({
   ...Object.fromEntries(Object.entries(VIOLATIONS).map(([k, v]) => [k, v.label])),
   far_hold: "مشوار بعيد — مستني قرار المدير",
@@ -741,6 +750,18 @@ export function register(app, ctx, deps = {}) {
              FROM dl_ext_runs r WHERE r.order_no = ANY($1::text[])`, [nos])).rows;
         runBy = new Map(runs.map((x) => [x.order_no, x]));
       } catch { /* الجدول لسه ما اتعملش — الشاشة بتشتغل من غيره */ }
+      /* محاولات الإرسال (delivery.js، ٢١ سبتمبر): الكارت لازم يقول «آخر
+         محاولة فشلت ليه» — قبل كده الفشل كان بيختفي تماماً والمدير بيفضل
+         يدوس على نفس الزرار. أي عطل هنا بيتبلع: الخريطة بتفضل فاضية. */
+      let attBy = new Map();
+      try {
+        const atts = (await pool.query(
+          `SELECT DISTINCT ON (shop_order_no) shop_order_no, provider, trigger, actor, started_at, finished_at,
+                  ok, outcome, http_status, error_code, error_message, resolved_at
+             FROM dl_dispatch_attempts WHERE shop_order_no = ANY($1::text[])
+            ORDER BY shop_order_no, id DESC`, [nos])).rows;
+        attBy = new Map(atts.map((a) => [a.shop_order_no, a]));
+      } catch { /* الجدول لسه ما اتعملش */ }
       const t = now();
       for (const r of rows) {
         if (r.option !== "delivery") continue;
@@ -811,6 +832,26 @@ export function register(app, ctx, deps = {}) {
             resolvedAt: isoOf(i.resolved_at), needsCost: Boolean(i.detail && i.detail.needsCost),
           } : null,
           sla: { assignMin: cfg.assignMin, arriveTargetMin: cfg.arriveTargetMin, arriveMin: cfg.arriveMin, graceMin: cfg.deliverGraceMin },
+          /* آخر محاولة إرسال + سبب فشلها بالنص، و`blocked` معناها إن
+             الإعادة التلقائية مقفولة لحد ما حد يراجع لوحة الشركة. */
+          lastDispatch: (() => {
+            const a = attBy.get(r.order_no);
+            if (!a) return null;
+            const blocked = !a.resolved_at && ["duplicate", "lost"].includes(String(a.outcome));
+            return {
+              at: isoOf(a.finished_at || a.started_at),
+              provider: a.provider || null,
+              by: a.actor || null,
+              trigger: a.trigger || null,
+              ok: a.ok === true,
+              outcome: a.outcome || (a.finished_at ? null : "in_flight"),
+              httpStatus: a.http_status != null ? Number(a.http_status) : null,
+              code: a.error_code || null,
+              error: a.error_message || null,
+              blocked,
+              label: DISPATCH_AR[String(a.outcome)] || (a.finished_at ? null : "الإرسال طاير دلوقتي"),
+            };
+          })(),
         };
       }
     } catch (e) {

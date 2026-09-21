@@ -2,7 +2,7 @@
    الهدف: نتأكد إن نفس الطلب بيتحول لشكلين صحيحين حسب الشركة، وإن حالات
    الشركتين بتترجم لنفس المصطلحات الموحّدة. */
 import assert from "node:assert";
-import { PROVIDERS, activeProvider, e164, msisdn, readableAddress, courierMilestone, PROVIDER_REPORTS_ARRIVAL } from "./couriers.js";
+import { PROVIDERS, activeProvider, e164, msisdn, readableAddress, courierMilestone, PROVIDER_REPORTS_ARRIVAL, isDuplicateMsg, pickLjOrder } from "./couriers.js";
 
 let pass = 0, fail = 0;
 const t = (name, fn) => {
@@ -169,6 +169,70 @@ t("Flying Arrow: مافيش إشارة «وصل المطعم» موثّقة، و
   assert.equal(courierMilestone("flyingarrow", "pickup_completed"), "picked");
   assert.equal(courierMilestone("flyingarrow", "driver_assigned"), null);
 });
+
+/* ═══ «الطلب موجود عندهم بالفعل» (٢١ سبتمبر) ════════════════════════════
+   طلب حقيقي (W1790011118692) خلّى المدير يعيد ٣ مرات على نفس الرد، والسبب
+   إن محاولة سابقة وصلتهم وإحنا ضيّعنا المرجع. فالرد ده لازم يتفرز كنوع
+   لوحده عشان الطبقة اللي فوق تسترجع بدل ما تعيد. */
+console.log("\nالتكرار عند لاجلك:");
+t("رسالتهم الحرفية بتتعرف كتكرار", () => {
+  assert.equal(isDuplicateMsg("With this W1790011118692 client order id an order is already exist in our system"), true);
+  assert.equal(isDuplicateMsg("Order created"), false);
+  assert.equal(isDuplicateMsg(""), false);
+});
+
+t("pickLjOrder بيلاقي الصف اللي id بتاعه = رقم طلبنا", () => {
+  const listed = { data: [{ id: "W1", dsp_order_id: "uuid-1", status: "Order Accept" },
+                          { id: "W2", dsp_order_id: "uuid-2" }] };
+  assert.equal(pickLjOrder(listed, "W2").dsp_order_id, "uuid-2");
+  assert.equal(pickLjOrder(listed, "W9"), null);
+  assert.equal(pickLjOrder({ id: "W3", dsp_order_id: "u3" }, "W3").dsp_order_id, "u3");
+  assert.equal(pickLjOrder({ id: "W3" }, "W3"), null, "من غير مرجعهم مفيش استرجاع");
+});
+
+{
+  const lj = PROVIDERS.leajlak;
+  const orig = lj.call;
+
+  lj.call = async () => {
+    throw Object.assign(new Error("Leajlak /orders: With this W1 client order id an order is already exist in our system"),
+      { code: "COURIER_ERROR", status: 400, resp: { message: "With this W1 client order id an order is already exist in our system" } });
+  };
+  let code = null, msg = null;
+  try { await lj.dispatch({ ...ORDER, order_no: "W1" }, CFG); } catch (e) { code = e.code; msg = e.providerMessage; }
+  t("رد التكرار بيرمي COURIER_DUPLICATE مش COURIER_ERROR", () => {
+    assert.equal(code, "COURIER_DUPLICATE");
+    assert.ok(/already exist/.test(msg || ""));
+  });
+
+  lj.call = async () => { throw Object.assign(new Error("Leajlak /orders: boom"), { code: "COURIER_ERROR", status: 500, resp: { message: "boom" } }); };
+  let code2 = null;
+  try { await lj.dispatch({ ...ORDER, order_no: "W2" }, CFG); } catch (e) { code2 = e.code; }
+  t("خطأ عادي مايتحوّلش لتكرار", () => assert.equal(code2, "COURIER_ERROR"));
+
+  lj.call = async () => { throw Object.assign(new Error("no"), { status: 404, resp: { message: "There is no order with this order id" } }); };
+  const miss = await lj.lookup("W1790011118692", CFG);
+  t("الاسترجاع بيرجّع كل اللي اتجرّب لما مفيش طريق", () => {
+    assert.equal(miss.found, false);
+    assert.ok(miss.tried.length >= 6, `جرّب ${miss.tried.length} مسار بس`);
+    assert.ok(miss.tried.every((x) => x.status === 404));
+  });
+
+  lj.call = async (path) => {
+    if (path === "/orders") return { data: [{ id: "W1790011118692", dsp_order_id: "abc-uuid", status: "Order Accept" }] };
+    throw Object.assign(new Error("no"), { status: 404, resp: { message: "nope" } });
+  };
+  const hit = await lj.lookup("W1790011118692", CFG);
+  t("الاسترجاع بيتبنّى الـuuid بتاعهم", () => {
+    assert.equal(hit.found, true);
+    assert.equal(hit.ref, "abc-uuid");
+    assert.equal(hit.status, "assigned");
+  });
+
+  const fa = await PROVIDERS.flyingarrow.lookup("W1", {});
+  t("Flying Arrow بتقول صراحة إن مفيش بحث برقمنا", () => assert.equal(fa.unsupported, true));
+  lj.call = orig;
+}
 
 console.log(`\n${pass} نجحت، ${fail} فشلت\n`);
 process.exit(fail ? 1 : 0);

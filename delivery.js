@@ -825,6 +825,50 @@ export function register(app, ctx, deps = {}) {
       );
       CREATE INDEX IF NOT EXISTS dl_webhook_log_time_idx ON dl_webhook_log(received_at DESC);
     `);
+    /* ── سجل محاولات الإرسال (٢١ سبتمبر) ────────────────────────────────
+       المشكلة اللي بنيناه عشانها: محاولة إرسال بتروح للاجلك، الحاوية بتموت
+       في نصّها (نشر جديد)، فالـINSERT في dl_shipments والحدث الاتنين
+       مابيحصلوش — النتيجة إن لاجلك عندها طلب حيّ وإحنا مش شايفين أي أثر،
+       والمدير بيدوس تاني فيردّوا «الطلب موجود بالفعل» للأبد.
+
+       الحل: الصف بيتكتب **قبل** نداء الشبكة. لو العملية ماتت، الصف بيفضل
+       finished_at = NULL — وده بقى الدليل إن فيه محاولة ضايعة.
+
+       الفهرس الفريد الجزئي = قفل الإرسال: محاولة واحدة طايرة لكل طلب على
+       مستوى قاعدة البيانات، فالكنس التلقائي وزرار البوابة وزرار الكاشير
+       ما يقدروش يتسابقوا — حتى لو حاويتين شغالين وقت النشر.
+
+       جدول جديد لوحده عن قصد: لو أي سطر هنا فشل مايوقعش باقي المخطط. */
+    try {
+      await pool.query(`
+        CREATE TABLE IF NOT EXISTS dl_dispatch_attempts (
+          id BIGSERIAL PRIMARY KEY,
+          shop_order_no TEXT NOT NULL,
+          provider TEXT,
+          trigger TEXT,
+          actor TEXT,
+          started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          finished_at TIMESTAMPTZ,
+          ok BOOLEAN,
+          outcome TEXT,
+          http_status INT,
+          error_code TEXT,
+          error_message TEXT,
+          provider_ref TEXT,
+          detail JSONB NOT NULL DEFAULT '{}'::jsonb,
+          resolved_at TIMESTAMPTZ,
+          resolved_by TEXT,
+          resolution TEXT
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS dl_dispatch_attempts_inflight_idx
+          ON dl_dispatch_attempts(shop_order_no) WHERE finished_at IS NULL;
+        CREATE INDEX IF NOT EXISTS dl_dispatch_attempts_order_idx ON dl_dispatch_attempts(shop_order_no, id DESC);
+        CREATE INDEX IF NOT EXISTS dl_dispatch_attempts_open_idx
+          ON dl_dispatch_attempts(shop_order_no) WHERE resolved_at IS NULL AND outcome IN ('duplicate','lost');
+      `);
+    } catch (e) {
+      console.error("[delivery] dispatch-attempts schema failed:", e.message);
+    }
     // Seed one sensible policy so the quote endpoint works before Omar edits
     // anything — inactive until he flips it on from the dashboard.
     const n = await pool.query("SELECT count(*)::int AS n FROM dl_policies");
@@ -1030,6 +1074,146 @@ export function register(app, ctx, deps = {}) {
     return res;
   }
 
+  /* ── دورة حياة المحاولة ──────────────────────────────────────────────── */
+  const ATTEMPT_STALE_MIN = Number(env("DISPATCH_ATTEMPT_STALE_MIN", "3"));
+
+  /* محاولة مفتوحة محتاجة قرار بني آدم: «موجود عندهم» أو «ضاعت».
+     وجودها بيقفل أي إرسال تاني للطلب ده — تلقائي أو يدوي — لحد ما تتحل. */
+  async function openBlock(orderNo) {
+    try {
+      const r = await pool.query(
+        `SELECT id, outcome, provider, error_message, provider_ref, started_at, detail
+           FROM dl_dispatch_attempts
+          WHERE shop_order_no=$1 AND resolved_at IS NULL AND outcome IN ('duplicate','lost')
+          ORDER BY id DESC LIMIT 1`, [String(orderNo)]);
+      return r.rows[0] || null;
+    } catch { return null; }
+  }
+
+  /* إرسال نجح (أو استرجاع) = أي قفل قديم على الطلب ده خلاص. */
+  async function resolveBlocks(orderNo, by, resolution) {
+    try {
+      await pool.query(
+        `UPDATE dl_dispatch_attempts SET resolved_at=NOW(), resolved_by=$2, resolution=$3
+          WHERE shop_order_no=$1 AND resolved_at IS NULL AND outcome IN ('duplicate','lost')`,
+        [String(orderNo), String(by || "system").slice(0, 80), String(resolution || "dispatched").slice(0, 40)]);
+    } catch { /* القفل مش أهم من الإرسال نفسه */ }
+  }
+
+  const BLOCK_AR = {
+    duplicate: "الطلب اتسجّل عند شركة التوصيل بالفعل — تابعه معاهم أو كلّمهم، وما تبعتش تاني",
+    lost: "فيه محاولة إرسال ضاعت (الخدمة اتقطعت في نصّها) — ممكن الطلب يكون اتسجّل عندهم: راجع لوحتهم الأول",
+  };
+
+  /* بيحجز المحاولة قبل أي نداء شبكة. بيرمي لو فيه محاولة طايرة (سباق)
+     أو محاولة قديمة ماتقفلتش (الخدمة ماتت) — والتانية دي بتتحوّل لـ«ضايعة»
+     عشان تبان للمدير بدل ما تفضل معلّقة للأبد. */
+  async function beginAttempt(orderNo, { provider, trigger, actor }) {
+    try {
+      const r = await pool.query(
+        `INSERT INTO dl_dispatch_attempts(shop_order_no, provider, trigger, actor)
+         VALUES ($1,$2,$3,$4) RETURNING id, started_at`,
+        [String(orderNo), provider || null, String(trigger || "unknown").slice(0, 40),
+         actor ? String(actor).slice(0, 80) : null]);
+      return r.rows[0] || { id: null };
+    } catch (e) {
+      if (e && e.code === "23505") {
+        const cur = (await pool.query(
+          `SELECT id, trigger, actor, started_at,
+                  EXTRACT(EPOCH FROM (NOW() - started_at))/60 AS age_min
+             FROM dl_dispatch_attempts WHERE shop_order_no=$1 AND finished_at IS NULL`,
+          [String(orderNo)])).rows[0];
+        if (cur && Number(cur.age_min) < ATTEMPT_STALE_MIN) {
+          throw Object.assign(new Error("فيه إرسال طاير للطلب ده دلوقتي — استنى"),
+            { code: "DISPATCH_IN_PROGRESS", attemptId: Number(cur.id) });
+        }
+        if (cur) {
+          await markLost(cur.id, orderNo);
+          throw Object.assign(new Error(BLOCK_AR.lost),
+            { code: "DISPATCH_LOST", attemptId: Number(cur.id) });
+        }
+      }
+      throw e;
+    }
+  }
+
+  async function endAttempt(id, fields = {}) {
+    if (!id) return;
+    try {
+      await pool.query(
+        `UPDATE dl_dispatch_attempts SET finished_at=NOW(), ok=$2, outcome=$3, http_status=$4,
+                error_code=$5, error_message=$6, provider_ref=$7, detail = detail || $8::jsonb
+          WHERE id=$1`,
+        [id, fields.ok === true, String(fields.outcome || "error").slice(0, 24),
+         Number.isFinite(Number(fields.httpStatus)) ? Number(fields.httpStatus) : null,
+         fields.errorCode ? String(fields.errorCode).slice(0, 40) : null,
+         fields.errorMessage ? String(fields.errorMessage).slice(0, 400) : null,
+         fields.providerRef ? String(fields.providerRef).slice(0, 80) : null,
+         jb(fields.detail || {})]);
+    } catch (e) {
+      console.error("[delivery] endAttempt failed:", e.message);
+    }
+  }
+
+  /* محاولة ماتقفلتش = الخدمة ماتت وهي شغالة. بتتقفل كـ«ضايعة» وبتفضل
+     مفتوحة (resolved_at NULL) عشان تقفل الإرسال لحد ما حد يتأكد. */
+  async function markLost(id, orderNo) {
+    try {
+      const r = await pool.query(
+        `UPDATE dl_dispatch_attempts
+            SET finished_at=NOW(), ok=false, outcome='lost',
+                error_message=COALESCE(error_message,'الخدمة اتقطعت قبل ما يرجع رد شركة التوصيل')
+          WHERE id=$1 AND finished_at IS NULL
+        RETURNING shop_order_no, provider, trigger`, [id]);
+      if (!r.rowCount) return null;
+      const row = r.rows[0];
+      courierEvent("courier_dispatch", orderNo || row.shop_order_no, {
+        source: "delivery", ok: false,
+        summary: "محاولة إرسال ضاعت — ممكن الطلب يكون اتسجّل عند الشركة",
+        data: { provider: row.provider || null, reason: "lost", trigger: row.trigger || null },
+      });
+      return row;
+    } catch (e) {
+      console.error("[delivery] markLost failed:", e.message);
+      return null;
+    }
+  }
+
+  /* كنس: أي محاولة طايرة أقدم من الحد بتتقفل كـ«ضايعة». بيخلّي الفشل
+     الصامت يبان في البوابة خلال دقايق بدل ما يفضل مستخبّي للأبد. */
+  async function sweepLostAttempts() {
+    try {
+      const rows = (await pool.query(
+        `SELECT id, shop_order_no FROM dl_dispatch_attempts
+          WHERE finished_at IS NULL AND started_at < NOW() - make_interval(mins => $1::int)`,
+        [ATTEMPT_STALE_MIN])).rows;
+      for (const r of rows) await markLost(r.id, r.shop_order_no);
+      return rows.length;
+    } catch (e) {
+      console.error("[delivery] sweepLostAttempts failed:", e.message);
+      return 0;
+    }
+  }
+
+  /* بيحاول يسترجع طلب لاجلك قايلة إنه موجود عندهم، ويتبنّاه في صف شحنة
+     عادي عشان التتبع والإلغاء يكمّلوا زي أي طلب تاني. */
+  async function adoptExisting(order, provider, cfg, { trigger, actor } = {}) {
+    if (typeof provider.lookup !== "function") return { adopted: false, tried: [], unsupported: true };
+    const look = await provider.lookup(order.order_no, cfg).catch((e) => ({ found: false, error: e.message, tried: [] }));
+    if (!look || !look.found || !look.ref) return { adopted: false, ...(look || {}) };
+    await pool.query(
+      `INSERT INTO dl_shipments(shop_order_no, provider, provider_ref, fa_order_id, fa_order_number,
+                                status, driver, cost, dispatch, events)
+       VALUES ($1,$2,$3,NULL,$4,$5,$6,NULL,$7,$8)`,
+      [order.order_no, provider.id, look.ref, look.ref, look.status || "pending",
+       look.driver ? jb(look.driver) : null,
+       jb({ status: "adopted", assigned: look.status === "assigned", adopted: true,
+            message: "الطلب كان مسجّل عند الشركة من محاولة ضاعت — اتبنّى", via: look.via || null }),
+       jb([{ at: new Date().toISOString(), event: "adopted", provider: provider.id,
+             trigger: trigger || null, by: actor || null, resp: look.raw || null }])]);
+    return { adopted: true, ref: look.ref, status: look.status || "pending", driver: look.driver || null, tried: look.tried || [] };
+  }
+
   async function dispatchInner(order, opts = {}) {
     const all = await getSettingsData();
     const settings = all.delivery || {};
@@ -1073,7 +1257,63 @@ export function register(app, ctx, deps = {}) {
       storeLat: STORE_LAT(), storeLng: STORE_LNG(),
       webhookUrl: `${env("PUBLIC_API_URL", "https://freshcuts-api.o2m8.me")}/api/delivery/courier-webhook`,
     };
-    const res = await provider.dispatch(order, cfg);
+
+    /* ── حراسة قبل أي نداء شبكة (٢١ سبتمبر) ─────────────────────────────
+       الترتيب مقصود: شحنة حيّة → قفل مفتوح → حجز المحاولة. كل مسار في
+       السيستم (الكنس، زرار البوابة، زرار الكاشير، الراوت الإداري) بيعدّي
+       من هنا، فالحراسة مركزية مش مكرّرة في كل راوت — والراوت اللي كان
+       ناسي يفحص (زرار الكاشير) بقى محميّ من غير ما يتغيّر. */
+    const live = await shipmentOf(order.order_no);
+    if (live && String(live.status) !== "cancelled" && !opts.allowExisting) {
+      throw Object.assign(new Error("فيه شحنة شغّالة على الطلب ده بالفعل"),
+        { code: "ALREADY_DISPATCHED", provider: live.provider, ref: live.provider_ref || null,
+          shipmentStatus: live.status });
+    }
+    const block = await openBlock(order.order_no);
+    if (block && !opts.force) {
+      throw Object.assign(new Error(BLOCK_AR[block.outcome] || "الإرسال متوقف لحد المراجعة"),
+        { code: "DISPATCH_BLOCKED", block: { id: Number(block.id), outcome: block.outcome,
+          provider: block.provider || null, at: block.started_at,
+          message: block.error_message || null } });
+    }
+    const attempt = await beginAttempt(order.order_no, {
+      provider: provider.id, trigger: opts.trigger || "unknown", actor: opts.actor || null });
+
+    let res;
+    try {
+      res = await provider.dispatch(order, cfg);
+    } catch (e) {
+      /* «موجود عندهم بالفعل»: ما نعيدش — نسترجع. لو الاسترجاع نجح الطلب
+         بيكمّل تتبع عادي؛ لو فشل بنقفل الإرسال ونقول للمدير جملة واحدة
+         واضحة بدل ما يفضل يدوس ويتشتم من نفس الرد. */
+      if (e && e.code === "COURIER_DUPLICATE") {
+        let rec = null;
+        try { rec = await adoptExisting(order, provider, cfg, { trigger: opts.trigger, actor: opts.actor }); }
+        catch (e2) { rec = { adopted: false, error: String(e2.message || e2).slice(0, 200) }; }
+        if (rec && rec.adopted) {
+          await endAttempt(attempt.id, { ok: true, outcome: "adopted", httpStatus: e.status,
+            providerRef: rec.ref, errorCode: "COURIER_DUPLICATE",
+            errorMessage: e.providerMessage || e.message, detail: { recovered: true, tried: rec.tried || [] } });
+          await resolveBlocks(order.order_no, opts.actor || "system", "adopted");
+          courierEvent("courier_dispatch", order.order_no, {
+            source: "delivery", ok: true,
+            summary: "الطلب كان مسجّل عند الشركة — استرجعناه وكمّلنا تتبع",
+            data: { provider: provider.id, ref: rec.ref, adopted: true },
+          });
+          return { provider: provider.id, faOrderId: rec.ref, orderNumber: rec.ref,
+                   cost: null, assigned: rec.status === "assigned", adopted: true, dispatch: {}, raw: null };
+        }
+        await endAttempt(attempt.id, { ok: false, outcome: "duplicate", httpStatus: e.status,
+          errorCode: "COURIER_DUPLICATE", errorMessage: e.providerMessage || e.message,
+          detail: { recover: rec || null } });
+        throw Object.assign(new Error(BLOCK_AR.duplicate),
+          { code: "COURIER_DUPLICATE", provider: provider.id, status: e.status,
+            providerMessage: e.providerMessage || null, recover: rec || null, attemptId: attempt.id });
+      }
+      await endAttempt(attempt.id, { ok: false, outcome: "error", httpStatus: e && e.status,
+        errorCode: (e && e.code) || null, errorMessage: String((e && e.message) || e) });
+      throw e;
+    }
 
     /* نجاح الإنشاء مش معناه إن في كابتن جاي. Flying Arrow ممكن ترجّع
        dispatch_result.status = "escalated_to_supervisor" ومعاها «No eligible
@@ -1095,6 +1335,12 @@ export function register(app, ctx, deps = {}) {
             message: dr.message || null, assigned }),
        jb([{ at: new Date().toISOString(), event: "created", provider: provider.id, resp: res.raw }])]
     );
+    /* الصف اتكتب — دلوقتي بس بنقفل المحاولة. الترتيب ده مقصود: لو الخدمة
+       ماتت بين الاتنين، المحاولة بتفضل مفتوحة والكنس بيحوّلها «ضايعة»،
+       فالطلب بيتقفل عن الإعادة بدل ما يروح للشركة مرتين. */
+    await endAttempt(attempt.id, { ok: true, outcome: "created", providerRef: res.ref || null,
+      detail: { assigned, dispatchStatus: dr.status || res.status || null, forced: Boolean(opts.force) } });
+    if (opts.force) await resolveBlocks(order.order_no, opts.actor || "system", "forced");
     if (!assigned) {
       console.error(`[delivery] ${order.order_no}: ${provider.label} accepted the order but NO DRIVER — ${dr.status || res.status || "?"}: ${dr.message || ""}`);
     }
@@ -1526,7 +1772,118 @@ export function register(app, ctx, deps = {}) {
     const err = await requireAdmin(c); if (err) return err;
     const rows = (await pool.query(
       "SELECT * FROM dl_shipments ORDER BY id DESC LIMIT 100")).rows;
-    return c.json({ ok: true, shipments: rows });
+    /* آخر محاولة إرسال جنب كل شحنة — والطلبات اللي محاولتها فشلت ومفيش
+       ليها شحنة خالص (ودي بالظبط اللي كانت بتختفي قبل ٢١ سبتمبر). */
+    let attempts = [], orphans = [];
+    try {
+      const nos = rows.map((r) => r.shop_order_no);
+      attempts = (await pool.query(
+        `SELECT DISTINCT ON (shop_order_no) * FROM dl_dispatch_attempts
+          WHERE shop_order_no = ANY($1::text[]) ORDER BY shop_order_no, id DESC`, [nos])).rows;
+      orphans = (await pool.query(
+        `SELECT a.* FROM dl_dispatch_attempts a
+          WHERE a.id IN (SELECT max(id) FROM dl_dispatch_attempts GROUP BY shop_order_no)
+            AND (a.ok IS NOT TRUE)
+            AND NOT EXISTS (SELECT 1 FROM dl_shipments s WHERE s.shop_order_no = a.shop_order_no)
+          ORDER BY a.id DESC LIMIT 50`)).rows;
+    } catch { /* الجدول لسه ما اتعملش */ }
+    const byNo = new Map(attempts.map((a) => [a.shop_order_no, a]));
+    return c.json({
+      ok: true,
+      shipments: rows.map((r) => ({ ...r, lastAttempt: byNo.get(r.shop_order_no) || null })),
+      failedWithoutShipment: orphans,
+    });
+  });
+
+  /* ── محاولات الإرسال (٢١ سبتمبر) ───────────────────────────────────────
+     كل محاولة: مين طلبها، امتى، رد الشركة ورقم الخطأ. ده اللي كان ناقص
+     لما لاجلك فضلت تقول «الطلب موجود» وإحنا مش شايفين ولا صف. */
+  app.get("/api/delivery/dispatch-attempts", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    const orderNo = c.req.query("orderNo") || null;
+    const hours = Math.min(720, Math.max(1, Number(c.req.query("hours")) || 48));
+    const limit = Math.min(500, Math.max(1, Number(c.req.query("limit")) || 200));
+    try {
+      const rows = orderNo
+        ? (await pool.query(
+            "SELECT * FROM dl_dispatch_attempts WHERE shop_order_no=$1 ORDER BY id DESC LIMIT $2",
+            [String(orderNo), limit])).rows
+        : (await pool.query(
+            `SELECT * FROM dl_dispatch_attempts
+              WHERE started_at > NOW() - make_interval(hours => $1::int)
+              ORDER BY id DESC LIMIT $2`, [hours, limit])).rows;
+      return c.json({ ok: true, attempts: rows,
+        open: rows.filter((r) => !r.resolved_at && ["duplicate", "lost"].includes(String(r.outcome))).length });
+    } catch (e) {
+      return c.json({ ok: false, error: e.message }, 500);
+    }
+  });
+
+  /* حالة الإرسال الكاملة لطلب واحد: الحجز + الشحنات + المحاولات + القفل.
+     شاشة تشخيص واحدة بدل ما ندخل على قاعدة البيانات بإيدينا. */
+  app.get("/api/delivery/dispatch-state/:orderNo", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    const orderNo = String(c.req.param("orderNo") || "").slice(0, 64);
+    const q = async (sql, v) => { try { return (await pool.query(sql, v)).rows; } catch { return []; } };
+    const order = (await q(
+      `SELECT order_no, status, option, accepted_at, pos_ready_at, created_at,
+              dispatch_claimed_at::text AS dispatch_claimed_at FROM shop_orders WHERE order_no=$1`, [orderNo]))[0] || null;
+    const shipments = await q(
+      `SELECT id, provider, provider_ref, status, cost, created_at, updated_at, dispatch
+         FROM dl_shipments WHERE shop_order_no=$1 ORDER BY id`, [orderNo]);
+    const attempts = await q(
+      "SELECT * FROM dl_dispatch_attempts WHERE shop_order_no=$1 ORDER BY id", [orderNo]);
+    return c.json({ ok: true, order, shipments, attempts, block: await openBlock(orderNo) });
+  });
+
+  /* «أنا اتأكدت» — بيفك القفل بعد ما بني آدم يراجع لوحة الشركة. */
+  app.post("/api/delivery/dispatch-attempts/:id/resolve", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    const id = Number(c.req.param("id"));
+    const b = await c.req.json().catch(() => ({}));
+    if (!Number.isFinite(id)) return c.json({ ok: false, error: "bad_id" }, 400);
+    const r = await pool.query(
+      `UPDATE dl_dispatch_attempts SET resolved_at=NOW(), resolved_by=$2, resolution=$3
+        WHERE id=$1 AND resolved_at IS NULL RETURNING shop_order_no`,
+      [id, String(b.by || "admin").slice(0, 80), String(b.resolution || "checked").slice(0, 40)]);
+    if (!r.rowCount) return c.json({ ok: false, error: "not_open" }, 409);
+    return c.json({ ok: true, orderNo: r.rows[0].shop_order_no });
+  });
+
+  /* استرجاع طلب الشركة قايلة إنه موجود عندها: بيجرّب كل أشكال البحث
+     برقمنا ويرجّع اللي اتجرّب ورده — لو مفيش طريق، الرد بيقول كده صراحة
+     بدل ما نفضل نخمّن. `adopt=1` بيتبنّى الطلب في صف شحنة. */
+  app.post("/api/delivery/dispatch/recover", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    const b = await c.req.json().catch(() => ({}));
+    const orderNo = String(b.orderNo || "").slice(0, 64);
+    if (!orderNo) return c.json({ ok: false, error: "no_order" }, 400);
+    const all = await getSettingsData();
+    const provider = b.provider && API_PROVIDER_IDS.includes(String(b.provider))
+      ? PROVIDERS[String(b.provider)] : activeProvider(all);
+    if (!provider.configured()) return c.json({ ok: false, error: "unconfigured", missing: provider.missing() }, 409);
+    const cfg = { ...(all.delivery || {}) };
+    if (!b.adopt) {
+      const look = await provider.lookup?.(orderNo, cfg).catch((e) => ({ found: false, error: e.message, tried: [] }));
+      return c.json({ ok: true, provider: provider.id, lookup: look || { found: false, unsupported: true } });
+    }
+    const live = await shipmentOf(orderNo);
+    if (live && String(live.status) !== "cancelled") {
+      return c.json({ ok: false, error: "already_dispatched", ref: live.provider_ref || null }, 409);
+    }
+    const row = (await pool.query("SELECT * FROM shop_orders WHERE order_no=$1", [orderNo])).rows[0];
+    if (!row) return c.json({ ok: false, error: "not_found" }, 404);
+    try {
+      const rec = await adoptExisting(row, provider, cfg, { trigger: "admin_recover", actor: "admin" });
+      if (rec.adopted) {
+        await pool.query(
+          `UPDATE dl_dispatch_attempts SET resolved_at=NOW(), resolved_by='admin', resolution='adopted'
+            WHERE shop_order_no=$1 AND resolved_at IS NULL`, [orderNo]);
+      }
+      return c.json({ ok: Boolean(rec.adopted), recover: rec });
+    } catch (e) {
+      return c.json({ ok: false, error: e.message }, 502);
+    }
   });
 
   /* مطابقة شركة التوصيل: الفرق بين اللي العميل دفعه للتوصيل (سياسة المطعم —
@@ -1645,7 +2002,16 @@ export function register(app, ctx, deps = {}) {
       POLL_MIN * 60_000);
   }
 
+  /* محاولة ضايعة لازم تبان بسرعة: الكنس بيقفلها ويطلق حدث على الطلب،
+     فالمدير بيشوف السبب في الكارت بدل ما الطلب يقف من غير تفسير. */
+  const LOST_SWEEP_SEC = Number(env("DISPATCH_LOST_SWEEP_SECONDS", "60"));
+  if (LOST_SWEEP_SEC > 0) {
+    const t = setInterval(() => { sweepLostAttempts().catch(() => {}); }, LOST_SWEEP_SEC * 1000);
+    t.unref?.();
+  }
+
   return { quote, dispatch, shipmentOf, trackShipment, cancelShipment, manualEvent, pollInFlight,
+           openBlock, sweepLostAttempts, adoptExisting, BLOCK_AR,
            /* المزوّد المختار في الإعدادات، مش الافتراضي من البيئة: من غير
               الإعدادات كان بيرجع flyingarrow والشغل الحقيقي على لاجلك. */
            isLive: async () => activeProvider(await getSettingsData()).configured(),
