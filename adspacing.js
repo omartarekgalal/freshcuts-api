@@ -50,6 +50,14 @@ const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
 const NOT_PAID = ["pending_payment", "expired", "rejected_refunded", "refunded", "refund_failed", "cancelled", "canceled", "payment_failed", "failed", "unpaid"];
 const TEST_COUPONS = ["OMAR-9X4T"];
 
+/* أرقام عربية في النصوص اللي عمر بيقراها — الواجهة RTL والخلط بيبوظ القراءة */
+const AR_D = "٠١٢٣٤٥٦٧٨٩";
+export const arn = (v, d = 0) => {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return "—";
+  return n.toFixed(d).replace(/[0-9]/g, (x) => AR_D[+x]).replace(".", "٫");
+};
+
 export const WEEKDAY_AR = ["الأحد", "الاتنين", "التلات", "الأربع", "الخميس", "الجمعة", "السبت"];
 
 /* الإعدادات الافتراضية — كلها قابلة للتعديل من settings.adsPacing */
@@ -114,10 +122,10 @@ export function confidenceOf(n, spend = 0, days = 0) {
   const N = Math.max(0, Math.round(num(n)));
   if (!N) return { level: "none", rse: null, label: "مفيش عيّنة", trust: false, ar: "مفيش طلبات في الخانة دي" };
   const rse = 1 / Math.sqrt(N);
-  if (N >= 30 && spend >= 300 && days >= 7) return { level: "high", rse: r3(rse), label: "ثقة عالية", trust: true, ar: `${N} طلب — الرقم ده يتبنى عليه` };
-  if (N >= 12 && spend >= 120) return { level: "medium", rse: r3(rse), label: "ثقة متوسطة", trust: true, ar: `${N} طلب — الاتجاه واضح، الرقم نفسه ±${Math.round(rse * 100)}٪` };
-  if (N >= 4) return { level: "low", rse: r3(rse), label: "ثقة ضعيفة", trust: false, ar: `${N} طلب بس — اتجاه مبدئي، ±${Math.round(rse * 100)}٪` };
-  return { level: "tiny", rse: r3(rse), label: "العيّنة صغيرة", trust: false, ar: `${N} طلب — مش كفاية لأي قرار` };
+  if (N >= 30 && spend >= 300 && days >= 7) return { level: "high", rse: r3(rse), label: "ثقة عالية", trust: true, ar: `${arn(N)} طلب — الرقم ده يتبنى عليه` };
+  if (N >= 12 && spend >= 120) return { level: "medium", rse: r3(rse), label: "ثقة متوسطة", trust: true, ar: `${arn(N)} طلب — الاتجاه واضح، الرقم نفسه ±${arn(rse * 100)}٪` };
+  if (N >= 4) return { level: "low", rse: r3(rse), label: "ثقة ضعيفة", trust: false, ar: `${arn(N)} طلب بس — اتجاه مبدئي، ±${arn(rse * 100)}٪` };
+  return { level: "tiny", rse: r3(rse), label: "العيّنة صغيرة", trust: false, ar: `${arn(N)} طلب — مش كفاية لأي قرار` };
 }
 
 /* خانة فاضية */
@@ -313,9 +321,9 @@ export function register(app, ctx, deps = {}) {
       weekdayInfo.push({
         weekday: wd, label: WEEKDAY_AR[wd], days: a.n, revenuePerDay: r2(a.mean), raw: r3(raw), weight: w,
         // ثقة الوزن بتتقاس بعدد الأيام اللي شفناها لليوم ده، مش بعدد الطلبات
-        confidence: a.n >= 6 ? { level: "high", label: "ثقة عالية", trust: true, ar: `${a.n} ${WEEKDAY_AR[wd]} في النافذة` }
-          : a.n >= 3 ? { level: "medium", label: "ثقة متوسطة", trust: true, ar: `${a.n} أيام بس — الوزن مقرّب ناحية ١` }
-            : { level: "low", label: "ثقة ضعيفة", trust: false, ar: `${a.n} يوم — الوزن شبه ١` },
+        confidence: a.n >= 6 ? { level: "high", label: "ثقة عالية", trust: true, ar: `${arn(a.n)} ${WEEKDAY_AR[wd]} في النافذة` }
+          : a.n >= 3 ? { level: "medium", label: "ثقة متوسطة", trust: true, ar: `${arn(a.n)} أيام بس — الوزن مقرّب ناحية ١` }
+            : { level: "low", label: "ثقة ضعيفة", trust: false, ar: `${arn(a.n)} يوم — الوزن شبه ١` },
       });
     }
     const phase = {}, phaseInfo = [];
@@ -348,7 +356,9 @@ export function register(app, ctx, deps = {}) {
     const eff = bothTrust && off.cpa > 0 ? r3(clamp(peak.cpa / off.cpa, 0.25, 2)) : null;
     const effConf = bothTrust ? (peak.confidence.trust && off.confidence.trust ? "ok" : "weak") : "none";
 
-    // بداية الذروة المشتقّة: أبكر ساعة (١٥←٢١) الباقي منها ≥٦٠٪ من الدخل
+    /* بداية الذروة المشتقّة: آخر ساعة (بين ١٥ و٢١) لسه الباقي منها ≥٦٠٪ من
+       دخل اليوم. يعني «الساعة اللي بعدها الليل بيبقى معظم الشغل» — لو أخدنا
+       أبكر ساعة بدل آخر واحدة هترجع ١٥ دايماً (الباقي من ١٥ طبعاً أكبر). */
     const order = Array.from({ length: 24 }, (_, i) => (i + 4) % 24);   // اليوم التشغيلي ٤←٣
     const revAt = Object.fromEntries(m.hourCurve.map((x) => [x.hour, x.revenue]));
     let peakStart = c.peakFromHour;
@@ -356,7 +366,7 @@ export function register(app, ctx, deps = {}) {
       const h = order[i];
       if (h < 15 || h > 21) continue;
       const rest = order.slice(i).reduce((s, x) => s + num(revAt[x]), 0);
-      if (rest / totalRev >= 0.6) { peakStart = h; break; }
+      if (rest / totalRev >= 0.6) peakStart = h;
     }
     const untilMin = peakStart * 60;   // bizMin في الحارس = الساعة×٦٠ (قبل منتصف الليل)
 
@@ -385,7 +395,7 @@ export function register(app, ctx, deps = {}) {
     const lines = [];
     let verdict = "unknown", recommend = "min";
 
-    lines.push(`خارج الذروة (١٢←١٨) بيجيب ${Math.round(d.offShare * 100)}٪ من دخل المحل، والذروة (١٨←٠١) ${Math.round(d.peakShare * 100)}٪.`);
+    lines.push(`خارج الذروة (١٢←١٨) بيجيب ${arn(d.offShare * 100)}٪ من دخل المحل، والذروة (١٨←٠١) ${arn(d.peakShare * 100)}٪.`);
     if (ratio == null) {
       verdict = "unknown";
       lines.push("لسه مافيش تكلفة طلب موثوقة للفترتين — الصرف الحقيقي على الموقع بدأ ١٧/٩، فالعيّنة صغيرة.");
@@ -393,23 +403,23 @@ export function register(app, ctx, deps = {}) {
     } else if (ratio >= 1.5) {
       verdict = "worse";
       recommend = conf === "ok" ? "min" : "min";
-      lines.push(`طلب خارج الذروة بيكلّفنا ${d.cpaOffpeak} ر.س مقابل ${d.cpaPeak} ر.س في الذروة — يعني ${ratio}× أغلى${conf === "ok" ? "" : " (عيّنة صغيرة، الاتجاه أوضح من الرقم)"}.`);
+      lines.push(`طلب خارج الذروة بيكلّفنا ${arn(d.cpaOffpeak)} ر.س مقابل ${arn(d.cpaPeak)} ر.س في الذروة — يعني ${arn(ratio, 1)}× أغلى${conf === "ok" ? "" : " (عيّنة صغيرة، الاتجاه أوضح من الرقم)"}.`);
       lines.push(`الفرق ده هيكلي مش صدفة: الظهر الناس في الشغل، والنية أضعف — فنفس الريال بيجيب طلبات أقل.`);
-      lines.push(`التوصية: مانقفلش الظهر (عمر عايز دخل طول اليوم) لكن ميزانية صغيرة دايمة بدل ما يفضل يحرق الميزانية بدري — سقف ${Math.round(th.share * 100)}٪ من صرف اليوم قبل ${String(th.untilHour).padStart(2, "0")}:٠٠، والباقي لليل.`);
+      lines.push(`التوصية: مانقفلش الظهر (عمر عايز دخل طول اليوم) لكن ميزانية صغيرة دايمة بدل ما يفضل يحرق الميزانية بدري — سقف ${arn(th.share * 100)}٪ من صرف اليوم قبل ${arn(th.untilHour)}:٠٠، والباقي لليل.`);
       lines.push("والطريقة الصح لتحسين الظهر مش ميزانية أكتر: عرض غدا مخصوص + إبداع مختلف (وجبة سريعة/سعر غدا) + دفعة استلام من المحل — الاستلام بيشيل تكلفة المندوب ٢٠ ر.س من كل طلب صغير.");
     } else if (ratio <= 1.2) {
       verdict = "similar";
       recommend = "follow";
-      lines.push(`تكلفة الطلب قريبة في الفترتين (${d.cpaOffpeak} مقابل ${d.cpaPeak} ر.س) — يعني مفيش سبب نحرم الظهر من الميزانية.`);
+      lines.push(`تكلفة الطلب قريبة في الفترتين (${arn(d.cpaOffpeak)} مقابل ${arn(d.cpaPeak)} ر.س) — يعني مفيش سبب نحرم الظهر من الميزانية.`);
       lines.push("التوصية: الصرف يتوزّع بنفس نسبة الدخل — الفرملة النهارية تبقى على نصيب الظهر الطبيعي.");
     } else {
       verdict = "slightly_worse";
       recommend = "min";
-      lines.push(`الظهر أغلى شوية (${d.cpaOffpeak} مقابل ${d.cpaPeak} ر.س = ${ratio}×) — فرق بسيط، مش سبب نقفله.`);
+      lines.push(`الظهر أغلى شوية (${arn(d.cpaOffpeak)} مقابل ${arn(d.cpaPeak)} ر.س = ${arn(ratio, 1)}×) — فرق بسيط، مش سبب نقفله.`);
       lines.push("التوصية: ميزانية ظهر صغيرة دايمة + تركيز الزيادة على الليل.");
     }
     if (m.byBucket.find((x) => x.key === "late")?.revenue) {
-      lines.push(`المتأخر (بعد ٠١:٠٠) ${Math.round(d.lateShare * 100)}٪ من الدخل — صغير، فبنسيبه من غير ميزانية مستقلة.`);
+      lines.push(`المتأخر (بعد ٠١:٠٠) ${arn(d.lateShare * 100)}٪ من الدخل — صغير، فبنسيبه من غير ميزانية مستقلة.`);
     }
     return { verdict, recommend, ratio, confidence: conf, cpaPeak: d.cpaPeak, cpaOffpeak: d.cpaOffpeak, lines };
   }
