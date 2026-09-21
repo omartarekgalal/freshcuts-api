@@ -154,13 +154,42 @@ export function register(app, ctx, deps = {}) {
     };
   }
 
-  /* الدخل ساعة بساعة: نقطة البيع (صالة + تطبيقات) + المتجر.
-     طلبات المتجر بتنزل POS كـExternal من غير محفظة تطبيق — بنستبعدها من ناحية
-     الـPOS عشان مانعدّهاش مرتين (نفس قاعدة adsreport.js). */
+  /* الدخل ساعة بساعة. المصدر الأول هو bizreports.loadWindow — هو اللي بيعرف
+     يفرّق بين «طلب تطبيق توصيل» و«مرآة طلب متجر» بمطابقة وقت/مبلغ حقيقية، مش
+     بمحفظة الدفع لوحدها (مرايا طلبات المتجر بتحمل محفظة تطبيق أحياناً، فالفلتر
+     البسيط بيعدّها مرتين — يوم ١٨/٩ كان الفرق ٢٬٩٨٧ ر.س). لو bizreports مش
+     متاحة بنرجع للفلتر البسيط. */
+  async function revenuePartBiz(day) {
+    const biz = deps.biz;
+    if (!biz) return null;
+    try {
+      const cfg = await biz.settings();
+      const { rows, stats } = await biz.loadWindow(bizStart(day), bizEnd(day), cfg);
+      const byHour = {};
+      const tot = { hall: { orders: 0, revenue: 0 }, apps: { orders: 0, revenue: 0 }, online: { orders: 0, revenue: 0 }, mirrors: stats.mirrors || 0 };
+      const bump = (ts, key, rev) => {
+        const h = Number(new Intl.DateTimeFormat("en-GB", { timeZone: TZ, hour: "2-digit", hour12: false }).format(new Date(ts))) % 24;
+        const b = (byHour[h] ||= { revenue: 0, orders: 0, hall: 0, apps: 0, online: 0, adsOrders: 0, adsRevenue: 0 });
+        b[key] = r2(b[key] + rev); b.revenue = r2(b.revenue + rev); b.orders++;
+        return b;
+      };
+      const storeRows = new Map();
+      for (const r of rows) {
+        const key = r.ch === "store" ? "online" : r.ch.startsWith("app:") ? "apps" : "hall";
+        const t = key === "online" ? tot.online : key === "apps" ? tot.apps : tot.hall;
+        t.orders++; t.revenue = r2(t.revenue + num(r.total));
+        const b = bump(r.ts, key, num(r.total));
+        if (r.src === "store") storeRows.set(r.id, b);
+      }
+      return { tot, byHour, storeRows };
+    } catch (e) { console.error("[adsefficiency] revenuePartBiz:", e.message); return null; }
+  }
+
   async function revenuePart(day) {
-    const apps = await appsList();
+    const bizPart = await revenuePartBiz(day);
+    const apps = bizPart ? [] : await appsList();
     const [pos, shop] = await Promise.all([
-      q(`
+      bizPart ? [] : q(`
         SELECT (extract(hour from (o.order_date AT TIME ZONE '${TZ}'))::int) AS h,
                (o.order_type ILIKE '%external%' OR o.order_type ILIKE '%qr-menu%') AS mirror,
                (${APP_PAY} OR ${APP_SRC}) AS app_src,
@@ -176,24 +205,29 @@ export function register(app, ctx, deps = {}) {
         [bizStart(day).toISOString(), bizEnd(day).toISOString(), NOT_PAID]),
     ]);
 
-    const byHour = {};
+    let byHour = {}, tot = null, fromBiz = null;
     const bump = (h, key, n, rev) => {
       const b = (byHour[h] ||= { revenue: 0, orders: 0, hall: 0, apps: 0, online: 0, adsOrders: 0, adsRevenue: 0 });
       b[key] = r2(b[key] + rev); b.revenue = r2(b.revenue + rev); b.orders += n;
     };
-    const tot = { hall: { orders: 0, revenue: 0 }, apps: { orders: 0, revenue: 0 }, online: { orders: 0, revenue: 0 }, mirrors: 0 };
-    for (const r of pos) {
-      if (r.mirror && !r.app_src) { tot.mirrors += r.n; continue; }   // انعكاس طلب المتجر — بييجي من shop_orders
-      const t = r.app_src ? tot.apps : tot.hall;
-      t.orders += r.n; t.revenue = r2(t.revenue + num(r.rev));
-      bump(r.h, r.app_src ? "apps" : "hall", r.n, num(r.rev));
+    if (bizPart) { byHour = bizPart.byHour; tot = bizPart.tot; fromBiz = true; }
+    else {
+      tot = { hall: { orders: 0, revenue: 0 }, apps: { orders: 0, revenue: 0 }, online: { orders: 0, revenue: 0 }, mirrors: 0 };
+      for (const r of pos) {
+        if (r.mirror && !r.app_src) { tot.mirrors += r.n; continue; }   // انعكاس طلب المتجر — بييجي من shop_orders
+        const t = r.app_src ? tot.apps : tot.hall;
+        t.orders += r.n; t.revenue = r2(t.revenue + num(r.rev));
+        bump(r.h, r.app_src ? "apps" : "hall", r.n, num(r.rev));
+      }
     }
     let adsOrders = 0, adsRevenue = 0, testOrders = 0;
     const bySource = {};
     for (const o of shop) {
       if (o.is_test || TEST_COUPONS.includes(String(o.coupon || "").toUpperCase())) { testOrders++; continue; }
-      tot.online.orders++; tot.online.revenue = r2(tot.online.revenue + num(o.total));
-      bump(o.h, "online", 1, num(o.total));
+      if (!fromBiz) {
+        tot.online.orders++; tot.online.revenue = r2(tot.online.revenue + num(o.total));
+        bump(o.h, "online", 1, num(o.total));
+      }
       const src = adSourceOf(o.attribution, o.attrib_source);
       const key = src || String(o.attrib_source || "").toLowerCase() || "direct";
       const bs = (bySource[key] ||= { orders: 0, revenue: 0, paid: 0 });
@@ -206,7 +240,7 @@ export function register(app, ctx, deps = {}) {
     }
     const total = r2(tot.hall.revenue + tot.apps.revenue + tot.online.revenue);
     const orders = tot.hall.orders + tot.apps.orders + tot.online.orders;
-    return { total, orders, ...tot, adsOrders, adsRevenue, testOrders, bySource, byHour };
+    return { total, orders, ...tot, adsOrders, adsRevenue, testOrders, bySource, byHour, source: fromBiz ? "bizreports" : "fallback" };
   }
 
   /* منحنى توزيع الدخل بالساعة من آخر CURVE_DAYS يوم تشغيلي مكتمل. */
@@ -275,7 +309,7 @@ export function register(app, ctx, deps = {}) {
         total: revenue.total, orders: revenue.orders,
         hall: revenue.hall, deliveryApps: revenue.apps, online: revenue.online,
         aovOnline: revenue.online.orders ? r2(revenue.online.revenue / revenue.online.orders) : null,
-        mirrorsExcluded: revenue.mirrors, testOrdersExcluded: revenue.testOrders,
+        mirrorsExcluded: revenue.mirrors, testOrdersExcluded: revenue.testOrders, source: revenue.source,
         bySource: revenue.bySource,
       },
       ads: {
@@ -314,35 +348,28 @@ export function register(app, ctx, deps = {}) {
     }
   });
 
-  /* آخر N يوم: صرف × دخل × نسبة — للجدول تحت الشاشة والاتجاه */
+  /* آخر N يوم: صرف × دخل × نسبة — نفس حسبة الشاشة بالظبط (revenuePart) عشان
+     الجدول مايقولش رقم تاني عن الكارت اللي فوقه. */
   app.get("/api/marketing/ad-efficiency/history", async (c) => {
     const err = await requireAdmin(c); if (err) return err;
-    const days = Math.min(60, Math.max(2, Number(c.req.query("days")) || 14));
+    const days = Math.min(30, Math.max(2, Number(c.req.query("days")) || 14));
     const to = bizDay(new Date()), from = shiftDay(to, -(days - 1));
     const tgt = await target();
-    const [sp, pos, shop] = await Promise.all([
-      q(`SELECT ((hour_start AT TIME ZONE '${TZ}') - interval '4 hours')::date::text AS day, sum(spend) AS spend
-           FROM ad_spend_hourly WHERE hour_start >= $1 AND hour_start < $2 GROUP BY 1`, [bizStart(from).toISOString(), bizEnd(to).toISOString()]),
-      q(`SELECT ((o.order_date AT TIME ZONE '${TZ}') - interval '4 hours')::date::text AS day,
-                count(*)::int AS n, COALESCE(sum(o.total),0) AS rev
-           FROM ts_orders o WHERE o.order_date >= $1 AND o.order_date < $2 AND ${POS_LIVE}
-             AND NOT ((o.order_type ILIKE '%external%' OR o.order_type ILIKE '%qr-menu%') AND NOT (${APP_PAY} OR ${APP_SRC}))
-          GROUP BY 1`, [bizStart(from).toISOString(), bizEnd(to).toISOString(), await appsList()]),
-      q(`SELECT ((created_at AT TIME ZONE '${TZ}') - interval '4 hours')::date::text AS day, count(*)::int AS n, COALESCE(sum(total),0) AS rev
-           FROM shop_orders WHERE created_at >= $1 AND created_at < $2 AND status <> ALL($3::text[])
-             AND NOT COALESCE(is_test,false) AND COALESCE(upper(coupon),'') <> ALL($4::text[])
-          GROUP BY 1`, [bizStart(from).toISOString(), bizEnd(to).toISOString(), NOT_PAID, TEST_COUPONS]),
-    ]);
-    const m = new Map();
-    const row = (d) => m.get(d) || (m.set(d, { day: d, spend: 0, revenue: 0, orders: 0, onlineOrders: 0 }), m.get(d));
-    for (const r of sp) row(r.day).spend = r2(r.spend);
-    for (const r of pos) { const x = row(r.day); x.revenue = r2(x.revenue + num(r.rev)); x.orders += r.n; }
-    for (const r of shop) { const x = row(r.day); x.revenue = r2(x.revenue + num(r.rev)); x.orders += r.n; x.onlineOrders = r.n; }
-    const rows = [...m.values()].sort((a, b) => (a.day < b.day ? 1 : -1)).map((x) => ({
-      ...x, ratio: x.revenue > 0 ? r4(x.spend / x.revenue) : null,
-      cpo: x.orders ? r2(x.spend / x.orders) : null,
-      onTarget: x.revenue > 0 ? x.spend / x.revenue <= tgt : null,
-    }));
+    const list = Array.from({ length: days }, (_, i) => shiftDay(to, -i));
+    const rows = await cached(`hist|${to}|${days}|${tgt}`, async () => {
+      const out = [];
+      for (const day of list) {
+        const [sp, rv] = await Promise.all([spendPart(day), revenuePart(day)]);
+        out.push({
+          day, spend: sp.total, revenue: rv.total, orders: rv.orders, onlineOrders: rv.online.orders,
+          adsOrders: rv.adsOrders,
+          ratio: rv.total > 0 ? r4(sp.total / rv.total) : null,
+          cpo: rv.orders ? r2(sp.total / rv.orders) : null,
+          onTarget: rv.total > 0 ? sp.total / rv.total <= tgt : null,
+        });
+      }
+      return out;
+    }, 5 * 60_000);
     return c.json({ ok: true, target: tgt, from, to, rows });
   });
 
