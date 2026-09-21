@@ -294,3 +294,202 @@ test("districtBlock: شهر من غير طلبات حي = أصفار، مش قس
     assert.equal(b.avgFee, 0);
   });
 });
+
+/* ═══ آخر ميعاد «طلباتك» — ١٢:٤٥ (عمر ٢١/٩) ═══════════════════════════════ */
+import {
+  hhmmToMin, minToHhmm, riyadhMinutes, districtCutoff,
+  leajlakCostFor, districtRouting, DEFAULT_CUTOFF,
+} from "./districts.js";
+
+/* لحظة UTC اللي بتساوي ساعة/دقيقة معيّنة بتوقيت الرياض (UTC+3) */
+const riyadhAt = (h, m = 0) => Date.UTC(2026, 8, 21, h - 3, m);
+
+test("hhmm: التحويل جايّ ورايح، والغلط بيرجع null", () => {
+  assert.equal(hhmmToMin("00:45"), 45);
+  assert.equal(hhmmToMin("23:59"), 1439);
+  assert.equal(hhmmToMin("24:00"), null);
+  assert.equal(hhmmToMin("لا"), null);
+  assert.equal(minToHhmm(45), "00:45");
+  assert.equal(minToHhmm(1439), "23:59");
+});
+
+test("riyadhMinutes: الرياض UTC+3 ثابتة", () => {
+  assert.equal(riyadhMinutes(Date.UTC(2026, 8, 21, 21, 45)), 45);    // ٠٠:٤٥ الرياض
+  assert.equal(riyadhMinutes(Date.UTC(2026, 8, 21, 9, 0)), 12 * 60); // ١٢:٠٠ الرياض
+});
+
+test("districtCutoff: الشباك بيلف حوالين نص الليل", () => {
+  const cfg = { cutoff: { ...DEFAULT_CUTOFF } };   // ١٠:٠٠ → ٠٠:٤٥
+  assert.equal(districtCutoff(cfg, riyadhAt(14, 0)).open, true, "الضهر مفتوح");
+  assert.equal(districtCutoff(cfg, riyadhAt(23, 30)).open, true, "١١:٣٠ بالليل مفتوح");
+  assert.equal(districtCutoff(cfg, riyadhAt(0, 44)).open, true, "١٢:٤٤ لسه مفتوح");
+  assert.equal(districtCutoff(cfg, riyadhAt(0, 45)).open, true, "١٢:٤٥ بالظبط = آخر ميعاد، مقبول");
+  assert.equal(districtCutoff(cfg, riyadhAt(0, 46)).open, false, "١٢:٤٦ قافل");
+  assert.equal(districtCutoff(cfg, riyadhAt(2, 0)).open, false, "٢ الفجر قافل");
+  assert.equal(districtCutoff(cfg, riyadhAt(9, 0)).open, false, "٩ الصبح لسه مافتحوش");
+});
+
+test("districtCutoff: الدقايق الفاضلة وحالة «قرّب يقفل»", () => {
+  const cfg = { cutoff: { ...DEFAULT_CUTOFF, warnMin: 30 } };
+  assert.equal(districtCutoff(cfg, riyadhAt(0, 15)).minutesLeft, 30);
+  assert.equal(districtCutoff(cfg, riyadhAt(0, 15)).state, "soon");
+  assert.equal(districtCutoff(cfg, riyadhAt(23, 0)).minutesLeft, 105);
+  assert.equal(districtCutoff(cfg, riyadhAt(23, 0)).state, "open");
+  assert.equal(districtCutoff(cfg, riyadhAt(0, 44)).minutesLeft, 1);
+});
+
+test("districtCutoff: مقفولة = مفتوح دايماً (مافيش حجب من غير قصد)", () => {
+  const cfg = { cutoff: { ...DEFAULT_CUTOFF, enabled: false } };
+  assert.equal(districtCutoff(cfg, riyadhAt(3, 0)).open, true);
+});
+
+test("districtCutoff: شباك عادي من غير لفّة بيشتغل برضه", () => {
+  const cfg = { cutoff: { enabled: true, openHHMM: "09:00", lastHHMM: "17:00" } };
+  assert.equal(districtCutoff(cfg, riyadhAt(12, 0)).open, true);
+  assert.equal(districtCutoff(cfg, riyadhAt(18, 0)).open, false);
+  assert.equal(districtCutoff(cfg, riyadhAt(2, 0)).open, false);
+});
+
+/* ═══ الترشيح: مين يوصّل — «طلباتك» ولا لاجلك ═══════════════════════════ */
+test("leajlakCostFor: ثابت لحد ١٠ كم وبعدها بالكسر", () => {
+  assert.equal(leajlakCostFor(1), 19.55);
+  assert.equal(leajlakCostFor(9.9), 19.55);
+  assert.equal(leajlakCostFor(10), 19.55);
+  assert.equal(leajlakCostFor(12), 24.15);       // 19.55 + 2×2.30
+  assert.equal(leajlakCostFor(10.5), 20.7);      // بالكسر، مش كيلو كامل
+  assert.equal(leajlakCostFor(null), 19.55);
+});
+
+const cfgWith = (districts, extra = {}) => districtCfg({ delivery: { districtCouriers: {
+  enabled: true, providers: [{ id: "t", name: "طلباتك", active: true }], districts, ...extra } } });
+
+test("السلامة (١٥) هي الوحيدة الأرخص من لاجلك → بنبعتلهم", () => {
+  const cfg = cfgWith([
+    { name: "السلامة", price: 15, provider: "t", active: true, confirmed: true },
+    { name: "الروضة", price: 20, provider: "t", active: true, confirmed: true },
+    { name: "المروة", price: 30, provider: "t", active: true, confirmed: true },
+  ]);
+  const s = districtRouting(cfg, { district: "السلامة", km: 6, at: riyadhAt(20) });
+  assert.equal(s.prefer, true);
+  assert.equal(s.saving, 4.55);
+  assert.equal(s.leajlakCost, 19.55);
+  for (const d of ["الروضة", "المروة"]) {
+    const r = districtRouting(cfg, { district: d, km: 6, at: riyadhAt(20) });
+    assert.equal(r.prefer, false, d + " أغلى من لاجلك — تفضل على لاجلك");
+    assert.ok(r.saving < 0);
+  }
+});
+
+test("فوق ١٠٫٥ كم «طلباتك» هي الافتراضي حتى لو أغلى (لاجلك بترفض)", () => {
+  const cfg = cfgWith([{ name: "أبحر الشمالية", price: 40, provider: "t", active: true, confirmed: true }]);
+  const r = districtRouting(cfg, { district: "أبحر الشمالية", km: 23.4, at: riyadhAt(20) });
+  assert.equal(r.prefer, true);
+  assert.equal(r.far, true);
+  assert.match(r.reason, /فوق 10\.5/);
+});
+
+test("بعد ١٢:٤٥ الترشيح بيتوقف — لاجلك بتاخدها", () => {
+  const cfg = cfgWith([{ name: "السلامة", price: 15, provider: "t", active: true, confirmed: true }]);
+  const r = districtRouting(cfg, { district: "السلامة", km: 6, at: riyadhAt(1, 30) });
+  assert.equal(r.prefer, false);
+  assert.equal(r.blocked, true);
+  assert.equal(r.cutoff.open, false);
+});
+
+test("الترشيح بيتقفل من اللوحة", () => {
+  const cfg = cfgWith([{ name: "السلامة", price: 15, provider: "t", active: true, confirmed: true }],
+    { routing: { preferWhenCheaper: false, preferAboveKm: false } });
+  assert.equal(districtRouting(cfg, { district: "السلامة", km: 6, at: riyadhAt(20) }).prefer, false);
+  assert.equal(districtRouting(cfg, { district: "السلامة", km: 23, at: riyadhAt(20) }).prefer, false);
+});
+
+test("حي مش في الجدول = مفيش ترشيح خالص", () => {
+  const cfg = cfgWith([{ name: "السلامة", price: 15, provider: "t", active: true, confirmed: true }]);
+  assert.equal(districtRouting(cfg, { district: "حي مش موجود", km: 5, at: riyadhAt(20) }), null);
+});
+
+/* ═══ التسعيرة: الميعاد بيقفل الطلب البعيد، وبيسيب القريب ═══════════════ */
+const POL = { ...DEFAULT_POLICY, maxKm: 10, maxStraightKm: 7, minOrderTotal: 0,
+  farZoneEnabled: false, baseFee: 20, feeByTotal: null, perKm: 0, baseKm: 10 };
+
+test("بعد الميعاد: حي بعيد = رفض واضح بسبب الميعاد مش «بره النطاق»", () => {
+  const cfg = cfgWith([{ name: "أبحر الشمالية", price: 40, provider: "t", active: true, confirmed: true }]);
+  const late = computeDeliveryFee(POL, { distanceKm: 23, straightKm: 18, orderTotal: 120,
+    farZoneAccepted: true, district: "أبحر الشمالية", districts: cfg, at: riyadhAt(1, 30) });
+  assert.equal(late.deliverable, false);
+  assert.equal(late.reason, "district_closed");
+  assert.equal(late.districtClosed.lastHHMM, "00:45");
+  // نفس الطلب بالظبط قبل الميعاد = مقبول
+  const early = computeDeliveryFee(POL, { distanceKm: 23, straightKm: 18, orderTotal: 120,
+    farZoneAccepted: true, district: "أبحر الشمالية", districts: cfg, at: riyadhAt(23, 0) });
+  assert.equal(early.deliverable, true);
+  assert.equal(early.fee, 45);
+});
+
+test("الإرسال بالحي مابيغيّرش ولا ريال على العميل", () => {
+  const cfg = cfgWith([{ name: "السلامة", price: 15, provider: "t", active: true, confirmed: true }]);
+  const plain = computeDeliveryFee(POL, { distanceKm: 6, straightKm: 5, orderTotal: 70, at: riyadhAt(20) });
+  const routed = computeDeliveryFee(POL, { distanceKm: 6, straightKm: 5, orderTotal: 70,
+    district: "السلامة", districts: cfg, at: riyadhAt(20) });
+  assert.equal(routed.fee, plain.fee, "الرسم هو هو");
+  assert.equal(routed.feeBase, plain.feeBase);
+  assert.ok(routed.districtDispatch, "بس الطلب بيتوسم للإرسال بالحي");
+  assert.equal(routed.districtDispatch.cost, 15);
+  assert.equal(routed.districtDispatch.saving, 4.55);
+  assert.equal(routed.districtDispatch.district, "السلامة");
+});
+
+test("حي غالي جوّه النطاق: مفيش إرسال بالحي — لاجلك أرخص", () => {
+  const cfg = cfgWith([{ name: "المروة", price: 30, provider: "t", active: true, confirmed: true }]);
+  const q = computeDeliveryFee(POL, { distanceKm: 6, straightKm: 5, orderTotal: 70,
+    district: "المروة", districts: cfg, at: riyadhAt(20) });
+  assert.equal(q.deliverable, true);
+  assert.equal(q.districtDispatch, undefined);
+});
+
+test("بعد الميعاد: الإرسال بالحي بيقف والطلب بيكمّل عادي", () => {
+  const cfg = cfgWith([{ name: "السلامة", price: 15, provider: "t", active: true, confirmed: true }]);
+  const q = computeDeliveryFee(POL, { distanceKm: 6, straightKm: 5, orderTotal: 70,
+    district: "السلامة", districts: cfg, at: riyadhAt(1, 30) });
+  assert.equal(q.deliverable, true, "العميل القريب مايتأثرش خالص");
+  assert.equal(q.districtDispatch, undefined);
+});
+
+test("districtOfRow بيفرّق بين المسعّر والمُرسَل", () => {
+  assert.equal(districtOfRow({ delivery_quote: { districtDelivery: { district: "أبحر", fee: 45, cost: 40 } } }).mode, "priced");
+  assert.equal(districtOfRow({ delivery_quote: { districtDispatch: { district: "السلامة", fee: 15, cost: 15 } } }).mode, "dispatch");
+  assert.equal(districtOfRow({ delivery_quote: {} }), null);
+});
+
+/* ═══ رسالة الجروب ═══════════════════════════════════════════════════════ */
+test("رسالة الجروب فيها كل اللي عمر طلبه", async () => {
+  const { groupHandoffText, pickupLabel } = await import("./courierlive.js");
+  const txt = groupHandoffText({
+    order_no: "W123", total: 88.5,
+    customer: { name: "عميل", phone: "0551234567" },
+    address: { latitude: 21.6, longitude: 39.1, district: "أبحر الشمالية", street: "شارع" },
+  }, { link: "https://freshcuts.sa/d/abc", district: "أبحر الشمالية", cost: 40, pickup: "جاهز الآن" });
+  assert.match(txt, /W123/);
+  assert.match(txt, /أبحر الشمالية/);
+  assert.match(txt, /جاهز الآن/);
+  assert.match(txt, /maps\.google\.com/);
+  assert.match(txt, /88\.50 ر\.س/);
+  assert.match(txt, /مدفوع/);
+  assert.match(txt, /freshcuts\.sa\/d\/abc/);
+  assert.equal(pickupLabel({ readyAt: new Date(Date.now() - 6e4) }), "جاهز الآن");
+  assert.equal(pickupLabel({ delayMin: 15 }), "جاهز خلال 15 دقيقة تقريباً");
+});
+
+test("districtBlock: التوفير مقابل لاجلك", async () => {
+  const { districtBlock } = await import("./portal-reports.js");
+  const b = districtBlock({ district_orders: 3, district_fees: 90, district_cost: 70,
+    district_priced_orders: 2, district_dispatch_orders: 1,
+    district_dispatch_fees: 20, district_dispatch_cost: 15,
+    district_leajlak_cost: 95, district_saving: 25 });
+  assert.equal(b.savedVsLeajlak, 25);
+  assert.equal(b.savedPerOrder, 8.33);
+  assert.equal(b.dispatch.orders, 1);
+  assert.equal(b.dispatch.margin, 5);
+  assert.equal(b.priced.orders, 2);
+  assert.equal(b.priced.courierCost, 55);
+});

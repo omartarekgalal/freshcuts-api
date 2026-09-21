@@ -34,6 +34,8 @@ import crypto from "node:crypto";
 import { STORE_LAT, STORE_LNG } from "./tsstore.js";
 import { PROVIDERS, readableAddress, courierNotes, leaveAtDoor, DOOR_NOTE, PREPAID_NOTE, msisdn } from "./couriers.js";
 import { driverLatLng } from "./portal-core.js";
+import { districtOfRow } from "./districts.js";
+import { dispatchDelayOf } from "./delivery.js";
 import { emitOrder } from "./order-events.js";
 
 /* ── ثوابت التشغيل ─────────────────────────────────────────────────────── */
@@ -129,6 +131,67 @@ export function waUrl(phone, text) {
   const d = msisdn(phone || "");
   const q = `?text=${encodeURIComponent(text || "")}`;
   return /^9665\d{8}$/.test(d) ? `https://wa.me/${d}${q}` : `https://wa.me/${q}`;
+}
+
+/* ═══ رسالة الجروب — «طلباتك» (عمر ٢١/٩) ═══════════════════════════════════
+   الواقع اللي عمر وصفه: المدير **مابيكلّمش رقم**، بينشر الطلب في جروب
+   واتساب بتاعهم. اللي يقبله بيكلّم المدير، ييجي المطعم، يستلم، ويوصّل.
+   يعني وقت الإرسال إحنا **مانعرفش** مين المندوب ولا جواله — بييجوا بعدين.
+
+   وعشان كده الرسالة مختلفة عن رسالة المندوب الشخصي:
+     • مفيش «يا فلان» — دي منشور عام في جروب.
+     • الحي بيتكتب أول حاجة (ده اللي بيسعّروا بيه وبيقرّروا بيه يقبلوا ولا لأ).
+     • وقت الاستلام صريح («جاهز دلوقتي» / «جاهز خلال ١٥ د»).
+     • المبلغ + «مدفوع مسبقاً — لا يُحصَّل» عشان محدش يحصّل من العميل.
+     • رابط التتبع بيشتغل لأول واحد يفتحه — هو ده اللي أخد الطلب.
+
+   ⚠️ روابط جروبات الواتساب (chat.whatsapp.com/...) **مابتقبلش ?text=** —
+   مفيش طريقة تفتح جروب معيّن والرسالة مكتوبة فيه. الحل اللي بيشتغل فعلاً:
+     ١) ننسخ النص للحافظة (clipboard)،
+     ٢) نفتح `https://wa.me/?text=…` — ده بيفتح الواتساب على **منتقي
+        المحادثات** والرسالة جاهزة، فالمدير يختار الجروب ويبعت. ده المسار
+        الأساسي لأنه بيوفّر اللصق أصلاً.
+     ٣) ولو حب يفتح الجروب نفسه، زرار تاني بيفتح رابط الدعوة والنص متنسوخ
+        فيلزقه بإيده.                                                       */
+export function groupHandoffText(order, { link, district, cost, storeName = "فريش كاتس", pickup = null, providerName = null } = {}) {
+  const addr = (order && order.address) || {};
+  const lat = Number(addr.latitude ?? addr.lat), lng = Number(addr.longitude ?? addr.lng);
+  const hasPin = Number.isFinite(lat) && Number.isFinite(lng) && (lat || lng);
+  const pin = hasPin ? `https://maps.google.com/?q=${lat.toFixed(6)},${lng.toFixed(6)}` : "";
+  const text = readableAddress({ ...addr, leave_at_door: false }, { withPin: false });
+  const dnotes = String(addr.delivery_notes || addr.deliveryNotes || "").trim();
+  const total = Number(order && order.total);
+  const L = [`🛵 ${storeName} — طلب توصيل${district ? ` — حي ${district}` : ""}`, ""];
+  L.push(`رقم الطلب: ${order.order_no}`);
+  if (district) L.push(`الحي: ${district}`);
+  if (cost != null && Number.isFinite(Number(cost))) L.push(`أجرة التوصيل: ${Number(cost)} ر.س`);
+  L.push(`الاستلام من المطعم: ${pickup || "جاهز الآن"}`);
+  if (pin) L.push(`📍 موقع العميل: ${pin}`);
+  if (text && text !== "موقع العميل — اتبع الإحداثيات") L.push(`العنوان: ${text}`);
+  if (dnotes) L.push(`ملاحظات التوصيل: ${dnotes}`);
+  if (leaveAtDoor(addr)) L.push(`🚪 ${DOOR_NOTE}`);
+  L.push("");
+  if (Number.isFinite(total)) L.push(`مبلغ الطلب: ${total.toFixed(2)} ر.س`);
+  L.push(`💳 ${PREPAID_NOTE}`);
+  if (link) {
+    L.push("");
+    L.push("اللي هياخد الطلب يفتح الرابط ده ويسجّل منه التسليم:");
+    L.push(link);
+    L.push("(الرابط لهذا الطلب فقط — أول واحد يفتحه هو اللي استلمه)");
+  }
+  L.push("");
+  L.push(`يا ريت اللي هيستلم يكلّمنا${providerName ? "" : ""} ويبعت اسمه ورقمه.`);
+  return L.join("\n");
+}
+
+/* «جاهز دلوقتي» / «جاهز خلال ١٥ دقيقة» — الجروب محتاج يعرف يستنى قد إيه */
+export function pickupLabel({ readyAt = null, delayMin = 0, at = Date.now() } = {}) {
+  if (readyAt) {
+    const t = new Date(readyAt).getTime();
+    if (Number.isFinite(t) && t <= at) return "جاهز الآن";
+  }
+  const m = Math.max(0, Math.round(Number(delayMin) || 0));
+  return m > 0 ? `جاهز خلال ${m} دقيقة تقريباً` : "جاهز الآن";
 }
 
 /* ═══════════════════════════════════════════════════════════════════════ */
@@ -382,7 +445,8 @@ export function register(app, ctx, deps = {}) {
     const b = await c.req.json().catch(() => ({}));
     try {
       const r = await makeHandoff(orderNo, { name: clean(b.name, 80), phone: clean(b.phone, 20),
-        by: a.user?.name || "manager", fresh: b.fresh === true });
+        by: a.user?.name || "manager", fresh: b.fresh === true,
+        mode: b.mode === "group" || b.mode === "direct" ? b.mode : null });
       if (!r.ok) return c.json(r, r.status || 409);
       audit(a.user, "courier_handoff", orderNo, true, { to: r.courierPhone || r.courierName || null, fresh: Boolean(b.fresh) }, c);
       return c.json(r);
@@ -403,7 +467,7 @@ export function register(app, ctx, deps = {}) {
     return c.json({ ok: true, revoked: r.rowCount });
   });
 
-  async function makeHandoff(orderNo, { name, phone, by, fresh = false } = {}) {
+  async function makeHandoff(orderNo, { name, phone, by, fresh = false, mode = null } = {}) {
     if (!(await ensureSchema())) return { ok: false, error: "unavailable", status: 503 };
     const dl = delivery(), sp = shop();
     if (!dl || !sp) return { ok: false, error: "unavailable", status: 503 };
@@ -447,16 +511,72 @@ export function register(app, ctx, deps = {}) {
        واحد جديد (زرار «رابط جديد»). ده مقصود: hash واحد في الجدول يعني
        مفيش نسخة من المفتاح عندنا تتسرّب. */
     const link = token ? `${base}/d/${token}` : null;
-    const text = handoffText(row, { link: link || `${base}/d/…` });
+    /* ── نشر في جروب ولا رسالة لشخص؟ ──────────────────────────────────
+       «طلباتك» = جروب (عمر ٢١/٩). بنقرّر تلقائياً: لو الطلب طلب حي ومفيش
+       جوال مندوب لسه → وضع الجروب. والمدير يقدر يفرض الاتنين بـ`mode`. */
+    const dd = districtOfRow(row);
+    const grp = mode === "group" || (mode !== "direct" && Boolean(dd) && !cPhone);
+    let text, groupUrl = null, providerName = null;
+    if (grp) {
+      const delayMin = dispatchDelayOf(all);
+      providerName = (dd && dd.provider && dd.provider.name) || null;
+      groupUrl = (dd && dd.provider && dd.provider.groupUrl) || null;
+      text = groupHandoffText(row, {
+        link: link || `${base}/d/…`,
+        district: dd ? dd.district : null,
+        cost: dd && dd.cost != null ? dd.cost : null,
+        providerName,
+        pickup: pickupLabel({ readyAt: row.pos_ready_at, delayMin }),
+      });
+    } else {
+      text = handoffText(row, { link: link || `${base}/d/…` });
+    }
     return {
       ok: true, orderNo, shipmentId: Number(sh.id),
       link, hasLink: Boolean(link),
+      /* `mode:"group"` بيقول للبوابة: انسخ الأول وبعدين افتح — الجروب
+         مابيتفتحش وجواه رسالة، ده قيد في الواتساب نفسه. */
+      mode: grp ? "group" : "direct",
       text, waUrl: waUrl(cPhone, text),
+      shareUrl: `https://wa.me/?text=${encodeURIComponent(text)}`,
+      groupUrl, groupName: (dd && dd.provider && dd.provider.groupName) || null, providerName,
+      district: dd ? dd.district : null,
       courierName: cName, courierPhone: cPhone ? localPhone(cPhone) : null,
+      needsCourier: grp && !cPhone,
       expiresAt: iso(run.expires_at), run: extRunView(run),
       note: token ? null : "الرابط القديم لسه شغّال — اضغط «رابط جديد» لو محتاج واحد تاني",
     };
   }
+
+  /* ── اسم/جوال المندوب بييجوا **بعدين** (عمر ٢١/٩) ───────────────────────
+     وقت النشر في الجروب محدش عارف مين هياخده. لما يكلّم المدير، المدير
+     بيكتب اسمه ورقمه من نفس اللوحة — وبيتحفظوا على الشحنة وعلى الرابط
+     مع بعض، فالخريطة والتقارير بيشوفوا نفس الاسم. */
+  app.post("/api/portal/orders/:orderNo/courier/driver", async (c) => {
+    const a = await mgr(c); if (a.res) return a.res;
+    const orderNo = String(c.req.param("orderNo") || "").slice(0, 64);
+    const b = await c.req.json().catch(() => ({}));
+    const name = clean(b.name, 80) || null;
+    const phone = String(b.phone || "").replace(/\D/g, "").slice(0, 15) || null;
+    if (!name && !phone) return c.json({ ok: false, error: "empty", message: "اكتب اسم المندوب أو جواله" }, 400);
+    const dl = delivery();
+    const sh = dl ? await dl.shipmentOf(orderNo) : null;
+    if (!sh) return c.json({ ok: false, error: "no_shipment", message: "مفيش مندوب متسجّل على الطلب" }, 409);
+    await pool.query(
+      `UPDATE dl_shipments SET driver = COALESCE(driver,'{}'::jsonb) || $2::jsonb,
+              events = events || $3::jsonb, updated_at=NOW() WHERE id=$1`,
+      [sh.id, J({ ...(name ? { name } : {}), ...(phone ? { phone } : {}) }),
+       J([{ at: new Date(now()).toISOString(), provider: sh.provider, event: "driver_named",
+            by: `portal:${a.user?.name || "manager"}`, note: `${name || ""} ${phone || ""}`.trim() }])]);
+    if (await ensureSchema()) {
+      await pool.query(
+        `UPDATE dl_ext_runs SET courier_name = COALESCE($2, courier_name), courier_phone = COALESCE($3, courier_phone)
+          WHERE shipment_id=$1`, [sh.id, name, phone]).catch(() => {});
+    }
+    audit(a.user, "courier_driver", orderNo, true, { name, phone: phone ? "set" : null }, c);
+    try { portal()?.scheduleRefresh?.(orderNo); } catch {}
+    return c.json({ ok: true, name, phone: phone ? localPhone(phone) : null });
+  });
 
   /* ═══ صفحة المندوب الخارجي — عام، بالتوكن بس ══════════════════════════ */
   const pingGate = new Map();   // runId → آخر نبضة (خنق قبل ما نلمس الداتابيز)

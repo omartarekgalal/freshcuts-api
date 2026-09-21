@@ -74,13 +74,41 @@ export const DEFAULT_MARGIN = Object.freeze({
   max: null,            // سقف (null = بدون)
 });
 
+/* ── مواعيد شغل المندوب (عمر ٢١/٩) ────────────────────────────────────────
+   «طلباتك» بيشتغلوا لحد ١:٠٠ بالليل، فآخر طلب نقدر نبعتهولهم ١٢:٤٥.
+   الشباك بيلف حوالين نص الليل: من `openHHMM` (الصبح) لـ`lastHHMM` (بعد
+   نص الليل) — عشان كده المقارنة تحت بتفرّق بين شباك عادي وشباك لافّ. */
+export const DEFAULT_CUTOFF = Object.freeze({
+  enabled: true,
+  openHHMM: "10:00",     // من إمتى بيردّوا
+  lastHHMM: "00:45",     // آخر طلب نبعته (عمر: ١٢:٤٥)
+  closesHHMM: "01:00",   // بيقفلوا خالص
+  warnMin: 30,           // فاضل أقل من كده → تحذير في البوابة
+});
+
+/* ── الترشيح بين «طلباتك» ولاجلك (عمر ٢١/٩) ───────────────────────────────
+   لاجلك ثابتة ١٩٫٥٥ شامل الضريبة لحد ١٠ كم، وفوقها +٢٫٣٠/كم بالكسر.
+   قاعدة عمر: السلامة (١٥) أرخص من لاجلك — وهي **الحالة الوحيدة** الأرخص.
+   وفوق ١٠٫٥ كم لاجلك ممكن ترفض، فـ«طلباتك» هي الافتراضي هناك. */
+export const DEFAULT_ROUTING = Object.freeze({
+  preferWhenCheaper: true,   // تكلفة الحي < تكلفة لاجلك → ابعت للحي
+  preferAboveKm: true,       // فوق farKm → الحي هو الافتراضي (لاجلك بترفض)
+  farKm: 10.5,               // نفس رقم عمر في courierSla.farGuard.fromKm
+  leajlakFlat: 19.55,        // شامل الضريبة، لحد ١٠ كم
+  leajlakPerKm: 2.3,         // شامل، لكل كم فوق ١٠ (بالكسر)
+  leajlakBaseKm: 10,
+  minSaving: 0.5,            // أقل فرق يستاهل نغيّر بيه الشركة
+});
+
 export const DEFAULT_DISTRICT_COURIERS = Object.freeze({
   enabled: false,
   overrideFarZone: false,   // true = الجدول يغلب رسم المسافة الإضافية كمان
   fallbackPrice: null,      // تكلفة افتراضية لحي مفعّل من غير سعر (null = متتحسبش)
   note: "",
   margin: DEFAULT_MARGIN,
-  providers: [],            // [{id, name, phone, note, active}]
+  cutoff: DEFAULT_CUTOFF,
+  routing: DEFAULT_ROUTING,
+  providers: [],            // [{id, name, phone, groupUrl, groupName, note, active}]
   districts: [],            // [{name, price, provider, active, confirmed, source, note}]
 });
 
@@ -93,6 +121,7 @@ const num = (v) => {
 };
 const str = (v, n = 80) => String(v == null ? "" : v).trim().slice(0, n);
 const r2 = (v) => Math.round((Number(v) || 0) * 100) / 100;
+const r1 = (v) => Math.round((Number(v) || 0) * 10) / 10;
 
 export function marginCfg(raw) {
   const m = { ...DEFAULT_MARGIN, ...(raw && typeof raw === "object" ? raw : {}) };
@@ -137,6 +166,117 @@ export function marginLabel(rawMargin) {
   return `التكلفة ${bits.join(" · ")}`;
 }
 
+/* ═══ مواعيد الشغل ═════════════════════════════════════════════════════════
+   الرياض UTC+3 ثابتة طول السنة (مفيش توقيت صيفي) — فالحساب ساعات ثابتة،
+   من غير Intl ولا مكتبة. نفس اللي bizday.js بيعمله. */
+export const RIYADH_OFFSET_H = 3;
+const HHMM_RE = /^([01]?\d|2[0-3]):([0-5]\d)$/;
+
+/** "00:45" → 45 (دقايق من نص الليل). أي حاجة غلط → null. */
+export function hhmmToMin(v) {
+  const m = HHMM_RE.exec(String(v == null ? "" : v).trim());
+  return m ? Number(m[1]) * 60 + Number(m[2]) : null;
+}
+export function minToHhmm(v) {
+  const n = ((Math.round(Number(v) || 0) % 1440) + 1440) % 1440;
+  return `${String(Math.floor(n / 60)).padStart(2, "0")}:${String(n % 60).padStart(2, "0")}`;
+}
+/** دقايق اليوم بتوقيت الرياض للحظة. */
+export function riyadhMinutes(at) {
+  const ms = at instanceof Date ? at.getTime() : typeof at === "number" ? at : at ? Date.parse(at) : Date.now();
+  if (!Number.isFinite(ms)) return null;
+  const d = new Date(ms + RIYADH_OFFSET_H * 3600e3);
+  return d.getUTCHours() * 60 + d.getUTCMinutes();
+}
+
+export function cutoffCfg(raw) {
+  const c = { ...DEFAULT_CUTOFF, ...(raw && typeof raw === "object" ? raw : {}) };
+  const open = hhmmToMin(c.openHHMM) ?? hhmmToMin(DEFAULT_CUTOFF.openHHMM);
+  const last = hhmmToMin(c.lastHHMM) ?? hhmmToMin(DEFAULT_CUTOFF.lastHHMM);
+  const close = hhmmToMin(c.closesHHMM);
+  return {
+    enabled: c.enabled !== false,
+    openHHMM: minToHhmm(open),
+    lastHHMM: minToHhmm(last),
+    closesHHMM: close == null ? null : minToHhmm(close),
+    warnMin: Math.max(0, Math.min(180, num(c.warnMin) ?? DEFAULT_CUTOFF.warnMin)),
+  };
+}
+
+/* districtCutoff(cfg, at) → حالة الشباك دلوقتي.
+     open   — لسه بدري، والدقايق الفاضلة في `minutesLeft`
+     soon   — فاضل أقل من warnMin
+     closed — عدّى ١٢:٤٥ (أو لسه مافتحوش)
+
+   الشباك لافّ حوالين نص الليل (١٠:٠٠ → ٠٠:٤٥) فالمقارنة `m >= open || m <= last`.
+   لو حد ظبّط شباك عادي (٠٩:٠٠ → ١٧:٠٠) بتشتغل صح برضه بـ`m >= open && m <= last`. */
+export function districtCutoff(rawCfg, at = Date.now()) {
+  const cfg = cutoffCfg(((rawCfg || {}).cutoff) || rawCfg);
+  const m = riyadhMinutes(at);
+  const open = hhmmToMin(cfg.openHHMM), last = hhmmToMin(cfg.lastHHMM);
+  const base = { enabled: cfg.enabled, openHHMM: cfg.openHHMM, lastHHMM: cfg.lastHHMM, closesHHMM: cfg.closesHHMM, nowHHMM: m == null ? null : minToHhmm(m) };
+  if (!cfg.enabled || m == null) return { ...base, state: "open", open: true, minutesLeft: null };
+  const wraps = open > last;
+  const inside = wraps ? (m >= open || m <= last) : (m >= open && m <= last);
+  if (!inside) {
+    return { ...base, state: "closed", open: false, minutesLeft: 0,
+      reason: `«${"المندوب"}» بيستقبل من ${cfg.openHHMM} لـ${cfg.lastHHMM} بس` };
+  }
+  // الدقايق لحد آخر ميعاد — لو الشباك لافّ والوقت قبل نص الليل، زوّد يوم
+  let left = last - m;
+  if (left < 0) left += 1440;
+  return { ...base, state: left <= cfg.warnMin ? "soon" : "open", open: true, minutesLeft: left };
+}
+
+/* ═══ الترشيح بين «طلباتك» ولاجلك ══════════════════════════════════════════ */
+export function routingCfg(raw) {
+  const r = { ...DEFAULT_ROUTING, ...(raw && typeof raw === "object" ? raw : {}) };
+  return {
+    preferWhenCheaper: r.preferWhenCheaper !== false,
+    preferAboveKm: r.preferAboveKm !== false,
+    farKm: Math.max(0, num(r.farKm) ?? DEFAULT_ROUTING.farKm),
+    leajlakFlat: Math.max(0, num(r.leajlakFlat) ?? DEFAULT_ROUTING.leajlakFlat),
+    leajlakPerKm: Math.max(0, num(r.leajlakPerKm) ?? DEFAULT_ROUTING.leajlakPerKm),
+    leajlakBaseKm: Math.max(0, num(r.leajlakBaseKm) ?? DEFAULT_ROUTING.leajlakBaseKm),
+    minSaving: Math.max(0, num(r.minSaving) ?? DEFAULT_ROUTING.minSaving),
+  };
+}
+
+/** تكلفة لاجلك لمشوار طوله km — ثابت لحد ١٠، وفوقها بالكسر (العقد م١٢). */
+export function leajlakCostFor(km, rawRouting) {
+  const r = routingCfg(rawRouting);
+  const d = num(km);
+  if (d == null || !(d > r.leajlakBaseKm)) return r2(r.leajlakFlat);
+  return r2(r.leajlakFlat + (d - r.leajlakBaseKm) * r.leajlakPerKm);
+}
+
+/* districtRouting(cfg, {district, km}) → مين يوصّل الطلب ده وليه.
+   بيرجّع null لو مفيش تسعيرة حي أصلاً (يعني لاجلك زي ما هي).
+   { prefer:true }  = ابعت لـ«طلباتك»
+   { prefer:false } = سيبها للاجلك (أرخص وبتغطي المشوار) */
+export function districtRouting(cfg, { district, km, at = Date.now(), quote = null } = {}) {
+  const q = quote || districtQuote(cfg, district);
+  if (!q) return null;
+  const r = routingCfg((cfg || {}).routing);
+  const cut = districtCutoff(cfg, at);
+  const leajlak = leajlakCostFor(km, r);
+  const saving = r2(leajlak - q.cost);
+  const far = km != null && Number(km) > r.farKm;
+  let prefer = false, reason = "لاجلك أرخص وبتغطي المشوار";
+  if (r.preferAboveKm && far) {
+    prefer = true;
+    reason = `المشوار ${r1(km)} كم — فوق ${r.farKm} لاجلك ممكن ترفض (العقد م٣)`;
+  } else if (r.preferWhenCheaper && saving >= r.minSaving) {
+    prefer = true;
+    reason = `${q.district} بـ${q.cost} ر.س — أرخص من لاجلك بـ${saving} ر.س`;
+  }
+  if (prefer && !cut.open) {
+    return { prefer: false, blocked: true, cutoff: cut, reason: `${reason} — بس المندوب قافل (آخر ميعاد ${cut.lastHHMM})`,
+      leajlakCost: leajlak, cost: q.cost, saving, far, quote: q };
+  }
+  return { prefer, blocked: false, cutoff: cut, reason, leajlakCost: leajlak, cost: q.cost, saving, far, quote: q };
+}
+
 /* تنظيف/تطبيع الإعدادات الجاية من قاعدة البيانات أو من اللوحة */
 export function districtCfg(settings) {
   const raw = ((settings || {}).delivery || {}).districtCouriers;
@@ -146,6 +286,12 @@ export function districtCfg(settings) {
       id: str(p && p.id, 40) || `p${i + 1}`,
       name: str(p && p.name, 60),
       phone: String((p && p.phone) || "").replace(/\D/g, "").slice(0, 15),
+      /* الطلب بيتبعت في **جروب** واتساب مش لرقم (عمر ٢١/٩): المدير بينشر
+         في الجروب، واللي ياخده هو اللي بيكلّمه. فده رابط دعوة الجروب
+         (chat.whatsapp.com/...) — بنفتحه بعد ما ننسخ النص. */
+      groupUrl: /^https:\/\/(chat\.whatsapp\.com|wa\.me|web\.whatsapp\.com)\//i.test(String((p && p.groupUrl) || "").trim())
+        ? String(p.groupUrl).trim().slice(0, 200) : "",
+      groupName: str(p && p.groupName, 60),
       note: str(p && p.note, 200),
       active: (p && p.active) !== false,
     }))
@@ -173,6 +319,8 @@ export function districtCfg(settings) {
     fallbackPrice: num(src.fallbackPrice),
     note: str(src.note, 500),
     margin: marginCfg(src.margin),
+    cutoff: cutoffCfg(src.cutoff),
+    routing: routingCfg(src.routing),
     providers,
     districts,
   };
@@ -223,7 +371,8 @@ export function districtQuote(cfg, name) {
     margin: r2(fee - cost),
     marginRule: marginLabel(cfg.margin),
     confirmed: d.confirmed === true,
-    provider: p ? { id: p.id, name: p.name, phone: p.phone || null, note: p.note || null } : null,
+    provider: p ? { id: p.id, name: p.name, phone: p.phone || null, note: p.note || null,
+      groupUrl: p.groupUrl || null, groupName: p.groupName || null } : null,
   };
 }
 
@@ -241,8 +390,13 @@ export function districtOfRow(row = {}) {
   let q = row && row.delivery_quote;
   if (typeof q === "string") { try { q = JSON.parse(q); } catch { q = null; } }
   const d = q && q.districtDelivery;
-  if (!d || typeof d !== "object" || !d.district) return null;
-  return d;
+  if (d && typeof d === "object" && d.district) return { ...d, mode: "priced" };
+  /* «إرسال بالحي» — الطلب جوّه النطاق والعميل دفع السلّم العادي، بس المندوب
+     بالحي أرخص من لاجلك (السلامة ١٥ < ١٩٫٥٥) فالتوصيل بيروحله. الرسم اللي
+     العميل دفعه مالوش علاقة بالجدول هنا — `fee` بتفضل رسم السلّم. */
+  const s = q && q.districtDispatch;
+  if (s && typeof s === "object" && s.district) return { ...s, mode: "dispatch" };
+  return null;
 }
 
 /* ── قايمة «طلباتك» المنشورة (١٠٤ حي) ─────────────────────────────────────
@@ -288,9 +442,11 @@ export function seedConfig() {
   return {
     ...DEFAULT_DISTRICT_COURIERS,
     margin: { ...DEFAULT_MARGIN },
+    cutoff: { ...DEFAULT_CUTOFF },
+    routing: { ...DEFAULT_ROUTING },
     providers: [{
-      id: "tlbatksa", name: "طلباتك", phone: "", active: true,
-      note: "قايمة أسعار منشورة بالحي — من غير API، التنسيق واتساب. price.tlbatksa.com/store.html?code=TA79TK",
+      id: "tlbatksa", name: "طلباتك", phone: "", groupUrl: "", groupName: "جروب طلباتك", active: true,
+      note: "الطلب بيتنشر في جروب الواتساب بتاعهم — اللي ياخده هو اللي بيكلّم المدير. قايمة الأسعار: price.tlbatksa.com/store.html?code=TA79TK",
     }],
     districts: seedDistricts(),
     note: "الأسعار من قايمتهم المنشورة يوم ٢١/٩/٢٠٢٦ — محتاجة تأكيد المالك قبل التفعيل. الأسعار مابتشملش السيارات الكبيرة، وفيه رسوم إضافية لو الطلب محتاج تحميل.",
@@ -321,10 +477,15 @@ export function register(app, ctx) {
      نوصّلها؟ (أسماء بس — من غير أسعار التكلفة ولا أرقام المندوبين.) */
   app.get("/api/delivery/districts/public", async (c) => {
     const cfg = await load();
+    const cut = districtCutoff(cfg);
     return c.json({
       ok: true,
       enabled: cfg.enabled,
-      districts: cfg.enabled ? activeDistrictNames(cfg) : [],
+      districts: cfg.enabled && cut.open ? activeDistrictNames(cfg) : [],
+      /* الواجهة محتاجة تعرف إن الشباك قفل عشان تقول للعميل ليه — من غير
+         ده كان هيشوف «حيّك مش مغطّى» وهو مغطّى بس الوقت متأخر. */
+      cutoff: { open: cut.open, state: cut.state, lastHHMM: cut.lastHHMM, openHHMM: cut.openHHMM,
+        minutesLeft: cut.minutesLeft, nowHHMM: cut.nowHHMM },
     });
   });
 
@@ -332,9 +493,18 @@ export function register(app, ctx) {
     const err = await requireAdmin(c); if (err) return err;
     const cfg = await load();
     const active = cfg.districts.filter((d) => d.active).length;
+    const cut = districtCutoff(cfg);
+    const r = routingCfg(cfg.routing);
     return c.json({
       ok: true, config: cfg,
       marginLabel: marginLabel(cfg.margin),
+      cutoff: cut,
+      /* «مين أرخص» لكل سعر في الجدول — عمر بيشوف بعينه إن السلامة (١٥) هي
+         الوحيدة اللي تحت لاجلك، من غير ما يحسب. */
+      routingPreview: [...new Set(cfg.districts.map((d) => d.price).filter((p) => p != null))]
+        .sort((a, b) => a - b)
+        .map((cost) => ({ cost, leajlak: r.leajlakFlat, saving: r2(r.leajlakFlat - cost),
+          cheaper: r.leajlakFlat - cost >= r.minSaving })),
       counts: { total: cfg.districts.length, active, confirmed: cfg.districts.filter((d) => d.confirmed).length },
       // معاينة الهامش على الأسعار الموجودة — عمر يشوف الرسم قبل ما يفعّل
       preview: [...new Set(cfg.districts.map((d) => d.price).filter((p) => p != null))]
@@ -385,10 +555,12 @@ export function register(app, ctx) {
       ok: true, name, normalized: normDistrict(name), candidates: districtCandidates(name),
       match: hit ? { name: hit.name, price: hit.price, active: hit.active, confirmed: hit.confirmed } : null,
       quote: districtQuote(cfg, name),
+      routing: districtRouting(cfg, { district: name, km: num(c.req.query("km")) }),
     });
   });
 
-  return { cfg: load, districtQuote, findDistrict };
+  return { cfg: load, districtQuote, findDistrict, districtRouting, districtCutoff };
 }
 
-export default { register, districtCfg, districtQuote, findDistrict, normDistrict, applyMargin, districtOfRow };
+export default { register, districtCfg, districtQuote, findDistrict, normDistrict, applyMargin, districtOfRow,
+  districtCutoff, districtRouting, leajlakCostFor, cutoffCfg, routingCfg };

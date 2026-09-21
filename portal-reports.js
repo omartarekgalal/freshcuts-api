@@ -56,8 +56,14 @@ export const BASE_CTE = `WITH base AS (
          /* «المنطقة البعيدة» — محفوظة جوّه تسعيرة الطلب نفسها، مفيش عمود تاني
             يتعارض معاها. NULL = طلب عادي جوّه النطاق. */
          (o.delivery_quote->'farZone') AS far_zone,
-         /* «التوصيل بالحي» — نفس الحكاية: جوّه التسعيرة، مفيش عمود تاني */
-         (o.delivery_quote->'districtDelivery') AS district_delivery,
+         /* «التوصيل بالحي» — نفس الحكاية: جوّه التسعيرة، مفيش عمود تاني.
+            فيه نوعين والاتنين بيروحوا لنفس المندوب:
+              districtDelivery = العميل دفع سعر الحي (كان بره نطاقنا)
+              districtDispatch = دفع السلّم العادي، بس بعتنا للحي عشان أرخص
+            COALESCE بيجمّعهم في عمود واحد للتقرير، و district_mode بيفرّق. */
+         COALESCE(o.delivery_quote->'districtDelivery', o.delivery_quote->'districtDispatch') AS district_delivery,
+         CASE WHEN o.delivery_quote ? 'districtDelivery' THEN 'priced'
+              WHEN o.delivery_quote ? 'districtDispatch' THEN 'dispatch' END AS district_mode,
          (o.created_at AT TIME ZONE 'Asia/Riyadh') AS local_at,
          o.status NOT IN ('pending_payment','expired') AS is_paid,
          o.status NOT IN ('pending_payment','expired','rejected_refunded','refund_failed') AS is_net
@@ -106,6 +112,20 @@ SELECT
   COALESCE(sum(total) FILTER (WHERE is_net AND district_delivery IS NOT NULL),0)::float AS district_revenue,
   COALESCE(sum((district_delivery->>'fee')::numeric) FILTER (WHERE is_net AND district_delivery IS NOT NULL),0)::float AS district_fees,
   COALESCE(sum((district_delivery->>'cost')::numeric) FILTER (WHERE is_net AND district_delivery IS NOT NULL),0)::float AS district_cost,
+  count(*) FILTER (WHERE is_net AND district_mode='priced')::int AS district_priced_orders,
+  count(*) FILTER (WHERE is_net AND district_mode='dispatch')::int AS district_dispatch_orders,
+  COALESCE(sum((district_delivery->>'fee')::numeric) FILTER (WHERE is_net AND district_mode='dispatch'),0)::float AS district_dispatch_fees,
+  COALESCE(sum((district_delivery->>'cost')::numeric) FILTER (WHERE is_net AND district_mode='dispatch'),0)::float AS district_dispatch_cost,
+  /* التوفير مقابل لاجلك: تكلفتهم على نفس المشوار (١٩٫٥٥ ثابت، +٢٫٣٠/كم فوق
+     العشرة بالكسر) ناقص اللي دفعناه للمندوب بالحي. بيتحسب في SQL عشان يبقى
+     على المشوار الفعلي لكل طلب، مش على متوسط. */
+  COALESCE(sum(
+    (19.55 + GREATEST(0, COALESCE((district_delivery->>'km')::numeric, 0) - 10) * 2.30)
+    - COALESCE((district_delivery->>'cost')::numeric, 0)
+  ) FILTER (WHERE is_net AND district_delivery IS NOT NULL AND (district_delivery->>'cost') IS NOT NULL),0)::float AS district_saving,
+  COALESCE(sum(
+    19.55 + GREATEST(0, COALESCE((district_delivery->>'km')::numeric, 0) - 10) * 2.30
+  ) FILTER (WHERE is_net AND district_delivery IS NOT NULL AND (district_delivery->>'cost') IS NOT NULL),0)::float AS district_leajlak_cost,
   COALESCE(sum(tip) FILTER (WHERE is_net),0)::float AS tips,
   COALESCE(sum(discount_amount) FILTER (WHERE is_net),0)::float AS discounts,
   count(*) FILTER (WHERE is_net AND (coupon IS NOT NULL OR discount_amount > 0))::int AS discounted_orders,
@@ -300,6 +320,10 @@ export function districtBlock(t = {}) {
   const orders = Number(t.district_orders) || 0;
   const fees = r2(t.district_fees);
   const cost = r2(t.district_cost);
+  const priced = Number(t.district_priced_orders) || 0;
+  const dispatch = Number(t.district_dispatch_orders) || 0;
+  const saving = r2(t.district_saving);
+  const dFees = r2(t.district_dispatch_fees), dCost = r2(t.district_dispatch_cost);
   return {
     orders,
     revenue: r2(t.district_revenue),
@@ -309,6 +333,14 @@ export function districtBlock(t = {}) {
     marginPerOrder: orders ? r2((fees - cost) / orders) : 0,
     avgFee: orders ? r2(fees / orders) : 0,
     avgCost: orders ? r2(cost / orders) : 0,
+    /* تفصيل النوعين + التوفير مقابل لاجلك — عمر بيقيس بيه هل قرار الترشيح
+       (السلامة ١٥ بدل ١٩٫٥٥) بيجيب فلوس فعلاً ولا لأ. */
+    priced: { orders: priced, feesCollected: r2(fees - dFees), courierCost: r2(cost - dCost) },
+    dispatch: { orders: dispatch, feesCollected: dFees, courierCost: dCost,
+      margin: r2(dFees - dCost), avgCost: dispatch ? r2(dCost / dispatch) : 0 },
+    leajlakWouldCost: r2(t.district_leajlak_cost),
+    savedVsLeajlak: saving,
+    savedPerOrder: orders ? r2(saving / orders) : 0,
   };
 }
 

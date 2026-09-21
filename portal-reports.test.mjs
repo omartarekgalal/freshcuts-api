@@ -47,7 +47,10 @@ test("shapeReport: KPIs + هامش التوصيل + ملء الأيام والس
   assert.equal(r.fulfilment.deliverySharePct, 60);
   assert.deepEqual(r.delivery, { feesCollected: 90, courierCost: 75.5, margin: 14.5, shipments: 6, shipmentsWithoutCost: 1, cancelledShipments: 1, ordersWithCourier: 6,
     farZone: { orders: 0, revenue: 0, surcharge: 0, extraKm: 0, avgExtraKm: 0, maxKm: 0, courierExtraCost: 0, gap: 0, courierKm: 0, courierPerKm: 2.3 },
-    district: { orders: 0, revenue: 0, feesCollected: 0, courierCost: 0, margin: 0, marginPerOrder: 0, avgFee: 0, avgCost: 0 } });
+    district: { orders: 0, revenue: 0, feesCollected: 0, courierCost: 0, margin: 0, marginPerOrder: 0, avgFee: 0, avgCost: 0,
+      priced: { orders: 0, feesCollected: 0, courierCost: 0 },
+      dispatch: { orders: 0, feesCollected: 0, courierCost: 0, margin: 0, avgCost: 0 },
+      leajlakWouldCost: 0, savedVsLeajlak: 0, savedPerOrder: 0 } });
   assert.equal(r.losses.refunded.total, 60);
   assert.deepEqual(r.series.daily.map((d) => [d.day, d.orders]), [["2026-09-10", 0], ["2026-09-11", 4], ["2026-09-12", 0]]);
   assert.equal(r.series.hourly.length, 24);

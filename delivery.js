@@ -28,7 +28,7 @@ import { PROVIDERS, activeProvider, courierMilestone, API_PROVIDER_IDS } from ".
 import { emitOrder } from "./order-events.js";
 import { makeDriveDistance, resolveRouteKm } from "./drivedist.js";
 import { makeZoneService } from "./deliveryzone.js";
-import { districtCfg, districtQuote, activeDistrictNames } from "./districts.js";
+import { districtCfg, districtQuote, activeDistrictNames, districtCutoff, districtRouting } from "./districts.js";
 
 /* ── أحداث المندوب على ناقل الطلب (W1-05، الخطة §٤-١) ─────────────────────
    courier_dispatch / courier_update / courier_manual / courier_cancel.
@@ -157,8 +157,9 @@ export const DEFAULT_POLICY = {
 ═══════════════════════════════════════════════════════════════════════════ */
 
 /* فيه أحياء مفعّلة نقدر نعرضها على العميل لو الجيوكودر ما عرفش حيّه؟ */
-function districtsOffered(dcfg) {
-  return Boolean(dcfg && dcfg.enabled && activeDistrictNames(dcfg).length);
+function districtsOffered(dcfg, at = Date.now()) {
+  // بعد آخر ميعاد (١٢:٤٥) مفيش فايدة نعرض قايمة الأحياء — محدش هيستلم الطلب
+  return Boolean(dcfg && dcfg.enabled && districtCutoff(dcfg, at).open && activeDistrictNames(dcfg).length);
 }
 
 /* farZoneOf(cfg, distKm) → null (مش منطقة بعيدة) أو {km, extraKm, surcharge, maxKm}. */
@@ -198,7 +199,7 @@ export function farZoneOf(cfgIn, distanceKm) {
    {deliverable:true, fee, distanceKm, breakdown[]} — fee in SAR, rounded to
    2dp, never negative; breakdown lines are Arabic strings the storefront can
    show so the customer sees WHY the fee is what it is. */
-export function computeDeliveryFee(cfgIn, { distanceKm, straightKm, orderTotal, farZoneAccepted = false, district, districts }) {
+export function computeDeliveryFee(cfgIn, { distanceKm, straightKm, orderTotal, farZoneAccepted = false, district, districts, at = Date.now() }) {
   const cfg = { ...DEFAULT_POLICY, ...(cfgIn || {}) };
   const dist = Number(distanceKm) || 0;
   const straight = straightKm != null ? Number(straightKm) : null;
@@ -215,14 +216,27 @@ export function computeDeliveryFee(cfgIn, { distanceKm, straightKm, orderTotal, 
   const outOfZone = cfg.maxStraightKm != null && straight != null && straight > cfg.maxStraightKm;
   const outOfRange = cfg.maxKm != null && dist > cfg.maxKm;
   const farCovers = Boolean(far) && !(dcfg && dcfg.overrideFarZone);
-  const dq = (outOfZone || outOfRange) && !farCovers ? districtQuote(dcfg, district) : null;
+  const cut = dcfg ? districtCutoff(dcfg, at) : { open: true, state: "open" };
+  let dq = (outOfZone || outOfRange) && !farCovers ? districtQuote(dcfg, district) : null;
+  /* ── آخر ميعاد (عمر ٢١/٩): «طلباتك» بيقفلوا ١:٠٠، فآخر طلب ١٢:٤٥ ───────
+     العنوان ده مافيش غيرهم يوصّله (لاجلك رفضته أو بره سقفنا)، فبعد الميعاد
+     الطلب **مايتقبلش** — أحسن ألف مرة من إننا ناخد فلوس العميل ونقعد نلف
+     على مندوب الساعة ٢ بالليل. الرفض بيقول الميعاد بالظبط. */
+  if (dq && !cut.open) {
+    return {
+      deliverable: false, reason: "district_closed",
+      maxKm: cfg.maxKm, distanceKm: r2(dist),
+      ...(straight != null ? { straightKm: r2(straight) } : {}),
+      districtClosed: { district: dq.district, lastHHMM: cut.lastHHMM, openHHMM: cut.openHHMM, nowHHMM: cut.nowHHMM },
+    };
+  }
   if (dq) {
     if (!farZoneAccepted) {
       return {
         deliverable: false, reason: outOfZone ? "out_of_zone" : "out_of_range",
         maxKm: cfg.maxKm, distanceKm: r2(dist),
         ...(straight != null ? { straightKm: r2(straight) } : {}),
-        districtOffer: { ...dq, km: r2(dist) },
+        districtOffer: { ...dq, km: r2(dist), cutoff: { lastHHMM: cut.lastHHMM, state: cut.state, minutesLeft: cut.minutesLeft } },
       };
     }
     if (total < (cfg.minOrderTotal || 0)) {
@@ -235,7 +249,7 @@ export function computeDeliveryFee(cfgIn, { distanceKm, straightKm, orderTotal, 
       distanceKm: r2(dist), ...(straight != null ? { straightKm: r2(straight) } : {}),
       breakdown: [`توصيل حي ${dq.district}${dq.provider ? ` — ${dq.provider.name}` : ""}: ${r2(dq.fee)} ر.س`],
       guard: { applied: false, fee: dq.fee },
-      districtDelivery: { ...dq, km: r2(dist) },
+      districtDelivery: { ...dq, km: r2(dist), cutoff: { lastHHMM: cut.lastHHMM, state: cut.state } },
     };
   }
 
@@ -246,7 +260,7 @@ export function computeDeliveryFee(cfgIn, { distanceKm, straightKm, orderTotal, 
     return {
       deliverable: false, reason: "out_of_zone",
       maxStraightKm: cfg.maxStraightKm, straightKm: r2(straight), distanceKm: r2(dist),
-      ...(districtsOffered(dcfg) ? { districtChoices: activeDistrictNames(dcfg) } : {}),
+      ...(districtsOffered(dcfg, at) ? { districtChoices: activeDistrictNames(dcfg) } : {}),
     };
   }
   /* بره المنطقة: يا إما عرض «نوصلك برسوم إضافية» (لو جوّه السقف البعيد
@@ -256,7 +270,7 @@ export function computeDeliveryFee(cfgIn, { distanceKm, straightKm, orderTotal, 
       deliverable: false, reason: "out_of_range", maxKm: cfg.maxKm,
       distanceKm: r2(dist), ...(straight != null ? { straightKm: r2(straight) } : {}),
       ...(far ? { farZoneOffer: far } : {}),
-      ...(!far && districtsOffered(dcfg) ? { districtChoices: activeDistrictNames(dcfg) } : {}),
+      ...(!far && districtsOffered(dcfg, at) ? { districtChoices: activeDistrictNames(dcfg) } : {}),
     };
   }
   if (total < (cfg.minOrderTotal || 0)) {
@@ -345,10 +359,27 @@ export function computeDeliveryFee(cfgIn, { distanceKm, straightKm, orderTotal, 
   if (far) {
     breakdown.push(`رسوم مسافة إضافية (${far.extraKm} كم × ${r2(far.perKm)} ر.س): ${r2(far.surcharge)} ر.س`);
   }
+  /* ── مين يوصّل الطلب ده؟ (عمر ٢١/٩) ──────────────────────────────────
+     ده قرار **تشغيلي بحت** — مالوش أي أثر على اللي العميل بيدفعه. الرسم
+     فوق هو رسم السلّم زي ما هو. الجديد إننا بنقول للبوابة: الحي ده عند
+     «طلباتك» بـ١٥ ر.س بينما لاجلك ١٩٫٥٥ → ابعتلهم وأوفّر ٤٫٥٥.
+     شرط إضافي: المندوب لازم يكون شغّال (آخر ميعاد ١٢:٤٥) — بعد الميعاد
+     الطلب بيكمّل على لاجلك عادي، والعميل مايحسّش بحاجة. */
+  let dispatch = null;
+  if (dcfg && dcfg.enabled) {
+    const rt = districtRouting(dcfg, { district, km: dist, at });
+    if (rt && rt.prefer) {
+      dispatch = { district: rt.quote.district, cost: rt.quote.cost, provider: rt.quote.provider,
+        fee: feeBase + (far ? far.surcharge : 0), km: r2(dist),
+        leajlakCost: rt.leajlakCost, saving: rt.saving, reason: rt.reason,
+        cutoff: { lastHHMM: rt.cutoff.lastHHMM, state: rt.cutoff.state } };
+    }
+  }
   return {
     deliverable: true, fee: feeBase + (far ? far.surcharge : 0), feeBase,
     distanceKm: r2(dist), breakdown, guard: g,
     ...(far ? { farZone: far } : {}),
+    ...(dispatch ? { districtDispatch: dispatch } : {}),
   };
 }
 
@@ -929,7 +960,10 @@ export function register(app, ctx, deps = {}) {
        العنوان يطلع برّه النطاق والجيوكودر ما عرفش الحي. الأسعار (تكلفتنا)
        مابتطلعش هنا — الرسم بس بيرجع في `districtOffer`. */
     districtDelivery: dcfg && dcfg.enabled
-      ? { enabled: true, districts: activeDistrictNames(dcfg) }
+      ? (() => { const cut = districtCutoff(dcfg);
+          return { enabled: true, districts: cut.open ? activeDistrictNames(dcfg) : [],
+            cutoff: { open: cut.open, state: cut.state, lastHHMM: cut.lastHHMM, openHHMM: cut.openHHMM,
+              minutesLeft: cut.minutesLeft } }; })()
       : { enabled: false, districts: [] },
   });
   const gaps = (cfg, total) => {

@@ -29,7 +29,7 @@
 ═══════════════════════════════════════════════════════════════════════════ */
 
 import { STORE_LAT, STORE_LNG } from "./tsstore.js";
-import { districtOfRow } from "./districts.js";
+import { districtOfRow, districtCfg, districtCutoff, districtRouting, leajlakCostFor } from "./districts.js";
 import { cacheKey } from "./drivedist.js";
 import { PROVIDERS, API_PROVIDER_IDS } from "./couriers.js";
 import { driverKey, dispatchDelayOf } from "./delivery.js";
@@ -101,6 +101,7 @@ const isoOf = (v) => {
 const ms = (v) => { const t = v ? new Date(v).getTime() : NaN; return Number.isFinite(t) ? t : null; };
 const addMin = (iso, m) => { const t = ms(iso); return t == null || !Number.isFinite(Number(m)) ? null : new Date(t + Number(m) * 60_000).toISOString(); };
 const r1 = (n) => Math.round(Number(n) * 10) / 10;
+const r2 = (n) => Math.round(Number(n) * 100) / 100;
 
 export function eventStatus(e, provider) {
   if (!e || typeof e !== "object") return null;
@@ -482,6 +483,7 @@ export function register(app, ctx, deps = {}) {
   if (deps.ensureSchema !== false) ensureSchema();
 
   const cfgOf = async () => courierSlaCfg(await getSettingsData());
+  const dcfgOf = async () => { try { return districtCfg(await getSettingsData()); } catch { return null; } };
 
   /* مدة جوجل المخزّنة للعنوان — من الكاش بس، عمرنا ما نضرب جوجل هنا */
   const durCache = new Map();
@@ -663,12 +665,30 @@ export function register(app, ctx, deps = {}) {
          فالطلب بيستنى المدير في البوابة، وهو بيبعت واتساب للمندوب. */
       const dd = districtOfRow(row);
       if (dd) {
+        /* آخر ميعاد «طلباتك» ١٢:٤٥ (عمر ٢١/٩). بعده:
+           • طلب **مسعّر بالحي** (العنوان بره نطاقنا) — مفيش بديل، الطلب
+             بيتحجز للمدير بتحذير واضح إن المندوب قافل.
+           • طلب **إرسال بالحي** (جوّه النطاق، بس أرخص عندهم) — لاجلك
+             بتشتغل عادي، فبنسيب الإرسال التلقائي يكمّل ومانوقفش حاجة. */
+        const dcfg = await dcfgOf();
+        const cut = districtCutoff(dcfg, now());
+        if (dd.mode === "dispatch" && !cut.open) return farGuardDecision(row, cfg);
+        const closed = !cut.open;
+        const save = dd.saving != null ? Number(dd.saving)
+          : (dd.cost != null ? r2(leajlakCostFor(dd.km, (dcfg || {}).routing) - Number(dd.cost)) : null);
+        const head = dd.mode === "dispatch"
+          ? `إرسال بالحي: ${dd.district}${dd.provider ? ` — ${dd.provider.name}` : ""} بـ${dd.cost} ر.س${save > 0 ? ` (توفير ${save} ر.س عن لاجلك)` : ""}`
+          : `توصيل بالحي: ${dd.district}${dd.provider ? ` — ${dd.provider.name}` : ""} بـ${dd.fee} ر.س`;
         await openIncident(row.order_no, "district_courier", {
-          reason: `توصيل بالحي: ${dd.district}${dd.provider ? ` — ${dd.provider.name}` : ""} بـ${dd.fee} ر.س — ابعت للمندوب من «مندوب خارجي»`,
-          detail: { district: dd.district, provider: dd.provider ? dd.provider.name : null, fee: dd.fee, cost: dd.cost, km: dd.km },
+          reason: closed
+            ? `${head} — ⛔ المندوب قافل (آخر ميعاد ${cut.lastHHMM}) — كلّمهم أو وصّل بموظف`
+            : `${head} — انشر الطلب في جروب المندوب من «توصيل بالحي»`,
+          detail: { district: dd.district, provider: dd.provider ? dd.provider.name : null, fee: dd.fee, cost: dd.cost,
+            km: dd.km, mode: dd.mode, saving: save, cutoff: { open: cut.open, lastHHMM: cut.lastHHMM, state: cut.state } },
           alert: !row.is_test,
         });
-        return { far: true, hold: true, district: dd, km: dd.km != null ? r1(dd.km) : null, mode: "district" };
+        return { far: true, hold: true, district: { ...dd, saving: save, cutoff: cut },
+          km: dd.km != null ? r1(dd.km) : null, mode: "district" };
       }
       const d = farGuardDecision(row, cfg);
       if (!d.far) return d;
@@ -694,6 +714,8 @@ export function register(app, ctx, deps = {}) {
       if (!rows || !rows.length || !(await ensureSchema())) return rows;
       const all = await getSettingsData();
       const cfg = courierSlaCfg(all);
+      const dcfg = (() => { try { return districtCfg(all); } catch { return null; } })();
+      const dcut = dcfg ? districtCutoff(dcfg, now()) : null;
       const delayMin = dispatchDelayOf(all);
       const nos = [...new Set(rows.map((r) => r.order_no))];
       const inc = (await pool.query(
@@ -762,11 +784,21 @@ export function register(app, ctx, deps = {}) {
           district: (() => {
             const d = districtOfRow({ delivery_quote: r.delivery_quote });
             if (!d) return null;
+            const cost = d.cost != null ? Number(d.cost) : null;
+            const lj = leajlakCostFor(d.km, (dcfg || {}).routing);
             return {
-              district: d.district, fee: Number(d.fee) || 0, cost: d.cost != null ? Number(d.cost) : null,
+              district: d.district, fee: Number(d.fee) || 0, cost,
               margin: d.margin != null ? Number(d.margin) : null,
-              provider: d.provider ? { name: d.provider.name, phone: d.provider.phone || null } : null,
+              provider: d.provider ? { name: d.provider.name, phone: d.provider.phone || null,
+                groupUrl: d.provider.groupUrl || null, groupName: d.provider.groupName || null } : null,
               km: d.km != null ? Number(d.km) : null,
+              /* `priced` = العميل دفع رسم الحي (كان بره نطاقنا).
+                 `dispatch` = دفع السلّم العادي، بس بنبعت للحي عشان أرخص. */
+              mode: d.mode || "priced",
+              leajlakCost: lj,
+              saving: d.saving != null ? Number(d.saving) : (cost != null ? r2(lj - cost) : null),
+              cutoff: dcut ? { open: dcut.open, state: dcut.state, lastHHMM: dcut.lastHHMM,
+                openHHMM: dcut.openHHMM, minutesLeft: dcut.minutesLeft } : null,
               sent: Boolean(sh && sh.provider === "external"),
             };
           })(),
@@ -936,7 +968,8 @@ export function register(app, ctx, deps = {}) {
     let handoff = null;
     if (b.handoff !== false && !b.retro && stage !== "delivered") {
       try {
-        const h = await courierLive()?.makeHandoff?.(orderNo, { name, phone, by: user.name });
+        const h = await courierLive()?.makeHandoff?.(orderNo, { name, phone, by: user.name,
+          mode: b.mode === "group" || b.mode === "direct" ? b.mode : null });
         if (h && h.ok) handoff = h;
       } catch (e) { try { log.error(`[courierops] handoff ${orderNo}: ${e?.message || e}`); } catch {} }
     }
