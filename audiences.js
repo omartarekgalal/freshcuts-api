@@ -389,8 +389,18 @@ export function register(app, ctx) {
        GROUP BY pn
     )`;
 
+  /* ٢١/٩ — «كل العملاء» بقت من قاعدة العملاء (cms_contacts) مش من الطلبات بس.
+     الـCTE فوق مبني على ts_orders، فعميل مسجّل في نقطة البيع وطلباته مش مربوطة
+     بسجله (٢٣٠ رقم يوم ٢١/٩) ماكانش بيوصل لأي منصة أبداً. باقي الشرايح
+     (vip/lapsed30/recent14/delivery) بتفضل من الطلبات — دي تعريفاتها سلوكية
+     ومحتاجة تاريخ طلب حقيقي. الفريق/الاختبار/اللاغيين بيتشالوا في uploadgate
+     زي ما هم، وcms_contacts بيتحدّث كل نص ساعة فالقايمة بتكبر لوحدها. */
+  const CONTACTS_SQL = `SELECT phone_norm AS pn FROM cms_contacts
+                         WHERE length(phone_norm) = 9 AND phone_norm LIKE '5%'
+                           AND NOT is_staff AND NOT is_test`;
+
   const SEGMENT_SQL = {
-    all:      `${BASE_CTE} SELECT pn FROM ph`,
+    all:      `${BASE_CTE} SELECT pn FROM ph UNION ${CONTACTS_SQL}`,
     vip:      `${BASE_CTE} SELECT pn FROM ph WHERE spend >= 300 OR orders >= 4`,
     lapsed30: `${BASE_CTE} SELECT pn FROM ph WHERE last_day < (NOW() AT TIME ZONE 'utc')::date - 30`,
     recent14: `${BASE_CTE} SELECT pn FROM ph WHERE last_day >= (NOW() AT TIME ZONE 'utc')::date - 14`,
@@ -612,7 +622,85 @@ export function register(app, ctx) {
     return { ok: true, audienceId: aud.id, added };
   }
 
-  const SENDERS = { meta: syncMeta, tiktok: syncTiktok, snapchat: syncSnap };
+  /* ── Google Customer Match (٢١/٩) ──────────────────────────────────────
+     كان ناقص من الجدولة خالص: الرفع لجوجل كان راوت يدوي واحد
+     (/api/ads/google/customer-match) بيرفع قايمة واحدة لما حد يفتكر. دلوقتي
+     جوجل بقت منصة رابعة في نفس السلّم — نفس الشرايح، نفس البوابة، نفس السجل،
+     وبتكبر لوحدها كل ٦ ساعات زي ميتا وتيك توك.
+
+     OfflineUserDataJob مقفولة على أي توكن ماعملش Customer Match قبل ١/٤/٢٠٢٦،
+     فالرفع من Data Manager (audienceMembers:ingest) — ومحتاج توكن بصلاحية
+     datamanager. من غيره بنرجّع `skipped` بسبب مكتوب مرة واحدة، مش فشل
+     بيتكرر كل دورة: الجمهور بيتبني لوحده أول ما التوكن يتحط.
+
+     شروط Customer Match: بنبعت ACCEPTED بس لو المالك فتح
+     ap_settings.data.googleCmTerms = true. القبول ده إقرار قانوني — قرار
+     المالك مش قرار الكود (نفس قاعدة الراوت اليدوي). */
+  const GOOGLE_CM_LIFESPAN = "540";
+
+  async function googleCmTermsAccepted() {
+    const r = await pool.query(`SELECT data->>'googleCmTerms' AS v FROM ap_settings WHERE id=1`)
+      .catch(() => ({ rows: [] }));
+    const v = r.rows[0]?.v;
+    return v === true || String(v).toLowerCase() === "true";
+  }
+
+  async function syncGoogle(segId, phones) {
+    const g = byId("google");
+    if (!g) return { ok: false, error: "google adapter missing" };
+    const cust = g.cust();
+    if (!cust) return { ok: true, skipped: "GOOGLE_ADS_CUSTOMER_ID missing" };
+    const sc = await g.dmScopeOk();
+    if (!sc.ok) return { ok: true, skipped: sc.reason, code: sc.code };
+
+    const name = `${segName(segId)} (CM)`;
+    const aud = await audienceIdFor("google", segId, async () => {
+      const found = await g.search(
+        `SELECT user_list.id, user_list.name FROM user_list ` +
+        `WHERE user_list.name = '${name.replace(/'/g, "")}' AND user_list.type = 'CRM_BASED'`);
+      const hit = found.ok && found.results?.[0]?.userList?.id;
+      if (hit) return { ok: true, id: String(found.results[0].userList.id), name };
+      const t = await g.token();
+      if (!t) return { ok: false, error: "Google OAuth refused (management token)" };
+      const res = await httpJson(`${g.apiBase()}/customers/${cust}/userLists:mutate`, {
+        method: "POST", headers: { ...g.hdr(), Authorization: `Bearer ${t}` },
+        body: { operations: [{ create: {
+          name, description: "شريحة فريش كاتس — جوال مشفّر، من uploadgate",
+          membershipLifeSpan: GOOGLE_CM_LIFESPAN,
+          crmBasedUserList: { uploadKeyType: "CONTACT_INFO", dataSourceType: "FIRST_PARTY" },
+        } }] },
+      });
+      const rn = res.json?.results?.[0]?.resourceName;
+      if (!rn) return { ok: false, error: `user list create failed: ${JSON.stringify(res.json || res.error).slice(0, 300)}` };
+      return { ok: true, id: rn.split("/").pop(), name };
+    });
+    if (!aud.id) return aud;
+
+    const tok = await g.dmToken();
+    if (!tok) return { ok: true, skipped: "Data Manager token unavailable" };
+    const terms = await googleCmTermsAccepted();
+    const hashed = [...new Set(phones.map((p) => hashPhonePlus(String(p).replace(/\D/g, ""))).filter(Boolean))];
+    let added = 0;
+    for (let i = 0; i < hashed.length; i += 10000) {
+      const chunk = hashed.slice(i, i + 10000);
+      const res = await httpJson("https://datamanager.googleapis.com/v1/audienceMembers:ingest", {
+        method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${tok}` },
+        body: {
+          destinations: [{ operatingAccount: { accountType: "GOOGLE_ADS", accountId: cust }, productDestinationId: aud.id }],
+          encoding: "HEX",
+          ...(terms ? { termsOfService: { customerMatchTermsOfServiceStatus: "ACCEPTED" } } : {}),
+          audienceMembers: chunk.map((h) => ({ userData: { userIdentifiers: [{ phoneNumber: h }] } })),
+        },
+      });
+      if (!res.ok) {
+        return { ok: false, added, error: JSON.stringify(res.json || res.error || `HTTP ${res.status}`).slice(0, 300) };
+      }
+      added += chunk.length;
+    }
+    return { ok: true, audienceId: aud.id, added };
+  }
+
+  const SENDERS = { meta: syncMeta, tiktok: syncTiktok, snapchat: syncSnap, google: syncGoogle };
 
   /* ── the sync driver — every (platform × segment) pair, never throws ──── */
   /* ── البوابة (O6/PDPL، ١٩/٩) ────────────────────────────────────────────

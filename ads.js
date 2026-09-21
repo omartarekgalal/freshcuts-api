@@ -2436,12 +2436,19 @@ export function register(app, ctx, deps = {}) {
     if (ins.rowCount) return { id, fresh: true };
 
     const cur = await pool.query(
-      `SELECT id, status, attempts FROM ads_events WHERE order_id=$1 AND platform=$2 AND event_name=$3`,
+      `SELECT id, status, attempts, (response->>'permanent')::bool AS permanent
+         FROM ads_events WHERE order_id=$1 AND platform=$2 AND event_name=$3`,
       [ev.orderId, platform, ev.eventName]
     );
     const row = cur.rows[0];
     if (!row) return { id: null, fresh: false, reason: "conflict without row" };
-    if (row.status === "failed") {
+    /* ٢١/٩ — صف اتقفل بـ«رفض دائم» (الباب مقفول على مستوى الخدمة، زي
+       CUSTOMER_NOT_ALLOWLISTED من جوجل) لازم يترفع تاني أول ما الباب يفتح.
+       التعليق تحت كان بيقول إن skipped «بيخلي الطلب مؤهّل»، بس claim كانت
+       بتعتبره متحجوز خلاص — فـ١٨٩ طلب اتحرقوا في جوجل ومكانش حد هيرفعهم.
+       الدريب اللي التعليق خايف منه مقفول من فوق: preflight بيرجّع not-ok
+       ومفيش حاجة بتتحجز أصلاً والباب لسه مقفول. */
+    if (row.status === "failed" || (row.status === "skipped" && row.permanent === true)) {
       await pool.query(
         `UPDATE ads_events SET status='pending', attempts=attempts+1, request=$2 WHERE id=$1`,
         [row.id, jb(requestSummary)]
@@ -3456,6 +3463,17 @@ export function register(app, ctx, deps = {}) {
         if (!canSend(p)) continue;
         try { results[p.id] = await sendToPlatform(p, events); }
         catch (e) { results[p.id] = { platform: p.id, failed: events.length, errors: [String(e.message || e)] }; }
+        /* ٢١/٩ — gateOfflineRows بيسجّل صف واحد بالمرشّحين قبل الإرسال و`sent`
+           بيفضل فاضي، فمكانش فيه أي مكان يقول «راح كام لكل منصة». دلوقتي كل
+           منصة بتسجّل صفها بعد الإرسال (نفس جدول aud_upload_log، أعداد بس). */
+        const r = results[p.id] || {};
+        await logUpload(pool, {
+          kind: "offline", platform: p.id, segment: "purchases", trigger: "syncOrders",
+          enabled: !!gate.policy?.offline, candidates: events.length, kept: r.attempted ?? 0,
+          sent: r.sent ?? 0,
+          status: r.notReady ? "blocked" : (r.failed ? "failed" : (r.sent ? "sent" : "skipped")),
+          note: r.notReady || r.errors?.[0] || null,
+        }).catch(() => {});
       }
       return { from: f, to: t, orders: events.length, platforms: results, offlineGate: gate.stats ? { ...gate.stats, enabled: !!gate.policy?.offline, web: gate.web } : null };
     },

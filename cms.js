@@ -47,6 +47,7 @@ import {
   SAVINGS_RE, riyadhDay as bizDay,
 } from "./offers.js";
 import { soldOutOf, soldOutLines, soldOutMessage } from "./soldout.js";
+import { OWNER_COUPONS } from "./uploadgate.js";
 
 const scryptAsync = promisify(crypto.scrypt);
 const SESSION_DAYS = 30;
@@ -477,6 +478,22 @@ export function register(app, ctx, deps = {}) {
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW());
       ALTER TABLE cms_optout_log ADD COLUMN IF NOT EXISTS ua TEXT;
       CREATE INDEX IF NOT EXISTS cms_campaign_sends_phone_idx ON cms_campaign_sends(phone_norm, created_at DESC);
+      /* ٢١ سبتمبر — cms_contacts بقى «قاعدة العملاء» مش مجرد دفتر أكواد إيقاف.
+         الأعمدة دي كلها بيملاها syncContacts كل نص ساعة من كل المصادر، وعمرها
+         ما بتلمس opted_out_at / optout_* (دي ملك العميل). */
+      ALTER TABLE cms_contacts ADD COLUMN IF NOT EXISTS name TEXT;
+      ALTER TABLE cms_contacts ADD COLUMN IF NOT EXISTS in_pos BOOLEAN NOT NULL DEFAULT FALSE;
+      ALTER TABLE cms_contacts ADD COLUMN IF NOT EXISTS registered_at TIMESTAMPTZ;
+      ALTER TABLE cms_contacts ADD COLUMN IF NOT EXISTS first_order_at TIMESTAMPTZ;
+      ALTER TABLE cms_contacts ADD COLUMN IF NOT EXISTS last_order_day DATE;
+      ALTER TABLE cms_contacts ADD COLUMN IF NOT EXISTS orders INT NOT NULL DEFAULT 0;
+      ALTER TABLE cms_contacts ADD COLUMN IF NOT EXISTS app_orders INT NOT NULL DEFAULT 0;
+      ALTER TABLE cms_contacts ADD COLUMN IF NOT EXISTS online_orders INT NOT NULL DEFAULT 0;
+      ALTER TABLE cms_contacts ADD COLUMN IF NOT EXISTS is_staff BOOLEAN NOT NULL DEFAULT FALSE;
+      ALTER TABLE cms_contacts ADD COLUMN IF NOT EXISTS is_test BOOLEAN NOT NULL DEFAULT FALSE;
+      ALTER TABLE cms_contacts ADD COLUMN IF NOT EXISTS first_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
+      ALTER TABLE cms_contacts ADD COLUMN IF NOT EXISTS synced_at TIMESTAMPTZ;
+      CREATE INDEX IF NOT EXISTS cms_contacts_pos_idx ON cms_contacts(in_pos) WHERE in_pos;
     `);
     /* ربط الباقة بالعرض (٢٠٢٦-٠٩-١٢). الزرع مرة واحدة بس (cms_migrations)
        عشان لو المالك غيّر الربط بعدين، الإقلاع مايرجّعهوش. INSERT والـUPDATE
@@ -1955,7 +1972,7 @@ export function register(app, ctx, deps = {}) {
     const s = await getSettingsData();
     const apps = (Array.isArray(s?.deliveryAppMethods) && s.deliveryAppMethods.length
       ? s.deliveryAppMethods : (DEFAULT_DELIVERY_APPS || [])).map((x) => String(x).toLowerCase());
-    const [pos, online, push, names, tsPhone, shopNames, keeta] = await Promise.all([
+    const [pos, online, push, names, tsPhone, shopNames, keeta, contacts] = await Promise.all([
       pool.query(`
         WITH x AS (
           SELECT ${IDENT_SQL} AS pn, o.total, o.calendar_day AS day,
@@ -1994,6 +2011,11 @@ export function register(app, ctx, deps = {}) {
         SELECT k.pn, n.orders, n.apps, i.name, COALESCE(sum(i.amount), 0)::float AS amount
           FROM k JOIN n ON n.pn = k.pn LEFT JOIN ts_order_items i ON i.order_id = k.order_id
          GROUP BY k.pn, n.orders, n.apps, i.name`),
+      // قاعدة العملاء (syncContacts): بتضيف اللي مسجّل في نقطة البيع ومالوش
+      // طلب مربوط. لو الجدول لسه ماتعمّرش، الاستعلام بيرجّع فاضي ومفيش تغيير.
+      pool.query(`SELECT phone_norm AS pn, name FROM cms_contacts
+                   WHERE in_pos AND orders = 0 AND online_orders = 0 AND phone_norm ~ '${PHONE_RE}'`)
+        .catch(() => ({ rows: [] })),
     ]);
     const onl = new Map(online.rows.map((r) => [r.pn, r]));
     const pushSet = new Set(push.rows.map((r) => r.pn));
@@ -2039,8 +2061,21 @@ export function register(app, ctx, deps = {}) {
         online: o.n, onlineDaysSince: daysSince(o.last_day), push: pushSet.has(o.pn), lastDay: o.last_day,
         daysSince: daysSince(o.last_day), ...kOf(o.pn) });
     }
-    // VIP = أعلى ٢٠٪ إنفاق (نفس نسبة المؤشرات)
-    const spends = rows.map((r) => r.spend).sort((a, b) => a - b);
+    /* ٢١/٩ — عملاء مسجّلين في نقطة البيع وطلباتهم مش مربوطة بسجلهم (٢٣٠ رقم).
+       كانوا مختفيين من كل شاشة وكل قايمة إعلانية لإن كل حاجة مبنية على
+       الطلبات. بيدخلوا بـorders=0 وlastDay=null، فشريحة «سجّلوا وماطلبوش»
+       بتشوفهم، و«ضايعين» مابتشوفهمش (شرطها بقى orders > 0). */
+    for (const cRow of contacts.rows) {
+      if (seen.has(cRow.pn) || rows.some((x) => x.pn === cRow.pn)) continue;
+      seen.add(cRow.pn);
+      rows.push({ pn: cRow.pn, name: pickName(cRow.pn, cRow.name), orders: 0, spend: 0, appOrders: 0,
+        online: 0, onlineDaysSince: 9999, push: pushSet.has(cRow.pn), lastDay: null, daysSince: 9999,
+        registeredOnly: true, ...kOf(cRow.pn) });
+    }
+    /* VIP = أعلى ٢٠٪ إنفاق (نفس نسبة المؤشرات). النسبة بتتحسب على اللي صرفوا
+       بس: من ٢١/٩ القاعدة فيها ٢٣٠ مسجّل بصفر إنفاق، ولو دخلوا الحسبة كانوا
+       هيزحزحوا العتبة لتحت ويخلّقوا VIPs من العدم. */
+    const spends = rows.map((r) => r.spend).filter((v) => v > 0).sort((a, b) => a - b);
     const cut = spends.length ? spends[Math.floor(spends.length * 0.8)] : Infinity;
     for (const r of rows) r.vip = r.spend >= cut && r.spend > 0;
     rows.sort((a, b) => a.daysSince - b.daysSince);
@@ -2062,8 +2097,13 @@ export function register(app, ctx, deps = {}) {
     { id: "vip", icon: "⭐", label: "VIP", hint: "أعلى ٢٠٪ إنفاق ولسه نشطين (٤٥ يوم)", test: (c) => c.vip && c.daysSince <= 45 },
     { id: "at_risk", icon: "⚠️", label: "في خطر", hint: "كانوا بيرجعوا وبقالهم ٢٢–٤٥ يوم", test: (c) => c.orders >= 2 && c.daysSince >= 22 && c.daysSince <= 45 },
     { id: "dormant", icon: "😴", label: "نايمين", hint: "آخر طلب من ٤٦ لـ٩٠ يوم", test: (c) => c.daysSince >= 46 && c.daysSince <= 90 },
-    { id: "lost", icon: "👻", label: "ضايعين", hint: "أكتر من ٩٠ يوم من غير طلب", test: (c) => c.daysSince > 90 },
+    /* «طلب قبل كده» شرط صريح: من ٢١/٩ قاعدة العملاء بتضم ناس مسجّلين في نقطة
+       البيع وماطلبوش ولا مرة — دول مش «ضايعين»، ليهم شريحتهم تحت. */
+    { id: "lost", icon: "👻", label: "ضايعين", hint: "طلبوا قبل كده وبقالهم أكتر من ٩٠ يوم",
+      test: (c) => (c.orders + (c.online || 0)) > 0 && c.daysSince > 90 },
     { id: "online_buyers", icon: "🛒", label: "عملاء الموقع", hint: "طلبوا من متجرنا مرة على الأقل", test: (c) => c.online > 0 },
+    { id: "registered_only", icon: "🪪", label: "مسجّلين وماطلبوش", hint: "اسمهم وجوالهم في دليل نقطة البيع بس مافيش ولا طلب مربوط بيهم — فرصة أول طلب",
+      test: (c) => (c.orders + (c.online || 0)) === 0 },
     ...smsRules.WAVE_SEGMENTS,
     ...smsRules.KEETA_SEGMENTS,
     ...smsRules.APP_FOOD_SEGMENTS,
@@ -2115,6 +2155,143 @@ export function register(app, ctx, deps = {}) {
       excluded: aud.excluded, excludeLabels: smsRules.EXCLUDE_LABELS, tiers: aud.tiers,
       gap: smsRules.gapOf(cfg), gapTiers: smsRules.GAP_TIERS });
   });
+
+  /* ═══ قاعدة العملاء (٢١/٩) ═══════════════════════════════════════════════
+     ليه الأعداد كانت مختلفة: تاب سينس بيقول ١٣٧٣ عميل، والشرائح والقوايم
+     الإعلانية كانت بتشوف ١١٤٤، وcms_contacts فيه ١١٠٥.
+
+       • كل حاجة عندنا كانت مبنية على الطلبات: customerRows و BASE_CTE في
+         audiences.js بيقروا ts_orders، فأي عميل مسجّل في نقطة البيع وطلباته
+         مش مربوطة بسجله (customer_id فاضي والكاشير ماكتبش الجوال) ما بيظهرش
+         أبداً — دول ٢٣٠ رقم.
+       • وcms_contacts أصلاً ماكانش «قاعدة»: صف بيتولد بس لما الرقم يدخل
+         جمهور حملة SMS اتبعتت فعلاً (optoutCodes)، أو يعمل إلغاء اشتراك.
+         فحتى ناس داخل قاعدة الطلبات ماكانش ليها صف — دول ٣٩ كمان.
+
+     الحل: syncContacts بيقلب cms_contacts لقاعدة حقيقية بتتملّى **باستمرار**
+     (إقلاع + كل نص ساعة) من كل المصادر: ts_customers، order_sources،
+     shop_orders، acct_customers. الصف بياخد كود إيقاف من أول ظهور، والأعمدة
+     بتتحدّث كل دورة — وعمرها ما بتلمس opted_out_at/optout_* (دي ملك العميل).
+     علَم الفريق/الاختبار وعلَم «عميل تطبيقات» محفوظين عشان الشرايح والرفع
+     الإعلاني يفضلوا يعرفوا يفلتروا.                                        */
+  const CONTACT_SYNC_MS = 30 * 60_000;
+  let lastContactSync = null;
+
+  async function syncContacts({ trigger = "cron" } = {}) {
+    const s = await getSettingsData();
+    const apps = (Array.isArray(s?.deliveryAppMethods) && s.deliveryAppMethods.length
+      ? s.deliveryAppMethods : (DEFAULT_DELIVERY_APPS || [])).map((x) => String(x).toLowerCase());
+    const staff = [...smsRules.staffPhoneSet(s)].filter((p) => /^5\d{8}$/.test(p));
+    const before = (await pool.query("SELECT count(*)::int n FROM cms_contacts")).rows[0].n;
+    const r = await pool.query(`
+      WITH pos AS (
+        SELECT ${IDENT_SQL} AS pn, o.order_date, o.calendar_day AS day,
+               ${deliverySql("$1::text[]")} AS is_app
+          FROM ts_orders o
+          LEFT JOIN order_sources s ON s.order_id = o.order_id
+          LEFT JOIN ts_customers tc ON tc.customer_id = o.customer_id
+         WHERE ${SALES_ONLY}
+      ),
+      posagg AS (
+        SELECT pn, count(*)::int AS orders, count(*) FILTER (WHERE is_app)::int AS app_orders,
+               max(day) AS last_day, min(order_date) AS first_order
+          FROM pos WHERE pn ~ '${PHONE_RE}' GROUP BY pn
+      ),
+      web AS (
+        SELECT phone_norm AS pn, count(*)::int AS n, max(created_at)::date AS last_day,
+               min(created_at) AS first_order
+          FROM shop_orders WHERE ${PAID_ONLINE} AND phone_norm ~ '${PHONE_RE}' GROUP BY 1
+      ),
+      tsc AS (
+        SELECT phone_norm AS pn, max(NULLIF(btrim(name), '')) AS name,
+               min(registered_at) AS registered_at, min(first_order_at) AS first_order_at
+          FROM ts_customers WHERE phone_norm ~ '${PHONE_RE}' GROUP BY 1
+      ),
+      acct AS (
+        SELECT phone_norm AS pn, max(NULLIF(btrim(name), '')) AS name
+          FROM acct_customers WHERE phone_norm ~ '${PHONE_RE}' GROUP BY 1
+      ),
+      testy AS (
+        SELECT DISTINCT phone_norm AS pn FROM shop_orders
+         WHERE phone_norm ~ '${PHONE_RE}'
+           AND (is_test IS TRUE OR upper(COALESCE(coupon, '')) = ANY($2::text[]))
+      ),
+      src AS (
+        SELECT pn FROM posagg UNION SELECT pn FROM web UNION SELECT pn FROM tsc UNION SELECT pn FROM acct
+        UNION SELECT phone_norm FROM order_sources WHERE phone_norm ~ '${PHONE_RE}'
+      )
+      INSERT INTO cms_contacts (phone_norm, optout_code, name, in_pos, registered_at, first_order_at,
+                                last_order_day, orders, app_orders, online_orders, is_staff, is_test, synced_at)
+      SELECT x.pn,
+             substr(md5(random()::text || x.pn || clock_timestamp()::text), 1, 10),
+             COALESCE(t.name, a.name),
+             (t.pn IS NOT NULL),
+             t.registered_at,
+             LEAST(t.first_order_at, p.first_order, w.first_order),
+             GREATEST(p.last_day, w.last_day),
+             COALESCE(p.orders, 0), COALESCE(p.app_orders, 0), COALESCE(w.n, 0),
+             (x.pn = ANY($3::text[])),
+             (te.pn IS NOT NULL),
+             NOW()
+        FROM src x
+        LEFT JOIN posagg p ON p.pn = x.pn
+        LEFT JOIN web    w ON w.pn = x.pn
+        LEFT JOIN tsc    t ON t.pn = x.pn
+        LEFT JOIN acct   a ON a.pn = x.pn
+        LEFT JOIN testy te ON te.pn = x.pn
+      ON CONFLICT (phone_norm) DO UPDATE SET
+             name           = COALESCE(EXCLUDED.name, cms_contacts.name),
+             in_pos         = EXCLUDED.in_pos OR cms_contacts.in_pos,
+             registered_at  = LEAST(cms_contacts.registered_at, EXCLUDED.registered_at),
+             first_order_at = LEAST(cms_contacts.first_order_at, EXCLUDED.first_order_at),
+             last_order_day = GREATEST(cms_contacts.last_order_day, EXCLUDED.last_order_day),
+             orders         = EXCLUDED.orders,
+             app_orders     = EXCLUDED.app_orders,
+             online_orders  = EXCLUDED.online_orders,
+             is_staff       = EXCLUDED.is_staff,
+             is_test        = EXCLUDED.is_test,
+             synced_at      = NOW()`,
+      [apps, OWNER_COUPONS, staff]);
+    const after = (await pool.query("SELECT count(*)::int n FROM cms_contacts")).rows[0].n;
+    lastContactSync = { at: new Date().toISOString(), trigger, before, after, added: after - before, touched: r.rowCount };
+    if (after !== before) console.log(`[cms] contacts sync (${trigger}): ${before} → ${after}`);
+    return lastContactSync;
+  }
+
+  async function contactStats() {
+    const r = await pool.query(`
+      SELECT count(*)::int                                                           AS total,
+             count(*) FILTER (WHERE in_pos)::int                                     AS in_pos,
+             count(*) FILTER (WHERE orders = 0 AND online_orders = 0)::int           AS never_ordered,
+             count(*) FILTER (WHERE orders > 0 AND app_orders = orders
+                                    AND online_orders = 0)::int                      AS app_only,
+             count(*) FILTER (WHERE online_orders > 0)::int                          AS online_buyers,
+             count(*) FILTER (WHERE opted_out_at IS NOT NULL)::int                   AS opted_out,
+             count(*) FILTER (WHERE is_staff)::int                                   AS staff,
+             count(*) FILTER (WHERE is_test)::int                                    AS test,
+             count(*) FILTER (WHERE NOT is_staff AND NOT is_test
+                                    AND opted_out_at IS NULL)::int                   AS reachable,
+             max(synced_at)                                                          AS synced_at
+        FROM cms_contacts WHERE phone_norm ~ '${PHONE_RE}'`);
+    const ts = (await pool.query(
+      `SELECT count(*)::int n FROM ts_customers WHERE phone_norm ~ '${PHONE_RE}'`)).rows[0].n;
+    return { ...r.rows[0], posDirectory: ts, lastSync: lastContactSync };
+  }
+
+  app.get("/api/cms/contacts/stats", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    return c.json({ ok: true, ...(await contactStats()) });
+  });
+
+  app.post("/api/cms/contacts/sync", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    const run = await syncContacts({ trigger: "manual" });
+    segCache = { at: 0, rows: null };
+    return c.json({ ok: true, run, stats: await contactStats() });
+  });
+
+  setTimeout(() => syncContacts({ trigger: "boot" }).catch((e) => console.error("[cms] contacts sync:", e.message)), 45_000).unref?.();
+  setInterval(() => syncContacts({ trigger: "cron" }).catch((e) => console.error("[cms] contacts sync:", e.message)), CONTACT_SYNC_MS).unref?.();
 
   /* ── الحملات ──
      ١٧ سبتمبر (موافقة عمر على تشغيل الـSMS): كل رسالة تسويقية بتعدّي على
