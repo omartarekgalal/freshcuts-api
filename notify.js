@@ -110,7 +110,33 @@ export function register(app, ctx, deps = {}) {
       -- الجهاز: عشان سلة متروكة من غير جوال تفضل قابلة للتنبيه
       ALTER TABLE push_subs ADD COLUMN IF NOT EXISTS device_id TEXT;
       CREATE INDEX IF NOT EXISTS push_subs_device_idx ON push_subs(device_id) WHERE NOT disabled;
+      -- ٢١/٩: تطبيق أندرويد/آيفون (Capacitor) مابيشوفش Web Push — بيسجّل توكن
+      -- FCM. نفس الجدول، عمود kind بيفرّق: 'web' (VAPID) أو 'fcm' (توكن تطبيق).
+      ALTER TABLE push_subs ADD COLUMN IF NOT EXISTS kind TEXT NOT NULL DEFAULT 'web';
+      ALTER TABLE push_subs ADD COLUMN IF NOT EXISTS platform TEXT;
+      ALTER TABLE push_subs ADD COLUMN IF NOT EXISTS app_version TEXT;
+      ALTER TABLE push_subs ADD COLUMN IF NOT EXISTS last_seen_at TIMESTAMPTZ;
+      -- سجل الإرسال: من غيره اللوحة مابتعرفش وصل لمين ولا مين فتح.
+      CREATE TABLE IF NOT EXISTS push_log (
+        id BIGSERIAL PRIMARY KEY,
+        sub_id BIGINT,
+        phone_norm TEXT,
+        order_no TEXT,
+        stage TEXT,
+        campaign_id INTEGER,
+        title TEXT,
+        body TEXT,
+        url TEXT,
+        sent_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        delivered_at TIMESTAMPTZ,
+        clicked_at TIMESTAMPTZ
+      );
+      CREATE INDEX IF NOT EXISTS push_log_sent_idx ON push_log(sent_at DESC);
+      CREATE INDEX IF NOT EXISTS push_log_phone_idx ON push_log(phone_norm, sent_at DESC);
+      CREATE INDEX IF NOT EXISTS push_log_camp_idx ON push_log(campaign_id) WHERE campaign_id IS NOT NULL;
     `);
+    // تنضيف سجل قديم (٩٠ يوم) — مرة كل إقلاع، بهدوء.
+    pool.query("DELETE FROM push_log WHERE sent_at < NOW() - INTERVAL '90 days'").catch(() => {});
     // VAPID keys: settings-persisted, generated exactly once.
     const s = await getSettingsData();
     if (s.webPushKeys?.publicKey && s.webPushKeys?.privateKey) {
@@ -131,12 +157,101 @@ export function register(app, ctx, deps = {}) {
 
   /* ── channel senders ── */
 
-  /* بيرجّع عدد الاشتراكات اللي وصلها الإشعار فعلاً (0 لو ولا واحد). */
-  async function sendPushTo(subs, payload) {
+  /* ═══ FCM (تطبيق أندرويد/آيفون) ═══════════════════════════════════════
+     الـWebView جوّه التطبيق مابيدعمش Web Push خالص، فالتطبيق بيسجّل توكن
+     FCM بدل الاشتراك. الإرسال بيبقى على FCM HTTP v1، واللي محتاج حساب خدمة
+     (service account) من فايربيز في FCM_SERVICE_ACCOUNT (JSON خام أو base64).
+     من غير المتغيّر ده الكود ساكت تماماً — التوكنات بتتخزّن وبس، فأول ما عمر
+     يحط المفتاح كل المشتركين القدام يشتغلوا من غير أي نشر تاني. */
+  let fcmSa = null, fcmTok = { v: null, exp: 0 };
+  function fcmAccount() {
+    if (fcmSa !== null) return fcmSa;
+    const raw = env("FCM_SERVICE_ACCOUNT");
+    if (!raw) return (fcmSa = false);
+    try {
+      const json = raw.trim().startsWith("{") ? raw : Buffer.from(raw, "base64").toString("utf8");
+      const sa = JSON.parse(json);
+      fcmSa = sa.client_email && sa.private_key && sa.project_id ? sa : false;
+    } catch { fcmSa = false; }
+    if (!fcmSa) console.error("[notify] FCM_SERVICE_ACCOUNT is set but unreadable");
+    return fcmSa;
+  }
+  const fcmReady = () => Boolean(fcmAccount());
+  async function fcmToken() {
+    if (fcmTok.v && Date.now() < fcmTok.exp) return fcmTok.v;
+    const sa = fcmAccount();
+    if (!sa) throw Object.assign(new Error("FCM not configured"), { code: "FCM_UNCONFIGURED" });
+    const { createSign } = await import("node:crypto");
+    const now = Math.floor(Date.now() / 1000);
+    const b64 = (o) => Buffer.from(JSON.stringify(o)).toString("base64url");
+    const head = b64({ alg: "RS256", typ: "JWT" });
+    const claim = b64({
+      iss: sa.client_email, scope: "https://www.googleapis.com/auth/firebase.messaging",
+      aud: "https://oauth2.googleapis.com/token", iat: now, exp: now + 3600,
+    });
+    const sig = createSign("RSA-SHA256").update(`${head}.${claim}`).sign(sa.private_key, "base64url");
+    const r = await fetch("https://oauth2.googleapis.com/token", {
+      method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ grant_type: "urn:ietf:params:oauth:grant-type:jwt-bearer", assertion: `${head}.${claim}.${sig}` }),
+      signal: AbortSignal.timeout(15000),
+    });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok || !d.access_token) throw new Error(`FCM auth: ${d.error_description || d.error || r.status}`);
+    fcmTok = { v: d.access_token, exp: Date.now() + (Number(d.expires_in || 3600) - 120) * 1000 };
+    return fcmTok.v;
+  }
+  /* بيرمي زي web-push، وبـstatusCode 404/410 لو التوكن مات — عشان نفس
+     منطق التنضيف اللي فوق يشتغل من غير فرع تاني. */
+  async function fcmSend(token, payload) {
+    const sa = fcmAccount();
+    const at = await fcmToken();
+    const data = {};
+    for (const [k, v] of Object.entries(payload || {})) if (v != null) data[k] = String(v);
+    const r = await fetch(`https://fcm.googleapis.com/v1/projects/${sa.project_id}/messages:send`, {
+      method: "POST", headers: { Authorization: `Bearer ${at}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ message: {
+        token,
+        // notification + data: النظام بيعرض الإشعار حتى والتطبيق مقفول،
+        // والـdata بتوصل لـnotificationActionPerformed عشان الفتح يروح مكانه.
+        notification: { title: payload.title || "فريش كاتس 🍔", body: payload.body || "" },
+        data,
+        android: { priority: "high", notification: { channel_id: payload.channel || "orders", click_action: "FLUTTER_NOTIFICATION_CLICK" } },
+        apns: { payload: { aps: { sound: "default", "mutable-content": 1 } } },
+      } }),
+      signal: AbortSignal.timeout(15000),
+    });
+    if (r.ok) return true;
+    const d = await r.json().catch(() => ({}));
+    const status = d?.error?.details?.[0]?.errorCode || d?.error?.status || "";
+    const dead = r.status === 404 || status === "UNREGISTERED" || status === "INVALID_ARGUMENT";
+    throw Object.assign(new Error(`FCM: ${d?.error?.message || r.status}`), { statusCode: dead ? 410 : r.status });
+  }
+
+  /* بيرجّع عدد الاشتراكات اللي وصلها الإشعار فعلاً (0 لو ولا واحد).
+     meta = {stage, orderNo, campaignId} — بيتكتب في push_log، والـid بيتحقن
+     في الحمولة كـ`n` عشان الـservice worker يرجّع «وصل» و«اتفتح». */
+  async function sendPushTo(subs, payload, meta = {}) {
     let ok = 0;
     for (const row of subs || []) {
+      let logId = null;
       try {
-        await push.sendNotification(row.sub, JSON.stringify(payload), { TTL: 3600 });
+        const lg = await pool.query(
+          `INSERT INTO push_log(sub_id, phone_norm, order_no, stage, campaign_id, title, body, url)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id`,
+          [row.id || null, row.phone_norm || meta.phoneNorm || null, meta.orderNo || row.order_no || null,
+           String(meta.stage || "custom").slice(0, 40), meta.campaignId || null,
+           String(payload.title || "").slice(0, 120), String(payload.body || "").slice(0, 400),
+           String(payload.url || "").slice(0, 400)]).catch(() => null);
+        logId = lg?.rows?.[0]?.id || null;
+      } catch { /* السجل مش سبب لمنع إشعار */ }
+      const body = logId ? { ...payload, n: String(logId) } : payload;
+      try {
+        if (row.kind === "fcm") {
+          if (!fcmReady()) throw Object.assign(new Error("FCM not configured"), { statusCode: 0 });
+          await fcmSend(row.sub?.token || row.sub, body);
+        } else {
+          await push.sendNotification(row.sub, JSON.stringify(body), { TTL: 3600 });
+        }
         ok++;
         pool.query("UPDATE push_subs SET last_ok_at=NOW() WHERE id=$1", [row.id]).catch(() => {});
       } catch (e) {
@@ -144,6 +259,7 @@ export function register(app, ctx, deps = {}) {
         if (e.statusCode === 404 || e.statusCode === 410) {
           pool.query("UPDATE push_subs SET disabled=TRUE WHERE id=$1", [row.id]).catch(() => {});
         }
+        if (logId) pool.query("DELETE FROM push_log WHERE id=$1", [logId]).catch(() => {});
       }
     }
     return ok;
@@ -166,7 +282,7 @@ export function register(app, ctx, deps = {}) {
   }
 
   const orderSubs = async (phoneNorm, orderNo) => (await pool.query(
-    `SELECT id, sub FROM push_subs
+    `SELECT id, sub, kind, phone_norm, order_no FROM push_subs
       WHERE NOT disabled AND (phone_norm=$1 OR order_no=$2) LIMIT 20`,
     [phoneNorm, orderNo])).rows;
 
@@ -196,7 +312,7 @@ export function register(app, ctx, deps = {}) {
         title: "فريش كاتس 🍔",
         url: `${env("STOREFRONT_PUBLIC_URL", "https://freshcuts.sa")}/track/${order.order_no}`,
         ...body,
-      });
+      }, { stage, orderNo: order.order_no, phoneNorm: order.phone_norm });
       emitNotify(orderNo, stage, "push", sent > 0, { sent, of });
       return sent;
     } catch (e) {
@@ -238,7 +354,8 @@ export function register(app, ctx, deps = {}) {
         const url = status === "delivered"
           ? env("GOOGLE_REVIEW_URL", "https://g.page/r/CSG0gPAqlvHMEBM/review")
           : `${env("STOREFRONT_PUBLIC_URL", "https://freshcuts.sa")}/track/${order.order_no}`;
-        attempts.push(sendPushTo(subs, { title: "فريش كاتس 🍔", body: text, url }).then(
+        attempts.push(sendPushTo(subs, { title: "فريش كاتس 🍔", body: text, url },
+          { stage: status, orderNo: order.order_no, phoneNorm: order.phone_norm }).then(
           (sent) => emitNotify(orderNo, status, "push", sent > 0, { sent, of: subs.length }),
           () => emitNotify(orderNo, status, "push", false, { sent: 0, of: subs.length })));
       }
@@ -297,28 +414,95 @@ export function register(app, ctx, deps = {}) {
   app.get("/api/notify/vapid-key", (c) =>
     c.json(vapid ? { ok: true, publicKey: vapid.publicKey } : { ok: false }, vapid ? 200 : 503));
 
-  // PUBLIC: store a browser subscription, tied to a phone and/or an order.
+  /* PUBLIC: store a browser subscription, tied to a phone and/or an order.
+     شكلين: اشتراك متصفح {subscription:{endpoint,keys}} أو توكن تطبيق
+     {kind:"fcm", token}. الاتنين بيقعدوا في نفس الجدول — endpoint للتوكن =
+     "fcm:<token>" عشان نفس قفل التكرار يشتغل. */
   app.post("/api/notify/subscribe", async (c) => {
     const ip = c.req.header("cf-connecting-ip") || c.req.header("x-forwarded-for") || "?";
     if (rateLimited(ip)) return c.json({ ok: false, error: "rate_limited" }, 429);
     let b = {};
     try { b = await c.req.json(); } catch { return c.json({ ok: false, error: "bad json" }, 400); }
-    const sub = b.subscription;
-    if (!sub?.endpoint || !sub?.keys) return c.json({ ok: false, error: "bad subscription" }, 400);
-    const phone = b.phone ? normPhone(b.phone) : null;
+    let kind = "web", endpoint = "", stored = null;
+    if (b.kind === "fcm" || (!b.subscription && b.token)) {
+      const tok = String(b.token || "").trim();
+      if (tok.length < 20 || tok.length > 4096) return c.json({ ok: false, error: "bad token" }, 400);
+      kind = "fcm"; endpoint = `fcm:${tok}`; stored = { kind: "fcm", token: tok };
+    } else {
+      const sub = b.subscription;
+      if (!sub?.endpoint || !sub?.keys) return c.json({ ok: false, error: "bad subscription" }, 400);
+      endpoint = String(sub.endpoint); stored = sub;
+    }
+    let phone = b.phone ? normPhone(b.phone) : null;
+    if (!/^5\d{8}$/.test(phone || "")) phone = null;
+    const orderNo = b.orderNo ? String(b.orderNo).slice(0, 30) : null;
+    /* ٢١/٩: صفحة التتبع بتتفتح كتير من رابط SMS على جهاز تاني — فـfc_profile
+       فاضي والاشتراك كان بيتسجّل بلا جوال، يعني الحملات مابتشوفوش. رقم الطلب
+       عندنا، فبنجيب الجوال من الطلب نفسه بدل ما نستنى العميل. */
+    if (!phone && orderNo) {
+      const r = await pool.query("SELECT phone_norm FROM shop_orders WHERE order_no=$1", [orderNo]).catch(() => null);
+      const p = r?.rows?.[0]?.phone_norm;
+      if (/^5\d{8}$/.test(p || "")) phone = p;
+    }
     await pool.query(
-      `INSERT INTO push_subs(phone_norm, order_no, endpoint, sub, device_id)
-       VALUES ($1,$2,$3,$4,$5)
+      `INSERT INTO push_subs(phone_norm, order_no, endpoint, sub, device_id, kind, platform, app_version, last_seen_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,NOW())
        ON CONFLICT (endpoint) DO UPDATE SET
          phone_norm = COALESCE(EXCLUDED.phone_norm, push_subs.phone_norm),
          order_no = COALESCE(EXCLUDED.order_no, push_subs.order_no),
          device_id = COALESCE(EXCLUDED.device_id, push_subs.device_id),
+         platform = COALESCE(EXCLUDED.platform, push_subs.platform),
+         app_version = COALESCE(EXCLUDED.app_version, push_subs.app_version),
+         kind = EXCLUDED.kind, last_seen_at = NOW(),
          sub = EXCLUDED.sub, disabled = FALSE`,
-      [/^5\d{8}$/.test(phone || "") ? phone : null,
-       b.orderNo ? String(b.orderNo).slice(0, 30) : null,
-       String(sub.endpoint), jb(sub),
-       b.deviceId ? String(b.deviceId).slice(0, 64) : null]
+      [phone, orderNo, endpoint, jb(stored),
+       b.deviceId ? String(b.deviceId).slice(0, 64) : null,
+       kind,
+       b.platform ? String(b.platform).slice(0, 16) : null,
+       b.appVersion ? String(b.appVersion).slice(0, 24) : null]
     );
+    return c.json({ ok: true, kind, linked: Boolean(phone) });
+  });
+
+  /* PUBLIC: ربط كل اشتراكات جهاز بجوال اتأكّد بـOTP. الـtoken بتاع الحساب
+     (cust:) هو الإثبات — الجوال مابيتاخدش من الجسم عشان محدش يربط رقم غيره. */
+  app.post("/api/notify/link", async (c) => {
+    const ip = c.req.header("cf-connecting-ip") || c.req.header("x-forwarded-for") || "?";
+    if (rateLimited(ip, 120)) return c.json({ ok: false, error: "rate_limited" }, 429);
+    let b = {};
+    try { b = await c.req.json(); } catch { return c.json({ ok: false, error: "bad json" }, 400); }
+    // نفس قاعدة accounts.js: جلسة حيّة (١٨٠ يوم من آخر ظهور) = جوال متأكّد بـOTP
+    const m = (c.req.header("Authorization") || "").match(/^Bearer cust:([a-f0-9]{48,96})$/i);
+    if (!m) return c.json({ ok: false, error: "unauthorized" }, 401);
+    const sess = await pool.query(
+      "SELECT phone_norm FROM acct_sessions WHERE token=$1 AND last_seen_at > NOW() - INTERVAL '180 days'",
+      [m[1]]).catch(() => null);
+    const phone = sess?.rows?.[0]?.phone_norm;
+    if (!/^5\d{8}$/.test(phone || "")) return c.json({ ok: false, error: "unauthorized" }, 401);
+    const dev = b.deviceId ? String(b.deviceId).slice(0, 64) : null;
+    const ep = b.endpoint ? String(b.endpoint).slice(0, 1000) : null;
+    if (!dev && !ep) return c.json({ ok: false, error: "device_or_endpoint_required" }, 400);
+    const r = await pool.query(
+      `UPDATE push_subs SET phone_norm=$1, last_seen_at=NOW()
+        WHERE NOT disabled AND (($2::text IS NOT NULL AND device_id=$2) OR ($3::text IS NOT NULL AND endpoint=$3))`,
+      [phone, dev, ep]);
+    return c.json({ ok: true, linked: r.rowCount });
+  });
+
+  /* PUBLIC: الـservice worker بيقول «وصل» و«اتفتح». من غير ده اللوحة بتعرف
+     إننا بعتنا وبس — مش إن حد شاف. الـid رقم سطر في push_log، فمفيش بيانات
+     شخصية في الطريق. */
+  app.post("/api/notify/event", async (c) => {
+    const ip = c.req.header("cf-connecting-ip") || c.req.header("x-forwarded-for") || "?";
+    if (rateLimited(ip, 600)) return c.json({ ok: false }, 429);
+    let b = {};
+    try { b = await c.req.json(); } catch { return c.json({ ok: false }, 400); }
+    const id = Number(b.id);
+    if (!Number.isFinite(id) || id <= 0) return c.json({ ok: false }, 400);
+    const col = b.t === "click" ? "clicked_at" : "delivered_at";
+    await pool.query(
+      `UPDATE push_log SET ${col}=COALESCE(${col}, NOW())
+        WHERE id=$1 AND sent_at > NOW() - INTERVAL '7 days'`, [id]).catch(() => {});
     return c.json({ ok: true });
   });
 
@@ -326,11 +510,30 @@ export function register(app, ctx, deps = {}) {
   app.get("/api/notify/channels", async (c) => {
     const err = await requireAdmin(c); if (err) return err;
     const cfg = (await getSettingsData()).notifications || {};
-    const subs = (await pool.query(
-      "SELECT count(*)::int AS n FROM push_subs WHERE NOT disabled")).rows[0].n;
+    const [s, d] = await Promise.all([
+      pool.query(`SELECT count(*) FILTER (WHERE NOT disabled)::int AS live,
+                         count(*) FILTER (WHERE disabled)::int AS dead,
+                         count(DISTINCT phone_norm) FILTER (WHERE NOT disabled AND phone_norm IS NOT NULL)::int AS reach,
+                         count(*) FILTER (WHERE NOT disabled AND kind='fcm')::int AS app,
+                         count(*) FILTER (WHERE NOT disabled AND created_at > NOW() - INTERVAL '7 days')::int AS new7
+                    FROM push_subs`),
+      pool.query(`SELECT count(*)::int AS sent,
+                         count(*) FILTER (WHERE delivered_at IS NOT NULL)::int AS delivered,
+                         count(*) FILTER (WHERE clicked_at IS NOT NULL)::int AS clicked
+                    FROM push_log WHERE sent_at > NOW() - INTERVAL '30 days'`),
+    ]);
+    const st = s.rows[0], lg = d.rows[0];
     return c.json({
       ok: true,
-      push: { configured: Boolean(vapid), enabled: cfg.pushEnabled !== false, subscriptions: subs },
+      push: {
+        configured: Boolean(vapid), enabled: cfg.pushEnabled !== false, subscriptions: st.live,
+        // الوصول الحقيقي = عدد العملاء (أرقام جوال) مش عدد الأجهزة
+        reach: st.reach, devicesDead: st.dead, appTokens: st.app, new7d: st.new7,
+        fcmConfigured: fcmReady(),
+        last30d: { sent: lg.sent, delivered: lg.delivered, clicked: lg.clicked,
+          deliveredPct: lg.sent ? Math.round((lg.delivered / lg.sent) * 100) : null,
+          clickedPct: lg.sent ? Math.round((lg.clicked / lg.sent) * 100) : null },
+      },
       sms: {
         configured: Boolean(env("TAQNYAT_API_KEY") && env("TAQNYAT_SENDER")),
         enabled: cfg.smsEnabled === true,
@@ -384,7 +587,7 @@ export function register(app, ctx, deps = {}) {
         await sendWhatsApp(phone, text);
       } else {
         const subs = (await pool.query(
-          "SELECT id, sub FROM push_subs WHERE NOT disabled ORDER BY id DESC LIMIT 5")).rows;
+          "SELECT id, sub, kind, phone_norm, order_no FROM push_subs WHERE NOT disabled ORDER BY id DESC LIMIT 5")).rows;
         const sent = await sendPushTo(subs, { title: "فريش كاتس 🍔", body: text, url: env("STOREFRONT_PUBLIC_URL", "https://freshcuts.sa") });
         return c.json({ ok: true, sent, of: subs.length });
       }
@@ -396,15 +599,17 @@ export function register(app, ctx, deps = {}) {
 
   /* ── senders reusable by other modules (carts.js recovery) ──
      نفس قنوات إشعارات الطلب، بس بجمهور محدد بالجوال أو الجهاز. */
-  async function sendToAudience({ phoneNorm, deviceId, title, body, url }) {
+  async function sendToAudience({ phoneNorm, deviceId, title, body, url, stage, campaignId }) {
     const cfg = (await getSettingsData()).notifications || {};
     if (cfg.pushEnabled === false) return false;
     const subs = (await pool.query(
-      `SELECT id, sub FROM push_subs
+      `SELECT id, sub, kind, phone_norm, order_no FROM push_subs
         WHERE NOT disabled AND ((phone_norm IS NOT NULL AND phone_norm=$1) OR device_id=$2) LIMIT 10`,
       [phoneNorm || null, deviceId || ""])).rows;
     if (!subs.length) return false;
-    const ok = await sendPushTo(subs, { title, body, url: url || env("STOREFRONT_PUBLIC_URL", "https://freshcuts.sa") });
+    const ok = await sendPushTo(subs, { title, body, url: url || env("STOREFRONT_PUBLIC_URL", "https://freshcuts.sa"),
+      channel: campaignId ? "offers" : "orders" },
+      { stage: stage || (campaignId ? "campaign" : "custom"), campaignId: campaignId || null, phoneNorm: phoneNorm || null });
     return ok > 0;
   }
   /* meta = {kind, ref} لسجل الرسايل (smslog.js) — اختياري */
@@ -415,5 +620,24 @@ export function register(app, ctx, deps = {}) {
     return true;
   }
 
-  return { orderStatusChanged, sendToAudience, sendSmsTo, sendPushTo, sendOrderPush };
+  /* نتايج حملة إشعارات: بعتنا كام، وصل كام، اتفتح كام (cms.js بيعرضها) */
+  async function campaignPushStats(campaignId) {
+    const r = await pool.query(
+      `SELECT count(*)::int AS sent,
+              count(*) FILTER (WHERE delivered_at IS NOT NULL)::int AS delivered,
+              count(*) FILTER (WHERE clicked_at IS NOT NULL)::int AS clicked
+         FROM push_log WHERE campaign_id=$1`, [Number(campaignId)]);
+    return r.rows[0];
+  }
+  /* مين اتبعتله إشعار خلال N يوم — فاصل الإشعارات (أخف من الـSMS لأنه ببلاش) */
+  async function pushedSince(phones, days) {
+    if (!Array.isArray(phones) || !phones.length || !(days > 0)) return new Set();
+    const r = await pool.query(
+      `SELECT DISTINCT phone_norm FROM push_log
+        WHERE phone_norm = ANY($1) AND campaign_id IS NOT NULL
+          AND sent_at > NOW() - ($2 || ' days')::interval`, [phones, String(days)]);
+    return new Set(r.rows.map((x) => x.phone_norm));
+  }
+  return { orderStatusChanged, sendToAudience, sendSmsTo, sendPushTo, sendOrderPush,
+    campaignPushStats, pushedSince, fcmReady };
 }

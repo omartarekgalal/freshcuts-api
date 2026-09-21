@@ -313,7 +313,7 @@ export function register(app, ctx, deps = {}) {
     // خطوة ١: الإشعار ببلاش — لو مشترك ناخده بدل الـSMS
     if (step === 1 && cfg.pushEnabled !== false && notify) {
       const m = cartMessages.push1(row.item_count, eligibleFirst);
-      const ok = await notify.sendToAudience({ phoneNorm: pn, deviceId: row.device_id, ...m, url: `https://${link}?s=push` }).catch(() => false);
+      const ok = await notify.sendToAudience({ phoneNorm: pn, deviceId: row.device_id, ...m, url: `https://${link}?s=push`, stage: "cart_recovery" }).catch(() => false);
       if (ok) return { channel: "push" };
     }
     if (cfg.smsEnabled !== true) return { channel: null, reason: "sms_disabled" };
