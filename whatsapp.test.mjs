@@ -240,7 +240,9 @@ test("failed status → SMS fallback exactly once (duplicate webhooks)", withEnv
   await h(signed(statusHook("wamid.TEST1", "failed")));
   await flush();
   assert.equal(sms.length, 1);
-  assert.deepEqual(sms[0], { phoneNorm: "512345678", body: "نص بديل" });
+  // kind/ref بيروحوا لسجل الرسايل الموحّد (smslog) زي أي SMS تاني.
+  assert.deepEqual(sms[0], { phoneNorm: "512345678", body: "نص بديل",
+    kind: "order_status", ref: "W1:wa_fallback" });
 }));
 
 test("unsigned webhook is ignored with 200", withEnv(ON, async () => {
