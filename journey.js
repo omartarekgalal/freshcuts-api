@@ -81,6 +81,9 @@ export const WEB_EVENTS = Object.freeze([
   "geo_help", "lang_switch",
   // ١٩/٩ مساءً: الشيك أوت «الدخول الأول» — شاشة الدخول، الرمز اتأكد، اختيار عنوان محفوظ، عنوان جديد
   "login_start", "otp_ok", "address_pick", "address_new",
+  // ٢١/٩: محرر العنوان — الدبوس التقريبي اتحط (address_seeded) والوقفات اللي
+  // بتمنع الحفظ (address_blocked: pin_missing/pin_unconfirmed/name_missing/building_missing)
+  "address_seeded", "address_blocked",
 ]);
 
 /* نوع خطأ الـJS. المتصفح بيبعت kind من ١٩/٩؛ القديم بنصنّفه من الرسالة والملف.
