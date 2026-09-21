@@ -135,6 +135,72 @@ export const KEETA_SEGMENTS = [
     test: (c) => keetaFresh(c) && c.keetaLean !== "grill" },
 ];
 
+/* ═══ تفضيل الأكل الحقيقي لعميل التطبيق (قرار عمر ٢١/٩) ═══════════════════
+   عمر بالحرف: «عملاء كيتا لازم يعرفوا بالتوصيل المجاني مع العرض حسب الاكل
+   الى بياكلوه ولازم نحسب نسبة تحولهم للمتجر بتاعنا».
+   (ملاحظة مهمة: «مش هصرف على كيتا وهنجر» = صرف الإعلانات بس. الرسايل اللي
+   بتسحبهم لمتجرنا هي بالظبط اللي هو عايزها — الحملة ٩/١٩ اتلغت على سوء فهم.)
+
+   القديم (itemFamily/leanOf) كان بيقسّم الدنيا لحتّتين: مشاوي ولا بوكس.
+   ده كفاية عشان تختار العرض، بس مش كفاية عشان تكتب رسالة العميل يحس إنها
+   ليه. هنا بنقسّم بالفئة الحقيقية من نقطة البيع (٦ مجموعات = تعريفات عمر
+   للكاتيجوري) وكل مجموعة ليها عرضها ورسالتها.
+
+   الترتيب في الفحص مقصود: «بيتزا برجر» لازم تتحسب بيتزا (بتبدأ بـ«بيتزا»)،
+   و«كريب هوت دوج» كريب، و«جريلد تشيكن ساندوتش» برجر (واحد من الأربعة —
+   شوف memory freshcuts-menu-category-rules)، و«ورقة سجق اسكندراني» مع
+   الحواوشي لأنها عيش ملفوف مش مشاوي بالوزن. */
+export const FOOD_GROUPS = Object.freeze([
+  { id: "grill", label: "مشاوي", icon: "🔥", offer: "kilo", offerLabel: "كيلو ٩٦" },
+  { id: "crepe", label: "كريب", icon: "🌯", offer: "box", offerLabel: "بوكس ٩٦" },
+  { id: "pasta", label: "باستا", icon: "🍝", offer: "box", offerLabel: "بوكس ٩٦" },
+  { id: "pizza", label: "بيتزا", icon: "🍕", offer: "box", offerLabel: "بوكس ٩٦" },
+  { id: "hawawshi", label: "حواوشي", icon: "🥙", offer: "box", offerLabel: "بوكس ٩٦" },
+  { id: "burger", label: "برجر", icon: "🍔", offer: "box", offerLabel: "بوكس ٩٦" },
+]);
+export const FOOD_GROUP_IDS = FOOD_GROUPS.map((g) => g.id);
+const foodById = Object.fromEntries(FOOD_GROUPS.map((g) => [g.id, g]));
+export const foodGroupOf = (id) => foodById[id] || null;
+
+/* اسم الصنف زي ما نقطة البيع بتكتبه → مجموعة. بيتزا نقطة البيع بتيجي
+   بلاحقة («بيتزا بيبروني 1.0 حشو اطراف كيري») فالمطابقة بالبداية مش بالاسم
+   الكامل — المطابقة بالاسم الكامل كانت بتسيب ٧٩ سطر بيتزا من غير فئة. */
+const FOOD_RULES = [
+  { g: "pizza", re: /بيتزا/ },
+  { g: "crepe", re: /كريب/ },
+  { g: "hawawshi", re: /حواوشي|ورقة سجق/ },
+  { g: "pasta", re: /باستا|كازرول|الفريدو|ماك اند تشيز|نجرسكو|بشاميل/ },
+  { g: "burger", re: /برجر|جريلد تشيكن ساندوتش|كريمي مشروم تشيكن/ },
+  { g: "grill", re: /وجبة|بالوزن|مشوي|مشوية|على الفحم|كبدة|مشكل|كفتة|طرب|ريش|كباب|شيش|سجق/ },
+];
+export function foodGroup(name) {
+  const n = String(name || "");
+  for (const r of FOOD_RULES) if (r.re.test(n)) return r.g;
+  return null; // مقبلات/مشروبات/طاسات — مش إشارة تفضيل
+}
+/* أعلى مجموعة بالإنفاق. التعادل بيترتّب بترتيب FOOD_GROUPS عشان النتيجة
+   تبقى ثابتة (نفس العميل مايتنقلش بين شريحتين كل ما نعيد الحساب). */
+export function topFoodGroup(amounts) {
+  const a = amounts || {};
+  let best = null, bestV = 0;
+  for (const g of FOOD_GROUPS) {
+    const v = Number(a[g.id]) || 0;
+    if (v > bestV) { best = g.id; bestV = v; }
+  }
+  return best;
+}
+
+/* شرائح عملاء التطبيقات بالتفضيل. allowApps=true لأن دول بالتعريف أرقام
+   جاية من تطبيق توصيل (كيتا هو الوحيد اللي بيدّي جوال حقيقي — هنقرستيشن
+   ونينجا بيخفوا الرقم، شوف memory freshcuts-marketing-center). الشريحة
+   بتشتغل على أي مصدر تطبيق، فلو جالنا أرقام هنقر/نينجا بكرة تدخل لوحدها. */
+const appFresh = (c) => (c.appSrcOrders || 0) > 0 && !((c.onlineDaysSince ?? 9999) <= 14);
+export const APP_FOOD_SEGMENTS = FOOD_GROUPS.map((g) => ({
+  id: `k_app_${g.id}`, icon: g.icon, label: `عملاء التطبيقات — ${g.label} (${g.offerLabel})`, allowApps: true,
+  hint: `أغلب إنفاقهم على التطبيق ${g.label}. الرسالة بتربط أكلهم بـ${g.offerLabel} + توصيل مجاني لأول طلب من موقعنا. مش طالبين من الموقع آخر ١٤ يوم`,
+  test: (c) => appFresh(c) && c.appTopFood === g.id,
+}));
+
 /* ═══ الفاصل بين الرسايل التسويقية — قاعدة متدرّجة (قرار عمر ٢١/٩) ═══════
    عمر: «حاسس ان قاعدة منكلمش العميل ٧ ايام دي قاعدة مش حلوة».
    الـ٧ (والـ٢١ قبلها) كانت رقم واحد على كل الناس: نفس الفاصل للزبون اللي

@@ -105,7 +105,7 @@ const PATH_SECTIONS = [
   [/^\/api\/cms\/(products|catalog|collections|bundles|offers|recommendations|menu-availability)/, "products"],
   [/^\/api\/cms\/(growth|links)/, "growth"],
   // sms-optout = قايمة «مش عايز رسايل» (نفس دوال البوابة، portal.js)
-  [/^\/api\/cms\/(customers|segments|loyalty|campaigns|flows|reviews|sms-optout)/, "customers"],
+  [/^\/api\/cms\/(customers|segments|loyalty|campaigns|app-conversion|flows|reviews|sms-optout)/, "customers"],
   [/^\/api\/cms\/(analytics|exec)/, "analytics"],
   [/^\/api\/cms\/(ops|sla)/, "orders"],
   [/^\/api\/(shop\/coupons|discounts)/, "discounts"],
@@ -1981,15 +1981,19 @@ export function register(app, ctx, deps = {}) {
                    WHERE phone_norm ~ '${PHONE_RE}' GROUP BY 1`),
       pool.query(`SELECT phone_norm AS pn, max(NULLIF(btrim(customer->>'name'), '')) AS name FROM shop_orders
                    WHERE phone_norm ~ '${PHONE_RE}' GROUP BY 1`),
-      // عملاء كيتا: عدد طلباتهم هناك + أصناف الطلبات دي (للتفضيل مشاوي/بوكس)
+      /* عملاء تطبيقات التوصيل: عدد طلباتهم هناك + أصناف الطلبات دي.
+         كان مقصور على كيتا؛ بقى أي مصدر تطبيق (source_note) عشان لو جالنا
+         أرقام من هنقرستيشن/نينجا بكرة تدخل لوحدها. عملياً كيتا هو الوحيد
+         اللي بيدّي جوال حقيقي (الاتنين التانيين بيخفوه). */
       pool.query(`
         WITH k AS (
-          SELECT s.phone_norm AS pn, o.order_id FROM order_sources s JOIN ts_orders o ON o.order_id = s.order_id
-           WHERE s.source_note ILIKE 'keeta' AND s.phone_norm ~ '${PHONE_RE}' AND ${SALES_ONLY}),
-        n AS (SELECT pn, count(*)::int AS orders FROM k GROUP BY 1)
-        SELECT k.pn, n.orders, i.name, COALESCE(sum(i.amount), 0)::float AS amount
+          SELECT s.phone_norm AS pn, o.order_id, btrim(s.source_note) AS app
+            FROM order_sources s JOIN ts_orders o ON o.order_id = s.order_id
+           WHERE btrim(COALESCE(s.source_note, '')) <> '' AND s.phone_norm ~ '${PHONE_RE}' AND ${SALES_ONLY}),
+        n AS (SELECT pn, count(*)::int AS orders, string_agg(DISTINCT app, ',') AS apps FROM k GROUP BY 1)
+        SELECT k.pn, n.orders, n.apps, i.name, COALESCE(sum(i.amount), 0)::float AS amount
           FROM k JOIN n ON n.pn = k.pn LEFT JOIN ts_order_items i ON i.order_id = k.order_id
-         GROUP BY k.pn, n.orders, i.name`),
+         GROUP BY k.pn, n.orders, n.apps, i.name`),
     ]);
     const onl = new Map(online.rows.map((r) => [r.pn, r]));
     const pushSet = new Set(push.rows.map((r) => r.pn));
@@ -2002,17 +2006,23 @@ export function register(app, ctx, deps = {}) {
       onOrder || tsName.get(pn) || nameOf.get(pn) || shopName.get(pn) || "";
     const today = new Date(new Date().toISOString().slice(0, 10));
     const daysSince = (d) => (d ? Math.max(0, Math.round((today - new Date(d)) / 86400000)) : 9999);
+    /* لكل رقم تطبيق: الميل القديم (مشاوي/بوكس) + الإنفاق الحقيقي لكل مجموعة
+       أكل (٦ مجموعات) عشان الرسالة تتكلم عن اللي بياكله فعلاً. */
     const kMap = new Map();
     for (const k of keeta.rows) {
-      const e = kMap.get(k.pn) || { orders: 0, grill: 0, box: 0 };
+      const e = kMap.get(k.pn) || { orders: 0, apps: k.apps || "", grill: 0, box: 0, food: {} };
       e.orders = Math.max(e.orders, k.orders);
       const fam = smsRules.itemFamily(k.name);
       if (fam !== "other") e[fam] += k.amount;
+      const g = smsRules.foodGroup(k.name);
+      if (g) e.food[g] = (e.food[g] || 0) + k.amount;
       kMap.set(k.pn, e);
     }
     const kOf = (pn) => {
       const e = kMap.get(pn);
-      return e ? { keetaOrders: e.orders, keetaLean: smsRules.leanOf(e.grill, e.box) } : { keetaOrders: 0, keetaLean: null };
+      if (!e) return { keetaOrders: 0, keetaLean: null, appSrcOrders: 0, appNames: "", appFood: {}, appTopFood: null };
+      return { keetaOrders: e.orders, keetaLean: smsRules.leanOf(e.grill, e.box),
+        appSrcOrders: e.orders, appNames: e.apps, appFood: e.food, appTopFood: smsRules.topFoodGroup(e.food) };
     };
     const rows = pos.rows.map((r) => {
       const o = onl.get(r.pn);
@@ -2056,6 +2066,7 @@ export function register(app, ctx, deps = {}) {
     { id: "online_buyers", icon: "🛒", label: "عملاء الموقع", hint: "طلبوا من متجرنا مرة على الأقل", test: (c) => c.online > 0 },
     ...smsRules.WAVE_SEGMENTS,
     ...smsRules.KEETA_SEGMENTS,
+    ...smsRules.APP_FOOD_SEGMENTS,
   ];
   const segById = Object.fromEntries(SEGMENTS.map((s) => [s.id, s]));
   const pub = (s) => ({ id: s.id, icon: s.icon, label: s.label, hint: s.hint, ...(s.allowApps ? { allowApps: true } : {}) });
@@ -2084,7 +2095,9 @@ export function register(app, ctx, deps = {}) {
       members: m.slice(offset, offset + limit).map((x) => ({
         phone: x.pn, name: x.name, orders: x.orders, spend: Math.round(x.spend), lastDay: x.lastDay,
         daysSince: x.daysSince, appOrders: x.appOrders, onlineOrders: x.online, vip: x.vip, push: x.push,
-        keetaOrders: x.keetaOrders, keetaLean: x.keetaLean })),
+        keetaOrders: x.keetaOrders, keetaLean: x.keetaLean,
+        appSrcOrders: x.appSrcOrders, appNames: x.appNames, appTopFood: x.appTopFood,
+        appFood: Object.fromEntries(Object.entries(x.appFood || {}).map(([k, v]) => [k, Math.round(v)])) })),
     });
   });
 
@@ -2546,6 +2559,103 @@ export function register(app, ctx, deps = {}) {
       linkOrders: byLink.rows[0] || null,
       recipientsOrders72h: g.sent || { orders: 0, revenue: 0 }, holdoutOrders72h: g.holdout || { orders: 0, revenue: 0 },
       delivery: "Taqnyat API has no delivery-report endpoint; messageIds stored per recipient" });
+  });
+
+  /* ═══ تحويل عملاء التطبيقات (سؤال عمر ٢١/٩) ════════════════════════════
+     «لازم نحسب نسبة تحولهم للمتجر بتاعنا».
+
+     العميل هنا = رقم جوال جالنا من تطبيق توصيل (order_sources.source_note).
+     بنقسّمهم تلات مجموعات ونقيس نفس الحاجة على التلاتة:
+       • كلّمناه   — أول رسالة تسويقية وصلته (t0 = أول إرسال ناجح)
+       • المحجوزين — اتشالوا من الحملة عن قصد (holdout) = الضابط الحقيقي
+       • ماكلمناهوش — t0 = أول يوم كلّمنا فيه عميل تطبيق أصلاً (خط الأساس)
+     «تحوّل» = طلب أونلاين مدفوع من موقعنا بعد t0 وجوّه نافذة ٧/١٤/٣٠ يوم.
+
+     ليه تلاتة مش اتنين؟ الـholdout أنضف مقارنة بس عدده صغير، وخط الأساس
+     (ماكلمناهوش) عدده كبير بس فيه انحياز (اللي بنكلمهم بنختارهم). الاتنين
+     مع بعض بيحوّطوا الحقيقة؛ رقم واحد لوحده بيكدب.
+
+     التكلفة من cms_campaign_sends.cost الحقيقية (مش تقدير)، وتكلفة العميل
+     المحوَّل = التكلفة ÷ عدد المحوَّلين في نافذة ٣٠ يوم. */
+  const CONV_WINDOWS = [7, 14, 30];
+  app.get("/api/cms/app-conversion", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    const [rows, sends, orders] = await Promise.all([
+      customerRows(),
+      pool.query(`
+        WITH app AS (SELECT DISTINCT phone_norm AS pn FROM order_sources
+                      WHERE btrim(COALESCE(source_note, '')) <> '' AND phone_norm ~ '${PHONE_RE}')
+        SELECT a.pn,
+               min(s.created_at) FILTER (WHERE s.status = 'sent')    AS first_sent,
+               min(s.created_at) FILTER (WHERE s.status = 'holdout') AS first_hold,
+               count(*) FILTER (WHERE s.status = 'sent')::int        AS msgs,
+               COALESCE(sum(s.cost) FILTER (WHERE s.status = 'sent'), 0)::float AS cost
+          FROM app a LEFT JOIN cms_campaign_sends s ON s.phone_norm = a.pn
+         GROUP BY a.pn`),
+      pool.query(`
+        WITH app AS (SELECT DISTINCT phone_norm AS pn FROM order_sources
+                      WHERE btrim(COALESCE(source_note, '')) <> '' AND phone_norm ~ '${PHONE_RE}')
+        SELECT o.phone_norm AS pn, o.created_at, o.total::float AS total
+          FROM shop_orders o JOIN app a ON a.pn = o.phone_norm
+         WHERE ${PAID_ONLINE} ORDER BY o.created_at`),
+    ]);
+    const foodOf = new Map(rows.map((r) => [r.pn, r.appTopFood]));
+    const ordersOf = new Map();
+    for (const o of orders.rows) {
+      const l = ordersOf.get(o.pn) || []; l.push(o); ordersOf.set(o.pn, l);
+    }
+    // بداية حقبة الرسايل = أول رسالة وصلت عميل تطبيق. اللي ماكلمناهوش
+    // بنقيسه من نفس التاريخ عشان المقارنة تبقى على نفس الشباك الزمني.
+    const era = sends.rows.reduce((m, r) => (r.first_sent && (!m || r.first_sent < m) ? r.first_sent : m), null);
+    const blank = () => ({ people: 0, ...Object.fromEntries(CONV_WINDOWS.map((w) => [w, { converted: 0, orders: 0, revenue: 0 }])) });
+    const groups = { messaged: blank(), holdout: blank(), never: blank() };
+    const byFood = {};
+    let cost = 0, msgs = 0;
+    for (const r of sends.rows) {
+      const g = r.first_sent ? "messaged" : r.first_hold ? "holdout" : "never";
+      const t0 = r.first_sent || r.first_hold || era;
+      cost += Number(r.cost) || 0; msgs += r.msgs || 0;
+      groups[g].people++;
+      const food = foodOf.get(r.pn) || "other";
+      if (g === "messaged") (byFood[food] = byFood[food] || { people: 0, converted: 0, revenue: 0, cost: 0 });
+      if (g === "messaged") { byFood[food].people++; byFood[food].cost += Number(r.cost) || 0; }
+      if (!t0) continue;
+      const list = ordersOf.get(r.pn) || [];
+      for (const w of CONV_WINDOWS) {
+        const end = new Date(new Date(t0).getTime() + w * 86400_000);
+        const hit = list.filter((o) => new Date(o.created_at) >= new Date(t0) && new Date(o.created_at) < end);
+        if (!hit.length) continue;
+        groups[g][w].converted++;
+        groups[g][w].orders += hit.length;
+        groups[g][w].revenue += hit.reduce((s, o) => s + (Number(o.total) || 0), 0);
+        if (w === 30 && g === "messaged") {
+          byFood[food].converted++;
+          byFood[food].revenue += hit.reduce((s, o) => s + (Number(o.total) || 0), 0);
+        }
+      }
+    }
+    const rate = (g, w) => (g.people ? Math.round((g[w].converted / g.people) * 1000) / 10 : null);
+    const shape = (g) => ({ people: g.people, ...Object.fromEntries(CONV_WINDOWS.map((w) => [w,
+      { converted: g[w].converted, rate: rate(g, w), orders: g[w].orders, revenue: Math.round(g[w].revenue) }])) });
+    const baseRate = groups.holdout.people >= 20 ? rate(groups.holdout, 30) : rate(groups.never, 30);
+    const baseFrom = groups.holdout.people >= 20 ? "holdout" : "never";
+    const conv30 = groups.messaged[30].converted;
+    return c.json({ ok: true, windows: CONV_WINDOWS, era,
+      cohort: sends.rows.length,
+      messaged: shape(groups.messaged), holdout: shape(groups.holdout), never: shape(groups.never),
+      cost: Math.round(cost * 100) / 100, messages: msgs,
+      costPerConverted: conv30 ? Math.round((cost / conv30) * 100) / 100 : null,
+      revenue30: Math.round(groups.messaged[30].revenue),
+      baseline: { from: baseFrom, rate: baseRate },
+      lift: baseRate == null || rate(groups.messaged, 30) == null ? null
+        : Math.round((rate(groups.messaged, 30) - baseRate) * 10) / 10,
+      byFood: Object.entries(byFood).map(([id, v]) => ({
+        id, label: smsRules.foodGroupOf(id)?.label || "غير محدّد", icon: smsRules.foodGroupOf(id)?.icon || "🛵",
+        people: v.people, converted: v.converted, rate: v.people ? Math.round((v.converted / v.people) * 1000) / 10 : null,
+        revenue: Math.round(v.revenue), cost: Math.round(v.cost * 100) / 100,
+      })).sort((a, b) => b.people - a.people),
+      note: "التحوّل = طلب أونلاين مدفوع من موقعنا بعد أول رسالة. المحجوزين = ضابط حقيقي، وماكلمناهوش = خط أساس من نفس التاريخ",
+    });
   });
 
   // المالك بس (المسار مش تحت «customers» في خريطة الأقسام عن قصد): SMS بفلوس
