@@ -67,6 +67,7 @@ import * as courierlive from "./courierlive.js";
 import * as kitchen from "./kitchen.js";
 import * as adsreport from "./adsreport.js";
 import * as mkhub from "./mkhub.js";
+import * as adsefficiency from "./adsefficiency.js";
 import * as adconnect from "./adconnect.js";
 import * as ttconnect from "./ttconnect.js";
 import * as ttcatalog from "./ttcatalog.js";
@@ -3132,6 +3133,8 @@ globalThis.__fcAlignedSpend = async (from, to) => ({
 });
 // «الحملات كلها في مكان واحد» + تقرير السلات المتروكة (قراءة بس) — mkhub.js
 const mkhubApi = mkhub.register(app, moduleCtx, { alignedSpend: () => (globalThis.__fcAlignedSpend || null) });
+// ⚠️ كفاءة الإعلان (عمر ٢١/٩): الصرف × الدخل حيّ ساعة بساعة + الإيقاع مقابل هدف ١٥٪ — /api/marketing/ad-efficiency
+adsefficiency.register(app, moduleCtx);
 // ربط منصات الإعلانات الأربعة: فحص كل ٣ ساعات + SMS للإدارة لو ربط وقع/توكن هيخلص — adconnect.js
 // ربط تيك توك من اللوحة (App Secret + OAuth، مشفّر في الداتابيز) — ttconnect.js
 ttconnect.register(app, moduleCtx);
