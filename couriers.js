@@ -546,6 +546,10 @@ function ljStage(raw) {
 const LJ_DUP_RE = /already\s*exist|already\s*exists|duplicate|مسجّل|موجود بالفعل/i;
 export const isDuplicateMsg = (m) => LJ_DUP_RE.test(String(m || ""));
 
+/* حالات لاجلك النصّية → حالتنا الموحّدة. متصدّرة عشان لوحتهم
+   (leajlakdash.js) بتستعمل نفس الأسماء بالظبط. */
+export const ljStageOf = (raw) => ljStage(raw);
+
 const leajlak = {
   id: "leajlak",
   label: "Leajlak (4U)",

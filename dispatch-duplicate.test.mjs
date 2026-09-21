@@ -35,7 +35,7 @@ function patchProvider(id, patch) {
 }
 
 /* pool مزيّف بيقلّد الفهرس الفريد الجزئي: محاولة واحدة طايرة لكل طلب. */
-function build({ shipments = [] } = {}) {
+function build({ shipments = [], dash = null } = {}) {
   const prevPoll = process.env.FA_POLL_MINUTES, prevSweep = process.env.DISPATCH_LOST_SWEEP_SECONDS;
   process.env.FA_POLL_MINUTES = "0";
   process.env.DISPATCH_LOST_SWEEP_SECONDS = "0";
@@ -48,6 +48,15 @@ function build({ shipments = [] } = {}) {
       if (/SELECT \* FROM dl_shipments WHERE shop_order_no/i.test(s)) {
         const r = shipments.filter((x) => x.shop_order_no === vals[0]);
         return { rows: r.slice(-1), rowCount: r.length ? 1 : 0 };
+      }
+      if (/INSERT INTO dl_shipments\(shop_order_no, provider, provider_order_no/i.test(s)) {
+        // مسار الاسترجاع من اللوحة: رقمهم الداخلي + الأوقات + الرسوم
+        shipments.push({ id: shipments.length + 1, shop_order_no: vals[0], provider: "leajlak",
+                         provider_ref: null, provider_order_no: vals[1], status: vals[2],
+                         driver: vals[3], fee_dash: vals[4], fee_dash_ex: vals[5],
+                         created_at: vals[6], assigned_at: vals[7], arrived_at: vals[8],
+                         picked_at: vals[9], delivered_at: vals[10] });
+        return { rows: [{ id: shipments.length }], rowCount: 1 };
       }
       if (/INSERT INTO dl_shipments/i.test(s)) {
         shipments.push({ id: shipments.length + 1, shop_order_no: vals[0], provider: vals[1],
@@ -88,6 +97,11 @@ function build({ shipments = [] } = {}) {
         if (a) { a.finished_at = new Date(); a.ok = false; a.outcome = "lost"; }
         return { rows: a ? [a] : [], rowCount: a ? 1 : 0 };
       }
+      if (/UPDATE dl_dispatch_attempts SET resolved_at=NOW\(\)[\s\S]*WHERE id=\$1/i.test(s)) {
+        const a = attempts.find((x) => x.id === vals[0]);
+        if (a) { a.resolved_at = new Date(); a.resolution = 'adopted'; }
+        return { rows: [], rowCount: a ? 1 : 0 };
+      }
       if (/UPDATE dl_dispatch_attempts SET resolved_at=NOW\(\)/i.test(s)) {
         for (const a of attempts) {
           if (a.shop_order_no === vals[0] && !a.resolved_at) a.resolved_at = new Date();
@@ -98,7 +112,8 @@ function build({ shipments = [] } = {}) {
     },
   };
   const api = registerDelivery(app,
-    { pool, requireAdmin: async () => null, getSettingsData: async () => AUTO_LJ, jb }, {});
+    { pool, requireAdmin: async () => null, getSettingsData: async () => AUTO_LJ, jb },
+    dash ? { leajlakDash: dash } : {});
   const restore = () => {
     if (prevPoll === undefined) delete process.env.FA_POLL_MINUTES; else process.env.FA_POLL_MINUTES = prevPoll;
     if (prevSweep === undefined) delete process.env.DISPATCH_LOST_SWEEP_SECONDS; else process.env.DISPATCH_LOST_SWEEP_SECONDS = prevSweep;
@@ -220,5 +235,84 @@ test("محاولة ضاعت (الخدمة ماتت): الكنس بيقفلها �
     assert.equal(n, 1);
     assert.equal(attempts.find((a) => a.id === 99).outcome, "lost");
     await assert.rejects(() => api.dispatch(ORDER, { trigger: "sweep" }), (e) => e.code === "DISPATCH_BLOCKED");
+  } finally { un(); restore(); }
+});
+
+/* ═══ الاسترجاع من لوحة لاجلك (٢٢ سبتمبر) ═══════════════════════════════
+   API الشركاء عاجز يلاقي طلب برقمنا (٤٠٤ على رقمنا وعلى رقمهم الداخلي)،
+   فاللوحة هي المصدر. الاختبارات دي بتثبّت إن:
+     • رد «موجود عندهم» + اللوحة = شحنة كاملة تلقائياً (حالة/كابتن/وقت/تكلفة)
+     • محاولة ضاعت + اللوحة = استرجاع لوحده من غير أي تدخل
+     • اللوحة مقفولة = القفل والتنبيه الصريح للمدير (مش تخمين)              */
+
+const DASH_HIT = {
+  found: true, via: "dashboard", ref: null, providerOrderNo: "3263217",
+  rawStatus: "Delivered", captain: "ELFADIL IBAHIM -JED - leajlak11 A",
+  driver: { name: "ELFADIL IBAHIM -JED - leajlak11 A", phone: null, source: "leajlak" },
+  feeEx: 17, feeIncl: 19.55,
+  times: { created: "2026-09-21T17:33:00.000Z", assigned: "2026-09-21T17:35:00.000Z",
+           arrived: "2026-09-21T17:56:00.000Z", picked: "2026-09-21T17:57:00.000Z",
+           delivered: "2026-09-21T18:29:00.000Z" },
+  tried: [{ path: "/orders-client?q=", status: 200, matched: true }],
+};
+const fakeDash = (hit) => ({
+  configured: () => hit !== null,
+  missing: () => (hit === null ? ["LEAJLAK_DASH_EMAIL", "LEAJLAK_DASH_PASSWORD"] : []),
+  lookup: async () => (hit === null
+    ? { found: false, unsupported: true, reason: "dash_unconfigured", missing: ["LEAJLAK_DASH_EMAIL"], tried: [] }
+    : hit),
+});
+
+test("«موجود عندهم» + اللوحة = شحنة كاملة بالتكلفة والأوقات الحقيقية", async () => {
+  const { api, shipments, attempts, restore } = build({ dash: fakeDash(DASH_HIT) });
+  const un = patchProvider("leajlak", {
+    configured: () => true,
+    dispatch: async () => { throw dupErr(); },
+    lookup: async () => ({ found: false, tried: [{ path: "/orders/W…", status: 404 }] }),
+  });
+  try {
+    const res = await api.dispatch(ORDER, { trigger: "portal", actor: "محمد" });
+    assert.equal(res.adopted, true);
+    const sh = shipments.at(-1);
+    assert.equal(sh.provider, "leajlak");
+    assert.equal(sh.provider_order_no, "3263217");
+    assert.equal(sh.status, "delivered");
+    assert.equal(sh.fee_dash, 19.55, "التكلفة الحقيقية مش صفر");
+    assert.equal(sh.fee_dash_ex, 17);
+    assert.equal(sh.delivered_at, "2026-09-21T18:29:00.000Z");
+    assert.equal(sh.created_at, "2026-09-21T17:33:00.000Z", "وقت الطلب الحقيقي عندهم — عشان مهل العقد تتحسب صح");
+    assert.equal(attempts.at(-1).outcome, "adopted");
+  } finally { un(); restore(); }
+});
+
+test("محاولة ضاعت + اللوحة = استرجاع لوحده والقفل بيتفك", async () => {
+  const { api, shipments, attempts, restore } = build({ dash: fakeDash(DASH_HIT) });
+  const un = patchProvider("leajlak", { configured: () => true, lookup: async () => ({ found: false, tried: [] }) });
+  try {
+    attempts.push({ id: 77, shop_order_no: ORDER.order_no, provider: "leajlak", trigger: "sweep",
+                    started_at: new Date(Date.now() - 10 * 60000), finished_at: null, outcome: null, resolved_at: null });
+    await api.sweepLostAttempts();
+    const a = attempts.find((x) => x.id === 77);
+    assert.equal(a.outcome, "lost");
+    assert.ok(a.resolved_at, "القفل اتفك بعد ما اتأكدنا");
+    assert.equal(shipments.at(-1).provider_order_no, "3263217");
+    // ومفيش قفل تاني على الطلب
+    assert.equal(await api.openBlock(ORDER.order_no), null);
+  } finally { un(); restore(); }
+});
+
+test("اللوحة مقفولة: القفل يفضل والتنبيه واضح — مفيش تخمين", async () => {
+  const { api, shipments, attempts, restore } = build({ dash: fakeDash(null) });
+  const un = patchProvider("leajlak", { configured: () => true, lookup: async () => ({ found: false, tried: [] }) });
+  try {
+    attempts.push({ id: 88, shop_order_no: ORDER.order_no, provider: "leajlak", trigger: "sweep",
+                    started_at: new Date(Date.now() - 10 * 60000), finished_at: null, outcome: null, resolved_at: null });
+    await api.sweepLostAttempts();
+    assert.equal(attempts.find((x) => x.id === 88).outcome, "lost");
+    assert.equal(shipments.length, 0, "ما نخترعش شحنة من غير ما نتأكد");
+    const block = await api.openBlock(ORDER.order_no);
+    assert.ok(block, "القفل لازم يفضل");
+    await assert.rejects(() => api.dispatch(ORDER, { trigger: "sweep" }), (e) => e.code === "DISPATCH_BLOCKED");
+    assert.match(api.BLOCK_AR.lost, /اتأكد من لوحة لاجلك قبل ما تبعت مندوب تاني/);
   } finally { un(); restore(); }
 });

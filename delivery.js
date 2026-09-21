@@ -24,11 +24,12 @@
 
 import { ljContract } from "./leajlakrecon.js";
 import { STORE_LAT, STORE_LNG } from "./tsstore.js";
-import { PROVIDERS, activeProvider, courierMilestone, API_PROVIDER_IDS } from "./couriers.js";
+import { PROVIDERS, activeProvider, courierMilestone, API_PROVIDER_IDS, ljStageOf } from "./couriers.js";
 import { emitOrder } from "./order-events.js";
 import { makeDriveDistance, resolveRouteKm } from "./drivedist.js";
 import { makeZoneService } from "./deliveryzone.js";
 import { districtCfg, districtQuote, activeDistrictNames, districtCutoff, districtRouting } from "./districts.js";
+import { makeLeajlakDash } from "./leajlakdash.js";
 
 /* ── أحداث المندوب على ناقل الطلب (W1-05، الخطة §٤-١) ─────────────────────
    courier_dispatch / courier_update / courier_manual / courier_cancel.
@@ -883,6 +884,11 @@ export function register(app, ctx, deps = {}) {
     .then(() => console.log("[delivery] schema ready"))
     .catch((e) => console.error("[delivery] schema failed:", e.message));
 
+  /* لوحة لاجلك — مصدر الاسترجاع الوحيد اللي بيلاقي طلب برقمنا (شوف
+     leajlakdash.js). من غير بيانات دخول بيفضل مقفول والسيستم بينبّه المدير. */
+  const dash = deps.leajlakDash || makeLeajlakDash({ env: process.env, log: console });
+  console.log(`[delivery] لوحة لاجلك: ${dash.configured() ? "متظبطة" : `مقفولة (${dash.missing().join(", ")})`}`);
+
   /* محطّات المندوب: بتتكتب مرة واحدة لكل شحنة، وبتطلق حدث على ناقل الطلب
      أول مرة بس. بترجّع المحطة لو اتسجّلت دلوقتي، وnull لو كانت متسجّلة قبل
      كده أو الإشارة مش موجودة. عمرها ما ترمي — التتبع مايقعش عشان سطر عرض. */
@@ -1102,7 +1108,7 @@ export function register(app, ctx, deps = {}) {
 
   const BLOCK_AR = {
     duplicate: "الطلب اتسجّل عند شركة التوصيل بالفعل — تابعه معاهم أو كلّمهم، وما تبعتش تاني",
-    lost: "فيه محاولة إرسال ضاعت (الخدمة اتقطعت في نصّها) — ممكن الطلب يكون اتسجّل عندهم: راجع لوحتهم الأول",
+    lost: "يمكن الطلب اتسجّل عندهم — اتأكد من لوحة لاجلك قبل ما تبعت مندوب تاني (محاولة إرسال اتقطعت في نصّها)",
   };
 
   /* بيحجز المحاولة قبل أي نداء شبكة. بيرمي لو فيه محاولة طايرة (سباق)
@@ -1181,13 +1187,55 @@ export function register(app, ctx, deps = {}) {
 
   /* كنس: أي محاولة طايرة أقدم من الحد بتتقفل كـ«ضايعة». بيخلّي الفشل
      الصامت يبان في البوابة خلال دقايق بدل ما يفضل مستخبّي للأبد. */
+  /* ── شبكة الأمان للمحاولة الضايعة (٢١ سبتمبر) ───────────────────────
+     ما يكفيش إننا نعلّمها «ضايعة» ونسيبها: الطلب ممكن يكون ماشي عند لاجلك
+     وكابتن في الطريق (ده بالظبط اللي حصل في W1790011118692). فأول ما
+     محاولة تتحوّل لضايعة بنسأل لوحتهم على طول:
+       • لقيناه  → بنتبنّاه في صف شحنة كامل (حالة/كابتن/أوقات/تكلفة)
+                   والقفل بيتفك لوحده والتتبع بيكمّل. مفيش تدخل بني آدم.
+       • ملقيناهوش أو اللوحة مش متظبطة → القفل بيفضل والمدير بياخد تنبيه
+                   صريح «يمكن الطلب اتسجّل عندهم — اتأكد قبل ما تبعت
+                   مندوب تاني» بدل ما يفضل يدوس على الفاضي. */
+  async function verifyLostAttempt(attemptId, orderNo) {
+    if (!dash.configured()) {
+      return { verified: false, reason: "dash_unconfigured", missing: dash.missing() };
+    }
+    try {
+      const live = await shipmentOf(orderNo);
+      if (live && String(live.status) !== "cancelled") return { verified: false, reason: "already_has_shipment" };
+      const d = await dash.lookup(orderNo);
+      if (!d || !d.found) return { verified: true, found: false };
+      const rec = await adoptFromDash(orderNo, d, { trigger: "lost_verify", actor: "system" });
+      await pool.query(
+        `UPDATE dl_dispatch_attempts SET resolved_at=NOW(), resolved_by='system', resolution='adopted',
+                provider_ref=$2, detail = detail || $3::jsonb
+          WHERE id=$1`,
+        [attemptId, d.providerOrderNo ? String(d.providerOrderNo) : null,
+         jb({ recoveredVia: "leajlak_dashboard", providerOrderNo: d.providerOrderNo || null })]);
+      courierEvent("courier_dispatch", orderNo, {
+        source: "delivery", ok: true,
+        summary: "المحاولة الضايعة كانت وصلت لاجلك — استرجعنا الطلب من لوحتهم",
+        data: { provider: "leajlak", ref: d.providerOrderNo || null, adopted: true, via: "dashboard",
+                courier_status: rec.status || null },
+      });
+      return { verified: true, found: true, adopted: true, providerOrderNo: d.providerOrderNo || null, status: rec.status };
+    } catch (e) {
+      console.error(`[delivery] verifyLostAttempt ${orderNo} failed:`, e.message);
+      return { verified: false, error: String(e.message || e).slice(0, 200) };
+    }
+  }
+
   async function sweepLostAttempts() {
     try {
       const rows = (await pool.query(
         `SELECT id, shop_order_no FROM dl_dispatch_attempts
           WHERE finished_at IS NULL AND started_at < NOW() - make_interval(mins => $1::int)`,
         [ATTEMPT_STALE_MIN])).rows;
-      for (const r of rows) await markLost(r.id, r.shop_order_no);
+      for (const r of rows) {
+        const lost = await markLost(r.id, r.shop_order_no);
+        if (!lost) continue;                       // حاوية تانية سبقتنا
+        await verifyLostAttempt(r.id, r.shop_order_no);
+      }
       return rows.length;
     } catch (e) {
       console.error("[delivery] sweepLostAttempts failed:", e.message);
@@ -1197,21 +1245,89 @@ export function register(app, ctx, deps = {}) {
 
   /* بيحاول يسترجع طلب لاجلك قايلة إنه موجود عندهم، ويتبنّاه في صف شحنة
      عادي عشان التتبع والإلغاء يكمّلوا زي أي طلب تاني. */
+  /* ترتيب الاسترجاع (٢١ سبتمبر — مثبت على اللايف):
+       ١) API الشركاء: بيلاقي بالـUUID بتاعهم بس، واحنا مش ماسكينه ساعة
+          ما الإرسال يضيع — فعملياً بيفشل دايماً في الحالة دي.
+       ٢) **لوحتهم**: GET /orders-client?q=<رقمنا> بتلاقيه في ثانية، ومعاه
+          رقمهم الداخلي والحالة والكابتن ورسوم التوصيل وسجل المحطّات.
+     اللوحة مابتعرضش الـUUID، فالشحنة المسترجعة منها مرجعها رقمهم الداخلي
+     (provider_order_no) والتتبع بيكمّل من اللوحة مش من API الشركاء. */
   async function adoptExisting(order, provider, cfg, { trigger, actor } = {}) {
-    if (typeof provider.lookup !== "function") return { adopted: false, tried: [], unsupported: true };
-    const look = await provider.lookup(order.order_no, cfg).catch((e) => ({ found: false, error: e.message, tried: [] }));
-    if (!look || !look.found || !look.ref) return { adopted: false, ...(look || {}) };
-    await pool.query(
-      `INSERT INTO dl_shipments(shop_order_no, provider, provider_ref, fa_order_id, fa_order_number,
-                                status, driver, cost, dispatch, events)
-       VALUES ($1,$2,$3,NULL,$4,$5,$6,NULL,$7,$8)`,
-      [order.order_no, provider.id, look.ref, look.ref, look.status || "pending",
-       look.driver ? jb(look.driver) : null,
-       jb({ status: "adopted", assigned: look.status === "assigned", adopted: true,
-            message: "الطلب كان مسجّل عند الشركة من محاولة ضاعت — اتبنّى", via: look.via || null }),
-       jb([{ at: new Date().toISOString(), event: "adopted", provider: provider.id,
-             trigger: trigger || null, by: actor || null, resp: look.raw || null }])]);
-    return { adopted: true, ref: look.ref, status: look.status || "pending", driver: look.driver || null, tried: look.tried || [] };
+    const tried = [];
+    if (typeof provider.lookup === "function") {
+      const look = await provider.lookup(order.order_no, cfg).catch((e) => ({ found: false, error: e.message, tried: [] }));
+      tried.push(...((look && look.tried) || []));
+      if (look && look.found && look.ref) {
+        await pool.query(
+          `INSERT INTO dl_shipments(shop_order_no, provider, provider_ref, fa_order_id, fa_order_number,
+                                    status, driver, cost, dispatch, events)
+           VALUES ($1,$2,$3,NULL,$4,$5,$6,NULL,$7,$8)`,
+          [order.order_no, provider.id, look.ref, look.ref, look.status || "pending",
+           look.driver ? jb(look.driver) : null,
+           jb({ status: "adopted", assigned: look.status === "assigned", adopted: true, adoptedVia: "partner_api",
+                message: "الطلب كان مسجّل عند الشركة من محاولة ضاعت — اتبنّى", via: look.via || null }),
+           jb([{ at: new Date().toISOString(), event: "adopted", provider: provider.id,
+                 trigger: trigger || null, by: actor || null, resp: look.raw || null }])]);
+        return { adopted: true, via: "partner_api", ref: look.ref, status: look.status || "pending",
+                 driver: look.driver || null, tried };
+      }
+    }
+    if (provider.id !== "leajlak") return { adopted: false, tried, unsupported: true };
+    const d = await dash.lookup(order.order_no);
+    tried.push(...((d && d.tried) || []));
+    if (!d || !d.found) {
+      return { adopted: false, tried, dashConfigured: dash.configured(),
+               dashMissing: dash.configured() ? null : dash.missing(),
+               reason: (d && d.reason) || "not_found", error: (d && d.error) || null };
+    }
+    return adoptFromDash(order.order_no, d, { trigger, actor, tried });
+  }
+
+  /* بيكتب صف الشحنة من بيانات اللوحة: الحالة والكابتن والأوقات الحقيقية
+     والتكلفة الحقيقية — عشان التقارير والمالية ومطابقة الفاتورة كلها
+     تشوف الطلب ده زي أي طلب لاجلك عادي، مش صفر. */
+  async function adoptFromDash(orderNo, d, { trigger, actor, tried = [], shipmentId = null } = {}) {
+    const t = d.times || {};
+    const status = ljStageOf(d.rawStatus)
+      || (t.delivered ? "delivered" : t.picked ? "picked" : t.assigned ? "assigned" : "pending");
+    const events = [
+      ...["created", "assigned", "arrived", "picked", "reached_destination", "delivered", "cancelled"]
+        .filter((k) => t[k])
+        .map((k) => ({ at: t[k], event: k, provider: "leajlak", source: "dashboard" })),
+      { at: new Date().toISOString(), event: "adopted", provider: "leajlak", source: "dashboard",
+        trigger: trigger || null, by: actor || null,
+        note: `اتسترجع من لوحة لاجلك — طلبهم رقم ${d.providerOrderNo || "?"}` },
+    ];
+    const disp = jb({ status: "adopted", assigned: status !== "pending", adopted: true,
+                      adoptedVia: "leajlak_dashboard", providerOrderNo: d.providerOrderNo || null,
+                      captain: d.captain || null,
+                      message: "الطلب كان مسجّل عند لاجلك من محاولة ضاعت — اتسترجع من لوحتهم" });
+    const vals = [orderNo, d.providerOrderNo ? String(d.providerOrderNo) : null, status,
+                  d.driver ? jb(d.driver) : null,
+                  d.feeIncl != null ? d.feeIncl : null, d.feeEx != null ? d.feeEx : null,
+                  t.created || null, t.assigned || null, t.arrived || null, t.picked || null, t.delivered || null,
+                  disp, jb(events)];
+    if (shipmentId) {
+      await pool.query(
+        `UPDATE dl_shipments SET provider='leajlak', provider_order_no=$2, status=$3,
+                driver=COALESCE($4::jsonb, driver), fee_dash=COALESCE($5,fee_dash),
+                fee_dash_ex=COALESCE($6,fee_dash_ex), fee_dash_at=NOW(),
+                created_at=COALESCE($7::timestamptz, created_at), assigned_at=COALESCE($8::timestamptz, assigned_at),
+                arrived_at=COALESCE($9::timestamptz, arrived_at), picked_at=COALESCE($10::timestamptz, picked_at),
+                delivered_at=COALESCE($11::timestamptz, delivered_at),
+                dispatch=COALESCE(dispatch,'{}'::jsonb) || $12::jsonb, events = events || $13::jsonb, updated_at=NOW()
+          WHERE id=$14`, [...vals, shipmentId]);
+    } else {
+      await pool.query(
+        `INSERT INTO dl_shipments(shop_order_no, provider, provider_order_no, status, driver,
+                                  fee_dash, fee_dash_ex, fee_dash_at,
+                                  created_at, assigned_at, arrived_at, picked_at, delivered_at, dispatch, events)
+         VALUES ($1,'leajlak',$2,$3,$4::jsonb,$5,$6,NOW(),
+                 COALESCE($7::timestamptz,NOW()),$8::timestamptz,$9::timestamptz,$10::timestamptz,
+                 $11::timestamptz,$12::jsonb,$13::jsonb)`, vals);
+    }
+    return { adopted: true, via: "dashboard", ref: null, providerOrderNo: d.providerOrderNo || null,
+             status, driver: d.driver || null, feeIncl: d.feeIncl ?? null, times: t, tried };
   }
 
   async function dispatchInner(order, opts = {}) {
@@ -1795,6 +1911,19 @@ export function register(app, ctx, deps = {}) {
     });
   });
 
+  /* بحث مباشر في لوحة لاجلك برقم طلبنا — التشخيص اللي API الشركاء عاجز عنه. */
+  app.get("/api/delivery/leajlak/dash", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    const orderNo = String(c.req.query("orderNo") || "").slice(0, 64);
+    if (!dash.configured()) {
+      return c.json({ ok: false, error: "dash_unconfigured", missing: dash.missing(),
+        message: "ضيف LEAJLAK_DASH_EMAIL و LEAJLAK_DASH_PASSWORD في إعدادات التطبيق عشان الاسترجاع يشتغل لوحده" }, 409);
+    }
+    if (!orderNo) return c.json({ ok: false, error: "no_order" }, 400);
+    const r = await dash.lookup(orderNo);
+    return c.json({ ok: Boolean(r && r.found), lookup: r });
+  });
+
   /* ── محاولات الإرسال (٢١ سبتمبر) ───────────────────────────────────────
      كل محاولة: مين طلبها، امتى، رد الشركة ورقم الخطأ. ده اللي كان ناقص
      لما لاجلك فضلت تقول «الطلب موجود» وإحنا مش شايفين ولا صف. */
@@ -1865,7 +1994,13 @@ export function register(app, ctx, deps = {}) {
     const cfg = { ...(all.delivery || {}) };
     if (!b.adopt) {
       const look = await provider.lookup?.(orderNo, cfg).catch((e) => ({ found: false, error: e.message, tried: [] }));
-      return c.json({ ok: true, provider: provider.id, lookup: look || { found: false, unsupported: true } });
+      /* اللوحة هي الطريق الوحيد اللي بيلاقي طلب برقمنا — API الشركاء بيرد
+         ٤٠٤ على رقمنا وعلى رقمهم الداخلي كمان (مجرّب ٢١/٩). */
+      const dashLook = provider.id === "leajlak" ? await dash.lookup(orderNo) : null;
+      return c.json({ ok: true, provider: provider.id,
+        lookup: look || { found: false, unsupported: true },
+        dashboard: dashLook, dashConfigured: dash.configured(),
+        dashMissing: dash.configured() ? null : dash.missing() });
     }
     const live = await shipmentOf(orderNo);
     if (live && String(live.status) !== "cancelled") {
@@ -2000,7 +2135,50 @@ export function register(app, ctx, deps = {}) {
   if (POLL_MIN > 0) {
     setInterval(() => pollInFlight().catch((e) => console.error("[delivery] poll failed:", e.message)),
       POLL_MIN * 60_000);
+    setInterval(() => pollDashAdopted().catch((e) => console.error("[delivery] dash poll failed:", e.message)),
+      POLL_MIN * 60_000);
   }
+
+  /* ── تتبع الشحنات المسترجعة من اللوحة ─────────────────────────────────
+     الشحنة اللي اتسترجعت من لوحتهم مالهاش dsp_order_id (اللوحة مابتعرضهوش)،
+     فـ`pollInFlight` بيتخطّاها لأن provider_ref فاضي. من غير الاستطلاع ده
+     العميل هيفضل شايف «بندوّر على كابتن» لطلب كابتنه في الطريق فعلاً.
+     بنسأل اللوحة كل دورة ونحدّث الحالة والكابتن والأوقات والتكلفة. */
+  async function pollDashAdopted() {
+    if (!dash.configured()) return 0;
+    let n = 0;
+    try {
+      const rows = (await pool.query(
+        `SELECT id, shop_order_no, status FROM dl_shipments
+          WHERE provider='leajlak' AND provider_ref IS NULL AND provider_order_no IS NOT NULL
+            AND status NOT IN ('delivered','cancelled')
+            AND updated_at < NOW() - INTERVAL '60 seconds'
+            AND created_at > NOW() - INTERVAL '12 hours'
+          LIMIT 10`)).rows;
+      for (const r of rows) {
+        const d = await dash.lookup(r.shop_order_no).catch(() => null);
+        if (!d || !d.found) {
+          await pool.query("UPDATE dl_shipments SET updated_at=NOW() WHERE id=$1", [r.id]);
+          continue;
+        }
+        const before = r.status;
+        const rec = await adoptFromDash(r.shop_order_no, d, { trigger: "dash_poll", actor: "system", shipmentId: r.id });
+        n += 1;
+        if (rec.status && rec.status !== before) {
+          courierEvent("courier_update", r.shop_order_no, {
+            source: "courier_poll", ok: true, summary: "تحديث المندوب من لوحة لاجلك",
+            data: { via: "dashboard", provider: "leajlak", status: rec.status, from: before || null,
+                    driver_changed: Boolean(d.driver) },
+          });
+          try { await shop()?.onShipmentEvent?.(r.shop_order_no, rec.status); } catch { /* التتبع مايقعش */ }
+        }
+      }
+    } catch (e) {
+      console.error("[delivery] pollDashAdopted failed:", e.message);
+    }
+    return n;
+  }
+
 
   /* محاولة ضايعة لازم تبان بسرعة: الكنس بيقفلها ويطلق حدث على الطلب،
      فالمدير بيشوف السبب في الكارت بدل ما الطلب يقف من غير تفسير. */
@@ -2011,7 +2189,7 @@ export function register(app, ctx, deps = {}) {
   }
 
   return { quote, dispatch, shipmentOf, trackShipment, cancelShipment, manualEvent, pollInFlight,
-           openBlock, sweepLostAttempts, adoptExisting, BLOCK_AR,
+           openBlock, sweepLostAttempts, adoptExisting, adoptFromDash, pollDashAdopted, verifyLostAttempt, leajlakDash: dash, BLOCK_AR,
            /* المزوّد المختار في الإعدادات، مش الافتراضي من البيئة: من غير
               الإعدادات كان بيرجع flyingarrow والشغل الحقيقي على لاجلك. */
            isLive: async () => activeProvider(await getSettingsData()).configured(),
