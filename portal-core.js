@@ -363,7 +363,12 @@ export function courierDurations(r = {}) {
   const readyAt = r.pos_ready_at || null;
   const arrived = r.ship_arrived_at || null;
   const picked = r.ship_picked_at || null;
-  const delivered = r.ship_status === "delivered" ? (r.ship_updated_at || null) : null;
+  /* وقت التوصيل الحقيقي من عموده (delivered_at). `updated_at` كان بديل
+     مقبول وقت ما الصف ما كانش بيتلمس بعد التوصيل — بس شحنة بتتسترجع من
+     لوحة لاجلك أو بتتصحّح بعدين بيتغيّر فيها updated_at، فالرقم كان بيطلع
+     ساعات وهمية (٣٤٤ دقيقة لطلب اتوصّل في ٣٢). */
+  const delivered = r.ship_status === "delivered"
+    ? (r.ship_delivered_at || r.ship_updated_at || null) : null;
   return {
     readyToArrivedMin: minsBetween(readyAt, arrived),
     arrivedToPickedMin: minsBetween(arrived, picked),

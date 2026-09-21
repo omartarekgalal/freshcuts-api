@@ -449,3 +449,20 @@ test("pushKindForEvent/pushPayload: «المندوب وصل المطعم» إش�
   assert.match(p.title, /المندوب وصل المطعم/);
   assert.equal(p.urgency, "high");
 });
+
+/* ٢٢ سبتمبر: شحنة اتسترجعت من لوحة لاجلك (أو اتصحّحت يدوي) بيتغيّر فيها
+   updated_at بعد التوصيل، فالمدة كانت بتطلع ساعات وهمية. المصدر بقى
+   delivered_at، وupdated_at احتياطي للصفوف القديمة اللي مالهاش العمود. */
+test("مدة الطريق بتتقاس من delivered_at مش من آخر لمسة للصف", () => {
+  const r = {
+    ship_status: "delivered",
+    ship_arrived_at: "2026-09-21T17:56:00.000Z",
+    ship_picked_at: "2026-09-21T17:57:00.000Z",
+    ship_delivered_at: "2026-09-21T18:29:00.000Z",
+    ship_updated_at: "2026-09-21T23:41:05.000Z",   // اتصحّح بعد التوصيل بساعات
+  };
+  assert.equal(courierDurations(r).pickedToDeliveredMin, 32);
+  // صف قديم من غير العمود: بيرجع لـupdated_at زي الأول
+  const old = { ...r, ship_delivered_at: null, ship_updated_at: "2026-09-21T18:29:00.000Z" };
+  assert.equal(courierDurations(old).pickedToDeliveredMin, 32);
+});

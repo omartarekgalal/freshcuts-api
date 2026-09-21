@@ -53,9 +53,9 @@ const ORDER_COLS = `o.order_no, o.status, o.option, o.customer, o.phone_norm, o.
   o.delivery_quote->'farZone' AS far_zone, o.delivery_quote->>'routeKm' AS route_km, o.delivery_quote->>'straightKm' AS straight_km,
   s.status AS ship_status, s.driver AS ship_driver, s.provider AS ship_provider, s.provider_ref AS ship_ref,
   s.updated_at AS ship_updated_at, s.dispatch AS ship_dispatch,
-  s.arrived_at AS ship_arrived_at, s.picked_at AS ship_picked_at`;
+  s.arrived_at AS ship_arrived_at, s.picked_at AS ship_picked_at, s.delivered_at AS ship_delivered_at`;
 const SHIP_JOIN = `LEFT JOIN LATERAL (
-    SELECT status, driver, provider, provider_ref, updated_at, dispatch, arrived_at, picked_at
+    SELECT status, driver, provider, provider_ref, updated_at, dispatch, arrived_at, picked_at, delivered_at
       FROM dl_shipments WHERE shop_order_no = o.order_no ORDER BY id DESC LIMIT 1) s ON TRUE`;
 export const FEED_SQL = `SELECT ${ORDER_COLS} FROM shop_orders o ${SHIP_JOIN}
   WHERE o.status NOT IN ('pending_payment','expired')
