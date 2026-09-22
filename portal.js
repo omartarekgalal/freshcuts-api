@@ -1019,6 +1019,72 @@ export function register(app, ctx, deps = {}) {
     return c.json({ ok: true, staff: next.map(({ pinHash, ...x }) => x) });
   });
 
+  /* ── واتساب: صندوق المحادثات (wainbox.js) ────────────────────────────────
+     الرقم واحد للآلي وللرد اليدوي، فالكاشير لازم يرد من هنا مش من تطبيق
+     واتساب. الأدوار: القراية والرد الحر (ببلاش، جوّه ٢٤ ساعة) للكاشير
+     والمدير — ده شغل الكاشير أصلاً. إرسال قالب (بفلوس، بره النافذة)
+     للمدير بس. المطبخ مالوش دعوة (requirePortal بيقفله لوحده).
+     كل ده واقف خلف WHATSAPP_ENABLED=1 — من غيره الردود «disabled». */
+  const inbox = () => deps.wa?.();
+  const waOff = (c) => c.json({ ok: false, error: "disabled", message: "واتساب مش مفعّل" }, 503);
+
+  app.get("/api/portal/wa/status", async (c) => {
+    const a = await requirePortal(c); if (a.res) return a.res;
+    const wi = inbox(); if (!wi) return waOff(c);
+    return c.json({ ok: true, ...(await wi.status()), role: a.user.role });
+  });
+
+  app.get("/api/portal/wa/threads", async (c) => {
+    const a = await requirePortal(c); if (a.res) return a.res;
+    const wi = inbox(); if (!wi) return waOff(c);
+    return c.json(await wi.listThreads({ limit: c.req.query("limit"), q: c.req.query("q") || "" }));
+  });
+
+  app.get("/api/portal/wa/threads/:phone", async (c) => {
+    const a = await requirePortal(c); if (a.res) return a.res;
+    const wi = inbox(); if (!wi) return waOff(c);
+    const r = await wi.getThread(c.req.param("phone"));
+    return c.json(r, r.ok ? 200 : 400);
+  });
+
+  app.post("/api/portal/wa/threads/:phone/read", async (c) => {
+    const a = await requirePortal(c); if (a.res) return a.res;
+    const wi = inbox(); if (!wi) return waOff(c);
+    const r = await wi.markRead(c.req.param("phone"), a.user.name || a.user.id);
+    return c.json(r, r.ok ? 200 : 400);
+  });
+
+  /* رد حر — جوّه النافذة بس. الرفض بيرجّع window عشان الواجهة تشرح ليه. */
+  app.post("/api/portal/wa/threads/:phone/reply", async (c) => {
+    const a = await requirePortal(c); if (a.res) return a.res;
+    const wi = inbox(); if (!wi) return waOff(c);
+    const phone = c.req.param("phone");
+    const b = await c.req.json().catch(() => ({}));
+    const r = await wi.replyText({ phoneNorm: phone, text: b?.text, by: a.user.name || a.user.id });
+    audit(a.user, "wa_reply", null, r.ok, { phone, error: r.error || r.skipped || null }, ipOf(c), { emit: false });
+    return c.json(r, r.ok ? 200 : 400);
+  });
+
+  /* إرسال قالب — بفلوس، فالمدير بس. */
+  app.post("/api/portal/wa/threads/:phone/template", async (c) => {
+    const a = await requirePortal(c, "manager"); if (a.res) return a.res;
+    const wi = inbox(); if (!wi) return waOff(c);
+    const phone = c.req.param("phone");
+    const b = await c.req.json().catch(() => ({}));
+    const r = await wi.replyTemplate({ phoneNorm: phone, template: b?.template, params: b?.params || {},
+      by: a.user.name || a.user.id });
+    audit(a.user, "wa_template", null, r.ok, { phone, template: b?.template || null,
+      error: r.error || r.skipped || null }, ipOf(c), { emit: false });
+    return c.json(r, r.ok ? 200 : 400);
+  });
+
+  /* القوالب المعتمدة عند ميتا — عرض بس (مابنعملش قوالب من البوابة). */
+  app.get("/api/portal/wa/templates", async (c) => {
+    const a = await requirePortal(c); if (a.res) return a.res;
+    const wi = inbox(); if (!wi) return waOff(c);
+    return c.json(await wi.liveTemplates());
+  });
+
   /* «الأصناف»: المدير يقفل/يفتح صنف خلص (soldout.js). القراية للكل. */
   const soldOut = registerSoldOut(app, {
     pool, getSettingsData, requireAdmin, requirePortal, audit, log, now, fetchMenu: deps.fetchMenu,

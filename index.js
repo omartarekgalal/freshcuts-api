@@ -58,6 +58,7 @@ import * as searchMod from "./search.js";
 import { makePhoneGate } from "./phones.js";
 import * as notify from "./notify.js";
 import * as whatsapp from "./whatsapp.js";
+import * as wainbox from "./wainbox.js";
 import * as carts from "./carts.js";
 import * as openwait from "./openwait.js";
 import * as preorder from "./preorder.js";
@@ -3077,6 +3078,9 @@ ljRecon.register(app, moduleCtx, { providers: () => deliveryApi.PROVIDERS });
 // عشان كل تغيير حالة يعدّي عليها.
 // واتساب Cloud API (قوالب + ويب هوك + موافقات) — مقفول لحد WHATSAPP_ENABLED=1.
 const waApi = whatsapp.register(app, moduleCtx);
+// صندوق محادثات واتساب (بورتال المطعم) — نفس بوابة whatsapp.js، مفيش مفتاح تاني.
+const waInboxApi = wainbox.register(moduleCtx, { wa: waApi });
+waApi.setInbox(waInboxApi);
 const notifyApi = notify.register(app, moduleCtx, { wa: waApi });
 // السلات المتروكة: لقطات من المتجر + سلّم استرداد (إشعار ثم SMS) + أرقام اللوحة
 const cartsApi = carts.register(app, moduleCtx, { notify: notifyApi });
@@ -3141,7 +3145,7 @@ preorder.register(app, moduleCtx);
 // بوابة المطعم (كاشير + مدير): PIN، طلبات حيّة (SSE)، خط زمني، طلب/إلغاء مندوب، Push للفريق، تقارير.
 // بعد shop/delivery/cms — بيستخدم دوالهم نفسها (مفيش نسخة تانية من القواعد).
 let courierOpsApi = null;
-const portalApi = portal.register(app, moduleCtx, { shop: () => shopApi, delivery: () => deliveryApi, cmsWhoami: (c) => cmsApi.whoami(c), courierOps: () => courierOpsApi });
+const portalApi = portal.register(app, moduleCtx, { shop: () => shopApi, delivery: () => deliveryApi, cmsWhoami: (c) => cmsApi.whoami(c), courierOps: () => courierOpsApi, wa: () => waInboxApi });
 // لما المندوب مايجيش (١٩ سبتمبر): رفض/إلغاء لاجلك، مفيش كابتن، مخالفات SLA، مندوب خارجي،
 // تحويل لاستلام، حارس المشوار البعيد، وتقرير «مخالفات لاجلك» للمطالبات.
 let courierLiveApi = null;

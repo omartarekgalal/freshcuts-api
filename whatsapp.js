@@ -252,6 +252,12 @@ export function register(app, ctx, deps = {}) {
   const doFetch = deps.fetch || globalThis.fetch;
   const smsSend = deps.sendSms || defaultSendSms;
 
+  /* صندوق المحادثات (wainbox.js) بيتركّب بعدنا — بيتحقن هنا عشان كل رسالة
+     رايحة/جاية تحدّث صف المحادثة. فاضي = الصندوق مش مركّب، وكله شغّال زي ما هو. */
+  let inbox = null;
+  const setInbox = (i) => { inbox = i; };
+  const touchThread = (a) => { try { inbox?.touch?.(a); } catch { /* الصندوق مايوقّفش رسالة */ } };
+
   const token = () => env("WHATSAPP_TOKEN") || env("META_CAPI_TOKEN");
   const phoneId = () => env("WHATSAPP_PHONE_ID");
   const wabaId = () => env("WHATSAPP_WABA_ID");
@@ -340,6 +346,11 @@ export function register(app, ctx, deps = {}) {
          row.order_no || null, row.stage || null, row.status, row.error || null,
          row.body || null, row.fallback_sms || null]);
     } catch (e) { console.error("[wa] log failed:", e.message); }
+    // الصادر اللي ميتا قبلته بس بيظهر في المحادثة (الفاشل له صفه في wa_messages).
+    if (row.status === "accepted" && row.phone_norm) {
+      touchThread({ phoneNorm: row.phone_norm, direction: "out",
+        text: row.body || (row.template ? `[قالب: ${row.template}]` : ""), orderNo: row.order_no || null });
+    }
   }
 
   async function graphPost(path, payload) {
@@ -445,6 +456,8 @@ export function register(app, ctx, deps = {}) {
        VALUES ($1,'in',$2,'received',$3,$4) ON CONFLICT (wamid) DO NOTHING`,
       [m.wamid, pn, String(m.text || `[${m.type}]`).slice(0, 1000), m.referral ? jb({ referral: m.referral }) : null]);
     if (!pn) return;
+    /* يفتح/يجدّد نافذة الـ٢٤ ساعة ويرفع «غير مقروء» للكاشير. */
+    touchThread({ phoneNorm: pn, direction: "in", text: m.text || `[${m.type}]`, at: m.at || null });
     if (m.intent === "stop") {
       await recordOptIn({ phone: pn, marketing: false, source: "wa_stop" });
       pool.query(
@@ -537,5 +550,5 @@ export function register(app, ctx, deps = {}) {
     return c.json({ ok: true, results });
   });
 
-  return { sendTemplate, sendText, sendOrderUpdate, recordOptIn, gate, configured, masterOn, ready };
+  return { sendTemplate, sendText, sendOrderUpdate, recordOptIn, gate, configured, masterOn, ready, setInbox };
 }
