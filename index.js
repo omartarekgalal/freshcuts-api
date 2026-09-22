@@ -69,6 +69,8 @@ import * as menuplan from "./menuplan.js";
 import * as systemcheck from "./systemcheck.js";
 import * as syshealth from "./syshealth.js";
 import * as portal from "./portal.js";
+import * as checkoutwatch from "./checkoutwatch.js";
+import { makeStaffNotifier } from "./staffalerts.js";
 import * as courierops from "./courierops.js";
 import * as courierlive from "./courierlive.js";
 import * as cervotrial from "./cervotrial.js";
@@ -3146,6 +3148,13 @@ preorder.register(app, moduleCtx);
 // بعد shop/delivery/cms — بيستخدم دوالهم نفسها (مفيش نسخة تانية من القواعد).
 let courierOpsApi = null;
 const portalApi = portal.register(app, moduleCtx, { shop: () => shopApi, delivery: () => deliveryApi, cmsWhoami: (c) => cmsApi.whoami(c), courierOps: () => courierOpsApi, wa: () => waInboxApi });
+/* 🚨 حارس الدفع (٢٢/٩): ناس بتوصل لخطوة الدفع ومحدش بيدفع ⇒ SMS للمدير.
+   كان بيشتغل من cron على السيرفر بيحقن الموديول جوّه الحاوية، والـcron ده
+   بيسلّم الدور أول ما التطبيق نفسه يشحن checkoutwatch.js — فلازم نناديه
+   هنا، وإلا الحارس بيموت في صمت (وده بالظبط اللي حصل يوم ٢٢/٩ ٢٢:٠٠). */
+checkoutwatch.register(app, moduleCtx, {
+  staff: makeStaffNotifier({ getSettingsData, sendSms: accounts.sendSms }),
+});
 // لما المندوب مايجيش (١٩ سبتمبر): رفض/إلغاء لاجلك، مفيش كابتن، مخالفات SLA، مندوب خارجي،
 // تحويل لاستلام، حارس المشوار البعيد، وتقرير «مخالفات لاجلك» للمطالبات.
 let courierLiveApi = null;
