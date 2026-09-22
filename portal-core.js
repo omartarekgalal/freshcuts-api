@@ -380,7 +380,7 @@ export function courierDurations(r = {}) {
 }
 
 /* صف (shop_orders + آخر شحنة) → طلب البوابة */
-export function toPortalOrder(r, slaCfg = {}, now = Date.now()) {
+export function toPortalOrder(r, slaCfg = {}, now = Date.now(), opts = {}) {
   const addr = r.address && typeof r.address === "object" ? r.address : null;
   const cust = r.customer && typeof r.customer === "object" ? r.customer : {};
   const sla = slaCheck(r, slaCfg, now);
@@ -417,6 +417,12 @@ export function toPortalOrder(r, slaCfg = {}, now = Date.now()) {
       lat: num(addr.latitude ?? addr.lat), lng: num(addr.longitude ?? addr.lng),
     } : null,
     paidWith: r.pay_gateway || null,
+    /* 🔗 رابط تتبع العميل — نفس الصفحة اللي بتتبعت له في رسالة «تابع طلبك»
+       (notify.js). مالهوش توكن: رقم الطلب هو المفتاح، فهو موجود دايماً حتى
+       قبل ما يتطلب مندوب. الكاشير بينسخه من كارت الطلب ويبعته. */
+    trackUrl: opts.trackBase && r.order_no
+      ? `${String(opts.trackBase).replace(/\/+$/, "")}/track/${encodeURIComponent(r.order_no)}`
+      : null,
     createdAt: iso(r.created_at),
     updatedAt: iso(r.updated_at),
     paidAt: historyAt(r.history, "paid"),
@@ -433,6 +439,10 @@ export function toPortalOrder(r, slaCfg = {}, now = Date.now()) {
       provider: r.ship_provider || null,
       ref: r.ship_ref || null,
       assigned: Boolean(r.ship_dispatch?.assigned) || Boolean(drv?.name),
+      /* رابط تتبع شركة التوصيل نفسها: سيرفو بترجّعه (dashboard.cervodelivery.com/tracking/<uid>)
+         ولاجلك مابترجّعش — فالغالب null، والشاشة بتقول كده صراحة بدل ما تسيب فراغ. */
+      trackingUrl: typeof r.ship_tracking_url === "string" && /^https?:\/\//i.test(r.ship_tracking_url)
+        ? r.ship_tracking_url : null,
       /* محطتا المندوب (١٧ سبتمبر — طلب عمر عشان نقيس أداء الشركة) */
       arrivedAt: iso(r.ship_arrived_at),
       pickedAt: iso(r.ship_picked_at),

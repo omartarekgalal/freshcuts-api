@@ -151,7 +151,7 @@ test("toPortalOrder: نفس شكل العقد بالظبط", () => {
     "acceptedAt", "ackAt", "ackBy", "address", "courier", "courierOps", "createdAt", "customer", "deliveryFee", "farZone", "isTest", "items",
     "itemsCount", "notes", "option", "orderNo", "paidAt", "paidWith", "posOrderId", "readyAt",
     "scheduledFor", "scheduledLabel", "scheduledSlot", "sla", "stageLabel",
-    "status", "subtotal", "total", "updatedAt"].sort());
+    "status", "subtotal", "total", "trackUrl", "updatedAt"].sort());
   assert.equal(o.total, 95.5);
   assert.equal(o.itemsCount, 3, "عنوان الباقة مش صنف");
   assert.deepEqual(o.items[0], { name: "برجر — دبل", qty: 2, note: "بدون بصل", kind: "item", level: 0 });
@@ -165,12 +165,35 @@ test("toPortalOrder: نفس شكل العقد بالظبط", () => {
   assert.equal(o.readyAt, null);
   assert.deepEqual({ ...o.courier, updatedAt: undefined }, { status: "assigned", name: "كابتن سعيد", phone: "0555000111", lat: 21.6, lng: 39.2,
     updatedAt: undefined, provider: "leajlak", ref: "W1758100000000", assigned: true,
+    trackingUrl: null,
     arrivedAt: null, pickedAt: null, readyToArrivedMin: null, arrivedToPickedMin: null,
     pickedToDeliveredMin: null, arrivedBeforeReady: null });
   assert.deepEqual(Object.keys(o.sla).sort(), ["code", "level", "message"]);
   assert.equal(o.stageLabel, "بيتجهّز");
   assert.equal(o.posOrderId, "9001");
   assert.equal(o.isTest, false);
+  assert.equal(o.trackUrl, null, "من غير trackBase مفيش رابط — مابنخترعش دومين");
+});
+
+/* 🔗 رابط التتبع في كارت الطلب (٢٣ سبتمبر): رابط العميل موجود دايماً (رقم
+   الطلب هو المفتاح)، ورابط الشركة بييجي من سيرفو بس ولاجلك مابترجّعوش. */
+test("toPortalOrder: رابط تتبع العميل ورابط الشركة", () => {
+  const o = toPortalOrder(baseRow(), {}, NOW, { trackBase: "https://freshcuts.sa/" });
+  assert.equal(o.trackUrl, "https://freshcuts.sa/track/W1758100000000");
+  assert.equal(o.courier.trackingUrl, null, "لاجلك مابترجّعش رابط");
+
+  const cervo = toPortalOrder({ ...baseRow(), ship_provider: "cervo",
+    ship_tracking_url: "https://dashboard.cervodelivery.com/tracking/ec186b35" }, {}, NOW, { trackBase: "https://freshcuts.sa" });
+  assert.equal(cervo.courier.trackingUrl, "https://dashboard.cervodelivery.com/tracking/ec186b35");
+
+  // أي حاجة مش لينك http(s) بتترمي — مابنحطّش javascript: في href
+  assert.equal(toPortalOrder({ ...baseRow(), ship_tracking_url: "javascript:alert(1)" }, {}, NOW).courier.trackingUrl, null);
+  assert.equal(toPortalOrder({ ...baseRow(), ship_tracking_url: "" }, {}, NOW).courier.trackingUrl, null);
+
+  // طلب استلام من غير شحنة: courier null بس رابط العميل موجود
+  const pk = toPortalOrder({ ...baseRow(), option: "pickup", ship_status: null }, {}, NOW, { trackBase: "https://freshcuts.sa" });
+  assert.equal(pk.courier, null);
+  assert.equal(pk.trackUrl, "https://freshcuts.sa/track/W1758100000000");
 });
 
 test("toPortalOrder: استلام بدون عنوان، ومفيش شحنة = courier null، وSLA من slaCheck", () => {

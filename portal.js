@@ -54,9 +54,14 @@ const ORDER_COLS = `o.order_no, o.status, o.option, o.customer, o.phone_norm, o.
   o.delivery_quote->'farZone' AS far_zone, o.delivery_quote->>'routeKm' AS route_km, o.delivery_quote->>'straightKm' AS straight_km,
   s.status AS ship_status, s.driver AS ship_driver, s.provider AS ship_provider, s.provider_ref AS ship_ref,
   s.updated_at AS ship_updated_at, s.dispatch AS ship_dispatch,
-  s.arrived_at AS ship_arrived_at, s.picked_at AS ship_picked_at, s.delivered_at AS ship_delivered_at`;
+  s.arrived_at AS ship_arrived_at, s.picked_at AS ship_picked_at, s.delivered_at AS ship_delivered_at,
+  s.tracking_url AS ship_tracking_url`;
+/* tracking_url = رابط تتبع الشركة نفسها (سيرفو بترجّعه في الويبهوك؛ لاجلك
+   مابترجّعش حاجة). كان بيتخزّن من غير ما حد يقراه — دلوقتي الكاشير بيشوفه
+   في كارت الطلب جنب رابط تتبع العميل. */
 const SHIP_JOIN = `LEFT JOIN LATERAL (
-    SELECT status, driver, provider, provider_ref, updated_at, dispatch, arrived_at, picked_at, delivered_at
+    SELECT status, driver, provider, provider_ref, updated_at, dispatch, arrived_at, picked_at, delivered_at,
+           tracking_url
       FROM dl_shipments WHERE shop_order_no = o.order_no ORDER BY id DESC LIMIT 1) s ON TRUE`;
 /* الطلب المسبق بيفضل في الصف لحد ما موعده يعدّي — اتطلب امبارح بالليل
    وبيتنفّذ بكرة، فنافذة الساعات العادية كانت بتوقّعه من على البوابة. */
@@ -229,11 +234,16 @@ export function register(app, ctx, deps = {}) {
     }, Number(env.ITEM_NAMES_BACKFILL_DELAY_MS || 25_000));
     t.unref?.();
   }
+  /* نفس الأصل اللي بتتبني منه رسايل «تابع طلبك» في notify.js — عشان الرابط
+     اللي الكاشير بينسخه يبقى هو هو اللي العميل استلمه في الرسالة. */
+  const trackBase = () => String(env.STOREFRONT_PUBLIC_URL || "https://freshcuts.sa")
+    .split(",")[0].trim().replace(/\/+$/, "");
   async function loadFeed(hours) {
     const rows = await withNames((await pool.query(FEED_SQL, [hours])).rows || []);
     const cfg = await slaCfg();
     const t = now();
-    return rows.map((r) => toPortalOrder(r, cfg, t));
+    const opts = { trackBase: trackBase() };
+    return rows.map((r) => toPortalOrder(r, cfg, t, opts));
   }
   async function loadByNos(nos) {
     const list = [...new Set((nos || []).map(String))].slice(0, 100);
@@ -241,7 +251,8 @@ export function register(app, ctx, deps = {}) {
     const rows = await withNames((await pool.query(BY_NO_SQL, [list])).rows || []);
     const cfg = await slaCfg();
     const t = now();
-    return { rows, orders: rows.map((r) => toPortalOrder(r, cfg, t)) };
+    const opts = { trackBase: trackBase() };
+    return { rows, orders: rows.map((r) => toPortalOrder(r, cfg, t, opts)) };
   }
   async function loadInfo(orderNo) {
     const { orders } = await loadByNos([orderNo]);
