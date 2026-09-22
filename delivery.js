@@ -2011,8 +2011,12 @@ export function register(app, ctx, deps = {}) {
     if (from.verifyWebhook) {
       const headers = {};
       try { c.req.raw.headers.forEach((v, k) => { headers[k] = v; }); } catch {}
-      const pass = from.verifyWebhook(headers, b);
-      if (webhookSecretSet(from.id)) verified = Boolean(pass);
+      /* لاجلك بترجّع true/false؛ Cervo بترجّع "pass"/"absent"/"fail"
+         (السرّ الناقص مش رفض — شوف راوت Cervo). بنقرا الشكلين هنا عشان
+         لو رسالة Cervo عدّت من هنا يوماً ما، "fail" مايتحوّلش لـtrue. */
+      const raw = from.verifyWebhook(headers, b);
+      const pass = raw === true || raw === "pass" || raw === "absent";
+      if (webhookSecretSet(from.id)) verified = raw === true || raw === "pass";
       if (!pass) {
         console.error(`[delivery] ${from.id} webhook rejected: bad secret`);
         await logHit({ provider: from.id, verified: false, status: 401, body: b });
@@ -2089,17 +2093,20 @@ export function register(app, ctx, deps = {}) {
       return c.json({ ok: true, ignored: true });
     }
 
-    /* السرّ اختياري (لسه مش عندهم). لو سجّلناه، رسالة من غيره بترفض فوراً
-       قبل أي نداء عليهم. */
-    let verified = null;
+    /* ── السرّ: «ناقص» ≠ «غلط» (٢٢/٩، اتعلمناها من ويبهوك حقيقي) ────────
+       أول ويبهوك حقيقي منهم اترفض ٤٠١ لأن السرّ كان مظبوط عندنا وهم
+       **مابيبعتوش أي سرّ خالص**. حاولوا ٣ مرات وفشلوا ٣ مرات، والطلب فضل
+       واقف عندنا. فبقى: سرّ غلط ⇒ ٤٠١ · سرّ ناقص ⇒ نكمّل للتصديق بالـGET
+       (وهو الأمان الحقيقي — إحنا أصلاً مابناخدش الحالة من الجسم). */
     const headers = {};
     try { c.req.raw.headers.forEach((v, k) => { headers[k] = v; }); } catch {}
-    const pass = from.verifyWebhook(headers, b);
-    if (webhookSecretSet("cervo")) verified = Boolean(pass);
-    if (!pass) {
+    const secretState = from.verifyWebhook(headers, b);
+    if (secretState === "fail") {
+      console.error("[delivery] cervo webhook rejected: bad secret");
       await logHit({ verified: false, status: 401, body: b });
       return c.json({ ok: false, error: "bad_secret" }, 401);
     }
+    const verified = secretState === "pass" ? true : null;
 
     if (cervoThrottled(ev.ref)) {
       await logHit({ verified, matched: false, status: 429, body: b });
@@ -2108,13 +2115,18 @@ export function register(app, ctx, deps = {}) {
 
     /* الشحنة عندنا؟ المطابقة بمرجعهم، وبرقمنا لو بعتوه في partner_ref.
        المرجع المش معروف مابيسببش نداء عليهم أصلاً. */
+    /* `partner_ref` بيرجع **الـid الرقمي** (1790072314698) مش رقم طلبنا
+       النصّي (W1790072314698) — اتأكدنا من ويبهوك حقيقي. فبنطابق بمرجعهم،
+       وبرقمنا لو بعتوه كامل، وبالرقم المجرّد كشبكة أمان تالتة. */
     const own = await pool.query(
       `SELECT id, shop_order_no, status, provider, arrived_at, picked_at
          FROM dl_shipments
         WHERE provider = 'cervo'
-          AND (provider_ref = $1 OR ($2::text IS NOT NULL AND shop_order_no = $2))
+          AND (provider_ref = $1
+            OR ($2::text IS NOT NULL AND shop_order_no = $2)
+            OR ($3::text IS NOT NULL AND regexp_replace(shop_order_no, '\\D', '', 'g') = $3))
         ORDER BY id DESC LIMIT 1`,
-      [String(ev.ref), ev.orderNo || null]);
+      [String(ev.ref), ev.orderNo || null, ev.numericRef || null]);
     if (!own.rowCount) {
       const flood = cervoUnknownFlood();
       if (!flood) console.error(`[delivery] cervo webhook لمرجع مش عندنا: ${String(ev.ref).slice(0, 40)}`);
@@ -2150,6 +2162,9 @@ export function register(app, ctx, deps = {}) {
        والمسافات. */
     const trusted = {
       ...ev,
+      /* الرسالة ساعات مافيهاش رقمنا النصّي — بناخده من الشحنة اللي طابقناها،
+         عشان التحديث يمسك بالرقم مش بالمرجع بس. */
+      orderNo: ev.orderNo || own.rows[0].shop_order_no,
       status: truth.status,
       rawStatus: truth.rawStatus != null ? truth.rawStatus : ev.rawStatus,
       driver: truth.driver || ev.driver || null,

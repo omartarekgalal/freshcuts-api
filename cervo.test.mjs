@@ -7,7 +7,8 @@ import {
   cervoStage, CERVO_STATUS, CERVO_STATUS_AR, isCervoStatus, cervoStatusAr,
   cervoNumericId, cervoNotes, cervoAsciiLine, cervoAddress, cervoPayload,
   assertPrepaid, assertCervoPayload, parseCervoWebhook, pickCervoUid,
-  normalizeCervoOrder, riyadhToIso, isoToRiyadh, cervoContract, cervoCostFor,
+  normalizeCervoOrder, riyadhToIso, isoToRiyadh, cervoTimeToIso, isoToCervoTime,
+  CERVO_TZ_OFFSET_DEFAULT, cervoContract, cervoCostFor,
   maskedPayload, CERVO_PAYMENT, CERVO_LIMITS,
 } from "./cervo.js";
 import { PROVIDERS, API_PROVIDER_IDS, courierMilestone, PROVIDER_REPORTS_ARRIVAL,
@@ -270,22 +271,33 @@ t("GET /order بيتقرا صح", () => {
   assert.equal(o.tracking, "https://track.cervodelivery.com/uid-1");
   assert.equal(o.history.length, 2);
   assert.equal(o.history[1].status, "assigned");
-  assert.equal(o.history[1].at, "2026-01-21T07:15:00.000Z");   // الرياض −٣
+  assert.equal(o.history[1].at, "2026-01-21T10:15:00.000Z");   // UTC (مقاس)
 });
 t("من غير كابتن بيرجّع null مش كائن فاضي", () => {
   assert.equal(normalizeCervoOrder({ id: "u", Status: 1 }).driver, null);
 });
 
 /* ═══ الوقت ═══ */
-t("توقيتهم رياض من غير علامة — التحويل بيضبط", () => {
-  assert.equal(riyadhToIso("2026-01-21 10:00"), "2026-01-21T07:00:00.000Z");
-  assert.equal(riyadhToIso("2026-09-22 00:30:15"), "2026-09-21T21:30:15.000Z");
-  assert.equal(riyadhToIso("خربان"), null);
-  assert.equal(riyadhToIso(null), null);
+t("تواريخهم UTC — مقاسة، مش اللي اتقال", () => {
+  /* ٢٢/٩ على الساندبوكس: أنشأنا الطلب 10:18:34 UTC (13:18 رياض)، وهم
+     سجّلوا "2026-09-22 10:18". يعني UTC حرفياً. */
+  assert.equal(CERVO_TZ_OFFSET_DEFAULT, 0);
+  assert.equal(cervoTimeToIso("2026-09-22 10:18"), "2026-09-22T10:18:00.000Z");
+  assert.equal(riyadhToIso("2026-01-21 10:00"), "2026-01-21T10:00:00.000Z");
+  assert.equal(cervoTimeToIso("خربان"), null);
+  assert.equal(cervoTimeToIso(null), null);
 });
-t("والعكس للطلبات المجدولة", () => {
-  assert.equal(isoToRiyadh("2026-01-21T07:00:00.000Z"), "2026-01-21 10:00:00");
-  assert.equal(isoToRiyadh("لأ"), null);
+t("الإزاحة قابلة للتغيير لو رجعوا لرياض من غير نشر", () => {
+  assert.equal(cervoTimeToIso("2026-09-22 13:18", 3), "2026-09-22T10:18:00.000Z");
+  assert.equal(isoToCervoTime("2026-09-22T10:18:00.000Z", 3), "2026-09-22 13:18:00");
+});
+t("والعكس للطلبات المجدولة بنفس الإزاحة", () => {
+  assert.equal(isoToRiyadh("2026-01-21T07:00:00.000Z"), "2026-01-21 07:00:00");
+  assert.equal(isoToCervoTime("لأ"), null);
+});
+t("محطات الـhistory بتتقرا UTC", () => {
+  const o = normalizeCervoOrder({ id: "u", status: 2, orderStatus: [{ status: 2, date: "2026-09-22 10:18" }] });
+  assert.equal(o.history[0].at, "2026-09-22T10:18:00.000Z");
 });
 
 /* ═══ التكلفة ═══ */
@@ -403,4 +415,53 @@ t("رد GET بـcamelCase (الشكل الحقيقي) بيتقرا زي PascalCa
   const b = normalizeCervoOrder({ id: "u", DriverName: "سعد", Status: 3, OrderStatus: [] });
   assert.equal(b.status, "picked");
   assert.equal(b.driver.name, "سعد");
+});
+
+/* ═══ السرّ: «ناقص» ≠ «غلط» — من ويبهوك حقيقي اترفض ٤٠١ (٢٢/٩) ═══ */
+t("من غير سرّ متسجّل عندنا: absent", () => {
+  const sv = process.env.CERVO_WEBHOOK_SECRET; delete process.env.CERVO_WEBHOOK_SECRET;
+  assert.equal(PROVIDERS.cervo.verifyWebhook({}, {}), "absent");
+  if (sv) process.env.CERVO_WEBHOOK_SECRET = sv;
+});
+t("سرّ متسجّل + رسالة زيهم (مفيش أي سرّ في الهيدرز) ← absent مش fail", () => {
+  const sv = process.env.CERVO_WEBHOOK_SECRET; process.env.CERVO_WEBHOOK_SECRET = "abc";
+  /* دي الهيدرز الحقيقية اللي بعتوها — مفيش فيها سرّ، وفيها delivery-company */
+  const real = { accept: "*/*", "content-type": "application/json", "delivery-company": "cervo" };
+  assert.equal(PROVIDERS.cervo.verifyWebhook(real, { order_id: "u", order_status: 2 }), "absent");
+  if (sv === undefined) delete process.env.CERVO_WEBHOOK_SECRET; else process.env.CERVO_WEBHOOK_SECRET = sv;
+});
+t("سرّ اتبعت وغلط ← fail", () => {
+  const sv = process.env.CERVO_WEBHOOK_SECRET; process.env.CERVO_WEBHOOK_SECRET = "abc";
+  assert.equal(PROVIDERS.cervo.verifyWebhook({ "x-cervo-signature": "nope" }, {}), "fail");
+  assert.equal(PROVIDERS.cervo.verifyWebhook({ "x-cervo-signature": "abc" }, {}), "pass");
+  assert.equal(PROVIDERS.cervo.verifyWebhook({}, { secret: "abc" }), "pass");
+  assert.equal(PROVIDERS.cervo.verifyWebhook({ authorization: "Bearer abc" }, {}), "pass");
+  if (sv === undefined) delete process.env.CERVO_WEBHOOK_SECRET; else process.env.CERVO_WEBHOOK_SECRET = sv;
+});
+
+/* ═══ الجسم الحقيقي اللي بعتوه (٢٢/٩) ═══ */
+const REAL_BODY = {
+  cancel: null, member: null, order_id: "ec186b35-62be-41bf-9540-b14185611130",
+  store_id: 3017, tracking: "https://dashboard.cervodelivery.com/tracking/ec186b35-62be-41bf-9540-b14185611130",
+  driver_name: "Fot testing", partner_ref: "1790072314698", order_status: 2,
+  driver_mobile: "0599000111", isRiderChange: false,
+};
+t("جسمهم الحقيقي بيتقرا كامل", () => {
+  const e = parseCervoWebhook(REAL_BODY);
+  assert.equal(e.ref, "ec186b35-62be-41bf-9540-b14185611130");
+  assert.equal(e.status, "assigned");
+  assert.equal(e.statusCode, 2);
+  assert.equal(e.driver.name, "Fot testing");
+  assert.equal(e.storeId, "3017");
+  assert.equal(e.riderChanged, false);
+  /* partner_ref رقمي — مش رقم طلبنا النصّي */
+  assert.equal(e.orderNo, null);
+  assert.equal(e.numericRef, "1790072314698");
+});
+t("الرقم المجرّد بيطابق رقم طلبنا لما نشيل الحروف", () => {
+  const e = parseCervoWebhook(REAL_BODY);
+  assert.equal("W1790072314698".replace(/\D/g, ""), e.numericRef);
+});
+t("isRiderChange بيتقرا لما يبقى true", () => {
+  assert.equal(parseCervoWebhook({ ...REAL_BODY, isRiderChange: true }).riderChanged, true);
 });

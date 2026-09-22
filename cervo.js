@@ -365,7 +365,7 @@ export function pickCervoUid(data) {
    بيتنادى من التتبع ومن **التحقق من الويبهوك**.
    الرد الحقيقي (٢٢/٩) camelCase: {id, db_id, driverName, driverMobile, status,
    orderStatus[], tracking} — الوثيقة كاتباهم PascalCase. بنقبل الشكلين. */
-export function normalizeCervoOrder(o) {
+export function normalizeCervoOrder(o, offsetHours = CERVO_TZ_OFFSET_DEFAULT) {
   if (!o || typeof o !== "object") return null;
   const code = o.Status ?? o.status ?? null;
   const hist = Array.isArray(o.OrderStatus) ? o.OrderStatus : (Array.isArray(o.orderStatus) ? o.orderStatus : []);
@@ -382,39 +382,58 @@ export function normalizeCervoOrder(o) {
     history: hist.map((h) => ({
       code: Number(h.Status ?? h.status),
       status: cervoStage(h.Status ?? h.status),
-      at: riyadhToIso(h.Date ?? h.date),
+      at: cervoTimeToIso(h.Date ?? h.date, offsetHours),
     })).filter((h) => Number.isFinite(h.code)),
     raw: o,
   };
 }
 
-/* ── الوقت ──────────────────────────────────────────────────────────────
-   تواريخهم "2026-01-21 10:00" من غير أي علامة منطقة، وهم بتوقيت الرياض
-   (UTC+3 ثابت، مفيش توقيت صيفي) — فالتحويل حساب بسيط، من غير Intl. من غير
-   ده كل محطة كانت هتتسجّل متقدّمة ٣ ساعات ومهل الـSLA تطلع غلط. */
-export function riyadhToIso(s) {
+/* ── الوقت: قاسناه، مش صدّقنا اللي اتقال ────────────────────────────────
+   المورّد قال «التوقيت رياض». **القياس بيقول UTC.**
+   ٢٢/٩، طلب حقيقي على الساندبوكس: إحنا أنشأناه الساعة 10:18:34 UTC
+   (= 13:18 بتوقيت الرياض)، وهم سجّلوا المحطة `"2026-09-22 10:18"`.
+   يعني تواريخهم UTC حرفياً، مش رياض.
+
+   لو صدّقنا كلامهم وطرحنا ٣ ساعات، كل محطة كانت هتتسجّل **متأخرة ٣ ساعات
+   عن الحقيقة** — والكابتن يبان إنه وصل المطعم قبل ما الطلب يتعمل أصلاً.
+
+   `cervoTimeOffsetHours` في الإعدادات موجود عشان لو غيّروها بكرة نظبّطها
+   من غير نشر: 0 = UTC (المقاس)، 3 = رياض (اللي قالوه). */
+export const CERVO_TZ_OFFSET_DEFAULT = 0;
+export function cervoTimeToIso(s, offsetHours = CERVO_TZ_OFFSET_DEFAULT) {
   const m = /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})(?::(\d{2}))?/.exec(String(s || "").trim());
   if (!m) return null;
   const [, Y, Mo, D, H, Mi, S] = m;
-  return new Date(Date.UTC(+Y, +Mo - 1, +D, +H - 3, +Mi, +(S || 0))).toISOString();
+  const off = Number.isFinite(Number(offsetHours)) ? Number(offsetHours) : CERVO_TZ_OFFSET_DEFAULT;
+  return new Date(Date.UTC(+Y, +Mo - 1, +D, +H - off, +Mi, +(S || 0))).toISOString();
 }
-/* العكس — للطلبات المجدولة: بياخدوا "yyyy-MM-dd HH:mm:ss" بتوقيت الرياض. */
-export function isoToRiyadh(iso) {
+/* الاسم القديم فضل عشان ما نكسرش حاجة — بس هو دلوقتي UTC زي المقاس. */
+export const riyadhToIso = (s) => cervoTimeToIso(s, CERVO_TZ_OFFSET_DEFAULT);
+/* العكس — للطلبات المجدولة. بنفس الإزاحة المقاسة (UTC)، عشان الطلب
+   المجدول ما يتحجزش ٣ ساعات في غير وقته. */
+export function isoToCervoTime(iso, offsetHours = CERVO_TZ_OFFSET_DEFAULT) {
   const d = iso instanceof Date ? iso : new Date(iso);
   if (isNaN(d.getTime())) return null;
-  const r = new Date(d.getTime() + 3 * 3600_000);
+  const off = Number.isFinite(Number(offsetHours)) ? Number(offsetHours) : CERVO_TZ_OFFSET_DEFAULT;
+  const r = new Date(d.getTime() + off * 3600_000);
   const p = (n, w = 2) => String(n).padStart(w, "0");
   return `${r.getUTCFullYear()}-${p(r.getUTCMonth() + 1)}-${p(r.getUTCDate())} ${p(r.getUTCHours())}:${p(r.getUTCMinutes())}:${p(r.getUTCSeconds())}`;
 }
+export const isoToRiyadh = (iso) => isoToCervoTime(iso, CERVO_TZ_OFFSET_DEFAULT);
 
 /* ═══ تحليل الويبهوك ════════════════════════════════════════════════════
    جسمهم: {order_id (الـGUID بتاعهم), partner_ref (اللي بعتناه), driver_name,
    driver_mobile, order_status, store_distance, customer_distance, cancel,
    tracking}.
 
-   **مفيش توقيع ولا سرّ موثّق** — يعني أي حد يعرف الرابط يقدر يبعت رسالة
-   تحرّك حالة طلب. فالراوت بتاعهم في delivery.js **مابياخدش الجسم على
-   ذمّته**: بيستعمله كإشارة بس، وبيسأل GET /order/{uid} ويصدّق الرد ده.
+   الجسم الحقيقي (٢٢/٩، ويبهوك وصل فعلاً) فيه حقول **مش في الوثيقة**:
+     store_id: 3017        ← عندهم معرّف محل لينا، رغم إنهم قالوا مفيش
+     member, isRiderChange ← isRiderChange = الكابتن اتغيّر
+   و`partner_ref` بيرجع **الـid الرقمي** (1790072314698) مش رقم طلبنا النصّي.
+
+   **مفيش توقيع ولا سرّ** — يعني أي حد يعرف الرابط يقدر يبعت رسالة تحرّك
+   حالة طلب. فالراوت بتاعهم في delivery.js **مابياخدش الجسم على ذمّته**:
+   بيستعمله كإشارة بس، وبيسأل GET /order/{uid} ويصدّق الرد ده.
    الدالة دي بتقرا الشكل وبس. */
 export function parseCervoWebhook(b) {
   if (!b || typeof b !== "object") return null;
@@ -438,6 +457,9 @@ export function parseCervoWebhook(b) {
     driver: (name || phone) ? { name: name || null, phone: phone || null, source: "cervo" } : null,
     tracking: typeof b.tracking === "string" && b.tracking ? b.tracking : null,
     cancelReason: b.cancel ? String(b.cancel).slice(0, 200) : null,
+    /* حقول اتكشفت من ويبهوك حقيقي — مش في وثيقتهم */
+    storeId: b.store_id != null ? String(b.store_id) : null,
+    riderChanged: b.isRiderChange === true,
     storeDistance: b.store_distance != null ? Number(b.store_distance) : null,
     customerDistance: b.customer_distance != null ? Number(b.customer_distance) : null,
     cost: null,     // مفيش تكلفة في أي رد من ردودهم
@@ -568,18 +590,31 @@ export const cervo = {
     return { fee: null, refund: null, raw: typeof raw === "string" ? { message: raw } : raw };
   },
 
-  /* السرّ ده **إضافة من عندنا** لو وافقوا يبعتوه — لسه مش في الـAPI. من
-     غيره بنرجع true هنا، والأمان الحقيقي في التحقق بالـGET (شوف
-     delivery.js / cervo-webhook). */
+  /* ── ليه السرّ الناقص مش رفض (٢٢/٩، من ويبهوك حقيقي) ──────────────────
+     ظبّطنا CERVO_WEBHOOK_SECRET، وأول ويبهوك حقيقي منهم **اترفض ٤٠١** —
+     وحاولوا ٣ مرات وفشلوا ٣ مرات. السبب: هيدرزهم مافيهاش أي سرّ خالص
+     (بيبعتوا `delivery-company` بس)، فالسرّ عندنا كان بيقفل الباب في وشّ
+     الرسايل الحقيقية بدل ما يحميه.
+
+     فبقى ٣ حالات بدل اتنين:
+       pass   → السرّ اتبعت وصح
+       absent → مفيش سرّ في الرسالة (ده وضعهم الطبيعي) ⇒ نكمّل
+       fail   → سرّ اتبعت وغلط ⇒ ٤٠١
+
+     ومش ضعف: الأمان الحقيقي مش السرّ أصلاً — إحنا مابناخدش حالة من جسم
+     الرسالة خالص، بنسأل GET /order/{uid} ونطبّق ردّهم. يعني حتى رسالة
+     مزوّرة تماماً مابتقدرش تحرّك طلب. */
   verifyWebhook(headers = {}, body = {}) {
     const secret = CERVO_WH_SECRET();
-    if (!secret) return true;
+    if (!secret) return "absent";
     const h = (k) => String(headers[k] || headers[String(k).toLowerCase()] || "");
-    return [
+    const sent = [
       h("x-cervo-signature"), h("x-webhook-secret"), h("x-secret"), h("x-api-key"),
       h("authorization").replace(/^Bearer\s+/i, ""),
-      String(body.secret || ""), String(body.webhook_secret || ""),
-    ].some((v) => v && v === secret);
+      String((body && body.secret) || ""), String((body && body.webhook_secret) || ""),
+    ].filter(Boolean);
+    if (!sent.length) return "absent";
+    return sent.some((v) => v === secret) ? "pass" : "fail";
   },
 
   parseWebhook: parseCervoWebhook,

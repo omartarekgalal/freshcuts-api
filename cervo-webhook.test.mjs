@@ -207,7 +207,7 @@ test("JSON بايظ ← 400 + صف في السجل", async () => {
   } finally { t.restore(); }
 });
 
-test("سرّ متسجّل + رسالة من غيره ← 401 من غير أي نداء عليهم، والسرّ مايتسجّلش", async () => {
+test("سرّ متسجّل + سرّ **غلط** في الرسالة ← 401 من غير أي نداء عليهم", async () => {
   const t = build({ envMap: { CERVO_WEBHOOK_SECRET: "sh-h-h" } });
   try {
     const r = await t.call(wh(4), { "x-cervo-signature": "wrong" });
@@ -215,6 +215,35 @@ test("سرّ متسجّل + رسالة من غيره ← 401 من غير أي ن
     assert.equal(t.calls.length, 0);
     assert.equal(t.logs[0].verified, false);
     assert.equal(JSON.stringify(t.logs[0].vals).includes("sh-h-h"), false);
+  } finally { t.restore(); }
+});
+
+/* الباج اللي كلّفنا ٣ ويبهوكات حقيقية (٢٢/٩): السرّ كان مظبوط عندنا، وهم
+   مابيبعتوش أي سرّ، فكل رسالة حقيقية اترفضت ٤٠١ وحاولوا ٣ مرات وفشلوا. */
+test("سرّ متسجّل + رسالة زيهم من غير أي سرّ ← بتعدّي للتصديق مش بترفض", async () => {
+  const t = build({ envMap: { CERVO_WEBHOOK_SECRET: "sh-h-h" }, apiStatus: 4 });
+  try {
+    const r = await t.call(wh(4), { "content-type": "application/json", "delivery-company": "cervo" });
+    assert.equal(r.status, 200);
+    assert.equal(r.obj.status, "delivered");
+    assert.ok(t.calls.some((x) => x.url.includes("/order/")), "ماسألش الـAPI بتاعهم");
+    /* السرّ ما اتبعتش، فالتحقق بالسرّ مش «ناجح» — بس التصديق بالـGET تم */
+    assert.equal(t.logs.at(-1).verified, true);
+    assert.equal(t.logs.at(-1).matched, true);
+  } finally { t.restore(); }
+});
+
+test("partner_ref رقمي (زي الحقيقي) بيطابق شحنة برقم طلبنا النصّي", async () => {
+  const t = build({ apiStatus: 20 });
+  try {
+    const r = await t.call(JSON.stringify({
+      order_id: UID, partner_ref: "1789825687099", order_status: 20,
+      store_id: 3017, isRiderChange: false, member: null, cancel: null,
+    }));
+    assert.equal(r.obj.status, "assigned");
+    assert.deepEqual(t.milestones, ["arrived"]);
+    /* رقمنا النصّي بييجي من الشحنة المطابقة مش من الرسالة */
+    assert.equal(t.updates.find((x) => !x.unverifiedOnly).orderNo, ORDER_NO);
   } finally { t.restore(); }
 });
 
