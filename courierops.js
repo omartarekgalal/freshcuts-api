@@ -32,6 +32,7 @@ import { STORE_LAT, STORE_LNG } from "./tsstore.js";
 import { districtOfRow, districtCfg, districtCutoff, districtRouting, leajlakCostFor } from "./districts.js";
 import { cacheKey } from "./drivedist.js";
 import { PROVIDERS, API_PROVIDER_IDS, routeCourier } from "./couriers.js";
+import { cervoStage } from "./cervo.js";
 import { driverKey, dispatchDelayOf } from "./delivery.js";
 import { fitOneSms, makeStaffNotifier } from "./staffalerts.js";
 import { emitOrder } from "./order-events.js";
@@ -111,6 +112,20 @@ export function eventStatus(e, provider) {
     if (STAGE_STATUS[ev]) return STAGE_STATUS[ev];
   }
   if (ev === "created") return "pending";
+  /* ── حالات Cervo أكواد رقمية ────────────────────────────────────────
+     `norm()` بيشيل كل حاجة مش حرف، فـ"7" بتبقى نص فاضي و RAW_STATUS
+     (أسماء لاجلك النصّية) عمرها ما هتلاقيها. النتيجة كانت: الشحنة تتلغي
+     صح (الحالة جاية من الويبهوك مباشرة) بس **وقت** الإلغاء/الاستلام
+     مايتحسبش من سجل الأحداث — فالخط الزمني في شاشة المخالفات يطلع ناقص.
+     ٢٢/٩، إلغاء حقيقي من Cervo (كود ٧) هو اللي كشفها. */
+  if (provider === "cervo" || e.provider === "cervo") {
+    for (const v of [e.event, e.raw, e.status]) {
+      if (v != null && v !== "" && /^\d+$/.test(String(v))) {
+        const st = cervoStage(v);
+        if (st) return st;
+      }
+    }
+  }
   return RAW_STATUS[norm(ev)] || RAW_STATUS[norm(e.raw)] || null;
 }
 

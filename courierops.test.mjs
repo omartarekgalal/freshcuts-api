@@ -364,3 +364,34 @@ test("staffCourierNames: portal staff minus kitchen/inactive, no pins", async ()
   assert.deepEqual(out, [{ id: "a", name: "أحمد", role: "cashier" }, { id: "d", name: "محمد", role: "manager" }]);
   assert.deepEqual(staffCourierNames({}), []);
 });
+
+/* ═══ Cervo: أكواد رقمية في سجل الأحداث (٢٢/٩ — من إلغاء حقيقي كود ٧) ═══ */
+test("eventStatus بيفهم أكواد Cervo الرقمية", () => {
+  assert.equal(eventStatus({ event: "7", provider: "cervo" }, "cervo"), "cancelled");
+  assert.equal(eventStatus({ event: "2" }, "cervo"), "assigned");
+  assert.equal(eventStatus({ event: "3" }, "cervo"), "picked");
+  assert.equal(eventStatus({ event: "4" }, "cervo"), "delivered");
+  assert.equal(eventStatus({ event: "20" }, "cervo"), "assigned");
+  assert.equal(eventStatus({ event: "99" }, "cervo"), null);
+});
+test("الأكواد الرقمية مابتأثرش على لاجلك", () => {
+  assert.equal(eventStatus({ event: "7" }, "leajlak"), null);
+  assert.equal(eventStatus({ event: "Order Accept" }, "leajlak"), "assigned");
+  assert.equal(eventStatus({ event: "Delivered" }, "leajlak"), "delivered");
+});
+test("وقت الإلغاء بيتقرا من سجل أحداث Cervo", () => {
+  const sh = { provider: "cervo", status: "cancelled", created_at: "2026-09-22T10:40:25Z",
+    events: [{ at: "2026-09-22T10:40:30Z", event: "2", provider: "cervo" },
+             { at: "2026-09-22T10:40:54Z", event: "7", provider: "cervo" }] };
+  const t = shipmentTimes(sh);
+  assert.equal(t.cancelledAt, "2026-09-22T10:40:54.000Z");
+  assert.equal(t.assignedAt, "2026-09-22T10:40:30.000Z");
+  assert.equal(t.ourCancel, false);
+  /* ودي اللي بتطلّع حادثة «الشركة لغت» وتنبّه المدير */
+  assert.equal(providerCancelled(sh, t), true);
+});
+test("إلغاء منّا إحنا مايتحسبش على الشركة", () => {
+  const sh = { provider: "cervo", status: "cancelled",
+    events: [{ at: "2026-09-22T10:40:54Z", event: "cancel", provider: "cervo" }] };
+  assert.equal(providerCancelled(sh), false);
+});
