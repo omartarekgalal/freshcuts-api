@@ -792,6 +792,9 @@ function webhookSecretSet(providerId) {
 export function register(app, ctx, deps = {}) {
   const { pool, requireAdmin, getSettingsData, jb } = ctx;
   const shop = deps.shop || (() => null);   // late-bound: shipment status → order status
+  /* تجربة Cervo (cervotrial.js) — بتتسجّل بعدنا، فالربط متأخّر. لو مش
+     موصولة خالص، `decide` مابتتنادش والتوجيه بيشتغل زي ما هو. */
+  const cervoTrial = typeof deps.cervoTrial === "function" ? deps.cervoTrial : () => deps.cervoTrial || null;
 
   async function ensureSchema() {
     await pool.query(`
@@ -1107,6 +1110,7 @@ export function register(app, ctx, deps = {}) {
         data: { provider: res && res.provider, ref: (res && res.faOrderId) ?? null,
                 assigned: Boolean(res && res.assigned),
                 dispatch_status: (res && res.dispatch && res.dispatch.status) || null,
+                trial: (res && res.trial) ? `${res.trial.seq}/${res.trial.target}` : undefined,
                 cost: (res && res.cost) ?? null },
       });
     } catch {}
@@ -1418,8 +1422,23 @@ export function register(app, ctx, deps = {}) {
        لو الشريحة رمت على مزوّد مفاتيحه ناقصة، **مابنوقفش الطلب**: بنرجع
        للمزوّد الفعّال ونسجل الرجوع ده كحدث ظاهر. التبديل الصامت ممنوع،
        بس الرجوع المعلن أأمن من طلب واقف من غير مندوب. */
-    let routed = null;
+    /* ── تجربة Cervo (٢٢ سبتمبر — عمر: «نبدا نديلهم طلبات حقيقية») ─────
+       أول ١٠ طلبات توصيل مطابقة للشروط بتروح لـCervo بدل لاجلك، وبعد كده
+       العدّاد بيخلص والتوجيه بيرجع طبيعي **لوحده**.
+
+       مكانها هنا مقصود: **بعد** اختيار المدير الصريح (اختياره بيغلب
+       دايماً) و**قبل** التوجيه بالمسافة (التجربة أهم دلوقتي)، وقبل أي
+       نداء شبكة. كل الاستبعادات (فوق التغطية، بعيد، بالحي، تجريبي،
+       مسافة مش معروفة) جوّه `decide` — وأي عطل فيها بيرجّع take:false
+       يعني الطلب بيمشي في مساره العادي، مش بيقف. */
+    let trial = null;
     if (!want) {
+      try { trial = await cervoTrial()?.decide?.(order, { explicitProvider: null }); } catch { trial = null; }
+    }
+    const trialTake = Boolean(trial && trial.take && PROVIDERS.cervo && PROVIDERS.cervo.configured());
+
+    let routed = null;
+    if (!want && !trialTake) {
       try { routed = routeCourier(routeKmOfRow(order), all); } catch { routed = null; }
     }
     let routedTo = null;
@@ -1442,7 +1461,9 @@ export function register(app, ctx, deps = {}) {
         } catch {}
       }
     }
-    const provider = want ? PROVIDERS[want] : (routedTo ? PROVIDERS[routedTo] : activeProvider(all));
+    const provider = want ? PROVIDERS[want]
+      : trialTake ? PROVIDERS.cervo
+      : (routedTo ? PROVIDERS[routedTo] : activeProvider(all));
     if (provider.manual) {
       throw Object.assign(
         new Error("المزوّد المختار «يدوي» — مفيش إرسال آلي"),
@@ -1548,6 +1569,11 @@ export function register(app, ctx, deps = {}) {
             /* تكلفة Cervo تقدير من اللوحة مش رقم من عندهم — العلم ده
                بيخلّي شاشة المطابقة تفرّق بين «متحسبة» و«مؤكدة». */
             costAssumed: res.costAssumed === true ? true : undefined,
+            /* علامة التجربة: منها بيتعدّ «٣ من ١٠»، وعليها بتشتغل شبكة
+               الأمان، ومنها بتتبني بطاقة النتيجة. لازم تتكتب في نفس صف
+               الشحنة — أي جدول تاني كان هيقدر يفرق عن الحقيقة. */
+            trial: trialTake ? true : undefined,
+            trialSeq: trialTake ? (trial && trial.seq) || undefined : undefined,
             routedTo: routedTo || undefined, routeKm: cfg.routeKm ?? undefined }),
        jb([{ at: new Date().toISOString(), event: "created", provider: provider.id, resp: res.raw }]),
        res.tracking || null]
@@ -1565,6 +1591,7 @@ export function register(app, ctx, deps = {}) {
       provider: provider.id, faOrderId: res.ref, orderNumber: res.orderNumber,
       cost: res.cost, assigned, dispatch: dr, raw: res.raw,
       tracking: res.tracking || null, routed: routed || null,
+      trial: trialTake ? { seq: trial.seq, target: trial.target, why: trial.why } : null,
     };
   }
 

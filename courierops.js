@@ -358,6 +358,9 @@ export const DISPATCH_AR = Object.freeze({
 
 export const CODE_AR = Object.freeze({
   ...Object.fromEntries(Object.entries(VIOLATIONS).map(([k, v]) => [k, v.label])),
+  cervo_trial_fallback: "تجربة Cervo: مافيش كابتن — رجّعناه للاجلك",
+  cervo_trial_fallback_failed: "تجربة Cervo: الرجوع للاجلك فشل — تدخّل فوراً",
+  cervo_trial_cancelled: "تجربة Cervo: هم لغوا الطلب — ابعت لاجلك",
   far_hold: "مشوار بعيد — مستني قرار المدير",
   far_risk: "مشوار بعيد — ممكن الشركة ترفضه",
   district_courier: "توصيل بالحي — ابعت للمندوب",
@@ -375,6 +378,9 @@ const EN = {
   arrive_slow: (x) => `captain not at shop ${x.target}min after assignment (+${x.over}min)`,
   arrive_late: (x) => `captain not at shop ${x.target}min after request - CONTRACT (+${x.over}min)`,
   deliver_late: (x) => `delivery late +${x.over}min after pickup (route ${x.target}min)`,
+  cervo_trial_fallback: (x) => `CERVO TRIAL: no captain in ${x.waitedMin || "?"}min - auto-switched to Leajlak. Watch the portal`,
+  cervo_trial_fallback_failed: () => `CERVO TRIAL: switch to Leajlak FAILED - send a courier from the portal NOW`,
+  cervo_trial_cancelled: () => `CERVO TRIAL: Cervo CANCELLED the order. Portal: one tap to send Leajlak`,
 };
 const AR = {
   provider_cancelled: () => "شركة التوصيل لغت - افتح البوابة",
@@ -387,6 +393,9 @@ const AR = {
   arrive_slow: (x) => `الكابتن اتأخر عن المطعم ${x.over}د`,
   arrive_late: (x) => `الكابتن عدّى ٢٠د ومش في المطعم`,
   deliver_late: (x) => `التوصيل متأخر ${x.over}د`,
+  cervo_trial_fallback: (x) => `تجربة Cervo: مافيش كابتن ${x.waitedMin || ""}د - رجعناه للاجلك`,
+  cervo_trial_fallback_failed: () => "تجربة Cervo: الرجوع للاجلك فشل - ابعت من البوابة",
+  cervo_trial_cancelled: () => "تجربة Cervo: هم لغوا - ابعت لاجلك من البوابة",
 };
 export function courierAlertText(orderNo, code, x = {}, lang = "en") {
   const X = { ...x, over: x.over != null ? Math.round(x.over) : "?", km: x.km != null ? r1(x.km) : null };
@@ -473,7 +482,9 @@ export const OPS_DDL = Object.freeze([
   `CREATE INDEX IF NOT EXISTS dl_sla_breaches_order_idx ON dl_sla_breaches(order_no)`,
 ]);
 
-const INCIDENT_KINDS = new Set(["provider_cancelled", "refused_far", "no_assignment", "far_hold", "far_risk", "district_courier"]);
+const INCIDENT_KINDS = new Set(["provider_cancelled", "refused_far", "no_assignment", "far_hold", "far_risk", "district_courier",
+  /* تجربة Cervo (٢٢ سبتمبر) — cervotrial.js بيفتحها من كنسته */
+  "cervo_trial_fallback", "cervo_trial_fallback_failed", "cervo_trial_cancelled"]);
 const RESOLUTIONS = new Set(["retry", "switch", "external", "staff", "dismissed", "auto"]);
 // تنبيه «حي» بس: مانبعتش SMS لمخالفة قديمة اتكشفت أول مرة بعد نشر
 const FRESH_MS = 45 * 60_000;
@@ -644,15 +655,25 @@ export function register(app, ctx, deps = {}) {
         // الشركة لغت/رفضت
         if (providerCancelled(sh, times)) {
           const farCut = (cfg.farGuard && cfg.farGuard.fromKm) || 10;
-          const kind = km != null && km > farCut ? "refused_far" : "provider_cancelled";
+          /* شحنة من تجربة Cervo ليها نوع لوحدها (٢٢/٩): النص بيقول للمدير
+             يدوس «ابعت لـلاجلك»، والحادثة بتفضل **مفتوحة** عشان لوحة
+             البوابة تطلّع أزرار القرار. من غير كده كانت هتتسجّل كـ
+             «provider_cancelled» جوّه مخالفات لاجلك — على شركة تانية. */
+          const isTrial = Boolean(sh.dispatch && sh.dispatch.trial && String(sh.provider) === "cervo");
+          const kind = isTrial ? "cervo_trial_cancelled"
+            : km != null && km > farCut ? "refused_far" : "provider_cancelled";
           // الحادثة بتتفتح بس لو الطلب لسه محتاج توصيل (مش اتلغى/اترجع/اتوصّل بمندوب تاني)
           const stillNeeds = ["courier_cancelled", "accepted", "courier_requested"].includes(String(sh.order_status));
           const latest = rows.filter((o) => o.shop_order_no === sh.shop_order_no).every((o) => o.id <= sh.id);
           if (stillNeeds && latest) {
             const fresh = t - ms(times.cancelledAt || sh.updated_at) < FRESH_MS;
             const id = await openIncident(sh.shop_order_no, kind, { shipmentId: sh.id, provider: sh.provider,
-              reason: kind === "refused_far" ? `رفض مشوار ${r1(km)} كم (العقد م٣: حق الرفض فوق ١٠ كم)` : "الشركة لغت الطلب من عندها — مفيش سبب في الـAPI",
-              detail: { km: km != null ? r1(km) : null, cancelledAt: times.cancelledAt, assignedAt: times.assignedAt }, alert: fresh && !sh.is_test });
+              reason: kind === "cervo_trial_cancelled"
+                ? "تجربة Cervo: هم لغوا الطلب من عندهم — دوس «↔ ابعت لـلاجلك» دلوقتي، العميل دافع ومستني"
+                : kind === "refused_far" ? `رفض مشوار ${r1(km)} كم (العقد م٣: حق الرفض فوق ١٠ كم)` : "الشركة لغت الطلب من عندها — مفيش سبب في الـAPI",
+              detail: { km: km != null ? r1(km) : null, cancelledAt: times.cancelledAt, assignedAt: times.assignedAt,
+                ...(kind === "cervo_trial_cancelled" ? { trial: true, suggestProvider: "leajlak" } : {}) },
+              alert: fresh && !sh.is_test });
             if (id) out.incidents++;
           }
         }
@@ -863,6 +884,10 @@ export function register(app, ctx, deps = {}) {
             id: Number(i.id), kind: i.kind, label: CODE_AR[i.kind] || i.kind, reason: i.reason || null, provider: i.provider || null,
             at: isoOf(i.detected_at), open: !i.resolved_at, resolution: i.resolution || null, resolvedBy: i.resolved_by || null,
             resolvedAt: isoOf(i.resolved_at), needsCost: Boolean(i.detail && i.detail.needsCost),
+            /* «ابعت لـX» بضغطة: البوابة بتبرز الزرار ده لما الحادثة تقترح
+               مزوّد بعينه (تجربة Cervo بتقترح لاجلك). */
+            suggestProvider: (i.detail && i.detail.suggestProvider) || null,
+            trial: Boolean(i.detail && i.detail.trial),
           } : null,
           sla: { assignMin: cfg.assignMin, arriveTargetMin: cfg.arriveTargetMin, arriveMin: cfg.arriveMin, graceMin: cfg.deliverGraceMin },
           /* آخر محاولة إرسال + سبب فشلها بالنص، و`blocked` معناها إن

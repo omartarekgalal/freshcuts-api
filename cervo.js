@@ -263,13 +263,21 @@ export function maskedPayload(p) {
    هيوري عمر ربح مش موجود. الشحنة من غير تكلفة بتتعدّ في تقرير المطابقة
    (shipments_without_cost) زي أي شحنة خارجية. */
 export const DEFAULT_CERVO_CONTRACT = Object.freeze({
+  /* known = «عمر أكّد الأسعار دي معاهم». افتراضياً **false** — والرقم اللي
+     تحته تقدير، مش حقيقة.
+
+     الافتراضي = نفس تسعيرة لاجلك (١٩٫٥٥ شامل الضريبة لحد ١٠ كم، و٢٫٣٠/كم
+     بعدها). عمر اختاره عشان خانة التكلفة في الحسابات ماتفضلش فاضية طول
+     التجربة — بس كل شحنة بالرقم ده بتتعلّم `costAssumed` وبتتعدّ في
+     «شحنات من غير تكلفة مؤكدة» لحد ما تسعيرتهم الحقيقية تيجي. */
   known: false,          // عمر لسه ما أكّدش الأسعار معاهم
-  baseFee: null,         // شامل الضريبة
+  baseFee: 19.55,        // شامل الضريبة — تقدير: نفس لاجلك
   includedKm: 10,
-  perKm: null,           // شامل الضريبة، لكل كم بعد includedKm
+  perKm: 2.30,           // شامل الضريبة، لكل كم بعد includedKm — تقدير: نفس لاجلك
   minFare: null,
   vatPct: 15,
   vatIncluded: true,     // هل الأرقام فوق شاملة الضريبة؟
+  assumedNote: "تقديري — مش مؤكد (نفس تسعيرة لاجلك لحد ما Cervo تبعت تسعيرتها)",
 });
 export function cervoContract(deliverySettings = {}) {
   const raw = (deliverySettings || {}).cervoContract;
@@ -281,21 +289,30 @@ export function cervoContract(deliverySettings = {}) {
     perKm: n(c.perKm), minFare: n(c.minFare),
     vatPct: Number.isFinite(Number(c.vatPct)) ? Number(c.vatPct) : 15,
     vatIncluded: c.vatIncluded !== false,
+    assumedNote: String(c.assumedNote || DEFAULT_CERVO_CONTRACT.assumedNote),
   };
   if (out.baseFee === null || !Number.isFinite(out.baseFee)) out.known = false;
   return out;
 }
 const r2 = (n) => Math.round(Number(n) * 100) / 100;
-/* بترجّع {cost, known}. known=false ⇒ cost=null ⇒ التقرير بيعلّمها «تكلفة
-   غير معروفة» بدل ما يحسبها صفر. */
+/* بترجّع {cost, known, assumed}.
+
+   تلات حالات، مش اتنين:
+     • فيه رقم و`known` ⇒ تكلفة مؤكدة (assumed=false) — بتتحسب في الأرباح عادي.
+     • فيه رقم من غير `known` ⇒ **تقدير** (assumed=true) — الرقم بيتخزّن عشان
+       الحسابات ماتبقاش فاضية، بس الشحنة بتتعلّم وبتتعدّ في «من غير تكلفة
+       مؤكدة» في المطابقة. ده الوضع طول تجربة Cervo.
+     • مفيش رقم أصلاً ⇒ null — أحسن من صفر بيوري ربح مش موجود. */
 export function cervoCostFor(km, deliverySettings = {}) {
   const c = cervoContract(deliverySettings);
-  if (!c.known || c.baseFee === null) return { cost: null, known: false, contract: c };
+  if (c.baseFee === null || !Number.isFinite(c.baseFee)) {
+    return { cost: null, known: false, assumed: false, contract: c };
+  }
   const extra = Math.max(0, (Number(km) || 0) - c.includedKm);
   let v = c.baseFee + (c.perKm || 0) * extra;
   if (c.minFare != null) v = Math.max(v, c.minFare);
   if (!c.vatIncluded) v *= 1 + c.vatPct / 100;
-  return { cost: r2(v), known: true, contract: c };
+  return { cost: r2(v), known: c.known, assumed: !c.known, contract: c };
 }
 
 /* ═══ HTTP ══════════════════════════════════════════════════════════════
@@ -511,12 +528,14 @@ export const cervo = {
     try { look = normalizeCervoOrder((await cervoHttp(`/order/${encodeURIComponent(uid)}`)).data); }
     catch (e) { console.error(`[cervo] تأكيد ${order.order_no} بعد الإنشاء فشل: ${e.message}`); }
 
-    const { cost, known } = cervoCostFor(cfg.routeKm, cfg);
+    /* التكلفة: `assumed` معناها إن الرقم من تقدير اللوحة مش من عندهم —
+       بيتخزّن على الشحنة وشاشة المطابقة بتعدّها «من غير تكلفة مؤكدة». */
+    const { cost, assumed } = cervoCostFor(cfg.routeKm, cfg);
     return {
       ref: uid,
       orderNumber: (look && look.dbId) || String(payload.id),
       cost,
-      costAssumed: known,
+      costAssumed: assumed,
       driver: (look && look.driver) || null,
       status: (look && look.status) || "pending",
       rawStatus: (look && look.rawStatus) || null,

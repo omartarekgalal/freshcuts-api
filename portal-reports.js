@@ -145,7 +145,10 @@ FROM flag`,
   courierCost: `${BASE_CTE}
 SELECT COALESCE(sum(s.cost) FILTER (WHERE s.status <> 'cancelled'),0)::float AS courier_cost,
        count(*) FILTER (WHERE s.status <> 'cancelled')::int AS shipments,
-       count(*) FILTER (WHERE s.status <> 'cancelled' AND s.cost IS NULL)::int AS shipments_without_cost,
+       -- «من غير تكلفة **مؤكدة**»: مفيش رقم خالص، أو الرقم تقدير من اللوحة
+       -- (Cervo — الـAPI بتاعهم مافيهوش سعر). الاتنين لازم يبانوا للمالية.
+       count(*) FILTER (WHERE s.status <> 'cancelled'
+                          AND (s.cost IS NULL OR (s.dispatch->>'costAssumed') = 'true'))::int AS shipments_without_cost,
        count(*) FILTER (WHERE s.status = 'cancelled')::int AS cancelled_shipments,
        count(DISTINCT s.shop_order_no) FILTER (WHERE s.status <> 'cancelled')::int AS orders_with_courier
   FROM dl_shipments s

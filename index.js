@@ -69,6 +69,7 @@ import * as syshealth from "./syshealth.js";
 import * as portal from "./portal.js";
 import * as courierops from "./courierops.js";
 import * as courierlive from "./courierlive.js";
+import * as cervotrial from "./cervotrial.js";
 import * as districts from "./districts.js";
 import * as kitchen from "./kitchen.js";
 import * as adsreport from "./adsreport.js";
@@ -3062,7 +3063,10 @@ scorecard.register(app, moduleCtx, {
 // attribution/ads فوق. shop هو المالك الوحيد لدورة حياة الطلب.
 let shopApi = null;
 const payApi = pay.register(app, moduleCtx, { shop: () => shopApi });
-const deliveryApi = deliveryMod.register(app, moduleCtx, { shop: () => shopApi });
+let cervoTrialApi = null;
+// تجربة Cervo (٢٢/٩): أول N طلب حقيقي بيروح لهم بدل لاجلك، بشبكة أمان بترجّع
+// للاجلك لو مافيش كابتن. ربط متأخّر — cervotrial بيتسجّل بعد courierops.
+const deliveryApi = deliveryMod.register(app, moduleCtx, { shop: () => shopApi, cervoTrial: () => cervoTrialApi });
 // التوصيل بالحي (٢١/٩): جدول أسعار بالحي لمندوبين بره لاجلك — بيفتح المناطق
 // اللي فوق سقف المسافة بدل ما يشوفها العميل «خارج النطاق».
 districts.register(app, moduleCtx);
@@ -3140,6 +3144,9 @@ courierOpsApi = courierops.register(app, moduleCtx, { shop: () => shopApi, deliv
 // 🗺️ التتبّع الحي (٢١ سبتمبر): أثر الكابتن على الخريطة (لاجلك بترجّع إحداثيات)،
 // ورابط المندوب الخارجي لمرة واحدة (/d/<token>) اللي بيبعت موقعه ويسجّل التسليم.
 courierLiveApi = courierlive.register(app, moduleCtx, { shop: () => shopApi, delivery: () => deliveryApi, portal: () => portalApi });
+/* 🧪 تجربة Cervo — لازم بعد courierops (بتستعمل openIncident/onRedispatch بتاعته)
+   وبعد delivery (بتنده dispatch/cancelShipment). شبكة الأمان بتكنس كل دقيقة. */
+cervoTrialApi = cervotrial.register(app, moduleCtx, { shop: () => shopApi, delivery: () => deliveryApi, courierOps: () => courierOpsApi });
 // شاشة المطبخ (KDS) للمطعم كله: webhooks تاب سينس + استطلاع API الشريك + طلبات المتجر.
 // دخول بحساب «مطبخ» من «فريق البورتال» — نفس توكن البورتال ومقفول على /api/kitchen/*.
 kitchen.register(app, moduleCtx, { portal: () => portalApi, tsp: () => tspApi });

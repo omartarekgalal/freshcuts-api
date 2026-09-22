@@ -301,10 +301,26 @@ t("محطات الـhistory بتتقرا UTC", () => {
 });
 
 /* ═══ التكلفة ═══ */
-t("من غير أسعار مؤكدة التكلفة بتفضل فاضية — مش صفر", () => {
-  const r = cervoCostFor(11, {});
+t("الافتراضي تقدير معلّم — رقم في الحسابات، بس مش مؤكد", () => {
+  /* عمر (٢٢/٩): المالية ماتبقاش فاضية طول التجربة، فالافتراضي = نفس
+     تسعيرة لاجلك. بس `assumed` بيفضل مرفوع لحد ما Cervo تبعت تسعيرتها. */
+  const r = cervoCostFor(9, {});
+  assert.equal(r.cost, 19.55);
+  assert.equal(r.known, false);
+  assert.equal(r.assumed, true);
+  /* فوق ١٠ كم: ٢٫٣٠/كم زي لاجلك */
+  assert.equal(cervoCostFor(12, {}).cost, 24.15);
+});
+t("مفيش سعر أساسي خالص ⇒ null — صفر كان هيوري ربح مش موجود", () => {
+  const r = cervoCostFor(11, { cervoContract: { baseFee: null } });
   assert.equal(r.cost, null);
   assert.equal(r.known, false);
+  assert.equal(r.assumed, false);
+});
+t("تسعيرة مؤكدة ⇒ assumed=false والشحنة بتخرج من «من غير تكلفة مؤكدة»", () => {
+  const r = cervoCostFor(9, { cervoContract: { known: true, baseFee: 18, includedKm: 10 } });
+  assert.equal(r.known, true);
+  assert.equal(r.assumed, false);
 });
 t("لما عمر يكتب الأسعار بتتحسب", () => {
   const cfg = { cervoContract: { known: true, baseFee: 25, includedKm: 10, perKm: 3, vatIncluded: true } };
@@ -318,6 +334,7 @@ t("أسعار من غير ضريبة بتتضاف عليها", () => {
 });
 t("known:true من غير سعر أساسي = لسه مش معروف", () => {
   assert.equal(cervoContract({ cervoContract: { known: true, baseFee: null } }).known, false);
+  assert.equal(cervoCostFor(5, { cervoContract: { known: true, baseFee: null } }).cost, null);
 });
 t("حد أدنى للأجرة بيتحسب", () => {
   const cfg = { cervoContract: { known: true, baseFee: 10, includedKm: 10, perKm: 1, minFare: 22 } };
