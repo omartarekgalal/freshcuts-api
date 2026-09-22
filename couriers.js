@@ -549,6 +549,10 @@ export const isDuplicateMsg = (m) => LJ_DUP_RE.test(String(m || ""));
 /* حالات لاجلك النصّية → حالتنا الموحّدة. متصدّرة عشان لوحتهم
    (leajlakdash.js) بتستعمل نفس الأسماء بالظبط. */
 export const ljStageOf = (raw) => ljStage(raw);
+/* فحص صامت: «هي دي حالة عندهم ولا لأ؟» — من غير ما يكتب في اللوج.
+   القراءة من جدولهم بتسأل السؤال ده على كل خلية، فاللوج كان هيمتلي
+   بأسماء محلات وأرقام وكأنها حالات مش معروفة. */
+export const isLjStatus = (raw) => Boolean(LJ_STATUS[ljNorm(raw)]);
 
 const leajlak = {
   id: "leajlak",

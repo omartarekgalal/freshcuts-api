@@ -9,16 +9,45 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
-import { parseRows, rowToOrder, riyadhToIso, parseDetail, makeLeajlakDash } from "./leajlakdash.js";
+import { parseRows, parseTable, rowToOrder, riyadhToIso, parseDetail, makeLeajlakDash,
+         looksDate, looksMoney, looksStatus, looksName } from "./leajlakdash.js";
 
+/* ── الـHTML الحقيقي من اللايف (٢٢/٩) ──────────────────────────────────
+   الفخ: الـ<thead> فيه ١٢ عنوان والـ<tbody> فيه **١٤ خلية** — عمودين
+   زياده من غير عنوان (اسم العميل و«Fast») مدسوسين قبل التاريخ. القراءة
+   بالترتيب كانت بتدّي: الكابتن = "2026-09-21" والحالة = "Fast". */
 const LIST_HTML = `
 <table><thead><tr><th>#</th><th>Order ID</th><th>Client ID</th><th>Client Shopname</th><th>Area</th>
 <th>Zone</th><th>Amount</th><th>Del. Charge</th><th>Order Date</th><th>Status</th><th>Captain</th><th>Action</th></tr></thead>
 <tbody>
 <tr><td><input type="checkbox"></td><td>OR#3263217</td><td>#W1790011118692</td><td>FRESH CUTS-JED-SALAMAH</td>
-<td>NORTH JEDDAH</td><td>AL SALAMAH(JED)</td><td>96.00 SAR</td><td>17.00 SAR</td><td>2026-09-21</td>
-<td><span class="badge">Delivered</span></td><td>ELFADIL IBAHIM -JED - leajlak11 A</td>
+<td>NORTH JEDDAH</td><td>AL SALAMAH(JED)</td><td>96.00 SAR</td><td>17.00 SAR</td>
+<td>Ahmed Elbeltagy</td><td>Fast</td>
+<td>2026-09-21</td><td><span class="badge">Delivered</span></td><td>ELFADIL IBAHIM -JED - leajlak11 A</td>
 <td><a href="https://app.leajlak.com/orders-client/3263217"><i class="eye"></i></a></td></tr>
+</tbody></table>`;
+
+/* لو صلّحوا جدولهم يوم من الأيام (١٢ عنوان = ١٢ خلية) لازم يفضل شغّال */
+const LIST_HTML_TIDY = `
+<table><thead><tr><th>#</th><th>Order ID</th><th>Client ID</th><th>Client Shopname</th><th>Area</th>
+<th>Zone</th><th>Amount</th><th>Del. Charge</th><th>Order Date</th><th>Status</th><th>Captain</th><th>Action</th></tr></thead>
+<tbody>
+<tr><td></td><td>OR#3263217</td><td>#W1790011118692</td><td>FRESH CUTS-JED-SALAMAH</td>
+<td>NORTH JEDDAH</td><td>AL SALAMAH(JED)</td><td>96.00 SAR</td><td>17.00 SAR</td>
+<td>2026-09-21</td><td>Delivered</td><td>ELFADIL IBAHIM -JED - leajlak11 A</td>
+<td><a href="https://app.leajlak.com/orders-client/3263217">x</a></td></tr>
+</tbody></table>`;
+
+/* طلب جديد لسه من غير كابتن — الخانة بتبقى فاضية، ومش تحذير */
+const LIST_HTML_NEW = `
+<table><thead><tr><th>#</th><th>Order ID</th><th>Client ID</th><th>Client Shopname</th><th>Area</th>
+<th>Zone</th><th>Amount</th><th>Del. Charge</th><th>Order Date</th><th>Status</th><th>Captain</th><th>Action</th></tr></thead>
+<tbody>
+<tr><td></td><td>OR#3299001</td><td>#W1790099900011</td><td>FRESH CUTS-JED-SALAMAH</td>
+<td>NORTH JEDDAH</td><td>AL SALAMAH(JED)</td><td>150.00 SAR</td><td>17.00 SAR</td>
+<td>Sara A</td><td>Fast</td>
+<td>2026-09-22</td><td>New Order</td><td></td>
+<td><a href="https://app.leajlak.com/orders-client/3299001">x</a></td></tr>
 </tbody></table>`;
 
 const DETAIL_HTML = `
@@ -42,21 +71,78 @@ const DETAIL_HTML = `
 <tr><td>Delivered</td><td></td><td>ELFADIL IBAHIM -JED - leajlak11 A</td><td>2026-09-21 09:29 PM</td></tr>
 </tbody></table>`;
 
-test("صف القايمة → رقمهم الداخلي ورقمنا والرسوم والكابتن", () => {
-  const rows = parseRows(LIST_HTML);
-  assert.equal(rows.length, 1);
+test("جدولهم المكسور (١٢ عنوان / ١٤ خلية): الكابتن والحالة صح مش مزحلقين", () => {
+  const { headers, rows } = parseTable(LIST_HTML);
+  assert.equal(headers.length, 12);
+  assert.equal(rows[0].cells.length, 14, "الصف فيه عمودين زياده من غير عنوان");
   const o = rowToOrder(rows[0], "W1790011118692");
   assert.equal(o.theirNo, "3263217");
-  assert.equal(o.orderNo, "W1790011118692");       // الـ# اللي قدامه بيتشال
-  assert.equal(o.feeEx, 17);
-  assert.equal(o.feeIncl, 19.55);                  // ١٧ × ١٫١٥ = العقد بالظبط
+  assert.equal(o.orderNo, "W1790011118692");
+  assert.equal(o.rawStatus, "Delivered", "مش «Fast»");
+  assert.equal(o.captain, "ELFADIL IBAHIM -JED - leajlak11 A", "مش التاريخ");
+  assert.equal(o.date, "2026-09-21");
   assert.equal(o.amount, 96);
+  assert.equal(o.feeEx, 17);
+  assert.equal(o.feeIncl, 19.55);
+  assert.deepEqual(o.warnings, [], "قراءة نضيفة = مفيش تحذيرات");
+  // اسم العميل عمره ما بيتخزّن
+  assert.ok(!JSON.stringify(o).includes("Ahmed Elbeltagy"));
+});
+
+test("لو صلّحوا الجدول (١٢ = ١٢) يفضل شغّال زي ما هو", () => {
+  const o = rowToOrder(parseTable(LIST_HTML_TIDY).rows[0], "W1790011118692");
   assert.equal(o.rawStatus, "Delivered");
   assert.equal(o.captain, "ELFADIL IBAHIM -JED - leajlak11 A");
+  assert.equal(o.date, "2026-09-21");
+  assert.deepEqual(o.warnings, []);
+});
+
+test("طلب لسه من غير كابتن: فاضي من غير تحذير كاذب", () => {
+  const o = rowToOrder(parseTable(LIST_HTML_NEW).rows[0], "W1790099900011");
+  assert.equal(o.rawStatus, "New Order");
+  assert.equal(o.captain, null);
+  assert.equal(o.date, "2026-09-22");
+  assert.deepEqual(o.warnings, []);
+});
+
+test("الحرّاس: تاريخ/فلوس/حالة مايعدّوش كاسم كابتن", () => {
+  assert.equal(looksDate("2026-09-21"), true);
+  assert.equal(looksMoney("17.00 SAR"), true);
+  assert.equal(looksStatus("Delivered"), true);
+  assert.equal(looksStatus("Fast"), false, "«Fast» مش حالة");
+  assert.equal(looksName("2026-09-21"), false);
+  assert.equal(looksName("17.00 SAR"), false);
+  assert.equal(looksName("Delivered"), false);
+  assert.equal(looksName("ELFADIL IBAHIM -JED - leajlak11 A"), true);
+  assert.equal(looksName(""), false);
+});
+
+test("عمود زيادة تاني يوم من الأيام: المرساة هي الحالة فمفيش زحلقة", () => {
+  for (const extra of ["<td>EXTRA</td>", "<td>1.5 km</td>", "<td>حاجة جديدة</td>"]) {
+    const html = LIST_HTML.replace("<td>2026-09-21</td>", `${extra}<td>2026-09-21</td>`);
+    const o = rowToOrder(parseTable(html).rows[0], "W1790011118692");
+    assert.equal(o.rawStatus, "Delivered", extra);
+    assert.equal(o.captain, "ELFADIL IBAHIM -JED - leajlak11 A", extra);
+    assert.equal(o.date, "2026-09-21", extra);
+  }
+});
+
+test("لو الحالة نفسها اختفت: تحذير صريح ومفيش قيمة مخترعة", () => {
+  const html = LIST_HTML.replace("<span class=\"badge\">Delivered</span>", "???");
+  const o = rowToOrder(parseTable(html).rows[0], "W1790011118692");
+  assert.equal(o.rawStatus, null, "ما نخزّنش قيمة مش حالة");
+  assert.ok(o.warnings.some((w) => /مفيش حالة معروفة/.test(w)));
+});
+
+test("خلية الكابتن فيها خردة: بترجع فاضية مع تحذير مش بتتخزّن", () => {
+  const html = LIST_HTML.replace("<td>ELFADIL IBAHIM -JED - leajlak11 A</td>", "<td>2026-09-21</td>");
+  const o = rowToOrder(parseTable(html).rows[0], "W1790011118692");
+  assert.equal(o.captain, null);
+  assert.ok(o.warnings.some((w) => /الكابتن مش منطقي/.test(w)));
 });
 
 test("رقم طلب تاني في نفس الصفحة مابيتاخدش بالغلط", () => {
-  assert.equal(rowToOrder(parseRows(LIST_HTML)[0], "W9999999999999"), null);
+  assert.equal(rowToOrder(parseTable(LIST_HTML).rows[0], "W9999999999999"), null);
 });
 
 test("وقت لوحتهم بتوقيت الرياض → UTC", () => {

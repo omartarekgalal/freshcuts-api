@@ -1298,9 +1298,25 @@ export function register(app, ctx, deps = {}) {
         trigger: trigger || null, by: actor || null,
         note: `اتسترجع من لوحة لاجلك — طلبهم رقم ${d.providerOrderNo || "?"}` },
     ];
+    /* قراءة مشكوك فيها = علامة على الشحنة + صرخة في اللوج. جدولهم اتغيّر
+       مرة من غير ما يقولوا (١٢ عنوان و١٤ خلية) وطلع اسم الكابتن تاريخ،
+       فالمفروض ده يبان فوراً مش يتخزّن في صمت. */
+    const warnings = Array.isArray(d.warnings) ? d.warnings.filter(Boolean) : [];
+    if (!d.captain) warnings.push("اسم الكابتن ما اتقراش من لوحتهم");
+    if (!ljStageOf(d.rawStatus)) warnings.push(`حالة مش معروفة من لوحتهم: "${String(d.rawStatus || "").slice(0, 40)}"`);
+    if (warnings.length) {
+      console.error(`[delivery] استرجاع ${orderNo} من لوحة لاجلك فيه قراءة مشكوك فيها: ${warnings.join(" · ")}`);
+      courierEvent("courier_dispatch", orderNo, {
+        source: "delivery", ok: false,
+        summary: "قراءة لوحة لاجلك مش مضبوطة — راجع الشحنة",
+        data: { provider: "leajlak", reason: "dash_parse", warnings: warnings.slice(0, 5) },
+      });
+    }
     const disp = jb({ status: "adopted", assigned: status !== "pending", adopted: true,
                       adoptedVia: "leajlak_dashboard", providerOrderNo: d.providerOrderNo || null,
                       captain: d.captain || null,
+                      parseWarnings: warnings.length ? warnings.slice(0, 5) : null,
+                      parseShape: d.headerCount != null ? { headers: d.headerCount, cells: d.cellCount } : null,
                       message: "الطلب كان مسجّل عند لاجلك من محاولة ضاعت — اتسترجع من لوحتهم" });
     const vals = [orderNo, d.providerOrderNo ? String(d.providerOrderNo) : null, status,
                   d.driver ? jb(d.driver) : null,
@@ -2003,8 +2019,20 @@ export function register(app, ctx, deps = {}) {
         dashMissing: dash.configured() ? null : dash.missing() });
     }
     const live = await shipmentOf(orderNo);
-    if (live && String(live.status) !== "cancelled") {
-      return c.json({ ok: false, error: "already_dispatched", ref: live.provider_ref || null }, 409);
+    /* `refresh:true` = «اسحب الحقيقة من لوحتهم تاني على الصف الموجود».
+       بنحتاجها لما القراءة تطلع غلط (جدولهم اتغيّر) أو لما نصحّح شحنة
+       قديمة — من غيرها مكنّاش نقدر نعدّل صف موجود إلا من قاعدة البيانات. */
+    if (live && String(live.status) !== "cancelled" && !b.refresh) {
+      return c.json({ ok: false, error: "already_dispatched", ref: live.provider_ref || null,
+        message: "فيه شحنة على الطلب — ابعت refresh:true لو عايز تسحب بياناتها من لوحتهم تاني" }, 409);
+    }
+    if (live && b.refresh) {
+      if (provider.id !== "leajlak") return c.json({ ok: false, error: "not_leajlak" }, 409);
+      const d = await dash.lookup(orderNo);
+      if (!d || !d.found) return c.json({ ok: false, error: "not_found_on_dashboard", lookup: d }, 404);
+      const rec = await adoptFromDash(orderNo, d, { trigger: "admin_refresh", actor: "admin", shipmentId: live.id });
+      return c.json({ ok: true, refreshed: true, shipmentId: Number(live.id), recover: rec,
+        warnings: d.warnings || [] });
     }
     const row = (await pool.query("SELECT * FROM shop_orders WHERE order_no=$1", [orderNo])).rows[0];
     if (!row) return c.json({ ok: false, error: "not_found" }, 404);
