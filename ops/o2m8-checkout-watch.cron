@@ -1,0 +1,7 @@
+# Fresh Cuts — checkout watchdog (added 2026-09-22).
+# Every 5 minutes. The script itself refuses to run outside the restaurant's
+# open hours (settings.hours via isOpenNow), so this cadence is safe year-round.
+# Kill switch: touch /etc/o2m8/checkout-watch.off   Rollback: rm this file.
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+*/5 * * * * root /usr/local/bin/o2m8-checkout-watch

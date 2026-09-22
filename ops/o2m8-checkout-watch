@@ -1,0 +1,43 @@
+#!/bin/bash
+# ═══════════════════════════════════════════════════════════════════════════
+# Fresh Cuts — CHECKOUT WATCHDOG  (added 2026-09-22)
+#
+# WHY: on 22/9 a pre-pay upsell screen broke checkout at 16:33 Riyadh. Paid
+# orders went to zero while customers kept reaching "ready to pay". Nobody
+# noticed for 2h17m. This fires an SMS when people are at the payment door
+# and nothing is being paid, during open hours only.
+#
+# It adds NO new notification path: it runs checkoutwatch.js INSIDE the
+# running API container, which uses staffalerts.js -> accounts.sendSms, the
+# same channel as every other manager alert. Phones + language stay in the
+# dashboard. Nothing is restarted or redeployed.
+#
+# KILL SWITCH:  touch /etc/o2m8/checkout-watch.off    (takes effect next run)
+# ROLLBACK:     rm /etc/cron.d/o2m8-checkout-watch
+# DRY RUN:      /usr/local/bin/o2m8-checkout-watch --dry     (never sends)
+# LOG:          /var/log/o2m8-checkout-watch.log
+# ═══════════════════════════════════════════════════════════════════════════
+set -u
+OFF=/etc/o2m8/checkout-watch.off
+PREFIX=ifymn6uirp60hjuu7f76eoz6          # Coolify app uuid; the -NNNN suffix changes each deploy
+LIB=/usr/local/lib/o2m8
+LOG=/var/log/o2m8-checkout-watch.log
+say() { echo "$(date -u +%FT%TZ) $*" >> "$LOG"; }
+
+[ -f "$OFF" ] && { say "SKIPPED (kill switch $OFF)"; exit 0; }
+API=$(docker ps --format '{{.Names}}' | grep "^${PREFIX}-" | head -1)
+[ -z "$API" ] && { say "SKIPPED (no running container ${PREFIX}-*)"; exit 0; }
+for f in checkoutwatch.js checkout-watch-run.mjs; do
+  [ -f "$LIB/$f" ] || { say "FAILED (missing $LIB/$f)"; exit 1; }
+done
+
+# If the app ever ships checkoutwatch.js itself, the in-app scheduler owns this
+# job and the cron copy must stand down.
+if docker exec "$API" test -f /app/checkoutwatch.js 2>/dev/null; then
+  say "SKIPPED (app now ships checkoutwatch.js - remove this cron)"; exit 0
+fi
+
+docker cp "$LIB/checkoutwatch.js"        "$API:/app/_checkoutwatch.js"     >/dev/null 2>&1 || { say "FAILED (docker cp module)"; exit 1; }
+docker cp "$LIB/checkout-watch-run.mjs"  "$API:/app/_checkout_watch_run.mjs"   >/dev/null 2>&1 || { say "FAILED (docker cp runner)"; exit 1; }
+OUT=$(docker exec -w /app "$API" node /app/_checkout_watch_run.mjs "$@" 2>&1 | tail -3)
+say "$OUT"
