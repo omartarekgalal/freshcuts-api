@@ -16,6 +16,7 @@
 
 import * as orderEvents from "./order-events.js";
 import { soldOutOf } from "./soldout.js";
+import { preorderCfg, isDueNow } from "./preorder.js";
 import {
   normConfig, buildBoard, publicConfig, validBump, isStage, STAGE_AR, CHANNELS, normName,
 } from "./kitchen-core.js";
@@ -52,13 +53,17 @@ export const WEBHOOK_SQL = `
 export const SHOP_SQL = `
   SELECT o.order_no, o.status, o.option, o.items, o.notes, o.address, o.pos_order_id,
          o.created_at, o.updated_at, o.pos_ready_at, o.accepted_at, o.is_test,
+         o.scheduled_for, o.scheduled_slot,
          o.delivery_quote->'farZone' AS far_zone,
          s.status AS ship_status, s.arrived_at AS ship_arrived_at, s.picked_at AS ship_picked_at
     FROM shop_orders o
     LEFT JOIN LATERAL (
       SELECT status, arrived_at, picked_at FROM dl_shipments
        WHERE shop_order_no = o.order_no ORDER BY id DESC LIMIT 1) s ON TRUE
-   WHERE o.created_at > NOW() - make_interval(hours => $1::int)
+   /* الطلب المسبق بيتحسب بموعده مش بساعة ما اتطلب — اتطلب امبارح بالليل
+      وبيتنفّذ بكرة بالليل، فنافذة الساعات بتاعة الطلب العادي كانت بتوقّعه. */
+   WHERE (o.created_at > NOW() - make_interval(hours => $1::int)
+          OR (o.scheduled_for IS NOT NULL AND o.scheduled_for > NOW() - INTERVAL '6 hours'))
      AND o.status NOT IN ('pending_payment','expired')
      AND NOT COALESCE(o.is_test, false)
    ORDER BY o.created_at DESC LIMIT 200`;
@@ -218,8 +223,14 @@ export function register(app, ctx, deps = {}) {
       if (Number.isFinite(pu) && Number.isFinite(cu) && pu > cu) byId.set(id, { ...cur, order: p.order, slugs: {}, lastAt: p.lastAt, via: "poll" });
       if (Date.parse(p.firstSeenAt) < Date.parse(cur.firstSeenAt)) byId.get(id).firstSeenAt = p.firstSeenAt;
     }
+    /* 📅 الطلب المسبق مابيظهرش على شاشة المطبخ غير لما ييجي وقته (بداية
+       الشباك − مهلة التحضير). قبل كده مكانه «طلبات بكرة» في بوابة المدير —
+       شاشة المطبخ بتاعة اللي بيتطبخ **دلوقتي**، ولو حطينا طلبات بكرة فيها
+       الطباخ هيعملها بالليل. */
+    const poCfg = preorderCfg(settings || {});
+    const shopRows = (shop || []).filter((r) => isDueNow(r?.scheduled_for, poCfg));
     const orders = buildBoard({
-      tsOrders: [...byId.values()], shopRows: shop || [], bumps, catMap: m.catMap || {}, prodCat: m.prodCat || {},
+      tsOrders: [...byId.values()], shopRows, bumps, catMap: m.catMap || {}, prodCat: m.prodCat || {},
       optionNames: m.optionNames || {}, cfg, now: now(),
     });
     const soldOut = Object.entries(soldOutOf(settings, now())).map(([id, e]) => ({ id, name: e.name || `صنف #${id}`, until: e.until || null }));

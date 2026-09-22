@@ -149,7 +149,8 @@ test("toPortalOrder: نفس شكل العقد بالظبط", () => {
   const o = toPortalOrder(baseRow(), {}, NOW);
   assert.deepEqual(Object.keys(o).sort(), [
     "acceptedAt", "ackAt", "ackBy", "address", "courier", "courierOps", "createdAt", "customer", "deliveryFee", "farZone", "isTest", "items",
-    "itemsCount", "notes", "option", "orderNo", "paidAt", "paidWith", "posOrderId", "readyAt", "sla", "stageLabel",
+    "itemsCount", "notes", "option", "orderNo", "paidAt", "paidWith", "posOrderId", "readyAt",
+    "scheduledFor", "scheduledLabel", "scheduledSlot", "sla", "stageLabel",
     "status", "subtotal", "total", "updatedAt"].sort());
   assert.equal(o.total, 95.5);
   assert.equal(o.itemsCount, 3, "عنوان الباقة مش صنف");

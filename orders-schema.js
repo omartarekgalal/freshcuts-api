@@ -42,6 +42,13 @@ export const ORDER_COLUMNS = Object.freeze([
      **مش** نفس ts_orders.order_id، فمن غير العمود ده مفيش طريقة نربط مرآة
      الطلب في نقطة البيع بطلب الموقع — والتقارير وملف العميل بيضيعوا. */
   { name: "pos_tenant_order_id", type: "TEXT" },
+  /* ٢٢/٩ — الطلب المسبق (preorder.js): العميل بيدفع النهارده لموعد بكرة.
+     scheduled_for = بداية الشباك (UTC) — المندوب ودورة المطبخ بيقروا منها.
+     scheduled_slot = مفتاح الشباك "YYYY-MM-DD#HH:MM-HH:MM" — منه النص العربي
+     في نقطة البيع والمطبخ والبوابة من غير ما حد يحسب الميعاد تاني.
+     NULL = طلب عادي دلوقتي (كل الطلبات القديمة). */
+  { name: "scheduled_for", type: "TIMESTAMPTZ" },
+  { name: "scheduled_slot", type: "TEXT" },
 ]);
 
 export const ORDER_INDEXES = Object.freeze([
@@ -52,6 +59,7 @@ export const ORDER_INDEXES = Object.freeze([
   { name: "shop_orders_pos_idx", sql: "CREATE INDEX IF NOT EXISTS shop_orders_pos_idx ON shop_orders(pos_order_id) WHERE pos_order_id IS NOT NULL" },
   { name: "shop_orders_attrib_idx", sql: "CREATE INDEX IF NOT EXISTS shop_orders_attrib_idx ON shop_orders(attrib_source, created_at DESC)" },
   { name: "shop_orders_updated_idx", sql: "CREATE INDEX IF NOT EXISTS shop_orders_updated_idx ON shop_orders(updated_at DESC)" },
+  { name: "shop_orders_sched_idx", sql: "CREATE INDEX IF NOT EXISTS shop_orders_sched_idx ON shop_orders(scheduled_for) WHERE scheduled_for IS NOT NULL" },
 ]);
 
 export const addColumnSql = (c) => `ALTER TABLE shop_orders ADD COLUMN IF NOT EXISTS ${c.name} ${c.type}`;

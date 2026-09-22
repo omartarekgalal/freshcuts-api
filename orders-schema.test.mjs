@@ -60,6 +60,8 @@ test("every §4-2 column is declared with the planned type", () => {
     // ٢١/٩ — ts_orders.order_id بتاع مرآة الطلب في نقطة البيع (من
     // tenant_order_id بتاع API الشركاء). pos_order_id المقنّع مالوش علاقة بيه.
     pos_tenant_order_id: "TEXT",
+    scheduled_for: "TIMESTAMPTZ",
+    scheduled_slot: "TEXT",
   });
 });
 

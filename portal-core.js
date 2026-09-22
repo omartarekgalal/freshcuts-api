@@ -12,6 +12,7 @@
 import crypto from "node:crypto";
 import { STAGES, slaCheck } from "./shop.js";
 import { leaveAtDoor } from "./couriers.js";
+import { slotLabel } from "./preorder.js";
 
 /* kitchen (١٩ سبتمبر) = شاشة المطبخ (/kitchen/) بس — قراية + «تقديم» محلي للمرحلة.
    ممنوع من كل مسارات البورتال (requirePortal بيرفضه إلا لو المسار قال kitchen). */
@@ -391,6 +392,11 @@ export function toPortalOrder(r, slaCfg = {}, now = Date.now()) {
     status: r.status,
     stageLabel: stageLabel(r),
     option: r.option,
+    /* 📅 طلب مسبق: العميل دفع ونحن اللي هنجهّزه في الموعد ده. الكارت لازم
+       يقوله «بكرة ٧:٠٠م» بصوت عالي — من غيره الكاشير هيعمله دلوقتي. */
+    scheduledFor: r.scheduled_for ? new Date(r.scheduled_for).toISOString() : null,
+    scheduledSlot: r.scheduled_slot || null,
+    scheduledLabel: r.scheduled_slot ? slotLabel(r.scheduled_slot, now) : null,
     total: num(r.total) ?? 0,
     subtotal: num(r.subtotal) ?? 0,
     deliveryFee: num(r.delivery_fee) ?? 0,

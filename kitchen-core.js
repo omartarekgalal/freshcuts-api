@@ -24,6 +24,7 @@
 
 import { itemsOf, farZoneOf } from "./portal-core.js";
 import { leaveAtDoor } from "./couriers.js";
+import { slotLabel } from "./preorder.js";
 
 export const STAGES = Object.freeze(["new", "prep", "ready", "done"]);
 export const STAGE_AR = Object.freeze({ new: "جديد", prep: "بيتحضّر", ready: "جاهز", done: "اتسلّم" });
@@ -514,7 +515,12 @@ export function buildBoard({ tsOrders = [], shopRows = [], bumps = new Map(), ca
       table: null,
       items: itemsFromShop(r.items, cfg, { catMap, prodCat }),
       notes,
-      flags: { leaveAtDoor: Boolean(door), farZone: far ? { km: far.km } : null, inPos: Boolean(r.pos_order_id), posFailed: r.status === "paid_pos_failed" },
+      flags: {
+        leaveAtDoor: Boolean(door), farZone: far ? { km: far.km } : null,
+        inPos: Boolean(r.pos_order_id), posFailed: r.status === "paid_pos_failed",
+        // 📅 طلب مسبق وصل وقته — الموعد لازم يبان على التذكرة نفسها
+        slot: r.scheduled_slot ? { key: r.scheduled_slot, label: slotLabel(r.scheduled_slot, now), at: isoOf(r.scheduled_for) } : null,
+      },
       courier,
       via: "store",
     });

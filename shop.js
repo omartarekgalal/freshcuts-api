@@ -37,6 +37,7 @@ import { plausibleName } from "./posnames.js";
 import { VAT_RATE as BUNDLE_VAT } from "./bundles.js";
 import { MULTIPLY as MONEY_MULTIPLY, rescaleItems, stampMf, scaleOf } from "./money.js";
 import { isOpenNow } from "./carts.js";
+import { preorderCfg, slotCounts, validateSlot, isDueNow, slotLabel } from "./preorder.js";
 import { soldOutOf, soldOutLines, soldOutMessage } from "./soldout.js";
 import { dispatchDue, dispatchDelayOf } from "./delivery.js";
 import { makeStaffNotifier, slaAlertText, posFailedText, tabsenseDownText } from "./staffalerts.js";
@@ -203,7 +204,11 @@ export function posNotesOf(row, { withFee = false, now = Date.now() } = {}) {
   const feeNote = withFee && Number(row.delivery_fee) > 0 ? `توصيل ${Number(row.delivery_fee)}ر` : "";
   const far = farZoneOfRow(row);
   const dd = districtOfRow(row);
+  /* الطلب المسبق أول سطر عمداً: الكاشير والمطبخ لازم يشوفوا «لموعد …» قبل
+     أي حاجة تانية، وإلا الطلب هيتعمل دلوقتي وهو لبكرة. */
+  const sched = row.scheduled_slot ? `📅 لموعد ${slotLabel(row.scheduled_slot, now)}` : "";
   return [
+    sched,
     delivery ? "توصيل" : "استلام",
     // «التوصيل بالحي»: مندوب بره لاجلك بيستلم الطلب — الكاشير لازم يعرف
     // إن مفيش كابتن جاي من الشركة، والمدير هو اللي هيرتّب من البوابة.
@@ -213,7 +218,7 @@ export function posNotesOf(row, { withFee = false, now = Date.now() } = {}) {
     far ? `مشوار بعيد ${far.km} كم🛵` : "",
     delivery && leaveAtDoor(row.address) ? "اتركه عند الباب🚪" : "",
     `طُلب ${hm(row.created_at)}`,
-    row.option === "pickup" ? `استلام ${hm(now + 40 * 60_000)}` : "",
+    row.option === "pickup" && !row.scheduled_slot ? `استلام ${hm(now + 40 * 60_000)}` : "",
     feeNote,
     "مدفوع أونلاين✅",
     // ملاحظات الأكل بس (بتاعة الطلب) — ملاحظات التوصيل بتروح قسم التوصيل/المندوب (عمر ١٩/٩)
@@ -750,15 +755,28 @@ export function register(app, ctx, deps = {}) {
     const ip = c.req.header("cf-connecting-ip") || c.req.header("x-forwarded-for") || "?";
     if (rateLimited(ip)) return fail("rate_limited", 429);
     if (!pay.configured()) return fail("payments_not_configured", 503);
+
+    try { b = await c.req.json(); } catch { b = {}; return fail("bad json", 400); }
+
+    /* ── الموعد ───────────────────────────────────────────────────────────
+       طلب مسبق (٢٢/٩): العميل بيختار شباك من preorder.js ويدفع دلوقتي.
+       ده **الاستثناء الوحيد** لحاجز «المطعم مقفول» — دي الفكرة كلها: نمسك
+       طلب بكرة من الليلة. من غير موعد صالح، القفل بيفضل زي ما هو. */
+    const settingsNow = await getSettingsData();
+    let scheduled = null;
+    if (b.scheduled_slot) {
+      const poCfg = preorderCfg(settingsNow);
+      const v = validateSlot(String(b.scheduled_slot).slice(0, 40), poCfg, await slotCounts(pool));
+      if (!v.ok) return fail(v.error, 409, { message: v.message });
+      scheduled = v;
+    }
     // المطعم مقفول؟ الواجهة بتمنع قبل الدفع، بس لازم السيرفر يمنع كمان: صفحة
     // قديمة مفتوحة، أو شارة كانت غلط، كانت بتخلّي العميل يدفع والمطبخ مقفول.
     // المواعيد من اللوحة (settings.hours) — نفس مصدر الواجهة بالظبط.
-    if (!isOpenNow((await getSettingsData()).hours)) {
+    if (!scheduled && !isOpenNow(settingsNow.hours)) {
       return fail("store_closed", 409,
         { message: "المطعم مغلق حالياً 🌙 — تقدر تجهّز سلتك وتطلب أول ما نفتح." });
     }
-
-    try { b = await c.req.json(); } catch { b = {}; return fail("bad json", 400); }
     const option = b.option === "pickup" ? "pickup" : "delivery";
     const branchId = String(b.branch_id || "1");
     let items = Array.isArray(b.items) ? b.items : [];
@@ -1028,8 +1046,9 @@ export function register(app, ctx, deps = {}) {
     const inserted = await pool.query(
       `INSERT INTO shop_orders(order_no, status, option, branch_id, customer, phone_norm,
          address, items, pos_calc, subtotal, delivery_fee, tip, total, delivery_quote,
-         mf_session_id, notes, coupon, discount_percent, discount_amount, history, attribution)
-       VALUES ($1,'pending_payment',$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)
+         mf_session_id, notes, coupon, discount_percent, discount_amount, history, attribution,
+         scheduled_for, scheduled_slot)
+       VALUES ($1,'pending_payment',$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)
        RETURNING created_at`,
       [orderNo, option, branchId,
        jb({ name: nameChk.name.slice(0, NAME_MAX), phone: "+966" + phoneNorm, deviceId: b.deviceId ? String(b.deviceId).slice(0, 64) : null }), phoneNorm,
@@ -1039,7 +1058,8 @@ export function register(app, ctx, deps = {}) {
        r2(total - deliveryFee), deliveryFee, tip, total, jb(dq ? { ...dq, feeInPos, freeDeliveryByCoupon } : null),
        session.SessionId || null, (b.notes || "").slice(0, 200),
        coupon?.ok ? coupon.code : null, discountPercent, discountAmount,
-       jb([{ at: new Date().toISOString(), status: "pending_payment" }]), jb(attribution)]
+       jb([{ at: new Date().toISOString(), status: "pending_payment" }]), jb(attribution),
+       scheduled ? scheduled.startsAt : null, scheduled ? scheduled.key : null]
     );
     // journey_sid/client/app_version (W1-02) + attrib_source (W4-02) — تحديث
     // منفصل fire-and-forget: لو الأعمدة لسه ماتضافتش (ensureOrderColumns) الطلب
@@ -2220,11 +2240,17 @@ export function register(app, ctx, deps = {}) {
       const allSettings = await getSettingsData();
       if ((allSettings.shop || {}).autoDispatch !== false && await delivery.canAutoDispatch()) {
         const delayMin = dispatchDelayOf(allSettings);
+        const poCfg = preorderCfg(allSettings);
         const waiting = (await pool.query(
-          `SELECT order_no, pos_ready_at, history, delivery_quote, is_test FROM shop_orders
+          `SELECT order_no, pos_ready_at, history, delivery_quote, is_test, scheduled_for FROM shop_orders
             WHERE status='accepted' AND option='delivery' AND dispatch_claimed_at IS NULL
-              AND created_at > NOW() - INTERVAL '24 hours'`)).rows;
+              AND created_at > NOW() - INTERVAL '48 hours'`)).rows;
         for (const r of waiting) {
+          /* 📅 طلب مسبق: الكابتن **عمره ما يتطلب** دلوقتي لطلب موعده بكرة.
+             بيستنى لحد (بداية الشباك − مهلة التحضير)، وبعدها بيمشي بنفس
+             قواعد أي طلب عادي. من غير الحارس ده مندوب كان هيقف على الباب
+             بالليل لطلب بكرة الضهر. */
+          if (!isDueNow(r.scheduled_for, poCfg)) continue;
           const acceptedAt = (r.history || []).find((h) => h.status === "accepted")?.at || null;
           const v = dispatchDue({ delayMin, acceptedAt, readyAt: r.pos_ready_at });
           if (!v.due) continue;

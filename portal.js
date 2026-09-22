@@ -50,6 +50,7 @@ const ORDER_COLS = `o.order_no, o.status, o.option, o.customer, o.phone_norm, o.
   o.subtotal, o.delivery_fee, o.tip, o.total, o.notes, o.pos_order_id, o.created_at, o.updated_at,
   o.history, o.alerts, o.pos_ready_at, o.accepted_at, o.portal_ack_at, o.portal_ack_by, o.pay_gateway,
   o.is_test, o.dispatch_claimed_at::text AS dispatch_claimed_at,
+  o.scheduled_for, o.scheduled_slot,
   o.delivery_quote->'farZone' AS far_zone, o.delivery_quote->>'routeKm' AS route_km, o.delivery_quote->>'straightKm' AS straight_km,
   s.status AS ship_status, s.driver AS ship_driver, s.provider AS ship_provider, s.provider_ref AS ship_ref,
   s.updated_at AS ship_updated_at, s.dispatch AS ship_dispatch,
@@ -57,10 +58,13 @@ const ORDER_COLS = `o.order_no, o.status, o.option, o.customer, o.phone_norm, o.
 const SHIP_JOIN = `LEFT JOIN LATERAL (
     SELECT status, driver, provider, provider_ref, updated_at, dispatch, arrived_at, picked_at, delivered_at
       FROM dl_shipments WHERE shop_order_no = o.order_no ORDER BY id DESC LIMIT 1) s ON TRUE`;
+/* الطلب المسبق بيفضل في الصف لحد ما موعده يعدّي — اتطلب امبارح بالليل
+   وبيتنفّذ بكرة، فنافذة الساعات العادية كانت بتوقّعه من على البوابة. */
 export const FEED_SQL = `SELECT ${ORDER_COLS} FROM shop_orders o ${SHIP_JOIN}
   WHERE o.status NOT IN ('pending_payment','expired')
-    AND o.created_at > NOW() - make_interval(hours => $1::int)
-  ORDER BY o.created_at DESC LIMIT 150`;
+    AND (o.created_at > NOW() - make_interval(hours => $1::int)
+         OR (o.scheduled_for IS NOT NULL AND o.scheduled_for > NOW() - INTERVAL '6 hours'))
+  ORDER BY o.created_at DESC LIMIT 250`;
 export const BY_NO_SQL = `SELECT ${ORDER_COLS} FROM shop_orders o ${SHIP_JOIN}
   WHERE o.order_no = ANY($1::text[])`;
 
