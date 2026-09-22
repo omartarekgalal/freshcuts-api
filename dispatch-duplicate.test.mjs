@@ -49,6 +49,12 @@ function build({ shipments = [], dash = null } = {}) {
         const r = shipments.filter((x) => x.shop_order_no === vals[0]);
         return { rows: r.slice(-1), rowCount: r.length ? 1 : 0 };
       }
+      if (/UPDATE dl_shipments SET provider='leajlak', provider_order_no=\$2/i.test(s)) {
+        const sh = shipments.find((x) => x.id === vals[13] && x.shop_order_no === vals[0]);
+        if (sh) Object.assign(sh, { provider: "leajlak", provider_order_no: vals[1], status: vals[2],
+          driver: vals[3], fee_dash: vals[4], fee_dash_ex: vals[5], delivered_at: vals[10] });
+        return { rows: [], rowCount: sh ? 1 : 0 };
+      }
       if (/INSERT INTO dl_shipments\(shop_order_no, provider, provider_order_no/i.test(s)) {
         // مسار الاسترجاع من اللوحة: رقمهم الداخلي + الأوقات + الرسوم
         shipments.push({ id: shipments.length + 1, shop_order_no: vals[0], provider: "leajlak",
@@ -315,4 +321,20 @@ test("اللوحة مقفولة: القفل يفضل والتنبيه واضح �
     await assert.rejects(() => api.dispatch(ORDER, { trigger: "sweep" }), (e) => e.code === "DISPATCH_BLOCKED");
     assert.match(api.BLOCK_AR.lost, /اتأكد من لوحة لاجلك قبل ما تبعت مندوب تاني/);
   } finally { un(); restore(); }
+});
+
+test("refresh: بيحدّث الصف الموجود من اللوحة — وبيقفل على نفس الطلب", async () => {
+  const shipments = [{ id: 59, shop_order_no: ORDER.order_no, provider: "external",
+                       provider_ref: null, status: "delivered", driver: null }];
+  const { api, restore } = build({ shipments, dash: fakeDash(DASH_HIT) });
+  try {
+    const d = await fakeDash(DASH_HIT).lookup();
+    await api.adoptFromDash(ORDER.order_no, d, { trigger: "admin_refresh", actor: "admin", shipmentId: 59 });
+    const sh = shipments[0];
+    assert.equal(sh.provider, "leajlak");
+    assert.equal(sh.provider_order_no, "3263217");
+    assert.equal(sh.status, "delivered");
+    assert.equal(sh.fee_dash, 19.55);
+    assert.equal(JSON.parse(sh.driver).name, "ELFADIL IBAHIM -JED - leajlak11 A");
+  } finally { restore(); }
 });

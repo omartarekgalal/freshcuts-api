@@ -1332,7 +1332,7 @@ export function register(app, ctx, deps = {}) {
                 arrived_at=COALESCE($9::timestamptz, arrived_at), picked_at=COALESCE($10::timestamptz, picked_at),
                 delivered_at=COALESCE($11::timestamptz, delivered_at),
                 dispatch=COALESCE(dispatch,'{}'::jsonb) || $12::jsonb, events = events || $13::jsonb, updated_at=NOW()
-          WHERE id=$14`, [...vals, shipmentId]);
+          WHERE id=$14 AND shop_order_no=$1`, [...vals, shipmentId]);
     } else {
       await pool.query(
         `INSERT INTO dl_shipments(shop_order_no, provider, provider_order_no, status, driver,
