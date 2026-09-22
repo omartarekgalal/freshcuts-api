@@ -24,7 +24,11 @@
 
 import { ljContract } from "./leajlakrecon.js";
 import { STORE_LAT, STORE_LNG } from "./tsstore.js";
-import { PROVIDERS, activeProvider, courierMilestone, API_PROVIDER_IDS, ljStageOf } from "./couriers.js";
+import { PROVIDERS, activeProvider, courierMilestone, API_PROVIDER_IDS, ljStageOf,
+         routeCourier, courierRoutingCfg } from "./couriers.js";
+import { cervoContract, cervoCostFor, normalizeCervoOrder, cervoPayload,
+         maskedPayload as maskedCervoPayload, CERVO_BASE as cervoBase,
+         CERVO_STATUS as CERVO_STATUS_MAP } from "./cervo.js";
 import { emitOrder } from "./order-events.js";
 import { makeDriveDistance, resolveRouteKm } from "./drivedist.js";
 import { makeZoneService } from "./deliveryzone.js";
@@ -572,6 +576,21 @@ export const BENCHMARKS = {
 
 /* تكلفة التوصيلة علينا بالاتفاق (شاملة الضريبة). دالة صافية — نفس معادلة
    faCost تحت بس من غير الاعتماد على قايمة المركبات، عشان تتجرب أوفلاين. */
+/* مسافة المشوار من صفّ الطلب — نفس المصدر اللي courierops بيقرا منه
+   (delivery_quote.routeKm)، مكرّر هنا عشان delivery.js مايعتمدش على
+   courierops (الاتنين مستقلين والاستيراد بينهم كان هيعمل دايرة).
+   الترتيب: العمود الصريح → التسعيرة → مسافة المنطقة البعيدة. */
+export function routeKmOfRow(row = {}) {
+  let q = row && row.delivery_quote;
+  if (typeof q === "string") { try { q = JSON.parse(q); } catch { q = null; } }
+  const cands = [row.route_km, q && q.routeKm, q && q.farZone && q.farZone.km, q && q.distanceKm];
+  for (const v of cands) {
+    const n = Number(v);
+    if (v != null && v !== "" && Number.isFinite(n) && n > 0) return n;
+  }
+  return null;
+}
+
 export function contractCourierCost(routeKm, contract = {}) {
   /* لأجلك (المزوّد الفعلي من ٢٠٢٦-٠٨): ثابت لحد includedKm وبعدها لكل كيلو —
      نفس عقد «مطابقة فاتورة لاجلك» (leajlakrecon.ljContract، settings.delivery.leajlakContract). */
@@ -601,6 +620,16 @@ export function activeCourierContract(deliverySettings = {}) {
     const c = ljContract(d);
     return { provider: "leajlak", label: "لأجلك", ...c,
       flatInclVat: r2(c.flatExVat * (1 + c.vatPct / 100)), perKmInclVat: r2(c.perKmExVat * (1 + c.vatPct / 100)) };
+  }
+  if (provider === "cervo") {
+    /* Cervo مافيهاش تسعيرة في الـAPI لا قبل الإرسال ولا بعده — الرقم بييجي
+       من فاتورتهم بس. فالعقد هنا **افتراض** عمر بيكتبه من اللوحة، ولو
+       مش مكتوب بترجّع أصفار معلّمة `known:false` عشان أي شاشة تقول
+       «التكلفة لسه مش معروفة» بدل ما تحسب ربح وهمي. */
+    const c = cervoContract(d);
+    return { provider: "cervo", label: "Cervo", known: c.known,
+      baseFee: c.baseFee ?? 0, perKm: c.perKm ?? 0,
+      includedKm: c.includedKm ?? 0, minFare: c.minFare ?? 0 };
   }
   return {
     provider, label: "Flying Arrow",
@@ -756,6 +785,7 @@ export function webhookLogBody(body) {
    فالسجل يكتب verified=null بدل true عشان مانضحكش على نفسنا. */
 function webhookSecretSet(providerId) {
   if (providerId === "leajlak") return Boolean(env("LEAJLAK_WEBHOOK_SECRET"));
+  if (providerId === "cervo") return Boolean(env("CERVO_WEBHOOK_SECRET"));
   return false;
 }
 
@@ -807,6 +837,9 @@ export function register(app, ctx, deps = {}) {
       ALTER TABLE dl_shipments ADD COLUMN IF NOT EXISTS picked_at TIMESTAMPTZ;
       -- ١٩ سبتمبر (SLA المندوب — courierops.js): وقت التعيين ووقت التوصيل
       -- بيتسجّلوا مرة واحدة من سجل الأحداث، عشان مخالفات لاجلك تتقاس بالدقيقة.
+      -- رابط تتبع المزوّد (٢٢ سبتمبر — Cervo بترجّعه في GET /order وفي الويبهوك).
+      -- لاجلك وFlying Arrow مالهمش رابط أصلاً، فالعمود بيفضل فاضي عندهم.
+      ALTER TABLE dl_shipments ADD COLUMN IF NOT EXISTS tracking_url TEXT;
       ALTER TABLE dl_shipments ADD COLUMN IF NOT EXISTS assigned_at TIMESTAMPTZ;
       ALTER TABLE dl_shipments ADD COLUMN IF NOT EXISTS delivered_at TIMESTAMPTZ;
       CREATE INDEX IF NOT EXISTS dl_shipments_order_idx ON dl_shipments(shop_order_no);
@@ -1255,19 +1288,23 @@ export function register(app, ctx, deps = {}) {
   async function adoptExisting(order, provider, cfg, { trigger, actor } = {}) {
     const tried = [];
     if (typeof provider.lookup === "function") {
-      const look = await provider.lookup(order.order_no, cfg).catch((e) => ({ found: false, error: e.message, tried: [] }));
+      /* الصفّ نفسه بيتبعت كمان: Cervo مالهاش بحث بمرجعنا، واسترجاعها
+         بإعادة POST بنفس الجسم — فمحتاجة الطلب. باقي المزوّدين
+         بيتجاهلوا المعامل التالت. */
+      const look = await provider.lookup(order.order_no, cfg, order).catch((e) => ({ found: false, error: e.message, tried: [] }));
       tried.push(...((look && look.tried) || []));
       if (look && look.found && look.ref) {
         await pool.query(
           `INSERT INTO dl_shipments(shop_order_no, provider, provider_ref, fa_order_id, fa_order_number,
-                                    status, driver, cost, dispatch, events)
-           VALUES ($1,$2,$3,NULL,$4,$5,$6,NULL,$7,$8)`,
+                                    status, driver, cost, tracking_url, dispatch, events)
+           VALUES ($1,$2,$3,NULL,$4,$5,$6,NULL,$9,$7,$8)`,
           [order.order_no, provider.id, look.ref, look.ref, look.status || "pending",
            look.driver ? jb(look.driver) : null,
            jb({ status: "adopted", assigned: look.status === "assigned", adopted: true, adoptedVia: "partner_api",
                 message: "الطلب كان مسجّل عند الشركة من محاولة ضاعت — اتبنّى", via: look.via || null }),
            jb([{ at: new Date().toISOString(), event: "adopted", provider: provider.id,
-                 trigger: trigger || null, by: actor || null, resp: look.raw || null }])]);
+                 trigger: trigger || null, by: actor || null, resp: look.raw || null }]),
+           look.tracking || null]);
         return { adopted: true, via: "partner_api", ref: look.ref, status: look.status || "pending",
                  driver: look.driver || null, tried };
       }
@@ -1373,7 +1410,39 @@ export function register(app, ctx, deps = {}) {
     if (want && !API_PROVIDER_IDS.includes(want)) {
       throw Object.assign(new Error(`مزوّد غير معروف: ${want}`), { code: "BAD_PROVIDER" });
     }
-    const provider = want ? PROVIDERS[want] : activeProvider(all);
+    /* ── التوجيه بالمسافة (٢٢ سبتمبر) ──────────────────
+       اختيار المدير الصريح (opts.provider) بيغلب كل حاجة. من غيره، لو
+       التوجيه مفتوح بنشوف شريحة المشوار: ≤١٠ لاجلك، ١٠-١٢ Cervo، وفوق
+       كده «طلباتك» (اللي مالهاش API — بتقف للبوابة).
+
+       لو الشريحة رمت على مزوّد مفاتيحه ناقصة، **مابنوقفش الطلب**: بنرجع
+       للمزوّد الفعّال ونسجل الرجوع ده كحدث ظاهر. التبديل الصامت ممنوع،
+       بس الرجوع المعلن أأمن من طلب واقف من غير مندوب. */
+    let routed = null;
+    if (!want) {
+      try { routed = routeCourier(routeKmOfRow(order), all); } catch { routed = null; }
+    }
+    let routedTo = null;
+    if (routed && routed.enabled && routed.provider) {
+      if (routed.provider === "district" || routed.provider === "manual") {
+        throw Object.assign(
+          new Error(`التوجيه بالمسافة: ${routed.reason} — المشوار ده مش بيتبعت آلي (${routed.provider === "district" ? "توصيل بالحي" : "يدوي"})`),
+          { code: "ROUTED_NO_API", routed });
+      } else if (PROVIDERS[routed.provider] && PROVIDERS[routed.provider].configured()) {
+        routedTo = routed.provider;
+      } else {
+        const fb = activeProvider(all);
+        console.error(`[delivery] ${order.order_no}: التوجيه اختار ${routed.provider} بس مفاتيحه ناقصة — رجعنا لـ${fb.id}`);
+        try {
+          courierEvent("courier_dispatch", order.order_no, {
+            source: "delivery", ok: true, summary: "التوجيه بالمسافة رجع للمزوّد الفعّال",
+            data: { provider: fb.id, reason: "route_target_unconfigured", routedTo: routed.provider,
+                    km: routed.km ?? null, missing: (PROVIDERS[routed.provider] || {}).missing?.() || null },
+          });
+        } catch {}
+      }
+    }
+    const provider = want ? PROVIDERS[want] : (routedTo ? PROVIDERS[routedTo] : activeProvider(all));
     if (provider.manual) {
       throw Object.assign(
         new Error("المزوّد المختار «يدوي» — مفيش إرسال آلي"),
@@ -1384,10 +1453,14 @@ export function register(app, ctx, deps = {}) {
         new Error(`${provider.label}: مفاتيح ناقصة (${provider.missing().join(", ")})`),
         { code: "COURIER_UNCONFIGURED", provider: provider.id });
     }
+    const apiBase = env("PUBLIC_API_URL", "https://freshcuts-api.o2m8.me");
     const cfg = {
       ...settings,
       storeLat: STORE_LAT(), storeLng: STORE_LNG(),
-      webhookUrl: `${env("PUBLIC_API_URL", "https://freshcuts-api.o2m8.me")}/api/delivery/courier-webhook`,
+      webhookUrl: `${apiBase}/api/delivery/courier-webhook`,
+      /* Cervo ليها راوت لوحدها لأن رسالتها بتتصدّق بسؤالهم (مفيش توقيع). */
+      cervoWebhookUrl: `${apiBase}/api/delivery/cervo-webhook`,
+      routeKm: routeKmOfRow(order),
     };
 
     /* ── حراسة قبل أي نداء شبكة (٢١ سبتمبر) ─────────────────────────────
@@ -1402,7 +1475,14 @@ export function register(app, ctx, deps = {}) {
           shipmentStatus: live.status });
     }
     const block = await openBlock(order.order_no);
-    if (block && !opts.force) {
+    /* قفل «ممكن يكون اتسجّل عندهم» موجود عشان إعادة الإرسال للاجلك بتعمل
+       مندوبين. Cervo مختلفة: نفس الـid **بيحدّث** الطلب ويرجّع نفس
+       المرجع (موثّق عندهم)، فإعادة الإرسال لنفس المزوّد آمنة — والقفل
+       هنا كان هيوقف طلب حقيقي بلا داعي. بنفك القفل بس لما يكون القفل
+       نفسه من **نفس** المزوّد؛ قفل من لاجلك مايتفكّش بإرسال لـCervo
+       (ده كان هيبقى مندوبين من شركتين). */
+    const bypass = Boolean(block && provider.idempotentCreate && block.provider === provider.id);
+    if (block && !opts.force && !bypass) {
       throw Object.assign(new Error(BLOCK_AR[block.outcome] || "الإرسال متوقف لحد المراجعة"),
         { code: "DISPATCH_BLOCKED", block: { id: Number(block.id), outcome: block.outcome,
           provider: block.provider || null, at: block.started_at,
@@ -1457,15 +1537,20 @@ export function register(app, ctx, deps = {}) {
 
     await pool.query(
       `INSERT INTO dl_shipments(shop_order_no, provider, provider_ref, fa_order_id, fa_order_number,
-                                status, driver, cost, dispatch, events)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+                                status, driver, cost, tracking_url, dispatch, events)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$11,$9,$10)`,
       [order.order_no, provider.id, res.ref,
        provider.id === "flyingarrow" ? res.ref : null,
        res.orderNumber, res.status || "pending",
        res.driver ? jb(res.driver) : null, res.cost,
        jb({ status: dr.status || null, driverId: dr.driver_id ?? null, zoneId: dr.zone_id ?? null,
-            message: dr.message || null, assigned }),
-       jb([{ at: new Date().toISOString(), event: "created", provider: provider.id, resp: res.raw }])]
+            message: dr.message || null, assigned,
+            /* تكلفة Cervo تقدير من اللوحة مش رقم من عندهم — العلم ده
+               بيخلّي شاشة المطابقة تفرّق بين «متحسبة» و«مؤكدة». */
+            costAssumed: res.costAssumed === true ? true : undefined,
+            routedTo: routedTo || undefined, routeKm: cfg.routeKm ?? undefined }),
+       jb([{ at: new Date().toISOString(), event: "created", provider: provider.id, resp: res.raw }]),
+       res.tracking || null]
     );
     /* الصف اتكتب — دلوقتي بس بنقفل المحاولة. الترتيب ده مقصود: لو الخدمة
        ماتت بين الاتنين، المحاولة بتفضل مفتوحة والكنس بيحوّلها «ضايعة»،
@@ -1479,6 +1564,7 @@ export function register(app, ctx, deps = {}) {
     return {
       provider: provider.id, faOrderId: res.ref, orderNumber: res.orderNumber,
       cost: res.cost, assigned, dispatch: dr, raw: res.raw,
+      tracking: res.tracking || null, routed: routed || null,
     };
   }
 
@@ -1728,6 +1814,54 @@ export function register(app, ctx, deps = {}) {
     return c.json({ ok: true });
   });
 
+  /* ═══ Cervo — شاشة الفحص (٢٢ سبتمبر) ═══════════════════════════════════
+     ثلاث حاجات في راوت واحد عشان تتعمل قبل أول إرسال حقيقي:
+       • GET /health عندهم (وهو بيقرا التوكن كمان — من غيره ٤٠١).
+       • التوجيه بالمسافة الحالي + الشريحة اللي طلب معيّن هيقع فيها.
+       • **الجسم اللي هيتبعت بالظبط** لطلب حقيقي، بالجوال مقنّع — عشان
+         نراجعه بالعين قبل ما يروح لشركة. مفيش أي إرسال هنا. */
+  app.get("/api/delivery/cervo/check", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    const all = await getSettingsData();
+    const settings = all.delivery || {};
+    const p = PROVIDERS.cervo;
+    const out = {
+      ok: false, provider: "cervo", label: p.label,
+      configured: p.configured(), missing: p.missing(),
+      base: cervoBase(),
+      webhookUrl: `${env("PUBLIC_API_URL", "https://freshcuts-api.o2m8.me")}/api/delivery/cervo-webhook`,
+      routing: courierRoutingCfg(all),
+      contract: cervoContract(settings),
+      statusMap: CERVO_STATUS_MAP,
+      health: null, payload: null, orderNo: null, health_error: null, payload_error: null,
+    };
+    if (!p.configured()) return c.json({ ...out, error: "no_api_key" });
+    try { out.health = await p.health(); out.ok = true; }
+    catch (e) { out.health_error = String(e.message || e).slice(0, 300); }
+
+    /* معاينة الجسم: الطلب اللي الأدمن بيطلبه، أو آخر طلب توصيل حقيقي. */
+    const wanted = String(c.req.query("order") || "").trim();
+    try {
+      const r = await pool.query(
+        wanted
+          ? `SELECT * FROM shop_orders WHERE order_no = $1 LIMIT 1`
+          : `SELECT * FROM shop_orders WHERE option='delivery' AND address IS NOT NULL
+               ORDER BY created_at DESC LIMIT 1`,
+        wanted ? [wanted] : []);
+      const row = r.rows[0];
+      if (row) {
+        out.orderNo = row.order_no;
+        out.routeKm = routeKmOfRow(row);
+        out.route = routeCourier(out.routeKm, all);
+        out.payload = maskedCervoPayload(cervoPayload(row, {
+          ...settings, storeLat: STORE_LAT(), storeLng: STORE_LNG(),
+          cervoWebhookUrl: out.webhookUrl, routeKm: out.routeKm,
+        }));
+      }
+    } catch (e) { out.payload_error = String(e.message || e).slice(0, 300); }
+    return c.json(out);
+  });
+
   /* ADMIN — البيانات المرجعية من عندهم مباشرة، عشان معرّف المدينة والمركبة
      يتختاروا من قائمة حقيقية بدل ما نحزر رقم ونكتشف الغلط وقت أول طلب. */
   app.get("/api/delivery/fa/reference", async (c) => {
@@ -1759,6 +1893,60 @@ export function register(app, ctx, deps = {}) {
       });
     }
   });
+
+  /* ── تطبيق تحديث من مزوّد على الشحنة ──────────────────────────────────
+     كان جوّه راوت الويبهوك المشترك، واتفصل (٢٢ سبتمبر) عشان راوت Cervo
+     المصدّق يستعمل **نفس** آلة الحالة بالظبط: نفس الـUPDATE، نفس المحطّات،
+     نفس الحدث على ناقل الطلب، نفس نداء shop.onShipmentEvent. أي فرع تاني
+     كان معناه إن مزوّد يمشي بقواعد مختلفة عن التاني في نفس السيستم. */
+  async function applyCourierEvent(from, ev, body, { verified = null, via = "webhook" } = {}) {
+    /* المطابقة برقمنا أولاً، وبمرجع المزوّد لو رقمنا مش في الرسالة —
+       Flying Arrow بيرجّع external_order_id فاضي أحياناً. */
+    const upd = await pool.query(
+      `UPDATE dl_shipments SET
+         status = COALESCE($2, status),
+         driver = COALESCE($3, driver),
+         cost = COALESCE($5, cost),
+         tracking_url = COALESCE($8, tracking_url),
+         events = events || $4::jsonb,
+         updated_at = NOW()
+       WHERE (($1::text IS NOT NULL AND shop_order_no = $1)
+           OR ($6::text IS NOT NULL AND provider = $7 AND provider_ref = $6))
+       RETURNING id, shop_order_no, status, provider, arrived_at, picked_at`,
+      [ev.orderNo, ev.status,
+       ev.driver ? jb(ev.driver) : null,
+       jb([{ at: new Date().toISOString(), provider: from.id, event: ev.rawStatus, via, payload: body }]),
+       ev.cost, ev.ref || null, from.id, ev.tracking || null]
+    );
+    if (!upd.rowCount) return { matched: false, orderNo: null };
+    const matchedNo = upd.rows[0].shop_order_no;
+    /* محطّات المندوب من الويبهوك كمان — لاجلك عمرها ما بعتت ويبهوك لحد
+       النهارده، بس لو بعتت بكرة المحطة لازم تتسجّل من غير ما نستنى الاستطلاع.
+       Cervo بتبعت ٢٠ = «وصل المطعم» صراحةً، فدي أول محطة وصول من ويبهوك. */
+    try {
+      await applyMilestones(upd.rows[0], {
+        rawStatus: ev.rawStatus, status: ev.status, provider: from.id,
+        source: "courier_webhook", via,
+      });
+    } catch { /* الويبهوك مايفشلش عشان محطة */ }
+    /* «courier_webhook» مش اسم في ORDER_EVENTS (§٤-١ مقفولة)، فالتحديث
+       الجاي من الويبهوك بيتسجّل courier_update بمصدر courier_webhook. */
+    courierEvent("courier_update", matchedNo, {
+      source: "courier_webhook", ok: true, summary: "تحديث المندوب (ويبهوك)",
+      data: { via, provider: from.id, status: ev.status || null,
+              raw_status: ev.rawStatus != null ? String(ev.rawStatus).slice(0, 60) : null,
+              has_driver: Boolean(ev.driver), verified,
+              cancel_reason: ev.cancelReason || undefined },
+    });
+    if (ev.status) {
+      const api = shop();
+      if (api) {
+        api.onShipmentEvent(matchedNo, ev.status, body).catch((e) =>
+          console.error("[delivery] shipment event handler failed:", e.message));
+      }
+    }
+    return { matched: true, orderNo: matchedNo };
+  }
 
   /* PUBLIC — Flying Arrow's webhook. Their four events (order.driver_assigned,
      order.pickup_completed, order.delivered, order.cancelled) drive both the
@@ -1809,6 +1997,13 @@ export function register(app, ctx, deps = {}) {
       await logHit({ status: 200, body: b });
       return c.json({ ok: true, ignored: true });
     }
+    /* Cervo على الراوت المشترك (لو حطّوا الرابط الغلط): مابنطبّقش من هنا —
+       رسالتهم لازم تتصدّق بسؤالهم، وده بيحصل في راوتهم. 307 بيخلّي
+       الـPOST يتحوّل بجسمه زي ما هو. */
+    if (from.id === "cervo") {
+      await logHit({ provider: "cervo", status: 307, body: b });
+      return c.redirect("/api/delivery/cervo-webhook", 307);
+    }
     /* لو المزوّد بيدعم سرّ مشترك وإحنا مفعّلينه، الرسالة اللي مالهاش سرّ
        صحيح بترفض — الراوت ده عام، فمن غير كده أي حد يقدر يحرّك حالة طلب.
        verified في السجل: null = مفيش سرّ متسجّل (أو المزوّد مالوش تحقق). */
@@ -1825,53 +2020,145 @@ export function register(app, ctx, deps = {}) {
       }
     }
 
-    /* المطابقة برقمنا أولاً، وبمرجع المزوّد لو رقمنا مش في الرسالة —
-       Flying Arrow بيرجّع external_order_id فاضي أحياناً. */
-    const upd = await pool.query(
-      `UPDATE dl_shipments SET
-         status = COALESCE($2, status),
-         driver = COALESCE($3, driver),
-         cost = COALESCE($5, cost),
-         events = events || $4::jsonb,
-         updated_at = NOW()
-       WHERE (($1::text IS NOT NULL AND shop_order_no = $1)
-           OR ($6::text IS NOT NULL AND provider = $7 AND provider_ref = $6))
-       RETURNING id, shop_order_no, status, provider, arrived_at, picked_at`,
-      [ev.orderNo, ev.status,
-       ev.driver ? jb(ev.driver) : null,
-       jb([{ at: new Date().toISOString(), provider: from.id, event: ev.rawStatus, payload: b }]),
-       ev.cost, ev.ref || null, from.id]
-    );
-    if (!upd.rowCount) { // طلب مش عندنا
+    const applied = await applyCourierEvent(from, ev, b, { verified, via: "webhook" });
+    if (!applied.matched) { // طلب مش عندنا
       await logHit({ provider: from.id, verified, matched: false, status: 200, body: b });
       return c.json({ ok: true, ignored: true });
     }
-    const matchedNo = upd.rows[0].shop_order_no;
-    /* محطّات المندوب من الويبهوك كمان — لاجلك عمرها ما بعتت ويبهوك لحد
-       النهارده، بس لو بعتت بكرة المحطة لازم تتسجّل من غير ما نستنى الاستطلاع. */
-    try {
-      await applyMilestones(upd.rows[0], {
-        rawStatus: ev.rawStatus, status: ev.status, provider: from.id,
-        source: "courier_webhook", via: "webhook",
-      });
-    } catch { /* الويبهوك مايفشلش عشان محطة */ }
-    /* «courier_webhook» مش اسم في ORDER_EVENTS (§٤-١ مقفولة)، فالتحديث
-       الجاي من الويبهوك بيتسجّل courier_update بمصدر courier_webhook. */
-    courierEvent("courier_update", matchedNo, {
-      source: "courier_webhook", ok: true, summary: "تحديث المندوب (ويبهوك)",
-      data: { via: "webhook", provider: from.id, status: ev.status || null,
-              raw_status: ev.rawStatus != null ? String(ev.rawStatus).slice(0, 60) : null,
-              has_driver: Boolean(ev.driver), verified },
-    });
-    if (ev.status) {
-      const api = shop();
-      if (api) {
-        api.onShipmentEvent(matchedNo, ev.status, b).catch((e) =>
-          console.error("[delivery] shipment event handler failed:", e.message));
-      }
-    }
     await logHit({ provider: from.id, verified, matched: true, status: 200, body: b });
     return c.json({ ok: true });
+  });
+
+  /* ═══ ويبهوك Cervo — راوت لوحده، والرسالة **مش** مصدر الحقيقة ══════════
+     (٢٢ سبتمبر ٢٠٢٦)
+
+     وثيقة Cervo مافيهاش توقيع ولا سرّ مشترك: أي حد يعرف الرابط يقدر يبعت
+     {order_id, order_status:4} ويخلّي طلب يبان «متوصّل» وهو لسه في المطبخ.
+     فالراوت ده بياخد الرسالة **كتنبيه بس**، وبيسأل `GET /order/{uid}`
+     ويصدّق ردّهم هو. لو السؤال فشل بنسيب الحالة زي ما هي والاستطلاع
+     (كل دقيقة) بيلحقها — أحسن من إننا نمشّي حالة على كلام مش متأكدين منه.
+
+     وكمان: حدّ لمعدّل الرسائل لكل مرجع، ومرجع مش عندنا بيتسجّل ويتقفل
+     بهدوء — عشان رشّة رسايل من بره ما تعملش رشّة نداءات عليهم. */
+  const CERVO_RATE_MS = Number(env("CERVO_WEBHOOK_MIN_MS", "1500"));
+  const CERVO_UNKNOWN_MAX = Number(env("CERVO_WEBHOOK_UNKNOWN_MAX", "30"));
+  const _cervoSeen = new Map();          // ref → آخر وقت اتعامل معاه
+  let _cervoUnknown = { at: 0, n: 0 };   // عدّاد مراجع مش عندنا في الساعة
+
+  function cervoThrottled(ref) {
+    const now = Date.now();
+    if (_cervoSeen.size > 500) {         // تنضيف بسيط — مش كاش، مجرد حارس
+      for (const [k, t] of _cervoSeen) if (now - t > 600_000) _cervoSeen.delete(k);
+    }
+    const last = _cervoSeen.get(ref) || 0;
+    if (now - last < CERVO_RATE_MS) return true;
+    _cervoSeen.set(ref, now);
+    return false;
+  }
+  function cervoUnknownFlood() {
+    const now = Date.now();
+    if (now - _cervoUnknown.at > 3600_000) _cervoUnknown = { at: now, n: 0 };
+    _cervoUnknown.n += 1;
+    return _cervoUnknown.n > CERVO_UNKNOWN_MAX;
+  }
+
+  app.post("/api/delivery/cervo-webhook", async (c) => {
+    let headerKeys = [];
+    try { c.req.raw.headers.forEach((_v, k) => { headerKeys.push(String(k).toLowerCase()); }); } catch {}
+    const logHit = async (row) => {
+      try {
+        await pool.query(
+          `INSERT INTO dl_webhook_log(provider, verified, matched, http_status, body, header_keys)
+           VALUES ($1,$2,$3,$4,$5,$6)`,
+          ["cervo", row.verified ?? null, Boolean(row.matched), row.status,
+           jb(webhookLogBody(row.body)), headerKeys]);
+      } catch (e) { console.error("[delivery] cervo webhook log failed:", e.message); }
+    };
+
+    let b = {}, rawText = null;
+    try { rawText = await c.req.text(); b = JSON.parse(rawText); }
+    catch {
+      await logHit({ status: 400, body: { _unparsed: String(rawText ?? "") } });
+      return c.json({ ok: false }, 400);
+    }
+
+    const from = PROVIDERS.cervo;
+    const ev = from.parseWebhook(b);
+    if (!ev || !ev.ref) {   // من غير مرجعهم مفيش حاجة نصدّقها
+      await logHit({ status: 200, body: b });
+      return c.json({ ok: true, ignored: true });
+    }
+
+    /* السرّ اختياري (لسه مش عندهم). لو سجّلناه، رسالة من غيره بترفض فوراً
+       قبل أي نداء عليهم. */
+    let verified = null;
+    const headers = {};
+    try { c.req.raw.headers.forEach((v, k) => { headers[k] = v; }); } catch {}
+    const pass = from.verifyWebhook(headers, b);
+    if (webhookSecretSet("cervo")) verified = Boolean(pass);
+    if (!pass) {
+      await logHit({ verified: false, status: 401, body: b });
+      return c.json({ ok: false, error: "bad_secret" }, 401);
+    }
+
+    if (cervoThrottled(ev.ref)) {
+      await logHit({ verified, matched: false, status: 429, body: b });
+      return c.json({ ok: true, throttled: true });
+    }
+
+    /* الشحنة عندنا؟ المطابقة بمرجعهم، وبرقمنا لو بعتوه في partner_ref.
+       المرجع المش معروف مابيسببش نداء عليهم أصلاً. */
+    const own = await pool.query(
+      `SELECT id, shop_order_no, status, provider, arrived_at, picked_at
+         FROM dl_shipments
+        WHERE provider = 'cervo'
+          AND (provider_ref = $1 OR ($2::text IS NOT NULL AND shop_order_no = $2))
+        ORDER BY id DESC LIMIT 1`,
+      [String(ev.ref), ev.orderNo || null]);
+    if (!own.rowCount) {
+      const flood = cervoUnknownFlood();
+      if (!flood) console.error(`[delivery] cervo webhook لمرجع مش عندنا: ${String(ev.ref).slice(0, 40)}`);
+      await logHit({ verified, matched: false, status: 200, body: b });
+      return c.json({ ok: true, ignored: true });
+    }
+
+    /* ── التصديق: بنسأل عنهم بأنفسنا ──────────────────────────────────── */
+    let truth = null;
+    try {
+      const r = await from.track({ provider_ref: ev.ref });
+      truth = r || null;
+    } catch (e) {
+      console.error(`[delivery] cervo تصديق ${String(ev.ref).slice(0, 40)} فشل: ${e.message}`);
+    }
+    if (!truth || !truth.status) {
+      /* مش قادرين نتأكد ⇒ مابنحرّكش حالة. بنسجّل الرسالة في تاريخ الشحنة
+         كإشارة غير مصدّقة، والاستطلاع هيصحّح خلال دقيقة. */
+      try {
+        await pool.query(
+          `UPDATE dl_shipments SET events = events || $2::jsonb, updated_at = NOW() WHERE id = $1`,
+          [own.rows[0].id, jb([{ at: new Date().toISOString(), provider: "cervo",
+            event: "webhook_unverified", status: ev.rawStatus, payload: b }])]);
+      } catch {}
+      /* ٢٠٢ مش ٢٠٠: «وصلتني الرسالة بس ما طبّقتهاش». لو بيعيدوا المحاولة
+         على غير الـ2xx، ٢٠٢ بيمنع رشّة إعادة من غير ما يضيّع الإشارة. */
+      await logHit({ verified: false, matched: true, status: 202, body: b });
+      return c.json({ ok: true, unverified: true }, 202);
+    }
+
+    /* الحالة والكابتن ورابط التتبع من ردّهم، مش من الرسالة. اللي بناخده من
+       الرسالة حاجتين مالهمش مصدر تاني ومالهمش أثر خطير: سبب الإلغاء
+       والمسافات. */
+    const trusted = {
+      ...ev,
+      status: truth.status,
+      rawStatus: truth.rawStatus != null ? truth.rawStatus : ev.rawStatus,
+      driver: truth.driver || ev.driver || null,
+      tracking: truth.tracking || ev.tracking || null,
+      cost: null,
+    };
+    const applied = await applyCourierEvent(from, trusted, b, { verified: true, via: "webhook_verified" });
+    await logHit({ verified: true, matched: applied.matched, status: 200, body: b });
+    return c.json({ ok: true, status: trusted.status });
   });
 
   /* ADMIN — «وريني الأرقام». اقتصاديات كل مسافة في المنطقة على السياسة
@@ -2134,6 +2421,7 @@ export function register(app, ctx, deps = {}) {
       }
       await pool.query(
         `UPDATE dl_shipments SET status=$2, driver=COALESCE($3, driver), cost=COALESCE($5, cost),
+                tracking_url = COALESCE($6, tracking_url),
                 events = events || $4::jsonb, updated_at=NOW() WHERE id=$1`,
         [r.id, o.status, o.driver ? jb(o.driver) : null,
          /* الحالة الخام كمان (١٧ سبتمبر): قبل كده السجل كان بيحفظ الحالة
@@ -2141,7 +2429,7 @@ export function register(app, ctx, deps = {}) {
             هتضيع في صمت ومحدش هيعرف ليه. دلوقتي الأثر موجود. */
          jb([{ at: new Date().toISOString(), provider: p.id, event: "poll", status: o.status,
                raw: o.rawStatus != null ? String(o.rawStatus).slice(0, 60) : null }]),
-         o.cost]);
+         o.cost, o.tracking || null]);
       courierEvent("courier_update", r.shop_order_no, {
         source: "courier_poll", ok: true,
         data: { via: "poll", provider: p.id, status: o.status, from: r.status || null,

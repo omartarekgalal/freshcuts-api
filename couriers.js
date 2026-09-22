@@ -26,6 +26,11 @@
 
 import { feeFromApi } from "./leajlakrecon.js";
 import { districtOfRow } from "./districts.js";
+/* Cervo في ملف لوحده (cervo.js) — ربطهم مختلف كفاية عن الاتنين اللي هنا
+   (حالات بالأرقام، ردّ إنشاء نصّي، إعادة الإرسال بتحدّث بدل ما تنسخ).
+   الاستيراد دايري — cervo.js بياخد مساعدات العنوان من هنا — وده آمن في
+   ESM لأن ولا واحد فيهم بينادي التاني وقت تحميل الملف، بس وقت التشغيل. */
+import { cervo } from "./cervo.js";
 
 const env = (k, d) => (process.env[k] || d || "").toString().trim();
 
@@ -60,7 +65,10 @@ export const STAGES = ["pending", "assigned", "picked", "delivered", "cancelled"
    لـ«وصل نقطة الاستلام» في التوثيق اللي شفناه. بنقبل الأسماء المتوقّعة لو
    ظهرت، ولو ماظهرتش المحطة الأولى بتفضل فاضية والشاشة بتقولها صراحة.
 ═══════════════════════════════════════════════════════════════════════════ */
-const normStatus = (s) => String(s || "").toLowerCase().replace(/[^a-z]/g, "");
+/* بنسيب الأرقام: حالات Cervo أكواد رقمية («20» = وصل المطعم)، ولو شلناها
+   زي الأول كانت هتبقى نص فاضي ومحطة الوصول تضيع. الأسماء النصّية
+   (لاجلك/Flying Arrow) مافيهاش أرقام أصلاً فمحصلش فرق عندها. */
+const normStatus = (s) => String(s || "").toLowerCase().replace(/[^a-z0-9]/g, "");
 
 const MILESTONES = {
   leajlak: {
@@ -78,10 +86,14 @@ const MILESTONES = {
     pickupcompleted: "picked", pickedup: "picked", intransit: "picked", onthewa: "picked",
     ontheway: "picked", outfordelivery: "picked",
   },
+  /* Cervo بتقول الاتنين برقم صريح — ودي أول مرة نجيب «وصل المطعم» كإشارة
+     مستقلة مضمونة (٢٠ = In Store). لاجلك بتقولها بالاسم، Flying Arrow
+     مابتقولهاش خالص. */
+  cervo: { 20: "arrived", 3: "picked" },
 };
 /* هل المزوّد ده بيقول لنا «وصل المطعم» أصلاً؟ الشاشة بتستعمل ده عشان تفرّق
    بين «لسه ما وصلش» و«الشركة مابتبعتش الإشارة دي». */
-export const PROVIDER_REPORTS_ARRIVAL = Object.freeze({ leajlak: true, flyingarrow: false, manual: false, external: false });
+export const PROVIDER_REPORTS_ARRIVAL = Object.freeze({ leajlak: true, cervo: true, flyingarrow: false, manual: false, external: false });
 
 /* الحالة الخام → محطة ("arrived" | "picked" | null) */
 export function courierMilestone(providerId, rawStatus) {
@@ -779,8 +791,22 @@ const external = {
 };
 
 export const PROVIDERS = { flyingarrow, leajlak, manual, external };
+/* ── ليه Cervo متسجّلة بـgetter ─────────────────────────────────────────
+   cervo.js بياخد مساعدات العنوان والملاحظات من هنا، والملف ده بياخد
+   المزوّد من هناك — دايرة استيراد. ESM بيسمح بالدايرة، بس **القيمة**
+   بتفضل في TDZ لحد ما الملف التاني يخلّص تحميل. ولأن الملف اللي بيتحمّل
+   الأول بيختلف حسب مين بيستورد مين (الاختبار بيبدأ من cervo.js، والخدمة
+   بتبدأ من couriers.js)، الإسناد المباشر هنا كان بيقع بـ«Cannot access
+   'cervo' before initialization» في حالة واحدة بس من الاتنين — أسوأ نوع
+   عطل: بيعدّي من الاختبارات ويقع في مكان تاني.
+
+   الـgetter بيأجّل القراءة لوقت الاستعمال، ووقتها الملفين خلّصوا تحميل.
+   enumerable عشان Object.values/keys والنشر (...) يشوفوه زي أي مزوّد. */
+Object.defineProperty(PROVIDERS, "cervo", {
+  get: () => cervo, enumerable: true, configurable: true,
+});
 /* مزوّدين بـAPI حقيقي (ينفع «بدّل الشركة» يبعت لهم) */
-export const API_PROVIDER_IDS = Object.freeze(["leajlak", "flyingarrow"]);
+export const API_PROVIDER_IDS = Object.freeze(["leajlak", "cervo", "flyingarrow"]);
 
 /* المزوّد الفعّال. الإعدادات هي المرجع والمتغيّر البيئي احتياطي.
 
@@ -791,4 +817,77 @@ export function activeProvider(settings) {
   const want = String((settings && settings.delivery && settings.delivery.provider)
     || env("COURIER_PROVIDER", "flyingarrow")).toLowerCase();
   return PROVIDERS[want] || PROVIDERS.flyingarrow;
+}
+
+/* ═══ توجيه المزوّد بالمسافة (٢٢ سبتمبر ٢٠٢٦ — نية عمر) ═══════════════════
+   لكل مزوّد نطاق بيكسب فيه، ومحدش منهم بيغطّي كل حاجة:
+
+     ≤ ١٠ كم   → لاجلك   — ١٩٫٥٥ ثابت وعقد فيه التزامات (وصول ≤٢٠ د،
+                            إلغاء ≤٥٪، تعويض م٧). أرخص وأأمن في النطاق ده.
+     ١٠ – ١٢   → Cervo   — العقد بيدّي لاجلك حق الرفض فوق ١٠ كم (م٣)،
+                            والشريحة دي كانت بتقف على قرار المدير كل مرة.
+     > ١٢      → «طلباتك» (التوصيل بالحي) — لسه مقفول، شوف districts.js.
+
+   القرار بيتاخد في مكان واحد (`dispatchInner`)، فكل المسارات — الكنس
+   التلقائي، زرار الكاشير، زرار البوابة، الراوت الإداري — بتتوجّه بنفس
+   الطريقة. المدير لسه بيقدر يختار شركة لطلب واحد؛ الاختيار الصريح بتاعه
+   بيغلب التوجيه دايماً.
+
+   `enabled` افتراضياً **مقفول**: توكن Cervo اللي عندنا دلوقتي تجريبي،
+   وتشغيل التوجيه قبل توكن الإنتاج معناه طلبات حقيقية تروح على بيئة تجارب. */
+export const DEFAULT_COURIER_ROUTING = Object.freeze({
+  enabled: false,
+  rules: Object.freeze([
+    Object.freeze({ upToKm: 10, provider: "leajlak" }),
+    Object.freeze({ upToKm: 12, provider: "cervo" }),
+    Object.freeze({ upToKm: null, provider: "district" }),
+  ]),
+});
+/* المزوّدين المسموح بيهم في قاعدة توجيه: شركات بـAPI + «district» (اللي
+   معناها «مايتبعتش آلي — البوابة بتتولّى») + «manual». أي اسم تاني بيتشال
+   بدل ما يتحوّل لمزوّد غلط. */
+const ROUTE_TARGETS = new Set([...API_PROVIDER_IDS, "district", "manual"]);
+
+export function courierRoutingCfg(settings) {
+  const raw = ((settings || {}).delivery || {}).courierRouting;
+  const src = raw && typeof raw === "object" ? raw : {};
+  let rules = (Array.isArray(src.rules) ? src.rules : DEFAULT_COURIER_ROUTING.rules)
+    .map((r) => ({
+      upToKm: r && r.upToKm != null && r.upToKm !== "" && Number.isFinite(Number(r.upToKm))
+        ? Number(r.upToKm) : null,
+      provider: String((r && r.provider) || "").toLowerCase(),
+    }))
+    .filter((r) => ROUTE_TARGETS.has(r.provider));
+  if (!rules.length) rules = DEFAULT_COURIER_ROUTING.rules.map((r) => ({ ...r }));
+  /* الترتيب بالمسافة، والقاعدة المفتوحة (upToKm = null) آخر حاجة دايماً —
+     عشان ترتيب غلط من اللوحة مايخلّيش «الباقي» يبلع كل المشاوير. */
+  rules.sort((a, b) => {
+    if (a.upToKm == null) return 1;
+    if (b.upToKm == null) return -1;
+    return a.upToKm - b.upToKm;
+  });
+  return { enabled: Boolean(src.enabled), rules };
+}
+
+/* بترجّع القاعدة اللي بتنطبق على المسافة دي. مسافة مش معروفة = مفيش توجيه
+   (بنرجع للمزوّد الفعّال) — أحسن من إننا نحزر ونبعت لشركة غلط. */
+export function routeCourier(km, settings) {
+  const cfg = courierRoutingCfg(settings);
+  const n = Number(km);
+  if (!cfg.enabled) return { enabled: false, provider: null, km: null, reason: "التوجيه بالمسافة مقفول" };
+  if (!Number.isFinite(n) || n <= 0) {
+    return { enabled: true, provider: null, km: null, reason: "مسافة المشوار مش معروفة — المزوّد الفعّال" };
+  }
+  for (const r of cfg.rules) {
+    if (r.upToKm == null || n <= r.upToKm) {
+      return {
+        enabled: true, provider: r.provider, km: Math.round(n * 10) / 10,
+        upToKm: r.upToKm,
+        reason: r.upToKm == null
+          ? `مشوار ${Math.round(n * 10) / 10} كم — فوق كل الشرايح`
+          : `مشوار ${Math.round(n * 10) / 10} كم ≤ ${r.upToKm}`,
+      };
+    }
+  }
+  return { enabled: true, provider: null, km: Math.round(n * 10) / 10, reason: "مفيش قاعدة مطابقة" };
 }

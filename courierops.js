@@ -31,7 +31,7 @@
 import { STORE_LAT, STORE_LNG } from "./tsstore.js";
 import { districtOfRow, districtCfg, districtCutoff, districtRouting, leajlakCostFor } from "./districts.js";
 import { cacheKey } from "./drivedist.js";
-import { PROVIDERS, API_PROVIDER_IDS } from "./couriers.js";
+import { PROVIDERS, API_PROVIDER_IDS, routeCourier } from "./couriers.js";
 import { driverKey, dispatchDelayOf } from "./delivery.js";
 import { fitOneSms, makeStaffNotifier } from "./staffalerts.js";
 import { emitOrder } from "./order-events.js";
@@ -701,6 +701,24 @@ export function register(app, ctx, deps = {}) {
       }
       const d = farGuardDecision(row, cfg);
       if (!d.far) return d;
+      /* ── التوجيه بالمسافة (٢٢ سبتمبر) ────────────────────────────────
+         حارس البعيد اتعمل أصلاً لأن **لاجلك** بترفض فوق ١٠ كم (العقد م٣)،
+         فكان بيوقف الطلب لقرار المدير. دلوقتي لو الشريحة دي ليها مزوّد
+         تاني متظبّط (Cervo لـ١٠-١٢ كم)، الوقفة دي مابقاش ليها معنى —
+         الطلب بيروح للمزوّد اللي بيغطّي المسافة، والحادثة بتتسجّل مقفولة
+         للسجل بس. لو المزوّد مش متظبّط بنرجع للحارس زي الأول. */
+      let allS = {};
+      try { allS = await getSettingsData(); } catch { allS = {}; }
+      const rt = routeCourier(d.km, allS);
+      if (rt && rt.enabled && rt.provider && rt.provider !== "district"
+          && PROVIDERS[rt.provider] && PROVIDERS[rt.provider].configured()) {
+        await openIncident(row.order_no, "far_risk", {
+          reason: `مشوار ${d.km} كم — التوجيه بالمسافة بيوديه لـ${PROVIDERS[rt.provider].label} (${rt.reason})`,
+          detail: { km: d.km, fromKm: d.fromKm, mode: "routed", routedTo: rt.provider },
+          alert: false, resolved: "auto", by: "system",
+        });
+        return { ...d, hold: false, mode: "routed", routedTo: rt.provider };
+      }
       /* «تنبيه بس» (الافتراضي — عمر: «كل حاجة تفضل شغالة زي النهارده»): لاجلك
          بتتطلب عادي، والإدارة بتاخد SMS + علامة «بعيد» على الكارت. الحادثة
          بتتسجّل مقفولة عشان ماتقعدش في شريط المشاكل من غير سبب. */
@@ -1146,7 +1164,11 @@ export function register(app, ctx, deps = {}) {
     const a = await mgr(c); if (a.res) return a.res;
     let active = null;
     try { active = await delivery()?.activeProviderId?.(); } catch {}
-    return c.json({ ok: true, active, providers: API_PROVIDER_IDS.map((id) => ({
+    /* التوجيه بالمسافة (٢٢ سبتمبر): البوابة بتعرض المزوّد اللي الشريحة
+       بتختاره، والمدير لسه بيقدر يغيّره لطلب واحد — اختياره بيغلب. */
+    let routing = null;
+    try { routing = (await getSettingsData()).delivery?.courierRouting || null; } catch {}
+    return c.json({ ok: true, active, routing, providers: API_PROVIDER_IDS.map((id) => ({
       id, label: id === "leajlak" ? "لاجلك" : PROVIDERS[id].label, configured: PROVIDERS[id].configured(),
     })) });
   });
