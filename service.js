@@ -169,6 +169,66 @@ export function register(app, ctx) {
   /* ملاحظة: requireAdmin في المشروع ده **بيتنادى جوه** المعالِج ويرجّع
      Response أو null — مش وسيط Hono. لو اتحطّ كوسيط بيرجع «Context is not
      finalized» ٥٠٠ للتوكن الصح ويعدّي ٤٠١ للغلط، وده أسوأ شكل للعطل. */
+  /* ── 📊 تقرير الإيقاف: إيه اللي حصل، ومين ضاع، ومين رجع ──────────────
+     السؤال اللي عمر عايز يرد عليه في أي وقت: «قفلت الساعة كام، وكام واحد
+     جه وأنا مقفول، وكام واحد سبنا رقمه، ووصلته الرسالة، ورجع طلب؟»
+     المدى بالساعات (hours) أو from/to بتوقيت الرياض.                    */
+  app.get("/api/service/report", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    const hours = Math.min(24 * 30, Math.max(1, Number(c.req.query("hours")) || 24));
+    const from = c.req.query("from") || null, to = c.req.query("to") || null;
+    const range = from && to ? [from, to] : null;
+    const W = range
+      ? { sql: "BETWEEN $1::timestamptz AND $2::timestamptz", args: range }
+      : { sql: `> NOW() - INTERVAL '${hours} hours'`, args: [] };
+    const q = (s, a = W.args) => pool.query(s, a).then((r) => r.rows).catch(() => []);
+
+    const [events, visitors, wait, sms, orders] = await Promise.all([
+      /* مين قفل/فتح، إمتى، وأي قناة */
+      q(`SELECT at, staff_name, role, action, order_no AS channel, detail
+           FROM portal_audit WHERE action LIKE 'service\\_%' AND at ${W.sql}
+          ORDER BY at DESC LIMIT 200`),
+      /* الزوار في نفس المدى — دي اللي بتقول «ضاع مني كام» */
+      q(`SELECT count(*)::int AS sessions,
+                count(*) FILTER (WHERE cart_max > 0)::int AS reached_cart,
+                count(*) FILTER (WHERE phone_norm IS NOT NULL)::int AS known,
+                count(*) FILTER (WHERE paid)::int AS paid,
+                COALESCE(round(sum(cart_max) FILTER (WHERE cart_max > 0))::int, 0) AS cart_value
+           FROM journey_sessions WHERE started_at ${W.sql}
+            AND NOT COALESCE(is_bot,false) AND NOT COALESCE(is_qa,false) AND NOT COALESCE(is_staff,false)`),
+      /* اللي سابوا رقمهم */
+      q(`SELECT id, created_at, phone_norm, item_count, subtotal, option, source,
+                notified_at, channel, skip_reason, order_no, order_total
+           FROM open_waitlist WHERE created_at ${W.sql} ORDER BY created_at DESC LIMIT 200`),
+      /* الرسايل اللي اتبعتت فعلاً — من سجل الرسايل مش من نيّتنا */
+      q(`SELECT at, phone_norm, status, parts, cost, error
+           FROM sms_log WHERE kind='waitlist' AND at ${W.sql} ORDER BY at DESC LIMIT 200`),
+      /* ورجعوا طلبوا؟ */
+      q(`SELECT count(*)::int AS n, COALESCE(round(sum(order_total))::int,0) AS sar
+           FROM open_waitlist WHERE order_no IS NOT NULL AND created_at ${W.sql}`),
+    ]);
+
+    const v = visitors[0] || {};
+    const sent = sms.filter((r) => r.status === "sent").length;
+    return c.json({
+      ok: true,
+      range: range ? { from: range[0], to: range[1] } : { hours },
+      now: serviceState(await getSettingsData()),
+      events,
+      visitors: { sessions: v.sessions || 0, reachedCart: v.reached_cart || 0, known: v.known || 0, paid: v.paid || 0, cartValue: v.cart_value || 0 },
+      waitlist: {
+        rows: wait,
+        captured: wait.length,
+        waiting: wait.filter((r) => !r.notified_at && !r.skip_reason).length,
+        notified: wait.filter((r) => r.notified_at).length,
+        skipped: wait.filter((r) => r.skip_reason).length,
+        value: wait.filter((r) => !r.notified_at && !r.skip_reason).reduce((n, r) => n + (Number(r.subtotal) || 0), 0),
+      },
+      sms: { rows: sms, sent, failed: sms.length - sent, cost: sms.reduce((n, r) => n + (Number(r.cost) || 0), 0) },
+      returned: orders[0] || { n: 0, sar: 0 },
+    });
+  });
+
   app.put("/api/service", async (c) => {
     const err = await requireAdmin(c); if (err) return err;
     const b = await c.req.json().catch(() => ({}));
