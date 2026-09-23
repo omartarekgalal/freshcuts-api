@@ -649,7 +649,10 @@ export function register(app, ctx, deps = {}) {
     stashAudit(c, writeAudit(actor, c, sectionOf(c.req.path)));
   }
 
-  ctx.setCmsHooks?.({ resolve, audit: auditHook, isOwnerSync });
+  /* `note` بيتعرض للموديولات التانية (index.js → moduleCtx.auditNote) عشان
+     مسار زي «لوحة التوصيل» يكمّل نفس سطر السجل بـ«إيه اللي اتغيّر» بدل ما
+     يعمل سطر تاني منفصل عن الطلب. */
+  ctx.setCmsHooks?.({ resolve, audit: auditHook, isOwnerSync, note: auditNote });
 
   /* مين أنا؟ — الشِل بيناديها أول ما يفتح (وده كمان بيسخّن الجلسة). */
   async function whoami(c) {

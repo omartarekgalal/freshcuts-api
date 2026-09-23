@@ -76,6 +76,8 @@ import * as courierops from "./courierops.js";
 import * as courierlive from "./courierlive.js";
 import * as cervotrial from "./cervotrial.js";
 import * as districts from "./districts.js";
+import * as deliveryControl from "./deliverycontrol.js";
+import * as adsctl from "./adsctl.js";
 import * as kitchen from "./kitchen.js";
 import * as adsreport from "./adsreport.js";
 import * as mkhub from "./mkhub.js";
@@ -2970,6 +2972,9 @@ const moduleCtx = {
   todayISO, daysAgoISO, normPhone, ts, deliveryAppOf, DEFAULT_DELIVERY_APPS,
   sourceRank,
   setCmsHooks: (h) => { _cmsHooks = h; },
+  /* بيكمل سطر سجل النشاط اللي requireAdmin عمله للكتابة الحالية بـ«إيه اللي
+     اتغير». بيرجع بالسكات لو مفيش جلسة لوحة (سكربت أو تست). */
+  auditNote: (c, note) => (_cmsHooks && _cmsHooks.note ? _cmsHooks.note(c, note) : Promise.resolve()),
 };
 // analytics.register hands back { periodKpis, channelsData, deliveryApps } so
 // reports.js can quote the SAME sales figures the analytics screens quote
@@ -3075,6 +3080,9 @@ const deliveryApi = deliveryMod.register(app, moduleCtx, { shop: () => shopApi, 
 // التوصيل بالحي (٢١/٩): جدول أسعار بالحي لمندوبين بره لاجلك — بيفتح المناطق
 // اللي فوق سقف المسافة بدل ما يشوفها العميل «خارج النطاق».
 districts.register(app, moduleCtx);
+// 🛵 لوحة التوصيل والمندوبين (٢٤/٩): مكان واحد متحقق لكل مفاتيح التوصيل —
+// بيكتب في نفس مفاتيح settings.delivery / settings.shop اللي الكود بيقراها.
+deliveryControl.register(app, moduleCtx);
 // مطابقة فاتورة لاجلك (١٩/٩): المتوقَّع من العقد × المفوتَر من الفاتورة + الشذوذ + تصدير
 ljRecon.register(app, moduleCtx, { providers: () => deliveryApi.PROVIDERS });
 // إشعارات العميل (متصفح/SMS/واتساب بمفاتيح من لوحة التحكم) — قبل shop
@@ -3146,6 +3154,15 @@ openwait.register(app, moduleCtx, { notify: () => notifyApi, carts: () => cartsA
 /* ⏸️ إيقاف الخدمة مؤقتاً (٢٣/٩): وقف التوصيل أو الاستلام لفترة برجوع تلقائي.
    اللي اتمنع بيتسجّل في نفس قايمة «نبّهني لما تفتحوا» وبتوصله رسالة عند الرجوع. */
 service.register(app, moduleCtx);
+/* 🎛 التحكم في الإعلانات من اللوحة (٢٤/٩): تشغيل/إيقاف أي حملة أو مجموعة أو
+   إعلان واحد، ميزانية بسقف وتأكيد، وجدولة «اقفل/افتح الساعة كذا» بدل مؤقتات
+   الـsystemd اللي اتكتبت بالإيد ليلة ٢٣/٩. لازم بعد cms (بياخد whoami عشان
+   السجل يقول مين عمل إيه) وبعد service (بيقرا حالة الإيقاف قبل أي تشغيل). */
+const adsCtlApi = adsctl.register(app, moduleCtx, {
+  whoami: (c) => cmsApi.whoami(c),
+  serviceState: service.serviceState,
+  adsWindow: autopilot.adsWindow,
+});
 /* 📅 الطلب المسبق (٢٢/٩): شبابيك مواعيد بسقوف من اللوحة — العميل يطلب الليلة
    لموعد بكرة ويدفع دلوقتي. shop.js بيتحقق من الشباك وبيأجّل المندوب، والمطبخ
    مابيشوفش التذكرة غير لما ييجي وقتها. */
@@ -3261,6 +3278,17 @@ serve({ fetch: app.fetch, port: PORT, hostname: "0.0.0.0" }, (info) => {
     setInterval(() => ap.runDaypartCheck({ trigger: "fast" }).catch(() => {}), AP_PACE_MINUTES * 60_000);
   }, 30_000);
   console.log(`[autopilot] ads window (dayparting) every ${AP_PACE_MINUTES}m`);
+
+  /* 🎛 جدولة الإعلانات من اللوحة — بديل مؤقتات systemd اللي اتكتبت بالإيد
+     ليلة ٢٣/٩. الدورة بتقرا الإعدادات الأول: لو الجدولة مقفولة (وهي
+     الافتراضي) بترجع من غير ما تلمس أي منصة، فالتشغيلة الفاضية بلاش. اللحاق
+     بعد الانقطاع محكوم بـgraceMinutes جوّه dueRules، مش من المؤقت ده، عشان
+     رجوع السيرفر الساعة ٤ العصر مايفتحش إعلانات ميعادها كان ١١ الصبح. */
+  setTimeout(() => {
+    adsCtlApi.tick({ trigger: "boot" }).catch(() => {});
+    setInterval(() => adsCtlApi.tick({ trigger: "cron" }).catch(() => {}), adsctl.TICK_MINUTES * 60_000);
+  }, 75_000);
+  console.log(`[ads-ctl] schedule tick every ${adsctl.TICK_MINUTES}m`);
 
   /* ناشر انستجرام. انستجرام API ملوش جدولة أصلاً، فالجدولة بتاعتنا هي
      العامل ده: كل ٥ دقايق بياخد الصفوف اللي ميعادها جه وينشرها. الدورة

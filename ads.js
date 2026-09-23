@@ -1325,6 +1325,69 @@ const meta = {
     };
   },
 
+  /* ── الإعلانات الفردية (٢٤/٩) ─────────────────────────────────────────
+     ليلة ٢٣/٩ المشاوي خلصت، وكان فيه تمن إعلان بيبيعوا صنف مفيش منه — ومكانش
+     فيه أي طريقة تقفل إعلان واحد من اللوحة، فاتقفلوا بالإيد من السيرفر وبعدين
+     اتكتب سكريبت يرجّعهم. الكيانات دي ناقصة هنا، فالشاشة مكانش عندها حتى
+     قايمة بالإعلانات لتعرضها.
+
+     مهم: بنقرا **الكيانات** مش الأرقام — إعلان صرفه صفر النهارده مابيرجعش في
+     insights خالص، وهو بالظبط اللي محتاج يتقفل قبل ما يصرف. mkhub.js بيقرا
+     level=ad من insights لأنه تقرير؛ ده تحكّم، فبيقرا /ads. */
+  async ads() {
+    const token = env("META_CAPI_TOKEN");
+    const act = this.actId();
+    if (!token || !act) return { ok: false, reason: "META_AD_ACCOUNT_ID / META_CAPI_TOKEN missing", rows: [] };
+    const fields = "id,name,adset_id,campaign_id,status,effective_status,creative{id,name,thumbnail_url}";
+    const res = await httpJson(
+      `${this.base()}/${act}/ads?fields=${encodeURIComponent(fields)}&limit=500`,
+      { headers: { Authorization: `Bearer ${token}` } });
+    if (!res.ok) return { ok: false, reason: this.readBatchResult(res).error, rows: [] };
+    return {
+      ok: true,
+      rows: (res.json?.data || []).map((a) => ({
+        platform: "meta",
+        id: String(a.id),
+        name: a.name || "",
+        adsetId: String(a.adset_id || ""),
+        campaignId: String(a.campaign_id || ""),
+        status: a.status,
+        effectiveStatus: a.effective_status || null,
+        creativeId: a.creative?.id ? String(a.creative.id) : null,
+        creativeName: a.creative?.name || null,
+        thumbnail: a.creative?.thumbnail_url || null,
+      })),
+    };
+  },
+
+  /* أرقام الإعلان الواحد — نفس قارئ النتيجة (readMetaResult)، مفيش تعريف
+     تاني لـ«النتيجة» على مستوى الإعلان. */
+  async adInsights({ from, to }) {
+    const token = env("META_CAPI_TOKEN");
+    const act = this.actId();
+    if (!token || !act) return { ok: false, reason: "META_AD_ACCOUNT_ID / META_CAPI_TOKEN missing", rows: [] };
+    const fields = "ad_id,ad_name,adset_id,campaign_id,spend,impressions,clicks,"
+      + "actions,action_values,conversions,conversion_values";
+    const tr = encodeURIComponent(JSON.stringify({ since: from, until: to }));
+    const res = await httpJson(
+      `${this.base()}/${act}/insights?level=ad&fields=${fields}&time_range=${tr}&limit=500`,
+      { headers: { Authorization: `Bearer ${token}` } });
+    if (!res.ok) return { ok: false, reason: this.readBatchResult(res).error, rows: [] };
+    return {
+      ok: true,
+      rows: (res.json?.data || []).map((r) => {
+        const g = readMetaResult(r);
+        return {
+          platform: "meta", adId: String(r.ad_id), adName: r.ad_name || "",
+          adsetId: String(r.adset_id || ""), campaignId: String(r.campaign_id || ""),
+          spend: Number(r.spend || 0), impressions: Number(r.impressions || 0),
+          clicks: Number(r.clicks || 0),
+          results: g.results, resultValue: g.resultValue, resultBasis: g.resultBasis,
+        };
+      }),
+    };
+  },
+
   /* الجماهير المخصّصة. `approximate_count_upper_bound` مطلوب بالتحديد —
      من غيره مفيش طريقة تفرّق بين رقم متقاس ورقم أرضية. شوف
      audienceSizeVerdict فوق. */
@@ -2116,6 +2179,135 @@ async function measuredCostPerResult(platformId, objectId, days = 7) {
    "not connected" message. */
 const canSend = (p) => missingOf(p.conversionEnv).length === 0;
 const canManage = (p) => missingOf(p.manageEnv).length === 0;
+
+/* ═══════════════════════════════════════════════════════════════════════
+   الكتابة على مستوى الكيان: حملة / مجموعة / إعلان واحد   (٢٤/٩)
+
+   ليه دي موجودة، وليه هي محدودة بصراحة:
+
+   • **ميتا**: `stateCall` بتبني `POST /{object_id}` مع `status` — ودي
+     الصيغة اللي جراف بتقبلها على الحملة والمجموعة والإعلان بالحرف الواحد
+     (نفس المسار، نفس الحقل). فالتحكم في الإعلان الواحد شغّال هنا.
+     الميزانية بتتكتب على الحملة (CBO) أو المجموعة (ABO) — الإعلان نفسه
+     مالوش ميزانية أصلاً، فبنرفض الطلب بدل ما نبعت نداء مالوش معنى.
+
+   • **تيك توك**: `stateCall` بتضرب على `campaign/status/update/` وبتبعت
+     `campaign_ids`. ده **مش** بينفع على مجموعة ولا إعلان — تيك توك ليها
+     مسارين تانيين (`adgroup/status/update/` بـ`adgroup_ids`،
+     `ad/status/update/` بـ`ad_ids`). مش مكتوبين هنا لأنهم ماتجرّبوش على
+     الحساب ده ولا مرة، ونداء غلط على منصة بتصرف فلوس أسوأ من رسالة «مش
+     مدعوم». لما يتجرّبوا يتضافوا هنا وبس.
+
+   • **سناب**: التعديل PUT على **مجموعة الحملات** وبيتعمله hydrate من الحملة
+     كاملة (شوف `_campaignWrite`). مفيش نظير لده للـad squad ولا الإعلان في
+     الكود، فمرفوض بصراحة.
+
+   • **جوجل**: `campaigns:mutate` — الحملة بس. المجموعات (ad groups) بتتقرا
+     (`adGroups()`) بس مافيش كتابة ليها.
+
+   القاعدة: منصة/مستوى غير مدعوم بيرجّع رسالة بالعربي بتقول المستوى المدعوم
+   إيه — **مابنجرّبش نداء بالتخمين**.
+   ═══════════════════════════════════════════════════════════════════════ */
+
+const ENTITY_WRITE = {
+  meta:      { state: ["campaign", "adset", "ad"], budget: ["campaign", "adset"] },
+  tiktok:    { state: ["campaign"], budget: ["campaign"] },
+  snapchat:  { state: ["campaign"], budget: ["campaign"] },
+  google:    { state: ["campaign"], budget: ["campaign"] },
+};
+const LEVEL_AR = { campaign: "حملة", adset: "مجموعة إعلانية", ad: "إعلان" };
+
+/** المستويات اللي منصة بتقبل الكتابة عليها — الشاشة بتقفل الزرار من دي. */
+export function entityWriteSupport(platformId) {
+  const s = ENTITY_WRITE[String(platformId || "").toLowerCase()];
+  return s ? { state: [...s.state], budget: [...s.budget] } : { state: [], budget: [] };
+}
+
+function entityGate(platformId, level, kind) {
+  const p = byId(platformId);
+  if (!p) return { ok: false, error: `منصة مش معروفة: ${platformId}` };
+  if (!canManage(p)) {
+    return { ok: false, error: `${p.label}: غير مربوطة — ناقص ${missingOf(p.manageEnv).join("، ") || "صلاحيات إدارة الحملات"}` };
+  }
+  const sup = entityWriteSupport(p.id);
+  if (!sup[kind].includes(level)) {
+    return {
+      ok: false,
+      error: `${p.label}: مانقدرش ${kind === "state" ? "نشغّل/نوقف" : "نغيّر ميزانية"} على مستوى «${LEVEL_AR[level] || level}» — المدعوم: ${sup[kind].map((l) => LEVEL_AR[l] || l).join("، ") || "مفيش"}.`,
+      supported: sup[kind],
+    };
+  }
+  return { ok: true, p };
+}
+
+/**
+ * شغّل/وقّف أي كيان. نفس بوابة ADS_ALLOW_WRITE ونفس `sendPlatformWrite`
+ * اللي الزراير والطيار بيمشوا عليها — عشان الرفض يبقى بنفس الكلام.
+ * @returns {{ok:boolean, applied:boolean, error?:string, status?:number}}
+ */
+export async function applyEntityState({ platform, level = "campaign", id, state }) {
+  const st = String(state || "").toUpperCase();
+  if (st !== "ACTIVE" && st !== "PAUSED") return { ok: false, applied: false, error: 'state لازم تكون ACTIVE أو PAUSED', status: 400 };
+  const g = entityGate(platform, level, "state");
+  if (!g.ok) return { ok: false, applied: false, error: g.error, supported: g.supported, status: 400 };
+  let call;
+  try { call = g.p.stateCall(String(id), st); }
+  catch (e) { return { ok: false, applied: false, error: String(e.message || e), status: 400 }; }
+  if (!writeAllowed()) {
+    return { ok: true, applied: false, guard: "ADS_ALLOW_WRITE مش '1' — مفيش حاجة اتبعتت", wouldCall: safeRequest(call) };
+  }
+  const r = await sendPlatformWrite(g.p, call);
+  return r.ok
+    ? { ok: true, applied: true, httpStatus: r.httpStatus ?? null, platform: redact(r.raw ?? null) }
+    : { ok: false, applied: false, error: r.error, failureKind: r.kind || null,
+        ...(r.gated ? { gated: true } : {}), ...(r.retryInMinutes ? { retryInMinutes: r.retryInMinutes } : {}),
+        httpStatus: r.httpStatus ?? null, status: 502 };
+}
+
+/**
+ * ميزانية يومية لكيان. بيمشي على نفس السورين بتاعين الراوت القديم:
+ * ADS_MAX_DAILY_BUDGET و`learningBudgetCheck` (٧٫١٤ × تكلفة النتيجة).
+ * الفحص بيترجع دايماً في الرد — حتى لما نعدّي.
+ */
+export async function applyEntityBudget({ platform, level = "campaign", id, amount, costPerResult, force = false, name }) {
+  const amt = Number(amount);
+  if (!Number.isFinite(amt) || amt <= 0) return { ok: false, applied: false, error: "الميزانية لازم تكون رقم أكبر من صفر", status: 400 };
+  if (amt > MAX_DAILY_BUDGET) {
+    return { ok: false, applied: false, status: 400,
+      error: `${amt} ${DEFAULT_CURRENCY} أعلى من ADS_MAX_DAILY_BUDGET (${MAX_DAILY_BUDGET}) — ده حاجز في السيرفر.` };
+  }
+  const g = entityGate(platform, level, "budget");
+  if (!g.ok) return { ok: false, applied: false, error: g.error, supported: g.supported, status: 400 };
+
+  const cprWindowDays = 7;
+  let cpr = Number(costPerResult);
+  let cprSource = "caller";
+  if (!Number.isFinite(cpr) || cpr <= 0) {
+    cpr = null; cprSource = "unmeasured";
+    const m = await measuredCostPerResult(platform, id, cprWindowDays);
+    if (m.ok) { cpr = m.costPerResult; cprSource = m.level; } else cprSource = `unmeasured (${m.reason})`;
+  }
+  const learning = {
+    ...learningBudgetCheck({ dailyBudget: amt, costPerResult: cpr, name: name || `${platform}:${id}`,
+      resultsWindowDays: cpr == null ? null : cprWindowDays }),
+    costPerResult: cpr, costPerResultSource: cprSource,
+  };
+  if (learning.blocked && force !== true) {
+    return { ok: false, applied: false, status: 409, learning,
+      error: `الميزانية تحت الحد الأدنى للخروج من التعلّم. ${learning.why}` };
+  }
+  let call;
+  try { call = g.p.budgetCall(String(id), amt); }
+  catch (e) { return { ok: false, applied: false, error: String(e.message || e), status: 400, learning }; }
+  if (!writeAllowed()) {
+    return { ok: true, applied: false, learning, guard: "ADS_ALLOW_WRITE مش '1' — مفيش حاجة اتبعتت", wouldCall: safeRequest(call) };
+  }
+  const r = await sendPlatformWrite(g.p, call);
+  return r.ok
+    ? { ok: true, applied: true, learning, httpStatus: r.httpStatus ?? null, platform: redact(r.raw ?? null) }
+    : { ok: false, applied: false, learning, error: r.error, failureKind: r.kind || null,
+        httpStatus: r.httpStatus ?? null, status: 502 };
+}
 
 /* ═══════════════════════════════════════════════════════════════════════
    REGISTER
@@ -2955,6 +3147,50 @@ export function register(app, ctx, deps = {}) {
       } catch (e) { reasons[p.id] = String(e.message || e); }
     }
     return c.json({ ok: true, range: { from, to }, adsets: rows, reasons });
+  });
+
+  /* GET /api/ads/ads?platform=meta&campaignId=&adsetId=&from=&to=
+     قراءة فقط: الإعلانات الفردية بحالتها + أرقامها. الكيانات جاية من /ads
+     (فإعلان صرفه صفر بيبان) والأرقام من insights level=ad لو موجودة.
+     ده اللي كان ناقص ليلة ٢٣/٩ — الشاشة مكانش عندها قايمة إعلانات أصلاً. */
+  app.get("/api/ads/ads", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    const q = c.req.query();
+    const to = q.to || todayISO();
+    const from = q.from || daysAgoISO(7);
+    const rows = [], reasons = {};
+    for (const p of PLATFORMS) {
+      if (q.platform && p.id !== q.platform) continue;
+      if (typeof p.ads !== "function") {
+        reasons[p.id] = `${p.label}: مافيش قراية إعلانات فردية في الربط الحالي — الحملات والمجموعات بس.`;
+        continue;
+      }
+      if (!canManage(p)) { reasons[p.id] = `غير مربوطة — ناقص ${missingOf(p.manageEnv).join("، ") || "صلاحيات"}`; continue; }
+      try {
+        const r = await p.ads();
+        if (!r.ok) { reasons[p.id] = r.reason; continue; }
+        let stats = {};
+        if (typeof p.adInsights === "function") {
+          try {
+            const ins = await p.adInsights({ from, to });
+            if (ins.ok) stats = Object.fromEntries(ins.rows.map((x) => [String(x.adId), x]));
+          } catch { /* الأرقام إضافة، مش شرط */ }
+        }
+        for (const a of r.rows) {
+          if (q.campaignId && String(a.campaignId) !== String(q.campaignId)) continue;
+          if (q.adsetId && String(a.adsetId) !== String(q.adsetId)) continue;
+          const s = stats[a.id];
+          rows.push({
+            ...a,
+            writeLevels: entityWriteSupport(p.id).state,
+            recent: s
+              ? { from, to, spend: s.spend, impressions: s.impressions, clicks: s.clicks, results: s.results, resultBasis: s.resultBasis }
+              : { from, to, spend: null, impressions: null, clicks: null, results: null, resultBasis: null },
+          });
+        }
+      } catch (e) { reasons[p.id] = String(e.message || e); }
+    }
+    return c.json({ ok: true, range: { from, to }, ads: rows, reasons, writeEnabled: writeAllowed() });
   });
 
   /* GET /api/ads/insights?platform=&from=&to= */
