@@ -159,7 +159,11 @@ export function register(app, ctx) {
     return serviceState({ service: cfg }, now);
   };
 
-  app.put("/api/service", requireAdmin, async (c) => {
+  /* ملاحظة: requireAdmin في المشروع ده **بيتنادى جوه** المعالِج ويرجّع
+     Response أو null — مش وسيط Hono. لو اتحطّ كوسيط بيرجع «Context is not
+     finalized» ٥٠٠ للتوكن الصح ويعدّي ٤٠١ للغلط، وده أسوأ شكل للعطل. */
+  app.put("/api/service", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
     const b = await c.req.json().catch(() => ({}));
     if (!["delivery", "pickup", "both"].includes(String(b.channel))) {
       return c.json({ ok: false, error: "bad_channel" }, 400);
