@@ -86,6 +86,43 @@ export function serviceState(settings, now = new Date()) {
 }
 
 /* الحارس اللي shop.js بيستخدمه قبل ما يفتح أي جلسة دفع. */
+/* ═══ دقايق الإيقاف داخل نافذة (٢٣/٩) ══════════════════════════════════════
+   عمر: «اعرف كل حاجة حصلت في الوقت دا». السؤال اللي بيسأله التقرير: التوصيل
+   والاستلام كانوا واقفين كام دقيقة في المدى اللي اختاره.
+
+   الأحداث جاية من portal_audit بترتيب تصاعدي: service_pause بيفتح فترة،
+   service_resume بيقفلها، و«both» بيمسّ القناتين. حالتين لازم يتحسبوا صح:
+     • أول حدث لقناة = resume ⇒ كانت واقفة من قبل بداية النافذة ⇒ من البداية.
+     • آخر حدث = pause من غير resume ⇒ لسه واقفة ⇒ لحد نهاية النافذة.
+   بنقصّ أي فترة على حدود النافذة عشان رقم مايزيدش عن طول النافذة نفسها.  */
+export function pausedMinutesOf(events, range, hours, now = new Date()) {
+  const end = range ? new Date(range[1]) : now;
+  const start = range ? new Date(range[0]) : new Date(end.getTime() - hours * 3600_000);
+  const s = start.getTime(), e = end.getTime();
+  if (!(Number.isFinite(s) && Number.isFinite(e) && e > s)) return { delivery: 0, pickup: 0 };
+
+  const out = { delivery: 0, pickup: 0 };
+  for (const ch of CHANNELS) {
+    const mine = (events || []).filter(
+      (x) => x.channel === ch || x.channel === "both").map(
+      (x) => ({ at: new Date(x.at).getTime(), pause: x.action === "service_pause" }))
+      .filter((x) => Number.isFinite(x.at)).sort((a, b) => a.at - b.at);
+
+    let openedAt = mine.length && !mine[0].pause ? s : null;  // كانت واقفة قبل البداية
+    let total = 0;
+    for (const ev of mine) {
+      if (ev.pause) { if (openedAt == null) openedAt = ev.at; }
+      else if (openedAt != null) {
+        total += Math.max(0, Math.min(ev.at, e) - Math.max(openedAt, s));
+        openedAt = null;
+      }
+    }
+    if (openedAt != null) total += Math.max(0, e - Math.max(openedAt, s));
+    out[ch] = Math.round(total / 60000);
+  }
+  return out;
+}
+
 export function serviceBlock(settings, option, now = new Date(), lang = "ar") {
   const ch = option === "pickup" ? "pickup" : "delivery";
   const st = serviceState(settings, now);
@@ -183,7 +220,7 @@ export function register(app, ctx) {
       : { sql: `> NOW() - INTERVAL '${hours} hours'`, args: [] };
     const q = (s, a = W.args) => pool.query(s, a).then((r) => r.rows).catch(() => []);
 
-    const [events, visitors, wait, sms, orders] = await Promise.all([
+    const [events, visitors, wait, sms, orders, sales, pos, paused] = await Promise.all([
       /* مين قفل/فتح، إمتى، وأي قناة */
       q(`SELECT at, staff_name, role, action, order_no AS channel, detail
            FROM portal_audit WHERE action LIKE 'service\\_%' AND at ${W.sql}
@@ -206,6 +243,22 @@ export function register(app, ctx) {
       /* ورجعوا طلبوا؟ */
       q(`SELECT count(*)::int AS n, COALESCE(round(sum(order_total))::int,0) AS sar
            FROM open_waitlist WHERE order_no IS NOT NULL AND created_at ${W.sql}`),
+      /* ٢٣/٩ — طلب عمر «اعرف كل حاجة حصلت في الوقت دا»: طلبات المتجر نفسها،
+         مش بس اللي جم من قايمة الانتظار. ساعة الرياض عشان الجدول يتقرا. */
+      q(`SELECT count(*)::int AS n,
+                COALESCE(round(sum(total))::int,0) AS sar,
+                count(*) FILTER (WHERE option='delivery')::int AS delivery,
+                count(*) FILTER (WHERE option='pickup')::int AS pickup,
+                count(*) FILTER (WHERE status IN ('pending_payment','payment_failed'))::int AS unpaid
+           FROM shop_orders WHERE created_at ${W.sql}`),
+      /* ونقطة البيع كلها (صالة/سفري/تطبيقات) — دي اللي بتقول إيه اللي فات */
+      q(`SELECT count(*)::int AS n, COALESCE(round(sum(total))::int,0) AS sar,
+                to_char(date_trunc('hour', order_date AT TIME ZONE 'Asia/Riyadh'),'HH24') AS hh
+           FROM ts_orders WHERE order_date ${W.sql}
+          GROUP BY 3 ORDER BY 3`),
+      /* وكام دقيقة كانت الخدمة موقوفة في المدى ده */
+      q(`SELECT action, at, order_no AS channel FROM portal_audit
+          WHERE action LIKE 'service\_%' AND at ${W.sql} ORDER BY at ASC`),
     ]);
 
     const v = visitors[0] || {};
@@ -226,6 +279,11 @@ export function register(app, ctx) {
       },
       sms: { rows: sms, sent, failed: sms.length - sent, cost: sms.reduce((n, r) => n + (Number(r.cost) || 0), 0) },
       returned: orders[0] || { n: 0, sar: 0 },
+      /* «إيه اللي حصل» — الطلبات نفسها في نفس النافذة */
+      orders: sales[0] || { n: 0, sar: 0, delivery: 0, pickup: 0, unpaid: 0 },
+      pos: { rows: pos, n: pos.reduce((a, r) => a + Number(r.n || 0), 0),
+             sar: pos.reduce((a, r) => a + Number(r.sar || 0), 0) },
+      pausedMinutes: pausedMinutesOf(paused, range, hours),
     });
   });
 

@@ -82,3 +82,60 @@ test("SERVICE_DEFAULTS is frozen and has both channels", () => {
   assert.ok(Object.isFrozen(SERVICE_DEFAULTS));
   assert.ok(SERVICE_DEFAULTS.delivery && SERVICE_DEFAULTS.pickup);
 });
+
+/* ── دقايق الإيقاف داخل نافذة (٢٣/٩، طلب عمر: «اعرف كل حاجة حصلت») ─────── */
+import { pausedMinutesOf } from "./service.js";
+const R = (a, b) => [a, b];
+
+test("إيقاف وتشغيل جوه النافذة = الفرق بينهم", () => {
+  const ev = [
+    { at: "2026-09-23T17:41:00Z", action: "service_pause", channel: "delivery" },
+    { at: "2026-09-23T19:07:00Z", action: "service_resume", channel: "delivery" },
+  ];
+  const m = pausedMinutesOf(ev, R("2026-09-23T12:00:00Z", "2026-09-23T20:00:00Z"), 24);
+  assert.equal(m.delivery, 86);
+  assert.equal(m.pickup, 0, "الاستلام مالوش أحداث ⇒ صفر");
+});
+
+test("«both» بيمسّ القناتين", () => {
+  const ev = [
+    { at: "2026-09-23T18:00:00Z", action: "service_pause", channel: "both" },
+    { at: "2026-09-23T18:30:00Z", action: "service_resume", channel: "both" },
+  ];
+  const m = pausedMinutesOf(ev, R("2026-09-23T12:00:00Z", "2026-09-23T20:00:00Z"), 24);
+  assert.deepEqual(m, { delivery: 30, pickup: 30 });
+});
+
+test("كانت واقفة قبل بداية النافذة ⇒ بنحسب من البداية بس", () => {
+  const ev = [{ at: "2026-09-23T13:00:00Z", action: "service_resume", channel: "pickup" }];
+  const m = pausedMinutesOf(ev, R("2026-09-23T12:30:00Z", "2026-09-23T20:00:00Z"), 24);
+  assert.equal(m.pickup, 30, "نص ساعة من بداية النافذة، مش من الإيقاف الحقيقي");
+});
+
+test("لسه واقفة لحد دلوقتي ⇒ بنحسب لنهاية النافذة", () => {
+  const ev = [{ at: "2026-09-23T19:00:00Z", action: "service_pause", channel: "delivery" }];
+  const m = pausedMinutesOf(ev, R("2026-09-23T12:00:00Z", "2026-09-23T20:00:00Z"), 24);
+  assert.equal(m.delivery, 60);
+});
+
+test("الرقم عمره ما يزيد عن طول النافذة", () => {
+  const ev = [
+    { at: "2026-09-20T10:00:00Z", action: "service_pause", channel: "both" },
+    { at: "2026-09-25T10:00:00Z", action: "service_resume", channel: "both" },
+  ];
+  const m = pausedMinutesOf(ev, R("2026-09-23T12:00:00Z", "2026-09-23T14:00:00Z"), 24);
+  assert.deepEqual(m, { delivery: 120, pickup: 120 });
+});
+
+test("مفيش أحداث = صفر، ونافذة بايظة برضه صفر", () => {
+  assert.deepEqual(pausedMinutesOf([], R("2026-09-23T12:00:00Z", "2026-09-23T14:00:00Z"), 24),
+    { delivery: 0, pickup: 0 });
+  assert.deepEqual(pausedMinutesOf([{ at: "x", action: "service_pause", channel: "both" }],
+    R("bad", "worse"), 24), { delivery: 0, pickup: 0 });
+});
+
+test("بدون range بنستخدم hours من دلوقتي", () => {
+  const now = new Date("2026-09-23T20:00:00Z");
+  const ev = [{ at: "2026-09-23T19:30:00Z", action: "service_pause", channel: "delivery" }];
+  assert.equal(pausedMinutesOf(ev, null, 3, now).delivery, 30);
+});
