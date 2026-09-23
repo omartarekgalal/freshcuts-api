@@ -61,6 +61,7 @@ import * as whatsapp from "./whatsapp.js";
 import * as wainbox from "./wainbox.js";
 import * as carts from "./carts.js";
 import * as openwait from "./openwait.js";
+import * as service from "./service.js";
 import * as preorder from "./preorder.js";
 import * as journey from "./journey.js";
 import * as clarity from "./clarity.js";
@@ -3140,6 +3141,9 @@ searchMod.register(app, moduleCtx, { cms: () => cmsApi, c360: () => c360Api });
 // «نبّهني لما تفتحوا»: العميل اللي جه والمطعم مقفول بيسيب رقمه، وسلته بتتحفظ
 // ورا نفس رابط الاسترداد بتاع carts، والرسالة بتتبعت وقت الفتح بس.
 openwait.register(app, moduleCtx, { notify: () => notifyApi, carts: () => cartsApi });
+/* ⏸️ إيقاف الخدمة مؤقتاً (٢٣/٩): وقف التوصيل أو الاستلام لفترة برجوع تلقائي.
+   اللي اتمنع بيتسجّل في نفس قايمة «نبّهني لما تفتحوا» وبتوصله رسالة عند الرجوع. */
+service.register(app, moduleCtx);
 /* 📅 الطلب المسبق (٢٢/٩): شبابيك مواعيد بسقوف من اللوحة — العميل يطلب الليلة
    لموعد بكرة ويدفع دلوقتي. shop.js بيتحقق من الشباك وبيأجّل المندوب، والمطبخ
    مابيشوفش التذكرة غير لما ييجي وقتها. */

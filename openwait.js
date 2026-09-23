@@ -20,6 +20,7 @@
 ═══════════════════════════════════════════════════════════════════════════ */
 
 import { isOpenNow } from "./carts.js";
+import { serviceState, serviceCfg } from "./service.js";
 import { staffPhoneSet } from "./smsrules.js";
 
 const DAYS = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"];
@@ -118,8 +119,12 @@ export function register(app, ctx, deps = {}) {
     if (!cfg.enabled) return bad(c, "disabled", 503);
     const phone = norm(b.phone);
     if (!/^5\d{8}$/.test(phone || "")) return bad(c, "bad_phone");
-    // مفتوح دلوقتي؟ يبقى مالوش لازمة — نقول للواجهة تكمّل الطلب عادي
-    if (isOpenNow(s.hours)) return c.json({ ok: true, open: true, joined: false });
+    /* مفتوح دلوقتي؟ يبقى مالوش لازمة — نقول للواجهة تكمّل الطلب عادي.
+       استثناء (٢٣/٩): لو فيه قناة موقوفة مؤقتاً (service.js) فالعميل اللي
+       اتمنع يستاهل يسجّل، عشان توصله رسالة أول ما نرجع. */
+    if (isOpenNow(s.hours) && !serviceState(s).anyPaused) {
+      return c.json({ ok: true, open: true, joined: false });
+    }
 
     const device = /^[a-z0-9_-]{8,64}$/i.test(String(b.deviceId || "")) ? String(b.deviceId).slice(0, 64) : null;
     const items = Array.isArray(b.items) ? b.items.slice(0, 60) : [];
@@ -164,8 +169,17 @@ export function register(app, ctx, deps = {}) {
             AND created_at < $1::timestamptz - ($2 || ' hours')::interval`,
         [now.toISOString(), String(cfg.maxAgeHours)]);
       if (!isOpenNow(s.hours, now)) return { skipped: "closed" };
-      const since = minutesSinceOpen(s.hours, now);
-      if (since == null || since > cfg.openWindowMinutes) return { skipped: "outside_open_window", since };
+      if (serviceState(s, now).allPaused) return { skipped: "service_paused" };
+      /* شباكين للإرسال: بعد فتح المطعم زي الأول، **أو** بعد ما قناة موقوفة
+         ترجع (service.resumedAt). التاني بيخلّي «وقّفنا نص ساعة» يبعت كمان. */
+      const sinceOpen = minutesSinceOpen(s.hours, now);
+      const rAt = serviceCfg(s).resumedAt;
+      const sinceResume = rAt ? Math.floor((now.getTime() - new Date(rAt).getTime()) / 60000) : null;
+      const inWindow = (m) => m != null && m >= 0 && m <= cfg.openWindowMinutes;
+      const since = inWindow(sinceOpen) ? sinceOpen : sinceResume;
+      if (!inWindow(sinceOpen) && !inWindow(sinceResume)) {
+        return { skipped: "outside_open_window", sinceOpen, sinceResume };
+      }
 
       const rows = (await pool.query(
         `SELECT id, phone_norm, code FROM open_waitlist

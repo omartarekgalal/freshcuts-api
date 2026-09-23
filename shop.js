@@ -38,6 +38,7 @@ import { VAT_RATE as BUNDLE_VAT } from "./bundles.js";
 import { MULTIPLY as MONEY_MULTIPLY, rescaleItems, stampMf, scaleOf } from "./money.js";
 import { isOpenNow } from "./carts.js";
 import { preorderCfg, slotCounts, validateSlot, isDueNow, slotLabel } from "./preorder.js";
+import { serviceBlock } from "./service.js";
 import { soldOutOf, soldOutLines, soldOutMessage } from "./soldout.js";
 import { dispatchDue, dispatchDelayOf } from "./delivery.js";
 import { makeStaffNotifier, slaAlertText, posFailedText, tabsenseDownText } from "./staffalerts.js";
@@ -778,6 +779,13 @@ export function register(app, ctx, deps = {}) {
         { message: "المطعم مغلق حالياً 🌙 — تقدر تجهّز سلتك وتطلب أول ما نفتح." });
     }
     const option = b.option === "pickup" ? "pickup" : "delivery";
+    /* ⏸️ إيقاف مؤقت لقناة (service.js): المطبخ مضغوط ⇒ نوقف التوصيل نص ساعة
+       والاستلام يفضل شغّال. الواجهة بتمنع قبل الدفع، والسيرفر بيمنع كمان عشان
+       صفحة قديمة مفتوحة ما تعدّيش. الطلب المؤجّل مستثنى — موعده بعدين خالص. */
+    if (!scheduled) {
+      const blocked = serviceBlock(settingsNow, option);
+      if (blocked) return fail(blocked.error, 409, blocked);
+    }
     const branchId = String(b.branch_id || "1");
     let items = Array.isArray(b.items) ? b.items : [];
     if (!items.length) return fail("empty_cart", 400);
