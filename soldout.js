@@ -54,7 +54,50 @@ export const soldOutOf = (settings, nowMs = Date.now()) => activeSoldOut(setting
 export const pausedOffersOf = (settings, nowMs = Date.now()) =>
   activeSoldOut(settings?.catalog?.pausedOffers, nowMs);
 
-export function makeOfferPauseStore({ pool, getSettingsData, now = () => Date.now(), onChange = () => {} }) {
+/* ═══ إيقاف الباقة لازم يقفل بطل الصفحة كمان (٢٤/٩) ═══════════════════════
+   ليلة ٢٣/٩ قفلنا المشاوي ووقفنا الأربع باقات من البورتال، وفضلت الصفحة
+   الرئيسية بطلها «كيلو مشاوي ٩٦» و«باقات تجمّع من ٢٢٥» ٣ ساعات كاملة.
+   ٨٢ زائر من الإعلانات دخلوا، ٤ بس وصلوا للسلة.
+
+   السبب: مفتاحين مختلفين لنفس الحاجة. الإيقاف بيتكتب بـslug الباقة
+   (`national96-grill`) في settings، وبطل الصفحة بيتقرا من جدول `offer_registry`
+   بـoffer id (`nd96_kilo`) عن طريق /api/catalog/dine-in. الزرار ماكانش بيوصله.
+
+   الحل: نفس الضغطة بتقلب `offer_registry.enabled` للعرض المربوط بالباقة.
+   • الربط من `cms_bundles.offer_id` — مفيش قايمة مكتوبة بالإيد تبوظ مع أول
+     باقة جديدة.
+   • التشغيل بيرجّع `enabled` **بس لو إحنا اللي قفلناه** (بنبصم updated_by).
+     من غير الشرط ده، تشغيل باقة كان هيرجّع عرض عمر قافله بنفسه أو عرض منتهي.
+   • بننده refreshOffers() عشان السجل في الذاكرة يتحدّث على طول بدل ما نستنى
+     دورة الـ٥ دقايق.                                                       */
+const PAUSE_MARK = "bundle-pause";
+
+export function makeOfferPauseStore({ pool, getSettingsData, now = () => Date.now(), onChange = () => {},
+                                      refreshOffers = null }) {
+  /* offer_id بتاع الباقة — null يعني الباقة دي مالهاش عرض في السجل */
+  async function offerIdOf(slug) {
+    try {
+      const r = await pool.query(
+        "SELECT offer_id FROM cms_bundles WHERE slug = $1 AND offer_id IS NOT NULL AND offer_id <> ''", [slug]);
+      return r.rows[0]?.offer_id || null;
+    } catch { return null; }
+  }
+  async function syncRegistry(slug, paused) {
+    const offerId = await offerIdOf(slug);
+    if (!offerId) return null;
+    try {
+      const r = paused
+        ? await pool.query(
+            `UPDATE offer_registry SET enabled=false, updated_at=NOW(), updated_by=$2
+              WHERE id=$1 AND enabled RETURNING id`, [offerId, PAUSE_MARK])
+        : await pool.query(
+            `UPDATE offer_registry SET enabled=true, updated_at=NOW(), updated_by=$2
+              WHERE id=$1 AND NOT enabled AND updated_by=$2 RETURNING id`, [offerId, PAUSE_MARK]);
+      if (r.rowCount && refreshOffers) { try { await refreshOffers(); } catch {} }
+      return { offerId, changed: r.rowCount > 0 };
+    } catch { return { offerId, changed: false }; }
+  }
+
   async function active() { return pausedOffersOf(await getSettingsData(), now()); }
   async function set(offerId, { paused, until = "reopen_next_open", by = null, name = null } = {}) {
     const id = String(offerId ?? "").trim();
@@ -74,13 +117,15 @@ export function makeOfferPauseStore({ pool, getSettingsData, now = () => Date.no
              '{catalog,pausedOffers}', COALESCE(data->'catalog'->'pausedOffers','{}'::jsonb), true),
            ARRAY['catalog','pausedOffers',$1::text], $2::jsonb, true) WHERE id=1`, [id, JSON.stringify(entry)]);
       try { onChange(); } catch {}
-      return { ok: true, offerId: id, paused: true, entry };
+      const reg = await syncRegistry(id, true);
+      return { ok: true, offerId: id, paused: true, entry, registry: reg };
     }
     await pool.query(`UPDATE settings SET data = data #- ARRAY['catalog','pausedOffers',$1::text] WHERE id=1`, [id]);
     try { onChange(); } catch {}
-    return { ok: true, offerId: id, paused: false, entry: null };
+    const reg = await syncRegistry(id, false);
+    return { ok: true, offerId: id, paused: false, entry: null, registry: reg };
   }
-  return { active, set };
+  return { active, set, syncRegistry, offerIdOf };
 }
 
 /* سطور السلة (بعد توسيع الباقات) اللي فيها صنف خلصان. */
@@ -161,7 +206,7 @@ export function groupMenu(menuJson, active) {
 }
 
 /* المسارات: البورتال (مدير، أو كاشير لو settings.portal.cashierCanSoldOut) + اللوحة. */
-export function register(app, { pool, getSettingsData, requireAdmin, requirePortal, audit, cmsWho, onChange, log = console, fetchMenu, now }) {
+export function register(app, { pool, getSettingsData, requireAdmin, requirePortal, audit, cmsWho, onChange, log = console, fetchMenu, now, refreshOffers = null }) {
   const store = makeSoldOutStore({ pool, getSettingsData, now, onChange });
   const STORE_BASE = () => (process.env.CATALOG_MENU_BASE || process.env.STOREFRONT_PUBLIC_URL || "https://freshcuts.sa").replace(/\/+$/, "");
   let menuCache = { at: 0, json: null };
@@ -192,7 +237,8 @@ export function register(app, { pool, getSettingsData, requireAdmin, requirePort
   /* ⏸️ العروض والباقات — نفس أزرار «خلص» بالظبط. مع كل عرض بنرجّع أرقام
      المنتجات اللي بيعتمد عليها، عشان الشاشة تقدر تقول للمدير: «وقفت المشاوي،
      والعروض دي فيها مشاوي — توقفهم معاها؟» بدل ما يفتكر بنفسه. */
-  const offerStore = makeOfferPauseStore({ pool, getSettingsData, now, onChange });
+  const offerStore = makeOfferPauseStore({ pool, getSettingsData, now, onChange,
+    refreshOffers });
 
   async function offerPayload() {
     const paused = await offerStore.active();

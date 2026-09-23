@@ -354,7 +354,11 @@ export function register(app, ctx) {
       const rows = await getRows();
       ids = [...new Set([...ids, ...rows.filter((r) => r.dineIn).map((r) => r.id)])];
     } catch { /* fall back to the configured ids */ }
-    c.header("Cache-Control", "public, max-age=300");
+    /* ٦٠ مش ٣٠٠ (٢٤/٩): الرد ده فيه العروض الحيّة اللي بيتبني منها بطل
+       الصفحة. بـ٣٠٠ كان إيقاف عرض ياخد لحد ٥ دقايق كمان عشان يختفي من
+       المتصفح — وليلة ٢٣/٩ ده كان الفرق بين صفحة بتبيع الموجود وصفحة
+       بتبيع المقفول. */
+    c.header("Cache-Control", "public, max-age=60");
     // العروض المسجّلة بترجع كمان: مش أصناف في المنيو فمالهاش id تتبادج بيه،
     // لكن المتجر محتاج يعرضها في شريط العروض بنفس ملاحظة الصالة — ومن نفس
     // المصدر، عشان ما يبقاش فيه صنف مكتوب عليه صالة في الكتالوج وأونلاين
@@ -401,7 +405,11 @@ export function register(app, ctx) {
     catch (e) { return c.json({ ok: false, error: e.message }, 503); }
     const findings = auditRows(rows);
     const pending = pendingDashboardEdits(rows);
-    c.header("Cache-Control", "public, max-age=300");
+    /* ٦٠ مش ٣٠٠ (٢٤/٩): الرد ده فيه العروض الحيّة اللي بيتبني منها بطل
+       الصفحة. بـ٣٠٠ كان إيقاف عرض ياخد لحد ٥ دقايق كمان عشان يختفي من
+       المتصفح — وليلة ٢٣/٩ ده كان الفرق بين صفحة بتبيع الموجود وصفحة
+       بتبيع المقفول. */
+    c.header("Cache-Control", "public, max-age=60");
     return c.json({
       ok: findings.filter((f) => f.level === "error").length === 0,
       items: rows.length,

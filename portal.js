@@ -27,6 +27,7 @@ import { makePortalPush, validSubscription } from "./portal-push.js";
 import { parseRange, buildReport } from "./portal-reports.js";
 import { makeNameResolver, backfillItemNames } from "./product-names.js";
 import { register as registerSoldOut } from "./soldout.js";
+import { loadOffers } from "./offers.js";
 import { applyService, serviceState } from "./service.js";
 
 export const AUDIT_DDL = Object.freeze([
@@ -1121,6 +1122,9 @@ export function register(app, ctx, deps = {}) {
   /* «الأصناف»: المدير يقفل/يفتح صنف خلص (soldout.js). القراية للكل. */
   const soldOut = registerSoldOut(app, {
     pool, getSettingsData, requireAdmin, requirePortal, audit, log, now, fetchMenu: deps.fetchMenu,
+    /* إيقاف الباقة بيقفل عرضها في السجل كمان — ونحدّث السجل في الذاكرة على
+       طول بدل ما بطل الصفحة يفضل بيبيع المقفول لحد الدورة الجاية (٢٤/٩). */
+    refreshOffers: () => loadOffers(pool),
     cmsWho: async (c) => { try { const u = await deps.cmsWhoami?.(c); return u?.name || u?.username || null; } catch { return null; } },
   });
 
