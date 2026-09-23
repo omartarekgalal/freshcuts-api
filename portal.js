@@ -27,6 +27,7 @@ import { makePortalPush, validSubscription } from "./portal-push.js";
 import { parseRange, buildReport } from "./portal-reports.js";
 import { makeNameResolver, backfillItemNames } from "./product-names.js";
 import { register as registerSoldOut } from "./soldout.js";
+import { applyService, serviceState } from "./service.js";
 
 export const AUDIT_DDL = Object.freeze([
   `CREATE TABLE IF NOT EXISTS portal_audit (
@@ -539,6 +540,27 @@ export function register(app, ctx, deps = {}) {
 
   /* ── مدير: طلب مندوب الآن ── */
   const inflight = new Set();
+  /* ⏸️ إيقاف الخدمة من البوابة (٢٣/٩): الكاشير واقف على الشغل والمطبخ اتزنق —
+     يوقف التوصيل نص ساعة من موبايله من غير ما يستنى المالك. نفس منطق اللوحة
+     بالظبط (applyService) — مفيش نسخة تانية من القواعد تروح تفرق عنها. */
+  app.get("/api/portal/service", async (c) => {
+    const a = await requirePortal(c, "cashier"); if (a.res) return a.res;
+    return c.json({ ok: true, state: serviceState(await getSettingsData()) });
+  });
+  app.post("/api/portal/service", async (c) => {
+    const a = await requirePortal(c, "cashier"); if (a.res) return a.res;
+    const b = await c.req.json().catch(() => ({}));
+    if (!["delivery", "pickup", "both"].includes(String(b.channel))) {
+      return c.json({ ok: false, error: "bad_channel", message: "اختار التوصيل أو الاستلام" }, 400);
+    }
+    const state = await applyService(ctx, b);
+    try {
+      audit(a.user, b.paused ? "service_pause" : "service_resume", b.channel, true,
+        { minutes: b.minutes || null, reason: b.reason || null }, clientIp((n) => c.req.header(n)));
+    } catch {}
+    return c.json({ ok: true, state });
+  });
+
   app.post("/api/portal/orders/:orderNo/courier", async (c) => {
     const a = await requirePortal(c, "manager"); if (a.res) return a.res;
     const user = a.user;

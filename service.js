@@ -100,6 +100,33 @@ export function serviceBlock(settings, option, now = new Date(), lang = "ar") {
   };
 }
 
+/* التغيير نفسه، متاح للوحة وللبوابة (كل واحدة بصلاحيتها). مفيش نسخة تانية
+   من القواعد — الاتنين بينادوا على ده.                                    */
+export async function applyService(ctx, b = {}) {
+  const { pool, getSettingsData, jb } = ctx;
+  const now = new Date();
+  const s = await getSettingsData();
+  const cfg = serviceCfg(s);
+  const chans = b.channel === "both" ? CHANNELS : [b.channel === "pickup" ? "pickup" : "delivery"];
+  const paused = b.paused === true;
+  let until = null;
+  if (paused) {
+    if (b.until) { const d = new Date(b.until); if (Number.isFinite(d.getTime())) until = d.toISOString(); }
+    else if (Number(b.minutes) > 0) until = new Date(now.getTime() + Math.min(24 * 60, Number(b.minutes)) * 60000).toISOString();
+  }
+  let resumedAny = false;
+  for (const ch of chans) {
+    if (!paused && cfg[ch].paused) resumedAny = true;
+    cfg[ch] = { paused, until, reason: paused ? String(b.reason || "").slice(0, 120) : "" };
+  }
+  if (typeof b.note === "string") cfg.note = b.note.slice(0, 200);
+  if (resumedAny) cfg.resumedAt = now.toISOString();
+  await pool.query(
+    `UPDATE settings SET data = jsonb_set(COALESCE(data,'{}'::jsonb), '{service}', $1::jsonb, true), updated_at = NOW() WHERE id=1`,
+    [jb(cfg)]);
+  return serviceState({ service: cfg }, now);
+}
+
 export function register(app, ctx) {
   const { pool, requireAdmin, getSettingsData, jb } = ctx;
 
@@ -137,27 +164,7 @@ export function register(app, ctx) {
   /* ── إدارة: اللوحة والبوابة ──────────────────────────────────────────
      body: { channel:"delivery"|"pickup"|"both", paused:true|false,
              minutes?:30, until?:ISO, reason?:"" , note?:"" }            */
-  const apply = async (b) => {
-    const now = new Date();
-    const s = await getSettingsData();
-    const cfg = serviceCfg(s);
-    const chans = b.channel === "both" ? CHANNELS : [b.channel === "pickup" ? "pickup" : "delivery"];
-    const paused = b.paused === true;
-    let until = null;
-    if (paused) {
-      if (b.until) { const d = new Date(b.until); if (Number.isFinite(d.getTime())) until = d.toISOString(); }
-      else if (Number(b.minutes) > 0) until = new Date(now.getTime() + Math.min(24 * 60, Number(b.minutes)) * 60000).toISOString();
-    }
-    let resumedAny = false;
-    for (const ch of chans) {
-      if (!paused && cfg[ch].paused) resumedAny = true;
-      cfg[ch] = { paused, until, reason: paused ? String(b.reason || "").slice(0, 120) : "" };
-    }
-    if (typeof b.note === "string") cfg.note = b.note.slice(0, 200);
-    if (resumedAny) cfg.resumedAt = now.toISOString();
-    await save(cfg);
-    return serviceState({ service: cfg }, now);
-  };
+  const apply = (b) => applyService(ctx, b);
 
   /* ملاحظة: requireAdmin في المشروع ده **بيتنادى جوه** المعالِج ويرجّع
      Response أو null — مش وسيط Hono. لو اتحطّ كوسيط بيرجع «Context is not
