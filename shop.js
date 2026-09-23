@@ -38,7 +38,7 @@ import { VAT_RATE as BUNDLE_VAT } from "./bundles.js";
 import { MULTIPLY as MONEY_MULTIPLY, rescaleItems, stampMf, scaleOf } from "./money.js";
 import { isOpenNow } from "./carts.js";
 import { preorderCfg, slotCounts, validateSlot, isDueNow, slotLabel } from "./preorder.js";
-import { serviceBlock } from "./service.js";
+import { serviceBlock, serviceState, pausedText } from "./service.js";
 import { soldOutOf, soldOutLines, soldOutMessage } from "./soldout.js";
 import { dispatchDue, dispatchDelayOf } from "./delivery.js";
 import { makeStaffNotifier, slaAlertText, posFailedText, tabsenseDownText } from "./staffalerts.js";
@@ -660,8 +660,19 @@ export function register(app, ctx, deps = {}) {
     const s = await getSettingsData();
     const sf = s.storefront || {};
     const cat = s.catalog || {};
+    /* ⏸️ إيقاف الخدمة (service.js): المتجر لازم يعرف من أول لحظة، مش يسيب
+       العميل يملا سلة ويتمنع عند الدفع. الرسالة جاهزة من السيرفر عشان
+       تفضل واحدة في كل مكان. */
+    const svc = serviceState(s);
     return c.json({
       ok: true,
+      service: {
+        delivery: { open: svc.delivery.open, until: svc.delivery.until,
+          text: svc.delivery.paused ? pausedText("delivery", svc.delivery.until, svc.delivery.reason || svc.note) : "" },
+        pickup: { open: svc.pickup.open, until: svc.pickup.until,
+          text: svc.pickup.paused ? pausedText("pickup", svc.pickup.until, svc.pickup.reason || svc.note) : "" },
+        anyPaused: svc.anyPaused, allPaused: svc.allPaused,
+      },
       theme: sf.theme || {},           // {brand, deep, bg, ink, ...} CSS vars
       texts: sf.texts || {},           // {title, subtitle}
       // الفوتر: {line1, line2, links:[{label,url}]} — من اللوحة، من غير أي
