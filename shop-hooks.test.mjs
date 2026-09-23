@@ -525,3 +525,35 @@ test("watchdog: إنذار اتبعت قبل كده → مفيش sla_alert تا�
     assert.equal(s.events.filter((e) => e.name === "sla_alert").length, 0);
   } finally { s.restore(); }
 });
+
+/* 📅 الطلب المسبق — حادثة W1790115558483 (٢٣ سبتمبر ٢٠٢٦) */
+test("watchdog: الطلب المسبق مابيتسحبش قبل موعده، وعمره ما يترد تلقائي", async () => {
+  const placed = new Date(Date.now() - 40 * 60_000).toISOString();
+  const tomorrow = new Date(Date.now() + 34 * 3600_000).toISOString();
+  let refunded = false;
+  const s = build({
+    handler: (sql) => {
+      if (/WHERE status NOT IN \('pending_payment','expired','delivered','rejected_refunded'\)/.test(sql)) {
+        // لو الصف عدّى من الفلتر غلطاً، الحزام التاني لازم يمسكه
+        return { rows: [{ order_no: "W-PRE", status: "pos_created", option: "delivery",
+          created_at: placed, updated_at: placed, scheduled_for: tomorrow, alerts: {} }], rowCount: 1 };
+      }
+      if (/refund_attempts = refund_attempts \+ 1/.test(sql)) { refunded = true; }
+      return null;
+    },
+    deps: { pay: { configured: () => true, initiateSession: async () => ({}),
+      makeRefund: async () => { refunded = true; return { RefundId: "R1" }; } } },
+  });
+  try {
+    await s.api.watchdog();
+    await tick();
+    const q = s.queries.find((x) => /WHERE status NOT IN \('pending_payment','expired','delivered','rejected_refunded'\)/.test(x.sql));
+    assert.match(q.sql, /scheduled_for IS NULL OR scheduled_for <= NOW\(\)/,
+      "الاستعلام لازم يستبعد الطلب اللي لسه مجاش موعده");
+    assert.match(q.sql, /scheduled_for IS NOT NULL AND scheduled_for > NOW\(\) - INTERVAL '24 hours'/,
+      "وفي نفس الوقت يفضل شايفه في موعده حتى لو اتطلب من أكتر من ٢٤ ساعة");
+    assert.match(q.sql, /pos_ready_at, scheduled_for/, "لازم يقرا scheduled_for عشان slaCheck يشوفه");
+    assert.equal(refunded, false, "مفيش استرجاع تلقائي لطلب له موعد");
+    assert.equal(s.events.filter((e) => e.name === "sla_alert").length, 0);
+  } finally { s.restore(); }
+});

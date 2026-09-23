@@ -389,6 +389,20 @@ export function courierOf(r) {
   return { status: s, label: COURIER_AR[s] || s, arrivedAt: isoOf(r.ship_arrived_at), pickedAt: isoOf(r.ship_picked_at) };
 }
 
+/* 📅 ساعة المطبخ للطلب المسبق.
+   العميل دفع امبارح بالليل لموعد بكرة الضهر. لو حسبنا عمر التذكرة من ساعة ما
+   طلب، هتبقى عندها ٣٤ ساعة في نفس اللحظة اللي المفروض تظهر فيها — وقاعدة
+   الاختفاء (staleMin) بتاكلها فوراً، فالطباخ عمره ما يشوفها والأكل يضيع.
+   فالساعة بتبدأ من **موعده**: قبل الموعد التذكرة خضرا على 0:00 (الواجهة
+   بتقصّ السالب)، وبعده بتعدّ زي أي طلب عادي، وبتختفي بعد staleMin من موعده
+   مش من ساعة ما اتطلب. */
+export function kitchenStartOf(row) {
+  const created = isoOf(row?.created_at);
+  const sched = isoOf(row?.scheduled_for);
+  if (!sched) return created;
+  return (ms(sched) || 0) > (ms(created) || 0) ? sched : created;
+}
+
 /* رقم قصير للشاشة */
 export function shortRef(o) {
   const ext = o?.orders_external || {};
@@ -408,10 +422,13 @@ export function shortRef(o) {
    shopRows: صفوف shop_orders + آخر شحنة
    bumps: Map<key,{stage,at,by}>
    بترجّع طلبات جاهزة للعرض (الترتيب: الأقدم الأول جوّه كل مرحلة). */
-export function buildBoard({ tsOrders = [], shopRows = [], bumps = new Map(), catMap = {}, prodCat = {}, optionNames = {}, cfg = DEFAULT_CONFIG, now = Date.now() } = {}) {
+export function buildBoard({ tsOrders = [], shopRows = [], allShopRows = null, bumps = new Map(), catMap = {}, prodCat = {}, optionNames = {}, cfg = DEFAULT_CONFIG, now = Date.now() } = {}) {
   const out = [];
   const shopByPos = new Map();
-  for (const r of shopRows) if (r?.pos_order_id) shopByPos.set(String(r.pos_order_id), r);
+  /* الدمج لازم يشوف **كل** طلبات المتجر، مش اللي جه وقته بس. الطلب المسبق
+     اللي لسه مجاش موعده بيتشال من shopRows، وساعتها توأمه في نقطة البيع
+     مكانش بيلاقي أصله فبيتعرض كتذكرة عادية في ليلة غلط ومن غير شارة 📅. */
+  for (const r of (allShopRows || shopRows)) if (r?.pos_order_id) shopByPos.set(String(r.pos_order_id), r);
   const shopTs = new Map(); // order_no → نسخة تاب سينس بتاعته (أسرع في «جاهز»)
   const bumpOf = (key) => (bumps instanceof Map ? bumps.get(key) : bumps?.[key]) || null;
 
@@ -508,7 +525,8 @@ export function buildBoard({ tsOrders = [], shopRows = [], bumps = new Map(), ca
       orderNo: r.order_no,
       posRef: tw?.order ? shortRef(tw.order) : null,
       channel: channelInfo(delivery ? "store_delivery" : "store_pickup"),
-      createdAt: isoOf(r.created_at),
+      createdAt: kitchenStartOf(r),   // 📅 الطلب المسبق: من موعده
+      placedAt: isoOf(r.created_at),  // ساعة ما العميل دفع (للمرجع)
       firstSeenAt: isoOf(r.created_at),
       sourceStage,
       sourceAt,

@@ -229,8 +229,11 @@ export function register(app, ctx, deps = {}) {
        الطباخ هيعملها بالليل. */
     const poCfg = preorderCfg(settings || {});
     const shopRows = (shop || []).filter((r) => isDueNow(r?.scheduled_for, poCfg));
+    /* allShopRows = الصفوف قبل الفلترة. بتتستخدم في الدمج بس (توأم نقطة
+       البيع)، مش في العرض — من غيرها الطلب المسبق اللي لسه بدري كان بيظهر
+       من باب نقطة البيع كتذكرة عادية في الليلة الغلط. */
     const orders = buildBoard({
-      tsOrders: [...byId.values()], shopRows, bumps, catMap: m.catMap || {}, prodCat: m.prodCat || {},
+      tsOrders: [...byId.values()], shopRows, allShopRows: shop || [], bumps, catMap: m.catMap || {}, prodCat: m.prodCat || {},
       optionNames: m.optionNames || {}, cfg, now: now(),
     });
     const soldOut = Object.entries(soldOutOf(settings, now())).map(([id, e]) => ({ id, name: e.name || `صنف #${id}`, until: e.until || null }));

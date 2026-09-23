@@ -303,8 +303,18 @@ export const DEFAULT_SLA = {
 export function slaCheck(o, cfg = {}, now = Date.now()) {
   const s = { ...DEFAULT_SLA, ...(cfg || {}) };
   const mins = (t) => (t ? Math.floor((now - new Date(t).getTime()) / 60000) : 0);
-  const age = mins(o.created_at);
-  const inStatus = mins(o.updated_at || o.created_at);
+  /* 📅 الطلب المسبق: العميل دفع امبارح لموعد بكرة. كل المهل هنا لازم تتحسب
+     من **موعده** مش من ساعة ما دفع — غير كده الطلب بيبقى «متأخر ٣٤ ساعة»
+     وهو لسه مجاش وقته، فبتتبعت رسايل للمدير الساعة ٢ الفجر، والأسوأ: مفتاح
+     الإنذار بيتسجّل «اتبعت» فبنسكت في الميعاد الحقيقي. */
+  const createdMs = o.created_at ? new Date(o.created_at).getTime() : NaN;
+  const schedMs = o.scheduled_for ? new Date(o.scheduled_for).getTime() : NaN;
+  const scheduled = Number.isFinite(schedMs) && (!Number.isFinite(createdMs) || schedMs > createdMs);
+  const updMs = o.updated_at ? new Date(o.updated_at).getTime() : NaN;
+  const age = scheduled ? Math.max(0, Math.floor((now - schedMs) / 60000)) : mins(o.created_at);
+  const inStatus = scheduled
+    ? Math.max(0, Math.floor((now - Math.max(schedMs, Number.isFinite(updMs) ? updMs : schedMs)) / 60000))
+    : mins(o.updated_at || o.created_at);
   const none = { level: 0, code: null, minutes: age };
 
   const at = (level, code, message, minutes, action) => ({ level, code, message, minutes, action: action || null });
@@ -319,6 +329,13 @@ export function slaCheck(o, cfg = {}, now = Date.now()) {
 
     case "pos_created":
       if (age >= s.autoRefundNoAcceptMinutes) {
+        /* 📅 الطلب المسبق عمره ما يترد تلقائي. العميل حاجز موعد ودافع من
+           إمبارح؛ «ما اتقبلش في ٢٥ دقيقة» مش دليل إن مفيش أكل — دي حالة
+           بني آدم يقررها من البوابة، مش كود يرجّع الفلوس ويقول «معلش». */
+        if (scheduled) {
+          return at(2, "accept_breach",
+            `طلب مسبق: ${age} دقيقة من موعده ومحدش قبله — اقبله يدوي`, age, "accept_now");
+        }
         return at(3, "never_accepted",
           `${age} دقيقة والطلب ما اتقبلش — استرجاع تلقائي`, age, "auto_refund");
       }
@@ -2024,10 +2041,15 @@ export function register(app, ctx, deps = {}) {
 
     const rows = (await pool.query(
       `SELECT order_no, status, option, total, mf_payment_id, refund_id, refund_attempts,
-              customer, alerts, created_at, updated_at, pos_ready_at
+              customer, alerts, created_at, updated_at, pos_ready_at, scheduled_for
          FROM shop_orders
         WHERE status NOT IN ('pending_payment','expired','delivered','rejected_refunded')
-          AND created_at > NOW() - INTERVAL '24 hours'`)).rows;
+          /* 📅 الطلب المسبق: مالوش مهل قبل ما ييجي وقته (وإلا بنولّع إنذارات
+             بالليل لطلب بكرة)، وبيفضل تحت المراقبة في موعده حتى لو اتطلب
+             من أكتر من ٢٤ ساعة — نافذة الـ٢٤ ساعة كانت بتسيبه من غير شبكة. */
+          AND (scheduled_for IS NULL OR scheduled_for <= NOW())
+          AND (created_at > NOW() - INTERVAL '24 hours'
+               OR (scheduled_for IS NOT NULL AND scheduled_for > NOW() - INTERVAL '24 hours'))`)).rows;
 
     for (const row of rows) {
       const v = slaCheck(row, sla);
@@ -2049,7 +2071,8 @@ export function register(app, ctx, deps = {}) {
         staff.critical((lang) => slaAlertText(row.order_no, v, lang), `sla ${row.order_no} ${v.code}`)
           .catch((e) => console.error("[shop] SLA sms failed:", e.message));
       }
-      if (v.level >= 3 && v.action === "auto_refund" && autoRefundOn) {
+      /* حزام تاني فوق slaCheck: أي طلب له موعد مايترجعش تلقائي مهما حصل. */
+      if (v.level >= 3 && v.action === "auto_refund" && autoRefundOn && !row.scheduled_for) {
         /* المطعم ما قبلش الطلب خالص: مفيش أكل اتعمل ومفيش كابتن اتبعت،
            والعميل قاعد مستني على الفاضي. الاسترجاع هنا هو الصح.
            بنلغي الطلب من الـPOS الأول لو ينفع، وبعدين نسترجع. */
