@@ -39,7 +39,7 @@ import { MULTIPLY as MONEY_MULTIPLY, rescaleItems, stampMf, scaleOf } from "./mo
 import { isOpenNow } from "./carts.js";
 import { preorderCfg, slotCounts, validateSlot, isDueNow, slotLabel } from "./preorder.js";
 import { serviceBlock, serviceState, pausedText } from "./service.js";
-import { soldOutOf, soldOutLines, soldOutMessage } from "./soldout.js";
+import { soldOutOf, soldOutLines, soldOutMessage, deadCategoryItemIds } from "./soldout.js";
 import { dispatchDue, dispatchDelayOf } from "./delivery.js";
 import { makeStaffNotifier, slaAlertText, posFailedText, tabsenseDownText } from "./staffalerts.js";
 import { sendSms as sendStaffSms } from "./accounts.js";
@@ -416,6 +416,7 @@ export function register(app, ctx, deps = {}) {
   const journey = typeof deps.journey === "function" ? deps.journey : () => null; // late-bound — ٠٢
   const wa = typeof deps.wa === "function" ? deps.wa : () => null; // واتساب: موافقة الشيك أوت
   const emitOrder = makeOrderEmitter(deps.emitOrder);
+  const menuRows = typeof deps.menuRows === "function" ? deps.menuRows : null;
   /* أسماء الأصناف (بلاغ عمر ١٧ سبتمبر ٢٠٢٦): السلة الجاية من المتصفح فيها
      product_id وكمية وسعر بس — من غير اسم. الاسم بيتحل هنا من قايمة تاب
      سينس وبيتخزّن مع الطلب، فالكاشير والمطبخ والتقارير يشوفوا «كفتة مشوية
@@ -670,6 +671,15 @@ export function register(app, ctx, deps = {}) {
     return c.json({ ok: true });
   });
 
+  async function hiddenIdsFor(settings, cat) {
+    const base = (cat.hiddenIds || []).map(String);
+    if (!menuRows) return base;
+    try {
+      const dead = deadCategoryItemIds(await menuRows(), soldOutOf(settings));
+      return dead.length ? [...new Set([...base, ...dead])] : base;
+    } catch { return base; }
+  }
+
   /* ── storefront appearance + behavior (PUBLIC) — edited from the dashboard.
      Colors/texts live in settings.storefront so a rebrand (or the coming
      freshcuts.sa / SaaS skinning) is a settings edit, not a deploy. */
@@ -712,7 +722,10 @@ export function register(app, ctx, deps = {}) {
       } : null,
       // أصناف مخفية من العرض (غير نشطة أو تكرارات الأوزان): بتختفي من
       // القايمة والبحث لكن بتفضل في البيانات — عشان منتقي الوزن يلاقيها.
-      hiddenIds: (cat.hiddenIds || []).map(String),
+      // وبنضيف عليها الأقسام اللي كل أصنافها خلصت (٢٤/٩ — شوف
+      // deadCategoryItemIds). أي فشل هنا بيرجّع القايمة زي ما هي: المتجر
+      // يبان بقسم ميت أهون من إنه ما يبانش خالص.
+      hiddenIds: await hiddenIdsFor(s, cat),
       // مواعيد العمل من اللوحة: {enabled, days:{sat..fri:{open,close}}, note}
       // «close» أصغر من «open» معناها بعد منتصف الليل (12:00 → 02:00).
       // المتجر بيمنع الطلب بره المواعيد (وTabSense كمان بتقول pos_available).

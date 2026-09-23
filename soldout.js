@@ -128,6 +128,36 @@ export function makeOfferPauseStore({ pool, getSettingsData, now = () => Date.no
   return { active, set, syncRegistry, offerIdOf };
 }
 
+/* ═══ قسم كل أصنافه خلصت = يختفي (٢٤/٩) ═══════════════════════════════════
+   ليلة ٢٣/٩ قفلنا «وجبات» (١٠ أصناف) و«مشاوي بالوزن» (٩) بالكامل، وفضل
+   القسمين معروضين في المنيو مكتوب على كل كارت «خلص النهارده» — ٣٥٠٠ بكسل،
+   يعني أربع شاشات موبايل من حاجات مش موجودة، قبل ما العميل يوصل للبيتزا
+   والكريب. ٤٦ زائر في ٤٥ دقيقة، واحد بس وصل للسلة. خبّيناهم بالإيد وقتها
+   ونسبة الوصول للسلة قفزت من ٣٫١٪ لـ٧٫٧٪ — فالخطوة دي بتتعمل لوحدها من
+   دلوقتي.
+
+   ليه القسم كله بس مش كل صنف خلصان؟ «خلص النهارده» على صنف جنب أصناف
+   موجودة معلومة مفيدة — بتقول إن الصنف ده عندنا عادةً. القسم اللي مافيهوش
+   ولا صنف مش بيقول حاجة، بيبني حيطة.
+
+   بترجّع ids الأصناف اللي المفروض تتخفي — الواجهة بتخفي القسم لوحدها لما
+   يفضى (renderMenu: «الأقسام الفاضية بتختفي»).                            */
+export function deadCategoryItemIds(rows, active) {
+  const byCat = new Map();
+  for (const r of rows || []) {
+    const cat = String(r?.category ?? r?.cat ?? "").trim();
+    const id = String(r?.id ?? "");
+    if (!cat || !id) continue;
+    if (!byCat.has(cat)) byCat.set(cat, []);
+    byCat.get(cat).push(id);
+  }
+  const out = [];
+  for (const ids of byCat.values()) {
+    if (ids.length && ids.every((id) => active?.[id])) out.push(...ids);
+  }
+  return out;
+}
+
 /* سطور السلة (بعد توسيع الباقات) اللي فيها صنف خلصان. */
 export function soldOutLines(items, active) {
   const bad = [];

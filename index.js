@@ -3098,6 +3098,8 @@ selftest.register(app, moduleCtx, { delivery: () => deliveryApi });
 let accountsApi = null;
 shopApi = shop.register(app, moduleCtx, {
   pay: payApi, delivery: deliveryApi, notify: notifyApi, accounts: () => accountsApi, wa: () => waApi,
+  // عشان /api/shop/storefront يعرف يخفي قسم كل أصنافه خلصت (٢٤/٩)
+  menuRows: catalog.menuRows,
   posNames: () => posNamesApi,
   carts: () => cartsApi, tsp: () => tspApi, funnel: () => funnelApi,
   journey: () => journeyApi,
