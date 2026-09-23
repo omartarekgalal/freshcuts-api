@@ -48,6 +48,41 @@ export function activeSoldOut(map, nowMs = Date.now()) {
 
 export const soldOutOf = (settings, nowMs = Date.now()) => activeSoldOut(settings?.catalog?.soldOut, nowMs);
 
+/* ⏸️ العروض والباقات (٢٣/٩، طلب عمر): «لو وقفت المشاوي، العروض اللي فيها
+   مشاوي لازم تقف معاها». نفس فكرة «خلص» بالظبط ونفس شكل المدة — بس المفتاح
+   نص (slug) مش رقم منتج، فخزّناها في خريطة جنبها بدل ما نكسر التحقق. */
+export const pausedOffersOf = (settings, nowMs = Date.now()) =>
+  activeSoldOut(settings?.catalog?.pausedOffers, nowMs);
+
+export function makeOfferPauseStore({ pool, getSettingsData, now = () => Date.now(), onChange = () => {} }) {
+  async function active() { return pausedOffersOf(await getSettingsData(), now()); }
+  async function set(offerId, { paused, until = "reopen_next_open", by = null, name = null } = {}) {
+    const id = String(offerId ?? "").trim();
+    if (!/^[A-Za-z0-9_:.-]{1,64}$/.test(id)) return { ok: false, error: "bad_offer_id" };
+    if (paused) {
+      const s = await getSettingsData();
+      const untilIso = until === null || until === "manual" ? null
+        : (typeof until === "string" && until !== "reopen_next_open" && !Number.isNaN(Date.parse(until)) && Date.parse(until) > now()
+          ? new Date(Date.parse(until)).toISOString()
+          : nextOpening(s?.hours, now()));
+      const entry = { at: new Date(now()).toISOString(), by: by ? String(by).slice(0, 60) : null,
+        until: untilIso, name: name ? String(name).slice(0, 80) : null };
+      await pool.query(
+        `UPDATE settings SET data = jsonb_set(
+           jsonb_set(
+             CASE WHEN data ? 'catalog' THEN data ELSE jsonb_set(data,'{catalog}','{}'::jsonb,true) END,
+             '{catalog,pausedOffers}', COALESCE(data->'catalog'->'pausedOffers','{}'::jsonb), true),
+           ARRAY['catalog','pausedOffers',$1::text], $2::jsonb, true) WHERE id=1`, [id, JSON.stringify(entry)]);
+      try { onChange(); } catch {}
+      return { ok: true, offerId: id, paused: true, entry };
+    }
+    await pool.query(`UPDATE settings SET data = data #- ARRAY['catalog','pausedOffers',$1::text] WHERE id=1`, [id]);
+    try { onChange(); } catch {}
+    return { ok: true, offerId: id, paused: false, entry: null };
+  }
+  return { active, set };
+}
+
 /* سطور السلة (بعد توسيع الباقات) اللي فيها صنف خلصان. */
 export function soldOutLines(items, active) {
   const bad = [];
@@ -153,6 +188,71 @@ export function register(app, { pool, getSettingsData, requireAdmin, requirePort
     const until = body?.until === null || body?.until === "manual" ? null : (body?.until || "reopen_next_open");
     return store.set(body?.productId, { soldOut, until, by, name: body?.name || null });
   }
+
+  /* ⏸️ العروض والباقات — نفس أزرار «خلص» بالظبط. مع كل عرض بنرجّع أرقام
+     المنتجات اللي بيعتمد عليها، عشان الشاشة تقدر تقول للمدير: «وقفت المشاوي،
+     والعروض دي فيها مشاوي — توقفهم معاها؟» بدل ما يفتكر بنفسه. */
+  const offerStore = makeOfferPauseStore({ pool, getSettingsData, now, onChange });
+
+  async function offerPayload() {
+    const paused = await offerStore.active();
+    const soldOut = await store.active();
+    let rows = [];
+    try {
+      rows = (await pool.query(
+        `SELECT slug AS id, name, price, slots, active, offer_id
+           FROM cms_bundles WHERE active ORDER BY sort, id`)).rows;
+    } catch { rows = []; }
+    const items = rows.map((r) => {
+      /* أرقام المنتجات جوه الباقة — من slots (كل خانة فيها اختيارات) */
+      const products = [];
+      try {
+        for (const sl of (Array.isArray(r.slots) ? r.slots : [])) {
+          for (const o of (sl?.options || sl?.choices || [])) {
+            const pid = String(o?.product_id ?? o?.id ?? "").trim();
+            if (/^\d{1,12}$/.test(pid)) products.push(pid);
+          }
+        }
+      } catch {}
+      const uniq = [...new Set(products)];
+      return {
+        id: String(r.id), name: r.name, price: Number(r.price) || 0,
+        products: uniq,
+        soldOutInside: uniq.filter((pid) => soldOut[pid]).map((pid) => ({ id: pid, name: soldOut[pid]?.name || null })),
+        paused: paused[String(r.id)] || null,
+      };
+    });
+    return { ok: true, items, paused, count: items.length,
+      pausedCount: items.filter((x) => x.paused).length };
+  }
+
+  app.get("/api/portal/offer-availability", async (c) => {
+    const a = await requirePortal(c); if (a.res) return a.res;
+    const p = await offerPayload();
+    const s = await getSettingsData();
+    p.canEdit = a.user.role === "manager" || !!(s?.portal && s.portal.cashierCanSoldOut);
+    return c.json(p);
+  });
+  app.post("/api/portal/offer-availability", async (c) => {
+    const a = await portalGate(c); if (a.res) return a.res;
+    let b = {}; try { b = await c.req.json(); } catch { return c.json({ ok: false, error: "bad json" }, 400); }
+    const ids = Array.isArray(b.ids) ? b.ids.slice(0, 40) : [b.offerId];
+    const paused = b.paused === true;
+    const until = b.until === null || b.until === "manual" ? null : (b.until || "reopen_next_open");
+    const out = [];
+    for (const id of ids) {
+      const r = await offerStore.set(id, { paused, until, by: a.user.name, name: b.name || null });
+      out.push(r);
+      if (r.ok) { try { audit?.(a.user, paused ? "offer_paused" : "offer_resumed", null, true, { offerId: r.offerId, until: r.entry?.until ?? null }); } catch {} }
+    }
+    const bad = out.find((r) => !r.ok);
+    if (bad) return c.json(bad, 400);
+    return c.json({ ok: true, results: out, state: await offerPayload() });
+  });
+  app.get("/api/cms/offer-availability", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    return c.json(await offerPayload());
+  });
 
   async function portalGate(c) {
     const s = await getSettingsData();

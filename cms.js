@@ -32,6 +32,7 @@ import { logSms } from "./smslog.js";
 // نفس قواعد الـSLA بتاعة الـwatchdog — لوحة التشغيل مابتكتبش كتاب قواعد تاني
 import { slaCheck, DEFAULT_SLA } from "./shop.js";
 import { dispatchDelayOf, canAutoDispatch } from "./delivery.js";
+import { pausedOffersOf } from "./soldout.js";
 import { bizRange, rangeJson, bizDaySql } from "./bizday.js";
 import { isBotRequest } from "./botfilter.js";
 // قواعد الباقات (توزيع السعر والتوسيع) — صافية ومتجرّبة أوفلاين في bundles.test.mjs
@@ -1547,7 +1548,12 @@ export function register(app, ctx, deps = {}) {
       const now = new Date();
       // العرض المربوط موقوف/مابدأش/انتهى ⇒ الباقة مابتتعرضش. القنوات من العرض.
       // الفلترة قبل قراءة المنيو: مفيش باقة تتطلب ⇒ مفيش نداء لتاب سينس أصلاً.
-      const live = r.rows.map(bundleRow).map((b) => ({ b, av: availabilityOf(b, now) })).filter((x) => x.av.orderable);
+      /* ⏸️ إيقاف مؤقت للباقة من البوابة (٢٣/٩): «وقفت المشاوي ⇒ العروض اللي
+         فيها مشاوي تقف معاها». الباقة الموقوفة مابتتعرضش أصلاً — أحسن من إن
+         العميل يطلبها ونرفض بعد الدفع. */
+      const pausedNow = pausedOffersOf(await getSettingsData(), now.getTime());
+      const live = r.rows.map(bundleRow).map((b) => ({ b, av: availabilityOf(b, now) }))
+        .filter((x) => x.av.orderable && !pausedNow[String(x.b.slug)]);
       const menu = live.length ? await menuIndex() : new Map();
       for (const { b, av } of live) {
         b.order_kinds = av.kinds;
