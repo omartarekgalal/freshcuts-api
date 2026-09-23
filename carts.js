@@ -88,15 +88,24 @@ export function isOpenNow(hours, now = new Date()) {
   now = new Date(now.toLocaleString("en-US", { timeZone: "Asia/Riyadh" }));
   const mins = now.getHours() * 60 + now.getMinutes();
   const hhmm = (s) => { const [h, m] = String(s || "0:0").split(":").map(Number); return (h || 0) * 60 + (m || 0); };
-  const inWindow = (key, mm) => {
-    const d = hours.days[key];
+  /* ٢٤/٩ — الوردية بتتنسب لليوم اللي **بدأت** فيه، مش لليوم اللي فيه الصبح.
+     الغلط اللي كان: `mm >= o || mm < c` كانت بتتحسب على صف النهاردة كمان،
+     فذيل الفجر كان بياخد ساعة قفل النهاردة بدل امبارح. عمر أكّد (٢٤/٩) إن
+     الخميس والجمعة بيقفلوا ٣ الفجر والباقي ٢، يعني وردية الأربع بتنتهي
+     ٢:٠٠ الخميس الفجر — ومع ده الموقع كان بيقول «مفتوح» لحد ٣:٠٠ لأنه
+     قرا قفلة الخميس. كده ٣ أيام في الأسبوع كان بياخد طلبات والمطبخ ماشي. */
+  const eveningPart = (d, mm) => {                 // من الفتح لحد نص الليل (أو القفل)
     if (!d || d.closed || !d.open || !d.close) return false;
     const o = hhmm(d.open), c = hhmm(d.close);
-    return c > o ? (mm >= o && mm < c) : (mm >= o || mm < c);
+    return c > o ? (mm >= o && mm < c) : (mm >= o);
+  };
+  const morningTail = (d, mm) => {                 // ذيل وردية امبارح بعد نص الليل
+    if (!d || d.closed || !d.open || !d.close) return false;
+    const o = hhmm(d.open), c = hhmm(d.close);
+    return c < o && mm < c;
   };
   const today = DAYS[now.getDay()], yest = DAYS[(now.getDay() + 6) % 7];
-  const y = hours.days[yest] || {};
-  return inWindow(today, mins) || (hhmm(y.close) < hhmm(y.open) && inWindow(yest, mins));
+  return eveningPart(hours.days[today], mins) || morningTail(hours.days[yest], mins);
 }
 
 const rl = new Map();
