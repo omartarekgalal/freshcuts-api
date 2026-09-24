@@ -1251,7 +1251,16 @@ const storeNum = (v) => (v == null || v === "" || !Number.isFinite(Number(v)) ? 
 
 export function decideStoreAdset(row, s = {}, opts = {}) {
   const r = row || {};
-  const R = STORE_RULES;
+  /* `s = {}` بتتخطّى لو المتصل بعت `null` صريح — و`s.minSpend` تحت كانت
+     بتوقّع الطيار كله. اتلقطت في اختبار ٢٤/٩. */
+  if (!s || typeof s !== "object") s = {};
+  /* ٢٤/٩ — القواعد دي كانت ثابتة في الكود وبتتجاهل `s` اللي جاية من
+     الإعدادات. المشكلة إن `killCpa: 80` اتكتبت لما المتوقع كان ~١٢ ر.س
+     للنتيجة، وتكلفة الشرا الحقيقية النهاردة ٧٣–٩٥ — يعني القاعدة كانت
+     هتقتل FC96-SALES (محرّك الطلبات الأساسي) أول ما الطيار يشتغل auto،
+     و`scaleCpaMax: 30` كان هيمنع أي توسيع للأبد. دلوقتي إعدادات
+     `settings.autopilot.storeRules` بتغلب، والافتراضي زي ما هو. */
+  const R = { ...STORE_RULES, ...(s && typeof s.storeRules === "object" && s.storeRules ? s.storeRules : {}) };
   const now = opts.now != null ? new Date(opts.now) : new Date();
   const fmt = (n) => (n == null ? "—" : Math.round(n * 100) / 100);
   const platform = String(r.platform || "").toLowerCase() || null;
