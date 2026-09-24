@@ -72,9 +72,22 @@ export const FEED_SQL = `SELECT ${ORDER_COLS} FROM shop_orders o ${SHIP_JOIN}
   WHERE o.status NOT IN ('pending_payment','expired')
     AND (o.created_at > NOW() - make_interval(hours => $1::int)
          OR (o.scheduled_for IS NOT NULL AND o.scheduled_for > NOW() - INTERVAL '6 hours'))
-  ORDER BY o.created_at DESC LIMIT 250`;
+  ORDER BY o.created_at DESC LIMIT $2::int`;
 export const BY_NO_SQL = `SELECT ${ORDER_COLS} FROM shop_orders o ${SHIP_JOIN}
   WHERE o.order_no = ANY($1::text[])`;
+/* ٢٥/٩ — «البحث عن الطلبات مش موجود» (عمر). البحث **مش** مربوط بنافذة
+   الساعات بتاعت البورد: العميل اللي بيتصل يسأل عن طلب من أسبوع مش هيبقى
+   في آخر ٢٤ ساعة. بندوّر في كل التاريخ بسقف نتايج.
+   الجوال بيتنضّف من المسافات والشرط والصفر البادئ عشان اللي يكتب
+   «0544775082» أو «+966 54 477 5082» يلاقي نفس الطلب. */
+export const SEARCH_SQL = `SELECT ${ORDER_COLS} FROM shop_orders o ${SHIP_JOIN}
+  WHERE o.status NOT IN ('pending_payment','expired')
+    AND ( o.order_no ILIKE $1
+       OR o.customer->>'name' ILIKE $1
+       OR o.phone_norm LIKE $2
+       OR o.address->>'area' ILIKE $1
+       OR o.pos_order_id::text = $3 )
+  ORDER BY o.created_at DESC LIMIT $4::int`;
 
 const MAX_STREAMS = () => Math.max(1, Number(process.env.PORTAL_MAX_STREAMS || 40));
 const MAX_STREAMS_PER_USER = 6;
@@ -241,8 +254,12 @@ export function register(app, ctx, deps = {}) {
      اللي الكاشير بينسخه يبقى هو هو اللي العميل استلمه في الرسالة. */
   const trackBase = () => String(env.STOREFRONT_PUBLIC_URL || "https://freshcuts.sa")
     .split(",")[0].trim().replace(/\/+$/, "");
-  async function loadFeed(hours) {
-    const rows = await withNames((await pool.query(FEED_SQL, [hours])).rows || []);
+  /* السقف بيكبر مع النافذة: ٢٤ ساعة ⇒ ٢٥٠ صف يكفي بكتير، بس ١٤ يوم على
+     ~٢٠ طلب موقع في اليوم = ~٢٨٠، فـ٢٥٠ كانت هتقص السجل من غير ما حد
+     يعرف. بنحسبه من عدد الأيام وبنحطّ سقف صلب برضه. */
+  async function loadFeed(hours, limit) {
+    const lim = Math.min(900, Math.max(250, Number(limit) || Math.ceil(hours / 24) * 70));
+    const rows = await withNames((await pool.query(FEED_SQL, [hours, lim])).rows || []);
     const cfg = await slaCfg();
     const t = now();
     const opts = { trackBase: trackBase() };
@@ -420,9 +437,35 @@ export function register(app, ctx, deps = {}) {
     return c.json({ ok: true }); // التوكن مش متخزّن — الجهاز بيمسحه
   });
 
+  /* البحث — كل التاريخ، مش نافذة البورد. الحد ٦٠ نتيجة يكفي أي سؤال
+     كاشير («العميل ده طلب إيه قبل كده؟») من غير ما نجرّ الجدول كله. */
+  app.get("/api/portal/orders/search", async (c) => {
+    const a = await requirePortal(c); if (a.res) return a.res;
+    const raw = String(c.req.query("q") || "").trim().slice(0, 60);
+    if (raw.length < 2) return c.json({ ok: true, q: raw, orders: [], tooShort: true });
+    const like = `%${raw.replace(/[%_]/g, (m) => `\\${m}`)}%`;
+    /* آخر ٩ أرقام = الجوال من غير كود الدولة ولا الصفر البادئ */
+    const digits = raw.replace(/\D+/g, "");
+    const phone = digits.length >= 6 ? `%${digits.slice(-9)}` : "\u0000";
+    const posId = /^\d+$/.test(digits) && digits.length <= 12 ? digits : "\u0000";
+    try {
+      const rows = await withNames((await pool.query(SEARCH_SQL, [like, phone, posId, 60])).rows || []);
+      const cfg = await slaCfg();
+      const t = now();
+      const opts = { trackBase: trackBase() };
+      return c.json({ ok: true, q: raw, now: new Date(t).toISOString(),
+        orders: rows.map((r) => toPortalOrder(r, cfg, t, opts)) });
+    } catch (e) {
+      try { log.error(`[portal] search failed: ${e?.message || e}`); } catch {}
+      return c.json({ ok: false, error: "search_failed" }, 500);
+    }
+  });
+
   app.get("/api/portal/orders", async (c) => {
     const a = await requirePortal(c); if (a.res) return a.res;
-    const hours = Math.min(72, Math.max(1, Math.floor(Number(c.req.query("hours")) || 24)));
+    /* ٢٥/٩: السقف كان ٧٢ ساعة، وعمر عايز يرجع أبعد من كده في السجل.
+       ١٤ يوم (٣٣٦ ساعة) — والـSQL نفسه محدود بـ٢٥٠ صف فمفيش خطر جر. */
+    const hours = Math.min(336, Math.max(1, Math.floor(Number(c.req.query("hours")) || 24)));
     try {
       const orders = await loadFeed(hours);
       return c.json({ ok: true, now: new Date(now()).toISOString(), orders });
