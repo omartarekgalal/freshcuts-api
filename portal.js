@@ -18,6 +18,7 @@
 import crypto from "node:crypto";
 import * as orderEvents from "./order-events.js";
 import { dispatchDelayOf } from "./delivery.js";
+import { dispatchFailure } from "./shop.js";
 import {
   identitiesFrom, matchLogin, currentFingerprint, signToken, verifyToken, tokenSecret,
   makeLoginLimiter, clientIp, toPortalOrder, orderSignature, sseFrame, SSE_HEADERS,
@@ -637,14 +638,15 @@ export function register(app, ctx, deps = {}) {
            أي حاجة تانية (timeout/شبكة/5xx) ممكن تكون الشركة سجّلت الطلب فعلاً وإحنا
            ماوصلناش الرد — إعادة فورية = كابتنين. فالحجز يفضل حديث (إعادة بعد ٩٠ ث)
            والرسالة بتقول للمدير يراجع لوحة الشركة الأول. */
-        const st = Number(e?.status);
         /* ٢١ سبتمبر — «الطلب موجود عندهم بالفعل»: ده مش رفض، ده معناه إن
            المحاولة الأولى وصلتهم وإحنا ضيّعنا المرجع. الإعادة مستحيل
            تنجح (نفس الرد للأبد) وممكن تبقى كابتن تاني على نفس الطلب،
            فبنوقف الإعادة التلقائية والحجز بيفضل، والمدير بياخد جملة واحدة
-           واضحة + زرار تجاوز. نفس الكلام للقفل والمحاولة الضايعة. */
-        const STOP = ["COURIER_DUPLICATE", "DISPATCH_BLOCKED", "DISPATCH_LOST", "DISPATCH_IN_PROGRESS", "ALREADY_DISPATCHED"];
-        if (STOP.includes(e?.code)) {
+           واضحة + زرار تجاوز. نفس الكلام للقفل والمحاولة الضايعة.
+           التصنيف نفسه (stop/certain) بقى في shop.js عشان الكنس يستعمله
+           هو كمان — مصدر واحد للقاعدة. */
+        const fail = dispatchFailure(e);
+        if (fail.stop) {
           audit(user, "courier_request", orderNo, false,
             { error: e.code, providerMessage: String(e?.providerMessage || "").slice(0, 160) }, ip);
           scheduleRefresh(orderNo);
@@ -656,8 +658,7 @@ export function register(app, ctx, deps = {}) {
             recover: e?.recover || null, providerMessage: e?.providerMessage || null,
             message: msg }, 409);
         }
-        const certain = ["COURIER_UNCONFIGURED", "MANUAL_MODE", "BAD_STAGE", "BAD_PROVIDER"].includes(e?.code)
-          || (Number.isFinite(st) && st >= 400 && st < 500 && st !== 408 && st !== 409);
+        const certain = fail.certain;
         if (certain) {
           pool.query(
             `UPDATE shop_orders SET dispatch_claimed_at = NOW() - INTERVAL '5 minutes'

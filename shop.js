@@ -287,6 +287,43 @@ export function refundDecision(row, { maxAttempts = 3 } = {}) {
    اتبعت — العميل قاعد مستني على الفاضي، والاسترجاع هو الحل الصح والآمن.
    لكن لو المطعم قبل وجهّز الأكل، الاسترجاع التلقائي ممكن يرجّع فلوس طلب
    الكابتن ماسكه في إيده. الحالة دي بتروح لبني آدم، مش لكود.               */
+/* ═══ فشل طلب المندوب: أكيد قبل الإرسال، ولا مشكوك فيه؟ ═══════════════════
+   (القاعدة دي كانت مكتوبة جوّه معالِج البوابة (portal.js). اتنقلت هنا في
+   ٢٤/٩ عشان الكنس يستعملها هي نفسها — تعريفين لـ«فشل أكيد» كانوا هيفرقوا
+   مع الوقت، وده أسوأ من إنهم في ملف غريب شوية عن بعض.)
+
+   ليه القاعدة دي مهمة أصلاً: عمود الحجز (dispatch_claimed_at) هو اللي
+   بيمنع كابتنين على طلب واحد. لو رجّعنا الحجز بعد **أي** فشل، يبقى فشل
+   مشكوك فيه (timeout / ٥xx / سوكيت اتقطع) ممكن يكون الشركة سجّلت الطلب
+   فعلاً وإحنا ماشوفناش ردّها ⇒ الإعادة = كابتنين وفلوس ضايعة وشكل وحش
+   قدام العميل. فالحجز مابيترجّعش غير لما نكون **متأكدين** إن الطلب عمره
+   ما وصلهم:
+     • stop    = قفل صريح من delivery.js (موجود عندهم / محاولة ضايعة /
+                 بيتبعت دلوقتي) — الحجز يفضل وبني آدم يراجع لوحتهم.
+     • certain = فشل قبل ما نكلّم الشبكة أصلاً (مفاتيح ناقصة، وضع يدوي،
+                 مرحلة غلط، مزوّد غلط) أو رفض صريح منهم (4xx) ⇒ مستحيل
+                 تكون شحنة اتعملت ⇒ آمن نعيد.
+     • غير كده = مشكوك فيه ⇒ الحجز يفضل.
+   ٤٠٨ (انتهى الوقت) و٤٠٩ (تعارض) مستثنيين من الـ4xx عن قصد: الاتنين
+   ممكن يكونوا وصلوهم فعلاً.                                              */
+export const DISPATCH_STOP_CODES = Object.freeze([
+  "COURIER_DUPLICATE", "DISPATCH_BLOCKED", "DISPATCH_LOST", "DISPATCH_IN_PROGRESS", "ALREADY_DISPATCHED",
+]);
+export const DISPATCH_PREFLIGHT_CODES = Object.freeze([
+  "COURIER_UNCONFIGURED", "MANUAL_MODE", "BAD_STAGE", "BAD_PROVIDER",
+]);
+
+export function dispatchFailure(e) {
+  const code = e && e.code != null ? String(e.code) : null;
+  const raw = Number(e && e.status);
+  const status = Number.isFinite(raw) ? raw : null;
+  const stop = DISPATCH_STOP_CODES.includes(code);
+  const certain = !stop && (DISPATCH_PREFLIGHT_CODES.includes(code)
+    || (status !== null && status >= 400 && status < 500 && status !== 408 && status !== 409));
+  // retry = آمن نرجّع الحجز ونحاول تاني. أي حاجة تانية: سيبه محجوز.
+  return { code, status, stop, certain, retry: certain };
+}
+
 export const DEFAULT_SLA = {
   posFailMinutes: 5,          // مدفوع وما وصلش النظام
   acceptMinutes: 8,           // في صندوق الطلبات الخارجية ومحدش قبله
@@ -2130,6 +2167,71 @@ export function register(app, ctx, deps = {}) {
     return "e-Credit Card"; // مدفوع أونلاين مهما كانت الوسيلة — مش كاش أبداً
   }
 
+  /* ═══ فشل إرسال المندوب في الكنس ═══════════════════════════════════════
+     الباج اللي ده بيقفله (٢٤/٩): الكنس كان بيحجز الطلب **قبل** ما يحاول،
+     والحجز ما كانش بيترجّع أبداً لو المحاولة فشلت. وبما إن الكنس نفسه
+     بيدوّر على `dispatch_claimed_at IS NULL`، فشلة واحدة كانت بتطفّي
+     الإرسال التلقائي للطلب ده للأبد: يستنى مهلة الـ٢٠ دقيقة، يرن إنذار،
+     وبني آدم يدوس الزرار. دقيقة واحدة ٥xx من شركة التوصيل وقت الذروة =
+     ٦–١٠ طلبات كلها متأخرة ٢٠ دقيقة+.
+
+     القرار: نرجّع الحجز **بس** للفشل الأكيد قبل الإرسال (dispatchFailure
+     فوق). أي فشل مشكوك فيه بيفضل محجوز — كابتنين على طلب واحد أغلى من
+     تأخيرة.
+
+     ليه NULL مش «NOW() − ٥ دقايق» (اللي portal.js وcourierops.js
+     بيستعملوه)؟ لإن دول معناهم «فك القفل لزرار المدير بس» — الكنس
+     مابيشوفش غير NULL، فـ−٥ دقايق بالنسبة له مافيهاش أي فرق عن محجوز.
+     courierops «إيقاف لاجلك» معتمد على ده بالظبط عشان الكنس ما يبعتش
+     لوحده، فما ينفعش نغيّر الشرط نفسه.
+
+     والعدّاد في الذاكرة عن قصد: ده حارس ضد اللفّة السريعة (رفض ٤٠٠ ثابت
+     من الشركة كان هيفضل يحاول كل دقيقتين لحد ٤٨ ساعة)، مش حقيقة تجارية
+     تستاهل عمود في الداتابيز. لو الحاوية اتعمل لها restart بنسمح بـ٣
+     محاولات تانية — أسوأ حاجة إننا نكلّم الشركة ٣ مرات زيادة. */
+  const MAX_DISPATCH_RETRIES = 3;
+  const dispatchRetries = new Map();
+
+  async function afterDispatchFailure(orderNo, claimed, e) {
+    const f = dispatchFailure(e);
+    const why = f.code || (f.status != null ? `HTTP ${f.status}` : "?");
+    const msg = String((e && e.message) || e || "").slice(0, 300);
+    const tries = dispatchRetries.get(orderNo) || 0;
+    let hold = null;
+    if (f.stop) hold = "قفل صريح من شركة التوصيل";
+    else if (!f.retry) hold = "فشل مشكوك فيه (ممكن يكون وصلهم)";
+    else if (tries >= MAX_DISPATCH_RETRIES) hold = `جرّبنا ${tries} مرات وكل مرة نفس الرفض`;
+    if (!hold) {
+      /* حزام أخير قبل ما نفك الحجز: لو فيه شحنة حيّة على الطلب يبقى فيه
+         كابتن فعلاً — مهما كان شكل الخطأ. ولو السؤال نفسه وقع، نعتبرها
+         مشكوك فيها ونسيب الحجز. */
+      try {
+        const live = delivery.shipmentOf ? await delivery.shipmentOf(orderNo) : null;
+        if (live && !["cancelled", "delivered"].includes(String(live.status))) hold = "فيه شحنة حيّة على الطلب";
+      } catch (se) { hold = `ماقدرناش نتأكد من الشحنة (${se.message})`; }
+    }
+    if (hold) {
+      console.error(`[shop] طلب المندوب فشل لـ${orderNo} (${why}) — الحجز بيفضل: ${hold}. `
+        + `المدير يراجع لوحة الشركة ويبعت من البوابة: ${msg}`);
+      return { released: false, reason: hold };
+    }
+    const rel = await pool.query(
+      `UPDATE shop_orders SET dispatch_claimed_at = NULL
+        WHERE order_no=$1 AND status='accepted' AND dispatch_claimed_at::text = $2
+        RETURNING order_no`, [orderNo, claimed]).catch((qe) => {
+        console.error(`[shop] ماقدرناش نرجّع حجز ${orderNo}:`, qe.message); return { rowCount: 0 };
+      });
+    if (!rel.rowCount) {
+      console.error(`[shop] طلب المندوب فشل لـ${orderNo} (${why}) — الحجز اتغيّر من مكان تاني، سيبناه زي ما هو`);
+      return { released: false, reason: "الحجز اتغيّر" };
+    }
+    if (dispatchRetries.size > 500) dispatchRetries.clear(); // مايكبرش مع طول عمر العملية
+    dispatchRetries.set(orderNo, tries + 1);
+    console.error(`[shop] طلب المندوب فشل لـ${orderNo} (${why}) — فشل **أكيد** قبل الإرسال، `
+      + `فالحجز اترجّع والدورة الجاية تحاول تاني (محاولة ${tries + 1}/${MAX_DISPATCH_RETRIES}): ${msg}`);
+    return { released: true, attempt: tries + 1 };
+  }
+
   /* ── the sweep: retries, acceptance watch, auto-refund, dispatch ── */
   async function sweep() {
     // 0) ربط تاب سينس للطلبات الخارجية سليم؟ لو واقع، الطلبات الجاية مش هتوصل
@@ -2318,15 +2420,18 @@ export function register(app, ctx, deps = {}) {
           const claim = await pool.query(
             `UPDATE shop_orders SET dispatch_claimed_at=NOW()
               WHERE order_no=$1 AND dispatch_claimed_at IS NULL AND status='accepted'
-              RETURNING order_no`, [r.order_no]);
+              RETURNING dispatch_claimed_at::text AS claimed`, [r.order_no]);
           if (!claim.rowCount) continue;
+          const claimed = claim.rows[0].claimed;
           try {
             await delivery.dispatch(await getOrderRow(r.order_no), { trigger: "sweep" });
             await setStatus(r.order_no, "courier_requested",
               { note: v.reason === "ready" ? "المطبخ سجّل جاهز" : `مهلة التحضير (${delayMin} د)` });
+            dispatchRetries.delete(r.order_no);
           } catch (e) {
-            console.error(`[shop] courier dispatch failed for ${r.order_no}:`, e.message);
-            // مش بنعيد تلقائي — فشل الإرسال محتاج عين، واللوحة بتبيّن الوقفة.
+            // معالجة الفشل نفسها مامفروضش توقّف باقي الطلبات في نفس الدورة
+            await afterDispatchFailure(r.order_no, claimed, e).catch((fe) =>
+              console.error(`[shop] معالجة فشل الإرسال وقعت لـ${r.order_no}:`, fe.message));
           }
         }
       }
