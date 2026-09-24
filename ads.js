@@ -3386,6 +3386,55 @@ export function register(app, ctx, deps = {}) {
 
      بعد النجاح: خُد الـ id من الرد وحطّه في GOOGLE_ADS_CONVERSION_ACTION_ID.
      ═══════════════════════════════════════════════════════════════════════ */
+  /* ═══ إعفاء كلمات البراند المرفوضة (٢٤/٩) ══════════════════════════════
+     «فريش كاتس» و١٣ صيغة تانية مرفوضين تحت Sensitive events — جوجل بيقرا
+     "cuts" كجرح مش كقطعة لحمة. النتيجة إن اللي بيدوّر على المطعم بالاسم
+     مش شايف إعلانه خالص، وده أرخص ترافيك ممكن نجيبه.
+
+     مفيش زرار اعتراض في واجهة جوجل (شوف مذكرة google-ads-policy-exemption)،
+     والمسار الوحيد هو: شيل الكلمة ← أعد إنشاءها ← الرفض بيرجّع مفتاح
+     المخافة و`isExemptible` ← أعد الإنشاء بـexemptPolicyViolationKeys.
+
+     الإعفاء **بيتبعت بس بمفتاح جوجل نفسه رجّعه** ولمخالفة جوجل علّمها
+     قابلة للإعفاء — مابنخترعش مفاتيح. وأي كلمة جوجل مايقولش عنها exemptible
+     بتترفض وبيترد سببها زي ما هو.                                          */
+  app.post("/api/ads/google/keyword-exemption", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    let b = {};
+    try { b = await c.req.json(); } catch { b = {}; }
+    const g = byId("google");
+    if (!g || !canManage(g)) return c.json({ ok: false, error: "google not configured" }, 400);
+    const adGroupId = String(b.adGroupId || "").trim();
+    const kws = Array.isArray(b.keywords) ? b.keywords : [];
+    if (!adGroupId || !kws.length) return c.json({ ok: false, error: "adGroupId + keywords مطلوبين" }, 400);
+    if (!writeAllowed()) return c.json({ ok: true, applied: false, guard: "ADS_ALLOW_WRITE != 1" });
+
+    /* المحاولة الأولى — بنتوقّع الرفض، وهو اللي بيدينا المفاتيح */
+    let first;
+    try { first = await sendPlatformWrite(g, g.keywordCall(adGroupId, kws)); }
+    catch (e) { return c.json({ ok: false, error: String(e.message || e) }, 400); }
+    const keys = g.exemptionKeys(first.raw);
+    const exemptible = keys.filter((k) => k.exemptible);
+    if (!keys.length) {
+      return c.json({ ok: first.ok, applied: first.ok, stage: "created_without_exemption",
+        platform: redact(first.raw ?? null) });
+    }
+    if (!exemptible.length) {
+      return c.json({ ok: false, applied: false, stage: "not_exemptible",
+        error: "جوجل مارضيش يعتبر المخالفة قابلة للإعفاء",
+        violations: keys.map((k) => ({ text: k.text, policy: k.externalPolicyName, why: k.description })) }, 409);
+    }
+    /* المحاولة التانية — بنفس المفاتيح اللي جوجل رجّعها */
+    const second = await sendPlatformWrite(g,
+      g.keywordCall(adGroupId, kws.map((k) => ({
+        ...(typeof k === "string" ? { text: k } : k),
+        exempt: exemptible.map((x) => x.key),
+      }))));
+    return c.json({ ok: second.ok, applied: second.ok, stage: "exempted",
+      exempted: exemptible.map((k) => ({ text: k.text, policy: k.externalPolicyName })),
+      platform: redact(second.raw ?? null) });
+  });
+
   app.post("/api/ads/google/conversion-action", async (c) => {
     const err = await requireAdmin(c); if (err) return err;
     let b = {};
