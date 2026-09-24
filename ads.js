@@ -3398,6 +3398,24 @@ export function register(app, ctx, deps = {}) {
      الإعفاء **بيتبعت بس بمفتاح جوجل نفسه رجّعه** ولمخالفة جوجل علّمها
      قابلة للإعفاء — مابنخترعش مفاتيح. وأي كلمة جوجل مايقولش عنها exemptible
      بتترفض وبيترد سببها زي ما هو.                                          */
+  /* تفعيل فعل تحويل: الاستيراد كان معمول وجاهز بس مقفول بمفتاحين، فجوجل
+     كان بيزايد وهو شايف ٣٪ من الطلبات بس (٢٤/٩ — شوف setActionCountingCall). */
+  app.post("/api/ads/google/conversion-action/:id/counting", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    let b = {}; try { b = await c.req.json(); } catch { b = {}; }
+    const g = byId("google");
+    if (!g || !canManage(g)) return c.json({ ok: false, error: "google not configured" }, 400);
+    const id = String(c.req.param("id") || "").trim();
+    const counted = b.counted === undefined ? true : b.counted === true;
+    const primary = b.primary === undefined ? true : b.primary === true;
+    let call; try { call = g.setActionCountingCall(id, { counted, primary }); }
+    catch (e) { return c.json({ ok: false, error: String(e.message || e) }, 400); }
+    if (!writeAllowed()) return c.json({ ok: true, applied: false, guard: "ADS_ALLOW_WRITE != 1", wouldDo: { id, counted, primary } });
+    const r = await sendPlatformWrite(g, call);
+    return c.json({ ok: r.ok, applied: r.ok, did: `conversion action ${id}: counted=${counted} primary=${primary}`,
+      ...(r.ok ? { platform: redact(r.raw ?? null) } : { error: r.error, platform: redact(r.raw ?? null) }) }, r.ok ? 200 : 502);
+  });
+
   app.post("/api/ads/google/keyword-exemption", async (c) => {
     const err = await requireAdmin(c); if (err) return err;
     let b = {};

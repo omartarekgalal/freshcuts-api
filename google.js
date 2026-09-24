@@ -974,6 +974,37 @@ export function createGoogleAdapter({ httpJson, hashEmail, hashPhonePlus, google
          • MANY_PER_CLICK — every till order is its own sale, and orderId
            already dedups them.
        Nothing here touches a campaign, a budget or billing. */
+    /* ═══ تفعيل فعل تحويل موجود (٢٤/٩) ══════════════════════════════════
+       «Fresh Cuts - Till Orders (Import)» كان معمول وجاهز (uploadReadiness
+       READY) بس مقفول بمفتاحين: `countedInConversions:false` يعني الصفوف
+       اللي بترفع مابتوصلش المزايدة أصلاً، و`primaryForGoal:false` يعني
+       مش هدف الحملة.
+
+       النتيجة إن جوجل كان بيزايد وهو شايف **٨ تحويلات** (مبيعات الموقع
+       من GA4) والبيزنس عامل ~٢٦٦ طلب في نفس المدة — ٣٪ من الحقيقة.
+       والـMAXIMIZE_CONVERSIONS مش «جعان إشارة»، هو بيتحسّن على عيّنة غلط.
+
+       الدالة دي بتلمس المفتاحين دول بس — مش بتلمس النوع ولا الفئة ولا
+       العملة ولا أي حملة. */
+    setActionCountingCall(id, { counted = true, primary = true } = {}) {
+      const cust = this.cust();
+      const cid = digitsOnly(id);
+      if (!cid) throw new Error("id الفعل مطلوب");
+      /* أسماء الحقول متأكد منها من googleAdsFields في v25 المربوطة:
+         include_in_conversions_metric و primary_for_goal — الاتنين BOOLEAN. */
+      const update = { resourceName: `customers/${cust}/conversionActions/${cid}` };
+      const mask = [];
+      if (counted != null) { update.includeInConversionsMetric = counted === true; mask.push("include_in_conversions_metric"); }
+      if (primary != null) { update.primaryForGoal = primary === true; mask.push("primary_for_goal"); }
+      if (!mask.length) throw new Error("مفيش حاجة تتغيّر");
+      return {
+        url: `${this.apiBase()}/customers/${cust}/conversionActions:mutate`,
+        method: "POST",
+        headers: this.hdr(),
+        body: { operations: [{ update, updateMask: mask.join(",") }], responseContentType: "MUTABLE_RESOURCE" },
+      };
+    },
+
     createUploadActionCall({ name = "Fresh Cuts - Till Orders (Import)", category = "PURCHASE", currency = "SAR", id = null } = {}) {
       const cust = this.cust();
       // Rename an existing action: the only field this route may touch, and
