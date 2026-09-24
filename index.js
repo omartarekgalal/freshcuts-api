@@ -76,6 +76,7 @@ import * as courierops from "./courierops.js";
 import * as courierlive from "./courierlive.js";
 import * as cervotrial from "./cervotrial.js";
 import * as districts from "./districts.js";
+import * as etaMod from "./eta.js";
 import * as deliveryControl from "./deliverycontrol.js";
 import * as adsctl from "./adsctl.js";
 import * as kitchen from "./kitchen.js";
@@ -3083,6 +3084,11 @@ districts.register(app, moduleCtx);
 // 🛵 لوحة التوصيل والمندوبين (٢٤/٩): مكان واحد متحقق لكل مفاتيح التوصيل —
 // بيكتب في نفس مفاتيح settings.delivery / settings.shop اللي الكود بيقراها.
 deliveryControl.register(app, moduleCtx);
+/* ⏱ معاد الوصول المتوقّع (٢٤/٩): لقطة كوانتايلات على خانات المسافة من تاريخ
+   الطلبات اللي اتسلّمت فعلاً. قراية بس، ومابيلمسش أي حاجة تانية. الرقم
+   مابيتعرضش للعميل غير لما التقييم الخارجي يعدّي البوابة — /api/delivery/eta/model
+   بيقول ليه مقفول. */
+etaMod.register(app, moduleCtx);
 // مطابقة فاتورة لاجلك (١٩/٩): المتوقَّع من العقد × المفوتَر من الفاتورة + الشذوذ + تصدير
 ljRecon.register(app, moduleCtx, { providers: () => deliveryApi.PROVIDERS });
 // إشعارات العميل (متصفح/SMS/واتساب بمفاتيح من لوحة التحكم) — قبل shop
@@ -3153,7 +3159,10 @@ searchMod.register(app, moduleCtx, { cms: () => cmsApi, c360: () => c360Api });
 openwait.register(app, moduleCtx, { notify: () => notifyApi, carts: () => cartsApi });
 /* ⏸️ إيقاف الخدمة مؤقتاً (٢٣/٩): وقف التوصيل أو الاستلام لفترة برجوع تلقائي.
    اللي اتمنع بيتسجّل في نفس قايمة «نبّهني لما تفتحوا» وبتوصله رسالة عند الرجوع. */
-service.register(app, moduleCtx);
+/* التقرير بياخد مقبض bizreports (getter متأخر — bizreports بيتسجل بعده)
+   عشان «ساعة بساعة» تستعمل نفس تصنيف القنوات ونفس استبعاد المرايا بدل
+   ما يكتب SQL مبيعات تاني. */
+service.register(app, moduleCtx, { biz: () => bizApi });
 /* 🎛 التحكم في الإعلانات من اللوحة (٢٤/٩): تشغيل/إيقاف أي حملة أو مجموعة أو
    إعلان واحد، ميزانية بسقف وتأكيد، وجدولة «اقفل/افتح الساعة كذا» بدل مؤقتات
    الـsystemd اللي اتكتبت بالإيد ليلة ٢٣/٩. لازم بعد cms (بياخد whoami عشان
