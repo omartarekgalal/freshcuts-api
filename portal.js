@@ -17,7 +17,7 @@
 
 import crypto from "node:crypto";
 import * as orderEvents from "./order-events.js";
-import { dispatchDelayOf } from "./delivery.js";
+import { dispatchDelayOf, dispatchDelayOverride, DEFAULT_DISPATCH_DELAY_MIN } from "./delivery.js";
 import { dispatchFailure } from "./shop.js";
 import {
   identitiesFrom, matchLogin, currentFingerprint, signToken, verifyToken, tokenSecret,
@@ -545,6 +545,55 @@ export function register(app, ctx, deps = {}) {
   /* ⏸️ إيقاف الخدمة من البوابة (٢٣/٩): الكاشير واقف على الشغل والمطبخ اتزنق —
      يوقف التوصيل نص ساعة من موبايله من غير ما يستنى المالك. نفس منطق اللوحة
      بالظبط (applyService) — مفيش نسخة تانية من القواعد تروح تفرق عنها. */
+  /* ═══ مهلة التحضير المؤقتة (٢٤/٩، طلب عمر) ═══════════════════════════
+     «المدير يقدر يعدّل مهلة التحضير — يخليها ١٠ دقايق لمدة ساعة أو ساعتين
+     وبعدها ترجع لوحدها».
+
+     المهلة دي بتقرّر بعد قد إيه من القبول نطلب الكابتن لو الكاشير لسه ما
+     ضغطش «جاهز». المطبخ لما يتضغط، الكابتن بيوصل ويستنى — وبيلغي.
+     الرجوع أوتوماتيك: الحالة بتتحسب وقت القراية، فمستحيل تفضل ممدودة. */
+  app.get("/api/portal/prep-delay", async (c) => {
+    const a = await requirePortal(c, "cashier"); if (a.res) return a.res;
+    const s = await getSettingsData();
+    const temp = dispatchDelayOverride(s);
+    return c.json({ ok: true,
+      effective: dispatchDelayOf(s),
+      base: ((s.delivery || {}).dispatchDelayMin ?? DEFAULT_DISPATCH_DELAY_MIN),
+      temp, canEdit: a.user.role === "manager" });
+  });
+
+  app.post("/api/portal/prep-delay", async (c) => {
+    const a = await requirePortal(c, "manager"); if (a.res) return a.res;
+    const b = await c.req.json().catch(() => ({}));
+    const s = await getSettingsData();
+
+    if (b.clear === true) {
+      await pool.query(`UPDATE settings SET data = data #- '{delivery,dispatchDelayTemp}' WHERE id=1`);
+      audit?.(a.user, "prep_delay_clear", null, true, {});
+      const ns = await getSettingsData();
+      return c.json({ ok: true, effective: dispatchDelayOf(ns), temp: null });
+    }
+    const minutes = Number(b.minutes);
+    const hours = Number(b.hours);
+    if (!Number.isFinite(minutes) || minutes < 0 || minutes > 90) {
+      return c.json({ ok: false, error: "bad_minutes", message: "المهلة من صفر لـ٩٠ دقيقة" }, 400);
+    }
+    if (!Number.isFinite(hours) || hours <= 0 || hours > 6) {
+      return c.json({ ok: false, error: "bad_hours", message: "المدة من ساعة لـ٦ ساعات" }, 400);
+    }
+    const entry = { minutes: Math.round(minutes),
+      until: new Date(Date.now() + hours * 3600_000).toISOString(),
+      by: a.user.name || null, reason: String(b.reason || "").slice(0, 120) || null,
+      at: new Date().toISOString() };
+    await pool.query(
+      `UPDATE settings SET data = jsonb_set(
+         CASE WHEN data ? 'delivery' THEN data ELSE jsonb_set(data,'{delivery}','{}'::jsonb,true) END,
+         '{delivery,dispatchDelayTemp}', $1::jsonb, true) WHERE id=1`, [JSON.stringify(entry)]);
+    audit?.(a.user, "prep_delay_set", null, true, { minutes: entry.minutes, until: entry.until });
+    const ns = await getSettingsData();
+    return c.json({ ok: true, effective: dispatchDelayOf(ns), temp: dispatchDelayOverride(ns) });
+  });
+
   app.get("/api/portal/service", async (c) => {
     const a = await requirePortal(c, "cashier"); if (a.res) return a.res;
     return c.json({ ok: true, state: serviceState(await getSettingsData()) });

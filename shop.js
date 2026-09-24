@@ -2265,10 +2265,15 @@ export function register(app, ctx, deps = {}) {
     // التنبيه pickup_ready وصل 12:44 ومحدش قراه). هنا بنقرا آخر approval_status
     // من تنبيهات تاب سينس للطلبات المقبولة اللي لسه مالهاش pos_ready_at —
     // من غير أي تغيير في الحالة ولا طلب مندوب تاني.
+    /* ٢٤/٩ — النافذة كانت واقفة عند courier_assigned، والكابتن بيتعيّن بعد
+       دقيقة من الطلب بينما الكاشير بيضغط «جاهز» بعد ١٠–٢٥ دقيقة. يعني الطلب
+       بيخرج من المراقبة **قبل** ما الجهوزية تتسجّل: ٢٧ إشارة pickup_ready
+       وصلت في يوم واحد وصفر طلب اتسجّلت فيه. on_the_way/out_for_delivery
+       داخلين لأن «جاهز» بتسبق الاستلام منطقياً حتى لو التنبيه اتأخر. */
     const awaitingReady = (await pool.query(
       `SELECT order_no, pos_order_id, branch_id FROM shop_orders
         WHERE pos_order_id IS NOT NULL AND pos_ready_at IS NULL
-          AND status IN ('accepted','courier_requested','courier_assigned')
+          AND status IN ('accepted','courier_requested','courier_assigned','on_the_way','out_for_delivery')
           AND created_at > NOW() - INTERVAL '24 hours'`)).rows;
     for (const r of awaitingReady) {
       try {

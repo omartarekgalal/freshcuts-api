@@ -516,7 +516,34 @@ export function appsGuard({ total, fee, nextTierFee = 0, guard } = {}) {
    0 = الطريقة القديمة (فوراً مع القبول). الافتراضي 15. */
 export const DEFAULT_DISPATCH_DELAY_MIN = 15;
 
-export function dispatchDelayOf(settings) {
+/* ═══ تمديد مؤقت للمهلة (٢٤/٩، طلب عمر) ═══════════════════════════════════
+   «مدير المطعم يقدر يعدّل مهلة التحضير — يخليها ١٠ دقايق لمدة ساعة أو
+   ساعتين وبعدها ترجع لوحدها».
+
+   السبب: المطبخ بيتضغط فترة، فطلب الكابتن بدري معناه إنه يقعد يستنى —
+   والكابتن اللي بيستنى بيلغي، والإلغاء بيخلق مسار «مندوب من بره» اللي
+   بياخد ١٠٣ دقيقة بدل ٥٩.
+
+   الحالة بتتحسب **وقت القراية** زي إيقاف الخدمة بالظبط — يعني مستحيل
+   تفضل ممدودة لأن حد نسي يرجّعها. عدّى `until` ⇒ الرقم الأصلي رجع.  */
+export function dispatchDelayOverride(settings, now = Date.now()) {
+  const o = ((settings || {}).delivery || {}).dispatchDelayTemp;
+  if (!o || typeof o !== "object") return null;
+  /* Number(null) = 0 و Number("") = 0 — والاتنين معناهم «مش محدد» مش
+     «اطلب الكابتن فوراً». الفرق ده بيقرّر طلب مندوب، فلازم يبقى صريح. */
+  if (o.minutes === null || o.minutes === undefined || o.minutes === "") return null;
+  const min = Number(o.minutes);
+  if (!Number.isFinite(min) || min < 0 || min > 90) return null;
+  const until = o.until ? Date.parse(o.until) : NaN;
+  if (!Number.isFinite(until)) return null;          // بدون نهاية = مانقبلهاش
+  if (until <= now) return null;                     // عدّى وقتها ⇒ رجعت لوحدها
+  return { minutes: Math.round(min), until: new Date(until).toISOString(),
+           by: o.by || null, reason: o.reason || null };
+}
+
+export function dispatchDelayOf(settings, now = Date.now()) {
+  const temp = dispatchDelayOverride(settings, now);
+  if (temp) return temp.minutes;
   const v = ((settings || {}).delivery || {}).dispatchDelayMin;
   if (v === undefined || v === null || v === "") return DEFAULT_DISPATCH_DELAY_MIN;
   const n = Number(v);
