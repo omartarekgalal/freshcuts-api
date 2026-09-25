@@ -49,6 +49,7 @@ import * as shop from "./shop.js";
 import * as recs from "./recs.js";
 import * as accounts from "./accounts.js";
 import * as tspartner from "./tspartner.js";
+import * as modifiers from "./modifiers.js";
 import * as posnames from "./posnames.js";
 import * as cms from "./cms.js";
 import * as reviews from "./reviews.js";
@@ -3110,12 +3111,15 @@ selftest.register(app, moduleCtx, { delivery: () => deliveryApi });
 // accounts بترجع customerDiscount اللي الشيك أوت محتاجه (خصم الملاك الدائم) —
 // بس بتتسجل بعد shop، فالربط late-bound بنفس نمط attribution/ads.
 let accountsApi = null;
+let modifiersApi = null;
 shopApi = shop.register(app, moduleCtx, {
   pay: payApi, delivery: deliveryApi, notify: notifyApi, accounts: () => accountsApi, wa: () => waApi,
   // عشان /api/shop/storefront يعرف يخفي قسم كل أصنافه خلصت (٢٤/٩)
   menuRows: catalog.menuRows,
   posNames: () => posNamesApi,
   carts: () => cartsApi, tsp: () => tspApi, funnel: () => funnelApi,
+  // إضافات الأصناف (حشو الأطراف للبيتزا) — بتتسجّل بعدنا، ربط متأخّر
+  modifiers: () => modifiersApi,
   journey: () => journeyApi,
   // الباقات بتتعرّف في الـCMS (اللي بيتسجّل بعدنا) — الشيك أوت بيوسّعها
   // بنفس الدالة اللي المتجر بيعاين بيها، فالمعروض = المحسوب.
@@ -3131,6 +3135,9 @@ recs.register(app, moduleCtx);
 let posNamesApi = null;
 accountsApi = accounts.register(app, moduleCtx, { posNames: () => posNamesApi });
 const tspApi = tspartner.register(app, moduleCtx);
+/* إضافات الأصناف — لازم بعد tspartner لأنها بتقرا كتالوج الشريك منه
+   (القائمة الرقمية اللي المتجر بيقرا منها مفيهاش إضافات خالص). */
+modifiersApi = modifiers.register(app, moduleCtx, { listProducts: () => tspApi.listProducts() });
 /* اسم العميل الحقيقي في نقطة البيع + ربط مرآة الطلب بطلب الموقع — posnames.js.
    بيتسجّل بعد tspartner لأنه بيقرا tenant_order_id من API الشركاء، وshop/accounts
    بيوصلوا له بربط متأخّر (نفس نمط attribution/ads). */

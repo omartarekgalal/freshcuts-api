@@ -37,6 +37,7 @@ import { plausibleName } from "./posnames.js";
 import { VAT_RATE as BUNDLE_VAT } from "./bundles.js";
 import { MULTIPLY as MONEY_MULTIPLY, rescaleItems, stampMf, scaleOf } from "./money.js";
 import { isOpenNow } from "./carts.js";
+import { linesFor as modifierLines } from "./modifiers.js";
 import { preorderCfg, slotCounts, validateSlot, isDueNow, slotLabel } from "./preorder.js";
 import { serviceBlock, serviceState, pausedText } from "./service.js";
 import { soldOutOf, soldOutLines, soldOutMessage, deadCategoryItemIds } from "./soldout.js";
@@ -190,6 +191,17 @@ export function partnerItemsOf(row) {
       unitPrice: discounted ? Math.round(base * (1 - pct / 100) * 1e6) / 1e6 : base,
       ...(Number.isInteger(vo) && vo > 0 ? { variantOptionId: vo } : {}),
       ...(it.variant_name ? { variantName: it.variant_name } : {}),
+      /* الإضافات اتخزّنت على السطر وقت الشيك أوت بعد ما الخادم حسب سعرها
+         من كتالوج الشريك (modifiers.js). بتعدّي زي ما هي — مفيش حساب تاني
+         هنا عشان اللي نزل الطلب يبقى هو نفسه اللي اتدفع. */
+      ...(Array.isArray(it.modifiers) && it.modifiers.length
+        ? { modifiers: it.modifiers.map((m) => ({
+            id: m.id, quantity: m.quantity,
+            /* وحدة السطر → هللات. القسمة على scaleOf(it) بترجّع الريال الخام
+               والضرب في ١٠٠ بيوصّله لوحدة الشريك — من غير أي تقريب وسط. */
+            unit_amount: Math.round((Number(m.unit_amount) / scaleOf(it)) * 100),
+          })) }
+        : {}),
       ...(note ? { lineNote: note } : {}),
     };
   });
@@ -906,6 +918,35 @@ export function register(app, ctx, deps = {}) {
        (partnerItemsOf، التقارير، بكسل الشراء) بيعرف وحدة السطر من السطر نفسه
        بدل ما يفترض وحدة ثابتة — فتغيير الوحدة تاني مابيكسرش التاريخ. */
     items = stampMf(items, MONEY_MULTIPLY);
+    /* ── الإضافات (٢٥/٩، حشو الأطراف للبيتزا) ─────────────────────────────
+       المتصفح بيبعت أرقام الاختيارات بس (`modifiers: [16]`). السعر بيتحسب
+       **هنا** من كتالوج الشريك — نفس قاعدة الباقات بالظبط: العميل يختار،
+       السيرفر يسعّر. لو بعت سعر بنتجاهله.
+       الوحدة: سطور المتجر بـMONEY_MULTIPLY، وطلب الشريك بيحوّلها لهللات
+       في partnerItemsOf — وكل واحدة بتضرب في الخام مش في رقم مقرّب، لأن
+       تاب سينس بترفض فرق قرش واحد عن سعر النظام. */
+    if (items.some((it) => it && Array.isArray(it.modifiers) && it.modifiers.length)) {
+      const mods = typeof deps.modifiers === "function" ? deps.modifiers() : null;
+      if (!mods || !mods.resolve) return fail("modifiers_unavailable", 503);
+      const out = [];
+      for (const it of items) {
+        const chosen = Array.isArray(it.modifiers) ? it.modifiers : [];
+        if (!chosen.length) { out.push({ ...it, modifiers: undefined }); continue; }
+        let r;
+        try { r = await mods.resolve(it.product_id, chosen); }
+        catch (e) {
+          console.error(`[shop] modifier resolve failed for ${it.product_id}:`, e.message);
+          return fail("modifier_lookup_failed", 503, { product_id: it.product_id });
+        }
+        if (!r.ok) return fail("modifier_" + r.error, 422, { product_id: it.product_id, detail: r });
+        out.push({
+          ...it,
+          modifiers: modifierLines(r.lines, scaleOf(it)),
+          modifier_labels: r.labels,
+        });
+      }
+      items = out;
+    }
     /* «خلص النهارده» (soldout.js): المدير قفل الصنف من البورتال. بنرفض قبل
        الـOTP وقبل أي جلسة دفع — ومن غير ما نشيله من السلة بصمت: المتجر
        بيعلّم السطر ويطلب من العميل يشيله. */

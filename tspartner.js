@@ -84,12 +84,26 @@ export function partnerPurchase(it, defaultTax) {
   const vo = Number(it.variantOptionId);
   const hasVariant = Number.isInteger(vo) && vo > 0;
   const note = it.lineNote ? String(it.lineNote).slice(0, 100) : null;
+  /* الإضافات (٢٥/٩): كانت مبعوتة `[]` ثابتة، فحشو الأطراف اللي العميل
+     يدفعه أونلاين مكانش بيوصل المطبخ خالص. الشكل مثبت على الإنتاج:
+     `{ id, quantity, unit_amount }` — التلاتة إجباريين (ناقص أي واحد = 422)،
+     و`unit_amount` هللات **قبل الضريبة**. تاب سينس بيحسب الضريبة بنفسه
+     (كيري ٢٦١ ← ٣٠٠٫١٥ بالضريبة = ٣ ر.س بالظبط زي المحل).
+     السعر هنا جاي من `modifiers.js` اللي بيقراه من كتالوج الشريك —
+     مش من المتصفح، عشان محدش ياخد حشو بـصفر. */
+  const mods = (Array.isArray(it.modifiers) ? it.modifiers : [])
+    .map((m) => ({
+      id: m && m.id,
+      quantity: Math.max(1, Math.round(Number(m && m.quantity) || 1)),
+      unit_amount: Math.max(0, Math.round(Number(m && m.unit_amount) || 0)),
+    }))
+    .filter((m) => m.id);
   return {
     product_id: it.partnerProductId,
     quantity: Number(it.quantity) || 1,
     tax_id: it.taxId || (defaultTax && defaultTax.id),
     unit_amount: sarToUnitAmount(it.unitPrice),
-    modifiers: [],
+    modifiers: mods,
     ...(hasVariant ? { variant_option: { id: vo } } : {}),
     ...(note ? { meta: { notes: note } } : {}),
   };
@@ -615,5 +629,11 @@ export function register(app, ctx) {
     setInterval(() => { keepTokenFresh(); }, 20 * 60_000);
   }
 
-  return { api, accessToken, status, authorizeUrl, exchangeCode, refresh, createExternalOrder, catalog, keepTokenFresh };
+  /* كل منتجات الشريك كمصفوفة — modifiers.js بيقرا منها الإضافات والأسعار.
+     نفس الكاش بتاع loadProducts (٥ دقايق) فمفيش نداءات زيادة. */
+  async function listProducts() {
+    const { byTenant } = await loadProducts();
+    return [...byTenant.values()];
+  }
+  return { api, accessToken, status, authorizeUrl, exchangeCode, refresh, createExternalOrder, catalog, keepTokenFresh, listProducts };
 }

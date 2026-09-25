@@ -121,7 +121,15 @@ export async function calculateOrder({ branchId = "1", orderOptionId = 3, purcha
         quantity: Number(p.quantity),
         tax_id: p.tax_id ?? 1,
         unit_amount: Math.round(Number(p.unit_amount) * ratio),
-        modifiers: [],
+        /* الإضافات (٢٥/٩ — حشو الأطراف): كانت `[]` ثابتة، فحتى لما السطر
+           بيوصل ومعاه إضافة الحسبة كانت بتتجاهلها والعميل يدفع البيتزا
+           من غير الحشو. `unit_amount` بتاع الإضافة بوحدة MULTIPLY زي
+           السطر نفسه، فبتتظبط بنفس النسبة لو نزلنا درجة. */
+        modifiers: (Array.isArray(p.modifiers) ? p.modifiers : []).map((m) => ({
+          id: m.id,
+          quantity: Math.max(1, Math.round(Number(m.quantity) || 1)),
+          unit_amount: Math.round(Number(m.unit_amount) * ratio),
+        })),
         parent_product: { meta: { notes: null } },
         // weight/size variants (ثلث/نصف/كيلو) — probed 2026-08-16: TabSense
         // accepts `variant_option:{id}` and prices the chosen option itself
