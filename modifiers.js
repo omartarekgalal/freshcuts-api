@@ -45,12 +45,21 @@ export const DEFAULTS = {
   hiddenGroupIds: [],     // مجموعات نخبّيها عن المتجر من غير ما نلمس نقطة البيع
   hideZeroOption: false,  // «بدون حشو اطراف» — نخبّيها ونخليها الافتراضي
   cacheMinutes: 10,
+  /* قواعد لكل مجموعة تغلب اللي جاي من نقطة البيع (طلب عمر ٢٥/٩):
+       { "<معرّف المجموعة>": { mode:"single"|"multi", required:bool, default:<id> } }
+     ليه بنغلب تاب سينس: نفس مجموعة «حشو الأطراف» عندهم min/max مختلفين من
+     بيتزا للتانية (٠/٣ على واحدة و١/١ على تانية) — واللي العميل بيشوفه على
+     الموقع لازم يبقى قاعدة واحدة ثابتة. والمجموعات الجديدة اللي هتتضاف في
+     تاب سينس بتظهر لوحدها بقواعدها الأصلية لحد ما تتحط لها قاعدة هنا. */
+  groupRules: {},
 };
 
 export function cfgOf(settings) {
   const raw = ((settings || {}).shop || {}).modifiers || (settings || {}).modifiers || {};
   const c = { ...DEFAULTS, ...(raw && typeof raw === "object" ? raw : {}) };
   c.onlyItemIds = Array.isArray(c.onlyItemIds) ? c.onlyItemIds.map(String) : [];
+  c.groupRules = (c.groupRules && typeof c.groupRules === "object" && !Array.isArray(c.groupRules))
+    ? c.groupRules : {};
   c.hiddenGroupIds = Array.isArray(c.hiddenGroupIds) ? c.hiddenGroupIds.map(String) : [];
   c.cacheMinutes = Math.min(120, Math.max(1, Number(c.cacheMinutes) || DEFAULTS.cacheMinutes));
   return c;
@@ -98,8 +107,19 @@ export function buildCatalog(products, cfg = DEFAULTS) {
         })
         .filter((o) => o.id && o.name);
       if (!options.length) continue;
-      const min = Math.max(0, Math.round(num(g.min)));
-      const max = Math.max(min, Math.round(num(g.max)) || 1);
+      /* قاعدة اللوحة أولاً، وبعدين اللي نقطة البيع قالته */
+      const rule = (cfg.groupRules || {})[String(g.id)] || {};
+      let min = Math.max(0, Math.round(num(g.min)));
+      let max = Math.max(min, Math.round(num(g.max)) || 1);
+      if (rule.mode === "single") max = 1;
+      else if (rule.mode === "multi" && max < 2) max = Math.max(2, Math.round(num(g.max)) || 2);
+      if (rule.required === true) min = Math.max(1, min);
+      else if (rule.required === false) min = 0;
+      if (min > max) min = max;
+      /* الافتراضي: اللي المالك اختاره، وإلا اللي نقطة البيع علّمت عليه */
+      const wantDefault = rule.default != null && rule.default !== ""
+        ? String(rule.default)
+        : (g.defaults != null && g.defaults !== "" ? String(g.defaults) : null);
       groups.push({
         id: String(g.id),
         name: String(g.name || "").trim(),
@@ -108,6 +128,14 @@ export function buildCatalog(products, cfg = DEFAULTS) {
         options: cfg.hideZeroOption && min >= 1
           ? options.filter((o) => o.sar > 0)
           : options,
+        /* الخيار اللي المتجر بيعلّم عليه لوحده. لازم يكون موجود فعلاً
+           بعد الفلترة، وإلا الشاشة تعلّم على حاجة مش معروضة. */
+        defaultId: (() => {
+          const shown = cfg.hideZeroOption && min >= 1 ? options.filter((o) => o.sar > 0) : options;
+          const hit = shown.find((o) => String(o.id) === wantDefault)
+            || (min >= 1 ? shown.slice().sort((a, b) => a.sar - b.sar)[0] : null);
+          return hit ? hit.id : null;
+        })(),
       });
     }
     if (groups.length) out[menuId] = groups;

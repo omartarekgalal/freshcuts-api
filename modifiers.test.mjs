@@ -164,3 +164,69 @@ test("أرقام الإعدادات بتتحبس في حدود معقولة", ()
   assert.deepEqual(cfgOf({ modifiers: { onlyItemIds: [40, 41] } }).onlyItemIds, ["40", "41"]);
   assert.deepEqual(cfgOf({ modifiers: { onlyItemIds: "مش قايمة" } }).onlyItemIds, []);
 });
+
+/* ═══ قواعد المجموعة من اللوحة (٢٥/٩ — طلب عمر) ═══════════════════════════
+   تاب سينس بيدّي نفس المجموعة بقواعد مختلفة من صنف لصنف (حشو الأطراف
+   min0/max3 على بيتزا و min1/max1 على تانية). اللي العميل يشوفه لازم
+   يبقى قاعدة واحدة، فاللوحة بتغلب. */
+const RULES = (r) => ({ ...DEFAULTS, groupRules: { "74lo3Y8dXQ": r } });
+
+test("اختيار واحد بس بيغلب max بتاع نقطة البيع", () => {
+  const g = buildCatalog([PIZZA], RULES({ mode: "single" }))["40"][0];
+  assert.equal(g.max, 1, "كان ٣ عند تاب سينس");
+  assert.equal(resolveChoice([g], [16, 17]).error, "modifier_too_many");
+});
+
+test("متعدد بيفتح مجموعة تاب سينس قافلها على واحد", () => {
+  const g = buildCatalog([REQUIRED], RULES({ mode: "multi" }))["36"][0];
+  assert.ok(g.max >= 2);
+  assert.equal(resolveChoice([g], [16, 17]).ok, true);
+});
+
+test("مطلوب/اختياري بيتغيّروا من اللوحة", () => {
+  const req = buildCatalog([PIZZA], RULES({ required: true }))["40"][0];
+  assert.equal(req.min, 1);
+  assert.equal(resolveChoice([req], []).error, "modifier_required");
+  const opt = buildCatalog([REQUIRED], RULES({ required: false }))["36"][0];
+  assert.equal(opt.min, 0);
+  assert.equal(resolveChoice([opt], []).ok, true);
+});
+
+test("الافتراضي بييجي من اللوحة", () => {
+  assert.equal(buildCatalog([PIZZA], RULES({ default: 16 }))["40"][0].defaultId, 16);
+  assert.equal(buildCatalog([PIZZA], RULES({ default: "17" }))["40"][0].defaultId, 17);
+});
+
+test("افتراضي مش موجود مابيتعلّمش عليه", () => {
+  // اختياري + افتراضي غلط ⇒ مفيش افتراضي أصلاً
+  assert.equal(buildCatalog([PIZZA], RULES({ default: 999 }))["40"][0].defaultId, null);
+  // إجباري + افتراضي غلط ⇒ بنرجع لأرخص خيار عشان الشاشة ماتفضلش فاضية
+  assert.equal(buildCatalog([REQUIRED], RULES({ default: 999 }))["36"][0].defaultId, 15);
+});
+
+test("افتراضي متخبّي مايتعلّمش عليه", () => {
+  /* «بدون» متخبّية (hideZeroOption) ⇒ الافتراضي لازم يبقى خيار معروض،
+     وإلا الشاشة تعلّم على حاجة العميل مش شايفها. */
+  const g = buildCatalog([REQUIRED], { ...DEFAULTS, hideZeroOption: true,
+    groupRules: { "74lo3Y8dXQ": { default: 15 } } })["36"][0];
+  assert.ok(!g.options.some((o) => o.id === 15));
+  assert.equal(g.defaultId, 16, "أرخص خيار معروض");
+});
+
+test("مفيش قاعدة = اللي نقطة البيع قالته", () => {
+  const g = buildCatalog([PIZZA], DEFAULTS)["40"][0];
+  assert.equal(g.min, 0);
+  assert.equal(g.max, 3);
+});
+
+test("min مايعديش max بعد القواعد", () => {
+  const g = buildCatalog([PIZZA], RULES({ mode: "single", required: true }))["40"][0];
+  assert.equal(g.max, 1);
+  assert.equal(g.min, 1);
+});
+
+test("groupRules باظة مابترميش", () => {
+  for (const v of [null, "نص", [], 5]) {
+    assert.deepEqual(cfgOf({ modifiers: { groupRules: v } }).groupRules, {});
+  }
+});
