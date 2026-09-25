@@ -70,8 +70,8 @@ test("النص العربي بيتشفّر صح في الرابط", () => {
   assert.ok(!/[؀-ۿ]/.test(l), "مفيش حروف عربية خام في الرابط");
 });
 
-test("الشرايح الأربعة معرّفة بوصف", () => {
-  for (const k of ["never_online", "lapsed", "vip_lapsed", "online_once"]) {
+test("الشرايح الخمسة معرّفة بوصف", () => {
+  for (const k of ["ad_blocked", "never_online", "lapsed", "vip_lapsed", "online_once"]) {
     assert.ok(AUDIENCES[k], `${k} ناقصة`);
     assert.ok(AUDIENCES[k].label && AUDIENCES[k].hint);
   }

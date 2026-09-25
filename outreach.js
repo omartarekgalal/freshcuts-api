@@ -26,6 +26,13 @@ import { QUICK_STATS_SQL } from "./customer360.js";
 
 /* شرايح التواصل — كل واحدة بتجاوب على سؤال مختلف */
 export const AUDIENCES = {
+  /* ٢٥/٩: حاجبين الإعلانات عند المشغّل (smsblock.js). رسالة FreshCut-AD
+     مابتوصلهمش أصلاً — فالقناة الوحيدة اللي تكلّمهم بيها عن الموقع هي
+     واتساب يدوي من موبايل المحل. */
+  ad_blocked: {
+    label: "حاجبين رسايل الإعلانات (مابيوصلهمش SMS دعائي)",
+    hint: "واتساب هو الطريق الوحيد ليهم — كل رسالة دعائية ليهم كانت بتضيع",
+  },
   never_online: {
     label: "اشتروا من المحل وعمرهم ما طلبوا أونلاين",
     hint: "أكبر فرصة: بيعرفوا الأكل وبيحبوه، ناقص بس يجرّبوا الموقع مرة",
@@ -109,6 +116,7 @@ export function register(app, ctx, deps = {}) {
     ),
     -- اللي عامل إلغاء اشتراك: اختيار صريح، بيتشال من القايمة كلها
     opted AS (SELECT phone_norm FROM cms_contacts WHERE opted_out_at IS NOT NULL),
+    blk AS (SELECT phone_norm FROM sms_ad_blocked),
     web AS (
       SELECT phone_norm AS pn, count(*)::int n, max(created_at) last_at
         FROM shop_orders
@@ -126,7 +134,8 @@ export function register(app, ctx, deps = {}) {
          WHERE COALESCE(btrim(customer->>'name'),'') <> ''
       ) x WHERE pn ~ '^5[0-9]{8}$' GROUP BY pn
     )
-    SELECT p.pn, nm.name, COALESCE(w.n,0) AS web_orders, w.last_at AS web_last_at
+    SELECT p.pn, nm.name, COALESCE(w.n,0) AS web_orders, w.last_at AS web_last_at,
+           (p.pn IN (SELECT phone_norm FROM blk)) AS ad_blocked
       FROM people p LEFT JOIN web w ON w.pn = p.pn LEFT JOIN nm ON nm.pn = p.pn
      WHERE p.pn NOT IN (SELECT phone_norm FROM opted)`;
 
@@ -190,6 +199,7 @@ export function register(app, ctx, deps = {}) {
         const web = Number(b.web_orders) || 0;
 
         const inAud =
+          aud === "ad_blocked" ? b.ad_blocked === true :
           aud === "never_online" ? web === 0 :
           aud === "lapsed" ? daysAgo >= 30 :
           aud === "vip_lapsed" ? (spend >= 300 || orders >= 4) && daysAgo >= 21 :
@@ -211,6 +221,7 @@ export function register(app, ctx, deps = {}) {
           orders, spend: Math.round(spend), webOrders: web,
           lastAt: lastAt || null, daysAgo: daysAgo === 9999 ? null : daysAgo,
           lastItems: items || null,
+          adBlocked: b.ad_blocked === true,
           message: msg,
           wa: canSee ? waLink(b.pn, msg) : null,
           /* الأولوية: الفلوس × الغياب. اللي صرف كتير وغاب كتير الأول. */
