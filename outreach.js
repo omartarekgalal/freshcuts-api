@@ -140,14 +140,21 @@ export function register(app, ctx, deps = {}) {
          AND status NOT IN ('pending_payment','payment_failed','expired','cancelled','rejected')
        ORDER BY phone_norm, created_at DESC
     ), t AS (
-      SELECT DISTINCT ON (pn) pn, at, total, NULL::text names FROM (
-        SELECT COALESCE(NULLIF(s.phone_norm,''), NULLIF(tc.phone_norm,'')) pn, o.order_date at, o.total
-          FROM ts_orders o
-          LEFT JOIN order_sources s ON s.order_id = o.order_id
-          LEFT JOIN ts_customers tc ON tc.customer_id = o.customer_id
-         WHERE (s.phone_norm = ANY($1::text[]) OR tc.phone_norm = ANY($1::text[]))
-           AND (o.order_type IS NULL OR (o.order_type NOT ILIKE '%void%' AND o.order_type NOT ILIKE '%refund%'))
-      ) z WHERE pn IS NOT NULL ORDER BY pn, at DESC
+      /* أصناف طلبات المحل من ts_order_items — من غيرها الرسالة بتقول
+         «طلبت من عندنا» بدل «طلبت كيلو مشاوي»، والفرق كبير في رسالة شخصية.
+         أغلب عملائنا طلباتهم من المحل مش من الموقع، فده المصدر الأهم. */
+      SELECT DISTINCT ON (pn) pn, at, total,
+             (SELECT string_agg(i.name, '|' ORDER BY i.idx)
+                FROM ts_order_items i WHERE i.order_id = oid) AS names
+        FROM (
+          SELECT COALESCE(NULLIF(s.phone_norm,''), NULLIF(tc.phone_norm,'')) pn,
+                 o.order_date at, o.total, o.order_id AS oid
+            FROM ts_orders o
+            LEFT JOIN order_sources s ON s.order_id = o.order_id
+            LEFT JOIN ts_customers tc ON tc.customer_id = o.customer_id
+           WHERE (s.phone_norm = ANY($1::text[]) OR tc.phone_norm = ANY($1::text[]))
+             AND (o.order_type IS NULL OR (o.order_type NOT ILIKE '%void%' AND o.order_type NOT ILIKE '%refund%'))
+        ) z WHERE pn IS NOT NULL ORDER BY pn, at DESC
     )
     SELECT pn, at, total, names FROM (
       SELECT * FROM w UNION ALL SELECT * FROM t
