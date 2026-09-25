@@ -56,6 +56,8 @@ import * as reviews from "./reviews.js";
 import * as customer360 from "./customer360.js";
 import * as outreach from "./outreach.js";
 import * as smsblock from "./smsblock.js";
+// 🔎 حالة الـSEO للوحة (اكتشافات + قرارات + خطة، وفحوص حيّة على الموقع)
+import * as seostatus from "./seostatus.js";
 // 🔎 البحث الشامل في اللوحة (Ctrl+K) + 👁 قاعدة إظهار الجوال الكاملة
 import * as searchMod from "./search.js";
 import { makePhoneGate } from "./phones.js";
@@ -3158,6 +3160,8 @@ const c360Api = customer360.register(app, moduleCtx, { whoami: (c) => cmsApi.who
 /* 📇 قايمة التواصل اليدوي (واتساب من موبايل المحل) — بعد customer360 لأنها
    بتعيد استخدام QUICK_STATS_SQL بتاعته، وبعد الـCMS عشان canSeePhones. */
 outreach.register(app, moduleCtx);
+/* 🔎 حالة الـSEO — مصدر واحد تقراه شاشة «جوجل والبحث» وتكتب فيه جلسة الـSEO */
+seostatus.register(app, moduleCtx);
 /* 👁 قاعدة واحدة لإظهار جوال العميل كامل في اللوحة (phones.js): المالك دايماً،
    وعضو الفريق لو دوره عنده «عرض» على قسم العملاء. بتتحط على moduleCtx بعد ما
    الـCMS يتسجّل، والموديولات بتناديها وقت الطلب (ctx.canSeePhones) مش وقت التسجيل. */

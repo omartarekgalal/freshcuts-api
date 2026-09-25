@@ -107,7 +107,10 @@ const PATH_SECTIONS = [
   [/^\/api\/cms\/(products|catalog|collections|bundles|offers|recommendations|menu-availability)/, "products"],
   [/^\/api\/cms\/(growth|links)/, "growth"],
   // sms-optout = قايمة «مش عايز رسايل» (نفس دوال البوابة، portal.js)
-  [/^\/api\/cms\/(customers|segments|loyalty|campaigns|app-conversion|flows|reviews|sms-optout)/, "customers"],
+  // outreach = «واتساب يدوي»، sms/blocked = «حاجبين الإعلانات» (٢٦/٩) — كانوا
+  // بيقعوا على «الإعدادات» فأي دور غير المالك كان بياخد 403 في شاشات العملاء.
+  [/^\/api\/cms\/(customers|segments|loyalty|campaigns|app-conversion|flows|reviews|sms-optout|outreach)/, "customers"],
+  [/^\/api\/sms\/blocked/, "customers"],
   [/^\/api\/cms\/(analytics|exec)/, "analytics"],
   [/^\/api\/cms\/(ops|sla)/, "orders"],
   [/^\/api\/(shop\/coupons|discounts)/, "discounts"],
