@@ -55,6 +55,7 @@ import * as cms from "./cms.js";
 import * as reviews from "./reviews.js";
 import * as customer360 from "./customer360.js";
 import * as outreach from "./outreach.js";
+import * as smsblock from "./smsblock.js";
 // 🔎 البحث الشامل في اللوحة (Ctrl+K) + 👁 قاعدة إظهار الجوال الكاملة
 import * as searchMod from "./search.js";
 import { makePhoneGate } from "./phones.js";
@@ -3147,7 +3148,10 @@ posNamesApi = posnames.register(app, moduleCtx, { tsp: () => tspApi });
 // اللي فوق دي بنفسها جوّه العملية (app.request) بدل ما يكتب استعلام تاني
 // لنفس الرقم. فلازم يكونوا كلهم اتسجّلوا قبله.
 // لوحة المتجر: فريق وأدوار وصلاحيات وسجل نشاط — لازم قبل systemcheck.
-const cmsApi = cms.register(app, moduleCtx, { notify: () => notifyApi });
+let smsBlockApi = null;
+const cmsApi = cms.register(app, moduleCtx, { notify: () => notifyApi, smsBlock: () => smsBlockApi });
+/* 📵 حاجبين الإعلانات عند المشغّل — بيتشالوا من FreshCut-AD بس */
+smsBlockApi = smsblock.register(app, moduleCtx);
 reviews.register(app, moduleCtx, { notify: () => notifyApi, sessionUser: cmsApi.sessionUser });
 // 👥 Customer 360 — ملف العميل + سجل الرسايل + قايمة الإيقاف (identity.js = قاعدة العميل الجديد)
 const c360Api = customer360.register(app, moduleCtx, { whoami: (c) => cmsApi.whoami(c) });

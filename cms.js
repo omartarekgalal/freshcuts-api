@@ -2413,9 +2413,13 @@ export function register(app, ctx, deps = {}) {
                    AND created_at > NOW() - INTERVAL '3 days'`, [pns]).then((r) => new Set(r.rows.map((x) => x.phone_norm))),
     ]);
     const optedOut = new Set([...codes.values()].filter((x) => x.opted_out_at).map((x) => x.phone_norm));
+    /* حاجبين الإعلانات عند المشغّل (smsblock.js) — دي حملات دعائية بس،
+       والخدمي مابيعدّيش من هنا أصلاً. */
+    const smsBlock = typeof deps.smsBlock === "function" ? deps.smsBlock() : null;
+    const adBlocked = smsBlock ? await smsBlock.blockedSet(pns).catch(() => new Set()) : new Set();
     const f = smsRules.filterAudience(m, {
       staff: smsRules.staffPhoneSet(await getSettingsData()), optedOut, history, gap: cfg, recentOnline,
-      allowApps: s.allowApps === true });
+      allowApps: s.allowApps === true, adBlocked });
     const withCode = f.list.map((x) => ({ ...x, code: codes.get(x.pn)?.optout_code }));
     const holdout = withCode.filter((x) => smsRules.inHoldout(camp.id, x.pn, camp.holdout_pct));
     const hold = new Set(holdout.map((x) => x.pn));

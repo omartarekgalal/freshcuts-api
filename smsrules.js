@@ -293,14 +293,20 @@ export function gapReason(m, h, g) {
 /* فلترة الجمهور: بترجع القايمة + سبب كل استبعاد (بيتسجّل مع الحملة).
    history = Map(رقم → {days, in7, in30}); لو مش موجودة بنرجع للطريقة
    القديمة (Set لمين اتبعتله) عشان الأتمتة القديمة ماتقعش. */
-export function filterAudience(members, { staff = new Set(), optedOut = new Set(), recentlyMessaged = new Set(), recentOnline = new Set(), allowApps = false, history = null, gap = null } = {}) {
-  const excluded = { apps_only: 0, staff: 0, opted_out: 0, gap: 0, cap_week: 0, cap_month: 0, recent_online_order: 0 };
+export function filterAudience(members, { staff = new Set(), optedOut = new Set(), recentlyMessaged = new Set(), recentOnline = new Set(), allowApps = false, history = null, gap = null, adBlocked = new Set() } = {}) {
+  const excluded = { apps_only: 0, staff: 0, opted_out: 0, ad_blocked: 0, gap: 0, cap_week: 0, cap_month: 0, recent_online_order: 0 };
   const g = history ? gapOf(gap) : null;
   const list = [];
   for (const m of members) {
     if (!allowApps && !directRelationship(m)) { excluded.apps_only++; continue; }
     if (staff.has(m.pn)) { excluded.staff++; continue; }
     if (optedOut.has(m.pn)) { excluded.opted_out++; continue; }
+    /* حاجب الإعلانات عند المشغّل (٢٥/٩): تقرير تقنيات من ١٠ لـ٢٥ سبتمبر —
+       الخدمي FreshCut وصل ٩٩٫٨٪، والدعائي FreshCut-AD وصل ٥٩٪ بس، لنفس
+       العملاء. ٥٨٧ رقم عمرهم ما وصلهم أي دعائي، واتصرف عليهم ٩٤٤ رسالة.
+       كل محاولة بنتحاسب عليها وماتوصلش، فبنشيلهم من الدعائي وبس — الخدمي
+       (تأكيد طلب، OTP، تتبع) مابيعدّيش على الفلتر ده أصلاً. */
+    if (adBlocked.has(m.pn)) { excluded.ad_blocked++; continue; }
     if (recentOnline.has(m.pn)) { excluded.recent_online_order++; continue; }
     if (history) {
       const why = gapReason(m, history.get(m.pn), g);
@@ -314,6 +320,7 @@ export const EXCLUDE_LABELS = Object.freeze({
   apps_only: "رقمه من تطبيق توصيل بس (ماطلبش مننا مباشرة)",
   staff: "موظف أو رقم مستبعد",
   opted_out: "أوقف الرسائل الإعلانية",
+  ad_blocked: "حاجب الإعلانات عند شركة الاتصالات (مابتوصلوش أصلاً)",
   recent_online_order: "طلب من الموقع آخر ٣ أيام",
   gap: "لسه ماعدّاش الفاصل بين رسالتين",
   cap_week: "وصل سقف رسايل الأسبوع",
