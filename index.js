@@ -54,6 +54,7 @@ import * as posnames from "./posnames.js";
 import * as cms from "./cms.js";
 import * as reviews from "./reviews.js";
 import * as customer360 from "./customer360.js";
+import * as outreach from "./outreach.js";
 // 🔎 البحث الشامل في اللوحة (Ctrl+K) + 👁 قاعدة إظهار الجوال الكاملة
 import * as searchMod from "./search.js";
 import { makePhoneGate } from "./phones.js";
@@ -3150,6 +3151,9 @@ const cmsApi = cms.register(app, moduleCtx, { notify: () => notifyApi });
 reviews.register(app, moduleCtx, { notify: () => notifyApi, sessionUser: cmsApi.sessionUser });
 // 👥 Customer 360 — ملف العميل + سجل الرسايل + قايمة الإيقاف (identity.js = قاعدة العميل الجديد)
 const c360Api = customer360.register(app, moduleCtx, { whoami: (c) => cmsApi.whoami(c) });
+/* 📇 قايمة التواصل اليدوي (واتساب من موبايل المحل) — بعد customer360 لأنها
+   بتعيد استخدام QUICK_STATS_SQL بتاعته، وبعد الـCMS عشان canSeePhones. */
+outreach.register(app, moduleCtx);
 /* 👁 قاعدة واحدة لإظهار جوال العميل كامل في اللوحة (phones.js): المالك دايماً،
    وعضو الفريق لو دوره عنده «عرض» على قسم العملاء. بتتحط على moduleCtx بعد ما
    الـCMS يتسجّل، والموديولات بتناديها وقت الطلب (ctx.canSeePhones) مش وقت التسجيل. */
