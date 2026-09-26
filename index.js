@@ -61,6 +61,7 @@ import * as seostatus from "./seostatus.js";
 // 📟 التحكم في رسايل الإدارة (SMS) + تقريرها
 import * as staffcontrol from "./staffcontrol.js";
 import * as smstemplates from "./smstemplates.js";
+import * as extsettle from "./extsettle.js";
 import { sendAdSms as smsSendAd } from "./smsrules.js";
 // 🔎 البحث الشامل في اللوحة (Ctrl+K) + 👁 قاعدة إظهار الجوال الكاملة
 import * as searchMod from "./search.js";
@@ -3159,6 +3160,8 @@ const cmsApi = cms.register(app, moduleCtx, { notify: () => notifyApi, smsBlock:
 /* 📵 حاجبين الإعلانات عند المشغّل — بيتشالوا من FreshCut-AD بس */
 smsBlockApi = smsblock.register(app, moduleCtx);
 reviews.register(app, moduleCtx, { notify: () => notifyApi, sessionUser: cmsApi.sessionUser });
+// 26/9: external-courier settlement (cost + paid tasks)
+extsettle.register(app, moduleCtx, { sessionUser: cmsApi.sessionUser });
 // 👥 Customer 360 — ملف العميل + سجل الرسايل + قايمة الإيقاف (identity.js = قاعدة العميل الجديد)
 const c360Api = customer360.register(app, moduleCtx, { whoami: (c) => cmsApi.whoami(c) });
 /* 📇 قايمة التواصل اليدوي (واتساب من موبايل المحل) — بعد customer360 لأنها
