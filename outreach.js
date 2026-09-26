@@ -169,6 +169,65 @@ export function register(app, ctx, deps = {}) {
       SELECT * FROM w UNION ALL SELECT * FROM t
     ) u ORDER BY pn, at DESC`;
 
+  /* الشريحة كلها بالرسالة الجاهزة لكل عميل — الشاشة اليدوية والإرسال الآلي
+     (wasender.js) بيستخدموا نفس الدالة، فالفلاتر والنص واحد. */
+  async function audienceRows(aud, { canSee = false, C: Cin = null } = {}) {
+    const C = Cin || await cfg();
+    const base = (await pool.query(SQL)).rows;
+    const pns = base.map((x) => x.pn);
+    if (!pns.length) return [];
+
+    const stats = new Map((await pool.query(QUICK_STATS_SQL, [pns])).rows.map((x) => [x.pn, x]));
+    const last = new Map();
+    for (const r of (await pool.query(LAST_SQL, [pns])).rows) if (!last.has(r.pn)) last.set(r.pn, r);
+
+    const T = now();
+    const DAY = 86400000;
+    const rows = [];
+    for (const b of base) {
+      const st = stats.get(b.pn) || {};
+      const orders = Number(st.orders) || 0;
+      if (!orders) continue;                       // عميل من غير طلب = مش عميل
+      const spend = Number(st.spend) || 0;
+      const lastAt = st.last_at || b.web_last_at || null;
+      const daysAgo = lastAt ? Math.floor((T - Date.parse(lastAt)) / DAY) : 9999;
+      const web = Number(b.web_orders) || 0;
+
+      const inAud =
+        aud === "ad_blocked" ? b.ad_blocked === true :
+        aud === "never_online" ? web === 0 :
+        aud === "lapsed" ? daysAgo >= 30 :
+        aud === "vip_lapsed" ? (spend >= 300 || orders >= 4) && daysAgo >= 21 :
+        aud === "online_once" ? web === 1 : false;
+      if (!inAud) continue;
+
+      const L = last.get(b.pn) || {};
+      const items = itemsPhrase(nz(L.names).split("|").filter(Boolean));
+      const name = nz(b.name).trim();
+      const msg = renderMessage(C.template, {
+        name: name || "أستاذنا",
+        last_items: items || "من عندنا",
+        last_when: agoAr(L.at || lastAt, T),
+        site: C.site,
+      });
+      rows.push({
+        name: name || null,
+        pn: b.pn,
+        phone: canSee ? b.pn : `${b.pn.slice(0, 3)}••••${b.pn.slice(-2)}`,
+        orders, spend: Math.round(spend), webOrders: web,
+        lastAt: lastAt || null, daysAgo: daysAgo === 9999 ? null : daysAgo,
+        lastItems: items || null,
+        adBlocked: b.ad_blocked === true,
+        message: msg,
+        wa: canSee ? waLink(b.pn, msg) : null,
+        /* الأولوية: الفلوس × الغياب. اللي صرف كتير وغاب كتير الأول. */
+        score: Math.round(spend * Math.min(3, 1 + daysAgo / 60)),
+      });
+    }
+    rows.sort((a, b) => b.score - a.score);
+    return rows;
+  }
+
   app.get("/api/cms/outreach", async (c) => {
     const err = await requireAdmin(c); if (err) return err;
     const C = await cfg();
@@ -178,57 +237,8 @@ export function register(app, ctx, deps = {}) {
     const canSee = typeof ctx.canSeePhones === "function" ? await ctx.canSeePhones(c) : false;
 
     try {
-      const base = (await pool.query(SQL)).rows;
-      const pns = base.map((x) => x.pn);
-      if (!pns.length) return c.json({ ok: true, audience: aud, rows: [] });
-
-      const stats = new Map((await pool.query(QUICK_STATS_SQL, [pns])).rows.map((x) => [x.pn, x]));
-      const last = new Map();
-      for (const r of (await pool.query(LAST_SQL, [pns])).rows) if (!last.has(r.pn)) last.set(r.pn, r);
-
-      const T = now();
-      const DAY = 86400000;
-      const rows = [];
-      for (const b of base) {
-        const st = stats.get(b.pn) || {};
-        const orders = Number(st.orders) || 0;
-        if (!orders) continue;                       // عميل من غير طلب = مش عميل
-        const spend = Number(st.spend) || 0;
-        const lastAt = st.last_at || b.web_last_at || null;
-        const daysAgo = lastAt ? Math.floor((T - Date.parse(lastAt)) / DAY) : 9999;
-        const web = Number(b.web_orders) || 0;
-
-        const inAud =
-          aud === "ad_blocked" ? b.ad_blocked === true :
-          aud === "never_online" ? web === 0 :
-          aud === "lapsed" ? daysAgo >= 30 :
-          aud === "vip_lapsed" ? (spend >= 300 || orders >= 4) && daysAgo >= 21 :
-          aud === "online_once" ? web === 1 : false;
-        if (!inAud) continue;
-
-        const L = last.get(b.pn) || {};
-        const items = itemsPhrase(nz(L.names).split("|").filter(Boolean));
-        const name = nz(b.name).trim();
-        const msg = renderMessage(C.template, {
-          name: name || "أستاذنا",
-          last_items: items || "من عندنا",
-          last_when: agoAr(L.at || lastAt, T),
-          site: C.site,
-        });
-        rows.push({
-          name: name || null,
-          phone: canSee ? b.pn : `${b.pn.slice(0, 3)}••••${b.pn.slice(-2)}`,
-          orders, spend: Math.round(spend), webOrders: web,
-          lastAt: lastAt || null, daysAgo: daysAgo === 9999 ? null : daysAgo,
-          lastItems: items || null,
-          adBlocked: b.ad_blocked === true,
-          message: msg,
-          wa: canSee ? waLink(b.pn, msg) : null,
-          /* الأولوية: الفلوس × الغياب. اللي صرف كتير وغاب كتير الأول. */
-          score: Math.round(spend * Math.min(3, 1 + daysAgo / 60)),
-        });
-      }
-      rows.sort((a, b) => b.score - a.score);
+      const rows = (await audienceRows(aud, { canSee, C })).map(({ pn, ...r }) => r);
+      if (!rows.length) return c.json({ ok: true, audience: aud, rows: [] });
       return c.json({
         ok: true, audience: aud, label: AUDIENCES[aud].label, hint: AUDIENCES[aud].hint,
         total: rows.length, canSeePhones: canSee,
@@ -260,5 +270,5 @@ export function register(app, ctx, deps = {}) {
     return c.json({ ok: true, template: tpl || DEFAULT_TEMPLATE });
   });
 
-  return { AUDIENCES };
+  return { AUDIENCES, audienceRows, cfg };
 }

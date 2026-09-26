@@ -62,6 +62,7 @@ import * as seostatus from "./seostatus.js";
 import * as staffcontrol from "./staffcontrol.js";
 import * as smstemplates from "./smstemplates.js";
 import * as extsettle from "./extsettle.js";
+import * as wasender from "./wasender.js";
 import { sendAdSms as smsSendAd } from "./smsrules.js";
 // 🔎 البحث الشامل في اللوحة (Ctrl+K) + 👁 قاعدة إظهار الجوال الكاملة
 import * as searchMod from "./search.js";
@@ -3166,7 +3167,9 @@ extsettle.register(app, moduleCtx, { sessionUser: cmsApi.sessionUser });
 const c360Api = customer360.register(app, moduleCtx, { whoami: (c) => cmsApi.whoami(c) });
 /* 📇 قايمة التواصل اليدوي (واتساب من موبايل المحل) — بعد customer360 لأنها
    بتعيد استخدام QUICK_STATS_SQL بتاعته، وبعد الـCMS عشان canSeePhones. */
-outreach.register(app, moduleCtx);
+const outreachApi = outreach.register(app, moduleCtx);
+// 26/9: WhatsApp Web auto-sender (Chrome extension pulls one message at a time)
+wasender.register(app, moduleCtx, { outreach: outreachApi, sessionUser: cmsApi.sessionUser });
 /* 🔎 حالة الـSEO — مصدر واحد تقراه شاشة «جوجل والبحث» وتكتب فيه جلسة الـSEO */
 seostatus.register(app, moduleCtx);
 /* 📟 التحكم في رسايل الإدارة + تقريرها — البوابة بتتركّب على accounts.sendSms
