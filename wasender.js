@@ -243,6 +243,8 @@ export function register(app, ctx, deps = {}) {
       ALTER TABLE wa_send_queue ADD COLUMN IF NOT EXISTS optout_at TIMESTAMPTZ;
       ALTER TABLE wa_send_queue ADD COLUMN IF NOT EXISTS media TEXT;      -- image | text
       ALTER TABLE wa_send_queue ADD COLUMN IF NOT EXISTS note TEXT;       -- ليه الصورة ماراحتش مثلاً
+      ALTER TABLE wa_send_queue ADD COLUMN IF NOT EXISTS vars JSONB;      -- متغيرات العميل (لإعادة كتابة الرسالة)
+      ALTER TABLE wa_send_queue ADD COLUMN IF NOT EXISTS edited_by TEXT;  -- اتعدّلت يدوي من اللوحة
       CREATE INDEX IF NOT EXISTS wa_send_queue_link_idx ON wa_send_queue(link_code) WHERE link_code IS NOT NULL;
       CREATE INDEX IF NOT EXISTS wa_send_queue_pn_idx ON wa_send_queue(phone_norm, sent_at DESC);
       -- ردود العملاء اللي الإضافة بتقراها من واتساب ويب
@@ -577,9 +579,9 @@ export function register(app, ctx, deps = {}) {
         const msg = messageFor(x, { template: tpl, footer: r.cfg.footer, host, slug, code, coupon, couponDays: input.offer?.validDays });
         if (hold) holdN++;
         await client.query(
-          `INSERT INTO wa_send_queue(job_id, phone_norm, name, message, score, status, reason, link_code, coupon)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT DO NOTHING`,
-          [jobId, x.pn, x.name, msg, x.score || 0, hold ? "holdout" : "pending", hold ? "holdout" : null, code, hold ? null : coupon]);
+          `INSERT INTO wa_send_queue(job_id, phone_norm, name, message, score, status, reason, link_code, coupon, vars)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) ON CONFLICT DO NOTHING`,
+          [jobId, x.pn, x.name, msg, x.score || 0, hold ? "holdout" : "pending", hold ? "holdout" : null, code, hold ? null : coupon, J(x.vars || {})]);
       }
       await client.query("COMMIT");
     } catch (e) {
@@ -592,9 +594,79 @@ export function register(app, ctx, deps = {}) {
     return c.json({ ok: true, jobId, total: r.picked.length, holdout: holdN, slug, link: recipientLink(host, slug, null) });
   });
 
+  /* ── التحكم في الطابور وهو شغّال (طلب عمر ٢٦/٩) ────────────────────────
+     كل التعديلات فورية في السيرفر ومابتلمسش غير صفوف status='pending'؛ الإضافة
+     بتاخد الرسالة من السيرفر لحظة الإرسال، فالتعديل بيسري من الرسالة الجاية. */
+  const MAX_MSG = 1500;
+  app.post("/api/cms/wa-sender/items/:id/edit", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    let b = {}; try { b = await c.req.json(); } catch { return bad(c, "bad_json", "بيانات غلط"); }
+    const msg = String(b.message || "").replace(/\r\n/g, "\n").trim();
+    if (!msg) return bad(c, "empty", "الرسالة فاضية");
+    if (msg.length > MAX_MSG) return bad(c, "too_long", `الرسالة أطول من ${MAX_MSG} حرف`);
+    if (/\{\w+\}/.test(msg)) return bad(c, "raw_only", "التعديل الفردي نص نهائي — من غير متغيرات زي {name}");
+    const r = await pool.query(
+      "UPDATE wa_send_queue SET message=$2, edited_by=$3 WHERE id=$1 AND status='pending' RETURNING id",
+      [Number(c.req.param("id")), msg, await whoOf(c)]);
+    if (!r.rowCount) return bad(c, "not_pending", "الرسالة دي مابقتش في الطابور (اتبعتت أو اتشالت)", 409);
+    return c.json({ ok: true });
+  });
+  app.post("/api/cms/wa-sender/items/:id/remove", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    const r = await pool.query(
+      "UPDATE wa_send_queue SET status='skipped', reason='removed_by_owner', edited_by=$2 WHERE id=$1 AND status='pending' RETURNING id",
+      [Number(c.req.param("id")), await whoOf(c)]);
+    if (!r.rowCount) return bad(c, "not_pending", "الرسالة دي مابقتش في الطابور", 409);
+    return c.json({ ok: true });
+  });
+  /* إيقاف/تشغيل كل الحملات مرة واحدة */
+  app.post("/api/cms/wa-sender/all/:action", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    const a = c.req.param("action");
+    const [from, to] = a === "pause" ? ["running", "paused"] : a === "resume" ? ["paused", "running"] : [null, null];
+    if (!from) return bad(c, "bad_action", "أمر مش معروف");
+    const r = await pool.query("UPDATE wa_send_jobs SET status=$2 WHERE status=$1 RETURNING id", [from, to]);
+    return c.json({ ok: true, changed: r.rowCount });
+  });
+  /* نص جديد لكل اللي لسه في الطابور: نفس المتغيرات (المتخزّنة مع كل صف)، ونفس
+     رابط وكوبون كل عميل. الصفوف القديمة من غير متغيرات بنعيد حسابها من الشريحة. */
+  async function retemplate(c, jobId) {
+    let b = {}; try { b = await c.req.json(); } catch { return bad(c, "bad_json", "بيانات غلط"); }
+    const tpl = String(b.template || "").trim();
+    const tp = templateProblem(tpl);
+    if (!tpl || tp) return bad(c, tp || "empty", tp === "name_required" ? "النص لازم يحتوي على {name}" : tp ? "في متغير مش معروف أو النص طويل" : "النص فاضي", 422);
+    const job = (await pool.query("SELECT * FROM wa_send_jobs WHERE id=$1", [jobId])).rows[0];
+    if (!job || ["done", "cancelled"].includes(job.status)) return bad(c, "not_found", "الحملة خلصت أو مش موجودة", 404);
+    const rows = (await pool.query("SELECT id, phone_norm, vars, link_code, coupon FROM wa_send_queue WHERE job_id=$1 AND status='pending'", [jobId])).rows;
+    const missing = rows.filter((x) => !x.vars || !Object.keys(x.vars).length);
+    let fresh = new Map();
+    if (missing.length && outreach) {
+      const f = job.filters || {};
+      const A = (await resolveAudience(f.audience)) || { aud: f.audience || "never_online", segmentPhones: null };
+      const all = await outreach.audienceRows(A.aud, { canSee: true, minLastOrder: Number(f.minLastOrder) || 0, segmentPhones: A.segmentPhones });
+      fresh = new Map(all.map((x) => [x.pn, x.vars]));
+    }
+    const cfg = senderCfg(await getSettingsData());
+    const host = STORE(), by = await whoOf(c);
+    let done = 0, noVars = 0;
+    for (const x of rows) {
+      const vars = (x.vars && Object.keys(x.vars).length) ? x.vars : fresh.get(x.phone_norm);
+      if (!vars) { noVars++; continue; }
+      // حملة قديمة من غير رابط متتبّع: {link} بيبقى فاضي بدل رابط غلط
+      const msg = messageFor({ vars }, { template: tpl, footer: cfg.footer, host, slug: job.link_slug || "", code: x.link_code,
+        coupon: x.coupon, couponDays: job.offer?.validDays });
+      const final = job.link_slug ? msg : msg.replace(/\S*\/l\/(-\S*)?(?=\s|$)/g, "").replace(/[ 	]{2,}/g, " ");
+      const u = await pool.query("UPDATE wa_send_queue SET message=$2, vars=$3, edited_by=$4 WHERE id=$1 AND status='pending'", [x.id, final, J(vars), by]);
+      done += u.rowCount;
+    }
+    await pool.query("UPDATE wa_send_jobs SET template=$2 WHERE id=$1", [jobId, tpl]);
+    return c.json({ ok: true, updated: done, noVars });
+  }
+
   app.post("/api/cms/wa-sender/jobs/:id/:action", async (c) => {
     const err = await requireAdmin(c); if (err) return err;
     const id = Number(c.req.param("id")), action = c.req.param("action");
+    if (action === "retemplate") return retemplate(c, id);
     const to = { pause: "paused", resume: "running", cancel: "cancelled" }[action];
     if (!to) return bad(c, "bad_action", "أمر مش معروف");
     const r = await pool.query(
@@ -610,11 +682,15 @@ export function register(app, ctx, deps = {}) {
     const canSee = typeof ctx.canSeePhones === "function" ? await ctx.canSeePhones(c) : false;
     const r = await pool.query(
       `SELECT q.id, q.phone_norm, q.name, q.status, q.reason, q.attempts, q.sent_at, q.message, q.clicks, q.replied_at,
-              q.optout_at, q.media, q.note, q.coupon,
+              q.optout_at, q.media, q.note, q.coupon, q.edited_by,
               (SELECT w.text FROM wa_replies w WHERE w.phone_norm = q.phone_norm AND w.at >= q.sent_at
                 ORDER BY w.at DESC LIMIT 1) AS reply
          FROM wa_send_queue q WHERE q.job_id=$1
-        ORDER BY (q.status='pending'), (q.status='holdout'), q.sent_at DESC NULLS LAST, q.score DESC LIMIT 500`, [Number(c.req.param("id"))]);
+          AND ($2::text = '' OR q.name ILIKE '%' || $2 || '%' OR q.phone_norm LIKE '%' || $2)
+          AND ($3::text = '' OR q.status = $3)
+        ORDER BY (q.status='pending') DESC, (q.status='holdout'), q.sent_at DESC NULLS LAST, q.score DESC LIMIT 500`,
+      [Number(c.req.param("id")), String(c.req.query("q") || "").trim().replace(/[%_\\]/g, "").slice(0, 40),
+        ["pending", "sent", "failed", "skipped", "holdout"].includes(c.req.query("status")) ? c.req.query("status") : ""]);
     return c.json({ ok: true, items: r.rows.map((x) => ({ ...x, id: Number(x.id),
       phone_norm: canSee ? x.phone_norm : `${x.phone_norm.slice(0, 3)}••••${x.phone_norm.slice(-2)}` })) });
   });
