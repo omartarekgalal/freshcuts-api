@@ -55,7 +55,18 @@ export const smsRetryable = (e) => SMS_TRANSIENT.has((e && e.cause && e.cause.co
 /* ── Taqnyat SMS (the one place SMS leaves this API; notify.js will reuse) ── */
 /* kind/ref (اختياري) بيروحوا لسجل الرسايل الموحّد (smslog.js) — مين بعت إيه
    ولمين. التسجيل مابيأثرش على الإرسال خالص. */
+/* 📟 بوابة رسايل الإدارة (staffcontrol.js، ٢٦/٩): كل الـ١٢ مصدر اللي بيبعتوا
+   للإدارة بيعدّوا من هنا بـkind:"staff"، فالتحكم من اللوحة في مكان واحد.
+   fail-open: أي خطأ في البوابة ⇒ الرسالة تتبعت — تنبيه حرج مايتقفلش بباج. */
+let _staffGate = null;
+export function setStaffGate(fn) { _staffGate = typeof fn === "function" ? fn : null; }
+
 export async function sendSms({ phoneNorm, body, kind, ref }, opts = {}) {
+  if (kind === "staff" && _staffGate) {
+    let ok = true;
+    try { ok = (await _staffGate({ ref, phoneNorm })) !== false; } catch { ok = true; }
+    if (!ok) return { suppressed: true };
+  }
   try {
     const data = await sendSmsRaw({ phoneNorm, body }, opts);
     logSms({ phoneNorm, kind: kind || "other", sender: env("TAQNYAT_SENDER") || null, ref, body, status: "sent",
