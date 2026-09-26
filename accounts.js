@@ -329,6 +329,54 @@ export function recordUsedAddress(stored, raw, { now = new Date().toISOString() 
   }, { now }).list;
 }
 
+/* حذف بيانات عميل برقمه (DELETE /api/account/me). transaction واحدة لو الـpool
+   بيدعم connect — يا كله يتمسح يا مفيش حاجة. الجداول الاختيارية (app_installs
+   لسه مااتعملش) بتتفحص بـto_regclass عشان الحذف مايقعش على جدول مش موجود. */
+export const phoneHash = (pn) =>
+  crypto.createHash("sha256").update(`${pn}|${env("ACCOUNT_DELETE_SALT") || env("ADMIN_TOKEN", "del")}`).digest("hex");
+
+export async function deleteAccountData(pool, pn, { source = "web" } = {}) {
+  const client = typeof pool.connect === "function" ? await pool.connect() : pool;
+  const tx = client !== pool;
+  const n = (r) => (r && r.rowCount) || 0;
+  try {
+    if (tx) await client.query("BEGIN");
+    const has = async (t) => Boolean((await client.query("SELECT to_regclass($1) AS t", [t])).rows[0]?.t);
+    const out = {
+      sessions: n(await client.query("DELETE FROM acct_sessions WHERE phone_norm=$1", [pn])),
+      account: n(await client.query("DELETE FROM acct_customers WHERE phone_norm=$1", [pn])),
+      otp: n(await client.query("DELETE FROM acct_otp WHERE phone_norm=$1", [pn])),
+      pushSubs: (await has("push_subs"))
+        ? n(await client.query("UPDATE push_subs SET disabled=TRUE, phone_norm=NULL WHERE phone_norm=$1", [pn])) : 0,
+      carts: (await has("shop_carts"))
+        ? n(await client.query("DELETE FROM shop_carts WHERE phone_norm=$1", [pn])) : 0,
+      installs: (await has("app_installs"))
+        ? n(await client.query("UPDATE app_installs SET phone_norm=NULL WHERE phone_norm=$1", [pn])) : 0,
+    };
+    if (await has("cms_contacts")) {
+      await client.query(
+        `INSERT INTO cms_contacts(phone_norm, optout_code, opted_out_at, optout_source)
+         VALUES ($1, substr(md5(random()::text || $1 || clock_timestamp()::text), 1, 10), NOW(), 'account_delete')
+         ON CONFLICT (phone_norm) DO UPDATE SET
+           opted_out_at = COALESCE(cms_contacts.opted_out_at, NOW()),
+           optout_source = CASE WHEN cms_contacts.opted_out_at IS NULL THEN 'account_delete' ELSE cms_contacts.optout_source END`,
+        [pn]);
+      if (await has("cms_optout_log")) {
+        await client.query("INSERT INTO cms_optout_log(phone_norm, action, source) VALUES ($1,'optout','account_delete')", [pn]);
+      }
+    }
+    await client.query("INSERT INTO acct_deletions(phone_hash, source, counts) VALUES ($1,$2,$3)",
+      [phoneHash(pn), source, JSON.stringify(out)]);
+    if (tx) await client.query("COMMIT");
+    return out;
+  } catch (e) {
+    if (tx) await client.query("ROLLBACK").catch(() => {});
+    throw e;
+  } finally {
+    if (tx) client.release();
+  }
+}
+
 export function register(app, ctx, deps = {}) {
   const { pool, requireAdmin, getSettingsData, jb, normPhone, deliveryAppOf } = ctx;
   // posnames.js بيتسجّل بعدنا (محتاج tspartner)، فالربط متأخّر زي attribution/ads
@@ -367,6 +415,14 @@ export function register(app, ctx, deps = {}) {
         last_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
       );
       CREATE INDEX IF NOT EXISTS acct_sessions_phone_idx ON acct_sessions(phone_norm);
+      -- سجل الحذف من غير بيانات شخصية: بصمة الرقم + المصدر + عدد اللي اتمسح
+      CREATE TABLE IF NOT EXISTS acct_deletions (
+        id BIGSERIAL PRIMARY KEY,
+        phone_hash TEXT NOT NULL,
+        source TEXT NOT NULL,
+        counts JSONB,
+        requested_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
     `);
   }
   ensureSchema()
@@ -866,6 +922,34 @@ export function register(app, ctx, deps = {}) {
     const m = h.match(/^Bearer cust:([a-f0-9]{48,96})$/i);
     if (m) await pool.query("DELETE FROM acct_sessions WHERE token=$1", [m[1]]);
     return c.json({ ok: true });
+  });
+
+  /* ── حذف الحساب (٢٧/٩) ──
+     شرط Apple (5.1.1(v)) وGoogle Play: العميل يحذف حسابه بنفسه، من التطبيق
+     ومن صفحة ويب (freshcuts.sa/account/delete) من غير ما ينزّل التطبيق. نفس
+     المسار للاتنين: جلسة OTP عادية + كلمة «حذف» تأكيد.
+
+     بيتمسح: الحساب (الاسم والعناوين) والجلسات وكود الدخول والسلات المتروكة،
+     والإشعارات بتتقفل وتتفك من الرقم، والرقم بيتسجّل «موقوف» عن الرسايل
+     التسويقية (من غير كده أول حملة SMS كانت هترجع تكلّمه من دفتر الطلبات).
+     بيفضل: shop_orders — فواتير ومحاسبة واسترجاع، والسياسة بتقول كده صراحة.
+     سجل الحذف (acct_deletions) فيه بصمة الرقم بس، مش الرقم. */
+  app.delete("/api/account/me", async (c) => {
+    const acct = await customerOf(c);
+    if (!acct) return c.json({ ok: false, error: "unauthorized" }, 401);
+    let b = {};
+    try { b = await c.req.json(); } catch {}
+    if (String(b.confirm || "").trim() !== "حذف") return c.json({ ok: false, error: "confirm_required" }, 400);
+    const source = ["app_ios", "app_android", "web"].includes(b.source) ? b.source : "web";
+    const pn = acct.phone_norm;
+    // طلب لسه ماشي؟ نستنى لحد ما يوصل — المندوب والإشعارات محتاجين الرقم.
+    const active = await pool.query(
+      `SELECT order_no FROM shop_orders WHERE phone_norm=$1 AND created_at > NOW() - INTERVAL '12 hours'
+         AND status IN ('paid','paid_pos_failed','pos_created','accepted','courier_requested','courier_assigned','on_the_way','out_for_delivery')
+       LIMIT 1`, [pn]);
+    if (active.rowCount) return c.json({ ok: false, error: "active_order", orderNo: active.rows[0].order_no }, 409);
+    const deleted = await deleteAccountData(pool, pn, { source });
+    return c.json({ ok: true, deleted });
   });
 
   /* admin: the dashboard's customer-accounts list */
