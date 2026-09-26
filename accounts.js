@@ -22,6 +22,7 @@
 ═══════════════════════════════════════════════════════════════════════════ */
 
 import crypto from "node:crypto";
+import { renderTemplate } from "./smstemplates.js";
 import * as tabsense from "./tabsense.js";
 import { plausibleName, writableName } from "./posnames.js";
 import { logSms } from "./smslog.js";
@@ -491,8 +492,10 @@ export function register(app, ctx, deps = {}) {
         // بيتجاهل الرسالة تماماً وما بيملاش الرمز لوحده.
         const origin = env("STOREFRONT_PUBLIC_URL", "https://freshcuts.sa")
           .replace(/^https?:\/\//, "").replace(/\/$/, "");
-        await sendSms({ phoneNorm, kind: "otp",
-          body: `رمز الدخول لفريش كاتس: ${code}\nصالح ${OTP_TTL_MIN} دقائق.\n\n@${origin} #${code}` });
+        // ٢٦/٩: السطر الأول قابل للتعديل من «📱 رسايل SMS»؛ سطر WebOTP ثابت دايماً
+        const head = renderTemplate(settings, "account.otp", { code, minutes: OTP_TTL_MIN }).text
+          || `رمز الدخول لفريش كاتس: ${code}\nصالح ${OTP_TTL_MIN} دقائق.`;
+        await sendSms({ phoneNorm, kind: "otp", body: `${head}\n\n@${origin} #${code}` });
         _smsHour.n++; // اصرف من ميزانية الساعة بعد إرسال فعلي
         return c.json({ ok: true, sent: "sms" });
       } catch (e) {

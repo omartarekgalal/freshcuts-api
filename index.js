@@ -60,6 +60,8 @@ import * as smsblock from "./smsblock.js";
 import * as seostatus from "./seostatus.js";
 // 📟 التحكم في رسايل الإدارة (SMS) + تقريرها
 import * as staffcontrol from "./staffcontrol.js";
+import * as smstemplates from "./smstemplates.js";
+import { sendAdSms as smsSendAd } from "./smsrules.js";
 // 🔎 البحث الشامل في اللوحة (Ctrl+K) + 👁 قاعدة إظهار الجوال الكاملة
 import * as searchMod from "./search.js";
 import { makePhoneGate } from "./phones.js";
@@ -3167,6 +3169,8 @@ seostatus.register(app, moduleCtx);
 /* 📟 التحكم في رسايل الإدارة + تقريرها — البوابة بتتركّب على accounts.sendSms
    فبتغطي كل المصادر (shop، courierops، checkoutwatch، adconnect، adsreport…) */
 accounts.setStaffGate(staffcontrol.register(app, moduleCtx).gate);
+// 📱 26/9: every customer SMS template editable from the dashboard
+smstemplates.register(app, moduleCtx, { sendSms: (m) => accounts.sendSms(m), sendAdSms: smsSendAd });
 /* 👁 قاعدة واحدة لإظهار جوال العميل كامل في اللوحة (phones.js): المالك دايماً،
    وعضو الفريق لو دوره عنده «عرض» على قسم العملاء. بتتحط على moduleCtx بعد ما
    الـCMS يتسجّل، والموديولات بتناديها وقت الطلب (ctx.canSeePhones) مش وقت التسجيل. */

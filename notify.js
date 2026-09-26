@@ -26,6 +26,7 @@
 import webpush from "web-push";
 import { sendSms } from "./accounts.js";
 import { emitOrder } from "./order-events.js";
+import { renderTemplate } from "./smstemplates.js";
 
 const env = (k, d) => (process.env[k] || d || "").toString().trim();
 const trackHost = () => env("STOREFRONT_PUBLIC_URL", "https://freshcuts.sa").replace(/^https?:\/\//, "").replace(/\/+$/, "");
@@ -60,6 +61,15 @@ export const smsStagesOf = (cfg = {}) => {
   return [...new Set([...base, ...MANDATORY_SMS_STAGES])];
 };
 export const statusSmsText = (status, order) => (MESSAGES[status] ? MESSAGES[status](order) : null);
+/* ٢٦/٩ — النص من «📱 رسايل SMS» في اللوحة لو المالك عدّله، وإلا MESSAGES
+   زي ما هي (بمنطقها الخاص، زي شيل الإيموجي في on_the_way). */
+export function statusTextFor(status, order, settings) {
+  if (!MESSAGES[status]) return null;
+  const r = renderTemplate(settings || {}, `order.${status}`, {
+    order_no: order.order_no, track_url: `${trackHost()}/track/${order.order_no}`,
+    review_url: env("GOOGLE_REVIEW_URL", "https://g.page/r/CSG0gPAqlvHMEBM/review") });
+  return r.custom && r.text ? r.text : MESSAGES[status](order);
+}
 
 const rl = new Map();
 function rateLimited(ip, max = 60) {
@@ -330,9 +340,8 @@ export function register(app, ctx, deps = {}) {
       "SELECT order_no, phone_norm, option, total FROM shop_orders WHERE order_no=$1", [orderNo]);
     const order = r.rows[0];
     if (!order) return;
-    const text = make(order);
-    let cfg;
-    try { cfg = (await getSettingsData()).notifications || {}; }
+    let cfg, text;
+    try { const all = await getSettingsData(); cfg = all.notifications || {}; text = statusTextFor(status, order, all); }
     catch (e) {
       emitNotify(orderNo, status, "none", false, { reason: "settings_failed" });
       throw e;
@@ -564,7 +573,8 @@ export function register(app, ctx, deps = {}) {
      ?orderNo= بياخد رقم طلب حقيقي، غير كده رقم تجريبي بطول رقم الطلب الحالي. */
   app.get("/api/notify/sms-preview", async (c) => {
     const err = await requireAdmin(c); if (err) return err;
-    const cfg = (await getSettingsData()).notifications || {};
+    const allS = await getSettingsData();
+    const cfg = allS.notifications || {};
     let order = null;
     const no = String(c.req.query("orderNo") || "").slice(0, 30);
     if (no) order = (await pool.query("SELECT order_no, phone_norm, option, total FROM shop_orders WHERE order_no=$1", [no])).rows[0] || null;
@@ -577,7 +587,7 @@ export function register(app, ctx, deps = {}) {
     return c.json({
       ok: true, smsEnabled: cfg.smsEnabled === true, sender: env("TAQNYAT_SENDER") || null, stages,
       preview: Object.keys(MESSAGES).map((st) => {
-        const text = MESSAGES[st](order);
+        const text = statusTextFor(st, order, allS);
         return { stage: st, willSms: cfg.smsEnabled === true && stages.includes(st), text, chars: text.length, parts: smsParts(text) };
       }),
     });

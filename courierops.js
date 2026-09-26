@@ -29,6 +29,7 @@
 ═══════════════════════════════════════════════════════════════════════════ */
 
 import { STORE_LAT, STORE_LNG } from "./tsstore.js";
+import { renderTemplate } from "./smstemplates.js";
 import { districtOfRow, districtCfg, districtCutoff, districtRouting, leajlakCostFor } from "./districts.js";
 import { cacheKey } from "./drivedist.js";
 import { PROVIDERS, API_PROVIDER_IDS, routeCourier } from "./couriers.js";
@@ -407,6 +408,11 @@ export const CUSTOMER_TEXT = Object.freeze({
   external: (no) => `فريش كاتس: رتّبنا مندوب بديل لطلبك ${no} 🛵`,
   switched: (no) => `فريش كاتس: بنرتّب مندوب لطلبك ${no} - نعتذر عن التأخير`,
 });
+/* ٢٦/٩ — لو المالك عدّل النص من «📱 رسايل SMS» */
+export function customerText(settings, kind, orderNo) {
+  const r = renderTemplate(settings || {}, `courier.${kind}`, { order_no: orderNo });
+  return r.custom && r.text ? r.text : CUSTOMER_TEXT[kind](orderNo);
+}
 
 /* ── التقرير: CSV بنفس ترتيب الشاشة ─────────────────────────────────────── */
 const csvCell = (v) => {
@@ -945,7 +951,7 @@ export function register(app, ctx, deps = {}) {
       const r = await pool.query("SELECT phone_norm, is_test FROM shop_orders WHERE order_no=$1", [orderNo]);
       const o = r.rows[0];
       if (!o || !/^5\d{8}$/.test(o.phone_norm || "")) return false;
-      const ok = await n.sendSmsTo(o.phone_norm, CUSTOMER_TEXT[kind](orderNo), { kind: "order_status", ref: `${orderNo}:courier_${kind}` });
+      const ok = await n.sendSmsTo(o.phone_norm, customerText(await getSettingsData().catch(() => ({})), kind, orderNo), { kind: "order_status", ref: `${orderNo}:courier_${kind}` });
       try { emit("notify_sent", { orderNo, source: "notify", channel: "sms", ok: Boolean(ok), data: { stage: `courier_${kind}`, channel: "sms", ok: Boolean(ok) } }); } catch {}
       return ok;
     } catch (e) {
