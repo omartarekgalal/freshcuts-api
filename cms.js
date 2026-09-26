@@ -2382,20 +2382,26 @@ export function register(app, ctx, deps = {}) {
 
   /* تاريخ الرسايل التسويقية لكل رقم: آخر واحدة كام يوم، وكام في آخر ٧ و٣٠.
      استعلام واحد بيغذّي الفاصل المتدرّج والسقوف (smsrules.gapReason). */
-  async function messageHistory(phones) {
-    if (!phones.length) return new Map();
-    const r = await pool.query(
-      `WITH m AS (
+  /* ٢٦/٩: + رسايل واتساب (wa_contact_log: الآلي من wasender.js واليدوي) — العميل
+     مايتضربش واتساب وSMS في نفس الفاصل. الجدول ناقص (قاعدة جديدة) = الاستعلام القديم. */
+  const HISTORY_SQL = (withWa) => `WITH m AS (
          SELECT phone_norm, created_at AS at FROM cms_campaign_sends
           WHERE phone_norm = ANY($1) AND status = 'sent' AND created_at > NOW() - INTERVAL '60 days'
          UNION ALL
          SELECT phone_norm, sent_at AS at FROM cms_flow_log
-          WHERE phone_norm = ANY($1) AND sent_at > NOW() - INTERVAL '60 days')
+          WHERE phone_norm = ANY($1) AND sent_at > NOW() - INTERVAL '60 days'
+         ${withWa ? `UNION ALL
+         SELECT phone_norm, at FROM wa_contact_log
+          WHERE phone_norm = ANY($1) AND at > NOW() - INTERVAL '60 days'` : ""})
        SELECT phone_norm,
               EXTRACT(EPOCH FROM (NOW() - max(at))) / 86400 AS days,
               count(*) FILTER (WHERE at > NOW() - INTERVAL '7 days')::int AS in7,
               count(*) FILTER (WHERE at > NOW() - INTERVAL '30 days')::int AS in30
-         FROM m GROUP BY phone_norm`, [phones]);
+         FROM m GROUP BY phone_norm`;
+  async function messageHistory(phones) {
+    if (!phones.length) return new Map();
+    const r = await pool.query(HISTORY_SQL(true), [phones])
+      .catch((e) => (e && e.code === "42P01" ? pool.query(HISTORY_SQL(false), [phones]) : Promise.reject(e)));
     return new Map(r.rows.map((x) => [x.phone_norm, { days: Number(x.days), in7: x.in7, in30: x.in30 }]));
   }
 
@@ -3160,15 +3166,29 @@ export function register(app, ctx, deps = {}) {
       gapLapsedDays: Math.max(floor, g.gapLapsedDays), gapColdDays: Math.max(floor, g.gapColdDays) };
     const history = await messageHistory(entrants.map((x) => x.pn));
     let targets = entrants.filter((x) => !smsRules.gapReason(x, history.get(x.pn), flowGap));
-    if (flow.channel === "push") targets = targets.filter((x) => x.push);
-    else {
+    const staff = smsRules.staffPhoneSet(await getSettingsData());
+    if (flow.channel === "push") {
+      /* ٢٦/٩: الإشعار كان بيعدّي من غير إيقاف ولا استبعاد الفريق (نفس ثغرة
+         الحملات اللي اتقفلت ٢١/٩). الإيقاف صريح ومابيتفرّقش حسب القناة. */
+      targets = targets.filter((x) => x.push);
+      const codes = await optoutCodes(targets.map((x) => x.pn));
+      targets = targets.filter((x) => !staff.has(x.pn) && !codes.get(x.pn)?.opted_out_at);
+    } else {
       if (cfg.smsEnabled !== true) return;
+      // نفس فرملة الإيقاف بتاعة الحملات: لو اتشدّت، الأتمتة كمان بتقف
+      if (cfg.brake) return;
       const codes = await optoutCodes(targets.map((x) => x.pn));
       const optedOut = new Set(targets.filter((x) => codes.get(x.pn)?.opted_out_at).map((x) => x.pn));
-      targets = smsRules.filterAudience(targets, { staff: smsRules.staffPhoneSet(await getSettingsData()), optedOut }).list
+      // حاجبين الإعلانات: FreshCut-AD مابيوصلهمش — مانتحاسبش على رسالة ماتوصلش
+      const smsBlock = typeof deps.smsBlock === "function" ? deps.smsBlock() : null;
+      const adBlocked = smsBlock ? await smsBlock.blockedSet(targets.map((x) => x.pn)).catch(() => new Set()) : new Set();
+      targets = smsRules.filterAudience(targets, { staff, optedOut, adBlocked }).list
         .map((x) => ({ ...x, code: codes.get(x.pn)?.optout_code }));
       const room = Math.max(0, Number(cfg.dailySmsCap || 0) - (await smsToday()));
       targets = targets.slice(0, Math.floor(room / 2));
+      // سقف الميزانية (نفس تقدير الحملات: جزئين × ٠٫٠٧٥ ر.س)
+      const left = await budgetLeft(cfg);
+      if (Number.isFinite(left)) targets = targets.slice(0, Math.max(0, Math.floor(left / (2 * 0.075))));
     }
     targets = targets.slice(0, FLOW_RUN_CAP);
     let sent = 0;

@@ -324,6 +324,8 @@ export function register(app, ctx, deps = {}) {
 
   async function sendStep(row, step, cfg, s, flow) {
     const pn = row.phone_norm;
+    // ٢٦/٩: أرقام الفريق (إنذارات/طلبات جديدة/استبعاد الحملات) مالهاش رسالة تسويق — ولا حتى إشعار
+    if (smsRules.staffPhoneSet(s).has(pn)) return { channel: null, reason: "staff" };
     const eligibleFirst = cfg.autoFirst !== false && (await firstEligible(pn));
     const link = `${storeHost()}/c/${flow.code}`;
     // خطوة ١: الإشعار ببلاش — لو مشترك ناخده بدل الـSMS
@@ -335,6 +337,10 @@ export function register(app, ctx, deps = {}) {
     if (cfg.smsEnabled !== true) return { channel: null, reason: "sms_disabled" };
     const oc = await optout(pn);
     if (oc.opted_out_at) return { channel: null, reason: "opted_out" };
+    /* حاجب الإعلانات عند المشغّل: FreshCut-AD مابيوصلوش أصلاً (smsblock.js) —
+       بنتحاسب على رسالة ماتوصلش. الإشعار فوق عدّى عادي. */
+    const blocked = await pool.query("SELECT 1 FROM sms_ad_blocked WHERE phone_norm=$1", [pn]).then((r) => r.rowCount > 0).catch(() => false);
+    if (blocked) return { channel: null, reason: "ad_blocked" };
     const body = cartSmsBody(step, eligibleFirst, link,
       { cfg: (s.cms || {}).campaigns, code: oc.optout_code, host: storeHost(), sender: process.env.TAQNYAT_SENDER_AD }, s);
     const parts = smsRules.smsParts(body);
