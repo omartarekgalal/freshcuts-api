@@ -55,3 +55,72 @@ test("سطر آخر الرسالة", () => {
   assert.equal(withFooter("أهلاً", ""), "أهلاً");
   assert.equal(withFooter("أهلاً", "للإيقاف ردّ: إيقاف"), "أهلاً\n\nللإيقاف ردّ: إيقاف");
 });
+
+/* ── مرحلة ٠ (٢٦/٩): نص لكل حملة + رابط متتبّع + holdout + صورة + كوبون ── */
+import { jobInput, messageFor, imageUrlOk, newLinkCode, newCouponCode, DEFAULTS, SLUG_RE } from "./wasender.js";
+
+const HOSTS = ["freshcuts-api.o2m8.me", "freshcuts.sa"];
+
+test("سطر الإيقاف الافتراضي (قرار عمر)", () => {
+  assert.equal(DEFAULTS.footer, "لو ما تبي رسايلنا ردّ بكلمة: إيقاف");
+  assert.equal(senderCfg({}).footer, DEFAULTS.footer);
+  assert.equal(senderCfg({ waSender: { footer: "" } }).footer, "", "المالك يقدر يشيله");
+});
+
+test("حملة: النص لازم فيه {name}، والفاضي = القالب العام", () => {
+  assert.deepEqual(jobInput({}).errs, []);
+  assert.equal(jobInput({ template: "أهلاً" }).errs[0][0], "name_required");
+  assert.equal(jobInput({ template: "هلا {name} {lnk}" }).errs[0][0], "unknown_var");
+  assert.deepEqual(jobInput({ template: "هلا {name} {link}" }).errs, []);
+});
+
+test("حملة: الرابط والهدف والكوبون", () => {
+  const a = jobInput({ link: { slug: "WA-Sept", target_type: "offer", target_id: "nd96_box", coupon: "first" } });
+  assert.deepEqual(a.link, { slug: "wa-sept", target_type: "offer", target_id: "nd96_box", coupon: "FIRST" });
+  assert.equal(jobInput({ link: { target_type: "offer" } }).errs[0][0], "target_missing");
+  assert.equal(jobInput({ link: { slug: "بالعربي" } }).errs[0][0], "bad_slug");
+  assert.equal(jobInput({ link: { target_type: "weird" } }).link.target_type, "home");
+  assert.ok(SLUG_RE.test("w12") && !SLUG_RE.test("-w12") && !SLUG_RE.test("w12-"));
+});
+
+test("حملة: holdout بين ٠ و٥٠٪", () => {
+  assert.equal(jobInput({ holdoutPct: 10 }).holdoutPct, 10);
+  assert.equal(jobInput({ holdoutPct: 90 }).holdoutPct, 50);
+  assert.equal(jobInput({ holdoutPct: -3 }).holdoutPct, 0);
+  assert.equal(jobInput({}).holdoutPct, 0);
+});
+
+test("حملة: الصورة من دوميناتنا بس وhttps", () => {
+  assert.equal(imageUrlOk("https://freshcuts-api.o2m8.me/api/content/media/md_1.jpg", HOSTS), true);
+  assert.equal(imageUrlOk("http://freshcuts-api.o2m8.me/x.jpg", HOSTS), false);
+  assert.equal(imageUrlOk("https://evil.example/x.jpg", HOSTS), false);
+  assert.equal(imageUrlOk("javascript:alert(1)", HOSTS), false);
+  assert.equal(jobInput({ imageUrl: "https://evil.example/x.jpg" }, { hosts: HOSTS }).errs[0][0], "bad_image");
+  assert.deepEqual(jobInput({ imageUrl: "https://freshcuts.sa/a.png" }, { hosts: HOSTS }).errs, []);
+});
+
+test("حملة: كوبون مرة واحدة", () => {
+  const o = jobInput({ offer: { oneTime: true, freeDelivery: true, validDays: 99 } });
+  assert.deepEqual(o.errs, []);
+  assert.equal(o.offer.validDays, 30);
+  assert.equal(jobInput({ offer: { oneTime: true } }).errs[0][0], "offer_empty");
+  assert.equal(jobInput({ offer: { oneTime: true, percent: 10 }, link: { coupon: "FIRST" } }).errs[0][0], "two_coupons");
+  assert.equal(jobInput({ offer: { oneTime: false, percent: 10 } }).offer, null);
+  assert.match(newCouponCode(12), /^W12[A-HJ-NP-Z2-9]{5}$/);
+  assert.match(newLinkCode(), /^[a-z0-9]{6}$/);
+});
+
+test("الرسالة لكل مستلم: متغيراته + رابطه + كوبونه + سطر الإيقاف", () => {
+  const row = { vars: { name: "محمد", fav_dish: "كريب ستربس" }, message: "القديمة" };
+  const m = messageFor(row, { template: "هلا {name}، {fav_dish} بانتظارك: {link} كوبونك {coupon} ({coupon_days} أيام)",
+    footer: "لو ما تبي رسايلنا ردّ بكلمة: إيقاف", host: "https://freshcuts.sa", slug: "w12", code: "abc123", coupon: "W12ABCDE", couponDays: 7 });
+  assert.equal(m, "هلا محمد، كريب ستربس بانتظارك: freshcuts.sa/l/w12-abc123 كوبونك W12ABCDE (7 أيام)\n\nلو ما تبي رسايلنا ردّ بكلمة: إيقاف");
+  assert.equal(messageFor(row, { template: "", footer: "", host: "freshcuts.sa", slug: "w1", code: "x" }), "القديمة");
+});
+
+test("التجميع التدريجي في الإيقاع", () => {
+  const cfg = on({ dailyCap: 40, warmup: { enabled: true, startedAt: new Date(AT_17 - 2 * 86400e3).toISOString(), from: 10, step: 5 } });
+  assert.equal(pacing(cfg, { ...idle, today: 20 }, AT_17).reason, "warmup_cap");
+  assert.equal(pacing(cfg, { ...idle, today: 19 }, AT_17).wait, 0);
+  assert.equal(senderCfg({}).warmup.enabled, false);
+});

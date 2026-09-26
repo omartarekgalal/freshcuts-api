@@ -114,3 +114,9 @@ test("dashboard SMS opt-out + courier report map to customers / orders", () => {
   assert.equal(sectionOf("/api/content/posts/cp_1/pause"), "growth");
   assert.equal(sectionOf("/api/content/queue"), "growth");
 });
+
+test("مُرسل واتساب تحت «العملاء» مش «الإعدادات» (٢٦/٩)", () => {
+  assert.equal(sectionOf("/api/cms/wa-sender"), "customers");
+  assert.equal(sectionOf("/api/cms/wa-sender/jobs/3/results"), "customers");
+  assert.equal(sectionOf("/api/cms/outreach"), "customers");
+});

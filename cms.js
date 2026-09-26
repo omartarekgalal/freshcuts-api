@@ -29,6 +29,7 @@ import { promisify } from "node:util";
 import { IDENT_SQL, SALES_ONLY, deliverySql, WEBSITE_SQL } from "./analytics.js";
 import { FIRST_ORDER_CTE } from "./identity.js";
 import { logSms } from "./smslog.js";
+import { parseRecipientSlug } from "./wamsg.js";
 // نفس قواعد الـSLA بتاعة الـwatchdog — لوحة التشغيل مابتكتبش كتاب قواعد تاني
 import { slaCheck, DEFAULT_SLA } from "./shop.js";
 import { dispatchDelayOf, canAutoDispatch } from "./delivery.js";
@@ -109,7 +110,8 @@ const PATH_SECTIONS = [
   // sms-optout = قايمة «مش عايز رسايل» (نفس دوال البوابة، portal.js)
   // outreach = «واتساب يدوي»، sms/blocked = «حاجبين الإعلانات» (٢٦/٩) — كانوا
   // بيقعوا على «الإعدادات» فأي دور غير المالك كان بياخد 403 في شاشات العملاء.
-  [/^\/api\/cms\/(customers|segments|loyalty|campaigns|app-conversion|flows|reviews|sms-optout|outreach)/, "customers"],
+  // wa-sender = «الإرسال الآلي» جوّه «واتساب يدوي» (wasender.js، ٢٦/٩)
+  [/^\/api\/cms\/(customers|segments|loyalty|campaigns|app-conversion|flows|reviews|sms-optout|outreach|wa-sender)/, "customers"],
   [/^\/api\/sms\/blocked/, "customers"],
   [/^\/api\/cms\/(analytics|exec)/, "analytics"],
   [/^\/api\/cms\/(ops|sla)/, "orders"],
@@ -1954,14 +1956,35 @@ export function register(app, ctx, deps = {}) {
         `UPDATE cms_links SET clicks = clicks + 1, last_click_at = NOW()
           WHERE slug=$1 AND active RETURNING *`, [slug])
       : await pool.query(`SELECT * FROM cms_links WHERE slug=$1 AND active`, [slug]);
-    const l = r.rows[0];
+    let l = r.rows[0];
+    /* رابط لكل عميل من حملة واتساب (wasender.js): /l/<slug>-<code>. الضغطة
+       بتتعد على رابط الحملة + على العميل نفسه، وكوبونه الشخصي (مرة واحدة)
+       بيتحط بدل كوبون الرابط. utm_content = الرابط الشخصي. */
+    let rcp = null;
+    if (!l) {
+      const p = parseRecipientSlug(slug);
+      const q = p ? (await pool.query(
+        `SELECT q.id, q.coupon FROM wa_send_queue q JOIN wa_send_jobs j ON j.id = q.job_id
+          WHERE q.link_code=$1 AND j.link_slug=$2 LIMIT 1`, [p.code, p.base]).catch(() => ({ rows: [] }))).rows[0] : null;
+      if (q) {
+        const r2 = count
+          ? await pool.query(`UPDATE cms_links SET clicks = clicks + 1, last_click_at = NOW() WHERE slug=$1 AND active RETURNING *`, [p.base])
+          : await pool.query(`SELECT * FROM cms_links WHERE slug=$1 AND active`, [p.base]);
+        l = r2.rows[0];
+        if (l) {
+          rcp = { slug, coupon: q.coupon };
+          if (count) await pool.query("UPDATE wa_send_queue SET clicks = clicks + 1, clicked_at = COALESCE(clicked_at, NOW()) WHERE id=$1", [q.id]).catch(() => {});
+        }
+      }
+    }
     if (!l) return c.json({ ok: false }, 404);
     const q = new URLSearchParams();
     q.set("utm_source", l.utm_source || "other");
     q.set("utm_medium", l.utm_medium || "paid");
     if (l.utm_campaign) q.set("utm_campaign", l.utm_campaign);
-    q.set("utm_content", l.slug);
-    if (l.coupon) q.set("c", l.coupon);
+    q.set("utm_content", rcp ? rcp.slug : l.slug);
+    const cpn = (rcp && rcp.coupon) || l.coupon;
+    if (cpn) q.set("c", cpn);
     if (l.target_type === "collection" && l.target_id) q.set("col", l.target_id);
     if (l.target_type === "product" && l.target_id) q.set("p", l.target_id);
     // عرض: ?go=offers&offer=<id> — المتجر بيفتح منتقي العرض على طول (مسار ٠١)
@@ -3381,5 +3404,13 @@ export function register(app, ctx, deps = {}) {
   console.log("[cms] routes ready");
   // `expand` بيتصدّر عشان الـcheckout في shop.js يوسّع الباقة بنفس القواعد
   // بالظبط اللي المتجر عرضها — مفيش نسخة تانية من التسعير في أي مكان.
-  return { sectionOf, effectivePerms, sessionUser, whoami, expandBundle: expand, getBundle, offersPagePayload };
+  /* شرايح لوحة المتجر لمُرسل واتساب (wasender: audience = «segment:<id>») */
+  const segmentList = () => SEGMENTS.map(pub);
+  async function segmentPhones(id) {
+    const seg = segById[id];
+    if (!seg) return null;
+    return (await customerRows()).filter(seg.test).map((x) => x.pn);
+  }
+  return { sectionOf, effectivePerms, sessionUser, whoami, expandBundle: expand, getBundle, offersPagePayload,
+    segmentList, segmentPhones };
 }

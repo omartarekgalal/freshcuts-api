@@ -3169,7 +3169,7 @@ const c360Api = customer360.register(app, moduleCtx, { whoami: (c) => cmsApi.who
    بتعيد استخدام QUICK_STATS_SQL بتاعته، وبعد الـCMS عشان canSeePhones. */
 const outreachApi = outreach.register(app, moduleCtx);
 // 26/9: WhatsApp Web auto-sender (Chrome extension pulls one message at a time)
-wasender.register(app, moduleCtx, { outreach: outreachApi, sessionUser: cmsApi.sessionUser });
+wasender.register(app, moduleCtx, { outreach: outreachApi, sessionUser: cmsApi.sessionUser, cms: () => cmsApi });
 /* 🔎 حالة الـSEO — مصدر واحد تقراه شاشة «جوجل والبحث» وتكتب فيه جلسة الـSEO */
 seostatus.register(app, moduleCtx);
 /* 📟 التحكم في رسايل الإدارة + تقريرها — البوابة بتتركّب على accounts.sendSms

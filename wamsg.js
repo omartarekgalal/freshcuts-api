@@ -137,8 +137,9 @@ export function favDish(hist, now = Date.now()) {
   }
   let dish = "", best = 0;
   for (const [k, v] of score) if (v > best + 1e-9) { dish = k; best = v; }
-  let group = null, gb = 0;
-  for (const [k, v] of Object.entries(groups)) if (v > gb + 1e-9) { group = k; gb = v; }
+  // مجموعة الطبق المفضّل نفسه لو ليه — غير كده «حواوشي … (مشاوي)» في نفس الجملة
+  let group = dish ? foodGroup(dish) : null, gb = 0;
+  if (!group) for (const [k, v] of Object.entries(groups)) if (v > gb + 1e-9) { group = k; gb = v; }
   return { dish, group, groupLabel: group ? (foodGroupOf(group)?.label || "") : "" };
 }
 

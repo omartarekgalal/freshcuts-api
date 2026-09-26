@@ -170,3 +170,9 @@ test("ملخص النتيجة: التحويل مقابل المحجوز والط
   const noHold = summarizeResults({ sentN: 10, holdN: 0, sentOrders: [], holdOrders: [] });
   assert.equal(noHold.incremental, null); assert.equal(noHold.liftPts, null);
 });
+
+test("fav_group = مجموعة الطبق المفضّل نفسه (مش مجموعة تانية في نفس الجملة)", () => {
+  const f = favDish([{ at: ago(1), names: "حواوشي كيري بسطرمة" }, { at: ago(20), names: "وجبة ميكس جريل" }, { at: ago(25), names: "وجبة كفتة" }], NOW);
+  assert.equal(f.dish, "حواوشي كيري بسطرمة");
+  assert.equal(f.groupLabel, "حواوشي");
+});
