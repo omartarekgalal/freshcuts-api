@@ -162,6 +162,26 @@ export function aggregate(rows, suppressedRows, days, now = Date.now()) {
   };
 }
 
+/* رد التقرير — منفصل عشان يتختبر. ٢٦/٩: `...agg` كان بعد `phones` فكان
+   بيكتب فوقها بنسخة من غير الأسامي (اتمسك في اختبار الشاشة محلياً). */
+export function reportPayload({ agg, settings, days, logSince = null }) {
+  const cfg = controlCfg(settings);
+  const d = (settings && settings.delivery) || {};
+  const known = new Set([...staffPhones(d.alertPhones), ...staffPhones(d.newOrderPhones), ...agg.phones.map((p) => p.pn)]);
+  known.delete("?");
+  return {
+    ok: true, days, logSince,
+    ...agg,
+    catalogue: ALERT_TYPES,
+    cfg,
+    recipients: {
+      alertPhones: staffPhones(d.alertPhones), newOrderPhones: staffPhones(d.newOrderPhones),
+      newOrderSms: d.newOrderSms !== false,
+    },
+    phones: [...known].map((pn) => ({ pn, name: cfg.phoneNames[pn] || null, n: agg.phones.find((p) => p.pn === pn)?.n || 0 })),
+  };
+}
+
 export function register(app, ctx) {
   const { pool, requireAdmin, getSettingsData } = ctx;
   const log = ctx.log || console;
@@ -199,22 +219,7 @@ export function register(app, ctx) {
       `SELECT type, sum(n)::int n FROM staff_alert_suppressed
         WHERE day > (NOW() AT TIME ZONE 'Asia/Riyadh')::date - $1::int GROUP BY 1`, [days])).rows;
     const first = (await pool.query(`SELECT min(at) f FROM sms_log WHERE kind='staff'`)).rows[0]?.f || null;
-    const agg = aggregate(rows, sup, days);
-    const cfg = controlCfg(s);
-    const d = s.delivery || {};
-    const known = new Set([...staffPhones(d.alertPhones), ...staffPhones(d.newOrderPhones), ...agg.phones.map((p) => p.pn)]);
-    known.delete("?");
-    return c.json({
-      ok: true, days, logSince: first,
-      catalogue: ALERT_TYPES,
-      cfg,
-      recipients: {
-        alertPhones: staffPhones(d.alertPhones), newOrderPhones: staffPhones(d.newOrderPhones),
-        newOrderSms: d.newOrderSms !== false,
-      },
-      phones: [...known].map((pn) => ({ pn, name: cfg.phoneNames[pn] || null, n: agg.phones.find((p) => p.pn === pn)?.n || 0 })),
-      ...agg,
-    });
+    return c.json(reportPayload({ agg: aggregate(rows, sup, days), settings: s, days, logSince: first }));
   });
 
   /* بيدمج: types[id] بيتبدّل كله للنوع اللي اتبعت بس، والباقي زي ما هو. */

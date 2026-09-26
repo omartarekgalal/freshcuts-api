@@ -1,7 +1,7 @@
 // node --test staffcontrol.test.mjs
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { ALERT_TYPES, typeOfRef, controlCfg, allowStaff, aggregate } from "./staffcontrol.js";
+import { ALERT_TYPES, typeOfRef, controlCfg, allowStaff, aggregate, reportPayload } from "./staffcontrol.js";
 import { setStaffGate, sendSms } from "./accounts.js";
 import { makeStaffNotifier } from "./staffalerts.js";
 
@@ -89,4 +89,15 @@ test("التقرير: تجميع بالنوع والكود والرقم والي
   assert.equal(a.daily.length, 2);
   assert.equal(a.totals.spanDays, 2);
   assert.equal(a.totals.monthly, Math.round((0.2295 / 2) * 30 * 100) / 100);
+});
+
+test("رد التقرير: أسامي الأرقام مابتتمسحش (باج ٢٦/٩)", () => {
+  const agg = aggregate([{ at: "2026-09-25T10:00:00Z", phone_norm: MANAGER, ref: "new-order W2", parts: 1, cost: 0.0765 }], [], 7);
+  const r = reportPayload({ agg, days: 7, settings: {
+    delivery: { alertPhones: [`0${OWNER}`, `0${MANAGER}`], newOrderPhones: [`0${MANAGER}`] },
+    staffAlerts: { phoneNames: { [OWNER]: "عمر (المالك)", [MANAGER]: "مدير الفرع" } } } });
+  assert.deepEqual(r.phones.find((p) => p.pn === MANAGER), { pn: MANAGER, name: "مدير الفرع", n: 1 });
+  assert.deepEqual(r.phones.find((p) => p.pn === OWNER), { pn: OWNER, name: "عمر (المالك)", n: 0 });  // رقم مابيستلمش لسه بيظهر
+  assert.equal(r.totals.n, 1);
+  assert.ok(Array.isArray(r.catalogue) && r.catalogue.length >= 12);
 });
