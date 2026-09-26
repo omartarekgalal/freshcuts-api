@@ -23,6 +23,7 @@
    الموقع قبل كده ولا لأ. مش ترتيب أبجدي ولا عشوائي.
 ═══════════════════════════════════════════════════════════════════════════ */
 import { QUICK_STATS_SQL } from "./customer360.js";
+import { agoSa, itemsPhraseSa, favDish, renderTemplate } from "./wamsg.js";
 
 /* شرايح التواصل — كل واحدة بتجاوب على سؤال مختلف */
 export const AUDIENCES = {
@@ -46,10 +47,10 @@ export const AUDIENCES = {
    والمالك يقدر يعدّلها من الإعدادات (`settings.outreach.template`).
    المتغيرات: {name} {last_items} {last_when} {site} */
 export const DEFAULT_TEMPLATE =
-  "أهلاً {name} 👋\n" +
-  "معاك فريش كاتس. آخر مرة طلبت {last_items} ({last_when}) — عاملين إيه؟\n" +
-  "حبينا نقولك إن الطلب من موقعنا بقى أسهل وبيوصلك أسرع: {site}\n" +
-  "أي طلب خاص قولنا وإحنا نظبطه 🙏";
+  "هلا {name} 👋\n" +
+  "معك فريش كاتس. آخر طلب لك كان {last_items} ({last_when}) — كيف كان؟\n" +
+  "صار الطلب من موقعنا أسهل ويوصلك أسرع: {site}\n" +
+  "ولو تبي أي طلب خاص قل لنا ونرتّبه لك 🙏";
 
 const nz = (v) => (v == null ? "" : String(v));
 
@@ -67,14 +68,12 @@ export function agoAr(iso, now = Date.now()) {
   return `من ${Math.round(d / 30)} شهور`;
 }
 
-/* أصناف آخر طلب في جملة قصيرة — صنفين وبعدين «و٣ أصناف تانية».
+/* أصناف آخر طلب في جملة قصيرة — صنفين وبعدين «وغيرها» (نص العميل سعودي،
+   قرار عمر ٢٦/٩). الأطباق الأول: المية/البيبسي/الرز/الإضافات مابتتكتبش
+   لو فيه طبق، وأسماء نقطة البيع بتتنضّف («بالوزن - ثلث كيلو» → «ثلث كيلو»).
    القايمة الطويلة في رسالة واتساب بتبان زي الإعلان الآلي. */
 export function itemsPhrase(names, max = 2) {
-  const list = (names || []).map((x) => nz(x).trim()).filter(Boolean);
-  if (!list.length) return "";
-  if (list.length <= max) return list.join(" و");
-  const rest = list.length - max;
-  return `${list.slice(0, max).join(" و")} و${rest} ${rest === 1 ? "صنف" : "أصناف"} تانية`;
+  return itemsPhraseSa(names, max);
 }
 
 export function renderMessage(tpl, vars) {
@@ -177,8 +176,12 @@ export function register(app, ctx, deps = {}) {
 
   /* الشريحة كلها بالرسالة الجاهزة لكل عميل — الشاشة اليدوية والإرسال الآلي
      (wasender.js) بيستخدموا نفس الدالة، فالفلاتر والنص واحد. */
-  async function audienceRows(aud, { canSee = false, C: Cin = null, minLastOrder = 0 } = {}) {
+  /* aud = شريحة من AUDIENCES، أو «segment:<id>» (شرايح لوحة المتجر، cms.js) —
+     وقتها segmentPhones = Set أرقام الشريحة، والقاعدة هنا بتدّي الرسالة بس.
+     template = نص حملة واتساب بعينها (wasender) بدل القالب العام. */
+  async function audienceRows(aud, { canSee = false, C: Cin = null, minLastOrder = 0, template = null, segmentPhones = null } = {}) {
     const C = Cin || await cfg();
+    const tpl = String(template || "").trim() || C.template;
     const base = (await pool.query(SQL)).rows;
     const pns = base.map((x) => x.pn);
     if (!pns.length) return [];
@@ -204,6 +207,7 @@ export function register(app, ctx, deps = {}) {
       const web = Number(b.web_orders) || 0;
 
       const inAud =
+        segmentPhones ? segmentPhones.has(b.pn) :
         aud === "ad_blocked" ? b.ad_blocked === true :
         aud === "never_online" ? web === 0 :
         aud === "lapsed" ? daysAgo >= 30 :
@@ -218,12 +222,19 @@ export function register(app, ctx, deps = {}) {
       const L = meaningful || H[0] || {};
       const items = itemsPhrase(nz(L.names).split("|").filter(Boolean));
       const name = nz(b.name).trim();
-      const msg = renderMessage(C.template, {
+      const fav = favDish(H, T);
+      /* المتغيرات اللي العميل بيشوفها — سعودي/محايد. {link}/{coupon} بيتعبّوا
+         في wasender لكل مستلم (رابط متتبّع + كوبون مرة واحدة). */
+      const vars = {
         name: name || "أستاذنا",
+        first_name: name ? name.split(/\s+/)[0] : "أستاذنا",
         last_items: items || "من عندنا",
-        last_when: agoAr(L.at || lastAt, T),
+        last_when: agoSa(L.at || lastAt, T),
+        fav_dish: fav.dish || items.split(" و")[0] || "أطباقنا",
+        fav_group: fav.groupLabel || "أكلنا",
         site: C.site,
-      });
+      };
+      const msg = renderTemplate(tpl, vars);
       rows.push({
         name: name || null,
         pn: b.pn,
@@ -235,6 +246,8 @@ export function register(app, ctx, deps = {}) {
         skippedSmall: minT && meaningful ? H.indexOf(meaningful) : 0,   // كام طلب صغير اتعدّى
         noMeaningfulOrder: Boolean(minT) && !meaningful,
         adBlocked: b.ad_blocked === true,
+        favDish: fav.dish || null, favGroup: fav.group || null,
+        vars,
         message: msg,
         wa: canSee ? waLink(b.pn, msg) : null,
         /* الأولوية: الفلوس × الغياب. اللي صرف كتير وغاب كتير الأول. */

@@ -24,11 +24,12 @@ test("تاريخ باظ = نص فاضي، مش «NaN»", () => {
   for (const v of [null, undefined, "", "مش تاريخ", {}]) assert.equal(agoAr(v, NOW), "");
 });
 
-test("الأصناف: صنفين وبعدين «وكذا تاني»", () => {
+test("الأصناف: صنفين وبعدين «وغيرها» (نص العميل سعودي، ٢٦/٩)", () => {
   assert.equal(itemsPhrase(["كيلو مشاوي"]), "كيلو مشاوي");
-  assert.equal(itemsPhrase(["كيلو مشاوي", "أرز"]), "كيلو مشاوي وأرز");
-  assert.equal(itemsPhrase(["كيلو مشاوي", "أرز", "سلطة"]), "كيلو مشاوي وأرز و1 صنف تانية");
-  assert.equal(itemsPhrase(["أ", "ب", "ج", "د"]), "أ وب و2 أصناف تانية");
+  assert.equal(itemsPhrase(["كفتة مشوية بالوزن - كيلو", "كريب ستربس"]), "كفتة مشوية كيلو وكريب ستربس");
+  assert.equal(itemsPhrase(["كيلو مشاوي", "أرز"]), "كيلو مشاوي", "الرز جنب مش طبق");
+  assert.equal(itemsPhrase(["أ", "ب", "ج", "د"]), "أ وب وغيرها");
+  assert.ok(!/تانية|أصناف/.test(itemsPhrase(["أ", "ب", "ج"])));
 });
 
 test("أصناف فاضية أو باظة مابترميش", () => {
@@ -80,4 +81,8 @@ test("الشرايح الخمسة معرّفة بوصف", () => {
 test("القالب الافتراضي فيه الاسم — غير كده بتبقى رسالة جماعية", () => {
   assert.ok(/\{name\}/.test(DEFAULT_TEMPLATE));
   assert.ok(/\{last_items\}/.test(DEFAULT_TEMPLATE));
+});
+
+test("القالب الافتراضي سعودي مش مصري (العميل في جدة)", () => {
+  assert.ok(!/معاك|عاملين إيه|قولنا|نظبطه|بقى|امبارح|النهاردة/.test(DEFAULT_TEMPLATE), DEFAULT_TEMPLATE);
 });
