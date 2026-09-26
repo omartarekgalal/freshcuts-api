@@ -210,8 +210,11 @@ export function register(app, ctx, deps = {}) {
     if (!outreach) throw new Error("outreach_missing");
     const cfg = senderCfg(s);
     const aud = outreach.AUDIENCES[filters.audience] ? filters.audience : "never_online";
-    const all = await outreach.audienceRows(aud, { canSee: true });
-    const filtered = applyFilters(all, filters);
+    const minLast = Number(filters.minLastOrder) > 0 ? Number(filters.minLastOrder) : 0;
+    const all = await outreach.audienceRows(aud, { canSee: true, minLastOrder: minLast });
+    // مفيش ولا طلب ≥ الحد (بيشتري مية/بيبسي بس) ⇒ مالوش رسالة تفكّره بأكلة
+    const smallOnly = all.filter((r) => r.noMeaningfulOrder).length;
+    const filtered = applyFilters(all.filter((r) => !r.noMeaningfulOrder), filters);
     const pns = filtered.map((r) => r.pn);
     const staff = staffPhoneSet(s);
     const recent = await recentSet(pns, cfg.gapDays);
@@ -231,6 +234,8 @@ export function register(app, ctx, deps = {}) {
       ok.push(r);
     }
     const limit = Math.min(1000, Math.max(1, Number(filters.limit) || 100));
+    excluded.smallOnly = smallOnly;
+    excluded.smallSkipped = ok.filter((r) => r.skippedSmall > 0).length;   // اترجعنا لطلب أقدم
     return { audience: aud, inAudience: all.length, afterFilters: filtered.length, excluded, eligible: ok.length,
       picked: ok.slice(0, limit), cfg };
   }
@@ -291,8 +296,13 @@ export function register(app, ctx, deps = {}) {
     const s = await getSettingsData();
     const r = await build(b.filters || {}, s);
     const tpl = String(b.template || "").trim();
-    const sample = r.picked.slice(0, 5).map((x) => ({ name: x.name, phone: `${x.pn.slice(0, 3)}••••${x.pn.slice(-2)}`,
-      orders: x.orders, spend: x.spend, daysAgo: x.daysAgo, message: withFooter(x.message, r.cfg.footer) }));
+    // العينة: أول ٥ + مثال واحد اترجعنا فيه لطلب أقدم (عشان المالك يشوف الفلتر شغّال)
+    const pick = r.picked.slice(0, 5);
+    const ex = r.picked.find((x) => x.skippedSmall > 0);
+    if (ex && !pick.includes(ex)) pick.push(ex);
+    const sample = pick.map((x) => ({ name: x.name, phone: `${x.pn.slice(0, 3)}••••${x.pn.slice(-2)}`,
+      orders: x.orders, spend: x.spend, daysAgo: x.daysAgo, lastTotal: x.lastTotal, skippedSmall: x.skippedSmall || 0,
+      message: withFooter(x.message, r.cfg.footer) }));
     const days = Math.ceil(r.picked.length / r.cfg.dailyCap);
     return c.json({ ok: true, audience: r.audience, inAudience: r.inAudience, afterFilters: r.afterFilters,
       excluded: r.excluded, eligible: r.eligible, willQueue: r.picked.length, estDays: days, sample, customTemplate: Boolean(tpl) });

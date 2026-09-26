@@ -139,31 +139,37 @@ export function register(app, ctx, deps = {}) {
       FROM people p LEFT JOIN web w ON w.pn = p.pn LEFT JOIN nm ON nm.pn = p.pn
      WHERE p.pn NOT IN (SELECT phone_norm FROM opted)`;
 
-  /* آخر طلب وأصنافه لكل رقم — من الموقع أو من نقطة البيع */
+  /* آخر طلبات كل رقم (لحد ٨ من كل مصدر) وأصنافها — من الموقع أو من نقطة البيع.
+     ٢٦/٩: مش آخر طلب بس — عشان فلتر «تجاهل الطلبات الأقل من X» يلاقي
+     الطلب اللي قبل إزازة المية/البيبسي (عمر: «مش عايز أفكّره بالمياه»). */
   const LAST_SQL = `
     WITH w AS (
-      SELECT DISTINCT ON (phone_norm) phone_norm pn, created_at at, total,
-             (SELECT string_agg(COALESCE(i->>'name',''), '|') FROM jsonb_array_elements(items) i) names
-        FROM shop_orders
-       WHERE phone_norm = ANY($1::text[])
-         AND status NOT IN ('pending_payment','payment_failed','expired','cancelled','rejected')
-       ORDER BY phone_norm, created_at DESC
+      SELECT pn, at, total, names FROM (
+        SELECT phone_norm pn, created_at at, total,
+               (SELECT string_agg(COALESCE(i->>'name',''), '|') FROM jsonb_array_elements(items) i) names,
+               row_number() OVER (PARTITION BY phone_norm ORDER BY created_at DESC) rn
+          FROM shop_orders
+         WHERE phone_norm = ANY($1::text[])
+           AND status NOT IN ('pending_payment','payment_failed','expired','cancelled','rejected')
+      ) w0 WHERE rn <= 8
     ), t AS (
       /* أصناف طلبات المحل من ts_order_items — من غيرها الرسالة بتقول
          «طلبت من عندنا» بدل «طلبت كيلو مشاوي»، والفرق كبير في رسالة شخصية.
          أغلب عملائنا طلباتهم من المحل مش من الموقع، فده المصدر الأهم. */
-      SELECT DISTINCT ON (pn) pn, at, total,
+      SELECT pn, at, total,
              (SELECT string_agg(i.name, '|' ORDER BY i.idx)
                 FROM ts_order_items i WHERE i.order_id = oid) AS names
         FROM (
-          SELECT COALESCE(NULLIF(s.phone_norm,''), NULLIF(tc.phone_norm,'')) pn,
-                 o.order_date at, o.total, o.order_id AS oid
-            FROM ts_orders o
-            LEFT JOIN order_sources s ON s.order_id = o.order_id
-            LEFT JOIN ts_customers tc ON tc.customer_id = o.customer_id
-           WHERE (s.phone_norm = ANY($1::text[]) OR tc.phone_norm = ANY($1::text[]))
-             AND (o.order_type IS NULL OR (o.order_type NOT ILIKE '%void%' AND o.order_type NOT ILIKE '%refund%'))
-        ) z WHERE pn IS NOT NULL ORDER BY pn, at DESC
+          SELECT pn, at, total, oid, row_number() OVER (PARTITION BY pn ORDER BY at DESC) rn FROM (
+            SELECT COALESCE(NULLIF(s.phone_norm,''), NULLIF(tc.phone_norm,'')) pn,
+                   o.order_date at, o.total, o.order_id AS oid
+              FROM ts_orders o
+              LEFT JOIN order_sources s ON s.order_id = o.order_id
+              LEFT JOIN ts_customers tc ON tc.customer_id = o.customer_id
+             WHERE (s.phone_norm = ANY($1::text[]) OR tc.phone_norm = ANY($1::text[]))
+               AND (o.order_type IS NULL OR (o.order_type NOT ILIKE '%void%' AND o.order_type NOT ILIKE '%refund%'))
+          ) z0 WHERE pn IS NOT NULL
+        ) z WHERE rn <= 8
     )
     SELECT pn, at, total, names FROM (
       SELECT * FROM w UNION ALL SELECT * FROM t
@@ -171,15 +177,19 @@ export function register(app, ctx, deps = {}) {
 
   /* الشريحة كلها بالرسالة الجاهزة لكل عميل — الشاشة اليدوية والإرسال الآلي
      (wasender.js) بيستخدموا نفس الدالة، فالفلاتر والنص واحد. */
-  async function audienceRows(aud, { canSee = false, C: Cin = null } = {}) {
+  async function audienceRows(aud, { canSee = false, C: Cin = null, minLastOrder = 0 } = {}) {
     const C = Cin || await cfg();
     const base = (await pool.query(SQL)).rows;
     const pns = base.map((x) => x.pn);
     if (!pns.length) return [];
 
     const stats = new Map((await pool.query(QUICK_STATS_SQL, [pns])).rows.map((x) => [x.pn, x]));
-    const last = new Map();
-    for (const r of (await pool.query(LAST_SQL, [pns])).rows) if (!last.has(r.pn)) last.set(r.pn, r);
+    const hist = new Map();                          // pn → طلباته من الأحدث للأقدم
+    for (const r of (await pool.query(LAST_SQL, [pns])).rows) {
+      if (!hist.has(r.pn)) hist.set(r.pn, []);
+      hist.get(r.pn).push(r);
+    }
+    const minT = Number(minLastOrder) > 0 ? Number(minLastOrder) : 0;
 
     const T = now();
     const DAY = 86400000;
@@ -201,7 +211,11 @@ export function register(app, ctx, deps = {}) {
         aud === "online_once" ? web === 1 : false;
       if (!inAud) continue;
 
-      const L = last.get(b.pn) || {};
+      /* الطلب اللي الرسالة بتفكّر بيه: آخر طلب قيمته ≥ minT. إزازة مية أو
+         بيبسي بعد طلب كبير مابيتحسبوش — بنرجع للطلب اللي قبلهم. */
+      const H = hist.get(b.pn) || [];
+      const meaningful = minT ? H.find((o) => Number(o.total) >= minT) : H[0];
+      const L = meaningful || H[0] || {};
       const items = itemsPhrase(nz(L.names).split("|").filter(Boolean));
       const name = nz(b.name).trim();
       const msg = renderMessage(C.template, {
@@ -217,6 +231,9 @@ export function register(app, ctx, deps = {}) {
         orders, spend: Math.round(spend), webOrders: web,
         lastAt: lastAt || null, daysAgo: daysAgo === 9999 ? null : daysAgo,
         lastItems: items || null,
+        lastTotal: L.total != null ? Math.round(Number(L.total)) : null,
+        skippedSmall: minT && meaningful ? H.indexOf(meaningful) : 0,   // كام طلب صغير اتعدّى
+        noMeaningfulOrder: Boolean(minT) && !meaningful,
         adBlocked: b.ad_blocked === true,
         message: msg,
         wa: canSee ? waLink(b.pn, msg) : null,
