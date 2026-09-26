@@ -590,6 +590,9 @@ export function register(app, ctx, deps = {}) {
       -- «توصيل مجاني بالكوبون» (2026-09-11): الكوبون يتنازل عن رسم التوصيل
       -- كامل بدل (أو مع) خصم النسبة. كوبون أول طلب = free_delivery + once_per_customer.
       ALTER TABLE shop_coupons ADD COLUMN IF NOT EXISTS free_delivery BOOLEAN NOT NULL DEFAULT FALSE;
+      -- كوبون مقفول على جوال واحد (عروض واتساب مرة واحدة لكل عميل، wasender.js ٢٦/٩).
+      -- NULL = أي حد (كل الكوبونات القديمة).
+      ALTER TABLE shop_coupons ADD COLUMN IF NOT EXISTS phone_norm TEXT;
       -- مصدر الطلب (W0-03، checkout-meta.js): رابط الحملة/UTM/click ids + ip/ua
       -- من الهيدر، بيتسجّل وقت الـcheckout. الفهرس عشان خطة الإعلانات بتربط
       -- الطلبات بالروابط (attribution->>'fc_link').
@@ -653,6 +656,9 @@ export function register(app, ctx, deps = {}) {
       if (cp.expires_at && new Date(cp.expires_at) < new Date(new Date().toDateString())) return { ok: false, error: "expired" };
       if (cp.max_uses != null && cp.used_count >= cp.max_uses) return { ok: false, error: "maxed" };
       if (Number(subtotal) < Number(cp.min_total)) return { ok: false, error: "min_total", minTotal: Number(cp.min_total) };
+      // كوبون شخصي: جوال تاني = كأنه مش موجود. من غير جوال (معاينة السلة) بنسيبه،
+      // والشيك أوت (بجوال متأكد بالـOTP) هو اللي بيحسم.
+      if (cp.phone_norm && phoneNorm && cp.phone_norm !== phoneNorm) return { ok: false, error: "not_found" };
       if (cp.once_per_customer && phoneNorm) {
         const used = await pool.query(
           `SELECT 1 FROM shop_orders
