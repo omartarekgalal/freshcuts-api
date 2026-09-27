@@ -90,6 +90,17 @@ test("بناء التقرير: الأونلاين من shop_orders بس (مفي�
   assert.equal(r.recommendation.code, "CUT");                      // CPA 100 > 90
 });
 
+test("٢٧/٩: جوجل وتيك توك داخلين في الصرف الكلي والنسبة وسطر الـSMS", () => {
+  const base = buildReport({ day: "2026-09-18", pos, shop, meta });
+  const r = buildReport({ day: "2026-09-18", pos, shop, meta, other: { google: 481.31, tiktok: 20 } });
+  assert.equal(r.ads.spendGoogle, 481.31);
+  assert.equal(r.ads.spendTiktok, 20);
+  assert.equal(r.ads.spendTotal, Math.round((base.ads.spendTotal + 501.31) * 100) / 100);
+  assert.ok(r.ads.spendShareOfRevenue > base.ads.spendShareOfRevenue);
+  assert.match(smsAdsText(r), / G481 T20 WA/);
+  assert.equal(smsInfo(r.sms).segments, 1);
+});
+
 test("رسالة عمر: إنجليزي، رسالة واحدة GSM-7، حتى في أسوأ الأرقام", () => {
   const r = buildReport({ day: "2026-09-18", pos, shop, meta });
   assert.equal(smsInfo(r.sms).encoding, "GSM-7");

@@ -215,14 +215,16 @@ export function smsAdsText(rep) {
   if (A.spendSnap && !src.some((x) => /^S\d/.test(x))) src.splice(1, 0, `S${A.ordersFromAdsOursSnap || 0}`);
   const cpa = A.cpaOnline == null ? "-" : r0(A.cpaOnline);
   const cpaAds = A.cpaAds == null ? "-" : r0(A.cpaAds);
-  const spend = `M${r0(A.spendMeta - (A.spendWhatsapp || 0))} S${r0(A.spendSnap)} WA${r0(A.spendWhatsapp)}`;
+  const spend = `M${r0(A.spendMeta - (A.spendWhatsapp || 0))} S${r0(A.spendSnap)}`
+    + (A.spendGoogle ? ` G${r0(A.spendGoogle)}` : "") + (A.spendTiktok ? ` T${r0(A.spendTiktok)}` : "")
+    + ` WA${r0(A.spendWhatsapp)}`;
   const chg = changesText(rep.guard);
   const full = `FC ADS ${d} Ord ${src.join(" ")} | CPA ${cpa} (ads ${cpaAds}) | Spend ${spend} | Chg: ${chg}`;
   return fitOneSms(full);
 }
 
 /* Pure assembly — unit-tested. */
-export function buildReport({ day, pos, shop, meta, snap = null, guardLog = [], whatsapp = null, now = new Date() }) {
+export function buildReport({ day, pos, shop, meta, snap = null, other = null, guardLog = [], whatsapp = null, now = new Date() }) {
   const onlineDelivery = { orders: 0, revenue: 0 }, onlinePickup = { orders: 0, revenue: 0 };
   let testOrders = 0, ours = 0, oursMeta = 0, oursSnap = 0, adsRevenue = 0;
   const byLink = {}, bySource = {};
@@ -247,7 +249,11 @@ export function buildReport({ day, pos, shop, meta, snap = null, guardLog = [], 
   const spendMeta = r2(camps.reduce((s, c) => s + num(c.spend), 0));
   const spendWhatsapp = r2(camps.filter((c) => c.kind === "whatsapp").reduce((s, c) => s + num(c.spend), 0));
   const spendSnap = r2(snap?.spend || 0);
-  const spendTotal = r2(spendMeta + spendSnap);
+  // 27/9: Google and TikTok were never counted — the 26/9 SMS said "Ads 126 = 4%, SCALE +25%"
+  // on a day Google alone spent 481. Every platform in ad_spend_hourly now goes into the total.
+  const spendGoogle = r2(other?.google || 0);
+  const spendTiktok = r2(other?.tiktok || 0);
+  const spendTotal = r2(spendMeta + spendSnap + spendGoogle + spendTiktok);
   const spendWeb = r2(spendTotal - spendWhatsapp);
   const metaPurchases = camps.reduce((s, c) => s + num(c.purchases), 0);
   // OUR paid orders decide, not Meta's. Since the storefront attribution fix (17/9) the
@@ -255,7 +261,7 @@ export function buildReport({ day, pos, shop, meta, snap = null, guardLog = [], 
   // stays visible beside it (metaPurchases) but never drives a budget decision.
   const ordersFromAds = ours;
   const ads = {
-    spendTotal, spendMeta, spendSnap, spendWeb, spendWhatsapp,
+    spendTotal, spendMeta, spendSnap, spendGoogle, spendTiktok, spendWeb, spendWhatsapp,
     byCampaign: camps.sort((a, b) => b.spend - a.spend),
     metaPurchases, metaPurchaseValue: r2(camps.reduce((s, c) => s + num(c.purchaseValue), 0)),
     whatsappConversations: camps.reduce((s, c) => s + num(c.conversations), 0),
@@ -490,6 +496,10 @@ export function register(app, ctx, deps = {}) {
           })),
         },
         snap: { spend: r2(snapC.reduce((s, x) => s + num(x.spend), 0)) },
+        other: {
+          google: r2(camps.filter((x) => x.platform === "google").reduce((s, x) => s + num(x.spend), 0)),
+          tiktok: r2(camps.filter((x) => x.platform === "tiktok").reduce((s, x) => s + num(x.spend), 0)),
+        },
         metaDaySpend: r2((metaLa?.campaigns || []).reduce((s, x) => s + num(x.spend), 0)),
         snapDaySpend: snapOld ? r2(snapOld.spend) : null,
       };
@@ -502,7 +512,7 @@ export function register(app, ctx, deps = {}) {
   async function compute(day) {
     const [pos, shop, metaLa, guardLog, whatsapp, snapOld] = await Promise.all([posPartBiz(day), shopPart(day), metaPart(day), guardPart(day), whatsappPart(day), snapPart(day)]);
     const sp = await spendParts(day, metaLa, snapOld);
-    const rep = buildReport({ day, pos, shop, meta: sp.meta, snap: sp.snap, guardLog, whatsapp });
+    const rep = buildReport({ day, pos, shop, meta: sp.meta, snap: sp.snap, other: sp.other || null, guardLog, whatsapp });
     rep.spendAlignment = sp.aligned
       ? { aligned: true, window: `${day} 04:00 → ${shiftDay(day, 1)} 04:00 (الرياض)`, metaAccountDaySpend: sp.metaDaySpend, snapCalendarDaySpend: sp.snapDaySpend,
           note: "الصرف محسوب ساعة بساعة جوّه اليوم التشغيلي نفسه (مش يوم ميتا على توقيت لوس أنجلوس)." }
