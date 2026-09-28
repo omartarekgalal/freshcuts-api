@@ -19,10 +19,18 @@
      بيعمل SMS بديل (لو SMS مفعّل). «إيقاف/STOP» بيلغي التسويق.
    - الموافقة: recordOptIn() من الشيك أوت + /api/wa/optin.
    الويب هوك دايماً بيرد 200 (Cloudflare بيبلع الـ5xx وميتا بتعيد المحاولة).
+
+   Coexistence (٢٨/٩): الرقم على تطبيق واتساب بزنس والـAPI مع بعض. الويب هوك
+   بقى بيفهم smb_message_echoes (الكاشير بعت من الموبايل ⇒ صادر في نفس
+   المحادثة، من غير رد آلي)، smb_app_state_sync (أسماء جهات الاتصال)، history
+   (تاريخ المحادثات مرة واحدة — idempotent وبسقف)، و message_template_status_update.
+   كله idempotent بالـwamid، والمعالجة بعد الرد 200. مستمعين on("status"/"inbound")
+   بيحدّثوا طابور الحملات (wasender.js). الربط نفسه وحالته في wacloud.js.
 ═══════════════════════════════════════════════════════════════════════════ */
 
 import crypto from "node:crypto";
 import { sendSms as defaultSendSms } from "./accounts.js";
+import { isOptOutText } from "./wamsg.js";
 
 const env = (k, d) => (process.env[k] || d || "").toString().trim();
 export const GRAPH_VERSION = "v23.0";
@@ -105,47 +113,57 @@ export const TEMPLATES = {
     ],
     bind: (o) => ({ body: [o.order_no] }),
   },
+  /* ── قوالب التسويق (حملات wasender على قناة Cloud API — ٢٨/٩) ──────────
+     قواعد ميتا: مفيش متغير في أول الجسم ولا آخره، أمثلة لكل متغير، ومتغير
+     زرار الـURL في آخر الرابط بس. زرار الرابط = نفس روابطنا المتتبّعة لكل عميل
+     (/l/<slug>-<code> — cms.js بيحسب الضغطة على صف الطابور). «إيقاف» زرار رد
+     سريع: الضغطة بتيجي في الويب هوك كرسالة نصها «إيقاف» ⇒ نفس مسار الإيقاف.
+     campaign: القالب ينفع لحملة، و needs = اللي لازم الحملة توفّره. */
   fc_cart_reminder: {
     category: "MARKETING",
     components: [
       { type: "BODY",
         text: "أهلاً {{1}} 👋 سلتك في فريش كاتس لسا تنتظرك 🔥\nكمّل طلبك في دقيقة وتوصلك المشاوي حارّة.",
         example: { body_text: [["محمد"]] } },
-      { type: "FOOTER", text: "لإيقاف الرسائل أرسل: إيقاف" },
+      { type: "FOOTER", text: "للإيقاف ردّ: إيقاف" },
       { type: "BUTTONS", buttons: [
-        { type: "URL", text: "كمّل طلبك", url: "https://freshcuts.sa/{{1}}", example: ["?resume=abc123"] },
+        // نفس رابط استرجاع السلة بتاع الـSMS (carts.js ‏/c/<code>)
+        { type: "URL", text: "كمّل طلبك", url: "https://freshcuts.sa/c/{{1}}", example: ["k7q2m9"] },
+        { type: "QUICK_REPLY", text: "إيقاف" },
       ] },
     ],
-    bind: (x) => ({ body: [x.name || "عميلنا"], button: [x.resumePath || ""] }),
+    bind: (x) => ({ body: [x.name || "عميلنا"], button: [x.cartCode || x.code || ""] }),
   },
-  fc_offer: {
-    category: "MARKETING",
+  fc_offer_img: {
+    category: "MARKETING", campaign: { needs: ["image"], label: "عرض بصورة" },
     components: [
-      { type: "HEADER", format: "IMAGE", example: { header_handle: ["<upload handle — يتجاب وقت التقديم>"] } },
+      { type: "HEADER", format: "IMAGE", example: { header_handle: ["<upload handle — بيتجاب وقت التقديم>"] } },
       { type: "BODY",
-        text: "أهلاً {{1}} 👋\n{{2}} بـ{{3}} ر.س فقط في فريش كاتس 🔥\nالعرض لفترة محدودة، اطلب من المتجر مباشرة.",
-        example: { body_text: [["محمد", "كيلو مشاوي على الفحم مع طبق رز مجاناً", "96"]] } },
-      { type: "FOOTER", text: "لإيقاف الرسائل أرسل: إيقاف" },
+        text: "أهلاً {{1}} 👋\n{{2}}\nالعرض لفترة محدودة، اطلب من المتجر مباشرة 🔥",
+        example: { body_text: [["محمد", "كيلو مشاوي على الفحم مع طبق رز مجاناً بـ96 ريال"]] } },
+      { type: "FOOTER", text: "للإيقاف ردّ: إيقاف" },
       { type: "BUTTONS", buttons: [
-        { type: "URL", text: "اطلب الآن", url: "https://freshcuts.sa/l/{{1}}", example: ["96-wa-kilo"] },
-        { type: "QUICK_REPLY", text: "إيقاف العروض" },
+        { type: "URL", text: "اطلب الآن", url: "https://freshcuts.sa/l/{{1}}", example: ["w12-a1b2c3"] },
+        { type: "QUICK_REPLY", text: "إيقاف" },
       ] },
     ],
-    bind: (x) => ({ header: x.imageUrl ? { image: x.imageUrl } : null, body: [x.name || "عميلنا", x.offer, x.price], button: [x.slug] }),
+    bind: (x) => ({ header: x.imageUrl ? { image: x.imageUrl } : null,
+      body: [x.name || "عميلنا", x.offer || "عروض جديدة في فريش كاتس"], button: [x.linkSuffix || ""] }),
   },
   fc_winback: {
-    category: "MARKETING",
+    category: "MARKETING", campaign: { needs: ["coupon"], label: "اشتقنا لك + كود" },
     components: [
       { type: "BODY",
-        text: "اشتقنا لك يا {{1}} 🙌\nجهّزنا لك خصم {{2}}٪ على طلبك الجاي من المتجر بكود {{3}}.",
-        example: { body_text: [["محمد", "15", "BACK15"]] } },
-      { type: "FOOTER", text: "لإيقاف الرسائل أرسل: إيقاف" },
+        text: "اشتقنا لك يا {{1}} 🙌\nآخر مرة طلبت {{2}}، وجهّزنا لك كود {{3}} على طلبك الجاي من المتجر.\nالكود لك أنت بس ولفترة محدودة.",
+        example: { body_text: [["محمد", "كفتة مشوية", "W12K7Q2M"]] } },
+      { type: "FOOTER", text: "للإيقاف ردّ: إيقاف" },
       { type: "BUTTONS", buttons: [
-        { type: "URL", text: "اطلب الآن", url: "https://freshcuts.sa/{{1}}", example: ["?coupon=BACK15"] },
-        { type: "QUICK_REPLY", text: "إيقاف العروض" },
+        { type: "URL", text: "اطلب الآن", url: "https://freshcuts.sa/l/{{1}}", example: ["w12-a1b2c3"] },
+        { type: "QUICK_REPLY", text: "إيقاف" },
       ] },
     ],
-    bind: (x) => ({ body: [x.name || "عميلنا", String(x.percent), x.code], button: [`?coupon=${encodeURIComponent(x.code)}`] }),
+    bind: (x) => ({ body: [x.name || "عميلنا", x.dish || "أكلتك المفضّلة", x.coupon || x.code || ""],
+      button: [x.linkSuffix || ""] }),
   },
   fc_otp: {
     // قوالب التحقق نصها ثابت من ميتا («{{1}} هو رمز التحقق الخاص بك.») —
@@ -164,6 +182,27 @@ export const TEMPLATES = {
 export const STAGE_TEMPLATES = Object.fromEntries(
   Object.entries(TEMPLATES).filter(([, t]) => t.stage).map(([name, t]) => [t.stage, name]));
 
+/* ── سجل قوالب قابل للتوسيع ─────────────────────────────────────────────
+   كتالوج قوالب خارجي (مثلاً watemplates.js) بيتسجّل هنا وقت الإقلاع، والتقديم
+   لميتا والإرسال والحملات بيقروا من نفس TEMPLATES (مفيش نسخة تانية).
+   شكل كل قالب: { category, components, bind(ctx) ⇒ {header?, body[], button[]},
+     stage?  (مرحلة طلب في notify.js), campaign? {label, needs:["image"|"coupon"]} }
+   قالب حملة (campaign) الـbind بتاعه بياخد السياق ده (wacloud.campaignParams):
+     { name, offer, imageUrl, linkSuffix, dish, coupon }
+   الاسم الموجود مابيتغيّرش إلا بـ {override:true}. */
+export function registerTemplates(defs, { override = false } = {}) {
+  const added = [], skipped = [];
+  for (const [name, t] of Object.entries(defs || {})) {
+    const okShape = /^[a-z0-9_]{1,512}$/.test(name) && t && ["UTILITY", "MARKETING", "AUTHENTICATION"].includes(t.category)
+      && Array.isArray(t.components) && typeof t.bind === "function";
+    if (!okShape || (TEMPLATES[name] && !override)) { skipped.push(name); continue; }
+    TEMPLATES[name] = t;
+    if (t.stage && (override || !STAGE_TEMPLATES[t.stage])) STAGE_TEMPLATES[t.stage] = name;
+    added.push(name);
+  }
+  return { added, skipped };
+}
+
 function money(n) { const v = Number(n); return Number.isFinite(v) ? v.toFixed(2) : String(n ?? ""); }
 
 /* 5XXXXXXXX → 9665XXXXXXXX. أي حاجة تانية = null (مابنبعتش لأرقام مش سعودية). */
@@ -178,6 +217,22 @@ export function fromWaId(waId) {
   return /^9665\d{8}$/.test(d) ? d.slice(3) : null;
 }
 
+/* قيمة متغير في القالب. ميتا بترفض (132018) أي باراميتر فيه سطر جديد أو tab
+   أو أكتر من ٤ مسافات ورا بعض، وبترفض الفاضي — فبننضّفه هنا مرة واحدة. */
+export function cleanParam(v, max = 1000) {
+  const s = String(v ?? "").replace(/[\r\n\t]+/g, " ").replace(/ {2,}/g, " ").trim().slice(0, max);
+  return s || "-";
+}
+
+/* نص القالب بعد التعويض — للعرض في صندوق المحادثات بدل «[قالب: …]». */
+export function renderTemplateText(name, params = {}) {
+  const t = TEMPLATES[name];
+  const body = t?.components.find((c) => c.type === "BODY")?.text;
+  if (!body) return "";
+  const vals = Array.isArray(params.body) ? params.body : [];
+  return body.replace(/\{\{(\d+)\}\}/g, (m, i) => (vals[Number(i) - 1] != null ? cleanParam(vals[Number(i) - 1]) : m));
+}
+
 /* جسم رسالة القالب لـ POST /{PHONE_ID}/messages. */
 export function buildTemplatePayload(name, to, params = {}, lang = "ar") {
   const t = TEMPLATES[name];
@@ -187,7 +242,7 @@ export function buildTemplatePayload(name, to, params = {}, lang = "ar") {
     components.push({ type: "header", parameters: [{ type: "image", image: { link: params.header.image } }] });
   }
   if (Array.isArray(params.body) && params.body.length) {
-    components.push({ type: "body", parameters: params.body.map((v) => ({ type: "text", text: String(v ?? "").slice(0, 1000) })) });
+    components.push({ type: "body", parameters: params.body.map((v) => ({ type: "text", text: cleanParam(v) })) });
   }
   if (Array.isArray(params.button) && params.button.length) {
     if (t.category === "AUTHENTICATION") {
@@ -223,28 +278,104 @@ export function verifySignature(raw, header, secret) {
 const STOP_RE = /^\s*(stop|unsubscribe|إيقاف|ايقاف|إيقاف العروض|ايقاف العروض|الغاء|إلغاء الاشتراك|الغاء الاشتراك|وقف)\s*$/i;
 const START_RE = /^\s*(start|ابدأ|ابدا|اشتراك)\s*$/i;
 
-/* بيفرد الويب هوك لـ { statuses:[...], messages:[...] } — بيتجاهل أي حاجة مش شكلها صح. */
-export function parseWebhook(body) {
-  const out = { statuses: [], messages: [] };
+const isoOf = (ts) => {
+  const n = Number(ts);
+  return Number.isFinite(n) && n > 0 ? new Date(n * 1000).toISOString() : null;
+};
+const MEDIA_AR = { image: "صورة", video: "فيديو", audio: "رسالة صوتية", voice: "رسالة صوتية", document: "ملف",
+  sticker: "ملصق", location: "موقع", contacts: "جهة اتصال", reaction: "تفاعل", unsupported: "رسالة مش مدعومة" };
+
+/* نص أي رسالة (وارد/صدى/تاريخ) — والوسائط بتتكتب بين أقواس عشان الكاشير يفهم. */
+export function messageText(m) {
+  const t = m?.text?.body ?? m?.button?.text ?? m?.interactive?.button_reply?.title
+    ?? m?.interactive?.list_reply?.title ?? m?.image?.caption ?? m?.video?.caption ?? m?.document?.caption ?? null;
+  if (t != null && String(t).trim()) return String(t);
+  if (m?.type === "reaction") return m.reaction?.emoji ? `[تفاعل ${m.reaction.emoji}]` : "[تفاعل]";
+  if (m?.type === "document" && m.document?.filename) return `[ملف: ${m.document.filename}]`;
+  if (m?.type === "template") return "[قالب]";
+  return m?.type ? `[${MEDIA_AR[m.type] || m.type}]` : "";
+}
+export const intentOf = (text) => (STOP_RE.test(text || "") || isOptOutText(text || "") ? "stop" : START_RE.test(text || "") ? "start" : null);
+
+/* بيفرد الويب هوك — بيتجاهل أي حاجة مش شكلها صح.
+   الحقول (field) اللي بنفهمها:
+     messages            وارد العملاء + حالات رسايلنا (+ اسم البروفايل)
+     smb_message_echoes  الكاشير بعت من تطبيق واتساب بزنس على الموبايل (Coexistence)
+     smb_app_state_sync  جهات اتصال التطبيق (إضافة/حذف) — اسم للجوال
+     history             تاريخ المحادثات القديمة (مرة واحدة بعد الربط، على دفعات)
+     message_template_status_update  اعتماد/رفض قالب
+   opts.phoneId: لو محدد، أي تغيير لرقم تاني بيتشال (نفس الـWABA ممكن يبقى فيه أكتر من رقم). */
+export function parseWebhook(body, { phoneId = null } = {}) {
+  const out = { statuses: [], messages: [], echoes: [], contacts: [], profiles: [], history: [],
+    historyErrors: [], historyMeta: [], templateEvents: [], fields: [] };
   for (const entry of body?.entry || []) {
     for (const ch of entry?.changes || []) {
       const v = ch?.value || {};
+      const field = String(ch?.field || "messages");
+      const pid = v.metadata?.phone_number_id ? String(v.metadata.phone_number_id) : null;
+      if (phoneId && pid && pid !== String(phoneId)) { out.fields.push({ field, ignored: "other_phone" }); continue; }
+      out.fields.push({ field, phoneId: pid });
+      const bizPhone = String(v.metadata?.display_phone_number || "").replace(/\D/g, "");
       for (const s of v.statuses || []) {
         out.statuses.push({ wamid: s.id, status: s.status, recipient: s.recipient_id,
-          at: s.timestamp ? new Date(Number(s.timestamp) * 1000).toISOString() : null,
-          pricing: s.pricing || null, errors: s.errors || null });
+          at: isoOf(s.timestamp), pricing: s.pricing || null, errors: s.errors || null });
+      }
+      for (const c of v.contacts || []) {
+        if (c?.wa_id && c.profile?.name) out.profiles.push({ waId: String(c.wa_id), name: String(c.profile.name).slice(0, 80) });
       }
       for (const m of v.messages || []) {
-        const text = m.text?.body ?? m.button?.text ?? m.interactive?.button_reply?.title
-          ?? m.interactive?.list_reply?.title ?? "";
-        out.messages.push({ wamid: m.id, from: m.from, type: m.type, text: String(text || ""),
-          at: m.timestamp ? new Date(Number(m.timestamp) * 1000).toISOString() : null,
+        const text = messageText(m);
+        out.messages.push({ wamid: m.id, from: m.from, type: m.type, text,
+          at: isoOf(m.timestamp),
+          interactiveId: m.button?.payload ?? m.interactive?.button_reply?.id ?? m.interactive?.list_reply?.id ?? null,
           referral: m.referral || null, // رسالة جاية من إعلان Click-to-WhatsApp
-          intent: STOP_RE.test(text || "") ? "stop" : START_RE.test(text || "") ? "start" : null });
+          intent: m.type === "reaction" ? null : intentOf(text) });
+      }
+      for (const m of v.message_echoes || []) {
+        out.echoes.push({ wamid: m.id, from: m.from, to: m.to, type: m.type, text: messageText(m), at: isoOf(m.timestamp) });
+      }
+      for (const s of v.state_sync || []) {
+        const c = s?.contact || {};
+        if (!c.phone_number) continue;
+        out.contacts.push({ phone: String(c.phone_number).replace(/\D/g, ""), fullName: c.full_name ? String(c.full_name).slice(0, 80) : null,
+          firstName: c.first_name ? String(c.first_name).slice(0, 40) : null,
+          action: s.action === "remove" ? "remove" : "add", at: isoOf(s.metadata?.timestamp) });
+      }
+      for (const h of v.history || []) {
+        if (Array.isArray(h?.errors) && h.errors.length) {
+          for (const e of h.errors) out.historyErrors.push({ code: e.code, title: e.title || e.message || "", details: e.error_data?.details || null });
+        }
+        if (h?.metadata) out.historyMeta.push({ phase: h.metadata.phase ?? null, chunk: h.metadata.chunk_order ?? null, progress: h.metadata.progress ?? null });
+        for (const th of h?.threads || []) {
+          for (const m of th?.messages || []) {
+            const from = String(m.from || "").replace(/\D/g, "");
+            // الصادر = من رقمنا. الـthread id هو رقم العميل.
+            const out_ = (bizPhone && from === bizPhone) || (th.id && from && from !== String(th.id).replace(/\D/g, ""));
+            out.history.push({ wamid: m.id, customer: String(th.id || (out_ ? m.to : m.from) || "").replace(/\D/g, ""),
+              direction: out_ ? "out" : "in", type: m.type, text: messageText(m), at: isoOf(m.timestamp),
+              status: m.history_context?.status ? String(m.history_context.status).toLowerCase() : null });
+          }
+        }
+      }
+      if (field === "message_template_status_update" && (v.message_template_name || v.event)) {
+        out.templateEvents.push({ name: v.message_template_name || null, language: v.message_template_language || null,
+          id: v.message_template_id != null ? String(v.message_template_id) : null, event: v.event || null, reason: v.reason || null });
       }
     }
   }
   return out;
+}
+
+/* ترتيب الحالات: الحالة الأقدم مابتكتبش فوق الأحدث (ميتا بتبعت read قبل delivered أحياناً).
+   failed بيكسب بس لو لسه ماوصلتش. */
+const RANK = { accepted: 0, sent: 1, delivered: 2, read: 3 };
+export function nextStatus(cur, incoming) {
+  if (!incoming) return cur || null;
+  if (!cur) return incoming;
+  if (incoming === "failed") return RANK[cur] >= 2 ? cur : "failed";
+  if (cur === "failed") return RANK[incoming] >= 2 ? incoming : cur;
+  if (!(incoming in RANK)) return cur;
+  return (RANK[incoming] ?? -1) > (RANK[cur] ?? -1) ? incoming : cur;
 }
 
 export function register(app, ctx, deps = {}) {
@@ -256,13 +387,60 @@ export function register(app, ctx, deps = {}) {
      رايحة/جاية تحدّث صف المحادثة. فاضي = الصندوق مش مركّب، وكله شغّال زي ما هو. */
   let inbox = null;
   const setInbox = (i) => { inbox = i; };
-  const touchThread = (a) => { try { inbox?.touch?.(a); } catch { /* الصندوق مايوقّفش رسالة */ } };
+  const touchThread = (a) => { try { return inbox?.touch?.(a); } catch { /* الصندوق مايوقّفش رسالة */ } };
 
+  /* مستمعين للويب هوك (wasender بيسجّل هنا عشان حالات رسايل الحملة وردودها
+     تحدّث صفوف الطابور). مستمع بيقع مابيوقّفش الباقي. */
+  const hooks = { inbound: [], status: [] };
+  const on = (ev, fn) => { if (hooks[ev] && typeof fn === "function") hooks[ev].push(fn); };
+  const emit = async (ev, x) => {
+    for (const fn of hooks[ev] || []) { try { await fn(x); } catch (e) { console.error(`[wa] ${ev} hook:`, e.message); } }
+  };
+
+  /* ── البوت (ردود آلية) ─────────────────────────────────────────────────
+     setBot({ matchIntent(text, ctx), buildReply(intent, ctx) }) — مثلاً wabot.js.
+     بيشتغل بس لو WHATSAPP_BOT_ENABLED=1، ومش على صدى، ومش على «إيقاف/ابدأ»،
+     و**بيسكت** WHATSAPP_BOT_HANDOFF_HOURS (افتراضي ١٢) ساعة بعد آخر رسالة
+     الكاشير بعتها من الموبايل للعميل ده (تسليم لإنسان). buildReply بيرجّع
+     جسم رسالة Cloud API واحد أو قايمة (من غير to/messaging_product — بنكمّلهم). */
+  let bot = null;
+  const setBot = (b) => { bot = b && typeof b.matchIntent === "function" && typeof b.buildReply === "function" ? b : null; };
+  const handoffHours = () => Math.max(0, Number(env("WHATSAPP_BOT_HANDOFF_HOURS", "12")) || 0);
+  async function humanActive(pn) {
+    if (!handoffHours()) return false;
+    const r = await pool.query(
+      `SELECT 1 FROM wa_messages WHERE phone_norm=$1 AND source='echo' AND created_at > NOW() - make_interval(hours => $2::int) LIMIT 1`,
+      [pn, handoffHours()]).catch(() => ({ rowCount: 0 }));
+    return r.rowCount > 0;
+  }
+  async function runBot(ev) {
+    if (env("WHATSAPP_BOT_ENABLED") !== "1" || !bot || ev.isEcho || ev.intent || !ev.phone) return { skipped: "off" };
+    if (await humanActive(ev.phone)) return { skipped: "human_handoff" };
+    const ctx = { phone: ev.phone, text: ev.text, interactiveId: ev.interactiveId, referral: ev.referral, ts: ev.ts, store: STORE() };
+    const intent = await bot.matchIntent(ev.text, ctx);
+    if (!intent) return { skipped: "no_intent" };
+    const out = await bot.buildReply(intent, ctx);
+    const list = (Array.isArray(out) ? out : [out]).filter(Boolean);
+    let sent = 0;
+    for (const payload of list) {
+      if ((await gate())) break;
+      try {
+        const data = await graphPost(`${phoneId()}/messages`, { ...payload, messaging_product: "whatsapp", to: toWaId(ev.phone) });
+        await logOut({ wamid: data.messages?.[0]?.id || null, phone_norm: ev.phone, status: "accepted", source: "bot",
+          body: String(payload.text?.body || payload.interactive?.body?.text || `[${payload.type || "bot"}]`).slice(0, 500) });
+        sent++;
+      } catch (e) { console.error("[wa] bot reply:", e.message); break; }
+    }
+    return { intent, sent };
+  }
+
+  // التوكن: WHATSAPP_TOKEN لو اتحط، وإلا توكن مستخدم النظام الدائم (META_CAPI_TOKEN).
   const token = () => env("WHATSAPP_TOKEN") || env("META_CAPI_TOKEN");
   const phoneId = () => env("WHATSAPP_PHONE_ID");
   const wabaId = () => env("WHATSAPP_WABA_ID");
   const masterOn = () => env("WHATSAPP_ENABLED") === "1";
   const configured = () => Boolean(token() && phoneId());
+  const HISTORY_MAX = () => Math.max(0, Number(env("WHATSAPP_HISTORY_MAX", "20000")) || 0);
 
   async function ensureSchema() {
     await pool.query(`
@@ -291,6 +469,38 @@ export function register(app, ctx, deps = {}) {
       );
       CREATE INDEX IF NOT EXISTS wa_messages_phone_idx ON wa_messages(phone_norm, created_at DESC);
       CREATE INDEX IF NOT EXISTS wa_messages_order_idx ON wa_messages(order_no);
+      -- Coexistence (٢٨/٩): مصدر الرسالة — api | echo (من الموبايل) | history | campaign
+      ALTER TABLE wa_messages ADD COLUMN IF NOT EXISTS source TEXT;
+      ALTER TABLE wa_messages ADD COLUMN IF NOT EXISTS msg_type TEXT;
+      -- أسماء جهات الاتصال من تطبيق واتساب بزنس + اسم البروفايل من الوارد
+      CREATE TABLE IF NOT EXISTS wa_contact_names (
+        phone_norm TEXT PRIMARY KEY,
+        full_name TEXT, first_name TEXT, profile_name TEXT,
+        removed BOOLEAN NOT NULL DEFAULT FALSE,
+        src_at TIMESTAMPTZ,
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+      -- صحة الويب هوك: آخر حدث لكل field (للوحة الحالة)
+      CREATE TABLE IF NOT EXISTS wa_webhook_health (
+        field TEXT PRIMARY KEY,
+        last_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        n BIGINT NOT NULL DEFAULT 0,
+        last_note TEXT
+      );
+      CREATE TABLE IF NOT EXISTS wa_template_events (
+        id BIGSERIAL PRIMARY KEY,
+        name TEXT, language TEXT, template_id TEXT, event TEXT, reason TEXT,
+        at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+      CREATE TABLE IF NOT EXISTS wa_history_state (
+        id INT PRIMARY KEY DEFAULT 1,
+        imported INT NOT NULL DEFAULT 0,
+        skipped INT NOT NULL DEFAULT 0,
+        chunks INT NOT NULL DEFAULT 0,
+        last_meta JSONB, errors JSONB,
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+      INSERT INTO wa_history_state(id) VALUES (1) ON CONFLICT DO NOTHING;
     `);
   }
   const ready = ensureSchema()
@@ -340,15 +550,15 @@ export function register(app, ctx, deps = {}) {
   async function logOut(row) {
     try {
       await pool.query(
-        `INSERT INTO wa_messages(wamid, direction, phone_norm, template, category, order_no, stage, status, error, body, fallback_sms)
-         VALUES ($1,'out',$2,$3,$4,$5,$6,$7,$8,$9,$10) ON CONFLICT (wamid) DO NOTHING`,
+        `INSERT INTO wa_messages(wamid, direction, phone_norm, template, category, order_no, stage, status, error, body, fallback_sms, source)
+         VALUES ($1,'out',$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) ON CONFLICT (wamid) DO NOTHING`,
         [row.wamid || null, row.phone_norm || null, row.template || null, row.category || null,
          row.order_no || null, row.stage || null, row.status, row.error || null,
-         row.body || null, row.fallback_sms || null]);
+         row.body || null, row.fallback_sms || null, row.source || "api"]);
     } catch (e) { console.error("[wa] log failed:", e.message); }
     // الصادر اللي ميتا قبلته بس بيظهر في المحادثة (الفاشل له صفه في wa_messages).
     if (row.status === "accepted" && row.phone_norm) {
-      touchThread({ phoneNorm: row.phone_norm, direction: "out",
+      await touchThread({ phoneNorm: row.phone_norm, direction: "out",
         text: row.body || (row.template ? `[قالب: ${row.template}]` : ""), orderNo: row.order_no || null });
     }
   }
@@ -362,13 +572,16 @@ export function register(app, ctx, deps = {}) {
     const data = await resp.json().catch(() => ({}));
     if (!resp.ok || data.error) {
       throw Object.assign(new Error(data.error?.message || `HTTP ${resp.status}`),
-        { code: `WA_${data.error?.code || resp.status}` });
+        { code: `WA_${data.error?.code || resp.status}`, graph: data.error || null });
     }
     return data;
   }
 
-  /* الإرسال الأساسي. مابيرميش — بيرجّع {ok, wamid?, skipped?, error?}. */
-  async function sendTemplate({ phoneNorm, template, params = {}, orderNo = null, stage = null, fallbackSms = null, requireOptIn = true }) {
+  /* الإرسال الأساسي. مابيرميش — بيرجّع {ok, wamid?, skipped?, error?, code?}.
+     source/body اختياريين: الحملات بتبعت نص القالب بعد التعويض عشان يظهر في
+     المحادثة زي ما العميل شافه (مش «[قالب: …]»). */
+  async function sendTemplate({ phoneNorm, template, params = {}, orderNo = null, stage = null, fallbackSms = null,
+    requireOptIn = true, source = null, body = null }) {
     await ready;
     const t = TEMPLATES[template];
     if (!t) return { ok: false, error: "unknown_template" };
@@ -384,16 +597,18 @@ export function register(app, ctx, deps = {}) {
         if (await marketingSuppressed(phoneNorm)) return { ok: false, skipped: "opted_out" };
       }
     }
+    const text = body || renderTemplateText(template, params) || null;
     try {
       const data = await graphPost(`${phoneId()}/messages`, buildTemplatePayload(template, to, params));
       const wamid = data.messages?.[0]?.id || null;
       await logOut({ wamid, phone_norm: phoneNorm, template, category: t.category, order_no: orderNo,
-        stage, status: "accepted", fallback_sms: fallbackSms });
+        stage, status: "accepted", fallback_sms: fallbackSms, source, body: text });
       return { ok: true, wamid };
     } catch (e) {
       await logOut({ phone_norm: phoneNorm, template, category: t.category, order_no: orderNo, stage,
-        status: "failed", error: String(e.code || e.message).slice(0, 120) });
-      return { ok: false, error: String(e.code || "send_failed") };
+        status: "failed", error: String(e.code || e.message).slice(0, 120), source, body: text });
+      const code = Number(String(e.code || "").replace(/^WA_/, "")) || null;
+      return { ok: false, error: String(e.code || "send_failed"), code, message: String(e.message || "").slice(0, 200) };
     }
   }
 
@@ -429,15 +644,25 @@ export function register(app, ctx, deps = {}) {
   }
 
   /* ── الويب هوك ── */
+  const errOf = (s) => (s.errors?.length ? String(s.errors[0].code + ":" + (s.errors[0].title || s.errors[0].message || "")).slice(0, 120) : null);
+
   async function handleStatus(s) {
+    // الحالة الأقدم مابتكتبش فوق الأحدث (nextStatus بنفس المنطق في SQL)
     const r = await pool.query(
-      `UPDATE wa_messages SET status=$2, pricing=COALESCE($3, pricing),
-         error=COALESCE($4, error), updated_at=NOW()
-       WHERE wamid=$1 RETURNING id, phone_norm, order_no, fallback_sms, fallback_done`,
-      [s.wamid, s.status, s.pricing ? jb(s.pricing) : null,
-       s.errors?.length ? String(s.errors[0].code + ":" + (s.errors[0].title || "")).slice(0, 120) : null]);
+      `UPDATE wa_messages SET status = CASE
+           WHEN $2 = 'failed' THEN CASE WHEN status IN ('delivered','read') THEN status ELSE 'failed' END
+           WHEN status = 'failed' THEN CASE WHEN $2 IN ('delivered','read') THEN $2 ELSE status END
+           WHEN (CASE $2 WHEN 'sent' THEN 1 WHEN 'delivered' THEN 2 WHEN 'read' THEN 3 ELSE -1 END)
+              > (CASE status WHEN 'accepted' THEN 0 WHEN 'sent' THEN 1 WHEN 'delivered' THEN 2 WHEN 'read' THEN 3 ELSE -1 END)
+             THEN $2
+           ELSE status END,
+         pricing=COALESCE($3, pricing), error=COALESCE($4, error), updated_at=NOW()
+       WHERE wamid=$1 RETURNING id, phone_norm, order_no, fallback_sms, fallback_done, status`,
+      [s.wamid, s.status, s.pricing ? jb(s.pricing) : null, errOf(s)]);
     const row = r.rows[0];
-    if (s.status !== "failed" || !row?.fallback_sms || row.fallback_done) return;
+    await emit("status", { ...s, error: errOf(s), code: s.errors?.[0]?.code != null ? Number(s.errors[0].code) : null });
+    const finalStatus = row?.status || s.status;
+    if (finalStatus !== "failed" || !row?.fallback_sms || row.fallback_done) return;
     let smsOn = false;
     try { smsOn = (await getSettingsData())?.notifications?.smsEnabled === true; } catch { /* off */ }
     if (!smsOn) return;
@@ -449,30 +674,142 @@ export function register(app, ctx, deps = {}) {
     catch (e) { console.error(`[wa] SMS fallback failed for ${row.order_no}:`, e.message); }
   }
 
-  async function handleInbound(m) {
-    const pn = fromWaId(m.from);
-    await pool.query(
-      `INSERT INTO wa_messages(wamid, direction, phone_norm, status, body, pricing)
-       VALUES ($1,'in',$2,'received',$3,$4) ON CONFLICT (wamid) DO NOTHING`,
-      [m.wamid, pn, String(m.text || `[${m.type}]`).slice(0, 1000), m.referral ? jb({ referral: m.referral }) : null]);
-    if (!pn) return;
-    /* يفتح/يجدّد نافذة الـ٢٤ ساعة ويرفع «غير مقروء» للكاشير. */
-    touchThread({ phoneNorm: pn, direction: "in", text: m.text || `[${m.type}]`, at: m.at || null });
-    if (m.intent === "stop") {
+  async function applyIntent(pn, intent) {
+    if (intent === "stop") {
       await recordOptIn({ phone: pn, marketing: false, source: "wa_stop" });
       pool.query(
         `UPDATE cms_contacts SET opted_out_at=COALESCE(opted_out_at, NOW()), optout_source='whatsapp'
           WHERE phone_norm=$1`, [pn]).catch(() => {});
-    } else if (m.intent === "start") {
+    } else if (intent === "start") {
       await recordOptIn({ phone: pn, marketing: true, source: "wa_start" });
     }
-    // الرد الآلي (إعلانات Click-to-WhatsApp وغيرها) — مفتاح منفصل، ببلاش جوّه النافذة.
+  }
+
+  async function handleInbound(m) {
+    const pn = fromWaId(m.from);
+    const ins = await pool.query(
+      `INSERT INTO wa_messages(wamid, direction, phone_norm, status, body, pricing, source, msg_type)
+       VALUES ($1,'in',$2,'received',$3,$4,'api',$5) ON CONFLICT (wamid) DO NOTHING RETURNING id`,
+      [m.wamid, pn, String(m.text || `[${m.type}]`).slice(0, 1000), m.referral ? jb({ referral: m.referral }) : null, m.type || null]);
+    if (ins.rowCount === 0) return; // ويب هوك مكرر — اتعالج قبل كده
+    if (!pn) return;
+    /* يفتح/يجدّد نافذة الـ٢٤ ساعة ويرفع «غير مقروء» للكاشير. */
+    await touchThread({ phoneNorm: pn, direction: "in", text: m.text || `[${m.type}]`, at: m.at || null });
+    await applyIntent(pn, m.intent);
+    const ev = { phone: pn, phoneNorm: pn, wamid: m.wamid, text: m.text || "", type: m.type, interactiveId: m.interactiveId || null,
+      referral: m.referral || null, isEcho: false, ts: m.at, at: m.at, intent: m.intent, source: "api" };
+    await emit("inbound", ev);
+    if (bot && env("WHATSAPP_BOT_ENABLED") === "1") { await runBot(ev).catch((e) => console.error("[wa] bot:", e.message)); return; }
+    // الرد الآلي (إعلانات Click-to-WhatsApp وغيرها) — مفتاح منفصل، ببلاش جوّه النافذة،
+    // وبيسكت لو الكاشير بيكلّم العميل من الموبايل (نفس قاعدة البوت).
     const cfg = (await getSettingsData().catch(() => ({})))?.notifications || {};
-    if (cfg.whatsappAutoReply === true && !m.intent) {
+    if (cfg.whatsappAutoReply === true && !m.intent && !(await humanActive(pn))) {
       const text = cfg.whatsappAutoReplyText ||
         `أهلاً بك في فريش كاتس 🔥\nاطلب أونلاين وادفع في دقيقة: ${STORE()}/?utm_source=whatsapp&utm_medium=message\nوإذا تحتاج مساعدة اكتب سؤالك ويرد عليك فريقنا.`;
       await sendText({ phoneNorm: pn, text });
     }
+  }
+
+  /* الكاشير بعت من تطبيق واتساب بزنس على الموبايل (Coexistence). بيتسجّل صادر
+     في نفس المحادثة عشان الصندوق يعرض كل حاجة — ومفيش أي رد آلي عليه. */
+  async function handleEcho(e) {
+    const pn = fromWaId(e.to);
+    const ins = await pool.query(
+      `INSERT INTO wa_messages(wamid, direction, phone_norm, status, body, source, msg_type, created_at)
+       VALUES ($1,'out',$2,'sent',$3,'echo',$4, COALESCE($5::timestamptz, NOW())) ON CONFLICT (wamid) DO NOTHING RETURNING id`,
+      [e.wamid, pn, String(e.text || `[${e.type}]`).slice(0, 1000), e.type || null, e.at]);
+    if (ins.rowCount === 0 || !pn) return;
+    await touchThread({ phoneNorm: pn, direction: "out", text: e.text || `[${e.type}]`, at: e.at || null });
+    // المستمعين يعرفوا إن إنسان بيرد (البوت بيسكت) — isEcho:true = مش رسالة عميل
+    await emit("inbound", { phone: pn, phoneNorm: pn, wamid: e.wamid, text: e.text || "", type: e.type, interactiveId: null,
+      referral: null, isEcho: true, ts: e.at, at: e.at, intent: null, source: "echo" });
+  }
+
+  /* جهات اتصال تطبيق واتساب بزنس — اسم للجوال (الأحدث بيكسب). */
+  async function handleContact(c) {
+    const pn = fromWaId(c.phone);
+    if (!pn) return;
+    await pool.query(
+      `INSERT INTO wa_contact_names(phone_norm, full_name, first_name, removed, src_at)
+       VALUES ($1,$2,$3,$4,$5)
+       ON CONFLICT (phone_norm) DO UPDATE SET
+         full_name = CASE WHEN $4 THEN wa_contact_names.full_name ELSE COALESCE($2, wa_contact_names.full_name) END,
+         first_name = CASE WHEN $4 THEN wa_contact_names.first_name ELSE COALESCE($3, wa_contact_names.first_name) END,
+         removed = $4, src_at = $5, updated_at = NOW()
+       WHERE wa_contact_names.src_at IS NULL OR $5::timestamptz IS NULL OR $5::timestamptz >= wa_contact_names.src_at`,
+      [pn, c.fullName, c.firstName, c.action === "remove", c.at]);
+  }
+  async function handleProfile(p) {
+    const pn = fromWaId(p.waId);
+    if (!pn) return;
+    await pool.query(
+      `INSERT INTO wa_contact_names(phone_norm, profile_name) VALUES ($1,$2)
+       ON CONFLICT (phone_norm) DO UPDATE SET profile_name=$2, updated_at=NOW()`, [pn, p.name]);
+  }
+
+  /* تاريخ المحادثات (مرة واحدة بعد الربط، على دفعات لحد ٦ شهور). idempotent
+     بالـwamid، وسقف إجمالي (WHATSAPP_HISTORY_MAX، افتراضي ٢٠ ألف) عشان الجدول
+     مايتملاش. مابيرفعش «غير مقروء»، و«إيقاف» بيتطبّق بس لو من آخر ٣٠ يوم. */
+  async function handleHistory({ items, errors, meta }) {
+    const st = (await pool.query("SELECT imported FROM wa_history_state WHERE id=1")).rows[0] || { imported: 0 };
+    let room = Math.max(0, HISTORY_MAX() - (Number(st.imported) || 0));
+    let imported = 0, skipped = 0;
+    const sorted = [...items].sort((a, b) => String(a.at || "").localeCompare(String(b.at || "")));
+    for (const h of sorted) {
+      const pn = fromWaId(h.customer);
+      if (!pn || !h.wamid) { skipped++; continue; }
+      if (room <= 0) { skipped++; continue; }
+      const ins = await pool.query(
+        `INSERT INTO wa_messages(wamid, direction, phone_norm, status, body, source, msg_type, created_at)
+         VALUES ($1,$2,$3,$4,$5,'history',$6, COALESCE($7::timestamptz, NOW())) ON CONFLICT (wamid) DO NOTHING RETURNING id`,
+        [h.wamid, h.direction, pn, h.direction === "in" ? "received" : (h.status || "sent"),
+          String(h.text || `[${h.type}]`).slice(0, 1000), h.type || null, h.at]);
+      if (ins.rowCount === 0) { skipped++; continue; }
+      imported++; room--;
+      await touchThread({ phoneNorm: pn, direction: h.direction, text: h.text || `[${h.type}]`, at: h.at || null, silent: true });
+      if (h.direction === "in" && h.at && Date.now() - Date.parse(h.at) < 30 * 86400000) {
+        const intent = intentOf(h.text);
+        if (intent === "stop") await applyIntent(pn, intent);
+      }
+    }
+    await pool.query(
+      `UPDATE wa_history_state SET imported = imported + $1, skipped = skipped + $2, chunks = chunks + 1,
+         last_meta = COALESCE($3, last_meta), errors = CASE WHEN $4::jsonb IS NULL THEN errors ELSE $4::jsonb END, updated_at = NOW()
+       WHERE id=1`,
+      [imported, skipped, meta?.length ? jb(meta[meta.length - 1]) : null, errors?.length ? jb(errors) : null]);
+    return { imported, skipped };
+  }
+
+  async function health(fields) {
+    const seen = new Map();
+    for (const f of fields) seen.set(f.field, f.ignored || null);
+    for (const [field, note] of seen) {
+      await pool.query(
+        `INSERT INTO wa_webhook_health(field, last_at, n, last_note) VALUES ($1, NOW(), 1, $2)
+         ON CONFLICT (field) DO UPDATE SET last_at=NOW(), n = wa_webhook_health.n + 1, last_note=$2`,
+        [String(field).slice(0, 60), note]).catch(() => {});
+    }
+  }
+
+  /* الويب هوك كله بعد التوقيع. مستقلة عشان الاختبارات تناديها من غير HTTP. */
+  async function processWebhook(body) {
+    await ready;
+    const p = parseWebhook(body, { phoneId: phoneId() || null });
+    await health(p.fields);
+    for (const x of p.profiles) await handleProfile(x).catch((e) => console.error("[wa] profile:", e.message));
+    for (const s of p.statuses) await handleStatus(s).catch((e) => console.error("[wa] status:", e.message));
+    for (const m of p.messages) await handleInbound(m).catch((e) => console.error("[wa] inbound:", e.message));
+    for (const e of p.echoes) await handleEcho(e).catch((er) => console.error("[wa] echo:", er.message));
+    for (const c of p.contacts) await handleContact(c).catch((e) => console.error("[wa] contact:", e.message));
+    if (p.history.length || p.historyErrors.length || p.historyMeta.length) {
+      await handleHistory({ items: p.history, errors: p.historyErrors, meta: p.historyMeta })
+        .catch((e) => console.error("[wa] history:", e.message));
+    }
+    for (const t of p.templateEvents) {
+      await pool.query("INSERT INTO wa_template_events(name, language, template_id, event, reason) VALUES ($1,$2,$3,$4,$5)",
+        [t.name, t.language, t.id, t.event, t.reason]).catch(() => {});
+    }
+    return p;
   }
 
   // تحقق ميتا وقت ربط الويب هوك.
@@ -488,17 +825,14 @@ export function register(app, ctx, deps = {}) {
     try { raw = await c.req.text(); } catch { return c.json({ ok: true }); }
     if (!verifySignature(raw, c.req.header("x-hub-signature-256"), env("WHATSAPP_APP_SECRET"))) {
       console.warn("[wa] webhook signature missing/invalid — ignored");
+      pool.query(`INSERT INTO wa_webhook_health(field, last_at, n, last_note) VALUES ('_bad_signature', NOW(), 1, NULL)
+        ON CONFLICT (field) DO UPDATE SET last_at=NOW(), n = wa_webhook_health.n + 1`).catch(() => {});
       return c.json({ ok: true, ignored: "signature" });
     }
     let body;
     try { body = JSON.parse(raw); } catch { return c.json({ ok: true, ignored: "json" }); }
-    const { statuses, messages } = parseWebhook(body);
     // بنرد فوراً؛ المعالجة في الخلفية (ميتا بتعيد لو اتأخرنا).
-    Promise.resolve().then(async () => {
-      await ready;
-      for (const s of statuses) await handleStatus(s).catch((e) => console.error("[wa] status:", e.message));
-      for (const m of messages) await handleInbound(m).catch((e) => console.error("[wa] inbound:", e.message));
-    });
+    Promise.resolve().then(() => processWebhook(body)).catch((e) => console.error("[wa] webhook:", e.message));
     return c.json({ ok: true });
   });
 
@@ -533,6 +867,25 @@ export function register(app, ctx, deps = {}) {
     return c.json({ ok: true, templates: Object.keys(TEMPLATES).map((n) => templateSubmission(n)) });
   });
 
+  /* رفع صورة المثال لقالب بهيدر صورة (Resumable Upload API) ⇒ header_handle.
+     ميتا مابتقبلش رابط — لازم handle. بيتنده بس من التقديم (مقفول بمفتاح). */
+  async function uploadHandle(imageUrl) {
+    const appId = env("WHATSAPP_APP_ID", "1073414588466040");
+    const img = await doFetch(imageUrl);
+    if (!img.ok) throw new Error(`sample image HTTP ${img.status}`);
+    const buf = Buffer.from(await img.arrayBuffer());
+    const type = (img.headers?.get?.("content-type") || "image/jpeg").split(";")[0];
+    const s = await doFetch(`https://graph.facebook.com/${GRAPH_VERSION}/${appId}/uploads?file_length=${buf.length}&file_type=${encodeURIComponent(type)}`,
+      { method: "POST", headers: { Authorization: `Bearer ${token()}` } });
+    const sd = await s.json().catch(() => ({}));
+    if (!sd.id) throw new Error(sd.error?.message || "upload session failed");
+    const u = await doFetch(`https://graph.facebook.com/${GRAPH_VERSION}/${sd.id}`,
+      { method: "POST", headers: { Authorization: `OAuth ${token()}`, file_offset: "0" }, body: buf });
+    const ud = await u.json().catch(() => ({}));
+    if (!ud.h) throw new Error(ud.error?.message || "upload failed");
+    return ud.h;
+  }
+
   // Admin: تقديم القوالب لميتا — مفتاح مستقل WHATSAPP_TEMPLATES_WRITE=1 (مابيبعتش رسايل).
   app.post("/api/wa/templates/submit", async (c) => {
     const err = await requireAdmin(c); if (err) return err;
@@ -544,11 +897,21 @@ export function register(app, ctx, deps = {}) {
     const results = [];
     for (const n of names) {
       if (!TEMPLATES[n]) { results.push({ name: n, ok: false, error: "unknown" }); continue; }
-      try { results.push({ name: n, ok: true, ...(await graphPost(`${wabaId()}/message_templates`, templateSubmission(n))) }); }
+      try {
+        const sub = templateSubmission(n);
+        const hdr = sub.components.find((x) => x.type === "HEADER" && x.format === "IMAGE");
+        if (hdr) {
+          if (!b.sampleImageUrl) { results.push({ name: n, ok: false, error: "sample_image_required" }); continue; }
+          const h = await uploadHandle(String(b.sampleImageUrl));
+          sub.components = sub.components.map((x) => (x === hdr ? { ...x, example: { header_handle: [h] } } : x));
+        }
+        results.push({ name: n, ok: true, ...(await graphPost(`${wabaId()}/message_templates`, sub)) });
+      }
       catch (e) { results.push({ name: n, ok: false, error: e.message }); }
     }
     return c.json({ ok: true, results });
   });
 
-  return { sendTemplate, sendText, sendOrderUpdate, recordOptIn, gate, configured, masterOn, ready, setInbox };
+  return { sendTemplate, sendText, sendOrderUpdate, recordOptIn, gate, configured, masterOn, ready, setInbox,
+    on, processWebhook, token, phoneId, wabaId, setBot, runBot, humanActive };
 }

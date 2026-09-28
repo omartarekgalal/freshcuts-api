@@ -16,6 +16,12 @@
        على نفس بوابة whatsapp.js، فلو الموديول مقفول مفيش أي طلب شبكة.
      - القوالب الحيّة من ميتا (الاسم + حالة الاعتماد) — عرض بس، مابنعملش قوالب.
 
+   تحديث ٢٨/٩ — Coexistence: الرقم بقى على تطبيق واتساب بزنس **و** Cloud API
+   مع بعض. الكاشير يقدر يفضل يرد من الموبايل، ورسايله بتوصلنا صدى
+   (smb_message_echoes) وبتتسجّل صادر في نفس المحادثة (source='echo')، والتاريخ
+   القديم بيتسجّل source='history' من غير ما يرفع «غير مقروء». خانة الرد هنا
+   بقت اختيارية.
+
    كله واقف خلف WHATSAPP_ENABLED=1. من غيره القراءة بترجّع صندوق فاضي
    و«disabled»، والإرسال بيترفض قبل أي شبكة.
 ═══════════════════════════════════════════════════════════════════════════ */
@@ -56,7 +62,7 @@ export function register(ctx, deps = {}) {
   const doFetch = deps.fetch || globalThis.fetch;
   const wa = deps.wa; // الـAPI الراجع من whatsapp.js register()
 
-  const token = () => env("WHATSAPP_TOKEN") || env("META_CAPI_TOKEN");
+  const token = () => (wa?.token ? wa.token() : (env("WHATSAPP_TOKEN") || env("META_CAPI_TOKEN")));
   const wabaId = () => env("WHATSAPP_WABA_ID");
   const masterOn = () => env("WHATSAPP_ENABLED") === "1";
 
@@ -86,26 +92,29 @@ export function register(ctx, deps = {}) {
   /* ── تحديث المحادثة من رسالة ─────────────────────────────────────────────
      بنناديها من whatsapp.js على كل وارد/صادر. مابترميش أبداً — فشل هنا
      مايوقّفش رسالة طلب. */
-  async function touch({ phoneNorm, direction, text, at = null, orderNo = null }) {
+  async function touch({ phoneNorm, direction, text, at = null, orderNo = null, silent = false }) {
     if (!validPhone(phoneNorm)) return;
     const inbound = direction === "in";
     try {
       await ready;
+      /* silent = رسالة قديمة (تاريخ المحادثات بعد ربط Coexistence): بتحدّث
+         الأوقات بس — مابترفعش «غير مقروء» ومابتصفّروش. وآخر نص بيتغيّر بس
+         لو الرسالة دي أحدث من اللي عندنا (التاريخ بيوصل مش بالترتيب). */
       await pool.query(
         `INSERT INTO wa_threads(phone_norm, last_in_at, last_out_at, last_at, last_text, last_dir, unread, order_no)
          VALUES ($1, CASE WHEN $2 THEN COALESCE($3::timestamptz, NOW()) END,
                      CASE WHEN NOT $2 THEN COALESCE($3::timestamptz, NOW()) END,
-                     COALESCE($3::timestamptz, NOW()), $4, $5, CASE WHEN $2 THEN 1 ELSE 0 END, $6)
+                     COALESCE($3::timestamptz, NOW()), $4, $5, CASE WHEN $2 AND NOT $7 THEN 1 ELSE 0 END, $6)
          ON CONFLICT (phone_norm) DO UPDATE SET
            last_in_at  = CASE WHEN $2 THEN GREATEST(COALESCE($3::timestamptz, NOW()), COALESCE(wa_threads.last_in_at, 'epoch'::timestamptz)) ELSE wa_threads.last_in_at END,
            last_out_at = CASE WHEN NOT $2 THEN GREATEST(COALESCE($3::timestamptz, NOW()), COALESCE(wa_threads.last_out_at, 'epoch'::timestamptz)) ELSE wa_threads.last_out_at END,
            last_at     = GREATEST(COALESCE($3::timestamptz, NOW()), wa_threads.last_at),
-           last_text   = $4,
-           last_dir    = $5,
-           unread      = CASE WHEN $2 THEN wa_threads.unread + 1 ELSE 0 END,
+           last_text   = CASE WHEN COALESCE($3::timestamptz, NOW()) >= wa_threads.last_at THEN $4 ELSE wa_threads.last_text END,
+           last_dir    = CASE WHEN COALESCE($3::timestamptz, NOW()) >= wa_threads.last_at THEN $5 ELSE wa_threads.last_dir END,
+           unread      = CASE WHEN $7 THEN wa_threads.unread WHEN $2 THEN wa_threads.unread + 1 ELSE 0 END,
            order_no    = COALESCE($6, wa_threads.order_no),
            updated_at  = NOW()`,
-        [phoneNorm, inbound, at, preview(text, 200), direction, orderNo]);
+        [phoneNorm, inbound, at, preview(text, 200), direction, orderNo, silent === true]);
     } catch (e) { console.error("[wa-inbox] touch failed:", e.message); }
   }
 
@@ -126,6 +135,9 @@ export function register(ctx, deps = {}) {
       webhookSecret: Boolean(env("WHATSAPP_APP_SECRET")),
       verifyToken: Boolean(env("WHATSAPP_VERIFY_TOKEN")),
       windowHours: WINDOW_MS / 3600000,
+      // Coexistence: نفس الرقم على تطبيق واتساب بزنس — الكاشير يقدر يرد من الموبايل
+      // كمان، ورسايله بتظهر هنا (smb_message_echoes). خانة الرد هنا اختيارية.
+      coexistence: env("WHATSAPP_COEXISTENCE", "1") !== "0",
     };
   }
 
@@ -136,9 +148,10 @@ export function register(ctx, deps = {}) {
     const term = String(q || "").replace(/\D/g, "");
     const rows = (await pool.query(
       `SELECT t.phone_norm, t.last_in_at, t.last_at, t.last_text, t.last_dir, t.unread, t.order_no,
-              c.name AS name, c.orders AS orders
+              COALESCE(c.name, n.full_name, n.profile_name) AS name, c.orders AS orders
          FROM wa_threads t
          LEFT JOIN cms_contacts c ON c.phone_norm = t.phone_norm
+         LEFT JOIN wa_contact_names n ON n.phone_norm = t.phone_norm AND NOT n.removed
         WHERE ($1 = '' OR t.phone_norm LIKE '%' || $1 || '%')
         ORDER BY t.last_at DESC
         LIMIT $2`, [term, lim])).rows;
@@ -167,14 +180,15 @@ export function register(ctx, deps = {}) {
     await ready;
     const lim = Math.min(Math.max(Number(limit) || 80, 1), 300);
     const head = (await pool.query(
-      `SELECT t.phone_norm, t.last_in_at, t.unread, t.order_no, c.name AS name, c.orders AS orders,
+      `SELECT t.phone_norm, t.last_in_at, t.unread, t.order_no, COALESCE(c.name, n.full_name, n.profile_name) AS name, c.orders AS orders,
               o.updates AS optin_updates, o.marketing AS optin_marketing
          FROM wa_threads t
          LEFT JOIN cms_contacts c ON c.phone_norm = t.phone_norm
          LEFT JOIN wa_optins  o ON o.phone_norm = t.phone_norm
+         LEFT JOIN wa_contact_names n ON n.phone_norm = t.phone_norm AND NOT n.removed
         WHERE t.phone_norm = $1`, [phoneNorm])).rows[0];
     const msgs = (await pool.query(
-      `SELECT wamid, direction, status, error, body, template, category, order_no, created_at
+      `SELECT wamid, direction, status, error, body, template, category, order_no, created_at, source
          FROM wa_messages WHERE phone_norm = $1
         ORDER BY created_at DESC LIMIT $2`, [phoneNorm, lim])).rows;
     return {
@@ -194,6 +208,8 @@ export function register(ctx, deps = {}) {
         status: m.status || null,
         error: m.error || null,
         orderNo: m.order_no || null,
+        // api = من السيرفر · echo = الكاشير من الموبايل · history = قبل الربط · campaign = حملة
+        source: m.source || "api",
         at: m.created_at,
       })),
     };

@@ -2483,6 +2483,31 @@ export function register(app, ctx, deps = {}) {
     return { messageId: data.messageId != null ? String(data.messageId) : null, cost: Number(data.cost) || 0, parts: Number(data.msgLength) || smsPartsOf(body) };
   }
 
+  /* 📲→📱 SMS بديل لرسالة واتساب Cloud فشلت (wasender.js، لو الحملة اختارت
+     «SMS» كبديل). نفس ضوابط الـSMS التسويقي: مفتاح الحملات، الإيقاف، حاجبين
+     الإعلانات (FreshCut-AD مابيوصلهمش)، السقف اليومي والميزانية، وسطر الإيقاف. */
+  async function waFallbackSms({ phoneNorm, text, ref = null }) {
+    const pn = String(phoneNorm || "");
+    if (!/^5\d{8}$/.test(pn) || !String(text || "").trim()) return { ok: false, skipped: "bad_input" };
+    const cfg = await campaignCfg();
+    if (cfg.smsEnabled !== true) return { ok: false, skipped: "sms_off" };
+    const c = (await optoutCodes([pn])).get(pn);
+    if (c?.opted_out_at) return { ok: false, skipped: "opted_out" };
+    const smsBlock = typeof deps.smsBlock === "function" ? deps.smsBlock() : null;
+    const blocked = smsBlock ? await smsBlock.blockedSet([pn]).catch(() => new Set()) : new Set();
+    if (blocked.has(pn)) return { ok: false, skipped: "ad_blocked" };
+    if ((await smsToday()) + 2 > Number(cfg.dailySmsCap || 0)) return { ok: false, skipped: "daily_cap" };
+    if ((await budgetLeft(cfg)) < 2 * 0.075) return { ok: false, skipped: "budget" };
+    const body = `${String(text).trim()}
+${smsRules.optoutLine(cfg, { code: c?.optout_code, host: STORE_PUBLIC(), sender: process.env.TAQNYAT_SENDER_AD })}`;
+    try {
+      const info = await sendMarketingSms(pn, body);
+      logSms({ phoneNorm: pn, kind: "wa_fallback", ref, sender: process.env.TAQNYAT_SENDER_AD || null,
+        body, msgId: info && info.messageId, cost: info && info.cost, parts: info && info.parts });
+      return { ok: true };
+    } catch (e) { return { ok: false, error: String(e.code || e.message).slice(0, 60) }; }
+  }
+
   async function budgetLeft(cfg) {
     const cap = Number(cfg.budgetSar) || 0;
     if (cap <= 0) return Infinity;
@@ -3432,5 +3457,5 @@ export function register(app, ctx, deps = {}) {
     return (await customerRows()).filter(seg.test).map((x) => x.pn);
   }
   return { sectionOf, effectivePerms, sessionUser, whoami, expandBundle: expand, getBundle, offersPagePayload,
-    segmentList, segmentPhones };
+    segmentList, segmentPhones, waFallbackSms };
 }

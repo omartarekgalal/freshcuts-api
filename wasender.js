@@ -23,6 +23,16 @@
    ── الإضافة ────────────────────────────────────────────────────────────────
    التوثيق بتوكن جهاز (بيتولّد من اللوحة، بيتخزّن sha256 بس). الإضافة مابتشوفش
    غير رسالة واحدة في المرة.
+
+   ── قناة Cloud API (٢٨/٩ — Coexistence) ───────────────────────────────────
+   الحملة بتختار قناتها: wa_web (الإضافة، زي الأول) أو wa_cloud (قالب معتمد من
+   ميتا بصورة وزرار، السيرفر بيبعته بنفسه — مفيش إضافة). نفس الطابور ونفس
+   الاستبعادات (إيقاف/فريق/٣ أيام مشتركة مع SMS/طلب قريب/طلب مفتوح/holdout)،
+   وحدود Cloud لوحدها (settings.waCloud: يومي/ساعة/حد الـ٢٥٠ عميل في ٢٤ ساعة
+   للبزنس غير الموثّق مع حجز لتحديثات الطلب). الحالات (وصلت/اتقرت/فشلت) بتيجي
+   من الويب هوك وبتحدّث صف الطابور، والفشل بكود ميتا بيتحوّل لسبب، واختياري
+   قناة بديلة للحملة (واتساب ويب أو SMS). الردود و«إيقاف» بتيجي من الويب هوك
+   لنفس تبويب الردود.
 ═══════════════════════════════════════════════════════════════════════════ */
 import crypto from "node:crypto";
 import { staffPhoneSet, inHoldout, normLocal } from "./smsrules.js";
@@ -31,6 +41,9 @@ import {
   creditOrders, dropPosMirrors, summarizeResults,
 } from "./wamsg.js";
 import { shopPaidSql } from "./identity.js";
+import { nextStatus, TEMPLATES } from "./whatsapp.js";
+import { cloudCfg, cloudPacing, classifyError, fallbackFor, campaignParams, cloudJobProblem, defaultChannel,
+  CAMPAIGN_TEMPLATES } from "./wacloud.js";
 
 export const MIN_GAP_DAYS = 3;
 export const DEFAULTS = {
@@ -153,7 +166,18 @@ export function jobInput(b = {}, { hosts = [] } = {}) {
       minTotal: Math.max(0, Number(O.minTotal) || 0) };
     if (staticCoupon) errs.push(["two_coupons", "اختار: كوبون ثابت على الرابط أو كوبون مرة واحدة لكل عميل — مش الاتنين"]);
   }
-  return { errs, template, link: { slug: slug || null, target_type, target_id, coupon: staticCoupon }, holdoutPct, imageUrl, offer };
+  /* القناة (٢٨/٩): wa_web = الإضافة · wa_cloud = قالب معتمد من السيرفر */
+  const channel = b.channel === "wa_cloud" ? "wa_cloud" : "wa_web";
+  const fallback = ["none", "wa_web", "sms"].includes(b.fallback) ? b.fallback : "none";
+  let cloudTemplate = null, cloudVars = null;
+  if (channel === "wa_cloud") {
+    cloudTemplate = String(b.cloudTemplate || "").trim();
+    cloudVars = { offer: String((b.cloudVars && b.cloudVars.offer) || "").replace(/\r/g, "").trim().slice(0, 400) };
+    const p = cloudJobProblem({ cloudTemplate, cloudVars, imageUrl, offer, link: { coupon: staticCoupon } });
+    if (p) errs.push(p);
+  }
+  return { errs, template, link: { slug: slug || null, target_type, target_id, coupon: staticCoupon }, holdoutPct, imageUrl, offer,
+    channel, cloudTemplate, cloudVars, fallback: channel === "wa_cloud" ? fallback : "none" };
 }
 
 /* كود الرابط لكل مستلم + كود الكوبون (من غير حروف متشابهة) */
@@ -261,6 +285,20 @@ export function register(app, ctx, deps = {}) {
       );
       CREATE INDEX IF NOT EXISTS wa_replies_pn_idx ON wa_replies(phone_norm, at DESC);
       -- أرقام مش على واتساب — مابتدخلش أي حملة تانية
+      -- قناة Cloud API (٢٨/٩)
+      ALTER TABLE wa_send_jobs ADD COLUMN IF NOT EXISTS channel TEXT NOT NULL DEFAULT 'wa_web';   -- wa_web | wa_cloud
+      ALTER TABLE wa_send_jobs ADD COLUMN IF NOT EXISTS cloud_template TEXT;
+      ALTER TABLE wa_send_jobs ADD COLUMN IF NOT EXISTS cloud_vars JSONB;
+      ALTER TABLE wa_send_jobs ADD COLUMN IF NOT EXISTS fallback TEXT NOT NULL DEFAULT 'none';   -- none | wa_web | sms
+      ALTER TABLE wa_send_queue ADD COLUMN IF NOT EXISTS channel TEXT;          -- القناة اللي اتبعت/هيتبعت بيها فعلاً
+      ALTER TABLE wa_send_queue ADD COLUMN IF NOT EXISTS wamid TEXT;
+      ALTER TABLE wa_send_queue ADD COLUMN IF NOT EXISTS cloud_status TEXT;     -- accepted | sent | delivered | read | failed
+      ALTER TABLE wa_send_queue ADD COLUMN IF NOT EXISTS delivered_at TIMESTAMPTZ;
+      ALTER TABLE wa_send_queue ADD COLUMN IF NOT EXISTS read_at TIMESTAMPTZ;
+      ALTER TABLE wa_send_queue ADD COLUMN IF NOT EXISTS error_code INT;
+      ALTER TABLE wa_send_queue ADD COLUMN IF NOT EXISTS fallback_from TEXT;    -- «wa_cloud:<سبب>» لو اتحوّلت لقناة تانية
+      CREATE INDEX IF NOT EXISTS wa_send_queue_wamid_idx ON wa_send_queue(wamid) WHERE wamid IS NOT NULL;
+      INSERT INTO wa_sender_state(id) VALUES (2) ON CONFLICT DO NOTHING;      -- حالة قناة Cloud لوحدها
       CREATE TABLE IF NOT EXISTS wa_invalid_numbers (
         phone_norm TEXT PRIMARY KEY,
         at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -269,17 +307,29 @@ export function register(app, ctx, deps = {}) {
       );
     `);
   }
-  ensureSchema().catch((e) => console.error("[wasender] schema:", e.message));
+  const schemaReady = ensureSchema().catch((e) => console.error("[wasender] schema:", e.message));
 
-  async function stateNow() {
-    const s = (await pool.query("SELECT * FROM wa_sender_state WHERE id=1")).rows[0] || {};
+  /* الحالة لكل قناة: wa_web (صف ١، الإضافة) و wa_cloud (صف ٢). العدّ بالقناة
+     اللي الصف اتبعت بيها فعلاً (الصفوف القديمة من غير قناة = wa_web). */
+  async function stateNow(channel = "wa_web") {
+    const sid = channel === "wa_cloud" ? 2 : 1;
+    const s = (await pool.query("SELECT * FROM wa_sender_state WHERE id=$1", [sid])).rows[0] || {};
     const c = (await pool.query(
       `SELECT count(*) FILTER (WHERE (sent_at AT TIME ZONE 'Asia/Riyadh')::date = (NOW() AT TIME ZONE 'Asia/Riyadh')::date)::int AS today,
               count(*) FILTER (WHERE sent_at > NOW() - INTERVAL '1 hour')::int AS last_hour
-         FROM wa_send_queue WHERE status='sent' AND sent_at > NOW() - INTERVAL '2 days'`)).rows[0];
-    return { lastSentAt: s.last_sent_at, nextGapSec: s.next_gap_sec, sinceBreak: s.since_break || 0,
+         FROM wa_send_queue WHERE status='sent' AND sent_at > NOW() - INTERVAL '2 days' AND COALESCE(channel,'wa_web') = $1`, [channel])).rows[0] || {};
+    const out = { lastSentAt: s.last_sent_at, nextGapSec: s.next_gap_sec, sinceBreak: s.since_break || 0,
       failStreak: s.fail_streak || 0, lastSeenAt: s.last_seen_at, agent: s.agent, stoppedReason: s.stopped_reason,
-      today: c.today, lastHour: c.last_hour };
+      today: c.today || 0, lastHour: c.last_hour || 0 };
+    if (channel === "wa_cloud") {
+      /* حد ميتا للبزنس غير الموثّق = عملاء مختلفين بدأنا معاهم بقالب في ٢٤ ساعة —
+         الحملات وتحديثات الطلبات مع بعض (wa_messages فيها الاتنين). */
+      out.uniq24h = await pool.query(
+        `SELECT count(DISTINCT phone_norm)::int AS n FROM wa_messages
+          WHERE direction='out' AND template IS NOT NULL AND COALESCE(status,'') <> 'failed' AND created_at > NOW() - INTERVAL '24 hours'`)
+        .then((r) => r.rows[0]?.n || 0).catch(() => 0);
+    }
+    return out;
   }
 
   /* الأرقام اللي اتكلّمت في آخر gapDays — واتساب (آلي/يدوي) + رسايل SMS التسويقية
@@ -421,6 +471,9 @@ export function register(app, ctx, deps = {}) {
               count(q.*) FILTER (WHERE q.replied_at IS NOT NULL)::int AS replied,
               count(q.*) FILTER (WHERE q.optout_at IS NOT NULL)::int AS optouts,
               count(q.*) FILTER (WHERE q.clicks > 0)::int AS clickers,
+              count(q.*) FILTER (WHERE q.cloud_status IN ('delivered','read'))::int AS delivered,
+              count(q.*) FILTER (WHERE q.cloud_status = 'read')::int AS read_n,
+              count(q.*) FILTER (WHERE q.channel = 'wa_cloud' AND q.status IN ('sent','failed'))::int AS cloud_sent,
               (SELECT l.clicks FROM cms_links l WHERE l.slug = j.link_slug) AS link_clicks
          FROM wa_send_jobs j LEFT JOIN wa_send_queue q ON q.job_id=j.id
         GROUP BY j.id ORDER BY j.id DESC LIMIT 30`)).rows;
@@ -430,7 +483,8 @@ export function register(app, ctx, deps = {}) {
               (SELECT count(*)::int FROM wa_replies WHERE is_optout AND at > NOW() - INTERVAL '7 days') AS optouts7`)).rows[0];
     const C = outreach && typeof outreach.cfg === "function" ? await outreach.cfg() : { template: "", site: "freshcuts.sa" };
     const { agentHash, ...pub } = cfg;
-    return c.json({ ok: true, cfg: pub, agentPaired: Boolean(agentHash), state: st,
+    const cloud = await cloudInfo(s, cfg);
+    return c.json({ ok: true, cfg: pub, agentPaired: Boolean(agentHash), state: st, cloud,
       pace: pacing(cfg, st, now(), () => 0), inWindow: inWindow(cfg, now()),
       effectiveDailyCap: effectiveDailyCap(cfg, now()),
       audiences: await audienceList(),
@@ -509,12 +563,13 @@ export function register(app, ctx, deps = {}) {
     const sample = pick.map((x) => ({ name: x.name, phone: `${x.pn.slice(0, 3)}••••${x.pn.slice(-2)}`,
       orders: x.orders, spend: x.spend, daysAgo: x.daysAgo, lastTotal: x.lastTotal, skippedSmall: x.skippedSmall || 0,
       vars: { ...x.vars, link: recipientLink(host, slug, "xxxxxx"), coupon: couponEx || "", coupon_days: input.offer ? String(input.offer.validDays) : "" },
-      message: messageFor(x, { template: tpl, footer: r.cfg.footer, host, slug, code: "xxxxxx", coupon: couponEx, couponDays: input.offer?.validDays }) }));
+      message: messageFor(x, { template: tpl, footer: r.cfg.footer, host, slug, code: "xxxxxx", coupon: couponEx, couponDays: input.offer?.validDays }),
+      ...(input.channel === "wa_cloud" && TEMPLATES[input.cloudTemplate] ? { cloud: cloudSample(input, x, slug, couponEx) } : {}) }));
     const hold = input.holdoutPct ? r.picked.filter((x) => inHoldout("preview", x.pn, input.holdoutPct)).length : 0;
     const days = Math.ceil((r.picked.length - hold) / Math.max(1, effectiveDailyCap(r.cfg, now())));
     return c.json({ ok: true, audience: r.audience, inAudience: r.inAudience, afterFilters: r.afterFilters,
       excluded: r.excluded, eligible: r.eligible, willQueue: r.picked.length, holdoutEst: hold, estDays: days, sample,
-      customTemplate: Boolean(input.template), template: tpl, footer: r.cfg.footer,
+      customTemplate: Boolean(input.template), template: tpl, footer: r.cfg.footer, channel: input.channel,
       problems: input.errs.map(([error, message]) => ({ error, message })) });
   });
 
@@ -547,10 +602,12 @@ export function register(app, ctx, deps = {}) {
     try {
       await client.query("BEGIN");
       jobId = Number((await client.query(
-        `INSERT INTO wa_send_jobs(name, filters, total, created_by, template, holdout_pct, image_url, offer, audience_label)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id`,
+        `INSERT INTO wa_send_jobs(name, filters, total, created_by, template, holdout_pct, image_url, offer, audience_label,
+                                  channel, cloud_template, cloud_vars, fallback)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING id`,
         [name, J(b.filters || {}), r.picked.length, by, input.template || null, input.holdoutPct, input.imageUrl,
-          input.offer ? J(input.offer) : null, aud ? aud.label : r.audience])).rows[0].id);
+          input.offer ? J(input.offer) : null, aud ? aud.label : r.audience,
+          input.channel, input.cloudTemplate, input.cloudVars ? J(input.cloudVars) : null, input.fallback])).rows[0].id);
       /* الرابط المتتبّع: /l/<slug> (utm_source=whatsapp, utm_campaign=wa-<id>) —
          وكل عميل بياخد /l/<slug>-<code> عشان نعرف مين ضغط (cms.js resolve). */
       slug = input.link.slug || `w${jobId}`;
@@ -591,7 +648,7 @@ export function register(app, ctx, deps = {}) {
       }
       throw e;
     } finally { client.release(); }
-    return c.json({ ok: true, jobId, total: r.picked.length, holdout: holdN, slug, link: recipientLink(host, slug, null) });
+    return c.json({ ok: true, jobId, total: r.picked.length, holdout: holdN, slug, link: recipientLink(host, slug, null), channel: input.channel });
   });
 
   /* ── التحكم في الطابور وهو شغّال (طلب عمر ٢٦/٩) ────────────────────────
@@ -682,7 +739,8 @@ export function register(app, ctx, deps = {}) {
     const canSee = typeof ctx.canSeePhones === "function" ? await ctx.canSeePhones(c) : false;
     const r = await pool.query(
       `SELECT q.id, q.phone_norm, q.name, q.status, q.reason, q.attempts, q.sent_at, q.message, q.clicks, q.replied_at,
-              q.optout_at, q.media, q.note, q.coupon, q.edited_by,
+              q.optout_at, q.media, q.note, q.coupon, q.edited_by, q.channel, q.cloud_status, q.error_code,
+              q.delivered_at, q.read_at, q.fallback_from,
               (SELECT w.text FROM wa_replies w WHERE w.phone_norm = q.phone_norm AND w.at >= q.sent_at
                 ORDER BY w.at DESC LIMIT 1) AS reply
          FROM wa_send_queue q WHERE q.job_id=$1
@@ -740,7 +798,8 @@ export function register(app, ctx, deps = {}) {
     if (!job) return bad(c, "not_found", "مش موجودة", 404);
     const jobId = Number(job.id);
     const rows = (await pool.query(
-      `SELECT phone_norm pn, status, reason, sent_at, clicks, replied_at, optout_at, media, coupon FROM wa_send_queue WHERE job_id=$1`, [jobId])).rows;
+      `SELECT phone_norm pn, status, reason, sent_at, clicks, replied_at, optout_at, media, coupon, channel, cloud_status, error_code, fallback_from
+         FROM wa_send_queue WHERE job_id=$1`, [jobId])).rows;
     const sent = rows.filter((x) => x.status === "sent");
     const hold = rows.filter((x) => x.status === "holdout");
     const count = (f) => rows.filter(f).length;
@@ -753,7 +812,9 @@ export function register(app, ctx, deps = {}) {
       pending: count((x) => ["pending", "sending"].includes(x.status)),
       replies: count((x) => x.replied_at), optouts: count((x) => x.optout_at),
       clicks: linkRow ? Number(linkRow.clicks) : null, clickers: count((x) => Number(x.clicks) > 0),
-      images: count((x) => x.media === "image"), imageFallbacks: count((x) => x.status === "sent" && x.media === "text" && job.image_url) };
+      images: count((x) => x.media === "image"), imageFallbacks: count((x) => x.status === "sent" && x.media === "text" && job.image_url),
+      channel: job.channel || "wa_web", cloudTemplate: job.cloud_template || null, fallback: job.fallback || "none",
+      cloud: cloudStats(rows) };
     if (!pns.length) return c.json({ ...base, direct: null, apps: null, web: null, pos: null });
     const from = new Date(Math.min(t0h.getTime(), ...sent.map((x) => new Date(x.sent_at).getTime())));
     const to = new Date(Math.max(t0h.getTime(), ...sent.map((x) => new Date(x.sent_at).getTime())) + ATTR_DAYS * 86400000);
@@ -817,6 +878,290 @@ export function register(app, ctx, deps = {}) {
     return c.json({ ok: true, recent: Object.fromEntries(r.rows.map((x) => [x.phone_norm, x.at])) });
   });
 
+  /* ── مشترك بين القناتين ─────────────────────────────────────────────── */
+  // ليه مانبعتش للرقم ده دلوقتي؟ (null = ابعت) — نفس الترتيب في القناتين
+  async function skipReason(pn, cfg, staff) {
+    const oo = (await pool.query("SELECT 1 FROM cms_contacts WHERE phone_norm=$1 AND opted_out_at IS NOT NULL", [pn])).rowCount;
+    if (oo) return "opted_out";
+    if (staff.has(pn)) return "staff";
+    if ((await invalidSet([pn])).size) return "invalid_number";
+    const rec = await recentMap([pn], cfg.gapDays);
+    if (rec.size) return rec.get(pn) === "sms" ? "gap_sms" : "gap_3d";
+    const blk = await blockedSets([pn], cfg);
+    if (blk.onlineRecent.size) return "ordered_online";
+    if (blk.openOrder.size) return "open_order";
+    return null;
+  }
+
+  /* اتبعتت: الصف + سجل التواصل (قاعدة الـ٣ أيام) + حالة القناة + فتح الكوبون */
+  async function markSent(q, { media = null, note = null, channel = "wa_web", wamid = null, batchSize = 10 } = {}) {
+    await pool.query(
+      `UPDATE wa_send_queue SET status='sent', sent_at=NOW(), reason=NULL, media=$2, note=$3, channel=$4,
+              wamid=COALESCE($5, wamid), cloud_status = CASE WHEN $5::text IS NULL THEN cloud_status ELSE 'accepted' END
+        WHERE id=$1`, [q.id, media, note, channel, wamid]);
+    await pool.query("INSERT INTO wa_contact_log(phone_norm, channel, job_id, by) VALUES ($1,'auto',$2,$3)",
+      [q.phone_norm, q.job_id, channel === "wa_cloud" ? "cloud" : null]);
+    await pool.query(
+      `UPDATE wa_sender_state SET last_sent_at=NOW(), fail_streak=0,
+              since_break = CASE WHEN since_break >= $1 THEN 1 ELSE since_break + 1 END WHERE id=$2`,
+      [batchSize, channel === "wa_cloud" ? 2 : 1]);
+    // الكوبون مرة واحدة بيتفتح دلوقتي بس، وصلاحيته من يوم الإرسال
+    if (q.coupon) {
+      const job = (await pool.query("SELECT offer FROM wa_send_jobs WHERE id=$1", [q.job_id])).rows[0] || {};
+      const days = Number(job.offer?.validDays) || 0;
+      if (job.offer?.oneTime && days) {
+        await pool.query(
+          `UPDATE shop_coupons SET active=true, expires_at = CURRENT_DATE + $3::int
+            WHERE code=$1 AND phone_norm=$2 AND NOT active AND used_count=0`, [q.coupon, q.phone_norm, days]).catch(() => {});
+      }
+    }
+  }
+
+  /* ── قناة Cloud API ─────────────────────────────────────────────────────
+     الدورة: كل WA_CLOUD_TICK_SEC (١٥ث) — قفل Postgres استشاري عشان وقت
+     النشر (الكونتينرين شغّالين دقيقة) مايبعتوش مع بعض. */
+  const wa = deps.wa || null;
+  const cloudApi = () => (typeof deps.cloud === "function" ? deps.cloud() : deps.cloud) || null;
+
+  function cloudSample(input, x, slug, couponEx) {
+    try {
+      const { text } = campaignParams(input.cloudTemplate, { vars: x.vars, name: x.name, link_code: "xxxxxx", coupon: couponEx || "W…" },
+        { link_slug: slug, image_url: input.imageUrl, cloud_vars: input.cloudVars });
+      return { template: input.cloudTemplate, text, footer: TEMPLATES[input.cloudTemplate].components.find((c) => c.type === "FOOTER")?.text || "",
+        buttons: (TEMPLATES[input.cloudTemplate].components.find((c) => c.type === "BUTTONS")?.buttons || []).map((b) => b.text) };
+    } catch { return null; }
+  }
+
+  async function cloudInfo(s, cfg) {
+    const cc = cloudCfg(s);
+    const st = await stateNow("wa_cloud").catch(() => ({}));
+    const gate = wa ? await wa.gate() : "disabled";
+    const cl = cloudApi();
+    const phone = cl && !gate ? await cl.phoneInfo().catch(() => null) : null;
+    const tpl = cl && !gate ? await cl.templateInfo().catch(() => null) : null;
+    const approved = new Map(((tpl && tpl.list) || []).map((t) => [t.name, t.status]));
+    const { configId, ...pubCfg } = cc;
+    return { cfg: pubCfg, state: { today: st.today || 0, lastHour: st.lastHour || 0, uniq24h: st.uniq24h || 0, stoppedReason: st.stoppedReason || null },
+      pace: cloudPacing(cc, st, inWindow(cfg, now())), gate: gate || null, phoneStatus: phone?.status || null,
+      quality: phone?.quality || null, tier: phone?.tier || null,
+      defaultChannel: defaultChannel({ gate, phoneStatus: phone?.status }),
+      templates: CAMPAIGN_TEMPLATES().map((n) => ({ name: n, label: TEMPLATES[n].campaign.label, needs: TEMPLATES[n].campaign.needs || [],
+        status: approved.get(n) || (tpl && tpl.ok ? "NOT_SUBMITTED" : null),
+        body: TEMPLATES[n].components.find((c) => c.type === "BODY")?.text || "" })) };
+  }
+
+  function cloudStats(rows) {
+    const cl = rows.filter((x) => x.channel === "wa_cloud" && ["sent", "failed"].includes(x.status) || (x.fallback_from && String(x.fallback_from).startsWith("wa_cloud")));
+    if (!cl.length) return null;
+    const accepted = cl.filter((x) => x.cloud_status && x.cloud_status !== "failed" || x.status === "sent" && x.channel === "wa_cloud").length;
+    const delivered = cl.filter((x) => ["delivered", "read"].includes(x.cloud_status)).length;
+    const read = cl.filter((x) => x.cloud_status === "read").length;
+    const failed = cl.filter((x) => x.cloud_status === "failed" || (x.status === "failed" && x.channel === "wa_cloud")).length;
+    const reasons = {};
+    for (const x of cl) if (x.cloud_status === "failed" || x.status === "failed") { const k = x.reason || "failed"; reasons[k] = (reasons[k] || 0) + 1; }
+    const pct = (a, b) => (b ? Math.round((a / b) * 1000) / 10 : null);
+    return { attempted: cl.length, accepted, delivered, read, failed, reasons,
+      deliveredRate: pct(delivered, cl.length), readRate: pct(read, delivered),
+      fellBack: cl.filter((x) => x.fallback_from).length };
+  }
+
+  async function sendCloudRow(q, job, cfg, staff) {
+    const why = await skipReason(q.phone_norm, cfg, staff);
+    if (why) { await pool.query("UPDATE wa_send_queue SET status='skipped', reason=$2 WHERE id=$1", [q.id, why]); return { skipped: why }; }
+    let built;
+    try { built = campaignParams(job.cloud_template, q, job); }
+    catch { await pool.query("UPDATE wa_send_queue SET status='failed', reason='bad_template' WHERE id=$1", [q.id]); return { stop: "bad_template" }; }
+    const r = await wa.sendTemplate({ phoneNorm: q.phone_norm, template: job.cloud_template, params: built.params,
+      requireOptIn: false, source: "campaign", body: built.text });
+    if (r.ok) {
+      await markSent(q, { channel: "wa_cloud", wamid: r.wamid, media: job.image_url && TEMPLATES[job.cloud_template]?.components.some((c) => c.format === "IMAGE") ? "image" : "text" });
+      return { sent: true, wamid: r.wamid };
+    }
+    if (r.skipped) {
+      if (r.skipped === "invalid_phone") { await pool.query("UPDATE wa_send_queue SET status='skipped', reason='invalid_number' WHERE id=$1", [q.id]); return { skipped: "invalid_number" }; }
+      // البوابة اتقفلت في النص ⇒ يرجع للطابور ونقف الدورة
+      await pool.query("UPDATE wa_send_queue SET status='pending', attempts=GREATEST(attempts-1,0) WHERE id=$1", [q.id]);
+      return { halt: r.skipped };
+    }
+    const cls = classifyError(r.code);
+    if (cls.retry && (q.attempts || 1) < 3) {
+      await pool.query("UPDATE wa_send_queue SET status='pending', reason=$2, error_code=$3 WHERE id=$1", [q.id, cls.reason, cls.code]);
+      return { halt: cls.reason };
+    }
+    await cloudFailed(q, job, cls, { sync: true });
+    if (cls.stop) {
+      await pool.query("UPDATE wa_sender_state SET stopped_reason=$1, fail_streak=fail_streak+1 WHERE id=2", [cls.reason]);
+      return { stop: cls.reason };
+    }
+    return { failed: cls.reason };
+  }
+
+  /* فشل رسالة Cloud (من الإرسال نفسه أو من الويب هوك بعدين). مابتتحسبش
+     «اتكلّم» (إلا لو الـSMS البديل اتبعت)، والكوبون بيتقفل تاني لو ماتستخدمش. */
+  async function cloudFailed(q, job, cls, { sync = false } = {}) {
+    await pool.query(
+      "UPDATE wa_send_queue SET status='failed', reason=$2, error_code=$3, cloud_status='failed' WHERE id=$1",
+      [q.id, cls.reason, cls.code]);
+    if (!sync) {
+      await pool.query("DELETE FROM wa_contact_log WHERE phone_norm=$1 AND job_id=$2 AND by='cloud'", [q.phone_norm, q.job_id]);
+      if (q.coupon) {
+        await pool.query("UPDATE shop_coupons SET active=false WHERE code=$1 AND phone_norm=$2 AND used_count=0", [q.coupon, q.phone_norm]).catch(() => {});
+      }
+    }
+    if (cls.invalid) {
+      await pool.query(
+        `INSERT INTO wa_invalid_numbers(phone_norm, job_id) VALUES ($1,$2)
+         ON CONFLICT (phone_norm) DO UPDATE SET hits = wa_invalid_numbers.hits + 1, at = NOW(), job_id = EXCLUDED.job_id`,
+        [q.phone_norm, q.job_id]);
+    }
+    if (cls.optout) await optOut(q.phone_norm, "whatsapp_meta", "وقّف رسايل التسويق من واتساب نفسه (131050)", "ميتا");
+    const fb = fallbackFor(cls, job.fallback);
+    if (fb === "wa_web") {
+      await pool.query(
+        `UPDATE wa_send_queue SET status='pending', channel='wa_web', reason=NULL, fallback_from=$2, claimed_at=NULL
+          WHERE id=$1 AND status='failed'`, [q.id, `wa_cloud:${cls.reason}`]);
+      return "wa_web";
+    }
+    if (fb === "sms") {
+      const cms = cmsApi();
+      if (!cms || typeof cms.waFallbackSms !== "function") return null;
+      const r = await cms.waFallbackSms({ phoneNorm: q.phone_norm, text: stripFooter(q.message || "", [DEFAULTS.footer, senderCfg(await getSettingsData().catch(() => ({}))).footer]), ref: `wa${q.job_id}:${q.id}` }).catch((e) => ({ ok: false, error: e.message }));
+      await pool.query("UPDATE wa_send_queue SET note=$2, fallback_from=$3 WHERE id=$1",
+        [q.id, r.ok ? "sms_fallback" : `sms_fallback_failed:${String(r.skipped || r.error || "").slice(0, 40)}`, `wa_cloud:${cls.reason}`]);
+      if (r.ok) await pool.query("INSERT INTO wa_contact_log(phone_norm, channel, job_id, by) VALUES ($1,'auto',$2,'sms_fallback')", [q.phone_norm, q.job_id]);
+      return r.ok ? "sms" : null;
+    }
+    return null;
+  }
+  // نص الـSMS البديل = نفس رسالة الحملة من غير سطر إيقاف الواتساب (الـSMS ليه سطر إيقافه)
+  const stripFooter = (m, footers = [DEFAULTS.footer]) => {
+    let t = String(m || "").trimEnd();
+    for (const f of footers) if (f && t.endsWith(f)) t = t.slice(0, -f.length).trimEnd();
+    return t;
+  };
+
+  let ticking = false;
+  async function cloudTick() {
+    if (!wa || ticking) return { reason: "busy_or_no_wa" };
+    ticking = true;
+    let client = null, locked = false;
+    try {
+      await schemaReady;
+      const s = await getSettingsData();
+      const cc = cloudCfg(s);
+      if (!cc.enabled) return { reason: "disabled" };
+      const g = await wa.gate();
+      if (g) return { reason: g };
+      if (deps.lock !== false && typeof pool.connect === "function") {
+        client = await pool.connect();
+        locked = (await client.query("SELECT pg_try_advisory_lock(771001) AS ok")).rows[0]?.ok === true;
+        if (!locked) return { reason: "locked" };
+      }
+      const cfg = senderCfg(s);
+      const st = await stateNow("wa_cloud");
+      const p = cloudPacing(cc, st, inWindow(cfg, now()));
+      if (!p.allow) return { reason: p.reason };
+      const staff = staffPhoneSet(s);
+      const out = { sent: 0, skipped: 0, failed: 0 };
+      // «فشلت بسبب مؤقت» ترجع — الصفوف اللي علقت في sending أكتر من ١٠ دقايق
+      await pool.query(`UPDATE wa_send_queue SET status='pending' WHERE status='sending' AND channel='wa_cloud' AND claimed_at < NOW() - INTERVAL '10 minutes' AND attempts < 3`);
+      for (let i = 0, budget = p.allow, tries = 0; budget > 0 && tries < p.allow * 4; i++, tries++) {
+        const q = (await pool.query(
+          `UPDATE wa_send_queue SET status='sending', claimed_at=NOW(), attempts=attempts+1, channel='wa_cloud'
+            WHERE id = (SELECT q.id FROM wa_send_queue q JOIN wa_send_jobs j ON j.id=q.job_id
+                         WHERE q.status='pending' AND j.status='running'
+                           AND COALESCE(q.channel, j.channel, 'wa_web') = 'wa_cloud'
+                         ORDER BY j.id, q.score DESC, q.id LIMIT 1 FOR UPDATE SKIP LOCKED)
+            RETURNING id, job_id, phone_norm, message, name, vars, link_code, coupon, attempts`)).rows[0];
+        if (!q) {
+          await pool.query(`UPDATE wa_send_jobs j SET status='done', finished_at=NOW() WHERE status='running' AND channel='wa_cloud'
+                             AND NOT EXISTS (SELECT 1 FROM wa_send_queue q WHERE q.job_id=j.id AND q.status IN ('pending','sending'))`);
+          out.reason = "queue_empty";
+          break;
+        }
+        const job = (await pool.query("SELECT id, cloud_template, cloud_vars, image_url, link_slug, offer, fallback FROM wa_send_jobs WHERE id=$1", [q.job_id])).rows[0];
+        const r = await sendCloudRow(q, job, cfg, staff);
+        if (r.sent) { out.sent++; budget--; }
+        else if (r.skipped) out.skipped++;
+        else if (r.failed) { out.failed++; budget--; }
+        if (r.halt || r.stop) { out.reason = r.halt || r.stop; if (r.stop) out.stopped = true; break; }
+      }
+      return out;
+    } catch (e) {
+      console.error("[wasender] cloud tick:", e.message);
+      return { error: e.message };
+    } finally {
+      if (client) { if (locked) await client.query("SELECT pg_advisory_unlock(771001)").catch(() => {}); client.release(); }
+      ticking = false;
+    }
+  }
+
+  /* حالات رسايل الحملة من الويب هوك (whatsapp.js ⇒ on("status")) */
+  async function onCloudStatus(s) {
+    if (!s?.wamid) return;
+    const q = (await pool.query(
+      `SELECT id, job_id, phone_norm, status, cloud_status, channel, coupon, message FROM wa_send_queue WHERE wamid=$1 LIMIT 1`, [s.wamid])).rows[0];
+    if (!q) return;
+    const next = nextStatus(q.cloud_status, s.status);
+    await pool.query(
+      `UPDATE wa_send_queue SET cloud_status=$2,
+              delivered_at = CASE WHEN $2 IN ('delivered','read') THEN COALESCE(delivered_at, COALESCE($3::timestamptz, NOW())) ELSE delivered_at END,
+              read_at = CASE WHEN $2 = 'read' THEN COALESCE(read_at, COALESCE($3::timestamptz, NOW())) ELSE read_at END
+        WHERE id=$1`, [q.id, next, s.at || null]);
+    if (next === "failed" && q.status === "sent" && q.channel === "wa_cloud") {
+      const job = (await pool.query("SELECT id, fallback FROM wa_send_jobs WHERE id=$1", [q.job_id])).rows[0] || {};
+      await cloudFailed(q, job, classifyError(s.code));
+    }
+  }
+
+  /* رد العميل على Cloud (whatsapp.js ⇒ on("inbound")): نفس جدول الردود ونفس الإيقاف */
+  async function onCloudInbound(m) {
+    if (m?.isEcho) return;                 // رسالة الكاشير من الموبايل مش رد عميل
+    const pn = m?.phoneNorm;
+    if (!pn || !/^5\d{8}$/.test(pn)) return;
+    const text = String(m.text || "").replace(/\s+/g, " ").trim().slice(0, 1000);
+    const opt = m.intent === "stop" || isOptOutText(text);
+    const last = (await pool.query(
+      `SELECT id, job_id FROM wa_send_queue WHERE phone_norm=$1 AND status='sent' AND sent_at > NOW() - INTERVAL '30 days'
+        ORDER BY sent_at DESC LIMIT 1`, [pn])).rows[0];
+    // نفس الرد ممكن يوصل من الإضافة (واتساب ويب) ومن الويب هوك — مرة واحدة بس
+    const dup = last && text ? (await pool.query(
+      "SELECT 1 FROM wa_replies WHERE phone_norm=$1 AND text=$2 AND at > NOW() - INTERVAL '1 day' LIMIT 1", [pn, text])).rowCount : 0;
+    if (last && text && !dup) {
+      const ins = await pool.query(
+        `INSERT INTO wa_replies(phone_norm, text, ext_id, source, job_id, queue_id, is_optout)
+         VALUES ($1,$2,$3,'cloud',$4,$5,$6) ON CONFLICT (phone_norm, ext_id) DO NOTHING RETURNING id`,
+        [pn, text, String(m.wamid || "").slice(0, 200) || `h:${sha(text).slice(0, 20)}`, last.job_id, last.id, opt]);
+      if (ins.rowCount) await pool.query("UPDATE wa_send_queue SET replied_at = COALESCE(replied_at, NOW()) WHERE id=$1", [last.id]);
+    }
+    if (opt) await optOut(pn, "wa_cloud", text || "إيقاف", "واتساب");
+  }
+
+  if (wa && typeof wa.on === "function") {
+    wa.on("status", onCloudStatus);
+    wa.on("inbound", onCloudInbound);
+  }
+  if (deps.cloudLoop !== false && wa) {
+    const sec = Math.max(5, Number(process.env.WA_CLOUD_TICK_SEC) || 15);
+    const t = setInterval(() => { cloudTick().catch(() => {}); }, sec * 1000);
+    t.unref?.();
+  }
+
+  // نشغّل/نوقّف قناة Cloud من شاشة الإرسال الآلي (نفس settings.waCloud)
+  app.post("/api/cms/wa-sender/cloud", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    let b = {}; try { b = await c.req.json(); } catch { return bad(c, "bad_json", "بيانات غلط"); }
+    const s = await getSettingsData();
+    const cur = (s.waCloud && typeof s.waCloud === "object") ? s.waCloud : {};
+    const next = { ...cur };
+    for (const k of ["enabled", "dailyCap", "hourCap", "perTick", "tierLimit", "reserveUtility"]) if (b[k] !== undefined) next[k] = b[k];
+    const clean = cloudCfg({ waCloud: next });
+    await pool.query(`UPDATE settings SET data = jsonb_set(COALESCE(data,'{}'::jsonb), '{waCloud}', $1::jsonb, true) WHERE id=1`, [J(clean)]);
+    if (b.enabled === true) await pool.query("UPDATE wa_sender_state SET stopped_reason=NULL, fail_streak=0 WHERE id=2");
+    const { configId, ...pub } = clean;
+    return c.json({ ok: true, cfg: pub });
+  });
+
   // ── الإضافة (توكن جهاز، مش جلسة لوحة) ─────────────────────────────────
   async function agentAuth(c) {
     const t = (c.req.header("x-agent-token") || "").trim();
@@ -836,7 +1181,7 @@ export function register(app, ctx, deps = {}) {
     await pool.query(`UPDATE wa_send_queue SET status='pending' WHERE status='sending' AND claimed_at < NOW() - INTERVAL '10 minutes' AND attempts < 2`);
     await pool.query(`UPDATE wa_send_queue SET status='failed', reason='stuck' WHERE status='sending' AND claimed_at < NOW() - INTERVAL '10 minutes'`);
     if (b.waReady === false) return c.json({ ok: true, wait: 60, reason: "wa_not_ready" });
-    const st = await stateNow();
+    const st = await stateNow("wa_web");
     const p = pacing(cfg, st, now());
     if (p.reason === "fail_stop") await pool.query("UPDATE wa_sender_state SET stopped_reason='fail_stop' WHERE id=1");
     if (p.wait !== 0) return c.json({ ok: true, wait: p.wait, reason: p.reason });
@@ -845,9 +1190,10 @@ export function register(app, ctx, deps = {}) {
     // بنجرّب لحد ٥ مرشّحين — اللي يقع في قاعدة الـ٣ أيام أو اتغيّر حاله بيتعلّم skipped
     for (let i = 0; i < 5; i++) {
       const q = (await pool.query(
-        `UPDATE wa_send_queue SET status='sending', claimed_at=NOW(), attempts=attempts+1
+        `UPDATE wa_send_queue SET status='sending', claimed_at=NOW(), attempts=attempts+1, channel='wa_web'
           WHERE id = (SELECT q.id FROM wa_send_queue q JOIN wa_send_jobs j ON j.id=q.job_id
                        WHERE q.status='pending' AND j.status='running'
+                         AND COALESCE(q.channel, j.channel, 'wa_web') = 'wa_web'
                        ORDER BY j.id, q.score DESC, q.id LIMIT 1 FOR UPDATE SKIP LOCKED)
           RETURNING id, job_id, phone_norm, message`)).rows[0];
       if (!q) {
@@ -855,16 +1201,8 @@ export function register(app, ctx, deps = {}) {
                            AND NOT EXISTS (SELECT 1 FROM wa_send_queue q WHERE q.job_id=j.id AND q.status IN ('pending','sending'))`);
         return c.json({ ok: true, wait: 300, reason: "queue_empty" });
       }
-      const skip = async (reason) => pool.query("UPDATE wa_send_queue SET status='skipped', reason=$2 WHERE id=$1", [q.id, reason]);
-      const oo = (await pool.query("SELECT 1 FROM cms_contacts WHERE phone_norm=$1 AND opted_out_at IS NOT NULL", [q.phone_norm])).rowCount;
-      if (oo) { await skip("opted_out"); continue; }
-      if (staff.has(q.phone_norm)) { await skip("staff"); continue; }
-      if ((await invalidSet([q.phone_norm])).size) { await skip("invalid_number"); continue; }
-      const rec = await recentMap([q.phone_norm], cfg.gapDays);
-      if (rec.size) { await skip(rec.get(q.phone_norm) === "sms" ? "gap_sms" : "gap_3d"); continue; }
-      const blk = await blockedSets([q.phone_norm], cfg);
-      if (blk.onlineRecent.size) { await skip("ordered_online"); continue; }
-      if (blk.openOrder.size) { await skip("open_order"); continue; }
+      const why = await skipReason(q.phone_norm, cfg, staff);
+      if (why) { await pool.query("UPDATE wa_send_queue SET status='skipped', reason=$2 WHERE id=$1", [q.id, why]); continue; }
       await pool.query("UPDATE wa_sender_state SET next_gap_sec=$1 WHERE id=1", [p.nextGapSec]);
       const job = (await pool.query("SELECT image_url FROM wa_send_jobs WHERE id=$1", [q.job_id])).rows[0] || {};
       return c.json({ ok: true, wait: 0, item: { id: Number(q.id), phone: `966${q.phone_norm}`, text: q.message,
@@ -884,21 +1222,7 @@ export function register(app, ctx, deps = {}) {
     const media = ["image", "text"].includes(b.media) ? b.media : null;
     const note = b.note ? String(b.note).slice(0, 80) : null;
     if (b.ok === true) {
-      await pool.query("UPDATE wa_send_queue SET status='sent', sent_at=NOW(), reason=NULL, media=$2, note=$3 WHERE id=$1", [id, media, note]);
-      await pool.query("INSERT INTO wa_contact_log(phone_norm, channel, job_id) VALUES ($1,'auto',$2)", [q.phone_norm, q.job_id]);
-      await pool.query(
-        `UPDATE wa_sender_state SET last_sent_at=NOW(), fail_streak=0,
-                since_break = CASE WHEN since_break >= $1 THEN 1 ELSE since_break + 1 END WHERE id=1`, [cfg.batchSize]);
-      // الكوبون مرة واحدة بيتفتح دلوقتي بس، وصلاحيته من يوم الإرسال
-      if (q.coupon) {
-        const job = (await pool.query("SELECT offer FROM wa_send_jobs WHERE id=$1", [q.job_id])).rows[0] || {};
-        const days = Number(job.offer?.validDays) || 0;
-        if (job.offer?.oneTime && days) {
-          await pool.query(
-            `UPDATE shop_coupons SET active=true, expires_at = CURRENT_DATE + $3::int
-              WHERE code=$1 AND phone_norm=$2 AND NOT active AND used_count=0`, [q.coupon, q.phone_norm, days]).catch(() => {});
-        }
-      }
+      await markSent(q, { media, note, channel: "wa_web", batchSize: cfg.batchSize });
     } else {
       const reason = String(b.reason || "failed").slice(0, 60);
       // رقم مش على واتساب = مش غلطة الإضافة، مابيعدّش في «فشل ورا بعض» — وبيتحفظ عشان مايدخلش حملة تانية
@@ -932,6 +1256,10 @@ export function register(app, ctx, deps = {}) {
     if (!last) return c.json({ ok: true, ignored: "no_recent_send" });
     const ext = String(b.extId || "").slice(0, 200) || `h:${sha(text).slice(0, 20)}`;
     const opt = isOptOutText(text);
+    // وصل قبل كده من الويب هوك (Coexistence) ⇒ مانسجّلوش تاني
+    const seen = (await pool.query(
+      "SELECT 1 FROM wa_replies WHERE phone_norm=$1 AND text=$2 AND at > NOW() - INTERVAL '1 day' LIMIT 1", [pn, text])).rowCount;
+    if (seen) return c.json({ ok: true, duplicate: true });
     const ins = await pool.query(
       `INSERT INTO wa_replies(phone_norm, text, ext_id, source, job_id, queue_id, is_optout)
        VALUES ($1,$2,$3,$4,$5,$6,$7) ON CONFLICT (phone_norm, ext_id) DO NOTHING RETURNING id`,
@@ -952,5 +1280,5 @@ export function register(app, ctx, deps = {}) {
       phone_norm: canSee ? x.phone_norm : `${x.phone_norm.slice(0, 3)}••••${x.phone_norm.slice(-2)}` })) });
   });
 
-  return { recentSet, recentMap, build };
+  return { recentSet, recentMap, build, cloudTick, onCloudStatus, onCloudInbound, stateNow, schemaReady };
 }

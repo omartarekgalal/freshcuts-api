@@ -70,6 +70,7 @@ import { makePhoneGate } from "./phones.js";
 import * as notify from "./notify.js";
 import * as whatsapp from "./whatsapp.js";
 import * as wainbox from "./wainbox.js";
+import * as wacloud from "./wacloud.js";
 import * as carts from "./carts.js";
 import * as openwait from "./openwait.js";
 import * as service from "./service.js";
@@ -3109,6 +3110,15 @@ const waApi = whatsapp.register(app, moduleCtx);
 // صندوق محادثات واتساب (بورتال المطعم) — نفس بوابة whatsapp.js، مفيش مفتاح تاني.
 const waInboxApi = wainbox.register(moduleCtx, { wa: waApi });
 waApi.setInbox(waInboxApi);
+/* كتالوج قوالب خارجي + بوت (لو الملفات موجودة — فرع wa-content). مش موجودة = ولا حاجة.
+   البوت بيشتغل بس مع WHATSAPP_BOT_ENABLED=1 (whatsapp.js runBot + تسليم لإنسان بعد صدى الموبايل). */
+import("./watemplates.js").then((m) => {
+  const defs = m.TEMPLATES || m.CATALOG || m.default || {};
+  const r = whatsapp.registerTemplates(defs);
+  console.log(`[wa] watemplates: +${r.added.length} (kept existing: ${r.skipped.length})`);
+}).catch((e) => { if (e?.code !== "ERR_MODULE_NOT_FOUND") console.error("[wa] watemplates:", e.message); });
+import("./wabot.js").then((m) => waApi.setBot(m.default && m.default.matchIntent ? m.default : m))
+  .catch((e) => { if (e?.code !== "ERR_MODULE_NOT_FOUND") console.error("[wa] wabot:", e.message); });
 const notifyApi = notify.register(app, moduleCtx, { wa: waApi });
 // السلات المتروكة: لقطات من المتجر + سلّم استرداد (إشعار ثم SMS) + أرقام اللوحة
 const cartsApi = carts.register(app, moduleCtx, { notify: notifyApi });
@@ -3169,7 +3179,11 @@ const c360Api = customer360.register(app, moduleCtx, { whoami: (c) => cmsApi.who
    بتعيد استخدام QUICK_STATS_SQL بتاعته، وبعد الـCMS عشان canSeePhones. */
 const outreachApi = outreach.register(app, moduleCtx);
 // 26/9: WhatsApp Web auto-sender (Chrome extension pulls one message at a time)
-wasender.register(app, moduleCtx, { outreach: outreachApi, sessionUser: cmsApi.sessionUser, cms: () => cmsApi });
+/* ☁️ 28/9: WhatsApp Cloud API Coexistence — ربط Embedded Signup + حالة الرقم (wacloud.js)،
+   وقناة wa_cloud في الإرسال الآلي (السيرفر بيبعت القالب بنفسه + حالات الويب هوك). */
+const waCloudApi = wacloud.register(app, moduleCtx, { wa: waApi, sessionUser: cmsApi.sessionUser });
+wasender.register(app, moduleCtx, { outreach: outreachApi, sessionUser: cmsApi.sessionUser, cms: () => cmsApi,
+  wa: waApi, cloud: () => waCloudApi });
 /* 🔎 حالة الـSEO — مصدر واحد تقراه شاشة «جوجل والبحث» وتكتب فيه جلسة الـSEO */
 seostatus.register(app, moduleCtx);
 /* 📟 التحكم في رسايل الإدارة + تقريرها — البوابة بتتركّب على accounts.sendSms
