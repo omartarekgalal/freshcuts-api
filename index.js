@@ -103,6 +103,8 @@ import * as ttcatalog from "./ttcatalog.js";
 import * as growthnow from "./growthnow.js";
 import * as readiness from "./readiness.js";
 import * as consent from "./consent.js";
+import * as settingsGuard from "./settings-guard.js";
+import { cashierPinOf } from "./portal-core.js";
 
 const { Pool } = pg;
 
@@ -293,18 +295,10 @@ app.post("/api/auth/ambassador", async (c) => {
 });
 
 // ─── Settings ────────────────────────────────────────────────────────────────
-app.get("/api/settings", async (c) => {
-  const err = await requireAmbassadorOrAdmin(c);
-  if (err) return err;
-  const r = await pool.query("SELECT data FROM settings WHERE id=1");
-  return c.json(r.rows[0]?.data || {});
-});
-app.put("/api/settings", async (c) => {
-  const err = await requireAdmin(c); if (err) return err;
-  const body = await c.req.json();
-  await pool.query("UPDATE settings SET data=$1::jsonb, updated_at=NOW() WHERE id=1", [jb(body)]);
-  return c.json({ ok: true });
-});
+// GET/PUT /api/settings + POST /api/settings/patch اتنقلوا لـ settings-guard.js
+// (المرحلة ٠ من خطة الإعدادات): الـPUT الكامل مابيدوسش على مفاتيح السيرفر،
+// rev مع 409، والأسرار بتتشال من GET لغير المالك. التسجيل تحت عند moduleCtx.
+const isOwnerAuth = (c) => getAuth(c)?.kind === "admin";
 
 // ─── Ambassadors ─────────────────────────────────────────────────────────────
 app.get("/api/ambassadors", async (c) => {
@@ -573,14 +567,19 @@ app.post("/api/sync/redeemed", async (c) => {
 
 // ─── Bulk import (one-shot migration from localStorage) ──────────────────────
 app.post("/api/import", async (c) => {
+  // المالك بس (مفتاح الأدمن أو مستخدم فريق دوره «مالك») — الاستيراد بيكتب
+  // الإعدادات كلها. ومفاتيح السيرفر والأسرار بتفضل من الداتابيز (mergeForPut).
+  if (!isOwnerAuth(c)) return c.json({ ok: false, error: "owner_only" }, 403);
   const err = await requireAdmin(c); if (err) return err;
   const body = await c.req.json();
   const client = await pool.connect();
   const stats = { settings: 0, ambassadors: 0, batches: 0, codes: 0, designs: 0 };
   try {
     await client.query("BEGIN");
-    if (body.settings) {
-      await client.query("UPDATE settings SET data=$1::jsonb, updated_at=NOW() WHERE id=1", [jb(body.settings)]);
+    if (body.settings && typeof body.settings === "object" && !Array.isArray(body.settings)) {
+      const cur = (await client.query("SELECT data FROM settings WHERE id=1 FOR UPDATE")).rows[0]?.data || {};
+      await client.query("UPDATE settings SET data=$1::jsonb, updated_at=NOW() WHERE id=1",
+        [jb(settingsGuard.mergeForPut(cur, body.settings))]);
       stats.settings = 1;
     }
     for (const a of (body.ambassadors || [])) {
@@ -979,9 +978,12 @@ app.post("/api/discounts/refresh", async (c) => {
       let cached = 0;
       for (const cust of customers) { await cacheCustomerOrders(cust, cust.discountedOrders); cached += cust.discountedOrders.length; }
       job.cached = cached;
-      const settings = await getSettingsData();
-      settings.tsDiscountSync = { lastRefreshAt: new Date().toISOString(), from, to, customers: customers.length, orders: cached };
-      await pool.query("UPDATE settings SET data=$1::jsonb, updated_at=NOW() WHERE id=1", [jb(settings)]);
+      // مفتاح واحد بـjsonb_set — مش قراية الكائن كله وكتابته (كان بيدوس على أي
+      // تعديل حصل في الإعدادات وقت ما المهمة شغّالة).
+      const sync = { lastRefreshAt: new Date().toISOString(), from, to, customers: customers.length, orders: cached };
+      await pool.query(
+        "UPDATE settings SET data = jsonb_set(COALESCE(data,'{}'::jsonb), '{tsDiscountSync}', $1::jsonb, true), updated_at=NOW() WHERE id=1",
+        [jb(sync)]);
       job.status = "done";
     } catch (e) {
       job.error = e.message; job.status = "error";
@@ -2207,14 +2209,14 @@ async function requireCashierOrAdmin(c) {
   if (h.startsWith("Bearer cashier:")) {
     const pin = h.slice("Bearer cashier:".length);
     const s = await getSettingsData();
-    if (pin && String(pin) === String(s.cashierPin || "1111")) return null;
+    if (pin && String(pin) === String(cashierPinOf(s) || "1111")) return null;
   }
   return c.json({ error: "Unauthorized" }, 401);
 }
 app.post("/api/auth/cashier", async (c) => {
   const b = await c.req.json().catch(() => ({}));
   const s = await getSettingsData();
-  if (String(b.pin || "") === String(s.cashierPin || "1111")) return c.json({ ok: true });
+  if (String(b.pin || "") === String(cashierPinOf(s) || "1111")) return c.json({ ok: true });
   return c.json({ ok: false, error: "wrong_pin" }, 401);
 });
 
@@ -2985,6 +2987,8 @@ const moduleCtx = {
   pool, requireAdmin, requireCashierOrAdmin, getSettingsData, jb,
   todayISO, daysAgoISO, normPhone, ts, deliveryAppOf, DEFAULT_DELIVERY_APPS,
   sourceRank,
+  // المالك = مفتاح الأدمن أو مستخدم فريق دوره «مالك» (getAuth → kind admin)
+  isOwner: isOwnerAuth,
   setCmsHooks: (h) => { _cmsHooks = h; },
   /* بيكمل سطر سجل النشاط اللي requireAdmin عمله للكتابة الحالية بـ«إيه اللي
      اتغير». بيرجع بالسكات لو مفيش جلسة لوحة (سكربت أو تست). */
@@ -2993,6 +2997,7 @@ const moduleCtx = {
 // analytics.register hands back { periodKpis, channelsData, deliveryApps } so
 // reports.js can quote the SAME sales figures the analytics screens quote
 // instead of writing a second copy of the delivery/new-customer rules.
+settingsGuard.register(app, { ...moduleCtx, requireAmbassadorOrAdmin });
 const analyticsApi = analytics.register(app, moduleCtx);
 ai.register(app, moduleCtx);
 // staff.register hands back { requireStaff } so the promo station can accept a
