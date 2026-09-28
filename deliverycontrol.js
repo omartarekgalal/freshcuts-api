@@ -27,6 +27,7 @@ import { DEFAULT_LJ_CONTRACT, ljContract } from "./leajlakrecon.js";
 import { DEFAULT_COURIER_ROUTING, courierRoutingCfg, API_PROVIDER_IDS } from "./couriers.js";
 import { DEFAULT_DISPATCH_DELAY_MIN, dispatchDelayOf, dispatchMode, DISPATCH_MODES, DEFAULT_POLICY } from "./delivery.js";
 import { districtCfg } from "./districts.js";
+import { applyPathChanges } from "./settings-guard.js";
 
 /* ── عنوان الحقل جوّه الإعدادات ──────────────────────────────────────────── */
 export function getAt(obj, path) {
@@ -448,6 +449,15 @@ export function applyPatch(settings, values) {
   return { next, delivery: next.delivery, shop: next.shop };
 }
 
+/* نفس applyPatch بس كقايمة مسارات للكتابة الموجّهة ([{path, value}]). */
+export function patchChanges(values) {
+  const out = Object.entries(values || {}).map(([path, value]) => ({ path, value }));
+  if (Object.prototype.hasOwnProperty.call(values || {}, "delivery.courierSla.farGuard.mode")) {
+    out.push({ path: "delivery.courierSla.farGuard.enabled", value: values["delivery.courierSla.farGuard.mode"] !== "off" });
+  }
+  return out;
+}
+
 /* سطر سجل النشاط: «مين غيّر إيه من إيه لإيه» — الخطير الأول بعلامة. */
 export function auditLine(values, settings) {
   const danger = new Set(dangerousChanges(values, settings).map((d) => d.path));
@@ -548,15 +558,12 @@ export function register(app, ctx) {
     if (missing.length) return c.json({ ok: false, error: "confirm_required", needConfirm: missing }, 409);
 
     const note = auditLine(v.values, settings);
-    const { delivery, shop } = applyPatch(settings, v.values);
 
-    /* بنكتب الفرعين دول بس. لو شاشة تانية حفظت في نفس اللحظة، تعديلها في أي
-       مفتاح تاني بيفضل مكانه بدل ما بلوب كامل يدوس عليه. */
-    await pool.query(
-      `UPDATE settings SET data = jsonb_set(
-         jsonb_set(COALESCE(data,'{}'::jsonb), '{delivery}', $1::jsonb, true),
-         '{shop}', $2::jsonb, true), updated_at=NOW() WHERE id=1`,
-      [J(delivery), J(shop)]);
+    /* بنكتب المسارات اللي اتغيّرت بس، كل واحد بـjsonb_set (٢٩/٩). قبل كده
+       كنا بنكتب delivery وshop كاملين من نسخة اتقرت فوق — فلو البورتال حط
+       مهلة تحضير مؤقتة أو تجربة Cervo اتشغّلت أو checkout2Default اتغيّر في
+       اللحظة دي، كان بيرجع زي ما كان. */
+    await applyPathChanges(pool, patchChanges(v.values));
 
     await ctx.auditNote?.(c, note);
     log.log?.(`[delivery-control] ${note}`);

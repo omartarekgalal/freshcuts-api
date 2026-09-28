@@ -359,7 +359,10 @@ function fakeCtx({ settings = {}, requireAdmin = async () => null, onQuery } = {
   return {
     queries,
     ctx: {
-      pool: { query: async (sql, params) => { queries.push({ sql, params }); return onQuery ? onQuery(sql, params) : { rows: [] }; } },
+      pool: (() => {
+        const query = async (sql, params) => { queries.push({ sql, params }); return onQuery ? onQuery(sql, params) : { rows: [] }; };
+        return { query, connect: async () => ({ query, release() {} }) };
+      })(),
       getSettingsData: async () => settings,
       requireAdmin,
       jb: (v) => JSON.stringify(v),
@@ -424,22 +427,27 @@ test("PUT: مفتاح خطير من غير تأكيد ⇒ 409 ومفيش كتا�
   assert.equal(f.queries.filter((q) => /UPDATE settings/i.test(q.sql)).length, 0);
 });
 
-test("PUT: مع التأكيد ⇒ بيكتب delivery و shop بس (jsonb_set)", async () => {
+/* الكتابة بقت مسار بمسار (٢٩/٩): كل حقل اتغيّر = UPDATE واحد بـjsonb_set على
+   مساره هو بس، جوّه transaction والصف متقفل. آخر بارامترين: مسار الورقة والقيمة. */
+const writes = (f) => f.queries.filter((q) => /UPDATE settings/i.test(q.sql))
+  .map((q) => ({ sql: q.sql, path: q.params.at(-2).join("."), value: JSON.parse(q.params.at(-1)) }));
+
+test("PUT: مع التأكيد ⇒ بيكتب المسار اللي اتغيّر بس (jsonb_set) جوّه transaction", async () => {
   const { app, routes } = fakeApp();
   const f = fakeCtx({ settings: { cms: { dailyTarget: 200 }, delivery: { provider: "leajlak", ljShopId: "15882" } } });
   register(app, f.ctx);
   const r = await routes["PUT /api/delivery/control"](
     fakeC({ patch: { "delivery.provider": "cervo" }, confirm: ["delivery.provider"] }));
   assert.equal(r.payload.ok, true);
-  const w = f.queries.find((q) => /UPDATE settings/i.test(q.sql));
-  assert.ok(w, "لازم يكتب");
-  assert.match(w.sql, /jsonb_set/);
-  assert.match(w.sql, /\{delivery\}/);
-  assert.match(w.sql, /\{shop\}/);
-  assert.doesNotMatch(w.sql, /data=\$1::jsonb WHERE/i, "ممنوع نكتب البلوب كامل");
-  const delivery = JSON.parse(w.params[0]);
-  assert.equal(delivery.provider, "cervo");
-  assert.equal(delivery.ljShopId, "15882", "باقي مفاتيح التوصيل ما اتلمستش");
+  const w = writes(f);
+  assert.equal(w.length, 1, "كتابة واحدة للحقل الواحد");
+  assert.match(w[0].sql, /jsonb_set/);
+  assert.doesNotMatch(w[0].sql, /data=\$1::jsonb WHERE/i, "ممنوع نكتب البلوب كامل");
+  assert.deepEqual([w[0].path, w[0].value], ["delivery.provider", "cervo"]);
+  assert.ok(!w.some((x) => x.path === "delivery" || x.path === "shop"), "ممنوع نكتب delivery أو shop كاملين (بيدوسوا على dispatchDelayTemp/cervoTrial)");
+  const sqls = f.queries.map((q) => q.sql);
+  assert.ok(sqls.includes("BEGIN") && sqls.includes("COMMIT"));
+  assert.ok(sqls.some((s) => /FOR UPDATE/.test(s)), "الصف متقفل");
   assert.match(r.payload.note, /⚠️/);
 });
 
@@ -451,9 +459,19 @@ test("PUT: حزمة عادية بتعدي من غير تأكيد", async () => {
     fakeC({ patch: { "delivery.dispatchDelayMin": 20, "delivery.alertPhones": ["0544775082"] } }));
   assert.equal(r.payload.ok, true);
   assert.deepEqual(r.payload.danger, []);
-  const delivery = JSON.parse(f.queries.find((q) => /UPDATE settings/i.test(q.sql)).params[0]);
-  assert.equal(delivery.dispatchDelayMin, 20);
-  assert.deepEqual(delivery.alertPhones, ["0544775082"]);
+  const w = Object.fromEntries(writes(f).map((x) => [x.path, x.value]));
+  assert.equal(w["delivery.dispatchDelayMin"], 20);
+  assert.deepEqual(w["delivery.alertPhones"], ["0544775082"]);
+});
+
+test("PUT: farGuard.mode بيكتب enabled المشتق كمان", async () => {
+  const { app, routes } = fakeApp();
+  const f = fakeCtx({});
+  register(app, f.ctx);
+  const r = await routes["PUT /api/delivery/control"](fakeC({ patch: { "delivery.courierSla.farGuard.mode": "off" } }));
+  assert.equal(r.payload.ok, true);
+  const w = Object.fromEntries(writes(f).map((x) => [x.path, x.value]));
+  assert.equal(w["delivery.courierSla.farGuard.enabled"], false);
 });
 
 test("PUT: جسم من غير patch بيتقبل كـpatch مباشر", async () => {
