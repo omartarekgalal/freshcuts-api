@@ -464,9 +464,14 @@ export function register(app, ctx, deps = {}) {
     const language = /^[a-z]{2}(_[A-Z]{2})?$/.test(String(b.language || "")) ? String(b.language) : "en_US";
     if (!/^[a-z0-9_]{1,512}$/.test(name)) return c.json({ ok: false, error: "bad_name", message: "Use lowercase letters, numbers and _" });
     if (!text || text.length > 1024) return c.json({ ok: false, error: "bad_body", message: "Body is required (max 1024)" });
+    // ميتا بترفض ({code:100, sub:2494160}) أي قالب فيه {{n}} من غير أمثلة للقيم
+    const nVars = [...new Set((text.match(/\{\{\s*(\d+)\s*\}\}/g) || []).map((m) => Number(m.replace(/\D/g, ""))))].length;
+    const SAMPLES = ["Ahmed", "10245", "Fresh Cuts", "25 SAR", "7:30 PM"];
+    const bodyComp = { type: "BODY", text,
+      ...(nVars ? { example: { body_text: [Array.from({ length: nVars }, (_, i) => SAMPLES[i] || `value${i + 1}`)] } } : {}) };
     try {
       const d = await graph("POST", `${wabaId() || KNOWN_WABA_ID}/message_templates`, { body: { name, language, category,
-        components: [{ type: "BODY", text }] } });
+        components: [bodyComp] } });
       tplCache = { at: 0, data: null };
       return c.json({ ok: true, id: d.id || null, status: d.status || null, category: d.category || category, name });
     } catch (e) { return c.json(errJ(e)); }
