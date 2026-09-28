@@ -440,6 +440,10 @@ export function register(app, ctx, deps = {}) {
      أو من رقمنا لما يتربط. إنشاء القالب على الـWABA الحقيقي — مقفول بـ
      WHATSAPP_TEMPLATES_WRITE=1 زي تقديم القوالب. */
   const TEST_PHONE_ID = () => env("WHATSAPP_TEST_PHONE_ID", "1376437515542744");
+  // الـWABA الحقيقي (رقم المطعم) مربوط بتطبيق الموبايل بس لحد الـCoexistence، وميتا بترفض
+  // إنشاء قوالب عليه (sub 2494160 «This WABA is not allowed to create or update templates»)
+  // ⇒ العرض بيعمل القالب على حساب ميتا التجريبي، اللي بعت منه الرسالة في الفيديو الأول.
+  const TEST_WABA_ID = () => env("WHATSAPP_TEST_WABA_ID", "1375373441250188");
   app.post("/api/cms/wa-cloud/demo/send", async (c) => {
     const err = await ownerOnly(c); if (err) return err;
     const b = await c.req.json().catch(() => ({}));
@@ -470,10 +474,11 @@ export function register(app, ctx, deps = {}) {
     const bodyComp = { type: "BODY", text,
       ...(nVars ? { example: { body_text: [Array.from({ length: nVars }, (_, i) => SAMPLES[i] || `value${i + 1}`)] } } : {}) };
     try {
-      const d = await graph("POST", `${wabaId() || KNOWN_WABA_ID}/message_templates`, { body: { name, language, category,
+      const target = b.waba === "live" ? (wabaId() || KNOWN_WABA_ID) : TEST_WABA_ID();
+      const d = await graph("POST", `${target}/message_templates`, { body: { name, language, category,
         components: [bodyComp] } });
       tplCache = { at: 0, data: null };
-      return c.json({ ok: true, id: d.id || null, status: d.status || null, category: d.category || category, name });
+      return c.json({ ok: true, id: d.id || null, status: d.status || null, category: d.category || category, name, waba: target });
     } catch (e) { return c.json(errJ(e)); }
   });
 
