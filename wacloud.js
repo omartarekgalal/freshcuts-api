@@ -432,6 +432,46 @@ export function register(app, ctx, deps = {}) {
       defaultChannel: defaultChannel({ gate, phoneStatus: phone?.status }) });
   });
 
+  /* 🎬 عرض مراجعة التطبيق (App Review) — ٢٩/٩
+     ميتا بتطلب فيديوهين عشان تدّي Advanced Access (شرط الـEmbedded Signup):
+     ١) whatsapp_business_messaging: التطبيق بيبعت رسالة وبتوصل على واتساب.
+     ٢) whatsapp_business_management: التطبيق بيعمل قالب رسالة.
+     الإرسال من رقم ميتا التجريبي (بيبعت بس للأرقام المسجّلة في قايمة المستلمين)
+     أو من رقمنا لما يتربط. إنشاء القالب على الـWABA الحقيقي — مقفول بـ
+     WHATSAPP_TEMPLATES_WRITE=1 زي تقديم القوالب. */
+  const TEST_PHONE_ID = () => env("WHATSAPP_TEST_PHONE_ID", "1376437515542744");
+  app.post("/api/cms/wa-cloud/demo/send", async (c) => {
+    const err = await ownerOnly(c); if (err) return err;
+    const b = await c.req.json().catch(() => ({}));
+    const to = String(b.to || "").replace(/\D/g, "");
+    if (!/^\d{8,15}$/.test(to)) return c.json({ ok: false, error: "bad_to", message: "Enter the full number with country code" });
+    const from = b.sender === "live" ? (phoneId() || KNOWN_PHONE_ID) : TEST_PHONE_ID();
+    const template = /^[a-z0-9_]{1,512}$/.test(String(b.template || "")) ? String(b.template) : "hello_world";
+    const language = /^[a-z]{2}(_[A-Z]{2})?$/.test(String(b.language || "")) ? String(b.language) : "en_US";
+    try {
+      const d = await graph("POST", `${from}/messages`, { body: { messaging_product: "whatsapp", to, type: "template",
+        template: { name: template, language: { code: language } } } });
+      return c.json({ ok: true, from, to, template, messageId: d.messages?.[0]?.id || null, status: d.messages?.[0]?.message_status || "accepted" });
+    } catch (e) { return c.json(errJ(e)); }
+  });
+  app.post("/api/cms/wa-cloud/demo/template", async (c) => {
+    const err = await ownerOnly(c); if (err) return err;
+    if (env("WHATSAPP_TEMPLATES_WRITE") !== "1") return c.json({ ok: false, error: "templates_write_disabled", message: "Set WHATSAPP_TEMPLATES_WRITE=1" });
+    const b = await c.req.json().catch(() => ({}));
+    const name = String(b.name || "").trim().toLowerCase();
+    const text = String(b.body || "").trim();
+    const category = ["UTILITY", "MARKETING"].includes(b.category) ? b.category : "UTILITY";
+    const language = /^[a-z]{2}(_[A-Z]{2})?$/.test(String(b.language || "")) ? String(b.language) : "en_US";
+    if (!/^[a-z0-9_]{1,512}$/.test(name)) return c.json({ ok: false, error: "bad_name", message: "Use lowercase letters, numbers and _" });
+    if (!text || text.length > 1024) return c.json({ ok: false, error: "bad_body", message: "Body is required (max 1024)" });
+    try {
+      const d = await graph("POST", `${wabaId() || KNOWN_WABA_ID}/message_templates`, { body: { name, language, category,
+        components: [{ type: "BODY", text }] } });
+      tplCache = { at: 0, data: null };
+      return c.json({ ok: true, id: d.id || null, status: d.status || null, category: d.category || category, name });
+    } catch (e) { return c.json(errJ(e)); }
+  });
+
   // إعدادات قناة الـCloud + config_id (المالك)
   app.post("/api/cms/wa-cloud/settings", async (c) => {
     const err = await ownerOnly(c); if (err) return err;
