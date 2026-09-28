@@ -726,7 +726,8 @@ export function register(app, ctx, deps = {}) {
     try {
       const d = await settingsData(true);
       try { await loadModel(); } catch { /* الجدول لسه مااتبناش */ }
-      return c.json({ ok: true, settings: recSettingsOf(d), defaults: DEFAULT_SETTINGS, model: buildInfo() });
+      return c.json({ ok: true, settings: recSettingsOf(d), defaults: DEFAULT_SETTINGS, model: buildInfo(),
+        checkout2Default: (d?.shop || {}).checkout2Default === true });
     } catch (e) {
       return c.json({ ok: false, error: String(e.message || e) }, 500);
     }
@@ -737,9 +738,25 @@ export function register(app, ctx, deps = {}) {
     let b;
     try { b = await c.req.json(); } catch { return c.json({ ok: false, error: "bad json" }, 400); }
     if (!b || typeof b !== "object" || Array.isArray(b)) return c.json({ ok: false, error: "bad body" }, 400);
+    /* checkout2Default (تجربة الطلب الجديدة لكل العملاء، shop.checkout2Default)
+       — الشاشة بتبعته هنا، وnormalizeSettings كانت بترميه فعمره ما اتحفظ
+       (باج ٢٨/٩). للمالك بس، ومفتاح واحد بـjsonb_set. */
+    const { checkout2Default: c2, ...rest } = b;
+    let c2Saved = null;
+    if (c2 !== undefined) {
+      if (typeof ctx.isOwner === "function" && !ctx.isOwner(c)) return c.json({ ok: false, error: "owner_only" }, 403);
+      if (typeof c2 !== "boolean") return c.json({ ok: false, error: "checkout2Default must be boolean" }, 400);
+      await pool.query(
+        `UPDATE settings SET data = jsonb_set(
+           CASE WHEN jsonb_typeof(data->'shop') = 'object' THEN data ELSE jsonb_set(data, '{shop}', '{}'::jsonb, true) END,
+           '{shop,checkout2Default}', $1::jsonb, true) WHERE id=1`, [J(c2)]);
+      c2Saved = c2;
+      state.settingsData = null; state.settingsAt = 0;
+      if (!Object.keys(rest).length) return c.json({ ok: true, checkout2Default: c2Saved });
+    }
     const d = await settingsData(true);
     const cur = recSettingsOf(d);
-    const next = normalizeSettings({ ...cur, ...b });
+    const next = normalizeSettings({ ...cur, ...rest });
     await pool.query(
       `UPDATE settings SET data = jsonb_set(
          CASE WHEN jsonb_typeof(data->'shop') = 'object' THEN data ELSE jsonb_set(data, '{shop}', '{}'::jsonb, true) END,
@@ -750,7 +767,7 @@ export function register(app, ctx, deps = {}) {
       rebuilding = true;
       build({ reason: "settings" }).catch(() => {});
     }
-    return c.json({ ok: true, settings: next, rebuilding });
+    return c.json({ ok: true, settings: next, rebuilding, checkout2Default: c2Saved ?? ((d?.shop || {}).checkout2Default === true) });
   });
 
   app.get("/api/cms/recommendations/preview", async (c) => {

@@ -94,7 +94,8 @@ function fakePool({ data = fakeOrdersData(), settings = {}, sessions = {}, custo
     if (/FROM ts_orders o JOIN ts_order_items i/i.test(s)) return { rows: customerTs[p[0]] || [] };
     if (/^UPDATE settings/i.test(s)) {
       db.writes.push({ sql: s, value: JSON.parse(p[0]) });
-      db.settings = { ...db.settings, shop: { ...(db.settings.shop || {}), recommendations: JSON.parse(p[0]) } };
+      const key = /\{shop,checkout2Default\}/.test(s) ? "checkout2Default" : "recommendations";
+      db.settings = { ...db.settings, shop: { ...(db.settings.shop || {}), [key]: JSON.parse(p[0]) } };
       return { rows: [], rowCount: 1 };
     }
     throw new Error("unexpected SQL: " + s.slice(0, 80));
@@ -390,6 +391,29 @@ test("admin: settings GET/PUT require admin, normalise, persist under settings.s
   assert.equal(j.settings.maxPrice, 20);
   const bad = await app.request("/api/cms/recommendations/settings", { method: "PUT", body: "nope" });
   assert.equal(bad.status, 400);
+});
+
+test("checkout2Default: بيتحفظ فعلاً (كان normalizeSettings بيرميه) — للمالك بس، وبيرجع في GET", async () => {
+  const pool = fakePool();
+  const app = new Hono();
+  let owner = false;
+  recs.register(app, {
+    pool, requireAdmin: async () => null, getSettingsData: async () => pool.settings, jb: (v) => JSON.stringify(v),
+    isOwner: () => owner,
+  }, { menuRows: async () => MENU, rawMenu: null, hiddenOfferIds: () => new Set(), now: () => NOW, schedule: false });
+  const put = (body) => app.request("/api/cms/recommendations/settings", {
+    method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  assert.equal((await put({ checkout2Default: true })).status, 403, "مش مالك ⇒ 403");
+  assert.equal(pool.writes.length, 0);
+  owner = true;
+  assert.equal((await put({ checkout2Default: "yes" })).status, 400);
+  let j = await (await put({ checkout2Default: true })).json();
+  assert.equal(j.checkout2Default, true);
+  assert.equal(pool.writes.length, 1, "مفتاح واحد بس — الاقتراحات ما اتكتبتش");
+  assert.match(pool.writes[0].sql, /'\{shop,checkout2Default\}'/);
+  assert.equal(pool.settings.shop.checkout2Default, true);
+  j = await (await app.request("/api/cms/recommendations/settings")).json();
+  assert.equal(j.checkout2Default, true, "GET بيرجّع القيمة المحفوظة");
 });
 
 test("admin preview: score, together, lift, source split, eligibility", async () => {

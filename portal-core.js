@@ -78,17 +78,29 @@ export function normStaffList(list) {
   return out;
 }
 
+/* PIN الكاشير المشترك — مفتاح واحد: settings.cashierPin (اللي اللوحة بتكتبه
+   في «المؤشرات › الإعدادات»)، ولو مش موجود settings.shop.cashierPin القديم.
+   قبل ٢٩/٩ البورتال كان بيقرا shop الأول و/api/auth/cashier بيقرا
+   cashierPin بس، فتعديل اللوحة ماكانش بيوصل للبورتال لو shop.cashierPin موجود.
+   بترجع نص متقصقص أو null — والافتراضي («1111») قرار المستهلك. */
+export function cashierPinOf(settings) {
+  for (const v of [settings?.cashierPin, settings?.shop?.cashierPin]) {
+    if (v != null && String(v).trim()) return String(v).trim();
+  }
+  return null;
+}
+
 /* الهويات اللي ينفع تدخل البوابة دلوقتي:
      - موظفين settings.portal.staff (كل واحد باسمه ودوره)
-     - لو القائمة فاضية: الرقم المشترك (settings.shop.cashierPin) = كاشير
+     - لو القائمة فاضية: الرقم المشترك (cashierPinOf: settings.cashierPin ثم shop.cashierPin) = كاشير
      - مفتاح الأدمن (ADMIN_PASSWORD/ADMIN_TOKEN) = مدير دايماً
    بترجّع {staff, sharedPin, adminKeys} — للمطابقة والتحقق من بصمة التوكن. */
 export function identitiesFrom(settings = {}, env = {}) {
   const staff = normStaffList(settings?.portal?.staff);
   let sharedPin = null;
   if (!staff.length) {
-    const p = settings?.shop?.cashierPin ?? settings?.cashierPin;
-    if (p != null && String(p).trim()) sharedPin = String(p).trim();
+    const p = cashierPinOf(settings);
+    if (p) sharedPin = p;
     else if (env.PORTAL_REQUIRE_PIN !== "1") sharedPin = "1111"; // نفس افتراضي #delivery الحالي
   }
   const adminKeys = [env.ADMIN_PASSWORD, env.ADMIN_TOKEN].filter((k) => k && String(k).length >= 6);

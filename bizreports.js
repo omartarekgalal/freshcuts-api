@@ -284,7 +284,9 @@ export function register(app, ctx, deps = {}) {
       weekStart: Number.isInteger(ws) && ws >= 0 && ws <= 6 ? ws : DEFAULT_WEEK_START,
       rates: mergeRates(s.financeRates),
       basis: s.financeCommissionBasis === "total" ? "total" : "net",
-      dailyTarget: Number(s.dailyTarget) || 200,
+      // هدف طلبات اليوم: المفتاح اللي اللوحة بتكتبه (PUT /api/cms/settings → cms.dailyTarget).
+      // dailyTarget على المستوى الأول ماحدّش بيكتبه — بيتقري احتياطي بس.
+      dailyTarget: Number(s.cms?.dailyTarget ?? s.dailyTarget) || 200,
     };
   }
 

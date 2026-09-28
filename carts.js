@@ -533,9 +533,16 @@ export function register(app, ctx, deps = {}) {
     const err = await requireAdmin(c); if (err) return err;
     let b = {};
     try { b = await c.req.json(); } catch { return c.json({ ok: false, error: "bad json" }, 400); }
-    const val = cartCfg({ abandonedCarts: b });
+    if (!b || typeof b !== "object" || Array.isArray(b)) return c.json({ ok: false, error: "bad body" }, 400);
+    /* دمج مش استبدال (٢٩/٩): جسم ناقص كان بيرجّع باقي المفاتيح للافتراضي.
+       بنتحقق على (المحفوظ + الجديد)، وبنكتب المفاتيح اللي اتبعتت بس فوق
+       المحفوظ بـ|| جوّه jsonb_set — أي مفتاح تاني في abandonedCarts بيفضل مكانه. */
+    const saved = ((await getSettingsData()) || {}).abandonedCarts || {};
+    const val = cartCfg({ abandonedCarts: { ...saved, ...b } });
+    const sent = Object.fromEntries(Object.keys(b).filter((k) => k in CART_DEFAULTS).map((k) => [k, val[k]]));
     await pool.query(
-      `UPDATE settings SET data = jsonb_set(data, '{abandonedCarts}', $1::jsonb, true) WHERE id=1`, [jb(val)]);
+      `UPDATE settings SET data = jsonb_set(COALESCE(data,'{}'::jsonb), '{abandonedCarts}',
+         COALESCE(data->'abandonedCarts','{}'::jsonb) || $1::jsonb, true) WHERE id=1`, [jb(sent)]);
     return c.json({ ok: true, config: val });
   });
 
