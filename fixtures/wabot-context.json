@@ -1,0 +1,932 @@
+{
+ "_note": "لقطة من /api/menu وsettings/dl_policies/shop_coupons/offer_registry الحية 2026-09-28 — للاختبارات والتوثيق فقط. البوت نفسه يقرا الحي.",
+ "pages": [
+  {
+   "id": 38,
+   "title": "Best Sellers",
+   "local_title": "الأكثر طلباً",
+   "items": [
+    {
+     "id": 59,
+     "name": "بنا تشيكن كازرول",
+     "local_name": "Penne Chicken Casserole",
+     "description": "مكرونة بنا بـصدور دجاج متبلة، شرائح لحم بقري وزيتون مع طبقة موتزاريلا وكيري",
+     "retail_price": 28,
+     "image": "https://d3ectyws4rj41r.cloudfront.net/prod_freshcuts/39/cropped-image-(28).jpg"
+    },
+    {
+     "id": 13,
+     "name": "وجبة نصف دجاجة على الفحم",
+     "local_name": "Half Charcoal Chicken Meal",
+     "description": "نصف دجاجة مشوية على الفحم تُقدَّم مع الأرز والسلطة والطحينة",
+     "retail_price": 28,
+     "image": "https://d3ectyws4rj41r.cloudfront.net/prod_freshcuts/50/cropped-image-(39).jpg"
+    },
+    {
+     "id": 3,
+     "name": "كريب ميكس دجاج",
+     "local_name": "Mixed Chicken Crepe",
+     "description": "سترِبس دجاج، صدور دجاج متبلة، رومي مدخن، موتزاريلا، شيدر، فلفل وزيتون",
+     "retail_price": 29,
+     "image": "https://d3ectyws4rj41r.cloudfront.net/prod_freshcuts/43/cropped-image-(32).jpg"
+    },
+    {
+     "id": 1,
+     "name": "كريب ميكس لحوم",
+     "local_name": "Mixed Meat Crepe",
+     "description": "برجر، سجق، هوت دوج، موتزاريلا، صوص تكساس، فلفل وزيتون",
+     "retail_price": 30,
+     "image": "https://d3ectyws4rj41r.cloudfront.net/prod_freshcuts/6/crepe-mix-meat.png"
+    },
+    {
+     "id": 18,
+     "name": "وجبة ميكس جريل",
+     "local_name": "Mixed Grill Meal",
+     "description": "وجبة مشوية تحتوي على كفتة، طرب، صدور دجاج، شيش طاووق تُقدَّم مع الأرز والسلطة والطحينة",
+     "retail_price": 37,
+     "image": "https://d3ectyws4rj41r.cloudfront.net/prod_freshcuts/51/cropped-image-(40).jpg"
+    },
+    {
+     "id": 9,
+     "name": "كريب سوبر كرانشي",
+     "local_name": "Super Crunchy Crepe",
+     "description": "سترِبس دجاج، رومي مدخن، موتزاريلا، فلفل وزيتون",
+     "retail_price": 28,
+     "image": "https://d3ectyws4rj41r.cloudfront.net/prod_freshcuts/7/super-crunchy.png"
+    },
+    {
+     "id": 8,
+     "name": "كريب زنجر سوبريم",
+     "local_name": "Zinger Supreme Crepe",
+     "description": "سترِبس دجاج حار، موتزاريلا، شيدر فلفل وزيتون",
+     "retail_price": 25,
+     "image": "https://d3ectyws4rj41r.cloudfront.net/prod_freshcuts/42/cropped-image-(31).jpg"
+    },
+    {
+     "id": 61,
+     "name": "باستا بشاميل",
+     "local_name": "Pasta Béchamel",
+     "description": "مكرونة بنا بشاميل باـلحم المفروم مع طبقة موتزاريلا",
+     "retail_price": 25,
+     "image": "https://d3ectyws4rj41r.cloudfront.net/prod_freshcuts/32/cropped-image-(20).jpg"
+    },
+    {
+     "id": 84,
+     "name": "طبق كبدة اسكندراني",
+     "local_name": "Alexandrian Liver Plate",
+     "description": "وجبة كبدة اسكندراني تقدم مع الطحينة والسلطة والخبز",
+     "retail_price": 25,
+     "image": "https://d3ectyws4rj41r.cloudfront.net/prod_freshcuts/87/cropped-image-(12).jpg"
+    }
+   ]
+  },
+  {
+   "id": 39,
+   "title": "Offers",
+   "local_title": "العروض",
+   "items": []
+  },
+  {
+   "id": 21,
+   "title": "Meals",
+   "local_title": "وجبات",
+   "items": [
+    {
+     "id": 18,
+     "name": "وجبة ميكس جريل",
+     "local_name": "Mixed Grill Meal",
+     "description": "وجبة مشوية تحتوي على كفتة، طرب، صدور دجاج، شيش طاووق تُقدَّم مع الأرز والسلطة والطحينة",
+     "retail_price": 37,
+     "image": "https://d3ectyws4rj41r.cloudfront.net/prod_freshcuts/51/cropped-image-(40).jpg"
+    },
+    {
+     "id": 87,
+     "name": "وجبة كفتة وطرب",
+     "local_name": "Kofta & Tarb Meal",
+     "description": "وجبه مشويه تحتوي علي كفته وطرب تقدم مع الارز والسلطه والطحينه",
+     "retail_price": 37,
+     "image": "https://d3ectyws4rj41r.cloudfront.net/prod_freshcuts/106/كفته-مشويه.jpg"
+    },
+    {
+     "id": 13,
+     "name": "وجبة نصف دجاجة على الفحم",
+     "local_name": "Half Charcoal Chicken Meal",
+     "description": "نصف دجاجة مشوية على الفحم تُقدَّم مع الأرز والسلطة والطحينة",
+     "retail_price": 28,
+     "image": "https://d3ectyws4rj41r.cloudfront.net/prod_freshcuts/50/cropped-image-(39).jpg"
+    },
+    {
+     "id": 14,
+     "name": "وجبة دجاجة كاملة على الفحم",
+     "local_name": "Whole Charcoal Chicken Meal",
+     "description": "دجاجة كاملة مشوية على الفحم تُقدَّم مع الأرز والسلطة والطحينة",
+     "retail_price": 52,
+     "image": "https://d3ectyws4rj41r.cloudfront.net/prod_freshcuts/69/cropped-image-(57).jpg"
+    },
+    {
+     "id": 15,
+     "name": "وجبة صدور مشوية",
+     "local_name": "Grilled Chicken Breast Meal",
+     "description": "وجبة صدور دجاج مشوية تُقدَّم مع الأرز والسلطة والطحينة",
+     "retail_price": 25,
+     "image": "https://d3ectyws4rj41r.cloudfront.net/prod_freshcuts/49/cropped-image-(38).jpg"
+    },
+    {
+     "id": 17,
+     "name": "وجبة كفتة",
+     "local_name": "Kofta Meal",
+     "description": "وجبة كفتة مشوية تُقدَّم مع الأرز والسلطة والطحينة",
+     "retail_price": 24,
+     "image": "https://d3ectyws4rj41r.cloudfront.net/prod_freshcuts/52/cropped-image-(41).jpg"
+    },
+    {
+     "id": 16,
+     "name": "وجبة طرب",
+     "local_name": "Tarb Meal",
+     "description": "وجبة طرب مشوية تُقدَّم مع الأرز والسلطة والطحينة",
+     "retail_price": 27,
+     "image": "https://d3ectyws4rj41r.cloudfront.net/prod_freshcuts/53/cropped-image-(42).jpg"
+    },
+    {
+     "id": 90,
+     "name": "وجبة شيش طاووق",
+     "local_name": "Shish Tawook Meal",
+     "description": "وجبه شيش طاووق مشويه تقدم مع الارز,السلطه والطحينه",
+     "retail_price": 27,
+     "image": "https://d3ectyws4rj41r.cloudfront.net/prod_freshcuts/110/شيش-طاووك.jpg"
+    },
+    {
+     "id": 84,
+     "name": "طبق كبدة اسكندراني",
+     "local_name": "Alexandrian Liver Plate",
+     "description": "وجبة كبدة اسكندراني تقدم مع الطحينة والسلطة والخبز",
+     "retail_price": 25,
+     "image": "https://d3ectyws4rj41r.cloudfront.net/prod_freshcuts/87/cropped-image-(12).jpg"
+    },
+    {
+     "id": 85,
+     "name": "ورقة سجق اسكندراني",
+     "local_name": "Alexandrian Sausage in Foil",
+     "description": "وجبة سجق اسكندراني تقدم مع الطحينة والسلطة والخبز",
+     "retail_price": 28,
+     "image": "https://d3ectyws4rj41r.cloudfront.net/prod_freshcuts/109/سجق-أسكندراني.jpg"
+    }
+   ]
+  },
+  {
+   "id": 43,
+   "title": "Grills by the Kilo",
+   "local_title": "مشاوي بالوزن",
+   "items": [
+    {
+     "id": 97,
+     "name": "كباب مشوي بالوزن",
+     "local_name": "Grilled Kebab (by the kilo)",
+     "description": "كباب مشوي على الفحم — متاح بثلث كيلو ونصف كيلو وكيلو",
+     "retail_price": 47,
+     "image": "https://d3ectyws4rj41r.cloudfront.net/prod_freshcuts/94/كباب-مشوي.jpg"
+    },
+    {
+     "id": 91,
+     "name": "كفتة مشوية بالوزن",
+     "local_name": "Grilled Kofta (by the kilo)",
+     "description": "كفتة مشوية على الفحم — متاح بثلث كيلو ونصف كيلو وكيلو",
+     "retail_price": 40,
+     "image": "https://d3ectyws4rj41r.cloudfront.net/prod_freshcuts/105/cropped-image.jpg"
+    },
+    {
+     "id": 105,
+     "name": "سجق مشوي بالوزن",
+     "local_name": "Grilled Sausage (by the kilo)",
+     "description": "سجق مشوي على الفحم — متاح بثلث كيلو ونصف كيلو وكيلو",
+     "retail_price": 40,
+     "image": "https://d3ectyws4rj41r.cloudfront.net/prod_freshcuts/97/سجق-مشوي.jpg"
+    },
+    {
+     "id": 94,
+     "name": "طرب مشوي بالوزن",
+     "local_name": "Grilled Tarb (by the kilo)",
+     "description": "طرب مشوي على الفحم — متاح بثلث كيلو ونصف كيلو وكيلو",
+     "retail_price": 47,
+     "image": "https://d3ectyws4rj41r.cloudfront.net/prod_freshcuts/93/طرب-مشوي.jpg"
+    },
+    {
+     "id": 108,
+     "name": "كبدة مشوية بالوزن",
+     "local_name": "Grilled Liver (by the kilo)",
+     "description": "كبدة مشوية على الفحم — متاح بثلث كيلو ونصف كيلو وكيلو",
+     "retail_price": 33,
+     "image": "https://d3ectyws4rj41r.cloudfront.net/prod_freshcuts/98/كبدة-مشويه.jpg"
+    },
+    {
+     "id": 111,
+     "name": "صدور مشوية بالوزن",
+     "local_name": "Grilled Chicken Breast (by the kilo)",
+     "description": "صدور مشوية على الفحم — متاح بثلث كيلو ونصف كيلو وكيلو",
+     "retail_price": 30,
+     "image": "https://d3ectyws4rj41r.cloudfront.net/prod_freshcuts/100/صدور-مشويه.jpg"
+    },
+    {
+     "id": 114,
+     "name": "شيش طاووق مشوي بالوزن",
+     "local_name": "Grilled Shish Tawook (by the kilo)",
+     "description": "شيش طاووق مشوي على الفحم — متاح بثلث كيلو ونصف كيلو وكيلو",
+     "retail_price": 37,
+     "image": "https://d3ectyws4rj41r.cloudfront.net/prod_freshcuts/101/شيش-طاووك.jpg"
+    },
+    {
+     "id": 100,
+     "name": "ريش مشوية بالوزن",
+     "local_name": "Grilled Lamb Chops (by the kilo)",
+     "description": "ريش مشوية على الفحم — متاح بثلث كيلو ونصف كيلو وكيلو",
+     "retail_price": 62,
+     "image": "https://d3ectyws4rj41r.cloudfront.net/prod_freshcuts/95/ريش-مشويه.jpg"
+    },
+    {
+     "id": 103,
+     "name": "مشكل مخصوص بالوزن",
+     "local_name": "Special Mixed Grill (by the kilo)",
+     "description": "مشكل مخصوص على الفحم — متاح بثلث كيلو ونصف كيلو وكيلو",
+     "retail_price": 53,
+     "image": "https://d3ectyws4rj41r.cloudfront.net/prod_freshcuts/96/مشكل-مخصوص.jpg"
+    }
+   ]
+  },
+  {
+   "id": 23,
+   "title": "Crepes",
+   "local_title": "كريبات",
+   "items": [
+    {
+     "id": 1,
+     "name": "كريب ميكس لحوم",
+     "local_name": "Mixed Meat Crepe",
+     "description": "برجر، سجق، هوت دوج، موتزاريلا، صوص تكساس، فلفل وزيتون",
+     "retail_price": 30,
+     "image": "https://d3ectyws4rj41r.cloudfront.net/prod_freshcuts/6/crepe-mix-meat.png"
+    },
+    {
+     "id": 3,
+     "name": "كريب ميكس دجاج",
+     "local_name": "Mixed Chicken Crepe",
+     "description": "سترِبس دجاج، صدور دجاج متبلة، رومي مدخن، موتزاريلا، شيدر، فلفل وزيتون",
+     "retail_price": 29,
+     "image": "https://d3ectyws4rj41r.cloudfront.net/prod_freshcuts/43/cropped-image-(32).jpg"
+    },
+    {
+     "id": 9,
+     "name": "كريب سوبر كرانشي",
+     "local_name": "Super Crunchy Crepe",
+     "description": "سترِبس دجاج، رومي مدخن، موتزاريلا، فلفل وزيتون",
+     "retail_price": 28,
+     "image": "https://d3ectyws4rj41r.cloudfront.net/prod_freshcuts/7/super-crunchy.png"
+    },
+    {
+     "id": 8,
+     "name": "كريب زنجر سوبريم",
+     "local_name": "Zinger Supreme Crepe",
+     "description": "سترِبس دجاج حار، موتزاريلا، شيدر فلفل وزيتون",
+     "retail_price": 25,
+     "image": "https://d3ectyws4rj41r.cloudfront.net/prod_freshcuts/42/cropped-image-(31).jpg"
+    },
+    {
+     "id": 6,
+     "name": "كريب شيش طاووق",
+     "local_name": "Shish Tawook Crepe",
+     "description": "شيش طاووق، موتزاريلا، فلفل وزيتون",
+     "retail_price": 25,
+     "image": "https://d3ectyws4rj41r.cloudfront.net/prod_freshcuts/41/cropped-image-(30).jpg"
+    },
+    {
+     "id": 7,
+     "name": "كريب فاهيتا دجاج",
+     "local_name": "Chicken Fajita Crepe",
+     "description": "صدور دجاج متبلة، موتزاريلا، فلفل وزيتون",
+     "retail_price": 24,
+     "image": "https://d3ectyws4rj41r.cloudfront.net/prod_freshcuts/40/cropped-image-(29).jpg"
+    },
+    {
+     "id": 83,
+     "name": "كريب ستربس",
+     "local_name": "Chicken Strips Crepe",
+     "description": "سترِبس دجاج، موتزاريلا، شيدر  وفلفل وزيتون",
+     "retail_price": 25,
+     "image": "https://d3ectyws4rj41r.cloudfront.net/prod_freshcuts/83/cropped-image.jpg"
+    },
+    {
+     "id": 4,
+     "name": "كريب هوت دوج",
+     "local_name": "Hot Dog Crepe",
+     "description": "هوت دوج، موتزاريلا، فلفل وزيتون",
+     "retail_price": 23,
+     "image": "https://d3ectyws4rj41r.cloudfront.net/prod_freshcuts/10/crepe-hot-dog.png"
+    },
+    {
+     "id": 10,
+     "name": "كريب ميكس جبن",
+     "local_name": "Mixed Cheese Crepe",
+     "description": "موتزاريلا، شيدر، جبنة رومي، فلفل وزيتون",
+     "retail_price": 20,
+     "image": "https://d3ectyws4rj41r.cloudfront.net/prod_freshcuts/8/crepe-cheese.png"
+    },
+    {
+     "id": 11,
+     "name": "كريب بطاطس",
+     "local_name": "Potato Crepe",
+     "description": "بطاطس، موتزاريلا، فلفل وزيتون",
+     "retail_price": 15,
+     "image": "https://d3ectyws4rj41r.cloudfront.net/prod_freshcuts/9/crepe-fries.png"
+    },
+    {
+     "id": 118,
+     "name": "إضافة كومبو",
+     "local_name": "Combo Add-on",
+     "description": "بطاطس محمرة + بيبسي كان",
+     "retail_price": 6,
+     "image": "https://d3ectyws4rj41r.cloudfront.net/prod_freshcuts/102/كومبو.jpg"
+    }
+   ]
+  },
+  {
+   "id": 40,
+   "title": "Pizza",
+   "local_title": "بيتزا",
+   "items": [
+    {
+     "id": 41,
+     "name": "بيتزا سوبر سوبريم",
+     "local_name": "Super Supreme Pizza",
+     "description": "شرائح لحم بقري، سجق، بيبروني، موتزاريلا,فلفل وزيتون",
+     "retail_price": 31,
+     "image": "https://d3ectyws4rj41r.cloudfront.net/prod_freshcuts/14/cropped-image-(3).jpg"
+    },
+    {
+     "id": 47,
+     "name": "بيتزا سوبر كرانشي",
+     "local_name": "Super Crunchy Pizza",
+     "description": "سترِبس دجاج، رومي مدخن، موتزاريلا، شيدر,فلفل وزيتون",
+     "retail_price": 34,
+     "image": "https://d3ectyws4rj41r.cloudfront.net/prod_freshcuts/89/بيتزا-سوبر-كرانشي.jpg"
+    },
+    {
+     "id": 39,
+     "name": "بيتزا سي فود رانش",
+     "local_name": "Seafood Ranch Pizza",
+     "description": "جمبري، كاليماري، كابوريا، موتزاريلا وصوص رانش,فلفل وزيتون",
+     "retail_price": 38,
+     "image": "https://d3ectyws4rj41r.cloudfront.net/prod_freshcuts/19/cropped-image-(8).jpg"
+    },
+    {
+     "id": 40,
+     "name": "بيتزا بيبروني",
+     "local_name": "Pepperoni Pizza",
+     "description": "بيبروني، موتزاريلا,فلفل وزيتون",
+     "retail_price": 29,
+     "image": "https://d3ectyws4rj41r.cloudfront.net/prod_freshcuts/13/cropped-image-(2).jpg"
+    },
+    {
+     "id": 42,
+     "name": "بيتزا تشيكن باربكيو",
+     "local_name": "Chicken BBQ Pizza",
+     "description": "صدور دجاج متبلة، هوت دوج، موتزاريلا، باربكيو ,فلفل وزيتون",
+     "retail_price": 28,
+     "image": "https://d3ectyws4rj41r.cloudfront.net/prod_freshcuts/16/cropped-image-(5).jpg"
+    },
+    {
+     "id": 43,
+     "name": "بيتزا تشيكن رانش",
+     "local_name": "Chicken Ranch Pizza",
+     "description": "صدور دجاج متبلة، موتزاريلا، صوص رانش، فلفل ,مشروم وهالابينو ريمكل",
+     "retail_price": 28,
+     "image": "https://d3ectyws4rj41r.cloudfront.net/prod_freshcuts/18/cropped-image-(7).jpg"
+    },
+    {
+     "id": 46,
+     "name": "بيتزا تشيكن ديناميت",
+     "local_name": "Chicken Dynamite Pizza",
+     "description": "سترِبس دجاج، موتزاريلا، صوص ديناميت، هالابينو وزيتون",
+     "retail_price": 30,
+     "image": "https://d3ectyws4rj41r.cloudfront.net/prod_freshcuts/20/cropped-image-(9).jpg"
+    },
+    {
+     "id": 36,
+     "name": "بيتزا تشيكن الباتشينو",
+     "local_name": "Chicken Pacino Pizza",
+     "description": "صدور دجاج متبلة، رومي مدخن، موتزاريلا، ريكفورد ,فلفل وزيتون",
+     "retail_price": 30,
+     "image": "https://d3ectyws4rj41r.cloudfront.net/prod_freshcuts/17/cropped-image-(6).jpg"
+    },
+    {
+     "id": 38,
+     "name": "بيتزا برجر",
+     "local_name": "Burger Pizza",
+     "description": "برجر لحم، موتزاريلا، صوص تكساس، مشروم,فلفل وزيتون",
+     "retail_price": 30,
+     "image": "https://d3ectyws4rj41r.cloudfront.net/prod_freshcuts/21/cropped-image-(10).jpg"
+    },
+    {
+     "id": 48,
+     "name": "بيتزا تونة",
+     "local_name": "Tuna Pizza",
+     "description": "تونة، موتزاريلا، ذرة ,فلفل وزيتون",
+     "retail_price": 30,
+     "image": "https://d3ectyws4rj41r.cloudfront.net/prod_freshcuts/70/cropped-image-(58).jpg"
+    },
+    {
+     "id": 37,
+     "name": "بيتزا كواترو تشيز",
+     "local_name": "Quattro Cheese Pizza",
+     "description": "موتزاريلا، شيدر، جبنة رومي، ريكفورد,فلفل وزيتون",
+     "retail_price": 25,
+     "image": "https://d3ectyws4rj41r.cloudfront.net/prod_freshcuts/15/cropped-image-(4).jpg"
+    },
+    {
+     "id": 44,
+     "name": "بيتزا خضروات",
+     "local_name": "Vegetable Pizza",
+     "description": "موتزاريلا، مشروم، بصل، فلفل وزيتون",
+     "retail_price": 22,
+     "image": "https://d3ectyws4rj41r.cloudfront.net/prod_freshcuts/12/cropped-image-(1).jpg"
+    },
+    {
+     "id": 45,
+     "name": "بيتزا مارجريتا",
+     "local_name": "Margherita Pizza",
+     "description": "بيتزا بطبقة جبنة موتزاريلا",
+     "retail_price": 20,
+     "image": "https://d3ectyws4rj41r.cloudfront.net/prod_freshcuts/11/cropped-image.jpg"
+    }
+   ]
+  },
+  {
+   "id": 42,
+   "title": "Skillets",
+   "local_title": "طاسات",
+   "items": [
+    {
+     "id": 51,
+     "name": "طاسة الاكيلة",
+     "local_name": "Akeela Skillet",
+     "description": "طاسة جبن مع بسطرمة، سجق فلفل,بصل وزيتون",
+     "retail_price": 41,
+     "image": "https://d3ectyws4rj41r.cloudfront.net/prod_freshcuts/65/cropped-image-(54).jpg"
+    },
+    {
+     "id": 50,
+     "name": "طاسة كرانشي",
+     "local_name": "Crunchy Skillet",
+     "description": "طاسة جبن مع سترِبس دجاج، رومي مدخن,فلفل,بصل وزيتون",
+     "retail_price": 38,
+     "image": "https://d3ectyws4rj41r.cloudfront.net/prod_freshcuts/64/cropped-image-(53).jpg"
+    },
+    {
+     "id": 54,
+     "name": "طاسة صدور مشوية",
+     "local_name": "Grilled Chicken Breast Skillet",
+     "description": "طاسة جبن مع صدور دجاج متبلة فلفل,بصل وزيتون",
+     "retail_price": 32,
+     "image": "https://d3ectyws4rj41r.cloudfront.net/prod_freshcuts/62/cropped-image-(51).jpg"
+    },
+    {
+     "id": 53,
+     "name": "طاسة برجر",
+     "local_name": "Burger Skillet",
+     "description": "طاسة جبن مع برجر لحم فلفل,بصل وزيتون",
+     "retail_price": 32,
+     "image": "https://d3ectyws4rj41r.cloudfront.net/prod_freshcuts/104/طاسه-برجر.jpg"
+    },
+    {
+     "id": 52,
+     "name": "طاسة هوت دوج",
+     "local_name": "Hot Dog Skillet",
+     "description": "طاسة جبن مع هوت دوج فلفل,بصل وزيتون",
+     "retail_price": 29,
+     "image": "https://d3ectyws4rj41r.cloudfront.net/prod_freshcuts/63/cropped-image-(52).jpg"
+    }
+   ]
+  },
+  {
+   "id": 24,
+   "title": "Pasta",
+   "local_title": "باستا",
+   "items": [
+    {
+     "id": 59,
+     "name": "بنا تشيكن كازرول",
+     "local_name": "Penne Chicken Casserole",
+     "description": "مكرونة بنا بـصدور دجاج متبلة، شرائح لحم بقري وزيتون مع طبقة موتزاريلا وكيري",
+     "retail_price": 28,
+     "image": "https://d3ectyws4rj41r.cloudfront.net/prod_freshcuts/39/cropped-image-(28).jpg"
+    },
+    {
+     "id": 61,
+     "name": "باستا بشاميل",
+     "local_name": "Pasta Béchamel",
+     "description": "مكرونة بنا بشاميل باـلحم المفروم مع طبقة موتزاريلا",
+     "retail_price": 25,
+     "image": "https://d3ectyws4rj41r.cloudfront.net/prod_freshcuts/32/cropped-image-(20).jpg"
+    },
+    {
+     "id": 56,
+     "name": "تشيكن بينا الفريدو",
+     "local_name": "Chicken Penne Alfredo",
+     "description": "مكرونة قلم قطع دجاج متبلة، بارميزان، زيتون ومشروم",
+     "retail_price": 25,
+     "image": "https://d3ectyws4rj41r.cloudfront.net/prod_freshcuts/66/cropped-image-(55).jpg"
+    },
+    {
+     "id": 58,
+     "name": "بنا بيف كازرول",
+     "local_name": "Penne Beef Casserole",
+     "description": "مكرونة بنا بقطع اللحم,براون صوص ومشروم مع طبقة موتزاريلا",
+     "retail_price": 35,
+     "image": "https://d3ectyws4rj41r.cloudfront.net/prod_freshcuts/38/cropped-image-(27).jpg"
+    },
+    {
+     "id": 57,
+     "name": "سي فود كازرول",
+     "local_name": "Seafood Casserole Pasta",
+     "description": "مكرونة بنا جمبري، كاليماري، كابوريا مع طبقة موتزاريلا",
+     "retail_price": 37,
+     "image": "https://d3ectyws4rj41r.cloudfront.net/prod_freshcuts/25/cropped-image-(13).jpg"
+    },
+    {
+     "id": 63,
+     "name": "سي فود الفريدو",
+     "local_name": "Seafood Alfredo",
+     "description": "مكرونة بـجمبري، كابوريا، كاليماري، بارميزان وزيتون",
+     "retail_price": 30,
+     "image": "https://d3ectyws4rj41r.cloudfront.net/prod_freshcuts/28/cropped-image-(16).jpg"
+    },
+    {
+     "id": 55,
+     "name": "بيف الفريدو",
+     "local_name": "Beef Alfredo",
+     "description": "مكرونة شريط بقطع اللحم، بارميزان، زيتون ومشروم",
+     "retail_price": 28,
+     "image": "https://d3ectyws4rj41r.cloudfront.net/prod_freshcuts/68/cropped-image-(18).jpg"
+    },
+    {
+     "id": 62,
+     "name": "ماك اند تشيز",
+     "local_name": "Mac and Cheese",
+     "description": "مكرونة فوسيلي بـصدور دجاج متبلة، شرائح لحم بقري، شيدر وزيتون مع طبقة موتزاريلا",
+     "retail_price": 33,
+     "image": "https://d3ectyws4rj41r.cloudfront.net/prod_freshcuts/26/cropped-image-(14).jpg"
+    },
+    {
+     "id": 60,
+     "name": "نجرسكو",
+     "local_name": "Negresco",
+     "description": "مكرونة بنا بـصدور دجاج متبلة، فلفل، زيتون ومشروم مع طبقة موتزاريلا",
+     "retail_price": 25,
+     "image": "https://d3ectyws4rj41r.cloudfront.net/prod_freshcuts/31/cropped-image-(19).jpg"
+    }
+   ]
+  },
+  {
+   "id": 41,
+   "title": "Burgers",
+   "local_title": "برجر",
+   "items": [
+    {
+     "id": 71,
+     "name": "برجر لحم كلاسيك",
+     "local_name": "Classic Beef Burger",
+     "description": "برجر لحم بقري ، طماطم، خس، بصل، خيار",
+     "retail_price": 21,
+     "image": "https://d3ectyws4rj41r.cloudfront.net/prod_freshcuts/33/cropped-image-(21).jpg"
+    },
+    {
+     "id": 70,
+     "name": "مشروم بيف بيكون برجر",
+     "local_name": "Mushroom Beef Bacon Burger",
+     "description": "برجر لحم بقري، بيكون، شيدر، ثاوزند آيلاند ومشروم",
+     "retail_price": 30,
+     "image": "https://d3ectyws4rj41r.cloudfront.net/prod_freshcuts/34/cropped-image-(22).jpg"
+    },
+    {
+     "id": 67,
+     "name": "كريمي مشروم تشيكن",
+     "local_name": "Creamy Mushroom Chicken Burger",
+     "description": "برجر صدور دجاج مقلية، شيدر، كيري، رانش وثاوزند آيلاند",
+     "retail_price": 28,
+     "image": "https://d3ectyws4rj41r.cloudfront.net/prod_freshcuts/36/cropped-image-(25).jpg"
+    },
+    {
+     "id": 66,
+     "name": "جريلد تشيكن ساندوتش",
+     "local_name": "Grilled Chicken Burger",
+     "description": "صدور دجاج مشوية، خس، طماطم، صوص شيدر وثاوزند آيلاند",
+     "retail_price": 19,
+     "image": "https://d3ectyws4rj41r.cloudfront.net/prod_freshcuts/90/جريلد-تشيكن-ساندوتش.jpg"
+    }
+   ]
+  },
+  {
+   "id": 25,
+   "title": "Hawawshi",
+   "local_title": "حواوشي",
+   "items": [
+    {
+     "id": 20,
+     "name": "حواوشي كيري بسطرمة",
+     "local_name": "Kiri Pastrami Hawawshi",
+     "description": "حواوشي مع البسطرمة والجبنة الكيري يقدم مع مخلل وطحينة",
+     "retail_price": 28,
+     "image": "https://d3ectyws4rj41r.cloudfront.net/prod_freshcuts/46/cropped-image-(35).jpg"
+    },
+    {
+     "id": 19,
+     "name": "حواوشي موتزريلا",
+     "local_name": "Mozzarella Hawawshi",
+     "description": "حواوشي بالموتزاريلا يقدم مع مخلل وطحينة",
+     "retail_price": 23,
+     "image": "https://d3ectyws4rj41r.cloudfront.net/prod_freshcuts/45/cropped-image-(34).jpg"
+    },
+    {
+     "id": 21,
+     "name": "حواوشي سادة",
+     "local_name": "Plain Hawawshi",
+     "description": "حواوشي سادة يقدم مع مخلل وطحينة",
+     "retail_price": 20,
+     "image": "https://d3ectyws4rj41r.cloudfront.net/prod_freshcuts/44/cropped-image-(33).jpg"
+    }
+   ]
+  },
+  {
+   "id": 26,
+   "title": "Sides & Drinks",
+   "local_title": "اضافات",
+   "items": [
+    {
+     "id": 73,
+     "name": "فرايد تشيكن",
+     "local_name": "Fried Chicken",
+     "description": "قطع دجاج مقرمشة تقدم مع صوص ثاوثند أيلند",
+     "retail_price": 10,
+     "image": "https://d3ectyws4rj41r.cloudfront.net/prod_freshcuts/61/cropped-image-(50).jpg"
+    },
+    {
+     "id": 74,
+     "name": "فرايد موتزريلا",
+     "local_name": "Fried Mozzarella",
+     "description": "أصابع موتزاريلا مقلية ذهبية تقدم مع صوص ثاوثند أيلند",
+     "retail_price": 16,
+     "image": "https://d3ectyws4rj41r.cloudfront.net/prod_freshcuts/59/cropped-image-(48).jpg"
+    },
+    {
+     "id": 77,
+     "name": "كرانشي فرايز تشيز",
+     "local_name": "Crunchy Cheese Fries",
+     "description": "بطاطس مقلية مع قطع ستربس الدجاج بصوص الجبنة",
+     "retail_price": 19,
+     "image": "https://d3ectyws4rj41r.cloudfront.net/prod_freshcuts/56/cropped-image-(45).jpg"
+    },
+    {
+     "id": 76,
+     "name": "تشيلي تشيز فرايز",
+     "local_name": "Chili Cheese Fries",
+     "description": "بطاطس مقلية مع اللحم المفروم، صوص الجبنة، سويت شيلي وفلفل هالبينو",
+     "retail_price": 15,
+     "image": "https://d3ectyws4rj41r.cloudfront.net/prod_freshcuts/54/cropped-image-(43).jpg"
+    },
+    {
+     "id": 78,
+     "name": "تشيز فرايز",
+     "local_name": "Cheese Fries",
+     "description": "بطاطس مقلية مع صوص الجبنة",
+     "retail_price": 10,
+     "image": "https://d3ectyws4rj41r.cloudfront.net/prod_freshcuts/55/cropped-image-(44).jpg"
+    },
+    {
+     "id": 75,
+     "name": "حلقات بصل",
+     "local_name": "Onion Rings",
+     "description": "حلقات بصل مقرمشة تقدم مع صوص باربكيو",
+     "retail_price": 10,
+     "image": "https://d3ectyws4rj41r.cloudfront.net/prod_freshcuts/60/cropped-image-(49).jpg"
+    },
+    {
+     "id": 79,
+     "name": "بطاطس محمرة",
+     "local_name": "French Fries",
+     "description": "بطاطس مقلية",
+     "retail_price": 6,
+     "image": "https://d3ectyws4rj41r.cloudfront.net/prod_freshcuts/57/cropped-image-(46).jpg"
+    },
+    {
+     "id": 72,
+     "name": "كلوسلو",
+     "local_name": "Coleslaw",
+     "description": "سلطة كولسلو طازجة بالملفوف والجزر بصوص كريمي",
+     "retail_price": 6,
+     "image": "https://d3ectyws4rj41r.cloudfront.net/prod_freshcuts/58/cropped-image-(47).jpg"
+    },
+    {
+     "id": 119,
+     "name": "دوريتوس",
+     "local_name": "Doritos",
+     "description": "شرائح الدوريتوس الذهبيه المقليه",
+     "retail_price": 5,
+     "image": "https://d3ectyws4rj41r.cloudfront.net/prod_freshcuts/103/دوريتوس.jpg"
+    },
+    {
+     "id": 86,
+     "name": "بيبسي زجاج",
+     "local_name": "Pepsi (Glass Bottle)",
+     "description": "بيبسي عبوة زجاجية",
+     "retail_price": 4,
+     "image": "https://d3ectyws4rj41r.cloudfront.net/prod_freshcuts/108/cropped-image-(2).jpg"
+    },
+    {
+     "id": 82,
+     "name": "مشروبات غازية",
+     "local_name": "Soft Drinks",
+     "description": "مشروبات غازية متنوعة",
+     "retail_price": 3,
+     "image": "https://d3ectyws4rj41r.cloudfront.net/prod_freshcuts/91/بيبسي-كان.jpg"
+    },
+    {
+     "id": 81,
+     "name": "مياه",
+     "local_name": "Water",
+     "description": "مياه معدنية",
+     "retail_price": 1,
+     "image": "https://d3ectyws4rj41r.cloudfront.net/prod_freshcuts/107/cropped-image-(1).jpg"
+    }
+   ]
+  }
+ ],
+ "settings": {
+  "hours": {
+   "enabled": true,
+   "days": {
+    "sun": {
+     "open": "12:00",
+     "close": "02:00"
+    },
+    "mon": {
+     "open": "12:00",
+     "close": "02:00"
+    },
+    "tue": {
+     "open": "12:00",
+     "close": "02:00"
+    },
+    "wed": {
+     "open": "12:00",
+     "close": "02:00"
+    },
+    "thu": {
+     "open": "12:00",
+     "close": "03:00"
+    },
+    "fri": {
+     "open": "12:00",
+     "close": "03:00"
+    },
+    "sat": {
+     "open": "12:00",
+     "close": "02:00"
+    }
+   }
+  },
+  "storefront": {
+   "seo": {
+    "faq": [
+     {
+      "q": "أين يقع مطعم فريش كاتس؟",
+      "a": "في حي السلامة بجدة، عند دوار رامي. الموقع على خرائط جوجل متاح من صفحة التواصل.",
+      "a_en": "In Al Salamah, Jeddah, by Rami Roundabout. The Google Maps pin is on the contact page."
+     },
+     {
+      "q": "ما مواعيد العمل؟",
+      "a": "يومياً من 12:00 ظهراً حتى 2:00 فجراً، والخميس والجمعة حتى 3:00 فجراً."
+     },
+     {
+      "q": "هل يوجد توصيل؟",
+      "a": "نعم. توصيل من المطعم مباشرة عند الطلب من الموقع، وأيضاً عبر هنقرستيشن وكيتا ونينجا.",
+      "a_en": "Yes. The restaurant delivers directly when you order on the website, and you can also order through HungerStation, Keeta and Ninja."
+     },
+     {
+      "q": "كيف أعرف رسوم التوصيل ووقت الوصول؟",
+      "a": "عند تحديد موقعك على الخريطة في صفحة الطلب تظهر رسوم التوصيل والوقت المتوقع قبل الدفع.",
+      "a_en": "Once you drop the pin on the ordering page, the delivery fee and estimated time show before you pay."
+     },
+     {
+      "q": "ما طرق الدفع؟",
+      "a": "الدفع الإلكتروني عبر Apple Pay وmada والبطاقات الائتمانية وSTC Pay.",
+      "a_en": "Online payment with Apple Pay, mada, credit cards and STC Pay."
+     },
+     {
+      "q": "هل الأسعار شاملة الضريبة؟",
+      "a": "نعم، كل الأسعار في المنيو شاملة ضريبة القيمة المضافة 15%.",
+      "a_en": "Yes, all menu prices include 15% VAT."
+     },
+     {
+      "q": "هل المشاوي على الفحم؟",
+      "a": "نعم، المشاوي تُشوى على الفحم بعد استلام الطلب ولا تُحضَّر مسبقاً."
+     },
+     {
+      "q": "ماذا أطلب لجمعة عائلية؟",
+      "a": "المشاوي بالكيلو (ثلث، نصف، كيلو) مع الأرز والسلطة هي الأنسب للجمعات، وأي عرض عائلي حالي يظهر في صفحة الطلب."
+     },
+     {
+      "q": "كيف أتواصل مع المطعم؟",
+      "a": "هاتف أو واتساب على 0546715683."
+     }
+    ]
+   }
+  },
+  "googlePlace": {
+   "mapsUrl": "https://maps.google.com/?cid=14767749764292326433",
+   "rating": 4.9,
+   "count": 230
+  },
+  "reviews": {
+   "googleUrl": "https://g.page/r/CSG0gPAqlvHMEBM/review",
+   "threshold": 4
+  },
+  "preorder": {
+   "enabled": false
+  },
+  "catalog": {
+   "soldOut": {},
+   "hiddenIds": [],
+   "pausedOffers": {}
+  },
+  "service": {}
+ },
+ "policy": {
+  "type": "distance_tiers",
+  "maxKm": 10,
+  "perKm": 3,
+  "baseKm": 10,
+  "baseFee": 20,
+  "feeByTotal": [
+   {
+    "fee": 20,
+    "over": 0
+   },
+   {
+    "fee": 15,
+    "over": 60
+   },
+   {
+    "fee": 10,
+    "over": 80
+   },
+   {
+    "fee": 5,
+    "over": 100
+   },
+   {
+    "fee": 0,
+    "over": 150
+   }
+  ],
+  "farZoneMaxKm": 15,
+  "farZonePerKm": 3,
+  "farZoneFromKm": 10,
+  "farZoneEnabled": true,
+  "minOrderTotal": 0
+ },
+ "coupons": [
+  {
+   "code": "FIRST",
+   "percent": "0",
+   "min_total": "40",
+   "once_per_customer": true,
+   "free_delivery": true,
+   "active": true,
+   "expires_at": null
+  }
+ ],
+ "offers": [
+  {
+   "id": "gathering_4",
+   "title": "باقة تجمّع ٤–٦ أشخاص",
+   "price": 225,
+   "desc": "كيلو مشاوي × ٢ من اختيارك (كفتة أو شيش طاووق أو صدور أو طرب) مع طبقين أرز بسمتي، بطاطس محمرة، كلوسلو، و٤ مشروبات.",
+   "line": "كيلو مشاوي × ٢ على اختيارك + أرز وبطاطس وكلوسلو + ٤ مشروبات",
+   "untilText": "لين 15/10"
+  },
+  {
+   "id": "gathering_8",
+   "title": "باقة تجمّع ٨–١٠ أشخاص",
+   "price": 395,
+   "desc": "٣ كيلو مشاوي من اختيارك + دجاجة كاملة على الفحم",
+   "line": "٣ كيلو مشاوي + دجاجة كاملة على الفحم + أرز وبطاطس وكلوسلو + ٨ مشروبات",
+   "untilText": "لين 15/10"
+  },
+  {
+   "id": "gathering_15",
+   "title": "باقة مناسبة ١٥ شخص وأكتر",
+   "price": 595,
+   "desc": "٤ كيلو مشاوي من اختيارك + دجاجتين كاملة على الفحم",
+   "line": "٤ كيلو مشاوي + دجاجتين كاملة على الفحم + أرز وبطاطس وكلوسلو + ١٢ مشروب",
+   "untilText": "لين 15/10"
+  }
+ ]
+}

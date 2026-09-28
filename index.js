@@ -61,6 +61,7 @@ import * as seostatus from "./seostatus.js";
 // 📟 التحكم في رسايل الإدارة (SMS) + تقريرها
 import * as staffcontrol from "./staffcontrol.js";
 import * as smstemplates from "./smstemplates.js";
+import * as wabot from "./wabot.js";
 import * as extsettle from "./extsettle.js";
 import * as wasender from "./wasender.js";
 import { sendAdSms as smsSendAd } from "./smsrules.js";
@@ -3191,6 +3192,9 @@ seostatus.register(app, moduleCtx);
 accounts.setStaffGate(staffcontrol.register(app, moduleCtx).gate);
 // 📱 26/9: every customer SMS template editable from the dashboard
 smstemplates.register(app, moduleCtx, { sendSms: (m) => accounts.sendSms(m), sendAdSms: smsSendAd });
+/* 🤖 الرد الآلي على واتساب (wabot.js) — مسارات قراءة/تجربة في اللوحة بس. الويب هوك
+   بيوصّله whatsapp.js (فرع wa-cloud) عن طريق waBotApi.handleInbound + waBotApi.state. */
+const waBotApi = wabot.register(app, moduleCtx, { app });
 /* 👁 قاعدة واحدة لإظهار جوال العميل كامل في اللوحة (phones.js): المالك دايماً،
    وعضو الفريق لو دوره عنده «عرض» على قسم العملاء. بتتحط على moduleCtx بعد ما
    الـCMS يتسجّل، والموديولات بتناديها وقت الطلب (ctx.canSeePhones) مش وقت التسجيل. */
