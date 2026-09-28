@@ -1,28 +1,25 @@
 /* ═══════════════════════════════════════════════════════════════════════════
    WABOT — الرد الآلي على واتساب لفريش كاتس (داخل نافذة الـ٢٤ ساعة، نص حر).
 
-   ┌─ طريقة التوصيل (لوكيل التكامل — فرع wa-cloud) ─────────────────────────┐
-   │  import * as wabot from "./wabot.js";                                    │
-   │  const bot = wabot.register(app, moduleCtx, { app });                    │
+   ┌─ التوصيل بالويب هوك (whatsapp.js على main فيه setBot/runBot جاهز) ──────┐
+   │  // index.js — سطر واحد بعد تسجيل الاتنين:                                │
+   │  waApi.setBot(waBotApi.botAdapter);                                      │
    │                                                                          │
-   │  // لكل رسالة واردة من الويب هوك (بعد parseWebhook):                    │
-   │  const r = await bot.handleInbound({                                     │
-   │    from: m.from,            // wa_id «9665XXXXXXXX»                      │
-   │    type: m.type,            // text|button|interactive|location|image…   │
-   │    text: m.text,            // النص أو عنوان الزر                         │
-   │    replyId: m.interactive?.button_reply?.id ?? m.interactive?.list_reply?.id ?? null,
-   │    location: m.location ? { lat: m.location.latitude, lng: m.location.longitude } : null,
-   │    referral: m.referral || null,   // Click-to-WhatsApp                  │
-   │    profileName: contacts[0]?.profile?.name || null,                      │
-   │    at: m.at,                                                             │
-   │  });                                                                     │
-   │  // r = { skip:null|"<سبب>", intent, messages:[payload…], actions:[…] }  │
-   │  for (const p of r.messages) await send({ messaging_product:"whatsapp",  │
-   │                                  recipient_type:"individual", to: m.from, ...p });
-   │  for (const a of r.actions) …  // handoff | optout | optin | waitlist_join
+   │  عقد runBot في whatsapp.js (٢٨/٩):                                        │
+   │    ctx = { phone:"5XXXXXXXX", text, interactiveId, referral, ts, store }  │
+   │    const intent = await bot.matchIntent(text, ctx)   // null ⇒ سكوت       │
+   │    const out    = await bot.buildReply(intent, ctx)  // payload أو قايمة  │
+   │  botAdapter.matchIntent بيحمّل البيانات الحية ويطبّق السكوت/الحد، ويرجّع   │
+   │  نتيجة handleInbound (أو null)؛ buildReply بيرجّع messages[] ويبعت          │
+   │  actions[] لـ deps.onAction(actions, ctx) (تحويل/تذكرة/waitlist/optout).  │
+   │  «إيقاف/ابدأ» والصدى وتسليم الإنسان (١٢ ساعة) whatsapp.js بيتعامل معاهم    │
+   │  قبل ما ينادي البوت — والبوت عنده نفس الحماية لو اتنادى مباشرة.          │
    │                                                                          │
-   │  // رسالة طلعت من جوال المطعم (echo / smb_message_echoes):               │
-   │  bot.state.staffReplied(waId)   // البوت يسكت staffMuteHours (افتراضي ٤) │
+   │  أو مباشرة بدون runBot:                                                  │
+   │  const r = await waBotApi.handleInbound({ from:"9665…", type, text,       │
+   │    replyId, location:{lat,lng}|null, referral, profileName, at });        │
+   │  // r = { skip:null|"<سبب>", intent, messages:[payload…], actions:[…] }   │
+   │  رسالة من جوال المطعم (echo) ⇒ waBotApi.state.staffReplied("9665…")       │
    └──────────────────────────────────────────────────────────────────────────┘
 
    الـpayloads = أجسام رسائل Cloud API بدون `to` (text | interactive
@@ -1396,6 +1393,26 @@ export async function handleInbound(msg, deps) {
   return { skip: null, intent: match.intent, match, messages: reply.messages, actions: reply.actions.map((a) => ({ ...a, phone })) };
 }
 
+/* ═══ مهايئ setBot في whatsapp.js ════════════════════════════════════════ */
+export function makeBotAdapter({ state, loadContext, onAction = null } = {}) {
+  return {
+    async matchIntent(text, ctx = {}) {
+      const phone = String(ctx.phone || "").replace(/\D/g, "").replace(/^(966|0)/, "");
+      if (!/^5\d{8}$/.test(phone)) return null;
+      const type = ctx.type || (ctx.interactiveId ? "interactive" : ctx.location ? "location" : "text");
+      if (!String(text || "").trim() && !ctx.interactiveId && !ctx.location && type === "text") return null;
+      const r = await handleInbound({ from: `966${phone}`, type, text, replyId: ctx.interactiveId || null, location: ctx.location || null,
+        referral: ctx.referral || null, profileName: ctx.profileName || null }, { state, loadContext, now: ctx.now });
+      return r.skip || !r.messages.length ? null : r;
+    },
+    async buildReply(r, ctx = {}) {
+      if (!r) return [];
+      if (r.actions?.length && onAction) { try { await onAction(r.actions, ctx); } catch (e) { console.error("[wabot] action:", e.message); } }
+      return r.messages;
+    },
+  };
+}
+
 /* ═══ تحميل السياق من البيانات الحية (قراءة فقط) ════════════════════════ */
 export function makeContextLoader({ pool, getSettingsData, fetchMenuPages, activeOffers, quote } = {}) {
   let menuCache = { at: 0, pages: null };
@@ -1496,5 +1513,7 @@ export function register(app, ctx, deps = {}) {
   return {
     state, loadContext,
     handleInbound: (msg) => handleInbound(msg, { state, loadContext }),
+    /* waApi.setBot(waBotApi.botAdapter) — onAction بيتضبط من المُركِّب */
+    botAdapter: makeBotAdapter({ state, loadContext, onAction: (a, c) => (deps.onAction ? deps.onAction(a, c) : console.log("[wabot] actions", c.phone ? `…${String(c.phone).slice(-4)}` : "", JSON.stringify(a.map((x) => x.type + (x.reason ? `:${x.reason}` : ""))))) }),
   };
 }

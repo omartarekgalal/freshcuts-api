@@ -424,3 +424,21 @@ test("نص صفحة التتبع يتحوّل لصياغة سعودية، وال
   assert.equal(detectLang("asdkjh"), "ar");
   assert.equal(detectLang("hello"), "en");
 });
+
+test("مهايئ setBot: نفس عقد runBot في whatsapp.js (phone=5XXXXXXXX، interactiveId)", async () => {
+  const { makeBotAdapter } = await import("./wabot.js");
+  const seen = [];
+  const bot = makeBotAdapter({ state: createState(), loadContext: load(), onAction: (a) => seen.push(...a) });
+  const i = await bot.matchIntent("بكم نص دجاجة", { phone: "500000009", now: OPEN });
+  assert.equal(i.intent, "item_price");
+  const out = await bot.buildReply(i, { phone: "500000009" });
+  assert.ok(Array.isArray(out) && out[0].type === "interactive" && !out[0].to);
+  const b = await bot.matchIntent("", { phone: "500000009", interactiveId: "status", now: OPEN });
+  assert.equal(b.intent, "order_status");
+  const h = await bot.matchIntent("ابي اكلم موظف", { phone: "500000010", now: OPEN });
+  await bot.buildReply(h, { phone: "500000010" });
+  assert.equal(seen[0].type, "handoff");
+  assert.equal(await bot.matchIntent("المنيو", { phone: "500000010", now: OPEN }), null); // سكوت بعد التحويل
+  assert.equal(await bot.matchIntent("", { phone: "500000011" }), null);
+  assert.equal(await bot.matchIntent("هلا", { phone: "123" }), null);
+});

@@ -3193,7 +3193,7 @@ accounts.setStaffGate(staffcontrol.register(app, moduleCtx).gate);
 // 📱 26/9: every customer SMS template editable from the dashboard
 smstemplates.register(app, moduleCtx, { sendSms: (m) => accounts.sendSms(m), sendAdSms: smsSendAd });
 /* 🤖 الرد الآلي على واتساب (wabot.js) — مسارات قراءة/تجربة في اللوحة بس. الويب هوك
-   بيوصّله whatsapp.js (فرع wa-cloud) عن طريق waBotApi.handleInbound + waBotApi.state. */
+   للتشغيل: waApi.setBot(waBotApi.botAdapter) + WHATSAPP_BOT_ENABLED=1 (قرار التكامل). */
 const waBotApi = wabot.register(app, moduleCtx, { app });
 /* 👁 قاعدة واحدة لإظهار جوال العميل كامل في اللوحة (phones.js): المالك دايماً،
    وعضو الفريق لو دوره عنده «عرض» على قسم العملاء. بتتحط على moduleCtx بعد ما
