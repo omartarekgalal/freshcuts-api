@@ -2118,7 +2118,7 @@ export function register(app, ctx, deps = {}) {
       // أول طلب في حياة العميل من أي قناة (identity.js — القاعدة الوحيدة لـ«جديد»).
       // شريحة «اطلب تاني» بتحتاجه: «أول طلب من ٥ أيام» مش «آخر طلب من ٥ أيام».
       pool.query(`WITH ${FIRST_ORDER_CTE} SELECT pn, first_day FROM firsts WHERE pn ~ '${PHONE_RE}'`)
-        .catch(() => ({ rows: [] })),
+        .catch((e) => { console.error("[cms] first-order days:", e.message); return { rows: [] }; }),
     ]);
     const firstOf = new Map(firsts.rows.map((r) => [r.pn, r.first_day]));
     const onl = new Map(online.rows.map((r) => [r.pn, r]));
