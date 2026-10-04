@@ -27,7 +27,7 @@ import * as smsRules from "./smsrules.js";
 import { promisify } from "node:util";
 // نفس قواعد الهوية والقناة اللي المؤشرات بتستخدمها — مفيش نسخة تانية
 import { IDENT_SQL, SALES_ONLY, deliverySql, WEBSITE_SQL } from "./analytics.js";
-import { FIRST_ORDER_CTE } from "./identity.js";
+import { FIRST_ORDER_CTE, shopPaidSql, maskPhone } from "./identity.js";
 import { logSms } from "./smslog.js";
 import { parseRecipientSlug } from "./wamsg.js";
 // نفس قواعد الـSLA بتاعة الـwatchdog — لوحة التشغيل مابتكتبش كتاب قواعد تاني
@@ -500,6 +500,52 @@ export function register(app, ctx, deps = {}) {
       ALTER TABLE cms_contacts ADD COLUMN IF NOT EXISTS first_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
       ALTER TABLE cms_contacts ADD COLUMN IF NOT EXISTS synced_at TIMESTAMPTZ;
       CREATE INDEX IF NOT EXISTS cms_contacts_pos_idx ON cms_contacts(in_pos) WHERE in_pos;
+    `);
+    /* ٥/١٠ — دفتر الأتمتة (نفس فكرة cms_campaign_sends): صف لكل مستلم أو
+       محجوز (holdout) برابط شخصي /l/<slug>-<code> عشان الضغطة تتربط بالرقم،
+       والكوبون اللي اتبعتله، والتكلفة الحقيقية. وcms_flow_runs = كل دورة:
+       كام دخل، كام اتبعت، وكام اتشال وليه. */
+    await pool.query(`
+      ALTER TABLE cms_flows ADD COLUMN IF NOT EXISTS holdout_pct INT NOT NULL DEFAULT 10;
+      ALTER TABLE cms_flows ADD COLUMN IF NOT EXISTS link_slug TEXT;
+      ALTER TABLE cms_flows ADD COLUMN IF NOT EXISTS offer TEXT;              -- null | winback
+      ALTER TABLE cms_flows ADD COLUMN IF NOT EXISTS offer_min_total INT NOT NULL DEFAULT 60;
+      ALTER TABLE cms_flows ADD COLUMN IF NOT EXISTS offer_valid_days INT NOT NULL DEFAULT 14;
+      CREATE TABLE IF NOT EXISTS cms_flow_sends (
+        id BIGSERIAL PRIMARY KEY,
+        flow_id INT NOT NULL,
+        run_id BIGINT,
+        phone_norm TEXT NOT NULL,
+        status TEXT NOT NULL,            -- sending | sent | failed | holdout | test
+        msg_id TEXT,
+        parts INT NOT NULL DEFAULT 0,
+        cost NUMERIC NOT NULL DEFAULT 0,
+        error TEXT,
+        link_code TEXT UNIQUE,
+        coupon TEXT,
+        coupon_kind TEXT,                -- first | unique | fixed | null
+        clicks INT NOT NULL DEFAULT 0,
+        clicked_at TIMESTAMPTZ,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS cms_flow_sends_flow_idx ON cms_flow_sends(flow_id, created_at DESC);
+      CREATE INDEX IF NOT EXISTS cms_flow_sends_phone_idx ON cms_flow_sends(phone_norm, created_at DESC);
+      CREATE TABLE IF NOT EXISTS cms_flow_runs (
+        id BIGSERIAL PRIMARY KEY,
+        at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        flow_id INT NOT NULL,
+        trigger TEXT NOT NULL DEFAULT 'cron',
+        segment_size INT NOT NULL DEFAULT 0,
+        entrants INT NOT NULL DEFAULT 0,
+        eligible INT NOT NULL DEFAULT 0,
+        holdout INT NOT NULL DEFAULT 0,
+        sent INT NOT NULL DEFAULT 0,
+        failed INT NOT NULL DEFAULT 0,
+        left_segment INT NOT NULL DEFAULT 0,
+        skipped JSONB,
+        stopped TEXT
+      );
+      CREATE INDEX IF NOT EXISTS cms_flow_runs_idx ON cms_flow_runs(flow_id, at DESC);
     `);
     /* ربط الباقة بالعرض (٢٠٢٦-٠٩-١٢). الزرع مرة واحدة بس (cms_migrations)
        عشان لو المالك غيّر الربط بعدين، الإقلاع مايرجّعهوش. INSERT والـUPDATE
@@ -1976,6 +2022,21 @@ export function register(app, ctx, deps = {}) {
           if (count) await pool.query("UPDATE wa_send_queue SET clicks = clicks + 1, clicked_at = COALESCE(clicked_at, NOW()) WHERE id=$1", [q.id]).catch(() => {});
         }
       }
+      /* ٥/١٠ — نفس الفكرة لرسايل الأتمتة: /l/f<id>-<code> → صف المستلم في
+         cms_flow_sends (الضغطة بتتسجّل على الرقم + كوبونه الشخصي لو ليه). */
+      const fs = !l && p ? (await pool.query(
+        `SELECT s.id, s.coupon FROM cms_flow_sends s JOIN cms_flows f ON f.id = s.flow_id
+          WHERE s.link_code=$1 AND f.link_slug=$2 LIMIT 1`, [p.code, p.base]).catch(() => ({ rows: [] }))).rows[0] : null;
+      if (fs) {
+        const r3 = count
+          ? await pool.query(`UPDATE cms_links SET clicks = clicks + 1, last_click_at = NOW() WHERE slug=$1 AND active RETURNING *`, [p.base])
+          : await pool.query(`SELECT * FROM cms_links WHERE slug=$1 AND active`, [p.base]);
+        l = r3.rows[0];
+        if (l) {
+          rcp = { slug, coupon: fs.coupon };
+          if (count) await pool.query("UPDATE cms_flow_sends SET clicks = clicks + 1, clicked_at = COALESCE(clicked_at, NOW()) WHERE id=$1", [fs.id]).catch(() => {});
+        }
+      }
     }
     if (!l) return c.json({ ok: false }, 404);
     const q = new URLSearchParams();
@@ -2007,7 +2068,7 @@ export function register(app, ctx, deps = {}) {
     const s = await getSettingsData();
     const apps = (Array.isArray(s?.deliveryAppMethods) && s.deliveryAppMethods.length
       ? s.deliveryAppMethods : (DEFAULT_DELIVERY_APPS || [])).map((x) => String(x).toLowerCase());
-    const [pos, online, push, names, tsPhone, shopNames, keeta, contacts, catalog] = await Promise.all([
+    const [pos, online, push, names, tsPhone, shopNames, keeta, contacts, catalog, firsts] = await Promise.all([
       pool.query(`
         WITH x AS (
           SELECT ${IDENT_SQL} AS pn, o.total, o.calendar_day AS day,
@@ -2054,7 +2115,12 @@ export function register(app, ctx, deps = {}) {
         .catch(() => ({ rows: [] })),
       // كتالوج نقطة البيع — عشان نسعّر سطور البيتزا اللي بتيجي بصفر
       pool.query("SELECT name_ar, price_incl FROM cw_pos_products WHERE active AND price_incl > 0"),
+      // أول طلب في حياة العميل من أي قناة (identity.js — القاعدة الوحيدة لـ«جديد»).
+      // شريحة «اطلب تاني» بتحتاجه: «أول طلب من ٥ أيام» مش «آخر طلب من ٥ أيام».
+      pool.query(`WITH ${FIRST_ORDER_CTE} SELECT pn, first_day FROM firsts WHERE pn ~ '${PHONE_RE}'`)
+        .catch(() => ({ rows: [] })),
     ]);
+    const firstOf = new Map(firsts.rows.map((r) => [r.pn, r.first_day]));
     const onl = new Map(online.rows.map((r) => [r.pn, r]));
     const pushSet = new Set(push.rows.map((r) => r.pn));
     const nameOf = new Map(names.rows.map((r) => [r.pn, r.name]));
@@ -2117,7 +2183,11 @@ export function register(app, ctx, deps = {}) {
        هيزحزحوا العتبة لتحت ويخلّقوا VIPs من العدم. */
     const spends = rows.map((r) => r.spend).filter((v) => v > 0).sort((a, b) => a - b);
     const cut = spends.length ? spends[Math.floor(spends.length * 0.8)] : Infinity;
-    for (const r of rows) r.vip = r.spend >= cut && r.spend > 0;
+    for (const r of rows) {
+      r.vip = r.spend >= cut && r.spend > 0;
+      const fd = firstOf.get(r.pn);
+      r.firstDaysAgo = fd ? daysSince(fd) : null;
+    }
     rows.sort((a, b) => a.daysSince - b.daysSince);
     segCache = { at: Date.now(), rows };
     return rows;
@@ -2149,6 +2219,18 @@ export function register(app, ctx, deps = {}) {
     { id: "registered_only", icon: "🪪", label: "مسجّلين وماطلبوش", allowApps: true,
       hint: "اسمهم وجوالهم في دليل نقطة البيع بس مافيش ولا طلب مربوط بيهم — فرصة أول طلب",
       test: (c) => (c.orders + (c.online || 0)) === 0 },
+    /* ── شرائح الأتمتة (٥/١٠، قرار عمر: «اطلب تاني» يوم ٥ + استرجاع بعد ٢١ يوم) ──
+       الأتمتة بتبعت للي «بيدخل» الشريحة بس، فالشريحة لازم تكون نافذة أيام
+       ضيقة: العميل بيدخل يوم ٥ (أو يوم ٢١) ويخرج لوحده بعدها. */
+    { id: "second_nudge", icon: "🔁", label: "اطلب تاني — أول طلب من الموقع من ٥–٧ أيام",
+      hint: "أول طلب في حياته (أي قناة، قاعدة identity) كان من متجرنا من ٥–٧ أيام وماطلبش بعده",
+      // firstDaysAgo = أول طلب من أي قناة. daysSince ≥ firstDaysAgo−1 = مفيش طلب بعد يوم الأول
+      // (يوم سماحية لفرق اليوم التشغيلي ٤ الفجر عن تاريخ UTC في طلبات الموقع).
+      test: (c) => (c.online || 0) > 0 && c.firstDaysAgo != null && c.firstDaysAgo >= 5 && c.firstDaysAgo <= 7
+        && c.daysSince >= 5 && c.daysSince >= c.firstDaysAgo - 1 },
+    { id: "lapsed_21", icon: "🔙", label: "غابوا ٢١–٤٥ يوم (استرجاع)",
+      hint: "طلبوا مرة أو أكتر وآخر طلب من ٢١ لـ٤٥ يوم — بيدخلوا الشريحة يوم ٢١ بالظبط",
+      test: (c) => (c.orders + (c.online || 0)) > 0 && c.daysSince >= 21 && c.daysSince <= 45 },
     ...smsRules.WAVE_SEGMENTS,
     ...smsRules.KEETA_SEGMENTS,
     ...smsRules.APP_FOOD_SEGMENTS,
@@ -2511,10 +2593,24 @@ ${smsRules.optoutLine(cfg, { code: c?.optout_code, host: STORE_PUBLIC(), sender:
   async function budgetLeft(cfg) {
     const cap = Number(cfg.budgetSar) || 0;
     if (cap <= 0) return Infinity;
+    return cap - (await budgetSpent(cfg));
+  }
+  /* ٥/١٠ — الميزانية كانت بتعدّ الحملات بس. رسايل الأتمتة واسترجاع السلة
+     وبديل الواتساب كلها من نفس المُرسل الإعلاني وبنفس الفلوس، فبقت محسوبة:
+     الأتمتة من دفترها (cms_flow_sends)، والباقي من sms_log. */
+  async function budgetSpent(cfg) {
     const r = await pool.query(
-      `SELECT COALESCE(sum(cost),0)::float AS spent FROM cms_campaign_sends
-        WHERE status='sent' AND created_at >= COALESCE($1::timestamptz, '1970-01-01')`, [cfg.budgetSince || null]);
-    return cap - r.rows[0].spent;
+      `SELECT (SELECT COALESCE(sum(cost),0) FROM cms_campaign_sends
+                WHERE status='sent' AND created_at >= COALESCE($1::timestamptz, '1970-01-01'))
+            + (SELECT COALESCE(sum(cost),0) FROM cms_flow_sends
+                WHERE status IN ('sent','test') AND created_at >= COALESCE($1::timestamptz, '1970-01-01'))
+            + (SELECT COALESCE(sum(cost),0) FROM sms_log
+                WHERE kind IN ('cart_recovery','wa_fallback') AND status='sent'
+                  AND at >= COALESCE($1::timestamptz, '1970-01-01')) AS spent`, [cfg.budgetSince || null])
+      .catch(() => pool.query(
+        `SELECT COALESCE(sum(cost),0) AS spent FROM cms_campaign_sends
+          WHERE status='sent' AND created_at >= COALESCE($1::timestamptz, '1970-01-01')`, [cfg.budgetSince || null]));
+    return Number(r.rows[0].spent) || 0;
   }
 
   /* فحوصات ما قبل إرسال SMS — نفس الفحص للإرسال الفوري والمجدول */
@@ -2979,17 +3075,26 @@ ${smsRules.optoutLine(cfg, { code: c?.optout_code, host: STORE_PUBLIC(), sender:
   async function brakeCheck() {
     const cfg = await campaignCfg();
     if (cfg.brake) return;
+    /* ٥/١٠: الأتمتة كمان بتتحسب (كل أتمتة = مصدر لوحده، key «f<id>»). الإيقاف
+       بيتعد من المُرسل له بس — المحجوز (holdout) ماوصلوش حاجة. */
     const rows = (await pool.query(
-      `SELECT s.campaign_id, count(DISTINCT s.phone_norm) FILTER (WHERE s.status='sent')::int AS sent,
+      `WITH s AS (
+         SELECT 'c' || campaign_id AS k, phone_norm, status, created_at FROM cms_campaign_sends
+          WHERE created_at > NOW() - INTERVAL '2 hours'
+         UNION ALL
+         SELECT 'f' || flow_id, phone_norm, status, created_at FROM cms_flow_sends
+          WHERE created_at > NOW() - INTERVAL '2 hours')
+       SELECT s.k, count(DISTINCT s.phone_norm) FILTER (WHERE s.status='sent')::int AS sent,
               count(DISTINCT l.phone_norm)::int AS optouts
-         FROM cms_campaign_sends s
-         LEFT JOIN cms_optout_log l ON l.phone_norm = s.phone_norm AND l.action='optout' AND l.source='link'
+         FROM s
+         LEFT JOIN cms_optout_log l ON l.phone_norm = s.phone_norm AND s.status = 'sent' AND l.action='optout' AND l.source='link'
               AND l.created_at >= s.created_at AND l.created_at < s.created_at + ($1 || ' minutes')::interval
-        WHERE s.created_at > NOW() - INTERVAL '2 hours'
         GROUP BY 1`, [String(BRAKE_MIN)])).rows;
     const hit = rows.find((r) => r.sent >= 20 && r.optouts * 100 > r.sent * BRAKE_PCT);
     if (!hit) return;
-    const brake = { at: new Date().toISOString(), campaignId: hit.campaign_id, sent: hit.sent, optouts: hit.optouts };
+    hit.campaign_id = hit.k.startsWith("c") ? Number(hit.k.slice(1)) : hit.k;
+    const brake = { at: new Date().toISOString(), campaignId: hit.campaign_id, sent: hit.sent, optouts: hit.optouts,
+      ...(hit.k.startsWith("f") ? { flowId: Number(hit.k.slice(1)) } : {}) };
     await pool.query(
       `UPDATE settings SET data = jsonb_set(data, '{cms,campaigns,brake}', $1::jsonb, true) WHERE id=1`, [jb(brake)]);
     const held = await pool.query(
@@ -3154,6 +3259,178 @@ ${smsRules.optoutLine(cfg, { code: c?.optout_code, host: STORE_PUBLIC(), sender:
      واحد مرة واحدة. ومفيش عميل بياخد رسالة أتمتة أكتر من مرة كل ٢١ يوم. */
   const FLOW_GAP_DAYS = 21;
   const FLOW_RUN_CAP = 200;
+  const FLOW_PART_SAR = 0.075;
+  /* سبب «مؤقت» = العميل مابيتسجّلش عضو، فالدورة الجاية بتجرّبه تاني طول ما هو
+     لسه في الشريحة. باقي الأسباب نهائية للدخلة دي (زي ما كان من الأول). */
+  const FLOW_RETRY = new Set(["daily_cap", "run_cap"]);
+  const FLOW_SKIP_LABELS = {
+    ...smsRules.EXCLUDE_LABELS,
+    test: "رقم تجارب (عمل طلب تجريبي)",
+    no_push: "مش مفعّل إشعارات",
+    sms_off: "SMS التسويقي مقفول من الإعدادات",
+    brake: "فرملة الإيقاف مشدودة",
+    daily_cap: "السقف اليومي للرسايل خلص — هيتجرّب الدورة الجاية",
+    budget: "ميزانية الـSMS خلصت",
+    run_cap: "سقف الدورة (٢٠٠) — هيتجرّب الدورة الجاية",
+    send_failed: "تقنيات رفضت الإرسال",
+  };
+  const linkHost = () => STORE_PUBLIC().replace(/^https?:\/\//, "");
+  const LINK_ALPHA = "abcdefghjkmnpqrstuvwxyz23456789";
+  const newLinkCode = () => [...crypto.randomBytes(6)].map((x) => LINK_ALPHA[x % LINK_ALPHA.length]).join("");
+
+  /* الفاصل: flowGapDays (افتراضي ٢١) أرضية تحت كل طبقة، والسقف الأسبوعي/الشهري زي ما هو */
+  function flowGapOf(cfg) {
+    const floor = Number(cfg.flowGapDays) || FLOW_GAP_DAYS;
+    const g = smsRules.gapOf(cfg);
+    return { ...g, minGapDays: Math.max(floor, g.minGapDays),
+      gapLapsedDays: Math.max(floor, g.gapLapsedDays), gapColdDays: Math.max(floor, g.gapColdDays) };
+  }
+
+  /* مين يتبعتله فعلاً من مجموعة ناس — نفس حراس الحملات بالظبط (smsrules.filterAudience):
+     علاقة مباشرة، الموظفين/السفراء، أرقام التجارب، الإيقاف (كل مصادره بتكتب
+     cms_contacts.opted_out_at: الرابط/الشيك أوت/البوابة/واتساب)، حاجبين الإعلانات،
+     طلب أونلاين آخر ٣ أيام، الفاصل والسقوف — وبعدين holdout، ثم المفتاح والفرملة
+     والسقف اليومي والميزانية. caps:false = فحص الشريحة كلها من غير سقوف (للتقرير). */
+  async function flowAudience(flow, cfg, people, { caps = true } = {}) {
+    const seg = segById[flow.segment] || {};
+    const skipped = {};
+    const bump = (k, n = 1) => { if (n > 0) skipped[k] = (skipped[k] || 0) + n; };
+    if (!people.length) return { list: [], holdout: [], eligible: 0, skipped, retry: [] };
+    const staff = smsRules.staffPhoneSet(await getSettingsData());
+    const pns = people.map((x) => x.pn);
+    const flags = (await pool.query(
+      "SELECT phone_norm, is_staff, is_test FROM cms_contacts WHERE phone_norm = ANY($1) AND (is_staff OR is_test)", [pns])).rows;
+    for (const f of flags) if (f.is_staff) staff.add(f.phone_norm);
+    const testSet = new Set(flags.filter((f) => f.is_test && !staff.has(f.phone_norm)).map((f) => f.phone_norm));
+    let cand = people.filter((x) => !testSet.has(x.pn));
+    bump("test", people.length - cand.length);
+    if (flow.channel === "push") { const n = cand.length; cand = cand.filter((x) => x.push); bump("no_push", n - cand.length); }
+    const smsBlock = typeof deps.smsBlock === "function" ? deps.smsBlock() : null;
+    const [codes, history, recentOnline, adBlocked] = await Promise.all([
+      optoutCodes(pns),
+      messageHistory(pns),
+      pool.query(`SELECT DISTINCT phone_norm FROM shop_orders WHERE ${PAID_ONLINE} AND phone_norm = ANY($1)
+                   AND created_at > NOW() - INTERVAL '3 days'`, [pns]).then((r) => new Set(r.rows.map((x) => x.phone_norm))),
+      flow.channel === "sms" && smsBlock ? smsBlock.blockedSet(pns).catch(() => new Set()) : Promise.resolve(new Set()),
+    ]);
+    const optedOut = new Set([...codes.values()].filter((x) => x.opted_out_at).map((x) => x.phone_norm));
+    const f = smsRules.filterAudience(cand, { staff, optedOut, history, gap: flowGapOf(cfg), recentOnline, adBlocked,
+      allowApps: flow.channel === "push" || seg.allowApps === true });
+    for (const [k, n] of Object.entries(f.excluded)) bump(k, n);
+    const eligible = f.list.map((x) => ({ ...x, code: codes.get(x.pn)?.optout_code }));
+    const pct = flow.holdout_pct == null ? 10 : Number(flow.holdout_pct);
+    let hold = eligible.filter((x) => smsRules.inHoldout(`f${flow.id}`, x.pn, pct));
+    const hs = new Set(hold.map((x) => x.pn));
+    let list = eligible.filter((x) => !hs.has(x.pn));
+    const retry = [];
+    if (caps) {
+      // لو الإرسال واقف كله، المحجوزين كمان مايتسجّلوش — غير كده المقارنة تبقى من غير طرف تاني
+      const stop = flow.channel === "sms" ? (cfg.smsEnabled !== true ? "sms_off" : cfg.brake ? "brake" : null) : null;
+      if (stop) { bump(stop, list.length + hold.length); list = []; hold = []; }
+      else if (flow.channel === "sms") {
+        const room = Math.max(0, Math.floor((Number(cfg.dailySmsCap || 0) - (await smsToday())) / 2));
+        if (list.length > room) { const cut = list.slice(room); bump("daily_cap", cut.length); retry.push(...cut.map((x) => x.pn)); list = list.slice(0, room); }
+        const left = await budgetLeft(cfg);
+        if (Number.isFinite(left)) {
+          const fit = Math.max(0, Math.floor(left / (2 * FLOW_PART_SAR)));
+          if (list.length > fit) { bump("budget", list.length - fit); list = list.slice(0, fit); }
+        }
+      }
+      if (list.length > FLOW_RUN_CAP) { const cut = list.slice(FLOW_RUN_CAP); bump("run_cap", cut.length); retry.push(...cut.map((x) => x.pn)); list = list.slice(0, FLOW_RUN_CAP); }
+    }
+    return { list, holdout: hold, eligible: eligible.length, skipped, retry };
+  }
+
+  /* الكوبون: «استرجاع» (winback) = FIRST لو عمره مااستعمله (والكوبون شغّال)،
+     غير كده كود شخصي توصيل مجاني مرة واحدة بحد أدنى (افتراضي ٦٠) وصلاحية
+     (افتراضي ١٤ يوم) — مربوط بجواله فمحدش غيره يقدر يستعمله. مفيش نسب خصم. */
+  async function flowCouponFor(flow, pn, { dry = false } = {}) {
+    if (flow.offer === "winback") {
+      const [used, first] = await Promise.all([
+        pool.query(`SELECT 1 FROM shop_orders WHERE upper(COALESCE(coupon,''))='FIRST' AND phone_norm=$1
+                     AND status NOT IN ('pending_payment','expired') LIMIT 1`, [pn]),
+        pool.query("SELECT active FROM shop_coupons WHERE upper(code)='FIRST'"),
+      ]);
+      if (!used.rowCount && first.rows[0]?.active) return { code: "FIRST", kind: "first" };
+      const code = "WB" + crypto.randomBytes(3).toString("hex").toUpperCase();
+      if (dry) return { code, kind: "unique" };
+      const days = Math.min(60, Math.max(1, Number(flow.offer_valid_days) || 14));
+      const expires = new Date(Date.now() + days * 86400000).toISOString().slice(0, 10);
+      await pool.query(
+        `INSERT INTO shop_coupons(code, percent, active, min_total, max_uses, expires_at, note, once_per_customer, free_delivery, phone_norm)
+         VALUES ($1,0,true,$2,1,$3,$4,true,true,$5)`,
+        [code, Math.max(0, Number(flow.offer_min_total) || 60), expires, `أتمتة #${flow.id} — توصيل مجاني مرة واحدة — ${pn.slice(-4)}`, pn]);
+      return { code, kind: "unique" };
+    }
+    return flow.coupon ? { code: flow.coupon, kind: "fixed" } : null;
+  }
+
+  const flowText = (flow, person, { link, coupon }, cfg) => {
+    let msg = renderMsg(flow.message, { name: person.name, coupon: coupon || "" });
+    msg = msg.includes("{link}") ? msg.replaceAll("{link}", link) : `${msg} ${link}`;
+    if (flow.channel !== "sms") return msg;
+    return `${msg}\n${smsRules.optoutLine(cfg, { code: person.code, host: STORE_PUBLIC(), sender: process.env.TAQNYAT_SENDER_AD })}`;
+  };
+  /* أسوأ طول ممكن: اسم طويل + كود شخصي (٨ حروف) + رابط برقم الأتمتة */
+  function flowWorstCase(x, cfg, id) {
+    const coupon = x.offer === "winback" ? "WB1A2B3C" : (x.coupon || "");
+    const t = flowText(x, { name: "عبدالرحمن", code: "ab12cd34ef" },
+      { link: `${linkHost()}/l/${x.link_slug || `f${id || 99}`}-abc234`, coupon }, cfg);
+    return { text: t, chars: t.length, parts: smsPartsOf(t) };
+  }
+
+  /* إرسال واحد. الصف بيتكتب قبل الإرسال (sending) عشان الرابط الشخصي يبقى
+     موجود أول ما الرسالة توصل، وبعدين بيتحدّث بنتيجة تقنيات. */
+  async function flowSendOne(flow, p, cfg, { runId = null, status = "sent" } = {}) {
+    const code = newLinkCode();
+    const cp = await flowCouponFor(flow, p.pn);
+    const link = flow.link_slug ? `${linkHost()}/l/${flow.link_slug}-${code}` : linkHost();
+    const id = (await pool.query(
+      `INSERT INTO cms_flow_sends(flow_id, run_id, phone_norm, status, link_code, coupon, coupon_kind)
+       VALUES ($1,$2,$3,'sending',$4,$5,$6) RETURNING id`,
+      [flow.id, runId, p.pn, code, cp?.code || null, cp?.kind || null])).rows[0].id;
+    const body = flowText(flow, p, { link, coupon: cp?.code }, cfg);
+    try {
+      if (flow.channel === "sms") {
+        const info = await sendMarketingSms(p.pn, body);
+        await pool.query("UPDATE cms_flow_sends SET status=$2, msg_id=$3, parts=$4, cost=$5 WHERE id=$1",
+          [id, status, info?.messageId || null, info?.parts || smsPartsOf(body), info?.cost || 0]);
+        logSms({ phoneNorm: p.pn, kind: status === "test" ? "test" : "flow", ref: `flow:${flow.id}:${id}`,
+          sender: process.env.TAQNYAT_SENDER_AD || null, body, msgId: info?.messageId, cost: info?.cost, parts: info?.parts });
+      } else {
+        const ok = await notify()?.sendToAudience({ phoneNorm: p.pn, title: "فريش كاتس 🍔", body, url: `https://${link}`, stage: "flow" });
+        if (!ok) throw new Error("push_not_delivered");
+        await pool.query("UPDATE cms_flow_sends SET status=$2 WHERE id=$1", [id, status]);
+      }
+      if (status === "sent") await pool.query("INSERT INTO cms_flow_log(flow_id, phone_norm) VALUES ($1,$2)", [flow.id, p.pn]);
+      return { ok: true, id, body, link };
+    } catch (e) {
+      await pool.query("UPDATE cms_flow_sends SET status='failed', error=$2 WHERE id=$1", [id, String(e.message).slice(0, 200)]);
+      if (cp?.kind === "unique") await pool.query("UPDATE shop_coupons SET active=false WHERE code=$1", [cp.code]).catch(() => {});
+      console.error(`[cms] flow ${flow.id} → ${p.pn.slice(-4)}:`, e.message);
+      return { ok: false, id, error: e.message, body, link };
+    }
+  }
+
+  // رابط الأتمتة الأساسي f<id> في روابط الحملات (utm sms/automation/flow-<id>) — مرة واحدة
+  async function ensureFlowLink(flow) {
+    if (flow.link_slug) {
+      await pool.query("UPDATE cms_links SET active=TRUE WHERE slug=$1", [flow.link_slug]).catch(() => {});
+      return flow.link_slug;
+    }
+    for (const slug of [`f${flow.id}`, `fl${flow.id}`, `fa${flow.id}`]) {
+      const r = await pool.query(
+        `INSERT INTO cms_links(slug, label, target_type, coupon, utm_source, utm_medium, utm_campaign, active, created_by)
+         VALUES ($1,$2,'home',$3,'sms','automation',$4,TRUE,'flows') ON CONFLICT (slug) DO NOTHING RETURNING slug`,
+        [slug, `أتمتة: ${String(flow.name).slice(0, 60)}`, flow.offer === "winback" ? null : (flow.coupon || null), `flow-${flow.id}`]);
+      if (r.rowCount) {
+        await pool.query("UPDATE cms_flows SET link_slug=$2 WHERE id=$1", [flow.id, slug]);
+        flow.link_slug = slug;
+        return slug;
+      }
+    }
+    return null;
+  }
 
   async function flowBaseline(flow) {
     const seg = segById[flow.segment];
@@ -3165,12 +3442,15 @@ ${smsRules.optoutLine(cfg, { code: c?.optout_code, host: STORE_PUBLIC(), sender:
         `INSERT INTO cms_flow_members(flow_id, phone_norm) SELECT $1, p FROM unnest($2::text[]) p ON CONFLICT DO NOTHING`,
         [flow.id, m]);
     }
+    await pool.query(
+      `INSERT INTO cms_flow_runs(flow_id, trigger, segment_size, stopped) VALUES ($1,'baseline',$2,$3)`,
+      [flow.id, m.length, `baseline:${m.length}`]).catch(() => {});
     return m.length;
   }
 
-  async function runFlow(flow, cfg) {
+  async function runFlow(flow, cfg, trigger = "cron") {
     const seg = segById[flow.segment];
-    if (!seg) return;
+    if (!seg) return null;
     const rows = (await customerRows()).filter(seg.test);
     const now = new Set(rows.map((x) => x.pn));
     const seen = (await pool.query("SELECT phone_norm FROM cms_flow_members WHERE flow_id=$1", [flow.id])).rows.map((r) => r.phone_norm);
@@ -3178,71 +3458,44 @@ ${smsRules.optoutLine(cfg, { code: c?.optout_code, host: STORE_PUBLIC(), sender:
     const left = seen.filter((p) => !now.has(p));
     if (left.length) await pool.query("DELETE FROM cms_flow_members WHERE flow_id=$1 AND phone_norm = ANY($2)", [flow.id, left]);
     const entrants = rows.filter((x) => !seenSet.has(x.pn));
-    if (!entrants.length) return;
-    // بنسجّلهم دخلوا حتى لو مش هنقدر نوصلهم — عشان مانعيدش كل ساعة
+    const runId = (await pool.query(
+      `INSERT INTO cms_flow_runs(flow_id, trigger, segment_size, entrants, left_segment) VALUES ($1,$2,$3,$4,$5) RETURNING id`,
+      [flow.id, trigger, rows.length, entrants.length, left.length])).rows[0].id;
+    if (!entrants.length) {
+      await pool.query("UPDATE cms_flows SET last_run_at = NOW() WHERE id=$1", [flow.id]);
+      return { runId, entrants: 0, sent: 0 };
+    }
+    const plan = await flowAudience(flow, cfg, entrants);
+    // الكل بيتسجّل «دخل» (عشان مانعيدش كل ساعة) ما عدا اللي اتأجّلوا لسبب مؤقت
+    const retry = new Set(plan.retry);
+    const members = entrants.filter((x) => !retry.has(x.pn)).map((x) => x.pn);
+    if (members.length) {
+      await pool.query(
+        `INSERT INTO cms_flow_members(flow_id, phone_norm) SELECT $1, p FROM unnest($2::text[]) p ON CONFLICT DO NOTHING`,
+        [flow.id, members]);
+    }
+    for (const h of plan.holdout) {
+      await pool.query("INSERT INTO cms_flow_sends(flow_id, run_id, phone_norm, status) VALUES ($1,$2,$3,'holdout')",
+        [flow.id, runId, h.pn]);
+    }
+    let sent = 0, failed = 0;
+    for (const p of plan.list) {
+      const r = await flowSendOne(flow, p, cfg, { runId });
+      if (r.ok) sent++; else failed++;
+    }
+    const skipped = { ...plan.skipped, ...(failed ? { send_failed: failed } : {}) };
     await pool.query(
-      `INSERT INTO cms_flow_members(flow_id, phone_norm) SELECT $1, p FROM unnest($2::text[]) p ON CONFLICT DO NOTHING`,
-      [flow.id, entrants.map((x) => x.pn)]);
-    /* الأتمتة أهدى من الحملات: flowGapDays أرضية تحت كل طبقة من طبقات
-       الفاصل، والسقف الأسبوعي/الشهري بيتطبّق زي ما هو. */
-    const floor = Number(cfg.flowGapDays) || FLOW_GAP_DAYS;
-    const g = smsRules.gapOf(cfg);
-    const flowGap = { ...g, minGapDays: Math.max(floor, g.minGapDays),
-      gapLapsedDays: Math.max(floor, g.gapLapsedDays), gapColdDays: Math.max(floor, g.gapColdDays) };
-    const history = await messageHistory(entrants.map((x) => x.pn));
-    let targets = entrants.filter((x) => !smsRules.gapReason(x, history.get(x.pn), flowGap));
-    const staff = smsRules.staffPhoneSet(await getSettingsData());
-    if (flow.channel === "push") {
-      /* ٢٦/٩: الإشعار كان بيعدّي من غير إيقاف ولا استبعاد الفريق (نفس ثغرة
-         الحملات اللي اتقفلت ٢١/٩). الإيقاف صريح ومابيتفرّقش حسب القناة. */
-      targets = targets.filter((x) => x.push);
-      const codes = await optoutCodes(targets.map((x) => x.pn));
-      targets = targets.filter((x) => !staff.has(x.pn) && !codes.get(x.pn)?.opted_out_at);
-    } else {
-      if (cfg.smsEnabled !== true) return;
-      // نفس فرملة الإيقاف بتاعة الحملات: لو اتشدّت، الأتمتة كمان بتقف
-      if (cfg.brake) return;
-      const codes = await optoutCodes(targets.map((x) => x.pn));
-      const optedOut = new Set(targets.filter((x) => codes.get(x.pn)?.opted_out_at).map((x) => x.pn));
-      // حاجبين الإعلانات: FreshCut-AD مابيوصلهمش — مانتحاسبش على رسالة ماتوصلش
-      const smsBlock = typeof deps.smsBlock === "function" ? deps.smsBlock() : null;
-      const adBlocked = smsBlock ? await smsBlock.blockedSet(targets.map((x) => x.pn)).catch(() => new Set()) : new Set();
-      targets = smsRules.filterAudience(targets, { staff, optedOut, adBlocked }).list
-        .map((x) => ({ ...x, code: codes.get(x.pn)?.optout_code }));
-      const room = Math.max(0, Number(cfg.dailySmsCap || 0) - (await smsToday()));
-      targets = targets.slice(0, Math.floor(room / 2));
-      // سقف الميزانية (نفس تقدير الحملات: جزئين × ٠٫٠٧٥ ر.س)
-      const left = await budgetLeft(cfg);
-      if (Number.isFinite(left)) targets = targets.slice(0, Math.max(0, Math.floor(left / (2 * 0.075))));
-    }
-    targets = targets.slice(0, FLOW_RUN_CAP);
-    let sent = 0;
-    const url = flow.coupon ? `${STORE_PUBLIC()}/?c=${encodeURIComponent(flow.coupon)}` : STORE_PUBLIC();
-    for (const p of targets) {
-      try {
-        let ok = false;
-        if (flow.channel === "sms") {
-          const fb = smsBody(flow, p, cfg);
-          const info = await sendMarketingSms(p.pn, fb); ok = true;
-          logSms({ phoneNorm: p.pn, kind: "flow", ref: `flow:${flow.id}`, sender: process.env.TAQNYAT_SENDER_AD || null,
-            body: fb, msgId: info && info.messageId, cost: info && info.cost, parts: info && info.parts });
-        }
-        else ok = await notify()?.sendToAudience({ phoneNorm: p.pn, title: "فريش كاتس 🍔",
-          body: renderMsg(flow.message, { name: p.name, coupon: flow.coupon }), url, stage: "flow" });
-        if (ok) {
-          sent++;
-          await pool.query("INSERT INTO cms_flow_log(flow_id, phone_norm) VALUES ($1,$2)", [flow.id, p.pn]);
-        }
-      } catch (e) { console.error(`[cms] flow ${flow.id} → ${p.pn.slice(-4)}:`, e.message); }
-    }
+      `UPDATE cms_flow_runs SET eligible=$2, holdout=$3, sent=$4, failed=$5, skipped=$6 WHERE id=$1`,
+      [runId, plan.eligible, plan.holdout.length, sent, failed, jb(skipped)]);
     await pool.query("UPDATE cms_flows SET sent_total = sent_total + $2, last_run_at = NOW() WHERE id=$1", [flow.id, sent]);
-    if (sent) console.log(`[cms] flow ${flow.id} (${flow.segment}/${flow.channel}) → ${sent} new entrant(s)`);
+    if (sent || plan.holdout.length) console.log(`[cms] flow ${flow.id} (${flow.segment}/${flow.channel}) run ${runId}: entrants ${entrants.length} → sent ${sent}, holdout ${plan.holdout.length}, failed ${failed}`);
+    return { runId, entrants: entrants.length, sent, failed, holdout: plan.holdout.length, skipped };
   }
 
   async function flowsTick() {
     // نفس ساعات الهدوء بتاعة الحملات (smsrules.quietOf) — مش نسخة تانية
     if (smsRules.inQuietFor(await getSettingsData())) return;
-    const flows = (await pool.query("SELECT * FROM cms_flows WHERE active")).rows;
+    const flows = (await pool.query("SELECT * FROM cms_flows WHERE active ORDER BY id")).rows;
     if (!flows.length) return;
     segCache = { at: 0, rows: null }; // أعضاء طازة كل دورة
     const cfg = await campaignCfg();
@@ -3251,11 +3504,75 @@ ${smsRules.optoutLine(cfg, { code: c?.optout_code, host: STORE_PUBLIC(), sender:
   setInterval(() => flowsTick().catch((e) => console.error("[cms] flows:", e.message)), 60 * 60_000);
 
   function flowBody(b) {
+    const channel = b.channel === "sms" ? "sms" : "push";
+    const offer = b.offer === "winback" ? "winback" : null;
+    const hp = Math.round(Number(b.holdout_pct));
     return {
       name: clip(b.name, 80), segment: segById[b.segment] ? b.segment : null,
-      channel: b.channel === "sms" ? "sms" : "push", message: clip(b.message, 600),
-      coupon: clip(String(b.coupon || "").toUpperCase(), 40),
+      channel, message: clip(b.message, 600), offer,
+      coupon: offer ? "" : clip(String(b.coupon || "").toUpperCase(), 40),
+      holdout_pct: Number.isFinite(hp) ? Math.min(50, Math.max(0, hp)) : 10,
+      offer_min_total: Math.min(1000, Math.max(0, Math.round(Number(b.offer_min_total ?? 60)) || 0)),
+      offer_valid_days: Math.min(60, Math.max(1, Math.round(Number(b.offer_valid_days ?? 14)) || 14)),
     };
+  }
+
+  /* أرقام كل أتمتة من دفترها: اتبعت/وصل/ضغط/طلب/إيراد/تكلفة/إيقاف — والمحجوزين
+     (holdout) بنفس النافذة = الأثر الحقيقي. الطلب = طلب مدفوع من الموقع بنفس
+     الجوال خلال ٧٢ ساعة / ٧ أيام من الرسالة (نفس قاعدة الحملات). */
+  const FLOW_PAID = shopPaidSql("o");
+  async function flowStats(flowIds) {
+    if (!flowIds.length) return new Map();
+    const r = await pool.query(`
+      WITH s AS (SELECT * FROM cms_flow_sends WHERE flow_id = ANY($1) AND status IN ('sent','failed','holdout'))
+      SELECT s.flow_id, s.status, count(*)::int AS n,
+             COALESCE(sum(s.cost),0)::float AS cost, COALESCE(sum(s.parts),0)::int AS parts,
+             count(*) FILTER (WHERE s.clicked_at IS NOT NULL)::int AS clicked,
+             count(*) FILTER (WHERE d.ok)::int AS delivered,
+             count(*) FILTER (WHERE d.any_dlr)::int AS dlr_known,
+             count(*) FILTER (WHERE o3.n > 0)::int AS ordered72, COALESCE(sum(o3.rev),0)::float AS rev72,
+             count(*) FILTER (WHERE o7.n > 0)::int AS ordered7, COALESCE(sum(o7.rev),0)::float AS rev7,
+             count(*) FILTER (WHERE s.created_at < NOW() - INTERVAL '72 hours')::int AS mature72,
+             count(*) FILTER (WHERE s.created_at < NOW() - INTERVAL '7 days')::int AS mature7,
+             count(*) FILTER (WHERE oo.at IS NOT NULL)::int AS optouts
+        FROM s
+        LEFT JOIN LATERAL (
+          SELECT bool_or(status ILIKE 'deliv%') AS ok, count(*) > 0 AS any_dlr FROM sms_dlr_log
+           WHERE phone_norm = s.phone_norm AND at >= s.created_at AND at < s.created_at + INTERVAL '3 days') d ON s.status = 'sent'
+        LEFT JOIN LATERAL (
+          SELECT count(*)::int AS n, COALESCE(sum(o.total),0)::float AS rev FROM shop_orders o
+           WHERE o.phone_norm = s.phone_norm AND ${FLOW_PAID}
+             AND o.created_at >= s.created_at AND o.created_at < s.created_at + INTERVAL '72 hours') o3 ON TRUE
+        LEFT JOIN LATERAL (
+          SELECT count(*)::int AS n, COALESCE(sum(o.total),0)::float AS rev FROM shop_orders o
+           WHERE o.phone_norm = s.phone_norm AND ${FLOW_PAID}
+             AND o.created_at >= s.created_at AND o.created_at < s.created_at + INTERVAL '7 days') o7 ON TRUE
+        LEFT JOIN LATERAL (
+          SELECT min(at) AS at FROM (
+            SELECT created_at AS at FROM cms_optout_log WHERE phone_norm = s.phone_norm AND action = 'optout' AND created_at >= s.created_at
+            UNION ALL
+            SELECT opted_out_at FROM cms_contacts WHERE phone_norm = s.phone_norm AND opted_out_at >= s.created_at) u) oo ON s.status = 'sent'
+       GROUP BY 1, 2`, [flowIds]);
+    const anyDlr = (await pool.query("SELECT count(*)::int n FROM sms_dlr_log").catch(() => ({ rows: [{ n: 0 }] }))).rows[0].n > 0;
+    const out = new Map();
+    for (const id of flowIds) out.set(id, { sent: null, holdout: null, failed: 0, dlrAvailable: anyDlr });
+    const blank = () => ({ n: 0, cost: 0, parts: 0, clicked: 0, delivered: 0, dlrKnown: 0, ordered72: 0, rev72: 0, ordered7: 0, rev7: 0, mature72: 0, mature7: 0, optouts: 0 });
+    for (const x of r.rows) {
+      const o = out.get(x.flow_id);
+      if (x.status === "failed") { o.failed = x.n; continue; }
+      o[x.status] = { n: x.n, cost: Math.round(x.cost * 100) / 100, parts: x.parts, clicked: x.clicked, delivered: x.delivered,
+        dlrKnown: x.dlr_known, ordered72: x.ordered72, rev72: Math.round(x.rev72), ordered7: x.ordered7, rev7: Math.round(x.rev7),
+        mature72: x.mature72, mature7: x.mature7, optouts: x.optouts };
+    }
+    for (const o of out.values()) {
+      o.sent = o.sent || blank(); o.holdout = o.holdout || blank();
+      const rate = (g, k) => (g.n ? g[k] / g.n : null);
+      const a = rate(o.sent, "ordered7"), b = rate(o.holdout, "ordered7");
+      // الأثر = الفرق في نسبة الطلب خلال ٧ أيام. معناه بيقوى لما المحجوزين ≥ ٢٠
+      o.lift7 = a != null && b != null ? Math.round((a - b) * 1000) / 10 : null;
+      o.liftReliable = o.holdout.n >= 20;
+    }
+    return out;
   }
 
   app.get("/api/cms/flows", async (c) => {
@@ -3264,9 +3581,15 @@ ${smsRules.optoutLine(cfg, { code: c?.optout_code, host: STORE_PUBLIC(), sender:
       `SELECT f.*, (SELECT count(*)::int FROM cms_flow_members m WHERE m.flow_id = f.id) AS tracked
          FROM cms_flows f ORDER BY f.created_at DESC`)).rows;
     const cfgF = await campaignCfg();
-    return c.json({ ok: true, flows: rows, quietHours: smsRules.quietText(smsRules.quietOf(await getSettingsData())),
+    const stats = await flowStats(rows.map((r) => r.id)).catch((e) => { console.error("[cms] flow stats:", e.message); return new Map(); });
+    const flows = rows.map((f) => ({ ...f, stats: stats.get(f.id) || null,
+      length: f.channel === "sms" ? flowWorstCase(f, cfgF, f.id) : null }));
+    const left = await budgetLeft(cfgF);
+    return c.json({ ok: true, flows, quietHours: smsRules.quietText(smsRules.quietOf(await getSettingsData())),
       gapDays: Math.max(Number(cfgF.flowGapDays) || FLOW_GAP_DAYS, smsRules.gapOf(cfgF).minGapDays),
-      gap: smsRules.gapOf(cfgF), gapTiers: smsRules.GAP_TIERS });
+      gap: smsRules.gapOf(cfgF), gapTiers: smsRules.GAP_TIERS, skipLabels: FLOW_SKIP_LABELS,
+      sms: { enabled: cfgF.smsEnabled === true, brake: cfgF.brake || null, budgetLeft: Number.isFinite(left) ? Math.round(left * 100) / 100 : null,
+        dailyCap: Number(cfgF.dailySmsCap) || 0, today: await smsToday() } });
   });
   app.post("/api/cms/flows", async (c) => {
     const err = await requireAdmin(c); if (err) return err;
@@ -3274,10 +3597,17 @@ ${smsRules.optoutLine(cfg, { code: c?.optout_code, host: STORE_PUBLIC(), sender:
     try { b = await c.req.json(); } catch { return bad(c, "bad json"); }
     const x = flowBody(b);
     if (!x.name || !x.segment || !x.message) return bad(c, "name_segment_message_required");
+    if (x.channel === "sms") {
+      const L = flowWorstCase(x, await campaignCfg(), null);
+      if (L.parts > MAX_PARTS) return c.json({ ok: false, error: "too_long", chars: L.chars, parts: L.parts, sample: L.text }, 400);
+    }
     const r = await pool.query(
-      `INSERT INTO cms_flows(name, segment, channel, message, coupon, created_by)
-       VALUES ($1,$2,$3,$4,$5,$6) RETURNING *`, [x.name, x.segment, x.channel, x.message, x.coupon, await who(c)]);
-    return c.json({ ok: true, flow: r.rows[0] });
+      `INSERT INTO cms_flows(name, segment, channel, message, coupon, created_by, holdout_pct, offer, offer_min_total, offer_valid_days)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING *`,
+      [x.name, x.segment, x.channel, x.message, x.coupon, await who(c), x.holdout_pct, x.offer, x.offer_min_total, x.offer_valid_days]);
+    const flow = r.rows[0];
+    await ensureFlowLink(flow);
+    return c.json({ ok: true, flow });
   });
   app.put("/api/cms/flows/:id", async (c) => {
     const err = await requireAdmin(c); if (err) return err;
@@ -3288,6 +3618,8 @@ ${smsRules.optoutLine(cfg, { code: c?.optout_code, host: STORE_PUBLIC(), sender:
     if (!cur) return bad(c, "not_found", 404);
     if (Object.keys(b).length === 1 && typeof b.active === "boolean") {
       if (b.active && !cur.active) {
+        await ensureFlowLink(cur);
+        segCache = { at: 0, rows: null };
         const n = await flowBaseline(cur); // الموجودين دلوقتي = نقطة البداية، من غير إرسال
         await pool.query("UPDATE cms_flows SET active=TRUE WHERE id=$1", [id]);
         return c.json({ ok: true, active: true, baseline: n });
@@ -3297,9 +3629,18 @@ ${smsRules.optoutLine(cfg, { code: c?.optout_code, host: STORE_PUBLIC(), sender:
     }
     const x = flowBody(b);
     if (!x.name || !x.segment || !x.message) return bad(c, "name_segment_message_required");
+    if (x.channel === "sms") {
+      const L = flowWorstCase({ ...x, link_slug: cur.link_slug }, await campaignCfg(), id);
+      if (L.parts > MAX_PARTS) return c.json({ ok: false, error: "too_long", chars: L.chars, parts: L.parts, sample: L.text }, 400);
+    }
     const r = await pool.query(
-      `UPDATE cms_flows SET name=$2, segment=$3, channel=$4, message=$5, coupon=$6 WHERE id=$1 RETURNING *`,
-      [id, x.name, x.segment, x.channel, x.message, x.coupon]);
+      `UPDATE cms_flows SET name=$2, segment=$3, channel=$4, message=$5, coupon=$6, holdout_pct=$7, offer=$8,
+              offer_min_total=$9, offer_valid_days=$10 WHERE id=$1 RETURNING *`,
+      [id, x.name, x.segment, x.channel, x.message, x.coupon, x.holdout_pct, x.offer, x.offer_min_total, x.offer_valid_days]);
+    if (cur.link_slug) {
+      await pool.query("UPDATE cms_links SET coupon=$2, label=$3 WHERE slug=$1",
+        [cur.link_slug, x.offer ? null : (x.coupon || null), `أتمتة: ${x.name.slice(0, 60)}`]).catch(() => {});
+    }
     // الشريحة اتغيّرت وهي شغّالة → نقطة بداية جديدة عشان مانبعتش لكل أعضاء الشريحة الجديدة
     if (cur.active && cur.segment !== x.segment) await flowBaseline(r.rows[0]);
     return c.json({ ok: true, flow: r.rows[0] });
@@ -3307,9 +3648,160 @@ ${smsRules.optoutLine(cfg, { code: c?.optout_code, host: STORE_PUBLIC(), sender:
   app.delete("/api/cms/flows/:id", async (c) => {
     const err = await requireAdmin(c); if (err) return err;
     const id = Number(c.req.param("id"));
+    const cur = (await pool.query("SELECT link_slug FROM cms_flows WHERE id=$1", [id])).rows[0];
+    // الدفتر (cms_flow_sends/runs) بيفضل — تاريخ مين اتبعتله لازم يفضل للفاصل والمراجعة
+    if (cur?.link_slug) await pool.query("UPDATE cms_links SET active=FALSE WHERE slug=$1", [cur.link_slug]).catch(() => {});
     await pool.query("DELETE FROM cms_flow_members WHERE flow_id=$1", [id]);
     await pool.query("DELETE FROM cms_flows WHERE id=$1", [id]);
     return c.json({ ok: true });
+  });
+
+  /* تجربة من غير إرسال: مين هيدخل الدورة الجاية ومين هيتشال وليه — ومعاها
+     فحص الشريحة كلها (من غير السقوف) عشان «مين مستبعد وليه» يبان بالأرقام.
+     مفيش أي كتابة غير أكواد الإيقاف (زي معاينة الحملات). */
+  app.post("/api/cms/flows/:id/dry-run", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    const flow = (await pool.query("SELECT * FROM cms_flows WHERE id=$1", [Number(c.req.param("id"))])).rows[0];
+    if (!flow) return bad(c, "not_found", 404);
+    const seg = segById[flow.segment];
+    if (!seg) return bad(c, "segment_missing");
+    const cfg = await campaignCfg();
+    segCache = { at: 0, rows: null };
+    const rows = (await customerRows()).filter(seg.test);
+    const seen = new Set((await pool.query("SELECT phone_norm FROM cms_flow_members WHERE flow_id=$1", [flow.id])).rows.map((r) => r.phone_norm));
+    const entrants = flow.active ? rows.filter((x) => !seen.has(x.pn)) : [];
+    // بالترتيب مش بالتوازي: الاتنين بيعملوا upsert لأكواد الإيقاف لنفس الأرقام
+    const plan = await flowAudience(flow, cfg, entrants);
+    const pop = await flowAudience(flow, cfg, rows, { caps: false });
+    const firstTarget = plan.list[0] || pop.list[0] || null;
+    const cp = firstTarget ? await flowCouponFor(flow, firstTarget.pn, { dry: true }) : null;
+    const sample = flowText(flow, { name: firstTarget?.name || "محمد", code: "ab12cd34ef" },
+      { link: `${linkHost()}/l/${flow.link_slug || `f${flow.id}`}-abc234`, coupon: cp?.code || (flow.offer ? "FIRST" : flow.coupon) }, cfg);
+    let couponMix = null;
+    if (flow.offer === "winback" && pop.list.length) {
+      const used = (await pool.query(
+        `SELECT DISTINCT phone_norm FROM shop_orders WHERE upper(COALESCE(coupon,''))='FIRST' AND phone_norm = ANY($1)
+            AND status NOT IN ('pending_payment','expired')`, [pop.list.map((x) => x.pn)])).rows.length;
+      couponMix = { first: pop.list.length - used, unique: used };
+    }
+    const left = await budgetLeft(cfg);
+    return c.json({ ok: true, dryRun: true, flow: { id: flow.id, name: flow.name, active: flow.active, segment: flow.segment },
+      quietNow: smsRules.inQuietFor(await getSettingsData()),
+      next: { segmentSize: rows.length, entrants: entrants.length, wouldSend: plan.list.length, wouldHoldout: plan.holdout.length,
+        retryNextRun: plan.retry.length, skipped: plan.skipped, note: flow.active ? null : "الأتمتة متوقفة — التشغيل بيسجّل الموجودين نقطة بداية من غير إرسال" },
+      population: { size: rows.length, eligible: pop.eligible, holdout: pop.holdout.length, reachable: pop.list.length, excluded: pop.skipped, couponMix },
+      sample: { text: sample, chars: sample.length, parts: smsPartsOf(sample) },
+      worstCase: flow.channel === "sms" ? flowWorstCase(flow, cfg, flow.id) : null,
+      sms: { enabled: cfg.smsEnabled === true, brake: cfg.brake || null, dailyCap: Number(cfg.dailySmsCap) || 0, today: await smsToday(),
+        budgetLeft: Number.isFinite(left) ? Math.round(left * 100) / 100 : null },
+      labels: FLOW_SKIP_LABELS });
+  });
+
+  /* رسالة تجربة حقيقية لرقم الفريق بس (أرقام الإدارة/الاستبعاد) — المالك بس.
+     بتتسجّل في الدفتر بحالة test (برا كل الإجماليات) برابط شخصي حقيقي،
+     فالضغطة والطلب بيتتبعوا زي أي عميل. ماتحسبش في الفاصل. */
+  app.post("/api/cms/flows/:id/test-send", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    if ((await whoami(c))?.role !== "owner") return bad(c, "owner_only", 403);
+    const flow = (await pool.query("SELECT * FROM cms_flows WHERE id=$1", [Number(c.req.param("id"))])).rows[0];
+    if (!flow) return bad(c, "not_found", 404);
+    let b = {};
+    try { b = await c.req.json(); } catch { b = {}; }
+    const pn = smsRules.normLocal(b.phone);
+    if (!pn || !smsRules.staffPhoneSet(await getSettingsData()).has(pn)) return bad(c, "phone_not_staff");
+    const cfg = await campaignCfg();
+    if (flow.channel === "sms" && !process.env.TAQNYAT_SENDER_AD) return bad(c, "ad_sender_missing");
+    await ensureFlowLink(flow);
+    const code = (await optoutCodes([pn])).get(pn)?.optout_code;
+    const r = await flowSendOne(flow, { pn, name: String(b.name || ""), code }, cfg, { status: "test" });
+    return c.json({ ok: r.ok, id: r.id, body: r.body, link: r.link, chars: (r.body || "").length,
+      parts: smsPartsOf(r.body || ""), error: r.error || null });
+  });
+
+  /* سجل المتابعة لأتمتة واحدة: كل إرسال/محجوز بالوقت، الرقم مخفي، التسليم
+     (لو تقنيات بعتت تقرير)، الضغطة، الطلب خلال ٧٢ ساعة و٧ أيام (رقم وقيمة)،
+     رجوعه من أي قناة خلال ٧ أيام، والإيقاف بعد الرسالة. */
+  app.get("/api/cms/flows/:id/log", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    const id = Number(c.req.param("id"));
+    const flow = (await pool.query("SELECT id, name, link_slug, channel FROM cms_flows WHERE id=$1", [id])).rows[0];
+    const limit = Math.min(500, Math.max(1, Number(c.req.query("limit")) || 100));
+    const offset = Math.max(0, Number(c.req.query("offset")) || 0);
+    const st = c.req.query("status");
+    const statuses = ["sent", "failed", "holdout", "test"].includes(st) ? [st] : ["sent", "failed", "holdout", "test", "sending"];
+    const [rows, total, stats] = await Promise.all([
+      pool.query(`
+        SELECT s.id, s.created_at, s.phone_norm, s.status, s.msg_id, s.parts, s.cost, s.error, s.coupon, s.coupon_kind,
+               s.clicks, s.clicked_at, s.link_code, d.status AS dlr_status, d.at AS dlr_at,
+               o3.order_no AS o72_no, o3.total AS o72_total, o3.created_at AS o72_at, o3.fc_link AS o72_link, o3.utm_content AS o72_content,
+               o7.n AS o7_n, o7.rev AS o7_rev, o7.first_no AS o7_no, oo.at AS optout_at
+          FROM cms_flow_sends s
+          LEFT JOIN LATERAL (SELECT status, at FROM sms_dlr_log WHERE phone_norm = s.phone_norm AND at >= s.created_at
+                              AND at < s.created_at + INTERVAL '3 days' ORDER BY at DESC LIMIT 1) d ON s.status IN ('sent','test')
+          LEFT JOIN LATERAL (SELECT o.order_no, o.total, o.created_at, o.attribution->>'fc_link' AS fc_link,
+                                    o.attribution->'utm'->>'utm_content' AS utm_content
+                               FROM shop_orders o WHERE o.phone_norm = s.phone_norm AND ${FLOW_PAID}
+                                AND o.created_at >= s.created_at AND o.created_at < s.created_at + INTERVAL '72 hours'
+                              ORDER BY o.created_at LIMIT 1) o3 ON TRUE
+          LEFT JOIN LATERAL (SELECT count(*)::int AS n, COALESCE(sum(o.total),0)::float AS rev, min(o.order_no) AS first_no
+                               FROM shop_orders o WHERE o.phone_norm = s.phone_norm AND ${FLOW_PAID}
+                                AND o.created_at >= s.created_at AND o.created_at < s.created_at + INTERVAL '7 days') o7 ON TRUE
+          LEFT JOIN LATERAL (SELECT min(at) AS at FROM (
+                               SELECT created_at AS at FROM cms_optout_log WHERE phone_norm = s.phone_norm AND action = 'optout' AND created_at >= s.created_at
+                               UNION ALL
+                               SELECT opted_out_at FROM cms_contacts WHERE phone_norm = s.phone_norm AND opted_out_at >= s.created_at) u) oo ON s.status IN ('sent','test')
+         WHERE s.flow_id = $1 AND s.status = ANY($2)
+         ORDER BY s.created_at DESC, s.id DESC LIMIT $3 OFFSET $4`, [id, statuses, limit, offset]),
+      pool.query("SELECT count(*)::int n FROM cms_flow_sends WHERE flow_id=$1 AND status = ANY($2)", [id, statuses]),
+      flowStats([id]),
+    ]);
+    /* رجوع من أي قناة (صالة/سفري/تطبيق/موقع) خلال ٧ أيام — من نقطة البيع، استعلام
+       واحد للصفحة كلها بدل استعلام لكل صف */
+    const pns = [...new Set(rows.rows.map((r) => r.phone_norm))];
+    const minAt = rows.rows.reduce((m, r) => (!m || r.created_at < m ? r.created_at : m), null);
+    const pos = pns.length ? (await pool.query(`
+        SELECT DISTINCT o.order_id, COALESCE(NULLIF(os.phone_norm,''), tc.phone_norm) AS pn, o.order_date AS at, o.total
+          FROM ts_orders o
+          LEFT JOIN order_sources os ON os.order_id = o.order_id
+          LEFT JOIN ts_customers tc ON tc.customer_id = o.customer_id
+         WHERE (os.phone_norm = ANY($1) OR tc.phone_norm = ANY($1)) AND o.order_date >= $2 AND ${SALES_ONLY}`,
+      [pns, minAt]).catch(() => ({ rows: [] }))).rows : [];
+    const items = rows.rows.map((r) => {
+      const t0 = new Date(r.created_at).getTime();
+      const back = pos.filter((p) => p.pn === r.phone_norm && new Date(p.at).getTime() >= t0 && new Date(p.at).getTime() < t0 + 7 * 86400000);
+      const recSlug = flow?.link_slug && r.link_code ? `${flow.link_slug}-${r.link_code}` : null;
+      return {
+        id: r.id, at: r.created_at, phone: maskPhone(r.phone_norm), status: r.status, error: r.error, msgId: r.msg_id,
+        parts: r.parts, cost: Number(r.cost) || 0, coupon: r.coupon, couponKind: r.coupon_kind,
+        link: recSlug, clicks: r.clicks, clickedAt: r.clicked_at,
+        dlr: r.dlr_status ? { status: r.dlr_status, at: r.dlr_at } : null,
+        order72: r.o72_no ? { orderNo: r.o72_no, total: Number(r.o72_total) || 0, at: r.o72_at,
+          viaLink: Boolean(recSlug && (r.o72_content === recSlug || r.o72_link === flow.link_slug)) } : null,
+        order7: r.o7_n ? { orders: r.o7_n, revenue: Math.round(r.o7_rev), firstNo: r.o7_no } : null,
+        anyChannel7: back.length ? { orders: back.length, revenue: Math.round(back.reduce((s, p) => s + (Number(p.total) || 0), 0)) } : null,
+        optoutAt: r.optout_at,
+      };
+    });
+    return c.json({ ok: true, flow, total: total.rows[0].n, limit, offset, items, stats: stats.get(id) || null,
+      dlrNote: stats.get(id)?.dlrAvailable ? null : "تقنيات لسه مابعتتش ولا تقرير تسليم على الويب هوك (sms_dlr_log فاضي) — «اتبعتت» معناها اتقبلت عند تقنيات بس" });
+  });
+
+  /* سجل الأتمتة العام: كل دورة — إمتى، كام في الشريحة، كام دخل، كام اتبعت،
+     وكام اتشال وليه. ?flow= لأتمتة واحدة، ?all=1 يشمل الدورات الفاضية. */
+  app.get("/api/cms/flows-runs", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    const flowId = Number(c.req.query("flow")) || null;
+    const all = c.req.query("all") === "1";
+    const limit = Math.min(500, Math.max(1, Number(c.req.query("limit")) || 100));
+    const r = await pool.query(`
+      SELECT r.*, f.name AS flow_name FROM cms_flow_runs r LEFT JOIN cms_flows f ON f.id = r.flow_id
+       WHERE ($1::int IS NULL OR r.flow_id = $1) AND ($2 OR r.entrants > 0 OR r.trigger <> 'cron')
+       ORDER BY r.at DESC LIMIT $3`, [flowId, all, limit]);
+    const sum = (await pool.query(`
+      SELECT count(*)::int AS runs, max(at) AS last_at, COALESCE(sum(entrants),0)::int AS entrants,
+             COALESCE(sum(sent),0)::int AS sent, COALESCE(sum(holdout),0)::int AS holdout
+        FROM cms_flow_runs WHERE ($1::int IS NULL OR flow_id = $1) AND at > NOW() - INTERVAL '7 days'`, [flowId])).rows[0];
+    return c.json({ ok: true, runs: r.rows, last7d: sum, labels: FLOW_SKIP_LABELS });
   });
 
   /* ═══ تقرير المتجر — أرقام الموقع لوحده ════════════════════════════════
