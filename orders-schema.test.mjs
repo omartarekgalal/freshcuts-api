@@ -62,6 +62,7 @@ test("every §4-2 column is declared with the planned type", () => {
     pos_tenant_order_id: "TEXT",
     scheduled_for: "TIMESTAMPTZ",
     scheduled_slot: "TEXT",
+    table_no: "INT",   // أكتوبر ٢٠٢٦ — 🍽 طلب QR الطاولة
   });
 });
 

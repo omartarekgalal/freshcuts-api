@@ -49,6 +49,9 @@ export const ORDER_COLUMNS = Object.freeze([
      NULL = طلب عادي دلوقتي (كل الطلبات القديمة). */
   { name: "scheduled_for", type: "TIMESTAMPTZ" },
   { name: "scheduled_slot", type: "TEXT" },
+  /* أكتوبر ٢٠٢٦ — 🍽 طلب من الطاولة (table-order.js): رقم الطاولة من QR
+     الطاولة. NULL = مش طلب طاولة (كل الطلبات القديمة). option بيفضل pickup. */
+  { name: "table_no", type: "INT" },
 ]);
 
 export const ORDER_INDEXES = Object.freeze([

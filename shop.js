@@ -51,6 +51,7 @@ import {
 import { resumeKey } from "./resume-key.js";
 import { recordCheckoutConsent } from "./consent.js";
 import { makeNameResolver } from "./product-names.js";
+import { tableForCheckout, posOptionOf, tableNote } from "./table-order.js";
 
 /* ناقل أحداث الطلب (W1-01) وترحيل أعمدة shop_orders — تحميل كسول ودفاعي (W1-02):
    لو الملفات مش موجودة أو الـimport وقع، shop.js بيشتغل عادي والأحداث بتتجاهل.
@@ -220,9 +221,11 @@ export function posNotesOf(row, { withFee = false, now = Date.now() } = {}) {
   /* الطلب المسبق أول سطر عمداً: الكاشير والمطبخ لازم يشوفوا «لموعد …» قبل
      أي حاجة تانية، وإلا الطلب هيتعمل دلوقتي وهو لبكرة. */
   const sched = row.scheduled_slot ? `📅 لموعد ${slotLabel(row.scheduled_slot, now)}` : "";
+  // 🍽 طلب طاولة (table-order.js): أول سطر بدل «استلام»، ومفيش «استلام HH:MM»
+  const table = !delivery && Number(row.table_no) > 0 ? Number(row.table_no) : null;
   return [
-    sched,
-    delivery ? "توصيل" : "استلام",
+    table ? tableNote(table) : sched,
+    delivery ? "توصيل" : table ? "" : "استلام",
     // «التوصيل بالحي»: مندوب بره لاجلك بيستلم الطلب — الكاشير لازم يعرف
     // إن مفيش كابتن جاي من الشركة، والمدير هو اللي هيرتّب من البوابة.
     dd ? `${dd.mode === "dispatch" ? "مندوب حي" : "توصيل بالحي"} ${dd.district}${dd.provider ? ` (${dd.provider.name})` : ""}🛵` : "",
@@ -231,7 +234,7 @@ export function posNotesOf(row, { withFee = false, now = Date.now() } = {}) {
     far ? `مشوار بعيد ${far.km} كم🛵` : "",
     delivery && leaveAtDoor(row.address) ? "اتركه عند الباب🚪" : "",
     `طُلب ${hm(row.created_at)}`,
-    row.option === "pickup" && !row.scheduled_slot ? `استلام ${hm(now + 40 * 60_000)}` : "",
+    row.option === "pickup" && !row.scheduled_slot && !table ? `استلام ${hm(now + 40 * 60_000)}` : "",
     feeNote,
     "مدفوع أونلاين✅",
     // ملاحظات الأكل بس (بتاعة الطلب) — ملاحظات التوصيل بتروح قسم التوصيل/المندوب (عمر ١٩/٩)
@@ -243,7 +246,7 @@ export function posNotesOf(row, { withFee = false, now = Date.now() } = {}) {
    (الحي، الشارع، المبنى، الدور، الشقة، العلامة، «اترك الطلب عند الباب»). */
 export function posAddressLine(row) {
   const addr = row.address || {};
-  if (row.option !== "delivery") return "استلام";
+  if (row.option !== "delivery") return Number(row.table_no) > 0 ? `صالة — طاولة ${Number(row.table_no)}` : "استلام";
   const hasText = ["area", "street", "building"].some((k) => String(addr[k] || "").trim());
   return hasText ? readableAddress(addr).slice(0, 250) : "توصيل";
 }
@@ -882,6 +885,9 @@ export function register(app, ctx, deps = {}) {
       const blocked = serviceBlock(settingsNow, option);
       if (blocked) return fail(blocked.error, 409, blocked);
     }
+    /* 🍽 طلب من الطاولة (table-order.js): استلام + رقم طاولة من QR الطاولة.
+       رقم مش صالح = طلب استلام عادي، عمره ما يرفض الطلب. */
+    const tableNo = tableForCheckout(b, option, { scheduled: Boolean(scheduled), settings: settingsNow });
     const branchId = String(b.branch_id || "1");
     let items = Array.isArray(b.items) ? b.items : [];
     if (!items.length) return fail("empty_cart", 400);
@@ -972,7 +978,8 @@ export function register(app, ctx, deps = {}) {
         ...String(process.env.CATALOG_DINE_IN_IDS ?? "121").split(","),
         ...((s0.catalog || {}).dineInIds || []).map(String),
       ].map((x) => String(x).trim()).filter(Boolean));
-      const bad = items.filter((it) => dine.has(String(it.product_id)));
+      // العميل قاعد على الطاولة فعلاً ⇒ أصناف الصالة مسموحة لطلب الطاولة
+      const bad = tableNo ? [] : items.filter((it) => dine.has(String(it.product_id)));
       if (bad.length) return fail("dine_in_only", 422, { items: bad.map((x) => x.product_id) });
     }
     const cust = b.customer || {};
@@ -1194,6 +1201,12 @@ export function register(app, ctx, deps = {}) {
        jb([{ at: new Date().toISOString(), status: "pending_payment" }]), jb(attribution),
        scheduled ? scheduled.startsAt : null, scheduled ? scheduled.key : null]
     );
+    /* رقم الطاولة لازم يبقى على الصف قبل ما الدفع يخلص (createPosOrder بيقراه)،
+       فبنستنّاه. لو العمود لسه مش موجود الطلب بيكمّل استلام عادي. */
+    if (tableNo) {
+      await pool.query("UPDATE shop_orders SET table_no=$2 WHERE order_no=$1", [orderNo, tableNo])
+        .catch((e) => console.error(`[shop] ${orderNo}: table_no save failed: ${e.message}`));
+    }
     // journey_sid/client/app_version (W1-02) + attrib_source (W4-02) — تحديث
     // منفصل fire-and-forget: لو الأعمدة لسه ماتضافتش (ensureOrderColumns) الطلب
     // نفسه مايتأثرش. وهنا كمان بنكمّل الـutm الناقص من جلسة الرحلة: المتصفّح
@@ -1404,7 +1417,7 @@ export function register(app, ctx, deps = {}) {
     }
     return {
       externalOrderNo: row.order_no,
-      orderOption: row.option, // delivery→توصيل · pickup→سفري (Take away) للتقارير
+      orderOption: posOptionOf(row), // delivery→توصيل · pickup→سفري (Take away) · طاولة→Dine in
       paymentMethod: posPaymentMethodFor(row.pay_gateway, settings),
       notes,
       customer: {

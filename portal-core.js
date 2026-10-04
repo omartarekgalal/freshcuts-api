@@ -409,6 +409,8 @@ export function toPortalOrder(r, slaCfg = {}, now = Date.now(), opts = {}) {
     scheduledFor: r.scheduled_for ? new Date(r.scheduled_for).toISOString() : null,
     scheduledSlot: r.scheduled_slot || null,
     scheduledLabel: r.scheduled_slot ? slotLabel(r.scheduled_slot, now) : null,
+    /* 🍽 طلب من الطاولة (QR): استلام في دورتنا، بس العدّاء بيوديه للطاولة دي */
+    tableNo: Number(r.table_no) > 0 ? Number(r.table_no) : null,
     total: num(r.total) ?? 0,
     subtotal: num(r.subtotal) ?? 0,
     deliveryFee: num(r.delivery_fee) ?? 0,

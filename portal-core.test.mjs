@@ -151,7 +151,7 @@ test("toPortalOrder: نفس شكل العقد بالظبط", () => {
     "acceptedAt", "ackAt", "ackBy", "address", "courier", "courierOps", "createdAt", "customer", "deliveryFee", "farZone", "isTest", "items",
     "itemsCount", "notes", "option", "orderNo", "paidAt", "paidWith", "posOrderId", "readyAt",
     "scheduledFor", "scheduledLabel", "scheduledSlot", "sla", "stageLabel",
-    "status", "subtotal", "total", "trackUrl", "updatedAt"].sort());
+    "status", "subtotal", "tableNo", "total", "trackUrl", "updatedAt"].sort());
   assert.equal(o.total, 95.5);
   assert.equal(o.itemsCount, 3, "عنوان الباقة مش صنف");
   assert.deepEqual(o.items[0], { name: "برجر — دبل", qty: 2, note: "بدون بصل", kind: "item", level: 0 });

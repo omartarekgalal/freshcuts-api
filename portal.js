@@ -54,6 +54,7 @@ const ORDER_COLS = `o.order_no, o.status, o.option, o.customer, o.phone_norm, o.
   o.history, o.alerts, o.pos_ready_at, o.accepted_at, o.portal_ack_at, o.portal_ack_by, o.pay_gateway,
   o.is_test, o.dispatch_claimed_at::text AS dispatch_claimed_at,
   o.scheduled_for, o.scheduled_slot,
+  NULLIF(to_jsonb(o)->>'table_no','')::int AS table_no,
   o.delivery_quote->'farZone' AS far_zone, o.delivery_quote->>'routeKm' AS route_km, o.delivery_quote->>'straightKm' AS straight_km,
   s.status AS ship_status, s.driver AS ship_driver, s.provider AS ship_provider, s.provider_ref AS ship_ref,
   s.updated_at AS ship_updated_at, s.dispatch AS ship_dispatch,

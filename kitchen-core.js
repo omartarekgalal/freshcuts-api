@@ -136,6 +136,7 @@ export const CHANNELS = Object.freeze({
   own_delivery: { label: "توصيل المطعم", color: "#7c3aed" },
   store_delivery: { label: "متجر توصيل", color: "#D0202A" },
   store_pickup: { label: "متجر استلام", color: "#e11d48" },
+  store_table: { label: "متجر · طاولة", color: "#0f766e" },   // 🍽 طلب QR الطاولة (table-order.js)
   keeta: { label: "كيتا", color: "#f59e0b" },
   hungerstation: { label: "هنقرستيشن", color: "#facc15" },
   jahez: { label: "جاهز", color: "#dc2626" },
@@ -524,13 +525,13 @@ export function buildBoard({ tsOrders = [], shopRows = [], allShopRows = null, b
       ref: String(r.order_no || "").slice(-4),
       orderNo: r.order_no,
       posRef: tw?.order ? shortRef(tw.order) : null,
-      channel: channelInfo(delivery ? "store_delivery" : "store_pickup"),
+      channel: channelInfo(delivery ? "store_delivery" : Number(r.table_no) > 0 ? "store_table" : "store_pickup"),
       createdAt: kitchenStartOf(r),   // 📅 الطلب المسبق: من موعده
       placedAt: isoOf(r.created_at),  // ساعة ما العميل دفع (للمرجع)
       firstSeenAt: isoOf(r.created_at),
       sourceStage,
       sourceAt,
-      table: null,
+      table: Number(r.table_no) > 0 ? `طاولة ${Number(r.table_no)}` : null,
       items: itemsFromShop(r.items, cfg, { catMap, prodCat }),
       notes,
       flags: {
