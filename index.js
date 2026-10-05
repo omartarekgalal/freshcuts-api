@@ -83,6 +83,7 @@ import * as menuplan from "./menuplan.js";
 import * as systemcheck from "./systemcheck.js";
 import * as syshealth from "./syshealth.js";
 import * as portal from "./portal.js";
+import * as tableOrder from "./table-order.js";
 import * as checkoutwatch from "./checkoutwatch.js";
 import { makeStaffNotifier } from "./staffalerts.js";
 import * as courierops from "./courierops.js";
@@ -3237,6 +3238,8 @@ preorder.register(app, moduleCtx);
 // بعد shop/delivery/cms — بيستخدم دوالهم نفسها (مفيش نسخة تانية من القواعد).
 let courierOpsApi = null;
 const portalApi = portal.register(app, moduleCtx, { shop: () => shopApi, delivery: () => deliveryApi, cmsWhoami: (c) => cmsApi.whoami(c), courierOps: () => courierOpsApi, wa: () => waInboxApi });
+// 🍽 QR الطاولات: مفاتيح الطاولات + نداء الويتر (بيبعت إشعار البوابة) + تحليلات لكل طاولة
+tableOrder.register(app, moduleCtx, { portal: () => portalApi });
 /* 🚨 حارس الدفع (٢٢/٩): ناس بتوصل لخطوة الدفع ومحدش بيدفع ⇒ SMS للمدير.
    كان بيشتغل من cron على السيرفر بيحقن الموديول جوّه الحاوية، والـcron ده
    بيسلّم الدور أول ما التطبيق نفسه يشحن checkoutwatch.js — فلازم نناديه

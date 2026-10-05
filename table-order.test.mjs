@@ -21,7 +21,7 @@ test("parseTable: رقم/نص/table-N/tN/أرقام هندية — وأي حاج
 
 test("الإعدادات: الافتراضي ١٢ طاولة، maxNo ٩٩، والقفل بيرجّع null", () => {
   assert.deepEqual(tableCfg({}), { ...TABLE_DEFAULTS });
-  assert.deepEqual(tableCfg({ tables: { count: 10, maxNo: 20 } }), { enabled: true, count: 10, maxNo: 20 });
+  assert.deepEqual(tableCfg({ tables: { count: 10, maxNo: 20 } }), { ...TABLE_DEFAULTS, count: 10, maxNo: 20 });
   assert.deepEqual(tableCfg({ tables: { count: "x", maxNo: -3 } }), { ...TABLE_DEFAULTS });
   assert.equal(parseTable(21, tableCfg({ tables: { maxNo: 20 } })), null);
   assert.equal(parseTable(5, tableCfg({ tables: { enabled: false } })), null);

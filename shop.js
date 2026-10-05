@@ -51,7 +51,7 @@ import {
 import { resumeKey } from "./resume-key.js";
 import { recordCheckoutConsent } from "./consent.js";
 import { makeNameResolver } from "./product-names.js";
-import { tableForCheckout, posOptionOf, tableNote } from "./table-order.js";
+import { tableForCheckout, tableCfg, verifyTableKey, tableBusy, TABLE_MSG, posOptionOf, tableNote, tableTrackLabel, cleanCustomerText } from "./table-order.js";
 
 /* ناقل أحداث الطلب (W1-01) وترحيل أعمدة shop_orders — تحميل كسول ودفاعي (W1-02):
    لو الملفات مش موجودة أو الـimport وقع، shop.js بيشتغل عادي والأحداث بتتجاهل.
@@ -104,6 +104,12 @@ export function approvalFromWebhook(payload) {
 
 const env = (k, d) => (process.env[k] || d || "").toString().trim();
 const r2 = (v) => Math.round((Number(v) || 0) * 100) / 100;
+/* البقشيش من المتصفح: رقم موجب محدود بس. سالب كان بيتبعت زي ما هو لحساب
+   تاب سينس (tipAmount) — يعني خصم من صنع العميل لو الحساب قبله. */
+export const safeTip = (v) => {
+  const n = Number(v);
+  return Number.isFinite(n) && n > 0 ? Math.min(Math.round(n * 100) / 100, 1000) : 0;
+};
 
 const OPTION_ID = { pickup: 2, delivery: 3 };
 
@@ -886,8 +892,20 @@ export function register(app, ctx, deps = {}) {
       if (blocked) return fail(blocked.error, 409, blocked);
     }
     /* 🍽 طلب من الطاولة (table-order.js): استلام + رقم طاولة من QR الطاولة.
-       رقم مش صالح = طلب استلام عادي، عمره ما يرفض الطلب. */
+       مراجعة الأمان ٥/١٠: الرقم لوحده مش كفاية — لازم مفتاح الطاولة اللي في
+       الـQR (table_key). مفتاح غلط/طاولة موقوفة ⇒ table_invalid قبل أي جلسة
+       دفع (المتجر بيقول «امسح الـQR تاني»)، وطاولة عليها طلبات كتير ⇒ table_busy. */
     const tableNo = tableForCheckout(b, option, { scheduled: Boolean(scheduled), settings: settingsNow });
+    if (tableNo) {
+      const tcfg = tableCfg(settingsNow);
+      const tv = await verifyTableKey(pool, tableNo, b.table_key, tcfg);
+      if (!tv.ok) {
+        console.warn(`[shop] table ${tableNo} rejected: ${tv.reason}`);
+        return fail("table_invalid", 409, { message: TABLE_MSG.table_invalid, reason: tv.reason });
+      }
+      if (await tableBusy(pool, tableNo, tcfg)) return fail("table_busy", 409, { message: TABLE_MSG.table_busy });
+    }
+    b.tip = safeTip(b.tip);
     const branchId = String(b.branch_id || "1");
     let items = Array.isArray(b.items) ? b.items : [];
     if (!items.length) return fail("empty_cart", 400);
@@ -1196,7 +1214,7 @@ export function register(app, ctx, deps = {}) {
        // subtotal = the food part of what was charged (fee booked separately
        // whether inside or outside the POS invoice).
        r2(total - deliveryFee), deliveryFee, tip, total, jb(dq ? { ...dq, feeInPos, freeDeliveryByCoupon } : null),
-       session.SessionId || null, (b.notes || "").slice(0, 200),
+       session.SessionId || null, cleanCustomerText(b.notes, 200),
        coupon?.ok ? coupon.code : null, discountPercent, discountAmount,
        jb([{ at: new Date().toISOString(), status: "pending_payment" }]), jb(attribution),
        scheduled ? scheduled.startsAt : null, scheduled ? scheduled.key : null]
@@ -1633,7 +1651,11 @@ export function register(app, ctx, deps = {}) {
     let courier = null;
     const ready = Boolean(row.pos_ready_at);
 
-    if (row.option === "pickup" && row.status === "delivered") {
+    const tl = tableTrackLabel(row, { ready });
+    if (tl) {
+      // 🍽 طلب طاولة: العدّاء بيقدّمه — مفيش «جاهز للاستلام من الفرع»
+      label = tl.label; step = tl.step;
+    } else if (row.option === "pickup" && row.status === "delivered") {
       label = "استلمت طلبك — بالهنا والشفا 🌟"; step = 5;
     } else if (row.option === "pickup") {
       // الاستلام (سفري): «جاهز» بتيجي من الكاشير (pos_ready_at)؛ لو ماوصلتش،
