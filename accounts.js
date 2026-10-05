@@ -27,6 +27,7 @@ import * as tabsense from "./tabsense.js";
 import { plausibleName, writableName } from "./posnames.js";
 import { logSms } from "./smslog.js";
 import { customerId } from "./customer-id.js";
+import { couponQueries, firstEligibility } from "./couponrules.js";
 
 const env = (k, d) => (process.env[k] || d || "").toString().trim();
 
@@ -685,6 +686,33 @@ export function register(app, ctx, deps = {}) {
     return bad(n) ? null : n.slice(0, 60);
   }
 
+  /* 🎁 مكافآت الولاء اللي لسه صالحة للعميل ده (٥/١٠): مربوطة بجواله، شغّالة،
+     مش منتهية، ومااتستخدمتش. الكود بيرجع لصاحبه بس (توكن متأكد بالـOTP) —
+     الدفع بيطبّقه لوحده، والسيرفر بيتحقق تاني وقت الـcheckout. */
+  async function rewardsOf(pn) {
+    const r = await pool.query(
+      `SELECT s.code, s.percent, s.free_delivery, s.min_total, to_char(s.expires_at,'YYYY-MM-DD') AS expires
+         FROM cms_loyalty l JOIN shop_coupons s ON s.code = l.coupon
+        WHERE l.phone_norm = $1 AND s.active AND (s.phone_norm IS NULL OR s.phone_norm = $1)
+          AND s.used_count < COALESCE(s.max_uses, 1)
+          AND (s.expires_at IS NULL OR s.expires_at >= CURRENT_DATE)
+          AND NOT EXISTS (SELECT 1 FROM shop_orders o WHERE o.coupon = s.code AND o.phone_norm = $1
+                           AND o.status NOT IN ('pending_payment','expired'))
+        ORDER BY s.expires_at NULLS LAST, l.reward_no LIMIT 5`, [pn]).catch(() => ({ rows: [] }));
+    return r.rows.map((x) => ({
+      code: x.code, kind: "loyalty", freeDelivery: x.free_delivery === true,
+      percent: Number(x.percent) || 0, minTotal: Number(x.min_total) || 0, expires: x.expires,
+    }));
+  }
+  const couponQ = couponQueries(pool);
+  // FIRST: مؤهل لو مفيش طلب توصيل من الموقع قبل كده ومااستخدموش (الطاولة/الاستلام مايمنعوش)
+  async function firstEligibleOf(pn) {
+    try {
+      const r = await pool.query("SELECT code, percent, active, expires_at, free_delivery FROM shop_coupons WHERE upper(code)='FIRST'");
+      return (await firstEligibility(r.rows[0] || null, pn, couponQ)).eligible;
+    } catch { return null; }
+  }
+
   app.get("/api/account/me", async (c) => {
     const acct = await customerOf(c);
     if (!acct) return c.json({ ok: false, error: "unauthorized" }, 401);
@@ -706,6 +734,8 @@ export function register(app, ctx, deps = {}) {
       // الخصم الدائم للرقم (مثلاً «خصم الملاك ٥٠٪») — عشان المتجر يعرضه في السلة قبل الدفع.
       // الحساب النهائي بيفضل على السيرفر وقت الـcheckout (مابيتطبقش على العروض).
       discount: await customerDiscount(acct.phone_norm),
+      rewards: await rewardsOf(acct.phone_norm),
+      firstEligible: await firstEligibleOf(acct.phone_norm),
     });
   });
 

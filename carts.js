@@ -26,6 +26,7 @@ import crypto from "node:crypto";
 import * as smsRules from "./smsrules.js";
 import { renderTemplate } from "./smstemplates.js";
 import * as cartPresets from "./cartpresets.js";
+import { couponQueries, firstEligibility } from "./couponrules.js";
 const sendAdSms = (pn, body, meta) => smsRules.sendAdSms(pn, body, meta);
 
 const env = (k, d) => (process.env[k] || d || "").toString().trim();
@@ -300,12 +301,12 @@ export function register(app, ctx, deps = {}) {
     try { return await recoveryTick(now); } finally { running = false; }
   }
 
+  /* FIRST للسلة المتروكة: نفس قاعدة الشيك أوت (couponrules.js، ٥/١٠) — مفيش
+     طلب توصيل من الموقع قبل كده ومااستخدمش FIRST. طلب استلام/طاولة مايمنعش. */
+  const couponQ = couponQueries(pool);
   async function firstEligible(pn) {
-    const r = await pool.query(
-      `SELECT (SELECT count(*)::int FROM shop_orders WHERE phone_norm=$1 AND ${PAID_SQL}) AS paid,
-              (SELECT count(*)::int FROM shop_coupons WHERE upper(code)='FIRST' AND active
-                 AND (expires_at IS NULL OR expires_at >= CURRENT_DATE)) AS coupon`, [pn]);
-    return r.rows[0].paid === 0 && r.rows[0].coupon > 0;
+    const r = await pool.query("SELECT code, percent, active, expires_at, free_delivery FROM shop_coupons WHERE upper(code)='FIRST' LIMIT 1");
+    return (await firstEligibility(r.rows[0] || null, pn, couponQ)).eligible;
   }
   async function optout(pn) {
     await pool.query(

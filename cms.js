@@ -29,7 +29,9 @@ import { promisify } from "node:util";
 import { IDENT_SQL, SALES_ONLY, deliverySql, WEBSITE_SQL } from "./analytics.js";
 import { FIRST_ORDER_CTE, shopPaidSql, maskPhone } from "./identity.js";
 import { logSms } from "./smslog.js";
-import { parseRecipientSlug } from "./wamsg.js";
+import { parseRecipientSlug, recipientLink } from "./wamsg.js";
+import { couponQueries, firstEligibility } from "./couponrules.js";
+import * as loyaltyLib from "./loyalty.js";
 // نفس قواعد الـSLA بتاعة الـwatchdog — لوحة التشغيل مابتكتبش كتاب قواعد تاني
 import { slaCheck, DEFAULT_SLA } from "./shop.js";
 import { dispatchDelayOf, canAutoDispatch } from "./delivery.js";
@@ -298,6 +300,7 @@ export function validateOfferPagePatch(existing, body, { price = null, slugLocke
 
 export function register(app, ctx, deps = {}) {
   const { pool, requireAdmin, getSettingsData, jb, DEFAULT_DELIVERY_APPS } = ctx;
+  const couponQ = couponQueries(pool);
 
   /* جلسات في الذاكرة: token_hash → { user, exp }. مليانة وقت الإقلاع بكل
      الجلسات السارية، فـ isOwnerSync بتشتغل حتى بعد أي نشر/إعادة تشغيل. */
@@ -505,6 +508,16 @@ export function register(app, ctx, deps = {}) {
       ALTER TABLE cms_contacts ADD COLUMN IF NOT EXISTS first_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
       ALTER TABLE cms_contacts ADD COLUMN IF NOT EXISTS synced_at TIMESTAMPTZ;
       CREATE INDEX IF NOT EXISTS cms_contacts_pos_idx ON cms_contacts(in_pos) WHERE in_pos;
+      /* ٥/١٠ — رسالة الولاء: SMS واحدة لكل مكافأة (أو «merged» لو الرقم عنده
+         أكتر من مكافأة مستنية) برابط شخصي /l/loy-<code>. sms_status: NULL = لسه
+         في الطابور | sending | sent | failed:… | skipped:… | merged */
+      ALTER TABLE cms_loyalty ADD COLUMN IF NOT EXISTS sms_status TEXT;
+      ALTER TABLE cms_loyalty ADD COLUMN IF NOT EXISTS sms_at TIMESTAMPTZ;
+      ALTER TABLE cms_loyalty ADD COLUMN IF NOT EXISTS sms_msg_id TEXT;
+      ALTER TABLE cms_loyalty ADD COLUMN IF NOT EXISTS sms_cost NUMERIC;
+      ALTER TABLE cms_loyalty ADD COLUMN IF NOT EXISTS link_code TEXT UNIQUE;
+      ALTER TABLE cms_loyalty ADD COLUMN IF NOT EXISTS clicks INT NOT NULL DEFAULT 0;
+      ALTER TABLE cms_loyalty ADD COLUMN IF NOT EXISTS clicked_at TIMESTAMPTZ;
     `);
     /* ٥/١٠ — دفتر الأتمتة (نفس فكرة cms_campaign_sends): صف لكل مستلم أو
        محجوز (holdout) برابط شخصي /l/<slug>-<code> عشان الضغطة تتربط بالرقم،
@@ -2114,6 +2127,20 @@ export function register(app, ctx, deps = {}) {
           if (count) await pool.query("UPDATE cms_flow_sends SET clicks = clicks + 1, clicked_at = COALESCE(clicked_at, NOW()) WHERE id=$1", [fs.id]).catch(() => {});
         }
       }
+      /* ٥/١٠ — رسالة الولاء: /l/loy-<code> → صف المكافأة في cms_loyalty
+         (الضغطة على الرقم، وكوده الشخصي بيركب في ?c=). */
+      const ly = !l && p && p.base === loyaltyLib.LOYALTY_SLUG ? (await pool.query(
+        "SELECT phone_norm, reward_no, coupon FROM cms_loyalty WHERE link_code=$1 LIMIT 1", [p.code]).catch(() => ({ rows: [] }))).rows[0] : null;
+      if (ly) {
+        const r4 = count
+          ? await pool.query(`UPDATE cms_links SET clicks = clicks + 1, last_click_at = NOW() WHERE slug=$1 AND active RETURNING *`, [p.base])
+          : await pool.query(`SELECT * FROM cms_links WHERE slug=$1 AND active`, [p.base]);
+        l = r4.rows[0];
+        if (l) {
+          rcp = { slug, coupon: ly.coupon };
+          if (count) await pool.query("UPDATE cms_loyalty SET clicks = clicks + 1, clicked_at = COALESCE(clicked_at, NOW()) WHERE phone_norm=$1 AND reward_no=$2", [ly.phone_norm, ly.reward_no]).catch(() => {});
+        }
+      }
     }
     if (!l) return c.json({ ok: false }, 404);
     const q = new URLSearchParams();
@@ -2694,7 +2721,7 @@ ${smsRules.optoutLine(cfg, { code: c?.optout_code, host: STORE_PUBLIC(), sender:
             + (SELECT COALESCE(sum(cost),0) FROM cms_flow_sends
                 WHERE status IN ('sent','test') AND created_at >= COALESCE($1::timestamptz, '1970-01-01'))
             + (SELECT COALESCE(sum(cost),0) FROM sms_log
-                WHERE kind IN ('cart_recovery','wa_fallback') AND status='sent'
+                WHERE kind IN ('cart_recovery','wa_fallback','loyalty') AND status='sent'
                   AND at >= COALESCE($1::timestamptz, '1970-01-01')) AS spent`, [cfg.budgetSince || null])
       .catch(() => pool.query(
         `SELECT COALESCE(sum(cost),0) AS spent FROM cms_campaign_sends
@@ -3202,7 +3229,6 @@ ${smsRules.optoutLine(cfg, { code: c?.optout_code, host: STORE_PUBLIC(), sender:
   /* ── الولاء: كل N طلبات من الموقع = كوبون شخصي ──
      بيعدّ من لحظة التفعيل بس (startedAt) — لو عدّ التاريخ كله، التفعيل كان
      هيطلّع كوبونات لكل العملاء القدام مرة واحدة كتكلفة مفاجئة. */
-  const LOYALTY_DEFAULT = { enabled: false, every: 5, reward: "free_delivery", percent: 10, validDays: 14, startedAt: null, minTotal: LOYALTY_MIN_DEFAULT };
   /* الحد الأدنى لمكافأة الولاء (عمر ١٠/١٠): المكافآت اللي لسه ماتستخدمتش — القديمة
      والجديدة — بتمشي على الرقم اللي في اللوحة. بتتنده عند الحفظ ومع كل دورة. */
   async function loyaltyMinSync(cfg) {
@@ -3211,8 +3237,7 @@ ${smsRules.optoutLine(cfg, { code: c?.optout_code, host: STORE_PUBLIC(), sender:
     return r.rowCount;
   }
   async function loyaltyCfg() {
-    const s = await getSettingsData();
-    return { ...LOYALTY_DEFAULT, ...(((s || {}).cms || {}).loyalty || {}) };
+    return loyaltyLib.loyaltyCfgOf(await getSettingsData());
   }
   async function loyaltyCounts(cfg) {
     const since = cfg.startedAt || "1970-01-01";
@@ -3227,6 +3252,11 @@ ${smsRules.optoutLine(cfg, { code: c?.optout_code, host: STORE_PUBLIC(), sender:
     const cfg = await loyaltyCfg();
     await loyaltyMinSync(cfg).catch((e) => console.error("[cms] loyalty min sync:", e.message));
     if (!cfg.enabled || !cfg.startedAt) return;
+    // ٥/١٠: المكافآت القديمة اتعملت من غير جوال على الكوبون — نربطها بصاحبها
+    // (مرة واحدة فعلياً؛ بعد كده الاستعلام مابيلاقيش حاجة).
+    await pool.query(
+      `UPDATE shop_coupons s SET phone_norm = l.phone_norm FROM cms_loyalty l
+        WHERE s.code = l.coupon AND s.phone_norm IS NULL`).catch((e) => console.error("[cms] loyalty bind:", e.message));
     const every = Math.max(2, Number(cfg.every) || 5);
     const minTotal = loyaltyMinTotal(cfg);
     for (const r of await loyaltyCounts(cfg)) {
@@ -3238,10 +3268,11 @@ ${smsRules.optoutLine(cfg, { code: c?.optout_code, host: STORE_PUBLIC(), sender:
         if (!ins.rowCount) continue;
         const expires = new Date(Date.now() + (Number(cfg.validDays) || 14) * 86400000).toISOString().slice(0, 10);
         const isFree = cfg.reward !== "percent";
+        // مربوط بجوال العميل: محدش غيره يقدر يستخدمه، والدفع بيطبّقه لوحده
         await pool.query(
-          `INSERT INTO shop_coupons(code, percent, active, min_total, max_uses, expires_at, note, once_per_customer, free_delivery)
-           VALUES ($1,$2,true,$6,1,$3,$4,true,$5)`,
-          [code, isFree ? 0 : Math.min(50, Number(cfg.percent) || 10), expires, `مكافأة ولاء #${k} — ${r.pn.slice(-4)}`, isFree, minTotal]);
+          `INSERT INTO shop_coupons(code, percent, active, min_total, max_uses, expires_at, note, once_per_customer, free_delivery, phone_norm)
+           VALUES ($1,$2,true,$7,1,$3,$4,true,$5,$6)`,
+          [code, isFree ? 0 : Math.min(50, Number(cfg.percent) || 10), expires, `مكافأة ولاء #${k} — ${r.pn.slice(-4)}`, isFree, r.pn, minTotal]);
         const what = (isFree ? "توصيل مجاني" : `خصم ${Number(cfg.percent) || 10}٪`) + (minTotal > 0 ? ` للطلبات من ${minTotal} ر.س` : "");
         notify()?.sendToAudience({ phoneNorm: r.pn, title: "مبروك! 🎁",
           body: `أكملت ${every * k} طلبات من فريش كاتس — كوبونك ${code}: ${what} حتى ${expires}`,
@@ -3249,6 +3280,112 @@ ${smsRules.optoutLine(cfg, { code: c?.optout_code, host: STORE_PUBLIC(), sender:
         console.log(`[cms] loyalty reward ${code} → ${r.pn.slice(-4)} (#${k})`);
       }
     }
+    await loyaltySmsTick().catch((e) => console.error("[cms] loyalty sms:", e.message));
+  }
+
+  /* 📱 رسالة المكافأة (loyalty.js فيه القواعد والنص). طابور في cms_loyalty.sms_status:
+     كل دورة بتبعت للي لسه NULL ومكافأته صالحة — خارج ساعات الهدوء بس. المكافآت
+     اللي اتعملت قبل الميزة (٨ يوم ٥/١٠) بتدخل نفس الطابور وتاخد رسالتها مرة واحدة. */
+  async function ensureLoyaltyLink() {
+    await pool.query(
+      `INSERT INTO cms_links(slug, label, target_type, coupon, utm_source, utm_medium, utm_campaign, active, created_by)
+       VALUES ($1,'الولاء: رسالة المكافأة','home',NULL,'sms','loyalty','loyalty',TRUE,'loyalty')
+       ON CONFLICT (slug) DO NOTHING`, [loyaltyLib.LOYALTY_SLUG]);
+  }
+  const LOYALTY_PENDING_SQL = `
+    SELECT l.phone_norm, l.reward_no, l.coupon, to_char(s.expires_at, 'YYYY-MM-DD') AS exp
+      FROM cms_loyalty l JOIN shop_coupons s ON s.code = l.coupon
+     WHERE l.sms_status IS NULL AND s.active
+       AND s.used_count < COALESCE(s.max_uses, 1)
+       AND (s.expires_at IS NULL OR s.expires_at >= CURRENT_DATE)
+       AND NOT EXISTS (SELECT 1 FROM shop_orders o WHERE o.coupon = l.coupon
+                        AND o.status NOT IN ('pending_payment','expired'))`;
+  const riyadhDay = (now) => smsRules.riyadhParts(now).day;
+  let loyaltySmsBusy = false;
+  /* dry = معاينة من غير إرسال ولا تعليم (GET /api/cms/loyalty/sms-plan) */
+  async function loyaltySmsTick({ now = new Date(), dry = false } = {}) {
+    if (loyaltySmsBusy && !dry) return { skipped: "busy" };
+    if (!dry) loyaltySmsBusy = true;
+    try {
+      const s = await getSettingsData();
+      const cfg = loyaltyLib.loyaltyCfgOf(s);
+      const camp = await campaignCfg();
+      const gate = !cfg.enabled ? "loyalty_off" : !cfg.smsEnabled ? "loyalty_sms_off"
+        : camp.smsEnabled !== true ? "sms_off" : camp.brake ? "brake"
+        : smsRules.inQuietFor(s, now) ? "quiet_hours" : null;
+      if (gate && !dry) return { skipped: gate };
+      // المستخدمة/المنتهية من غير رسالة: تتقفل عشان الطابور يفضل نضيف
+      if (!dry) await pool.query(
+        `UPDATE cms_loyalty l SET sms_status='skipped:used_or_expired'
+          WHERE l.sms_status IS NULL AND NOT EXISTS (SELECT 1 FROM (${LOYALTY_PENDING_SQL}) p
+                 WHERE p.phone_norm = l.phone_norm AND p.reward_no = l.reward_no)`);
+      const rows = (await pool.query(LOYALTY_PENDING_SQL)).rows;
+      if (!rows.length) return dry ? { dry: true, gate, send: [], skip: [], merged: [] } : { sent: 0 };
+      const pns = [...new Set(rows.map((r) => r.phone_norm))];
+      // الموظفين: أرقام الإنذارات + استبعاد الحملات (السفراء) + cms_contacts.is_staff
+      const staff = smsRules.staffPhoneSet({ ...s, cms: { ...(s.cms || {}), campaigns: camp } });
+      const flags = (await pool.query(
+        "SELECT phone_norm, is_staff, is_test FROM cms_contacts WHERE phone_norm = ANY($1) AND (is_staff OR is_test)", [pns])).rows;
+      for (const f of flags) if (f.is_staff) staff.add(f.phone_norm);
+      const testSet = new Set(flags.filter((f) => f.is_test).map((f) => f.phone_norm));
+      const codes = await optoutCodes(pns);
+      const optedOut = new Set([...codes.values()].filter((x) => x.opted_out_at).map((x) => x.phone_norm));
+      const smsBlock = typeof deps.smsBlock === "function" ? deps.smsBlock() : null;
+      const adBlocked = smsBlock ? await smsBlock.blockedSet(pns).catch(() => new Set()) : new Set();
+      const plan = loyaltyLib.planLoyaltySms(rows, { staff, testSet, optedOut, adBlocked, today: riyadhDay(now) });
+      if (dry) {
+        const optout = smsRules.optoutLine(camp, { code: "0000000000", host: STORE_PUBLIC(), sender: process.env.TAQNYAT_SENDER_AD });
+        const sample = (r) => loyaltyLib.loyaltySmsText({ minTotal: loyaltyMinTotal(cfg), code: r.coupon, expires: r.exp,
+          link: recipientLink(STORE_PUBLIC(), loyaltyLib.LOYALTY_SLUG, "xxxxxx"), optout, reward: cfg.reward, percent: cfg.percent });
+        return { dry: true, gate,
+          send: plan.send.map((r) => ({ phone: maskPhone(r.phone_norm), coupon: r.coupon, exp: r.exp, text: sample(r), parts: smsRules.smsParts(sample(r) || "") })),
+          skip: plan.skip.map(({ row, reason }) => ({ phone: maskPhone(row.phone_norm), coupon: row.coupon, reason })),
+          merged: plan.merged.map((r) => ({ phone: maskPhone(r.phone_norm), coupon: r.coupon })) };
+      }
+      const mark = (r, status) => pool.query(
+        "UPDATE cms_loyalty SET sms_status=$3 WHERE phone_norm=$1 AND reward_no=$2 AND sms_status IS NULL",
+        [r.phone_norm, r.reward_no, status]);
+      for (const { row, reason } of plan.skip) await mark(row, `skipped:${reason}`);
+      for (const r of plan.merged) await mark(r, "merged");
+      if (!plan.send.length) return { sent: 0, skipped: plan.skip.length, merged: plan.merged.length };
+      await ensureLoyaltyLink();
+      let sent = 0, failed = 0, held = 0;
+      for (const r of plan.send) {
+        // السقف اليومي والميزانية: مايتقفلش — بيستنى الدورة الجاية
+        if ((await smsToday()) + 2 > Number(camp.dailySmsCap || 0)) { held++; continue; }
+        if ((await budgetLeft(camp)) < 2 * 0.075) { held++; continue; }
+        const linkCode = newLinkCode();
+        const claim = await pool.query(
+          `UPDATE cms_loyalty SET sms_status='sending', link_code=$3
+            WHERE phone_norm=$1 AND reward_no=$2 AND sms_status IS NULL RETURNING 1`,
+          [r.phone_norm, r.reward_no, linkCode]);
+        if (!claim.rowCount) continue; // دورة تانية خدته
+        const link = recipientLink(STORE_PUBLIC(), loyaltyLib.LOYALTY_SLUG, linkCode);
+        const optout = smsRules.optoutLine(camp, { code: codes.get(r.phone_norm)?.optout_code, host: STORE_PUBLIC(), sender: process.env.TAQNYAT_SENDER_AD });
+        const body = loyaltyLib.loyaltySmsText({ code: r.coupon, expires: r.exp, link, optout, reward: cfg.reward, percent: cfg.percent, minTotal: loyaltyMinTotal(cfg) });
+        if (!body) {
+          await pool.query("UPDATE cms_loyalty SET sms_status='skipped:too_long' WHERE phone_norm=$1 AND reward_no=$2", [r.phone_norm, r.reward_no]);
+          continue;
+        }
+        try {
+          const info = await sendMarketingSms(r.phone_norm, body);
+          logSms({ phoneNorm: r.phone_norm, kind: "loyalty", ref: r.coupon, sender: process.env.TAQNYAT_SENDER_AD || null,
+            body, msgId: info && info.messageId, cost: info && info.cost, parts: info && info.parts });
+          await pool.query(
+            "UPDATE cms_loyalty SET sms_status='sent', sms_at=NOW(), sms_msg_id=$3, sms_cost=$4 WHERE phone_norm=$1 AND reward_no=$2",
+            [r.phone_norm, r.reward_no, info?.messageId || null, Number(info?.cost) || 0]);
+          sent++;
+        } catch (e) {
+          logSms({ phoneNorm: r.phone_norm, kind: "loyalty", ref: r.coupon, sender: process.env.TAQNYAT_SENDER_AD || null,
+            body, status: "failed", error: e && e.message });
+          await pool.query("UPDATE cms_loyalty SET sms_status=$3 WHERE phone_norm=$1 AND reward_no=$2",
+            [r.phone_norm, r.reward_no, `failed:${String(e.message || e).slice(0, 80)}`]);
+          failed++;
+        }
+      }
+      if (sent || failed) console.log(`[cms] loyalty sms: sent ${sent}, failed ${failed}, held ${held}`);
+      return { sent, failed, held, skipped: plan.skip.length, merged: plan.merged.length };
+    } finally { if (!dry) loyaltySmsBusy = false; }
   }
   setTimeout(() => loyaltyRun().catch((e) => console.error("[cms] loyalty:", e.message)), 60_000);
   setInterval(() => loyaltyRun().catch((e) => console.error("[cms] loyalty:", e.message)), 15 * 60_000);
@@ -3258,17 +3395,31 @@ ${smsRules.optoutLine(cfg, { code: c?.optout_code, host: STORE_PUBLIC(), sender:
     const cfg = await loyaltyCfg();
     const every = Math.max(2, Number(cfg.every) || 5);
     const counts = await loyaltyCounts(cfg);
-    const [issued, used, recent] = await Promise.all([
+    const [issued, used, recent, sms] = await Promise.all([
       pool.query("SELECT count(*)::int AS n FROM cms_loyalty"),
       pool.query("SELECT count(*)::int AS n FROM cms_loyalty l JOIN shop_coupons s ON s.code = l.coupon WHERE s.used_count > 0"),
-      pool.query(`SELECT l.phone_norm AS phone, l.reward_no, l.coupon, l.created_at, COALESCE(s.used_count,0) > 0 AS used
+      pool.query(`SELECT l.phone_norm AS phone, l.reward_no, l.coupon, l.created_at, COALESCE(s.used_count,0) > 0 AS used,
+                         l.sms_status, l.sms_at, l.clicks
                     FROM cms_loyalty l LEFT JOIN shop_coupons s ON s.code = l.coupon ORDER BY l.created_at DESC LIMIT 10`),
+      pool.query(`SELECT count(*) FILTER (WHERE sms_status='sent')::int AS sent,
+                         count(*) FILTER (WHERE sms_status IS NULL)::int AS queued,
+                         count(*) FILTER (WHERE sms_status LIKE 'skipped:%' OR sms_status='merged')::int AS skipped,
+                         count(*) FILTER (WHERE sms_status LIKE 'failed:%')::int AS failed,
+                         COALESCE(sum(sms_cost),0)::float AS cost, COALESCE(sum(clicks),0)::int AS clicks
+                    FROM cms_loyalty`).catch(() => ({ rows: [{}] })),
     ]);
     return c.json({ ok: true, config: cfg, stats: {
       members: counts.length,
       eligibleSoon: counts.filter((r) => r.n % every === every - 1).length,
       rewardsIssued: issued.rows[0].n, rewardsUsed: used.rows[0].n, recent: recent.rows,
+      sms: sms.rows[0] || {},
     } });
+  });
+
+  // معاينة طابور رسايل الولاء: مين هياخد إيه ومين متشال وليه — من غير إرسال
+  app.get("/api/cms/loyalty/sms-plan", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    return c.json({ ok: true, ...(await loyaltySmsTick({ dry: true })) });
   });
 
   app.put("/api/cms/loyalty", async (c) => {
@@ -3276,18 +3427,7 @@ ${smsRules.optoutLine(cfg, { code: c?.optout_code, host: STORE_PUBLIC(), sender:
     let b = {};
     try { b = await c.req.json(); } catch { return bad(c, "bad json"); }
     const prev = await loyaltyCfg();
-    const enabled = b.enabled === true;
-    const val = {
-      enabled,
-      every: Math.min(20, Math.max(2, Number(b.every) || 5)),
-      reward: b.reward === "percent" ? "percent" : "free_delivery",
-      percent: Math.min(50, Math.max(5, Number(b.percent) || 10)),
-      validDays: Math.min(90, Math.max(3, Number(b.validDays) || 14)),
-      // أقل طلب تتستخدم عليه المكافأة (٠ = من غير حد). لو مااتبعتش: يفضل الحالي.
-      minTotal: loyaltyMinTotal(b.minTotal === undefined ? prev : b),
-      // أول تفعيل بيثبّت نقطة البداية؛ الإيقاف والتشغيل تاني مابيعدّش التاريخ
-      startedAt: enabled ? (prev.startedAt || new Date().toISOString()) : prev.startedAt,
-    };
+    const val = loyaltyLib.loyaltyCfgFromBody(b, prev);
     await pool.query(
       `UPDATE settings SET data = jsonb_set(
          CASE WHEN data ? 'cms' THEN data ELSE jsonb_set(data,'{cms}','{}'::jsonb,true) END,
@@ -3447,12 +3587,10 @@ ${smsRules.optoutLine(cfg, { code: c?.optout_code, host: STORE_PUBLIC(), sender:
      (افتراضي ١٤ يوم) — مربوط بجواله فمحدش غيره يقدر يستعمله. مفيش نسب خصم. */
   async function flowCouponFor(flow, pn, { dry = false } = {}) {
     if (flow.offer === "winback") {
-      const [used, first] = await Promise.all([
-        pool.query(`SELECT 1 FROM shop_orders WHERE upper(COALESCE(coupon,''))='FIRST' AND phone_norm=$1
-                     AND status NOT IN ('pending_payment','expired') LIMIT 1`, [pn]),
-        pool.query("SELECT active FROM shop_coupons WHERE upper(code)='FIRST'"),
-      ]);
-      if (!used.rowCount && first.rows[0]?.active) return { code: "FIRST", kind: "first" };
+      // FIRST بنفس قاعدة الشيك أوت (couponrules.js ٥/١٠): مفيش توصيل من الموقع قبل
+      // كده ومااستخدمهوش — غير كده كان بيوصله FIRST والشيك أوت يرفضه.
+      const first = await pool.query("SELECT code, percent, active, expires_at, free_delivery FROM shop_coupons WHERE upper(code)='FIRST'");
+      if ((await firstEligibility(first.rows[0] || null, pn, couponQ)).eligible) return { code: "FIRST", kind: "first" };
       const code = "WB" + crypto.randomBytes(3).toString("hex").toUpperCase();
       if (dry) return { code, kind: "unique" };
       const days = Math.min(60, Math.max(1, Number(flow.offer_valid_days) || 14));

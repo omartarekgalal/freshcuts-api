@@ -51,6 +51,7 @@ import {
 } from "./checkout-meta.js";
 import { resumeKey } from "./resume-key.js";
 import { freeBarCfg } from "./freebar.js";
+import { evaluateCoupon, couponQueries, isPureFreeDelivery } from "./couponrules.js";
 import { recordCheckoutConsent } from "./consent.js";
 import { makeNameResolver } from "./product-names.js";
 import { tableSessionForCheckout, tableGate, touchTableSession, tableCfg, tableBusy, TABLE_MSG, posOptionOf, tableNote, tableWho, tableTrackLabel, cleanCustomerText } from "./table-order.js";
@@ -657,29 +658,20 @@ export function register(app, ctx, deps = {}) {
      and the attribution to its ambassador stays intact for free.
      Caveat (told to Omar): online redemption marks it used HERE — the POS
      cashier flow has its own promotion check and cannot see ours. */
+  const couponQ = couponQueries(pool);
+  async function isPureFreeCode(codeRaw) {
+    const r = await pool.query("SELECT percent, free_delivery FROM shop_coupons WHERE upper(code)=$1",
+      [String(codeRaw || "").trim().toUpperCase()]).catch(() => ({ rows: [] }));
+    return isPureFreeDelivery(r.rows[0]);
+  }
   async function checkCoupon(codeRaw, subtotal, phoneNorm) {
     const code = String(codeRaw || "").trim().toUpperCase();
     if (!code) return null;
     const r = await pool.query("SELECT * FROM shop_coupons WHERE upper(code)=$1", [code]);
     const cp = r.rows[0];
-    if (cp) {
-      if (!cp.active) return { ok: false, error: "not_found" };
-      if (cp.expires_at && new Date(cp.expires_at) < new Date(new Date().toDateString())) return { ok: false, error: "expired" };
-      if (cp.max_uses != null && cp.used_count >= cp.max_uses) return { ok: false, error: "maxed" };
-      if (Number(subtotal) < Number(cp.min_total)) return { ok: false, error: "min_total", minTotal: Number(cp.min_total) };
-      // كوبون شخصي: جوال تاني = كأنه مش موجود. من غير جوال (معاينة السلة) بنسيبه،
-      // والشيك أوت (بجوال متأكد بالـOTP) هو اللي بيحسم.
-      if (cp.phone_norm && phoneNorm && cp.phone_norm !== phoneNorm) return { ok: false, error: "not_found" };
-      if (cp.once_per_customer && phoneNorm) {
-        const used = await pool.query(
-          `SELECT 1 FROM shop_orders
-            WHERE coupon=$1 AND phone_norm=$2 AND status NOT IN ('pending_payment','expired') LIMIT 1`,
-          [cp.code, phoneNorm]);
-        if (used.rowCount) return { ok: false, error: "already_used" };
-      }
-      return { ok: true, code: cp.code, percent: Number(cp.percent) || 0, freeDelivery: cp.free_delivery === true, kind: "coupon",
-        minTotal: Number(cp.min_total) || 0 };
-    }
+    // القواعد في couponrules.js (٥/١٠): «مرة لكل عميل» لكود توصيل مجاني صِرف
+    // بتتعدّ على طلبات التوصيل بس، وFIRST مرفوض لو الجوال عنده توصيل قبل كده.
+    if (cp) return evaluateCoupon(cp, { subtotal, phoneNorm }, couponQ);
     // أكواد السفراء: قابلة للإيقاف من اللوحة لو قلق الاستخدام المزدوج
     // (أونلاين + كاشير) رجّح كفة الفصل الكامل بين القناتين.
     if (((await getSettingsData()).shop || {}).acceptAmbassadorCodes === false) {
@@ -1068,6 +1060,12 @@ export function register(app, ctx, deps = {}) {
       // subtotal check happens against the raw cart estimate; the authoritative
       // re-check against real totals comes right after the first calc.
       coupon = await checkCoupon(b.coupon, Number.MAX_SAFE_INTEGER, phoneNorm);
+      /* كود توصيل مجاني صِرف على استلام/طاولة مالوش قيمة — حتى لو مش صالح
+         للرقم ده (مثلاً FIRST لحد طلب توصيل قبل كده) مانوقفش الطلب عشانه. */
+      if (coupon && !coupon.ok && option !== "delivery" && (await isPureFreeCode(b.coupon))) {
+        console.log(`[shop] invalid free-delivery code ignored on a ${tableSid ? "table" : "pickup"} order (${coupon.error})`);
+        coupon = null;
+      }
       if (coupon && !coupon.ok) return fail("coupon_" + coupon.error, 422, { coupon });
       /* كود توصيل مجاني صِرف (زي FIRST) على استلام/طاولة: مالوش قيمة هنا،
          ولو اتسجّل على الطلب بيتحرق (once_per_customer) والعميل يخسره لأول
@@ -1715,6 +1713,13 @@ export function register(app, ctx, deps = {}) {
       progress: into, left: every - into, justEarned: n > 0 && into === 0 };
   }
 
+  // كود دعوة التقييم للطلب (reviews.js بيعمله لحظة «اتسلّم»). مفيش = null والصفحة بتفتح /r عادي.
+  async function reviewCodeOf(orderNo) {
+    const r = await pool.query("SELECT code FROM review_invites WHERE order_no=$1", [String(orderNo)])
+      .catch(() => ({ rows: [] }));
+    return r.rows[0]?.code || null;
+  }
+
   /* Customer tracking — delivery-app style stages + courier driver info. */
   app.get("/api/shop/track/:orderNo", async (c) => {
     const row = await getOrderRow(c.req.param("orderNo"));
@@ -1788,6 +1793,9 @@ export function register(app, ctx, deps = {}) {
       table: Number(row.table_no) > 0 ? Number(row.table_no) : null,
       // 🎁 الولاء: «كل N طلبات = توصيل مجاني» — العميل يشوف هو فين (من غير جوال)
       loyalty: await loyaltyOf(row.phone_norm).catch(() => null),
+      /* ⭐ زرار التقييم بعد التسليم بيروح لصفحتنا /r?c=<كود دعوة الطلب> — نفس
+         التوجيه الذكي (٤–٥★ بس هم اللي يشوفوا جوجل)، مش جوجل مباشر (قرار ٥/١٠). */
+      reviewCode: row.status === "delivered" ? await reviewCodeOf(row.order_no) : null,
       total: Number(row.total), subtotal: Number(row.subtotal),
       deliveryFee: Number(row.delivery_fee), courier,
       /* «توصيل بعيد»: العميل وافق على رسوم مسافة إضافية — بيشوفها في صفحة

@@ -25,6 +25,8 @@ export const SMS_KINDS = {
   review_invite: "دعوة تقييم",
   review_reply: "رد على تقييم",
   cart_recovery: "استرداد سلة",
+  loyalty: "مكافأة ولاء",
+  wa_fallback: "بديل واتساب",
   waitlist: "منتظرين الفتح",
   campaign: "حملة",
   flow: "أتمتة",
