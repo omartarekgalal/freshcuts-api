@@ -51,7 +51,7 @@ import {
 import { resumeKey } from "./resume-key.js";
 import { recordCheckoutConsent } from "./consent.js";
 import { makeNameResolver } from "./product-names.js";
-import { tableForCheckout, tableCfg, verifyTableKey, tableBusy, TABLE_MSG, posOptionOf, tableNote, tableTrackLabel, cleanCustomerText } from "./table-order.js";
+import { tableSessionForCheckout, tableGate, touchTableSession, tableCfg, tableBusy, TABLE_MSG, posOptionOf, tableNote, tableTrackLabel, cleanCustomerText } from "./table-order.js";
 
 /* ناقل أحداث الطلب (W1-01) وترحيل أعمدة shop_orders — تحميل كسول ودفاعي (W1-02):
    لو الملفات مش موجودة أو الـimport وقع، shop.js بيشتغل عادي والأحداث بتتجاهل.
@@ -895,15 +895,26 @@ export function register(app, ctx, deps = {}) {
        مراجعة الأمان ٥/١٠: الرقم لوحده مش كفاية — لازم مفتاح الطاولة اللي في
        الـQR (table_key). مفتاح غلط/طاولة موقوفة ⇒ table_invalid قبل أي جلسة
        دفع (المتجر بيقول «امسح الـQR تاني»)، وطاولة عليها طلبات كتير ⇒ table_busy. */
-    const tableNo = tableForCheckout(b, option, { scheduled: Boolean(scheduled), settings: settingsNow });
-    if (tableNo) {
+    /* قرارات عمر ٥/١٠: الطلب بييجي بجلسة طاولة (اتفتحت بمسح QR بمفتاح صح)
+       مش برقم — والرقم نفسه من الجلسة. لازم العميل يكون جوّه المطعم: موقع
+       المتصفح (table_geo) بيتقارن بنقطة الفرع هنا على السيرفر. الإحداثيات
+       بتتمسح من الجسم فوراً ومابتتخزنش — على الطلب المسافة + النتيجة بس.
+       السياج يفشل ⇒ الجلسة بتخلص (لازم يمسح تاني). مفيش أي تحويل لاستلام. */
+    const tableGeoIn = b.table_geo;
+    delete b.table_geo;
+    const tableSid = tableSessionForCheckout(b, option, { scheduled: Boolean(scheduled) });
+    let tableNo = null, tableGeo = null;
+    if (tableSid) {
       const tcfg = tableCfg(settingsNow);
-      const tv = await verifyTableKey(pool, tableNo, b.table_key, tcfg);
-      if (!tv.ok) {
-        console.warn(`[shop] table ${tableNo} rejected: ${tv.reason}`);
-        return fail("table_invalid", 409, { message: TABLE_MSG.table_invalid, reason: tv.reason });
+      const tg = await tableGate(pool, { session: tableSid, device: b.table_device, geo: tableGeoIn }, tcfg, { endOnFar: true });
+      if (!tg.ok) {
+        console.warn(`[shop] table checkout rejected: ${tg.reason}${tg.distanceM != null ? ` (${tg.distanceM} m)` : ""}`);
+        return fail(tg.error, 409, { message: TABLE_MSG[tg.error] || TABLE_MSG.table_invalid, reason: tg.reason });
       }
+      tableNo = tg.table;
+      tableGeo = tg.geo;
       if (await tableBusy(pool, tableNo, tcfg)) return fail("table_busy", 409, { message: TABLE_MSG.table_busy });
+      await touchTableSession(pool, tableSid);
     }
     b.tip = safeTip(b.tip);
     const branchId = String(b.branch_id || "1");
@@ -1224,6 +1235,10 @@ export function register(app, ctx, deps = {}) {
     if (tableNo) {
       await pool.query("UPDATE shop_orders SET table_no=$2 WHERE order_no=$1", [orderNo, tableNo])
         .catch((e) => console.error(`[shop] ${orderNo}: table_no save failed: ${e.message}`));
+      // الجلسة + نتيجة السياج (مسافة بالمتر + نجح/null لو السياج مقفول) — من غير إحداثيات
+      pool.query("UPDATE shop_orders SET table_session=$2, table_geo_m=$3, table_geo_ok=$4 WHERE order_no=$1",
+        [orderNo, tableSid, tableGeo && tableGeo.distanceM != null ? tableGeo.distanceM : null, tableGeo && !tableGeo.skipped ? true : null])
+        .catch((e) => console.error(`[shop] ${orderNo}: table geo save failed: ${e.message}`));
     }
     // journey_sid/client/app_version (W1-02) + attrib_source (W4-02) — تحديث
     // منفصل fire-and-forget: لو الأعمدة لسه ماتضافتش (ensureOrderColumns) الطلب

@@ -2,7 +2,7 @@
    node --test table-order.test.mjs */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { parseTable, tableCfg, tableForCheckout, posOptionOf, tableNote, TABLE_DEFAULTS } from "./table-order.js";
+import { parseTable, tableCfg, tableSessionForCheckout, posOptionOf, tableNote, TABLE_DEFAULTS } from "./table-order.js";
 import { posNotesOf, posAddressLine } from "./shop.js";
 import { buildBoard } from "./kitchen-core.js";
 import { toPortalOrder } from "./portal-core.js";
@@ -27,13 +27,14 @@ test("الإعدادات: الافتراضي ١٢ طاولة، maxNo ٩٩، وا
   assert.equal(parseTable(5, tableCfg({ tables: { enabled: false } })), null);
 });
 
-test("tableForCheckout: استلام دلوقتي بس — توصيل أو طلب مسبق = من غير طاولة", () => {
-  assert.equal(tableForCheckout({ table: 4 }, "pickup"), 4);
-  assert.equal(tableForCheckout({ table: 4 }, "delivery"), null);
-  assert.equal(tableForCheckout({ table: 4 }, "pickup", { scheduled: true }), null);
-  assert.equal(tableForCheckout({}, "pickup"), null);
-  assert.equal(tableForCheckout(null, "pickup"), null);
-  assert.equal(tableForCheckout({ table: 4 }, "pickup", { settings: { tables: { enabled: false } } }), null);
+test("tableSessionForCheckout: استلام دلوقتي بس + جلسة سليمة — الرقم من المتصفح مالوش لازمة", () => {
+  const sid = "AbCdEfGhIjKlMnOpQrStUv";
+  assert.equal(tableSessionForCheckout({ table_session: sid }, "pickup"), sid);
+  assert.equal(tableSessionForCheckout({ table_session: sid }, "delivery"), null);
+  assert.equal(tableSessionForCheckout({ table_session: sid }, "pickup", { scheduled: true }), null);
+  assert.equal(tableSessionForCheckout({ table: 4 }, "pickup"), null);
+  assert.equal(tableSessionForCheckout({ table_session: "short" }, "pickup"), null);
+  assert.equal(tableSessionForCheckout(null, "pickup"), null);
 });
 
 test("نقطة البيع: Dine in + أول الملاحظات «🍽 طاولة N» ومفيش «استلام HH:MM»", () => {

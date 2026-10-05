@@ -63,6 +63,9 @@ test("every §4-2 column is declared with the planned type", () => {
     scheduled_for: "TIMESTAMPTZ",
     scheduled_slot: "TEXT",
     table_no: "INT",   // أكتوبر ٢٠٢٦ — 🍽 طلب QR الطاولة
+    table_session: "TEXT",
+    table_geo_m: "INT",
+    table_geo_ok: "BOOLEAN",
   });
 });
 

@@ -52,6 +52,12 @@ export const ORDER_COLUMNS = Object.freeze([
   /* أكتوبر ٢٠٢٦ — 🍽 طلب من الطاولة (table-order.js): رقم الطاولة من QR
      الطاولة. NULL = مش طلب طاولة (كل الطلبات القديمة). option بيفضل pickup. */
   { name: "table_no", type: "INT" },
+  /* جلسة الطاولة اللي الطلب جه منها + نتيجة السياج الجغرافي: المسافة بالمتر
+     من نقطة الفرع ونجح/فشل (NULL = السياج كان مقفول). الإحداثيات نفسها
+     مابتتخزنش أبداً (قرار عمر ٥/١٠). */
+  { name: "table_session", type: "TEXT" },
+  { name: "table_geo_m", type: "INT" },
+  { name: "table_geo_ok", type: "BOOLEAN" },
 ]);
 
 export const ORDER_INDEXES = Object.freeze([
