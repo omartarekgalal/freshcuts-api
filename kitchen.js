@@ -55,6 +55,7 @@ export const SHOP_SQL = `
          o.created_at, o.updated_at, o.pos_ready_at, o.accepted_at, o.is_test,
          o.scheduled_for, o.scheduled_slot,
          NULLIF(to_jsonb(o)->>'table_no','')::int AS table_no,
+         o.customer->>'name' AS customer_name,
          o.delivery_quote->'farZone' AS far_zone,
          s.status AS ship_status, s.arrived_at AS ship_arrived_at, s.picked_at AS ship_picked_at
     FROM shop_orders o

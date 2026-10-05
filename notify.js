@@ -45,7 +45,10 @@ const MESSAGES = {
     return full.length <= 70 ? full : `فريش كاتس: طلبك مع المندوب بالطريق ${url}`;
   },
   // Google Business review link (settings.storefront.seo.links.review overrides the env/default).
-  delivered: () => `فريش كاتس: تم توصيل طلبك — بالهنا والشفا 🌟 عجبك الأكل؟ قيّمنا على جوجل: ${env("GOOGLE_REVIEW_URL", "https://g.page/r/CSG0gPAqlvHMEBM/review")}`,
+  // استلام/طاولة: مفيش «توصيل» — الطلب اتسلّم في الفرع أو اتقدّم على الطاولة
+  delivered: (o) => (o && o.option === "pickup"
+    ? `فريش كاتس: بالهنا والشفا 🌟 عجبك الأكل؟ قيّمنا على جوجل: ${env("GOOGLE_REVIEW_URL", "https://g.page/r/CSG0gPAqlvHMEBM/review")}`
+    : `فريش كاتس: تم توصيل طلبك — بالهنا والشفا 🌟 عجبك الأكل؟ قيّمنا على جوجل: ${env("GOOGLE_REVIEW_URL", "https://g.page/r/CSG0gPAqlvHMEBM/review")}`),
   rejected_refunded: (o) => `فريش كاتس: نعتذر، تعذّر تنفيذ طلبك ${o.order_no} وتم استرجاع المبلغ كاملاً لبطاقتك 💳`,
   /* الاسترجاع اتأخر — ما نقولش «تم» وهو ما تمّش. الرسالة دي بتعترف
      بالمشكلة وبتوعد بمتابعة، والوعد ده مدعوم بإنذار درجة 3 في اللوحة

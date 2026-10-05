@@ -53,7 +53,7 @@ import { resumeKey } from "./resume-key.js";
 import { freeBarCfg } from "./freebar.js";
 import { recordCheckoutConsent } from "./consent.js";
 import { makeNameResolver } from "./product-names.js";
-import { tableSessionForCheckout, tableGate, touchTableSession, tableCfg, tableBusy, TABLE_MSG, posOptionOf, tableNote, tableTrackLabel, cleanCustomerText } from "./table-order.js";
+import { tableSessionForCheckout, tableGate, touchTableSession, tableCfg, tableBusy, TABLE_MSG, posOptionOf, tableNote, tableWho, tableTrackLabel, cleanCustomerText } from "./table-order.js";
 
 /* ناقل أحداث الطلب (W1-01) وترحيل أعمدة shop_orders — تحميل كسول ودفاعي (W1-02):
    لو الملفات مش موجودة أو الـimport وقع، shop.js بيشتغل عادي والأحداث بتتجاهل.
@@ -232,7 +232,7 @@ export function posNotesOf(row, { withFee = false, now = Date.now() } = {}) {
   // 🍽 طلب طاولة (table-order.js): أول سطر بدل «استلام»، ومفيش «استلام HH:MM»
   const table = !delivery && Number(row.table_no) > 0 ? Number(row.table_no) : null;
   return [
-    table ? tableNote(table) : sched,
+    table ? tableNote(table, row.customer && row.customer.name) : sched,
     delivery ? "توصيل" : table ? "" : "استلام",
     // «التوصيل بالحي»: مندوب بره لاجلك بيستلم الطلب — الكاشير لازم يعرف
     // إن مفيش كابتن جاي من الشركة، والمدير هو اللي هيرتّب من البوابة.
@@ -254,7 +254,7 @@ export function posNotesOf(row, { withFee = false, now = Date.now() } = {}) {
    (الحي، الشارع، المبنى، الدور، الشقة، العلامة، «اترك الطلب عند الباب»). */
 export function posAddressLine(row) {
   const addr = row.address || {};
-  if (row.option !== "delivery") return Number(row.table_no) > 0 ? `صالة — طاولة ${Number(row.table_no)}` : "استلام";
+  if (row.option !== "delivery") return Number(row.table_no) > 0 ? `صالة — ${tableWho(Number(row.table_no), row.customer && row.customer.name)}` : "استلام";
   const hasText = ["area", "street", "building"].some((k) => String(addr[k] || "").trim());
   return hasText ? readableAddress(addr).slice(0, 250) : "توصيل";
 }
@@ -922,7 +922,8 @@ export function register(app, ctx, deps = {}) {
       tableNo = tg.table;
       tableGeo = tg.geo;
       if (await tableBusy(pool, tableNo, tcfg)) return fail("table_busy", 409, { message: TABLE_MSG.table_busy, detail: TABLE_MSG.table_busy });
-      await touchTableSession(pool, tableSid);
+      // touchTableSession بقت بعد ما الطلب يتسجّل (تحت): محاولة وقعت في الـOTP أو
+      // الاسم كانت بتعدّ «طلب» على الجلسة وبتمدّ عمرها
     }
     b.tip = safeTip(b.tip);
     const branchId = String(b.branch_id || "1");
@@ -1068,6 +1069,13 @@ export function register(app, ctx, deps = {}) {
       // re-check against real totals comes right after the first calc.
       coupon = await checkCoupon(b.coupon, Number.MAX_SAFE_INTEGER, phoneNorm);
       if (coupon && !coupon.ok) return fail("coupon_" + coupon.error, 422, { coupon });
+      /* كود توصيل مجاني صِرف (زي FIRST) على استلام/طاولة: مالوش قيمة هنا،
+         ولو اتسجّل على الطلب بيتحرق (once_per_customer) والعميل يخسره لأول
+         طلب توصيل بجد. المتجر بيشيله أصلاً — ده لنسخة قديمة في الكاش. */
+      if (coupon?.ok && option !== "delivery" && coupon.freeDelivery && !(coupon.percent > 0)) {
+        console.log(`[shop] free-delivery code ${coupon.code} ignored on a ${tableSid ? "table" : "pickup"} order`);
+        coupon = null;
+      }
     }
     // Standing per-customer discount (الملاك): auto-applies by phone alone.
     // Never stacks with a coupon — the customer gets whichever is bigger.
@@ -1260,6 +1268,7 @@ export function register(app, ctx, deps = {}) {
     /* رقم الطاولة لازم يبقى على الصف قبل ما الدفع يخلص (createPosOrder بيقراه)،
        فبنستنّاه. لو العمود لسه مش موجود الطلب بيكمّل استلام عادي. */
     if (tableNo) {
+      await touchTableSession(pool, tableSid);
       await pool.query("UPDATE shop_orders SET table_no=$2 WHERE order_no=$1", [orderNo, tableNo])
         .catch((e) => console.error(`[shop] ${orderNo}: table_no save failed: ${e.message}`));
       // الجلسة + نتيجة السياج (مسافة بالمتر + نجح/null لو السياج مقفول) — من غير إحداثيات
@@ -1686,6 +1695,26 @@ export function register(app, ctx, deps = {}) {
     return c.json(res, res.ok ? 200 : 402);
   });
 
+  /* 🎁 تقدّم الولاء لجوال الطلب: نفس قاعدة cms.js loyaltyCounts بالظبط
+     (طلبات الموقع المدفوعة من startedAt — توصيل واستلام وطاولة). null لو
+     الولاء مقفول. ده اللي بيقول للعميل «فاضلك طلب واحد». */
+  async function loyaltyOf(phoneNorm) {
+    if (!/^5\d{8}$/.test(String(phoneNorm || ""))) return null;
+    const lc = ((await getSettingsData()).cms || {}).loyalty || {};
+    if (lc.enabled !== true || !lc.startedAt) return null;
+    const every = Math.max(2, Number(lc.every) || 5);
+    const r = await pool.query(
+      `SELECT count(*)::int AS n FROM shop_orders
+        WHERE phone_norm=$1 AND created_at >= $2::timestamptz
+          AND status NOT IN ('pending_payment','expired','rejected_refunded','refund_failed','paid_pos_failed')`,
+      [phoneNorm, lc.startedAt]);
+    const n = r.rows[0]?.n || 0;
+    const into = n % every;
+    return { every, reward: lc.reward === "percent" ? "percent" : "free_delivery",
+      percent: lc.reward === "percent" ? Number(lc.percent) || 10 : null,
+      progress: into, left: every - into, justEarned: n > 0 && into === 0 };
+  }
+
   /* Customer tracking — delivery-app style stages + courier driver info. */
   app.get("/api/shop/track/:orderNo", async (c) => {
     const row = await getOrderRow(c.req.param("orderNo"));
@@ -1755,6 +1784,10 @@ export function register(app, ctx, deps = {}) {
     return c.json({
       ok: true, found: true, orderNo: row.order_no, status: row.status,
       label, step, option: row.option,
+      // 🍽 رقم الطاولة: صفحة التتبع بتعرض خطوات الصالة بدل «جاهز للاستلام من الفرع»
+      table: Number(row.table_no) > 0 ? Number(row.table_no) : null,
+      // 🎁 الولاء: «كل N طلبات = توصيل مجاني» — العميل يشوف هو فين (من غير جوال)
+      loyalty: await loyaltyOf(row.phone_norm).catch(() => null),
       total: Number(row.total), subtotal: Number(row.subtotal),
       deliveryFee: Number(row.delivery_fee), courier,
       /* «توصيل بعيد»: العميل وافق على رسوم مسافة إضافية — بيشوفها في صفحة

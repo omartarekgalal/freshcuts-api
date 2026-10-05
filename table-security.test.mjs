@@ -316,7 +316,7 @@ test("الجلسة: «الطاولة فضيت» بتقفل كل جلسات ال�
   const live1 = await (await app.request("/api/tables/live", { headers: PORTAL })).json();
   assert.equal(live1.tables[0].sessions, 2);
   const f = await (await post("/api/tables/7/free", {}, PORTAL)).json();
-  assert.deepEqual(f, { ok: true, table: 7, ended: 2 });
+  assert.deepEqual(f, { ok: true, table: 7, ended: 2, served: 0 });
   assert.equal((await chk(a)).reason, "freed");
   assert.equal((await chk(b, DEV2)).ok, false);
   const fresh = (await scan()).session;

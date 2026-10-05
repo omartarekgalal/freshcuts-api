@@ -206,8 +206,22 @@ export function cleanCustomerText(raw, max = 200) {
 
 export const tableLabel = (n) => (n ? `طاولة ${n}` : null);
 
-/* أول الملاحظات في نقطة البيع — الكاشير والعدّاء يشوفوه قبل أي حاجة. */
-export const tableNote = (n) => `🍽 ${tableLabel(n)} — يتقدّم على الطاولة`;
+/* أول كلمة من اسم العميل (مُنضّفة، ≤١٤ حرف) — عشان الويتر يعرف أنهي طلب لمين
+   لما كذا موبايل يطلبوا على نفس الطاولة («طاولة 7 · أحمد»). مفيش جوال هنا. */
+export function firstNameOf(raw) {
+  const s = cleanCustomerText(raw, 60);
+  const w = s.split(/\s+/).find((x) => /[\p{L}]/u.test(x)) || "";
+  return Array.from(w.replace(/[^\p{L}\p{M}'-]/gu, "")).slice(0, 14).join("") || null;
+}
+export const tableWho = (n, name) => {
+  const f = firstNameOf(name);
+  return f ? `${tableLabel(n)} · ${f}` : tableLabel(n);
+};
+
+/* أول الملاحظات في نقطة البيع — الكاشير والعدّاء يشوفوه قبل أي حاجة.
+   الاسم الأول جنب الرقم (٥/١٠ مساءً): عيلة بـ٣ موبايلات = ٣ تذاكر على نفس
+   الطاولة، والعدّاء لازم يعرف التذكرة دي لمين. */
+export const tableNote = (n, name = null) => `🍽 ${tableWho(n, name)} — يتقدّم على الطاولة`;
 
 export function posOptionOf(row) {
   return row && Number(row.table_no) > 0 ? "dine_in" : row && row.option;
@@ -356,6 +370,11 @@ export async function openTableSession(pool, n, device, cfg, { viaKey = true } =
                    ORDER BY last_at DESC LIMIT 1)
       RETURNING id`, [n, dh, cfg.sessionIdleMin]);
   if (cur.rows[0]) return cur.rows[0].id;
+  /* نفس الموبايل اتنقل لطاولة تانية: جلسته القديمة تخلص — من غير كده الطاولة
+     القديمة بتفضل «مفتوحة» في شريط البوابة ٩٠ دقيقة بموبايل مش قاعد عليها. */
+  await pool.query(
+    "UPDATE table_sessions SET ended_at=NOW(), end_reason='moved' WHERE device_hash=$1 AND table_no<>$2 AND ended_at IS NULL",
+    [dh, n]).catch(() => {});
   const id = newSessionId();
   await pool.query("INSERT INTO table_sessions(id, table_no, device_hash, via_key) VALUES ($1,$2,$3,$4)", [id, n, dh, viaKey]);
   return id;
@@ -423,7 +442,7 @@ export async function freeTable(pool, n, by = null) {
 export function liveTables({ sessions = [], orders = [], freed = [] } = {}) {
   const by = new Map();
   const get = (n) => {
-    if (!by.has(n)) by.set(n, { table: n, sessions: 0, since: null, lastAt: null, orders: 0, ready: 0, total: 0, lastOrderAt: null, orderNos: [] });
+    if (!by.has(n)) by.set(n, { table: n, sessions: 0, since: null, lastAt: null, orders: 0, ready: 0, total: 0, lastOrderAt: null, orderNos: [], people: [] });
     return by.get(n);
   };
   const freedAt = new Map(freed.map((f) => [Number(f.table_no), f.freed_at ? new Date(f.freed_at).getTime() : 0]));
@@ -447,6 +466,8 @@ export function liveTables({ sessions = [], orders = [], freed = [] } = {}) {
     t.since = minIso(t.since, iso(o.created_at));
     t.lastOrderAt = maxIso(t.lastOrderAt, iso(o.created_at));
     if (t.orderNos.length < 6) t.orderNos.push(String(o.order_no || ""));
+    // مين طلب إيه على الطاولة: الاسم الأول + جاهز ولا لأ (للعدّاء — مفيش جوال)
+    if (t.people.length < 8) t.people.push({ orderNo: String(o.order_no || ""), name: firstNameOf(o.customer_name), ready: Boolean(o.pos_ready_at), served: o.status === "delivered" });
   }
   return [...by.values()].filter((t) => t.sessions || t.orders).sort((a, b) => a.table - b.table);
 }
@@ -477,7 +498,10 @@ export async function tableBusy(pool, n, cfg) {
     const r = await pool.query(
       `SELECT count(*)::int AS n FROM shop_orders
         WHERE table_no=$1 AND ${PAID_SQL} AND NOT COALESCE(is_test,false)
-          AND created_at > NOW() - make_interval(mins => $2::int)`, [n, cfg.openWindowMin]);
+          AND created_at > NOW() - make_interval(mins => $2::int)
+          /* القعدة الحالية بس: طلبات الناس اللي قاموا (قبل «الطاولة فضيت»)
+             مابتتحسبش على اللي قعدوا بعدهم */
+          AND created_at > COALESCE((SELECT freed_at FROM table_qr WHERE table_no=$1), 'epoch'::timestamptz)`, [n, cfg.openWindowMin]);
     return (r.rows[0]?.n || 0) >= cfg.maxOpenPerTable;
   } catch {
     return false; // العمود لسه ماتضافش؟ مانوقفش طلب بسبب عدّاد
@@ -486,7 +510,7 @@ export async function tableBusy(pool, n, cfg) {
 
 export const TABLE_MSG = Object.freeze({
   table_invalid: "جلسة الطاولة انتهت أو تغيّر رمزها — امسح الـQR الموجود على الطاولة مرة أخرى، أو اطلب من الكاشير.",
-  table_busy: "هذه الطاولة عليها طلبات كثيرة الآن — إذا احتجت شيئاً كلّم الكاشير.",
+  table_busy: "هذه الطاولة وصلت لأقصى عدد طلبات حالياً — اطلب النادل وهو يكمل طلبك، أو كلّم الكاشير.",
   geo_required: "فعّل الموقع حتى نتأكد أنك في المطعم — أو اطلب من الكاشير",
   geo_far: "يبدو أنك خارج المطعم — طلب الطاولة يعمل من الطاولة فقط. إذا كنت جالساً فعلاً فعّل «الموقع الدقيق» وامسح الـQR مرة أخرى، أو اطلب من الكاشير.",
   geo_unconfigured: "طلب الطاولة متوقف مؤقتاً — اطلب من الكاشير.",
@@ -638,7 +662,8 @@ export function register(app, ctx, deps = {}) {
     const [sessions, orders, freed, calls] = await Promise.all([
       pool.query(`SELECT table_no, count(*)::int AS sessions, min(created_at) AS since, max(last_at) AS last_at
                     FROM table_sessions WHERE ended_at IS NULL GROUP BY 1`).then((r) => r.rows).catch(() => []),
-      pool.query(`SELECT order_no, NULLIF(to_jsonb(o)->>'table_no','')::int AS table_no, total, created_at, pos_ready_at
+      pool.query(`SELECT order_no, NULLIF(to_jsonb(o)->>'table_no','')::int AS table_no, total, created_at, pos_ready_at,
+                         o.status, o.customer->>'name' AS customer_name
                     FROM shop_orders o
                    WHERE NULLIF(to_jsonb(o)->>'table_no','') IS NOT NULL AND ${PAID_SQL.replace(/status/g, "o.status")}
                      AND o.created_at > NOW() - interval '6 hours'
@@ -664,9 +689,27 @@ export function register(app, ctx, deps = {}) {
     const n = parseTable(c.req.param("n"), { ...(await cfgNow()), enabled: true });
     if (!n) return bad(c, "bad_table");
     await ensure();
+    /* الطلبات الجاهزة على القعدة دي = اتقدّمت والناس أكلت وقاموا ⇒ «اتقدّم»
+       (delivered). ده اللي بيشغّل دعوة التقييم بعد الأكل (reviews.js، بأرضية
+       ساعة من الطلب) وصفحة التتبع بتقول «بالهنا والشفا». الطلب اللي لسه
+       بيتجهّز مابيتلمسش — الكاشير بيشوف تحذير قبل ما يدوس. */
+    const served = await pool.query(
+      `SELECT order_no, status FROM shop_orders
+        WHERE table_no=$1 AND status IN ('pos_created','accepted') AND pos_ready_at IS NOT NULL
+          AND created_at > NOW() - interval '6 hours'
+          AND created_at > COALESCE((SELECT freed_at FROM table_qr WHERE table_no=$1), 'epoch'::timestamptz)`, [n])
+      .then((r) => r.rows).catch(() => []);
     const ended = await freeTable(pool, n, a.user?.name || a.user?.role || "portal");
-    console.log(`[tables] table ${n} freed by ${String(a.user?.name || "?").slice(0, 40)} — ${ended} session(s) ended`);
-    return c.json({ ok: true, table: n, ended });
+    const setStatus = deps.shop?.()?.setStatus;
+    let servedN = 0;
+    if (setStatus) {
+      for (const o of served) {
+        try { await setStatus(o.order_no, "delivered", { note: "اتقدّم على الطاولة — «الطاولة فضيت» من البوابة", from: o.status, source: "tables" }); servedN++; }
+        catch (e) { console.error(`[tables] ${o.order_no}: served mark failed: ${e.message}`); }
+      }
+    }
+    console.log(`[tables] table ${n} freed by ${String(a.user?.name || "?").slice(0, 40)} — ${ended} session(s) ended, ${servedN} order(s) served`);
+    return c.json({ ok: true, table: n, ended, served: servedN });
   });
 
   /* ═══ اللوحة (#store/settings/tables) — قسم «الإعدادات» عبر requireAdmin ═══ */

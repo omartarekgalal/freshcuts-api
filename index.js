@@ -3244,7 +3244,7 @@ preorder.register(app, moduleCtx);
 let courierOpsApi = null;
 const portalApi = portal.register(app, moduleCtx, { shop: () => shopApi, delivery: () => deliveryApi, cmsWhoami: (c) => cmsApi.whoami(c), courierOps: () => courierOpsApi, wa: () => waInboxApi });
 // 🍽 QR الطاولات: مفاتيح الطاولات + نداء الويتر (بيبعت إشعار البوابة) + تحليلات لكل طاولة
-tableOrder.register(app, moduleCtx, { portal: () => portalApi });
+tableOrder.register(app, moduleCtx, { portal: () => portalApi, shop: () => shopApi });
 /* 🚨 حارس الدفع (٢٢/٩): ناس بتوصل لخطوة الدفع ومحدش بيدفع ⇒ SMS للمدير.
    كان بيشتغل من cron على السيرفر بيحقن الموديول جوّه الحاوية، والـcron ده
    بيسلّم الدور أول ما التطبيق نفسه يشحن checkoutwatch.js — فلازم نناديه

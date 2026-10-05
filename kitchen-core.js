@@ -25,6 +25,7 @@
 import { itemsOf, farZoneOf } from "./portal-core.js";
 import { leaveAtDoor } from "./couriers.js";
 import { slotLabel } from "./preorder.js";
+import { tableWho } from "./table-order.js";
 
 export const STAGES = Object.freeze(["new", "prep", "ready", "done"]);
 export const STAGE_AR = Object.freeze({ new: "جديد", prep: "بيتحضّر", ready: "جاهز", done: "اتسلّم" });
@@ -531,7 +532,8 @@ export function buildBoard({ tsOrders = [], shopRows = [], allShopRows = null, b
       firstSeenAt: isoOf(r.created_at),
       sourceStage,
       sourceAt,
-      table: Number(r.table_no) > 0 ? `طاولة ${Number(r.table_no)}` : null,
+      // «طاولة 7 · أحمد»: كذا موبايل على نفس الطاولة = كذا تذكرة، والاسم الأول بيفرّقهم
+      table: Number(r.table_no) > 0 ? tableWho(Number(r.table_no), r.customer_name) : null,
       items: itemsFromShop(r.items, cfg, { catMap, prodCat }),
       notes,
       flags: {
