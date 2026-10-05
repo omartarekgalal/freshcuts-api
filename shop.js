@@ -909,11 +909,13 @@ export function register(app, ctx, deps = {}) {
       const tg = await tableGate(pool, { session: tableSid, device: b.table_device, geo: tableGeoIn }, tcfg, { endOnFar: true });
       if (!tg.ok) {
         console.warn(`[shop] table checkout rejected: ${tg.reason}${tg.distanceM != null ? ` (${tg.distanceM} m)` : ""}`);
-        return fail(tg.error, 409, { message: TABLE_MSG[tg.error] || TABLE_MSG.table_invalid, reason: tg.reason });
+        // detail = نفس الرسالة: app.js بيعرض detail في الشيك أوت (من غير كده كان بيظهر الكود «geo_required»)
+        const msg = TABLE_MSG[tg.error] || TABLE_MSG.table_invalid;
+        return fail(tg.error, 409, { message: msg, detail: msg, reason: tg.reason });
       }
       tableNo = tg.table;
       tableGeo = tg.geo;
-      if (await tableBusy(pool, tableNo, tcfg)) return fail("table_busy", 409, { message: TABLE_MSG.table_busy });
+      if (await tableBusy(pool, tableNo, tcfg)) return fail("table_busy", 409, { message: TABLE_MSG.table_busy, detail: TABLE_MSG.table_busy });
       await touchTableSession(pool, tableSid);
     }
     b.tip = safeTip(b.tip);
