@@ -140,7 +140,10 @@ export function parseRule(desc) {
 export function normaliseAct(a) {
   const b = a.actBaseInfo || {};
   const t = a.actTime || {};
-  const rules = (a.benefitRuleDescs || []).map(parseRule);
+  // صنف ترويجي (actAggregateType 3) = «اسم الصنف: -X%». الباقي (خصم على الطلب
+  // بسلالم، تخفيض سعر…) جمل كاملة — مانقراهاش كأسماء أصناف.
+  const isItem = b.actAggregateType === 3;
+  const rules = isItem ? (a.benefitRuleDescs || []).map(parseRule) : [];
   return {
     id: b.actId,
     type: b.actTypeDoc || null,
@@ -149,7 +152,9 @@ export function normaliseAct(a) {
     channel: b.userGetMode || null,
     audience: b.userTypeDoc || null,
     rules,
+    isItem,
     names: rules.map((r) => r.name).filter(Boolean),
+    desc: isItem ? null : (a.benefitRuleDescs || []).map((x) => String(x).replace(/\s+/g, " ").trim()).join(" · ") || null,
     percent: rules.length === 1 ? rules[0].percent : null,
     dates: t.dateRangeDesc || null,
     startSec: t.startTime ?? null,
@@ -209,7 +214,8 @@ export function register(app, ctx) {
     return menuCache;
   }
 
-  async function readPromos(statuses = [1, 2]) {
+  // 0 = لسه مابدأش، 1 = «قيد التقدم». 2 = «مكتمل» و3 = «منتهية» (اتقاسوا ٧/١٠) مش بنعرضهم.
+  async function readPromos(statuses = [0, 1]) {
     const rows = [];
     for (let page = 1; page <= 10; page++) {
       const d = await keetaCall("/api/marketing/merchant/promotion/single-shop/act-list", {
@@ -375,7 +381,7 @@ export function register(app, ctx) {
       const missing = actIds.filter((id) => !byId.has(id));
       if (missing.length) return c.json({ ok: false, error: `عروض مش شغّالة أو مش موجودة: ${missing.join(", ")}` });
       const blocked = actIds.filter((id) => !byId.get(id).canEnd);
-      if (blocked.length) return c.json({ ok: false, error: `كيتا مش سامحة بإنهاء: ${blocked.map((id) => byId.get(id).names.join("/")).join("، ")}` });
+      if (blocked.length) return c.json({ ok: false, error: `كيتا مش سامحة بإنهاء: ${blocked.map((id) => byId.get(id).names.join("/") || byId.get(id).type || id).join("، ")}` });
       const body = { transferCnDiscount: false, actIds };
       let keeta = null, error = null;
       try { keeta = await keetaCall("/api/marketing/merchant/promotion/single-shop/act-batch-terminate", body); }
@@ -383,7 +389,7 @@ export function register(app, ctx) {
       const after = await readPromos().catch(() => null);
       const stillRunning = after ? actIds.filter((id) => after.some((p) => p.id === id)) : actIds;
       const verified = !!after && stillRunning.length === 0;
-      const summary = `إنهاء عروض: ${actIds.map((id) => { const p = byId.get(id); return `${p.names.join("/")} ${p.percent != null ? `-${p.percent}%` : ""}`.trim(); }).join("، ")}`;
+      const summary = `إنهاء عروض: ${actIds.map((id) => { const p = byId.get(id); return `${p.names.length ? p.names.join("/") : (p.desc || p.type || id)} ${p.percent != null ? `-${p.percent}%` : ""}`.trim(); }).join("، ")}`;
       await logAction(c, "promo_end", summary,
         { actIds, before: actIds.map((id) => byId.get(id)), body }, { keeta, error: error?.message || null, stillRunning }, !error && verified, verified);
       if (error) return fail(c, error);

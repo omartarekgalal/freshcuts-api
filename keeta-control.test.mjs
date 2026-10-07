@@ -76,7 +76,7 @@ test("rule descriptions → name + percent", () => {
 
 test("act row normaliser (real act-list row)", () => {
   const a = normaliseAct({
-    actBaseInfo: { actId: 13089208, actTypeDoc: "الأصناف الترويجية", actStandardStatus: 1, actStandardStatusDoc: "قيد التقدم", userGetMode: "delivery", userTypeDoc: "جميع العملاء" },
+    actBaseInfo: { actId: 13089208, actAggregateType: 3, actTypeDoc: "الأصناف الترويجية", actStandardStatus: 1, actStandardStatusDoc: "قيد التقدم", userGetMode: "delivery", userTypeDoc: "جميع العملاء" },
     actTime: { startTime: 1783458000, endTime: 1793393999, autoDelayType: 1, dateRangeDesc: "08/07/2026–30/10/2026" },
     benefitRuleDescs: ["بيتزا سوبر سوبريم:\t-20%"],
     activityOperations: [{ type: 11, isAllowed: 1 }, { type: 2, isAllowed: 1 }],
@@ -107,4 +107,16 @@ test("permissions: control = products, its settings = settings, reports stay ana
   assert.equal(sectionOf("/api/keeta/control/settings"), "settings");
   assert.equal(sectionOf("/api/keeta/menu"), "analytics");
   assert.equal(sectionOf("/api/keeta-reports/overview"), "analytics");
+});
+
+test("order-level tiered discount is not read as item names", () => {
+  const a = normaliseAct({
+    actBaseInfo: { actId: 12978425, actAggregateType: 1, actTypeDoc: "خصم", actStandardStatus: 1 },
+    actTime: {},
+    benefitRuleDescs: ["سلم1:	مقابل سعر 80.00 ر.س. سيتم تخفيضه بمقدار20%, إعانة المتجر"],
+  });
+  assert.deepEqual(a.names, []);
+  assert.equal(a.percent, null);
+  assert.equal(a.isItem, false);
+  assert.match(a.desc, /80\.00/);
 });
