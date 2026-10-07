@@ -228,6 +228,19 @@ export function register(app, ctx) {
     return rows.map(normaliseAct);
   }
 
+  /* كيتا بتاخد ثواني لحد ما العرض الجديد/المنتهي يبان في act-list (اتقاس ٧/١٠:
+     الإنشاء والإنهاء الاتنين نجحوا وماظهروش في القراية الفورية، وظهروا بعد ≤٥ ث).
+     فبنعيد القراية لحد ما الشرط يتحقق أو ~١٠ ثواني. */
+  async function settle(read, done, waits = [1500, 2500, 3000, 3000]) {
+    let last = null;
+    for (let i = 0; i <= waits.length; i++) {
+      last = await read().catch(() => null);
+      if (last && done(last)) return { value: last, ok: true };
+      if (i < waits.length) await new Promise((r) => setTimeout(r, waits[i]));
+    }
+    return { value: last, ok: false };
+  }
+
   const itemView = (s, catNames) => {
     const sku = (s.skuList || [])[0] || {};
     const sale = s.onSaleDetail || null;
@@ -306,8 +319,10 @@ export function register(app, ctx) {
       try { keeta = await keetaCall("/api/sailorProduct/spu/w/batchUpdateSpuStatus", body); }
       catch (e) { error = e; }
       // «success» لوحده مش دليل — نقرا تاني ونقارن
-      const after = await readMenu(true).catch(() => null);
       const want = available ? 1 : 0;
+      const settledMenu = error ? { value: null, ok: false } :
+        await settle(() => readMenu(true), (m) => ids.every((id) => m.byId.get(id)?.status === want), [1500, 2500]);
+      const after = settledMenu.value;
       const changed = after ? ids.filter((id) => after.byId.get(id)?.status === want) : [];
       const missed = ids.filter((id) => !changed.includes(id));
       const verified = !!after && missed.length === 0;
@@ -353,16 +368,24 @@ export function register(app, ctx) {
       let keeta = null, error = null;
       try { keeta = await keetaCall("/api/marketing/merchant/promotion/single-shop/act-batch-save", body); }
       catch (e) { error = e; }
-      const after = await readPromos().catch(() => null);
-      const created = after ? after.filter((p) => !beforeIds.has(p.id) && p.names.some((n) => names.some((x) => x.startsWith(n)))) : [];
-      const verified = !!after && created.length >= items.length;
+      // رد كيتا نفسه فيه actId لكل صنف — ده الدليل الأول، والقراية بتأكده
+      const results = keeta?.singleResults || [];
+      const failedItems = results.filter((r) => r && r.codeSuccess === false);
+      const wantIds = results.filter((r) => r && r.codeSuccess && r.actId).map((r) => r.actId);
+      const isNew = (p) => !beforeIds.has(p.id) && (wantIds.includes(p.id) || p.names.some((n) => names.some((x) => x.startsWith(n))));
+      const settled = error ? { value: null, ok: false } :
+        await settle(() => readPromos(), (list) => list.filter(isNew).length >= items.length);
+      const created = (settled.value || []).filter(isNew);
+      const verified = settled.ok && !failedItems.length;
       const summary = `عرض جديد: ${names.join("، ")}`;
       await logAction(c, "promo_create", summary, { items, body },
-        { keeta, error: error?.message || null, created: created.map((p) => p.id) }, !error && verified, verified);
+        { keeta, error: error?.message || null, created: created.map((p) => p.id), failedItems }, !error && verified, verified);
       if (error) return fail(c, error);
       menuCache = null;
       return c.json({ ok: verified, applied: true, verified, created,
-        error: verified ? null : "كيتا ردّت بس العرض لسه مش ظاهر في القائمة — حدّث بعد دقيقة وراجع السجل" });
+        rejected: failedItems.map((r) => ({ spuId: r.spuId, name: r.spuName, message: r.i18nMsg || r.errorMsg })),
+        error: verified ? null : failedItems.length ? "كيتا رفضت بعض الأصناف — راجع السجل"
+          : "كيتا ردّت بنجاح بس العرض لسه مش ظاهر بعد ١٠ ثواني — حدّث بعد دقيقة وراجع السجل" });
     } catch (e) { return fail(c, e); }
   });
 
@@ -386,16 +409,17 @@ export function register(app, ctx) {
       let keeta = null, error = null;
       try { keeta = await keetaCall("/api/marketing/merchant/promotion/single-shop/act-batch-terminate", body); }
       catch (e) { error = e; }
-      const after = await readPromos().catch(() => null);
-      const stillRunning = after ? actIds.filter((id) => after.some((p) => p.id === id)) : actIds;
-      const verified = !!after && stillRunning.length === 0;
+      const settled = error ? { value: null, ok: false } :
+        await settle(() => readPromos(), (list) => !actIds.some((id) => list.some((p) => p.id === id)));
+      const stillRunning = settled.value ? actIds.filter((id) => settled.value.some((p) => p.id === id)) : actIds;
+      const verified = settled.ok;
       const summary = `إنهاء عروض: ${actIds.map((id) => { const p = byId.get(id); return `${p.names.length ? p.names.join("/") : (p.desc || p.type || id)} ${p.percent != null ? `-${p.percent}%` : ""}`.trim(); }).join("، ")}`;
       await logAction(c, "promo_end", summary,
         { actIds, before: actIds.map((id) => byId.get(id)), body }, { keeta, error: error?.message || null, stillRunning }, !error && verified, verified);
       if (error) return fail(c, error);
       menuCache = null;
       return c.json({ ok: verified, applied: true, verified, stillRunning,
-        error: verified ? null : "كيتا ردّت بس بعض العروض لسه ظاهرة شغّالة — حدّث بعد دقيقة" });
+        error: verified ? null : "كيتا ردّت بس بعض العروض لسه ظاهرة شغّالة بعد ١٠ ثواني — حدّث بعد دقيقة" });
     } catch (e) { return fail(c, e); }
   });
 
