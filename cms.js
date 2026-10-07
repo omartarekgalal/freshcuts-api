@@ -140,6 +140,10 @@ const PATH_SECTIONS = [
   [/^\/api\/(cms\/)?openwait/, "growth"],
   [/^\/api\/(ads|autopilot|attribution|funnel|audiences|retargeting|retarget|marketing|mkhub|content|social|promo|catalog|tracking|offers|carts|menuplan|scorecard|ai\/|chat)/, "growth"],
   [/^\/api\/(customers|account\/admin)/, "customers"],
+  // تحكم كيتا (٧/١٠): إتاحة الأصناف والعروض = «المنتجات» (زي «خلص النهارده» عندنا)،
+  // وإعداداته للمالك بس — لازم يسبقوا سطر keeta العام بتاع التحليلات.
+  [/^\/api\/keeta\/control\/settings/, "settings"],
+  [/^\/api\/keeta\/control/, "products"],
   [/^\/api\/(analytics|reports|insights|keeta-reports|hungerstation|ninja|keeta\b|keeta\/)/, "analytics"],
 ];
 export function sectionOf(path) {

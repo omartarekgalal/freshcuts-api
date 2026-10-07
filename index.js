@@ -30,6 +30,7 @@ import * as bizreports from "./bizreports.js";
 import * as mffees from "./mffees.js";
 import * as ads from "./ads.js";
 import * as keeta from "./keeta.js";
+import * as keetaControl from "./keeta_control.js";
 import * as funnel from "./funnel.js";
 import * as audiences from "./audiences.js";
 import * as autopilot from "./autopilot.js";
@@ -3028,6 +3029,8 @@ dayreport.register(app, moduleCtx);
 let attribApi = null;
 const adsApi = ads.register(app, moduleCtx, { attribution: () => attribApi });
 keeta.register(app, moduleCtx);
+// تحكم كيتا (الإتاحة + العروض) — keeta_control.js، صلاحية «المنتجات»
+keetaControl.register(app, moduleCtx);
 // attribution.register hands back { sweepAndRoll, linkOrder, overviewData }.
 // It registers BEFORE funnel so a storefront Purchase can link itself to the
 // ad lead that produced it the moment it lands, and before autopilot so the
