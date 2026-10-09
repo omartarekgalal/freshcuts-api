@@ -292,3 +292,125 @@ test("deepSetStatement: بيعمل الآباء الناقصين وبيحط ال
   const v = validatePatch([{ path: "jobs.x.enabled", value: true }], { jobs: { x: [] } });
   assert.equal(v.ok, false, "المهمة لازم تكون كائن موجود");
 });
+
+/* ── ٥) حارس الإعلانات «الوضع المحصور» (٩/١٠) ───────────────────────────── */
+const SCOPED = () => {
+  const d = LIVE();
+  d.adsGuard = {
+    ...d.adsGuard, floor: 0, hardCap: 0, stopAll: false, utmCampaign: "oct-first", pauseOutOfScope: true,
+    scope: [
+      { key: "meta/120251213770420593", name: "FC-OCT26-FIRST", links: ["m-grill-1"], enabled: true, platform: "meta" },
+      { key: "google/24262865184", name: "Search v2", links: ["g-rsa-1"], enabled: true, platform: "google" },
+    ],
+    window: { from: "14:00", to: "23:30" },
+    dailyCaps: { "2026-10-09": 750 }, defaultCap: 165,
+    budgets: { "2026-10-09": { meta: 480, google: 220 } }, defaultBudgets: { meta: 100, google: 50 },
+    intraday: { after: "20:00", spendOver: 250, minNewOrders: 1 },
+    killRule: { auto: true, note: "N", start: "2026-10-09", afterDays: 3, stopIfCpaOver: 60, scaleIfCpaAtMost: 45 },
+    platformStopped: { google: { since: "2026-10-12", why: "cpa" } },
+    killRuleLast: { day: "2026-10-12" },
+  };
+  return d;
+};
+
+test("٥) PATCH للحارس: النافذة بعد نص الليل، السقوف والميزانيات بالتاريخ، stopAll، الأرقام", async () => {
+  const { db, call } = makeApp(SCOPED());
+  const before = clone(db.data.adsGuard);
+  const r = await call("POST", "/api/settings/patch", "admin", { changes: [
+    { path: "adsGuard.window", value: { from: "14", to: "1:30" } },
+    { path: "adsGuard.stopAll", value: true },
+    { path: "adsGuard.defaultCap", value: 200 },
+    { path: "adsGuard.dailyCaps.2026-10-10", value: 600 },
+    { path: "adsGuard.budgets.2026-10-10", value: { meta: 400, google: "180" } },
+    { path: "adsGuard.defaultBudgets", value: { meta: 120, google: 60 } },
+    { path: "adsGuard.smsPhones", value: ["0544775082", "+966 50 633 8246", "966544775082"] },
+  ] });
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  const g = db.data.adsGuard;
+  assert.deepEqual(g.window, { from: "14:00", to: "01:30" });
+  assert.equal(g.stopAll, true);
+  assert.equal(g.defaultCap, 200);
+  assert.deepEqual(g.dailyCaps, { "2026-10-09": 750, "2026-10-10": 600 });
+  assert.deepEqual(g.budgets["2026-10-10"], { meta: 400, google: 180 });
+  assert.deepEqual(g.budgets["2026-10-09"], before.budgets["2026-10-09"]);
+  assert.deepEqual(g.defaultBudgets, { meta: 120, google: 60 });
+  assert.deepEqual(g.smsPhones, ["966544775082", "966506338246"]);
+  // المفاتيح اللي ماتلمستش (scope/killRule/killRuleLast/spendExclude…) زي ما هي
+  for (const k of ["scope", "killRule", "killRuleLast", "spendExclude", "utmCampaign", "pauseOutOfScope", "intraday", "platformStopped"]) {
+    assert.deepEqual(g[k], before[k], k);
+  }
+  // مسح يوم (null) بيرجّعه للافتراضي
+  const r2 = await call("POST", "/api/settings/patch", "admin", { changes: [{ path: "adsGuard.dailyCaps.2026-10-10", value: null }] });
+  assert.equal(r2.status, 200);
+  assert.equal(db.data.adsGuard.dailyCaps["2026-10-10"], null);
+});
+
+test("٥) PATCH للحارس: scope بيغيّر enabled بس، والقاعدتين بيتدمجوا مع الحالي", async () => {
+  const { db, call } = makeApp(SCOPED());
+  const r = await call("POST", "/api/settings/patch", "admin", { changes: [
+    { path: "adsGuard.scope", value: [{ key: "google/24262865184", enabled: false, links: ["evil"], name: "x" }] },
+    { path: "adsGuard.intraday", value: { after: "21:00", spendOver: 300 } },
+    { path: "adsGuard.killRule", value: { stopIfCpaOver: 70, scaleIfCpaAtMost: 50, auto: false } },
+    { path: "adsGuard.platformStopped.google", value: null },
+  ] });
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  const g = db.data.adsGuard;
+  assert.equal(g.scope.length, 2);
+  assert.equal(g.scope[0].enabled, true);
+  assert.deepEqual(g.scope[1], { key: "google/24262865184", name: "Search v2", links: ["g-rsa-1"], enabled: false, platform: "google" });
+  assert.deepEqual(g.intraday, { after: "21:00", spendOver: 300, minNewOrders: 1 });
+  assert.deepEqual(g.killRule, { auto: false, note: "N", start: "2026-10-09", afterDays: 3, stopIfCpaOver: 70, scaleIfCpaAtMost: 50 });
+  assert.equal(g.platformStopped.google, null);
+});
+
+test("٥) PATCH للحارس: رفض القيم الغلط من غير أي كتابة", async () => {
+  const { db, call } = makeApp(SCOPED());
+  const bad = async (changes) => {
+    const r = await call("POST", "/api/settings/patch", "admin", { changes });
+    assert.equal(r.status, 400, JSON.stringify(changes));
+  };
+  await bad([{ path: "adsGuard.stopAll", value: "true" }]);
+  await bad([{ path: "adsGuard.window", value: { from: "24:00", to: "01:30" } }]);
+  await bad([{ path: "adsGuard.window", value: { from: "14:00", to: "14:00" } }]);
+  await bad([{ path: "adsGuard.window", value: { from: "14:10", to: "01:30" } }]); // دقايق مش ربع ساعة
+  await bad([{ path: "adsGuard.window.to", value: "abc" }]);
+  await bad([{ path: "adsGuard.dailyCaps.2026-13-40", value: 500 }]);
+  await bad([{ path: "adsGuard.dailyCaps.2026-10-10", value: -5 }]);
+  await bad([{ path: "adsGuard.dailyCaps", value: { "10/10": 500 } }]);
+  await bad([{ path: "adsGuard.budgets.2026-10-10", value: { facebook: 100 } }]);
+  await bad([{ path: "adsGuard.budgets.2026-10-10", value: { meta: 99999 } }]);
+  await bad([{ path: "adsGuard.defaultBudgets", value: 100 }]);
+  await bad([{ path: "adsGuard.scope", value: [{ key: "meta/999", enabled: false }] }]);
+  await bad([{ path: "adsGuard.scope", value: [{ key: "meta/120251213770420593", enabled: "no" }] }]);
+  await bad([{ path: "adsGuard.scope.0.enabled", value: false }]); // بالـindex ممنوع (jsonb_set كان هيمسح القايمة)
+  await bad([{ path: "adsGuard.killRule", value: { stopIfCpaOver: 40, scaleIfCpaAtMost: 50 } }]);
+  await bad([{ path: "adsGuard.killRule", value: { start: "9/10" } }]);
+  await bad([{ path: "adsGuard.intraday", value: { after: "8pm" } }]);
+  await bad([{ path: "adsGuard.platformStopped.meta", value: { since: "x" } }]);
+  await bad([{ path: "adsGuard.smsPhones", value: ["123"] }]);
+  await bad([{ path: "adsGuard.killRuleLast", value: {} }]);
+  await bad([{ path: "adsGuard.spendExclude", value: {} }]);
+  assert.equal(db.writes.length, 0);
+});
+
+test("٥) PUT كامل من شاشة قديمة مابيمسحش مفاتيح الحارس الجديدة", async () => {
+  const { db, call } = makeApp(SCOPED());
+  const old = clone(db.data);
+  old.adsGuard = { floor: 500, ratio: 0.15, hardCap: 3000 };   // نسخة قديمة ماتعرفش المفاتيح الجديدة
+  old.storefront.texts.title = "جديد";
+  const r = await call("PUT", "/api/settings", "admin", old);
+  assert.equal(r.status, 200);
+  assert.deepEqual(db.data.adsGuard, SCOPED().adsGuard);
+  assert.equal(db.data.storefront.texts.title, "جديد");
+});
+
+test("٥) GET حالة الحارس: بترجع ok حتى لو جدول الحالة مش موجود", async () => {
+  const { call } = makeApp(SCOPED());
+  const r = await call("GET", "/api/settings/ads-guard/status", "admin");
+  assert.equal(r.status, 200);
+  assert.equal(r.body.ok, true);
+  assert.equal(r.body.lastRun, null);
+  assert.deepEqual(r.body.platformStopped, SCOPED().adsGuard.platformStopped);
+  const amb = await call("GET", "/api/settings/ads-guard/status", "amb");
+  assert.equal(amb.status, 401);
+});

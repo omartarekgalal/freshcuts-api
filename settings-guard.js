@@ -179,7 +179,138 @@ const JOB_NAME_RE = /^[A-Za-z0-9_-]{1,40}$/;
 const DAY_RE = /^\d{4}-\d{2}-\d{2}$/;
 const BUDGET_ID_RE = /^(google|meta|tiktok|snapchat)\/[A-Za-z0-9_-]{1,40}$/;
 
+/* ── حارس الإعلانات «الوضع المحصور» (٩/١٠، إطلاق أكتوبر FIRST) ─────────────
+   fc-adsentry (سكربت السيرفر) بيقرا المفاتيح دي من settings.adsGuard كل ربع
+   ساعة. كل فاحص هنا بيرجّع الشكل اللي السكربت متوقعه بالظبط. */
+const PLATFORMS = ["meta", "google", "tiktok", "snapchat"];
+const bool = (label) => (v) => (typeof v === "boolean" ? { ok: true, value: v } : { ok: false, error: `${label}: لازم true أو false` });
+/* "14" / 14 / "1:30" / "01:30" ⇒ "HH:MM" (الدقايق ٠٠ أو ١٥ أو ٣٠ أو ٤٥ — نفس خطوات جدولة جوجل) */
+export function normHHMM(v) {
+  if (typeof v === "number" && Number.isInteger(v)) v = `${v}:00`;
+  const m = String(v ?? "").trim().match(/^(\d{1,2})(?::(\d{2}))?$/);
+  if (!m) return null;
+  const h = Number(m[1]), mi = Number(m[2] || 0);
+  if (h > 23 || ![0, 15, 30, 45].includes(mi)) return null;
+  return `${String(h).padStart(2, "0")}:${String(mi).padStart(2, "0")}`;
+}
+const hhmm = (label) => (v) => {
+  const s = normHHMM(v);
+  return s ? { ok: true, value: s } : { ok: false, error: `${label}: لازم ساعة بالشكل HH:MM (٠٠–٢٣، والدقايق ٠٠/١٥/٣٠/٤٥)` };
+};
+const isDay = (d) => typeof d === "string" && DAY_RE.test(d) && !Number.isNaN(Date.parse(`${d}T00:00:00Z`))
+  && new Date(`${d}T00:00:00Z`).toISOString().slice(0, 10) === d;
+/* {meta, google, …} ⇒ أرقام صحيحة ٠–٥٠٠٠؛ أي منصة مش معروفة بترفض */
+function platformBudgets(v, label) {
+  if (!isObj(v)) return { ok: false, error: `${label}: لازم {meta, google}` };
+  const out = {};
+  for (const [k, x] of Object.entries(v)) {
+    if (!PLATFORMS.includes(k)) return { ok: false, error: `${label}: منصة مش معروفة «${k}»` };
+    if (x === null || x === "") continue;
+    const n = Number(x);
+    if (!Number.isFinite(n) || n < 0 || n > 5000) return { ok: false, error: `${label} (${k}): لازم رقم بين ٠ و٥٠٠٠` };
+    out[k] = Math.round(n);
+  }
+  return { ok: true, value: out };
+}
+const capNum = num(0, 20000, { int: true, label: "سقف اليوم" });
+const dayMap = (label, max, each) => (v) => {
+  if (!isObj(v)) return { ok: false, error: `${label}: لازم {YYYY-MM-DD: …}` };
+  const keys = Object.keys(v);
+  if (keys.length > max) return { ok: false, error: `${label}: ${max} يوم بالكتير` };
+  const out = {};
+  for (const d of keys) {
+    if (!isDay(d)) return { ok: false, error: `${label}: التاريخ «${d}» لازم YYYY-MM-DD` };
+    if (v[d] === null) continue;               // null = امسح اليوم ده (يرجع للافتراضي)
+    const r = each(v[d], `${label} ${d}`);
+    if (!r.ok) return r;
+    out[d] = r.value;
+  }
+  return { ok: true, value: out };
+};
+export function normSaPhone(p) {
+  const d = String(p ?? "").replace(/\D/g, "");
+  const m = d.match(/^(?:00966|966|0)?(5\d{8})$/);
+  return m ? `966${m[1]}` : null;
+}
+
 export const PATCH_RULES = [
+  { re: /^adsGuard\.stopAll$/, check: bool("إيقاف كل الإعلانات") },
+  {
+    re: /^adsGuard\.window$/, check: (v) => {
+      if (!isObj(v)) return { ok: false, error: "نافذة الإعلانات: لازم {from, to}" };
+      const a = hhmm("بداية النافذة")(v.from); if (!a.ok) return a;
+      const b = hhmm("نهاية النافذة")(v.to); if (!b.ok) return b;
+      if (a.value === b.value) return { ok: false, error: "نافذة الإعلانات: البداية والنهاية نفس الساعة" };
+      return { ok: true, value: { from: a.value, to: b.value } };   // النهاية ممكن تبقى بعد نص الليل (مثلاً 01:30)
+    },
+  },
+  { re: /^adsGuard\.window\.from$/, check: hhmm("بداية النافذة") },
+  { re: /^adsGuard\.window\.to$/, check: hhmm("نهاية النافذة") },
+  { re: /^adsGuard\.defaultCap$/, check: capNum },
+  { re: /^adsGuard\.dailyCaps$/, check: dayMap("سقف الأيام", 62, (x) => capNum(x)) },
+  { re: /^adsGuard\.dailyCaps\.(\d{4}-\d{2}-\d{2})$/, day: true, check: (v) => (v === null ? { ok: true, value: null } : capNum(v)) },
+  { re: /^adsGuard\.defaultBudgets$/, check: (v) => platformBudgets(v, "الميزانية الافتراضية") },
+  { re: /^adsGuard\.budgets$/, check: dayMap("ميزانيات الأيام", 62, (x, l) => platformBudgets(x, l)) },
+  { re: /^adsGuard\.budgets\.(\d{4}-\d{2}-\d{2})$/, day: true, check: (v) => (v === null ? { ok: true, value: null } : platformBudgets(v, "ميزانية اليوم")) },
+  {
+    /* scope: الحملات نفسها بيحددها اللي بيطلق الحملة — من هنا بيتغيّر enabled بس.
+       الفاحص بيبني القيمة من النسخة الحالية (merge) فالروابط والأسماء ماتضيعش. */
+    re: /^adsGuard\.scope$/, withCurrent: true, check: (v, current) => {
+      const cur = getAt(current, ["adsGuard", "scope"]);
+      if (!Array.isArray(cur) || !cur.length) return { ok: false, error: "مفيش حملات في نطاق الحارس" };
+      if (!Array.isArray(v)) return { ok: false, error: "حملات الحارس: لازم قايمة" };
+      const want = new Map();
+      for (const s of v) {
+        const key = String(s?.key || "");
+        if (!cur.some((c) => c?.key === key)) return { ok: false, error: `الحملة «${key || "فاضي"}» مش في نطاق الحارس` };
+        if (typeof s.enabled !== "boolean") return { ok: false, error: `الحملة ${key}: enabled لازم true أو false` };
+        want.set(key, s.enabled);
+      }
+      return { ok: true, value: cur.map((c) => (want.has(c?.key) ? { ...c, enabled: want.get(c.key) } : c)) };
+    },
+  },
+  {
+    re: /^adsGuard\.intraday$/, withCurrent: true, check: (v, current) => {
+      if (!isObj(v)) return { ok: false, error: "قاعدة الساعة ٨: لازم كائن" };
+      const out = { ...(getAt(current, ["adsGuard", "intraday"]) || {}) };
+      if ("enabled" in v) { const r = bool("قاعدة الساعة ٨")(v.enabled); if (!r.ok) return r; out.enabled = r.value; }
+      if ("after" in v) { const r = hhmm("قاعدة الساعة ٨ — من الساعة")(v.after); if (!r.ok) return r; out.after = r.value; }
+      if ("spendOver" in v) { const r = num(0, 20000, { int: true, label: "قاعدة الساعة ٨ — صرف أكتر من" })(v.spendOver); if (!r.ok) return r; out.spendOver = r.value; }
+      if ("minNewOrders" in v) { const r = num(1, 50, { int: true, label: "قاعدة الساعة ٨ — أقل عدد عملاء جداد" })(v.minNewOrders); if (!r.ok) return r; out.minNewOrders = r.value; }
+      return { ok: true, value: out };
+    },
+  },
+  {
+    re: /^adsGuard\.killRule$/, withCurrent: true, check: (v, current) => {
+      if (!isObj(v)) return { ok: false, error: "قاعدة الـ٣ أيام: لازم كائن" };
+      const out = { ...(getAt(current, ["adsGuard", "killRule"]) || {}) };
+      if ("auto" in v) { const r = bool("قاعدة الـ٣ أيام")(v.auto); if (!r.ok) return r; out.auto = r.value; }
+      if ("start" in v) { if (!isDay(v.start)) return { ok: false, error: "قاعدة الـ٣ أيام — البداية: لازم YYYY-MM-DD" }; out.start = v.start; }
+      if ("afterDays" in v) { const r = num(1, 30, { int: true, label: "قاعدة الـ٣ أيام — بعد كام يوم" })(v.afterDays); if (!r.ok) return r; out.afterDays = r.value; }
+      if ("stopIfCpaOver" in v) { const r = num(1, 1000, { label: "تكلفة العميل — إيقاف فوق" })(v.stopIfCpaOver); if (!r.ok) return r; out.stopIfCpaOver = r.value; }
+      if ("scaleIfCpaAtMost" in v) { const r = num(1, 1000, { label: "تكلفة العميل — توسيع لحد" })(v.scaleIfCpaAtMost); if (!r.ok) return r; out.scaleIfCpaAtMost = r.value; }
+      if (out.scaleIfCpaAtMost != null && out.stopIfCpaOver != null && Number(out.scaleIfCpaAtMost) > Number(out.stopIfCpaOver)) {
+        return { ok: false, error: "حد التوسيع لازم يبقى أقل من أو يساوي حد الإيقاف" };
+      }
+      return { ok: true, value: out };
+    },
+  },
+  /* platformStopped: من هنا بس «امسح» (null) — الإيقاف نفسه بيحطّه السكربت */
+  { re: /^adsGuard\.platformStopped\.(meta|google|tiktok|snapchat)$/, check: (v) => (v === null ? { ok: true, value: null } : { ok: false, error: "إيقاف المنصة بيتمسح بس من هنا (null)" }) },
+  {
+    re: /^adsGuard\.smsPhones$/, check: (v) => {
+      if (!Array.isArray(v)) return { ok: false, error: "أرقام رسايل الحارس: لازم قايمة" };
+      if (!v.length) return { ok: false, error: "أرقام رسايل الحارس: لازم رقم واحد على الأقل" };
+      if (v.length > 5) return { ok: false, error: "أرقام رسايل الحارس: ٥ أرقام بالكتير" };
+      const out = [];
+      for (const p of v) {
+        const n = normSaPhone(p);
+        if (!n) return { ok: false, error: `الرقم «${String(p).slice(0, 20)}» مش جوال سعودي (05xxxxxxxx)` };
+        if (!out.includes(n)) out.push(n);
+      }
+      return { ok: true, value: out };
+    },
+  },
   { re: /^adsGuard\.floor$/, check: num(0, 100000, { label: "أرضية الإعلانات" }) },
   { re: /^adsGuard\.ratio$/, check: num(0.01, 1, { label: "نسبة الإعلانات من المبيعات" }) },
   { re: /^adsGuard\.hardCap$/, check: num(0, 100000, { label: "السقف اليومي" }) },
@@ -228,7 +359,8 @@ export function validatePatch(changes, current = {}) {
         errors.push({ path, error: `مفيش مهمة مجدولة اسمها «${name}»` }); continue;
       }
     }
-    const r = rule.check(ch?.value);
+    if (rule.day && !isDay(path.match(rule.re)[1])) { errors.push({ path, error: "التاريخ لازم YYYY-MM-DD" }); continue; }
+    const r = rule.check(ch?.value, current);
     if (!r.ok) { errors.push({ path, error: r.error }); continue; }
     values.push({ path, value: r.value });
   }
@@ -237,7 +369,7 @@ export function validatePatch(changes, current = {}) {
     const after = clone(current) || {};
     for (const v of values) setAt(after, v.path, v.value);
     const g = after.adsGuard || {};
-    if (values.some((v) => v.path.startsWith("adsGuard.")) && Number.isFinite(Number(g.floor)) && Number.isFinite(Number(g.hardCap))
+    if (values.some((v) => v.path === "adsGuard.floor" || v.path === "adsGuard.hardCap") && Number.isFinite(Number(g.floor)) && Number.isFinite(Number(g.hardCap))
       && g.floor != null && g.hardCap != null && Number(g.floor) > Number(g.hardCap)) {
       errors.push({ path: "adsGuard.floor", error: "الأرضية أكبر من السقف اليومي — السقف لازم يبقى أكبر أو يساوي" });
     }
@@ -332,6 +464,26 @@ export function register(app, ctx) {
     } finally {
       client.release();
     }
+  });
+
+  /* حالة حارس الإعلانات (fc-adsentry بيكتبها في ads_sentry_state كل دورة):
+     آخر تشغيل (صرف/سقف/النافذة)، آخر أمر بعته لحملة، وقفلات الساعة ٨ النهارده،
+     ونتيجة قاعدة الـ٣ أيام والمنصات الموقوفة من settings. للقراية بس. */
+  app.get("/api/settings/ads-guard/status", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    let state = null, updatedAt = null;
+    try {
+      const r = await pool.query("SELECT data, updated_at FROM ads_sentry_state WHERE id=1");
+      state = r.rows[0]?.data || null; updatedAt = r.rows[0]?.updated_at || null;
+    } catch { /* الجدول لسه ماتعملش — الحارس عمره ما اشتغل */ }
+    const g = ((await pool.query("SELECT data FROM settings WHERE id=1")).rows[0]?.data || {}).adsGuard || {};
+    return c.json({
+      ok: true, updatedAt,
+      lastRun: state?.lastRun || null, lastAction: state?.lastAction || null,
+      intraday: state?.day && state?.lastRun?.day === state.day ? state.intraday || {} : {},
+      capSms: !!state?.capSms, day: state?.day || null, reason: state?.reason || null,
+      killRuleLast: g.killRuleLast || null, platformStopped: g.platformStopped || {},
+    });
   });
 
   /* تعديل مسارات محددة — للمالك بس. {changes:[{path,value}]} */
