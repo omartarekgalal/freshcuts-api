@@ -94,6 +94,14 @@ function rateLimited(ip) {
 
 // Purchase لنفس الطلب = تكرار مهما عدّى وقت (ريفريش صفحة التتبع بعد يومين،
 // المتصفح بعد السيرفر، إعادة محاولة). الطلب الواحد بيتدفع مرة واحدة.
+/* كود اختبار تيك توك للويب (٩/١٠): TIKTOK_WEB_TEST_EVENT_CODE من «Test events» في
+   Events Manager ⇒ الأحداث بتظهر هناك بس ومابتدخلش في الإحصائيات/التحسين. متغيّر منفصل
+   عن TIKTOK_TEST_EVENT_CODE بتاع مزامنة ads.js الأوفلاين عشان مانقلبش الاتنين مع بعض.
+   شيله بعد الاختبار — طول ما هو موجود كل أحداث السيرفر بتروح كاختبار. */
+export function withTikTokTestCode(body, code = (process.env.TIKTOK_WEB_TEST_EVENT_CODE || "").trim()) {
+  return code ? { ...body, test_event_code: code } : body;
+}
+
 export const purchaseDedupKey = (orderId) => (orderId ? `Purchase:${String(orderId).slice(0, 64)}` : null);
 
 /* fbc = fb.1.<ms>.<fbclid>. لو الـ_fbc cookie مااتكتبش (متصفح التطبيق، مانع
@@ -343,7 +351,7 @@ export function register(app, ctx, deps = {}) {
     return {
       url: "https://business-api.tiktok.com/open_api/v1.3/event/track/",
       headers: { "Content-Type": "application/json", "Access-Token": token },
-      body: {
+      body: withTikTokTestCode({
         event_source: "web",
         event_source_id: pixel,
         data: [{
@@ -363,7 +371,7 @@ export function register(app, ctx, deps = {}) {
             } : {}),
           },
         }],
-      },
+      }),
     };
   }
 
