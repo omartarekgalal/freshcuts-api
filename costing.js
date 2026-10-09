@@ -155,7 +155,11 @@ const GRILL_FAMILIES = [
   { key: "ريش",   meat: 36.63, acc: 3.44,          accSource: "omar", meatNote: "333 g × 110 SAR/kg" },
   { key: "كباب",  meat: 24.50, acc: 5.50,          accSource: "omar", meatNote: "350 g × 70 SAR/kg" },
   { key: "كبدة",  meat: 7.48,  acc: 5.50,          accSource: "omar", meatNote: "340 g × 22 SAR/kg" },
-  { key: "مشكل",  meat: 23.60, acc: 5.50,          accSource: "omar", meatNote: "ريش150+كفتة150+كباب50+طرب100" },
+  /* مشكل per ثلث — Omar 10/10/2026: 100 g kofta + 75 g tarb + 100 g kebab + 100 g ribs
+     (375 g raw). Priced at the workbench batches (kofta 30.47, tarb 25.294, kebab 71.916
+     SAR/kg) and Omar's ribs 110 SAR/kg: 3.047 + 1.897 + 7.192 + 11.000 = 23.136.
+     The same numbers are written to item_costs (effective 2026-10-10); keep both in step. */
+  { key: "مشكل",  meat: 23.136, acc: 5.50,         accSource: "omar", meatNote: "كفتة100+طرب75+كباب100+ريش100 (عمر ١٠/١٠)" },
   { key: "كفتة",  meat: 9.32,  acc: accPack("third"), accSource: "workbook", meatNote: "من ملف التكلفة (meat only)" },
   { key: "كفته",  meat: 9.32,  acc: accPack("third"), accSource: "workbook", meatNote: "من ملف التكلفة (meat only)" },
   { key: "طرب",   meat: 7.99,  acc: accPack("third"), accSource: "workbook", meatNote: "من ملف التكلفة (meat only)" },
