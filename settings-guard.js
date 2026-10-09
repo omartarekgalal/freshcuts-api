@@ -295,6 +295,25 @@ export const PATCH_RULES = [
       return { ok: true, value: out };
     },
   },
+  {
+    /* creditProtect (٩/١٠ — رصيد جوجل ٦٥٠ ريال): لحد ما الشروط تتحقق، الحارس بينزّل
+       ميزانية المنصة دي للأرضية بدل ما يوقفها (الساعة ٨ / الـ٣ أيام / السقف).
+       platform/promo/note بيحطّهم اللي بيظبط العرض — من هنا الأرضية والتواريخ والتشغيل. */
+    re: /^adsGuard\.creditProtect$/, withCurrent: true, check: (v, current) => {
+      if (!isObj(v)) return { ok: false, error: "حماية الرصيد: لازم كائن" };
+      const cur = getAt(current, ["adsGuard", "creditProtect"]);
+      if (!isObj(cur) || !cur.platform) return { ok: false, error: "مفيش عرض رصيد متسجّل في الحارس" };
+      const out = { ...cur };
+      if ("enabled" in v) { const r = bool("حماية الرصيد")(v.enabled); if (!r.ok) return r; out.enabled = r.value; }
+      if ("floor" in v) { const r = num(5, 500, { int: true, label: "حماية الرصيد — الأرضية" })(v.floor); if (!r.ok) return r; out.floor = r.value; }
+      if ("from" in v) { if (!isDay(v.from)) return { ok: false, error: "حماية الرصيد — من يوم: لازم YYYY-MM-DD" }; out.from = v.from; }
+      if ("until" in v) { if (!isDay(v.until)) return { ok: false, error: "حماية الرصيد — آخر موعد: لازم YYYY-MM-DD" }; out.until = v.until; }
+      if ("targetSpend" in v) { const r = num(0, 100000, { int: true, label: "حماية الرصيد — الصرف المطلوب" })(v.targetSpend); if (!r.ok) return r; out.targetSpend = r.value; }
+      if ("activeDays" in v) { const r = num(1, 120, { int: true, label: "حماية الرصيد — عدد الأيام" })(v.activeDays); if (!r.ok) return r; out.activeDays = r.value; }
+      if (out.from && out.until && out.until < out.from) return { ok: false, error: "حماية الرصيد: آخر موعد قبل البداية" };
+      return { ok: true, value: out };
+    },
+  },
   /* platformStopped: من هنا بس «امسح» (null) — الإيقاف نفسه بيحطّه السكربت */
   { re: /^adsGuard\.platformStopped\.(meta|google|tiktok|snapchat)$/, check: (v) => (v === null ? { ok: true, value: null } : { ok: false, error: "إيقاف المنصة بيتمسح بس من هنا (null)" }) },
   {
@@ -483,6 +502,7 @@ export function register(app, ctx) {
       intraday: state?.day && state?.lastRun?.day === state.day ? state.intraday || {} : {},
       capSms: !!state?.capSms, day: state?.day || null, reason: state?.reason || null,
       killRuleLast: g.killRuleLast || null, platformStopped: g.platformStopped || {},
+      creditProtect: state?.creditProtect || null, cpYesterday: state?.cpYesterday || null,
     });
   });
 

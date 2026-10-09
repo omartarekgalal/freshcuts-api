@@ -363,6 +363,25 @@ test("٥) PATCH للحارس: scope بيغيّر enabled بس، والقاعدت
   assert.equal(g.platformStopped.google, null);
 });
 
+test("٥) PATCH للحارس: creditProtect بيتدمج (أرضية/تواريخ/تشغيل) ومابيمسحش platform/promo", async () => {
+  const d = SCOPED();
+  d.adsGuard.creditProtect = { enabled: true, platform: "google", from: "2026-10-09", until: "2026-11-18", floor: 25, targetSpend: 650, activeDays: 30, promo: "P" };
+  const { db, call } = makeApp(d);
+  const r = await call("POST", "/api/settings/patch", "admin", { changes: [
+    { path: "adsGuard.creditProtect", value: { floor: "30", until: "2026-11-15", enabled: false, platform: "meta" } },
+  ] });
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  assert.deepEqual(db.data.adsGuard.creditProtect,
+    { enabled: false, platform: "google", from: "2026-10-09", until: "2026-11-15", floor: 30, targetSpend: 650, activeDays: 30, promo: "P" });
+  for (const v of [{ floor: 0 }, { until: "18/11" }, { until: "2026-10-01" }, { enabled: "yes" }, 5]) {
+    const b = await call("POST", "/api/settings/patch", "admin", { changes: [{ path: "adsGuard.creditProtect", value: v }] });
+    assert.equal(b.status, 400, JSON.stringify(v));
+  }
+  // من غير عرض متسجّل ← رفض
+  const { call: call2 } = makeApp(SCOPED());
+  assert.equal((await call2("POST", "/api/settings/patch", "admin", { changes: [{ path: "adsGuard.creditProtect", value: { floor: 30 } }] })).status, 400);
+});
+
 test("٥) PATCH للحارس: رفض القيم الغلط من غير أي كتابة", async () => {
   const { db, call } = makeApp(SCOPED());
   const bad = async (changes) => {
