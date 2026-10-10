@@ -18,6 +18,11 @@
      • الموقوفين (/u/<code>) مستبعدين. أرقام الفريق **مش** مستبعدة (١٠/١٠):
        اللي كتب رقمه بإيده طلب التنبيه — واستبعادهم كان بيخلّي تجربة المالك
        نفسه تفشل في صمت (صفّين skip_reason='staff' يوم ٢٣/٩).
+     • **المُرسل حسب التحقق (عمر ١٠/١٠):** العميل اللي أكّد رقمه بـOTP (أو داخل
+       بحسابه) طلب الرسالة بنفسه ⇒ معاملاتية من «FreshCut». اللي ساب رقم من
+       غير تحقق (ممكن يكون رقم حد تاني) ⇒ المسار التسويقي زي السلة المتروكة:
+       «FreshCut-AD» + سطر الإيقاف + ساعات الهدوء + استبعاد المحجوبين عند
+       المشغّل — ومفيش تحويل للمُرسل المعاملاتي.
      • لو الجهاز مفعّل الإشعارات: Push **و** SMS مع بعض (١٠/١٠). الـPush فوري
        وببلاش بس وصوله مش مضمون (البطارية/المتصفح مقفول)، والـSMS المعاملاتي
        بيوصل ٩٩٫٨٪ — والعميل طلب تنبيه واحد مهم، فمانراهنش على قناة واحدة.
@@ -26,6 +31,7 @@
 
 import { isOpenNow } from "./carts.js";
 import { serviceState, serviceCfg } from "./service.js";
+import { sendAdSms, optoutLine, smsParts, inQuietFor } from "./smsrules.js";
 
 const DAYS = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"];
 const PAID_SQL = "status NOT IN ('pending_payment','expired','rejected_refunded','refund_failed','paid_pos_failed')";
@@ -56,6 +62,10 @@ export function openWaitCfg(settings) {
   };
 }
 
+/* نص المسار غير الموثّق: نفس الرسالة + سطر الإيقاف (شرط المُرسل الإعلاني) */
+export const waitBodyAd = (text, link, campaignsCfg, sender) =>
+  `${waitBody(text, link)}\n${optoutLine(campaignsCfg, { sender: sender || undefined })}`;
+
 export const waitBody = (text, link) => {
   const t = String(text || OPENWAIT_DEFAULTS.text).trim().slice(0, 200);
   return t.includes("{link}") ? t.replace("{link}", link) : `${t} ${link}`;
@@ -81,6 +91,7 @@ export function register(app, ctx, deps = {}) {
   const { pool, requireAdmin, getSettingsData, jb, normPhone } = ctx;
   const notify = () => (typeof deps.notify === "function" ? deps.notify() : deps.notify || null);
   const carts = () => (typeof deps.carts === "function" ? deps.carts() : deps.carts || null);
+  const sendAd = ctx.sendAdSms || sendAdSms;   // حقن للاختبارات بس
 
   const bad = (c, error, status = 400) => c.json({ ok: false, error }, status);
   const norm = (p) => { try { return normPhone(p); } catch { return null; } };
@@ -100,6 +111,8 @@ export function register(app, ctx, deps = {}) {
         notified_at TIMESTAMPTZ, channel TEXT, skip_reason TEXT,
         order_no TEXT, ordered_at TIMESTAMPTZ
       );
+      -- ١٠/١٠: الرقم اتأكّد بـOTP (أو جلسة حساب) وقت التسجيل ⇒ رسالة معاملاتية
+      ALTER TABLE open_waitlist ADD COLUMN IF NOT EXISTS verified BOOLEAN NOT NULL DEFAULT FALSE;
       -- صف مفتوح واحد بس لكل رقم: تسجيل تاني بيحدّث السلة مش بيعمل صف جديد
       CREATE UNIQUE INDEX IF NOT EXISTS open_waitlist_one_open_idx
         ON open_waitlist(phone_norm) WHERE notified_at IS NULL AND skip_reason IS NULL;
@@ -136,6 +149,15 @@ export function register(app, ctx, deps = {}) {
       return c.json({ ok: true, open: true, joined: false });
     }
 
+    /* موثّق = الطلب جاي بجلسة حساب حيّة لنفس الرقم (نفس قاعدة /api/notify/link:
+       الجلسة مابتتعملش غير بعد OTP). الرقم مابيتاخدش من الجسم كإثبات. */
+    let verified = false;
+    const tk = (c.req.header("Authorization") || "").match(/^Bearer cust:([a-f0-9]{48,96})$/i);
+    if (tk) {
+      const sess = await pool.query(
+        "SELECT phone_norm FROM acct_sessions WHERE token=$1 AND last_seen_at > NOW() - INTERVAL '180 days'", [tk[1]]).catch(() => null);
+      verified = sess?.rows?.[0]?.phone_norm === phone;
+    }
     const device = /^[a-z0-9_-]{8,64}$/i.test(String(b.deviceId || "")) ? String(b.deviceId).slice(0, 64) : null;
     const items = Array.isArray(b.items) ? b.items.slice(0, 60) : [];
     const itemCount = items.reduce((n, it) => n + (Number(it.qty) || 1), 0);
@@ -151,16 +173,17 @@ export function register(app, ctx, deps = {}) {
       console.error("[openwait] restore link failed:", e.message);   // الرابط للرئيسية أحسن من رفض التسجيل
     }
     await pool.query(
-      `INSERT INTO open_waitlist(phone_norm, device_id, code, item_count, subtotal, option, source)
-       VALUES ($1,$2,$3,$4,$5,$6,$7)
+      `INSERT INTO open_waitlist(phone_norm, device_id, code, item_count, subtotal, option, source, verified)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
        ON CONFLICT (phone_norm) WHERE notified_at IS NULL AND skip_reason IS NULL
        DO UPDATE SET code = COALESCE(EXCLUDED.code, open_waitlist.code),
                      device_id = COALESCE(EXCLUDED.device_id, open_waitlist.device_id),
                      item_count = EXCLUDED.item_count, subtotal = EXCLUDED.subtotal,
-                     option = EXCLUDED.option, created_at = NOW()`,
+                     option = EXCLUDED.option, created_at = NOW(),
+                     verified = open_waitlist.verified OR EXCLUDED.verified`,
       [phone, device, code, itemCount, Number(b.subtotal) || 0,
-       b.option ? String(b.option).slice(0, 12) : null, ["strip", "cart"].includes(b.source) ? b.source : "checkout"]);
-    return c.json({ ok: true, joined: true, open: false });
+       b.option ? String(b.option).slice(0, 12) : null, ["strip", "cart"].includes(b.source) ? b.source : "checkout", verified]);
+    return c.json({ ok: true, joined: true, open: false, verified });
   });
 
   /* إشعار الفتح للي فعّل الإشعارات — بالجوال أو بنفس الجهاز اللي سجّل منه.
@@ -219,7 +242,7 @@ export function register(app, ctx, deps = {}) {
       }
 
       const rows = (await pool.query(
-        `SELECT id, phone_norm, code, device_id FROM open_waitlist
+        `SELECT id, phone_norm, code, device_id, verified FROM open_waitlist
           WHERE notified_at IS NULL AND skip_reason IS NULL
           ORDER BY created_at LIMIT $1`, [cfg.capPerRun])).rows;
       if (!rows.length) return { sent: 0 };
@@ -253,17 +276,29 @@ export function register(app, ctx, deps = {}) {
         if (dup.rowCount) { await close("dup_today"); out.skipped++; continue; }
         const link = `${storeHost()}/${w.code ? `c/${w.code}` : "?utm_source=sms&utm_medium=crm&utm_campaign=open_now"}`;
         try {
+          /* غير موثّق + ساعات الهدوء التسويقية (مثلاً رجوع خدمة ١٠ بالليل) ⇒ نستنى */
+          if (!w.verified && inQuietFor(s, now)) { out.held = (out.held || 0) + 1; continue; }
           const pushed = await pushOpen(cfg, w, link);
-          let ok = false, smsErr = null;
-          try { ok = await n?.sendSmsTo?.(w.phone_norm, waitBody(cfg.text, link), { kind: "waitlist", ref: `wait:${w.id}` }); }
-          catch (e) { smsErr = e; }
+          let ok = false, smsErr = null, why = "sms_disabled";
+          try {
+            if (w.verified) {
+              ok = await n?.sendSmsTo?.(w.phone_norm, waitBody(cfg.text, link), { kind: "waitlist", ref: `wait:${w.id}` });
+            } else if ((s.notifications || {}).smsEnabled === true) {
+              const blocked = await pool.query("SELECT 1 FROM sms_ad_blocked WHERE phone_norm=$1", [w.phone_norm])
+                .then((r) => r.rowCount > 0).catch(() => false);
+              const body = waitBodyAd(cfg.text, link, (s.cms || {}).campaigns, process.env.TAQNYAT_SENDER_AD);
+              if (blocked) why = "unverified_ad_blocked";
+              else if (smsParts(body) > 2) why = "unverified_too_long";
+              else { await sendAd(w.phone_norm, body, { kind: "waitlist", ref: `wait:${w.id}` }); ok = true; }
+            }
+          } catch (e) { smsErr = e; }
           // الإشعار وصل ⇒ العميل اتنبّه حتى لو الـSMS وقع؛ مانقفلش الصف كفشل
           if (!ok && !pushed) {
-            await close(smsErr ? "sms_failed: " + String(smsErr.message).slice(0, 80) : "sms_disabled");
+            await close(smsErr ? "sms_failed: " + String(smsErr.message).slice(0, 80) : why);
             out.skipped++; continue;
           }
           await pool.query("UPDATE open_waitlist SET notified_at=NOW(), channel=$2 WHERE id=$1",
-            [w.id, pushed && ok ? "push+sms" : pushed ? "push" : "sms"]);
+            [w.id, (pushed && ok ? "push+sms" : pushed ? "push" : "sms") + (ok && !w.verified ? "-ad" : "")]);
           out.sent++; if (pushed) out.pushed = (out.pushed || 0) + 1;
         } catch (e) { await close("sms_failed: " + String(e.message).slice(0, 80)); out.skipped++; }
       }
@@ -293,7 +328,7 @@ export function register(app, ctx, deps = {}) {
               COALESCE(sum(subtotal) FILTER (WHERE notified_at IS NULL AND skip_reason IS NULL),0)::float AS waiting_value
          FROM open_waitlist`)).rows[0];
     const recent = (await pool.query(
-      `SELECT id, item_count, subtotal, option, source, created_at, notified_at, channel, skip_reason, order_no
+      `SELECT id, item_count, subtotal, option, source, created_at, notified_at, channel, skip_reason, order_no, verified
          FROM open_waitlist ORDER BY created_at DESC LIMIT 50`)).rows;
     return c.json({
       ok: true, config: openWaitCfg(s), defaults: OPENWAIT_DEFAULTS,
