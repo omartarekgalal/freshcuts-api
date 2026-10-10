@@ -47,7 +47,7 @@ import { makeStaffNotifier, slaAlertText, posFailedText, tabsenseDownText } from
 import { sendSms as sendStaffSms } from "./accounts.js";
 import {
   parseCheckoutMeta, fireServerPurchase,
-  classifySource, mergeSessionAttribution, SESSION_ATTR_SQL,
+  classifySource, mergeSessionAttribution, SESSION_ATTR_SQL, stripTableAttribution,
 } from "./checkout-meta.js";
 import { resumeKey } from "./resume-key.js";
 import { freeBarCfg } from "./freebar.js";
@@ -1231,7 +1231,12 @@ export function register(app, ctx, deps = {}) {
 
     // مصدر الطلب — قايمة مفاتيح مسموحة، وip/ua من الهيدر بس. عمره ما يوقّع الطلب.
     let attribution = null, meta = null;
-    try { meta = parseCheckoutMeta(b, (n) => c.req.header(n)); attribution = meta.attribution; }
+    try {
+      meta = parseCheckoutMeta(b, (n) => c.req.header(n));
+      // P5 (10/10): table-QR attribution only stays on an order placed with a table session
+      meta.attribution = stripTableAttribution(meta.attribution, !!tableNo).attribution;
+      attribution = meta.attribution;
+    }
     catch (e) { console.error(`[shop] ${orderNo}: checkout meta parse failed: ${e.message}`); }
 
     const inserted = await pool.query(
@@ -1276,6 +1281,8 @@ export function register(app, ctx, deps = {}) {
           const merged = mergeSessionAttribution(attr, s?.rows?.[0] || null);
           if (merged.enriched) attr = merged.attribution;
         }
+        // the journey session may itself have landed on a table link - same rule
+        attr = stripTableAttribution(attr, !!tableNo).attribution;
         await pool.query(
           `UPDATE shop_orders SET journey_sid=$2, client=$3, app_version=$4,
              attrib_source=$5, attribution=COALESCE($6::jsonb, attribution) WHERE order_no=$1`,

@@ -209,3 +209,32 @@ export function fireServerPurchase(funnelDep, orderNo, log = console) {
     log.error(`[shop] serverPurchase threw for ${orderNo}: ${e?.message || e}`);
   }
 }
+
+/* ── إسناد الطاولة (مراجعة عمر ١٠/١٠) ──────────────────────────────────────
+   الطلب «طلب طاولة» بس لو اتعمل بجلسة طاولة سارية (shop_orders.table_no). لكن
+   رابط الـQR (/l/table-N ⇒ utm_source=qr · utm_medium=table · fc_link=table-N)
+   بيفضل محفوظ في المتصفح أيام: عمر مسح طاولة ١ يوم ٥/١٠ وطلب «استلام» يوم ٩/١٠،
+   والطلبين اتحسبوا في تقارير الروابط/المصادر على table-1.
+   القاعدة: إسناد الطاولة مايتسجّلش على طلب من غير جلسة طاولة. الـclick ids
+   (إعلان) بتفضل، والقيم الأصلية بتتحفظ في stale_table للمراجعة. */
+const TABLE_LINK_RE = /^table-\d{1,3}$/i;
+export function isTableAttribution(attribution) {
+  const a = attribution && typeof attribution === "object" ? attribution : {};
+  const utm = a.utm && typeof a.utm === "object" ? a.utm : {};
+  return TABLE_LINK_RE.test(String(a.fc_link || "").trim())
+    || String(utm.utm_medium || "").trim().toLowerCase() === "table"
+    || TABLE_LINK_RE.test(String(utm.utm_content || "").trim())
+    || String(utm.utm_campaign || "").trim().toLowerCase() === "table-qr";
+}
+/* isTableOrder = الطلب اتعمل بجلسة طاولة فعلاً ⇒ الإسناد يفضل زي ما هو */
+export function stripTableAttribution(attribution, isTableOrder) {
+  const a = attribution && typeof attribution === "object" ? attribution : {};
+  if (isTableOrder || !isTableAttribution(a)) return { attribution: a, stripped: false };
+  const out = { ...a };
+  const utm = a.utm && typeof a.utm === "object" ? a.utm : {};
+  out.stale_table = { fc_link: a.fc_link || null, utm, landing_at: a.landing_at || null };
+  if (TABLE_LINK_RE.test(String(a.fc_link || "").trim())) out.fc_link = null;
+  out.utm = {};
+  out.landing_at = null;
+  return { attribution: out, stripped: true };
+}
