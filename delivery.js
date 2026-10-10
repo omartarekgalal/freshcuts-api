@@ -1053,7 +1053,9 @@ export function register(app, ctx, deps = {}) {
     return {
       ...res, straightKm: r2(straight), routeKm: r2(route),
       driveKm: rk.driveKm != null ? r2(rk.driveKm) : null, distanceSource: rk.distanceSource,
-      policyId: pol.id, policyName: pol.name, policy: publicPolicy(cfg, dcfg), ...gaps(cfg, orderTotal),
+      /* ١٠/١٠ (QA): اسم السياسة الداخلي مايطلعش في تسعيرة عامة — كان فيه «أرخص من التطبيقات» (عبارة ممنوعة).
+         المتجر واللوحة مابيقروهوش من هنا؛ اللوحة بتجيبه من مسارات الإدارة. */
+      policyId: pol.id, policy: publicPolicy(cfg, dcfg), ...gaps(cfg, orderTotal),
     };
   }
   const publicPolicy = (cfg, dcfg = null) => ({

@@ -174,8 +174,8 @@ export function soldOutLines(items, active) {
 export const soldOutMessage = (names) => {
   const n = (names || []).filter(Boolean);
   return n.length
-    ? `للأسف ${n.join("، ")} خلص النهارده 🙏 — شيله من السلة وكمّل طلبك.`
-    : "فيه صنف في سلتك خلص النهارده 🙏 — شيله من السلة وكمّل طلبك.";
+    ? `للأسف ${n.join("، ")} نفد اليوم 🙏 — احذفه من السلة وأكمل طلبك.`
+    : "يوجد صنف في سلتك نفد اليوم 🙏 — احذفه من السلة وأكمل طلبك.";
 };
 
 /* المخزن: قراءة/كتابة settings.catalog.soldOut. الكتابة ذرّية على مفتاح واحد

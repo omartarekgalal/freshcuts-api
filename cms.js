@@ -3244,7 +3244,7 @@ ${smsRules.optoutLine(cfg, { code: c?.optout_code, host: STORE_PUBLIC(), sender:
           [code, isFree ? 0 : Math.min(50, Number(cfg.percent) || 10), expires, `مكافأة ولاء #${k} — ${r.pn.slice(-4)}`, isFree, minTotal]);
         const what = (isFree ? "توصيل مجاني" : `خصم ${Number(cfg.percent) || 10}٪`) + (minTotal > 0 ? ` للطلبات من ${minTotal} ر.س` : "");
         notify()?.sendToAudience({ phoneNorm: r.pn, title: "مبروك! 🎁",
-          body: `كمّلت ${every * k} طلبات من فريش كاتس — كوبونك ${code}: ${what} لحد ${expires}`,
+          body: `أكملت ${every * k} طلبات من فريش كاتس — كوبونك ${code}: ${what} حتى ${expires}`,
           url: `${STORE_PUBLIC()}/?c=${code}`, stage: "loyalty" }).catch(() => {});
         console.log(`[cms] loyalty reward ${code} → ${r.pn.slice(-4)} (#${k})`);
       }

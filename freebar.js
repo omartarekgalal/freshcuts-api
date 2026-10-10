@@ -24,11 +24,11 @@ export const FREEBAR_DEFAULTS = {
   maxGap: 60,       // «التوصيل المجاني» بيبان كهدف لو الفرق ≤ ده (ر.س)؛ أبعد من كده بنعرض الشريحة الجاية
   suggest: true,    // اقتراح صنف واحد يقفل الفرق
   texts: {
-    gapAr: "فاضل {x} ر.س وتاخد التوصيل مجاناً", gapEn: "{x} SAR away from free delivery",
-    tierAr: "زوّد {x} ر.س والتوصيل ينزل لـ{fee} ر.س", tierEn: "Add {x} SAR and delivery drops to {fee} SAR",
+    gapAr: "باقي {x} ر.س وتحصل على التوصيل مجاناً", gapEn: "{x} SAR away from free delivery",
+    tierAr: "أضف {x} ر.س وينخفض التوصيل إلى {fee} ر.س", tierEn: "Add {x} SAR and delivery drops to {fee} SAR",
     doneAr: "🎉 التوصيل مجاني", doneEn: "🎉 Free delivery unlocked",
     firstAr: "أول طلب توصيل — من {min} ر.س", firstEn: "First delivery order — from {min} SAR",
-    addAr: "ضيف", addEn: "Add",
+    addAr: "أضف", addEn: "Add",
   },
   /* 🤝 سطر الثقة (١٠/١٠): «نفس سعر المطعم» في المنيو + سطر جنب الإجمالي في الدفع.
      نفس التخزين ونفس المسارات؛ النصوص عليها حارس صياغة (bannedWording تحت). */

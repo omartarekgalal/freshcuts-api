@@ -18,11 +18,11 @@ test("من غير إعدادات: الافتراضي كامل (٤ مفاتيح +
   assert.deepEqual(FREEBAR_DEFAULTS, {
     enabled: true, autoFirst: true, maxGap: 60, suggest: true,
     texts: {
-      gapAr: "فاضل {x} ر.س وتاخد التوصيل مجاناً", gapEn: "{x} SAR away from free delivery",
-      tierAr: "زوّد {x} ر.س والتوصيل ينزل لـ{fee} ر.س", tierEn: "Add {x} SAR and delivery drops to {fee} SAR",
+      gapAr: "باقي {x} ر.س وتحصل على التوصيل مجاناً", gapEn: "{x} SAR away from free delivery",
+      tierAr: "أضف {x} ر.س وينخفض التوصيل إلى {fee} ر.س", tierEn: "Add {x} SAR and delivery drops to {fee} SAR",
       doneAr: "🎉 التوصيل مجاني", doneEn: "🎉 Free delivery unlocked",
       firstAr: "أول طلب توصيل — من {min} ر.س", firstEn: "First delivery order — from {min} SAR",
-      addAr: "ضيف", addEn: "Add",
+      addAr: "أضف", addEn: "Add",
     },
     trust: {
       enabled: true,
