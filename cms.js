@@ -1924,11 +1924,13 @@ export function register(app, ctx, deps = {}) {
   const slugOk = (s) => /^[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?$/.test(s);
   function linkBody(b) {
     // «offer» (14 سبتمبر): رابط يفتح عرض واحد على طول — /l/96-kilo و /l/96-box
-    const target_type = ["home", "collection", "product", "offer"].includes(b.target_type) ? b.target_type : "home";
+    // «cart» (١٠/١٠): الرابط يهبط على سلة جاهزة (cartpresets.js) — target_id = كود السلة
+    const target_type = ["home", "collection", "product", "offer", "cart"].includes(b.target_type) ? b.target_type : "home";
     const utm_source = clip(b.utm_source, 30) || "other";
     return {
       label: clip(b.label, 80), target_type,
-      target_id: target_type === "home" ? null : clip(b.target_id, 64),
+      target_id: target_type === "home" ? null
+        : target_type === "cart" ? clip(String(b.target_id || "").toLowerCase(), 16) : clip(b.target_id, 64),
       coupon: clip(String(b.coupon || "").toUpperCase(), 40),
       // الوسيط الصريح بيكسب — من غيره بوستات السوشال العضوية كانت بتتسجّل «paid»
       utm_source, utm_medium: clip(b.utm_medium, 30) || MEDIUM[utm_source] || "paid",
@@ -2048,7 +2050,17 @@ export function register(app, ctx, deps = {}) {
     q.set("utm_medium", l.utm_medium || "paid");
     if (l.utm_campaign) q.set("utm_campaign", l.utm_campaign);
     q.set("utm_content", rcp ? rcp.slug : l.slug);
-    const cpn = (rcp && rcp.coupon) || l.coupon;
+    let cpn = (rcp && rcp.coupon) || l.coupon;
+    /* سلة جاهزة: نفس هبوط /c/<code> (المتجر بيبني السلة من ?cart=) بس بـUTM
+       الرابط وfc_link بتاعه — فالحارس والتقارير بينسبوا للرابط عادي. كوبون
+       الرابط/العميل بيكسب، وإلا كوبون السلة. سلة موقوفة/ممسوحة = الرئيسية. */
+    if (l.target_type === "cart" && /^[a-z0-9]{6,16}$/.test(String(l.target_id || ""))) {
+      const pr = (await pool.query(
+        count
+          ? `UPDATE cart_presets SET opens = opens + 1, last_open_at = NOW() WHERE code=$1 AND active RETURNING code, coupon`
+          : `SELECT code, coupon FROM cart_presets WHERE code=$1 AND active`, [l.target_id]).catch(() => ({ rows: [] }))).rows[0];
+      if (pr) { q.set("cart", pr.code); if (!cpn && pr.coupon) cpn = pr.coupon; }
+    }
     if (cpn) q.set("c", cpn);
     if (l.target_type === "collection" && l.target_id) q.set("col", l.target_id);
     if (l.target_type === "product" && l.target_id) q.set("p", l.target_id);
