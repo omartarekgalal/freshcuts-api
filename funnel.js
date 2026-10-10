@@ -106,6 +106,59 @@ export function fbcOf(click = {}, landingAt = null) {
   return `fb.1.${Number.isFinite(t) ? t : Date.now()}.${id}`.slice(0, 300);
 }
 
+/* ── C5 (10/10): external_id — one stable identity on every event ──────────
+   Events Manager showed external_id on 0% of web events. Two ids, both
+   64-char lowercase hex SHA-256 (Meta accepts an array):
+     • device: sha256("fc:" + fc_dev). The storefront computes the same string,
+       sends it as `externalId` and gives it to the browser pixel
+       (fbq('init', id, {external_id})), so pixel and CAPI agree. Old storefront
+       JS sends only `anonId` (= fc_dev) — the server derives the same hash.
+     • phone: sha256 of the E.164 digits (9665…) — the same value as `ph`, and
+       the same one ads.js sends for till orders, so web and store purchases
+       of one customer stitch together. */
+export const EXTERNAL_ID_RE = /^[a-f0-9]{64}$/;
+const DEVICE_ID_RE = /^[a-z0-9_-]{8,64}$/i;
+const sha256hex = (v) => crypto.createHash("sha256").update(String(v), "utf8").digest("hex");
+export const deviceIdOf = (v) => (typeof v === "string" && DEVICE_ID_RE.test(v) ? v : null);
+export function deviceExternalId({ externalId = null, anonId = null } = {}) {
+  const given = typeof externalId === "string" ? externalId.trim().toLowerCase() : "";
+  if (EXTERNAL_ID_RE.test(given)) return given;
+  const dev = deviceIdOf(anonId);
+  return dev ? sha256hex("fc:" + dev) : null;
+}
+export function externalIdsOf(e = {}) {
+  const dev = EXTERNAL_ID_RE.test(String(e.externalId || "")) ? String(e.externalId) : null;
+  const ph = e.digits ? hashPhoneDigits(e.digits) : null;
+  return [...new Set([dev, ph].filter(Boolean))];
+}
+/* Meta CAPI user_data for a web event (pure). */
+export function metaUserData(e = {}) {
+  const click = e.click || {};
+  const user_data = {
+    client_ip_address: e.ip || undefined,
+    client_user_agent: e.ua || undefined,
+  };
+  if (click.fbp) user_data.fbp = click.fbp;
+  if (click.fbc) user_data.fbc = click.fbc;
+  const ph = e.digits ? hashPhoneDigits(e.digits) : null;
+  const em = hashEmail(e.email);
+  if (ph) user_data.ph = [ph];
+  if (em) user_data.em = [em];
+  const ext = externalIdsOf(e);
+  if (ext.length) user_data.external_id = ext;
+  return user_data;
+}
+/* A click id remembered from an earlier event of the same device / phone: the
+   customer who clicked the ad on Monday and pays on Thursday from a tab that
+   no longer has the cookie or the stored fbclid. 7 days = Meta's click window. */
+export const STORED_FBC_DAYS = 7;
+export const STORED_FBC_SQL = `
+  SELECT click_ids->>'fbc' AS fbc FROM funnel_events
+   WHERE created_at > NOW() - ($3::int * INTERVAL '1 day')
+     AND (($1::text IS NOT NULL AND anon_id = $1) OR ($2::text IS NOT NULL AND phone_norm = $2))
+     AND COALESCE(click_ids->>'fbc','') <> ''
+   ORDER BY created_at DESC LIMIT 1`;
+
 // حالات مالهاش شراء حقيقي: لسه مادفعش، انتهى، أو اترفض واترجّعت فلوسه.
 const NO_PURCHASE_STATUS = /pending_payment|expired|refund|reject|cancel/;
 const VAT = 0.15;
@@ -195,6 +248,9 @@ export function serverPurchaseEvent(order, { contents = [], digits = null, now =
     ua: s(a.ua, 400) || "",
     digits,
     email: null,
+    // C5: the device that placed the order (shop.js stores fc_dev on the order)
+    anonId: deviceIdOf(order?.customer?.deviceId),
+    externalId: deviceExternalId({ anonId: order?.customer?.deviceId }),
     utm: a.utm && typeof a.utm === "object" ? a.utm : {},
     click: {
       fbp: s(click.fbp, 200), fbc: fbcOf(click, a.landing_at),
@@ -289,16 +345,7 @@ export function register(app, ctx, deps = {}) {
   function metaCall(e) {
     const pixel = metaPixel(), token = env("META_CAPI_TOKEN");
     if (!pixel || !token) return null;
-    const user_data = {
-      client_ip_address: e.ip || undefined,
-      client_user_agent: e.ua || undefined,
-    };
-    if (e.click.fbp) user_data.fbp = e.click.fbp;
-    if (e.click.fbc) user_data.fbc = e.click.fbc;
-    const ph = e.digits ? hashPhoneDigits(e.digits) : null;
-    const em = hashEmail(e.email);
-    if (ph) user_data.ph = [ph];
-    if (em) user_data.em = [em];
+    const user_data = metaUserData(e);
     const body = {
       data: [{
         event_name: e.name,
@@ -340,6 +387,9 @@ export function register(app, ctx, deps = {}) {
     const em = hashEmail(e.email);
     if (ph) user.phone = ph;
     if (em) user.email = em;
+    // C5: TikTok takes ONE hashed external_id — the device, else the phone
+    const ext = externalIdsOf(e);
+    if (ext.length) user.external_id = ext[0];
     return {
       url: "https://business-api.tiktok.com/open_api/v1.3/event/track/",
       headers: { "Content-Type": "application/json", "Access-Token": token },
@@ -379,6 +429,8 @@ export function register(app, ctx, deps = {}) {
     const em = hashEmail(e.email);
     if (ph) user_data.ph = [ph];
     if (em) user_data.em = [em];
+    const ext = externalIdsOf(e);       // C5
+    if (ext.length) user_data.external_id = ext;
     return {
       url: `https://tr.snapchat.com/v3/${pixel}/events?access_token=${token}`,
       headers: { "Content-Type": "application/json" },
@@ -469,6 +521,17 @@ export function register(app, ctx, deps = {}) {
   /* فيه Purchase متسجّل لأي id من دول؟ (ريفريش التتبع + إطلاق مزدوج + صفوف
      قبل dedup_key). لو الفحص نفسه فشل بنكمّل — الحجز الذرّي (claimPurchaseRow)
      والحجز في ads_events لسه بيمنعوا التكرار. */
+  /* C5: fbc for a Purchase that arrived without one (no cookie, no fbclid on
+     the order) — taken from an earlier event of the same device or phone.
+     Never throws, never blocks a Purchase. */
+  async function storedFbc(anonId, pnLocal) {
+    if (!anonId && !pnLocal) return null;
+    try {
+      const r = await pool.query(STORED_FBC_SQL, [anonId || null, pnLocal || null, STORED_FBC_DAYS]);
+      return r.rows[0]?.fbc ? String(r.rows[0].fbc).slice(0, 300) : null;
+    } catch { return null; }
+  }
+
   async function recentPurchase(ids) {
     const list = [...new Set(ids.filter(Boolean).map(String))];
     if (!list.length) return false;
@@ -552,6 +615,7 @@ export function register(app, ctx, deps = {}) {
     const digits = pnLocal ? phoneDigits(pnLocal, normPhone) : null;
     const baseUrl = (env("STOREFRONT_PUBLIC_URL") || "https://freshcuts.sa").split(",")[0].trim().replace(/\/+$/, "");
     const e = serverPurchaseEvent(order, { contents, digits, baseUrl });
+    if (!e.click.fbc) e.click.fbc = await storedFbc(e.anonId, pnLocal);
 
     const rowId = await claimPurchaseRow(e, pnLocal);
     if (!rowId) return { ok: true, duplicate: true, orderId: String(order.pos_order_id) };
@@ -661,6 +725,8 @@ export function register(app, ctx, deps = {}) {
     const e = {
       name, eventId, orderId, value,
       sessionId, anonId,
+      // C5: `externalId` from the storefront (64-hex sha256), else derived from anonId
+      externalId: deviceExternalId({ externalId: b.externalId ?? b.external_id, anonId }),
       contents,
       numItems: contents.reduce((a, i) => a + i.quantity, 0),
       currency: String(b.currency || "SAR").slice(0, 3).toUpperCase(),
@@ -692,6 +758,7 @@ export function register(app, ctx, deps = {}) {
 
     let results;
     if (name === "Purchase" && orderId) {
+      if (!e.click.fbc) e.click.fbc = await storedFbc(anonId, pnLocal);
       const rowId = await claimPurchaseRow(e, pnLocal);
       if (!rowId) return c.json({ ok: true, duplicate: true });
       results = await forwardAll(e, { claimSource });
