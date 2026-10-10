@@ -94,6 +94,8 @@ export function classify(x = {}) {
   if (OFFLINE_MEDIUM.test(med) || ["sticker", "qr", "pos", "print", "table"].includes(src) || /^sticker-|^qr-|^pos-/.test(cont) || cls === "offline") return { family: "offline", paid: false };
   const p = plat(src);
   if (p && ORGANIC_MEDIUM.test(med)) return { family: "organic", paid: false, platform: p };
+  // ميتا بوسيط صريح مش مدفوع (cta / post …) = مجاني، حتى لو صف الجلسة القديم متسجّل meta_ads (قبل تصحيح ١٠/١٠)
+  if (p === "meta" && med && !PAID_MEDIUM.test(med)) return { family: "organic", paid: false, platform: p };
   if (p && (PAID_MEDIUM.test(med) || /_ads$/.test(ch))) return { family: p, paid: true };
   if (/_ads$/.test(ch) && !ORGANIC_MEDIUM.test(med)) {
     const f = { meta: "meta", snap: "snapchat", snapchat: "snapchat", tiktok: "tiktok", google: "google" }[ch.replace(/_ads$/, "")];

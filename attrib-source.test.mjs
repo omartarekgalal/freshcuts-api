@@ -11,7 +11,7 @@ import { classifySource, normalizeSource, mergeSessionAttribution } from "./chec
 import { backfillAttribSource, ATTRIB_BACKFILL_SELECT_NOJOIN } from "./orders-schema.js";
 
 test("utm_source الصريح بيغلب أي حاجة تانية، وبأسماء المنصات الموحّدة", () => {
-  assert.equal(classifySource({ utm: { utm_source: "Instagram" }, click: { ttclid: "x" } }), "meta");
+  assert.equal(classifySource({ utm: { utm_source: "Instagram" }, click: { ttclid: "x" } }), "instagram"); // مجاني — "meta" = إعلان مدفوع بس (١٠/١٠)
   assert.equal(classifySource({ utm: { utm_source: "snap" } }), "snapchat");
   assert.equal(classifySource({ utm: { utm_source: "TikTok" } }), "tiktok");
   assert.equal(classifySource({ utm: { utm_source: "sms" } }), "sms");
@@ -23,8 +23,9 @@ test("utm_source الصريح بيغلب أي حاجة تانية، وبأسما
 });
 
 test("من غير utm: click id ثم fc_link ثم direct", () => {
-  assert.equal(classifySource({ click: { fbclid: "abc" } }), "meta");
-  assert.equal(classifySource({ click: { fbc: "fb.1.2.3" } }), "meta");
+  assert.equal(classifySource({ click: { fbclid: "abc" } }), "facebook"); // fbclid لوحده = زيارة مجانية
+  assert.equal(classifySource({ click: { fbc: "fb.1.2.3" } }), "facebook");
+  assert.equal(classifySource({ click: { fbc: "fb.1.2.3" }, utm: { utm_term: "FC96-ATC-KILO-A" } }), "meta"); // وسم الإعلان لسه موجود
   assert.equal(classifySource({ click: { ttclid: "t" } }), "tiktok");
   assert.equal(classifySource({ click: { ScCid: "s" } }), "snapchat");
   assert.equal(classifySource({ click: { scid: "s" } }), "snapchat");
@@ -63,7 +64,9 @@ test("الدمج مابيدوسش على اللي المتصفّح بعته", ()
 
 test("مصدر الجلسة بيتاخد من channel/referrer لما مافيش utm", () => {
   assert.equal(classifySource({}, { channel: "meta_ads" }), "meta");
-  assert.equal(classifySource({}, { channel: "direct", referrer_host: "m.facebook.com" }), "meta");
+  assert.equal(classifySource({}, { channel: "direct", referrer_host: "m.facebook.com" }), "facebook");
+  assert.equal(classifySource({}, { channel: "facebook" }), "facebook");
+  assert.equal(classifySource({}, { channel: "instagram" }), "instagram");
   assert.equal(classifySource({}, { channel: "direct", referrer_host: "www.google.com" }), "google");
   assert.equal(classifySource({}, { channel: "direct", referrer_host: "example.com" }), "direct");
 });

@@ -28,7 +28,7 @@ test("يوم التقرير: ٣:٠٠ الفجر عادةً، ٤:٠٠ بعد لي
 test("مصدر الطلب: روابط 96-m2/m3/meta و fbc = ميتا، UTM مدفوع بس، وسناب", () => {
   assert.equal(adSourceOf({ fc_link: "96-m3-box-b" }), "meta");
   assert.equal(adSourceOf({ utm: { utm_content: "96-m2-kilo-a" } }), "meta");
-  assert.equal(adSourceOf({ click: { fbc: "fb.1.x" } }), "meta");
+  assert.equal(adSourceOf({ click: { fbc: "fb.1.x" } }), null); // fbclid لوحده مش إعلان (١٠/١٠) — metatouch.test.mjs
   assert.equal(adSourceOf({ utm: { utm_source: "meta", utm_medium: "paid" } }), "meta");
   assert.equal(adSourceOf({ utm: { utm_source: "instagram", utm_medium: "story" } }), null); // organic
   assert.equal(adSourceOf({ utm: { utm_source: "direct", utm_medium: "offer-link", utm_content: "96-box" } }), null);

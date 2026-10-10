@@ -36,6 +36,7 @@
 
 import { smsInfo, fitOneSms, staffPhones } from "./staffalerts.js";
 import { bizStart, bizEnd, shiftDay } from "./bizday.js";
+import { metaTouch } from "./metatouch.js";
 
 const TZ = "Asia/Riyadh";
 /* قرار عمر ١٩/٩: الرسالة الساعة ٣:٠٠ الفجر، إلا بعد ليلة الخميس والجمعة (اليوم
@@ -93,16 +94,20 @@ export function adSourceOf(attr, attribSource = null) {
   const med = String(utm.utm_medium || "").toLowerCase();
   const link = String(a.fc_link || utm.utm_content || "").toLowerCase();
   const click = a.click || {};
-  if (/^96-(m2|m3|meta)-/.test(link) || click.fbc || click.fbclid) return "meta";
+  // ميتا المدفوع من وسم الرابط (metatouch.js). fbclid لوحده مش إعلان: فيسبوك بيلزقه على بوست الصفحة المجاني كمان
+  // (١٠/١٠: ٣ طلبات «ميتا» / ٤٨٨ ر.س والإعلانات جابت ١ / ١٤٢).
+  const mt = metaTouch({ ...utm, link, fbclid: !!(click.fbc || click.fbclid) });
+  if (mt === "paid") return "meta";
+  if (mt !== "organic" && /^96-(m2|m3|meta)-/.test(link)) return "meta";
   if (/^96-snap-/.test(link) || click.ScCid || click.sccid) return "snapchat";
   if (med === "paid") {
-    if (["meta", "facebook", "instagram", "fb", "ig"].includes(src)) return "meta";
     if (src === "snapchat") return "snapchat";
   }
   // classifySource() (checkout-meta.js) writes shop_orders.attrib_source from the SAME
   // attribution blob plus the server-side journey session, so it catches the in-app-browser
   // orders whose localStorage was wiped. Platform + a paid medium/link is still required.
   const cls = String(attribSource || "").toLowerCase();
+  if (cls === "meta" && mt === "organic") return null;
   if ((cls === "meta" || cls === "snapchat") && (med === "paid" || /^96-(m2|m3|meta|snap)-/.test(link))) return cls;
   return null;
 }

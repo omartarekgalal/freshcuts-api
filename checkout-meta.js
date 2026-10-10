@@ -14,6 +14,8 @@
    headers = دالة (name) => value (زي c.req.header)، أو Headers، أو object عادي.
 ═══════════════════════════════════════════════════════════════════════════ */
 
+import { metaTouch, metaOrganicName } from "./metatouch.js";
+
 export const MAX_LEN = 300;
 export const UTM_KEYS = ["utm_source", "utm_medium", "utm_campaign", "utm_content", "utm_term", "utm_id"];
 // scid = نفس ScCid بتاع سناب — pixels.js بيحفظه باسم scid وfunnel.js بيقرا الاتنين
@@ -132,8 +134,11 @@ const SOURCE_ALIASES = {
   email: "email", newsletter: "email",
   direct: "direct", none: "direct", "(direct)": "direct",
 };
+/* ميتا في attrib_source: "meta" = إعلان مدفوع بس. المجاني = "facebook" / "instagram" (metatouch.js). */
+const metaSource = (x) => { const t = metaTouch(x); return t === "paid" ? "meta" : t === "organic" ? metaOrganicName(x) : null; };
 const REF_HOSTS = [
-  [/(^|\.)(facebook|instagram|fb|messenger)\./, "meta"],
+  [/(^|\.)instagram\./, "instagram"],
+  [/(^|\.)(facebook|fb|messenger)\./, "facebook"],
   [/(^|\.)(snapchat)\./, "snapchat"],
   [/(^|\.)(tiktok)\./, "tiktok"],
   [/(^|\.)(google|googleadservices|gstatic)\./, "google"],
@@ -154,15 +159,21 @@ export function classifySource(attribution, session = null) {
   const utm = a.utm && typeof a.utm === "object" ? a.utm : {};
   const click = a.click && typeof a.click === "object" ? a.click : {};
 
+  const fb = !!(click.fbclid || click.fbc);
   const fromUtm = normalizeSource(utm.utm_source);
+  if (fromUtm === "meta") return metaSource({ ...utm, link: a.fc_link || utm.utm_content, fbclid: fb }) || "meta";
   if (fromUtm) return fromUtm;
-  if (click.fbclid || click.fbc) return "meta";
+  // fbclid من غير utm: إعلان بس لو وسم الإعلان (utm_term / رابط الإعلان) لسه موجود؛ غير كده زيارة مجانية
+  if (fb) return metaSource({ ...utm, link: a.fc_link, fbclid: true, in_app: session && session.in_app, referrer_host: session && session.referrer_host });
   if (click.ttclid) return "tiktok";
   if (click.ScCid || click.scid) return "snapchat";
   if (click.gclid || click.gbraid || click.wbraid) return "google";
   if (a.fc_link) return "link";
 
   if (session) {
+    if (normalizeSource(session.utm_source) === "meta") return metaSource({ ...session, link: session.link_slug || session.utm_content, fbclid: false }) || "meta";
+    const ch = String(session.channel || "").toLowerCase();
+    if (ch === "facebook" || ch === "instagram") return ch;      // قناة مجانية — ماتتحوّلش لـ"meta" (= مدفوع)
     const fromSession = normalizeSource(session.utm_source) || normalizeSource(session.channel);
     if (fromSession && fromSession !== "direct") return fromSession;
     const host = String(session.referrer_host || "").toLowerCase();

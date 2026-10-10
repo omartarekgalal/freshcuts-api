@@ -41,6 +41,7 @@
 
 import crypto from "node:crypto";
 import { customerId } from "./customer-id.js";
+import { metaTouch, metaOrganicName } from "./metatouch.js";
 
 /* ═══ pure lib (متجرّب في journey.test.mjs) ═════════════════════════════ */
 
@@ -277,11 +278,14 @@ export function classifyChannel(s = {}) {
   if (src === "whatsapp" || src === "wa" || med === "whatsapp") return "whatsapp";
   if (src === "push" || med === "push") return "push";
   if (src === "qr" || med === "qr") return "qr";
-  if (clicks.has("fbclid") && (paidMed || !src || /^(meta|fb|facebook|ig|instagram)$/.test(src)) && (paidMed || /^(meta|fb|facebook|ig|instagram)$/.test(src))) return "meta_ads";
-  if (/^(meta|fb|facebook|ig|instagram)$/.test(src) && paidMed) return "meta_ads";
+  // ميتا: مدفوع ولا مجاني من وسم الرابط نفسه (metatouch.js) — fbclid بيتلزق على البوست المجاني زي الإعلان بالظبط
+  const mt = metaTouch({ utm_source: src, utm_medium: med, utm_campaign: s.utm_campaign, utm_term: s.utm_term, link: s.link_slug || s.utm_content, fbclid: clicks.has("fbclid") });
+  if (mt === "paid") return "meta_ads";
   if (clicks.has("gclid") || clicks.has("gbraid") || clicks.has("wbraid") || (src === "google" && paidMed)) return "google_ads";
   if (clicks.has("ttclid") || (src === "tiktok" && paidMed)) return "tiktok_ads";
   if (clicks.has("sccid") || clicks.has("scid") || (/^snap(chat)?$/.test(src) && paidMed)) return "snap_ads";
+  // بوست/ستوري/بايو مجاني بوسم صريح: قناته فيسبوك/انستجرام (مجاني) حتى لو جاي من رابط حملة ‎/l/96-fb-…
+  if (mt === "organic" && src) return metaOrganicName({ utm_source: src });
   if (med === "offer-link" || med === "offer_link") return "offer_link";
   if (s.link_slug) return "campaign_link";
   if (/^(ig|instagram)$/.test(src)) return "instagram";
