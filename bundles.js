@@ -154,6 +154,9 @@ export function normalizeSlots(raw) {
     seen.add(key);
     const quantity = Math.min(20, Math.max(1, Math.round(Number(s.quantity) || 1)));
     const slot = { key, label: clip(s.label, 80), type, quantity };
+    // اسم الخانة بالإنجليزي (١٠/١٠): المتجر الإنجليزي بيعرضه بدل ما يخمّن من العربي
+    const labelEn = clip(s.label_en, 80);
+    if (labelEn) slot.label_en = labelEn;
     if (type === "choice") {
       const choices = [];
       const cseen = new Set();
@@ -251,6 +254,28 @@ export function bundleAvailability(bundle, offer) {
      { product_id, quantity, tax_id, unit_amount, variant_option_id,
        bundle, bundle_name, bundle_slot, bundle_line, variant_name, name }
 ═══════════════════════════════════════════════════════════════════════════ */
+/* ── إضافات وملاحظات لكل خانة (١٠/١٠ — البوكسات) ───────────────────────────
+   قرار عمر: بيتزا جوّه بوكس لازم يتعرض معاها حشو الأطراف زي المنيو بالظبط،
+   وكل صنف العميل اختاره له ملاحظته هو (غير ملاحظة الطلب).
+     opts.mods  : { [slotKey]: [رقم اختيار الإضافة, …] }   ← أرقام بس، من غير سعر
+     opts.notes : { [slotKey]: "نص" }
+   الدالة دي **مابتسعّرش** الإضافات: بتحطّ الأرقام على سطر الخانة، والشيك أوت
+   بيسعّرها من كتالوج الشريك بنفس مسار الصنف العادي (modifiers.js) — يعني
+   نفس الاختيارات ونفس الأسعار، وبتنزل نقطة البيع على سطر البيتزا نفسه.
+   سعر الباقة نفسه مابيتأثرش: الإضافة فلوس **فوق** سعر الباقة. */
+const NOTE_MAX = 100;
+export function cleanSlotNote(v) {
+  return String(v == null ? "" : v).replace(/[\x00-\x1f\x7f]+/g, " ").replace(/\s{2,}/g, " ").trim().slice(0, NOTE_MAX);
+}
+export function cleanSlotMods(v) {
+  const out = [];
+  for (const x of Array.isArray(v) ? v.slice(0, 12) : []) {
+    const n = Number(x);
+    if (Number.isInteger(n) && n > 0 && !out.includes(n)) out.push(n);
+  }
+  return out;
+}
+
 export function expandBundle(bundle, choices, quantity, resolve, opts = {}) {
   const qty = Math.min(20, Math.max(1, Math.round(Number(quantity) || 1)));
   const slots = Array.isArray(bundle && bundle.slots) ? bundle.slots : [];
@@ -258,6 +283,11 @@ export function expandBundle(bundle, choices, quantity, resolve, opts = {}) {
   const vatRate = Number(bundle.vat_rate ?? opts.vatRate ?? VAT_RATE);
   const multiply = Number(opts.multiply || MULTIPLY);
   const ch = choices && typeof choices === "object" ? choices : {};
+  const isMap = (o) => o && typeof o === "object" && !Array.isArray(o);
+  const modsIn = isMap(opts.mods) ? opts.mods : {};
+  const notesIn = isMap(opts.notes) ? opts.notes : {};
+  const slotMods = (key) => cleanSlotMods(modsIn[key]);
+  const slotNote = (key) => cleanSlotNote(notesIn[key]);
 
   // ١) اختيار كل خانة → منتج حقيقي + سعر قايمة
   const picked = [];
@@ -312,6 +342,9 @@ export function expandBundle(bundle, choices, quantity, resolve, opts = {}) {
       bundle_qty: qty,
       name: p.info.name || "",
       ...(p.info.variantName ? { variant_name: p.info.variantName } : {}),
+      // أرقام الإضافات (خام) + ملاحظة الصنف — السعر بيتحسب في الشيك أوت
+      ...(slotMods(p.slot.key).length ? { modifiers: slotMods(p.slot.key) } : {}),
+      ...(slotNote(p.slot.key) ? { note: slotNote(p.slot.key) } : {}),
     };
   });
 
@@ -329,6 +362,8 @@ export function expandBundle(bundle, choices, quantity, resolve, opts = {}) {
     picks: picked.map((p) => ({
       slot: p.slot.key, label: p.slot.label, product_id: p.productId,
       variant_option_id: p.variantId, name: p.info.name, variant_name: p.info.variantName || null,
+      ...(slotMods(p.slot.key).length ? { modifiers: slotMods(p.slot.key) } : {}),
+      ...(slotNote(p.slot.key) ? { note: slotNote(p.slot.key) } : {}),
     })),
   };
 }

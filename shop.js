@@ -942,13 +942,20 @@ export function register(app, ctx, deps = {}) {
       const cms = bundles();
       if (!cms || !cms.expandBundle) return fail("bundles_unavailable", 503);
       const expanded = [];
+      let bundleSeq = 0;
+      const bundleStamp = Date.now().toString(36);
       for (const it of items) {
         // وسوم الباقة بيحطّها السيرفر بس. لو المتصفح بعتها على صنف عادي
         // بنشيلها، عشان حد مايقدرش يزوّر تقارير «كام باقة اتباعت».
         if (!it || !it.bundle) { expanded.push(stripBundleTags(it)); continue; }
         let r;
         try {
-          r = await cms.expandBundle(String(it.bundle), it.choices || {}, it.quantity || 1, option);
+          /* `mods` (حشو الأطراف…) و`notes` (ملاحظة لكل صنف) لكل خانة — أرقام ونص
+             بس؛ الإضافات بتتسعّر تحت من كتالوج الشريك زي أي صنف عادي.
+             `lineUid` فريد لكل سطر سلة: بوكسين من نفس النوع باختيارات مختلفة
+             في نفس الطلب لازم يفضلوا بوكسين على شاشة المطبخ والبوابة. */
+          r = await cms.expandBundle(String(it.bundle), it.choices || {}, it.quantity || 1, option,
+            { mods: it.mods, notes: it.notes, lineUid: `${String(it.bundle)}-${bundleStamp}-${bundleSeq++}` });
         } catch (e) {
           console.error(`[shop] bundle expand threw for ${it.bundle}:`, e.message);
           return fail("bundle_expand_failed", 422, { bundle: it.bundle });
@@ -1092,8 +1099,12 @@ export function register(app, ctx, deps = {}) {
       for (const it of bundleItems) {
         if (seen.has(it.bundle_line)) continue;
         seen.add(it.bundle_line);
+        /* سعر الباقة الموزّع + الإضافات المدفوعة على أصنافها (حشو الأطراف):
+           الإضافة للوحدة، فبتتضرب في كمية السطر — زي الصنف العادي بالظبط. */
         const ex = bundleItems.filter((x) => x.bundle_line === it.bundle_line)
-          .reduce((a, x) => a + (Number(x.unit_amount) / scaleOf(x)) * Number(x.quantity), 0);
+          .reduce((a, x) => a + ((Number(x.unit_amount) / scaleOf(x))
+            + (Array.isArray(x.modifiers) ? x.modifiers : []).reduce((m, y) =>
+                m + (Number(y.unit_amount) / scaleOf(x)) * (Number(y.quantity) || 1), 0)) * Number(x.quantity), 0);
         bundleTotal += ex * (1 + BUNDLE_VAT);
       }
       bundleTotal = r2(bundleTotal);

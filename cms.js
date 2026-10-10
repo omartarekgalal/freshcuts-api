@@ -556,6 +556,11 @@ export function register(app, ctx, deps = {}) {
        في جملة واحدة: يا الاتنين يحصلوا يا ولا واحد. */
     await pool.query(`
       ALTER TABLE cms_bundles ADD COLUMN IF NOT EXISTS offer_id TEXT;
+      -- البوكسات (١٠/١٠): قسم العرض في المتجر (فردي/لاتنين/عيلة) + «هيرو» + وصف إنجليزي
+      ALTER TABLE cms_bundles ADD COLUMN IF NOT EXISTS section TEXT;
+      ALTER TABLE cms_bundles ADD COLUMN IF NOT EXISTS section_en TEXT;
+      ALTER TABLE cms_bundles ADD COLUMN IF NOT EXISTS featured BOOLEAN NOT NULL DEFAULT FALSE;
+      ALTER TABLE cms_bundles ADD COLUMN IF NOT EXISTS description_en TEXT;
       CREATE TABLE IF NOT EXISTS cms_migrations (id TEXT PRIMARY KEY, at TIMESTAMPTZ NOT NULL DEFAULT NOW());
     `);
     await pool.query(`
@@ -1163,6 +1168,8 @@ export function register(app, ctx, deps = {}) {
       order_kinds: bundlesLib.normalizeKinds(r.order_kinds),
       active: r.active, sort: r.sort, updated_at: r.updated_at, updated_by: r.updated_by || "",
       offer_id: r.offer_id || null,
+      section: r.section || "", section_en: r.section_en || "", featured: r.featured === true,
+      description_en: r.description_en || "",
     };
   }
 
@@ -1354,15 +1361,32 @@ export function register(app, ctx, deps = {}) {
   });
 
   const slugOkB = (s) => /^[a-z0-9](?:[a-z0-9-]{0,46}[a-z0-9])?$/.test(s);
-  function bundleBody(b) {
+  /* `before` = الصف الحالي عند التعديل. الحقول الجديدة (القسم/هيرو/الوصف
+     الإنجليزي/اسم الخانة الإنجليزي) لو الطلب **ماجابهاش خالص** بتفضل زي ما هي —
+     لوحة قديمة مكاشّة بتحفظ باقة مابتمسحش قسمها ولا أسماء خاناتها الإنجليزي. */
+  function bundleBody(b, before = null) {
+    const has = (o, k) => Object.prototype.hasOwnProperty.call(o || {}, k);
+    const slots = bundlesLib.normalizeSlots(b.slots);
+    if (before) {
+      const prev = new Map((before.slots || []).map((s) => [s.key, s]));
+      const raw = new Map((Array.isArray(b.slots) ? b.slots : []).filter((s) => s && s.key).map((s) => [String(s.key), s]));
+      for (const s of slots) {
+        const was = prev.get(s.key);
+        if (!s.label_en && was && was.label_en && !has(raw.get(s.key), "label_en")) s.label_en = was.label_en;
+      }
+    }
+    const keep = (k, n) => (has(b, k) ? clip(b[k], n) : ((before && before[k]) || ""));
     return {
       name: clip(b.name, 80), name_en: clip(b.name_en, 80), description: clip(b.description, 600),
       image: clip(b.image, 500), badge: clip(b.badge, 40),
       price: Math.max(0, Math.round((Number(b.price) || 0) * 100) / 100),
-      slots: bundlesLib.normalizeSlots(b.slots),
+      slots,
       order_kinds: bundlesLib.normalizeKinds(b.order_kinds),
       active: b.active === true, sort: Number(b.sort) || 0,
       offer_id: clip(b.offer_id, 40),
+      section: keep("section", 40), section_en: keep("section_en", 40),
+      description_en: keep("description_en", 600),
+      featured: has(b, "featured") ? b.featured === true : Boolean(before && before.featured),
     };
   }
 
@@ -1394,6 +1418,7 @@ export function register(app, ctx, deps = {}) {
     cmp("name", "الاسم"); cmp("price", "السعر"); cmp("active", "مفعّلة");
     cmp("offer_id", "العرض"); cmp("image", "الصورة", (v) => (v ? "صورة" : "—"));
     cmp("description", "الوصف", () => "…");
+    cmp("section", "القسم"); cmp("featured", "هيرو");
     const shape = (slots) => (slots || []).map((s) => `${s.key}:${s.type === "choice" ? (s.choices || []).length + "اختيار" : s.product_id}`).join(" ");
     if (shape(before?.slots) !== shape(after?.slots)) parts.push(`الخانات ${shape(before?.slots) || "—"}→${shape(after?.slots)}`);
     return parts.length ? parts.join("، ") : "حفظ من غير تغيير";
@@ -1414,10 +1439,12 @@ export function register(app, ctx, deps = {}) {
     if (f.active) { const blk = await activationBlock({ ...f, slug }); if (blk) return c.json(blk, 422); }
     try {
       const r = await pool.query(
-        `INSERT INTO cms_bundles(slug,name,name_en,description,image,badge,price,slots,order_kinds,active,sort,updated_by,offer_id)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING *`,
+        `INSERT INTO cms_bundles(slug,name,name_en,description,image,badge,price,slots,order_kinds,active,sort,updated_by,offer_id,
+                                 section,section_en,featured,description_en)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17) RETURNING *`,
         [slug, f.name, f.name_en, f.description, f.image, f.badge, f.price,
-         jb(f.slots), jb(f.order_kinds), f.active, f.sort, await who(c), f.offer_id]);
+         jb(f.slots), jb(f.order_kinds), f.active, f.sort, await who(c), f.offer_id,
+         f.section, f.section_en, f.featured, f.description_en]);
       const bundle = bundleRow(r.rows[0]);
       auditNote(c, `باقة جديدة ${slug}: ${bundleChangeNote(null, bundle)}`);
       return c.json({ ok: true, bundle, availability: availabilityOf(bundle) });
@@ -1432,7 +1459,7 @@ export function register(app, ctx, deps = {}) {
     let b = {}; try { b = await c.req.json(); } catch { return c.json({ ok: false, error: "bad json" }, 400); }
     const before = await getBundle(Number(c.req.param("id")));
     if (!before) return c.json({ ok: false, error: "not_found", message: "الباقة مش موجودة." }, 404);
-    const f = bundleBody(b);
+    const f = bundleBody(b, before);
     if (!f.name) return bundleFail(c, "name_required");
     if (!okImage(f.image)) return bundleFail(c, "bad_image_url");
     if (!(f.price > 0)) return bundleFail(c, "price_required");
@@ -1442,10 +1469,12 @@ export function register(app, ctx, deps = {}) {
     if (f.active) { const blk = await activationBlock({ ...f, slug: before.slug }); if (blk) return c.json(blk, 422); }
     const r = await pool.query(
       `UPDATE cms_bundles SET name=$2,name_en=$3,description=$4,image=$5,badge=$6,price=$7,
-         slots=$8,order_kinds=$9,active=$10,sort=$11,updated_at=NOW(),updated_by=$12,offer_id=$13
+         slots=$8,order_kinds=$9,active=$10,sort=$11,updated_at=NOW(),updated_by=$12,offer_id=$13,
+         section=$14,section_en=$15,featured=$16,description_en=$17
        WHERE id=$1 RETURNING *`,
       [before.id, f.name, f.name_en, f.description, f.image, f.badge, f.price,
-       jb(f.slots), jb(f.order_kinds), f.active, f.sort, await who(c), f.offer_id]);
+       jb(f.slots), jb(f.order_kinds), f.active, f.sort, await who(c), f.offer_id,
+       f.section, f.section_en, f.featured, f.description_en]);
     if (!r.rowCount) return c.json({ ok: false, error: "not_found" }, 404);
     const bundle = bundleRow(r.rows[0]);
     auditNote(c, `باقة ${bundle.slug}: ${bundleChangeNote(before, bundle)}`);
@@ -1587,11 +1616,11 @@ export function register(app, ctx, deps = {}) {
       if (s.type === "choice") {
         const choices = s.choices.map((ch) => dress(ch.product_id, ch.variant_option_id, ch.label)).filter(Boolean);
         if (!choices.length) return null;
-        slots.push({ key: s.key, label: s.label, type: "choice", quantity: s.quantity, choices });
+        slots.push({ key: s.key, label: s.label, ...(s.label_en ? { label_en: s.label_en } : {}), type: "choice", quantity: s.quantity, choices });
       } else {
         const item = dress(s.product_id, s.variant_option_id, "");
         if (!item) return null;
-        slots.push({ key: s.key, label: s.label, type: "fixed", quantity: s.quantity, item });
+        slots.push({ key: s.key, label: s.label, ...(s.label_en ? { label_en: s.label_en } : {}), type: "fixed", quantity: s.quantity, item });
       }
     }
     return slots;
@@ -1620,7 +1649,10 @@ export function register(app, ctx, deps = {}) {
         if (!slots) continue; // باقة مكسورة مابتتعرضش أبداً — أحسن من طلب بيفشل
         // offer_id (مسار ٠١): المتجر بيربط الباقة بعرضها من هنا بدل جدول مكتوب في app.js
         out.push({ slug: b.slug, name: b.name, name_en: b.name_en, description: b.description,
-          image: b.image, badge: b.badge, price: b.price, order_kinds: b.order_kinds, offer_id: b.offer_id || null, slots });
+          image: b.image, badge: b.badge, price: b.price, order_kinds: b.order_kinds, offer_id: b.offer_id || null, slots,
+          // البوكسات: القسم اللي الباقة بتتعرض تحته في المتجر + «هيرو» (أول القسم وفوق الصفحة)
+          section: b.section || "", section_en: b.section_en || "", featured: b.featured === true,
+          description_en: b.description_en || "" });
       }
       return c.json({ ok: true, bundles: out });
     } catch (e) {
@@ -1820,7 +1852,7 @@ export function register(app, ctx, deps = {}) {
 
   /* التوسيع — المصدر الوحيد للحقيقة. المتجر بينده عليه للمعاينة، والـcheckout
      بينده على **نفس** الدالة، فاللي العميل شافه هو اللي اتحسب بالظبط. */
-  async function expand(slug, choices, quantity, orderKind) {
+  async function expand(slug, choices, quantity, orderKind, extra = {}) {
     const b = await getBundle(slug);
     if (!b) return { ok: false, error: "bundle_not_found" };
     // نفس حساب المتجر واللوحة: الباقة مسودة، أو عرضها موقوف/مابدأش/انتهى ⇒ مرفوضة
@@ -1832,7 +1864,8 @@ export function register(app, ctx, deps = {}) {
     }
     if (orderKind && !av.kinds.includes(orderKind)) return { ok: false, error: "bundle_not_available_for_option", kinds: av.kinds };
     const resolve = await makeResolver(b);
-    const r = bundlesLib.expandBundle(b, choices, quantity, resolve);
+    const r = bundlesLib.expandBundle(b, choices, quantity, resolve,
+      { mods: extra && extra.mods, notes: extra && extra.notes, ...(extra && extra.lineUid ? { lineUid: String(extra.lineUid) } : {}) });
     // «خلص النهارده»: اختيار خلصان في الباقة ⇒ رفض واضح قبل أي دفع
     if (r && r.ok) {
       let act = {};
@@ -1846,17 +1879,41 @@ export function register(app, ctx, deps = {}) {
   app.post("/api/shop/bundles/expand", async (c) => {
     let b = {}; try { b = await c.req.json(); } catch { return c.json({ ok: false, error: "bad json" }, 400); }
     try {
-      const r = await expand(String(b.slug || ""), b.choices || {}, b.quantity || 1, b.option || null);
+      const r = await expand(String(b.slug || ""), b.choices || {}, b.quantity || 1, b.option || null,
+        { mods: b.mods, notes: b.notes });
       if (!r.ok) return c.json(r, 200); // ٢٠٠ عشان الخطأ الحقيقي يوصل للمتصفح
       /* السطور بترجع بوحدة الفلوس اللي المتصفح طلبها: السلة بتجمعها مع حساب
          تاب سينس في نفس الإجمالي، فلو الوحدتين اختلفوا سعر الباقة يبان غلط
          ×١٠٠٠. نسخة قديمة مكاشّة مابتبعتش الحقل ⇒ النانو القديم. (الدفع
          بيعيد التوسيع على السيرفر، فالمحصّل صح في كل الحالات.) */
       const mfOut = Number(b.multiply_factor) > 0 ? Number(b.multiply_factor) : LEGACY_MULTIPLY;
-      const lines = mfOut === bundlesLib.MULTIPLY ? r.lines
+      let lines = mfOut === bundlesLib.MULTIPLY ? r.lines
         : r.lines.map((l) => ({ ...l, unit_amount: Math.round(l.unit_amount * mfOut / bundlesLib.MULTIPLY) }));
+      /* الإضافات (حشو الأطراف جوّه البوكس): السعر من كتالوج الشريك — نفس
+         دالة الشيك أوت بالظبط (modifiers.resolve)، فاللي السلة عرضته هو اللي
+         هيتحسب عند الدفع. `modifiers` بترجع مسعّرة بوحدة المتصفح. */
+      let modsEx = 0;   // ريال قبل الضريبة لكل الكمية
+      if (lines.some((l) => Array.isArray(l.modifiers) && l.modifiers.length)) {
+        const mods = typeof deps.modifiers === "function" ? deps.modifiers() : null;
+        if (!mods || !mods.resolve) return c.json({ ok: false, error: "modifiers_unavailable" });
+        const out = [];
+        for (const l of lines) {
+          const chosen = Array.isArray(l.modifiers) ? l.modifiers : [];
+          if (!chosen.length) { out.push(l); continue; }
+          const m = await mods.resolve(l.product_id, chosen);
+          if (!m.ok) return c.json({ ok: false, error: "modifier_" + m.error, slot: l.bundle_slot, detail: m });
+          modsEx += m.lines.reduce((a, x) => a + Number(x.sar) * (Number(x.quantity) || 1), 0) * Number(l.quantity);
+          out.push({ ...l,
+            modifiers: m.lines.map((x) => ({ id: x.id, quantity: Math.max(1, Math.round(Number(x.quantity) || 1)),
+              unit_amount: Math.round(Number(x.sar) * mfOut), name: x.name })),
+            modifier_labels: m.labels });
+        }
+        lines = out;
+      }
+      const baseIncl = Math.round(r.totalEx * 1.15 / bundlesLib.MULTIPLY * 100) / 100;
+      const modsIncl = Math.round(modsEx * 1.15 * 100) / 100;
       return c.json({ ok: true, lines, picks: r.picks, quantity: r.quantity, multiply_factor: mfOut,
-        total_incl: Math.round(r.totalEx * 1.15 / bundlesLib.MULTIPLY * 100) / 100 });
+        total_incl: Math.round((baseIncl + modsIncl) * 100) / 100, base_incl: baseIncl, mods_incl: modsIncl });
     } catch (e) { return c.json({ ok: false, error: "expand_failed", message: e.message }); }
   });
 
@@ -1925,7 +1982,8 @@ export function register(app, ctx, deps = {}) {
   function linkBody(b) {
     // «offer» (14 سبتمبر): رابط يفتح عرض واحد على طول — /l/96-kilo و /l/96-box
     // «cart» (١٠/١٠): الرابط يهبط على سلة جاهزة (cartpresets.js) — target_id = كود السلة
-    const target_type = ["home", "collection", "product", "offer", "cart"].includes(b.target_type) ? b.target_type : "home";
+    // «box» (١٠/١٠): رابط يفتح منتقي بوكس واحد (باقة) بالـslug — /l/box-…
+    const target_type = ["home", "collection", "product", "offer", "cart", "box"].includes(b.target_type) ? b.target_type : "home";
     const utm_source = clip(b.utm_source, 30) || "other";
     return {
       label: clip(b.label, 80), target_type,
@@ -2066,6 +2124,8 @@ export function register(app, ctx, deps = {}) {
     if (l.target_type === "product" && l.target_id) q.set("p", l.target_id);
     // عرض: ?go=offers&offer=<id> — المتجر بيفتح منتقي العرض على طول (مسار ٠١)
     if (l.target_type === "offer" && l.target_id) { q.set("go", "offers"); q.set("offer", l.target_id); }
+    // بوكس: ?go=offers&box=<slug> — المتجر بيفتح منتقي البوكس على طول؛ نسخة قديمة بتنزل على قسم البوكسات
+    if (l.target_type === "box" && l.target_id) { q.set("go", "offers"); q.set("box", l.target_id); }
     q.set("fc_link", l.slug);
     return c.json({ ok: true, url: "/?" + q.toString() });
   });

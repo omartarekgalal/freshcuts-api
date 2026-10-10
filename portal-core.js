@@ -315,9 +315,20 @@ export function lineName(it) {
 export const hasRealName = (it) =>
   Boolean(String(it?.name ?? it?.product_name ?? "").trim());
 
+/* الإضافات المختارة على السطر (حشو الأطراف) — «بدون …» مابتتكتبش. الأسماء
+   اتخزّنت وقت الشيك أوت من كتالوج الشريك (shop.js ← modifier_labels). */
+export function lineMods(it) {
+  const labels = Array.isArray(it?.modifier_labels) ? it.modifier_labels : [];
+  return labels.map((x) => String(x == null ? "" : x).trim())
+    .filter((x) => x && !/^بدون(\s|$)/.test(x)).slice(0, 6);
+}
+/* ملاحظة السطر على شاشة البوابة/المطبخ = الإضافات + اللي العميل كتبه على الصنف.
+   (١٠/١٠) قبل كده الإضافة ماكانتش بتبان خالص على البوابة لحد ما الطلب ينزل
+   نقطة البيع — وبيتزا جوّه بوكس بحشو أطراف لازم تبان من أول لحظة. */
 const lineNote = (it) => {
   const raw = it?.note ?? it?.notes ?? it?.comment ?? it?.customer_note ?? null;
-  return raw ? String(raw).slice(0, 200) : null;
+  const parts = [...lineMods(it), raw ? String(raw).trim() : ""].filter(Boolean);
+  return parts.length ? parts.join(" · ").slice(0, 200) : null;
 };
 
 export function itemsOf(items) {

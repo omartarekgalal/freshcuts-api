@@ -3179,7 +3179,7 @@ posNamesApi = posnames.register(app, moduleCtx, { tsp: () => tspApi });
 // لنفس الرقم. فلازم يكونوا كلهم اتسجّلوا قبله.
 // لوحة المتجر: فريق وأدوار وصلاحيات وسجل نشاط — لازم قبل systemcheck.
 let smsBlockApi = null;
-const cmsApi = cms.register(app, moduleCtx, { notify: () => notifyApi, smsBlock: () => smsBlockApi });
+const cmsApi = cms.register(app, moduleCtx, { notify: () => notifyApi, smsBlock: () => smsBlockApi, modifiers: () => modifiersApi });
 /* 📵 حاجبين الإعلانات عند المشغّل — بيتشالوا من FreshCut-AD بس */
 smsBlockApi = smsblock.register(app, moduleCtx);
 reviews.register(app, moduleCtx, { notify: () => notifyApi, sessionUser: cmsApi.sessionUser });
