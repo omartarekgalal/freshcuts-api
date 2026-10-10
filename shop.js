@@ -41,6 +41,7 @@ import { linesFor as modifierLines } from "./modifiers.js";
 import { preorderCfg, slotCounts, validateSlot, isDueNow, slotLabel } from "./preorder.js";
 import { serviceBlock, serviceState, pausedText } from "./service.js";
 import { soldOutOf, soldOutLines, soldOutMessage, deadCategoryItemIds } from "./soldout.js";
+import { feeAfterCoupon } from "./couponmin.js";
 import { dispatchDue, dispatchDelayOf } from "./delivery.js";
 import { makeStaffNotifier, slaAlertText, posFailedText, tabsenseDownText } from "./staffalerts.js";
 import { sendSms as sendStaffSms } from "./accounts.js";
@@ -676,7 +677,8 @@ export function register(app, ctx, deps = {}) {
           [cp.code, phoneNorm]);
         if (used.rowCount) return { ok: false, error: "already_used" };
       }
-      return { ok: true, code: cp.code, percent: Number(cp.percent) || 0, freeDelivery: cp.free_delivery === true, kind: "coupon" };
+      return { ok: true, code: cp.code, percent: Number(cp.percent) || 0, freeDelivery: cp.free_delivery === true, kind: "coupon",
+        minTotal: Number(cp.min_total) || 0 };
     }
     // أكواد السفراء: قابلة للإيقاف من اللوحة لو قلق الاستخدام المزدوج
     // (أونلاين + كاشير) رجّح كفة الفصل الكامل بين القناتين.
@@ -1157,12 +1159,15 @@ export function register(app, ctx, deps = {}) {
       // حقيقية فوق المشوار العادي، والعميل وافق عليها لوحدها.
       // ورسم «التوصيل بالحي» زيّه بالظبط: ده سعر مندوب حقيقي من جدول
       // الأحياء، مش رسم ربح — كوبون مجاني مايلغيهوش.
+      // P1 (١٠/١٠): التنازل بيعدّي على feeAfterCoupon — تحت الحد الأدنى للكوبون مفيش
+      // تنازل أبداً، حتى لو أي فحص قبله اتفوّت (السيرفر هو الحكم، مش الواجهة).
       if (coupon?.ok && coupon.freeDelivery && deliveryFee > 0) {
         const keep = dq.districtDelivery ? Number(dq.districtDelivery.fee) || 0
           : dq.farZone ? Number(dq.farZone.surcharge) || 0 : 0;
-        if (deliveryFee > keep) {
+        const w = feeAfterCoupon({ fee: deliveryFee, keep, coupon, foodTotal });
+        if (w.waived) {
           freeDeliveryByCoupon = true;
-          deliveryFee = keep;
+          deliveryFee = w.fee;
         }
       }
     }

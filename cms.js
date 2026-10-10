@@ -50,6 +50,7 @@ import {
 } from "./offers.js";
 import { soldOutOf, soldOutLines, soldOutMessage } from "./soldout.js";
 import { OWNER_COUPONS } from "./uploadgate.js";
+import { LOYALTY_MIN_DEFAULT, loyaltyMinTotal, LOYALTY_MIN_BACKFILL_SQL } from "./couponmin.js";
 
 const scryptAsync = promisify(crypto.scrypt);
 const SESSION_DAYS = 30;
@@ -3201,7 +3202,14 @@ ${smsRules.optoutLine(cfg, { code: c?.optout_code, host: STORE_PUBLIC(), sender:
   /* ── الولاء: كل N طلبات من الموقع = كوبون شخصي ──
      بيعدّ من لحظة التفعيل بس (startedAt) — لو عدّ التاريخ كله، التفعيل كان
      هيطلّع كوبونات لكل العملاء القدام مرة واحدة كتكلفة مفاجئة. */
-  const LOYALTY_DEFAULT = { enabled: false, every: 5, reward: "free_delivery", percent: 10, validDays: 14, startedAt: null };
+  const LOYALTY_DEFAULT = { enabled: false, every: 5, reward: "free_delivery", percent: 10, validDays: 14, startedAt: null, minTotal: LOYALTY_MIN_DEFAULT };
+  /* الحد الأدنى لمكافأة الولاء (عمر ١٠/١٠): المكافآت اللي لسه ماتستخدمتش — القديمة
+     والجديدة — بتمشي على الرقم اللي في اللوحة. بتتنده عند الحفظ ومع كل دورة. */
+  async function loyaltyMinSync(cfg) {
+    const r = await pool.query(LOYALTY_MIN_BACKFILL_SQL, [loyaltyMinTotal(cfg)]);
+    if (r.rowCount) console.log(`[cms] loyalty min_total → ${loyaltyMinTotal(cfg)} on ${r.rowCount} unused reward(s)`);
+    return r.rowCount;
+  }
   async function loyaltyCfg() {
     const s = await getSettingsData();
     return { ...LOYALTY_DEFAULT, ...(((s || {}).cms || {}).loyalty || {}) };
@@ -3217,8 +3225,10 @@ ${smsRules.optoutLine(cfg, { code: c?.optout_code, host: STORE_PUBLIC(), sender:
   }
   async function loyaltyRun() {
     const cfg = await loyaltyCfg();
+    await loyaltyMinSync(cfg).catch((e) => console.error("[cms] loyalty min sync:", e.message));
     if (!cfg.enabled || !cfg.startedAt) return;
     const every = Math.max(2, Number(cfg.every) || 5);
+    const minTotal = loyaltyMinTotal(cfg);
     for (const r of await loyaltyCounts(cfg)) {
       for (let k = r.issued + 1; k <= Math.floor(r.n / every); k++) {
         const code = "FC" + crypto.randomBytes(4).toString("hex").toUpperCase();
@@ -3230,9 +3240,9 @@ ${smsRules.optoutLine(cfg, { code: c?.optout_code, host: STORE_PUBLIC(), sender:
         const isFree = cfg.reward !== "percent";
         await pool.query(
           `INSERT INTO shop_coupons(code, percent, active, min_total, max_uses, expires_at, note, once_per_customer, free_delivery)
-           VALUES ($1,$2,true,0,1,$3,$4,true,$5)`,
-          [code, isFree ? 0 : Math.min(50, Number(cfg.percent) || 10), expires, `مكافأة ولاء #${k} — ${r.pn.slice(-4)}`, isFree]);
-        const what = isFree ? "توصيل مجاني" : `خصم ${Number(cfg.percent) || 10}٪`;
+           VALUES ($1,$2,true,$6,1,$3,$4,true,$5)`,
+          [code, isFree ? 0 : Math.min(50, Number(cfg.percent) || 10), expires, `مكافأة ولاء #${k} — ${r.pn.slice(-4)}`, isFree, minTotal]);
+        const what = (isFree ? "توصيل مجاني" : `خصم ${Number(cfg.percent) || 10}٪`) + (minTotal > 0 ? ` للطلبات من ${minTotal} ر.س` : "");
         notify()?.sendToAudience({ phoneNorm: r.pn, title: "مبروك! 🎁",
           body: `كمّلت ${every * k} طلبات من فريش كاتس — كوبونك ${code}: ${what} لحد ${expires}`,
           url: `${STORE_PUBLIC()}/?c=${code}`, stage: "loyalty" }).catch(() => {});
@@ -3273,6 +3283,8 @@ ${smsRules.optoutLine(cfg, { code: c?.optout_code, host: STORE_PUBLIC(), sender:
       reward: b.reward === "percent" ? "percent" : "free_delivery",
       percent: Math.min(50, Math.max(5, Number(b.percent) || 10)),
       validDays: Math.min(90, Math.max(3, Number(b.validDays) || 14)),
+      // أقل طلب تتستخدم عليه المكافأة (٠ = من غير حد). لو مااتبعتش: يفضل الحالي.
+      minTotal: loyaltyMinTotal(b.minTotal === undefined ? prev : b),
       // أول تفعيل بيثبّت نقطة البداية؛ الإيقاف والتشغيل تاني مابيعدّش التاريخ
       startedAt: enabled ? (prev.startedAt || new Date().toISOString()) : prev.startedAt,
     };
@@ -3280,7 +3292,8 @@ ${smsRules.optoutLine(cfg, { code: c?.optout_code, host: STORE_PUBLIC(), sender:
       `UPDATE settings SET data = jsonb_set(
          CASE WHEN data ? 'cms' THEN data ELSE jsonb_set(data,'{cms}','{}'::jsonb,true) END,
          '{cms,loyalty}', $1::jsonb, true) WHERE id=1`, [jb(val)]);
-    return c.json({ ok: true, config: val });
+    const synced = await loyaltyMinSync(val).catch(() => 0);
+    return c.json({ ok: true, config: val, rewardsUpdated: synced });
   });
 
   /* ═══ المرحلة ٤: لوحة التشغيل (SLA) + الهدف اليومي + الأتمتة ═══════════ */
