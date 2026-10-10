@@ -440,7 +440,7 @@ test("/api/shop/bundles فيه offer_id لكل باقة مربوطة (والشك
   assert.deepEqual(by["national96-grill"].order_kinds, ["dine_in", "pickup", "delivery"]);
   assert.deepEqual(by["national96-box"].order_kinds, ["pickup", "delivery"]);
   assert.deepEqual(Object.keys(by.family).sort(),
-    ["badge", "description", "description_en", "featured", "image", "name", "name_en", "offer_id", "order_kinds", "price",
+    ["badge", "description", "description_en", "featured", "image", "image_wide", "name", "name_en", "offer_id", "order_kinds", "price",
       "section", "section_en", "slots", "slug"]);
   // فلتر option لسه شغّال
   const pick = await call("GET", "/api/shop/bundles?option=dine_in");

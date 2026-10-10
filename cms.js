@@ -561,6 +561,8 @@ export function register(app, ctx, deps = {}) {
       ALTER TABLE cms_bundles ADD COLUMN IF NOT EXISTS section_en TEXT;
       ALTER TABLE cms_bundles ADD COLUMN IF NOT EXISTS featured BOOLEAN NOT NULL DEFAULT FALSE;
       ALTER TABLE cms_bundles ADD COLUMN IF NOT EXISTS description_en TEXT;
+      -- صورة عريضة (١٢٠٠×٥٦٠) لكاروسيل أول الصفحة وصف «المميّزة» — الصورة الأساسية مربّعة للكروت
+      ALTER TABLE cms_bundles ADD COLUMN IF NOT EXISTS image_wide TEXT;
       CREATE TABLE IF NOT EXISTS cms_migrations (id TEXT PRIMARY KEY, at TIMESTAMPTZ NOT NULL DEFAULT NOW());
     `);
     await pool.query(`
@@ -1169,7 +1171,7 @@ export function register(app, ctx, deps = {}) {
       active: r.active, sort: r.sort, updated_at: r.updated_at, updated_by: r.updated_by || "",
       offer_id: r.offer_id || null,
       section: r.section || "", section_en: r.section_en || "", featured: r.featured === true,
-      description_en: r.description_en || "",
+      description_en: r.description_en || "", image_wide: r.image_wide || "",
     };
   }
 
@@ -1385,7 +1387,7 @@ export function register(app, ctx, deps = {}) {
       active: b.active === true, sort: Number(b.sort) || 0,
       offer_id: clip(b.offer_id, 40),
       section: keep("section", 40), section_en: keep("section_en", 40),
-      description_en: keep("description_en", 600),
+      description_en: keep("description_en", 600), image_wide: keep("image_wide", 500),
       featured: has(b, "featured") ? b.featured === true : Boolean(before && before.featured),
     };
   }
@@ -1431,7 +1433,7 @@ export function register(app, ctx, deps = {}) {
     if (!slugOkB(slug)) return bundleFail(c, "bad_slug");
     const f = bundleBody(b);
     if (!f.name) return bundleFail(c, "name_required");
-    if (!okImage(f.image)) return bundleFail(c, "bad_image_url");
+    if (!okImage(f.image) || !okImage(f.image_wide)) return bundleFail(c, "bad_image_url");
     if (!(f.price > 0)) return bundleFail(c, "price_required");
     if (!f.slots.length) return bundleFail(c, "slots_required");
     const link = linkCheck(f);
@@ -1440,11 +1442,11 @@ export function register(app, ctx, deps = {}) {
     try {
       const r = await pool.query(
         `INSERT INTO cms_bundles(slug,name,name_en,description,image,badge,price,slots,order_kinds,active,sort,updated_by,offer_id,
-                                 section,section_en,featured,description_en)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17) RETURNING *`,
+                                 section,section_en,featured,description_en,image_wide)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18) RETURNING *`,
         [slug, f.name, f.name_en, f.description, f.image, f.badge, f.price,
          jb(f.slots), jb(f.order_kinds), f.active, f.sort, await who(c), f.offer_id,
-         f.section, f.section_en, f.featured, f.description_en]);
+         f.section, f.section_en, f.featured, f.description_en, f.image_wide]);
       const bundle = bundleRow(r.rows[0]);
       auditNote(c, `باقة جديدة ${slug}: ${bundleChangeNote(null, bundle)}`);
       return c.json({ ok: true, bundle, availability: availabilityOf(bundle) });
@@ -1461,7 +1463,7 @@ export function register(app, ctx, deps = {}) {
     if (!before) return c.json({ ok: false, error: "not_found", message: "الباقة مش موجودة." }, 404);
     const f = bundleBody(b, before);
     if (!f.name) return bundleFail(c, "name_required");
-    if (!okImage(f.image)) return bundleFail(c, "bad_image_url");
+    if (!okImage(f.image) || !okImage(f.image_wide)) return bundleFail(c, "bad_image_url");
     if (!(f.price > 0)) return bundleFail(c, "price_required");
     if (!f.slots.length) return bundleFail(c, "slots_required");
     const link = linkCheck(f);
@@ -1470,11 +1472,11 @@ export function register(app, ctx, deps = {}) {
     const r = await pool.query(
       `UPDATE cms_bundles SET name=$2,name_en=$3,description=$4,image=$5,badge=$6,price=$7,
          slots=$8,order_kinds=$9,active=$10,sort=$11,updated_at=NOW(),updated_by=$12,offer_id=$13,
-         section=$14,section_en=$15,featured=$16,description_en=$17
+         section=$14,section_en=$15,featured=$16,description_en=$17,image_wide=$18
        WHERE id=$1 RETURNING *`,
       [before.id, f.name, f.name_en, f.description, f.image, f.badge, f.price,
        jb(f.slots), jb(f.order_kinds), f.active, f.sort, await who(c), f.offer_id,
-       f.section, f.section_en, f.featured, f.description_en]);
+       f.section, f.section_en, f.featured, f.description_en, f.image_wide]);
     if (!r.rowCount) return c.json({ ok: false, error: "not_found" }, 404);
     const bundle = bundleRow(r.rows[0]);
     auditNote(c, `باقة ${bundle.slug}: ${bundleChangeNote(before, bundle)}`);
@@ -1652,7 +1654,7 @@ export function register(app, ctx, deps = {}) {
           image: b.image, badge: b.badge, price: b.price, order_kinds: b.order_kinds, offer_id: b.offer_id || null, slots,
           // البوكسات: القسم اللي الباقة بتتعرض تحته في المتجر + «هيرو» (أول القسم وفوق الصفحة)
           section: b.section || "", section_en: b.section_en || "", featured: b.featured === true,
-          description_en: b.description_en || "" });
+          description_en: b.description_en || "", image_wide: b.image_wide || "" });
       }
       return c.json({ ok: true, bundles: out });
     } catch (e) {
