@@ -321,7 +321,7 @@ export const TEMPLATES = [
       fallbackSms: "w_lapsed", notes: "يحترم فجوة ٢١ يوم وقواعد smsrules (ساعات الهدوء، الموقوفين، الفريق)" } }),
 
   T({ name: "fc_winback_45", category: "MARKETING", group: "marketing", ...MKT,
-    body: "وحشتنا يا {{1}} 🙌\nجهّزنا لك {{2}} على طلبك الجاي من موقع فريش كاتس بكود {{3}}، والكود صالح لين {{4}} لا يفوتك.",
+    body: "اشتقنا لك يا {{1}} 🙌\nجهّزنا لك {{2}} على طلبك الجاي من موقع فريش كاتس بكود {{3}}، والكود صالح لين {{4}} لا يفوتك.",
     vars: [FIRST_NAME, { path: "coupon.benefitText", label: "الميزة", ex: "خصم 10٪" },
       { path: "coupon.code", label: "كود شخصي لمرة وحدة", ex: "WB-4Q7M" }, { path: "coupon.expiresText", label: "الانتهاء", ex: "5 أكتوبر" }],
     buttons: [COUPON_LINK("اطلب بالكود"), qr(OPTOUT_BUTTON)],

@@ -252,6 +252,8 @@ test("19/9: auto_cart_* and geo_* events are accepted and carry no funnel step",
 
 test("19/9 evening: login-first checkout — login → OTP → address, provisional location is no step", () => {
   for (const n of ["login_start", "otp_ok", "address_pick", "address_new"]) assert.ok(J.WEB_EVENTS.includes(n), n);
+  // UX v2 (10/10): events the redesigned storefront sends
+  for (const n of ["added_sheet", "box_tier"]) assert.ok(J.WEB_EVENTS.includes(n), n);
   assert.equal(J.stepOf("login_start"), 3);
   assert.equal(J.stepOf("otp_ok"), 4);
   assert.equal(J.stepOf("address_pick", { deliverable: true }), 5);

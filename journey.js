@@ -89,6 +89,9 @@ export const WEB_EVENTS = Object.freeze([
   // ready-made ad cart landed
   "address_district", "freebar_show", "freebar_add", "freebar_done", "freebar_dismiss", "freebar_first_armed",
   "otp_resume", "preset_cart",
+  // 10/10 (UX v2): the «added to cart» sheet (open / checkout / more) and the box tier tabs.
+  // The storefront sent both from U5/U6 but the names were not listed here, so they were dropped.
+  "added_sheet", "box_tier",
 ]);
 
 /* نوع خطأ الـJS. المتصفح بيبعت kind من ١٩/٩؛ القديم بنصنّفه من الرسالة والملف.
