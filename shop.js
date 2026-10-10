@@ -49,6 +49,7 @@ import {
   classifySource, mergeSessionAttribution, SESSION_ATTR_SQL,
 } from "./checkout-meta.js";
 import { resumeKey } from "./resume-key.js";
+import { freeBarCfg } from "./freebar.js";
 import { recordCheckoutConsent } from "./consent.js";
 import { makeNameResolver } from "./product-names.js";
 import { tableSessionForCheckout, tableGate, touchTableSession, tableCfg, tableBusy, TABLE_MSG, posOptionOf, tableNote, tableTrackLabel, cleanCustomerText } from "./table-order.js";
@@ -800,6 +801,9 @@ export function register(app, ctx, deps = {}) {
       allowCash: (s.shop || {}).allowCash === true, // Omar 2026-08-12: online-only by default
       // تجربة الطلب الجديدة لكل العملاء (مفتاح في شاشة الاقتراحات باللوحة)؛ الافتراضي مقفولة
       checkout2Default: (s.shop || {}).checkout2Default === true,
+      /* 🛵 شريط التوصيل المجاني (freebar.js): مفاتيحه ونصوصه من اللوحة، كامل
+         دايماً بالافتراضيات. الحدود نفسها من firstCoupon وسلّم الرسوم. */
+      freeBar: freeBarCfg(s),
       // نصوص وروابط صفحات الـSEO في المتجر (/menu, /about, /faq, الرئيسية):
       // {home:{h1,intro,h1_en,intro_en,showIntro}, rating, links:{maps,review,
       //  instagram,tiktok,snapchat,facebook,hungerstation,keeta,ninja},

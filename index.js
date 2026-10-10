@@ -74,6 +74,7 @@ import * as whatsapp from "./whatsapp.js";
 import * as wainbox from "./wainbox.js";
 import * as wacloud from "./wacloud.js";
 import * as carts from "./carts.js";
+import * as freebar from "./freebar.js";
 import * as openwait from "./openwait.js";
 import * as service from "./service.js";
 import * as preorder from "./preorder.js";
@@ -3132,6 +3133,7 @@ import("./wabot.js").then((m) => waApi.setBot(m.default && m.default.matchIntent
 const notifyApi = notify.register(app, moduleCtx, { wa: waApi });
 // السلات المتروكة: لقطات من المتجر + سلّم استرداد (إشعار ثم SMS) + أرقام اللوحة
 const cartsApi = carts.register(app, moduleCtx, { notify: notifyApi });
+freebar.register(app, moduleCtx);
 // رحلة العميل (٠٢): دفعات أحداث المتجر + checkout_result/order_paid من السيرفر + تقرير #store/analytics/journey
 const journeyApi = journey.register(app, moduleCtx, { analytics: analyticsApi });
 // Clarity (١٨ سبتمبر): سحب يومي لإشارات الإحباط (rage/dead/quickback/أخطاء) → لوحة جوه رحلة العميل

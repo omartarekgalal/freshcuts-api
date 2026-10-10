@@ -25,6 +25,7 @@
 import crypto from "node:crypto";
 import * as smsRules from "./smsrules.js";
 import { renderTemplate } from "./smstemplates.js";
+import * as cartPresets from "./cartpresets.js";
 const sendAdSms = (pn, body, meta) => smsRules.sendAdSms(pn, body, meta);
 
 const env = (k, d) => (process.env[k] || d || "").toString().trim();
@@ -189,11 +190,17 @@ export function register(app, ctx, deps = {}) {
       UPDATE shop_carts SET nudges = '[]'::jsonb WHERE jsonb_array_length(nudges) > 5;
       CREATE INDEX IF NOT EXISTS shop_carts_phone_idx ON shop_carts(phone_norm) WHERE phone_norm IS NOT NULL;
       CREATE INDEX IF NOT EXISTS shop_carts_open_idx ON shop_carts(updated_at DESC) WHERE recovered_order IS NULL;
+      -- 🛍 سلات جاهزة للإعلانات (cartpresets.js) — نفس رابط /c/<code>
+      ${cartPresets.PRESETS_DDL}
     `);
   }
   ensureSchema()
     .then(() => console.log("[carts] schema ready"))
     .catch((e) => console.error("[carts] schema failed:", e.message));
+
+  /* 🛍 السلات الجاهزة (cartpresets.js): مسارات اللوحة + اللي مساري الاسترداد
+     العامّين تحت بينده عليه لما الكود مايبقاش رابط استرداد. */
+  const presets = cartPresets.register(app, ctx, { rawCart, menuIds: deps.presetMenuIds });
 
   /* ── PUBLIC: لقطة السلة من المتجر ─────────────────────────────────────
      بتتنده عند كل تغيير مهم (debounced في الواجهة). مفيش أسرار هنا —
@@ -446,6 +453,8 @@ export function register(app, ctx, deps = {}) {
   async function createFlow(row) {
     for (let i = 0; i < 5; i++) {
       const code = newCode();
+      // كود سلة جاهزة (المالك بيختاره) عمره ما يتاخد لرابط استرداد
+      if (await presets.codeTaken(code).catch(() => false)) continue;
       const r = await pool.query(
         `INSERT INTO cart_recovery(code, phone_norm, device_id, subtotal, item_count, items, cart_raw, option)
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT (code) DO NOTHING RETURNING id, code`,
@@ -475,7 +484,12 @@ export function register(app, ctx, deps = {}) {
         WHERE code=$1 AND started_at > NOW() - INTERVAL '7 days'
         RETURNING phone_norm, step1_channel, step2_at`, [code]);
     const f = r.rows[0];
-    if (!f) return c.json({ ok: false }, 404);
+    if (!f) {
+      /* مش رابط استرداد ⇒ يمكن سلة جاهزة: بتتفتح للأبد، والكوبون بيتحط دايماً
+         (الأهلية بتتراجع في المتجر/الدفع). موقوفة أو مش موجودة = نفس الـ404. */
+      const url = await presets.openPreset(code).catch(() => null);
+      return url ? c.json({ ok: true, url }) : c.json({ ok: false }, 404);
+    }
     const cfg = cartCfg(await getSettingsData());
     const q = new URLSearchParams();
     q.set("cart", code);
@@ -496,7 +510,10 @@ export function register(app, ctx, deps = {}) {
     const f = (await pool.query(
       `SELECT items, cart_raw, option, subtotal, order_no FROM cart_recovery
         WHERE code=$1 AND started_at > NOW() - INTERVAL '7 days'`, [code])).rows[0];
-    if (!f) return c.json({ ok: false, error: "expired" }, 404);
+    if (!f) {
+      const preset = await presets.restorePreset(code).catch(() => null);
+      return preset ? c.json(preset) : c.json({ ok: false, error: "expired" }, 404);
+    }
     return c.json({ ok: true, items: f.items || [], raw: f.cart_raw || null, option: f.option,
       subtotal: Number(f.subtotal) || 0, ordered: Boolean(f.order_no) });
   });

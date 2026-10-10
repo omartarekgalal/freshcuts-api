@@ -61,6 +61,7 @@ export const SERVER_OWNED_PATHS = [
   "tables",                     // table-order.js (QR الطاولات — /api/tables/admin/config)
   "shop.recommendations",       // recs.js
   "shop.checkout2Default",      // recs.js (مفتاح «التجربة الجديدة لكل العملاء»)
+  "freeBar",                    // freebar.js (شريط التوصيل المجاني — /api/delivery/free-bar)
 ];
 
 /* مسارات ليها كاتبين: شاشة PUT كاملة + السيرفر (catalog.hiddenIds: شاشة
