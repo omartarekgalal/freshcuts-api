@@ -61,6 +61,7 @@ export const SERVER_OWNED_PATHS = [
   "tables",                     // table-order.js (QR الطاولات — /api/tables/admin/config)
   "shop.recommendations",       // recs.js
   "shop.checkout2Default",      // recs.js (مفتاح «التجربة الجديدة لكل العملاء»)
+  "shop.addressFirst",          // recs.js (مفتاح «العنوان قبل رقم الجوال» — G2)
   "freeBar",                    // freebar.js (شريط التوصيل المجاني — /api/delivery/free-bar)
 ];
 

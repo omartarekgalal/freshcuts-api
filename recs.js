@@ -727,7 +727,8 @@ export function register(app, ctx, deps = {}) {
       const d = await settingsData(true);
       try { await loadModel(); } catch { /* الجدول لسه مااتبناش */ }
       return c.json({ ok: true, settings: recSettingsOf(d), defaults: DEFAULT_SETTINGS, model: buildInfo(),
-        checkout2Default: (d?.shop || {}).checkout2Default === true });
+        checkout2Default: (d?.shop || {}).checkout2Default === true,
+        addressFirst: (d?.shop || {}).addressFirst !== false });
     } catch (e) {
       return c.json({ ok: false, error: String(e.message || e) }, 500);
     }
@@ -741,7 +742,20 @@ export function register(app, ctx, deps = {}) {
     /* checkout2Default (تجربة الطلب الجديدة لكل العملاء، shop.checkout2Default)
        — الشاشة بتبعته هنا، وnormalizeSettings كانت بترميه فعمره ما اتحفظ
        (باج ٢٨/٩). للمالك بس، ومفتاح واحد بـjsonb_set. */
-    const { checkout2Default: c2, ...rest } = b;
+    const { checkout2Default: c2, addressFirst: af, ...rest0 } = b;
+    let rest = rest0;
+    /* addressFirst (G2 — «العنوان قبل رقم الجوال»، shop.addressFirst): نفس طريقة checkout2Default — للمالك فقط، مفتاح واحد
+       بـjsonb_set، والمتجر يقرأه من /api/shop/storefront عند فتح الصفحة التالية. */
+    if (af !== undefined) {
+      if (typeof ctx.isOwner === "function" && !ctx.isOwner(c)) return c.json({ ok: false, error: "owner_only" }, 403);
+      if (typeof af !== "boolean") return c.json({ ok: false, error: "addressFirst must be boolean" }, 400);
+      await pool.query(
+        `UPDATE settings SET data = jsonb_set(
+           CASE WHEN jsonb_typeof(data->'shop') = 'object' THEN data ELSE jsonb_set(data, '{shop}', '{}'::jsonb, true) END,
+           '{shop,addressFirst}', $1::jsonb, true) WHERE id=1`, [J(af)]);
+      state.settingsData = null; state.settingsAt = 0;
+      if (c2 === undefined && !Object.keys(rest).length) return c.json({ ok: true, addressFirst: af });
+    }
     let c2Saved = null;
     if (c2 !== undefined) {
       if (typeof ctx.isOwner === "function" && !ctx.isOwner(c)) return c.json({ ok: false, error: "owner_only" }, 403);
@@ -752,7 +766,7 @@ export function register(app, ctx, deps = {}) {
            '{shop,checkout2Default}', $1::jsonb, true) WHERE id=1`, [J(c2)]);
       c2Saved = c2;
       state.settingsData = null; state.settingsAt = 0;
-      if (!Object.keys(rest).length) return c.json({ ok: true, checkout2Default: c2Saved });
+      if (!Object.keys(rest).length) return c.json({ ok: true, checkout2Default: c2Saved, ...(af !== undefined ? { addressFirst: af } : {}) });
     }
     const d = await settingsData(true);
     const cur = recSettingsOf(d);
@@ -767,7 +781,8 @@ export function register(app, ctx, deps = {}) {
       rebuilding = true;
       build({ reason: "settings" }).catch(() => {});
     }
-    return c.json({ ok: true, settings: next, rebuilding, checkout2Default: c2Saved ?? ((d?.shop || {}).checkout2Default === true) });
+    return c.json({ ok: true, settings: next, rebuilding, checkout2Default: c2Saved ?? ((d?.shop || {}).checkout2Default === true),
+      addressFirst: af !== undefined ? af : (d?.shop || {}).addressFirst !== false });
   });
 
   app.get("/api/cms/recommendations/preview", async (c) => {

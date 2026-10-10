@@ -94,7 +94,7 @@ function fakePool({ data = fakeOrdersData(), settings = {}, sessions = {}, custo
     if (/FROM ts_orders o JOIN ts_order_items i/i.test(s)) return { rows: customerTs[p[0]] || [] };
     if (/^UPDATE settings/i.test(s)) {
       db.writes.push({ sql: s, value: JSON.parse(p[0]) });
-      const key = /\{shop,checkout2Default\}/.test(s) ? "checkout2Default" : "recommendations";
+      const key = /\{shop,checkout2Default\}/.test(s) ? "checkout2Default" : /\{shop,addressFirst\}/.test(s) ? "addressFirst" : "recommendations";
       db.settings = { ...db.settings, shop: { ...(db.settings.shop || {}), [key]: JSON.parse(p[0]) } };
       return { rows: [], rowCount: 1 };
     }
@@ -414,6 +414,40 @@ test("checkout2Default: بيتحفظ فعلاً (كان normalizeSettings بير
   assert.equal(pool.settings.shop.checkout2Default, true);
   j = await (await app.request("/api/cms/recommendations/settings")).json();
   assert.equal(j.checkout2Default, true, "GET بيرجّع القيمة المحفوظة");
+});
+
+test("addressFirst (G2): شغّال افتراضياً، بيتقفل ويتفتح من نفس الـPUT — للمالك بس، مفتاح واحد", async () => {
+  const pool = fakePool();
+  const app = new Hono();
+  let owner = false;
+  recs.register(app, {
+    pool, requireAdmin: async () => null, getSettingsData: async () => pool.settings, jb: (v) => JSON.stringify(v),
+    isOwner: () => owner,
+  }, { menuRows: async () => MENU, rawMenu: null, hiddenOfferIds: () => new Set(), now: () => NOW, schedule: false });
+  const put = (body) => app.request("/api/cms/recommendations/settings", {
+    method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  const get = async () => (await app.request("/api/cms/recommendations/settings")).json();
+  assert.equal((await get()).addressFirst, true, "من غير أي قيمة محفوظة = شغّال");
+  assert.equal((await put({ addressFirst: false })).status, 403, "مش مالك ⇒ 403");
+  assert.equal(pool.writes.length, 0);
+  owner = true;
+  assert.equal((await put({ addressFirst: "no" })).status, 400);
+  let j = await (await put({ addressFirst: false })).json();
+  assert.deepEqual(j, { ok: true, addressFirst: false });
+  assert.equal(pool.writes.length, 1, "مفتاح واحد بس — الاقتراحات وcheckout2Default ما اتلمسوش");
+  assert.match(pool.writes[0].sql, /'\{shop,addressFirst\}'/);
+  assert.equal(pool.settings.shop.addressFirst, false);
+  assert.equal(pool.settings.shop.checkout2Default, undefined);
+  assert.equal((await get()).addressFirst, false, "GET بيرجّع القيمة المحفوظة");
+  j = await (await put({ addressFirst: true })).json();
+  assert.equal(j.addressFirst, true);
+  assert.equal((await get()).addressFirst, true);
+  // المفتاحين مع بعض في نفس الطلب
+  j = await (await put({ addressFirst: false, checkout2Default: true })).json();
+  assert.equal(j.addressFirst, false);
+  assert.equal(j.checkout2Default, true);
+  assert.equal(pool.settings.shop.addressFirst, false);
+  assert.equal(pool.settings.shop.checkout2Default, true);
 });
 
 test("admin preview: score, together, lift, source split, eligibility", async () => {

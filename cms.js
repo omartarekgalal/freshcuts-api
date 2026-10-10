@@ -465,6 +465,7 @@ export function register(app, ctx, deps = {}) {
       );
       CREATE INDEX IF NOT EXISTS cms_flow_log_idx ON cms_flow_log(phone_norm, sent_at DESC);
       -- ١٧ سبتمبر: جدولة الحملة + holdout + دفتر لكل مستلم (نتيجة ونسب وفاصل ٢١ يوم)
+      ALTER TABLE cms_links ADD COLUMN IF NOT EXISTS autocart BOOLEAN NOT NULL DEFAULT FALSE;
       ALTER TABLE cms_campaigns ADD COLUMN IF NOT EXISTS scheduled_at TIMESTAMPTZ;
       ALTER TABLE cms_campaigns ADD COLUMN IF NOT EXISTS confirm_audience INT;
       ALTER TABLE cms_campaigns ADD COLUMN IF NOT EXISTS holdout_pct INT NOT NULL DEFAULT 0;
@@ -2041,8 +2042,16 @@ export function register(app, ctx, deps = {}) {
       // الوسيط الصريح بيكسب — من غيره بوستات السوشال العضوية كانت بتتسجّل «paid»
       utm_source, utm_medium: clip(b.utm_medium, 30) || MEDIUM[utm_source] || "paid",
       utm_campaign: clip(b.utm_campaign, 80),
+      // G2: رابط بوكس «بسلة جاهزة» — البوكس ينزل في السلة باختياراته الافتراضية والسلة تُفتح (مقفول افتراضياً)
+      autocart: target_type === "box" && b.autocart === true,
     };
   }
+  /* عمود autocart في جملة مستقلة: جمل الإدراج/التعديل الأصلية كما هي (والروابط التي ينشئها باقي النظام لا تعرفه). */
+  const saveAutocart = async (row, on) => {
+    if (!row) return row;
+    try { await pool.query("UPDATE cms_links SET autocart=$2 WHERE id=$1", [row.id, on === true]); row.autocart = on === true; } catch { /* عمود لم يُنشأ بعد */ }
+    return row;
+  };
 
   app.get("/api/cms/links", async (c) => {
     const err = await requireAdmin(c); if (err) return err;
@@ -2061,7 +2070,7 @@ export function register(app, ctx, deps = {}) {
         `INSERT INTO cms_links(slug, label, target_type, target_id, coupon, utm_source, utm_medium, utm_campaign, active, created_by)
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING *`,
         [slug, x.label, x.target_type, x.target_id, x.coupon, x.utm_source, x.utm_medium, x.utm_campaign, b.active !== false, await who(c)]);
-      return c.json({ ok: true, link: r.rows[0] });
+      return c.json({ ok: true, link: await saveAutocart(r.rows[0], x.autocart) });
     } catch (e) {
       if (String(e.message).includes("duplicate")) return c.json({ ok: false, error: "slug_taken" }, 409);
       throw e;
@@ -2086,7 +2095,7 @@ export function register(app, ctx, deps = {}) {
                 utm_medium=$8, utm_campaign=$9, active=$10 WHERE id=$1 RETURNING *`,
         [id, slug, x.label, x.target_type, x.target_id, x.coupon, x.utm_source, x.utm_medium, x.utm_campaign, b.active !== false]);
       if (!r.rowCount) return c.json({ ok: false, error: "not_found" }, 404);
-      return c.json({ ok: true, link: r.rows[0] });
+      return c.json({ ok: true, link: await saveAutocart(r.rows[0], x.autocart) });
     } catch (e) {
       if (String(e.message).includes("duplicate")) return c.json({ ok: false, error: "slug_taken" }, 409);
       throw e;
@@ -2187,7 +2196,7 @@ export function register(app, ctx, deps = {}) {
     // عرض: ?go=offers&offer=<id> — المتجر بيفتح منتقي العرض على طول (مسار ٠١)
     if (l.target_type === "offer" && l.target_id) { q.set("go", "offers"); q.set("offer", l.target_id); }
     // بوكس: ?go=offers&box=<slug> — المتجر بيفتح منتقي البوكس على طول؛ نسخة قديمة بتنزل على قسم البوكسات
-    if (l.target_type === "box" && l.target_id) { q.set("go", "offers"); q.set("box", l.target_id); }
+    if (l.target_type === "box" && l.target_id) { q.set("go", "offers"); q.set("box", l.target_id); if (l.autocart === true) q.set("bxadd", "1"); }
     q.set("fc_link", l.slug);
     return c.json({ ok: true, url: "/?" + q.toString() });
   });
