@@ -146,7 +146,36 @@ export function metaUserData(e = {}) {
   if (em) user_data.em = [em];
   const ext = externalIdsOf(e);
   if (ext.length) user_data.external_id = ext;
+  // T1 (10/10 tracking audit): more match keys, only from facts we hold.
+  const nm = nameParts(e.fullName);
+  if (nm.fn) user_data.fn = [sha256hex(nm.fn)];
+  if (nm.ln) user_data.ln = [sha256hex(nm.ln)];
+  const ct = geoKey(e.city);
+  if (ct) user_data.ct = [sha256hex(ct)];
+  const country = e.country || countryOfDigits(e.digits);
+  if (country) user_data.country = [sha256hex(country)];
   return user_data;
+}
+/* T1 — Meta formats: fn/ln lowercase, no punctuation, UTF-8 (Arabic is hashed as
+   typed); ct lowercase letters only; country = ISO-2 lowercase. A placeholder
+   name («عميل», "customer") is not a name. */
+const NAME_PLACEHOLDER = /^(عميل|عميل اونلاين|عميل أونلاين|customer|guest|test)$/i;
+export function nameParts(full) {
+  const clean = String(full || "").normalize("NFKC").toLowerCase().replace(/[^\p{L}\s]/gu, " ").replace(/\s+/g, " ").trim();
+  if (!clean || clean.length < 2 || NAME_PLACEHOLDER.test(clean)) return { fn: null, ln: null };
+  const parts = clean.split(" ");
+  return { fn: parts[0], ln: parts.length > 1 ? parts[parts.length - 1] : null };
+}
+export const geoKey = (v) => { const s = String(v || "").toLowerCase().replace(/[^a-z]/g, ""); return s || null; };
+/* A Saudi mobile (9665XXXXXXXX) is a Saudi customer. Nothing else is claimed. */
+export const countryOfDigits = (digits) => (/^9665\d{8}$/.test(String(digits || "")) ? "sa" : null);
+/* Snap's Conversions API rejects the whole request ("Request parsing failed",
+   HTTP 400) when external_id holds more than one value — measured 10/10: every
+   event that carried a phone (142 events, all 4 paid orders) was lost at Snap
+   from the moment C5 started sending [device, phone]. One value only. */
+export function snapExternalId(e = {}) {
+  const ext = externalIdsOf(e);
+  return ext.length ? [ext[0]] : null;
 }
 /* A click id remembered from an earlier event of the same device / phone: the
    customer who clicked the ad on Monday and pays on Thursday from a tab that
@@ -251,6 +280,9 @@ export function serverPurchaseEvent(order, { contents = [], digits = null, now =
     // C5: the device that placed the order (shop.js stores fc_dev on the order)
     anonId: deviceIdOf(order?.customer?.deviceId),
     externalId: deviceExternalId({ anonId: order?.customer?.deviceId }),
+    // T1: the name the customer gave at checkout; the store delivers inside Jeddah only
+    fullName: s(order?.customer?.name, 80),
+    city: "jeddah",
     utm: a.utm && typeof a.utm === "object" ? a.utm : {},
     click: {
       fbp: s(click.fbp, 200), fbc: fbcOf(click, a.landing_at),
@@ -429,8 +461,8 @@ export function register(app, ctx, deps = {}) {
     const em = hashEmail(e.email);
     if (ph) user_data.ph = [ph];
     if (em) user_data.em = [em];
-    const ext = externalIdsOf(e);       // C5
-    if (ext.length) user_data.external_id = ext;
+    const ext = snapExternalId(e);      // C5 + T1: Snap takes ONE value
+    if (ext) user_data.external_id = ext;
     return {
       url: `https://tr.snapchat.com/v3/${pixel}/events?access_token=${token}`,
       headers: { "Content-Type": "application/json" },
@@ -495,7 +527,7 @@ export function register(app, ctx, deps = {}) {
       try {
         const res = await http(call.url, { method: "POST", headers: call.headers, body: call.body, timeout: 10000 });
         const ok = f.okOf(res);
-        results[f.id] = ok ? { sent: true } : { error: res.json?.error?.message || res.json?.message || res.error || `HTTP ${res.status}` };
+        results[f.id] = ok ? { sent: true } : { error: String(res.json?.error?.message || res.json?.message || res.json?.reason || res.error || `HTTP ${res.status}`).slice(0, 200) };
         await finishPurchase(rowId, ok, { via: claimSource, httpStatus: res.status });
       } catch (err) {
         results[f.id] = { error: String(err.message || err) };

@@ -393,7 +393,8 @@ test("route: الأحداث التانية (AddToCart) مابيتطبقش علي
 test("loadOrdersQuery: شرط الاستبعاد موجود والمعاملات مرقّمة", () => {
   const q = loadOrdersQuery("2026-09-01", "2026-09-16", 500);
   assert.equal(WEB_ORDER_HOLD_HOURS, 6);
-  assert.match(q.text, /NOT EXISTS\s*\(\s*SELECT 1 FROM shop_orders so\s+WHERE so\.pos_order_id = o\.order_id\s+AND so\.created_at > NOW\(\) - \(\$4 \|\| ' hours'\)::interval\)/);
+  // T1 (10/10): the hold matches the shop order by partner hash id OR tenant number
+  assert.match(q.text, /NOT EXISTS\s*\(\s*SELECT 1 FROM shop_orders so\s+WHERE \(so\.pos_order_id = o\.order_id OR so\.pos_tenant_order_id = o\.order_id\)\s+AND so\.created_at > NOW\(\) - \(\$4 \|\| ' hours'\)::interval\)/);
   assert.deepEqual(q.values, ["2026-09-01", "2026-09-16", 500, "6"]);
   assert.match(q.text, /LIMIT \$3/);
 });

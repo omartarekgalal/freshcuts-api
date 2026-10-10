@@ -732,7 +732,7 @@ export function createGoogleAdapter({ httpJson, hashEmail, hashPhonePlus, google
       return {
         ...(e.orderId ? { transactionId: String(e.orderId) } : {}),
         eventTimestamp: (Number.isFinite(t.getTime()) ? t : new Date()).toISOString(),
-        eventSource: e.actionSource === "website" ? "WEB" : "IN_STORE",
+        eventSource: e.actionSource === "website" || e.webOrder === true ? "WEB" : "IN_STORE",   // T1: a website order seen at the till is still a WEB sale
         conversionValue: Number(e.value) || 0,
         currency: e.currency || "SAR",
         ...(ids.length ? { userData: { userIdentifiers: ids } } : {}),

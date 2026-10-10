@@ -171,6 +171,8 @@ export async function gateOfflineRows(pool, rows, { trigger = "sync" } = {}) {
       web = new Set(r.rows.map((x) => String(x.pos_order_id)));
     } catch { /* مانعرفش مين ويب ⇒ كله يتعامل أوفلاين (الأضيق) */ }
   }
+  // T1: loadOrders already resolved the shop order behind a till row (partner hash id OR tenant number)
+  for (const r of rows) if (r.web_pos_id) web.add(String(r.order_id));
   const webRows = rows.filter((r) => web.has(String(r.order_id)));
   const pos = rows.filter((r) => !web.has(String(r.order_id)));
   const stats = { candidates: pos.length, excluded_optout: 0, excluded_no_consent: 0, excluded_no_phone: 0, kept: 0 };

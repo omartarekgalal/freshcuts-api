@@ -2336,21 +2336,48 @@ export function loadOrdersQuery(from, to, limit = 5000, { holdHours = WEB_ORDER_
               o.total, o.customer_id, o.branch,
               COALESCE(NULLIF(s.phone_norm,''), NULLIF(tc.phone_norm,'')) AS phone_norm,
               NULLIF(tc.email,'') AS email,
-              s.source AS src, s.source_note AS src_note
+              s.source AS src, s.source_note AS src_note,
+              web.pos_order_id AS web_pos_id, web.click AS web_click
          FROM ts_orders o
          LEFT JOIN ts_customers tc ON tc.customer_id = o.customer_id
          LEFT JOIN order_sources s ON s.order_id = o.order_id
+         LEFT JOIN LATERAL (
+                SELECT w.pos_order_id, w.attribution->'click' AS click
+                  FROM shop_orders w
+                 WHERE w.pos_order_id = o.order_id OR w.pos_tenant_order_id = o.order_id
+                 ORDER BY w.created_at DESC LIMIT 1) web ON TRUE
         WHERE ${SALES_ONLY}
           AND o.calendar_day >= $1::date AND o.calendar_day <= $2::date
           AND COALESCE(o.total, 0) > 0
           AND NOT EXISTS (
                 SELECT 1 FROM shop_orders so
-                 WHERE so.pos_order_id = o.order_id
+                 WHERE (so.pos_order_id = o.order_id OR so.pos_tenant_order_id = o.order_id)
                    AND so.created_at > NOW() - ($4 || ' hours')::interval)
         ORDER BY o.order_date ASC
         LIMIT $3`,
     values: [from, to, limit, String(holdHours)],
   };
+}
+
+/* T1 (10/10 tracking audit) — a WEBSITE order seen again at the till.
+   Since the TabSense partner integration (week of 14/9) shop_orders.pos_order_id
+   is the partner hash id ("PngGq71OeN") while ts_orders.order_id is the tenant
+   number ("5279", = shop_orders.pos_tenant_order_id). The website Purchase is
+   claimed under the hash id, the till sync claimed the number, so nothing
+   matched: ~90% of website orders were reported to Meta / TikTok / Snap a
+   second time as a store sale, and Google never received the order's gclid.
+   The till row of a website order now uses the SAME key as the website
+   Purchase (so the claim in ads_events refuses the duplicate) and carries the
+   click ids saved on the order. `legacyId` = the key older syncs used. */
+export function webOrderOverlay(row = {}) {
+  const pos = row.web_pos_id ? String(row.web_pos_id) : "";
+  if (!pos) return null;
+  const c = row.web_click && typeof row.web_click === "object" ? row.web_click : {};
+  const pick = (k) => (c[k] ? String(c[k]).slice(0, 300) : null);
+  const click = { gclid: pick("gclid"), gbraid: pick("gbraid"), wbraid: pick("wbraid") };
+  const legacyId = String(row.order_id ?? "");
+  return { orderId: pos, legacyId: legacyId && legacyId !== pos ? legacyId : null,
+    click: click.gclid || click.gbraid || click.wbraid ? click : null };
 }
 
 export function register(app, ctx, deps = {}) {
@@ -2558,6 +2585,28 @@ export function register(app, ctx, deps = {}) {
   // A restaurant sale, expressed the same way for every platform.
   function toEvent(row, eventName = "Purchase", items = null, click = null) {
     const digits = row.phone_norm ? phoneDigits(row.phone_norm, normPhone) : null;
+    const web = webOrderOverlay(row);
+    if (web && web.click) click = web.click;          // the click saved on the order itself
+    const ev = baseEvent(row, eventName, items, click, digits);
+    if (web) { ev.eventId = web.orderId; ev.orderId = web.orderId; ev.webOrder = true; ev.legacyId = web.legacyId; }
+    return ev;
+  }
+  /* Orders already reported under the old (tenant number) key must not go out
+     again under the new one. One query per sync; never throws. */
+  async function markLegacyReported(events) {
+    const ids = events.filter((e) => e.webOrder && e.legacyId).map((e) => e.legacyId);
+    if (!ids.length) return events;
+    try {
+      const r = await pool.query(
+        `SELECT order_id, platform FROM ads_events
+          WHERE event_name = 'Purchase' AND order_id = ANY($1::text[]) AND status IN ('sent','pending')`, [ids]);
+      const by = new Map();
+      for (const x of r.rows) { if (!by.has(x.order_id)) by.set(x.order_id, new Set()); by.get(x.order_id).add(x.platform); }
+      for (const e of events) if (e.webOrder && e.legacyId && by.has(e.legacyId)) e.legacyReported = by.get(e.legacyId);
+    } catch (err) { console.error("[ads] legacy-claim lookup failed:", err.message); }
+    return events;
+  }
+  function baseEvent(row, eventName, items, click, digits) {
     return {
       // Google only. Exactly one of the three is ever set on a click, and the
       // adapter sends whichever is present — never a substitute.
@@ -2708,6 +2757,12 @@ export function register(app, ctx, deps = {}) {
       const eligible = events.filter((e) => p.usable(e));
       out.skipped += events.length - eligible.length;
       events = eligible;
+    }
+    {
+      // T1: a website order this platform already has under the old till key
+      const fresh = events.filter((e) => !(e.legacyReported && e.legacyReported.has(p.id)));
+      out.skipped += events.length - fresh.length;
+      events = fresh;
     }
 
     if (dryRun) {
@@ -2944,8 +2999,8 @@ export function register(app, ctx, deps = {}) {
     let clickByOrder = new Map();
     try { clickByOrder = await loadClickIds(ids); }
     catch (e) { console.error("[ads] click ids load failed:", e.message); }
-    const events = rows.map((r) => toEvent(r, b.eventName || "Purchase",
-      itemsByOrder.get(String(r.order_id)) || null, clickByOrder.get(String(r.order_id)) || null));
+    const events = await markLegacyReported(rows.map((r) => toEvent(r, b.eventName || "Purchase",
+      itemsByOrder.get(String(r.order_id)) || null, clickByOrder.get(String(r.order_id)) || null)));
 
     const results = {};
     for (const p of targets) {
@@ -3763,8 +3818,8 @@ export function register(app, ctx, deps = {}) {
       try { itemsByOrder = await loadItems(ids); } catch { /* bonus */ }
       let clickByOrder = new Map();
       try { clickByOrder = await loadClickIds(ids); } catch { /* bonus */ }
-      const events = rows.map((r) => toEvent(r, "Purchase",
-        itemsByOrder.get(String(r.order_id)) || null, clickByOrder.get(String(r.order_id)) || null));
+      const events = await markLegacyReported(rows.map((r) => toEvent(r, "Purchase",
+        itemsByOrder.get(String(r.order_id)) || null, clickByOrder.get(String(r.order_id)) || null)));
       const results = {};
       for (const p of PLATFORMS) {
         if (!canSend(p)) continue;
