@@ -15,13 +15,17 @@
      • بس في نافذة الفتح (من ميعاد فتح اليوم ولمدة openWindowMinutes) —
        يعني عمرها ما تتبعت ٣ الفجر ولا قبل ١٢ الضهر.
      • اللي طلب فعلاً بعد ما سجّل ⇒ بيتشال من غير رسالة.
-     • الموقوفين (/u/<code>) وأرقام الفريق مستبعدين.
+     • الموقوفين (/u/<code>) مستبعدين. أرقام الفريق **مش** مستبعدة (١٠/١٠):
+       اللي كتب رقمه بإيده طلب التنبيه — واستبعادهم كان بيخلّي تجربة المالك
+       نفسه تفشل في صمت (صفّين skip_reason='staff' يوم ٢٣/٩).
+     • لو الجهاز مفعّل الإشعارات: Push **و** SMS مع بعض (١٠/١٠). الـPush فوري
+       وببلاش بس وصوله مش مضمون (البطارية/المتصفح مقفول)، والـSMS المعاملاتي
+       بيوصل ٩٩٫٨٪ — والعميل طلب تنبيه واحد مهم، فمانراهنش على قناة واحدة.
      • سقف لكل دورة (capPerRun) عشان فاتورة الرسايل تفضل متوقّعة.
 ═══════════════════════════════════════════════════════════════════════════ */
 
 import { isOpenNow } from "./carts.js";
 import { serviceState, serviceCfg } from "./service.js";
-import { staffPhoneSet } from "./smsrules.js";
 
 const DAYS = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"];
 const PAID_SQL = "status NOT IN ('pending_payment','expired','rejected_refunded','refund_failed','paid_pos_failed')";
@@ -32,6 +36,9 @@ export const OPENWAIT_DEFAULTS = {
   openWindowMinutes: 240,   // نبعت في أول ٤ ساعات من الفتح بس
   capPerRun: 60,
   maxAgeHours: 48,          // سجّل من يومين ولسه ماجاش؟ خلاص
+  pushEnabled: true,        // إشعار فوري للي فعّل الإشعارات (مع الـSMS مش بداله)
+  pushTitle: "فريش كاتس فتح 🔔",
+  pushText: "سلتك محفوظة — اضغط وكمّل طلبك.",
 };
 
 const clampN = (v, lo, hi, d) => { const n = Number(v); return Number.isFinite(n) ? Math.min(hi, Math.max(lo, n)) : d; };
@@ -43,6 +50,9 @@ export function openWaitCfg(settings) {
     openWindowMinutes: Math.round(clampN(x.openWindowMinutes, 30, 720, 240)),
     capPerRun: Math.round(clampN(x.capPerRun, 1, 500, 60)),
     maxAgeHours: Math.round(clampN(x.maxAgeHours, 2, 168, 48)),
+    pushEnabled: typeof x.pushEnabled === "boolean" ? x.pushEnabled : true,
+    pushTitle: String(x.pushTitle || OPENWAIT_DEFAULTS.pushTitle).slice(0, 60),
+    pushText: String(x.pushText || OPENWAIT_DEFAULTS.pushText).slice(0, 140),
   };
 }
 
@@ -149,9 +159,35 @@ export function register(app, ctx, deps = {}) {
                      item_count = EXCLUDED.item_count, subtotal = EXCLUDED.subtotal,
                      option = EXCLUDED.option, created_at = NOW()`,
       [phone, device, code, itemCount, Number(b.subtotal) || 0,
-       b.option ? String(b.option).slice(0, 12) : null, b.source === "strip" ? "strip" : "checkout"]);
+       b.option ? String(b.option).slice(0, 12) : null, ["strip", "cart"].includes(b.source) ? b.source : "checkout"]);
     return c.json({ ok: true, joined: true, open: false });
   });
+
+  /* إشعار الفتح للي فعّل الإشعارات — بالجوال أو بنفس الجهاز اللي سجّل منه.
+     بيرجّع true لو اشتراك واحد على الأقل قبِل الإشعار. عمره ما بيرمي. */
+  async function pushOpen(cfg, w, link) {
+    if (!cfg.pushEnabled) return false;
+    try {
+      return Boolean(await notify()?.sendToAudience?.({
+        phoneNorm: w.phone_norm, deviceId: w.device_id || null,
+        title: cfg.pushTitle, body: cfg.pushText, url: `https://${link}`, stage: "waitlist",
+      }));
+    } catch (e) { console.error("[openwait] push failed:", e.message); return false; }
+  }
+
+  /* اللي اتبعتله وطلب بعدها (٧٢ ساعة) — قبل ١٠/١٠ order_no كان بيتكتب بس للي
+     اتشال قبل الإرسال، فكارت اللوحة «طلبوا بعدها» كان دايماً صفر. */
+  async function attributeOrders() {
+    await pool.query(
+      `UPDATE open_waitlist w SET order_no = o.order_no, ordered_at = o.created_at
+         FROM (SELECT DISTINCT ON (w2.id) w2.id, so.order_no, so.created_at
+                 FROM open_waitlist w2 JOIN shop_orders so
+                   ON so.phone_norm = w2.phone_norm AND so.${PAID_SQL}
+                  AND so.created_at > w2.created_at AND so.created_at < w2.notified_at + INTERVAL '72 hours'
+                WHERE w2.notified_at > NOW() - INTERVAL '4 days' AND w2.order_no IS NULL
+                ORDER BY w2.id, so.created_at) o
+        WHERE w.id = o.id`).catch((e) => console.error("[openwait] attribution failed:", e.message));
+  }
 
   /* ── الحارس: رسالة واحدة وقت الفتح ───────────────────────────────────── */
   let running = false;
@@ -168,6 +204,7 @@ export function register(app, ctx, deps = {}) {
           WHERE notified_at IS NULL AND skip_reason IS NULL
             AND created_at < $1::timestamptz - ($2 || ' hours')::interval`,
         [now.toISOString(), String(cfg.maxAgeHours)]);
+      await attributeOrders();
       if (!isOpenNow(s.hours, now)) return { skipped: "closed" };
       if (serviceState(s, now).allPaused) return { skipped: "service_paused" };
       /* شباكين للإرسال: بعد فتح المطعم زي الأول، **أو** بعد ما قناة موقوفة
@@ -182,16 +219,14 @@ export function register(app, ctx, deps = {}) {
       }
 
       const rows = (await pool.query(
-        `SELECT id, phone_norm, code FROM open_waitlist
+        `SELECT id, phone_norm, code, device_id FROM open_waitlist
           WHERE notified_at IS NULL AND skip_reason IS NULL
           ORDER BY created_at LIMIT $1`, [cfg.capPerRun])).rows;
       if (!rows.length) return { sent: 0 };
-      const staff = staffPhoneSet(s);
       const n = notify();
       const out = { sent: 0, skipped: 0 };
       for (const w of rows) {
         const close = (reason) => pool.query("UPDATE open_waitlist SET skip_reason=$2 WHERE id=$1", [w.id, reason]);
-        if (staff.has(w.phone_norm)) { await close("staff"); out.skipped++; continue; }
         // طلب خلاص بعد ما سجّل ⇒ ما نزعّجوش
         const paid = await pool.query(
           `SELECT order_no FROM shop_orders WHERE phone_norm=$1 AND ${PAID_SQL}
@@ -201,6 +236,13 @@ export function register(app, ctx, deps = {}) {
             [w.id, paid.rows[0].order_no]);
           out.skipped++; continue;
         }
+        /* بيدفع دلوقتي (طلب اتفتح بعد التسجيل ولسه pending) ⇒ نستنى الدورة
+           الجاية بدل ما نبعتله «كمّل طلبك» وهو في نص الدفع (حصل ٤/١٠). */
+        const paying = await pool.query(
+          `SELECT 1 FROM shop_orders WHERE phone_norm=$1 AND status='pending_payment'
+             AND created_at > (SELECT created_at FROM open_waitlist WHERE id=$2)
+             AND created_at > NOW() - INTERVAL '15 minutes' LIMIT 1`, [w.phone_norm, w.id]);
+        if (paying.rowCount) { out.held = (out.held || 0) + 1; continue; }
         const oo = (await pool.query("SELECT opted_out_at FROM cms_contacts WHERE phone_norm=$1", [w.phone_norm])).rows[0];
         if (oo?.opted_out_at) { await close("opted_out"); out.skipped++; continue; }
         // رسالة واحدة لكل رقم في اليوم (لو سجّل تاني بعد ما اتبعتله)
@@ -211,10 +253,18 @@ export function register(app, ctx, deps = {}) {
         if (dup.rowCount) { await close("dup_today"); out.skipped++; continue; }
         const link = `${storeHost()}/${w.code ? `c/${w.code}` : "?utm_source=sms&utm_medium=crm&utm_campaign=open_now"}`;
         try {
-          const ok = await n?.sendSmsTo?.(w.phone_norm, waitBody(cfg.text, link), { kind: "waitlist", ref: `wait:${w.id}` });
-          if (!ok) { await close("sms_disabled"); out.skipped++; continue; }
-          await pool.query("UPDATE open_waitlist SET notified_at=NOW(), channel='sms' WHERE id=$1", [w.id]);
-          out.sent++;
+          const pushed = await pushOpen(cfg, w, link);
+          let ok = false, smsErr = null;
+          try { ok = await n?.sendSmsTo?.(w.phone_norm, waitBody(cfg.text, link), { kind: "waitlist", ref: `wait:${w.id}` }); }
+          catch (e) { smsErr = e; }
+          // الإشعار وصل ⇒ العميل اتنبّه حتى لو الـSMS وقع؛ مانقفلش الصف كفشل
+          if (!ok && !pushed) {
+            await close(smsErr ? "sms_failed: " + String(smsErr.message).slice(0, 80) : "sms_disabled");
+            out.skipped++; continue;
+          }
+          await pool.query("UPDATE open_waitlist SET notified_at=NOW(), channel=$2 WHERE id=$1",
+            [w.id, pushed && ok ? "push+sms" : pushed ? "push" : "sms"]);
+          out.sent++; if (pushed) out.pushed = (out.pushed || 0) + 1;
         } catch (e) { await close("sms_failed: " + String(e.message).slice(0, 80)); out.skipped++; }
       }
       if (out.sent) console.log(`[openwait] opening → sent ${out.sent}, skipped ${out.skipped}`);
@@ -222,7 +272,9 @@ export function register(app, ctx, deps = {}) {
     } finally { running = false; }
   }
 
-  const EVERY_MIN = Number(process.env.OPENWAIT_MINUTES ?? 5);
+  /* كل دقيقة (كانت ٥): الإعلانات بتبدأ ١١:٣٠ والناس مستنية ١٢:٠٠ بالظبط —
+     الرسايل الحقيقية كانت بتطلع ١٢:٠٢–١٢:٠٤. الدورة الفاضية استعلامات خفاف. */
+  const EVERY_MIN = Number(process.env.OPENWAIT_MINUTES ?? 1);
   if (EVERY_MIN > 0) {
     setInterval(() => runOpenWait().catch((e) => console.error("[openwait] failed:", e.message)), EVERY_MIN * 60_000);
   }
@@ -282,8 +334,9 @@ export function register(app, ctx, deps = {}) {
     const link = `${storeHost()}/${code ? `c/${code}` : "?utm_source=sms&utm_medium=crm&utm_campaign=open_now"}`;
     const body = waitBody(cfg.text, link);
     try {
+      const pushed = await pushOpen(cfg, { phone_norm: phone, device_id: null }, link);
       const ok = await notify()?.sendSmsTo?.(phone, body, { kind: "test", ref: "waitlist_test" });
-      return c.json({ ok: Boolean(ok), sent: Boolean(ok), body, link, reason: ok ? null : "sms_disabled" });
+      return c.json({ ok: Boolean(ok), sent: Boolean(ok), pushed, body, link, reason: ok ? null : "sms_disabled" });
     } catch (e) { return c.json({ ok: false, error: String(e.message).slice(0, 160), body }, 502); }
   });
 
