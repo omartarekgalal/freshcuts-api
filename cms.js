@@ -4026,6 +4026,29 @@ ${smsRules.optoutLine(cfg, { code: c?.optout_code, host: STORE_PUBLIC(), sender:
     if (!seg) return null;
     return (await customerRows()).filter(seg.test).map((x) => x.pn);
   }
+  /* ── تسخين كاش الباقات عند الإقلاع (١٠/١٠) ───────────────────────────────
+     /api/shop/bundles بيحتاج تفاصيل كل صنف جوّه كل باقة من تاب سينس. مع ١٨ بوكس
+     بقوا ~٦٠ صنف: أول طلب بعد أي نشر (كاش فاضي) كان بياخد أكتر من مهلة المتجر
+     (٨ ث)، فالزائر ده مايشوفش البوكسات خالص — اتشاف فعلاً ٠٥:٠٤ بعد نشر.
+     فبنحمّلهم في الخلفية أول ما الخدمة تقوم، ٦ في المرة. فشل التسخين مش مشكلة:
+     الطلب العادي هيحمّل اللي ناقص زي الأول. */
+  async function warmBundles() {
+    try {
+      const r = await pool.query("SELECT slots FROM cms_bundles WHERE active");
+      const ids = new Set();
+      for (const row of r.rows) for (const p of productIdsOf(Array.isArray(row.slots) ? row.slots : [])) ids.add(String(p));
+      const list = [...ids];
+      const t0 = Date.now();
+      for (let i = 0; i < list.length; i += 6) await Promise.all(list.slice(i, i + 6).map((p) => productDetail(p)));
+      await menuIndex().catch(() => null);
+      console.log(`[cms] bundles warm: ${list.length} products in ${Date.now() - t0} ms`);
+    } catch (e) { console.error("[cms] bundles warm failed:", e.message); }
+  }
+  if (deps.warm !== false && !process.env.NODE_TEST_CONTEXT) {
+    const wt = setTimeout(warmBundles, 2500);
+    if (wt && wt.unref) wt.unref();
+  }
+
   return { sectionOf, effectivePerms, sessionUser, whoami, expandBundle: expand, getBundle, offersPagePayload,
     segmentList, segmentPhones, waFallbackSms };
 }
