@@ -1644,9 +1644,19 @@ export function register(app, ctx, deps = {}) {
       const live = r.rows.map(bundleRow).map((b) => ({ b, av: availabilityOf(b, now) }))
         .filter((x) => x.av.orderable && !pausedNow[String(x.b.slug)]);
       const menu = live.length ? await menuIndex() : new Map();
+      /* «خلص النهارده» والبوكسات (١٠/١٠): صنف **ثابت** في الباقة خلص (مشكل، ريش، مشروب…)
+         أو خانة اختيار **كل** اختياراتها خلصت ⇒ الباقة مابتتعرضش أصلاً، بدل ما العميل
+         يكوّنها ويترفض عند «أضف للسلة». اختيار واحد خلصان من كذا اختيار = الباقة تفضل
+         والمتجر بيقفل البلاطة دي بس. قراءة الإعدادات لو فشلت ⇒ مابنخبّيش حاجة. */
+      let soldNow = {};
+      try { soldNow = soldOutOf(await getSettingsData(), now.getTime()) || {}; } catch { soldNow = {}; }
+      const blockedBySoldOut = (slots) => (slots || []).some((s) => (s.type === "choice"
+        ? (s.choices || []).length > 0 && (s.choices || []).every((ch) => soldNow[String(ch.product_id)])
+        : Boolean(soldNow[String(s.product_id)])));
       for (const { b, av } of live) {
         b.order_kinds = av.kinds;
         if (kind && !b.order_kinds.includes(kind)) continue;
+        if (blockedBySoldOut(b.slots)) continue;
         const slots = await dressSlots(b, menu);
         if (!slots) continue; // باقة مكسورة مابتتعرضش أبداً — أحسن من طلب بيفشل
         // offer_id (مسار ٠١): المتجر بيربط الباقة بعرضها من هنا بدل جدول مكتوب في app.js

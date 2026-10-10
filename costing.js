@@ -151,15 +151,26 @@ const accPack = (size) => {
    allowance: rebuilding those from the workbook portions would have cut grill
    COGS by SAR 344 on nothing but an assumption. The three families that had NO
    accompaniment cost at all get the measured workbook pack, flagged `assumed`. */
+/* ── قواعد عمر للتكلفة (١٠/١٠/٢٠٢٦) — المرجع دلوقتي ───────────────────────
+   • كل الأوزان خام (قبل الشوي). ثلث الكيلو = ٣٣٣ جم.
+   • اللحم بسعر الكيلو المعتمد: كفتة ٣٠٫٥ · طرب ٢٥٫٣ · كباب ٧١٫٩ · ريش ١٠٠ (مؤقت).
+     شيش/صدور بتكلفة التشغيلة (٢٧٫١٧٧ / ٢٤٫٦٦٧) · سجق ٣٦ (سعر ورقة السجق — محتاج تأكيد).
+   • مشكل مخصوص للثلث = ١٠٠ كفتة + ٧٥ طرب + ١٠٠ كباب + ١٠٠ ريش.
+   • النص = ١٫٥× لحم الثلث · الكيلو = ٣× · المرفقات (سلطة + طحينة + خبز) مبلغ ثابت: ٢ / ٣ / ٥.
+   نفس الأرقام اتكتبت في item_costs (effective 2026-10-10) — الدالة دي بتراجعها بس. */
+const THIRD_KG = 0.333;
+const SIDES_SAR = { third: 2, half: 3, kilo: 5 };
 const GRILL_FAMILIES = [
-  { key: "ريش",   meat: 36.63, acc: 3.44,          accSource: "omar", meatNote: "333 g × 110 SAR/kg" },
-  { key: "كباب",  meat: 24.50, acc: 5.50,          accSource: "omar", meatNote: "350 g × 70 SAR/kg" },
-  { key: "كبدة",  meat: 7.48,  acc: 5.50,          accSource: "omar", meatNote: "340 g × 22 SAR/kg" },
-  { key: "مشكل",  meat: 23.60, acc: 5.50,          accSource: "omar", meatNote: "ريش150+كفتة150+كباب50+طرب100" },
-  { key: "كفتة",  meat: 9.32,  acc: accPack("third"), accSource: "workbook", meatNote: "من ملف التكلفة (meat only)" },
-  { key: "كفته",  meat: 9.32,  acc: accPack("third"), accSource: "workbook", meatNote: "من ملف التكلفة (meat only)" },
-  { key: "طرب",   meat: 7.99,  acc: accPack("third"), accSource: "workbook", meatNote: "من ملف التكلفة (meat only)" },
-  { key: "شيش",   meat: 9.66,  acc: accPack("third"), accSource: "workbook", meatNote: "من ملف التكلفة (meat only)" },
+  { key: "مشكل",  meat: 0.100 * 30.5 + 0.075 * 25.3 + 0.100 * 71.9 + 0.100 * 100, accSource: "omar", meatNote: "١٠٠ كفتة + ٧٥ طرب + ١٠٠ كباب + ١٠٠ ريش (خام)" },
+  { key: "ريش",   meat: THIRD_KG * 100,    accSource: "omar", meatNote: "333 g × 100 SAR/kg (مؤقت)" },
+  { key: "كباب",  meat: THIRD_KG * 71.9,   accSource: "omar", meatNote: "333 g × 71.9 SAR/kg" },
+  { key: "كبدة",  meat: 7.48,              accSource: "omar", meatNote: "340 g × 22 SAR/kg (رقم قديم — محتاج تأكيد)" },
+  { key: "كفتة",  meat: THIRD_KG * 30.5,   accSource: "omar", meatNote: "333 g × 30.5 SAR/kg" },
+  { key: "كفته",  meat: THIRD_KG * 30.5,   accSource: "omar", meatNote: "333 g × 30.5 SAR/kg" },
+  { key: "طرب",   meat: THIRD_KG * 25.3,   accSource: "omar", meatNote: "333 g × 25.3 SAR/kg" },
+  { key: "شيش",   meat: THIRD_KG * 27.177, accSource: "omar", meatNote: "333 g × 27.18 SAR/kg (تكلفة التشغيلة)" },
+  { key: "صدور",  meat: THIRD_KG * 24.667, accSource: "omar", meatNote: "333 g × 24.67 SAR/kg (تكلفة التشغيلة)" },
+  { key: "سجق",   meat: THIRD_KG * 36,     accSource: "assumed", meatNote: "333 g × 36 SAR/kg (محتاج تأكيد)" },
 ];
 
 /** Which weight bucket a POS item name is, or null if it is not sold by weight.
@@ -181,8 +192,9 @@ export function expectedWeightCost(name) {
   if (!size || !fam) return null;
   const m = WEIGHT_MODEL[size];
   const meat = fam.meat * m.meat;
-  const acc = fam.acc * (size === "third" ? 1 : size === "half" ? 2 : 3);
-  return { size, family: fam.key, meat: round3(meat), acc: round3(acc), total: round3(meat + acc),
+  const acc = SIDES_SAR[size];
+  // لأقرب هللة — نفس دقة item_costs، عشان الفحص مايعلّمش على فرق تقريب
+  return { size, family: fam.key, meat: round3(meat), acc: round3(acc), total: Math.round((meat + acc) * 100) / 100,
            accSource: fam.accSource, meatNote: fam.meatNote };
 }
 

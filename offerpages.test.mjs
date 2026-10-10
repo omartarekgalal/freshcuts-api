@@ -155,13 +155,13 @@ function fakePool({ bundleRows = bundles(), pages = null, failPages = false } = 
   return pool;
 }
 
-function makeApp(poolOpts = {}, { ts = fakeTs(), perms = { marketing: { products: "view" } } } = {}) {
+function makeApp(poolOpts = {}, { ts = fakeTs(), perms = { marketing: { products: "view" } }, settings = {} } = {}) {
   const pool = fakePool(poolOpts);
   const app = new Hono();
   let hooks = null;
   const ctx = {
     pool, jb: (x) => JSON.stringify(x), DEFAULT_DELIVERY_APPS: [], todayISO: () => offers.riyadhDay(),
-    getSettingsData: async () => ({ cms: { perms } }),
+    getSettingsData: async () => ({ cms: { perms }, ...settings }),
     setCmsHooks: (h) => { hooks = h; },
     // نفس requireAdmin بتاع index.js: مفتاح الأدمن بيعدّي، وتوكن الفريق بيتفحص بالقسم
     requireAdmin: async (c) => {
@@ -445,6 +445,25 @@ test("/api/shop/bundles فيه offer_id لكل باقة مربوطة (والشك
   // فلتر option لسه شغّال
   const pick = await call("GET", "/api/shop/bundles?option=dine_in");
   assert.deepEqual(pick.body.bundles.map((b) => b.slug), ["national96-grill"]);
+});
+
+/* ٨-ب — «خلص النهارده» والبوكسات (١٠/١٠) */
+test("/api/shop/bundles: صنف ثابت خلص ⇒ الباقة تختفي؛ اختيار واحد خلص ⇒ تفضل؛ كل الاختيارات خلصت ⇒ تختفي", async () => {
+  liveNow();
+  const at = new Date().toISOString();
+  const slugs = async (soldOut) => {
+    const { call } = makeApp({}, { settings: { catalog: { soldOut } } });
+    return (await call("GET", "/api/shop/bundles")).body.bundles.map((b) => b.slug);
+  };
+  assert.deepEqual(await slugs({}), ["national96-grill", "national96-box", "family"]);
+  // الحواوشي (٢١) صنف ثابت في «بوكس ٩٦» وفي «عائلية» ⇒ الاتنين يختفوا، والكيلو يفضل
+  assert.deepEqual(await slugs({ 21: { at } }), ["national96-grill"]);
+  // اختيار واحد من اختيارين المشوي خلص ⇒ باقة الكيلو لسه معروضة
+  assert.ok((await slugs({ 91: { at } })).includes("national96-grill"));
+  // كل اختيارات الخانة خلصت ⇒ الباقة تختفي
+  assert.ok(!(await slugs({ 91: { at }, 94: { at } })).includes("national96-grill"));
+  // صلاحية «خلص» انتهت ⇒ مالهاش أثر
+  assert.ok((await slugs({ 21: { at, until: new Date(Date.now() - 60000).toISOString() } })).includes("family"));
 });
 
 /* ٩ */

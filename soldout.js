@@ -288,6 +288,9 @@ export function register(app, { pool, getSettingsData, requireAdmin, requirePort
             const pid = String(o?.product_id ?? o?.id ?? "").trim();
             if (/^\d{1,12}$/.test(pid)) products.push(pid);
           }
+          // الصنف الثابت في الخانة (مشكل/ريش جوّه بوكس) — البوابة لازم تعرف إن الباقة فيها الصنف ده
+          const fixedPid = String(sl?.product_id ?? "").trim();
+          if (/^\d{1,12}$/.test(fixedPid)) products.push(fixedPid);
         }
       } catch {}
       const uniq = [...new Set(products)];
