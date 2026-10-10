@@ -56,6 +56,7 @@ import { hashEmail, hashPhoneDigits, hashPhonePlus, phoneDigits, httpJson } from
 import { scaleOf } from "./money.js";
 import { isBotRequest, BOT_SQL } from "./botfilter.js";
 import { offerById } from "./offers.js";
+import { boxCatalogId } from "./catalog.js";
 
 const env = (k) => (process.env[k] || "").trim();
 const META_VER = () => env("META_API_VERSION") || "v25.0";
@@ -200,6 +201,16 @@ const r2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
    ماكانتش تعرف إن العميل ده بصّ على عرض اليوم الوطني. والشراء من السيرفر كان
    بيفرد الباقة لأصنافها (كفتة بالوزن + طبق أرز id 123 اللي مش في الكتالوج).
    bundleMap = { slug: productId } من cms_bundles.offer_id + offers.js. */
+/* Pixel review (10/10): a bundle's catalogue id. A bundle tied to an offer is
+   that offer's row (offer-…); a plain box is its own row in the feed
+   (catalog.boxCatalogId). Before this only offer bundles were mapped, so the 18
+   boxes went out as «b:box-…» — an id Meta's catalogue does not have — and a box
+   Purchase was reported as its loose components. */
+export function bundleCatalogId(row, offerOf = offerById) {
+  if (!row || !row.slug) return null;
+  if (row.offer_id) return offerOf(row.offer_id)?.productId || null;
+  return boxCatalogId(row.slug);
+}
 export function canonicalContentId(id, bundleMap = null) {
   const s = String(id ?? "");
   if (s.startsWith("b:") && bundleMap) return bundleMap[s.slice(2)] || s;
@@ -309,9 +320,9 @@ export function register(app, ctx, deps = {}) {
   async function bundleIdMap() {
     if (Date.now() - bmap.at < 10 * 60_000) return bmap.map;
     try {
-      const r = await pool.query(`SELECT slug, offer_id FROM cms_bundles WHERE offer_id IS NOT NULL`);
+      const r = await pool.query(`SELECT slug, offer_id FROM cms_bundles WHERE offer_id IS NOT NULL OR active IS NOT FALSE`);
       const map = {};
-      for (const x of r.rows) { const pid = offerById(x.offer_id)?.productId; if (pid) map[x.slug] = pid; }
+      for (const x of r.rows) { const pid = bundleCatalogId(x); if (pid) map[x.slug] = pid; }
       bmap = { at: Date.now(), map };
     } catch { bmap = { ...bmap, at: Date.now() - 9 * 60_000 }; }
     return bmap.map;

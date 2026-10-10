@@ -82,7 +82,62 @@ const OFFER_ART_IDS = new Set(String(process.env.CATALOG_OFFER_ART_IDS ?? "nd96_
 const offerArtUrl = (o) => (OFFER_ART_IDS.has(o.id) ? `${STORE_BASE}/static/offers/${o.id}-web.jpg` : "");
 /* رابط صف العرض: «/?offer=<id>» بيفتح منتقي العرض على طول (handleCampaignParams في
    المتجر). «/#item-offer-…» ماكانش بيفتح حاجة — المتجر بيقبل #item-<رقم> بس. */
-export const catalogLink = (r) => (r.offerId ? `${STORE_BASE}/?offer=${encodeURIComponent(r.offerId)}` : `${STORE_BASE}/#item-${r.id}`);
+export const catalogLink = (r) => (r.boxSlug ? `${STORE_BASE}/?box=${encodeURIComponent(r.boxSlug)}`
+  : r.offerId ? `${STORE_BASE}/?offer=${encodeURIComponent(r.offerId)}` : `${STORE_BASE}/#item-${r.id}`);
+
+/* ── BOXES IN THE CATALOGUE (pixel review 10/10) ───────────────────────────
+   The boxes (cms_bundles without an offer) are what the October ads sell, but
+   they were not in the feed: the storefront sent content id «b:<slug>» on
+   ViewContent / AddToCart / InitiateCheckout and Meta answered "content IDs
+   aren't matching any catalog" (da_checks: pixel_has_low_event_source_match_rate
+   FAILED; Commerce Manager match rate 88.7 %, under the 90 % it asks for).
+   A browser that looked at a box could not be retargeted with that box.
+   One row per ACTIVE box that can be ordered for delivery or pickup. The id is
+   a plain catalogue id (the slug; "box-" is put in front of a slug that does not
+   start with it) — funnel.js maps «b:<slug>» to it on both legs.
+   Meta feed only: the TikTok catalogue (adFeedRows) is left as it was. */
+export const boxCatalogId = (slug) => {
+  const s = String(slug || "").trim().toLowerCase();
+  if (!/^[a-z0-9][a-z0-9-]{1,60}$/.test(s)) return null;
+  return s.startsWith("box-") ? s : `box-${s}`;
+};
+export function boxRowsOf(bundles) {
+  const out = [], seen = new Set();
+  for (const b of Array.isArray(bundles) ? bundles : []) {
+    if (!b || b.active === false || b.offer_id) continue;
+    const id = boxCatalogId(b.slug);
+    const price = Number(b.price);
+    const kinds = Array.isArray(b.order_kinds) ? b.order_kinds : null;
+    if (!id || seen.has(id) || !(price > 0) || !b.image) continue;
+    if (kinds && !kinds.includes("delivery") && !kinds.includes("pickup")) continue;   // table-only: not an ad
+    const title = String(b.name || "").trim().slice(0, 200);
+    if (!title) continue;
+    seen.add(id);
+    out.push({
+      id, boxSlug: String(b.slug), title,
+      description: (String(b.description || "").trim() || title).slice(0, 500),
+      price, image: String(b.image), category: "Boxes", isBox: true,
+    });
+  }
+  return out;
+}
+let boxLoader = null;                       // set by register(): () => rows of cms_bundles
+let boxCache = { at: 0, rows: [] };
+async function boxRows() {
+  if (!boxLoader) return [];
+  if (Date.now() - boxCache.at < CACHE_MS) return boxCache.rows;
+  try { boxCache = { at: Date.now(), rows: boxRowsOf(await boxLoader()) }; }
+  catch (e) { boxCache = { at: Date.now() - CACHE_MS + 60_000, rows: boxCache.rows }; console.error("[catalog] boxes unavailable:", e.message); }
+  return boxCache.rows;
+}
+/** The Meta feed: menu + live offers, then the boxes (never an id twice). */
+export function withBoxRows(rows, boxes) {
+  const ids = new Set((rows || []).map((r) => String(r.id)));
+  return [...(rows || []), ...(boxes || []).filter((b) => !ids.has(String(b.id)))];
+}
+async function metaFeedRows() {
+  return withBoxRows(adRows(await getRows()), await boxRows());
+}
 const offerRow = (o) => ({
   id: o.productId,
   offerId: o.id,
@@ -280,7 +335,7 @@ export async function syncCatalog({ force = false } = {}) {
     return lastPush;
   }
   let rows;
-  try { rows = adRows(await getRows()); }
+  try { rows = await metaFeedRows(); }
   catch (e) {
     lastPush = { ...lastPush, error: `menu unavailable: ${e.message}` };
     return lastPush;
@@ -314,6 +369,10 @@ export async function syncCatalog({ force = false } = {}) {
 
 export function register(app, ctx) {
   const { requireAdmin, getSettingsData } = ctx;
+  if (ctx.pool) {
+    boxLoader = async () => (await ctx.pool.query(
+      `SELECT slug, name, description, price, image, active, offer_id, order_kinds FROM cms_bundles WHERE active IS NOT FALSE AND offer_id IS NULL ORDER BY sort, id`)).rows;
+  }
 
   // keep the dine-in list in step with the dashboard (5-minute refresh, and
   // a fresh read on every /dine-in request below)
@@ -329,7 +388,7 @@ export function register(app, ctx) {
 
   app.get("/api/catalog/feed.csv", async (c) => {
     let rows;
-    try { rows = adRows(await getRows()); }
+    try { rows = await metaFeedRows(); }
     catch (e) { return c.text(`# feed unavailable: ${e.message}`, 503); }
     const header = "id,title,description,availability,condition,price,link,image_link,brand,product_type";
     const lines = rows.map((r) => [
