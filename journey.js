@@ -84,6 +84,11 @@ export const WEB_EVENTS = Object.freeze([
   // ٢١/٩: محرر العنوان — الدبوس التقريبي اتحط (address_seeded) والوقفات اللي
   // بتمنع الحفظ (address_blocked: pin_missing/pin_unconfirmed/name_missing/building_missing)
   "address_seeded", "address_blocked",
+  // 10/10 (conversion fixes C1-C4): district picked from the list, free-delivery bar
+  // (shown / add-on tapped / reached / dismissed / FIRST armed), OTP code step resumed,
+  // ready-made ad cart landed
+  "address_district", "freebar_show", "freebar_add", "freebar_done", "freebar_dismiss", "freebar_first_armed",
+  "otp_resume", "preset_cart",
 ]);
 
 /* نوع خطأ الـJS. المتصفح بيبعت kind من ١٩/٩؛ القديم بنصنّفه من الرسالة والملف.
