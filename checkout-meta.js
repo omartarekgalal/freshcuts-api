@@ -215,8 +215,9 @@ export function fireServerPurchase(funnelDep, orderNo, log = console) {
    رابط الـQR (/l/table-N ⇒ utm_source=qr · utm_medium=table · fc_link=table-N)
    بيفضل محفوظ في المتصفح أيام: عمر مسح طاولة ١ يوم ٥/١٠ وطلب «استلام» يوم ٩/١٠،
    والطلبين اتحسبوا في تقارير الروابط/المصادر على table-1.
-   القاعدة: إسناد الطاولة مايتسجّلش على طلب من غير جلسة طاولة. الـclick ids
-   (إعلان) بتفضل، والقيم الأصلية بتتحفظ في stale_table للمراجعة. */
+   القاعدة: إسناد الطاولة مايتسجّلش على طلب من غير جلسة طاولة. الـclick ids المحفوظة
+   مع نفس الهبوط القديم بتتشال كمان (كانت هتحسب طلب عمر على إعلان ميتا) — مصدر الطلب
+   الحقيقي بييجي بعدها من جلسة الرحلة الحالية. الأصل كله محفوظ في stale_table. */
 const TABLE_LINK_RE = /^table-\d{1,3}$/i;
 export function isTableAttribution(attribution) {
   const a = attribution && typeof attribution === "object" ? attribution : {};
@@ -232,9 +233,11 @@ export function stripTableAttribution(attribution, isTableOrder) {
   if (isTableOrder || !isTableAttribution(a)) return { attribution: a, stripped: false };
   const out = { ...a };
   const utm = a.utm && typeof a.utm === "object" ? a.utm : {};
-  out.stale_table = { fc_link: a.fc_link || null, utm, landing_at: a.landing_at || null };
+  const click = a.click && typeof a.click === "object" ? a.click : {};
+  out.stale_table = { fc_link: a.fc_link || null, utm, click, landing_at: a.landing_at || null };
   if (TABLE_LINK_RE.test(String(a.fc_link || "").trim())) out.fc_link = null;
   out.utm = {};
+  out.click = {};
   out.landing_at = null;
   return { attribution: out, stripped: true };
 }

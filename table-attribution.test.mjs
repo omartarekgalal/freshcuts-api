@@ -22,13 +22,14 @@ test("table attribution is recognised by link slug, medium, content or campaign"
   assert.equal(isTableAttribution(null), false);
 });
 
-test("a pickup order without a table session loses the table link and utm — click ids, ip and ua stay, the original is kept for audit", () => {
+test("a pickup order without a table session loses the table link, utm and the click ids saved with that old landing — ip and ua stay, the original is kept for audit", () => {
   const r = stripTableAttribution(omar, false);
   assert.equal(r.stripped, true);
   assert.equal(r.attribution.fc_link, null);
   assert.deepEqual(r.attribution.utm, {});
   assert.equal(r.attribution.landing_at, null);
-  assert.deepEqual(r.attribution.click, omar.click);
+  assert.deepEqual(r.attribution.click, {});
+  assert.deepEqual(r.attribution.stale_table.click, omar.click);
   assert.equal(r.attribution.ip, "x");
   assert.equal(r.attribution.stale_table.fc_link, "table-1");
   assert.equal(r.attribution.stale_table.utm.utm_medium, "table");
@@ -37,7 +38,7 @@ test("a pickup order without a table session loses the table link and utm — cl
   assert.equal(omar.fc_link, "table-1", "input is not mutated");
   // the source column no longer says offline/qr for it
   assert.equal(classifySource(omar), "offline");
-  assert.equal(classifySource(r.attribution), "meta");
+  assert.equal(classifySource(r.attribution), "direct", "an old fbclid must not credit the order to a Meta ad");
   assert.equal(classifySource(stripTableAttribution({ fc_link: "table-2", utm: { utm_source: "qr", utm_medium: "table" } }, false).attribution), "direct");
 });
 
