@@ -116,6 +116,52 @@ const WEB_SET = new Set(WEB_EVENTS);
 export const SERVER_EVENTS = Object.freeze(["checkout_result", "order_paid", "identified"]);
 const SERVER_SET = new Set(SERVER_EVENTS);
 
+/* C6 — menu-level context: the provisional page-load location and the menu's
+   "deliver to" chip (editor mode "prov", surfaces prov_auto / prov_intro /
+   prov_chip, ctx "menu"). Such an event never proves a checkout step. */
+export function isMenuCtx(props = {}) {
+  const p = props && typeof props === "object" ? props : {};
+  return p.prov === true || p.ctx === "menu" || p.mode === "prov" || /^prov(_|$)/.test(String(p.surface || ""));
+}
+/* C6 — events that PROVE the customer opened checkout: the checkout sheet /
+   login screen itself, or anything at payment level and beyond. */
+export function isCheckoutProof(name, step) {
+  return name === "checkout_view" || name === "login_start" || (step != null && step >= 6);
+}
+/* C6 — "soft" events: address / OTP events also happen outside checkout (menu
+   chip, account login), and the old storefront sends no reliable context for
+   them. Their step counts only for a session that already opened checkout. */
+const SOFT_STEP_EVENTS = new Set(["address_set", "address_pick", "address_new", "pickup_selected", "otp_verified", "otp_ok"]);
+export const isSoftStep = (name) => SOFT_STEP_EVENTS.has(name);
+/* The furthest step a batch of events (in order) proves, for both cases:
+   ifOpen   = the session had already opened checkout before this batch
+   ifClosed = it had not — soft steps count only after a proof event in the batch */
+export function batchMaxSteps(events) {
+  let ifOpen = 0, ifClosed = 0, open = false;
+  for (const e of events || []) {
+    const st = e && e.step != null ? Number(e.step) : null;
+    if (st == null || !Number.isFinite(st)) continue;
+    if (isCheckoutProof(e.name, st)) open = true;
+    if (st > ifOpen) ifOpen = st;
+    if ((open || !isSoftStep(e.name)) && st > ifClosed) ifClosed = st;
+  }
+  return { ifOpen, ifClosed };
+}
+/* One-off, idempotent repair of stored sessions (C6): a session sitting at
+   steps 3–5 with no order and no checkout-proof event never opened checkout —
+   drop it back to the furthest menu step its events prove. */
+export const REPAIR_DAYS = 30;
+export const REPAIR_SQL = `
+  UPDATE journey_sessions s SET max_step = COALESCE((
+      SELECT max(CASE WHEN e.name = 'item_add' THEN 2
+                      WHEN e.name IN ('offer_view','picker_open','item_view') THEN 1 ELSE 0 END)
+        FROM journey_events e WHERE e.session_id = s.session_id), 0)
+   WHERE s.biz_day >= (CURRENT_DATE - $1::int)
+     AND s.max_step BETWEEN 3 AND 5 AND NOT s.paid AND s.order_no IS NULL
+     AND NOT EXISTS (SELECT 1 FROM journey_events e
+                      WHERE e.session_id = s.session_id
+                        AND (e.name IN ('checkout_view','login_start') OR e.step >= 6))`;
+
 /* الخطوة اللي الحدث بيثبتها. order_paid (٧) من السيرفر بس — المتصفح مايقدرش
    يعلن إنه دفع. */
 export function stepOf(name, props = {}, source = "web") {
@@ -124,16 +170,24 @@ export function stepOf(name, props = {}, source = "web") {
     case "session_start": case "page_view": return 0;
     case "offer_view": case "picker_open": case "item_view": return 1;
     case "item_add": return 2;
-    case "checkout_view": case "address_step_open": case "login_start": return 3;
+    case "checkout_view": case "login_start": return 3;
+    /* C6 (10/10): address_step_open is NOT a funnel step. The address editor /
+       address list also open from the menu's "deliver to" chip (guest editor in
+       mode "prov", saved-address list for logged-in customers) and used to raise
+       the session to step 3 "opened checkout" without any checkout. A real
+       checkout always emits checkout_view or login_start first. */
+    case "address_step_open": return null;
     /* address_set: prov = الموقع التقريبي اللي بيتحدد أول ما الصفحة تفتح،
        ctx=menu = عنوان اتختار لوحده وهو لسه في المنيو — الاتنين مش خطوة في
        إتمام الطلب. */
     case "address_set":
-      if (p.prov === true || p.ctx === "menu") return null;
+      if (isMenuCtx(p)) return null;
       return p.deliverable === true ? 5 : 3;
-    case "address_pick": case "address_new": return p.deliverable === false ? 3 : 5;
-    case "pickup_selected": return 3;
-    case "otp_verified": case "otp_ok": return 4;
+    case "address_pick": case "address_new":
+      if (isMenuCtx(p)) return null;
+      return p.deliverable === false ? 3 : 5;
+    case "pickup_selected": return isMenuCtx(p) ? null : 3;
+    case "otp_verified": case "otp_ok": return isMenuCtx(p) ? null : 4;
     case "payment_sheet_open": case "payment_redirect": case "payment_method_selected": case "order_created": return 6;
     case "checkout_result": return p.ok === true ? 6 : null;
     case "order_paid": return source === "server" ? PAID_STEP : null;
@@ -502,7 +556,17 @@ export function register(app, ctx, deps = {}) {
     `);
     ready = true;
   }
+  /* C6: clean sessions polluted before the fix. Idempotent (a repaired row no
+     longer matches), bounded to REPAIR_DAYS, never blocks boot. */
+  async function repairCheckoutSteps() {
+    try {
+      const r = await pool.query(REPAIR_SQL, [REPAIR_DAYS]);
+      if (r.rowCount) { reportCache.clear(); console.log(`[journey] C6 repair: ${r.rowCount} sessions dropped below the checkout step`); }
+      return r.rowCount || 0;
+    } catch (e) { console.error("[journey] C6 repair failed:", e.message); return 0; }
+  }
   ensureSchema()
+    .then(() => { setTimeout(repairCheckoutSteps, 15_000).unref?.(); })
     .then(() => console.log("[journey] schema ready"))
     .catch((e) => console.error("[journey] schema failed:", e.message));
 
@@ -562,16 +626,18 @@ export function register(app, ctx, deps = {}) {
        VALUES ${cols.join(",")} ON CONFLICT DO NOTHING RETURNING name, step, props, order_no`, vals);
     const rows = ins.rows;
     if (!rows.length) return 0;
-    const maxStep = rows.reduce((m, r) => (r.step != null && r.step > m ? r.step : m), 0);
+    // C6: address/OTP steps count only once the session has opened checkout
+    const { ifOpen, ifClosed } = batchMaxSteps(rows);
     const cartMax = rows.reduce((m, r) => Math.max(m, Number(r.props?.cart_subtotal) || 0), 0);
     const orderNo = rows.map((r) => r.order_no).filter(Boolean).pop() || null;
     const last = rows[rows.length - 1].name;
     await pool.query(
       `UPDATE journey_sessions SET events = events + $2, last_seen_at = NOW(),
-              max_step = GREATEST(max_step, $3), cart_max = GREATEST(cart_max, $4),
+              max_step = GREATEST(max_step, CASE WHEN max_step >= 3 THEN $3::int ELSE $7::int END),
+              cart_max = GREATEST(cart_max, $4),
               order_no = COALESCE($5, order_no), last_event = $6
         WHERE session_id = $1`,
-      [sessionId, rows.length, maxStep, cartMax, orderNo, last]);
+      [sessionId, rows.length, ifOpen, cartMax, orderNo, last, ifClosed]);
     if (orderNo) {
       pool.query(`UPDATE shop_orders SET journey_sid=$2 WHERE order_no=$1 AND journey_sid IS NULL`, [orderNo, sessionId])
         .catch(() => {});

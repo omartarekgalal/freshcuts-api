@@ -1062,7 +1062,11 @@ const meta = {
       if (ph) user_data.ph = [ph];
       // external_id is "hashing recommended" and is the only identity most of
       // our delivery orders can offer. It is stable per customer, not per order.
-      if (e.externalId) user_data.external_id = [sha256(String(e.externalId))];
+      // C5 (10/10): the hashed phone goes in as a second external_id — funnel.js
+      // sends the same value on web events, so a customer's website and till
+      // purchases stitch into one person.
+      const ext = [e.externalId ? sha256(String(e.externalId)) : null, ph].filter(Boolean);
+      if (ext.length) user_data.external_id = [...new Set(ext)];
       const ev = {
         event_name: e.eventName || "Purchase",
         event_time: Math.floor(e.eventTime.getTime() / 1000),
