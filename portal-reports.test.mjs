@@ -79,7 +79,7 @@ test("buildReport: الاستعلامات واحد ورا التاني بنفس 
   };
   const r = await buildReport(pool, { from: "2026-09-01", to: "2026-09-02", days: 2 }, { error() {} });
   assert.equal(maxActive, 1, "مابياخدش الـpool كله");
-  assert.equal(seen.length, Object.keys(SQL).length);
+  assert.equal(seen.length, Object.keys(SQL).length + 1, "كل استعلامات SQL + استعلام وقت التحضير (prepSql)");
   assert.ok(seen.every((v) => v[0] === "2026-09-01" && v[1] === "2026-09-02"));
   assert.deepEqual(r.partial, ["topItems"]);
   assert.equal(r.kpis.aov, 100);

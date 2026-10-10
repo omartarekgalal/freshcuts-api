@@ -13,6 +13,7 @@ import crypto from "node:crypto";
 import { STAGES, slaCheck } from "./shop.js";
 import { leaveAtDoor } from "./couriers.js";
 import { slotLabel } from "./preorder.js";
+import { prepCfg, prepCheck, prepState } from "./prepstatus.js";
 
 /* kitchen (١٩ سبتمبر) = شاشة المطبخ (/kitchen/) بس — قراية + «تقديم» محلي للمرحلة.
    ممنوع من كل مسارات البورتال (requirePortal بيرفضه إلا لو المسار قال kitchen). */
@@ -272,9 +273,14 @@ export function stageLabel(row) {
       if (!ready) return "بيتجهّز";
       return delivery ? "جاهز — مستني المندوب" : "جاهز — مستني العميل يستلم";
     case "courier_requested": return ready ? "جاهز — بندوّر على كابتن" : "بندوّر على كابتن";
-    case "courier_assigned": return "الكابتن جاي للمطعم";
+    case "courier_assigned": return row.handed_at ? "سُلّم للمندوب — مستنيين تأكيده" : "الكابتن جاي للمطعم";
     case "on_the_way": return "مع الكابتن في الطريق للعميل";
-    case "delivered": return "تم التوصيل";
+    /* ١٠/١٠: delivered = النهاية الحقيقية للطلب، مش ضغطة «تم التوصيل» بتاعة
+       الكاشير (دي = تسليم للمندوب، handed_at). */
+    case "delivered":
+      if (delivery) return "وصل للعميل";
+      if (row.option === "pickup") return Number(row.table_no) > 0 ? "اتقدّم على الطاولة" : "العميل استلم";
+      return "اتسلّم للعميل";
     case "collected": return "العميل استلم";
     case "paid_pos_failed": return "مدفوع — فشل الإرسال لنقطة البيع";
     case "rejected_refunded": return "مرفوض — المبلغ اترجع";
@@ -406,7 +412,15 @@ export function courierDurations(r = {}) {
 export function toPortalOrder(r, slaCfg = {}, now = Date.now(), opts = {}) {
   const addr = r.address && typeof r.address === "object" ? r.address : null;
   const cust = r.customer && typeof r.customer === "object" ? r.customer : {};
-  const sla = slaCheck(r, slaCfg, now);
+  let sla = slaCheck(r, slaCfg, now);
+  /* مهلة التحضير (عمر: ≤ ٣٠ د من القبول لحد «جاهز»): لو التحضير لسه مفتوح
+     وحالته أسوأ من باقي المهل، هي اللي بتبان على الكارت. */
+  const pcfg = prepCfg(slaCfg);
+  const prepRow = { ...r, accepted_at: r.accepted_at || historyAt(r.history, "accepted"), picked_at: r.ship_picked_at };
+  const pv = prepCheck(prepRow, pcfg, now);
+  if (pv.open && pv.level > (sla.level || 0)) {
+    sla = { level: pv.level, code: pv.code, message: pv.message, minutes: pv.minutes, action: pv.action };
+  }
   const drv = r.ship_driver && typeof r.ship_driver === "object" ? r.ship_driver : null;
   const pos = driverLatLng(drv);
   const items = itemsOf(r.items);
@@ -453,6 +467,13 @@ export function toPortalOrder(r, slaCfg = {}, now = Date.now(), opts = {}) {
     paidAt: historyAt(r.history, "paid"),
     acceptedAt: iso(r.accepted_at) || historyAt(r.history, "accepted"),
     readyAt: iso(r.pos_ready_at),
+    /* «سُلّم للمندوب» (توصيل) / «العميل استلم» (استلام وطاولة) — ضغطات الكاشير
+       بأوقاتها. deliveredAt بتاع العميل في courierOps.times (من المندوب). */
+    handedAt: iso(r.handed_at),
+    handedBy: r.handed_by || null,
+    handedSource: r.handed_source || null,
+    collectedAt: iso(r.collected_at),
+    prep: prepState(prepRow, pcfg),
     ackAt: iso(r.portal_ack_at),
     ackBy: r.portal_ack_by || null,
     courier: r.ship_status ? {
@@ -526,7 +547,8 @@ const COURIER_STATUS_AR = {
   delivered: "اتوصّل", cancelled: "اتلغى",
 };
 const APPROVAL_AR = {
-  accepted: "الكاشير قبل الطلب", pickup_ready: "الكاشير سجّل «جاهز»", delivered: "نقطة البيع: تم التوصيل",
+  accepted: "الكاشير قبل الطلب", pickup_ready: "الكاشير سجّل «جاهز»",
+  delivered: "نقطة البيع: «تم التوصيل» (= الكاشير سلّم الطلب)",
   rejected: "الكاشير رفض الطلب", cancelled: "الطلب اتلغى في نقطة البيع",
 };
 const ALERT_AR = {
@@ -536,6 +558,7 @@ const ALERT_AR = {
 const SLA_CODE_AR = {
   pos_stuck: "ما وصلش نقطة البيع", never_accepted: "ما اتقبلش — استرجاع تلقائي", accept_breach: "محدش قبل الطلب",
   accept_late: "القبول متأخر", handoff_breach: "ما اتدخّلش لشركة التوصيل", handoff_late: "إدخال التوصيل متأخر",
+  prep_breach: "التحضير عدّى الحد من القبول (علينا)", prep_late: "التحضير قرّب على الحد",
   pickup_breach: "الكابتن ما استلمش", pickup_late: "الكابتن متأخر", deliver_breach: "ما وصلش العميل",
   deliver_late: "التوصيل متأخر", refund_failed: "فشل الاسترجاع", delivery_failed: "تعثّر التوصيل",
   // courierops.js (١٩ سبتمبر)
@@ -580,7 +603,8 @@ function evLabel(e) {
   switch (e.name) {
     case "order_status": return `الحالة: ${d.to ? stageLabel({ status: d.to }) : "—"}`; // صياغة الفريق، مش رسالة العميل
     case "pos_push": return e.ok === false ? "فشل إرسال الطلب لنقطة البيع" : e.ok ? "الطلب نزل نقطة البيع" : (e.summary || "إرسال لنقطة البيع");
-    case "pos_ready": return d.source === "portal" ? "اتسجّل «جاهز» من البوابة" : "الطلب جاهز (نقطة البيع)";
+    case "pos_ready": return d.source === "portal" ? "اتسجّل «جاهز» من البوابة"
+      : d.basis === "pos_closed" ? "الطلب جاهز (الكاشير قفله من غير «جاهز»)" : "الطلب جاهز (نقطة البيع)";
     case "sla_alert": return `تنبيه تأخير (${d.level ?? "?"}): ${SLA_CODE_AR[d.code] || d.code || ""}`.trim();
     case "notify_sent": return `إشعار للعميل (${d.channel || e.channel || "—"})${e.ok === false ? " — ما وصلش" : ""}`;
     case "courier_update": return d.status ? `المندوب: ${COURIER_STATUS_AR[d.status] || d.status}` : (e.summary || "تحديث المندوب");

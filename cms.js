@@ -34,6 +34,7 @@ import { couponQueries, firstEligibility } from "./couponrules.js";
 import * as loyaltyLib from "./loyalty.js";
 // نفس قواعد الـSLA بتاعة الـwatchdog — لوحة التشغيل مابتكتبش كتاب قواعد تاني
 import { slaCheck, DEFAULT_SLA } from "./shop.js";
+import { prepCfg, prepCheck } from "./prepstatus.js";
 import { dispatchDelayOf, canAutoDispatch } from "./delivery.js";
 import { pausedOffersOf } from "./soldout.js";
 import { bizRange, rangeJson, bizDaySql } from "./bizday.js";
@@ -3449,6 +3450,7 @@ ${smsRules.optoutLine(cfg, { code: c?.optout_code, host: STORE_PUBLIC(), sender:
     const [rows, today] = await Promise.all([
       pool.query(`
         SELECT o.order_no, o.status, o.option, o.total, o.customer, o.created_at, o.updated_at, o.pos_ready_at,
+               o.accepted_at, o.history, o.collected_at, NULLIF(to_jsonb(o)->>'handed_at','') AS handed_at,
                sh.provider AS ship_provider, sh.status AS ship_status, sh.driver AS ship_driver,
                sh.arrived_at AS ship_arrived_at, sh.picked_at AS ship_picked_at
           FROM shop_orders o
@@ -3465,7 +3467,16 @@ ${smsRules.optoutLine(cfg, { code: c?.optout_code, host: STORE_PUBLIC(), sender:
          WHERE created_at > (date_trunc('day', NOW() AT TIME ZONE 'Asia/Riyadh') AT TIME ZONE 'Asia/Riyadh')`),
     ]);
     const now = Date.now();
+    const pcfg = prepCfg(sla);
+    // مهلة التحضير (من القبول لـ«جاهز») — نفس حساب الحارس والبوابة
+    const prepOf = (o) => {
+      const acc = o.accepted_at || (Array.isArray(o.history) ? o.history : []).find((h) => h && h.status === "accepted")?.at || null;
+      const v = prepCheck({ ...o, accepted_at: acc, picked_at: o.ship_picked_at }, pcfg, now);
+      return v.startAt ? { level: v.open ? v.level : 0, minutes: v.minutes, open: v.open, startAt: v.startAt, endAt: v.endAt,
+        late: v.level >= 2, warnMin: pcfg.warnMin, maxMin: pcfg.maxMin } : null;
+    };
     const orders = rows.rows.map((o) => ({
+      prep: prepOf(o), handedAt: o.handed_at || null,
       orderNo: o.order_no, status: o.status, option: o.option, total: Number(o.total) || 0,
       name: (o.customer && o.customer.name) || "", ageMin: Math.floor((now - new Date(o.created_at).getTime()) / 60000),
       ready: Boolean(o.pos_ready_at),
@@ -3476,7 +3487,10 @@ ${smsRules.optoutLine(cfg, { code: c?.optout_code, host: STORE_PUBLIC(), sender:
       sla: slaCheck(o, sla, now),
     }));
     return c.json({ ok: true, sla, orders, breaches: orders.filter((o) => o.sla.level >= 2).length,
-      late: orders.filter((o) => o.sla.level === 1).length, today: today.rows[0] });
+      late: orders.filter((o) => o.sla.level === 1).length, today: today.rows[0],
+      prep: { warnMin: pcfg.warnMin, maxMin: pcfg.maxMin,
+        late: orders.filter((o) => o.prep && o.prep.open && o.prep.level === 1).length,
+        breaches: orders.filter((o) => o.prep && o.prep.open && o.prep.level >= 2).length } });
   });
 
   // الهدف اليومي لطلبات الموقع (المالك — المسار بيقع على «الإعدادات»)

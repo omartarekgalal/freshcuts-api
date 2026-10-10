@@ -53,6 +53,9 @@ export const BASE_CTE = `WITH base AS (
   SELECT o.order_no, o.status, o.option, o.total, o.subtotal, o.delivery_fee, o.tip,
          o.discount_amount, o.coupon, o.phone_norm, o.created_at, o.pay_gateway, o.attribution,
          o.attrib_source, o.items, o.alerts, o.history, o.pos_ready_at, o.accepted_at,
+         /* ١٠/١٠: لحظة تسليم الكاشير الطلب للمندوب (handed_at). to_jsonb عشان
+            التقرير مايقعش لو العمود لسه ما اتضافش. */
+         NULLIF(to_jsonb(o)->>'handed_at','')::timestamptz AS handed_at,
          /* «المنطقة البعيدة» — محفوظة جوّه تسعيرة الطلب نفسها، مفيش عمود تاني
             يتعارض معاها. NULL = طلب عادي جوّه النطاق. */
          (o.delivery_quote->'farZone') AS far_zone,
@@ -171,7 +174,7 @@ SELECT EXTRACT(HOUR FROM local_at)::int AS hour,
 
   times: `${BASE_CTE},
 t AS (
-  SELECT b.option, b.pos_ready_at, COALESCE(b.accepted_at, hh.accepted_at) AS accepted_at,
+  SELECT b.option, b.pos_ready_at, b.handed_at, COALESCE(b.accepted_at, hh.accepted_at) AS accepted_at,
          hh.paid_at, hh.assigned_at, hh.onway_at, hh.delivered_at
     FROM base b
     LEFT JOIN LATERAL (
@@ -190,6 +193,8 @@ m AS (
   SELECT 'paid_to_accepted' AS k, (EXTRACT(EPOCH FROM (accepted_at - paid_at))/60)::float8 AS mins FROM t
   UNION ALL SELECT 'accepted_to_ready', (EXTRACT(EPOCH FROM (pos_ready_at - accepted_at))/60)::float8 FROM t
   UNION ALL SELECT 'ready_to_courier_assigned', (EXTRACT(EPOCH FROM (assigned_at - pos_ready_at))/60)::float8 FROM t WHERE option='delivery'
+  UNION ALL SELECT 'ready_to_handed', (EXTRACT(EPOCH FROM (handed_at - pos_ready_at))/60)::float8 FROM t WHERE option='delivery'
+  UNION ALL SELECT 'accepted_to_handed', (EXTRACT(EPOCH FROM (handed_at - accepted_at))/60)::float8 FROM t WHERE option='delivery'
   UNION ALL SELECT 'picked_to_delivered', (EXTRACT(EPOCH FROM (delivered_at - onway_at))/60)::float8 FROM t WHERE option='delivery'
   UNION ALL SELECT 'paid_to_delivered', (EXTRACT(EPOCH FROM (delivered_at - paid_at))/60)::float8 FROM t WHERE option='delivery'
 )
@@ -206,7 +211,7 @@ SELECT k, count(*)::int AS n, avg(mins)::float AS avg,
      ready_to_arrived سالب = المندوب وصل **قبل** ما الأكل يجهز. */
   courierTimes: `${BASE_CTE},
 cs AS (
-  SELECT s.*, b.pos_ready_at
+  SELECT s.*, b.pos_ready_at, b.handed_at
     FROM dl_shipments s
     JOIN base b ON b.order_no = s.shop_order_no AND b.is_net AND b.option = 'delivery'
    WHERE s.provider <> 'manual' AND s.status <> 'cancelled'
@@ -214,6 +219,7 @@ cs AS (
 cm AS (
   SELECT 'ready_to_arrived' AS k, (EXTRACT(EPOCH FROM (arrived_at - pos_ready_at))/60)::float8 AS mins FROM cs
   UNION ALL SELECT 'arrived_to_picked', (EXTRACT(EPOCH FROM (picked_at - arrived_at))/60)::float8 FROM cs
+  UNION ALL SELECT 'arrived_to_handed', (EXTRACT(EPOCH FROM (handed_at - arrived_at))/60)::float8 FROM cs
   UNION ALL SELECT 'courier_picked_to_delivered',
                    (EXTRACT(EPOCH FROM (updated_at - picked_at))/60)::float8 FROM cs WHERE status='delivered'
 )
@@ -373,6 +379,9 @@ const TIME_LABELS = {
   paid_to_accepted: "من الدفع للقبول",
   accepted_to_ready: "من القبول لـ«جاهز»",
   ready_to_courier_assigned: "من «جاهز» لتعيين الكابتن",
+  ready_to_handed: "من «جاهز» لتسليم المندوب",
+  accepted_to_handed: "من القبول لتسليم المندوب",
+  arrived_to_handed: "المندوب استنّانا — من وصوله لتسليمنا له",
   picked_to_delivered: "من استلام الكابتن للتوصيل",
   paid_to_delivered: "من الدفع للتوصيل",
   // محطّات المندوب (من إشارات شركة التوصيل نفسها)
@@ -382,9 +391,62 @@ const TIME_LABELS = {
 };
 
 /* تشكيل النتايج (صافي — بيتجرّب من غير قاعدة) */
+/* ── وقت التحضير (عمر): من القبول لحد «جاهز»، الحد ٣٠ د ─────────────────
+   صف لكل نوع طلب. measured = طلبات فيها الوقتين؛ الباقي (noSignal) محدش سجّل
+   فيه «جاهز» — بنعدّه لوحده بدل ما نخبّيه جوّه المتوسط. */
+export const prepSql = (warnMin = 25, maxMin = 30) => {
+  const w = Number(warnMin) > 0 ? Number(warnMin) : 25, x = Number(maxMin) > 0 ? Number(maxMin) : 30;
+  return `${BASE_CTE},
+t AS (
+  SELECT b.option, b.pos_ready_at,
+         COALESCE(b.accepted_at, (
+           SELECT min((h->>'at')::timestamptz)
+             FROM jsonb_array_elements(CASE WHEN jsonb_typeof(b.history)='array' THEN b.history ELSE '[]'::jsonb END) h
+            WHERE h->>'status'='accepted' AND (h->>'at') ~ ${TS_OK})) AS accepted_at
+    FROM base b WHERE b.is_net
+),
+m AS (
+  SELECT option, accepted_at,
+         CASE WHEN pos_ready_at IS NOT NULL AND accepted_at IS NOT NULL
+                   AND pos_ready_at >= accepted_at AND pos_ready_at < accepted_at + INTERVAL '12 hours'
+              THEN (EXTRACT(EPOCH FROM (pos_ready_at - accepted_at))/60)::float8 END AS mins
+    FROM t
+)
+SELECT option,
+       count(*) FILTER (WHERE accepted_at IS NOT NULL)::int AS accepted,
+       count(mins)::int AS measured,
+       count(*) FILTER (WHERE mins >= ${x})::int AS over,
+       count(*) FILTER (WHERE mins >= ${w} AND mins < ${x})::int AS warn,
+       percentile_cont(0.5) WITHIN GROUP (ORDER BY mins)::float AS median,
+       percentile_cont(0.9) WITHIN GROUP (ORDER BY mins)::float AS p90,
+       max(mins)::float AS max
+  FROM m GROUP BY option`;
+};
+
+export function prepBlock(rows = [], warnMin = 25, maxMin = 30) {
+  const one = (r = {}) => {
+    const accepted = Number(r.accepted) || 0, measured = Number(r.measured) || 0, over = Number(r.over) || 0, warn = Number(r.warn) || 0;
+    return { accepted, measured, noSignal: Math.max(0, accepted - measured), onTime: Math.max(0, measured - over), warn, over,
+      overPct: measured ? r1((over / measured) * 100) : null,
+      medianMin: r1(r.median), p90Min: r1(r.p90), maxMin: r1(r.max) };
+  };
+  const byOption = {};
+  const sum = { accepted: 0, measured: 0, over: 0, warn: 0 };
+  for (const r of rows || []) {
+    byOption[r.option || "other"] = one(r);
+    for (const k of Object.keys(sum)) sum[k] += Number(r[k]) || 0;
+  }
+  const all = one(sum);
+  /* وسيط الإجمالي مش مجموع وسيطين — بنسيبه فاضي لو أكتر من نوع، والشاشة
+     بتعرض وسيط كل نوع. نوع واحد بس ⇒ هو هو. */
+  const only = (rows || []).length === 1 ? one(rows[0]) : null;
+  return { warnMin, limitMin: maxMin, ...all, medianMin: only ? only.medianMin : null, p90Min: only ? only.p90Min : null,
+    maxMin: (rows || []).reduce((m, r) => Math.max(m, Number(r.max) || 0), 0) || null, byOption };
+}
+
 export function shapeReport({ range, totals = {}, courier = {}, daily = [], hourly = [], times = [], slaCodes = [],
   topItems = [], customers = {}, sources = [], links = [], payments = [],
-  courierTimes = [], courierMilestones = {}, courierDaily = [] }) {
+  courierTimes = [], courierMilestones = {}, courierDaily = [], prep = [], prepWarnMin = 25, prepMaxMin = 30 }) {
   const t = totals || {};
   const revenue = r2(t.revenue);
   const netOrders = Number(t.net_orders) || 0;
@@ -449,6 +511,7 @@ export function shapeReport({ range, totals = {}, courier = {}, daily = [], hour
       byCode: Object.values(slaByCode).sort((a, b) => b.orders - a.orders),
     },
     times: timeMap,
+    prep: prepBlock(prep, prepWarnMin, prepMaxMin),
     /* أداء شركة التوصيل — «وصل المطعم» و«استلم» جايين من إشارات الشركة نفسها.
        coverage = نسبة الشحنات اللي وصلتنا فيها إشارة وصول: لو صفر فالشركة
        مش بتبعتها أصلاً، والشاشة بتقول كده بدل ما تعرض متوسطات على الفاضي. */
@@ -499,11 +562,13 @@ export function shapeReport({ range, totals = {}, courier = {}, daily = [], hour
 }
 
 /* تشغيل كل الاستعلامات (واحد ورا التاني) — أي استعلام يقع بيرجّع فاضي بدل ما يوقّع التقرير كله */
-export async function buildReport(pool, range, log = console) {
+export async function buildReport(pool, range, log = console, opts = {}) {
   const params = [range.from, range.to];
   const errors = [];
-  const q = async (key) => {
-    try { return (await pool.query(SQL[key], params)).rows || []; }
+  const prepWarnMin = Number(opts.prepWarnMin) > 0 ? Number(opts.prepWarnMin) : 25;
+  const prepMaxMin = Number(opts.prepMaxMin) > 0 ? Number(opts.prepMaxMin) : 30;
+  const q = async (key, sql) => {
+    try { return (await pool.query(sql || SQL[key], params)).rows || []; }
     catch (e) {
       errors.push(key);
       try { log.error(`[portal-reports] ${key} failed: ${e?.message || e}`); } catch {}
@@ -524,8 +589,9 @@ export async function buildReport(pool, range, log = console) {
   const courierTimes = await q("courierTimes");
   const courierMilestones = (await q("courierMilestones"))[0] || {};
   const courierDaily = await q("courierDaily");
+  const prep = await q("prep", prepSql(prepWarnMin, prepMaxMin));
   const report = shapeReport({ range, totals, courier, daily, hourly, times, slaCodes, topItems, customers, sources, links, payments,
-    courierTimes, courierMilestones, courierDaily });
+    courierTimes, courierMilestones, courierDaily, prep, prepWarnMin, prepMaxMin });
   if (errors.length) report.partial = errors;
   return report;
 }

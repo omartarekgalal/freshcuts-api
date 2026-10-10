@@ -176,6 +176,8 @@ export const ORDER_SLA_FIELDS = [
   ["autoRefundNoAcceptMinutes", "ماتقبلش خالص ⇒ استرجاع", 25],
   ["handoffMinutes", "اتقبل ومفيش مندوب — تنبيه", 10],
   ["handoffBreachMinutes", "اتقبل ومفيش مندوب — إنذار SMS", 20],
+  ["prepMinutes", "التحضير من القبول لـ«جاهز» — تنبيه", 25],
+  ["prepBreachMinutes", "التحضير من القبول لـ«جاهز» — مخالفة + إنذار SMS", 30],
   ["pickupMinutes", "مستني المندوب يستلم — تنبيه", 25],
   ["pickupBreachMinutes", "مستني المندوب يستلم — إنذار SMS", 45],
   ["deliverMinutes", "في الطريق للعميل — تنبيه", 45],

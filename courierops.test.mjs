@@ -395,3 +395,31 @@ test("إلغاء منّا إحنا مايتحسبش على الشركة", () => 
     events: [{ at: "2026-09-22T10:40:54Z", event: "cancel", provider: "cervo" }] };
   assert.equal(providerCancelled(sh), false);
 });
+
+/* ═══ ١٠/١٠ — «العميل استلم» للمندوب الخارجي مش ضغطة مع «استلم» ═══════════ */
+test("route: external delivered right after pickup → 409 too_soon until the manager confirms; handover time is stored", async () => {
+  const justNow = new Date(Date.now() - 60_000).toISOString();
+  const cur = { id: 99, provider: "external", status: "picked", picked_at: justNow };
+  const h = harness({ row: { ...baseRow, status: "on_the_way" }, current: cur });
+  const r = await h.post("/api/portal/orders/W1/courier/external/delivered", {});
+  const j = await r.json();
+  assert.equal(r.status, 409, JSON.stringify(j));
+  assert.equal(j.error, "too_soon");
+  assert.equal(j.needConfirm, true);
+  assert.ok(j.minGap >= 5);
+  assert.deepEqual(h.calls.setStatus, [], "العميل مايتقالوش «تم التوصيل»");
+  assert.equal(h.q.some((x) => /UPDATE dl_shipments SET status=\$2/.test(x.sql)), false);
+  // تأكيد صريح ⇒ بيعدّي
+  const ok = await h.post("/api/portal/orders/W1/courier/external/delivered", { confirm: true });
+  assert.equal(ok.status, 200);
+  assert.deepEqual(h.calls.setStatus.map((x) => x[1]), ["delivered"]);
+  // مستلم من زمان ⇒ من غير تأكيد
+  const h2 = harness({ row: { ...baseRow, status: "on_the_way" }, current: { ...cur, picked_at: new Date(Date.now() - 40 * 60_000).toISOString() } });
+  assert.equal((await h2.post("/api/portal/orders/W1/courier/external/delivered", {})).status, 200);
+  // «استلم» بتسجّل لحظة التسليم للمندوب على الطلب
+  const h3 = harness({ row: { ...baseRow, status: "courier_assigned" }, current: { id: 99, provider: "external", status: "assigned" } });
+  assert.equal((await h3.post("/api/portal/orders/W1/courier/external/picked", {})).status, 200);
+  const hd = h3.q.find((x) => /SET handed_at = COALESCE\(handed_at, \$2::timestamptz\)/.test(x.sql));
+  assert.ok(hd);
+  assert.equal(hd.vals[2], "مدير");
+});

@@ -148,8 +148,9 @@ const baseRow = () => ({
 test("toPortalOrder: نفس شكل العقد بالظبط", () => {
   const o = toPortalOrder(baseRow(), {}, NOW);
   assert.deepEqual(Object.keys(o).sort(), [
-    "acceptedAt", "ackAt", "ackBy", "address", "courier", "courierOps", "createdAt", "customer", "deliveryFee", "farZone", "isTest", "items",
-    "itemsCount", "notes", "option", "orderNo", "paidAt", "paidWith", "posOrderId", "readyAt",
+    "acceptedAt", "ackAt", "ackBy", "address", "collectedAt", "courier", "courierOps", "createdAt", "customer", "deliveryFee", "farZone",
+    "handedAt", "handedBy", "handedSource", "isTest", "items",
+    "itemsCount", "notes", "option", "orderNo", "paidAt", "paidWith", "posOrderId", "prep", "readyAt",
     "scheduledFor", "scheduledLabel", "scheduledSlot", "sla", "stageLabel",
     "status", "subtotal", "tableNo", "total", "trackUrl", "updatedAt"].sort());
   assert.equal(o.total, 95.5);

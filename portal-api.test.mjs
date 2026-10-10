@@ -667,3 +667,21 @@ test("dashboard courier-report: requireAdmin + نفس buildReport (courierPerf +
   for (const k of ["ready_to_arrived", "arrived_to_picked", "courier_picked_to_delivered"]) assert.ok(k in r.body.times, k);
   assert.ok(Array.isArray(r.body.courierPerf.daily));
 });
+
+/* ═══ ١٠/١٠ — «سلّمت الطلب للمندوب» بتتخزّن على الطلب ═══════════════════ */
+test("handed: بيكتب handed_at/handed_by مرة واحدة (COALESCE)، مابيغيّرش الحالة، ومرفوض لطلب الاستلام", async () => {
+  const s = build({ settings: { portal: { staff: STAFF() } },
+    orders: [orderRow("W1", { status: "courier_assigned" }), orderRow("P1", { option: "pickup" })] });
+  const t = (await login(s, "2468")).body.token;
+  const r = await s.json("POST", "/api/portal/orders/W1/handed", { token: t });
+  assert.equal(r.status, 200);
+  const q = s.db.queries.find((x) => /SET handed_at = COALESCE\(handed_at, NOW\(\)\)/.test(x.sql));
+  assert.ok(q, "اتكتب على الطلب");
+  assert.match(q.sql, /handed_source = COALESCE\(handed_source, 'portal'\)/);
+  assert.deepEqual(q.vals, ["W1", "علي"]);
+  assert.equal(s.db.orders.get("W1").status, "courier_assigned", "الحالة زي ما هي — «وصل للعميل» من المندوب");
+  assert.equal(s.db.queries.some((x) => /SET status=/.test(x.sql) && x.vals[0] === "W1"), false);
+  const p = await s.json("POST", "/api/portal/orders/P1/handed", { token: t });
+  assert.equal(p.status, 400);
+  assert.equal(p.body.error, "not_delivery");
+});

@@ -55,6 +55,7 @@ import { evaluateCoupon, couponQueries, isPureFreeDelivery } from "./couponrules
 import { recordCheckoutConsent } from "./consent.js";
 import { makeNameResolver } from "./product-names.js";
 import { tableSessionForCheckout, tableGate, touchTableSession, tableCfg, tableBusy, TABLE_MSG, posOptionOf, tableNote, tableWho, tableTrackLabel, cleanCustomerText } from "./table-order.js";
+import { posMilestones, prepCfg, prepCheck, orderKind, WEBHOOKS_SQL, PREP_DDL } from "./prepstatus.js";
 
 /* ناقل أحداث الطلب (W1-01) وترحيل أعمدة shop_orders — تحميل كسول ودفاعي (W1-02):
    لو الملفات مش موجودة أو الـimport وقع، shop.js بيشتغل عادي والأحداث بتتجاهل.
@@ -355,6 +356,10 @@ export const DEFAULT_SLA = {
   autoRefundNoAcceptMinutes: 25,  // ما اتقبلش خالص ⇒ استرجاع تلقائي
   handoffMinutes: 10,         // اتقبل، والكاشير ما دخّلوش على لوحة الشركة
   handoffBreachMinutes: 20,
+  /* عمر (٥/١٠): التحضير مايعدّيش ٣٠ دقيقة من القبول لحد «جاهز».
+     تنبيه عند ٢٥، ومخالفة علينا + رسالة للإدارة عند ٣٠ (prepstatus.js). */
+  prepMinutes: 25,
+  prepBreachMinutes: 30,
   pickupMinutes: 25,          // اتدخّل على اللوحة، والكابتن ما جاش
   pickupBreachMinutes: 45,
   deliverMinutes: 45,         // خرج للعميل وما وصلش
@@ -617,7 +622,10 @@ export function register(app, ctx, deps = {}) {
     // أعمدة §٤-٢ (W1-01) بعد جدول shop_orders — كلها IF NOT EXISTS ومابتوقفش الإقلاع
     .then(() => _ordersSchemaReady)
     .then((m) => (m && typeof m.ensureOrderColumns === "function" ? m.ensureOrderColumns(pool) : null))
-    .catch((e) => console.error("[shop] schema failed:", e.message));
+    .catch((e) => console.error("[shop] schema failed:", e.message))
+    // سجل مخالفات التحضير (علينا) — جدول مستقل، مابيوقفش الإقلاع
+    .then(async () => { for (const sql of PREP_DDL) await pool.query(sql); })
+    .catch((e) => console.error("[shop] prep schema failed:", e.message));
 
   async function getOrderRow(orderNo) {
     const r = await pool.query("SELECT * FROM shop_orders WHERE order_no=$1", [String(orderNo)]);
@@ -626,6 +634,10 @@ export function register(app, ctx, deps = {}) {
 
   async function setStatus(orderNo, status, extra = {}) {
     const sets = ["status=$2", "history = history || $3::jsonb", "updated_at=NOW()"];
+    /* وقت القبول بيتكتب لحظتها. كان بيتملى من backfill وقت الإقلاع بس، فطلبات
+       اليوم كانت NULL ووقت التحضير مالوش بداية. الكنس بيكتب قبلها وقت ضغطة
+       الكاشير نفسها (الويبهوك) — COALESCE بيحافظ عليه. */
+    if (status === "accepted") sets.push("accepted_at = COALESCE(accepted_at, NOW())");
     const vals = [String(orderNo), status, jb([{ at: new Date().toISOString(), status, ...extra.note ? { note: extra.note } : {} }])];
     for (const [col, v] of Object.entries(extra.cols || {})) {
       vals.push(v);
@@ -1756,6 +1768,10 @@ export function register(app, ctx, deps = {}) {
         label = "تم توصيل طلبك — بالهنا والشفا 🌟"; step = 5;
       } else if (row.status === "on_the_way") {
         label = "طلبك في الطريق إليك الآن 🛵💨"; step = 4;
+      } else if (row.handed_at) {
+        /* الكاشير سلّم الطلب للمندوب («تم التوصيل» على نقطة البيع = تسليم
+           للمندوب — تعريف عمر ١٠/١٠). «في الطريق» بتتأكد من المندوب نفسه. */
+        label = "تم تسليم طلبك للمندوب 🛵"; step = 3;
       } else if (ready) {
         label = "طلبك جاهز وبنسلّمه للمندوب 🛵"; step = 3;
       } else if (["paid", "pos_created"].includes(row.status)) {
@@ -1779,7 +1795,7 @@ export function register(app, ctx, deps = {}) {
           };
           /* «الكابتن في المطعم» أوضح بكتير من «بيجهّز» وهو واقف عندنا فعلاً.
              بيتعرض بس لما الشركة تقول وصل ولسه ما استلمش. */
-          if (sh.arrived_at && !sh.picked_at && !["on_the_way", "delivered"].includes(row.status)) {
+          if (sh.arrived_at && !sh.picked_at && !row.handed_at && !["on_the_way", "delivered"].includes(row.status)) {
             label = ready ? "المندوب في المطعم وبيستلم طلبك 🛵" : "المندوب وصل المطعم — طلبك بيتجهّز 👨‍🍳";
             step = ready ? 3 : 2;
           }
@@ -1805,6 +1821,9 @@ export function register(app, ctx, deps = {}) {
       // sync reports, so the platforms de-dupe instead of double counting
       posOrderId: row.pos_order_id || null,
       createdAt: row.created_at,
+      // محطات المطعم بأوقاتها: قبول ← جاهز ← تسليم للمندوب / استلام العميل
+      acceptedAt: row.accepted_at || null, readyAt: row.pos_ready_at || null,
+      handedAt: row.handed_at || null, collectedAt: row.collected_at || null,
     });
   });
 
@@ -2204,6 +2223,16 @@ export function register(app, ctx, deps = {}) {
     if (!next) return;
     const row = await getOrderRow(orderNo);
     if (!row) return;
+    /* المندوب استلم ومحدش سجّل التسليم (لا نقطة البيع ولا البوابة) ⇒ وقت
+       استلامه هو وقت التسليم. ضغطة الكاشير لو جت بعدها بتكسب (أدق). */
+    if ((next === "on_the_way" || next === "delivered") && !row.handed_at) {
+      await pool.query(
+        `UPDATE shop_orders SET handed_source = 'courier',
+                handed_at = COALESCE((SELECT s.picked_at FROM dl_shipments s
+                                       WHERE s.shop_order_no = $1 AND s.picked_at IS NOT NULL ORDER BY s.id DESC LIMIT 1), NOW())
+          WHERE order_no = $1 AND handed_at IS NULL`, [String(orderNo)])
+        .catch((e) => console.error(`[shop] handed_at fallback failed for ${orderNo}:`, e.message));
+    }
     // never let a late webhook drag a delivered order backwards
     const order = ["courier_requested", "courier_assigned", "on_the_way", "delivered"];
     if (next !== "courier_cancelled" &&
@@ -2298,6 +2327,112 @@ export function register(app, ctx, deps = {}) {
           delivery.cancelShipment(row.order_no, `order ${row.order_no} never accepted`).catch(() => {});
         }
         await refundOrder(await getOrderRow(row.order_no), "never accepted by restaurant");
+      }
+    }
+    await prepWatch(settings).catch((e) => console.error("[shop] prep watch failed:", e.message));
+  }
+
+  /* ── محطات نقطة البيع لطلب واحد (كل الويبهوكات) ── */
+  async function posMilestonesOf(posOrderId) {
+    if (!posOrderId) return null;
+    try {
+      const rows = (await pool.query(WEBHOOKS_SQL, [String(posOrderId)])).rows || [];
+      return { ...posMilestones(rows), n: rows.length };
+    } catch { return null; }   // tsp_webhooks لسه ماتعملتش
+  }
+
+  /* بيكتب «جاهز» و«تسليم للمندوب» بأوقات الضغط الحقيقية — مرة واحدة لكل
+     محطة (الشرط في جملة الـUPDATE نفسها)، وبيطلّع حدث لكل واحدة. */
+  async function applyPosMilestones(r, pm) {
+    const out = { ready: false, handed: false };
+    const did = (u) => u && (u.rowCount == null || u.rowCount > 0);
+    if (pm.readyAt && !r.pos_ready_at) {
+      const u = await pool.query(
+        `UPDATE shop_orders SET pos_ready_at = $2::timestamptz, ready_source = COALESCE(ready_source, $3),
+                pos_approval = COALESCE($4, pos_approval), updated_at = NOW()
+          WHERE order_no = $1 AND pos_ready_at IS NULL`,
+        [r.order_no, pm.readyAt, pm.readyBasis || "pos", pm.closedAt && r.option !== "delivery" ? null : "pickup_ready"]);
+      if (did(u)) {
+        out.ready = true;
+        emitOrder("pos_ready", { orderNo: r.order_no, source: "shop",
+          data: { source: "pos", by: null, approval: pm.readyBasis === "pos_closed" ? "delivered" : "pickup_ready", at: pm.readyAt, basis: pm.readyBasis } });
+        /* الاستلام/الطاولة: العميل يعرف إن طلبه جاهز — إلا لو الكاشير قفل
+           الطلب في نفس اللحظة (ساعتها رسالة «استلمت طلبك» جاية حالاً). */
+        if (r.option !== "delivery" && !pm.closedAt && notify && typeof notify.orderReady === "function") {
+          notify.orderReady(String(r.order_no)).catch((e) => console.error(`[shop] ready notify failed for ${r.order_no}:`, e.message));
+        }
+      }
+    }
+    if (r.option === "delivery" && pm.closedAt && (!r.handed_at || r.handed_source === "courier")) {
+      const u = await pool.query(
+        `UPDATE shop_orders SET handed_at = LEAST(COALESCE(handed_at, $2::timestamptz), $2::timestamptz), handed_source = 'pos'
+          WHERE order_no = $1 AND (handed_at IS NULL OR handed_source = 'courier')`, [r.order_no, pm.closedAt]);
+      if (did(u)) {
+        out.handed = true;
+        emitOrder("staff_action", { orderNo: r.order_no, source: "shop",
+          summary: "الكاشير سلّم الطلب للمندوب (نقطة البيع)",
+          data: { action: "handed_to_courier", via: "pos", at: pm.closedAt } });
+      }
+    }
+    return out;
+  }
+
+  /* ── مهلة التحضير (عمر): من القبول لحد «جاهز» ≤ ٣٠ دقيقة ─────────────────
+     تنبيه عند ٢٥ (درجة ١ — بيبان في البوابة)، ومخالفة علينا عند ٣٠ (درجة ٢ —
+     رسالة للإدارة + صف في shop_prep_breaches). كل درجة مرة واحدة لكل طلب.
+     الطلب اللي اتأخر واتسجّل «جاهز» قبل ما نشوفه بيتسجّل مخالفة برضه، بس من
+     غير رسالة (مفيش حاجة تتعمل). */
+  async function prepWatch(settings) {
+    const cfg = prepCfg(((settings || {}).delivery || {}).sla || {});
+    const rows = (await pool.query(
+      `SELECT o.order_no, o.status, o.option, o.is_test, o.alerts, o.history, o.accepted_at, o.pos_ready_at,
+              o.scheduled_for, o.table_no,
+              NULLIF(to_jsonb(o)->>'handed_at','')::timestamptz AS handed_at, o.collected_at,
+              (SELECT s.picked_at FROM dl_shipments s
+                WHERE s.shop_order_no = o.order_no AND s.picked_at IS NOT NULL ORDER BY s.id DESC LIMIT 1) AS picked_at
+         FROM shop_orders o
+        WHERE o.status NOT IN ('pending_payment','expired','paid','paid_pos_failed','pos_created','rejected_refunded','refund_failed')
+          AND (o.status <> 'delivered' OR o.updated_at > NOW() - INTERVAL '30 minutes')
+          AND (o.scheduled_for IS NULL OR o.scheduled_for <= NOW())
+          AND (o.created_at > NOW() - INTERVAL '24 hours'
+               OR (o.scheduled_for IS NOT NULL AND o.scheduled_for > NOW() - INTERVAL '24 hours'))`)).rows;
+    const now = Date.now();
+    for (const row of rows) {
+      const acceptedAt = row.accepted_at || (Array.isArray(row.history) ? row.history : []).find((h) => h && h.status === "accepted")?.at || null;
+      const v = prepCheck({ ...row, accepted_at: acceptedAt }, cfg, now);
+      if (!v.level) continue;
+      if (!v.open && v.level < 2) continue;          // خلص في الوقت الأصفر — مش مخالفة
+      if (v.level >= 2) {
+        await pool.query(
+          `INSERT INTO shop_prep_breaches(order_no, option, accepted_at, deadline_at, ready_at, ready_basis, prep_min, over_min, max_min, is_test)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+           ON CONFLICT (order_no) DO UPDATE SET ready_at = EXCLUDED.ready_at, ready_basis = EXCLUDED.ready_basis,
+                  prep_min = EXCLUDED.prep_min, over_min = EXCLUDED.over_min
+            WHERE shop_prep_breaches.ready_at IS NULL`,
+          [row.order_no, orderKind(row), v.startAt, v.deadlineAt, v.endAt, v.basis, v.exactMin, v.overMin, cfg.maxMin, Boolean(row.is_test)])
+          .catch((e) => console.error(`[shop] prep breach record failed for ${row.order_no}:`, e.message));
+      }
+      const seen = row.alerts || {};
+      const key = `${v.code}:${v.level}`;
+      if (seen[key]) continue;
+      await pool.query(
+        "UPDATE shop_orders SET alerts = COALESCE(alerts,'{}'::jsonb) || $2::jsonb WHERE order_no=$1",
+        [row.order_no, jb({ [key]: new Date().toISOString() })]);
+      /* «حي» بس: طلب مفتوح ولسه في أول ٢٠ دقيقة بعد الحد — مانبعتش رسالة
+         لمخالفة قديمة اتكشفت أول مرة بعد نشر. */
+      const live = v.open && v.minutes < cfg.maxMin + 20 && !row.is_test;
+      /* الحدث بيرنّ في البوابة (درجة ٢ = إشعار لأجهزة الفريق)، فبيتطلق بس لما
+         فيه حاجة تتعمل دلوقتي. المخالفة المقفولة/القديمة بتتسجّل في الجدول
+         وفي alerts من غير أي رنّة. */
+      if (!live) continue;
+      emitOrder("sla_alert", { orderNo: row.order_no, source: "shop", ok: null,
+        data: { code: v.code, level: v.level, notified: v.level >= 2, action: v.action || null,
+                minutes: v.minutes ?? null, status: row.status } });
+      if (v.level >= 2 && live) {
+        console.error(`[shop] PREP ${row.order_no}: ${v.message}`);
+        await pool.query("UPDATE shop_prep_breaches SET alerted_at = NOW() WHERE order_no=$1 AND alerted_at IS NULL", [row.order_no]).catch(() => {});
+        staff.critical((lang) => slaAlertText(row.order_no, v, lang), `prep ${row.order_no}`)
+          .catch((e) => console.error("[shop] prep sms failed:", e.message));
       }
     }
   }
@@ -2437,13 +2572,30 @@ export function register(app, ctx, deps = {}) {
        بيخرج من المراقبة **قبل** ما الجهوزية تتسجّل: ٢٧ إشارة pickup_ready
        وصلت في يوم واحد وصفر طلب اتسجّلت فيه. on_the_way/out_for_delivery
        داخلين لأن «جاهز» بتسبق الاستلام منطقياً حتى لو التنبيه اتأخر. */
+    /* ١٠/١٠ — الكاشير بيضغط «جاهز» و«تم التوصيل» ورا بعض في نفس الثواني
+       (٦٤ من ٦٥ طلب توصيل). قراية **آخر** ويبهوك بس كانت بتلاقي delivered
+       ومابتلاقيش ready ⇒ الجهوزية اتسجّلت في ٦ من ٦٦ طلب، والتسليم للمندوب
+       ماكانش بيتسجّل خالص. دلوقتي بنقرا **كل** ويبهوكات الطلب ونسجّل كل
+       محطة بوقت وصولها الحقيقي: جاهز = pos_ready_at، و«تم التوصيل» على
+       طلب توصيل = handed_at (تسليم للمندوب — مش وصول للعميل).
+       النافذة بتشمل delivered لآخر ٣ ساعات: التسليم ممكن يتقري بعد ما
+       المندوب يخلّص. */
     const awaitingReady = (await pool.query(
-      `SELECT order_no, pos_order_id, branch_id FROM shop_orders
-        WHERE pos_order_id IS NOT NULL AND pos_ready_at IS NULL
-          AND status IN ('accepted','courier_requested','courier_assigned','on_the_way','out_for_delivery')
+      `SELECT order_no, pos_order_id, branch_id, option, pos_ready_at,
+              NULLIF(to_jsonb(shop_orders)->>'handed_at','') AS handed_at,
+              NULLIF(to_jsonb(shop_orders)->>'handed_source','') AS handed_source
+         FROM shop_orders
+        WHERE pos_order_id IS NOT NULL
+          AND (pos_ready_at IS NULL
+               OR (option='delivery' AND COALESCE(to_jsonb(shop_orders)->>'handed_source','courier') = 'courier'))
+          AND (status IN ('accepted','courier_requested','courier_assigned','on_the_way','out_for_delivery','courier_cancelled')
+               OR (status='delivered' AND option='delivery' AND updated_at > NOW() - INTERVAL '3 hours'))
           AND created_at > NOW() - INTERVAL '24 hours'`)).rows;
     for (const r of awaitingReady) {
       try {
+        const pm = await posMilestonesOf(r.pos_order_id);
+        if (pm && pm.n) { await applyPosMilestones(r, pm); continue; }
+        if (r.pos_ready_at) continue;
         const wh = await pool.query(
           `SELECT jsonb_build_object('resource', jsonb_build_object('statuses_slugs',
                     payload->'resource'->'statuses_slugs')) AS payload
@@ -2460,6 +2612,7 @@ export function register(app, ctx, deps = {}) {
         if (a.includes("ready")) {
           await pool.query(
             `UPDATE shop_orders SET pos_approval=$2, pos_ready_at = COALESCE(pos_ready_at, NOW()),
+                    ready_source = COALESCE(ready_source, 'pos'),
                     updated_at=NOW() WHERE order_no=$1`, [r.order_no, a]);
           emitOrder("pos_ready", { orderNo: r.order_no, source: "shop", data: { source: "pos", by: null, approval: a } });
         }
@@ -2477,6 +2630,22 @@ export function register(app, ctx, deps = {}) {
           AND created_at > NOW() - INTERVAL '48 hours'`)).rows;
     for (const r of pickupOpen) {
       try {
+        /* ١٠/١٠: أوقات «جاهز» و«استلم» من الويبهوكات نفسها (مش وقت الكنس)،
+           و«استلم» بتتسجّل في collected_at. الإشارة لسه هي هي: completed. */
+        const pm = await posMilestonesOf(r.pos_order_id);
+        if (pm && pm.n) {
+          if (pm.closedAt) {
+            await pool.query(
+              `UPDATE shop_orders SET pos_approval = 'delivered',
+                      pos_ready_at = COALESCE(pos_ready_at, $2::timestamptz),
+                      ready_source = COALESCE(ready_source, $3),
+                      collected_at = COALESCE(collected_at, $4::timestamptz)
+                WHERE order_no = $1`,
+              [r.order_no, pm.readyAt || pm.closedAt, pm.readyBasis || "pos_closed", pm.closedAt]);
+            await setStatus(r.order_no, "delivered", { note: "الكاشير سلّم الطلب (تاب سينس)" });
+          }
+          continue;
+        }
         const wh = await pool.query(
           `SELECT payload->'resource'->'statuses_slugs'->>'approval_status' AS a,
                   payload->'resource'->'statuses_slugs'->>'order_status' AS o,
@@ -2542,9 +2711,20 @@ export function register(app, ctx, deps = {}) {
       const rejectedLike = a.includes("reject") || a.includes("cancel");
       // «جاهز للاستلام»: أول ما الكاشير يسجّلها، بنثبّت وقت الجهوزية مرة واحدة.
       // ("pickup_ready" وأي "ready" تدخل؛ accepted/preparing/processing مش منها.)
-      if (a.includes("ready")) {
+      const pm = await posMilestonesOf(r.pos_order_id);
+      if (acceptedLike) {
+        /* وقت القبول = لحظة ضغطة الكاشير (الويبهوك)، مش لحظة ما الكنس شافها
+           (فرق وسيطه ١٫١ د ولحد دقيقتين) — وقت التحضير بيبدأ منها. */
         await pool.query(
-          "UPDATE shop_orders SET pos_ready_at = COALESCE(pos_ready_at, NOW()), updated_at=NOW() WHERE order_no=$1",
+          "UPDATE shop_orders SET accepted_at = COALESCE(accepted_at, $2::timestamptz) WHERE order_no=$1",
+          [r.order_no, (pm && pm.acceptedAt) || new Date().toISOString()])
+          .catch((e) => console.error(`[shop] accepted_at failed for ${r.order_no}:`, e.message));
+      }
+      if (pm && pm.n && !rejectedLike) {
+        await applyPosMilestones(r, pm);
+      } else if (a.includes("ready")) {
+        await pool.query(
+          "UPDATE shop_orders SET pos_ready_at = COALESCE(pos_ready_at, NOW()), ready_source = COALESCE(ready_source, 'pos'), updated_at=NOW() WHERE order_no=$1",
           [r.order_no]);
         if (!r.pos_ready_at) emitOrder("pos_ready", { orderNo: r.order_no, source: "shop", data: { source: "pos", by: null, approval: a } });
       }
@@ -2650,5 +2830,5 @@ export function register(app, ctx, deps = {}) {
     setInterval(() => sweep().catch((e) => console.error("[shop] sweep failed:", e.message)), sweepSec * 1000);
   }
 
-  return { confirmOrder, onShipmentEvent, sweep, refundOrder, watchdog, setStatus, getOrderRow, createPosOrder };
+  return { confirmOrder, onShipmentEvent, sweep, refundOrder, watchdog, setStatus, getOrderRow, createPosOrder, prepWatch, posMilestonesOf, applyPosMilestones };
 }

@@ -38,6 +38,7 @@ import { driverKey, dispatchDelayOf } from "./delivery.js";
 import { fitOneSms, makeStaffNotifier } from "./staffalerts.js";
 import { emitOrder } from "./order-events.js";
 import { sendSms as sendStaffSms } from "./accounts.js";
+import { externalTooSoon } from "./prepstatus.js";
 
 /* ── الإعدادات (settings.delivery.courierSla — بتتعدّل من «مطابقة لاجلك») ── */
 export const DEFAULT_COURIER_SLA = Object.freeze({
@@ -1101,11 +1102,30 @@ export function register(app, ctx, deps = {}) {
     }
     if (String(cur.status) === "cancelled") return c.json({ ok: false, error: "cancelled" }, 409);
     if (stage === "picked" && ["picked", "delivered"].includes(String(cur.status))) return c.json({ ok: true, already: true });
+    /* ١٠/١٠: «العميل استلم» للمندوب الخارجي مالوش شركة تأكّده — الضغطة هي
+       المصدر الوحيد. في ٢ من ٣ طلبات اتضغطت مع «استلم» في نفس الدقيقة (يعني
+       وقت التسليم للمندوب)، فالعميل اتقاله «تم التوصيل» والأكل لسه خارج.
+       لو بدري قوي بنطلب تأكيد صريح (confirm:true). */
+    if (stage === "delivered" && b.confirm !== true) {
+      let expectedMin = null;
+      try { expectedMin = expectedDriveMin({ km: routeKmOf(row), durationSec: await durationSecOf(row.address) }, await cfgOf()); } catch {}
+      const g = externalTooSoon({ pickedAt: cur.picked_at, expectedMin, now: now() });
+      if (!cur.picked_at || g.tooSoon) {
+        return c.json({ ok: false, error: "too_soon", needConfirm: true, minGap: g.minGap, sincePickedMin: g.sincePickedMin,
+          message: !cur.picked_at
+            ? "المندوب لسه ما اتسجّلش إنه استلم — «العميل استلم» معناها إن الطلب وصل لإيد العميل فعلاً. متأكد؟"
+            : `المندوب مستلم من ${Math.max(0, Math.floor(g.sincePickedMin))} دقيقة بس — «العميل استلم» معناها إن الطلب وصل لإيده فعلاً. متأكد؟` }, 409);
+      }
+    }
     await pool.query(
       `UPDATE dl_shipments SET status=$2, picked_at = COALESCE(picked_at, $3), delivered_at = CASE WHEN $2='delivered' THEN COALESCE(delivered_at, $3) ELSE delivered_at END,
               cost = COALESCE($4, cost), cost_basis = CASE WHEN $4 IS NULL THEN cost_basis ELSE 'manual' END,
               events = events || $5::jsonb, updated_at=NOW() WHERE id=$1`,
       [cur.id, stage, at, cost, J([{ at, provider: "external", event: stage, by: `portal:${user.name}` }])]);
+    // المندوب الخارجي استلم = لحظة التسليم للمندوب (لو محدش سجّلها قبل كده)
+    await pool.query(
+      `UPDATE shop_orders SET handed_at = COALESCE(handed_at, $2::timestamptz), handed_source = COALESCE(handed_source, 'portal'),
+              handed_by = COALESCE(handed_by, $3) WHERE order_no = $1`, [orderNo, cur.picked_at || at, user.name || null]).catch(() => {});
     const next = stage === "delivered" ? "delivered" : "on_the_way";
     const order = ["courier_requested", "courier_assigned", "on_the_way", "delivered"];
     if (row.status === "courier_cancelled" || order.indexOf(next) > order.indexOf(row.status)) {

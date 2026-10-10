@@ -83,9 +83,13 @@ test("setStatus بيطلق order_status مرة واحدة، والـSQL زي م�
     assert.deepEqual(st[0].data, { from: "pos_created", to: "accepted", note: "n1" });
     const upd = s.queries.filter((q) => /^\s*UPDATE shop_orders SET status=\$2/.test(q.sql));
     assert.equal(upd.length, 1);
-    assert.equal(upd[0].sql, "UPDATE shop_orders SET status=$2, history = history || $3::jsonb, updated_at=NOW() WHERE order_no=$1");
+    // القبول بيكتب accepted_at لحظتها (١٠/١٠) — باقي الحالات الـSQL زي ما هو
+    assert.equal(upd[0].sql, "UPDATE shop_orders SET status=$2, history = history || $3::jsonb, updated_at=NOW(), accepted_at = COALESCE(accepted_at, NOW()) WHERE order_no=$1");
     // from مش معروف → null
+    s.queries.length = 0;
     await s.api.setStatus("W1", "delivered");
+    assert.equal(s.queries.filter((q) => /^\s*UPDATE shop_orders SET status=\$2/.test(q.sql))[0].sql,
+      "UPDATE shop_orders SET status=$2, history = history || $3::jsonb, updated_at=NOW() WHERE order_no=$1");
     assert.deepEqual(s.events.filter((e) => e.name === "order_status")[1].data, { from: null, to: "delivered", note: null });
   } finally { s.restore(); }
 });
@@ -471,16 +475,20 @@ test("createPosOrder مسار المتجر + باقة: pos_push ok:false (من �
 /* ═══ ٤) sweep + watchdog ════════════════════════════════════════════════ */
 
 test("sweep: pos_ready من ويب هوك الشريك + order_expired + sla_alert", async () => {
-  const hookPayload = { event: "order-updated", resource: { order: { id: 88 }, statuses_slugs: { approval_status: "pickup_ready" } } };
   const tenMinAgo = new Date(Date.now() - 10 * 60_000).toISOString();
+  const readyAt = new Date(Date.now() - 3 * 60_000).toISOString();
   const s = build({
     env: { TSP_AUTO_ORDER: undefined },
     handler: (sql) => {
-      if (/pos_ready_at IS NULL\s+AND status IN/.test(sql)) return { rows: [{ order_no: "W1", pos_order_id: "88", branch_id: "1" }], rowCount: 1 };
+      if (/pos_ready_at IS NULL\s+OR \(option='delivery'/.test(sql)) return { rows: [{ order_no: "W1", pos_order_id: "88", branch_id: "1", option: "delivery", pos_ready_at: null, handed_at: null, handed_source: null }], rowCount: 1 };
       if (/FROM tsp_webhooks/.test(sql)) {
-        assert.match(sql, /jsonb_build_object\('statuses_slugs',\s+payload->'resource'->'statuses_slugs'\)\) AS payload/);
-        return { rows: [{ payload: hookPayload }], rowCount: 1 };
+        // ١٠/١٠: كل ويبهوكات الطلب بوقت وصولها (مش آخر واحد بس)
+        assert.match(sql, /approval_status' AS approval/);
+        assert.match(sql, /ORDER BY received_at\s*$/);
+        return { rows: [{ received_at: tenMinAgo, approval: "accepted", order_status: "processing" },
+          { received_at: readyAt, approval: "pickup_ready", order_status: "processing" }], rowCount: 2 };
       }
+      if (/SET pos_ready_at = \$2::timestamptz/.test(sql)) return { rows: [], rowCount: 1 };
       if (/SET status='expired'/.test(sql)) {
         assert.match(sql, /RETURNING order_no, mf_invoice_id/);
         return { rows: [{ order_no: "W2", mf_invoice_id: "INV-9" }, { order_no: "W3", mf_invoice_id: null }], rowCount: 2 };
@@ -497,9 +505,11 @@ test("sweep: pos_ready من ويب هوك الشريك + order_expired + sla_ale
     const ready = s.events.filter((e) => e.name === "pos_ready");
     assert.equal(ready.length, 1);
     assert.equal(ready[0].orderNo, "W1");
-    assert.deepEqual(ready[0].data, { source: "pos", by: null, approval: "pickup_ready" });
-    const readyUpd = s.queries.find((q) => /pos_approval=\$2, pos_ready_at = COALESCE/.test(q.sql));
-    assert.deepEqual(readyUpd.vals, ["W1", "pickup_ready"]);
+    assert.deepEqual(ready[0].data, { source: "pos", by: null, approval: "pickup_ready", at: readyAt, basis: "pos_ready" });
+    // وقت الجهوزية = وقت ضغطة الكاشير (الويبهوك) مش وقت الكنس
+    const upReady = s.queries.find((q) => /SET pos_ready_at = \$2::timestamptz/.test(q.sql));
+    assert.ok(upReady, "pos_ready_at بيتكتب");
+    assert.equal(upReady.vals[1], readyAt);
 
     const exp = s.events.filter((e) => e.name === "order_expired");
     assert.deepEqual(exp.map((e) => [e.orderNo, e.data.executed]), [["W2", true], ["W3", false]]);

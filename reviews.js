@@ -28,6 +28,7 @@ import * as places from "./places.js";
 import { staffPhoneSet } from "./smsrules.js";
 import { subscribe } from "./order-events.js";
 import { setLiveGoogleRating } from "./playbook.js";
+import { reviewDueAt } from "./prepstatus.js";
 
 const CATEGORIES = ["الأكل", "التوصيل", "الخدمة", "السعر", "النظافة", "الوقت"];
 export const DEFAULTS = {
@@ -358,12 +359,26 @@ export function register(app, ctx, deps = {}) {
     if (o.is_test) return { ok: false, reason: "test_order" };
     if (!/^5\d{8}$/.test(o.phone_norm || "")) return { ok: false, reason: "no_phone" };
     const mins = Math.min(720, Math.max(1, Number(cf.askAfterMinutes) || 30));
-    let due = new Date(at.getTime() + mins * 60_000);
-    // الاستلام: عمره ما يتبعت قبل ساعة من الطلب (تجهيز + وصول العميل + الأكل) — أمان ضد «استلم» بدري
-    if (o.option === "pickup" && o.created_at) {
-      const floor = new Date(new Date(o.created_at).getTime() + Math.max(60, mins) * 60_000);
-      if (floor > due) due = floor;
+    /* ١٠/١٠ — «بعد ما العميل يستلم بنص ساعة»: التوصيل بيتحسب من تأكيد المندوب.
+       لو المندوب خارجي ومحدش أكّد من رابطه (المدير ضغط «العميل استلم» بإيده)
+       بنفترض إن المشوار خد على الأقل ٣٠ د من استلامه — الرسالة ماتوصلش
+       والعميل لسه مستني. الاستلام من الفرع: مش قبل ساعة من الطلب (زي الأول). */
+    let pickedAt = null, courierConfirmed = true;
+    if (o.option === "delivery") {
+      try {
+        const s = (await pool.query(
+          "SELECT id, provider, picked_at FROM dl_shipments WHERE shop_order_no=$1 ORDER BY id DESC LIMIT 1", [o.order_no])).rows[0];
+        if (s && (s.provider === "external" || s.provider === "manual")) {
+          pickedAt = s.picked_at || null;
+          courierConfirmed = false;
+          if (s.provider === "external") {
+            const run = (await pool.query("SELECT delivered_at FROM dl_ext_runs WHERE shipment_id=$1", [s.id]).catch(() => ({ rows: [] }))).rows[0];
+            courierConfirmed = Boolean(run && run.delivered_at);
+          }
+        }
+      } catch { /* من غير بيانات الشحنة: الحساب العادي */ }
     }
+    const due = reviewDueAt({ deliveredAt: at, askAfterMin: mins, option: o.option, createdAt: o.created_at, pickedAt, courierConfirmed });
     const ins = await pool.query(
       `INSERT INTO review_invites(order_no, code, phone_norm, option, due_at)
        VALUES ($1,$2,$3,$4,$5) ON CONFLICT (order_no) DO NOTHING RETURNING code`,

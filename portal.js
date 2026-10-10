@@ -26,6 +26,7 @@ import {
 } from "./portal-core.js";
 import { makePortalPush, validSubscription } from "./portal-push.js";
 import { parseRange, buildReport } from "./portal-reports.js";
+import { prepCfg } from "./prepstatus.js";
 import { makeNameResolver, backfillItemNames } from "./product-names.js";
 import { register as registerSoldOut } from "./soldout.js";
 import { loadOffers } from "./offers.js";
@@ -53,6 +54,8 @@ const ORDER_COLS = `o.order_no, o.status, o.option, o.customer, o.phone_norm, o.
   o.subtotal, o.delivery_fee, o.tip, o.total, o.notes, o.pos_order_id, o.created_at, o.updated_at,
   o.history, o.alerts, o.pos_ready_at, o.accepted_at, o.portal_ack_at, o.portal_ack_by, o.pay_gateway,
   o.is_test, o.dispatch_claimed_at::text AS dispatch_claimed_at,
+  NULLIF(to_jsonb(o)->>'handed_at','') AS handed_at, to_jsonb(o)->>'handed_source' AS handed_source,
+  to_jsonb(o)->>'handed_by' AS handed_by, NULLIF(to_jsonb(o)->>'collected_at','') AS collected_at,
   o.scheduled_for, o.scheduled_slot,
   NULLIF(to_jsonb(o)->>'table_no','')::int AS table_no,
   o.delivery_quote->'farZone' AS far_zone, o.delivery_quote->>'routeKm' AS route_km, o.delivery_quote->>'straightKm' AS straight_km,
@@ -848,15 +851,32 @@ export function register(app, ctx, deps = {}) {
     }
   });
 
-  /* ── الكل: «سلّمت الطلب للمندوب» (تسجيل بس، مابيغيّرش الحالة) ── */
+  /* ── الكل: «سلّمت الطلب للمندوب» ──────────────────────────────────────
+     ١٠/١٠ (تعريف عمر): دي لحظة **التسليم للمندوب** — بتتخزّن على الطلب
+     (handed_at + مين) مرة واحدة، ومابتغيّرش حالة الطلب ولا بتقول للعميل
+     «اتوصّل»: الوصول للعميل بييجي من المندوب. قبل كده كانت سطر في سجل
+     البوابة بس ومابترجعش في أي شاشة أو تقرير. */
   app.post("/api/portal/orders/:orderNo/handed", async (c) => {
     const a = await requirePortal(c); if (a.res) return a.res;
     const orderNo = String(c.req.param("orderNo") || "").slice(0, 64);
     const row = await shop()?.getOrderRow?.(orderNo).catch(() => null);
     if (!row) return c.json({ ok: false, error: "not_found" }, 404);
+    if (row.option !== "delivery") return c.json({ ok: false, error: "not_delivery", message: "الطلب مش توصيل" }, 400);
+    let handed = null;
+    try {
+      const r = await pool.query(
+        `UPDATE shop_orders SET handed_at = COALESCE(handed_at, NOW()),
+                handed_source = COALESCE(handed_source, 'portal'),
+                handed_by = COALESCE(handed_by, $2)
+          WHERE order_no = $1 RETURNING handed_at, handed_source, handed_by`, [orderNo, a.user.name || a.user.id]);
+      handed = r.rows?.[0] || null;
+    } catch (e) {
+      try { log.error(`[portal] handed ${orderNo} failed: ${e?.message || e}`); } catch {}
+      return c.json({ ok: false, error: "failed" }, 500);
+    }
     audit(a.user, "handed_to_courier", orderNo, true, {}, clientIp((n) => c.req.header(n)));
     scheduleRefresh(orderNo);
-    return c.json({ ok: true });
+    return c.json({ ok: true, handedAt: handed?.handed_at || null, handedBy: handed?.handed_by || null, handedSource: handed?.handed_source || null });
   });
 
   /* ── Push ── */
@@ -895,13 +915,21 @@ export function register(app, ctx, deps = {}) {
     return c.json({ ok: res.sent > 0, ...res });
   });
 
+  // حدّا التحضير (settings.delivery.sla) — نفس الأرقام اللي الحارس بيحكم بيها
+  const prepOpts = async () => {
+    try {
+      const p = prepCfg((((await getSettingsData()) || {}).delivery || {}).sla || {});
+      return { prepWarnMin: p.warnMin, prepMaxMin: p.maxMin };
+    } catch { return {}; }
+  };
+
   /* ── تقارير الأونلاين (مدير) ── */
   app.get("/api/portal/reports", async (c) => {
     const a = await requirePortal(c, "manager"); if (a.res) return a.res;
     const range = parseRange(c.req.query("from"), c.req.query("to"), now());
     if (!range.ok) return c.json({ ok: false, ...range }, 400);
     try {
-      const report = await buildReport(pool, range, log);
+      const report = await buildReport(pool, range, log, await prepOpts());
       return c.json({ ok: true, ...report });
     } catch (e) {
       try { log.error(`[portal] reports failed: ${e?.message || e}`); } catch {}
@@ -1084,8 +1112,8 @@ export function register(app, ctx, deps = {}) {
     const range = parseRange(c.req.query("from"), c.req.query("to"), now());
     if (!range.ok) return c.json({ ok: false, ...range }, 400);
     try {
-      const report = await buildReport(pool, range, log);
-      return c.json({ ok: true, range: report.range, times: report.times, courierPerf: report.courierPerf,
+      const report = await buildReport(pool, range, log, await prepOpts());
+      return c.json({ ok: true, range: report.range, times: report.times, prep: report.prep, courierPerf: report.courierPerf,
         delivery: report.delivery, ...(report.partial ? { partial: report.partial } : {}) });
     } catch (e) {
       try { log.error(`[portal] courier-report failed: ${e?.message || e}`); } catch {}

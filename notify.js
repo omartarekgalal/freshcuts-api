@@ -27,6 +27,7 @@ import webpush from "web-push";
 import { sendSms } from "./accounts.js";
 import { emitOrder } from "./order-events.js";
 import { renderTemplate } from "./smstemplates.js";
+import { READY_TEXT, orderKind } from "./prepstatus.js";
 
 const env = (k, d) => (process.env[k] || d || "").toString().trim();
 const trackHost = () => env("STOREFRONT_PUBLIC_URL", "https://freshcuts.sa").replace(/^https?:\/\//, "").replace(/\/+$/, "");
@@ -340,7 +341,7 @@ export function register(app, ctx, deps = {}) {
     const make = MESSAGES[status];
     if (!make) return; // internal stage — customers never hear about it
     const r = await pool.query(
-      "SELECT order_no, phone_norm, option, total FROM shop_orders WHERE order_no=$1", [orderNo]);
+      "SELECT order_no, phone_norm, option, total, NULLIF(to_jsonb(shop_orders)->>'table_no','')::int AS table_no FROM shop_orders WHERE order_no=$1", [orderNo]);
     const order = r.rows[0];
     if (!order) return;
     let cfg, text;
@@ -664,6 +665,20 @@ export function register(app, ctx, deps = {}) {
           AND sent_at > NOW() - ($2 || ' days')::interval`, [phones, String(days)]);
     return new Set(r.rows.map((x) => x.phone_norm));
   }
-  return { orderStatusChanged, sendToAudience, sendSmsTo, sendPushTo, sendOrderPush,
+  /* «طلبك جاهز» لطلب الاستلام/الطاولة — إشعار متصفح بس (مجاني)، عمره ما يبقى SMS.
+     بينادي عليه كنس shop.js أول ما الكاشير يسجّل «جاهز» والطلب لسه ما اتقفلش.
+     التوصيل مالوش رسالة هنا: العميل بيسمع من المندوب («في الطريق»). */
+  async function orderReady(orderNo) {
+    const r = await pool.query(
+      "SELECT order_no, option, NULLIF(to_jsonb(shop_orders)->>'table_no','')::int AS table_no FROM shop_orders WHERE order_no=$1", [String(orderNo)]);
+    const o = r.rows[0];
+    if (!o) return 0;
+    const kind = orderKind(o);
+    if (!READY_TEXT[kind]) return 0;
+    return sendOrderPush(o.order_no, { stage: "ready", title: "فريش كاتس 🍔", body: READY_TEXT[kind](o),
+      url: `${env("STOREFRONT_PUBLIC_URL", "https://freshcuts.sa").split(",")[0]}/track/${o.order_no}` });
+  }
+
+  return { orderStatusChanged, orderReady, sendToAudience, sendSmsTo, sendPushTo, sendOrderPush,
     campaignPushStats, pushedSince, fcmReady };
 }

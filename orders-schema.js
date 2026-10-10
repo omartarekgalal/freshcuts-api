@@ -37,6 +37,14 @@ export const ORDER_COLUMNS = Object.freeze([
   { name: "portal_ack_at", type: "TIMESTAMPTZ" },
   { name: "portal_ack_by", type: "TEXT" },
   { name: "collected_at", type: "TIMESTAMPTZ" },
+  /* ١٠/١٠ — «تم التوصيل» من الكاشير على طلب توصيل = **سلّم الطلب للمندوب**
+     (تعريف عمر)، مش وصول للعميل. handed_at = لحظة التسليم؛ handed_source =
+     pos (ضغطة نقطة البيع) | portal (زرار البوابة) | courier (المندوب أكّد
+     الاستلام ومحدش سجّل قبله)؛ handed_by = اسم الموظف لو من البوابة.
+     «وصل للعميل» بتيجي من المندوب (dl_shipments.delivered_at). */
+  { name: "handed_at", type: "TIMESTAMPTZ" },
+  { name: "handed_source", type: "TEXT" },
+  { name: "handed_by", type: "TEXT" },
   /* ٢١/٩ — رقم الطلب الرقمي في تاب سينس (tenant_order_id من API الشركاء بدون
      بادئة المتجر). pos_order_id هو الـid المقنّع اللي بيرجّعه الشريك، وهو
      **مش** نفس ts_orders.order_id، فمن غير العمود ده مفيش طريقة نربط مرآة
