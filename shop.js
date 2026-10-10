@@ -55,7 +55,7 @@ import { evaluateCoupon, couponQueries, isPureFreeDelivery } from "./couponrules
 import { recordCheckoutConsent } from "./consent.js";
 import { makeNameResolver } from "./product-names.js";
 import { tableSessionForCheckout, tableGate, touchTableSession, tableCfg, tableBusy, TABLE_MSG, posOptionOf, tableNote, tableWho, tableTrackLabel, cleanCustomerText } from "./table-order.js";
-import { posMilestones, prepCfg, prepCheck, orderKind, WEBHOOKS_SQL, PREP_DDL } from "./prepstatus.js";
+import { posMilestones, prepCfg, prepCheck, prepSmsEnabled, orderKind, WEBHOOKS_SQL, PREP_DDL } from "./prepstatus.js";
 
 /* ناقل أحداث الطلب (W1-01) وترحيل أعمدة shop_orders — تحميل كسول ودفاعي (W1-02):
    لو الملفات مش موجودة أو الـimport وقع، shop.js بيشتغل عادي والأحداث بتتجاهل.
@@ -2378,8 +2378,10 @@ export function register(app, ctx, deps = {}) {
   }
 
   /* ── مهلة التحضير (عمر): من القبول لحد «جاهز» ≤ ٣٠ دقيقة ─────────────────
-     تنبيه عند ٢٥ (درجة ١ — بيبان في البوابة)، ومخالفة علينا عند ٣٠ (درجة ٢ —
-     رسالة للإدارة + صف في shop_prep_breaches). كل درجة مرة واحدة لكل طلب.
+     تنبيه عند ٢٥ (درجة ١ — أصفر على الكارت)، ومخالفة علينا عند ٣٠ (درجة ٢ —
+     إشعار في البوابة بتفاصيل الطلب وبصوت + صف في shop_prep_breaches).
+     قرار عمر ١٠/١٠: من غير SMS — إلا لو اتفتح من اللوحة (delivery.prepBreachSms).
+     كل درجة مرة واحدة لكل طلب.
      الطلب اللي اتأخر واتسجّل «جاهز» قبل ما نشوفه بيتسجّل مخالفة برضه، بس من
      غير رسالة (مفيش حاجة تتعمل). */
   async function prepWatch(settings) {
@@ -2430,9 +2432,12 @@ export function register(app, ctx, deps = {}) {
                 minutes: v.minutes ?? null, status: row.status } });
       if (v.level >= 2 && live) {
         console.error(`[shop] PREP ${row.order_no}: ${v.message}`);
+        // alerted_at = لحظة إشعار البوابة (الحدث فوق)
         await pool.query("UPDATE shop_prep_breaches SET alerted_at = NOW() WHERE order_no=$1 AND alerted_at IS NULL", [row.order_no]).catch(() => {});
-        staff.critical((lang) => slaAlertText(row.order_no, v, lang), `prep ${row.order_no}`)
-          .catch((e) => console.error("[shop] prep sms failed:", e.message));
+        if (prepSmsEnabled(settings)) {
+          staff.critical((lang) => slaAlertText(row.order_no, v, lang), `prep ${row.order_no}`)
+            .catch((e) => console.error("[shop] prep sms failed:", e.message));
+        }
       }
     }
   }

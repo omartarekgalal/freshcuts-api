@@ -13,7 +13,7 @@ import crypto from "node:crypto";
 import { STAGES, slaCheck } from "./shop.js";
 import { leaveAtDoor } from "./couriers.js";
 import { slotLabel } from "./preorder.js";
-import { prepCfg, prepCheck, prepState } from "./prepstatus.js";
+import { prepCfg, prepCheck, prepState, itemsSummary } from "./prepstatus.js";
 
 /* kitchen (١٩ سبتمبر) = شاشة المطبخ (/kitchen/) بس — قراية + «تقديم» محلي للمرحلة.
    ممنوع من كل مسارات البورتال (requirePortal بيرفضه إلا لو المسار قال kitchen). */
@@ -568,6 +568,7 @@ const SLA_CODE_AR = {
   courier_deliver_late: "التوصيل اتأخر بعد الاستلام", courier_arrive_slow: "الكابتن عدّى هدف الوصول (١٥ د من التعيين)",
 };
 const PUSH_KIND_AR = {
+  prep_breach: "إشعار للبوابة: التحضير عدّى الحد",
   new: "إشعار للبوابة: طلب جديد", pos_failed: "إشعار للبوابة: فشل نقطة البيع",
   courier_assigned: "إشعار للبوابة: اتعيّن كابتن", courier_picked: "إشعار للبوابة: الكابتن استلم",
   courier_arrived: "إشعار للبوابة: المندوب وصل المطعم",
@@ -737,6 +738,19 @@ export function pushPayload(kind, info = {}, baseUrl = "") {
     case "sla":
       return { ...common, urgency: "high", ttl: 1800, requireInteraction: true,
         title: `⏰ تأخير ${no}`, body: info.message || SLA_CODE_AR[info.code] || "طلب متأخر — راجعه" };
+    /* مخالفة التحضير (عمر ١٠/١٠): إشعار بتفاصيل الطلب المتأخر — رقم الطلب،
+       العميل، النوع، الدقايق من القبول، وملخص الأصناف. بصوت وبيفضل على الشاشة. */
+    case "prep": {
+      const type = Number(info.tableNo) > 0 ? `طاولة ${info.tableNo} 🍽` : optAr(info.option);
+      const lines = [
+        [info.customerName ? `👤 ${String(info.customerName).slice(0, 30)}` : null, type].filter(Boolean).join(" · "),
+        info.itemsSummary ? `🧾 ${info.itemsSummary}` : (info.itemsCount ? `🧾 ${info.itemsCount} صنف` : null),
+        "لسه ما اتسجّلش «جاهز» — راجع المطبخ",
+      ].filter(Boolean);
+      return { ...common, urgency: "high", ttl: 1800, requireInteraction: true,
+        title: `🍳 تحضير متأخر — ${info.minutes != null ? `${info.minutes} د من القبول` : "عدّى الحد"} · ${no}`,
+        body: lines.join("\n") };
+    }
     case "tabsense_down":
       return { ...common, tag: "portal-tabsense-down", urgency: "high", ttl: 3600, requireInteraction: true,
         title: "⚠️ الربط مع تاب سينس واقع", body: `الطلبات الأونلاين مش هتنزل نقطة البيع${info.detail ? ` (${String(info.detail).slice(0, 80)})` : ""}` };
@@ -763,6 +777,7 @@ export function pushKindForEvent(evt) {
   /* «المندوب وصل المطعم» — أهم إشعار للكاشير: الكابتن واقف بيستنى.
      بيتبعت من حدثه الخاص مش من تغيّر الحالة، لأن الحالة مابتتغيّرش أصلاً. */
   if (evt.name === "courier_arrived") return { kind: "courier_arrived", key: "courier_arrived" };
+  if (evt.name === "sla_alert" && d.code === "prep_breach" && Number(d.level) >= 2) return { kind: "prep", key: "prep_breach" };
   if (evt.name === "sla_alert" && Number(d.level) >= 2) {
     return { kind: "sla", key: `sla:${String(d.code || "x").slice(0, 30)}:${Number(d.level)}` };
   }

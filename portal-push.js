@@ -210,6 +210,7 @@ export function makePortalPush({ pool, getSettingsData, webpush = webpushLib, lo
         try { info = (await loadInfo?.(evt.orderNo)) || {}; } catch { info = {}; }
         if (info.isTest) return { skipped: "test_order" }; // الطلبات الاصطناعية ماترنّش في المطبخ
         if (m.kind === "sla") info = { ...info, code: d.code, message: null };
+        if (m.kind === "prep") info = { ...info, code: d.code, minutes: d.minutes ?? null };
         if (m.kind === "new" && info.total == null && d.total != null) info.total = d.total;
         if (m.kind === "new" && !info.option && d.option) info.option = d.option;
         return notifyOrder(m.kind, m.key, evt.orderNo, info);

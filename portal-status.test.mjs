@@ -7,9 +7,10 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   posMilestones, prepCfg, prepCheck, prepState, prepEnd, externalTooSoon, reviewDueAt, READY_TEXT, orderKind, PREP_DEFAULTS,
+  prepSmsEnabled, itemsSummary,
 } from "./prepstatus.js";
 import { register as registerShop, DEFAULT_SLA } from "./shop.js";
-import { toPortalOrder, stageLabel } from "./portal-core.js";
+import { toPortalOrder, stageLabel, pushKindForEvent, pushPayload } from "./portal-core.js";
 import { statusSmsText } from "./notify.js";
 import { prepBlock, prepSql, shapeReport } from "./portal-reports.js";
 import { ORDER_SLA_FIELDS, FIELD_BY_PATH } from "./deliverycontrol.js";
@@ -315,7 +316,7 @@ test("prepWatch: ٢٦ د ⇒ تنبيه درجة ١ من غير SMS ومن غي�
   } finally { s.restore(); }
 });
 
-test("prepWatch: ٣١ د ولسه مفتوح ⇒ مخالفة علينا: صف + sla_alert درجة ٢ + رسالة للإدارة، ومرة واحدة بس", async () => {
+test("prepWatch: ٣١ د ولسه مفتوح ⇒ مخالفة علينا: صف + sla_alert درجة ٢ (إشعار البوابة)، ومرة واحدة بس", async () => {
   const acc = new Date(Date.now() - 31 * MIN).toISOString();
   const sent = [];
   const s = build({
@@ -434,11 +435,51 @@ test("stageLabel: delivered مابقتش «تم التوصيل» لكل حاجة
 
 test("رسالة النهاية بتقول اللي حصل: توصيل / استلام / طاولة — ومفيش «تم توصيل» لطلب استلام", () => {
   assert.match(statusSmsText("delivered", { order_no: "W1", option: "delivery" }), /تم توصيل طلبك/);
+  // نص الاستلام/الطاولة من شريحة ١٣ (رسايل العميل): من غير كلمة «توصيل»
   const p = statusSmsText("delivered", { order_no: "W1", option: "pickup" });
-  assert.match(p, /تم استلام طلبك/);
+  assert.match(p, /بالهنا والشفا/);
   assert.doesNotMatch(p, /توصيل/);
-  assert.match(statusSmsText("delivered", { order_no: "W1", option: "pickup", table_no: 3 }), /تم تقديم طلبك/);
-  assert.match(statusSmsText("delivered", {}), /تم استلام طلبك|تم توصيل طلبك/);
+  assert.doesNotMatch(statusSmsText("delivered", { order_no: "W1", option: "pickup", table_no: 3 }), /توصيل/);
+});
+
+/* ═══ قرار عمر (١٠/١٠ مساءً): مخالفة التحضير = إشعار بوابة بالتفاصيل وبصوت، مش SMS ═══ */
+test("مخالفة التحضير: الـSMS مقفول افتراضياً وبيتفتح من اللوحة بس", async () => {
+  assert.equal(prepSmsEnabled({}), false);
+  assert.equal(prepSmsEnabled({ delivery: {} }), false);
+  assert.equal(prepSmsEnabled({ delivery: { prepBreachSms: "true" } }), false, "true الصريحة بس");
+  assert.equal(prepSmsEnabled({ delivery: { prepBreachSms: true } }), true);
+  const f = FIELD_BY_PATH["delivery.prepBreachSms"];
+  assert.equal(f.type, "bool");
+  assert.equal(f.group, "alerts");
+  // الحارس: المخالفة الحيّة بتطلّع حدث البوابة (notified) من غير ما تلمس مرسل الـSMS
+  const src = (await import("node:fs")).readFileSync(new URL("./shop.js", import.meta.url), "utf8");
+  assert.match(src, /if \(prepSmsEnabled\(settings\)\) \{\s+staff\.critical\(\(lang\) => slaAlertText\(row\.order_no, v, lang\), `prep /);
+});
+
+test("إشعار البوابة «تحضير متأخر»: نوع لوحده بتفاصيل الطلب، مرة واحدة لكل طلب، وبيفضل على الشاشة بصوت", () => {
+  const k = pushKindForEvent({ orderNo: "W1", name: "sla_alert", data: { code: "prep_breach", level: 2 } });
+  assert.deepEqual(k, { kind: "prep", key: "prep_breach" });
+  // التنبيه الأصفر (٢٥ د) مابيرنّش، وباقي المخالفات زي ما هي
+  assert.equal(pushKindForEvent({ orderNo: "W1", name: "sla_alert", data: { code: "prep_late", level: 1 } }), null);
+  assert.equal(pushKindForEvent({ orderNo: "W1", name: "sla_alert", data: { code: "pickup_breach", level: 2 } }).kind, "sla");
+  const p = pushPayload("prep", { orderNo: "W1791632212804", customerName: "أحمد", option: "delivery", minutes: 31,
+    itemsSummary: "2× مشاوي مشكل، رز بخاري", itemsCount: 3 }, "https://x/portal/");
+  assert.match(p.title, /تحضير متأخر/);
+  assert.match(p.title, /31 د من القبول/);
+  assert.match(p.title, /W1791632212804/);
+  assert.match(p.body, /أحمد/);
+  assert.match(p.body, /توصيل/);
+  assert.match(p.body, /2× مشاوي مشكل، رز بخاري/);
+  assert.equal(p.requireInteraction, true, "الـservice worker بيعامل requireInteraction كإشعار مهم: صوت + اهتزاز");
+  assert.equal(p.urgency, "high");
+  assert.match(p.url, /#order=W1791632212804$/);
+  assert.match(pushPayload("prep", { orderNo: "W2", option: "pickup", tableNo: 4, minutes: 33, itemsCount: 2 }, "").body, /طاولة 4/);
+  assert.match(pushPayload("prep", { orderNo: "W3", option: "pickup", minutes: 30 }, "").body, /استلام/);
+  // ملخص الأصناف: عناوين الأصناف والباقات بس (من غير مكوّنات الباقة)، وبحد أقصى
+  assert.equal(itemsSummary([{ name: "مشاوي مشكل", qty: 2, kind: "item" }, { name: "باقة العيلة", qty: 1, kind: "bundle" },
+    { name: "رز", qty: 1, kind: "component" }, { name: "سلطة", qty: 1 }, { name: "عصير", qty: 3 }, { name: "خبز", qty: 1 }]),
+    "2× مشاوي مشكل، باقة العيلة، سلطة +2");
+  assert.equal(itemsSummary(null), "");
 });
 
 test("«طلبك جاهز»: للاستلام والطاولة بس، بلهجة بيضاء", () => {

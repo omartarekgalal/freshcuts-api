@@ -39,6 +39,18 @@ export function prepCfg(sla = {}) {
   return { warnMin: warn, maxMin: max };
 }
 
+/* قرار عمر (١٠/١٠ مساءً): مخالفة التحضير **مش SMS** — إشعار في البوابة بتفاصيل
+   الطلب وبصوت. الـSMS للإدارة مقفول افتراضياً، وبيتفتح من اللوحة
+   (settings.delivery.prepBreachSms = true). */
+export const prepSmsEnabled = (settings = {}) => (((settings || {}).delivery || {}).prepBreachSms === true);
+
+/* ملخص أصناف قصير للإشعار: «٢× مشاوي مشكل، رز بخاري +٢» */
+export function itemsSummary(items = [], max = 3) {
+  const list = (Array.isArray(items) ? items : []).filter((x) => x && x.name && x.kind !== "component");
+  const txt = list.slice(0, max).map((x) => `${Number(x.qty) > 1 ? `${Number(x.qty)}× ` : ""}${String(x.name).slice(0, 28)}`).join("، ");
+  return list.length > max ? `${txt} +${list.length - max}` : txt;
+}
+
 /* ── محطات نقطة البيع من الويبهوكات ──────────────────────────────────────
    rows = [{received_at, approval, order_status}] بأي ترتيب.
    acceptedAt = أول ويبهوك «مقبول» (أو أي حالة بعده — القبول حصل قبلها أكيد)

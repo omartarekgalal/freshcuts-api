@@ -26,7 +26,7 @@ import {
 } from "./portal-core.js";
 import { makePortalPush, validSubscription } from "./portal-push.js";
 import { parseRange, buildReport } from "./portal-reports.js";
-import { prepCfg } from "./prepstatus.js";
+import { prepCfg, itemsSummary } from "./prepstatus.js";
 import { makeNameResolver, backfillItemNames } from "./product-names.js";
 import { register as registerSoldOut } from "./soldout.js";
 import { loadOffers } from "./offers.js";
@@ -282,7 +282,9 @@ export function register(app, ctx, deps = {}) {
     const { orders } = await loadByNos([orderNo]);
     const o = orders[0];
     if (!o) return {};
-    return { total: o.total, option: o.option, itemsCount: o.itemsCount, driverName: o.courier?.name || null, isTest: o.isTest };
+    return { total: o.total, option: o.option, itemsCount: o.itemsCount, driverName: o.courier?.name || null, isTest: o.isTest,
+      // تفاصيل إشعار «تحضير متأخر» (عمر ١٠/١٠)
+      customerName: o.customer?.name || null, tableNo: o.tableNo || null, itemsSummary: itemsSummary(o.items) };
   }
 
   /* ═══ البث الحي ═══════════════════════════════════════════════════════ */
