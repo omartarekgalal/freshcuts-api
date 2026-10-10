@@ -369,7 +369,7 @@ export const TEMPLATES = [
   T({ name: "fc_bundle_offer", category: "MARKETING", group: "marketing", ...MKT, header: { image: true },
     body: "لمّة الأهل والأصحاب؟ 🍢\n{{1}} بـ{{2}} ر.س وفيها {{3}}.\nاطلبها من الموقع للتوصيل أو الاستلام.",
     vars: [{ path: "offer.title", label: "اسم الباقة", ex: "باقة تجمّع ٨–١٠ أشخاص" }, { path: "offer.price", label: "السعر", ex: "395", fmt: "money" },
-      { path: "offer.line", label: "المحتوى (extra.copy.line)", ex: "٣ كيلو مشاوي ودجاجة كاملة على الفحم مع الأرز والبطاطس والكلوسلو و٨ مشروبات" }],
+      { path: "offer.line", label: "المحتوى (extra.copy.line)", ex: "٣ كيلو مشاوي ودجاجة كاملة على الفحم مع الأرز والبطاطس والكولسلو و٨ مشروبات" }],
     buttons: [url("كوّن الباقة", `${STORE}/?offer=`, { path: "offer.id", ex: "gathering_8" }), qr(OPTOUT_BUTTON)],
     meta: { purpose: "عرض الباقات/البوكس (صورة)", trigger: "يدوي أو شريحة «طلبات كبيرة»", send: "manual", fallbackSms: null,
       notes: "المحتوى من offer_registry كما هو — لا نضيف عدد أشخاص لأي صنف بالوزن («مشكل مخصوص» خصوصاً)" } }),

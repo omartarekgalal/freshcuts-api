@@ -160,7 +160,7 @@ const KEYWORD_RULES = [
   // «طاسة برجر» طاسة، فالطاسة لازم تتفحص قبل البرجر.
   ["skillet", /طاسه|skillet/],
   ["burger", /برجر|burger|سندوتش|sandwich/],
-  ["appetizers", /بطاطس|فرايز|fries|كلوسلو|coleslaw|دوريتوس|dorito|حلقات بصل|onion ring|فرايد|fried|موتزريلا|mozzarella|سلطه|salad|ناجتس|nugget/],
+  ["appetizers", /بطاطس|فرايز|fries|كلوسلو|كولسلو|coleslaw|دوريتوس|dorito|حلقات بصل|onion ring|فرايد|fried|موتزريلا|موتزاريلا|mozzarella|سلطه|salad|ناجتس|nugget/],
   ["drinks", /مياه|water|بيبسي|pepsi|مشروب|soft drink|كولا|cola|عصير|juice|شاي\b|قهوه|coffee/],
   ["offers", /صينيه|offer/],
   ["grill", /وجبه|meal|مشوي|مشويه|grill|فحم|charcoal|كفته|kofta|طرب|tarb|كباب|kabab|كبده|liver|شيش|tawook|ريش|rib|سجق|sausage|مشكل|mix|دجاجه|chicken|ملوخيه/],
@@ -840,7 +840,7 @@ export function register(app, ctx, deps = {}) {
         rate: ratio(appetizerOrders, ordersCounted),
         comboOrders,
         note: "نسبة الطلبات اللي فيها صنف واحد على الأقل من صفحة «مقبلات» في نقطة البيع "
-          + "(بطاطس، تشيز فرايز، كلوسلو، حلقات بصل، دوريتوس، فرايد تشيكن/موتزريلا) أو أرز أو «إضافة كومبو». "
+          + "(بطاطس، تشيز فرايز، كولسلو، حلقات بصل، دوريتوس، فرايد تشيكن/موتزاريلا) أو أرز أو «إضافة كومبو». "
           + (comboOrders > 0
             ? `منهم ${comboOrders} طلب دخلوا عن طريق «إضافة كومبو» — الكومبو بيتسجّل كسطر واحد مش كأصنافه، `
               + "فمحسوب مقبلات لأنه أصلاً بطاطس ومشروب."

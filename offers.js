@@ -284,7 +284,7 @@ export const OFFER_SEED = [
     catalogTitle: "بوكس اليوم الوطني ٩٦ ريال",
     title: "بوكس اليوم الوطني ٩٦",
     desc: "بيتزا + باستا + كريب من اختيارك (ما عدا السي فود)، ومعاهم"
-      + " حواوشي سادة وبطاطس محمرة وكلوسلو — بـ٩٦ ريال."
+      + " حواوشي سادة وبطاطس محمرة وكولسلو — بـ٩٦ ريال."
       + " صالة أو تيك أواي أو توصيل.",
     emoji: "🔥",
     image: "",
@@ -306,9 +306,9 @@ export const OFFER_SEED = [
     orderable: false,
     orderableVia: "store_bundle",
     extra: {
-      copy: { title: "بوكس اليوم الوطني ٩٦", line: "بيتزا + باستا + كريب على اختيارك + حواوشي + بطاطس + كلوسلو", cta: "كوّن البوكس ←" },
+      copy: { title: "بوكس اليوم الوطني ٩٦", line: "بيتزا + باستا + كريب على اختيارك + حواوشي + بطاطس + كولسلو", cta: "كوّن البوكس ←" },
       art: { web: "/static/offers/nd96_box-web.jpg?v=4", wide: "/static/offers/nd96_box-wide.jpg?v=4" },
-      gifts: ["بطاطس محمرة", "كلوسلو"],
+      gifts: ["بطاطس محمرة", "كولسلو"],
       bundleSlug: "national96-box",
     },
     catalogRow: true,
@@ -324,7 +324,7 @@ export const OFFER_SEED = [
       { label: "كريب (ما عدا السي فود)" },
       { label: "حواوشي سادة" },
       { label: "بطاطس محمرة" },
-      { label: "كلوسلو" },
+      { label: "كولسلو" },
     ],
   },
 ];

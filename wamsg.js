@@ -54,7 +54,7 @@ const EN_AR = {
   "mixed chicken crepe": "كريب ميكس دجاج", "mixed meat crepe": "كريب ميكس لحوم",
   "chicken fajita crepe": "كريب فاهيتا دجاج", "shish tawook crepe": "كريب شيش طاووق",
   "chicken strips crepe": "كريب ستربس", "hot dog crepe": "كريب هوت دوج", "potato crepe": "كريب بطاطس",
-  "plain hawawshi": "حواوشي سادة", "mozzarella hawawshi": "حواوشي موتزريلا", "kiri pastrami hawawshi": "حواوشي كيري بسطرمة",
+  "plain hawawshi": "حواوشي سادة", "mozzarella hawawshi": "حواوشي موتزاريلا", "kiri pastrami hawawshi": "حواوشي كيري بسطرمة",
   "chicken ranch pizza": "بيتزا تشيكن رانش", "margherita pizza": "بيتزا مارجريتا", "quattro cheese pizza": "بيتزا كواترو تشيز",
   "super supreme pizza": "بيتزا سوبر سوبريم", "chicken patcino pizza": "بيتزا تشيكن الباتشينو",
   "super crunchy pizza": "بيتزا سوبر كرانشي", "vegetable pizza": "بيتزا خضروات", "chicken bbq pizza": "بيتزا تشيكن باربكيو",
@@ -89,7 +89,7 @@ export function cleanItemName(raw, { withSize = true } = {}) {
 
 const DRINK_RE = /مياه|مياة|^ماء|water|مشروب|بيبسي|pepsi|كولا|cola|soft ?drink|عصير|juice|سفن|seven|ميرندا|mirinda|شاي|tea\b|قهو|coffee|كان$/i;
 const ADDON_RE = /إضاف|اضاف|أضاف|\badd\b|كومبو|كمبو|combo|توصيل|رسوم|خدمه|خدمة|فرق كاش|تامين|تأمين|حشو اطراف/i;
-const SIDE_RE = /بطاطس|فرايز|fries|أرز|ارز|^رز|عيش|خبز|سلط|كلوسلو|coleslaw|طحين|صوص|ثومي|مخلل|حلقات بصل|onion|دوريتوس|موتزريلا|جبن|شوربه|شوربة|ملوخي/i;
+const SIDE_RE = /بطاطس|فرايز|fries|أرز|ارز|^رز|عيش|خبز|سلط|كلوسلو|كولسلو|coleslaw|طحين|صوص|ثومي|مخلل|حلقات بصل|onion|دوريتوس|موتزريلا|موتزاريلا|جبن|شوربه|شوربة|ملوخي/i;
 
 /* طبق حقيقي؟ المجموعة (كريب/بيتزا/مشاوي…) بتكسب — «كريب بطاطس» كريب مش بطاطس */
 export function isDishName(raw) {
