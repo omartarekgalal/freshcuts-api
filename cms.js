@@ -1390,6 +1390,16 @@ export function register(app, ctx, deps = {}) {
       for (const s of slots) {
         const was = prev.get(s.key);
         if (!s.label_en && was && was.label_en && !has(raw.get(s.key), "label_en")) s.label_en = was.label_en;
+        /* فرق سعر الاختيار (١٠/١٠): محرّر لا يعرف الحقل (نسخة لوحة قديمة، سكربت) لا يمسحه بالحفظ — يُمسح فقط لو أُرسل الحقل صراحةً (0 أو فارغ). */
+        if (s.type === "choice" && was && was.type === "choice") {
+          const rawCh = new Map((Array.isArray((raw.get(s.key) || {}).choices) ? raw.get(s.key).choices : []).filter(Boolean)
+            .map((x) => [`${x.product_id}:${x.variant_option_id || ""}`, x]));
+          for (const ch of s.choices) {
+            const k = `${ch.product_id}:${ch.variant_option_id || ""}`;
+            const old = (was.choices || []).find((x) => `${x.product_id}:${x.variant_option_id || ""}` === k);
+            if (!ch.surcharge && old && old.surcharge && !has(rawCh.get(k), "surcharge")) ch.surcharge = old.surcharge;
+          }
+        }
       }
     }
     const keep = (k, n) => (has(b, k) ? clip(b[k], n) : ((before && before[k]) || ""));
@@ -1631,7 +1641,11 @@ export function register(app, ctx, deps = {}) {
     const slots = [];
     for (const s of b.slots) {
       if (s.type === "choice") {
-        const choices = s.choices.map((ch) => dress(ch.product_id, ch.variant_option_id, ch.label)).filter(Boolean);
+        const choices = s.choices.map((ch) => {
+          const d = dress(ch.product_id, ch.variant_option_id, ch.label);
+          // «+4 ر.س»: فرق سعر الاختيار (شامل الضريبة) — المتجر يعرضه، والخادم هو من يحسبه عند التوسيع
+          return d && bundlesLib.cleanSurcharge(ch.surcharge) > 0 ? { ...d, surcharge: bundlesLib.cleanSurcharge(ch.surcharge) } : d;
+        }).filter(Boolean);
         if (!choices.length) return null;
         slots.push({ key: s.key, label: s.label, ...(s.label_en ? { label_en: s.label_en } : {}), type: "choice", quantity: s.quantity, choices });
       } else {
@@ -1939,8 +1953,10 @@ export function register(app, ctx, deps = {}) {
       }
       const baseIncl = Math.round(r.totalEx * 1.15 / bundlesLib.MULTIPLY * 100) / 100;
       const modsIncl = Math.round(modsEx * 1.15 * 100) / 100;
+      // base_incl = سعر الباقة + فروق الاختيارات (لكل الكمية) — surcharge_incl جزء منه، للعرض فقط
       return c.json({ ok: true, lines, picks: r.picks, quantity: r.quantity, multiply_factor: mfOut,
-        total_incl: Math.round((baseIncl + modsIncl) * 100) / 100, base_incl: baseIncl, mods_incl: modsIncl });
+        total_incl: Math.round((baseIncl + modsIncl) * 100) / 100, base_incl: baseIncl, mods_incl: modsIncl,
+        surcharge_incl: Number(r.surchargeIncl) || 0 });
     } catch (e) { return c.json({ ok: false, error: "expand_failed", message: e.message }); }
   });
 
@@ -1955,7 +1971,10 @@ export function register(app, ctx, deps = {}) {
       `SELECT it->>'bundle' AS slug,
               max(it->>'bundle_name') AS name,
               count(DISTINCT it->>'bundle_line')::int AS sold,
-              count(DISTINCT o.order_no)::int AS orders
+              count(DISTINCT o.order_no)::int AS orders,
+              -- الإيراد الفعلي من سطور الطلب نفسها (سعر الباقة + فروق الاختيارات؛ بدون الإضافات المدفوعة) — قبل الضريبة
+              sum((it->>'unit_amount')::numeric * (it->>'quantity')::numeric / NULLIF((it->>'mf')::numeric, 0)) AS rev_ex,
+              bool_and((it->>'mf') IS NOT NULL) AS has_mf
          FROM shop_orders o, LATERAL jsonb_array_elements(o.items) it
         WHERE o.created_at > NOW() - ($1 || ' days')::interval
           AND o.status IN ${PAID} AND it->>'bundle' IS NOT NULL
@@ -1978,7 +1997,9 @@ export function register(app, ctx, deps = {}) {
         const def = defs.rows.find((d) => d.slug === r.slug);
         return { slug: r.slug, name: r.name || (def && def.name) || r.slug, sold: r.sold, orders: r.orders,
           price: def ? Number(def.price) : null,
-          revenue: def ? Math.round(Number(def.price) * r.sold * 100) / 100 : null };
+          // من السطور الفعلية متى كانت كلها موسومة بالوحدة؛ وإلا (طلبات قديمة) سعر الباقة × العدد كما كان
+          revenue: r.has_mf && r.rev_ex != null ? Math.round(Number(r.rev_ex) * 1.15 * 100) / 100
+            : (def ? Math.round(Number(def.price) * r.sold * 100) / 100 : null) };
       }),
       // مزيج الاختيارات — الخانات من نوع «اختيار» بس (المثبّتة مالهاش معنى)
       choices: picks.rows.filter((r) => {

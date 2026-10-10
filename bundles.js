@@ -129,14 +129,22 @@ export function distribute(totalEx, lines) {
      type: "fixed" | "choice",
      quantity: 1,
      product_id, variant_option_id      // لـfixed
-     choices: [{ product_id, variant_option_id, label }]   // لـchoice
+     choices: [{ product_id, variant_option_id, label, surcharge? }]   // لـchoice
    }
+   surcharge (١٠/١٠، قرار عمر «درجتين ٢٩ و٣٣»): ريال **شامل الضريبة** يُضاف لسعر الباقة لو العميل اختار هذا الاختيار
+   («+4 ر.س» على الكريب الأغلى داخل نفس البوكس). يُسعَّر هنا في الخادم فقط — المتصفح يعرضه ولا يحسبه.
 ═══════════════════════════════════════════════════════════════════════════ */
 const clip = (v, n) => (v == null ? "" : String(v).trim().slice(0, n));
 const pid = (v) => {
   const s = clip(v, 24);
   return /^\d+$/.test(s) ? s : null;
 };
+/* فرق سعر الاختيار: ريال شامل الضريبة، لأقرب هللة، بين 0 و SURCHARGE_MAX. أي شيء آخر = بلا فرق. */
+export const SURCHARGE_MAX = 200;
+export function cleanSurcharge(v) {
+  const n = Math.round(Number(v) * 100) / 100;
+  return Number.isFinite(n) && n > 0 && n <= SURCHARGE_MAX ? n : 0;
+}
 const vopt = (v) => {
   if (v == null || v === "" || v === false) return null;
   const n = Number(v);
@@ -167,7 +175,8 @@ export function normalizeSlots(raw) {
         const ck = `${p}:${vo || ""}`;
         if (cseen.has(ck)) continue;
         cseen.add(ck);
-        choices.push({ product_id: p, variant_option_id: vo, label: clip(ch.label, 60) });
+        const sur = cleanSurcharge(ch.surcharge);
+        choices.push({ product_id: p, variant_option_id: vo, label: clip(ch.label, 60), ...(sur > 0 ? { surcharge: sur } : {}) });
       }
       if (!choices.length) continue; // خانة اختيار من غير اختيارات = مالهاش معنى
       slot.choices = choices;
@@ -292,6 +301,8 @@ export function expandBundle(bundle, choices, quantity, resolve, opts = {}) {
   // ١) اختيار كل خانة → منتج حقيقي + سعر قايمة
   const picked = [];
   const missing = [];
+  let surcharge = 0;            // ريال شامل الضريبة لباقة واحدة
+  const surOf = new Map();      // slot key → فرق سعر اختياره
   for (const slot of slots) {
     let productId = null, variantId = null;
     if (slot.type === "choice") {
@@ -305,6 +316,9 @@ export function expandBundle(bundle, choices, quantity, resolve, opts = {}) {
       if (!allowed) return { ok: false, error: "choice_not_allowed", slot: slot.key, product_id: gp };
       productId = allowed.product_id;
       variantId = allowed.variant_option_id;
+      // فرق سعر هذا الاختيار × كمية الخانة — لباقة واحدة
+      surcharge += cleanSurcharge(allowed.surcharge) * Math.max(1, Math.round(Number(slot.quantity) || 1));
+      if (cleanSurcharge(allowed.surcharge) > 0) surOf.set(slot.key, cleanSurcharge(allowed.surcharge));
     } else {
       productId = slot.product_id;
       variantId = slot.variant_option_id;
@@ -315,8 +329,12 @@ export function expandBundle(bundle, choices, quantity, resolve, opts = {}) {
   }
   if (missing.length) return { ok: false, error: "choice_required", missing };
 
-  // ٢) توزيع سعر باقة واحدة على مكوّناتها (بالظبط)
-  const totalEx = exVatUnits(bundle.price, { multiply, vatRate });
+  /* ٢) توزيع سعر باقة واحدة على مكوّناتها (بالظبط).
+     السعر الفعلي = سعر الباقة + فروق الاختيارات المميّزة. الفرق يدخل **قبل** التوزيع: فالسطور التي تنزل نقطة البيع
+     مجموعها = السعر الفعلي بالضبط (نفس الضمان ونفس حزام الأمان تحت) — ما يدفعه العميل هو ما يُرسل لتاب سينس. */
+  surcharge = Math.round(surcharge * 100) / 100;
+  const unitIncl = Math.round((Number(bundle.price) + surcharge) * 100) / 100;
+  const totalEx = exVatUnits(unitIncl, { multiply, vatRate });
   const shares = distribute(totalEx, picked.map((p, i) => ({
     key: i, menuPriceEx: p.info.priceEx, quantity: p.slot.quantity,
   })));
@@ -357,11 +375,15 @@ export function expandBundle(bundle, choices, quantity, resolve, opts = {}) {
   return {
     ok: true, lines, lineUid,
     totalEx: totalEx * qty,
-    priceIncl: Math.round(Number(bundle.price) * 100) / 100 * qty,
+    priceIncl: Math.round(unitIncl * qty * 100) / 100,
+    // سعر الباقة الأساسي والفرق (شامل الضريبة، لكل الكمية) — للعرض والتقارير؛ priceIncl = مجموعهما
+    basePriceIncl: Math.round(Number(bundle.price) * qty * 100) / 100,
+    surchargeIncl: Math.round(surcharge * qty * 100) / 100,
     quantity: qty,
     picks: picked.map((p) => ({
       slot: p.slot.key, label: p.slot.label, product_id: p.productId,
       variant_option_id: p.variantId, name: p.info.name, variant_name: p.info.variantName || null,
+      ...(surOf.has(p.slot.key) ? { surcharge: surOf.get(p.slot.key) } : {}),
       ...(slotMods(p.slot.key).length ? { modifiers: slotMods(p.slot.key) } : {}),
       ...(slotNote(p.slot.key) ? { note: slotNote(p.slot.key) } : {}),
     })),
