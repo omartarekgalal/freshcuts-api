@@ -10,6 +10,7 @@
    والمالك بيعدّل من «المنطقة والرسوم» ← «شريط التوصيل المجاني».
      GET /api/shop/storefront      → freeBar (عام، كامل دايماً بالافتراضيات)
      GET/PUT /api/delivery/free-bar → اللوحة (قسم «التوصيل»)
+   جوّاه freeBar.trust = سطر الثقة «نفس سعر المطعم» (مفتاح + ٤ نصوص + حارس صياغة).
    المفتاح في SERVER_OWNED_PATHS: الـPUT الكامل للإعدادات مابيدوسش عليه.
 
    {x} = الفرق بالريال، {fee} = الرسم بعد الشريحة الجاية، {min} = حد FIRST —
@@ -29,10 +30,59 @@ export const FREEBAR_DEFAULTS = {
     firstAr: "أول طلب توصيل — من {min} ر.س", firstEn: "First delivery order — from {min} SAR",
     addAr: "ضيف", addEn: "Add",
   },
+  /* 🤝 سطر الثقة (١٠/١٠): «نفس سعر المطعم» في المنيو + سطر جنب الإجمالي في الدفع.
+     نفس التخزين ونفس المسارات؛ النصوص عليها حارس صياغة (bannedWording تحت). */
+  trust: {
+    enabled: true,
+    menuAr: "نفس سعر المطعم… بدون أي زيادة", menuEn: "Same price as in the restaurant — no markup",
+    checkoutAr: "الأسعار هنا هي نفس أسعار المطعم", checkoutEn: "Prices here are the same as in the restaurant",
+  },
 };
 export const FREEBAR_TEXT_KEYS = Object.keys(FREEBAR_DEFAULTS.texts);
+export const TRUST_TEXT_KEYS = ["menuAr", "menuEn", "checkoutAr", "checkoutEn"];
 
-const isObj = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
+/* ── حارس الصياغة (قاعدة المالك الثابتة): ممنوع ادّعاء «أرخص من التطبيقات» وممنوع
+   اسم أي تطبيق توصيل. المقارنة بعد التطبيع: حروف صغيرة، أ/إ/آ→ا، ة→ه، ى→ي،
+   من غير تشكيل/تطويل، والمسافات المتكررة مسافة واحدة. " app" بمسافة قبلها عشان
+   مانمسكش كلمات زي happy؛ بداية النص بتتعامل كأن قبلها مسافة. */
+export const TRUST_BANNED_WORDS = [
+  "أرخص", "ارخص", "تطبيق", "تطبيقات", "كيتا", "هنقرستيشن", "هنجرستيشن", "جاهز", "نينجا", "مرسول", "طلبات",
+  "cheaper", "cheapest", "keeta", "hungerstation", "hunger station", "jahez", "ninja", "mrsool", "talabat",
+  " app", "apps",
+];
+export function normWording(v) {
+  return String(v ?? "").toLowerCase()
+    .replace(/[ً-ٰٟـ]/g, "")
+    .replace(/[أإآ]/g, "ا").replace(/ة/g, "ه").replace(/ى/g, "ي")
+    .replace(/\s+/g, " ");
+}
+/* أول كلمة ممنوعة في النص (زي ما هي في القايمة، من غير مسافات الأطراف) أو null */
+export function bannedWording(text) {
+  if (typeof text !== "string" || !text.trim()) return null;
+  const hay = " " + normWording(text).trim();
+  for (const w of TRUST_BANNED_WORDS) if (hay.includes(normWording(w))) return w.trim();
+  return null;
+}
+/* فحص نصوص trust في جسم الطلب (بعد نفس التنضيف اللي هيتخزّن بيه) → {field, word} | null */
+export function trustWordingError(body) {
+  const t = isObj(body) && isObj(body.trust) ? body.trust : null;
+  if (!t) return null;
+  for (const k of TRUST_TEXT_KEYS) {
+    const word = bannedWording(cleanBarText(t[k]));
+    if (word) return { field: k, word };
+  }
+  return null;
+}
+
+/* trust الفعلي: المحفوظ فوق الافتراضي، كامل دايماً */
+function trustCfg(raw) {
+  const r = isObj(raw) ? raw : {};
+  const out = { enabled: typeof r.enabled === "boolean" ? r.enabled : FREEBAR_DEFAULTS.trust.enabled };
+  for (const k of TRUST_TEXT_KEYS) out[k] = cleanBarText(r[k]) || FREEBAR_DEFAULTS.trust[k];
+  return out;
+}
+
+function isObj(v) { return v !== null && typeof v === "object" && !Array.isArray(v); }
 /* نص سطر واحد: من غير حروف تحكم/سطور جديدة ولا < > (المتجر بيحطه كنص، ده حزام تاني)، ≤ ٨٠ حرف */
 export function cleanBarText(v) {
   if (typeof v !== "string") return "";
@@ -54,6 +104,7 @@ export function freeBarCfg(settings) {
       ? FREEBAR_DEFAULTS.maxGap : Math.min(300, Math.max(0, Math.round(n))),
     suggest: bool("suggest"),
     texts,
+    trust: trustCfg(raw.trust),
   };
 }
 
@@ -62,7 +113,10 @@ export function freeBarCfg(settings) {
 export function freeBarStored(cfg) {
   const texts = {};
   for (const k of FREEBAR_TEXT_KEYS) if (cfg.texts[k] !== FREEBAR_DEFAULTS.texts[k]) texts[k] = cfg.texts[k];
-  return { enabled: cfg.enabled, autoFirst: cfg.autoFirst, maxGap: cfg.maxGap, suggest: cfg.suggest, texts };
+  const t = trustCfg(cfg.trust);
+  const trust = { enabled: t.enabled };
+  for (const k of TRUST_TEXT_KEYS) if (t[k] !== FREEBAR_DEFAULTS.trust[k]) trust[k] = t[k];
+  return { enabled: cfg.enabled, autoFirst: cfg.autoFirst, maxGap: cfg.maxGap, suggest: cfg.suggest, texts, trust };
 }
 
 /* دمج جسم الطلب (جزئي) فوق المحفوظ. نص فاضي = «رجّع الافتراضي». */
@@ -76,6 +130,11 @@ export function mergeFreeBar(saved, body) {
     next.texts = { ...(isObj(s.texts) ? s.texts : {}) };
     for (const k of FREEBAR_TEXT_KEYS) if (k in b.texts) next.texts[k] = b.texts[k];
   }
+  if (isObj(b.trust)) {
+    next.trust = { ...(isObj(s.trust) ? s.trust : {}) };
+    if (typeof b.trust.enabled === "boolean") next.trust.enabled = b.trust.enabled;
+    for (const k of TRUST_TEXT_KEYS) if (k in b.trust) next.trust[k] = b.trust[k];
+  }
   return freeBarCfg({ freeBar: next });
 }
 
@@ -86,6 +145,12 @@ export function freeBarErrors(body) {
   for (const k of ["enabled", "autoFirst", "suggest"]) if (k in body && typeof body[k] !== "boolean") errs.push(`${k} must be boolean`);
   if ("maxGap" in body && !Number.isFinite(Number(body.maxGap))) errs.push("maxGap must be a number");
   if ("texts" in body && !isObj(body.texts)) errs.push("texts must be an object");
+  if ("trust" in body) {
+    if (!isObj(body.trust)) errs.push("trust must be an object");
+    else {
+      if ("enabled" in body.trust && typeof body.trust.enabled !== "boolean") errs.push("trust.enabled must be boolean");
+    }
+  }
   return errs;
 }
 
@@ -118,6 +183,8 @@ export function register(app, ctx) {
     try { b = await c.req.json(); } catch { return c.json({ ok: false, error: "bad json" }, 400); }
     const errs = freeBarErrors(b);
     if (errs.length) return c.json({ ok: false, error: errs[0], errors: errs }, 400);
+    const banned = trustWordingError(b);
+    if (banned) return c.json({ ok: false, error: "banned_wording", field: banned.field, word: banned.word }, 400);
     const saved = ((await getSettingsData()) || {}).freeBar;
     const next = mergeFreeBar(saved, b);
     await pool.query(
