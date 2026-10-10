@@ -226,8 +226,8 @@ export function register(app, ctx, deps = {}) {
       /* المتغيرات اللي العميل بيشوفها — سعودي/محايد. {link}/{coupon} بيتعبّوا
          في wasender لكل مستلم (رابط متتبّع + كوبون مرة واحدة). */
       const vars = {
-        name: name || "أستاذنا",
-        first_name: name ? name.split(/\s+/)[0] : "أستاذنا",
+        name: name || "عميلنا",
+        first_name: name ? name.split(/\s+/)[0] : "عميلنا",
         last_items: items || "من عندنا",
         last_when: agoSa(L.at || lastAt, T),
         fav_dish: fav.dish || items.split(" و")[0] || "أطباقنا",

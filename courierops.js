@@ -406,7 +406,7 @@ export function courierAlertText(orderNo, code, x = {}, lang = "en") {
 /* للعميل — معاملاتية بس، جزء UCS-2 واحد (≤٧٠)، من غير عروض ولا روابط تسويق */
 export const CUSTOMER_TEXT = Object.freeze({
   external: (no) => `فريش كاتس: رتّبنا مندوب بديل لطلبك ${no} 🛵`,
-  switched: (no) => `فريش كاتس: بنرتّب مندوب لطلبك ${no} - نعتذر عن التأخير`,
+  switched: (no) => `فريش كاتس: جارٍ ترتيب مندوب لطلبك ${no}، نعتذر عن التأخير`,
 });
 /* ٢٦/٩ — لو المالك عدّل النص من «📱 رسايل SMS» */
 export function customerText(settings, kind, orderNo) {

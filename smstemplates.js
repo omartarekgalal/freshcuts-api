@@ -65,14 +65,14 @@ export const CATALOGUE = [
     def: "فريش كاتس: نعتذر، تعذّر تنفيذ طلبك {order_no} وتم استرجاع المبلغ كاملاً لبطاقتك 💳" },
   { id: "order.refund_failed", group: "order", stage: "refund_failed", sender: "tx", label: "الاسترجاع اتأخر",
     when: "الاسترجاع الأوتوماتيك يفشل — إجبارية", vars: [V.order_no], mandatory: true,
-    def: "فريش كاتس: نعتذر عن طلبك {order_no}. استرجاع المبلغ جارٍ وفريقنا بيتابعه — هنتواصل معك للتأكيد 🙏" },
+    def: "فريش كاتس: نعتذر عن طلبك {order_no}. استرجاع المبلغ جارٍ وفريقنا يتابعه، وسنتواصل معك للتأكيد 🙏" },
 
   { id: "courier.external", group: "courier", stage: "courier_assigned", sender: "tx", label: "مندوب بديل",
     when: "لاجلك يرفض ونبعت مندوب خارجي", vars: [V.order_no],
     def: "فريش كاتس: رتّبنا مندوب بديل لطلبك {order_no} 🛵" },
   { id: "courier.switched", group: "courier", stage: "courier_assigned", sender: "tx", label: "بنغيّر المندوب",
     when: "المندوب اتأخر وبنحوّل لشركة تانية", vars: [V.order_no],
-    def: "فريش كاتس: بنرتّب مندوب لطلبك {order_no} - نعتذر عن التأخير" },
+    def: "فريش كاتس: جارٍ ترتيب مندوب لطلبك {order_no}، نعتذر عن التأخير" },
 
   { id: "account.otp", group: "account", sender: "tx", label: "رمز الدخول",
     when: "العميل يطلب رمز دخول في الشيك أوت", vars: [V.code, V.minutes], required: ["code"], always: true,
