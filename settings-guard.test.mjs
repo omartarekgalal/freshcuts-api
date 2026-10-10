@@ -11,7 +11,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { Hono } from "hono";
 import {
-  register, mergeForPut, settingsRev, redactForViewer, validatePatch, deepSetStatement, setAt, getAt,
+  register, mergeForPut, settingsRev, redactForViewer, validatePatch, deepSetStatement, deepUnsetStatement, setAt, getAt, delAt,
 } from "./settings-guard.js";
 
 const clone = (v) => JSON.parse(JSON.stringify(v));
@@ -29,6 +29,11 @@ function fakePool(initial) {
     if (/^UPDATE settings SET data = jsonb_set/.test(s)) {
       setAt(db.data, p.at(-2), JSON.parse(p.at(-1)));
       db.writes.push(p.at(-2).join("."));
+      return { rowCount: 1, rows: [] };
+    }
+    if (/^UPDATE settings SET data = COALESCE\(data,'\{\}'::jsonb\) #- \$1::text\[\]/.test(s)) {
+      delAt(db.data, p[0]);
+      db.writes.push(`-${p[0].join(".")}`);
       return { rowCount: 1, rows: [] };
     }
     throw new Error("unexpected sql: " + s);
@@ -432,4 +437,195 @@ test("٥) GET حالة الحارس: بترجع ok حتى لو جدول الحا
   assert.deepEqual(r.body.platformStopped, SCOPED().adsGuard.platformStopped);
   const amb = await call("GET", "/api/settings/ads-guard/status", "amb");
   assert.equal(amb.status, 401);
+});
+
+/* ── C7 (١٠/١٠): قاعدة الإعلان الواحد + سقوف كل منصة + استثناءات القاعدتين ── */
+const C7 = () => {
+  const d = SCOPED();
+  d.adsGuard.platformCaps = { tiktok: { daily: 90, lifetime: 500, from: "2026-10-09", note: "تجربة" } };
+  d.adsGuard.intraday.perPlatform = { tiktok: { spendOver: 50 }, meta: { spendOver: 120, minNewOrders: 2 } };
+  d.adsGuard.killRule.perPlatform = { tiktok: { start: "2026-10-09", stopIfCpaOver: 60 } };
+  return d;
+};
+const patch = (call, changes) => call("POST", "/api/settings/patch", "admin", { changes });
+
+test("C7) adRule: مش بيتكتب غير لما المالك يحفظ، وأول حفظ بيكمّل الافتراضي (مقفولة/٩٠/١) وبعدها دمج", async () => {
+  const { db, call } = makeApp(C7());
+  assert.equal(db.data.adsGuard.adRule, undefined);
+  const r = await patch(call, [{ path: "adsGuard.adRule", value: { spendOver: "120" } }]);
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  assert.deepEqual(db.data.adsGuard.adRule, { enabled: false, spendOver: 120, minNewOrders: 1 });
+  assert.deepEqual(r.body.adsGuard.adRule, db.data.adsGuard.adRule);
+  await patch(call, [{ path: "adsGuard.adRule", value: { enabled: true, minNewOrders: 2 } }]);
+  assert.deepEqual(db.data.adsGuard.adRule, { enabled: true, spendOver: 120, minNewOrders: 2 });
+  // باقي الحارس زي ما هو
+  const rest = clone(db.data.adsGuard); delete rest.adRule;
+  assert.deepEqual(rest, C7().adsGuard);
+});
+
+test("C7) platformCaps: دمج الحقول، null بيشيل الحقل، وnull للمنصة بيشيلها بجد من غير ما يلمس أخواتها", async () => {
+  const { db, call } = makeApp(C7());
+  // حقل واحد: الباقي (lifetime/from/note) بيفضل
+  let r = await patch(call, [{ path: "adsGuard.platformCaps.tiktok", value: { daily: 120 } }]);
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  assert.deepEqual(db.data.adsGuard.platformCaps.tiktok, { daily: 120, lifetime: 500, from: "2026-10-09", note: "تجربة" });
+  // null للحقل = الحقل بيتشال (مش بيتحط null)
+  r = await patch(call, [{ path: "adsGuard.platformCaps.tiktok", value: { lifetime: null, from: null } }]);
+  assert.equal(r.status, 200);
+  assert.deepEqual(db.data.adsGuard.platformCaps.tiktok, { daily: 120, note: "تجربة" });
+  // منصة جديدة جنب تيك توك: الأب موجود، والأخت ماتتمسحش
+  r = await patch(call, [{ path: "adsGuard.platformCaps.snapchat", value: { daily: 40, from: "2026-10-12" } }]);
+  assert.equal(r.status, 200);
+  assert.deepEqual(db.data.adsGuard.platformCaps, { tiktok: { daily: 120, note: "تجربة" }, snapchat: { daily: 40, from: "2026-10-12" } });
+  // null للمنصة = المفتاح نفسه بيتشال (‎#-‎) والتانية بتفضل
+  r = await patch(call, [{ path: "adsGuard.platformCaps.tiktok", value: null }]);
+  assert.equal(r.status, 200);
+  assert.deepEqual(db.data.adsGuard.platformCaps, { snapchat: { daily: 40, from: "2026-10-12" } });
+  assert.equal(db.writes.at(-1), "-adsGuard.platformCaps.tiktok");
+  assert.deepEqual(r.body.changed, ["adsGuard.platformCaps.tiktok"]);
+  // من غير platformCaps خالص: الأب بيتعمل
+  const b = makeApp(SCOPED());
+  r = await patch(b.call, [{ path: "adsGuard.platformCaps.tiktok", value: { daily: 90, lifetime: 500, from: "2026-10-09" } }]);
+  assert.equal(r.status, 200);
+  assert.deepEqual(b.db.data.adsGuard.platformCaps, { tiktok: { daily: 90, lifetime: 500, from: "2026-10-09" } });
+  // شيل منصة مش موجودة = مفيش ضرر
+  r = await patch(b.call, [{ path: "adsGuard.platformCaps.meta", value: null }]);
+  assert.equal(r.status, 200);
+  assert.deepEqual(b.db.data.adsGuard.platformCaps, { tiktok: { daily: 90, lifetime: 500, from: "2026-10-09" } });
+  // باقي الحارس ماتلمسش
+  const rest = clone(b.db.data.adsGuard); delete rest.platformCaps;
+  assert.deepEqual(rest, SCOPED().adsGuard);
+});
+
+test("C7) intraday.perPlatform.<منصة>.spendOver: رقم بيتكتب في مكانه، وnull بيشيله (والمنصة كلها لو مفيهاش غيره)", async () => {
+  const { db, call } = makeApp(C7());
+  let r = await patch(call, [{ path: "adsGuard.intraday.perPlatform.tiktok.spendOver", value: 70 }]);
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  assert.deepEqual(db.data.adsGuard.intraday, { after: "20:00", spendOver: 250, minNewOrders: 1, perPlatform: { tiktok: { spendOver: 70 }, meta: { spendOver: 120, minNewOrders: 2 } } });
+  // تيك توك مفيهاش غير spendOver ⇒ المنصة كلها بتتشال
+  r = await patch(call, [{ path: "adsGuard.intraday.perPlatform.tiktok.spendOver", value: null }]);
+  assert.equal(r.status, 200);
+  assert.deepEqual(db.data.adsGuard.intraday.perPlatform, { meta: { spendOver: 120, minNewOrders: 2 } });
+  // ميتا فيها مفتاح تاني ⇒ الحقل بس
+  r = await patch(call, [{ path: "adsGuard.intraday.perPlatform.meta.spendOver", value: null }]);
+  assert.equal(r.status, 200);
+  assert.deepEqual(db.data.adsGuard.intraday.perPlatform, { meta: { minNewOrders: 2 } });
+  // منصة جديدة ومفيش perPlatform: الآباء بيتعملوا
+  const b = makeApp(SCOPED());
+  r = await patch(b.call, [{ path: "adsGuard.intraday.perPlatform.google.spendOver", value: 80 }]);
+  assert.equal(r.status, 200);
+  assert.deepEqual(b.db.data.adsGuard.intraday, { after: "20:00", spendOver: 250, minNewOrders: 1, perPlatform: { google: { spendOver: 80 } } });
+});
+
+test("C7) killRule.perPlatform.<منصة>: دمج، null للحقل، null للمنصة — والقاعدة العامة ماتتغيّرش", async () => {
+  const { db, call } = makeApp(C7());
+  const base = () => { const k = clone(C7().adsGuard.killRule); delete k.perPlatform; return k; };
+  let r = await patch(call, [{ path: "adsGuard.killRule.perPlatform.tiktok", value: { stopIfCpaOver: 75.5 } }]);
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  assert.deepEqual(db.data.adsGuard.killRule, { ...base(), perPlatform: { tiktok: { start: "2026-10-09", stopIfCpaOver: 75.5 } } });
+  r = await patch(call, [{ path: "adsGuard.killRule.perPlatform.tiktok", value: { start: null } }]);
+  assert.deepEqual(db.data.adsGuard.killRule.perPlatform.tiktok, { stopIfCpaOver: 75.5 });
+  r = await patch(call, [{ path: "adsGuard.killRule.perPlatform.meta", value: { start: "2026-10-11" } }]);
+  assert.deepEqual(db.data.adsGuard.killRule.perPlatform, { tiktok: { stopIfCpaOver: 75.5 }, meta: { start: "2026-10-11" } });
+  // كل الحقول null ⇒ المنصة بتتشال
+  r = await patch(call, [{ path: "adsGuard.killRule.perPlatform.tiktok", value: { stopIfCpaOver: null } }]);
+  assert.deepEqual(db.data.adsGuard.killRule.perPlatform, { meta: { start: "2026-10-11" } });
+  r = await patch(call, [{ path: "adsGuard.killRule.perPlatform.meta", value: null }]);
+  assert.equal(r.status, 200);
+  assert.deepEqual(db.data.adsGuard.killRule, { ...base(), perPlatform: {} });
+});
+
+test("C7) القاعدة العامة + استثناء المنصة في نفس الطلب: الأب بيتكتب الأول فالاستثناء مايرجعش للقديم", async () => {
+  const { db, call } = makeApp(C7());
+  // الابن قبل الأب عن قصد
+  const r = await patch(call, [
+    { path: "adsGuard.intraday.perPlatform.tiktok.spendOver", value: 65 },
+    { path: "adsGuard.killRule.perPlatform.tiktok", value: null },
+    { path: "adsGuard.intraday", value: { spendOver: 300 } },
+    { path: "adsGuard.killRule", value: { stopIfCpaOver: 70 } },
+  ]);
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  assert.equal(db.data.adsGuard.intraday.spendOver, 300);
+  assert.equal(db.data.adsGuard.intraday.perPlatform.tiktok.spendOver, 65);
+  assert.deepEqual(db.data.adsGuard.intraday.perPlatform.meta, { spendOver: 120, minNewOrders: 2 });
+  assert.equal(db.data.adsGuard.killRule.stopIfCpaOver, 70);
+  assert.deepEqual(db.data.adsGuard.killRule.perPlatform, {});
+  // القاعدة العامة لوحدها لسه بتحافظ على استثناءات المنصات
+  const b = makeApp(C7());
+  await patch(b.call, [{ path: "adsGuard.intraday", value: { enabled: false } }, { path: "adsGuard.killRule", value: { afterDays: 4 } }]);
+  assert.deepEqual(b.db.data.adsGuard.intraday.perPlatform, C7().adsGuard.intraday.perPlatform);
+  assert.deepEqual(b.db.data.adsGuard.killRule.perPlatform, C7().adsGuard.killRule.perPlatform);
+});
+
+test("C7) رفض القيم الغلط من غير أي كتابة، ولغير المالك 403", async () => {
+  const { db, call } = makeApp(C7());
+  const bad = async (changes) => {
+    const r = await patch(call, changes);
+    assert.equal(r.status, 400, JSON.stringify(changes));
+    assert.ok(r.body.errors[0].error, "رسالة عربي");
+  };
+  await bad([{ path: "adsGuard.adRule", value: true }]);
+  await bad([{ path: "adsGuard.adRule", value: { enabled: "yes" } }]);
+  await bad([{ path: "adsGuard.adRule", value: { spendOver: 9 } }]);
+  await bad([{ path: "adsGuard.adRule", value: { spendOver: 5001 } }]);
+  await bad([{ path: "adsGuard.adRule", value: { spendOver: null } }]);
+  await bad([{ path: "adsGuard.adRule", value: { minNewOrders: 0 } }]);
+  await bad([{ path: "adsGuard.adRule", value: { minNewOrders: 21 } }]);
+  await bad([{ path: "adsGuard.adRule.enabled", value: true }]);
+  await bad([{ path: "adsGuard.platformCaps", value: {} }]);                       // الكائن كله ممنوع (كان هيمسح المنصات)
+  await bad([{ path: "adsGuard.platformCaps.facebook", value: { daily: 50 } }]);
+  await bad([{ path: "adsGuard.platformCaps.tiktok.daily", value: 50 }]);
+  await bad([{ path: "adsGuard.platformCaps.tiktok", value: 90 }]);
+  await bad([{ path: "adsGuard.platformCaps.tiktok", value: { daily: -1 } }]);
+  await bad([{ path: "adsGuard.platformCaps.tiktok", value: { daily: 10001 } }]);
+  await bad([{ path: "adsGuard.platformCaps.tiktok", value: { lifetime: 100001 } }]);
+  await bad([{ path: "adsGuard.platformCaps.tiktok", value: { lifetime: "كتير" } }]);
+  await bad([{ path: "adsGuard.platformCaps.tiktok", value: { from: "9/10" } }]);
+  await bad([{ path: "adsGuard.platformCaps.tiktok", value: { from: "2026-02-30" } }]);
+  await bad([{ path: "adsGuard.platformCaps.tiktok", value: { daily: null, lifetime: null } }]);   // تاريخ من غير أي سقف = صرف من غير حد
+  await bad([{ path: "adsGuard.platformCaps.meta", value: { from: "2026-10-12" } }]);
+  await bad([{ path: "adsGuard.intraday.perPlatform", value: {} }]);
+  await bad([{ path: "adsGuard.intraday.perPlatform.tiktok", value: { spendOver: 50 } }]);
+  await bad([{ path: "adsGuard.intraday.perPlatform.tiktok.spendOver", value: -1 }]);
+  await bad([{ path: "adsGuard.intraday.perPlatform.tiktok.spendOver", value: 10001 }]);
+  await bad([{ path: "adsGuard.intraday.perPlatform.tiktok.spendOver", value: "abc" }]);
+  await bad([{ path: "adsGuard.intraday.perPlatform.x.spendOver", value: 50 }]);
+  await bad([{ path: "adsGuard.intraday.perPlatform.tiktok.minNewOrders", value: 2 }]);
+  await bad([{ path: "adsGuard.killRule.perPlatform", value: {} }]);
+  await bad([{ path: "adsGuard.killRule.perPlatform.tiktok", value: 60 }]);
+  await bad([{ path: "adsGuard.killRule.perPlatform.tiktok", value: { stopIfCpaOver: 0 } }]);
+  await bad([{ path: "adsGuard.killRule.perPlatform.tiktok", value: { stopIfCpaOver: 1001 } }]);
+  await bad([{ path: "adsGuard.killRule.perPlatform.tiktok", value: { start: "bad" } }]);
+  await bad([{ path: "adsGuard.killRule.perPlatform.x", value: null }]);
+  // تغيير صح + تغيير غلط في نفس الطلب ⇒ ولا واحد بيتكتب
+  await bad([{ path: "adsGuard.platformCaps.tiktok", value: { daily: 100 } }, { path: "adsGuard.adRule", value: { spendOver: 1 } }]);
+  assert.equal(db.writes.length, 0);
+  assert.deepEqual(db.data, C7());
+  const ops = await call("POST", "/api/settings/patch", "cmsops", { changes: [{ path: "adsGuard.platformCaps.tiktok", value: null }] });
+  assert.equal(ops.status, 403);
+  assert.equal(db.writes.length, 0);
+});
+
+test("C7) PUT كامل قديم مابيمسحش المفاتيح الجديدة، وحالة الحارس بترجّعها، والحذف جملة ‎#-‎ واحدة", async () => {
+  const { db, call } = makeApp(C7());
+  await patch(call, [{ path: "adsGuard.adRule", value: { enabled: false } }]);
+  const want = clone(db.data.adsGuard);
+  const old = clone(db.data);
+  old.adsGuard = { floor: 500 };
+  assert.equal((await call("PUT", "/api/settings", "admin", old)).status, 200);
+  assert.deepEqual(db.data.adsGuard, want);
+  const st = await call("GET", "/api/settings/ads-guard/status", "admin");
+  assert.deepEqual(st.body.adRule, { enabled: false, spendOver: 90, minNewOrders: 1 });
+  assert.deepEqual(st.body.platformCaps, want.platformCaps);
+  assert.deepEqual(st.body.intradayPerPlatform, want.intraday.perPlatform);
+  assert.deepEqual(st.body.killRulePerPlatform, want.killRule.perPlatform);
+  const empty = await makeApp(SCOPED()).call("GET", "/api/settings/ads-guard/status", "admin");
+  assert.equal(empty.body.adRule, null);
+  assert.deepEqual(empty.body.platformCaps, {});
+  const u = deepUnsetStatement("adsGuard.platformCaps.tiktok");
+  assert.match(u.sql, /^UPDATE settings SET data = COALESCE\(data,'\{\}'::jsonb\) #- \$1::text\[\], updated_at = NOW\(\) WHERE id=1$/);
+  assert.deepEqual(u.params, [["adsGuard", "platformCaps", "tiktok"]]);
+  // validatePatch بيعلّم الحذف بـremove
+  const v = validatePatch([{ path: "adsGuard.platformCaps.tiktok", value: null }], C7());
+  assert.deepEqual(v.values, [{ path: "adsGuard.platformCaps.tiktok", value: null, remove: true }]);
 });

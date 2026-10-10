@@ -233,6 +233,25 @@ export function normSaPhone(p) {
   return m ? `966${m[1]}` : null;
 }
 
+/* ── C7 (١٠/١٠): قاعدة الإعلان الواحد + سقوف كل منصة + استثناءات القاعدتين لكل منصة ──
+   null هنا = «استخدم العام»: الحقل (أو المنصة كلها) بيتشال من الداتابيز بجد (‎#-‎)
+   مش بيتحط null — عشان السكربت يرجع للقيمة العامة من غير ما يفهم null غلط. */
+const REMOVE = { ok: true, value: null, remove: true };
+const numOrNull = (lo, hi, opt) => (v) => (v === null || v === "" ? { ok: true, value: null } : num(lo, hi, opt)(v));
+const dayOrNull = (label) => (v) => (v === null || v === "" ? { ok: true, value: null }
+  : isDay(v) ? { ok: true, value: v } : { ok: false, error: `${label}: لازم YYYY-MM-DD` });
+/* بيدمج الحقول المبعوتة بس فوق الكائن الحالي؛ null بيشيل الحقل، وأي مفتاح تاني في الداتابيز بيفضل */
+function mergeNullable(cur, v, fields) {
+  const out = { ...(isObj(cur) ? cur : {}) };
+  for (const [k, check] of Object.entries(fields)) {
+    if (!(k in v)) continue;
+    const r = check(v[k]);
+    if (!r.ok) return r;
+    if (r.value === null) delete out[k]; else out[k] = r.value;
+  }
+  return { ok: true, value: out };
+}
+
 export const PATCH_RULES = [
   { re: /^adsGuard\.stopAll$/, check: bool("إيقاف كل الإعلانات") },
   {
@@ -314,6 +333,65 @@ export const PATCH_RULES = [
       return { ok: true, value: out };
     },
   },
+  {
+    /* adRule: قاعدة إيقاف الإعلان الواحد (صرف من غير عملاء جداد). محفوظة بس —
+       fc-adsentry لسه مابينفّذهاش. أول حفظ بيكمّل الناقص بالافتراضي (مقفولة/٩٠/١). */
+    re: /^adsGuard\.adRule$/, withCurrent: true, check: (v, current) => {
+      if (!isObj(v)) return { ok: false, error: "قاعدة الإعلان الواحد: لازم كائن" };
+      const cur = getAt(current, ["adsGuard", "adRule"]);
+      const out = { enabled: false, spendOver: 90, minNewOrders: 1, ...(isObj(cur) ? cur : {}) };
+      if ("enabled" in v) { const r = bool("قاعدة الإعلان الواحد")(v.enabled); if (!r.ok) return r; out.enabled = r.value; }
+      if ("spendOver" in v) { const r = num(10, 5000, { label: "قاعدة الإعلان الواحد — صرف أكتر من" })(v.spendOver); if (!r.ok) return r; out.spendOver = r.value; }
+      if ("minNewOrders" in v) { const r = num(1, 20, { int: true, label: "قاعدة الإعلان الواحد — أقل عدد عملاء جداد" })(v.minNewOrders); if (!r.ok) return r; out.minNewOrders = r.value; }
+      return { ok: true, value: out };
+    },
+  },
+  {
+    /* platformCaps.<منصة>: منصة ليها سقفها الخاص بتطلع بره السقف اليومي العام والحارس
+       مابيبعتلهاش ميزانية يومية. null = شيل سقفها (ترجع للسقف العام). لازم يفضل فيها
+       سقف يومي أو إجمالي — منصة بره العام ومن غير سقف خاص = صرف من غير حد. */
+    re: /^adsGuard\.platformCaps\.(meta|google|tiktok|snapchat)$/, withCurrent: true, check: (v, current, m) => {
+      const label = `سقف المنصة (${m[1]})`;
+      if (v === null) return REMOVE;
+      if (!isObj(v)) return { ok: false, error: `${label}: لازم كائن أو null` };
+      const r = mergeNullable(getAt(current, ["adsGuard", "platformCaps", m[1]]), v, {
+        daily: numOrNull(0, 10000, { label: `${label} — اليومي` }),
+        lifetime: numOrNull(0, 100000, { label: `${label} — الإجمالي` }),
+        from: dayOrNull(`${label} — من يوم`),
+      });
+      if (!r.ok) return r;
+      if (!Object.keys(r.value).length) return REMOVE;
+      if (r.value.daily == null && r.value.lifetime == null) {
+        return { ok: false, error: `${label}: لازم سقف يومي أو إجمالي — أو امسح سقف المنصة كله عشان ترجع للسقف العام` };
+      }
+      return r;
+    },
+  },
+  {
+    /* intraday.perPlatform.<منصة>.spendOver: حد الصرف بتاع قاعدة الساعة ٨ للمنصة دي بس. null = العام. */
+    re: /^adsGuard\.intraday\.perPlatform\.(meta|google|tiktok|snapchat)\.spendOver$/, withCurrent: true, check: (v, current, m) => {
+      if (v === null || v === "") {
+        const cur = getAt(current, ["adsGuard", "intraday", "perPlatform", m[1]]);
+        const others = isObj(cur) ? Object.keys(cur).filter((k) => k !== "spendOver") : [];
+        return others.length ? REMOVE : { ...REMOVE, path: `adsGuard.intraday.perPlatform.${m[1]}` };   // مفيش غيره ⇒ شيل المنصة كلها بدل {}
+      }
+      return num(0, 10000, { label: `قاعدة الساعة ٨ (${m[1]}) — صرف أكتر من` })(v);
+    },
+  },
+  {
+    /* killRule.perPlatform.<منصة>: بداية وحد إيقاف خاصين بالمنصة في قاعدة الـ٣ أيام. null = العام. */
+    re: /^adsGuard\.killRule\.perPlatform\.(meta|google|tiktok|snapchat)$/, withCurrent: true, check: (v, current, m) => {
+      const label = `قاعدة الـ٣ أيام (${m[1]})`;
+      if (v === null) return REMOVE;
+      if (!isObj(v)) return { ok: false, error: `${label}: لازم كائن أو null` };
+      const r = mergeNullable(getAt(current, ["adsGuard", "killRule", "perPlatform", m[1]]), v, {
+        start: dayOrNull(`${label} — البداية`),
+        stopIfCpaOver: numOrNull(1, 1000, { label: `${label} — إيقاف فوق` }),
+      });
+      if (!r.ok) return r;
+      return Object.keys(r.value).length ? r : REMOVE;
+    },
+  },
   /* platformStopped: من هنا بس «امسح» (null) — الإيقاف نفسه بيحطّه السكربت */
   { re: /^adsGuard\.platformStopped\.(meta|google|tiktok|snapchat)$/, check: (v) => (v === null ? { ok: true, value: null } : { ok: false, error: "إيقاف المنصة بيتمسح بس من هنا (null)" }) },
   {
@@ -379,9 +457,16 @@ export function validatePatch(changes, current = {}) {
       }
     }
     if (rule.day && !isDay(path.match(rule.re)[1])) { errors.push({ path, error: "التاريخ لازم YYYY-MM-DD" }); continue; }
-    const r = rule.check(ch?.value, current);
+    const r = rule.check(ch?.value, current, path.match(rule.re));
     if (!r.ok) { errors.push({ path, error: r.error }); continue; }
-    values.push({ path, value: r.value });
+    values.push(r.remove ? { path: r.path || path, value: null, remove: true } : { path, value: r.value });
+  }
+  /* الأب قبل ابنه: adsGuard.intraday / killRule بيتكتبوا كائن كامل (مدموج من النسخة
+     الحالية)، فلو جُم بعد intraday.perPlatform.… في نفس الطلب كانوا هيرجّعوا القديم. */
+  const isParent = (v) => values.some((o) => o.path.startsWith(`${v.path}.`));
+  if (values.some(isParent)) {
+    const first = values.filter(isParent).sort((a, b) => a.path.length - b.path.length);
+    values.splice(0, values.length, ...first, ...values.filter((v) => !first.includes(v)));
   }
   /* حارس منطقي: الأرضية مايبقاش فوق السقف بعد التعديل. */
   if (!errors.length) {
@@ -416,6 +501,11 @@ export function deepSetStatement(path, value) {
   return { sql: `UPDATE settings SET data = ${expr}, updated_at = NOW() WHERE id=1`, params };
 }
 
+/* شيل مسار بجد (‎#-‎) — «استخدم العام». مسار مش موجود = مفيش تغيير. */
+export function deepUnsetStatement(path) {
+  return { sql: "UPDATE settings SET data = COALESCE(data,'{}'::jsonb) #- $1::text[], updated_at = NOW() WHERE id=1", params: [parts(path).map(String)] };
+}
+
 /* كذا مسار في transaction واحد (والصف متقفل). changes: [{path,value}] */
 export async function applyPathChanges(pool, changes, { lock = true } = {}) {
   const client = await pool.connect();
@@ -423,7 +513,7 @@ export async function applyPathChanges(pool, changes, { lock = true } = {}) {
     await client.query("BEGIN");
     if (lock) await client.query("SELECT data FROM settings WHERE id=1 FOR UPDATE");
     for (const ch of changes) {
-      const st = deepSetStatement(ch.path, ch.value);
+      const st = ch.remove ? deepUnsetStatement(ch.path) : deepSetStatement(ch.path, ch.value);
       await client.query(st.sql, st.params);
     }
     await client.query("COMMIT");
@@ -503,6 +593,8 @@ export function register(app, ctx) {
       capSms: !!state?.capSms, day: state?.day || null, reason: state?.reason || null,
       killRuleLast: g.killRuleLast || null, platformStopped: g.platformStopped || {},
       creditProtect: state?.creditProtect || null, cpYesterday: state?.cpYesterday || null,
+      adRule: g.adRule || null, platformCaps: g.platformCaps || {},
+      intradayPerPlatform: g.intraday?.perPlatform || {}, killRulePerPlatform: g.killRule?.perPlatform || {},
     });
   });
 
