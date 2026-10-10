@@ -68,6 +68,7 @@ export function loyaltySmsText({ code, expires, link, optout, reward = "free_del
   const variants = [
     `🎁 كسبت ${prize}${min} من فريش كاتس! كودك ${code} ينطبق تلقائياً${until}: ${link}`,
     `🎁 كسبت ${prize}${min} من فريش كاتس، ينطبق تلقائياً${until}: ${link}`,
+    ...(min ? [`🎁 ${prize}${min} من فريش كاتس، ينطبق تلقائياً${until}: ${link}`, `🎁 ${prize}${min} من فريش كاتس${until}: ${link}`] : []),
     `🎁 كسبت ${prize} من فريش كاتس! كودك ${code} ينطبق تلقائياً${until}: ${link}`,
     `🎁 كسبت ${prize} من فريش كاتس، ينطبق تلقائياً${until}: ${link}`,
     `🎁 ${prize} من فريش كاتس${until}: ${link}`,

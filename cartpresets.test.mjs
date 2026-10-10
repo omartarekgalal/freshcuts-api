@@ -103,6 +103,9 @@ function makeApp({ admin = true, recovery = [], carts = [], orders = [], links =
         return { rows: n ? [{}] : [], rowCount: n };
       }
       if (s.includes("FROM shop_orders WHERE phone_norm=$1")) return { rows: [{ paid: 0, coupon: 1 }], rowCount: 1 };
+      // 5/10 coupon rules (couponrules.js): FIRST row + «used once» / «prior delivery» lookups — a first-time customer
+      if (s.includes("FROM shop_coupons WHERE upper(code)='FIRST'")) return { rows: [{ code: "FIRST", percent: 0, active: true, expires_at: null, free_delivery: true }], rowCount: 1 };
+      if (s.includes("FROM shop_orders") && (s.includes("WHERE coupon=$1 AND phone_norm=$2") || s.includes("so.option='delivery'"))) return { rows: [], rowCount: 0 };
       // ── cart_presets
       if (s.startsWith("UPDATE cart_presets SET opens")) {
         const f = db.presets.find((x) => x.code === p[0] && x.active);

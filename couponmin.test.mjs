@@ -52,15 +52,17 @@ test("wiring: checkout waives through feeAfterCoupon, re-checks the real total, 
   assert.ok(shop.includes("const w = feeAfterCoupon({ fee: deliveryFee, keep, coupon, foodTotal });"));
   assert.ok(shop.includes("const recheck = await checkCoupon(b.coupon, foodTotal, phoneNorm);"), "authoritative re-check against the real food total");
   assert.ok(shop.includes('if (!recheck.ok) return fail("coupon_" + recheck.error, 422, { coupon: recheck });'));
-  assert.ok(shop.includes("minTotal: Number(cp.min_total) || 0 };"), "validate-coupon returns minTotal so the cart can re-evaluate on every change");
-  assert.ok(shop.includes('if (Number(subtotal) < Number(cp.min_total)) return { ok: false, error: "min_total", minTotal: Number(cp.min_total) };'));
+  const rules = src("couponrules.js");   // since the 5/10 coupon rules moved in, the row → verdict logic lives there
+  assert.ok(shop.includes("if (cp) return evaluateCoupon(cp, { subtotal, phoneNorm }, couponQ);"));
+  assert.ok(rules.includes("minTotal: Number(cp.min_total) || 0 };"), "validate-coupon returns minTotal so the cart can re-evaluate on every change");
+  assert.ok(rules.includes('if (Number(subtotal) < Number(cp.min_total)) return { ok: false, error: "min_total", minTotal: Number(cp.min_total) };'));
 });
 
 test("wiring: loyalty rewards are issued with the minimum and unused ones follow the setting", () => {
   const cms = src("cms.js");
-  assert.ok(cms.includes("VALUES ($1,$2,true,$6,1,$3,$4,true,$5)"), "min_total comes from the setting, not a literal 0");
-  assert.ok(!cms.includes("VALUES ($1,$2,true,0,1,$3,$4,true,$5)"));
-  assert.ok(cms.includes("minTotal: loyaltyMinTotal(b.minTotal === undefined ? prev : b),"));
+  assert.ok(cms.includes("VALUES ($1,$2,true,$7,1,$3,$4,true,$5,$6)"), "min_total comes from the setting, not a literal 0 — and the reward is bound to the phone");
+  assert.ok(!cms.includes("VALUES ($1,$2,true,0,1,$3,$4,true,$5"));
+  assert.ok(src("loyalty.js").includes("minTotal: loyaltyMinTotal(b.minTotal === undefined ? prev : b),"));
   assert.ok(cms.includes("await loyaltyMinSync(cfg)"));
   assert.ok(cms.includes("const synced = await loyaltyMinSync(val)"));
   assert.match(LOYALTY_MIN_BACKFILL_SQL, /COALESCE\(s\.used_count,0\) = 0/);
