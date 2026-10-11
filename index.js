@@ -3124,9 +3124,9 @@ waApi.setInbox(waInboxApi);
 /* كتالوج قوالب خارجي + بوت (لو الملفات موجودة — فرع wa-content). مش موجودة = ولا حاجة.
    البوت بيشتغل بس مع WHATSAPP_BOT_ENABLED=1 (whatsapp.js runBot + تسليم لإنسان بعد صدى الموبايل). */
 import("./watemplates.js").then((m) => {
-  const defs = m.TEMPLATES || m.CATALOG || m.default || {};
-  const r = whatsapp.registerTemplates(defs);
-  console.log(`[wa] watemplates: +${r.added.length} (kept existing: ${r.skipped.length})`);
+  // ١٢/١٠: الكتالوج قايمة (array) — registerCatalog بتحوّلها لخريطة بالاسم ومعاها bind. قبل كده اتتخطّى كله.
+  const r = whatsapp.registerCatalog(m);
+  console.log(`[wa] watemplates (${r.shape}): +${r.added.length} (kept existing: ${r.skipped.length}${r.invalid.length ? `, invalid: ${r.invalid.join("; ")}` : ""})`);
 }).catch((e) => { if (e?.code !== "ERR_MODULE_NOT_FOUND") console.error("[wa] watemplates:", e.message); });
 import("./wabot.js").then((m) => waApi.setBot(m.default && m.default.matchIntent ? m.default : m))
   .catch((e) => { if (e?.code !== "ERR_MODULE_NOT_FOUND") console.error("[wa] wabot:", e.message); });

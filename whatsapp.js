@@ -203,6 +203,46 @@ export function registerTemplates(defs, { override = false } = {}) {
   return { added, skipped };
 }
 
+/* ── كتالوج watemplates.js ⇒ السجل (١٢/١٠) ─────────────────────────────────
+   العطل: index.js كان بيدّي registerTemplates الـTEMPLATES بتاعة watemplates.js زي ما هي — وهي **قايمة** (array) من
+   غير bind لكل قالب، وregisterTemplates مستنية خريطة {اسم: {…, bind()}}. فالمفاتيح بقت "0","1",… واتتخطّى الكل:
+   السيرفر الحي مايعرفش غير الـ١١ قالب القدام، وfc_winback_45 مايتقدّمش من اللوحة.
+   الحل: الدالة دي بتحوّل القايمة لخريطة بالاسم ومعاها bind (من bindTemplate بتاع الكتالوج) وتسجّلها.
+   • القالب المسجّل بـcatalog:true **من غير** stage ولا campaign: يتعرض ويتقدّم لميتا بس — مابيدخلش في تحديثات
+     الطلب التلقائية ولا في قايمة قوالب الحملات. مفيش حاجة بتتقدّم لوحدها، والإرسال ومفاتيحه زي ما هم.
+   • اسم موجود في السجل (الـ٨ اللي في الاتنين) بيفضل على تعريف whatsapp.js.
+   • نفس الاسم بلغتين (قوالب الفريق ar + en) = قالب واحد بـvariants؛ التقديم بيبعت كل لغة.
+   mod = موديول watemplates.js (TEMPLATES قايمة + bindTemplate + validateTemplate)، أو خريطة جاهزة بالشكل القديم. */
+export function registerCatalog(mod, { override = false } = {}) {
+  const src = mod && (mod.TEMPLATES || mod.CATALOG || mod.default);
+  if (!Array.isArray(src)) return { ...registerTemplates(src || {}, { override }), invalid: [], shape: "map" };
+  const bindFn = typeof mod.bindTemplate === "function" ? mod.bindTemplate : null;
+  const validate = typeof mod.validateTemplate === "function" ? mod.validateTemplate : () => [];
+  const defs = {}, invalid = [];
+  for (const t of src) {
+    const name = t && t.name;
+    if (!name || !Array.isArray(t.components)) { invalid.push(String(name || "?")); continue; }
+    let errs = [];
+    try { errs = validate(t) || []; } catch (e) { errs = [e.message]; }
+    if (errs.length) { invalid.push(`${name}: ${errs[0]}`); continue; }
+    const lang = String(t.language || "ar");
+    if (defs[name]) { defs[name].variants[lang] = t.components; continue; }   // لغة تانية لنفس الاسم
+    defs[name] = {
+      category: t.category, components: t.components, language: lang, variants: { [lang]: t.components },
+      catalog: true, group: t.group || (t.meta && t.meta.group) || null, purpose: (t.meta && t.meta.purpose) || null,
+      // نفس شكل bind بتاع السجل: {body[], button[]} — + missing عشان المُرسل مايبعتش متغيّر فاضي
+      bind: (ctx) => {
+        if (!bindFn) return { body: [], button: [], missing: ["bindTemplate"] };
+        const r = bindFn(t, ctx || {});
+        return { body: r.body || [], button: (r.buttons || []).map((b) => b.text), missing: r.missing || [] };
+      },
+    };
+  }
+  return { ...registerTemplates(defs, { override }), invalid, shape: "list" };
+}
+export const isCatalogTemplate = (name) => Boolean(TEMPLATES[name] && TEMPLATES[name].catalog);
+export const templateLanguages = (name) => (TEMPLATES[name] && TEMPLATES[name].variants ? Object.keys(TEMPLATES[name].variants) : ["ar"]);
+
 function money(n) { const v = Number(n); return Number.isFinite(v) ? v.toFixed(2) : String(n ?? ""); }
 
 /* 5XXXXXXXX → 9665XXXXXXXX. أي حاجة تانية = null (مابنبعتش لأرقام مش سعودية). */
@@ -260,10 +300,14 @@ export function buildTemplatePayload(name, to, params = {}, lang = "ar") {
 }
 
 /* جسم التقديم لميتا (مراجعة القوالب). */
-export function templateSubmission(name, lang = "ar") {
+export function templateSubmission(name, lang) {
   const t = TEMPLATES[name];
   if (!t) throw new Error(`unknown template ${name}`);
-  return { name, language: lang, category: t.category, components: t.components };
+  // قالب كتالوج بأكتر من لغة: مكوّنات اللغة المطلوبة (الافتراضي لغته الأساسية). القوالب القديمة: عربي زي ما كانت.
+  const language = lang || t.language || "ar";
+  const components = t.variants ? t.variants[language] : t.components;
+  if (!components) throw new Error(`template ${name} has no ${language} version`);
+  return { name, language, category: t.category, components };
 }
 
 /* X-Hub-Signature-256 = "sha256=" + HMAC-SHA256(appSecret, rawBody). مقارنة ثابتة الوقت. */
@@ -864,7 +908,9 @@ export function register(app, ctx, deps = {}) {
   // Admin: القوالب بصيغة التقديم (للمراجعة قبل الإرسال لميتا).
   app.get("/api/wa/templates", async (c) => {
     const err = await requireAdmin(c); if (err) return err;
-    return c.json({ ok: true, templates: Object.keys(TEMPLATES).map((n) => templateSubmission(n)) });
+    // القوالب القديمة + قوالب الكتالوج (catalog:true، وكل لغة لوحدها) — للعرض بس، مفيش تقديم هنا
+    return c.json({ ok: true, templates: Object.keys(TEMPLATES).flatMap((n) => templateLanguages(n).map((lang) => ({
+      ...templateSubmission(n, TEMPLATES[n].variants ? lang : undefined), catalog: isCatalogTemplate(n), group: TEMPLATES[n].group || null }))) });
   });
 
   /* رفع صورة المثال لقالب بهيدر صورة (Resumable Upload API) ⇒ header_handle.
@@ -893,21 +939,31 @@ export function register(app, ctx, deps = {}) {
     if (!token() || !wabaId()) return c.json({ ok: false, error: "unconfigured" });
     let b = {};
     try { b = await c.req.json(); } catch { /* الكل */ }
-    const names = Array.isArray(b.names) && b.names.length ? b.names : Object.keys(TEMPLATES);
+    /* من غير names = القوالب القديمة بس (زي الأول). قالب الكتالوج بيتقدّم بالاسم، **واحد في الطلب**:
+       تقديمه قرار يدوي لكل قالب — مفيش ضغطة تقدّم الكتالوج كله، ومفيش حاجة بتتقدّم لوحدها. */
+    const asked = Array.isArray(b.names) && b.names.length ? b.names.map(String) : Object.keys(TEMPLATES).filter((n) => !isCatalogTemplate(n));
     const results = [];
-    for (const n of names) {
+    const jobs = [];
+    for (const n of asked) {
       if (!TEMPLATES[n]) { results.push({ name: n, ok: false, error: "unknown" }); continue; }
+      if (isCatalogTemplate(n) && asked.length > 1) { results.push({ name: n, ok: false, error: "catalog_one_at_a_time" }); continue; }
+      const langs = isCatalogTemplate(n) ? templateLanguages(n).filter((l) => !b.language || l === String(b.language)) : [undefined];
+      if (!langs.length) { results.push({ name: n, ok: false, error: "no_such_language" }); continue; }
+      for (const l of langs) jobs.push([n, l]);
+    }
+    for (const [n, l] of jobs) {
+      const tag = l && templateLanguages(n).length > 1 ? { language: l } : {};
       try {
-        const sub = templateSubmission(n);
+        const sub = templateSubmission(n, l);
         const hdr = sub.components.find((x) => x.type === "HEADER" && x.format === "IMAGE");
         if (hdr) {
-          if (!b.sampleImageUrl) { results.push({ name: n, ok: false, error: "sample_image_required" }); continue; }
+          if (!b.sampleImageUrl) { results.push({ name: n, ...tag, ok: false, error: "sample_image_required" }); continue; }
           const h = await uploadHandle(String(b.sampleImageUrl));
           sub.components = sub.components.map((x) => (x === hdr ? { ...x, example: { header_handle: [h] } } : x));
         }
-        results.push({ name: n, ok: true, ...(await graphPost(`${wabaId()}/message_templates`, sub)) });
+        results.push({ name: n, ...tag, ok: true, ...(await graphPost(`${wabaId()}/message_templates`, sub)) });
       }
-      catch (e) { results.push({ name: n, ok: false, error: e.message }); }
+      catch (e) { results.push({ name: n, ...tag, ok: false, error: e.message }); }
     }
     return c.json({ ok: true, results });
   });

@@ -396,9 +396,21 @@ export function register(app, ctx, deps = {}) {
       const byStatus = {};
       for (const t of list) byStatus[t.status] = (byStatus[t.status] || 0) + 1;
       const x = { ok: true, total: list.length, byStatus, list,
-        ours: Object.keys(TEMPLATES).map((n) => ({ name: n, category: TEMPLATES[n].category,
+        // «ours» = القوالب القديمة بس — زرار «قدّم N قالب» في اللوحة بيقدّمها كلها، فالكتالوج مايدخلش فيه
+        ours: Object.keys(TEMPLATES).filter((n) => !TEMPLATES[n].catalog).map((n) => ({ name: n, category: TEMPLATES[n].category,
           campaign: Boolean(TEMPLATES[n].campaign), label: TEMPLATES[n].campaign?.label || null,
-          status: list.find((t) => t.name === n)?.status || "NOT_SUBMITTED" })) };
+          status: list.find((t) => t.name === n)?.status || "NOT_SUBMITTED" })),
+        // قوالب الكتالوج (watemplates.js): كل واحد يتقدّم لوحده بزراره — حالة كل لغة من ميتا
+        catalog: Object.keys(TEMPLATES).filter((n) => TEMPLATES[n].catalog).map((n) => {
+          const t = TEMPLATES[n];
+          const langs = Object.keys(t.variants || { [t.language || "ar"]: 1 });
+          const st = langs.map((l) => list.find((x) => x.name === n && String(x.language || "").slice(0, 2) === l)?.status || "NOT_SUBMITTED");
+          return { name: n, category: t.category, group: t.group || null, purpose: t.purpose || null, languages: langs,
+            needsImage: (t.components || []).some((c) => c.type === "HEADER" && c.format === "IMAGE"),
+            body: (t.components.find((c) => c.type === "BODY") || {}).text || "",
+            statuses: Object.fromEntries(langs.map((l, i) => [l, st[i]])),
+            status: st.every((x) => x === st[0]) ? st[0] : st.includes("REJECTED") ? "REJECTED" : st.includes("NOT_SUBMITTED") ? "NOT_SUBMITTED" : "PENDING" };
+        }) };
       tplCache = { at: now(), data: x };
       return x;
     } catch (e) { const x = errJ(e); tplCache = { at: now(), data: x }; return x; }
