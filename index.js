@@ -63,6 +63,7 @@ import * as seostatus from "./seostatus.js";
 import * as staffcontrol from "./staffcontrol.js";
 import * as smstemplates from "./smstemplates.js";
 import * as wabot from "./wabot.js";
+import * as wabotrun from "./wabotrun.js";
 import * as extsettle from "./extsettle.js";
 import * as wasender from "./wasender.js";
 import { sendAdSms as smsSendAd } from "./smsrules.js";
@@ -3122,14 +3123,12 @@ const waApi = whatsapp.register(app, moduleCtx);
 const waInboxApi = wainbox.register(moduleCtx, { wa: waApi });
 waApi.setInbox(waInboxApi);
 /* كتالوج قوالب خارجي + بوت (لو الملفات موجودة — فرع wa-content). مش موجودة = ولا حاجة.
-   البوت بيشتغل بس مع WHATSAPP_BOT_ENABLED=1 (whatsapp.js runBot + تسليم لإنسان بعد صدى الموبايل). */
+   البوت بيشتغل بس مع settings.waBot.mode (wabotrun.js, 12/10) (whatsapp.js runBot + تسليم لإنسان بعد صدى الموبايل). */
 import("./watemplates.js").then((m) => {
   // ١٢/١٠: الكتالوج قايمة (array) — registerCatalog بتحوّلها لخريطة بالاسم ومعاها bind. قبل كده اتتخطّى كله.
   const r = whatsapp.registerCatalog(m);
   console.log(`[wa] watemplates (${r.shape}): +${r.added.length} (kept existing: ${r.skipped.length}${r.invalid.length ? `, invalid: ${r.invalid.join("; ")}` : ""})`);
 }).catch((e) => { if (e?.code !== "ERR_MODULE_NOT_FOUND") console.error("[wa] watemplates:", e.message); });
-import("./wabot.js").then((m) => waApi.setBot(m.default && m.default.matchIntent ? m.default : m))
-  .catch((e) => { if (e?.code !== "ERR_MODULE_NOT_FOUND") console.error("[wa] wabot:", e.message); });
 const notifyApi = notify.register(app, moduleCtx, { wa: waApi });
 // السلات المتروكة: لقطات من المتجر + سلّم استرداد (إشعار ثم SMS) + أرقام اللوحة
 const cartsApi = carts.register(app, moduleCtx, { notify: notifyApi });
@@ -3204,8 +3203,11 @@ accounts.setStaffGate(staffcontrol.register(app, moduleCtx).gate);
 // 📱 26/9: every customer SMS template editable from the dashboard
 smstemplates.register(app, moduleCtx, { sendSms: (m) => accounts.sendSms(m), sendAdSms: smsSendAd });
 /* 🤖 الرد الآلي على واتساب (wabot.js) — مسارات قراءة/تجربة في اللوحة بس. الويب هوك
-   للتشغيل: waApi.setBot(waBotApi.botAdapter) + WHATSAPP_BOT_ENABLED=1 (قرار التكامل). */
+   للتشغيل: waApi.setBot(waBotApi.botAdapter) + settings.waBot.mode (wabotrun.js, 12/10) (قرار التكامل). */
 const waBotApi = wabot.register(app, moduleCtx, { app });
+/* 🤖 ١٢/١٠: بوت واتساب v1 (wabotrun.js) — بيمسك الوارد من whatsapp.js (setBotRuntime). الوضع وكل إعداداته من اللوحة
+   (settings.waBot: off الافتراضي / dry / test / live) — مفيش مفتاح env. off = مابيلمسش أي رسالة. */
+wabotrun.register(app, moduleCtx, { app, wa: waApi, sendSms: accounts.sendSms });
 /* 👁 قاعدة واحدة لإظهار جوال العميل كامل في اللوحة (phones.js): المالك دايماً،
    وعضو الفريق لو دوره عنده «عرض» على قسم العملاء. بتتحط على moduleCtx بعد ما
    الـCMS يتسجّل، والموديولات بتناديها وقت الطلب (ctx.canSeePhones) مش وقت التسجيل. */

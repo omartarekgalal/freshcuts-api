@@ -196,8 +196,12 @@ test("campaignParams: per-recipient link suffix = our /l/<slug>-<code> scheme", 
   const payload = W.buildTemplatePayload("fc_offer_img", "966512345678", a.params);
   assert.equal(payload.template.components[0].type, "header");
   assert.equal(payload.template.components[2].parameters[0].text, "w12-a1b2c3");
-  // من غير اسم ⇒ «عميلنا»، من غير طبق ⇒ نص محايد
-  assert.deepEqual(C.campaignParams("fc_winback", { vars: {}, link_code: "x", coupon: "C" }, job).params.body, ["عميلنا", "أكلتك المفضّلة", "C"]);
+  // من غير اسم ⇒ «عميلنا». من غير طبق ⇒ مفيش نص مخترَع («أكلتك المفضّلة»): المتغيّر ناقص والإرسال بيتمنع (١٢/١٠)
+  const noDish = C.campaignParams("fc_winback", { vars: {}, link_code: "x", coupon: "C" }, job).params;
+  assert.deepEqual(noDish.body, ["عميلنا", "", "C"]);
+  assert.deepEqual(noDish.missing, ["dish"]);
+  assert.equal(W.paramProblem("fc_winback", noDish), "missing:dish");
+  assert.equal(W.paramProblem("fc_winback", b.params), null);
 });
 
 test("cloud job validation", () => {
@@ -732,30 +736,37 @@ test("registerTemplates: plugs a catalogue in without clobbering existing names"
   delete W.TEMPLATES.fc_test_delay;
 });
 
-test("inbound hook: full event shape; bot replies unless staff answered from the phone recently", withEnv({ ...ON, WHATSAPP_BOT_ENABLED: "1" }, async () => {
+test("inbound hook: full event shape; the bot runtime owns the message, echoes never reach it", withEnv(ON, async () => {
   const { api, pool, calls } = await setupWa();
   const events = [];
   api.on("inbound", (e) => events.push(e));
-  const asked = [];
-  api.setBot({ matchIntent: (text, ctx) => { asked.push(ctx); return /منيو/.test(text) ? "menu" : null; },
-    buildReply: (intent) => ({ type: "text", text: { body: "المنيو: https://freshcuts.sa/menu" } }) });
+  const seen = [];
+  api.setBotRuntime(async (ev) => { seen.push(ev); return true; });
   const now = Math.floor(Date.now() / 1000);
   await api.processWebhook(change("messages", { messages: [{ from: "966512345678", id: "wamid.B1", timestamp: String(now), type: "interactive",
     interactive: { type: "button_reply", button_reply: { id: "menu_btn", title: "ابي المنيو" } } }] }));
-  assert.equal(calls.length, 1, "bot replied");
-  const sent = JSON.parse(calls[0].init.body);
-  assert.equal(sent.to, "966512345678"); assert.equal(sent.messaging_product, "whatsapp");
-  assert.equal(pool.db.msgs.find((m) => m.source === "bot")?.body, "المنيو: https://freshcuts.sa/menu");
+  assert.equal(seen.length, 1, "runtime called once");
+  assert.equal(seen[0].phone, "512345678"); assert.equal(seen[0].interactiveId, "menu_btn"); assert.equal(seen[0].wamid, "wamid.B1");
+  assert.equal(calls.length, 0, "whatsapp.js itself sends nothing — the runtime decides");
   assert.deepEqual(Object.keys(events[0]).filter((k) => ["phone", "text", "interactiveId", "referral", "isEcho", "ts"].includes(k)).sort(),
     ["interactiveId", "isEcho", "phone", "referral", "text", "ts"]);
   assert.equal(events[0].interactiveId, "menu_btn"); assert.equal(events[0].isEcho, false);
-  // الكاشير رد من الموبايل ⇒ البوت يسكت
-  await api.processWebhook(change("smb_message_echoes", { message_echoes: [{ from: BIZ, to: "966512345678", id: "wamid.HUMAN", timestamp: String(now + 1), type: "text", text: { body: "معك محمد من المطعم" } }] }));
+  // a webhook re-delivery of the same wamid never reaches the runtime twice
+  await api.processWebhook(change("messages", { messages: [{ from: "966512345678", id: "wamid.B1", timestamp: String(now), type: "text", text: { body: "ابي المنيو" } }] }));
+  assert.equal(seen.length, 1, "duplicate wamid ignored");
+  // الكاشير رد من الموبايل ⇒ صدى: بيتسجّل وبيوصل للمستمعين، ومابيروحش للبوت
+  await api.processWebhook(change("smb_message_echoes", { message_echoes: [{ from: BIZ, to: "966512345678", id: "wamid.HUMAN", timestamp: String(now + 1), type: "text", text: { body: "معك محمد من فريش كاتس" } }] }));
   assert.equal(events.at(-1).isEcho, true);
-  pool.query = ((orig) => async (sql, p) => (/source='echo' AND created_at >/.test(String(sql)) ? { rowCount: pool.db.msgs.some((m) => m.phone_norm === p[0] && m.source === "echo") ? 1 : 0, rows: [] } : orig(sql, p)))(pool.query.bind(pool));
-  await api.processWebhook(change("messages", { messages: [{ from: "966512345678", id: "wamid.B2", timestamp: String(now + 2), type: "text", text: { body: "ابي المنيو" } }] }));
-  assert.equal(calls.length, 1, "human handoff: no bot reply");
-  assert.equal((await api.runBot({ phone: "512345678", text: "ابي المنيو", isEcho: false })).skipped, "human_handoff");
-  // «إيقاف» مابيروحش للبوت
-  assert.equal((await api.runBot({ phone: "598765432", text: "إيقاف", intent: "stop" })).skipped, "off");
+  assert.equal(seen.length, 1, "echo not passed to the bot");
+  pool.query = ((orig) => async (sql, p) => (/source='echo' AND created_at >/.test(String(sql)) ? { rowCount: pool.db.msgs.some((m) => m.phone_norm === p[0] && m.source === "echo") ? 1 : 0, rows: [] } : orig(sql, p)))(pool.query);
+  assert.equal(await api.humanActive("512345678", 12), true);
+  assert.equal(await api.humanActive("598765432", 12), false);
+  assert.equal(await api.humanActive("512345678", 0), false, "window 0 = the rule is off");
+  // sendFreeform: the full gate, or the allow-list path that needs no customer switch
+  const r1 = await api.sendFreeform({ phoneNorm: "512345678", payload: { type: "text", text: { body: "hi" } } });
+  assert.equal(r1.ok, true); assert.equal(calls.length, 1);
+  assert.equal(JSON.parse(calls[0].init.body).to, "966512345678");
+  assert.equal(pool.db.msgs.find((m) => m.source === "bot")?.body, "hi");
+  assert.equal((await api.sendFreeform({ phoneNorm: "598765432", payload: { type: "text", text: { body: "x" } }, allowList: ["512345678"] })).skipped, "not_in_allow_list");
+  assert.equal(calls.length, 1, "nothing sent outside the allow-list");
 }));

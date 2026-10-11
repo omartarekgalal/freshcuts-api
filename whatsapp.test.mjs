@@ -129,7 +129,7 @@ test("buildTemplatePayload: body params + URL button suffix at the right index",
     W.TEMPLATES.fc_order_received.bind({ order_no: "W9", total: 50, name: "سارة" }));
   assert.equal(p.to, "966512345678");
   assert.equal(p.template.language.code, "ar");
-  assert.deepEqual(p.template.components[0].parameters.map((x) => x.text), ["سارة", "W9", "50.00"]);
+  assert.deepEqual(p.template.components[0].parameters.map((x) => x.text), ["سارة", "W9", "50"]);
   assert.deepEqual(p.template.components[1], { type: "button", sub_type: "url", index: "0", parameters: [{ type: "text", text: "W9" }] });
   const otp = W.buildTemplatePayload("fc_otp", "966512345678", W.TEMPLATES.fc_otp.bind({ code: "4821" }));
   assert.equal(otp.template.components[0].parameters[0].text, "4821");
@@ -191,7 +191,7 @@ test("marketing needs marketing opt-in and respects cms opt-out", withEnv(ON, as
   const fetch = fakeFetch();
   const pool = memPool({ optins: { "512345678": { updates: true, marketing: false }, "598765432": { updates: false, marketing: true } }, suppressed: ["598765432"] });
   const { api } = setupWa({ pool, fetch });
-  const p = { body: ["محمد"], button: ["?r=1"] };
+  const p = { body: ["محمد"], button: ["k7q2m9"] };
   assert.equal((await api.sendTemplate({ phoneNorm: "512345678", template: "fc_cart_reminder", params: p })).skipped, "no_optin");
   assert.equal((await api.sendTemplate({ phoneNorm: "598765432", template: "fc_cart_reminder", params: p })).skipped, "opted_out");
   assert.equal(fetch.calls.length, 0);
@@ -201,7 +201,7 @@ test("Graph error → ok:false, logged failed, never throws", withEnv(ON, async 
   const fetch = fakeFetch({ error: { code: 131047, message: "Re-engagement" } }, false);
   const pool = memPool({ optins: { "512345678": { updates: true } } });
   const { api } = setupWa({ pool, fetch });
-  const r = await api.sendTemplate({ phoneNorm: "512345678", template: "fc_order_preparing", params: { body: ["W1"] } });
+  const r = await api.sendTemplate({ phoneNorm: "512345678", template: "fc_order_preparing", params: { body: ["W1"], button: ["W1"] } });
   assert.equal(r.ok, false);
   assert.equal(r.error, "WA_131047");
   assert.equal(pool.msgs[0].status, "failed");
@@ -234,7 +234,7 @@ test("failed status → SMS fallback exactly once (duplicate webhooks)", withEnv
   const sms = [];
   const pool = memPool({ optins: { "512345678": { updates: true } } });
   const { app, api } = setupWa({ pool, notifications: { whatsappEnabled: true, smsEnabled: true }, sendSms: async (x) => { sms.push(x); } });
-  await api.sendTemplate({ phoneNorm: "512345678", template: "fc_order_preparing", params: { body: ["W1"] }, orderNo: "W1", fallbackSms: "نص بديل" });
+  await api.sendTemplate({ phoneNorm: "512345678", template: "fc_order_preparing", params: { body: ["W1"], button: ["W1"] }, orderNo: "W1", fallbackSms: "نص بديل" });
   const h = app.routes["POST /api/wa/webhook"];
   assert.equal((await h(signed(statusHook("wamid.TEST1", "failed")))).status, 200);
   await h(signed(statusHook("wamid.TEST1", "failed")));

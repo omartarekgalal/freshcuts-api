@@ -31,6 +31,7 @@
 import crypto from "node:crypto";
 import { sendSms as defaultSendSms } from "./accounts.js";
 import { isOptOutText } from "./wamsg.js";
+import * as CAT from "./watemplates.js";
 
 const env = (k, d) => (process.env[k] || d || "").toString().trim();
 export const GRAPH_VERSION = "v23.0";
@@ -40,79 +41,36 @@ const STORE = () => env("STOREFRONT_PUBLIC_URL", "https://freshcuts.sa").replace
    category: UTILITY | MARKETING | AUTHENTICATION (زي ميتا بالظبط).
    components: جسم التقديم لـ POST /{WABA_ID}/message_templates (مع أمثلة).
    bind(ctx): بيرجّع { body:[...], button:[suffix] } — بالترتيب الموضعي {{1}}.. */
+/* ── القوالب الـ٨ المشتركة مع الكتالوج (١٢/١٠) ───────────────────────────────
+   كانت مكتوبة هنا بنص أقدم (٢٨/٩) ومكتوبة تاني في watemplates.js بنص أحدث، والسجل كان بيحتفظ بالأقدم.
+   ولا واحد منهم اتقدّم لميتا قبل كده، فالنص الحي بقى نص الكتالوج — مصدر واحد للنص، وهنا بس:
+     stage  مرحلة الطلب اللي بتبعته (notify.js)
+     data   صف الطلب ⇒ بيانات الكتالوج (نفس مسارات meta.vars — الاختبار بيتأكد إن مفيش متغيّر فاضي ولا متبدّل)
+     guard  شرط إضافي على الطلب؛ false ⇒ مفيش إرسال (skipped: stage_not_applicable). */
+function fromCatalog(name, { stage = null, data, guard = null } = {}) {
+  const t = CAT.findTemplate(name, "ar");
+  if (!t) throw new Error(`catalogue template missing: ${name}`);
+  return {
+    category: t.category, stage, guard, components: t.components, language: "ar", variants: { ar: t.components }, wording: "catalogue",
+    bind: (ctx) => {
+      const r = CAT.bindTemplate(t, data(ctx || {}));
+      return { body: r.body, button: r.buttons.map((b) => b.text), missing: r.missing };
+    },
+  };
+}
+const orderData = (o) => ({ customer: { name: o.name }, order: { order_no: o.order_no, total: o.total } });
+const isDelivery = (o) => o.option === "delivery" && !o.table_no;
+
 export const TEMPLATES = {
-  fc_order_received: {
-    category: "UTILITY", stage: "pos_created",
-    components: [
-      { type: "BODY",
-        text: "أهلاً {{1}} 👋\nاستلمنا طلبك رقم {{2}} من فريش كاتس وتم الدفع بنجاح ✅\nالإجمالي: {{3}} ر.س\nبنبلغك هنا أول ما يبدأ التجهيز.",
-        example: { body_text: [["محمد", "W1726500000000", "96.00"]] } },
-      { type: "BUTTONS", buttons: [
-        { type: "URL", text: "تتبّع طلبك", url: "https://freshcuts.sa/track/{{1}}", example: ["W1726500000000"] },
-      ] },
-    ],
-    bind: (o) => ({ body: [o.name || "عميلنا", o.order_no, money(o.total)], button: [o.order_no] }),
-  },
-  fc_order_preparing: {
-    category: "UTILITY", stage: "accepted",
-    components: [
-      { type: "BODY",
-        text: "طلبك رقم {{1}} صار في المطبخ 👨‍🍳 ونجهّزه الحين.\nبنبلغك أول ما يطلع.",
-        example: { body_text: [["W1726500000000"]] } },
-      { type: "BUTTONS", buttons: [
-        { type: "URL", text: "تتبّع طلبك", url: "https://freshcuts.sa/track/{{1}}", example: ["W1726500000000"] },
-      ] },
-    ],
-    bind: (o) => ({ body: [o.order_no], button: [o.order_no] }),
-  },
-  fc_order_on_the_way: {
-    category: "UTILITY", stage: "on_the_way",
-    components: [
-      { type: "BODY",
-        text: "طلبك رقم {{1}} في الطريق إليك الآن 🛵\nخلّ جوالك قريب، المندوب ممكن يتصل عند الوصول.",
-        example: { body_text: [["W1726500000000"]] } },
-      { type: "BUTTONS", buttons: [
-        { type: "URL", text: "تتبّع طلبك", url: "https://freshcuts.sa/track/{{1}}", example: ["W1726500000000"] },
-      ] },
-    ],
-    bind: (o) => ({ body: [o.order_no], button: [o.order_no] }),
-  },
-  fc_order_ready_pickup: {
-    category: "UTILITY", stage: "pickup_ready",
-    components: [
-      { type: "BODY",
-        text: "طلبك رقم {{1}} جاهز للاستلام من فرع فريش كاتس ✅\nاعرض رقم الطلب على الكاشير.",
-        example: { body_text: [["W1726500000000"]] } },
-    ],
-    bind: (o) => ({ body: [o.order_no] }),
-  },
-  fc_order_delivered: {
-    category: "UTILITY", stage: "delivered",
-    components: [
-      { type: "BODY",
-        text: "تم توصيل طلبك رقم {{1}} ✅ بالعافية.\nإذا عندك أي ملاحظة على الطلب رد على هذه الرسالة ونتابع معك.",
-        example: { body_text: [["W1726500000000"]] } },
-    ],
-    bind: (o) => ({ body: [o.order_no] }),
-  },
-  fc_order_refunded: {
-    category: "UTILITY", stage: "rejected_refunded",
-    components: [
-      { type: "BODY",
-        text: "نعتذر منك، ما قدرنا ننفّذ طلبك رقم {{1}} وتم استرجاع المبلغ كاملاً لوسيلة الدفع 💳\nيظهر المبلغ حسب البنك خلال أيام العمل.",
-        example: { body_text: [["W1726500000000"]] } },
-    ],
-    bind: (o) => ({ body: [o.order_no] }),
-  },
-  fc_refund_in_progress: {
-    category: "UTILITY", stage: "refund_failed",
-    components: [
-      { type: "BODY",
-        text: "نعتذر منك بخصوص طلبك رقم {{1}}. استرجاع المبلغ جاري وفريقنا يتابعه، وبنتواصل معك للتأكيد 🙏",
-        example: { body_text: [["W1726500000000"]] } },
-    ],
-    bind: (o) => ({ body: [o.order_no] }),
-  },
+  fc_order_received: fromCatalog("fc_order_received", { stage: "pos_created", data: orderData }),
+  fc_order_preparing: fromCatalog("fc_order_preparing", { stage: "accepted", data: orderData }),
+  // «في الطريق» و«تم التوصيل» لطلب توصيل بس — طلب الاستلام/الطاولة مالوش مندوب ولا «توصيل»
+  fc_order_on_the_way: fromCatalog("fc_order_on_the_way", { stage: "on_the_way", data: orderData, guard: isDelivery }),
+  fc_order_ready_pickup: fromCatalog("fc_order_ready_pickup", { stage: "pickup_ready", data: orderData, guard: (o) => o.option === "pickup" && !o.table_no }),
+  fc_order_delivered: fromCatalog("fc_order_delivered", { stage: "delivered", data: orderData, guard: isDelivery }),
+  // الحالة rejected_refunded بتتسجّل كمان لما «مفيش مبلغ يتسترجع» (shop.js refundOrder) — «تم الاسترجاع» بس لو فيه رقم استرجاع فعلي
+  fc_order_refunded: fromCatalog("fc_order_refunded", { stage: "rejected_refunded", data: orderData, guard: (o) => Boolean(o.refund_id) }),
+  fc_refund_in_progress: fromCatalog("fc_refund_in_progress", { stage: "refund_failed", data: orderData }),
   /* ── قوالب التسويق (حملات wasender على قناة Cloud API — ٢٨/٩) ──────────
      قواعد ميتا: مفيش متغير في أول الجسم ولا آخره، أمثلة لكل متغير، ومتغير
      زرار الـURL في آخر الرابط بس. زرار الرابط = نفس روابطنا المتتبّعة لكل عميل
@@ -120,7 +78,9 @@ export const TEMPLATES = {
      سريع: الضغطة بتيجي في الويب هوك كرسالة نصها «إيقاف» ⇒ نفس مسار الإيقاف.
      campaign: القالب ينفع لحملة، و needs = اللي لازم الحملة توفّره. */
   fc_cart_reminder: {
-    category: "MARKETING",
+    /* متقاعد (١٢/١٠): عمره ما اتربط بمُرسل ولا اتقدّم لميتا، وfc_cart_1h في الكتالوج بنفس الغرض وبنص معتمد اللهجة.
+       باقي في السجل عشان الأسماء القديمة ماتتكسرش، بس مابيتقدّمش لميتا (retired). */
+    category: "MARKETING", retired: true,
     components: [
       { type: "BODY",
         text: "أهلاً {{1}} 👋 سلتك في فريش كاتس لسا تنتظرك 🔥\nكمّل طلبك في دقيقة وتوصلك المشاوي حارّة.",
@@ -139,8 +99,8 @@ export const TEMPLATES = {
     components: [
       { type: "HEADER", format: "IMAGE", example: { header_handle: ["<upload handle — بيتجاب وقت التقديم>"] } },
       { type: "BODY",
-        text: "أهلاً {{1}} 👋\n{{2}}\nالعرض لفترة محدودة، اطلب من المتجر مباشرة 🔥",
-        example: { body_text: [["محمد", "كيلو مشاوي على الفحم مع طبق رز مجاناً بـ96 ريال"]] } },
+        text: "أهلاً {{1}} 👋\n{{2}}\nاطلبه من موقع فريش كاتس للتوصيل أو الاستلام 🔥",
+        example: { body_text: [["محمد", "بوكس التشكيلة من فريش كاتس بـ105 ريال"]] } },
       { type: "FOOTER", text: "للإيقاف ردّ: إيقاف" },
       { type: "BUTTONS", buttons: [
         { type: "URL", text: "اطلب الآن", url: "https://freshcuts.sa/l/{{1}}", example: ["w12-a1b2c3"] },
@@ -148,13 +108,14 @@ export const TEMPLATES = {
       ] },
     ],
     bind: (x) => ({ header: x.imageUrl ? { image: x.imageUrl } : null,
-      body: [x.name || "عميلنا", x.offer || "عروض جديدة في فريش كاتس"], button: [x.linkSuffix || ""] }),
+      body: [x.name || "عميلنا", x.offer || ""], button: [x.linkSuffix || ""],
+      missing: [!x.offer && "offer", !x.imageUrl && "image", !x.linkSuffix && "linkSuffix"].filter(Boolean) }),
   },
   fc_winback: {
     category: "MARKETING", campaign: { needs: ["coupon"], label: "اشتقنا لك + كود" },
     components: [
       { type: "BODY",
-        text: "اشتقنا لك يا {{1}} 🙌\nآخر مرة طلبت {{2}}، وجهّزنا لك كود {{3}} على طلبك الجاي من المتجر.\nالكود لك أنت بس ولفترة محدودة.",
+        text: "اشتقنا لك يا {{1}} 🙌\nآخر مرة طلبت {{2}}، وجهّزنا لك كود {{3}} على طلبك الجاي من موقعنا.\nالكود لك أنت بس ولفترة محدودة.",
         example: { body_text: [["محمد", "كفتة مشوية", "W12K7Q2M"]] } },
       { type: "FOOTER", text: "للإيقاف ردّ: إيقاف" },
       { type: "BUTTONS", buttons: [
@@ -162,20 +123,12 @@ export const TEMPLATES = {
         { type: "QUICK_REPLY", text: "إيقاف" },
       ] },
     ],
-    bind: (x) => ({ body: [x.name || "عميلنا", x.dish || "أكلتك المفضّلة", x.coupon || x.code || ""],
-      button: [x.linkSuffix || ""] }),
+    bind: (x) => ({ body: [x.name || "عميلنا", x.dish || "", x.coupon || x.code || ""],
+      button: [x.linkSuffix || ""],
+      missing: [!x.dish && "dish", !(x.coupon || x.code) && "coupon", !x.linkSuffix && "linkSuffix"].filter(Boolean) }),
   },
-  fc_otp: {
-    // قوالب التحقق نصها ثابت من ميتا («{{1}} هو رمز التحقق الخاص بك.») —
-    // إحنا بنختار بس: تحذير الأمان + مدة الصلاحية + زرار نسخ الكود.
-    category: "AUTHENTICATION",
-    components: [
-      { type: "BODY", add_security_recommendation: true },
-      { type: "FOOTER", code_expiration_minutes: 5 },
-      { type: "BUTTONS", buttons: [{ type: "OTP", otp_type: "COPY_CODE", text: "نسخ الرمز" }] },
-    ],
-    bind: (x) => ({ body: [String(x.code)], button: [String(x.code)] }),
-  },
+  // قوالب التحقق نصها ثابت من ميتا («{{1}} هو رمز التحقق الخاص بك.») — تعريفها في الكتالوج (تحذير الأمان + ٥ دقايق + نسخ الرمز)
+  fc_otp: fromCatalog("fc_otp", { data: (x) => ({ otp: { code: x.code == null ? "" : String(x.code) } }) }),
 };
 
 /* المرحلة (زي notify.js) → اسم القالب. المراحل اللي مش هنا مالهاش واتساب. */
@@ -262,6 +215,31 @@ export function fromWaId(waId) {
 export function cleanParam(v, max = 1000) {
   const s = String(v ?? "").replace(/[\r\n\t]+/g, " ").replace(/ {2,}/g, " ").trim().slice(0, max);
   return s || "-";
+}
+
+/* متغيّر ناقص = مفيش إرسال. bind بيرجّع missing[]، وكمان أي قيمة جسم/زرار فاضية أو «-» بتتمسك هنا
+   (cleanParam بتحوّل الفاضي لـ«-» عشان ميتا ماترفضش — وده بالظبط اللي مايصحّش يوصل لعميل).
+   لاحقة زرار الرابط لازم حروف رابط آمنة بس (ميتا بتطلب ترميز أي رمز خاص). */
+export function paramProblem(name, params = {}, lang = null) {
+  const t = TEMPLATES[name];
+  if (!t) return "unknown_template";
+  if (Array.isArray(params.missing) && params.missing.length) return `missing:${params.missing.join(",")}`.slice(0, 120);
+  const blank = (v) => { const s = String(v ?? "").replace(/[\r\n\t]+/g, " ").trim(); return !s || s === "-"; };
+  const comps = (t.variants && t.variants[lang || t.language || "ar"]) || t.components;
+  const auth = t.category === "AUTHENTICATION";
+  const bodyText = comps.find((c) => c.type === "BODY")?.text || "";
+  const need = auth ? 1 : new Set([...bodyText.matchAll(/\{\{(\d+)\}\}/g)].map((m) => m[1])).size;
+  const body = Array.isArray(params.body) ? params.body : [];
+  if (body.length !== need) return `body_params:${body.length}/${need}`;
+  if (body.some(blank)) return "empty_body_param";
+  if (auth && !/^[A-Za-z0-9]{1,15}$/.test(String(body[0]))) return "bad_otp_code";
+  const btns = comps.find((c) => c.type === "BUTTONS")?.buttons || [];
+  const dyn = auth ? 1 : btns.filter((b) => b.type === "URL" && /\{\{1\}\}/.test(b.url || "")).length;
+  const button = Array.isArray(params.button) ? params.button : [];
+  if (dyn && (button.length < dyn || button.slice(0, dyn).some(blank))) return "empty_button_param";
+  if (dyn && !auth && button.slice(0, dyn).some((v) => !/^[A-Za-z0-9._~-]{1,200}$/.test(String(v)))) return "unsafe_button_param";
+  if (comps.some((c) => c.type === "HEADER" && c.format === "IMAGE") && !params.header?.image) return "missing_header_image";
+  return null;
 }
 
 /* نص القالب بعد التعويض — للعرض في صندوق المحادثات بدل «[قالب: …]». */
@@ -443,39 +421,21 @@ export function register(app, ctx, deps = {}) {
 
   /* ── البوت (ردود آلية) ─────────────────────────────────────────────────
      setBot({ matchIntent(text, ctx), buildReply(intent, ctx) }) — مثلاً wabot.js.
-     بيشتغل بس لو WHATSAPP_BOT_ENABLED=1، ومش على صدى، ومش على «إيقاف/ابدأ»،
-     و**بيسكت** WHATSAPP_BOT_HANDOFF_HOURS (افتراضي ١٢) ساعة بعد آخر رسالة
-     الكاشير بعتها من الموبايل للعميل ده (تسليم لإنسان). buildReply بيرجّع
-     جسم رسالة Cloud API واحد أو قايمة (من غير to/messaging_product — بنكمّلهم). */
-  let bot = null;
-  const setBot = (b) => { bot = b && typeof b.matchIntent === "function" && typeof b.buildReply === "function" ? b : null; };
-  const handoffHours = () => Math.max(0, Number(env("WHATSAPP_BOT_HANDOFF_HOURS", "12")) || 0);
-  async function humanActive(pn) {
-    if (!handoffHours()) return false;
+     ١٢/١٠: البوت بقى wabotrun.js وكل مفاتيحه من اللوحة (settings.waBot: الوضع off/dry/test/live، قايمة
+     أرقام التجربة، نافذة سكوت الموظف…) — مفيش WHATSAPP_BOT_ENABLED ولا WHATSAPP_BOT_HANDOFF_HOURS.
+     setBotRuntime(fn): fn(ev) بترجّع true لو البوت «ماسك» الرسالة (أي وضع غير off) ⇒ الرد الآلي القديم مايشتغلش.
+     setBot القديمة باقية بالاسم بس (مابتعملش حاجة) عشان أي كود قديم بيناديها مايقعش. */
+  let botRuntime = null;
+  const setBotRuntime = (fn) => { botRuntime = typeof fn === "function" ? fn : null; };
+  const setBot = () => {};
+  /* الكاشير رد من الموبايل (صدى) على العميل ده خلال آخر `hours` ساعة؟ — البوت والرد الآلي القديم بيسكتوا. */
+  async function humanActive(pn, hours = 12) {
+    const h = Math.max(0, Number(hours) || 0);
+    if (!h) return false;
     const r = await pool.query(
       `SELECT 1 FROM wa_messages WHERE phone_norm=$1 AND source='echo' AND created_at > NOW() - make_interval(hours => $2::int) LIMIT 1`,
-      [pn, handoffHours()]).catch(() => ({ rowCount: 0 }));
+      [pn, Math.ceil(h)]).catch(() => ({ rowCount: 0 }));
     return r.rowCount > 0;
-  }
-  async function runBot(ev) {
-    if (env("WHATSAPP_BOT_ENABLED") !== "1" || !bot || ev.isEcho || ev.intent || !ev.phone) return { skipped: "off" };
-    if (await humanActive(ev.phone)) return { skipped: "human_handoff" };
-    const ctx = { phone: ev.phone, text: ev.text, interactiveId: ev.interactiveId, referral: ev.referral, ts: ev.ts, store: STORE() };
-    const intent = await bot.matchIntent(ev.text, ctx);
-    if (!intent) return { skipped: "no_intent" };
-    const out = await bot.buildReply(intent, ctx);
-    const list = (Array.isArray(out) ? out : [out]).filter(Boolean);
-    let sent = 0;
-    for (const payload of list) {
-      if ((await gate())) break;
-      try {
-        const data = await graphPost(`${phoneId()}/messages`, { ...payload, messaging_product: "whatsapp", to: toWaId(ev.phone) });
-        await logOut({ wamid: data.messages?.[0]?.id || null, phone_norm: ev.phone, status: "accepted", source: "bot",
-          body: String(payload.text?.body || payload.interactive?.body?.text || `[${payload.type || "bot"}]`).slice(0, 500) });
-        sent++;
-      } catch (e) { console.error("[wa] bot reply:", e.message); break; }
-    }
-    return { intent, sent };
   }
 
   // التوكن: WHATSAPP_TOKEN لو اتحط، وإلا توكن مستخدم النظام الدائم (META_CAPI_TOKEN).
@@ -625,15 +585,24 @@ export function register(app, ctx, deps = {}) {
      source/body اختياريين: الحملات بتبعت نص القالب بعد التعويض عشان يظهر في
      المحادثة زي ما العميل شافه (مش «[قالب: …]»). */
   async function sendTemplate({ phoneNorm, template, params = {}, orderNo = null, stage = null, fallbackSms = null,
-    requireOptIn = true, source = null, body = null }) {
+    requireOptIn = true, source = null, body = null, lang = null, allowList = null }) {
     await ready;
     const t = TEMPLATES[template];
     if (!t) return { ok: false, error: "unknown_template" };
     const to = toWaId(phoneNorm);
     if (!to) return { ok: false, skipped: "invalid_phone" };
-    const blocked = await gate();
+    /* allowList (قايمة أرقام التجربة من اللوحة): إرسال تجربة للأرقام دي **بس** من غير فتح مفاتيح العملاء
+       (WHATSAPP_ENABLED / مفتاح اللوحة). أي رقم بره القايمة = not_in_allow_list من غير أي طلب شبكة. */
+    const blocked = Array.isArray(allowList) ? allowListGate(phoneNorm, allowList) : await gate();
     if (blocked) return { ok: false, skipped: blocked };
-    if (requireOptIn && t.category !== "AUTHENTICATION") {
+    const language = lang || t.language || "ar";
+    const bad = paramProblem(template, params, language);
+    if (bad) {
+      await logOut({ phone_norm: phoneNorm, template, category: t.category, order_no: orderNo, stage, status: "skipped",
+        error: `param:${bad}`.slice(0, 120), source });
+      return { ok: false, skipped: "missing_param", detail: bad };
+    }
+    if (requireOptIn && !Array.isArray(allowList) && t.category !== "AUTHENTICATION") {
       const o = await optInOf(phoneNorm);
       if (t.category === "UTILITY" && !o.updates) return { ok: false, skipped: "no_optin" };
       if (t.category === "MARKETING") {
@@ -643,7 +612,7 @@ export function register(app, ctx, deps = {}) {
     }
     const text = body || renderTemplateText(template, params) || null;
     try {
-      const data = await graphPost(`${phoneId()}/messages`, buildTemplatePayload(template, to, params));
+      const data = await graphPost(`${phoneId()}/messages`, buildTemplatePayload(template, to, params, language));
       const wamid = data.messages?.[0]?.id || null;
       await logOut({ wamid, phone_norm: phoneNorm, template, category: t.category, order_no: orderNo,
         stage, status: "accepted", fallback_sms: fallbackSms, source, body: text });
@@ -651,6 +620,31 @@ export function register(app, ctx, deps = {}) {
     } catch (e) {
       await logOut({ phone_norm: phoneNorm, template, category: t.category, order_no: orderNo, stage,
         status: "failed", error: String(e.code || e.message).slice(0, 120), source, body: text });
+      const code = Number(String(e.code || "").replace(/^WA_/, "")) || null;
+      return { ok: false, error: String(e.code || "send_failed"), code, message: String(e.message || "").slice(0, 200) };
+    }
+  }
+
+  const allowListGate = (phoneNorm, list) => (!configured() ? "unconfigured"
+    : (list || []).map((x) => String(x)).includes(String(phoneNorm)) ? null : "not_in_allow_list");
+
+  /* رسالة حرة بجسم Cloud API جاهز (نص / interactive) — للبوت. جوّه نافذة الـ٢٤ ساعة بس (المنادي مسؤول عنها).
+     allowList = وضع التجربة: للأرقام دي بس ومن غير مفاتيح العملاء. من غيرها = البوابة الكاملة (gate).
+     محاولة واحدة، مفيش إعادة. بيرجّع {ok, wamid?} أو {ok:false, skipped|error, code?, message?}. */
+  async function sendFreeform({ phoneNorm, payload, source = "bot", allowList = null, preview = null }) {
+    await ready;
+    const to = toWaId(phoneNorm);
+    if (!to) return { ok: false, skipped: "invalid_phone" };
+    if (!payload || !payload.type) return { ok: false, skipped: "bad_payload" };
+    const blocked = Array.isArray(allowList) ? allowListGate(phoneNorm, allowList) : await gate();
+    if (blocked) return { ok: false, skipped: blocked };
+    const text = String(preview || payload.text?.body || payload.interactive?.body?.text || `[${payload.type}]`).slice(0, 500);
+    try {
+      const data = await graphPost(`${phoneId()}/messages`, { ...payload, messaging_product: "whatsapp", recipient_type: "individual", to });
+      const wamid = data.messages?.[0]?.id || null;
+      await logOut({ wamid, phone_norm: phoneNorm, status: "accepted", source, body: text });
+      return { ok: true, wamid };
+    } catch (e) {
       const code = Number(String(e.code || "").replace(/^WA_/, "")) || null;
       return { ok: false, error: String(e.code || "send_failed"), code, message: String(e.message || "").slice(0, 200) };
     }
@@ -678,12 +672,19 @@ export function register(app, ctx, deps = {}) {
   async function sendOrderUpdate(order, stage, { fallbackSms = null } = {}) {
     const template = STAGE_TEMPLATES[stage];
     if (!template) return { ok: false, skipped: "no_template_for_stage" };
-    let name = "";
+    let row = {};
     try {
-      const r = await pool.query("SELECT customer->>'name' AS name FROM shop_orders WHERE order_no=$1", [order.order_no]);
-      name = String(r.rows[0]?.name || "").trim().split(/\s+/)[0] || "";
-    } catch { /* الاسم اختياري */ }
-    const params = TEMPLATES[template].bind({ ...order, name });
+      const r = await pool.query(
+        `SELECT customer->>'name' AS name, option, total, refund_id,
+                NULLIF(to_jsonb(shop_orders)->>'table_no','')::int AS table_no
+           FROM shop_orders WHERE order_no=$1`, [order.order_no]);
+      row = r.rows[0] || {};
+    } catch { /* الاسم اختياري؛ من غير الصف الحارس بيشتغل على اللي جاي من notify */ }
+    const o = { ...order, option: row.option ?? order.option, total: row.total ?? order.total, table_no: row.table_no ?? order.table_no ?? null,
+      refund_id: row.refund_id ?? order.refund_id ?? null, name: String(row.name || "").trim() };
+    const t = TEMPLATES[template];
+    if (typeof t.guard === "function" && !t.guard(o)) return { ok: false, skipped: "stage_not_applicable" };
+    const params = t.bind(o);
     return sendTemplate({ phoneNorm: order.phone_norm, template, params, orderNo: order.order_no, stage, fallbackSms });
   }
 
@@ -743,7 +744,11 @@ export function register(app, ctx, deps = {}) {
     const ev = { phone: pn, phoneNorm: pn, wamid: m.wamid, text: m.text || "", type: m.type, interactiveId: m.interactiveId || null,
       referral: m.referral || null, isEcho: false, ts: m.at, at: m.at, intent: m.intent, source: "api" };
     await emit("inbound", ev);
-    if (bot && env("WHATSAPP_BOT_ENABLED") === "1") { await runBot(ev).catch((e) => console.error("[wa] bot:", e.message)); return; }
+    if (botRuntime) {
+      let owned = false;
+      try { owned = (await botRuntime(ev)) === true; } catch (e) { console.error("[wa] bot:", e.message); owned = true; }
+      if (owned) return;   // البوت ماسك المحادثة (حتى لو قرر يسكت) — مفيش رد آلي قديم فوقه
+    }
     // الرد الآلي (إعلانات Click-to-WhatsApp وغيرها) — مفتاح منفصل، ببلاش جوّه النافذة،
     // وبيسكت لو الكاشير بيكلّم العميل من الموبايل (نفس قاعدة البوت).
     const cfg = (await getSettingsData().catch(() => ({})))?.notifications || {};
@@ -941,11 +946,15 @@ export function register(app, ctx, deps = {}) {
     try { b = await c.req.json(); } catch { /* الكل */ }
     /* من غير names = القوالب القديمة بس (زي الأول). قالب الكتالوج بيتقدّم بالاسم، **واحد في الطلب**:
        تقديمه قرار يدوي لكل قالب — مفيش ضغطة تقدّم الكتالوج كله، ومفيش حاجة بتتقدّم لوحدها. */
-    const asked = Array.isArray(b.names) && b.names.length ? b.names.map(String) : Object.keys(TEMPLATES).filter((n) => !isCatalogTemplate(n));
+    const asked = Array.isArray(b.names) && b.names.length ? b.names.map(String)
+      : Object.keys(TEMPLATES).filter((n) => !isCatalogTemplate(n) && !TEMPLATES[n].retired);
     const results = [];
     const jobs = [];
     for (const n of asked) {
       if (!TEMPLATES[n]) { results.push({ name: n, ok: false, error: "unknown" }); continue; }
+      // موقوف عن التقديم (سبب مكتوب في الكتالوج) أو متقاعد — مايتقدّمش إلا بـ force:true من المالك
+      const held = TEMPLATES[n].retired ? "retired" : (CAT.HOLD && CAT.HOLD[n]) || null;
+      if (held && b.force !== true) { results.push({ name: n, ok: false, error: "held", reason: held }); continue; }
       if (isCatalogTemplate(n) && asked.length > 1) { results.push({ name: n, ok: false, error: "catalog_one_at_a_time" }); continue; }
       const langs = isCatalogTemplate(n) ? templateLanguages(n).filter((l) => !b.language || l === String(b.language)) : [undefined];
       if (!langs.length) { results.push({ name: n, ok: false, error: "no_such_language" }); continue; }
@@ -968,6 +977,6 @@ export function register(app, ctx, deps = {}) {
     return c.json({ ok: true, results });
   });
 
-  return { sendTemplate, sendText, sendOrderUpdate, recordOptIn, gate, configured, masterOn, ready, setInbox,
-    on, processWebhook, token, phoneId, wabaId, setBot, runBot, humanActive };
+  return { sendTemplate, sendText, sendFreeform, sendOrderUpdate, recordOptIn, applyIntent, gate, configured, masterOn, ready, setInbox,
+    on, processWebhook, token, phoneId, wabaId, setBot, setBotRuntime, humanActive };
 }

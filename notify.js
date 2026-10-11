@@ -670,11 +670,23 @@ export function register(app, ctx, deps = {}) {
      التوصيل مالوش رسالة هنا: العميل بيسمع من المندوب («في الطريق»). */
   async function orderReady(orderNo) {
     const r = await pool.query(
-      "SELECT order_no, option, NULLIF(to_jsonb(shop_orders)->>'table_no','')::int AS table_no FROM shop_orders WHERE order_no=$1", [String(orderNo)]);
+      "SELECT order_no, phone_norm, option, total, NULLIF(to_jsonb(shop_orders)->>'table_no','')::int AS table_no FROM shop_orders WHERE order_no=$1", [String(orderNo)]);
     const o = r.rows[0];
     if (!o) return 0;
     const kind = orderKind(o);
     if (!READY_TEXT[kind]) return 0;
+    /* ١٢/١٠: قالب واتساب «جاهز للاستلام» (fc_order_ready_pickup) كان معرَّف ومالوش حد يبعته — «جاهز» بتيجي من هنا مش من
+       orderStatusChanged. لطلب الاستلام بس (حارس القالب بيرفض الطاولة والتوصيل)، وبنفس أقفال واتساب الأربعة. */
+    if (kind === "pickup" && wa && typeof wa.sendOrderUpdate === "function") {
+      try {
+        const cfg = (await getSettingsData()).notifications || {};
+        if (cfg.whatsappEnabled === true) {
+          const w = await wa.sendOrderUpdate(o, "pickup_ready");
+          if (w.skipped !== "no_template_for_stage") emitNotify(o.order_no, "pickup_ready", "whatsapp", w.ok === true,
+            w.ok ? {} : { error: String(w.skipped || w.error || "send_failed").slice(0, 60) });
+        }
+      } catch (e) { console.error(`[notify] WA ready failed for ${o.order_no}:`, e?.message); }
+    }
     return sendOrderPush(o.order_no, { stage: "ready", title: "فريش كاتس 🍔", body: READY_TEXT[kind](o),
       url: `${env("STOREFRONT_PUBLIC_URL", "https://freshcuts.sa").split(",")[0]}/track/${o.order_no}` });
   }

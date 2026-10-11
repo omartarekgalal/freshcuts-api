@@ -979,6 +979,8 @@ export function register(app, ctx, deps = {}) {
     }
     if (r.skipped) {
       if (r.skipped === "invalid_phone") { await pool.query("UPDATE wa_send_queue SET status='skipped', reason='invalid_number' WHERE id=$1", [q.id]); return { skipped: "invalid_number" }; }
+      // ١٢/١٠: متغيّر ناقص في القالب لهذا العميل (مثلاً مافيش «آخر طبق») ⇒ الصف ده يتخطّى بسببه، والباقي يكمل — مانبعتش نص ناقص ومانوقفش الحملة
+      if (r.skipped === "missing_param") { await pool.query("UPDATE wa_send_queue SET status='skipped', reason='missing_param' WHERE id=$1", [q.id]); return { skipped: "missing_param" }; }
       // البوابة اتقفلت في النص ⇒ يرجع للطابور ونقف الدورة
       await pool.query("UPDATE wa_send_queue SET status='pending', attempts=GREATEST(attempts-1,0) WHERE id=$1", [q.id]);
       return { halt: r.skipped };

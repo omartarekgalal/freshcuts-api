@@ -121,11 +121,12 @@ test("submit: one catalogue template by name goes to Meta with the catalogue's b
   assert.deepEqual(posts()[0].body, WT.submissionBody(WT.TEMPLATES.find((t) => t.name === "fc_winback_45")));
 }));
 
-test("submit: no names = the 11 built-ins only (as before) — the catalogue is never submitted in bulk", withEnv(WRITE, async () => {
+test("submit: no names = the built-ins only, minus the retired one — the catalogue is never submitted in bulk", withEnv(WRITE, async () => {
   const a = mkApp();
   const r = await a.call("POST", "/api/wa/templates/submit", {});
   const asked = r.body.results.map((x) => x.name);
-  assert.deepEqual(asked.sort(), BUILT_IN.slice().sort());
+  // 12/10: fc_cart_reminder is retired (never wired, never submitted; fc_cart_1h replaces it) and is not submitted
+  assert.deepEqual(asked.sort(), BUILT_IN.filter((n) => n !== "fc_cart_reminder").sort());
   assert.ok(a.posts().every((p) => BUILT_IN.includes(p.body.name)));
   // two catalogue names, or a catalogue name mixed with others, are refused: one decision per template
   const b = mkApp();

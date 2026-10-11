@@ -102,8 +102,11 @@ const ORDER_NO = { path: "order.order_no", label: "رقم الطلب", ex: "W179
 const FIRST_NAME = { path: "customer.name", label: "الاسم الأول (افتراضي «عميلنا»)", ex: "محمد", fmt: "firstName" };
 const TRACK = (text = "تتبّع الطلب") => url(text, `${STORE}/track/`, { path: "order.order_no", ex: "W1790012345678" });
 const CART = (text = "كمّل طلبك") => url(text, `${STORE}/c/`, { path: "cart.code", ex: "ab12cd34" });
-const LAND = (text = "اطلب الآن", ex = "wa-first") => url(text, `${STORE}/l/`, { path: "link.slug", ex });
-const COUPON_LINK = (text = "استخدم الكود") => url(text, `${STORE}/?c=`, { path: "coupon.code", ex: "WA-7K2Q" });
+const LAND = (text = "اطلب الآن", ex = "wa-first") => url(text, `${STORE}/l/`, { path: "link.suffix", ex });
+/* رابط الكوبون القديم (‎/?c=<code>) — مستعمل في fc_winback_45 بس: اعتُمد من ميتا بهذا الزر (١٢/١٠) وتعديل زره يرجّعه للمراجعة. */
+const COUPON_LINK = (text = "استخدم الكود") => url(text, `${STORE}/?c=`, { path: "coupon.code", ex: "WB-4Q7M" });
+/* كل قالب تسويقي ثاني: رابطنا المتتبَّع ‎/l/<slug>-<code> (cms.js يحسب الضغطة على صف المُرسَل إليه، وكوبونه الشخصي يركب في ‎?c=). */
+const TRACKED = (text, ex) => url(text, `${STORE}/l/`, { path: "link.suffix", ex });
 const MKT = { footer: OPTOUT_FOOTER };
 
 export const TEMPLATES = [
@@ -128,8 +131,8 @@ export const TEMPLATES = [
       fallbackSms: "order.accepted", existing: "whatsapp.js fc_order_preparing" } }),
 
   T({ name: "fc_order_ready_pickup", category: "UTILITY", group: "order",
-    body: "طلبك رقم {{1}} جاهز للاستلام ✅\nتقدر تستلمه من فرعنا في {{2}}، واعرض رقم الطلب على الكاشير.",
-    vars: [ORDER_NO, { path: "branch.area", label: "منطقة الفرع (من الإعدادات)", ex: "حي السلامة عند دوار رامي" }],
+    body: "طلبك رقم {{1}} جاهز للاستلام ✅\nتقدر تستلمه من فرع فريش كاتس في حي السلامة بجدة، واعرض رقم الطلب على الكاشير.",
+    vars: [ORDER_NO],
     buttons: [link("موقع الفرع", MAPS_URL)],
     meta: { purpose: "طلب استلام صار جاهز", trigger: "pos_ready_at لطلب option=pickup (أو pickupReadyMinutes بعد القبول)",
       stage: "pickup_ready", send: "auto", fallbackSms: "فريش كاتس: طلبك {order_no} جاهز للاستلام من الفرع", existing: "whatsapp.js fc_order_ready_pickup" } }),
@@ -168,8 +171,8 @@ export const TEMPLATES = [
       notes: "ما فيه وعد بدقائق — ما عندنا ETA حقيقي (لاجلك ما يرجّع ETA)" } }),
 
   T({ name: "fc_order_refunded", category: "UTILITY", group: "order",
-    body: "نعتذر منك، ما قدرنا ننفّذ طلبك رقم {{1}} وتم استرجاع مبلغ {{2}} ر.س كاملاً لوسيلة الدفع 💳\nيظهر المبلغ في حسابك حسب إجراءات البنك.",
-    vars: [ORDER_NO, { path: "order.total", label: "المبلغ المسترجع", ex: "86.50", fmt: "money" }],
+    body: "نعتذر منك، ما قدرنا ننفّذ طلبك رقم {{1}} وتم استرجاع المبلغ كاملاً لوسيلة الدفع 💳\nيظهر المبلغ في حسابك حسب إجراءات البنك.",
+    vars: [ORDER_NO],
     meta: { purpose: "الطلب اترفض والاسترجاع نجح", trigger: "حالة rejected_refunded", stage: "rejected_refunded",
       send: "auto", mandatory: true, fallbackSms: "order.rejected_refunded", existing: "whatsapp.js fc_order_refunded" } }),
 
@@ -214,12 +217,12 @@ export const TEMPLATES = [
       send: "auto-candidate", fallbackSms: "فريش كاتس: تذكير بطلبك المجدول {order_no}",
       notes: "settings.preorder.enabled=false حالياً — يشتغل لما يتفعّل" } }),
 
-  T({ name: "fc_waitlist_open", category: "UTILITY", group: "order",
-    body: "فتحنا الحين 🎉\nطلبت منّا نذكّرك أول ما يفتح المطعم، وسلتك محفوظة زي ما تركتها.",
-    buttons: [CART()],
+  T({ name: "fc_waitlist_open", category: "MARKETING", group: "order", ...MKT,
+    body: "فتحنا الحين 🎉\nطلبت منّا نذكّرك أول ما يفتح المطعم، وسلتك محفوظة مثل ما تركتها.",
+    buttons: [CART(), qr(OPTOUT_BUTTON)],
     meta: { purpose: "«نبّهني لما تفتحوا» — تنبيه طلبه العميل بنفسه", trigger: "openwait.js عند الفتح (نافذة openWindowMinutes)",
       send: "auto", reclassRisk: "medium", fallbackSms: "waitlist.open",
-      notes: "العميل طلب التنبيه ⇒ UTILITY. لو ميتا رفضت: نفس النص MARKETING مع فوتر الإيقاف" } }),
+      notes: "١٢/١٠: إرشادات ميتا تعدّ تذكير السلة/إعادة الاستهداف تسويقاً «حتى لو طلبه العميل» ⇒ MARKETING مع فوتر وزر الإيقاف" } }),
 
   /* ── ٢) الحساب والولاء ───────────────────────────────────────────────── */
   T({ name: "fc_welcome_account", category: "UTILITY", group: "account",
@@ -229,23 +232,23 @@ export const TEMPLATES = [
       send: "auto-candidate", fallbackSms: null } }),
 
   T({ name: "fc_loyalty_progress", category: "MARKETING", group: "account", ...MKT,
-    body: "باقي لك {{1}} طلبات وتحصل على {{2}} 🎁\nكل طلب من موقع فريش كاتس يقرّبك من مكافأتك.",
-    vars: [{ path: "loyalty.remaining", label: "الطلبات الباقية", ex: "2" }, { path: "loyalty.rewardText", label: "المكافأة (من cms.loyalty)", ex: "توصيل مجاني" }],
+    body: "باقي لك {{1}} وتحصل على {{2}} 🎁\nكل طلب من موقع فريش كاتس يقرّبك من مكافأتك.",
+    vars: [{ path: "loyalty.remainingText", label: "الباقي نصاً: «طلب واحد» / «طلبين» (لا رقم مجرّد)", ex: "طلب واحد" }, { path: "loyalty.rewardText", label: "المكافأة (من cms.loyalty)", ex: "توصيل مجاني" }],
     buttons: [LAND("اطلب الآن", "wa-loyalty"), qr(OPTOUT_BUTTON)],
     meta: { purpose: "تقدّم الولاء", trigger: "بعد كل طلب مدفوع لو cms.loyalty.enabled و remaining ≤ 2",
-      send: "auto-candidate", fallbackSms: null, notes: "cms.loyalty.enabled=false حالياً (every=5, reward=free_delivery)" } }),
+      send: "auto-candidate", fallbackSms: null, notes: "الولاء شغّال من ٥/١٠: كل ٣ طلبات = توصيل مجاني (حد أدنى ٦٠)" } }),
 
   T({ name: "fc_loyalty_reward", category: "MARKETING", group: "account", ...MKT,
     body: "مبروك {{1}} 🎉 وصلت لمكافأتك في فريش كاتس: {{2}}.\nكودك الخاص {{3}} صالح لين {{4}}، استخدمه في طلبك الجاي من الموقع.",
-    vars: [FIRST_NAME, { path: "loyalty.rewardText", label: "المكافأة", ex: "توصيل مجاني" },
-      { path: "coupon.code", label: "الكود الشخصي (cms_loyalty.coupon)", ex: "LOY-8F3K" }, { path: "coupon.expiresText", label: "تاريخ الانتهاء", ex: "12 أكتوبر" }],
-    buttons: [COUPON_LINK(), qr(OPTOUT_BUTTON)],
+    vars: [FIRST_NAME, { path: "loyalty.rewardText", label: "المكافأة", ex: "توصيل مجاني للطلبات من 60 ر.س" },
+      { path: "coupon.code", label: "الكود الشخصي (cms_loyalty.coupon)", ex: "LOY-8F3K" }, { path: "coupon.expiresText", label: "تاريخ الانتهاء", ex: "26 أكتوبر" }],
+    buttons: [TRACKED("استخدم الكود", "loy-ab12cd"), qr(OPTOUT_BUTTON)],
     meta: { purpose: "كوبون الولاء", trigger: "cms.js loyaltyRun يصدر كوبون", send: "auto", fallbackSms: "push/SMS الحالي في loyaltyRun" } }),
 
   T({ name: "fc_coupon_expiring", category: "MARKETING", group: "account", ...MKT,
     body: "تذكير لطيف: كودك {{1}} ينتهي {{2}} ⏳\nاستخدمه في طلبك من موقع فريش كاتس قبل ما يروح عليك.",
     vars: [{ path: "coupon.code", label: "الكود", ex: "LOY-8F3K" }, { path: "coupon.expiresText", label: "الانتهاء", ex: "بكرة" }],
-    buttons: [COUPON_LINK(), qr(OPTOUT_BUTTON)],
+    buttons: [TRACKED("استخدم الكود", "wa-coupon-ab12cd"), qr(OPTOUT_BUTTON)],
     meta: { purpose: "كوبون شخصي (ولاء/واتساب مرة وحدة) قرب ينتهي", trigger: "shop_coupons phone_norm غير فاضي، used_count=0، expires_at = بكرة",
       send: "auto-candidate", fallbackSms: null } }),
 
@@ -309,10 +312,10 @@ export const TEMPLATES = [
   T({ name: "fc_welcome_offer", category: "MARKETING", group: "marketing", ...MKT,
     body: "أهلاً {{1}} 👋 حيّاك في فريش كاتس.\nأول طلب لك من موقعنا توصيله مجاني بكود {{2}} للطلبات من {{3}} ر.س وأكثر داخل نطاق التوصيل.\nمشاوي على الفحم، كريبات، بيتزا وباستا نطبخها طازجة عند الطلب.",
     vars: [FIRST_NAME, { path: "coupon.code", label: "كود أول طلب (shop_coupons FIRST)", ex: "FIRST" },
-      { path: "coupon.min_total", label: "الحد الأدنى (shop_coupons.min_total)", ex: "40", fmt: "money" }],
+      { path: "coupon.min_total", label: "الحد الأدنى (shop_coupons.min_total)", ex: "60", fmt: "money" }],
     buttons: [LAND("اطلب الآن", "wa-first"), qr(OPTOUT_BUTTON)],
     meta: { purpose: "ترحيب بعرض أول طلب", trigger: "رقم جديد ما عنده طلب موقع مدفوع (identity.js) ووافق على التسويق",
-      send: "auto-candidate", fallbackSms: "حملة SMS w_recent_new", notes: "FIRST: free_delivery + once_per_customer + min 40 — لا يغطي رسوم المسافة البعيدة" } }),
+      send: "auto-candidate", fallbackSms: "حملة SMS w_recent_new", notes: "FIRST: free_delivery + once_per_customer + min 60 (من ٥/١٠)، لأول طلب توصيل — لا يغطي رسوم المسافة البعيدة" } }),
 
   T({ name: "fc_winback_21", category: "MARKETING", group: "marketing", ...MKT,
     body: "اشتقنا لك يا {{1}} 🔥\nصار لك فترة ما طلبت من فريش كاتس، ومشاوينا على الفحم تنتظرك. اطلب من موقعنا بأسعار المنيو الأصلية.",
@@ -322,30 +325,31 @@ export const TEMPLATES = [
 
   T({ name: "fc_winback_45", category: "MARKETING", group: "marketing", ...MKT,
     body: "اشتقنا لك يا {{1}} 🙌\nجهّزنا لك {{2}} على طلبك الجاي من موقع فريش كاتس بكود {{3}}، والكود صالح لين {{4}} لا يفوتك.",
-    vars: [FIRST_NAME, { path: "coupon.benefitText", label: "الميزة", ex: "خصم 10٪" },
-      { path: "coupon.code", label: "كود شخصي لمرة وحدة", ex: "WB-4Q7M" }, { path: "coupon.expiresText", label: "الانتهاء", ex: "5 أكتوبر" }],
+    vars: [FIRST_NAME, { path: "coupon.benefitText", label: "الميزة", ex: "توصيل مجاني" },
+      { path: "coupon.code", label: "كود شخصي لمرة وحدة", ex: "WB-4Q7M" }, { path: "coupon.expiresText", label: "الانتهاء", ex: "26 أكتوبر" }],
     buttons: [COUPON_LINK("اطلب بالكود"), qr(OPTOUT_BUTTON)],
-    meta: { purpose: "استرجاع ٤٥ يوم بكوبون شخصي", trigger: "آخر طلب قبل ٤٥–٨٩ يوم", send: "auto-candidate", fallbackSms: "w_lapsed" } }),
+    meta: { purpose: "استرجاع ٤٥ يوم بكوبون شخصي", trigger: "آخر طلب قبل ٤٥–٨٩ يوم", send: "auto-candidate", fallbackSms: "w_lapsed",
+      notes: "معتمد من ميتا ١٢/١٠ (id 2300518740740218) — النص والزر لا يتغيّران هنا (أي تعديل = مراجعة جديدة)" } }),
 
   T({ name: "fc_winback_90", category: "MARKETING", group: "marketing", ...MKT,
     body: "من زمان ما شفناك يا {{1}}!\nعشان ترجع تجرّبنا هذي هدية منّا: {{2}} على طلبك من الموقع بكود {{3}}. الكود لمرة وحدة وصالح لين {{4}} بس.",
     vars: [FIRST_NAME, { path: "coupon.benefitText", label: "الميزة", ex: "توصيل مجاني" },
-      { path: "coupon.code", label: "كود شخصي", ex: "WB-9Z2P" }, { path: "coupon.expiresText", label: "الانتهاء", ex: "5 أكتوبر" }],
-    buttons: [COUPON_LINK("اطلب بالكود"), qr(OPTOUT_BUTTON)],
+      { path: "coupon.code", label: "كود شخصي", ex: "WB-9Z2P" }, { path: "coupon.expiresText", label: "الانتهاء", ex: "26 أكتوبر" }],
+    buttons: [TRACKED("اطلب بالكود", "wa-wb90-ab12cd"), qr(OPTOUT_BUTTON)],
     meta: { purpose: "آخر محاولة استرجاع ٩٠ يوم", trigger: "آخر طلب قبل ٩٠–١٨٠ يوم (مرة وحدة)", send: "auto-candidate", fallbackSms: "w_last_call" } }),
 
   T({ name: "fc_vip_lapsed", category: "MARKETING", group: "marketing", ...MKT,
     body: "يا هلا {{1}} ⭐ أنت من أغلى عملائنا ولاحظنا غيابك من فترة.\nجهّزنا لك {{2}} بكود خاص فيك {{3}} صالح لين {{4}}، ونتمنى نشوف طلبك قريب.",
-    vars: [FIRST_NAME, { path: "coupon.benefitText", label: "الميزة", ex: "خصم 15٪" },
-      { path: "coupon.code", label: "كود شخصي", ex: "VIP-3H8D" }, { path: "coupon.expiresText", label: "الانتهاء", ex: "10 أكتوبر" }],
-    buttons: [COUPON_LINK("اطلب بالكود"), qr(OPTOUT_BUTTON)],
+    vars: [FIRST_NAME, { path: "coupon.benefitText", label: "الميزة", ex: "توصيل مجاني" },
+      { path: "coupon.code", label: "كود شخصي", ex: "VIP-3H8D" }, { path: "coupon.expiresText", label: "الانتهاء", ex: "26 أكتوبر" }],
+    buttons: [TRACKED("اطلب بالكود", "wa-vip-ab12cd"), qr(OPTOUT_BUTTON)],
     meta: { purpose: "VIP غايب", trigger: "أعلى ١٠٪ إنفاق (customer360) وآخر طلب قبل ≥٣٠ يوم", send: "manual", fallbackSms: null } }),
 
   T({ name: "fc_fav_dish", category: "MARKETING", group: "marketing", ...MKT,
     body: "مشتهي {{1}} اليوم؟ 😋\nطلبته منّا قبل، وهو متوفر الحين بـ{{2}} ر.س في موقع فريش كاتس. اطلبه بضغطة ويوصلك حار.",
     vars: [{ path: "dish.name", label: "الطبق المفضّل (أكثر صنف طلبه — من المنيو الحي فقط)", ex: "وجبة ميكس جريل" },
       { path: "dish.price", label: "السعر الحي من /api/menu", ex: "37", fmt: "money" }],
-    buttons: [url("اطلبه الآن", `${STORE}/`, { path: "dish.linkSuffix", ex: "?utm_source=whatsapp#item-18" }), qr(OPTOUT_BUTTON)],
+    buttons: [TRACKED("اطلبه الآن", "wa-fav-ab12cd"), qr(OPTOUT_BUTTON)],
     meta: { purpose: "توصية بالطبق المفضّل", trigger: "ts_order_items/shop_orders — الصنف الأكثر للعميل، بشرط موجود في المنيو الحي ومش «خلص»",
       send: "auto-candidate", fallbackSms: null, notes: "الحارس: لو الصنف مش في المنيو الحي أو السعر اختلف ⇒ لا ترسل" } }),
 
@@ -354,7 +358,7 @@ export const TEMPLATES = [
     vars: [{ path: "item.name", label: "اسم الصنف (المنيو الحي)", ex: "طاسة كرانشي" },
       { path: "item.description", label: "الوصف من المنيو ≤120", ex: "طاسة جبن مع سترِبس دجاج ورومي مدخن" },
       { path: "item.price", label: "السعر الحي", ex: "38", fmt: "money" }],
-    buttons: [url("اطلبه الآن", `${STORE}/`, { path: "item.linkSuffix", ex: "?utm_source=whatsapp#item-50" }), qr(OPTOUT_BUTTON)],
+    buttons: [TRACKED("اطلبه الآن", "wa-new-ab12cd"), qr(OPTOUT_BUTTON)],
     meta: { purpose: "إطلاق صنف جديد (صورة)", trigger: "يدوي من اللوحة عند إضافة صنف", send: "manual", fallbackSms: null,
       notes: "الصورة: صورة الصنف الحقيقية من المنيو (قرار ١٨/٩: بدون نص/سعر داخل الصورة)" } }),
 
@@ -362,15 +366,15 @@ export const TEMPLATES = [
     body: "عرض نهاية الأسبوع في فريش كاتس 🎉\n{{1}} بـ{{2}} ر.س، والعرض لين {{3}} فقط. اطلبه من الموقع للتوصيل أو الاستلام.",
     vars: [{ path: "offer.title", label: "عنوان العرض (offer_registry)", ex: "باقة تجمّع ٤–٦ أشخاص" },
       { path: "offer.price", label: "السعر", ex: "225", fmt: "money" }, { path: "offer.untilText", label: "آخر يوم", ex: "السبت" }],
-    buttons: [url("شوف العرض", `${STORE}/?offer=`, { path: "offer.id", ex: "gathering_4" }), qr(OPTOUT_BUTTON)],
+    buttons: [TRACKED("شوف العرض", "wa-weekend-ab12cd"), qr(OPTOUT_BUTTON)],
     meta: { purpose: "عرض الويكند (صورة)", trigger: "الخميس ١٦:٠٠ لعرض شغّال في offer_registry (enabled + التاريخ + قناة delivery)",
       send: "manual", fallbackSms: null, notes: "offers-cache-chain: تأكد العرض enabled في offer_registry مو بس الباقة" } }),
 
   T({ name: "fc_bundle_offer", category: "MARKETING", group: "marketing", ...MKT, header: { image: true },
     body: "لمّة الأهل والأصحاب؟ 🍢\n{{1}} بـ{{2}} ر.س وفيها {{3}}.\nاطلبها من الموقع للتوصيل أو الاستلام.",
     vars: [{ path: "offer.title", label: "اسم الباقة", ex: "باقة تجمّع ٨–١٠ أشخاص" }, { path: "offer.price", label: "السعر", ex: "395", fmt: "money" },
-      { path: "offer.line", label: "المحتوى (extra.copy.line)", ex: "٣ كيلو مشاوي ودجاجة كاملة على الفحم مع الأرز والبطاطس والكولسلو و٨ مشروبات" }],
-    buttons: [url("كوّن الباقة", `${STORE}/?offer=`, { path: "offer.id", ex: "gathering_8" }), qr(OPTOUT_BUTTON)],
+      { path: "offer.line", label: "المحتوى — وصف الباقة كما هو في اللوحة (cms_bundles.description)", ex: "مشاوي على الفحم مع الأرز والبطاطس والكولسلو والمشروبات" }],
+    buttons: [TRACKED("كوّن الباقة", "wa-bundle-ab12cd"), qr(OPTOUT_BUTTON)],
     meta: { purpose: "عرض الباقات/البوكس (صورة)", trigger: "يدوي أو شريحة «طلبات كبيرة»", send: "manual", fallbackSms: null,
       notes: "المحتوى من offer_registry كما هو — لا نضيف عدد أشخاص لأي صنف بالوزن («مشكل مخصوص» خصوصاً)" } }),
 
@@ -386,44 +390,44 @@ export const TEMPLATES = [
     meta: { purpose: "سلة متروكة — الخطوة ٢ (عميل قديم)", trigger: "carts.js sms2 (تاني يوم ١٧:٠٠، سلة ≥ ٦٠)", send: "auto", fallbackSms: "cart.sms2" } }),
 
   T({ name: "fc_cart_24h_first", category: "MARKETING", group: "marketing", ...MKT,
-    body: "لسا طلبك ينتظرك في سلة فريش كاتس 😋\nوبما إنه أول طلب لك من الموقع، التوصيل مجاني بكود {{1}} داخل نطاق التوصيل.",
-    vars: [{ path: "coupon.code", label: "كود أول طلب", ex: "FIRST" }],
+    body: "لسا طلبك ينتظرك في سلة فريش كاتس 😋\nوبما إنه أول طلب لك من الموقع، التوصيل مجاني بكود {{1}} للطلبات من {{2}} ر.س وأكثر داخل نطاق التوصيل.",
+    vars: [{ path: "coupon.code", label: "كود أول طلب", ex: "FIRST" }, { path: "coupon.min_total", label: "الحد الأدنى (shop_coupons.min_total)", ex: "60", fmt: "money" }],
     buttons: [CART(), qr(OPTOUT_BUTTON)],
     meta: { purpose: "سلة متروكة — الخطوة ٢ (عميل جديد)", trigger: "carts.js sms2_first", send: "auto", fallbackSms: "cart.sms2_first" } }),
 
   T({ name: "fc_birthday", category: "MARKETING", group: "marketing", ...MKT,
     body: "كل عام وأنت بخير يا {{1}} 🎂\nهديتك من فريش كاتس: {{2}} بكود {{3}}، صالح لين {{4}} على طلبك من الموقع.",
     vars: [FIRST_NAME, { path: "coupon.benefitText", label: "الهدية", ex: "توصيل مجاني" },
-      { path: "coupon.code", label: "كود شخصي", ex: "BD-6T1R" }, { path: "coupon.expiresText", label: "الانتهاء", ex: "نهاية الأسبوع" }],
-    buttons: [COUPON_LINK("استخدم الهدية"), qr(OPTOUT_BUTTON)],
+      { path: "coupon.code", label: "كود شخصي", ex: "BD-6T1R" }, { path: "coupon.expiresText", label: "الانتهاء", ex: "26 أكتوبر" }],
+    buttons: [TRACKED("استخدم الهدية", "wa-bd-ab12cd"), qr(OPTOUT_BUTTON)],
     meta: { purpose: "عيد ميلاد (قالب جاهز)", trigger: "لا يوجد تاريخ ميلاد في بياناتنا حالياً — placeholder", send: "manual", fallbackSms: null,
       needsOmar: "هل نجمع تاريخ الميلاد؟" } }),
 
   T({ name: "fc_occasion", category: "MARKETING", group: "marketing", ...MKT, header: { image: true },
     body: "بمناسبة {{1}} نقول لك كل عام وأنت بخير 🎉\nجهّزنا لك {{2}} على طلبك من موقع فريش كاتس لين {{3}}.",
-    vars: [{ path: "occasion.name", label: "المناسبة", ex: "اليوم الوطني" }, { path: "occasion.offerText", label: "العرض (من offer_registry)", ex: "كيلو مشاوي بـ96 ر.س" },
-      { path: "occasion.untilText", label: "آخر يوم", ex: "30 سبتمبر" }],
-    buttons: [url("اطلب الآن", `${STORE}/l/`, { path: "link.slug", ex: "wa-occasion" }), qr(OPTOUT_BUTTON)],
+    vars: [{ path: "occasion.name", label: "المناسبة", ex: "اليوم الوطني" }, { path: "occasion.offerText", label: "العرض (من offer_registry — عرض شغّال فعلاً)", ex: "توصيل مجاني للطلبات من 60 ر.س" },
+      { path: "occasion.untilText", label: "آخر يوم", ex: "26 أكتوبر" }],
+    buttons: [TRACKED("اطلب الآن", "wa-occasion"), qr(OPTOUT_BUTTON)],
     meta: { purpose: "مناسبة وطنية/موسمية عامة", trigger: "يدوي", send: "manual", fallbackSms: null,
       notes: "اليوم الوطني: الهوية الرسمية (saudi-national-day-identity). رمضان/العيد: نفس القالب" } }),
 
   T({ name: "fc_review_thanks_coupon", category: "MARKETING", group: "marketing", ...MKT,
     body: "شكراً {{1}} على ملاحظتك لفريش كاتس 🙏\nكلامك يوصل للفريق كامل، وهذي هدية بسيطة لطلبك الجاي: {{2}} بكود {{3}} على طلبك من الموقع.",
-    vars: [FIRST_NAME, { path: "coupon.benefitText", label: "الهدية", ex: "خصم 10٪" }, { path: "coupon.code", label: "كود شخصي", ex: "TY-2M5W" }],
-    buttons: [COUPON_LINK("استخدم الهدية"), qr(OPTOUT_BUTTON)],
+    vars: [FIRST_NAME, { path: "coupon.benefitText", label: "الهدية", ex: "توصيل مجاني" }, { path: "coupon.code", label: "كود شخصي", ex: "TY-2M5W" }],
+    buttons: [TRACKED("استخدم الهدية", "wa-ty-ab12cd"), qr(OPTOUT_BUTTON)],
     meta: { purpose: "شكر على الملاحظة الداخلية", trigger: "يدوي من صندوق التقييمات بعد حل المشكلة", send: "manual", fallbackSms: null,
       notes: "للملاحظات الداخلية بس — لا ترسله مقابل تقييم جوجل (سياسة جوجل تمنع الحوافز)" } }),
 
   T({ name: "fc_referral_invite", category: "MARKETING", group: "marketing", ...MKT,
     body: "يا هلا {{1}} 👋 عندك صديق يحب المشاوي؟\nشارك معه كودك {{2}} ويحصل على {{3}} في أول طلب له من موقع فريش كاتس.",
-    vars: [FIRST_NAME, { path: "referral.code", label: "كود السفير (batches)", ex: "AMB-OMAR" }, { path: "referral.benefitText", label: "ميزة الصديق", ex: "خصم 15٪" }],
-    buttons: [url("انسخ رابطك", `${STORE}/?c=`, { path: "referral.code", ex: "AMB-OMAR" }), qr(OPTOUT_BUTTON)],
+    vars: [FIRST_NAME, { path: "referral.code", label: "كود السفير (batches)", ex: "AMB-OMAR" }, { path: "referral.benefitText", label: "ميزة الصديق", ex: "توصيل مجاني" }],
+    buttons: [TRACKED("افتح رابطك", "wa-ref-ab12cd"), qr(OPTOUT_BUTTON)],
     meta: { purpose: "دعوة صديق / سفير", trigger: "يدوي أو بعد ٣ طلبات ناجحة", send: "manual", fallbackSms: null,
       needsOmar: "برنامج الإحالة — المكافأة وقواعدها" } }),
 
   T({ name: "fc_try_website", category: "MARKETING", group: "marketing", ...MKT,
     body: "شكراً إنك اخترت فريش كاتس 🙏\nتقدر الحين تطلب مباشرة من موقعنا بأسعار المنيو الأصلية، وأول طلب توصيله مجاني بكود {{1}} للطلبات من {{2}} ر.س وأكثر.",
-    vars: [{ path: "coupon.code", label: "كود أول طلب", ex: "FIRST" }, { path: "coupon.min_total", label: "الحد الأدنى", ex: "40", fmt: "money" }],
+    vars: [{ path: "coupon.code", label: "كود أول طلب", ex: "FIRST" }, { path: "coupon.min_total", label: "الحد الأدنى", ex: "60", fmt: "money" }],
     buttons: [LAND("جرّب الموقع", "wa-site"), qr(OPTOUT_BUTTON)],
     meta: { purpose: "تحويل عملاء الصالة/التطبيقات للموقع", trigger: "رقم له طلبات POS/كيتا وما له طلب موقع (O6 app segments)",
       send: "auto-candidate", fallbackSms: "k_app_* waves", notes: "لا «أرخص من التطبيقات» — الحارس مقفول" } }),
@@ -431,22 +435,22 @@ export const TEMPLATES = [
   T({ name: "fc_one_time_coupon", category: "MARKETING", group: "marketing", ...MKT,
     body: "يا هلا {{1}} 🎁\nهذا كود خاص فيك لمرة وحدة {{2}} ويعطيك {{3}} على طلبك من موقع فريش كاتس، صالح لين {{4}} فقط.",
     vars: [FIRST_NAME, { path: "coupon.code", label: "كود مقفول على الجوال (shop_coupons.phone_norm)", ex: "WA-7K2Q" },
-      { path: "coupon.benefitText", label: "الميزة", ex: "خصم 15٪" }, { path: "coupon.expiresText", label: "الانتهاء", ex: "3 أكتوبر" }],
-    buttons: [COUPON_LINK(), qr(OPTOUT_BUTTON)],
+      { path: "coupon.benefitText", label: "الميزة", ex: "توصيل مجاني" }, { path: "coupon.expiresText", label: "الانتهاء", ex: "26 أكتوبر" }],
+    buttons: [TRACKED("استخدم الكود", "wa-otc-ab12cd"), qr(OPTOUT_BUTTON)],
     meta: { purpose: "كوبون شخصي لمرة وحدة", trigger: "wasender.js عروض واتساب (مرة لكل عميل)", send: "auto-candidate", fallbackSms: null } }),
 
   /* ── ٥) إعلانات «راسلنا على واتساب» ─────────────────────────────────── */
   T({ name: "fc_ad_lead_followup", category: "MARKETING", group: "ads", ...MKT,
-    body: "أهلاً {{1}} 👋 تواصلت معنا من إعلان فريش كاتس.\nالمنيو كامل بأسعاره في موقعنا، وأول طلب توصيله مجاني بكود {{2}} داخل نطاق التوصيل.",
-    vars: [FIRST_NAME, { path: "coupon.code", label: "كود أول طلب", ex: "FIRST" }],
+    body: "أهلاً {{1}} 👋 تواصلت معنا من إعلان فريش كاتس.\nالمنيو كامل بأسعاره في موقعنا، وأول طلب توصيله مجاني بكود {{2}} للطلبات من {{3}} ر.س وأكثر داخل نطاق التوصيل.",
+    vars: [FIRST_NAME, { path: "coupon.code", label: "كود أول طلب", ex: "FIRST" }, { path: "coupon.min_total", label: "الحد الأدنى (shop_coupons.min_total)", ex: "60", fmt: "money" }],
     buttons: [LAND("شوف المنيو", "wa-ad"), qr(OPTOUT_BUTTON)],
     meta: { purpose: "متابعة عميل إعلان ما طلب (بعد قفل نافذة ٢٤ ساعة)", trigger: "wa conversation بـreferral، بدون طلب خلال ٢٤–٤٨ ساعة",
       send: "auto-candidate", fallbackSms: null } }),
 
   T({ name: "fc_ad_lead_last_call", category: "MARKETING", group: "ads", ...MKT,
     body: "آخر تذكير منّا يا {{1}} 😊\nعرض {{2}} لسا شغّال لين {{3}}، ولو عندك أي سؤال ردّ هنا ونخدمك.",
-    vars: [FIRST_NAME, { path: "offer.title", label: "العرض الشغّال", ex: "باقة تجمّع ٤–٦ أشخاص" }, { path: "offer.untilText", label: "آخر يوم", ex: "15 أكتوبر" }],
-    buttons: [url("شوف العرض", `${STORE}/?offer=`, { path: "offer.id", ex: "gathering_4" }), qr(OPTOUT_BUTTON)],
+    vars: [FIRST_NAME, { path: "offer.title", label: "العرض الشغّال", ex: "باقة تجمّع ٤–٦ أشخاص" }, { path: "offer.untilText", label: "آخر يوم", ex: "26 أكتوبر" }],
+    buttons: [TRACKED("شوف العرض", "wa-ad2-ab12cd"), qr(OPTOUT_BUTTON)],
     meta: { purpose: "آخر محاولة لعميل الإعلان", trigger: "بعد ٧٢ ساعة من fc_ad_lead_followup بدون طلب — مرة وحدة", send: "auto-candidate", fallbackSms: null } }),
 ];
 
@@ -460,17 +464,31 @@ function staffPair(name, texts, vars, meta, buttonsEn = [link("Open portal", POR
   ];
 }
 
-/* أول ٨ نقدّمهم لميتا (الأثر الأكبر × أقل مخاطرة تصنيف) — مرتبين */
-export const RECOMMENDED_FIRST = [
-  "fc_otp",                 // يقلّل تكلفة SMS الرمز ويوصل أضمن
-  "fc_order_received",      // أول لمسة بعد الدفع
-  "fc_order_on_the_way",    // الرسالة الوحيدة المفعّلة SMS اليوم
-  "fc_order_delivered",     // يفتح نافذة الـ٢٤ ساعة للملاحظات
-  "fc_order_refunded",      // إجباري (فلوس العميل)
-  "fc_staff_new_order",     // يغني عن SMS المدير
-  "fc_cart_1h",             // أعلى عائد تسويقي (سلة جاهزة)
-  "fc_welcome_offer",       // FIRST — تحويل عملاء الإعلان/التطبيقات
-];
+/* ── مراجعة ١٢/١٠/٢٠٢٦ (كل القوالب، قبل التقديم) ─────────────────────────────
+   HOLD = قوالب **لا تُقدَّم** لميتا الآن، وكل واحد بسببه. مسار التقديم (whatsapp.js) يرفضها بـ«held»
+   إلا بـ force:true من المالك. الباقي يتقدّم على دفعات SUBMIT_BATCHES بالترتيب، واحد في الطلب. */
+export const HOLD = Object.freeze({
+  fc_birthday: "لا يوجد تاريخ ميلاد في بياناتنا — لا شيء يطلقه",
+  fc_referral_invite: "برنامج الإحالة غير معرَّف (المكافأة والقواعد) — النص يعد بميزة لا يصدرها النظام",
+  fc_order_cancelled: "لا يوجد مسار إلغاء بطلب العميل يسترجع المبلغ آلياً — النص يقول «يرجع لوسيلة الدفع»",
+  fc_payment_failed: "تذكير بسلة بعد فشل الدفع = إعادة استهداف (تسويق عند ميتا)، وfc_cart_1h يغطيه",
+  fc_address_confirm: "لا يوجد في البورتال ما يرسله ولا ما يعالج ردّي الزرّين",
+  fc_scheduled_reminder: "الطلب المسبق مقفول (settings.preorder.enabled=false)",
+  fc_welcome_account: "ترحيب بعد التسجيل بزر «فتح الموقع» — حدّه رمادي بين الخدمي والتسويقي، وغير مربوط بمُرسل",
+  fc_ad_lead_last_call: "يحتاج عرضاً له تاريخ انتهاء؛ البوكسات بلا تاريخ انتهاء — لا شيء صادق يُكتب في المتغيّرين",
+});
+
+/* دفعات التقديم بالأولوية. الدفعة ١ = قائمة «أول ٨» الأصلية. */
+export const SUBMIT_BATCHES = Object.freeze([
+  ["fc_otp", "fc_order_received", "fc_order_on_the_way", "fc_order_delivered", "fc_order_refunded", "fc_staff_new_order", "fc_cart_1h", "fc_welcome_offer"],
+  ["fc_order_preparing", "fc_order_ready_pickup", "fc_refund_in_progress", "fc_cart_24h", "fc_cart_24h_first", "fc_loyalty_reward", "fc_winback_21", "fc_review_request"],
+  ["fc_staff_sla_alert", "fc_staff_courier_issue", "fc_staff_pos_failed", "fc_staff_wa_handoff", "fc_staff_low_rating", "fc_staff_checkout_watchdog", "fc_staff_daily_summary"],
+  ["fc_order_delayed", "fc_courier_assigned", "fc_payment_received", "fc_waitlist_open", "fc_loyalty_progress", "fc_coupon_expiring", "fc_try_website", "fc_ad_lead_followup"],
+  ["fc_winback_90", "fc_vip_lapsed", "fc_one_time_coupon", "fc_review_thanks_coupon", "fc_fav_dish"],
+  // بصورة: يحتاج sampleImageUrl وقت التقديم
+  ["fc_new_item", "fc_weekend_offer", "fc_bundle_offer", "fc_occasion"],
+]);
+export const RECOMMENDED_FIRST = SUBMIT_BATCHES[0];
 
 /* ═══ أدوات ══════════════════════════════════════════════════════════════ */
 export const bodyOf = (t) => (t.components.find((c) => c.type === "BODY") || {}).text || "";
@@ -510,6 +528,8 @@ export function validateTemplate(t) {
   const ex = body?.example?.body_text?.[0] || [];
   if (nums.length && ex.length !== uniq.length) e.push(`أمثلة المتغيّرات ${ex.length} ≠ ${uniq.length}`);
   if (ex.some((v) => !String(v).trim() || /[\n\t]|\s{4,}/.test(String(v)))) e.push("مثال متغيّر فاضي أو فيه سطر جديد");
+  // ميتا ترفض # و $ و % داخل قيمة المثال (سبب رفض موثّق)، و«٪» نتجنّبها معها
+  if (ex.some((v) => /[#$%٪]/.test(String(v)))) e.push("مثال متغيّر فيه # أو $ أو %");
   // ميتا ترفض النص اللي متغيّراته كثيرة بالنسبة لطوله
   const words = text.replace(/\{\{\d+\}\}/g, " ").split(/\s+/).filter(Boolean).length;
   if (uniq.length && words < uniq.length * 3) e.push("نسبة المتغيّرات للنص عالية");
@@ -537,6 +557,10 @@ export function validateTemplate(t) {
       if (vn.length > 1 || (vn.length && vn[0] !== 1)) e.push("الرابط: متغيّر واحد {{1}} فقط");
       if (vn.length && !/\{\{1\}\}$/.test(b.url)) e.push("الرابط: {{1}} لازم في الآخر");
       if (vn.length && !(Array.isArray(b.example) && /^https:\/\//.test(b.example[0] || ""))) e.push("الرابط: مثال كامل مطلوب");
+      // لاحقة الرابط = حروف رابط آمنة فقط (ميتا تطلب ترميز أي رمز خاص؛ ? و # و = لا تدخل في المتغيّر)
+      if (vn.length && Array.isArray(b.example) && !/^[A-Za-z0-9._~-]+$/.test(String(b.example[0] || "").slice(b.url.replace("{{1}}", "").length))) e.push("الرابط: لاحقة المثال فيها رموز غير آمنة");
+      // التسويق: الرابط لازم رابطنا المتتبَّع /l/ أو رابط السلة /c/ (والاستثناء الوحيد fc_winback_45 المعتمد بزر ‎?c=)
+      if (t.category === "MARKETING" && t.name !== "fc_winback_45" && !/^https:\/\/freshcuts\.sa\/(l|c)\/\{\{1\}\}$/.test(b.url)) e.push(`التسويق: رابط غير متتبَّع ${b.url}`);
     }
   }
   // ترتيب الأزرار: ميتا تطلب تجميع الردود السريعة مع بعض والـCTA مع بعض
@@ -571,6 +595,7 @@ function fmtVal(v, fmt) {
     return w.length >= 2 && w.length <= 20 ? w : "عميلنا";
   }
   if (fmt === "money") {
+    if (v == null || String(v).trim() === "") return "";   // مبلغ ناقص = متغيّر ناقص (Number("") = 0 كان يطلع «0 ر.س»)
     const n = Number(v);
     return Number.isFinite(n) ? (Number.isInteger(n) ? String(n) : n.toFixed(2)) : "";
   }
@@ -584,7 +609,7 @@ export function bindTemplate(t, data = {}) {
   const missing = [];
   if (t.category === "AUTHENTICATION") {
     const code = cleanParam(getPath(data, "otp.code"));
-    if (!code) missing.push("otp.code");
+    if (!/^[A-Za-z0-9]{1,15}$/.test(code)) missing.push("otp.code");   // ميتا: الرمز ١٥ خانة كحد أقصى
     return { body: [code], buttons: [{ index: 0, sub_type: "url", text: code }], missing };
   }
   const body = (t.meta.vars || []).map((v) => {
@@ -598,7 +623,7 @@ export function bindTemplate(t, data = {}) {
     if (b.type !== "URL" || !/\{\{1\}\}/.test(b.url)) return;
     const bv = (t.meta.buttonVars || []).find((x) => x.button === b.text);
     const s = cleanParam(getPath(data, bv?.path), 2000);
-    if (!s) missing.push(bv?.path || `button:${index}`);
+    if (!s || !/^[A-Za-z0-9._~-]+$/.test(s)) missing.push(bv?.path || `button:${index}`);
     buttons.push({ index, sub_type: "url", text: s });
   });
   return { body, buttons, missing };
