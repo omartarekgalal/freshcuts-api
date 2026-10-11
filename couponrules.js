@@ -22,6 +22,22 @@ export const isFirstCode = (code) => String(code || "").trim().toUpperCase() ===
 export const isPureFreeDelivery = (cp) => Boolean(cp) && cp.free_delivery === true && !(Number(cp.percent) > 0);
 
 /* «اتستخدم قبل كده» على الرقم ده. pureFree ⇒ طلبات التوصيل بس. */
+/* C1 (١٢/١٠) — كود على طلب استلام/طاولة: كود التوصيل المجاني الصِرف (FIRST مثلاً) لا قيمة له هناك.
+   • غير صالح للرقم (سبق استخدامه…) ⇒ لا نوقف الطلب بسببه.
+   • صالح ⇒ لا نسجّله على الطلب (وإلا احترق «مرة لكل عميل» وخسره العميل لأول طلب توصيل فعلي).
+   في الحالتين الطلب يكمل بلا كود، والرد يقول ذلك (couponIgnored) — الإجمالي لا يتغيّر: الاستلام بلا رسوم توصيل.
+   أي كود آخر (نسبة، أو مكتوب خطأ) يبقى كما هو: الصالح يُطبَّق وغير الصالح يُرفض.
+   طلب التوصيل لا يمرّ من هنا: هناك تجاهل الكود يغيّر المبلغ المدفوع، فالرفض (coupon_*) هو ما يُري العميل الرقم الجديد قبل الدفع.
+   coupon = نتيجة checkCoupon (أو null). يرجّع { coupon, ignored }. */
+export function nonDeliveryCoupon(coupon, { option, pureFree, code, table = false } = {}) {
+  if (!coupon || option === "delivery") return { coupon: coupon || null, ignored: null };
+  const where = table ? "table" : "pickup";
+  const name = String(coupon.code || code || "").trim().toUpperCase();
+  if (!coupon.ok && pureFree) return { coupon: null, ignored: { code: name, reason: "free_delivery_code_on_" + where, error: coupon.error || null } };
+  if (coupon.ok && coupon.freeDelivery === true && !(Number(coupon.percent) > 0)) return { coupon: null, ignored: { code: name, reason: "free_delivery_code_on_" + where, error: null } };
+  return { coupon, ignored: null };
+}
+
 export const usedOnceSql = (pureFree) =>
   `SELECT 1 FROM shop_orders
     WHERE coupon=$1 AND phone_norm=$2 AND status NOT IN ('pending_payment','expired')

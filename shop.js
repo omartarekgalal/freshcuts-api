@@ -51,7 +51,7 @@ import {
 } from "./checkout-meta.js";
 import { resumeKey } from "./resume-key.js";
 import { freeBarCfg } from "./freebar.js";
-import { evaluateCoupon, couponQueries, isPureFreeDelivery } from "./couponrules.js";
+import { evaluateCoupon, couponQueries, isPureFreeDelivery, nonDeliveryCoupon } from "./couponrules.js";
 import { recordCheckoutConsent } from "./consent.js";
 import { makeNameResolver } from "./product-names.js";
 import { tableSessionForCheckout, tableGate, touchTableSession, tableCfg, tableBusy, TABLE_MSG, posOptionOf, tableNote, tableWho, tableTrackLabel, cleanCustomerText } from "./table-order.js";
@@ -1071,16 +1071,22 @@ export function register(app, ctx, deps = {}) {
     }
 
     // Coupon first — the discount changes every number after it.
-    let coupon = null;
+    let coupon = null, couponIgnored = null;
     if (b.coupon) {
       // subtotal check happens against the raw cart estimate; the authoritative
       // re-check against real totals comes right after the first calc.
       coupon = await checkCoupon(b.coupon, Number.MAX_SAFE_INTEGER, phoneNorm);
       /* كود توصيل مجاني صِرف على استلام/طاولة مالوش قيمة — حتى لو مش صالح
          للرقم ده (مثلاً FIRST لحد طلب توصيل قبل كده) مانوقفش الطلب عشانه. */
-      if (coupon && !coupon.ok && option !== "delivery" && (await isPureFreeCode(b.coupon))) {
-        console.log(`[shop] invalid free-delivery code ignored on a ${tableSid ? "table" : "pickup"} order (${coupon.error})`);
-        coupon = null;
+      /* C1 (١٢/١٠): نفس القاعدتين في دالة واحدة مختبرة (couponrules.nonDeliveryCoupon)، والرد يقول إن الكود تُجوهل. */
+      if (coupon && option !== "delivery") {
+        const nd = nonDeliveryCoupon(coupon, { option, code: b.coupon, table: Boolean(tableSid),
+          pureFree: coupon.ok ? false : await isPureFreeCode(b.coupon) });
+        if (nd.ignored) {
+          console.log(`[shop] free-delivery code ${nd.ignored.code} ignored on a ${tableSid ? "table" : "pickup"} order${nd.ignored.error ? ` (${nd.ignored.error})` : ""}`);
+          couponIgnored = nd.ignored;
+        }
+        coupon = nd.coupon;
       }
       if (coupon && !coupon.ok) return fail("coupon_" + coupon.error, 422, { coupon });
       /* كود توصيل مجاني صِرف (زي FIRST) على استلام/طاولة: مالوش قيمة هنا،
@@ -1377,7 +1383,8 @@ export function register(app, ctx, deps = {}) {
       "UPDATE shop_orders SET mf_invoice_id=$2, updated_at=NOW() WHERE order_no=$1",
       [row.order_no, res.InvoiceId != null ? String(res.InvoiceId) : null]
     );
-    return c.json({ ok: true, paymentUrl: res.PaymentURL || res.InvoiceURL || null, invoiceId: res.InvoiceId });
+    return c.json({ ok: true, paymentUrl: res.PaymentURL || res.InvoiceURL || null, invoiceId: res.InvoiceId,
+      ...(couponIgnored ? { couponIgnored } : {}) });
   });
 
   /* ── confirmOrder — the one door to "paid" (webhook / browser / sweep) ── */
