@@ -310,6 +310,26 @@ test("submit: held and retired templates are refused; batches cover every other 
   assert.match(fetch.calls[0].url, /\/WABA\/message_templates$/);
 }));
 
+test("submit {edit:true}: a rejected template is edited in place by its id at Meta (components only), not re-created", withEnv({ WHATSAPP_TOKEN: "tok", WHATSAPP_PHONE_ID: "P", WHATSAPP_WABA_ID: "WABA", WHATSAPP_TEMPLATES_WRITE: "1" }, async () => {
+  const calls = [];
+  const fetch = async (url, init) => {
+    calls.push({ url, method: init.method, body: init.body ? JSON.parse(init.body) : null });
+    if (init.method === "GET") return { ok: true, status: 200, json: async () => ({ data: [{ id: "777", name: "fc_order_ready_pickup", language: "ar", status: "REJECTED" }] }) };
+    return { ok: true, status: 200, json: async () => ({ success: true }) };
+  };
+  const { app } = setup({ fetch });
+  const r = await app.routes["POST /api/wa/templates/submit"](ctxOf({ names: ["fc_order_ready_pickup"], edit: true }));
+  assert.deepEqual(r.body.results, [{ name: "fc_order_ready_pickup", ok: true, edited: true, id: "777", was: "REJECTED" }]);
+  assert.match(calls[0].url, /\/WABA\/message_templates\?name=fc_order_ready_pickup&fields=/);
+  assert.match(calls[1].url, /\/v23\.0\/777$/); assert.equal(calls[1].method, "POST");
+  assert.deepEqual(Object.keys(calls[1].body), ["components"]);
+  assert.equal(calls[1].body.components.find((c) => c.type === "BUTTONS").buttons[0].url, "https://freshcuts.sa/track/{{1}}");
+  // a name Meta does not have is not created by an edit request
+  const none = async (url, init) => ({ ok: true, status: 200, json: async () => (init.method === "GET" ? { data: [] } : { success: true }) });
+  const r2 = await setup({ fetch: none }).app.routes["POST /api/wa/templates/submit"](ctxOf({ names: ["fc_cart_1h"], edit: true }));
+  assert.equal(r2.body.results[0].error, "not_at_meta");
+}));
+
 test("allow-list test send: only the listed phones, without any customer switch", withEnv({ WHATSAPP_TOKEN: "tok", WHATSAPP_PHONE_ID: "PHONE1" }, async () => {
   // WHATSAPP_ENABLED is NOT set and the dashboard switch is off
   const { api, fetch } = setup({ settings: { notifications: {} } });

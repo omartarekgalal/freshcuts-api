@@ -581,6 +581,13 @@ export function register(app, ctx, deps = {}) {
     return data;
   }
 
+  async function graphGet(path) {
+    const resp = await doFetch(`https://graph.facebook.com/${GRAPH_VERSION}/${path}`, { method: "GET", headers: { Authorization: `Bearer ${token()}` } });
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok || data.error) throw Object.assign(new Error(data.error?.message || `HTTP ${resp.status}`), { code: `WA_${data.error?.code || resp.status}` });
+    return data;
+  }
+
   /* الإرسال الأساسي. مابيرميش — بيرجّع {ok, wamid?, skipped?, error?, code?}.
      source/body اختياريين: الحملات بتبعت نص القالب بعد التعويض عشان يظهر في
      المحادثة زي ما العميل شافه (مش «[قالب: …]»). */
@@ -969,6 +976,16 @@ export function register(app, ctx, deps = {}) {
           if (!b.sampleImageUrl) { results.push({ name: n, ...tag, ok: false, error: "sample_image_required" }); continue; }
           const h = await uploadHandle(String(b.sampleImageUrl));
           sub.components = sub.components.map((x) => (x === hdr ? { ...x, example: { header_handle: [h] } } : x));
+        }
+        /* edit:true = تعديل قالب موجود عند ميتا بنفس الاسم واللغة (مرفوض/موقوف: من غير حد؛ معتمد: مرة في اليوم) بدل إنشاء
+           جديد — ميتا بترفض إنشاء اسم موجود. بنجيب رقم القالب بالاسم ونبعت المكوّنات بس (الفئة مابتتغيّرش في التعديل). */
+        if (b.edit === true) {
+          const found = await graphGet(`${wabaId()}/message_templates?name=${encodeURIComponent(n)}&fields=id,name,language,status&limit=50`);
+          const row = (found.data || []).find((x) => x.name === n && x.language === sub.language);
+          if (!row) { results.push({ name: n, ...tag, ok: false, error: "not_at_meta" }); continue; }
+          const r = await graphPost(String(row.id), { components: sub.components });
+          results.push({ name: n, ...tag, ok: r.success !== false, edited: true, id: String(row.id), was: row.status });
+          continue;
         }
         results.push({ name: n, ...tag, ok: true, ...(await graphPost(`${wabaId()}/message_templates`, sub)) });
       }
