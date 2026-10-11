@@ -131,11 +131,12 @@ export const TEMPLATES = [
       fallbackSms: "order.accepted", existing: "whatsapp.js fc_order_preparing" } }),
 
   T({ name: "fc_order_ready_pickup", category: "UTILITY", group: "order",
-    body: "طلبك رقم {{1}} جاهز للاستلام ✅\nتقدر تستلمه من فرع فريش كاتس في حي السلامة بجدة، واعرض رقم الطلب على الكاشير.",
+    body: "طلبك رقم {{1}} جاهز للاستلام ✅\nالاستلام من فرع فريش كاتس في حي السلامة بجدة. اذكر رقم الطلب للكاشير.",
     vars: [ORDER_NO],
-    buttons: [link("موقع الفرع", MAPS_URL)],
+    buttons: [TRACK("تفاصيل الطلب")],
     meta: { purpose: "طلب استلام صار جاهز", trigger: "pos_ready_at لطلب option=pickup (أو pickupReadyMinutes بعد القبول)",
-      stage: "pickup_ready", send: "auto", fallbackSms: "فريش كاتس: طلبك {order_no} جاهز للاستلام من الفرع", existing: "whatsapp.js fc_order_ready_pickup" } }),
+      stage: "pickup_ready", send: "auto", fallbackSms: "فريش كاتس: طلبك {order_no} جاهز للاستلام من الفرع", existing: "whatsapp.js fc_order_ready_pickup",
+      notes: "١٢/١٠: النسخة الأولى (زر «موقع الفرع» → خرائط جوجل + «تقدر تستلمه من…») رفضتها ميتا INCORRECT_CATEGORY — القالب الخدمي الوحيد اللي زره مش رابط الطلب نفسه. الزر بقى رابط تتبّع الطلب زي باقي قوالب الطلب المعتمدة، والنص عن الطلب بس." } }),
 
   T({ name: "fc_courier_assigned", category: "UTILITY", group: "order",
     body: "رتّبنا مندوب لطلبك رقم {{1}} 🛵\nيستلم الطلب أول ما يجهز من المطبخ، وتقدر تتابع من الرابط.",

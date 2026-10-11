@@ -79,7 +79,7 @@ const EXPECT = {
   delivered: { no: "W1790011111111", name: "fc_order_delivered",
     text: "تم توصيل طلبك رقم W1790011111111 ✅ بالعافية عليك.\nلو عندك أي ملاحظة على الطلب ردّ على هذي الرسالة ونخدمك.", button: null },
   pickup_ready: { no: "W1790022222222", name: "fc_order_ready_pickup",
-    text: "طلبك رقم W1790022222222 جاهز للاستلام ✅\nتقدر تستلمه من فرع فريش كاتس في حي السلامة بجدة، واعرض رقم الطلب على الكاشير.", button: null },
+    text: "طلبك رقم W1790022222222 جاهز للاستلام ✅\nالاستلام من فرع فريش كاتس في حي السلامة بجدة. اذكر رقم الطلب للكاشير.", button: "W1790022222222" },
   rejected_refunded: { no: "W1790044444444", name: "fc_order_refunded",
     text: "نعتذر منك، ما قدرنا ننفّذ طلبك رقم W1790044444444 وتم استرجاع المبلغ كاملاً لوسيلة الدفع 💳\nيظهر المبلغ في حسابك حسب إجراءات البنك.", button: null },
   refund_failed: { no: "W1790011111111", name: "fc_refund_in_progress",
@@ -260,6 +260,18 @@ test("catalogue: all valid; marketing = tracked link + working opt-out; copy rul
     assert.doesNotMatch(String(v.example), /خصم|٪|%/, `${t.name}: sample «${v.example}»`);
     if (/min_total$/.test(v.path)) assert.equal(v.example, "60", `${t.name}: FIRST minimum sample`);
   }
+});
+
+test("every UTILITY order template for the customer has only the order's own tracking link as its button (Meta rejected a maps button as INCORRECT_CATEGORY)", () => {
+  for (const t of C.TEMPLATES.filter((x) => x.category === "UTILITY" && x.meta.group === "order" && !C.HOLD[x.name])) {
+    for (const b of C.buttonsOf(t)) {
+      if (b.type !== "URL") continue;
+      assert.match(b.url, /^https:\/\/freshcuts\.sa\/(track\/\{\{1\}\}|r\?c=\{\{1\}\})$/, `${t.name}: ${b.url}`);
+    }
+  }
+  const p = C.findTemplate("fc_order_ready_pickup");
+  assert.deepEqual(C.buttonsOf(p), [{ type: "URL", text: "تفاصيل الطلب", url: "https://freshcuts.sa/track/{{1}}", example: ["https://freshcuts.sa/track/W1790012345678"] }]);
+  assert.doesNotMatch(C.bodyOf(p), /تقدر|موقع|خرائط|خريطة/);
 });
 
 test("fc_winback_45 is byte-identical to what Meta approved on 12/10", () => {
