@@ -1,0 +1,1720 @@
+[
+ {
+  "id": "ps5-6869-delivery-first-order",
+  "group": "the real chat",
+  "world": {
+   "profile": "new",
+   "loc": "in"
+  },
+  "expect": {
+   "noCart": true,
+   "noHandover": true,
+   "owner": {
+    "2": "assistant"
+   },
+   "turnMustContain": {
+    "0": "نعم نوصل",
+    "1": "نعم نوصل لك",
+    "2": "مجاني"
+   },
+   "mustContain": [
+    "الموقع|موقعك",
+    "بكود FIRST",
+    "60"
+   ],
+   "turnMustNotContain": {
+    "0": "\\d+ ?ر\\.س",
+    "2": "ما فيه طلب مفتوح"
+   }
+  },
+  "turns": [
+   {
+    "i": 0,
+    "customer": "في توصيل؟",
+    "cls": "delivery",
+    "raw": "delivery",
+    "by": "assistant",
+    "reply": "معك ماجد، المساعد الرقمي لفريش كاتس. أهلاً بك 👋\n\nنعم نوصل داخل جدة 👍 شاركني موقعك هنا في واتساب (📎 ثم «الموقع») عشان أتأكد من التغطية وأقولك رسوم التوصيل.",
+    "cart": null,
+    "handover": null,
+    "outcome": "sent",
+    "tools": [],
+    "verdicts": [
+     {
+      "ok": false,
+      "problems": [
+       {
+        "type": "self_talk",
+        "value": "... لا،"
+       }
+      ],
+      "text": "وعليكم... لا، هذي الرسالة ما فيها تحية. أهلاً، معك ماجد، المساعد الرقمي لفريش كاتس.\n\nنعم نوصل داخل جدة 👍 شاركني موقعك هنا في واتساب (📎 ثم «الموقع») عشان أتأكد من التغطية وأقولك رسوم التوصيل."
+     },
+     {
+      "ok": true,
+      "problems": [],
+      "text": "معك ماجد، المساعد الرقمي لفريش كاتس. أهلاً بك 👋\n\nنعم نوصل داخل جدة 👍 شاركني موقعك هنا في واتساب (📎 ثم «الموقع») عشان أتأكد من التغطية وأقولك رسوم التوصيل."
+     }
+    ],
+    "calls": [
+     {
+      "model": "claude-haiku-5-5",
+      "tier": "fast",
+      "ms": 2464,
+      "outcome": "ok",
+      "in": 17601,
+      "out": 134,
+      "cached": 0,
+      "costSar": 0.006852
+     },
+     {
+      "model": "claude-haiku-5-5",
+      "tier": "fast",
+      "ms": 3060,
+      "outcome": "ok",
+      "in": 287,
+      "out": 112,
+      "cached": 14077,
+      "costSar": 0.005597
+     }
+    ],
+    "ms": 5541,
+    "costSar": 0.012449,
+    "model": "claude-haiku-5-5",
+    "suggestions": [],
+    "context": {
+     "open_now": true,
+     "closes_at": "2 فجراً",
+     "location_shared": false,
+     "introduce_yourself": {
+      "say": "معك ماجد، المساعد الرقمي لفريش كاتس",
+      "rule": "use this phrase once in this message, exactly as it is"
+     },
+     "you": {
+      "name": "ماجد",
+      "name_en": "Majed",
+      "what": "Fresh Cuts' digital assistant (not a human)"
+     },
+     "customer": {
+      "known": false,
+      "name": null,
+      "orders": 0,
+      "status": "no_orders",
+      "days_since_last": null,
+      "usual_basket_sar": null,
+      "usual_mode": null,
+      "usual_hour": null,
+      "favourites": [],
+      "taste": null,
+      "last_order": null,
+      "districts": [],
+      "loyalty": {
+       "every": 3,
+       "progress": 0,
+       "left": 3,
+       "reward": "free_delivery",
+       "min_total": 60,
+       "status": null
+      },
+      "unused_rewards": [],
+      "first_order_offer": true,
+      "language": "ar"
+     },
+     "offers": {
+      "first_order": {
+       "eligible": true,
+       "code": "FIRST",
+       "free_delivery": true,
+       "min_total": 60,
+       "reason": null
+      },
+      "loyalty": {
+       "every": 3,
+       "progress": 0,
+       "left": 3,
+       "reward": "free_delivery",
+       "min_total": 60,
+       "status": null
+      }
+     },
+     "branch": "📍 فرعنا في حي السلامة بجدة، عند دوار رامي.",
+     "boxes": [
+      "box-solo-crepe: بوكس الكريب الفردي",
+      "box-solo-mixgrill: بوكس الميكس جريل الفردي",
+      "box-solo-burger: بوكس البرجر الفردي",
+      "box-solo-pasta: بوكس الباستا الفردي",
+      "box-solo-hawawshi: بوكس الحواوشي الفردي",
+      "box-solo-meal: بوكس وجبة المشاوي الفردي",
+      "box-crepe-duo: بوكس الكريب لشخصين",
+      "box-mixgrill-duo: ميكس جريل لشخصين",
+      "box-pizza-pasta: بيتزا وباستا لشخصين",
+      "box-meals-duo: وجبتين مشاوي لشخصين",
+      "box-burger-duo: بوكس البرجر لشخصين",
+      "box-late-night: بوكس السهرة",
+      "box-taste-all: بوكس التشكيلة",
+      "box-grill-half-half: بوكس المشاوي نص ونص",
+      "box-family: بوكس العائلة — مشاوي وبيتزا وباستا",
+      "box-pizza-night: بوكس سهرة البيتزا",
+      "box-mashakel: بوكس المشكل المخصوص",
+      "box-ribs-grill: بوكس الريش والمشاوي"
+     ]
+    },
+    "tier": "fast",
+    "escalated": false,
+    "lang": "ar",
+    "introByModel": true
+   },
+   {
+    "i": 1,
+    "customer": "[location]",
+    "cls": "area",
+    "raw": "location",
+    "by": "assistant",
+    "reply": "نعم نوصل لك 👍 أول طلب توصيل لك من موقعنا توصيله مجاني للطلبات من 60 ر.س بكود FIRST. أقل من ذلك الرسوم 20 ر.س.\n\nتحب تطلب من المشاوي ولا الكريب والبرجر؟",
+    "cart": null,
+    "handover": null,
+    "outcome": "sent",
+    "tools": [
+     {
+      "name": "quote_delivery",
+      "input": {
+       "total": 0
+      },
+      "result": {
+       "ok": true,
+       "deliverable": true,
+       "fee": 20,
+       "for_total": 0,
+       "to_next_tier": 60,
+       "next_tier_fee": 15,
+       "to_free": 150,
+       "far_zone_extra": 0,
+       "location": "shared_in_chat",
+       "free_from_total": 150,
+       "distance_km": 6.4,
+       "if_the_fee_is_an_obstacle": "call delivery_savers with the same total",
+       "first_order": {
+        "free_delivery_from_total": 60,
+        "code": "FIRST",
+        "say": "أول طلب توصيل لك من موقعنا توصيله مجاني للطلبات من 60 ر.س بكود FIRST.",
+        "rule": "This customer's first delivery order is free: start «نعم نوصل لك 👍», then this \"say\" text exactly as it is, then in a few words the fee for a smaller order (\"fee\"), then one question that moves to the order. Do not recite the whole fee ladder."
+       }
+      },
+      "ms": 0
+     }
+    ],
+    "verdicts": [
+     {
+      "ok": true,
+      "problems": [],
+      "text": "نعم نوصل لك 👍 أول طلب توصيل لك من موقعنا توصيله مجاني للطلبات من 60 ر.س بكود FIRST. أقل من ذلك الرسوم 20 ر.س.\n\nتحب تطلب من المشاوي ولا الكريب والبرجر؟"
+     }
+    ],
+    "calls": [
+     {
+      "model": "claude-haiku-5-5",
+      "tier": "fast",
+      "ms": 1122,
+      "outcome": "ok",
+      "in": 287,
+      "out": 50,
+      "cached": 14303,
+      "costSar": 0.005565
+     },
+     {
+      "model": "claude-haiku-5-5",
+      "tier": "fast",
+      "ms": 1192,
+      "outcome": "ok",
+      "in": 446,
+      "out": 110,
+      "cached": 14529,
+      "costSar": 0.005822
+     }
+    ],
+    "ms": 2319,
+    "costSar": 0.011387,
+    "model": "claude-haiku-5-5",
+    "suggestions": [],
+    "context": {
+     "open_now": true,
+     "closes_at": "2 فجراً",
+     "location_shared": true,
+     "customer_just_shared_a_location_pin": true
+    },
+    "tier": "fast",
+    "escalated": false,
+    "lang": "ar"
+   },
+   {
+    "i": 2,
+    "customer": "يعني لو طلبي فوق ال٦٠ يصير ١٥ ريال فقط ؟؟",
+    "cls": "status",
+    "raw": "order_status",
+    "by": "assistant",
+    "reply": "بالنسبة لطلبك الأول: إذا وصل الطلب 60 ر.س فأكثر مع كود FIRST يكون التوصيل مجاني، والرسوم العادية لهذا المبلغ 15 ر.س بدون الكود.\n\nتحب تبدأ الطلب من المشاوي ولا الكريب والبرجر؟",
+    "cart": null,
+    "handover": null,
+    "outcome": "sent",
+    "tools": [
+     {
+      "name": "quote_delivery",
+      "input": {
+       "total": 60
+      },
+      "result": {
+       "ok": true,
+       "deliverable": true,
+       "fee": 15,
+       "for_total": 60,
+       "to_next_tier": 20,
+       "next_tier_fee": 10,
+       "to_free": 90,
+       "far_zone_extra": 0,
+       "location": "shared_in_chat",
+       "free_from_total": 150,
+       "distance_km": 6.4,
+       "if_the_fee_is_an_obstacle": "call delivery_savers with the same total",
+       "first_order": {
+        "free_delivery_from_total": 60,
+        "code": "FIRST",
+        "say": "أول طلب توصيل لك من موقعنا توصيله مجاني للطلبات من 60 ر.س بكود FIRST.",
+        "rule": "This customer's first delivery order is free: start «نعم نوصل لك 👍», then this \"say\" text exactly as it is, then in a few words the fee for a smaller order (\"fee\"), then one question that moves to the order. Do not recite the whole fee ladder."
+       }
+      },
+      "ms": 3
+     }
+    ],
+    "verdicts": [
+     {
+      "ok": true,
+      "problems": [],
+      "text": "بالنسبة لطلبك الأول: إذا وصل الطلب 60 ر.س فأكثر مع كود FIRST يكون التوصيل مجاني، والرسوم العادية لهذا المبلغ 15 ر.س بدون الكود.\n\nتحب تبدأ الطلب من المشاوي ولا الكريب والبرجر؟"
+     }
+    ],
+    "calls": [
+     {
+      "model": "claude-haiku-5-5",
+      "tier": "fast",
+      "ms": 2086,
+      "outcome": "ok",
+      "in": 301,
+      "out": 282,
+      "cached": 14884,
+      "costSar": 0.006223
+     },
+     {
+      "model": "claude-haiku-5-5",
+      "tier": "fast",
+      "ms": 1336,
+      "outcome": "ok",
+      "in": 736,
+      "out": 124,
+      "cached": 15121,
+      "costSar": 0.006179
+     }
+    ],
+    "ms": 3436,
+    "costSar": 0.012402,
+    "model": "claude-haiku-5-5",
+    "suggestions": [],
+    "context": {
+     "open_now": true,
+     "closes_at": "2 فجراً",
+     "location_shared": true
+    },
+    "tier": "fast",
+    "escalated": false,
+    "lang": "ar"
+   }
+  ],
+  "carts": [],
+  "costSar": 0.036238,
+  "grade": {
+   "pass": true,
+   "fails": [],
+   "review": [
+    {
+     "type": "many_emoji",
+     "turn": 0,
+     "detail": ""
+    },
+    {
+     "type": "validator_retry",
+     "turn": 0,
+     "detail": "self_talk:... لا،"
+    }
+   ]
+  }
+ },
+ {
+  "id": "ps5-6869-delivery-ordered-before",
+  "group": "the real chat",
+  "world": {
+   "profile": "returning",
+   "loc": "in"
+  },
+  "expect": {
+   "noCart": true,
+   "noHandover": true,
+   "owner": {
+    "2": "assistant"
+   },
+   "turnMustContain": {
+    "0": "نعم نوصل",
+    "1": "20",
+    "2": "15"
+   },
+   "mustNotContain": [
+    "FIRST",
+    "ما فيه طلب مفتوح"
+   ]
+  },
+  "turns": [
+   {
+    "i": 0,
+    "customer": "في توصيل؟",
+    "cls": "delivery",
+    "raw": "delivery",
+    "by": "assistant",
+    "reply": "معك ماجد، المساعد الرقمي لفريش كاتس. نعم نوصل داخل جدة 👍 شارك موقعك معي هنا في واتساب (📎 ثم «الموقع») عشان أتأكد من التغطية وأعطيك رسوم التوصيل. وش تحب تطلب؟",
+    "cart": null,
+    "handover": null,
+    "outcome": "sent",
+    "tools": [],
+    "verdicts": [
+     {
+      "ok": true,
+      "problems": [],
+      "text": "معك ماجد، المساعد الرقمي لفريش كاتس. نعم نوصل داخل جدة 👍 شارك موقعك معي هنا في واتساب (📎 ثم «الموقع») عشان أتأكد من التغطية وأعطيك رسوم التوصيل. وش تحب تطلب؟"
+     }
+    ],
+    "calls": [
+     {
+      "model": "claude-haiku-5-5",
+      "tier": "fast",
+      "ms": 2400,
+      "outcome": "ok",
+      "in": 17801,
+      "out": 114,
+      "cached": 0,
+      "costSar": 0.006889
+     }
+    ],
+    "ms": 2460,
+    "costSar": 0.006889,
+    "model": "claude-haiku-5-5",
+    "suggestions": [],
+    "context": {
+     "open_now": true,
+     "closes_at": "2 فجراً",
+     "location_shared": false,
+     "introduce_yourself": {
+      "say": "معك ماجد، المساعد الرقمي لفريش كاتس",
+      "rule": "use this phrase once in this message, exactly as it is"
+     },
+     "you": {
+      "name": "ماجد",
+      "name_en": "Majed",
+      "what": "Fresh Cuts' digital assistant (not a human)"
+     },
+     "customer": {
+      "known": true,
+      "name": "أحمد",
+      "orders": 7,
+      "status": "repeat",
+      "days_since_last": 6,
+      "usual_basket_sar": 92.4,
+      "usual_mode": "delivery",
+      "usual_hour": 20,
+      "favourites": [
+       {
+        "name": "وجبة كفتة",
+        "times": 4
+       },
+       {
+        "name": "كريب زنجر سوبريم",
+        "times": 3
+       }
+      ],
+      "taste": "مشاوي",
+      "last_order": {
+       "days_ago": 6,
+       "channel": "website",
+       "mode": "delivery",
+       "total": 74,
+       "items": [
+        {
+         "name": "كريب زنجر سوبريم",
+         "qty": 2
+        },
+        {
+         "name": "وجبة كفتة",
+         "qty": 1
+        }
+       ]
+      },
+      "districts": [
+       "الصفا"
+      ],
+      "loyalty": {
+       "every": 3,
+       "progress": 1,
+       "left": 2,
+       "reward": "free_delivery",
+       "min_total": 60,
+       "status": "باقي طلبين"
+      },
+      "unused_rewards": [],
+      "first_order_offer": false,
+      "language": "ar",
+      "had_a_bad_experience_before": true
+     },
+     "offers": {
+      "first_order": {
+       "eligible": false,
+       "code": "FIRST",
+       "free_delivery": true,
+       "min_total": 60,
+       "reason": "used"
+      },
+      "loyalty": {
+       "every": 3,
+       "progress": 1,
+       "left": 2,
+       "reward": "free_delivery",
+       "min_total": 60,
+       "status": "باقي طلبين"
+      }
+     },
+     "branch": "📍 فرعنا في حي السلامة بجدة، عند دوار رامي.",
+     "boxes": [
+      "box-solo-crepe: بوكس الكريب الفردي",
+      "box-solo-mixgrill: بوكس الميكس جريل الفردي",
+      "box-solo-burger: بوكس البرجر الفردي",
+      "box-solo-pasta: بوكس الباستا الفردي",
+      "box-solo-hawawshi: بوكس الحواوشي الفردي",
+      "box-solo-meal: بوكس وجبة المشاوي الفردي",
+      "box-crepe-duo: بوكس الكريب لشخصين",
+      "box-mixgrill-duo: ميكس جريل لشخصين",
+      "box-pizza-pasta: بيتزا وباستا لشخصين",
+      "box-meals-duo: وجبتين مشاوي لشخصين",
+      "box-burger-duo: بوكس البرجر لشخصين",
+      "box-late-night: بوكس السهرة",
+      "box-taste-all: بوكس التشكيلة",
+      "box-grill-half-half: بوكس المشاوي نص ونص",
+      "box-family: بوكس العائلة — مشاوي وبيتزا وباستا",
+      "box-pizza-night: بوكس سهرة البيتزا",
+      "box-mashakel: بوكس المشكل المخصوص",
+      "box-ribs-grill: بوكس الريش والمشاوي"
+     ]
+    },
+    "tier": "fast",
+    "escalated": false,
+    "lang": "ar",
+    "introByModel": true
+   },
+   {
+    "i": 1,
+    "customer": "[location]",
+    "cls": "area",
+    "raw": "location",
+    "by": "assistant",
+    "reply": "نعم نوصل لك 👍 رسوم التوصيل 20 ر.س، والتوصيل مجاني من طلب 150 ر.س. وش تحب تطلب اليوم؟",
+    "cart": null,
+    "handover": null,
+    "outcome": "sent",
+    "tools": [
+     {
+      "name": "quote_delivery",
+      "input": {
+       "total": 0
+      },
+      "result": {
+       "ok": true,
+       "deliverable": true,
+       "fee": 20,
+       "for_total": 0,
+       "to_next_tier": 60,
+       "next_tier_fee": 15,
+       "to_free": 150,
+       "far_zone_extra": 0,
+       "location": "shared_in_chat",
+       "free_from_total": 150,
+       "distance_km": 6.4,
+       "if_the_fee_is_an_obstacle": "call delivery_savers with the same total"
+      },
+      "ms": 0
+     }
+    ],
+    "verdicts": [
+     {
+      "ok": true,
+      "problems": [],
+      "text": "نعم نوصل لك 👍 رسوم التوصيل 20 ر.س، والتوصيل مجاني من طلب 150 ر.س. وش تحب تطلب اليوم؟"
+     }
+    ],
+    "calls": [
+     {
+      "model": "claude-haiku-5-5",
+      "tier": "fast",
+      "ms": 1220,
+      "outcome": "ok",
+      "in": 289,
+      "out": 50,
+      "cached": 14237,
+      "costSar": 0.005541
+     },
+     {
+      "model": "claude-haiku-5-5",
+      "tier": "fast",
+      "ms": 1113,
+      "outcome": "ok",
+      "in": 234,
+      "out": 69,
+      "cached": 14465,
+      "costSar": 0.005642
+     }
+    ],
+    "ms": 2339,
+    "costSar": 0.011183,
+    "model": "claude-haiku-5-5",
+    "suggestions": [],
+    "context": {
+     "open_now": true,
+     "closes_at": "2 فجراً",
+     "location_shared": true,
+     "customer_just_shared_a_location_pin": true
+    },
+    "tier": "fast",
+    "escalated": false,
+    "lang": "ar"
+   },
+   {
+    "i": 2,
+    "customer": "يعني لو طلبي فوق ال٦٠ يصير ١٥ ريال فقط ؟؟",
+    "cls": "status",
+    "raw": "order_status",
+    "by": "assistant",
+    "reply": "نعم، إذا وصل طلبك 60 ر.س أو أكثر تكون رسوم التوصيل 15 ر.س بدل 20 ر.س. ومن 150 ر.س التوصيل مجاني. وش تحب تطلب؟",
+    "cart": null,
+    "handover": null,
+    "outcome": "sent",
+    "tools": [],
+    "verdicts": [
+     {
+      "ok": true,
+      "problems": [],
+      "text": "نعم، إذا وصل طلبك 60 ر.س أو أكثر تكون رسوم التوصيل 15 ر.س بدل 20 ر.س. ومن 150 ر.س التوصيل مجاني. وش تحب تطلب؟"
+     }
+    ],
+    "calls": [
+     {
+      "model": "claude-haiku-5-5",
+      "tier": "fast",
+      "ms": 1778,
+      "outcome": "ok",
+      "in": 249,
+      "out": 225,
+      "cached": 14650,
+      "costSar": 0.006009
+     }
+    ],
+    "ms": 1781,
+    "costSar": 0.006009,
+    "model": "claude-haiku-5-5",
+    "suggestions": [],
+    "context": {
+     "open_now": true,
+     "closes_at": "2 فجراً",
+     "location_shared": true
+    },
+    "tier": "fast",
+    "escalated": false,
+    "lang": "ar"
+   }
+  ],
+  "carts": [],
+  "costSar": 0.024081,
+  "grade": {
+   "pass": true,
+   "fails": [],
+   "review": []
+  }
+ },
+ {
+  "id": "ps5-6869-the-order",
+  "group": "the real chat",
+  "world": {
+   "profile": "new"
+  },
+  "expect": {
+   "noHandover": true,
+   "turnMustContain": {
+    "0": "27",
+    "2": "مقمر",
+    "5": "ما [أا]قدر|ما نقدر|لا [أا]قدر"
+   },
+   "mustContain": [
+    "110"
+   ],
+   "turnButtons": {
+    "0": "وجبة"
+   },
+   "turnMustNotContain": {
+    "5": "[أا]رسل لك صور|بصو[ّ]?ر|أصو[ّ]?ر لك"
+   },
+   "maxCount": [
+    [
+     "[أا]حو[ّ]?له بوكس|يصير بوكس|بوكس لشخصين",
+     1
+    ]
+   ],
+   "maxLen": {
+    "3": 260
+   }
+  },
+  "turns": [
+   {
+    "i": 0,
+    "customer": "شيش طاووق مشوي على الفحم",
+    "cls": "item",
+    "raw": "item_info",
+    "by": "assistant",
+    "reply": "معك ماجد، المساعد الرقمي لفريش كاتس 👋 شيش طاووق مشوي على الفحم عندنا بطريقتين: تبيه وجبة وجبة شيش طاووق بـ 27 ر.س مع الأرز والسلطة والطحينة، ولا بالوزن (ثلث كيلو 37 ر.س · نصف كيلو 55 ر.س · كيلو 110 ر.س)؟",
+    "cart": null,
+    "handover": null,
+    "outcome": "sent",
+    "tools": [
+     {
+      "name": "search_menu",
+      "input": {
+       "query": "شيش طاووق"
+      },
+      "result": {
+       "ok": true,
+       "results": [
+        {
+         "id": "6",
+         "name": "كريب شيش طاووق",
+         "name_en": "Shish Tawook Crepe",
+         "price": 25,
+         "section": "كريبات",
+         "kind": "main",
+         "sold_out": false,
+         "by_weight": false
+        },
+        {
+         "id": "90",
+         "name": "وجبة شيش طاووق",
+         "name_en": "Shish Tawook Meal",
+         "price": 27,
+         "section": "وجبات",
+         "kind": "main",
+         "sold_out": false,
+         "by_weight": false,
+         "also_as": {
+          "by_weight": {
+           "id": "114",
+           "name": "شيش طاووق مشوي بالوزن",
+           "name_en": "Grilled Shish Tawook (by the kilo)",
+           "sold_out": false,
+           "weights": [
+            {
+             "label": "ثلث كيلو",
+             "label_en": "1/3 Kilo",
+             "price": 37,
+             "variant_option_id": 68
+            },
+            {
+             "label": "نصف كيلو",
+             "label_en": "1/2 Kilo",
+             "price": 55,
+             "variant_option_id": 69
+            },
+            {
+             "label": "كيلو",
+             "label_en": "Kilo",
+             "price": 110,
+             "variant_option_id": 70
+            }
+           ],
+           "description": "شيش طاووق مشوي على الفحم — متاح بثلث كيلو ونصف كيلو وكيلو"
+          }
+         },
+         "description": "وجبة شيش طاووق مشوية تُقدَّم مع الأرز والسلطة والطحينة"
+        },
+        {
+         "id": "114",
+         "name": "شيش طاووق مشوي بالوزن",
+         "name_en": "Grilled Shish Tawook (by the kilo)",
+         "section": "مشاوي بالوزن",
+         "kind": "main",
+         "sold_out": false,
+         "by_weight": true,
+         "weights": [
+          {
+           "label": "ثلث كيلو",
+           "label_en": "1/3 Kilo",
+           "price": 37,
+           "variant_option_id": 68
+          },
+          {
+           "label": "نصف كيلو",
+           "label_en": "1/2 Kilo",
+           "price": 55,
+           "variant_option_id": 69
+          },
+          {
+           "label": "كيلو",
+           "label_en": "Kilo",
+           "price": 110,
+           "variant_option_id": 70
+          }
+         ],
+         "how_to_price": "sold by weight: every price belongs to ONE of the weights above; always say the weight with its price",
+         "also_as": {
+          "meal": {
+           "id": "90",
+           "name": "وجبة شيش طاووق",
+           "name_en": "Shish Tawook Meal",
+           "price": 27,
+           "sold_out": false,
+           "description": "وجبة شيش طاووق مشوية تُقدَّم مع الأرز والسلطة والطحينة"
+          }
+         }
+        },
+        {
+         "id": "18",
+         "name": "وجبة ميكس جريل",
+         "name_en": "Mixed Grill Meal",
+         "price": 37,
+         "section": "وجبات",
+         "kind": "main",
+         "sold_out": false,
+         "by_weight": false
+        }
+       ],
+       "ask_which": {
+        "meal": {
+         "id": "90",
+         "name": "وجبة شيش طاووق",
+         "name_en": "Shish Tawook Meal",
+         "price": 27,
+         "description": "وجبة شيش طاووق مشوية تُقدَّم مع الأرز والسلطة والطحينة"
+        },
+        "by_weight": {
+         "id": "114",
+         "name": "شيش طاووق مشوي بالوزن",
+         "name_en": "Grilled Shish Tawook (by the kilo)",
+         "sold_out": false,
+         "weights": [
+          {
+           "label": "ثلث كيلو",
+           "label_en": "1/3 Kilo",
+           "price": 37,
+           "variant_option_id": 68
+          },
+          {
+           "label": "نصف كيلو",
+           "label_en": "1/2 Kilo",
+           "price": 55,
+           "variant_option_id": 69
+          },
+          {
+           "label": "كيلو",
+           "label_en": "Kilo",
+           "price": 110,
+           "variant_option_id": 70
+          }
+         ],
+         "description": "شيش طاووق مشوي على الفحم — متاح بثلث كيلو ونصف كيلو وكيلو"
+        },
+        "rule": "This grill is sold two ways and the customer did not say which. Ask ONE question that gives both with their prices, and nothing else: the meal with what its description says it comes with and its price, or by weight with each weight and its price («تبيها وجبة … بـ … ر.س، ولا بالوزن (ثلث كيلو … · نصف كيلو … · كيلو …)؟»). Two buttons are attached. Never choose for them, and do not call preview_cart before they answer."
+       }
+      },
+      "ms": 10
+     },
+     {
+      "name": "faq",
+      "input": {
+       "topic": "meat",
+       "about": "طاووق"
+      },
+      "result": {
+       "ok": true,
+       "topic": "meat",
+       "say": "الدجاج مبرّد.\nكل لحومنا ودجاجنا حلال.",
+       "rule": "send this text as it is (it is the part of the answer they asked about), then one short question that leads back to their order"
+      },
+      "ms": 0
+     }
+    ],
+    "verdicts": [
+     {
+      "ok": true,
+      "problems": [],
+      "text": "معك ماجد، المساعد الرقمي لفريش كاتس 👋 شيش طاووق مشوي على الفحم عندنا بطريقتين: تبيه وجبة وجبة شيش طاووق بـ 27 ر.س مع الأرز والسلطة والطحينة، ولا بالوزن (ثلث كيلو 37 ر.س · نصف كيلو 55 ر.س · كيلو 110 ر.س)؟"
+     }
+    ],
+    "calls": [
+     {
+      "model": "claude-haiku-5-5",
+      "tier": "fast",
+      "ms": 2155,
+      "outcome": "ok",
+      "in": 17612,
+      "out": 110,
+      "cached": 0,
+      "costSar": 0.006811
+     },
+     {
+      "model": "claude-haiku-5-5",
+      "tier": "fast",
+      "ms": 1018,
+      "outcome": "ok",
+      "in": 1845,
+      "out": 72,
+      "cached": 14086,
+      "costSar": 0.006109
+     },
+     {
+      "model": "claude-haiku-5-5",
+      "tier": "fast",
+      "ms": 1849,
+      "outcome": "ok",
+      "in": 207,
+      "out": 223,
+      "cached": 15560,
+      "costSar": 0.006331
+     }
+    ],
+    "ms": 5041,
+    "costSar": 0.019251,
+    "model": "claude-haiku-5-5",
+    "suggestions": [],
+    "context": {
+     "open_now": true,
+     "closes_at": "2 فجراً",
+     "location_shared": false,
+     "introduce_yourself": {
+      "say": "معك ماجد، المساعد الرقمي لفريش كاتس",
+      "rule": "use this phrase once in this message, exactly as it is"
+     },
+     "you": {
+      "name": "ماجد",
+      "name_en": "Majed",
+      "what": "Fresh Cuts' digital assistant (not a human)"
+     },
+     "customer": {
+      "known": false,
+      "name": null,
+      "orders": 0,
+      "status": "no_orders",
+      "days_since_last": null,
+      "usual_basket_sar": null,
+      "usual_mode": null,
+      "usual_hour": null,
+      "favourites": [],
+      "taste": null,
+      "last_order": null,
+      "districts": [],
+      "loyalty": {
+       "every": 3,
+       "progress": 0,
+       "left": 3,
+       "reward": "free_delivery",
+       "min_total": 60,
+       "status": null
+      },
+      "unused_rewards": [],
+      "first_order_offer": true,
+      "language": "ar"
+     },
+     "offers": {
+      "first_order": {
+       "eligible": true,
+       "code": "FIRST",
+       "free_delivery": true,
+       "min_total": 60,
+       "reason": null
+      },
+      "loyalty": {
+       "every": 3,
+       "progress": 0,
+       "left": 3,
+       "reward": "free_delivery",
+       "min_total": 60,
+       "status": null
+      }
+     },
+     "branch": "📍 فرعنا في حي السلامة بجدة، عند دوار رامي.",
+     "boxes": [
+      "box-solo-crepe: بوكس الكريب الفردي",
+      "box-solo-mixgrill: بوكس الميكس جريل الفردي",
+      "box-solo-burger: بوكس البرجر الفردي",
+      "box-solo-pasta: بوكس الباستا الفردي",
+      "box-solo-hawawshi: بوكس الحواوشي الفردي",
+      "box-solo-meal: بوكس وجبة المشاوي الفردي",
+      "box-crepe-duo: بوكس الكريب لشخصين",
+      "box-mixgrill-duo: ميكس جريل لشخصين",
+      "box-pizza-pasta: بيتزا وباستا لشخصين",
+      "box-meals-duo: وجبتين مشاوي لشخصين",
+      "box-burger-duo: بوكس البرجر لشخصين",
+      "box-late-night: بوكس السهرة",
+      "box-taste-all: بوكس التشكيلة",
+      "box-grill-half-half: بوكس المشاوي نص ونص",
+      "box-family: بوكس العائلة — مشاوي وبيتزا وباستا",
+      "box-pizza-night: بوكس سهرة البيتزا",
+      "box-mashakel: بوكس المشكل المخصوص",
+      "box-ribs-grill: بوكس الريش والمشاوي"
+     ]
+    },
+    "tier": "fast",
+    "escalated": false,
+    "lang": "ar",
+    "introByModel": true,
+    "buttons": [
+     "وجبة",
+     "بالوزن"
+    ]
+   },
+   {
+    "i": 1,
+    "customer": "وجبة",
+    "cls": "cat",
+    "raw": "menu",
+    "by": "assistant",
+    "reply": "وجبة شيش طاووق بـ 27 ر.س. وبـ 33 ر.س يصير بوكس: وجبة مشاوي من اختيارك + صنف جانبي (بطاطس أو كولسلو أو دوريتوس) + مشروب غازي. أحوّله بوكس؟",
+    "cart": null,
+    "handover": null,
+    "outcome": "sent",
+    "tools": [
+     {
+      "name": "preview_cart",
+      "input": {
+       "items": [
+        {
+         "id": "90",
+         "qty": 1
+        }
+       ],
+       "option": "pickup"
+      },
+      "result": {
+       "ok": true,
+       "option": "pickup",
+       "lines": [
+        {
+         "id": "90",
+         "name": "وجبة شيش طاووق",
+         "name_en": "Shish Tawook Meal",
+         "price": 27,
+         "qty": 1,
+         "total": 27,
+         "kind": "main"
+        }
+       ],
+       "subtotal": 27,
+       "problems": [],
+       "note": "prices include VAT; the delivery fee is separate and shown by quote_delivery and again on the site before payment",
+       "saved": false,
+       "suggestion": {
+        "kind": "pair",
+        "when": "meal_x1",
+        "name": "بوكس وجبة المشاوي الفردي",
+        "box": {
+         "slug": "box-solo-meal",
+         "name": "بوكس وجبة المشاوي الفردي",
+         "name_en": "Grill Meal Solo Box",
+         "price": 33,
+         "base_price": 29,
+         "their_choice_extra": 4,
+         "description": "وجبة مشاوي من اختيارك + صنف جانبي (بطاطس أو كولسلو أو دوريتوس) + مشروب غازي."
+        },
+        "cart_subtotal": 27
+       },
+       "suggestion_say": "what goes with this order: the box «بوكس وجبة المشاوي الفردي» for 33 SAR (وجبة مشاوي من اختيارك + صنف جانبي (بطاطس أو كولسلو أو دوريتوس) + مشروب غازي.); the cart now is 27 SAR. This box REPLACES the items in the cart, it is not added to them: state the item's price, then offer it as «وبـ 33 ر.س يصير بوكس: …» with what the box adds in a few words, and ask «أحوّله بوكس؟». Never «أضيف لك بوكس». Do not subtract or compare the amounts yourself.",
+       "suggestion_rule": "you may offer this ONE suggestion as a short question; nothing else"
+      },
+      "ms": 3
+     }
+    ],
+    "verdicts": [
+     {
+      "ok": true,
+      "problems": [],
+      "text": "وجبة شيش طاووق بـ 27 ر.س. وبـ 33 ر.س يصير بوكس: وجبة مشاوي من اختيارك + صنف جانبي (بطاطس أو كولسلو أو دوريتوس) + مشروب غازي. أحوّله بوكس؟"
+     }
+    ],
+    "calls": [
+     {
+      "model": "claude-haiku-5-5",
+      "tier": "fast",
+      "ms": 1245,
+      "outcome": "ok",
+      "in": 406,
+      "out": 85,
+      "cached": 15724,
+      "costSar": 0.006208
+     },
+     {
+      "model": "claude-haiku-5-5",
+      "tier": "fast",
+      "ms": 1186,
+      "outcome": "ok",
+      "in": 854,
+      "out": 108,
+      "cached": 16045,
+      "costSar": 0.00654
+     }
+    ],
+    "ms": 2443,
+    "costSar": 0.012747999999999999,
+    "model": "claude-haiku-5-5",
+    "suggestions": [
+     {
+      "kind": "pair",
+      "ref": "box-solo-meal",
+      "name": "بوكس وجبة المشاوي الفردي",
+      "numbers": {
+       "kind": "pair",
+       "when": "meal_x1",
+       "name": "بوكس وجبة المشاوي الفردي",
+       "box": {
+        "slug": "box-solo-meal",
+        "name": "بوكس وجبة المشاوي الفردي",
+        "name_en": "Grill Meal Solo Box",
+        "price": 33,
+        "base_price": 29,
+        "their_choice_extra": 4,
+        "description": "وجبة مشاوي من اختيارك + صنف جانبي (بطاطس أو كولسلو أو دوريتوس) + مشروب غازي."
+       },
+       "cart_subtotal": 27
+      },
+      "outcome": "computed"
+     }
+    ],
+    "context": {
+     "open_now": true,
+     "closes_at": "2 فجراً",
+     "location_shared": false
+    },
+    "tier": "fast",
+    "escalated": false,
+    "lang": "ar"
+   },
+   {
+    "i": 2,
+    "customer": "والطرب ابغا وجبة، جزء منه مقمر وجزء مستوي عادي",
+    "cls": "item",
+    "raw": "item_info",
+    "by": "assistant",
+    "reply": "تمام، كتبت ملاحظة للمطبخ: جزء مقمر وجزء مستوي عادي. أضفت وجبة شيش طاووق بـ 27 ر.س، والمجموع 27 ر.س. شي ثاني؟",
+    "cart": null,
+    "handover": null,
+    "outcome": "sent",
+    "tools": [
+     {
+      "name": "preview_cart",
+      "input": {
+       "items": [
+        {
+         "id": "90",
+         "qty": 1,
+         "note": "جزء مقمر وجزء مستوي عادي"
+        }
+       ],
+       "option": "pickup"
+      },
+      "result": {
+       "ok": true,
+       "option": "pickup",
+       "lines": [
+        {
+         "id": "90",
+         "name": "وجبة شيش طاووق",
+         "name_en": "Shish Tawook Meal",
+         "price": 27,
+         "qty": 1,
+         "total": 27,
+         "kind": "main",
+         "note": "جزء مقمر وجزء مستوي عادي"
+        }
+       ],
+       "subtotal": 27,
+       "problems": [],
+       "note": "prices include VAT; the delivery fee is separate and shown by quote_delivery and again on the site before payment",
+       "saved": false,
+       "suggestion": {
+        "kind": "pair",
+        "when": "meal_x1",
+        "name": "بوكس وجبة المشاوي الفردي",
+        "box": {
+         "slug": "box-solo-meal",
+         "name": "بوكس وجبة المشاوي الفردي",
+         "name_en": "Grill Meal Solo Box",
+         "price": 33,
+         "base_price": 29,
+         "their_choice_extra": 4,
+         "description": "وجبة مشاوي من اختيارك + صنف جانبي (بطاطس أو كولسلو أو دوريتوس) + مشروب غازي."
+        },
+        "cart_subtotal": 27
+       },
+       "suggestion_say": "what goes with this order: the box «بوكس وجبة المشاوي الفردي» for 33 SAR (وجبة مشاوي من اختيارك + صنف جانبي (بطاطس أو كولسلو أو دوريتوس) + مشروب غازي.); the cart now is 27 SAR. This box REPLACES the items in the cart, it is not added to them: state the item's price, then offer it as «وبـ 33 ر.س يصير بوكس: …» with what the box adds in a few words, and ask «أحوّله بوكس؟». Never «أضيف لك بوكس». Do not subtract or compare the amounts yourself.",
+       "suggestion_rule": "you may offer this ONE suggestion as a short question; nothing else",
+       "reply_rule": "The customer is adding items one by one. Answer in ONE short line: what you added (with its note if any), the new total («المجموع … ر.س»), and «شي ثاني؟». No explanation of how you recorded it, no list of the whole cart: the full recap comes when they say they are done."
+      },
+      "ms": 3
+     }
+    ],
+    "verdicts": [
+     {
+      "ok": true,
+      "problems": [],
+      "text": "تمام، كتبت ملاحظة للمطبخ: جزء مقمر وجزء مستوي عادي. أضفت وجبة شيش طاووق بـ 27 ر.س، والمجموع 27 ر.س. شي ثاني؟"
+     }
+    ],
+    "calls": [
+     {
+      "model": "claude-haiku-5-5",
+      "tier": "fast",
+      "ms": 1995,
+      "outcome": "ok",
+      "in": 358,
+      "out": 277,
+      "cached": 16726,
+      "costSar": 0.006926
+     },
+     {
+      "model": "claude-haiku-5-5",
+      "tier": "fast",
+      "ms": 2077,
+      "outcome": "ok",
+      "in": 1322,
+      "out": 338,
+      "cached": 17009,
+      "costSar": 0.007508
+     }
+    ],
+    "ms": 4092,
+    "costSar": 0.014433999999999999,
+    "model": "claude-haiku-5-5",
+    "suggestions": [
+     {
+      "kind": "pair",
+      "ref": "box-solo-meal",
+      "name": "بوكس وجبة المشاوي الفردي",
+      "numbers": {
+       "kind": "pair",
+       "when": "meal_x1",
+       "name": "بوكس وجبة المشاوي الفردي",
+       "box": {
+        "slug": "box-solo-meal",
+        "name": "بوكس وجبة المشاوي الفردي",
+        "name_en": "Grill Meal Solo Box",
+        "price": 33,
+        "base_price": 29,
+        "their_choice_extra": 4,
+        "description": "وجبة مشاوي من اختيارك + صنف جانبي (بطاطس أو كولسلو أو دوريتوس) + مشروب غازي."
+       },
+       "cart_subtotal": 27
+      },
+      "outcome": "computed"
+     }
+    ],
+    "context": {
+     "open_now": true,
+     "closes_at": "2 فجراً",
+     "location_shared": false
+    },
+    "tier": "fast",
+    "escalated": false,
+    "lang": "ar"
+   },
+   {
+    "i": 3,
+    "customer": "البيبسي اثنين",
+    "cls": "item",
+    "raw": "item_info",
+    "by": "assistant",
+    "reply": "أضفت بيبسي زجاج × 2 بـ 8 ر.س، والمجموع 35 ر.س. شي ثاني؟",
+    "cart": null,
+    "handover": null,
+    "outcome": "sent",
+    "tools": [
+     {
+      "name": "search_menu",
+      "input": {
+       "query": "بيبسي"
+      },
+      "result": {
+       "ok": true,
+       "results": [
+        {
+         "id": "86",
+         "name": "بيبسي زجاج",
+         "name_en": "Pepsi (Glass Bottle)",
+         "price": 4,
+         "section": "إضافات",
+         "kind": "drink",
+         "sold_out": false,
+         "by_weight": false
+        },
+        {
+         "id": "118",
+         "name": "إضافة كومبو",
+         "name_en": "Combo Add-on",
+         "price": 6,
+         "section": "كريبات",
+         "kind": "main",
+         "sold_out": false,
+         "by_weight": false
+        }
+       ]
+      },
+      "ms": 2
+     },
+     {
+      "name": "preview_cart",
+      "input": {
+       "items": [
+        {
+         "id": "90",
+         "qty": 1,
+         "note": "جزء مقمر وجزء مستوي عادي"
+        },
+        {
+         "id": "86",
+         "qty": 2
+        }
+       ],
+       "option": "pickup"
+      },
+      "result": {
+       "ok": true,
+       "option": "pickup",
+       "lines": [
+        {
+         "id": "90",
+         "name": "وجبة شيش طاووق",
+         "name_en": "Shish Tawook Meal",
+         "price": 27,
+         "qty": 1,
+         "total": 27,
+         "kind": "main",
+         "note": "جزء مقمر وجزء مستوي عادي"
+        },
+        {
+         "id": "86",
+         "name": "بيبسي زجاج",
+         "name_en": "Pepsi (Glass Bottle)",
+         "price": 4,
+         "qty": 2,
+         "total": 8,
+         "kind": "drink"
+        }
+       ],
+       "subtotal": 35,
+       "problems": [],
+       "note": "prices include VAT; the delivery fee is separate and shown by quote_delivery and again on the site before payment",
+       "saved": false,
+       "suggestion": {
+        "kind": "pair",
+        "when": "meal_x1",
+        "name": "بوكس وجبة المشاوي الفردي",
+        "box": {
+         "slug": "box-solo-meal",
+         "name": "بوكس وجبة المشاوي الفردي",
+         "name_en": "Grill Meal Solo Box",
+         "price": 33,
+         "base_price": 29,
+         "their_choice_extra": 4,
+         "description": "وجبة مشاوي من اختيارك + صنف جانبي (بطاطس أو كولسلو أو دوريتوس) + مشروب غازي."
+        },
+        "cart_subtotal": 35
+       },
+       "suggestion_say": "what goes with this order: the box «بوكس وجبة المشاوي الفردي» for 33 SAR (وجبة مشاوي من اختيارك + صنف جانبي (بطاطس أو كولسلو أو دوريتوس) + مشروب غازي.); the cart now is 35 SAR. This box REPLACES the items in the cart, it is not added to them: state the item's price, then offer it as «وبـ 33 ر.س يصير بوكس: …» with what the box adds in a few words, and ask «أحوّله بوكس؟». Never «أضيف لك بوكس». Do not subtract or compare the amounts yourself.",
+       "suggestion_rule": "you may offer this ONE suggestion as a short question; nothing else",
+       "reply_rule": "The customer is adding items one by one. Answer in ONE short line: what you added (with its note if any), the new total («المجموع … ر.س»), and «شي ثاني؟». No explanation of how you recorded it, no list of the whole cart: the full recap comes when they say they are done."
+      },
+      "ms": 3
+     }
+    ],
+    "verdicts": [
+     {
+      "ok": true,
+      "problems": [],
+      "text": "أضفت بيبسي زجاج × 2 بـ 8 ر.س، والمجموع 35 ر.س. شي ثاني؟"
+     }
+    ],
+    "calls": [
+     {
+      "model": "claude-haiku-5-5",
+      "tier": "fast",
+      "ms": 1216,
+      "outcome": "ok",
+      "in": 556,
+      "out": 64,
+      "cached": 18065,
+      "costSar": 0.007103
+     },
+     {
+      "model": "claude-haiku-5-5",
+      "tier": "fast",
+      "ms": 1078,
+      "outcome": "ok",
+      "in": 284,
+      "out": 126,
+      "cached": 18506,
+      "costSar": 0.007283
+     },
+     {
+      "model": "claude-haiku-5-5",
+      "tier": "fast",
+      "ms": 998,
+      "outcome": "ok",
+      "in": 1211,
+      "out": 51,
+      "cached": 18731,
+      "costSar": 0.007574
+     }
+    ],
+    "ms": 3307,
+    "costSar": 0.02196,
+    "model": "claude-haiku-5-5",
+    "suggestions": [
+     {
+      "kind": "pair",
+      "ref": "box-solo-meal",
+      "name": "بوكس وجبة المشاوي الفردي",
+      "numbers": {
+       "kind": "pair",
+       "when": "meal_x1",
+       "name": "بوكس وجبة المشاوي الفردي",
+       "box": {
+        "slug": "box-solo-meal",
+        "name": "بوكس وجبة المشاوي الفردي",
+        "name_en": "Grill Meal Solo Box",
+        "price": 33,
+        "base_price": 29,
+        "their_choice_extra": 4,
+        "description": "وجبة مشاوي من اختيارك + صنف جانبي (بطاطس أو كولسلو أو دوريتوس) + مشروب غازي."
+       },
+       "cart_subtotal": 35
+      },
+      "outcome": "computed"
+     }
+    ],
+    "context": {
+     "open_now": true,
+     "closes_at": "2 فجراً",
+     "location_shared": false
+    },
+    "tier": "fast",
+    "escalated": false,
+    "lang": "ar"
+   },
+   {
+    "i": 4,
+    "customer": "في صوصات؟",
+    "cls": "unknown",
+    "raw": "unknown",
+    "by": "assistant",
+    "reply": "ما عندي صوصات مضافة في المنيو للوجبة. الوجبة تجي مع الأرز والسلطة والطحينة حسب الوصف. تبي توصيل ولا استلام؟",
+    "cart": null,
+    "handover": null,
+    "outcome": "sent",
+    "tools": [
+     {
+      "name": "search_menu",
+      "input": {
+       "query": "صوص"
+      },
+      "result": {
+       "ok": true,
+       "results": [
+        {
+         "id": "73",
+         "name": "فرايد تشيكن",
+         "name_en": "Fried Chicken",
+         "price": 10,
+         "section": "إضافات",
+         "kind": "side",
+         "sold_out": false,
+         "by_weight": false
+        },
+        {
+         "id": "78",
+         "name": "تشيز فرايز",
+         "name_en": "Cheese Fries",
+         "price": 10,
+         "section": "إضافات",
+         "kind": "side",
+         "sold_out": false,
+         "by_weight": false
+        },
+        {
+         "id": "75",
+         "name": "حلقات بصل",
+         "name_en": "Onion Rings",
+         "price": 10,
+         "section": "إضافات",
+         "kind": "side",
+         "sold_out": false,
+         "by_weight": false
+        },
+        {
+         "id": "76",
+         "name": "تشيلي تشيز فرايز",
+         "name_en": "Chili Cheese Fries",
+         "price": 15,
+         "section": "إضافات",
+         "kind": "side",
+         "sold_out": false,
+         "by_weight": false
+        },
+        {
+         "id": "74",
+         "name": "فرايد موتزاريلا",
+         "name_en": "Fried Mozzarella",
+         "price": 16,
+         "section": "إضافات",
+         "kind": "side",
+         "sold_out": false,
+         "by_weight": false
+        },
+        {
+         "id": "66",
+         "name": "جريلد تشيكن ساندوتش",
+         "name_en": "Grilled Chicken Burger",
+         "price": 19,
+         "section": "برجر",
+         "kind": "main",
+         "sold_out": false,
+         "by_weight": false
+        },
+        {
+         "id": "43",
+         "name": "بيتزا تشيكن رانش",
+         "name_en": "Chicken Ranch Pizza",
+         "price": 28,
+         "section": "بيتزا",
+         "kind": "main",
+         "sold_out": false,
+         "by_weight": false
+        },
+        {
+         "id": "1",
+         "name": "كريب ميكس لحوم",
+         "name_en": "Mixed Meat Crepe",
+         "price": 30,
+         "section": "كريبات",
+         "kind": "main",
+         "sold_out": false,
+         "by_weight": false
+        }
+       ]
+      },
+      "ms": 4
+     },
+     {
+      "name": "get_item",
+      "input": {
+       "id": "90"
+      },
+      "result": {
+       "ok": true,
+       "item": {
+        "id": "90",
+        "name": "وجبة شيش طاووق",
+        "name_en": "Shish Tawook Meal",
+        "price": 27,
+        "section": "وجبات",
+        "kind": "main",
+        "sold_out": false,
+        "by_weight": false,
+        "description": "وجبة شيش طاووق مشوية تُقدَّم مع الأرز والسلطة والطحينة",
+        "addons": [],
+        "addons_known": true,
+        "note": "description is the menu description, not a full ingredient list"
+       }
+      },
+      "ms": 3
+     }
+    ],
+    "verdicts": [
+     {
+      "ok": true,
+      "problems": [],
+      "text": "ما عندي صوصات مضافة في المنيو للوجبة. الوجبة تجي مع الأرز والسلطة والطحينة حسب الوصف. تبي توصيل ولا استلام؟"
+     }
+    ],
+    "calls": [
+     {
+      "model": "claude-haiku-5-5",
+      "tier": "fast",
+      "ms": 1260,
+      "outcome": "ok",
+      "in": 194,
+      "out": 77,
+      "cached": 19698,
+      "costSar": 0.007604
+     },
+     {
+      "model": "claude-haiku-5-5",
+      "tier": "fast",
+      "ms": 1316,
+      "outcome": "ok",
+      "in": 834,
+      "out": 127,
+      "cached": 19850,
+      "costSar": 0.007995
+     },
+     {
+      "model": "claude-haiku-5-5",
+      "tier": "fast",
+      "ms": 2191,
+      "outcome": "ok",
+      "in": 367,
+      "out": 266,
+      "cached": 20515,
+      "costSar": 0.00833
+     }
+    ],
+    "ms": 4793,
+    "costSar": 0.023929,
+    "model": "claude-haiku-5-5",
+    "suggestions": [],
+    "context": {
+     "open_now": true,
+     "closes_at": "2 فجراً",
+     "location_shared": false
+    },
+    "tier": "fast",
+    "escalated": false,
+    "lang": "ar"
+   },
+   {
+    "i": 5,
+    "customer": "كيف شكل الصوص ممكن تصورلي هوا؟",
+    "cls": "unknown",
+    "raw": "unknown",
+    "by": "assistant",
+    "reply": "ما أقدر أرسل صور، والصوص ما عليه صورة في المنيو. إذا تبيه صورة حقيقية اكتب «موظف» ويردون عليك. تبي توصيل ولا استلام للطلب؟",
+    "cart": null,
+    "handover": null,
+    "outcome": "sent",
+    "tools": [
+     {
+      "name": "dish_photo",
+      "input": {},
+      "result": {
+       "ok": true,
+       "has_menu_photo": false,
+       "rule": "Say in one honest line that you cannot take or send photos and that there is no photo of it on the menu; if they want a real photo, typing «موظف» reaches the team. Then carry on with their order."
+      },
+      "ms": 0
+     }
+    ],
+    "verdicts": [
+     {
+      "ok": true,
+      "problems": [],
+      "text": "ما أقدر أرسل صور، والصوص ما عليه صورة في المنيو. إذا تبيه صورة حقيقية اكتب «موظف» ويردون عليك. تبي توصيل ولا استلام للطلب؟"
+     }
+    ],
+    "calls": [
+     {
+      "model": "claude-haiku-5-5",
+      "tier": "fast",
+      "ms": 1093,
+      "outcome": "ok",
+      "in": 484,
+      "out": 28,
+      "cached": 20807,
+      "costSar": 0.008037
+     },
+     {
+      "model": "claude-haiku-5-5",
+      "tier": "fast",
+      "ms": 1324,
+      "outcome": "ok",
+      "in": 152,
+      "out": 84,
+      "cached": 21191,
+      "costSar": 0.008161
+     }
+    ],
+    "ms": 2426,
+    "costSar": 0.016198,
+    "model": "claude-haiku-5-5",
+    "suggestions": [],
+    "context": {
+     "open_now": true,
+     "closes_at": "2 فجراً",
+     "location_shared": false
+    },
+    "tier": "fast",
+    "escalated": false,
+    "lang": "ar"
+   }
+  ],
+  "carts": [],
+  "costSar": 0.10852000000000002,
+  "grade": {
+   "pass": true,
+   "fails": [],
+   "review": []
+  }
+ },
+ {
+  "id": "ps5-status-real-open-order",
+  "group": "status",
+  "world": {
+   "profile": "new",
+   "orders": [
+    {
+     "order_no": "W1790011111111",
+     "status": "accepted",
+     "option": "delivery",
+     "total": 74,
+     "created_at": "2026-10-12T14:30:00Z"
+    }
+   ]
+  },
+  "expect": {
+   "noCart": true,
+   "owner": {
+    "0": "rules"
+   }
+  },
+  "turns": [
+   {
+    "i": 0,
+    "customer": "وين طلبي",
+    "cls": "status",
+    "raw": "order_status",
+    "by": "rules",
+    "reply": null,
+    "cart": null,
+    "handover": null,
+    "outcome": "rules:status",
+    "tools": [],
+    "verdicts": [],
+    "calls": [],
+    "ms": 0,
+    "costSar": 0,
+    "model": null,
+    "suggestions": []
+   }
+  ],
+  "carts": [],
+  "costSar": 0,
+  "grade": {
+   "pass": true,
+   "fails": [],
+   "review": []
+  }
+ }
+]

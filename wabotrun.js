@@ -41,7 +41,7 @@ import { MAPS_URL } from "./watemplates.js";
 import { isOpenNow } from "./carts.js";
 import { preorderCfg } from "./preorder.js";
 import { makeBotCarts, reorderPlan, planSummary, orderDay, chatLocation } from "./wabotcart.js";
-import { makeAssistTools, validateReply, profileSummaryAr } from "./waassist.js";
+import { makeAssistTools, validateReply, profileSummaryAr, grillFamilies } from "./waassist.js";
 import { lookupFact, groupsIn, SEVERE_RE, factsCoverage, pickDish, factNote, dishAllergens } from "./wadishfacts.js";
 import { makeAiCost, pricesOf, waRatesOf, pricesFromBody, waRatesFromBody, BUDGET_DEFAULTS } from "./waaicost.js";
 import { providerInfo, maskText } from "./wabotllm.js";
@@ -72,6 +72,7 @@ export const DEFAULTS = Object.freeze({
   neverReplyPhones: [],        // M5: أرقام البوت مايردش عليها أبداً (مش عملاء: موظف، مورّد، مندوب، طالب وظيفة) — 5XXXXXXXX
   liveScope: "all",            // M5: في وضع live — ads = محادثات الإعلانات بس · new = الإعلانات + الأرقام الجديدة (مالهاش رسايل قبل liveSince) · all = الكل. أرقام التجربة دايماً جوّه
   liveSince: "",               // لحظة أول تشغيل للعملاء (ISO) — بتتسجّل لوحدها أول ما الوضع يبقى live وهي فاضية
+  mediaFloodBuyerCount: 20,    // PS5: والمساعد بيشوف الصور: الكتم بس بعد العدد ده من الصور من غير ولا كلمة ومن غير محادثة طلب شغّالة (صور ورا بعض = طلب، مش سيل)
   mediaFloodCount: 5, mediaFloodMinutes: 2, mediaFloodMuteHours: 24,      // M5: الرقم ده من الصور/الملفات من غير نص خلال الدقايق دي ⇒ كتم بالساعات دي + تحويل واحد
   autoEchoTexts: [],           // نصوص ردود آلية يحددها المالك بالحرف: بتتحسب آلية لحد ٦٠ ثانية حتى لو قصيرة
   greetScope: "all",           // all | ads (تحية لمحادثات الإعلانات بس)
@@ -226,10 +227,19 @@ export const TEXTS = Object.freeze({
   fee_same: t("لحظة الرسوم: نفس المبلغ", "نفس المبلغ، وأكل بزيادة {extra} ر.س.", "The same total, with SAR {extra} more food.", ["extra"], [], 200),
   fee_step: t("لحظة الرسوم: الدرجة الجاية", "وإذا زدت عليه {extra} ر.س يصير التوصيل {fee} ر.س، والإجمالي {total} ر.س.", "Add SAR {extra} and delivery becomes SAR {fee}, SAR {total} in total.", ["extra", "fee", "total"], [], 200),
   fee_step_free: t("لحظة الرسوم: الدرجة الجاية مجانية", "وإذا زدت عليه {extra} ر.س يصير التوصيل مجاني، والإجمالي {total} ر.س.", "Add SAR {extra} and delivery is free, SAR {total} in total.", ["extra", "total"], [], 200),
+  first_lead: t("بعد الموقع: أول طلب توصيله مجاني", "أول طلب توصيل لك من موقعنا توصيله مجاني للطلبات من {from} ر.س بكود {code}.", "Your first delivery order on our website has free delivery on orders from SAR {from} with code {code}.", ["from", "code"], [], 250),
   fee_unlocated: t("لحظة الرسوم: من غير موقع", "الرسوم هذي حسب قيمة الطلب، وتتأكد لموقعك في موقعنا قبل الدفع.", "These fees go by the order total; the exact fee for your location shows on our website before payment.", [], [], 200),
   fee_pickup: t("لحظة الرسوم: الاستلام", "أو استلام من الفرع بدون رسوم توصيل = {order} ر.س.", "Or pickup from the branch with no delivery fee = SAR {order}.", ["order"], [], 200),
   btn_fee_reach: t("زر: أكمّل للحد", "أكمّلها {from} ر.س", "Make it SAR {from}", ["from"], [], LIMITS.btnTitle),
   btn_fee_pickup: t("زر: استلام من الفرع", "استلام من الفرع", "Pickup", [], [], LIMITS.btnTitle),
+  cart_recap_head: t("ملخص السلة: العنوان", "سلتك ({mode}):", "Your cart ({mode}):", ["mode"], [], 100),
+  cart_recap_line: t("ملخص السلة: سطر", "• {name} × {qty} = {total} ر.س", "• {name} × {qty} = SAR {total}", ["name", "qty", "total"], [], 300),
+  cart_recap_note: t("ملخص السلة: ملاحظة السطر", "↳ ملاحظة للمطبخ: {note}", "↳ Kitchen note: {note}", ["note"], [], 300),
+  cart_recap_total: t("ملخص السلة: المجموع", "المجموع: {total} ر.س", "Total: SAR {total}", ["total"], [], 100),
+  cart_recap_close: t("ملخص السلة: القفلة", "راجع السلة، ولو كل شي تمام اضغط الزر وأكمل الدفع 👇", "Check the cart, and if it is all right tap the button to pay 👇", [], [], 200),
+  btn_meal: t("زر: وجبة", "وجبة", "Meal", [], [], LIMITS.btnTitle),
+  btn_weight: t("زر: بالوزن", "بالوزن", "By weight", [], [], LIMITS.btnTitle),
+  item_two_ways: t("بطاقة مشوي له وجبة وبالوزن", "*{meal}* — {meal_price}\n{meal_desc}\n*{weight}* — {weight_prices}\nتبيها وجبة ولا بالوزن؟", "*{meal}* — {meal_price}\n{meal_desc}\n*{weight}* — {weight_prices}\nAs a meal or by weight?", ["meal", "meal_price", "weight", "weight_prices"], ["meal_desc"], 900),
   btn_delivery: t("زر: توصيل", "توصيل", "Delivery", [], [], LIMITS.btnTitle),
   btn_other: t("زر: أبغى شي ثاني", "أبغى شي ثاني", "Something else", [], [], LIMITS.btnTitle),
   menu_link_line: t("تحت قايمة الأقسام: رابط المنيو", "وهذا المنيو كامل بالصور والأسعار 👇", "And here is the full menu with photos and prices 👇", [], [], 200),
@@ -361,6 +371,7 @@ export const TEXTS = Object.freeze({
   transfer_note: t("سطر للعميل: الكاشير حوّل المحادثة للمدير (ST2)", "حوّلت محادثتك لمدير الفرع، ويكمل معك هنا 🙏", "I've passed your chat to the branch manager, who will continue with you here 🙏", [], [], 300),
   handover_note: t("متابعة للعميل: الموظف اتأخر (مرة واحدة)", "نعتذر عن التأخير 🙏 نبّهنا الفريق مرة ثانية ويرد عليك موظف هنا.", "Sorry for the wait 🙏 We've alerted the team again and a staff member will reply here.", [], [], 300),
   handover_note_assist: t("متابعة للعميل: الموظف اتأخر، والمساعد معاه", "نعتذر عن التأخير 🙏 نبّهنا الفريق مرة ثانية ويرد عليك موظف هنا.\nوأنا معك لو تحتاج شي في المنيو أو الطلب.", "Sorry for the wait 🙏 We've alerted the team again and a staff member will reply here.\nMeanwhile I'm here for anything about the menu or your order.", [], [], 300),
+  media_flood_line: t("سيل صور: سطر للعميل قبل الكتم", "وصلتنا صورك 🙏 حوّلتها لواحد من الفريق يراجعها ويرد عليك هنا.", "We got your pictures 🙏 I passed them to someone from the team, who will reply here.", [], [], 300),
   call_line: t("رقم المطعم تحت سطر التحويل لموظف", "أو اتصل على {phone}", "Or call us on {phone}", ["phone"], [], 100),
   when_open: t("سطر «الرد قريب» (في الدوام بس)", "يرد عليك موظف هنا في أقرب وقت، وأنا أترك المحادثة له.", "A staff member will reply here shortly, and I'll leave the chat to them.", [], [], 200),
   wait_line: t("سطر «الرد لما نفتح»", "المطعم مقفل الحين. يرد عليك موظف هنا أول ما نفتح {opens}، وأنا أترك المحادثة له.", "We're closed now. A staff member will reply here once we open {opens}, and I'll leave the chat to them.", ["opens"], [], 200),
@@ -518,6 +529,7 @@ export function botConfig(settings) {
     neverReplyPhones: [...new Set((Array.isArray(x.neverReplyPhones) ? x.neverReplyPhones : []).map(phNorm).filter((p) => /^5\d{8}$/.test(p)))].slice(0, 500),
     liveScope: LIVE_SCOPES.includes(x.liveScope) ? x.liveScope : DEFAULTS.liveScope,
     liveSince: Number.isFinite(Date.parse(x.liveSince)) ? new Date(x.liveSince).toISOString() : "",
+    mediaFloodBuyerCount: num(x.mediaFloodBuyerCount, 5, 200, DEFAULTS.mediaFloodBuyerCount),
     mediaFloodCount: num(x.mediaFloodCount, 0, 50, DEFAULTS.mediaFloodCount), mediaFloodMinutes: num(x.mediaFloodMinutes, 1, 30, DEFAULTS.mediaFloodMinutes), mediaFloodMuteHours: num(x.mediaFloodMuteHours, 1, 168, DEFAULTS.mediaFloodMuteHours),
     autoEchoTexts: (Array.isArray(x.autoEchoTexts) ? x.autoEchoTexts : []).map((t) => String(t || "").replace(/\s+/g, " ").trim()).filter(Boolean).slice(0, ECHO.maxTexts),
     maxRepliesPerHour: num(x.maxRepliesPerHour, 5, 300, DEFAULTS.maxRepliesPerHour),
@@ -585,7 +597,7 @@ export function configFromBody(b, prev = {}) {
   delete out.humanWindowHours;      // اتلغى (١٢/١٠) — أي حفظ بينضّف المخزّن القديم
   for (const k of ["humanPauseMin", "staffWaitMin", "closedEchoPauseMin", "manualMuteHours", "handoffOpenHours", "freeRepliesPerMonth", "replyRateSar", "disclosureHours", "unknownHandoverAfter", "adWindowHours", "optinAnswerWindowMin",
     "offerEndWithinDays", "boxesCacheMin", "menuCacheMin", "offersCacheMin", "staleCacheMin", "logKeepDays", "reorderMaxDays", "reorderLinkDays", "reorderMinTotal", "reorderLookback",
-    "handoverRealertMin", "handoverCustomerNoteMin", "greetWindowHours", "maxAgeMinutes", "sameTextSeconds", "autoEchoMaxSec", "autoInboundSec", "openerHours", "leadFollowUpMin", "loopGuardCount", "loopGuardFastSec", "loopGuardSeconds", "loopGuardMuteHours", "mediaFloodCount", "mediaFloodMinutes", "mediaFloodMuteHours", "maxRepliesPerHour", "maxTapsPerHour", "maxRepliesPerMinute", "orderLookbackHours", "lateAfterMinutes", "maxAlertsPerHour"]) {
+    "handoverRealertMin", "handoverCustomerNoteMin", "greetWindowHours", "maxAgeMinutes", "sameTextSeconds", "autoEchoMaxSec", "autoInboundSec", "openerHours", "leadFollowUpMin", "loopGuardCount", "loopGuardFastSec", "loopGuardSeconds", "loopGuardMuteHours", "mediaFloodBuyerCount", "mediaFloodCount", "mediaFloodMinutes", "mediaFloodMuteHours", "maxRepliesPerHour", "maxTapsPerHour", "maxRepliesPerMinute", "orderLookbackHours", "lateAfterMinutes", "maxAlertsPerHour"]) {
     if (k in src) { if (Number.isFinite(Number(src[k])) && src[k] !== "" && src[k] !== null) out[k] = Number(src[k]); else errors.push(k); }
   }
   for (const k of ["interactive", "staffAlert", "alertInTest", "autoEchoSkipCovered", "autoInboundPatterns", "paidNoteEnabled", "handoverAckNeedsReply", "reorderEnabled", "dishFactsEnabled"]) if (k in src) out[k] = src[k] === true;
@@ -780,6 +792,7 @@ export const SCHEMA = Object.freeze({
   neverReplyPhones: S("mode", "phones", "أرقام البوت مايردش عليها أبداً", "مش عملاء: موظف، مورّد، مندوب، طالب وظيفة. أرقام تنبيهات الفريق وأرقام المناديب بتتستبعد لوحدها (إلا لو الرقم في أرقام التجربة)."),
   liveScope: S("mode", "enum", "نطاق التشغيل للعملاء", "الإعلانات بس / الإعلانات + الأرقام الجديدة / الكل. بره النطاق: البوت يسكت ويسجّل الرد اللي كان هيطلع. أرقام التجربة دايماً جوّه. لازم يتحدد وقت تحويل الوضع لـ«شغّال».", { options: ["ads", "new", "all"] }),
   liveSince: S("mode", "datetime", "بداية التشغيل للعملاء", "بتتسجّل لوحدها أول مرة الوضع يبقى «شغّال». «الأرقام الجديدة» = اللي مالهاش أي رسالة قبل اللحظة دي."),
+  mediaFloodBuyerCount: S("limits", "number", "سيل صور والمساعد بيشوف الصور: العدد", "لما المساعد بيشوف الصور، كذا صورة ورا بعض بتتحسب طلب مش سيل. الكتم بيحصل بس بعد العدد ده من غير ولا رسالة نصية ومن غير محادثة طلب شغّالة — وساعتها العميل بياخد سطر واحد والفريق بيتنبّه كعاجل.", { min: 5, max: 200, unit: "صورة" }),
   mediaFloodCount: S("limits", "number", "سيل صور/ملفات من غير نص: العدد", "العدد ده خلال المدة ⇒ البوت يكتم المحادثة ويحوّلها لموظف مرة واحدة. صفر = مقفول.", { min: 0, max: 50, unit: "ملف" }),
   mediaFloodMinutes: S("limits", "number", "سيل صور/ملفات: خلال", "", { min: 1, max: 30, unit: "دقيقة" }),
   mediaFloodMuteHours: S("limits", "number", "سيل صور/ملفات: مدة الكتم", "", { min: 1, max: 168, unit: "ساعة" }),
@@ -1026,6 +1039,12 @@ export function buildReply(key, c) {
       const it = data.menu && data.menu.items ? data.menu.items.find((i) => i.id === String(c.arg)) : null;
       if (!it) throw new DataMissing("item");
       const slug = data.links && data.links["wab-menu"] === true ? "wab-menu" : pickLink(cfg, data, c.referral);
+      /* PS5: مشوي له وجبة وبالوزن، والعميل ماحددش (مفيش «وجبة» ولا وزن في رسالته، ومش ضغطة على صنف بعينه) ⇒ الاتنين بأسعارهم وزرّين. */
+      if (cfg.assist && cfg.assist.grillFamilies && !it.soldOut && c.asked != null && !/(^| )(وجبه|وجبات|بالوزن|كيلو|نص|نصف|ثلث|تلت|kilo|kg|half|meal)( |$)/i.test(normalize(String(c.asked)))) {
+        const pair = grillFamilies(data.menu).get(String(it.id));
+        if (pair && !pair.meal.soldOut && !pair.weight.soldOut && weightsLine(lang, pair.weight)) { const en = lang === "en";
+          return { body: F("item_two_ways", { meal: en ? pair.meal.nameEn || pair.meal.name : pair.meal.name, meal_price: priceText(lang, pair.meal), meal_desc: en ? "" : pair.meal.desc, weight: en ? pair.weight.nameEn || pair.weight.name : pair.weight.name, weight_prices: weightsLine(lang, pair.weight) }),
+            buttons: [{ id: `item:${pair.meal.id}`, title: T("btn_meal") }, { id: `item:${pair.weight.id}`, title: T("btn_weight") }] }; } }
       const nm = lang === "en" ? (it.nameEn || it.name) : it.name, desc = lang === "en" || isMashakel(it) ? "" : it.desc;
       const wl = weightsLine(lang, it);
       const body = wl ? F("item_weights", { name: nm, prices: wl, desc, note: it.soldOut ? T("sold_line") : "" }) : F("item_body", { name: nm, price: priceText(lang, it), desc, note: it.soldOut ? T("sold_line") : "" });
@@ -1576,6 +1595,17 @@ export function faqAnswer(raw, asked = "") {
   return out.join("\n").replace(/\n{3,}/g, "\n\n").trim();
 }
 /* PS4 — نص لحظة الرسوم من الاختيارات المحسوبة (waassist.deliverySavers ⇒ options). ⇒ { text, reach } أو null لو مفيش «زي ما هو». كل رقم من options. */
+/* PS5 — ملخص السلة من السلة نفسها (مش من الموديل): كل سطر باسمه في المنيو، الوزن، اختيارات البوكس، وملاحظة المطبخ. */
+export function cartRecapOf(cfg, cart, lang) {
+  const L = lang === "en" ? "en" : "ar", T2 = (k, v = {}) => fill(k, textOf(cfg, k, L), v), en = L === "en";
+  const out = [T2("cart_recap_head", { mode: cart.option === "pickup" ? T2("btn_fee_pickup") : T2("btn_delivery") })];
+  for (const l of cart.lines || []) { const nm = en ? l.name_en || l.name : l.name, w = l.weight ? (en ? l.weight_en || l.weight : l.weight) : "";
+    const picks = (l.picks || []).map((p) => `${p.name}${p.note ? ` (${p.note})` : ""}`).join("، ");
+    out.push(T2("cart_recap_line", { name: `${nm}${w ? ` — ${w}` : ""}${picks ? ` (${picks})` : ""}`, qty: String(l.qty), total: money(l.total) }));
+    if (l.note) out.push(T2("cart_recap_note", { note: l.note })); }
+  out.push(T2("cart_recap_total", { total: money(cart.subtotal) }), T2("cart_recap_close"));
+  return out.join("\n");
+}
 export function feeSayOf(cfg, options, lang, { located = true } = {}) {
   const o = options || {}, L = lang === "en" ? "en" : "ar", a = o.as_is, r = o.reach, p = o.pickup;
   if (!a || !(Number(a.delivery) > 0) || !p) return null;
@@ -1595,6 +1625,7 @@ export function assistExtras(cfg, lang, r) {
   const b = r && r.buttons;
   if (b && b.kind === "fee") return { buttons: [...(b.reach ? [{ id: "as:reach", title: fit(T2("btn_fee_reach", { from: money(b.reach) })) }] : []), { id: "as:pickup", title: T2("btn_fee_pickup") }] };
   if (b && b.kind === "bigbox" && b.a && b.b) return { buttons: [{ id: `as:box:${b.a.slug}`, title: fit(b.a.name) }, { id: `as:box:${b.b.slug}`, title: fit(b.b.name) }] };
+  if (b && b.kind === "family" && b.meal && b.weight) return { buttons: [{ id: `as:meal:${b.meal.id}`, title: T2("btn_meal") }, { id: `as:weight:${b.weight.id}`, title: T2("btn_weight") }] };
   if (b && b.kind === "ad") return { buttons: [{ id: "as:delivery", title: T2("btn_delivery") }, { id: "as:pickup", title: T2("btn_fee_pickup") }, { id: "as:other", title: T2("btn_other") }] };
   if (r && r.list && Array.isArray(r.list.rows) && r.list.rows.length >= 2) return { list: { button: T2("list_btn"), rows: r.list.rows.slice(0, LIMITS.rows).map((x) => ({ id: x.id, title: x.title, ...(Number(x.extra) > 0 ? { description: L === "en" ? `+ SAR ${money(x.extra)}` : `+ ${money(x.extra)} ر.س` } : {}) })) } };
   return {};
@@ -2368,11 +2399,21 @@ export function register(app, ctx, deps = {}) {
       const gate5 = ok ? await liveGate5({ cfg, settings, phone, chat, ev, now }) : { never: null, out: false };
       /* M5: سيل صور/ملفات من غير نص ⇒ كتم + تحويل واحد (مش ٣٨ رد «ما أقدر أفتح الصور»). */
       if (ok && !afterWait && cls.key === "media" && !gate5.never && !gate5.out && cfg.mediaFloodCount > 0 && (cfg.mode === "live" || (cfg.mode === "test" && cfg.testPhones.includes(phone))) && !(chat.muted_until && Date.parse(chat.muted_until) > now.getTime())) {
-        const fl = await q(`SELECT count(*)::int AS n FROM wa_bot_log WHERE phone_norm=$1 AND msg_type IN ('image','video','document','audio','voice','sticker') AND at > NOW() - make_interval(mins => $2::int)`, [phone, Math.ceil(cfg.mediaFloodMinutes)]);
-        if (fl && fl[0] && Number(fl[0].n) >= cfg.mediaFloodCount) {
+const fl = await q(`SELECT count(*)::int AS n FROM wa_bot_log WHERE phone_norm=$1 AND msg_type IN ('image','video','document','audio','voice','sticker') AND at > NOW() - make_interval(mins => $2::int)`, [phone, Math.ceil(cfg.mediaFloodMinutes)]);
+        /* PS5 (…٦٨٦٩: خمس صور للي عايز يطلبه ⇒ كتم ٢٤ ساعة وسكوت على كل رسالة بعدها): والمساعد بيشوف الصور، الصور ورا بعض طلب. الكتم بعد mediaFloodBuyerCount بس، ولو مفيش ولا رسالة نصية
+           في المدة ومفيش محادثة مساعد شغّالة. ولما يحصل: سطر واحد للعميل + تنبيه عاجل للفريق — مش سكوت. */
+        const sees = cfg.assist.imagesEnabled === true && ["test", "live"].includes(cfg.assist.mode) && ev.media && ev.media.kind === "image";
+        let buyer = false;
+        if (sees && fl && fl[0] && Number(fl[0].n) >= cfg.mediaFloodCount) {
+          const tx = await q(`SELECT count(*)::int AS n FROM wa_bot_log WHERE phone_norm=$1 AND msg_type='text' AND at > NOW() - make_interval(mins => $2::int)`, [phone, Math.ceil(cfg.mediaFloodMinutes) + 30]);
+          let sess = null; try { sess = assistStore ? await assistStore.loadSession(phone, now, cfg.assist.sessionMin) : null; } catch { sess = null; }
+          buyer = Number(fl[0].n) < cfg.mediaFloodBuyerCount || Boolean(tx && tx[0] && Number(tx[0].n) > 0) || Boolean(sess);
+        }
+        if (fl && fl[0] && Number(fl[0].n) >= cfg.mediaFloodCount && !buyer) {
           await muteChat(phone, cfg.mediaFloodMuteHours, "media_flood");
-          const alert = await handoffNow(settings, cfg, phone, ["media_flood", "normal"], null, null, cls.lang);
-          await finish({ decision: "silent", reason: "media_flood", key: "media", handoff: "media_flood", alert, resumeAt: new Date(now.getTime() + cfg.mediaFloodMuteHours * 3600_000).toISOString() });
+          const alert = await handoffNow(settings, cfg, phone, ["media_flood", "urgent"], null, null, cls.lang);
+          let told = null; try { const L5 = cls.lang === "en" ? "en" : "ar", ph = publicPhoneOf(cfg, settings); told = await sendOwn(phone, cfg, now, { body: `${textOf(cfg, "media_flood_line", L5)}${ph ? `\n${fill("call_line", textOf(cfg, "call_line", L5), { phone: ph })}` : ""}` }, L5, "media_flood_line", null); } catch (e) { told = String(e.message).slice(0, 40); }
+          await finish({ decision: "silent", reason: "media_flood", key: "media", handoff: "media_flood", alert, detail: told ? `line not sent: ${told}` : "customer told once", resumeAt: new Date(now.getTime() + cfg.mediaFloodMuteHours * 3600_000).toISOString() });
           await oddThing(settings, cfg, "media_flood", phone, { detail: `${fl[0].n} ملف في ${cfg.mediaFloodMinutes} دقيقة — البوت اتكتم ${cfg.mediaFloodMuteHours} ساعة` });
           return;
         }
@@ -2398,8 +2439,16 @@ export function register(app, ctx, deps = {}) {
          - صورة دفع / طلب فيه مشكلة ⇒ تحويل لموظف بنص ثابت + اللي اتفهم في ملاحظة الموظف. صورة موقع ⇒ نطلب الموقع نفسه.
          - أي حاجة تانية أو أي فشل (مقفول، سقف، طويلة، مش واضحة، المزوّد واقع) ⇒ القرار زي ما هو (تحويل لموظف). */
       let mediaDone = false, seenEv = null;
+      /* PS5 — كذا صورة ورا بعض: كل صورة بتتسجّل «مستنية» وبتتعمل لها شغلة media_burst؛ آخر شغلة في السلسلة بتشوفهم كلهم وتبعت للمساعد وصف واحد (runMediaBurst ⇒ ev.burstSeen). */
+      if (ev.burstSeen) seenEv = { ...ev, text: String(ev.burstSeen), type: "text", media: null, heard: "image" };
+      else if (assistOn && !held && !afterWait && !ev.heard && !ev.noBurst && ev.media && ev.media.kind === "image" && ev.type === "image" && cfg.assist.imagesEnabled && cfg.assist.imageBurstSec > 0 && (d.act === "reply" || (d.act === "wait" && d.waitKind === "unknown_wait"))) {
+        const due = now.getTime() + cfg.assist.imageBurstSec * 1000;
+        const evLite = { phone, phoneNorm: phone, wamid: ev.wamid || null, text: String(ev.text || "").slice(0, 1000), type: "image", interactiveId: null, referral: ev.referral || null, location: null, media: { id: ev.media.id, kind: "image", mime: ev.media.mime || null, caption: ev.media.caption || null }, at: ev.at || now.toISOString(), intent: null };
+        const jb2 = await q(`INSERT INTO wa_bot_jobs(wamid, phone_norm, kind, due_at, ev, log_id) VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT (wamid) DO NOTHING RETURNING id`, [`mb:${ev.wamid || logId}`, phone, "media_burst", new Date(due).toISOString(), jb(evLite), logId]);
+        if (jb2 && jb2.length) { await finish({ decision: "waiting", reason: "media_burst", key: "media", resumeAt: new Date(due).toISOString() }); soon(cfg.assist.imageBurstSec * 1000 + 250); return; }
+      }
       /* صورة معاها تعليق: التعليق اتصنّف كنص عادي، بس الصورة لازم تتشاف برضه (الفشل ⇒ الرد على التعليق لوحده زي الأول). */
-      if (assistOn && !held && !ev.heard && ev.media && (d.act === "reply" || (d.act === "wait" && d.waitKind === "unknown_wait")) && (d.key === "media" || (ev.media.kind === "image" && ev.type === "image"))) {
+      if (!seenEv && assistOn && !held && !ev.heard && ev.media && (d.act === "reply" || (d.act === "wait" && d.waitKind === "unknown_wait")) && (d.key === "media" || (ev.media.kind === "image" && ev.type === "image"))) {
         let mu = null;
         try { mu = await understandMedia({ ev, cfg, phone, logId, lang: cls.lang === "en" ? "en" : "ar", data }); } catch (e) { console.error("[assist] media:", e.message); mu = null; }
         if (mu && mu.ev) return work(mu.ev, logId, settings, cfg, afterWait);
@@ -2671,6 +2720,7 @@ export function register(app, ctx, deps = {}) {
         if (j.kind === "paid_note") { await runPaidNote(j, settings, cfg, now, end); ran++; continue; }
         if (j.kind === "lead_followup") { await runLeadFollowUp(j, settings, cfg, now, end); ran++; continue; }
         if (j.kind === "assist_reminder") { await runReminder(j, settings, cfg, now, end); ran++; continue; }
+        if (j.kind === "media_burst") { await runMediaBurst(j, ev, settings, cfg, now, end); ran++; continue; }
         if (j.kind === "handover_check") { await runHandoverCheck(j, settings, cfg, now, end); ran++; continue; }
         if (now.getTime() - new Date(j.due_at).getTime() > cfg.maxAgeMinutes * 60_000) { await cancel("stale"); continue; }
         const echo = await q(`SELECT 1 FROM wa_messages WHERE phone_norm=$1 AND source='echo' AND created_at > $2 AND ${STAFF_ECHO_SQL} LIMIT 1`, [j.phone_norm, ev.at || new Date(j.due_at).toISOString()]);
@@ -2960,7 +3010,9 @@ export function register(app, ctx, deps = {}) {
     deliveryInfo: async () => { const r = await q("SELECT config FROM dl_policies WHERE active ORDER BY priority DESC, id LIMIT 1", []); const pol = r && r[0] ? r[0].config : null; const fees = pol ? feeLines(pol, "ar") : "";
       return pol && fees ? { ok: true, delivers_up_to_km: Number(pol.maxKm) || null, far_zone_up_to_km: pol.farZoneEnabled !== false ? Number(pol.farZoneMaxKm) || null : null, far_zone_extra_per_km: pol.farZoneEnabled !== false ? Number(pol.farZonePerKm) || null : null,
         fee_by_order_total: fees.split("\n"), ladder: Array.isArray(pol.feeByTotal) ? pol.feeByTotal.map((x) => ({ over: Number(x.over), fee: Number(x.fee) })) : null, note: "the exact fee for the customer is shown on the website before payment" } : null; },
-    feeSay: async (options, lang, o) => feeSayOf(cfg, options, lang, o),      // PS4: نص لحظة الرسوم من نصوص اللوحة
+    feeSay: async (options, lang, o) => feeSayOf(cfg, options, lang, o),
+    cartRecap: async (cart, lang) => cartRecapOf(cfg, cart, lang),      // PS5
+    firstLead: async (v, lang) => fill("first_lead", textOf(cfg, "first_lead", lang === "en" ? "en" : "ar"), { from: money(v.from), code: v.code }),      // PS5      // PS4: نص لحظة الرسوم من نصوص اللوحة
     /* PS3: خطة التذكير — آخر رسالة للعميل = الرسالة دي (النافذة ٢٤ ساعة منها)، ساعات الهدوء من الإعدادات، والمطعم لازم يكون فاتح في الميعاد. */
     reminder: async ({ day, time, lang }) => planReminder({ now: clock(), day, time, lastInMs: clock().getTime(), quietStart: cfg.assist.reminderQuietStart, quietEnd: cfg.assist.reminderQuietEnd, lang,
       isOpenAt: (dt) => { try { return settings?.hours ? isOpenNow(settings.hours, dt) : null; } catch { return null; } } }),
@@ -2975,8 +3027,11 @@ export function register(app, ctx, deps = {}) {
     const seeded = Boolean(session && session.state && (session.state.seed === true || session.state.seed === "reminder")), cardSeed = Boolean(session && session.state && session.state.seed === true);
     /* «بدون بصل» وهو بيجهّز سلة = ملاحظة للمساعد؛ بس لو له طلب حديث من الموقع تبقى «تعديل طلب» للموظف زي النهارده (ومانعرفش ⇒ نفترض إن له طلب). */
     let recentOrder = false;
-    if (cls.key === "change") { const ro = await q(`SELECT 1 FROM shop_orders WHERE phone_norm=$1 AND NOT COALESCE(is_test,false) AND status NOT IN ('expired','pending_payment') AND created_at > NOW() - INTERVAL '24 hours' LIMIT 1`, [phone]); recentOrder = ro === null || ro.length > 0; }
-    const el = assistEligible({ acfg, cfg, phone, ev, cls, d, afterWait: null, sessionActive: Boolean(session) && !cardSeed, handoverOpen: held, recentOrder, allowed });
+    if (cls.key === "change" || cls.key === "complaint") { const ro = await q(`SELECT 1 FROM shop_orders WHERE phone_norm=$1 AND NOT COALESCE(is_test,false) AND status NOT IN ('expired','pending_payment') AND created_at > NOW() - INTERVAL '24 hours' LIMIT 1`, [phone]); recentOrder = ro === null || ro.length > 0; }
+    /* PS5: «حالة الطلب» للقواعد بس لو للعميل طلب مفتوح فعلاً (نفس قراءة أداة المساعد). مانعرفش ⇒ null ⇒ القواعد. */
+    let openOrder = null;
+    if (cls.key === "status" && assist) { try { const os = await assist.order_status(phone); openOrder = os && os.ok ? os.has_open_order === true : null; } catch { openOrder = null; } }
+    const el = assistEligible({ acfg, cfg, phone, ev, cls, d, afterWait: null, sessionActive: Boolean(session) && !cardSeed, handoverOpen: held, recentOrder, openOrder, allowed });
     const lang = cls.lang === "en" ? "en" : "ar";
     const ruleKey = () => String((d && d.key) || cls.key || "reply");
     const turnRow = (x) => assistStore.addTurn({ phone, sessionId: session ? session.id : null, logId, wamid: ev.wamid || null, lang, ...x });
@@ -3021,16 +3076,29 @@ export function register(app, ctx, deps = {}) {
     const persona = personaOn(cfg);
     if (fresh || (persona && discloseDue)) cx.context = { ...cx.context, you: { name: cfg.assist.personaName, name_en: cfg.assist.personaNameEn, what: "Fresh Cuts' digital assistant (not a human)" } };
     if (persona && discloseDue) cx.context = { ...cx.context, introduce_yourself: { say: introSay(personaNameOf(cfg, lang), lang), rule: "use this phrase once in this message, exactly as it is" } };
+    /* PS5 (…٦٨٦٩: خمس صور للأصناف وصلت والمحادثة مكتومة، والمساعد بنى السلة من الكلام بس): صور العميل في آخر sessionMin دقيقة اللي لسه محدش شافها بتتشاف دلوقتي (نفس السقف والإخفاء)،
+       ووصفها بيدخل سياق الدور ده قبل أي تسعير. */
+    let earlierPictures = null;
+    if (acfg.imagesEnabled && !ev.burstSeen && !ev.heard) { try {
+      const pics = await q(`SELECT m.wamid, m.media, l.id AS log_id FROM wa_messages m JOIN wa_bot_log l ON l.wamid = m.wamid
+                             WHERE m.phone_norm=$1 AND m.direction='in' AND m.media->>'kind'='image' AND m.created_at > NOW() - make_interval(mins => $2::int) AND COALESCE(l.text,'') NOT LIKE '🖼%' AND l.id <> $4 ORDER BY m.id DESC LIMIT $3`, [phone, Math.ceil(acfg.sessionMin), Math.round(acfg.imageBurstMax), logId]);
+      const seen = [];
+      for (const pz of (pics || []).reverse()) { const md = typeof pz.media === "string" ? JSON.parse(pz.media) : (pz.media || {}); if (!md.id) continue;
+        const mu = await understandMedia({ ev: { phone, wamid: pz.wamid, text: "", type: "image", media: { id: md.id, kind: "image", mime: md.mime || null, caption: md.caption || null } }, cfg, phone, logId: pz.log_id, lang, data: {} });
+        if (mu && mu.seen) seen.push(String(mu.seen.text || "").replace(/^\[صورة من العميل\]\s*/, "").trim()); }
+      if (seen.length) earlierPictures = seen.map((s, i) => `صورة ${i + 1}: ${s}`).join("\n");
+    } catch (e) { console.error("[assist] earlier pictures:", e.message); earlierPictures = null; } }
     const loop = makeAssistLoop(assistDeps(cfg, settings, logId));
     const text = cls.key === "area" ? "📍" : String(ev.text || "");      // الموقع نفسه مابيتبعتش للموديل: علامة بس، والسياق بيقول إنه شارك موقعه
-    const r = await loop.runTurn({ phone, text, lang, session, acfg, context: cx.context, profile: cx.profile });
+    const r = await loop.runTurn({ phone, text, lang, session, acfg, context: cx.context, profile: cx.profile, earlierPictures });
     if (!r.ok) { if (fresh) session = null; if (/^model_http_400/.test(r.reason)) { await assistStore.dropSession(phone); session = null; } return fallback(r.reason, r.trace); }
     const tr = r.trace, nowMs = now.getTime(), L = tr.lang === "en" ? "en" : tr.lang === "ar" ? "ar" : lang;      // لغة الدور زي ما المساعد حدّدها («Pickup» وسط محادثة إنجليزية = إنجليزي)
     const bc = { cfg, lang: L, data, referral: null, factual: false, arg: null };
     let reply, handoff = null;
     try {
       if (r.handover) { const [k, tuple] = ASSIST_HANDOVER[r.handover.reason] || ASSIST_HANDOVER.needs_staff; reply = buildReply(k, k === "dishfact" ? { ...bc, arg: { id: null, text: "حساسية شديدة" } } : bc); handoff = tuple; reply = { body: reply.body }; }
-      else { let map = null; if (r.location && !r.cart) { try { map = buildReply("location", bc).cta || null; } catch { map = null; } }      // PS3: رد الموقع ⇒ زر «افتح الخريطة» (نفس رابط بوت القواعد). السلة لها الأولوية (زر واحد في الرسالة)
+      else { let map = null; if (r.photoItem && !r.cart && !r.location) { try { map = { title: textOf(cfg, "cta_menu", L), url: `${STORE}/l/wab-menu#item-${r.photoItem}` }; } catch { map = null; } }      // PS5: «كيف شكله؟» ⇒ زر يفتح صورة الصنف في المنيو
+        if (r.location && !r.cart) { try { map = buildReply("location", bc).cta || null; } catch { map = null; } }      // PS3: رد الموقع ⇒ زر «افتح الخريطة» (نفس رابط بوت القواعد). السلة لها الأولوية (زر واحد في الرسالة)
         let extras = {}; if (!r.cart && !map) { try { extras = assistExtras(cfg, L, r); } catch { extras = {}; } }      // PS4: زرّين لحظة الرسوم / بوكس كبير وبديله / أزرار الإعلان / قايمة اختيارات البوكس
         reply = { body: r.text, ...(r.cart ? { cta: { title: textOf(cfg, "cta_reorder", L), url: r.cart.link } } : map ? { cta: map } : extras.buttons || extras.list ? extras : fresh && cx.reorder ? { buttons: [{ id: "re:last", title: textOf(cfg, "row_reorder", L) }] } : {}) }; }
     } catch (e) { if (fresh) session = null; return fallback("reply_build", tr); }
@@ -3136,6 +3204,30 @@ export function register(app, ctx, deps = {}) {
         await assistStore.saveSession(phone, s0, now); } catch (e) { console.error("[assist] reminder seed:", e.message); }
     }
     return end(r.ok ? "done" : "cancelled", r.ok ? null : `send_failed:${err}`.slice(0, 80));
+  }
+  /* ── PS5 — سلسلة الصور ─────────────────────────────────────────────────────
+     كل صورة لها شغلة (ميعادها = وصولها + imageBurstSec). الشغلة اللي بعدها شغلة مستنية لنفس الرقم «بتندمج» (done / burst_merged). آخر شغلة بتجمع اللي اندمج في آخر ٣ دقايق + نفسها،
+     تشوف كل صورة (understandMedia — نفس السقف والإخفاء)، وتبعت للمساعد وصف واحد: «صورة ١: … صورة ٢: …». صورة دفع/مشكلة طلب/موقع في السلسلة، أو ولا صورة اتفهمت ⇒ آخر صورة تمشي في المسار العادي
+     (نص ثابت أو تحويل لموظف، زي النهارده). موظف كتب في النص ⇒ مانردّش فوقه. */
+  async function runMediaBurst(j, ev, settings, cfg, now, end) {
+    const phone = String(j.phone_norm || "");
+    const newer = await q("SELECT id FROM wa_bot_jobs WHERE phone_norm=$1 AND kind='media_burst' AND status='pending' LIMIT 1", [phone]);
+    if (newer === null) { await end("cancelled", "burst_check_failed"); await finishLog(j.log_id, { decision: "silent", reason: "burst_check_failed" }); return; }
+    if (newer.length) { await end("done", "burst_merged"); return; }
+    const earlier = (await q("SELECT ev, log_id FROM wa_bot_jobs WHERE phone_norm=$1 AND kind='media_burst' AND status='done' AND reason='burst_merged' AND done_at > NOW() - INTERVAL '3 minutes' ORDER BY id", [phone])) || [];
+    await q("UPDATE wa_bot_jobs SET reason='burst_used' WHERE phone_norm=$1 AND kind='media_burst' AND status='done' AND reason='burst_merged'", [phone]);
+    const all = [...earlier.map((r) => ({ ev: typeof r.ev === "string" ? JSON.parse(r.ev) : (r.ev || {}), logId: r.log_id })), { ev, logId: j.log_id }];
+    const echo = await q(`SELECT 1 FROM wa_messages WHERE phone_norm=$1 AND source='echo' AND created_at > $2 AND ${STAFF_ECHO_SQL} LIMIT 1`, [phone, all[0].ev.at || new Date(j.due_at).toISOString()]);
+    if (echo === null || echo.length) { for (const x of all) await finishLog(x.logId, { decision: "silent", reason: echo === null ? "echo_check_failed" : "staff_answered" }); await end("cancelled", echo === null ? "echo_check_failed" : "staff_answered"); return; }
+    if (all.length === 1) { await work({ ...ev, noBurst: true }, j.log_id, settings, cfg, null); await end("done", null); return; }      // صورة واحدة: المسار العادي
+    const lang = "ar", max = Math.round(cfg.assist.imageBurstMax), look = all.slice(0, max), seen = []; let special = false;
+    for (const x of look) { let mu = null; try { mu = await understandMedia({ ev: x.ev, cfg, phone, logId: x.logId, lang, data: {} }); } catch (e) { console.error("[assist] burst media:", e.message); mu = null; }
+      if (mu && mu.seen) seen.push(String(mu.seen.text || "").replace(/^\[صورة من العميل\]\s*/, "").trim()); else if (mu && mu.d) special = true; }
+    for (const x of all.slice(0, -1)) await finishLog(x.logId, { decision: "silent", reason: "media_burst", detail: `مع ${all.length} صور — الرد على آخر صورة` });
+    if (special || !seen.length) { await work({ ...ev, noBurst: true }, j.log_id, settings, cfg, null); await end("done", special ? "burst_special" : "burst_unclear"); return; }
+    const text = `[${all.length} صور من العميل ورا بعض]\n${seen.map((s, i) => `صورة ${i + 1}: ${s}`).join("\n")}${all.length > look.length ? `\n(${all.length - look.length} صور زيادة مااتشافتش: اطلب من العميل يبعتها تاني لو مهمة)` : ""}${seen.length < look.length ? `\n(${look.length - seen.length} صورة مش واضحة)` : ""}`;
+    await work({ ...ev, burstSeen: text }, j.log_id, settings, cfg, null);
+    await end("done", `burst ${all.length}`);
   }
   const minutesToClose = (hours, now) => { const c = closingToday(hours, now); if (!c) return null; const [h, m] = String(c).split(":").map(Number); const r = new Date(now.getTime() + 3 * 3600_000);
     return ((h * 60 + (m || 0)) - (r.getUTCHours() * 60 + r.getUTCMinutes()) + 1440) % 1440; };
@@ -3385,7 +3477,7 @@ export function register(app, ctx, deps = {}) {
     }
     const phone = normPh(b.phone);
     if (!/^5\d{8}$/.test(phone)) return c.json({ ok: false, error: "bad_phone" }, 400);
-    return c.json(await unmuteChat(phone));
+    return c.json(await unmuteChat(phone, { release: true }));      // PS5: «رجّع البوت» = الموظف ساب المحادثة: ردوده اللي قبل اللحظة دي مابتسكّتش البوت (كانت بتسكّته ٥–٣٠ دقيقة)
   }
   // صفحة المالك (#wa-bot)
   app.get("/api/cms/wabot/chats", async (c) => { const err = await requireAdmin(c); if (err) return err; return c.json({ ok: true, rows: await chatRows() }); });

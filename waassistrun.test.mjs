@@ -42,8 +42,10 @@ test("who answers: the rules keep stop, complaints, staff, media, order status, 
   const E = (cls, over = {}) => AR.assistEligible({ ...base, cls, ...over });
   for (const k of ["greet", "cats", "cat", "item", "items", "boxes", "tier", "box", "best", "spicy", "notmenu", "packs", "offers", "order", "delivery", "pickup", "faq"]) assert.equal(E({ key: k }).run, true, k);
   assert.equal(E({ key: "dishfact", rawIntent: "allergy_dish" }).run, true, "a question about one dish and an ingredient");
-  for (const k of ["stop", "start", "resume_all", "resume_updates", "optin_yes", "optin_no", "complaint", "problem", "change", "human", "media", "status", "reorder", "secret", "custom_offer", "hours", "hoursloc", "location", "payment", "thanks", "main"])
+  for (const k of ["stop", "start", "resume_all", "resume_updates", "optin_yes", "optin_no", "complaint", "problem", "change", "human", "media", "reorder", "secret", "custom_offer", "hours", "hoursloc", "location", "payment", "thanks", "main"])
     assert.deepEqual(E({ key: k }), { run: false, why: `rules:${k}` }, k);
+  /* PS5: order status is the rules bot's only for a real question about an order (and unless we know there is no open one) */
+  assert.deepEqual(E({ key: "status" }, { ev: { text: "وين طلبي" }, d: { act: "reply", key: "status" } }), { run: false, why: "rules:status" });
   assert.equal(E({ key: "dishfact", rawIntent: "allergy_severe" }).why, "rules:allergy_severe");
   // an unknown message waits for staff in the rules bot: the assistant answers it instead
   assert.equal(E({ key: "unknown" }, { d: { act: "wait", waitKind: "unknown_wait" } }).run, true);
@@ -320,7 +322,8 @@ test("found by the 259-conversation run of 12/10: cart notes are not «order cha
   assert.equal(E({ key: "change", rawIntent: "special_request" }, { handoverOpen: true }).run, false);
   // «استلام لما تفتحون» in the middle of an order went to the hours reply and cut the order: inside the conversation it stays with the assistant
   for (const k of ["hours", "hoursloc", "location", "payment", "thanks"]) { assert.equal(E({ key: k }, { d: { act: "reply", key: k } }).run, false, k); assert.equal(E({ key: k }, { d: { act: "reply", key: k }, sessionActive: true }).run, true, `${k} in session`); }
-  for (const k of ["stop", "complaint", "human", "status", "reorder", "secret", "main", "media"]) assert.equal(E({ key: k }, { d: { act: "reply", key: k }, sessionActive: true }).run, false, `${k} stays with the rules even in session`);
+  for (const k of ["stop", "complaint", "human", "reorder", "secret", "main", "media"]) assert.equal(E({ key: k }, { d: { act: "reply", key: k }, sessionActive: true }).run, false, `${k} stays with the rules even in session`);
+  assert.equal(E({ key: "status" }, { ev: { text: "طلبي وصل؟" }, d: { act: "reply", key: "status" }, sessionActive: true, openOrder: true }).run, false, "a real status question with an open order stays with the rules, in session too");
   // honest refusals in the plural and with a word between «no» and «discount»; the clause ends at «لكن / بس / but»
   const types = (t, lang = "ar") => AR.checkReply(t, { lang, facts: [{ a: 25, b: 60, c: 27 }] }).problems.map((p) => p.type);
   for (const ok of ["ما نقدر نشارك طريقة التحضير أو الوصفة. لكن باستا بشاميل متوفرة عندنا بـ 25 ر.س", "ما أقدر أفصّل البهارات أو طريقة التتبيل، لكن وجبة طرب بـ 27 ر.س", "ما عندي تفاصيل عن طريقة تحضير الطحينة أو عن موردينا، وما أقدر أشارك هذه المعلومات.", "ما أقدر أعطيك اسم المورد."]) assert.deepEqual(types(ok), [], ok);
@@ -429,7 +432,7 @@ test("AS4 — «وعليكم السلام» is an answer to a greeting: when the
   const m2 = scripted([say("وعليكم السلام 👋 وش تحب تطلب اليوم؟")]);
   const r2 = await turn(makeWorld({}, { callModel: m2.callModel }), null, "السلام عليكم");
   assert.equal(r2.text, "وعليكم السلام 👋 وش تحب تطلب اليوم؟", "the customer greeted: kept");
-  assert.ok(AR.SYSTEM_PROMPT.includes("until the pin arrives do not say that we do or do not deliver"));
+  assert.ok(AR.SYSTEM_PROMPT.includes("state no fee before the pin")); assert.ok(AR.SYSTEM_PROMPT.includes("«نعم نوصل داخل جدة 👍»"));
   assert.ok(AR.SYSTEM_PROMPT.includes("Never offer a service that no tool result or context mentions"));
 });
 

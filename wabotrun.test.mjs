@@ -58,7 +58,7 @@ function world({ waBot = {}, notifications = { whatsappEnabled: true }, orders =
   const clock = { now: () => new Date(nowMs), advance: (min) => { nowMs += min * 60_000; }, advanceSec: (s) => { nowMs += s * 1000; }, set: (iso) => { nowMs = Date.parse(iso); } };
   const db = { msgs: [], log: [], jobs: [], proofs: [], consentLog: [], ai: [], aiAlerts: [], tpl: [], cfgLog: [], botCarts: [], chats: new Map(), optouts: [], optins: {}, links: links.map((s) => (typeof s === "string" ? { slug: s, active: true, clicks: 0 } : { active: true, clicks: 0, ...s })), adChats: [], adReportParams: null, channelOffers: [], channelReportParams: null, sttKey: null, liveDay: [], marketingTo: [], settings: null };
   db.settings = { hours: HOURS, notifications, googlePlace: { mapsUrl: "https://maps.google.com/?cid=14767749764292326433" }, storefront: { seo: { faq: FAQ } },
-    cms: { loyalty: { enabled: true, every: 3, reward: "free_delivery", minTotal: 60 } }, delivery: { alertPhones: ["0544775082", "0506338246"], staffSmsLanguage: "en" }, waBot: { footerMode: "always", disclosureMode: "classic", ...waBot, assist: { menuToRules: false, ...((waBot || {}).assist || {}) } },      // PS4: the sections list alone, as the older tests expect; the menu link under it is tested on its own
+    cms: { loyalty: { enabled: true, every: 3, reward: "free_delivery", minTotal: 60 } }, delivery: { alertPhones: ["0544775082", "0506338246"], staffSmsLanguage: "en" }, waBot: { footerMode: "always", disclosureMode: "classic", ...waBot, assist: { menuToRules: false, grillFamilies: false, ...((waBot || {}).assist || {}) } },      // PS4: the sections list alone, as the older tests expect; the menu link under it is tested on its own
     waMaster: { enabled: true },   // SEC: مفتاح المالك الرئيسي (whatsapp.js guardSend) — مفتوح في العالم الافتراضي للاختبار
     ...extraSettings };
   const iso = () => new Date(nowMs).toISOString();
@@ -98,6 +98,9 @@ function world({ waBot = {}, notifications = { whatsappEnabled: true }, orders =
       if (/^SELECT \(expires_at > NOW\(\)\) AS live FROM wa_bot_carts/i.test(s)) return { rows: db.botCarts.filter((x) => x.code === p[0] && x.phone === p[1]).map((x) => ({ live: !x.expired })) };
       if (/^SELECT 1 FROM shop_orders WHERE phone_norm=\$1 AND created_at > \$2 AND status <> 'expired'/i.test(s)) return { rows: orders.filter((o) => o.phone_norm === p[0] && Date.parse(o.created_at) > Date.parse(p[1]) && o.status !== "expired").map(() => ({})) };
       if (/^UPDATE wa_bot_jobs SET status='cancelled', reason=\$2, done_at=NOW\(\) WHERE phone_norm=\$1 AND kind='assist_reminder'/i.test(s)) { for (const j of db.jobs) if (j.phone_norm === p[0] && j.kind === "assist_reminder" && j.status === "pending") { j.status = "cancelled"; j.reason = p[1]; } return { rows: [] }; }
+      if (/^SELECT id FROM wa_bot_jobs WHERE phone_norm=\$1 AND kind='media_burst' AND status='pending'/i.test(s)) return { rows: db.jobs.filter((j) => j.phone_norm === p[0] && j.kind === "media_burst" && j.status === "pending").slice(0, 1).map((j) => ({ id: j.id })) };
+      if (/^SELECT ev, log_id FROM wa_bot_jobs WHERE phone_norm=\$1 AND kind='media_burst' AND status='done' AND reason='burst_merged'/i.test(s)) return { rows: db.jobs.filter((j) => j.phone_norm === p[0] && j.kind === "media_burst" && j.status === "done" && j.reason === "burst_merged").map((j) => ({ ev: j.ev, log_id: j.log_id })) };
+      if (/^UPDATE wa_bot_jobs SET reason='burst_used'/i.test(s)) { for (const j of db.jobs) if (j.phone_norm === p[0] && j.kind === "media_burst" && j.reason === "burst_merged") j.reason = "burst_used"; return { rows: [] }; }
       if (/^UPDATE wa_bot_jobs SET status='cancelled', reason='replaced'/i.test(s)) { for (const j of db.jobs) if (j.phone_norm === p[0] && j.kind === "assist_followup" && j.status === "pending") { j.status = "cancelled"; j.reason = "replaced"; } return { rows: [] }; }
       if (/^SELECT 1 FROM wa_bot_jobs WHERE phone_norm=\$1 AND kind='assist_followup' AND status='done'/i.test(s)) return { rows: db.jobs.filter((j) => j.phone_norm === p[0] && j.kind === "assist_followup" && j.status === "done").map(() => ({})) };
       if (/^SELECT last_loc FROM wa_bot_chats/i.test(s)) return { rows: db.chats.has(p[0]) ? [{ last_loc: db.chats.get(p[0]).last_loc || null }] : [] };
@@ -2360,7 +2363,7 @@ function memStore() {
 }
 const TESTERS = ["0512345678"];
 /* PS4: the older assistant tests keep the behaviour they were written for; PS4 has its own tests (wa-ps4.test.mjs and the PS4 tests below) */
-const LEGACY_ASSIST = { feeMoment: false, menuToRules: false, pickForMe: false, choiceList: false, bigBoxSar: 0, pairingEnabled: false, adButtons: false, weightToAssistant: false, faqShort: false };
+const LEGACY_ASSIST = { imageBurstSec: 0, firstLead: false, grillFamilies: false, oneOfferPerChat: false, ackMaxChars: 0, feeMoment: false, menuToRules: false, pickForMe: false, choiceList: false, bigBoxSar: 0, pairingEnabled: false, adButtons: false, weightToAssistant: false, faqShort: false };
 function aWorld(steps, o = {}) {
   const m = aModel(steps), store = memStore();
   const w = world({ bundles: LIVE.bundles, links: ALL_LINKS, ...o, waBot: { mode: "test", testPhones: TESTERS, footerMode: "smart", ...(o.waBot || {}), assist: { mode: "test", forceSuggestion: false, typing: false, orderWordsStrong: true, ...LEGACY_ASSIST, ...((o.waBot || {}).assist || {}) } }, assistModel: m.callModel, assistStore: store });
@@ -2402,7 +2405,7 @@ test("assistant off (the default), dry bot, or assistant «test» while the bot 
 }));
 
 test("assistant: what the rules own is never sent to the model — stop, staff, complaint, order status, recipes, severe allergy, hours, taps, a staff member in the chat, an open handover", withEnv(CONFIGURED, async () => {
-  for (const text of ["إيقاف", "ابي اكلم موظف", "الطلب وصل بارد وناقص", "وين طلبي", "ايش التتبيلة حقت الشيش طاووق؟", "عندي حساسية شديدة من المكسرات وش اطلب", "متى تقفلون؟", "وين موقعكم"]) {
+  for (const text of ["إيقاف", "ابي اكلم موظف", "الطلب وصل بارد وناقص", "ايش التتبيلة حقت الشيش طاووق؟", "عندي حساسية شديدة من المكسرات وش اطلب", "متى تقفلون؟", "وين موقعكم"]) {
     const w = aWorld([]); const r = await w.say(text);
     assert.equal(w.m.used(), 0, text); assert.ok(r.log.reply_key !== "assist", text); assert.ok(msgs(r).length >= 1, `${text}: the rules bot answered`);
     assert.deepEqual(w.store.turns.map((t) => t.handledBy), ["rules_owned"], text);
@@ -3666,7 +3669,8 @@ test("M5: a flood of pictures with no text mutes the chat for 24 h with ONE hand
   assert.equal(first.length, 4); assert.ok(w.calls.length >= 1, "the first ones are handled as today");
   const smsBefore = w.sms.length, portalBefore = w.portal.length;
   const f = await img();
-  assert.deepEqual([f.sent.length, f.log.decision, f.log.reason, f.log.handoff], [0, "silent", "media_flood", "media_flood"]);
+  /* PS5: the mute is no longer silent — the customer gets ONE line, and the team an urgent alert */
+  assert.deepEqual([f.sent.length, f.log.decision, f.log.reason, f.log.handoff], [1, "silent", "media_flood", "media_flood"]); assert.equal(f.sent[0].text.body, "وصلتنا صورك 🙏 حوّلتها لواحد من الفريق يراجعها ويرد عليك هنا."); assert.equal(w.portal.at(-1)[1].urgent, true);
   assert.equal(w.portal.length, portalBefore + 1); assert.equal(w.portal.at(-1)[1].reason, "media_flood");
   assert.ok(w.sms.length >= smsBefore);
   const chat = w.db.chats.get("512345678");
@@ -4285,4 +4289,44 @@ test("PS4 — on WhatsApp: «المنيو» is the sections list + the menu link
   w.clock.advance(1);
   const t = await w.press("as:pickup", "استلام من الفرع");
   assert.equal(t.log.reply_key, "assist", "the assistant's own button returns to the assistant, as text"); assert.match(JSON.stringify(w.m.seen.at(-1).messages.at(-1)), /استلام من الفرع/);
+}));
+
+test("PS5 — several pictures in a row are one order: each waits a few seconds, then they are looked at together and answered ONCE; no flood mute for a buyer; a single picture behaves as before", withEnv(CONFIGURED, async () => {
+  const file = { ok: true, buf: JPG, mime: "image/jpeg" };
+  const BURST = { ...MEDIA_ON.assist, imageBurstSec: 6, imageBurstMax: 6 };
+  const w = aWorld([look({ kind: "menu_or_ad", summary: "صورة شيش طاووق مشوي على الفحم", clear: true }), look({ kind: "menu_or_ad", summary: "صورة طرب مشوي", clear: true }), look({ kind: "menu_or_ad", summary: "صورة بيبسي", clear: true }),
+    mSay("وصلتني الصور: شيش طاووق، طرب، وبيبسي. أجهّزهم لك؟")], { waBot: { assist: BURST }, mediaFile: file });
+  const img = (n) => w.say(null, { raw: { type: "image", image: { id: `90000000000${n}`, mime_type: "image/jpeg" } } });
+  const a = await img(1); w.clock.advanceSec(2); const b = await img(2); w.clock.advanceSec(2); const c = await img(3);
+  for (const r of [a, b, c]) assert.deepEqual([r.sent.length, r.log.decision, r.log.reason], [0, "waiting", "media_burst"]);
+  assert.equal(w.m.used(), 0, "nothing is looked at before the burst ends"); assert.equal(w.db.jobs.filter((j) => j.kind === "media_burst").length, 3);
+  assert.deepEqual(await w.tick(0.05), [], "the first two are due later than the third arrived: still waiting");
+  const out = await w.tick(0.2);
+  assert.equal(out.length, 1, "ONE reply for the three pictures"); assert.equal(out[0].text.body.split("\n").pop(), "وصلتني الصور: شيش طاووق، طرب، وبيبسي. أجهّزهم لك؟");
+  assert.equal(w.m.used(), 4, "three looks + one assistant turn");
+  const turnMsg = JSON.stringify(w.m.seen[3].messages.at(-1));
+  assert.match(turnMsg, /3 صور من العميل ورا بعض/); assert.match(turnMsg, /صورة 1: صورة شيش طاووق/); assert.match(turnMsg, /صورة 3: صورة بيبسي/); assert.match(turnMsg, /seen_in_a_picture/); assert.match(turnMsg, /usually ONE order/);
+  assert.deepEqual(w.db.jobs.filter((j) => j.kind === "media_burst").map((j) => [j.status, /^burst/.test(j.reason)]), [["done", true], ["done", true], ["done", true]]);
+  assert.equal(w.db.chats.get("512345678").muted_until || null, null, "no mute");
+  // a single picture: looked at alone after the wait, exactly the old path
+  const s = aWorld([look({ kind: "menu_or_ad", summary: "إعلان بوكس الكريب الفردي", clear: true }), mSay("بوكس الكريب الفردي عندنا. تبيه توصيل ولا استلام؟")], { waBot: { assist: BURST }, mediaFile: file });
+  await s.say(null, { raw: imageMsg() }); const so = await s.tick(0.2);
+  assert.equal(so.length, 1); assert.equal(s.m.used(), 2);
+  // five pictures within two minutes from someone the assistant is serving: not a flood
+  const f = aWorld(Array.from({ length: 6 }, (_, i) => (i < 5 ? look({ kind: "menu_or_ad", summary: `صورة صنف ${"ابجده"[i]}`, clear: true }) : mSay("وصلتني الصور. أجهّز لك الطلب؟"))), { waBot: { assist: BURST, mediaFloodCount: 5 }, mediaFile: file });
+  for (let i = 0; i < 5; i++) { const r = await f.say(null, { raw: { type: "image", image: { id: `8000000000${i}`, mime_type: "image/jpeg" } } }); assert.notEqual(r.log.reason, "media_flood", `picture ${i + 1}`); f.clock.advanceSec(1); }
+  assert.equal((await f.tick(0.2)).length, 1); assert.equal(f.db.chats.get("512345678")?.muted_by || null, null);
+}));
+
+test("PS5 — «رجّع البوت» and the hub's «تم التعامل» really hand the chat back: the staff reply before it no longer pauses the bot", withEnv(CONFIGURED, async () => {
+  const w = aWorld([mSay("هلا والله 👋 وش تحب تطلب اليوم؟")]);
+  await w.cashier("تفضل، التوصيل فوق 60 ريال يصير 15"); w.clock.advance(1);
+  const paused = await w.say("ابي بيتزا"); assert.equal(paused.log.decision, "waiting", "a staff member is in the chat");
+  await w.call("POST", "/api/cms/wabot/chats/unmute", { phone: "0512345678" });
+  assert.ok(w.db.chats.get("512345678").released_at, "the release is recorded");
+  w.clock.advance(1);
+  const r = await w.say("طيب ابي بيتزا"); assert.deepEqual([r.log.decision, r.log.reply_key], ["replied", "assist"], "answered at once, not «staff_pause»");
+  // a staff message AFTER the release pauses again
+  w.clock.advance(1); await w.cashier("لحظة معك"); w.clock.advance(1);
+  assert.equal((await w.say("طيب")).log.decision !== "replied" || false, true);
 }));

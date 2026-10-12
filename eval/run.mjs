@@ -60,7 +60,7 @@ async function runOne(sc) {
     /* as in the bot since 12/10: an ordinary handover does not stop the assistant; a serious one does (the script has no clock, so it holds to the end) */
     if (t.staff) { session = null; handoverOpen = null; }      // PS1: staff handled the chat and closed it — a new assistant session starts, as in the bot
     const serious = ["allergy_severe", "complaint", "problem", "order_change"].includes(handoverOpen);
-    const el = AR.assistEligible({ acfg: W.acfg, cfg: W.cfg, phone: PHONE, ev, cls, d, sessionActive: Boolean(session), handoverOpen: serious, recentOrder: Boolean((sc.world || {}).orders) });
+    const el = AR.assistEligible({ acfg: W.acfg, cfg: W.cfg, phone: PHONE, ev, cls, d, sessionActive: Boolean(session), handoverOpen: serious, recentOrder: Boolean((sc.world || {}).orders), openOrder: Boolean(((sc.world || {}).orders || []).length) });
     const rec = { i, customer: t.text || `[${ev.type}]`, cls: cls.key, raw: cls.rawIntent, by: null, reply: null, cart: null, handover: null, outcome: null, tools: [], verdicts: [], calls: [], ms: 0, costSar: 0, model: null, suggestions: [] };
     const rulesHandover = { complaint: "complaint", problem: "problem", change: "order_change", human: "asked_human", media: "media", custom_offer: "custom_offer" };
     if (!el.run) {
@@ -81,7 +81,7 @@ async function runOne(sc) {
     rec.context = context;
     first = false;
     const text = t.location ? "📍" : ev.text;
-    const r = await W.loop.runTurn({ phone: PHONE, text, lang, session, acfg: W.acfg, context, profile });
+    const r = await W.loop.runTurn({ phone: PHONE, text, lang, session, acfg: W.acfg, context, profile, earlierPictures: t.pictures || null });      // PS5: turn.pictures = descriptions of pictures the customer sent earlier
     Object.assign(rec, { tools: r.trace.tools, verdicts: r.trace.verdicts, calls: r.trace.calls, ms: r.trace.ms, costSar: r.trace.costSar, model: r.trace.model, tier: r.trace.tier, escalated: Boolean(r.trace.escalated), suggestions: r.trace.suggestions, lang: r.trace.lang || lang });
     if (!r.ok) { rec.by = "rules"; rec.outcome = `fallback:${r.reason}`; session = fresh ? null : AR.noteRulesTurn(session, ev.text, cls.key); turns.push(rec); continue; }
     session = r.session; rec.by = "assistant";

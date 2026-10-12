@@ -15,12 +15,13 @@ const A = AR.assistConfig({ mode: "test" });
 const u = (name, input) => ({ name, input });
 
 test("routing: the fast model starts every turn; the strong one only for a box, a cart beyond the simple size, or a fee objection", () => {
-  assert.deepEqual([A.fastCartLines, A.orderWordsStrong, A.fastSimplePreview], [2, false, true]);
+  assert.deepEqual([A.fastCartLines, A.orderWordsStrong, A.fastSimplePreview], [1, false, true]);      // PS5: 2 → 1 after the first real (wrong) cart
   for (const t of ["هلا", "ابي كريب زنجر سوبريم", "جهز لي بوكس البرجر", "i want a pizza"]) assert.equal(AR.pickModel(A, null, t).tier, "fast", t);
   assert.equal(AR.pickModel(A, { strong: true }, "شكرا").tier, "strong", "a conversation that needed the strong model stays on it");
   assert.equal(AR.pickModel({ ...A, orderWordsStrong: true }, null, "ابي كريب زنجر سوبريم").tier, "strong", "the pre-PS2 behaviour is a setting");
   const one = { items: [{ id: "8", qty: 1 }] }, two = { items: [{ id: "8", qty: 1, note: "بدون مخلل" }, { id: "82", qty: 2 }], option: "pickup" }, three = { items: [{ id: "8" }, { id: "82" }, { id: "3" }] };
-  for (const n of ["preview_cart", "build_cart"]) { assert.equal(AR.needsStrong(u(n, one), A), false, n); assert.equal(AR.needsStrong(u(n, two), A), false, n); assert.equal(AR.needsStrong(u(n, three), A), true, n);
+  const A2 = { ...A, fastCartLines: 2 }, twoPlain = { items: [{ id: "8", qty: 1 }, { id: "82", qty: 2 }], option: "pickup" };
+  for (const n of ["preview_cart", "build_cart"]) { assert.equal(AR.needsStrong(u(n, one), A), false, n); assert.equal(AR.needsStrong(u(n, twoPlain), A), true, `${n}: two lines are the strong model's since PS5`); assert.equal(AR.needsStrong(u(n, twoPlain), A2), false, `${n}: the setting still allows two`); assert.equal(AR.needsStrong(u(n, two), A2), true, `${n}: a kitchen note is the strong model's`); assert.equal(AR.needsStrong(u(n, three), A), true, n);
     assert.equal(AR.needsStrong(u(n, { items: [{ id: "8" }], boxes: [{ slug: "box-crepe-duo" }] }), A), true, `${n} with a box`); assert.equal(AR.needsStrong(u(n, { items: [] }), A), true, `${n} empty`); }
   assert.equal(AR.needsStrong(u("get_box", { slug: "box-crepe-duo" }), A), true); assert.equal(AR.needsStrong(u("delivery_savers", { total: 30 }), A), true);
   for (const n of ["search_menu", "get_item", "list_boxes", "recommend", "quote_delivery", "get_offers", "faq", "dish_fact", "note_suggestion", "handover"]) assert.equal(AR.needsStrong(u(n, {}), A), false, n);
@@ -33,7 +34,7 @@ test("routing in the loop: a two-dish order is priced and built by the fast mode
   const say = (text) => ({ ok: true, content: [{ type: "text", text }], stop: "end_turn", usage: { input_tokens: 50, output_tokens: 20 }, ms: 5, provider: "t" });
   const use = (name, input) => ({ ok: true, content: [{ type: "tool_use", id: `t${seen.length}`, name, input }], stop: "tool_use", usage: { input_tokens: 50, output_tokens: 20 }, ms: 5, provider: "t" });
   const run = async (steps, text) => { let i = 0; seen.length = 0; const W = makeWorld({}, { callModel: async (a) => { seen.push(a.model); return steps[i++]; }, onCall: async () => ({ costSar: 0, in: 0, out: 0, cached: 0 }) });
-    const hours = await W.tools.get_hours(); return W.loop.runTurn({ phone: PHONE, text, lang: "ar", session: AR.newSession(W.now()), acfg: { ...W.acfg, forceSuggestion: false }, context: AR.buildContext({ first: true, hours, boxes: W.boxes }) }); };
+    const hours = await W.tools.get_hours(); return W.loop.runTurn({ phone: PHONE, text, lang: "ar", session: AR.newSession(W.now()), acfg: { ...W.acfg, forceSuggestion: false, fastCartLines: 2 }, context: AR.buildContext({ first: true, hours, boxes: W.boxes }) }); };
   const r = await run([use("build_cart", { option: "pickup", items: [{ id: "8", qty: 1 }, { id: "82", qty: 1 }] }), say("سلتك: كريب زنجر سوبريم 25 ر.س + مشروبات غازية 3 ر.س = 28 ر.س 👇")], "ابي كريب زنجر سوبريم ومشروب غازي استلام");
   assert.equal(r.ok, true); assert.equal(r.cart.subtotal, 28); assert.deepEqual(seen, ["claude-haiku-5-5", "claude-haiku-5-5"]); assert.equal(r.trace.tier, "fast"); assert.ok(!r.trace.escalated);
   const ctx = JSON.parse(/<context[^>]*>([\s\S]*?)<\/context>/.exec(r.session.messages[0].content[0].text)[1]);
@@ -43,7 +44,7 @@ test("routing in the loop: a two-dish order is priced and built by the fast mode
 });
 
 test("prompt: rules that belong to a context key travel with that key, word for word, and the fixed prompt is smaller; the leak detector still knows them", () => {
-  assert.ok(AR.SYSTEM_PROMPT.length < 23300, `fixed prompt ${AR.SYSTEM_PROMPT.length} chars (25.5k before PS2; PS3 added two short rules and kept the postponement rule in the context)`);
+  assert.ok(AR.SYSTEM_PROMPT.length < 24000, `fixed prompt ${AR.SYSTEM_PROMPT.length} chars (25.5k before PS2; PS3 added two short rules and kept the postponement rule in the context)`);
   for (const k of ["heard_from_voice_note", "seen_in_a_picture", "came_from_ad", "staff_handled_this_chat", "reorder_offer"]) assert.ok(!AR.SYSTEM_PROMPT.includes(`"${k}"`), `${k} is no longer explained in the fixed prompt`);
   assert.match(AR.SYSTEM_PROMPT, /Some context keys carry their own "rule"/); assert.match(AR.SYSTEM_PROMPT, /Never write a channel link or mention the channel in a turn whose context has no "channel_invite"/);
   for (const [k, v] of Object.entries(AR.CTX_RULES)) { assert.ok(v.length > 120, k); assert.doesNotMatch(v, /\d/, `${k}: no digits (a context block counts as facts for the validator's number check)`); }

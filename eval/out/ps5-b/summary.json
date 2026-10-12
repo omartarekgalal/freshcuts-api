@@ -1,0 +1,67 @@
+{
+ "set": "ps5",
+ "name": "ps5-b",
+ "over": {
+  "routing": "escalate",
+  "thinking": "adaptive",
+  "effort": "low",
+  "timeoutMs": 60000
+ },
+ "capped": false,
+ "spentRun": 0.5282870000000001,
+ "spentTodayBefore": 5.21081,
+ "cap": 120,
+ "conversations": 6,
+ "passed": 4,
+ "failed": [
+  "ps5-6869-wrong-cart-text-only",
+  "ps5-6869-wrong-cart-with-pictures"
+ ],
+ "customerTurns": 20,
+ "modelTurns": 19,
+ "answeredByAssistant": 19,
+ "rulesOwned": 1,
+ "fallbacks": {},
+ "validatorRetries": 2,
+ "escalations": 1,
+ "costSar": 0.5283,
+ "costPerConversationSar": 0.088,
+ "costPerModelTurnSar": 0.0278,
+ "latencyMs": {
+  "p50": 3077,
+  "p90": 6306,
+  "max": 7699,
+  "n": 19
+ },
+ "modelCalls": 40,
+ "byModel": {
+  "claude-haiku-5-5": {
+   "calls": 35,
+   "in": 92071,
+   "out": 5217,
+   "cached": 506027,
+   "sar": 0.2341,
+   "callP50ms": 1385,
+   "callP90ms": 2218
+  },
+  "claude-sonnet-5-5": {
+   "calls": 5,
+   "in": 26175,
+   "out": 1034,
+   "cached": 78840,
+   "sar": 0.2942,
+   "callP50ms": 2048,
+   "callP90ms": 2830
+  }
+ },
+ "failTypes": {
+  "must_contain": 3
+ },
+ "reviewFlags": {
+  "validator_retry": 2,
+  "same_closing": 1,
+  "intro_by_code": 1
+ },
+ "text": "conversations 6 · passed 4 · failed 2\ncustomer turns 20: assistant answered 19, rules owned 1, fallbacks {}\nvalidator retries 2 · escalations fast→strong 1 · model calls 40\ncost 0.5283 SAR (0.088 per conversation, 0.0278 per model turn)\nlatency per answered turn: p50 3077 ms · p90 6306 ms · max 7699 ms (n=19)\nby model {\"claude-haiku-5-5\":{\"calls\":35,\"in\":92071,\"out\":5217,\"cached\":506027,\"sar\":0.2341,\"callP50ms\":1385,\"callP90ms\":2218},\"claude-sonnet-5-5\":{\"calls\":5,\"in\":26175,\"out\":1034,\"cached\":78840,\"sar\":0.2942,\"callP50ms\":2048,\"callP90ms\":2830}}\nfail types {\"must_contain\":3}\nreview flags {\"validator_retry\":2,\"same_closing\":1,\"intro_by_code\":1}",
+ "markdown": "# Assistant evaluation: ps5-b\n\n```\nconversations 6 · passed 4 · failed 2\ncustomer turns 20: assistant answered 19, rules owned 1, fallbacks {}\nvalidator retries 2 · escalations fast→strong 1 · model calls 40\ncost 0.5283 SAR (0.088 per conversation, 0.0278 per model turn)\nlatency per answered turn: p50 3077 ms · p90 6306 ms · max 7699 ms (n=19)\nby model {\"claude-haiku-5-5\":{\"calls\":35,\"in\":92071,\"out\":5217,\"cached\":506027,\"sar\":0.2341,\"callP50ms\":1385,\"callP90ms\":2218},\"claude-sonnet-5-5\":{\"calls\":5,\"in\":26175,\"out\":1034,\"cached\":78840,\"sar\":0.2942,\"callP50ms\":2048,\"callP90ms\":2830}}\nfail types {\"must_contain\":3}\nreview flags {\"validator_retry\":2,\"same_closing\":1,\"intro_by_code\":1}\n```\n\n## Conversations\n\n### PASS · ps5-6869-delivery-first-order (the real chat) · 0.0302 SAR\n\nReview: validator_retry@0 «self_talk:... لا،»; same_closing@2 «وش تحب تطلب»\n\n- **العميل:** في توصيل؟\n  - **المساعد** (fast, 3489 ms, 0.0125 SAR): معك ماجد، المساعد الرقمي لفريش كاتس. نعم نوصل داخل جدة 👍 شاركني موقعك هنا في واتساب (📎 ثم «الموقع») عشان أتأكد من التغطية وأعطيك رسوم التوصيل.\n- **العميل:** [location]\n  - **المساعد** (fast, 2513 ms, 0.0114 SAR, tools: quote_delivery): نعم نوصل لك 👍 أول طلب توصيل لك من موقعنا توصيله مجاني للطلبات من 60 ر.س بكود FIRST. أقل من ذلك الرسوم 20 ر.س. ⏎  ⏎ وش تحب تطلب؟\n- **العميل:** يعني لو طلبي فوق ال٦٠ يصير ١٥ ريال فقط ؟؟\n  - **المساعد** (fast, 2438 ms, 0.0064 SAR): نعم، من 60 ر.س الرسوم تصير 15 ر.س. وإذا كانت أول طلب توصيل لك، الكود FIRST يخلي التوصيل مجاني من 60 ر.س. ⏎  ⏎ وش تحب تطلب؟\n\n### PASS · ps5-6869-delivery-ordered-before (the real chat) · 0.0243 SAR\n\n- **العميل:** في توصيل؟\n  - **المساعد** (fast, 2133 ms, 0.0069 SAR): معك ماجد، المساعد الرقمي لفريش كاتس. نعم نوصل داخل جدة 👍 شاركني موقعك هنا في واتساب (📎 ثم «الموقع») حتى أتأكد من التغطية وأعرف رسوم التوصيل.\n- **العميل:** [location]\n  - **المساعد** (fast, 2419 ms, 0.0113 SAR, tools: quote_delivery): نعم نوصل لك 👍 رسوم التوصيل لهذا الموقع 20 ر.س، وتصير 15 ر.س إذا وصل الطلب 60 ر.س، والتوصيل مجاني من 150 ر.س. ⏎  ⏎ وش تحب تطلب اليوم؟\n- **العميل:** يعني لو طلبي فوق ال٦٠ يصير ١٥ ريال فقط ؟؟\n  - **المساعد** (fast, 2155 ms, 0.0061 SAR): نعم، إذا وصل الطلب 60 ر.س أو أكثر تصير رسوم التوصيل 15 ر.س، والتوصيل مجاني من 150 ر.س. ⏎  ⏎ تحب تطلب وش؟\n\n### PASS · ps5-6869-the-order (the real chat) · 0.0911 SAR\n\n- **العميل:** شيش طاووق مشوي على الفحم\n  - _(أزرار: [وجبة] [بالوزن])_\n  - **المساعد** (fast, 3265 ms, 0.0131 SAR, tools: search_menu): معك ماجد، المساعد الرقمي لفريش كاتس 👋 شيش طاووق مشوي على الفحم، تبيه وجبة بـ 27 ر.س (مع الأرز والسلطة والطحينة)، ولا بالوزن؟ الوزن: ثلث كيلو بـ 37 ر.س · نصف كيلو بـ 55 ر.س · كيلو بـ 110 ر.س.\n- **العميل:** وجبة\n  - **المساعد** (fast, 2677 ms, 0.0128 SAR, tools: preview_cart): وجبة شيش طاووق بـ 27 ر.س. وبـ 33 ر.س يصير بوكس «بوكس وجبة المشاوي الفردي»: وجبة مشاوي من اختيارك + صنف جانبي (بطاطس أو كولسلو أو دوريتوس) + مشروب غازي. أحوّله بوكس؟\n- **العميل:** والطرب ابغا وجبة، جزء منه مقمر وجزء مستوي عادي\n  - **المساعد** (fast, 2875 ms, 0.0138 SAR, tools: note_suggestion, preview_cart): تمام، وجبة شيش طاووق بـ 27 ر.س، وكتبت ملاحظة للمطبخ: جزء منه مقمر وجزء مستوي عادي. المجموع 27 ر.س. شي ثاني؟\n- **العميل:** البيبسي اثنين\n  - **المساعد** (fast, 3194 ms, 0.0209 SAR, tools: search_menu, preview_cart): أضفت بيبسي زجاج × 2 بـ 8 ر.س. المجموع 35 ر.س. شي ثاني؟\n- **العميل:** في صوصات؟\n  - **المساعد** (fast, 3328 ms, 0.0151 SAR, tools: search_menu): ما لقيت صوصات منفصلة في المنيو الحين. الوجبة تجي مع الطحينة والسلطة. تبي تضيف شي ثاني ولا نكمل؟\n- **العميل:** كيف شكل الصوص ممكن تصورلي هوا؟\n  - **المساعد** (fast, 2492 ms, 0.0153 SAR, tools: dish_photo): ما أقدر أرسل صور، وما عندي صورة لهذا الصوص في المنيو. إذا تبيها صورة حقيقية اكتب «موظف» وأحوّلك للفريق. تبي تكمل الطلب؟\n\n### PASS · ps5-status-real-open-order (status) · 0.0000 SAR\n\n- **العميل:** وين طلبي\n  - _بوت القواعد_ (rules:status)\n\n### FAIL · ps5-6869-wrong-cart-text-only (the wrong cart) · 0.0469 SAR\n\n**Fails:** must_contain «110»; must_contain@0 «27»\n\nReview: intro_by_code@0 «»\n\n- **العميل:** شيش طاووق مشوي على الفحم\n  - _(أزرار: [وجبة] [بالوزن])_\n  - **المساعد** (fast, 4667 ms, 0.0193 SAR, tools: search_menu, dish_fact): معك ماجد، المساعد الرقمي لفريش كاتس. ⏎ ما عندي معلومة مؤكدة عن هذا المكوّن في الصنف. ⏎ واكتب لنا حساسيتك في ملاحظة الطلب وننتبه لها. ⏎ ولو تبي تأكيد من المطبخ اكتب: موظف\n- **العميل:** وضيف طرب\n  - _(أزرار: [وجبة] [بالوزن])_\n  - **المساعد** (fast, 2822 ms, 0.0132 SAR, tools: search_menu): تمام، أضيف طرب. تبيه وجبة طرب بـ 27 ر.س (مع الأرز والسلطة والطحينة)، ولا بالوزن (ثلث كيلو 47 ر.س · نصف كيلو 70 ر.س · كيلو 140 ر.س)؟\n- **العميل:** ثلاثه ببسي\n  - **المساعد** (fast, 4553 ms, 0.0144 SAR, tools: search_menu): تمام، ثلاث بيبسي زجاج بـ 4 ر.س للواحدة. وما زلت محتاج أعرف الشيش والطرب، ولا تحدد لي، أجهّزهم وجبات بـ 27 ر.س لكل واحدة، ونكمّل بعدها؟\n\n### FAIL · ps5-6869-wrong-cart-with-pictures (the wrong cart) · 0.3358 SAR\n\n**Fails:** must_contain «طرب مشوي بالوزن — نصف كيلو|طرب مشوي بالوزن نصف كيلو»\n\nReview: validator_retry@3 «weight_price_without_weight:طرب مشوي بالوزن: 70»\n\n- **العميل:** شيش طاووق مشوي على الفحم\n  - **المساعد** (fast, 3249 ms, 0.0128 SAR, tools: search_menu): معك ماجد، المساعد الرقمي لفريش كاتس 🙂 ⏎  ⏎ الشيش طاووق المشوي على الفحم بالوزن: ثلث كيلو 37 ر.س · نصف كيلو 55 ر.س · كيلو 110 ر.س. ⏎  ⏎ تبيه ثلث كيلو ولا نصف كيلو ولا كيلو؟\n- **العميل:** نص كيلو من كل واحد، والطرب جزء منه مقمر وجزء مستوي عادي\n  - **المساعد** (fast, 3077 ms, 0.0140 SAR, tools: preview_cart): أبشر، نص كيلو شيش طاووق بـ 55 ر.س، ونص كيلو طرب بـ 70 ر.س، والطرب بملاحظة: جزء مقمر وجزء مستوي عادي، كتبتها ملاحظة للمطبخ. المجموع 125 ر.س. ⏎  ⏎ تحب أضيف لك بطاطس محمرة بـ 6 ر.س؟\n- **العميل:** ثلاثه ببسي وبدون مويه، توصيل\n  - **المساعد** (strong↑, 7699 ms, 0.2303 SAR, tools: search_menu, note_suggestion, preview_cart): أضفت 3 بيبسي زجاج، والمجموع 137 ر.س، وبدون مويه ما أضفتها. شارك موقعك هنا (📎 ثم «الموقع») وأتأكد لك من التوصيل والرسوم.\n- **العميل:** خلها زي ما هي وارسل السلة\n  - **المساعد** (strong, 6306 ms, 0.0786 SAR, tools: build_cart, cart 137 delivery): سلتك: ⏎ شيش طاووق مشوي بالوزن، نصف كيلو: 55 ر.س ⏎ طرب مشوي بالوزن، نصف كيلو: 70 ر.س (جزء مقمر وجزء مستوي عادي) ⏎ 3 بيبسي زجاج = 12 ر.س ⏎ المجموع 137 ر.س، والتوصيل يظهر في الموقع. ⏎  ⏎ اضغط الزر، حدّد موقعك وادفع 👇\n"
+}

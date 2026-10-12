@@ -18,7 +18,7 @@ export const LOOK_SYSTEM = `You look at ONE picture a customer sent to a restaur
 {"kind": "menu_or_ad" | "payment" | "order_problem" | "location" | "other", "summary": "<one or two short sentences in Arabic>", "clear": true | false}
 
 kind:
-- menu_or_ad: a screenshot or photo of a menu, a dish, a box, an offer or an advertisement. summary = what is shown: dish or offer names exactly as written, and a price only if it is clearly printed.
+- menu_or_ad: a screenshot or photo of a menu, a dish, a box, an offer or an advertisement. summary = what is shown: dish or offer names exactly as written, and a price only if it is clearly printed. If it is a screenshot of ONE item's page on an ordering website or app: the item name exactly as written, the section label if one is shown, the size or weight that is selected or highlighted if any (otherwise each size or weight with its printed price), and the printed price.
 - payment: a payment receipt, a bank transfer, a card or wallet screen, an invoice or an order confirmation. summary = that it is a payment or order screenshot and, if visible, whether it shows success or failure. NOTHING else from it.
 - order_problem: a photo of food or a delivered order that looks wrong, missing, damaged, cold, spilled, or with something in it. summary = what is visibly wrong, plainly, without judging who is at fault.
 - location: a map or address screenshot. summary = that it is a location screenshot (a district name only if clearly written).

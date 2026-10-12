@@ -1,0 +1,52 @@
+{
+ "set": "ps5",
+ "name": "ps5-a",
+ "over": {
+  "routing": "escalate",
+  "thinking": "adaptive",
+  "effort": "low",
+  "timeoutMs": 60000
+ },
+ "capped": false,
+ "spentRun": 0.16883900000000002,
+ "spentTodayBefore": 5.041970999999999,
+ "cap": 120,
+ "conversations": 4,
+ "passed": 4,
+ "failed": [],
+ "customerTurns": 13,
+ "modelTurns": 12,
+ "answeredByAssistant": 12,
+ "rulesOwned": 1,
+ "fallbacks": {},
+ "validatorRetries": 1,
+ "escalations": 0,
+ "costSar": 0.1688,
+ "costPerConversationSar": 0.0422,
+ "costPerModelTurnSar": 0.0141,
+ "latencyMs": {
+  "p50": 3307,
+  "p90": 5041,
+  "max": 5541,
+  "n": 12
+ },
+ "modelCalls": 25,
+ "byModel": {
+  "claude-haiku-5-5": {
+   "calls": 25,
+   "in": 64917,
+   "out": 3306,
+   "cached": 368779,
+   "sar": 0.1688,
+   "callP50ms": 1316,
+   "callP90ms": 2400
+  }
+ },
+ "failTypes": {},
+ "reviewFlags": {
+  "many_emoji": 1,
+  "validator_retry": 1
+ },
+ "text": "conversations 4 · passed 4 · failed 0\ncustomer turns 13: assistant answered 12, rules owned 1, fallbacks {}\nvalidator retries 1 · escalations fast→strong 0 · model calls 25\ncost 0.1688 SAR (0.0422 per conversation, 0.0141 per model turn)\nlatency per answered turn: p50 3307 ms · p90 5041 ms · max 5541 ms (n=12)\nby model {\"claude-haiku-5-5\":{\"calls\":25,\"in\":64917,\"out\":3306,\"cached\":368779,\"sar\":0.1688,\"callP50ms\":1316,\"callP90ms\":2400}}\nfail types {}\nreview flags {\"many_emoji\":1,\"validator_retry\":1}",
+ "markdown": "# Assistant evaluation: ps5-a\n\n```\nconversations 4 · passed 4 · failed 0\ncustomer turns 13: assistant answered 12, rules owned 1, fallbacks {}\nvalidator retries 1 · escalations fast→strong 0 · model calls 25\ncost 0.1688 SAR (0.0422 per conversation, 0.0141 per model turn)\nlatency per answered turn: p50 3307 ms · p90 5041 ms · max 5541 ms (n=12)\nby model {\"claude-haiku-5-5\":{\"calls\":25,\"in\":64917,\"out\":3306,\"cached\":368779,\"sar\":0.1688,\"callP50ms\":1316,\"callP90ms\":2400}}\nfail types {}\nreview flags {\"many_emoji\":1,\"validator_retry\":1}\n```\n\n## Conversations\n\n### PASS · ps5-6869-delivery-first-order (the real chat) · 0.0362 SAR\n\nReview: many_emoji@0 «»; validator_retry@0 «self_talk:... لا،»\n\n- **العميل:** في توصيل؟\n  - **المساعد** (fast, 5541 ms, 0.0124 SAR): معك ماجد، المساعد الرقمي لفريش كاتس. أهلاً بك 👋 ⏎  ⏎ نعم نوصل داخل جدة 👍 شاركني موقعك هنا في واتساب (📎 ثم «الموقع») عشان أتأكد من التغطية وأقولك رسوم التوصيل.\n- **العميل:** [location]\n  - **المساعد** (fast, 2319 ms, 0.0114 SAR, tools: quote_delivery): نعم نوصل لك 👍 أول طلب توصيل لك من موقعنا توصيله مجاني للطلبات من 60 ر.س بكود FIRST. أقل من ذلك الرسوم 20 ر.س. ⏎  ⏎ تحب تطلب من المشاوي ولا الكريب والبرجر؟\n- **العميل:** يعني لو طلبي فوق ال٦٠ يصير ١٥ ريال فقط ؟؟\n  - **المساعد** (fast, 3436 ms, 0.0124 SAR, tools: quote_delivery): بالنسبة لطلبك الأول: إذا وصل الطلب 60 ر.س فأكثر مع كود FIRST يكون التوصيل مجاني، والرسوم العادية لهذا المبلغ 15 ر.س بدون الكود. ⏎  ⏎ تحب تبدأ الطلب من المشاوي ولا الكريب والبرجر؟\n\n### PASS · ps5-6869-delivery-ordered-before (the real chat) · 0.0241 SAR\n\n- **العميل:** في توصيل؟\n  - **المساعد** (fast, 2460 ms, 0.0069 SAR): معك ماجد، المساعد الرقمي لفريش كاتس. نعم نوصل داخل جدة 👍 شارك موقعك معي هنا في واتساب (📎 ثم «الموقع») عشان أتأكد من التغطية وأعطيك رسوم التوصيل. وش تحب تطلب؟\n- **العميل:** [location]\n  - **المساعد** (fast, 2339 ms, 0.0112 SAR, tools: quote_delivery): نعم نوصل لك 👍 رسوم التوصيل 20 ر.س، والتوصيل مجاني من طلب 150 ر.س. وش تحب تطلب اليوم؟\n- **العميل:** يعني لو طلبي فوق ال٦٠ يصير ١٥ ريال فقط ؟؟\n  - **المساعد** (fast, 1781 ms, 0.0060 SAR): نعم، إذا وصل طلبك 60 ر.س أو أكثر تكون رسوم التوصيل 15 ر.س بدل 20 ر.س. ومن 150 ر.س التوصيل مجاني. وش تحب تطلب؟\n\n### PASS · ps5-6869-the-order (the real chat) · 0.1085 SAR\n\n- **العميل:** شيش طاووق مشوي على الفحم\n  - _(أزرار: [وجبة] [بالوزن])_\n  - **المساعد** (fast, 5041 ms, 0.0193 SAR, tools: search_menu, faq): معك ماجد، المساعد الرقمي لفريش كاتس 👋 شيش طاووق مشوي على الفحم عندنا بطريقتين: تبيه وجبة وجبة شيش طاووق بـ 27 ر.س مع الأرز والسلطة والطحينة، ولا بالوزن (ثلث كيلو 37 ر.س · نصف كيلو 55 ر.س · كيلو 110 ر.س)؟\n- **العميل:** وجبة\n  - **المساعد** (fast, 2443 ms, 0.0127 SAR, tools: preview_cart): وجبة شيش طاووق بـ 27 ر.س. وبـ 33 ر.س يصير بوكس: وجبة مشاوي من اختيارك + صنف جانبي (بطاطس أو كولسلو أو دوريتوس) + مشروب غازي. أحوّله بوكس؟\n- **العميل:** والطرب ابغا وجبة، جزء منه مقمر وجزء مستوي عادي\n  - **المساعد** (fast, 4092 ms, 0.0144 SAR, tools: preview_cart): تمام، كتبت ملاحظة للمطبخ: جزء مقمر وجزء مستوي عادي. أضفت وجبة شيش طاووق بـ 27 ر.س، والمجموع 27 ر.س. شي ثاني؟\n- **العميل:** البيبسي اثنين\n  - **المساعد** (fast, 3307 ms, 0.0220 SAR, tools: search_menu, preview_cart): أضفت بيبسي زجاج × 2 بـ 8 ر.س، والمجموع 35 ر.س. شي ثاني؟\n- **العميل:** في صوصات؟\n  - **المساعد** (fast, 4793 ms, 0.0239 SAR, tools: search_menu, get_item): ما عندي صوصات مضافة في المنيو للوجبة. الوجبة تجي مع الأرز والسلطة والطحينة حسب الوصف. تبي توصيل ولا استلام؟\n- **العميل:** كيف شكل الصوص ممكن تصورلي هوا؟\n  - **المساعد** (fast, 2426 ms, 0.0162 SAR, tools: dish_photo): ما أقدر أرسل صور، والصوص ما عليه صورة في المنيو. إذا تبيه صورة حقيقية اكتب «موظف» ويردون عليك. تبي توصيل ولا استلام للطلب؟\n\n### PASS · ps5-status-real-open-order (status) · 0.0000 SAR\n\n- **العميل:** وين طلبي\n  - _بوت القواعد_ (rules:status)\n"
+}

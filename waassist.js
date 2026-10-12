@@ -27,7 +27,10 @@ const STORE = "https://freshcuts.sa";
 const round2 = (n) => Math.round(Number(n) * 100) / 100;
 const isObj = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
 const qtyOf = (v) => Math.min(20, Math.max(1, Math.round(Number(v) || 1)));
-const words = (s) => normalize(String(s || "")).replace(/[^\p{L}\p{N}\s]/gu, " ").split(/\s+/).map((w) => w.replace(/^(ال|وال|بال|لل)(?=.{2,})/, "")).filter((w) => w.length > 1);
+/* PS5: هجاء العميل لاسم منتج لازم يلاقي المنتج («ثلاثه ببسي» اتحطت «مشروبات غازية» بملاحظة «ببسي» والمنيو فيه «بيبسي زجاج»). */
+const SPELL = { ببسي: "بيبسي", بيبس: "بيبسي", ببس: "بيبسي", بيبسى: "بيبسي", بيبسي: "بيبسي", pepsi: "بيبسي", بطاطا: "بطاطس", كولسلوو: "كولسلو", مويه: "مياه", مويا: "مياه", ماء: "مياه" };
+const words = (s) => normalize(String(s || "")).replace(/[^\p{L}\p{N}\s]/gu, " ").split(/\s+/).map((w) => w.replace(/^(ال|وال|بال|لل)(?=.{2,})/, "")).map((w) => SPELL[w] || w).filter((w) => w.length > 1);
+export const grillStemOf = (name) => grillStem(name);
 const DRINK_RE = /بيبسي|سفن|ميرندا|كولا|مياه|ماء|عصير|مشروب|شاي|قهوه|لبن|pepsi|7up|seven|mirinda|cola|water|juice|drink|tea/i;
 const SIDE_RE = /بطاطس|كولسلو|سلطه|ارز|رز|خبز|صوص|طحينه|ثوم|حمص|fries|coleslaw|salad|rice|bread|sauce|dip/i;
 const kindOf = (it) => (/Sides|Drinks|إضافات/i.test(`${it.category} ${it.categoryAr}`) ? (DRINK_RE.test(normalize(`${it.name} ${it.nameEn}`)) ? "drink" : "side") : "main");
@@ -105,6 +108,24 @@ export function profileSummaryAr(m) {
   if (m.loyalty) out.push(`الولاء: ${m.loyalty.progress} من ${m.loyalty.every} طلبات.`);
   out.push("نستخدمها عشان نخدمك أسرع بس. لإيقاف رسائلنا اكتب: إيقاف");
   return out.join("\n");
+}
+
+/* ── المشاوي نوعين (PS5، عمر ١٣/١٠: «إما وجبات معاها رز وإما بالوزن — لازم ماجد يبقى فاهم هو بيبيع إيه») ─────────────
+   من المنيو الحي: صنف في قسم الوجبات وصنف في قسم «بالوزن» لهم نفس الجذر («وجبة كفتة» ↔ «كفتة مشوية بالوزن») = نفس المشوي بطريقتين. ⇒ Map: id ⇒ { meal, weight } (صنفي المنيو).
+   مفيش أسماء مكتوبة هنا: الجذر = الاسم من غير «وجبة / مشوي / بالوزن / على الفحم». «مشكل مخصوص» مالوش وجبة بنفس الجذر ⇒ بالوزن بس. */
+const grillStem = (name) => normalize(String(name || "")).replace(/(^| )(وجبه|مشويه|مشوي|بالوزن|علي الفحم|على الفحم)(?= |$)/g, " ").replace(/\s+/g, " ").trim();
+export function grillFamilies(menu) {
+  const items = menu && Array.isArray(menu.items) ? menu.items : [], out = new Map();
+  const meals = items.filter((i) => i.category === "Meals"), weights = items.filter((i) => i.byWeight);
+  for (const w of weights) { const st = grillStem(w.name); if (st.length < 3) continue; const m = meals.find((x) => grillStem(x.name) === st); if (m) { const pair = { meal: m, weight: w }; out.set(String(m.id), pair); out.set(String(w.id), pair); } }
+  return out;
+}
+/* للموديل: الصنف التاني من نفس المشوي بسعره، ووصف الوجبة زي ما هو في المنيو (الأرز والسلطة… من البيانات مش من الدماغ) */
+export function alsoAs(it, fam) {
+  const p = fam && fam.get(String(it.id)); if (!p) return null;
+  return String(p.meal.id) === String(it.id)
+    ? { by_weight: { id: String(p.weight.id), name: p.weight.name, name_en: p.weight.nameEn || p.weight.name, sold_out: Boolean(p.weight.soldOut), weights: weightsBrief(p.weight), description: p.weight.desc || "" } }
+    : { meal: { id: String(p.meal.id), name: p.meal.name, name_en: p.meal.nameEn || p.meal.name, price: p.meal.price, sold_out: Boolean(p.meal.soldOut), description: p.meal.desc || "" } };
 }
 
 /* ── ٣أ) جدول الاقتران (PS4) ───────────────────────────────────────────────
@@ -339,8 +360,11 @@ export function makeAssistTools(deps = {}) {
   const tuneOf = async () => { try { const t = deps.tune ? await deps.tune() : null; return t && typeof t === "object" ? { ...ASSIST_DEFAULTS, ...t } : ASSIST_DEFAULTS; } catch { return ASSIST_DEFAULTS; } };
 
   async function search_menu(_p, { query } = {}) {
-    const r = searchMenu(await menuOf(), query, (await tuneOf()).searchMax);
-    return r === null ? unavailable("menu") : { ok: true, results: r };
+    const menu = await menuOf(), tune = await tuneOf();
+    const r = searchMenu(menu, query, tune.searchMax);
+    if (r === null) return unavailable("menu");
+    if (tune.grillFamilies !== false) { const fam = grillFamilies(menu); for (const x of r) { const it = menu.items.find((i) => String(i.id) === String(x.id)); const a = it ? alsoAs(it, fam) : null; if (a) { x.also_as = a; if (it.category === "Meals") x.description = it.desc || ""; } } }
+    return { ok: true, results: r };
   }
   async function addonsOf(id) {
     try { const cat = deps.modifiers ? await deps.modifiers.catalogItems() : null; const g = cat && cat[String(id)];
@@ -396,7 +420,7 @@ export function makeAssistTools(deps = {}) {
   async function quote_delivery(phone, { lat, lng, total = 0 } = {}) {
     let la = Number(lat), ln = Number(lng), from = "given";
     if (!(Number.isFinite(la) && Number.isFinite(ln))) { const l = deps.lastLocation ? await deps.lastLocation(phone) : null; if (l && Number.isFinite(Number(l.lat))) { la = Number(l.lat); ln = Number(l.lng); from = "shared_in_chat"; } }
-    if (!(Number.isFinite(la) && Number.isFinite(ln))) return { ok: false, error: "need_location", hint: "ask the customer to share their location pin in the chat; until it arrives do not say whether we deliver to them or what the fee is" };
+    if (!(Number.isFinite(la) && Number.isFinite(ln))) return { ok: false, error: "need_location", hint: "in ONE message: yes, we deliver inside Jeddah («نعم نوصل داخل جدة 👍»), then ask them to share their location pin here so you can confirm their address and the fee. State no fee before the pin." };
     let r; try { r = await deps.quote({ lat: la, lng: ln, orderTotal: Number(total) || 0 }); } catch { r = null; }
     if (!r || typeof r.deliverable !== "boolean") return unavailable("delivery_quote");
     if (r.deliverable) return { ok: true, deliverable: true, fee: Number(r.fee), for_total: Number(total) || 0, to_next_tier: Number(r.toNextTier) > 0 ? round2(r.toNextTier) : null, next_tier_fee: Number.isFinite(Number(r.nextTierFee)) ? Number(r.nextTierFee) : null,
@@ -471,6 +495,9 @@ export function makeAssistTools(deps = {}) {
       if (it.soldOut) { problems.push({ id: it.id, name: it.name, error: "sold_out_today" }); continue; }
       if (Array.isArray(li.addons) && li.addons.length) { problems.push({ id: it.id, name: it.name, error: "addons_on_site_only", url: `${STORE}/l/wab-menu#item-${it.id}` }); continue; }
       const qty = qtyOf(li.qty), note = String(li.note || "").replace(/\s+/g, " ").trim().slice(0, 100);
+      /* PS5: ملاحظة بتسمّي مشروب موجود في المنيو كصنف (والسطر نفسه صنف تاني) ⇒ ده منتج مش ملاحظة: المساعد يحط الصنف نفسه. «بدون …» ملاحظة عادية. */
+      if (note && !/(^| )(بدون|بلا|من غير|no|without)( |$)/i.test(normalize(note))) { const nw = words(note); const prod = menu.items.find((x) => String(x.id) !== String(it.id) && kindOf(x) === "drink" && !x.soldOut && words(x.name).some((w) => w.length >= 4 && nw.includes(w)));
+        if (prod) { problems.push({ id: it.id, name: it.name, error: "note_names_a_product", product: itemBrief(prod), rule: "The note names a product that is on the menu as its own item: put THAT item in the cart (with the quantity), not this line with a note. If several products match, ask which." }); continue; } }
       /* M3 — صنف بالوزن: لازم وزن من أوزانه الحقيقية (variant_option_id)، والكمية = عدد الوزن ده («٢ كيلو» = ٢ × اختيار الكيلو). سطر السلة بنفس شكل سطر المتجر
          (المفتاح ‎<id>:v<variant>‎ ومعاه variant بسعره من نقطة البيع)، فالرابط بيفتح نفس السطر بنفس السعر. */
       if (it.byWeight) {

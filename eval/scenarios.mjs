@@ -78,5 +78,6 @@ import { EX6 } from "./scenarios-ex6.mjs";
 import { PS1 } from "./scenarios-ps1.mjs";
 import { PS3 } from "./scenarios-ps3.mjs";
 import { PS4 } from "./scenarios-ps4.mjs";
+import { PS5 } from "./scenarios-ps5.mjs";
 for (const s of BATCH20) s.sets = ["batch20", "full"];
-export const SCENARIOS = [...BATCH20, ...FULL_EXTRA, ...AS3, ...AS4, ...CH1, ...M3, ...M45, ...EX6, ...PS1, ...PS3, ...PS4];
+export const SCENARIOS = [...BATCH20, ...FULL_EXTRA, ...AS3, ...AS4, ...CH1, ...M3, ...M45, ...EX6, ...PS1, ...PS3, ...PS4, ...PS5];

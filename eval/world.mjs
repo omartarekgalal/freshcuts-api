@@ -73,6 +73,8 @@ export function makeWorld(w = {}, { callModel, onCall, acfg: acfgIn = {} } = {})
     /* manager knowledge base: w.kb = [{ id, question, ar, en? }] (same matching and the same re-check as the store) */
     kbSearch: async (question, lang) => kbCandidates((w.kb || []).map((r) => ({ ...r, examples: r.examples || [] })), question).map((r) => ({ id: r.id, question: r.question, say: (lang === "en" && r.en) || r.ar })).filter((r) => kbCheck(r.say).ok),
     feeSay: async (options, lang, o) => R.feeSayOf(cfg, options, lang, o),      // PS4
+    cartRecap: async (cart, lang) => R.cartRecapOf(cfg, cart, lang),      // PS5
+    firstLead: async (v, lang) => R.fill("first_lead", R.textOf(cfg, "first_lead", lang === "en" ? "en" : "ar"), { from: String(v.from), code: v.code }),      // PS5
     /* PS3: the reminder plan with the world's clock and opening hours (the customer's last message = now) */
     reminder: async ({ day, time, lang }) => AR.planReminder({ now: now(), day, time, lastInMs: now().getTime(), lang, isOpenAt: (dt) => openState(settings, dt).open === true }),
     deliveryInfo: async () => ({ ok: true, delivers_up_to_km: POLICY.maxKm, far_zone_up_to_km: POLICY.farZoneMaxKm, far_zone_extra_per_km: POLICY.farZonePerKm, fee_by_order_total: R.feeLines(POLICY, "ar").split("\n"), ladder: POLICY.feeByTotal.map((x) => ({ over: x.over, fee: x.fee })), note: "the exact fee is shown on the website before payment" }) });

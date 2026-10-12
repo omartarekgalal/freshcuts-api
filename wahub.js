@@ -415,7 +415,7 @@ export function register(app, ctx, deps = {}) {
     if (!pn) return c.json({ ok: false, error: "not_found" }, 404);
     const b = bot();
     if (!b || typeof b.unmuteChat !== "function") return c.json({ ok: false, error: "bot_unavailable" }, 503);
-    await b.unmuteChat(pn);
+    await b.unmuteChat(pn, { release: true });      // PS5: «تم التعامل» = سيبها للبوت فوراً (released_at) — رد الموظف اللي قبلها مايسكّتش البوت
     await markHandled(pn);
     return c.json({ ok: true });
   });

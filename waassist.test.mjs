@@ -145,7 +145,7 @@ test("cart builder never guesses: every line that can not be built comes back wi
 
 test("delivery quote: only from a real location (shared pin or the last one in the chat), with the fee for THIS basket and the gap to the next tier", async () => {
   const { t } = tools();
-  assert.deepEqual(await t.quote_delivery(ME, { total: 70 }), { ok: false, error: "need_location", hint: "ask the customer to share their location pin in the chat; until it arrives do not say whether we deliver to them or what the fee is" });
+  assert.deepEqual(await t.quote_delivery(ME, { total: 70 }), { ok: false, error: "need_location", hint: "in ONE message: yes, we deliver inside Jeddah («نعم نوصل داخل جدة 👍»), then ask them to share their location pin here so you can confirm their address and the fee. State no fee before the pin." });
   const q1 = await t.quote_delivery(ME, { lat: 21.58, lng: 39.15, total: 70 });
   assert.deepEqual([q1.deliverable, q1.fee, q1.to_next_tier, q1.next_tier_fee, q1.to_free, q1.location], [true, 15, 10, 10, 80, "given"]);
   const withLoc = tools({ lastLoc: { lat: 21.58, lng: 39.15 } }).t;

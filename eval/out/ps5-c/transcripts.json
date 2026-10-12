@@ -1,0 +1,1543 @@
+[
+ {
+  "id": "ps5-6869-the-order",
+  "group": "the real chat",
+  "world": {
+   "profile": "new"
+  },
+  "expect": {
+   "noHandover": true,
+   "turnMustContain": {
+    "0": "27",
+    "2": "مقمر",
+    "5": "ما [أا]قدر|ما نقدر|لا [أا]قدر"
+   },
+   "mustContain": [
+    "110"
+   ],
+   "turnButtons": {
+    "0": "وجبة"
+   },
+   "turnMustNotContain": {
+    "5": "[أا]رسل لك صور|بصو[ّ]?ر|أصو[ّ]?ر لك"
+   },
+   "maxCount": [
+    [
+     "[أا]حو[ّ]?له بوكس|يصير بوكس|بوكس لشخصين",
+     1
+    ]
+   ],
+   "maxLen": {
+    "3": 260
+   }
+  },
+  "turns": [
+   {
+    "i": 0,
+    "customer": "شيش طاووق مشوي على الفحم",
+    "cls": "item",
+    "raw": "item_info",
+    "by": "assistant",
+    "reply": "معك ماجد، المساعد الرقمي لفريش كاتس 👋 شيش طاووق مشوي على الفحم عندنا بطريقتين: وجبة شيش طاووق بـ 27 ر.س تجي مع الأرز والسلطة والطحينة، ولا بالوزن (ثلث كيلو 37 ر.س · نصف كيلو 55 ر.س · كيلو 110 ر.س). أيهم تبي؟",
+    "cart": null,
+    "handover": null,
+    "outcome": "sent",
+    "tools": [
+     {
+      "name": "search_menu",
+      "input": {
+       "query": "شيش طاووق"
+      },
+      "result": {
+       "ok": true,
+       "results": [
+        {
+         "id": "6",
+         "name": "كريب شيش طاووق",
+         "name_en": "Shish Tawook Crepe",
+         "price": 25,
+         "section": "كريبات",
+         "kind": "main",
+         "sold_out": false,
+         "by_weight": false
+        },
+        {
+         "id": "90",
+         "name": "وجبة شيش طاووق",
+         "name_en": "Shish Tawook Meal",
+         "price": 27,
+         "section": "وجبات",
+         "kind": "main",
+         "sold_out": false,
+         "by_weight": false,
+         "also_as": {
+          "by_weight": {
+           "id": "114",
+           "name": "شيش طاووق مشوي بالوزن",
+           "name_en": "Grilled Shish Tawook (by the kilo)",
+           "sold_out": false,
+           "weights": [
+            {
+             "label": "ثلث كيلو",
+             "label_en": "1/3 Kilo",
+             "price": 37,
+             "variant_option_id": 68
+            },
+            {
+             "label": "نصف كيلو",
+             "label_en": "1/2 Kilo",
+             "price": 55,
+             "variant_option_id": 69
+            },
+            {
+             "label": "كيلو",
+             "label_en": "Kilo",
+             "price": 110,
+             "variant_option_id": 70
+            }
+           ],
+           "description": "شيش طاووق مشوي على الفحم — متاح بثلث كيلو ونصف كيلو وكيلو"
+          }
+         },
+         "description": "وجبة شيش طاووق مشوية تُقدَّم مع الأرز والسلطة والطحينة"
+        },
+        {
+         "id": "114",
+         "name": "شيش طاووق مشوي بالوزن",
+         "name_en": "Grilled Shish Tawook (by the kilo)",
+         "section": "مشاوي بالوزن",
+         "kind": "main",
+         "sold_out": false,
+         "by_weight": true,
+         "weights": [
+          {
+           "label": "ثلث كيلو",
+           "label_en": "1/3 Kilo",
+           "price": 37,
+           "variant_option_id": 68
+          },
+          {
+           "label": "نصف كيلو",
+           "label_en": "1/2 Kilo",
+           "price": 55,
+           "variant_option_id": 69
+          },
+          {
+           "label": "كيلو",
+           "label_en": "Kilo",
+           "price": 110,
+           "variant_option_id": 70
+          }
+         ],
+         "how_to_price": "sold by weight: every price belongs to ONE of the weights above; always say the weight with its price",
+         "also_as": {
+          "meal": {
+           "id": "90",
+           "name": "وجبة شيش طاووق",
+           "name_en": "Shish Tawook Meal",
+           "price": 27,
+           "sold_out": false,
+           "description": "وجبة شيش طاووق مشوية تُقدَّم مع الأرز والسلطة والطحينة"
+          }
+         }
+        },
+        {
+         "id": "18",
+         "name": "وجبة ميكس جريل",
+         "name_en": "Mixed Grill Meal",
+         "price": 37,
+         "section": "وجبات",
+         "kind": "main",
+         "sold_out": false,
+         "by_weight": false
+        }
+       ],
+       "ask_which": {
+        "meal": {
+         "id": "90",
+         "name": "وجبة شيش طاووق",
+         "name_en": "Shish Tawook Meal",
+         "price": 27,
+         "description": "وجبة شيش طاووق مشوية تُقدَّم مع الأرز والسلطة والطحينة"
+        },
+        "by_weight": {
+         "id": "114",
+         "name": "شيش طاووق مشوي بالوزن",
+         "name_en": "Grilled Shish Tawook (by the kilo)",
+         "sold_out": false,
+         "weights": [
+          {
+           "label": "ثلث كيلو",
+           "label_en": "1/3 Kilo",
+           "price": 37,
+           "variant_option_id": 68
+          },
+          {
+           "label": "نصف كيلو",
+           "label_en": "1/2 Kilo",
+           "price": 55,
+           "variant_option_id": 69
+          },
+          {
+           "label": "كيلو",
+           "label_en": "Kilo",
+           "price": 110,
+           "variant_option_id": 70
+          }
+         ],
+         "description": "شيش طاووق مشوي على الفحم — متاح بثلث كيلو ونصف كيلو وكيلو"
+        },
+        "rule": "This grill is sold two ways and the customer did not say which. Ask ONE question that gives both with their prices, and nothing else: the meal with what its description says it comes with and its price, or by weight with each weight and its price («تبيها وجبة … بـ … ر.س، ولا بالوزن (ثلث كيلو … · نصف كيلو … · كيلو …)؟»). Two buttons are attached. Never choose for them, never offer to choose for them, and do not call preview_cart before they answer."
+       }
+      },
+      "ms": 6
+     }
+    ],
+    "verdicts": [
+     {
+      "ok": true,
+      "problems": [],
+      "text": "معك ماجد، المساعد الرقمي لفريش كاتس 👋 شيش طاووق مشوي على الفحم عندنا بطريقتين: وجبة شيش طاووق بـ 27 ر.س تجي مع الأرز والسلطة والطحينة، ولا بالوزن (ثلث كيلو 37 ر.س · نصف كيلو 55 ر.س · كيلو 110 ر.س). أيهم تبي؟"
+     }
+    ],
+    "calls": [
+     {
+      "model": "claude-haiku-5-5",
+      "tier": "fast",
+      "ms": 1996,
+      "outcome": "ok",
+      "in": 17673,
+      "out": 111,
+      "cached": 0,
+      "costSar": 0.006836
+     },
+     {
+      "model": "claude-haiku-5-5",
+      "tier": "fast",
+      "ms": 1429,
+      "outcome": "ok",
+      "in": 1857,
+      "out": 159,
+      "cached": 14135,
+      "costSar": 0.006295
+     }
+    ],
+    "ms": 3493,
+    "costSar": 0.013131,
+    "model": "claude-haiku-5-5",
+    "suggestions": [],
+    "context": {
+     "open_now": true,
+     "closes_at": "2 فجراً",
+     "location_shared": false,
+     "introduce_yourself": {
+      "say": "معك ماجد، المساعد الرقمي لفريش كاتس",
+      "rule": "use this phrase once in this message, exactly as it is"
+     },
+     "you": {
+      "name": "ماجد",
+      "name_en": "Majed",
+      "what": "Fresh Cuts' digital assistant (not a human)"
+     },
+     "customer": {
+      "known": false,
+      "name": null,
+      "orders": 0,
+      "status": "no_orders",
+      "days_since_last": null,
+      "usual_basket_sar": null,
+      "usual_mode": null,
+      "usual_hour": null,
+      "favourites": [],
+      "taste": null,
+      "last_order": null,
+      "districts": [],
+      "loyalty": {
+       "every": 3,
+       "progress": 0,
+       "left": 3,
+       "reward": "free_delivery",
+       "min_total": 60,
+       "status": null
+      },
+      "unused_rewards": [],
+      "first_order_offer": true,
+      "language": "ar"
+     },
+     "offers": {
+      "first_order": {
+       "eligible": true,
+       "code": "FIRST",
+       "free_delivery": true,
+       "min_total": 60,
+       "reason": null
+      },
+      "loyalty": {
+       "every": 3,
+       "progress": 0,
+       "left": 3,
+       "reward": "free_delivery",
+       "min_total": 60,
+       "status": null
+      }
+     },
+     "branch": "📍 فرعنا في حي السلامة بجدة، عند دوار رامي.",
+     "boxes": [
+      "box-solo-crepe: بوكس الكريب الفردي",
+      "box-solo-mixgrill: بوكس الميكس جريل الفردي",
+      "box-solo-burger: بوكس البرجر الفردي",
+      "box-solo-pasta: بوكس الباستا الفردي",
+      "box-solo-hawawshi: بوكس الحواوشي الفردي",
+      "box-solo-meal: بوكس وجبة المشاوي الفردي",
+      "box-crepe-duo: بوكس الكريب لشخصين",
+      "box-mixgrill-duo: ميكس جريل لشخصين",
+      "box-pizza-pasta: بيتزا وباستا لشخصين",
+      "box-meals-duo: وجبتين مشاوي لشخصين",
+      "box-burger-duo: بوكس البرجر لشخصين",
+      "box-late-night: بوكس السهرة",
+      "box-taste-all: بوكس التشكيلة",
+      "box-grill-half-half: بوكس المشاوي نص ونص",
+      "box-family: بوكس العائلة — مشاوي وبيتزا وباستا",
+      "box-pizza-night: بوكس سهرة البيتزا",
+      "box-mashakel: بوكس المشكل المخصوص",
+      "box-ribs-grill: بوكس الريش والمشاوي"
+     ]
+    },
+    "tier": "fast",
+    "escalated": false,
+    "lang": "ar",
+    "introByModel": true,
+    "buttons": [
+     "وجبة",
+     "بالوزن"
+    ]
+   },
+   {
+    "i": 1,
+    "customer": "وجبة",
+    "cls": "cat",
+    "raw": "menu",
+    "by": "assistant",
+    "reply": "وجبة شيش طاووق بـ 27 ر.س. وبـ 33 ر.س يصير بوكس «بوكس وجبة المشاوي الفردي»: وجبة مشاوي من اختيارك + صنف جانبي (بطاطس أو كولسلو أو دوريتوس) + مشروب غازي. أحوّله بوكس؟",
+    "cart": null,
+    "handover": null,
+    "outcome": "sent",
+    "tools": [
+     {
+      "name": "preview_cart",
+      "input": {
+       "items": [
+        {
+         "id": "90",
+         "qty": 1
+        }
+       ]
+      },
+      "result": {
+       "ok": true,
+       "option": "delivery",
+       "lines": [
+        {
+         "id": "90",
+         "name": "وجبة شيش طاووق",
+         "name_en": "Shish Tawook Meal",
+         "price": 27,
+         "qty": 1,
+         "total": 27,
+         "kind": "main"
+        }
+       ],
+       "subtotal": 27,
+       "problems": [],
+       "note": "prices include VAT; the delivery fee is separate and shown by quote_delivery and again on the site before payment",
+       "saved": false,
+       "suggestion": {
+        "kind": "pair",
+        "when": "meal_x1",
+        "name": "بوكس وجبة المشاوي الفردي",
+        "box": {
+         "slug": "box-solo-meal",
+         "name": "بوكس وجبة المشاوي الفردي",
+         "name_en": "Grill Meal Solo Box",
+         "price": 33,
+         "base_price": 29,
+         "their_choice_extra": 4,
+         "description": "وجبة مشاوي من اختيارك + صنف جانبي (بطاطس أو كولسلو أو دوريتوس) + مشروب غازي."
+        },
+        "cart_subtotal": 27
+       },
+       "suggestion_say": "what goes with this order: the box «بوكس وجبة المشاوي الفردي» for 33 SAR (وجبة مشاوي من اختيارك + صنف جانبي (بطاطس أو كولسلو أو دوريتوس) + مشروب غازي.); the cart now is 27 SAR. This box REPLACES the items in the cart, it is not added to them: state the item's price, then offer it as «وبـ 33 ر.س يصير بوكس: …» with what the box adds in a few words, and ask «أحوّله بوكس؟». Never «أضيف لك بوكس». Do not subtract or compare the amounts yourself.",
+       "suggestion_rule": "you may offer this ONE suggestion as a short question; nothing else"
+      },
+      "ms": 11
+     }
+    ],
+    "verdicts": [
+     {
+      "ok": true,
+      "problems": [],
+      "text": "وجبة شيش طاووق بـ 27 ر.س. وبـ 33 ر.س يصير بوكس «بوكس وجبة المشاوي الفردي»: وجبة مشاوي من اختيارك + صنف جانبي (بطاطس أو كولسلو أو دوريتوس) + مشروب غازي. أحوّله بوكس؟"
+     }
+    ],
+    "calls": [
+     {
+      "model": "claude-haiku-5-5",
+      "tier": "fast",
+      "ms": 1305,
+      "outcome": "ok",
+      "in": 326,
+      "out": 155,
+      "cached": 15619,
+      "costSar": 0.00627
+     },
+     {
+      "model": "claude-haiku-5-5",
+      "tier": "fast",
+      "ms": 1167,
+      "outcome": "ok",
+      "in": 941,
+      "out": 127,
+      "cached": 15876,
+      "costSar": 0.006545
+     }
+    ],
+    "ms": 2495,
+    "costSar": 0.012815,
+    "model": "claude-haiku-5-5",
+    "suggestions": [
+     {
+      "kind": "pair",
+      "ref": "box-solo-meal",
+      "name": "بوكس وجبة المشاوي الفردي",
+      "numbers": {
+       "kind": "pair",
+       "when": "meal_x1",
+       "name": "بوكس وجبة المشاوي الفردي",
+       "box": {
+        "slug": "box-solo-meal",
+        "name": "بوكس وجبة المشاوي الفردي",
+        "name_en": "Grill Meal Solo Box",
+        "price": 33,
+        "base_price": 29,
+        "their_choice_extra": 4,
+        "description": "وجبة مشاوي من اختيارك + صنف جانبي (بطاطس أو كولسلو أو دوريتوس) + مشروب غازي."
+       },
+       "cart_subtotal": 27
+      },
+      "outcome": "offered"
+     }
+    ],
+    "context": {
+     "open_now": true,
+     "closes_at": "2 فجراً",
+     "location_shared": false
+    },
+    "tier": "fast",
+    "escalated": false,
+    "lang": "ar"
+   },
+   {
+    "i": 2,
+    "customer": "والطرب ابغا وجبة، جزء منه مقمر وجزء مستوي عادي",
+    "cls": "item",
+    "raw": "item_info",
+    "by": "assistant",
+    "reply": "تمام، وجبة شيش طاووق، وكتبت للمطبخ ملاحظة «جزء مقمر وجزء مستوي عادي». المجموع 27 ر.س. توصيل ولا استلام؟",
+    "cart": null,
+    "handover": null,
+    "outcome": "sent",
+    "tools": [
+     {
+      "name": "note_suggestion",
+      "input": {
+       "kind": "pair",
+       "outcome": "declined"
+      },
+      "result": {
+       "ok": true
+      },
+      "ms": 1
+     },
+     {
+      "name": "preview_cart",
+      "input": {
+       "items": [
+        {
+         "id": "90",
+         "qty": 1,
+         "note": "جزء مقمر وجزء مستوي عادي"
+        }
+       ]
+      },
+      "result": {
+       "ok": true,
+       "option": "delivery",
+       "lines": [
+        {
+         "id": "90",
+         "name": "وجبة شيش طاووق",
+         "name_en": "Shish Tawook Meal",
+         "price": 27,
+         "qty": 1,
+         "total": 27,
+         "kind": "main",
+         "note": "جزء مقمر وجزء مستوي عادي"
+        }
+       ],
+       "subtotal": 27,
+       "problems": [],
+       "note": "prices include VAT; the delivery fee is separate and shown by quote_delivery and again on the site before payment",
+       "saved": false,
+       "suggestion": null,
+       "suggestion_rule": "no suggestion: do not offer any add-on or upgrade",
+       "reply_rule": "The customer is adding items one by one. Answer in ONE short line: what you added (with its note if any), the new total («المجموع … ر.س»), and «شي ثاني؟». No explanation of how you recorded it, no list of the whole cart: the full recap comes when they say they are done."
+      },
+      "ms": 8
+     }
+    ],
+    "verdicts": [
+     {
+      "ok": true,
+      "problems": [],
+      "text": "تمام، وجبة شيش طاووق، وكتبت للمطبخ ملاحظة «جزء مقمر وجزء مستوي عادي». المجموع 27 ر.س. توصيل ولا استلام؟"
+     }
+    ],
+    "calls": [
+     {
+      "model": "claude-haiku-5-5",
+      "tier": "fast",
+      "ms": 1938,
+      "outcome": "ok",
+      "in": 382,
+      "out": 313,
+      "cached": 16627,
+      "costSar": 0.006965
+     },
+     {
+      "model": "claude-sonnet-5-5",
+      "tier": "strong",
+      "ms": 2113,
+      "outcome": "ok",
+      "in": 21166,
+      "out": 212,
+      "cached": 0,
+      "costSar": 0.166695
+     },
+     {
+      "model": "claude-sonnet-5-5",
+      "tier": "strong",
+      "ms": 1207,
+      "outcome": "ok",
+      "in": 811,
+      "out": 79,
+      "cached": 16929,
+      "costSar": 0.021742
+     }
+    ],
+    "ms": 5281,
+    "costSar": 0.19540200000000002,
+    "model": "claude-sonnet-5-5",
+    "suggestions": [
+     {
+      "kind": "pair",
+      "ref": "box-solo-meal",
+      "name": "بوكس وجبة المشاوي الفردي",
+      "outcome": "declined"
+     }
+    ],
+    "context": {
+     "open_now": true,
+     "closes_at": "2 فجراً",
+     "location_shared": false
+    },
+    "tier": "strong",
+    "escalated": true,
+    "lang": "ar"
+   },
+   {
+    "i": 3,
+    "customer": "البيبسي اثنين",
+    "cls": "item",
+    "raw": "item_info",
+    "by": "assistant",
+    "reply": "أضفت 2 بيبسي زجاج، المجموع 35 ر.س. شي ثاني؟",
+    "cart": null,
+    "handover": null,
+    "outcome": "sent",
+    "tools": [
+     {
+      "name": "search_menu",
+      "input": {
+       "query": "بيبسي"
+      },
+      "result": {
+       "ok": true,
+       "results": [
+        {
+         "id": "86",
+         "name": "بيبسي زجاج",
+         "name_en": "Pepsi (Glass Bottle)",
+         "price": 4,
+         "section": "إضافات",
+         "kind": "drink",
+         "sold_out": false,
+         "by_weight": false
+        },
+        {
+         "id": "118",
+         "name": "إضافة كومبو",
+         "name_en": "Combo Add-on",
+         "price": 6,
+         "section": "كريبات",
+         "kind": "main",
+         "sold_out": false,
+         "by_weight": false
+        }
+       ]
+      },
+      "ms": 8
+     },
+     {
+      "name": "preview_cart",
+      "input": {
+       "items": [
+        {
+         "id": "90",
+         "qty": 1,
+         "note": "جزء مقمر وجزء مستوي عادي"
+        },
+        {
+         "id": "86",
+         "qty": 2
+        }
+       ]
+      },
+      "result": {
+       "ok": true,
+       "option": "delivery",
+       "lines": [
+        {
+         "id": "90",
+         "name": "وجبة شيش طاووق",
+         "name_en": "Shish Tawook Meal",
+         "price": 27,
+         "qty": 1,
+         "total": 27,
+         "kind": "main",
+         "note": "جزء مقمر وجزء مستوي عادي"
+        },
+        {
+         "id": "86",
+         "name": "بيبسي زجاج",
+         "name_en": "Pepsi (Glass Bottle)",
+         "price": 4,
+         "qty": 2,
+         "total": 8,
+         "kind": "drink"
+        }
+       ],
+       "subtotal": 35,
+       "problems": [],
+       "note": "prices include VAT; the delivery fee is separate and shown by quote_delivery and again on the site before payment",
+       "saved": false,
+       "suggestion": null,
+       "suggestion_rule": "no suggestion: do not offer any add-on or upgrade",
+       "reply_rule": "The customer is adding items one by one. Answer in ONE short line: what you added (with its note if any), the new total («المجموع … ر.س»), and «شي ثاني؟». No explanation of how you recorded it, no list of the whole cart: the full recap comes when they say they are done."
+      },
+      "ms": 4
+     }
+    ],
+    "verdicts": [
+     {
+      "ok": true,
+      "problems": [],
+      "text": "أضفت 2 بيبسي زجاج، المجموع 35 ر.س. شي ثاني؟"
+     }
+    ],
+    "calls": [
+     {
+      "model": "claude-sonnet-5-5",
+      "tier": "strong",
+      "ms": 1335,
+      "outcome": "ok",
+      "in": 232,
+      "out": 52,
+      "cached": 17576,
+      "costSar": 0.016872
+     },
+     {
+      "model": "claude-sonnet-5-5",
+      "tier": "strong",
+      "ms": 1137,
+      "outcome": "ok",
+      "in": 269,
+      "out": 98,
+      "cached": 17758,
+      "costSar": 0.019011
+     },
+     {
+      "model": "claude-sonnet-5-5",
+      "tier": "strong",
+      "ms": 1037,
+      "outcome": "ok",
+      "in": 671,
+      "out": 39,
+      "cached": 17971,
+      "costSar": 0.019973
+     }
+    ],
+    "ms": 3535,
+    "costSar": 0.055856,
+    "model": "claude-sonnet-5-5",
+    "suggestions": [],
+    "context": {
+     "open_now": true,
+     "closes_at": "2 فجراً",
+     "location_shared": false
+    },
+    "tier": "strong",
+    "escalated": false,
+    "lang": "ar"
+   },
+   {
+    "i": 4,
+    "customer": "في صوصات؟",
+    "cls": "unknown",
+    "raw": "unknown",
+    "by": "assistant",
+    "reply": "الوجبة تجي مع الأرز والسلطة والطحينة، وما لقيت صوصات إضافية للوجبة في المنيو. لو تبي زيادة طحينة اكتبها ملاحظة للمطبخ. توصيل ولا استلام؟",
+    "cart": null,
+    "handover": null,
+    "outcome": "sent",
+    "tools": [
+     {
+      "name": "search_menu",
+      "input": {
+       "query": "صوص"
+      },
+      "result": {
+       "ok": true,
+       "results": [
+        {
+         "id": "73",
+         "name": "فرايد تشيكن",
+         "name_en": "Fried Chicken",
+         "price": 10,
+         "section": "إضافات",
+         "kind": "side",
+         "sold_out": false,
+         "by_weight": false
+        },
+        {
+         "id": "78",
+         "name": "تشيز فرايز",
+         "name_en": "Cheese Fries",
+         "price": 10,
+         "section": "إضافات",
+         "kind": "side",
+         "sold_out": false,
+         "by_weight": false
+        },
+        {
+         "id": "75",
+         "name": "حلقات بصل",
+         "name_en": "Onion Rings",
+         "price": 10,
+         "section": "إضافات",
+         "kind": "side",
+         "sold_out": false,
+         "by_weight": false
+        },
+        {
+         "id": "76",
+         "name": "تشيلي تشيز فرايز",
+         "name_en": "Chili Cheese Fries",
+         "price": 15,
+         "section": "إضافات",
+         "kind": "side",
+         "sold_out": false,
+         "by_weight": false
+        },
+        {
+         "id": "74",
+         "name": "فرايد موتزاريلا",
+         "name_en": "Fried Mozzarella",
+         "price": 16,
+         "section": "إضافات",
+         "kind": "side",
+         "sold_out": false,
+         "by_weight": false
+        },
+        {
+         "id": "66",
+         "name": "جريلد تشيكن ساندوتش",
+         "name_en": "Grilled Chicken Burger",
+         "price": 19,
+         "section": "برجر",
+         "kind": "main",
+         "sold_out": false,
+         "by_weight": false
+        },
+        {
+         "id": "43",
+         "name": "بيتزا تشيكن رانش",
+         "name_en": "Chicken Ranch Pizza",
+         "price": 28,
+         "section": "بيتزا",
+         "kind": "main",
+         "sold_out": false,
+         "by_weight": false
+        },
+        {
+         "id": "1",
+         "name": "كريب ميكس لحوم",
+         "name_en": "Mixed Meat Crepe",
+         "price": 30,
+         "section": "كريبات",
+         "kind": "main",
+         "sold_out": false,
+         "by_weight": false
+        }
+       ]
+      },
+      "ms": 6
+     },
+     {
+      "name": "get_item",
+      "input": {
+       "id": "90"
+      },
+      "result": {
+       "ok": true,
+       "item": {
+        "id": "90",
+        "name": "وجبة شيش طاووق",
+        "name_en": "Shish Tawook Meal",
+        "price": 27,
+        "section": "وجبات",
+        "kind": "main",
+        "sold_out": false,
+        "by_weight": false,
+        "description": "وجبة شيش طاووق مشوية تُقدَّم مع الأرز والسلطة والطحينة",
+        "addons": [],
+        "addons_known": true,
+        "note": "description is the menu description, not a full ingredient list"
+       }
+      },
+      "ms": 7
+     }
+    ],
+    "verdicts": [
+     {
+      "ok": true,
+      "problems": [],
+      "text": "الوجبة تجي مع الأرز والسلطة والطحينة، وما لقيت صوصات إضافية للوجبة في المنيو. لو تبي زيادة طحينة اكتبها ملاحظة للمطبخ. توصيل ولا استلام؟"
+     }
+    ],
+    "calls": [
+     {
+      "model": "claude-sonnet-5-5",
+      "tier": "strong",
+      "ms": 1563,
+      "outcome": "ok",
+      "in": 179,
+      "out": 94,
+      "cached": 18506,
+      "costSar": 0.018747
+     },
+     {
+      "model": "claude-sonnet-5-5",
+      "tier": "strong",
+      "ms": 1374,
+      "outcome": "ok",
+      "in": 1120,
+      "out": 95,
+      "cached": 18646,
+      "costSar": 0.025947
+     }
+    ],
+    "ms": 2957,
+    "costSar": 0.044694,
+    "model": "claude-sonnet-5-5",
+    "suggestions": [],
+    "context": {
+     "open_now": true,
+     "closes_at": "2 فجراً",
+     "location_shared": false
+    },
+    "tier": "strong",
+    "escalated": false,
+    "lang": "ar"
+   },
+   {
+    "i": 5,
+    "customer": "كيف شكل الصوص ممكن تصورلي هوا؟",
+    "cls": "unknown",
+    "raw": "unknown",
+    "by": "assistant",
+    "reply": "ما أقدر أصوّر أو أرسل صور، وما عندنا صورة للصوص في المنيو. لو تبي صورة حقيقية اكتب «موظف». نكمّل طلبك، توصيل ولا استلام؟",
+    "cart": null,
+    "handover": null,
+    "outcome": "sent",
+    "tools": [
+     {
+      "name": "dish_photo",
+      "input": {},
+      "result": {
+       "ok": true,
+       "has_menu_photo": false,
+       "rule": "Say in one honest line that you cannot take or send photos and that there is no photo of it on the menu; if they want a real photo, typing «موظف» reaches the team. Then carry on with their order."
+      },
+      "ms": 0
+     }
+    ],
+    "verdicts": [
+     {
+      "ok": true,
+      "problems": [],
+      "text": "ما أقدر أصوّر أو أرسل صور، وما عندنا صورة للصوص في المنيو. لو تبي صورة حقيقية اكتب «موظف». نكمّل طلبك، توصيل ولا استلام؟"
+     }
+    ],
+    "calls": [
+     {
+      "model": "claude-sonnet-5-5",
+      "tier": "strong",
+      "ms": 1199,
+      "outcome": "ok",
+      "in": 271,
+      "out": 28,
+      "cached": 19540,
+      "costSar": 0.017738
+     },
+     {
+      "model": "claude-sonnet-5-5",
+      "tier": "strong",
+      "ms": 1481,
+      "outcome": "ok",
+      "in": 152,
+      "out": 85,
+      "cached": 19753,
+      "costSar": 0.019142
+     }
+    ],
+    "ms": 2695,
+    "costSar": 0.036879999999999996,
+    "model": "claude-sonnet-5-5",
+    "suggestions": [],
+    "context": {
+     "open_now": true,
+     "closes_at": "2 فجراً",
+     "location_shared": false
+    },
+    "tier": "strong",
+    "escalated": false,
+    "lang": "ar"
+   }
+  ],
+  "carts": [],
+  "costSar": 0.35877800000000004,
+  "grade": {
+   "pass": true,
+   "fails": [],
+   "review": []
+  }
+ },
+ {
+  "id": "ps5-6869-wrong-cart-text-only",
+  "group": "the wrong cart",
+  "world": {
+   "profile": "new"
+  },
+  "expect": {
+   "noHandover": true,
+   "noCart": true,
+   "turnMustContain": {
+    "0": "27",
+    "2": "بيبسي زجاج"
+   },
+   "mustContain": [
+    "110",
+    "وجبة",
+    "بالوزن"
+   ],
+   "turnButtons": {
+    "0": "وجبة"
+   },
+   "mustNotContain": [
+    "مشروبات غازية"
+   ]
+  },
+  "turns": [
+   {
+    "i": 0,
+    "customer": "شيش طاووق مشوي على الفحم",
+    "cls": "item",
+    "raw": "item_info",
+    "by": "assistant",
+    "reply": "معك ماجد، المساعد الرقمي لفريش كاتس 👋 شيش طاووق مشوي على الفحم عندنا بطريقتين: تبيها وجبة شيش طاووق بـ 27 ر.س، تُقدَّم مع الأرز والسلطة والطحينة، ولا بالوزن (ثلث كيلو 37 ر.س · نصف كيلو 55 ر.س · كيلو 110 ر.س)؟",
+    "cart": null,
+    "handover": null,
+    "outcome": "sent",
+    "tools": [
+     {
+      "name": "search_menu",
+      "input": {
+       "query": "شيش طاووق"
+      },
+      "result": {
+       "ok": true,
+       "results": [
+        {
+         "id": "6",
+         "name": "كريب شيش طاووق",
+         "name_en": "Shish Tawook Crepe",
+         "price": 25,
+         "section": "كريبات",
+         "kind": "main",
+         "sold_out": false,
+         "by_weight": false
+        },
+        {
+         "id": "90",
+         "name": "وجبة شيش طاووق",
+         "name_en": "Shish Tawook Meal",
+         "price": 27,
+         "section": "وجبات",
+         "kind": "main",
+         "sold_out": false,
+         "by_weight": false,
+         "also_as": {
+          "by_weight": {
+           "id": "114",
+           "name": "شيش طاووق مشوي بالوزن",
+           "name_en": "Grilled Shish Tawook (by the kilo)",
+           "sold_out": false,
+           "weights": [
+            {
+             "label": "ثلث كيلو",
+             "label_en": "1/3 Kilo",
+             "price": 37,
+             "variant_option_id": 68
+            },
+            {
+             "label": "نصف كيلو",
+             "label_en": "1/2 Kilo",
+             "price": 55,
+             "variant_option_id": 69
+            },
+            {
+             "label": "كيلو",
+             "label_en": "Kilo",
+             "price": 110,
+             "variant_option_id": 70
+            }
+           ],
+           "description": "شيش طاووق مشوي على الفحم — متاح بثلث كيلو ونصف كيلو وكيلو"
+          }
+         },
+         "description": "وجبة شيش طاووق مشوية تُقدَّم مع الأرز والسلطة والطحينة"
+        },
+        {
+         "id": "114",
+         "name": "شيش طاووق مشوي بالوزن",
+         "name_en": "Grilled Shish Tawook (by the kilo)",
+         "section": "مشاوي بالوزن",
+         "kind": "main",
+         "sold_out": false,
+         "by_weight": true,
+         "weights": [
+          {
+           "label": "ثلث كيلو",
+           "label_en": "1/3 Kilo",
+           "price": 37,
+           "variant_option_id": 68
+          },
+          {
+           "label": "نصف كيلو",
+           "label_en": "1/2 Kilo",
+           "price": 55,
+           "variant_option_id": 69
+          },
+          {
+           "label": "كيلو",
+           "label_en": "Kilo",
+           "price": 110,
+           "variant_option_id": 70
+          }
+         ],
+         "how_to_price": "sold by weight: every price belongs to ONE of the weights above; always say the weight with its price",
+         "also_as": {
+          "meal": {
+           "id": "90",
+           "name": "وجبة شيش طاووق",
+           "name_en": "Shish Tawook Meal",
+           "price": 27,
+           "sold_out": false,
+           "description": "وجبة شيش طاووق مشوية تُقدَّم مع الأرز والسلطة والطحينة"
+          }
+         }
+        },
+        {
+         "id": "18",
+         "name": "وجبة ميكس جريل",
+         "name_en": "Mixed Grill Meal",
+         "price": 37,
+         "section": "وجبات",
+         "kind": "main",
+         "sold_out": false,
+         "by_weight": false
+        }
+       ],
+       "ask_which": {
+        "meal": {
+         "id": "90",
+         "name": "وجبة شيش طاووق",
+         "name_en": "Shish Tawook Meal",
+         "price": 27,
+         "description": "وجبة شيش طاووق مشوية تُقدَّم مع الأرز والسلطة والطحينة"
+        },
+        "by_weight": {
+         "id": "114",
+         "name": "شيش طاووق مشوي بالوزن",
+         "name_en": "Grilled Shish Tawook (by the kilo)",
+         "sold_out": false,
+         "weights": [
+          {
+           "label": "ثلث كيلو",
+           "label_en": "1/3 Kilo",
+           "price": 37,
+           "variant_option_id": 68
+          },
+          {
+           "label": "نصف كيلو",
+           "label_en": "1/2 Kilo",
+           "price": 55,
+           "variant_option_id": 69
+          },
+          {
+           "label": "كيلو",
+           "label_en": "Kilo",
+           "price": 110,
+           "variant_option_id": 70
+          }
+         ],
+         "description": "شيش طاووق مشوي على الفحم — متاح بثلث كيلو ونصف كيلو وكيلو"
+        },
+        "rule": "This grill is sold two ways and the customer did not say which. Ask ONE question that gives both with their prices, and nothing else: the meal with what its description says it comes with and its price, or by weight with each weight and its price («تبيها وجبة … بـ … ر.س، ولا بالوزن (ثلث كيلو … · نصف كيلو … · كيلو …)؟»). Two buttons are attached. Never choose for them, never offer to choose for them, and do not call preview_cart before they answer."
+       }
+      },
+      "ms": 3
+     }
+    ],
+    "verdicts": [
+     {
+      "ok": true,
+      "problems": [],
+      "text": "معك ماجد، المساعد الرقمي لفريش كاتس 👋 شيش طاووق مشوي على الفحم عندنا بطريقتين: تبيها وجبة شيش طاووق بـ 27 ر.س، تُقدَّم مع الأرز والسلطة والطحينة، ولا بالوزن (ثلث كيلو 37 ر.س · نصف كيلو 55 ر.س · كيلو 110 ر.س)؟"
+     }
+    ],
+    "calls": [
+     {
+      "model": "claude-haiku-5-5",
+      "tier": "fast",
+      "ms": 2074,
+      "outcome": "ok",
+      "in": 17673,
+      "out": 121,
+      "cached": 0,
+      "costSar": 0.006854
+     },
+     {
+      "model": "claude-haiku-5-5",
+      "tier": "fast",
+      "ms": 1397,
+      "outcome": "ok",
+      "in": 1870,
+      "out": 161,
+      "cached": 14135,
+      "costSar": 0.006304
+     }
+    ],
+    "ms": 3530,
+    "costSar": 0.013158,
+    "model": "claude-haiku-5-5",
+    "suggestions": [],
+    "context": {
+     "open_now": true,
+     "closes_at": "2 فجراً",
+     "location_shared": false,
+     "introduce_yourself": {
+      "say": "معك ماجد، المساعد الرقمي لفريش كاتس",
+      "rule": "use this phrase once in this message, exactly as it is"
+     },
+     "you": {
+      "name": "ماجد",
+      "name_en": "Majed",
+      "what": "Fresh Cuts' digital assistant (not a human)"
+     },
+     "customer": {
+      "known": false,
+      "name": null,
+      "orders": 0,
+      "status": "no_orders",
+      "days_since_last": null,
+      "usual_basket_sar": null,
+      "usual_mode": null,
+      "usual_hour": null,
+      "favourites": [],
+      "taste": null,
+      "last_order": null,
+      "districts": [],
+      "loyalty": {
+       "every": 3,
+       "progress": 0,
+       "left": 3,
+       "reward": "free_delivery",
+       "min_total": 60,
+       "status": null
+      },
+      "unused_rewards": [],
+      "first_order_offer": true,
+      "language": "ar"
+     },
+     "offers": {
+      "first_order": {
+       "eligible": true,
+       "code": "FIRST",
+       "free_delivery": true,
+       "min_total": 60,
+       "reason": null
+      },
+      "loyalty": {
+       "every": 3,
+       "progress": 0,
+       "left": 3,
+       "reward": "free_delivery",
+       "min_total": 60,
+       "status": null
+      }
+     },
+     "branch": "📍 فرعنا في حي السلامة بجدة، عند دوار رامي.",
+     "boxes": [
+      "box-solo-crepe: بوكس الكريب الفردي",
+      "box-solo-mixgrill: بوكس الميكس جريل الفردي",
+      "box-solo-burger: بوكس البرجر الفردي",
+      "box-solo-pasta: بوكس الباستا الفردي",
+      "box-solo-hawawshi: بوكس الحواوشي الفردي",
+      "box-solo-meal: بوكس وجبة المشاوي الفردي",
+      "box-crepe-duo: بوكس الكريب لشخصين",
+      "box-mixgrill-duo: ميكس جريل لشخصين",
+      "box-pizza-pasta: بيتزا وباستا لشخصين",
+      "box-meals-duo: وجبتين مشاوي لشخصين",
+      "box-burger-duo: بوكس البرجر لشخصين",
+      "box-late-night: بوكس السهرة",
+      "box-taste-all: بوكس التشكيلة",
+      "box-grill-half-half: بوكس المشاوي نص ونص",
+      "box-family: بوكس العائلة — مشاوي وبيتزا وباستا",
+      "box-pizza-night: بوكس سهرة البيتزا",
+      "box-mashakel: بوكس المشكل المخصوص",
+      "box-ribs-grill: بوكس الريش والمشاوي"
+     ]
+    },
+    "tier": "fast",
+    "escalated": false,
+    "lang": "ar",
+    "introByModel": true,
+    "buttons": [
+     "وجبة",
+     "بالوزن"
+    ]
+   },
+   {
+    "i": 1,
+    "customer": "وضيف طرب",
+    "cls": "items",
+    "raw": "item_info",
+    "by": "assistant",
+    "reply": "تمام، أضيف الطرب مع الشيش. الطرب بطريقتين: وجبة طرب بـ 27 ر.س، ولا بالوزن (ثلث كيلو 47 ر.س · نصف كيلو 70 ر.س · كيلو 140 ر.س)؟",
+    "cart": null,
+    "handover": null,
+    "outcome": "sent",
+    "tools": [
+     {
+      "name": "search_menu",
+      "input": {
+       "query": "طرب"
+      },
+      "result": {
+       "ok": true,
+       "results": [
+        {
+         "id": "16",
+         "name": "وجبة طرب",
+         "name_en": "Tarb Meal",
+         "price": 27,
+         "section": "وجبات",
+         "kind": "main",
+         "sold_out": false,
+         "by_weight": false,
+         "also_as": {
+          "by_weight": {
+           "id": "94",
+           "name": "طرب مشوي بالوزن",
+           "name_en": "Grilled Tarb (by the kilo)",
+           "sold_out": false,
+           "weights": [
+            {
+             "label": "ثلث كيلو",
+             "label_en": "1/3 Kilo",
+             "price": 47,
+             "variant_option_id": 47
+            },
+            {
+             "label": "نصف كيلو",
+             "label_en": "1/2 Kilo",
+             "price": 70,
+             "variant_option_id": 48
+            },
+            {
+             "label": "كيلو",
+             "label_en": "Kilo",
+             "price": 140,
+             "variant_option_id": 49
+            }
+           ],
+           "description": "طرب مشوي على الفحم — متاح بثلث كيلو ونصف كيلو وكيلو"
+          }
+         },
+         "description": "وجبة طرب مشوية تُقدَّم مع الأرز والسلطة والطحينة"
+        },
+        {
+         "id": "94",
+         "name": "طرب مشوي بالوزن",
+         "name_en": "Grilled Tarb (by the kilo)",
+         "section": "مشاوي بالوزن",
+         "kind": "main",
+         "sold_out": false,
+         "by_weight": true,
+         "weights": [
+          {
+           "label": "ثلث كيلو",
+           "label_en": "1/3 Kilo",
+           "price": 47,
+           "variant_option_id": 47
+          },
+          {
+           "label": "نصف كيلو",
+           "label_en": "1/2 Kilo",
+           "price": 70,
+           "variant_option_id": 48
+          },
+          {
+           "label": "كيلو",
+           "label_en": "Kilo",
+           "price": 140,
+           "variant_option_id": 49
+          }
+         ],
+         "how_to_price": "sold by weight: every price belongs to ONE of the weights above; always say the weight with its price",
+         "also_as": {
+          "meal": {
+           "id": "16",
+           "name": "وجبة طرب",
+           "name_en": "Tarb Meal",
+           "price": 27,
+           "sold_out": false,
+           "description": "وجبة طرب مشوية تُقدَّم مع الأرز والسلطة والطحينة"
+          }
+         }
+        },
+        {
+         "id": "18",
+         "name": "وجبة ميكس جريل",
+         "name_en": "Mixed Grill Meal",
+         "price": 37,
+         "section": "وجبات",
+         "kind": "main",
+         "sold_out": false,
+         "by_weight": false
+        }
+       ],
+       "ask_which": {
+        "meal": {
+         "id": "16",
+         "name": "وجبة طرب",
+         "name_en": "Tarb Meal",
+         "price": 27,
+         "description": "وجبة طرب مشوية تُقدَّم مع الأرز والسلطة والطحينة"
+        },
+        "by_weight": {
+         "id": "94",
+         "name": "طرب مشوي بالوزن",
+         "name_en": "Grilled Tarb (by the kilo)",
+         "sold_out": false,
+         "weights": [
+          {
+           "label": "ثلث كيلو",
+           "label_en": "1/3 Kilo",
+           "price": 47,
+           "variant_option_id": 47
+          },
+          {
+           "label": "نصف كيلو",
+           "label_en": "1/2 Kilo",
+           "price": 70,
+           "variant_option_id": 48
+          },
+          {
+           "label": "كيلو",
+           "label_en": "Kilo",
+           "price": 140,
+           "variant_option_id": 49
+          }
+         ],
+         "description": "طرب مشوي على الفحم — متاح بثلث كيلو ونصف كيلو وكيلو"
+        },
+        "rule": "This grill is sold two ways and the customer did not say which. Ask ONE question that gives both with their prices, and nothing else: the meal with what its description says it comes with and its price, or by weight with each weight and its price («تبيها وجبة … بـ … ر.س، ولا بالوزن (ثلث كيلو … · نصف كيلو … · كيلو …)؟»). Two buttons are attached. Never choose for them, never offer to choose for them, and do not call preview_cart before they answer."
+       }
+      },
+      "ms": 5
+     }
+    ],
+    "verdicts": [
+     {
+      "ok": true,
+      "problems": [],
+      "text": "تمام، أضيف الطرب مع الشيش. الطرب بطريقتين: وجبة طرب بـ 27 ر.س، ولا بالوزن (ثلث كيلو 47 ر.س · نصف كيلو 70 ر.س · كيلو 140 ر.س)؟"
+     }
+    ],
+    "calls": [
+     {
+      "model": "claude-haiku-5-5",
+      "tier": "fast",
+      "ms": 1714,
+      "outcome": "ok",
+      "in": 332,
+      "out": 211,
+      "cached": 15629,
+      "costSar": 0.006381
+     },
+     {
+      "model": "claude-haiku-5-5",
+      "tier": "fast",
+      "ms": 3100,
+      "outcome": "ok",
+      "in": 1815,
+      "out": 491,
+      "cached": 15891,
+      "costSar": 0.00756
+     }
+    ],
+    "ms": 4835,
+    "costSar": 0.013941,
+    "model": "claude-haiku-5-5",
+    "suggestions": [],
+    "context": {
+     "open_now": true,
+     "closes_at": "2 فجراً",
+     "location_shared": false
+    },
+    "tier": "fast",
+    "escalated": false,
+    "lang": "ar",
+    "buttons": [
+     "وجبة",
+     "بالوزن"
+    ]
+   },
+   {
+    "i": 2,
+    "customer": "ثلاثه ببسي",
+    "cls": "unknown",
+    "raw": "unknown",
+    "by": "assistant",
+    "reply": "ثلاث بيبسي زجاج، 4 ر.س للواحدة. وبالنسبة للطلب: الشيش طاووق تبيه وجبة بـ 27 ر.س، ولا بالوزن (ثلث كيلو 37 ر.س · نصف كيلو 55 ر.س · كيلو 110 ر.س)؟",
+    "cart": null,
+    "handover": null,
+    "outcome": "sent",
+    "tools": [
+     {
+      "name": "search_menu",
+      "input": {
+       "query": "بيبسي"
+      },
+      "result": {
+       "ok": true,
+       "results": [
+        {
+         "id": "86",
+         "name": "بيبسي زجاج",
+         "name_en": "Pepsi (Glass Bottle)",
+         "price": 4,
+         "section": "إضافات",
+         "kind": "drink",
+         "sold_out": false,
+         "by_weight": false
+        },
+        {
+         "id": "118",
+         "name": "إضافة كومبو",
+         "name_en": "Combo Add-on",
+         "price": 6,
+         "section": "كريبات",
+         "kind": "main",
+         "sold_out": false,
+         "by_weight": false
+        }
+       ]
+      },
+      "ms": 15
+     }
+    ],
+    "verdicts": [
+     {
+      "ok": true,
+      "problems": [],
+      "text": "ثلاث بيبسي زجاج، 4 ر.س للواحدة. وبالنسبة للطلب: الشيش طاووق تبيه وجبة بـ 27 ر.س، ولا بالوزن (ثلث كيلو 37 ر.س · نصف كيلو 55 ر.س · كيلو 110 ر.س)؟"
+     }
+    ],
+    "calls": [
+     {
+      "model": "claude-haiku-5-5",
+      "tier": "fast",
+      "ms": 1120,
+      "outcome": "ok",
+      "in": 748,
+      "out": 101,
+      "cached": 17341,
+      "costSar": 0.006973
+     },
+     {
+      "model": "claude-haiku-5-5",
+      "tier": "fast",
+      "ms": 1314,
+      "outcome": "ok",
+      "in": 330,
+      "out": 123,
+      "cached": 17936,
+      "costSar": 0.00708
+     }
+    ],
+    "ms": 2458,
+    "costSar": 0.014053,
+    "model": "claude-haiku-5-5",
+    "suggestions": [],
+    "context": {
+     "open_now": true,
+     "closes_at": "2 فجراً",
+     "location_shared": false
+    },
+    "tier": "fast",
+    "escalated": false,
+    "lang": "ar"
+   }
+  ],
+  "carts": [],
+  "costSar": 0.041151999999999994,
+  "grade": {
+   "pass": true,
+   "fails": [],
+   "review": []
+  }
+ }
+]
