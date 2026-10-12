@@ -47,6 +47,7 @@ export const ASSIST_CFG_DEFAULTS = Object.freeze({
   liveAudience: "test",                // test = أرقام التجربة بس · ads = اللي جاي من إعلان · campaign = اللي رد على حملة · ads_campaign = الاتنين · all = الكل
   liveDailyCustomers: 30,              // أقصى عدد عملاء مختلفين المساعد يرد عليهم في اليوم (بتوقيت الرياض). بعده: بوت القواعد للعملاء الجداد
   /* «يشوف ويسمع» (waassistmedia.js) — الاتنين مقفولين لحد ما يتفتحوا من اللوحة */
+  fastSimplePreview: true,             // معاينة سلة بسطر واحد تفضل على الموديل السريع (escalate بس)
   imagesEnabled: false,                // صورة من العميل: نظرة واحدة بالموديل السريع ⇒ ملخص مقنّع يكمل بيه المساعد (أو تحويل لموظف مع اللي اتفهم)
   voiceEnabled: false,                 // رسالة صوتية: تتحوّل لنص (محتاج موديل تحويل في البروكسي) وتمشي في دور المساعد العادي
   voiceMaxSec: 60,                     // أطول من كده ⇒ رد الصور/الصوت العادي (تحويل لموظف)
@@ -59,7 +60,7 @@ export const ASSIST_CFG_DEFAULTS = Object.freeze({
 const NUMS = { budgetDaySar: [0, 1000], budgetMonthSar: [0, 10000], maxToolRounds: [1, 8], maxRepliesPerChatDay: [1, 60], timeoutMs: [5000, 60000], sessionMin: [10, 720], staffStepBackMin: [1, 60], seriousHoldMin: [0, 240], locationHours: [1, 24], keepDays: [7, 730],
   followUpMin: [5, 720], followUpCloseGuardMin: [0, 240], searchMax: [3, 15], nudgeGapSar: [0, 100], topSellerDays: [7, 180], profileOrders: [5, 200], maxCartLines: [1, 40], liveDailyCustomers: [0, 5000], voiceMaxSec: [10, 300], mediaBudgetDaySar: [0, 50], sttSarPerMin: [0, 1] };
 const ENUMS = { mode: ASSIST_MODES, routing: ["escalate", "strong", "fast"], effort: ["low", "medium", "high"], thinking: ["adaptive", "off"], sttProvider: ["openai", "groq", "elevenlabs"], liveAudience: LIVE_AUDIENCES };
-const BOOLS = ["typing", "followUpEnabled", "forceSuggestion", "imagesEnabled", "voiceEnabled"];
+const BOOLS = ["typing", "followUpEnabled", "forceSuggestion", "imagesEnabled", "voiceEnabled", "fastSimplePreview"];
 const MODEL_RE = /^[a-z0-9./-]{3,60}$/;
 export function assistConfig(raw) {
   const x = raw && typeof raw === "object" ? raw : {}, out = {};
@@ -113,6 +114,7 @@ export const ASSIST_SCHEMA = Object.freeze({
   "assist.topSellerDays": N("topSellerDays", "«الأكثر مبيعاً» من مبيعات آخر", "", "يوم"),
   "assist.profileOrders": N("profileOrders", "«المعتاد» في ملف العميل من آخر", "", "طلب"),
   "assist.maxCartLines": N("maxCartLines", "أقصى سطور في السلة الجاهزة", "", "سطر"),
+  "assist.fastSimplePreview": { group: "assist", type: "boolean", ar: "صنف واحد: الموديل السريع يكفي", help: "عميل طلب صنف واحد (زي «نص كيلو كفته»): معاينة السعر تفضل على الموديل السريع، والموديل القوي يدخل وقت تجهيز السلة الفعلية أو لو الطلب أكبر. أرخص وأسرع. اقفلها لو لاحظت أخطاء في الأسعار." },
   "assist.imagesEnabled": { group: "assist", type: "boolean", ar: "المساعد يشوف الصور", help: "صورة منيو أو إعلان: يرد عليها زي النص. إيصال دفع أو صورة طلب فيه مشكلة: يحوّلها لموظف ومعاها اللي فهمه. مقفول = رد «ما أقدر أفتح الصور» وتحويل لموظف زي الأول." },
   "assist.voiceEnabled": { group: "assist", type: "boolean", ar: "المساعد يسمع الرسايل الصوتية", help: "محتاج موديل تحويل الصوت لنص متضاف في مزوّد الموديلات. المساعد بيتأكد من العميل من اللي سمعه قبل ما يجهّز سلة. مقفول أو التحويل فشل = تحويل لموظف زي الأول." },
   "assist.voiceMaxSec": N("voiceMaxSec", "أطول رسالة صوتية المساعد يسمعها", "الأطول بتتحوّل لموظف.", "ثانية"),
@@ -128,10 +130,10 @@ export const ASSIST_SCHEMA = Object.freeze({
    حالة الطلب، «نفس طلبي السابق»، أسئلة الوصفات (سطر ثابت)، الحساسية الشديدة، المواعيد والموقع وطرق الدفع، الشكر، «القائمة»،
    وكل ضغطة زر أو صف قايمة. المساعد بياخد الباقي — وبس لو مفيش تحويل مفتوح ولا سكوت موظف ولا كتم ولا حارس حلقات. */
 const RULES_OWN = new Set(["stop", "start", "resume_all", "resume_updates", "optin_yes", "optin_no", "complaint", "problem", "change", "human", "media", "status", "reorder",
-  "secret", "custom_offer", "hours", "hoursloc", "location", "payment", "thanks", "main", "other_city", "whoami"]);
+  "secret", "custom_offer", "hours", "hoursloc", "location", "payment", "thanks", "main", "other_city", "whoami", "weight"]);
 const RULES_NOTICE = new Set(["rate", "rate_burst", "handoff_remind"]);
 /* جوّه محادثة المساعد الشغّالة، الأسئلة المعلوماتية دي بتفضل معاه (عطل تقييم ١٢/١٠: «استلام لما تفتحون» راحت لرد المواعيد وقطعت الطلب). */
-const IN_SESSION = new Set(["hours", "hoursloc", "location", "payment", "thanks"]);
+const IN_SESSION = new Set(["hours", "hoursloc", "location", "payment", "thanks", "weight"]);      // EX6: طلب بالوزن جوّه جلسة المساعد بيفضل معاه (السلة بتاعته)
 /* «خلها بدون طحينة» / «بدون بصل» وهو بيجهّز السلة = ملاحظة على الصنف، مش «تعديل طلب». تعديل طلب **اتدفع** بيفضل للموظف: لو له طلب حديث، القواعد تمسكها. */
 const CART_EDIT = new Set(["special_request", "modify_order"]);
 export function assistEligible({ acfg, cfg, phone, ev, cls, d, afterWait = null, sessionActive = false, handoverOpen = false, recentOrder = false, allowed = false }) {
@@ -177,6 +179,7 @@ Every fact you state (a dish, a box, a price, a fee, an offer, opening hours, an
 - Answer what was asked, no more. Do not list the whole menu; offer two or three fitting options.
 
 # Selling, honestly
+- Your job is to take the order to the end. Once the customer names what they want: confirm the items in one line, ask delivery or pickup, for delivery ask for the location pin and check coverage and the fee with quote_delivery, then build_cart and tell them to tap the button and pay. Do not stop at prices or at a suggestion when the customer is ready to order; one step per message, each ending with the next question.
 - Ask only what you need: what they feel like or how many people, then the dish or box, then the choices a box needs, then delivery or pickup, then build the cart.
 - A box (بوكس) is often the better deal for two or more people: use list_boxes / get_box. Boxes are ordered on the website only. The first context lists every box as slug and name ("boxes"): when the customer names a box, call get_box with its slug directly; use list_boxes only when you need prices or contents to compare. Ask for each choice slot of a box, offering only the choices get_box lists (and their extra price if any). Crust and other add-ons only as get_box / get_item list them.
 - As soon as the customer has named what they want (a dish, or a box with its choices), call preview_cart before you ask anything else: it returns the real prices and at most ONE "suggestion" computed by our system. If there is a suggestion, your message states the price and offers that one suggestion as its single short question («تحب أضيف لك …؟»), with its real benefit when it has one, exactly as "suggestion_say" explains (a cheaper delivery fee, or a box that costs less than the separate items); the delivery-or-pickup question comes in the next message. Never invent a suggestion, never offer more than one. If the customer declines or ignores it, call note_suggestion(kind, "declined") and never repeat it. If they accept, call note_suggestion(kind, "accepted") and include it in the cart.
@@ -452,6 +455,10 @@ export const billableUsage = (u) => { const n = (v) => Math.max(0, Math.round(Nu
 /* ── أدوار تجهيز الطلب: كلمات طلب صريحة ⇒ الموديل القوي من أول نداء ───────── */
 const ORDER_RE = /(^| )(ابي|ابغى|ابغا|ابا|بدي|ودي|اريد|عايز|عاوز|اطلب|اطلبلي|جهز|جهزلي|حط|ضيف|اضف|زود|هات)( لي)? |(^| )(ال)?سله( |$)|\b(order|i want|i'?ll (have|take)|add|cart)\b|\b(abi|abgha|3ayez|ayez|awez)\b/i;
 const CART_TOOLS = new Set(["preview_cart", "build_cart", "get_box"]);
+/* EX6: معاينة سلة فيها سطر واحد من غير بوكسات ولا ملاحظة (زي «نص كيلو كفته») شغل بسيط: السعر راجع من الأداة والمدقّق بيراجع الأرقام ⇒ تفضل على الموديل السريع.
+   build_cart (السلة الفعلية) وأي سلة أكبر بتتحوّل للقوي زي ما هي. */
+export const simplePreview = (u) => { const i = (u && u.input) || {}; const items = Array.isArray(i.items) ? i.items : [], boxes = Array.isArray(i.boxes) ? i.boxes : [];
+  return u.name === "preview_cart" && items.length === 1 && boxes.length === 0 && !String(items[0].note || "").trim(); };
 export function pickModel(acfg, session, text) {
   if (acfg.routing === "strong") return { model: acfg.model, tier: "strong" };
   if (acfg.routing === "fast") return { model: acfg.modelSimple, tier: "fast" };
@@ -675,7 +682,7 @@ export function makeAssistLoop(deps) {
       if (res.stop === "refusal" || res.stop === "max_tokens" || res.stop === "pause_turn") return fail(`stop_${res.stop}`);
       const uses = res.content.filter((b) => b.type === "tool_use");
       /* الموديل السريع طلب أداة تجهيز سلة ⇒ الدور ده للموديل القوي (ردّه بيترمي، والجلسة تفضل على القوي). */
-      if (tier === "fast" && acfg.routing === "escalate" && uses.some((u) => CART_TOOLS.has(u.name))) { model = acfg.model; tier = "strong"; session.strong = true; trace.model = model; trace.tier = "strong"; trace.escalated = true; continue; }
+      if (tier === "fast" && acfg.routing === "escalate" && uses.some((u) => CART_TOOLS.has(u.name) && !(acfg.fastSimplePreview && simplePreview(u)))) { model = acfg.model; tier = "strong"; session.strong = true; trace.model = model; trace.tier = "strong"; trace.escalated = true; continue; }
       if (tier === "strong") session.strong = true;
       session.messages.push({ role: "assistant", content: res.content });
       if (uses.length) {

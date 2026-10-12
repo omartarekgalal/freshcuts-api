@@ -408,6 +408,8 @@ export function parseWebhook(body, { phoneId = null, phoneIds = [], ownNumbers =
           at: isoOf(m.timestamp),
           interactiveId: m.button?.payload ?? m.interactive?.button_reply?.id ?? m.interactive?.list_reply?.id ?? null,
           referral: m.referral || null, // رسالة جاية من إعلان Click-to-WhatsApp
+          /* EX6: رسالة نوعها مش مدعوم (أول رسالة من إعلان اتشافت كده ١٣/١٠) — نحفظ اللي ميتا قالته عنها: الأخطاء وأسماء الحقول اللي جت، عشان نعرف هي إيه. */
+          ...(m.type === "unsupported" || Array.isArray(m.errors) ? { unsupported: { errors: (Array.isArray(m.errors) ? m.errors : []).slice(0, 3).map((e) => ({ code: e.code ?? null, title: String(e.title || e.message || "").slice(0, 120), details: String(e.error_data?.details || "").slice(0, 200) })), keys: Object.keys(m).slice(0, 20), context: m.context ? Object.keys(m.context).slice(0, 10) : null } } : {}),
           // موقع العميل (مشاركة الموقع) — البوت بيتأكد بيه إن التوصيل يوصله (wabotrun: area)
           location: m.type === "location" && Number.isFinite(Number(m.location?.latitude)) && Number.isFinite(Number(m.location?.longitude))
             ? { lat: Number(m.location.latitude), lng: Number(m.location.longitude) } : null,
@@ -1041,7 +1043,7 @@ export function register(app, ctx, deps = {}) {
     const ins = await pool.query(
       `INSERT INTO wa_messages(wamid, direction, phone_norm, status, body, pricing, source, msg_type)
        VALUES ($1,'in',$2,'received',$3,$4,'api',$5) ON CONFLICT (wamid) DO NOTHING RETURNING id`,
-      [m.wamid, pn, String(m.text || `[${m.type}]`).slice(0, 1000), m.referral ? jb({ referral: m.referral }) : null, m.type || null]);
+      [m.wamid, pn, String(m.text || `[${m.type}]`).slice(0, 1000), m.referral || m.unsupported ? jb({ ...(m.referral ? { referral: m.referral } : {}), ...(m.unsupported ? { unsupported: m.unsupported } : {}) }) : null, m.type || null]);
     if (ins.rowCount === 0) return; // ويب هوك مكرر — اتعالج قبل كده
     if (m.media) await pool.query("UPDATE wa_messages SET media=$2::jsonb WHERE wamid=$1", [m.wamid, jb(m.media)]).catch((e) => console.error("[wa] media meta:", e.message));
     if (!pn) return;

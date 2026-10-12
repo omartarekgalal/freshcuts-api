@@ -1,0 +1,47 @@
+{
+ "set": "ex6",
+ "name": "ex6-after",
+ "over": {
+  "routing": "escalate",
+  "thinking": "adaptive",
+  "effort": "low",
+  "timeoutMs": 60000
+ },
+ "capped": false,
+ "spentRun": 0,
+ "spentTodayBefore": 33.09868299999995,
+ "cap": 33.6,
+ "conversations": 5,
+ "passed": 0,
+ "failed": [
+  "ex6-half-kofta",
+  "ex6-kilo-mashakel",
+  "ex6-third-tawook",
+  "ex6-two-kilos-kebab",
+  "ex6-half-kofta-en"
+ ],
+ "customerTurns": 5,
+ "modelTurns": 0,
+ "answeredByAssistant": 0,
+ "rulesOwned": 5,
+ "fallbacks": {},
+ "validatorRetries": 0,
+ "escalations": 0,
+ "costSar": 0,
+ "costPerConversationSar": 0,
+ "costPerModelTurnSar": null,
+ "latencyMs": {
+  "p50": null,
+  "p90": null,
+  "max": null,
+  "n": 0
+ },
+ "modelCalls": 0,
+ "byModel": {},
+ "failTypes": {
+  "must_contain": 5
+ },
+ "reviewFlags": {},
+ "text": "conversations 5 · passed 0 · failed 5\ncustomer turns 5: assistant answered 0, rules owned 5, fallbacks {}\nvalidator retries 0 · escalations fast→strong 0 · model calls 0\ncost 0 SAR (0 per conversation, null per model turn)\nlatency per answered turn: p50 null ms · p90 null ms · max null ms (n=0)\nby model {}\nfail types {\"must_contain\":5}\nreview flags {}",
+ "markdown": "# Assistant evaluation: ex6-after\n\n```\nconversations 5 · passed 0 · failed 5\ncustomer turns 5: assistant answered 0, rules owned 5, fallbacks {}\nvalidator retries 0 · escalations fast→strong 0 · model calls 0\ncost 0 SAR (0 per conversation, null per model turn)\nlatency per answered turn: p50 null ms · p90 null ms · max null ms (n=0)\nby model {}\nfail types {\"must_contain\":5}\nreview flags {}\n```\n\n## Conversations\n\n### FAIL · ex6-half-kofta (by weight) · 0.0000 SAR\n\n**Fails:** must_contain «60»\n\n- **العميل:** عايزه نص كيلو كفته\n  - _بوت القواعد_ (rules:weight)\n\n### FAIL · ex6-kilo-mashakel (by weight) · 0.0000 SAR\n\n**Fails:** must_contain «155»\n\n- **العميل:** ابي كيلو مشكل مخصوص\n  - _بوت القواعد_ (rules:weight)\n\n### FAIL · ex6-third-tawook (by weight) · 0.0000 SAR\n\n**Fails:** must_contain «37»\n\n- **العميل:** ثلث كيلو شيش طاووق لو سمحت\n  - _بوت القواعد_ (rules:weight)\n\n### FAIL · ex6-two-kilos-kebab (by weight) · 0.0000 SAR\n\n**Fails:** must_contain «280»\n\n- **العميل:** ٢ كيلو كباب مشوي\n  - _بوت القواعد_ (rules:weight)\n\n### FAIL · ex6-half-kofta-en (by weight) · 0.0000 SAR\n\n**Fails:** must_contain «60»\n\n- **العميل:** half kilo kofta please\n  - _بوت القواعد_ (rules:weight)\n"
+}

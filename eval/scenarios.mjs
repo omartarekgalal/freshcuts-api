@@ -73,5 +73,6 @@ import { AS4 } from "./scenarios-as4.mjs";
 import { CH1 } from "./scenarios-ch1.mjs";
 import { M3 } from "./scenarios-m3.mjs";
 import { M45 } from "./scenarios-m45.mjs";
+import { EX6 } from "./scenarios-ex6.mjs";
 for (const s of BATCH20) s.sets = ["batch20", "full"];
-export const SCENARIOS = [...BATCH20, ...FULL_EXTRA, ...AS3, ...AS4, ...CH1, ...M3, ...M45];
+export const SCENARIOS = [...BATCH20, ...FULL_EXTRA, ...AS3, ...AS4, ...CH1, ...M3, ...M45, ...EX6];

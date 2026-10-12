@@ -87,5 +87,16 @@ export function pickDish(text, candidates) {
   if (full.length) return String(full[0].id);
   return list.length === 1 ? String(list[0].id) : null;
 }
+/* EX6 — «مسببات الحساسية» لصنف محدد: المجموعات **المسجّلة** في بيانات الصنف بس، بترتيب ثابت. مابنقولش أبداً إن الباقي مش موجود.
+   ⇒ { dish, dishEn, groups:[{ key, ar, en }], fryer } أو null (الصنف مش في البيانات / مفيش مجموعة مسجّلة). */
+export const GROUP_LABELS = { gluten_wheat: ["الجلوتين (القمح)", "gluten (wheat)"], milk: ["الحليب ومشتقاته", "milk"], egg: ["البيض", "egg"], sesame: ["السمسم", "sesame"], mustard: ["الخردل", "mustard"], celery: ["الكرفس", "celery"],
+  fish: ["السمك", "fish"], crustaceans_molluscs: ["القشريات والرخويات", "shellfish"], tree_nuts: ["المكسرات", "tree nuts"], peanuts: ["الفول السوداني", "peanuts"] };
+export function dishAllergens(dishId) {
+  const d = loadFacts().dishes[String(dishId)]; if (!d) return null;
+  const groups = Object.keys(GROUP_LABELS).filter((g) => d.a && d.a[g]).map((g) => ({ key: g, ar: GROUP_LABELS[g][0], en: GROUP_LABELS[g][1] }));
+  return groups.length ? { dish: d.ar, dishEn: d.en || d.ar, groups, fryer: Array.isArray(d.fry) && d.fry.length > 0 } : null;
+}
+/* المجموعات اللي ليها صنف واحد على الأقل في البيانات — للإجابة العامة (مسودة README). */
+export const menuAllergenGroups = () => { const ds = Object.values(loadFacts().dishes); return Object.keys(GROUP_LABELS).filter((g) => ds.some((d) => d.a && d.a[g])).map((g) => ({ key: g, ar: GROUP_LABELS[g][0], en: GROUP_LABELS[g][1] })); };
 /* جملة عامة وافق عليها المالك بتتقال مع وصف المنيو («الصوص يُقدَّم جانبياً») — أو null */
 export const factNote = (dishId, lang = "ar") => { const d = loadFacts().dishes[String(dishId)]; return d && d.p ? (lang === "en" ? d.p.en || d.p.ar : d.p.ar) || null : null; };export const factsCoverage = () => { const ds = Object.values(loadFacts().dishes); return { revision: loadFacts().revision, dishes: ds.length, covered: ds.filter((d) => d.u === "none" || d.u === "removable_only").length }; };

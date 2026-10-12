@@ -1,0 +1,232 @@
+[
+ {
+  "id": "ex6-half-kofta",
+  "group": "by weight",
+  "world": {
+   "profile": "new"
+  },
+  "expect": {
+   "noHandover": true,
+   "mustContain": [
+    "60"
+   ]
+  },
+  "turns": [
+   {
+    "i": 0,
+    "customer": "عايزه نص كيلو كفته",
+    "cls": "weight",
+    "raw": "weight_order",
+    "by": "rules",
+    "reply": null,
+    "cart": null,
+    "handover": null,
+    "outcome": "rules:weight",
+    "tools": [],
+    "verdicts": [],
+    "calls": [],
+    "ms": 0,
+    "costSar": 0,
+    "model": null,
+    "suggestions": []
+   }
+  ],
+  "carts": [],
+  "costSar": 0,
+  "grade": {
+   "pass": false,
+   "fails": [
+    {
+     "type": "must_contain",
+     "turn": null,
+     "detail": "60"
+    }
+   ],
+   "review": []
+  }
+ },
+ {
+  "id": "ex6-kilo-mashakel",
+  "group": "by weight",
+  "world": {
+   "profile": "new"
+  },
+  "expect": {
+   "noHandover": true,
+   "mustContain": [
+    "155"
+   ]
+  },
+  "turns": [
+   {
+    "i": 0,
+    "customer": "ابي كيلو مشكل مخصوص",
+    "cls": "weight",
+    "raw": "weight_order",
+    "by": "rules",
+    "reply": null,
+    "cart": null,
+    "handover": null,
+    "outcome": "rules:weight",
+    "tools": [],
+    "verdicts": [],
+    "calls": [],
+    "ms": 0,
+    "costSar": 0,
+    "model": null,
+    "suggestions": []
+   }
+  ],
+  "carts": [],
+  "costSar": 0,
+  "grade": {
+   "pass": false,
+   "fails": [
+    {
+     "type": "must_contain",
+     "turn": null,
+     "detail": "155"
+    }
+   ],
+   "review": []
+  }
+ },
+ {
+  "id": "ex6-third-tawook",
+  "group": "by weight",
+  "world": {
+   "profile": "new"
+  },
+  "expect": {
+   "noHandover": true,
+   "mustContain": [
+    "37"
+   ]
+  },
+  "turns": [
+   {
+    "i": 0,
+    "customer": "ثلث كيلو شيش طاووق لو سمحت",
+    "cls": "weight",
+    "raw": "weight_order",
+    "by": "rules",
+    "reply": null,
+    "cart": null,
+    "handover": null,
+    "outcome": "rules:weight",
+    "tools": [],
+    "verdicts": [],
+    "calls": [],
+    "ms": 0,
+    "costSar": 0,
+    "model": null,
+    "suggestions": []
+   }
+  ],
+  "carts": [],
+  "costSar": 0,
+  "grade": {
+   "pass": false,
+   "fails": [
+    {
+     "type": "must_contain",
+     "turn": null,
+     "detail": "37"
+    }
+   ],
+   "review": []
+  }
+ },
+ {
+  "id": "ex6-two-kilos-kebab",
+  "group": "by weight",
+  "world": {
+   "profile": "new"
+  },
+  "expect": {
+   "noHandover": true,
+   "mustContain": [
+    "280"
+   ]
+  },
+  "turns": [
+   {
+    "i": 0,
+    "customer": "٢ كيلو كباب مشوي",
+    "cls": "weight",
+    "raw": "weight_order",
+    "by": "rules",
+    "reply": null,
+    "cart": null,
+    "handover": null,
+    "outcome": "rules:weight",
+    "tools": [],
+    "verdicts": [],
+    "calls": [],
+    "ms": 0,
+    "costSar": 0,
+    "model": null,
+    "suggestions": []
+   }
+  ],
+  "carts": [],
+  "costSar": 0,
+  "grade": {
+   "pass": false,
+   "fails": [
+    {
+     "type": "must_contain",
+     "turn": null,
+     "detail": "280"
+    }
+   ],
+   "review": []
+  }
+ },
+ {
+  "id": "ex6-half-kofta-en",
+  "group": "by weight",
+  "world": {
+   "profile": "new"
+  },
+  "expect": {
+   "noHandover": true,
+   "mustContain": [
+    "60"
+   ]
+  },
+  "turns": [
+   {
+    "i": 0,
+    "customer": "half kilo kofta please",
+    "cls": "weight",
+    "raw": "weight_order",
+    "by": "rules",
+    "reply": null,
+    "cart": null,
+    "handover": null,
+    "outcome": "rules:weight",
+    "tools": [],
+    "verdicts": [],
+    "calls": [],
+    "ms": 0,
+    "costSar": 0,
+    "model": null,
+    "suggestions": []
+   }
+  ],
+  "carts": [],
+  "costSar": 0,
+  "grade": {
+   "pass": false,
+   "fails": [
+    {
+     "type": "must_contain",
+     "turn": null,
+     "detail": "60"
+    }
+   ],
+   "review": []
+  }
+ }
+]

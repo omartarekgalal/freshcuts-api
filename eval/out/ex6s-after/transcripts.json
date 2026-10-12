@@ -1,0 +1,1661 @@
+[
+ {
+  "id": "ex6s-half-kofta",
+  "group": "by weight",
+  "world": {
+   "profile": "new"
+  },
+  "expect": {
+   "noHandover": true,
+   "mustContain": [
+    "60"
+   ]
+  },
+  "turns": [
+   {
+    "i": 0,
+    "customer": "السلام عليكم ابي اطلب عشاء وش تنصحني",
+    "cls": "best",
+    "raw": "recommend",
+    "by": "assistant",
+    "reply": "وعليكم السلام 👋 أكثر ما يطلبه الزبائن:\n- وجبة ميكس جريل بـ 37 ر.س\n- كريب زنجر سوبريم بـ 25 ر.س\n- بنا تشيكن كازرول بـ 28 ر.س\n\nتبي واحد منها، ولا تبي بوكس لأكثر من شخص؟",
+    "cart": null,
+    "handover": null,
+    "outcome": "sent",
+    "tools": [
+     {
+      "name": "recommend",
+      "input": {},
+      "result": {
+       "ok": true,
+       "basis": "real sales, most sold first",
+       "results": [
+        {
+         "id": "18",
+         "name": "وجبة ميكس جريل",
+         "name_en": "Mixed Grill Meal",
+         "price": 37,
+         "section": "وجبات",
+         "kind": "main",
+         "sold_out": false,
+         "by_weight": false
+        },
+        {
+         "id": "8",
+         "name": "كريب زنجر سوبريم",
+         "name_en": "Zinger Supreme Crepe",
+         "price": 25,
+         "section": "كريبات",
+         "kind": "main",
+         "sold_out": false,
+         "by_weight": false
+        },
+        {
+         "id": "59",
+         "name": "بنا تشيكن كازرول",
+         "name_en": "Penne Chicken Casserole",
+         "price": 28,
+         "section": "باستا",
+         "kind": "main",
+         "sold_out": false,
+         "by_weight": false
+        },
+        {
+         "id": "13",
+         "name": "وجبة نصف دجاجة على الفحم",
+         "name_en": "Half Charcoal Chicken Meal",
+         "price": 28,
+         "section": "وجبات",
+         "kind": "main",
+         "sold_out": false,
+         "by_weight": false
+        },
+        {
+         "id": "3",
+         "name": "كريب ميكس دجاج",
+         "name_en": "Mixed Chicken Crepe",
+         "price": 29,
+         "section": "كريبات",
+         "kind": "main",
+         "sold_out": false,
+         "by_weight": false
+        }
+       ]
+      },
+      "ms": 2
+     }
+    ],
+    "verdicts": [
+     {
+      "ok": true,
+      "problems": [],
+      "text": "وعليكم السلام 👋 أكثر ما يطلبه الزبائن:\n- وجبة ميكس جريل بـ 37 ر.س\n- كريب زنجر سوبريم بـ 25 ر.س\n- بنا تشيكن كازرول بـ 28 ر.س\n\nتبي واحد منها، ولا تبي بوكس لأكثر من شخص؟"
+     }
+    ],
+    "calls": [
+     {
+      "model": "claude-sonnet-5-5",
+      "tier": "strong",
+      "ms": 2657,
+      "outcome": "ok",
+      "in": 1136,
+      "out": 26,
+      "cached": 10017,
+      "costSar": 0.017008
+     },
+     {
+      "model": "claude-sonnet-5-5",
+      "tier": "strong",
+      "ms": 2121,
+      "outcome": "ok",
+      "in": 546,
+      "out": 133,
+      "cached": 10922,
+      "costSar": 0.017274
+     }
+    ],
+    "ms": 4799,
+    "costSar": 0.034282,
+    "model": "claude-sonnet-5-5",
+    "suggestions": [],
+    "context": {
+     "open_now": true,
+     "closes_at": "2 فجراً",
+     "location_shared": false,
+     "customer": {
+      "known": false,
+      "name": null,
+      "orders": 0,
+      "status": "no_orders",
+      "days_since_last": null,
+      "usual_basket_sar": null,
+      "usual_mode": null,
+      "usual_hour": null,
+      "favourites": [],
+      "taste": null,
+      "last_order": null,
+      "districts": [],
+      "loyalty": {
+       "every": 3,
+       "progress": 0,
+       "left": 3,
+       "reward": "free_delivery",
+       "min_total": 60,
+       "status": null
+      },
+      "unused_rewards": [],
+      "first_order_offer": true,
+      "language": "ar"
+     },
+     "offers": {
+      "first_order": {
+       "eligible": true,
+       "code": "FIRST",
+       "free_delivery": true,
+       "min_total": 60,
+       "reason": null
+      },
+      "loyalty": {
+       "every": 3,
+       "progress": 0,
+       "left": 3,
+       "reward": "free_delivery",
+       "min_total": 60,
+       "status": null
+      }
+     },
+     "branch": "📍 فرعنا في حي السلامة بجدة، عند دوار رامي.",
+     "boxes": [
+      "box-solo-crepe: بوكس الكريب الفردي",
+      "box-solo-mixgrill: بوكس الميكس جريل الفردي",
+      "box-solo-burger: بوكس البرجر الفردي",
+      "box-solo-pasta: بوكس الباستا الفردي",
+      "box-solo-hawawshi: بوكس الحواوشي الفردي",
+      "box-solo-meal: بوكس وجبة المشاوي الفردي",
+      "box-crepe-duo: بوكس الكريب لشخصين",
+      "box-mixgrill-duo: ميكس جريل لشخصين",
+      "box-pizza-pasta: بيتزا وباستا لشخصين",
+      "box-meals-duo: وجبتين مشاوي لشخصين",
+      "box-burger-duo: بوكس البرجر لشخصين",
+      "box-late-night: بوكس السهرة",
+      "box-taste-all: بوكس التشكيلة",
+      "box-grill-half-half: بوكس المشاوي نص ونص",
+      "box-family: بوكس العائلة — مشاوي وبيتزا وباستا",
+      "box-pizza-night: بوكس سهرة البيتزا",
+      "box-mashakel: بوكس المشكل المخصوص",
+      "box-ribs-grill: بوكس الريش والمشاوي"
+     ]
+    },
+    "tier": "strong",
+    "escalated": false,
+    "lang": "ar"
+   },
+   {
+    "i": 1,
+    "customer": "خلاص ابي نص كيلو كفته",
+    "cls": "weight",
+    "raw": "weight_order",
+    "by": "assistant",
+    "reply": "كفتة مشوية بالوزن نصف كيلو بـ 60 ر.س. تحب أضيف لك مشروبات غازية بـ 3 ر.س؟",
+    "cart": null,
+    "handover": null,
+    "outcome": "sent",
+    "tools": [
+     {
+      "name": "search_menu",
+      "input": {
+       "query": "كفتة"
+      },
+      "result": {
+       "ok": true,
+       "results": [
+        {
+         "id": "17",
+         "name": "وجبة كفتة",
+         "name_en": "Kofta Meal",
+         "price": 24,
+         "section": "وجبات",
+         "kind": "main",
+         "sold_out": false,
+         "by_weight": false
+        },
+        {
+         "id": "87",
+         "name": "وجبة كفتة وطرب",
+         "name_en": "Kofta & Tarb Meal",
+         "price": 37,
+         "section": "وجبات",
+         "kind": "main",
+         "sold_out": false,
+         "by_weight": false
+        },
+        {
+         "id": "91",
+         "name": "كفتة مشوية بالوزن",
+         "name_en": "Grilled Kofta (by the kilo)",
+         "section": "مشاوي بالوزن",
+         "kind": "main",
+         "sold_out": false,
+         "by_weight": true,
+         "weights": [
+          {
+           "label": "ثلث كيلو",
+           "label_en": "1/3 Kilo",
+           "price": 40,
+           "variant_option_id": 44
+          },
+          {
+           "label": "نصف كيلو",
+           "label_en": "1/2 Kilo",
+           "price": 60,
+           "variant_option_id": 45
+          },
+          {
+           "label": "كيلو",
+           "label_en": "Kilo",
+           "price": 120,
+           "variant_option_id": 46
+          }
+         ],
+         "how_to_price": "sold by weight: every price belongs to ONE of the weights above; always say the weight with its price"
+        },
+        {
+         "id": "18",
+         "name": "وجبة ميكس جريل",
+         "name_en": "Mixed Grill Meal",
+         "price": 37,
+         "section": "وجبات",
+         "kind": "main",
+         "sold_out": false,
+         "by_weight": false
+        }
+       ]
+      },
+      "ms": 6
+     },
+     {
+      "name": "preview_cart",
+      "input": {
+       "items": [
+        {
+         "id": "91",
+         "qty": 1,
+         "variant_option_id": 45
+        }
+       ]
+      },
+      "result": {
+       "ok": true,
+       "option": "delivery",
+       "lines": [
+        {
+         "id": "91",
+         "name": "كفتة مشوية بالوزن",
+         "name_en": "Grilled Kofta (by the kilo)",
+         "weight": "نصف كيلو",
+         "weight_en": "1/2 Kilo",
+         "variant_option_id": 45,
+         "price": 60,
+         "qty": 1,
+         "total": 60,
+         "kind": "main"
+        }
+       ],
+       "subtotal": 60,
+       "problems": [],
+       "note": "prices include VAT; the delivery fee is separate and shown by quote_delivery and again on the site before payment",
+       "saved": false,
+       "suggestion": {
+        "kind": "drink",
+        "item": {
+         "id": "82",
+         "name": "مشروبات غازية",
+         "name_en": "Soft Drinks",
+         "price": 3,
+         "section": "إضافات",
+         "kind": "drink",
+         "sold_out": false,
+         "by_weight": false
+        }
+       },
+       "suggestion_say": "a plain add-on: «تحب أضيف لك مشروبات غازية بـ 3 ر.س؟» — no pressure.",
+       "suggestion_rule": "you may offer this ONE suggestion as a short question; nothing else"
+      },
+      "ms": 2
+     }
+    ],
+    "verdicts": [
+     {
+      "ok": true,
+      "problems": [],
+      "text": "كفتة مشوية بالوزن نصف كيلو بـ 60 ر.س. تحب أضيف لك مشروبات غازية بـ 3 ر.س؟"
+     }
+    ],
+    "calls": [
+     {
+      "model": "claude-sonnet-5-5",
+      "tier": "strong",
+      "ms": 1538,
+      "outcome": "ok",
+      "in": 308,
+      "out": 51,
+      "cached": 11357,
+      "costSar": 0.01274
+     },
+     {
+      "model": "claude-sonnet-5-5",
+      "tier": "strong",
+      "ms": 1182,
+      "outcome": "ok",
+      "in": 660,
+      "out": 72,
+      "cached": 11600,
+      "costSar": 0.01635
+     },
+     {
+      "model": "claude-sonnet-5-5",
+      "tier": "strong",
+      "ms": 1418,
+      "outcome": "ok",
+      "in": 545,
+      "out": 62,
+      "cached": 12126,
+      "costSar": 0.015507
+     }
+    ],
+    "ms": 4161,
+    "costSar": 0.044597,
+    "model": "claude-sonnet-5-5",
+    "suggestions": [
+     {
+      "kind": "drink",
+      "ref": "82",
+      "name": "مشروبات غازية",
+      "numbers": {
+       "kind": "drink",
+       "item": {
+        "id": "82",
+        "name": "مشروبات غازية",
+        "name_en": "Soft Drinks",
+        "price": 3,
+        "section": "إضافات",
+        "kind": "drink",
+        "sold_out": false,
+        "by_weight": false
+       }
+      },
+      "outcome": "offered"
+     }
+    ],
+    "context": {
+     "open_now": true,
+     "closes_at": "2 فجراً",
+     "location_shared": false
+    },
+    "tier": "strong",
+    "escalated": false,
+    "lang": "ar"
+   }
+  ],
+  "carts": [],
+  "costSar": 0.078879,
+  "grade": {
+   "pass": true,
+   "fails": [],
+   "review": []
+  }
+ },
+ {
+  "id": "ex6s-kilo-kebab",
+  "group": "by weight",
+  "world": {
+   "profile": "new"
+  },
+  "expect": {
+   "noHandover": true,
+   "mustContain": [
+    "140"
+   ]
+  },
+  "turns": [
+   {
+    "i": 0,
+    "customer": "وش عندكم مشاوي؟",
+    "cls": "cat",
+    "raw": "menu",
+    "by": "assistant",
+    "reply": "عندنا مشاوي بالوزن، وهذي أشهرها:\nصدور مشوية: ثلث كيلو 30 ر.س · نصف كيلو 45 ر.س · كيلو 90 ر.س\nشيش طاووق: ثلث كيلو 37 ر.س · نصف كيلو 55 ر.س · كيلو 110 ر.س\nكباب: ثلث كيلو 47 ر.س · نصف كيلو 70 ر.س · كيلو 140 ر.س\n\nتحب أي وحدة، ولا تفضّل بوكس لشخصين؟",
+    "cart": null,
+    "handover": null,
+    "outcome": "sent",
+    "tools": [
+     {
+      "name": "search_menu",
+      "input": {
+       "query": "مشاوي"
+      },
+      "result": {
+       "ok": true,
+       "results": [
+        {
+         "id": "111",
+         "name": "صدور مشوية بالوزن",
+         "name_en": "Grilled Chicken Breast (by the kilo)",
+         "section": "مشاوي بالوزن",
+         "kind": "main",
+         "sold_out": false,
+         "by_weight": true,
+         "weights": [
+          {
+           "label": "ثلث كيلو",
+           "label_en": "1/3 Kilo",
+           "price": 30,
+           "variant_option_id": 65
+          },
+          {
+           "label": "نصف كيلو",
+           "label_en": "1/2 Kilo",
+           "price": 45,
+           "variant_option_id": 66
+          },
+          {
+           "label": "كيلو",
+           "label_en": "Kilo",
+           "price": 90,
+           "variant_option_id": 67
+          }
+         ],
+         "how_to_price": "sold by weight: every price belongs to ONE of the weights above; always say the weight with its price"
+        },
+        {
+         "id": "108",
+         "name": "كبدة مشوية بالوزن",
+         "name_en": "Grilled Liver (by the kilo)",
+         "section": "مشاوي بالوزن",
+         "kind": "main",
+         "sold_out": false,
+         "by_weight": true,
+         "weights": [
+          {
+           "label": "ثلث كيلو",
+           "label_en": "1/3 Kilo",
+           "price": 33,
+           "variant_option_id": 62
+          },
+          {
+           "label": "نصف كيلو",
+           "label_en": "1/2 Kilo",
+           "price": 50,
+           "variant_option_id": 63
+          },
+          {
+           "label": "كيلو",
+           "label_en": "Kilo",
+           "price": 100,
+           "variant_option_id": 64
+          }
+         ],
+         "how_to_price": "sold by weight: every price belongs to ONE of the weights above; always say the weight with its price"
+        },
+        {
+         "id": "114",
+         "name": "شيش طاووق مشوي بالوزن",
+         "name_en": "Grilled Shish Tawook (by the kilo)",
+         "section": "مشاوي بالوزن",
+         "kind": "main",
+         "sold_out": false,
+         "by_weight": true,
+         "weights": [
+          {
+           "label": "ثلث كيلو",
+           "label_en": "1/3 Kilo",
+           "price": 37,
+           "variant_option_id": 68
+          },
+          {
+           "label": "نصف كيلو",
+           "label_en": "1/2 Kilo",
+           "price": 55,
+           "variant_option_id": 69
+          },
+          {
+           "label": "كيلو",
+           "label_en": "Kilo",
+           "price": 110,
+           "variant_option_id": 70
+          }
+         ],
+         "how_to_price": "sold by weight: every price belongs to ONE of the weights above; always say the weight with its price"
+        },
+        {
+         "id": "91",
+         "name": "كفتة مشوية بالوزن",
+         "name_en": "Grilled Kofta (by the kilo)",
+         "section": "مشاوي بالوزن",
+         "kind": "main",
+         "sold_out": false,
+         "by_weight": true,
+         "weights": [
+          {
+           "label": "ثلث كيلو",
+           "label_en": "1/3 Kilo",
+           "price": 40,
+           "variant_option_id": 44
+          },
+          {
+           "label": "نصف كيلو",
+           "label_en": "1/2 Kilo",
+           "price": 60,
+           "variant_option_id": 45
+          },
+          {
+           "label": "كيلو",
+           "label_en": "Kilo",
+           "price": 120,
+           "variant_option_id": 46
+          }
+         ],
+         "how_to_price": "sold by weight: every price belongs to ONE of the weights above; always say the weight with its price"
+        },
+        {
+         "id": "105",
+         "name": "سجق مشوي بالوزن",
+         "name_en": "Grilled Sausage (by the kilo)",
+         "section": "مشاوي بالوزن",
+         "kind": "main",
+         "sold_out": false,
+         "by_weight": true,
+         "weights": [
+          {
+           "label": "ثلث كيلو",
+           "label_en": "1/3 Kilo",
+           "price": 40,
+           "variant_option_id": 59
+          },
+          {
+           "label": "نصف كيلو",
+           "label_en": "1/2 Kilo",
+           "price": 60,
+           "variant_option_id": 60
+          },
+          {
+           "label": "كيلو",
+           "label_en": "Kilo",
+           "price": 120,
+           "variant_option_id": 61
+          }
+         ],
+         "how_to_price": "sold by weight: every price belongs to ONE of the weights above; always say the weight with its price"
+        },
+        {
+         "id": "97",
+         "name": "كباب مشوي بالوزن",
+         "name_en": "Grilled Kebab (by the kilo)",
+         "section": "مشاوي بالوزن",
+         "kind": "main",
+         "sold_out": false,
+         "by_weight": true,
+         "weights": [
+          {
+           "label": "ثلث كيلو",
+           "label_en": "1/3 Kilo",
+           "price": 47,
+           "variant_option_id": 50
+          },
+          {
+           "label": "نصف كيلو",
+           "label_en": "1/2 Kilo",
+           "price": 70,
+           "variant_option_id": 51
+          },
+          {
+           "label": "كيلو",
+           "label_en": "Kilo",
+           "price": 140,
+           "variant_option_id": 52
+          }
+         ],
+         "how_to_price": "sold by weight: every price belongs to ONE of the weights above; always say the weight with its price"
+        },
+        {
+         "id": "94",
+         "name": "طرب مشوي بالوزن",
+         "name_en": "Grilled Tarb (by the kilo)",
+         "section": "مشاوي بالوزن",
+         "kind": "main",
+         "sold_out": false,
+         "by_weight": true,
+         "weights": [
+          {
+           "label": "ثلث كيلو",
+           "label_en": "1/3 Kilo",
+           "price": 47,
+           "variant_option_id": 47
+          },
+          {
+           "label": "نصف كيلو",
+           "label_en": "1/2 Kilo",
+           "price": 70,
+           "variant_option_id": 48
+          },
+          {
+           "label": "كيلو",
+           "label_en": "Kilo",
+           "price": 140,
+           "variant_option_id": 49
+          }
+         ],
+         "how_to_price": "sold by weight: every price belongs to ONE of the weights above; always say the weight with its price"
+        },
+        {
+         "id": "103",
+         "name": "مشكل مخصوص بالوزن",
+         "name_en": "Special Mixed Grill (by the kilo)",
+         "section": "مشاوي بالوزن",
+         "kind": "main",
+         "sold_out": false,
+         "by_weight": true,
+         "weights": [
+          {
+           "label": "ثلث كيلو",
+           "label_en": "1/3 Kilo",
+           "price": 53,
+           "variant_option_id": 56
+          },
+          {
+           "label": "نصف كيلو",
+           "label_en": "1/2 Kilo",
+           "price": 78,
+           "variant_option_id": 57
+          },
+          {
+           "label": "كيلو",
+           "label_en": "Kilo",
+           "price": 155,
+           "variant_option_id": 58
+          }
+         ],
+         "how_to_price": "sold by weight: every price belongs to ONE of the weights above; always say the weight with its price"
+        }
+       ]
+      },
+      "ms": 4
+     }
+    ],
+    "verdicts": [
+     {
+      "ok": true,
+      "problems": [],
+      "text": "عندنا مشاوي بالوزن، وهذي أشهرها:\nصدور مشوية: ثلث كيلو 30 ر.س · نصف كيلو 45 ر.س · كيلو 90 ر.س\nشيش طاووق: ثلث كيلو 37 ر.س · نصف كيلو 55 ر.س · كيلو 110 ر.س\nكباب: ثلث كيلو 47 ر.س · نصف كيلو 70 ر.س · كيلو 140 ر.س\n\nتحب أي وحدة، ولا تفضّل بوكس لشخصين؟"
+     }
+    ],
+    "calls": [
+     {
+      "model": "claude-haiku-5-5",
+      "tier": "fast",
+      "ms": 1893,
+      "outcome": "ok",
+      "in": 8818,
+      "out": 52,
+      "cached": 3859,
+      "costSar": 0.004851
+     },
+     {
+      "model": "claude-haiku-5-5",
+      "tier": "fast",
+      "ms": 1746,
+      "outcome": "ok",
+      "in": 2520,
+      "out": 206,
+      "cached": 10910,
+      "costSar": 0.005423
+     }
+    ],
+    "ms": 3725,
+    "costSar": 0.010274,
+    "model": "claude-haiku-5-5",
+    "suggestions": [],
+    "context": {
+     "open_now": true,
+     "closes_at": "2 فجراً",
+     "location_shared": false,
+     "customer": {
+      "known": false,
+      "name": null,
+      "orders": 0,
+      "status": "no_orders",
+      "days_since_last": null,
+      "usual_basket_sar": null,
+      "usual_mode": null,
+      "usual_hour": null,
+      "favourites": [],
+      "taste": null,
+      "last_order": null,
+      "districts": [],
+      "loyalty": {
+       "every": 3,
+       "progress": 0,
+       "left": 3,
+       "reward": "free_delivery",
+       "min_total": 60,
+       "status": null
+      },
+      "unused_rewards": [],
+      "first_order_offer": true,
+      "language": "ar"
+     },
+     "offers": {
+      "first_order": {
+       "eligible": true,
+       "code": "FIRST",
+       "free_delivery": true,
+       "min_total": 60,
+       "reason": null
+      },
+      "loyalty": {
+       "every": 3,
+       "progress": 0,
+       "left": 3,
+       "reward": "free_delivery",
+       "min_total": 60,
+       "status": null
+      }
+     },
+     "branch": "📍 فرعنا في حي السلامة بجدة، عند دوار رامي.",
+     "boxes": [
+      "box-solo-crepe: بوكس الكريب الفردي",
+      "box-solo-mixgrill: بوكس الميكس جريل الفردي",
+      "box-solo-burger: بوكس البرجر الفردي",
+      "box-solo-pasta: بوكس الباستا الفردي",
+      "box-solo-hawawshi: بوكس الحواوشي الفردي",
+      "box-solo-meal: بوكس وجبة المشاوي الفردي",
+      "box-crepe-duo: بوكس الكريب لشخصين",
+      "box-mixgrill-duo: ميكس جريل لشخصين",
+      "box-pizza-pasta: بيتزا وباستا لشخصين",
+      "box-meals-duo: وجبتين مشاوي لشخصين",
+      "box-burger-duo: بوكس البرجر لشخصين",
+      "box-late-night: بوكس السهرة",
+      "box-taste-all: بوكس التشكيلة",
+      "box-grill-half-half: بوكس المشاوي نص ونص",
+      "box-family: بوكس العائلة — مشاوي وبيتزا وباستا",
+      "box-pizza-night: بوكس سهرة البيتزا",
+      "box-mashakel: بوكس المشكل المخصوص",
+      "box-ribs-grill: بوكس الريش والمشاوي"
+     ]
+    },
+    "tier": "fast",
+    "escalated": false,
+    "lang": "ar"
+   },
+   {
+    "i": 1,
+    "customer": "عطني كيلو كباب مشوي",
+    "cls": "weight",
+    "raw": "weight_order",
+    "by": "assistant",
+    "reply": "كيلو كباب مشوي بـ 140 ر.س. تحب أضيف لك مشروبات غازية بـ 3 ر.س؟",
+    "cart": null,
+    "handover": null,
+    "outcome": "sent",
+    "tools": [
+     {
+      "name": "preview_cart",
+      "input": {
+       "items": [
+        {
+         "id": "97",
+         "qty": 1,
+         "variant_option_id": 52
+        }
+       ]
+      },
+      "result": {
+       "ok": true,
+       "option": "delivery",
+       "lines": [
+        {
+         "id": "97",
+         "name": "كباب مشوي بالوزن",
+         "name_en": "Grilled Kebab (by the kilo)",
+         "weight": "كيلو",
+         "weight_en": "Kilo",
+         "variant_option_id": 52,
+         "price": 140,
+         "qty": 1,
+         "total": 140,
+         "kind": "main"
+        }
+       ],
+       "subtotal": 140,
+       "problems": [],
+       "note": "prices include VAT; the delivery fee is separate and shown by quote_delivery and again on the site before payment",
+       "saved": false,
+       "suggestion": {
+        "kind": "drink",
+        "item": {
+         "id": "82",
+         "name": "مشروبات غازية",
+         "name_en": "Soft Drinks",
+         "price": 3,
+         "section": "إضافات",
+         "kind": "drink",
+         "sold_out": false,
+         "by_weight": false
+        }
+       },
+       "suggestion_say": "a plain add-on: «تحب أضيف لك مشروبات غازية بـ 3 ر.س؟» — no pressure.",
+       "suggestion_rule": "you may offer this ONE suggestion as a short question; nothing else"
+      },
+      "ms": 4
+     }
+    ],
+    "verdicts": [
+     {
+      "ok": true,
+      "problems": [],
+      "text": "كيلو كباب مشوي بـ 140 ر.س. تحب أضيف لك مشروبات غازية بـ 3 ر.س؟"
+     }
+    ],
+    "calls": [
+     {
+      "model": "claude-haiku-5-5",
+      "tier": "fast",
+      "ms": 1328,
+      "outcome": "ok",
+      "in": 397,
+      "out": 72,
+      "cached": 12924,
+      "costSar": 0.00513
+     },
+     {
+      "model": "claude-haiku-5-5",
+      "tier": "fast",
+      "ms": 964,
+      "outcome": "ok",
+      "in": 537,
+      "out": 53,
+      "cached": 13238,
+      "costSar": 0.005265
+     }
+    ],
+    "ms": 2310,
+    "costSar": 0.010395,
+    "model": "claude-haiku-5-5",
+    "suggestions": [
+     {
+      "kind": "drink",
+      "ref": "82",
+      "name": "مشروبات غازية",
+      "numbers": {
+       "kind": "drink",
+       "item": {
+        "id": "82",
+        "name": "مشروبات غازية",
+        "name_en": "Soft Drinks",
+        "price": 3,
+        "section": "إضافات",
+        "kind": "drink",
+        "sold_out": false,
+        "by_weight": false
+       }
+      },
+      "outcome": "offered"
+     }
+    ],
+    "context": {
+     "open_now": true,
+     "closes_at": "2 فجراً",
+     "location_shared": false
+    },
+    "tier": "fast",
+    "escalated": false,
+    "lang": "ar"
+   }
+  ],
+  "carts": [],
+  "costSar": 0.020669,
+  "grade": {
+   "pass": true,
+   "fails": [],
+   "review": []
+  }
+ },
+ {
+  "id": "ex6s-third-mashakel",
+  "group": "by weight",
+  "world": {
+   "profile": "new"
+  },
+  "expect": {
+   "noHandover": true,
+   "mustContain": [
+    "53"
+   ]
+  },
+  "turns": [
+   {
+    "i": 0,
+    "customer": "ابي شي مشوي لشخص واحد",
+    "cls": "unknown",
+    "raw": "unknown",
+    "by": "assistant",
+    "reply": "عندنا خياران لشخص واحد:\n- «بوكس وجبة المشاوي الفردي» بـ 29 ر.س: وجبة مشاوي من اختيارك (كفتة، صدور مشوية، شيش طاووق وغيرها) + صنف جانبي + مشروب غازي.\n- «بوكس الميكس جريل الفردي» بـ 39 ر.س: وجبة ميكس جريل أو وجبة كفتة وطرب + صنف جانبي + مشروب غازي.\n\nأي بوكس تفضّل؟",
+    "cart": null,
+    "handover": null,
+    "outcome": "sent",
+    "tools": [
+     {
+      "name": "list_boxes",
+      "input": {},
+      "result": {
+       "ok": true,
+       "boxes": [
+        {
+         "slug": "box-solo-crepe",
+         "name": "بوكس الكريب الفردي",
+         "name_en": "Crepe Solo Box",
+         "price": 29,
+         "section": "بوكسات فردية",
+         "section_en": "Solo boxes",
+         "description": "كريب من اختيارك + صنف جانبي (بطاطس أو كولسلو أو دوريتوس) + مشروب غازي.",
+         "description_en": "A crepe of your choice + a side (fries, coleslaw or Doritos) + a soft drink."
+        },
+        {
+         "slug": "box-solo-mixgrill",
+         "name": "بوكس الميكس جريل الفردي",
+         "name_en": "Mixed Grill Solo Box",
+         "price": 39,
+         "section": "بوكسات فردية",
+         "section_en": "Solo boxes",
+         "description": "وجبة ميكس جريل أو وجبة كفتة وطرب + صنف جانبي (بطاطس أو كولسلو أو دوريتوس) + مشروب غازي.",
+         "description_en": "Mixed grill meal or kofta & tarb meal + a side (fries, coleslaw or Doritos) + a soft drink."
+        },
+        {
+         "slug": "box-solo-burger",
+         "name": "بوكس البرجر الفردي",
+         "name_en": "Burger Solo Box",
+         "price": 29,
+         "section": "بوكسات فردية",
+         "section_en": "Solo boxes",
+         "description": "برجر من اختيارك + بطاطس + حلقات بصل أو تشيز فرايز + مشروب غازي.",
+         "description_en": "A burger of your choice + fries + onion rings or cheese fries + a soft drink."
+        },
+        {
+         "slug": "box-solo-pasta",
+         "name": "بوكس الباستا الفردي",
+         "name_en": "Pasta Solo Box",
+         "price": 29,
+         "section": "بوكسات فردية",
+         "section_en": "Solo boxes",
+         "description": "باستا من اختيارك + صنف جانبي (بطاطس أو كولسلو أو دوريتوس) + مشروب غازي.",
+         "description_en": "A pasta of your choice + a side (fries, coleslaw or Doritos) + a soft drink."
+        },
+        {
+         "slug": "box-solo-hawawshi",
+         "name": "بوكس الحواوشي الفردي",
+         "name_en": "Hawawshi Solo Box",
+         "price": 29,
+         "section": "بوكسات فردية",
+         "section_en": "Solo boxes",
+         "description": "حواوشي من اختيارك + بطاطس + كولسلو أو دوريتوس + مشروب غازي.",
+         "description_en": "A hawawshi of your choice + fries + coleslaw or Doritos + a soft drink."
+        },
+        {
+         "slug": "box-solo-meal",
+         "name": "بوكس وجبة المشاوي الفردي",
+         "name_en": "Grill Meal Solo Box",
+         "price": 29,
+         "section": "بوكسات فردية",
+         "section_en": "Solo boxes",
+         "description": "وجبة مشاوي من اختيارك + صنف جانبي (بطاطس أو كولسلو أو دوريتوس) + مشروب غازي.",
+         "description_en": "A grill meal of your choice + a side (fries, coleslaw or Doritos) + a soft drink."
+        },
+        {
+         "slug": "box-crepe-duo",
+         "name": "بوكس الكريب لشخصين",
+         "name_en": "Crepe Box for Two",
+         "price": 65,
+         "section": "بوكسات لشخصين",
+         "section_en": "Boxes for two",
+         "description": "كريبين من اختيارك + تشيز فرايز + صنف جانبي (بطاطس أو كولسلو أو دوريتوس) + مشروبين غازيين.",
+         "description_en": "Two crepes of your choice + cheese fries + a side (fries, coleslaw or Doritos) + 2 soft drinks."
+        },
+        {
+         "slug": "box-mixgrill-duo",
+         "name": "ميكس جريل لشخصين",
+         "name_en": "Mixed Grill for Two",
+         "price": 85,
+         "section": "بوكسات لشخصين",
+         "section_en": "Boxes for two",
+         "description": "وجبتين من اختيارك (ميكس جريل أو كفتة وطرب) + بطاطس + كولسلو + مشروبين غازيين.",
+         "description_en": "Two meals of your choice (mixed grill or kofta & tarb) + fries + coleslaw + 2 soft drinks."
+        },
+        {
+         "slug": "box-pizza-pasta",
+         "name": "بيتزا وباستا لشخصين",
+         "name_en": "Pizza & Pasta for Two",
+         "price": 69,
+         "section": "بوكسات لشخصين",
+         "section_en": "Boxes for two",
+         "description": "بيتزا وسط + باستا من اختيارك + تشيز فرايز أو حلقات بصل + كولسلو + مشروبين غازيين.",
+         "description_en": "A medium pizza + a pasta of your choice + cheese fries or onion rings + coleslaw + 2 soft drinks."
+        },
+        {
+         "slug": "box-meals-duo",
+         "name": "وجبتين مشاوي لشخصين",
+         "name_en": "Grill Meals for Two",
+         "price": 65,
+         "section": "بوكسات لشخصين",
+         "section_en": "Boxes for two",
+         "description": "وجبتين مشاوي من اختيارك + بطاطس + كولسلو + دوريتوس + مشروبين غازيين.",
+         "description_en": "Two grill meals of your choice + fries + coleslaw + Doritos + 2 soft drinks."
+        },
+        {
+         "slug": "box-burger-duo",
+         "name": "بوكس البرجر لشخصين",
+         "name_en": "Burger Box for Two",
+         "price": 65,
+         "section": "بوكسات لشخصين",
+         "section_en": "Boxes for two",
+         "description": "برجرين من اختيارك + بطاطس عدد ٢ + حلقات بصل + تشيز فرايز + مشروبين غازيين.",
+         "description_en": "Two burgers of your choice + 2 fries + onion rings + cheese fries + 2 soft drinks."
+        },
+        {
+         "slug": "box-late-night",
+         "name": "بوكس السهرة",
+         "name_en": "Late-Night Box",
+         "price": 72,
+         "section": "بوكسات لشخصين",
+         "section_en": "Boxes for two",
+         "description": "طاسة جبن ساخنة (برجر، صدور مشوية أو هوت دوج) + كريب من اختيارك + تشيلي تشيز فرايز + حلقات بصل + مشروبين غازيين.",
+         "description_en": "A hot cheese skillet (burger, grilled chicken breast or hot dog) + a crepe of your choice + chili cheese fries + onion rings + 2 soft drinks."
+        },
+        {
+         "slug": "box-taste-all",
+         "name": "بوكس التشكيلة",
+         "name_en": "Variety Box",
+         "price": 105,
+         "section": "بوكسات المشاركة والعائلة",
+         "section_en": "Sharing & family boxes",
+         "description": "بيتزا وسط + باستا + كريب + حواوشي من اختيارك + بطاطس + كولسلو + مشروبين غازيين.",
+         "description_en": "A medium pizza + pasta + crepe + hawawshi, all your choice + fries + coleslaw + 2 soft drinks."
+        },
+        {
+         "slug": "box-grill-half-half",
+         "name": "بوكس المشاوي نص ونص",
+         "name_en": "Charcoal Grill Box (Half & Half)",
+         "price": 125,
+         "section": "بوكسات المشاركة والعائلة",
+         "section_en": "Sharing & family boxes",
+         "description": "كيلو مشاوي نص ونص: نوعين من اختيارك + طبقين أرز + بطاطس + كولسلو، مع السلطة والطحينة والخبز.",
+         "description_en": "A kilo of grills, half and half: two kinds of your choice + 2 basmati rice + fries + coleslaw, with salad, tahini and bread."
+        },
+        {
+         "slug": "box-family",
+         "name": "بوكس العائلة — مشاوي وبيتزا وباستا",
+         "name_en": "Family Box — Grills, Pizza & Pasta",
+         "price": 179,
+         "section": "بوكسات المشاركة والعائلة",
+         "section_en": "Sharing & family boxes",
+         "description": "نوعين مشاوي من اختيارك (نصف كيلو لكل نوع) + بيتزا وسط + باستا + ٣ أطباق أرز + بطاطس + كولسلو + ٤ مشروبات غازية، والمشاوي معها السلطة والطحينة والخبز.",
+         "description_en": "Two grills of your choice (half a kilo each) + a medium pizza + a pasta + 3 basmati rice + fries + coleslaw + 4 soft drinks. The grills come with salad, tahini and bread."
+        },
+        {
+         "slug": "box-pizza-night",
+         "name": "بوكس سهرة البيتزا",
+         "name_en": "Pizza Night Box",
+         "price": 85,
+         "section": "بوكسات المشاركة والعائلة",
+         "section_en": "Sharing & family boxes",
+         "description": "بيتزتين وسط من اختيارك + فرايد موتزاريلا + بطاطس + كولسلو + مشروبين غازيين.",
+         "description_en": "Two medium pizzas of your choice + fried mozzarella + fries + coleslaw + 2 soft drinks."
+        },
+        {
+         "slug": "box-mashakel",
+         "name": "بوكس المشكل المخصوص",
+         "name_en": "Special Mixed Grill Box",
+         "price": 145,
+         "section": "بوكسات المشاركة والعائلة",
+         "section_en": "Sharing & family boxes",
+         "description": "نصف كيلو مشكل مخصوص + نصف كيلو مشاوي من اختيارك + طبقين أرز + بطاطس + كولسلو، مع السلطة والطحينة والخبز.",
+         "description_en": "Half a kilo of our special mixed grill + half a kilo of a grill of your choice + 2 basmati rice + fries + coleslaw, with salad, tahini and bread."
+        },
+        {
+         "slug": "box-ribs-grill",
+         "name": "بوكس الريش والمشاوي",
+         "name_en": "Lamb Chops & Grill Box",
+         "price": 189,
+         "section": "بوكسات المشاركة والعائلة",
+         "section_en": "Sharing & family boxes",
+         "description": "ثلث كيلو ريش + نوعين مشاوي من اختيارك (نصف كيلو لكل نوع) + طبقين أرز + بطاطس + كولسلو + ٤ مشروبات غازية، مع السلطة والطحينة والخبز.",
+         "description_en": "A third of a kilo of lamb chops + two grills of your choice (half a kilo each) + 2 basmati rice + fries + coleslaw + 4 soft drinks, with salad, tahini and bread."
+        }
+       ],
+       "online_only": true
+      },
+      "ms": 1
+     },
+     {
+      "name": "get_box",
+      "input": {
+       "slug": "box-solo-mixgrill"
+      },
+      "result": {
+       "ok": true,
+       "box": {
+        "slug": "box-solo-mixgrill",
+        "name": "بوكس الميكس جريل الفردي",
+        "name_en": "Mixed Grill Solo Box",
+        "price": 39,
+        "description": "وجبة ميكس جريل أو وجبة كفتة وطرب + صنف جانبي (بطاطس أو كولسلو أو دوريتوس) + مشروب غازي.",
+        "description_en": "Mixed grill meal or kofta & tarb meal + a side (fries, coleslaw or Doritos) + a soft drink.",
+        "section": "بوكسات فردية",
+        "slots": [
+         {
+          "key": "meal",
+          "label": "اختر الوجبة",
+          "type": "choice",
+          "quantity": 1,
+          "choices": [
+           {
+            "product_id": "18",
+            "variant_option_id": null,
+            "name": "وجبة ميكس جريل",
+            "variant": null,
+            "extra": 0,
+            "name_en": "Mixed Grill Meal",
+            "addons": []
+           },
+           {
+            "product_id": "87",
+            "variant_option_id": null,
+            "name": "وجبة كفتة وطرب",
+            "variant": null,
+            "extra": 0,
+            "name_en": "Kofta & Tarb Meal",
+            "addons": []
+           }
+          ],
+          "label_en": "Choose your meal"
+         },
+         {
+          "key": "side",
+          "label": "اختر الصنف الجانبي",
+          "type": "choice",
+          "quantity": 1,
+          "choices": [
+           {
+            "product_id": "79",
+            "variant_option_id": null,
+            "name": "بطاطس محمرة",
+            "variant": null,
+            "extra": 0,
+            "name_en": "French Fries",
+            "addons": []
+           },
+           {
+            "product_id": "72",
+            "variant_option_id": null,
+            "name": "كولسلو",
+            "variant": null,
+            "extra": 0,
+            "name_en": "Coleslaw",
+            "addons": []
+           },
+           {
+            "product_id": "119",
+            "variant_option_id": null,
+            "name": "دوريتوس",
+            "variant": null,
+            "extra": 0,
+            "name_en": "Doritos",
+            "addons": []
+           }
+          ],
+          "label_en": "Choose your side"
+         },
+         {
+          "key": "drink",
+          "label": "مشروب غازي",
+          "type": "fixed",
+          "quantity": 1,
+          "item": {
+           "product_id": "82",
+           "name": "مشروبات غازية",
+           "variant": "كان",
+           "name_en": "Soft Drinks"
+          },
+          "label_en": "Soft drink"
+         }
+        ],
+        "online_only": true
+       }
+      },
+      "ms": 1
+     },
+     {
+      "name": "get_box",
+      "input": {
+       "slug": "box-solo-meal"
+      },
+      "result": {
+       "ok": true,
+       "box": {
+        "slug": "box-solo-meal",
+        "name": "بوكس وجبة المشاوي الفردي",
+        "name_en": "Grill Meal Solo Box",
+        "price": 29,
+        "description": "وجبة مشاوي من اختيارك + صنف جانبي (بطاطس أو كولسلو أو دوريتوس) + مشروب غازي.",
+        "description_en": "A grill meal of your choice + a side (fries, coleslaw or Doritos) + a soft drink.",
+        "section": "بوكسات فردية",
+        "slots": [
+         {
+          "key": "meal",
+          "label": "اختر الوجبة",
+          "type": "choice",
+          "quantity": 1,
+          "choices": [
+           {
+            "product_id": "17",
+            "variant_option_id": null,
+            "name": "وجبة كفتة",
+            "variant": null,
+            "extra": 0,
+            "name_en": "Kofta Meal",
+            "addons": []
+           },
+           {
+            "product_id": "15",
+            "variant_option_id": null,
+            "name": "وجبة صدور مشوية",
+            "variant": null,
+            "extra": 0,
+            "name_en": "Grilled Chicken Breast Meal",
+            "addons": []
+           },
+           {
+            "product_id": "16",
+            "variant_option_id": null,
+            "name": "وجبة طرب",
+            "variant": null,
+            "extra": 4,
+            "name_en": "Tarb Meal",
+            "addons": []
+           },
+           {
+            "product_id": "90",
+            "variant_option_id": null,
+            "name": "وجبة شيش طاووق",
+            "variant": null,
+            "extra": 4,
+            "name_en": "Shish Tawook Meal",
+            "addons": []
+           },
+           {
+            "product_id": "84",
+            "variant_option_id": null,
+            "name": "طبق كبدة اسكندراني",
+            "variant": null,
+            "extra": 0,
+            "name_en": "Alexandrian Liver Plate",
+            "addons": []
+           },
+           {
+            "product_id": "13",
+            "variant_option_id": null,
+            "name": "وجبة نصف دجاجة على الفحم",
+            "variant": null,
+            "extra": 4,
+            "name_en": "Half Charcoal Chicken Meal",
+            "addons": []
+           }
+          ],
+          "label_en": "Choose your meal"
+         },
+         {
+          "key": "side",
+          "label": "اختر الصنف الجانبي",
+          "type": "choice",
+          "quantity": 1,
+          "choices": [
+           {
+            "product_id": "79",
+            "variant_option_id": null,
+            "name": "بطاطس محمرة",
+            "variant": null,
+            "extra": 0,
+            "name_en": "French Fries",
+            "addons": []
+           },
+           {
+            "product_id": "72",
+            "variant_option_id": null,
+            "name": "كولسلو",
+            "variant": null,
+            "extra": 0,
+            "name_en": "Coleslaw",
+            "addons": []
+           },
+           {
+            "product_id": "119",
+            "variant_option_id": null,
+            "name": "دوريتوس",
+            "variant": null,
+            "extra": 0,
+            "name_en": "Doritos",
+            "addons": []
+           }
+          ],
+          "label_en": "Choose your side"
+         },
+         {
+          "key": "drink",
+          "label": "مشروب غازي",
+          "type": "fixed",
+          "quantity": 1,
+          "item": {
+           "product_id": "82",
+           "name": "مشروبات غازية",
+           "variant": "كان",
+           "name_en": "Soft Drinks"
+          },
+          "label_en": "Soft drink"
+         }
+        ],
+        "online_only": true
+       }
+      },
+      "ms": 1
+     }
+    ],
+    "verdicts": [
+     {
+      "ok": true,
+      "problems": [],
+      "text": "عندنا خياران لشخص واحد:\n- «بوكس وجبة المشاوي الفردي» بـ 29 ر.س: وجبة مشاوي من اختيارك (كفتة، صدور مشوية، شيش طاووق وغيرها) + صنف جانبي + مشروب غازي.\n- «بوكس الميكس جريل الفردي» بـ 39 ر.س: وجبة ميكس جريل أو وجبة كفتة وطرب + صنف جانبي + مشروب غازي.\n\nأي بوكس تفضّل؟"
+     }
+    ],
+    "calls": [
+     {
+      "model": "claude-sonnet-5-5",
+      "tier": "strong",
+      "ms": 2275,
+      "outcome": "ok",
+      "in": 8822,
+      "out": 133,
+      "cached": 3859,
+      "costSar": 0.074047
+     },
+     {
+      "model": "claude-sonnet-5-5",
+      "tier": "strong",
+      "ms": 2108,
+      "outcome": "ok",
+      "in": 6792,
+      "out": 194,
+      "cached": 10913,
+      "costSar": 0.0664
+     }
+    ],
+    "ms": 4425,
+    "costSar": 0.140447,
+    "model": "claude-sonnet-5-5",
+    "suggestions": [],
+    "context": {
+     "open_now": true,
+     "closes_at": "2 فجراً",
+     "location_shared": false,
+     "customer": {
+      "known": false,
+      "name": null,
+      "orders": 0,
+      "status": "no_orders",
+      "days_since_last": null,
+      "usual_basket_sar": null,
+      "usual_mode": null,
+      "usual_hour": null,
+      "favourites": [],
+      "taste": null,
+      "last_order": null,
+      "districts": [],
+      "loyalty": {
+       "every": 3,
+       "progress": 0,
+       "left": 3,
+       "reward": "free_delivery",
+       "min_total": 60,
+       "status": null
+      },
+      "unused_rewards": [],
+      "first_order_offer": true,
+      "language": "ar"
+     },
+     "offers": {
+      "first_order": {
+       "eligible": true,
+       "code": "FIRST",
+       "free_delivery": true,
+       "min_total": 60,
+       "reason": null
+      },
+      "loyalty": {
+       "every": 3,
+       "progress": 0,
+       "left": 3,
+       "reward": "free_delivery",
+       "min_total": 60,
+       "status": null
+      }
+     },
+     "branch": "📍 فرعنا في حي السلامة بجدة، عند دوار رامي.",
+     "boxes": [
+      "box-solo-crepe: بوكس الكريب الفردي",
+      "box-solo-mixgrill: بوكس الميكس جريل الفردي",
+      "box-solo-burger: بوكس البرجر الفردي",
+      "box-solo-pasta: بوكس الباستا الفردي",
+      "box-solo-hawawshi: بوكس الحواوشي الفردي",
+      "box-solo-meal: بوكس وجبة المشاوي الفردي",
+      "box-crepe-duo: بوكس الكريب لشخصين",
+      "box-mixgrill-duo: ميكس جريل لشخصين",
+      "box-pizza-pasta: بيتزا وباستا لشخصين",
+      "box-meals-duo: وجبتين مشاوي لشخصين",
+      "box-burger-duo: بوكس البرجر لشخصين",
+      "box-late-night: بوكس السهرة",
+      "box-taste-all: بوكس التشكيلة",
+      "box-grill-half-half: بوكس المشاوي نص ونص",
+      "box-family: بوكس العائلة — مشاوي وبيتزا وباستا",
+      "box-pizza-night: بوكس سهرة البيتزا",
+      "box-mashakel: بوكس المشكل المخصوص",
+      "box-ribs-grill: بوكس الريش والمشاوي"
+     ]
+    },
+    "tier": "strong",
+    "escalated": false,
+    "lang": "ar"
+   },
+   {
+    "i": 1,
+    "customer": "ثلث كيلو مشكل مخصوص",
+    "cls": "weight",
+    "raw": "weight_order",
+    "by": "assistant",
+    "reply": "مشكل مخصوص بالوزن (ثلث كيلو) بـ 53 ر.س. تحب أضيف لك مشروبات غازية بـ 3 ر.س؟",
+    "cart": null,
+    "handover": null,
+    "outcome": "sent",
+    "tools": [
+     {
+      "name": "search_menu",
+      "input": {
+       "query": "مشكل مخصوص"
+      },
+      "result": {
+       "ok": true,
+       "results": [
+        {
+         "id": "103",
+         "name": "مشكل مخصوص بالوزن",
+         "name_en": "Special Mixed Grill (by the kilo)",
+         "section": "مشاوي بالوزن",
+         "kind": "main",
+         "sold_out": false,
+         "by_weight": true,
+         "weights": [
+          {
+           "label": "ثلث كيلو",
+           "label_en": "1/3 Kilo",
+           "price": 53,
+           "variant_option_id": 56
+          },
+          {
+           "label": "نصف كيلو",
+           "label_en": "1/2 Kilo",
+           "price": 78,
+           "variant_option_id": 57
+          },
+          {
+           "label": "كيلو",
+           "label_en": "Kilo",
+           "price": 155,
+           "variant_option_id": 58
+          }
+         ],
+         "how_to_price": "sold by weight: every price belongs to ONE of the weights above; always say the weight with its price"
+        }
+       ]
+      },
+      "ms": 8
+     },
+     {
+      "name": "preview_cart",
+      "input": {
+       "items": [
+        {
+         "id": "103",
+         "qty": 1,
+         "variant_option_id": 56
+        }
+       ]
+      },
+      "result": {
+       "ok": true,
+       "option": "delivery",
+       "lines": [
+        {
+         "id": "103",
+         "name": "مشكل مخصوص بالوزن",
+         "name_en": "Special Mixed Grill (by the kilo)",
+         "weight": "ثلث كيلو",
+         "weight_en": "1/3 Kilo",
+         "variant_option_id": 56,
+         "price": 53,
+         "qty": 1,
+         "total": 53,
+         "kind": "main"
+        }
+       ],
+       "subtotal": 53,
+       "problems": [],
+       "note": "prices include VAT; the delivery fee is separate and shown by quote_delivery and again on the site before payment",
+       "saved": false,
+       "suggestion": {
+        "kind": "drink",
+        "item": {
+         "id": "82",
+         "name": "مشروبات غازية",
+         "name_en": "Soft Drinks",
+         "price": 3,
+         "section": "إضافات",
+         "kind": "drink",
+         "sold_out": false,
+         "by_weight": false
+        }
+       },
+       "suggestion_say": "a plain add-on: «تحب أضيف لك مشروبات غازية بـ 3 ر.س؟» — no pressure.",
+       "suggestion_rule": "you may offer this ONE suggestion as a short question; nothing else"
+      },
+      "ms": 3
+     }
+    ],
+    "verdicts": [
+     {
+      "ok": true,
+      "problems": [],
+      "text": "مشكل مخصوص بالوزن (ثلث كيلو) بـ 53 ر.س. تحب أضيف لك مشروبات غازية بـ 3 ر.س؟"
+     }
+    ],
+    "calls": [
+     {
+      "model": "claude-sonnet-5-5",
+      "tier": "strong",
+      "ms": 1255,
+      "outcome": "ok",
+      "in": 386,
+      "out": 56,
+      "cached": 16345,
+      "costSar": 0.017254
+     },
+     {
+      "model": "claude-sonnet-5-5",
+      "tier": "strong",
+      "ms": 1281,
+      "outcome": "ok",
+      "in": 402,
+      "out": 72,
+      "cached": 16650,
+      "costSar": 0.018203
+     },
+     {
+      "model": "claude-sonnet-5-5",
+      "tier": "strong",
+      "ms": 1132,
+      "outcome": "ok",
+      "in": 549,
+      "out": 66,
+      "cached": 16970,
+      "costSar": 0.01932
+     }
+    ],
+    "ms": 3704,
+    "costSar": 0.054777000000000006,
+    "model": "claude-sonnet-5-5",
+    "suggestions": [
+     {
+      "kind": "drink",
+      "ref": "82",
+      "name": "مشروبات غازية",
+      "numbers": {
+       "kind": "drink",
+       "item": {
+        "id": "82",
+        "name": "مشروبات غازية",
+        "name_en": "Soft Drinks",
+        "price": 3,
+        "section": "إضافات",
+        "kind": "drink",
+        "sold_out": false,
+        "by_weight": false
+       }
+      },
+      "outcome": "offered"
+     }
+    ],
+    "context": {
+     "open_now": true,
+     "closes_at": "2 فجراً",
+     "location_shared": false
+    },
+    "tier": "strong",
+    "escalated": false,
+    "lang": "ar"
+   }
+  ],
+  "carts": [],
+  "costSar": 0.195224,
+  "grade": {
+   "pass": true,
+   "fails": [],
+   "review": []
+  }
+ }
+]

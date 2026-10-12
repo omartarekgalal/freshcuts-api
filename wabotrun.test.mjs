@@ -67,6 +67,15 @@ function world({ waBot = {}, notifications = { whatsappEnabled: true }, orders =
       const s = String(sql).replace(/\s+/g, " ").trim();
       if (failDb && failDb.test(s)) throw new Error("db down");
       if (/^CREATE TABLE|^DELETE FROM wa_bot_log|wa_webhook_health|wa_contact_names|wa_threads/i.test(s)) return { rows: [], rowCount: 0 };
+      // ── EX6: رسالة مش مدعومة، تأكيد الدفع، متابعة المحادثة
+      if (/^SELECT 1 FROM wa_messages WHERE phone_norm=\$1 AND direction='out' AND COALESCE\(source,'api'\) <> 'echo' AND created_at > \$2/i.test(s)) return { rows: db.msgs.filter((m) => m.phone_norm === p[0] && m.direction === "out" && m.source !== "echo" && Date.parse(m.created_at) > Date.parse(p[1])).slice(0, 1).map(() => ({})) };
+      if (/^SELECT o\.order_no, o\.phone_norm FROM shop_orders o/i.test(s)) return { rows: orders.filter((o) => !o.is_test && ["paid", "pos_created", "accepted", "courier_requested", "courier_assigned", "on_the_way"].includes(o.status) && nowMs - Date.parse(o.created_at) < 7200_000
+        && db.log.some((l) => l.phone_norm === o.phone_norm && l.decision === "replied" && Date.parse(l.at) < Date.parse(o.created_at) + 600_000 && Date.parse(l.at) > Date.parse(o.created_at) - 86400_000) && !db.jobs.some((j) => j.wamid === `paid:${o.order_no}`)).map((o) => ({ order_no: o.order_no, phone_norm: o.phone_norm })) };
+      if (/^SELECT l\.phone_norm, l\.at, l\.lang FROM wa_bot_log l/i.test(s)) { const last = new Map(); for (const l of db.log) last.set(l.phone_norm, l);
+        return { rows: [...last.values()].filter((l) => nowMs - Date.parse(l.at) >= p[0] * 60_000 && nowMs - Date.parse(l.at) < (p[0] + 60) * 60_000 && l.decision === "silent" && ["out_of_scope", "ignored_type", "auto_reply_covered"].includes(l.reason)).map((l) => ({ phone_norm: l.phone_norm, at: l.at, lang: l.lang })) }; }
+      if (/^SELECT 1 FROM wa_bot_log WHERE phone_norm=\$1 AND at > NOW\(\) - INTERVAL '24 hours' AND \(reply_key IN/i.test(s)) return { rows: db.log.filter((l) => l.phone_norm === p[0] && nowMs - Date.parse(l.at) < 86400_000 && (["complaint", "problem", "change"].includes(l.reply_key) || ["complaint", "problem", "order_change", "allergy_severe"].includes(l.handoff))).slice(0, 1).map(() => ({})) };
+      // ── EX6: آخر ردّين (سياق الكارت)
+      if (/^SELECT reply_key, reply_arg, msg_type FROM wa_bot_log WHERE phone_norm=\$1 AND id <> \$2/i.test(s)) return { rows: db.log.filter((l) => l.phone_norm === p[0] && l.id !== p[1] && ["replied", "dry"].includes(l.decision) && nowMs - Date.parse(l.at) < 900_000).slice(-2).reverse().map((l) => ({ reply_key: l.reply_key, reply_arg: l.reply_arg || null, msg_type: l.msg_type })) };
       // ── EX5: رد آلي وارد + حارس الحلقات
       if (/^SELECT max\(created_at\) FILTER \(WHERE template IS NOT NULL\) AS tpl_at/i.test(s)) { const o = db.msgs.filter((m) => m.phone_norm === p[0] && m.direction === "out" && m.source !== "echo" && !["failed", "skipped"].includes(m.status) && nowMs - Date.parse(m.created_at) < 600_000);
         const mx = (l) => l.map((m) => m.created_at).sort().pop() || null; return { rows: [{ tpl_at: mx(o.filter((m) => m.template)), out_at: mx(o) }] }; }
@@ -3872,4 +3881,169 @@ test("EX5: the loop guard — three fast long messages in a row after our replie
   // 0 = off
   const off = liveWorld({ waBot: { loopGuardCount: 0 } });
   for (let i = 0; i < 6; i++) { assert.notEqual((await off.say(`${LOOP} ${i}`)).log.reason, "loop_guard"); off.clock.advanceSec(1); }
+}));
+
+/* ── EX6 (١٣/١٠، محادثتين حقيقيتين ليلة التشغيل) ─────────────────────────────────────── */
+const MENU6 = W_BOT.indexMenu(LIVE.pages, { variants: VAR });
+test("EX6: weight + dish in one message — Egyptian and Gulf spellings, numbers, a card in context; and what is not a weight order", () => {
+  const wo = (text, ctx = null) => R.weightOrder(text, MENU6, ctx);
+  const K = { third: 44, half: 45, kilo: 46 };      // كفتة مشوية بالوزن (91)
+  for (const [text, parts] of [["عايزه تلت كيلو كفته", [[K.third, 1]]], ["لا نص كيلو كفته", [[K.half, 1]]], ["نص كيلو كفته", [[K.half, 1]]], ["لا انا عايزه نص كيلو كفتة", [[K.half, 1]]], ["ابي نصف كيلو كفتة مشوية", [[K.half, 1]]],
+    ["ثلث كيلو كفته لو سمحت", [[K.third, 1]]], ["كيلو كفته", [[K.kilo, 1]]], ["٢ كيلو كفته", [[K.kilo, 2]]], ["كيلوين كفته", [[K.kilo, 2]]], ["كيلو ونص كفته", [[K.kilo, 1], [K.half, 1]]], ["اتنين كيلو كفته", [[K.kilo, 2]]], ["half kilo kofta", [[K.half, 1]]], ["2 kg kofta", [[K.kilo, 2]]]])
+    assert.deepEqual(wo(text), { id: "91", parts }, text);
+  // right after that dish's card: the weight alone
+  for (const [text, parts] of [["خليها نص كيلو", [[K.half, 1]]], ["محتاجه نص كيلو", [[K.half, 1]]], ["نص", [[K.half, 1]]], ["خليها كيلو", [[K.kilo, 1]]], ["لا تلت", [[K.third, 1]]]]) assert.deepEqual(wo(text, "91"), { id: "91", parts }, text);
+  assert.equal(wo("خليها نص كيلو", "59"), null, "the card in context is not sold by weight: the message is read without it (⇒ the by-weight dishes to choose from)");
+  assert.equal(wo("تمام", "91"), null); assert.equal(wo("كم رسوم التوصيل", "91"), null);
+  // a weight we do not sell, a price question, a sold-out dish ⇒ the dish card with its weights
+  for (const text of ["ربع كيلو كفته", "بكم نص كيلو الكفته", "كم كيلو الكفته"]) assert.deepEqual(wo(text), { id: "91", ask: true }, text);
+  // the weight with no dish and no card ⇒ the by-weight dishes to choose from
+  assert.equal(wo("ابي نص كيلو").ids.length, 9);
+  // not a weight order
+  for (const text of ["نص دجاجه", "وجبة نصف دجاجة", "نص كيلو برجر", "كفتة", "السلام عليكم", "ابي كيلو كباب ونص كيلو كفته", "ابي بوكس لشخصين"]) assert.equal(wo(text), null, text);
+  assert.equal(R.classify({ text: "عايزه تلت كيلو كفته", type: "text" }, { menu: MENU6 }).key, "weight");
+  assert.equal(R.classify({ text: "وقف الرسائل نص كيلو كفته", type: "text" }, { menu: MENU6 }).key, "stop", "a clear intent wins");
+});
+
+test("EX6: the conversation of 13/10 (…9417) — each message gets THAT weight's price and a ready cart with the weight line", withEnv(LOCKS_OPEN, async () => {
+  const w = liveWorld({ variants: VAR });
+  const a = await w.say("عايزه تلت كيلو كفته");
+  assert.equal(a.log.reply_key, "weight");
+  assert.equal(bodyOf(a.sent[0]), "*كفتة مشوية بالوزن* — ثلث كيلو: 40 ر.س\nاضغط الزر تلقاه في سلتك بهذا الوزن، وتقدر تزيد عليه من المنيو.");
+  assert.equal(urlOf(a.sent[0]), `https://freshcuts.sa/c/${w.db.botCarts[0].code}`); assert.equal(a.sent[0].interactive.action.parameters.display_text, "كمّل طلبك");
+  assert.deepEqual(w.db.botCarts[0].plan.raw, { "91:v44": { item: { id: 91 }, qty: 1, variant: { id: 44, name: "ثلث كيلو", local_name: "1/3 Kilo", retail_price: 40, price: 34.7826087 } } });
+  assert.deepEqual([w.db.botCarts[0].source, w.db.botCarts[0].phone, w.db.botCarts[0].plan.items[0].p], ["weight", "512345678", 40]);
+  w.clock.advance(1);
+  const b = await w.say("خليها نص كيلو");
+  assert.deepEqual([b.log.reply_key, bodyOf(b.sent[0]).split("\n")[0]], ["weight", "*كفتة مشوية بالوزن* — نصف كيلو: 60 ر.س"]); assert.ok(w.db.botCarts[1].plan.raw["91:v45"]);
+  w.clock.advance(1);
+  for (const text of ["لا نص كيلو كفته", "نص كيلو كفته", "لا انا عايزه نص كيلو كفتة", "محتاجه نص كيلو"]) { const r = await w.say(text); assert.match(bodyOf(r.sent[0]), /^\*كفتة مشوية بالوزن\* — نصف كيلو: 60 ر\.س/, text); assert.equal(r.log.handoff, null, text); w.clock.advance(1); }
+  // two weights / a quantity: lines and a total
+  const m = await liveWorld({ variants: VAR }).say("كيلو ونص كباب");
+  assert.match(bodyOf(m.sent[0]), /• كيلو × 1: 140 ر\.س\n• نصف كيلو × 1: 70 ر\.س\nالمجموع: 210 ر\.س/);
+  // the weight after the dish's card was tapped, and after a card of a dish that is not sold by weight
+  const c = liveWorld({ variants: VAR }); await c.press("item:91", "كفتة مشوية بالوزن"); c.clock.advance(1);
+  assert.equal((await c.say("محتاجه نص كيلو")).log.reply_key, "weight");
+  const n = liveWorld({ variants: VAR }); await n.press("item:59", "بنا تشيكن كازرول"); n.clock.advance(1);
+  const nr = await n.say("ابي نص كيلو"); assert.equal(nr.log.reply_key, "items"); assert.equal(rowsOf(nr.sent[0]).filter((r) => /^item:/.test(r.id)).length, 9);
+  // a weight we do not sell ⇒ the card with the real weights; sold out ⇒ no order button; cart could not be made ⇒ the dish page
+  assert.match(bodyOf((await liveWorld({ variants: VAR }).say("ربع كيلو كفته")).sent[0]), /ثلث كيلو: 40 ر\.س · نصف كيلو: 60 ر\.س · كيلو: 120 ر\.س/);
+  const so = await liveWorld({ variants: VAR, extraSettings: { catalog: { soldOut: { 91: { until: null } } } } }).say("نص كيلو كفته");
+  assert.equal(so.sent[0].interactive.type, "button", "sold out: the card without an order button");
+  const fail = liveWorld({ variants: VAR, failDb: /INSERT INTO wa_bot_carts/ }), fr = await fail.say("نص كيلو كفته");
+  assert.match(urlOf(fr.sent[0]), /#item-91$/);
+  // dry mode makes no cart row; simulate shows a preview link
+  const dry = world({ waBot: { mode: "dry" }, bundles: LIVE.bundles, links: ALL_LINKS, variants: VAR }); await dry.say("نص كيلو كفته"); assert.equal(dry.db.botCarts.length, 0);
+  const sim = (await w.call("POST", "/api/cms/wabot/simulate", { text: "نص كيلو كفته" })).body;
+  assert.equal(sim.decision.key, "weight"); assert.equal(urlOf(sim.payloads[0]), "https://freshcuts.sa/c/preview0");
+  for (const k of ["weight_one", "weight_many", "df_list"]) assert.ok(R.TEXT_KEYS.includes(k), k);
+}));
+
+test("EX6: the same card is not sent a third time in a row to someone who keeps typing — staff instead; taps never count", withEnv(LOCKS_OPEN, async () => {
+  const w = liveWorld({ variants: VAR });
+  const keys = [];
+  for (const text of ["كفتة", "الكفته", "كفته لو سمحت"]) { const r = await w.say(text); keys.push([r.log.reply_key, r.log.handoff || null]); w.clock.advance(1); }
+  assert.deepEqual(keys, [["items", null], ["items", null], ["staff", "repeated_card"]]);
+  assert.equal(w.portal.at(-1)[1].reason, "repeated_card");
+  const t = liveWorld({ variants: VAR });
+  for (let i = 0; i < 4; i++) { const r = await t.press("item:91", "كفتة مشوية بالوزن"); assert.equal(r.log.reply_key, "item"); t.clock.advance(1); }
+  const d = liveWorld({ variants: VAR }); await d.say("كفتة"); d.clock.advance(1); await d.say("كم رسوم التوصيل"); d.clock.advance(1);
+  assert.equal((await d.say("كفتة")).log.reply_key, "items", "something else in between: not a run");
+}));
+
+test("EX6: the conversation of 13/10 (…1008) — «مسببات الحساسية» after a dish card is answered from that dish's facts; severe still goes to staff", withEnv(LOCKS_OPEN, async () => {
+  const mk = (o = {}) => liveWorld({ variants: VAR, waBot: { dishFactsEnabled: true, ...o } });
+  const LIST = "حسب بيانات مطبخنا، «سي فود كازرول» يحتوي على: الجلوتين (القمح)، الحليب ومشتقاته، البيض، الكرفس، السمك، القشريات والرخويات.\nمطبخنا واحد لكل الأصناف وقد يحصل تلامس بين المكونات أثناء التحضير.\nواكتب لنا حساسيتك في ملاحظة الطلب وننتبه لها.\nولو حساسيتك من شي آخر اكتب اسمه وأتأكد لك.";
+  const w = mk(); await w.press("item:57", "سي فود كازرول"); w.clock.advance(1);
+  const a = await w.say("مسببات الحساسية");
+  assert.deepEqual([a.log.reply_key, a.log.handoff, a.log.detail], ["dishfact", null, "fact:list"]); assert.equal(bodyOf(a.sent[0]), LIST); assert.equal(w.sms.length, 0);
+  assert.doesNotMatch(bodyOf(a.sent[0]), /خال|آمن|مضمون|لا يحتوي/, "only what is recorded: never «free from»");
+  // named in the message, with no card
+  const n = await mk().say("ايش مسببات الحساسية في سي فود كازرول؟");
+  assert.equal(bodyOf(n.sent[0]), LIST);
+  // a specific allergen is still the single-fact answer; severe is a person, urgently
+  const s1 = mk(); await s1.press("item:57", "سي فود كازرول"); s1.clock.advance(1);
+  const sev = await s1.say("عندي حساسية شديدة"); assert.equal(sev.log.handoff, "allergy_severe");
+  // no dish in context: as before (the owner's general answer when he fills it; staff while it is empty) — and then the dish he names gets its list
+  const g0 = await mk().say("مسببات الحساسية"); assert.equal(g0.log.handoff, "needs_staff");
+  const g = mk({ faq: { allergens: { ar: "اكتب اسم الصنف وأقول لك المسببات المسجلة فيه." } } });
+  const g1 = await g.say("مسببات الحساسية"); assert.deepEqual([g1.log.reply_key, g1.log.handoff], ["faq", null]); g.clock.advance(1);
+  const g2 = await g.say("سي فود كازرول"); assert.equal(bodyOf(g2.sent[0]), LIST);
+  // the facts switch off ⇒ staff, as for every dish fact
+  const off = liveWorld({ variants: VAR }); await off.press("item:57", "سي فود كازرول"); off.clock.advance(1);
+  assert.equal((await off.say("مسببات الحساسية")).log.handoff, "needs_staff");
+}));
+
+test("EX6: with the assistant on, a plain weight order that opens a conversation is answered by the rules (free, at once); inside an assistant session it stays with the assistant", withEnv(CONFIGURED, async () => {
+  const w = aWorld([], { variants: VAR });
+  const r = await w.say("عايزه نص كيلو كفته");
+  assert.deepEqual([r.log.reply_key, w.m.used()], ["weight", 0]); assert.match(bodyOf(r.sent[0]), /نصف كيلو: 60 ر\.س/);
+  const s = aWorld([mSay("أبشر، وش تحب تطلب؟"), mSay("تمام")], { variants: VAR });
+  await s.say("ابي اطلب عشاء لشخصين وش تنصحني"); s.clock.advance(1);
+  const r2 = await s.say("نص كيلو كفته"); assert.equal(r2.log.reply_key, "assist");
+}));
+
+test("EX6: a message WhatsApp calls «unsupported» is never dropped — it opens the chat like a greeting, or asks for text mid-conversation", withEnv(LOCKS_OPEN, async () => {
+  const UNS = { raw: { type: "unsupported", errors: [{ code: 131051, title: "Message type unknown", error_data: { details: "Message type is currently not supported." } }] } };
+  // the ad lead of 13/10 (…1328): the first thing we ever get from the number
+  const w = liveWorld({ greetMenu: true });
+  const a = await w.say(null, UNS);
+  assert.deepEqual([a.log.decision, a.log.reply_key], ["replied", "greet"]); assert.match(bodyOf(a.sent[0]), /حيّاك الله في فريش كاتس 👋/);
+  w.clock.advance(1);
+  const b = await w.say(null, UNS);
+  assert.deepEqual([b.log.reply_key, b.sent.map(bodyOf)], ["unsupported", ["ما وصلتني رسالتك بشكل واضح، اكتبها نص لو سمحت 🙏"]]); assert.equal(b.log.handoff, null);
+  // we wrote to the number recently (a campaign): it is not an opening
+  const c = liveWorld(); c.db.msgs.push({ wamid: "wamid.TPL", direction: "out", phone_norm: "512345678", template: "fc_frame_video", status: "sent", source: "cloud", created_at: new Date(c.clock.now().getTime() - 3600_000).toISOString() });
+  assert.equal((await c.say(null, UNS)).log.reply_key, "unsupported");
+  // with the assistant on: the opening goes to the assistant (it greets and asks what they want)
+  const s = aWorld([mSay("حيّاك الله 👋 وش تحب تطلب اليوم؟")]);
+  const r = await s.say(null, UNS);
+  assert.deepEqual([r.log.reply_key, bodyOf(r.sent[0])], ["assist", "حيّاك الله 👋 وش تحب تطلب اليوم؟"]);
+  // reactions and stickers are still ignored; out of scope / never-reply still win
+  assert.equal((await liveWorld().say(null, { raw: { type: "reaction", reaction: { emoji: "👍", message_id: "x" } } })).log.reason, "ignored_type");
+  assert.equal((await liveWorld({ waBot: { liveScope: "ads" } }).say(null, UNS)).log.reason, "out_of_scope");
+  assert.equal(R.botConfig({}).openerHours, 12); assert.ok(R.SCHEMA.openerHours.ar && R.SCHEMA.paidNoteEnabled.ar && R.SCHEMA.leadFollowUpMin.ar);
+}));
+
+test("EX6: after the customer pays, the chat gets one line with the order number — only for a chat the bot answered, with an open window, once", withEnv(LOCKS_OPEN, async () => {
+  const paid = (w, o = {}) => order({ status: "paid", created_at: w.clock.now().toISOString(), ...o });
+  const orders = [];
+  const w = liveWorld({ orders });
+  await w.say("مرحبا"); w.clock.advance(5);
+  orders.push(paid(w));
+  const out = await w.tick(1);
+  assert.equal(out.length, 1); assert.equal(bodyOf(out[0]), "وصلنا طلبك رقم W1790011111111 ✅ نبدأ نجهّزه الحين.\nتقدر تتابعه من الزر 👇"); assert.equal(urlOf(out[0]), "https://freshcuts.sa/track/W1790011111111");
+  assert.deepEqual([w.db.log.at(-1).reply_key, w.db.log.at(-1).decision], ["paid_note", "replied"]);
+  assert.deepEqual(await w.tick(2), [], "once per order"); assert.deepEqual(await w.tick(30), []);
+  // an order from a number the bot never talked to: nothing
+  const o2 = []; const n = liveWorld({ orders: o2 }); o2.push(paid(n, { phone_norm: "598765432" })); assert.deepEqual(await n.tick(1), []);
+  // the setting off; the customer stopped all messages; a manual mute
+  const o3 = []; const off = liveWorld({ orders: o3, waBot: { paidNoteEnabled: false } }); await off.say("مرحبا"); off.clock.advance(5); o3.push(paid(off)); assert.deepEqual(await off.tick(1), []);
+  const o4 = []; const st = liveWorld({ orders: o4 }); await st.say("مرحبا"); st.clock.advance(5); st.db.optins["512345678"] = { stopped_at: st.clock.now().toISOString() }; o4.push(paid(st));
+  assert.deepEqual(await st.tick(1), []); assert.equal(st.db.jobs.find((j) => j.kind === "paid_note").reason, "stopped");
+  // an unpaid / test order is not announced
+  const o5 = []; const up = liveWorld({ orders: o5 }); await up.say("مرحبا"); up.clock.advance(5); o5.push(paid(up, { status: "pending_payment" }), paid(up, { order_no: "W1790000000002", is_test: true })); assert.deepEqual(await up.tick(1), []);
+}));
+
+test("EX6: «متابعة المحادثة» — a customer left without an answer gets ONE follow-up after 20 minutes; never if he wrote again, staff answered, we are closed, he stopped or complained", withEnv(LOCKS_OPEN, async () => {
+  const lead = async (o = {}) => { const w = liveWorld({ waBot: { liveScope: "ads", ...o } }); const r = await w.say("ممكن اعمل طلب"); assert.equal(r.log.reason, "out_of_scope"); w.db.settings.waBot.liveScope = "all"; return w; };
+  const w = await lead();
+  assert.deepEqual(await w.tick(19), [], "not before 20 minutes");
+  const out = await w.tick(2);
+  assert.equal(out.length, 1);
+  assert.equal(bodyOf(out[0]), `${R.disclosureLine(R.botConfig(w.db.settings), "ar", w.db.settings)}\nوصلتنا رسالتك وما قدرنا نخدمك وقتها، نعتذر منك 🙏\nوش تحب تطلب؟ اكتب لي الصنف وأجهّز لك طلبك.`);
+  assert.deepEqual(out[0].interactive.action.buttons.map((x) => x.reply.id), ["bot:menu", "bot:human"]);
+  assert.deepEqual(await w.tick(30), [], "once"); assert.equal(w.sms.length, 0);
+  w.clock.advance(1);
+  assert.equal((await w.say("ابي اطلب")).sent.length, 1, "his answer is handled as usual");
+  // each reason not to send
+  const a = await lead(); a.clock.advance(5); await a.say("الو"); assert.deepEqual((await a.tick(20)).filter((x) => /وصلتنا رسالتك/.test(bodyOf(x))), [], "he wrote again and was answered");
+  const b = await lead(); b.clock.advance(5); await b.cashier("تفضل"); assert.deepEqual(await b.tick(20), []); assert.equal(b.db.jobs.find((j) => j.kind === "lead_followup").reason, "staff_in_chat");
+  const c = await lead(); c.clock.advance(5); c.db.msgs.push({ wamid: "wamid.DASH", direction: "out", phone_norm: "512345678", status: "sent", source: "staff", created_at: c.clock.now().toISOString() });
+  assert.deepEqual(await c.tick(20), []); assert.equal(c.db.jobs.find((j) => j.kind === "lead_followup").reason, "already_answered", "a reply from the dashboard counts");
+  const d = await lead(); d.db.optins["512345678"] = { marketing_off_at: d.clock.now().toISOString() }; assert.deepEqual(await d.tick(21), []);
+  const e = await lead(); e.db.settings.waBot.liveScope = "ads"; assert.deepEqual(await e.tick(21), [], "still outside the scope");
+  const f = await lead({ leadFollowUpMin: 0 }); assert.deepEqual(await f.tick(30), []); assert.equal(f.db.jobs.length, 0);
+  const g = liveWorld({ waBot: { liveScope: "ads" }, at: "2026-10-12T22:50:00Z" }); await g.say("ممكن اعمل طلب"); g.db.settings.waBot.liveScope = "all"; assert.deepEqual(await g.tick(21), [], "closed by then");
+  assert.equal(R.botConfig({}).leadFollowUpMin, 20);
 }));

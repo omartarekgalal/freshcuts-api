@@ -461,3 +461,14 @@ test("serious: a coupon or code statement needs get_offers in this conversation 
   assert.deepEqual(types("أبشر، وش تحب تطلب؟", { offersSeen: false }), []);
   assert.deepEqual(types("عندنا كوبون للطلب الأول").filter((x) => x === "coupon_without_offers"), [], "callers that do not pass the flag are not affected");
 });
+
+test("EX6: a one-line cart preview stays on the fast model; a bigger cart, a box, a note or build_cart still escalate", () => {
+  const u = (name, input) => ({ name, input });
+  assert.equal(AR.simplePreview(u("preview_cart", { items: [{ id: "91", qty: 1, variant_option_id: 45 }] })), true);
+  assert.equal(AR.simplePreview(u("preview_cart", { items: [{ id: "91", qty: 1 }, { id: "8", qty: 1 }] })), false);
+  assert.equal(AR.simplePreview(u("preview_cart", { items: [{ id: "91", qty: 1, note: "بدون بصل" }] })), false);
+  assert.equal(AR.simplePreview(u("preview_cart", { items: [], boxes: [{ slug: "box-crepe-duo" }] })), false);
+  assert.equal(AR.simplePreview(u("build_cart", { items: [{ id: "91", qty: 1 }] })), false);
+  assert.equal(AR.ASSIST_CFG_DEFAULTS.fastSimplePreview, true);
+  assert.match(AR.SYSTEM_PROMPT, /take the order to the end/);
+});
