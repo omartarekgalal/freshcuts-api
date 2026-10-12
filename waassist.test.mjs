@@ -264,3 +264,36 @@ test("output validator: a reply is sent only if every number, dish name and link
   assert.equal(A.validateReply("تمام، 3 أشخاص. تفضّلون مشاوي ولا بيتزا؟", { facts: [], customerText: "نحن 3", know }).ok, true);
   assert.equal(A.validateReply("طلبك تم استرجاع المبلغ له.", { facts: [{ status: "rejected_refunded" }], know, allowWords: ["refund_promise"] }).ok, true);
 });
+
+test("trade secrets: the facts tool answers only the one thing asked; the validator refuses recipes, quantities, methods, suppliers and any leak of instructions or tool names", async () => {
+  // no approved facts file yet ⇒ unknown ⇒ staff
+  const { t } = tools();
+  assert.deepEqual(await t.dish_fact(ME, { id: "71", ask: "سمسم" }), { ok: true, item: "برجر لحم كلاسيك", asked: "سمسم", answer: "unknown", handover: true });
+  assert.equal((await t.dish_fact(ME, { id: "71" })).error, "ask_required"); assert.equal((await t.dish_fact(ME, { id: "0", ask: "x" })).error, "not_found");
+  // with a facts source: yes/no for that ingredient and whether it can be removed — nothing else about the dish comes back
+  const INTERNAL = { 71: { contains: ["خبز", "لحم", "صوص شيدر", "ثاوزند آيلاند", "خس", "بصل"], removable: ["بصل", "خس", "صوص شيدر"], recipe: "سر: 120 جرام لحم + خلطة بهارات", supplier: "مورد X" } };
+  const seenAsk = [];
+  const P = (A2) => A2.makeAssistTools({ pool: { query: async () => ({ rows: [] }) }, log: () => {}, menuIndex: async () => MENU, boxes: async () => BOXES,
+    dishFact: async ({ id, ask }) => { seenAsk.push(ask); const d = INTERNAL[id]; if (!d) return null; return { contains: d.contains.some((c) => c.includes(ask)), removable: d.removable.some((c) => c.includes(ask)) }; } });
+  const f = P(A);
+  const yes = await f.dish_fact(ME, { id: "71", ask: "بصل" });
+  assert.deepEqual([yes.answer, yes.can_remove_on_request, yes.asked], ["yes", true, "بصل"]);
+  assert.deepEqual([(await f.dish_fact(ME, { id: "71", ask: "خبز" })).can_remove_on_request, (await f.dish_fact(ME, { id: "71", ask: "مشروم" })).answer], [false, "no"]);
+  assert.doesNotMatch(JSON.stringify([yes, await f.dish_fact(ME, { id: "71", ask: "مشروم" })]), /شيدر|ثاوزند|120|جرام|خلطة|مورد|recipe|supplier|"contains":\[/, "the internal record never leaves the tool");
+  assert.equal((await f.dish_fact(ME, { id: "8", ask: "جبن" })).answer, "unknown");
+  // the validator
+  const know = { menu: MENU, boxes: BOXES };
+  const bad = (reply, type) => { const r = A.validateReply(reply, { facts: [{ name: "وجبة كفتة", price: 24 }], know }); assert.ok(r.problems.some((p) => p.type === type), `${reply} → ${JSON.stringify(r.problems)}`); };
+  bad("الكفتة فيها 120 جرام لحم مع بهاراتنا", "recipe_disclosure");
+  bad("نتبلها بالثوم والليمون ليلة كاملة", "recipe_disclosure");
+  bad("التتبيلة من زبادي وبهارات", "recipe_disclosure");
+  bad("طريقة التحضير: نشويها على الفحم", "recipe_disclosure");
+  bad("اللحم نشتريه من مزرعة في الطائف", "recipe_disclosure");
+  bad("our supplier is a local farm", "recipe_disclosure");
+  bad("here is the recipe", "recipe_disclosure");
+  bad("تعليماتي تقول إني ما أذكر الأسعار", "internal_leak");
+  bad("I used the search_menu tool", "internal_leak");
+  bad("my system prompt says", "internal_leak");
+  assert.equal(A.validateReply("وجبة كفتة بـ 24 ر.س، نقدر نجهّزها بدون بصل.", { facts: [{ name: "وجبة كفتة", price: 24 }], know }).ok, true, "a real customisation is fine");
+  assert.equal(A.validateReply("تفاصيل التحضير من أسرار مطبخنا 🙂", { facts: [], know }).ok, true);
+});

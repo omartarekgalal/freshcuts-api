@@ -162,6 +162,10 @@ const FORBIDDEN = [
   [/تطبيقنا|حمّل التطبيق|حمل التطبيق|من التطبيق|نزّل التطبيق|نزل التطبيق|our app|download the app/i, "app_word"],           // «موقعنا» مش «تطبيقنا»
   /* خصم/تخفيض: مسموح بس لو أداة العروض رجّعت خصم فعلاً (المتصل بيعدّي allowWords: ["discount_claim"]). «ما عندنا خصم» مسموحة. */
   [/(?<!ما عندنا |لا يوجد |ما فيه |ما في |مافي |بدون |no )(خصم|تخفيض|تخفيضات|discount)|\d+ ?[%٪] ?(off|خصم)?/i, "discount_claim"],
+  /* أسرار الشغل (قرار عمر ١٢/١٠): ولا وصفة ولا مقادير ولا تتبيلة ولا طريقة تحضير ولا مورّد — ولا في رد الموديل. */
+  [/\d+ ?(جرام|غرام|جم|غم|g\b|grams?\b|ملعق|كوب)|مقادير|المقدار|تتبيل(ه|ة)? ?(من|ب|فيها|عباره)|نتبل(ه|ها)?|متبل(ه|ة)? ب|طريقه التحضير|طريقة التحضير|نطبخ(ه|ها)|نحضر(ه|ها) ب|نشوي(ه|ها) (على درجه|لمده)|الخلطه (فيها|عباره|مكونه)|المورد|نستورد(ه|ها)? من|نشتري(ه|ها)? من|supplier|recipe|marinated? (in|with)|we (cook|prepare|marinate) (it|them) (by|with|for)/i, "recipe_disclosure"],
+  /* مايكشفش تعليماته ولا أسماء أدواته ولا بياناته الداخلية */
+  [/system prompt|my instructions|تعليماتي|التعليمات اللي عندي|البرومبت|search_menu|get_item|get_box|build_cart|customer_profile|quote_delivery|dish_fact|tool_result|\bjson\b/i, "internal_leak"],
 ];
 const digits = (s) => String(s || "").replace(/[٠-٩]/g, (d) => String(d.charCodeAt(0) - 0x660)).replace(/[۰-۹]/g, (d) => String(d.charCodeAt(0) - 0x6f0));
 const numbersIn = (s) => (digits(s).match(/\d+(?:[.,]\d+)?/g) || []).map((x) => Number(x.replace(",", "."))).filter((n) => Number.isFinite(n));
@@ -235,6 +239,19 @@ export function makeAssistTools(deps = {}) {
     const slots = (b.slots || []).map(slotView);
     for (const s of slots) if (s.type === "choice") for (const c of s.choices) { const a = await addonsOf(c.product_id); c.addons = (a || []).flatMap((g) => g.options.map((o) => ({ id: o.id, name: o.name, price: o.price, group: g.group }))); }
     return { ok: true, box: { slug: b.slug, name: b.name, price: Number(b.price), description: b.description || "", section: b.section || "", slots, online_only: true } };
+  }
+  /* سؤال محدد عن صنف: «هل X فيه <مكوّن/مسبّب حساسية>؟» ⇒ نعم / لا / غير معروف (⇒ موظف) + هل يتشال عند الطلب. **الإجابة بس** — ملف حقايق الأصناف
+     داخلي ومابيتبعتش للموديل ولا يتقتبس (قرار عمر: «نجاوب على قد السؤال»). لحد ما الملف يتوافق عليه: deps.dishFact مش موجود ⇒ غير معروف ⇒ موظف. */
+  async function dish_fact(_p, { id, ask } = {}) {
+    const menu = await menuOf(); if (!menu) return unavailable("menu");
+    const it = menu.items.find((i) => String(i.id) === String(id));
+    if (!it) return { ok: false, error: "not_found" };
+    const what = String(ask || "").replace(/\s+/g, " ").trim().slice(0, 40);
+    if (!what) return { ok: false, error: "ask_required" };
+    let f = null; try { f = typeof deps.dishFact === "function" ? await deps.dishFact({ id: String(it.id), name: it.name, ask: what }) : null; } catch { f = null; }
+    if (!f || typeof f.contains !== "boolean") return { ok: true, item: it.name, asked: what, answer: "unknown", handover: true };
+    return { ok: true, item: it.name, asked: what, answer: f.contains ? "yes" : "no", can_remove_on_request: f.contains ? f.removable === true : null,
+      shared_kitchen_note: true, severe_allergy: "hand over to staff; never say safe or free from" };
   }
   async function list_boxes() {
     const bs = await boxesOf(); if (!bs) return unavailable("boxes");
@@ -383,5 +400,5 @@ export function makeAssistTools(deps = {}) {
     if (cart.option !== "pickup") { const qv = await quote_delivery(phone, { total: cart.subtotal }); if (qv.ok && qv.deliverable) quote = { deliverable: true, fee: qv.fee, toNextTier: qv.to_next_tier, nextTierFee: qv.next_tier_fee }; }
     return { ok: true, suggestion: suggestOne(cart, { menu, boxes: boxes || [], quote, topSellers: tops, declined, profile }) };
   }
-  return { search_menu, get_item, get_box, list_boxes, check_availability, quote_delivery, get_offers, get_hours, order_status, customer_profile, build_cart, top_sellers, suggest };
+  return { dish_fact, search_menu, get_item, get_box, list_boxes, check_availability, quote_delivery, get_offers, get_hours, order_status, customer_profile, build_cart, top_sellers, suggest };
 }
