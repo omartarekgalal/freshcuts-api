@@ -40,6 +40,7 @@ import { loyaltyCfgOf } from "./loyalty.js";
 import { MAPS_URL } from "./watemplates.js";
 import { isOpenNow } from "./carts.js";
 import { makeBotCarts, reorderPlan, planSummary, orderDay } from "./wabotcart.js";
+import { makeAssistTools, validateReply, profileSummaryAr } from "./waassist.js";
 import { makeAiCost, pricesOf, waRatesOf, pricesFromBody, waRatesFromBody, BUDGET_DEFAULTS } from "./waaicost.js";
 import { providerInfo } from "./wabotllm.js";
 import { WA_UPDATES_TEXTS, WA_UPDATES_CURRENT, recordWaUpdatesBot, recordWaMarketingBot, ensureWaConsentSchema } from "./waconsent.js";
@@ -2034,6 +2035,49 @@ export function register(app, ctx, deps = {}) {
       const pick = tried.find((t) => t.ok) || null;
       out.customer = { hasSnapshot: snaps.length > 0, candidates: snaps.length, fromOrder: pick ? pick.fromOrder : null, plan: pick, tried: tried.map((t) => ({ fromOrder: t.fromOrder, day: t.day, ok: t.ok, why: t.why })) };
     }
+    return c.json(out);
+  });
+
+  /* ── مساعد الطلبات: القلب (الشريحة ١) ─────────────────────────────────────────
+     الأدوات بتتركّب هنا على مصادر النظام الحيّة، **من غير أي موديل ومن غير أي إرسال ومن غير أي تغيير في ردود البوت**.
+     المسار ده للمالك بس وللتجربة: ينده أداة واحدة ويرجّع نتيجتها زي ما الموديل هيشوفها. بنّاء السلة هنا معاينة دايماً (مابيعملش رابط). */
+  const ax = deps.assist || null;
+  const assist = ax ? makeAssistTools({
+    pool, now: clock,
+    menuIndex: async () => menuIndex((await getSettingsData()) || {}, clock()),
+    boxes: async () => bundles(),
+    expandBundle: ax.expandBundle,
+    modifiers: { catalogItems: async () => { const r = await ax.modifiersCatalog(); return r && r.cfg && r.cfg.enabled === false ? {} : (r && r.catalog) || null; }, resolve: ax.modifiersResolve },
+    quote: ax.quote, buildProfile: ax.buildProfile,
+    offers: async () => liveOffers((await getSettingsData()) || {}, clock()),
+    settings: async () => (await getSettingsData()) || {},
+    openState: async () => { const st = (await getSettingsData()) || {}; if (!st.hours) return null; const now = clock(), o = openState(st, now);
+      let opens = null; try { opens = o.open ? null : openingText(st.hours, now, "ar"); } catch { opens = null; }
+      return { open: o.open, closesText: o.closesAt ? fmtTime(o.closesAt, "ar") : null, opensText: opens, deliveryPaused: Boolean(o.open && o.svc && o.svc.delivery && o.svc.delivery.paused) }; },
+    lastLocation: async (ph) => { const r = await q("SELECT last_loc FROM wa_bot_chats WHERE phone_norm=$1", [ph]); return r && r[0] ? r[0].last_loc : null; },
+    botCarts,
+  }) : null;
+  const ASSIST_TRY = ["search_menu", "get_item", "get_box", "list_boxes", "check_availability", "quote_delivery", "get_offers", "get_hours", "order_status", "customer_profile", "build_cart", "top_sellers", "suggest"];
+  app.post("/api/cms/wabot/assist/try", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    const no = ownerOnly(c); if (no) return no;
+    if (!assist) return c.json({ ok: false, error: "assist_not_wired" }, 503);
+    let b; try { b = await c.req.json(); } catch { return c.json({ ok: false, error: "bad_json" }, 400); }
+    const tool = String(b.tool || ""), args = b.args && typeof b.args === "object" ? b.args : {};
+    if (!ASSIST_TRY.includes(tool)) return c.json({ ok: false, error: "unknown_tool", tools: ASSIST_TRY }, 400);
+    const ph = String(b.phone || "").replace(/\D/g, "").replace(/^(00966|966|0)/, "");
+    await ready;
+    const t0 = Date.now();
+    let result;
+    try {
+      if (tool === "build_cart") result = await assist.build_cart(ph, args, { save: false });
+      else if (tool === "suggest") { const cart = await assist.build_cart(ph, args.cart || {}, { save: false }); result = { cart, ...(await assist.suggest(ph, { cart, declined: args.declined || [] })) }; }
+      else if (tool === "top_sellers" || tool === "list_boxes" || tool === "get_hours") result = await assist[tool]();
+      else result = await assist[tool](ph, args);
+    } catch (e) { return c.json({ ok: false, error: "tool_threw", message: e.message }, 500); }
+    const out = { ok: true, tool, ms: Date.now() - t0, result };
+    if (tool === "customer_profile" && result && result.profile) out.told_to_customer = profileSummaryAr(result.profile);
+    if (typeof b.reply === "string") out.validation = validateReply(b.reply, { facts: [result], customerText: String(b.customerText || ""), know: { menu: await menuIndex((await getSettingsData()) || {}, clock()), boxes: (await bundles()) || [] } });
     return c.json(out);
   });
 

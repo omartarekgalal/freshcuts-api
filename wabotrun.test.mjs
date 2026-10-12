@@ -211,7 +211,10 @@ function world({ waBot = {}, notifications = { whatsappEnabled: true }, orders =
   const botCarts = { ensure: async () => {}, lastOrderCarts: async (ph, days, o) => { const v = typeof lastCart === "function" ? lastCart(ph, days, o) : lastCart; return (Array.isArray(v) ? v : v ? [v] : []).map((x, i) => ({ latest: i === 0, ...x })); },
     create: async (x) => { if (failDb && failDb.test("INSERT INTO wa_bot_carts")) return null; const code = `rc${String(db.botCarts.length + 1).padStart(6, "0")}`; db.botCarts.push({ code, ...x }); return { code }; }, open: async () => null, restore: async () => null, coverage: async () => ({ orders: 40, with_snapshot: 30, with_raw: 28, usable: 26, avg_diff: 0, mismatched: 2, links: db.botCarts.length, opened: 0 }) };
   const portalEvents = [];
-  const bot = R.register(app, ctx, { app, wa, now: clock.now, noTimer: true, botCarts, portalEmit: (ev2, data) => portalEvents.push([ev2, data]), whoami: async () => actor.who, ...(resolveMapsLink ? { resolveMapsLink } : { resolveMapsLink: async () => null }), sendSms: async (x) => { sms.push(x); return { ok: true }; },
+  const bot = R.register(app, ctx, { app, wa, now: clock.now, noTimer: true, botCarts,
+    assist: { expandBundle: async () => ({ ok: false, error: "bundle_not_found" }), modifiersCatalog: async () => ({ cfg: { enabled: true }, catalog: {} }), modifiersResolve: async () => ({ ok: true, shown: 0 }),
+      quote: async (x) => (typeof quote === "function" ? quote(x.lat, x.lng) : quote), buildProfile: async () => ({ identity: { name: "أحمد" }, summary: { orders: 2, status: "repeat" }, orders: [], favorites: { items: [] }, addresses: [] }) }, whoami: async () => actor.who, ...(resolveMapsLink ? { resolveMapsLink } : { resolveMapsLink: async () => null }), sendSms: async (x) => { sms.push(x); return { ok: true }; },
+    portalEmit: (ev2, data) => portalEvents.push([ev2, data]), whoami: async () => actor.who, ...(resolveMapsLink ? { resolveMapsLink } : { resolveMapsLink: async () => null }), sendSms: async (x) => { sms.push(x); return { ok: true }; },
     fetchMenuPages: async () => { if (pages === null) throw new Error("menu down"); return pages; }, quote: async (lat, lng) => (typeof quote === "function" ? quote(lat, lng) : quote), llm,
     fetchOffers: async () => { if (offers === null) throw new Error("offers down"); return offers; } });
   let seq = 0;
@@ -1900,6 +1903,26 @@ test("handover also rings the restaurant portal: one live event per handover ale
   await t.say("ابي اكلم موظف"); assert.deepEqual([t.portal.length, t.portal[0][1].test, t.portal[0][1].urgent, t.sms.length], [1, true, false, 0]);
   const d = liveWorld({ waBot: { mode: "dry" } });
   await d.say("ابي اكلم موظف"); assert.equal(d.portal.length, 0);
+}));
+
+test("assistant core, slice 1: the owner route runs one tool on live sources and previews a cart — no model, no send, no cart row, nothing changes in the bot's replies", withEnv(LOCKS_OPEN, async () => {
+  const w = liveWorld({ quote: { deliverable: true, fee: 15, toNextTier: 10, nextTierFee: 10 } });
+  const T = async (tool, args = {}, extra = {}) => (await w.call("POST", "/api/cms/wabot/assist/try", { tool, phone: "0512345678", args, ...extra }));
+  const s = (await T("search_menu", { query: "كريب زنجر" })).body;
+  assert.deepEqual([s.ok, s.tool, s.result.results[0].name, s.result.results[0].price], [true, "search_menu", "كريب زنجر سوبريم", 25]);
+  const c = (await T("build_cart", { items: [{ id: "8", qty: 2 }, { id: "999999" }] })).body.result;
+  assert.deepEqual([c.ok, c.saved, c.subtotal, c.lines.length, c.problems[0].error, c.link], [true, false, 50, 1, "not_on_menu", undefined]);
+  assert.equal(w.db.botCarts.length, 0, "the try route never creates a cart");
+  const p = (await T("customer_profile")).body;
+  assert.equal(p.result.profile.name, "أحمد"); assert.match(p.told_to_customer, /^عدد طلباتك السابقة: 2\./);
+  const h = (await T("get_hours")).body.result; assert.equal(h.open_now, true);
+  const v = (await T("search_menu", { query: "كريب زنجر" }, { reply: "كريب زنجر سوبريم بـ 999 ر.س" })).body.validation;
+  assert.equal(v.ok, false); assert.equal(v.problems[0].type, "number_not_from_tools");
+  assert.equal((await T("drop_tables")).status, 400);
+  w.setOwner(false); assert.equal((await T("get_hours")).status, 403); w.setOwner(true);
+  assert.equal(w.calls.length, 0, "nothing was sent"); assert.equal(w.db.log.length, 0);
+  // the bot's own replies are unchanged by this slice
+  assert.equal((await w.say("كم رسوم التوصيل")).log.reply_key, "delivery");
 }));
 
 test("replay: the stored inbound messages run through the current classifier offline — nothing sent, nothing logged", withEnv(LOCKS_OPEN, async () => {
