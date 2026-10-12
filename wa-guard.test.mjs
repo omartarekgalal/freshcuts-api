@@ -396,6 +396,10 @@ test("R3: POST /api/notify/test (whatsapp) reaches the dashboard's test numbers 
     assert.equal(r1.status, 403);
     assert.equal(r1.body.error, "not_in_allow_list");
     assert.equal(w.calls.length, 0);
+    // رسالة التجربة نص حر ⇒ لازم رقم التجربة يكون كلّمنا في آخر ٢٤ ساعة (نفس قاعدة العملاء)
+    const closed = await post({ channel: "whatsapp", phone: "0544775082", text: "تجربة" });
+    assert.equal(closed.status, 403); assert.equal(closed.body.error, "window_closed"); assert.equal(w.calls.length, 0);
+    w.db.inbound.push("544775082");
     const r2 = await post({ channel: "whatsapp", phone: "0544775082", text: "تجربة" });
     assert.equal(r2.body.ok, true);
     assert.equal(w.calls.length, 1);
@@ -504,4 +508,18 @@ test("status: /api/wa/status names the closed lock without any secret", withEnv(
   assert.equal(r.body.blockedBy, "master_off");
   assert.equal(r.body.testPhones, 1);
   assert.doesNotMatch(JSON.stringify(r.body), /"tok"/);
+}));
+
+
+/* ══ فجوة بلّغ عنها مساعد الطلبات (١٣/١٠): تجربة النص الحر كانت بتعدّي الحارس بره نافذة الـ٢٤ ساعة ══ */
+test("test sends: a free-form test message needs the 24-hour window like any other; a template test send does not", withEnv(CONFIGURED, async () => {
+  const w = world({ settings: { waMaster: { enabled: false } } });
+  assert.equal((await w.wa.guardSend({ phoneNorm: STAFF, kind: "session", test: true })).reason, "window_closed");
+  assert.equal((await w.wa.sendFreeform({ phoneNorm: STAFF, payload: text(), allowList: [STAFF] })).skipped, "window_closed");
+  assert.equal((await w.wa.guardSend({ phoneNorm: STAFF, kind: "template", template: "fc_order_preparing", test: true })).ok, true, "templates are what you send outside the window");
+  assert.equal(w.calls.length, 0);
+  w.db.inbound.push(STAFF);
+  assert.equal((await w.wa.sendFreeform({ phoneNorm: STAFF, payload: text(), allowList: [STAFF] })).ok, true);
+  assert.equal(w.calls.length, 1);
+  assert.equal((await w.wa.guardSend({ phoneNorm: CUST, kind: "session", test: true })).reason, "not_in_allow_list", "the allow-list is still checked first");
 }));

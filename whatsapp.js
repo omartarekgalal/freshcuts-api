@@ -625,6 +625,13 @@ export function register(app, ctx, deps = {}) {
        purpose:  "marketing" بيفرض موافقة التسويق مهما كانت فئة القالب (الحملات)
        test:     إرسال تجربة — للأرقام اللي في قايمة التجربة في اللوحة **بس** (allowList بتضيّق، ماتوسّعش)
      بيرجّع {ok:true, ticket} أو {ok:false, reason}. التذكرة لرقم واحد، مرة واحدة، ودقيقة واحدة. */
+  /* العميل كلّمنا في آخر ٢٤ ساعة؟ (رسالة حقيقية وصلت على الويب هوك، مش تاريخ مستورد) */
+  async function windowOpen(pn) {
+    const r = await pool.query(
+      `SELECT 1 FROM wa_messages WHERE phone_norm=$1 AND direction='in' AND COALESCE(source,'api') <> 'history'
+          AND created_at > NOW() - INTERVAL '24 hours' LIMIT 1`, [pn]);
+    return Boolean(r.rows && r.rows.length);
+  }
   const TICKETS = new WeakSet();
   const TICKET_TTL_MS = 60_000;
   async function guardSend({ phoneNorm, kind, template = null, purpose = null, source = null, test = false, allowList = null, fromId = null } = {}) {
@@ -647,16 +654,15 @@ export function register(app, ctx, deps = {}) {
       if (!s) return no("settings_unreadable");
       if (!testPhonesOf(s).includes(pn)) return no("not_in_allow_list");
       if (Array.isArray(allowList) && !staffPhones(allowList).includes(pn)) return no("not_in_allow_list");
+      /* رسالة حرة لرقم تجربة: نفس شرط النافذة (ميتا بترفضها بره الـ٢٤ ساعة أصلاً) — التجربة مابتعدّيش قاعدة العملاء دي */
+      if (kind === "session" && !(await windowOpen(pn))) return no("window_closed");
       return grant();
     }
     const blocked = channelBlock(s);
     if (blocked) return no(blocked);
     if (kind === "session") {
       // رد حر: العميل لازم يكون كلّمنا في آخر ٢٤ ساعة (رسالة حقيقية وصلت على الويب هوك، مش تاريخ مستورد)
-      const r = await pool.query(
-        `SELECT 1 FROM wa_messages WHERE phone_norm=$1 AND direction='in' AND COALESCE(source,'api') <> 'history'
-            AND created_at > NOW() - INTERVAL '24 hours' LIMIT 1`, [pn]);
-      if (!(r.rows && r.rows.length)) return no("window_closed");
+      if (!(await windowOpen(pn))) return no("window_closed");
       return grant();
     }
     const t = TEMPLATES[template];

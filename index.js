@@ -65,6 +65,7 @@ import * as smstemplates from "./smstemplates.js";
 import * as wabot from "./wabot.js";
 import * as wabotrun from "./wabotrun.js";
 import * as wahandover from "./wahandover.js";
+import * as wahub from "./wahub.js";
 import * as wabotllm from "./wabotllm.js";
 import * as extsettle from "./extsettle.js";
 import * as wasender from "./wasender.js";
@@ -3004,6 +3005,8 @@ const moduleCtx = {
 // analytics.register hands back { periodKpis, channelsData, deliveryApps } so
 // reports.js can quote the SAME sales figures the analytics screens quote
 // instead of writing a second copy of the delivery/new-customer rules.
+/* N7: بعد أي كتابة ناجحة على مسارات مفاتيح واتساب/الإشعارات، سجّل «من ← إلى» باسم اللي كتب (wahub.js). لازم يتسجّل قبل المسارات دي. */
+app.use("/api/*", async (c, next) => { await next(); try { if (waHubApi && c.req.method !== "GET" && c.res && c.res.status < 400 && /^\/api\/(settings|notify\/|cms\/(wa-cloud|wa-sender|wabot\/config))/.test(c.req.path)) waHubApi.sweepFor(c); } catch { /* السجل مايوقّفش طلب */ } });
 settingsGuard.register(app, { ...moduleCtx, requireAmbassadorOrAdmin });
 const analyticsApi = analytics.register(app, moduleCtx);
 ai.register(app, moduleCtx);
@@ -3136,6 +3139,7 @@ const notifyApi = notify.register(app, moduleCtx, { wa: waApi });
 // السلات المتروكة: لقطات من المتجر + سلّم استرداد (إشعار ثم SMS) + أرقام اللوحة
 let wabotApi = null;   // wabotrun.register (below): its ready-cart store answers /c/<code> through carts.js
 let waHandoverApi = null;   // wahandover.register (بعد البوابة): بيسجّل تحويلات واتساب ويرنّها على البوابة
+let waHubApi = null;        // wahub.register (آخر الملف): مسارات قسم واتساب في اللوحة + سجل تغيير المفاتيح
 const cartsApi = carts.register(app, moduleCtx, { notify: notifyApi, botCarts: () => (wabotApi ? wabotApi.carts : null) });
 freebar.register(app, moduleCtx);
 // رحلة العميل (٠٢): دفعات أحداث المتجر + checkout_result/order_paid من السيرفر + تقرير #store/analytics/journey
@@ -3253,6 +3257,7 @@ preorder.register(app, moduleCtx);
 let courierOpsApi = null;
 const portalApi = portal.register(app, moduleCtx, { shop: () => shopApi, delivery: () => deliveryApi, cmsWhoami: (c) => cmsApi.whoami(c), courierOps: () => courierOpsApi, wa: () => waInboxApi });
 waHandoverApi = wahandover.register(app, moduleCtx, { requirePortal: portalApi.requirePortal, broadcast: portalApi.broadcast, push: () => portalApi.push });
+waHubApi = wahub.register(app, moduleCtx, { whoami: (c) => cmsApi.whoami(c), wa: waApi, waInbox: () => waInboxApi, bot: () => wabotApi });
 // 🍽 QR الطاولات: مفاتيح الطاولات + نداء الويتر (بيبعت إشعار البوابة) + تحليلات لكل طاولة
 tableOrder.register(app, moduleCtx, { portal: () => portalApi, shop: () => shopApi });
 /* 🚨 حارس الدفع (٢٢/٩): ناس بتوصل لخطوة الدفع ومحدش بيدفع ⇒ SMS للمدير.

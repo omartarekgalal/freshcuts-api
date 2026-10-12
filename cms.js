@@ -118,6 +118,9 @@ const PATH_SECTIONS = [
   [/^\/api\/cms\/(customers|segments|loyalty|campaigns|app-conversion|flows|reviews|sms-optout|outreach|wa-sender)/, "customers"],
   [/^\/api\/sms\/blocked/, "customers"],
   [/^\/api\/cms\/(analytics|exec)/, "analytics"],
+  // قسم واتساب في اللوحة (wahub.js): المحادثات = «الطلبات» + قايمة أدوار جوّه المسار نفسه؛ القوالب = «العملاء» (المالك والتسويق)
+  [/^\/api\/cms\/wa\/threads/, "orders"],
+  [/^\/api\/cms\/wa\/templates/, "customers"],
   [/^\/api\/cms\/(ops|sla)/, "orders"],
   [/^\/api\/(shop\/coupons|discounts)/, "discounts"],
   [/^\/api\/(finance|keeta-payouts|costing|staff-meals|staff_meals|pay\/|influencer-payments)/, "finance"],
