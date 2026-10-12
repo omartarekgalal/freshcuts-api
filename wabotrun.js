@@ -48,7 +48,7 @@ import { kbTokens } from "./wakb.js";
 import { makeStt, STT_PROVIDERS } from "./wasttkey.js";
 const STT_LABEL = Object.fromEntries(STT_PROVIDERS.map((p) => [p.id, p.label]));
 import { lookImage, makeTranscriber, voiceSeconds, transcriptUsable, IMAGE_MAX_BYTES, VOICE_MAX_BYTES } from "./waassistmedia.js";
-import { ASSIST_CFG_DEFAULTS, ASSIST_SCHEMA, PROMPT_HASH, assistConfig, assistFromBody, assistEligible, makeAssistLoop, makeAssistStore, makeModelCaller, billableUsage, newSession, noteRulesTurn, buildContext, hintOf } from "./waassistrun.js";
+import { ASSIST_CFG_DEFAULTS, ASSIST_SCHEMA, PROMPT_HASH, LIVE_AUDIENCES, assistConfig, assistFromBody, assistEligible, makeAssistLoop, makeAssistStore, makeModelCaller, billableUsage, newSession, noteRulesTurn, buildContext, hintOf } from "./waassistrun.js";
 import { WA_UPDATES_TEXTS, WA_UPDATES_CURRENT, recordWaUpdatesBot, recordWaMarketingBot, ensureWaConsentSchema } from "./waconsent.js";
 
 export const STORE = "https://freshcuts.sa";
@@ -61,7 +61,6 @@ export const DEFAULTS = Object.freeze({
   humanPauseMin: 30,           // سكوت بعد **آخر** رد للموظف من الموبايل (في الدوام)
   staffWaitMin: 5,             // العميل كتب وقت السكوت: نستنى الموظف المدة دي وبعدها البوت يرد (نية معروفة بس)
   closedEchoPauseMin: 10,      // موظف رد والمطعم مقفول: سكوت قصير بس
-  unknownWaitMin: 3,           // في الدوام: رسالة غير مفهومة تستنى الموظف قبل القائمة (٠ = فوراً)
   handoverRealertMin: 5,       // تحويل ومحدش من الفريق رد: تنبيه تاني بعد المدة دي (٠ = مفيش)
   handoverCustomerNoteMin: 10, // ولسه محدش رد: رسالة واحدة صادقة للعميل بعد المدة دي من التحويل (٠ = مفيش)
   manualMuteHours: 24,         // «كتم البوت في المحادثة دي» من الموظف — المدة الافتراضية
@@ -89,7 +88,7 @@ export const DEFAULTS = Object.freeze({
   reorderMinTotal: 10,         // طلب أصنافه أقل من كده (ر.س) مايتعرضش — طلبات التجربة الصغيرة
   reorderLookback: 5,          // لو آخر طلب مايتجهّزش، نجرّب اللي قبله لحد العدد ده
   maxAgeMinutes: 20,           // رسالة أقدم من كده (ويب هوك متأخر) مابيتردش عليها
-  duplicateSeconds: 120,       // نفس الرد لنفس العميل مايتكررش خلالها
+  sameTextSeconds: 8,          // نفس النص من نفس العميل خلال الثواني دي = تكرار ويب هوك/ضغطة مرتين ⇒ مايتردّش عليه تاني. عميل بيكرر سؤاله بعدها بيترد عليه (١٢/١٠)
   /* حارس الحلقات (مش سبب لتحويل لموظف — عطل ١٢/١٠: ٨ ردود كانت بتقطع عميل بيتصفّح القائمة وتحوّله لموظف):
      رسايل مكتوبة ورا بعض ليها حد في الساعة، ضغطات القائمة/الأزرار ليها حد أوسع لوحدها، وحد قصير للدقيقة. عند الحد: سطر هادي مرة واحدة،
      من غير تحويل ولا تنبيه، والبوت يرجع لوحده لما المدة تعدّي. */
@@ -414,7 +413,6 @@ export function botConfig(settings) {
     humanPauseMin: num(x.humanPauseMin, 1, 720, DEFAULTS.humanPauseMin),
     staffWaitMin: num(x.staffWaitMin, 1, 15, DEFAULTS.staffWaitMin),
     closedEchoPauseMin: num(x.closedEchoPauseMin, 0, 120, DEFAULTS.closedEchoPauseMin),
-    unknownWaitMin: num(x.unknownWaitMin, 0, 15, DEFAULTS.unknownWaitMin),
     manualMuteHours: num(x.manualMuteHours, 1, 168, DEFAULTS.manualMuteHours),
     handoverRealertMin: num(x.handoverRealertMin, 0, 60, DEFAULTS.handoverRealertMin), handoverCustomerNoteMin: num(x.handoverCustomerNoteMin, 0, 120, DEFAULTS.handoverCustomerNoteMin),
     handoffOpenHours: num(x.handoffOpenHours, 1, 168, DEFAULTS.handoffOpenHours),
@@ -444,7 +442,7 @@ export function botConfig(settings) {
     reorderEnabled: x.reorderEnabled !== false, reorderMaxDays: num(x.reorderMaxDays, 1, 365, DEFAULTS.reorderMaxDays), reorderLinkDays: num(x.reorderLinkDays, 1, 30, DEFAULTS.reorderLinkDays),
     reorderMinTotal: num(x.reorderMinTotal, 0, 500, DEFAULTS.reorderMinTotal), reorderLookback: num(x.reorderLookback, 1, 10, DEFAULTS.reorderLookback),
     maxAgeMinutes: num(x.maxAgeMinutes, 1, 120, DEFAULTS.maxAgeMinutes),
-    duplicateSeconds: num(x.duplicateSeconds, 0, 3600, DEFAULTS.duplicateSeconds),
+    sameTextSeconds: num(x.sameTextSeconds, 0, 120, DEFAULTS.sameTextSeconds),
     maxRepliesPerHour: num(x.maxRepliesPerHour, 5, 300, DEFAULTS.maxRepliesPerHour),
     maxTapsPerHour: num(x.maxTapsPerHour, 20, 1000, DEFAULTS.maxTapsPerHour),
     maxRepliesPerMinute: num(x.maxRepliesPerMinute, 3, 30, DEFAULTS.maxRepliesPerMinute),
@@ -496,9 +494,9 @@ export function configFromBody(b, prev = {}) {
   if ("footerMode" in src) { if (["always", "smart", "first"].includes(src.footerMode)) out.footerMode = src.footerMode; else errors.push("footerMode"); }
   errors.push(...rangeErrors(src));
   delete out.humanWindowHours;      // اتلغى (١٢/١٠) — أي حفظ بينضّف المخزّن القديم
-  for (const k of ["humanPauseMin", "staffWaitMin", "closedEchoPauseMin", "unknownWaitMin", "manualMuteHours", "handoffOpenHours", "freeRepliesPerMonth", "replyRateSar", "disclosureHours", "unknownHandoverAfter", "adWindowHours", "optinAnswerWindowMin",
+  for (const k of ["humanPauseMin", "staffWaitMin", "closedEchoPauseMin", "manualMuteHours", "handoffOpenHours", "freeRepliesPerMonth", "replyRateSar", "disclosureHours", "unknownHandoverAfter", "adWindowHours", "optinAnswerWindowMin",
     "offerEndWithinDays", "boxesCacheMin", "menuCacheMin", "offersCacheMin", "staleCacheMin", "logKeepDays", "reorderMaxDays", "reorderLinkDays", "reorderMinTotal", "reorderLookback",
-    "handoverRealertMin", "handoverCustomerNoteMin", "greetWindowHours", "maxAgeMinutes", "duplicateSeconds", "maxRepliesPerHour", "maxTapsPerHour", "maxRepliesPerMinute", "orderLookbackHours", "lateAfterMinutes", "maxAlertsPerHour"]) {
+    "handoverRealertMin", "handoverCustomerNoteMin", "greetWindowHours", "maxAgeMinutes", "sameTextSeconds", "maxRepliesPerHour", "maxTapsPerHour", "maxRepliesPerMinute", "orderLookbackHours", "lateAfterMinutes", "maxAlertsPerHour"]) {
     if (k in src) { if (Number.isFinite(Number(src[k])) && src[k] !== "" && src[k] !== null) out[k] = Number(src[k]); else errors.push(k); }
   }
   for (const k of ["interactive", "staffAlert", "alertInTest", "reorderEnabled", "dishFactsEnabled"]) if (k in src) out[k] = src[k] === true;
@@ -698,7 +696,6 @@ export const SCHEMA = Object.freeze({
   humanPauseMin: S("staff", "number", "سكوت البوت بعد رد الموظف", "من آخر رسالة للموظف من موبايل المطعم، في وقت الدوام.", { min: 1, max: 720, unit: "دقيقة" }),
   staffWaitMin: S("staff", "number", "انتظار الموظف قبل ما البوت يرد", "العميل كتب وقت السكوت والموظف ماردّش: البوت يرد بعد المدة دي (أسئلة مفهومة بس).", { min: 1, max: 15, unit: "دقيقة" }),
   closedEchoPauseMin: S("staff", "number", "سكوت البوت لو الموظف رد والمطعم مقفول", "سكوت قصير بس.", { min: 0, max: 120, unit: "دقيقة" }),
-  unknownWaitMin: S("staff", "number", "رسالة مش مفهومة: انتظار الموظف", "في الدوام بس. صفر = القائمة فوراً.", { min: 0, max: 15, unit: "دقيقة" }),
   handoverRealertMin: S("staff", "number", "تحويل ومحدش رد: نبّه الفريق تاني بعد", "من وقت التحويل، لو مفيش موظف كتب للعميل ولا ضغط «تم». صفر = مفيش تنبيه تاني.", { min: 0, max: 60, unit: "دقيقة" }),
   handoverCustomerNoteMin: S("staff", "number", "ولسه محدش رد: رسالة اعتذار واحدة للعميل بعد", "من وقت التحويل. مرة واحدة لكل تحويل، في وقت الدوام بس. صفر = مفيش.", { min: 0, max: 120, unit: "دقيقة" }),
   unknownHandoverAfter: S("staff", "number", "تحويل لموظف بعد كام رسالة مش مفهومة ورا بعض", "٢ = أول مرة القائمة، تاني مرة تحويل.", { min: 1, max: 5, unit: "رسالة" }),
@@ -709,7 +706,7 @@ export const SCHEMA = Object.freeze({
   alertPhones: S("alerts", "phones", "أرقام تنبيه التحويل", "فاضي = أرقام الإنذارات في إعدادات التوصيل."),
   maxAlertsPerHour: S("alerts", "number", "أقصى تنبيهات في الساعة", "", { min: 1, max: 30, unit: "تنبيه" }),
   maxAgeMinutes: S("limits", "number", "عمر الرسالة الأقصى", "رسالة وصلت متأخر أكتر من كده مابيتردش عليها.", { min: 1, max: 120, unit: "دقيقة" }),
-  duplicateSeconds: S("limits", "number", "عدم تكرار نفس الرد", "نفس الرد لنفس العميل مايتبعتش تاني خلال المدة دي.", { min: 0, max: 3600, unit: "ثانية" }),
+  sameTextSeconds: S("limits", "number", "تجاهل نفس الرسالة لو اتكررت خلال", "نفس النص من نفس العميل خلال الثواني دي بيتعتبر تكرار (ضغطتين أو إعادة إرسال) ومابيتردّش عليه تاني. بعدها أي تكرار بيترد عليه عادي. صفر = مقفول.", { min: 0, max: 120, unit: "ثانية" }),
   maxRepliesPerHour: S("limits", "number", "أقصى ردود على رسايل مكتوبة في الساعة", "حارس حلقات. عند الحد: سطر واحد هادي، من غير تحويل لموظف، والبوت يرجع لوحده.", { min: 5, max: 300, unit: "رد" }),
   maxTapsPerHour: S("limits", "number", "أقصى ردود على ضغطات القائمة في الساعة", "ضغطات الأزرار والقوايم بتتعدّ لوحدها عشان اللي بيتصفّح مايتقطعش.", { min: 20, max: 1000, unit: "رد" }),
   maxRepliesPerMinute: S("limits", "number", "أقصى ردود في الدقيقة", "حلقة سريعة: البوت يهدّي دقيقة.", { min: 3, max: 30, unit: "رد" }),
@@ -1381,12 +1378,11 @@ export function decide(ev, ctx) {
       key = cap === "burst" ? "rate_burst" : "rate";
     }
   }
-  if (ctx.lastSame && ctx.lastSame.key === key && key !== "status" && nowMs - Date.parse(ctx.lastSame.at) < cfg.duplicateSeconds * 1000) return silent("duplicate", { key });
-  // ٥) في الدوام: الغير مفهوم يستنى الموظف قبل القائمة. مقفول: فوراً.
-  if (wasUnknown && key !== "rate" && key !== "rate_burst" && open !== false && !ctx.afterWait && cfg.unknownWaitMin > 0) {
-    const due = nowMs + cfg.unknownWaitMin * 60_000;
-    return { act: "wait", waitKind: "unknown_wait", dueAt: iso(due), resumeAt: iso(due), reason: "unknown_wait", ...base };
-  }
+  /* التكرار = نفس نص الرسالة (أو نفس الضغطة) من نفس العميل خلال sameTextSeconds — ضغطتين ورا بعض أو إعادة إرسال. الويب هوك المكرر نفسه بيتمسك بالـwamid قبل كده.
+     عميل بيكرر سؤاله بعد كده (حتى لو نفس الكلام) بيترد عليه: السكوت عليه كان بيبان إن البوت واقف (١٢/١٠). */
+  if (ctx.sameTextAt && cfg.sameTextSeconds > 0 && nowMs - Date.parse(ctx.sameTextAt) < cfg.sameTextSeconds * 1000) return silent("duplicate", { key });
+  // ٥) الرسالة الغير مفهومة بيترد عليها فوراً (سطر صريح + القائمة + «موظف»): مفيش «انتظار الموظف ٣ دقايق» — كان بيبان إن البوت مابيردّش (١٢/١٠).
+  //    اللي لسه مستني من قبل التحديث (afterWait = unknown_wait) بيتنفّذ عادي.
   if (HANDOFF_KEYS[key] && !handoff) handoff = HANDOFF_KEYS[key];
 
   const interactive = cfg.interactive && ctx.interactive !== false;
@@ -1517,6 +1513,8 @@ export function register(app, ctx, deps = {}) {
       ALTER TABLE wa_bot_chats ADD COLUMN IF NOT EXISTS muted_by TEXT;
       -- دعوة قناة واتساب: آخر مرة اتعرضت على العميل (عدّاد واحد للبوت والمساعد) + سجل لكل عرض (للعدّ اليومي)
       ALTER TABLE wa_bot_chats ADD COLUMN IF NOT EXISTS channel_offered_at TIMESTAMPTZ;
+      -- وضع العملاء للمساعد: العملاء (غير أرقام التجربة) اللي المساعد بدأ يرد عليهم في اليوم ده (بتوقيت الرياض) — للسقف اليومي
+      CREATE TABLE IF NOT EXISTS wa_assist_live_day (day DATE NOT NULL, phone_norm TEXT NOT NULL, why TEXT, at TIMESTAMPTZ NOT NULL DEFAULT NOW(), PRIMARY KEY (day, phone_norm));
       CREATE TABLE IF NOT EXISTS wa_channel_offers (id BIGSERIAL PRIMARY KEY, at TIMESTAMPTZ NOT NULL DEFAULT NOW(), phone_norm TEXT NOT NULL, via TEXT NOT NULL);
       CREATE INDEX IF NOT EXISTS wa_channel_offers_at_idx ON wa_channel_offers(at DESC);
       ALTER TABLE wa_bot_chats ADD COLUMN IF NOT EXISTS released_at TIMESTAMPTZ;   -- SR2: الموظف ساب المحادثة للبوت ⇒ ردوده اللي قبل كده مابتسكّتش البوت
@@ -1696,7 +1694,7 @@ export function register(app, ctx, deps = {}) {
   async function chatOf(phone) { const r = await q("SELECT * FROM wa_bot_chats WHERE phone_norm=$1", [phone]); return (r && r[0]) || {}; }
   const isoOf = (v) => (v ? new Date(v).toISOString() : null);
   const argOf = (a) => (a == null ? "" : typeof a === "string" ? a : JSON.stringify(a)).slice(0, 120);
-  async function recent(phone, key, arg = null) {
+  async function recent(phone, key, arg = null, text = null) {
     /* الإشعارات نفسها (rate / rate_burst / handoff_remind) مابتتعدّش. ضغطات القائمة (msg_type=interactive) بتتعدّ لوحدها. */
     const NOT_NOTICE = `COALESCE(reply_key,'') NOT IN ('rate','rate_burst','handoff_remind')`, OKD = `decision IN ('replied','dry')`, TAP = `COALESCE(msg_type,'') = 'interactive'`;
     const r = await q(`SELECT count(*) FILTER (WHERE ${OKD} AND ${NOT_NOTICE} AND NOT ${TAP})::int AS n_text, min(at) FILTER (WHERE ${OKD} AND ${NOT_NOTICE} AND NOT ${TAP}) AS oldest_text,
@@ -1705,11 +1703,12 @@ export function register(app, ctx, deps = {}) {
                               max(at) FILTER (WHERE ${OKD} AND reply_key='rate') AS rate_at, max(at) FILTER (WHERE ${OKD} AND reply_key='rate_burst') AS burst_at,
                               count(*) FILTER (WHERE decision IN ('replied','dry') AND at > NOW() - INTERVAL '1 hour')::int AS n,
                               max(at) FILTER (WHERE decision IN ('replied','dry') AND reply_key=$2 AND COALESCE(reply_arg,'')=$3) AS same_at,
+                              max(at) FILTER (WHERE decision IN ('replied','dry') AND $4::text <> '' AND COALESCE(text,'') = $4) AS same_text_at,
                               max(at) FILTER (WHERE decision='failed' AND error NOT LIKE 'skipped:%' AND at > NOW() - INTERVAL '10 minutes') AS failed_at
-                         FROM wa_bot_log WHERE phone_norm=$1 AND at > NOW() - INTERVAL '1 hour'`, [phone, key, argOf(arg)]);
+                         FROM wa_bot_log WHERE phone_norm=$1 AND at > NOW() - INTERVAL '1 hour'`, [phone, key, argOf(arg), String(text || "")]);
     const x = (r && r[0]) || {};
     const at = (v) => (v ? isoOf(v) : null);
-    return { n: Number(x.n) || 0, rate: { text: Number(x.n_text) || 0, taps: Number(x.n_tap) || 0, minute: Number(x.n_min) || 0, oldestText: at(x.oldest_text), oldestTap: at(x.oldest_tap), oldestMinute: at(x.oldest_min), rateAt: at(x.rate_at), burstAt: at(x.burst_at) }, lastSame: x.same_at ? { key, at: isoOf(x.same_at) } : null, failedRecently: Boolean(x.failed_at) };
+    return { n: Number(x.n) || 0, rate: { text: Number(x.n_text) || 0, taps: Number(x.n_tap) || 0, minute: Number(x.n_min) || 0, oldestText: at(x.oldest_text), oldestTap: at(x.oldest_tap), oldestMinute: at(x.oldest_min), rateAt: at(x.rate_at), burstAt: at(x.burst_at) }, lastSame: x.same_at ? { key, at: isoOf(x.same_at) } : null, sameTextAt: x.same_text_at ? isoOf(x.same_text_at) : null, failedRecently: Boolean(x.failed_at) };
   }
   /* آخر رسالة بعتها الموظف من موبايل المطعم للعميل ده (صدى) — بالثانية، مش «فيه/مافيش» */
   async function lastEcho(phone) {
@@ -1811,7 +1810,7 @@ export function register(app, ctx, deps = {}) {
           }
         }
       } else if (afterWait && ev.cls && ev.cls.key) cls = { ...cls, ...ev.cls };   // الرد المؤجّل بيكمل بنفس التصنيف اللي اتحسب وقت وصول الرسالة
-      const rc = cls.key ? await recent(phone, cls.key, cls.arg) : { n: 0, lastSame: null, failedRecently: false };
+      const rc = cls.key ? await recent(phone, cls.key, cls.arg, ["text", "interactive", "button"].includes(String(ev.type || "text")) ? String(ev.text || "").slice(0, 300) : "") : { n: 0, lastSame: null, sameTextAt: null, failedRecently: false };
       await q("UPDATE wa_bot_log SET reply_arg=$2 WHERE id=$1", [logId, argOf(cls.arg)]);
       let data;
       try { data = await loadData({ settings, cfg, phone, orderNo: cls.entities?.orderNo || null, key: cls.key, now, know, arg: cls.arg }); }
@@ -1829,7 +1828,9 @@ export function register(app, ctx, deps = {}) {
          • الموظف كتب ⇒ المساعد يتراجع assist.staffStepBackMin (٥ د) بدل humanPauseMin (٣٠ د)، وبعدها يرجع لوحده.
          • تحويل عادي (طلب موظف، سؤال، عرض مخصص، صورة) مابيمسكش المحادثة: المساعد يكمل يرد على اللي يعرفه.
          • تحويل جدّي (شكوى، مشكلة دفع، تعديل طلب مدفوع، حساسية شديدة) بيمسكها assist.seriousHoldMin (١٥ د) بس، مش ٢٤ ساعة. */
-      const assistOn = cfg.assist.mode === "test" && (cfg.mode === "test" || cfg.mode === "live") && cfg.testPhones.includes(phone);
+      const aud = (cfg.mode === "test" || cfg.mode === "live") && ok ? await assistAudience({ cfg, phone, chat, now, hasReferral: Boolean(ev.referral), count: !afterWait }) : { on: false, why: "bot_mode" };
+      const assistOn = aud.on;
+      data.assistWhy = aud.why;
       const held = assistOn && seriousHeld(chat, cfg, now);
       data.assistOn = assistOn;
       /* دعوة القناة: مرة لكل عميل كل everyDays (نفس العدّاد للبوت والمساعد)، مش مع تحويل مفتوح ولا محادثة مكتومة ولا لعميل كتب «إيقاف».
@@ -1841,7 +1842,7 @@ export function register(app, ctx, deps = {}) {
         data.channelOk = so !== null && !(so[0] && (so[0].stopped_at || so[0].marketing_off_at));
       }
       let d = decide(ev, { cfg: assistOn ? { ...cfg, humanPauseMin: cfg.assist.staffStepBackMin } : cfg, now, chat: assistOn && !held ? { ...chat, handoff_at: null, handoff_reason: null } : chat,
-        lastEchoAt: echoAt, repliesLastHour: rc.n, rate: rc.rate, lastSame: rc.lastSame, failedRecently: rc.failedRecently, data, cls, afterWait, assistOn });
+        lastEchoAt: echoAt, repliesLastHour: rc.n, rate: rc.rate, lastSame: rc.lastSame, sameTextAt: afterWait ? null : rc.sameTextAt, failedRecently: rc.failedRecently, data, cls, afterWait, assistOn });
       /* «يشوف ويسمع» (١٢/١٠): صورة أو رسالة صوتية كانت هتاخد رد «ما أقدر أفتح الصور…» + تحويل. لو المساعد شغّال للرقم ده والمفتاح مفتوح والسقف يسمح:
          - الصوت بيتحوّل لنص، والصورة (منيو/إعلان) لملخص مقنّع ⇒ الرسالة بتتعالج من الأول كأنها نص (ومعاها علامة heard للمساعد).
          - صورة دفع / طلب فيه مشكلة ⇒ تحويل لموظف بنص ثابت + اللي اتفهم في ملاحظة الموظف. صورة موقع ⇒ نطلب الموقع نفسه.
@@ -1858,7 +1859,7 @@ export function register(app, ctx, deps = {}) {
       /* مساعد الطلبات (وضع التجربة، أرقام التجربة بس): لو الرسالة من نصيبه ومفيش مانع، ردّه بيبدّل قرار القواعد. أي فشل (مهلة، سقف، خطأ، رد اترفض
          مرتين) ⇒ ar.d = null ⇒ قرار القواعد زي ما هو. ar.done بيتنادى بعد التنفيذ عشان الجلسة والسجل والمتابعة يتكتبوا **بعد** ما الرسالة تتبعت فعلاً. */
       let ar = null;
-      if (assistOn && !mediaDone) { try { ar = await assistTurn({ ev: seenEv || ev, logId, settings, cfg, d, cls: seenEv ? { ...cls, key: "seen", rawIntent: "picture", arg: null, entities: {} } : cls, chat, data, know, now, echoAt, phone, held }); } catch (e) { console.error("[assist] turn:", e.message); ar = null; } }
+      if (assistOn && !mediaDone) { try { ar = await assistTurn({ ev: seenEv || ev, logId, settings, cfg, d, cls: seenEv ? { ...cls, key: "seen", rawIntent: "picture", arg: null, entities: {} } : cls, chat, data, know, now, echoAt, phone, held, allowed: assistOn }); } catch (e) { console.error("[assist] turn:", e.message); ar = null; } }
       if (ar && ar.d) d = ar.d;
       const assistDone = async (x) => { if (ar && ar.done) { try { await ar.done(x); } catch (e) { console.error("[assist] done:", e.message); } } };
       /* رسالة القواعد مافهمتهاش (هترد «ما فهمت» الحين أو بعد انتظار الموظف) ⇒ تنزل في طابور أسئلة المدير لو فيها كلمتين معنى على الأقل
@@ -2039,7 +2040,7 @@ export function register(app, ctx, deps = {}) {
     if (echo === null) return no("echo_check_failed"); if (echo.length) return no("staff_answered");
     const ack = await q(`SELECT acked_at FROM wa_handovers WHERE phone_norm=$1 AND at >= $2 ORDER BY at DESC LIMIT 1`, [phone, ev.hoAt]);      // «تم» في البوابة = حد مسكها
     if (ack && ack[0] && ack[0].acked_at) return no("staff_acked");
-    const assistOn = cfg.assist.mode === "test" && cfg.testPhones.includes(phone);
+    const assistOn = (await assistAudience({ cfg, phone, chat, now, hasReferral: false, count: false })).on;
     if (ev.stage === "realert") {
       const waited = Math.round((now.getTime() - Date.parse(ev.hoAt)) / 60_000);
       if (typeof deps.portalEmit === "function") { try { deps.portalEmit("wa_handover", { phone: `0${phone}`, phoneMasked: `…${phone.slice(-4)}`, reason: ev.reason, reasonAr: REASON_AR[ev.reason] || ev.reason, urgent: ev.urgent === true, orderNo: ev.orderNo || null,
@@ -2141,6 +2142,38 @@ export function register(app, ctx, deps = {}) {
     return { d: { key, payloads: [p], fallback: [p], handoff: key === "media_payment" ? ["problem", "urgent"] : key === "media_order" ? ["complaint", "urgent"] : null,
       note: key === "media_location" ? null : `صورة: ${r.summary}`.slice(0, 200), detail: `media:vision ${r.kind}`, disclose: false, unknown: false, link: null, channel: null } };
   }
+  /* ── مين ياخد المساعد (١٢/١٠: وضع العملاء على مراحل) ───────────────────────────
+     off ⇒ محدش. test ⇒ أرقام التجربة. live ⇒ أرقام التجربة + جمهور assist.liveAudience، لحد assist.liveDailyCustomers عميل مختلف في اليوم.
+     العميل اللي بدأ مع المساعد النهارده بيكمل معاه حتى لو السقف اتوصل له بعد كده (السقف على العملاء مش على الرسايل).
+     count=false (المتابعة / تنبيه التحويل): مابتبدأش عميل جديد — بس اللي المساعد كان معاه (النهارده أو امبارح).
+     الحجز ذرّي: الصف بيتضاف بس لو عدد عملاء اليوم أقل من السقف. القاعدة ماردّتش ⇒ بوت القواعد (مانخمّنش). أقفال الحارس وقايمة «إيقاف» زي ما هي على الإرسال نفسه. */
+  const LIVE_DAY = `((NOW() AT TIME ZONE 'Asia/Riyadh')::date)`;
+  async function assistAudience({ cfg, phone, chat, now, hasReferral = false, count = true }) {
+    const acfg = cfg.assist;
+    if (!assist || !["test", "live"].includes(acfg.mode)) return { on: false, why: "assist_off" };
+    if (cfg.testPhones.includes(phone)) return { on: true, why: "test_phone" };
+    if (acfg.mode !== "live") return { on: false, why: "test_only" };
+    if (cfg.mode !== "live") return { on: false, why: "bot_not_live" };
+    const mine = await q(`SELECT 1 FROM wa_assist_live_day WHERE phone_norm=$1 AND day >= ${LIVE_DAY} - $2::int LIMIT 1`, [phone, count ? 0 : 1]);
+    if (mine === null) return { on: false, why: "db" };
+    if (mine.length) return { on: true, why: "live_today" };
+    if (!count) return { on: false, why: "not_started" };
+    const A = acfg.liveAudience;
+    if (A === "test") return { on: false, why: "audience_test" };
+    let match = A === "all";
+    if (!match && (A === "ads" || A === "ads_campaign")) match = hasReferral || Boolean(chat && chat.referral_at && now.getTime() - Date.parse(chat.referral_at) < cfg.adWindowHours * 3600_000);
+    if (!match && (A === "campaign" || A === "ads_campaign")) {
+      const r = await q(`SELECT 1 FROM wa_messages WHERE phone_norm=$1 AND direction='out' AND category='MARKETING' AND COALESCE(status,'') NOT IN ('failed','skipped')
+                           AND created_at > NOW() - make_interval(hours => $2::int) LIMIT 1`, [phone, Math.ceil(cfg.adWindowHours)]);
+      match = Boolean(r && r.length);
+    }
+    if (!match) return { on: false, why: "not_in_audience" };
+    if (!(acfg.liveDailyCustomers > 0)) return { on: false, why: "daily_cap" };
+    const ins = await q(`INSERT INTO wa_assist_live_day(day, phone_norm, why) SELECT ${LIVE_DAY}, $1, $2 WHERE (SELECT count(*) FROM wa_assist_live_day WHERE day = ${LIVE_DAY}) < $3::int
+                         ON CONFLICT (day, phone_norm) DO NOTHING RETURNING phone_norm`, [phone, A, Math.round(acfg.liveDailyCustomers)]);
+    if (ins === null) return { on: false, why: "db" };
+    return ins.length ? { on: true, why: "live_new" } : { on: false, why: "daily_cap" };
+  }
   /* قاعدة معرفة المدير (wakb.js): بتتسجّل بعد البورتال، فبنوصل لها وقت الاستخدام. مش موجودة ⇒ المساعد يشتغل من غيرها. */
   const kbApi = () => { try { return typeof deps.kb === "function" ? deps.kb() : deps.kb || null; } catch { return null; } };
   /* العميل جاي من إعلان (الرسالة دي معاها referral، أو محادثته لسه جوّه مدة الإعلان): عنوان الإعلان من غير أرقام (السعر من الأدوات بس)،
@@ -2195,15 +2228,15 @@ export function register(app, ctx, deps = {}) {
       return pol && fees ? { ok: true, delivers_up_to_km: Number(pol.maxKm) || null, far_zone_up_to_km: pol.farZoneEnabled !== false ? Number(pol.farZoneMaxKm) || null : null, far_zone_extra_per_km: pol.farZoneEnabled !== false ? Number(pol.farZonePerKm) || null : null,
         fee_by_order_total: fees.split("\n"), note: "the exact fee for the customer is shown on the website before payment" } : null; },
     onCall: async (m) => { const rec = await aicost.record({ ...m, purpose: "assistant", logId }, cfg.llm.prices); return { costSar: rec.costSar, in: rec.in, out: rec.out, cached: rec.cached }; } });
-  async function assistTurn({ ev, logId, settings, cfg, d, cls, chat, data, know, now, echoAt, phone, held = false }) {
+  async function assistTurn({ ev, logId, settings, cfg, d, cls, chat, data, know, now, echoAt, phone, held = false, allowed = false }) {
     const acfg = cfg.assist;
-    if (!assist || acfg.mode !== "test" || !cfg.testPhones.includes(phone)) return null;
+    if (!assist || !allowed) return null;
     await ready;
     let session = await assistStore.loadSession(phone, now, acfg.sessionMin);
     /* «بدون بصل» وهو بيجهّز سلة = ملاحظة للمساعد؛ بس لو له طلب حديث من الموقع تبقى «تعديل طلب» للموظف زي النهارده (ومانعرفش ⇒ نفترض إن له طلب). */
     let recentOrder = false;
     if (cls.key === "change") { const ro = await q(`SELECT 1 FROM shop_orders WHERE phone_norm=$1 AND NOT COALESCE(is_test,false) AND status NOT IN ('expired','pending_payment') AND created_at > NOW() - INTERVAL '24 hours' LIMIT 1`, [phone]); recentOrder = ro === null || ro.length > 0; }
-    const el = assistEligible({ acfg, cfg, phone, ev, cls, d, afterWait: null, sessionActive: Boolean(session), handoverOpen: held, recentOrder });
+    const el = assistEligible({ acfg, cfg, phone, ev, cls, d, afterWait: null, sessionActive: Boolean(session), handoverOpen: held, recentOrder, allowed });
     const lang = cls.lang === "en" ? "en" : "ar";
     const ruleKey = () => String((d && d.key) || cls.key || "reply");
     const turnRow = (x) => assistStore.addTurn({ phone, sessionId: session ? session.id : null, logId, wamid: ev.wamid || null, lang, ...x });
@@ -2229,7 +2262,7 @@ export function register(app, ctx, deps = {}) {
     const stop = await aicost.gate({ purpose: "assistant", budget: { budgetMonthSar: acfg.budgetMonthSar, budgetDaySar: acfg.budgetDaySar }, phones: cfg.llm.alertPhones.length ? cfg.llm.alertPhones : (cfg.alertPhones.length ? cfg.alertPhones : sc0.alertPhones), lang: sc0.lang });
     if (stop) return fallback(stop);
     /* «مقروء + جاري الكتابة» من غير انتظار: لو فشل، الرد نفسه مايتأثرش. */
-    if (acfg.typing && ev.wamid && typeof wa.sendTyping === "function") wa.sendTyping({ phoneNorm: phone, wamid: ev.wamid, allowList: cfg.testPhones }).catch((e) => console.error("[assist] typing:", e.message));
+    if (acfg.typing && ev.wamid && typeof wa.sendTyping === "function") wa.sendTyping({ phoneNorm: phone, wamid: ev.wamid, allowList: cfg.mode === "test" || acfg.mode !== "live" ? cfg.testPhones : null }).catch((e) => console.error("[assist] typing:", e.message));
     const fresh = !session;
     if (fresh) session = newSession(now);
     /* تحويل عادي لسه مستني موظف: المساعد يعرف (مايحوّلش نفس الحاجة تاني، ويقول للعميل إن الموظف هيرد) ويكمل يساعد. */
@@ -2290,8 +2323,8 @@ export function register(app, ctx, deps = {}) {
     const acfg = cfg.assist, phone = String(j.phone_norm || ""), ev = typeof j.ev === "string" ? JSON.parse(j.ev) : (j.ev || {});
     const no = (reason) => end("cancelled", reason);
     if (cfg.mode !== "test" && cfg.mode !== "live") return no("mode_off");
-    if (acfg.mode !== "test" || !acfg.followUpEnabled) return no("assist_off");
-    if (!cfg.testPhones.includes(phone)) return no("not_test_phone");
+    if (!["test", "live"].includes(acfg.mode) || !acfg.followUpEnabled) return no("assist_off");
+    if (!(await assistAudience({ cfg, phone, chat: {}, now, hasReferral: false, count: false })).on) return no("not_test_phone");
     if (now.getTime() - new Date(j.due_at).getTime() > cfg.maxAgeMinutes * 60_000) return no("stale");
     if (!ev.code || !ev.sentAt) return no("bad_job");
     const cart = await q("SELECT (expires_at > NOW()) AS live FROM wa_bot_carts WHERE code=$1 AND phone_norm=$2", [ev.code, phone]);
@@ -2320,8 +2353,9 @@ export function register(app, ctx, deps = {}) {
     try { const rep = { body: textOf(cfg, "assist_followup", lang), cta: { title: textOf(cfg, "cta_reorder", lang), url: `${STORE}/c/${ev.code}` } };
       pl = toPayload(rep, { cfg, lang, interactive: cfg.interactive, footer: false }); plain = toPayload(rep, { cfg, lang, interactive: false, footer: false }); } catch { return no("text_invalid"); }
     if (payloadProblem(pl) || payloadProblem(plain)) return no("payload_invalid");
-    let r = await wa.sendFreeform({ phoneNorm: phone, payload: pl, source: "bot", allowList: cfg.testPhones });      // المساعد تجربة بس ⇒ دايماً بقايمة التجربة
-    if (!r.ok && !r.skipped && pl.type === "interactive") { pl = plain; r = await wa.sendFreeform({ phoneNorm: phone, payload: pl, source: "bot", allowList: cfg.testPhones }); }
+    const fuAllow = cfg.mode === "test" || acfg.mode !== "live" ? cfg.testPhones : null;      // قايمة التجربة بتقيّد الإرسال طول ما البوت أو المساعد في التجربة؛ في وضع العملاء: أقفال الحارس الكاملة
+    let r = await wa.sendFreeform({ phoneNorm: phone, payload: pl, source: "bot", allowList: fuAllow });
+    if (!r.ok && !r.skipped && pl.type === "interactive") { pl = plain; r = await wa.sendFreeform({ phoneNorm: phone, payload: pl, source: "bot", allowList: fuAllow }); }
     const err = r.ok ? null : (r.skipped ? `skipped:${r.skipped}` : String(r.error || "send_failed"));
     /* صف في سجل البوت زي أي رد (من غير wamid: مفيش رسالة عميل وراه) — عشان يظهر في السجل وفي حارس الحلقات */
     const lg = await q(
@@ -2393,6 +2427,10 @@ export function register(app, ctx, deps = {}) {
     const prev = settings.waBot && typeof settings.waBot === "object" ? settings.waBot : {};
     const v = configFromBody(b, prev);
     if (!v.ok) return c.json({ ok: false, error: "invalid", errors: v.errors }, 400);
+    /* وضع العملاء للمساعد مابيتفتحش ولا جمهوره بيتغيّر من الحفظ العادي: من «تشغيل للعملاء» بتأكيد المالك بس (‎/api/cms/wabot/assist/go-live‎). الرجوع لـ test / off مسموح من هنا. */
+    { const was = botConfig({ waBot: prev }).assist, next = botConfig({ waBot: v.value }).assist;
+      if (next.mode === "live" && (was.mode !== "live" || was.liveAudience !== next.liveAudience))
+        return c.json({ ok: false, error: "invalid", errors: ["assist.mode: تشغيل المساعد للعملاء (أو تغيير جمهوره) من زر «تشغيل للعملاء» بتأكيد المالك، مش من حفظ الإعدادات"], liveReason: "use_go_live" }, 400); }
     /* «المساعد يسمع» مابيتفتحش (ومابيفضلش مفتوح) غير وآخر اختبار للمفتاح ناجح للمزوّد والموديل والمفتاح الحاليين. */
     { const next = botConfig({ waBot: v.value }).assist;
       if (next.voiceEnabled) { const ce = await stt.canEnable(next); if (!ce.ok) return c.json({ ok: false, error: "invalid", errors: [`assist.voiceEnabled: ${ce.message}`], sttReason: ce.reason }, 400); } }
@@ -2751,6 +2789,90 @@ export function register(app, ctx, deps = {}) {
     const sum = (k) => ads.reduce((s, a) => s + (Number(a[k]) || 0), 0);
     return c.json({ ok: true, days, windowHours: win, since: "2026-10-12: محادثات الإعلانات بتتسجّل بالإعلان من تاريخ تشغيل الشريحة دي؛ اللي قبلها مالوش رقم إعلان محفوظ",
       totals: { ads: ads.length, chats: sum("chats"), carts: sum("carts"), cartsOpened: sum("cartsOpened"), buyers: sum("buyers"), orders: sum("orders"), revenue: r2(sum("revenue")) }, ads });
+  });
+  /* ── وضع العملاء للمساعد (المالك بس): الحالة، التشغيل بتأكيد، وزر الإيقاف ─────────────────
+     GET  /api/cms/wabot/assist/live      الحالة الحين + المقترحات
+     POST /api/cms/wabot/assist/go-live   { audience, dailyCustomers?, budgetDaySar?, budgetMonthSar?, confirm? } — من غير confirm = معاينة «إيه اللي هيحصل»؛ confirm لازم يساوي اسم الجمهور
+     POST /api/cms/wabot/assist/kill      { to?: "test" | "off" } — إيقاف فوري للعملاء (الافتراضي test: أرقام التجربة تفضل شغّالة) */
+  const MONTH0 = `(date_trunc('month', NOW() AT TIME ZONE 'Asia/Riyadh') AT TIME ZONE 'Asia/Riyadh')`;
+  const AUD_AR = { test: "أرقام التجربة بس", ads: "اللي جاي من إعلان", campaign: "اللي رد على حملة", ads_campaign: "اللي جاي من إعلان + اللي رد على حملة", all: "كل العملاء" };
+  /* مقترحات للمالك (مش قرار): متوسط المحادثة الكاملة لحد السلة في التقييم ٠٫١٥–٠٫٣٥ ر.س. */
+  const LIVE_PROPOSALS = [
+    { audience: "ads", dailyCustomers: 30, budgetDaySar: 10, budgetMonthSar: 200 },
+    { audience: "ads_campaign", dailyCustomers: 60, budgetDaySar: 20, budgetMonthSar: 400 },
+    { audience: "all", dailyCustomers: 150, budgetDaySar: 50, budgetMonthSar: 1000 },
+  ];
+  async function liveStatus() {
+    const settings = (await getSettingsData()) || {};
+    const cfg = botConfig(settings), a = cfg.assist;
+    const served = await q(`SELECT count(*)::int AS n FROM wa_assist_live_day WHERE day = ${LIVE_DAY}`, []);
+    const cost = await q(`SELECT COALESCE(sum(cost_sar) FILTER (WHERE at >= ${MEDIA_DAY}), 0)::float AS day, COALESCE(sum(cost_sar), 0)::float AS month FROM ai_calls WHERE at >= ${MONTH0} AND ($1::text IS NULL OR purpose = $1)`, ["assistant"]);
+    /* قفل الإرسال (whatsapp.js gate): null = مفتوح، نص = سبب القفل. مانعرفش ⇒ unknown. */
+    let gate = "unknown"; try { gate = typeof wa.gate === "function" ? await wa.gate() : "unknown"; } catch { gate = "unknown"; }
+    const n = served && served[0] ? served[0].n : null, day = cost && cost[0] ? Math.round(cost[0].day * 100) / 100 : null, month = cost && cost[0] ? Math.round(cost[0].month * 100) / 100 : null;
+    const stopped = a.mode !== "live" ? null : (day !== null && a.budgetDaySar > 0 && day >= a.budgetDaySar) ? "budget_day" : (month !== null && a.budgetMonthSar > 0 && month >= a.budgetMonthSar) ? "budget_month" : (n !== null && n >= a.liveDailyCustomers) ? "daily_cap" : null;
+    return { ok: true, mode: a.mode, botMode: cfg.mode, audience: a.liveAudience, audienceAr: AUD_AR[a.liveAudience], dailyCustomers: a.liveDailyCustomers, servedToday: n,
+      budget: { daySar: day, dayCapSar: a.budgetDaySar, monthSar: month, monthCapSar: a.budgetMonthSar },
+      /* اللي بيحصل للعملاء الحين: live + البوت live ⇒ الجمهور؛ غير كده أرقام التجربة بس (أو محدش). stopped = سبب إن العملاء الجداد راجعين لبوت القواعد دلوقتي. */
+      customersGetAssistant: a.mode === "live" && cfg.mode === "live" && a.liveAudience !== "test" && !stopped, stopped,
+      testPhones: cfg.testPhones.length, guard: { open: gate === null ? true : gate === "unknown" ? null : false, reason: gate === null || gate === "unknown" ? null : String(gate) },
+      audiences: LIVE_AUDIENCES.map((id) => ({ id, ar: AUD_AR[id] })), proposals: LIVE_PROPOSALS };
+  }
+  const liveGate = async (c) => { const err = await requireAdmin(c); if (err) return err; return ownerOnly(c); };
+  app.get("/api/cms/wabot/assist/live", async (c) => { const no = await liveGate(c); if (no) return no; await ready; return c.json(await liveStatus()); });
+  app.post("/api/cms/wabot/assist/go-live", async (c) => {
+    const no = await liveGate(c); if (no) return no;
+    await ready;
+    let b = {}; try { b = (await c.req.json()) || {}; } catch { b = {}; }
+    const settings = (await getSettingsData()) || {};
+    const prev = settings.waBot && typeof settings.waBot === "object" ? settings.waBot : {};
+    const cfg = botConfig(settings), a = cfg.assist;
+    if (!LIVE_AUDIENCES.includes(b.audience) || b.audience === "test") return c.json({ ok: false, error: "bad_audience", message: "اختار الجمهور: ads أو campaign أو ads_campaign أو all" }, 400);
+    const patch = { mode: "live", liveAudience: b.audience };
+    for (const k of ["liveDailyCustomers", "budgetDaySar", "budgetMonthSar"]) { const src = k === "liveDailyCustomers" ? b.dailyCustomers : b[k]; if (src !== undefined && src !== null && src !== "") patch[k] = src; }
+    const v = configFromBody({ assist: patch }, prev);
+    if (!v.ok) return c.json({ ok: false, error: "invalid", errors: v.errors }, 400);
+    const next = botConfig({ waBot: v.value }).assist;
+    const blockers = [];
+    if (cfg.mode !== "live") blockers.push({ code: "bot_not_live", message: "البوت نفسه لسه مش في وضع «شغّال للعملاء» (وضعه الحين: " + cfg.mode + "). شغّل البوت للعملاء الأول، وبعدها المساعد." });
+    if (!(next.liveDailyCustomers > 0)) blockers.push({ code: "zero_customers", message: "سقف العملاء اليومي صفر: مفيش عميل هياخد المساعد." });
+    if (!(next.budgetDaySar > 0) || !(next.budgetMonthSar > 0)) blockers.push({ code: "zero_budget", message: "سقف المساعد اليومي أو الشهري صفر: المساعد هيقف فوراً." });
+    const will = [
+      `المساعد هيرد على: ${AUD_AR[next.liveAudience]} — غير أرقام التجربة (${cfg.testPhones.length}) اللي شغّالة دايماً.`,
+      `أقصى ${next.liveDailyCustomers} عميل مختلف في اليوم. بعدهم العملاء الجداد يرد عليهم بوت القواعد زي النهارده.`,
+      `السقف المالي: ${next.budgetDaySar} ر.س في اليوم و${next.budgetMonthSar} ر.س في الشهر. أول ما يتوصل لأي واحد: المساعد يقف، بوت القواعد يكمل، ورسالة واحدة ليك.`,
+      "أي عطل في المساعد (مهلة، خطأ، رد اترفض) ⇒ بوت القواعد يرد على نفس الرسالة. العميل مايتسابش من غير رد.",
+      "الشكاوى ومشاكل الدفع وتعديل طلب مدفوع والحساسية الشديدة وطلب موظف: زي ما هي، لموظف.",
+      "قفل الإرسال الرئيسي وقايمة «إيقاف» ونافذة الـ٢٤ ساعة بتاعة واتساب شغّالين زي ما هم على كل رسالة.",
+      `الصور: ${next.imagesEnabled ? "المساعد بيشوفها" : "مقفولة (تحويل لموظف)"} · الصوت: ${next.voiceEnabled ? "المساعد بيسمعه" : "مقفول (تحويل لموظف)"} · المتابعة بعد رابط السلة: ${next.followUpEnabled ? `رسالة واحدة بعد ${next.followUpMin} دقيقة` : "مقفولة"}.`,
+      "الإيقاف الفوري: زر «إيقاف للعملاء» — العملاء يرجعوا لبوت القواعد في نفس اللحظة.",
+    ];
+    const st0 = await liveStatus();
+    const warnings = st0.guard.open === false ? [{ code: "guard_closed", message: `قفل الإرسال للعملاء مقفول دلوقتي (${st0.guard.reason}): ولا رسالة بتطلع لعميل لحد ما يتفتح، مهما كان وضع المساعد.` }] : [];
+    const changes = configDiff(prev, v.value);
+    if (b.confirm === undefined || b.confirm === null || b.confirm === false || b.confirm === "")
+      return c.json({ ok: true, preview: true, audience: next.liveAudience, audienceAr: AUD_AR[next.liveAudience], will, blockers, warnings, changes, confirmWith: next.liveAudience, canConfirm: blockers.length === 0 });
+    if (b.confirm !== next.liveAudience) return c.json({ ok: false, error: "confirm_mismatch", message: `للتأكيد ابعت confirm = "${next.liveAudience}"` }, 400);
+    if (blockers.length) return c.json({ ok: false, error: "blocked", blockers, message: blockers[0].message }, 409);
+    await pool.query("UPDATE settings SET data = jsonb_set(COALESCE(data,'{}'::jsonb), '{waBot}', $1::jsonb, true), updated_at=NOW() WHERE id=1", [JSON.stringify(v.value)]);
+    if (changes.length) await q("INSERT INTO wa_bot_config_log(who, changes) VALUES ($1, $2::jsonb)", [await actorOf(c), JSON.stringify(changes)]);
+    if (ctx.auditNote) { try { await ctx.auditNote(c, `🤖 مساعد واتساب: تشغيل للعملاء (${AUD_AR[next.liveAudience]}، ${next.liveDailyCustomers} عميل/يوم، ${next.budgetDaySar}/${next.budgetMonthSar} ر.س)`); } catch { /* اختياري */ } }
+    return c.json({ ok: true, live: true, will, warnings, status: await liveStatus() });
+  });
+  app.post("/api/cms/wabot/assist/kill", async (c) => {
+    const no = await liveGate(c); if (no) return no;
+    await ready;
+    let b = {}; try { b = (await c.req.json()) || {}; } catch { b = {}; }
+    const to = b.to === "off" ? "off" : "test";
+    const settings = (await getSettingsData()) || {};
+    const prev = settings.waBot && typeof settings.waBot === "object" ? settings.waBot : {};
+    const was = botConfig(settings).assist.mode;
+    const nextRaw = { ...prev, assist: { ...(prev.assist || {}), mode: to === "test" && !botConfig(settings).testPhones.length ? "off" : to } };
+    await pool.query("UPDATE settings SET data = jsonb_set(COALESCE(data,'{}'::jsonb), '{waBot}', $1::jsonb, true), updated_at=NOW() WHERE id=1", [JSON.stringify(nextRaw)]);
+    const changes = configDiff(prev, nextRaw);
+    if (changes.length) await q("INSERT INTO wa_bot_config_log(who, changes) VALUES ($1, $2::jsonb)", [await actorOf(c), JSON.stringify(changes)]);
+    if (ctx.auditNote) { try { await ctx.auditNote(c, `🛑 مساعد واتساب: إيقاف للعملاء (${was} → ${nextRaw.assist.mode})`); } catch { /* اختياري */ } }
+    return c.json({ ok: true, was, mode: nextRaw.assist.mode, message: "العملاء رجعوا لبوت القواعد من دلوقتي.", status: await liveStatus() });
   });
   /* ── مفتاح تحويل الصوت لنص (المالك بس) — العقد في slices/VM2-api-assist-stt-key/README.md ──
      المفتاح مابيرجعش في أي رد ومابيتكتبش في أي سجل. حفظ أو مسح المفتاح بيقفل «المساعد يسمع» لحد اختبار جديد. */

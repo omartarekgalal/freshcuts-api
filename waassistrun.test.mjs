@@ -24,16 +24,17 @@ async function turn(W, session, text, over = {}) {
 
 test("settings: off by default, only off / test exist, every value has limits and a schema row with an Arabic name", () => {
   const d = AR.assistConfig(undefined);
-  assert.equal(d.mode, "off"); assert.deepEqual(AR.ASSIST_MODES, ["off", "test"]);
+  assert.equal(d.mode, "off"); assert.deepEqual(AR.ASSIST_MODES, ["off", "test", "live"]);
   assert.deepEqual([d.budgetDaySar, d.budgetMonthSar, d.maxToolRounds, d.maxRepliesPerChatDay, d.followUpMin, d.followUpEnabled, d.model, d.modelSimple], [10, 100, 4, 12, 30, true, "claude-sonnet-5-5", "claude-haiku-5-5"]);
-  assert.equal(AR.assistConfig({ mode: "live" }).mode, "off", "«live» is not a mode of this slice");
+  assert.equal(AR.assistConfig({ mode: "live" }).mode, "live"); assert.equal(AR.assistConfig({ mode: "everyone" }).mode, "off", "an unknown mode reads as off");
+  assert.deepEqual([d.liveAudience, d.liveDailyCustomers], ["test", 30], "live starts with the test numbers only");
   assert.equal(AR.assistConfig({ mode: true }).mode, "off");
   assert.equal(AR.assistConfig({ budgetDaySar: 99999 }).budgetDaySar, 1000); assert.equal(AR.assistConfig({ budgetDaySar: "x" }).budgetDaySar, 10);
   assert.equal(AR.assistConfig({ model: "drop table;" }).model, "claude-sonnet-5-5");
   for (const k of Object.keys(AR.ASSIST_CFG_DEFAULTS)) { const row = AR.ASSIST_SCHEMA[`assist.${k}`]; assert.ok(row && row.ar && row.group === "assist", `assist.${k} has a schema row`); if (row.type === "number") assert.ok(d[k] >= row.min && d[k] <= row.max, k); }
   assert.equal(Object.keys(AR.ASSIST_SCHEMA).length, Object.keys(AR.ASSIST_CFG_DEFAULTS).length);
   assert.deepEqual(AR.assistFromBody({ mode: "test", budgetDaySar: 5 }, { followUpMin: 45 }), { ok: true, value: { followUpMin: 45, mode: "test", budgetDaySar: 5 } });
-  for (const bad of [{ mode: "live" }, { budgetDaySar: -1 }, { budgetDaySar: "" }, { maxToolRounds: 99 }, { routing: "smart" }, { model: "a b" }, { nope: 1 }]) assert.equal(AR.assistFromBody(bad, {}).ok, false, JSON.stringify(bad));
+  for (const bad of [{ mode: "everyone" }, { liveAudience: "vip" }, { liveDailyCustomers: 9999 }, { budgetDaySar: -1 }, { budgetDaySar: "" }, { maxToolRounds: 99 }, { routing: "smart" }, { model: "a b" }, { nope: 1 }]) assert.equal(AR.assistFromBody(bad, {}).ok, false, JSON.stringify(bad));
 });
 
 test("who answers: the rules keep stop, complaints, staff, media, order status, reorder, recipes, severe allergy, hours and every tap; the assistant takes the rest only when nothing blocks it", () => {

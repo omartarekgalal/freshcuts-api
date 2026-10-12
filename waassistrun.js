@@ -18,7 +18,10 @@ import { providerOf, maskText } from "./wabotllm.js";
 import { chatHash } from "./waaicost.js";
 
 /* ── الإعدادات ───────────────────────────────────────────────────────────── */
-export const ASSIST_MODES = ["off", "test"];          // «live» مش موجود في الشريحة دي عن قصد
+/* off = بوت القواعد بس · test = أرقام التجربة بس · live = عملاء حقيقيين على مراحل (assist.liveAudience + سقف عملاء يومي + السقف المالي).
+   الدخول لـ live من مسار المالك بتأكيد (‎/api/cms/wabot/assist/go-live‎) بس — الحفظ العادي للإعدادات بيرفضه. أرقام التجربة شغّالة في test و live. */
+export const ASSIST_MODES = ["off", "test", "live"];
+export const LIVE_AUDIENCES = ["test", "ads", "campaign", "ads_campaign", "all"];
 export const ASSIST_CFG_DEFAULTS = Object.freeze({
   mode: "off",
   model: "claude-sonnet-5-5",          // أدوار تجهيز السلة
@@ -40,6 +43,9 @@ export const ASSIST_CFG_DEFAULTS = Object.freeze({
   followUpEnabled: true, followUpMin: 30, followUpCloseGuardMin: 30,
   searchMax: ASSIST_DEFAULTS.searchMax, nudgeGapSar: ASSIST_DEFAULTS.nudgeGapSar, topSellerDays: ASSIST_DEFAULTS.topSellerDays,
   profileOrders: ASSIST_DEFAULTS.profileOrders, maxCartLines: ASSIST_DEFAULTS.maxCartLines,
+  /* وضع live على مراحل: مين ياخد المساعد، وكام عميل مختلف في اليوم (أرقام التجربة مش محسوبة). الباقي بيرد عليه بوت القواعد زي ما هو. */
+  liveAudience: "test",                // test = أرقام التجربة بس · ads = اللي جاي من إعلان · campaign = اللي رد على حملة · ads_campaign = الاتنين · all = الكل
+  liveDailyCustomers: 30,              // أقصى عدد عملاء مختلفين المساعد يرد عليهم في اليوم (بتوقيت الرياض). بعده: بوت القواعد للعملاء الجداد
   /* «يشوف ويسمع» (waassistmedia.js) — الاتنين مقفولين لحد ما يتفتحوا من اللوحة */
   imagesEnabled: false,                // صورة من العميل: نظرة واحدة بالموديل السريع ⇒ ملخص مقنّع يكمل بيه المساعد (أو تحويل لموظف مع اللي اتفهم)
   voiceEnabled: false,                 // رسالة صوتية: تتحوّل لنص (محتاج موديل تحويل في البروكسي) وتمشي في دور المساعد العادي
@@ -51,8 +57,8 @@ export const ASSIST_CFG_DEFAULTS = Object.freeze({
   visionModel: "claude-haiku-5-5",
 });
 const NUMS = { budgetDaySar: [0, 1000], budgetMonthSar: [0, 10000], maxToolRounds: [1, 8], maxRepliesPerChatDay: [1, 60], timeoutMs: [5000, 60000], sessionMin: [10, 720], staffStepBackMin: [1, 60], seriousHoldMin: [0, 240], locationHours: [1, 24], keepDays: [7, 730],
-  followUpMin: [5, 720], followUpCloseGuardMin: [0, 240], searchMax: [3, 15], nudgeGapSar: [0, 100], topSellerDays: [7, 180], profileOrders: [5, 200], maxCartLines: [1, 40], voiceMaxSec: [10, 300], mediaBudgetDaySar: [0, 50], sttSarPerMin: [0, 1] };
-const ENUMS = { mode: ASSIST_MODES, routing: ["escalate", "strong", "fast"], effort: ["low", "medium", "high"], thinking: ["adaptive", "off"], sttProvider: ["openai", "groq", "elevenlabs"] };
+  followUpMin: [5, 720], followUpCloseGuardMin: [0, 240], searchMax: [3, 15], nudgeGapSar: [0, 100], topSellerDays: [7, 180], profileOrders: [5, 200], maxCartLines: [1, 40], liveDailyCustomers: [0, 5000], voiceMaxSec: [10, 300], mediaBudgetDaySar: [0, 50], sttSarPerMin: [0, 1] };
+const ENUMS = { mode: ASSIST_MODES, routing: ["escalate", "strong", "fast"], effort: ["low", "medium", "high"], thinking: ["adaptive", "off"], sttProvider: ["openai", "groq", "elevenlabs"], liveAudience: LIVE_AUDIENCES };
 const BOOLS = ["typing", "followUpEnabled", "forceSuggestion", "imagesEnabled", "voiceEnabled"];
 const MODEL_RE = /^[a-z0-9./-]{3,60}$/;
 export function assistConfig(raw) {
@@ -80,6 +86,8 @@ export function assistFromBody(src, prev) {
 const N = (k, ar, help, unit, extra = {}) => ({ group: "assist", type: "number", ar, help, min: NUMS[k][0], max: NUMS[k][1], unit, ...extra });
 export const ASSIST_SCHEMA = Object.freeze({
   "assist.mode": { group: "assist", type: "enum", ar: "وضع مساعد الطلبات", help: "مقفول، أو أرقام التجربة بس. طول ما هو مقفول أو واقف لأي سبب، بوت القواعد هو اللي بيرد.", options: ASSIST_MODES },
+  "assist.liveAudience": { group: "assist", type: "enum", ar: "وضع العملاء: مين ياخد المساعد", help: "بيتغيّر من «تشغيل للعملاء» بتأكيد المالك. أرقام التجربة دايماً معاهم. الباقي بيرد عليه بوت القواعد.", options: LIVE_AUDIENCES },
+  "assist.liveDailyCustomers": N("liveDailyCustomers", "وضع العملاء: أقصى عملاء مختلفين في اليوم", "أول ما العدد يتوصل له، العملاء الجداد يرد عليهم بوت القواعد لباقي اليوم؛ اللي بدأ مع المساعد النهارده يكمل معاه. صفر = ولا عميل.", "عميل"),
   "assist.model": { group: "assist", type: "model", ar: "موديل أدوار تجهيز الطلب", help: "الموديل الأقوى: بيتستخدم لما العميل بيجهّز سلة." },
   "assist.modelSimple": { group: "assist", type: "model", ar: "موديل الأدوار البسيطة", help: "الموديل الأسرع والأرخص: تحية، سؤال، ترشيح." },
   "assist.routing": { group: "assist", type: "enum", ar: "توزيع الأدوار على الموديلين", help: "السريع أولاً ويتحوّل للقوي عند تجهيز الطلب / القوي دايماً / السريع دايماً.", options: ENUMS.routing },
@@ -126,11 +134,12 @@ const RULES_NOTICE = new Set(["rate", "rate_burst", "handoff_remind"]);
 const IN_SESSION = new Set(["hours", "hoursloc", "location", "payment", "thanks"]);
 /* «خلها بدون طحينة» / «بدون بصل» وهو بيجهّز السلة = ملاحظة على الصنف، مش «تعديل طلب». تعديل طلب **اتدفع** بيفضل للموظف: لو له طلب حديث، القواعد تمسكها. */
 const CART_EDIT = new Set(["special_request", "modify_order"]);
-export function assistEligible({ acfg, cfg, phone, ev, cls, d, afterWait = null, sessionActive = false, handoverOpen = false, recentOrder = false }) {
+export function assistEligible({ acfg, cfg, phone, ev, cls, d, afterWait = null, sessionActive = false, handoverOpen = false, recentOrder = false, allowed = false }) {
   const no = (why) => ({ run: false, why });
-  if (!acfg || acfg.mode !== "test") return no("assist_off");
+  if (!acfg || !["test", "live"].includes(acfg.mode)) return no("assist_off");
   if (!cfg || !["test", "live"].includes(cfg.mode)) return no("bot_mode");
-  if (!/^5\d{8}$/.test(String(phone || "")) || !cfg.testPhones.includes(phone)) return no("not_test_phone");
+  /* allowed = البوت قرّر إن العميل ده من جمهور وضع العملاء (wabotrun.assistAudience). من غيرها: أرقام التجربة بس، في الوضعين. */
+  if (!/^5\d{8}$/.test(String(phone || "")) || !(cfg.testPhones.includes(phone) || (allowed === true && acfg.mode === "live"))) return no("not_test_phone");
   /* الرد المؤجّل (بعد انتظار الموظف) بقى من نصيب المساعد برضه (١٢/١٠: كان بيروح للقواعد فالمساعد ماردّش ولا مرة). afterWait للتوثيق بس. */
   if (ev && ev.interactiveId) return no("tap");
   if (!cls || !cls.key || !d) return no("no_class");
