@@ -40,13 +40,14 @@ export const groupsIn = (text) => { const n = normalize(String(text || "")); ret
 
 /* (رقم الصنف، نص السؤال) ⇒ { status, dish, dishEn, asked, part?, partEn?, fryer } أو { status:"unknown_staff" | "severe" }.
    asked = الكلمة اللي العميل سأل عنها (للعرض)، مش أي حاجة من البيانات. */
-export function lookupFact(dishId, askText, { askedWord = null } = {}) {
+export function lookupFact(dishId, askText, { askedWord = null, remove = false } = {}) {
   const d = loadFacts().dishes[String(dishId)];
   const text = String(askText || ""), n = normalize(text);
   if (SEVERE_RE.test(n) || SEVERE_RE.test(text)) return { status: "severe" };
   if (!d) return { status: "unknown_staff", why: "dish_not_in_facts" };
   const base = { dish: d.ar, dishEn: d.en || d.ar };
-  if (d.u !== "none" && d.u !== "removable_only") return { ...base, status: "unknown_staff", why: "dish_not_covered" };
+  /* عقد الشيف: اللي **متسجّل** في بيانات الصنف (مسبّب موجود، مكوّن بيتشال، مكوّن ثابت) بيتجاوب لأي صنف. اللي **مش متسجّل** مايتقالش إنه مش موجود
+     إلا لو بيانات الصنف كاملة (u = none)؛ غير كده ⇒ موظف. */
   const gs = groupsIn(text);
   if (gs.length > 1) return { ...base, status: "unknown_staff", why: "several_allergens" };
   if (gs.length === 1) {
@@ -54,6 +55,8 @@ export function lookupFact(dishId, askText, { askedWord = null } = {}) {
     const asked = askedWord || (GROUPS.find(([k]) => k === g)[1].exec(n) || [g])[0];
     if (NOT_ASSESSED.has(g)) return { ...base, status: "unknown_staff", asked, why: "not_assessed" };
     const fryer = Array.isArray(d.fry) && d.fry.includes(g);
+    if (a && remove) return a.r && a.ar ? { ...base, status: "can_remove", asked, part: a.ar, partEn: a.en || a.ar, kind: "allergen", fryer } : { ...base, status: "cannot_remove", asked, kind: "allergen", fryer };
+    if (remove) return { ...base, status: "unknown_staff", asked, why: "not_recorded" };
     if (a) return a.r && a.ar ? { ...base, status: "present_removable", asked, part: a.ar, partEn: a.en || a.ar, kind: "allergen", fryer } : { ...base, status: "present_fixed", asked, kind: "allergen", fryer };
     return d.u === "none" ? { ...base, status: "not_found", asked, kind: "allergen", fryer } : { ...base, status: "unknown_staff", asked, why: "has_unlabelled_part" };
   }
@@ -61,9 +64,20 @@ export function lookupFact(dishId, askText, { askedWord = null } = {}) {
   const ws = n.replace(/[^\p{L}\p{N}\s]/gu, " ").split(/\s+/).map((w) => w.replace(/^(ال|بال|وال|لل)(?=.{2,})/, "")).filter((w) => w.length > 1);
   const has = (m) => { const k = normalize(String(m)).replace(/^(ال)(?=.{2,})/, ""); return k.length > 1 && (ws.includes(k) || (k.includes(" ") && n.includes(k))); };
   const rm = (d.rm || []).find((r) => (r.m || []).some(has));
+  if (rm && remove) return { ...base, status: "can_remove", asked: rm.ar, part: rm.ar, partEn: rm.en || rm.ar, kind: "ingredient", fryer: false };
   if (rm) return { ...base, status: "present_removable", asked: rm.ar, part: rm.ar, partEn: rm.en || rm.ar, kind: "ingredient", fryer: false };
   const fx = (d.fx || []).find(has);
-  if (fx) return { ...base, status: "present_fixed", asked: fx, kind: "ingredient", fryer: false };
+  if (fx) return { ...base, status: remove ? "cannot_remove" : "present_fixed", asked: fx, kind: "ingredient", fryer: false };
   return { ...base, status: "unknown_staff", why: "ingredient_not_recorded" };
+}
+/* صنف واحد من أسماء اتذكرت: الاسم الكامل اللي ورد في النص بيكسب («وجبة الكفتة» = «وجبة كفتة» مش «وجبة كفتة وطرب»)، والأطول أولاً.
+   مفيش اسم كامل وفيه أكتر من مرشّح ⇒ null (مانخمّنش أنهي صنف). */
+export function pickDish(text, candidates) {
+  const strip = (x) => normalize(String(x || "")).replace(/[^\p{L}\p{N}\s]/gu, " ").split(/\s+/).map((w) => w.replace(/^(ال|بال|وال|لل)(?=.{2,})/, "")).filter(Boolean).join(" ");
+  const t = ` ${strip(text)} `;
+  const list = (candidates || []).filter((c) => c && c.id != null);
+  const full = list.filter((c) => { const k = strip(c.name); return k && t.includes(` ${k} `); }).sort((a, b) => strip(b.name).length - strip(a.name).length);
+  if (full.length) return String(full[0].id);
+  return list.length === 1 ? String(list[0].id) : null;
 }
 export const factsCoverage = () => { const ds = Object.values(loadFacts().dishes); return { revision: loadFacts().revision, dishes: ds.length, covered: ds.filter((d) => d.u === "none" || d.u === "removable_only").length }; };

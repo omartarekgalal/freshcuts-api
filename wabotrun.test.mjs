@@ -1935,7 +1935,8 @@ test("per-dish facts: «does X contain Y» answers only that one thing for the c
   assert.deepEqual(DF.lookupFact("13", "وجبة نص دجاجة فيها سمسم؟"), { dish: "وجبة نصف دجاجة على الفحم", dishEn: "Half Charcoal Chicken Meal", status: "present_removable", asked: "سمسم", part: "الطحينة", partEn: "tahini", kind: "allergen", fryer: false });
   assert.deepEqual([DF.lookupFact("13", "فيها حليب؟").status, DF.lookupFact("13", "فيها بيض؟").status, DF.lookupFact("13", "فيها صويا؟").status, DF.lookupFact("13", "فيها سمسم وبيض؟").status], ["present_fixed", "not_found", "unknown_staff", "unknown_staff"]);
   assert.deepEqual([DF.lookupFact("13", "فيها ارز؟").status, DF.lookupFact("13", "فيها ارز؟").part, DF.lookupFact("13", "فيها بصل؟").status, DF.lookupFact("13", "فيها فلفل؟").status], ["present_removable", "الأرز", "present_fixed", "unknown_staff"], "an ingredient that is not recorded is never declared absent");
-  assert.equal(DF.lookupFact("71", "البرجر فيه سمسم؟").status, "unknown_staff", "a dish with a bought-in part of unknown label is not answered by the bot");
+  // a dish with a bought-in part (not complete data): what IS recorded is answered, what is not recorded goes to staff — absence is never inferred
+  assert.deepEqual([DF.lookupFact("71", "البرجر فيه سمسم؟").status, DF.lookupFact("71", "البرجر فيه بيض؟").status, DF.lookupFact("71", "البرجر فيه بيض؟").why], ["present_fixed", "unknown_staff", "has_unlabelled_part"]);
   assert.equal(DF.lookupFact("999", "فيه بيض؟").status, "unknown_staff");
   for (const sev of ["عندي حساسية شديدة من السمسم", "حساسية قوية من البيض", "severe nut allergy", "اخر مره رحت المستشفى من المكسرات"]) assert.equal(DF.lookupFact("13", sev).status, "severe", sev);
   assert.doesNotMatch(JSON.stringify(DF.lookupFact("13", "فيها سمسم؟")), /mustard|milk|"rm"|"fx"|"a":|السلطة|ثوم/, "nothing else about the dish leaves the lookup");
@@ -1958,7 +1959,7 @@ test("per-dish facts: «does X contain Y» answers only that one thing for the c
   w = mk(); r = await w.say("وجبة نصف دجاجة على الفحم فيها ارز؟");
   assert.deepEqual(r.sent, [txt(ME, "نعم، وجبة نصف دجاجة على الفحم فيه الأرز. نقدر نجهّزه لك بدون الأرز: اكتبها في ملاحظة الصنف عند الطلب.")]);
   // not sure, not covered, several allergens ⇒ staff with one alert; the reply names no ingredient
-  for (const q of ["وجبة نصف دجاجة على الفحم فيها فلفل؟", "برجر لحم كلاسيك فيه سمسم؟", "وجبة نصف دجاجة على الفحم فيها صويا؟"]) {
+  for (const q of ["وجبة نصف دجاجة على الفحم فيها فلفل؟", "برجر لحم كلاسيك فيه بيض؟", "وجبة نصف دجاجة على الفحم فيها صويا؟"]) {
     w = mk(); r = await w.say(q);
     assert.deepEqual(r.sent, [txt(ME, `ما عندي تأكيد كافٍ عن هذا المكوّن. حوّلت سؤالك لموظف يتأكد لك من المطبخ.\n${HAND}`)], q); assert.equal(r.log.handoff, "needs_staff", q); assert.equal(w.sms.length, 2, q);
   }
@@ -1975,6 +1976,43 @@ test("per-dish facts: «does X contain Y» answers only that one thing for the c
   for (const k of ["df_removable", "df_removable_item", "df_fixed", "df_not_found", "df_unknown", "df_severe", "kitchen_line", "fryer_line"]) for (const lang of ["ar", "en"]) assert.doesNotMatch(R.TEXTS[k][lang], /خالٍ من|خالي من|آمن|مضمون|free from|safe |guarantee|no nuts/i, `${k} ${lang}`);
   // gatherings with the number written as a word (the phrase B12's verify used)
   for (const q of ["ابي طلب لخمسين شخص", "عندنا عشرين ضيف", "ابي طلب لعزومة 20 شخص"]) assert.equal(R.classify({ text: q, type: "text" }, KNOW).key, "packs", q);
+}));
+
+test("the chef's worked examples (12/10), and the two live misses: a named dish + an allergen reaches the dish lookup before the general FAQ; «ممكن X بدون Y؟» is answered", withEnv(LOCKS_OPEN, async () => {
+  const DF = await import("./wadishfacts.js");
+  const mk = () => liveWorld({ waBot: { dishFactsEnabled: true } });
+  const KITCHEN = "مطبخنا واحد لكل الأصناف وقد يحصل تلامس بين المكونات أثناء التحضير.";
+  const ask = async (q) => { const w = mk(); const r = await w.say(q); return { r, w, body: r.sent[0] ? bodyOf(r.sent[0]) : null }; };
+  // live miss 1: «وجبة الكفتة فيها سمسم؟» went to the empty general FAQ because two dishes matched «كفتة». The full name wins now.
+  assert.equal(DF.pickDish("وجبة الكفتة فيها سمسم؟", [{ id: 17, name: "وجبة كفتة" }, { id: 87, name: "وجبة كفتة وطرب" }]), "17");
+  assert.equal(DF.pickDish("وجبة كفتة وطرب فيها سمسم؟", [{ id: 17, name: "وجبة كفتة" }, { id: 87, name: "وجبة كفتة وطرب" }]), "87", "the longer full name wins");
+  assert.equal(DF.pickDish("الكفتة فيها سمسم؟", [{ id: 17, name: "وجبة كفتة" }, { id: 87, name: "وجبة كفتة وطرب" }]), null, "no full name and two candidates ⇒ no guess");
+  let x = await ask("وجبة الكفتة فيها سمسم؟");
+  assert.equal(x.body, `نعم، وجبة كفتة فيه سمسم في الطحينة. نقدر نجهّزه لك بدون الطحينة: اكتبها في ملاحظة الصنف عند الطلب.\n${KITCHEN}`);
+  assert.deepEqual([x.r.log.reply_key, x.r.log.detail, x.r.log.handoff], ["dishfact", "fact:present_removable", null]);
+  // chef's example 3: «ممكن وجبة الكفتة بدون طحينة؟»
+  x = await ask("ممكن وجبة الكفتة بدون طحينة؟");
+  assert.equal(x.body, "أكيد، نجهّز وجبة كفتة لك بدون الطحينة. اكتبها في ملاحظة الصنف عند الطلب."); assert.equal(x.r.log.detail, "fact:can_remove"); assert.equal(x.w.sms.length, 0);
+  x = await ask("ابي برجر لحم كلاسيك بدون بصل");
+  assert.equal(x.body, "أكيد، نجهّز برجر لحم كلاسيك لك بدون البصل. اكتبها في ملاحظة الصنف عند الطلب.");
+  x = await ask("ممكن وجبة نصف دجاجة على الفحم بدون ثوم؟");
+  assert.equal(x.body, "وجبة نصف دجاجة على الفحم ما نقدر نجهّزه بدون ثوم.");
+  x = await ask("ممكن وجبة الكفتة بدون كزبرة؟");
+  assert.equal(x.r.log.handoff, "needs_staff", "an ingredient that is not recorded ⇒ staff, never «yes» or «it has none»");
+  // a removal about an EXISTING order stays an order change for staff
+  x = await ask("طلبي بدون بصل لو سمحت"); assert.notEqual(x.r.log.reply_key, "dishfact");
+  assert.equal(R.classify({ text: "بدون بصل لو سمحت", type: "text" }, KNOW).key, "change", "no dish named ⇒ not a dish question («بصل» is not «حلقات بصل»)");
+  // chef's example 1 (sesame and the burger): recorded and fixed ⇒ yes, cannot be made without it — and not where it is
+  x = await ask("برجر لحم كلاسيك فيه سمسم؟");
+  assert.equal(x.body, "نعم، برجر لحم كلاسيك فيه سمسم، وما نقدر نجهّزه بدونه."); assert.doesNotMatch(x.body, /خبز/);
+  // live miss 2: the classic burger and egg — the burger has a bought-in part of unknown label and egg is not recorded ⇒ «not sure» + staff is the right answer
+  x = await ask("البرجر الكلاسيك فيه بيض؟");
+  assert.equal(x.body, `ما عندي تأكيد كافٍ عن هذا المكوّن. حوّلت سؤالك لموظف يتأكد لك من المطبخ.\n${HAND}`); assert.equal(x.r.log.detail, "fact:unknown:has_unlabelled_part");
+  // chef's example 2 (egg and a crepe), for one named crepe
+  x = await ask("كريب زنجر سوبريم فيه بيض؟");
+  assert.equal(x.body, "نعم، كريب زنجر سوبريم فيه بيض، وما نقدر نجهّزه بدونه.");
+  // a general word for a whole group («البرجر», «الكريب») is still not one dish ⇒ staff (the assistant, not the rules bot, will suggest alternatives)
+  x = await ask("عندي حساسية سمسم، ينفع البرجر؟"); assert.equal(x.r.log.handoff, "needs_staff");
 }));
 
 test("replay: the stored inbound messages run through the current classifier offline — nothing sent, nothing logged", withEnv(LOCKS_OPEN, async () => {

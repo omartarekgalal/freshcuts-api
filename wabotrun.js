@@ -41,7 +41,7 @@ import { MAPS_URL } from "./watemplates.js";
 import { isOpenNow } from "./carts.js";
 import { makeBotCarts, reorderPlan, planSummary, orderDay } from "./wabotcart.js";
 import { makeAssistTools, validateReply, profileSummaryAr } from "./waassist.js";
-import { lookupFact, groupsIn, SEVERE_RE, factsCoverage } from "./wadishfacts.js";
+import { lookupFact, groupsIn, SEVERE_RE, factsCoverage, pickDish } from "./wadishfacts.js";
 import { makeAiCost, pricesOf, waRatesOf, pricesFromBody, waRatesFromBody, BUDGET_DEFAULTS } from "./waaicost.js";
 import { providerInfo } from "./wabotllm.js";
 import { WA_UPDATES_TEXTS, WA_UPDATES_CURRENT, recordWaUpdatesBot, recordWaMarketingBot, ensureWaConsentSchema } from "./waconsent.js";
@@ -214,6 +214,8 @@ export const TEXTS = Object.freeze({
   df_removable: t("الصنف فيه المسبّب، وجزؤه يتشال", "نعم، {dish} فيه {asked} في {part}. نقدر نجهّزه لك بدون {part}: اكتبها في ملاحظة الصنف عند الطلب.\n{kitchen}\n{fryer}",
     "Yes, {dish} has {asked} in the {part}. We can make it without the {part}: write it in the item note when you order.\n{kitchen}\n{fryer}", ["dish", "asked", "part"], ["kitchen", "fryer"], 600),
   df_removable_item: t("الصنف فيه المكوّن، ويتشال", "نعم، {dish} فيه {part}. نقدر نجهّزه لك بدون {part}: اكتبها في ملاحظة الصنف عند الطلب.", "Yes, {dish} comes with {part}. We can make it without the {part}: write it in the item note when you order.", ["dish", "part"], [], 400),
+  df_can_remove: t("ممكن الصنف بدون كذا؟ — أيوه", "أكيد، نجهّز {dish} لك بدون {part}. اكتبها في ملاحظة الصنف عند الطلب.", "Sure, we can make {dish} without the {part}. Write it in the item note when you order.", ["dish", "part"], [], 400),
+  df_cannot_remove: t("ممكن الصنف بدون كذا؟ — لأ", "{dish} ما نقدر نجهّزه بدون {asked}.", "We cannot make {dish} without {asked}.", ["dish", "asked"], [], 400),
   df_fixed: t("الصنف فيه المكوّن، ومايتشالش", "نعم، {dish} فيه {asked}، وما نقدر نجهّزه بدونه.", "Yes, {dish} contains {asked}, and we cannot make it without it.", ["dish", "asked"], [], 400),
   df_not_found: t("حسب بياناتنا الصنف مافيهوش", "حسب بياناتنا {dish} ما فيه {asked}.\n{kitchen}\n{fryer}\nوإذا حساسيتك شديدة اكتب «موظف» قبل الطلب.", "According to our data, {dish} does not contain {asked}.\n{kitchen}\n{fryer}\nIf your allergy is severe, type “staff” before ordering.", ["dish", "asked"], ["kitchen", "fryer"], 600),
   df_unknown: t("مش متأكدين ⇒ موظف", "ما عندي تأكيد كافٍ عن هذا المكوّن. حوّلت سؤالك لموظف يتأكد لك من المطبخ.\n{wait}", "I cannot confirm that ingredient. I've passed your question to a team member who will check with the kitchen.\n{wait}", [], ["wait"]),
@@ -959,13 +961,15 @@ export function buildReply(key, c) {
     case "dishfact": {
       /* إجابة السؤال الواحد من حقايق الأصناف. مقفول من اللوحة، أو الحالة مش مؤكدة ⇒ موظف. حساسية شديدة ⇒ موظف (عاجل) من غير أي كلام عن صنف. */
       const a = c.arg && typeof c.arg === "object" ? c.arg : {};
-      const f = lookupFact(a.id, a.text);
+      const f = lookupFact(a.id, a.text, { remove: a.remove === true });
       if (f.status === "severe") return { body: F("df_severe", { wait: wait() }), handoff: ["allergy_severe", "urgent"], fact: "severe" };
       if (!cfg.dishFactsEnabled) return { ...buildReply("staff", c), handoff: HANDOFF_KEYS.staff, fact: "off" };
       const nm = lang === "en" ? f.dishEn : f.dish, part = lang === "en" ? f.partEn : f.part;
       const kitchen = f.kind === "allergen" ? T("kitchen_line") : "", fryer = f.fryer ? T("fryer_line") : "";
       if (f.status === "present_removable") return { body: f.kind === "allergen" ? F("df_removable", { dish: nm, asked: f.asked, part, kitchen, fryer }) : F("df_removable_item", { dish: nm, part }), fact: f.status };
       if (f.status === "present_fixed") return { body: F("df_fixed", { dish: nm, asked: f.asked }), fact: f.status };
+      if (f.status === "can_remove") return { body: F("df_can_remove", { dish: nm, part }), fact: f.status };
+      if (f.status === "cannot_remove") return { body: F("df_cannot_remove", { dish: nm, asked: f.asked }), fact: f.status };
       if (f.status === "not_found") return { body: F("df_not_found", { dish: nm, asked: f.asked, kitchen, fryer }), fact: f.status };
       return { body: F("df_unknown", { wait: wait() }), handoff: HANDOFF_KEYS.staff, fact: `unknown:${f.why || ""}` };
     }
@@ -1061,6 +1065,15 @@ const EXTRA = [
 const INGR_RE = /(^هل .*(فيه|فيها|فيهم) (?!ايش|ايه|شنو)\S+)|((فيه|فيها|فيهم) (ال)?(?!ايش|ايه|شنو)[^\s؟?]+ ?[؟?]\s*$)|\bcontains?\b|\bdoes .* have\b|\bwithout\b.*\?/i;
 /* الوصفة والمقادير وطريقة التحضير والتتبيلة والمورّد: أسرار شغل (قرار عمر ١٢/١٠) ⇒ رد «secret»، من غير تحويل ومن غير أي تفصيلة */
 const RECIPE_RE = /تتبيل|متبل ب|مقادير|المقدار|كم (جرام|غرام|جم)|بالجرام|جرامات|طريقه (ال)?(عمل|تحضير|طبخ|تسويه|كفته|شوي)|كيف (تسوون|تسووا|تعملون|تعملوا|تحضرون|تطبخون|تتبلون)|اعطني طريقه|عطني طريقه|ريسبي|الوصفه|وصفه (ال)?|خلطه|الخلطه|سر (ال)?(طعم|نكهه|خلطه)|المورد|موردكم|recipe|marinade|how (do|did) you (make|cook|prepare|marinate)|how many grams|supplier/i;
+const REMOVE_RE = /(^| )(بدون|من غير|بلا) \S+|\bwithout \S+|\bno [a-z]+ (please|pls)\b/i;
+/* صنف واحد من النص: الاسم الكامل أولاً (wadishfacts.pickDish)، وإلا المرشّح الوحيد اللي المصنّف لقاه. */
+function dishOf(text, e, know) {
+  const ids = e.itemId ? [String(e.itemId)] : (e.items || []).map(String);
+  const all = (know.menu && know.menu.items) || [];
+  const cands = ids.length ? all.filter((i) => ids.includes(String(i.id))) : all;
+  const hit = pickDish(text, cands.map((i) => ({ id: i.id, name: i.name })));
+  return hit || (ids.length === 1 ? ids[0] : null);
+}
 /* «نفس الطلب / زي آخر مرة / كرر الطلب / المعتاد» — بعد التطبيع (ة⇒ه، أ⇒ا) */
 const REORDER_RE = /(نفس|زي|مثل) (ال)?(طلب|طلبي|طلبنا|اخر مره|المره اللي فاتت|المره الماضيه)|كرر(وا|و)? ?(لي )?(ال)?(طلب|طلبي)|(ال)?معتاد|same (order|as last)|re-?order|the usual/i;
 export function classify(ev, know = {}) {
@@ -1101,8 +1114,15 @@ export function classify(ev, know = {}) {
   /* حساسية: «شديدة» ⇒ موظف عاجل مهما كان الصنف. سؤال حساسية عن صنف واحد محدد ⇒ حقايق الأصناف. غير كده ⇒ مدخل «allergens» (فاضي عمداً ⇒ موظف). */
   if (!HARD_INTENTS.has(intent) && groupsIn(text).length) {
     if (SEVERE_RE.test(n) || SEVERE_RE.test(text)) return done("dishfact", { id: null, text }, "allergy_severe");
-    const one = e.itemId ? [String(e.itemId)] : (e.items || []).map(String);
-    if (one.length === 1) return done("dishfact", { id: one[0], text }, "allergy_dish");
+    const one = dishOf(text, e, know);
+    if (one) return done("dishfact", { id: one, text }, "allergy_dish");
+  }
+  /* «ممكن وجبة الكفتة بدون طحينة؟»: سؤال تخصيص قبل الطلب عن صنف محدد ⇒ حقايق الأصناف. كلام عن طلب موجود («طلبي بدون بصل») بيفضل تعديل طلب ⇒ موظف. */
+  if (REMOVE_RE.test(n) && !/طلبي|الطلب|طلبنا|اوردر|\border\b/.test(n) && !["complaint", "refund", "cancel_order", "human", "stop", "start"].includes(intent)) {
+    /* الصنف لازم يكون مذكور باسمه الكامل **قبل** «بدون» — «بدون بصل لو سمحت» لوحدها مش سؤال عن صنف (و«بصل» مش «حلقات بصل»). */
+    const menuAll = (know.menu && know.menu.items) || [];
+    const one = menuAll.length > 1 ? pickDish(text.split(/بدون|من غير|بلا |without|no /i)[0], menuAll.map((i) => ({ id: i.id, name: i.name }))) : null;
+    if (one) return done("dishfact", { id: one, text: text.replace(/^.*?(بدون|من غير|بلا|without|no )/i, "$1"), remove: true }, "remove_question");
   }
   if (!HARD_INTENTS.has(intent)) {
     const fq = FAQ_RULES.find(([, re]) => re.test(n));
@@ -1125,8 +1145,8 @@ export function classify(ev, know = {}) {
     /* سؤال مكونات عن صنف («ايش مكونات…»، «… فيه جبن؟»): وصف المنيو مش قايمة مكونات كاملة (ملاحظة الشيف ١٢/١٠: وصف البرجر الكلاسيك
        مافيهوش صوص الشيدر ولا الثاوزند آيلاند) ⇒ مانردّش بالوصف كأنه المكونات؛ نحوّل لموظف لحد ما ملف حقايق الأصناف يتوافق عليه. */
     if ((INGR_RE.test(n) || INGR_RE.test(text)) && (e.itemId || (e.items || []).length || e.categoryId)) {
-      const one = e.itemId ? [String(e.itemId)] : (e.items || []).map(String);
-      return one.length === 1 ? done("dishfact", { id: one[0], text }, "ingredients") : done("staff", null, "ingredients");      // صنف واحد محدد ⇒ حقايق الأصناف؛ غير كده موظف
+      const one = dishOf(text, e, know);
+      return one ? done("dishfact", { id: one, text }, "ingredients") : done("staff", null, "ingredients");      // صنف واحد محدد ⇒ حقايق الأصناف؛ غير كده موظف
     }      // «… فيه جبن؟»: نعم/لا من ملف الحقايق المعتمد — لحد ما يتوافق عليه: موظف
     /* «ايش مكونات X / وش فيه X»: وصف المنيو العام وبس (الرد العادي للصنف تحت) — مش قايمة مكونات ومش وصفة. */
     const ids = e.itemId ? [String(e.itemId)] : (e.items || []).map(String);
