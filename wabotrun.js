@@ -12,8 +12,17 @@
      الإعدادات بتتقري من القاعدة مع كل رسالة ⇒ تغيير الوضع لـoff = إيقاف فوري.
    • جوّه نافذة خدمة العملاء بس: بيرد على رسالة عميل لسه واصلة (الرسالة الأقدم من maxAgeMinutes مابيتردش عليها)،
      وعمره ما بيبدأ محادثة.
-   • مابيردّش لو: الكاشير رد من الموبايل على العميل ده خلال humanWindowHours (صدى smb_message_echoes)،
-     أو المحادثة اتحوّلت لموظف (سكوت نفس المدة)، أو نفس الرد اتبعت من شوية، أو العميل عدّى حد الردود.
+   • الإنسان أولاً — قواعد ١٢/١٠ (موافقة عمر، بحث docs/…/whatsapp/البوت-والموظف-السلوك-الطبيعي.md):
+       ١ سكوت بالدقايق: humanPauseMin (٣٠) من **آخر** رسالة للموظف من الموبايل (صدى smb_message_echoes).
+       ٢ العميل كتب وقت السكوت والموظف ماردّش خلال staffWaitMin (٥) ⇒ البوت يرد، بس على نية معروفة.
+       ٣ المطعم مقفول (نفس مصدر المواعيد) ⇒ السكوت ده مالوش وجود.
+       ٤ استثناءات: كتم يدوي للمحادثة (بمدة) بيفضل ماسك · شكوى مفتوحة ⇒ معلومات بس (مواعيد/موقع/حالة طلب) من غير
+         روابط طلب ولا عروض · رد موظف وقت الإقفال ⇒ سكوت closedEchoPauseMin (١٠) بس.
+       ٥ في الدوام: النية المعروفة تتجاوب فوراً؛ الغير مفهوم يستنى unknownWaitMin (٣) للموظف وبعدها القائمة. مقفول: فوراً.
+       ٦ أي سكوت بيخلص ساعة الإقفال، والتحويل وقت الإقفال بيتقال له ميعاد الفتح الحقيقي.
+       ٧ أول رسالة من البوت في كل محادثة (كل ٢٤ ساعة) بتعرّف إنه مساعد آلي + «موظف» + رقم المطعم.
+     الرد المؤجّل = صف في wa_bot_jobs (بيعيش بعد إعادة التشغيل)، ووقت التنفيذ كل الشروط بتتراجع من جديد.
+     حد معروف: رسايل تطبيق الموبايل من بعض الأجهزة المرتبطة مابتطلّعش صدى ⇒ السكوت ممكن مايحسّش بيها.
    • تحية واحدة لكل عميل كل greetWindowHours.
    • النية: wabot.matchIntent (قواعد وكلمات — مفيش LLM). الرد: نص ثابت مراجَع من settings.waBot.texts
      (والافتراضي هنا) بيتعبّى ببيانات حيّة: البوكسات من /api/shop/bundles، المواعيد من settings.hours،
@@ -29,6 +38,7 @@ import { matchIntent, detectLang, normalize, msgText, msgButtons, msgCta, LIMITS
 import { staffPhones, fitOneSms, staffConfig } from "./staffalerts.js";
 import { loyaltyCfgOf } from "./loyalty.js";
 import { MAPS_URL } from "./watemplates.js";
+import { isOpenNow } from "./carts.js";
 
 export const STORE = "https://freshcuts.sa";
 export const MODES = ["off", "dry", "test", "live"];
@@ -37,7 +47,15 @@ export const DEFAULTS = Object.freeze({
   mode: "off",
   testPhones: [],              // 5XXXXXXXX — من اللوحة فقط
   greetScope: "all",           // all | ads (تحية لمحادثات الإعلانات بس)
-  humanWindowHours: 12,        // سكوت بعد رد الكاشير من الموبايل / بعد التحويل لموظف
+  humanPauseMin: 30,           // سكوت بعد **آخر** رد للموظف من الموبايل (في الدوام)
+  staffWaitMin: 5,             // العميل كتب وقت السكوت: نستنى الموظف المدة دي وبعدها البوت يرد (نية معروفة بس)
+  closedEchoPauseMin: 10,      // موظف رد والمطعم مقفول: سكوت قصير بس
+  unknownWaitMin: 3,           // في الدوام: رسالة غير مفهومة تستنى الموظف قبل القائمة (٠ = فوراً)
+  manualMuteHours: 24,         // «كتم البوت في المحادثة دي» من الموظف — المدة الافتراضية
+  handoffOpenHours: 24,        // التحويل لموظف «مفتوح» المدة دي: شكوى ⇒ معلومات بس، ومفيش تنبيه مكرر
+  publicPhone: "",             // رقم المطعم في رسالة التعريف؛ فاضي = من سؤال «كيف أتواصل» في الأسئلة الشائعة
+  freeRepliesPerMonth: 1000,   // تسعيرة ميتا ١/١٠/٢٠٢٦: أول ١٠٠٠ رد حر في الشهر ببلاش…
+  replyRateSar: 0.0401,        // …وبعدها بالريال للرد
   greetWindowHours: 24,        // تحية واحدة لكل عميل في المدة دي
   maxAgeMinutes: 20,           // رسالة أقدم من كده (ويب هوك متأخر) مابيتردش عليها
   duplicateSeconds: 120,       // نفس الرد لنفس العميل مايتكررش خلالها
@@ -81,26 +99,26 @@ export const TEXTS = Object.freeze({
   location: t("موقع الفرع", "📍 فرعنا في حي السلامة بجدة، عند دوار رامي.", "📍 Our branch is in Al Salamah, Jeddah, by Rami Roundabout."),
   payment: t("طرق الدفع", "💳 {payment}", "💳 {payment}", ["payment"]),
   status_found: t("حالة الطلب", "طلبك رقم {order_no}: {status}", "Order {order_no}: {status}", ["order_no", "status"]),
-  status_late: t("حالة طلب متأخر", "طلبك رقم {order_no}: {status}\nنعتذر عن التأخير 🙏 بلّغت الفريق يتابعه معك الحين.",
-    "Order {order_no}: {status}\nSorry for the delay 🙏 I've asked the team to follow it up with you now.", ["order_no", "status"]),
+  status_late: t("حالة طلب متأخر", "طلبك رقم {order_no}: {status}\nنعتذر عن التأخير 🙏 بلّغت الفريق يتابعه معك.\n{wait}",
+    "Order {order_no}: {status}\nSorry for the delay 🙏 I've asked the team to follow it up with you.\n{wait}", ["order_no", "status"], ["wait"]),
   status_none: t("مافيه طلب على الرقم", "ما لقيت طلب حديث من موقعنا على رقمك هذا 🙏\nحوّلت محادثتك لموظف يتأكد لك.\n{wait}",
     "I couldn't find a recent website order on this number 🙏\nI've passed your chat to a staff member to check.\n{wait}", [], ["wait"]),
-  complaint_known: t("شكوى (الطلب معروف)", "نعتذر منك على اللي صار 🙏\nحوّلت محادثتك لمدير الفرع ويتواصل معك هنا بأسرع وقت.\nطلبك رقم {order_no} قدّامنا.\n{wait}",
-    "We're sorry about that 🙏\nI've passed your chat to the branch manager, who will reply here as soon as possible.\nWe have your order {order_no} in front of us.\n{wait}", ["order_no"], ["wait"]),
-  complaint_ask: t("شكوى (نطلب رقم الطلب)", "نعتذر منك على اللي صار 🙏\nحوّلت محادثتك لمدير الفرع ويتواصل معك هنا بأسرع وقت.\nلو تكرّمت اكتب رقم الطلب (يبدأ بحرف W) عشان نخدمك أسرع.\n{wait}",
-    "We're sorry about that 🙏\nI've passed your chat to the branch manager, who will reply here as soon as possible.\nPlease send your order number (it starts with W) so we can help faster.\n{wait}", [], ["wait"]),
-  problem: t("مشكلة دفع / موقع / كود", "نعتذر عن المشكلة 🙏 حوّلتها لموظف ويرد عليك هنا بأسرع وقت.\n{wait}",
-    "Sorry about the trouble 🙏 I've passed it to a staff member who will reply here as soon as possible.\n{wait}", [], ["wait"]),
-  change: t("تعديل / إلغاء طلب", "تعديل الطلب أو إلغاؤه يحتاج موظف 🙏 حوّلت طلبك له الحين ويرد عليك هنا.\n{wait}",
-    "Changing or cancelling an order needs a staff member 🙏 I've passed it on and they will reply here.\n{wait}", [], ["wait"]),
-  human: t("طلب موظف", "أبشر 🙏 حوّلت محادثتك لموظف ويرد عليك هنا بأسرع وقت.\n{wait}",
-    "Sure 🙏 I've passed your chat to a staff member who will reply here as soon as possible.\n{wait}", [], ["wait"]),
-  staff: t("سؤال يحتاج موظف", "سؤالك يحتاج واحد من الفريق 🙏 حوّلته لهم ويردّون عليك هنا.\n{wait}",
-    "Your question needs one of the team 🙏 I've passed it on and they will reply here.\n{wait}", [], ["wait"]),
-  media: t("صورة / صوت / ملف", "ما أقدر أفتح الصور والمقاطع الصوتية 🙏 حوّلت محادثتك لموظف ويرد عليك هنا.\n{wait}",
-    "I can't open photos or voice notes 🙏 I've passed your chat to a staff member who will reply here.\n{wait}", [], ["wait"]),
+  complaint_known: t("شكوى (الطلب معروف)", "نعتذر منك على اللي صار 🙏\nحوّلت محادثتك لمدير الفرع.\nطلبك رقم {order_no} قدّامنا.\n{wait}",
+    "We're sorry about that 🙏\nI've passed your chat to the branch manager.\nWe have your order {order_no} in front of us.\n{wait}", ["order_no"], ["wait"]),
+  complaint_ask: t("شكوى (نطلب رقم الطلب)", "نعتذر منك على اللي صار 🙏\nحوّلت محادثتك لمدير الفرع.\nلو تكرّمت اكتب رقم الطلب (يبدأ بحرف W) عشان نخدمك أسرع.\n{wait}",
+    "We're sorry about that 🙏\nI've passed your chat to the branch manager.\nPlease send your order number (it starts with W) so we can help faster.\n{wait}", [], ["wait"]),
+  problem: t("مشكلة دفع / موقع / كود", "نعتذر عن المشكلة 🙏 حوّلتها لموظف.\n{wait}",
+    "Sorry about the trouble 🙏 I've passed it to a staff member.\n{wait}", [], ["wait"]),
+  change: t("تعديل / إلغاء طلب", "تعديل الطلب أو إلغاؤه يحتاج موظف 🙏 حوّلت طلبك له.\n{wait}",
+    "Changing or cancelling an order needs a staff member 🙏 I've passed it on.\n{wait}", [], ["wait"]),
+  human: t("طلب موظف", "أبشر 🙏 حوّلت محادثتك لموظف.\n{wait}",
+    "Sure 🙏 I've passed your chat to a staff member.\n{wait}", [], ["wait"]),
+  staff: t("سؤال يحتاج موظف", "سؤالك يحتاج واحد من الفريق 🙏 حوّلته لهم.\n{wait}",
+    "Your question needs one of the team 🙏 I've passed it on.\n{wait}", [], ["wait"]),
+  media: t("صورة / صوت / ملف", "ما أقدر أفتح الصور والمقاطع الصوتية 🙏 حوّلت محادثتك لموظف.\n{wait}",
+    "I can't open photos or voice notes 🙏 I've passed your chat to a staff member.\n{wait}", [], ["wait"]),
   unknown: t("غير مفهوم (أول مرة)", "ما فهمت طلبك تماماً 🙏 اختر من الأزرار، أو اكتب: موظف", "I didn't quite get that 🙏 Pick a button, or type: staff"),
-  data_missing: t("معلومة ناقصة", "ما قدرت أجيب المعلومة الحين 🙏 حوّلت سؤالك لموظف ويرد عليك هنا.\n{wait}",
+  data_missing: t("معلومة ناقصة", "ما قدرت أجيب المعلومة الحين 🙏 حوّلت سؤالك لموظف.\n{wait}",
     "I couldn't get that information right now 🙏 I've passed your question to a staff member.\n{wait}", [], ["wait"]),
   rate: t("حد الردود", "وصلتنا رسائلك 🙏 حوّلت محادثتك لموظف يكمل معك.\n{wait}", "We got your messages 🙏 A staff member will continue with you.\n{wait}", [], ["wait"]),
   thanks: t("شكر / وداع", "العفو، حيّاك الله 🌟", "You're welcome 🌟"),
@@ -115,6 +133,13 @@ export const TEXTS = Object.freeze({
   far_line: t("سطر النطاق البعيد", "ومن {km} إلى {far_km} كم برسوم مسافة إضافية {far_fee} ر.س لكل كم.", "From {km} to {far_km} km there is an extra distance charge of SAR {far_fee} per km.", ["km", "far_km", "far_fee"], [], 200),
   closed_line: t("سطر «مقفل الحين»", "🌙 المطعم مقفل الحين ونفتح {opens}. جهّز سلتك واضغط «نبّهني أول ما نفتح» ونذكّرك.",
     "🌙 We're closed now and open {opens}. Build your cart and tap “Notify me when we open”.", ["opens"], [], 300),
+  hours_closed_plain: t("المواعيد (مقفل) — من غير رابط، لعميل عنده شكوى مفتوحة", "⏰ مواعيدنا:\n{hours}\n🌙 مقفلين الحين، ونفتح {opens}.",
+    "⏰ Our hours:\n{hours}\n🌙 We're closed now and open {opens}.", ["hours", "opens"]),
+  disclosure: t("التعريف بالبوت (أول رسالة في المحادثة)", "معك المساعد الآلي لفريش كاتس 🤖 للتحدث مع موظف اكتب: موظف",
+    "This is Fresh Cuts' automated assistant 🤖 To reach a person type: staff", [], [], 200),
+  disclosure_phone: t("التعريف بالبوت + رقم المطعم", "معك المساعد الآلي لفريش كاتس 🤖 للتحدث مع موظف اكتب: موظف، أو اتصل على {phone}",
+    "This is Fresh Cuts' automated assistant 🤖 To reach a person type: staff, or call {phone}", ["phone"], [], 200),
+  when_open: t("سطر «الرد قريب» (في الدوام بس)", "يرد عليك هنا في أقرب وقت.", "They will reply here shortly.", [], [], 200),
   wait_line: t("سطر «الرد لما نفتح»", "المطعم مقفل الحين، والرد يوصلك أول ما نفتح {opens}.", "We're closed now; you will get a reply once we open {opens}.", ["opens"], [], 200),
   paused_delivery: t("سطر «التوصيل متوقف»", "⚠️ التوصيل متوقف مؤقتاً، والاستلام من الفرع متاح.", "⚠️ Delivery is paused for now; pickup from the branch is available.", [], [], 200),
   footer: t("تذييل الرسائل بزر", "رد آلي · للموظف اكتب: موظف", "Automated reply · type: staff", [], [], LIMITS.footer),
@@ -174,7 +199,16 @@ export function botConfig(settings) {
     mode: MODES.includes(x.mode) ? x.mode : "off",
     testPhones: staffPhones(x.testPhones),
     greetScope: x.greetScope === "ads" ? "ads" : "all",
-    humanWindowHours: num(x.humanWindowHours, 1, 72, DEFAULTS.humanWindowHours),
+    // humanWindowHours (١٢ ساعة) اتلغى ١٢/١٠: المخزّن القديم بيتجاهَل والسكوت بقى humanPauseMin (٣٠ دقيقة)
+    humanPauseMin: num(x.humanPauseMin, 1, 720, DEFAULTS.humanPauseMin),
+    staffWaitMin: num(x.staffWaitMin, 1, 15, DEFAULTS.staffWaitMin),
+    closedEchoPauseMin: num(x.closedEchoPauseMin, 0, 120, DEFAULTS.closedEchoPauseMin),
+    unknownWaitMin: num(x.unknownWaitMin, 0, 15, DEFAULTS.unknownWaitMin),
+    manualMuteHours: num(x.manualMuteHours, 1, 168, DEFAULTS.manualMuteHours),
+    handoffOpenHours: num(x.handoffOpenHours, 1, 168, DEFAULTS.handoffOpenHours),
+    publicPhone: /^0\d{8,9}$/.test(String(x.publicPhone || "")) ? String(x.publicPhone) : "",
+    freeRepliesPerMonth: num(x.freeRepliesPerMonth, 0, 100000, DEFAULTS.freeRepliesPerMonth),
+    replyRateSar: num(x.replyRateSar, 0, 5, DEFAULTS.replyRateSar),
     greetWindowHours: num(x.greetWindowHours, 1, 168, DEFAULTS.greetWindowHours),
     maxAgeMinutes: num(x.maxAgeMinutes, 1, 120, DEFAULTS.maxAgeMinutes),
     duplicateSeconds: num(x.duplicateSeconds, 0, 3600, DEFAULTS.duplicateSeconds),
@@ -224,10 +258,16 @@ export function configFromBody(b, prev = {}) {
   }
   if ("alertPhones" in src) out.alertPhones = staffPhones(Array.isArray(src.alertPhones) ? src.alertPhones : String(src.alertPhones || "").split(/[\s,،;]+/));
   if ("greetScope" in src) { if (["all", "ads"].includes(src.greetScope)) out.greetScope = src.greetScope; else errors.push("greetScope"); }
-  for (const k of ["humanWindowHours", "greetWindowHours", "maxAgeMinutes", "duplicateSeconds", "maxRepliesPerHour", "orderLookbackHours", "lateAfterMinutes", "maxAlertsPerHour"]) {
+  delete out.humanWindowHours;      // اتلغى (١٢/١٠) — أي حفظ بينضّف المخزّن القديم
+  for (const k of ["humanPauseMin", "staffWaitMin", "closedEchoPauseMin", "unknownWaitMin", "manualMuteHours", "handoffOpenHours", "freeRepliesPerMonth", "replyRateSar",
+    "greetWindowHours", "maxAgeMinutes", "duplicateSeconds", "maxRepliesPerHour", "orderLookbackHours", "lateAfterMinutes", "maxAlertsPerHour"]) {
     if (k in src) { if (Number.isFinite(Number(src[k])) && src[k] !== "" && src[k] !== null) out[k] = Number(src[k]); else errors.push(k); }
   }
   for (const k of ["interactive", "staffAlert", "alertInTest"]) if (k in src) out[k] = src[k] === true;
+  if ("publicPhone" in src) {
+    const d = String(src.publicPhone || "").replace(/[^\d]/g, "").replace(/^(00966|966)/, "0");
+    if (!String(src.publicPhone || "").trim()) out.publicPhone = ""; else if (/^0\d{8,9}$/.test(d)) out.publicPhone = d; else errors.push("publicPhone: رقم غير صحيح");
+  }
   if ("firstCode" in src) { if (/^[A-Z0-9-]{2,20}$/.test(String(src.firstCode || ""))) out.firstCode = String(src.firstCode); else errors.push("firstCode"); }
   if ("links" in src) {
     const L = src.links || {}, cur = { ...(prev.links || {}) };
@@ -378,7 +418,8 @@ export function buildReply(key, c) {
   const { cfg, lang, data } = c;
   const T = (k) => textOf(cfg, k, lang);
   const F = (k, vars) => fill(k, T(k), vars);
-  const wait = () => closedLine(cfg, lang, data, "wait_line");
+  // في الدوام: «يرد عليك في أقرب وقت». مقفول: ميعاد الفتح الحقيقي. حالة المواعيد مش معروفة: ولا وعد.
+  const wait = () => (data.open && data.open.open === true ? T("when_open") : closedLine(cfg, lang, data, "wait_line"));
   const order = data.order || null;
   const withLink = (k, vars, ctaKey) => { const slug = pickLink(cfg, data, c.referral); return { body: F(k, vars), cta: { title: T(ctaKey), url: linkUrl(slug) }, link: slug }; };
   switch (key) {
@@ -401,6 +442,7 @@ export function buildReply(key, c) {
         if (!data.open.closesAt) throw new DataMissing("hours.closes");
         return { body: F("hours_open", { hours: lines.join("\n"), closes: fmtTime(data.open.closesAt, lang) }) };
       }
+      if (c.factual) return { body: F("hours_closed_plain", { hours: lines.join("\n"), opens: opensText(data, lang) }) };   // شكوى مفتوحة: من غير رابط طلب
       return withLink("hours_closed", { hours: lines.join("\n"), opens: opensText(data, lang) }, "cta_cart");
     }
     case "location": {
@@ -420,7 +462,7 @@ export function buildReply(key, c) {
       if (!sk) throw new DataMissing(`status:${order.status}`);
       const mins = (data.now.getTime() - Date.parse(order.created_at)) / 60000;
       const late = ACTIVE.has(String(order.status)) && Number.isFinite(mins) && mins > cfg.lateAfterMinutes;
-      const vars = { order_no: order.order_no, status: T(sk.key) };
+      const vars = { order_no: order.order_no, status: T(sk.key), wait: late ? wait() : "" };
       const r = { body: F(late ? "status_late" : "status_found", vars), cta: { title: T("cta_track"), url: `${STORE}/track/${encodeURIComponent(order.order_no)}` } };
       if (late) r.handoff = ["order_late", "urgent"]; else if (sk.handoff) r.handoff = ["order_issue", "urgent"];
       return r;
@@ -493,6 +535,40 @@ export function classify(ev) {
   return { key, rawIntent: m.intent, lang: m.lang || lang, score: m.score, entities: { ...(m.entities || {}), orderNo: om ? om[1].toUpperCase() : null } };
 }
 
+/* رقم المطعم للتعريف: إعداد البوت، وإلا من إجابة «كيف أتواصل مع المطعم؟» في الأسئلة الشائعة (إعدادات المتجر) */
+export function publicPhoneOf(cfg, settings) {
+  if (cfg.publicPhone) return cfg.publicPhone;
+  const f = (settings?.storefront?.seo?.faq || []).find((x) => /تواصل/.test(String(x?.q || "")));
+  const m = f && String(f.a || "").match(/0\d{8,9}/);
+  return m ? m[0] : "";
+}
+export function disclosureLine(cfg, lang, settings) {
+  const phone = publicPhoneOf(cfg, settings);
+  return phone ? fill("disclosure_phone", textOf(cfg, "disclosure_phone", lang), { phone }) : textOf(cfg, "disclosure", lang);
+}
+
+/* سكوت الموظف (قواعد ١ و٣ و٤ج و٦). lastEchoAt = آخر رسالة بعتها الموظف من موبايل المطعم للعميل ده.
+   مقفول: الصدى اللي اتبعت والمطعم فاتح اتلغى ساعة الإقفال؛ الصدى اللي اتبعت والمطعم مقفول = سكوت قصير بس. */
+export function pauseState({ cfg, now, open, lastEchoAt, hours }) {
+  const t = lastEchoAt ? Date.parse(lastEchoAt) : NaN;
+  if (!Number.isFinite(t) || t > now.getTime()) return { paused: false, until: null, kind: null };
+  if (open === false) {
+    let echoWhileOpen = true;
+    try { echoWhileOpen = isOpenNow(hours, new Date(t)); } catch { echoWhileOpen = true; }
+    if (echoWhileOpen) return { paused: false, until: null, kind: null, expired: "closing" };
+    const until = t + cfg.closedEchoPauseMin * 60_000;
+    return { paused: until > now.getTime(), until, kind: "staff_pause_closed" };
+  }
+  const until = t + cfg.humanPauseMin * 60_000;
+  return { paused: until > now.getTime(), until, kind: "staff_pause" };
+}
+const FACTUAL_KEYS = new Set(["hours", "location", "status", "thanks", "stop", "start"]);
+const SERIOUS = new Set(["complaint", "problem", "order_change", "order_late", "order_issue", "send_failed"]);
+const iso = (ms) => new Date(ms).toISOString();
+
+/* ctx = { cfg, now, chat, lastEchoAt, repliesLastHour, lastSame, failedRecently, data, cls, afterWait }
+   afterWait = "staff_wait" | "unknown_wait" لما الرد المؤجّل وقته جه (والتشغيل اتأكد إن مفيش صدى بعد رسالة العميل).
+   ⇒ act: "reply" | "silent" | "wait" (+ waitKind, dueAt) · resumeAt = امتى البوت هيرد تاني (للسجل). */
 export function decide(ev, ctx) {
   const { cfg, now } = ctx;
   const c = ctx.cls || classify(ev);
@@ -505,41 +581,81 @@ export function decide(ev, ctx) {
   const at = ev.at ? Date.parse(ev.at) : now.getTime();
   const ageMin = (now.getTime() - (Number.isFinite(at) ? at : now.getTime())) / 60000;
   if (ageMin >= 24 * 60) return silent("outside_window");
-  if (ageMin > cfg.maxAgeMinutes) return silent("stale");
+  const waited = ctx.afterWait === "staff_wait" ? cfg.staffWaitMin : ctx.afterWait === "unknown_wait" ? cfg.unknownWaitMin : 0;
+  if (ageMin > cfg.maxAgeMinutes + waited) return silent("stale");
   const optout = c.key === "stop" || c.key === "start" ? c.key : null;
   const chat = ctx.chat || {};
-  if (chat.muted_until && Date.parse(chat.muted_until) > now.getTime()) return silent("muted", { optout });
-  if (ctx.humanActive) return silent("human_active", { optout });
+  const nowMs = now.getTime();
+
+  // ٤أ) كتم يدوي من الموظف — بيفضل ماسك حتى والمطعم مقفول
+  if (chat.muted_until && Date.parse(chat.muted_until) > nowMs) return silent("manual_mute", { optout, resumeAt: new Date(chat.muted_until).toISOString() });
+  if (ctx.failedRecently && !optout) return silent("recent_send_failure");
+
+  // ١/٣/٤ج/٦) سكوت الموظف
+  const open = ctx.data && ctx.data.open ? ctx.data.open.open === true : null;
+  const ps = pauseState({ cfg, now, open, lastEchoAt: ctx.lastEchoAt, hours: ctx.data?.settings?.hours });
+  if (ps.paused && !ctx.afterWait) {
+    if (optout) return silent(ps.kind, { optout, resumeAt: iso(ps.until) });
+    // ٢) نية معروفة: نستنى الموظف staffWaitMin وبعدها نرد. غير مفهوم: للموظف (هو في المحادثة).
+    if (c.key === "unknown") return silent(ps.kind, { resumeAt: iso(ps.until), detail: "unknown_left_to_staff" });
+    const due = Math.min(nowMs + cfg.staffWaitMin * 60_000, ps.until);
+    return { act: "wait", waitKind: "staff_wait", dueAt: iso(due), resumeAt: iso(due), reason: ps.kind, ...base };
+  }
 
   let key = c.key, handoff = null;
   if (cfg.intentsOff.includes(key) && !optout) { key = "staff"; }
+
+  // ٤ب) تحويل مفتوح: شكوى ⇒ معلومات بس. طلب موظف اتكرر ⇒ الفريق اتنبّه خلاص، مفيش رسالة ولا تنبيه تاني.
+  const hoAt = chat.handoff_at ? Date.parse(chat.handoff_at) : NaN;
+  const ho = Number.isFinite(hoAt) && nowMs - hoAt < cfg.handoffOpenHours * 3600_000 ? String(chat.handoff_reason || "handover") : null;
+  const hoUntil = ho ? iso(hoAt + cfg.handoffOpenHours * 3600_000) : null;
+  const factual = Boolean(ho && SERIOUS.has(ho));
+  if (factual && !FACTUAL_KEYS.has(key)) return silent("handoff_open", { key, resumeAt: hoUntil, detail: ho });
+  if (ho && !factual && HANDOFF_KEYS[key] && !SERIOUS.has(HANDOFF_KEYS[key][0])) return silent("handoff_open", { key, resumeAt: hoUntil, detail: ho });
+
   if (key === "greet") {
-    const hasAd = Boolean(ev.referral) || Boolean(chat.referral_at && now.getTime() - Date.parse(chat.referral_at) < 72 * 3600_000);
+    const hasAd = Boolean(ev.referral) || Boolean(chat.referral_at && nowMs - Date.parse(chat.referral_at) < 72 * 3600_000);
     if (cfg.greetScope === "ads" && !hasAd) return silent("greet_ads_only");
-    if (chat.last_greet_at && now.getTime() - Date.parse(chat.last_greet_at) < cfg.greetWindowHours * 3600_000) return silent("already_greeted");
+    if (chat.last_greet_at && nowMs - Date.parse(chat.last_greet_at) < cfg.greetWindowHours * 3600_000) {
+      return silent("already_greeted", { resumeAt: iso(Date.parse(chat.last_greet_at) + cfg.greetWindowHours * 3600_000) });
+    }
   }
+  const wasUnknown = key === "unknown";
   if (key === "unknown" && Number(chat.unknown_streak) >= 1) { key = "human"; handoff = ["not_understood_twice", "normal"]; }
   if (!optout && ctx.repliesLastHour >= cfg.maxRepliesPerHour) return silent("rate_limited");
   if (!optout && ctx.repliesLastHour === cfg.maxRepliesPerHour - 1 && !HANDOFF_KEYS[key]) { key = "rate"; handoff = ["rate_limit", "normal"]; }
-  if (ctx.lastSame && ctx.lastSame.key === key && key !== "status" && now.getTime() - Date.parse(ctx.lastSame.at) < cfg.duplicateSeconds * 1000) return silent("duplicate", { key });
+  if (ctx.lastSame && ctx.lastSame.key === key && key !== "status" && nowMs - Date.parse(ctx.lastSame.at) < cfg.duplicateSeconds * 1000) return silent("duplicate", { key });
+  // ٥) في الدوام: الغير مفهوم يستنى الموظف قبل القائمة. مقفول: فوراً.
+  if (wasUnknown && key !== "rate" && open !== false && !ctx.afterWait && cfg.unknownWaitMin > 0) {
+    const due = nowMs + cfg.unknownWaitMin * 60_000;
+    return { act: "wait", waitKind: "unknown_wait", dueAt: iso(due), resumeAt: iso(due), reason: "unknown_wait", ...base };
+  }
   if (HANDOFF_KEYS[key] && !handoff) handoff = HANDOFF_KEYS[key];
 
   const interactive = cfg.interactive && ctx.interactive !== false;
-  const bc = { cfg, lang: c.lang, data: ctx.data, referral: ev.referral || null };
+  const bc = { cfg, lang: c.lang, data: ctx.data, referral: ev.referral || null, factual };
   let reply, problem = null;
   try { reply = buildReply(key, bc); }
   catch (e) { problem = e instanceof DataMissing ? e.what : `error:${e.message}`; }
   if (problem) {
     try { reply = buildReply("data_missing", bc); handoff = ["data_missing", "normal"]; key = "data_missing"; }
-    catch (e2) { return { act: "silent", reason: "build_failed", ...base, key, detail: problem, handoff: ["data_missing", "normal"], mute: true }; }
+    catch (e2) { return { act: "silent", reason: "build_failed", ...base, key, detail: problem, handoff: ["data_missing", "normal"] }; }
   }
   if (reply.handoff) handoff = reply.handoff;
+  // تحويل مفتوح أصلاً ⇒ مفيش تنبيه تاني للفريق على نفس المحادثة (إلا لو الجديد أخطر من القديم)
+  if (handoff && ho && !(SERIOUS.has(handoff[0]) && !SERIOUS.has(ho))) handoff = null;
+  // ٧) التعريف: أول رسالة من البوت في المحادثة (مرة كل ٢٤ ساعة)
+  const disclose = !chat.last_disclosed_at || nowMs - Date.parse(chat.last_disclosed_at) >= 24 * 3600_000;
+  if (disclose) {
+    try { reply = { ...reply, body: `${disclosureLine(cfg, c.lang, ctx.data?.settings)}\n${reply.body}` }; }
+    catch { /* نص التعريف اتعدّل غلط ⇒ الرد يطلع من غيره أحسن ما مايطلعش */ }
+  }
   const payload = toPayload(reply, { cfg, lang: c.lang, interactive });
   const fallback = toPayload(reply, { cfg, lang: c.lang, interactive: false });
   const pp = payloadProblem(payload) || payloadProblem(fallback);
-  if (pp) return { act: "silent", reason: "payload_invalid", ...base, key, detail: pp, handoff: handoff || ["data_missing", "normal"], mute: true };
-  return { act: "reply", reason: problem ? `data_missing:${problem}` : null, ...base, key, payloads: [payload], fallback: [fallback], handoff, mute: Boolean(handoff),
-    greet: key === "greet", optout, link: reply.link || null, unknown: key === "unknown" };
+  if (pp) return { act: "silent", reason: "payload_invalid", ...base, key, detail: pp, handoff: handoff || ["data_missing", "normal"] };
+  return { act: "reply", reason: problem ? `data_missing:${problem}` : (ctx.afterWait ? `after_${ctx.afterWait}` : null), ...base, key, payloads: [payload], fallback: [fallback], handoff,
+    greet: key === "greet", optout, link: reply.link || null, unknown: key === "unknown", disclose, factual };
 }
 
 /* نص تنبيه الفريق — رسالة SMS واحدة (fitOneSms حارس أخير). مفيش اسم العميل ولا نص رسالته. */
@@ -592,6 +708,25 @@ export function register(app, ctx, deps = {}) {
         handoff TEXT, alert TEXT, link_slug TEXT, referral BOOLEAN NOT NULL DEFAULT FALSE
       );
       CREATE INDEX IF NOT EXISTS wa_bot_log_phone_idx ON wa_bot_log(phone_norm, at DESC);
+      -- ١٢/١٠ (قواعد السكوت): التحويل المفتوح + آخر تعريف + مين كتم؛ وامتى البوت هيرد تاني؛ والردود المؤجّلة
+      ALTER TABLE wa_bot_chats ADD COLUMN IF NOT EXISTS handoff_at TIMESTAMPTZ;
+      ALTER TABLE wa_bot_chats ADD COLUMN IF NOT EXISTS handoff_reason TEXT;
+      ALTER TABLE wa_bot_chats ADD COLUMN IF NOT EXISTS last_disclosed_at TIMESTAMPTZ;
+      ALTER TABLE wa_bot_chats ADD COLUMN IF NOT EXISTS muted_by TEXT;
+      ALTER TABLE wa_bot_log ADD COLUMN IF NOT EXISTS resume_at TIMESTAMPTZ;
+      CREATE TABLE IF NOT EXISTS wa_bot_jobs (
+        id BIGSERIAL PRIMARY KEY,
+        wamid TEXT UNIQUE,                 -- رسالة العميل اللي الرد المؤجّل ده ليها (رد واحد لكل رسالة)
+        phone_norm TEXT, kind TEXT,        -- staff_wait | unknown_wait
+        due_at TIMESTAMPTZ NOT NULL,
+        status TEXT NOT NULL DEFAULT 'pending',   -- pending | running | done | cancelled
+        reason TEXT, ev JSONB, log_id BIGINT,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), done_at TIMESTAMPTZ
+      );
+      CREATE INDEX IF NOT EXISTS wa_bot_jobs_due_idx ON wa_bot_jobs(due_at) WHERE status = 'pending';
+      -- السكوت القديم (١٢ ساعة بعد التحويل) اتلغى: muted_until بقى للكتم اليدوي بس
+      UPDATE wa_bot_chats SET handoff_at = COALESCE(handoff_at, updated_at), handoff_reason = COALESCE(handoff_reason, mute_reason), muted_until = NULL, mute_reason = NULL
+       WHERE muted_until IS NOT NULL AND mute_reason IS DISTINCT FROM 'manual';
       CREATE INDEX IF NOT EXISTS wa_bot_log_at_idx ON wa_bot_log(at DESC);
     `);
     for (const l of SEED_LINKS) {
@@ -642,12 +777,19 @@ export function register(app, ctx, deps = {}) {
   }
 
   async function chatOf(phone) { const r = await q("SELECT * FROM wa_bot_chats WHERE phone_norm=$1", [phone]); return (r && r[0]) || {}; }
+  const isoOf = (v) => (v ? new Date(v).toISOString() : null);
   async function recent(phone, key) {
     const r = await q(`SELECT count(*) FILTER (WHERE decision IN ('replied','dry') AND at > NOW() - INTERVAL '1 hour')::int AS n,
-                              max(at) FILTER (WHERE decision IN ('replied','dry') AND reply_key=$2) AS same_at
+                              max(at) FILTER (WHERE decision IN ('replied','dry') AND reply_key=$2) AS same_at,
+                              max(at) FILTER (WHERE decision='failed' AND error NOT LIKE 'skipped:%' AND at > NOW() - INTERVAL '10 minutes') AS failed_at
                          FROM wa_bot_log WHERE phone_norm=$1 AND at > NOW() - INTERVAL '1 hour'`, [phone, key]);
     const x = (r && r[0]) || {};
-    return { n: Number(x.n) || 0, lastSame: x.same_at ? { key, at: new Date(x.same_at).toISOString() } : null };
+    return { n: Number(x.n) || 0, lastSame: x.same_at ? { key, at: isoOf(x.same_at) } : null, failedRecently: Boolean(x.failed_at) };
+  }
+  /* آخر رسالة بعتها الموظف من موبايل المطعم للعميل ده (صدى) — بالثانية، مش «فيه/مافيش» */
+  async function lastEcho(phone) {
+    const r = await q(`SELECT max(created_at) AS at FROM wa_messages WHERE phone_norm=$1 AND source='echo' AND created_at > NOW() - INTERVAL '24 hours'`, [phone]);
+    return r && r[0] && r[0].at ? isoOf(r[0].at) : null;
   }
 
   async function alertStaff(settings, cfg, { phone, reason, orderNo }) {
@@ -667,6 +809,11 @@ export function register(app, ctx, deps = {}) {
     return sent ? "sent" : "failed";
   }
 
+  const finishLog = (logId, d) => q(
+    `UPDATE wa_bot_log SET decision=$2, reason=$3, detail=$4, reply_key=COALESCE($5, reply_key), replies=$6, sent=$7, error=$8, handoff=$9, alert=$10, link_slug=$11, resume_at=$12 WHERE id=$1`,
+    [logId, d.decision, d.reason || null, d.detail ? String(d.detail).slice(0, 200) : null, d.key || null, d.replies ? jb(d.replies) : null,
+      d.sent || 0, d.error ? String(d.error).slice(0, 200) : null, d.handoff || null, d.alert || null, d.link || null, d.resumeAt || null]);
+
   /* رسالة واردة واحدة. بترجّع true لو البوت «ماسك» (أي وضع غير off). عمرها ما بترمي. */
   async function handle(ev) {
     let settings;
@@ -676,7 +823,6 @@ export function register(app, ctx, deps = {}) {
     if (ev.isEcho) return true;
     await ready;
     const phone = String(ev.phone || "");
-    const now = clock();
     const cls = classify(ev);
     // ١) احجز الـwamid — ويب هوك مكرر مايتعالجش مرتين
     const claim = await q(
@@ -685,22 +831,28 @@ export function register(app, ctx, deps = {}) {
       [ev.wamid || null, ev.at || null, phone || null, cfg.mode, String(ev.type || "text").slice(0, 20), String(ev.text || "").slice(0, 300),
         String(cls.rawIntent || "").slice(0, 40), cls.key, Number(cls.score) || 0, cls.lang, Boolean(ev.referral)]);
     if (!claim || !claim.length) return true;                // مكرر، أو القاعدة واقعة ⇒ مانردّش على حاجة مش متسجّلة
-    const logId = claim[0].id;
-    const finish = (d) => q(
-      `UPDATE wa_bot_log SET decision=$2, reason=$3, detail=$4, reply_key=COALESCE($5, reply_key), replies=$6, sent=$7, error=$8, handoff=$9, alert=$10, link_slug=$11 WHERE id=$1`,
-      [logId, d.decision, d.reason || null, d.detail ? String(d.detail).slice(0, 200) : null, d.key || null, d.replies ? jb(d.replies) : null,
-        d.sent || 0, d.error ? String(d.error).slice(0, 200) : null, d.handoff || null, d.alert || null, d.link || null]);
+    await work(ev, claim[0].id, settings, cfg, null);
+    return true;
+  }
+
+  /* القرار والتنفيذ لرسالة واحدة. afterWait = نوع الرد المؤجّل لما وقته ييجي (وإلا null). عمرها ما بترمي. */
+  async function work(ev, logId, settings, cfg, afterWait) {
+    const phone = String(ev.phone || "");
+    const now = clock();
+    const cls = classify(ev);
+    const finish = (d) => finishLog(logId, d);
     try {
       // ٢) الإعلان: نحفظ مصدره على المحادثة من أول رسالة (حتى لو هنسكت)
-      if (ev.referral && /^5\d{8}$/.test(phone)) {
+      if (!afterWait && ev.referral && /^5\d{8}$/.test(phone)) {
         const r = ev.referral;
         const ref = { source_id: r.source_id || null, source_type: r.source_type || null, source_url: r.source_url || null, headline: r.headline ? String(r.headline).slice(0, 120) : null, ctwa_clid: r.ctwa_clid || null };
         await q(`INSERT INTO wa_bot_chats(phone_norm, referral, referral_at) VALUES ($1,$2,NOW())
                  ON CONFLICT (phone_norm) DO UPDATE SET referral=$2, referral_at=NOW(), updated_at=NOW()`, [phone, jb(ref)]);
       }
+      const ok = /^5\d{8}$/.test(phone);
       const chat = await chatOf(phone);
-      const humanActive = /^5\d{8}$/.test(phone) ? await wa.humanActive(phone, cfg.humanWindowHours) : false;
-      const rc = cls.key ? await recent(phone, cls.key) : { n: 0, lastSame: null };
+      const echoAt = ok ? await lastEcho(phone) : null;
+      const rc = cls.key ? await recent(phone, cls.key) : { n: 0, lastSame: null, failedRecently: false };
       let data;
       try { data = await loadData({ settings, cfg, phone, orderNo: cls.entities?.orderNo || null, key: cls.key, now }); }
       catch (e) {   // مصدر بيانات وقع كله ⇒ بيانات فاضية: أي رد محتاج بيانات هيتحوّل لموظف من نفسه (DataMissing)
@@ -708,16 +860,25 @@ export function register(app, ctx, deps = {}) {
         data = { settings, now, bundles: [], policy: null, first: null, loyalty: null, order: null, orderDbFailed: true, links: {}, open: null };
       }
       data.chat = chat;
-      const d = decide(ev, { cfg, now, chat, humanActive, repliesLastHour: rc.n, lastSame: rc.lastSame, data, cls });
+      const d = decide(ev, { cfg, now, chat, lastEchoAt: echoAt, repliesLastHour: rc.n, lastSame: rc.lastSame, failedRecently: rc.failedRecently, data, cls, afterWait });
 
       // «إيقاف/اشتراك» بصياغة أوسع من اللي whatsapp.js بيمسكها ⇒ نطبّقها هنا (حتى لو هنسكت)
-      if (d.optout && !ev.intent && typeof wa.applyIntent === "function") { try { await wa.applyIntent(phone, d.optout); } catch (e) { console.error("[wabot] optout:", e.message); } }
+      if (d.optout && !ev.intent && !afterWait && typeof wa.applyIntent === "function") { try { await wa.applyIntent(phone, d.optout); } catch (e) { console.error("[wabot] optout:", e.message); } }
 
+      if (d.act === "wait") {
+        // رد مؤجّل: صف في القاعدة (بيعيش بعد إعادة التشغيل). وقت التنفيذ كل الشروط بتتراجع من جديد.
+        const evLite = { phone, phoneNorm: phone, wamid: ev.wamid || null, text: String(ev.text || "").slice(0, 1000), type: ev.type || "text",
+          interactiveId: ev.interactiveId || null, referral: ev.referral || null, at: ev.at || now.toISOString(), intent: ev.intent || null };
+        const j = await q(`INSERT INTO wa_bot_jobs(wamid, phone_norm, kind, due_at, ev, log_id) VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT (wamid) DO NOTHING RETURNING id`,
+          [ev.wamid || null, phone, d.waitKind, d.dueAt, jb(evLite), logId]);
+        await finish({ decision: j && j.length ? "waiting" : "silent", reason: j && j.length ? d.reason : "job_not_saved", key: d.key, resumeAt: d.resumeAt });
+        return;
+      }
       if (d.act === "silent") {
         let alert = null;
-        if (d.handoff) alert = await handoffNow(settings, cfg, phone, d.handoff, data.order?.order_no, d.mute);
-        await finish({ decision: "silent", reason: d.reason, detail: d.detail, key: d.key, handoff: d.handoff ? d.handoff[0] : null, alert });
-        return true;
+        if (d.handoff) alert = await handoffNow(settings, cfg, phone, d.handoff, data.order?.order_no);
+        await finish({ decision: "silent", reason: d.reason, detail: d.detail, key: d.key, handoff: d.handoff ? d.handoff[0] : null, alert, resumeAt: d.resumeAt });
+        return;
       }
       // ٣) الإرسال: dry = مفيش. test = قايمة التجربة بس. live = الأقفال الكاملة. محاولة واحدة (+ نص عادي لو التفاعلي فشل).
       let sent = 0, error = null, used = d.payloads;
@@ -731,37 +892,87 @@ export function register(app, ctx, deps = {}) {
         if (r.ok) sent = 1; else error = r.skipped ? `skipped:${r.skipped}` : `${r.error || "send_failed"}${r.message ? ` ${r.message}` : ""}`;
       }
       const okSent = cfg.mode === "dry" || sent > 0;
-      // ٤) الحالة: التحية، عدّاد «غير مفهوم»، آخر رد
+      // ٤) الحالة: التحية، التعريف، عدّاد «غير مفهوم»، آخر رد
       if (okSent) {
-        await q(`INSERT INTO wa_bot_chats(phone_norm, last_greet_at, unknown_streak, last_key, last_key_at)
-                 VALUES ($1, CASE WHEN $2 THEN NOW() END, CASE WHEN $3 THEN 1 ELSE 0 END, $4, NOW())
+        await q(`INSERT INTO wa_bot_chats(phone_norm, last_greet_at, unknown_streak, last_key, last_key_at, last_disclosed_at)
+                 VALUES ($1, CASE WHEN $2 THEN NOW() END, CASE WHEN $3 THEN 1 ELSE 0 END, $4, NOW(), CASE WHEN $5 THEN NOW() END)
                  ON CONFLICT (phone_norm) DO UPDATE SET
                    last_greet_at = CASE WHEN $2 THEN NOW() ELSE wa_bot_chats.last_greet_at END,
                    unknown_streak = CASE WHEN $3 THEN wa_bot_chats.unknown_streak + 1 ELSE 0 END,
-                   last_key = $4, last_key_at = NOW(), updated_at = NOW()`, [phone, d.greet === true, d.unknown === true, d.key]);
+                   last_disclosed_at = CASE WHEN $5 THEN NOW() ELSE wa_bot_chats.last_disclosed_at END,
+                   last_key = $4, last_key_at = NOW(), updated_at = NOW()`, [phone, d.greet === true, d.unknown === true, d.key, d.disclose === true]);
       }
-      // ٥) التحويل: سكوت + تنبيه. فشل الإرسال نفسه = تحويل (العميل ماوصلوش حاجة) من غير أي محاولة تانية.
+      // ٥) التحويل: يتسجّل «مفتوح» على المحادثة + تنبيه. فشل الإرسال نفسه = تحويل (العميل ماوصلوش حاجة) من غير محاولة تانية.
       let handoff = d.handoff, alert = null;
-      if (!okSent && /^skipped:/.test(error || "")) handoff = null;      // الأقفال مقفولة (وضع live من غير مفاتيح واتساب) ⇒ البوت عملياً مقفول: لا سكوت ولا تنبيه
+      if (!okSent && /^skipped:/.test(error || "")) handoff = null;      // الأقفال مقفولة (وضع live من غير مفاتيح واتساب) ⇒ البوت عملياً مقفول: لا تسجيل ولا تنبيه
       else if (!okSent) handoff = ["send_failed", "urgent"];
-      if (handoff) alert = await handoffNow(settings, cfg, phone, handoff, data.order?.order_no, true);
+      if (handoff) alert = await handoffNow(settings, cfg, phone, handoff, data.order?.order_no);
       await finish({ decision: cfg.mode === "dry" ? "dry" : sent ? "replied" : "failed", reason: d.reason, key: d.key, replies: used, sent, error,
         handoff: handoff ? handoff[0] : null, alert, link: d.link });
     } catch (e) {
-      console.error("[wabot] handle:", e.message);
+      console.error("[wabot] work:", e.message);
       await finish({ decision: "failed", reason: "exception", error: e.message });
     }
-    return true;
   }
-  async function handoffNow(settings, cfg, phone, handoff, orderNo, mute) {
-    if (mute && /^5\d{8}$/.test(phone)) {
-      await q(`INSERT INTO wa_bot_chats(phone_norm, muted_until, mute_reason) VALUES ($1, NOW() + make_interval(hours => $2::int), $3)
-               ON CONFLICT (phone_norm) DO UPDATE SET muted_until = NOW() + make_interval(hours => $2::int), mute_reason=$3, unknown_streak=0, updated_at=NOW()`,
-        [phone, Math.ceil(cfg.humanWindowHours), handoff[0]]);
+  async function handoffNow(settings, cfg, phone, handoff, orderNo) {
+    if (/^5\d{8}$/.test(phone)) {
+      await q(`INSERT INTO wa_bot_chats(phone_norm, handoff_at, handoff_reason) VALUES ($1, NOW(), $2)
+               ON CONFLICT (phone_norm) DO UPDATE SET handoff_at = NOW(), handoff_reason = $2, unknown_streak = 0, updated_at = NOW()`, [phone, handoff[0]]);
     }
     if (cfg.mode === "dry") return "would";
     if (cfg.mode === "test" && !cfg.alertInTest) return "would";
     return alertStaff(settings, cfg, { phone, reason: handoff[0], orderNo });
+  }
+
+  /* ── الردود المؤجّلة (قواعد ٢ و٥) ─────────────────────────────────────────
+     كل ١٥ ثانية: الصفوف اللي وقتها جه. الحجز بـUPDATE … WHERE status='pending' ⇒ نسخة واحدة بس بتنفّذ، وصف اتحجز
+     ووقع السيرفر في نصه بيفضل running وعمره ما يتبعت تاني (الأمان قبل الاكتمال). وقت التنفيذ بنراجع من جديد:
+     الوضع (off ⇒ إلغاء)، الموظف رد بعد رسالة العميل (⇒ إلغاء)، التأخير عن الميعاد (⇒ إلغاء)، وبعدها decide كاملة
+     (قايمة التجربة، الكتم اليدوي، نافذة الـ٢٤ ساعة، الحدود…). */
+  async function runDueJobs() {
+    await ready;
+    const due = await q(`SELECT id FROM wa_bot_jobs WHERE status='pending' AND due_at <= $1 ORDER BY due_at LIMIT 25`, [clock().toISOString()]);
+    let ran = 0;
+    for (const row of due || []) {
+      const got = await q(`UPDATE wa_bot_jobs SET status='running' WHERE id=$1 AND status='pending' RETURNING id, wamid, phone_norm, kind, due_at, ev, log_id`, [row.id]);
+      if (!got || !got.length) continue;
+      const j = got[0];
+      const end = (status, reason) => q(`UPDATE wa_bot_jobs SET status=$2, reason=$3, done_at=NOW() WHERE id=$1`, [j.id, status, reason || null]);
+      const cancel = async (reason) => { await end("cancelled", reason); await finishLog(j.log_id, { decision: "silent", reason }); };
+      try {
+        const settings = (await getSettingsData()) || {};
+        const cfg = botConfig(settings);
+        const ev = typeof j.ev === "string" ? JSON.parse(j.ev) : (j.ev || {});
+        const now = clock();
+        if (cfg.mode === "off") { await cancel("mode_off"); continue; }
+        if (now.getTime() - new Date(j.due_at).getTime() > cfg.maxAgeMinutes * 60_000) { await cancel("stale"); continue; }
+        const echo = await q(`SELECT 1 FROM wa_messages WHERE phone_norm=$1 AND source='echo' AND created_at > $2 LIMIT 1`, [j.phone_norm, ev.at || new Date(j.due_at).toISOString()]);
+        if (echo === null) { await cancel("echo_check_failed"); continue; }      // مانعرفش الموظف رد ولا لأ ⇒ مانردّش
+        if (echo.length) { await cancel("staff_answered"); continue; }
+        await work(ev, j.log_id, settings, cfg, j.kind === "unknown_wait" ? "unknown_wait" : "staff_wait");
+        await end("done", null);
+        ran++;
+      } catch (e) { console.error("[wabot] job:", e.message); await end("cancelled", "exception"); }
+    }
+    return ran;
+  }
+  let timer = null;
+  if (!deps.noTimer) { timer = setInterval(() => { runDueJobs().catch((e) => console.error("[wabot] jobs:", e.message)); }, 15_000); if (timer.unref) timer.unref(); }
+
+  /* كتم يدوي: الموظف ماسك المحادثة بنفسه. بيفضل ماسك حتى والمطعم مقفول، وبينتهي لوحده. */
+  async function muteChat(phone, hours, by) {
+    const h = Math.min(168, Math.max(1, Math.ceil(Number(hours) || 0)));
+    await ready;
+    await q(`INSERT INTO wa_bot_chats(phone_norm, muted_until, mute_reason, muted_by) VALUES ($1, NOW() + make_interval(hours => $2::int), 'manual', $3)
+             ON CONFLICT (phone_norm) DO UPDATE SET muted_until = NOW() + make_interval(hours => $2::int), mute_reason='manual', muted_by=$3, updated_at=NOW()`, [phone, h, by ? String(by).slice(0, 60) : null]);
+    await q(`UPDATE wa_bot_jobs SET status='cancelled', reason='manual_mute', done_at=NOW() WHERE phone_norm=$1 AND status='pending'`, [phone]);
+    return { ok: true, hours: h };
+  }
+  /* رجّع البوت: بيشيل الكتم اليدوي والتحويل المفتوح وعدّاد «غير مفهوم» */
+  async function unmuteChat(phone) {
+    await ready;
+    await q("UPDATE wa_bot_chats SET muted_until=NULL, mute_reason=NULL, muted_by=NULL, handoff_at=NULL, handoff_reason=NULL, unknown_streak=0, updated_at=NOW() WHERE phone_norm=$1", [phone]);
+    return { ok: true };
   }
   if (wa && typeof wa.setBotRuntime === "function") wa.setBotRuntime(handle);
 
@@ -779,7 +990,8 @@ export function register(app, ctx, deps = {}) {
     const lr = (await q("SELECT slug, active, clicks, target_type, target_id, utm_campaign, coupon FROM cms_links WHERE slug = ANY($1::text[])", [slugs])) || [];
     return c.json({ ok: true, config: cfg, defaults: DEFAULTS, texts: textsMeta(), replyKeys: REPLY_KEYS, modes: MODES,
       state: { configured: wa?.configured ? wa.configured() : false, liveGate: gate,   // null = الأقفال مفتوحة؛ غير كده اسم القفل اللي مانع وضع live
-        liveReady: !gate, staffLang: staffConfig(settings).lang, defaultAlertPhones: staffConfig(settings).alertPhones.map((p) => `0${p}`) },
+        liveReady: !gate, staffLang: staffConfig(settings).lang, publicPhone: publicPhoneOf(cfg, settings),
+        open: (() => { try { return settings?.hours ? openState(settings, clock()).open : null; } catch { return null; } })(), defaultAlertPhones: staffConfig(settings).alertPhones.map((p) => `0${p}`) },
       links: slugs.map((s) => lr.find((x) => x.slug === s) || { slug: s, missing: true }) });
   });
 
@@ -804,11 +1016,11 @@ export function register(app, ctx, deps = {}) {
     const decision = String(c.req.query("decision") || "");
     const where = [], p = [];
     if (/^5\d{8}$/.test(phone)) { p.push(phone); where.push(`l.phone_norm=$${p.length}`); }
-    if (["replied", "dry", "silent", "failed"].includes(decision)) { p.push(decision); where.push(`l.decision=$${p.length}`); }
+    if (["replied", "dry", "silent", "failed", "waiting"].includes(decision)) { p.push(decision); where.push(`l.decision=$${p.length}`); }
     if (c.req.query("handoff") === "1") where.push("l.handoff IS NOT NULL");
     p.push(limit);
     const rows = (await q(`SELECT l.id, l.at, l.phone_norm, l.mode, l.msg_type, l.text, l.intent, l.reply_key, l.lang, l.decision, l.reason, l.detail, l.replies, l.sent, l.error,
-        l.handoff, l.alert, l.link_slug, l.referral FROM wa_bot_log l ${where.length ? `WHERE ${where.join(" AND ")}` : ""} ORDER BY l.at DESC LIMIT $${p.length}`, p)) || [];
+        l.handoff, l.alert, l.link_slug, l.referral, l.resume_at FROM wa_bot_log l ${where.length ? `WHERE ${where.join(" AND ")}` : ""} ORDER BY l.at DESC LIMIT $${p.length}`, p)) || [];
     return c.json({ ok: true, rows });
   });
 
@@ -836,25 +1048,61 @@ export function register(app, ctx, deps = {}) {
           AND o.status NOT IN ('pending_payment','expired','rejected_refunded','refund_failed','paid_pos_failed') AND o.created_at > NOW() - make_interval(days => $2::int)) AS orders
         FROM cms_links l WHERE l.slug = ANY($1::text[])`, [slugs, days])) || [];
     const muted = (await q("SELECT count(*)::int AS n FROM wa_bot_chats WHERE muted_until > NOW()", [])) || [{ n: 0 }];
-    return c.json({ ok: true, days, mode: cfg.mode, totals: tot || {}, byKey, byReason, ordersAfterReply: ord || {}, links, mutedNow: muted[0]?.n || 0 });
+    // ردود الشهر (بتوقيت الرياض) والتكلفة: أول freeRepliesPerMonth ببلاش، وبعدها replyRateSar للرد (من الإعدادات)
+    const mo = (await q(`SELECT count(*)::int AS n FROM wa_bot_log WHERE decision='replied' AND at >= (date_trunc('month', NOW() AT TIME ZONE 'Asia/Riyadh') AT TIME ZONE 'Asia/Riyadh')`, [])) || [{ n: 0 }];
+    const monthReplies = Number(mo[0]?.n) || 0;
+    const billable = Math.max(0, monthReplies - cfg.freeRepliesPerMonth);
+    const waiting = (await q("SELECT count(*)::int AS n FROM wa_bot_jobs WHERE status='pending'", [])) || [{ n: 0 }];
+    return c.json({ ok: true, days, mode: cfg.mode, totals: tot || {}, byKey, byReason, ordersAfterReply: ord || {}, links, mutedNow: muted[0]?.n || 0, waitingNow: waiting[0]?.n || 0,
+      month: { replies: monthReplies, free: cfg.freeRepliesPerMonth, billable, rateSar: cfg.replyRateSar, costSar: Math.round(billable * cfg.replyRateSar * 100) / 100 } });
   });
 
-  app.get("/api/cms/wabot/chats", async (c) => {
-    const err = await requireAdmin(c); if (err) return err;
+  const normPh = (v) => String(v || "").replace(/\D/g, "").replace(/^(00966|966|0)/, "");
+  async function chatRows() {
     await ready;
-    const rows = (await q(`SELECT phone_norm, muted_until, mute_reason, last_greet_at, last_key, last_key_at, referral, referral_at
-                             FROM wa_bot_chats WHERE muted_until > NOW() OR updated_at > NOW() - INTERVAL '48 hours' ORDER BY updated_at DESC LIMIT 200`, [])) || [];
-    return c.json({ ok: true, rows });
-  });
-  app.post("/api/cms/wabot/chats/unmute", async (c) => {
+    const cfg = botConfig((await getSettingsData()) || {});
+    const rows = (await q(`SELECT c.phone_norm, c.muted_until, c.muted_by, c.handoff_at, c.handoff_reason, c.last_key, c.last_key_at, c.referral_at, c.updated_at,
+        (SELECT max(m.created_at) FROM wa_messages m WHERE m.phone_norm = c.phone_norm AND m.source='echo' AND m.created_at > NOW() - INTERVAL '24 hours') AS last_echo_at,
+        l.text AS last_text, l.at AS last_at, l.decision AS last_decision, l.reason AS last_reason, l.resume_at AS last_resume_at
+      FROM wa_bot_chats c LEFT JOIN LATERAL (SELECT text, at, decision, reason, resume_at FROM wa_bot_log x WHERE x.phone_norm = c.phone_norm ORDER BY x.at DESC LIMIT 1) l ON TRUE
+      WHERE c.muted_until > NOW() OR c.updated_at > NOW() - INTERVAL '48 hours' ORDER BY c.updated_at DESC LIMIT 200`, [])) || [];
+    const now = Date.now();
+    return rows.map((r) => ({ ...r, manual_muted: Boolean(r.muted_until && new Date(r.muted_until).getTime() > now),
+      handoff_open: Boolean(r.handoff_at && now - new Date(r.handoff_at).getTime() < cfg.handoffOpenHours * 3600_000),
+      handoff_until: r.handoff_at ? new Date(new Date(r.handoff_at).getTime() + cfg.handoffOpenHours * 3600_000).toISOString() : null }));
+  }
+  const whoOf = (c) => { try { return (ctx.whoami && ctx.whoami(c)) || null; } catch { return null; } };
+  async function muteRoute(c) {
     const err = await requireAdmin(c); if (err) return err;
     let b = {}; try { b = await c.req.json(); } catch { /* الكل */ }
-    const phone = String(b.phone || "").replace(/\D/g, "").replace(/^(966|0)/, "");
-    if (b.all === true) { const no = ownerOnly(c); if (no) return no; await q("UPDATE wa_bot_chats SET muted_until=NULL, mute_reason=NULL, unknown_streak=0, last_greet_at=NULL, updated_at=NOW()", []); return c.json({ ok: true, all: true }); }
+    const phone = normPh(b.phone);
+    if (!/^5\d{8}$/.test(phone)) return c.json({ ok: false, error: "bad_phone", message: "اكتب جوال سعودي 05XXXXXXXX" }, 400);
+    const cfg = botConfig((await getSettingsData()) || {});
+    const r = await muteChat(phone, b.hours || cfg.manualMuteHours, b.by || whoOf(c) || "dashboard");
+    if (ctx.auditNote) { try { await ctx.auditNote(c, `🤖 كتم بوت واتساب في محادثة 0${phone} لمدة ${r.hours} ساعة`); } catch { /* اختياري */ } }
+    return c.json({ ...r, phone: `0${phone}` });
+  }
+  async function unmuteRoute(c) {
+    const err = await requireAdmin(c); if (err) return err;
+    let b = {}; try { b = await c.req.json(); } catch { /* الكل */ }
+    if (b.all === true) {
+      const no = ownerOnly(c); if (no) return no;
+      await q("UPDATE wa_bot_chats SET muted_until=NULL, mute_reason=NULL, muted_by=NULL, handoff_at=NULL, handoff_reason=NULL, unknown_streak=0, last_greet_at=NULL, last_disclosed_at=NULL, updated_at=NOW()", []);
+      return c.json({ ok: true, all: true });
+    }
+    const phone = normPh(b.phone);
     if (!/^5\d{8}$/.test(phone)) return c.json({ ok: false, error: "bad_phone" }, 400);
-    await q("UPDATE wa_bot_chats SET muted_until=NULL, mute_reason=NULL, unknown_streak=0, updated_at=NOW() WHERE phone_norm=$1", [phone]);
-    return c.json({ ok: true });
-  });
+    return c.json(await unmuteChat(phone));
+  }
+  // صفحة المالك (#wa-bot)
+  app.get("/api/cms/wabot/chats", async (c) => { const err = await requireAdmin(c); if (err) return err; return c.json({ ok: true, rows: await chatRows() }); });
+  app.post("/api/cms/wabot/chats/mute", muteRoute);
+  app.post("/api/cms/wabot/chats/unmute", unmuteRoute);
+  /* نفس التلاتة للفريق (مدير/كاشير): مسارهم تحت /api/cms/ops ⇒ قسم «الطلبات» في صلاحيات الأدوار (cms.sectionOf)،
+     فاللي عنده تعديل الطلبات يقدر يكتم/يرجّع البوت في محادثة من غير ما يشوف إعدادات البوت. */
+  app.get("/api/cms/ops/wabot/chats", async (c) => { const err = await requireAdmin(c); if (err) return err; return c.json({ ok: true, rows: await chatRows() }); });
+  app.post("/api/cms/ops/wabot/mute", muteRoute);
+  app.post("/api/cms/ops/wabot/unmute", unmuteRoute);
 
   /* تجربة على الورق: نص ⇒ القرار والرد بالبيانات الحيّة. لا إرسال، لا سجل، لا تغيير حالة. */
   app.post("/api/cms/wabot/simulate", async (c) => {
@@ -870,8 +1118,10 @@ export function register(app, ctx, deps = {}) {
     try { data = await loadData({ settings, cfg, phone, orderNo: cls.entities?.orderNo || null, key: cls.key, now }); }
     catch (e) { return c.json({ ok: true, classified: cls, decision: { act: "silent", reason: `data_failed:${e.message}` } }); }
     data.chat = {};
-    const d = decide(ev, { cfg, now, chat: {}, humanActive: false, repliesLastHour: 0, lastSame: null, data, cls });
-    return c.json({ ok: true, classified: { key: cls.key, intent: cls.rawIntent, lang: cls.lang, score: cls.score }, decision: { act: d.act, reason: d.reason, key: d.key, handoff: d.handoff || null, link: d.link || null },
+    // المحاكاة = «لو الرد هيطلع دلوقتي»: من غير سكوت موظف، ومن غير انتظار الـ٣ دقايق، ومع سطر التعريف (أول رسالة)
+    const d = decide(ev, { cfg, now, chat: {}, lastEchoAt: null, repliesLastHour: 0, lastSame: null, failedRecently: false, data, cls, afterWait: "unknown_wait" });
+    return c.json({ ok: true, classified: { key: cls.key, intent: cls.rawIntent, lang: cls.lang, score: cls.score }, open: data.open ? data.open.open : null,
+      decision: { act: d.act, reason: /^after_/.test(d.reason || "") ? null : d.reason, key: d.key, handoff: d.handoff || null, link: d.link || null },
       payloads: d.payloads || [], textFallback: d.fallback || [] });
   });
 
@@ -901,5 +1151,5 @@ export function register(app, ctx, deps = {}) {
     return c.json({ ok: r.ok === true, result: r, to: `0${phone}`, template: tpl.name, language: lang });
   });
 
-  return { handle, ready, loadData, botConfig: async () => botConfig((await getSettingsData()) || {}) };
+  return { handle, ready, loadData, runDueJobs, muteChat, unmuteChat, stop: () => { if (timer) clearInterval(timer); }, botConfig: async () => botConfig((await getSettingsData()) || {}) };
 }
