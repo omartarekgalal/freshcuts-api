@@ -7,6 +7,7 @@ import { expandBundle, normalizeSlots } from "../bundles.js";
 import { makeAssistTools } from "../waassist.js";
 import * as AR from "../waassistrun.js";
 import * as R from "../wabotrun.js";
+import { factNote } from "../wadishfacts.js";
 
 const J = (f) => JSON.parse(fs.readFileSync(new URL(`./fixtures/${f}`, import.meta.url), "utf8"));
 export const FX = { pages: J("menu.json").data.pages, bundles: J("bundles.json").bundles, mods: J("modifiers.json").items, offers: J("offers.json").offers || [], faq: J("faq.json") };
@@ -50,7 +51,7 @@ export function makeWorld(w = {}, { callModel, onCall, acfg: acfgIn = {} } = {})
   const feeFor = (t) => (t >= 150 ? 0 : t >= 100 ? 5 : t >= 80 ? 10 : t >= 60 ? 15 : 20);
   const nextAt = (t) => (t < 60 ? 60 : t < 80 ? 80 : t < 100 ? 100 : t < 150 ? 150 : null);
   const tools = makeAssistTools({ pool, log: () => {}, now, tune: async () => AR.assistConfig(acfgIn),
-    menuIndex: async () => (down.has("menu") ? null : menu), boxes: async () => (down.has("boxes") ? null : boxes),
+    menuIndex: async () => (down.has("menu") ? null : menu), dishNote: async (id) => { const ar = factNote(id, "ar"); return ar ? { ar, en: factNote(id, "en") || ar } : null; }, boxes: async () => (down.has("boxes") ? null : boxes),
     expandBundle: async (slug, choices, qty, _option, extra) => { const b = raw.find((x) => x.slug === slug); return b ? expandBundle(b, choices, qty, resolve, extra) : { ok: false, error: "bundle_not_found" }; },
     modifiers: { catalogItems: async () => FX.mods, resolve: async (pid, ids) => { const opts = (FX.mods[String(pid)] || []).flatMap((g) => g.options); const bad = ids.filter((id) => !opts.some((o) => o.id === id));
       return bad.length ? { ok: false, error: "unknown_modifier", ids: bad } : { ok: true, shown: ids.reduce((a, id) => a + opts.find((o) => o.id === id).shown, 0) }; } },

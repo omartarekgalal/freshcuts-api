@@ -84,6 +84,7 @@ export function gradeConversation(conv, W) {
   const hand = conv.turns.find((t) => t.handover);
   if (E.handover) { if (!hand) fail("missed_handover", null, E.handover); else if (![].concat(E.handover).includes(hand.handover)) fail("wrong_handover", hand.i, hand.handover); }
   if (E.noHandover && hand) fail("wrong_handover", hand.i, hand.handover);
+  if (E.noAssistantHandover) for (const t of conv.turns) if (t.by === "assistant" && t.handover) fail("wrong_handover", t.i, `the assistant handed over again: ${t.handover}`);
   const built = conv.turns.filter((t) => t.cart).pop();
   const lastBuild = built ? [...built.tools].reverse().find((x) => x.name === "build_cart" && x.result && x.result.ok) : null;
   if (E.noCart && built) fail("unexpected_cart", built.i, "");

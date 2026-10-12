@@ -1964,7 +1964,7 @@ test("per-dish facts: «does X contain Y» answers only that one thing for the c
   assert.deepEqual([DF.lookupFact("13", "فيها حليب؟").status, DF.lookupFact("13", "فيها بيض؟").status, DF.lookupFact("13", "فيها صويا؟").status, DF.lookupFact("13", "فيها سمسم وبيض؟").status], ["present_fixed", "not_found", "unknown_staff", "unknown_staff"]);
   assert.deepEqual([DF.lookupFact("13", "فيها ارز؟").status, DF.lookupFact("13", "فيها ارز؟").part, DF.lookupFact("13", "فيها بصل؟").status, DF.lookupFact("13", "فيها فلفل؟").status], ["present_removable", "الأرز", "present_fixed", "unknown_staff"], "an ingredient that is not recorded is never declared absent");
   // a dish with a bought-in part (not complete data): what IS recorded is answered, what is not recorded goes to staff — absence is never inferred
-  assert.deepEqual([DF.lookupFact("71", "البرجر فيه سمسم؟").status, DF.lookupFact("71", "البرجر فيه بيض؟").status, DF.lookupFact("71", "البرجر فيه بيض؟").why], ["present_fixed", "unknown_staff", "has_unlabelled_part"]);
+  assert.deepEqual([DF.lookupFact("71", "البرجر فيه سمسم؟").status, DF.lookupFact("71", "البرجر فيه خردل؟").status, DF.lookupFact("71", "البرجر فيه خردل؟").why], ["present_fixed", "unknown_staff", "has_unlabelled_part"]);
   assert.equal(DF.lookupFact("999", "فيه بيض؟").status, "unknown_staff");
   for (const sev of ["عندي حساسية شديدة من السمسم", "حساسية قوية من البيض", "severe nut allergy", "اخر مره رحت المستشفى من المكسرات"]) assert.equal(DF.lookupFact("13", sev).status, "severe", sev);
   assert.doesNotMatch(JSON.stringify(DF.lookupFact("13", "فيها سمسم؟")), /mustard|milk|"rm"|"fx"|"a":|السلطة|ثوم/, "nothing else about the dish leaves the lookup");
@@ -1976,20 +1976,21 @@ test("per-dish facts: «does X contain Y» answers only that one thing for the c
   // switched on
   const mk = () => liveWorld({ waBot: { dishFactsEnabled: true } });
   const KITCHEN = "مطبخنا واحد لكل الأصناف وقد يحصل تلامس بين المكونات أثناء التحضير.";
+  const NOTE = "واكتب لنا حساسيتك في ملاحظة الطلب وننتبه لها.";      // 12/10 (Omar): after an allergy answer, offer the order note
   let w = mk();
   let r = await w.say("وجبة نصف دجاجة على الفحم فيها سمسم؟");
-  assert.deepEqual(r.sent, [txt(ME, `نعم، يوجد سمسم في «وجبة نصف دجاجة على الفحم»، وذلك في الطحينة. يمكن تجهيز الطلب بدون الطحينة: اكتبها في ملاحظة الصنف عند الطلب.\n${KITCHEN}`)]);
+  assert.deepEqual(r.sent, [txt(ME, `نعم، يوجد سمسم في «وجبة نصف دجاجة على الفحم»، وذلك في الطحينة. يمكن تجهيز الطلب بدون الطحينة: اكتبها في ملاحظة الصنف عند الطلب.\n${KITCHEN}\n${NOTE}`)]);
   assert.deepEqual([r.log.reply_key, r.log.detail, r.log.handoff, w.sms.length], ["dishfact", "fact:present_removable", null, 0]);
   w = mk(); r = await w.say("هل وجبة نصف دجاجة على الفحم فيها بيض");
-  assert.deepEqual(r.sent, [txt(ME, `حسب بياناتنا لا يوجد بيض في «وجبة نصف دجاجة على الفحم».\n${KITCHEN}\nوإذا كانت الحساسية شديدة اكتب «موظف» قبل الطلب.`)]);
+  assert.deepEqual(r.sent, [txt(ME, `حسب بياناتنا لا يوجد بيض في «وجبة نصف دجاجة على الفحم».\n${KITCHEN}\nوإذا كانت الحساسية شديدة اكتب «موظف» قبل الطلب.\n${NOTE}`)]);
   w = mk(); r = await w.say("وجبة نصف دجاجة على الفحم فيها حليب؟");
-  assert.deepEqual(r.sent, [txt(ME, "نعم، يوجد حليب في «وجبة نصف دجاجة على الفحم»، ولا يمكن تجهيز الطلب بدون حليب.")]);
+  assert.deepEqual(r.sent, [txt(ME, `نعم، يوجد حليب في «وجبة نصف دجاجة على الفحم»، ولا يمكن تجهيز الطلب بدون حليب.\n${NOTE}`)]);
   w = mk(); r = await w.say("وجبة نصف دجاجة على الفحم فيها ارز؟");
   assert.deepEqual(r.sent, [txt(ME, "نعم، الأرز ضمن «وجبة نصف دجاجة على الفحم». يمكن تجهيز الطلب بدون الأرز: اكتبها في ملاحظة الصنف عند الطلب.")]);
-  // not sure, not covered, several allergens ⇒ staff with one alert; the reply names no ingredient
-  for (const q of ["وجبة نصف دجاجة على الفحم فيها فلفل؟", "برجر لحم كلاسيك فيه بيض؟", "وجبة نصف دجاجة على الفحم فيها صويا؟"]) {
+  // not sure, not covered, several allergens ⇒ said plainly, with the order note and «موظف» if he wants the kitchen to confirm. No automatic handover, no alert (12/10); the reply names no ingredient
+  for (const q of ["وجبة نصف دجاجة على الفحم فيها فلفل؟", "برجر لحم كلاسيك فيه خردل؟", "وجبة نصف دجاجة على الفحم فيها صويا؟"]) {
     w = mk(); r = await w.say(q);
-    assert.deepEqual(r.sent, [txt(ME, `ما عندي تأكيد كافٍ عن هذا المكوّن. حوّلت سؤالك لموظف يتأكد لك من المطبخ.\n${HAND}`)], q); assert.equal(r.log.handoff, "needs_staff", q); assert.equal(w.sms.length, 2, q);
+    assert.deepEqual(r.sent, [txt(ME, `ما عندي معلومة مؤكدة عن هذا المكوّن في الصنف.\n${NOTE}\nولو تبي تأكيد من المطبخ اكتب: موظف`)], q); assert.equal(r.log.handoff, null, q); assert.equal(w.sms.length, 0, q); assert.match(r.log.detail, /^fact:unknown:/, q);
   }
   // severe: urgent handover whatever the dish, on or off, with no dish advice
   for (const world of [mk(), liveWorld()]) {
@@ -2001,7 +2002,7 @@ test("per-dish facts: «does X contain Y» answers only that one thing for the c
   w = mk(); r = await w.say("عندي حساسية من المكسرات");
   assert.equal(r.log.detail, "faq:allergens"); assert.equal(r.log.handoff, "needs_staff");
   // never «free from», «safe», «guaranteed», and never «no nuts in the kitchen», in any of the texts
-  for (const k of ["df_removable", "df_removable_item", "df_fixed", "df_fixed_visible", "df_not_found", "df_can_remove", "df_cannot_remove", "df_unknown", "df_severe", "kitchen_line", "fryer_line"]) for (const lang of ["ar", "en"]) assert.doesNotMatch(R.TEXTS[k][lang], /خالٍ من|خالي من|آمن|مضمون|free from|safe |guarantee|no nuts/i, `${k} ${lang}`);
+  for (const k of ["df_removable", "df_removable_item", "df_fixed", "df_fixed_visible", "df_not_found", "df_can_remove", "df_cannot_remove", "df_unknown", "df_severe", "kitchen_line", "fryer_line", "df_note_line", "df_maybe_removable", "df_removable_only", "df_alt", "df_bread"]) for (const lang of ["ar", "en"]) assert.doesNotMatch(R.TEXTS[k][lang], /خالٍ من|خالي من|آمن|مضمون|free from|safe |guarantee|no nuts/i, `${k} ${lang}`);
   // gatherings with the number written as a word (the phrase B12's verify used)
   for (const q of ["ابي طلب لخمسين شخص", "عندنا عشرين ضيف", "ابي طلب لعزومة 20 شخص"]) assert.equal(R.classify({ text: q, type: "text" }, KNOW).key, "packs", q);
 }));
@@ -2016,8 +2017,10 @@ test("the chef's worked examples (12/10), and the two live misses: a named dish 
   assert.equal(DF.pickDish("وجبة كفتة وطرب فيها سمسم؟", [{ id: 17, name: "وجبة كفتة" }, { id: 87, name: "وجبة كفتة وطرب" }]), "87", "the longer full name wins");
   assert.equal(DF.pickDish("الكفتة فيها سمسم؟", [{ id: 17, name: "وجبة كفتة" }, { id: 87, name: "وجبة كفتة وطرب" }]), null, "no full name and two candidates ⇒ no guess");
   let x = await ask("وجبة الكفتة فيها سمسم؟");
-  assert.equal(x.body, `نعم، يوجد سمسم في «وجبة كفتة»، وذلك في الطحينة. يمكن تجهيز الطلب بدون الطحينة: اكتبها في ملاحظة الصنف عند الطلب.\n${KITCHEN}`);
-  assert.deepEqual([x.r.log.reply_key, x.r.log.detail, x.r.log.handoff], ["dishfact", "fact:present_removable", null]);
+  const NOTE = "واكتب لنا حساسيتك في ملاحظة الطلب وننتبه لها.";
+  // owner fact of 12/10: the kofta itself has no sesame; it is in the tahini that comes with the order
+  assert.equal(x.body, `نعم، يوجد سمسم في «وجبة كفتة»، وذلك في الطحينة فقط، والكفتة نفسها بدون سمسم. يمكن تجهيز الطلب بدون الطحينة: اكتبها في ملاحظة الصنف عند الطلب.\n${KITCHEN}\n${NOTE}`);
+  assert.deepEqual([x.r.log.reply_key, x.r.log.detail, x.r.log.handoff], ["dishfact", "fact:present_removable_only", null]);
   // chef's example 3: «ممكن وجبة الكفتة بدون طحينة؟»
   x = await ask("ممكن وجبة الكفتة بدون طحينة؟");
   assert.equal(x.body, "أكيد، يمكن تجهيز «وجبة كفتة» بدون الطحينة. اكتبها في ملاحظة الصنف عند الطلب."); assert.equal(x.r.log.detail, "fact:can_remove"); assert.equal(x.w.sms.length, 0);
@@ -2026,20 +2029,31 @@ test("the chef's worked examples (12/10), and the two live misses: a named dish 
   x = await ask("ممكن وجبة نصف دجاجة على الفحم بدون ثوم؟");
   assert.equal(x.body, "لا يمكن تجهيز «وجبة نصف دجاجة على الفحم» بدون ثوم.");
   x = await ask("ممكن وجبة الكفتة بدون كزبرة؟");
-  assert.equal(x.r.log.handoff, "needs_staff", "an ingredient that is not recorded ⇒ staff, never «yes» or «it has none»");
+  assert.equal(x.r.log.handoff, null); assert.match(x.body, /^ما عندي معلومة مؤكدة عن هذا المكوّن في الصنف\./, "an ingredient that is not recorded ⇒ said plainly, never «yes» or «it has none», and no automatic handover");
   // a removal about an EXISTING order stays an order change for staff
   x = await ask("طلبي بدون بصل لو سمحت"); assert.notEqual(x.r.log.reply_key, "dishfact");
   assert.equal(R.classify({ text: "بدون بصل لو سمحت", type: "text" }, KNOW).key, "change", "no dish named ⇒ not a dish question («بصل» is not «حلقات بصل»)");
   // chef's example 1 (sesame and the burger): recorded and fixed ⇒ yes, cannot be made without it — and not where it is
   x = await ask("برجر لحم كلاسيك فيه سمسم؟");
-  assert.equal(x.body, `نعم، يوجد سمسم في «برجر لحم كلاسيك»، وذلك في الخبز.\nللتأكد من إمكانية بديل عن الخبز اكتب: موظف\n${KITCHEN}`);
+  assert.equal(x.body, `نعم، يوجد سمسم في «برجر لحم كلاسيك»، وذلك في الخبز.\nللتأكد من إمكانية بديل عن الخبز اكتب: موظف\n${KITCHEN}\n${NOTE}`);
   assert.deepEqual([x.r.log.detail, x.r.log.handoff, x.w.sms.length], ["fact:present_fixed_visible", null, 0], "revision 4: the bun is a visible component ⇒ the place is said, staff only if he asks");
-  // live miss 2: the classic burger and egg — the burger has a bought-in part of unknown label and egg is not recorded ⇒ «not sure» + staff is the right answer
+  // live miss 2, answered by the owner on 12/10: no egg in the burger itself; it MAY be in the bought-in sauce (mayonnaise type) ⇒ «قد يوجد», in the sauce, which can be left out. No handover.
   x = await ask("البرجر الكلاسيك فيه بيض؟");
-  assert.equal(x.body, `ما عندي تأكيد كافٍ عن هذا المكوّن. حوّلت سؤالك لموظف يتأكد لك من المطبخ.\n${HAND}`); assert.equal(x.r.log.detail, "fact:unknown:has_unlabelled_part");
+  assert.equal(x.body, `قد يوجد بيض في الصوص المستخدم مع «برجر لحم كلاسيك». يمكن تجهيز الطلب بدون الصوص: اكتبها في ملاحظة الصنف عند الطلب.\n${KITCHEN}\n${NOTE}`);
+  assert.deepEqual([x.r.log.detail, x.r.log.handoff, x.w.sms.length], ["fact:present_maybe_removable", null, 0]);
+  // owner facts of 12/10, each through the bot: hawawshi bread has no sesame; zinger without the heat = the strips crepe; another bread for a burger ⇒ staff; hot dog is meat; crunchy fries have beef
+  x = await ask("حواوشي سادة فيه سمسم؟");
+  assert.equal(x.body, `نعم، يوجد سمسم في «حواوشي سادة»، وذلك في الطحينة فقط، وخبز الحواوشي بدون سمسم. يمكن تجهيز الطلب بدون الطحينة: اكتبها في ملاحظة الصنف عند الطلب.\n${KITCHEN}\nونوضّح لك أن البطاطس تُقلى في نفس القلاية مع أصناف مقرمشة أخرى.\n${NOTE}`.replace("\nونوضّح لك أن البطاطس تُقلى في نفس القلاية مع أصناف مقرمشة أخرى.", ""));
+  x = await ask("ممكن كريب زنجر سوبريم بدون حار؟");
+  assert.equal(x.body, "«كريب زنجر سوبريم» فيه حار. بدون حار عندنا «كريب ستربس»."); assert.deepEqual([x.r.log.detail, x.r.log.handoff], ["fact:alternative", null]);
+  x = await ask("ممكن برجر لحم كلاسيك بدون خبز؟");
+  assert.equal(x.body, `تغيير خبز «برجر لحم كلاسيك» يحتاج تأكيد من موظف 🙏 حوّلت طلبك له.\n${HAND}`); assert.deepEqual([x.r.log.detail, x.r.log.handoff], ["fact:unknown:other_bread", "needs_staff"]);
+  assert.deepEqual([DF.lookupFact("4", "فيه لحم؟").status, DF.lookupFact("40", "فيها لحوم؟").status, DF.lookupFact("77", "فيها لحم بقري؟").status, DF.lookupFact("77", "فيها لحم بقري؟").part], ["present_fixed", "present_fixed", "present_removable", "شرائح اللحم البقري"]);
+  assert.deepEqual([DF.factNote("73"), DF.factNote("52", "en"), DF.factNote("8")], ["صدور دجاج مقرمشة (ستربس) تُقدَّم مع صوص ثاوزند آيلاند.", "The sauce is served on the side.", null]);
+  assert.equal(DF.lookupFact("19", "فيه جبن؟").rest, undefined, "cheese is used in other items too: «only» is never said about cheese");
   // chef's example 2 (egg and a crepe), for one named crepe
   x = await ask("كريب زنجر سوبريم فيه بيض؟");
-  assert.equal(x.body, "نعم، يوجد بيض في «كريب زنجر سوبريم»، ولا يمكن تجهيز الطلب بدون بيض.");
+  assert.equal(x.body, `نعم، يوجد بيض في «كريب زنجر سوبريم»، ولا يمكن تجهيز الطلب بدون بيض.\n${NOTE}`);
   // a general word for a whole group («البرجر», «الكريب») is still not one dish ⇒ staff (the assistant, not the rules bot, will suggest alternatives)
   x = await ask("عندي حساسية سمسم، ينفع البرجر؟"); assert.equal(x.r.log.handoff, "needs_staff");
 }));
@@ -2057,13 +2071,13 @@ test("dish facts wording: no pronoun tied to the dish name (reads right for any 
     assert.deepEqual([DF.lookupFact("71", "فيه سمسم؟").status, DF.lookupFact("71", "فيه سمسم؟").part], ["present_fixed", "الخبز"]);
     const w = liveWorld({ waBot: { dishFactsEnabled: true } });
     const r = await w.say("برجر لحم كلاسيك فيه سمسم؟");
-    assert.deepEqual(r.sent, [txt(ME, "نعم، يوجد سمسم في «برجر لحم كلاسيك»، وذلك في الخبز.\nللتأكد من إمكانية بديل عن الخبز اكتب: موظف\nمطبخنا واحد لكل الأصناف وقد يحصل تلامس بين المكونات أثناء التحضير.")]);
+    assert.deepEqual(r.sent, [txt(ME, "نعم، يوجد سمسم في «برجر لحم كلاسيك»، وذلك في الخبز.\nللتأكد من إمكانية بديل عن الخبز اكتب: موظف\nمطبخنا واحد لكل الأصناف وقد يحصل تلامس بين المكونات أثناء التحضير.\nواكتب لنا حساسيتك في ملاحظة الطلب وننتبه لها.")]);
     assert.deepEqual([r.log.detail, r.log.handoff, w.sms.length], ["fact:present_fixed_visible", null, 0]);
     // milk in the same dish is NOT flagged visible ⇒ no place is said
-    assert.equal(bodyOf((await liveWorld({ waBot: { dishFactsEnabled: true } }).say("برجر لحم كلاسيك فيه حليب؟")).sent[0]), "نعم، يوجد حليب في «برجر لحم كلاسيك»، ولا يمكن تجهيز الطلب بدون حليب.");
+    assert.equal(bodyOf((await liveWorld({ waBot: { dishFactsEnabled: true } }).say("برجر لحم كلاسيك فيه حليب؟")).sent[0]), "نعم، يوجد حليب في «برجر لحم كلاسيك»، ولا يمكن تجهيز الطلب بدون حليب.\nواكتب لنا حساسيتك في ملاحظة الطلب وننتبه لها.");
   } finally { DF._setFactsForTests(real); }
   // revision 4 of the chef's data (12/10): 59 visible cases in 24 dishes; bread on the burgers, nothing inside a dough, marinade or mix
-  assert.equal(real.revision, 4);
+  assert.equal(real.revision, 5);      // revision 5 = the owner's facts of 12/10 on top of the chef's revision 4 (the visible-component flags are unchanged)
   const vis = Object.entries(real.dishes).flatMap(([id, d]) => Object.entries(d.a || {}).filter(([, a]) => a.v).map(([g, a]) => [id, g, a.v.ar]));
   assert.deepEqual([vis.length, new Set(vis.map((v) => v[0])).size], [59, 24]);
   assert.ok(vis.every(([, , place]) => !/عجين|تتبيل|خلط|marinad|dough|batter/i.test(place)), "no place names a dough, marinade or mix");
@@ -2072,10 +2086,10 @@ test("dish facts wording: no pronoun tied to the dish name (reads right for any 
   // on the real data: the burger's sesame is on the bun (said, no handover); the egg of a crepe is in the dough (no place is said)
   const on = () => liveWorld({ waBot: { dishFactsEnabled: true } });
   const b = on(); const br = await b.say("برجر لحم كلاسيك فيه سمسم؟");
-  assert.deepEqual(br.sent, [txt(ME, "نعم، يوجد سمسم في «برجر لحم كلاسيك»، وذلك في الخبز.\nللتأكد من إمكانية بديل عن الخبز اكتب: موظف\nمطبخنا واحد لكل الأصناف وقد يحصل تلامس بين المكونات أثناء التحضير.")]);
+  assert.deepEqual(br.sent, [txt(ME, "نعم، يوجد سمسم في «برجر لحم كلاسيك»، وذلك في الخبز.\nللتأكد من إمكانية بديل عن الخبز اكتب: موظف\nمطبخنا واحد لكل الأصناف وقد يحصل تلامس بين المكونات أثناء التحضير.\nواكتب لنا حساسيتك في ملاحظة الطلب وننتبه لها.")]);
   assert.deepEqual([br.log.handoff, b.sms.length, b.portal.length], [null, 0, 0]);
   const cr = await on().say("كريب زنجر سوبريم فيه بيض؟");
-  assert.deepEqual(cr.sent, [txt(ME, "نعم، يوجد بيض في «كريب زنجر سوبريم»، ولا يمكن تجهيز الطلب بدون بيض.")]); assert.equal(real.dishes["8"].a.egg.v, undefined);
+  assert.deepEqual(cr.sent, [txt(ME, "نعم، يوجد بيض في «كريب زنجر سوبريم»، ولا يمكن تجهيز الطلب بدون بيض.\nواكتب لنا حساسيتك في ملاحظة الطلب وننتبه لها.")]); assert.equal(real.dishes["8"].a.egg.v, undefined);
   // «موظف» after the bun answer is an ordinary handover
   b.clock.advance(1); assert.equal((await b.say("موظف")).log.handoff, "asked_human");
 }));
@@ -2311,9 +2325,16 @@ test("assistant: what the rules own is never sent to the model — stop, staff, 
   // a cashier answered from the restaurant phone: the pause rules apply, the assistant does not talk over a person
   const st = aWorld([]); await st.cashier("هلا بك"); st.clock.advance(1);
   const p = await st.say("ابي بيتزا"); assert.equal(st.m.used(), 0); assert.equal(p.log.decision, "waiting");
-  // handover open (the customer asked for staff): the assistant stays out, even for a menu question
-  const ho = aWorld([]); await ho.say("ابي اكلم موظف"); ho.clock.advance(1);
-  await ho.say("ابي بيتزا"); assert.equal(ho.m.used(), 0);
+  // 12/10 (Omar's live test): an ORDINARY handover (he asked for staff) no longer owns the chat — the assistant keeps answering and knows staff were already asked
+  const ho = aWorld([mSay("عندنا بيتزا بأنواع كثيرة. تبي أعرض لك الأنواع؟")]); const h1 = await ho.say("ابي اكلم موظف"); ho.clock.advance(1);
+  assert.equal(bodyOf(msgs(h1)[0]), "أبشر 🙏 حوّلت محادثتك لموظف.\nيرد عليك موظف هنا في أقرب وقت، وأنا معك لو تحتاج شي ثاني.");
+  const h2 = await ho.say("ابي بيتزا"); assert.equal(h2.log.reply_key, "assist"); assert.equal(ho.m.used(), 1);
+  assert.match(ho.m.seen[0].messages[0].content[0].text, /"staff_already_asked":\{"reason":"asked_human","minutes_ago":1\}/);
+  ho.clock.advance(1); const h3 = await ho.say("موظف"); assert.equal(h3.log.alert, "already_open", "asking again does not alert the team twice"); assert.equal(ho.portal.length, 1);
+  // a SERIOUS handover (complaint) holds the assistant for assist.seriousHoldMin (15), not for 24 hours
+  const se = aWorld([mSay("هلا 👋 وش تحب تطلب؟")]); await se.say("الطلب وصل بارد وناقص"); se.clock.advance(5);
+  await se.say("ابي بيتزا"); assert.equal(se.m.used(), 0, "inside the hold: the rules bot's facts-only behaviour");
+  se.clock.advance(11); assert.equal((await se.say("ابي بيتزا")).log.reply_key, "assist");
   // an unknown message waits three minutes for staff in the rules bot; with the assistant on it is answered now
   const un = aWorld([mSay("أقدر أساعدك في المنيو والطلب. وش تحب تطلب؟")]);
   const u = await un.say("بلا بلا بلا كلام مو مفهوم"); assert.equal(u.log.decision, "replied"); assert.equal(u.log.reply_key, "assist"); assert.equal(un.db.jobs.length, 0);
@@ -2358,11 +2379,12 @@ test("assistant budget: 10 SAR a day and 100 a month of its own; at the ceiling 
 test("assistant handover: the customer gets the rules bot's fixed line, the chat is handed over with the note, and the assistant goes quiet", withEnv(CONFIGURED, async () => {
   const w = aWorld([mUse(tUse("handover", { reason: "custom_offer", note: "25 people, Friday 9 pm, delivery" }))]);
   const r = await w.say("ابي عرض لعزيمة 25 شخص الجمعة الساعة 9 توصيل");
-  assert.deepEqual(msgs(r), [txt(ME, "أبشر 🙏 حوّلت محادثتك لموظف.\nيرد عليك موظف هنا في أقرب وقت، والمساعد الآلي يترك المحادثة له.")]);
+  assert.deepEqual(msgs(r), [txt(ME, "أبشر 🙏 حوّلت محادثتك لموظف.\nيرد عليك موظف هنا في أقرب وقت، وأنا معك لو تحتاج شي ثاني.")]);
   assert.deepEqual([r.log.reply_key, r.log.handoff], ["assist", "custom_offer"]); assert.equal(w.db.chats.get("512345678").handoff_reason, "custom_offer");
   assert.deepEqual([w.portal[0][0], w.portal[0][1].reason, w.portal[0][1].note, w.portal[0][1].test], ["wa_handover", "custom_offer", "25 people, Friday 9 pm, delivery", true]);
   assert.deepEqual([w.store.turns[0].outcome, w.store.turns[0].handover], ["handover:custom_offer", "custom_offer"]);
-  w.clock.advance(2); await w.say("ابي بيتزا"); assert.equal(w.m.used(), 1, "handover open: no further model call");
+  w.m.push(mSay("أبشر، عندنا بيتزا. وطلب العرض المخصص عند الموظف ويرد عليك هنا.")); w.clock.advance(2);
+  assert.equal((await w.say("ابي بيتزا")).log.reply_key, "assist", "a tailored-offer handover does not silence the assistant"); assert.equal(w.m.used(), 2);
   // severe allergy raised by the model: the same urgent text the rules bot uses
   const s = aWorld([mUse(tUse("handover", { reason: "allergy_severe" }))]);
   const a = await s.say("ولدي ياكل اي شي؟ عنده مشكلة مع الفستق");
@@ -2493,4 +2515,83 @@ test("assistant: «خلها بدون طحينة» while building a cart is a not
   await h.say("ابي اطلب"); h.clock.advance(1);
   assert.equal((await h.say("متى تقفلون؟")).log.reply_key, "assist");
   const o = aWorld([]); assert.equal((await o.say("متى تقفلون؟")).log.reply_key, "hours"); assert.equal(o.m.used(), 0);
+}));
+
+/* ══ ١٢/١٠ بعد تجربة عمر الحيّة (المساعد ماردّش ولا مرة): الموظف والمساعد في نفس المحادثة ═══════════════ */
+test("item 8 — an offers question after a staff reply is answered by the ASSISTANT: it steps back 5 minutes (not 30), waits for staff, then answers; unknown messages are not dropped", withEnv(CONFIGURED, async () => {
+  const w = aWorld([mUse(tUse("get_offers", {})), mSay("عندك عرض الطلب الأول: توصيل مجاني للطلبات من 60 ر.س. تحب أرشح لك شي؟"), mSay("أنا معك. وش تحب تطلب؟")], { waBot: { staffWaitMin: 2 } });
+  await w.cashier("هلا بك، كيف اخدمك"); w.clock.advance(1);
+  // the customer writes one minute after staff: nothing is sent yet, the message waits for the staff member (2 min)
+  const a = await w.say("عندكم عروض؟");
+  assert.deepEqual([a.sent.length, a.log.decision, w.m.used()], [0, "waiting", 0]); assert.equal(w.db.jobs[0].kind, "staff_wait");
+  // staff did not answer ⇒ the delayed reply is the assistant's (it was the rules bot's: «سالته اكتر من مرة على العروض ومبيردش»)
+  const out = (await w.tick(2)).filter((b) => b.type);
+  assert.deepEqual(out, [txt(ME, "عندك عرض الطلب الأول: توصيل مجاني للطلبات من 60 ر.س. تحب أرشح لك شي؟")]);
+  assert.deepEqual([a.log.reply_key, a.log.reason, w.m.used()], ["assist", "assistant", 2]);
+  // a message the rules do not understand also waits and is then answered (it used to be left to staff with no reply at all)
+  w.clock.advance(1); const u = await w.say("انت بطيء اوي");
+  assert.equal(u.log.decision, "waiting"); assert.equal((await w.tick(2)).filter((b) => b.type).length, 1); assert.equal(u.log.reply_key, "assist");
+  // five minutes after the LAST staff message the assistant answers at once again; with the assistant off the old 30-minute pause still applies
+  const s = aWorld([mSay("هلا 👋 وش تحب تطلب؟")]); await s.cashier("لحظة"); s.clock.advance(6);
+  const now = await s.say("ابي بيتزا"); assert.deepEqual([now.log.decision, now.log.reply_key], ["replied", "assist"]);
+  const off = aWorld([], { waBot: { assist: { mode: "off" } } }); await off.cashier("لحظة"); off.clock.advance(6);
+  assert.equal((await off.say("ابي بيتزا")).log.decision, "waiting", "assistant off: the rules bot's own pause, as before");
+  // staff answered while the message was waiting ⇒ nobody talks over them
+  const st = aWorld([], { waBot: { staffWaitMin: 2 } }); await st.cashier("هلا"); st.clock.advance(1); const q1 = await st.say("عندكم عروض؟"); st.clock.advance(1); await st.cashier("ايوه عندنا");
+  assert.deepEqual(await st.tick(1), []); assert.equal(q1.log.reason, "staff_answered"); assert.equal(st.m.used(), 0);
+}));
+
+test("handover follow-up: staff are alerted again after 5 minutes of silence, the customer gets ONE honest note after 10 — never if staff wrote or pressed «تم», the handover changed, the chat is muted, or we are closed", withEnv(CONFIGURED, async () => {
+  const NOTE = txt(ME, "نعتذر عن التأخير 🙏 نبّهنا الفريق مرة ثانية ويرد عليك موظف هنا.\nوأنا معك لو تحتاج شي في المنيو أو الطلب.");
+  const start = async (o = {}) => { const w = aWorld([], o); await w.say("ابي اكلم موظف"); return w; };
+  const jobs = (w) => w.db.jobs.filter((j) => j.kind === "handover_check").map((j) => [j.ev.stage, j.status, j.reason]);
+  const w = await start();
+  assert.deepEqual(jobs(w), [["realert", "pending", null]]); assert.equal(w.portal.length, 1);
+  assert.deepEqual(await w.tick(4), []); assert.equal(w.portal.length, 1, "not before five minutes");
+  assert.deepEqual(await w.tick(1), []);
+  assert.deepEqual([w.portal.length, w.portal[1][0], w.portal[1][1].reminder, w.portal[1][1].waitedMin, w.portal[1][1].reason, w.portal[1][1].test], [2, "wa_handover", true, 5, "asked_human", true]);
+  assert.deepEqual(jobs(w), [["realert", "done", "realert:would"], ["note", "pending", null]]); assert.equal(w.sms.length, 0, "test mode: no SMS unless alertInTest");
+  assert.deepEqual(await w.tick(5), [NOTE]); assert.deepEqual(jobs(w)[1], ["note", "done", "note_sent"]);
+  assert.deepEqual([w.db.log.at(-1).reply_key, w.db.log.at(-1).decision], ["handover_note", "replied"]);
+  assert.deepEqual(await w.tick(30), [], "once per handover");
+  // staff wrote ⇒ neither the second alert nor the note
+  const a = await start(); a.clock.advance(2); await a.cashier("تفضل"); await a.tick(3);
+  assert.deepEqual([jobs(a), a.portal.length], [[["realert", "cancelled", "staff_answered"]], 1]);
+  // staff wrote between the alert and the note ⇒ no note
+  const b = await start(); await b.tick(5); b.clock.advance(1); await b.cashier("معك"); assert.deepEqual(await b.tick(4), []); assert.deepEqual(jobs(b)[1], ["note", "cancelled", "staff_answered"]);
+  // «رجّع البوت» / a new handover / a manual mute / mode off / the number left the test list
+  const c = await start(); await c.bot.unmuteChat("512345678"); await c.tick(5); assert.equal(jobs(c)[0][2], "handover_changed");
+  const d = await start(); await d.bot.muteChat("512345678", 2, "omar"); assert.deepEqual(jobs(d)[0].slice(1), ["cancelled", "manual_mute"]);
+  const e = await start(); e.setMode("off"); await e.tick(5); assert.equal(jobs(e)[0][2], "mode_off");
+  const f = await start(); f.db.settings.waBot.testPhones = ["0544775082"]; await f.tick(5); assert.equal(jobs(f)[0][2], "not_test_phone");
+  // closed when the note is due: no note (the handover line already said a person answers when we open)
+  const g = await start({ at: "2026-10-12T22:52:00Z" }); await g.tick(5); assert.equal(g.portal.length, 2); assert.deepEqual(await g.tick(5), []); assert.equal(jobs(g)[1][2], "closed");
+  // he stopped our messages ⇒ no note
+  const h = await start(); await h.tick(5); h.db.optins["512345678"] = { stopped_at: h.clock.now().toISOString() }; await h.tick(5); assert.equal(jobs(h)[1][2], "stopped");
+  // settings: zero switches each step off; a complaint gets the note without «وأنا معك»; alertInTest sends the SMS again
+  const n0 = await start({ waBot: { handoverRealertMin: 0, handoverCustomerNoteMin: 0 } }); assert.deepEqual(jobs(n0), []);
+  const n1 = await start({ waBot: { handoverRealertMin: 0, handoverCustomerNoteMin: 3 } }); assert.deepEqual(jobs(n1), [["note", "pending", null]]); assert.equal((await n1.tick(3)).length, 1);
+  const cp = aWorld([]); await cp.say("الطلب وصل بارد وناقص"); await cp.tick(5);
+  assert.deepEqual(await cp.tick(5), [txt(ME, "نعتذر عن التأخير 🙏 نبّهنا الفريق مرة ثانية ويرد عليك موظف هنا.")]);
+  const sm = await start({ waBot: { alertInTest: true } }); const n = sm.sms.length; await sm.tick(5); assert.equal(sm.sms.length, n + 2, "the team is alerted again by SMS when test alerts are on"); assert.equal(jobs(sm)[0][2], "realert:sent");
+  // the settings exist with limits
+  for (const k of ["handoverRealertMin", "handoverCustomerNoteMin"]) { assert.ok(R.SCHEMA[k].ar && R.SCHEMA[k].group === "staff"); assert.equal(R.configFromBody({ [k]: 999 }).ok, false); }
+  assert.deepEqual([R.botConfig({}).handoverRealertMin, R.botConfig({}).handoverCustomerNoteMin, R.botConfig({}).assist.staffStepBackMin, R.botConfig({}).assist.seriousHoldMin], [5, 10, 5, 15]);
+}));
+
+test("fewer handovers: «not sure» about an ingredient is said plainly by the assistant with the order note — no staff alert; a severe allergy and a different burger bread still go to staff", withEnv(CONFIGURED, async () => {
+  const x = aWorld([], { waBot: { dishFactsEnabled: true } });
+  x.m.push(mUse(tUse("dish_fact", { id: "71", question: "خردل" })), mSay("ما عندي معلومة مؤكدة عن هذا المكوّن في الصنف.\nواكتب لنا حساسيتك في ملاحظة الطلب وننتبه لها.\nولو تبي تأكيد من المطبخ اكتب: موظف"));
+  const r = await x.say("برجر لحم كلاسيك فيه خردل وانا عندي حساسية خفيفة؟");
+  assert.deepEqual([r.log.reply_key, r.log.handoff, x.portal.length], ["assist", null, 0]);
+  const res = JSON.parse(x.m.seen[1].messages.at(-1).content[0].content);
+  assert.deepEqual([res.status.slice(0, 7), /do NOT hand over/.test(res.rule)], ["unknown", true]);
+  assert.deepEqual(x.store.turns[0].trace.unanswered.map((u) => u.source), ["dish_fact"], "the question is kept for the manager's queue");
+  // another bread: the tool itself says handover
+  const b = aWorld([mUse(tUse("dish_fact", { id: "71", question: "بدون خبز", remove: true })), mUse(tUse("handover", { reason: "needs_staff", note: "burger without the bun" }))], { waBot: { dishFactsEnabled: true } });
+  const br = await b.say("ابي برجر لحم كلاسيك بس بخبز توست");
+  assert.equal(br.log.handoff, "needs_staff"); assert.equal(JSON.parse(b.m.seen[1].messages.at(-1).content[0].content).handover, "needs_staff");
+  // severe allergy never reaches the model
+  const s = aWorld([], { waBot: { dishFactsEnabled: true } }); const sr = await s.say("عندي حساسية شديدة من السمسم، وجبة كفتة تنفع؟");
+  assert.equal(s.m.used(), 0); assert.equal(sr.log.handoff, "allergy_severe"); assert.match(bodyOf(msgs(sr)[0]), /والمساعد الآلي يترك المحادثة له\.$/, "a serious handover keeps the old line: the assistant does step back");
 }));

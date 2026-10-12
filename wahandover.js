@@ -55,6 +55,20 @@ export function register(app, ctx, deps = {}) {
     const d = data && typeof data === "object" ? data : {};
     const pn = normPhone(d.phone);
     let row = null;
+    /* تنبيه تاني (البوت: محدش رد على التحويل بعد المدة المحددة): مفيش صف جديد — نفس كارت التحويل المفتوح بيرنّ تاني ومعاه reminder و waitedMin.
+       لو الكارت اتقفل بـ«تم» خلاص، مفيش حاجة تتبعت. */
+    if (d.reminder === true) {
+      try {
+        await ready;
+        const r = pn ? await pool.query(`SELECT id, phone_norm, reason, reason_ar, urgent, order_no, test, last_text, at FROM wa_handovers WHERE phone_norm=$1 AND acked_at IS NULL ORDER BY at DESC LIMIT 1`, [pn]) : { rows: [] };
+        const open = r.rows && r.rows[0] ? r.rows[0] : null;
+        if (!open) return null;
+        const out = { ...publicRow(open), reminder: true, waitedMin: Number(d.waitedMin) || null };
+        try { deps.broadcast?.("wa_handover", out); } catch (e) { log.error("[wa-handover] broadcast:", e.message); }
+        if (open.test !== true) { try { const push = typeof deps.push === "function" ? deps.push() : deps.push; if (push && typeof push.sendToSubs === "function") push.sendToSubs(pushPayloadFor(open, push.PORTAL_URL || "")).catch(() => {}); } catch { /* الإشعار مايوقّفش حاجة */ } }
+        return out;
+      } catch (e) { log.error("[wa-handover] reminder:", e.message); return null; }
+    }
     if (pn && d.reason) {
       try {
         await ready;

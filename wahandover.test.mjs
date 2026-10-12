@@ -26,6 +26,9 @@ function world({ role = "cashier", lastIn = "الطلب وصل بارد\n ومت
       if (!r) return { rows: [], rowCount: 0 };
       r.acked_at = NOW; r.acked_by = p[1]; return { rows: [{ id: r.id }], rowCount: 1 };
     }
+    if (/^SELECT id, phone_norm, reason, reason_ar, urgent, order_no, test, last_text, at FROM wa_handovers WHERE phone_norm=\$1 AND acked_at IS NULL ORDER BY at DESC LIMIT 1/i.test(s)) {      // تنبيه تاني: آخر كارت مفتوح لنفس الرقم
+      return { rows: db.rows.filter((r) => r.phone_norm === p[0] && !r.acked_at).sort((a, b) => Date.parse(b.at) - Date.parse(a.at)).slice(0, 1).map((r) => ({ ...r })) };
+    }
     throw new Error("unexpected SQL: " + s.slice(0, 80));
   } };
   const routes = {};
@@ -147,4 +150,18 @@ test("wiring: the bot's event goes through this module; other portal events are 
   const src = readFileSync(new URL("./wahandover.js", import.meta.url), "utf8");
   for (const w of ["sendTemplate", "sendText", "sendFreeform", "guardSend", "deliver(", "graph.facebook.com", "sendSms", "fetch("]) assert.ok(!src.includes(w), w);
   assert.ok(!/UPDATE wa_bot|INSERT INTO wa_bot|DELETE FROM/.test(src), "the bot's tables are not written");
+});
+
+test("a reminder (the bot: nobody answered the handover) rings the SAME open card again — no new row; nothing once the card was closed with «تم»", async () => {
+  const w = world();
+  const first = await w.api.emit(EV);
+  const again = await w.api.emit({ ...EV, reminder: true, waitedMin: 5 });
+  assert.deepEqual(again, { ...first, reminder: true, waitedMin: 5 });
+  assert.equal(w.db.rows.length, 1, "no second row");
+  assert.deepEqual(w.events.map((e) => [e[0], e[1].id, e[1].reminder || false]), [["wa_handover", 1, false], ["wa_handover", 1, true]]);
+  assert.equal(w.pushes.length, 2, "the portal devices are notified again");
+  await w.call("POST", "/api/portal/wa-handovers/:id/ack", { id: "1" });
+  const n = w.events.length;
+  assert.equal(await w.api.emit({ ...EV, reminder: true, waitedMin: 9 }), null); assert.equal(w.events.length, n, "a closed card is not rung again"); assert.equal(w.db.rows.length, 1);
+  assert.equal(await world().api.emit({ ...EV, reminder: true }), null, "a reminder with no open card creates nothing");
 });

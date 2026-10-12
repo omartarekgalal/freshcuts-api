@@ -9,6 +9,7 @@ import * as AR from "../waassistrun.js";
 import * as R from "../wabotrun.js";
 import { costSar, normUsage, PRICE_DEFAULTS } from "../waaicost.js";
 import { litellmKey } from "./_key.mjs";
+import { lookupFact } from "../wadishfacts.js";
 import { makeWorld, PHONE } from "./world.mjs";
 import { SCENARIOS } from "./scenarios.mjs";
 import { gradeConversation, summarize } from "./grade.mjs";
@@ -55,12 +56,14 @@ async function runOne(sc) {
     if (t.location) { W.state.loc = { lat: 21.58, lng: 39.16 }; W.world_loc = t.location; ev.location = { lat: 21.58, lng: 39.16 }; }
     const cls = R.classify(ev, W.know);
     const d = cls.key === "ack" || cls.key === "nack" ? { act: "silent", reason: "ack" } : cls.key === "unknown" ? { act: "wait", waitKind: "unknown_wait" } : cls.key ? { act: "reply", key: cls.key } : null;
-    const el = AR.assistEligible({ acfg: W.acfg, cfg: W.cfg, phone: PHONE, ev, cls, d, sessionActive: Boolean(session), handoverOpen: Boolean(handoverOpen), recentOrder: Boolean((sc.world || {}).orders) });
+    /* as in the bot since 12/10: an ordinary handover does not stop the assistant; a serious one does (the script has no clock, so it holds to the end) */
+    const serious = ["allergy_severe", "complaint", "problem", "order_change"].includes(handoverOpen);
+    const el = AR.assistEligible({ acfg: W.acfg, cfg: W.cfg, phone: PHONE, ev, cls, d, sessionActive: Boolean(session), handoverOpen: serious, recentOrder: Boolean((sc.world || {}).orders) });
     const rec = { i, customer: t.text || `[${ev.type}]`, cls: cls.key, raw: cls.rawIntent, by: null, reply: null, cart: null, handover: null, outcome: null, tools: [], verdicts: [], calls: [], ms: 0, costSar: 0, model: null, suggestions: [] };
     const rulesHandover = { complaint: "complaint", problem: "problem", change: "order_change", human: "asked_human", media: "media", custom_offer: "custom_offer" };
     if (!el.run) {
-      rec.by = "rules"; rec.outcome = handoverOpen ? "rules:handover_open" : `rules:${el.why.replace(/^rules:/, "")}`;
-      if (!handoverOpen) { if (cls.key === "dishfact" && cls.rawIntent === "allergy_severe") { rec.handover = "allergy_severe"; handoverOpen = "allergy_severe"; } else if (rulesHandover[cls.key]) { rec.handover = rulesHandover[cls.key]; handoverOpen = rec.handover; } }
+      rec.by = "rules"; rec.outcome = serious ? "rules:handover_open" : `rules:${el.why.replace(/^rules:/, "")}`;
+      if (!serious) { if (cls.key === "dishfact" && cls.rawIntent === "allergy_severe") { rec.handover = "allergy_severe"; handoverOpen = "allergy_severe"; } else if (rulesHandover[cls.key]) { rec.handover = rulesHandover[cls.key]; handoverOpen = rec.handover; } }
       if (session) session = AR.noteRulesTurn(session, ev.text, cls.key);
       turns.push(rec); continue;
     }
@@ -69,7 +72,7 @@ async function runOne(sc) {
     const hours = await W.tools.get_hours();
     let profile = null, offers = null;
     if (fresh || first) { const p = await W.tools.customer_profile(PHONE); profile = p && p.ok ? p.profile : null; offers = await W.tools.get_offers(PHONE); }
-    const context = AR.buildContext({ first: fresh, hours, profile, offers, reorder: fresh ? W.reorder : null, locationShared: Boolean(W.state.loc), justShared: Boolean(t.location), branch: fresh ? R.textOf(W.cfg, "location", lang) : null, boxes: fresh ? W.boxes : null, hint: AR.hintOf(cls) });
+    const context = AR.buildContext({ first: fresh, hours, profile, offers, reorder: fresh ? W.reorder : null, locationShared: Boolean(W.state.loc), justShared: Boolean(t.location), branch: fresh ? R.textOf(W.cfg, "location", lang) : null, boxes: fresh ? W.boxes : null, hint: AR.hintOf(withAlt(cls)), handover: handoverOpen && !serious ? { reason: handoverOpen, minutes_ago: 2 } : null });
     rec.context = context;
     first = false;
     const text = t.location ? "📍" : ev.text;
@@ -87,6 +90,7 @@ async function runOne(sc) {
   return conv;
 }
 
+const withAlt = (cls) => { if (!cls || cls.key !== "dishfact" || cls.rawIntent !== "remove_question" || !cls.arg || !cls.arg.id) return cls; const f = lookupFact(cls.arg.id, cls.arg.text, { remove: true }); return f.status === "alternative" ? { ...cls, alt: { id: f.altId, name: f.alt, name_en: f.altEn } } : cls; };
 const results = [];
 const queue = [...list];
 await Promise.all(Array.from({ length: Math.max(1, PAR) }, async () => { for (;;) { const sc = queue.shift(); if (!sc || capped) return; try { const c = await runOne(sc); results.push(c); console.log(`${c.grade.pass ? "PASS" : "FAIL"}  ${c.id.padEnd(34)} ${c.costSar.toFixed(4)} SAR  ${c.grade.fails.map((f) => f.type).join(",")}`); } catch (e) { console.log(`ERROR ${sc.id}: ${e.stack || e.message}`); results.push({ id: sc.id, group: sc.group, turns: [], error: e.message, grade: { pass: false, fails: [{ type: "harness_error", detail: e.message }], review: [] }, costSar: 0 }); } } }));

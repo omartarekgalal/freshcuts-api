@@ -41,7 +41,7 @@ import { MAPS_URL } from "./watemplates.js";
 import { isOpenNow } from "./carts.js";
 import { makeBotCarts, reorderPlan, planSummary, orderDay, chatLocation } from "./wabotcart.js";
 import { makeAssistTools, validateReply, profileSummaryAr } from "./waassist.js";
-import { lookupFact, groupsIn, SEVERE_RE, factsCoverage, pickDish } from "./wadishfacts.js";
+import { lookupFact, groupsIn, SEVERE_RE, factsCoverage, pickDish, factNote } from "./wadishfacts.js";
 import { makeAiCost, pricesOf, waRatesOf, pricesFromBody, waRatesFromBody, BUDGET_DEFAULTS } from "./waaicost.js";
 import { providerInfo, maskText } from "./wabotllm.js";
 import { ASSIST_CFG_DEFAULTS, ASSIST_SCHEMA, PROMPT_HASH, assistConfig, assistFromBody, assistEligible, makeAssistLoop, makeAssistStore, makeModelCaller, newSession, noteRulesTurn, buildContext, hintOf } from "./waassistrun.js";
@@ -58,6 +58,8 @@ export const DEFAULTS = Object.freeze({
   staffWaitMin: 5,             // العميل كتب وقت السكوت: نستنى الموظف المدة دي وبعدها البوت يرد (نية معروفة بس)
   closedEchoPauseMin: 10,      // موظف رد والمطعم مقفول: سكوت قصير بس
   unknownWaitMin: 3,           // في الدوام: رسالة غير مفهومة تستنى الموظف قبل القائمة (٠ = فوراً)
+  handoverRealertMin: 5,       // تحويل ومحدش من الفريق رد: تنبيه تاني بعد المدة دي (٠ = مفيش)
+  handoverCustomerNoteMin: 10, // ولسه محدش رد: رسالة واحدة صادقة للعميل بعد المدة دي من التحويل (٠ = مفيش)
   manualMuteHours: 24,         // «كتم البوت في المحادثة دي» من الموظف — المدة الافتراضية
   handoffOpenHours: 24,        // التحويل لموظف «مفتوح» المدة دي: شكوى ⇒ معلومات بس، ومفيش تنبيه مكرر
   publicPhone: "",             // رقم المطعم في رسالة التعريف؛ فاضي = من سؤال «كيف أتواصل» في الأسئلة الشائعة
@@ -224,7 +226,15 @@ export const TEXTS = Object.freeze({
   /* مسبّب في جزء ظاهر العميل عارفه (الخبز، صوص، جبن، طحينة، إضافة فوق): المكان بيتقال في كلمتين — مش سر وصفة. بيتبعت بس لو بيانات الشيف علّمت الجزء «ظاهر». */
   df_fixed_visible: t("الصنف فيه المسبّب في جزء ظاهر", "نعم، يوجد {asked} في «{dish}»، وذلك في {part}.\nللتأكد من إمكانية بديل عن {part} اكتب: موظف\n{kitchen}", "Yes, {dish} has {asked}, in the {part}.\nTo check whether another {part} is possible, type: staff\n{kitchen}", ["dish", "asked", "part"], ["kitchen"], 500),
   df_not_found: t("حسب بياناتنا الصنف مافيهوش", "حسب بياناتنا لا يوجد {asked} في «{dish}».\n{kitchen}\n{fryer}\nوإذا كانت الحساسية شديدة اكتب «موظف» قبل الطلب.", "According to our data, {dish} does not contain {asked}.\n{kitchen}\n{fryer}\nIf your allergy is severe, type “staff” before ordering.", ["dish", "asked"], ["kitchen", "fryer"], 600),
-  df_unknown: t("مش متأكدين ⇒ موظف", "ما عندي تأكيد كافٍ عن هذا المكوّن. حوّلت سؤالك لموظف يتأكد لك من المطبخ.\n{wait}", "I cannot confirm that ingredient. I've passed your question to a team member who will check with the kitchen.\n{wait}", [], ["wait"]),
+  /* مش متأكدين (قرار عمر ١٢/١٠: «نرد بكل شفافية… بلغنا في الملاحظات وهناخد بالنا»): بنقول بصراحة إن مفيش معلومة مؤكدة، نعرض الملاحظة، والموظف لو العميل عايز تأكيد — من غير تحويل تلقائي. */
+  df_unknown: t("مش متأكدين: نقولها بصراحة (من غير تحويل)", "ما عندي معلومة مؤكدة عن هذا المكوّن في الصنف.\n{note}\nولو تبي تأكيد من المطبخ اكتب: موظف", "I don't have confirmed information about that ingredient in this dish.\n{note}\nIf you want the kitchen to confirm, type: staff", [], ["note"], 500),
+  df_note_line: t("سطر «اكتب حساسيتك في الملاحظة»", "واكتب لنا حساسيتك في ملاحظة الطلب وننتبه لها.", "Write your allergy in the order note and we will take care.", [], [], 200),
+  df_maybe_removable: t("المسبّب ممكن يكون في صوص جاهز، ويتشال", "قد يوجد {asked} في {part} المستخدم مع «{dish}». يمكن تجهيز الطلب بدون {part}: اكتبها في ملاحظة الصنف عند الطلب.\n{kitchen}",
+    "{dish} may contain {asked}, in the {part}. We can make it without the {part}: write it in the item note when you order.\n{kitchen}", ["dish", "asked", "part"], ["kitchen"], 600),
+  df_removable_only: t("المسبّب في الجزء اللي بيتشال بس", "نعم، يوجد {asked} في «{dish}»، وذلك في {part} فقط، و{rest} بدون {asked}. يمكن تجهيز الطلب بدون {part}: اكتبها في ملاحظة الصنف عند الطلب.\n{kitchen}",
+    "Yes, {dish} has {asked}, in the {part} only; {rest} has no {asked}. We can make it without the {part}: write it in the item note when you order.\n{kitchen}", ["dish", "asked", "part", "rest"], ["kitchen"], 600),
+  df_alt: t("الصنف من غير كذا = صنف تاني في المنيو", "«{dish}» فيه {asked}. بدون {asked} عندنا «{alt}».", "{dish} comes with {asked}. Without it, we have {alt}.", ["dish", "asked", "alt"], [], 400),
+  df_bread: t("تغيير خبز البرجر ⇒ موظف", "تغيير خبز «{dish}» يحتاج تأكيد من موظف 🙏 حوّلت طلبك له.\n{wait}", "Changing the bread of {dish} needs a staff member 🙏 I've passed it on.\n{wait}", ["dish"], ["wait"], 400),
   df_severe: t("حساسية شديدة ⇒ موظف", "سلامتك أهم 🙏 ما دام الحساسية شديدة، حوّلت محادثتك لموظف يتأكد من المطبخ بنفسه قبل أي طلب.\n{wait}", "Your safety comes first 🙏 Since the allergy is severe, I've passed your chat to a team member who will check with the kitchen before any order.\n{wait}", [], ["wait"]),
   kitchen_line: t("سطر المطبخ الواحد", "مطبخنا واحد لكل الأصناف وقد يحصل تلامس بين المكونات أثناء التحضير.", "We have one kitchen for all dishes, so ingredients can touch during preparation.", [], [], 300),
   fryer_line: t("سطر القلاية المشتركة", "ونوضّح لك أن البطاطس تُقلى في نفس القلاية مع أصناف مقرمشة أخرى.", "Note that the fries share a fryer with other crispy items.", [], [], 300),
@@ -272,6 +282,10 @@ export const TEXTS = Object.freeze({
     "This is Fresh Cuts' automated assistant 🤖 To reach a person type: staff", [], [], 200),
   disclosure_phone: t("التعريف بالبوت + رقم المطعم", "معك المساعد الآلي لفريش كاتس 🤖 للتحدث مع موظف اكتب: موظف، أو اتصل على {phone}",
     "This is Fresh Cuts' automated assistant 🤖 To reach a person type: staff, or call {phone}", ["phone"], [], 200),
+  when_open_assist: t("سطر «الرد قريب» والمساعد مكمل معاه", "يرد عليك موظف هنا في أقرب وقت، وأنا معك لو تحتاج شي ثاني.", "A staff member will reply here shortly, and I'm here if you need anything else.", [], [], 200),
+  wait_line_assist: t("سطر «الرد لما نفتح» والمساعد مكمل معاه", "المطعم مقفل الحين. يرد عليك موظف هنا أول ما نفتح {opens}، وأنا معك لو تحتاج شي ثاني.", "We're closed now. A staff member will reply here once we open {opens}, and I'm here if you need anything else.", ["opens"], [], 300),
+  handover_note: t("متابعة للعميل: الموظف اتأخر (مرة واحدة)", "نعتذر عن التأخير 🙏 نبّهنا الفريق مرة ثانية ويرد عليك موظف هنا.", "Sorry for the wait 🙏 We've alerted the team again and a staff member will reply here.", [], [], 300),
+  handover_note_assist: t("متابعة للعميل: الموظف اتأخر، والمساعد معاه", "نعتذر عن التأخير 🙏 نبّهنا الفريق مرة ثانية ويرد عليك موظف هنا.\nوأنا معك لو تحتاج شي في المنيو أو الطلب.", "Sorry for the wait 🙏 We've alerted the team again and a staff member will reply here.\nMeanwhile I'm here for anything about the menu or your order.", [], [], 300),
   when_open: t("سطر «الرد قريب» (في الدوام بس)", "يرد عليك موظف هنا في أقرب وقت، والمساعد الآلي يترك المحادثة له.", "A staff member will reply here shortly, and the automated assistant leaves the chat to them.", [], [], 200),
   wait_line: t("سطر «الرد لما نفتح»", "المطعم مقفل الحين. يرد عليك موظف هنا أول ما نفتح {opens}، والمساعد الآلي يترك المحادثة له.", "We're closed now. A staff member will reply here once we open {opens}, and the automated assistant leaves the chat to them.", ["opens"], [], 200),
   paused_delivery: t("سطر «التوصيل متوقف»", "⚠️ التوصيل متوقف مؤقتاً، والاستلام من الفرع متاح.", "⚠️ Delivery is paused for now; pickup from the branch is available.", [], [], 200),
@@ -381,6 +395,7 @@ export function botConfig(settings) {
     closedEchoPauseMin: num(x.closedEchoPauseMin, 0, 120, DEFAULTS.closedEchoPauseMin),
     unknownWaitMin: num(x.unknownWaitMin, 0, 15, DEFAULTS.unknownWaitMin),
     manualMuteHours: num(x.manualMuteHours, 1, 168, DEFAULTS.manualMuteHours),
+    handoverRealertMin: num(x.handoverRealertMin, 0, 60, DEFAULTS.handoverRealertMin), handoverCustomerNoteMin: num(x.handoverCustomerNoteMin, 0, 120, DEFAULTS.handoverCustomerNoteMin),
     handoffOpenHours: num(x.handoffOpenHours, 1, 168, DEFAULTS.handoffOpenHours),
     publicPhone: /^0\d{8,9}$/.test(String(x.publicPhone || "")) ? String(x.publicPhone) : "",
     faq: x.faq && typeof x.faq === "object" ? x.faq : {},
@@ -462,7 +477,7 @@ export function configFromBody(b, prev = {}) {
   delete out.humanWindowHours;      // اتلغى (١٢/١٠) — أي حفظ بينضّف المخزّن القديم
   for (const k of ["humanPauseMin", "staffWaitMin", "closedEchoPauseMin", "unknownWaitMin", "manualMuteHours", "handoffOpenHours", "freeRepliesPerMonth", "replyRateSar", "disclosureHours", "unknownHandoverAfter", "adWindowHours", "optinAnswerWindowMin",
     "offerEndWithinDays", "boxesCacheMin", "menuCacheMin", "offersCacheMin", "staleCacheMin", "logKeepDays", "reorderMaxDays", "reorderLinkDays", "reorderMinTotal", "reorderLookback",
-    "greetWindowHours", "maxAgeMinutes", "duplicateSeconds", "maxRepliesPerHour", "maxTapsPerHour", "maxRepliesPerMinute", "orderLookbackHours", "lateAfterMinutes", "maxAlertsPerHour"]) {
+    "handoverRealertMin", "handoverCustomerNoteMin", "greetWindowHours", "maxAgeMinutes", "duplicateSeconds", "maxRepliesPerHour", "maxTapsPerHour", "maxRepliesPerMinute", "orderLookbackHours", "lateAfterMinutes", "maxAlertsPerHour"]) {
     if (k in src) { if (Number.isFinite(Number(src[k])) && src[k] !== "" && src[k] !== null) out[k] = Number(src[k]); else errors.push(k); }
   }
   for (const k of ["interactive", "staffAlert", "alertInTest", "reorderEnabled", "dishFactsEnabled"]) if (k in src) out[k] = src[k] === true;
@@ -656,6 +671,8 @@ export const SCHEMA = Object.freeze({
   staffWaitMin: S("staff", "number", "انتظار الموظف قبل ما البوت يرد", "العميل كتب وقت السكوت والموظف ماردّش: البوت يرد بعد المدة دي (أسئلة مفهومة بس).", { min: 1, max: 15, unit: "دقيقة" }),
   closedEchoPauseMin: S("staff", "number", "سكوت البوت لو الموظف رد والمطعم مقفول", "سكوت قصير بس.", { min: 0, max: 120, unit: "دقيقة" }),
   unknownWaitMin: S("staff", "number", "رسالة مش مفهومة: انتظار الموظف", "في الدوام بس. صفر = القائمة فوراً.", { min: 0, max: 15, unit: "دقيقة" }),
+  handoverRealertMin: S("staff", "number", "تحويل ومحدش رد: نبّه الفريق تاني بعد", "من وقت التحويل، لو مفيش موظف كتب للعميل ولا ضغط «تم». صفر = مفيش تنبيه تاني.", { min: 0, max: 60, unit: "دقيقة" }),
+  handoverCustomerNoteMin: S("staff", "number", "ولسه محدش رد: رسالة اعتذار واحدة للعميل بعد", "من وقت التحويل. مرة واحدة لكل تحويل، في وقت الدوام بس. صفر = مفيش.", { min: 0, max: 120, unit: "دقيقة" }),
   unknownHandoverAfter: S("staff", "number", "تحويل لموظف بعد كام رسالة مش مفهومة ورا بعض", "٢ = أول مرة القائمة، تاني مرة تحويل.", { min: 1, max: 5, unit: "رسالة" }),
   manualMuteHours: S("staff", "number", "مدة الكتم اليدوي", "المدة الافتراضية لزر «كتم البوت في المحادثة دي».", { min: 1, max: 168, unit: "ساعة" }),
   handoffOpenHours: S("staff", "number", "التحويل لموظف يفضل مفتوح", "طول المدة دي البوت بيرد على المواعيد والموقع وحالة الطلب بس، ومفيش تنبيه مكرر.", { min: 1, max: 168, unit: "ساعة" }),
@@ -801,7 +818,9 @@ export function buildReply(key, c) {
   const T = (k) => textOf(cfg, k, lang);
   const F = (k, vars) => fill(k, T(k), vars);
   // في الدوام: «يرد عليك في أقرب وقت». مقفول: ميعاد الفتح الحقيقي. حالة المواعيد مش معروفة: ولا وعد.
-  const wait = () => (data.open && data.open.open === true ? T("when_open") : closedLine(cfg, lang, data, "wait_line"));
+  /* مع مساعد الطلبات شغّال للعميل ده (data.assistOn) والتحويل مش شكوى/مشكلة/تعديل: المساعد مابيسيبش المحادثة — «وأنا معك لو تحتاج شي ثاني». */
+  const softWait = Boolean(data.assistOn) && !["complaint", "problem", "change"].includes(key) && !(key === "dishfact" && c.arg && c.arg.id == null);
+  const wait = () => (data.open && data.open.open === true ? T(softWait ? "when_open_assist" : "when_open") : closedLine(cfg, lang, data, softWait ? "wait_line_assist" : "wait_line"));
   const order = data.order || null;
   const withLink = (k, vars, ctaKey) => { const slug = pickLink(cfg, data, c.referral); return { body: F(k, vars), cta: { title: T(ctaKey), url: linkUrl(slug) }, link: slug }; };
   switch (key) {
@@ -976,13 +995,21 @@ export function buildReply(key, c) {
       if (!cfg.dishFactsEnabled) return { ...buildReply("staff", c), handoff: HANDOFF_KEYS.staff, fact: "off" };
       const nm = lang === "en" ? f.dishEn : f.dish, part = lang === "en" ? f.partEn : f.part;
       const kitchen = f.kind === "allergen" ? T("kitchen_line") : "", fryer = f.fryer ? T("fryer_line") : "";
-      if (f.status === "present_removable") return { body: f.kind === "allergen" ? F("df_removable", { dish: nm, asked: f.asked, part, kitchen, fryer }) : F("df_removable_item", { dish: nm, part }), fact: f.status };
-      if (f.status === "present_fixed" && part) return { body: F("df_fixed_visible", { dish: nm, asked: f.asked, part, kitchen: f.kind === "allergen" ? T("kitchen_line") : "" }), fact: "present_fixed_visible" };
-      if (f.status === "present_fixed") return { body: F("df_fixed", { dish: nm, asked: f.asked }), fact: f.status };
+      /* سؤال حساسية ⇒ بعد الإجابة سطر «اكتب حساسيتك في ملاحظة الطلب وننتبه لها» (قرار عمر ١٢/١٠). سؤال مكوّن عادي من غيره. */
+      const withNote = (body) => (f.kind === "allergen" ? `${body}\n${T("df_note_line")}` : body);
+      const rest = lang === "en" ? f.restEn : f.rest;
+      if (f.status === "present_removable" && f.kind === "allergen" && f.may) return { body: withNote(F("df_maybe_removable", { dish: nm, asked: f.asked, part, kitchen })), fact: "present_maybe_removable" };
+      if (f.status === "present_removable" && f.kind === "allergen" && rest) return { body: withNote(F("df_removable_only", { dish: nm, asked: f.asked, part, rest, kitchen })), fact: "present_removable_only" };
+      if (f.status === "present_removable") return { body: f.kind === "allergen" ? withNote(F("df_removable", { dish: nm, asked: f.asked, part, kitchen, fryer })) : F("df_removable_item", { dish: nm, part }), fact: f.status };
+      if (f.status === "present_fixed" && part) return { body: withNote(F("df_fixed_visible", { dish: nm, asked: f.asked, part, kitchen: f.kind === "allergen" ? T("kitchen_line") : "" })), fact: "present_fixed_visible" };
+      if (f.status === "present_fixed") return { body: withNote(F("df_fixed", { dish: nm, asked: f.asked })), fact: f.status };
       if (f.status === "can_remove") return { body: F("df_can_remove", { dish: nm, part }), fact: f.status };
       if (f.status === "cannot_remove") return { body: F("df_cannot_remove", { dish: nm, asked: f.asked }), fact: f.status };
-      if (f.status === "not_found") return { body: F("df_not_found", { dish: nm, asked: f.asked, kitchen, fryer }), fact: f.status };
-      return { body: F("df_unknown", { wait: wait() }), handoff: HANDOFF_KEYS.staff, fact: `unknown:${f.why || ""}` };
+      if (f.status === "alternative") return { body: F("df_alt", { dish: nm, asked: f.asked, alt: lang === "en" ? f.altEn : f.alt }), fact: f.status };
+      if (f.status === "not_found") return { body: withNote(F("df_not_found", { dish: nm, asked: f.asked, kitchen, fryer })), fact: f.status };
+      /* خبز تاني للبرجر: الحالة الوحيدة هنا اللي لسه بتتحوّل لموظف (غير الحساسية الشديدة) */
+      if (f.why === "other_bread") return { body: F("df_bread", { dish: nm, wait: wait() }), handoff: HANDOFF_KEYS.staff, fact: "unknown:other_bread" };
+      return { body: F("df_unknown", { note: T("df_note_line") }), fact: `unknown:${f.why || ""}` };
     }
     case "secret": return { body: T("secret"), buttons: [{ id: "bot:menu", title: T("btn_main") }, { id: "bot:human", title: T("btn_human") }] };
     case "problem": case "change": case "human": case "staff": case "media": case "data_missing": case "handoff_remind": case "custom_offer":
@@ -1251,7 +1278,8 @@ export function decide(ev, ctx) {
     if (optout) return silent(ps.kind, { optout, resumeAt: iso(ps.until) });
     // ٢) نية معروفة: نستنى الموظف staffWaitMin وبعدها نرد. غير مفهوم: للموظف (هو في المحادثة).
     if (c.key === "ack" || c.key === "nack") return silent("ack");
-    if (c.key === "unknown") return silent(ps.kind, { resumeAt: iso(ps.until), detail: "unknown_left_to_staff" });
+    /* مع مساعد الطلبات (ctx.assistOn): الرسالة الغير مفهومة بتستنى الموظف زي غيرها وبعدين المساعد يرد عليها — مابتتسابش من غير رد (عطل ١٢/١٠: «انت بطيء اوي» فضلت من غير رد). */
+    if (c.key === "unknown" && !ctx.assistOn) return silent(ps.kind, { resumeAt: iso(ps.until), detail: "unknown_left_to_staff" });
     const due = Math.min(nowMs + cfg.staffWaitMin * 60_000, ps.until);
     return { act: "wait", waitKind: "staff_wait", dueAt: iso(due), resumeAt: iso(due), reason: ps.kind, ...base };
   }
@@ -1730,11 +1758,19 @@ export function register(app, ctx, deps = {}) {
         else { const made = await botCarts.create({ phone, source: "reorder", fromOrder: data.reorder.orderNo, plan: data.reorder.plan, option: data.reorder.option, days: cfg.reorderLinkDays }); data.reorder = made ? { ...data.reorder, url: `${STORE}/c/${made.code}`, code: made.code } : null; }
       }
       data.chat = chat;
-      let d = decide(ev, { cfg, now, chat, lastEchoAt: echoAt, repliesLastHour: rc.n, rate: rc.rate, lastSame: rc.lastSame, failedRecently: rc.failedRecently, data, cls, afterWait });
+      /* مساعد الطلبات شغّال للعميل ده (١٢/١٠، بعد تجربة عمر: المساعد ماردّش ولا مرة عشان التحويل والرد المؤجّل كانوا للقواعد):
+         • الموظف كتب ⇒ المساعد يتراجع assist.staffStepBackMin (٥ د) بدل humanPauseMin (٣٠ د)، وبعدها يرجع لوحده.
+         • تحويل عادي (طلب موظف، سؤال، عرض مخصص، صورة) مابيمسكش المحادثة: المساعد يكمل يرد على اللي يعرفه.
+         • تحويل جدّي (شكوى، مشكلة دفع، تعديل طلب مدفوع، حساسية شديدة) بيمسكها assist.seriousHoldMin (١٥ د) بس، مش ٢٤ ساعة. */
+      const assistOn = cfg.assist.mode === "test" && (cfg.mode === "test" || cfg.mode === "live") && cfg.testPhones.includes(phone);
+      const held = assistOn && seriousHeld(chat, cfg, now);
+      data.assistOn = assistOn;
+      let d = decide(ev, { cfg: assistOn ? { ...cfg, humanPauseMin: cfg.assist.staffStepBackMin } : cfg, now, chat: assistOn && !held ? { ...chat, handoff_at: null, handoff_reason: null } : chat,
+        lastEchoAt: echoAt, repliesLastHour: rc.n, rate: rc.rate, lastSame: rc.lastSame, failedRecently: rc.failedRecently, data, cls, afterWait, assistOn });
       /* مساعد الطلبات (وضع التجربة، أرقام التجربة بس): لو الرسالة من نصيبه ومفيش مانع، ردّه بيبدّل قرار القواعد. أي فشل (مهلة، سقف، خطأ، رد اترفض
          مرتين) ⇒ ar.d = null ⇒ قرار القواعد زي ما هو. ar.done بيتنادى بعد التنفيذ عشان الجلسة والسجل والمتابعة يتكتبوا **بعد** ما الرسالة تتبعت فعلاً. */
       let ar = null;
-      if (!afterWait && cfg.assist.mode === "test") { try { ar = await assistTurn({ ev, logId, settings, cfg, d, cls, chat, data, know, now, echoAt, phone }); } catch (e) { console.error("[assist] turn:", e.message); ar = null; } }
+      if (assistOn) { try { ar = await assistTurn({ ev, logId, settings, cfg, d, cls, chat, data, know, now, echoAt, phone, held }); } catch (e) { console.error("[assist] turn:", e.message); ar = null; } }
       if (ar && ar.d) d = ar.d;
       const assistDone = async (x) => { if (ar && ar.done) { try { await ar.done(x); } catch (e) { console.error("[assist] done:", e.message); } } };
 
@@ -1763,7 +1799,7 @@ export function register(app, ctx, deps = {}) {
       }
       if (d.act === "silent") {
         let alert = null;
-        if (d.handoff) alert = await handoffNow(settings, cfg, phone, d.handoff, data.order?.order_no);
+        if (d.handoff) alert = await handoffNow(settings, cfg, phone, d.handoff, data.order?.order_no, null, d.lang);
         await finish({ decision: "silent", reason: d.reason, detail: d.detail, key: d.key, handoff: d.handoff ? d.handoff[0] : null, alert, resumeAt: d.resumeAt });
         await assistDone({ okSent: false });
         return;
@@ -1810,7 +1846,7 @@ export function register(app, ctx, deps = {}) {
       let handoff = d.handoff, alert = null;
       if (!okSent && /^skipped:/.test(error || "")) handoff = null;      // الأقفال مقفولة (وضع live من غير مفاتيح واتساب) ⇒ البوت عملياً مقفول: لا تسجيل ولا تنبيه
       else if (!okSent) handoff = ["send_failed", "urgent"];
-      if (handoff) alert = await handoffNow(settings, cfg, phone, handoff, data.order?.order_no, d.note || null);
+      if (handoff) alert = await handoffNow(settings, cfg, phone, handoff, data.order?.order_no, d.note || null, d.lang);
       await finish({ decision: cfg.mode === "dry" ? "dry" : sent ? "replied" : "failed", reason: d.reason, detail: d.detail, key: d.key, replies: used, sent, error,
         handoff: handoff ? handoff[0] : null, alert, link: d.link });
       await assistDone({ okSent: okSent && cfg.mode !== "dry", error });
@@ -1819,7 +1855,12 @@ export function register(app, ctx, deps = {}) {
       await finish({ decision: "failed", reason: "exception", error: e.message });
     }
   }
-  async function handoffNow(settings, cfg, phone, handoff, orderNo, note = null) {
+  async function handoffNow(settings, cfg, phone, handoff, orderNo, note = null, lang = "ar") {
+    /* نفس السبب اتحوّل قبل شوية (العميل كتب «موظف» تاني والمساعد شغّال فالتحويل مابيمسكش المحادثة) ⇒ مفيش تنبيه مكرر ولا عدّاد جديد. */
+    if (/^5\d{8}$/.test(phone) && cfg.mode !== "dry") {
+      const was = await chatOf(phone), at0 = was.handoff_at ? Date.parse(was.handoff_at) : NaN;
+      if (Number.isFinite(at0) && String(was.handoff_reason || "") === handoff[0] && clock().getTime() - at0 < Math.max(5, cfg.handoverRealertMin, cfg.handoverCustomerNoteMin) * 60_000) return "already_open";
+    }
     if (/^5\d{8}$/.test(phone)) {
       await q(`INSERT INTO wa_bot_chats(phone_norm, handoff_at, handoff_reason) VALUES ($1, NOW(), $2)
                ON CONFLICT (phone_norm) DO UPDATE SET handoff_at = NOW(), handoff_reason = $2, unknown_streak = 0, updated_at = NOW()`, [phone, handoff[0]]);
@@ -1827,6 +1868,11 @@ export function register(app, ctx, deps = {}) {
     if (cfg.mode === "dry") return "would";
     /* البوابة (الكاشير): حدث حيّ wa_handover على نفس قناة الطلبات — بيتبعت في وضع التجربة كمان (الكاشير هو اللي بيرد). الواجهة والصوت عند صاحب البورتال. */
     if (typeof deps.portalEmit === "function") { try { deps.portalEmit("wa_handover", { phone: `0${phone}`, phoneMasked: `…${String(phone).slice(-4)}`, reason: handoff[0], reasonAr: REASON_AR[handoff[0]] || handoff[0], urgent: handoff[1] === "urgent", orderNo: orderNo || null, at: clock().toISOString(), test: cfg.mode === "test", ...(note ? { note: String(note).slice(0, 200) } : {}) }); } catch (e) { console.error("[wabot] portal:", e.message); } }
+    /* المتابعة: لو محدش من الفريق رد — تنبيه تاني، وبعدها رسالة واحدة صادقة للعميل (صف في wa_bot_jobs، كل الشروط بتتراجع وقت التنفيذ). */
+    if (/^5\d{8}$/.test(phone) && (cfg.handoverRealertMin > 0 || cfg.handoverCustomerNoteMin > 0)) {
+      const cur = await chatOf(phone), hoAt = cur.handoff_at ? new Date(cur.handoff_at).toISOString() : null;
+      if (hoAt) await scheduleHandoverCheck(phone, { hoAt, reason: handoff[0], urgent: handoff[1] === "urgent", orderNo: orderNo || null, lang: lang === "en" ? "en" : "ar", stage: cfg.handoverRealertMin > 0 ? "realert" : "note" }, cfg);
+    }
     if (cfg.mode === "test" && !cfg.alertInTest) return "would";
     return alertStaff(settings, cfg, { phone, reason: handoff[0], orderNo });
   }
@@ -1853,6 +1899,7 @@ export function register(app, ctx, deps = {}) {
         const now = clock();
         if (cfg.mode === "off") { await cancel("mode_off"); continue; }
         if (j.kind === "assist_followup") { await runFollowUp(j, settings, cfg, now, end); ran++; continue; }
+        if (j.kind === "handover_check") { await runHandoverCheck(j, settings, cfg, now, end); ran++; continue; }
         if (now.getTime() - new Date(j.due_at).getTime() > cfg.maxAgeMinutes * 60_000) { await cancel("stale"); continue; }
         const echo = await q(`SELECT 1 FROM wa_messages WHERE phone_norm=$1 AND source='echo' AND created_at > $2 LIMIT 1`, [j.phone_norm, ev.at || new Date(j.due_at).toISOString()]);
         if (echo === null) { await cancel("echo_check_failed"); continue; }      // مانعرفش الموظف رد ولا لأ ⇒ مانردّش
@@ -1869,14 +1916,72 @@ export function register(app, ctx, deps = {}) {
      done({ okSent }) بيتنادى بعد التنفيذ: الجلسة، سجل الأدوار، الاقتراحات، وسم السلة، وجدولة المتابعة — كله بعد ما الرسالة تتبعت فعلاً. */
   const ASSIST_HANDOVER = { allergy_severe: ["dishfact", ["allergy_severe", "urgent"]], complaint: ["complaint", HANDOFF_KEYS.complaint], problem: ["problem", HANDOFF_KEYS.problem], order_change: ["change", HANDOFF_KEYS.change],
     custom_offer: ["human", ["custom_offer", "normal"]], needs_staff: ["staff", HANDOFF_KEYS.staff] };
+  /* تحويل جدّي لسه ماسك المحادثة (المساعد ساكت والقواعد بترد بالمعلومات بس): خلال assist.seriousHoldMin من التحويل. */
+  const seriousHeld = (chat, cfg, now) => { const at = chat.handoff_at ? Date.parse(chat.handoff_at) : NaN;
+    return Number.isFinite(at) && SERIOUS.has(String(chat.handoff_reason || "")) && now.getTime() - at < cfg.assist.seriousHoldMin * 60_000; };
+  /* ── متابعة التحويل: تنبيه تاني للفريق ثم رسالة واحدة للعميل ─────────────────────
+     stage «realert» بعد handoverRealertMin من التحويل، و«note» بعد handoverCustomerNoteMin. مابيحصلش أي منهم لو: التحويل اتغيّر أو اتقفل، موظف كتب للعميل
+     أو ضغط «تم» في البوابة، المحادثة مكتومة، الوضع اتقفل، أو (للرسالة) المطعم مقفل / بره نافذة الـ٢٤ ساعة / العميل وقّف الرسايل. */
+  async function scheduleHandoverCheck(phone, ev, cfg) {
+    const base = Date.parse(ev.hoAt), min = ev.stage === "realert" ? cfg.handoverRealertMin : cfg.handoverCustomerNoteMin;
+    return q(`INSERT INTO wa_bot_jobs(wamid, phone_norm, kind, due_at, ev, log_id) VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT (wamid) DO NOTHING RETURNING id`,
+      [`ho:${phone}:${base}:${ev.stage}`, phone, "handover_check", new Date(Math.max(base + min * 60_000, clock().getTime() + 1000)).toISOString(), jb(ev), null]);
+  }
+  async function runHandoverCheck(j, settings, cfg, now, end) {
+    const phone = String(j.phone_norm || ""), ev = typeof j.ev === "string" ? JSON.parse(j.ev) : (j.ev || {});
+    const no = (reason) => end("cancelled", reason);
+    if (cfg.mode !== "test" && cfg.mode !== "live") return no("mode_off");
+    if (cfg.mode === "test" && !cfg.testPhones.includes(phone)) return no("not_test_phone");
+    if (now.getTime() - new Date(j.due_at).getTime() > cfg.maxAgeMinutes * 60_000) return no("stale");
+    const chat = await chatOf(phone);
+    if (!chat.handoff_at || new Date(chat.handoff_at).toISOString() !== ev.hoAt) return no("handover_changed");
+    if (chat.muted_until && Date.parse(chat.muted_until) > now.getTime()) return no("muted");
+    const echo = await q(`SELECT 1 FROM wa_messages WHERE phone_norm=$1 AND source='echo' AND created_at > $2 LIMIT 1`, [phone, ev.hoAt]);
+    if (echo === null) return no("echo_check_failed"); if (echo.length) return no("staff_answered");
+    const ack = await q(`SELECT acked_at FROM wa_handovers WHERE phone_norm=$1 AND at >= $2 ORDER BY at DESC LIMIT 1`, [phone, ev.hoAt]);      // «تم» في البوابة = حد مسكها
+    if (ack && ack[0] && ack[0].acked_at) return no("staff_acked");
+    const assistOn = cfg.assist.mode === "test" && cfg.testPhones.includes(phone);
+    if (ev.stage === "realert") {
+      const waited = Math.round((now.getTime() - Date.parse(ev.hoAt)) / 60_000);
+      if (typeof deps.portalEmit === "function") { try { deps.portalEmit("wa_handover", { phone: `0${phone}`, phoneMasked: `…${phone.slice(-4)}`, reason: ev.reason, reasonAr: REASON_AR[ev.reason] || ev.reason, urgent: ev.urgent === true, orderNo: ev.orderNo || null,
+        at: ev.hoAt, test: cfg.mode === "test", reminder: true, waitedMin: waited }); } catch (e) { console.error("[wabot] portal:", e.message); } }
+      let alert = "would";
+      if (cfg.mode === "live" || cfg.alertInTest) alert = await alertStaff(settings, cfg, { phone, reason: ev.reason, orderNo: ev.orderNo });
+      if (cfg.handoverCustomerNoteMin > 0) await scheduleHandoverCheck(phone, { ...ev, stage: "note" }, cfg);
+      return end("done", `realert:${alert}`);
+    }
+    let open = null; try { open = settings?.hours ? openState(settings, now) : null; } catch { open = null; }
+    if (!open || open.open !== true) return no("closed");
+    const m = await q(`SELECT max(created_at) FILTER (WHERE direction='in' AND COALESCE(source,'api') <> 'history') AS last_in,
+                              count(*) FILTER (WHERE direction='in' AND created_at > $2)::int AS wrote, count(*) FILTER (WHERE source='echo' AND created_at > $2)::int AS staff
+                         FROM wa_messages WHERE phone_norm=$1 AND created_at > NOW() - INTERVAL '25 hours'`, [phone, ev.hoAt]);
+    if (m === null || !m[0]) return no("window_check_failed");
+    if (!m[0].last_in || now.getTime() - new Date(m[0].last_in).getTime() > (24 * 60 - 10) * 60_000) return no("window_closed");
+    const op = await q("SELECT stopped_at FROM wa_optins WHERE phone_norm=$1", [phone]);
+    if (op === null) return no("optout_check_failed"); if (op[0] && op[0].stopped_at) return no("stopped");
+    const lang = ev.lang === "en" ? "en" : "ar";
+    let pl; try { pl = msgText(textOf(cfg, assistOn && !SERIOUS.has(String(ev.reason)) ? "handover_note_assist" : "handover_note", lang), false); } catch { return no("text_invalid"); }
+    if (payloadProblem(pl)) return no("payload_invalid");
+    const r = await wa.sendFreeform({ phoneNorm: phone, payload: pl, source: "bot", allowList: cfg.mode === "test" ? cfg.testPhones : null });
+    const err = r.ok ? null : (r.skipped ? `skipped:${r.skipped}` : String(r.error || "send_failed"));
+    const lg = await q(
+      `INSERT INTO wa_bot_log(wamid, msg_at, phone_norm, mode, msg_type, text, intent, reply_key, score, lang, decision, referral)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'pending',$11) ON CONFLICT (wamid) DO NOTHING RETURNING id`,
+      [null, now.toISOString(), phone, cfg.mode, "followup", "", "handover_note", "handover_note", 0, lang, false]);
+    if (lg && lg[0]) await finishLog(lg[0].id, { decision: r.ok ? "replied" : "failed", reason: "handover_note", key: "handover_note", replies: r.ok ? [pl] : null, sent: r.ok ? 1 : 0, error: err, detail: `handover ${ev.reason}` });
+    return end(r.ok ? "done" : "cancelled", r.ok ? "note_sent" : `send_failed:${err}`.slice(0, 80));
+  }
   const handoverOpenOf = (chat, cfg, echoAt, now) => {      // نفس قاعدة decide (٤ب): تحويل مفتوح، والعادي بيتقفل أول ما موظف يرد بعده
     const hoAt = chat.handoff_at ? Date.parse(chat.handoff_at) : NaN;
     if (!Number.isFinite(hoAt) || now.getTime() - hoAt >= cfg.handoffOpenHours * 3600_000) return false;
     const reason = String(chat.handoff_reason || "handover"), staffTook = Boolean(echoAt && Date.parse(echoAt) > hoAt);
     return !(staffTook && !SERIOUS.has(reason));
   };
+  /* «زنجر بدون حار» = صنف تاني في المنيو (حقايق المالك): التصنيف بياخد اسم الصنف البديل عشان المساعد يعرضه بدل ما يكتب ملاحظة. */
+  const withAlt = (cls) => { if (!cls || cls.key !== "dishfact" || cls.rawIntent !== "remove_question" || !cls.arg || !cls.arg.id) return cls;
+    const f = lookupFact(cls.arg.id, cls.arg.text, { remove: true }); return f.status === "alternative" ? { ...cls, alt: { id: f.altId, name: f.alt, name_en: f.altEn } } : cls; };
   const locFresh = (loc, now) => Boolean(chatLocation(loc, now, tune.assist.locationHours));      // نفس القاعدة اللي بتتبعت للمتجر مع السلة: موقع بوقته وعمره أقل من الإعداد
-  async function assistContext({ fresh, phone, cfg, lang, chat, know, data, now, cls }) {
+  async function assistContext({ fresh, phone, cfg, lang, chat, know, data, now, cls, pending = null }) {
     const hours = await assist.get_hours();
     let profile = null, offers = null, reorder = null;
     if (fresh) {
@@ -1891,7 +1996,7 @@ export function register(app, ctx, deps = {}) {
       if (ro) reorder = { day: orderDay(ro.at, lang), lines: ro.plan.lines.map((l) => ({ name: lang === "en" ? l.nameEn : l.name, qty: l.q })), note: "a one-tap button for the same order is attached under your message" };
     }
     let branch = null; try { branch = fresh ? textOf(cfg, "location", lang) : null; } catch { branch = null; }
-    return { profile, reorder, context: buildContext({ first: fresh, hours: hours && hours.ok ? hours : null, profile, offers, reorder, locationShared: locFresh(chat.last_loc, now), justShared: cls.key === "area", branch, boxes: fresh ? know.bundles : null, hint: hintOf(cls) }) };
+    return { profile, reorder, context: buildContext({ first: fresh, hours: hours && hours.ok ? hours : null, profile, offers, reorder, locationShared: locFresh(chat.last_loc, now), justShared: cls.key === "area", branch, boxes: fresh ? know.bundles : null, hint: hintOf(withAlt(cls)), handover: pending }) };
   }
   const assistDeps = (cfg, settings, logId) => ({ tools: assist, callModel: assistCall, now: clock,
     knowOf: async () => ({ menu: await menuIndex(settings, clock()), boxes: (await bundles()) || [] }),
@@ -1906,7 +2011,7 @@ export function register(app, ctx, deps = {}) {
       return pol && fees ? { ok: true, delivers_up_to_km: Number(pol.maxKm) || null, far_zone_up_to_km: pol.farZoneEnabled !== false ? Number(pol.farZoneMaxKm) || null : null, far_zone_extra_per_km: pol.farZoneEnabled !== false ? Number(pol.farZonePerKm) || null : null,
         fee_by_order_total: fees.split("\n"), note: "the exact fee for the customer is shown on the website before payment" } : null; },
     onCall: async (m) => { const rec = await aicost.record({ ...m, purpose: "assistant", logId }, cfg.llm.prices); return { costSar: rec.costSar, in: rec.in, out: rec.out, cached: rec.cached }; } });
-  async function assistTurn({ ev, logId, settings, cfg, d, cls, chat, data, know, now, echoAt, phone }) {
+  async function assistTurn({ ev, logId, settings, cfg, d, cls, chat, data, know, now, echoAt, phone, held = false }) {
     const acfg = cfg.assist;
     if (!assist || acfg.mode !== "test" || !cfg.testPhones.includes(phone)) return null;
     await ready;
@@ -1914,7 +2019,7 @@ export function register(app, ctx, deps = {}) {
     /* «بدون بصل» وهو بيجهّز سلة = ملاحظة للمساعد؛ بس لو له طلب حديث من الموقع تبقى «تعديل طلب» للموظف زي النهارده (ومانعرفش ⇒ نفترض إن له طلب). */
     let recentOrder = false;
     if (cls.key === "change") { const ro = await q(`SELECT 1 FROM shop_orders WHERE phone_norm=$1 AND NOT COALESCE(is_test,false) AND status NOT IN ('expired','pending_payment') AND created_at > NOW() - INTERVAL '24 hours' LIMIT 1`, [phone]); recentOrder = ro === null || ro.length > 0; }
-    const el = assistEligible({ acfg, cfg, phone, ev, cls, d, afterWait: null, sessionActive: Boolean(session), handoverOpen: handoverOpenOf(chat, cfg, echoAt, now), recentOrder });
+    const el = assistEligible({ acfg, cfg, phone, ev, cls, d, afterWait: null, sessionActive: Boolean(session), handoverOpen: held, recentOrder });
     const lang = cls.lang === "en" ? "en" : "ar";
     const ruleKey = () => String((d && d.key) || cls.key || "reply");
     const turnRow = (x) => assistStore.addTurn({ phone, sessionId: session ? session.id : null, logId, wamid: ev.wamid || null, lang, ...x });
@@ -1943,7 +2048,9 @@ export function register(app, ctx, deps = {}) {
     if (acfg.typing && ev.wamid && typeof wa.sendTyping === "function") wa.sendTyping({ phoneNorm: phone, wamid: ev.wamid, allowList: cfg.testPhones }).catch((e) => console.error("[assist] typing:", e.message));
     const fresh = !session;
     if (fresh) session = newSession(now);
-    const cx = await assistContext({ fresh, phone, cfg, lang, chat, know, data, now, cls });
+    /* تحويل عادي لسه مستني موظف: المساعد يعرف (مايحوّلش نفس الحاجة تاني، ويقول للعميل إن الموظف هيرد) ويكمل يساعد. */
+    const pending = handoverOpenOf(chat, cfg, echoAt, now) ? { reason: String(chat.handoff_reason || "handover"), minutes_ago: Math.max(0, Math.round((now.getTime() - Date.parse(chat.handoff_at)) / 60_000)) } : null;
+    const cx = await assistContext({ fresh, phone, cfg, lang, chat, know, data, now, cls, pending });
     const loop = makeAssistLoop(assistDeps(cfg, settings, logId));
     const text = cls.key === "area" ? "📍" : String(ev.text || "");      // الموقع نفسه مابيتبعتش للموديل: علامة بس، والسياق بيقول إنه شارك موقعه
     const r = await loop.runTurn({ phone, text, lang, session, acfg, context: cx.context, profile: cx.profile });
@@ -2317,6 +2424,7 @@ export function register(app, ctx, deps = {}) {
       return { open: o.open, closesText: o.closesAt ? fmtTime(o.closesAt, "ar") : null, opensText: opens, deliveryPaused: Boolean(o.open && o.svc && o.svc.delivery && o.svc.delivery.paused) }; },
     lastLocation: async (ph) => { const r = await q("SELECT last_loc FROM wa_bot_chats WHERE phone_norm=$1", [ph]); const l = r && r[0] ? r[0].last_loc : null; return locFresh(l, clock()) ? l : null; },      // موقع أقدم من ٢٤ ساعة مايتحسبش
     tune: async () => botConfig((await getSettingsData()) || {}).assist,
+    dishNote: async (id) => { const ar = factNote(id, "ar"), en = factNote(id, "en"); return ar ? { ar, en: en || ar } : null; },
     botCarts,
   }) : null;
   const ASSIST_TRY = ["search_menu", "get_item", "get_box", "list_boxes", "check_availability", "quote_delivery", "get_offers", "get_hours", "order_status", "customer_profile", "build_cart", "top_sellers", "suggest"];

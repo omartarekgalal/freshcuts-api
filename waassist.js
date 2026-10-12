@@ -238,7 +238,9 @@ export function makeAssistTools(deps = {}) {
     const it = menu.items.find((i) => String(i.id) === String(id));
     if (!it) return { ok: false, error: "not_found" };
     const addons = await addonsOf(it.id);
-    return { ok: true, item: { ...itemBrief(it), description: it.desc || "", addons: addons || [], addons_known: addons !== null, note: "description is the menu description, not a full ingredient list" } };
+    /* جملة عامة وافق عليها المالك (حقايق ١٢/١٠: «الصوص يُقدَّم جانبياً»، «صدور دجاج مقرمشة…») — بتتقال مع وصف المنيو */
+    let ownerNote = null; try { ownerNote = typeof deps.dishNote === "function" ? await deps.dishNote(String(it.id)) : null; } catch { ownerNote = null; }
+    return { ok: true, item: { ...itemBrief(it), description: it.desc || "", ...(ownerNote ? { owner_note: ownerNote } : {}), addons: addons || [], addons_known: addons !== null, note: "description is the menu description, not a full ingredient list" } };
   }
   const slotView = (s) => (s.type === "fixed"
     ? { key: s.key, label: s.label, type: "fixed", quantity: s.quantity || 1, item: s.item ? { product_id: String(s.item.product_id), name: s.item.name, variant: s.item.variant_name || null } : null }

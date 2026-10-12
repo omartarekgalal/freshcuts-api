@@ -57,13 +57,20 @@ export function lookupFact(dishId, askText, { askedWord = null, remove = false }
     const fryer = Array.isArray(d.fry) && d.fry.includes(g);
     if (a && remove) return a.r && a.ar ? { ...base, status: "can_remove", asked, part: a.ar, partEn: a.en || a.ar, kind: "allergen", fryer } : { ...base, status: "cannot_remove", asked, kind: "allergen", fryer };
     if (remove) return { ...base, status: "unknown_staff", asked, why: "not_recorded" };
-    if (a) return a.r && a.ar ? { ...base, status: "present_removable", asked, part: a.ar, partEn: a.en || a.ar, kind: "allergen", fryer } : { ...base, status: "present_fixed", asked, kind: "allergen", fryer, ...(a.v && a.v.ar ? { part: a.v.ar, partEn: a.v.en || a.v.ar } : {}) };      // v = جزء ظاهر علّمه الشيف (الخبز/صوص/جبن/طحينة/إضافة) ⇒ المكان بيتقال
+    /* مراجعة ٥ (حقايق المالك ١٢/١٠): may = «قد يوجد» (صوص جاهز من نوع معروف)؛ o = المسبّب في الجزء اللي بيتشال **بس**، وrest هو الباقي اللي مافيهوش (الكفتة نفسها، خبز الحواوشي). */
+    if (a) return a.r && a.ar ? { ...base, status: "present_removable", asked, part: a.ar, partEn: a.en || a.ar, kind: "allergen", fryer, ...(a.may ? { may: true } : {}), ...(a.o && a.o.ar ? { rest: a.o.ar, restEn: a.o.en || a.o.ar } : {}) } : { ...base, status: "present_fixed", asked, kind: "allergen", fryer, ...(a.v && a.v.ar ? { part: a.v.ar, partEn: a.v.en || a.v.ar } : {}) };      // v = جزء ظاهر علّمه الشيف (الخبز/صوص/جبن/طحينة/إضافة) ⇒ المكان بيتقال
     return d.u === "none" ? { ...base, status: "not_found", asked, kind: "allergen", fryer } : { ...base, status: "unknown_staff", asked, why: "has_unlabelled_part" };
   }
   /* مكوّن عادي: الكلمة لازم تطابق مكوّن مسجّل إنه بيتشال أو إنه ثابت. أي كلمة تانية ⇒ موظف (عمرنا ما نستنتج إن مكوّن مش موجود). */
   const ws = n.replace(/[^\p{L}\p{N}\s]/gu, " ").split(/\s+/).map((w) => w.replace(/^(ال|بال|وال|لل)(?=.{2,})/, "")).filter((w) => w.length > 1);
   const has = (m) => { const k = normalize(String(m)).replace(/^(ال)(?=.{2,})/, ""); return k.length > 1 && (ws.includes(k) || (k.includes(" ") && n.includes(k))); };
-  const rm = (d.rm || []).find((r) => (r.m || []).some(has));
+  /* طلب تغيير محتاج موظف (خبز تاني للبرجر): بس لما العميل بيطلب يشيله/يغيّره. «X بدون Y» اللي هو صنف تاني في المنيو (زنجر بدون حار = ستربس) ⇒ الصنف البديل. */
+  if (remove) {
+    const sw = (d.sw || []).find(has);
+    if (sw) return { ...base, status: "unknown_staff", asked: sw, why: "other_bread" };
+    const alt = (d.alt || []).find((x) => (x.m || []).some(has));
+    if (alt && alt.ar) return { ...base, status: "alternative", asked: (alt.m || []).find(has), alt: alt.ar, altEn: alt.en || alt.ar, altId: String(alt.id), kind: "ingredient", fryer: false };
+  }  const rm = (d.rm || []).find((r) => (r.m || []).some(has));
   if (rm && remove) return { ...base, status: "can_remove", asked: rm.ar, part: rm.ar, partEn: rm.en || rm.ar, kind: "ingredient", fryer: false };
   if (rm) return { ...base, status: "present_removable", asked: rm.ar, part: rm.ar, partEn: rm.en || rm.ar, kind: "ingredient", fryer: false };
   const fx = (d.fx || []).find(has);
@@ -80,4 +87,5 @@ export function pickDish(text, candidates) {
   if (full.length) return String(full[0].id);
   return list.length === 1 ? String(list[0].id) : null;
 }
-export const factsCoverage = () => { const ds = Object.values(loadFacts().dishes); return { revision: loadFacts().revision, dishes: ds.length, covered: ds.filter((d) => d.u === "none" || d.u === "removable_only").length }; };
+/* جملة عامة وافق عليها المالك بتتقال مع وصف المنيو («الصوص يُقدَّم جانبياً») — أو null */
+export const factNote = (dishId, lang = "ar") => { const d = loadFacts().dishes[String(dishId)]; return d && d.p ? (lang === "en" ? d.p.en || d.p.ar : d.p.ar) || null : null; };export const factsCoverage = () => { const ds = Object.values(loadFacts().dishes); return { revision: loadFacts().revision, dishes: ds.length, covered: ds.filter((d) => d.u === "none" || d.u === "removable_only").length }; };

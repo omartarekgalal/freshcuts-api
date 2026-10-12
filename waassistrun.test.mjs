@@ -56,7 +56,7 @@ test("who answers: the rules keep stop, complaints, staff, media, order status, 
   assert.equal(E({ key: "cats" }, { cfg: { mode: "dry", testPhones: [PHONE] } }).why, "bot_mode"); assert.equal(E({ key: "cats" }, { cfg: { mode: "off", testPhones: [PHONE] } }).run, false);
   assert.equal(E({ key: "cats" }, { phone: "598765432" }).why, "not_test_phone");
   assert.equal(E({ key: "cats" }, { cfg: { mode: "live", testPhones: [] } }).why, "not_test_phone", "the rules bot live for everyone does not open the assistant to everyone");
-  assert.equal(E({ key: "cats" }, { ev: { interactiveId: "m:cats" } }).why, "tap"); assert.equal(E({ key: "cats" }, { afterWait: "unknown_wait" }).why, "delayed_reply");
+  assert.equal(E({ key: "cats" }, { ev: { interactiveId: "m:cats" } }).why, "tap"); assert.equal(E({ key: "cats" }, { afterWait: "staff_wait" }).run, true, "a reply delayed by the staff wait is the assistant's too (12/10)");
   assert.equal(E({ key: "cats" }, { handoverOpen: true }).why, "handover_open"); assert.equal(E({ key: "cats" }, { d: { act: "reply", key: "cats", factual: true } }).why, "handover_open");
   for (const r of ["manual_mute", "staff_pause", "complaint_with_staff", "rate_limited", "duplicate", "stale", "outside_window", "recent_send_failure"]) assert.equal(E({ key: "cats" }, { d: { act: "silent", reason: r } }).run, false, r);
   for (const k of ["rate", "rate_burst", "handoff_remind"]) assert.equal(E({ key: "cats" }, { d: { act: "reply", key: k } }).run, false, k);
@@ -335,4 +335,34 @@ test("found by the 259-conversation run of 12/10: cart notes are not «order cha
   assert.equal(AR.hintOf({ key: "dishfact", rawIntent: "remove_question", arg: { id: "21", remove: true } }).intent, "dish_without_something");
   assert.equal(AR.hintOf({ key: "change", rawIntent: "special_request" }).intent, "note_or_change_to_the_cart_being_built"); assert.equal(AR.hintOf({ key: "greet" }), null);
   assert.deepEqual(AR.buildContext({ hint: AR.hintOf({ key: "faq", arg: "apps" }) }).hint, { intent: "faq", topic: "apps" });
+});
+
+test("12/10 after the owner's live test: an allergy answer goes out in its approved wording even when the model rewrites it; «مش» is refused; the «same dish without it» hint", async () => {
+  const fact = (a) => JSON.parse(a.messages.at(-1).content.find((b) => b.type === "tool_result").content);
+  // the model changes the approved text and adds its own lines: the code restores the text and keeps only a short closing question
+  const m = scripted([use(tu("dish_fact", { id: "71", question: "بيض" })), (a) => say(`${fact(a).say.replace(":", "،").replace("قد يوجد", "ممكن يكون فيه")}\nوعلى فكرة البرجر لذيذ جداً.\nتحب أجهّزه لك بدون الصوص؟`)]);
+  const W = makeWorld({}, { callModel: m.callModel });
+  const r = await turn(W, null, "البرجر الكلاسيك فيه بيض؟");
+  assert.equal(r.ok, true); assert.equal(r.trace.factTextRestored, true);
+  assert.equal(r.text, "قد يوجد بيض في الصوص المستخدم مع «برجر لحم كلاسيك». يمكن تجهيز الطلب بدون الصوص: اكتبها في ملاحظة الصنف عند الطلب.\nمطبخنا واحد لكل الأصناف وقد يحصل تلامس بين المكونات أثناء التحضير.\nواكتب لنا حساسيتك في ملاحظة الطلب وننتبه لها.\nتحب أجهّزه لك بدون الصوص؟");
+  // sent as it is ⇒ untouched
+  const m2 = scripted([use(tu("dish_fact", { id: "17", question: "سمسم" })), (a) => say(fact(a).say)]);
+  const r2 = await turn(makeWorld({}, { callModel: m2.callModel }), null, "وجبة كفتة فيها سمسم؟");
+  assert.match(r2.text, /^نعم، يوجد سمسم في «وجبة كفتة»، وذلك في الطحينة فقط، والكفتة نفسها بدون سمسم\./); assert.equal(r2.trace.factTextRestored, undefined);
+  // not sure ⇒ the plain text, no handover, and the question is kept for the manager
+  const m3 = scripted([use(tu("dish_fact", { id: "71", question: "خردل" })), (a) => say(fact(a).say)]);
+  const r3 = await turn(makeWorld({}, { callModel: m3.callModel }), null, "برجر لحم كلاسيك فيه خردل؟");
+  assert.match(r3.text, /^ما عندي معلومة مؤكدة عن هذا المكوّن في الصنف\.\nواكتب لنا حساسيتك في ملاحظة الطلب وننتبه لها\.\nولو تبي تأكيد من المطبخ اكتب: موظف$/); assert.equal(r3.handover, null);
+  assert.deepEqual(r3.trace.unanswered.map((u) => u.source), ["dish_fact"]);
+  assert.ok(AR.checkReply("الصوص يُقدَّم جانبياً، مش فوقها.", { lang: "ar" }).problems.some((p) => p.type === "dialect_egyptian"));
+  assert.deepEqual(AR.hintOf({ key: "dishfact", rawIntent: "remove_question", arg: { id: "8", remove: true }, alt: { id: "83", name: "كريب ستربس" } }).same_dish_without_it, { id: "83", name: "كريب ستربس" });
+  assert.deepEqual(AR.buildContext({ handover: { reason: "asked_human", minutes_ago: 3 } }).staff_already_asked, { reason: "asked_human", minutes_ago: 3 });
+  // the owner-approved public sentence travels with the dish
+  assert.deepEqual((await W.tools.get_item(PHONE, { id: "52" })).item.owner_note, { ar: "الصوص يُقدَّم جانبياً.", en: "The sauce is served on the side." });
+});
+
+test("a general FAQ word inside a question about ONE named dish is a question about that dish («كرانشي فرايز تشيز فيها لحم بقري؟»)", () => {
+  assert.deepEqual(AR.hintOf({ key: "faq", arg: "meat", entities: { items: ["77"] } }), { intent: "question_about_one_dish", dish_id: "77", wants_it_removed: false });
+  assert.deepEqual(AR.hintOf({ key: "faq", arg: "meat", entities: { items: ["77", "17"] } }), { intent: "faq", topic: "meat" }, "two dishes ⇒ still the general topic");
+  assert.deepEqual(AR.hintOf({ key: "faq", arg: "meat", entities: {} }), { intent: "faq", topic: "meat" });
 });
