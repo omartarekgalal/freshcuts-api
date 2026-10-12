@@ -584,7 +584,7 @@ export const SCHEMA = Object.freeze({
   greetScope: S("greeting", "enum", "مين يتحيّى", "كل محادثة جديدة، أو محادثات الإعلانات بس.", { options: ["all", "ads"] }),
   greetWindowHours: S("greeting", "number", "تحية واحدة كل", "العميل مايتحيّاش تاني قبل المدة دي.", { min: 1, max: 168, unit: "ساعة" }),
   disclosureHours: S("greeting", "number", "التعريف بالمساعد الآلي كل", "أول رد في المحادثة بيقول إنه مساعد آلي وإزاي توصل لموظف؛ يتكرر بعد المدة دي.", { min: 1, max: 168, unit: "ساعة" }),
-  footerMode: S("greeting", "enum", "سطر «للرجوع… أو موظف» تحت الرسايل", "كل رسالة / ذكي: أول رسالة والرسالة الغير مفهومة والرسايل اللي مافيهاش زر رجوع أو موظف / أول رسالة بس.", { options: ["always", "smart", "first"] }),
+  footerMode: S("greeting", "enum", "سطر «للرجوع… أو موظف» تحت الرسايل", "كل رسالة / ذكي: الرسالة الغير مفهومة والأزرار اللي مافيهاش زر رجوع أو موظف (أول رسالة فيها التعريف فمش محتاجاه) / أول رسالة بس.", { options: ["always", "smart", "first"] }),
   publicPhone: S("greeting", "phone", "رقم المطعم في التعريف", "فاضي = الرقم المكتوب في سؤال «كيف أتواصل» في الأسئلة الشائعة."),
   humanPauseMin: S("staff", "number", "سكوت البوت بعد رد الموظف", "من آخر رسالة للموظف من موبايل المطعم، في وقت الدوام.", { min: 1, max: 720, unit: "دقيقة" }),
   staffWaitMin: S("staff", "number", "انتظار الموظف قبل ما البوت يرد", "العميل كتب وقت السكوت والموظف ماردّش: البوت يرد بعد المدة دي (أسئلة مفهومة بس).", { min: 1, max: 15, unit: "دقيقة" }),
@@ -1138,8 +1138,9 @@ export function decide(ev, ctx) {
   if (handoff && ho && !(SERIOUS.has(handoff[0]) && !SERIOUS.has(ho))) handoff = null;
   // ٧) التعريف: أول رسالة من البوت في المحادثة (مرة كل ٢٤ ساعة)
   const disclose = !chat.last_disclosed_at || nowMs - Date.parse(chat.last_disclosed_at) >= cfg.disclosureHours * 3600_000;
+  let disclosed = false;       // سطر التعريف اتحط فعلاً فوق الرد
   if (disclose) {
-    try { reply = { ...reply, body: `${disclosureLine(cfg, c.lang, ctx.data?.settings)}\n${reply.body}` }; }
+    try { reply = { ...reply, body: `${disclosureLine(cfg, c.lang, ctx.data?.settings)}\n${reply.body}` }; disclosed = true; }
     catch { /* نص التعريف اتعدّل غلط ⇒ الرد يطلع من غيره أحسن ما مايطلعش */ }
   }
   // رسالة تانية (اختيارية): بعد التحية القائمة الرئيسية؛ بعد حالة الطلب سؤال الموافقة على تحديثات الطلب
@@ -1157,10 +1158,11 @@ export function decide(ev, ctx) {
     } catch { /* الرسالة التانية إضافة — الرد الأساسي يطلع من غيرها */ }
   }
   /* سطر «للرجوع… أو موظف» (طلب عمر ١٢/١٠: مش تحت كل رسالة). always = كل رسالة بزر؛ first = أول رسالة في المحادثة بس؛
-     smart = أول رسالة + الرسالة الغير مفهومة + أي أزرار/قايمة مافيهاش زر «القائمة» أو «موظف». رسالة الرابط (زر واحد يفتح الموقع)
-     من غير السطر في smart: الطريق لموظف اتقال في التعريف، وكلمة «موظف» شغّالة دايماً. */
+     smart = الرسالة الغير مفهومة + أي أزرار/قايمة مافيهاش زر «القائمة» أو «موظف». أول رسالة في smart من غير السطر: سطر التعريف
+     فوقها بيقول «للتحدث مع موظف اكتب: موظف» أصلاً، فمايتكررش مرتين في نفس الرسالة (لو التعريف ماطلعش لأي سبب، السطر يرجع).
+     رسالة الرابط (زر واحد يفتح الموقع) من غير السطر في smart: كلمة «موظف» شغّالة دايماً. */
   const wayBack = (r) => [...(r.buttons || []), ...((r.list && r.list.rows) || [])].some((b) => /^(bot:human|m:human|bot:menu|m:main)$/.test(String(b.id)));
-  const showFooter = (r, i) => Boolean(cfg.footerMode === "always" || (disclose && i === 0) || (cfg.footerMode === "smart" && (key === "unknown" || ((r.buttons || r.list) && !wayBack(r)))));
+  const showFooter = (r, i) => Boolean(cfg.footerMode === "always" || (cfg.footerMode === "first" && disclose && i === 0) || (cfg.footerMode === "smart" && disclose && !disclosed && i === 0) || (cfg.footerMode === "smart" && (key === "unknown" || ((r.buttons || r.list) && !wayBack(r)))));
   const payloads = replies.map((r, i) => toPayload(r, { cfg, lang: c.lang, interactive, footer: showFooter(r, i) }));
   const fallback = replies.map((r) => toPayload(r, { cfg, lang: c.lang, interactive: false }));
   const pp = [...payloads, ...fallback].map(payloadProblem).find(Boolean);
@@ -1764,9 +1766,11 @@ export function register(app, ctx, deps = {}) {
     let data;
     try { data = await loadData({ settings, cfg, phone, orderNo: cls.entities?.orderNo || null, key: cls.key, now, know, arg: cls.arg }); }
     catch (e) { return c.json({ ok: true, classified: cls, decision: { act: "silent", reason: `data_failed:${e.message}` } }); }
-    data.chat = {};
-    // المحاكاة = «لو الرد هيطلع دلوقتي»: من غير سكوت موظف، ومن غير انتظار الـ٣ دقايق، ومع سطر التعريف (أول رسالة)
-    const d = decide(ev, { cfg, now, chat: {}, lastEchoAt: null, repliesLastHour: 0, lastSame: null, failedRecently: false, data, cls, afterWait: "unknown_wait" });
+    // المحاكاة = «لو الرد هيطلع دلوقتي»: من غير سكوت موظف، ومن غير انتظار الـ٣ دقايق. الافتراضي: أول رسالة في المحادثة (بسطر التعريف)؛
+    // first:false ⇒ رسالة تانية في نفس المحادثة (من غير التعريف) — عشان يتشاف شكل الرد العادي.
+    const simChat = b.first === false ? { last_disclosed_at: now.toISOString() } : {};
+    data.chat = simChat;
+    const d = decide(ev, { cfg, now, chat: simChat, lastEchoAt: null, repliesLastHour: 0, lastSame: null, failedRecently: false, data, cls, afterWait: "unknown_wait" });
     return c.json({ ok: true, classified: { key: cls.key, intent: cls.rawIntent, lang: cls.lang, score: cls.score }, open: data.open ? data.open.open : null,
       decision: { act: d.act, reason: /^after_/.test(d.reason || "") ? null : d.reason, key: d.key, handoff: d.handoff || null, link: d.link || null },
       payloads: d.payloads || [], textFallback: d.fallback || [] });

@@ -1356,7 +1356,7 @@ test("footer «للرجوع… أو موظف»: not under every message (smart, 
   };
   const smart = await run("smart");
   assert.match(smart.greetBody, /^معك المساعد الآلي لفريش كاتس 🤖 للتحدث مع موظف اكتب: موظف/, "the first message says how to reach a person");
-  assert.deepEqual([smart.greetLink, smart.greetMenu], [FOOTER, null], "first message of the conversation: footer once, not on the menu right after it");
+  assert.deepEqual([smart.greetLink, smart.greetMenu], [null, null], "the first message already carries the introduction: no footer repeating «موظف» in the same bubble");
   assert.ok(smart.menuRows.includes("m:human"), "the menu itself carries «كلّم موظف»");
   assert.deepEqual([smart.cta, smart.list, smart.box, smart.notmenu, smart.status], [null, null, null, null, null], "no footer on ordinary answers");
   assert.ok(smart.notmenuBtns.includes("bot:human"));
@@ -1366,6 +1366,12 @@ test("footer «للرجوع… أو موظف»: not under every message (smart, 
   assert.deepEqual([always.greetLink, always.greetMenu, always.cta, always.list, always.box, always.notmenu, always.unknown, always.status, always.optin], Array(9).fill(FOOTER));
   const first = await run("first");
   assert.deepEqual([first.greetLink, first.greetMenu, first.cta, first.list, first.box, first.notmenu, first.status, first.optin], [FOOTER, null, null, null, null, null, null, null]);
+  // the dashboard preview: first message of a conversation by default, an ordinary later message with first:false
+  const sw = liveWorld({ waBot: { footerMode: "smart" } });
+  const s1 = (await sw.call("POST", "/api/cms/wabot/simulate", { text: "كم رسوم التوصيل" })).body.payloads[0];
+  assert.match(s1.interactive.body.text, /^معك المساعد الآلي/); assert.equal(foot(s1), null);
+  const s2 = (await sw.call("POST", "/api/cms/wabot/simulate", { text: "كم رسوم التوصيل", first: false })).body.payloads[0];
+  assert.match(s2.interactive.body.text, /^🛵/); assert.equal(foot(s2), null, "second and later link messages: no introduction and no footer");
   // «موظف» typed works in every mode, footer or not
   const h = liveWorld({ waBot: { footerMode: "first" } });
   await h.say("كم رسوم التوصيل"); h.clock.advance(1);
