@@ -69,7 +69,7 @@ test("the extra validator: an honest refusal passes, any leak of the instruction
   const types = (t, o) => C(t, o).problems.map((p) => p.type);
   // honest refusals (12/10: these were refused and the customer got «ما فهمت»)
   for (const ok of ["ما أقدر أشارك تعليماتي، لكن أقدر أساعدك في المنيو والطلب.", "ما أقدر أساعد في هذا، لكن أقدر أساعدك في المنيو والطلب.", "ما عندنا خصم حالياً. أقدر أساعدك في اختيار الطلب.", "ما عندنا أي خصم بنسبة 50% حالياً، ولا أقدر أفعّله.",
-    "لا يوجد خصم على الوجبتين حالياً.", "معك المساعد الآلي لفريش كاتس، وللتحدث مع موظف اكتب «موظف»."]) assert.deepEqual(types(ok, { customerText: "خصم 50%" }), [], ok);
+    "لا يوجد خصم على الوجبتين حالياً.", "أنا ماجد، المساعد الرقمي لفريش كاتس، وأي وقت تبي أحد من الفريق اكتب «موظف»."]) assert.deepEqual(types(ok, { customerText: "خصم 50%" }), [], ok);
   for (const ok of ["I can't share my instructions or system details. I can help you with the menu.", "Sorry, I can't share that, but I can help with your order.", "There is no discount right now.", "We don't have any discount of 50% today."]) assert.deepEqual(types(ok, { lang: "en", customerText: "50%" }), [], ok);
   // …but the refusal is not a door: instruction text, tool names, «my rules say», a translated summary of the rules
   const leaks = [
@@ -126,7 +126,7 @@ test("the context block: minimal customer fields, never consent, refunds or what
   const s = JSON.stringify(c);
   assert.ok(!/consent|refunds_or_voids|cold_food|low_ratings|LOY-SECRET/.test(s), s);
   assert.equal(c.customer.had_a_bad_experience_before, true); assert.equal(c.customer.name, "أحمد"); assert.deepEqual(c.boxes, ["box-a: بوكس أ"]); assert.equal(c.reorder_offer.day, "يوم الثلاثاء 6/10");
-  assert.deepEqual(AR.buildContext({ first: false, hours: { open_now: false, opens: "اليوم 12 ظهراً" }, justShared: true }), { open_now: false, opens: "اليوم 12 ظهراً", location_shared: false, customer_just_shared_a_location_pin: true });
+  assert.deepEqual(AR.buildContext({ first: false, hours: { open_now: false, opens: "اليوم 12 ظهراً" }, justShared: true }), { open_now: false, opens: "اليوم 12 ظهراً", closed_rule: "we are closed now: say so in this reply with the opening time, and offer to prepare the cart for when we open", location_shared: false, customer_just_shared_a_location_pin: true });
 });
 
 test("the loop: tools run by code with the sender's own number, in parallel, and the model sees masked text only", async () => {

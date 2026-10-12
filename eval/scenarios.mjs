@@ -2,7 +2,8 @@
    and the only cost is the assistant itself.
    A scenario: { id, group, sets:["batch20"], world:{ profile, closed, soldOut, loc, offers, reorder }, turns:[ "text" | { text, type, location, tap } ], expect:{…} }
    expect: cart { option, items:[{ id, qty, note }], boxes:[{ slug, choices:[product ids], addons:[ids], note, price }], only, not:[ids], subtotal } · noCart ·
-           handover (reason or list) · noHandover · owner { turnIndex: "rules" | "assistant" } · mustContain / mustNotContain (regex) · turnMustContain { turnIndex: regex }
+           handover (reason or list) · noHandover · owner { turnIndex: "rules" | "assistant" } · mustContain / mustNotContain (regex) · turnMustContain / turnMustNotContain { turnIndex: regex } ·
+           turnTool { turnIndex: tool name } · a turn may be { text, staff: "summary" } = staff handled the chat before this message (PS1)
    Ids are the live menu ids of 12/10/2026 (eval/fixtures). */
 const B20 = ["batch20"];
 export const BATCH20 = [
@@ -74,5 +75,6 @@ import { CH1 } from "./scenarios-ch1.mjs";
 import { M3 } from "./scenarios-m3.mjs";
 import { M45 } from "./scenarios-m45.mjs";
 import { EX6 } from "./scenarios-ex6.mjs";
+import { PS1 } from "./scenarios-ps1.mjs";
 for (const s of BATCH20) s.sets = ["batch20", "full"];
-export const SCENARIOS = [...BATCH20, ...FULL_EXTRA, ...AS3, ...AS4, ...CH1, ...M3, ...M45, ...EX6];
+export const SCENARIOS = [...BATCH20, ...FULL_EXTRA, ...AS3, ...AS4, ...CH1, ...M3, ...M45, ...EX6, ...PS1];

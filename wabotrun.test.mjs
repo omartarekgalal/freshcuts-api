@@ -57,7 +57,7 @@ function world({ waBot = {}, notifications = { whatsappEnabled: true }, orders =
   const clock = { now: () => new Date(nowMs), advance: (min) => { nowMs += min * 60_000; }, advanceSec: (s) => { nowMs += s * 1000; }, set: (iso) => { nowMs = Date.parse(iso); } };
   const db = { msgs: [], log: [], jobs: [], proofs: [], consentLog: [], ai: [], aiAlerts: [], tpl: [], cfgLog: [], botCarts: [], chats: new Map(), optouts: [], optins: {}, links: links.map((s) => (typeof s === "string" ? { slug: s, active: true, clicks: 0 } : { active: true, clicks: 0, ...s })), adChats: [], adReportParams: null, channelOffers: [], channelReportParams: null, sttKey: null, liveDay: [], marketingTo: [], settings: null };
   db.settings = { hours: HOURS, notifications, googlePlace: { mapsUrl: "https://maps.google.com/?cid=14767749764292326433" }, storefront: { seo: { faq: FAQ } },
-    cms: { loyalty: { enabled: true, every: 3, reward: "free_delivery", minTotal: 60 } }, delivery: { alertPhones: ["0544775082", "0506338246"], staffSmsLanguage: "en" }, waBot: { footerMode: "always", ...waBot },
+    cms: { loyalty: { enabled: true, every: 3, reward: "free_delivery", minTotal: 60 } }, delivery: { alertPhones: ["0544775082", "0506338246"], staffSmsLanguage: "en" }, waBot: { footerMode: "always", disclosureMode: "classic", ...waBot },
     waMaster: { enabled: true },   // SEC: مفتاح المالك الرئيسي (whatsapp.js guardSend) — مفتوح في العالم الافتراضي للاختبار
     ...extraSettings };
   const iso = () => new Date(nowMs).toISOString();
@@ -405,9 +405,9 @@ test("closed hours: says when we open, points to «نبّهني أول ما نف
     "⏰ مواعيدنا:\nالسبت – الأربعاء: 12 ظهراً – 2 فجراً\nالخميس – الجمعة: 12 ظهراً – 3 فجراً\n🌙 مقفلين الحين، ونفتح اليوم الساعة 12 ظهراً.\nجهّز سلتك من الرابط واضغط «نبّهني أول ما نفتح» ونذكّرك.",
     "جهّز سلتك", "https://freshcuts.sa/l/wab-boxes")]);
   const g = await w.say("مرحبا", { from: "966598765432" });
-  assert.equal(g.sent[0].interactive.body.text, "حيّاك الله في فريش كاتس 👋 اختر من القائمة.\n🌙 المطعم مقفل الحين ونفتح اليوم الساعة 12 ظهراً.");
+  assert.equal(g.sent[0].interactive.body.text, "حيّاك الله 👋 وش تحب تطلب اليوم؟ اكتب لي أو اختر من القائمة.\n🌙 المطعم مقفل الحين ونفتح اليوم الساعة 12 ظهراً.");
   const h = await w.say("ابي موظف", { from: "966555555555" });
-  assert.equal(h.sent[0].text.body, "أبشر 🙏 حوّلت محادثتك لموظف.\nالمطعم مقفل الحين. يرد عليك موظف هنا أول ما نفتح اليوم الساعة 12 ظهراً، والمساعد الآلي يترك المحادثة له.");
+  assert.equal(h.sent[0].text.body, "أبشر 🙏 حوّلت محادثتك لموظف.\nالمطعم مقفل الحين. يرد عليك موظف هنا أول ما نفتح اليوم الساعة 12 ظهراً، وأنا أترك المحادثة له.");
   // 02:30 Tuesday (Monday's shift ended 02:00) — closed; 01:30 — still open on Monday's shift
   const late = world({ waBot: { mode: "live" }, at: "2026-10-12T23:30:00Z" });
   assert.match((await late.say("مفتوحين؟")).sent[0].interactive.body.text, /🌙 مقفلين الحين، ونفتح اليوم الساعة 12 ظهراً\./);
@@ -587,7 +587,7 @@ test("template test send: owner only, allow-list only, no customer switch needed
    ١٢/١٠ — قواعد «البوت والموظف» (موافقة عمر): سكوت بالدقايق، نهاية مبكرة، المطعم مقفول، الكتم اليدوي،
    الشكوى المفتوحة، انتظار الغير مفهوم، الرد المؤجّل، التعريف، ووضوح السجل.
 ═════════════════════════════════════════════════════════════════════════════ */
-const SOON = "\nيرد عليك موظف هنا في أقرب وقت، والمساعد الآلي يترك المحادثة له.";
+const SOON = "\nيرد عليك موظف هنا في أقرب وقت، وأنا أترك المحادثة له.";
 const DISC = "معك المساعد الآلي لفريش كاتس 🤖 للتحدث مع موظف اكتب: موظف";
 const mins = (a, b) => Math.round((Date.parse(a) - Date.parse(b)) / 60000);
 const CLOSE_AT = "2026-10-12T23:00:00Z";     // الثلاثاء ٠٢:٠٠ الرياض = قفلة وردية الاثنين
@@ -653,7 +653,7 @@ test("rule 1+2: staff reply pauses the bot 30 min from the LAST echo; a customer
   assert.deepEqual([u.sent.length, u.log.decision, u.log.reason, u.log.reply_key], [0, "waiting", "staff_pause", "unknown"]); assert.equal(w3.db.jobs.length, 1);
   assert.equal(mins(u.log.resume_at, w3.clock.now().toISOString()), 5);
   const late3 = await w3.tick(5);
-  assert.equal(late3.length, 1); assert.match(bodyOf(late3[0]), /ما فهمت|ما قدرت أفهم|لم أفهم/); assert.deepEqual([u.log.decision, u.log.reason], ["replied", "after_staff_wait"]);
+  assert.equal(late3.length, 1); assert.match(bodyOf(late3[0]), /ما وضح لي|ما فهمت|ما قدرت أفهم|لم أفهم/); assert.deepEqual([u.log.decision, u.log.reason], ["replied", "after_staff_wait"]);
   assert.equal((await w3.say("كم رسوم التوصيل", { from: "966598765432" })).sent.length, 1, "another customer is not affected");
 }));
 
@@ -765,14 +765,14 @@ test("complaint or order problem: apology in the house style, order number, imme
 }));
 
 /* ── القاعدة ٥ ───────────────────────────────────────────────────────────── */
-const FALLBACK = (to) => ({ messaging_product: "whatsapp", recipient_type: "individual", to, type: "interactive", interactive: { type: "button", body: { text: "ما فهمت طلبك تماماً 🙏 اختر من الأزرار، أو اكتب: موظف" }, footer: { text: FOOTER },
+const FALLBACK = (to) => ({ messaging_product: "whatsapp", recipient_type: "individual", to, type: "interactive", interactive: { type: "button", body: { text: "المعذرة، ما وضح لي طلبك 🙏 اكتبه لي بكلمات ثانية أو اختر من الأزرار، وإذا تبي أحد من الفريق اكتب: موظف" }, footer: { text: FOOTER },
   action: { buttons: [{ type: "reply", reply: { id: "bot:menu", title: "🎁 البوكسات والمنيو" } }, { type: "reply", reply: { id: "bot:status", title: "📦 وين طلبي؟" } }, { type: "reply", reply: { id: "bot:human", title: "👤 كلّم موظف" } }] } } });
 /* ── القاعدة ٧: التعريف ─────────────────────────────────────────────────── */
 test("rule 7: the first bot message of a conversation says it is automated and how to reach a person; once per 24 h", withEnv(LOCKS_OPEN, async () => {
   const CONTACT = { storefront: { seo: { faq: [...FAQ, { q: "كيف أتواصل مع المطعم؟", a: "هاتف أو واتساب على 0546715683." }] } } };
   const w = world({ waBot: { mode: "live" }, disclosure: true, extraSettings: CONTACT });
   const a = await w.say("السلام عليكم");
-  assert.equal(a.sent[0].interactive.body.text, `${DISC}، أو اتصل على 0546715683\nحيّاك الله في فريش كاتس 👋 اختر من القائمة.`);
+  assert.equal(a.sent[0].interactive.body.text, `${DISC}، أو اتصل على 0546715683\nحيّاك الله 👋 وش تحب تطلب اليوم؟ اكتب لي أو اختر من القائمة.`);
   w.clock.advance(2);
   assert.equal((await w.say("وين موقعكم")).sent[0].interactive.body.text, "📍 فرعنا في حي السلامة بجدة، عند دوار رامي.", "not repeated in the same conversation");
   w.clock.advance(24 * 60);
@@ -864,13 +864,13 @@ const bodyOf = (p) => (p.type === "text" ? p.text.body : p.interactive.body.text
 const rowsOf = (p) => p.interactive.action.sections[0].rows;
 const urlOf = (p) => p.interactive.action.parameters.url;
 const LIVE_BOXES = "🎁 بوكساتنا:\n• بوكسات فردية من 29 ر.س\n• بوكسات لشخصين من 65 ر.س\n• بوكسات المشاركة والعائلة من 85 ر.س";
-const HAND = "يرد عليك موظف هنا في أقرب وقت، والمساعد الآلي يترك المحادثة له.";
+const HAND = "يرد عليك موظف هنا في أقرب وقت، وأنا أترك المحادثة له.";
 
 test("conversation: greeting (link + main menu) → order → delivery → hours → location → payment → thanks (exact payloads)", withEnv(LOCKS_OPEN, async () => {
   const w = world({ waBot: { mode: "live" }, greetMenu: true });
   const g = await w.say("السلام عليكم");
   assert.equal(g.sent.length, 1, "the greeting is ONE short message: a welcome line and the menu (Omar 12/10: the long greeting with the boxes was too much)");
-  assert.equal(g.sent[0].interactive.type, "list"); assert.equal(bodyOf(g.sent[0]), "حيّاك الله في فريش كاتس 👋 اختر من القائمة.");
+  assert.equal(g.sent[0].interactive.type, "list"); assert.equal(bodyOf(g.sent[0]), "حيّاك الله 👋 وش تحب تطلب اليوم؟ اكتب لي أو اختر من القائمة.");
   assert.deepEqual(rowsOf(g.sent[0]).map((r) => [r.id, r.title]), [["m:boxes", "🎁 البوكسات"], ["m:cats", "📋 المنيو بالأقسام"], ["m:offers", "🔥 العروض وأول طلب"], ["m:delivery", "🛵 التوصيل والرسوم"], ["m:status", "📦 حالة طلبي"], ["m:human", "👤 كلّم موظف"]]);
   assert.doesNotMatch(JSON.stringify(g.sent), /بوكسات فردية|ر\.س|FIRST|freshcuts\.sa/, "no box list, no fees, no offer text, no link in the greeting");
   assert.equal(w.db.log.length, 1);
@@ -890,7 +890,7 @@ test("conversation: greeting (link + main menu) → order → delivery → hours
   w.clock.advance(1);
   assert.deepEqual((await w.say("تقبلون كاش؟")).sent, [txt(ME, "💳 الدفع الإلكتروني عبر Apple Pay وmada والبطاقات الائتمانية وSTC Pay.")]);
   w.clock.advance(1);
-  assert.deepEqual((await w.say("يعطيك العافية")).sent, [txt(ME, "العفو، حيّاك الله 🌟")]);
+  assert.deepEqual((await w.say("يعطيك العافية")).sent, [txt(ME, "العفو، حيّاك الله في أي وقت 🌟")]);
   assert.equal(w.sms.length, 0);
 }));
 
@@ -1106,7 +1106,7 @@ test("after a handover the assistant really leaves the chat: facts only, until s
 test("rule 4b: with an open complaint the bot answers facts only — no order link, no first-order line, no second alert", withEnv(LOCKS_OPEN, async () => {
   const w = liveWorld({ at: CLOSED_AT, orders: [order({ status: "delivered" })] });
   const c = await w.say("الطلب وصل بارد وناقص");
-  assert.deepEqual(c.sent, [txt(ME, "نعتذر منك على اللي صار 🙏\nحوّلت محادثتك لمدير الفرع.\nطلبك رقم W1790011111111 قدّامنا.\nالمطعم مقفل الحين. يرد عليك موظف هنا أول ما نفتح اليوم الساعة 12 ظهراً، والمساعد الآلي يترك المحادثة له.")]);
+  assert.deepEqual(c.sent, [txt(ME, "نعتذر منك على اللي صار 🙏\nحوّلت محادثتك لمدير الفرع.\nطلبك رقم W1790011111111 قدّامنا.\nالمطعم مقفل الحين. يرد عليك موظف هنا أول ما نفتح اليوم الساعة 12 ظهراً، وأنا أترك المحادثة له.")]);
   assert.equal(w.sms.length, 2, "the alert still goes out while closed");
   w.clock.advance(2);
   assert.deepEqual((await w.say("متى تفتحون")).sent, [txt(ME, "⏰ مواعيدنا:\nالسبت – الأربعاء: 12 ظهراً – 2 فجراً\nالخميس – الجمعة: 12 ظهراً – 3 فجراً\n🌙 مقفلين الحين، ونفتح اليوم الساعة 12 ظهراً.")]);
@@ -1129,7 +1129,7 @@ test("rule 4b: with an open complaint the bot answers facts only — no order li
   assert.equal((await w.say("المنيو")).sent.length, 1, "after handoffOpenHours the chat is normal again");
 }));
 
-const FALLBACK2 = (to) => ({ messaging_product: "whatsapp", recipient_type: "individual", to, type: "interactive", interactive: { type: "button", body: { text: "ما فهمت طلبك تماماً 🙏 اختر من الأزرار، أو اكتب: موظف" }, footer: { text: FOOTER },
+const FALLBACK2 = (to) => ({ messaging_product: "whatsapp", recipient_type: "individual", to, type: "interactive", interactive: { type: "button", body: { text: "المعذرة، ما وضح لي طلبك 🙏 اكتبه لي بكلمات ثانية أو اختر من الأزرار، وإذا تبي أحد من الفريق اكتب: موظف" }, footer: { text: FOOTER },
   action: { buttons: [{ type: "reply", reply: { id: "bot:menu", title: "📋 القائمة" } }, { type: "reply", reply: { id: "bot:status", title: "📦 وين طلبي؟" } }, { type: "reply", reply: { id: "bot:human", title: "👤 كلّم موظف" } }] } } });
 test("rule 5: a message the bot does not understand is answered AT ONCE with the honest line + buttons (no three minutes of silence); twice in a row ⇒ staff; a staff member in the chat still gets his wait", withEnv(LOCKS_OPEN, async () => {
   const w = liveWorld();
@@ -1311,7 +1311,7 @@ test("missing data: never a partial or placeholder text — a plain «handed to 
   const nh = world({ waBot: { mode: "live" }, extraSettings: { hours: null } });
   assert.deepEqual((await nh.say("متى تفتحون")).sent, [txt(ME, "ما قدرت أجيب المعلومة الحين 🙏 حوّلت سؤالك لموظف.")]);
   const w = world({ waBot: { mode: "live" }, first: null, offers: [], extraSettings: { cms: { loyalty: { enabled: false } } } });
-  assert.equal(bodyOf((await w.say("السلام عليكم")).sent[0]), "حيّاك الله في فريش كاتس 👋 اختر من القائمة.");
+  assert.equal(bodyOf((await w.say("السلام عليكم")).sent[0]), "حيّاك الله 👋 وش تحب تطلب اليوم؟ اكتب لي أو اختر من القائمة.");
   w.clock.advance(3);
   assert.equal(bodyOf((await w.say("عندكم عروض")).sent[0]), BOXES);
   const w2 = world({ waBot: { mode: "live" }, links: ["wab-boxes"] });
@@ -1693,8 +1693,8 @@ test("Omar's «السلام عليكم» of 12/10: one short reply (welcome + ho
   const w = liveWorld({ disclosure: true, extraSettings: CONTACT, waBot: { footerMode: "smart" } });
   const g = await w.say("السلام عليكم");
   assert.equal(g.sent.length, 1);
-  assert.equal(bodyOf(g.sent[0]), "معك المساعد الآلي لفريش كاتس 🤖 للتحدث مع موظف اكتب: موظف، أو اتصل على 0546715683\nحيّاك الله في فريش كاتس 👋 اختر من القائمة.");
-  assert.ok(bodyOf(g.sent[0]).length < 140, "short"); assert.equal(rowsOf(g.sent[0]).length, 6); assert.equal(g.sent[0].interactive.footer, undefined);
+  assert.equal(bodyOf(g.sent[0]), "معك المساعد الآلي لفريش كاتس 🤖 للتحدث مع موظف اكتب: موظف، أو اتصل على 0546715683\nحيّاك الله 👋 وش تحب تطلب اليوم؟ اكتب لي أو اختر من القائمة.");
+  assert.ok(bodyOf(g.sent[0]).length < 170, "short"); assert.equal(rowsOf(g.sent[0]).length, 6); assert.equal(g.sent[0].interactive.footer, undefined);
   // the branches hold what the greeting used to carry
   w.clock.advance(1);
   assert.match(bodyOf((await w.press("m:boxes", "🎁 البوكسات")).sent[0]), /^بوكساتنا/);
@@ -1703,14 +1703,14 @@ test("Omar's «السلام عليكم» of 12/10: one short reply (welcome + ho
   w.clock.advance(1);
   assert.match(bodyOf((await w.press("m:delivery", "x")).sent[0]), /• من 150 ر\.س: مجاني/);
   // returning customer: greeted by the name he typed in his last order; junk names are not used
-  for (const [name, expect] of [["أحمد العتيبي", "حيّاك الله أحمد 👋 اختر من القائمة."], ["Omar", "حيّاك الله Omar 👋 اختر من القائمة."], ["05444", "حيّاك الله في فريش كاتس 👋 اختر من القائمة."], ["", "حيّاك الله في فريش كاتس 👋 اختر من القائمة."], ["عميل", "حيّاك الله في فريش كاتس 👋 اختر من القائمة."]]) {
+  for (const [name, expect] of [["أحمد العتيبي", "هلا أحمد، حيّاك الله 👋 وش تحب تطلب اليوم؟ اكتب لي أو اختر من القائمة."], ["Omar", "هلا Omar، حيّاك الله 👋 وش تحب تطلب اليوم؟ اكتب لي أو اختر من القائمة."], ["05444", "حيّاك الله 👋 وش تحب تطلب اليوم؟ اكتب لي أو اختر من القائمة."], ["", "حيّاك الله 👋 وش تحب تطلب اليوم؟ اكتب لي أو اختر من القائمة."], ["عميل", "حيّاك الله 👋 وش تحب تطلب اليوم؟ اكتب لي أو اختر من القائمة."]]) {
     const r = liveWorld({ orders: [{ ...order({ status: "delivered" }), customer: { name } }] });
     assert.equal(bodyOf((await r.say("هلا")).sent[0]), expect, JSON.stringify(name));
   }
   assert.deepEqual(["أحمد", "x", "أبو-فهد", "Mohammed Ali", "aaaaaaaaaaaaaaaaaaaaaaaa"].map(R.greetName), ["أحمد", "", "", "Mohammed", ""]);
   // closed: one more line with the real reopening time, nothing about building a cart
   const c = liveWorld({ at: CLOSED_AT });
-  assert.equal(bodyOf((await c.say("السلام عليكم")).sent[0]), "حيّاك الله في فريش كاتس 👋 اختر من القائمة.\n🌙 المطعم مقفل الحين ونفتح اليوم الساعة 12 ظهراً.");
+  assert.equal(bodyOf((await c.say("السلام عليكم")).sent[0]), "حيّاك الله 👋 وش تحب تطلب اليوم؟ اكتب لي أو اختر من القائمة.\n🌙 المطعم مقفل الحين ونفتح اليوم الساعة 12 ظهراً.");
 }));
 
 test("«إيقاف»: confirmed with what was stopped and two buttons to turn messages back on; each choice is an explicit, logged consent", withEnv(LOCKS_OPEN, async () => {
@@ -1885,7 +1885,7 @@ test("«نفس طلبي الأخير»: a row in the returning customer's greeti
   const prior = [{ ...order({ status: "delivered" }), customer: { name: "أحمد" } }];
   const w = liveWorld({ orders: prior, lastCart: SNAP() });
   const g = await w.say("السلام عليكم");
-  assert.equal(bodyOf(g.sent[0]), "حيّاك الله أحمد 👋 اختر من القائمة.");
+  assert.equal(bodyOf(g.sent[0]), "هلا أحمد، حيّاك الله 👋 وش تحب تطلب اليوم؟ اكتب لي أو اختر من القائمة.");
   assert.deepEqual(rowsOf(g.sent[0])[0], { id: "re:last", title: "🔁 نفس طلبي السابق", description: "5/10: 2× كريب زنجر سوبريم، بنا تشيكن كازرول، ميكس جريل لشخصين" });
   assert.equal(rowsOf(g.sent[0]).length, 7); assert.equal(w.db.botCarts.length, 0, "nothing is created until he taps");
   w.clock.advance(1);
@@ -1976,7 +1976,7 @@ test("trade secrets (Omar 12/10): «what is in X» gets the public menu descript
 test("a customer who says hello is never answered with silence; and the full list of silent outcomes is what it should be", withEnv(LOCKS_OPEN, async () => {
   // Omar 12/10 07:12: greeted at 04:34, wrote «هلا» and «السلام عليكم» again inside the 24-hour greeting window and got nothing
   const w = liveWorld({ orders: [{ ...order({ status: "delivered" }), customer: { name: "أحمد" } }], waBot: { greetWindowHours: 24 } });
-  assert.equal(bodyOf((await w.say("السلام عليكم")).sent[0]), "حيّاك الله أحمد 👋 اختر من القائمة.");
+  assert.equal(bodyOf((await w.say("السلام عليكم")).sent[0]), "هلا أحمد، حيّاك الله 👋 وش تحب تطلب اليوم؟ اكتب لي أو اختر من القائمة.");
   w.clock.advance(158);
   for (const hello of ["هلا", "السلام عليكم"]) {
     const r = await w.say(hello); w.clock.advance(3);
@@ -1985,7 +1985,7 @@ test("a customer who says hello is never answered with silence; and the full lis
     assert.equal(rowsOf(r.sent[0]).length, 10);
   }
   w.clock.advance(24 * 60);
-  assert.match(bodyOf((await w.say("هلا")).sent[0]), /حيّاك الله أحمد 👋 اختر من القائمة\.$/, "after the window: a proper greeting again");
+  assert.match(bodyOf((await w.say("هلا")).sent[0]), /هلا أحمد، حيّاك الله 👋 وش تحب تطلب اليوم؟ اكتب لي أو اختر من القائمة\.$/, "after the window: a proper greeting again");
   // a reply that can not be built correctly is not silence either: the plain «handed to staff» line goes out, with the alert
   const b = liveWorld({ waBot: { texts: {} } });
   b.db.settings.waBot.texts = { thanks: { ar: "العفو undefined" } };
@@ -2675,7 +2675,7 @@ test("fewer handovers: «not sure» about an ingredient is said plainly by the a
   assert.equal(br.log.handoff, "needs_staff"); assert.equal(JSON.parse(b.m.seen[1].messages.at(-1).content[0].content).handover, "needs_staff");
   // severe allergy never reaches the model
   const s = aWorld([], { waBot: { dishFactsEnabled: true } }); const sr = await s.say("عندي حساسية شديدة من السمسم، وجبة كفتة تنفع؟");
-  assert.equal(s.m.used(), 0); assert.equal(sr.log.handoff, "allergy_severe"); assert.match(bodyOf(msgs(sr)[0]), /والمساعد الآلي يترك المحادثة له\.$/, "a serious handover keeps the old line: the assistant does step back");
+  assert.equal(s.m.used(), 0); assert.equal(sr.log.handoff, "allergy_severe"); assert.match(bodyOf(msgs(sr)[0]), /وأنا أترك المحادثة له\.$/, "a serious handover keeps the old line: the assistant does step back");
 }));
 
 const ctxOf = (seenCall) => { const t = seenCall.messages.map((m) => (Array.isArray(m.content) ? m.content.map((b) => b.text || "").join("\n") : String(m.content || ""))).join("\n"); const m = /<context [^>]*>([\s\S]*?)<\/context>/.exec(t); return m ? JSON.parse(m[1]) : null; };
@@ -3137,7 +3137,7 @@ test("GL1 no dead air — with the assistant on, a message the rules do not unde
   // the model is down ⇒ the rules bot's line + buttons in the same second (it used to be three minutes of nothing)
   const down = aWorld([{ ok: false, error: "http_500", ms: 5, provider: "x", usage: null }]);
   const d = await down.say("بس انا طلبت قبل كدا");
-  assert.deepEqual([d.log.decision, d.log.reply_key], ["replied", "unknown"]); assert.match(bodyOf(msgs(d)[0]), /ما فهمت طلبك تماماً/); assert.equal(down.db.jobs.length, 0);
+  assert.deepEqual([d.log.decision, d.log.reply_key], ["replied", "unknown"]); assert.match(bodyOf(msgs(d)[0]), /ما وضح لي طلبك/); assert.equal(down.db.jobs.length, 0);
   // Omar's exact sequence: the same question a minute later is answered again (by whoever is on), never «duplicate»
   const o = aWorld([mUse(tUse("get_offers", {})), mSay("عندك عرض الطلب الأول: توصيل مجاني للطلبات من 60 ر.س. تحب أرشح لك شي؟"), mUse(tUse("get_offers", {})), mSay("عرض الطلب الأول: توصيل مجاني للطلبات من 60 ر.س. تبي أجهّز لك طلب؟")]);
   const a1 = await o.say("ايه احسن عرض عندكم"); o.clock.advance(1);
@@ -3988,7 +3988,7 @@ test("EX6: a message WhatsApp calls «unsupported» is never dropped — it open
   // the ad lead of 13/10 (…1328): the first thing we ever get from the number
   const w = liveWorld({ greetMenu: true });
   const a = await w.say(null, UNS);
-  assert.deepEqual([a.log.decision, a.log.reply_key], ["replied", "greet"]); assert.match(bodyOf(a.sent[0]), /حيّاك الله في فريش كاتس 👋/);
+  assert.deepEqual([a.log.decision, a.log.reply_key], ["replied", "greet"]); assert.match(bodyOf(a.sent[0]), /حيّاك الله 👋/);
   w.clock.advance(1);
   const b = await w.say(null, UNS);
   assert.deepEqual([b.log.reply_key, b.sent.map(bodyOf)], ["unsupported", ["ما وصلتني رسالتك بشكل واضح، اكتبها نص لو سمحت 🙏"]]); assert.equal(b.log.handoff, null);
@@ -4188,7 +4188,7 @@ test("ST2 transfer line: one fixed line to the customer through the guard — on
   await w.say("السلام عليكم");
   const before = w.calls.length;
   assert.equal(await w.bot.sendFlowLine("0512345678", "transfer_note"), "sent");
-  assert.deepEqual(w.calls.slice(before).map((c) => [c.body.to, bodyOf(c.body)]), [["966512345678", "حوّلنا محادثتك لمدير الفرع وبيكمل معك هنا 🙏"]]);
+  assert.deepEqual(w.calls.slice(before).map((c) => [c.body.to, bodyOf(c.body)]), [["966512345678", "حوّلت محادثتك لمدير الفرع، ويكمل معك هنا 🙏"]]);
   assert.equal(await w.bot.sendFlowLine("0512345678", "greet"), "bad_key");
   assert.equal(await w.bot.sendFlowLine("0598765432", "transfer_note"), "window_closed", "never wrote ⇒ nothing");
   w.clock.advance(25 * 60);
@@ -4198,5 +4198,5 @@ test("ST2 transfer line: one fixed line to the customer through the guard — on
   assert.equal(await dry.bot.sendFlowLine("0512345678", "transfer_note"), "mode_off");
   const t = world({ waBot: { mode: "test", testPhones: ["0544775082"] }, bundles: LIVE.bundles, links: ALL_LINKS });
   assert.equal(await t.bot.sendFlowLine("0512345678", "transfer_note"), "not_test_phone");
-  assert.equal(R.TEXTS.transfer_note.ar, "حوّلنا محادثتك لمدير الفرع وبيكمل معك هنا 🙏");
+  assert.equal(R.TEXTS.transfer_note.ar, "حوّلت محادثتك لمدير الفرع، ويكمل معك هنا 🙏");
 }));

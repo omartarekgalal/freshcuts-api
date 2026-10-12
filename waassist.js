@@ -163,6 +163,43 @@ export function suggestOne(cart, ctx = {}, cfg = ASSIST_DEFAULTS) {
   return null;
 }
 
+/* ── ٣ب) السلة الصغيرة ورسوم التوصيل (صافية) — PS1 ─────────────────────────
+   عميل معترض على رسوم التوصيل أو سلته صغيرة: إيه الحلول الحقيقية؟ الاستلام (من غير رسوم)، وأقرب قيمة طلب الرسوم عندها أقل أو مجانية
+   (كود أول طلب / مكافأة / سلّم الرسوم)، وأقرب بوكسات سعرها يوصّل القيمة دي. **كل الأرقام من المدخلات** (العروض، التسعيرة، سلّم الرسوم، البوكسات) — مفيش رقم مكتوب هنا.
+   offers = نتيجة get_offers · quote = نتيجة quote_delivery (أو need_location) · ladder = [{ over, fee }] من سياسة التوصيل · boxes = list_boxes().boxes */
+export function deliverySavers({ total = 0, offers = null, quote = null, ladder = null, boxes = [] } = {}) {
+  const t = round2(Math.max(0, Number(total) || 0));
+  const located = Boolean(quote && quote.ok && quote.deliverable === true);
+  if (quote && quote.ok && quote.deliverable === false) return { ok: true, for_total: t, deliverable: false, pickup: { fee: 0 }, rule: "Their location is outside our delivery range: say so plainly and offer pickup from the branch (no delivery fee)." };
+  const far = located ? Number(quote.far_zone_extra) || 0 : 0;
+  const steps = (Array.isArray(ladder) ? ladder : []).map((x) => ({ over: Number(x && x.over), fee: Number(x && x.fee) })).filter((x) => Number.isFinite(x.over) && Number.isFinite(x.fee)).sort((a, b) => a.over - b.over);
+  const cur = [...steps].reverse().find((s) => t >= s.over) || null;
+  const feeNow = located ? Number(quote.fee) : cur ? cur.fee : null;
+  /* أرخص: أقرب درجة في السلّم رسومها أقل من الحالية. مجاني: أقل قيمة طلب توصيلها مجاني (كود أول طلب، مكافأة، أو آخر السلّم). */
+  let cheaper = null, free = null;
+  const up = steps.find((s) => s.over > t && (!cur || s.fee < cur.fee));
+  if (up) cheaper = { order_from: up.over, fee_then: round2(up.fee + far), missing: round2(up.over - t) };
+  else if (located && Number(quote.to_next_tier) > 0 && Number.isFinite(Number(quote.next_tier_fee))) cheaper = { order_from: round2(t + Number(quote.to_next_tier)), fee_then: Number(quote.next_tier_fee), missing: round2(quote.to_next_tier) };
+  const frees = [];
+  const fo = offers && offers.first_order;
+  if (fo && fo.eligible === true && fo.free_delivery) frees.push({ order_from: Number(fo.min_total) || 0, with_code: String(fo.code), condition: "the customer's first delivery order on our website" });
+  for (const r of (offers && offers.rewards) || []) if (r && r.freeDelivery) frees.push({ order_from: Number(r.minTotal) || 0, with_code: String(r.code || ""), condition: "the customer's own unused reward code" });
+  const zero = steps.find((s) => s.fee === 0 && far === 0);
+  if (zero) frees.push({ order_from: zero.over, condition: "any order of that total" });
+  else if (located && Number(quote.free_from_total) > 0) frees.push({ order_from: Number(quote.free_from_total), condition: "any order of that total" });
+  frees.sort((a, b) => a.order_from - b.order_from);
+  if (frees.length) { const f = frees[0]; free = { order_from: f.order_from, missing: round2(Math.max(0, f.order_from - t)), ...(f.with_code ? { with_code: f.with_code } : {}), condition: f.condition }; }
+  if (cheaper && free && free.order_from <= cheaper.order_from) cheaper = null;      // المجاني أقرب أو بنفس القيمة ⇒ هو العرض
+  const target = cheaper ? cheaper.order_from : free && free.missing > 0 ? free.order_from : null;
+  const reach = target === null ? [] : (Array.isArray(boxes) ? boxes : []).filter((b) => b && Number(b.price) >= target).sort((a, b) => Number(a.price) - Number(b.price)).slice(0, 3)
+    .map((b) => ({ slug: b.slug, name: b.name, ...(b.name_en ? { name_en: b.name_en } : {}), price: Number(b.price), section: b.section || "", ...(b.section_en ? { section_en: b.section_en } : {}),
+      delivery_fee_with_it: free && Number(b.price) >= free.order_from ? 0 : cheaper ? cheaper.fee_then : null,
+      ...(free && free.with_code && Number(b.price) >= free.order_from ? { free_only_with_code: free.with_code } : {}) }));
+  return { ok: true, for_total: t, deliverable: located ? true : null, fee_now: feeNow, ...(located ? {} : { fee_note: "no location pin yet: fees here are the standard ones; the exact fee for their location is shown on the website before payment" }),
+    pickup: { fee: 0 }, cheaper, free, boxes_reaching: reach,
+    rule: "In ONE short message offer the real ways out: pickup from the branch (no delivery fee), and ONE way to cheaper or free delivery: the missing amount, or one box from boxes_reaching (its name and price as given, the one that fits what they wanted). If delivery is free only with a code (with_code / free_only_with_code), say the code and its condition in the same sentence. End with one either-or question. Offer this once; if they still decline, accept warmly and do not push." };
+}
+
 /* ── ٤) المراجِع (صافي) ───────────────────────────────────────────────────
    reply: نص الموديل. facts: كل نتايج الأدوات في الدور ده + نص العميل (أرقامه هو مسموح تتكرر).
    know: { menu, boxes } لاكتشاف اسم صنف/بوكس اتذكر ومارجعش من أداة.

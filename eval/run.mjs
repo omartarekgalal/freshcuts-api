@@ -45,7 +45,7 @@ async function runOne(sc) {
     return { costSar: c.sar, ...u };
   };
   const W = makeWorld(sc.world || {}, { callModel, onCall, acfg: { ...OVER, ...(sc.acfg || {}) } });
-  let session = null, handoverOpen = null, first = true, chShown = false;
+  let session = null, handoverOpen = null, first = true, chShown = false, disclosed = Boolean((sc.world || {}).disclosed);
   const CH_URL = "https://whatsapp.com/channel/0029VaExampleChannel01", CH_SAY = R.textOf(W.cfg, "channel_assist", "ar") + " " + CH_URL;
   const turns = [];
   /* العميل المكتوب بيقفل زي عميل حقيقي: لو المساعد سأله سؤال (اقتراح) بعد آخر سطر في النص ولسه مفيش سلة، بيرد «لا شكراً، ارسل السلة». */
@@ -58,12 +58,13 @@ async function runOne(sc) {
     const cls = R.classify(ev, W.know);
     const d = cls.key === "ack" || cls.key === "nack" ? { act: "silent", reason: "ack" } : cls.key === "unknown" ? { act: "wait", waitKind: "unknown_wait" } : cls.key ? { act: "reply", key: cls.key } : null;
     /* as in the bot since 12/10: an ordinary handover does not stop the assistant; a serious one does (the script has no clock, so it holds to the end) */
+    if (t.staff) { session = null; handoverOpen = null; }      // PS1: staff handled the chat and closed it — a new assistant session starts, as in the bot
     const serious = ["allergy_severe", "complaint", "problem", "order_change"].includes(handoverOpen);
     const el = AR.assistEligible({ acfg: W.acfg, cfg: W.cfg, phone: PHONE, ev, cls, d, sessionActive: Boolean(session), handoverOpen: serious, recentOrder: Boolean((sc.world || {}).orders) });
     const rec = { i, customer: t.text || `[${ev.type}]`, cls: cls.key, raw: cls.rawIntent, by: null, reply: null, cart: null, handover: null, outcome: null, tools: [], verdicts: [], calls: [], ms: 0, costSar: 0, model: null, suggestions: [] };
     const rulesHandover = { complaint: "complaint", problem: "problem", change: "order_change", human: "asked_human", media: "media", custom_offer: "custom_offer" };
     if (!el.run) {
-      rec.by = "rules"; rec.outcome = serious ? "rules:handover_open" : `rules:${el.why.replace(/^rules:/, "")}`;
+      rec.by = "rules"; if (cls.key === "whoami" || cls.key === "thanks") { try { rec.reply = R.buildReply(cls.key, { cfg: W.cfg, lang: cls.lang === "en" ? "en" : "ar", data: { settings: {} }, referral: null, factual: false, arg: null }).body; rec.fixedText = true; } catch { /* the transcript shows the owner only */ } } rec.outcome = serious ? "rules:handover_open" : `rules:${el.why.replace(/^rules:/, "")}`;
       if (!serious) { if (cls.key === "dishfact" && cls.rawIntent === "allergy_severe") { rec.handover = "allergy_severe"; handoverOpen = "allergy_severe"; } else if (rulesHandover[cls.key]) { rec.handover = rulesHandover[cls.key]; handoverOpen = rec.handover; } }
       if (session) session = AR.noteRulesTurn(session, ev.text, cls.key);
       turns.push(rec); continue;
@@ -73,7 +74,10 @@ async function runOne(sc) {
     const hours = await W.tools.get_hours();
     let profile = null, offers = null;
     if (fresh || first) { const p = await W.tools.customer_profile(PHONE); profile = p && p.ok ? p.profile : null; offers = await W.tools.get_offers(PHONE); }
-    const context = AR.buildContext({ first: fresh, hours, profile, offers, reorder: fresh ? W.reorder : null, locationShared: Boolean(W.state.loc), justShared: Boolean(t.location), branch: fresh ? R.textOf(W.cfg, "location", lang) : null, boxes: fresh ? W.boxes : null, channel: (sc.world || {}).channel && !chShown && cls.key !== "dishfact" ? { say: CH_SAY, url: CH_URL } : null, notes: fresh ? (sc.world || {}).notes || null : null, ad: fresh ? (sc.world || {}).ad || null : null, hint: AR.hintOf(withAlt(cls)), handover: handoverOpen && !serious ? { reason: handoverOpen, minutes_ago: 2 } : null });
+    /* PS1: the persona as the bot gives it — the name in the first context, the intro phrase in the first reply of the conversation only (the bot's «disclose» moment), and, when the
+       scenario says staff handled the chat before this turn (turn.staff = their summary), the summary. Like the bot, the code guarantees the intro in that first reply (ensureIntro). */
+    const persona = R.personaOn(W.cfg), pName = R.personaNameOf(W.cfg, lang), introduce = persona && !disclosed ? AR.introSay(pName, lang) : null;
+    const context = AR.buildContext({ persona: { name: W.cfg.assist.personaName, name_en: W.cfg.assist.personaNameEn }, introduce, handback: t.staff ? { outcome: "answered", outcome_label: "استفسار واترد عليه", staff_note: null, staff_told_customer: [String(t.staff)], closed_minutes_ago: 3, still_to_do: false, ...(typeof t.staff === "object" ? t.staff : {}) } : null, first: fresh, hours, profile, offers, reorder: fresh ? W.reorder : null, locationShared: Boolean(W.state.loc), justShared: Boolean(t.location), branch: fresh ? R.textOf(W.cfg, "location", lang) : null, boxes: fresh ? W.boxes : null, channel: (sc.world || {}).channel && !chShown && cls.key !== "dishfact" ? { say: CH_SAY, url: CH_URL } : null, notes: fresh ? (sc.world || {}).notes || null : null, ad: fresh ? (sc.world || {}).ad || null : null, hint: AR.hintOf(withAlt(cls)), handover: handoverOpen && !serious ? { reason: handoverOpen, minutes_ago: 2 } : null });
     rec.context = context;
     first = false;
     const text = t.location ? "📍" : ev.text;
@@ -82,7 +86,7 @@ async function runOne(sc) {
     if (!r.ok) { rec.by = "rules"; rec.outcome = `fallback:${r.reason}`; session = fresh ? null : AR.noteRulesTurn(session, ev.text, cls.key); turns.push(rec); continue; }
     session = r.session; rec.by = "assistant";
     if (r.handover) { rec.handover = r.handover.reason; rec.note = r.handover.note; rec.outcome = `handover:${r.handover.reason}`; handoverOpen = r.handover.reason; }
-    else { rec.reply = r.text; rec.cart = r.cart; rec.outcome = "sent"; if (r.trace && r.trace.channelOffered) { chShown = true; rec.channel = true; } }
+    else { rec.reply = introduce ? AR.ensureIntro(r.text, introduce, pName) : r.text; if (introduce) { rec.introByModel = AR.hasIntro(r.text, pName); disclosed = true; } rec.cart = r.cart; rec.outcome = "sent"; if (r.trace && r.trace.channelOffered) { chShown = true; rec.channel = true; } }
     turns.push(rec);
     if (i === script.length - 1 && i === sc.turns.length - 1 && sc.expect && sc.expect.cart && sc.closing !== false && !turns.some((x) => x.cart) && rec.by === "assistant" && rec.reply) script.push("لا شكراً، ارسل رابط السلة");
   }

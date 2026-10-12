@@ -50,7 +50,7 @@ import { ECHO, STAFF_ECHO_SQL } from "./waecho.js";
 import { makeStt, STT_PROVIDERS } from "./wasttkey.js";
 const STT_LABEL = Object.fromEntries(STT_PROVIDERS.map((p) => [p.id, p.label]));
 import { lookImage, makeTranscriber, voiceSeconds, transcriptUsable, IMAGE_MAX_BYTES, VOICE_MAX_BYTES } from "./waassistmedia.js";
-import { ASSIST_CFG_DEFAULTS, ASSIST_SCHEMA, PROMPT_HASH, LIVE_AUDIENCES, assistConfig, assistFromBody, assistEligible, makeAssistLoop, makeAssistStore, makeModelCaller, billableUsage, newSession, noteRulesTurn, buildContext, hintOf } from "./waassistrun.js";
+import { ASSIST_CFG_DEFAULTS, ASSIST_SCHEMA, PROMPT_HASH, LIVE_AUDIENCES, assistConfig, assistFromBody, assistEligible, makeAssistLoop, makeAssistStore, makeModelCaller, billableUsage, newSession, noteRulesTurn, buildContext, hintOf, introSay, ensureIntro, hasIntro } from "./waassistrun.js";
 import { WA_UPDATES_TEXTS, WA_UPDATES_CURRENT, recordWaUpdatesBot, recordWaMarketingBot, ensureWaConsentSchema } from "./waconsent.js";
 
 export const STORE = "https://freshcuts.sa";
@@ -90,7 +90,8 @@ export const DEFAULTS = Object.freeze({
   replyRateSar: 0.0401,        // …وبعدها بالريال للرد
   greetWindowHours: 24,        // تحية واحدة لكل عميل في المدة دي
   disclosureHours: 24,         // التعريف بالمساعد الآلي: مرة كل المدة دي
-  footerMode: "smart",         // always | smart | first — سطر «للرجوع… أو موظف» تحت الرسايل (طلب عمر ١٢/١٠: مش على كل رسالة)
+  disclosureMode: "persona",   // PS1 (طلب عمر ١٣/١٠: «مش مقدمة روبوت»): persona = المساعد بيعرّف نفسه باسمه مرة في أول المحادثة («معك … المساعد الرقمي لفريش كاتس») ومفيش سطر تحت الرسايل · classic = السطر القديم «معك المساعد الآلي … اكتب: موظف» + footerMode
+  footerMode: "smart",         // (في وضع classic بس) always | smart | first — سطر «للرجوع… أو موظف» تحت الرسايل (طلب عمر ١٢/١٠: مش على كل رسالة)
   unknownHandoverAfter: 2,     // كام رسالة مش مفهومة ورا بعض قبل التحويل
   adWindowHours: 72,           // المحادثة تفضل محسوبة على الإعلان المدة دي
   optinAnswerWindowMin: 60,    // «تمام/لا» مكتوبة تتحسب إجابة على سؤال الموافقة خلالها
@@ -161,8 +162,8 @@ export const FAQ_KEYS = Object.keys(FAQ_DEFS);
 const t = (label, ar, en, vars = [], opt = [], max = 900) => ({ label, ar, en, vars, opt, max });
 export const TEXTS = Object.freeze({
   /* التحية قصيرة (طلب عمر ١٢/١٠: «رسالة طويلة فيها البوكسات»): ترحيب + القائمة. البوكسات والرسوم والعروض في فروعها. */
-  greet: t("التحية (أول رسالة)", "حيّاك الله في فريش كاتس 👋 اختر من القائمة.\n{paused}\n{closed}", "Welcome to Fresh Cuts 👋 Pick from the menu.\n{paused}\n{closed}", [], ["paused", "closed"], 300),
-  greet_back: t("تحية عميل طلب قبل كده (بالاسم)", "حيّاك الله {name} 👋 اختر من القائمة.\n{paused}\n{closed}", "Welcome back {name} 👋 Pick from the menu.\n{paused}\n{closed}", ["name"], ["paused", "closed"], 300),
+  greet: t("التحية (أول رسالة)", "حيّاك الله 👋 وش تحب تطلب اليوم؟ اكتب لي أو اختر من القائمة.\n{paused}\n{closed}", "Welcome 👋 What would you like today? Type it or pick from the menu.\n{paused}\n{closed}", [], ["paused", "closed"], 300),
+  greet_back: t("تحية عميل طلب قبل كده (بالاسم)", "هلا {name}، حيّاك الله 👋 وش تحب تطلب اليوم؟ اكتب لي أو اختر من القائمة.\n{paused}\n{closed}", "Welcome back {name} 👋 What would you like today? Type it or pick from the menu.\n{paused}\n{closed}", ["name"], ["paused", "closed"], 300),
   closed_short: t("سطر «مقفل الحين» القصير (في التحية)", "🌙 المطعم مقفل الحين ونفتح {opens}.", "🌙 We're closed now and open {opens}.", ["opens"], [], 200),
   menu: t("المنيو / الأسعار", "{boxes}\nوالمنيو كامل بالصور والأسعار في موقعنا 👇\n{closed}",
     "{boxes}\nThe full menu with photos and prices is on our website 👇\n{closed}", ["boxes"], ["closed"]),
@@ -198,7 +199,7 @@ export const TEXTS = Object.freeze({
   media_location: t("صورة موقع (المساعد شافها)", "وصلتني صورة موقع 📍 عشان أتأكد من التوصيل والرسوم لموقعك أرسل الموقع نفسه من واتساب: 📎 ثم «الموقع».", "I got a location screenshot 📍 To check delivery and the fee, please share the location itself from WhatsApp: 📎 then “Location”.", [], [], 400),
   media: t("صورة / صوت / ملف", "ما أقدر أفتح الصور والمقاطع الصوتية 🙏 حوّلت محادثتك لموظف.\n{wait}",
     "I can't open photos or voice notes 🙏 I've passed your chat to a staff member.\n{wait}", [], ["wait"]),
-  unknown: t("غير مفهوم (أول مرة)", "ما فهمت طلبك تماماً 🙏 اختر من الأزرار، أو اكتب: موظف", "I didn't quite get that 🙏 Pick a button, or type: staff"),
+  unknown: t("غير مفهوم (أول مرة)", "المعذرة، ما وضح لي طلبك 🙏 اكتبه لي بكلمات ثانية أو اختر من الأزرار، وإذا تبي أحد من الفريق اكتب: موظف", "Sorry, I didn't quite get that 🙏 Say it another way or pick a button, and if you'd like someone from the team type: staff"),
   data_missing: t("معلومة ناقصة", "ما قدرت أجيب المعلومة الحين 🙏 حوّلت سؤالك لموظف.\n{wait}",
     "I couldn't get that information right now 🙏 I've passed your question to a staff member.\n{wait}", [], ["wait"]),
   rate: t("حد الرسائل الآلية في الساعة", "وصلنا حد الرسائل الآلية لهذه الساعة 🙏 اكتب «موظف» لو تحتاج مساعدة.", "We have reached the automated message limit for this hour 🙏 Type “staff” if you need help.", [], [], 300),
@@ -218,7 +219,7 @@ export const TEXTS = Object.freeze({
   paid_note: t("تأكيد الطلب بعد الدفع", "وصلنا طلبك رقم {order_no} ✅ نبدأ نجهّزه الحين.\nتقدر تتابعه من الزر 👇", "We received your order {order_no} ✅ We are starting on it now.\nYou can follow it from the button 👇", ["order_no"], [], 400),
   lead_followup: t("متابعة محادثة ماخدتش رد مفيد", "{who}\nوصلتنا رسالتك وما قدرنا نخدمك وقتها، نعتذر منك 🙏\nوش تحب تطلب؟ اكتب لي الصنف وأجهّز لك طلبك.", "{who}\nWe got your message and could not help you at the time, sorry 🙏\nWhat would you like to order? Tell me the dish and I will get your order ready.", ["who"], [], 600),
   handoff_remind: t("تذكير: المحادثة عند الموظف (مرة واحدة)", "محادثتك عند الموظف 🙏\n{wait}", "Your chat is with our staff 🙏\n{wait}", [], ["wait"]),
-  thanks: t("شكر / وداع", "العفو، حيّاك الله 🌟", "You're welcome 🌟"),
+  thanks: t("شكر / وداع", "العفو، حيّاك الله في أي وقت 🌟", "You're welcome, any time 🌟"),
   /* «إيقاف» = كل رسايلنا المبادِرة (العروض وتحديثات الطلب) — حارس الإرسال بيسكّت كل القوالب. الرد على سؤاله في المحادثة شغّال. */
   stop: t("تأكيد إيقاف العروض (ومعاه زر الرجوع وزر إيقاف تحديثات الطلب)", "تم إيقاف العروض ✅ تحديثات طلباتك مستمرة.\nضغطت بالغلط؟ اضغط «رجّع العروض». وللرجوع في أي وقت اكتب: اشتراك", "Offers stopped ✅ Your order updates continue.\nTapped by mistake? Press «Offers back on». To come back any time, type: start"),
   btn_stop_undo: t("زر: رجّع العروض (تراجع عن الإيقاف)", "↩️ رجّع العروض", "↩️ Offers back on", [], [], LIMITS.btnTitle),
@@ -230,7 +231,10 @@ export const TEXTS = Object.freeze({
   other_city: t("عميل من مدينة تانية", "نحن في جدة، حي السلامة، والتوصيل داخل جدة فقط.", "We are in Jeddah (Al Salamah) and deliver inside Jeddah only."),
   delivery_time: t("مدة التوصيل (من غير دقايق)", "الوقت يختلف حسب المسافة والزحمة. أرسل موقعك 📍 وأتأكد لك من التغطية والرسوم.", "The time depends on distance and traffic. Share your location 📍 and I will check coverage and the fee for you."),
   payment_no_cash_transfer: t("سؤال «ادفع تحويل / كاش؟»: السطر الأول (قرار المالك)", "الدفع أونلاين من موقعنا عند إتمام الطلب، وما نستقبل تحويل بنكي أو كاش عبر المحادثة.", "Payment is online on our website when you place the order; we do not take bank transfers or cash through the chat."),
-  whoami: t("«انت بوت؟ / مين معي»: سطر التعريف + القائمة", "{who}\nاختر اللي تبيه 👇", "{who}\nPick what you need 👇", ["who"]),
+  whoami: t("«انت بوت؟ / مين معي»: سطر التعريف + القائمة (وضع classic)", "{who}\nاختر اللي تبيه 👇", "{who}\nPick what you need 👇", ["who"]),
+  /* PS1 — الصدق: الشخصية لها اسم، بس «انت بوت؟ / مع مين اتكلم؟ / انت شخص حقيقي؟» بتاخد إجابة صريحة في سطر واحد: مساعد رقمي، والفريق موجود بكلمة «موظف». */
+  whoami_persona: t("«انت بوت؟ / مين معي»: الإجابة الصريحة باسم المساعد", "أنا {name}، المساعد الرقمي لفريش كاتس 🙂 وأي وقت تبي أحد من الفريق اكتب: موظف\nوش تحب أساعدك فيه؟ 👇", "I'm {name}, Fresh Cuts' digital assistant 🙂 Any time you'd like someone from the team, type: staff\nWhat can I help you with? 👇", ["name"], [], 300),
+  intro: t("التعريف بالاسم (أول رسالة في المحادثة)", "معك {name}، المساعد الرقمي لفريش كاتس.", "This is {name}, Fresh Cuts' digital assistant.", ["name"], [], 200),
   btn_cancel_order: t("زر: إلغاء طلبي", "إلغاء طلبي", "Cancel my order", [], [], LIMITS.btnTitle),
   btn_stop_msgs: t("زر: إيقاف الرسائل", "إيقاف الرسائل", "Stop messages", [], [], LIMITS.btnTitle),
   btn_resume_all: t("زر: رجّع كل الرسائل", "كل الرسائل والعروض", "All messages", [], [], LIMITS.btnTitle),
@@ -336,11 +340,11 @@ export const TEXTS = Object.freeze({
     "This is Fresh Cuts' automated assistant 🤖 To reach a person type: staff, or call {phone}", ["phone"], [], 200),
   when_open_assist: t("سطر «الرد قريب» والمساعد مكمل معاه", "يرد عليك موظف هنا في أقرب وقت، وأنا معك لو تحتاج شي ثاني.", "A staff member will reply here shortly, and I'm here if you need anything else.", [], [], 200),
   wait_line_assist: t("سطر «الرد لما نفتح» والمساعد مكمل معاه", "المطعم مقفل الحين. يرد عليك موظف هنا أول ما نفتح {opens}، وأنا معك لو تحتاج شي ثاني.", "We're closed now. A staff member will reply here once we open {opens}, and I'm here if you need anything else.", ["opens"], [], 300),
-  transfer_note: t("سطر للعميل: الكاشير حوّل المحادثة للمدير (ST2)", "حوّلنا محادثتك لمدير الفرع وبيكمل معك هنا 🙏", "We've passed your chat to the branch manager, who will continue with you here 🙏", [], [], 300),
+  transfer_note: t("سطر للعميل: الكاشير حوّل المحادثة للمدير (ST2)", "حوّلت محادثتك لمدير الفرع، ويكمل معك هنا 🙏", "I've passed your chat to the branch manager, who will continue with you here 🙏", [], [], 300),
   handover_note: t("متابعة للعميل: الموظف اتأخر (مرة واحدة)", "نعتذر عن التأخير 🙏 نبّهنا الفريق مرة ثانية ويرد عليك موظف هنا.", "Sorry for the wait 🙏 We've alerted the team again and a staff member will reply here.", [], [], 300),
   handover_note_assist: t("متابعة للعميل: الموظف اتأخر، والمساعد معاه", "نعتذر عن التأخير 🙏 نبّهنا الفريق مرة ثانية ويرد عليك موظف هنا.\nوأنا معك لو تحتاج شي في المنيو أو الطلب.", "Sorry for the wait 🙏 We've alerted the team again and a staff member will reply here.\nMeanwhile I'm here for anything about the menu or your order.", [], [], 300),
-  when_open: t("سطر «الرد قريب» (في الدوام بس)", "يرد عليك موظف هنا في أقرب وقت، والمساعد الآلي يترك المحادثة له.", "A staff member will reply here shortly, and the automated assistant leaves the chat to them.", [], [], 200),
-  wait_line: t("سطر «الرد لما نفتح»", "المطعم مقفل الحين. يرد عليك موظف هنا أول ما نفتح {opens}، والمساعد الآلي يترك المحادثة له.", "We're closed now. A staff member will reply here once we open {opens}, and the automated assistant leaves the chat to them.", ["opens"], [], 200),
+  when_open: t("سطر «الرد قريب» (في الدوام بس)", "يرد عليك موظف هنا في أقرب وقت، وأنا أترك المحادثة له.", "A staff member will reply here shortly, and I'll leave the chat to them.", [], [], 200),
+  wait_line: t("سطر «الرد لما نفتح»", "المطعم مقفل الحين. يرد عليك موظف هنا أول ما نفتح {opens}، وأنا أترك المحادثة له.", "We're closed now. A staff member will reply here once we open {opens}, and I'll leave the chat to them.", ["opens"], [], 200),
   paused_delivery: t("سطر «التوصيل متوقف»", "⚠️ التوصيل متوقف مؤقتاً، والاستلام من الفرع متاح.", "⚠️ Delivery is paused for now; pickup from the branch is available.", [], [], 200),
   footer: t("تذييل الرسائل بزر", "رد آلي · اكتب «القائمة» للرجوع أو «موظف»", "Automated · type “menu” to go back or “staff”", [], [], LIMITS.footer),
   cta_order: t("زر: اطلب", "اطلب الآن", "Order now", [], [], LIMITS.ctaText),
@@ -440,6 +444,7 @@ const channelCfg = (x) => { const c = x && typeof x === "object" ? x : {}; const
   return { url: channelUrlOk(c.url) ? String(c.url) : "", enabled: c.enabled === true, everyDays: Number.isFinite(d) && d >= 1 && d <= 365 ? d : 30 }; };
 const phNorm = (v) => String(v || "").replace(/\D/g, "").replace(/^(00966|966|0)/, "");
 export const LIVE_SCOPES = Object.freeze(["ads", "new", "all"]);
+export const DISCLOSURE_MODES = Object.freeze(["persona", "classic"]);
 export const channelOn = (cfg) => Boolean(cfg && cfg.links && cfg.links.channel && cfg.links.channel.enabled === true && channelUrlOk(cfg.links.channel.url));
 export function botConfig(settings) {
   const x = (settings && settings.waBot) || {};
@@ -471,6 +476,7 @@ export function botConfig(settings) {
     replyRateSar: num(x.replyRateSar, 0, 5, DEFAULTS.replyRateSar),
     greetWindowHours: num(x.greetWindowHours, 1, 168, DEFAULTS.greetWindowHours),
     disclosureHours: num(x.disclosureHours, 1, 168, DEFAULTS.disclosureHours),
+    disclosureMode: DISCLOSURE_MODES.includes(x.disclosureMode) ? x.disclosureMode : DEFAULTS.disclosureMode,
     footerMode: ["always", "smart", "first"].includes(x.footerMode) ? x.footerMode : DEFAULTS.footerMode,
     unknownHandoverAfter: num(x.unknownHandoverAfter, 1, 5, DEFAULTS.unknownHandoverAfter),
     adWindowHours: num(x.adWindowHours, 1, 168, DEFAULTS.adWindowHours),
@@ -554,6 +560,7 @@ export function configFromBody(b, prev = {}) {
   }
   if ("alertPhones" in src) out.alertPhones = staffPhones(Array.isArray(src.alertPhones) ? src.alertPhones : String(src.alertPhones || "").split(/[\s,،;]+/));
   if ("greetScope" in src) { if (["all", "ads"].includes(src.greetScope)) out.greetScope = src.greetScope; else errors.push("greetScope"); }
+  if ("disclosureMode" in src) { if (DISCLOSURE_MODES.includes(src.disclosureMode)) out.disclosureMode = src.disclosureMode; else errors.push("disclosureMode: persona أو classic"); }
   if ("footerMode" in src) { if (["always", "smart", "first"].includes(src.footerMode)) out.footerMode = src.footerMode; else errors.push("footerMode"); }
   errors.push(...rangeErrors(src));
   delete out.humanWindowHours;      // اتلغى (١٢/١٠) — أي حفظ بينضّف المخزّن القديم
@@ -771,8 +778,9 @@ export const SCHEMA = Object.freeze({
   autoEchoTexts: S("staff", "texts", "نصوص الردود الآلية بتاعة التطبيق", "نص مكتوب هنا بالحرف بيتحسب رد آلي لو طلع خلال دقيقة من رسالة العميل، حتى لو قصير."),
   greetScope: S("greeting", "enum", "مين يتحيّى", "كل محادثة جديدة، أو محادثات الإعلانات بس.", { options: ["all", "ads"] }),
   greetWindowHours: S("greeting", "number", "تحية واحدة كل", "العميل مايتحيّاش تاني قبل المدة دي.", { min: 1, max: 168, unit: "ساعة" }),
-  disclosureHours: S("greeting", "number", "التعريف بالمساعد الآلي كل", "أول رد في المحادثة بيقول إنه مساعد آلي وإزاي توصل لموظف؛ يتكرر بعد المدة دي.", { min: 1, max: 168, unit: "ساعة" }),
-  footerMode: S("greeting", "enum", "سطر «للرجوع… أو موظف» تحت الرسايل", "كل رسالة / ذكي: الرسالة الغير مفهومة والأزرار اللي مافيهاش زر رجوع أو موظف (أول رسالة فيها التعريف فمش محتاجاه) / أول رسالة بس.", { options: ["always", "smart", "first"] }),
+  disclosureMode: S("greeting", "enum", "طريقة التعريف في أول المحادثة", "persona = المساعد بيعرّف نفسه باسمه مرة واحدة في أول رسالة («معك … المساعد الرقمي لفريش كاتس») ومفيش سطر «رد آلي» تحت الرسايل؛ كلمة «موظف» شغّالة دايماً وبتتذكر وقت ما تفيد. classic = السطر القديم «معك المساعد الآلي… اكتب: موظف» وسطر التذييل حسب الإعداد اللي تحت. في الحالتين: لو العميل سأل «انت بوت؟» بيتقال له بصراحة.", { options: ["persona", "classic"] }),
+  disclosureHours: S("greeting", "number", "التعريف يتكرر كل", "التعريف بيتقال في أول رد في المحادثة، ويتكرر بعد المدة دي.", { min: 1, max: 168, unit: "ساعة" }),
+  footerMode: S("greeting", "enum", "سطر «للرجوع… أو موظف» تحت الرسايل (وضع classic بس)", "كل رسالة / ذكي: الرسالة الغير مفهومة والأزرار اللي مافيهاش زر رجوع أو موظف (أول رسالة فيها التعريف فمش محتاجاه) / أول رسالة بس.", { options: ["always", "smart", "first"] }),
   publicPhone: S("greeting", "phone", "رقم المطعم في التعريف", "فاضي = الرقم المكتوب في سؤال «كيف أتواصل» في الأسئلة الشائعة."),
   humanPauseMin: S("staff", "number", "سكوت البوت بعد رد الموظف", "من آخر رسالة للموظف من موبايل المطعم، في وقت الدوام.", { min: 1, max: 720, unit: "دقيقة" }),
   staffWaitMin: S("staff", "number", "انتظار الموظف قبل ما البوت يرد", "العميل كتب وقت السكوت والموظف ماردّش: البوت يرد بعد المدة دي (أسئلة مفهومة بس).", { min: 1, max: 15, unit: "دقيقة" }),
@@ -1175,7 +1183,7 @@ export function buildReply(key, c) {
     case "repeat_short": return { body: T("repeat_short"), buttons: [{ id: "bot:human", title: T("btn_human") }] };
     case "other_city": return { body: T("other_city") };
     case "delivery_time": return { body: T("delivery_time") };
-    case "whoami": { const m = buildReply("main", c); return { ...m, body: F("whoami", { who: disclosureLine(cfg, lang, data.settings) }) }; }
+    case "whoami": { const m = buildReply("main", c); return { ...m, body: personaOn(cfg) ? honestText(cfg, "whoami_persona", lang) : F("whoami", { who: disclosureLine(cfg, lang, data.settings) }) }; }
     case "cancel_what": return { body: T("cancel_what"), buttons: [{ id: "cw:order", title: T("btn_cancel_order") }, { id: "cw:stop", title: T("btn_stop_msgs") }] };
     case "thanks": case "start": return { body: T(key) };
     default: throw new DataMissing(`key:${key}`);
@@ -1294,7 +1302,7 @@ const EXTRA_INTENTS = [
   /* مصدر اللحم ⇒ إجابة المالك المعتمدة faq:meat (مش قايمة أصناف ولا أي تفصيلة مننا). «مين المورد» بيفضل secret: اسم المورّد سر تجاري (قاعدة عمر ١٢/١٠). */
   [/من (وين|فين|اين) (تجيبون|تجيبوا|تجيبو|تاخذون|تشترون|تشتروا|جايبين) (ال)?(لحم|لحمه|لحوم|دجاج|فراخ)|مصدر (ال)?(لحم|لحوم|دجاج)|لحمكم (من وين|بلدي|مستورد)|where (do you get|is) (the|your) meat( from)?/, "faq", "meat", "meat_source"],
   /* «انت بوت؟ / مين معي» ⇒ سطر التعريف + القائمة */
-  [/^(انت|انتي|انتم|هل انت|هل انتم) (بوت|روبوت|انسان|بشر|الي|رد الي|شخص حقيقي|موظف)( ولا (انسان|بوت|بشر|موظف))?$|^(مين|من|منو) (معي|معايا|يكلمني|بيكلمني|انت|انتم)$|^(اكلم|بكلم) مين$|are you (a )?(bot|robot|human|real)|who (is this|am i (talking|speaking) (to|with))/, "whoami", null, "who_are_you"],
+  [/^(انت|انتي|انتم|هل انت|هل انتم) (بوت|روبوت|انسان|بشر|الي|رد الي|شخص حقيقي|موظف)( ولا (انسان|بوت|بشر|موظف))?$|^(مين|من|منو) (معي|معايا|يكلمني|بيكلمني|انت|انتم)$|^(اكلم|بكلم) مين$|^(مع )?(مين|من|منو) (اتكلم|بتكلم|اكلم|بكلم|احكي|اللي يرد علي|يرد علي)( معه| معاه)?$|^(انت|انتي|هل انت) (حقيقي|حقيقيه|شخص|ادمي)$|are you (a |an )?(bot|robot|human|real|ai|person)|is this (a |an )?(bot|robot|real person|human|person|ai)|am i (talking|speaking|chatting) (to|with) (a |an )?(bot|robot|human|real person|person|machine|ai)|who (is this|am i (talking|speaking) (to|with))/, "whoami", null, "who_are_you"],
   /* الدفع تحويل / كاش / حساب بنكي ⇒ السطر المباشر + طرق الدفع */
   [/(ادفع|دفع|الدفع|احاسب|احاسبكم) (ب)?(تحويل|كاش|نقد|نقدي|عند الاستلام)|تحويل بنكي|(ابي|ابغى|عايز|عايزه|عاوز|عاوزه|ودي|ممكن|اعطني|عطني|ارسل|ارسلي|ابعت|ابعتي) (لي )?(رقم )?(ال)?(حساب|ايبان)|حساب عشان (احول|احولك|احولكم)|احول (لك|لكم|عليكم|على حسابكم)|احولك|احولكم|pay (by|with|in) (cash|transfer)|bank transfer|cash on delivery/, "payment", "no_cash_transfer", "payment_method_q"],
   /* «كم الحساب / المجموع» ⇒ حالة الطلب لو له طلب مفتوح، وإلا «كيف أطلب» (resolveByOrder بعد تحميل الطلب) */
@@ -1448,7 +1456,7 @@ export function classify(ev, know = {}) {
   if (intent === "complaint" && m.score < 5) intent = orderNo || /طلب|اوردر|order|مندوب|driver/.test(n) ? "order_status" : "unknown";
   /* M4 (مراجعة الخبير، من سجل المحادثات الحي): صيغ كانت بتقع «ما فهمت» أو في رد غلط. كل صيغة ليها مثالها في الاختبارات.
      مابتغلبش نية صريحة (إيقاف، موظف، مشكلة دفع، استرجاع…)؛ الاستثناء الوحيد: شكوى المندوب/الطلب بتغلب «وين طلبي». */
-  { const x = extraIntent(n); if (x && (!HARD_INTENTS.has(intent) || (x[0] === "complaint" && intent === "order_status"))) return done(x[0], x[1] ?? null, x[2]); }
+  { const x = extraIntent(n); if (x && (!HARD_INTENTS.has(intent) || (x[0] === "complaint" && intent === "order_status") || (x[0] === "whoami" && intent === "human"))) return done(x[0], x[1] ?? null, x[2]); }
   /* EX6: وزن + صنف بالوزن ⇒ سعر الوزن ده وسلة جاهزة. */
   if (!HARD_INTENTS.has(intent)) { const wo = weightOrder(text, know.menu || null, null); if (wo) return wo.ids ? done("items", wo.ids, "weight_which") : wo.ask ? done("item", wo.id, "weight_not_offered") : done("weight", wo, "weight_order"); }
   if (RECIPE_RE.test(n) && !HARD_INTENTS.has(intent)) return done("secret", null, "recipe");
@@ -1522,7 +1530,13 @@ export function publicPhoneOf(cfg, settings) {
   const m = f && String(f.a || "").match(/0\d{8,9}/);
   return m ? m[0] : "";
 }
+/* PS1 — اسم الشخصية بلغة الرد، وهل الوضع persona. نصوص intro / whoami_persona لازم يفضل فيها الاسم و«المساعد الرقمي» (لو المالك عدّلها وشالهم، الافتراضي هو اللي يتبعت: الصدق مايتشالش بتعديل نص). */
+export const personaOn = (cfg) => cfg.disclosureMode !== "classic";
+export const personaNameOf = (cfg, lang) => (lang === "en" ? cfg.assist.personaNameEn : cfg.assist.personaName);
+const honestText = (cfg, key, lang) => { const name = personaNameOf(cfg, lang), L = lang === "en" ? "en" : "ar"; const own = fill(key, textOf(cfg, key, L), { name }); return hasIntro(own, name) ? own : fill(key, TEXTS[key][L], { name }); };
+export const introLine = (cfg, lang) => honestText(cfg, "intro", lang);
 export function disclosureLine(cfg, lang, settings) {
+  if (personaOn(cfg)) return introLine(cfg, lang);
   const phone = publicPhoneOf(cfg, settings);
   return phone ? fill("disclosure_phone", textOf(cfg, "disclosure_phone", lang), { phone }) : textOf(cfg, "disclosure", lang);
 }
@@ -1716,7 +1730,7 @@ export function decide(ev, ctx) {
      فوقها بيقول «للتحدث مع موظف اكتب: موظف» أصلاً، فمايتكررش مرتين في نفس الرسالة (لو التعريف ماطلعش لأي سبب، السطر يرجع).
      رسالة الرابط (زر واحد يفتح الموقع) من غير السطر في smart: كلمة «موظف» شغّالة دايماً. */
   const wayBack = (r) => [...(r.buttons || []), ...((r.list && r.list.rows) || [])].some((b) => /^(bot:human|m:human|bot:menu|m:main)$/.test(String(b.id)));
-  const showFooter = (r, i) => Boolean(cfg.footerMode === "always" || (cfg.footerMode === "first" && disclose && i === 0) || (cfg.footerMode === "smart" && disclose && !disclosed && i === 0) || (cfg.footerMode === "smart" && (key === "unknown" || ((r.buttons || r.list) && !wayBack(r)))));
+  const showFooter = (r, i) => !personaOn(cfg) && Boolean(cfg.footerMode === "always" || (cfg.footerMode === "first" && disclose && i === 0) || (cfg.footerMode === "smart" && disclose && !disclosed && i === 0) || (cfg.footerMode === "smart" && (key === "unknown" || ((r.buttons || r.list) && !wayBack(r)))));
   const payloads = replies.map((r, i) => toPayload(r, { cfg, lang: c.lang, interactive, footer: showFooter(r, i) }));
   const fallback = replies.map((r) => toPayload(r, { cfg, lang: c.lang, interactive: false }));
   const pp = [...payloads, ...fallback].map(payloadProblem).find(Boolean);
@@ -2876,7 +2890,7 @@ export function register(app, ctx, deps = {}) {
     kbSearch: async (question, lang) => { const kb = kbApi(); return kb ? kb.search(question, lang) : null; },
     deliveryInfo: async () => { const r = await q("SELECT config FROM dl_policies WHERE active ORDER BY priority DESC, id LIMIT 1", []); const pol = r && r[0] ? r[0].config : null; const fees = pol ? feeLines(pol, "ar") : "";
       return pol && fees ? { ok: true, delivers_up_to_km: Number(pol.maxKm) || null, far_zone_up_to_km: pol.farZoneEnabled !== false ? Number(pol.farZoneMaxKm) || null : null, far_zone_extra_per_km: pol.farZoneEnabled !== false ? Number(pol.farZonePerKm) || null : null,
-        fee_by_order_total: fees.split("\n"), note: "the exact fee for the customer is shown on the website before payment" } : null; },
+        fee_by_order_total: fees.split("\n"), ladder: Array.isArray(pol.feeByTotal) ? pol.feeByTotal.map((x) => ({ over: Number(x.over), fee: Number(x.fee) })) : null, note: "the exact fee for the customer is shown on the website before payment" } : null; },
     onCall: async (m) => { const rec = await aicost.record({ ...m, purpose: "assistant", logId }, cfg.llm.prices); return { costSar: rec.costSar, in: rec.in, out: rec.out, cached: rec.cached }; } });
   async function assistTurn({ ev, logId, settings, cfg, d, cls, chat, data, know, now, echoAt, phone, held = false, allowed = false }) {
     const acfg = cfg.assist;
@@ -2924,6 +2938,11 @@ export function register(app, ctx, deps = {}) {
     const pending = handoverOpenOf(chat, cfg, echoAt, now) ? { reason: String(chat.handoff_reason || "handover"), minutes_ago: Math.max(0, Math.round((now.getTime() - Date.parse(chat.handoff_at)) / 60_000)) } : null;
     const cx = await assistContext({ fresh, phone, cfg, lang, chat, know, data, now, cls, pending, ev, settings });
     if (ev.heard) cx.context = { ...cx.context, ...(ev.heard === "voice" ? { heard_from_voice_note: true } : { seen_in_a_picture: true }) };
+    /* PS1 — الشخصية: الاسم في سياق أول دور، وجملة التعريف في الدور اللي التعريف مستحق فيه بس (أول رد في المحادثة / مرة كل disclosureHours). */
+    const discloseDue = !chat.last_disclosed_at || now.getTime() - Date.parse(chat.last_disclosed_at) >= cfg.disclosureHours * 3600_000;
+    const persona = personaOn(cfg);
+    if (fresh || (persona && discloseDue)) cx.context = { ...cx.context, you: { name: cfg.assist.personaName, name_en: cfg.assist.personaNameEn, what: "Fresh Cuts' digital assistant (not a human)" } };
+    if (persona && discloseDue) cx.context = { ...cx.context, introduce_yourself: { say: introSay(personaNameOf(cfg, lang), lang), rule: "use this phrase once in this message, exactly as it is" } };
     const loop = makeAssistLoop(assistDeps(cfg, settings, logId));
     const text = cls.key === "area" ? "📍" : String(ev.text || "");      // الموقع نفسه مابيتبعتش للموديل: علامة بس، والسياق بيقول إنه شارك موقعه
     const r = await loop.runTurn({ phone, text, lang, session, acfg, context: cx.context, profile: cx.profile });
@@ -2935,8 +2954,9 @@ export function register(app, ctx, deps = {}) {
       if (r.handover) { const [k, tuple] = ASSIST_HANDOVER[r.handover.reason] || ASSIST_HANDOVER.needs_staff; reply = buildReply(k, k === "dishfact" ? { ...bc, arg: { id: null, text: "حساسية شديدة" } } : bc); handoff = tuple; reply = { body: reply.body }; }
       else reply = { body: r.text, ...(r.cart ? { cta: { title: textOf(cfg, "cta_reorder", L), url: r.cart.link } } : fresh && cx.reorder ? { buttons: [{ id: "re:last", title: textOf(cfg, "row_reorder", L) }] } : {}) };
     } catch (e) { if (fresh) session = null; return fallback("reply_build", tr); }
-    const disclose = !chat.last_disclosed_at || nowMs - Date.parse(chat.last_disclosed_at) >= cfg.disclosureHours * 3600_000;
-    if (disclose) { try { reply = { ...reply, body: `${disclosureLine(cfg, L, settings)}\n${reply.body}` }; } catch { /* من غير التعريف أحسن من مفيش رد */ } }
+    const disclose = discloseDue;
+    /* persona: المساعد قال التعريف في مكانه الطبيعي؛ لو ماقالوش (أو الرد نص تحويل ثابت) الكود بيحطه — التعريف مضمون بالكود مش بالموديل. classic: السطر القديم فوق الرد. */
+    if (disclose) { try { reply = { ...reply, body: persona ? ensureIntro(reply.body, introSay(personaNameOf(cfg, L), L), personaNameOf(cfg, L)) : `${disclosureLine(cfg, L, settings)}\n${reply.body}` }; } catch { /* من غير التعريف أحسن من مفيش رد */ } }
     const payloads = [toPayload(reply, { cfg, lang: L, interactive: cfg.interactive, footer: false })], fb = [toPayload(reply, { cfg, lang: L, interactive: false, footer: false })];
     if ([...payloads, ...fb].map(payloadProblem).find(Boolean)) { if (fresh) session = null; return fallback("payload", tr); }
     const outcome = r.handover ? `handover:${r.handover.reason}` : "sent";

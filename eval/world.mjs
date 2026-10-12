@@ -62,7 +62,7 @@ export function makeWorld(w = {}, { callModel, onCall, acfg: acfgIn = {} } = {})
     settings: async () => settings, buildProfile: async () => (w.profile === "returning" ? RETURNING : NEW),
     lastLocation: async () => state.loc, botCarts: { create: async (x) => { const code = `ev${String(carts.length + 1).padStart(6, "0")}`; carts.push({ code, ...x }); return { code }; } } });
   const state = { loc: null };
-  const cfg = R.botConfig({ waBot: { mode: "test", testPhones: [`0${PHONE}`], dishFactsEnabled: true } });
+  const cfg = R.botConfig({ waBot: { mode: "test", testPhones: [`0${PHONE}`], dishFactsEnabled: true, ...(w.waBot || {}) } });
   const faq = async (topic, lang) => {
     if (topic === "payment") return lang === "en" ? "Online payment with Apple Pay, mada, credit cards and STC Pay." : "الدفع الإلكتروني عبر Apple Pay وmada والبطاقات الائتمانية وSTC Pay.";
     if (topic === "branch_location") return R.textOf(cfg, "location", lang);
@@ -72,7 +72,7 @@ export function makeWorld(w = {}, { callModel, onCall, acfg: acfgIn = {} } = {})
     dishFactSay: async (a) => R.dishFactSay(cfg, { open: { open: !w.closed } }, a),
     /* manager knowledge base: w.kb = [{ id, question, ar, en? }] (same matching and the same re-check as the store) */
     kbSearch: async (question, lang) => kbCandidates((w.kb || []).map((r) => ({ ...r, examples: r.examples || [] })), question).map((r) => ({ id: r.id, question: r.question, say: (lang === "en" && r.en) || r.ar })).filter((r) => kbCheck(r.say).ok),
-    deliveryInfo: async () => ({ ok: true, delivers_up_to_km: POLICY.maxKm, far_zone_up_to_km: POLICY.farZoneMaxKm, far_zone_extra_per_km: POLICY.farZonePerKm, fee_by_order_total: R.feeLines(POLICY, "ar").split("\n"), note: "the exact fee is shown on the website before payment" }) });
+    deliveryInfo: async () => ({ ok: true, delivers_up_to_km: POLICY.maxKm, far_zone_up_to_km: POLICY.farZoneMaxKm, far_zone_extra_per_km: POLICY.farZonePerKm, fee_by_order_total: R.feeLines(POLICY, "ar").split("\n"), ladder: POLICY.feeByTotal.map((x) => ({ over: x.over, fee: x.fee })), note: "the exact fee is shown on the website before payment" }) });
   const acfg = { ...AR.assistConfig({ mode: "test", ...acfgIn }) };
   const reorder = w.reorder ? { day: "يوم الثلاثاء 6/10", lines: [{ name: "كريب زنجر سوبريم", qty: 2 }, { name: "وجبة كفتة", qty: 1 }], note: "a one-tap button «نفس طلبي السابق» is attached under your message" } : null;
   return { tools, loop, menu, boxes, cfg, acfg, carts, state, now, reorder, know: { menu, bundles: boxes } };

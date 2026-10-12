@@ -1,0 +1,60 @@
+{
+ "set": "batch20",
+ "name": "ps1-gather1",
+ "over": {
+  "routing": "escalate",
+  "thinking": "adaptive",
+  "effort": "low",
+  "timeoutMs": 60000
+ },
+ "capped": false,
+ "spentRun": 0.043689,
+ "spentTodayBefore": 37.31847099999999,
+ "cap": 41,
+ "conversations": 1,
+ "passed": 1,
+ "failed": [],
+ "customerTurns": 2,
+ "modelTurns": 2,
+ "answeredByAssistant": 2,
+ "rulesOwned": 0,
+ "fallbacks": {},
+ "validatorRetries": 0,
+ "escalations": 0,
+ "costSar": 0.0437,
+ "costPerConversationSar": 0.0437,
+ "costPerModelTurnSar": 0.0218,
+ "latencyMs": {
+  "p50": 4209,
+  "p90": 4209,
+  "max": 4209,
+  "n": 2
+ },
+ "modelCalls": 3,
+ "byModel": {
+  "claude-haiku-5-5": {
+   "calls": 2,
+   "in": 746,
+   "out": 290,
+   "cached": 27334,
+   "sar": 0.0111,
+   "callP50ms": 2084,
+   "callP90ms": 2084
+  },
+  "claude-sonnet-5-5": {
+   "calls": 1,
+   "in": 2501,
+   "out": 117,
+   "cached": 12626,
+   "sar": 0.0326,
+   "callP50ms": 2003,
+   "callP90ms": 2003
+  }
+ },
+ "failTypes": {},
+ "reviewFlags": {
+  "number_not_in_tools": 2
+ },
+ "text": "conversations 1 · passed 1 · failed 0\ncustomer turns 2: assistant answered 2, rules owned 0, fallbacks {}\nvalidator retries 0 · escalations fast→strong 0 · model calls 3\ncost 0.0437 SAR (0.0437 per conversation, 0.0218 per model turn)\nlatency per answered turn: p50 4209 ms · p90 4209 ms · max 4209 ms (n=2)\nby model {\"claude-haiku-5-5\":{\"calls\":2,\"in\":746,\"out\":290,\"cached\":27334,\"sar\":0.0111,\"callP50ms\":2084,\"callP90ms\":2084},\"claude-sonnet-5-5\":{\"calls\":1,\"in\":2501,\"out\":117,\"cached\":12626,\"sar\":0.0326,\"callP50ms\":2003,\"callP90ms\":2003}}\nfail types {}\nreview flags {\"number_not_in_tools\":2}",
+ "markdown": "# Assistant evaluation: ps1-gather1\n\n```\nconversations 1 · passed 1 · failed 0\ncustomer turns 2: assistant answered 2, rules owned 0, fallbacks {}\nvalidator retries 0 · escalations fast→strong 0 · model calls 3\ncost 0.0437 SAR (0.0437 per conversation, 0.0218 per model turn)\nlatency per answered turn: p50 4209 ms · p90 4209 ms · max 4209 ms (n=2)\nby model {\"claude-haiku-5-5\":{\"calls\":2,\"in\":746,\"out\":290,\"cached\":27334,\"sar\":0.0111,\"callP50ms\":2084,\"callP90ms\":2084},\"claude-sonnet-5-5\":{\"calls\":1,\"in\":2501,\"out\":117,\"cached\":12626,\"sar\":0.0326,\"callP50ms\":2003,\"callP90ms\":2003}}\nfail types {}\nreview flags {\"number_not_in_tools\":2}\n```\n\n## Conversations\n\n### PASS · family-gathering-custom-offer (family gathering) · 0.0437 SAR\n\nReview: number_not_in_tools@0 «25»; number_not_in_tools@0 «25»\n\n- **العميل:** عندنا عزيمة يوم الجمعة لخمسة وعشرين شخص، وش عندكم؟\n  - **المساعد** (fast, 4209 ms, 0.0111 SAR, tools: list_packs): أهلاً بك، معك ماجد، المساعد الرقمي لفريش كاتس. لعزيمة ٢٥ شخص عندنا باقات تجمّع: ⏎  ⏎ باقة ١٥ شخصاً وأكثر بـ 595 ر.س: ٤ كيلو مشاوي + دجاجتين كاملتين على الفحم + أرز وبطاطس وكولسلو + ١٢ مشروب. ⏎  ⏎ تبيني أرتب لك عرض مخصص لـ ٢٥ شخص؟ إذا تبي، وش اليوم والوقت، والتوصيل ولا الاستلام؟\n- **العميل:** ابي عرض مخصص: 25 شخص، الجمعة الساعة 9 مساء، توصيل\n  - **تحويل لموظف** (custom_offer: 25 people, Friday 9 PM, delivery. Showed packs (15+ pack 595 SAR). Customer wants tailored offer.; 2014 ms, tools: handover)\n"
+}
