@@ -71,6 +71,7 @@ import * as wakb from "./wakb.js";
 import * as wabotllm from "./wabotllm.js";
 import * as extsettle from "./extsettle.js";
 import * as wasender from "./wasender.js";
+import * as waoffers from "./waoffers.js";
 import { sendAdSms as smsSendAd } from "./smsrules.js";
 // 🔎 البحث الشامل في اللوحة (Ctrl+K) + 👁 قاعدة إظهار الجوال الكاملة
 import * as searchMod from "./search.js";
@@ -3206,8 +3207,10 @@ const outreachApi = outreach.register(app, moduleCtx);
 /* ☁️ 28/9: WhatsApp Cloud API Coexistence — ربط Embedded Signup + حالة الرقم (wacloud.js)،
    وقناة wa_cloud في الإرسال الآلي (السيرفر بيبعت القالب بنفسه + حالات الويب هوك). */
 const waCloudApi = wacloud.register(app, moduleCtx, { wa: waApi, sessionUser: cmsApi.sessionUser });
-wasender.register(app, moduleCtx, { outreach: outreachApi, sessionUser: cmsApi.sessionUser, cms: () => cmsApi,
+const waSenderApi = wasender.register(app, moduleCtx, { outreach: outreachApi, sessionUser: cmsApi.sessionUser, cms: () => cmsApi,
   wa: waApi, cloud: () => waCloudApi });
+/* OF1: مكتبة عروض واتساب (طبقة فوق البوكسات/العروض الموجودة، في settings.waOffers) — الحملة نفسها من wasender */
+waoffers.register(app, moduleCtx, { hosts: () => waSenderApi.imageHosts(), actor: async (c) => { const u = await cmsApi.whoami(c); return (u && (u.name || u.username)) || null; } });
 /* 🔎 حالة الـSEO — مصدر واحد تقراه شاشة «جوجل والبحث» وتكتب فيه جلسة الـSEO */
 seostatus.register(app, moduleCtx);
 /* 📟 التحكم في رسايل الإدارة + تقريرها — البوابة بتتركّب على accounts.sendSms

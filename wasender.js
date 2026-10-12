@@ -1446,5 +1446,5 @@ export function register(app, ctx, deps = {}) {
       phone_norm: canSee ? x.phone_norm : `${x.phone_norm.slice(0, 3)}••••${x.phone_norm.slice(-2)}` })) });
   });
 
-  return { recentSet, recentMap, build, cloudTick, onCloudStatus, onCloudInbound, stateNow, schemaReady };
+  return { recentSet, recentMap, build, cloudTick, onCloudStatus, onCloudInbound, stateNow, schemaReady, imageHosts };
 }

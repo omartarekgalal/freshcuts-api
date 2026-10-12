@@ -83,7 +83,7 @@ test("قالب الرمز = قالب تحقق ميتا الرسمي (نسخ ال
 });
 
 test("قوالب الصورة معلّمة «تحتاج رفع»", () => {
-  const imgs = TEMPLATES.filter((t) => t.components.some((c) => c.type === "HEADER" && c.format === "IMAGE"));
+  const imgs = TEMPLATES.filter((t) => t.components.some((c) => c.type === "HEADER" && ["IMAGE", "VIDEO"].includes(c.format)));
   assert.ok(imgs.length >= 3);
   for (const t of imgs) assert.equal(t.meta.needsUpload, true, t.name);
   assert.deepEqual(summary().needsUpload.sort(), imgs.map((t) => t.name).sort());

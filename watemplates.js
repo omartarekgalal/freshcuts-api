@@ -62,6 +62,8 @@ function T(def) {
   const components = [];
   if (header?.image) {
     components.push({ type: "HEADER", format: "IMAGE", example: { header_handle: ["<UPLOAD_REQUIRED>"] } });
+  } else if (header?.video) {      // OF1: إطار بفيديو (mp4 لحد ١٦ ميجا) — المثال بيترفع وقت التقديم زي الصورة
+    components.push({ type: "HEADER", format: "VIDEO", example: { header_handle: ["<UPLOAD_REQUIRED>"] } });
   } else if (header?.text) {
     components.push({ type: "HEADER", format: "TEXT", text: header.text });
   }
@@ -91,7 +93,7 @@ function T(def) {
       group,
       vars: vars.map((v, i) => ({ n: i + 1, path: v.path, label: v.label || v.path, example: String(v.ex), fmt: v.fmt || null })),
       buttonVars: buttons.filter((x) => x.var).map((x) => ({ button: x.text, path: x.var.path, example: String(x.var.ex), base: x.base })),
-      needsUpload: Boolean(header?.image),
+      needsUpload: Boolean(header?.image || header?.video),
       ...meta,
     },
   };
@@ -423,6 +425,39 @@ export const TEMPLATES = [
     meta: { purpose: "عرض الباقات/البوكس (صورة)", trigger: "يدوي أو شريحة «طلبات كبيرة»", send: "manual", fallbackSms: null,
       notes: "المحتوى من offer_registry كما هو — لا نضيف عدد أشخاص لأي صنف بالوزن («مشكل مخصوص» خصوصاً)" } }),
 
+  /* ── OF1 (١٣/١٠): «إطارات» العروض — كلام ثابت قليل حوالين متغيرات، والصورة/الفيديو والرابط بيتغيروا مع كل إرسال.
+     بتتعتمد مرة واحدة وبعدها أي عرض جديد من مكتبة العروض (waoffers.js) بيتبعت بيها من غير اعتماد جديد.
+     قواعد ميتا المتراعاة: مفيش متغير في أول ولا آخر النص، مفيش متغيرين ملزوقين، وكلام ثابت كفاية حوالين المتغيرات.
+     في HOLD لحد ما عمر يوافق على الصياغة. ── */
+  T({ name: "fc_frame_offer_img", category: "MARKETING", group: "marketing", ...MKT, header: { image: true },
+    body: "من فريش كاتس 🔥\n{{1}}: {{2}}.\nالسعر {{3}} ر.س، واطلبه من موقعنا للتوصيل أو الاستلام.",
+    vars: [{ path: "offer.title", label: "اسم العرض", ex: "بوكس التشكيلة" }, { path: "offer.line", label: "اللي فيه (سطر واحد)", ex: "مشاوي على الفحم مع بيتزا وباستا وأصناف جانبية ومشروبات" },
+      { path: "offer.price", label: "السعر", ex: "105", fmt: "money" }],
+    buttons: [TRACKED("اطلب الآن", "wa-offer-ab12cd"), qr(OPTOUT_BUTTON)],
+    meta: { purpose: "إطار عرض بصورة (اسم + تفاصيل + سعر)", trigger: "مكتبة عروض واتساب ← حملة", send: "manual", fallbackSms: null,
+      notes: "إطار: القيم من العرض المختار. لا نكتب عدد أشخاص لصنف بالوزن ولا «حصري» ولا مقارنة بالتطبيقات." } }),
+
+  T({ name: "fc_frame_video", category: "MARKETING", group: "marketing", ...MKT, header: { video: true },
+    body: "من فريش كاتس 🎬\n{{1}}: {{2}}.\nاطلب من موقعنا للتوصيل أو الاستلام.",
+    vars: [{ path: "offer.title", label: "العنوان", ex: "اطلب من موقعنا مباشرة" }, { path: "offer.line", label: "التفاصيل (سطر واحد — السعر وآخر يوم بيتكتبوا هنا لو موجودين)", ex: "اختر البوكس، حدّد عنوانك على الخريطة وادفع أونلاين، وأول طلب توصيله مجاني للطلبات من 60 ر.س" }],
+    buttons: [TRACKED("اطلب الآن", "wa-offer-ab12cd"), qr(OPTOUT_BUTTON)],
+    meta: { purpose: "إطار فيديو (عنوان + تفاصيل)", trigger: "مكتبة عروض واتساب ← حملة", send: "manual", fallbackSms: null,
+      notes: "الفيديو mp4 لحد ١٦ ميجا من مخزن الوسائط بتاعنا. من غير خانة سعر عشان ينفع لفيديو «طريقة الطلب» ولأي عرض." } }),
+
+  T({ name: "fc_frame_limited_img", category: "MARKETING", group: "marketing", ...MKT, header: { image: true },
+    body: "عرض لفترة محدودة من فريش كاتس 🎉\n{{1}}: {{2}}.\nالسعر {{3}} ر.س، والعرض لين {{4}}. اطلبه من موقعنا للتوصيل أو الاستلام.",
+    vars: [{ path: "offer.title", label: "اسم العرض", ex: "باقة تجمّع ٤–٦ أشخاص" }, { path: "offer.line", label: "اللي فيه (سطر واحد)", ex: "مشاوي على الفحم مع الأرز والأصناف الجانبية والمشروبات" },
+      { path: "offer.price", label: "السعر", ex: "225", fmt: "money" }, { path: "offer.untilText", label: "آخر يوم", ex: "السبت 18 أكتوبر" }],
+    buttons: [TRACKED("اطلب الآن", "wa-offer-ab12cd"), qr(OPTOUT_BUTTON)],
+    meta: { purpose: "إطار عرض بصورة له آخر يوم", trigger: "مكتبة عروض واتساب ← حملة (العرض له تاريخ انتهاء حقيقي)", send: "manual", fallbackSms: null,
+      notes: "آخر يوم لازم يكون تاريخ العرض الفعلي في اللوحة — مفيش استعجال مخترع." } }),
+
+  T({ name: "fc_frame_news_text", category: "MARKETING", group: "marketing", ...MKT,
+    body: "جديد من فريش كاتس 👋\n{{1}}: {{2}}.\nالتفاصيل والطلب من موقعنا للتوصيل أو الاستلام.",
+    vars: [{ path: "offer.title", label: "العنوان", ex: "بوكسات فردية" }, { path: "offer.line", label: "التفاصيل (سطر واحد)", ex: "كريب أو برجر أو باستا أو حواوشي أو وجبة مشاوي مع صنف جانبي ومشروب، من 29 ر.س" }],
+    buttons: [TRACKED("شوف التفاصيل", "wa-offer-ab12cd"), qr(OPTOUT_BUTTON)],
+    meta: { purpose: "إطار خبر/عرض نص بس", trigger: "مكتبة عروض واتساب ← حملة (من غير صورة أو من غير سعر)", send: "manual", fallbackSms: null } }),
+
   T({ name: "fc_cart_1h", category: "MARKETING", group: "marketing", ...MKT,
     body: "سلتك في فريش كاتس محفوظة 🛒\nكمّل طلبك بضغطة من الرابط، ولو عندك سؤال ردّ علينا هنا.",
     buttons: [CART(), qr(OPTOUT_BUTTON)],
@@ -520,6 +555,10 @@ export const HOLD = Object.freeze({
   fc_scheduled_reminder: "الطلب المسبق مقفول (settings.preorder.enabled=false)",
   fc_welcome_account: "غير مربوط بمُرسل (الزر اتشال ١٢/١٠ فالنص خدمي؛ يتقدّم لما يتقرّر إرساله)",
   fc_ad_lead_last_call: "يحتاج عرضاً له تاريخ انتهاء؛ البوكسات بلا تاريخ انتهاء — لا شيء صادق يُكتب في المتغيّرين",
+  fc_frame_offer_img: "إطار جديد (OF1) — الصياغة في انتظار موافقة عمر قبل التقديم لميتا",
+  fc_frame_video: "إطار جديد (OF1) — الصياغة في انتظار موافقة عمر، والفيديو النموذجي لسه مااتاختارش",
+  fc_frame_limited_img: "إطار جديد (OF1) — الصياغة في انتظار موافقة عمر قبل التقديم لميتا",
+  fc_frame_news_text: "إطار جديد (OF1) — الصياغة في انتظار موافقة عمر قبل التقديم لميتا",
 });
 
 /* دفعات التقديم بالأولوية. الدفعة ١ = قائمة «أول ٨» الأصلية. */
