@@ -63,7 +63,8 @@ export function register(ctx, deps = {}) {
   const wa = deps.wa; // الـAPI الراجع من whatsapp.js register()
 
   const token = () => (wa?.token ? wa.token() : (env("WHATSAPP_TOKEN") || env("META_CAPI_TOKEN")));
-  const wabaId = () => env("WHATSAPP_WABA_ID");
+  // W5: الأرقام الفعّالة من whatsapp.js (آخر ربط ناجح، وإلا الـenv) — قوالب البورتال تتقري من الحساب المستعمل فعلاً
+  const wabaId = () => (wa?.wabaId ? wa.wabaId() : env("WHATSAPP_WABA_ID"));
   const masterOn = () => env("WHATSAPP_ENABLED") === "1";
 
   async function ensureSchema() {
@@ -130,7 +131,7 @@ export function register(ctx, deps = {}) {
       settingsOn,
       canSend: !gate,
       blocked: gate,                          // disabled | unconfigured | settings_off | null
-      phoneId: env("WHATSAPP_PHONE_ID") || null,
+      phoneId: (wa?.phoneId ? wa.phoneId() : env("WHATSAPP_PHONE_ID")) || null,
       wabaId: wabaId() || null,
       webhookSecret: Boolean(env("WHATSAPP_APP_SECRET")),
       verifyToken: Boolean(env("WHATSAPP_VERIFY_TOKEN")),

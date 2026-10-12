@@ -326,17 +326,40 @@ export const intentOf = (text) => (STOP_RE.test(text || "") || isOptOutText(text
      smb_app_state_sync  جهات اتصال التطبيق (إضافة/حذف) — اسم للجوال
      history             تاريخ المحادثات القديمة (مرة واحدة بعد الربط، على دفعات)
      message_template_status_update  اعتماد/رفض قالب
-   opts.phoneId: لو محدد، أي تغيير لرقم تاني بيتشال (نفس الـWABA ممكن يبقى فيه أكتر من رقم). */
-export function parseWebhook(body, { phoneId = null } = {}) {
+   opts.phoneId: لو محدد، أي تغيير لرقم تاني بيتشال (نفس الـWABA ممكن يبقى فيه أكتر من رقم).
+   W5 (١٢/١٠) — الرقم ممكن ياخد phone_number_id **جديد** بعد ربط في محفظة تانية، وويب هوك مزامنة جهات الاتصال
+   والتاريخ بييجوا مرة واحدة: لو اترموا عشان الـid مش بتاع الـenv مايتطلبوش تاني. فالحدث بيتقبل لو:
+     • الـid = opts.phoneId (الـenv)                                    ⇒ via "env"
+     • الـid في opts.phoneIds (أرقام آخر ربط ناجح في wa_onboarding)       ⇒ via "onboarding"
+     • metadata.display_phone_number = رقم من opts.ownNumbers (رقمنا)    ⇒ via "number"
+   أي رقم تاني لسه بيترفض (ignored: "other_phone"). من غير أي فلتر (ولا واحد من التلاتة) كله بيتقبل زي الأول. */
+const digitsOf = (v) => String(v ?? "").replace(/\D/g, "");
+export function acceptPhone(pid, displayNumber, { phoneId = null, phoneIds = [], ownNumbers = [] } = {}) {
+  const ids = (phoneIds || []).map(String).filter(Boolean), nums = (ownNumbers || []).map(digitsOf).filter(Boolean);
+  if (!phoneId && !ids.length && !nums.length) return { ok: true, via: null };       // مفيش فلتر
+  if (!pid) return { ok: true, via: null };                                          // حدث على مستوى الحساب (account_update…)
+  if (phoneId && String(pid) === String(phoneId)) return { ok: true, via: "env" };
+  if (ids.includes(String(pid))) return { ok: true, via: "onboarding" };
+  if (nums.length && nums.includes(digitsOf(displayNumber))) return { ok: true, via: "number" };
+  return { ok: false, via: null };
+}
+export function parseWebhook(body, { phoneId = null, phoneIds = [], ownNumbers = [] } = {}) {
   const out = { statuses: [], messages: [], echoes: [], contacts: [], profiles: [], history: [],
-    historyErrors: [], historyMeta: [], templateEvents: [], fields: [] };
+    historyErrors: [], historyMeta: [], templateEvents: [], accountEvents: [], fields: [] };
   for (const entry of body?.entry || []) {
     for (const ch of entry?.changes || []) {
       const v = ch?.value || {};
       const field = String(ch?.field || "messages");
       const pid = v.metadata?.phone_number_id ? String(v.metadata.phone_number_id) : null;
-      if (phoneId && pid && pid !== String(phoneId)) { out.fields.push({ field, ignored: "other_phone" }); continue; }
-      out.fields.push({ field, phoneId: pid });
+      const acc = acceptPhone(pid, v.metadata?.display_phone_number, { phoneId, phoneIds, ownNumbers });
+      if (!acc.ok) { out.fields.push({ field, ignored: "other_phone", phoneId: pid }); continue; }
+      /* account_update (PARTNER_ADDED / ACCOUNT_VIOLATION…) وأي حدث حساب: نص مختصر من الحمولة يتسجّل في
+         wa_webhook_health.last_note — ده اللي بيقول الحساب اتشارك مع مين وبأي أرقام بعد الربط. */
+      const note = field === "account_update" || field === "phone_number_name_update" || field === "business_capability_update"
+        ? JSON.stringify(v).slice(0, 480) : (acc.via && acc.via !== "env" ? `via:${acc.via} phone_id:${pid}` : null);
+      out.fields.push({ field, phoneId: pid, via: acc.via, ...(note ? { note } : {}) });
+      if (field === "account_update") out.accountEvents.push({ event: v.event || null, wabaId: v.waba_info?.waba_id ? String(v.waba_info.waba_id) : null,
+        ownerBusinessId: v.waba_info?.owner_business_id ? String(v.waba_info.owner_business_id) : null, entryId: entry?.id ? String(entry.id) : null });
       const bizPhone = String(v.metadata?.display_phone_number || "").replace(/\D/g, "");
       for (const s of v.statuses || []) {
         out.statuses.push({ wamid: s.id, status: s.status, recipient: s.recipient_id,
@@ -413,7 +436,7 @@ export function register(app, ctx, deps = {}) {
 
   /* مستمعين للويب هوك (wasender بيسجّل هنا عشان حالات رسايل الحملة وردودها
      تحدّث صفوف الطابور). مستمع بيقع مابيوقّفش الباقي. */
-  const hooks = { inbound: [], status: [] };
+  const hooks = { inbound: [], status: [], account: [] };
   const on = (ev, fn) => { if (hooks[ev] && typeof fn === "function") hooks[ev].push(fn); };
   const emit = async (ev, x) => {
     for (const fn of hooks[ev] || []) { try { await fn(x); } catch (e) { console.error(`[wa] ${ev} hook:`, e.message); } }
@@ -440,8 +463,24 @@ export function register(app, ctx, deps = {}) {
 
   // التوكن: WHATSAPP_TOKEN لو اتحط، وإلا توكن مستخدم النظام الدائم (META_CAPI_TOKEN).
   const token = () => env("WHATSAPP_TOKEN") || env("META_CAPI_TOKEN");
-  const phoneId = () => env("WHATSAPP_PHONE_ID");
-  const wabaId = () => env("WHATSAPP_WABA_ID");
+  /* W5 (١٢/١٠): الأرقام الفعّالة = آخر ربط ناجح (wacloud.js بيحطها هنا من settings.waCloudActive) وإلا الـenv.
+     كده بعد ربط ناجح على حساب/رقم جديد الإرسال والقوالب والصندوق بيقروا الأرقام الجديدة من غير تعديل env أعمى.
+     مفيش أي إرسال بيتفتح من هنا: WHATSAPP_ENABLED وكل المفاتيح زي ما هي. */
+  let activeIds = { phoneId: null, wabaId: null, source: "env" };
+  const setActiveIds = (a) => {
+    const p = a && a.phoneId ? String(a.phoneId).replace(/\D/g, "") : null, w = a && a.wabaId ? String(a.wabaId).replace(/\D/g, "") : null;
+    activeIds = p || w ? { phoneId: p, wabaId: w, source: (a && a.source) || "onboarding" } : { phoneId: null, wabaId: null, source: "env" };
+    return idsInUse();
+  };
+  const phoneId = () => activeIds.phoneId || env("WHATSAPP_PHONE_ID");
+  const wabaId = () => activeIds.wabaId || env("WHATSAPP_WABA_ID");
+  const idsInUse = () => ({ phoneId: phoneId() || null, wabaId: wabaId() || null,
+    phoneSource: activeIds.phoneId ? activeIds.source : (env("WHATSAPP_PHONE_ID") ? "env" : null),
+    wabaSource: activeIds.wabaId ? activeIds.source : (env("WHATSAPP_WABA_ID") ? "env" : null),
+    envPhoneId: env("WHATSAPP_PHONE_ID") || null, envWabaId: env("WHATSAPP_WABA_ID") || null });
+  /* أرقام إضافية الويب هوك يقبلها (wacloud.js: phone_id بتاع آخر ربط + رقمنا المعروض) */
+  let webhookAccept = () => ({ phoneIds: [], ownNumbers: [] });
+  const setWebhookAccept = (fn) => { if (typeof fn === "function") webhookAccept = fn; };
   const masterOn = () => env("WHATSAPP_ENABLED") === "1";
   const configured = () => Boolean(token() && phoneId());
   const HISTORY_MAX = () => Math.max(0, Number(env("WHATSAPP_HISTORY_MAX", "20000")) || 0);
@@ -838,7 +877,7 @@ export function register(app, ctx, deps = {}) {
 
   async function health(fields) {
     const seen = new Map();
-    for (const f of fields) seen.set(f.field, f.ignored || null);
+    for (const f of fields) seen.set(f.field, f.ignored ? `${f.ignored}${f.phoneId ? ` phone_id:${f.phoneId}` : ""}` : (f.note || null));
     for (const [field, note] of seen) {
       await pool.query(
         `INSERT INTO wa_webhook_health(field, last_at, n, last_note) VALUES ($1, NOW(), 1, $2)
@@ -850,7 +889,13 @@ export function register(app, ctx, deps = {}) {
   /* الويب هوك كله بعد التوقيع. مستقلة عشان الاختبارات تناديها من غير HTTP. */
   async function processWebhook(body) {
     await ready;
-    const p = parseWebhook(body, { phoneId: phoneId() || null });
+    let acc = { phoneIds: [], ownNumbers: [] };
+    try { acc = (await webhookAccept()) || acc; } catch { /* الفلتر الأساسي يكفي */ }
+    // الـenv id يفضل مقبول حتى لو الأرقام الفعّالة اتغيّرت (فترة الانتقال: أحداث الرقمين بتتسجّل)
+    const envPid = env("WHATSAPP_PHONE_ID") || null;
+    const p = parseWebhook(body, { phoneId: envPid || phoneId() || null,
+      phoneIds: [phoneId(), ...(acc.phoneIds || [])].filter(Boolean), ownNumbers: acc.ownNumbers || [] });
+    for (const a of p.accountEvents || []) { try { for (const fn of hooks.account || []) await fn(a); } catch (e) { console.error("[wa] account hook:", e.message); } }
     await health(p.fields);
     for (const x of p.profiles) await handleProfile(x).catch((e) => console.error("[wa] profile:", e.message));
     for (const s of p.statuses) await handleStatus(s).catch((e) => console.error("[wa] status:", e.message));
@@ -995,5 +1040,6 @@ export function register(app, ctx, deps = {}) {
   });
 
   return { sendTemplate, sendText, sendFreeform, sendOrderUpdate, recordOptIn, applyIntent, gate, configured, masterOn, ready, setInbox,
-    on, processWebhook, token, phoneId, wabaId, setBot, setBotRuntime, humanActive };
+    on, processWebhook, token, phoneId, wabaId, setBot, setBotRuntime, humanActive,
+    setActiveIds, idsInUse, setWebhookAccept };
 }

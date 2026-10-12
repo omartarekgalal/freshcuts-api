@@ -663,7 +663,8 @@ test("onboard: write switch off → ids recorded, ZERO Graph calls", withEnv(ON,
   assert.equal(r.body.envHint.changePhone, false);
 }));
 
-test("onboard: exchange → subscribe → contacts sync → history sync, system token first", withEnv({ ...ON, WHATSAPP_ONBOARD_WRITE: "1" }, async () => {
+// W5 (12/10): when the code exchange gave a business token it is used FIRST (was: system first) — see w5-wa-onboarding.test.mjs
+test("onboard: exchange → subscribe → contacts sync → history sync, business token first", withEnv({ ...ON, WHATSAPP_ONBOARD_WRITE: "1" }, async () => {
   const fetch = graphFetch((url) => (/oauth\/access_token/.test(url) ? { access_token: "biztok" } : /subscribed_apps/.test(url) ? { success: true } : { request_id: "rq1" }));
   const { app, pool } = setupOnboard(fetch);
   const r = await app.routes["POST /api/cms/wa-cloud/onboard"](fakeCtx({ json: signup }));
@@ -671,27 +672,29 @@ test("onboard: exchange → subscribe → contacts sync → history sync, system
   const [ex, sub, c1, c2] = fetch.calls;
   assert.match(ex.url, /oauth\/access_token\?client_id=1073414588466040&client_secret=sec&code=AQB-code/);
   assert.equal(ex.auth, null, "code exchange sends no bearer token");
-  assert.match(sub.url, /\/2047231412843417\/subscribed_apps$/); assert.equal(sub.method, "POST"); assert.equal(sub.auth, "Bearer systok");
+  assert.match(sub.url, /\/2047231412843417\/subscribed_apps$/); assert.equal(sub.method, "POST"); assert.equal(sub.auth, "Bearer biztok");
   assert.match(c1.url, /\/1102069402989468\/smb_app_data$/); assert.deepEqual(c1.body, { messaging_product: "whatsapp", sync_type: "smb_app_state_sync" });
   assert.deepEqual(c2.body, { messaging_product: "whatsapp", sync_type: "history" });
   assert.equal(fetch.calls.length, 4);
   assert.ok(!fetch.calls.some((c) => /\/register$/.test(c.url)), "never calls /register");
   assert.equal(pool.db.recs[0].biz_token, "biztok");
   assert.equal(JSON.stringify(r.body).includes("biztok"), false, "business token never leaves the server");
-  assert.equal(r.body.onboarding.steps.sync_history.via, "system");
+  assert.equal(r.body.onboarding.steps.sync_history.via, "business");
 }));
 
-test("onboard: system token refused → retried with the business token", withEnv({ ...ON, WHATSAPP_ONBOARD_WRITE: "1" }, async () => {
+test("onboard: business token refused → retried with the system token (any error, not only auth codes)", withEnv({ ...ON, WHATSAPP_ONBOARD_WRITE: "1" }, async () => {
   const fetch = graphFetch((url, init) => {
     if (/oauth\/access_token/.test(url)) return { access_token: "biztok" };
-    if (init.headers?.Authorization === "Bearer systok" && /smb_app_data/.test(url)) return { error: { code: 200, message: "Permissions error" } };
+    if (init.headers?.Authorization === "Bearer biztok" && /smb_app_data/.test(url)) return { error: { code: 131000, error_subcode: 10, message: "This API is only available to WhatsApp Business App phone numbers onboarded on to WhatsApp Business Platform" } };
     return { success: true };
   });
   const { app } = setupOnboard(fetch);
   const r = await app.routes["POST /api/cms/wa-cloud/onboard"](fakeCtx({ json: signup }));
   assert.equal(r.body.ok, true);
-  assert.equal(r.body.onboarding.steps.sync_contacts.via, "business");
-  assert.equal(r.body.onboarding.steps.subscribe.via, "system");
+  assert.equal(r.body.onboarding.steps.sync_contacts.via, "system");
+  assert.deepEqual(r.body.onboarding.steps.sync_contacts.tried, ["business", "system"]);
+  assert.equal(r.body.onboarding.steps.sync_contacts.businessError.code, 131000);
+  assert.equal(r.body.onboarding.steps.subscribe.via, "business");
 }));
 
 test("onboard: a different phone id is reported so the env can be updated", withEnv({ ...ON, WHATSAPP_ONBOARD_WRITE: "1" }, async () => {

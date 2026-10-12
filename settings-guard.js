@@ -43,6 +43,7 @@ export const SERVER_OWNED_PATHS = [
   "seoStatus",                  // seostatus.js
   "waSender",                   // wasender.js (agentHash — سر)
   "waCloud",                    // wacloud.js / wasender.js
+  "waCloudActive",              // wacloud.js (W5: أرقام آخر ربط ناجح — الأرقام الفعّالة)
   "jobs",                       // fc-job-gate + /api/settings/patch
   "adsGuard",                   // fc-adsentry + /api/settings/patch
   "adsPacer",                   // fc-pacer

@@ -30,6 +30,26 @@ export const APP_ID = "1073414588466040";
 export const DEFAULT_CONFIG_ID = "1100099832721217";   // Facebook Login for Business — WA Embedded Signup (٢٨/٩)
 export const KNOWN_PHONE_ID = "1102069402989468";       // +966 54 671 5683
 export const KNOWN_WABA_ID = "2047231412843417";
+export const KNOWN_NUMBER = "966546715683";              // الرقم المعروض (display_phone_number) بالأرقام بس
+
+/* ── W5 (١٢/١٠): دوال صافية لمسار الربط على حساب/رقم جديد ────────────────────
+   pickPhoneId: من رد GET /{waba}/phone_numbers نختار رقمنا (بالرقم المعروض)، وإلا الرقم الوحيد، وإلا null. */
+export function pickPhoneId(list, ourNumber = KNOWN_NUMBER) {
+  const rows = (Array.isArray(list) ? list : []).filter((x) => x && x.id);
+  const d = (v) => String(v ?? "").replace(/\D/g, "");
+  const mine = rows.find((x) => d(x.display_phone_number) === d(ourNumber));
+  if (mine) return { id: String(mine.id), by: "number", count: rows.length };
+  if (rows.length === 1) return { id: String(rows[0].id), by: "only", count: 1 };
+  return { id: null, by: rows.length ? "ambiguous" : "empty", count: rows.length };
+}
+/* الأرقام الفعّالة = آخر ربط ناجح (اشتراك التطبيق تم + الرقمين موجودين). rec = صف wa_onboarding. */
+export function activeFromRecord(rec) {
+  if (!rec || !rec.waba_id || !rec.phone_id) return null;
+  const s = rec.steps || {};
+  if (!(s.subscribe && s.subscribe.ok)) return null;
+  return { wabaId: String(rec.waba_id), phoneId: String(rec.phone_id), onboardingId: Number(rec.id) || null,
+    at: rec.created_at ? new Date(rec.created_at).toISOString() : null };
+}
 const clampN = (v, lo, hi, d) => { const n = Number(v); return Number.isFinite(n) ? Math.min(hi, Math.max(lo, Math.round(n))) : d; };
 
 /* ── إعدادات قناة الـCloud (settings.waCloud) ────────────────────────────
@@ -180,8 +200,11 @@ export function register(app, ctx, deps = {}) {
   const J = (v) => JSON.stringify(v);
 
   const sysToken = () => (wa?.token ? wa.token() : (env("WHATSAPP_TOKEN") || env("META_CAPI_TOKEN")));
-  const phoneId = () => env("WHATSAPP_PHONE_ID");
-  const wabaId = () => env("WHATSAPP_WABA_ID");
+  // W5: الأرقام الفعّالة من whatsapp.js (آخر ربط ناجح، وإلا الـenv) — نفس المصدر للإرسال والقوالب والحالة
+  const phoneId = () => (wa?.phoneId ? wa.phoneId() : env("WHATSAPP_PHONE_ID"));
+  const wabaId = () => (wa?.wabaId ? wa.wabaId() : env("WHATSAPP_WABA_ID"));
+  const envPhoneId = () => env("WHATSAPP_PHONE_ID");
+  const envWabaId = () => env("WHATSAPP_WABA_ID");
   const appSecret = () => env("WHATSAPP_APP_SECRET") || env("META_APP_SECRET");
   const onboardWrite = () => env("WHATSAPP_ONBOARD_WRITE") === "1";
 
@@ -236,17 +259,84 @@ export function register(app, ctx, deps = {}) {
   // غلطة صلاحية/توكن ⇒ نجرّب توكن البزنس
   const authish = (e) => [10, 100, 190, 200, 3, 33].includes(Number(e.code)) || /permission|access token|not authorized/i.test(String(e.message));
 
-  /* خطوة بتوكن النظام، ولو اترفضت صلاحية ⇒ بتوكن البزنس (لو عندنا) */
+  /* W5 (١٢/١٠) — ترتيب التوكن: لو عندنا توكن البزنس (من تبديل كود النافذة) بنستعمله **الأول**، ولو فشل بنجرّب توكن
+     النظام. قبل كده كان العكس، والرجوع لتوكن البزنس بس على أكواد الصلاحية (10/100/190/200/3/33) — والرفض اللي
+     بييجي فعلاً من المزامنة 131000/10 مش منهم، فالمزامنة كانت بتتجرّب بالتوكن الغلط ومابتتعادش.
+     كل خطوة بتسجّل: via (business|system)، tried (الترتيب)، الرد الكامل data، وخطأ كل توكن فشل. */
   async function step(fn, bizToken) {
-    try { return { ok: true, via: "system", at: new Date(now()).toISOString(), data: await fn(sysToken()) }; }
-    catch (e) {
-      if (bizToken && authish(e)) {
-        try { return { ok: true, via: "business", at: new Date(now()).toISOString(), data: await fn(bizToken), systemError: errJ(e) }; }
-        catch (e2) { return { ...errJ(e2), via: "business", at: new Date(now()).toISOString(), systemError: errJ(e) }; }
-      }
-      return { ...errJ(e), via: "system", at: new Date(now()).toISOString() };
+    const order = bizToken ? [["business", bizToken], ["system", sysToken()]] : [["system", sysToken()]];
+    const tried = [], errors = {};
+    for (const [name, tok] of order) {
+      if (!tok) { errors[name] = { ok: false, error: "no_token" }; tried.push(name); continue; }
+      tried.push(name);
+      try {
+        const data = await fn(tok);
+        return { ok: true, via: name, tried, at: new Date(now()).toISOString(), data,
+          ...(errors.business ? { businessError: errors.business } : {}), ...(errors.system ? { systemError: errors.system } : {}) };
+      } catch (e) { errors[name] = errJ(e); }
     }
+    const last = tried[tried.length - 1];
+    return { ...errors[last], via: last, tried, at: new Date(now()).toISOString(),
+      ...(errors.business ? { businessError: errors.business } : {}), ...(errors.system ? { systemError: errors.system } : {}) };
   }
+
+  /* W5 — G3: رسالة FINISH ممكن تيجي بـwaba_id بس. بنسأل ميتا عن أرقام الحساب (بتوكن البزنس الأول) وناخد رقمنا
+     ونحفظه على الصف، وبعدها المزامنة تمشي. */
+  async function lookupPhone(rec) {
+    if (rec.phone_id || !rec.waba_id) return null;
+    const r = await step((tok) => graph("GET", `${rec.waba_id}/phone_numbers`, { token: tok,
+      query: { fields: "id,display_phone_number,verified_name,status,platform_type,is_on_biz_app", limit: "50" } }), rec.biz_token);
+    if (!r.ok) return { ...r, step: "lookup_phone" };
+    const pick = pickPhoneId(r.data?.data, env("WHATSAPP_DISPLAY_NUMBER", KNOWN_NUMBER));
+    const out = { ok: Boolean(pick.id), via: r.via, tried: r.tried, at: r.at, by: pick.by, count: pick.count, phoneId: pick.id,
+      numbers: (r.data?.data || []).map((x) => ({ id: String(x.id), number: x.display_phone_number || null, status: x.status || null })).slice(0, 10),
+      ...(pick.id ? {} : { error: pick.by === "empty" ? "no_numbers_on_waba" : "number_not_found_on_waba" }) };
+    if (pick.id) {
+      rec.phone_id = pick.id;
+      rec.same_phone = pick.id === (envPhoneId() || KNOWN_PHONE_ID);
+      await pool.query("UPDATE wa_onboarding SET phone_id=$2, same_phone=$3 WHERE id=$1", [rec.id, pick.id, rec.same_phone]);
+    }
+    return out;
+  }
+
+  /* W5 — G4: بعد ربط ناجح (اشتراك التطبيق تم) الأرقام الفعّالة = أرقام الربط؛ بتتحفظ في settings.waCloudActive
+     وبتتحط في whatsapp.js (wa.setActiveIds). «رجوع للـenv» = مسح المفتاح (POST /active {use:"env"}). */
+  async function saveActive(a, by) {
+    await pool.query(`UPDATE settings SET data = jsonb_set(COALESCE(data,'{}'::jsonb), '{waCloudActive}', $1::jsonb, true) WHERE id=1`,
+      [J(a ? { ...a, setAt: new Date(now()).toISOString(), setBy: by || null } : null)]);
+    if (wa?.setActiveIds) wa.setActiveIds(a ? { phoneId: a.phoneId, wabaId: a.wabaId, source: "onboarding" } : null);
+    acceptCache = { at: 0, data: null };
+    phoneCache = { at: 0, data: null }; tplCache = { at: 0, data: null };
+  }
+  async function loadActive() {
+    try {
+      const a = ((await getSettingsData()) || {}).waCloudActive;
+      if (a && (a.phoneId || a.wabaId) && wa?.setActiveIds) wa.setActiveIds({ phoneId: a.phoneId, wabaId: a.wabaId, source: "onboarding" });
+      return a || null;
+    } catch { return null; }
+  }
+  /* W5 — G1: الأرقام اللي الويب هوك يقبلها زيادة على الـenv: phone_id بتاع آخر صفوف الربط (running/done/partial)
+     + رقمنا المعروض. كاش دقيقة؛ بيتصفّر مع كل ربط. */
+  let acceptCache = { at: 0, data: null };
+  async function webhookAccept() {
+    if (acceptCache.data && now() - acceptCache.at < 60e3) return acceptCache.data;
+    let ids = [];
+    try {
+      ids = (await pool.query(`SELECT DISTINCT phone_id FROM (SELECT phone_id FROM wa_onboarding
+        WHERE event='onboard' AND phone_id IS NOT NULL AND status IN ('running','done','partial') ORDER BY id DESC LIMIT 5) t`)).rows.map((r) => String(r.phone_id));
+    } catch { /* الجدول لسه */ }
+    const data = { phoneIds: ids, ownNumbers: [env("WHATSAPP_DISPLAY_NUMBER", KNOWN_NUMBER)] };
+    acceptCache = { at: now(), data };
+    return data;
+  }
+  if (wa?.setWebhookAccept) wa.setWebhookAccept(webhookAccept);
+  // وقت الإقلاع: الأرقام الفعّالة من settings.waCloudActive (لو فيه ربط ناجح اتحفظ) — وإلا الـenv زي ما هو
+  const activeReady = ready.then(() => loadActive()).catch(() => null);
+  // حدث الحساب (PARTNER_ADDED…) بيتسجّل صف في wa_onboarding كمان — أثر دائم بالأرقام اللي ميتا بعتتها
+  if (wa?.on) wa.on("account", async (a) => {
+    await pool.query("INSERT INTO wa_onboarding(created_by, event, waba_id, business_id, info, status) VALUES ('webhook',$1,$2,$3,$4,'recorded')",
+      [`account_update:${String(a.event || "").slice(0, 40)}`, a.wabaId || a.entryId || null, a.ownerBusinessId || null, J(a)]).catch(() => {});
+  });
 
   const STEPS = {
     subscribe: (waba) => (tok) => graph("POST", `${waba}/subscribed_apps`, { token: tok }),
@@ -257,21 +347,35 @@ export function register(app, ctx, deps = {}) {
   async function runSteps(rec, names) {
     const steps = { ...(rec.steps || {}) };
     for (const n of names) {
+      // G3: المزامنة محتاجة phone_id — لو ناقص بنجيبه من الحساب الأول (مرة واحدة لكل تشغيل)
+      if (n !== "subscribe" && !rec.phone_id && rec.waba_id && !steps._lookedUp) {
+        steps._lookedUp = true;
+        try { const lk = await lookupPhone(rec); if (lk) steps.lookup_phone = lk; } catch (e) { steps.lookup_phone = { ...errJ(e), at: new Date(now()).toISOString() }; }
+      }
       const target = n === "subscribe" ? rec.waba_id : rec.phone_id;
       if (!target) { steps[n] = { ok: false, error: "missing_id", at: new Date(now()).toISOString() }; continue; }
       steps[n] = await step(STEPS[n](target), rec.biz_token);
       // المزامنة التانية بعد الأولى — ميتا: جهات الاتصال الأول وبعدين التاريخ
     }
+    delete steps._lookedUp;
     const all = ["subscribe", "sync_contacts", "sync_history"].map((k) => steps[k]).filter(Boolean);
     const status = all.length === 3 && all.every((s) => s.ok) ? "done" : all.some((s) => s.ok) ? "partial" : "failed";
     await pool.query("UPDATE wa_onboarding SET steps=$2, status=$3 WHERE id=$1", [rec.id, J(steps), status]);
-    return { steps, status };
+    acceptCache = { at: 0, data: null };
+    // G4: ربط ناجح ⇒ أرقامه هي الفعّالة (لو اتغيّرت)
+    let active = null;
+    try {
+      active = activeFromRecord({ ...rec, steps });
+      if (active && (active.phoneId !== phoneId() || active.wabaId !== wabaId())) await saveActive(active, rec.created_by);
+    } catch (e) { console.error("[wa-cloud] active ids:", e.message); }
+    return { steps, status, active };
   }
 
   const pubRec = (r) => (r ? { id: Number(r.id), at: r.created_at, by: r.created_by, event: r.event, wabaId: r.waba_id,
     phoneId: r.phone_id, businessId: r.business_id, samePhone: r.same_phone, sameWaba: r.same_waba,
     hasBusinessToken: Boolean(r.biz_token), businessTokenAt: r.biz_token_at, steps: r.steps || {}, status: r.status,
     syncDeadline: r.created_at ? new Date(new Date(r.created_at).getTime() + 24 * 3600e3).toISOString() : null } : null);
+  const idsNow = () => (wa?.idsInUse ? wa.idsInUse() : { phoneId: phoneId() || null, wabaId: wabaId() || null, phoneSource: "env", wabaSource: "env", envPhoneId: envPhoneId() || null, envWabaId: envWabaId() || null });
   const lastRec = async () => (await pool.query("SELECT * FROM wa_onboarding WHERE waba_id IS NOT NULL OR phone_id IS NOT NULL ORDER BY id DESC LIMIT 1")).rows[0] || null;
 
   // ── الإعدادات اللي صفحة الربط محتاجاها (من غير أسرار) ───────────────────
@@ -311,15 +415,15 @@ export function register(app, ctx, deps = {}) {
     const phone = String(b.phone_number_id || "").replace(/\D/g, "").slice(0, 30) || null;
     const biz = String(b.business_id || "").replace(/\D/g, "").slice(0, 30) || null;
     if (!waba && !phone) return c.json({ ok: false, error: "missing_ids", message: "مفيش waba_id ولا phone_number_id" });
-    const samePhone = phone ? phone === (phoneId() || KNOWN_PHONE_ID) : null;
-    const sameWaba = waba ? waba === (wabaId() || KNOWN_WABA_ID) : null;
+    const samePhone = phone ? phone === (envPhoneId() || KNOWN_PHONE_ID) : null;
+    const sameWaba = waba ? waba === (envWabaId() || KNOWN_WABA_ID) : null;
     const w = await who(c);
     const rec = (await pool.query(
       `INSERT INTO wa_onboarding(created_by, event, waba_id, phone_id, business_id, same_phone, same_waba, status)
        VALUES ($1,'onboard',$2,$3,$4,$5,$6,$7) RETURNING *`,
       [w.name, waba, phone, biz, samePhone, sameWaba, onboardWrite() ? "running" : "write_disabled"])).rows[0];
     const envHint = { WHATSAPP_PHONE_ID: phone, WHATSAPP_WABA_ID: waba,
-      changePhone: phone && phoneId() !== phone, changeWaba: waba && wabaId() !== waba };
+      changePhone: phone && envPhoneId() !== phone, changeWaba: waba && envWabaId() !== waba };
     if (!onboardWrite()) {
       return c.json({ ok: false, error: "onboard_write_disabled", recorded: pubRec(rec), envHint,
         message: "الأرقام اتسجّلت، بس المزامنة مااشتغلتش — WHATSAPP_ONBOARD_WRITE مقفول" });
@@ -341,7 +445,10 @@ export function register(app, ctx, deps = {}) {
     }
     rec.steps = steps;
     const r = await runSteps(rec, ["subscribe", "sync_contacts", "sync_history"]);
-    return c.json({ ok: r.status === "done", status: r.status, onboarding: pubRec({ ...rec, steps: r.steps, status: r.status }), envHint });
+    // G3: لو الرقم اتجاب من الحساب، التلميح بتاع الـenv بيتحدّث بيه
+    if (rec.phone_id && !phone) { envHint.WHATSAPP_PHONE_ID = rec.phone_id; envHint.changePhone = envPhoneId() !== rec.phone_id; }
+    return c.json({ ok: r.status === "done", status: r.status, onboarding: pubRec({ ...rec, steps: r.steps, status: r.status }), envHint,
+      ids: idsNow(), active: r.active || null });
   });
 
   // إعادة خطوة (مثلاً المزامنة فشلت) — نفس المفتاح، وعلى آخر ربط
@@ -356,7 +463,24 @@ export function register(app, ctx, deps = {}) {
     if (!rec) return c.json({ ok: false, error: "no_onboarding" });
     const late = now() - new Date(rec.created_at).getTime() > 24 * 3600e3;
     const r = await runSteps(rec, names);
-    return c.json({ ok: names.every((n) => r.steps[n]?.ok), status: r.status, late, onboarding: pubRec({ ...rec, steps: r.steps, status: r.status }) });
+    return c.json({ ok: names.every((n) => r.steps[n]?.ok), status: r.status, late, onboarding: pubRec({ ...rec, steps: r.steps, status: r.status }),
+      ids: idsNow(), usedBusinessToken: Boolean(rec.biz_token) });
+  });
+
+  /* W5 — المالك يختار مصدر الأرقام الفعّالة: {use:"env"} يرجع لأرقام الـenv (يمسح settings.waCloudActive)،
+     {use:"onboarding"} يرجع لآخر ربط ناجح. مابيبعتش حاجة لميتا ومالوش علاقة بالإرسال. */
+  app.post("/api/cms/wa-cloud/active", async (c) => {
+    const err = await ownerOnly(c); if (err) return err;
+    await ready;
+    const b = await c.req.json().catch(() => ({}));
+    const w = await who(c);
+    if (b.use === "env") { await saveActive(null, w.name); return c.json({ ok: true, ids: idsNow() }); }
+    if (b.use !== "onboarding") return c.json({ ok: false, error: "bad_use", message: "use = env أو onboarding" }, 400);
+    const rows = (await pool.query("SELECT * FROM wa_onboarding WHERE event='onboard' ORDER BY id DESC LIMIT 10")).rows;
+    const a = rows.map(activeFromRecord).find(Boolean);
+    if (!a) return c.json({ ok: false, error: "no_successful_onboarding", message: "مفيش ربط ناجح (اشتراك + رقمين) نرجع له" });
+    await saveActive(a, w.name);
+    return c.json({ ok: true, ids: idsNow(), active: a });
   });
 
   /* ── الحالة (قراية بس) ──────────────────────────────────────────────────
@@ -437,7 +561,13 @@ export function register(app, ctx, deps = {}) {
     return c.json({ ok: true, phone, templates: tpl, subscribedApps: { ...subs, ours: ourApp },
       webhook: { lastEventAt: lastEvent, fields: hooks, callback: "/api/wa/webhook" }, history: hist,
       onboarding: pubRec(last), gate: gate || null,
-      env: { WHATSAPP_ENABLED: env("WHATSAPP_ENABLED") === "1", WHATSAPP_PHONE_ID: phoneId() || null, WHATSAPP_WABA_ID: wabaId() || null,
+      // W5: الأرقام المستعملة فعلاً ومصدرها (آخر ربط ناجح ولا الـenv)، والتوكن اللي السيرفر بيستعمله
+      ids: idsNow(),
+      tokens: { sending: env("WHATSAPP_TOKEN") ? "WHATSAPP_TOKEN" : env("META_CAPI_TOKEN") ? "META_CAPI_TOKEN" : null, sendingKind: "system",
+        business: last ? { stored: Boolean(last.biz_token), at: last.biz_token_at || null, onboardingId: Number(last.id),
+          expiresAbout: last.biz_token_at ? new Date(new Date(last.biz_token_at).getTime() + 60 * 86400e3).toISOString() : null } : { stored: false },
+        syncOrder: last && last.biz_token ? ["business", "system"] : ["system"] },
+      env: { WHATSAPP_ENABLED: env("WHATSAPP_ENABLED") === "1", WHATSAPP_PHONE_ID: envPhoneId() || null, WHATSAPP_WABA_ID: envWabaId() || null,
         token: env("WHATSAPP_TOKEN") ? "WHATSAPP_TOKEN" : env("META_CAPI_TOKEN") ? "META_CAPI_TOKEN" : null,
         WHATSAPP_APP_SECRET: Boolean(env("WHATSAPP_APP_SECRET")), WHATSAPP_VERIFY_TOKEN: Boolean(env("WHATSAPP_VERIFY_TOKEN")),
         WHATSAPP_ONBOARD_WRITE: onboardWrite(), WHATSAPP_TEMPLATES_WRITE: env("WHATSAPP_TEMPLATES_WRITE") === "1" },
@@ -509,5 +639,5 @@ export function register(app, ctx, deps = {}) {
     return c.json({ ok: true, cfg: clean });
   });
 
-  return { phoneInfo, templateInfo, ready, cloudCfg };
+  return { phoneInfo, templateInfo, ready, cloudCfg, activeReady, webhookAccept, idsNow };
 }
