@@ -66,6 +66,7 @@ import * as wabot from "./wabot.js";
 import * as wabotrun from "./wabotrun.js";
 import * as wahandover from "./wahandover.js";
 import * as wahub from "./wahub.js";
+import * as wastaff from "./wastaff.js";
 import * as wabotllm from "./wabotllm.js";
 import * as extsettle from "./extsettle.js";
 import * as wasender from "./wasender.js";
@@ -3257,7 +3258,9 @@ preorder.register(app, moduleCtx);
 let courierOpsApi = null;
 const portalApi = portal.register(app, moduleCtx, { shop: () => shopApi, delivery: () => deliveryApi, cmsWhoami: (c) => cmsApi.whoami(c), courierOps: () => courierOpsApi, wa: () => waInboxApi });
 waHandoverApi = wahandover.register(app, moduleCtx, { requirePortal: portalApi.requirePortal, broadcast: portalApi.broadcast, push: () => portalApi.push });
-waHubApi = wahub.register(app, moduleCtx, { whoami: (c) => cmsApi.whoami(c), wa: waApi, waInbox: () => waInboxApi, bot: () => wabotApi });
+let waStaffApi = null;      // wastaff.register: رد الموظف على محادثة واتساب من اللوحة ومن البورتال (نفس حارس الإرسال)
+waHubApi = wahub.register(app, moduleCtx, { whoami: (c) => cmsApi.whoami(c), wa: waApi, waInbox: () => waInboxApi, bot: () => wabotApi, staff: () => waStaffApi });
+waStaffApi = wastaff.register(app, moduleCtx, { wa: waApi, hub: () => waHubApi, requirePortal: portalApi.requirePortal, audit: portalApi.audit });
 // 🍽 QR الطاولات: مفاتيح الطاولات + نداء الويتر (بيبعت إشعار البوابة) + تحليلات لكل طاولة
 tableOrder.register(app, moduleCtx, { portal: () => portalApi, shop: () => shopApi });
 /* 🚨 حارس الدفع (٢٢/٩): ناس بتوصل لخطوة الدفع ومحدش بيدفع ⇒ SMS للمدير.

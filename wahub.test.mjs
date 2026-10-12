@@ -64,7 +64,7 @@ function world({ role = "owner", settings = {}, threads = [], messages = [], bot
       wa: { token: () => "systok", idsInUse: () => ({ wabaId: "WABA1" }), gate: async () => { if (db.gateThrows) throw new Error("x"); return db.gate === undefined ? "disabled" : db.gate; } },
       waInbox: () => ({ replyText: async (a) => { inboxCalls.push(["text", a]); return db.nextReply || { ok: true, wamid: "wamid.R1", window: { open: true } }; },
         replyTemplate: async (a) => { inboxCalls.push(["template", a]); return db.nextReply || { ok: true, wamid: "wamid.T1" }; } }),
-      bot: () => ({ unmuteChat: async (pn) => { db.unmuted.push(pn); return { ok: true }; }, botConfig: async () => ({ humanPauseMin: 30 }) }) });
+      bot: () => ({ unmuteChat: async (pn) => { db.unmuted.push(pn); return { ok: true }; }, botConfig: async () => ({ humanPauseMin: 30 }) }), staff: () => db.staff || null });
   const call = (method, path, { params = {}, query = {}, json = {} } = {}) => routes[`${method} ${path}`]({
     req: { param: (k) => params[k], query: (k) => query[k], json: async () => json, method, path }, json: (body, status = 200) => ({ body, status }) });
   return { db, api, call, fetches, inboxCalls, setUser: (u) => { user = u; } };
@@ -315,7 +315,8 @@ test("N7 wiring: every successful write on a settings route is followed by a swe
   assert.ok(i > 0);
   assert.ok(index.slice(i, i + 400).includes("/^\\/api\\/(settings|notify\\/|cms\\/(wa-cloud|wa-sender|wabot\\/config))/.test(c.req.path)) waHubApi.sweepFor(c);"));
   assert.ok(i < index.indexOf("settingsGuard.register(app,"), "registered before the routes it watches");
-  assert.ok(index.includes("waHubApi = wahub.register(app, moduleCtx, { whoami: (c) => cmsApi.whoami(c), wa: waApi, waInbox: () => waInboxApi, bot: () => wabotApi });"));
+  assert.ok(index.includes("waHubApi = wahub.register(app, moduleCtx, { whoami: (c) => cmsApi.whoami(c), wa: waApi, waInbox: () => waInboxApi, bot: () => wabotApi, staff: () => waStaffApi });"));
+  assert.ok(index.includes("waStaffApi = wastaff.register(app, moduleCtx, { wa: waApi, hub: () => waHubApi, requirePortal: portalApi.requirePortal, audit: portalApi.audit });"));
 });
 
 /* ══ العدّادان ═════════════════════════════════════════════════════════════ */
@@ -348,4 +349,28 @@ test("send state: the list and the chat tell the caller — cashier included —
   assert.deepEqual((await w.call("GET", "/api/cms/wa/threads")).body.send, { ok: false, gate: "settings_unreadable" }, "if the state cannot be read the box stays locked");
   const m = world({ role: "marketing", threads: [T("512345678")] });
   assert.equal((await m.call("GET", "/api/cms/wa/threads")).body.send, undefined, "a refused role learns nothing");
+});
+
+test("staff reply (wastaff.js): when registered, the dashboard reply and the chat's send state go through it", async () => {
+  const w = world({ role: "kitchen", threads: [T("512345678")], messages: [{ phone_norm: "512345678", wamid: "wamid.S1", direction: "out", status: "accepted", body: "حياك", source: "echo", created_at: ago(2) }] });
+  const calls = [];
+  w.db.staff = { reply: async (a) => { calls.push(a); return w.db.staffReply || { ok: true, wamid: "wamid.S1", test: false }; },
+    sendStateFor: async (pn) => ({ ok: true, gate: null, test: pn === "512345678" }),
+    annotate: async (ms) => { for (const m of ms) if (m.id === "wamid.S1") { m.source = "staff"; m.staff = { by: "منى", role: "kitchen", via: "dashboard" }; } return ms; } };
+  const ok = await w.call("POST", "/api/cms/wa/threads/:key/reply", { params: { key: "512345678" }, json: { text: "حياك الله" } });
+  assert.deepEqual(ok.body, { ok: true, wamid: "wamid.S1", test: false, send: { ok: true, gate: null, test: true } });
+  assert.deepEqual(calls[0], { phoneNorm: "512345678", text: "حياك الله", by: "منى", role: "kitchen", via: "dashboard" });
+  assert.equal(w.inboxCalls.length, 0, "the old inbox path is not used once wastaff is registered");
+  for (const [reply, status] of [[{ ok: false, error: "opted_out", gate: "opted_out" }, 409], [{ ok: false, error: "window_closed", gate: "window_closed" }, 409], [{ ok: false, error: "empty", gate: null }, 400]]) {
+    w.db.staffReply = reply;
+    const r = await w.call("POST", "/api/cms/wa/threads/:key/reply", { params: { key: "512345678" }, json: { text: "x" } });
+    assert.equal(r.status, status); assert.equal(r.body.gate, reply.gate); assert.equal(r.body.error, reply.error);
+  }
+  const one = await w.call("GET", "/api/cms/wa/threads/:key", { params: { key: "512345678" } });
+  assert.deepEqual(one.body.send, { ok: true, gate: null, test: true });
+  assert.deepEqual(one.body.messages.map((m) => [m.source, m.staff ? m.staff.via : null]), [["staff", "dashboard"]]);
+  // a role that may not read chats is still refused before wastaff is reached
+  w.setUser({ name: "x", role: "marketing" });
+  assert.equal((await w.call("POST", "/api/cms/wa/threads/:key/reply", { params: { key: "512345678" }, json: { text: "x" } })).status, 403);
+  assert.equal(calls.length, 4);
 });

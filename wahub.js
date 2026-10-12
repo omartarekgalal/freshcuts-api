@@ -97,6 +97,7 @@ export function register(app, ctx, deps = {}) {
   const wa = deps.wa || null;
   const inbox = () => (typeof deps.waInbox === "function" ? deps.waInbox() : deps.waInbox) || null;
   const bot = () => (typeof deps.bot === "function" ? deps.bot() : deps.bot) || null;
+  const staff = () => (typeof deps.staff === "function" ? deps.staff() : deps.staff) || null;      // wastaff.js: رد الموظف (لوحة + بورتال)
   const SALT = String(deps.keySalt || tokenSecret(process.env) || "");
   const keyOf = (pn) => crypto.createHash("md5").update(`${SALT}:${pn}`).digest("hex");
   const ready = pool.query(DDL).then(() => true).catch((e) => { log.error("[wa-hub] schema:", e.message); return false; });
@@ -261,6 +262,9 @@ export function register(app, ctx, deps = {}) {
       const r = await getThread(pn, { limit: c.req.query("limit"), before: c.req.query("before") || null, full: a.full });
       if (!r.ok) return c.json(r, 404);
       /* للمحادثة نفسها: قفل القناة أولاً، وبعده النافذة (نص حر بره الـ٢٤ ساعة مرفوض — القالب للمالك والعمليات) */
+      /* wastaff: حالة الرد للمحادثة دي بالظبط (رقم تجربة والقناة مقفولة = مفتوح للتجربة؛ العميل وقّف الرسايل = مقفول) + مين رد من اللوحة/البورتال */
+      const sf = staff();
+      if (sf) { await sf.annotate(r.messages); return c.json({ ...r, send: await sf.sendStateFor(pn) }); }
       const st = await sendState();
       return c.json({ ...r, send: st.ok && !r.window.open ? { ok: false, gate: "window_closed" } : st });
     } catch (e) { log.error("[wa-hub] thread:", e.message); return c.json({ ok: false, error: "unavailable" }, 500); }
@@ -290,6 +294,13 @@ export function register(app, ctx, deps = {}) {
     const pn = await phoneOfKey(c.req.param("key"), a.full);
     if (!pn) return c.json({ ok: false, error: "not_found" }, 404);
     let b = {}; try { b = await c.req.json(); } catch { return c.json({ ok: false, error: "bad_json" }, 400); }
+    /* wastaff.reply: نفس الحارس، + يتسجّل كرد موظف (البوت يسكت ويرجع لوحده) + مين رد + رقم التجربة في وضع التجربة */
+    const sf = staff();
+    if (sf) {
+      const x = await sf.reply({ phoneNorm: pn, text: b.text, by: a.user.name || a.user.role, role: a.user.role, via: "dashboard" });
+      if (x.ok) return c.json({ ok: true, wamid: x.wamid, test: x.test, send: await sf.sendStateFor(pn) });
+      return c.json({ ok: false, error: x.error, gate: x.gate || null, message: x.message || undefined }, ["empty", "too_long", "bad_phone"].includes(x.error) ? 400 : 409);
+    }
     const ib = inbox();
     if (!ib) return c.json({ ok: false, error: "inbox_unavailable" }, 503);
     const r = await ib.replyText({ phoneNorm: pn, text: b.text, by: a.user.name || a.user.role });
