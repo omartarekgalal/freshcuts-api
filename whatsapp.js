@@ -734,6 +734,22 @@ export function register(app, ctx, deps = {}) {
     return sendTemplate({ phoneNorm: order.phone_norm, template, params, orderNo: order.order_no, stage, fallbackSms });
   }
 
+  /* قالب كتالوج مرتبط بطلب محدد، **مرة وحدة للطلب** (١٢/١٠ — رصيد الولاء): نفس أقفال sendTemplate الأربعة وموافقة
+     العميل حسب فئة القالب. لو نفس القالب اتقبل لنفس الطلب قبل كده (wa_messages) ⇒ already_sent من غير أي طلب شبكة. */
+  async function sendOrderTemplateOnce({ order, template, data, stage = null }) {
+    await ready;
+    const t = TEMPLATES[template];
+    if (!t || typeof t.bind !== "function") return { ok: false, error: "unknown_template" };
+    const blocked = await gate();
+    if (blocked) return { ok: false, skipped: blocked };
+    if (!order || !order.order_no) return { ok: false, skipped: "no_order" };
+    const dup = await pool.query(
+      "SELECT 1 FROM wa_messages WHERE order_no=$1 AND template=$2 AND direction='out' AND status NOT IN ('failed','skipped') LIMIT 1",
+      [String(order.order_no), template]);
+    if (dup.rows.length) return { ok: false, skipped: "already_sent" };
+    return sendTemplate({ phoneNorm: order.phone_norm, template, params: t.bind(data || {}), orderNo: order.order_no, stage });
+  }
+
   /* ── الويب هوك ── */
   const errOf = (s) => (s.errors?.length ? String(s.errors[0].code + ":" + (s.errors[0].title || s.errors[0].message || "")).slice(0, 120) : null);
 
@@ -1039,7 +1055,7 @@ export function register(app, ctx, deps = {}) {
     return c.json({ ok: true, results });
   });
 
-  return { sendTemplate, sendText, sendFreeform, sendOrderUpdate, recordOptIn, applyIntent, gate, configured, masterOn, ready, setInbox,
+  return { sendTemplate, sendText, sendFreeform, sendOrderUpdate, sendOrderTemplateOnce, recordOptIn, applyIntent, gate, configured, masterOn, ready, setInbox,
     on, processWebhook, token, phoneId, wabaId, setBot, setBotRuntime, humanActive,
     setActiveIds, idsInUse, setWebhookAccept };
 }

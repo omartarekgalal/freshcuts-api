@@ -355,24 +355,24 @@ const render = (name, data, lang = "ar") => {
 };
 test("utility versions render their exact final text with realistic data, no empty variable", () => {
   const order = { order_no: "W1790011111111" };
-  assert.equal(render("fc_loyalty_status", { order, loyalty: { progress: 2, every: 3 } }).text,
-    "تم احتساب طلبك رقم W1790011111111 في برنامج ولاء فريش كاتس ✅\nرصيدك الآن 2 من 3 طلبات.");
-  assert.deepEqual(render("fc_loyalty_status", { order, loyalty: { progress: 1, every: 3 } }).buttons, ["W1790011111111"]);
+  assert.equal(render("fc_loyalty_status", { order, loyalty: { progress: 2, every: 3, statusText: "باقي طلب واحد" } }).text,
+    "تم احتساب طلبك رقم W1790011111111 في برنامج ولاء فريش كاتس ✅\nرصيدك من الطلبات الآن 2 من 3: باقي طلب واحد.\nالتفاصيل في صفحة الطلب.");
+  assert.deepEqual(render("fc_loyalty_status", { order, loyalty: { progress: 1, every: 3, statusText: "باقي طلبين" } }).buttons, ["W1790011111111"]);
   assert.equal(render("fc_feedback_received", { order }).text,
     "شكراً على ملاحظتك بخصوص طلبك رقم W1790011111111 🙏\nوصلت ملاحظتك للفريق وراجعناها، ولو احتجنا تفاصيل أكثر نتواصل معك على هذا الرقم.");
   assert.equal(render("fc_payment_failed", { order }).text,
     "ما اكتملت عملية الدفع لطلبك رقم W1790011111111 من فريش كاتس، والطلب ما تأكّد.\nلو ظهر مبلغ معلّق في حسابك يرجع تلقائياً حسب إجراءات البنك، ولأي استفسار ردّ على هذي الرسالة.");
-  assert.equal(render("fc_open_notice", { hours: { closeText: "2:00 ص" } }).text,
-    "طلبت منّا تنبيهك عند فتح المطعم 🔔\nفريش كاتس مفتوح الآن ويستقبل الطلبات حتى الساعة 2:00 ص.");
+  assert.equal(render("fc_open_notice", { waitlist: { ref: "N-1042", requestedText: "يوم 12/10 الساعة 4:35 ص" }, hours: { closeText: "2:00 ص" } }).text,
+    "تنبيه الفتح رقم N-1042 المسجَّل يوم 12/10 الساعة 4:35 ص 🔔\nطلبت منّا تنبيهك عند فتح المطعم: فريش كاتس مفتوح الآن ويستقبل الطلبات حتى الساعة 2:00 ص.");
   assert.equal(render("fc_staff_payment_alert", { watch: { problem: "٣ محاولات دفع فشلت خلال ٢٠ دقيقة", lastOrderAgo: "قبل ٩٥ دقيقة" } }).text,
     "تنبيه تشغيلي في نظام طلبات فريش كاتس: ٣ محاولات دفع فشلت خلال ٢٠ دقيقة. آخر طلب مدفوع على النظام: قبل ٩٥ دقيقة. تابع من البورتال.");
   assert.equal(render("fc_staff_day_report", { day: { label: "11 Oct", orders: 14, sales: 1240, rating: "4.6" } }, "en").text,
     "End-of-day operations report for 11 Oct: 14 online orders handled, 1240 SAR collected, average customer rating 4.6. The full report is in the dashboard.");
   // a zero balance or a missing number never goes out as an empty variable
-  for (const bad of [{ order, loyalty: { every: 3 } }, { order: {}, loyalty: { progress: 1, every: 3 } }, { order, loyalty: { progress: "", every: 3 } }]) {
+  for (const bad of [{ order, loyalty: { every: 3, statusText: "باقي طلبين" } }, { order: {}, loyalty: { progress: 1, every: 3, statusText: "باقي طلبين" } }, { order, loyalty: { progress: 1, every: 3 } }]) {
     assert.ok(C.bindTemplate(C.findTemplate("fc_loyalty_status"), bad).missing.length > 0);
   }
-  assert.ok(C.bindTemplate(C.findTemplate("fc_open_notice"), { hours: {} }).missing.includes("hours.closeText"));
+  assert.ok(C.bindTemplate(C.findTemplate("fc_open_notice"), { waitlist: { ref: "N-1" }, hours: {} }).missing.includes("hours.closeText"));
 });
 
 test("utility versions carry nothing promotional: no offer words, no order push, no cart or landing link, no opt-out footer", () => {

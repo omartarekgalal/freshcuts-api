@@ -103,3 +103,21 @@ export function planLoyaltySms(rows, { staff = new Set(), testSet = new Set(), o
   }
   return { send, skip, merged };
 }
+
+/* ── رصيد الولاء لطلب محدد (رسالة واتساب الخدمية fc_loyalty_status — ١٢/١٠) ──────────────
+   نفس قاعدة العدّ بتاعة cms.js (PAID_ONLINE) و shop.js (loyaltyOf): طلبات الموقع المدفوعة من startedAt — توصيل واستلام
+   وطاولة. الاختبار بيتأكد إن الثلاثة بنفس قايمة الحالات. */
+export const LOYALTY_COUNTED_SQL = "status NOT IN ('pending_payment','expired','rejected_refunded','refund_failed','paid_pos_failed')";
+
+/* n = ترتيب الطلب وسط طلبات العميل المحتسبة (1 = أول طلب). بيرجّع موقعه في الدورة:
+   progress من 1 لـevery (الطلب المكمِّل = every، عمره ما يبقى صفر)، left الباقي، reached = الطلب ده كمّل الدورة.
+   null = مفيش حاجة تتقال (الطلب مش محتسب أو الإعداد غلط) ⇒ مفيش رسالة. */
+export function loyaltyStatusFor(n, every) {
+  const N = Math.floor(Number(n)), E = Math.floor(Number(every));
+  if (!Number.isFinite(N) || !Number.isFinite(E) || N < 1 || E < 2) return null;
+  const progress = N % E || E;
+  const left = E - progress;
+  const statusText = left === 0 ? "اكتمل الرصيد" : left === 1 ? "باقي طلب واحد" : left === 2 ? "باقي طلبين"
+    : left <= 10 ? `باقي ${left} طلبات` : `باقي ${left} طلب`;
+  return { progress, every: E, left, reached: left === 0, statusText };
+}

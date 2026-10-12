@@ -75,6 +75,21 @@ export const waitBody = (text, link) => {
    مقفول أو المواعيد مش معرّفة. بعد نص الليل إحنا في ذيل يوم امبارح، يعني
    عدّى عليه أكتر من ٢٤ ساعة… لأ: بنحسبه من فتح امبارح فبيطلع رقم كبير
    وبالتالي بره النافذة — وده المطلوب بالظبط (ما نبعتش ٢ الفجر). */
+/* بيانات القالب الخدمي fc_open_notice من صف open_waitlist (١٢/١٠): مرجع طلب التنبيه = رقم الصف (ثابت حتى لو العميل
+   سجّل تاني قبل الفتح) + وقت التسجيل بتوقيت الرياض + وقت الإقفال (المنادي بيجيبه من settings.hours).
+   pure ومفيش مُرسل بينادي عليها لسه. قيمة ناقصة ⇒ سلسلة فاضية ⇒ bindTemplate بيمنع الإرسال. */
+export function openNoticeData(row, closeText) {
+  const d = row && row.created_at ? new Date(row.created_at) : null;
+  let requestedText = "";
+  if (d && !Number.isNaN(d.getTime())) {
+    const p = Object.fromEntries(new Intl.DateTimeFormat("en-GB", { timeZone: "Asia/Riyadh", day: "numeric", month: "numeric", hour: "numeric", minute: "2-digit", hour12: true })
+      .formatToParts(d).map((x) => [x.type, x.value]));
+    requestedText = `يوم ${p.day}/${p.month} الساعة ${p.hour}:${p.minute} ${/p/i.test(p.dayPeriod || "") ? "م" : "ص"}`;
+  }
+  const id = Number(row && row.id);
+  return { waitlist: { ref: Number.isInteger(id) && id > 0 ? `N-${id}` : "", requestedText }, hours: { closeText: String(closeText || "").trim() } };
+}
+
 export function minutesSinceOpen(hours, now = new Date()) {
   if (!hours || hours.enabled === false || !hours.days) return null;
   const r = new Date(now.toLocaleString("en-US", { timeZone: "Asia/Riyadh" }));

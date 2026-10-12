@@ -28,6 +28,7 @@ import { sendSms } from "./accounts.js";
 import { emitOrder } from "./order-events.js";
 import { renderTemplate } from "./smstemplates.js";
 import { READY_TEXT, orderKind } from "./prepstatus.js";
+import { loyaltyCfgOf, loyaltyStatusFor, LOYALTY_COUNTED_SQL } from "./loyalty.js";
 
 const env = (k, d) => (process.env[k] || d || "").toString().trim();
 const trackHost = () => env("STOREFRONT_PUBLIC_URL", "https://freshcuts.sa").replace(/^https?:\/\//, "").replace(/\/+$/, "");
@@ -336,6 +337,23 @@ export function register(app, ctx, deps = {}) {
     }
   }
 
+  /* موقع الطلب في دورة الولاء: ترتيبه وسط طلبات نفس الجوال المحتسبة من startedAt لحد وقت إنشائه (نفس قاعدة cms.js
+     loyaltyCounts و shop.js loyaltyOf). null = الولاء مقفول، أو الطلب نفسه مش محتسب (قبل البداية / مرفوض). */
+  async function loyaltyStatusOfOrder(order) {
+    if (!/^5\d{8}$/.test(String(order.phone_norm || ""))) return null;
+    const lc = loyaltyCfgOf(await getSettingsData());
+    if (lc.enabled !== true || !lc.startedAt) return null;
+    const r = await pool.query(
+      `SELECT count(*)::int AS n, COALESCE(bool_or(order_no = $2), FALSE) AS counted
+         FROM shop_orders
+        WHERE phone_norm = $1 AND created_at >= $3::timestamptz AND ${LOYALTY_COUNTED_SQL}
+          AND created_at <= (SELECT created_at FROM shop_orders WHERE order_no = $2)`,
+      [order.phone_norm, order.order_no, lc.startedAt]);
+    const row = r.rows[0] || {};
+    if (!row.counted) return null;
+    return loyaltyStatusFor(row.n, Math.max(2, Number(lc.every) || 5));
+  }
+
   /* ── the one entry point shop.js calls on every status change ── */
   async function orderStatusChanged(orderNo, status) {
     const make = MESSAGES[status];
@@ -393,6 +411,22 @@ export function register(app, ctx, deps = {}) {
       }
     }
     const smsSkippedForWa = Boolean(waResult?.ok && cfg.whatsappReplacesSms === true);
+
+    /* 🎁 رصيد الولاء (قالب خدمي fc_loyalty_status) — بعد ما الطلب «اتسلّم» (توصيل/استلام/طاولة: نفس اللي المحرّك بيعدّه)،
+       مرة وحدة للطلب، واتساب بس (مفيش SMS بديل: رصيد مش مستاهل رسالة بفلوس، وكود المكافأة له رسالته).
+       مفتاح اللوحة notifications.whatsappLoyaltyStatus (افتراضي مقفول) فوق أقفال واتساب الأربعة وموافقة «التحديثات». */
+    if (status === "delivered" && wa && cfg.whatsappEnabled === true && cfg.whatsappLoyaltyStatus === true
+        && typeof wa.sendOrderTemplateOnce === "function") {
+      try {
+        const ls = await loyaltyStatusOfOrder(order);
+        if (ls) {
+          const w = await wa.sendOrderTemplateOnce({ order, template: "fc_loyalty_status", stage: "loyalty_status",
+            data: { order: { order_no: order.order_no }, loyalty: { progress: ls.progress, every: ls.every, statusText: ls.statusText } } });
+          emitNotify(orderNo, "loyalty_status", "whatsapp", w.ok === true,
+            w.ok ? { progress: ls.progress, every: ls.every } : { error: String(w.skipped || w.error || "send_failed").slice(0, 60) });
+        }
+      } catch (e) { console.error(`[notify] loyalty status failed for ${orderNo}:`, e?.message); }
+    }
 
     // SMS (default OFF, stage-filtered — each message costs money).
     if (cfg.smsEnabled === true && smsStages.includes(status) && !smsSkippedForWa) {
