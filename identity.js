@@ -48,6 +48,15 @@ export const appSourceSql = (a = "s") => `(${a}.source = '${APP_SOURCE}' AND btr
 export const appNoteSql = (a = "s") => `(CASE WHEN ${a}.source = '${APP_SOURCE}' THEN NULLIF(btrim(${a}.source_note), '') END)`;
 /* نسخة نقطة البيع لطلب من متجرنا (تاب سينس بيسجّلها External زي طلبات التطبيقات) */
 export const websiteSourceSql = (a = "s") => `(${a}.source = 'website')`;
+/* QP1 (١٣/١٠): «رقم من تطبيق توصيل بس» — له طلب مصدره تطبيق (نفس appSourceSql) ومالوش أي علاقة مباشرة بينا:
+   ولا صف بمصدر تاني (الكاشير سأله / طلب من الموقع)، ولا طلب مدفوع من الموقع، ولا حساب مسجّل. يعني رقمه جالنا من التطبيق، مش منه.
+   param = مكان مصفوفة الأرقام في الاستعلام. */
+export const appOnlyPhonesSql = (param = "$1") => `
+  SELECT DISTINCT s.phone_norm AS pn FROM order_sources s
+   WHERE s.phone_norm = ANY(${param}::text[]) AND ${appSourceSql("s")}
+     AND NOT EXISTS (SELECT 1 FROM order_sources d WHERE d.phone_norm = s.phone_norm AND d.source <> '${APP_SOURCE}')
+     AND NOT EXISTS (SELECT 1 FROM shop_orders so WHERE so.phone_norm = s.phone_norm AND ${shopPaidSql("so")})
+     AND NOT EXISTS (SELECT 1 FROM acct_customers a WHERE a.phone_norm = s.phone_norm)`;
 export const isAppSource = (row) => Boolean(row) && row.source === APP_SOURCE && String(row.source_note ?? row.sourceNote ?? "").trim() !== "";
 export const BIZ_DAY_START_HOUR = 4; // نفس analytics.js — تاب سينس بيقلب اليوم ٤ الفجر
 

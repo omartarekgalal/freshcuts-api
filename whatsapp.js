@@ -40,6 +40,7 @@ import { echoKind, echoSettings, ECHO, STAFF_ECHO_SQL } from "./waecho.js";
 import * as CAT from "./watemplates.js";
 import { staffPhones } from "./staffalerts.js";
 import { termsCoverOrder, TERMS_CURRENT, TERMS_VERSIONS } from "./waconsent.js";
+import { custCapOf, custCapReason } from "./waquality.js";
 
 const env = (k, d) => (process.env[k] || d || "").toString().trim();
 export const GRAPH_VERSION = "v23.0";
@@ -369,7 +370,7 @@ export function acceptPhone(pid, displayNumber, { phoneId = null, phoneIds = [],
 }
 export function parseWebhook(body, { phoneId = null, phoneIds = [], ownNumbers = [] } = {}) {
   const out = { statuses: [], messages: [], echoes: [], contacts: [], profiles: [], history: [],
-    historyErrors: [], historyMeta: [], templateEvents: [], accountEvents: [], fields: [] };
+    historyErrors: [], historyMeta: [], templateEvents: [], accountEvents: [], qualityEvents: [], fields: [] };
   for (const entry of body?.entry || []) {
     for (const ch of entry?.changes || []) {
       const v = ch?.value || {};
@@ -384,6 +385,14 @@ export function parseWebhook(body, { phoneId = null, phoneIds = [], ownNumbers =
       out.fields.push({ field, phoneId: pid, via: acc.via, ...(note ? { note } : {}) });
       if (field === "account_update") out.accountEvents.push({ event: v.event || null, wabaId: v.waba_info?.waba_id ? String(v.waba_info.waba_id) : null,
         ownerBusinessId: v.waba_info?.owner_business_id ? String(v.waba_info.owner_business_id) : null, entryId: entry?.id ? String(entry.id) : null });
+      /* QP1: أحداث الجودة/الحساب (جودة الرقم وحده، جودة/حالة قالب، مخالفة حساب) ⇒ wasender بيخزّنها وبوابة الجودة بتوقّف الحملات */
+      /* حدث جودة لرقم تاني على نفس الحساب (لو عرفنا رقمنا من ownNumbers) مايخصّناش */
+      const otherNumber = field === "phone_number_quality_update" && v.display_phone_number && (ownNumbers || []).map(digitsOf).filter(Boolean).length
+        && !(ownNumbers || []).map(digitsOf).includes(digitsOf(v.display_phone_number));
+      if (field === "phone_number_quality_update") { if (!otherNumber) out.qualityEvents.push({ kind: "phone", event: v.event || null, tier: v.current_limit || null }); }
+      else if (field === "message_template_quality_update") out.qualityEvents.push({ kind: "template", state: v.new_quality_score || null, name: v.message_template_name || null, language: v.message_template_language || null });
+      else if (field === "message_template_status_update" && v.message_template_name) out.qualityEvents.push({ kind: "template", event: v.event || null, name: v.message_template_name, language: v.message_template_language || null });
+      else if (field === "account_update" || field === "account_alerts") out.qualityEvents.push({ kind: "account", event: v.event || v.alert_type || null });
       const bizPhone = String(v.metadata?.display_phone_number || "").replace(/\D/g, "");
       for (const s of v.statuses || []) {
         out.statuses.push({ wamid: s.id, status: s.status, recipient: s.recipient_id,
@@ -470,7 +479,7 @@ export function register(app, ctx, deps = {}) {
 
   /* مستمعين للويب هوك (wasender بيسجّل هنا عشان حالات رسايل الحملة وردودها
      تحدّث صفوف الطابور). مستمع بيقع مابيوقّفش الباقي. */
-  const hooks = { inbound: [], status: [], account: [], chat: [] };
+  const hooks = { inbound: [], status: [], account: [], chat: [], quality: [] };
   const on = (ev, fn) => { if (hooks[ev] && typeof fn === "function") hooks[ev].push(fn); };
   const emit = async (ev, x) => {
     for (const fn of hooks[ev] || []) { try { await fn(x); } catch (e) { console.error(`[wa] ${ev} hook:`, e.message); } }
@@ -670,6 +679,18 @@ export function register(app, ctx, deps = {}) {
           AND created_at > NOW() - INTERVAL '24 hours' LIMIT 1`, [pn]);
     return Boolean(r.rows && r.rows.length);
   }
+  /* QP1 (M7-6): سقف العميل للقوالب التسويقية — واحد كل ٧ أيام و٣ كل ٣٠ يوم، من أي حملة أو أتمتة (العدّ من wa_messages:
+     قالب اتقبل وفئته تسويق أو مصدره حملة). الحدود من settings.waCloud (custCap7d / custCap30d). ماقدرناش نعدّ ⇒ مانبعتش. */
+  async function marketingCapReason(pn, s) {
+    try {
+      const r = await pool.query(
+        `SELECT count(*) FILTER (WHERE created_at > NOW() - INTERVAL '7 days')::int AS d7, count(*)::int AS d30
+           FROM wa_messages WHERE phone_norm=$1 AND direction='out' AND template IS NOT NULL
+            AND (category='MARKETING' OR source='campaign') AND COALESCE(status,'') NOT IN ('failed','skipped')
+            AND created_at > NOW() - INTERVAL '30 days'`, [pn]);
+      return custCapReason((r.rows && r.rows[0]) || {}, custCapOf(s));
+    } catch { return "marketing_cap_unreadable"; }
+  }
   const TICKETS = new WeakSet();
   const TICKET_TTL_MS = 60_000;
   async function guardSend({ phoneNorm, kind, template = null, purpose = null, source = null, test = false, allowList = null, fromId = null, orderNo = null } = {}) {
@@ -713,6 +734,8 @@ export function register(app, ctx, deps = {}) {
          العروض بتتبعت لأي عميل **إلا** اللي طلب إيقاف — «إيقاف» في واتساب، رفض صريح للعروض من أي مصدر، أو إيقاف رسايل
          التسويق عموماً (cms_contacts). مابقاش فيه شرط موافقة مسبقة على العروض. */
       if (o.stopped || o.marketingOff || await marketingSuppressed(pn)) return no("opted_out");
+      const capped = await marketingCapReason(pn, s);      // QP1: marketing_cap_7d | marketing_cap_30d | marketing_cap_unreadable
+      if (capped) return no(capped);
     } else {
       /* TC (١٣/١٠، قرار عمر): القالب الخدمي بيتبعت لو
            • العميل مش موقِّف («إيقاف» بيغلب أي حاجة، حتى طلب جديد)، و
@@ -1125,6 +1148,7 @@ export function register(app, ctx, deps = {}) {
     const p = parseWebhook(body, { phoneId: envPid || phoneId() || null,
       phoneIds: [phoneId(), ...(acc.phoneIds || [])].filter(Boolean), ownNumbers: acc.ownNumbers || [] });
     for (const a of p.accountEvents || []) { try { for (const fn of hooks.account || []) await fn(a); } catch (e) { console.error("[wa] account hook:", e.message); } }
+    for (const qe of p.qualityEvents || []) await emit("quality", qe);      // QP1
     await health(p.fields);
     for (const x of p.profiles) await handleProfile(x).catch((e) => console.error("[wa] profile:", e.message));
     for (const s of p.statuses) await handleStatus(s).catch((e) => console.error("[wa] status:", e.message));

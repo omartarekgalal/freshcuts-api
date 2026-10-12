@@ -20,11 +20,16 @@ const ALLOW = { ...CONFIGURED, WHATSAPP_ENABLED: "1" };
 const IMG = "https://freshcuts-api.o2m8.me/api/content/media/1.jpg", VID = "https://freshcuts-api.o2m8.me/api/content/media/9.mp4";
 const HOSTS = ["freshcuts-api.o2m8.me", "freshcuts.sa"];
 const TESTER = "544775082", AT_17 = Date.parse("2026-10-13T14:00:00Z");      // ١٧:٠٠ الرياض
+/* QP1: الدورة بقت بتقرا جودة الرقم قبل أي إرسال (من غيرها مفيش تسويق) وبتمشي على سلّم تسخين. الاختبارات القديمة دي عن حاجات تانية،
+   فبتشتغل برقم جودته GREEN وسلّم خلصان (السقف اليومي هو اللي حاكم). البوابة والسلّم نفسهم في waquality.test.mjs. */
+const GREEN_CLOUD = { phoneInfo: async () => ({ ok: true, status: "CONNECTED", quality: "GREEN", tier: "TIER_250", portfolio: { ok: true, limit: "TIER_250" }, checkedAt: new Date(AT_17).toISOString() }),
+  templateInfo: async () => ({ ok: true, list: [] }) };
+const WARM_DONE = { step: 3, since: "2026-09-01", startedAt: "2026-09-01" };
 
 // ───────── دوال صافية ─────────
-test("الإعدادات: السقف اليومي ٢٠٠، سقف الصرف ٥٠، والفرامل ٥٪ «إيقاف» / ١٠٪ فشل بعد ٢٠ — وكلها بتتظبط لو اتكتبت غلط", () => {
+test("الإعدادات: السقف اليومي ٢٠٠، سقف الصرف ٥٠، والفرامل ٢٪ «إيقاف» / ١٠٪ فشل بعد ٣٠ (QP1) — وكلها بتتظبط لو اتكتبت غلط", () => {
   const d = C.cloudCfg({});
-  assert.deepEqual([d.enabled, d.dailyCap, d.spendDaySar, d.brakeMinSends, d.brakeStopPct, d.brakeFailPct, d.tierLimit, d.reserveUtility], [false, 200, 50, 20, 5, 10, 250, 50]);
+  assert.deepEqual([d.enabled, d.dailyCap, d.spendDaySar, d.brakeMinSends, d.brakeStopPct, d.brakeFailPct, d.tierLimit, d.reserveUtility], [false, 200, 50, 30, 2, 10, 250, 50]);
   const x = C.cloudCfg({ waCloud: { dailyCap: 120, spendDaySar: "12.345", brakeMinSends: 1, brakeStopPct: 0, brakeFailPct: 500 } });
   assert.deepEqual([x.dailyCap, x.spendDaySar, x.brakeMinSends, x.brakeStopPct, x.brakeFailPct], [120, 12.35, 5, 0.5, 100]);
   assert.equal(C.cloudCfg({ waCloud: { spendDaySar: 0 } }).spendDaySar, 0);
@@ -43,8 +48,8 @@ test("الإيقاع: سقف الصرف اليومي بيوقّف وبيحدّ �
   assert.equal(C.cloudPacing(cc, { today: 0, rateSar: 0.2159, stoppedReason: "payment_issue" }, true).reason, "stopped");
 });
 
-test("الفرامل: مش قبل ٢٠ محاولة، وبعدها ١٠٪ فشل أو ٥٪ «إيقاف»", () => {
-  const cc = C.cloudCfg({});
+test("الفرامل: مش قبل الحد الأدنى من المحاولات، وبعدها نسبة الفشل أو نسبة «إيقاف» (بالحدود القديمة ٢٠ / ٥٪ مكتوبة صريح)", () => {
+  const cc = C.cloudCfg({ waCloud: { brakeMinSends: 20, brakeStopPct: 5 } });
   assert.equal(C.brakeCheck({ sent: 10, failed: 9, stopped: 9 }, cc), null);
   assert.deepEqual(C.brakeCheck({ sent: 18, failed: 2, stopped: 0 }, cc), { reason: "fail_rate", pct: 10, limit: 10 });
   assert.equal(C.brakeCheck({ sent: 19, failed: 1, stopped: 0 }, cc), null);
@@ -134,10 +139,10 @@ function world({ jobs = [], queue = [], settings = {}, sentToday = 0, links = ["
   const qrow = (id) => db.queue.find((q) => q.id === Number(id));
   const pool = { db, connect: async () => ({ query: (s, p) => pool.query(s, p), release() {} }), async query(sql, p = []) {
     const s = String(sql).replace(/\s+/g, " ").trim(); db.sql.push(s);
-    if (/^SELECT \* FROM wa_sender_state WHERE id=\$1/i.test(s)) return { rows: [{ stopped_reason: null }] };
+    if (/^SELECT \* FROM wa_sender_state WHERE id=\$1/i.test(s)) return { rows: [{ stopped_reason: null, warmup: WARM_DONE }] };
     if (/FROM wa_send_queue WHERE status='sent' AND sent_at > NOW\(\) - INTERVAL '2 days'/i.test(s)) return { rows: [{ today: sentToday + db.queue.filter((q) => q.status === "sent" && q._now).length, last_hour: 0 }] };
     if (/^SELECT count\(DISTINCT phone_norm\)::int AS n FROM wa_messages/i.test(s)) return { rows: [{ n: 0 }] };
-    if (/^SELECT id, spend_cap_sar, rate_sar FROM wa_send_jobs WHERE status='running'/i.test(s)) return { rows: db.jobs.filter((j) => j.status === "running" && j.channel === "wa_cloud") };
+    if (/^SELECT id, spend_cap_sar, rate_sar, cloud_template, brake_ack_at FROM wa_send_jobs WHERE status='running'/i.test(s)) return { rows: db.jobs.filter((j) => j.status === "running" && j.channel === "wa_cloud") };
     if (/^SELECT count\(\*\) FILTER \(WHERE status='sent' AND COALESCE\(cloud_status/i.test(s)) { const r = db.queue.filter((q) => q.job_id === Number(p[0]));
       return { rows: [{ sent: r.filter((q) => q.status === "sent" && q.cloud_status !== "failed").length, failed: r.filter((q) => q.status === "failed" || q.cloud_status === "failed").length, stopped: r.filter((q) => q.optout_at).length }] }; }
     if (/^UPDATE wa_send_jobs SET status='paused', stop_reason=\$2 WHERE id=\$1 AND status='running'/i.test(s)) { const j = job(p[0]); if (j && j.status === "running") { j.status = "paused"; j.stop_reason = p[1]; } return { rows: [] }; }
@@ -174,7 +179,7 @@ function world({ jobs = [], queue = [], settings = {}, sentToday = 0, links = ["
   const rows = Array.from({ length: people }, (_, i) => ({ pn: `51000000${i}`, name: `عميل ${i}`, orders: 2, spend: 100, daysAgo: 40, lastTotal: 60, score: 1, vars: { first_name: `عميل${i}` } }));
   const outreach = { AUDIENCES: { lapsed: { label: "غايبين" } }, audienceRows: async () => rows, cfg: async () => ({ template: "أهلاً {name}" }) };
   /* cms:mk… = دور تسويق، غيره = المالك */
-  const api = S.register(app, ctx, { wa, fetch, outreach, cloudLoop: false, lock: false, now: () => AT_17, cms: () => null,
+  const api = S.register(app, ctx, { wa, fetch, outreach, cloudLoop: false, lock: false, now: () => AT_17, cms: () => null, cloud: () => GREEN_CLOUD,
     sessionUser: async (t) => (t === "cms:mk" ? { name: "تسويق", role: "marketing" } : { name: "عمر", role: "owner" }) });
   return { db, app, api, wa, calls };
 }
@@ -187,7 +192,7 @@ test("المعاينة (متاحة للتسويق): العدد بالظبط × �
   assert.equal(r.status, 200); assert.equal(r.body.willQueue, 30); assert.deepEqual(r.body.problems, []);
   assert.deepEqual(r.body.cost, { messages: 30, rateSar: 0.2159, rateDate: "2026-10-01", sar: 6.48, spendCapSar: 4, willSendUnderCap: 18, sarUnderCap: 3.89 });
   assert.deepEqual([r.body.capacity.perDay, r.body.capacity.dailyCap, r.body.capacity.spendDaySar], [200, 200, 50]);
-  assert.deepEqual(r.body.capacity.brake, { minSends: 20, stopPct: 5, failPct: 10 });
+  assert.deepEqual(r.body.capacity.brake, { minSends: 30, stopPct: 2, failPct: 10, warnPct: 1, lowRead: { minDelivered: 50, hours: 6, pct: 40 } });
   assert.equal(r.body.spec.header, "image"); assert.equal(r.body.gate, null);
   assert.match(r.body.sample[0].cloud.text, /باقة تجمّع بـ225/);
   assert.equal(w.calls.length, 0);
@@ -252,20 +257,22 @@ const J = (x = {}) => ({ id: 1, status: "running", channel: "wa_cloud", cloud_te
 const Q = (id, x = {}) => ({ id, job_id: 1, phone_norm: `5200000${String(id).padStart(2, "0")}`, status: "pending", channel: "wa_cloud", name: "محمد", vars: { first_name: "محمد" }, link_code: `c${id}`, coupon: null, attempts: 0, ...x });
 const optin = (w) => { for (const q of w.db.queue) w.db.optins[q.phone_norm] = { updates: true, marketing: true }; };
 
+/* QP1: الحدود الافتراضية بقت ٢٪ بعد ٣٠ (waquality.test.mjs). السيناريوهات دي مكتوبة على ٥٪ بعد ٢٠، فالحدود دي مكتوبة فيها صريح. */
+const OLD_BRAKES = { waCloud: { enabled: true, brakeMinSends: 20, brakeStopPct: 5 } };
 test("الدورة: الفرامل بتوقّف الحملة على نسبة الفشل، وعلى نسبة «إيقاف»، وبتكتب السبب", withEnv(ALLOW, async () => {
   // ١٨ اتبعتوا + ٢ فشلوا = ١٠٪ فشل بعد ٢٠ محاولة ⇒ تقف قبل ما تبعت الباقي
-  const a = world({ jobs: [J()], queue: [...Array.from({ length: 18 }, (_, i) => Q(i + 1, { status: "sent" })), Q(19, { status: "failed", cloud_status: "failed" }), Q(20, { status: "failed", cloud_status: "failed" }), Q(21), Q(22)] });
+  const a = world({ settings: OLD_BRAKES, jobs: [J()], queue: [...Array.from({ length: 18 }, (_, i) => Q(i + 1, { status: "sent" })), Q(19, { status: "failed", cloud_status: "failed" }), Q(20, { status: "failed", cloud_status: "failed" }), Q(21), Q(22)] });
   optin(a);
   const r = await a.api.cloudTick();
   assert.equal(a.db.jobs[0].status, "paused"); assert.equal(a.db.jobs[0].stop_reason, "fail_rate:10"); assert.equal(a.calls.length, 0, JSON.stringify(r));
   assert.equal(a.db.queue.filter((q) => q.status === "pending").length, 2);
   // ٤٠ اتبعتوا و٢ كتبوا «إيقاف» = ٥٪
-  const b = world({ jobs: [J()], queue: [...Array.from({ length: 40 }, (_, i) => Q(i + 1, { status: "sent", ...(i < 2 ? { optout_at: "2026-10-13T13:00:00Z" } : {}) })), Q(41)] });
+  const b = world({ settings: OLD_BRAKES, jobs: [J()], queue: [...Array.from({ length: 40 }, (_, i) => Q(i + 1, { status: "sent", ...(i < 2 ? { optout_at: "2026-10-13T13:00:00Z" } : {}) })), Q(41)] });
   optin(b);
   await b.api.cloudTick();
   assert.equal(b.db.jobs[0].stop_reason, "stop_rate:5"); assert.equal(b.calls.length, 0);
   // تحت الحد: بتكمّل
-  const c = world({ jobs: [J()], queue: [...Array.from({ length: 40 }, (_, i) => Q(i + 1, { status: "sent", ...(i < 1 ? { optout_at: "x" } : {}) })), Q(41)] });
+  const c = world({ settings: OLD_BRAKES, jobs: [J()], queue: [...Array.from({ length: 40 }, (_, i) => Q(i + 1, { status: "sent", ...(i < 1 ? { optout_at: "x" } : {}) })), Q(41)] });
   optin(c);
   const rc = await c.api.cloudTick();
   assert.equal(c.db.jobs[0].status, "running"); assert.equal(rc.sent, 1); assert.equal(c.calls.length, 1);

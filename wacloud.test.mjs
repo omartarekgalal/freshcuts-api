@@ -253,7 +253,8 @@ test("Meta error codes → reason / stop / retry / invalid / fallback", () => {
   assert.equal(C.classifyError(130429).retry, true);
   assert.equal(C.classifyError(987654).reason, "meta_987654");
   assert.equal(C.classifyError(null).reason, "send_failed");
-  assert.equal(C.fallbackFor(C.classifyError(131049), "wa_web"), "wa_web");
+  assert.equal(C.fallbackFor(C.classifyError(131049), "wa_web"), null);      // QP1: ميتا حدّت العميل ⇒ مايتوصلّوش من واتساب ويب
+  assert.equal(C.fallbackFor(C.classifyError(130472), "wa_web"), "wa_web");
   assert.equal(C.fallbackFor(C.classifyError(131026), "wa_web"), null, "not on WhatsApp ⇒ WA Web can't help");
   assert.equal(C.fallbackFor(C.classifyError(131026), "sms"), "sms");
   assert.equal(C.fallbackFor(C.classifyError(131050), "sms"), null, "customer opted out ⇒ no SMS either");
@@ -429,6 +430,11 @@ test("campaign send logs the rendered template text (inbox shows what the custom
 }));
 
 /* ══ ٦) الطابور على قناة Cloud (wasender) ════════════════════════════════ */
+/* QP1: الدورة بقت بتقرا جودة الرقم قبل أي إرسال وبتمشي على سلّم تسخين — الاختبارات دي عن حاجات تانية، فبتشتغل برقم GREEN وسلّم خلصان.
+   البوابة والسلّم نفسهم في waquality.test.mjs. */
+const GREEN_CLOUD = { phoneInfo: async () => ({ ok: true, status: "CONNECTED", quality: "GREEN", tier: "TIER_250", portfolio: { ok: true, limit: "TIER_250" }, checkedAt: new Date(AT_17).toISOString() }),
+  templateInfo: async () => ({ ok: true, list: [] }) };
+const WARM_DONE = { step: 3, since: "2026-09-01", startedAt: "2026-09-01" };
 function senderPool({ jobs, queue, optedOut = [], invalid = [], recent = [] }) {
   const db = { jobs, queue, contactLog: [], invalid: new Set(invalid), state: { 1: {}, 2: {} }, replies: [], optouts: [], coupons: [] };
   const pool = { db, async query(sql, p = []) {
@@ -436,7 +442,7 @@ function senderPool({ jobs, queue, optedOut = [], invalid = [], recent = [] }) {
     const job = (id) => db.jobs.find((j) => j.id === Number(id));
     const qrow = (id) => db.queue.find((q) => q.id === Number(id));
     if (/^CREATE TABLE|^ALTER TABLE|^CREATE INDEX|^INSERT INTO wa_sender_state\(id\)/i.test(s)) return { rows: [] };
-    if (/^SELECT \* FROM wa_sender_state WHERE id=\$1/i.test(s)) return { rows: [{ stopped_reason: db.state[p[0]].stopped_reason || null }] };
+    if (/^SELECT \* FROM wa_sender_state WHERE id=\$1/i.test(s)) return { rows: [{ stopped_reason: db.state[p[0]].stopped_reason || null, warmup: WARM_DONE }] };
     if (/FROM wa_send_queue WHERE status='sent' AND sent_at > NOW\(\) - INTERVAL '2 days'/i.test(s)) {
       const n = db.queue.filter((q) => q.status === "sent" && (q.channel || "wa_web") === p[0]).length;
       return { rows: [{ today: n, last_hour: n }] };
@@ -493,7 +499,7 @@ function senderPool({ jobs, queue, optedOut = [], invalid = [], recent = [] }) {
   return pool;
 }
 function fakeWa(script = []) {
-  const hooks = { status: [], inbound: [] };
+  const hooks = { status: [], inbound: [], quality: [] };
   const sent = [];
   let i = 0;
   return { sent, hooks, gate: async () => null, on: (ev, fn) => hooks[ev].push(fn),
@@ -505,7 +511,7 @@ const qr = (id, pn, x = {}) => ({ id, job_id: 1, phone_norm: pn, status: "pendin
 function setupSender({ pool, wa, waCloud = { enabled: true, perTick: 5 }, cms = null }) {
   const app = fakeApp();
   const api = S.register(app, { pool, requireAdmin: async () => null, getSettingsData: async () => ({ waCloud, waSender: {} }) },
-    { wa, cloudLoop: false, lock: false, now: () => AT_17, cms: () => cms });
+    { wa, cloudLoop: false, lock: false, now: () => AT_17, cms: () => cms, cloud: () => GREEN_CLOUD });
   return { app, api };
 }
 
@@ -518,7 +524,7 @@ test("cloud tick: sends the right template per row, skips opted-out/recent/inval
   const r = await api.cloudTick();
   assert.equal(r.sent, 2);
   assert.deepEqual(pool.db.queue.map((q) => q.status), ["sent", "skipped", "skipped", "skipped", "sent", "pending"]);
-  assert.deepEqual(pool.db.queue.slice(1, 4).map((q) => q.reason), ["opted_out", "gap_3d", "invalid_number"]);
+  assert.deepEqual(pool.db.queue.slice(1, 4).map((q) => q.reason), ["opted_out", "gap_7d", "invalid_number"]);      // QP1: فاصل الواتساب على قناة Cloud ٧ أيام
   assert.equal(wa.sent[0].template, "fc_offer_img");
   assert.equal(wa.sent[0].requireOptIn, true, "SEC: campaigns ask for the marketing opt-in");
   assert.equal(wa.sent[0].source, "campaign");
@@ -552,16 +558,16 @@ test("statuses from the webhook update the queue row; out-of-order read stays re
   assert.equal(wa.hooks.status.length, 1, "wasender subscribed to whatsapp.js status hook");
 });
 
-test("async failure 131049 + fallback wa_web → row goes back to the extension, contact log released, coupon closed", async () => {
+test("async failure 130472 + fallback wa_web → row goes back to the extension, contact log released, coupon closed (QP1: not for 131049)", async () => {
   const pool = senderPool({ jobs: [cloudJob({ fallback: "wa_web" })], queue: [qr(1, "511111111", { coupon: "W1ABCDE" })] });
   const wa = fakeWa();
   const { api } = setupSender({ pool, wa });
   await api.schemaReady;
   await api.cloudTick();
-  await api.onCloudStatus({ wamid: "wamid.C1", status: "failed", code: 131049 });
+  await api.onCloudStatus({ wamid: "wamid.C1", status: "failed", code: 130472 });
   const q = pool.db.queue[0];
   assert.equal(q.status, "pending"); assert.equal(q.channel, "wa_web");
-  assert.equal(q.fallback_from, "wa_cloud:meta_marketing_limit");
+  assert.equal(q.fallback_from, "wa_cloud:meta_experiment");
   assert.equal(pool.db.contactLog.length, 0);
   assert.deepEqual(pool.db.coupons.at(-1), ["off", "W1ABCDE"]);
 });

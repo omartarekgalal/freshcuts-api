@@ -25,6 +25,7 @@
 ═══════════════════════════════════════════════════════════════════════════ */
 import { GRAPH_VERSION, TEMPLATES, renderTemplateText, registerTemplates } from "./whatsapp.js";
 import * as CAT from "./watemplates.js";
+import { qualityCfg, QUALITY_KEYS, QUALITY_DEFAULTS, WARMUP_DEFAULTS, migrateQuality } from "./waquality.js";
 
 const env = (k, d) => (process.env[k] || d || "").toString().trim();
 export const APP_ID = "1073414588466040";
@@ -60,22 +61,28 @@ const clampN = (v, lo, hi, d) => { const n = Number(v); return Number.isFinite(n
 export const CLOUD_DEFAULTS = {
   enabled: false, dailyCap: 200, hourCap: 60, perTick: 5, tierLimit: 250, reserveUtility: 50,
   /* حملات واتساب (١٣/١٠ — قرار عمر): سقف صرف يومي، وفرامل آلية على نسبة الفشل ونسبة «إيقاف» بعد أول N رسالة من الحملة */
-  spendDaySar: 50, brakeMinSends: 20, brakeStopPct: 5, brakeFailPct: 10,
+  /* QP1 (١٣/١٠ — مراجعة الخبير M7): الإيقاف ٥٪ ⇒ ٢٪ وبعد ٣٠ رسالة بدل ٢٠ */
+  spendDaySar: 50, brakeMinSends: 30, brakeStopPct: 2, brakeFailPct: 10,
+  ...QUALITY_DEFAULTS, warmup: { steps: WARMUP_DEFAULTS.steps.map((x) => ({ ...x })), stepUpStopPct: WARMUP_DEFAULTS.stepUpStopPct, minStepSends: WARMUP_DEFAULTS.minStepSends },
   configId: DEFAULT_CONFIG_ID,
 };
-export const CLOUD_KEYS = Object.freeze(["enabled", "dailyCap", "hourCap", "perTick", "tierLimit", "reserveUtility", "spendDaySar", "brakeMinSends", "brakeStopPct", "brakeFailPct"]);
+export const CLOUD_KEYS = Object.freeze(["enabled", "dailyCap", "hourCap", "perTick", "tierLimit", "reserveUtility", "spendDaySar", "brakeMinSends", "brakeStopPct", "brakeFailPct", ...QUALITY_KEYS]);
 /* مفاتيح «رفع السقف» = للمالك بس؛ تقليلها أو قفل القناة مسموح لأي دور يدخل الشاشة */
-export const CLOUD_CEILINGS = Object.freeze(["dailyCap", "hourCap", "perTick", "tierLimit", "spendDaySar", "brakeStopPct", "brakeFailPct"]);
+export const CLOUD_CEILINGS = Object.freeze(["dailyCap", "hourCap", "perTick", "tierLimit", "spendDaySar", "brakeStopPct", "brakeFailPct",
+  "brakeWarnPct", "lowReadMinDelivered", "lowReadHours", "lowReadPct", "cappedFallbackSms", "allowUnknownQuality", "qualityMaxAgeMin", "custCap7d", "custCap30d", "warmup"]);
 const clampF = (v, lo, hi, d) => { const n = Number(v); return Number.isFinite(n) && v !== null && v !== "" ? Math.min(hi, Math.max(lo, Math.round(n * 100) / 100)) : d; };
 export function cloudCfg(settings) {
   const x = { ...CLOUD_DEFAULTS, ...(((settings || {}).waCloud) || {}) };
   const tier = clampN(x.tierLimit, 1, 100000, 250);
+  const stopPct = clampF(x.brakeStopPct, 0.5, 100, 2);
   return {
+    ...qualityCfg(x, stopPct),
+    ...(Number(x.rev) >= 2 ? { rev: 2 } : {}),      // علامة ترحيل QP1 (migrateQuality) — لازم تفضل مع كل حفظ
     enabled: x.enabled === true,
     dailyCap: clampN(x.dailyCap, 1, 100000, 200),
     spendDaySar: clampF(x.spendDaySar, 0, 100000, 50),          // صفر = مفيش إرسال حملات
-    brakeMinSends: clampN(x.brakeMinSends, 5, 1000, 20),
-    brakeStopPct: clampF(x.brakeStopPct, 0.5, 100, 5),
+    brakeMinSends: clampN(x.brakeMinSends, 5, 1000, 30),
+    brakeStopPct: stopPct,
     brakeFailPct: clampF(x.brakeFailPct, 1, 100, 10),
     hourCap: clampN(x.hourCap, 1, 10000, 60),
     perTick: clampN(x.perTick, 1, 50, 5),
@@ -92,8 +99,11 @@ export function cloudPacing(cc, st, inHours) {
   if (!cc.enabled) return { allow: 0, reason: "disabled" };
   if (st.stoppedReason) return { allow: 0, reason: "stopped", detail: st.stoppedReason };
   if (!inHours) return { allow: 0, reason: "outside_hours" };
-  const day = cc.dailyCap - (st.today || 0);
-  if (day <= 0) return { allow: 0, reason: "daily_cap" };
+  /* QP1: سقف سلّم التسخين (st.warmCap) تحت السقف اليومي — عمره ما بيرفعه */
+  const warm = st.warmCap != null && Number.isFinite(Number(st.warmCap)) ? Math.max(0, Number(st.warmCap)) : null;
+  const cap = warm != null ? Math.min(cc.dailyCap, warm) : cc.dailyCap;
+  const day = cap - (st.today || 0);
+  if (day <= 0) return { allow: 0, reason: cap < cc.dailyCap ? "warmup_cap" : "daily_cap" };
   const hour = cc.hourCap - (st.lastHour || 0);
   if (hour <= 0) return { allow: 0, reason: "hour_cap" };
   const tier = cc.tierLimit - cc.reserveUtility - (st.uniq24h || 0);
@@ -104,7 +114,9 @@ export function cloudPacing(cc, st, inHours) {
     money = Math.floor((Number(cc.spendDaySar) - (st.today || 0) * Number(st.rateSar)) / Number(st.rateSar) + 1e-9);
     if (money <= 0) return { allow: 0, reason: "spend_cap" };
   }
-  return { allow: Math.max(0, Math.min(cc.perTick, day, hour, tier, money)), reason: null };
+  /* QP1: حملة في منطقة التحذير (st.halve) ⇒ نص عدد الدورة */
+  const perTick = st.halve ? Math.max(1, Math.floor(cc.perTick / 2)) : cc.perTick;
+  return { allow: Math.max(0, Math.min(perTick, day, hour, tier, money)), reason: null };
 }
 
 /* ── أكواد أخطاء ميتا → قرار ──────────────────────────────────────────────
@@ -116,7 +128,8 @@ export function cloudPacing(cc, st, inHours) {
    fallback تنفع قناة بديلة (sms = بس؛ both = واتساب ويب أو SMS) */
 export const META_ERRORS = {
   131026: { reason: "undeliverable", invalid: true, fallback: "sms" },
-  131049: { reason: "meta_marketing_limit", fallback: "both" },
+  /* QP1: ميتا نفسها حدّت رسايل التسويق للعميل ده — مش فشل عندنا: بيتعدّ لوحده (meta_capped) وبره نسبة الفشل، ومن غير SMS بديل افتراضياً */
+  131049: { reason: "meta_marketing_limit", fallback: "both", capped: true },
   130472: { reason: "meta_experiment", fallback: "both" },
   131050: { reason: "user_stopped_marketing", optout: true },
   131047: { reason: "window_closed" },
@@ -152,15 +165,16 @@ export const META_ERRORS = {
 export function classifyError(code) {
   const n = Number(code);
   const m = META_ERRORS[n];
-  if (m) return { code: n, stop: false, retry: false, invalid: false, optout: false, fallback: null, ...m };
+  if (m) return { code: n, stop: false, retry: false, invalid: false, optout: false, capped: false, fallback: null, ...m };
   return { code: Number.isFinite(n) ? n : null, reason: Number.isFinite(n) && n ? `meta_${n}` : "send_failed",
-    stop: false, retry: false, invalid: false, optout: false, fallback: null };
+    stop: false, retry: false, invalid: false, optout: false, capped: false, fallback: null };
 }
 /* القناة البديلة المسموحة للصف ده: job.fallback × نوع الغلطة */
-export function fallbackFor(cls, jobFallback) {
+export function fallbackFor(cls, jobFallback, { cappedSms = false } = {}) {
   if (!cls?.fallback || !jobFallback || jobFallback === "none") return null;
-  if (jobFallback === "sms") return "sms";
-  if (jobFallback === "wa_web") return cls.fallback === "both" ? "wa_web" : null;
+  if (jobFallback === "sms") return cls.capped && !cappedSms ? null : "sms";      // QP1: 131049 من غير SMS بديل إلا لو المالك فعّله
+  /* QP1 (قرار المنسّق ١٣/١٠): عميل ميتا حدّت تسويقه (131049) مايتوصلّوش من واتساب ويب كمان — مفيش مفتاح بيفتح ده */
+  if (jobFallback === "wa_web") return cls.fallback === "both" && !cls.capped ? "wa_web" : null;
   return null;
 }
 
@@ -298,7 +312,8 @@ export function cloudJobProblem({ cloudTemplate, cloudVars, imageUrl, videoUrl, 
 }
 
 /* فرامل الحملة (زي فرامل الـ٥٪ بتاعة SMS): بعد أول brakeMinSends محاولة، لو نسبة الفشل أو نسبة «إيقاف» عدّت الحد ⇒ الحملة تقف.
-   n = { sent, failed, stopped } لنفس الحملة. بترجع null أو { reason:"fail_rate"|"stop_rate", pct, limit }. */
+   n = { sent, failed, stopped } لنفس الحملة. بترجع null أو { reason:"fail_rate"|"stop_rate", pct, limit }.
+   QP1: failed هنا من غير اللي ميتا حدّته (131049) — المنادي بيعدّه لوحده في n.capped ومابيدخلش في النسبة. */
 export function brakeCheck(n, cc) {
   const sent = Number(n?.sent) || 0, failed = Number(n?.failed) || 0, stopped = Number(n?.stopped) || 0;
   const tried = sent + failed;
@@ -352,6 +367,14 @@ export function register(app, ctx, deps = {}) {
     `);
   }
   const ready = ensureSchema().catch((e) => console.error("[wa-cloud] schema:", e.message));
+  /* QP1: ترحيل حدود الفرامل المخزّنة (٥٪/٢٠ ⇒ ٢٪/٣٠) مرة واحدة — شوف migrateQuality. فشل القراءة/الكتابة = نجرّب الإقلاع الجاي. */
+  const qualityMigrated = ready.then(async () => {
+    const m = migrateQuality(((await getSettingsData()) || {}).waCloud);
+    if (!m.changed) return false;
+    await pool.query(`UPDATE settings SET data = jsonb_set(COALESCE(data,'{}'::jsonb), '{waCloud}', $1::jsonb, true) WHERE id=1`, [J(cloudCfg({ waCloud: m.next }))]);
+    console.log(`[wa-cloud] QP1 brake limits migrated (stop ${m.from.brakeStopPct}→${m.next.brakeStopPct ?? "default"}, after ${m.from.brakeMinSends}→${m.next.brakeMinSends ?? "default"})`);
+    return true;
+  }).catch((e) => { console.error("[wa-cloud] QP1 migrate:", e.message); return false; });
 
   const who = async (c) => {
     try {
@@ -617,7 +640,8 @@ export function register(app, ctx, deps = {}) {
   const PHONE_FIELDS_MIN = "display_phone_number,verified_name,status,quality_rating,platform_type,throughput,messaging_limit_tier,code_verification_status";
   async function phoneInfo({ fresh = false } = {}) {
     const pid = phoneId() || KNOWN_PHONE_ID;
-    if (!fresh && phoneCache.data && now() - phoneCache.at < 10 * 60e3 && phoneCache.data.id === pid) return phoneCache.data;
+    /* QP1: قراءة فاشلة بتتخزّن دقيقة بس (كانت ١٠) — بوابة الجودة بتوقف التسويق طول ما القراءة فاشلة، فمانستناش ١٠ دقايق بعد ما ميتا ترجع */
+    if (!fresh && phoneCache.data && now() - phoneCache.at < (phoneCache.data.ok ? 10 * 60e3 : 60e3) && phoneCache.data.id === pid) return phoneCache.data;
     if (!sysToken()) return { ok: false, error: "no_token", id: pid };
     let d;
     try { d = await graph("GET", pid, { query: { fields: PHONE_FIELDS } }); }
@@ -637,7 +661,8 @@ export function register(app, ctx, deps = {}) {
       status: d.status || null, quality: d.quality_rating || null, platform: d.platform_type || null,
       throughput: d.throughput?.level || null, tier: d.messaging_limit_tier || null,
       verification: d.code_verification_status || null, nameStatus: d.name_status || null,
-      isOnBizApp: d.is_on_biz_app ?? null, health: d.health_status?.can_send_message || null };
+      isOnBizApp: d.is_on_biz_app ?? null, health: d.health_status?.can_send_message || null,
+      checkedAt: new Date(now()).toISOString() };      // QP1: بوابة الجودة بترفض قراءة أقدم من qualityMaxAgeMin
     phoneCache = { at: now(), data: x };
     return x;
   }
@@ -645,14 +670,18 @@ export function register(app, ctx, deps = {}) {
   let tplCache = { at: 0, data: null };
   async function templateInfo({ fresh = false } = {}) {
     const waba = wabaId() || KNOWN_WABA_ID;
-    if (!fresh && tplCache.data && now() - tplCache.at < 10 * 60e3) return tplCache.data;
+    if (!fresh && tplCache.data && now() - tplCache.at < (tplCache.data.ok ? 10 * 60e3 : 60e3)) return tplCache.data;      // QP1: الفشل بيتخزّن دقيقة بس
     if (!sysToken()) return { ok: false, error: "no_token" };
     try {
-      const d = await graph("GET", `${waba}/message_templates`, { query: { fields: "name,status,category,language", limit: "200" } });
-      const list = (d.data || []).map((t) => ({ name: t.name, status: t.status, category: t.category, language: t.language }));
+      /* QP1: بنطلب جودة كل قالب (quality_score). لو ميتا رفضت الحقل، بنرجع للحقول القديمة عشان شاشات القوالب ماتقعش — وبنعلّم
+         qualityRead=false: بوابة الجودة ساعتها بتوقف التسويق («ماقدرناش نقرا جودة القوالب») بدل ما تفترض إنها تمام. */
+      let d, qualityRead = true;
+      try { d = await graph("GET", `${waba}/message_templates`, { query: { fields: "name,status,category,language,quality_score", limit: "200" } }); }
+      catch { d = await graph("GET", `${waba}/message_templates`, { query: { fields: "name,status,category,language", limit: "200" } }); qualityRead = false; }
+      const list = (d.data || []).map((t) => ({ name: t.name, status: t.status, category: t.category, language: t.language, quality: (t.quality_score && t.quality_score.score) || null }));
       const byStatus = {};
       for (const t of list) byStatus[t.status] = (byStatus[t.status] || 0) + 1;
-      const x = { ok: true, total: list.length, byStatus, list,
+      const x = { ok: true, qualityRead, checkedAt: new Date(now()).toISOString(), total: list.length, byStatus, list,
         // «ours» = القوالب القديمة بس — زرار «قدّم N قالب» في اللوحة بيقدّمها كلها، فالكتالوج مايدخلش فيه
         ours: Object.keys(TEMPLATES).filter((n) => !TEMPLATES[n].catalog).map((n) => ({ name: n, category: TEMPLATES[n].category,
           campaign: Boolean(TEMPLATES[n].campaign), label: TEMPLATES[n].campaign?.label || null,
@@ -803,6 +832,7 @@ export function register(app, ctx, deps = {}) {
     const cur = (s.waCloud && typeof s.waCloud === "object") ? s.waCloud : {};
     const next = { ...cur };
     for (const k of [...CLOUD_KEYS, "configId"]) if (b[k] !== undefined) next[k] = b[k];
+    if (cur.rev) next.rev = cur.rev;
     const clean = cloudCfg({ waCloud: next });
     await pool.query(`UPDATE settings SET data = jsonb_set(COALESCE(data,'{}'::jsonb), '{waCloud}', $1::jsonb, true) WHERE id=1`, [J(clean)]);
     // التشغيل من تاني بيمسح «اتوقف» (المالك بص وقرر)
@@ -810,5 +840,5 @@ export function register(app, ctx, deps = {}) {
     return c.json({ ok: true, cfg: clean });
   });
 
-  return { phoneInfo, templateInfo, ready, cloudCfg, activeReady, webhookAccept, idsNow };
+  return { phoneInfo, templateInfo, ready, cloudCfg, activeReady, webhookAccept, idsNow, qualityMigrated };
 }

@@ -40,7 +40,10 @@ import {
   TEMPLATE_VARS, renderTemplate, templateProblem, recipientLink, effectiveDailyCap, isOptOutText,
   creditOrders, dropPosMirrors, summarizeResults,
 } from "./wamsg.js";
-import { shopPaidSql } from "./identity.js";
+import { shopPaidSql, appOnlyPhonesSql } from "./identity.js";
+import { staffConfig, fitOneSms } from "./staffalerts.js";
+import { brakeWarn, lowReadCheck, qualityVerdict, qualityEventRow, warmupAdvance, warmupView, warmupStart, warmupClean, riyadhDay, custCapOf, custCapReason,
+  CLOUD_MIN_GAP_DAYS, META_CAPPED_CODE, qualityAlertText, warnAlertText } from "./waquality.js";
 import { nextStatus, TEMPLATES } from "./whatsapp.js";
 import { cloudCfg, cloudPacing, classifyError, fallbackFor, campaignParams, cloudJobProblem, defaultChannel,
   CAMPAIGN_TEMPLATES, campaignTemplateNames, campaignSpec, brakeCheck, campaignCost, mediaProblem, MEDIA_LIMITS, CLOUD_KEYS, CLOUD_CEILINGS, CLOUD_DEFAULTS } from "./wacloud.js";
@@ -351,6 +354,18 @@ export function register(app, ctx, deps = {}) {
       ALTER TABLE wa_send_jobs ADD COLUMN IF NOT EXISTS rate_sar NUMERIC;    -- «wa_cloud:<سبب>» لو اتحوّلت لقناة تانية
       CREATE INDEX IF NOT EXISTS wa_send_queue_wamid_idx ON wa_send_queue(wamid) WHERE wamid IS NOT NULL;
       INSERT INTO wa_sender_state(id) VALUES (2) ON CONFLICT DO NOTHING;      -- حالة قناة Cloud لوحدها
+      -- QP1 (١٣/١٠): حماية الجودة — حالة سلّم التسخين وآخر حد/جودة شفناهم (صف ٢)، تحذير الحملة، «كمّل» المالك، وعدد أرقام التطبيقات اللي اتأكد عليها
+      ALTER TABLE wa_sender_state ADD COLUMN IF NOT EXISTS warmup JSONB;
+      ALTER TABLE wa_sender_state ADD COLUMN IF NOT EXISTS quality JSONB;
+      ALTER TABLE wa_send_jobs ADD COLUMN IF NOT EXISTS warn_at TIMESTAMPTZ;
+      ALTER TABLE wa_send_jobs ADD COLUMN IF NOT EXISTS brake_ack_at TIMESTAMPTZ;
+      ALTER TABLE wa_send_jobs ADD COLUMN IF NOT EXISTS app_only INT;
+      CREATE TABLE IF NOT EXISTS wa_quality_events (
+        id BIGSERIAL PRIMARY KEY,
+        at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        kind TEXT NOT NULL,              -- phone | template | account
+        event TEXT, state TEXT, name TEXT, language TEXT, tier TEXT
+      );
       CREATE TABLE IF NOT EXISTS wa_invalid_numbers (
         phone_norm TEXT PRIMARY KEY,
         at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -374,6 +389,8 @@ export function register(app, ctx, deps = {}) {
       failStreak: s.fail_streak || 0, lastSeenAt: s.last_seen_at, agent: s.agent, stoppedReason: s.stopped_reason,
       today: c.today || 0, lastHour: c.last_hour || 0 };
     if (channel === "wa_cloud") {
+      out.warmup = warmupClean(s.warmup);                                             // QP1
+      out.quality = s.quality && typeof s.quality === "object" ? s.quality : {};
       /* حد ميتا للبزنس غير الموثّق = عملاء مختلفين بدأنا معاهم بقالب في ٢٤ ساعة —
          الحملات وتحديثات الطلبات مع بعض (wa_messages فيها الاتنين). */
       out.uniq24h = await pool.query(
@@ -387,15 +404,16 @@ export function register(app, ctx, deps = {}) {
   /* الأرقام اللي اتكلّمت في آخر gapDays — واتساب (آلي/يدوي) + رسايل SMS التسويقية
      (حملات، أتمتة، استرجاع السلة). عمر: العميل مايتضربش واتساب وSMS في نفس الفاصل.
      بترجع Map(رقم → «wa» | «sms»). جدول ناقص (قاعدة جديدة) = نكمّل بالموجود. */
-  async function recentMap(pns, gapDays) {
+  async function recentMap(pns, gapDays, { waGapDays = null } = {}) {
     const out = new Map();
     if (!pns.length) return out;
     const iv = String(gapDays);
-    const run = async (ch, sql) => {
-      try { for (const r of (await pool.query(sql, [pns, iv])).rows) if (!out.has(r.pn)) out.set(r.pn, ch); }
+    const run = async (ch, sql, days = iv) => {
+      try { for (const r of (await pool.query(sql, [pns, days])).rows) if (!out.has(r.pn)) out.set(r.pn, ch); }
       catch (e) { if (e && e.code !== "42P01") throw e; }
     };
-    await run("wa", `SELECT DISTINCT phone_norm pn FROM wa_contact_log WHERE phone_norm = ANY($1::text[]) AND at > NOW() - ($2 || ' days')::interval`);
+    /* QP1: على قناة Cloud الفاصل بين رسالتين واتساب ٧ أيام (waGapDays)؛ فاصل الـSMS تحت زي ما هو */
+    await run("wa", `SELECT DISTINCT phone_norm pn FROM wa_contact_log WHERE phone_norm = ANY($1::text[]) AND at > NOW() - ($2 || ' days')::interval`, String(Math.max(Number(waGapDays) || 0, Number(gapDays) || 0)));
     /* SMS الدعائي لحاجبين الإعلانات عمره ما وصل (smsblock.js — قرار عمر ٢٦/٩:
        الحجب غلطة مزوّد مش العميل) ⇒ مايتحسبش «اتكلّم». أول قراية حيّة: ٢٢٦ من
        ٤٨٦ حاجب كانوا هيتشالوا من الواتساب بسبب رسايل ماوصلتهمش. */
@@ -472,8 +490,32 @@ export function register(app, ctx, deps = {}) {
     return outreach && outreach.AUDIENCES[aud] ? { aud, segmentPhones: null } : null;
   }
 
-  async function build(filters, s) {
+  /* QP1 — قناة Cloud: عدد القوالب التسويقية اللي اتقبلت لكل رقم (٧ / ٣٠ يوم) من wa_messages — حملات وأتمتة مع بعض.
+     نفس العدّ اللي الحارس (whatsapp.js guardSend) بيرفض بيه وقت الإرسال؛ هنا عشان عدد المعاينة يطلع مظبوط. */
+  async function marketingCounts(pns) {
+    const out = new Map();
+    if (!pns.length) return out;
+    /* فشل العدّ هنا مايوقّعش المعاينة: الحارس بيعدّ تاني لكل رقم وقت الإرسال، ولو ماقدرش بيرفض (marketing_cap_unreadable) */
+    let r; try { r = await pool.query(
+      `SELECT phone_norm AS pn, count(*) FILTER (WHERE created_at > NOW() - INTERVAL '7 days')::int AS d7, count(*)::int AS d30
+         FROM wa_messages WHERE phone_norm = ANY($1::text[]) AND direction='out' AND template IS NOT NULL
+          AND (category='MARKETING' OR source='campaign') AND COALESCE(status,'') NOT IN ('failed','skipped')
+          AND created_at > NOW() - INTERVAL '30 days' GROUP BY 1`, [pns]); }
+    catch (e) { console.error("[wasender] marketing counts:", e.message); return out; }
+    for (const x of r.rows || []) out.set(x.pn, { d7: x.d7 || 0, d30: x.d30 || 0 });
+    return out;
+  }
+  /* QP1: أرقام «تطبيق توصيل بس» في قايمة (identity.js). بترجع Set، أو null لو ماقدرناش نقرا (⇒ الحملة ماتبدأش). */
+  async function appOnlySet(pns) {
+    if (!pns.length) return new Set();
+    try { return new Set(((await pool.query(appOnlyPhonesSql("$1"), [pns])).rows || []).map((x) => x.pn)); }
+    catch (e) { console.error("[wasender] app-only:", e.message); return null; }
+  }
+  const APP_ONLY_LABEL = "أرقام من تطبيقات التوصيل — لم يعطونا رقمهم مباشرة";
+
+  async function build(filters, s, { channel = "wa_web" } = {}) {
     if (!outreach) throw new Error("outreach_missing");
+    const cloud = channel === "wa_cloud";
     const cfg = senderCfg(s);
     const A = (await resolveAudience(filters.audience)) || { aud: "never_online", segmentPhones: null };
     const minLast = Number(filters.minLastOrder) > 0 ? Number(filters.minLastOrder) : 0;
@@ -483,9 +525,10 @@ export function register(app, ctx, deps = {}) {
     const filtered = applyFilters(all.filter((r) => !r.noMeaningfulOrder), filters);
     const pns = filtered.map((r) => r.pn);
     const staff = staffPhoneSet(s);
-    const recent = await recentMap(pns, cfg.gapDays);
+    const recent = await recentMap(pns, cfg.gapDays, cloud ? { waGapDays: CLOUD_MIN_GAP_DAYS } : {});
     const invalid = await invalidSet(pns);
     const blk = await blockedSets(pns, cfg);
+    const cap = custCapOf(s), mk = cloud ? await marketingCounts(pns) : new Map();
     const qr = (await pool.query(
       `SELECT q.phone_norm, bool_or(q.status = 'holdout') AS held FROM wa_send_queue q JOIN wa_send_jobs j ON j.id=q.job_id
         WHERE q.phone_norm = ANY($1::text[])
@@ -494,7 +537,7 @@ export function register(app, ctx, deps = {}) {
             OR (q.status = 'holdout' AND j.created_at > NOW() - make_interval(days => $2::int + 7)))
         GROUP BY 1`, [pns, ATTR_DAYS])).rows;
     const queued = new Map(qr.map((x) => [x.phone_norm, x.held]));
-    const excluded = { staff: 0, recent: 0, recentSms: 0, invalid: 0, onlineRecent: 0, openOrder: 0, queued: 0, heldOut: 0 };
+    const excluded = { staff: 0, recent: 0, recentSms: 0, invalid: 0, onlineRecent: 0, openOrder: 0, queued: 0, heldOut: 0, ...(cloud ? { waCap: 0 } : {}) };
     const ok = [];
     for (const r of filtered) {
       if (staff.has(r.pn)) { excluded.staff++; continue; }
@@ -503,14 +546,19 @@ export function register(app, ctx, deps = {}) {
       if (blk.onlineRecent.has(r.pn)) { excluded.onlineRecent++; continue; }
       if (blk.openOrder.has(r.pn)) { excluded.openOrder++; continue; }
       if (queued.has(r.pn)) { excluded[queued.get(r.pn) ? "heldOut" : "queued"]++; continue; }
+      if (cloud && custCapReason(mk.get(r.pn), cap)) { excluded.waCap++; continue; }      // QP1: سقف العميل ١/٧ أيام و٣/٣٠ يوم
       ok.push(r);
     }
     const limit = Math.min(1000, Math.max(1, Number(filters.limit) || 100));
     excluded.smallOnly = smallOnly;
     excluded.smallSkipped = ok.filter((r) => r.skippedSmall > 0).length;   // اترجعنا لطلب أقدم
     const C = typeof outreach.cfg === "function" ? await outreach.cfg() : { template: "" };
+    const picked = ok.slice(0, limit);
+    /* QP1: كام رقم في اللي هيتبعتلهم جاي من تطبيق توصيل بس — المالك لازم يأكد العدد ده قبل البدء (قناة Cloud) */
+    let appOnly = null;
+    if (cloud) { const set = await appOnlySet(picked.map((x) => x.pn)); appOnly = set ? { count: set.size, label: APP_ONLY_LABEL, needsConfirm: set.size > 0 } : { count: null, label: APP_ONLY_LABEL, needsConfirm: true, error: "unreadable" }; }
     return { audience: A.aud, inAudience: all.length, afterFilters: filtered.length, excluded, eligible: ok.length,
-      picked: ok.slice(0, limit), cfg, globalTemplate: C.template };
+      picked, cfg, globalTemplate: C.template, appOnly };
   }
 
   // ── اللوحة ──────────────────────────────────────────────────────────────
@@ -522,6 +570,7 @@ export function register(app, ctx, deps = {}) {
     const jobs = (await pool.query(
       `SELECT j.*, count(q.*) FILTER (WHERE q.status='sent')::int AS sent,
               count(q.*) FILTER (WHERE q.status='failed')::int AS failed,
+              count(q.*) FILTER (WHERE q.status='failed' AND q.error_code = ${META_CAPPED_CODE})::int AS meta_capped,
               count(q.*) FILTER (WHERE q.status='skipped')::int AS skipped,
               count(q.*) FILTER (WHERE q.status='holdout')::int AS holdout,
               count(q.*) FILTER (WHERE q.status IN ('pending','sending'))::int AS pending,
@@ -608,7 +657,7 @@ export function register(app, ctx, deps = {}) {
     let b = {}; try { b = await c.req.json(); } catch { return bad(c, "bad_json", "بيانات غلط"); }
     const input = jobInput(b, { hosts: imageHosts() });
     const s = await getSettingsData();
-    const r = await build(b.filters || {}, s);
+    const r = await build(b.filters || {}, s, { channel: input.channel });
     const tpl = tplOf(r, input);
     // العينة: أول ٥ + مثال واحد اترجعنا فيه لطلب أقدم (عشان المالك يشوف الفلتر شغّال)
     const pick = r.picked.slice(0, 5);
@@ -630,12 +679,16 @@ export function register(app, ctx, deps = {}) {
       const cc = cloudCfg(s), { rateSar, rateDate } = rateOf(s), st = await stateNow("wa_cloud").catch(() => ({}));
       const messages = r.picked.length - hold;
       const perDayMoney = rateSar > 0 ? Math.floor(cc.spendDaySar / rateSar + 1e-9) : cc.dailyCap;
-      const perDay = Math.max(0, Math.min(cc.dailyCap, perDayMoney, cc.tierLimit - cc.reserveUtility));
+      const wv = warmupView(st.warmup, cc.warmup, { today: riyadhDay(now()), dailyCap: cc.dailyCap });      // QP1: سقف سلّم التسخين النهارده
+      const perDay = Math.max(0, Math.min(cc.dailyCap, wv.cap, perDayMoney, cc.tierLimit - cc.reserveUtility));
       days = perDay > 0 ? Math.ceil(messages / perDay) : null;
       const capped = input.spendCapSar != null && rateSar > 0 ? Math.min(messages, Math.floor(input.spendCapSar / rateSar + 1e-9)) : messages;
       cloudExtra = { cost: { messages, rateSar: rateSar || null, rateDate, sar: campaignCost(messages, rateSar), spendCapSar: input.spendCapSar, willSendUnderCap: capped, sarUnderCap: campaignCost(capped, rateSar) },
         capacity: { perDay, dailyCap: cc.dailyCap, spendDaySar: cc.spendDaySar, tierLimit: cc.tierLimit, reserveUtility: cc.reserveUtility, sentToday: st.today || 0, uniq24h: st.uniq24h || 0,
-          brake: { minSends: cc.brakeMinSends, stopPct: cc.brakeStopPct, failPct: cc.brakeFailPct } },
+          brake: { minSends: cc.brakeMinSends, stopPct: cc.brakeStopPct, failPct: cc.brakeFailPct, warnPct: cc.brakeWarnPct,
+            lowRead: { minDelivered: cc.lowReadMinDelivered, hours: cc.lowReadHours, pct: cc.lowReadPct } },
+          warmup: wv, custCap: { d7: cc.custCap7d, d30: cc.custCap30d, gapDays: Math.max(CLOUD_MIN_GAP_DAYS, r.cfg.gapDays) } },
+        appOnly: r.appOnly,
         spec: campaignSpec(input.cloudTemplate), gate: wa ? await wa.gate() : "disabled", enabled: cc.enabled };
     }
     return c.json({ ok: true, ...cloudExtra, audience: r.audience, inAudience: r.inAudience, afterFilters: r.afterFilters,
@@ -661,10 +714,19 @@ export function register(app, ctx, deps = {}) {
       if (taken) return bad(c, "slug_taken", "اسم الرابط ده مستخدم — اختار اسم تاني أو سيبه فاضي", 409);
     }
     const s = await getSettingsData();
-    const r = await build(b.filters || {}, s);
+    const r = await build(b.filters || {}, s, { channel: input.channel });
     if (!r.picked.length) return bad(c, "empty", "مفيش حد مؤهل بالفلاتر دي");
     if (b.confirmCount != null && Number(b.confirmCount) !== r.picked.length) {
       return bad(c, "count_changed", `العدد اتغيّر (${r.picked.length}) — اعمل معاينة تاني`, 409);
+    }
+    /* QP1 (M7-7): أرقام جاية من تطبيقات التوصيل بس ⇒ تأكيد صريح من المالك بالعدد نفسه. ماقدرناش نعدّ ⇒ مانبدأش. */
+    if (input.channel === "wa_cloud") {
+      const ao = r.appOnly || { count: null };
+      if (ao.count == null) return c.json({ ok: false, error: "app_only_unreadable", message: "ماقدرناش نعرف كام رقم جاي من تطبيقات التوصيل — جرّب تاني بعد شوية", appOnly: ao }, 409);
+      if (ao.count > 0 && Number(b.confirmAppOnly) !== ao.count) {
+        return c.json({ ok: false, error: "app_only_confirm_required", appOnly: ao,
+          message: `في الحملة ${ao.count} رقم «${APP_ONLY_LABEL}». أكّد العدد ده عشان تبدأ` }, 409);
+      }
     }
     const by = await whoOf(c);
     const name = String(b.name || "").trim().slice(0, 80) || `حملة ${new Date(now()).toISOString().slice(0, 10)}`;
@@ -677,12 +739,13 @@ export function register(app, ctx, deps = {}) {
       await client.query("BEGIN");
       jobId = Number((await client.query(
         `INSERT INTO wa_send_jobs(name, filters, total, created_by, template, holdout_pct, image_url, offer, audience_label,
-                                  channel, cloud_template, cloud_vars, fallback, video_url, spend_cap_sar, rate_sar)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16) RETURNING id`,
+                                  channel, cloud_template, cloud_vars, fallback, video_url, spend_cap_sar, rate_sar, app_only)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17) RETURNING id`,
         [name, J(b.filters || {}), r.picked.length, by, input.template || null, input.holdoutPct, input.imageUrl,
           input.offer ? J(input.offer) : null, aud ? aud.label : r.audience,
           input.channel, input.cloudTemplate, input.cloudVars ? J(input.cloudVars) : null, input.fallback,
-          input.videoUrl, input.spendCapSar, input.channel === "wa_cloud" ? (rateOf(s).rateSar || null) : null])).rows[0].id);
+          input.videoUrl, input.spendCapSar, input.channel === "wa_cloud" ? (rateOf(s).rateSar || null) : null,
+          input.channel === "wa_cloud" && r.appOnly ? r.appOnly.count : null])).rows[0].id);
       /* الرابط المتتبّع: /l/<slug> (utm_source=whatsapp, utm_campaign=wa-<id>) —
          وكل عميل بياخد /l/<slug>-<code> عشان نعرف مين ضغط (cms.js resolve). */
       slug = input.link.slug || `w${jobId}`;
@@ -759,7 +822,8 @@ export function register(app, ctx, deps = {}) {
     if (!from) return bad(c, "bad_action", "أمر مش معروف");
     /* تكملة حملات Cloud (بتبعت من السيرفر) للمالك بس — غير المالك بيكمّل حملات واتساب ويب بس. الإيقاف لأي حد. */
     const owner = to === "running" ? await isOwner(c) : true;
-    const r = await pool.query(`UPDATE wa_send_jobs SET status=$2, stop_reason = CASE WHEN $2='running' THEN NULL ELSE stop_reason END
+    const r = await pool.query(`UPDATE wa_send_jobs SET status=$2, stop_reason = CASE WHEN $2='running' THEN NULL ELSE stop_reason END,
+                                        brake_ack_at = CASE WHEN $2='running' THEN NOW() ELSE brake_ack_at END
                                  WHERE status=$1 AND ($3::boolean OR COALESCE(channel,'wa_web') <> 'wa_cloud') RETURNING id`, [from, to, owner]);
     return c.json({ ok: true, changed: r.rowCount });
   });
@@ -810,7 +874,8 @@ export function register(app, ctx, deps = {}) {
     }
     const r = await pool.query(
       `UPDATE wa_send_jobs SET status=$2, finished_at = CASE WHEN $2='cancelled' THEN NOW() ELSE finished_at END,
-              stop_reason = CASE WHEN $2='running' THEN NULL ELSE stop_reason END
+              stop_reason = CASE WHEN $2='running' THEN NULL ELSE stop_reason END,
+              brake_ack_at = CASE WHEN $2='running' THEN NOW() ELSE brake_ack_at END
         WHERE id=$1 AND status NOT IN ('done','cancelled') RETURNING id`, [id, to]);
     if (!r.rowCount) return bad(c, "not_found", "الحملة خلصت أو مش موجودة", 404);
     if (to === "cancelled") await pool.query("UPDATE wa_send_queue SET status='skipped', reason='cancelled' WHERE job_id=$1 AND status='pending'", [id]);
@@ -968,13 +1033,13 @@ export function register(app, ctx, deps = {}) {
 
   /* ── مشترك بين القناتين ─────────────────────────────────────────────── */
   // ليه مانبعتش للرقم ده دلوقتي؟ (null = ابعت) — نفس الترتيب في القناتين
-  async function skipReason(pn, cfg, staff) {
+  async function skipReason(pn, cfg, staff, { cloud = false } = {}) {
     const oo = (await pool.query("SELECT 1 FROM cms_contacts WHERE phone_norm=$1 AND opted_out_at IS NOT NULL", [pn])).rowCount;
     if (oo) return "opted_out";
     if (staff.has(pn)) return "staff";
     if ((await invalidSet([pn])).size) return "invalid_number";
-    const rec = await recentMap([pn], cfg.gapDays);
-    if (rec.size) return rec.get(pn) === "sms" ? "gap_sms" : "gap_3d";
+    const rec = await recentMap([pn], cfg.gapDays, cloud ? { waGapDays: CLOUD_MIN_GAP_DAYS } : {});
+    if (rec.size) return rec.get(pn) === "sms" ? "gap_sms" : (cloud ? "gap_7d" : "gap_3d");
     const blk = await blockedSets([pn], cfg);
     if (blk.onlineRecent.size) return "ordered_online";
     if (blk.openOrder.size) return "open_order";
@@ -1030,8 +1095,15 @@ export function register(app, ctx, deps = {}) {
     const tpl = cl ? await cl.templateInfo().catch(() => null) : null;
     const approved = new Map(((tpl && tpl.list) || []).map((t) => [t.name, t.status]));
     const { configId, ...pubCfg } = cc;
+    /* QP1: سلّم التسخين وحالة بوابة الجودة للوحة (قراءة بس — الدورة هي اللي بتقرر وبتحفظ) */
+    const wv = warmupView(st.warmup, cc.warmup, { today: riyadhDay(now()), dailyCap: cc.dailyCap });
+    const qs = st.quality || {};
     return { cfg: pubCfg, state: { today: st.today || 0, lastHour: st.lastHour || 0, uniq24h: st.uniq24h || 0, stoppedReason: st.stoppedReason || null },
-      pace: cloudPacing(cc, st, inWindow(cfg, now())), gate: gate || null, phoneStatus: phone?.status || null,
+      warmup: wv, effectiveDailyCap: wv.cap,
+      qualityGate: { last: lastQuality, stoppedByQuality: /^quality_/.test(String(st.stoppedReason || "")), lastStop: qs.lastStop || null,
+        seen: { tier: qs.tier || null, portfolio: qs.portfolio || null, at: qs.at || null }, allowUnknown: cc.allowUnknownQuality, maxAgeMin: cc.qualityMaxAgeMin, ownerResumeOnly: true },
+      custCap: { d7: cc.custCap7d, d30: cc.custCap30d, gapDays: Math.max(CLOUD_MIN_GAP_DAYS, cfg.gapDays) },
+      pace: cloudPacing(cc, { ...st, warmCap: wv.cap }, inWindow(cfg, now())), gate: gate || null, phoneStatus: phone?.status || null,
       quality: phone?.quality || null, tier: phone?.tier || null,
       defaultChannel: defaultChannel({ gate, phoneStatus: phone?.status }),
       defaults: (({ configId: _c, ...d }) => d)(CLOUD_DEFAULTS),
@@ -1049,37 +1121,52 @@ export function register(app, ctx, deps = {}) {
     const accepted = cl.filter((x) => x.cloud_status && x.cloud_status !== "failed" || x.status === "sent" && x.channel === "wa_cloud").length;
     const delivered = cl.filter((x) => ["delivered", "read"].includes(x.cloud_status)).length;
     const read = cl.filter((x) => x.cloud_status === "read").length;
-    const failed = cl.filter((x) => x.cloud_status === "failed" || (x.status === "failed" && x.channel === "wa_cloud")).length;
+    /* QP1: اللي ميتا حدّته (131049) بيتعدّ لوحده — مش «فشل» */
+    const isFail = (x) => x.cloud_status === "failed" || (x.status === "failed" && x.channel === "wa_cloud");
+    const metaCapped = cl.filter((x) => isFail(x) && Number(x.error_code) === META_CAPPED_CODE).length;
+    const failed = cl.filter(isFail).length - metaCapped;
     const reasons = {};
     for (const x of cl) if (x.cloud_status === "failed" || x.status === "failed") { const k = x.reason || "failed"; reasons[k] = (reasons[k] || 0) + 1; }
     const pct = (a, b) => (b ? Math.round((a / b) * 1000) / 10 : null);
-    return { attempted: cl.length, accepted, delivered, read, failed, reasons,
+    return { attempted: cl.length, accepted, delivered, read, failed, metaCapped, reasons,
       deliveredRate: pct(delivered, cl.length), readRate: pct(read, delivered),
       fellBack: cl.filter((x) => x.fallback_from).length };
   }
 
   /* عدّادات الحملة (على قناة Cloud): اتبعت / فشل / «إيقاف» */
-  async function jobCounts(jobId) {
+  /* QP1: failed من غير اللي ميتا حدّته (131049 ⇒ capped)؛ ووصلت/اتقرت/أول إرسال من بعد آخر «كمّل» من المالك (ackAt) لفرملة القراءة */
+  async function jobCounts(jobId, ackAt = null) {
     const r = (await pool.query(
       `SELECT count(*) FILTER (WHERE status='sent' AND COALESCE(cloud_status,'') <> 'failed')::int AS sent,
-              count(*) FILTER (WHERE status='failed' OR cloud_status='failed')::int AS failed,
-              count(*) FILTER (WHERE optout_at IS NOT NULL)::int AS stopped
-         FROM wa_send_queue WHERE job_id=$1 AND (channel='wa_cloud' OR fallback_from LIKE 'wa_cloud%')`, [jobId])).rows[0] || {};
-    return { sent: r.sent || 0, failed: r.failed || 0, stopped: r.stopped || 0 };
+              count(*) FILTER (WHERE (status='failed' OR cloud_status='failed') AND COALESCE(error_code,0) <> ${META_CAPPED_CODE})::int AS failed,
+              count(*) FILTER (WHERE (status='failed' OR cloud_status='failed') AND error_code = ${META_CAPPED_CODE})::int AS capped,
+              count(*) FILTER (WHERE optout_at IS NOT NULL)::int AS stopped,
+              count(*) FILTER (WHERE cloud_status IN ('delivered','read') AND ($2::timestamptz IS NULL OR sent_at > $2))::int AS delivered,
+              count(*) FILTER (WHERE cloud_status = 'read' AND ($2::timestamptz IS NULL OR sent_at > $2))::int AS read_n,
+              min(sent_at) FILTER (WHERE status='sent' AND ($2::timestamptz IS NULL OR sent_at > $2)) AS first_sent
+         FROM wa_send_queue WHERE job_id=$1 AND (channel='wa_cloud' OR fallback_from LIKE 'wa_cloud%')`, [jobId, ackAt || null])).rows[0] || {};
+    return { sent: r.sent || 0, failed: r.failed || 0, capped: r.capped || 0, stopped: r.stopped || 0, delivered: r.delivered || 0, read: r.read_n || 0, firstSentAt: r.first_sent || null };
   }
   const pauseJob = (jobId, reason) => pool.query("UPDATE wa_send_jobs SET status='paused', stop_reason=$2 WHERE id=$1 AND status='running'", [jobId, String(reason).slice(0, 80)]);
   /* الفرامل وسقف صرف الحملة. بترجع سبب الوقوف (والحملة اتوقفت) أو null. */
-  async function jobBrake(job, cc, rateSar) {
-    const n = await jobCounts(job.id);
-    const b = brakeCheck(n, cc);
+  async function jobBrake(job, cc, rateSar, flags = null) {
+    const n = await jobCounts(job.id, job.brake_ack_at || null);
+    const b = brakeCheck(n, cc) || lowReadCheck(n, cc, now());      // QP1: + فرملة القراءة الضعيفة
     if (b) { const why = `${b.reason}:${b.pct}`; await pauseJob(job.id, why); return why; }
+    /* QP1: منطقة التحذير (١٪): الحملة تكمّل بنص السرعة، والمالك ياخد تنبيه واحد للحملة */
+    const w = brakeWarn(n, cc);
+    if (w && flags) {
+      flags.warn = true;
+      const first = await pool.query("UPDATE wa_send_jobs SET warn_at=NOW() WHERE id=$1 AND warn_at IS NULL RETURNING id", [job.id]).catch(() => ({ rowCount: 0 }));
+      if (first.rowCount) await alertOwner((lang) => warnAlertText(w.pct, lang), `wa-campaign-warn ${job.id}`, { kind: "campaign_warn", jobId: Number(job.id), pct: w.pct, limit: w.limit });
+    }
     const rate = Number(job.rate_sar) > 0 ? Number(job.rate_sar) : rateSar;
     if (job.spend_cap_sar != null && rate > 0 && (n.sent + 1) * rate > Number(job.spend_cap_sar) + 1e-9) { await pauseJob(job.id, "campaign_spend_cap"); return "campaign_spend_cap"; }
     return null;
   }
 
   async function sendCloudRow(q, job, cfg, staff) {
-    const why = await skipReason(q.phone_norm, cfg, staff);
+    const why = await skipReason(q.phone_norm, cfg, staff, { cloud: true });
     if (why) { await pool.query("UPDATE wa_send_queue SET status='skipped', reason=$2 WHERE id=$1", [q.id, why]); return { skipped: why }; }
     let built;
     try { built = campaignParams(job.cloud_template, q, job); }
@@ -1099,6 +1186,8 @@ export function register(app, ctx, deps = {}) {
       if (r.skipped === "missing_param") { await pool.query("UPDATE wa_send_queue SET status='skipped', reason='missing_param' WHERE id=$1", [q.id]); return { skipped: "missing_param" }; }
       // SEC: العميل مش موافق على التسويق / موقوف ⇒ الصف ده يتخطّى بسببه والباقي يكمل (مش قفل قناة)
       if (r.skipped === "no_optin" || r.skipped === "opted_out") { await pool.query("UPDATE wa_send_queue SET status='skipped', reason=$2 WHERE id=$1", [q.id, r.skipped]); return { skipped: r.skipped }; }
+      // QP1: العميل وصل سقفه (قالب تسويقي واحد في ٧ أيام / ٣ في ٣٠ يوم — من أي حملة أو أتمتة) ⇒ الصف يتخطّى والباقي يكمل
+      if (r.skipped === "marketing_cap_7d" || r.skipped === "marketing_cap_30d") { await pool.query("UPDATE wa_send_queue SET status='skipped', reason=$2 WHERE id=$1", [q.id, r.skipped]); return { skipped: r.skipped }; }
       // البوابة اتقفلت في النص ⇒ يرجع للطابور ونقف الدورة
       await pool.query("UPDATE wa_send_queue SET status='pending', attempts=GREATEST(attempts-1,0) WHERE id=$1", [q.id]);
       return { halt: r.skipped };
@@ -1135,7 +1224,8 @@ export function register(app, ctx, deps = {}) {
         [q.phone_norm, q.job_id]);
     }
     if (cls.optout) await optOut(q.phone_norm, "whatsapp_meta", "وقّف رسايل التسويق من واتساب نفسه (131050)", "ميتا");
-    const fb = fallbackFor(cls, job.fallback);
+    /* QP1: 131049 (ميتا حدّت تسويق العميل ده) من غير SMS بديل إلا لو المالك فعّل waCloud.cappedFallbackSms */
+    const fb = fallbackFor(cls, job.fallback, { cappedSms: cls.capped ? cloudCfg(await getSettingsData().catch(() => ({}))).cappedFallbackSms : false });
     if (fb === "wa_web") {
       await pool.query(
         `UPDATE wa_send_queue SET status='pending', channel='wa_web', reason=NULL, fallback_from=$2, claimed_at=NULL
@@ -1160,6 +1250,86 @@ export function register(app, ctx, deps = {}) {
     return t;
   };
 
+  /* ══ QP1: حماية الجودة ══════════════════════════════════════════════════════════════════════════════
+     تنبيه المالك: SMS واحد لأرقام تنبيهات الإدارة (delivery.alertPhones — نفس قايمة التنبيهات الحرجة) + حدث «wa_quality»
+     للبورتال/اللوحة. من غير أرقام عملاء. عمره ما بيرمي. */
+  async function alertOwner(textOf, tag, event) {
+    let sms = 0;
+    try {
+      const sc = staffConfig(await getSettingsData());
+      if (typeof deps.sendSms === "function") {
+        for (const p of sc.alertPhones) {
+          try { const r = await deps.sendSms({ phoneNorm: p, body: fitOneSms(textOf(sc.lang)), kind: "staff", ref: tag }); if (!(r && r.suppressed)) sms++; }
+          catch (e) { console.error(`[wasender] ${tag}: alert sms failed:`, e.message); }
+        }
+      }
+    } catch (e) { console.error(`[wasender] ${tag}: alert:`, e.message); }
+    try { if (typeof deps.broadcast === "function") deps.broadcast("wa_quality", { ...event, at: new Date(now()).toISOString() }); } catch { /* الحدث مايوقّفش حاجة */ }
+    return sms;
+  }
+  let lastQuality = null;                 // آخر حكم للبوابة — للعرض في اللوحة (cloudInfo)
+  const saveQuality = (q) => pool.query("UPDATE wa_sender_state SET quality=$1::jsonb WHERE id=2", [J(q)]);
+  /* أحداث الجودة/الحساب من الويب هوك (whatsapp.js ⇒ on("quality")) بتتخزّن؛ الدورة الجاية هي اللي بتوقّف. */
+  async function onQualityEvent(ev) {
+    const row = qualityEventRow(ev);
+    if (!row) return;
+    await schemaReady;
+    await pool.query("INSERT INTO wa_quality_events(kind, event, state, name, language, tier) VALUES ($1,$2,$3,$4,$5,$6)",
+      [row.kind, row.event, row.state, row.name, row.language, row.tier]);
+  }
+  /* البوابة: بتتنادى كل دورة فيها حملة Cloud شغّالة، قبل أي إرسال.
+     ok ⇒ نكمّل · hold ⇒ ماقدرناش نقرا الجودة: مفيش تسويق الدورة دي (من غير إيقاف دائم) · stop ⇒ كل حملات Cloud تقف،
+     stopped_reason = quality_<الحالة>، وتنبيه واحد للمالك. الرجوع من مسار المالك بس (تشغيل القناة + تكملة الحملة). */
+  async function qualityGate(cc, st, running) {
+    const qs = st.quality && typeof st.quality === "object" ? st.quality : {};
+    const fin = (v) => { lastQuality = { ...v, at: new Date(now()).toISOString() }; return v; };
+    let events = [];
+    try {
+      events = (await pool.query(
+        `SELECT id, kind, event, state, name, language, tier FROM wa_quality_events
+          WHERE id > $1 AND at > NOW() - INTERVAL '7 days' ORDER BY id LIMIT 500`, [Number(qs.lastEventId) || 0])).rows || [];
+    } catch (e) { return fin({ ok: false, hold: true, reason: "quality_unreadable", detail: "events_not_read" }); }
+    const cl = cloudApi();
+    if (!cl || typeof cl.phoneInfo !== "function") return fin({ ok: false, hold: true, reason: "quality_unreadable", detail: "no_reader" });
+    const maxAgeMs = cc.qualityMaxAgeMin * 60_000;
+    /* بعد إيقاف جودة والمالك رجّع القناة: قراءة جديدة من ميتا مش من الكاش */
+    const afterResume = Boolean(qs.lastStop && !qs.lastStop.resumedAt);
+    let phone = null, tpl = null;
+    try {
+      phone = await cl.phoneInfo(afterResume ? { fresh: true } : {});
+      if (phone && phone.ok && !(now() - Date.parse(phone.checkedAt || 0) <= maxAgeMs)) phone = await cl.phoneInfo({ fresh: true });
+      tpl = typeof cl.templateInfo === "function" ? await cl.templateInfo(afterResume ? { fresh: true } : {}) : null;
+    } catch (e) { return fin({ ok: false, hold: true, reason: "quality_unreadable", detail: String(e.message || e).slice(0, 60) }); }
+    const names = [...new Set(running.map((j) => j.cloud_template).filter(Boolean))];
+    const tplQuality = Boolean(tpl && tpl.ok && tpl.qualityRead !== false);      // حالات القوالب اتقرت بس جودتها لأ ⇒ برضه «مش مقروءة»
+    const v = qualityVerdict({ phone, prev: { tier: qs.tier || null, portfolio: qs.portfolio || null }, events, running: names,
+      templates: (tpl && tpl.list) || [], tplOk: tplQuality, allowUnknown: cc.allowUnknownQuality, maxAgeMs, now: now() });
+    if (v.hold && v.detail === "templates_not_read" && tpl && tpl.ok) v.detail = "template_quality_not_read";
+    const lastEventId = events.length ? Number(events[events.length - 1].id) : Number(qs.lastEventId) || 0;
+    const seen = phone && phone.ok ? { tier: phone.tier || qs.tier || null, portfolio: (phone.portfolio && phone.portfolio.ok && phone.portfolio.limit) || qs.portfolio || null } : { tier: qs.tier || null, portfolio: qs.portfolio || null };
+    if (v.ok) {
+      const next = { ...qs, ...seen, quality: v.state, lastEventId, at: new Date(now()).toISOString(), ...(afterResume ? { lastStop: { ...qs.lastStop, resumedAt: new Date(now()).toISOString() } } : {}) };
+      if (next.tier !== qs.tier || next.portfolio !== qs.portfolio || next.lastEventId !== qs.lastEventId || next.quality !== qs.quality || afterResume) await saveQuality(next);
+      return fin(v);
+    }
+    if (v.hold) return fin(v);
+    /* إيقاف: القناة + كل الحملات الشغّالة. الحد الجديد بيتسجّل (عشان النزول مايتحسبش تاني بعد ما المالك يرجّع)، والأحداث بتتعلّم «اتعالجت». */
+    const first = (await pool.query("UPDATE wa_sender_state SET stopped_reason=$1 WHERE id=2 AND stopped_reason IS NULL RETURNING id", [v.reason])).rowCount > 0;
+    const paused = (await pool.query("UPDATE wa_send_jobs SET status='paused', stop_reason=$1 WHERE status='running' AND channel='wa_cloud' RETURNING id", [v.reason])).rowCount || 0;
+    await saveQuality({ ...qs, ...seen, quality: phone && phone.ok ? String(phone.quality || "").toUpperCase() || null : qs.quality || null, lastEventId,
+      at: new Date(now()).toISOString(), lastStop: { reason: v.reason, detail: v.detail || null, at: new Date(now()).toISOString(), paused } });
+    if (first) await alertOwner((lang) => qualityAlertText(v.reason, v.detail, lang), `wa-quality ${v.reason}`, { kind: "quality_stop", reason: v.reason, detail: v.detail || null, paused });
+    return fin({ ...v, paused });
+  }
+  /* رسايل الدرجة الحالية من سلّم التسخين (من يوم since بتوقيت الرياض): اتبعت / «إيقاف» */
+  async function stepStats(since) {
+    const r = (await pool.query(
+      `SELECT count(*)::int AS sent, count(*) FILTER (WHERE optout_at IS NOT NULL)::int AS stopped FROM wa_send_queue
+        WHERE channel='wa_cloud' AND status='sent' AND sent_at >= ($1::date::timestamp AT TIME ZONE 'Asia/Riyadh')`, [since])).rows[0] || {};
+    return { sent: r.sent || 0, stopped: r.stopped || 0 };
+  }
+  const saveWarmup = (w) => pool.query("UPDATE wa_sender_state SET warmup=$1::jsonb WHERE id=2", [J(w)]);
+
   let ticking = false;
   async function cloudTick() {
     if (!wa || ticking) return { reason: "busy_or_no_wa" };
@@ -1181,12 +1351,29 @@ export function register(app, ctx, deps = {}) {
       const st = await stateNow("wa_cloud");
       const { rateSar } = rateOf(s);
       st.rateSar = rateSar;
+      const running = (await pool.query("SELECT id, spend_cap_sar, rate_sar, cloud_template, brake_ack_at FROM wa_send_jobs WHERE status='running' AND channel='wa_cloud'")).rows || [];
+      /* QP1 — بوابة الجودة قبل أي حاجة تانية (حتى بره ساعات الإرسال: الإيقاف مايستناش). مفيش حملة شغّالة = مفيش حاجة نحميها. */
+      let quality = null;
+      if (running.length && !st.stoppedReason) {
+        quality = await qualityGate(cc, st, running);
+        if (!quality.ok) return { reason: quality.reason, detail: quality.detail || null, ...(quality.stop ? { stopped: true, paused: quality.paused || 0 } : { held: true }) };
+      }
+      /* «إيقاف» بييجي بعد التسليم: نراجع فرامل كل حملة شغّالة قبل ما نبعت أي حاجة في الدورة دي (QP1: + القراءة الضعيفة + التحذير) */
+      const flags = { warn: false };
+      for (const j of running) await jobBrake(j, cc, rateSar, flags);
+      /* QP1 — سلّم التسخين: لو مدة الدرجة خلصت نحاول نطلع درجة (نسبة «إيقاف» الدرجة < الحد + الجودة GREEN)، وسقف النهارده = سقف الدرجة */
+      const today = riyadhDay(now());
+      let warm = st.warmup;
+      if (warm && quality) {
+        const adv = warmupAdvance(warm, cc.warmup, { today, stats: await stepStats(warm.since), quality: quality.state });
+        if (adv.changed) { warm = adv.state; await saveWarmup(warm); }
+      }
+      const wv = warmupView(warm, cc.warmup, { today, dailyCap: cc.dailyCap });
+      st.warmCap = wv.cap; st.halve = flags.warn;
       const p = cloudPacing(cc, st, inWindow(cfg, now()));
-      if (!p.allow) return { reason: p.reason };
-      /* «إيقاف» بييجي بعد التسليم: نراجع فرامل كل حملة شغّالة قبل ما نبعت أي حاجة في الدورة دي */
-      for (const j of (await pool.query("SELECT id, spend_cap_sar, rate_sar FROM wa_send_jobs WHERE status='running' AND channel='wa_cloud'")).rows) await jobBrake(j, cc, rateSar);
+      if (!p.allow) return { reason: p.reason, ...(p.reason === "warmup_cap" ? { warmup: { step: wv.step, cap: wv.cap, refused: wv.refused } } : {}) };
       const staff = staffPhoneSet(s);
-      const out = { sent: 0, skipped: 0, failed: 0 };
+      const out = { sent: 0, skipped: 0, failed: 0, ...(flags.warn ? { halved: true } : {}) };
       // «فشلت بسبب مؤقت» ترجع — الصفوف اللي علقت في sending أكتر من ١٠ دقايق
       await pool.query(`UPDATE wa_send_queue SET status='pending' WHERE status='sending' AND channel='wa_cloud' AND claimed_at < NOW() - INTERVAL '10 minutes' AND attempts < 3`);
       for (let i = 0, budget = p.allow, tries = 0; budget > 0 && tries < p.allow * 4; i++, tries++) {
@@ -1203,12 +1390,15 @@ export function register(app, ctx, deps = {}) {
           out.reason = "queue_empty";
           break;
         }
-        const job = (await pool.query("SELECT id, cloud_template, cloud_vars, image_url, video_url, link_slug, offer, fallback, spend_cap_sar, rate_sar FROM wa_send_jobs WHERE id=$1", [q.job_id])).rows[0];
+        const job = (await pool.query("SELECT id, cloud_template, cloud_vars, image_url, video_url, link_slug, offer, fallback, spend_cap_sar, rate_sar, brake_ack_at FROM wa_send_jobs WHERE id=$1", [q.job_id])).rows[0];
         /* سقف صرف الحملة قبل الإرسال: لو الرسالة دي هتعدّيه، الصف يرجع للطابور والحملة تقف */
         const pre = await jobBrake(job, cc, rateSar);
         if (pre) { await pool.query("UPDATE wa_send_queue SET status='pending', attempts=GREATEST(attempts-1,0) WHERE id=$1", [q.id]); out.braked = pre; continue; }
         const r = await sendCloudRow(q, job, cfg, staff);
-        if (r.sent) { out.sent++; budget--; }
+        if (r.sent) {
+          out.sent++; budget--;
+          if (!warm) { warm = warmupStart(today); await saveWarmup(warm); }      // QP1: أول رسالة حملة على Cloud = يوم ١ في السلّم
+        }
         else if (r.skipped) out.skipped++;
         else if (r.failed) { out.failed++; budget--; }
         if (r.sent || r.failed) { const post = await jobBrake(job, cc, rateSar); if (post) out.braked = post; }
@@ -1268,6 +1458,7 @@ export function register(app, ctx, deps = {}) {
   if (wa && typeof wa.on === "function") {
     wa.on("status", onCloudStatus);
     wa.on("inbound", onCloudInbound);
+    wa.on("quality", (ev) => onQualityEvent(ev));      // QP1
   }
   if (deps.cloudLoop !== false && wa) {
     const sec = Math.max(5, Number(process.env.WA_CLOUD_TICK_SEC) || 15);
@@ -1446,5 +1637,5 @@ export function register(app, ctx, deps = {}) {
       phone_norm: canSee ? x.phone_norm : `${x.phone_norm.slice(0, 3)}••••${x.phone_norm.slice(-2)}` })) });
   });
 
-  return { recentSet, recentMap, build, cloudTick, onCloudStatus, onCloudInbound, stateNow, schemaReady, imageHosts };
+  return { recentSet, recentMap, build, cloudTick, onCloudStatus, onCloudInbound, onQualityEvent, stateNow, schemaReady, imageHosts };
 }

@@ -60,7 +60,9 @@ export function watchedValues(settings) {
   for (const [k, v] of Object.entries(s.notifications || {})) if (/^whatsapp/i.test(k) && k !== "whatsappEnabled") put(`notifications.${k}`, v);
   put("waMaster.enabled", (s.waMaster || {}).enabled === true);
   put("waCloud.enabled", (s.waCloud || {}).enabled === true);
-  for (const k of ["dailyCap", "hourCap", "perTick", "tierLimit", "reserveUtility"]) put(`waCloud.${k}`, (s.waCloud || {})[k]);
+  for (const k of ["dailyCap", "hourCap", "perTick", "tierLimit", "reserveUtility",
+    /* QP1: حدود حماية الجودة — أي تغيير فيها بيتسجّل باسم اللي غيّره */
+    "spendDaySar", "brakeMinSends", "brakeStopPct", "brakeFailPct", "brakeWarnPct", "lowReadPct", "lowReadHours", "lowReadMinDelivered", "custCap7d", "custCap30d", "allowUnknownQuality", "cappedFallbackSms", "qualityMaxAgeMin"]) put(`waCloud.${k}`, (s.waCloud || {})[k]);
   for (const [k, v] of Object.entries(s.waSender || {})) if (!/hash|token|secret|key/i.test(k)) put(`waSender.${k}`, v);
   for (const k of ["phoneId", "wabaId"]) put(`waCloudActive.${k}`, (s.waCloudActive || {})[k]);
   put("waBot.mode", (s.waBot || {}).mode);

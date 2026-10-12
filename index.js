@@ -3208,7 +3208,9 @@ const outreachApi = outreach.register(app, moduleCtx);
    وقناة wa_cloud في الإرسال الآلي (السيرفر بيبعت القالب بنفسه + حالات الويب هوك). */
 const waCloudApi = wacloud.register(app, moduleCtx, { wa: waApi, sessionUser: cmsApi.sessionUser });
 const waSenderApi = wasender.register(app, moduleCtx, { outreach: outreachApi, sessionUser: cmsApi.sessionUser, cms: () => cmsApi,
-  wa: waApi, cloud: () => waCloudApi });
+  wa: waApi, cloud: () => waCloudApi,
+  /* QP1: تنبيه المالك لما بوابة الجودة توقّف الحملات — SMS لأرقام تنبيهات الإدارة + حدث للبورتال (portalApi بيتعرّف تحت؛ النداء وقت التشغيل) */
+  sendSms: (m) => accounts.sendSms(m), broadcast: (...a) => portalApi.broadcast(...a) });
 /* OF1: مكتبة عروض واتساب (طبقة فوق البوكسات/العروض الموجودة، في settings.waOffers) — الحملة نفسها من wasender */
 waoffers.register(app, moduleCtx, { hosts: () => waSenderApi.imageHosts(), actor: async (c) => { const u = await cmsApi.whoami(c); return (u && (u.name || u.username)) || null; } });
 /* 🔎 حالة الـSEO — مصدر واحد تقراه شاشة «جوجل والبحث» وتكتب فيه جلسة الـSEO */
