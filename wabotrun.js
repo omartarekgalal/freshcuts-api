@@ -41,6 +41,7 @@ import { MAPS_URL } from "./watemplates.js";
 import { isOpenNow } from "./carts.js";
 import { makeBotCarts, reorderPlan, planSummary, orderDay } from "./wabotcart.js";
 import { makeAssistTools, validateReply, profileSummaryAr } from "./waassist.js";
+import { lookupFact, groupsIn, SEVERE_RE, factsCoverage } from "./wadishfacts.js";
 import { makeAiCost, pricesOf, waRatesOf, pricesFromBody, waRatesFromBody, BUDGET_DEFAULTS } from "./waaicost.js";
 import { providerInfo } from "./wabotllm.js";
 import { WA_UPDATES_TEXTS, WA_UPDATES_CURRENT, recordWaUpdatesBot, recordWaMarketingBot, ensureWaConsentSchema } from "./waconsent.js";
@@ -73,6 +74,7 @@ export const DEFAULTS = Object.freeze({
   offerEndWithinDays: 7,       // تاريخ نهاية العرض يتذكر لو باقي عليه كده أو أقل
   boxesCacheMin: 5, menuCacheMin: 5, offersCacheMin: 2, staleCacheMin: 60,   // كاش المصادر الحيّة بالدقايق
   logKeepDays: 90,             // سجل البوت بيتمسح بعدها
+  dishFactsEnabled: false,     // «هل الصنف فيه كذا؟» من حقايق الأصناف المعتمدة (الأصناف المغطّاة بس) — مقفول = موظف
   reorderEnabled: true,        // «نفس طلبي الأخير» بضغطة: رابط سلة جاهزة من لقطة سلة آخر طلب (طلب عمر ١٢/١٠)
   reorderMaxDays: 90,          // آخر طلب أقدم من كده مايتعرضش
   reorderLinkDays: 7,          // صلاحية رابط السلة الجاهزة
@@ -208,6 +210,16 @@ export const TEXTS = Object.freeze({
   packs_custom: t("التجمعات: عرض مخصص (رسالة بزر)", "وعندنا عروض مخصصة للتجمعات والمناسبات وطلبات الشركات 👇", "We also make tailored offers for gatherings, events and company orders 👇", [], [], 300),
   btn_custom: t("زر: أبغى عرض مخصص", "أبغى عرض مخصص", "Tailored offer", [], [], LIMITS.btnTitle),
   custom_offer: t("طلب عرض مخصص (تحويل لموظف)", "أبشر 🙏 عشان نجهّز لك عرض مخصص اكتب لنا هنا: عدد الأشخاص، اليوم والوقت، وتوصيل أو استلام.\nحوّلت طلبك لموظف.\n{wait}", "Sure 🙏 To prepare a tailored offer please write here: how many people, the day and time, and delivery or pickup.\nI've passed your request to a staff member.\n{wait}", [], ["wait"]),
+  /* حقايق الأصناف (١٢/١٠): إجابة على قد السؤال — من غير قايمة مكونات، من غير «خالٍ من / آمن» */
+  df_removable: t("الصنف فيه المسبّب، وجزؤه يتشال", "نعم، {dish} فيه {asked} في {part}. نقدر نجهّزه لك بدون {part}: اكتبها في ملاحظة الصنف عند الطلب.\n{kitchen}\n{fryer}",
+    "Yes, {dish} has {asked} in the {part}. We can make it without the {part}: write it in the item note when you order.\n{kitchen}\n{fryer}", ["dish", "asked", "part"], ["kitchen", "fryer"], 600),
+  df_removable_item: t("الصنف فيه المكوّن، ويتشال", "نعم، {dish} فيه {part}. نقدر نجهّزه لك بدون {part}: اكتبها في ملاحظة الصنف عند الطلب.", "Yes, {dish} comes with {part}. We can make it without the {part}: write it in the item note when you order.", ["dish", "part"], [], 400),
+  df_fixed: t("الصنف فيه المكوّن، ومايتشالش", "نعم، {dish} فيه {asked}، وما نقدر نجهّزه بدونه.", "Yes, {dish} contains {asked}, and we cannot make it without it.", ["dish", "asked"], [], 400),
+  df_not_found: t("حسب بياناتنا الصنف مافيهوش", "حسب بياناتنا {dish} ما فيه {asked}.\n{kitchen}\n{fryer}\nوإذا حساسيتك شديدة اكتب «موظف» قبل الطلب.", "According to our data, {dish} does not contain {asked}.\n{kitchen}\n{fryer}\nIf your allergy is severe, type “staff” before ordering.", ["dish", "asked"], ["kitchen", "fryer"], 600),
+  df_unknown: t("مش متأكدين ⇒ موظف", "ما عندي تأكيد كافٍ عن هذا المكوّن. حوّلت سؤالك لموظف يتأكد لك من المطبخ.\n{wait}", "I cannot confirm that ingredient. I've passed your question to a team member who will check with the kitchen.\n{wait}", [], ["wait"]),
+  df_severe: t("حساسية شديدة ⇒ موظف", "سلامتك أهم 🙏 ما دام الحساسية شديدة، حوّلت محادثتك لموظف يتأكد من المطبخ بنفسه قبل أي طلب.\n{wait}", "Your safety comes first 🙏 Since the allergy is severe, I've passed your chat to a team member who will check with the kitchen before any order.\n{wait}", [], ["wait"]),
+  kitchen_line: t("سطر المطبخ الواحد", "مطبخنا واحد لكل الأصناف وقد يحصل تلامس بين المكونات أثناء التحضير.", "We have one kitchen for all dishes, so ingredients can touch during preparation.", [], [], 300),
+  fryer_line: t("سطر القلاية المشتركة", "ونوضّح لك أن البطاطس تُقلى في نفس القلاية مع أصناف مقرمشة أخرى.", "Note that the fries share a fryer with other crispy items.", [], [], 300),
   /* أسرار الشغل (قرار عمر ١٢/١٠): المقادير والتتبيلة وطريقة التحضير والمورّدين مابتتقالش — رد واحد مهذب من غير تحويل */
   secret: t("سؤال عن الوصفة / المقادير / طريقة التحضير", "تفاصيل التحضير والمقادير من أسرار مطبخنا 🙂 أقدر أساعدك في المنيو والأسعار والطلب.", "How we prepare our dishes is our kitchen's secret 🙂 I can help with the menu, prices and ordering.", [], [], 300),
   pickup_body: t("الاستلام من الفرع", "🏃 {pickup}", "🏃 {pickup}", ["pickup"]),
@@ -295,7 +307,7 @@ export const INTENT_MAP = Object.freeze({
   cancel_order: "change", modify_order: "change", cancel_or_stop: "change", special_request: "change",
   human: "human", thanks: "thanks", bye: "thanks", stop: "stop", start: "start", media: "media", unknown: "unknown",
 });
-export const TREE_KEYS = ["main", "boxes", "tier", "box", "cats", "cat", "item", "items", "best", "notmenu", "packs", "pickup", "spicy", "faq", "area", "hoursloc", "optin_yes", "optin_no", "resume_all", "resume_updates", "reorder", "custom_offer", "secret"];
+export const TREE_KEYS = ["main", "boxes", "tier", "box", "cats", "cat", "item", "items", "best", "notmenu", "packs", "pickup", "spicy", "faq", "area", "hoursloc", "optin_yes", "optin_no", "resume_all", "resume_updates", "reorder", "custom_offer", "secret", "dishfact"];
 export const REPLY_KEYS = ["greet", "menu", "order", "offers", "delivery", "hours", "location", "payment", "status", "complaint", "problem", "change", "human", "staff", "media", "unknown", "thanks", "stop", "start"];
 const HANDOFF_KEYS = { custom_offer: ["custom_offer", "normal"], complaint: ["complaint", "urgent"], problem: ["problem", "urgent"], change: ["order_change", "urgent"], human: ["asked_human", "normal"], staff: ["needs_staff", "normal"], media: ["media", "normal"] };
 const BUTTON_IDS = { "bot:menu": "main", "bot:status": "status", "bot:human": "human", "optin:yes": "optin_yes", "optin:no": "optin_no", "resume:all": "resume_all", "resume:updates": "resume_updates", "re:last": "reorder", "bot:custom": "custom_offer" };
@@ -320,7 +332,8 @@ const FAQ_RULES = [
 const SPICY_RE = /(?:^| )(?:حار|حاره|سبايسي|حراق|حراقه|spicy|hot)(?: |$)/;
 const SPICY_DESC = /حار|هالابينو|ديناميت|تشيلي|spicy|jalape/i;
 const BOX_RE = /بوكس|بوكسات|box/;
-const PACK_RE = /باقه|باقات|تجمع|تجمعات|عزيمه|عزومه|catering|gathering/;
+/* «طلب لخمسين شخص»: العدد مكتوب بالحروف برضه (عطل تحقق B12: الرقم بالحروف ماكانش بيتفهم) */
+const PACK_RE = /باقه|باقات|تجمع|تجمعات|عزيمه|عزومه|catering|gathering|(عشره|عشرين|ثلاثين|تلاتين|اربعين|خمسين|ستين|سبعين|ثمانين|تمانين|تسعين|ميه|مئه|مايه) (شخص|نفر|ضيف|واحد)/;
 const TIER_RES = [/فردي|فرديه|لشخص واحد|لواحد|لي انا|لوحدي|solo|single|for one/, /شخصين|لاثنين|اثنين|نفرين|two|couple/, /عائل|عايل|مشارك|للجمعه|شله|ربع|family|sharing|group/];
 const BOX_STOP = new Set(["بوكس", "بوكسات", "لشخصين", "شخصين", "الفردي", "فردي", "من", "مع", "و", "وجبه", "وجبتين", "العائله", "box"]);
 const ntok = (s2) => normalize(s2).split(" ").map((w) => w.replace(/^(?:وال|بال|لل|ال)(?=.{3,})/, "")).filter((w) => w.length >= 3);
@@ -382,6 +395,7 @@ export function botConfig(settings) {
     boxesCacheMin: num(x.boxesCacheMin, 1, 60, DEFAULTS.boxesCacheMin), menuCacheMin: num(x.menuCacheMin, 1, 60, DEFAULTS.menuCacheMin),
     offersCacheMin: num(x.offersCacheMin, 1, 30, DEFAULTS.offersCacheMin), staleCacheMin: num(x.staleCacheMin, 5, 720, DEFAULTS.staleCacheMin),
     logKeepDays: num(x.logKeepDays, 7, 730, DEFAULTS.logKeepDays),
+    dishFactsEnabled: x.dishFactsEnabled === true,
     reorderEnabled: x.reorderEnabled !== false, reorderMaxDays: num(x.reorderMaxDays, 1, 365, DEFAULTS.reorderMaxDays), reorderLinkDays: num(x.reorderLinkDays, 1, 30, DEFAULTS.reorderLinkDays),
     reorderMinTotal: num(x.reorderMinTotal, 0, 500, DEFAULTS.reorderMinTotal), reorderLookback: num(x.reorderLookback, 1, 10, DEFAULTS.reorderLookback),
     maxAgeMinutes: num(x.maxAgeMinutes, 1, 120, DEFAULTS.maxAgeMinutes),
@@ -442,7 +456,7 @@ export function configFromBody(b, prev = {}) {
     "greetWindowHours", "maxAgeMinutes", "duplicateSeconds", "maxRepliesPerHour", "maxTapsPerHour", "maxRepliesPerMinute", "orderLookbackHours", "lateAfterMinutes", "maxAlertsPerHour"]) {
     if (k in src) { if (Number.isFinite(Number(src[k])) && src[k] !== "" && src[k] !== null) out[k] = Number(src[k]); else errors.push(k); }
   }
-  for (const k of ["interactive", "staffAlert", "alertInTest", "reorderEnabled"]) if (k in src) out[k] = src[k] === true;
+  for (const k of ["interactive", "staffAlert", "alertInTest", "reorderEnabled", "dishFactsEnabled"]) if (k in src) out[k] = src[k] === true;
   if ("llm" in src) {
     const L = src.llm || {}, cur = { ...(prev.llm || {}) };
     if ("enabled" in L) cur.enabled = L.enabled === true;
@@ -663,6 +677,7 @@ export const SCHEMA = Object.freeze({
   offersCacheMin: S("data", "number", "تحديث العروض كل", "", { min: 1, max: 30, unit: "دقيقة" }),
   staleCacheMin: S("data", "number", "لو المصدر واقع: استخدم آخر نسخة لحد", "بعدها البوت يقول أقل أو يحوّل لموظف.", { min: 5, max: 720, unit: "دقيقة" }),
   logKeepDays: S("data", "number", "الاحتفاظ بسجل البوت", "الأقدم بيتمسح تلقائي.", { min: 7, max: 730, unit: "يوم" }),
+  dishFactsEnabled: S("faq", "boolean", "الرد على «هل الصنف فيه كذا؟» من حقايق الأصناف", "للأصناف اللي بياناتها كاملة بس: نعم/لا للمكوّن المسؤول عنه، وهل يتشال، وسطر المطبخ الواحد. أي صنف تاني أو حساسية شديدة: موظف. مقفول = كل الأسئلة دي لموظف."),
   faq: S("faq", "faq", "إجابات الأسئلة الشائعة", "الفاضي = البوت يحوّل السؤال لموظف."),
   texts: S("texts", "texts", "نصوص الردود", "الفاضي = النص الافتراضي."),
   "optin.enabled": S("optin", "boolean", "سؤال تحديثات الطلب على واتساب", "بعد رد «وين طلبي»: سؤال واحد بزرارين."),
@@ -941,6 +956,19 @@ export function buildReply(key, c) {
       return r;
     }
     case "complaint": return { body: order ? F("complaint_known", { order_no: order.order_no, wait: wait() }) : F("complaint_ask", { wait: wait() }) };
+    case "dishfact": {
+      /* إجابة السؤال الواحد من حقايق الأصناف. مقفول من اللوحة، أو الحالة مش مؤكدة ⇒ موظف. حساسية شديدة ⇒ موظف (عاجل) من غير أي كلام عن صنف. */
+      const a = c.arg && typeof c.arg === "object" ? c.arg : {};
+      const f = lookupFact(a.id, a.text);
+      if (f.status === "severe") return { body: F("df_severe", { wait: wait() }), handoff: ["allergy_severe", "urgent"], fact: "severe" };
+      if (!cfg.dishFactsEnabled) return { ...buildReply("staff", c), handoff: HANDOFF_KEYS.staff, fact: "off" };
+      const nm = lang === "en" ? f.dishEn : f.dish, part = lang === "en" ? f.partEn : f.part;
+      const kitchen = f.kind === "allergen" ? T("kitchen_line") : "", fryer = f.fryer ? T("fryer_line") : "";
+      if (f.status === "present_removable") return { body: f.kind === "allergen" ? F("df_removable", { dish: nm, asked: f.asked, part, kitchen, fryer }) : F("df_removable_item", { dish: nm, part }), fact: f.status };
+      if (f.status === "present_fixed") return { body: F("df_fixed", { dish: nm, asked: f.asked }), fact: f.status };
+      if (f.status === "not_found") return { body: F("df_not_found", { dish: nm, asked: f.asked, kitchen, fryer }), fact: f.status };
+      return { body: F("df_unknown", { wait: wait() }), handoff: HANDOFF_KEYS.staff, fact: `unknown:${f.why || ""}` };
+    }
     case "secret": return { body: T("secret"), buttons: [{ id: "bot:menu", title: T("btn_main") }, { id: "bot:human", title: T("btn_human") }] };
     case "problem": case "change": case "human": case "staff": case "media": case "data_missing": case "handoff_remind": case "custom_offer":
       return { body: F(key, { wait: wait() }) };
@@ -1070,6 +1098,12 @@ export function classify(ev, know = {}) {
   if (RECIPE_RE.test(n) && !HARD_INTENTS.has(intent)) return done("secret", null, "recipe");
   if (TIME_RE.test(n) && !HARD_INTENTS.has(intent)) return done("hours", null, "time_question");
   if (REORDER_RE.test(n) && (!HARD_INTENTS.has(intent) || intent === "order_status")) return done("reorder", null, "reorder");
+  /* حساسية: «شديدة» ⇒ موظف عاجل مهما كان الصنف. سؤال حساسية عن صنف واحد محدد ⇒ حقايق الأصناف. غير كده ⇒ مدخل «allergens» (فاضي عمداً ⇒ موظف). */
+  if (!HARD_INTENTS.has(intent) && groupsIn(text).length) {
+    if (SEVERE_RE.test(n) || SEVERE_RE.test(text)) return done("dishfact", { id: null, text }, "allergy_severe");
+    const one = e.itemId ? [String(e.itemId)] : (e.items || []).map(String);
+    if (one.length === 1) return done("dishfact", { id: one[0], text }, "allergy_dish");
+  }
   if (!HARD_INTENTS.has(intent)) {
     const fq = FAQ_RULES.find(([, re]) => re.test(n));
     if (fq) return done("faq", fq[0], `faq:${fq[0]}`);
@@ -1090,7 +1124,10 @@ export function classify(ev, know = {}) {
     if (e.notOnMenu) return done("notmenu", e.notOnMenu);
     /* سؤال مكونات عن صنف («ايش مكونات…»، «… فيه جبن؟»): وصف المنيو مش قايمة مكونات كاملة (ملاحظة الشيف ١٢/١٠: وصف البرجر الكلاسيك
        مافيهوش صوص الشيدر ولا الثاوزند آيلاند) ⇒ مانردّش بالوصف كأنه المكونات؛ نحوّل لموظف لحد ما ملف حقايق الأصناف يتوافق عليه. */
-    if ((INGR_RE.test(n) || INGR_RE.test(text)) && (e.itemId || (e.items || []).length || e.categoryId)) return done("staff", null, "ingredients");      // «… فيه جبن؟»: نعم/لا من ملف الحقايق المعتمد — لحد ما يتوافق عليه: موظف
+    if ((INGR_RE.test(n) || INGR_RE.test(text)) && (e.itemId || (e.items || []).length || e.categoryId)) {
+      const one = e.itemId ? [String(e.itemId)] : (e.items || []).map(String);
+      return one.length === 1 ? done("dishfact", { id: one[0], text }, "ingredients") : done("staff", null, "ingredients");      // صنف واحد محدد ⇒ حقايق الأصناف؛ غير كده موظف
+    }      // «… فيه جبن؟»: نعم/لا من ملف الحقايق المعتمد — لحد ما يتوافق عليه: موظف
     /* «ايش مكونات X / وش فيه X»: وصف المنيو العام وبس (الرد العادي للصنف تحت) — مش قايمة مكونات ومش وصفة. */
     const ids = e.itemId ? [String(e.itemId)] : (e.items || []).map(String);
     if (ids.length === 1) return done("item", ids[0]);
@@ -1138,8 +1175,8 @@ export function pauseState({ cfg, now, open, lastEchoAt, hours }) {
 }
 const FACTUAL_KEYS = new Set(["hours", "hoursloc", "location", "status", "thanks", "stop", "start", "optin_yes", "optin_no", "resume_all", "resume_updates"]);
 /* أسئلة المنيو والأسعار والتوصيل: معلومات. بتتجاوب حتى والمحادثة عند الموظف — إلا لو التحويل شكوى/مشكلة (SERIOUS). */
-const MENU_KEYS = new Set(["main", "menu", "cats", "cat", "item", "items", "boxes", "tier", "box", "best", "spicy", "notmenu", "packs", "payment", "pickup", "delivery", "area", "faq"]);
-const SERIOUS = new Set(["complaint", "problem", "order_change", "order_late", "order_issue", "send_failed"]);
+const MENU_KEYS = new Set(["main", "menu", "cats", "cat", "item", "items", "boxes", "tier", "box", "best", "spicy", "notmenu", "packs", "payment", "pickup", "delivery", "area", "faq", "dishfact"]);
+const SERIOUS = new Set(["allergy_severe", "complaint", "problem", "order_change", "order_late", "order_issue", "send_failed"]);
 const iso = (ms) => new Date(ms).toISOString();
 
 /* ctx = { cfg, now, chat, lastEchoAt, repliesLastHour, lastSame, failedRecently, data, cls, afterWait }
@@ -1305,15 +1342,15 @@ export function decide(ev, ctx) {
     return { act: "silent", reason: "payload_invalid", ...base, key, detail: pp, handoff: handoff || ["data_missing", "normal"] };
   }
   return { act: "reply", reason: problem ? `data_missing:${problem}` : (ctx.afterWait ? `after_${ctx.afterWait}` : null), ...base, key, payloads, fallback, handoff,
-    detail: faqGap ? `faq:${faqGap}` : regreet ? "regreet" : null, greet: key === "greet", resume: key === "resume_all" ? "all" : key === "resume_updates" ? "updates" : null, optout, link: reply.link || null, unknown: key === "unknown", disclose, factual,
+    detail: faqGap ? `faq:${faqGap}` : regreet ? "regreet" : reply.fact ? `fact:${reply.fact}` : null, greet: key === "greet", resume: key === "resume_all" ? "all" : key === "resume_updates" ? "updates" : null, optout, link: reply.link || null, unknown: key === "unknown", disclose, factual,
     optinAsk, optinAnswer: key === "optin_yes" ? "yes" : key === "optin_no" ? "no" : null };
 }
 
 /* نص تنبيه الفريق — رسالة SMS واحدة (fitOneSms حارس أخير). مفيش اسم العميل ولا نص رسالته. */
 const REASON_EN = { complaint: "complaint", problem: "payment/site problem", order_change: "change/cancel order", asked_human: "asked for staff", needs_staff: "question for staff",
   media: "sent photo/voice", not_understood_twice: "not understood", rate_limit: "many messages", data_missing: "bot could not answer", order_not_found: "order not found",
-  custom_offer: "wants a tailored group offer", order_late: "LATE order", order_issue: "order issue", send_failed: "bot reply failed" };
-const REASON_AR = { custom_offer: "عرض مخصص لتجمع", complaint: "شكوى", problem: "مشكلة دفع/موقع", order_change: "تعديل/الغاء طلب", asked_human: "طلب موظف", needs_staff: "سؤال", media: "صورة/صوت",
+  allergy_severe: "SEVERE ALLERGY question", custom_offer: "wants a tailored group offer", order_late: "LATE order", order_issue: "order issue", send_failed: "bot reply failed" };
+const REASON_AR = { allergy_severe: "حساسية شديدة", custom_offer: "عرض مخصص لتجمع", complaint: "شكوى", problem: "مشكلة دفع/موقع", order_change: "تعديل/الغاء طلب", asked_human: "طلب موظف", needs_staff: "سؤال", media: "صورة/صوت",
   not_understood_twice: "غير مفهوم", rate_limit: "رسائل كثيرة", data_missing: "البوت لم يجب", order_not_found: "طلب غير موجود", order_late: "طلب متاخر", order_issue: "مشكلة طلب", send_failed: "فشل رد البوت" };
 export function alertText({ phone, reason, orderNo = null }, lang = "en") {
   const ph = `0${phone}`;
@@ -1807,7 +1844,7 @@ export function register(app, ctx, deps = {}) {
     const slugs = [...new Set([cfg.links.organic, cfg.links.ads, ...Object.values(cfg.links.adMap)])];
     const lr = (await q("SELECT slug, active, clicks, target_type, target_id, utm_campaign, coupon FROM cms_links WHERE slug = ANY($1::text[])", [slugs])) || [];
     const llmReady = Boolean(process.env.ANTHROPIC_API_KEY || process.env.LITELLM_KEY);
-    return c.json({ ok: true, config: cfg, defaults: DEFAULTS, texts: textsMeta(), replyKeys: REPLY_KEYS, modes: MODES, llmReady, llmProvider: providerInfo(),
+    return c.json({ ok: true, config: cfg, defaults: DEFAULTS, texts: textsMeta(), replyKeys: REPLY_KEYS, modes: MODES, llmReady, llmProvider: providerInfo(), dishFacts: factsCoverage(),
       faq: FAQ_KEYS.map((k) => ({ key: k, q: FAQ_DEFS[k].q, needs: FAQ_DEFS[k].needs, ar: cfg.faq?.[k]?.ar || "", en: cfg.faq?.[k]?.en || "" })),
       state: { configured: wa?.configured ? wa.configured() : false, liveGate: gate,   // null = الأقفال مفتوحة؛ غير كده اسم القفل اللي مانع وضع live
         liveReady: !gate, staffLang: staffConfig(settings).lang, publicPhone: publicPhoneOf(cfg, settings),
@@ -2049,6 +2086,8 @@ export function register(app, ctx, deps = {}) {
     expandBundle: ax.expandBundle,
     modifiers: { catalogItems: async () => { const r = await ax.modifiersCatalog(); return r && r.cfg && r.cfg.enabled === false ? {} : (r && r.catalog) || null; }, resolve: ax.modifiersResolve },
     quote: ax.quote, buildProfile: ax.buildProfile,
+    /* حقايق الأصناف للمساعد: نفس المطابقة بتاعة البوت، وبترجّع «فيه / مافيهوش / يتشال» بس. مقفولة من اللوحة أو مش مؤكدة أو حساسية شديدة ⇒ null ⇒ موظف. */
+    dishFact: async ({ id, ask }) => { if (!botConfig((await getSettingsData()) || {}).dishFactsEnabled) return null; const f = lookupFact(id, ask); return f.status === "present_removable" ? { contains: true, removable: true } : f.status === "present_fixed" ? { contains: true, removable: false } : f.status === "not_found" ? { contains: false } : null; },
     offers: async () => liveOffers((await getSettingsData()) || {}, clock()),
     settings: async () => (await getSettingsData()) || {},
     openState: async () => { const st = (await getSettingsData()) || {}; if (!st.hours) return null; const now = clock(), o = openState(st, now);
