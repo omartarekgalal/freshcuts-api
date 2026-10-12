@@ -79,7 +79,7 @@ const EXPECT = {
   delivered: { no: "W1790011111111", name: "fc_order_delivered",
     text: "تم توصيل طلبك رقم W1790011111111 ✅ بالعافية عليك.\nلو عندك أي ملاحظة على الطلب ردّ على هذي الرسالة ونخدمك.", button: null },
   pickup_ready: { no: "W1790022222222", name: "fc_order_ready_pickup",
-    text: "طلبك رقم W1790022222222 جاهز للاستلام ✅\nالاستلام من فرع فريش كاتس في حي السلامة بجدة. اذكر رقم الطلب للكاشير.", button: "W1790022222222" },
+    text: "طلبك رقم W1790022222222 جاهز للاستلام ✅\nاذكر رقم الطلب للكاشير عند الاستلام.", button: "W1790022222222" },
   rejected_refunded: { no: "W1790044444444", name: "fc_order_refunded",
     text: "نعتذر منك، ما قدرنا ننفّذ طلبك رقم W1790044444444 وتم استرجاع المبلغ كاملاً لوسيلة الدفع 💳\nيظهر المبلغ في حسابك حسب إجراءات البنك.", button: null },
   refund_failed: { no: "W1790011111111", name: "fc_refund_in_progress",
@@ -271,7 +271,7 @@ test("every UTILITY order template for the customer has only the order's own tra
   }
   const p = C.findTemplate("fc_order_ready_pickup");
   assert.deepEqual(C.buttonsOf(p), [{ type: "URL", text: "تفاصيل الطلب", url: "https://freshcuts.sa/track/{{1}}", example: ["https://freshcuts.sa/track/W1790012345678"] }]);
-  assert.doesNotMatch(C.bodyOf(p), /تقدر|موقع|خرائط|خريطة/);
+  assert.doesNotMatch(C.bodyOf(p), /تقدر|موقع|خرائط|خريطة|فرع|حي |جدة/);   // رفض ميتا التاني: جملة الفرع والحي
 });
 
 test("fc_winback_45 is byte-identical to what Meta approved on 12/10", () => {
@@ -343,3 +343,79 @@ test("allow-list test send: only the listed phones, without any customer switch"
   assert.equal(fetch.calls.length, 1);
   assert.equal(fetch.calls[0].body.to, "966544775082");
 }));
+
+
+/* ── ١٢/١٠ «خدمي ولا تسويقي» ─────────────────────────────────────────────
+   النسخ الخدمية الجديدة: نص نهائي حرفي ببيانات واقعية، ولا كلمة ترويج، ولا زر غير رابط الطلب نفسه. */
+const render = (name, data, lang = "ar") => {
+  const t = C.findTemplate(name, lang);
+  const r = C.bindTemplate(t, data);
+  assert.deepEqual(r.missing, [], name);
+  return { t, text: C.bodyOf(t).replace(/\{\{(\d+)\}\}/g, (m, n) => r.body[Number(n) - 1]), buttons: r.buttons.map((b) => b.text) };
+};
+test("utility versions render their exact final text with realistic data, no empty variable", () => {
+  const order = { order_no: "W1790011111111" };
+  assert.equal(render("fc_loyalty_status", { order, loyalty: { progress: 2, every: 3 } }).text,
+    "تم احتساب طلبك رقم W1790011111111 في برنامج ولاء فريش كاتس ✅\nرصيدك الآن 2 من 3 طلبات.");
+  assert.deepEqual(render("fc_loyalty_status", { order, loyalty: { progress: 1, every: 3 } }).buttons, ["W1790011111111"]);
+  assert.equal(render("fc_feedback_received", { order }).text,
+    "شكراً على ملاحظتك بخصوص طلبك رقم W1790011111111 🙏\nوصلت ملاحظتك للفريق وراجعناها، ولو احتجنا تفاصيل أكثر نتواصل معك على هذا الرقم.");
+  assert.equal(render("fc_payment_failed", { order }).text,
+    "ما اكتملت عملية الدفع لطلبك رقم W1790011111111 من فريش كاتس، والطلب ما تأكّد.\nلو ظهر مبلغ معلّق في حسابك يرجع تلقائياً حسب إجراءات البنك، ولأي استفسار ردّ على هذي الرسالة.");
+  assert.equal(render("fc_open_notice", { hours: { closeText: "2:00 ص" } }).text,
+    "طلبت منّا تنبيهك عند فتح المطعم 🔔\nفريش كاتس مفتوح الآن ويستقبل الطلبات حتى الساعة 2:00 ص.");
+  assert.equal(render("fc_staff_payment_alert", { watch: { problem: "٣ محاولات دفع فشلت خلال ٢٠ دقيقة", lastOrderAgo: "قبل ٩٥ دقيقة" } }).text,
+    "تنبيه تشغيلي في نظام طلبات فريش كاتس: ٣ محاولات دفع فشلت خلال ٢٠ دقيقة. آخر طلب مدفوع على النظام: قبل ٩٥ دقيقة. تابع من البورتال.");
+  assert.equal(render("fc_staff_day_report", { day: { label: "11 Oct", orders: 14, sales: 1240, rating: "4.6" } }, "en").text,
+    "End-of-day operations report for 11 Oct: 14 online orders handled, 1240 SAR collected, average customer rating 4.6. The full report is in the dashboard.");
+  // a zero balance or a missing number never goes out as an empty variable
+  for (const bad of [{ order, loyalty: { every: 3 } }, { order: {}, loyalty: { progress: 1, every: 3 } }, { order, loyalty: { progress: "", every: 3 } }]) {
+    assert.ok(C.bindTemplate(C.findTemplate("fc_loyalty_status"), bad).missing.length > 0);
+  }
+  assert.ok(C.bindTemplate(C.findTemplate("fc_open_notice"), { hours: {} }).missing.includes("hours.closeText"));
+});
+
+test("utility versions carry nothing promotional: no offer words, no order push, no cart or landing link, no opt-out footer", () => {
+  const PROMO = /اطلب|جرّب|كمّل|سلتك|سلة|هدية|مكافأ|توصيل مجاني|كود|عرض|خصم|order now|offer|discount|coupon|test the website/i;
+  const names = ["fc_loyalty_status", "fc_feedback_received", "fc_payment_failed", "fc_open_notice", "fc_welcome_account", "fc_staff_payment_alert", "fc_staff_day_report"];
+  for (const n of names) for (const t of C.TEMPLATES.filter((x) => x.name === n)) {
+    assert.equal(t.category, "UTILITY", n);
+    assert.doesNotMatch(C.bodyOf(t), PROMO, `${C.templateKey(t)}: promotional wording`);
+    assert.equal(C.footerOf(t), "", n);
+    for (const b of C.buttonsOf(t)) {
+      assert.equal(b.type, "URL", `${n}: no quick replies`);
+      assert.match(b.url, /^https:\/\/(freshcuts\.sa\/track\/\{\{1\}\}|freshcuts-invite\.o2m8\.me\/(portal\/|#store))$/, `${n}: ${b.url}`);
+    }
+  }
+  assert.deepEqual(C.buttonsOf(C.findTemplate("fc_payment_failed")), [], "no «كمّل الدفع» cart link: that is a cart reminder");
+  assert.deepEqual(C.buttonsOf(C.findTemplate("fc_welcome_account")), [], "no «فتح الموقع» button");
+  assert.deepEqual(C.buttonsOf(C.findTemplate("fc_open_notice")), []);
+});
+
+test("each utility version keeps its marketing twin: the promotional wording is still there for consenting customers", () => {
+  for (const [util, mkt] of [["fc_loyalty_status", "fc_loyalty_progress"], ["fc_open_notice", "fc_waitlist_open"], ["fc_feedback_received", "fc_review_thanks_coupon"]]) {
+    assert.equal(C.findTemplate(util).category, "UTILITY");
+    assert.equal(C.findTemplate(util).meta.pairedWith, mkt);
+    assert.equal(C.findTemplate(mkt).category, "MARKETING", mkt);
+  }
+  // approved marketing texts are not touched by this slice (an edit would send them back to review)
+  assert.equal(C.bodyOf(C.findTemplate("fc_loyalty_progress")), "باقي لك {{1}} وتحصل على {{2}} 🎁\nكل طلب من موقع فريش كاتس يقرّبك من مكافأتك.");
+  assert.equal(C.bodyOf(C.findTemplate("fc_waitlist_open")), "فتحنا الحين 🎉\nطلبت منّا نذكّرك أول ما يفتح المطعم، وسلتك محفوظة مثل ما تركتها.");
+  assert.equal(C.bodyOf(C.findTemplate("fc_loyalty_reward")), "مبروك {{1}} 🎉 وصلت لمكافأتك في فريش كاتس: {{2}}.\nكودك الخاص {{3}} صالح لين {{4}}، استخدمه في طلبك الجاي من الموقع.");
+});
+
+test("templates Meta filed as MARKETING are billed as marketing and are wired to no sender", () => {
+  assert.deepEqual(Object.keys(C.META_CATEGORY).sort(), ["fc_staff_checkout_watchdog:ar", "fc_staff_checkout_watchdog:en", "fc_staff_daily_summary:ar"]);
+  for (const key of Object.keys(C.META_CATEGORY)) {
+    const [name, lang] = key.split(":");
+    const t = C.findTemplate(name, lang);
+    assert.ok(t, key);
+    assert.equal(C.billedCategory(t), "MARKETING");
+    assert.ok(!Object.values(W.STAGE_TEMPLATES).includes(name), `${name} must not be sent by an order stage`);
+  }
+  assert.equal(C.billedCategory(C.findTemplate("fc_staff_daily_summary", "en")), "UTILITY");
+  assert.equal(C.billedCategory(C.findTemplate("fc_order_received")), "UTILITY");
+  assert.equal(C.billedCategory(C.findTemplate("fc_cart_1h")), "MARKETING");
+  // the reworded replacements exist in both languages and are not the old names
+  for (const n of ["fc_staff_payment_alert", "fc_staff_day_report"]) assert.equal(C.TEMPLATES.filter((t) => t.name === n).length, 2, n);
+});

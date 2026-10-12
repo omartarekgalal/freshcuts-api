@@ -131,12 +131,12 @@ export const TEMPLATES = [
       fallbackSms: "order.accepted", existing: "whatsapp.js fc_order_preparing" } }),
 
   T({ name: "fc_order_ready_pickup", category: "UTILITY", group: "order",
-    body: "طلبك رقم {{1}} جاهز للاستلام ✅\nالاستلام من فرع فريش كاتس في حي السلامة بجدة. اذكر رقم الطلب للكاشير.",
+    body: "طلبك رقم {{1}} جاهز للاستلام ✅\nاذكر رقم الطلب للكاشير عند الاستلام.",
     vars: [ORDER_NO],
     buttons: [TRACK("تفاصيل الطلب")],
     meta: { purpose: "طلب استلام صار جاهز", trigger: "pos_ready_at لطلب option=pickup (أو pickupReadyMinutes بعد القبول)",
       stage: "pickup_ready", send: "auto", fallbackSms: "فريش كاتس: طلبك {order_no} جاهز للاستلام من الفرع", existing: "whatsapp.js fc_order_ready_pickup",
-      notes: "١٢/١٠: النسخة الأولى (زر «موقع الفرع» → خرائط جوجل + «تقدر تستلمه من…») رفضتها ميتا INCORRECT_CATEGORY — القالب الخدمي الوحيد اللي زره مش رابط الطلب نفسه. الزر بقى رابط تتبّع الطلب زي باقي قوالب الطلب المعتمدة، والنص عن الطلب بس." } }),
+      notes: "١٢/١٠: النسخة الأولى (زر «موقع الفرع» → خرائط جوجل + «تقدر تستلمه من…») رفضتها ميتا INCORRECT_CATEGORY — القالب الخدمي الوحيد اللي زره مش رابط الطلب نفسه. الزر بقى رابط تتبّع الطلب زي باقي قوالب الطلب المعتمدة، والنص عن الطلب بس. ١٢/١٠ (تاني): التعديل اترفض برضه INCORRECT_CATEGORY والزر كان رابط الطلب ⇒ الباقي المختلف عن القوالب المعتمدة هو جملة الفرع والحي والمدينة — اتشالت، والنص بقى حالة الطلب + تعليمة الاستلام بس." } }),
 
   T({ name: "fc_courier_assigned", category: "UTILITY", group: "order",
     body: "رتّبنا مندوب لطلبك رقم {{1}} 🛵\nيستلم الطلب أول ما يجهز من المطبخ، وتقدر تتابع من الرابط.",
@@ -190,11 +190,11 @@ export const TEMPLATES = [
       send: "manual", fallbackSms: "فريش كاتس: تم إلغاء طلبك {order_no} حسب طلبك" } }),
 
   T({ name: "fc_payment_failed", category: "UTILITY", group: "order",
-    body: "ما اكتملت عملية الدفع لطلبك من فريش كاتس.\nسلتك محفوظة وتقدر تكمّل الدفع من الرابط، ولو ظهر مبلغ معلّق يرجع تلقائياً حسب البنك.",
-    buttons: [CART("كمّل الدفع")],
-    meta: { purpose: "جلسة الدفع فشلت/انتهت (رفض بنك)", trigger: "shop_orders pending_payment → expired مع cart_recovery code (مرة وحدة)",
-      send: "auto-candidate", reclassRisk: "medium", fallbackSms: "فريش كاتس: ما اكتمل الدفع، سلتك محفوظة: freshcuts.sa/c/{code}",
-      notes: "نبرة محايدة بدون عرض عشان يبقى UTILITY. لو ميتا صنّفته تسويق نرجع لـfc_cart_1h" } }),
+    body: "ما اكتملت عملية الدفع لطلبك رقم {{1}} من فريش كاتس، والطلب ما تأكّد.\nلو ظهر مبلغ معلّق في حسابك يرجع تلقائياً حسب إجراءات البنك، ولأي استفسار ردّ على هذي الرسالة.",
+    vars: [ORDER_NO],
+    meta: { purpose: "جلسة الدفع فشلت/انتهت (رفض بنك) — تنبيه عن عملية الدفع نفسها", trigger: "shop_orders pending_payment → expired (مرة وحدة للطلب)",
+      send: "auto-candidate", reclassRisk: "low", fallbackSms: "فريش كاتس: ما اكتمل الدفع لطلبك {order_no} والطلب ما تأكّد",
+      notes: "١٢/١٠: كان فيه «سلتك محفوظة» وزر «كمّل الدفع» → /c/ = تذكير سلة (تسويق عند ميتا). النص الآن عن عملية الدفع لطلب محدد بس، بدون رابط ولا دعوة للطلب. استرجاع السلة يفضل عند fc_cart_1h (تسويق، بموافقة التسويق)." } }),
 
   T({ name: "fc_otp", category: "AUTHENTICATION", group: "order", expiryMinutes: 5, copyText: "نسخ الرمز",
     meta: { purpose: "رمز الدخول في الشيك أوت", trigger: "accounts.js /api/account/otp/request (قناة واتساب اختيارية)",
@@ -225,12 +225,35 @@ export const TEMPLATES = [
       send: "auto", reclassRisk: "medium", fallbackSms: "waitlist.open",
       notes: "١٢/١٠: إرشادات ميتا تعدّ تذكير السلة/إعادة الاستهداف تسويقاً «حتى لو طلبه العميل» ⇒ MARKETING مع فوتر وزر الإيقاف" } }),
 
+  T({ name: "fc_open_notice", category: "UTILITY", group: "order",
+    body: "طلبت منّا تنبيهك عند فتح المطعم 🔔\nفريش كاتس مفتوح الآن ويستقبل الطلبات حتى الساعة {{1}}.",
+    vars: [{ path: "hours.closeText", label: "وقت الإقفال اليوم (settings.hours)", ex: "2:00 ص" }],
+    meta: { purpose: "«نبّهني لما تفتحوا» — التنبيه اللي طلبه العميل، بدون سلة ولا رابط ولا دعوة للطلب", trigger: "openwait.js عند الفتح، لرقم متحقَّق منه بـOTP",
+      send: "auto-candidate", reclassRisk: "high", fallbackSms: "waitlist.open", pairedWith: "fc_waitlist_open",
+      notes: "١٢/١٠: النسخة الخدمية من fc_waitlist_open. خدمي لأنه «طلبه العميل» وبدون ترويج؛ لكن إرشادات ميتا تعدّ الدعوة للطلب لزائر الموقع تسويقاً «حتى لو طلبها» — لو ميتا صنّفته تسويق نفضل على fc_waitlist_open ولا نعيد تقديمه." } }),
+
   /* ── ٢) الحساب والولاء ───────────────────────────────────────────────── */
   T({ name: "fc_welcome_account", category: "UTILITY", group: "account",
     body: "أهلاً {{1}}، تم تفعيل حسابك في فريش كاتس ✅\nتقدر تتابع طلباتك وعناوينك المحفوظة من الموقع، وأي استفسار ردّ على هذي الرسالة.",
-    vars: [FIRST_NAME], buttons: [link("فتح الموقع", `${STORE}/`)],
-    meta: { purpose: "ترحيب بعد أول تحقق OTP/إنشاء حساب — بدون عرض (عشان يبقى UTILITY)", trigger: "acct_customers أول تسجيل",
-      send: "auto-candidate", fallbackSms: null } }),
+    vars: [FIRST_NAME],
+    meta: { purpose: "تأكيد إنشاء الحساب بعد أول تحقق OTP — بدون عرض وبدون زر", trigger: "acct_customers أول تسجيل",
+      send: "auto-candidate", fallbackSms: null, notes: "١٢/١٠: زر «فتح الموقع» اتشال — زر للموقع في رسالة ترحيب = دعوة للزيارة (تسويق عند ميتا)" } }),
+
+  T({ name: "fc_loyalty_status", category: "UTILITY", group: "account",
+    body: "تم احتساب طلبك رقم {{1}} في برنامج ولاء فريش كاتس ✅\nرصيدك الآن {{2}} من {{3}} طلبات.",
+    vars: [ORDER_NO, { path: "loyalty.progress", label: "عدد الطلبات المحتسبة في الدورة الحالية (track.loyalty.progress)", ex: "2" },
+      { path: "loyalty.every", label: "عدد طلبات الدورة (cms.loyalty.every)", ex: "3" }],
+    buttons: [TRACK("تفاصيل الطلب")],
+    meta: { purpose: "رصيد الولاء بعد طلب مدفوع — تحديث حساب مرتبط بطلب محدد", trigger: "بعد كل طلب مدفوع لو cms.loyalty.enabled (نفس أرقام /api/shop/track loyalty)",
+      send: "auto-candidate", reclassRisk: "medium", fallbackSms: null, pairedWith: "fc_loyalty_progress",
+      notes: "١٢/١٠: النسخة الخدمية من fc_loyalty_progress — رصيد بس: لا اسم المكافأة، لا «اطلب»، لا كود. النسخة التسويقية (باقي لك… وتحصل على…) باقية للي وافق على التسويق." } }),
+
+  T({ name: "fc_feedback_received", category: "UTILITY", group: "account",
+    body: "شكراً على ملاحظتك بخصوص طلبك رقم {{1}} 🙏\nوصلت ملاحظتك للفريق وراجعناها، ولو احتجنا تفاصيل أكثر نتواصل معك على هذا الرقم.",
+    vars: [ORDER_NO],
+    meta: { purpose: "متابعة ملاحظة العميل على طلب محدد — بدون هدية", trigger: "يدوي من صندوق التقييمات بعد مراجعة الملاحظة",
+      send: "manual", reclassRisk: "low", fallbackSms: null, pairedWith: "fc_review_thanks_coupon",
+      notes: "١٢/١٠: النسخة الخدمية من fc_review_thanks_coupon (ميتا: «كود خصم شكراً على طلب سابق» = تسويق). لو فيه هدية تتبعت بالقالب التسويقي للي وافق على التسويق." } }),
 
   T({ name: "fc_loyalty_progress", category: "MARKETING", group: "account", ...MKT,
     body: "باقي لك {{1}} وتحصل على {{2}} 🎁\nكل طلب من موقع فريش كاتس يقرّبك من مكافأتك.",
@@ -300,6 +323,24 @@ export const TEMPLATES = [
     [{ path: "watch.problem", ex: "3 payment sessions failed in 20 min", exAr: "٣ محاولات دفع فشلت خلال ٢٠ دقيقة", label: "المشكلة (checkoutwatch)" },
       { path: "watch.lastOrderAgo", ex: "95 min ago", exAr: "قبل ٩٥ دقيقة", label: "آخر طلب ناجح" }],
     { purpose: "حارس الشيك أوت", trigger: "checkoutwatch.js / ops/checkout-watch-run.mjs", send: "auto", fallbackSms: "checkoutwatch SMS" }),
+  /* ١٢/١٠: ميتا صنّفت fc_staff_checkout_watchdog (ar+en) و fc_staff_daily_summary (ar) تسويق. دول صياغة تانية بأسماء جديدة:
+     تنبيه/تقرير تشغيلي لحساب المطعم نفسه — بدون «جرّب الموقع» وبدون كلمة «مبيعات». القديمة باقية بأسمائها (لا تتمسح). */
+  ...staffPair("fc_staff_payment_alert",
+    { body: "Operations alert on the Fresh Cuts ordering system: {{1}}. Last paid order on the system: {{2}}. Follow it up from the portal.",
+      ar: "تنبيه تشغيلي في نظام طلبات فريش كاتس: {{1}}. آخر طلب مدفوع على النظام: {{2}}. تابع من البورتال." },
+    [{ path: "watch.problem", ex: "3 payment sessions failed in 20 min", exAr: "٣ محاولات دفع فشلت خلال ٢٠ دقيقة", label: "المشكلة (checkoutwatch)" },
+      { path: "watch.lastOrderAgo", ex: "95 min ago", exAr: "قبل ٩٥ دقيقة", label: "آخر طلب ناجح" }],
+    { purpose: "حارس الشيك أوت — صياغة تشغيلية", trigger: "checkoutwatch.js / ops/checkout-watch-run.mjs", send: "auto", fallbackSms: "checkoutwatch SMS",
+      reclassRisk: "medium", replaces: "fc_staff_checkout_watchdog" }),
+  ...staffPair("fc_staff_day_report",
+    { body: "End-of-day operations report for {{1}}: {{2}} online orders handled, {{3}} SAR collected, average customer rating {{4}}. The full report is in the dashboard.",
+      ar: "تقرير إقفال اليوم التشغيلي {{1}}: عدد الطلبات الأونلاين {{2}}، المبلغ المحصّل {{3}} ر.س، متوسط التقييم {{4}}. التقرير الكامل في اللوحة." },
+    [{ path: "day.label", ex: "27 Sep", exAr: "٢٧ سبتمبر", label: "اليوم التشغيلي (bizday 11→03)" },
+      { path: "day.orders", ex: "14", label: "عدد الطلبات" }, { path: "day.sales", ex: "1240", label: "المبلغ المحصّل", fmt: "money" },
+      { path: "day.rating", ex: "4.6", label: "متوسط تقييمنا الداخلي" }],
+    { purpose: "تقرير إقفال اليوم — صياغة تشغيلية", trigger: "dayreport.js بعد قفلة اليوم التشغيلي (٠٤:٠٠)", send: "auto-candidate", fallbackSms: null,
+      reclassRisk: "medium", replaces: "fc_staff_daily_summary" },
+    [link("Open dashboard", "https://freshcuts-invite.o2m8.me/#store")], [link("فتح اللوحة", "https://freshcuts-invite.o2m8.me/#store")]),
   ...staffPair("fc_staff_wa_handoff",
     { body: "A WhatsApp customer needs a staff reply ({{1}}): {{2}}. Open the WhatsApp inbox in the portal.",
       ar: "عميل واتساب يحتاج رد موظف ({{1}}): {{2}}. افتح صندوق واتساب في البورتال." },
@@ -472,10 +513,9 @@ export const HOLD = Object.freeze({
   fc_birthday: "لا يوجد تاريخ ميلاد في بياناتنا — لا شيء يطلقه",
   fc_referral_invite: "برنامج الإحالة غير معرَّف (المكافأة والقواعد) — النص يعد بميزة لا يصدرها النظام",
   fc_order_cancelled: "لا يوجد مسار إلغاء بطلب العميل يسترجع المبلغ آلياً — النص يقول «يرجع لوسيلة الدفع»",
-  fc_payment_failed: "تذكير بسلة بعد فشل الدفع = إعادة استهداف (تسويق عند ميتا)، وfc_cart_1h يغطيه",
   fc_address_confirm: "لا يوجد في البورتال ما يرسله ولا ما يعالج ردّي الزرّين",
   fc_scheduled_reminder: "الطلب المسبق مقفول (settings.preorder.enabled=false)",
-  fc_welcome_account: "ترحيب بعد التسجيل بزر «فتح الموقع» — حدّه رمادي بين الخدمي والتسويقي، وغير مربوط بمُرسل",
+  fc_welcome_account: "غير مربوط بمُرسل (الزر اتشال ١٢/١٠ فالنص خدمي؛ يتقدّم لما يتقرّر إرساله)",
   fc_ad_lead_last_call: "يحتاج عرضاً له تاريخ انتهاء؛ البوكسات بلا تاريخ انتهاء — لا شيء صادق يُكتب في المتغيّرين",
 });
 
@@ -488,8 +528,20 @@ export const SUBMIT_BATCHES = Object.freeze([
   ["fc_winback_90", "fc_vip_lapsed", "fc_one_time_coupon", "fc_review_thanks_coupon", "fc_fav_dish"],
   // بصورة: يحتاج sampleImageUrl وقت التقديم
   ["fc_new_item", "fc_weekend_offer", "fc_bundle_offer", "fc_occasion"],
+  // ١٢/١٠ «خدمي ولا تسويقي»: النسخ الخدمية الجديدة — من الأضمن للأخطر، واحد في المرة، ونقف عند أول قالب ميتا تصنّفه تسويق
+  ["fc_payment_failed", "fc_feedback_received", "fc_loyalty_status", "fc_staff_payment_alert", "fc_staff_day_report", "fc_open_notice"],
 ]);
 export const RECOMMENDED_FIRST = SUBMIT_BATCHES[0];
+
+/* الفئة الفعلية عند ميتا لما تختلف عن فئتنا (ميتا غيّرتها وقت الاعتماد — previous_category=UTILITY، قراءة ١٢/١٠ 03:46).
+   المفتاح name:language. القوالب دي تتحاسب بسعر التسويق وتترفض للي وقّف «العروض» ⇒ **لا تتربط بمُرسل** لحد ما مراجعة ميتا
+   («Request Review» في WhatsApp Manager، خلال ٦٠ يوم من التغيير) ترجّعها خدمي؛ البديل fc_staff_payment_alert / fc_staff_day_report. */
+export const META_CATEGORY = Object.freeze({
+  "fc_staff_checkout_watchdog:ar": "MARKETING",
+  "fc_staff_checkout_watchdog:en": "MARKETING",
+  "fc_staff_daily_summary:ar": "MARKETING",
+});
+export const billedCategory = (t) => META_CATEGORY[`${t.name}:${t.language}`] || t.category;
 
 /* ═══ أدوات ══════════════════════════════════════════════════════════════ */
 export const bodyOf = (t) => (t.components.find((c) => c.type === "BODY") || {}).text || "";
