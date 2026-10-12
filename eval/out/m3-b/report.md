@@ -1,0 +1,33 @@
+# Assistant evaluation: m3-b
+
+```
+conversations 3 · passed 1 · failed 2
+customer turns 3: assistant answered 3, rules owned 0, fallbacks {}
+validator retries 0 · escalations fast→strong 1 · model calls 7
+cost 0.0857 SAR (0.0286 per conversation, 0.0286 per model turn)
+latency per answered turn: p50 4505 ms · p90 4512 ms · max 4512 ms (n=3)
+by model {"claude-haiku-5-5":{"calls":3,"in":10,"out":422,"cached":34329,"sar":0.0137,"callP50ms":1781,"callP90ms":2008},"claude-sonnet-5-5":{"calls":4,"in":4329,"out":272,"cached":39217,"sar":0.0721,"callP50ms":1989,"callP90ms":2475}}
+fail types {"must_not_contain":2}
+review flags {}
+```
+
+## Conversations
+
+### FAIL · m3-price-kebab-en (by weight: price) · 0.0094 SAR
+
+**Fails:** must_not_contain «kilo[^\n]{0,25}\b47\b»
+
+- **العميل:** how much is the grilled kebab by the kilo?
+  - **المساعد** (fast, 3142 ms, 0.0094 SAR, tools: search_menu, search_menu): Grilled Kebab (by the kilo): 1/3 Kilo: 47 SAR · 1/2 Kilo: 70 SAR · Kilo: 140 SAR. ⏎  ⏎ Which weight would you like?
+
+### FAIL · m3-price-fast-en (by weight: price) · 0.0352 SAR
+
+**Fails:** must_not_contain «by the kilo[^\n]{0,30}53»
+
+- **العميل:** what's the price of the special mixed grill?
+  - **المساعد** (strong↑, 4505 ms, 0.0352 SAR, tools: search_menu): Special Mixed Grill (by the kilo): 1/3 Kilo: SAR 53 · 1/2 Kilo: SAR 78 · Kilo: SAR 155. Which weight would you like?
+
+### PASS · m3-ask-weight (by weight: cart) · 0.0412 SAR
+
+- **العميل:** ابي كفتة مشوية بالوزن توصيل
+  - **المساعد** (strong, 4512 ms, 0.0412 SAR, tools: search_menu): كفتة مشوية بالوزن: ثلث كيلو 40 ر.س · نصف كيلو 60 ر.س · كيلو 120 ر.س. ⏎ تبيه ثلث كيلو، نصف كيلو، ولا كيلو؟

@@ -11,7 +11,7 @@ import { factNote } from "../wadishfacts.js";
 import { kbCandidates, kbCheck } from "../wakb.js";
 
 const J = (f) => JSON.parse(fs.readFileSync(new URL(`./fixtures/${f}`, import.meta.url), "utf8"));
-export const FX = { pages: J("menu.json").data.pages, bundles: J("bundles.json").bundles, mods: J("modifiers.json").items, offers: J("offers.json").offers || [], faq: J("faq.json") };
+export const FX = { pages: J("menu.json").data.pages, bundles: J("bundles.json").bundles, mods: J("modifiers.json").items, offers: J("offers.json").offers || [], faq: J("faq.json"), variants: J("variants.json").variants };
 export const PHONE = "512345678";
 const HOURS = { enabled: true, days: { fri: { open: "12:00", close: "03:00" }, mon: { open: "12:00", close: "02:00" }, sat: { open: "12:00", close: "02:00" }, sun: { open: "12:00", close: "02:00" }, thu: { open: "12:00", close: "03:00" }, tue: { open: "12:00", close: "02:00" }, wed: { open: "12:00", close: "02:00" } } };
 export const POLICY = { type: "distance_tiers", maxKm: 10, farZoneEnabled: true, farZoneMaxKm: 15, farZonePerKm: 3, farZoneFromKm: 10, feeByTotal: [{ fee: 20, over: 0 }, { fee: 15, over: 60 }, { fee: 10, over: 80 }, { fee: 5, over: 100 }, { fee: 0, over: 150 }] };
@@ -30,7 +30,7 @@ const undress = (b) => ({ ...b, slots: normalizeSlots(b.slots.map((s) => (s.type
 export function makeWorld(w = {}, { callModel, onCall, acfg: acfgIn = {} } = {}) {
   const nowIso = w.closed ? CLOSED_AT : OPEN_AT, now = () => new Date(nowIso);
   const soldOut = Object.fromEntries((w.soldOut || []).map((id) => [String(id), true]));
-  const menu = indexMenu(FX.pages, { hiddenIds: [], soldOut });
+  const menu = indexMenu(FX.pages, { hiddenIds: [], soldOut, variants: w.noWeights ? null : FX.variants });      // M3: the live weights and prices of the by-weight dishes (fixtures/variants.json)
   const boxes = FX.bundles, raw = boxes.map(undress);
   const item = (id) => menu.items.find((i) => i.id === String(id));
   const resolve = (pid) => { const it = item(pid); return { name: it ? it.name : `#${pid}`, priceEx: (it ? it.price : 10) / 1.15, taxId: 1 }; };

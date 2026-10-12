@@ -48,7 +48,12 @@ export function searchMenu(menu, query, max = ASSIST_DEFAULTS.searchMax) {
   scored.sort((a, b) => b[0] - a[0] || a[1].price - b[1].price);
   return scored.slice(0, max).map(([, it]) => itemBrief(it));
 }
-export const itemBrief = (it) => ({ id: String(it.id), name: it.name, name_en: it.nameEn || it.name, price: it.price, section: it.categoryAr || it.category, kind: kindOf(it), sold_out: Boolean(it.soldOut), by_weight: Boolean(it.byWeight) });
+/* M3: صنف بالوزن ⇒ من غير «price» خالص (كان بيتقال «الكيلو بـ53» و53 سعر التلت): الأوزان بأسعارها ورقم كل اختيار. الأوزان مش متاحة الحين ⇒ weights: null. */
+export const weightsBrief = (it) => (it && Array.isArray(it.weights) && it.weights.length ? it.weights.map((w) => ({ label: w.label_ar, label_en: w.label_en, price: w.price, variant_option_id: w.variant_option_id })) : null);
+export const itemBrief = (it) => (it.byWeight
+  ? { id: String(it.id), name: it.name, name_en: it.nameEn || it.name, section: it.categoryAr || it.category, kind: kindOf(it), sold_out: Boolean(it.soldOut), by_weight: true, weights: weightsBrief(it),
+      how_to_price: weightsBrief(it) ? "sold by weight: every price belongs to ONE of the weights above; always say the weight with its price" : "sold by weight; the weights and prices are not available right now: say so and point to the website" }
+  : { id: String(it.id), name: it.name, name_en: it.nameEn || it.name, price: it.price, section: it.categoryAr || it.category, kind: kindOf(it), sold_out: Boolean(it.soldOut), by_weight: false });
 
 /* ── ملف العميل للموديل: الحد الأدنى (صافي) ─────────────────────────────
    p = customer360.buildProfile(pn). extra = { loyalty, rewards, firstEligible, consent, lang }.
@@ -349,9 +354,23 @@ export function makeAssistTools(deps = {}) {
       const it = menu.items.find((i) => String(i.id) === String(li && li.id));
       if (!it) { problems.push({ id: String(li && li.id), error: "not_on_menu" }); continue; }
       if (it.soldOut) { problems.push({ id: it.id, name: it.name, error: "sold_out_today" }); continue; }
-      if (it.byWeight) { problems.push({ id: it.id, name: it.name, error: "choose_weight_on_site", url: `${STORE}/l/wab-menu#item-${it.id}` }); continue; }
       if (Array.isArray(li.addons) && li.addons.length) { problems.push({ id: it.id, name: it.name, error: "addons_on_site_only", url: `${STORE}/l/wab-menu#item-${it.id}` }); continue; }
       const qty = qtyOf(li.qty), note = String(li.note || "").replace(/\s+/g, " ").trim().slice(0, 100);
+      /* M3 — صنف بالوزن: لازم وزن من أوزانه الحقيقية (variant_option_id)، والكمية = عدد الوزن ده («٢ كيلو» = ٢ × اختيار الكيلو). سطر السلة بنفس شكل سطر المتجر
+         (المفتاح ‎<id>:v<variant>‎ ومعاه variant بسعره من نقطة البيع)، فالرابط بيفتح نفس السطر بنفس السعر. */
+      if (it.byWeight) {
+        const ws = Array.isArray(it.weights) ? it.weights : null;
+        if (!ws || !ws.length) { problems.push({ id: it.id, name: it.name, error: "weights_unavailable", url: `${STORE}/l/wab-menu#item-${it.id}` }); continue; }
+        const w = ws.find((x) => String(x.variant_option_id) === String(li.variant_option_id));
+        if (!w) { problems.push({ id: it.id, name: it.name, error: "need_weight", weights: weightsBrief(it), rule: "ask which weight, then send its variant_option_id; qty = how many of that weight" }); continue; }
+        const key = `${it.id}:v${w.variant_option_id}`, prevW = raw[key];
+        if (prevW && !note && !prevW.note) { prevW.qty = Math.min(20, prevW.qty + qty); const l0 = lines.find((l) => l.id === it.id && l.variant_option_id === w.variant_option_id && !l.note); l0.qty = prevW.qty; l0.total = round2(w.price * prevW.qty); continue; }
+        const k2 = prevW ? `${key}:n${lines.length}` : key;
+        raw[k2] = { item: { id: Number(it.id) }, qty, variant: { id: w.variant_option_id, name: w.label_ar, local_name: w.label_en, retail_price: w.price, ...(w.price_ex != null ? { price: w.price_ex } : {}) }, ...(note ? { note } : {}) };
+        lines.push({ id: it.id, name: it.name, name_en: it.nameEn || it.name, weight: w.label_ar, weight_en: w.label_en, variant_option_id: w.variant_option_id, price: w.price, qty, total: round2(w.price * qty), kind: kindOf(it), ...(note ? { note } : {}) });
+        items.push({ id: it.id, n: `${it.name} (${w.label_ar})`.slice(0, 60), q: qty, p: w.price, v: w.variant_option_id });
+        continue;
+      }
       const prev = raw[it.id];
       if (prev && !note && !prev.note) { prev.qty = Math.min(20, prev.qty + qty); const l0 = lines.find((l) => l.id === it.id && !l.note); l0.qty = prev.qty; l0.total = round2(it.price * prev.qty); continue; }
       const key = prev ? `${it.id}:n${lines.length}` : String(it.id);

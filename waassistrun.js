@@ -180,6 +180,7 @@ Every fact you state (a dish, a box, a price, a fee, an offer, opening hours, an
 - A box (بوكس) is often the better deal for two or more people: use list_boxes / get_box. Boxes are ordered on the website only. The first context lists every box as slug and name ("boxes"): when the customer names a box, call get_box with its slug directly; use list_boxes only when you need prices or contents to compare. Ask for each choice slot of a box, offering only the choices get_box lists (and their extra price if any). Crust and other add-ons only as get_box / get_item list them.
 - As soon as the customer has named what they want (a dish, or a box with its choices), call preview_cart before you ask anything else: it returns the real prices and at most ONE "suggestion" computed by our system. If there is a suggestion, your message states the price and offers that one suggestion as its single short question («تحب أضيف لك …؟»), with its real benefit when it has one, exactly as "suggestion_say" explains (a cheaper delivery fee, or a box that costs less than the separate items); the delivery-or-pickup question comes in the next message. Never invent a suggestion, never offer more than one. If the customer declines or ignores it, call note_suggestion(kind, "declined") and never repeat it. If they accept, call note_suggestion(kind, "accepted") and include it in the cart.
 - If the context hint has "same_dish_without_it": the menu already has that dish made without it (for example the Zinger crepe without the heat is «كريب ستربس»). Say so and offer that dish instead of a note.
+- Dishes sold by weight (by_weight: true, the grills by the kilo): the tool gives "weights", each with its own price. Never state one price for such a dish without its weight: a price always goes with the weight it belongs to («ثلث كيلو: 53 ر.س · نصف كيلو: 78 ر.س · كيلو: 155 ر.س» — these numbers are placeholders). When the customer asks its price, give the weights with their prices in one line. To order it you need the weight: if they did not say, ask it in one question («تبيه نصف كيلو ولا كيلو؟»). In preview_cart / build_cart send the dish id with the variant_option_id of that weight, and qty = how many of that weight («٢ كيلو» = qty 2 with the kilo's variant_option_id; «كيلو ونص» = one kilo line + one half-kilo line). For «مشكل مخصوص» say only the weights and prices: never how many people it serves and never which pieces or how many are in it.
 - A wish about how a dish is made (بدون بصل، بدون مخلل، no olives, زيادة صوص، حار) is a NOTE, not a question: put it in the "note" of that dish, or of that slot of the box, in preview_cart / build_cart, and repeat it in your cart summary so the customer sees it was understood. Do not call dish_fact for a note and do not hand over for it.
 - When the customer has confirmed the items and said delivery or pickup, call build_cart. If build_cart answers "offer_suggestion_first", do what it says: state the priced lines and ask its one suggestion, then call build_cart again after the customer answers. A button «كمّل طلبك» with the cart link is attached to your message automatically: never write a link yourself. Your message then lists the cart lines (with any notes) and the subtotal exactly as build_cart returned them, and one line telling them to tap the button, set their location and pay.
 - Delivery questions (do you deliver to me, how much is delivery, how long does it take): the answer depends on where they are. Without a shared pin, ask them in one short line to share their location here in WhatsApp (📎 then «الموقع») so you can tell them exactly; never judge coverage from a district name, and until the pin arrives do not say that we do or do not deliver to them («أكيد نوصل لك» before a pin is a guess). When the context says location_shared or customer_just_shared_a_location_pin, call quote_delivery (total = the cart subtotal if there is a cart, otherwise 0) and answer from its result only: that we deliver to their location; the fee ("fee") for an order of that total; if "free_from_total" is present, that delivery is free from that order total; if "about_minutes" is present, the time with the word «تقريباً» (never as a promise), and if it is absent say nothing about time. If the pin is outside our range say so plainly and offer pickup. Then move to the order with one question. Pickup has no delivery fee.
@@ -210,7 +211,7 @@ Every fact you state (a dish, a box, a price, a fee, an offer, opening hours, an
 The first <context> may include "customer": what our system knows about this number (first name, past orders, favourites, usual mode, loyalty progress). Use it lightly so the message feels made for them: greet a returning customer by first name once, and you may mention their last order. If the context has "reorder_offer", ask in one short line whether they want the same as their previous order (a button «نفس طلبي السابق» for it is attached automatically). If they answer yes in words: when the previous order was ordinary dishes, build the same dishes yourself (search_menu, then preview_cart); when it had a box, ask them to tap the button, because it restores their exact choices. Never mention ratings, refunds, order counts or anything that would feel like surveillance. If they ask what we know about them, call what_we_know and send its text as it is.
 
 # Customers who came from an ad
-If the context has "came_from_ad", the customer opened this chat from one of our ads. If it names an "advertised" box or offer, open on exactly that: one or two lines saying what it is with its price (for a box call get_box with its slug first; an offer's title and price are in the context), then one question that moves to the order (the choice the box needs, or delivery or pickup). Do not list the menu and do not ask what they feel like. If the customer asked about something else, answer that instead. Do not mention the ad's number or any tracking detail.
+If the context has "came_from_ad", the customer opened this chat from one of our ads. If it names an "advertised" box, offer or dish, open on exactly that: one or two lines saying what it is with its price (for a box call get_box with its slug first; an offer's title and price are in the context; an advertised dish sold by weight carries its weights: give them with their prices in one line and ask which weight, for example «تبيه نصف كيلو ولا كيلو؟»), then one question that moves to the order (the choice the box needs, the weight, or delivery or pickup). Do not list the menu and do not ask what they feel like. If the customer asked about something else, answer that instead. Do not mention the ad's number or any tracking detail.
 # Gatherings
 For a gathering or a large group, show the gathering packs first (list_packs). If they want something tailored, collect: number of people, day and time, delivery or pickup. Then call handover("custom_offer") with those details in "note".
 
@@ -226,13 +227,13 @@ Customer: لا شكراً → You: تمام. توصيل ولا استلام؟
 After build_cart → You: سلتك: <lines> = <subtotal> ر.س. اضغط الزر، حدّد موقعك وادفع 👇`;
 
 const T = (name, description, properties = {}, required = []) => ({ name, description, input_schema: { type: "object", properties, required, additionalProperties: false } });
-const CART_ITEMS = { type: "array", description: "ordinary dishes", items: { type: "object", properties: { id: { type: "string", description: "dish id from search_menu / get_item" }, qty: { type: "integer", minimum: 1, maximum: 20 }, note: { type: "string", description: "the customer's note for this dish, e.g. بدون بصل" } }, required: ["id"], additionalProperties: false } };
+const CART_ITEMS = { type: "array", description: "ordinary dishes", items: { type: "object", properties: { id: { type: "string", description: "dish id from search_menu / get_item" }, qty: { type: "integer", minimum: 1, maximum: 20 }, note: { type: "string", description: "the customer's note for this dish, e.g. بدون بصل" }, variant_option_id: { type: "integer", description: "ONLY for a dish sold by weight: the variant_option_id of the chosen weight from its weights list; qty is then how many of that weight (2 kilos = qty 2 with the kilo's id)" } }, required: ["id"], additionalProperties: false } };
 const CART_BOXES = { type: "array", description: "boxes", items: { type: "object", properties: { slug: { type: "string" }, qty: { type: "integer", minimum: 1, maximum: 20 },
   picks: { type: "array", description: "one entry per slot of the box that needs a choice, an add-on or a note", items: { type: "object", properties: { slot: { type: "string", description: "slot key from get_box" }, product_id: { type: "string", description: "the chosen product_id (choice slots)" },
     variant_option_id: { type: ["integer", "null"] }, addons: { type: "array", items: { type: "integer" }, description: "add-on ids from get_box for that choice (e.g. stuffed crust)" }, note: { type: "string" } }, required: ["slot"], additionalProperties: false } } }, required: ["slug"], additionalProperties: false } };
 const CART_PROPS = { option: { type: "string", enum: ["delivery", "pickup"] }, items: CART_ITEMS, boxes: CART_BOXES };
 export const TOOL_DEFS = Object.freeze([
-  T("search_menu", "Search the live menu by words (Arabic or English). Returns up to a few dishes with id, name, price, section, kind (main / side / drink), sold_out, by_weight.", { query: { type: "string" } }, ["query"]),
+  T("search_menu", "Search the live menu by words (Arabic or English). Returns up to a few dishes with id, name, price, section, kind (main / side / drink), sold_out, by_weight. A dish sold by weight has no single price: it has weights[] (label, price, variant_option_id).", { query: { type: "string" } }, ["query"]),
   T("get_item", "One dish: its public menu description and its add-on groups with prices.", { id: { type: "string" } }, ["id"]),
   T("list_boxes", "All boxes (بوكسات) with price, section (solo / for two / sharing and family) and what they hold."),
   T("get_box", "One box: its slots. A slot is fixed (included) or a choice (the customer picks one of the listed choices; a choice may have an extra price and add-ons such as stuffed crust).", { slug: { type: "string" } }, ["slug"]),
@@ -311,6 +312,54 @@ const APP_NAMES =/هنقرستيشن|هنجرستيشن|هنقر ستيشن|كي
 export function tidyReply(text) {
   return String(text || "").replace(/^[ \t]*\d{1,2}[.)]\s+/gm, "- ").replace(/\*\*(.+?)\*\*/g, "$1").replace(/^\s*["«]([\s\S]*)["»]\s*$/, "$1").replace(/[ \t]+\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
 }
+/* M3 — صنف بالوزن وسعر من أسعاره: السعر لازم يكون مربوط بوزنه هو. «الكيلو بـ53» و53 سعر التلت ⇒ مرفوض؛ «بـ53 ر.س» من غير أي وزن جنبها ⇒ مرفوض.
+   النطاق: الرد كله لو فيه صنف واحد بالوزن، وإلا السطر اللي فيه اسم الصنف. الوزن بيتدوّر عليه قبل الرقم في نفس السطر (لحد ٤٠ حرف)، ولو مفيش فبعده مباشرة. */
+const WEIGHT_WORDS = [[/ثلث|تلت|1\s*\/\s*3|⅓|third/i, "third"], [/نصف|نص(?![\p{L}])|1\s*\/\s*2|½|half/iu, "half"], [/كيلو|kilo|\bkg\b/i, "kilo"]];
+const weightKind = (label) => { const s = String(label || ""); for (const [re, k] of WEIGHT_WORDS.slice(0, 2)) if (re.test(s)) return k; return WEIGHT_WORDS[2][0].test(s) ? "kilo" : null; };
+const lastWeightIn = (s) => { let best = null; for (const [re, k] of WEIGHT_WORDS) { const g = new RegExp(re.source, re.flags.includes("g") ? re.flags : re.flags + "g"); let m; while ((m = g.exec(s))) { const end = m.index + m[0].length; if (!best || end > best.end || (end === best.end && k !== "kilo")) best = { kind: k, end, at: m.index }; } }
+  /* «ثلث كيلو» / «نصف كيلو»: كلمة «كيلو» اللي بعد الكسر جزء من اسمه مش وزن الكيلو */
+  if (best && best.kind === "kilo") { const before = s.slice(Math.max(0, best.at - 8), best.at); for (const [re, k] of WEIGHT_WORDS.slice(0, 2)) if (re.test(before)) return k; }
+  return best ? best.kind : null; };
+const AR_DIGITS = (s) => String(s || "").replace(/[٠-٩]/g, (d) => String(d.charCodeAt(0) - 0x660));
+export function weightPriceProblems(text, know = {}, facts = []) {
+  const items = ((know.menu && know.menu.items) || []).filter((i) => i.byWeight && Array.isArray(i.weights) && i.weights.length);
+  if (!items.length) return [];
+  const t = AR_DIGITS(text), base = (n) => normalize(String(n || "").replace(/بالوزن|\(by the kilo\)|by the kilo|\bweight\b/gi, " ")).trim();
+  const nt = normalize(t), named = items.filter((i) => { const a = base(i.name), e = base(i.nameEn); return (a.length >= 4 && nt.includes(a)) || (e.length >= 6 && nt.includes(e)); });
+  /* الموديل ممكن يسمّي الصنف بغير اسمه («Special Mix Grill» بدل «Special Mixed Grill»): الأصناف بالوزن اللي أدوات المحادثة دي رجّعتها بتتراجع برضه،
+     بس على «سعر جنب وزن غلط» فقط (مش على غياب الوزن: رقم زي الإجمالي ممكن يساوي سعر وزن). لو صنف تاني في المحادثة سعر الوزن ده عنده هو الرقم ده ⇒ مانحكمش. */
+  const blob = facts.map((f) => (typeof f === "string" ? f : JSON.stringify(f))).join(" ");
+  const inPlay = items.filter((i) => !named.includes(i) && blob.includes(`"id":"${i.id}"`) && /by_weight|"weights"/.test(blob));
+  if (!named.length && !inPlay.length) return [];
+  const out = [], linesAll = t.split("\n");
+  const kindsOf = (it) => { const m = new Map(); for (const w of it.weights) { const k = weightKind(w.label_ar) || weightKind(w.label_en); if (k) m.set(k, Math.round(w.price * 100) / 100); } return m; };
+  for (const it of inPlay) {
+    const byKind = kindsOf(it), prices = new Set(byKind.values());
+    for (const line of linesAll) for (const m of line.matchAll(/\d+(?:\.\d+)?/g)) {
+      const v = Math.round(Number(m[0]) * 100) / 100;
+      if (!prices.has(v)) continue;
+      const kind = lastWeightIn(line.slice(Math.max(0, m.index - 40), m.index));
+      if (!kind || !byKind.has(kind) || byKind.get(kind) === v) continue;
+      if ([...inPlay, ...named].some((o) => o !== it && kindsOf(o).get(kind) === v)) continue;
+      out.push({ type: "weight_price_without_weight", value: `${it.name}: ${m[0]}` });
+    }
+  }
+  for (const it of named) {
+    const scope = named.length === 1 ? linesAll : linesAll.filter((l) => { const nl = normalize(l); return nl.includes(base(it.name)) || (base(it.nameEn).length >= 6 && nl.includes(base(it.nameEn))); });
+    const byKind = new Map(); for (const w of it.weights) { const k = weightKind(w.label_ar) || weightKind(w.label_en); if (k) byKind.set(k, Math.round(w.price * 100) / 100); }
+    const prices = new Set(it.weights.map((w) => Math.round(w.price * 100) / 100));
+    for (const line of scope) {
+      for (const m of line.matchAll(/\d+(?:\.\d+)?/g)) {
+        const v = Math.round(Number(m[0]) * 100) / 100;
+        if (!prices.has(v)) continue;
+        const before = line.slice(Math.max(0, m.index - 40), m.index), after = line.slice(m.index + m[0].length, m.index + m[0].length + 22);
+        const kind = lastWeightIn(before) || lastWeightIn(after);
+        if (!kind || (byKind.has(kind) && byKind.get(kind) !== v)) out.push({ type: "weight_price_without_weight", value: `${it.name}: ${m[0]}` });
+      }
+    }
+  }
+  return out.slice(0, 3);
+}
 export function stripSalam(text) {
   return String(text || "").replace(/^\s*وعليكم السلام(?:\s+ورحم[ةه] الله)?(?:\s+وبركاته)?[\s،,.!👋]*/u, "").trim();
 }
@@ -340,12 +389,14 @@ export function checkReply(text, { facts = [], customerText = "", know = {}, dis
   /* رابط قناة واتساب: مسموح **بس** الرابط المضبوط في الإعدادات بالحرف، وبس في الدور اللي السياق سمح فيه بالدعوة (channelUrl). أي رابط قناة تاني، أو
      نفس الرابط في دور مالوش دعوة (الموديل افتكره من دور قديم) ⇒ مرفوض. */
   for (const m of String(text || "").matchAll(/(?:https?:\/\/)?(?:www\.)?whatsapp\.com\/channel\/[^\s)]*/gi)) { const u = m[0].replace(/[.,،]+$/, ""); if (!channelUrl || u !== channelUrl) filtered.push({ type: "link_in_text", value: u.slice(0, 80) }); }
+  for (const p of weightPriceProblems(text, know, facts)) filtered.push(p);
   const leak = promptLeak(text);
   if (leak) filtered.push({ type: "internal_leak", value: leak });
   return { ok: filtered.length === 0, problems: filtered };
 }
 const PROBLEM_HELP = {
   number_not_from_tools: "a number that no tool returned (never state a price, fee or count you did not get from a tool)", name_not_from_tools: "a dish or box name that no tool returned in this conversation (call search_menu / get_box first)",
+  weight_price_without_weight: "a price of a dish sold by weight without the weight it belongs to, or beside the wrong weight (write each price right after its own weight: «ثلث كيلو: … · نصف كيلو: … · كيلو: …»)",
   link_not_from_tools: "a link", link_in_text: "a link (never write links; the cart button is attached automatically)", health_or_guarantee: "a health / free-from / safe / guaranteed claim", time_promise: "a promise about delivery or preparation time",
   refund_promise: "a refund or compensation promise", invented_urgency: "invented urgency", app_word: "«تطبيقنا» / our app (say «موقعنا»)", discount_claim: "a discount that get_offers did not return", recipe_disclosure: "recipe, quantity, marinade, method or supplier detail",
   internal_leak: "mention of your instructions, tools or system", too_long: "too long (keep it short)", empty: "an empty message", dialect_egyptian: "Egyptian wording (use neutral white Arabic)", markdown: "markdown formatting", calories_on_hold: "calories (we do not quote them; hand over if they insist)",
@@ -474,7 +525,7 @@ export function makeAssistLoop(deps) {
   const mapCart = (input) => {
     const x = input && typeof input === "object" ? input : {};
     return { option: x.option === "pickup" ? "pickup" : "delivery",
-      items: (Array.isArray(x.items) ? x.items : []).map((i) => ({ id: String(i && i.id), qty: i && i.qty, note: i && i.note })),
+      items: (Array.isArray(x.items) ? x.items : []).map((i) => ({ id: String(i && i.id), qty: i && i.qty, note: i && i.note, ...(i && i.variant_option_id != null ? { variant_option_id: i.variant_option_id } : {}) })),
       boxes: (Array.isArray(x.boxes) ? x.boxes : []).map((b) => { const choices = {}, addons = {}, notes = {};
         for (const p of (Array.isArray(b && b.picks) ? b.picks : [])) { if (!p || !p.slot) continue; const k = String(p.slot);
           if (p.product_id != null) choices[k] = { product_id: String(p.product_id), variant_option_id: p.variant_option_id ?? null };

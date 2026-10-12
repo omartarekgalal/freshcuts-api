@@ -213,7 +213,19 @@ function canon(tok) {
 export const tokens = (s) => normalize(s).split(" ").filter(Boolean).map(canon);
 
 /* الصفحات الحية → فهرس { items:[{id,name,nameEn,desc,price,image,category,categoryAr,tokens}], categories } */
-export function indexMenu(pages = [], { hiddenIds = [], soldOut = {} } = {}) {
+/* M3 (١٢/١٠): أوزان الصنف اللي بيتباع بالوزن من بيانات نقطة البيع الحيّة (variant.options بتاعة ‎/api/product/<id>‎): الاسم والسعر ورقم الاختيار.
+   مفيش أي سعر مكتوب هنا. الاختيار اللي مش متاح للبيع بيتشال. ⇒ [{ label_ar, label_en, price, price_ex, variant_option_id }] مترتبة بالسعر، أو null. */
+export function weightsOf(options) {
+  const out = [];
+  for (const o of Array.isArray(options) ? options : []) {
+    const price = Number(o && o.retail_price), id = o && o.id;
+    if (!Number.isFinite(price) || price <= 0 || id == null || !String(o.name || "").trim()) continue;
+    if (o.available && (o.available.available === false || o.available.can_be_sold === false)) continue;
+    out.push({ label_ar: String(o.name).trim(), label_en: String(o.local_name || o.name).trim(), price, price_ex: Number.isFinite(Number(o.price)) ? Number(o.price) : null, variant_option_id: Number(id) });
+  }
+  return out.length ? out.sort((x, y) => x.price - y.price) : null;
+}
+export function indexMenu(pages = [], { hiddenIds = [], soldOut = {}, variants = null } = {}) {
   const hidden = new Set((hiddenIds || []).map(String));
   const items = [], seen = new Map(), cats = [];
   const byRank = [...pages].sort((a, b) => (MERCH.has(a.title) ? 1 : 0) - (MERCH.has(b.title) ? 1 : 0));
@@ -233,6 +245,7 @@ export function indexMenu(pages = [], { hiddenIds = [], soldOut = {} } = {}) {
           category: p.title, categoryAr: p.local_title || p.title, soldOut: Boolean(soldOut[id]),
           byWeight: p.title === "Grills by the Kilo" || /بالوزن/.test(name),
         };
+        if (row.byWeight) row.weights = variants && variants[id] ? weightsOf(variants[id]) : null;      // null = الأوزان مش معروفة الحين ⇒ «من X» زي الأول، ومفيش سلة بالوزن
         row.tokens = [...new Set([...tokens(name), ...tokens(nameEn)])].filter((t) => !STOPWORDS.has(t));
         seen.set(id, row); items.push(row);
       }

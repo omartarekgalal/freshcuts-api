@@ -1,0 +1,320 @@
+{
+ "note": "public snapshot 13/10/2026 of /api/product/<id> variant options for the by-weight dishes",
+ "variants": {
+  "91": [
+   {
+    "id": 44,
+    "name": "ثلث كيلو",
+    "local_name": "1/3 Kilo",
+    "price": 34.7826087,
+    "retail_price": 40,
+    "available": {
+     "available": true,
+     "can_be_sold": true
+    }
+   },
+   {
+    "id": 45,
+    "name": "نصف كيلو",
+    "local_name": "1/2 Kilo",
+    "price": 52.17391304,
+    "retail_price": 60,
+    "available": {
+     "available": true,
+     "can_be_sold": true
+    }
+   },
+   {
+    "id": 46,
+    "name": "كيلو",
+    "local_name": "Kilo",
+    "price": 104.34782609,
+    "retail_price": 120,
+    "available": {
+     "available": true,
+     "can_be_sold": true
+    }
+   }
+  ],
+  "94": [
+   {
+    "id": 47,
+    "name": "ثلث كيلو",
+    "local_name": "1/3 Kilo",
+    "price": 40.86956522,
+    "retail_price": 47,
+    "available": {
+     "available": true,
+     "can_be_sold": true
+    }
+   },
+   {
+    "id": 48,
+    "name": "نصف كيلو",
+    "local_name": "1/2 Kilo",
+    "price": 60.86956522,
+    "retail_price": 70,
+    "available": {
+     "available": true,
+     "can_be_sold": true
+    }
+   },
+   {
+    "id": 49,
+    "name": "كيلو",
+    "local_name": "Kilo",
+    "price": 121.73913043,
+    "retail_price": 140,
+    "available": {
+     "available": true,
+     "can_be_sold": true
+    }
+   }
+  ],
+  "97": [
+   {
+    "id": 50,
+    "name": "ثلث كيلو",
+    "local_name": "1/3 Kilo",
+    "price": 40.86956522,
+    "retail_price": 47,
+    "available": {
+     "available": true,
+     "can_be_sold": true
+    }
+   },
+   {
+    "id": 51,
+    "name": "نصف كيلو",
+    "local_name": "1/2 Kilo",
+    "price": 60.86956522,
+    "retail_price": 70,
+    "available": {
+     "available": true,
+     "can_be_sold": true
+    }
+   },
+   {
+    "id": 52,
+    "name": "كيلو",
+    "local_name": "Kilo",
+    "price": 121.73913043,
+    "retail_price": 140,
+    "available": {
+     "available": true,
+     "can_be_sold": true
+    }
+   }
+  ],
+  "100": [
+   {
+    "id": 53,
+    "name": "ثلث كيلو",
+    "local_name": "1/3 Kilo",
+    "price": 53.91304348,
+    "retail_price": 62,
+    "available": {
+     "available": true,
+     "can_be_sold": true
+    }
+   },
+   {
+    "id": 54,
+    "name": "نصف كيلو",
+    "local_name": "1/2 Kilo",
+    "price": 80.86956522,
+    "retail_price": 93,
+    "available": {
+     "available": true,
+     "can_be_sold": true
+    }
+   },
+   {
+    "id": 55,
+    "name": "كيلو",
+    "local_name": "Kilo",
+    "price": 160.86956522,
+    "retail_price": 185,
+    "available": {
+     "available": true,
+     "can_be_sold": true
+    }
+   }
+  ],
+  "103": [
+   {
+    "id": 56,
+    "name": "ثلث كيلو",
+    "local_name": "1/3 Kilo",
+    "price": 46.08695652,
+    "retail_price": 53,
+    "available": {
+     "available": true,
+     "can_be_sold": true
+    }
+   },
+   {
+    "id": 57,
+    "name": "نصف كيلو",
+    "local_name": "1/2 Kilo",
+    "price": 67.82608696,
+    "retail_price": 78,
+    "available": {
+     "available": true,
+     "can_be_sold": true
+    }
+   },
+   {
+    "id": 58,
+    "name": "كيلو",
+    "local_name": "Kilo",
+    "price": 134.7826087,
+    "retail_price": 155,
+    "available": {
+     "available": true,
+     "can_be_sold": true
+    }
+   }
+  ],
+  "105": [
+   {
+    "id": 59,
+    "name": "ثلث كيلو",
+    "local_name": "1/3 Kilo",
+    "price": 34.7826087,
+    "retail_price": 40,
+    "available": {
+     "available": true,
+     "can_be_sold": true
+    }
+   },
+   {
+    "id": 60,
+    "name": "نصف كيلو",
+    "local_name": "1/2 Kilo",
+    "price": 52.17391304,
+    "retail_price": 60,
+    "available": {
+     "available": true,
+     "can_be_sold": true
+    }
+   },
+   {
+    "id": 61,
+    "name": "كيلو",
+    "local_name": "Kilo",
+    "price": 104.34782609,
+    "retail_price": 120,
+    "available": {
+     "available": true,
+     "can_be_sold": true
+    }
+   }
+  ],
+  "108": [
+   {
+    "id": 62,
+    "name": "ثلث كيلو",
+    "local_name": "1/3 Kilo",
+    "price": 28.69565217,
+    "retail_price": 33,
+    "available": {
+     "available": true,
+     "can_be_sold": true
+    }
+   },
+   {
+    "id": 63,
+    "name": "نصف كيلو",
+    "local_name": "1/2 Kilo",
+    "price": 43.47826087,
+    "retail_price": 50,
+    "available": {
+     "available": true,
+     "can_be_sold": true
+    }
+   },
+   {
+    "id": 64,
+    "name": "كيلو",
+    "local_name": "Kilo",
+    "price": 86.95652174,
+    "retail_price": 100,
+    "available": {
+     "available": true,
+     "can_be_sold": true
+    }
+   }
+  ],
+  "111": [
+   {
+    "id": 65,
+    "name": "ثلث كيلو",
+    "local_name": "1/3 Kilo",
+    "price": 26.08695652,
+    "retail_price": 30,
+    "available": {
+     "available": true,
+     "can_be_sold": true
+    }
+   },
+   {
+    "id": 66,
+    "name": "نصف كيلو",
+    "local_name": "1/2 Kilo",
+    "price": 39.13043478,
+    "retail_price": 45,
+    "available": {
+     "available": true,
+     "can_be_sold": true
+    }
+   },
+   {
+    "id": 67,
+    "name": "كيلو",
+    "local_name": "Kilo",
+    "price": 78.26086957,
+    "retail_price": 90,
+    "available": {
+     "available": true,
+     "can_be_sold": true
+    }
+   }
+  ],
+  "114": [
+   {
+    "id": 68,
+    "name": "ثلث كيلو",
+    "local_name": "1/3 Kilo",
+    "price": 32.17391304,
+    "retail_price": 37,
+    "available": {
+     "available": true,
+     "can_be_sold": true
+    }
+   },
+   {
+    "id": 69,
+    "name": "نصف كيلو",
+    "local_name": "1/2 Kilo",
+    "price": 47.82608696,
+    "retail_price": 55,
+    "available": {
+     "available": true,
+     "can_be_sold": true
+    }
+   },
+   {
+    "id": 70,
+    "name": "كيلو",
+    "local_name": "Kilo",
+    "price": 95.65217391,
+    "retail_price": 110,
+    "available": {
+     "available": true,
+     "can_be_sold": true
+    }
+   }
+  ]
+ }
+}

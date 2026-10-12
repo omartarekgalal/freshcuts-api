@@ -227,6 +227,7 @@ export const TEXTS = Object.freeze({
   cat_body: t("أصناف قسم", "{cat} 👇 اختر الصنف لتفاصيله.\n{more}", "{cat} 👇 pick a dish for details.\n{more}", ["cat"], ["more"], 300),
   more_line: t("سطر «وأصناف ثانية»", "وباقي أصناف القسم في الموقع.", "The rest of this section is on the website.", [], [], 200),
   item_body: t("صنف: التفاصيل والسعر", "*{name}* — {price}\n{desc}\n{note}", "*{name}* — {price}\n{desc}\n{note}", ["name", "price"], ["desc", "note"]),
+  item_weights: t("صنف بالوزن: الاسم ثم الأوزان بأسعارها", "*{name}*\n{prices}\n{desc}\n{note}", "*{name}*\n{prices}\n{desc}\n{note}", ["name", "prices"], ["desc", "note"]),
   sold_line: t("سطر «خلص اليوم»", "⚠️ خلص اليوم.", "⚠️ Sold out today.", [], [], 120),
   items_body: t("أسعار كذا صنف", "{lines}", "{lines}", ["lines"]),
   notmenu: t("صنف مش عندنا", "ما عندنا {what} في المنيو 🙏 تقدر تشوف الأقسام من هنا:", "We don't have {what} on the menu 🙏 Browse the sections here:", ["what"], [], 300),
@@ -931,8 +932,12 @@ export function buildReply(key, c) {
       const it = data.menu && data.menu.items ? data.menu.items.find((i) => i.id === String(c.arg)) : null;
       if (!it) throw new DataMissing("item");
       const slug = data.links && data.links["wab-menu"] === true ? "wab-menu" : pickLink(cfg, data, c.referral);
-      return { body: F("item_body", { name: lang === "en" ? (it.nameEn || it.name) : it.name, price: priceText(lang, it), desc: lang === "en" || isMashakel(it) ? "" : it.desc, note: it.soldOut ? T("sold_line") : "" }),
-        cta: { title: T("cta_item"), url: `${linkUrl(slug)}#item-${it.id}` }, link: slug };
+      const nm = lang === "en" ? (it.nameEn || it.name) : it.name, desc = lang === "en" || isMashakel(it) ? "" : it.desc;
+      const wl = weightsLine(lang, it);
+      const body = wl ? F("item_weights", { name: nm, prices: wl, desc, note: it.soldOut ? T("sold_line") : "" }) : F("item_body", { name: nm, price: priceText(lang, it), desc, note: it.soldOut ? T("sold_line") : "" });
+      /* خلص اليوم ⇒ من غير زر «اطلبه الآن»: نعرض الأقسام بدله (M3). */
+      if (it.soldOut) return { body, buttons: [{ id: "m:cats", title: T("row_cats") }, { id: "m:boxes", title: T("row_boxes") }, { id: "bot:menu", title: T("btn_main") }] };
+      return { body, cta: { title: T("cta_item"), url: `${linkUrl(slug)}#item-${it.id}` }, link: slug };
     }
     case "items": {
       const its = (Array.isArray(c.arg) ? c.arg : []).map((id) => data.menu && data.menu.items ? data.menu.items.find((i) => i.id === String(id)) : null).filter(Boolean);
@@ -1103,7 +1108,9 @@ function timedBlock(cfg, lang, data) {
 }
 export class FaqMissing extends DataMissing { constructor(k) { super(`faq:${k}`); this.faq = k; } }
 const isMashakel = (i) => /مشكل مخصوص/.test(i.name);       // قاعدة عمر: مشكل مخصوص من غير أوزان ولا عدد أشخاص ⇒ الاسم والسعر بس
-const priceText = (lang, i) => (i.byWeight ? (lang === "en" ? `from SAR ${money(i.price)}` : `من ${money(i.price)} ر.س`) : (lang === "en" ? `SAR ${money(i.price)}` : `${money(i.price)} ر.س`));
+/* M3: الصنف بالوزن بيتقال بأوزانه وأسعارها الحقيقية («ثلث كيلو: 53 ر.س · نصف كيلو: 78 ر.س · كيلو: 155 ر.س»). «من X» بس لو الأوزان مش متاحة الحين. */
+export const weightsLine = (lang, i) => (i && Array.isArray(i.weights) && i.weights.length ? i.weights.map((w) => (lang === "en" ? `${w.label_en}: SAR ${money(w.price)}` : `${w.label_ar}: ${money(w.price)} ر.س`)).join(" · ") : "");
+const priceText = (lang, i) => (i.byWeight ? (weightsLine(lang, i) || (lang === "en" ? `from SAR ${money(i.price)}` : `من ${money(i.price)} ر.س`)) : (lang === "en" ? `SAR ${money(i.price)}` : `${money(i.price)} ر.س`));
 const fitTitle = (s2, n2) => { const a = [...String(s2 || "").trim()]; return a.length <= n2 ? a.join("") : a.slice(0, n2 - 1).join("").trim() + "…"; };
 
 /* المجرّد ⇒ جسم Cloud API. interactive=false ⇒ نص عادي (الرابط في آخره؛ الأزرار تتحوّل لتعليمات مكتوبة). */
@@ -1616,16 +1623,32 @@ export function register(app, ctx, deps = {}) {
     if (!r.ok) throw new Error(`menu HTTP ${r.status}`);
     return (await r.json())?.data?.pages || [];
   });
-  let menuCache = { at: 0, pages: null };
+  /* M3: أوزان الأصناف اللي بتتباع بالوزن — نفس مصدر صفحة الصنف في المتجر (‎/api/product/<id>‎ ⇒ data.variant.options). بتتجاب مع تحديث المنيو وتتخزّن معاه.
+     صنف ماجاش ⇒ بيفضل بآخر أوزان معروفة له (لحد ما كاش المنيو نفسه يقدم)، أو من غير أوزان. */
+  /* لو المنيو نفسه متبدّل (اختبارات) ومفيش محمّل أوزان متبعت ⇒ مفيش أي نداء شبكة للأوزان. */
+  const fetchVariants = deps.fetchVariants || (deps.fetchMenuPages ? null : async (id) => {
+    const r = await fetch(`${storeBase}/api/product/${encodeURIComponent(id)}?branch_id=1`, { headers: { "User-Agent": "freshcuts-wabot" }, signal: AbortSignal.timeout(6000) });
+    if (!r.ok) throw new Error(`product HTTP ${r.status}`);
+    return (await r.json())?.data?.variant?.options || [];
+  });
+  const isByWeight = (p, it) => p.title === "Grills by the Kilo" || /بالوزن/.test(String(it.name || it.local_name || ""));
+  async function loadVariants(pages, prev) {
+    if (!fetchVariants) return prev || {};
+    const ids = [...new Set(pages.flatMap((p) => (p.items || []).filter((it) => isByWeight(p, it)).map((it) => String(it.id))))].slice(0, 40);
+    const out = {};
+    await Promise.all(ids.map(async (id) => { try { const o = await fetchVariants(id); if (Array.isArray(o) && o.length) out[id] = o; else if (prev && prev[id]) out[id] = prev[id]; } catch (e) { if (prev && prev[id]) out[id] = prev[id]; } }));
+    return out;
+  }
+  let menuCache = { at: 0, pages: null, variants: {} };
   async function menuIndex(settings, now) {
     if (!menuCache.pages || Date.now() - menuCache.at > tune.menuCacheMin * 60_000) {
-      try { const pg = await fetchMenuPages(); if (Array.isArray(pg) && pg.length) menuCache = { at: Date.now(), pages: pg }; }
+      try { const pg = await fetchMenuPages(); if (Array.isArray(pg) && pg.length) menuCache = { at: Date.now(), pages: pg, variants: await loadVariants(pg, menuCache.variants) }; }
       catch (e) { console.error("[wabot] menu:", e.message); }
     }
     if (!menuCache.pages || Date.now() - menuCache.at > tune.staleCacheMin * 60_000) return null;
     const soldOut = {};
     for (const [k, v] of Object.entries(settings?.catalog?.soldOut || {})) if (!v?.until || Date.parse(v.until) > now.getTime()) soldOut[k] = true;
-    try { return indexMenu(menuCache.pages, { hiddenIds: settings?.catalog?.hiddenIds || [], soldOut }); } catch { return null; }
+    try { return indexMenu(menuCache.pages, { hiddenIds: settings?.catalog?.hiddenIds || [], soldOut, variants: menuCache.variants }); } catch { return null; }
   }
   /* العروض الشغّالة الحين من سجل العروض (نفس اللي المتجر بيعرضه) — كاش دقيقتين؛ وقع ⇒ null (نقول أقل) */
   const fetchOffers = deps.fetchOffers || (async () => { const r = await self.request("/api/offers"); if (!r.ok) throw new Error(`offers HTTP ${r.status}`); return (await r.json())?.offers || []; });
@@ -2259,6 +2282,10 @@ export function register(app, ctx, deps = {}) {
       const r = await q("SELECT target_type, target_id FROM cms_links WHERE slug=$1 AND active", [slug]);
       const l = r && r[0] ? r[0] : null;
       if (l && l.target_type === "box") { const b = (know.bundles || []).find((x) => String(x.slug) === String(l.target_id)); if (b) advertised = { kind: "box", slug: String(b.slug), name: b.name, ...(b.name_en ? { name_en: b.name_en } : {}), price: Number(b.price) }; }
+      else if (l && l.target_type === "product") {      // M3: إعلان عن صنف (مثلاً مشكل مخصوص بالوزن): الاسم والأوزان بأسعارها
+        const it = know.menu && know.menu.items ? know.menu.items.find((x) => String(x.id) === String(l.target_id)) : null;
+        if (it && !it.soldOut) advertised = { kind: "item", id: String(it.id), name: it.name, ...(it.nameEn ? { name_en: it.nameEn } : {}), ...(it.byWeight && it.weights ? { by_weight: true, weights: it.weights.map((w) => ({ label: w.label_ar, label_en: w.label_en, price: w.price, variant_option_id: w.variant_option_id })) } : { price: it.price }) };
+      }
       else if (l && l.target_type === "offer") { let list = null; try { list = await liveOffers(settings, now); } catch { list = null; } const o = (list || []).find((x) => String(x.id) === String(l.target_id)); if (o) advertised = { kind: "offer", title: o.title, price: Number(o.price), ...(o.until ? { until: o.until } : {}) }; }
     }
     return headline || advertised ? { ...(headline ? { ad_text: headline } : {}), ...(advertised ? { advertised } : {}) } : null;

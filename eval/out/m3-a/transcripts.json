@@ -1,0 +1,3630 @@
+[
+ {
+  "id": "m3-price-mashakel",
+  "group": "by weight: price",
+  "world": {
+   "profile": "new"
+  },
+  "expect": {
+   "noCart": true,
+   "noHandover": true,
+   "mustContain": [
+    "53",
+    "78",
+    "155"
+   ],
+   "mustNotContain": [
+    "\\d+ ?(اشخاص|أشخاص|شخص|افراد|أفراد|people|persons)",
+    "يكفي \\d",
+    "قطع",
+    "ريش\\b.*كباب"
+   ]
+  },
+  "turns": [
+   {
+    "i": 0,
+    "customer": "كم كيلو المشكل المخصوص؟",
+    "cls": "item",
+    "raw": "item_info",
+    "by": "assistant",
+    "reply": "مشكل مخصوص بالوزن متوفر بهذه الأوزان:\nثلث كيلو: 53 ر.س · نصف كيلو: 78 ر.س · كيلو: 155 ر.س\nتبيه ثلث كيلو، نصف كيلو ولا كيلو؟",
+    "cart": null,
+    "handover": null,
+    "outcome": "sent",
+    "tools": [
+     {
+      "name": "search_menu",
+      "input": {
+       "query": "المشكل المخصوص"
+      },
+      "result": {
+       "ok": true,
+       "results": [
+        {
+         "id": "103",
+         "name": "مشكل مخصوص بالوزن",
+         "name_en": "Special Mixed Grill (by the kilo)",
+         "section": "مشاوي بالوزن",
+         "kind": "main",
+         "sold_out": false,
+         "by_weight": true,
+         "weights": [
+          {
+           "label": "ثلث كيلو",
+           "label_en": "1/3 Kilo",
+           "price": 53,
+           "variant_option_id": 56
+          },
+          {
+           "label": "نصف كيلو",
+           "label_en": "1/2 Kilo",
+           "price": 78,
+           "variant_option_id": 57
+          },
+          {
+           "label": "كيلو",
+           "label_en": "Kilo",
+           "price": 155,
+           "variant_option_id": 58
+          }
+         ],
+         "how_to_price": "sold by weight: every price belongs to ONE of the weights above; always say the weight with its price"
+        }
+       ]
+      },
+      "ms": 2
+     }
+    ],
+    "verdicts": [
+     {
+      "ok": true,
+      "problems": [],
+      "text": "مشكل مخصوص بالوزن متوفر بهذه الأوزان:\nثلث كيلو: 53 ر.س · نصف كيلو: 78 ر.س · كيلو: 155 ر.س\nتبيه ثلث كيلو، نصف كيلو ولا كيلو؟"
+     }
+    ],
+    "calls": [
+     {
+      "model": "claude-haiku-5-5",
+      "tier": "fast",
+      "ms": 2945,
+      "outcome": "ok",
+      "in": 12821,
+      "out": 170,
+      "cached": 0,
+      "costSar": 0.005127
+     },
+     {
+      "model": "claude-sonnet-5-5",
+      "tier": "strong",
+      "ms": 1316,
+      "outcome": "ok",
+      "in": 12821,
+      "out": 56,
+      "cached": 0,
+      "costSar": 0.098258
+     },
+     {
+      "model": "claude-sonnet-5-5",
+      "tier": "strong",
+      "ms": 1240,
+      "outcome": "ok",
+      "in": 402,
+      "out": 106,
+      "cached": 10253,
+      "costSar": 0.01468
+     }
+    ],
+    "ms": 5537,
+    "costSar": 0.118065,
+    "model": "claude-sonnet-5-5",
+    "suggestions": [],
+    "context": {
+     "open_now": true,
+     "closes_at": "2 فجراً",
+     "location_shared": false,
+     "customer": {
+      "known": false,
+      "name": null,
+      "orders": 0,
+      "status": "no_orders",
+      "days_since_last": null,
+      "usual_basket_sar": null,
+      "usual_mode": null,
+      "usual_hour": null,
+      "favourites": [],
+      "taste": null,
+      "last_order": null,
+      "districts": [],
+      "loyalty": {
+       "every": 3,
+       "progress": 0,
+       "left": 3,
+       "reward": "free_delivery",
+       "min_total": 60,
+       "status": null
+      },
+      "unused_rewards": [],
+      "first_order_offer": true,
+      "language": "ar"
+     },
+     "offers": {
+      "first_order": {
+       "eligible": true,
+       "code": "FIRST",
+       "free_delivery": true,
+       "min_total": 60,
+       "reason": null
+      },
+      "loyalty": {
+       "every": 3,
+       "progress": 0,
+       "left": 3,
+       "reward": "free_delivery",
+       "min_total": 60,
+       "status": null
+      }
+     },
+     "branch": "📍 فرعنا في حي السلامة بجدة، عند دوار رامي.",
+     "boxes": [
+      "box-solo-crepe: بوكس الكريب الفردي",
+      "box-solo-mixgrill: بوكس الميكس جريل الفردي",
+      "box-solo-burger: بوكس البرجر الفردي",
+      "box-solo-pasta: بوكس الباستا الفردي",
+      "box-solo-hawawshi: بوكس الحواوشي الفردي",
+      "box-solo-meal: بوكس وجبة المشاوي الفردي",
+      "box-crepe-duo: بوكس الكريب لشخصين",
+      "box-mixgrill-duo: ميكس جريل لشخصين",
+      "box-pizza-pasta: بيتزا وباستا لشخصين",
+      "box-meals-duo: وجبتين مشاوي لشخصين",
+      "box-burger-duo: بوكس البرجر لشخصين",
+      "box-late-night: بوكس السهرة",
+      "box-taste-all: بوكس التشكيلة",
+      "box-grill-half-half: بوكس المشاوي نص ونص",
+      "box-family: بوكس العائلة — مشاوي وبيتزا وباستا",
+      "box-pizza-night: بوكس سهرة البيتزا",
+      "box-mashakel: بوكس المشكل المخصوص",
+      "box-ribs-grill: بوكس الريش والمشاوي"
+     ]
+    },
+    "tier": "strong",
+    "escalated": true,
+    "lang": "ar"
+   }
+  ],
+  "carts": [],
+  "costSar": 0.118065,
+  "grade": {
+   "pass": true,
+   "fails": [],
+   "review": []
+  }
+ },
+ {
+  "id": "m3-price-kebab-en",
+  "group": "by weight: price",
+  "world": {
+   "profile": "new"
+  },
+  "expect": {
+   "noCart": true,
+   "noHandover": true,
+   "mustContain": [
+    "140"
+   ],
+   "mustNotContain": [
+    "kilo[^\\n]{0,25}\\b47\\b",
+    "\\b47\\b[^\\n]{0,12}(per|a|the) kilo"
+   ]
+  },
+  "turns": [
+   {
+    "i": 0,
+    "customer": "how much is the grilled kebab by the kilo?",
+    "cls": "item",
+    "raw": "item_price",
+    "by": "assistant",
+    "reply": "The Grilled Kebab (by the kilo) is priced by weight: 1/3 Kilo: 47 SAR · 1/2 Kilo: 70 SAR · Kilo: 140 SAR.\n\nWhich weight would you like?",
+    "cart": null,
+    "handover": null,
+    "outcome": "sent",
+    "tools": [
+     {
+      "name": "search_menu",
+      "input": {
+       "query": "kebab kilo"
+      },
+      "result": {
+       "ok": true,
+       "results": [
+        {
+         "id": "97",
+         "name": "كباب مشوي بالوزن",
+         "name_en": "Grilled Kebab (by the kilo)",
+         "section": "مشاوي بالوزن",
+         "kind": "main",
+         "sold_out": false,
+         "by_weight": true,
+         "weights": [
+          {
+           "label": "ثلث كيلو",
+           "label_en": "1/3 Kilo",
+           "price": 47,
+           "variant_option_id": 50
+          },
+          {
+           "label": "نصف كيلو",
+           "label_en": "1/2 Kilo",
+           "price": 70,
+           "variant_option_id": 51
+          },
+          {
+           "label": "كيلو",
+           "label_en": "Kilo",
+           "price": 140,
+           "variant_option_id": 52
+          }
+         ],
+         "how_to_price": "sold by weight: every price belongs to ONE of the weights above; always say the weight with its price"
+        },
+        {
+         "id": "111",
+         "name": "صدور مشوية بالوزن",
+         "name_en": "Grilled Chicken Breast (by the kilo)",
+         "section": "مشاوي بالوزن",
+         "kind": "main",
+         "sold_out": false,
+         "by_weight": true,
+         "weights": [
+          {
+           "label": "ثلث كيلو",
+           "label_en": "1/3 Kilo",
+           "price": 30,
+           "variant_option_id": 65
+          },
+          {
+           "label": "نصف كيلو",
+           "label_en": "1/2 Kilo",
+           "price": 45,
+           "variant_option_id": 66
+          },
+          {
+           "label": "كيلو",
+           "label_en": "Kilo",
+           "price": 90,
+           "variant_option_id": 67
+          }
+         ],
+         "how_to_price": "sold by weight: every price belongs to ONE of the weights above; always say the weight with its price"
+        },
+        {
+         "id": "108",
+         "name": "كبدة مشوية بالوزن",
+         "name_en": "Grilled Liver (by the kilo)",
+         "section": "مشاوي بالوزن",
+         "kind": "main",
+         "sold_out": false,
+         "by_weight": true,
+         "weights": [
+          {
+           "label": "ثلث كيلو",
+           "label_en": "1/3 Kilo",
+           "price": 33,
+           "variant_option_id": 62
+          },
+          {
+           "label": "نصف كيلو",
+           "label_en": "1/2 Kilo",
+           "price": 50,
+           "variant_option_id": 63
+          },
+          {
+           "label": "كيلو",
+           "label_en": "Kilo",
+           "price": 100,
+           "variant_option_id": 64
+          }
+         ],
+         "how_to_price": "sold by weight: every price belongs to ONE of the weights above; always say the weight with its price"
+        },
+        {
+         "id": "114",
+         "name": "شيش طاووق مشوي بالوزن",
+         "name_en": "Grilled Shish Tawook (by the kilo)",
+         "section": "مشاوي بالوزن",
+         "kind": "main",
+         "sold_out": false,
+         "by_weight": true,
+         "weights": [
+          {
+           "label": "ثلث كيلو",
+           "label_en": "1/3 Kilo",
+           "price": 37,
+           "variant_option_id": 68
+          },
+          {
+           "label": "نصف كيلو",
+           "label_en": "1/2 Kilo",
+           "price": 55,
+           "variant_option_id": 69
+          },
+          {
+           "label": "كيلو",
+           "label_en": "Kilo",
+           "price": 110,
+           "variant_option_id": 70
+          }
+         ],
+         "how_to_price": "sold by weight: every price belongs to ONE of the weights above; always say the weight with its price"
+        },
+        {
+         "id": "91",
+         "name": "كفتة مشوية بالوزن",
+         "name_en": "Grilled Kofta (by the kilo)",
+         "section": "مشاوي بالوزن",
+         "kind": "main",
+         "sold_out": false,
+         "by_weight": true,
+         "weights": [
+          {
+           "label": "ثلث كيلو",
+           "label_en": "1/3 Kilo",
+           "price": 40,
+           "variant_option_id": 44
+          },
+          {
+           "label": "نصف كيلو",
+           "label_en": "1/2 Kilo",
+           "price": 60,
+           "variant_option_id": 45
+          },
+          {
+           "label": "كيلو",
+           "label_en": "Kilo",
+           "price": 120,
+           "variant_option_id": 46
+          }
+         ],
+         "how_to_price": "sold by weight: every price belongs to ONE of the weights above; always say the weight with its price"
+        },
+        {
+         "id": "105",
+         "name": "سجق مشوي بالوزن",
+         "name_en": "Grilled Sausage (by the kilo)",
+         "section": "مشاوي بالوزن",
+         "kind": "main",
+         "sold_out": false,
+         "by_weight": true,
+         "weights": [
+          {
+           "label": "ثلث كيلو",
+           "label_en": "1/3 Kilo",
+           "price": 40,
+           "variant_option_id": 59
+          },
+          {
+           "label": "نصف كيلو",
+           "label_en": "1/2 Kilo",
+           "price": 60,
+           "variant_option_id": 60
+          },
+          {
+           "label": "كيلو",
+           "label_en": "Kilo",
+           "price": 120,
+           "variant_option_id": 61
+          }
+         ],
+         "how_to_price": "sold by weight: every price belongs to ONE of the weights above; always say the weight with its price"
+        },
+        {
+         "id": "94",
+         "name": "طرب مشوي بالوزن",
+         "name_en": "Grilled Tarb (by the kilo)",
+         "section": "مشاوي بالوزن",
+         "kind": "main",
+         "sold_out": false,
+         "by_weight": true,
+         "weights": [
+          {
+           "label": "ثلث كيلو",
+           "label_en": "1/3 Kilo",
+           "price": 47,
+           "variant_option_id": 47
+          },
+          {
+           "label": "نصف كيلو",
+           "label_en": "1/2 Kilo",
+           "price": 70,
+           "variant_option_id": 48
+          },
+          {
+           "label": "كيلو",
+           "label_en": "Kilo",
+           "price": 140,
+           "variant_option_id": 49
+          }
+         ],
+         "how_to_price": "sold by weight: every price belongs to ONE of the weights above; always say the weight with its price"
+        },
+        {
+         "id": "103",
+         "name": "مشكل مخصوص بالوزن",
+         "name_en": "Special Mixed Grill (by the kilo)",
+         "section": "مشاوي بالوزن",
+         "kind": "main",
+         "sold_out": false,
+         "by_weight": true,
+         "weights": [
+          {
+           "label": "ثلث كيلو",
+           "label_en": "1/3 Kilo",
+           "price": 53,
+           "variant_option_id": 56
+          },
+          {
+           "label": "نصف كيلو",
+           "label_en": "1/2 Kilo",
+           "price": 78,
+           "variant_option_id": 57
+          },
+          {
+           "label": "كيلو",
+           "label_en": "Kilo",
+           "price": 155,
+           "variant_option_id": 58
+          }
+         ],
+         "how_to_price": "sold by weight: every price belongs to ONE of the weights above; always say the weight with its price"
+        }
+       ]
+      },
+      "ms": 6
+     },
+     {
+      "name": "search_menu",
+      "input": {
+       "query": "grilled kebab"
+      },
+      "result": {
+       "ok": true,
+       "results": [
+        {
+         "id": "97",
+         "name": "كباب مشوي بالوزن",
+         "name_en": "Grilled Kebab (by the kilo)",
+         "section": "مشاوي بالوزن",
+         "kind": "main",
+         "sold_out": false,
+         "by_weight": true,
+         "weights": [
+          {
+           "label": "ثلث كيلو",
+           "label_en": "1/3 Kilo",
+           "price": 47,
+           "variant_option_id": 50
+          },
+          {
+           "label": "نصف كيلو",
+           "label_en": "1/2 Kilo",
+           "price": 70,
+           "variant_option_id": 51
+          },
+          {
+           "label": "كيلو",
+           "label_en": "Kilo",
+           "price": 140,
+           "variant_option_id": 52
+          }
+         ],
+         "how_to_price": "sold by weight: every price belongs to ONE of the weights above; always say the weight with its price"
+        },
+        {
+         "id": "66",
+         "name": "جريلد تشيكن ساندوتش",
+         "name_en": "Grilled Chicken Burger",
+         "price": 19,
+         "section": "برجر",
+         "kind": "main",
+         "sold_out": false,
+         "by_weight": false
+        },
+        {
+         "id": "15",
+         "name": "وجبة صدور مشوية",
+         "name_en": "Grilled Chicken Breast Meal",
+         "price": 25,
+         "section": "وجبات",
+         "kind": "main",
+         "sold_out": false,
+         "by_weight": false
+        },
+        {
+         "id": "111",
+         "name": "صدور مشوية بالوزن",
+         "name_en": "Grilled Chicken Breast (by the kilo)",
+         "section": "مشاوي بالوزن",
+         "kind": "main",
+         "sold_out": false,
+         "by_weight": true,
+         "weights": [
+          {
+           "label": "ثلث كيلو",
+           "label_en": "1/3 Kilo",
+           "price": 30,
+           "variant_option_id": 65
+          },
+          {
+           "label": "نصف كيلو",
+           "label_en": "1/2 Kilo",
+           "price": 45,
+           "variant_option_id": 66
+          },
+          {
+           "label": "كيلو",
+           "label_en": "Kilo",
+           "price": 90,
+           "variant_option_id": 67
+          }
+         ],
+         "how_to_price": "sold by weight: every price belongs to ONE of the weights above; always say the weight with its price"
+        },
+        {
+         "id": "54",
+         "name": "طاسة صدور مشوية",
+         "name_en": "Grilled Chicken Breast Skillet",
+         "price": 32,
+         "section": "طاسات",
+         "kind": "main",
+         "sold_out": false,
+         "by_weight": false
+        },
+        {
+         "id": "108",
+         "name": "كبدة مشوية بالوزن",
+         "name_en": "Grilled Liver (by the kilo)",
+         "section": "مشاوي بالوزن",
+         "kind": "main",
+         "sold_out": false,
+         "by_weight": true,
+         "weights": [
+          {
+           "label": "ثلث كيلو",
+           "label_en": "1/3 Kilo",
+           "price": 33,
+           "variant_option_id": 62
+          },
+          {
+           "label": "نصف كيلو",
+           "label_en": "1/2 Kilo",
+           "price": 50,
+           "variant_option_id": 63
+          },
+          {
+           "label": "كيلو",
+           "label_en": "Kilo",
+           "price": 100,
+           "variant_option_id": 64
+          }
+         ],
+         "how_to_price": "sold by weight: every price belongs to ONE of the weights above; always say the weight with its price"
+        },
+        {
+         "id": "114",
+         "name": "شيش طاووق مشوي بالوزن",
+         "name_en": "Grilled Shish Tawook (by the kilo)",
+         "section": "مشاوي بالوزن",
+         "kind": "main",
+         "sold_out": false,
+         "by_weight": true,
+         "weights": [
+          {
+           "label": "ثلث كيلو",
+           "label_en": "1/3 Kilo",
+           "price": 37,
+           "variant_option_id": 68
+          },
+          {
+           "label": "نصف كيلو",
+           "label_en": "1/2 Kilo",
+           "price": 55,
+           "variant_option_id": 69
+          },
+          {
+           "label": "كيلو",
+           "label_en": "Kilo",
+           "price": 110,
+           "variant_option_id": 70
+          }
+         ],
+         "how_to_price": "sold by weight: every price belongs to ONE of the weights above; always say the weight with its price"
+        },
+        {
+         "id": "91",
+         "name": "كفتة مشوية بالوزن",
+         "name_en": "Grilled Kofta (by the kilo)",
+         "section": "مشاوي بالوزن",
+         "kind": "main",
+         "sold_out": false,
+         "by_weight": true,
+         "weights": [
+          {
+           "label": "ثلث كيلو",
+           "label_en": "1/3 Kilo",
+           "price": 40,
+           "variant_option_id": 44
+          },
+          {
+           "label": "نصف كيلو",
+           "label_en": "1/2 Kilo",
+           "price": 60,
+           "variant_option_id": 45
+          },
+          {
+           "label": "كيلو",
+           "label_en": "Kilo",
+           "price": 120,
+           "variant_option_id": 46
+          }
+         ],
+         "how_to_price": "sold by weight: every price belongs to ONE of the weights above; always say the weight with its price"
+        }
+       ]
+      },
+      "ms": 6
+     }
+    ],
+    "verdicts": [
+     {
+      "ok": true,
+      "problems": [],
+      "text": "The Grilled Kebab (by the kilo) is priced by weight: 1/3 Kilo: 47 SAR · 1/2 Kilo: 70 SAR · Kilo: 140 SAR.\n\nWhich weight would you like?"
+     }
+    ],
+    "calls": [
+     {
+      "model": "claude-haiku-5-5",
+      "tier": "fast",
+      "ms": 2752,
+      "outcome": "ok",
+      "in": 12819,
+      "out": 103,
+      "cached": 0,
+      "costSar": 0.005
+     },
+     {
+      "model": "claude-haiku-5-5",
+      "tier": "fast",
+      "ms": 1036,
+      "outcome": "ok",
+      "in": 4472,
+      "out": 80,
+      "cached": 10252,
+      "costSar": 0.005672
+     }
+    ],
+    "ms": 3868,
+    "costSar": 0.010672000000000001,
+    "model": "claude-haiku-5-5",
+    "suggestions": [],
+    "context": {
+     "open_now": true,
+     "closes_at": "2 فجراً",
+     "location_shared": false,
+     "customer": {
+      "known": false,
+      "name": null,
+      "orders": 0,
+      "status": "no_orders",
+      "days_since_last": null,
+      "usual_basket_sar": null,
+      "usual_mode": null,
+      "usual_hour": null,
+      "favourites": [],
+      "taste": null,
+      "last_order": null,
+      "districts": [],
+      "loyalty": {
+       "every": 3,
+       "progress": 0,
+       "left": 3,
+       "reward": "free_delivery",
+       "min_total": 60,
+       "status": null
+      },
+      "unused_rewards": [],
+      "first_order_offer": true,
+      "language": "ar"
+     },
+     "offers": {
+      "first_order": {
+       "eligible": true,
+       "code": "FIRST",
+       "free_delivery": true,
+       "min_total": 60,
+       "reason": null
+      },
+      "loyalty": {
+       "every": 3,
+       "progress": 0,
+       "left": 3,
+       "reward": "free_delivery",
+       "min_total": 60,
+       "status": null
+      }
+     },
+     "branch": "📍 Our branch is in Al Salamah, Jeddah, by Rami Roundabout.",
+     "boxes": [
+      "box-solo-crepe: بوكس الكريب الفردي",
+      "box-solo-mixgrill: بوكس الميكس جريل الفردي",
+      "box-solo-burger: بوكس البرجر الفردي",
+      "box-solo-pasta: بوكس الباستا الفردي",
+      "box-solo-hawawshi: بوكس الحواوشي الفردي",
+      "box-solo-meal: بوكس وجبة المشاوي الفردي",
+      "box-crepe-duo: بوكس الكريب لشخصين",
+      "box-mixgrill-duo: ميكس جريل لشخصين",
+      "box-pizza-pasta: بيتزا وباستا لشخصين",
+      "box-meals-duo: وجبتين مشاوي لشخصين",
+      "box-burger-duo: بوكس البرجر لشخصين",
+      "box-late-night: بوكس السهرة",
+      "box-taste-all: بوكس التشكيلة",
+      "box-grill-half-half: بوكس المشاوي نص ونص",
+      "box-family: بوكس العائلة — مشاوي وبيتزا وباستا",
+      "box-pizza-night: بوكس سهرة البيتزا",
+      "box-mashakel: بوكس المشكل المخصوص",
+      "box-ribs-grill: بوكس الريش والمشاوي"
+     ]
+    },
+    "tier": "fast",
+    "escalated": false,
+    "lang": "en"
+   }
+  ],
+  "carts": [],
+  "costSar": 0.010672000000000001,
+  "grade": {
+   "pass": false,
+   "fails": [
+    {
+     "type": "must_not_contain",
+     "turn": null,
+     "detail": "kilo[^\\n]{0,25}\\b47\\b"
+    }
+   ],
+   "review": []
+  }
+ },
+ {
+  "id": "m3-price-fast-en",
+  "group": "by weight: price",
+  "world": {
+   "profile": "new"
+  },
+  "expect": {
+   "noCart": true,
+   "noHandover": true,
+   "mustContain": [
+    "155"
+   ],
+   "mustNotContain": [
+    "kilo[^\\n]{0,25}\\b53\\b(?![^\\n]{0,4}\\/)",
+    "by the kilo[^\\n]{0,30}53"
+   ]
+  },
+  "turns": [
+   {
+    "i": 0,
+    "customer": "what's the price of the special mixed grill?",
+    "cls": "item",
+    "raw": "item_price",
+    "by": "assistant",
+    "reply": "The Special Mixed Grill (by the kilo) is priced by weight:\n1/3 Kilo: 53 SAR · 1/2 Kilo: 78 SAR · Kilo: 155 SAR\n\nWhich weight would you like?",
+    "cart": null,
+    "handover": null,
+    "outcome": "sent",
+    "tools": [
+     {
+      "name": "search_menu",
+      "input": {
+       "query": "special mixed grill"
+      },
+      "result": {
+       "ok": true,
+       "results": [
+        {
+         "id": "103",
+         "name": "مشكل مخصوص بالوزن",
+         "name_en": "Special Mixed Grill (by the kilo)",
+         "section": "مشاوي بالوزن",
+         "kind": "main",
+         "sold_out": false,
+         "by_weight": true,
+         "weights": [
+          {
+           "label": "ثلث كيلو",
+           "label_en": "1/3 Kilo",
+           "price": 53,
+           "variant_option_id": 56
+          },
+          {
+           "label": "نصف كيلو",
+           "label_en": "1/2 Kilo",
+           "price": 78,
+           "variant_option_id": 57
+          },
+          {
+           "label": "كيلو",
+           "label_en": "Kilo",
+           "price": 155,
+           "variant_option_id": 58
+          }
+         ],
+         "how_to_price": "sold by weight: every price belongs to ONE of the weights above; always say the weight with its price"
+        },
+        {
+         "id": "18",
+         "name": "وجبة ميكس جريل",
+         "name_en": "Mixed Grill Meal",
+         "price": 37,
+         "section": "وجبات",
+         "kind": "main",
+         "sold_out": false,
+         "by_weight": false
+        },
+        {
+         "id": "10",
+         "name": "كريب ميكس جبن",
+         "name_en": "Mixed Cheese Crepe",
+         "price": 20,
+         "section": "كريبات",
+         "kind": "main",
+         "sold_out": false,
+         "by_weight": false
+        },
+        {
+         "id": "3",
+         "name": "كريب ميكس دجاج",
+         "name_en": "Mixed Chicken Crepe",
+         "price": 29,
+         "section": "كريبات",
+         "kind": "main",
+         "sold_out": false,
+         "by_weight": false
+        },
+        {
+         "id": "1",
+         "name": "كريب ميكس لحوم",
+         "name_en": "Mixed Meat Crepe",
+         "price": 30,
+         "section": "كريبات",
+         "kind": "main",
+         "sold_out": false,
+         "by_weight": false
+        },
+        {
+         "id": "66",
+         "name": "جريلد تشيكن ساندوتش",
+         "name_en": "Grilled Chicken Burger",
+         "price": 19,
+         "section": "برجر",
+         "kind": "main",
+         "sold_out": false,
+         "by_weight": false
+        },
+        {
+         "id": "15",
+         "name": "وجبة صدور مشوية",
+         "name_en": "Grilled Chicken Breast Meal",
+         "price": 25,
+         "section": "وجبات",
+         "kind": "main",
+         "sold_out": false,
+         "by_weight": false
+        },
+        {
+         "id": "111",
+         "name": "صدور مشوية بالوزن",
+         "name_en": "Grilled Chicken Breast (by the kilo)",
+         "section": "مشاوي بالوزن",
+         "kind": "main",
+         "sold_out": false,
+         "by_weight": true,
+         "weights": [
+          {
+           "label": "ثلث كيلو",
+           "label_en": "1/3 Kilo",
+           "price": 30,
+           "variant_option_id": 65
+          },
+          {
+           "label": "نصف كيلو",
+           "label_en": "1/2 Kilo",
+           "price": 45,
+           "variant_option_id": 66
+          },
+          {
+           "label": "كيلو",
+           "label_en": "Kilo",
+           "price": 90,
+           "variant_option_id": 67
+          }
+         ],
+         "how_to_price": "sold by weight: every price belongs to ONE of the weights above; always say the weight with its price"
+        }
+       ]
+      },
+      "ms": 5
+     }
+    ],
+    "verdicts": [
+     {
+      "ok": true,
+      "problems": [],
+      "text": "The Special Mixed Grill (by the kilo) is priced by weight:\n1/3 Kilo: 53 SAR · 1/2 Kilo: 78 SAR · Kilo: 155 SAR\n\nWhich weight would you like?"
+     }
+    ],
+    "calls": [
+     {
+      "model": "claude-haiku-5-5",
+      "tier": "fast",
+      "ms": 3065,
+      "outcome": "ok",
+      "in": 12816,
+      "out": 190,
+      "cached": 0,
+      "costSar": 0.005162
+     },
+     {
+      "model": "claude-haiku-5-5",
+      "tier": "fast",
+      "ms": 964,
+      "outcome": "ok",
+      "in": 1430,
+      "out": 80,
+      "cached": 10249,
+      "costSar": 0.00453
+     }
+    ],
+    "ms": 4078,
+    "costSar": 0.009692,
+    "model": "claude-haiku-5-5",
+    "suggestions": [],
+    "context": {
+     "open_now": true,
+     "closes_at": "2 فجراً",
+     "location_shared": false,
+     "customer": {
+      "known": false,
+      "name": null,
+      "orders": 0,
+      "status": "no_orders",
+      "days_since_last": null,
+      "usual_basket_sar": null,
+      "usual_mode": null,
+      "usual_hour": null,
+      "favourites": [],
+      "taste": null,
+      "last_order": null,
+      "districts": [],
+      "loyalty": {
+       "every": 3,
+       "progress": 0,
+       "left": 3,
+       "reward": "free_delivery",
+       "min_total": 60,
+       "status": null
+      },
+      "unused_rewards": [],
+      "first_order_offer": true,
+      "language": "ar"
+     },
+     "offers": {
+      "first_order": {
+       "eligible": true,
+       "code": "FIRST",
+       "free_delivery": true,
+       "min_total": 60,
+       "reason": null
+      },
+      "loyalty": {
+       "every": 3,
+       "progress": 0,
+       "left": 3,
+       "reward": "free_delivery",
+       "min_total": 60,
+       "status": null
+      }
+     },
+     "branch": "📍 Our branch is in Al Salamah, Jeddah, by Rami Roundabout.",
+     "boxes": [
+      "box-solo-crepe: بوكس الكريب الفردي",
+      "box-solo-mixgrill: بوكس الميكس جريل الفردي",
+      "box-solo-burger: بوكس البرجر الفردي",
+      "box-solo-pasta: بوكس الباستا الفردي",
+      "box-solo-hawawshi: بوكس الحواوشي الفردي",
+      "box-solo-meal: بوكس وجبة المشاوي الفردي",
+      "box-crepe-duo: بوكس الكريب لشخصين",
+      "box-mixgrill-duo: ميكس جريل لشخصين",
+      "box-pizza-pasta: بيتزا وباستا لشخصين",
+      "box-meals-duo: وجبتين مشاوي لشخصين",
+      "box-burger-duo: بوكس البرجر لشخصين",
+      "box-late-night: بوكس السهرة",
+      "box-taste-all: بوكس التشكيلة",
+      "box-grill-half-half: بوكس المشاوي نص ونص",
+      "box-family: بوكس العائلة — مشاوي وبيتزا وباستا",
+      "box-pizza-night: بوكس سهرة البيتزا",
+      "box-mashakel: بوكس المشكل المخصوص",
+      "box-ribs-grill: بوكس الريش والمشاوي"
+     ]
+    },
+    "tier": "fast",
+    "escalated": false,
+    "lang": "en"
+   }
+  ],
+  "carts": [],
+  "costSar": 0.009692,
+  "grade": {
+   "pass": false,
+   "fails": [
+    {
+     "type": "must_not_contain",
+     "turn": null,
+     "detail": "kilo[^\\n]{0,25}\\b53\\b(?![^\\n]{0,4}\\/)"
+    }
+   ],
+   "review": []
+  }
+ },
+ {
+  "id": "m3-cart-two-kilos",
+  "group": "by weight: cart",
+  "world": {
+   "profile": "new"
+  },
+  "expect": {
+   "noHandover": true,
+   "mustContain": [
+    "310"
+   ],
+   "cart": {
+    "option": "pickup",
+    "items": [
+     {
+      "id": 103,
+      "qty": 2
+     }
+    ]
+   }
+  },
+  "turns": [
+   {
+    "i": 0,
+    "customer": "ابي ٢ كيلو مشكل مخصوص استلام",
+    "cls": "item",
+    "raw": "item_info",
+    "by": "assistant",
+    "reply": "مشكل مخصوص بالوزن، 2 كيلو (كيلو بـ 155 ر.س) = 310 ر.س للاستلام.\nتحب أضيف لك مشروبات غازية بـ 3 ر.س؟",
+    "cart": null,
+    "handover": null,
+    "outcome": "sent",
+    "tools": [
+     {
+      "name": "search_menu",
+      "input": {
+       "query": "مشكل مخصوص"
+      },
+      "result": {
+       "ok": true,
+       "results": [
+        {
+         "id": "103",
+         "name": "مشكل مخصوص بالوزن",
+         "name_en": "Special Mixed Grill (by the kilo)",
+         "section": "مشاوي بالوزن",
+         "kind": "main",
+         "sold_out": false,
+         "by_weight": true,
+         "weights": [
+          {
+           "label": "ثلث كيلو",
+           "label_en": "1/3 Kilo",
+           "price": 53,
+           "variant_option_id": 56
+          },
+          {
+           "label": "نصف كيلو",
+           "label_en": "1/2 Kilo",
+           "price": 78,
+           "variant_option_id": 57
+          },
+          {
+           "label": "كيلو",
+           "label_en": "Kilo",
+           "price": 155,
+           "variant_option_id": 58
+          }
+         ],
+         "how_to_price": "sold by weight: every price belongs to ONE of the weights above; always say the weight with its price"
+        }
+       ]
+      },
+      "ms": 6
+     },
+     {
+      "name": "preview_cart",
+      "input": {
+       "items": [
+        {
+         "id": "103",
+         "qty": 2,
+         "variant_option_id": 58
+        }
+       ],
+       "option": "pickup"
+      },
+      "result": {
+       "ok": true,
+       "option": "pickup",
+       "lines": [
+        {
+         "id": "103",
+         "name": "مشكل مخصوص بالوزن",
+         "name_en": "Special Mixed Grill (by the kilo)",
+         "weight": "كيلو",
+         "weight_en": "Kilo",
+         "variant_option_id": 58,
+         "price": 155,
+         "qty": 2,
+         "total": 310,
+         "kind": "main"
+        }
+       ],
+       "subtotal": 310,
+       "problems": [],
+       "note": "prices include VAT; the delivery fee is separate and shown by quote_delivery and again on the site before payment",
+       "saved": false,
+       "suggestion": {
+        "kind": "drink",
+        "item": {
+         "id": "82",
+         "name": "مشروبات غازية",
+         "name_en": "Soft Drinks",
+         "price": 3,
+         "section": "إضافات",
+         "kind": "drink",
+         "sold_out": false,
+         "by_weight": false
+        }
+       },
+       "suggestion_say": "a plain add-on: «تحب أضيف لك مشروبات غازية بـ 3 ر.س؟» — no pressure.",
+       "suggestion_rule": "you may offer this ONE suggestion as a short question; nothing else"
+      },
+      "ms": 8
+     }
+    ],
+    "verdicts": [
+     {
+      "ok": true,
+      "problems": [],
+      "text": "مشكل مخصوص بالوزن، 2 كيلو (كيلو بـ 155 ر.س) = 310 ر.س للاستلام.\nتحب أضيف لك مشروبات غازية بـ 3 ر.س؟"
+     }
+    ],
+    "calls": [
+     {
+      "model": "claude-sonnet-5-5",
+      "tier": "strong",
+      "ms": 1446,
+      "outcome": "ok",
+      "in": 1132,
+      "out": 56,
+      "cached": 9356,
+      "costSar": 0.017607
+     },
+     {
+      "model": "claude-sonnet-5-5",
+      "tier": "strong",
+      "ms": 1397,
+      "outcome": "ok",
+      "in": 402,
+      "out": 95,
+      "cached": 10258,
+      "costSar": 0.014271
+     },
+     {
+      "model": "claude-sonnet-5-5",
+      "tier": "strong",
+      "ms": 1397,
+      "outcome": "ok",
+      "in": 567,
+      "out": 84,
+      "cached": 10578,
+      "costSar": 0.015336
+     }
+    ],
+    "ms": 4266,
+    "costSar": 0.047214000000000006,
+    "model": "claude-sonnet-5-5",
+    "suggestions": [
+     {
+      "kind": "drink",
+      "ref": "82",
+      "name": "مشروبات غازية",
+      "numbers": {
+       "kind": "drink",
+       "item": {
+        "id": "82",
+        "name": "مشروبات غازية",
+        "name_en": "Soft Drinks",
+        "price": 3,
+        "section": "إضافات",
+        "kind": "drink",
+        "sold_out": false,
+        "by_weight": false
+       }
+      },
+      "outcome": "offered"
+     }
+    ],
+    "context": {
+     "open_now": true,
+     "closes_at": "2 فجراً",
+     "location_shared": false,
+     "customer": {
+      "known": false,
+      "name": null,
+      "orders": 0,
+      "status": "no_orders",
+      "days_since_last": null,
+      "usual_basket_sar": null,
+      "usual_mode": null,
+      "usual_hour": null,
+      "favourites": [],
+      "taste": null,
+      "last_order": null,
+      "districts": [],
+      "loyalty": {
+       "every": 3,
+       "progress": 0,
+       "left": 3,
+       "reward": "free_delivery",
+       "min_total": 60,
+       "status": null
+      },
+      "unused_rewards": [],
+      "first_order_offer": true,
+      "language": "ar"
+     },
+     "offers": {
+      "first_order": {
+       "eligible": true,
+       "code": "FIRST",
+       "free_delivery": true,
+       "min_total": 60,
+       "reason": null
+      },
+      "loyalty": {
+       "every": 3,
+       "progress": 0,
+       "left": 3,
+       "reward": "free_delivery",
+       "min_total": 60,
+       "status": null
+      }
+     },
+     "branch": "📍 فرعنا في حي السلامة بجدة، عند دوار رامي.",
+     "boxes": [
+      "box-solo-crepe: بوكس الكريب الفردي",
+      "box-solo-mixgrill: بوكس الميكس جريل الفردي",
+      "box-solo-burger: بوكس البرجر الفردي",
+      "box-solo-pasta: بوكس الباستا الفردي",
+      "box-solo-hawawshi: بوكس الحواوشي الفردي",
+      "box-solo-meal: بوكس وجبة المشاوي الفردي",
+      "box-crepe-duo: بوكس الكريب لشخصين",
+      "box-mixgrill-duo: ميكس جريل لشخصين",
+      "box-pizza-pasta: بيتزا وباستا لشخصين",
+      "box-meals-duo: وجبتين مشاوي لشخصين",
+      "box-burger-duo: بوكس البرجر لشخصين",
+      "box-late-night: بوكس السهرة",
+      "box-taste-all: بوكس التشكيلة",
+      "box-grill-half-half: بوكس المشاوي نص ونص",
+      "box-family: بوكس العائلة — مشاوي وبيتزا وباستا",
+      "box-pizza-night: بوكس سهرة البيتزا",
+      "box-mashakel: بوكس المشكل المخصوص",
+      "box-ribs-grill: بوكس الريش والمشاوي"
+     ]
+    },
+    "tier": "strong",
+    "escalated": false,
+    "lang": "ar"
+   },
+   {
+    "i": 1,
+    "customer": "لا شكرا بس كذا",
+    "cls": "thanks",
+    "raw": "thanks",
+    "by": "assistant",
+    "reply": "سلتك: مشكل مخصوص بالوزن، كيلو × 2 = 310 ر.س (استلام). اضغط الزر وأكمل طلبك وادفع 👇",
+    "cart": {
+     "link": "https://freshcuts.sa/c/ev000001",
+     "code": "ev000001",
+     "subtotal": 310,
+     "option": "pickup",
+     "lines": [
+      {
+       "id": "103",
+       "name": "مشكل مخصوص بالوزن",
+       "name_en": "Special Mixed Grill (by the kilo)",
+       "weight": "كيلو",
+       "weight_en": "Kilo",
+       "variant_option_id": 58,
+       "price": 155,
+       "qty": 2,
+       "total": 310,
+       "kind": "main"
+      }
+     ]
+    },
+    "handover": null,
+    "outcome": "sent",
+    "tools": [
+     {
+      "name": "note_suggestion",
+      "input": {
+       "kind": "drink",
+       "outcome": "declined"
+      },
+      "result": {
+       "ok": true
+      },
+      "ms": 0
+     },
+     {
+      "name": "build_cart",
+      "input": {
+       "items": [
+        {
+         "id": "103",
+         "qty": 2,
+         "variant_option_id": 58
+        }
+       ],
+       "option": "pickup"
+      },
+      "result": {
+       "ok": true,
+       "option": "pickup",
+       "lines": [
+        {
+         "id": "103",
+         "name": "مشكل مخصوص بالوزن",
+         "name_en": "Special Mixed Grill (by the kilo)",
+         "weight": "كيلو",
+         "weight_en": "Kilo",
+         "variant_option_id": 58,
+         "price": 155,
+         "qty": 2,
+         "total": 310,
+         "kind": "main"
+        }
+       ],
+       "subtotal": 310,
+       "problems": [],
+       "note": "prices include VAT; the delivery fee is separate and shown by quote_delivery and again on the site before payment",
+       "saved": true,
+       "link_attached": "a button with the cart link is attached to your message automatically; do not write a link"
+      },
+      "ms": 1
+     }
+    ],
+    "verdicts": [
+     {
+      "ok": true,
+      "problems": [],
+      "text": "سلتك: مشكل مخصوص بالوزن، كيلو × 2 = 310 ر.س (استلام). اضغط الزر وأكمل طلبك وادفع 👇"
+     }
+    ],
+    "calls": [
+     {
+      "model": "claude-sonnet-5-5",
+      "tier": "strong",
+      "ms": 2072,
+      "outcome": "ok",
+      "in": 241,
+      "out": 170,
+      "cached": 11030,
+      "costSar": 0.016455
+     },
+     {
+      "model": "claude-sonnet-5-5",
+      "tier": "strong",
+      "ms": 1590,
+      "outcome": "ok",
+      "in": 562,
+      "out": 66,
+      "cached": 11219,
+      "costSar": 0.015104
+     }
+    ],
+    "ms": 3673,
+    "costSar": 0.031559000000000004,
+    "model": "claude-sonnet-5-5",
+    "suggestions": [
+     {
+      "kind": "drink",
+      "ref": "82",
+      "name": "مشروبات غازية",
+      "outcome": "declined"
+     }
+    ],
+    "context": {
+     "open_now": true,
+     "closes_at": "2 فجراً",
+     "location_shared": false
+    },
+    "tier": "strong",
+    "escalated": false,
+    "lang": "ar"
+   }
+  ],
+  "carts": [
+   {
+    "code": "ev000001",
+    "phone": "512345678",
+    "source": "assistant",
+    "plan": {
+     "ok": true,
+     "raw": {
+      "103:v58": {
+       "item": {
+        "id": 103
+       },
+       "qty": 2,
+       "variant": {
+        "id": 58,
+        "name": "كيلو",
+        "local_name": "Kilo",
+        "retail_price": 155,
+        "price": 134.7826087
+       }
+      }
+     },
+     "items": [
+      {
+       "id": "103",
+       "n": "مشكل مخصوص بالوزن (كيلو)",
+       "q": 2,
+       "p": 155,
+       "v": 58
+      }
+     ],
+     "removed": [],
+     "repriced": [],
+     "review": []
+    },
+    "option": "pickup",
+    "days": 7
+   }
+  ],
+  "costSar": 0.07877300000000001,
+  "grade": {
+   "pass": true,
+   "fails": [],
+   "review": []
+  }
+ },
+ {
+  "id": "m3-cart-kilo-and-half",
+  "group": "by weight: cart",
+  "world": {
+   "profile": "new"
+  },
+  "expect": {
+   "noHandover": true,
+   "mustContain": [
+    "210"
+   ],
+   "cart": {
+    "option": "pickup"
+   }
+  },
+  "turns": [
+   {
+    "i": 0,
+    "customer": "ابي كيلو ونص كباب مشوي استلام",
+    "cls": "item",
+    "raw": "item_info",
+    "by": "assistant",
+    "reply": "كباب مشوي بالوزن: كيلو بـ 140 ر.س + نصف كيلو بـ 70 ر.س = 210 ر.س.\nتحب أضيف لك مشروبات غازية بـ 3 ر.س؟",
+    "cart": null,
+    "handover": null,
+    "outcome": "sent",
+    "tools": [
+     {
+      "name": "search_menu",
+      "input": {
+       "query": "كباب"
+      },
+      "result": {
+       "ok": true,
+       "results": [
+        {
+         "id": "97",
+         "name": "كباب مشوي بالوزن",
+         "name_en": "Grilled Kebab (by the kilo)",
+         "section": "مشاوي بالوزن",
+         "kind": "main",
+         "sold_out": false,
+         "by_weight": true,
+         "weights": [
+          {
+           "label": "ثلث كيلو",
+           "label_en": "1/3 Kilo",
+           "price": 47,
+           "variant_option_id": 50
+          },
+          {
+           "label": "نصف كيلو",
+           "label_en": "1/2 Kilo",
+           "price": 70,
+           "variant_option_id": 51
+          },
+          {
+           "label": "كيلو",
+           "label_en": "Kilo",
+           "price": 140,
+           "variant_option_id": 52
+          }
+         ],
+         "how_to_price": "sold by weight: every price belongs to ONE of the weights above; always say the weight with its price"
+        }
+       ]
+      },
+      "ms": 3
+     },
+     {
+      "name": "preview_cart",
+      "input": {
+       "items": [
+        {
+         "id": "97",
+         "qty": 1,
+         "variant_option_id": 52
+        },
+        {
+         "id": "97",
+         "qty": 1,
+         "variant_option_id": 51
+        }
+       ],
+       "option": "pickup"
+      },
+      "result": {
+       "ok": true,
+       "option": "pickup",
+       "lines": [
+        {
+         "id": "97",
+         "name": "كباب مشوي بالوزن",
+         "name_en": "Grilled Kebab (by the kilo)",
+         "weight": "كيلو",
+         "weight_en": "Kilo",
+         "variant_option_id": 52,
+         "price": 140,
+         "qty": 1,
+         "total": 140,
+         "kind": "main"
+        },
+        {
+         "id": "97",
+         "name": "كباب مشوي بالوزن",
+         "name_en": "Grilled Kebab (by the kilo)",
+         "weight": "نصف كيلو",
+         "weight_en": "1/2 Kilo",
+         "variant_option_id": 51,
+         "price": 70,
+         "qty": 1,
+         "total": 70,
+         "kind": "main"
+        }
+       ],
+       "subtotal": 210,
+       "problems": [],
+       "note": "prices include VAT; the delivery fee is separate and shown by quote_delivery and again on the site before payment",
+       "saved": false,
+       "suggestion": {
+        "kind": "drink",
+        "item": {
+         "id": "82",
+         "name": "مشروبات غازية",
+         "name_en": "Soft Drinks",
+         "price": 3,
+         "section": "إضافات",
+         "kind": "drink",
+         "sold_out": false,
+         "by_weight": false
+        }
+       },
+       "suggestion_say": "a plain add-on: «تحب أضيف لك مشروبات غازية بـ 3 ر.س؟» — no pressure.",
+       "suggestion_rule": "you may offer this ONE suggestion as a short question; nothing else"
+      },
+      "ms": 3
+     }
+    ],
+    "verdicts": [
+     {
+      "ok": true,
+      "problems": [],
+      "text": "كباب مشوي بالوزن: كيلو بـ 140 ر.س + نصف كيلو بـ 70 ر.س = 210 ر.س.\nتحب أضيف لك مشروبات غازية بـ 3 ر.س؟"
+     }
+    ],
+    "calls": [
+     {
+      "model": "claude-sonnet-5-5",
+      "tier": "strong",
+      "ms": 1460,
+      "outcome": "ok",
+      "in": 1129,
+      "out": 50,
+      "cached": 9356,
+      "costSar": 0.01736
+     },
+     {
+      "model": "claude-sonnet-5-5",
+      "tier": "strong",
+      "ms": 1506,
+      "outcome": "ok",
+      "in": 391,
+      "out": 117,
+      "cached": 10256,
+      "costSar": 0.015012
+     },
+     {
+      "model": "claude-sonnet-5-5",
+      "tier": "strong",
+      "ms": 1189,
+      "outcome": "ok",
+      "in": 726,
+      "out": 86,
+      "cached": 10567,
+      "costSar": 0.016595
+     }
+    ],
+    "ms": 4170,
+    "costSar": 0.048967,
+    "model": "claude-sonnet-5-5",
+    "suggestions": [
+     {
+      "kind": "drink",
+      "ref": "82",
+      "name": "مشروبات غازية",
+      "numbers": {
+       "kind": "drink",
+       "item": {
+        "id": "82",
+        "name": "مشروبات غازية",
+        "name_en": "Soft Drinks",
+        "price": 3,
+        "section": "إضافات",
+        "kind": "drink",
+        "sold_out": false,
+        "by_weight": false
+       }
+      },
+      "outcome": "offered"
+     }
+    ],
+    "context": {
+     "open_now": true,
+     "closes_at": "2 فجراً",
+     "location_shared": false,
+     "customer": {
+      "known": false,
+      "name": null,
+      "orders": 0,
+      "status": "no_orders",
+      "days_since_last": null,
+      "usual_basket_sar": null,
+      "usual_mode": null,
+      "usual_hour": null,
+      "favourites": [],
+      "taste": null,
+      "last_order": null,
+      "districts": [],
+      "loyalty": {
+       "every": 3,
+       "progress": 0,
+       "left": 3,
+       "reward": "free_delivery",
+       "min_total": 60,
+       "status": null
+      },
+      "unused_rewards": [],
+      "first_order_offer": true,
+      "language": "ar"
+     },
+     "offers": {
+      "first_order": {
+       "eligible": true,
+       "code": "FIRST",
+       "free_delivery": true,
+       "min_total": 60,
+       "reason": null
+      },
+      "loyalty": {
+       "every": 3,
+       "progress": 0,
+       "left": 3,
+       "reward": "free_delivery",
+       "min_total": 60,
+       "status": null
+      }
+     },
+     "branch": "📍 فرعنا في حي السلامة بجدة، عند دوار رامي.",
+     "boxes": [
+      "box-solo-crepe: بوكس الكريب الفردي",
+      "box-solo-mixgrill: بوكس الميكس جريل الفردي",
+      "box-solo-burger: بوكس البرجر الفردي",
+      "box-solo-pasta: بوكس الباستا الفردي",
+      "box-solo-hawawshi: بوكس الحواوشي الفردي",
+      "box-solo-meal: بوكس وجبة المشاوي الفردي",
+      "box-crepe-duo: بوكس الكريب لشخصين",
+      "box-mixgrill-duo: ميكس جريل لشخصين",
+      "box-pizza-pasta: بيتزا وباستا لشخصين",
+      "box-meals-duo: وجبتين مشاوي لشخصين",
+      "box-burger-duo: بوكس البرجر لشخصين",
+      "box-late-night: بوكس السهرة",
+      "box-taste-all: بوكس التشكيلة",
+      "box-grill-half-half: بوكس المشاوي نص ونص",
+      "box-family: بوكس العائلة — مشاوي وبيتزا وباستا",
+      "box-pizza-night: بوكس سهرة البيتزا",
+      "box-mashakel: بوكس المشكل المخصوص",
+      "box-ribs-grill: بوكس الريش والمشاوي"
+     ]
+    },
+    "tier": "strong",
+    "escalated": false,
+    "lang": "ar"
+   },
+   {
+    "i": 1,
+    "customer": "لا بس كذا",
+    "cls": "unknown",
+    "raw": "unknown",
+    "by": "assistant",
+    "reply": "سلتك (استلام):\nكباب مشوي بالوزن كيلو: 140 ر.س\nكباب مشوي بالوزن نصف كيلو: 70 ر.س\nالمجموع: 210 ر.س\nاضغط الزر وأكمل طلبك وادفع 👇",
+    "cart": {
+     "link": "https://freshcuts.sa/c/ev000001",
+     "code": "ev000001",
+     "subtotal": 210,
+     "option": "pickup",
+     "lines": [
+      {
+       "id": "97",
+       "name": "كباب مشوي بالوزن",
+       "name_en": "Grilled Kebab (by the kilo)",
+       "weight": "كيلو",
+       "weight_en": "Kilo",
+       "variant_option_id": 52,
+       "price": 140,
+       "qty": 1,
+       "total": 140,
+       "kind": "main"
+      },
+      {
+       "id": "97",
+       "name": "كباب مشوي بالوزن",
+       "name_en": "Grilled Kebab (by the kilo)",
+       "weight": "نصف كيلو",
+       "weight_en": "1/2 Kilo",
+       "variant_option_id": 51,
+       "price": 70,
+       "qty": 1,
+       "total": 70,
+       "kind": "main"
+      }
+     ]
+    },
+    "handover": null,
+    "outcome": "sent",
+    "tools": [
+     {
+      "name": "note_suggestion",
+      "input": {
+       "kind": "drink",
+       "outcome": "declined"
+      },
+      "result": {
+       "ok": true
+      },
+      "ms": 0
+     },
+     {
+      "name": "build_cart",
+      "input": {
+       "option": "pickup",
+       "items": [
+        {
+         "id": "97",
+         "qty": 1,
+         "variant_option_id": 52
+        },
+        {
+         "id": "97",
+         "qty": 1,
+         "variant_option_id": 51
+        }
+       ]
+      },
+      "result": {
+       "ok": true,
+       "option": "pickup",
+       "lines": [
+        {
+         "id": "97",
+         "name": "كباب مشوي بالوزن",
+         "name_en": "Grilled Kebab (by the kilo)",
+         "weight": "كيلو",
+         "weight_en": "Kilo",
+         "variant_option_id": 52,
+         "price": 140,
+         "qty": 1,
+         "total": 140,
+         "kind": "main"
+        },
+        {
+         "id": "97",
+         "name": "كباب مشوي بالوزن",
+         "name_en": "Grilled Kebab (by the kilo)",
+         "weight": "نصف كيلو",
+         "weight_en": "1/2 Kilo",
+         "variant_option_id": 51,
+         "price": 70,
+         "qty": 1,
+         "total": 70,
+         "kind": "main"
+        }
+       ],
+       "subtotal": 210,
+       "problems": [],
+       "note": "prices include VAT; the delivery fee is separate and shown by quote_delivery and again on the site before payment",
+       "saved": true,
+       "link_attached": "a button with the cart link is attached to your message automatically; do not write a link"
+      },
+      "ms": 0
+     }
+    ],
+    "verdicts": [
+     {
+      "ok": true,
+      "problems": [],
+      "text": "سلتك (استلام):\nكباب مشوي بالوزن كيلو: 140 ر.س\nكباب مشوي بالوزن نصف كيلو: 70 ر.س\nالمجموع: 210 ر.س\nاضغط الزر وأكمل طلبك وادفع 👇"
+     }
+    ],
+    "calls": [
+     {
+      "model": "claude-sonnet-5-5",
+      "tier": "strong",
+      "ms": 2004,
+      "outcome": "ok",
+      "in": 238,
+      "out": 196,
+      "cached": 11146,
+      "costSar": 0.017495
+     },
+     {
+      "model": "claude-sonnet-5-5",
+      "tier": "strong",
+      "ms": 1776,
+      "outcome": "ok",
+      "in": 721,
+      "out": 101,
+      "cached": 11333,
+      "costSar": 0.017695
+     }
+    ],
+    "ms": 3797,
+    "costSar": 0.03519,
+    "model": "claude-sonnet-5-5",
+    "suggestions": [
+     {
+      "kind": "drink",
+      "ref": "82",
+      "name": "مشروبات غازية",
+      "outcome": "declined"
+     }
+    ],
+    "context": {
+     "open_now": true,
+     "closes_at": "2 فجراً",
+     "location_shared": false
+    },
+    "tier": "strong",
+    "escalated": false,
+    "lang": "ar"
+   }
+  ],
+  "carts": [
+   {
+    "code": "ev000001",
+    "phone": "512345678",
+    "source": "assistant",
+    "plan": {
+     "ok": true,
+     "raw": {
+      "97:v52": {
+       "item": {
+        "id": 97
+       },
+       "qty": 1,
+       "variant": {
+        "id": 52,
+        "name": "كيلو",
+        "local_name": "Kilo",
+        "retail_price": 140,
+        "price": 121.73913043
+       }
+      },
+      "97:v51": {
+       "item": {
+        "id": 97
+       },
+       "qty": 1,
+       "variant": {
+        "id": 51,
+        "name": "نصف كيلو",
+        "local_name": "1/2 Kilo",
+        "retail_price": 70,
+        "price": 60.86956522
+       }
+      }
+     },
+     "items": [
+      {
+       "id": "97",
+       "n": "كباب مشوي بالوزن (كيلو)",
+       "q": 1,
+       "p": 140,
+       "v": 52
+      },
+      {
+       "id": "97",
+       "n": "كباب مشوي بالوزن (نصف كيلو)",
+       "q": 1,
+       "p": 70,
+       "v": 51
+      }
+     ],
+     "removed": [],
+     "repriced": [],
+     "review": []
+    },
+    "option": "pickup",
+    "days": 7
+   }
+  ],
+  "costSar": 0.084157,
+  "grade": {
+   "pass": true,
+   "fails": [],
+   "review": []
+  }
+ },
+ {
+  "id": "m3-ask-weight",
+  "group": "by weight: cart",
+  "world": {
+   "profile": "new"
+  },
+  "expect": {
+   "noCart": true,
+   "noHandover": true,
+   "mustContain": [
+    "كيلو"
+   ]
+  },
+  "turns": [
+   {
+    "i": 0,
+    "customer": "ابي كفتة مشوية بالوزن توصيل",
+    "cls": "dishfact",
+    "raw": "allergy_dish",
+    "by": "assistant",
+    "reply": "كفتة مشوية بالوزن: ثلث كيلو: 40 ر.س · نصف كيلو: 60 ر.س · كيلو: 120 ر.س.\nتبيها ثلث كيلو ولا نصف كيلو ولا كيلو؟",
+    "cart": null,
+    "handover": null,
+    "outcome": "sent",
+    "tools": [
+     {
+      "name": "search_menu",
+      "input": {
+       "query": "كفتة مشوية"
+      },
+      "result": {
+       "ok": true,
+       "results": [
+        {
+         "id": "91",
+         "name": "كفتة مشوية بالوزن",
+         "name_en": "Grilled Kofta (by the kilo)",
+         "section": "مشاوي بالوزن",
+         "kind": "main",
+         "sold_out": false,
+         "by_weight": true,
+         "weights": [
+          {
+           "label": "ثلث كيلو",
+           "label_en": "1/3 Kilo",
+           "price": 40,
+           "variant_option_id": 44
+          },
+          {
+           "label": "نصف كيلو",
+           "label_en": "1/2 Kilo",
+           "price": 60,
+           "variant_option_id": 45
+          },
+          {
+           "label": "كيلو",
+           "label_en": "Kilo",
+           "price": 120,
+           "variant_option_id": 46
+          }
+         ],
+         "how_to_price": "sold by weight: every price belongs to ONE of the weights above; always say the weight with its price"
+        },
+        {
+         "id": "17",
+         "name": "وجبة كفتة",
+         "name_en": "Kofta Meal",
+         "price": 24,
+         "section": "وجبات",
+         "kind": "main",
+         "sold_out": false,
+         "by_weight": false
+        },
+        {
+         "id": "87",
+         "name": "وجبة كفتة وطرب",
+         "name_en": "Kofta & Tarb Meal",
+         "price": 37,
+         "section": "وجبات",
+         "kind": "main",
+         "sold_out": false,
+         "by_weight": false
+        },
+        {
+         "id": "15",
+         "name": "وجبة صدور مشوية",
+         "name_en": "Grilled Chicken Breast Meal",
+         "price": 25,
+         "section": "وجبات",
+         "kind": "main",
+         "sold_out": false,
+         "by_weight": false
+        },
+        {
+         "id": "111",
+         "name": "صدور مشوية بالوزن",
+         "name_en": "Grilled Chicken Breast (by the kilo)",
+         "section": "مشاوي بالوزن",
+         "kind": "main",
+         "sold_out": false,
+         "by_weight": true,
+         "weights": [
+          {
+           "label": "ثلث كيلو",
+           "label_en": "1/3 Kilo",
+           "price": 30,
+           "variant_option_id": 65
+          },
+          {
+           "label": "نصف كيلو",
+           "label_en": "1/2 Kilo",
+           "price": 45,
+           "variant_option_id": 66
+          },
+          {
+           "label": "كيلو",
+           "label_en": "Kilo",
+           "price": 90,
+           "variant_option_id": 67
+          }
+         ],
+         "how_to_price": "sold by weight: every price belongs to ONE of the weights above; always say the weight with its price"
+        },
+        {
+         "id": "54",
+         "name": "طاسة صدور مشوية",
+         "name_en": "Grilled Chicken Breast Skillet",
+         "price": 32,
+         "section": "طاسات",
+         "kind": "main",
+         "sold_out": false,
+         "by_weight": false
+        },
+        {
+         "id": "108",
+         "name": "كبدة مشوية بالوزن",
+         "name_en": "Grilled Liver (by the kilo)",
+         "section": "مشاوي بالوزن",
+         "kind": "main",
+         "sold_out": false,
+         "by_weight": true,
+         "weights": [
+          {
+           "label": "ثلث كيلو",
+           "label_en": "1/3 Kilo",
+           "price": 33,
+           "variant_option_id": 62
+          },
+          {
+           "label": "نصف كيلو",
+           "label_en": "1/2 Kilo",
+           "price": 50,
+           "variant_option_id": 63
+          },
+          {
+           "label": "كيلو",
+           "label_en": "Kilo",
+           "price": 100,
+           "variant_option_id": 64
+          }
+         ],
+         "how_to_price": "sold by weight: every price belongs to ONE of the weights above; always say the weight with its price"
+        },
+        {
+         "id": "100",
+         "name": "ريش مشوية بالوزن",
+         "name_en": "Grilled Lamb Chops (by the kilo)",
+         "section": "مشاوي بالوزن",
+         "kind": "main",
+         "sold_out": false,
+         "by_weight": true,
+         "weights": [
+          {
+           "label": "ثلث كيلو",
+           "label_en": "1/3 Kilo",
+           "price": 62,
+           "variant_option_id": 53
+          },
+          {
+           "label": "نصف كيلو",
+           "label_en": "1/2 Kilo",
+           "price": 93,
+           "variant_option_id": 54
+          },
+          {
+           "label": "كيلو",
+           "label_en": "Kilo",
+           "price": 185,
+           "variant_option_id": 55
+          }
+         ],
+         "how_to_price": "sold by weight: every price belongs to ONE of the weights above; always say the weight with its price"
+        }
+       ]
+      },
+      "ms": 8
+     }
+    ],
+    "verdicts": [
+     {
+      "ok": true,
+      "problems": [],
+      "text": "كفتة مشوية بالوزن: ثلث كيلو: 40 ر.س · نصف كيلو: 60 ر.س · كيلو: 120 ر.س.\nتبيها ثلث كيلو ولا نصف كيلو ولا كيلو؟"
+     }
+    ],
+    "calls": [
+     {
+      "model": "claude-sonnet-5-5",
+      "tier": "strong",
+      "ms": 1341,
+      "outcome": "ok",
+      "in": 1176,
+      "out": 55,
+      "cached": 9356,
+      "costSar": 0.0179
+     },
+     {
+      "model": "claude-sonnet-5-5",
+      "tier": "strong",
+      "ms": 2045,
+      "outcome": "ok",
+      "in": 1677,
+      "out": 94,
+      "cached": 10293,
+      "costSar": 0.023822
+     }
+    ],
+    "ms": 3405,
+    "costSar": 0.041721999999999995,
+    "model": "claude-sonnet-5-5",
+    "suggestions": [],
+    "context": {
+     "open_now": true,
+     "closes_at": "2 فجراً",
+     "location_shared": false,
+     "hint": {
+      "intent": "question_about_one_dish",
+      "dish_id": "91",
+      "wants_it_removed": false
+     },
+     "customer": {
+      "known": false,
+      "name": null,
+      "orders": 0,
+      "status": "no_orders",
+      "days_since_last": null,
+      "usual_basket_sar": null,
+      "usual_mode": null,
+      "usual_hour": null,
+      "favourites": [],
+      "taste": null,
+      "last_order": null,
+      "districts": [],
+      "loyalty": {
+       "every": 3,
+       "progress": 0,
+       "left": 3,
+       "reward": "free_delivery",
+       "min_total": 60,
+       "status": null
+      },
+      "unused_rewards": [],
+      "first_order_offer": true,
+      "language": "ar"
+     },
+     "offers": {
+      "first_order": {
+       "eligible": true,
+       "code": "FIRST",
+       "free_delivery": true,
+       "min_total": 60,
+       "reason": null
+      },
+      "loyalty": {
+       "every": 3,
+       "progress": 0,
+       "left": 3,
+       "reward": "free_delivery",
+       "min_total": 60,
+       "status": null
+      }
+     },
+     "branch": "📍 فرعنا في حي السلامة بجدة، عند دوار رامي.",
+     "boxes": [
+      "box-solo-crepe: بوكس الكريب الفردي",
+      "box-solo-mixgrill: بوكس الميكس جريل الفردي",
+      "box-solo-burger: بوكس البرجر الفردي",
+      "box-solo-pasta: بوكس الباستا الفردي",
+      "box-solo-hawawshi: بوكس الحواوشي الفردي",
+      "box-solo-meal: بوكس وجبة المشاوي الفردي",
+      "box-crepe-duo: بوكس الكريب لشخصين",
+      "box-mixgrill-duo: ميكس جريل لشخصين",
+      "box-pizza-pasta: بيتزا وباستا لشخصين",
+      "box-meals-duo: وجبتين مشاوي لشخصين",
+      "box-burger-duo: بوكس البرجر لشخصين",
+      "box-late-night: بوكس السهرة",
+      "box-taste-all: بوكس التشكيلة",
+      "box-grill-half-half: بوكس المشاوي نص ونص",
+      "box-family: بوكس العائلة — مشاوي وبيتزا وباستا",
+      "box-pizza-night: بوكس سهرة البيتزا",
+      "box-mashakel: بوكس المشكل المخصوص",
+      "box-ribs-grill: بوكس الريش والمشاوي"
+     ]
+    },
+    "tier": "strong",
+    "escalated": false,
+    "lang": "ar"
+   }
+  ],
+  "carts": [],
+  "costSar": 0.041721999999999995,
+  "grade": {
+   "pass": true,
+   "fails": [],
+   "review": []
+  }
+ },
+ {
+  "id": "m3-then-weight",
+  "group": "by weight: cart",
+  "world": {
+   "profile": "new"
+  },
+  "expect": {
+   "noHandover": true,
+   "mustContain": [
+    "60"
+   ],
+   "cart": {
+    "option": "pickup",
+    "items": [
+     {
+      "id": 91,
+      "qty": 1
+     }
+    ]
+   }
+  },
+  "turns": [
+   {
+    "i": 0,
+    "customer": "ابي كفتة مشوية بالوزن استلام",
+    "cls": "dishfact",
+    "raw": "allergy_dish",
+    "by": "assistant",
+    "reply": "كفتة مشوية بالوزن: ثلث كيلو: 40 ر.س · نصف كيلو: 60 ر.س · كيلو: 120 ر.س.\nتبيه ثلث كيلو، نصف كيلو ولا كيلو؟",
+    "cart": null,
+    "handover": null,
+    "outcome": "sent",
+    "tools": [
+     {
+      "name": "search_menu",
+      "input": {
+       "query": "كفتة مشوية"
+      },
+      "result": {
+       "ok": true,
+       "results": [
+        {
+         "id": "91",
+         "name": "كفتة مشوية بالوزن",
+         "name_en": "Grilled Kofta (by the kilo)",
+         "section": "مشاوي بالوزن",
+         "kind": "main",
+         "sold_out": false,
+         "by_weight": true,
+         "weights": [
+          {
+           "label": "ثلث كيلو",
+           "label_en": "1/3 Kilo",
+           "price": 40,
+           "variant_option_id": 44
+          },
+          {
+           "label": "نصف كيلو",
+           "label_en": "1/2 Kilo",
+           "price": 60,
+           "variant_option_id": 45
+          },
+          {
+           "label": "كيلو",
+           "label_en": "Kilo",
+           "price": 120,
+           "variant_option_id": 46
+          }
+         ],
+         "how_to_price": "sold by weight: every price belongs to ONE of the weights above; always say the weight with its price"
+        },
+        {
+         "id": "17",
+         "name": "وجبة كفتة",
+         "name_en": "Kofta Meal",
+         "price": 24,
+         "section": "وجبات",
+         "kind": "main",
+         "sold_out": false,
+         "by_weight": false
+        },
+        {
+         "id": "87",
+         "name": "وجبة كفتة وطرب",
+         "name_en": "Kofta & Tarb Meal",
+         "price": 37,
+         "section": "وجبات",
+         "kind": "main",
+         "sold_out": false,
+         "by_weight": false
+        },
+        {
+         "id": "15",
+         "name": "وجبة صدور مشوية",
+         "name_en": "Grilled Chicken Breast Meal",
+         "price": 25,
+         "section": "وجبات",
+         "kind": "main",
+         "sold_out": false,
+         "by_weight": false
+        },
+        {
+         "id": "111",
+         "name": "صدور مشوية بالوزن",
+         "name_en": "Grilled Chicken Breast (by the kilo)",
+         "section": "مشاوي بالوزن",
+         "kind": "main",
+         "sold_out": false,
+         "by_weight": true,
+         "weights": [
+          {
+           "label": "ثلث كيلو",
+           "label_en": "1/3 Kilo",
+           "price": 30,
+           "variant_option_id": 65
+          },
+          {
+           "label": "نصف كيلو",
+           "label_en": "1/2 Kilo",
+           "price": 45,
+           "variant_option_id": 66
+          },
+          {
+           "label": "كيلو",
+           "label_en": "Kilo",
+           "price": 90,
+           "variant_option_id": 67
+          }
+         ],
+         "how_to_price": "sold by weight: every price belongs to ONE of the weights above; always say the weight with its price"
+        },
+        {
+         "id": "54",
+         "name": "طاسة صدور مشوية",
+         "name_en": "Grilled Chicken Breast Skillet",
+         "price": 32,
+         "section": "طاسات",
+         "kind": "main",
+         "sold_out": false,
+         "by_weight": false
+        },
+        {
+         "id": "108",
+         "name": "كبدة مشوية بالوزن",
+         "name_en": "Grilled Liver (by the kilo)",
+         "section": "مشاوي بالوزن",
+         "kind": "main",
+         "sold_out": false,
+         "by_weight": true,
+         "weights": [
+          {
+           "label": "ثلث كيلو",
+           "label_en": "1/3 Kilo",
+           "price": 33,
+           "variant_option_id": 62
+          },
+          {
+           "label": "نصف كيلو",
+           "label_en": "1/2 Kilo",
+           "price": 50,
+           "variant_option_id": 63
+          },
+          {
+           "label": "كيلو",
+           "label_en": "Kilo",
+           "price": 100,
+           "variant_option_id": 64
+          }
+         ],
+         "how_to_price": "sold by weight: every price belongs to ONE of the weights above; always say the weight with its price"
+        },
+        {
+         "id": "100",
+         "name": "ريش مشوية بالوزن",
+         "name_en": "Grilled Lamb Chops (by the kilo)",
+         "section": "مشاوي بالوزن",
+         "kind": "main",
+         "sold_out": false,
+         "by_weight": true,
+         "weights": [
+          {
+           "label": "ثلث كيلو",
+           "label_en": "1/3 Kilo",
+           "price": 62,
+           "variant_option_id": 53
+          },
+          {
+           "label": "نصف كيلو",
+           "label_en": "1/2 Kilo",
+           "price": 93,
+           "variant_option_id": 54
+          },
+          {
+           "label": "كيلو",
+           "label_en": "Kilo",
+           "price": 185,
+           "variant_option_id": 55
+          }
+         ],
+         "how_to_price": "sold by weight: every price belongs to ONE of the weights above; always say the weight with its price"
+        }
+       ]
+      },
+      "ms": 5
+     }
+    ],
+    "verdicts": [
+     {
+      "ok": true,
+      "problems": [],
+      "text": "كفتة مشوية بالوزن: ثلث كيلو: 40 ر.س · نصف كيلو: 60 ر.س · كيلو: 120 ر.س.\nتبيه ثلث كيلو، نصف كيلو ولا كيلو؟"
+     }
+    ],
+    "calls": [
+     {
+      "model": "claude-sonnet-5-5",
+      "tier": "strong",
+      "ms": 1411,
+      "outcome": "ok",
+      "in": 1174,
+      "out": 55,
+      "cached": 9356,
+      "costSar": 0.017884
+     },
+     {
+      "model": "claude-sonnet-5-5",
+      "tier": "strong",
+      "ms": 1215,
+      "outcome": "ok",
+      "in": 1677,
+      "out": 92,
+      "cached": 10292,
+      "costSar": 0.023746
+     }
+    ],
+    "ms": 2637,
+    "costSar": 0.04163,
+    "model": "claude-sonnet-5-5",
+    "suggestions": [],
+    "context": {
+     "open_now": true,
+     "closes_at": "2 فجراً",
+     "location_shared": false,
+     "hint": {
+      "intent": "question_about_one_dish",
+      "dish_id": "91",
+      "wants_it_removed": false
+     },
+     "customer": {
+      "known": false,
+      "name": null,
+      "orders": 0,
+      "status": "no_orders",
+      "days_since_last": null,
+      "usual_basket_sar": null,
+      "usual_mode": null,
+      "usual_hour": null,
+      "favourites": [],
+      "taste": null,
+      "last_order": null,
+      "districts": [],
+      "loyalty": {
+       "every": 3,
+       "progress": 0,
+       "left": 3,
+       "reward": "free_delivery",
+       "min_total": 60,
+       "status": null
+      },
+      "unused_rewards": [],
+      "first_order_offer": true,
+      "language": "ar"
+     },
+     "offers": {
+      "first_order": {
+       "eligible": true,
+       "code": "FIRST",
+       "free_delivery": true,
+       "min_total": 60,
+       "reason": null
+      },
+      "loyalty": {
+       "every": 3,
+       "progress": 0,
+       "left": 3,
+       "reward": "free_delivery",
+       "min_total": 60,
+       "status": null
+      }
+     },
+     "branch": "📍 فرعنا في حي السلامة بجدة، عند دوار رامي.",
+     "boxes": [
+      "box-solo-crepe: بوكس الكريب الفردي",
+      "box-solo-mixgrill: بوكس الميكس جريل الفردي",
+      "box-solo-burger: بوكس البرجر الفردي",
+      "box-solo-pasta: بوكس الباستا الفردي",
+      "box-solo-hawawshi: بوكس الحواوشي الفردي",
+      "box-solo-meal: بوكس وجبة المشاوي الفردي",
+      "box-crepe-duo: بوكس الكريب لشخصين",
+      "box-mixgrill-duo: ميكس جريل لشخصين",
+      "box-pizza-pasta: بيتزا وباستا لشخصين",
+      "box-meals-duo: وجبتين مشاوي لشخصين",
+      "box-burger-duo: بوكس البرجر لشخصين",
+      "box-late-night: بوكس السهرة",
+      "box-taste-all: بوكس التشكيلة",
+      "box-grill-half-half: بوكس المشاوي نص ونص",
+      "box-family: بوكس العائلة — مشاوي وبيتزا وباستا",
+      "box-pizza-night: بوكس سهرة البيتزا",
+      "box-mashakel: بوكس المشكل المخصوص",
+      "box-ribs-grill: بوكس الريش والمشاوي"
+     ]
+    },
+    "tier": "strong",
+    "escalated": false,
+    "lang": "ar"
+   },
+   {
+    "i": 1,
+    "customer": "نص كيلو",
+    "cls": "item",
+    "raw": "item_info",
+    "by": "assistant",
+    "reply": "كفتة مشوية بالوزن نصف كيلو بـ 60 ر.س، استلام.\nتحب أضيف لك مشروبات غازية بـ 3 ر.س؟",
+    "cart": null,
+    "handover": null,
+    "outcome": "sent",
+    "tools": [
+     {
+      "name": "preview_cart",
+      "input": {
+       "items": [
+        {
+         "id": "91",
+         "qty": 1,
+         "variant_option_id": 45
+        }
+       ],
+       "option": "pickup"
+      },
+      "result": {
+       "ok": true,
+       "option": "pickup",
+       "lines": [
+        {
+         "id": "91",
+         "name": "كفتة مشوية بالوزن",
+         "name_en": "Grilled Kofta (by the kilo)",
+         "weight": "نصف كيلو",
+         "weight_en": "1/2 Kilo",
+         "variant_option_id": 45,
+         "price": 60,
+         "qty": 1,
+         "total": 60,
+         "kind": "main"
+        }
+       ],
+       "subtotal": 60,
+       "problems": [],
+       "note": "prices include VAT; the delivery fee is separate and shown by quote_delivery and again on the site before payment",
+       "saved": false,
+       "suggestion": {
+        "kind": "drink",
+        "item": {
+         "id": "82",
+         "name": "مشروبات غازية",
+         "name_en": "Soft Drinks",
+         "price": 3,
+         "section": "إضافات",
+         "kind": "drink",
+         "sold_out": false,
+         "by_weight": false
+        }
+       },
+       "suggestion_say": "a plain add-on: «تحب أضيف لك مشروبات غازية بـ 3 ر.س؟» — no pressure.",
+       "suggestion_rule": "you may offer this ONE suggestion as a short question; nothing else"
+      },
+      "ms": 1
+     }
+    ],
+    "verdicts": [
+     {
+      "ok": true,
+      "problems": [],
+      "text": "كفتة مشوية بالوزن نصف كيلو بـ 60 ر.س، استلام.\nتحب أضيف لك مشروبات غازية بـ 3 ر.س؟"
+     }
+    ],
+    "calls": [
+     {
+      "model": "claude-sonnet-5-5",
+      "tier": "strong",
+      "ms": 1574,
+      "outcome": "ok",
+      "in": 244,
+      "out": 95,
+      "cached": 11632,
+      "costSar": 0.014117
+     },
+     {
+      "model": "claude-sonnet-5-5",
+      "tier": "strong",
+      "ms": 984,
+      "outcome": "ok",
+      "in": 576,
+      "out": 67,
+      "cached": 11824,
+      "costSar": 0.015701
+     }
+    ],
+    "ms": 2570,
+    "costSar": 0.029817999999999997,
+    "model": "claude-sonnet-5-5",
+    "suggestions": [
+     {
+      "kind": "drink",
+      "ref": "82",
+      "name": "مشروبات غازية",
+      "numbers": {
+       "kind": "drink",
+       "item": {
+        "id": "82",
+        "name": "مشروبات غازية",
+        "name_en": "Soft Drinks",
+        "price": 3,
+        "section": "إضافات",
+        "kind": "drink",
+        "sold_out": false,
+        "by_weight": false
+       }
+      },
+      "outcome": "offered"
+     }
+    ],
+    "context": {
+     "open_now": true,
+     "closes_at": "2 فجراً",
+     "location_shared": false
+    },
+    "tier": "strong",
+    "escalated": false,
+    "lang": "ar"
+   },
+   {
+    "i": 2,
+    "customer": "لا شكرا",
+    "cls": "nack",
+    "raw": "nack",
+    "by": "assistant",
+    "reply": "سلتك: كفتة مشوية بالوزن نصف كيلو = 60 ر.س (استلام). اضغط الزر وكمّل طلبك وادفع 👇",
+    "cart": {
+     "link": "https://freshcuts.sa/c/ev000001",
+     "code": "ev000001",
+     "subtotal": 60,
+     "option": "pickup",
+     "lines": [
+      {
+       "id": "91",
+       "name": "كفتة مشوية بالوزن",
+       "name_en": "Grilled Kofta (by the kilo)",
+       "weight": "نصف كيلو",
+       "weight_en": "1/2 Kilo",
+       "variant_option_id": 45,
+       "price": 60,
+       "qty": 1,
+       "total": 60,
+       "kind": "main"
+      }
+     ]
+    },
+    "handover": null,
+    "outcome": "sent",
+    "tools": [
+     {
+      "name": "note_suggestion",
+      "input": {
+       "kind": "drink",
+       "outcome": "declined"
+      },
+      "result": {
+       "ok": true
+      },
+      "ms": 0
+     },
+     {
+      "name": "build_cart",
+      "input": {
+       "option": "pickup",
+       "items": [
+        {
+         "id": "91",
+         "qty": 1,
+         "variant_option_id": 45
+        }
+       ]
+      },
+      "result": {
+       "ok": true,
+       "option": "pickup",
+       "lines": [
+        {
+         "id": "91",
+         "name": "كفتة مشوية بالوزن",
+         "name_en": "Grilled Kofta (by the kilo)",
+         "weight": "نصف كيلو",
+         "weight_en": "1/2 Kilo",
+         "variant_option_id": 45,
+         "price": 60,
+         "qty": 1,
+         "total": 60,
+         "kind": "main"
+        }
+       ],
+       "subtotal": 60,
+       "problems": [],
+       "note": "prices include VAT; the delivery fee is separate and shown by quote_delivery and again on the site before payment",
+       "saved": true,
+       "link_attached": "a button with the cart link is attached to your message automatically; do not write a link"
+      },
+      "ms": 2
+     }
+    ],
+    "verdicts": [
+     {
+      "ok": true,
+      "problems": [],
+      "text": "سلتك: كفتة مشوية بالوزن نصف كيلو = 60 ر.س (استلام). اضغط الزر وكمّل طلبك وادفع 👇"
+     }
+    ],
+    "calls": [
+     {
+      "model": "claude-sonnet-5-5",
+      "tier": "strong",
+      "ms": 1616,
+      "outcome": "ok",
+      "in": 213,
+      "out": 170,
+      "cached": 12283,
+      "costSar": 0.017185
+     },
+     {
+      "model": "claude-sonnet-5-5",
+      "tier": "strong",
+      "ms": 1114,
+      "outcome": "ok",
+      "in": 569,
+      "out": 63,
+      "cached": 12450,
+      "costSar": 0.015967
+     }
+    ],
+    "ms": 2745,
+    "costSar": 0.033152,
+    "model": "claude-sonnet-5-5",
+    "suggestions": [
+     {
+      "kind": "drink",
+      "ref": "82",
+      "name": "مشروبات غازية",
+      "outcome": "declined"
+     }
+    ],
+    "context": {
+     "open_now": true,
+     "closes_at": "2 فجراً",
+     "location_shared": false
+    },
+    "tier": "strong",
+    "escalated": false,
+    "lang": "ar"
+   }
+  ],
+  "carts": [
+   {
+    "code": "ev000001",
+    "phone": "512345678",
+    "source": "assistant",
+    "plan": {
+     "ok": true,
+     "raw": {
+      "91:v45": {
+       "item": {
+        "id": 91
+       },
+       "qty": 1,
+       "variant": {
+        "id": 45,
+        "name": "نصف كيلو",
+        "local_name": "1/2 Kilo",
+        "retail_price": 60,
+        "price": 52.17391304
+       }
+      }
+     },
+     "items": [
+      {
+       "id": "91",
+       "n": "كفتة مشوية بالوزن (نصف كيلو)",
+       "q": 1,
+       "p": 60,
+       "v": 45
+      }
+     ],
+     "removed": [],
+     "repriced": [],
+     "review": []
+    },
+    "option": "pickup",
+    "days": 7
+   }
+  ],
+  "costSar": 0.1046,
+  "grade": {
+   "pass": true,
+   "fails": [],
+   "review": []
+  }
+ },
+ {
+  "id": "m3-serves-how-many",
+  "group": "by weight: owner rule",
+  "world": {
+   "profile": "new"
+  },
+  "expect": {
+   "noCart": true,
+   "noHandover": true,
+   "mustNotContain": [
+    "\\d+ ?(اشخاص|أشخاص|شخص|افراد|أفراد|people|persons)",
+    "يكفي \\d",
+    "قطع",
+    "ريش\\b.*كباب"
+   ]
+  },
+  "turns": [
+   {
+    "i": 0,
+    "customer": "المشكل المخصوص الكيلو يكفي كم شخص؟",
+    "cls": "boxes",
+    "raw": "servings",
+    "by": "assistant",
+    "reply": "مشكل مخصوص بالوزن، والأسعار حسب الوزن:\nثلث كيلو: 53 ر.س · نصف كيلو: 78 ر.س · كيلو: 155 ر.س\n\nما أقدر أحدد عدد الأشخاص لكل وزن. تبيه نصف كيلو ولا كيلو؟",
+    "cart": null,
+    "handover": null,
+    "outcome": "sent",
+    "tools": [
+     {
+      "name": "search_menu",
+      "input": {
+       "query": "المشكل المخصوص"
+      },
+      "result": {
+       "ok": true,
+       "results": [
+        {
+         "id": "103",
+         "name": "مشكل مخصوص بالوزن",
+         "name_en": "Special Mixed Grill (by the kilo)",
+         "section": "مشاوي بالوزن",
+         "kind": "main",
+         "sold_out": false,
+         "by_weight": true,
+         "weights": [
+          {
+           "label": "ثلث كيلو",
+           "label_en": "1/3 Kilo",
+           "price": 53,
+           "variant_option_id": 56
+          },
+          {
+           "label": "نصف كيلو",
+           "label_en": "1/2 Kilo",
+           "price": 78,
+           "variant_option_id": 57
+          },
+          {
+           "label": "كيلو",
+           "label_en": "Kilo",
+           "price": 155,
+           "variant_option_id": 58
+          }
+         ],
+         "how_to_price": "sold by weight: every price belongs to ONE of the weights above; always say the weight with its price"
+        }
+       ]
+      },
+      "ms": 3
+     }
+    ],
+    "verdicts": [
+     {
+      "ok": true,
+      "problems": [],
+      "text": "مشكل مخصوص بالوزن، والأسعار حسب الوزن:\nثلث كيلو: 53 ر.س · نصف كيلو: 78 ر.س · كيلو: 155 ر.س\n\nما أقدر أحدد عدد الأشخاص لكل وزن. تبيه نصف كيلو ولا كيلو؟"
+     }
+    ],
+    "calls": [
+     {
+      "model": "claude-haiku-5-5",
+      "tier": "fast",
+      "ms": 2196,
+      "outcome": "ok",
+      "in": 1136,
+      "out": 302,
+      "cached": 9356,
+      "costSar": 0.004501
+     },
+     {
+      "model": "claude-haiku-5-5",
+      "tier": "fast",
+      "ms": 1364,
+      "outcome": "ok",
+      "in": 710,
+      "out": 123,
+      "cached": 10261,
+      "costSar": 0.004345
+     }
+    ],
+    "ms": 3574,
+    "costSar": 0.008846,
+    "model": "claude-haiku-5-5",
+    "suggestions": [],
+    "context": {
+     "open_now": true,
+     "closes_at": "2 فجراً",
+     "location_shared": false,
+     "customer": {
+      "known": false,
+      "name": null,
+      "orders": 0,
+      "status": "no_orders",
+      "days_since_last": null,
+      "usual_basket_sar": null,
+      "usual_mode": null,
+      "usual_hour": null,
+      "favourites": [],
+      "taste": null,
+      "last_order": null,
+      "districts": [],
+      "loyalty": {
+       "every": 3,
+       "progress": 0,
+       "left": 3,
+       "reward": "free_delivery",
+       "min_total": 60,
+       "status": null
+      },
+      "unused_rewards": [],
+      "first_order_offer": true,
+      "language": "ar"
+     },
+     "offers": {
+      "first_order": {
+       "eligible": true,
+       "code": "FIRST",
+       "free_delivery": true,
+       "min_total": 60,
+       "reason": null
+      },
+      "loyalty": {
+       "every": 3,
+       "progress": 0,
+       "left": 3,
+       "reward": "free_delivery",
+       "min_total": 60,
+       "status": null
+      }
+     },
+     "branch": "📍 فرعنا في حي السلامة بجدة، عند دوار رامي.",
+     "boxes": [
+      "box-solo-crepe: بوكس الكريب الفردي",
+      "box-solo-mixgrill: بوكس الميكس جريل الفردي",
+      "box-solo-burger: بوكس البرجر الفردي",
+      "box-solo-pasta: بوكس الباستا الفردي",
+      "box-solo-hawawshi: بوكس الحواوشي الفردي",
+      "box-solo-meal: بوكس وجبة المشاوي الفردي",
+      "box-crepe-duo: بوكس الكريب لشخصين",
+      "box-mixgrill-duo: ميكس جريل لشخصين",
+      "box-pizza-pasta: بيتزا وباستا لشخصين",
+      "box-meals-duo: وجبتين مشاوي لشخصين",
+      "box-burger-duo: بوكس البرجر لشخصين",
+      "box-late-night: بوكس السهرة",
+      "box-taste-all: بوكس التشكيلة",
+      "box-grill-half-half: بوكس المشاوي نص ونص",
+      "box-family: بوكس العائلة — مشاوي وبيتزا وباستا",
+      "box-pizza-night: بوكس سهرة البيتزا",
+      "box-mashakel: بوكس المشكل المخصوص",
+      "box-ribs-grill: بوكس الريش والمشاوي"
+     ]
+    },
+    "tier": "fast",
+    "escalated": false,
+    "lang": "ar"
+   }
+  ],
+  "carts": [],
+  "costSar": 0.008846,
+  "grade": {
+   "pass": true,
+   "fails": [],
+   "review": []
+  }
+ },
+ {
+  "id": "m3-ad-mashakel",
+  "group": "by weight: ad",
+  "world": {
+   "profile": "new",
+   "ad": {
+    "ad_text": "مشكل مخصوص على الفحم — راسلنا واتساب",
+    "advertised": {
+     "kind": "item",
+     "id": "103",
+     "name": "مشكل مخصوص بالوزن",
+     "name_en": "Special Mixed Grill (by the kilo)",
+     "by_weight": true,
+     "weights": [
+      {
+       "label": "ثلث كيلو",
+       "label_en": "1/3 Kilo",
+       "price": 53,
+       "variant_option_id": 56
+      },
+      {
+       "label": "نصف كيلو",
+       "label_en": "1/2 Kilo",
+       "price": 78,
+       "variant_option_id": 57
+      },
+      {
+       "label": "كيلو",
+       "label_en": "Kilo",
+       "price": 155,
+       "variant_option_id": 58
+      }
+     ]
+    }
+   }
+  },
+  "expect": {
+   "noHandover": true,
+   "mustContain": [
+    "53",
+    "78",
+    "155"
+   ],
+   "cart": {
+    "option": "pickup",
+    "items": [
+     {
+      "id": 103,
+      "qty": 1
+     }
+    ]
+   }
+  },
+  "turns": [
+   {
+    "i": 0,
+    "customer": "مرحبا",
+    "cls": "greet",
+    "raw": "greeting",
+    "by": "assistant",
+    "reply": "أهلاً فيك. مشكل مخصوص على الفحم بالوزن: ثلث كيلو: 53 ر.س · نصف كيلو: 78 ر.س · كيلو: 155 ر.س.\nتبيه أي وزن؟",
+    "cart": null,
+    "handover": null,
+    "outcome": "sent",
+    "tools": [],
+    "verdicts": [
+     {
+      "ok": true,
+      "problems": [],
+      "text": "أهلاً فيك. مشكل مخصوص على الفحم بالوزن: ثلث كيلو: 53 ر.س · نصف كيلو: 78 ر.س · كيلو: 155 ر.س.\nتبيه أي وزن؟"
+     }
+    ],
+    "calls": [
+     {
+      "model": "claude-haiku-5-5",
+      "tier": "fast",
+      "ms": 2291,
+      "outcome": "ok",
+      "in": 1398,
+      "out": 321,
+      "cached": 9356,
+      "costSar": 0.004635
+     }
+    ],
+    "ms": 2301,
+    "costSar": 0.004635,
+    "model": "claude-haiku-5-5",
+    "suggestions": [],
+    "context": {
+     "open_now": true,
+     "closes_at": "2 فجراً",
+     "location_shared": false,
+     "came_from_ad": {
+      "ad_text": "مشكل مخصوص على الفحم — راسلنا واتساب",
+      "advertised": {
+       "kind": "item",
+       "id": "103",
+       "name": "مشكل مخصوص بالوزن",
+       "name_en": "Special Mixed Grill (by the kilo)",
+       "by_weight": true,
+       "weights": [
+        {
+         "label": "ثلث كيلو",
+         "label_en": "1/3 Kilo",
+         "price": 53,
+         "variant_option_id": 56
+        },
+        {
+         "label": "نصف كيلو",
+         "label_en": "1/2 Kilo",
+         "price": 78,
+         "variant_option_id": 57
+        },
+        {
+         "label": "كيلو",
+         "label_en": "Kilo",
+         "price": 155,
+         "variant_option_id": 58
+        }
+       ]
+      }
+     },
+     "customer": {
+      "known": false,
+      "name": null,
+      "orders": 0,
+      "status": "no_orders",
+      "days_since_last": null,
+      "usual_basket_sar": null,
+      "usual_mode": null,
+      "usual_hour": null,
+      "favourites": [],
+      "taste": null,
+      "last_order": null,
+      "districts": [],
+      "loyalty": {
+       "every": 3,
+       "progress": 0,
+       "left": 3,
+       "reward": "free_delivery",
+       "min_total": 60,
+       "status": null
+      },
+      "unused_rewards": [],
+      "first_order_offer": true,
+      "language": "ar"
+     },
+     "offers": {
+      "first_order": {
+       "eligible": true,
+       "code": "FIRST",
+       "free_delivery": true,
+       "min_total": 60,
+       "reason": null
+      },
+      "loyalty": {
+       "every": 3,
+       "progress": 0,
+       "left": 3,
+       "reward": "free_delivery",
+       "min_total": 60,
+       "status": null
+      }
+     },
+     "branch": "📍 فرعنا في حي السلامة بجدة، عند دوار رامي.",
+     "boxes": [
+      "box-solo-crepe: بوكس الكريب الفردي",
+      "box-solo-mixgrill: بوكس الميكس جريل الفردي",
+      "box-solo-burger: بوكس البرجر الفردي",
+      "box-solo-pasta: بوكس الباستا الفردي",
+      "box-solo-hawawshi: بوكس الحواوشي الفردي",
+      "box-solo-meal: بوكس وجبة المشاوي الفردي",
+      "box-crepe-duo: بوكس الكريب لشخصين",
+      "box-mixgrill-duo: ميكس جريل لشخصين",
+      "box-pizza-pasta: بيتزا وباستا لشخصين",
+      "box-meals-duo: وجبتين مشاوي لشخصين",
+      "box-burger-duo: بوكس البرجر لشخصين",
+      "box-late-night: بوكس السهرة",
+      "box-taste-all: بوكس التشكيلة",
+      "box-grill-half-half: بوكس المشاوي نص ونص",
+      "box-family: بوكس العائلة — مشاوي وبيتزا وباستا",
+      "box-pizza-night: بوكس سهرة البيتزا",
+      "box-mashakel: بوكس المشكل المخصوص",
+      "box-ribs-grill: بوكس الريش والمشاوي"
+     ]
+    },
+    "tier": "fast",
+    "escalated": false,
+    "lang": "ar"
+   },
+   {
+    "i": 1,
+    "customer": "نص كيلو استلام",
+    "cls": "item",
+    "raw": "item_info",
+    "by": "assistant",
+    "reply": "مشكل مخصوص بالوزن نصف كيلو بـ 78 ر.س، استلام.\nتحب أضيف لك مشروبات غازية بـ 3 ر.س؟",
+    "cart": null,
+    "handover": null,
+    "outcome": "sent",
+    "tools": [
+     {
+      "name": "preview_cart",
+      "input": {
+       "items": [
+        {
+         "id": "103",
+         "qty": 1,
+         "variant_option_id": 57
+        }
+       ],
+       "option": "pickup"
+      },
+      "result": {
+       "ok": true,
+       "option": "pickup",
+       "lines": [
+        {
+         "id": "103",
+         "name": "مشكل مخصوص بالوزن",
+         "name_en": "Special Mixed Grill (by the kilo)",
+         "weight": "نصف كيلو",
+         "weight_en": "1/2 Kilo",
+         "variant_option_id": 57,
+         "price": 78,
+         "qty": 1,
+         "total": 78,
+         "kind": "main"
+        }
+       ],
+       "subtotal": 78,
+       "problems": [],
+       "note": "prices include VAT; the delivery fee is separate and shown by quote_delivery and again on the site before payment",
+       "saved": false,
+       "suggestion": {
+        "kind": "drink",
+        "item": {
+         "id": "82",
+         "name": "مشروبات غازية",
+         "name_en": "Soft Drinks",
+         "price": 3,
+         "section": "إضافات",
+         "kind": "drink",
+         "sold_out": false,
+         "by_weight": false
+        }
+       },
+       "suggestion_say": "a plain add-on: «تحب أضيف لك مشروبات غازية بـ 3 ر.س؟» — no pressure.",
+       "suggestion_rule": "you may offer this ONE suggestion as a short question; nothing else"
+      },
+      "ms": 2
+     }
+    ],
+    "verdicts": [
+     {
+      "ok": true,
+      "problems": [],
+      "text": "مشكل مخصوص بالوزن نصف كيلو بـ 78 ر.س، استلام.\nتحب أضيف لك مشروبات غازية بـ 3 ر.س؟"
+     }
+    ],
+    "calls": [
+     {
+      "model": "claude-haiku-5-5",
+      "tier": "fast",
+      "ms": 1300,
+      "outcome": "ok",
+      "in": 537,
+      "out": 95,
+      "cached": 10471,
+      "costSar": 0.004306
+     },
+     {
+      "model": "claude-sonnet-5-5",
+      "tier": "strong",
+      "ms": 1542,
+      "outcome": "ok",
+      "in": 1931,
+      "out": 95,
+      "cached": 9356,
+      "costSar": 0.025062
+     },
+     {
+      "model": "claude-sonnet-5-5",
+      "tier": "strong",
+      "ms": 1391,
+      "outcome": "ok",
+      "in": 579,
+      "out": 68,
+      "cached": 10897,
+      "costSar": 0.015065
+     }
+    ],
+    "ms": 4244,
+    "costSar": 0.044433,
+    "model": "claude-sonnet-5-5",
+    "suggestions": [
+     {
+      "kind": "drink",
+      "ref": "82",
+      "name": "مشروبات غازية",
+      "numbers": {
+       "kind": "drink",
+       "item": {
+        "id": "82",
+        "name": "مشروبات غازية",
+        "name_en": "Soft Drinks",
+        "price": 3,
+        "section": "إضافات",
+        "kind": "drink",
+        "sold_out": false,
+        "by_weight": false
+       }
+      },
+      "outcome": "offered"
+     }
+    ],
+    "context": {
+     "open_now": true,
+     "closes_at": "2 فجراً",
+     "location_shared": false
+    },
+    "tier": "strong",
+    "escalated": true,
+    "lang": "ar"
+   },
+   {
+    "i": 2,
+    "customer": "لا شكراً، ارسل رابط السلة",
+    "cls": "order",
+    "raw": "how_to_order",
+    "by": "assistant",
+    "reply": "سلتك: مشكل مخصوص بالوزن نصف كيلو = 78 ر.س (استلام). اضغط الزر وادفع 👇",
+    "cart": {
+     "link": "https://freshcuts.sa/c/ev000001",
+     "code": "ev000001",
+     "subtotal": 78,
+     "option": "pickup",
+     "lines": [
+      {
+       "id": "103",
+       "name": "مشكل مخصوص بالوزن",
+       "name_en": "Special Mixed Grill (by the kilo)",
+       "weight": "نصف كيلو",
+       "weight_en": "1/2 Kilo",
+       "variant_option_id": 57,
+       "price": 78,
+       "qty": 1,
+       "total": 78,
+       "kind": "main"
+      }
+     ]
+    },
+    "handover": null,
+    "outcome": "sent",
+    "tools": [
+     {
+      "name": "note_suggestion",
+      "input": {
+       "kind": "drink",
+       "outcome": "declined"
+      },
+      "result": {
+       "ok": true
+      },
+      "ms": 0
+     },
+     {
+      "name": "build_cart",
+      "input": {
+       "option": "pickup",
+       "items": [
+        {
+         "id": "103",
+         "qty": 1,
+         "variant_option_id": 57
+        }
+       ]
+      },
+      "result": {
+       "ok": true,
+       "option": "pickup",
+       "lines": [
+        {
+         "id": "103",
+         "name": "مشكل مخصوص بالوزن",
+         "name_en": "Special Mixed Grill (by the kilo)",
+         "weight": "نصف كيلو",
+         "weight_en": "1/2 Kilo",
+         "variant_option_id": 57,
+         "price": 78,
+         "qty": 1,
+         "total": 78,
+         "kind": "main"
+        }
+       ],
+       "subtotal": 78,
+       "problems": [],
+       "note": "prices include VAT; the delivery fee is separate and shown by quote_delivery and again on the site before payment",
+       "saved": true,
+       "link_attached": "a button with the cart link is attached to your message automatically; do not write a link"
+      },
+      "ms": 1
+     }
+    ],
+    "verdicts": [
+     {
+      "ok": true,
+      "problems": [],
+      "text": "سلتك: مشكل مخصوص بالوزن نصف كيلو = 78 ر.س (استلام). اضغط الزر وادفع 👇"
+     }
+    ],
+    "calls": [
+     {
+      "model": "claude-sonnet-5-5",
+      "tier": "strong",
+      "ms": 1754,
+      "outcome": "ok",
+      "in": 228,
+      "out": 170,
+      "cached": 11358,
+      "costSar": 0.016604
+     },
+     {
+      "model": "claude-sonnet-5-5",
+      "tier": "strong",
+      "ms": 1105,
+      "outcome": "ok",
+      "in": 571,
+      "out": 55,
+      "cached": 11537,
+      "costSar": 0.014998
+     }
+    ],
+    "ms": 2868,
+    "costSar": 0.031602,
+    "model": "claude-sonnet-5-5",
+    "suggestions": [
+     {
+      "kind": "drink",
+      "ref": "82",
+      "name": "مشروبات غازية",
+      "outcome": "declined"
+     }
+    ],
+    "context": {
+     "open_now": true,
+     "closes_at": "2 فجراً",
+     "location_shared": false
+    },
+    "tier": "strong",
+    "escalated": false,
+    "lang": "ar"
+   }
+  ],
+  "carts": [
+   {
+    "code": "ev000001",
+    "phone": "512345678",
+    "source": "assistant",
+    "plan": {
+     "ok": true,
+     "raw": {
+      "103:v57": {
+       "item": {
+        "id": 103
+       },
+       "qty": 1,
+       "variant": {
+        "id": 57,
+        "name": "نصف كيلو",
+        "local_name": "1/2 Kilo",
+        "retail_price": 78,
+        "price": 67.82608696
+       }
+      }
+     },
+     "items": [
+      {
+       "id": "103",
+       "n": "مشكل مخصوص بالوزن (نصف كيلو)",
+       "q": 1,
+       "p": 78,
+       "v": 57
+      }
+     ],
+     "removed": [],
+     "repriced": [],
+     "review": []
+    },
+    "option": "pickup",
+    "days": 7
+   }
+  ],
+  "costSar": 0.08066999999999999,
+  "grade": {
+   "pass": true,
+   "fails": [],
+   "review": []
+  }
+ }
+]

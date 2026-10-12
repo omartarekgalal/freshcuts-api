@@ -129,7 +129,7 @@ test("cart builder never guesses: every line that can not be built comes back wi
   // by-weight dishes need a weight picked on the site
   const kilo = MENU.items.find((i) => i.byWeight);
   const w = await t.build_cart(ME, { items: [{ id: kilo.id }] });
-  assert.deepEqual([w.ok, w.error, w.problems[0].error], [false, "empty_cart", "choose_weight_on_site"]); assert.equal(db.carts.length, 1);
+  assert.deepEqual([w.ok, w.error, w.problems[0].error], [false, "empty_cart", "weights_unavailable"]); assert.equal(db.carts.length, 1);
   // a box the checkout function refuses (sold out inside), boxes source down, link can not be saved
   const so = tools({ expandBundle: async () => ({ ok: false, error: "sold_out", items: [{ product_id: 79, name: "بطاطس محمرة" }], message: "خلص اليوم" }) }).t;
   const r = await so.build_cart(ME, { boxes: [{ slug: "box-kofta-solo" }] });

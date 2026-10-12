@@ -29,7 +29,7 @@ const GROUPS = [
   ["soy", /صويا|\bsoy/],
   ["fish", /سمك|اسماك|\bfish\b/],
   ["crustaceans_molluscs", /قشريات|جمبري|روبيان|ربيان|محار|shrimp|prawn|shellfish|crustacean/],
-  ["tree_nuts", /مكسرات|لوز|جوز|فستق|كاجو|بندق|\bnuts?\b|almond|walnut|pistachio|cashew|hazelnut/],
+  ["tree_nuts", /مكسرات|لوز(?!ن)|(?<![يت])جوز|فستق|كاجو|بندق|\bnuts?\b|almond|walnut|pistachio|cashew|hazelnut/],
   ["peanuts", /فول سوداني|peanut/],
   ["celery", /كرفس|celery/],
   ["sulphites", /كبريت|sulphite|sulfite/],

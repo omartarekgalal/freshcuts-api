@@ -1,0 +1,58 @@
+{
+ "set": "m3",
+ "name": "m3-c",
+ "over": {
+  "routing": "escalate",
+  "thinking": "adaptive",
+  "effort": "low",
+  "timeoutMs": 60000
+ },
+ "capped": false,
+ "spentRun": 0.043332999999999997,
+ "spentTodayBefore": 28.57567999999995,
+ "cap": 80,
+ "conversations": 2,
+ "passed": 2,
+ "failed": [],
+ "customerTurns": 2,
+ "modelTurns": 2,
+ "answeredByAssistant": 2,
+ "rulesOwned": 0,
+ "fallbacks": {},
+ "validatorRetries": 0,
+ "escalations": 1,
+ "costSar": 0.0433,
+ "costPerConversationSar": 0.0217,
+ "costPerModelTurnSar": 0.0217,
+ "latencyMs": {
+  "p50": 4530,
+  "p90": 4530,
+  "max": 4530,
+  "n": 2
+ },
+ "modelCalls": 5,
+ "byModel": {
+  "claude-haiku-5-5": {
+   "calls": 3,
+   "in": 10,
+   "out": 472,
+   "cached": 34329,
+   "sar": 0.0138,
+   "callP50ms": 1499,
+   "callP90ms": 2238
+  },
+  "claude-sonnet-5-5": {
+   "calls": 2,
+   "in": 1263,
+   "out": 126,
+   "cached": 20498,
+   "sar": 0.0296,
+   "callP50ms": 1203,
+   "callP90ms": 1203
+  }
+ },
+ "failTypes": {},
+ "reviewFlags": {},
+ "text": "conversations 2 · passed 2 · failed 0\ncustomer turns 2: assistant answered 2, rules owned 0, fallbacks {}\nvalidator retries 0 · escalations fast→strong 1 · model calls 5\ncost 0.0433 SAR (0.0217 per conversation, 0.0217 per model turn)\nlatency per answered turn: p50 4530 ms · p90 4530 ms · max 4530 ms (n=2)\nby model {\"claude-haiku-5-5\":{\"calls\":3,\"in\":10,\"out\":472,\"cached\":34329,\"sar\":0.0138,\"callP50ms\":1499,\"callP90ms\":2238},\"claude-sonnet-5-5\":{\"calls\":2,\"in\":1263,\"out\":126,\"cached\":20498,\"sar\":0.0296,\"callP50ms\":1203,\"callP90ms\":1203}}\nfail types {}\nreview flags {}",
+ "markdown": "# Assistant evaluation: m3-c\n\n```\nconversations 2 · passed 2 · failed 0\ncustomer turns 2: assistant answered 2, rules owned 0, fallbacks {}\nvalidator retries 0 · escalations fast→strong 1 · model calls 5\ncost 0.0433 SAR (0.0217 per conversation, 0.0217 per model turn)\nlatency per answered turn: p50 4530 ms · p90 4530 ms · max 4530 ms (n=2)\nby model {\"claude-haiku-5-5\":{\"calls\":3,\"in\":10,\"out\":472,\"cached\":34329,\"sar\":0.0138,\"callP50ms\":1499,\"callP90ms\":2238},\"claude-sonnet-5-5\":{\"calls\":2,\"in\":1263,\"out\":126,\"cached\":20498,\"sar\":0.0296,\"callP50ms\":1203,\"callP90ms\":1203}}\nfail types {}\nreview flags {}\n```\n\n## Conversations\n\n### PASS · m3-price-kebab-en (by weight: price) · 0.0094 SAR\n\n- **العميل:** how much is the grilled kebab by the kilo?\n  - **المساعد** (fast, 2625 ms, 0.0094 SAR, tools: search_menu, search_menu): Grilled Kebab (by the kilo): 1/3 Kilo: 47 SAR · 1/2 Kilo: 70 SAR · Kilo: 140 SAR. ⏎  ⏎ Which weight would you like?\n\n### PASS · m3-price-fast-en (by weight: price) · 0.0340 SAR\n\n- **العميل:** what's the price of the special mixed grill?\n  - **المساعد** (strong↑, 4530 ms, 0.0340 SAR, tools: search_menu): Special Mixed Grill (by the kilo): 1/3 Kilo: 53 SAR · 1/2 Kilo: 78 SAR · Kilo: 155 SAR. ⏎  ⏎ Which weight would you like?\n"
+}

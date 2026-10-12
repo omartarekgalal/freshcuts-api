@@ -52,7 +52,7 @@ const LOCKS_OPEN = { ...CONFIGURED, WHATSAPP_ENABLED: "1" };
 
 /* ── عالم صغير: قاعدة في الذاكرة + ساعة + Graph مزيّف ─────────────────────── */
 function world({ waBot = {}, notifications = { whatsappEnabled: true }, orders = [], bundles = BUNDLES, policy = POLICY, first = FIRST, links = ["wab-boxes", "wa-boxes", "wa-box-d4"],
-  at = OPEN_AT, graph = null, failDb = null, extraSettings = {}, disclosure = false, pages = LIVE.pages, quote = null, llm = null, greetMenu = false, offers = LIVE.offers, resolveMapsLink = null, lastCart = null, assistModel = null, assistStore = null, kb = null, adReport = [], channelReport = [], mediaFile = null, transcribe = null, sttFetch = null } = {}) {
+  at = OPEN_AT, graph = null, failDb = null, extraSettings = {}, disclosure = false, pages = LIVE.pages, quote = null, llm = null, greetMenu = false, offers = LIVE.offers, resolveMapsLink = null, lastCart = null, assistModel = null, assistStore = null, kb = null, adReport = [], channelReport = [], mediaFile = null, transcribe = null, sttFetch = null, variants = null } = {}) {
   let nowMs = Date.parse(at);
   const clock = { now: () => new Date(nowMs), advance: (min) => { nowMs += min * 60_000; }, advanceSec: (s) => { nowMs += s * 1000; }, set: (iso) => { nowMs = Date.parse(iso); } };
   const db = { msgs: [], log: [], jobs: [], proofs: [], consentLog: [], ai: [], aiAlerts: [], tpl: [], cfgLog: [], botCarts: [], chats: new Map(), optouts: [], optins: {}, links: links.map((s) => (typeof s === "string" ? { slug: s, active: true, clicks: 0 } : { active: true, clicks: 0, ...s })), adChats: [], adReportParams: null, channelOffers: [], channelReportParams: null, sttKey: null, liveDay: [], marketingTo: [], settings: null };
@@ -252,6 +252,7 @@ function world({ waBot = {}, notifications = { whatsappEnabled: true }, orders =
     assist: { expandBundle: async () => ({ ok: false, error: "bundle_not_found" }), modifiersCatalog: async () => ({ cfg: { enabled: true }, catalog: {} }), modifiersResolve: async () => ({ ok: true, shown: 0 }),
       quote: async (x) => (typeof quote === "function" ? quote(x.lat, x.lng) : quote), buildProfile: async () => ({ identity: { name: "أحمد" }, summary: { orders: 2, status: "repeat" }, orders: [], favorites: { items: [] }, addresses: [] }) }, whoami: async () => actor.who, ...(resolveMapsLink ? { resolveMapsLink } : { resolveMapsLink: async () => null }), sendSms: async (x) => { sms.push(x); return { ok: true }; },
     portalEmit: (ev2, data) => portalEvents.push([ev2, data]), whoami: async () => actor.who, ...(resolveMapsLink ? { resolveMapsLink } : { resolveMapsLink: async () => null }), sendSms: async (x) => { sms.push(x); return { ok: true }; },
+    ...(variants ? { fetchVariants: async (id) => { if (variants[id] === "down") throw new Error("product down"); return variants[id] || []; } } : {}),
     fetchMenuPages: async () => { if (pages === null) throw new Error("menu down"); return pages; }, quote: async (lat, lng) => (typeof quote === "function" ? quote(lat, lng) : quote), llm,
     fetchOffers: async () => { if (offers === null) throw new Error("offers down"); return offers; }, ...(assistModel ? { assistCallModel: assistModel } : {}), ...(assistStore ? { assistStore } : {}), ...(kb ? { kb: () => kb } : {}), ...(transcribe ? { transcribe } : {}), ...(sttFetch ? { sttFetch } : {}) });
   let seq = 0;
@@ -3349,3 +3350,133 @@ test("M2 — opt-out wordings stop the OFFERS only and are never answered with t
   const s3 = await withOrder.call("POST", "/api/cms/wabot/simulate", { text: "الغاء", phone: "0512345678", first: false });
   assert.deepEqual([s3.body.decision.key, s3.body.decision.handoff], ["change", ["order_change", "urgent"]]);
 }));
+
+/* ── مراجعة الخبير M3 — الأصناف بالوزن: أوزانها وأسعارها في كل مكان ─────────────────────────────── */
+const VAR = JSON.parse(fs.readFileSync(new URL("./eval/fixtures/variants.json", import.meta.url), "utf8")).variants;
+const ASSIST_TOOLS = await import("./waassist.js");
+
+test("M3 index — weights come from the live variant options (no price in code): label, price, option id; an unavailable option is dropped; no data ⇒ null", () => {
+  const m = W_BOT.indexMenu(LIVE.pages, { variants: VAR });
+  const mk = m.items.find((i) => i.id === "103");
+  assert.deepEqual(mk.weights.map((w) => [w.label_ar, w.label_en, w.price, w.variant_option_id]), [["ثلث كيلو", "1/3 Kilo", 53, 56], ["نصف كيلو", "1/2 Kilo", 78, 57], ["كيلو", "Kilo", 155, 58]]);
+  assert.ok(mk.weights.every((w) => w.price_ex > 0 && w.price_ex < w.price));
+  assert.equal(m.items.filter((i) => i.byWeight).every((i) => Array.isArray(i.weights) && i.weights.length === 3), true);
+  assert.equal(m.items.find((i) => !i.byWeight).weights, undefined);
+  assert.equal(W_BOT.indexMenu(LIVE.pages).items.find((i) => i.id === "103").weights, null, "no variant data: weights unknown, never invented");
+  assert.deepEqual(W_BOT.weightsOf([{ id: 1, name: "كيلو", retail_price: 100, available: { available: false } }, { id: 2, name: "نصف كيلو", local_name: "1/2 Kilo", retail_price: 50, price: 43.48 }, { id: 3, name: "", retail_price: 9 }, { id: 4, name: "x", retail_price: 0 }]).map((w) => w.variant_option_id), [2]);
+  assert.equal(W_BOT.weightsOf([]), null); assert.equal(W_BOT.weightsOf(null), null);
+});
+
+test("M3 rules bot — «كم كيلو المشكل» gets the three real prices; mashakel has no serving count or piece list; a sold-out dish says so with NO order button; unknown weights fall back to «من X»", withEnv(LOCKS_OPEN, async () => {
+  const w = liveWorld({ variants: VAR });
+  const r = await w.say("كم كيلو المشكل");
+  assert.equal(r.log.reply_key, "item");
+  assert.equal(bodyOf(r.sent[0]), "*مشكل مخصوص بالوزن*\nثلث كيلو: 53 ر.س · نصف كيلو: 78 ر.س · كيلو: 155 ر.س");
+  assert.ok(!/أشخاص|شخص|قطع|ريش|كباب|يكفي/.test(bodyOf(r.sent[0])), "owner rule: prices only for «مشكل مخصوص»");
+  assert.match(urlOf(r.sent[0]), /#item-103$/);
+  w.clock.advance(1);
+  const k = await w.say("بكم كيلو الكباب");
+  assert.match(bodyOf(k.sent[0]), /^\*كباب مشوي بالوزن\*\nثلث كيلو: 47 ر\.س · نصف كيلو: 70 ر\.س · كيلو: 140 ر\.س/);
+  assert.ok(!/من 47/.test(bodyOf(k.sent[0])));
+  // English
+  w.clock.advance(1);
+  const e = await w.say("how much is the grilled kebab by the kilo");
+  if (e.log.reply_key === "item") assert.match(bodyOf(e.sent[0]), /1\/3 Kilo: SAR 47 · 1\/2 Kilo: SAR 70 · Kilo: SAR 140/);
+  // sold out today: said plainly, no «اطلبه الآن», the sections instead
+  const so = liveWorld({ variants: VAR, extraSettings: { catalog: { soldOut: { 97: { until: null } } } } });
+  const s = await so.say("بكم كيلو الكباب");
+  assert.match(bodyOf(s.sent[0]), /خلص اليوم/); assert.equal(s.sent[0].interactive.type, "button"); assert.ok(!JSON.stringify(s.sent[0]).includes("cta_url"));
+  assert.deepEqual(s.sent[0].interactive.action.buttons.map((b) => b.reply.id), ["m:cats", "m:boxes", "bot:menu"]);
+  // the product endpoint is down for one dish ⇒ that dish says «من X» as before; nothing is guessed
+  const dn = liveWorld({ variants: { ...VAR, 103: "down" } });
+  assert.match(bodyOf((await dn.say("كم كيلو المشكل")).sent[0]), /^\*مشكل مخصوص بالوزن\* — من 53 ر\.س/);
+  // no variant loader at all (older setups): unchanged
+  assert.match(bodyOf((await liveWorld().say("كم كيلو المشكل")).sent[0]), /من 53 ر\.س/);
+}));
+
+test("M3 assistant tools — a by-weight dish has weights and NO bare price; the cart takes a weight by its option id, «٢ كيلو» = 2 × the kilo line, and the saved cart is the storefront's own line shape", async () => {
+  const menu = W_BOT.indexMenu(LIVE.pages, { variants: VAR });
+  const made = [];
+  const tools = ASSIST_TOOLS.makeAssistTools({ menuIndex: async () => menu, boxes: async () => LIVE.bundles, pool: { query: async () => ({ rows: [] }) }, expandBundle: async () => ({ ok: false }), modifiers: { catalogItems: async () => ({}), resolve: async () => ({ ok: true }) },
+    quote: async () => ({ deliverable: true, fee: 15 }), offers: async () => [], openState: async () => ({ open: true }), buildProfile: async () => null, lastLocation: async () => null, settings: async () => ({}),
+    botCarts: { create: async (x) => { made.push(x); return { code: "wt000001" }; } } });
+  const s = await tools.search_menu("512345678", { query: "مشكل مخصوص" });
+  const hit = s.results.find((i) => i.id === "103");
+  assert.equal("price" in hit, false, "no single price to misquote"); assert.equal(hit.by_weight, true);
+  assert.deepEqual(hit.weights, [{ label: "ثلث كيلو", label_en: "1/3 Kilo", price: 53, variant_option_id: 56 }, { label: "نصف كيلو", label_en: "1/2 Kilo", price: 78, variant_option_id: 57 }, { label: "كيلو", label_en: "Kilo", price: 155, variant_option_id: 58 }]);
+  const g = await tools.get_item("512345678", { id: "103" });
+  assert.equal("price" in g.item, false); assert.equal(g.item.weights.length, 3);
+  const plain = (await tools.search_menu("512345678", { query: "كريب زنجر سوبريم" })).results[0];
+  assert.equal(plain.price, 25); assert.equal(plain.by_weight, false); assert.equal("weights" in plain, false);
+  // no weight ⇒ asked for it, with the list; a wrong option id ⇒ the same
+  let c = await tools.build_cart("512345678", { option: "pickup", items: [{ id: "103", qty: 2 }] }, { save: false });
+  assert.deepEqual([c.ok, c.error, c.problems[0].error, c.problems[0].weights.length], [false, "empty_cart", "need_weight", 3]);
+  c = await tools.build_cart("512345678", { option: "pickup", items: [{ id: "103", qty: 1, variant_option_id: 50 }] }, { save: false });
+  assert.equal(c.problems[0].error, "need_weight", "the kebab's kilo id is not the mashakel's");
+  // «ابي ٢ كيلو مشكل مخصوص استلام»
+  c = await tools.build_cart("512345678", { option: "pickup", items: [{ id: "103", qty: 2, variant_option_id: 58 }] });
+  assert.equal(c.ok, true); assert.equal(c.subtotal, 310);
+  assert.deepEqual(c.lines.map((l) => [l.id, l.weight, l.variant_option_id, l.price, l.qty, l.total]), [["103", "كيلو", 58, 155, 2, 310]]);
+  assert.deepEqual(Object.keys(made[0].plan.raw), ["103:v58"], "the storefront's cart key for a variant line");
+  assert.deepEqual(made[0].plan.raw["103:v58"], { item: { id: 103 }, qty: 2, variant: { id: 58, name: "كيلو", local_name: "Kilo", retail_price: 155, price: 134.7826087 } });
+  assert.deepEqual(made[0].plan.items, [{ id: "103", n: "مشكل مخصوص بالوزن (كيلو)", q: 2, p: 155, v: 58 }]);
+  // «كيلو ونص» = two lines; the same weight twice merges; a plain dish beside it is unchanged
+  c = await tools.build_cart("512345678", { option: "delivery", items: [{ id: "103", qty: 1, variant_option_id: 58 }, { id: "103", qty: 1, variant_option_id: 57 }, { id: "103", qty: 1, variant_option_id: 58 }, { id: "8", qty: 1 }] }, { save: false });
+  assert.deepEqual(c.lines.map((l) => [l.id, l.weight || null, l.qty, l.total]), [["103", "كيلو", 2, 310], ["103", "نصف كيلو", 1, 78], ["8", null, 1, 25]]); assert.equal(c.subtotal, 413);
+  // weights unknown right now ⇒ said so, with the dish's page; never a guessed price
+  const bare = ASSIST_TOOLS.makeAssistTools({ menuIndex: async () => W_BOT.indexMenu(LIVE.pages), boxes: async () => [], pool: { query: async () => ({ rows: [] }) } });
+  const b0 = await bare.build_cart("512345678", { option: "pickup", items: [{ id: "103", qty: 1, variant_option_id: 58 }] }, { save: false });
+  assert.equal(b0.problems[0].error, "weights_unavailable"); assert.equal((await bare.get_item("512345678", { id: "103" })).item.weights, null);
+});
+
+test("M3 validator — a price of a by-weight dish must sit with its own weight: «by the kilo at <third-kilo price>» and a bare price are refused; the three-prices line passes", async () => {
+  const AR3 = await import("./waassistrun.js");
+  const know = { menu: W_BOT.indexMenu(LIVE.pages, { variants: VAR }), boxes: [] };
+  const facts = [{ item: { name: "مشكل مخصوص بالوزن", id: "103", by_weight: true, name_en: "Special Mixed Grill (by the kilo)", weights: [{ label: "ثلث كيلو", price: 53 }, { label: "نصف كيلو", price: 78 }, { label: "كيلو", price: 155 }] } }, { item: { name: "كباب مشوي بالوزن", name_en: "Grilled Kebab (by the kilo)", weights: [{ price: 47 }, { price: 70 }, { price: 140 }] } }];
+  const P = (t, lang = "ar") => AR3.checkReply(t, { facts, know, lang }).problems.map((p) => p.type);
+  const bad = (t, lang) => assert.ok(P(t, lang).includes("weight_price_without_weight"), t);
+  const ok = (t, lang) => assert.ok(!P(t, lang).includes("weight_price_without_weight"), `${t} ⇒ ${JSON.stringify(AR3.checkReply(t, { facts, know, lang }).problems)}`);
+  ok("مشكل مخصوص بالوزن:\nثلث كيلو: 53 ر.س · نصف كيلو: 78 ر.س · كيلو: 155 ر.س\nتبيه نصف كيلو ولا كيلو؟");
+  ok("المشكل المخصوص: ثلث كيلو بـ 53 ر.س، نصف كيلو بـ 78 ر.س، والكيلو بـ 155 ر.س.");
+  ok("سلتك: مشكل مخصوص بالوزن (كيلو) × 2 = 310 ر.س", "ar");
+  ok("Special Mixed Grill: 1/3 Kilo: SAR 53 · 1/2 Kilo: SAR 78 · Kilo: SAR 155", "en");
+  ok("Special Mix Grill: 1/3 Kilo: SAR 53 · 1/2 Kilo: SAR 78 · Kilo: SAR 155", "en");
+  ok("كباب مشوي بالوزن: نص كيلو بـ 70 ر.س");
+  bad("Special Mix Grill is sold by the kilo, at SAR 53.", "en");            // named loosely: caught because the dish's weights are in this conversation's tool results
+  bad("Special Mixed Grill is sold by the kilo, at SAR 53.", "en");           // the reviewer's fast-tier line: 53 is the third-kilo price
+  bad("مشكل مخصوص بالوزن بـ 53 ر.س");                                        // no weight at all
+  bad("كيلو المشكل المخصوص بـ 78 ر.س");                                       // the half-kilo price beside «كيلو»
+  bad("مشكل مخصوص بالوزن: الكيلو 53 ر.س");
+  // a reply with no by-weight dish in it is not touched, and a plain dish with a price equal to a weight price is fine
+  ok("كريب زنجر سوبريم بـ 25 ر.س. توصيل ولا استلام؟"); ok("رسوم التوصيل 53 ر.س");
+  // two by-weight dishes in one reply: each line is judged with its own dish
+  ok("كباب مشوي بالوزن: ثلث كيلو 47 ر.س · نصف كيلو 70 ر.س · كيلو 140 ر.س\nمشكل مخصوص بالوزن: ثلث كيلو 53 ر.س · نصف كيلو 78 ر.س · كيلو 155 ر.س");
+  bad("كباب مشوي بالوزن: الكيلو 47 ر.س\nمشكل مخصوص بالوزن: ثلث كيلو 53 ر.س");
+  assert.ok(AR3.SYSTEM_PROMPT.includes("Never state one price for such a dish without its weight")); assert.ok(AR3.SYSTEM_PROMPT.includes("never how many people it serves"));
+  assert.ok(AR3.TOOL_DEFS.find((t) => t.name === "build_cart").input_schema.properties.items.items.properties.variant_option_id);
+});
+
+test("M3 ad — an ad mapped to a by-weight dish opens the assistant on that dish with its three prices in the context; the cart from the chat is 2 × the kilo line", withEnv(CONFIGURED, async () => {
+  const AD = "120251224485800593";
+  const referral = { source_id: AD, source_type: "ad", headline: "مشكل مخصوص على الفحم — راسلنا واتساب", ctwa_clid: "C1" };
+  const links = [...ALL_LINKS, { slug: "ad-mashakel", target_type: "product", target_id: "103" }];
+  const w = aWorld([mSay("هلا 👋 مشكل مخصوص بالوزن:\nثلث كيلو: 53 ر.س · نصف كيلو: 78 ر.س · كيلو: 155 ر.س\nتبيه نصف كيلو ولا كيلو؟"),
+    mUse(tUse("preview_cart", { option: "pickup", items: [{ id: "103", qty: 2, variant_option_id: 58 }] })), mUse(tUse("build_cart", { option: "pickup", items: [{ id: "103", qty: 2, variant_option_id: 58 }] })), mSay("سلتك (استلام): مشكل مخصوص بالوزن (كيلو) × 2 = 310 ر.س\nاضغط الزر وكمّل طلبك 👇")],
+    { links, variants: VAR, waBot: { links: { organic: "wab-boxes", ads: "wa-boxes", adMap: { [AD]: "ad-mashakel" } } } });
+  const r = await w.say("مرحبا", { referral });
+  assert.equal(r.log.reply_key, "assist");
+  const adv = ctxOf(w.m.seen[0]).came_from_ad.advertised;
+  assert.deepEqual([adv.kind, adv.id, adv.name, adv.by_weight, adv.weights.map((x) => x.price)], ["item", "103", "مشكل مخصوص بالوزن", true, [53, 78, 155]]); assert.equal("price" in adv, false);
+  assert.match(bodyOf(msgs(r)[0]), /ثلث كيلو: 53 ر\.س · نصف كيلو: 78 ر\.س · كيلو: 155 ر\.س/);
+  w.clock.advance(1);
+  const c = await w.say("ابي ٢ كيلو استلام");
+  assert.equal(c.log.reply_key, "assist"); assert.match(bodyOf(msgs(c)[0]), /= 310 ر\.س/);
+  assert.deepEqual(w.db.botCarts.at(-1).plan.raw["103:v58"].variant.retail_price, 155); assert.equal(w.db.botCarts.at(-1).plan.raw["103:v58"].qty, 2);
+}));
+
+test("M3 found on the way — «بالوزن» is not a nut: the word «لوز» inside «الوزن» (and «جوز» inside «يجوز») no longer turns a by-weight order into an allergy question", async () => {
+  const DF = await import("./wadishfacts.js");
+  for (const t of ["ابي كفتة مشوية بالوزن توصيل", "كم سعر الكباب بالوزن", "يجوز اطلب بدون صوص؟", "الوزن كم؟"]) assert.deepEqual(DF.groupsIn(t), [], t);
+  for (const t of ["فيه لوز في الكريب؟", "عندي حساسية من اللوز", "فيه جوز؟", "حساسية مكسرات"]) assert.deepEqual(DF.groupsIn(t), ["tree_nuts"], t);
+  assert.notEqual(R.classify({ text: "ابي كفتة مشوية بالوزن توصيل", type: "text" }, KNOW).key, "dishfact");
+});
