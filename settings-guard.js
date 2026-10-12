@@ -44,6 +44,7 @@ export const SERVER_OWNED_PATHS = [
   "waSender",                   // wasender.js (agentHash — سر)
   "waCloud",                    // wacloud.js / wasender.js
   "waBot",                      // wabotrun.js (وضع البوت، أرقام التجربة، النصوص) — شاشة قديمة بتحفظ الإعدادات كلها ماتمسحش ولا ترجّع وضع البوت
+  "waMaster",                   // wacloud.js (SEC: مفتاح واتساب الرئيسي — المالك بس، POST /api/cms/wa-cloud/master)
   "waCloudActive",              // wacloud.js (W5: أرقام آخر ربط ناجح — الأرقام الفعّالة)
   "jobs",                       // fc-job-gate + /api/settings/patch
   "adsGuard",                   // fc-adsentry + /api/settings/patch

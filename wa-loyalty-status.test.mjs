@@ -47,7 +47,7 @@ function world({ optins = { [PHONE]: { updates: true, marketing: false } }, noti
     return { rows: [], rowCount: 0 };
   } };
   const fetch = async (url, init) => { calls.push({ url, body: JSON.parse(init.body) }); return { ok: true, status: 200, json: async () => ({ messages: [{ id: `wamid.L${calls.length}` }] }) }; };
-  const settings = { notifications, cms: { loyalty } };
+  const settings = { notifications, cms: { loyalty }, waMaster: { enabled: true } };
   const ctx = { pool, requireAdmin: async () => null, getSettingsData: async () => settings, jb: (x) => JSON.stringify(x), normPhone: (x) => x };
   const add = () => () => {};
   const app = { get: add(), post: add(), put: add(), delete: add() };

@@ -306,6 +306,10 @@ function waPool() {
     if (/^INSERT INTO wa_template_events/i.test(s)) { db.tplEvents.push(p); return { rows: [] }; }
     if (/FROM wa_optins WHERE/i.test(s)) return { rows: db.optins[p[0]] ? [db.optins[p[0]]] : [] };
     if (/^INSERT INTO wa_optins/i.test(s)) { db.optins[p[0]] = { updates: p[1] ?? false, marketing: p[2] ?? false, source: p[3] }; return { rows: [] }; }
+    // SEC: نافذة الـ٢٤ ساعة اللي الحارس المركزي بيتأكد منها قبل أي رد حر (وارد حقيقي، مش تاريخ مستورد)
+    if (/^SELECT 1 FROM wa_messages WHERE phone_norm=\$1 AND direction='in'/i.test(s)) {
+      return { rows: db.msgs.filter((m) => m.phone_norm === p[0] && m.direction === "in" && m.source !== "history").slice(0, 1).map(() => ({})) };
+    }
     if (/^UPDATE cms_contacts/i.test(s)) { db.contacts[p[0]] = "out"; return { rows: [] }; }
     return { rows: [], rowCount: 0 };
   } };
@@ -317,7 +321,7 @@ async function setupWa({ fetch, notifications = { whatsappEnabled: true } } = {}
   const app = fakeApp();
   const calls = [];
   const f = fetch || (async (url, init) => { calls.push({ url, init }); return { ok: true, status: 200, json: async () => ({ messages: [{ id: "wamid.OUT" }] }) }; });
-  const api = W.register(app, { pool, requireAdmin: async () => null, getSettingsData: async () => ({ notifications }),
+  const api = W.register(app, { pool, requireAdmin: async () => null, getSettingsData: async () => ({ notifications, waMaster: { enabled: true }, waBot: { testPhones: ["0512345678"] } }),
     jb: (x) => JSON.stringify(x), normPhone: (x) => String(x || "").replace(/\D/g, "").replace(/^966/, "").replace(/^0/, "") }, { fetch: f, sendSms: async () => ({}) });
   const inbox = WI.register({ pool, getSettingsData: async () => ({ notifications }) }, { wa: api });
   api.setInbox(inbox);
@@ -409,6 +413,11 @@ test("webhook route: bad signature → 200 ignored (logged), good signature → 
 test("campaign send logs the rendered template text (inbox shows what the customer saw)", withEnv(ON, async () => {
   const { api, pool, calls } = await setupWa();
   const { params, text } = C.campaignParams("fc_winback", { vars: { first_name: "محمد", fav_dish: "كفتة" }, link_code: "abc123", coupon: "W1X" }, { link_slug: "w1" });
+  // SEC: الحملة = تسويق ⇒ من غير موافقة تسويق صريحة مفيش إرسال، حتى لو المنادي كتب requireOptIn:false
+  const refused = await api.sendTemplate({ phoneNorm: "512345678", template: "fc_winback", params, requireOptIn: false, source: "campaign", body: text });
+  assert.equal(refused.skipped, "no_optin");
+  assert.equal(calls.length, 0);
+  pool.db.optins["512345678"] = { updates: false, marketing: true };
   const r = await api.sendTemplate({ phoneNorm: "512345678", template: "fc_winback", params, requireOptIn: false, source: "campaign", body: text });
   assert.equal(r.ok, true);
   const sent = JSON.parse(calls[0].init.body);
@@ -511,7 +520,8 @@ test("cloud tick: sends the right template per row, skips opted-out/recent/inval
   assert.deepEqual(pool.db.queue.map((q) => q.status), ["sent", "skipped", "skipped", "skipped", "sent", "pending"]);
   assert.deepEqual(pool.db.queue.slice(1, 4).map((q) => q.reason), ["opted_out", "gap_3d", "invalid_number"]);
   assert.equal(wa.sent[0].template, "fc_offer_img");
-  assert.equal(wa.sent[0].requireOptIn, false);
+  assert.equal(wa.sent[0].requireOptIn, true, "SEC: campaigns ask for the marketing opt-in");
+  assert.equal(wa.sent[0].source, "campaign");
   assert.deepEqual(wa.sent[0].params.button, ["w1-c1xxxx"]);
   assert.equal(pool.db.queue[0].wamid, "wamid.C1");
   assert.equal(pool.db.contactLog.filter((l) => l.by === "cloud").length, 2, "3-day rule sees cloud sends");

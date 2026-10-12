@@ -241,22 +241,24 @@ test("sendOrderPush(orderNo,payload) returns count and emits", async () => {
   } finally { console.error = origErr; }
 });
 
-test("whatsapp failure emits ok:false with the error code, never throws", async () => {
-  const saved = { t: process.env.WHATSAPP_TOKEN, p: process.env.WHATSAPP_PHONE_ID };
-  delete process.env.WHATSAPP_TOKEN; delete process.env.WHATSAPP_PHONE_ID;
+/* SEC (١٢/١٠): المرسل المباشر القديم اتشال. من غير موديول whatsapp.js (الحارس المركزي) مفيش أي واتساب بيطلع من notify،
+   حتى لو مفتاح اللوحة مفتوح والتوكن موجود. */
+test("no WhatsApp module ⇒ notify never talks to Graph itself, even with the switch on and a token", async () => {
+  const saved = { t: process.env.WHATSAPP_TOKEN, p: process.env.WHATSAPP_PHONE_ID, f: globalThis.fetch };
+  process.env.WHATSAPP_TOKEN = "tok"; process.env.WHATSAPP_PHONE_ID = "PHONE1";
+  const graphCalls = [];
+  globalThis.fetch = async (url) => { graphCalls.push(String(url)); return { ok: true, status: 200, json: async () => ({}) }; };
   const api = setup({ notifications: { pushEnabled: false, whatsappEnabled: true } });
   const origErr = console.error; console.error = () => {};
   const cap = capture();
   try {
     await assert.doesNotReject(api.orderStatusChanged("W1001", "accepted"));
     await flush();
-    assert.equal(cap.events.length, 1);
-    assert.equal(cap.events[0].channel, "whatsapp");
-    assert.equal(cap.events[0].ok, false);
-    assert.equal(cap.events[0].data.error, "WA_UNCONFIGURED");
+    assert.equal(cap.events.filter((e) => e.channel === "whatsapp").length, 0);
+    assert.equal(graphCalls.filter((u) => /graph\.facebook\.com/.test(u)).length, 0);
   } finally {
-    console.error = origErr; cap.stop();
-    if (saved.t !== undefined) process.env.WHATSAPP_TOKEN = saved.t;
-    if (saved.p !== undefined) process.env.WHATSAPP_PHONE_ID = saved.p;
+    console.error = origErr; cap.stop(); globalThis.fetch = saved.f;
+    if (saved.t !== undefined) process.env.WHATSAPP_TOKEN = saved.t; else delete process.env.WHATSAPP_TOKEN;
+    if (saved.p !== undefined) process.env.WHATSAPP_PHONE_ID = saved.p; else delete process.env.WHATSAPP_PHONE_ID;
   }
 });

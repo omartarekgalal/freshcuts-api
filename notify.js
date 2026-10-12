@@ -280,21 +280,8 @@ export function register(app, ctx, deps = {}) {
     return ok;
   }
 
-  async function sendWhatsApp(phoneNorm, text) {
-    const token = env("WHATSAPP_TOKEN"), phoneId = env("WHATSAPP_PHONE_ID");
-    if (!token || !phoneId) throw Object.assign(new Error("WhatsApp not configured"), { code: "WA_UNCONFIGURED" });
-    const resp = await fetch(`https://graph.facebook.com/v23.0/${phoneId}/messages`, {
-      method: "POST",
-      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-      body: JSON.stringify({
-        messaging_product: "whatsapp", to: `966${phoneNorm}`,
-        type: "text", text: { body: text },
-      }),
-    });
-    const data = await resp.json().catch(() => ({}));
-    if (!resp.ok) throw Object.assign(new Error(`WhatsApp: ${data.error?.message || resp.status}`), { resp: data });
-    return data;
-  }
+  /* SEC (١٢/١٠): المرسل المباشر القديم (sendWhatsApp ⇒ Graph من غير أي قفل ولا موافقة) اتشال. كل واتساب من هنا بيعدّي
+     من whatsapp.js (الحارس المركزي guardSend). */
 
   const orderSubs = async (phoneNorm, orderNo) => (await pool.query(
     `SELECT id, sub, kind, phone_norm, order_no FROM push_subs
@@ -438,15 +425,7 @@ export function register(app, ctx, deps = {}) {
         }));
     }
 
-    // WhatsApp (default OFF; needs the coexistence step + an approved template).
-    if (!wa && cfg.whatsappEnabled === true) {
-      attempts.push(sendWhatsApp(order.phone_norm, text).then(
-        () => emitNotify(orderNo, status, "whatsapp", true),
-        (e) => {
-          console.error(`[notify] WhatsApp failed for ${orderNo}:`, e?.message);
-          emitNotify(orderNo, status, "whatsapp", false, { error: String(e?.code || "send_failed").slice(0, 60) });
-        }));
-    }
+    // SEC: المسار القديم «واتساب نص حر من غير موديول whatsapp.js» اتشال — كان بيبعت لأي عميل من غير قفل ولا موافقة.
 
     // مفيش ولا قناة اتجرّبت (Push مقفول أو مفيش اشتراكات، وSMS/واتساب مقفولين).
     if (!attempts.length) emitNotify(orderNo, status, "none", false, { reason: "no_channel" });
@@ -645,7 +624,15 @@ export function register(app, ctx, deps = {}) {
       } else if (b.channel === "whatsapp") {
         const phone = normPhone(b.phone);
         if (!/^5\d{8}$/.test(phone)) return c.json({ ok: false, error: "invalid_phone" }, 400);
-        await sendWhatsApp(phone, text);
+        /* SEC: تجربة واتساب = لأرقام التجربة اللي في اللوحة **بس** وعن طريق الحارس المركزي. رسالة نص حر، فميتا
+           هتقبلها بس لو الرقم ده كلّمنا في آخر ٢٤ ساعة. */
+        if (!wa || typeof wa.sendFreeform !== "function") return c.json({ ok: false, error: "whatsapp_unavailable" }, 503);
+        const r = await wa.sendFreeform({ phoneNorm: phone, payload: { type: "text", text: { body: String(text).slice(0, 1000) } },
+          source: "test", test: true });
+        if (!r.ok) {
+          return c.json({ ok: false, error: r.skipped || r.error || "send_failed", message: r.skipped === "not_in_allow_list"
+            ? "الرقم ده مش في قايمة أرقام التجربة" : (r.message || undefined) }, r.skipped ? 403 : 502);
+        }
       } else {
         const subs = (await pool.query(
           "SELECT id, sub, kind, phone_norm, order_no FROM push_subs WHERE NOT disabled ORDER BY id DESC LIMIT 5")).rows;

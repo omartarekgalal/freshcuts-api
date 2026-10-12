@@ -331,7 +331,7 @@ function fakeCtx({ raw = "", headers = {} } = {}) {
 test("a real inbound webhook reaches the inbox and opens the window", withEnv({ ...ON, WHATSAPP_APP_SECRET: "sek" }, async () => {
   const pool = memPool();
   const app = fakeApp();
-  const ctx = { pool, requireAdmin: async () => null, getSettingsData: async () => ({ notifications: { whatsappEnabled: true } }),
+  const ctx = { pool, requireAdmin: async () => null, getSettingsData: async () => ({ notifications: { whatsappEnabled: true }, waMaster: { enabled: true } }),
     jb: (x) => JSON.stringify(x), normPhone: (p) => String(p || "").replace(/\D/g, "").replace(/^966/, "") };
 
   const waApi = W.register(app, ctx, { fetch: async () => ({ ok: true, json: async () => ({ messages: [{ id: "wamid.1" }] }) }) });

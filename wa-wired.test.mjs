@@ -48,7 +48,7 @@ const withEnv = (vals, fn) => async () => {
   try { await fn(); } finally { for (const k of ENV) { if (saved[k] === undefined) delete process.env[k]; else process.env[k] = saved[k]; } }
 };
 const ON = { WHATSAPP_ENABLED: "1", WHATSAPP_TOKEN: "tok", WHATSAPP_PHONE_ID: "PHONE1" };
-function setup({ pool, fetch, settings = { notifications: { whatsappEnabled: true } } } = {}) {
+function setup({ pool, fetch, settings = { notifications: { whatsappEnabled: true }, waMaster: { enabled: true } } } = {}) {
   const app = fakeApp();
   const f = fetch || fakeFetch();
   const p = pool || memPool();
@@ -332,7 +332,7 @@ test("submit {edit:true}: a rejected template is edited in place by its id at Me
 
 test("allow-list test send: only the listed phones, without any customer switch", withEnv({ WHATSAPP_TOKEN: "tok", WHATSAPP_PHONE_ID: "PHONE1" }, async () => {
   // WHATSAPP_ENABLED is NOT set and the dashboard switch is off
-  const { api, fetch } = setup({ settings: { notifications: {} } });
+  const { api, fetch } = setup({ settings: { notifications: {}, waBot: { testPhones: ["0544775082", "0561186075"] } } });
   const params = W.TEMPLATES.fc_order_preparing.bind({ order_no: "W1790011111111" });
   assert.equal((await api.sendTemplate({ phoneNorm: "544775082", template: "fc_order_preparing", params })).skipped, "disabled", "normal path stays locked");
   assert.equal((await api.sendTemplate({ phoneNorm: "512345678", template: "fc_order_preparing", params, allowList: ["544775082", "561186075"] })).skipped, "not_in_allow_list");

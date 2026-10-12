@@ -3,6 +3,11 @@
 
    الخطة والقرارات: docs/growth-2026-09/05-whatsapp-api.md (ريبو freshcuts invite).
 
+   🔒 SEC (١٢/١٠) — حارس واحد: **كل** رسالة واتساب لازم تعدّي guardSend() وتاخد منه تذكرة، و deliver(ticket, payload)
+   هي المكان الوحيد في الكود كله اللي بينادي ‎/{phone_id}/messages‎ (wa-guard.test.mjs بيعدّ المواضع ويفشل لو زاد موضع).
+   الأقفال: مفتاح الخادم (env) **و** مفتاح المالك في اللوحة (settings.waMaster.enabled) **و** الإعداد **و** موافقة العميل
+   المناسبة لنوع الرسالة. الاستثناء الوحيد = أرقام التجربة المكتوبة في اللوحة (settings.waBot.testPhones).
+
    الموديول ده **مقفول افتراضياً**. مفيش رسالة بتطلع إلا لو الأربعة دول مع بعض:
      ١) env ‏WHATSAPP_ENABLED=1                       (المفتاح الرئيسي — Coolify)
      ٢) env ‏WHATSAPP_PHONE_ID + توكن (WHATSAPP_TOKEN أو META_CAPI_TOKEN)
@@ -32,6 +37,7 @@ import crypto from "node:crypto";
 import { sendSms as defaultSendSms } from "./accounts.js";
 import { isOptOutText } from "./wamsg.js";
 import * as CAT from "./watemplates.js";
+import { staffPhones } from "./staffalerts.js";
 
 const env = (k, d) => (process.env[k] || d || "").toString().trim();
 export const GRAPH_VERSION = "v23.0";
@@ -485,6 +491,14 @@ export function register(app, ctx, deps = {}) {
   let webhookAccept = () => ({ phoneIds: [], ownNumbers: [] });
   const setWebhookAccept = (fn) => { if (typeof fn === "function") webhookAccept = fn; };
   const masterOn = () => env("WHATSAPP_ENABLED") === "1";
+  /* مفتاح الخادم = قفل صلب فوق مفتاح اللوحة (الاتنين لازم يسمحوا):
+       "1"                 ⇒ allow  (الخادم سامح — القرار لمفتاح المالك في اللوحة)
+       "0"/off/false/no    ⇒ kill   (قفل صريح: ولا رسالة، ولا حتى لأرقام التجربة)
+       مش مكتوب            ⇒ unset  (العملاء مقفولين زي الأول؛ أرقام التجربة بس شغّالة) */
+  const envState = () => {
+    const v = env("WHATSAPP_ENABLED").toLowerCase();
+    return v === "1" ? "allow" : (["0", "off", "false", "no"].includes(v) ? "kill" : "unset");
+  };
   const configured = () => Boolean(token() && phoneId());
   const HISTORY_MAX = () => Math.max(0, Number(env("WHATSAPP_HISTORY_MAX", "20000")) || 0);
 
@@ -518,6 +532,9 @@ export function register(app, ctx, deps = {}) {
       -- Coexistence (٢٨/٩): مصدر الرسالة — api | echo (من الموبايل) | history | campaign
       ALTER TABLE wa_messages ADD COLUMN IF NOT EXISTS source TEXT;
       ALTER TABLE wa_messages ADD COLUMN IF NOT EXISTS msg_type TEXT;
+      -- SEC (١٢/١٠): العميل كتب «إيقاف» على واتساب ⇒ ولا قالب (تسويق ولا تحديثات) لحد ما يرجع يوافق.
+      -- عمود مستقل عشان source بيتكتب فوقه مع كل طلب (shop.js) فماينفعش يبقى هو العلامة.
+      ALTER TABLE wa_optins ADD COLUMN IF NOT EXISTS stopped_at TIMESTAMPTZ;
       -- أسماء جهات الاتصال من تطبيق واتساب بزنس + اسم البروفايل من الوارد
       CREATE TABLE IF NOT EXISTS wa_contact_names (
         phone_norm TEXT PRIMARY KEY,
@@ -558,23 +575,114 @@ export function register(app, ctx, deps = {}) {
     catch { return false; }
   }
 
-  /* السبب اللي بيمنع الإرسال، أو null لو كله تمام. */
-  async function gate() {
-    if (!masterOn()) return "disabled";
+  /* مفتاح المالك في اللوحة (settings.waMaster.enabled) — بيتكتب من مسار واحد للمالك بس (wacloud.js: POST /api/cms/wa-cloud/master)،
+     ومحمي من الحفظ العام للإعدادات (settings-guard.js: SERVER_OWNED_PATHS). الافتراضي مقفول. */
+  const dashMasterOf = (s) => Boolean(s && s.waMaster && s.waMaster.enabled === true);
+  const testPhonesOf = (s) => staffPhones(s && s.waBot && s.waBot.testPhones);
+  async function settingsSnap() {
+    try { return (await getSettingsData()) || {}; } catch { return null; }   // مش قادرين نقرا الإعدادات = مقفول
+  }
+  /* أقفال القناة (من غير العميل): السبب اللي بيمنع، أو null. نفس الترتيب القديم + مفتاح المالك. */
+  function channelBlock(s) {
+    if (envState() !== "allow") return "disabled";
     if (!configured()) return "unconfigured";
-    if (!(await settingsOn())) return "settings_off";
+    if (!s) return "settings_unreadable";
+    if (!dashMasterOf(s)) return "master_off";
+    if (!(s.notifications && s.notifications.whatsappEnabled === true)) return "settings_off";
     return null;
   }
 
+  /* السبب اللي بيمنع الإرسال، أو null لو كله تمام. */
+  async function gate() {
+    return channelBlock(await settingsSnap());
+  }
+
+  /* موافقة العميل. stopped = كتب «إيقاف» على واتساب ولسه مارجعش. للتحديثات: موافقة صريحة **بعد** الإيقاف بترجّعها
+     (waconsent.js بيكتب updates_answered_at)؛ للتسويق: «START» بس (بيمسح stopped_at). */
   async function optInOf(phoneNorm) {
-    const r = await pool.query("SELECT updates, marketing FROM wa_optins WHERE phone_norm=$1", [phoneNorm]);
-    return r.rows[0] || { updates: false, marketing: false };
+    const r = await pool.query(
+      `SELECT updates, marketing, stopped_at, (to_jsonb(wa_optins)->>'updates_answered_at')::timestamptz AS answered_at
+         FROM wa_optins WHERE phone_norm=$1`, [phoneNorm]);
+    const o = r.rows[0] || {};
+    const stoppedAt = o.stopped_at ? new Date(o.stopped_at).getTime() : null;
+    const answeredAt = o.answered_at ? new Date(o.answered_at).getTime() : null;
+    return { updates: o.updates === true, marketing: o.marketing === true, stopped: Boolean(stoppedAt),
+      stoppedForUpdates: Boolean(stoppedAt) && !(answeredAt && answeredAt > stoppedAt) };
   }
   async function marketingSuppressed(phoneNorm) {
     try {
       const r = await pool.query("SELECT 1 FROM cms_contacts WHERE phone_norm=$1 AND opted_out_at IS NOT NULL", [phoneNorm]);
       return r.rowCount > 0;
-    } catch { return false; } // الجدول مش موجود = مفيش إيقاف مسجّل
+    } catch (e) {
+      return !(e && e.code === "42P01");   // الجدول مش موجود = مفيش إيقاف مسجّل؛ أي خطأ تاني = مانبعتش
+    }
+  }
+
+  /* ══ الحارس المركزي ════════════════════════════════════════════════════════════════════════════════════
+     كل إرسال واتساب (قالب، رد حر من الصندوق/البورتال، حملة، أتمتة، بوت، تجربة) لازم يعدّي من هنا.
+       kind:     "template" (بيتدفع، بره النافذة) | "session" (رد حر جوّه نافذة الـ٢٤ ساعة)
+       template: اسم القالب (الفئة بتتاخد من السجل — المنادي مايقدرش يدّعي فئة)
+       purpose:  "marketing" بيفرض موافقة التسويق مهما كانت فئة القالب (الحملات)
+       test:     إرسال تجربة — للأرقام اللي في قايمة التجربة في اللوحة **بس** (allowList بتضيّق، ماتوسّعش)
+     بيرجّع {ok:true, ticket} أو {ok:false, reason}. التذكرة لرقم واحد، مرة واحدة، ودقيقة واحدة. */
+  const TICKETS = new WeakSet();
+  const TICKET_TTL_MS = 60_000;
+  async function guardSend({ phoneNorm, kind, template = null, purpose = null, source = null, test = false, allowList = null, fromId = null } = {}) {
+    const no = (reason) => ({ ok: false, reason });
+    await ready;
+    const pn = String(phoneNorm || "");
+    const to = toWaId(pn);
+    if (!to) return no("invalid_phone");
+    if (kind !== "template" && kind !== "session") return no("bad_kind");
+    const isTest = test === true || Array.isArray(allowList);
+    const s = await settingsSnap();
+    const grant = () => {
+      const ticket = Object.freeze({ to, phoneNorm: pn, kind, test: isTest, fromId: isTest && fromId ? String(fromId) : null, at: Date.now() });
+      TICKETS.add(ticket);
+      return { ok: true, ticket, test: isTest };
+    };
+    if (isTest) {
+      if (envState() === "kill") return no("disabled");
+      if (!configured()) return no("unconfigured");
+      if (!s) return no("settings_unreadable");
+      if (!testPhonesOf(s).includes(pn)) return no("not_in_allow_list");
+      if (Array.isArray(allowList) && !staffPhones(allowList).includes(pn)) return no("not_in_allow_list");
+      return grant();
+    }
+    const blocked = channelBlock(s);
+    if (blocked) return no(blocked);
+    if (kind === "session") {
+      // رد حر: العميل لازم يكون كلّمنا في آخر ٢٤ ساعة (رسالة حقيقية وصلت على الويب هوك، مش تاريخ مستورد)
+      const r = await pool.query(
+        `SELECT 1 FROM wa_messages WHERE phone_norm=$1 AND direction='in' AND COALESCE(source,'api') <> 'history'
+            AND created_at > NOW() - INTERVAL '24 hours' LIMIT 1`, [pn]);
+      if (!(r.rows && r.rows.length)) return no("window_closed");
+      return grant();
+    }
+    const t = TEMPLATES[template];
+    if (!t) return no("unknown_template");
+    const marketing = t.category === "MARKETING" || purpose === "marketing" || source === "campaign";
+    if (t.category === "AUTHENTICATION" && !marketing) return grant();   // كود تحقق العميل طلبه بنفسه
+    const o = await optInOf(pn);
+    if (marketing) {
+      if (o.stopped || await marketingSuppressed(pn)) return no("opted_out");
+      if (!o.marketing) return no("no_optin");
+    } else {
+      if (o.stoppedForUpdates) return no("opted_out");
+      if (!o.updates) return no("no_optin");
+    }
+    return grant();
+  }
+
+  /* المكان الوحيد اللي بيكلّم ‎/messages‎. من غير تذكرة من guardSend = خطأ، ومفيش طلب شبكة. */
+  async function deliver(ticket, payload) {
+    const refuse = (code) => { throw Object.assign(new Error(`WhatsApp send refused: ${code}`), { code }); };
+    if (!ticket || !TICKETS.has(ticket)) refuse("WA_NO_GUARD");
+    TICKETS.delete(ticket);
+    if (Date.now() - ticket.at > TICKET_TTL_MS) refuse("WA_GUARD_EXPIRED");
+    if (!payload || String(payload.to) !== ticket.to) refuse("WA_GUARD_MISMATCH");
+    if ((payload.type === "template") !== (ticket.kind === "template")) refuse("WA_GUARD_MISMATCH");
+    return graphPost(`${ticket.fromId || phoneId()}/messages`, payload);
   }
 
   async function recordOptIn({ phone, updates, marketing, source = "checkout", orderNo = null }) {
@@ -634,16 +742,18 @@ export function register(app, ctx, deps = {}) {
      source/body اختياريين: الحملات بتبعت نص القالب بعد التعويض عشان يظهر في
      المحادثة زي ما العميل شافه (مش «[قالب: …]»). */
   async function sendTemplate({ phoneNorm, template, params = {}, orderNo = null, stage = null, fallbackSms = null,
-    requireOptIn = true, source = null, body = null, lang = null, allowList = null }) {
+    requireOptIn = true, source = null, body = null, lang = null, allowList = null, test = false }) {
     await ready;
     const t = TEMPLATES[template];
     if (!t) return { ok: false, error: "unknown_template" };
     const to = toWaId(phoneNorm);
     if (!to) return { ok: false, skipped: "invalid_phone" };
-    /* allowList (قايمة أرقام التجربة من اللوحة): إرسال تجربة للأرقام دي **بس** من غير فتح مفاتيح العملاء
-       (WHATSAPP_ENABLED / مفتاح اللوحة). أي رقم بره القايمة = not_in_allow_list من غير أي طلب شبكة. */
-    const blocked = Array.isArray(allowList) ? allowListGate(phoneNorm, allowList) : await gate();
-    if (blocked) return { ok: false, skipped: blocked };
+    /* SEC: الحارس المركزي — أقفال القناة + موافقة العميل حسب فئة القالب. requireOptIn اتلغى مفعوله (الموافقة دايماً
+       مطلوبة)؛ الاستثناء الوحيد = أرقام التجربة اللي في اللوحة (test / allowList). */
+    void requireOptIn;
+    const g = await guardSend({ phoneNorm, kind: "template", template, source, purpose: source === "campaign" ? "marketing" : null,
+      test, allowList });
+    if (!g.ok) return { ok: false, skipped: g.reason };
     const language = lang || t.language || "ar";
     const bad = paramProblem(template, params, language);
     if (bad) {
@@ -651,17 +761,9 @@ export function register(app, ctx, deps = {}) {
         error: `param:${bad}`.slice(0, 120), source });
       return { ok: false, skipped: "missing_param", detail: bad };
     }
-    if (requireOptIn && !Array.isArray(allowList) && t.category !== "AUTHENTICATION") {
-      const o = await optInOf(phoneNorm);
-      if (t.category === "UTILITY" && !o.updates) return { ok: false, skipped: "no_optin" };
-      if (t.category === "MARKETING") {
-        if (!o.marketing) return { ok: false, skipped: "no_optin" };
-        if (await marketingSuppressed(phoneNorm)) return { ok: false, skipped: "opted_out" };
-      }
-    }
     const text = body || renderTemplateText(template, params) || null;
     try {
-      const data = await graphPost(`${phoneId()}/messages`, buildTemplatePayload(template, to, params, language));
+      const data = await deliver(g.ticket, buildTemplatePayload(template, to, params, language));
       const wamid = data.messages?.[0]?.id || null;
       await logOut({ wamid, phone_norm: phoneNorm, template, category: t.category, order_no: orderNo,
         stage, status: "accepted", fallback_sms: fallbackSms, source, body: text });
@@ -674,22 +776,19 @@ export function register(app, ctx, deps = {}) {
     }
   }
 
-  const allowListGate = (phoneNorm, list) => (!configured() ? "unconfigured"
-    : (list || []).map((x) => String(x)).includes(String(phoneNorm)) ? null : "not_in_allow_list");
-
   /* رسالة حرة بجسم Cloud API جاهز (نص / interactive) — للبوت. جوّه نافذة الـ٢٤ ساعة بس (المنادي مسؤول عنها).
      allowList = وضع التجربة: للأرقام دي بس ومن غير مفاتيح العملاء. من غيرها = البوابة الكاملة (gate).
      محاولة واحدة، مفيش إعادة. بيرجّع {ok, wamid?} أو {ok:false, skipped|error, code?, message?}. */
-  async function sendFreeform({ phoneNorm, payload, source = "bot", allowList = null, preview = null }) {
+  async function sendFreeform({ phoneNorm, payload, source = "bot", allowList = null, preview = null, test = false }) {
     await ready;
     const to = toWaId(phoneNorm);
     if (!to) return { ok: false, skipped: "invalid_phone" };
-    if (!payload || !payload.type) return { ok: false, skipped: "bad_payload" };
-    const blocked = Array.isArray(allowList) ? allowListGate(phoneNorm, allowList) : await gate();
-    if (blocked) return { ok: false, skipped: blocked };
+    if (!payload || !payload.type || payload.type === "template") return { ok: false, skipped: "bad_payload" };
+    const g = await guardSend({ phoneNorm, kind: "session", source, test, allowList });
+    if (!g.ok) return { ok: false, skipped: g.reason };
     const text = String(preview || payload.text?.body || payload.interactive?.body?.text || `[${payload.type}]`).slice(0, 500);
     try {
-      const data = await graphPost(`${phoneId()}/messages`, { ...payload, messaging_product: "whatsapp", recipient_type: "individual", to });
+      const data = await deliver(g.ticket, { ...payload, messaging_product: "whatsapp", recipient_type: "individual", to });
       const wamid = data.messages?.[0]?.id || null;
       await logOut({ wamid, phone_norm: phoneNorm, status: "accepted", source, body: text });
       return { ok: true, wamid };
@@ -704,10 +803,10 @@ export function register(app, ctx, deps = {}) {
     await ready;
     const to = toWaId(phoneNorm);
     if (!to) return { ok: false, skipped: "invalid_phone" };
-    const blocked = await gate();
-    if (blocked) return { ok: false, skipped: blocked };
+    const g = await guardSend({ phoneNorm, kind: "session", source: "reply" });
+    if (!g.ok) return { ok: false, skipped: g.reason };
     try {
-      const data = await graphPost(`${phoneId()}/messages`, {
+      const data = await deliver(g.ticket, {
         messaging_product: "whatsapp", to, type: "text", text: { body: String(text).slice(0, 4096), preview_url: previewUrl } });
       const wamid = data.messages?.[0]?.id || null;
       await logOut({ wamid, phone_norm: phoneNorm, status: "accepted", body: String(text).slice(0, 500) });
@@ -787,11 +886,13 @@ export function register(app, ctx, deps = {}) {
   async function applyIntent(pn, intent) {
     if (intent === "stop") {
       await recordOptIn({ phone: pn, marketing: false, source: "wa_stop" });
+      await pool.query("UPDATE wa_optins SET stopped_at=NOW() WHERE phone_norm=$1", [pn]).catch(() => {});
       pool.query(
         `UPDATE cms_contacts SET opted_out_at=COALESCE(opted_out_at, NOW()), optout_source='whatsapp'
           WHERE phone_norm=$1`, [pn]).catch(() => {});
     } else if (intent === "start") {
       await recordOptIn({ phone: pn, marketing: true, source: "wa_start" });
+      await pool.query("UPDATE wa_optins SET stopped_at=NULL WHERE phone_norm=$1", [pn]).catch(() => {});
     }
   }
 
@@ -978,7 +1079,9 @@ export function register(app, ctx, deps = {}) {
     const last7 = (await pool.query(
       `SELECT direction, status, count(*)::int AS n FROM wa_messages
         WHERE created_at > NOW() - INTERVAL '7 days' GROUP BY 1,2 ORDER BY 1,2`)).rows;
+    const snap = await settingsSnap();
     return c.json({ ok: true, master: masterOn(), configured: configured(), settingsOn: await settingsOn(),
+      envState: envState(), dashMaster: dashMasterOf(snap), blockedBy: channelBlock(snap), testPhones: testPhonesOf(snap).length,
       phoneId: phoneId() || null, wabaId: wabaId() || null,
       webhookSecret: Boolean(env("WHATSAPP_APP_SECRET")), verifyToken: Boolean(env("WHATSAPP_VERIFY_TOKEN")),
       optins: counts, last7, templates: Object.keys(TEMPLATES) });
@@ -1062,6 +1165,7 @@ export function register(app, ctx, deps = {}) {
   });
 
   return { sendTemplate, sendText, sendFreeform, sendOrderUpdate, sendOrderTemplateOnce, recordOptIn, applyIntent, gate, configured, masterOn, ready, setInbox,
+    guardSend, deliver, envState, dashMasterOn: async () => dashMasterOf(await settingsSnap()), testPhones: async () => testPhonesOf(await settingsSnap()),
     on, processWebhook, token, phoneId, wabaId, setBot, setBotRuntime, humanActive,
     setActiveIds, idsInUse, setWebhookAccept };
 }

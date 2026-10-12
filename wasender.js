@@ -216,6 +216,14 @@ export function register(app, ctx, deps = {}) {
       return (u && u.name) || "المالك";
     } catch { return "المالك"; }
   };
+  /* SEC: نفس تعريف «المالك» في wacloud.js — توكن الأدمن الأساسي أو مستخدم لوحة دوره owner. أي خطأ = مش مالك. */
+  const isOwner = async (c) => {
+    try {
+      const t = (c.req.header("authorization") || "").replace(/^Bearer\s+/i, "");
+      const u = t.startsWith("cms:") && deps.sessionUser ? await deps.sessionUser(t) : null;
+      return !u || u.role === "owner";
+    } catch { return false; }
+  };
 
   async function ensureSchema() {
     await pool.query(`
@@ -971,8 +979,10 @@ export function register(app, ctx, deps = {}) {
     let built;
     try { built = campaignParams(job.cloud_template, q, job); }
     catch { await pool.query("UPDATE wa_send_queue SET status='failed', reason='bad_template' WHERE id=$1", [q.id]); return { stop: "bad_template" }; }
+    /* SEC (١٢/١٠): كان requireOptIn:false (المستبعد = اللي قال «إيقاف» بس). الحملة = تسويق ⇒ لازم موافقة تسويق صريحة
+       (wa_optins.marketing) ومش موقوف — الحارس المركزي بيفرضها مهما كانت فئة القالب (source:"campaign"). */
     const r = await wa.sendTemplate({ phoneNorm: q.phone_norm, template: job.cloud_template, params: built.params,
-      requireOptIn: false, source: "campaign", body: built.text });
+      requireOptIn: true, source: "campaign", body: built.text });
     if (r.ok) {
       await markSent(q, { channel: "wa_cloud", wamid: r.wamid, media: job.image_url && TEMPLATES[job.cloud_template]?.components.some((c) => c.format === "IMAGE") ? "image" : "text" });
       return { sent: true, wamid: r.wamid };
@@ -981,6 +991,8 @@ export function register(app, ctx, deps = {}) {
       if (r.skipped === "invalid_phone") { await pool.query("UPDATE wa_send_queue SET status='skipped', reason='invalid_number' WHERE id=$1", [q.id]); return { skipped: "invalid_number" }; }
       // ١٢/١٠: متغيّر ناقص في القالب لهذا العميل (مثلاً مافيش «آخر طبق») ⇒ الصف ده يتخطّى بسببه، والباقي يكمل — مانبعتش نص ناقص ومانوقفش الحملة
       if (r.skipped === "missing_param") { await pool.query("UPDATE wa_send_queue SET status='skipped', reason='missing_param' WHERE id=$1", [q.id]); return { skipped: "missing_param" }; }
+      // SEC: العميل مش موافق على التسويق / موقوف ⇒ الصف ده يتخطّى بسببه والباقي يكمل (مش قفل قناة)
+      if (r.skipped === "no_optin" || r.skipped === "opted_out") { await pool.query("UPDATE wa_send_queue SET status='skipped', reason=$2 WHERE id=$1", [q.id, r.skipped]); return { skipped: r.skipped }; }
       // البوابة اتقفلت في النص ⇒ يرجع للطابور ونقف الدورة
       await pool.query("UPDATE wa_send_queue SET status='pending', attempts=GREATEST(attempts-1,0) WHERE id=$1", [q.id]);
       return { halt: r.skipped };
@@ -1153,6 +1165,11 @@ export function register(app, ctx, deps = {}) {
   app.post("/api/cms/wa-sender/cloud", async (c) => {
     const err = await requireAdmin(c); if (err) return err;
     let b = {}; try { b = await c.req.json(); } catch { return bad(c, "bad_json", "بيانات غلط"); }
+    /* SEC (١٢/١٠): المسار ده كان بأي أدمن (دور التسويق يقدر يشغّل قناة Cloud ويرفع السقوف) وهو بيكتب نفس settings.waCloud
+       اللي مسار المالك (POST /api/cms/wa-cloud/settings) بيحميه. دلوقتي: غير المالك يقدر **يوقّف** بس. */
+    const keys = ["enabled", "dailyCap", "hourCap", "perTick", "tierLimit", "reserveUtility"].filter((k) => b[k] !== undefined);
+    const onlyOff = keys.length === 1 && keys[0] === "enabled" && b.enabled === false;
+    if (!onlyOff && !(await isOwner(c))) return c.json({ ok: false, error: "owner_only", message: "تشغيل القناة وتعديل السقوف للمالك بس" }, 403);
     const s = await getSettingsData();
     const cur = (s.waCloud && typeof s.waCloud === "object") ? s.waCloud : {};
     const next = { ...cur };

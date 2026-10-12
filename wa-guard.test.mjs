@@ -1,0 +1,507 @@
+/* ═══════════════════════════════════════════════════════════════════════
+   🔒 SEC (١٢/١٠) — حارس إرسال واتساب (whatsapp.js: guardSend + deliver)
+   «ولا رسالة توصل عميل على واتساب إلا لو: (أ) المفتاح الرئيسي مفتوح، (ب) العميل موافق على نوع الرسالة،
+    (ج) دور اللي بيشغّل مسموح له».
+     ١) عدّ المواضع: /messages بتاع Graph له موضع واحد في الكود كله (deliver)، وكل نداء لـdeliver وراه guardSend
+     ٢) deliver من غير تذكرة / بتذكرة مزوّرة / مستعملة / لرقم تاني ⇒ خطأ ومفيش طلب شبكة
+     ٣) المفتاح الرئيسي: الخادم (قفل صلب) × مفتاح المالك × إعداد الإشعارات
+     ٤) الموافقة حسب النوع: خدمي / تسويق / تحقق / رد حر + «إيقاف»
+     ٥) التجربة: أرقام اللوحة بس — القايمة اللي المنادي بيبعتها بتضيّق وماتوسّعش
+     ٦) R1 الأدوار · R2 الحملات · R3 مسارات التجربة · R5 مفتاح المالك ومحميّ من الحفظ العام
+   node --test wa-guard.test.mjs
+═══════════════════════════════════════════════════════════════════════ */
+import test from "node:test";
+import assert from "node:assert/strict";
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+const W = await import("./whatsapp.js");
+const C = await import("./wacloud.js");
+const S = await import("./wasender.js");
+const N = await import("./notify.js");
+const G = await import("./settings-guard.js");
+
+const HERE = path.dirname(fileURLToPath(import.meta.url));
+const ENV_KEYS = ["WHATSAPP_ENABLED", "WHATSAPP_TOKEN", "WHATSAPP_PHONE_ID", "WHATSAPP_WABA_ID", "META_CAPI_TOKEN", "WHATSAPP_TEST_PHONE_ID"];
+function withEnv(vals, fn) {
+  return async () => {
+    const saved = {};
+    for (const k of ENV_KEYS) { saved[k] = process.env[k]; delete process.env[k]; }
+    Object.assign(process.env, vals);
+    try { await fn(); } finally {
+      for (const k of ENV_KEYS) { if (saved[k] === undefined) delete process.env[k]; else process.env[k] = saved[k]; }
+    }
+  };
+}
+const CONFIGURED = { WHATSAPP_TOKEN: "tok", WHATSAPP_PHONE_ID: "PHONE1" };
+const ALLOW = { ...CONFIGURED, WHATSAPP_ENABLED: "1" };
+
+function fakeApp() {
+  const routes = {};
+  const add = (m) => (p, h) => { routes[`${m} ${p}`] = h; };
+  return { routes, get: add("GET"), post: add("POST"), put: add("PUT"), delete: add("DELETE") };
+}
+const fakeCtx = ({ json = {}, headers = {}, query = {} } = {}) => ({
+  req: { json: async () => json, text: async () => "", header: (n) => headers[String(n).toLowerCase()], query: (n) => query[n], param: () => undefined },
+  json: (body, status = 200) => ({ body, status }), text: (body, status = 200) => ({ body, status }) });
+
+/* عالم صغير: إعدادات + موافقات + وارد + «إيقاف» التسويق، وfetch بيسجّل كل طلب لـGraph */
+function world({ settings = {}, optins = {}, inbound = [], suppressed = [] } = {}) {
+  const db = { settings: { notifications: { whatsappEnabled: true }, waMaster: { enabled: true }, waBot: { testPhones: ["0544775082"] }, ...settings },
+    optins: { ...optins }, inbound: [...inbound], suppressed: [...suppressed], msgs: [] };
+  const pool = { db, async query(sql, p = []) {
+    const s = String(sql).replace(/\s+/g, " ").trim();
+    if (/^SELECT 1 FROM wa_messages WHERE phone_norm=\$1 AND direction='in'/i.test(s)) return { rows: db.inbound.includes(p[0]) ? [{}] : [] };
+    if (/FROM wa_optins WHERE phone_norm/i.test(s)) return { rows: db.optins[p[0]] ? [db.optins[p[0]]] : [] };
+    if (/^INSERT INTO wa_optins/i.test(s)) { const c = db.optins[p[0]] || {}; db.optins[p[0]] = { ...c, updates: p[1] ?? c.updates ?? false, marketing: p[2] ?? c.marketing ?? false }; return { rows: [] }; }
+    if (/^UPDATE wa_optins SET stopped_at=NOW\(\)/i.test(s)) { db.optins[p[0]] = { ...(db.optins[p[0]] || {}), stopped_at: new Date().toISOString() }; return { rows: [] }; }
+    if (/^UPDATE wa_optins SET stopped_at=NULL/i.test(s)) { db.optins[p[0]] = { ...(db.optins[p[0]] || {}), stopped_at: null }; return { rows: [] }; }
+    if (/FROM cms_contacts/i.test(s)) return { rows: [], rowCount: db.suppressed.includes(p[0]) ? 1 : 0 };
+    if (/^INSERT INTO wa_messages/i.test(s)) { db.msgs.push({ wamid: p[0], phone_norm: p[1], status: p[6] }); return { rows: [], rowCount: 1 }; }
+    if (/^UPDATE settings SET data = jsonb_set\(COALESCE\(data,'\{\}'::jsonb\), '\{waMaster\}'/i.test(s)) { db.settings.waMaster = JSON.parse(p[0]); return { rows: [], rowCount: 1 }; }
+    if (/^UPDATE settings SET data = jsonb_set\(COALESCE\(data,'\{\}'::jsonb\), '\{waCloud\}'/i.test(s)) { db.settings.waCloud = JSON.parse(p[0]); return { rows: [], rowCount: 1 }; }
+    return { rows: [], rowCount: 0 };
+  } };
+  const calls = [];
+  const fetch = async (url, init) => {
+    calls.push({ url: String(url), body: init && init.body ? JSON.parse(init.body) : null });
+    return { ok: true, status: 200, json: async () => ({ messages: [{ id: `wamid.G${calls.length}` }] }) };
+  };
+  const app = fakeApp();
+  const ctx = { pool, requireAdmin: async () => null, getSettingsData: async () => JSON.parse(JSON.stringify(db.settings)), jb: (x) => JSON.stringify(x),
+    normPhone: (x) => String(x || "").replace(/\D/g, "").replace(/^966/, "").replace(/^0/, "") };
+  const wa = W.register(app, ctx, { fetch, sendSms: async () => ({ ok: true }) });
+  return { db, pool, calls, fetch, app, ctx, wa };
+}
+const CUST = "512345678", STAFF = "544775082";
+const utilParams = () => W.TEMPLATES.fc_order_preparing.bind({ order_no: "W1790011111111" });
+const text = (body = "أهلاً") => ({ type: "text", text: { body } });
+
+/* ══ ١) عدّ المواضع ═══════════════════════════════════════════════════════ */
+function sourceFiles(dir = HERE, out = []) {
+  for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+    if (e.name === "node_modules" || e.name.startsWith(".")) continue;
+    const f = path.join(dir, e.name);
+    if (e.isDirectory()) sourceFiles(f, out);
+    else if (/\.(js|mjs|cjs)$/.test(e.name) && !/\.test\.(js|mjs)$/.test(e.name)) out.push(f);
+  }
+  return out;
+}
+/* الكود من غير التعليقات (بنفس أرقام السطور) — عشان شرح قديم في تعليق مايتحسبش موضع إرسال */
+const code = (f) => fs.readFileSync(f, "utf8").replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, " ")).replace(/^\s*\/\/.*$/gm, "").replace(/\s\/\/ .*$/gm, "");
+const rel = (f) => path.relative(HERE, f).replace(/\\/g, "/");
+/* اسم الدالة اللي السطر جوّاها (آخر «function اسم(» قبله) */
+function enclosing(lines, i) {
+  for (let k = i; k >= 0; k--) { const m = lines[k].match(/^\s*(?:async\s+)?function\s+([A-Za-z0-9_]+)\s*\(/) || lines[k].match(/app\.(?:post|get|put|delete)\(\s*"([^"]+)"/); if (m) return { name: m[1], at: k }; }
+  return { name: null, at: 0 };
+}
+
+test("call sites: Graph «/messages» is requested from exactly one place in the whole codebase — deliver()", () => {
+  const OTHER_APIS = /api\.taqnyat\.sa|api\.anthropic\.com/;
+  const hits = [];
+  for (const f of sourceFiles()) {
+    const lines = code(f).split(/\r?\n/);
+    lines.forEach((ln, i) => {
+      if (/^\s*(\/\/|\*|\/\*)/.test(ln)) return;                                  // تعليق
+      if (!/\/messages[`"']/.test(ln) || OTHER_APIS.test(ln)) return;
+      if (/app\.(get|post|put|delete)\(\s*["'`]\/api\//.test(ln)) return;        // مسار عندنا اسمه بينتهي بـ/messages
+      hits.push(`${rel(f)}:${enclosing(lines, i).name}`);
+    });
+  }
+  assert.deepEqual(hits, ["whatsapp.js:deliver"], "a new low-level WhatsApp send must go through guardSend()+deliver(), not its own Graph call");
+});
+
+test("call sites: nobody builds a Graph messages URL by hand, and every deliver() call is fed a ticket from guardSend() in the same function", () => {
+  const callers = [];
+  for (const f of sourceFiles()) {
+    const lines = code(f).split(/\r?\n/);
+    lines.forEach((ln, i) => {
+      if (/^\s*(\/\/|\*|\/\*)/.test(ln)) return;
+      if (/graph\.facebook\.com[^"'`]*messages/.test(ln)) assert.fail(`${rel(f)}:${i + 1} builds a Graph messages URL directly`);
+      const m = ln.match(/(?:^|[^A-Za-z0-9_.])((?:wa\.|waApi\.|api\.)?deliver)\(([^,)]*)/);
+      if (!m || /function\s+deliver\(/.test(ln)) return;
+      const enc = enclosing(lines, i);
+      const body = lines.slice(enc.at, i + 1).join("\n");
+      assert.match(m[2].trim(), /^g\.ticket$/, `${rel(f)}:${i + 1} deliver() must receive g.ticket`);
+      assert.match(body, /const g = await (?:wa\.)?guardSend\(/, `${rel(f)}:${i + 1} (${enc.name}) calls deliver() without guardSend() before it`);
+      callers.push(`${rel(f)}:${enc.name}`);
+    });
+  }
+  assert.deepEqual(callers.sort(), ["wacloud.js:/api/cms/wa-cloud/demo/send", "whatsapp.js:sendFreeform", "whatsapp.js:sendTemplate", "whatsapp.js:sendText"],
+    "the list of functions that may hand a message to Graph — adding one is a deliberate decision, update this list with the review");
+  // مفيش حد بره whatsapp.js بيكلّم graphPost بتاعه، والتوكن مابيتبعتش لـ/messages من ملف تاني
+  const wsrc = fs.readFileSync(path.join(HERE, "whatsapp.js"), "utf8");
+  assert.equal((wsrc.match(/graphPost\(`\$\{[^`]*\/messages`/g) || []).length, 1);
+});
+
+/* ══ ٢) deliver من غير تذكرة ═══════════════════════════════════════════════ */
+test("deliver(): no ticket, a forged ticket, a used ticket, another phone or another kind ⇒ refused before any network call", withEnv(ALLOW, async () => {
+  const w = world({ inbound: [CUST] });
+  const payload = { messaging_product: "whatsapp", to: "966512345678", ...text() };
+  await assert.rejects(w.wa.deliver(null, payload), (e) => e.code === "WA_NO_GUARD");
+  await assert.rejects(w.wa.deliver({ to: "966512345678", phoneNorm: CUST, kind: "session", test: false, at: Date.now() }, payload), (e) => e.code === "WA_NO_GUARD");
+  const g1 = await w.wa.guardSend({ phoneNorm: CUST, kind: "session" });
+  assert.equal(g1.ok, true);
+  await assert.rejects(w.wa.deliver(g1.ticket, { ...payload, to: "966598765432" }), (e) => e.code === "WA_GUARD_MISMATCH");
+  await assert.rejects(w.wa.deliver(g1.ticket, payload), (e) => e.code === "WA_NO_GUARD", "a refused ticket is spent");
+  const g2 = await w.wa.guardSend({ phoneNorm: CUST, kind: "session" });
+  await assert.rejects(w.wa.deliver(g2.ticket, { messaging_product: "whatsapp", to: "966512345678", type: "template", template: { name: "x" } }), (e) => e.code === "WA_GUARD_MISMATCH",
+    "a free-form ticket cannot carry a template");
+  assert.equal(w.calls.length, 0);
+  const g3 = await w.wa.guardSend({ phoneNorm: CUST, kind: "session" });
+  await w.wa.deliver(g3.ticket, payload);
+  assert.equal(w.calls.length, 1);
+  assert.match(w.calls[0].url, /\/PHONE1\/messages$/);
+  await assert.rejects(w.wa.deliver(g3.ticket, payload), (e) => e.code === "WA_NO_GUARD", "one ticket = one message");
+  assert.equal(w.calls.length, 1);
+  assert.equal(Object.isFrozen(g3.ticket), true);
+}));
+
+/* ══ ٣) المفتاح الرئيسي ═════════════════════════════════════════════════════ */
+test("master: the server flag is a hard kill above the owner's dashboard switch — both must allow, for every kind of message", async () => {
+  const optins = { [CUST]: { updates: true, marketing: true } };
+  const tries = async (w) => [
+    (await w.wa.sendTemplate({ phoneNorm: CUST, template: "fc_order_preparing", params: utilParams() })).skipped || "sent",
+    (await w.wa.sendFreeform({ phoneNorm: CUST, payload: text() })).skipped || "sent",
+    (await w.wa.sendText({ phoneNorm: CUST, text: "أهلاً" })).skipped || "sent",
+    (await w.wa.gate()) || "open",
+  ];
+  const cases = [
+    [{ ...CONFIGURED }, {}, "disabled"],                                                   // الخادم مش مكتوب ⇒ العملاء مقفولين
+    [{ ...CONFIGURED, WHATSAPP_ENABLED: "0" }, {}, "disabled"],                            // قفل صريح
+    [{ ...CONFIGURED, WHATSAPP_ENABLED: "true" }, {}, "disabled"],                         // أي قيمة غير "1" مش سماح
+    [{ WHATSAPP_ENABLED: "1" }, {}, "unconfigured"],
+    [ALLOW, { waMaster: { enabled: false } }, "master_off"],
+    [ALLOW, { waMaster: undefined }, "master_off"],                                        // الافتراضي مقفول
+    [ALLOW, { waMaster: { enabled: "true" } }, "master_off"],                              // true الحقيقية بس
+    [ALLOW, { waMaster: true }, "master_off"],
+    [ALLOW, { notifications: { whatsappEnabled: false } }, "settings_off"],
+  ];
+  for (const [env, settings, want] of cases) {
+    await withEnv(env, async () => {
+      const w = world({ settings, optins, inbound: [CUST] });
+      assert.deepEqual(await tries(w), [want, want, want, want], JSON.stringify([env.WHATSAPP_ENABLED, settings]));
+      assert.equal(w.calls.length, 0, "no network call while locked");
+    })();
+  }
+  await withEnv(ALLOW, async () => {
+    const w = world({ optins, inbound: [CUST] });
+    assert.deepEqual(await tries(w), ["sent", "sent", "sent", "open"]);
+    assert.equal(w.calls.length, 3);
+  })();
+});
+
+test("master: settings that cannot be read ⇒ locked (never «assume on»)", withEnv(ALLOW, async () => {
+  const w = world({ optins: { [CUST]: { updates: true } }, inbound: [CUST] });
+  w.ctx.getSettingsData = async () => { throw new Error("db down"); };
+  const wa = W.register(fakeApp(), w.ctx, { fetch: w.fetch, sendSms: async () => ({}) });
+  assert.equal((await wa.sendTemplate({ phoneNorm: CUST, template: "fc_order_preparing", params: utilParams() })).skipped, "settings_unreadable");
+  assert.equal((await wa.sendFreeform({ phoneNorm: STAFF, payload: text(), test: true })).skipped, "settings_unreadable");
+  assert.equal(w.calls.length, 0);
+}));
+
+/* ══ ٤) الموافقة حسب النوع ══════════════════════════════════════════════════ */
+test("consent: utility needs the updates opt-in, marketing needs the marketing opt-in, and requireOptIn:false no longer skips either", withEnv(ALLOW, async () => {
+  const marketingTpl = Object.keys(W.TEMPLATES).find((n) => W.TEMPLATES[n].category === "MARKETING");
+  assert.ok(marketingTpl, "the registry has a marketing template");
+  const send = (w, template, extra = {}) => w.wa.guardSend({ phoneNorm: CUST, kind: "template", template, ...extra });
+  const none = world();
+  assert.equal((await send(none, "fc_order_preparing")).reason, "no_optin");
+  assert.equal((await send(none, marketingTpl)).reason, "no_optin");
+  assert.equal((await none.wa.sendTemplate({ phoneNorm: CUST, template: "fc_order_preparing", params: utilParams(), requireOptIn: false })).skipped, "no_optin");
+  const upd = world({ optins: { [CUST]: { updates: true, marketing: false } } });
+  assert.equal((await send(upd, "fc_order_preparing")).ok, true);
+  assert.equal((await send(upd, marketingTpl)).reason, "no_optin", "an updates opt-in is not a marketing opt-in");
+  assert.equal((await send(upd, "fc_order_preparing", { source: "campaign" })).reason, "no_optin", "a campaign is marketing whatever the template category");
+  assert.equal((await send(upd, "fc_order_preparing", { purpose: "marketing" })).reason, "no_optin");
+  const mkt = world({ optins: { [CUST]: { updates: false, marketing: true } } });
+  assert.equal((await send(mkt, marketingTpl)).ok, true);
+  assert.equal((await send(mkt, "fc_order_preparing")).reason, "no_optin", "a marketing opt-in is not an updates opt-in");
+  const out = world({ optins: { [CUST]: { updates: true, marketing: true } }, suppressed: [CUST] });
+  assert.equal((await send(out, marketingTpl)).reason, "opted_out", "an opt-out recorded anywhere (SMS link, WhatsApp) always wins for marketing");
+  assert.equal((await send(out, "fc_order_preparing", { source: "campaign" })).reason, "opted_out");
+  assert.equal((await send(none, "no_such_template")).reason, "unknown_template");
+  assert.equal((await none.wa.guardSend({ phoneNorm: "123", kind: "template", template: "fc_order_preparing" })).reason, "invalid_phone");
+  assert.equal((await none.wa.guardSend({ phoneNorm: CUST, kind: "broadcast" })).reason, "bad_kind");
+  for (const w of [none, upd, mkt, out]) assert.equal(w.calls.length, 0);
+}));
+
+test("consent: an authentication code needs no opt-in — unless someone tries to use it as a campaign", withEnv(ALLOW, async () => {
+  const auth = Object.keys(W.TEMPLATES).find((n) => W.TEMPLATES[n].category === "AUTHENTICATION");
+  if (!auth) return;
+  const w = world();
+  assert.equal((await w.wa.guardSend({ phoneNorm: CUST, kind: "template", template: auth })).ok, true);
+  assert.equal((await w.wa.guardSend({ phoneNorm: CUST, kind: "template", template: auth, source: "campaign" })).reason, "no_optin");
+}));
+
+test("consent: a free-form reply needs a real inbound message in the last 24 h — checked by the guard, not left to the caller", withEnv(ALLOW, async () => {
+  const w = world({ optins: { [CUST]: { updates: true, marketing: true } } });
+  assert.equal((await w.wa.sendText({ phoneNorm: CUST, text: "عرض اليوم" })).skipped, "window_closed");
+  assert.equal((await w.wa.sendFreeform({ phoneNorm: CUST, payload: text("عرض اليوم") })).skipped, "window_closed");
+  assert.equal((await w.wa.sendFreeform({ phoneNorm: CUST, payload: { type: "template", template: { name: "x" } } })).skipped, "bad_payload", "no template through the free-form door");
+  assert.equal(w.calls.length, 0);
+  w.db.inbound.push(CUST);
+  assert.equal((await w.wa.sendText({ phoneNorm: CUST, text: "أهلاً" })).ok, true);
+  assert.equal(w.calls.length, 1);
+}));
+
+test("«إيقاف» on WhatsApp silences every template — marketing until «START», updates until a new explicit yes; a later order does not undo it", withEnv(ALLOW, async () => {
+  const marketingTpl = Object.keys(W.TEMPLATES).find((n) => W.TEMPLATES[n].category === "MARKETING");
+  const w = world({ optins: { [CUST]: { updates: true, marketing: true, updates_answered_at: "2026-10-01T10:00:00Z", answered_at: "2026-10-01T10:00:00Z" } } });
+  const util = () => w.wa.guardSend({ phoneNorm: CUST, kind: "template", template: "fc_order_preparing" });
+  const mkt = () => w.wa.guardSend({ phoneNorm: CUST, kind: "template", template: marketingTpl });
+  assert.equal((await util()).ok, true); assert.equal((await mkt()).ok, true);
+  await w.wa.applyIntent(CUST, "stop");
+  assert.equal(w.db.optins[CUST].marketing, false);
+  assert.ok(w.db.optins[CUST].stopped_at);
+  assert.equal((await util()).reason, "opted_out");
+  assert.equal((await mkt()).reason, "opted_out");
+  // طلب جديد: الشيك أوت بيكتب source فوق القديم (shop.js) — العلامة عمود مستقل فمابتتمسحش
+  await w.wa.recordOptIn({ phone: CUST, marketing: undefined, source: "checkout" });
+  assert.equal((await util()).reason, "opted_out", "the next order does not quietly re-subscribe them");
+  // موافقة صريحة جديدة على التحديثات (بعد الإيقاف) ⇒ التحديثات ترجع، التسويق لأ
+  w.db.optins[CUST].answered_at = new Date(Date.now() + 1000).toISOString();
+  assert.equal((await util()).ok, true);
+  assert.equal((await mkt()).reason, "opted_out");
+  await w.wa.applyIntent(CUST, "start");
+  assert.equal(w.db.optins[CUST].stopped_at, null);
+  assert.equal((await mkt()).ok, true);
+}));
+
+/* ══ ٥) التجربة ══════════════════════════════════════════════════════════════ */
+test("test sends: only the dashboard's test numbers; a caller's own list can narrow that list but never widen it", withEnv(CONFIGURED, async () => {
+  // مفتاح الخادم مش مكتوب ومفتاح المالك مقفول — التجربة لأرقام اللوحة شغّالة، والعميل لأ
+  const w = world({ settings: { waMaster: { enabled: false }, notifications: {}, waBot: { testPhones: ["0544775082", "+966561186075"] } } });
+  const t = (a) => w.wa.guardSend({ kind: "template", template: "fc_order_preparing", ...a });
+  assert.equal((await t({ phoneNorm: STAFF, test: true })).ok, true);
+  assert.equal((await t({ phoneNorm: "561186075", allowList: ["561186075"] })).ok, true);
+  assert.equal((await t({ phoneNorm: CUST, test: true })).reason, "not_in_allow_list");
+  assert.equal((await t({ phoneNorm: CUST, allowList: [CUST] })).reason, "not_in_allow_list", "a caller cannot add a customer to the allow-list");
+  assert.equal((await t({ phoneNorm: CUST, allowList: [CUST], test: true })).reason, "not_in_allow_list");
+  assert.equal((await t({ phoneNorm: STAFF, allowList: ["561186075"] })).reason, "not_in_allow_list", "the caller's list narrows");
+  assert.equal((await t({ phoneNorm: STAFF, allowList: [] })).reason, "not_in_allow_list");
+  assert.equal((await t({ phoneNorm: STAFF })).reason, "disabled", "without the test flag a staff phone is a customer like any other");
+  assert.equal((await w.wa.sendFreeform({ phoneNorm: CUST, payload: text(), allowList: [CUST] })).skipped, "not_in_allow_list");
+  assert.equal(w.calls.length, 0);
+  // تذكرة التجربة مابتتبعتش من رقم تاني إلا في وضع التجربة
+  const g = await t({ phoneNorm: STAFF, test: true, fromId: "TESTPHONE" });
+  assert.equal(g.ticket.fromId, "TESTPHONE");
+  const empty = world({ settings: { waBot: {} } });
+  assert.equal((await empty.wa.guardSend({ phoneNorm: STAFF, kind: "session", test: true })).reason, "not_in_allow_list", "no list = no test sends");
+}));
+
+test("test sends: an explicit server kill (WHATSAPP_ENABLED=0) stops even the test numbers; fromId is ignored outside test mode", async () => {
+  await withEnv({ ...CONFIGURED, WHATSAPP_ENABLED: "0" }, async () => {
+    const w = world();
+    assert.equal((await w.wa.guardSend({ phoneNorm: STAFF, kind: "session", test: true })).reason, "disabled");
+    assert.equal(w.wa.envState(), "kill");
+  })();
+  await withEnv(ALLOW, async () => {
+    const w = world({ inbound: [CUST] });
+    const g = await w.wa.guardSend({ phoneNorm: CUST, kind: "session", fromId: "OTHER" });
+    assert.equal(g.ticket.fromId, null);
+    assert.equal(w.wa.envState(), "allow");
+  })();
+  await withEnv(CONFIGURED, async () => { assert.equal(world().wa.envState(), "unset"); })();
+});
+
+/* ══ ٦) R1 — الأدوار ═════════════════════════════════════════════════════════ */
+function senderWorld({ role }) {
+  const w = world({ settings: { waCloud: { enabled: false, dailyCap: 50 }, waSender: {} } });
+  const sessionUser = async () => (role ? { name: "سارة", role } : null);
+  const app = fakeApp();
+  S.register(app, { pool: w.pool, requireAdmin: async () => null, getSettingsData: w.ctx.getSettingsData },
+    { wa: { gate: async () => null, on: () => {}, sendTemplate: async () => ({ ok: true }) }, cloudLoop: false, lock: false, sessionUser, cms: () => null });
+  const post = (json) => app.routes["POST /api/cms/wa-sender/cloud"](fakeCtx({ json, headers: { authorization: role ? "Bearer cms:abc" : "Bearer admin-token" } }));
+  return { ...w, post };
+}
+
+test("R1: the marketing role cannot switch the Cloud campaign channel on or raise its caps from the sender screen — it can only switch it off", async () => {
+  for (const role of ["marketing", "manager", "admin"]) {
+    const w = senderWorld({ role });
+    for (const body of [{ enabled: true }, { dailyCap: 500 }, { enabled: false, hourCap: 900 }, { tierLimit: 100000 }, { reserveUtility: 0 }, {}]) {
+      const r = await w.post(body);
+      assert.equal(r.status, 403, `${role} ${JSON.stringify(body)}`);
+      assert.equal(r.body.error, "owner_only");
+    }
+    assert.equal(w.db.settings.waCloud.enabled, false);
+    assert.equal(w.db.settings.waCloud.dailyCap, 50, "nothing written");
+    const off = await w.post({ enabled: false });
+    assert.equal(off.status, 200, "switching off is always allowed");
+    assert.equal(off.body.cfg.enabled, false);
+  }
+  for (const role of ["owner", null]) {
+    const w = senderWorld({ role });
+    const r = await w.post({ enabled: true });
+    assert.equal(r.status, 200);
+    assert.equal(w.db.settings.waCloud.enabled, true);
+  }
+});
+
+test("R1: a broken session lookup is «not the owner»", async () => {
+  const w = world({ settings: { waCloud: { enabled: false }, waSender: {} } });
+  const app = fakeApp();
+  S.register(app, { pool: w.pool, requireAdmin: async () => null, getSettingsData: w.ctx.getSettingsData },
+    { wa: { gate: async () => null, on: () => {} }, cloudLoop: false, lock: false, sessionUser: async () => { throw new Error("db down"); }, cms: () => null });
+  const r = await app.routes["POST /api/cms/wa-sender/cloud"](fakeCtx({ json: { enabled: true }, headers: { authorization: "Bearer cms:abc" } }));
+  assert.equal(r.status, 403);
+  assert.equal(w.db.settings.waCloud.enabled, false);
+});
+
+/* ══ R2 — الحملات ════════════════════════════════════════════════════════════ */
+test("R2: the campaign sender asks for the marketing opt-in, and the code no longer contains a send that waives consent for customers", () => {
+  const src = code(path.join(HERE, "wasender.js"));
+  assert.doesNotMatch(src, /requireOptIn:\s*false/);
+  assert.match(src, /requireOptIn: true, source: "campaign"/);
+  assert.match(src, /r\.skipped === "no_optin" \|\| r\.skipped === "opted_out"/, "a customer without consent is skipped by reason; the queue goes on");
+  // أي requireOptIn:false باقي في الكود = إرسال تجربة للأرقام المسموحة (البوت) أو رد من الصندوق — والحارس بيفرض الموافقة في الحالتين
+  for (const f of sourceFiles()) {
+    const lines = code(f).split(/\r?\n/);
+    lines.forEach((ln, i) => {
+      if (/^\s*(\/\/|\*|\/\*)/.test(ln) || !/requireOptIn:\s*false/.test(ln)) return;
+      assert.ok(["wabotrun.js", "wainbox.js"].includes(rel(f)), `${rel(f)}:${i + 1} asks to waive consent`);
+    });
+  }
+});
+
+test("R2: end to end — a campaign row for a customer with only the «order updates» opt-in is not sent", withEnv(ALLOW, async () => {
+  const marketingTpl = Object.keys(W.TEMPLATES).find((n) => W.TEMPLATES[n].category === "MARKETING");
+  const w = world({ optins: { [CUST]: { updates: true, marketing: false }, "598765432": { updates: false, marketing: true } } });
+  const params = { body: ["x"] };
+  const r1 = await w.wa.sendTemplate({ phoneNorm: CUST, template: marketingTpl, params, requireOptIn: false, source: "campaign" });
+  assert.equal(r1.skipped, "no_optin");
+  assert.equal(w.calls.length, 0);
+  const g = await w.wa.guardSend({ phoneNorm: "598765432", kind: "template", template: marketingTpl, source: "campaign" });
+  assert.equal(g.ok, true);
+}));
+
+/* ══ R3 — مسارات التجربة ════════════════════════════════════════════════════ */
+function notifyWorld(w) {
+  const app = fakeApp();
+  N.register(app, { ...w.ctx, webpush: { generateVAPIDKeys: () => ({ publicKey: "p", privateKey: "q" }), setVapidDetails() {}, async sendNotification() {} },
+    sendSms: async () => ({ ok: true }) }, { wa: w.wa });
+  return (json) => app.routes["POST /api/notify/test"](fakeCtx({ json }));
+}
+
+test("R3: POST /api/notify/test (whatsapp) reaches the dashboard's test numbers only, through the guard", withEnv(CONFIGURED, async () => {
+  const realFetch = globalThis.fetch;
+  const direct = [];
+  globalThis.fetch = async (u) => { direct.push(String(u)); return { ok: true, status: 200, json: async () => ({}) }; };
+  try {
+    const w = world({ settings: { waMaster: { enabled: false } } });
+    w.db.settings.webPushKeys = { publicKey: "p", privateKey: "q" };
+    const post = notifyWorld(w);
+    const r1 = await post({ channel: "whatsapp", phone: "0512345678", text: "تجربة" });
+    assert.equal(r1.status, 403);
+    assert.equal(r1.body.error, "not_in_allow_list");
+    assert.equal(w.calls.length, 0);
+    const r2 = await post({ channel: "whatsapp", phone: "0544775082", text: "تجربة" });
+    assert.equal(r2.body.ok, true);
+    assert.equal(w.calls.length, 1);
+    assert.equal(w.calls[0].body.to, "966544775082");
+    assert.equal(w.calls[0].body.text.body, "تجربة");
+    assert.equal(direct.filter((u) => /graph\.facebook\.com/.test(u)).length, 0, "notify.js has no Graph call of its own");
+    const r3 = await post({ channel: "whatsapp", phone: "123" });
+    assert.equal(r3.status, 400);
+  } finally { globalThis.fetch = realFetch; }
+  const nsrc = code(path.join(HERE, "notify.js"));
+  assert.doesNotMatch(nsrc, /function sendWhatsApp|graph\.facebook\.com/);
+}));
+
+test("R3: an explicit server kill also stops the notify test send", withEnv({ ...CONFIGURED, WHATSAPP_ENABLED: "0" }, async () => {
+  const w = world();
+  w.db.settings.webPushKeys = { publicKey: "p", privateKey: "q" };
+  const r = await notifyWorld(w)({ channel: "whatsapp", phone: "0544775082" });
+  assert.equal(r.status, 403);
+  assert.equal(r.body.error, "disabled");
+  assert.equal(w.calls.length, 0);
+}));
+
+function cloudWorld(w, { role = null } = {}) {
+  const app = fakeApp();
+  C.register(app, { ...w.ctx }, { fetch: w.fetch, wa: w.wa, sessionUser: async () => (role ? { name: "سارة", role } : null) });
+  const hdr = { authorization: role ? "Bearer cms:abc" : "Bearer admin-token" };
+  return { app, call: (method, p, json) => app.routes[`${method} ${p}`](fakeCtx({ json, headers: hdr })) };
+}
+
+test("R3: wa-cloud/demo/send goes to the dashboard's test numbers only — from the test sender or the live one", withEnv({ ...CONFIGURED, WHATSAPP_TEST_PHONE_ID: "TESTPHONE" }, async () => {
+  const w = world({ settings: { waMaster: { enabled: false } } });
+  const { call } = cloudWorld(w);
+  for (const to of ["966512345678", "201001234567", "14155550100", "966544775083"]) {
+    for (const sender of ["test", "live"]) {
+      const r = await call("POST", "/api/cms/wa-cloud/demo/send", { to, sender });
+      assert.equal(r.status, 403, `${to} ${sender}`);
+      assert.match(r.body.error, /not_in_allow_list|invalid_phone/);
+    }
+  }
+  assert.equal(w.calls.length, 0);
+  const ok = await call("POST", "/api/cms/wa-cloud/demo/send", { to: "+966 54 477 5082", sender: "test" });
+  assert.equal(ok.body.ok, true);
+  assert.equal(w.calls.length, 1);
+  assert.match(w.calls[0].url, /\/TESTPHONE\/messages$/);
+  assert.deepEqual(w.calls[0].body, { messaging_product: "whatsapp", to: "966544775082", type: "template", template: { name: "hello_world", language: { code: "en_US" } } });
+  const live = await call("POST", "/api/cms/wa-cloud/demo/send", { to: "966544775082", sender: "live" });
+  assert.equal(live.body.ok, true);
+  assert.match(w.calls[1].url, /\/PHONE1\/messages$/);
+  const marketing = cloudWorld(world(), { role: "marketing" });
+  assert.equal((await marketing.call("POST", "/api/cms/wa-cloud/demo/send", { to: "966544775082" })).status, 403);
+}));
+
+/* ══ R5 — مفتاح المالك ═══════════════════════════════════════════════════════ */
+test("R5: the master switch is a dashboard setting only the owner can write; switching on needs the confirmation; every change is logged", withEnv(ALLOW, async () => {
+  const w = world({ settings: { waMaster: undefined }, optins: { [CUST]: { updates: true } } });
+  const owner = cloudWorld(w);
+  const send = async () => (await w.wa.sendTemplate({ phoneNorm: CUST, template: "fc_order_preparing", params: utilParams() }));
+  assert.equal((await send()).skipped, "master_off");
+  const v0 = await owner.call("GET", "/api/cms/wa-cloud/master");
+  assert.deepEqual([v0.body.master.enabled, v0.body.master.envState, v0.body.master.blockedBy, v0.body.master.sending], [false, "allow", "master_off", false]);
+  for (const role of ["marketing", "manager", "admin"]) {
+    const other = cloudWorld(w, { role });
+    const r = await other.call("POST", "/api/cms/wa-cloud/master", { enabled: true, confirm: true });
+    assert.equal(r.status, 403, role);
+    assert.equal((await other.call("GET", "/api/cms/wa-cloud/master")).body.ok, true, "anyone on the dashboard can see the state");
+  }
+  assert.equal(w.db.settings.waMaster, undefined);
+  assert.equal((await owner.call("POST", "/api/cms/wa-cloud/master", { enabled: true })).body.error, "confirm_required");
+  assert.equal((await owner.call("POST", "/api/cms/wa-cloud/master", { enabled: "yes", confirm: true })).body.error, "bad_enabled");
+  assert.equal((await owner.call("POST", "/api/cms/wa-cloud/master", {})).body.error, "bad_enabled");
+  assert.equal((await send()).skipped, "master_off");
+  const on = await owner.call("POST", "/api/cms/wa-cloud/master", { enabled: true, confirm: true });
+  assert.deepEqual([on.body.master.enabled, on.body.master.blockedBy, on.body.master.sending], [true, null, true]);
+  assert.equal((await send()).ok, true);
+  const off = await owner.call("POST", "/api/cms/wa-cloud/master", { enabled: false });
+  assert.equal(off.body.master.enabled, false, "switching off needs no confirmation");
+  assert.equal((await send()).skipped, "master_off", "off takes effect on the very next message");
+  assert.deepEqual(w.db.settings.waMaster.log.map((l) => l.enabled), [true, false]);
+  assert.ok(w.db.settings.waMaster.log.every((l) => l.by && l.at));
+}));
+
+test("R5: the server flag still overrides the dashboard switch, and the dashboard says which lock is closed", withEnv(CONFIGURED, async () => {
+  const w = world({ optins: { [CUST]: { updates: true } } });
+  const owner = cloudWorld(w);
+  const on = await owner.call("POST", "/api/cms/wa-cloud/master", { enabled: true, confirm: true });
+  assert.deepEqual([on.body.master.enabled, on.body.master.envState, on.body.master.blockedBy, on.body.master.sending], [true, "unset", "disabled", false]);
+  assert.equal((await w.wa.sendTemplate({ phoneNorm: CUST, template: "fc_order_preparing", params: utilParams() })).skipped, "disabled");
+  assert.equal(w.calls.length, 0);
+}));
+
+test("R5: the general settings save and the settings patch route cannot touch the master switch", () => {
+  assert.ok(G.SERVER_OWNED_PATHS.includes("waMaster"));
+  const merged = G.mergeForPut({ waMaster: { enabled: false }, notifications: {} }, { waMaster: { enabled: true }, notifications: { smsEnabled: true } }, { trusted: true });
+  assert.deepEqual(merged.waMaster, { enabled: false }, "a full-settings PUT keeps the server's value");
+  const created = G.mergeForPut({ notifications: {} }, { waMaster: { enabled: true }, notifications: {} }, { trusted: true });
+  assert.notEqual(created.waMaster && created.waMaster.enabled, true, "…and cannot create it either");
+  for (const p of ["waMaster", "waMaster.enabled"]) assert.equal(G.validatePatch([{ path: p, value: true }], {}).ok, false, p);
+});
+
+/* ══ الحالة ══════════════════════════════════════════════════════════════════ */
+test("status: /api/wa/status names the closed lock without any secret", withEnv(ALLOW, async () => {
+  const w = world({ settings: { waMaster: { enabled: false } } });
+  const r = await w.app.routes["GET /api/wa/status"](fakeCtx());
+  assert.equal(r.body.envState, "allow");
+  assert.equal(r.body.dashMaster, false);
+  assert.equal(r.body.blockedBy, "master_off");
+  assert.equal(r.body.testPhones, 1);
+  assert.doesNotMatch(JSON.stringify(r.body), /"tok"/);
+}));

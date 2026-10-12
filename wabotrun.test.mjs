@@ -55,7 +55,9 @@ function world({ waBot = {}, notifications = { whatsappEnabled: true }, orders =
   const clock = { now: () => new Date(nowMs), advance: (min) => { nowMs += min * 60_000; }, set: (iso) => { nowMs = Date.parse(iso); } };
   const db = { msgs: [], log: [], jobs: [], proofs: [], consentLog: [], ai: [], aiAlerts: [], tpl: [], cfgLog: [], chats: new Map(), optouts: [], optins: {}, links: links.map((s) => ({ slug: s, active: true, clicks: 0 })), settings: null };
   db.settings = { hours: HOURS, notifications, googlePlace: { mapsUrl: "https://maps.google.com/?cid=14767749764292326433" }, storefront: { seo: { faq: FAQ } },
-    cms: { loyalty: { enabled: true, every: 3, reward: "free_delivery", minTotal: 60 } }, delivery: { alertPhones: ["0544775082", "0506338246"], staffSmsLanguage: "en" }, waBot: { footerMode: "always", ...waBot }, ...extraSettings };
+    cms: { loyalty: { enabled: true, every: 3, reward: "free_delivery", minTotal: 60 } }, delivery: { alertPhones: ["0544775082", "0506338246"], staffSmsLanguage: "en" }, waBot: { footerMode: "always", ...waBot },
+    waMaster: { enabled: true },   // SEC: مفتاح المالك الرئيسي (whatsapp.js guardSend) — مفتوح في العالم الافتراضي للاختبار
+    ...extraSettings };
   const iso = () => new Date(nowMs).toISOString();
   const chat = (p) => { if (!db.chats.has(p)) db.chats.set(p, { phone_norm: p, unknown_streak: 0, ...(disclosure ? {} : { last_disclosed_at: iso() }) }); return db.chats.get(p); };
   const pool = {
@@ -87,6 +89,11 @@ function world({ waBot = {}, notifications = { whatsappEnabled: true }, orders =
       if (/FROM wa_messages WHERE direction='out' AND template IS NOT NULL/i.test(s)) return { rows: db.tpl };
       if (/^INSERT INTO cms_links/i.test(s)) { if (!db.links.find((l) => l.slug === p[0])) db.links.push({ slug: p[0], active: true, clicks: 0, seeded: true }); return { rows: [] }; }
       if (/FROM cms_links WHERE slug = ANY/i.test(s)) return { rows: db.links.filter((l) => p[0].includes(l.slug) && l.active) };
+      // SEC: نافذة الـ٢٤ ساعة اللي الحارس المركزي بيتأكد منها قبل أي رد حر
+      if (/^SELECT 1 FROM wa_messages WHERE phone_norm=\$1 AND direction='in'/i.test(s)) {
+        const n = db.msgs.filter((m) => m.phone_norm === p[0] && m.direction === "in" && m.source !== "history" && nowMs - Date.parse(m.created_at) < 24 * 3600_000).length;
+        return { rows: n ? [{}] : [], rowCount: n ? 1 : 0 };
+      }
       if (/^INSERT INTO wa_messages/i.test(s)) {
         if (p[0] && db.msgs.some((m) => m.wamid === p[0])) return { rows: [], rowCount: 0 };
         const echo = /'echo'/.test(s), inbound = /'in'/.test(s);

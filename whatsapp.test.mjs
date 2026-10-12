@@ -99,11 +99,11 @@ function withEnv(vals, fn) {
 }
 const ON = { WHATSAPP_ENABLED: "1", WHATSAPP_TOKEN: "tok", WHATSAPP_PHONE_ID: "PHONE1", WHATSAPP_APP_SECRET: "sec", WHATSAPP_VERIFY_TOKEN: "vt" };
 
-function setupWa({ pool, fetch, notifications = { whatsappEnabled: true }, sendSms } = {}) {
+function setupWa({ pool, fetch, notifications = { whatsappEnabled: true }, sendSms, waMaster = { enabled: true } } = {}) {
   const app = fakeApp();
   const api = W.register(app, {
     pool: pool || memPool(), requireAdmin: async () => null,
-    getSettingsData: async () => ({ notifications }), jb: (x) => JSON.stringify(x),
+    getSettingsData: async () => ({ notifications, waMaster }), jb: (x) => JSON.stringify(x),
     normPhone: (x) => String(x || "").replace(/\D/g, "").replace(/^966/, "").replace(/^0/, ""),
   }, { fetch: fetch || fakeFetch(), sendSms: sendSms || (async () => ({ ok: true })) });
   return { app, api };

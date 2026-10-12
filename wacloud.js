@@ -594,12 +594,50 @@ export function register(app, ctx, deps = {}) {
     const from = b.sender === "live" ? (phoneId() || KNOWN_PHONE_ID) : TEST_PHONE_ID();
     const template = /^[a-z0-9_]{1,512}$/.test(String(b.template || "")) ? String(b.template) : "hello_world";
     const language = /^[a-z]{2}(_[A-Z]{2})?$/.test(String(b.language || "")) ? String(b.language) : "en_US";
+    /* SEC (١٢/١٠): كان بيبعت لأي رقم من غير أي قفل. دلوقتي إرسال تجربة عن طريق الحارس المركزي:
+       لأرقام التجربة اللي في اللوحة بس (رقم سعودي)، والإرسال نفسه من wa.deliver (المكان الوحيد لـ/messages). */
+    if (!wa || typeof wa.guardSend !== "function") return c.json({ ok: false, error: "whatsapp_unavailable", message: "WhatsApp module is not loaded" });
+    const pn = /^9665\d{8}$/.test(to) ? to.slice(3) : "";
+    const g = await wa.guardSend({ phoneNorm: pn, kind: "template", template, source: "test", test: true, fromId: from });
+    if (!g.ok) {
+      return c.json({ ok: false, error: g.reason, message: g.reason === "not_in_allow_list" || g.reason === "invalid_phone"
+        ? "Add this number to the test numbers list in the dashboard first (Saudi mobile, 9665XXXXXXXX)" : `Blocked: ${g.reason}` }, 403);
+    }
     try {
-      const d = await graph("POST", `${from}/messages`, { body: { messaging_product: "whatsapp", to, type: "template",
-        template: { name: template, language: { code: language } } } });
+      const d = await wa.deliver(g.ticket, { messaging_product: "whatsapp", to, type: "template",
+        template: { name: template, language: { code: language } } });
       return c.json({ ok: true, from, to, template, messageId: d.messages?.[0]?.id || null, status: d.messages?.[0]?.message_status || "accepted" });
     } catch (e) { return c.json(errJ(e)); }
   });
+  /* 🔒 مفتاح واتساب الرئيسي (المالك بس) — settings.waMaster. الإرسال للعملاء محتاج المفتاح ده **و** مفتاح الخادم
+     (WHATSAPP_ENABLED) مع بعض؛ مفتاح الخادم قفل صلب فوقه. التشغيل لازم ييجي ومعاه confirm:true (الخطوة التانية في اللوحة).
+     القراية لأي أدمن (عشان الشاشات تعرض الحالة)، الكتابة للمالك بس. */
+  const masterView = async () => {
+    const s = await getSettingsData();
+    const m = (s.waMaster && typeof s.waMaster === "object") ? s.waMaster : {};
+    const blockedBy = wa && wa.gate ? await wa.gate() : "disabled";
+    return { enabled: m.enabled === true, by: m.by || null, at: m.at || null, log: Array.isArray(m.log) ? m.log.slice(-20) : [],
+      envState: wa && wa.envState ? wa.envState() : "unset", blockedBy: blockedBy || null, sending: !blockedBy,
+      testPhones: wa && wa.testPhones ? (await wa.testPhones()).length : 0 };
+  };
+  app.get("/api/cms/wa-cloud/master", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    return c.json({ ok: true, master: await masterView() });
+  });
+  app.post("/api/cms/wa-cloud/master", async (c) => {
+    const err = await ownerOnly(c); if (err) return err;
+    const b = await c.req.json().catch(() => ({}));
+    if (typeof b.enabled !== "boolean") return c.json({ ok: false, error: "bad_enabled", message: "enabled لازم true أو false" }, 400);
+    if (b.enabled && b.confirm !== true) return c.json({ ok: false, error: "confirm_required", message: "التشغيل محتاج تأكيد" }, 400);
+    const s = await getSettingsData();
+    const cur = (s.waMaster && typeof s.waMaster === "object") ? s.waMaster : {};
+    const entry = { enabled: b.enabled, by: (await who(c)).name, at: new Date().toISOString() };
+    const next = { ...entry, log: [...(Array.isArray(cur.log) ? cur.log : []), entry].slice(-20) };
+    await pool.query("UPDATE settings SET data = jsonb_set(COALESCE(data,'{}'::jsonb), '{waMaster}', $1::jsonb, true), updated_at=NOW() WHERE id=1",
+      [JSON.stringify(next)]);
+    return c.json({ ok: true, master: await masterView() });
+  });
+
   app.post("/api/cms/wa-cloud/demo/template", async (c) => {
     const err = await ownerOnly(c); if (err) return err;
     if (env("WHATSAPP_TEMPLATES_WRITE") !== "1") return c.json({ ok: false, error: "templates_write_disabled", message: "Set WHATSAPP_TEMPLATES_WRITE=1" });
