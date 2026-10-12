@@ -50,7 +50,7 @@ import { ECHO, STAFF_ECHO_SQL } from "./waecho.js";
 import { makeStt, STT_PROVIDERS } from "./wasttkey.js";
 const STT_LABEL = Object.fromEntries(STT_PROVIDERS.map((p) => [p.id, p.label]));
 import { lookImage, makeTranscriber, voiceSeconds, transcriptUsable, IMAGE_MAX_BYTES, VOICE_MAX_BYTES } from "./waassistmedia.js";
-import { ASSIST_CFG_DEFAULTS, ASSIST_SCHEMA, PROMPT_HASH, LIVE_AUDIENCES, assistConfig, assistFromBody, assistEligible, makeAssistLoop, makeAssistStore, makeModelCaller, billableUsage, newSession, noteRulesTurn, buildContext, hintOf, introSay, ensureIntro, hasIntro } from "./waassistrun.js";
+import { ASSIST_CFG_DEFAULTS, ASSIST_SCHEMA, PROMPT_HASH, LIVE_AUDIENCES, assistConfig, assistFromBody, assistEligible, makeAssistLoop, makeAssistStore, makeModelCaller, billableUsage, newSession, noteRulesTurn, buildContext, hintOf, introSay, ensureIntro, hasIntro, heardContext } from "./waassistrun.js";
 import { WA_UPDATES_TEXTS, WA_UPDATES_CURRENT, recordWaUpdatesBot, recordWaMarketingBot, ensureWaConsentSchema } from "./waconsent.js";
 
 export const STORE = "https://freshcuts.sa";
@@ -2900,10 +2900,13 @@ export function register(app, ctx, deps = {}) {
     if (!assist || !allowed) return null;
     await ready;
     let session = await assistStore.loadSession(phone, now, acfg.sessionMin);
+    /* PS2: «جلسة بذرة» = بوت القواعد رد على سؤال سعر صنف في أول المحادثة (rulesFirstPrice) وسجّل السؤال، والمساعد لسه مادخلش. مش محادثة مساعد شغّالة (المواعيد والموقع والشكر
+       يفضلوا مع القواعد ببلاش)، وأول دور للمساعد بعدها بياخد سياق أول دور كامل (ملف العميل، العروض، البوكسات) وهو شايف سؤال العميل اللي فات. */
+    const seeded = Boolean(session && session.state && session.state.seed === true);
     /* «بدون بصل» وهو بيجهّز سلة = ملاحظة للمساعد؛ بس لو له طلب حديث من الموقع تبقى «تعديل طلب» للموظف زي النهارده (ومانعرفش ⇒ نفترض إن له طلب). */
     let recentOrder = false;
     if (cls.key === "change") { const ro = await q(`SELECT 1 FROM shop_orders WHERE phone_norm=$1 AND NOT COALESCE(is_test,false) AND status NOT IN ('expired','pending_payment') AND created_at > NOW() - INTERVAL '24 hours' LIMIT 1`, [phone]); recentOrder = ro === null || ro.length > 0; }
-    const el = assistEligible({ acfg, cfg, phone, ev, cls, d, afterWait: null, sessionActive: Boolean(session), handoverOpen: held, recentOrder, allowed });
+    const el = assistEligible({ acfg, cfg, phone, ev, cls, d, afterWait: null, sessionActive: Boolean(session) && !seeded, handoverOpen: held, recentOrder, allowed });
     const lang = cls.lang === "en" ? "en" : "ar";
     const ruleKey = () => String((d && d.key) || cls.key || "reply");
     const turnRow = (x) => assistStore.addTurn({ phone, sessionId: session ? session.id : null, logId, wamid: ev.wamid || null, lang, ...x });
@@ -2911,6 +2914,7 @@ export function register(app, ctx, deps = {}) {
       return { d: null, done: async ({ okSent }) => {       // القواعد ماسكة الرسالة: لو ردّت وسط محادثة المساعد، تتسجّل عشان المساعد يفضل فاهم السياق
         if (!okSent) return;
         if (session) await assistStore.saveSession(phone, noteRulesTurn(session, ev.text, ruleKey()), now);
+        else if (el.seed) { const s0 = newSession(now); s0.state.seed = true; await assistStore.saveSession(phone, noteRulesTurn(s0, ev.text, "dish card: price + order button"), now); }
         await turnRow({ handledBy: "rules_owned", outcome: `rules:${el.why.replace(/^rules:/, "")}`, masked: maskText(ev.text), trace: {} });
       } };
     }
@@ -2935,12 +2939,13 @@ export function register(app, ctx, deps = {}) {
     if (stop) return fallback(stop);
     /* «مقروء + جاري الكتابة» من غير انتظار: لو فشل، الرد نفسه مايتأثرش. */
     if (acfg.typing && ev.wamid && typeof wa.sendTyping === "function") wa.sendTyping({ phoneNorm: phone, wamid: ev.wamid, allowList: cfg.mode === "test" || acfg.mode !== "live" ? cfg.testPhones : null }).catch((e) => console.error("[assist] typing:", e.message));
-    const fresh = !session;
-    if (fresh) session = newSession(now);
+    const fresh = !session || seeded;
+    if (!session) session = newSession(now);
+    if (seeded) { session = JSON.parse(JSON.stringify(session)); delete session.state.seed; }
     /* تحويل عادي لسه مستني موظف: المساعد يعرف (مايحوّلش نفس الحاجة تاني، ويقول للعميل إن الموظف هيرد) ويكمل يساعد. */
     const pending = handoverOpenOf(chat, cfg, echoAt, now) ? { reason: String(chat.handoff_reason || "handover"), minutes_ago: Math.max(0, Math.round((now.getTime() - Date.parse(chat.handoff_at)) / 60_000)) } : null;
     const cx = await assistContext({ fresh, phone, cfg, lang, chat, know, data, now, cls, pending, ev, settings });
-    if (ev.heard) cx.context = { ...cx.context, ...(ev.heard === "voice" ? { heard_from_voice_note: true } : { seen_in_a_picture: true }) };
+    if (ev.heard) cx.context = { ...cx.context, ...heardContext(ev.heard === "voice" ? "voice" : "image") };      // PS2: القاعدة بتيجي مع المفتاح
     /* PS1 — الشخصية: الاسم في سياق أول دور، وجملة التعريف في الدور اللي التعريف مستحق فيه بس (أول رد في المحادثة / مرة كل disclosureHours). */
     const discloseDue = !chat.last_disclosed_at || now.getTime() - Date.parse(chat.last_disclosed_at) >= cfg.disclosureHours * 3600_000;
     const persona = personaOn(cfg);

@@ -9,6 +9,7 @@ import assert from "node:assert/strict";
 
 import fs from "node:fs";
 import * as C from "./waconsent.js";
+import { CTX_RULES } from "./waassistrun.js";
 import * as AIC from "./waaicost.js";
 import * as BC from "./wabotcart.js";
 const W = await import("./whatsapp.js");
@@ -2359,7 +2360,7 @@ function memStore() {
 const TESTERS = ["0512345678"];
 function aWorld(steps, o = {}) {
   const m = aModel(steps), store = memStore();
-  const w = world({ bundles: LIVE.bundles, links: ALL_LINKS, ...o, waBot: { mode: "test", testPhones: TESTERS, footerMode: "smart", ...(o.waBot || {}), assist: { mode: "test", forceSuggestion: false, typing: false, ...((o.waBot || {}).assist || {}) } }, assistModel: m.callModel, assistStore: store });
+  const w = world({ bundles: LIVE.bundles, links: ALL_LINKS, ...o, waBot: { mode: "test", testPhones: TESTERS, footerMode: "smart", ...(o.waBot || {}), assist: { mode: "test", forceSuggestion: false, typing: false, orderWordsStrong: true, ...((o.waBot || {}).assist || {}) } }, assistModel: m.callModel, assistStore: store });
   return { ...w, m, store: store.st };
 }
 const msgs = (r) => r.sent.filter((b) => b.type);                    // رسايل فعلية (من غير «مقروء + جاري الكتابة»)
@@ -2699,7 +2700,7 @@ test("AS4 ads — a chat opened from an ad: the assistant opens on the advertise
   // an ad with no link of its own: the ad text only, no «advertised»; a second click on the first ad is the same row
   const w2 = aWorld([mSay("هلا 👋 وش تحب تطلب اليوم؟")], { links });
   await w2.say("مرحبا", { referral: { source_id: "777777777", source_type: "ad", headline: "عشاء لشخصين" } });
-  assert.deepEqual(ctxOf(w2.m.seen[0]).came_from_ad, { ad_text: "عشاء لشخصين" });
+  assert.deepEqual(ctxOf(w2.m.seen[0]).came_from_ad, { ad_text: "عشاء لشخصين", rule: CTX_RULES.ad });
   w.m.push(mSay("أكيد، تبيه توصيل ولا استلام؟")); await w.say("ابي العرض", { referral });
   assert.equal(w.db.adChats.length, 1); assert.equal(w.db.adChats[0].clicks, 2);
   // not from an ad ⇒ nothing about ads in the context
@@ -2890,7 +2891,7 @@ test("CH1 assistant — the invite line is offered only when the context allows 
   // a normal question: the context allows the invite, the model does not use it ⇒ nothing is counted
   const w2 = aWorld([mSay("هلا 👋 وش تحب تطلب اليوم؟"), mSay("أكيد، تفضّل مشاوي ولا كريب؟")], { waBot: chOn() });
   const a = await w2.say("ابي اطلب عشا");
-  assert.equal(a.log.reply_key, "assist"); assert.deepEqual(ctxOf(w2.m.seen[0]).channel_invite, { say }); assert.equal(w2.db.channelOffers.length, 0);
+  assert.equal(a.log.reply_key, "assist"); assert.deepEqual(ctxOf(w2.m.seen[0]).channel_invite, { say, rule: CTX_RULES.channel }); assert.equal(w2.db.channelOffers.length, 0);
   // shown once (by the rules bot's row) ⇒ the assistant's next context has no invite, and the link written anyway is refused by the validator
   await w2.press("m:channel", "🔔 قناة العروض"); assert.deepEqual(w2.db.channelOffers.map((o) => o.via), ["rules_menu"]);
   w2.clock.advance(1);
@@ -2954,7 +2955,7 @@ test("VM1 voice — the note is transcribed, the assistant gets the text marked 
   assert.equal(bodyOf(msgs(r)[0]), "سمعت إنك تبي كريب زنجر سوبريم استلام، صح؟");
   assert.deepEqual(heard, [{ model: "gpt-4o-transcribe", mime: "audio/ogg; codecs=opus", bytes: 64 }]);
   assert.deepEqual(w.mediaAsked[0], ["111222333444", { maxBytes: 4_000_000 }]);
-  assert.equal(ctxOf(w.m.seen[0]).heard_from_voice_note, true);
+  assert.deepEqual(ctxOf(w.m.seen[0]).heard_from_voice_note, { rule: CTX_RULES.voice });
   assert.ok(!JSON.stringify(w.m.seen).includes("512345678"), "the transcript is masked before the model like any text");
   assert.equal(r.log.text, "🎤 ابي كريب زنجر سوبريم استلام ورقمي [رقم]");
   const stt = w.db.ai.find((a) => /^media:stt/.test(a.detail));
@@ -2990,7 +2991,7 @@ test("VM1 images — a menu or ad screenshot is answered like text from a masked
   const c2 = JSON.stringify(w.m.seen[1].messages);
   assert.ok(!c2.includes(JPG.toString("base64")) && !c2.includes("512345678"));
   assert.ok(c2.includes("كم هذا؟") && c2.includes("[صورة من العميل]") && c2.includes("بوكس الكريب الفردي"));
-  assert.equal(ctxOf(w.m.seen[1]).seen_in_a_picture, true);
+  assert.deepEqual(ctxOf(w.m.seen[1]).seen_in_a_picture, { rule: CTX_RULES.picture });
   assert.equal(r.log.text, "🖼 إعلان بوكس الكريب الفردي بسعر 29، رقم التواصل [رقم]");
   const vis = w.db.ai.find((a) => /^media:vision/.test(a.detail));
   assert.deepEqual([vis.purpose, vis.model, vis.detail, vis.sent_text], ["assistant", "claude-haiku-5-5", "media:vision menu_or_ad", null]);
@@ -4170,7 +4171,7 @@ test("ST2 re-entry: the assistant's first turn after a staff close carries what 
   const w = aWorld([mSay("تمام، أي مشروب تحب أضيفه؟"), mSay("أبشر 👍")], { flow });
   const r = await w.say("ابي بيتزا");
   assert.equal(r.log.reply_key, "assist");
-  assert.match(w.m.seen[0].messages[0].content[0].text, /"staff_handled_this_chat":\{"outcome":"follow_up","outcome_label":"محتاج متابعة","staff_note":"عايز يضيف مشروب","staff_told_customer":\["طلبك اتسجّل"\],"closed_minutes_ago":3,"still_to_do":true\}/);
+  assert.match(w.m.seen[0].messages[0].content[0].text, /"staff_handled_this_chat":\{"outcome":"follow_up","outcome_label":"محتاج متابعة","staff_note":"عايز يضيف مشروب","staff_told_customer":\["طلبك اتسجّل"\],"closed_minutes_ago":3,"still_to_do":true,"rule":"Someone from the team/);
   assert.equal(used, 1);
   w.clock.advance(1); await w.say("وعندكم باستا؟");
   assert.doesNotMatch(JSON.stringify(w.m.seen[1].messages.at(-1)), /staff_handled_this_chat/, "once");
@@ -4180,7 +4181,7 @@ test("ST2 re-entry: the assistant's first turn after a staff close carries what 
   const bad = aWorld([{ ok: false, error: "timeout", ms: 20000, provider: "x", usage: null }], { flow: f2 });
   await bad.say("ابي بيتزا"); assert.equal(kept, 0);
   const AR = await import("./waassistrun.js");
-  assert.match(AR.SYSTEM_PROMPT || "", /staff_handled_this_chat/);
+  assert.match(AR.CTX_RULES.staff, /never contradict/);      // PS2: the rule travels with the key
 }));
 
 test("ST2 transfer line: one fixed line to the customer through the guard — only inside the window, never to someone who stopped, never in dry / off mode", withEnv(LOCKS_OPEN, async () => {
@@ -4199,4 +4200,22 @@ test("ST2 transfer line: one fixed line to the customer through the guard — on
   const t = world({ waBot: { mode: "test", testPhones: ["0544775082"] }, bundles: LIVE.bundles, links: ALL_LINKS });
   assert.equal(await t.bot.sendFlowLine("0512345678", "transfer_note"), "not_test_phone");
   assert.equal(R.TEXTS.transfer_note.ar, "حوّلت محادثتك لمدير الفرع، ويكمل معك هنا 🙏");
+}));
+
+test("PS2 — rulesFirstPrice: a price question that opens the chat is answered by the rules bot's dish card (no model call); hours/location stay free; the assistant's first turn after it is a full first turn that sees the question", withEnv(CONFIGURED, async () => {
+  const w = aWorld([mSay("أبشر، تبيه استلام ولا توصيل؟")], { waBot: { assist: { rulesFirstPrice: true, orderWordsStrong: false } } });
+  const p = await w.say("بكم كريب زنجر سوبريم");
+  assert.equal(w.m.used(), 0, "no model call for the price"); assert.equal(p.log.reply_key, "item"); assert.match(bodyOf(msgs(p)[0]), /25/);
+  assert.deepEqual(w.store.turns.map((t) => [t.handledBy, t.outcome]), [["rules_owned", "rules:item_price"]]);
+  const seed = JSON.parse([...w.store.sessions.values()][0].s); assert.equal(seed.state.seed, true);
+  w.clock.advance(1); const loc = await w.say("وين موقعكم");
+  assert.equal(w.m.used(), 0, "a seeded chat is not an assistant conversation: location is still the rules bot's, free"); assert.equal(loc.log.reply_key, "location");
+  w.clock.advance(1); const o = await w.say("طيب واحد لو سمحت");
+  assert.equal(w.m.used(), 1); assert.equal(o.log.reply_key, "assist");
+  const sent = JSON.stringify(w.m.seen[0].messages);
+  assert.match(sent, /بكم كريب زنجر سوبريم/, "the assistant sees what the customer asked the rules bot"); assert.match(sent, /\\"boxes\\":/, "and gets the full first-turn context");
+  assert.equal(JSON.parse([...w.store.sessions.values()][0].s).state.seed, undefined, "the seed is gone once the assistant has answered");
+  // off (the default): the assistant answers the price itself
+  const off = aWorld([mUse(tUse("search_menu", { query: "كريب زنجر سوبريم" })), mSay("كريب زنجر سوبريم بـ 25 ر.س.")]);
+  await off.say("بكم كريب زنجر سوبريم"); assert.equal(off.m.used(), 2);
 }));

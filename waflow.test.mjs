@@ -287,7 +287,7 @@ test("assistant re-entry: after the close it gets what staff told the customer (
   const hb = await w.flow.handbackFor(CUST);
   assert.deepEqual(hb, { outcome: "follow_up", outcome_label: "محتاج متابعة", staff_note: "عايز يضيف بيبسي للطلب", staff_told_customer: ["أهلاً أستاذ محمد، طلبك اتسجّل", "لو فيه مشكلة كلمني على [رقم]"], closed_minutes_ago: 7, still_to_do: true });
   const ctx = A.buildContext({ handback: hb });
-  assert.deepEqual(ctx.staff_handled_this_chat, hb);
+  { const { rule, ...rest } = ctx.staff_handled_this_chat; assert.deepEqual(rest, hb); assert.match(rule, /^Someone from the team has just been talking/); }
   assert.equal(A.buildContext({}).staff_handled_this_chat, undefined);
   await w.flow.handbackUsed(CUST); assert.equal(await w.flow.handbackFor(CUST), null, "used once");
   const s = world(); await s.handover(); await s.flow.take(CUST, P_CASHIER); await s.flow.close(CUST, P_CASHIER, { outcome: "ordered" });

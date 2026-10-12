@@ -19,7 +19,7 @@ const lastResults = (seenCall) => seenCall.messages.at(-1).content.filter((b) =>
 async function turn(W, session, text, over = {}) {
   const s = session || AR.newSession(W.now());
   const hours = await W.tools.get_hours();
-  return W.loop.runTurn({ phone: PHONE, text, lang: "ar", session: s, acfg: { ...W.acfg, ...over }, context: AR.buildContext({ first: !session, hours, locationShared: Boolean(W.state.loc), boxes: W.boxes }) });
+  return W.loop.runTurn({ phone: PHONE, text, lang: "ar", session: s, acfg: { ...W.acfg, orderWordsStrong: true, ...over }, context: AR.buildContext({ first: !session, hours, locationShared: Boolean(W.state.loc), boxes: W.boxes }) });
 }
 
 test("settings: off by default, only off / test exist, every value has limits and a schema row with an Arabic name", () => {
@@ -195,7 +195,7 @@ test("the loop: fast model first, the strong one as soon as the turn builds an o
   assert.deepEqual([r.trace.tier, r.trace.escalated, r.session.strong], ["strong", true, true]);
   assert.equal(m.seen[1].messages.length, 1, "the fast model's discarded answer is not in the conversation");
   await turn(W, r.session, "طيب"); assert.equal(m.seen[3].model, "claude-sonnet-5-5");
-  assert.deepEqual([AR.pickModel(W.acfg, null, "هلا").tier, AR.pickModel(W.acfg, null, "ابي اطلب بوكس").tier, AR.pickModel({ ...W.acfg, routing: "strong" }, null, "هلا").tier, AR.pickModel({ ...W.acfg, routing: "fast" }, { strong: true }, "ابي اطلب").tier], ["fast", "strong", "strong", "fast"]);
+  assert.deepEqual([AR.pickModel(W.acfg, null, "هلا").tier, AR.pickModel({ ...W.acfg, orderWordsStrong: true }, null, "ابي اطلب بوكس").tier, AR.pickModel({ ...W.acfg, routing: "strong" }, null, "هلا").tier, AR.pickModel({ ...W.acfg, routing: "fast" }, { strong: true }, "ابي اطلب").tier], ["fast", "strong", "strong", "fast"]);
 });
 
 test("the loop: no cart link before the system's one suggestion was offered once; the link never reaches the model; accepted and declined are recorded", async () => {
@@ -399,7 +399,7 @@ test("AS4 — context: the manager's notes on the first turn only, the ad on any
   const c1 = AR.buildContext({ first: true, notes: "الصالة تتسع 40 شخص.", ad: { ad_text: "بوكس العيلة", advertised: { kind: "box", slug: "box-family", name: "بوكس العيلة", price: 149 } } });
   assert.equal(c1.manager_notes, "الصالة تتسع 40 شخص."); assert.equal(c1.came_from_ad.advertised.slug, "box-family");
   const c2 = AR.buildContext({ first: false, notes: "x", ad: { ad_text: "y" } });
-  assert.equal(c2.manager_notes, undefined); assert.deepEqual(c2.came_from_ad, { ad_text: "y" });
+  assert.equal(c2.manager_notes, undefined); assert.deepEqual(c2.came_from_ad, { ad_text: "y", rule: AR.CTX_RULES.ad });
   assert.equal(AR.buildContext({ first: true }).came_from_ad, undefined);
   const W = makeWorld({}, {}); W.state.loc = { lat: 21.6, lng: 39.15 };
   const q0 = await W.tools.quote_delivery(PHONE, { total: 0 });
@@ -413,7 +413,8 @@ test("AS4 — context: the manager's notes on the first turn only, the ad on any
   const W3 = makeWorld({}, {});
   assert.equal((await W3.tools.quote_delivery(PHONE, { total: 0 })).error, "need_location");
   // the prompt: ask for the pin, never judge from a district name, time only as «تقريباً» when present; ads; knowledge base
-  for (const s of ["share their location here in WhatsApp", "never judge coverage from a district name", "if it is absent say nothing about time", "came_from_ad", "ask_knowledge", "manager_notes"]) assert.ok(AR.SYSTEM_PROMPT.includes(s), s);
+  for (const s of ["share their location here in WhatsApp", "never judge coverage from a district name", "if it is absent say nothing about time", "ask_knowledge", "manager_notes"]) assert.ok(AR.SYSTEM_PROMPT.includes(s), s);
+  assert.match(AR.CTX_RULES.ad, /open on exactly that/);      // PS2: the ad rule travels with the came_from_ad key
   assert.ok(AR.TOOL_DEFS.some((t) => t.name === "ask_knowledge" && t.input_schema.required.includes("question")));
 });
 
@@ -450,7 +451,7 @@ test("CH1 — the channel invite in the loop: sent as written when the turn allo
   const r4 = await go([use(tu("dish_fact", { id: "17", question: "سمسم" })), (a) => say(`${lastResults(a)[0].say}\n${line}`)], "وجبة كفتة فيها سمسم؟", true);
   assert.equal(r4.ok, true); assert.ok(!r4.text.includes("whatsapp.com")); assert.equal(r4.trace.channelOffered, undefined);
   assert.equal(AR.buildContext({ channel: null }).channel_invite, undefined);
-  assert.deepEqual(AR.buildContext({ first: false, channel: { say: line, url: URL } }).channel_invite, { say: line });
+  assert.deepEqual(AR.buildContext({ first: false, channel: { say: line, url: URL } }).channel_invite, { say: line, rule: AR.CTX_RULES.channel });
 });
 
 test("serious: a coupon or code statement needs get_offers in this conversation (or the word coming from a tool / the context)", () => {

@@ -1,0 +1,61 @@
+{
+ "set": "all",
+ "name": "ps2-subset-b",
+ "over": {
+  "routing": "escalate",
+  "thinking": "adaptive",
+  "effort": "low",
+  "timeoutMs": 60000
+ },
+ "capped": false,
+ "spentRun": 0.4552689999999999,
+ "spentTodayBefore": 0,
+ "cap": 60,
+ "conversations": 8,
+ "passed": 8,
+ "failed": [],
+ "customerTurns": 27,
+ "modelTurns": 27,
+ "answeredByAssistant": 27,
+ "rulesOwned": 0,
+ "fallbacks": {},
+ "validatorRetries": 1,
+ "escalations": 2,
+ "costSar": 0.4553,
+ "costPerConversationSar": 0.0569,
+ "costPerModelTurnSar": 0.0169,
+ "latencyMs": {
+  "p50": 3070,
+  "p90": 4695,
+  "max": 6697,
+  "n": 27
+ },
+ "modelCalls": 56,
+ "byModel": {
+  "claude-haiku-5-5": {
+   "calls": 46,
+   "in": 25324,
+   "out": 5671,
+   "cached": 636081,
+   "sar": 0.2587,
+   "callP50ms": 1429,
+   "callP90ms": 2131
+  },
+  "claude-sonnet-5-5": {
+   "calls": 10,
+   "in": 8929,
+   "out": 687,
+   "cached": 138498,
+   "sar": 0.1966,
+   "callP50ms": 1522,
+   "callP90ms": 1783
+  }
+ },
+ "failTypes": {},
+ "reviewFlags": {
+  "intro_by_code": 1,
+  "validator_retry": 1
+ },
+ "text": "conversations 8 · passed 8 · failed 0\ncustomer turns 27: assistant answered 27, rules owned 0, fallbacks {}\nvalidator retries 1 · escalations fast→strong 2 · model calls 56\ncost 0.4553 SAR (0.0569 per conversation, 0.0169 per model turn)\nlatency per answered turn: p50 3070 ms · p90 4695 ms · max 6697 ms (n=27)\nby model {\"claude-haiku-5-5\":{\"calls\":46,\"in\":25324,\"out\":5671,\"cached\":636081,\"sar\":0.2587,\"callP50ms\":1429,\"callP90ms\":2131},\"claude-sonnet-5-5\":{\"calls\":10,\"in\":8929,\"out\":687,\"cached\":138498,\"sar\":0.1966,\"callP50ms\":1522,\"callP90ms\":1783}}\nfail types {}\nreview flags {\"intro_by_code\":1,\"validator_retry\":1}",
+ "markdown": "# Assistant evaluation: ps2-subset-b\n\n```\nconversations 8 · passed 8 · failed 0\ncustomer turns 27: assistant answered 27, rules owned 0, fallbacks {}\nvalidator retries 1 · escalations fast→strong 2 · model calls 56\ncost 0.4553 SAR (0.0569 per conversation, 0.0169 per model turn)\nlatency per answered turn: p50 3070 ms · p90 4695 ms · max 6697 ms (n=27)\nby model {\"claude-haiku-5-5\":{\"calls\":46,\"in\":25324,\"out\":5671,\"cached\":636081,\"sar\":0.2587,\"callP50ms\":1429,\"callP90ms\":2131},\"claude-sonnet-5-5\":{\"calls\":10,\"in\":8929,\"out\":687,\"cached\":138498,\"sar\":0.1966,\"callP50ms\":1522,\"callP90ms\":1783}}\nfail types {}\nreview flags {\"intro_by_code\":1,\"validator_retry\":1}\n```\n\n## Conversations\n\n### PASS · returning-reorder-declined-upsell (returning customer) · 0.0475 SAR\n\n- **العميل:** هلا\n  - **المساعد** (fast, 3203 ms, 0.0057 SAR): هلا والله أحمد 👋 معك ماجد، المساعد الرقمي لفريش كاتس. آخر طلب لك كان كريب زنجر سوبريم × 2 ووجبة كفتة × 1، تبيه نفس الطلب؟\n- **العميل:** لا، اليوم بس كريب زنجر سوبريم\n  - **المساعد** (fast, 3412 ms, 0.0111 SAR, tools: search_menu): كريب زنجر سوبريم بـ 25 ر.س. كم حبة تبي؟\n- **العميل:** لا شكراً\n  - **المساعد** (fast, 1217 ms, 0.0056 SAR): ولا يهمك، متى ما حبيت اكتب لي.\n- **العميل:** استلام\n  - **المساعد** (fast, 4235 ms, 0.0124 SAR, tools: preview_cart): تمام، كريب زنجر سوبريم × 1 للاستلام بـ 25 ر.س، وإذا تبي أكثر قلّي. تحب أضيف لك مشروبات غازية بـ 3 ر.س؟\n- **العميل:** لا شكراً، ارسل رابط السلة\n  - **المساعد** (fast, 3070 ms, 0.0126 SAR, tools: note_suggestion, build_cart, cart 25 pickup): سلتك: كريب زنجر سوبريم × 1 للاستلام = 25 ر.س. اضغط الزر، واختر الاستلام وادفع 👇\n\n### PASS · undecided-hungry (undecided) · 0.0385 SAR\n\n- **العميل:** جوعان ومدري وش اطلب\n  - **المساعد** (fast, 3651 ms, 0.0104 SAR, tools: recommend): معك ماجد، المساعد الرقمي لفريش كاتس. أبشر، من أكثر الأصناف طلباً عندنا: ⏎  ⏎ وجبة ميكس جريل بـ 37 ر.س ⏎ وجبة نصف دجاجة على الفحم بـ 28 ر.س ⏎ كريب زنجر سوبريم بـ 25 ر.س ⏎  ⏎ تحب تكون وجبة مشاوي ولا كريب ولا باستا؟\n- **العميل:** شي فيه دجاج\n  - **المساعد** (fast, 1259 ms, 0.0053 SAR): Options with chicken: ⏎  ⏎ وجبة نصف دجاجة على الفحم بـ 28 ر.س ⏎ كريب ميكس دجاج بـ 29 ر.س ⏎ بنا تشيكن كازرول بـ 28 ر.س ⏎  ⏎ أيهم تبي؟\n- **العميل:** خلاص ابي كريب ميكس دجاج واحد\n  - **المساعد** (fast, 2484 ms, 0.0109 SAR, tools: preview_cart): كريب ميكس دجاج واحد بـ 29 ر.س. تحب أضيف لك مشروبات غازية بـ 3 ر.س؟\n- **العميل:** استلام\n  - **المساعد** (fast, 3314 ms, 0.0119 SAR, tools: note_suggestion, build_cart, cart 29 pickup): سلتك: كريب ميكس دجاج × 1 = 29 ر.س، استلام من الفرع. اضغط الزر، حدّد موقعك وادفع 👇\n\n### PASS · sold-out-item (sold-out item) · 0.0334 SAR\n\nReview: intro_by_code@0 «»\n\n- **العميل:** ابي كريب زنجر سوبريم\n  - **المساعد** (fast, 3636 ms, 0.0107 SAR, tools: search_menu): معك ماجد، المساعد الرقمي لفريش كاتس. ⏎ كريب زنجر سوبريم خلص اليوم للأسف. أقرب بدائل عندنا: كريب ستربس بـ 25 ر.س، أو كريب سوبر كرانشي بـ 28 ر.س. أيهم تحب؟\n- **العميل:** طيب عطني كريب ستربس بداله\n  - **المساعد** (fast, 2140 ms, 0.0110 SAR, tools: preview_cart): كريب ستربس بـ 25 ر.س. تحب أضيف لك مشروبات غازية بـ 3 ر.س؟\n- **العميل:** استلام\n  - **المساعد** (fast, 3008 ms, 0.0117 SAR, tools: note_suggestion, build_cart, cart 25 pickup): سلتك: كريب ستربس × 1 = 25 ر.س، استلام من الفرع. اضغط الزر، حدّد موقعك وادفع 👇\n\n### PASS · location-out-of-range (location share out of range) · 0.1203 SAR\n\n- **العميل:** ابي وجبة ميكس جريل توصيل\n  - **المساعد** (strong↑, 6697 ms, 0.0604 SAR, tools: search_menu, preview_cart): أبشر، معك ماجد، المساعد الرقمي لفريش كاتس. وجبة ميكس جريل بـ 37 ر.س. تحب أضيف لك مشروبات غازية بـ 3 ر.س؟\n- **العميل:** [location]\n  - **المساعد** (strong, 3063 ms, 0.0292 SAR, tools: quote_delivery): للأسف موقعك خارج نطاق التوصيل عندنا. ممكن تستلم من الفرع في حي السلامة عند دوار رامي، وبدون رسوم توصيل. تبي أجهّز لك الطلب استلام؟\n- **العميل:** تمام خلها استلام\n  - **المساعد** (strong, 2626 ms, 0.0307 SAR, tools: build_cart, cart 37 pickup): سلتك: وجبة ميكس جريل = 37 ر.س. اضغط الزر وأكمل الطلب وادفع 👇\n\n### PASS · upsell-accepted (upsell accepted) · 0.0400 SAR\n\n- **العميل:** ابي كريب ميكس لحوم\n  - **المساعد** (fast, 3963 ms, 0.0160 SAR, tools: search_menu, preview_cart): معك ماجد، المساعد الرقمي لفريش كاتس. أبشر، «كريب ميكس لحوم» بـ 30 ر.س. تحب أضيف لك مشروبات غازية بـ 3 ر.س؟\n- **العميل:** ايوه ضيفه\n  - **المساعد** (fast, 3343 ms, 0.0117 SAR, tools: note_suggestion, preview_cart): تمام، «كريب ميكس لحوم» مع مشروبات غازية = 33 ر.س. تحب أضيف لك بطاطس محمرة بـ 6 ر.س؟\n- **العميل:** استلام\n  - **المساعد** (fast, 2822 ms, 0.0122 SAR, tools: note_suggestion, build_cart, cart 33 pickup): سلتك: كريب ميكس لحوم 30 ر.س + مشروبات غازية 3 ر.س = 33 ر.س. اضغط الزر، حدّد موقعك وادفع 👇\n\n### PASS · ps1-order-first-message (persona: greeting) · 0.0380 SAR\n\n- **العميل:** ابي كريب زنجر سوبريم\n  - **المساعد** (fast, 3189 ms, 0.0158 SAR, tools: search_menu, preview_cart): معك ماجد، المساعد الرقمي لفريش كاتس 🙂 ⏎ كريب زنجر سوبريم بـ 25 ر.س. تحب أضيف لك مشروبات غازية بـ 3 ر.س؟\n- **العميل:** لا شكراً\n  - **المساعد** (fast, 3027 ms, 0.0109 SAR, tools: note_suggestion): تمام. توصيل ولا استلام من الفرع؟\n- **العميل:** استلام\n  - **المساعد** (fast, 2254 ms, 0.0112 SAR, tools: build_cart, cart 25 pickup): سلتك: كريب زنجر سوبريم × 1 = 25 ر.س. اضغط الزر، حدّد موقعك وادفع 👇\n\n### PASS · ps1-small-basket-objection (persona: small basket) · 0.1221 SAR\n\nReview: validator_retry@1 «number_not_from_tools:54»\n\n- **العميل:** ابي كريب ميكس لحوم وبيبسي توصيل\n  - **المساعد** (fast, 4695 ms, 0.0166 SAR, tools: search_menu, search_menu, preview_cart): معك ماجد، المساعد الرقمي لفريش كاتس. أبشر، كريب ميكس لحوم بـ 30 ر.س وبيبسي زجاج بـ 4 ر.س، المجموع 34 ر.س قبل رسوم التوصيل. ⏎ تحب أضيف لك بطاطس محمرة بـ 6 ر.س؟\n- **العميل:** [location]\n  - **المساعد** (fast, 5071 ms, 0.0178 SAR, tools: quote_delivery): نوصل لموقعك، ورسوم التوصيل لطلب 34 ر.س هي 20 ر.س. ⏎ تحب أضيف البطاطس المحمرة، ولا أجهّز الطلب كما هو؟\n- **العميل:** 20 ريال توصيل على طلب صغير؟ كثير والله\n  - **المساعد** (strong↑, 4548 ms, 0.0725 SAR, tools: delivery_savers): معك حق. عندك حلّين: استلام من الفرع بدون رسوم توصيل، أو بوكس الكريب لشخصين بـ 65 ر.س وتوصيله مجاني بكود FIRST (لأول طلب توصيل لك على موقعنا، من 60 ر.س). ⏎ أيهم يناسبك؟\n- **العميل:** لا خلاص\n  - **المساعد** (strong, 1318 ms, 0.0151 SAR): ولا يهمك، متى ما حبيت اكتب لي.\n\n### PASS · ps1-thanks (persona: closing) · 0.0156 SAR\n\n- **العميل:** كم سعر كريب زنجر سوبريم؟\n  - **المساعد** (fast, 2357 ms, 0.0104 SAR, tools: search_menu): أبشر، معك ماجد، المساعد الرقمي لفريش كاتس. كريب زنجر سوبريم بـ 25 ر.س. تبيه، ولا أضيف لك شي معه؟\n- **العميل:** تمام يعطيك العافية\n  - **المساعد** (fast, 1111 ms, 0.0052 SAR): العفو، بالعافية عليك 🌟\n"
+}

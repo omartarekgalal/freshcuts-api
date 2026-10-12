@@ -61,9 +61,9 @@ test("context: the name on the first turn, the intro phrase only when it is due,
   // ST2 hands over what staff told the customer (handback): one mechanism, one context key; PS1 only words the rule in the prompt
   const hb = { outcome: "answered", outcome_label: "استفسار واترد عليه", staff_note: null, staff_told_customer: ["نعتذر عن التأخير"], closed_minutes_ago: 2, still_to_do: false };
   const back = AR.buildContext({ first: true, persona: p, handback: hb });
-  assert.deepEqual(back.staff_handled_this_chat, hb); assert.equal(back.staff_handled, undefined); assert.equal(back.introduce_yourself, undefined);
-  assert.equal((AR.SYSTEM_PROMPT.match(/staff_handled_this_chat/g) || []).length, 1, "one prompt line for the re-entry, not two");
-  assert.match(AR.SYSTEM_PROMPT, /never say or imply that you are a person/); assert.match(AR.SYSTEM_PROMPT, /no greeting, no introduction \(unless this turn also carries "introduce_yourself"\)/); assert.match(AR.SYSTEM_PROMPT, /delivery_savers/);
+  assert.deepEqual(back.staff_handled_this_chat, { ...hb, rule: AR.CTX_RULES.staff }); assert.equal(back.staff_handled, undefined); assert.equal(back.introduce_yourself, undefined);
+  assert.equal((AR.SYSTEM_PROMPT.match(/staff_handled_this_chat/g) || []).length, 0, "PS2: the re-entry rule travels with its context key — one mechanism, not in the always-paid prompt");
+  assert.match(AR.SYSTEM_PROMPT, /never say or imply that you are a person/); assert.match(AR.CTX_RULES.staff, /no greeting, no introduction \(unless this turn also carries "introduce_yourself"\)/); assert.match(AR.SYSTEM_PROMPT, /delivery_savers/);
   assert.doesNotMatch(AR.SYSTEM_PROMPT, /automated assistant/, "the old self-description is gone");
   assert.ok(AR.TOOL_DEFS.some((t) => t.name === "delivery_savers"));
 });
