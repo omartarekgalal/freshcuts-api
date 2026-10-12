@@ -66,7 +66,7 @@ CREATE TABLE IF NOT EXISTS wa_chat_owner_log (
 CREATE INDEX IF NOT EXISTS wa_chat_owner_log_phone_at ON wa_chat_owner_log (phone_norm, at DESC)`;
 
 const ROW_SQL = `SELECT t.phone_norm, t.last_in_at, b.muted_until, b.muted_by, b.handoff_at, b.handoff_reason,
-    (SELECT max(m.created_at) FROM wa_messages m WHERE m.phone_norm = t.phone_norm AND m.source = 'echo') AS last_echo_at
+    (SELECT max(m.created_at) FROM wa_messages m WHERE m.phone_norm = t.phone_norm AND m.source = 'echo' AND COALESCE(m.echo_kind,'staff') <> 'auto') AS last_echo_at
   FROM wa_threads t LEFT JOIN wa_bot_chats b ON b.phone_norm = t.phone_norm WHERE t.phone_norm = $1`;
 
 /* deps: { pool, getSettingsData, bot() ⇒ {holdChat, unmuteChat, botConfig}, keyOf(pn) ⇒ مفتاح المحادثة, broadcast?(event, data), log?, now? } */
@@ -174,7 +174,7 @@ export function create(deps) {
     try {
       await ready;
       const rows = (await pool.query(`SELECT h.phone_norm, h.by_name, h.touched_at, b.muted_until,
-          (SELECT max(m.created_at) FROM wa_messages m WHERE m.phone_norm = h.phone_norm AND m.source = 'echo') AS last_echo_at
+          (SELECT max(m.created_at) FROM wa_messages m WHERE m.phone_norm = h.phone_norm AND m.source = 'echo' AND COALESCE(m.echo_kind,'staff') <> 'auto') AS last_echo_at
         FROM wa_chat_holds h LEFT JOIN wa_bot_chats b ON b.phone_norm = h.phone_norm WHERE h.state = 'held'`)).rows || [];
       const b = bot(); if (!b) return out;
       const t0 = now(), m = await minutes();

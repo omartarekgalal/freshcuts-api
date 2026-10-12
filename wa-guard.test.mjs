@@ -55,7 +55,7 @@ function world({ settings = {}, optins = {}, inbound = [], suppressed = [] } = {
     if (/^SELECT 1 FROM wa_messages WHERE phone_norm=\$1 AND direction='in'/i.test(s)) return { rows: db.inbound.includes(p[0]) ? [{}] : [] };
     if (/^SELECT 1 FROM wa_messages WHERE wamid=\$1 AND phone_norm=\$2 AND direction='in'/i.test(s)) return { rows: (db.inboundIds || []).includes(`${p[0]}|${p[1]}`) ? [{}] : [] };      // sendTyping: الرسالة واردة من نفس الرقم
     if (/FROM wa_optins WHERE phone_norm/i.test(s)) return { rows: db.optins[p[0]] ? [db.optins[p[0]]] : [] };
-    if (/^INSERT INTO wa_optins/i.test(s)) { const c = db.optins[p[0]] || {}; db.optins[p[0]] = { ...c, updates: p[1] ?? c.updates ?? false, marketing: p[2] ?? c.marketing ?? false }; return { rows: [] }; }
+    if (/^INSERT INTO wa_optins/i.test(s)) { const c = db.optins[p[0]] || {}; db.optins[p[0]] = { ...c, updates: p[1] ?? c.updates ?? false, marketing: p[2] ?? c.marketing ?? false, marketing_off_at: p[2] === false ? (c.marketing_off_at || new Date().toISOString()) : p[2] === true ? null : (c.marketing_off_at ?? null) }; return { rows: [] }; }
     if (/^UPDATE wa_optins SET stopped_at=NOW\(\)/i.test(s)) { db.optins[p[0]] = { ...(db.optins[p[0]] || {}), stopped_at: new Date().toISOString() }; return { rows: [] }; }
     if (/^UPDATE wa_optins SET stopped_at=NULL/i.test(s)) { db.optins[p[0]] = { ...(db.optins[p[0]] || {}), stopped_at: null }; return { rows: [] }; }
     if (/^SELECT text_version FROM wa_optin_log WHERE kind='terms' AND value AND order_no=\$1 AND phone_norm=\$2/i.test(s)) {
@@ -261,8 +261,12 @@ test("«إيقاف» on WhatsApp silences every template — marketing until «S
   const util = () => w.wa.guardSend({ phoneNorm: CUST, kind: "template", template: "fc_order_preparing" });
   const mkt = () => w.wa.guardSend({ phoneNorm: CUST, kind: "template", template: marketingTpl });
   assert.equal((await util()).ok, true); assert.equal((await mkt()).ok, true);
+  // M2 (12/10): «إيقاف» stops the OFFERS only; order updates stop when the customer taps the second button (stop_all)
   await w.wa.applyIntent(CUST, "stop");
   assert.equal(w.db.optins[CUST].marketing, false);
+  assert.ok(!w.db.optins[CUST].stopped_at);
+  assert.equal((await util()).ok, true, "order updates continue after «إيقاف»"); assert.equal((await mkt()).reason, "opted_out");
+  await w.wa.applyIntent(CUST, "stop_all");
   assert.ok(w.db.optins[CUST].stopped_at);
   assert.equal((await util()).reason, "opted_out");
   assert.equal((await mkt()).reason, "opted_out");
@@ -629,7 +633,9 @@ test("TC2: «إيقاف» → the bot's two buttons still work with the new rule
   const mkt = () => w.wa.guardSend({ phoneNorm: CUST, kind: "template", template: marketingTpl });
   assert.equal((await util()).ok, true); assert.equal((await mkt()).ok, true, "before any stop: both go");
   await w.wa.applyIntent(CUST, "stop");
-  assert.equal((await util()).reason, "opted_out"); assert.equal((await mkt()).reason, "opted_out", "«إيقاف» stops everything");
+  assert.equal((await util()).ok, true); assert.equal((await mkt()).reason, "opted_out", "«إيقاف» stops the offers only (M2)");
+  await w.wa.applyIntent(CUST, "stop_all");
+  assert.equal((await util()).reason, "opted_out"); assert.equal((await mkt()).reason, "opted_out", "the second button stops order updates too");
   // button «تحديثات طلبي فقط» (wabotrun: recordWaUpdatesBot yes ⇒ updates=true with a time after the stop)
   Object.assign(w.db.optins[CUST], { updates: true, answered_at: new Date(Date.now() + 1000).toISOString() });
   assert.equal((await util()).ok, true); assert.equal((await mkt()).reason, "opted_out", "order updates only");
@@ -637,7 +643,7 @@ test("TC2: «إيقاف» → the bot's two buttons still work with the new rule
   await w.wa.applyIntent(CUST, "start");
   assert.equal((await util()).ok, true); assert.equal((await mkt()).ok, true);
   const bot = fs.readFileSync(path.join(HERE, "wabotrun.js"), "utf8");
-  assert.ok(bot.includes('case "stop": return { body: T("stop"), buttons: [{ id: "resume:updates", title: T("btn_resume_updates") }, { id: "resume:all", title: T("btn_resume_all") }] };'), "the stop reply still carries the two buttons");
+  assert.ok(bot.includes('case "stop_updates": return { body: T("stop_updates"), buttons: [{ id: "resume:updates", title: T("btn_resume_updates") }, { id: "resume:all", title: T("btn_resume_all") }] };'), "the full-stop reply still carries the two buttons that bring messages back");
 }));
 
 test("TC2: an explicit refusal of offers is remembered on its own column (a fresh row is not a refusal), and nothing else about the locks moved", () => {

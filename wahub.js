@@ -185,7 +185,7 @@ export function register(app, ctx, deps = {}) {
               COALESCE(c.name, n.full_name, n.profile_name) AS name, c.orders AS orders,
               b.muted_until, b.mute_reason, b.muted_by, b.handoff_at, b.handoff_reason, (b.referral IS NOT NULL) AS ad,
               lm.source AS last_source, lm.direction AS lm_dir, lm.body AS lm_body, lm.template AS lm_template, lm.created_at AS lm_at,
-              (SELECT max(m.created_at) FROM wa_messages m WHERE m.phone_norm = t.phone_norm AND m.source = 'echo') AS last_echo_at
+              (SELECT max(m.created_at) FROM wa_messages m WHERE m.phone_norm = t.phone_norm AND m.source = 'echo' AND COALESCE(m.echo_kind,'staff') <> 'auto') AS last_echo_at
        ${FROM}
        /* LR1 (عطل ١٣/١٠): آخر رسالة = آخر صف اتخزّن للمحادثة (أكبر id). wa_threads.last_text بيتحدّث بمقارنة أوقات بالثانية،
           فلما رسالتين يتخزّنوا في أقل من ثانية (رسالة العميل بوقت واتساب ورد البوت بوقت السيرفر) المعاينة كانت بتفضل على اللي قبلها. */
@@ -224,7 +224,7 @@ export function register(app, ctx, deps = {}) {
     const head = (await pool.query(
       `SELECT t.phone_norm, t.last_in_at, t.last_at, t.unread, t.order_no, COALESCE(c.name, n.full_name, n.profile_name) AS name, c.orders AS orders,
               b.muted_until, b.mute_reason, b.muted_by, b.handoff_at, b.handoff_reason, (b.referral IS NOT NULL) AS ad,
-              (SELECT max(m.created_at) FROM wa_messages m WHERE m.phone_norm = t.phone_norm AND m.source = 'echo') AS last_echo_at,
+              (SELECT max(m.created_at) FROM wa_messages m WHERE m.phone_norm = t.phone_norm AND m.source = 'echo' AND COALESCE(m.echo_kind,'staff') <> 'auto') AS last_echo_at,
               o.updates AS optin_updates, o.marketing AS optin_marketing, o.stopped_at
        ${FROM} LEFT JOIN wa_optins o ON o.phone_norm = t.phone_norm
        WHERE t.phone_norm = $1`, [pn])).rows[0];
@@ -236,6 +236,9 @@ export function register(app, ctx, deps = {}) {
         ORDER BY created_at DESC LIMIT $3`, [pn, b4, lim + 1])).rows || [];
     const page = msgs.slice(0, lim).reverse();
     const from = page.length ? iso(page[0].created_at) : null;
+    /* M1: أنهي صدى في الصفحة دي «آلي» (رد من تطبيق واتساب بزنس مش موظف) — للشارة «آلي» في الشاشات. أي خطأ ⇒ من غير شارة. */
+    let autoIds = new Set();
+    try { const ids = page.filter((m) => m.source === "echo").map((m) => m.id); if (ids.length) { const ar = await pool.query("SELECT id FROM wa_messages WHERE id = ANY($1::bigint[]) AND echo_kind = 'auto'", [ids]); autoIds = new Set(((ar && ar.rows) || []).map((r) => String(r.id))); } } catch { autoIds = new Set(); }
     /* قرارات البوت على رسايل العميل في نفس المدى (المفتاح wamid الرسالة الواردة) + التحويلات كأحداث */
     let botRows = [];
     if (from) {
@@ -261,7 +264,7 @@ export function register(app, ctx, deps = {}) {
         const pr = m.pricing && typeof m.pricing === "object" && "billable" in m.pricing ? { billable: m.pricing.billable === true, category: m.pricing.category || null } : null;
         return { id: m.wamid || `${m.direction}:${iso(m.created_at)}`, dir: m.direction, text: m.body || (m.template ? `[قالب: ${m.template}]` : ""),
           template: m.template || null, category: m.category || null, status: m.status || null, error: m.error || null, orderNo: m.order_no || null,
-          source: m.source || "api", at: iso(m.created_at), cost: pr, media: publicMedia(m),      // MD1: ملف الرسالة (من غير رقم ميتا)
+          source: m.source || "api", ...(m.source === "echo" ? { echoKind: autoIds.has(String(m.id)) ? "auto" : "staff" } : {}), at: iso(m.created_at), cost: pr, media: publicMedia(m),      // MD1: ملف الرسالة (من غير رقم ميتا)
           bot: d ? { decision: d.decision || null, replyKey: d.reply_key || null, reason: d.reason || null } : null };
       }),
       events,

@@ -89,6 +89,9 @@ test("الرفض باسم القفل ومن غير أي طلب شبكة: الخ�
   await run(ALLOW, { settings: { notifications: { whatsappEnabled: false } } }); assert.equal(run.last.r.gate, "settings_off");
   await run(ALLOW, { inbound: [] }); assert.equal(run.last.r.gate, "window_closed");
   await run(ALLOW, { optins: { [CUST]: { stopped_at: "2026-10-10T00:00:00Z" } } }); assert.equal(run.last.r.gate, "opted_out");
+  // M2 (12/10): the customer stopped all messages and then wrote to us himself ⇒ the reply box is open (he started it); with no message after the stop it stays locked
+  await withEnv(ALLOW, async () => { const w2 = world({ optins: { [CUST]: { stopped_at: "2026-10-10T00:00:00Z", last_in: "2026-10-12T09:00:00Z" } } }); const r2 = await w2.st.reply({ phoneNorm: CUST, text: "هلا", by: "x", role: "cashier", via: "portal" }); assert.equal(r2.ok, true, JSON.stringify(r2)); assert.equal(w2.calls.length, 1); })();
+  await run(ALLOW, { optins: { [CUST]: { stopped_at: "2026-10-10T00:00:00Z", last_in: "2026-10-09T09:00:00Z" } } }); assert.equal(run.last.r.gate, "opted_out");
   await run(ALLOW, {}, CUST, "   "); assert.deepEqual([run.last.r.error, run.last.r.gate], ["empty", null]);
   await run(ALLOW, {}, CUST, "ط".repeat(4097)); assert.equal(run.last.r.error, "too_long");
   await run(ALLOW, {}, "12345"); assert.equal(run.last.r.error, "bad_phone");

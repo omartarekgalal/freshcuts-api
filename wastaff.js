@@ -99,8 +99,11 @@ export function register(app, ctx, deps = {}) {
     return normPhone(k) || null;
   }
   const isStopped = async (pn) => {
-    const r = await pool.query("SELECT stopped_at FROM wa_optins WHERE phone_norm=$1", [pn]);
-    return Boolean(r.rows[0] && r.rows[0].stopped_at);
+    /* M2: العميل وقّف كل الرسايل وبعدها كتب لنا ⇒ خانة الرد مفتوحة (هو اللي بدأ). القفل بيفضل بس لو مفيش رسالة منه بعد الإيقاف. */
+    const r = await pool.query(`SELECT stopped_at, (SELECT max(m.created_at) FROM wa_messages m WHERE m.phone_norm = wa_optins.phone_norm AND m.direction='in' AND COALESCE(m.source,'api') <> 'history') AS last_in
+                                  FROM wa_optins WHERE phone_norm=$1`, [pn]);
+    const x = r.rows[0];
+    return Boolean(x && x.stopped_at && !(x.last_in && new Date(x.last_in).getTime() > new Date(x.stopped_at).getTime()));
   };
   const windowOpen = async (pn) => {
     const r = await pool.query(`SELECT 1 FROM wa_messages WHERE phone_norm=$1 AND direction='in' AND COALESCE(source,'api') <> 'history' AND created_at > NOW() - INTERVAL '24 hours' LIMIT 1`, [pn]);

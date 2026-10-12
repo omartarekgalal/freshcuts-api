@@ -36,6 +36,7 @@
 import crypto from "node:crypto";
 import { sendSms as defaultSendSms } from "./accounts.js";
 import { isOptOutText } from "./wamsg.js";
+import { echoKind, echoSettings, ECHO, STAFF_ECHO_SQL } from "./waecho.js";
 import * as CAT from "./watemplates.js";
 import { staffPhones } from "./staffalerts.js";
 import { termsCoverOrder, TERMS_CURRENT, TERMS_VERSIONS } from "./waconsent.js";
@@ -307,7 +308,8 @@ export function verifySignature(raw, header, secret) {
   return crypto.timingSafeEqual(Buffer.from(got, "hex"), Buffer.from(expected, "hex"));
 }
 
-const STOP_RE = /^\s*(stop|unsubscribe|إيقاف|ايقاف|إيقاف العروض|ايقاف العروض|الغاء|إلغاء الاشتراك|الغاء الاشتراك|وقف)\s*$/i;
+/* M2 (١٢/١٠): «الغاء» و«وقف» لوحدهم اتشالوا من هنا — العميل اللي بيكتبهم غالباً قصده طلبه مش رسايلنا. البوت بيسأله «تلغي طلبك ولا توقف الرسايل؟» (wabotrun: cancel_what). */
+const STOP_RE = /^\s*(stop|unsubscribe|إيقاف|ايقاف|إيقاف العروض|ايقاف العروض|إلغاء الاشتراك|الغاء الاشتراك)\s*$/i;
 const START_RE = /^\s*(start|ابدأ|ابدا|اشتراك)\s*$/i;
 
 const isoOf = (ts) => {
@@ -488,7 +490,7 @@ export function register(app, ctx, deps = {}) {
     const h = Math.max(0, Number(hours) || 0);
     if (!h) return false;
     const r = await pool.query(
-      `SELECT 1 FROM wa_messages WHERE phone_norm=$1 AND source='echo' AND created_at > NOW() - make_interval(hours => $2::int) LIMIT 1`,
+      `SELECT 1 FROM wa_messages WHERE phone_norm=$1 AND source='echo' AND created_at > NOW() - make_interval(hours => $2::int) AND ${STAFF_ECHO_SQL} LIMIT 1`,
       [pn, Math.ceil(h)]).catch(() => ({ rowCount: 0 }));
     return r.rowCount > 0;
   }
@@ -555,6 +557,7 @@ export function register(app, ctx, deps = {}) {
       -- Coexistence (٢٨/٩): مصدر الرسالة — api | echo (من الموبايل) | history | campaign
       ALTER TABLE wa_messages ADD COLUMN IF NOT EXISTS source TEXT;
       ALTER TABLE wa_messages ADD COLUMN IF NOT EXISTS msg_type TEXT;
+      ALTER TABLE wa_messages ADD COLUMN IF NOT EXISTS echo_kind TEXT;   -- M1: صدى موبايل المطعم «auto» (رد آلي من تطبيق واتساب بزنس) أو «staff» — waecho.js
       ALTER TABLE wa_messages ADD COLUMN IF NOT EXISTS media JSONB;      -- MD1: بيانات ملف الرسالة (mediaOf)
       -- SEC (١٢/١٠): العميل كتب «إيقاف» على واتساب ⇒ ولا قالب (تسويق ولا تحديثات) لحد ما يرجع يوافق.
       -- عمود مستقل عشان source بيتكتب فوقه مع كل طلب (shop.js) فماينفعش يبقى هو العلامة.
@@ -975,9 +978,11 @@ export function register(app, ctx, deps = {}) {
   }
 
   async function applyIntent(pn, intent) {
-    if (intent === "stop") {
+    /* M2: «إيقاف» (مكتوبة أو زر القالب) = إيقاف **العروض** بس (marketing_off_at + cms_contacts.opted_out_at). تحديثات الطلب بتقف بس لما العميل يضغط الزر التاني
+       «أوقف تحديثات الطلب» ⇒ stop_all (stopped_at). */
+    if (intent === "stop" || intent === "stop_all") {
       await recordOptIn({ phone: pn, marketing: false, source: "wa_stop" });
-      await pool.query("UPDATE wa_optins SET stopped_at=NOW() WHERE phone_norm=$1", [pn]).catch(() => {});
+      if (intent === "stop_all") await pool.query("UPDATE wa_optins SET stopped_at=NOW() WHERE phone_norm=$1", [pn]).catch(() => {});
       pool.query(
         `UPDATE cms_contacts SET opted_out_at=COALESCE(opted_out_at, NOW()), optout_source='whatsapp'
           WHERE phone_norm=$1`, [pn]).catch(() => {});
@@ -1027,10 +1032,21 @@ export function register(app, ctx, deps = {}) {
       [e.wamid, pn, String(e.text || `[${e.type}]`).slice(0, 1000), e.type || null, e.at]);
     if (ins.rowCount === 0 || !pn) return;
     if (e.media) await pool.query("UPDATE wa_messages SET media=$2::jsonb WHERE wamid=$1", [e.wamid, jb(e.media)]).catch((x) => console.error("[wa] media meta:", x.message));
+    /* M1 (١٢/١٠): رد آلي من تطبيق واتساب بزنس (ترحيب / أسئلة الإعلان الجاهزة) ولا موظف؟ بيتحدد لحظة التسجيل من التوقيت (waecho.js) وبيتخزّن في echo_kind.
+       الصدى الآلي **مش** «موظف بيرد»: البوت مايسكتش بسببه. أي خطأ في التصنيف ⇒ يفضل «موظف» (السلوك القديم). رد الموظف من اللوحة/البورتال مابيعدّيش من هنا أصلاً. */
+    let kind = "staff";
+    try {
+      const es = echoSettings(await getSettingsData().catch(() => ({})));
+      const at = e.at ? new Date(e.at) : new Date();
+      const li = await pool.query("SELECT max(created_at) AS at FROM wa_messages WHERE phone_norm=$1 AND direction='in' AND created_at <= $2::timestamptz", [pn, new Date(at.getTime() + ECHO.earlySec * 1000).toISOString()]);
+      const last = li.rows[0] && li.rows[0].at ? new Date(li.rows[0].at).getTime() : null;
+      kind = echoKind({ text: e.type === "text" ? e.text : "", deltaSec: last === null ? null : (at.getTime() - last) / 1000, maxSec: es.maxSec, texts: es.texts });
+      await pool.query("UPDATE wa_messages SET echo_kind=$2 WHERE wamid=$1", [e.wamid, kind]);
+    } catch (x) { kind = "staff"; console.error("[wa] echo kind:", x.message); }
     await touchThread({ phoneNorm: pn, direction: "out", text: e.text || `[${e.type}]`, at: e.at || null });
     // المستمعين يعرفوا إن إنسان بيرد (البوت بيسكت) — isEcho:true = مش رسالة عميل
     await emit("inbound", { phone: pn, phoneNorm: pn, wamid: e.wamid, text: e.text || "", type: e.type, interactiveId: null,
-      referral: null, isEcho: true, ts: e.at, at: e.at, intent: null, source: "echo" });
+      referral: null, isEcho: true, echoKind: kind, ts: e.at, at: e.at, intent: null, source: "echo" });
   }
 
   /* جهات اتصال تطبيق واتساب بزنس — اسم للجوال (الأحدث بيكسب). */
