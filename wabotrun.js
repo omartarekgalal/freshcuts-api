@@ -34,7 +34,7 @@
      (ومع خريطة «إعلان ⇒ رابط» اختيارية). رابط التتبع /track/<رقم الطلب> ورابط الخريطة من الإعدادات.
 ═══════════════════════════════════════════════════════════════════════════ */
 
-import { matchIntent, detectLang, normalize, msgText, msgButtons, msgCta, msgList, LIMITS, openState, openingText, hoursLines, fmtTime, ORDER_NO_RE, indexMenu } from "./wabot.js";
+import { matchIntent, detectLang, normalize, msgText, msgButtons, msgCta, msgList, LIMITS, openState, openingText, hoursLines, fmtTime, ORDER_NO_RE, indexMenu, closingToday } from "./wabot.js";
 import { staffPhones, fitOneSms, staffConfig } from "./staffalerts.js";
 import { loyaltyCfgOf } from "./loyalty.js";
 import { MAPS_URL } from "./watemplates.js";
@@ -43,7 +43,8 @@ import { makeBotCarts, reorderPlan, planSummary, orderDay } from "./wabotcart.js
 import { makeAssistTools, validateReply, profileSummaryAr } from "./waassist.js";
 import { lookupFact, groupsIn, SEVERE_RE, factsCoverage, pickDish } from "./wadishfacts.js";
 import { makeAiCost, pricesOf, waRatesOf, pricesFromBody, waRatesFromBody, BUDGET_DEFAULTS } from "./waaicost.js";
-import { providerInfo } from "./wabotllm.js";
+import { providerInfo, maskText } from "./wabotllm.js";
+import { ASSIST_CFG_DEFAULTS, ASSIST_SCHEMA, PROMPT_HASH, assistConfig, assistFromBody, assistEligible, makeAssistLoop, makeAssistStore, makeModelCaller, newSession, noteRulesTurn, buildContext, hintOf } from "./waassistrun.js";
 import { WA_UPDATES_TEXTS, WA_UPDATES_CURRENT, recordWaUpdatesBot, recordWaMarketingBot, ensureWaConsentSchema } from "./waconsent.js";
 
 export const STORE = "https://freshcuts.sa";
@@ -63,6 +64,7 @@ export const DEFAULTS = Object.freeze({
   faq: {},                     // { key: { ar, en } } — إجابات يوافق عليها المالك (FAQ_DEFS). الفاضي = «أحوّلك لموظف»، مش تخمين
   llm: { enabled: false, minConfidence: 0.75, timeoutMs: 2500, model: "claude-haiku-5-5", budgetMonthSar: BUDGET_DEFAULTS.budgetMonthSar, budgetDaySar: BUDGET_DEFAULTS.budgetDaySar, alertPhones: [], prices: null },   // تصنيف بس للرسالة الغير مفهومة — مايكتبش ولا كلمة للعميل
   optin: { enabled: false, askAfterHours: 720 },   // سؤال «نبلّغك بتحديثات طلباتك على واتساب؟» بعد رد حالة الطلب — مرة كل askAfterHours
+  assist: { ...ASSIST_CFG_DEFAULTS },   // مساعد الطلبات (waassistrun.js): مقفول افتراضياً؛ «test» = أرقام التجربة بس. طول ما هو واقف لأي سبب، القواعد اللي بترد
   freeRepliesPerMonth: 1000,   // تسعيرة ميتا ١/١٠/٢٠٢٦: أول ١٠٠٠ رد حر في الشهر ببلاش…
   replyRateSar: 0.0401,        // …وبعدها بالريال للرد
   greetWindowHours: 24,        // تحية واحدة لكل عميل في المدة دي
@@ -181,6 +183,8 @@ export const TEXTS = Object.freeze({
   re_price: t("سطر: سعر اتغيّر", "سعر {name} الآن {now} ر.س (كان {was} ر.س)", "{name} is now SAR {now} (was SAR {was})", ["name", "now", "was"], [], 300),
   re_review: t("سطر: راجع الإضافات", "راجع الإضافات والسعر في السلة قبل الدفع: {names}", "Please check the add-ons and price in the cart before paying: {names}", ["names"], [], 400),
   cta_reorder: t("زر: كمّل طلبك", "كمّل طلبك", "Complete order", [], [], LIMITS.ctaText),
+  /* مساعد الطلبات: المتابعة الواحدة بعد رابط السلة (نص ثابت + نفس الرابط بزر «كمّل طلبك») */
+  assist_followup: t("مساعد الطلبات: متابعة بعد رابط السلة", "سلتك ما زالت جاهزة 🛒 تقدر تكمّل طلبك من الزر 👇\nوإذا تحتاج شي ثاني اكتب لي.", "Your cart is still ready 🛒 You can complete your order from the button 👇\nIf you need anything else, just write.", [], [], 300),
   handoff_remind: t("تذكير: المحادثة عند الموظف (مرة واحدة)", "محادثتك عند الموظف 🙏\n{wait}", "Your chat is with our staff 🙏\n{wait}", [], ["wait"]),
   thanks: t("شكر / وداع", "العفو، حيّاك الله 🌟", "You're welcome 🌟"),
   /* «إيقاف» = كل رسايلنا المبادِرة (العروض وتحديثات الطلب) — حارس الإرسال بيسكّت كل القوالب. الرد على سؤاله في المحادثة شغّال. */
@@ -387,6 +391,7 @@ export function botConfig(settings) {
       alertPhones: staffPhones(x.llm?.alertPhones), prices: pricesOf(x.llm?.prices) },
     waRates: waRatesOf(x.waRates),
     optin: { enabled: x.optin?.enabled === true, askAfterHours: num(x.optin?.askAfterHours, 24, 8760, DEFAULTS.optin.askAfterHours) },
+    assist: assistConfig(x.assist),
     freeRepliesPerMonth: num(x.freeRepliesPerMonth, 0, 100000, DEFAULTS.freeRepliesPerMonth),
     replyRateSar: num(x.replyRateSar, 0, 5, DEFAULTS.replyRateSar),
     greetWindowHours: num(x.greetWindowHours, 1, 168, DEFAULTS.greetWindowHours),
@@ -479,6 +484,7 @@ export function configFromBody(b, prev = {}) {
     if ("askAfterHours" in O) { if (Number.isFinite(Number(O.askAfterHours)) && O.askAfterHours !== "") cur.askAfterHours = Number(O.askAfterHours); else errors.push("optin.askAfterHours"); }
     out.optin = cur;
   }
+  if ("assist" in src) { const av = assistFromBody(src.assist, prev.assist); if (av.ok) out.assist = av.value; else errors.push(...av.errors); }
   if ("faq" in src) {
     const cur = { ...(prev.faq || {}) };
     for (const [key, v] of Object.entries(src.faq || {})) {
@@ -527,6 +533,7 @@ export function configFromBody(b, prev = {}) {
   }
   // وضع التجربة من غير أرقام = مفيش حد هيتردّ عليه؛ مش خطأ، بس وضع live/test محتاج قرار واضح
   if (out.mode === "test" && !(out.testPhones || []).length) errors.push("mode=test يحتاج رقم تجربة واحد على الأقل");
+  if (out.assist && out.assist.mode === "test" && !(out.testPhones || []).length) errors.push("assist.mode=test يحتاج رقم تجربة واحد على الأقل");
   return errors.length ? { ok: false, errors } : { ok: true, value: out };
 }
 
@@ -698,9 +705,10 @@ export const SCHEMA = Object.freeze({
   freeRepliesPerMonth: S("cost", "number", "ردود واتساب المجانية في الشهر", "", { min: 0, max: 100000, unit: "رد" }),
   replyRateSar: S("cost", "number", "سعر الرد بعد المجاني", "", { min: 0, max: 5, unit: "ر.س", step: 0.0001 }),
   waRates: S("cost", "rates", "بطاقة أسعار قوالب واتساب", "تسويقي / خدمي / رمز تحقق + تاريخ البطاقة."),
+  ...ASSIST_SCHEMA,
 });
 export const SCHEMA_GROUPS = Object.freeze({ mode: "الوضع", greeting: "التحية والتعريف", staff: "البوت والموظف", alerts: "التنبيهات", limits: "الحدود", orders: "الطلبات", links: "الروابط", data: "البيانات الحيّة",
-  faq: "الأسئلة الشائعة", texts: "النصوص", optin: "موافقة التحديثات", ai: "الذكاء الاصطناعي", cost: "التكلفة" });
+  faq: "الأسئلة الشائعة", texts: "النصوص", optin: "موافقة التحديثات", ai: "الذكاء الاصطناعي", cost: "التكلفة", assist: "مساعد الطلبات" });
 const getPath = (o, p) => p.split(".").reduce((a, k) => (a && typeof a === "object" ? a[k] : undefined), o);
 /* للّوحة: كل إعداد بقيمته الحالية والافتراضية وحدوده وشرحه. */
 export function schemaFor(cfg) {
@@ -985,6 +993,15 @@ export function buildReply(key, c) {
     case "thanks": case "start": return { body: T(key) };
     default: throw new DataMissing(`key:${key}`);
   }
+}
+/* حقيقة صنف لمساعد الطلبات: **نفس النص المعتمد** اللي بوت القواعد بيرد بيه (df_*)، والمساعد بيبعته زي ما هو — مفيش صياغة من الموديل في سؤال حساسية.
+   ⇒ { status, say } أو { status, handover: "allergy_severe" | "needs_staff" } (حساسية شديدة، مقفول من اللوحة، أو مش مؤكد). */
+export function dishFactSay(cfg, data, { id, question, remove = false, lang = "ar" } = {}) {
+  try {
+    const r = buildReply("dishfact", { cfg, lang: lang === "en" ? "en" : "ar", data: data || {}, referral: null, factual: false, arg: { id: String(id || ""), text: String(question || ""), remove: remove === true } });
+    if (r.handoff) return { status: String(r.fact || "unknown"), handover: r.handoff[0] === "allergy_severe" ? "allergy_severe" : "needs_staff" };
+    return { status: String(r.fact || ""), say: String(r.body || "").trim() };
+  } catch { return { status: "unknown", handover: "needs_staff" }; }
 }
 /* «لين ١٥/١٠» لو العرض بينتهي خلال ٧ أيام (بتوقيت الرياض)؛ غير كده ولا كلمة */
 export function endsSoon(until, now, lang, within = DEFAULTS.offerEndWithinDays) {
@@ -1465,7 +1482,7 @@ export function register(app, ctx, deps = {}) {
     { const keep = botConfig((await getSettingsData().catch(() => null)) || {}).logKeepDays; await pool.query("DELETE FROM wa_bot_log WHERE at < NOW() - make_interval(days => $1::int)", [keep]).catch(() => {}); }
     await pool.query(`CREATE TABLE IF NOT EXISTS wa_bot_config_log (id BIGSERIAL PRIMARY KEY, at TIMESTAMPTZ NOT NULL DEFAULT NOW(), who TEXT, changes JSONB NOT NULL)`).catch((e) => console.error("[wabot] config log:", e.message));
   }
-  const ready = ensureSchema().then(() => botCarts.ensure().catch((e) => console.error('[wabot] cart schema:', e.message))).then(() => aicost.ensure().catch((e) => console.error('[wabot] ai-cost schema:', e.message))).then(() => ensureWaConsentSchema(pool).catch((e) => console.error('[wabot] consent schema:', e.message))).then(() => console.log("[wabot] runtime ready")).catch((e) => console.error("[wabot] init failed:", e.message));
+  const ready = ensureSchema().then(() => botCarts.ensure().catch((e) => console.error('[wabot] cart schema:', e.message))).then(() => aicost.ensure().catch((e) => console.error('[wabot] ai-cost schema:', e.message))).then(() => assistStore.ensure().then(async () => assistStore.purge(botConfig((await getSettingsData().catch(() => null)) || {}).assist.keepDays)).catch((e) => console.error('[wabot] assist schema:', e.message))).then(() => ensureWaConsentSchema(pool).catch((e) => console.error('[wabot] consent schema:', e.message))).then(() => console.log("[wabot] runtime ready")).catch((e) => console.error("[wabot] init failed:", e.message));
 
   let tune = botConfig({});          // آخر إعدادات اتقرت — مدد الكاش بتتاخد منها (بتتحدّث مع كل رسالة وكل قراءة للإعدادات)
   let bundleCache = { at: 0, rows: null };
@@ -1535,6 +1552,9 @@ export function register(app, ctx, deps = {}) {
   const botCarts = deps.botCarts || makeBotCarts({ pool });      // السلات الجاهزة (نفس الطلب الأخير؛ ومساعد الطلبات بعدين)
   const llm = deps.llm || null;      // wabotllm.classify — تصنيف بس
   const aicost = makeAiCost({ pool, sendSms: deps.sendSms || null, now: deps.now || (() => new Date()) });   // كل نداء للموديل بيتسجّل بتكلفته + السقف
+  /* مساعد الطلبات: المخزن (الجلسة، سجل الأدوار، الاقتراحات) ونداء الموديل. الحلقة نفسها بتتركّب تحت بعد الأدوات. */
+  const assistStore = deps.assistStore || makeAssistStore({ pool, jb: (v) => JSON.stringify(v) });
+  const assistCall = deps.assistCallModel || makeModelCaller();
   const q = async (sql, params) => { try { return (await pool.query(sql, params)).rows; } catch (e) { console.error("[wabot] db:", e.message); return null; } };
 
   /* البيانات الحية لرسالة واحدة. أي مصدر وقع ⇒ قيمته null/فاضية ⇒ الرد اللي محتاجه بيتحوّل لموظف. */
@@ -1710,7 +1730,13 @@ export function register(app, ctx, deps = {}) {
         else { const made = await botCarts.create({ phone, source: "reorder", fromOrder: data.reorder.orderNo, plan: data.reorder.plan, option: data.reorder.option, days: cfg.reorderLinkDays }); data.reorder = made ? { ...data.reorder, url: `${STORE}/c/${made.code}`, code: made.code } : null; }
       }
       data.chat = chat;
-      const d = decide(ev, { cfg, now, chat, lastEchoAt: echoAt, repliesLastHour: rc.n, rate: rc.rate, lastSame: rc.lastSame, failedRecently: rc.failedRecently, data, cls, afterWait });
+      let d = decide(ev, { cfg, now, chat, lastEchoAt: echoAt, repliesLastHour: rc.n, rate: rc.rate, lastSame: rc.lastSame, failedRecently: rc.failedRecently, data, cls, afterWait });
+      /* مساعد الطلبات (وضع التجربة، أرقام التجربة بس): لو الرسالة من نصيبه ومفيش مانع، ردّه بيبدّل قرار القواعد. أي فشل (مهلة، سقف، خطأ، رد اترفض
+         مرتين) ⇒ ar.d = null ⇒ قرار القواعد زي ما هو. ar.done بيتنادى بعد التنفيذ عشان الجلسة والسجل والمتابعة يتكتبوا **بعد** ما الرسالة تتبعت فعلاً. */
+      let ar = null;
+      if (!afterWait && cfg.assist.mode === "test") { try { ar = await assistTurn({ ev, logId, settings, cfg, d, cls, chat, data, know, now, echoAt, phone }); } catch (e) { console.error("[assist] turn:", e.message); ar = null; } }
+      if (ar && ar.d) d = ar.d;
+      const assistDone = async (x) => { if (ar && ar.done) { try { await ar.done(x); } catch (e) { console.error("[assist] done:", e.message); } } };
 
       /* زرار الرجوع تحت رسالة الإيقاف: اختيار صريح من العميل بنفسه. «تحديثات طلبي فقط» ⇒ موافقة تحديثات عن طريق waconsent (بتتغلب على الإيقاف
          للتحديثات بس). «كل الرسائل والعروض» ⇒ نفس «اشتراك» (applyIntent start) + صف إثبات تسويقي. التجربة الصامتة مابتسجّلش حاجة. */
@@ -1732,12 +1758,14 @@ export function register(app, ctx, deps = {}) {
         const j = await q(`INSERT INTO wa_bot_jobs(wamid, phone_norm, kind, due_at, ev, log_id) VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT (wamid) DO NOTHING RETURNING id`,
           [ev.wamid || null, phone, d.waitKind, d.dueAt, jb(evLite), logId]);
         await finish({ decision: j && j.length ? "waiting" : "silent", reason: j && j.length ? d.reason : "job_not_saved", key: d.key, resumeAt: d.resumeAt });
+        await assistDone({ okSent: false });
         return;
       }
       if (d.act === "silent") {
         let alert = null;
         if (d.handoff) alert = await handoffNow(settings, cfg, phone, d.handoff, data.order?.order_no);
         await finish({ decision: "silent", reason: d.reason, detail: d.detail, key: d.key, handoff: d.handoff ? d.handoff[0] : null, alert, resumeAt: d.resumeAt });
+        await assistDone({ okSent: false });
         return;
       }
       // ٣) الإرسال: dry = مفيش. test = قايمة التجربة بس. live = الأقفال الكاملة. محاولة واحدة (+ نص عادي لو التفاعلي فشل).
@@ -1782,22 +1810,23 @@ export function register(app, ctx, deps = {}) {
       let handoff = d.handoff, alert = null;
       if (!okSent && /^skipped:/.test(error || "")) handoff = null;      // الأقفال مقفولة (وضع live من غير مفاتيح واتساب) ⇒ البوت عملياً مقفول: لا تسجيل ولا تنبيه
       else if (!okSent) handoff = ["send_failed", "urgent"];
-      if (handoff) alert = await handoffNow(settings, cfg, phone, handoff, data.order?.order_no);
+      if (handoff) alert = await handoffNow(settings, cfg, phone, handoff, data.order?.order_no, d.note || null);
       await finish({ decision: cfg.mode === "dry" ? "dry" : sent ? "replied" : "failed", reason: d.reason, detail: d.detail, key: d.key, replies: used, sent, error,
         handoff: handoff ? handoff[0] : null, alert, link: d.link });
+      await assistDone({ okSent: okSent && cfg.mode !== "dry", error });
     } catch (e) {
       console.error("[wabot] work:", e.message);
       await finish({ decision: "failed", reason: "exception", error: e.message });
     }
   }
-  async function handoffNow(settings, cfg, phone, handoff, orderNo) {
+  async function handoffNow(settings, cfg, phone, handoff, orderNo, note = null) {
     if (/^5\d{8}$/.test(phone)) {
       await q(`INSERT INTO wa_bot_chats(phone_norm, handoff_at, handoff_reason) VALUES ($1, NOW(), $2)
                ON CONFLICT (phone_norm) DO UPDATE SET handoff_at = NOW(), handoff_reason = $2, unknown_streak = 0, updated_at = NOW()`, [phone, handoff[0]]);
     }
     if (cfg.mode === "dry") return "would";
     /* البوابة (الكاشير): حدث حيّ wa_handover على نفس قناة الطلبات — بيتبعت في وضع التجربة كمان (الكاشير هو اللي بيرد). الواجهة والصوت عند صاحب البورتال. */
-    if (typeof deps.portalEmit === "function") { try { deps.portalEmit("wa_handover", { phone: `0${phone}`, phoneMasked: `…${String(phone).slice(-4)}`, reason: handoff[0], reasonAr: REASON_AR[handoff[0]] || handoff[0], urgent: handoff[1] === "urgent", orderNo: orderNo || null, at: clock().toISOString(), test: cfg.mode === "test" }); } catch (e) { console.error("[wabot] portal:", e.message); } }
+    if (typeof deps.portalEmit === "function") { try { deps.portalEmit("wa_handover", { phone: `0${phone}`, phoneMasked: `…${String(phone).slice(-4)}`, reason: handoff[0], reasonAr: REASON_AR[handoff[0]] || handoff[0], urgent: handoff[1] === "urgent", orderNo: orderNo || null, at: clock().toISOString(), test: cfg.mode === "test", ...(note ? { note: String(note).slice(0, 200) } : {}) }); } catch (e) { console.error("[wabot] portal:", e.message); } }
     if (cfg.mode === "test" && !cfg.alertInTest) return "would";
     return alertStaff(settings, cfg, { phone, reason: handoff[0], orderNo });
   }
@@ -1823,6 +1852,7 @@ export function register(app, ctx, deps = {}) {
         const ev = typeof j.ev === "string" ? JSON.parse(j.ev) : (j.ev || {});
         const now = clock();
         if (cfg.mode === "off") { await cancel("mode_off"); continue; }
+        if (j.kind === "assist_followup") { await runFollowUp(j, settings, cfg, now, end); ran++; continue; }
         if (now.getTime() - new Date(j.due_at).getTime() > cfg.maxAgeMinutes * 60_000) { await cancel("stale"); continue; }
         const echo = await q(`SELECT 1 FROM wa_messages WHERE phone_norm=$1 AND source='echo' AND created_at > $2 LIMIT 1`, [j.phone_norm, ev.at || new Date(j.due_at).toISOString()]);
         if (echo === null) { await cancel("echo_check_failed"); continue; }      // مانعرفش الموظف رد ولا لأ ⇒ مانردّش
@@ -1833,6 +1863,175 @@ export function register(app, ctx, deps = {}) {
       } catch (e) { console.error("[wabot] job:", e.message); await end("cancelled", "exception"); }
     }
     return ran;
+  }
+  /* ── مساعد الطلبات: دور واحد ───────────────────────────────────────────────
+     ⇒ null (المساعد مالوش دعوة بالرسالة دي) أو { d, done }. d = قرار بديل لقرار القواعد (رد المساعد أو تحويله لموظف)، أو null ⇒ القواعد ترد.
+     done({ okSent }) بيتنادى بعد التنفيذ: الجلسة، سجل الأدوار، الاقتراحات، وسم السلة، وجدولة المتابعة — كله بعد ما الرسالة تتبعت فعلاً. */
+  const ASSIST_HANDOVER = { allergy_severe: ["dishfact", ["allergy_severe", "urgent"]], complaint: ["complaint", HANDOFF_KEYS.complaint], problem: ["problem", HANDOFF_KEYS.problem], order_change: ["change", HANDOFF_KEYS.change],
+    custom_offer: ["human", ["custom_offer", "normal"]], needs_staff: ["staff", HANDOFF_KEYS.staff] };
+  const handoverOpenOf = (chat, cfg, echoAt, now) => {      // نفس قاعدة decide (٤ب): تحويل مفتوح، والعادي بيتقفل أول ما موظف يرد بعده
+    const hoAt = chat.handoff_at ? Date.parse(chat.handoff_at) : NaN;
+    if (!Number.isFinite(hoAt) || now.getTime() - hoAt >= cfg.handoffOpenHours * 3600_000) return false;
+    const reason = String(chat.handoff_reason || "handover"), staffTook = Boolean(echoAt && Date.parse(echoAt) > hoAt);
+    return !(staffTook && !SERIOUS.has(reason));
+  };
+  const locFresh = (loc, now) => Boolean(loc && Number.isFinite(Number(loc.lat)) && (!loc.at || now.getTime() - Date.parse(loc.at) < 24 * 3600_000));
+  async function assistContext({ fresh, phone, cfg, lang, chat, know, data, now, cls }) {
+    const hours = await assist.get_hours();
+    let profile = null, offers = null, reorder = null;
+    if (fresh) {
+      const [p, o] = await Promise.all([assist.customer_profile(phone), assist.get_offers(phone)]);
+      profile = p && p.ok ? p.profile : null; offers = o && o.ok ? o : null;
+      let ro = data && data.reorder && data.reorder.plan ? data.reorder : null;
+      if (!ro && cfg.reorderEnabled) {
+        try { const snaps = await botCarts.lastOrderCarts(phone, cfg.reorderMaxDays, { limit: cfg.reorderLookback, minTotal: cfg.reorderMinTotal });
+          for (const snap of snaps || []) { const plan = reorderPlan(snap, { menu: know.menu, bundles: know.bundles && know.bundles.length ? know.bundles : null }); if (plan && plan.ok) { ro = { plan, at: snap.at }; break; } } }
+        catch (e) { console.error("[assist] reorder:", e.message); }
+      }
+      if (ro) reorder = { day: orderDay(ro.at, lang), lines: ro.plan.lines.map((l) => ({ name: lang === "en" ? l.nameEn : l.name, qty: l.q })), note: "a one-tap button for the same order is attached under your message" };
+    }
+    let branch = null; try { branch = fresh ? textOf(cfg, "location", lang) : null; } catch { branch = null; }
+    return { profile, reorder, context: buildContext({ first: fresh, hours: hours && hours.ok ? hours : null, profile, offers, reorder, locationShared: locFresh(chat.last_loc, now), justShared: cls.key === "area", branch, boxes: fresh ? know.bundles : null, hint: hintOf(cls) }) };
+  }
+  const assistDeps = (cfg, settings, logId) => ({ tools: assist, callModel: assistCall, now: clock,
+    knowOf: async () => ({ menu: await menuIndex(settings, clock()), boxes: (await bundles()) || [] }),
+    faq: async (topic, lang) => {
+      const pick = (o) => String((o && (lang === "en" ? o.en || "" : o.ar || "")) || "").trim() || null;
+      if (topic === "payment") { const f = (settings?.storefront?.seo?.faq || []).find((x) => /دفع/.test(String(x?.q || ""))); return f ? String((lang === "en" ? f.a_en : f.a) || f.a || "").trim() || null : null; }
+      if (topic === "branch_location") { try { return textOf(cfg, "location", lang); } catch { return null; } }
+      return FAQ_DEFS[topic] ? pick(cfg.faq && cfg.faq[topic]) : null;
+    },
+    dishFactSay: async (a) => { let open = null; try { open = settings?.hours ? openState(settings, clock()) : null; } catch { open = null; } return dishFactSay(cfg, { settings, now: clock(), open }, a); },
+    deliveryInfo: async () => { const r = await q("SELECT config FROM dl_policies WHERE active ORDER BY priority DESC, id LIMIT 1", []); const pol = r && r[0] ? r[0].config : null; const fees = pol ? feeLines(pol, "ar") : "";
+      return pol && fees ? { ok: true, delivers_up_to_km: Number(pol.maxKm) || null, far_zone_up_to_km: pol.farZoneEnabled !== false ? Number(pol.farZoneMaxKm) || null : null, far_zone_extra_per_km: pol.farZoneEnabled !== false ? Number(pol.farZonePerKm) || null : null,
+        fee_by_order_total: fees.split("\n"), note: "the exact fee for the customer is shown on the website before payment" } : null; },
+    onCall: async (m) => { const rec = await aicost.record({ ...m, purpose: "assistant", logId }, cfg.llm.prices); return { costSar: rec.costSar, in: rec.in, out: rec.out, cached: rec.cached }; } });
+  async function assistTurn({ ev, logId, settings, cfg, d, cls, chat, data, know, now, echoAt, phone }) {
+    const acfg = cfg.assist;
+    if (!assist || acfg.mode !== "test" || !cfg.testPhones.includes(phone)) return null;
+    await ready;
+    let session = await assistStore.loadSession(phone, now, acfg.sessionMin);
+    /* «بدون بصل» وهو بيجهّز سلة = ملاحظة للمساعد؛ بس لو له طلب حديث من الموقع تبقى «تعديل طلب» للموظف زي النهارده (ومانعرفش ⇒ نفترض إن له طلب). */
+    let recentOrder = false;
+    if (cls.key === "change") { const ro = await q(`SELECT 1 FROM shop_orders WHERE phone_norm=$1 AND NOT COALESCE(is_test,false) AND status NOT IN ('expired','pending_payment') AND created_at > NOW() - INTERVAL '24 hours' LIMIT 1`, [phone]); recentOrder = ro === null || ro.length > 0; }
+    const el = assistEligible({ acfg, cfg, phone, ev, cls, d, afterWait: null, sessionActive: Boolean(session), handoverOpen: handoverOpenOf(chat, cfg, echoAt, now), recentOrder });
+    const lang = cls.lang === "en" ? "en" : "ar";
+    const ruleKey = () => String((d && d.key) || cls.key || "reply");
+    const turnRow = (x) => assistStore.addTurn({ phone, sessionId: session ? session.id : null, logId, wamid: ev.wamid || null, lang, ...x });
+    if (!el.run) {
+      return { d: null, done: async ({ okSent }) => {       // القواعد ماسكة الرسالة: لو ردّت وسط محادثة المساعد، تتسجّل عشان المساعد يفضل فاهم السياق
+        if (!okSent) return;
+        if (session) await assistStore.saveSession(phone, noteRulesTurn(session, ev.text, ruleKey()), now);
+        await turnRow({ handledBy: "rules_owned", outcome: `rules:${el.why.replace(/^rules:/, "")}`, masked: maskText(ev.text), trace: {} });
+      } };
+    }
+    const fallback = async (reason, trace = {}) => {
+      await q("UPDATE wa_bot_log SET detail=$2 WHERE id=$1", [logId, `assist off: ${reason}`]);
+      return { d: null, done: async ({ okSent }) => {
+        if (okSent && session) await assistStore.saveSession(phone, noteRulesTurn(session, ev.text, ruleKey()), now);
+        await turnRow({ handledBy: "rules", outcome: `fallback:${reason}`, masked: trace.sent ?? maskText(ev.text), trace });
+      } };
+    };
+    const n = await assistStore.repliesToday(phone);
+    if (n === null) return fallback("db");
+    if (n >= acfg.maxRepliesPerChatDay) return fallback("daily_replies");
+    /* السقف: مصروف اليوم/الشهر للمساعد وصل الحد ⇒ القواعد ترد + SMS واحد للمالك. */
+    const sc0 = staffConfig(settings);
+    const stop = await aicost.gate({ purpose: "assistant", budget: { budgetMonthSar: acfg.budgetMonthSar, budgetDaySar: acfg.budgetDaySar }, phones: cfg.llm.alertPhones.length ? cfg.llm.alertPhones : (cfg.alertPhones.length ? cfg.alertPhones : sc0.alertPhones), lang: sc0.lang });
+    if (stop) return fallback(stop);
+    /* «مقروء + جاري الكتابة» من غير انتظار: لو فشل، الرد نفسه مايتأثرش. */
+    if (acfg.typing && ev.wamid && typeof wa.sendTyping === "function") wa.sendTyping({ phoneNorm: phone, wamid: ev.wamid, allowList: cfg.testPhones }).catch((e) => console.error("[assist] typing:", e.message));
+    const fresh = !session;
+    if (fresh) session = newSession(now);
+    const cx = await assistContext({ fresh, phone, cfg, lang, chat, know, data, now, cls });
+    const loop = makeAssistLoop(assistDeps(cfg, settings, logId));
+    const text = cls.key === "area" ? "📍" : String(ev.text || "");      // الموقع نفسه مابيتبعتش للموديل: علامة بس، والسياق بيقول إنه شارك موقعه
+    const r = await loop.runTurn({ phone, text, lang, session, acfg, context: cx.context, profile: cx.profile });
+    if (!r.ok) { if (fresh) session = null; if (/^model_http_400/.test(r.reason)) { await assistStore.dropSession(phone); session = null; } return fallback(r.reason, r.trace); }
+    const tr = r.trace, nowMs = now.getTime(), L = tr.lang === "en" ? "en" : tr.lang === "ar" ? "ar" : lang;      // لغة الدور زي ما المساعد حدّدها («Pickup» وسط محادثة إنجليزية = إنجليزي)
+    const bc = { cfg, lang: L, data, referral: null, factual: false, arg: null };
+    let reply, handoff = null;
+    try {
+      if (r.handover) { const [k, tuple] = ASSIST_HANDOVER[r.handover.reason] || ASSIST_HANDOVER.needs_staff; reply = buildReply(k, k === "dishfact" ? { ...bc, arg: { id: null, text: "حساسية شديدة" } } : bc); handoff = tuple; reply = { body: reply.body }; }
+      else reply = { body: r.text, ...(r.cart ? { cta: { title: textOf(cfg, "cta_reorder", L), url: r.cart.link } } : fresh && cx.reorder ? { buttons: [{ id: "re:last", title: textOf(cfg, "row_reorder", L) }] } : {}) };
+    } catch (e) { if (fresh) session = null; return fallback("reply_build", tr); }
+    const disclose = !chat.last_disclosed_at || nowMs - Date.parse(chat.last_disclosed_at) >= cfg.disclosureHours * 3600_000;
+    if (disclose) { try { reply = { ...reply, body: `${disclosureLine(cfg, L, settings)}\n${reply.body}` }; } catch { /* من غير التعريف أحسن من مفيش رد */ } }
+    const payloads = [toPayload(reply, { cfg, lang: L, interactive: cfg.interactive, footer: false })], fb = [toPayload(reply, { cfg, lang: L, interactive: false, footer: false })];
+    if ([...payloads, ...fb].map(payloadProblem).find(Boolean)) { if (fresh) session = null; return fallback("payload", tr); }
+    const outcome = r.handover ? `handover:${r.handover.reason}` : "sent";
+    const nd = { act: "reply", reason: "assistant", key: "assist", rawIntent: cls.rawIntent, lang: cls.lang, score: cls.score, payloads, fallback: fb, handoff, note: r.handover ? r.handover.note : null,
+      detail: `assist ${tr.tier}${tr.escalated ? "↑" : ""} ${tr.calls.length} calls ${tr.ms}ms ${Math.round(tr.costSar * 10000) / 10000} SAR${r.handover ? ` → ${r.handover.reason}` : ""}`,
+      greet: cls.key === "greet", resume: null, optout: null, link: null, unknown: false, disclose, factual: false, optinAsk: null, optinAnswer: null };
+    return { d: nd, done: async ({ okSent, error }) => {
+      if (!okSent) { await turnRow({ handledBy: "assistant", outcome: `send_failed${error ? `:${String(error).slice(0, 60)}` : ""}`, masked: tr.sent, text: r.text, trace: tr, handover: r.handover ? r.handover.reason : null }); return; }
+      session = r.session;
+      await assistStore.saveSession(phone, session, now);
+      const turnId = await turnRow({ handledBy: "assistant", outcome, masked: tr.sent, text: r.handover ? reply.body : r.text, trace: tr, cartCode: r.cart ? r.cart.code : null, handover: r.handover ? r.handover.reason : null });
+      await assistStore.recordSuggestions(phone, session.id, turnId, tr.suggestions.filter((s) => s.outcome !== "computed"), r.cart ? r.cart.code : null);
+      if (r.cart) {
+        await assistStore.tagCart(r.cart.code, (session.state.lastCart && session.state.lastCart.accepted) || [], session.id);
+        if (acfg.followUpEnabled) await scheduleFollowUp(phone, { code: r.cart.code, sentAt: clock().toISOString(), lang: L }, acfg);
+      }
+    } };
+  }
+  /* ── المتابعة الواحدة بعد رابط السلة ─────────────────────────────────────────
+     صف في wa_bot_jobs (بيعيش بعد إعادة التشغيل). سلة جديدة بتلغي متابعة السلة اللي قبلها. وقت التنفيذ **كل** الشروط بتتراجع من جديد (runFollowUp). */
+  async function scheduleFollowUp(phone, ev, acfg) {
+    await q(`UPDATE wa_bot_jobs SET status='cancelled', reason='replaced', done_at=NOW() WHERE phone_norm=$1 AND kind='assist_followup' AND status='pending'`, [phone]);
+    return q(`INSERT INTO wa_bot_jobs(wamid, phone_norm, kind, due_at, ev, log_id) VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT (wamid) DO NOTHING RETURNING id`,
+      [`fu:${ev.code}`, phone, "assist_followup", new Date(Date.parse(ev.sentAt) + acfg.followUpMin * 60_000).toISOString(), jb(ev), null]);
+  }
+  const minutesToClose = (hours, now) => { const c = closingToday(hours, now); if (!c) return null; const [h, m] = String(c).split(":").map(Number); const r = new Date(now.getTime() + 3 * 3600_000);
+    return ((h * 60 + (m || 0)) - (r.getUTCHours() * 60 + r.getUTCMinutes()) + 1440) % 1440; };
+  /* مايتبعتش لو: الوضع اتقفل، الرقم مش في قايمة التجربة، الميعاد فات، السلة انتهت، العميل طلب (أو بدأ دفع)، العميل كتب بعد الرابط، موظف دخل المحادثة،
+     العميل وقّف الرسايل، المحادثة مكتومة أو عند موظف، بره نافذة الـ٢٤ ساعة (بنتأكد منها هنا **وكمان** الحارس)، المطعم مقفل أو قرّب يقفل، أو اتبعتت له متابعة في آخر ٢٤ ساعة.
+     أي فحص مانعرفش نتيجته (القاعدة ماردّتش) ⇒ مانبعتش. */
+  async function runFollowUp(j, settings, cfg, now, end) {
+    const acfg = cfg.assist, phone = String(j.phone_norm || ""), ev = typeof j.ev === "string" ? JSON.parse(j.ev) : (j.ev || {});
+    const no = (reason) => end("cancelled", reason);
+    if (cfg.mode !== "test" && cfg.mode !== "live") return no("mode_off");
+    if (acfg.mode !== "test" || !acfg.followUpEnabled) return no("assist_off");
+    if (!cfg.testPhones.includes(phone)) return no("not_test_phone");
+    if (now.getTime() - new Date(j.due_at).getTime() > cfg.maxAgeMinutes * 60_000) return no("stale");
+    if (!ev.code || !ev.sentAt) return no("bad_job");
+    const cart = await q("SELECT (expires_at > NOW()) AS live FROM wa_bot_carts WHERE code=$1 AND phone_norm=$2", [ev.code, phone]);
+    if (cart === null) return no("cart_check_failed"); if (!cart[0] || !cart[0].live) return no("cart_gone");
+    const ord = await q("SELECT 1 FROM shop_orders WHERE phone_norm=$1 AND created_at > $2 AND status <> 'expired' LIMIT 1", [phone, ev.sentAt]);
+    if (ord === null) return no("order_check_failed"); if (ord.length) return no("ordered");
+    const m = await q(`SELECT max(created_at) FILTER (WHERE direction='in' AND COALESCE(source,'api') <> 'history') AS last_in,
+                              count(*) FILTER (WHERE direction='in' AND created_at > $2)::int AS wrote, count(*) FILTER (WHERE source='echo' AND created_at > $2)::int AS staff
+                         FROM wa_messages WHERE phone_norm=$1 AND created_at > NOW() - INTERVAL '25 hours'`, [phone, ev.sentAt]);
+    if (m === null || !m[0]) return no("window_check_failed");
+    if (Number(m[0].wrote) > 0) return no("customer_wrote"); if (Number(m[0].staff) > 0) return no("staff_in_chat");
+    if (!m[0].last_in || now.getTime() - new Date(m[0].last_in).getTime() > (24 * 60 - 10) * 60_000) return no("window_closed");
+    const op = await q("SELECT stopped_at FROM wa_optins WHERE phone_norm=$1", [phone]);
+    if (op === null) return no("optout_check_failed"); if (op[0] && op[0].stopped_at) return no("stopped");
+    const chat = await chatOf(phone);
+    if (chat.muted_until && Date.parse(chat.muted_until) > now.getTime()) return no("muted");
+    if (chat.handoff_at && now.getTime() - Date.parse(chat.handoff_at) < cfg.handoffOpenHours * 3600_000) return no("handover_open");
+    let open = null; try { open = settings?.hours ? openState(settings, now) : null; } catch { open = null; }
+    if (!open) return no("hours_unknown"); if (open.open !== true) return no("closed");
+    const left = minutesToClose(settings.hours, now);
+    if (left === null || left < acfg.followUpCloseGuardMin) return no("near_closing");
+    const prior = await q(`SELECT 1 FROM wa_bot_jobs WHERE phone_norm=$1 AND kind='assist_followup' AND status='done' AND done_at > NOW() - INTERVAL '24 hours' LIMIT 1`, [phone]);
+    if (prior === null) return no("prior_check_failed"); if (prior.length) return no("already_followed_up");
+    const lang = ev.lang === "en" ? "en" : "ar";
+    let pl, plain;
+    try { const rep = { body: textOf(cfg, "assist_followup", lang), cta: { title: textOf(cfg, "cta_reorder", lang), url: `${STORE}/c/${ev.code}` } };
+      pl = toPayload(rep, { cfg, lang, interactive: cfg.interactive, footer: false }); plain = toPayload(rep, { cfg, lang, interactive: false, footer: false }); } catch { return no("text_invalid"); }
+    if (payloadProblem(pl) || payloadProblem(plain)) return no("payload_invalid");
+    let r = await wa.sendFreeform({ phoneNorm: phone, payload: pl, source: "bot", allowList: cfg.testPhones });      // المساعد تجربة بس ⇒ دايماً بقايمة التجربة
+    if (!r.ok && !r.skipped && pl.type === "interactive") { pl = plain; r = await wa.sendFreeform({ phoneNorm: phone, payload: pl, source: "bot", allowList: cfg.testPhones }); }
+    const err = r.ok ? null : (r.skipped ? `skipped:${r.skipped}` : String(r.error || "send_failed"));
+    /* صف في سجل البوت زي أي رد (من غير wamid: مفيش رسالة عميل وراه) — عشان يظهر في السجل وفي حارس الحلقات */
+    const lg = await q(
+      `INSERT INTO wa_bot_log(wamid, msg_at, phone_norm, mode, msg_type, text, intent, reply_key, score, lang, decision, referral)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'pending',$11) ON CONFLICT (wamid) DO NOTHING RETURNING id`,
+      [null, now.toISOString(), phone, cfg.mode, "followup", "", "assist_followup", "assist_followup", 0, lang, false]);
+    if (lg && lg[0]) await finishLog(lg[0].id, { decision: r.ok ? "replied" : "failed", reason: "assist_followup", key: "assist_followup", replies: r.ok ? [pl] : null, sent: r.ok ? 1 : 0, error: err, detail: `cart ${ev.code}` });
+    await assistStore.addTurn({ phone, sessionId: null, handledBy: "assistant", outcome: r.ok ? "followup_sent" : `followup_failed:${err}`, masked: null, text: r.ok ? textOf(cfg, "assist_followup", lang) : null, lang, trace: {}, cartCode: ev.code });
+    return end(r.ok ? "done" : "cancelled", r.ok ? null : `send_failed:${err}`.slice(0, 80));
   }
   let timer = null;
   if (!deps.noTimer) { timer = setInterval(() => { runDueJobs().catch((e) => console.error("[wabot] jobs:", e.message)); }, 15_000); if (timer.unref) timer.unref(); }
@@ -2116,7 +2315,8 @@ export function register(app, ctx, deps = {}) {
     openState: async () => { const st = (await getSettingsData()) || {}; if (!st.hours) return null; const now = clock(), o = openState(st, now);
       let opens = null; try { opens = o.open ? null : openingText(st.hours, now, "ar"); } catch { opens = null; }
       return { open: o.open, closesText: o.closesAt ? fmtTime(o.closesAt, "ar") : null, opensText: opens, deliveryPaused: Boolean(o.open && o.svc && o.svc.delivery && o.svc.delivery.paused) }; },
-    lastLocation: async (ph) => { const r = await q("SELECT last_loc FROM wa_bot_chats WHERE phone_norm=$1", [ph]); return r && r[0] ? r[0].last_loc : null; },
+    lastLocation: async (ph) => { const r = await q("SELECT last_loc FROM wa_bot_chats WHERE phone_norm=$1", [ph]); const l = r && r[0] ? r[0].last_loc : null; return locFresh(l, clock()) ? l : null; },      // موقع أقدم من ٢٤ ساعة مايتحسبش
+    tune: async () => botConfig((await getSettingsData()) || {}).assist,
     botCarts,
   }) : null;
   const ASSIST_TRY = ["search_menu", "get_item", "get_box", "list_boxes", "check_availability", "quote_delivery", "get_offers", "get_hours", "order_status", "customer_profile", "build_cart", "top_sellers", "suggest"];
@@ -2143,6 +2343,70 @@ export function register(app, ctx, deps = {}) {
     return c.json(out);
   });
 
+  /* ── مساعد الطلبات: مسارات المالك (قراءة) ─────────────────────────────────────
+     chats  = قايمة المحادثات (آخر دور، عدد الأدوار، التكلفة). turns = أدوار محادثة واحدة بكل تفاصيلها: نص العميل بعد الإخفاء (زي ما اتبعت للمزوّد)،
+     نداءات الأدوات بمدخلاتها ونتايجها، حكم المراجِع، الرد النهائي، الموديل، التوكنز، التكلفة، الزمن. stats = البيع الإضافي (اتعرض/اتقبل/اترفض بالنوع)،
+     وإيراد الطلبات اللي جت من سلة المساعد واللي سلتها فيها اقتراح اتقبل، والسرعة p50/p90، وأسباب الرجوع للقواعد. */
+  app.get("/api/cms/wabot/assist/chats", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    const no = ownerOnly(c); if (no) return no;
+    await ready;
+    const rows = await assistStore.chats({ days: Number(c.req.query("days")) || 7, limit: Number(c.req.query("limit")) || 100 });
+    return c.json({ ok: true, rows: rows.map((r) => ({ ...r, phone: `0${r.phone_norm}` })) });
+  });
+  app.get("/api/cms/wabot/assist/turns", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    const no = ownerOnly(c); if (no) return no;
+    await ready;
+    const ph = String(c.req.query("phone") || "").replace(/\D/g, "").replace(/^(00966|966|0)/, ""), hash = String(c.req.query("hash") || "");
+    const before = Number(c.req.query("before")) || null;
+    const rows = await assistStore.turns({ phone: /^5\d{8}$/.test(ph) ? ph : null, hash: /^[0-9a-f]{16}$/.test(hash) ? hash : null, limit: Number(c.req.query("limit")) || 100, before });
+    return c.json({ ok: true, rows });
+  });
+  /* تجربة المساعد على الورق (المالك بس، ولرقم من قايمة التجربة): دور حقيقي بالموديل وبالبيانات الحيّة — **من غير أي إرسال ومن غير رابط سلة حقيقي**،
+     وبيشتغل حتى والوضع «مقفول» عشان يتجرّب قبل الفتح. بيتحسب على سقف المساعد وبيتسجّل في سجل الأدوار (handled_by = simulate).
+     reset:true = محادثة جديدة. الجلسة في الذاكرة بس (بتروح مع إعادة التشغيل) ومالهاش علاقة بمحادثة الرقم الحقيقية. */
+  const simSessions = new Map();
+  app.post("/api/cms/wabot/assist/simulate", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    const no = ownerOnly(c); if (no) return no;
+    if (!assist) return c.json({ ok: false, error: "assist_not_wired" }, 503);
+    let b; try { b = await c.req.json(); } catch { return c.json({ ok: false, error: "bad_json" }, 400); }
+    await ready;
+    const settings = (await getSettingsData()) || {};
+    const cfg = botConfig(settings), acfg = cfg.assist, now = clock();
+    const phone = String(b.phone || "").replace(/\D/g, "").replace(/^(00966|966|0)/, "");
+    if (!cfg.testPhones.includes(phone)) return c.json({ ok: false, error: "not_in_allow_list", message: "الرقم مش في قايمة أرقام التجربة" }, 403);
+    const text = String(b.text || "").trim();
+    if (!text) return c.json({ ok: false, error: "text_required" }, 400);
+    const sc0 = staffConfig(settings);
+    const stop = await aicost.gate({ purpose: "assistant", budget: { budgetMonthSar: acfg.budgetMonthSar, budgetDaySar: acfg.budgetDaySar }, phones: cfg.llm.alertPhones.length ? cfg.llm.alertPhones : (cfg.alertPhones.length ? cfg.alertPhones : sc0.alertPhones), lang: sc0.lang });
+    if (stop) return c.json({ ok: false, error: stop, message: "سقف المساعد اتوصل له" });
+    const know = { menu: await menuIndex(settings, now), bundles: await bundles() };
+    const ev = { phone, text, type: "text", interactiveId: null, at: now.toISOString() };
+    const cls = classify(ev, know), lang = cls.lang === "en" ? "en" : "ar";
+    const prev = b.reset === true ? null : simSessions.get(phone);
+    let session = prev && now.getTime() - prev.at < acfg.sessionMin * 60_000 ? prev.session : null;
+    const fresh = !session; if (fresh) session = newSession(now);
+    const owns = assistEligible({ acfg: { ...acfg, mode: "test" }, cfg: { ...cfg, mode: cfg.mode === "live" ? "live" : "test" }, phone, ev, cls, d: cls.key === "unknown" ? { act: "wait", waitKind: "unknown_wait" } : cls.key === "ack" || cls.key === "nack" ? { act: "silent", reason: "ack" } : { act: "reply", key: cls.key }, sessionActive: !fresh, handoverOpen: false });
+    const cx = await assistContext({ fresh, phone, cfg, lang, chat: await chatOf(phone), know, data: {}, now, cls });
+    const dry = { ...assist, build_cart: async (ph, input, o = {}) => { const r = await assist.build_cart(ph, input, { save: false }); return o.save === false || !r || !r.ok ? r : { ...r, saved: true, link: `${STORE}/c/preview0`, code: "preview0" }; } };
+    const r = await makeAssistLoop({ ...assistDeps(cfg, settings, null), tools: dry }).runTurn({ phone, text, lang, session, acfg, context: cx.context, profile: cx.profile });
+    if (r.ok) simSessions.set(phone, { session: r.session, at: now.getTime() });
+    const tr = r.trace;
+    await assistStore.addTurn({ phone, sessionId: session.id, handledBy: "simulate", outcome: r.ok ? (r.handover ? `handover:${r.handover.reason}` : "sent") : `fallback:${r.reason}`, masked: tr.sent, text: r.ok ? r.text : null, lang, trace: tr, handover: r.ok && r.handover ? r.handover.reason : null });
+    return c.json({ ok: r.ok, classified: cls.key, wouldAnswer: owns.run ? "assistant" : `rules (${owns.why})`, reply: r.ok ? r.text : null, cart: r.ok && r.cart ? { subtotal: r.cart.subtotal, option: r.cart.option, lines: r.cart.lines } : null,
+      handover: r.ok ? r.handover : null, reason: r.ok ? null : r.reason, reorderOffered: Boolean(fresh && cx.reorder),
+      trace: { model: tr.model, tier: tr.tier, escalated: Boolean(tr.escalated), ms: tr.ms, costSar: Math.round(tr.costSar * 1e6) / 1e6, calls: tr.calls, tools: tr.tools, verdicts: tr.verdicts, suggestions: tr.suggestions, sentToModel: tr.sent } });
+  });  app.get("/api/cms/wabot/assist/stats", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    await ready;
+    const cfg = botConfig((await getSettingsData()) || {});
+    const followups = (await q(`SELECT status, COALESCE(reason,'sent') AS reason, count(*)::int AS n FROM wa_bot_jobs WHERE kind='assist_followup' AND created_at > NOW() - make_interval(days => $1::int) GROUP BY 1,2 ORDER BY 3 DESC`, [Math.min(90, Math.max(1, Number(c.req.query("days")) || 7))])) || [];
+    return c.json({ ok: true, mode: cfg.assist.mode, botMode: cfg.mode, testPhones: cfg.testPhones.length, promptVersion: PROMPT_HASH, provider: providerInfo(), models: { strong: cfg.assist.model, simple: cfg.assist.modelSimple, routing: cfg.assist.routing },
+      storeReady: (await q("SELECT 1 FROM wa_assist_turns LIMIT 1", [])) !== null && (await q("SELECT 1 FROM wa_assist_suggestions LIMIT 1", [])) !== null && (await q("SELECT 1 FROM wa_assist_chats LIMIT 1", [])) !== null,
+      ...(await assistStore.stats(Number(c.req.query("days")) || 7)), followups });
+  });
   /* مخطط الإعدادات للّوحة: كل إعداد بنوعه وحدوده وافتراضيه وقيمته واسمه وشرحه بالعربي (قراءة بس). */
   app.get("/api/cms/wabot/schema", async (c) => {
     const err = await requireAdmin(c); if (err) return err;
@@ -2179,8 +2443,11 @@ export function register(app, ctx, deps = {}) {
     await ready;
     const cfg = botConfig((await getSettingsData()) || {});
     const budget = { budgetMonthSar: cfg.llm.budgetMonthSar, budgetDaySar: cfg.llm.budgetDaySar };
-    const [ai, wside] = await Promise.all([aicost.summary({ purpose: "classify", budget, prices: cfg.llm.prices }), aicost.waSide({ freeReplies: cfg.freeRepliesPerMonth, replyRateSar: cfg.replyRateSar, rates: cfg.waRates })]);
-    return c.json({ ok: true, enabled: cfg.llm.enabled, mode: cfg.mode, model: cfg.llm.model, provider: providerInfo(), ai, wa: wside });
+    const [ai, wside, asst] = await Promise.all([aicost.summary({ purpose: "classify", budget, prices: cfg.llm.prices }), aicost.waSide({ freeReplies: cfg.freeRepliesPerMonth, replyRateSar: cfg.replyRateSar, rates: cfg.waRates }),
+      aicost.summary({ purpose: "assistant", budget: { budgetMonthSar: cfg.assist.budgetMonthSar, budgetDaySar: cfg.assist.budgetDaySar }, prices: cfg.llm.prices })]);
+    /* assistant = نفس شكل ai بس لمساعد الطلبات (غرض «assistant»، سقفه 10/100 لوحده). ai فضل زي ما هو («الفهم بالذكاء»). */
+    return c.json({ ok: true, enabled: cfg.llm.enabled, mode: cfg.mode, model: cfg.llm.model, provider: providerInfo(), ai, wa: wside,
+      assistant: { mode: cfg.assist.mode, model: cfg.assist.model, modelSimple: cfg.assist.modelSimple, routing: cfg.assist.routing, summary: asst } });
   });
   /* سجل نداءات الموديل للمراجعة: إيه اللي اتبعت بالظبط (بعد الإخفاء)، التوكنز، التكلفة، النتيجة. المالك بس. */
   app.get("/api/cms/wabot/ai-calls", async (c) => {

@@ -110,7 +110,9 @@ export function suggestOne(cart, ctx = {}, cfg = ASSIST_DEFAULTS) {
   if (!cart || !Array.isArray(cart.lines) || !cart.lines.length) return null;
   const declined = new Set(ctx.declined || []);
   const menu = ctx.menu, items = menu && Array.isArray(menu.items) ? menu.items.filter((i) => !i.soldOut) : [];
-  const inCart = new Set(cart.lines.filter((l) => l.id).map((l) => String(l.id)));
+  /* اللي في السلة = الأصناف + كل اللي جوّه البوكسات (الثابت والمختار) — مانقترحش على العميل حاجة هو واخدها جوّه البوكس (عطل تقييم ١٢/١٠: «وجبة ميكس جريل» فوق بوكس الميكس جريل). */
+  const inCart = new Set([...cart.lines.filter((l) => l.id).map((l) => String(l.id)), ...cart.lines.flatMap((l) => (Array.isArray(l.contains) ? l.contains.map(String) : []))]);
+  const hasBox = cart.lines.some((l) => l.slug);
   const avoid = new Set((ctx.profile && ctx.profile.low_ratings && ctx.profile.low_ratings.items) || []);
   // (أ) بوكس فيه نفس الأصناف بسعر أقل — حساب بحت
   if (!declined.has("box_saves") && Array.isArray(ctx.boxes)) {
@@ -140,10 +142,16 @@ export function suggestOne(cart, ctx = {}, cfg = ASSIST_DEFAULTS) {
     return { kind: "next_tier", add_sar: gap, fee_now: Number(qv.fee), fee_then: Number(qv.nextTierFee), free: Number(qv.nextTierFee) === 0, item: pick ? itemBrief(pick) : null };
   }
   const has = (k) => cart.lines.some((l) => l.kind === k || l.slug);            // البوكسات فيها مشروب وجانبي غالباً ⇒ مانقترحش عليهم
-  const cheapest = (k) => items.filter((i) => kindOf(i) === k && !inCart.has(String(i.id)) && !avoid.has(i.name)).sort((a, b) => a.price - b.price)[0] || null;
-  if (!declined.has("drink") && !has("drink")) { const d = cheapest("drink"); if (d) return { kind: "drink", item: itemBrief(d) }; }
-  if (!declined.has("side") && !has("side")) { const s2 = cheapest("side"); if (s2) return { kind: "side", item: itemBrief(s2) }; }
-  if (!declined.has("top_seller") && Array.isArray(ctx.topSellers)) {
+  /* مشروب / جانبي: الأكثر مبيعاً فعلاً (ترتيب مبيعات نقطة البيع) مش الأرخص؛ المياه مابتتقترحش كـ«المشروب» إلا لو مفيش غيرها (قرار ١٢/١٠). */
+  const rank = new Map((Array.isArray(ctx.topSellers) ? ctx.topSellers : []).map((id, i) => [String(id), i]));
+  const WATER = /مياه|ماء|water/i;
+  const best = (k) => { const c = items.filter((i) => kindOf(i) === k && !inCart.has(String(i.id)) && !avoid.has(i.name));
+    const order = (a, b) => (rank.has(String(a.id)) ? rank.get(String(a.id)) : 1e6) - (rank.has(String(b.id)) ? rank.get(String(b.id)) : 1e6) || a.price - b.price;
+    const nw = c.filter((i) => !WATER.test(normalize(`${i.name} ${i.nameEn}`))); return (nw.length ? nw : c).sort(order)[0] || null; };
+  if (!declined.has("drink") && !has("drink")) { const d = best("drink"); if (d) return { kind: "drink", item: itemBrief(d) }; }
+  if (!declined.has("side") && !has("side")) { const s2 = best("side"); if (s2) return { kind: "side", item: itemBrief(s2) }; }
+  /* صنف رئيسي من الأكثر مبيعاً: بس لو السلة مافيهاش صنف رئيسي ولا بوكس (العميل طالب مشروب/جانبي بس) — «زوّد وجبة تانية» مش اقتراح أمين. */
+  if (!declined.has("top_seller") && Array.isArray(ctx.topSellers) && !hasBox && !cart.lines.some((l) => l.kind === "main")) {
     const t = ctx.topSellers.map((id) => items.find((i) => String(i.id) === String(id))).find((i) => i && !inCart.has(String(i.id)) && kindOf(i) === "main" && !avoid.has(i.name));
     if (t) return { kind: "top_seller", item: itemBrief(t) };
   }
@@ -212,14 +220,17 @@ export function makeAssistTools(deps = {}) {
   const menuOf = async () => { try { return await deps.menuIndex(); } catch { return null; } };
   const boxesOf = async () => { try { const b = await deps.boxes(); return Array.isArray(b) && b.length ? b : null; } catch { return null; } };
   const unavailable = (what) => ({ ok: false, error: "unavailable", what });
+  /* الحدود (عدد نتايج البحث، فرق الشريحة، أيام الأكثر مبيعاً…) من إعدادات اللوحة لو المتصل وصّلها (deps.tune)، وإلا الافتراضي. */
+  const tuneOf = async () => { try { const t = deps.tune ? await deps.tune() : null; return t && typeof t === "object" ? { ...ASSIST_DEFAULTS, ...t } : ASSIST_DEFAULTS; } catch { return ASSIST_DEFAULTS; } };
 
   async function search_menu(_p, { query } = {}) {
-    const r = searchMenu(await menuOf(), query);
+    const r = searchMenu(await menuOf(), query, (await tuneOf()).searchMax);
     return r === null ? unavailable("menu") : { ok: true, results: r };
   }
   async function addonsOf(id) {
     try { const cat = deps.modifiers ? await deps.modifiers.catalogItems() : null; const g = cat && cat[String(id)];
-      return Array.isArray(g) ? g.map((x) => ({ group: x.localName || x.name, min: x.min, max: x.max, options: (x.options || []).map((o) => ({ id: o.id, name: o.localName || o.name, price: round2(o.shown) })) })) : []; }
+      /* الكتالوج الحي: name = الاسم العربي، localName = الإنجليزي (زي أصناف المنيو). الشريحة ١ كانت بتعرض الإنجليزي للعميل العربي. */
+      return Array.isArray(g) ? g.map((x) => ({ group: x.name || x.localName, group_en: x.localName || x.name, min: x.min, max: x.max, options: (x.options || []).map((o) => ({ id: o.id, name: o.name || o.localName, name_en: o.localName || o.name, price: round2(o.shown) })) })) : []; }
     catch { return null; }
   }
   async function get_item(_p, { id } = {}) {
@@ -237,8 +248,11 @@ export function makeAssistTools(deps = {}) {
     const b = bs.find((x) => String(x.slug) === String(slug));
     if (!b) return { ok: false, error: "not_found" };
     const slots = (b.slots || []).map(slotView);
+    const menu = await menuOf(), enOf = (pid) => { const it = menu && menu.items.find((i) => String(i.id) === String(pid)); return it && it.nameEn ? it.nameEn : null; };
+    for (const s of slots) { if (s.label && (b.slots.find((x) => x.key === s.key) || {}).label_en) s.label_en = b.slots.find((x) => x.key === s.key).label_en;
+      if (s.type === "fixed" && s.item) { const e = enOf(s.item.product_id); if (e) s.item.name_en = e; } if (s.type === "choice") for (const c of s.choices) { const e = enOf(c.product_id); if (e) c.name_en = e; } }
     for (const s of slots) if (s.type === "choice") for (const c of s.choices) { const a = await addonsOf(c.product_id); c.addons = (a || []).flatMap((g) => g.options.map((o) => ({ id: o.id, name: o.name, price: o.price, group: g.group }))); }
-    return { ok: true, box: { slug: b.slug, name: b.name, price: Number(b.price), description: b.description || "", section: b.section || "", slots, online_only: true } };
+    return { ok: true, box: { slug: b.slug, name: b.name, name_en: b.name_en || null, price: Number(b.price), description: b.description || "", description_en: b.description_en || null, section: b.section || "", slots, online_only: true } };
   }
   /* سؤال محدد عن صنف: «هل X فيه <مكوّن/مسبّب حساسية>؟» ⇒ نعم / لا / غير معروف (⇒ موظف) + هل يتشال عند الطلب. **الإجابة بس** — ملف حقايق الأصناف
      داخلي ومابيتبعتش للموديل ولا يتقتبس (قرار عمر: «نجاوب على قد السؤال»). لحد ما الملف يتوافق عليه: deps.dishFact مش موجود ⇒ غير معروف ⇒ موظف. */
@@ -255,7 +269,7 @@ export function makeAssistTools(deps = {}) {
   }
   async function list_boxes() {
     const bs = await boxesOf(); if (!bs) return unavailable("boxes");
-    return { ok: true, boxes: bs.filter((b) => String(b.section || "").trim()).map((b) => ({ slug: b.slug, name: b.name, price: Number(b.price), section: b.section, description: b.description || "" })), online_only: true };
+    return { ok: true, boxes: bs.filter((b) => String(b.section || "").trim()).map((b) => ({ slug: b.slug, name: b.name, name_en: b.name_en || null, price: Number(b.price), section: b.section, section_en: b.section_en || null, description: b.description || "", description_en: b.description_en || null })), online_only: true };
   }
   async function check_availability(_p, { ids = [] } = {}) {
     const menu = await menuOf(); if (!menu) return unavailable("menu");
@@ -314,7 +328,7 @@ export function makeAssistTools(deps = {}) {
     let firstEligible = null; try { const fr = await q(`SELECT code, percent, active, expires_at, free_delivery FROM shop_coupons WHERE upper(code)='FIRST' LIMIT 1`, []); if (fr && fr[0]) firstEligible = (await firstEligibility(fr[0], phone, couponQueries(pool), now())).eligible; } catch { firstEligible = null; }
     const co = await q(`SELECT updates, marketing, stopped_at FROM wa_optins WHERE phone_norm=$1`, [phone]);
     const consent = co && co[0] ? { updates: co[0].updates === true, marketing: co[0].marketing === true, stopped: Boolean(co[0].stopped_at) } : null;
-    return { ok: true, profile: profileForModel(p, { loyalty: await loyaltyOf(phone), rewards: await rewardsOf(phone), firstEligible, consent, lang: deps.langOf ? await deps.langOf(phone) : "ar" }, now()) };
+    return { ok: true, profile: profileForModel(p, { loyalty: await loyaltyOf(phone), rewards: await rewardsOf(phone), firstEligible, consent, lang: deps.langOf ? await deps.langOf(phone) : "ar" }, now(), await tuneOf()) };
   }
 
   /* بنّاء السلة. input = { option: "delivery"|"pickup", items:[{ id, qty, note }], boxes:[{ slug, qty, choices:{ slot:{product_id,variant_option_id} }, addons:{ slot:[id] }, notes:{ slot:"…" } }] }
@@ -324,7 +338,7 @@ export function makeAssistTools(deps = {}) {
     const menu = await menuOf(); if (!menu) return unavailable("menu");
     const option = input.option === "pickup" ? "pickup" : "delivery";
     const lines = [], problems = [], raw = {}, items = [];
-    for (const li of (Array.isArray(input.items) ? input.items : []).slice(0, ASSIST_DEFAULTS.maxCartLines)) {
+    for (const li of (Array.isArray(input.items) ? input.items : []).slice(0, (await tuneOf()).maxCartLines)) {
       const it = menu.items.find((i) => String(i.id) === String(li && li.id));
       if (!it) { problems.push({ id: String(li && li.id), error: "not_on_menu" }); continue; }
       if (it.soldOut) { problems.push({ id: it.id, name: it.name, error: "sold_out_today" }); continue; }
@@ -371,7 +385,7 @@ export function makeAssistTools(deps = {}) {
       const key = `b:${b.slug}:${sig}`;      // نفس مفتاح المتجر (addBundleToCart): نفس التركيبة سطر واحد
       raw[key] = { key, bundle: b, choices, qty, mods, notes, modsIncl: round2(modsIncl), surIncl,
         item: { id: `b:${b.slug}`, name: b.name, local_name: b.name_en || b.name, retail_price: round2(Number(b.price) + surIncl), price: round2((Number(b.price) + surIncl) / 1.15), image: b.image || "" } };
-      lines.push({ slug: b.slug, name: b.name, name_en: b.name_en || b.name, price: unit, qty, total: round2(unit * qty), kind: "box",
+      lines.push({ slug: b.slug, name: b.name, name_en: b.name_en || b.name, price: unit, qty, total: round2(unit * qty), kind: "box", contains: [...new Set([...(b.slots || []).filter((s) => s.type === "fixed" && s.item).map((s) => String(s.item.product_id)), ...Object.values(choices).map((c) => String(c.product_id))])],
         picks: (ex.picks || []).map((p) => ({ slot: p.label || p.slot, name: p.name, variant: p.variant_name || null, ...(p.note ? { note: p.note } : {}) })), base_price: Number(b.price), choices_extra: surIncl, addons_extra: round2(modsIncl) });
       items.push({ id: key, n: String(b.name).slice(0, 60), q: qty, p: unit });
     }
@@ -388,7 +402,7 @@ export function makeAssistTools(deps = {}) {
   async function top_sellers() {
     const menu = await menuOf(); if (!menu) return [];
     const r = await q(`SELECT i.name, sum(i.qty)::float AS qty FROM ts_order_items i JOIN ts_orders o ON o.order_id = i.order_id
-                        WHERE o.order_date > NOW() - make_interval(days => $1::int) AND COALESCE(o.order_type,'') NOT ILIKE '%void%' AND COALESCE(o.order_type,'') NOT ILIKE '%refund%' GROUP BY 1 ORDER BY 2 DESC LIMIT 40`, [ASSIST_DEFAULTS.topSellerDays]);
+                        WHERE o.order_date > NOW() - make_interval(days => $1::int) AND COALESCE(o.order_type,'') NOT ILIKE '%void%' AND COALESCE(o.order_type,'') NOT ILIKE '%refund%' GROUP BY 1 ORDER BY 2 DESC LIMIT 40`, [(await tuneOf()).topSellerDays]);
     const byName = new Map(menu.items.map((i) => [normalize(i.name), i.id]));
     return (r || []).map((x) => byName.get(normalize(x.name))).filter(Boolean);
   }
@@ -397,8 +411,22 @@ export function makeAssistTools(deps = {}) {
     if (!cart || !cart.ok) return { ok: true, suggestion: null };
     const [menu, boxes, tops] = await Promise.all([menuOf(), boxesOf(), top_sellers()]);
     let quote = null;
-    if (cart.option !== "pickup") { const qv = await quote_delivery(phone, { total: cart.subtotal }); if (qv.ok && qv.deliverable) quote = { deliverable: true, fee: qv.fee, toNextTier: qv.to_next_tier, nextTierFee: qv.next_tier_fee }; }
-    return { ok: true, suggestion: suggestOne(cart, { menu, boxes: boxes || [], quote, topSellers: tops, declined, profile }) };
+    let freeAnyway = false;
+    if (cart.option !== "pickup") { try { const of = await get_offers(phone); freeAnyway = Boolean((of.first_order && of.first_order.eligible && of.first_order.free_delivery && cart.subtotal >= (of.first_order.min_total || 0)) || (of.rewards || []).some((r) => r.freeDelivery && cart.subtotal >= (r.minTotal || 0))); } catch { freeAnyway = false; } }
+    if (cart.option !== "pickup" && !freeAnyway) { const qv = await quote_delivery(phone, { total: cart.subtotal }); if (qv.ok && qv.deliverable) quote = { deliverable: true, fee: qv.fee, toNextTier: qv.to_next_tier, nextTierFee: qv.next_tier_fee }; }
+    return { ok: true, suggestion: suggestOne(cart, { menu, boxes: boxes || [], quote, topSellers: tops, declined, profile }, await tuneOf()) };
   }
-  return { dish_fact, search_menu, get_item, get_box, list_boxes, check_availability, quote_delivery, get_offers, get_hours, order_status, customer_profile, build_cart, top_sellers, suggest };
+  /* باقات التجمعات (الباقات اللي مالهاش قسم بوكسات): الاسم والسعر والوصف العام */
+  async function list_packs() {
+    const bs = await boxesOf(); if (!bs) return unavailable("boxes");
+    return { ok: true, packs: bs.filter((b) => !String(b.section || "").trim()).map((b) => ({ slug: b.slug, name: b.name, name_en: b.name_en || null, price: Number(b.price), description: b.description || "", description_en: b.description_en || null })), online_only: true };
+  }
+  /* «جوعان ومش عارف أطلب إيه»: الأكثر مبيعاً فعلاً (نقطة البيع) من الأصناف المتاحة الحين — لحد ٥ */
+  async function recommend() {
+    const menu = await menuOf(); if (!menu) return unavailable("menu");
+    const ids = await top_sellers();
+    const picks = ids.map((id) => menu.items.find((i) => String(i.id) === String(id))).filter((i) => i && !i.soldOut && kindOf(i) === "main").slice(0, 5).map(itemBrief);
+    return { ok: true, basis: "real sales, most sold first", results: picks };
+  }
+  return { dish_fact, search_menu, get_item, get_box, list_boxes, list_packs, recommend, check_availability, quote_delivery, get_offers, get_hours, order_status, customer_profile, build_cart, top_sellers, suggest };
 }

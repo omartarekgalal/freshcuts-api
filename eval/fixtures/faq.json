@@ -1,0 +1,38 @@
+{
+ "meat": {
+  "ar": "نشوي على فحم طبيعي ونحضّر كل طلب بعد استلامه.\nالكفتة والطرب: لحم غنم مع لحم بقري برازيلي مبرّد.\nالبرجر والحواوشي والسجق: لحم بقري برازيلي مبرّد مع لحم بلدي بقري وغنم.\nالريش والكباب: لحم غنم أسترالي. والدجاج مبرّد.\nوكل لحومنا ودجاجنا حلال.",
+  "en": "We grill over natural charcoal and prepare every order after we receive it.\nKofta and tarb: lamb with chilled Brazilian beef.\nBurger, hawawshi and sausage: chilled Brazilian beef with local beef and lamb.\nLamb chops and kebab: Australian lamb. Our chicken is chilled.\nAll our meat and chicken are halal."
+ },
+ "halal": {
+  "ar": "نعم، كل اللحوم والدجاج عندنا حلال، وتوصلنا من الموردين وعليها ملصق المورد المختوم بختم الحلال.",
+  "en": "Yes. All our meat and chicken are halal and arrive from our suppliers with the supplier's halal-stamped label."
+ },
+ "vegetarian": {
+  "ar": "الصنف النباتي بالكامل عندنا هو البطاطس المحمرة.\nوعندنا أصناف بدون لحوم لكن فيها جبن أو حليب أو بيض: بيتزا مارجريتا، بيتزا خضروات، بيتزا كواترو تشيز، كريب ميكس جبن، كريب بطاطس، تشيز فرايز والكولسلو.\nالباستا والطاسات غير مناسبة للنباتيين، والجبن من مصدر حيواني.",
+  "en": "Our only fully plant-based item is French fries.\nMeat-free items that contain cheese, milk or egg: Margherita, Vegetable and Quattro Cheese pizza, Mixed Cheese crepe, Potato crepe, cheese fries and coleslaw.\nPasta and skillets are not suitable for vegetarians, and our cheese is from an animal source."
+ },
+ "kids": {
+  "ar": "ما عندنا وجبة مخصّصة للأطفال، لكن هذه الأصناف تناسبهم: فرايد تشيكن مع بطاطس محمرة، برجر لحم كلاسيك أو جريلد تشيكن ساندوتش، أو بيتزا مارجريتا.\nوبوكس البرجر الفردي فيه برجر وبطاطس ومشروب.",
+  "en": "We do not have a dedicated kids' meal, but these suit children: Fried Chicken with French Fries, a Classic Beef Burger or Grilled Chicken Burger, or a Margherita Pizza.\nThe Burger Solo Box includes a burger, fries and a drink."
+ },
+ "stuffed_crust": {
+  "ar": "نعم، حشو الأطراف متاح لكل أنواع البيتزا: كيري بإضافة 3 ريال، أو موتزاريلا بإضافة 5 ريال. تختاره مع البيتزا عند الطلب.",
+  "en": "Yes. Stuffed crust is available on every pizza: Kiri for +3 SAR or mozzarella for +5 SAR. You choose it with the pizza when ordering."
+ },
+ "dine_in": {
+  "ar": "نعم، عندنا جلسات داخلية وفيها قسم للعائلات، والجلوس متاح طوال ساعات العمل. لا توجد جلسات خارجية.",
+  "en": "Yes. We have indoor seating with a family section, available throughout opening hours. There is no outdoor seating."
+ },
+ "parking": {
+  "ar": "ما عندنا مواقف خاصة بالمطعم. المواقف على الشارع وتتوفر أحياناً، ويصعب إيجادها في أوقات الزحمة.",
+  "en": "We do not have our own parking. Street parking is sometimes available, and it is hard to find at busy times."
+ },
+ "reservation": {
+  "ar": "الحجز يكون باتصال على 0546715683، أو اكتب «موظف» هنا ونرتّب لك.\nوالطلبات الكبيرة والعزايم نحتاج طلبها قبل الموعد بيوم.",
+  "en": "Book by calling 0546715683, or type \"agent\" here and we will arrange it.\nLarge orders and gatherings need to be placed one day ahead."
+ },
+ "apps": {
+  "ar": "نعم، تجدنا على كيتا وهنقرستيشن ونينجا.\nوالطلب من موقعنا freshcuts.sa بسعر المطعم نفسه، وأسعار الأصناف في التطبيقات أعلى.\nوأول طلب توصيل من الموقع توصيله مجاني للطلبات من 60 ر.س بكود FIRST.",
+  "en": "Yes, you can find us on Keeta, HungerStation and Ninja.\nOrdering on our website freshcuts.sa is at the restaurant's own prices, and item prices on the apps are higher.\nYour first delivery order on the website has free delivery on orders from 60 SAR with code FIRST."
+ }
+}

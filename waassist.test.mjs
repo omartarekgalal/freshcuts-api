@@ -22,8 +22,8 @@ const BOX_MEAL = { slug: "box-kofta-solo", name: "بوكس الكفتة الفر
   { key: "meal", type: "fixed", label: "وجبة كفتة", product_id: "17" }, { key: "fries", type: "fixed", label: "بطاطس محمرة", product_id: "79" }, { key: "drink", type: "fixed", label: "مشروب", product_id: "82" }]) };
 const RAW_BOXES = [BOX_PIZZA, BOX_MEAL], BOXES = RAW_BOXES.map(dress);
 const resolve = (pid) => { const it = item(pid); return it ? { name: it.name, priceEx: it.price / 1.15, taxId: 1 } : null; };
-const MODS = { 43: [{ id: 5, name: "Crust", localName: "حشو الأطراف", min: 0, max: 1, options: [{ id: 16, name: "Kiri", localName: "كيري", shown: 5 }, { id: 15, name: "Mozzarella", localName: "موتزاريلا", shown: 5 }] }],
-  41: [{ id: 5, name: "Crust", localName: "حشو الأطراف", min: 0, max: 1, options: [{ id: 16, name: "Kiri", localName: "كيري", shown: 5 }] }] };
+const MODS = { 43: [{ id: 5, name: "حشو الأطراف", localName: "Crust", min: 0, max: 1, options: [{ id: 16, name: "كيري", localName: "Kiri", shown: 5 }, { id: 15, name: "موتزاريلا", localName: "Mozzarella", shown: 5 }] }],
+  41: [{ id: 5, name: "حشو الأطراف", localName: "Crust", min: 0, max: 1, options: [{ id: 16, name: "كيري", localName: "Kiri", shown: 5 }] }] };
 
 function tools(over = {}) {
   const db = { carts: [], orders: over.orders || [], optins: over.optins || {}, loyaltyOrders: over.loyaltyOrders ?? 4, sold: over.sold || [] };
@@ -212,9 +212,15 @@ test("upsell: at most one suggestion, computed from real numbers, never repeated
   assert.deepEqual(A.suggestOne({ lines: [L(18)], subtotal: 148, option: "delivery" }, { ...ctx, quote: { deliverable: true, fee: 5, toNextTier: 2, nextTierFee: 0 } }).free, true);
   // missing drink, then missing side, then a real best seller; each only once and never after it was declined
   const main = { lines: [L(71)], subtotal: 21, option: "pickup" };
-  assert.deepEqual(A.suggestOne(main, ctx), { kind: "drink", item: A.itemBrief(item(81)) });
-  assert.equal(A.suggestOne(main, { ...ctx, declined: ["drink"] }).kind, "side");
-  assert.deepEqual(A.suggestOne(main, { ...ctx, declined: ["drink", "side"] }), { kind: "top_seller", item: A.itemBrief(item(18)) }, "the top seller that is a main dish and not in the cart (fries are a side)");
+  assert.deepEqual(A.suggestOne(main, ctx), { kind: "drink", item: A.itemBrief(item(82)) }, "never water as «the drink» while another drink exists: the cheapest other drink when sales do not rank one");
+  assert.deepEqual(A.suggestOne(main, { ...ctx, topSellers: ["79", "86", "82"] }), { kind: "drink", item: A.itemBrief(item(86)) }, "the drink that really sells most (POS rank), not the cheapest");
+  assert.deepEqual(A.suggestOne(main, { ...ctx, declined: ["drink"] }), { kind: "side", item: A.itemBrief(item(79)) }, "the best-selling side");
+  assert.equal(A.suggestOne(main, { ...ctx, declined: ["drink", "side"] }), null, "«add another main dish» is not offered to someone who already has one");
+  assert.deepEqual(A.suggestOne({ lines: [L(82)], subtotal: 3, option: "pickup" }, { ...ctx, declined: ["side"] }), { kind: "top_seller", item: A.itemBrief(item(18)) }, "a best-selling main only when the cart has no main dish and no box");
+  // nothing that is already inside a box of the cart (12/10: a mixed grill meal was offered on top of the mixed grill box)
+  assert.equal(A.suggestOne({ lines: [{ slug: "box-x", name: "x", price: 85, qty: 1, kind: "box", contains: ["18", "87", "79", "72", "82"] }], subtotal: 85, option: "pickup" }, ctx), null);
+  const onlyWater = { ...MENU, items: MENU.items.filter((i) => A.itemBrief(i).kind !== "drink" || i.id === "81") };
+  assert.deepEqual(A.suggestOne(main, { ...ctx, menu: onlyWater }).item.id, "81", "water only when no other drink fits");
   assert.equal(A.suggestOne(main, { ...ctx, declined: ["drink", "side", "top_seller", "box_saves", "next_tier"] }), null);
   assert.equal(A.suggestOne({ lines: [{ slug: "box-kofta-solo", name: "x", price: 29, qty: 1, kind: "box" }], subtotal: 29, option: "pickup" }, { ...ctx, declined: ["top_seller"] }), null, "a box already holds a drink and a side");
   assert.equal(A.suggestOne({ lines: [], subtotal: 0 }, ctx), null); assert.equal(A.suggestOne(null, ctx), null);
@@ -222,11 +228,14 @@ test("upsell: at most one suggestion, computed from real numbers, never repeated
   const soldMenu = { ...MENU, items: MENU.items.map((i) => (kindOfDrink(i) ? { ...i, soldOut: true } : i)) };
   assert.equal(A.suggestOne(main, { ...ctx, menu: soldMenu }).kind, "side");
   // through the tool: inputs are gathered from the system (quote for his last shared location, real top sellers)
-  const { t } = tools({ lastLoc: { lat: 21.58, lng: 39.15 } });
+  const { t } = tools({ lastLoc: { lat: 21.58, lng: 39.15 }, priorDelivery: true, firstUsed: true });
   const cart = await t.build_cart(ME, { items: [{ id: "18", qty: 2 }] }, { save: false });
   const s = (await t.suggest(ME, { cart })).suggestion;
   assert.deepEqual([s.kind, s.add_sar, s.fee_now, s.fee_then], ["next_tier", 6, 15, 10]);
   assert.deepEqual(await t.top_sellers(), ["79", "18", "8"]);
+  // a first order that already gets free delivery is never told «add more to pay a lower fee»
+  const fresh = tools({ lastLoc: { lat: 21.58, lng: 39.15 } }).t;
+  assert.notEqual((await fresh.suggest(ME, { cart: await fresh.build_cart(ME, { items: [{ id: "18", qty: 2 }] }, { save: false }) })).suggestion.kind, "next_tier");
 });
 const kindOfDrink = (i) => A.itemBrief(i).kind === "drink";
 

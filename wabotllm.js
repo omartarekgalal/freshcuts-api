@@ -44,7 +44,7 @@ const RX = {
   coords: /-?\d{1,3}\.\d{3,}\s*[,،]\s*-?\d{1,3}\.\d{3,}/g,
   order: /(^|[^A-Za-z0-9])[Ww]\s?-?\d{5,}/g,
   digits: /(?:\+|00)?\d[\d\s().-]{5,}\d/g,
-  name: new RegExp(`(?<![\\p{L}])(انا اسمي|أنا اسمي|اسمي|إسمي|الاسم|باسم|بإسم|my name is|name is|this is)(?![\\p{L}])\\s*[:：]?\\s+(${WORD})(\\s+(?!(?:${NAME_STOP})(?![\\p{L}]))${WORD})?`, "giu"),
+  name: new RegExp(`(?<![\\p{L}])([وف]?(?:انا اسمي|أنا اسمي|اسمي|إسمي|الاسم|باسم|بإسم)|my name is|name is|this is)(?![\\p{L}])\\s*[:：]?\\s+(${WORD})(\\s+(?!(?:${NAME_STOP})(?![\\p{L}]))${WORD})?`, "giu"),
   nameLead: new RegExp(`(^|[.،,!؟?\\n]\\s*)((?:السلام عليكم|مرحبا|هلا|اهلا|أهلا|hi|hello)\\s+)?(معك|معاك|معكم)\\s+(?!(?:${NAME_STOP}|${ORDER_WORDS})(?![\\p{L}]))(${WORD})(\\s+(?!(?:${NAME_STOP}|${ORDER_WORDS})(?![\\p{L}]))${WORD})?`, "giu"),
   street: new RegExp(`(?<![\\p{L}])(?<!عن )(?:شارع|طريق|street|st\\.|road)(?![\\p{L}])\\s+${WORD}(?:\\s+${WORD}){0,2}`, "giu"),
   unit: new RegExp(`(?<![\\p{L}])(?:عماره|عمارة|مبنى|مبني|برج|فيلا|فله|فلة)(?![\\p{L}])\\s*(?:رقم\\s*)?[:#]?\\s*${WORD}`, "giu"),
