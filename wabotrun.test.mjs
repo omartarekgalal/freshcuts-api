@@ -123,6 +123,7 @@ function world({ waBot = {}, notifications = { whatsappEnabled: true }, orders =
       }
       if (/FROM wa_optins WHERE phone_norm/i.test(s)) return { rows: db.optins[p[0]] ? [db.optins[p[0]]] : [] };
       if (/^INSERT INTO wa_optin_proofs/i.test(s)) { db.proofs.push({ phone_norm: p[0], answer: p[1], wording: p[2], lang: p[3], asked_at: p[4], answer_wamid: p[5], at: iso() }); return { rows: [] }; }
+      if (/^UPDATE wa_bot_chats SET handoff_reminded_at=NOW\(\)/i.test(s)) { chat(p[0]).handoff_reminded_at = iso(); return { rows: [] }; }
       if (/^UPDATE wa_bot_chats SET optin_asked_at=NOW\(\)/i.test(s)) { chat(p[0]).optin_asked_at = iso(); return { rows: [] }; }
       if (/^UPDATE wa_bot_chats SET optin_answered_at=NOW\(\)/i.test(s)) { chat(p[0]).optin_answered_at = iso(); return { rows: [] }; }
       if (/^UPDATE wa_bot_log SET reply_arg=\$2/i.test(s)) { const l = db.log.find((x) => x.id === p[0]); if (l) l.reply_arg = p[1]; return { rows: [] }; }
@@ -149,7 +150,9 @@ function world({ waBot = {}, notifications = { whatsappEnabled: true }, orders =
         const rows = db.log.filter((l) => l.phone_norm === p[0] && ["replied", "dry"].includes(l.decision) && nowMs - Date.parse(l.at) < 3600_000);
         const same = rows.filter((l) => l.reply_key === p[1] && (l.reply_arg || "") === (p[2] || "")).map((l) => l.at).sort().pop() || null;
         const failed = db.log.filter((l) => l.phone_norm === p[0] && l.decision === "failed" && !/^skipped:/.test(l.error || "") && nowMs - Date.parse(l.at) < 600_000).map((l) => l.at).sort().pop() || null;
-        return { rows: [{ n: rows.length, same_at: same, failed_at: failed }] };
+        const cnt = rows.filter((l) => !["rate", "rate_burst", "handoff_remind"].includes(l.reply_key)), tap = (l) => l.msg_type === "interactive", first = (l) => l.map((x) => x.at).sort()[0] || null;
+        const txt = cnt.filter((l) => !tap(l)), taps = cnt.filter(tap), min1 = cnt.filter((l) => nowMs - Date.parse(l.at) < 60_000), last = (k) => rows.filter((l) => l.reply_key === k).map((l) => l.at).sort().pop() || null;
+        return { rows: [{ n: rows.length, n_text: txt.length, oldest_text: first(txt), n_tap: taps.length, oldest_tap: first(taps), n_min: min1.length, oldest_min: first(min1), rate_at: last("rate"), burst_at: last("rate_burst"), same_at: same, failed_at: failed }] };
       }
       if (/FROM wa_bot_log WHERE alert='sent'/i.test(s)) return { rows: [{ n: db.log.filter((l) => l.alert === "sent" && nowMs - Date.parse(l.at) < 3600_000).length }] };
       if (/^SELECT \* FROM wa_bot_chats WHERE phone_norm/i.test(s)) return { rows: db.chats.has(p[0]) ? [{ ...db.chats.get(p[0]) }] : (disclosure ? [] : [{ phone_norm: p[0], unknown_streak: 0, last_disclosed_at: iso() }]) };
@@ -430,7 +433,7 @@ test("dashboard settings: validation, editable texts with safe placeholders, own
   assert.equal(R.configFromBody({ texts: { greet: { ar: "حياك {discount}" } } }).ok, false);
   // clamps: a nonsense number can not switch a safety rule off
   const c = R.botConfig({ waBot: { humanPauseMin: 0, maxRepliesPerHour: 9999, maxAgeMinutes: -5, staffWaitMin: 999, unknownWaitMin: -3 } });
-  assert.deepEqual([c.humanPauseMin, c.maxRepliesPerHour, c.maxAgeMinutes, c.staffWaitMin, c.unknownWaitMin], [1, 30, 1, 15, 0]);
+  assert.deepEqual([c.humanPauseMin, c.maxRepliesPerHour, c.maxAgeMinutes, c.staffWaitMin, c.unknownWaitMin], [1, 300, 1, 15, 0]);
 
   const w = world({ waBot: {} });
   w.setOwner(false);
@@ -812,7 +815,8 @@ test("the three messages that went wrong in Omar's test on 12/10", withEnv(LOCKS
   assert.equal(a.log.handoff, "needs_staff"); assert.equal(a.log.detail, "faq:meat"); assert.equal(w.sms.length, 2);
   w.clock.advance(1);
   const b = await w.say("ايش نوع اللحم");
-  assert.equal(b.sent.length, 0); assert.equal(b.log.reason, "handoff_open");
+  assert.deepEqual(b.sent, [txt(ME, `محادثتك عند الموظف 🙏\n${HAND}`)], "he keeps writing: told once more that the chat is with staff");
+  assert.equal(b.log.reply_key, "handoff_remind"); assert.equal(b.log.handoff, null);
   w.clock.advance(1);
   const c = await w.say("ايش نوع اللحم");
   assert.equal(c.sent.length, 0); assert.equal(c.log.reason, "handoff_open", "consistent: the assistant said it leaves the chat to staff, and it does");
@@ -956,7 +960,16 @@ test("after a handover the assistant really leaves the chat: facts only, until s
   }
   const w = liveWorld();
   assert.deepEqual((await w.say("ابي اكلم موظف")).sent, [txt(ME, `أبشر 🙏 حوّلت محادثتك لموظف.\n${HAND}`)]);
-  for (const q of ["موظف", "كم رسوم التوصيل", "المنيو", "السلام عليكم", "قفغفغ"]) { w.clock.advance(1); const x = await w.say(q); assert.equal(x.sent.length, 0, q); assert.equal(x.log.reason, "handoff_open", q); }
+  // an ordinary handover: menu, prices and delivery are information and are still answered; sales talk is not
+  w.clock.advance(1); assert.equal((await w.say("كم رسوم التوصيل")).log.reply_key, "delivery");
+  w.clock.advance(1); assert.equal((await w.say("المنيو")).log.reply_key, "cats");
+  w.clock.advance(3); assert.equal((await w.say("اسعاركم")).sent.length, 1, "«اسعاركم» during a handover is answered");
+  w.clock.advance(1); assert.equal((await w.say("بكم الكفتة")).log.reply_key, "items");
+  // he keeps writing other things: one reminder, then quiet
+  w.clock.advance(1);
+  const rem = await w.say("موظف");
+  assert.deepEqual(rem.sent, [txt(ME, `محادثتك عند الموظف 🙏\n${HAND}`)]); assert.equal(rem.log.reply_key, "handoff_remind");
+  for (const q of ["السلام عليكم", "ابي اطلب", "قفغفغ", "موظف"]) { w.clock.advance(1); const x = await w.say(q); assert.equal(x.sent.length, 0, q); assert.equal(x.log.reason, "handoff_open", q); assert.ok(x.log.resume_at, "the log says until when"); }
   w.clock.advance(1);
   assert.equal((await w.say("متى تقفلون")).sent.length, 1, "a fact is still answered");
   assert.equal(w.sms.length, 2, "one alert");
@@ -971,6 +984,7 @@ test("after a handover the assistant really leaves the chat: facts only, until s
   // a complaint stays «facts only» even after staff replied (rule 4b), until it expires or «رجّع البوت»
   const w3 = liveWorld();
   await w3.say("عندي شكوى"); w3.clock.advance(2); await w3.cashier("نعتذر منك"); w3.clock.advance(31);
+  assert.equal((await w3.say("المنيو")).log.reply_key, "handoff_remind", "told once that the chat is with staff"); w3.clock.advance(1);
   assert.equal((await w3.say("المنيو")).log.reason, "handoff_open");
   await w3.call("POST", "/api/cms/wabot/chats/unmute", { phone: "0512345678" }); w3.clock.advance(1);
   assert.equal((await w3.say("المنيو")).sent.length, 1);
@@ -987,6 +1001,10 @@ test("rule 4b: with an open complaint the bot answers facts only — no order li
   assert.equal(urlOf((await w.say("وين موقعكم")).sent[0]), "https://maps.google.com/?cid=14767749764292326433");
   w.clock.advance(2);
   assert.match(bodyOf((await w.say("وين طلبي")).sent[0]), /^طلبك رقم W1790011111111: تم توصيل طلبك ✅$/);
+  // an open COMPLAINT: no menu, no prices, no promotion. Told once that the chat is with staff (with the reopening time), then quiet
+  w.clock.advance(2);
+  const rem = await w.say("اسعاركم");
+  assert.equal(rem.log.reply_key, "handoff_remind"); assert.match(bodyOf(rem.sent[0]), /^محادثتك عند الموظف 🙏\nالمطعم مقفل الحين\. يرد عليك موظف هنا أول ما نفتح اليوم الساعة 12 ظهراً/);
   for (const promo of ["السلام عليكم", "عندكم عروض؟", "ابي اطلب", "كم رسوم التوصيل", "المنيو", "ابي اكلم موظف", "الاكل كان محروق", "بوكس العائلة", "القائمة"]) {
     w.clock.advance(2);
     const x = await w.say(promo);
@@ -1072,11 +1090,86 @@ test("no loops and no double replies: webhook re-delivery, duplicate window, hou
   assert.equal(dup.sent.length, 0); assert.equal(dup.log.reason, "duplicate");
   d.clock.advance(3);
   assert.equal((await d.say("المنيو")).sent.length, 1);
-  const cap = liveWorld({ waBot: { maxRepliesPerHour: 4, duplicateSeconds: 0 } });
+  // the hourly guard for TYPED messages: one calm line, no handover, no alert; quiet until the window slides; then back by itself
+  assert.deepEqual([R.botConfig({}).maxRepliesPerHour, R.botConfig({}).maxTapsPerHour, R.botConfig({}).maxRepliesPerMinute], [40, 150, 6]);
+  const cap = liveWorld({ waBot: { maxRepliesPerHour: 5, duplicateSeconds: 0 } });
   const keys = [];
-  for (const q of ["المنيو", "كم رسوم التوصيل", "وين موقعكم", "متى تفتحون", "ابي اطلب", "طرق الدفع"]) { const r = await cap.say(q); keys.push([r.log.reply_key, r.sent.length, r.log.reason || null]); cap.clock.advance(1); }
-  assert.deepEqual(keys, [["cats", 1, null], ["delivery", 1, null], ["location", 1, null], ["rate", 1, null], ["order", 0, "handoff_open"], ["payment", 0, "handoff_open"]]);
-  assert.equal(cap.sms.length, 2);
+  for (const q of ["المنيو", "كم رسوم التوصيل", "وين موقعكم", "متى تفتحون", "طرق الدفع", "ابي اطلب", "بكم الكفتة", "اسعاركم"]) { const r = await cap.say(q); keys.push([r.log.reply_key, r.sent.length, r.log.reason || null, r.log.handoff || null]); cap.clock.advance(2); }
+  assert.deepEqual(keys, [["cats", 1, null, null], ["delivery", 1, null, null], ["location", 1, null, null], ["hours", 1, null, null], ["payment", 1, null, null],
+    ["rate", 1, null, null], ["items", 0, "rate_limited", null], ["cats", 0, "rate_limited", null]]);
+  assert.deepEqual(cap.calls[cap.calls.length - 1].body, txt(ME, "وصلنا حد الرسائل الآلية لهذه الساعة 🙏 اكتب «موظف» لو تحتاج مساعدة."));
+  assert.equal(cap.sms.length, 0, "the guard never alerts staff"); assert.equal(cap.db.chats.get("512345678").handoff_at ?? null, null, "and never opens a handover");
+  const lim = cap.db.log[cap.db.log.length - 1];
+  assert.equal(lim.detail, "hour"); assert.equal(mins(lim.resume_at, cap.db.log[0].at), 60, "the log says when the bot answers again: one hour after the oldest counted reply");
+  assert.equal((await cap.say("ابي اكلم موظف")).log.handoff, "asked_human", "asking for a person always works, limit or not");
+  const cap2 = liveWorld({ waBot: { maxRepliesPerHour: 5, duplicateSeconds: 0 } });
+  for (const q of ["المنيو", "كم رسوم التوصيل", "وين موقعكم", "متى تفتحون", "طرق الدفع", "ابي اطلب"]) { await cap2.say(q); cap2.clock.advance(2); }
+  cap2.clock.advance(52);
+  assert.equal((await cap2.say("بكم الكفتة")).log.reply_key, "items", "the window slid: the bot is back without anyone touching it");
+  // menu taps are counted apart from typed messages: browsing the tree is never cut off by the typed-message limit
+  const nav = liveWorld({ waBot: { maxRepliesPerHour: 5, duplicateSeconds: 0 } });
+  const taps = [["m:cats", "📋 المنيو بالأقسام"], ["m:boxes", "🎁 البوكسات"], ["tier:0", "x"], ["tier:1", "x"], ["tier:2", "x"], ["m:main", "x"], ["m:delivery", "x"], ["m:offers", "x"], ["m:hours", "x"], ["m:packs", "x"], ["m:pay", "x"], ["box:box-family", "x"]];
+  let navSent = 0;
+  for (let i = 0; i < 36; i++) { const t = taps[i % taps.length]; const r = await nav.press(t[0], t[1]); navSent += r.sent.length ? 1 : 0; assert.notEqual(r.log.reply_key, "rate", `tap ${i + 1}`); assert.equal(r.log.handoff || null, null); nav.clock.advance(1); }
+  assert.equal(navSent, 36, "36 taps in 36 minutes: every one answered");
+  assert.equal((await nav.say("بكم الكفتة")).log.reply_key, "items", "and a typed question after all that browsing is still answered");
+  const tapCap = liveWorld({ waBot: { maxTapsPerHour: 20, duplicateSeconds: 0 } });
+  for (let i = 0; i < 20; i++) { await tapCap.press(taps[i % taps.length][0], "x"); tapCap.clock.advance(1); }
+  const over = await tapCap.press("m:cats", "x");
+  assert.equal(over.log.reply_key, "rate"); assert.equal(over.log.handoff || null, null);
+  tapCap.clock.advance(1);
+  const over2 = await tapCap.press("m:boxes", "x"); assert.equal(over2.log.reason, "rate_limited"); assert.equal(over2.log.detail, "taps");
+  // burst: more than maxRepliesPerMinute in one minute ⇒ one «لحظة» line, then quiet for the minute, then normal
+  const burst = liveWorld({ waBot: { maxRepliesPerMinute: 3, duplicateSeconds: 0 } });
+  const bk = [];
+  for (const q of ["المنيو", "كم رسوم التوصيل", "وين موقعكم", "متى تفتحون", "طرق الدفع"]) { const r = await burst.say(q); bk.push([r.log.reply_key, r.sent.length, r.log.reason || null]); }
+  assert.deepEqual(bk, [["cats", 1, null], ["delivery", 1, null], ["location", 1, null], ["rate_burst", 1, null], ["payment", 0, "rate_limited"]]);
+  assert.equal(burst.sms.length, 0);
+  burst.clock.advance(2);
+  assert.equal((await burst.say("طرق الدفع")).log.reply_key, "payment");
+  // settings: the schema allows the generous values and refuses nonsense
+  assert.equal(R.configFromBody({ maxRepliesPerHour: 40, maxTapsPerHour: 300, maxRepliesPerMinute: 10 }).ok, true);
+  assert.equal(R.configFromBody({ maxRepliesPerHour: 2 }).ok, false); assert.equal(R.configFromBody({ maxRepliesPerMinute: 100 }).ok, false);
+}));
+
+test("Omar's session of 12/10 morning: browsing the tree is never cut off, and a handover does not look like «the bot stopped»", withEnv(LOCKS_OPEN, async () => {
+  // that morning the limit was 8 replies an hour of ANY kind and reaching it opened a handover; now: defaults (40 typed, 150 taps), no handover
+  const w = liveWorld({ waBot: { duplicateSeconds: 0 }, quote: { ok: true, deliverable: true, fee: 15 } });
+  const seq = [];
+  const step = async (label, p) => { const r = await p; seq.push([label, r.log.reply_key, r.sent.length, r.log.reason || null, r.log.handoff || null]); w.clock.advance(1); return r; };
+  await step("السلام عليكم", w.say("السلام عليكم"));
+  await step("كم رسوم التوصيل", w.say("كم رسوم التوصيل"));
+  await step("location", w.say(null, { raw: { type: "location", location: { latitude: 21.58, longitude: 39.15 } } }));
+  await step("وين طلبي", w.say("وين طلبي"));
+  w.db.chats.get("512345678").handoff_at = null;                    // «no order found» handed over; the coordinator cleared the chat — same here
+  await step("متى تقفلون", w.say("متى تقفلون"));
+  await step("عندكم عروض", w.say("عندكم عروض"));
+  await step("طرق الدفع", w.say("طرق الدفع"));
+  await step("بكم الكفتة", w.say("بكم الكفتة"));
+  const cats = await step("tap المنيو بالأقسام", w.press("m:cats", "📋 المنيو بالأقسام"));
+  const grill = rowsOf(cats.sent[0]).find((r) => /مشاوي بالوزن/.test(r.title));
+  assert.ok(grill, "the section he tapped exists in the live menu");
+  const dishes = await step("tap مشاوي بالوزن", w.press(grill.id, grill.title));
+  const kofta = rowsOf(dishes.sent[0]).find((r) => /كفتة مشوية بالوزن/.test(r.title));
+  const dish = await step("tap كفتة مشوية بالوزن", w.press(kofta.id, kofta.title));
+  assert.deepEqual(seq.slice(7).map((x) => x.slice(1)), [["items", 1, null, null], ["cats", 1, null, null], ["cat", 1, null, null], ["item", 1, null, null]],
+    "the tap that was answered «handover rate_limit» that morning is answered with the dish");
+  assert.match(bodyOf(dish.sent[0]), /^\*كفتة مشوية بالوزن\*/);
+  assert.equal(w.sms.length, 2, "only the «no order found» handover alerted; the limit alerted nobody");
+  // then a voice note: the bot can not open it ⇒ handover, said plainly
+  const voice = await step("voice note", w.say(null, { raw: { type: "audio", audio: { id: "A1" } } }));
+  assert.equal(voice.log.handoff, "media"); assert.match(bodyOf(voice.sent[0]), /^ما أقدر أفتح الصور والمقاطع الصوتية/);
+  // with the chat at staff: location and prices are still answered; he is told once if he writes something else
+  assert.equal((await step("وين موقعكم", w.say("وين موقعكم"))).sent.length, 1);
+  const prices = await step("اسعاركم", w.say("اسعاركم"));
+  assert.deepEqual([prices.log.reply_key, prices.sent.length], ["cats", 1], "«اسعاركم» was «silent (handoff_open)» that morning");
+  const more = await step("ابي اطلب", w.say("ابي اطلب"));
+  assert.equal(more.log.reply_key, "handoff_remind");
+  const quiet = await step("هلا", w.say("هلا"));
+  assert.deepEqual([quiet.sent.length, quiet.log.reason, quiet.log.detail], [0, "handoff_open", "media"]); assert.ok(quiet.log.resume_at);
+  // staff reply ⇒ the ordinary handover is over; after the pause the bot is fully back
+  await w.cashier("تفضل"); w.clock.advance(31);
+  assert.equal((await w.say("ابي اطلب")).log.reply_key, "order");
 }));
 
 test("missing data: never a partial or placeholder text — a plain «handed to staff» and an alert", withEnv(LOCKS_OPEN, async () => {

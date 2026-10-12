@@ -73,7 +73,12 @@ export const DEFAULTS = Object.freeze({
   logKeepDays: 90,             // سجل البوت بيتمسح بعدها
   maxAgeMinutes: 20,           // رسالة أقدم من كده (ويب هوك متأخر) مابيتردش عليها
   duplicateSeconds: 120,       // نفس الرد لنفس العميل مايتكررش خلالها
-  maxRepliesPerHour: 8,        // لكل عميل؛ عند الحد: تحويل لموظف وسكوت
+  /* حارس الحلقات (مش سبب لتحويل لموظف — عطل ١٢/١٠: ٨ ردود كانت بتقطع عميل بيتصفّح القائمة وتحوّله لموظف):
+     رسايل مكتوبة ورا بعض ليها حد في الساعة، ضغطات القائمة/الأزرار ليها حد أوسع لوحدها، وحد قصير للدقيقة. عند الحد: سطر هادي مرة واحدة،
+     من غير تحويل ولا تنبيه، والبوت يرجع لوحده لما المدة تعدّي. */
+  maxRepliesPerHour: 40,       // ردود على رسايل **مكتوبة** لكل عميل في الساعة
+  maxTapsPerHour: 150,         // ردود على ضغطات القائمة/الأزرار في الساعة (التصفّح مايتقطعش)
+  maxRepliesPerMinute: 6,      // أي ردود في الدقيقة (حلقة سريعة)
   orderLookbackHours: 72,
   lateAfterMinutes: 70,        // «وين طلبي» على طلب نشط أقدم من كده ⇒ الحالة + تحويل
   interactive: true,           // أزرار/رابط بزر؛ false = نص عادي والرابط في آخره
@@ -154,7 +159,9 @@ export const TEXTS = Object.freeze({
   unknown: t("غير مفهوم (أول مرة)", "ما فهمت طلبك تماماً 🙏 اختر من الأزرار، أو اكتب: موظف", "I didn't quite get that 🙏 Pick a button, or type: staff"),
   data_missing: t("معلومة ناقصة", "ما قدرت أجيب المعلومة الحين 🙏 حوّلت سؤالك لموظف.\n{wait}",
     "I couldn't get that information right now 🙏 I've passed your question to a staff member.\n{wait}", [], ["wait"]),
-  rate: t("حد الردود", "وصلتنا رسائلك 🙏 حوّلت محادثتك لموظف يكمل معك.\n{wait}", "We got your messages 🙏 A staff member will continue with you.\n{wait}", [], ["wait"]),
+  rate: t("حد الرسائل الآلية في الساعة", "وصلنا حد الرسائل الآلية لهذه الساعة 🙏 اكتب «موظف» لو تحتاج مساعدة.", "We have reached the automated message limit for this hour 🙏 Type “staff” if you need help.", [], [], 300),
+  rate_burst: t("رسائل كثيرة في دقيقة", "لحظة من فضلك 🙏 وصلتنا رسائل كثيرة متتالية، ونكمل معك بعد دقيقة.", "One moment 🙏 We received many messages in a row and will continue in a minute.", [], [], 300),
+  handoff_remind: t("تذكير: المحادثة عند الموظف (مرة واحدة)", "محادثتك عند الموظف 🙏\n{wait}", "Your chat is with our staff 🙏\n{wait}", [], ["wait"]),
   thanks: t("شكر / وداع", "العفو، حيّاك الله 🌟", "You're welcome 🌟"),
   stop: t("إيقاف العروض", "تم إيقاف رسائل العروض ✅ تحديثات طلباتك توصلك عادي.\nللرجوع اكتب: اشتراك", "Offer messages are stopped ✅ You will still get your order updates.\nTo resume, type: start"),
   start: t("رجوع الاشتراك", "تم تفعيل رسائل العروض ✅\nللإيقاف اكتب: إيقاف", "Offer messages are on ✅\nTo stop, type: stop"),
@@ -347,7 +354,9 @@ export function botConfig(settings) {
     logKeepDays: num(x.logKeepDays, 7, 730, DEFAULTS.logKeepDays),
     maxAgeMinutes: num(x.maxAgeMinutes, 1, 120, DEFAULTS.maxAgeMinutes),
     duplicateSeconds: num(x.duplicateSeconds, 0, 3600, DEFAULTS.duplicateSeconds),
-    maxRepliesPerHour: num(x.maxRepliesPerHour, 1, 30, DEFAULTS.maxRepliesPerHour),
+    maxRepliesPerHour: num(x.maxRepliesPerHour, 5, 300, DEFAULTS.maxRepliesPerHour),
+    maxTapsPerHour: num(x.maxTapsPerHour, 20, 1000, DEFAULTS.maxTapsPerHour),
+    maxRepliesPerMinute: num(x.maxRepliesPerMinute, 3, 30, DEFAULTS.maxRepliesPerMinute),
     orderLookbackHours: num(x.orderLookbackHours, 1, 336, DEFAULTS.orderLookbackHours),
     lateAfterMinutes: num(x.lateAfterMinutes, 20, 600, DEFAULTS.lateAfterMinutes),
     interactive: x.interactive !== false,
@@ -398,7 +407,7 @@ export function configFromBody(b, prev = {}) {
   delete out.humanWindowHours;      // اتلغى (١٢/١٠) — أي حفظ بينضّف المخزّن القديم
   for (const k of ["humanPauseMin", "staffWaitMin", "closedEchoPauseMin", "unknownWaitMin", "manualMuteHours", "handoffOpenHours", "freeRepliesPerMonth", "replyRateSar", "disclosureHours", "unknownHandoverAfter", "adWindowHours", "optinAnswerWindowMin",
     "offerEndWithinDays", "boxesCacheMin", "menuCacheMin", "offersCacheMin", "staleCacheMin", "logKeepDays",
-    "greetWindowHours", "maxAgeMinutes", "duplicateSeconds", "maxRepliesPerHour", "orderLookbackHours", "lateAfterMinutes", "maxAlertsPerHour"]) {
+    "greetWindowHours", "maxAgeMinutes", "duplicateSeconds", "maxRepliesPerHour", "maxTapsPerHour", "maxRepliesPerMinute", "orderLookbackHours", "lateAfterMinutes", "maxAlertsPerHour"]) {
     if (k in src) { if (Number.isFinite(Number(src[k])) && src[k] !== "" && src[k] !== null) out[k] = Number(src[k]); else errors.push(k); }
   }
   for (const k of ["interactive", "staffAlert", "alertInTest"]) if (k in src) out[k] = src[k] === true;
@@ -599,7 +608,9 @@ export const SCHEMA = Object.freeze({
   maxAlertsPerHour: S("alerts", "number", "أقصى تنبيهات في الساعة", "", { min: 1, max: 30, unit: "تنبيه" }),
   maxAgeMinutes: S("limits", "number", "عمر الرسالة الأقصى", "رسالة وصلت متأخر أكتر من كده مابيتردش عليها.", { min: 1, max: 120, unit: "دقيقة" }),
   duplicateSeconds: S("limits", "number", "عدم تكرار نفس الرد", "نفس الرد لنفس العميل مايتبعتش تاني خلال المدة دي.", { min: 0, max: 3600, unit: "ثانية" }),
-  maxRepliesPerHour: S("limits", "number", "أقصى ردود للعميل في الساعة", "عند الحد: تحويل لموظف وسكوت.", { min: 1, max: 30, unit: "رد" }),
+  maxRepliesPerHour: S("limits", "number", "أقصى ردود على رسايل مكتوبة في الساعة", "حارس حلقات. عند الحد: سطر واحد هادي، من غير تحويل لموظف، والبوت يرجع لوحده.", { min: 5, max: 300, unit: "رد" }),
+  maxTapsPerHour: S("limits", "number", "أقصى ردود على ضغطات القائمة في الساعة", "ضغطات الأزرار والقوايم بتتعدّ لوحدها عشان اللي بيتصفّح مايتقطعش.", { min: 20, max: 1000, unit: "رد" }),
+  maxRepliesPerMinute: S("limits", "number", "أقصى ردود في الدقيقة", "حلقة سريعة: البوت يهدّي دقيقة.", { min: 3, max: 30, unit: "رد" }),
   interactive: S("limits", "boolean", "أزرار وقوايم", "مقفول = نص عادي والرابط في آخره."),
   intentsOff: S("limits", "keys", "ردود مقفولة", "أي رد هنا بيتحوّل لموظف بدل ما البوت يجاوب."),
   orderLookbackHours: S("orders", "number", "«وين طلبي» بيدوّر في آخر", "طلبات رقم المرسل نفسه بس.", { min: 1, max: 336, unit: "ساعة" }),
@@ -854,8 +865,9 @@ export function buildReply(key, c) {
       return r;
     }
     case "complaint": return { body: order ? F("complaint_known", { order_no: order.order_no, wait: wait() }) : F("complaint_ask", { wait: wait() }) };
-    case "problem": case "change": case "human": case "staff": case "media": case "data_missing": case "rate":
+    case "problem": case "change": case "human": case "staff": case "media": case "data_missing": case "handoff_remind":
       return { body: F(key, { wait: wait() }) };
+    case "rate": case "rate_burst": return { body: T(key) };
     case "unknown": return { body: T("unknown"), buttons: [{ id: "bot:menu", title: T("btn_main") }, { id: "bot:status", title: T("btn_status") }, { id: "bot:human", title: T("btn_human") }] };
     case "thanks": case "stop": case "start": return { body: T(key) };
     default: throw new DataMissing(`key:${key}`);
@@ -1034,6 +1046,8 @@ export function pauseState({ cfg, now, open, lastEchoAt, hours }) {
   return { paused: until > now.getTime(), until, kind: "staff_pause" };
 }
 const FACTUAL_KEYS = new Set(["hours", "hoursloc", "location", "status", "thanks", "stop", "start", "optin_yes", "optin_no"]);
+/* أسئلة المنيو والأسعار والتوصيل: معلومات. بتتجاوب حتى والمحادثة عند الموظف — إلا لو التحويل شكوى/مشكلة (SERIOUS). */
+const MENU_KEYS = new Set(["main", "menu", "cats", "cat", "item", "items", "boxes", "tier", "box", "best", "spicy", "notmenu", "packs", "payment", "pickup", "delivery", "area"]);
 const SERIOUS = new Set(["complaint", "problem", "order_change", "order_late", "order_issue", "send_failed"]);
 const iso = (ms) => new Date(ms).toISOString();
 
@@ -1086,7 +1100,7 @@ export function decide(ev, ctx) {
   const staffTook = Boolean(hoReason && ctx.lastEchoAt && Date.parse(ctx.lastEchoAt) > hoAt);
   const ho = hoReason && !(staffTook && !SERIOUS.has(hoReason)) ? hoReason : null;
   const hoUntil = ho ? iso(hoAt + cfg.handoffOpenHours * 3600_000) : null;
-  const factual = Boolean(ho);
+  let factual = Boolean(ho);
   const escalates = Boolean(ho && HANDOFF_KEYS[key] && SERIOUS.has(HANDOFF_KEYS[key][0]) && !SERIOUS.has(ho));
   // «تمام/لا»: إجابة على سؤال الموافقة لو لسه مطروح، وإلا مفيش رد (العميل بيقفل الكلام)
   if (key === "ack" || key === "nack") {
@@ -1096,7 +1110,15 @@ export function decide(ev, ctx) {
     if (!pending) return silent("ack");
     key = key === "ack" ? "optin_yes" : "optin_no";
   }
-  if (factual && !FACTUAL_KEYS.has(key) && !escalates) return silent("handoff_open", { key, resumeAt: hoUntil, detail: ho });
+  if (factual && !FACTUAL_KEYS.has(key) && !escalates) {
+    if (!SERIOUS.has(ho) && MENU_KEYS.has(key)) factual = false;          // تحويل عادي: المنيو والأسعار بتتجاوب عادي
+    else {
+      /* العميل لسه بيكتب والمحادثة عند الموظف: نقول له مرة واحدة (بميعاد الفتح لو مقفول)، وبعدها سكوت. */
+      const reminded = chat.handoff_reminded_at && Date.parse(chat.handoff_reminded_at) >= hoAt;
+      if (reminded || optout) return silent("handoff_open", { key, resumeAt: hoUntil, detail: ho });
+      key = "handoff_remind";
+    }
+  }
 
   if (key === "greet") {
     const hasAd = Boolean(ev.referral) || Boolean(chat.referral_at && nowMs - Date.parse(chat.referral_at) < cfg.adWindowHours * 3600_000);
@@ -1107,11 +1129,22 @@ export function decide(ev, ctx) {
   }
   const wasUnknown = key === "unknown";
   if (key === "unknown" && Number(chat.unknown_streak) >= cfg.unknownHandoverAfter - 1) { key = "human"; handoff = ["not_understood_twice", "normal"]; }
-  if (!optout && ctx.repliesLastHour >= cfg.maxRepliesPerHour) return silent("rate_limited");
-  if (!optout && ctx.repliesLastHour === cfg.maxRepliesPerHour - 1 && !HANDOFF_KEYS[key]) { key = "rate"; handoff = ["rate_limit", "normal"]; }
+  /* حارس الحلقات: مش تحويل لموظف. طلب موظف/شكوى بيعدّوا دايماً. عند الحد: سطر هادي مرة واحدة في الساعة، وبعدها سكوت لحد ما المدة تعدّي. */
+  const rt = ctx.rate || { text: Number(ctx.repliesLastHour) || 0, taps: 0, minute: 0 };
+  if (!optout && !HANDOFF_KEYS[key] && key !== "handoff_remind") {
+    const isTap = Boolean(ev.interactiveId);
+    const cap = rt.minute >= cfg.maxRepliesPerMinute ? "burst" : (isTap ? rt.taps >= cfg.maxTapsPerHour : rt.text >= cfg.maxRepliesPerHour) ? "hour" : null;
+    if (cap) {
+      const oldest = cap === "burst" ? rt.oldestMinute : isTap ? rt.oldestTap : rt.oldestText;
+      const resume = (oldest ? Date.parse(oldest) : nowMs) + (cap === "burst" ? 60_000 : 3600_000);
+      const toldAt = cap === "burst" ? rt.burstAt : rt.rateAt;
+      if (toldAt && nowMs - Date.parse(toldAt) < 3600_000) return silent("rate_limited", { key, resumeAt: iso(resume), detail: cap === "burst" ? "minute" : isTap ? "taps" : "hour" });
+      key = cap === "burst" ? "rate_burst" : "rate";
+    }
+  }
   if (ctx.lastSame && ctx.lastSame.key === key && key !== "status" && nowMs - Date.parse(ctx.lastSame.at) < cfg.duplicateSeconds * 1000) return silent("duplicate", { key });
   // ٥) في الدوام: الغير مفهوم يستنى الموظف قبل القائمة. مقفول: فوراً.
-  if (wasUnknown && key !== "rate" && open !== false && !ctx.afterWait && cfg.unknownWaitMin > 0) {
+  if (wasUnknown && key !== "rate" && key !== "rate_burst" && open !== false && !ctx.afterWait && cfg.unknownWaitMin > 0) {
     const due = nowMs + cfg.unknownWaitMin * 60_000;
     return { act: "wait", waitKind: "unknown_wait", dueAt: iso(due), resumeAt: iso(due), reason: "unknown_wait", ...base };
   }
@@ -1232,6 +1265,7 @@ export function register(app, ctx, deps = {}) {
       -- ١٢/١٠: سؤال الموافقة على تحديثات الطلب (مرة كل فترة) + إثبات الإجابة بنص السؤال اللي اتعرض
       ALTER TABLE wa_bot_chats ADD COLUMN IF NOT EXISTS optin_asked_at TIMESTAMPTZ;
       ALTER TABLE wa_bot_chats ADD COLUMN IF NOT EXISTS optin_answered_at TIMESTAMPTZ;
+      ALTER TABLE wa_bot_chats ADD COLUMN IF NOT EXISTS handoff_reminded_at TIMESTAMPTZ;
       CREATE TABLE IF NOT EXISTS wa_optin_proofs (
         id BIGSERIAL PRIMARY KEY,
         phone_norm TEXT NOT NULL, kind TEXT NOT NULL,        -- updates (تحديثات الطلب). التسويق سؤال منفصل لاحقاً.
@@ -1350,12 +1384,19 @@ export function register(app, ctx, deps = {}) {
   const isoOf = (v) => (v ? new Date(v).toISOString() : null);
   const argOf = (a) => (a == null ? "" : typeof a === "string" ? a : JSON.stringify(a)).slice(0, 120);
   async function recent(phone, key, arg = null) {
-    const r = await q(`SELECT count(*) FILTER (WHERE decision IN ('replied','dry') AND at > NOW() - INTERVAL '1 hour')::int AS n,
+    /* الإشعارات نفسها (rate / rate_burst / handoff_remind) مابتتعدّش. ضغطات القائمة (msg_type=interactive) بتتعدّ لوحدها. */
+    const NOT_NOTICE = `COALESCE(reply_key,'') NOT IN ('rate','rate_burst','handoff_remind')`, OKD = `decision IN ('replied','dry')`, TAP = `COALESCE(msg_type,'') = 'interactive'`;
+    const r = await q(`SELECT count(*) FILTER (WHERE ${OKD} AND ${NOT_NOTICE} AND NOT ${TAP})::int AS n_text, min(at) FILTER (WHERE ${OKD} AND ${NOT_NOTICE} AND NOT ${TAP}) AS oldest_text,
+                              count(*) FILTER (WHERE ${OKD} AND ${NOT_NOTICE} AND ${TAP})::int AS n_tap, min(at) FILTER (WHERE ${OKD} AND ${NOT_NOTICE} AND ${TAP}) AS oldest_tap,
+                              count(*) FILTER (WHERE ${OKD} AND ${NOT_NOTICE} AND at > NOW() - INTERVAL '1 minute')::int AS n_min, min(at) FILTER (WHERE ${OKD} AND ${NOT_NOTICE} AND at > NOW() - INTERVAL '1 minute') AS oldest_min,
+                              max(at) FILTER (WHERE ${OKD} AND reply_key='rate') AS rate_at, max(at) FILTER (WHERE ${OKD} AND reply_key='rate_burst') AS burst_at,
+                              count(*) FILTER (WHERE decision IN ('replied','dry') AND at > NOW() - INTERVAL '1 hour')::int AS n,
                               max(at) FILTER (WHERE decision IN ('replied','dry') AND reply_key=$2 AND COALESCE(reply_arg,'')=$3) AS same_at,
                               max(at) FILTER (WHERE decision='failed' AND error NOT LIKE 'skipped:%' AND at > NOW() - INTERVAL '10 minutes') AS failed_at
                          FROM wa_bot_log WHERE phone_norm=$1 AND at > NOW() - INTERVAL '1 hour'`, [phone, key, argOf(arg)]);
     const x = (r && r[0]) || {};
-    return { n: Number(x.n) || 0, lastSame: x.same_at ? { key, at: isoOf(x.same_at) } : null, failedRecently: Boolean(x.failed_at) };
+    const at = (v) => (v ? isoOf(v) : null);
+    return { n: Number(x.n) || 0, rate: { text: Number(x.n_text) || 0, taps: Number(x.n_tap) || 0, minute: Number(x.n_min) || 0, oldestText: at(x.oldest_text), oldestTap: at(x.oldest_tap), oldestMinute: at(x.oldest_min), rateAt: at(x.rate_at), burstAt: at(x.burst_at) }, lastSame: x.same_at ? { key, at: isoOf(x.same_at) } : null, failedRecently: Boolean(x.failed_at) };
   }
   /* آخر رسالة بعتها الموظف من موبايل المطعم للعميل ده (صدى) — بالثانية، مش «فيه/مافيش» */
   async function lastEcho(phone) {
@@ -1455,7 +1496,7 @@ export function register(app, ctx, deps = {}) {
         data = { settings, now, bundles: [], policy: null, first: null, loyalty: null, order: null, orderDbFailed: true, links: {}, open: null };
       }
       data.chat = chat;
-      const d = decide(ev, { cfg, now, chat, lastEchoAt: echoAt, repliesLastHour: rc.n, lastSame: rc.lastSame, failedRecently: rc.failedRecently, data, cls, afterWait });
+      const d = decide(ev, { cfg, now, chat, lastEchoAt: echoAt, repliesLastHour: rc.n, rate: rc.rate, lastSame: rc.lastSame, failedRecently: rc.failedRecently, data, cls, afterWait });
 
       // «إيقاف/اشتراك» بصياغة أوسع من اللي whatsapp.js بيمسكها ⇒ نطبّقها هنا (حتى لو هنسكت)
       if (d.optout && !ev.intent && !afterWait && typeof wa.applyIntent === "function") { try { await wa.applyIntent(phone, d.optout); } catch (e) { console.error("[wabot] optout:", e.message); } }
@@ -1502,6 +1543,7 @@ export function register(app, ctx, deps = {}) {
                    last_disclosed_at = CASE WHEN $5 THEN NOW() ELSE wa_bot_chats.last_disclosed_at END,
                    last_key = $4, last_key_at = NOW(), updated_at = NOW()`, [phone, d.greet === true, d.unknown === true, d.key, d.disclose === true]);
         if (askSent) await q("UPDATE wa_bot_chats SET optin_asked_at=NOW() WHERE phone_norm=$1", [phone]);
+        if (d.key === "handoff_remind") await q("UPDATE wa_bot_chats SET handoff_reminded_at=NOW() WHERE phone_norm=$1", [phone]);
         /* إجابة سؤال الموافقة: «نعم» ⇒ wa_optins.updates (نفس الجدول اللي الشيك أوت بيكتب فيه) + إثبات بنص السؤال والوقت.
            التسويق مابيتلمسش هنا — سؤال منفصل وصريح بعدين. dry: مفيش حاجة بتتسجّل (محدش اتسأل فعلاً). */
         if (d.optinAnswer && cfg.mode !== "dry") {
