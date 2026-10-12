@@ -957,8 +957,11 @@ export function register(app, ctx, deps = {}) {
   app.post("/api/wa/optin", async (c) => {
     let b = {};
     try { b = await c.req.json(); } catch { return c.json({ ok: false, error: "bad json" }, 400); }
-    // التسويق مايتفعّلش من طلب مجهول — بس تحديثات الطلب أو الإلغاء.
-    const r = await recordOptIn({ phone: b.phone, updates: typeof b.updates === "boolean" ? b.updates : undefined,
+    /* WO (١٢/١٠): المسار ده عام ومن غير تحقق — أي حد كان يقدر يبعت رقم أي حد بـupdates:true ويسجّل «موافقة».
+       دلوقتي بيقبل **الإلغاء بس** (updates:false / marketing:false). الموافقة بتتسجّل من رقم متحقق بالـOTP:
+       POST /api/account/wa-updates أو مع الشيك أوت (waconsent.js). */
+    if (b.updates === true || b.marketing === true) return c.json({ ok: false, error: "optin_needs_verified_phone" }, 403);
+    const r = await recordOptIn({ phone: b.phone, updates: b.updates === false ? false : undefined,
       marketing: b.marketing === false ? false : undefined, source: "storefront" });
     return c.json(r, r.ok ? 200 : 400);
   });

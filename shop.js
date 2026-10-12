@@ -52,6 +52,7 @@ import {
 import { resumeKey } from "./resume-key.js";
 import { freeBarCfg } from "./freebar.js";
 import { evaluateCoupon, couponQueries, isPureFreeDelivery, nonDeliveryCoupon } from "./couponrules.js";
+import { parseWaUpdates, recordWaUpdates } from "./waconsent.js";
 import { recordCheckoutConsent } from "./consent.js";
 import { makeNameResolver } from "./product-names.js";
 import { tableSessionForCheckout, tableGate, touchTableSession, tableCfg, tableBusy, TABLE_MSG, posOptionOf, tableNote, tableWho, tableTrackLabel, cleanCustomerText } from "./table-order.js";
@@ -1329,11 +1330,18 @@ export function register(app, ctx, deps = {}) {
     }
     // موافقة واتساب من الشيك أوت («وصّلني تحديثات الطلب على واتساب») — fire-and-forget.
     // بتتسجّل بس لو المتجر بعت الحقل صراحةً؛ غيابه مايغيّرش موافقة قديمة.
-    if (wa() && (typeof b.waUpdates === "boolean" || typeof b.waMarketing === "boolean")) {
-      Promise.resolve().then(() => wa().recordOptIn({ phone: phoneNorm,
-        updates: typeof b.waUpdates === "boolean" ? b.waUpdates : undefined,
-        marketing: typeof b.waMarketing === "boolean" ? b.waMarketing : undefined,
-        source: "checkout", orderNo }))
+    /* WO (١٢/١٠): «تحديثات الطلب» بتتسجّل بإثباتها (الوقت + نسخة النص + النص + المصدر + الطلب + IP/UA) في
+       waconsent.js، وبس لو المتجر بعت اختيار العميل الفعلي مع نسخة نص معروفة (waUpdates boolean + waUpdatesVersion).
+       من غير نسخة معروفة مايتسجّلش حاجة — الموافقة مابتتخمّنش. الرقم هنا متحقق بالـOTP. */
+    const waAnswer = parseWaUpdates({ updates: b.waUpdates, version: b.waUpdatesVersion, source: b.waUpdatesSource || "checkout" });
+    if (waAnswer) {
+      recordWaUpdates(pool, { phoneNorm, answer: waAnswer, orderNo,
+        ip: c.req.header("cf-connecting-ip") || null, ua: c.req.header("user-agent") || null })
+        .catch((e) => console.error(`[shop] ${orderNo}: wa updates consent save failed: ${e.message}`));
+    }
+    // موافقة تسويق واتساب (لو المتجر بعتها صراحةً) — مسار قديم زي ما هو، مالوش علاقة بتحديثات الطلب
+    if (wa() && typeof b.waMarketing === "boolean") {
+      Promise.resolve().then(() => wa().recordOptIn({ phone: phoneNorm, marketing: b.waMarketing, source: "checkout", orderNo }))
         .catch((e) => console.error(`[shop] ${orderNo}: wa opt-in save failed: ${e.message}`));
     }
     // مفتاح الاستكمال/التتبع (٠٣ A3/A9) — null لو SHOP_RESUME_SECRET مش متظبط

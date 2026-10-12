@@ -107,6 +107,7 @@ import * as ttcatalog from "./ttcatalog.js";
 import * as growthnow from "./growthnow.js";
 import * as readiness from "./readiness.js";
 import * as consent from "./consent.js";
+import * as waconsent from "./waconsent.js";
 import * as settingsGuard from "./settings-guard.js";
 import { cashierPinOf } from "./portal-core.js";
 
@@ -3165,6 +3166,8 @@ recs.register(app, moduleCtx);
 // في دفتر عملاء TabSense (الموجود يتربط، الجديد بس هو اللي يتعمل).
 let posNamesApi = null;
 accountsApi = accounts.register(app, moduleCtx, { posNames: () => posNamesApi });
+// WO (١٢/١٠): موافقة «تحديثات الطلب على واتساب» — اختيار العميل برقم متحقق (جلسة الحساب)، تسجيل بس من غير أي إرسال
+waconsent.register(app, moduleCtx, { customerOf: (c) => accountsApi.customerOf(c) });
 const tspApi = tspartner.register(app, moduleCtx);
 /* إضافات الأصناف — لازم بعد tspartner لأنها بتقرا كتالوج الشريك منه
    (القائمة الرقمية اللي المتجر بيقرا منها مفيهاش إضافات خالص). */
