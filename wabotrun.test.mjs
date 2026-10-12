@@ -199,11 +199,12 @@ function world({ waBot = {}, notifications = { whatsappEnabled: true }, orders =
   const app = { routes, get: add("GET"), post: add("POST"), put: add("PUT"), delete: add("DELETE"),
     request: async () => ({ ok: bundles !== null, status: bundles === null ? 500 : 200, json: async () => ({ ok: true, bundles }) }) };
   let owner = true;
+  const actor = { who: { id: 7, username: "omar", name: "عمر", role: "owner" } };
   const ctx = { pool, requireAdmin: async () => null, getSettingsData: async () => JSON.parse(JSON.stringify(db.settings)), jb: (x) => JSON.stringify(x),
-    normPhone: (x) => String(x || "").replace(/\D/g, "").replace(/^966/, "").replace(/^0/, ""), isOwner: () => owner, whoami: async () => ({ name: "عمر", role: "owner" }) };
+    normPhone: (x) => String(x || "").replace(/\D/g, "").replace(/^966/, "").replace(/^0/, ""), isOwner: () => owner };
   const wa = W.register(app, ctx, { fetch, sendSms: async () => ({ ok: true }) });
   const sms = [];
-  const bot = R.register(app, ctx, { app, wa, now: clock.now, noTimer: true, sendSms: async (x) => { sms.push(x); return { ok: true }; },
+  const bot = R.register(app, ctx, { app, wa, now: clock.now, noTimer: true, whoami: async () => actor.who, sendSms: async (x) => { sms.push(x); return { ok: true }; },
     fetchMenuPages: async () => { if (pages === null) throw new Error("menu down"); return pages; }, quote: async (lat, lng) => (typeof quote === "function" ? quote(lat, lng) : quote), llm,
     fetchOffers: async () => { if (offers === null) throw new Error("offers down"); return offers; } });
   let seq = 0;
@@ -223,7 +224,7 @@ function world({ waBot = {}, notifications = { whatsappEnabled: true }, orders =
   const call = async (method, path, json = {}, query = {}) => routes[`${method} ${path}`]({ req: { json: async () => json, query: (k) => query[k], header: () => undefined, text: async () => "" }, json: (body, status = 200) => ({ body, status }) });
   /* وقت الرد المؤجّل: نقدّم الساعة ونشغّل دورة الردود المؤجّلة؛ بيرجّع اللي اتبعت فيها */
   const tick = async (min = 0) => { clock.advance(min); const before = calls.length; await bot.runDueJobs(); return calls.slice(before).map((c) => c.body); };
-  return { db, clock, calls, sms, say, press, cashier, call, wa, bot, tick, setOwner: (v) => { owner = v; }, setMode: (m) => { db.settings.waBot = { ...db.settings.waBot, mode: m }; } };
+  return { db, clock, calls, sms, say, press, cashier, call, wa, bot, tick, setOwner: (v) => { owner = v; }, setActor: (v) => { actor.who = v; }, setMode: (m) => { db.settings.waBot = { ...db.settings.waBot, mode: m }; } };
 }
 const cta = (to, body, title, url) => ({ messaging_product: "whatsapp", recipient_type: "individual", to, type: "interactive",
   interactive: { type: "cta_url", body: { text: body }, footer: { text: FOOTER }, action: { name: "cta_url", parameters: { display_text: title, url } } } });
@@ -1504,7 +1505,13 @@ test("settings are complete: every tunable has a schema row (type, limits, defau
   assert.equal((await w.call("PUT", "/api/cms/wabot/config", { humanPauseMin: 45, llm: { budgetDaySar: 2 } })).status, 200);
   assert.equal((await w.call("PUT", "/api/cms/wabot/config", { humanPauseMin: 45 })).status, 200);
   assert.equal(w.db.cfgLog.length, 1, "a save that changes nothing adds no row");
-  assert.equal(w.db.cfgLog[0].who, "عمر");
+  assert.equal(w.db.cfgLog[0].who, "عمر (owner)", "a dashboard user: name and role");
+  w.setActor({ id: 0, username: "admin", name: "المالك", role: "owner", adminKey: true });
+  await w.call("PUT", "/api/cms/wabot/config", { humanPauseMin: 46 });
+  assert.equal(w.db.cfgLog[1].who, "owner token", "a script or agent using the owner token is named as such (the live row of 12/10 02:54Z had who: null)");
+  w.setActor(null); await w.call("PUT", "/api/cms/wabot/config", { humanPauseMin: 45 });
+  assert.equal(w.db.cfgLog[2].who, "unknown", "never empty");
+  w.db.cfgLog.splice(1); w.setActor({ name: "عمر", role: "owner" });
   assert.deepEqual(w.db.cfgLog[0].changes.map((x) => [x.path, x.to]).filter((x) => ["humanPauseMin", "llm.budgetDaySar"].includes(x[0])), [["humanPauseMin", 45], ["llm.budgetDaySar", 2]]);
   assert.equal((await w.call("PUT", "/api/cms/wabot/config", { humanPauseMin: 100000 })).status, 400);
   assert.equal(w.db.cfgLog.length, 1);

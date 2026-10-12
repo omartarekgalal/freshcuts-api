@@ -1345,6 +1345,17 @@ export function register(app, ctx, deps = {}) {
       .map((o) => ({ id: String(o.id), title: String(o.title || ""), price: Number(o.price) || 0, from: o.from || null, until: o.until || null }));
   }
   const quoteAt = deps.quote || (async (lat, lng) => { const r = await self.request(`/api/delivery/quote?lat=${encodeURIComponent(lat)}&lng=${encodeURIComponent(lng)}`); return r.ok ? r.json() : null; });
+  /* مين اللي عمل التعديل (لسجل الإعدادات والكتم): مستخدم اللوحة باسمه ودوره، أو «owner token» لو الطلب جه بمفتاح المالك (سكربت/وكيل).
+     مفيش هوية معروفة ⇒ "unknown" (مش فاضي): السجل دايماً بيقول مين. */
+  const whoami = deps.whoami || ctx.whoami || null;
+  async function actorOf(c) {
+    try {
+      const u = whoami ? await whoami(c) : null;
+      if (u && typeof u === "object") return u.adminKey ? "owner token" : `${String(u.name || u.username || "user").slice(0, 40)} (${String(u.role || "?").slice(0, 20)})`;
+      if (u) return String(u).slice(0, 60);
+    } catch (e) { console.error("[wabot] whoami:", e.message); }
+    return "unknown";
+  }
   const llm = deps.llm || null;      // wabotllm.classify — تصنيف بس
   const aicost = makeAiCost({ pool, sendSms: deps.sendSms || null, now: deps.now || (() => new Date()) });   // كل نداء للموديل بيتسجّل بتكلفته + السقف
   const q = async (sql, params) => { try { return (await pool.query(sql, params)).rows; } catch (e) { console.error("[wabot] db:", e.message); return null; } };
@@ -1660,8 +1671,7 @@ export function register(app, ctx, deps = {}) {
     if (!v.ok) return c.json({ ok: false, error: "invalid", errors: v.errors }, 400);
     await pool.query("UPDATE settings SET data = jsonb_set(COALESCE(data,'{}'::jsonb), '{waBot}', $1::jsonb, true), updated_at=NOW() WHERE id=1", [JSON.stringify(v.value)]);
     /* مين غيّر إيه: كل حفظ صف بالفرق (من ← إلى) واسم اللي حفظ */
-    { const changes = configDiff(prev, v.value); if (changes.length) { let who = null; try { who = ctx.whoami ? await ctx.whoami(c) : null; } catch { /* مجهول */ }
-      await q("INSERT INTO wa_bot_config_log(who, changes) VALUES ($1, $2::jsonb)", [who && typeof who === "object" ? String(who.name || who.username || who.role || "") || null : who ? String(who) : null, JSON.stringify(changes)]); } }
+    { const changes = configDiff(prev, v.value); if (changes.length) await q("INSERT INTO wa_bot_config_log(who, changes) VALUES ($1, $2::jsonb)", [await actorOf(c), JSON.stringify(changes)]); }
     if (ctx.auditNote) { try { await ctx.auditNote(c, `🤖 بوت واتساب: ${prev.mode || "off"} → ${v.value.mode || "off"}${"testPhones" in (b || {}) ? ` · أرقام التجربة ${(v.value.testPhones || []).length}` : ""}`); } catch { /* سجل النشاط اختياري */ } }
     return c.json({ ok: true, config: botConfig({ waBot: v.value }) });
   });
@@ -1761,14 +1771,14 @@ export function register(app, ctx, deps = {}) {
       handoff_open: Boolean(r.handoff_at && now - new Date(r.handoff_at).getTime() < cfg.handoffOpenHours * 3600_000),
       handoff_until: r.handoff_at ? new Date(new Date(r.handoff_at).getTime() + cfg.handoffOpenHours * 3600_000).toISOString() : null }));
   }
-  const whoOf = (c) => { try { return (ctx.whoami && ctx.whoami(c)) || null; } catch { return null; } };
+
   async function muteRoute(c) {
     const err = await requireAdmin(c); if (err) return err;
     let b = {}; try { b = await c.req.json(); } catch { /* الكل */ }
     const phone = normPh(b.phone);
     if (!/^5\d{8}$/.test(phone)) return c.json({ ok: false, error: "bad_phone", message: "اكتب جوال سعودي 05XXXXXXXX" }, 400);
     const cfg = botConfig((await getSettingsData()) || {});
-    const r = await muteChat(phone, b.hours || cfg.manualMuteHours, b.by || whoOf(c) || "dashboard");
+    const r = await muteChat(phone, b.hours || cfg.manualMuteHours, b.by || (await actorOf(c)));
     if (ctx.auditNote) { try { await ctx.auditNote(c, `🤖 كتم بوت واتساب في محادثة 0${phone} لمدة ${r.hours} ساعة`); } catch { /* اختياري */ } }
     return c.json({ ...r, phone: `0${phone}` });
   }
