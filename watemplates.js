@@ -113,6 +113,9 @@ const MKT = { footer: OPTOUT_FOOTER };
 /* FR1: زر الرد في الإطارات + نسخة الإنجليزي. «STOP» كلمة الإيقاف اللي الويب هوك بيفهمها (STOP_RE). */
 export const ORDER_BUTTON = "أبغى أطلب";
 export const ORDER_BUTTON_EN = "I want to order";
+/* RF1 (١٤/١٠): زر الرد «ورّني المنيو» في إطارات «الرد أولاً» — البوت والمساعد بيفهموه «المنيو» (wabotrun classify ⇒ cats) */
+export const MENU_BUTTON = "ورّني المنيو";
+export const MENU_BUTTON_EN = "Show me the menu";
 export const OPTOUT_FOOTER_EN = "To stop, reply: STOP";
 export const OPTOUT_BUTTON_EN = "STOP";
 const V = (path, label, ex, fmt) => ({ path, label, ex, ...(fmt ? { fmt } : {}) });
@@ -141,6 +144,21 @@ const FRAMES_DEF = [
     vars: [V("offer.title", "العنوان", "بوكسات فردية"), V("offer.line", "التفاصيل (سطر واحد)", "كريب أو برجر أو باستا أو حواوشي أو وجبة مشاوي مع صنف جانبي ومشروب، من 29 ر.س")],
     varsEn: [V("offer.title", "Title", "Solo boxes"), V("offer.line", "Details (one line)", "crepe, burger, pasta, hawawshi or a grill meal with a side and a drink, from 29 SAR")],
     notes: "من غير صورة أو من غير سعر." },
+];
+
+const ASK_CLOSE_AR = "تبي نجهز لك الطلب هنا؟ اضغط الزر وكمّل معنا في المحادثة.";
+const ASK_CLOSE_EN = "Want us to prepare your order here? Tap a button and continue with us in this chat.";
+const ASK_FRAMES_DEF = [
+  { name: "fc_frame_ask_video", header: { video: true }, purpose: "إطار فيديو — الرد أولاً (من غير رابط)",
+    ar: `من فريش كاتس 🎬\n{{1}}: {{2}}.\n${ASK_CLOSE_AR}`, en: `From Fresh Cuts 🎬\n{{1}}: {{2}}.\n${ASK_CLOSE_EN}`,
+    vars: [V("offer.title", "العنوان", "بوكس التشكيلة"), V("offer.line", "التفاصيل (سطر واحد — السعر وآخر يوم بيتكتبوا هنا لو موجودين)", "مشاوي على الفحم مع بيتزا وباستا وأصناف جانبية ومشروبات، بـ105 ر.س")],
+    varsEn: [V("offer.title", "Title", "Taste-it-all box"), V("offer.line", "Details (one line)", "charcoal grills with pizza, pasta, sides and drinks, for 105 SAR")],
+    notes: "الفيديو mp4 لحد ١٦ ميجا من مخزن الوسائط بتاعنا. مفيش زر رابط: العميل بيرد والمساعد يكمّل. لا نكتب عدد أشخاص لصنف بالوزن ولا مقارنة بالتطبيقات." },
+  { name: "fc_frame_ask_text", header: null, purpose: "إطار نص — الرد أولاً (من غير رابط)",
+    ar: `جديد من فريش كاتس 👋\n{{1}}: {{2}}.\n${ASK_CLOSE_AR}`, en: `New from Fresh Cuts 👋\n{{1}}: {{2}}.\n${ASK_CLOSE_EN}`,
+    vars: [V("offer.title", "العنوان", "بوكسات فردية"), V("offer.line", "التفاصيل (سطر واحد)", "كريب أو برجر أو باستا أو حواوشي أو وجبة مشاوي مع صنف جانبي ومشروب، من 29 ر.س")],
+    varsEn: [V("offer.title", "Title", "Solo boxes"), V("offer.line", "Details (one line)", "crepe, burger, pasta, hawawshi or a grill meal with a side and a drink, from 29 SAR")],
+    notes: "من غير صورة ولا فيديو. مفيش زر رابط: العميل بيرد والمساعد يكمّل." },
 ];
 
 export const TEMPLATES = [
@@ -492,6 +510,19 @@ export const TEMPLATES = [
       meta: { purpose: `${f.purpose} (English)`, trigger: "مكتبة عروض واتساب ← حملة", send: "manual", fallbackSms: null, notes: f.notes } }),
   ]),
 
+  /* RF1 (١٤/١٠ — ملاحظة عمر على أول موجة: «لازم نخلي العميل يبدأ يتكلم معانا»): إطارات «الرد أولاً».
+     الفعل الأساسي = رد (بيفتح نافذة الـ٢٤ ساعة المجانية والمساعد يكمّل البيع في المحادثة) مش رابط: **مفيش زر رابط خالص** — ٣ أزرار رد سريع بس:
+     «أبغى أطلب» · «ورّني المنيو» · «إيقاف». نفس متغيّرات إطار الفيديو/الخبر المعتمدين ({{1}} العنوان، {{2}} التفاصيل)، سطر افتتاح ثابت وسؤال ختام ثابت.
+     قابلة للتقديم (مش HOLD). */
+  ...ASK_FRAMES_DEF.flatMap((f) => [
+    T({ name: f.name, category: "MARKETING", group: "marketing", ...MKT, header: f.header, body: f.ar, vars: f.vars,
+      buttons: [qr(ORDER_BUTTON), qr(MENU_BUTTON), qr(OPTOUT_BUTTON)],
+      meta: { purpose: f.purpose, trigger: "مكتبة عروض واتساب ← حملة (الرد أولاً)", send: "manual", fallbackSms: null, replyFirst: true, notes: f.notes } }),
+    T({ name: f.name, category: "MARKETING", group: "marketing", language: "en", footer: OPTOUT_FOOTER_EN, header: f.header, body: f.en, vars: f.varsEn,
+      buttons: [qr(ORDER_BUTTON_EN), qr(MENU_BUTTON_EN), qr(OPTOUT_BUTTON_EN)],
+      meta: { purpose: `${f.purpose} (English)`, trigger: "مكتبة عروض واتساب ← حملة (الرد أولاً)", send: "manual", fallbackSms: null, replyFirst: true, notes: f.notes } }),
+  ]),
+
   T({ name: "fc_cart_1h", category: "MARKETING", group: "marketing", ...MKT,
     body: "سلتك في فريش كاتس محفوظة 🛒\nكمّل طلبك بضغطة من الرابط، ولو عندك سؤال ردّ علينا هنا.",
     buttons: [CART(), qr(OPTOUT_BUTTON)],
@@ -607,9 +638,12 @@ export const SUBMIT_BATCHES = Object.freeze([
   ["fc_payment_failed", "fc_feedback_received", "fc_loyalty_status", "fc_staff_payment_alert", "fc_staff_day_report", "fc_open_notice"],
   // FR1 (١٣/١٠): إطارات العروض — النصي الأول (مافيهوش رفع)، وبعده الصور، وآخرهم الفيديو. كل اسم = عربي + إنجليزي
   ["fc_frame_news_text", "fc_frame_offer_img", "fc_frame_limited_img", "fc_frame_video"],
+  // RF1 (١٤/١٠): إطارات «الرد أولاً» — النصي الأول (مافيهوش رفع) وبعده الفيديو. كل اسم = عربي + إنجليزي
+  ["fc_frame_ask_text", "fc_frame_ask_video"],
 ]);
 export const RECOMMENDED_FIRST = SUBMIT_BATCHES[0];
-export const FRAME_BATCH = SUBMIT_BATCHES[SUBMIT_BATCHES.length - 1];      // FR1: دفعة الإطارات
+export const FRAME_BATCH = SUBMIT_BATCHES.find((b) => b.includes("fc_frame_news_text"));      // FR1: دفعة الإطارات (بالرابط)
+export const ASK_FRAME_BATCH = SUBMIT_BATCHES.find((b) => b.includes("fc_frame_ask_text"));   // RF1: دفعة «الرد أولاً»
 
 /* الفئة الفعلية عند ميتا لما تختلف عن فئتنا (ميتا غيّرتها وقت الاعتماد — previous_category=UTILITY، قراءة ١٢/١٠ 03:46).
    المفتاح name:language. القوالب دي تتحاسب بسعر التسويق وتترفض للي وقّف «العروض» ⇒ **لا تتربط بمُرسل** لحد ما مراجعة ميتا

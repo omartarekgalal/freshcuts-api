@@ -368,7 +368,7 @@ test("LK1 حملة برابط بوكس: الرابط بيتخزّن «box» به
   const BOX = { ...WEEKEND, link: { target_type: "box", target_id: "taste-it-all" } };
   const w = world();
   const pv = await call(w.app, "POST /api/cms/wa-sender/preview", { json: BOX, auth: MK });
-  assert.deepEqual(pv.body.link, { slug: null, targetType: "box", targetId: "taste-it-all", url: "freshcuts.sa/l/w…-xxxxxx", opens: "https://freshcuts.sa/?go=offers&box=taste-it-all", coupon: null });
+  assert.deepEqual(pv.body.link, { slug: null, targetType: "box", targetId: "taste-it-all", url: "freshcuts.sa/l/w…-xxxxxx", opens: "https://freshcuts.sa/?go=offers&box=taste-it-all", coupon: null, button: true });
   assert.deepEqual(pv.body.problems, []);
   const ok = await call(w.app, "POST /api/cms/wa-sender/jobs", { json: { ...BOX, name: "بوكس التشكيلة" }, auth: OWNER });
   assert.equal(ok.status, 200, JSON.stringify(ok.body));

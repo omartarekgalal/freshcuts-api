@@ -580,6 +580,7 @@ export function register(app, ctx, deps = {}) {
               count(q.*) FILTER (WHERE q.replied_at IS NOT NULL)::int AS replied,
               count(q.*) FILTER (WHERE q.optout_at IS NOT NULL)::int AS optouts,
               count(q.*) FILTER (WHERE q.clicks > 0)::int AS clickers,
+              COALESCE(sum(q.clicks), 0)::int AS recipient_clicks,
               count(q.*) FILTER (WHERE q.cloud_status IN ('delivered','read'))::int AS delivered,
               count(q.*) FILTER (WHERE q.cloud_status = 'read')::int AS read_n,
               count(q.*) FILTER (WHERE q.channel = 'wa_cloud' AND q.status IN ('sent','failed'))::int AS cloud_sent,
@@ -696,7 +697,9 @@ export function register(app, ctx, deps = {}) {
     }
     /* LK1: الزر هيفتح إيه — النوع والهدف وشكل رابط الهبوط، عشان المالك يشوفه قبل البدء */
     const linkView = { slug: input.link.slug || null, targetType: input.link.target_type, targetId: input.link.target_id,
-      url: recipientLink(host, slug, "xxxxxx"), opens: `${host}${linkTargetPath(input.link)}`, coupon: input.link.coupon || null };
+      url: recipientLink(host, slug, "xxxxxx"), opens: `${host}${linkTargetPath(input.link)}`, coupon: input.link.coupon || null,
+      /* RF1: القالب فيه زر رابط أصلاً؟ إطارات «الرد أولاً» مافيهاش — الرابط بيتعمل للحملة بس مش بيظهر للعميل */
+      button: input.channel === "wa_cloud" ? Boolean(campaignSpec(input.cloudTemplate) && campaignSpec(input.cloudTemplate).button) : true };
     return c.json({ ok: true, ...cloudExtra, link: linkView, audience: r.audience, inAudience: r.inAudience, afterFilters: r.afterFilters,
       excluded: r.excluded, eligible: r.eligible, willQueue: r.picked.length, holdoutEst: hold, estDays: days, sample,
       customTemplate: Boolean(input.template), template: tpl, footer: r.cfg.footer, channel: input.channel,
@@ -970,6 +973,12 @@ export function register(app, ctx, deps = {}) {
       pending: count((x) => ["pending", "sending"].includes(x.status)),
       replies: count((x) => x.replied_at), optouts: count((x) => x.optout_at),
       clicks: linkRow ? Number(linkRow.clicks) : null, clickers: count((x) => Number(x.clicks) > 0),
+      /* RF1 (١٤/١٠) — الضغطات بصدق: زر القالب بيفتح رابط **العميل نفسه** (‎/l/<slug>-<code>‎)، فضغطة المستلم بتتسجّل على صفّه.
+         recipientClicks = مجموع ضغطات المستلمين · otherClicks = ضغطات على الرابط العام من غير كود (تجربة المالك، مشاركة، فتح يدوي) — مش مستلمين.
+         (جلب المعاينة والزواحف — واتساب/ميتا — مابيتعدّوش أصلاً: botfilter.js.) linkButton=false ⇒ القالب مافيهوش زر رابط («الرد أولاً»). */
+      recipientClicks: rows.reduce((a, x) => a + (Number(x.clicks) || 0), 0),
+      otherClicks: linkRow ? Math.max(0, Number(linkRow.clicks) - rows.reduce((a, x) => a + (Number(x.clicks) || 0), 0)) : null,
+      linkButton: job.channel === "wa_cloud" ? Boolean(campaignSpec(job.cloud_template) && campaignSpec(job.cloud_template).button) : true,
       images: count((x) => x.media === "image"), imageFallbacks: count((x) => x.status === "sent" && x.media === "text" && job.image_url),
       channel: job.channel || "wa_web", cloudTemplate: job.cloud_template || null, fallback: job.fallback || "none",
       cloud: cloudStats(rows), stopReason: job.stop_reason || null, spendCapSar: job.spend_cap_sar != null ? Number(job.spend_cap_sar) : null,
@@ -1339,6 +1348,26 @@ export function register(app, ctx, deps = {}) {
   }
   const saveWarmup = (w) => pool.query("UPDATE wa_sender_state SET warmup=$1::jsonb WHERE id=2", [J(w)]);
 
+  /* RF1 (١٤/١٠): صف الطابور بيتحدّث من الويب هوك بالـwamid — بس الـwamid بيتكتب على الصف **بعد** ما الإرسال يرجع، فحالة توصل في اللحظة دي
+     بتتسجّل في wa_messages وماتلاقيش صف الطابور. التسوية دي بتنقل الحالة الأحدث (وصلت / اتقرت) من wa_messages لصف الطابور بنفس الـwamid،
+     للأمام بس (عمرها ما بترجّع حالة)، وبتملا delivered_at / read_at الناقصين. بتشتغل كل ١٠ دقايق مع الدورة، ومتاحة كدالة للتسوية اليدوية. */
+  async function reconcileStatuses({ days = 7 } = {}) {
+    const r = await pool.query(
+      `UPDATE wa_send_queue q
+          SET cloud_status = m.status,
+              delivered_at = COALESCE(q.delivered_at, m.updated_at),
+              read_at = CASE WHEN m.status = 'read' THEN COALESCE(q.read_at, m.updated_at) ELSE q.read_at END
+         FROM wa_messages m
+        WHERE m.wamid = q.wamid AND q.wamid IS NOT NULL AND q.channel = 'wa_cloud' AND q.status = 'sent'
+          AND q.sent_at > NOW() - make_interval(days => $1::int)
+          AND m.status IN ('delivered','read')
+          AND (CASE m.status WHEN 'delivered' THEN 2 WHEN 'read' THEN 3 END)
+            > (CASE COALESCE(q.cloud_status,'accepted') WHEN 'accepted' THEN 0 WHEN 'sent' THEN 1 WHEN 'delivered' THEN 2 WHEN 'read' THEN 3 ELSE 9 END)
+        RETURNING q.id`, [Math.max(1, Math.min(60, Math.round(Number(days) || 7)))]);
+    return r.rowCount || 0;
+  }
+  let lastReconcile = 0;
+
   let ticking = false;
   async function cloudTick() {
     if (!wa || ticking) return { reason: "busy_or_no_wa" };
@@ -1357,6 +1386,7 @@ export function register(app, ctx, deps = {}) {
         if (!locked) return { reason: "locked" };
       }
       const cfg = senderCfg(s);
+      if (now() - lastReconcile > 10 * 60_000) { lastReconcile = now(); await reconcileStatuses().catch((e) => console.error("[wasender] reconcile:", e.message)); }      // RF1
       const st = await stateNow("wa_cloud");
       const { rateSar } = rateOf(s);
       st.rateSar = rateSar;
@@ -1646,5 +1676,5 @@ export function register(app, ctx, deps = {}) {
       phone_norm: canSee ? x.phone_norm : `${x.phone_norm.slice(0, 3)}••••${x.phone_norm.slice(-2)}` })) });
   });
 
-  return { recentSet, recentMap, build, cloudTick, onCloudStatus, onCloudInbound, onQualityEvent, stateNow, schemaReady, imageHosts };
+  return { reconcileStatuses, recentSet, recentMap, build, cloudTick, onCloudStatus, onCloudInbound, onQualityEvent, stateNow, schemaReady, imageHosts };
 }

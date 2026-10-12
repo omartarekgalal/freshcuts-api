@@ -242,13 +242,32 @@ const GREEN = () => ({ ok: true, status: "CONNECTED", quality: "GREEN", tier: "T
 const WARM_DONE = { step: 3, since: "2026-09-01", startedAt: "2026-09-01" };
 
 function world({ jobs = [], queue = [], settings = {}, warmup = WARM_DONE, quality = null, phone = GREEN, templates = [], tplOk = true, cloud = true, sentToday = null, mk = {}, mkThrows = false,
-  appOnly = [], appOnlyThrows = false, people = 3, waContacts = [], stopped = null } = {}) {
-  const db = { jobs, queue, state: { stopped_reason: stopped, warmup, quality }, events: [], sms: [], broadcasts: [], gapDays: [], newJobs: [], smsFallback: [],
+  appOnly = [], appOnlyThrows = false, people = 3, waContacts = [], stopped = null, linkClicks = 0 } = {}) {
+  const db = { jobs, queue, state: { stopped_reason: stopped, warmup, quality }, events: [], sms: [], broadcasts: [], gapDays: [], newJobs: [], smsFallback: [], msgs: [], unmatched: [], replies: [], sqlLog: [],
     settings: { waCloud: { enabled: true }, waSender: {}, waMaster: { enabled: true }, notifications: { whatsappEnabled: true }, delivery: { alertPhones: ["0500000001"] }, ...settings } };
   const job = (id) => db.jobs.find((j) => j.id === Number(id));
   const qrow = (id) => db.queue.find((q) => q.id === Number(id));
   const pool = { db, connect: async () => ({ query: (s, p) => pool.query(s, p), release() {} }), async query(sql, p = []) {
     const s = String(sql).replace(/\s+/g, " ").trim();
+    db.sqlLog.push(s);
+    /* RF1: رسايل صادرة وحالاتها، ردود العملاء على الحملة، ونتايج الحملة */
+    if (/^INSERT INTO wa_messages\(wamid, direction, phone_norm, template/i.test(s)) { db.msgs.push({ wamid: p[0], phone_norm: p[1], template: p[2], category: p[3], status: p[6], body: p[8], source: p[10], updated_at: null }); return { rows: [], rowCount: 1 }; }
+    if (/^INSERT INTO wa_messages\(wamid, direction, phone_norm, status, body, pricing/i.test(s)) return { rows: [{ id: 1 }], rowCount: 1 };
+    if (/^UPDATE wa_messages SET status = CASE/i.test(s)) { const m = db.msgs.find((x) => x.wamid === p[0]); if (!m) return { rows: [], rowCount: 0 }; m.status = W.nextStatus(m.status, p[1]);
+      return { rows: [{ id: 1, phone_norm: m.phone_norm, order_no: null, fallback_sms: null, fallback_done: false, status: m.status }], rowCount: 1 }; }
+    if (/^INSERT INTO wa_webhook_health\(field, last_at, n, last_note\) VALUES \('_status_unmatched'/i.test(s)) { db.unmatched.push(p[0]); return { rows: [] }; }
+    if (/^UPDATE wa_send_queue q SET cloud_status = m\.status/i.test(s)) { const rank = { accepted: 0, sent: 1, delivered: 2, read: 3 }; let n = 0;
+      for (const q of db.queue) { const m = q.wamid && db.msgs.find((x) => x.wamid === q.wamid); if (!m || q.status !== "sent" || !["delivered", "read"].includes(m.status)) continue;
+        if (rank[m.status] > (rank[q.cloud_status || "accepted"] ?? 9)) { q.cloud_status = m.status; q.delivered_at = q.delivered_at || m.updated_at; if (m.status === "read") q.read_at = q.read_at || m.updated_at; n++; } }
+      return { rows: [], rowCount: n }; }
+    if (/^SELECT id, job_id FROM wa_send_queue WHERE phone_norm=\$1 AND status='sent'/i.test(s)) return { rows: db.queue.filter((q) => q.phone_norm === p[0] && q.status === "sent").slice(-1) };
+    if (/^INSERT INTO wa_replies/i.test(s)) { db.replies.push({ pn: p[0], text: p[1], job_id: p[3], optout: p[5] }); return { rows: [{ id: db.replies.length }], rowCount: 1 }; }
+    if (/^UPDATE wa_send_queue SET replied_at = COALESCE\(replied_at, NOW\(\)\) WHERE id=\$1/i.test(s)) { qrow(p[0]).replied_at = iso(AT_17); return { rows: [] }; }
+    if (/^UPDATE wa_send_queue SET optout_at = COALESCE\(optout_at, NOW\(\)\) WHERE id = \(SELECT id FROM wa_send_queue WHERE phone_norm=\$1/i.test(s)) { const q = db.queue.filter((x) => x.phone_norm === p[0] && x.status === "sent").slice(-1)[0]; if (q) q.optout_at = iso(AT_17); return { rows: [] }; }
+    if (/^SELECT \* FROM wa_send_jobs WHERE id=\$1/i.test(s)) return { rows: job(p[0]) ? [job(p[0])] : [] };
+    if (/^SELECT phone_norm pn, status, reason, sent_at, clicks, replied_at/i.test(s)) return { rows: db.queue.filter((q) => q.job_id === Number(p[0])).map((q) => ({ ...q, pn: q.phone_norm })) };
+    if (/^SELECT clicks FROM cms_links WHERE slug=\$1/i.test(s)) return { rows: [{ clicks: linkClicks }] };
+    if (/^SELECT count\(DISTINCT so\.order_no\)::int n/i.test(s)) return { rows: [{ n: 0, rev: 0 }] };
     if (/^SELECT \* FROM wa_sender_state WHERE id=\$1/i.test(s)) return { rows: [Number(p[0]) === 2 ? { ...db.state } : {}] };
     if (/^UPDATE wa_sender_state SET quality=\$1/i.test(s)) { db.state.quality = JSON.parse(p[0]); return { rows: [], rowCount: 1 }; }
     if (/^UPDATE wa_sender_state SET warmup=\$1/i.test(s)) { db.state.warmup = JSON.parse(p[0]); return { rows: [], rowCount: 1 }; }
@@ -282,7 +301,8 @@ function world({ jobs = [], queue = [], settings = {}, warmup = WARM_DONE, quali
     if (/^SELECT id, cloud_template, cloud_vars, image_url, video_url/i.test(s)) return { rows: [job(p[0])] };
     if (/^SELECT id, fallback FROM wa_send_jobs/i.test(s)) return { rows: [job(p[0])] };
     if (/^SELECT id, job_id, phone_norm, status, cloud_status, channel, coupon, message FROM wa_send_queue WHERE wamid=\$1/i.test(s)) return { rows: db.queue.filter((q) => q.wamid === p[0]) };
-    if (/^UPDATE wa_send_queue SET cloud_status=\$2/i.test(s)) { qrow(p[0]).cloud_status = p[1]; return { rows: [] }; }
+    if (/^UPDATE wa_send_queue SET cloud_status=\$2/i.test(s)) { const q = qrow(p[0]), at = p[2] ? new Date(p[2]).toISOString() : iso(AT_17); q.cloud_status = p[1];
+      if (["delivered", "read"].includes(p[1])) q.delivered_at = q.delivered_at || at; if (p[1] === "read") q.read_at = q.read_at || at; return { rows: [] }; }
     if (/^UPDATE wa_send_queue SET status='pending', attempts=GREATEST/i.test(s)) { qrow(p[0]).status = "pending"; return { rows: [] }; }
     if (/^UPDATE wa_send_queue SET status='sent'/i.test(s)) { Object.assign(qrow(p[0]), { status: "sent", _now: true, wamid: p[4] }); return { rows: [], rowCount: 1 }; }
     if (/^UPDATE wa_send_queue SET status='failed', reason=\$2, error_code=\$3, cloud_status='failed'/i.test(s)) { Object.assign(qrow(p[0]), { status: "failed", reason: p[1], error_code: p[2], cloud_status: "failed" }); return { rows: [] }; }
@@ -642,3 +662,126 @@ test("ترحيل الإقلاع: ٥٪/٢٠ المخزّنين بيتكتبوا �
   assert.equal(await mk(undefined).api.qualityMigrated, false, "مفيش حاجة مخزّنة ⇒ الافتراضي الجديد لوحده");
   assert.equal(saved.length, 1);
 });
+
+/* ══ RF1 (١٤/١٠): «اتقرت» في الحملات + الضغطات بصدق + إطارات «الرد أولاً» ═══════════════ */
+const BOTRUN = await import("./wabotrun.js");
+const statusHook = (wamid, status, at = null) => ({ entry: [{ id: "WABA1", changes: [{ field: "messages", value: { metadata: { phone_number_id: "PHONE1", display_phone_number: "966546715683" },
+  statuses: [{ id: wamid, status, recipient_id: "966520000001", ...(at ? { timestamp: String(Math.floor(Date.parse(at) / 1000)) } : {}) }] } }] }] });
+const tapHook = (from, text, id) => ({ entry: [{ id: "WABA1", changes: [{ field: "messages", value: { metadata: { phone_number_id: "PHONE1", display_phone_number: "966546715683" },
+  messages: [{ id, from, type: "button", timestamp: String(Math.floor(AT_17 / 1000)), button: { text, payload: text } }] } }] }] });
+
+test("RF1 «اتقرت»: حالة read لرسالة حملة بتوصل للجدولين (wa_messages + صف الطابور) بأي ترتيب، ومفيش فلتر على المصدر ولا رجوع للحالة", withEnv(ALLOW, async () => {
+  const w = world({ jobs: [J()], queue: [R(1), R(2), R(3)] });
+  assert.equal((await w.api.cloudTick()).sent, 3);
+  const [a, b, c] = w.db.queue.map((q) => q.wamid);
+  assert.deepEqual(w.db.msgs.map((m) => [m.wamid, m.template, m.source, m.status]), [[a, "fc_offer_img", "campaign", "accepted"], [b, "fc_offer_img", "campaign", "accepted"], [c, "fc_offer_img", "campaign", "accepted"]]);
+  // الترتيب العادي: sent ⇒ delivered ⇒ read
+  for (const st of ["sent", "delivered", "read"]) await w.wa.processWebhook(statusHook(a, st, "2026-10-13T14:05:00Z"));
+  assert.equal(w.db.msgs[0].status, "read");
+  assert.deepEqual([w.db.queue[0].cloud_status, w.db.queue[0].delivered_at, w.db.queue[0].read_at], ["read", "2026-10-13T14:05:00.000Z", "2026-10-13T14:05:00.000Z"]);
+  // read قبل delivered (ميتا بتعملها): تفضل read
+  await w.wa.processWebhook(statusHook(b, "read", "2026-10-13T14:06:00Z")); await w.wa.processWebhook(statusHook(b, "delivered", "2026-10-13T14:07:00Z"));
+  assert.deepEqual([w.db.msgs[1].status, w.db.queue[1].cloud_status, w.db.queue[1].read_at, w.db.queue[1].delivered_at], ["read", "read", "2026-10-13T14:06:00.000Z", "2026-10-13T14:06:00.000Z"]);
+  // delivered بس: مش مقروءة
+  await w.wa.processWebhook(statusHook(c, "delivered"));
+  assert.deepEqual([w.db.msgs[2].status, w.db.queue[2].cloud_status, w.db.queue[2].read_at || null], ["delivered", "delivered", null]);
+  // read متكررة مابتغيّرش وقت القراءة الأول
+  await w.wa.processWebhook(statusHook(a, "read", "2026-10-13T15:00:00Z"));
+  assert.equal(w.db.queue[0].read_at, "2026-10-13T14:05:00.000Z");
+  assert.equal(w.db.unmatched.length, 0);
+  // حالة لرسالة مالهاش صف عندنا: بتتعدّ في صحة الويب هوك بدل ما تضيع من غير أثر
+  await w.wa.processWebhook(statusHook("wamid.UNKNOWN", "read"));
+  assert.deepEqual(w.db.unmatched, ["read"]);
+}));
+
+test("RF1 التسوية: حالة وصلت لـwa_messages قبل ما الـwamid يتكتب على صف الطابور بتتنقل للصف — للأمام بس", withEnv(ALLOW, async () => {
+  const w = world({ jobs: [J()], queue: [R(1), R(2)] });
+  await w.api.cloudTick();
+  const [a, b] = w.db.queue.map((q) => q.wamid);
+  // محاكاة السباق: wa_messages اتحدّثت والطابور لأ
+  w.db.msgs[0].status = "read"; w.db.msgs[0].updated_at = "2026-10-13T14:09:00.000Z";
+  w.db.msgs[1].status = "delivered"; w.db.msgs[1].updated_at = "2026-10-13T14:08:00.000Z";
+  w.db.queue[1].cloud_status = "read"; w.db.queue[1].read_at = "2026-10-13T14:01:00.000Z";      // الطابور سابق: مايرجعش
+  assert.equal(await w.api.reconcileStatuses(), 1);
+  assert.deepEqual([w.db.queue[0].cloud_status, w.db.queue[0].read_at, w.db.queue[0].delivered_at], ["read", "2026-10-13T14:09:00.000Z", "2026-10-13T14:09:00.000Z"]);
+  assert.deepEqual([w.db.queue[1].cloud_status, w.db.queue[1].read_at], ["read", "2026-10-13T14:01:00.000Z"]);
+  assert.equal(await w.api.reconcileStatuses(), 0, "مرة تانية مفيش حاجة تتنقل");
+  const sql = w.db.sqlLog.find((x) => /^UPDATE wa_send_queue q SET cloud_status = m\.status/.test(x));
+  assert.ok(sql.includes("m.wamid = q.wamid") && sql.includes("m.status IN ('delivered','read')") && sql.includes("q.channel = 'wa_cloud'"));
+  assert.ok(a && b);
+}));
+
+test("RF1 النتايج: ضغطات المستلمين (برابط العميل نفسه) لوحدها، وضغطات الرابط العام لوحدها", withEnv(ALLOW, async () => {
+  const w = world({ jobs: [J({ created_at: "2026-10-13T13:00:00Z" })], linkClicks: 9,
+    queue: [R(1, { status: "sent", sent_at: "2026-10-13T13:10:00Z", clicks: 2 }), R(2, { status: "sent", sent_at: "2026-10-13T13:11:00Z", clicks: 1 }), R(3, { status: "sent", sent_at: "2026-10-13T13:12:00Z", clicks: 0 })] });
+  const r = (await call(w.app, "GET /api/cms/wa-sender/jobs/:id/results", { param: { id: "1" } })).body;
+  assert.deepEqual([r.clicks, r.recipientClicks, r.otherClicks, r.clickers, r.linkButton], [9, 3, 6, 2, true]);
+  // قالب «الرد أولاً»: مفيش زر رابط
+  const a = world({ jobs: [J({ cloud_template: "fc_frame_ask_text", image_url: null, created_at: "2026-10-13T13:00:00Z" })], linkClicks: 0, queue: [R(1, { status: "sent", sent_at: "2026-10-13T13:10:00Z", replied_at: "2026-10-13T13:20:00Z" })] });
+  const ra = (await call(a.app, "GET /api/cms/wa-sender/jobs/:id/results", { param: { id: "1" } })).body;
+  assert.deepEqual([ra.linkButton, ra.replies, ra.recipientClicks, ra.sent], [false, 1, 0, 1]);
+}));
+
+test("RF1 إطارات «الرد أولاً»: في الكتالوج بالعربي والإنجليزي، قابلة للتقديم، ٣ أزرار رد بس ومفيش زر رابط، والنص بالحرف", () => {
+  const BODY = {
+    "fc_frame_ask_video:ar": "من فريش كاتس 🎬\n{{1}}: {{2}}.\nتبي نجهز لك الطلب هنا؟ اضغط الزر وكمّل معنا في المحادثة.",
+    "fc_frame_ask_video:en": "From Fresh Cuts 🎬\n{{1}}: {{2}}.\nWant us to prepare your order here? Tap a button and continue with us in this chat.",
+    "fc_frame_ask_text:ar": "جديد من فريش كاتس 👋\n{{1}}: {{2}}.\nتبي نجهز لك الطلب هنا؟ اضغط الزر وكمّل معنا في المحادثة.",
+    "fc_frame_ask_text:en": "New from Fresh Cuts 👋\n{{1}}: {{2}}.\nWant us to prepare your order here? Tap a button and continue with us in this chat." };
+  for (const name of ["fc_frame_ask_video", "fc_frame_ask_text"]) {
+    assert.ok(!CAT.HOLD[name], `${name} not held`); assert.ok(CAT.ASK_FRAME_BATCH.includes(name)); assert.equal(CAT.SUBMIT_BATCHES.flat().filter((n) => n === name).length, 1);
+    for (const lang of ["ar", "en"]) {
+      const t = CAT.findTemplate(name, lang);
+      assert.deepEqual(CAT.validateTemplate(t), [], `${name} ${lang}`);
+      assert.equal(t.category, "MARKETING"); assert.equal(CAT.bodyOf(t), BODY[`${name}:${lang}`]);
+      assert.deepEqual(CAT.buttonsOf(t).map((b) => [b.type, b.text]), lang === "ar"
+        ? [["QUICK_REPLY", "أبغى أطلب"], ["QUICK_REPLY", "ورّني المنيو"], ["QUICK_REPLY", "إيقاف"]] : [["QUICK_REPLY", "I want to order"], ["QUICK_REPLY", "Show me the menu"], ["QUICK_REPLY", "STOP"]]);
+      assert.equal(CAT.footerOf(t), lang === "ar" ? "للإيقاف ردّ: إيقاف" : "To stop, reply: STOP");
+      assert.deepEqual(t.meta.vars.map((v) => v.path), ["offer.title", "offer.line"]); assert.deepEqual(t.meta.buttonVars, []);
+    }
+    assert.deepEqual(W.templateLanguages(name).sort(), ["ar", "en"]);
+  }
+  assert.deepEqual([...CAT.FRAME_BATCH], ["fc_frame_news_text", "fc_frame_offer_img", "fc_frame_limited_img", "fc_frame_video"], "دفعة إطارات الرابط زي ما هي");
+  // في محرّك الحملات: قالب حملة من غير زر رابط
+  const v = C.campaignSpec("fc_frame_ask_video"), t = C.campaignSpec("fc_frame_ask_text");
+  assert.deepEqual([v.kind, v.header, v.button, v.needsCoupon, v.fields.map((f) => f.key)], ["catalog", "video", null, false, ["offer.title", "offer.line"]]);
+  assert.deepEqual([t.header, t.button, t.held], [null, null, false]);
+  const P = (x) => (C.cloudJobProblem(x) || [null])[0], vals = { values: { "offer.title": "بوكس التشكيلة", "offer.line": "مشاوي على الفحم، بـ105 ر.س" } };
+  assert.equal(P({ cloudTemplate: "fc_frame_ask_text", cloudVars: vals }), null, "من غير صورة ولا رابط ولا كوبون");
+  assert.equal(P({ cloudTemplate: "fc_frame_ask_video", cloudVars: vals }), "video_required");
+  assert.equal(P({ cloudTemplate: "fc_frame_ask_text", cloudVars: { values: { "offer.title": "بوكس" } } }), "value_required");
+  // أزرار الرد بنصها: البوت بيفهمها — «أبغى أطلب» طلب، «ورّني المنيو» المنيو، «إيقاف» إيقاف
+  const key = (text) => BOTRUN.classify({ text, type: "button" }, {}).key;
+  assert.deepEqual(["أبغى أطلب", "I want to order"].map(key), ["order", "order"]);
+  assert.deepEqual(["ورّني المنيو", "ورني المنيو", "Show me the menu"].map(key), ["cats", "cats", "cats"]);
+  assert.deepEqual(["أبغى أطلب", "ورّني المنيو", "I want to order", "Show me the menu"].map((x) => W.intentOf(x)), [null, null, null, null], "أزرار الطلب والمنيو مش إيقاف");
+  assert.deepEqual(["إيقاف", "STOP"].map((x) => W.intentOf(x)), ["stop", "stop"]);
+});
+
+test("RF1 حملة «الرد أولاً»: بتتبعت من غير أي زر رابط؛ وضغطة العميل على زر الرد بتتحسب رد على الحملة (و«إيقاف» إيقاف)", withEnv(ALLOW, async () => {
+  const ASK = { cloud_template: "fc_frame_ask_text", image_url: null, cloud_vars: { values: { "offer.title": "بوكسات فردية", "offer.line": "كريب أو برجر مع صنف جانبي ومشروب، من 29 ر.س" } } };
+  for (const link_slug of ["w1", null]) {
+    const w = world({ jobs: [J({ ...ASK, link_slug })], queue: [R(1), R(2)] });
+    const r = await w.api.cloudTick();
+    assert.equal(r.sent, 2, JSON.stringify(r));
+    const p = w.calls[0].body;
+    assert.deepEqual([p.type, p.template.name, p.template.language.code, p.to], ["template", "fc_frame_ask_text", "ar", "966520000001"]);
+    assert.deepEqual(p.template.components, [{ type: "body", parameters: [{ type: "text", text: "بوكسات فردية" }, { type: "text", text: "كريب أو برجر مع صنف جانبي ومشروب، من 29 ر.س" }] }], "مفيش مكوّن زر: أزرار الرد ثابتة في القالب");
+    assert.match(w.db.msgs[0].body, /تبي نجهز لك الطلب هنا؟/);
+    // العميل ضغط «أبغى أطلب»
+    await w.wa.processWebhook(tapHook("966520000001", "أبغى أطلب", "wamid.TAP1"));
+    assert.deepEqual(w.db.replies.map((x) => [x.pn, x.text, x.job_id, x.optout]), [["520000001", "أبغى أطلب", 1, false]]);
+    assert.ok(w.db.queue[0].replied_at); assert.equal(w.db.queue[0].optout_at || null, null);
+    // التاني ضغط «إيقاف»
+    await w.wa.processWebhook(tapHook("966520000002", "إيقاف", "wamid.TAP2"));
+    assert.deepEqual(w.db.replies[1].optout, true); assert.ok(w.db.queue[1].optout_at);
+  }
+  // بدء حملة «الرد أولاً» من اللوحة: من غير link خالص، ومعاينتها بتقول إن مفيش زر رابط
+  const s = world();
+  const body = { channel: "wa_cloud", cloudTemplate: "fc_frame_ask_text", cloudVars: ASK.cloud_vars, filters: { audience: "lapsed" } };
+  const pv = (await call(s.app, "POST /api/cms/wa-sender/preview", { json: body, auth: MK })).body;
+  assert.deepEqual([pv.problems, pv.spec.button, pv.link.button], [[], null, false]);
+  assert.match(pv.sample[0].cloud.text, /تبي نجهز لك الطلب هنا؟/); assert.deepEqual(pv.sample[0].cloud.buttons, ["أبغى أطلب", "ورّني المنيو", "إيقاف"]);
+  const ok = await call(s.app, "POST /api/cms/wa-sender/jobs", { json: body });
+  assert.equal(ok.status, 200, JSON.stringify(ok.body)); assert.equal(s.db.newJobs[0][10], "fc_frame_ask_text");
+}));

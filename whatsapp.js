@@ -994,6 +994,12 @@ export function register(app, ctx, deps = {}) {
        WHERE wamid=$1 RETURNING id, phone_norm, order_no, fallback_sms, fallback_done, status`,
       [s.wamid, s.status, s.pricing ? jb(s.pricing) : null, errOf(s)]);
     const row = r.rows[0];
+    /* RF1 (١٤/١٠): حالة لرسالة مالهاش صف عندنا (الويب هوك سبق تسجيل الرسالة، أو رسالة اتبعتت من بره السيرفر) كانت بتضيع من غير أثر.
+       بنعدّها في صحة الويب هوك (_status_unmatched، وآخر نوع حالة) عشان نعرف لو ميتا بتبعت «read» وإحنا مش لاقيين صفها. */
+    if (!row && s.wamid) {
+      pool.query(`INSERT INTO wa_webhook_health(field, last_at, n, last_note) VALUES ('_status_unmatched', NOW(), 1, $1)
+                  ON CONFLICT (field) DO UPDATE SET last_at=NOW(), n = wa_webhook_health.n + 1, last_note=$1`, [String(s.status || "").slice(0, 20)]).catch(() => {});
+    }
     if (row && row.phone_norm) await emit("chat", { phoneNorm: row.phone_norm, what: "status", dir: "out", at: s.at || null });      // LR1: علامات ✓✓ بتتحدّث لوحدها
     await emit("status", { ...s, error: errOf(s), code: s.errors?.[0]?.code != null ? Number(s.errors[0].code) : null });
     const finalStatus = row?.status || s.status;
