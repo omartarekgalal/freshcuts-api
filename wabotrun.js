@@ -39,6 +39,8 @@ import { staffPhones, fitOneSms, staffConfig } from "./staffalerts.js";
 import { loyaltyCfgOf } from "./loyalty.js";
 import { MAPS_URL } from "./watemplates.js";
 import { isOpenNow } from "./carts.js";
+import { makeAiCost, pricesOf, waRatesOf, pricesFromBody, waRatesFromBody, BUDGET_DEFAULTS } from "./waaicost.js";
+import { providerInfo } from "./wabotllm.js";
 import { WA_UPDATES_TEXTS, WA_UPDATES_CURRENT, recordWaUpdatesBot, ensureWaConsentSchema } from "./waconsent.js";
 
 export const STORE = "https://freshcuts.sa";
@@ -56,11 +58,19 @@ export const DEFAULTS = Object.freeze({
   handoffOpenHours: 24,        // التحويل لموظف «مفتوح» المدة دي: شكوى ⇒ معلومات بس، ومفيش تنبيه مكرر
   publicPhone: "",             // رقم المطعم في رسالة التعريف؛ فاضي = من سؤال «كيف أتواصل» في الأسئلة الشائعة
   faq: {},                     // { key: { ar, en } } — إجابات يوافق عليها المالك (FAQ_DEFS). الفاضي = «أحوّلك لموظف»، مش تخمين
-  llm: { enabled: false, minConfidence: 0.75, timeoutMs: 2500, model: "claude-haiku-5-5" },   // تصنيف بس للرسالة الغير مفهومة — مايكتبش ولا كلمة للعميل
+  llm: { enabled: false, minConfidence: 0.75, timeoutMs: 2500, model: "claude-haiku-5-5", budgetMonthSar: BUDGET_DEFAULTS.budgetMonthSar, budgetDaySar: BUDGET_DEFAULTS.budgetDaySar, alertPhones: [], prices: null },   // تصنيف بس للرسالة الغير مفهومة — مايكتبش ولا كلمة للعميل
   optin: { enabled: false, askAfterHours: 720 },   // سؤال «نبلّغك بتحديثات طلباتك على واتساب؟» بعد رد حالة الطلب — مرة كل askAfterHours
   freeRepliesPerMonth: 1000,   // تسعيرة ميتا ١/١٠/٢٠٢٦: أول ١٠٠٠ رد حر في الشهر ببلاش…
   replyRateSar: 0.0401,        // …وبعدها بالريال للرد
   greetWindowHours: 24,        // تحية واحدة لكل عميل في المدة دي
+  disclosureHours: 24,         // التعريف بالمساعد الآلي: مرة كل المدة دي
+  footerMode: "smart",         // always | smart | first — سطر «للرجوع… أو موظف» تحت الرسايل (طلب عمر ١٢/١٠: مش على كل رسالة)
+  unknownHandoverAfter: 2,     // كام رسالة مش مفهومة ورا بعض قبل التحويل
+  adWindowHours: 72,           // المحادثة تفضل محسوبة على الإعلان المدة دي
+  optinAnswerWindowMin: 60,    // «تمام/لا» مكتوبة تتحسب إجابة على سؤال الموافقة خلالها
+  offerEndWithinDays: 7,       // تاريخ نهاية العرض يتذكر لو باقي عليه كده أو أقل
+  boxesCacheMin: 5, menuCacheMin: 5, offersCacheMin: 2, staleCacheMin: 60,   // كاش المصادر الحيّة بالدقايق
+  logKeepDays: 90,             // سجل البوت بيتمسح بعدها
   maxAgeMinutes: 20,           // رسالة أقدم من كده (ويب هوك متأخر) مابيتردش عليها
   duplicateSeconds: 120,       // نفس الرد لنفس العميل مايتكررش خلالها
   maxRepliesPerHour: 8,        // لكل عميل؛ عند الحد: تحويل لموظف وسكوت
@@ -317,11 +327,24 @@ export function botConfig(settings) {
     publicPhone: /^0\d{8,9}$/.test(String(x.publicPhone || "")) ? String(x.publicPhone) : "",
     faq: x.faq && typeof x.faq === "object" ? x.faq : {},
     llm: { enabled: x.llm?.enabled === true, minConfidence: num(x.llm?.minConfidence, 0.5, 0.99, DEFAULTS.llm.minConfidence),
-      timeoutMs: num(x.llm?.timeoutMs, 500, 8000, DEFAULTS.llm.timeoutMs), model: /^[a-z0-9./-]{3,60}$/.test(String(x.llm?.model || "")) ? String(x.llm.model) : DEFAULTS.llm.model },
+      timeoutMs: num(x.llm?.timeoutMs, 500, 8000, DEFAULTS.llm.timeoutMs), model: /^[a-z0-9./-]{3,60}$/.test(String(x.llm?.model || "")) ? String(x.llm.model) : DEFAULTS.llm.model,
+      /* سقف مصروف الذكاء بالريال (٠ = مقفول): أول ما يتوصل له ⇒ قواعد بس + SMS واحد. */
+      budgetMonthSar: num(x.llm?.budgetMonthSar, 0, 10000, DEFAULTS.llm.budgetMonthSar), budgetDaySar: num(x.llm?.budgetDaySar, 0, 1000, DEFAULTS.llm.budgetDaySar),
+      alertPhones: staffPhones(x.llm?.alertPhones), prices: pricesOf(x.llm?.prices) },
+    waRates: waRatesOf(x.waRates),
     optin: { enabled: x.optin?.enabled === true, askAfterHours: num(x.optin?.askAfterHours, 24, 8760, DEFAULTS.optin.askAfterHours) },
     freeRepliesPerMonth: num(x.freeRepliesPerMonth, 0, 100000, DEFAULTS.freeRepliesPerMonth),
     replyRateSar: num(x.replyRateSar, 0, 5, DEFAULTS.replyRateSar),
     greetWindowHours: num(x.greetWindowHours, 1, 168, DEFAULTS.greetWindowHours),
+    disclosureHours: num(x.disclosureHours, 1, 168, DEFAULTS.disclosureHours),
+    footerMode: ["always", "smart", "first"].includes(x.footerMode) ? x.footerMode : DEFAULTS.footerMode,
+    unknownHandoverAfter: num(x.unknownHandoverAfter, 1, 5, DEFAULTS.unknownHandoverAfter),
+    adWindowHours: num(x.adWindowHours, 1, 168, DEFAULTS.adWindowHours),
+    optinAnswerWindowMin: num(x.optinAnswerWindowMin, 5, 1440, DEFAULTS.optinAnswerWindowMin),
+    offerEndWithinDays: num(x.offerEndWithinDays, 0, 60, DEFAULTS.offerEndWithinDays),
+    boxesCacheMin: num(x.boxesCacheMin, 1, 60, DEFAULTS.boxesCacheMin), menuCacheMin: num(x.menuCacheMin, 1, 60, DEFAULTS.menuCacheMin),
+    offersCacheMin: num(x.offersCacheMin, 1, 30, DEFAULTS.offersCacheMin), staleCacheMin: num(x.staleCacheMin, 5, 720, DEFAULTS.staleCacheMin),
+    logKeepDays: num(x.logKeepDays, 7, 730, DEFAULTS.logKeepDays),
     maxAgeMinutes: num(x.maxAgeMinutes, 1, 120, DEFAULTS.maxAgeMinutes),
     duplicateSeconds: num(x.duplicateSeconds, 0, 3600, DEFAULTS.duplicateSeconds),
     maxRepliesPerHour: num(x.maxRepliesPerHour, 1, 30, DEFAULTS.maxRepliesPerHour),
@@ -370,8 +393,11 @@ export function configFromBody(b, prev = {}) {
   }
   if ("alertPhones" in src) out.alertPhones = staffPhones(Array.isArray(src.alertPhones) ? src.alertPhones : String(src.alertPhones || "").split(/[\s,،;]+/));
   if ("greetScope" in src) { if (["all", "ads"].includes(src.greetScope)) out.greetScope = src.greetScope; else errors.push("greetScope"); }
+  if ("footerMode" in src) { if (["always", "smart", "first"].includes(src.footerMode)) out.footerMode = src.footerMode; else errors.push("footerMode"); }
+  errors.push(...rangeErrors(src));
   delete out.humanWindowHours;      // اتلغى (١٢/١٠) — أي حفظ بينضّف المخزّن القديم
-  for (const k of ["humanPauseMin", "staffWaitMin", "closedEchoPauseMin", "unknownWaitMin", "manualMuteHours", "handoffOpenHours", "freeRepliesPerMonth", "replyRateSar",
+  for (const k of ["humanPauseMin", "staffWaitMin", "closedEchoPauseMin", "unknownWaitMin", "manualMuteHours", "handoffOpenHours", "freeRepliesPerMonth", "replyRateSar", "disclosureHours", "unknownHandoverAfter", "adWindowHours", "optinAnswerWindowMin",
+    "offerEndWithinDays", "boxesCacheMin", "menuCacheMin", "offersCacheMin", "staleCacheMin", "logKeepDays",
     "greetWindowHours", "maxAgeMinutes", "duplicateSeconds", "maxRepliesPerHour", "orderLookbackHours", "lateAfterMinutes", "maxAlertsPerHour"]) {
     if (k in src) { if (Number.isFinite(Number(src[k])) && src[k] !== "" && src[k] !== null) out[k] = Number(src[k]); else errors.push(k); }
   }
@@ -381,7 +407,12 @@ export function configFromBody(b, prev = {}) {
     if ("enabled" in L) cur.enabled = L.enabled === true;
     for (const k of ["minConfidence", "timeoutMs"]) if (k in L) { if (Number.isFinite(Number(L[k])) && L[k] !== "") cur[k] = Number(L[k]); else errors.push(`llm.${k}`); }
     if ("model" in L) { if (/^[a-z0-9./-]{3,60}$/.test(String(L.model || ""))) cur.model = String(L.model); else errors.push("llm.model"); }
+    for (const [k, hi] of [["budgetMonthSar", 10000], ["budgetDaySar", 1000]]) if (k in L) { const n = Number(L[k]); if (Number.isFinite(n) && L[k] !== "" && L[k] !== null && n >= 0 && n <= hi) cur[k] = n; else errors.push(`llm.${k}`); }
+    if ("alertPhones" in L) cur.alertPhones = staffPhones(Array.isArray(L.alertPhones) ? L.alertPhones : String(L.alertPhones || "").split(/[\s,،;]+/));
+    if ("prices" in L) { const pr = pricesFromBody(L.prices, cur.prices); if (pr.ok) cur.prices = pr.value; else errors.push(...pr.errors); }
     out.llm = cur;
+  }
+  if ("waRates" in src) { const wr = waRatesFromBody(src.waRates, prev.waRates); if (wr.ok) out.waRates = wr.value; else errors.push(...wr.errors);
   }
   if ("optin" in src) {
     const O = src.optin || {}, cur = { ...(prev.optin || {}) };
@@ -543,11 +574,128 @@ export function orderStatusKey(o) {
 }
 const ACTIVE = new Set(["paid", "pos_created", "accepted", "courier_requested", "courier_assigned", "on_the_way", "paid_pos_failed", "courier_cancelled"]);
 
+/* ── مخطط الإعدادات (١٢/١٠): كل ثابت سلوكي في البوت = إعداد في اللوحة ─────────────────────────────
+   لكل إعداد: النوع، الافتراضي، الحدود، المجموعة، اسم عربي، وسطر شرح. نفس الجدول بيتحقق من الحفظ (configFromBody)
+   وبيتبعت للّوحة (/api/cms/wabot/schema) عشان أي شاشة تبني نفسها منه. اختبار بيفشل لو إعداد في DEFAULTS مالوش صف هنا. */
+const S = (group, type, ar, help, extra = {}) => Object.freeze({ group, type, ar, help, ...extra });
+export const SCHEMA = Object.freeze({
+  mode: S("mode", "enum", "وضع البوت", "مقفول / تجربة صامتة / أرقام التجربة / شغّال للكل.", { options: ["off", "dry", "test", "live"] }),
+  testPhones: S("mode", "phones", "أرقام التجربة", "الأرقام الوحيدة اللي البوت يرد عليها في وضع التجربة."),
+  greetScope: S("greeting", "enum", "مين يتحيّى", "كل محادثة جديدة، أو محادثات الإعلانات بس.", { options: ["all", "ads"] }),
+  greetWindowHours: S("greeting", "number", "تحية واحدة كل", "العميل مايتحيّاش تاني قبل المدة دي.", { min: 1, max: 168, unit: "ساعة" }),
+  disclosureHours: S("greeting", "number", "التعريف بالمساعد الآلي كل", "أول رد في المحادثة بيقول إنه مساعد آلي وإزاي توصل لموظف؛ يتكرر بعد المدة دي.", { min: 1, max: 168, unit: "ساعة" }),
+  footerMode: S("greeting", "enum", "سطر «للرجوع… أو موظف» تحت الرسايل", "كل رسالة / ذكي: أول رسالة والرسالة الغير مفهومة والرسايل اللي مافيهاش زر رجوع أو موظف / أول رسالة بس.", { options: ["always", "smart", "first"] }),
+  publicPhone: S("greeting", "phone", "رقم المطعم في التعريف", "فاضي = الرقم المكتوب في سؤال «كيف أتواصل» في الأسئلة الشائعة."),
+  humanPauseMin: S("staff", "number", "سكوت البوت بعد رد الموظف", "من آخر رسالة للموظف من موبايل المطعم، في وقت الدوام.", { min: 1, max: 720, unit: "دقيقة" }),
+  staffWaitMin: S("staff", "number", "انتظار الموظف قبل ما البوت يرد", "العميل كتب وقت السكوت والموظف ماردّش: البوت يرد بعد المدة دي (أسئلة مفهومة بس).", { min: 1, max: 15, unit: "دقيقة" }),
+  closedEchoPauseMin: S("staff", "number", "سكوت البوت لو الموظف رد والمطعم مقفول", "سكوت قصير بس.", { min: 0, max: 120, unit: "دقيقة" }),
+  unknownWaitMin: S("staff", "number", "رسالة مش مفهومة: انتظار الموظف", "في الدوام بس. صفر = القائمة فوراً.", { min: 0, max: 15, unit: "دقيقة" }),
+  unknownHandoverAfter: S("staff", "number", "تحويل لموظف بعد كام رسالة مش مفهومة ورا بعض", "٢ = أول مرة القائمة، تاني مرة تحويل.", { min: 1, max: 5, unit: "رسالة" }),
+  manualMuteHours: S("staff", "number", "مدة الكتم اليدوي", "المدة الافتراضية لزر «كتم البوت في المحادثة دي».", { min: 1, max: 168, unit: "ساعة" }),
+  handoffOpenHours: S("staff", "number", "التحويل لموظف يفضل مفتوح", "طول المدة دي البوت بيرد على المواعيد والموقع وحالة الطلب بس، ومفيش تنبيه مكرر.", { min: 1, max: 168, unit: "ساعة" }),
+  staffAlert: S("alerts", "boolean", "SMS للفريق عند التحويل", "في وضع «شغّال»؛ وفي التجربة لو المفتاح اللي بعده مفتوح."),
+  alertInTest: S("alerts", "boolean", "ابعت التنبيه في وضع التجربة", ""),
+  alertPhones: S("alerts", "phones", "أرقام تنبيه التحويل", "فاضي = أرقام الإنذارات في إعدادات التوصيل."),
+  maxAlertsPerHour: S("alerts", "number", "أقصى تنبيهات في الساعة", "", { min: 1, max: 30, unit: "تنبيه" }),
+  maxAgeMinutes: S("limits", "number", "عمر الرسالة الأقصى", "رسالة وصلت متأخر أكتر من كده مابيتردش عليها.", { min: 1, max: 120, unit: "دقيقة" }),
+  duplicateSeconds: S("limits", "number", "عدم تكرار نفس الرد", "نفس الرد لنفس العميل مايتبعتش تاني خلال المدة دي.", { min: 0, max: 3600, unit: "ثانية" }),
+  maxRepliesPerHour: S("limits", "number", "أقصى ردود للعميل في الساعة", "عند الحد: تحويل لموظف وسكوت.", { min: 1, max: 30, unit: "رد" }),
+  interactive: S("limits", "boolean", "أزرار وقوايم", "مقفول = نص عادي والرابط في آخره."),
+  intentsOff: S("limits", "keys", "ردود مقفولة", "أي رد هنا بيتحوّل لموظف بدل ما البوت يجاوب."),
+  orderLookbackHours: S("orders", "number", "«وين طلبي» بيدوّر في آخر", "طلبات رقم المرسل نفسه بس.", { min: 1, max: 336, unit: "ساعة" }),
+  lateAfterMinutes: S("orders", "number", "الطلب يعتبر متأخر بعد", "طلب نشط أقدم من كده: الحالة + تحويل لموظف.", { min: 20, max: 600, unit: "دقيقة" }),
+  firstCode: S("orders", "code", "كود أول طلب", "الكود اللي سطر «أول طلب» بيقرا شروطه من الكوبونات."),
+  "links.organic": S("links", "slug", "رابط المحادثات العادية", "من «روابط الحملات»."),
+  "links.ads": S("links", "slug", "رابط محادثات الإعلانات", ""),
+  "links.adMap": S("links", "map", "رابط لكل إعلان", "رقم الإعلان ← الرابط."),
+  adWindowHours: S("links", "number", "المحادثة تفضل محسوبة على الإعلان", "بعدها ترجع للرابط العادي.", { min: 1, max: 168, unit: "ساعة" }),
+  offerEndWithinDays: S("data", "number", "اذكر تاريخ نهاية العرض لو باقي عليه", "عرض بينتهي بعد أكتر من كده: مايتذكرش تاريخ.", { min: 0, max: 60, unit: "يوم" }),
+  boxesCacheMin: S("data", "number", "تحديث البوكسات كل", "أقصى تأخير بين تعديل بوكس وظهوره في ردود البوت.", { min: 1, max: 60, unit: "دقيقة" }),
+  menuCacheMin: S("data", "number", "تحديث المنيو كل", "", { min: 1, max: 60, unit: "دقيقة" }),
+  offersCacheMin: S("data", "number", "تحديث العروض كل", "", { min: 1, max: 30, unit: "دقيقة" }),
+  staleCacheMin: S("data", "number", "لو المصدر واقع: استخدم آخر نسخة لحد", "بعدها البوت يقول أقل أو يحوّل لموظف.", { min: 5, max: 720, unit: "دقيقة" }),
+  logKeepDays: S("data", "number", "الاحتفاظ بسجل البوت", "الأقدم بيتمسح تلقائي.", { min: 7, max: 730, unit: "يوم" }),
+  faq: S("faq", "faq", "إجابات الأسئلة الشائعة", "الفاضي = البوت يحوّل السؤال لموظف."),
+  texts: S("texts", "texts", "نصوص الردود", "الفاضي = النص الافتراضي."),
+  "optin.enabled": S("optin", "boolean", "سؤال تحديثات الطلب على واتساب", "بعد رد «وين طلبي»: سؤال واحد بزرارين."),
+  "optin.askAfterHours": S("optin", "number", "لو ماجاوبش: مايتسألش تاني قبل", "اللي جاوب نعم أو لا مايتسألش تاني أبداً.", { min: 24, max: 8760, unit: "ساعة" }),
+  optinAnswerWindowMin: S("optin", "number", "«تمام/لا» مكتوبة تتحسب إجابة خلال", "بعد السؤال بالمدة دي؛ بعدها تبقى كلام عادي.", { min: 5, max: 1440, unit: "دقيقة" }),
+  "llm.enabled": S("ai", "boolean", "الفهم بالذكاء الاصطناعي", "للرسالة اللي القواعد مافهمتهاش بس. الرد يفضل نصّنا."),
+  "llm.model": S("ai", "model", "الموديل", ""),
+  "llm.minConfidence": S("ai", "number", "أقل درجة ثقة تتقبل", "أقل منها: الرسالة تتعامل كغير مفهومة.", { min: 0.5, max: 0.99, step: 0.01 }),
+  "llm.timeoutMs": S("ai", "number", "مهلة الموديل", "بعدها البوت يكمل بالقواعد.", { min: 500, max: 8000, unit: "مللي ثانية" }),
+  "llm.budgetDaySar": S("ai", "number", "السقف اليومي", "صفر = الموديل مقفول.", { min: 0, max: 1000, unit: "ر.س" }),
+  "llm.budgetMonthSar": S("ai", "number", "ميزانية الشهر", "", { min: 0, max: 10000, unit: "ر.س" }),
+  "llm.alertPhones": S("ai", "phones", "أرقام تنبيه السقف", "فاضي = أرقام تنبيه التحويل."),
+  "llm.prices": S("ai", "prices", "جدول أسعار الموديلات", "بالدولار لكل مليون توكن + سعر الصرف + تاريخ الجدول."),
+  freeRepliesPerMonth: S("cost", "number", "ردود واتساب المجانية في الشهر", "", { min: 0, max: 100000, unit: "رد" }),
+  replyRateSar: S("cost", "number", "سعر الرد بعد المجاني", "", { min: 0, max: 5, unit: "ر.س", step: 0.0001 }),
+  waRates: S("cost", "rates", "بطاقة أسعار قوالب واتساب", "تسويقي / خدمي / رمز تحقق + تاريخ البطاقة."),
+});
+export const SCHEMA_GROUPS = Object.freeze({ mode: "الوضع", greeting: "التحية والتعريف", staff: "البوت والموظف", alerts: "التنبيهات", limits: "الحدود", orders: "الطلبات", links: "الروابط", data: "البيانات الحيّة",
+  faq: "الأسئلة الشائعة", texts: "النصوص", optin: "موافقة التحديثات", ai: "الذكاء الاصطناعي", cost: "التكلفة" });
+const getPath = (o, p) => p.split(".").reduce((a, k) => (a && typeof a === "object" ? a[k] : undefined), o);
+/* للّوحة: كل إعداد بقيمته الحالية والافتراضية وحدوده وشرحه. */
+export function schemaFor(cfg) {
+  const def = botConfig({});
+  return Object.entries(SCHEMA).map(([key, s]) => ({ key, ...s, groupAr: SCHEMA_GROUPS[s.group] || s.group, default: getPath(def, key), value: cfg ? getPath(cfg, key) : undefined }));
+}
+/* رقم بره حدود المخطط ⇒ خطأ حفظ (مش تصحيح صامت). */
+function rangeErrors(src) {
+  const errors = [];
+  for (const [key, s] of Object.entries(SCHEMA)) {
+    if (s.type !== "number") continue;
+    const v = getPath(src, key);
+    if (v === undefined) continue;
+    const n = Number(v);
+    if (v === "" || v === null || !Number.isFinite(n) || n < s.min || n > s.max) errors.push(key);
+  }
+  return errors;
+}
+/* الفرق بين إعدادين (مسارات مسطّحة) ⇒ [{ path, from, to }] — لسجل «مين غيّر إيه». */
+export function configDiff(a, b) {
+  const flat = (o, pre = "", out = {}) => { for (const [k, v] of Object.entries(o || {})) { const p = pre ? `${pre}.${k}` : k; if (v && typeof v === "object" && !Array.isArray(v)) flat(v, p, out); else out[p] = v; } return out; };
+  const A = flat(a), B = flat(b), out = [];
+  for (const p of [...new Set([...Object.keys(A), ...Object.keys(B)])].sort()) if (JSON.stringify(A[p]) !== JSON.stringify(B[p])) out.push({ path: p, from: A[p] ?? null, to: B[p] ?? null });
+  return out;
+}
+
+/* أسئلة العملاء المتكررة اللي البوت مافهمهاش أو حوّلها لموظف — مجمّعة بالتشابه (كلمات مشتركة بعد التنضيف)، بعدد وأمثلة.
+   rows: [{ text, key, handoff, phone }] (النص زي ما في السجل). قواعد بس: من غير موديل ومن غير تكلفة. */
+const MINE_STOP = new Set("في من على عن الى إلى ما هل لو يا و او أو انا انت انتم عندكم عندك فيه فيها هذا هذي ذا ده دي اللي الي كم كيف وش ايش إيش شنو ليش متى وين فين ابي ابغى ابغا اريد عايز ممكن لو سمحت سمحتوا الله يعطيكم العافيه العافية السلام عليكم مرحبا هلا شكرا the a is do you have i to and of for".split(" "));
+/* جذر تقريبي للتجميع بس (مش للعرض): شيل السوابق واللواحق الشائعة وحروف المد — «توصلون/توصيل» و«لمكة/مكة» يتقابلوا. */
+export function mineStem(w) {
+  let x = String(w || "");
+  const p = /^(وال|بال|لل|ال|و|ب|ل|ف)(?=.{3,})/.exec(x); if (p) x = x.slice(p[0].length);
+  const q = /(ون|ين|ات|كم|ها)$/.exec(x); if (q && x.length - q[0].length >= 3) x = x.slice(0, -q[0].length);
+  const y = x.replace(/[اويى]/g, "");
+  return y.length >= 2 ? y : x;
+}
+export function mineQuestions(rows, { minCount = 2, max = 30, similarity = 0.6 } = {}) {
+  const words = (t) => [...new Set(normalize(String(t || "")).replace(/[^\p{L}\p{N}\s]/gu, " ").split(/\s+/).filter((w) => w.length > 1 && !MINE_STOP.has(w) && !MINE_STOP.has(w.replace(/^(ال|لل)/, "")) && !/^\d+$/.test(w)))];
+  const groups = [];
+  for (const r of rows || []) {
+    const ws = words(r.text), st = [...new Set(ws.map(mineStem))];
+    if (!st.length) continue;
+    let best = null, bs = 0;
+    for (const g of groups) {
+      const inter = st.filter((x) => g.set.has(x)).length, small = Math.min(st.length, g.set.size), big = Math.max(st.length, g.set.size);
+      const sim = small ? inter / small : 0;
+      if (sim >= similarity && (inter >= 2 || (small === 1 && big <= 2)) && sim > bs) { bs = sim; best = g; }
+    }
+    if (best) { best.count++; best.phones.add(r.phone || ""); if (r.handoff) best.handoffs++; if (best.examples.length < 4 && !best.examples.includes(r.text)) best.examples.push(r.text);
+      for (const w of ws) { const k = mineStem(w); best.freq[k] = (best.freq[k] || 0) + 1; best.show[k] ||= w; } }
+    else groups.push({ set: new Set(st), freq: Object.fromEntries(st.map((x) => [x, 1])), show: Object.fromEntries(ws.map((w) => [mineStem(w), w])), count: 1, handoffs: r.handoff ? 1 : 0, phones: new Set([r.phone || ""]), examples: [r.text], key: r.key || null });
+  }
+  return groups.filter((g) => g.count >= minCount).sort((a, b) => b.count - a.count).slice(0, max)
+    .map((g) => ({ count: g.count, customers: g.phones.size, handoffs: g.handoffs, lastKey: g.key, words: Object.entries(g.freq).sort((a, b) => b[1] - a[1]).slice(0, 4).map((x) => g.show[x[0]] || x[0]), examples: g.examples }));
+}
+
 /* ── بناء الرد (مجرّد): { body, footer?, cta?:{title,url}, buttons?:[{id,title}] } ───────── */
 const linkUrl = (slug) => `${STORE}/l/${slug}`;
 export function pickLink(cfg, data, referral) {
   const ref = referral || data.chat?.referral || null;
-  const fresh = referral || (data.chat?.referral_at && data.now.getTime() - Date.parse(data.chat.referral_at) < 72 * 3600_000);
+  const fresh = referral || (data.chat?.referral_at && data.now.getTime() - Date.parse(data.chat.referral_at) < cfg.adWindowHours * 3600_000);
   let slug = cfg.links.organic;
   if (ref && fresh) slug = (ref.source_id && cfg.links.adMap[String(ref.source_id)]) || cfg.links.ads;
   const ok = (s) => data.links && data.links[s] === true;
@@ -638,7 +786,7 @@ export function buildReply(key, c) {
         .filter((b2) => !b2.offer_id || !act || act.has(String(b2.offer_id))).sort((a, b2) => Number(a.price) - Number(b2.price));
       if (!packs.length) throw new DataMissing("packs");
       return withLink("packs_body", { lines: packs.map((b2) => `• ${(lang === "en" && b2.name_en) || b2.name}: ${lang === "en" ? `SAR ${money(b2.price)}` : `${money(b2.price)} ر.س`}${
-        b2.offer_id && act ? endsSoon(act.get(String(b2.offer_id))?.until, data.now, lang) : ""}`).join("\n") }, "cta_order");
+        b2.offer_id && act ? endsSoon(act.get(String(b2.offer_id))?.until, data.now, lang, cfg.offerEndWithinDays) : ""}`).join("\n") }, "cta_order");
     }
     case "pickup": {
       const f = (data.settings?.storefront?.seo?.faq || []).find((x) => /الاستلام|استلام/.test(String(x?.q || "")));
@@ -714,19 +862,19 @@ export function buildReply(key, c) {
   }
 }
 /* «لين ١٥/١٠» لو العرض بينتهي خلال ٧ أيام (بتوقيت الرياض)؛ غير كده ولا كلمة */
-export function endsSoon(until, now, lang) {
+export function endsSoon(until, now, lang, within = DEFAULTS.offerEndWithinDays) {
   const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(until || ""));
   if (!m) return "";
   const end = Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]), 21, 0, 0);       // نهاية اليوم بتوقيت الرياض = 21:00 UTC
   const days = (end - now.getTime()) / 86400000;
-  if (days < 0 || days > 7) return "";
+  if (days < 0 || days > within) return "";
   return lang === "en" ? ` (until ${Number(m[3])}/${Number(m[2])})` : ` (لين ${Number(m[3])}/${Number(m[2])})`;
 }
 /* عروض السجل الشغّالة الحين واللي ليها تاريخ انتهاء — للتوصيل/الاستلام بس */
 function timedBlock(cfg, lang, data) {
   const list = (Array.isArray(data.offers) ? data.offers : []).filter((o) => o.until && o.title && Number(o.price) > 0);
   if (!list.length) return "";
-  return [textOf(cfg, "timed_head", lang), ...list.slice(0, 4).map((o) => `• ${o.title}: ${lang === "en" ? `SAR ${money(o.price)}` : `${money(o.price)} ر.س`}${endsSoon(o.until, data.now, lang)}`)].join("\n");
+  return [textOf(cfg, "timed_head", lang), ...list.slice(0, 4).map((o) => `• ${o.title}: ${lang === "en" ? `SAR ${money(o.price)}` : `${money(o.price)} ر.س`}${endsSoon(o.until, data.now, lang, cfg.offerEndWithinDays)}`)].join("\n");
 }
 export class FaqMissing extends DataMissing { constructor(k) { super(`faq:${k}`); this.faq = k; } }
 const isMashakel = (i) => /مشكل مخصوص/.test(i.name);       // قاعدة عمر: مشكل مخصوص من غير أوزان ولا عدد أشخاص ⇒ الاسم والسعر بس
@@ -734,8 +882,8 @@ const priceText = (lang, i) => (i.byWeight ? (lang === "en" ? `from SAR ${money(
 const fitTitle = (s2, n2) => { const a = [...String(s2 || "").trim()]; return a.length <= n2 ? a.join("") : a.slice(0, n2 - 1).join("").trim() + "…"; };
 
 /* المجرّد ⇒ جسم Cloud API. interactive=false ⇒ نص عادي (الرابط في آخره؛ الأزرار تتحوّل لتعليمات مكتوبة). */
-export function toPayload(r, { cfg, lang, interactive = true } = {}) {
-  const footer = textOf(cfg, "footer", lang);
+export function toPayload(r, { cfg, lang, interactive = true, footer: withFooter = true } = {}) {
+  const footer = withFooter ? textOf(cfg, "footer", lang) : undefined;
   if (r.list) {
     const rows = r.list.rows.slice(0, LIMITS.rows).map((x) => ({ id: x.id, title: fitTitle(x.title, LIMITS.rowTitle), ...(x.description ? { description: fitTitle(x.description, LIMITS.rowDesc) } : {}) }));
     if (interactive) return msgList(r.body, r.list.button, rows, { footer });
@@ -944,21 +1092,21 @@ export function decide(ev, ctx) {
   if (key === "ack" || key === "nack") {
     const asked = chat.optin_asked_at ? Date.parse(chat.optin_asked_at) : NaN;
     const answered = chat.optin_answered_at ? Date.parse(chat.optin_answered_at) : NaN;
-    const pending = Number.isFinite(asked) && nowMs - asked < 3600_000 && !(Number.isFinite(answered) && answered >= asked);
+    const pending = Number.isFinite(asked) && nowMs - asked < cfg.optinAnswerWindowMin * 60_000 && !(Number.isFinite(answered) && answered >= asked);
     if (!pending) return silent("ack");
     key = key === "ack" ? "optin_yes" : "optin_no";
   }
   if (factual && !FACTUAL_KEYS.has(key) && !escalates) return silent("handoff_open", { key, resumeAt: hoUntil, detail: ho });
 
   if (key === "greet") {
-    const hasAd = Boolean(ev.referral) || Boolean(chat.referral_at && nowMs - Date.parse(chat.referral_at) < 72 * 3600_000);
+    const hasAd = Boolean(ev.referral) || Boolean(chat.referral_at && nowMs - Date.parse(chat.referral_at) < cfg.adWindowHours * 3600_000);
     if (cfg.greetScope === "ads" && !hasAd) return silent("greet_ads_only");
     if (chat.last_greet_at && nowMs - Date.parse(chat.last_greet_at) < cfg.greetWindowHours * 3600_000) {
       return silent("already_greeted", { resumeAt: iso(Date.parse(chat.last_greet_at) + cfg.greetWindowHours * 3600_000) });
     }
   }
   const wasUnknown = key === "unknown";
-  if (key === "unknown" && Number(chat.unknown_streak) >= 1) { key = "human"; handoff = ["not_understood_twice", "normal"]; }
+  if (key === "unknown" && Number(chat.unknown_streak) >= cfg.unknownHandoverAfter - 1) { key = "human"; handoff = ["not_understood_twice", "normal"]; }
   if (!optout && ctx.repliesLastHour >= cfg.maxRepliesPerHour) return silent("rate_limited");
   if (!optout && ctx.repliesLastHour === cfg.maxRepliesPerHour - 1 && !HANDOFF_KEYS[key]) { key = "rate"; handoff = ["rate_limit", "normal"]; }
   if (ctx.lastSame && ctx.lastSame.key === key && key !== "status" && nowMs - Date.parse(ctx.lastSame.at) < cfg.duplicateSeconds * 1000) return silent("duplicate", { key });
@@ -989,7 +1137,7 @@ export function decide(ev, ctx) {
   // تحويل مفتوح أصلاً ⇒ مفيش تنبيه تاني للفريق على نفس المحادثة (إلا لو الجديد أخطر من القديم)
   if (handoff && ho && !(SERIOUS.has(handoff[0]) && !SERIOUS.has(ho))) handoff = null;
   // ٧) التعريف: أول رسالة من البوت في المحادثة (مرة كل ٢٤ ساعة)
-  const disclose = !chat.last_disclosed_at || nowMs - Date.parse(chat.last_disclosed_at) >= 24 * 3600_000;
+  const disclose = !chat.last_disclosed_at || nowMs - Date.parse(chat.last_disclosed_at) >= cfg.disclosureHours * 3600_000;
   if (disclose) {
     try { reply = { ...reply, body: `${disclosureLine(cfg, c.lang, ctx.data?.settings)}\n${reply.body}` }; }
     catch { /* نص التعريف اتعدّل غلط ⇒ الرد يطلع من غيره أحسن ما مايطلعش */ }
@@ -1008,7 +1156,12 @@ export function decide(ev, ctx) {
       }
     } catch { /* الرسالة التانية إضافة — الرد الأساسي يطلع من غيرها */ }
   }
-  const payloads = replies.map((r) => toPayload(r, { cfg, lang: c.lang, interactive }));
+  /* سطر «للرجوع… أو موظف» (طلب عمر ١٢/١٠: مش تحت كل رسالة). always = كل رسالة بزر؛ first = أول رسالة في المحادثة بس؛
+     smart = أول رسالة + الرسالة الغير مفهومة + أي أزرار/قايمة مافيهاش زر «القائمة» أو «موظف». رسالة الرابط (زر واحد يفتح الموقع)
+     من غير السطر في smart: الطريق لموظف اتقال في التعريف، وكلمة «موظف» شغّالة دايماً. */
+  const wayBack = (r) => [...(r.buttons || []), ...((r.list && r.list.rows) || [])].some((b) => /^(bot:human|m:human|bot:menu|m:main)$/.test(String(b.id)));
+  const showFooter = (r, i) => Boolean(cfg.footerMode === "always" || (disclose && i === 0) || (cfg.footerMode === "smart" && (key === "unknown" || ((r.buttons || r.list) && !wayBack(r)))));
+  const payloads = replies.map((r, i) => toPayload(r, { cfg, lang: c.lang, interactive, footer: showFooter(r, i) }));
   const fallback = replies.map((r) => toPayload(r, { cfg, lang: c.lang, interactive: false }));
   const pp = [...payloads, ...fallback].map(payloadProblem).find(Boolean);
   if (pp) return { act: "silent", reason: "payload_invalid", ...base, key, detail: pp, handoff: handoff || ["data_missing", "normal"] };
@@ -1108,16 +1261,18 @@ export function register(app, ctx, deps = {}) {
         [l.slug, l.label, l.target_type, l.target_id, l.coupon, l.utm_source, l.utm_medium, l.utm_campaign]).catch(() => {});
     }
     // الخصوصية: سجل البوت ٩٠ يوم
-    await pool.query("DELETE FROM wa_bot_log WHERE at < NOW() - INTERVAL '90 days'").catch(() => {});
+    { const keep = botConfig((await getSettingsData().catch(() => null)) || {}).logKeepDays; await pool.query("DELETE FROM wa_bot_log WHERE at < NOW() - make_interval(days => $1::int)", [keep]).catch(() => {}); }
+    await pool.query(`CREATE TABLE IF NOT EXISTS wa_bot_config_log (id BIGSERIAL PRIMARY KEY, at TIMESTAMPTZ NOT NULL DEFAULT NOW(), who TEXT, changes JSONB NOT NULL)`).catch((e) => console.error("[wabot] config log:", e.message));
   }
-  const ready = ensureSchema().then(() => ensureWaConsentSchema(pool).catch((e) => console.error('[wabot] consent schema:', e.message))).then(() => console.log("[wabot] runtime ready")).catch((e) => console.error("[wabot] init failed:", e.message));
+  const ready = ensureSchema().then(() => aicost.ensure().catch((e) => console.error('[wabot] ai-cost schema:', e.message))).then(() => ensureWaConsentSchema(pool).catch((e) => console.error('[wabot] consent schema:', e.message))).then(() => console.log("[wabot] runtime ready")).catch((e) => console.error("[wabot] init failed:", e.message));
 
+  let tune = botConfig({});          // آخر إعدادات اتقرت — مدد الكاش بتتاخد منها (بتتحدّث مع كل رسالة وكل قراءة للإعدادات)
   let bundleCache = { at: 0, rows: null };
   async function bundles() {
-    if (bundleCache.rows && Date.now() - bundleCache.at < 5 * 60_000) return bundleCache.rows;
+    if (bundleCache.rows && Date.now() - bundleCache.at < tune.boxesCacheMin * 60_000) return bundleCache.rows;
     try { const rows = await fetchBundles(); if (Array.isArray(rows) && rows.length) bundleCache = { at: Date.now(), rows }; }
     catch (e) { console.error("[wabot] bundles:", e.message); }
-    return bundleCache.rows && Date.now() - bundleCache.at < 60 * 60_000 ? bundleCache.rows : [];   // كاش أقدم من ساعة مايتعرضش
+    return bundleCache.rows && Date.now() - bundleCache.at < tune.staleCacheMin * 60_000 ? bundleCache.rows : [];   // كاش أقدم من ساعة مايتعرضش
   }
   /* المنيو الحي (نفس اللي المتجر بيعرضه) ⇒ فهرس wabot.indexMenu. كاش ١٠ دقايق؛ كاش أقدم من ساعة مايتعرضش. */
   const storeBase = (process.env.STOREFRONT_PUBLIC_URL || STORE).split(",")[0].replace(/\/+$/, "");
@@ -1128,11 +1283,11 @@ export function register(app, ctx, deps = {}) {
   });
   let menuCache = { at: 0, pages: null };
   async function menuIndex(settings, now) {
-    if (!menuCache.pages || Date.now() - menuCache.at > 5 * 60_000) {
+    if (!menuCache.pages || Date.now() - menuCache.at > tune.menuCacheMin * 60_000) {
       try { const pg = await fetchMenuPages(); if (Array.isArray(pg) && pg.length) menuCache = { at: Date.now(), pages: pg }; }
       catch (e) { console.error("[wabot] menu:", e.message); }
     }
-    if (!menuCache.pages || Date.now() - menuCache.at > 60 * 60_000) return null;
+    if (!menuCache.pages || Date.now() - menuCache.at > tune.staleCacheMin * 60_000) return null;
     const soldOut = {};
     for (const [k, v] of Object.entries(settings?.catalog?.soldOut || {})) if (!v?.until || Date.parse(v.until) > now.getTime()) soldOut[k] = true;
     try { return indexMenu(menuCache.pages, { hiddenIds: settings?.catalog?.hiddenIds || [], soldOut }); } catch { return null; }
@@ -1141,9 +1296,9 @@ export function register(app, ctx, deps = {}) {
   const fetchOffers = deps.fetchOffers || (async () => { const r = await self.request("/api/offers"); if (!r.ok) throw new Error(`offers HTTP ${r.status}`); return (await r.json())?.offers || []; });
   let offersCache = { at: 0, rows: null };
   async function liveOffers(settings, now) {
-    if (!offersCache.rows || Date.now() - offersCache.at > 2 * 60_000) {
+    if (!offersCache.rows || Date.now() - offersCache.at > tune.offersCacheMin * 60_000) {
       try { const rows = await fetchOffers(); if (Array.isArray(rows)) offersCache = { at: Date.now(), rows }; }
-      catch (e) { console.error("[wabot] offers:", e.message); if (Date.now() - offersCache.at > 30 * 60_000) offersCache = { at: 0, rows: null }; }
+      catch (e) { console.error("[wabot] offers:", e.message); if (Date.now() - offersCache.at > tune.staleCacheMin * 60_000) offersCache = { at: 0, rows: null }; }
     }
     if (!offersCache.rows) return null;
     const paused = settings?.catalog?.pausedOffers || {};
@@ -1155,6 +1310,7 @@ export function register(app, ctx, deps = {}) {
   }
   const quoteAt = deps.quote || (async (lat, lng) => { const r = await self.request(`/api/delivery/quote?lat=${encodeURIComponent(lat)}&lng=${encodeURIComponent(lng)}`); return r.ok ? r.json() : null; });
   const llm = deps.llm || null;      // wabotllm.classify — تصنيف بس
+  const aicost = makeAiCost({ pool, sendSms: deps.sendSms || null, now: deps.now || (() => new Date()) });   // كل نداء للموديل بيتسجّل بتكلفته + السقف
   const q = async (sql, params) => { try { return (await pool.query(sql, params)).rows; } catch (e) { console.error("[wabot] db:", e.message); return null; } };
 
   /* البيانات الحية لرسالة واحدة. أي مصدر وقع ⇒ قيمته null/فاضية ⇒ الرد اللي محتاجه بيتحوّل لموظف. */
@@ -1231,7 +1387,7 @@ export function register(app, ctx, deps = {}) {
   async function handle(ev) {
     let settings;
     try { settings = (await getSettingsData()) || {}; } catch { return false; }
-    const cfg = botConfig(settings);
+    const cfg = botConfig(settings); tune = cfg;
     if (cfg.mode === "off") return false;
     if (ev.isEcho) return true;
     await ready;
@@ -1269,11 +1425,24 @@ export function register(app, ctx, deps = {}) {
       /* هجين (اختياري، من اللوحة): الرسالة اللي القواعد مافهمتهاش تتصنّف بموديل — **تصنيف بس**: بيرجّع اسم نية من قايمتنا
          (+ صنف/قسم/بوكس من البيانات) بدرجة ثقة، والرد نفسه نص ثابت بيتعبّى من البيانات الحيّة زي أي رد. فشل/تأخر/ثقة قليلة ⇒ «غير مفهوم». */
       if (cls.key === "unknown" && cfg.llm.enabled && llm && !afterWait && String(ev.text || "").trim().length >= 2) {
-        try {
-          const g = await llm({ text: String(ev.text || ""), menu: know.menu, bundles: know.bundles, cfg: cfg.llm });
-          if (g && g.key && g.confidence >= cfg.llm.minConfidence) cls = { ...cls, key: g.key, arg: g.arg ?? null, rawIntent: `llm:${g.key}`, score: g.confidence };
+        /* السقف أولاً: مصروف اليوم/الشهر وصل الحد (أو مانعرفش نعدّه) ⇒ مفيش نداء، والبوت يكمل بالقواعد. SMS واحد أول مرة. */
+        const sc0 = staffConfig(settings);
+        const stop = await aicost.gate({ purpose: "classify", budget: cfg.llm, phones: cfg.llm.alertPhones.length ? cfg.llm.alertPhones : (cfg.alertPhones.length ? cfg.alertPhones : sc0.alertPhones), lang: sc0.lang, alert: cfg.mode !== "dry" });
+        if (stop) await q("UPDATE wa_bot_log SET detail=$2 WHERE id=$1", [logId, `llm off: ${stop}`]);
+        else {
+          const metas = []; let g = null, threw = null; const t0 = Date.now();
+          try { g = await llm({ text: String(ev.text || ""), menu: know.menu, bundles: know.bundles, cfg: { ...cfg.llm, onCall: (m) => metas.push(m) } }); }
+          catch (e) { threw = e; console.error("[wabot] llm:", e.message); }
+          const accepted = Boolean(g && g.key && g.confidence >= cfg.llm.minConfidence);
+          if (accepted) cls = { ...cls, key: g.key, arg: g.arg ?? null, rawIntent: `llm:${g.key}`, score: g.confidence };
           await q("UPDATE wa_bot_log SET intent=$2, reply_key=$3, detail=$4 WHERE id=$1", [logId, g && g.key ? `llm:${g.key}` : "llm:none", cls.key, g ? `llm ${Math.round((g.confidence || 0) * 100)}% ${g.ms || 0}ms` : "llm failed"]);
-        } catch (e) { console.error("[wabot] llm:", e.message); }
+          /* المصنّف مابلّغش عن النداء (حقنة اختبار أو مزوّد قديم) ⇒ صف تقديري برضه: مفيش نداء من غير أثر. */
+          if (!metas.length) metas.push({ provider: null, model: cfg.llm.model, usage: null, ms: (g && g.ms) || Date.now() - t0, outcome: threw ? "error" : g ? "ok" : "none", sent: null, promptChars: 0 });
+          for (const m of metas) {
+            const outcome = m.outcome !== "ok" ? m.outcome : accepted ? "accepted" : g && g.key ? "low_confidence" : "no_intent";
+            try { await aicost.record({ ...m, purpose: "classify", phone, outcome, detail: g && g.key ? `${g.key} ${Math.round((g.confidence || 0) * 100)}%` : null, logId }, cfg.llm.prices); } catch (e) { console.error("[wabot] ai-cost:", e.message); }
+          }
+        }
       } else if (afterWait && ev.cls && ev.cls.key) cls = { ...cls, ...ev.cls };   // الرد المؤجّل بيكمل بنفس التصنيف اللي اتحسب وقت وصول الرسالة
       const rc = cls.key ? await recent(phone, cls.key, cls.arg) : { n: 0, lastSame: null, failedRecently: false };
       await q("UPDATE wa_bot_log SET reply_arg=$2 WHERE id=$1", [logId, argOf(cls.arg)]);
@@ -1381,7 +1550,7 @@ export function register(app, ctx, deps = {}) {
       const cancel = async (reason) => { await end("cancelled", reason); await finishLog(j.log_id, { decision: "silent", reason }); };
       try {
         const settings = (await getSettingsData()) || {};
-        const cfg = botConfig(settings);
+        const cfg = botConfig(settings); tune = cfg;
         const ev = typeof j.ev === "string" ? JSON.parse(j.ev) : (j.ev || {});
         const now = clock();
         if (cfg.mode === "off") { await cancel("mode_off"); continue; }
@@ -1424,12 +1593,12 @@ export function register(app, ctx, deps = {}) {
     const err = await requireAdmin(c); if (err) return err;
     await ready;
     const settings = (await getSettingsData()) || {};
-    const cfg = botConfig(settings);
+    const cfg = botConfig(settings); tune = cfg;
     const gate = wa && wa.gate ? await wa.gate() : "no_wa";
     const slugs = [...new Set([cfg.links.organic, cfg.links.ads, ...Object.values(cfg.links.adMap)])];
     const lr = (await q("SELECT slug, active, clicks, target_type, target_id, utm_campaign, coupon FROM cms_links WHERE slug = ANY($1::text[])", [slugs])) || [];
     const llmReady = Boolean(process.env.ANTHROPIC_API_KEY || process.env.LITELLM_KEY);
-    return c.json({ ok: true, config: cfg, defaults: DEFAULTS, texts: textsMeta(), replyKeys: REPLY_KEYS, modes: MODES, llmReady,
+    return c.json({ ok: true, config: cfg, defaults: DEFAULTS, texts: textsMeta(), replyKeys: REPLY_KEYS, modes: MODES, llmReady, llmProvider: providerInfo(),
       faq: FAQ_KEYS.map((k) => ({ key: k, q: FAQ_DEFS[k].q, needs: FAQ_DEFS[k].needs, ar: cfg.faq?.[k]?.ar || "", en: cfg.faq?.[k]?.en || "" })),
       state: { configured: wa?.configured ? wa.configured() : false, liveGate: gate,   // null = الأقفال مفتوحة؛ غير كده اسم القفل اللي مانع وضع live
         liveReady: !gate, staffLang: staffConfig(settings).lang, publicPhone: publicPhoneOf(cfg, settings),
@@ -1446,6 +1615,9 @@ export function register(app, ctx, deps = {}) {
     const v = configFromBody(b, prev);
     if (!v.ok) return c.json({ ok: false, error: "invalid", errors: v.errors }, 400);
     await pool.query("UPDATE settings SET data = jsonb_set(COALESCE(data,'{}'::jsonb), '{waBot}', $1::jsonb, true), updated_at=NOW() WHERE id=1", [JSON.stringify(v.value)]);
+    /* مين غيّر إيه: كل حفظ صف بالفرق (من ← إلى) واسم اللي حفظ */
+    { const changes = configDiff(prev, v.value); if (changes.length) { let who = null; try { who = ctx.whoami ? await ctx.whoami(c) : null; } catch { /* مجهول */ }
+      await q("INSERT INTO wa_bot_config_log(who, changes) VALUES ($1, $2::jsonb)", [who && typeof who === "object" ? String(who.name || who.username || who.role || "") || null : who ? String(who) : null, JSON.stringify(changes)]); } }
     if (ctx.auditNote) { try { await ctx.auditNote(c, `🤖 بوت واتساب: ${prev.mode || "off"} → ${v.value.mode || "off"}${"testPhones" in (b || {}) ? ` · أرقام التجربة ${(v.value.testPhones || []).length}` : ""}`); } catch { /* سجل النشاط اختياري */ } }
     return c.json({ ok: true, config: botConfig({ waBot: v.value }) });
   });
@@ -1456,7 +1628,7 @@ export function register(app, ctx, deps = {}) {
     const err = await requireAdmin(c); if (err) return err;
     await ready;
     const settings = (await getSettingsData()) || {};
-    const cfg = botConfig(settings);
+    const cfg = botConfig(settings); tune = cfg;
     const now = clock();
     const menu = await menuIndex(settings, now);
     const bs = await bundles();
@@ -1476,7 +1648,7 @@ export function register(app, ctx, deps = {}) {
         hidden: (settings?.catalog?.hiddenIds || []).length, ageSeconds: menuCache.at ? Math.round((Date.now() - menuCache.at) / 1000) : null },
       first: safe(() => firstLine(cfg, "ar", data)), loyalty: safe(() => loyaltyLine(cfg, "ar", data)),
       delivery: { known: Boolean(policy), km: policy ? Number(policy.maxKm) || null : null, farKm: policy && policy.farZoneEnabled !== false ? Number(policy.farZoneMaxKm) || null : null, fees: policy ? feeLines(policy, "ar").split("\n").filter(Boolean) : [] },
-      offers: { known: offers !== null, list: (offers || []).map((o) => ({ title: o.title, price: o.price, until: o.until, ends: endsSoon(o.until, now, "ar").trim() || null })) },
+      offers: { known: offers !== null, list: (offers || []).map((o) => ({ title: o.title, price: o.price, until: o.until, ends: endsSoon(o.until, now, "ar", cfg.offerEndWithinDays).trim() || null })) },
       contact: { phone: publicPhoneOf(cfg, settings) || null, maps: String(settings?.googlePlace?.mapsUrl || "") || null },
       faq: { answered: FAQ_KEYS.filter((k) => String(cfg.faq?.[k]?.ar || "").trim()), missing: FAQ_KEYS.filter((k) => !String(cfg.faq?.[k]?.ar || "").trim()) },
       caches: { menuSeconds: 300, boxesSeconds: 300, offersSeconds: 120, everythingElse: "read on every message" } });
@@ -1634,6 +1806,53 @@ export function register(app, ctx, deps = {}) {
         would: first ? String(first.text?.body || first.interactive?.body?.text || "").slice(0, 400) : null, messages: out.payloads ? out.payloads.length : 0 });
     }
     return c.json({ ok: true, days, count: rows.length, menuItems: know.menu ? know.menu.items.length : 0, tally, rows });
+  });
+
+  /* مخطط الإعدادات للّوحة: كل إعداد بنوعه وحدوده وافتراضيه وقيمته واسمه وشرحه بالعربي (قراءة بس). */
+  app.get("/api/cms/wabot/schema", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    const cfg = botConfig((await getSettingsData()) || {});
+    return c.json({ ok: true, groups: SCHEMA_GROUPS, settings: schemaFor(cfg), texts: textsMeta(), faq: FAQ_KEYS.map((k) => ({ key: k, ...FAQ_DEFS[k], ar: cfg.faq?.[k]?.ar || "", en: cfg.faq?.[k]?.en || "" })) });
+  });
+  /* سجل تعديلات الإعدادات: مين، إمتى، وإيه اللي اتغيّر (من ← إلى). */
+  app.get("/api/cms/wabot/config-log", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    const no = ownerOnly(c); if (no) return no;
+    await ready;
+    return c.json({ ok: true, rows: (await q("SELECT id, at, who, changes FROM wa_bot_config_log ORDER BY id DESC LIMIT $1", [Math.min(200, Math.max(1, Number(c.req.query("limit")) || 50))])) || [] });
+  });
+  /* تنقيب الأسئلة: أكتر النوايا، وأكتر الأسئلة اللي اتحوّلت لموظف أو مااتفهمتش مجمّعة بالتشابه بأمثلتها — عشان تتحوّل لإجابات أو فروع. */
+  app.get("/api/cms/wabot/faq-mining", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    await ready;
+    const days = Math.min(90, Math.max(1, Number(c.req.query("days")) || 30));
+    const rows = (await q(`SELECT text, reply_key AS key, handoff, phone_norm AS phone, detail FROM wa_bot_log WHERE at > NOW() - make_interval(days => $1::int) AND text IS NOT NULL AND text <> '' ORDER BY id DESC LIMIT 5000`, [days])) || [];
+    const byKey = {};
+    for (const r of rows) byKey[r.key || "-"] = (byKey[r.key || "-"] || 0) + 1;
+    const hard = rows.filter((r) => r.key === "unknown" || r.key === "staff" || r.key === "data_missing" || ["needs_staff", "not_understood_twice"].includes(r.handoff));
+    const faqGaps = {};
+    for (const r of rows) { const m = /^faq:(\w+)/.exec(String(r.detail || "")); if (m) faqGaps[m[1]] = (faqGaps[m[1]] || 0) + 1; }
+    return c.json({ ok: true, days, messages: rows.length, intents: Object.entries(byKey).map(([key, n]) => ({ key, n })).sort((a, b) => b.n - a.n),
+      unanswered: { messages: hard.length, groups: mineQuestions(hard, { minCount: Number(c.req.query("min")) || 2 }), singles: mineQuestions(hard, { minCount: 1, max: 200 }).filter((g) => g.count === 1).slice(0, 40).map((g) => g.examples[0]) },
+      faqWaiting: Object.entries(faqGaps).map(([key, n]) => ({ key, q: FAQ_DEFS[key]?.q || key, n })).sort((a, b) => b.n - a.n) });
+  });
+
+  /* كارت التكلفة: الذكاء (اليوم/٧ أيام/الشهر، لكل محادثة ولكل رسالة، نسبة الرسايل اللي احتاجت الموديل، توقّع الشهر، السقف)
+     + تكلفة واتساب نفسها (الردود الحرة مقابل المجاني، والقوالب بالفئة بسعر البطاقة المخزّنة). قراءة بس. */
+  app.get("/api/cms/wabot/cost", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    await ready;
+    const cfg = botConfig((await getSettingsData()) || {});
+    const budget = { budgetMonthSar: cfg.llm.budgetMonthSar, budgetDaySar: cfg.llm.budgetDaySar };
+    const [ai, wside] = await Promise.all([aicost.summary({ purpose: "classify", budget, prices: cfg.llm.prices }), aicost.waSide({ freeReplies: cfg.freeRepliesPerMonth, replyRateSar: cfg.replyRateSar, rates: cfg.waRates })]);
+    return c.json({ ok: true, enabled: cfg.llm.enabled, mode: cfg.mode, model: cfg.llm.model, provider: providerInfo(), ai, wa: wside });
+  });
+  /* سجل نداءات الموديل للمراجعة: إيه اللي اتبعت بالظبط (بعد الإخفاء)، التوكنز، التكلفة، النتيجة. المالك بس. */
+  app.get("/api/cms/wabot/ai-calls", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    const no = ownerOnly(c); if (no) return no;
+    await ready;
+    return c.json({ ok: true, rows: await aicost.calls({ limit: Number(c.req.query("limit")) || 100 }) });
   });
 
   /* إثباتات الموافقة على تحديثات الطلب (من سؤال البوت) */

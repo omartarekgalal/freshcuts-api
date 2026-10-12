@@ -9,6 +9,7 @@ import assert from "node:assert/strict";
 
 import fs from "node:fs";
 import * as C from "./waconsent.js";
+import * as AIC from "./waaicost.js";
 const W = await import("./whatsapp.js");
 const R = await import("./wabotrun.js");
 const LLM = await import("./wabotllm.js");
@@ -52,9 +53,9 @@ function world({ waBot = {}, notifications = { whatsappEnabled: true }, orders =
   at = OPEN_AT, graph = null, failDb = null, extraSettings = {}, disclosure = false, pages = LIVE.pages, quote = null, llm = null, greetMenu = false, offers = LIVE.offers } = {}) {
   let nowMs = Date.parse(at);
   const clock = { now: () => new Date(nowMs), advance: (min) => { nowMs += min * 60_000; }, set: (iso) => { nowMs = Date.parse(iso); } };
-  const db = { msgs: [], log: [], jobs: [], proofs: [], consentLog: [], chats: new Map(), optouts: [], optins: {}, links: links.map((s) => ({ slug: s, active: true, clicks: 0 })), settings: null };
+  const db = { msgs: [], log: [], jobs: [], proofs: [], consentLog: [], ai: [], aiAlerts: [], tpl: [], cfgLog: [], chats: new Map(), optouts: [], optins: {}, links: links.map((s) => ({ slug: s, active: true, clicks: 0 })), settings: null };
   db.settings = { hours: HOURS, notifications, googlePlace: { mapsUrl: "https://maps.google.com/?cid=14767749764292326433" }, storefront: { seo: { faq: FAQ } },
-    cms: { loyalty: { enabled: true, every: 3, reward: "free_delivery", minTotal: 60 } }, delivery: { alertPhones: ["0544775082", "0506338246"], staffSmsLanguage: "en" }, waBot, ...extraSettings };
+    cms: { loyalty: { enabled: true, every: 3, reward: "free_delivery", minTotal: 60 } }, delivery: { alertPhones: ["0544775082", "0506338246"], staffSmsLanguage: "en" }, waBot: { footerMode: "always", ...waBot }, ...extraSettings };
   const iso = () => new Date(nowMs).toISOString();
   const chat = (p) => { if (!db.chats.has(p)) db.chats.set(p, { phone_norm: p, unknown_streak: 0, ...(disclosure ? {} : { last_disclosed_at: iso() }) }); return db.chats.get(p); };
   const pool = {
@@ -62,6 +63,28 @@ function world({ waBot = {}, notifications = { whatsappEnabled: true }, orders =
       const s = String(sql).replace(/\s+/g, " ").trim();
       if (failDb && failDb.test(s)) throw new Error("db down");
       if (/^CREATE TABLE|^DELETE FROM wa_bot_log|wa_webhook_health|wa_contact_names|wa_threads/i.test(s)) return { rows: [], rowCount: 0 };
+      if (/^INSERT INTO wa_bot_config_log/i.test(s)) { db.cfgLog.push({ id: db.cfgLog.length + 1, at: iso(), who: p[0], changes: JSON.parse(p[1]) }); return { rows: [] }; }
+      if (/FROM wa_bot_config_log/i.test(s)) return { rows: [...db.cfgLog].reverse() };
+      if (/^SELECT text, reply_key AS key, handoff, phone_norm AS phone, detail FROM wa_bot_log/i.test(s)) return { rows: db.log.filter((l) => l.text).map((l) => ({ text: l.text, key: l.reply_key, handoff: l.handoff || null, phone: l.phone_norm, detail: l.detail || null })).reverse() };
+      // ── ai_calls (waaicost.js)
+      if (/^INSERT INTO ai_calls/i.test(s)) { db.ai.push({ id: db.ai.length + 1, at: iso(), purpose: p[0], provider: p[1], model: p[2], in_tokens: p[3], out_tokens: p[4], cached_tokens: p[5], estimated: p[6], cost_sar: p[7], priced: p[8], price_date: p[9],
+        ms: p[10], chat_hash: p[11], outcome: p[12], detail: p[13], sent_text: p[14], prompt_chars: p[15], prompt_hash: p[16], log_id: p[17] }); return { rows: [] }; }
+      if (/FROM ai_calls/i.test(s)) {
+        const k = AIC.riyadhKeys(new Date(nowMs)), kOf = (a) => AIC.riyadhKeys(new Date(a.at)), sum = (l) => l.reduce((x, a) => x + Number(a.cost_sar), 0);
+        if (/AS day, COALESCE\(sum\(cost_sar\), 0\)::float AS month/i.test(s)) { const m = db.ai.filter((a) => kOf(a).month === k.month && (!p[0] || a.purpose === p[0])); return { rows: [{ day: sum(m.filter((a) => kOf(a).day === k.day)), month: sum(m) }] }; }
+        if (/^SELECT count\(\*\)::int AS calls/i.test(s)) {
+          const l = db.ai.filter((a) => (!p[0] || a.purpose === p[0]) && (/date_trunc\('day'/.test(s) ? kOf(a).day === k.day : /7 days/.test(s) ? nowMs - Date.parse(a.at) < 7 * 86400_000 : kOf(a).month === k.month));
+          return { rows: [{ calls: l.length, cost: sum(l), ms: l.length ? l.reduce((x, a) => x + a.ms, 0) / l.length : 0, tin: l.reduce((x, a) => x + a.in_tokens, 0), tout: l.reduce((x, a) => x + a.out_tokens, 0), tcached: l.reduce((x, a) => x + a.cached_tokens, 0),
+            chats: new Set(l.map((a) => a.chat_hash)).size, estimated: l.filter((a) => a.estimated).length, accepted: l.filter((a) => a.outcome === "accepted").length }] };
+        }
+        if (/GROUP BY 1/i.test(s)) { const g = {}; for (const a of db.ai) g[a.outcome] = (g[a.outcome] || 0) + 1; return { rows: Object.entries(g).map(([outcome, n]) => ({ outcome, n })) }; }
+        return { rows: [...db.ai].reverse().slice(0, p[0]) };
+      }
+      if (/^UPDATE wa_bot_log SET detail=.2 WHERE id=.1/i.test(s)) { const l = db.log.find((x) => x.id === p[0]); if (l) l.detail = p[1]; return { rows: [] }; }
+      if (/^INSERT INTO ai_budget_alerts/i.test(s)) { if (db.aiAlerts.includes(p[0])) return { rows: [] }; db.aiAlerts.push(p[0]); return { rows: [{ key: p[0] }] }; }
+      if (/ai_budget_alerts/i.test(s)) return { rows: db.aiAlerts.map((key) => ({ key })) };
+      if (/^SELECT count\(\*\)::int AS n FROM wa_bot_log WHERE at >= \(date_trunc\('month'/i.test(s)) return { rows: [{ n: db.log.length }] };
+      if (/FROM wa_messages WHERE direction='out' AND template IS NOT NULL/i.test(s)) return { rows: db.tpl };
       if (/^INSERT INTO cms_links/i.test(s)) { if (!db.links.find((l) => l.slug === p[0])) db.links.push({ slug: p[0], active: true, clicks: 0, seeded: true }); return { rows: [] }; }
       if (/FROM cms_links WHERE slug = ANY/i.test(s)) return { rows: db.links.filter((l) => p[0].includes(l.slug) && l.active) };
       if (/^INSERT INTO wa_messages/i.test(s)) {
@@ -167,7 +190,7 @@ function world({ waBot = {}, notifications = { whatsappEnabled: true }, orders =
     request: async () => ({ ok: bundles !== null, status: bundles === null ? 500 : 200, json: async () => ({ ok: true, bundles }) }) };
   let owner = true;
   const ctx = { pool, requireAdmin: async () => null, getSettingsData: async () => JSON.parse(JSON.stringify(db.settings)), jb: (x) => JSON.stringify(x),
-    normPhone: (x) => String(x || "").replace(/\D/g, "").replace(/^966/, "").replace(/^0/, ""), isOwner: () => owner };
+    normPhone: (x) => String(x || "").replace(/\D/g, "").replace(/^966/, "").replace(/^0/, ""), isOwner: () => owner, whoami: async () => ({ name: "عمر", role: "owner" }) };
   const wa = W.register(app, ctx, { fetch, sendSms: async () => ({ ok: true }) });
   const sms = [];
   const bot = R.register(app, ctx, { app, wa, now: clock.now, noTimer: true, sendSms: async (x) => { sms.push(x); return { ok: true }; },
@@ -1178,14 +1201,14 @@ test("LLM (switchable, off by default): classification only, for messages the ru
     assert.deepEqual(await x.tick(3), [FALLBACK2(ME)]);
   }
   // what leaves the server: the text with long digit runs masked, plus public menu names; no phone, no name
-  assert.equal(LLM.maskText("ابغا الكريب 0544775082 طلب W1790011111111 رقم ٠٥٤٤٧٧٥٠٨٢"), "ابغا الكريب # طلب W# رقم #");
+  assert.equal(LLM.maskText("ابغا الكريب 0544775082 طلب W1790011111111 رقم ٠٥٤٤٧٧٥٠٨٢"), "ابغا الكريب [رقم] طلب [طلب] رقم [رقم]");
   const reqs = [];
   const cls = LLM.makeClassifier({ faqKeys: R.FAQ_KEYS, env: { ANTHROPIC_API_KEY: "k" }, fetch: async (url, init) => { reqs.push({ url, headers: init.headers, body: JSON.parse(init.body) });
     return { ok: true, json: async () => ({ stop_reason: "end_turn", content: [{ type: "thinking", thinking: "" }, { type: "text", text: 'النتيجة: {"intent":"item","item_id":"8","confidence":0.9}' }] }) }; } });
   const g = await cls({ text: "ابغا الكريب الحراق 0544775082", menu: KNOW.menu, bundles: LIVE.bundles, cfg: { model: "claude-haiku-5-5", timeoutMs: 2500 } });
   assert.deepEqual([g.key, g.arg, g.confidence], ["item", "8", 0.9]);
   assert.equal(reqs[0].url, "https://api.anthropic.com/v1/messages"); assert.equal(reqs[0].body.model, "claude-haiku-5-5"); assert.deepEqual(reqs[0].body.output_config, { effort: "low" });
-  assert.equal(reqs[0].body.messages[0].content, "ابغا الكريب الحراق #"); assert.doesNotMatch(JSON.stringify(reqs[0].body), /0544775082|544775082/);
+  assert.equal(reqs[0].body.messages[0].content, "ابغا الكريب الحراق [رقم]"); assert.doesNotMatch(JSON.stringify(reqs[0].body), /0544775082|544775082/);
   assert.ok(!("temperature" in reqs[0].body) && !("tool_choice" in reqs[0].body));
   // the model can not invent a dish, a box, a category, an FAQ key or an intent
   const V = (o) => LLM.validate(o, { menu: KNOW.menu, bundles: LIVE.bundles, faqKeys: R.FAQ_KEYS });
@@ -1199,6 +1222,227 @@ test("LLM (switchable, off by default): classification only, for messages the ru
   // settings
   assert.equal(R.configFromBody({ llm: { enabled: true, minConfidence: 0.8 } }).value.llm.enabled, true);
   assert.equal(R.configFromBody({ llm: { model: "bad model!" } }).ok, false);
+}));
+
+/* ── تكلفة الذكاء: إخفاء، تسجيل، سقف ───────────────────────────────────── */
+test("masking before anything leaves the server: phones, order numbers, links, names after a cue, address details — the district stays", () => {
+  const M = LLM.maskText;
+  for (const [raw, out] of [
+    ["رقمي 0544775082", "رقمي [رقم]"], ["كلموني على +966 54 477 5082", "كلموني على [رقم]"], ["00966544775082", "[رقم]"], ["054-477-5082 ضروري", "[رقم] ضروري"],
+    ["بطاقتي 4111 1111 1111 1111", "بطاقتي [رقم]"], ["طلبي W1790011111111 وينه", "طلبي [طلب] وينه"], ["w 1790011111111", "[طلب]"],
+    ["اسمي احمد العتيبي ابي بوكس", "اسمي [اسم] ابي بوكس"], ["معك خالد ابي اطلب", "معك [اسم] ابي اطلب"], ["my name is Omar Tarek", "my name is [اسم]"], ["الطلب باسم سارة", "الطلب باسم [اسم]"],
+    ["توصلون حي السلامة شارع صاري عمارة 12 شقة 5", "توصلون حي السلامة [عنوان] [عنوان]"], ["انا في حي الصفا جنب مسجد النور", "انا في حي الصفا [عنوان]"],
+    ["فيلا 22 حي الروضة", "[عنوان] حي الروضة"], ["موقعي 21.5810, 39.1502", "موقعي [موقع]"], ["https://maps.app.goo.gl/AbC123 هذا موقعي", "[رابط] هذا موقعي"], ["ايميلي omar@example.com", "ايميلي [ايميل]"],
+    // ordinary questions are untouched: prices, counts and short numbers are not personal
+    ["ابي 2 كريب زنجر وبطاطس", "ابي 2 كريب زنجر وبطاطس"], ["عندكم بوكس ل 6 اشخاص بحدود 200", "عندكم بوكس ل 6 اشخاص بحدود 200"], ["توصلون حي النعيم؟", "توصلون حي النعيم؟"], ["بكم الكفتة", "بكم الكفتة"],
+  ]) assert.equal(M(raw), out, raw);
+  for (const leak of ["0544775082", "٠٥٤٤٧٧٥٠٨٢ احمد", "اسمي فهد 0561186075 شارع التحلية عمارة 4"]) assert.doesNotMatch(M(leak), /\d{7,}|فهد|التحلية/, leak);
+  assert.equal(M("x".repeat(900)).length, 300);
+});
+
+test("AI cost: price table → SAR per call, unknown model never under-counted, projection, budgets, settings validation", () => {
+  assert.deepEqual(AIC.normUsage({ prompt_tokens: 2675, completion_tokens: 163 }, "openai"), { in: 2675, out: 163, cached: 0 });
+  assert.deepEqual(AIC.normUsage({ prompt_tokens: 3000, completion_tokens: 10, prompt_tokens_details: { cached_tokens: 2000 } }, "openai"), { in: 1000, out: 10, cached: 2000 });
+  assert.deepEqual(AIC.normUsage({ input_tokens: 500, output_tokens: 80, cache_read_input_tokens: 2000, cache_creation_input_tokens: 100 }, "anthropic"), { in: 600, out: 80, cached: 2000 });
+  // the measured classification call of 12/10: 2,675 in + 163 out on claude-haiku-5-5 = $0.000349 = 0.001309 SAR
+  assert.deepEqual(AIC.costSar({ in: 2675, out: 163, cached: 0 }, "anthropic/claude-haiku-5-5", null), { sar: 0.001309, priced: true, priceDate: "2026-10-06" });
+  assert.deepEqual(AIC.costSar({ in: 4339, out: 631, cached: 0 }, "claude-sonnet-5-5", null).sar, 0.056205);
+  const odd = AIC.costSar({ in: 1000, out: 100, cached: 0 }, "some-new-model", null);
+  assert.equal(odd.priced, false); assert.equal(odd.sar, 0.0225, "a model missing from the table is charged at the dearest listed price");
+  assert.equal(AIC.costSar({ in: 1e6, out: 0, cached: 0 }, "claude-haiku-5-5", { usdSar: 3.8, date: "2026-11-01", models: { "claude-haiku-5-5": { in: 0.2 } } }).sar, 0.76);
+  assert.equal(AIC.pricesOf({ models: { "claude-haiku-5-5": { in: -5, out: "x" } }, usdSar: 99 }).models["claude-haiku-5-5"].in, 0.1, "a bad stored price falls back to the default");
+  assert.equal(AIC.pricesOf({ usdSar: 99 }).usdSar, 3.75);
+  assert.equal(AIC.pricesFromBody({ models: { "claude-haiku-5-5": { in: "abc" } } }, null).ok, false);
+  assert.equal(AIC.pricesFromBody({ date: "2026-11-01", models: { "claude-haiku-5-5": { in: 0.12 } } }, null).value.models["claude-haiku-5-5"].in, 0.12);
+  assert.equal(AIC.waRatesFromBody({ marketing: 9 }, null).ok, false); assert.equal(AIC.waRatesOf(null).utility, 0.0401);
+  assert.equal(AIC.projectMonth(6, new Date("2026-10-12T21:00:00Z")), 15.5, "12 full days gone (it is 00:00 on the 13th in Riyadh) ⇒ 6 ÷ 12 × 31");
+  assert.equal(AIC.projectMonth(1, new Date("2026-10-01T03:00:00Z")), null, "less than one day of data ⇒ no projection");
+  assert.equal(AIC.budgetStop({ day: 2.99, month: 10 }, { budgetDaySar: 3, budgetMonthSar: 30 }), null);
+  assert.equal(AIC.budgetStop({ day: 3, month: 10 }, { budgetDaySar: 3, budgetMonthSar: 30 }), "budget_day");
+  assert.equal(AIC.budgetStop({ day: 0.1, month: 30 }, { budgetDaySar: 3, budgetMonthSar: 30 }), "budget_month");
+  assert.equal(AIC.budgetStop({ day: 0, month: 0 }, { budgetDaySar: 3, budgetMonthSar: 0 }), "budget_month", "a zero budget means off");
+  assert.ok(AIC.budgetSms("budget_day", { day: 3.01, month: 9 }, { budgetDaySar: 3, budgetMonthSar: 30 }, "en").length <= 160);
+  assert.match(AIC.chatHash("512345678", "s"), /^[0-9a-f]{16}$/); assert.notEqual(AIC.chatHash("512345678", "s"), AIC.chatHash("512345679", "s"));
+  const d = R.botConfig({}).llm;
+  assert.deepEqual([d.budgetMonthSar, d.budgetDaySar, d.prices.models["claude-haiku-5-5"].out], [30, 3, 0.5]);
+  assert.equal(R.configFromBody({ llm: { budgetDaySar: -1 } }).ok, false); assert.equal(R.configFromBody({ llm: { budgetMonthSar: "" } }).ok, false);
+  assert.equal(R.configFromBody({ llm: { budgetDaySar: 1.5, budgetMonthSar: 20 } }).value.llm.budgetDaySar, 1.5);
+  assert.equal(R.configFromBody({ waRates: { marketing: 0.25, date: "2026-11-01" } }).value.waRates.marketing, 0.25);
+  assert.equal(R.configFromBody({ waRates: { utility: "x" } }).ok, false);
+});
+
+test("AI cost: every model call is logged with tokens, SAR cost, hashed chat and the exact masked text; ceilings stop the model and alert once", withEnv(LOCKS_OPEN, async () => {
+  const USAGE = { prompt_tokens: 2675, completion_tokens: 163 };
+  let n = 0;
+  const model = async (a) => { n++; a.cfg.onCall({ provider: "litellm:llm.o2m8.me", model: a.cfg.model, usage: USAGE, usageKind: "openai", ms: 1700, outcome: "ok", sent: LLM.maskText(a.text), promptChars: 5200, promptHash: "abc123abc123" }); return { key: "item", arg: "8", confidence: 0.92, ms: 1700 }; };
+  const ph = (i) => ({ from: `96650000${String(1000 + i)}` });
+  const w = liveWorld({ waBot: { llm: { enabled: true } }, llm: model });
+  await w.say("كم رسوم التوصيل"); assert.equal(w.db.ai.length, 0, "the rules answered: no call, no row");
+  const r = await w.say("ابغا ذاك اللي جربته قبل اسبوع اسمي احمد 0544775082", ph(1));
+  assert.equal(r.log.reply_key, "item"); assert.equal(w.db.ai.length, 1);
+  const row = w.db.ai[0];
+  assert.deepEqual([row.purpose, row.provider, row.model, row.in_tokens, row.out_tokens, row.cached_tokens, row.estimated, row.cost_sar, row.priced, row.price_date, row.ms, row.outcome, row.detail, row.log_id],
+    ["classify", "litellm:llm.o2m8.me", "claude-haiku-5-5", 2675, 163, 0, false, 0.001309, true, "2026-10-06", 1700, "accepted", "item 92%", r.log.id]);
+  assert.equal(row.sent_text, "ابغا ذاك اللي جربته قبل اسبوع اسمي [اسم] [رقم]"); assert.match(row.chat_hash, /^[0-9a-f]{16}$/);
+  assert.doesNotMatch(JSON.stringify(row), /500001001|0544775082|احمد/, "no phone and no name in the cost log");
+  // outcomes: low confidence and failures are logged too (a failed call may still be billed)
+  const lo = liveWorld({ waBot: { llm: { enabled: true } }, llm: async (a) => { a.cfg.onCall({ model: a.cfg.model, usage: USAGE, usageKind: "openai", ms: 900, outcome: "ok", sent: "x" }); return { key: "item", arg: "8", confidence: 0.5 }; } });
+  await lo.say("هذا كلام مو واضح ابد"); assert.equal(lo.db.ai[0].outcome, "low_confidence");
+  const to = liveWorld({ waBot: { llm: { enabled: true } }, llm: async (a) => { a.cfg.onCall({ model: a.cfg.model, usage: null, ms: 2500, outcome: "timeout", sent: "هذا كلام مو واضح ابد", promptChars: 5200 }); return null; } });
+  await to.say("هذا كلام مو واضح ابد");
+  assert.deepEqual([to.db.ai[0].outcome, to.db.ai[0].estimated, to.db.ai[0].in_tokens, to.db.ai[0].cost_sar > 0], ["timeout", true, 2610, true], "no usage from the provider ⇒ estimated from the prompt length, never zero");
+  const silent = liveWorld({ waBot: { llm: { enabled: true } }, llm: async () => ({ key: "item", arg: "8", confidence: 0.9 }) });
+  await silent.say("هذا كلام مو واضح ابد"); assert.equal(silent.db.ai.length, 1, "a classifier that reports nothing still leaves a row"); assert.equal(silent.db.ai[0].estimated, true);
+  // daily ceiling: 0.002 SAR ⇒ two calls (0 and 0.0013 are under it), then rules-only, one SMS to each alert phone, once
+  n = 0;
+  const b = liveWorld({ waBot: { llm: { enabled: true, budgetDaySar: 0.002 } }, llm: model });
+  await b.say("ابغا ذاك اللي جربته قبل اسبوع", ph(1)); b.clock.advance(1);
+  await b.say("ابغا ذاك اللي جربته قبل اسبوع", ph(2)); b.clock.advance(1);
+  assert.equal(n, 2); assert.equal(b.sms.length, 0);
+  const s3 = await b.say("ابغا ذاك اللي جربته قبل اسبوع", ph(3));
+  assert.equal(n, 2, "ceiling reached: the model is not called"); assert.equal(s3.log.detail, "llm off: budget_day"); assert.equal(s3.log.reason, "unknown_wait", "the bot carries on with the rules");
+  assert.equal(b.sms.length, 2); assert.match(b.sms[0].body, /^WhatsApp bot: AI daily ceiling reached \(.+ SAR\)\. Rules-only until tomorrow\.$/); assert.ok(b.sms[0].body.length <= 160);
+  b.clock.advance(1); await b.say("ابغا ذاك اللي جربته قبل اسبوع", ph(4));
+  assert.equal(n, 2); assert.equal(b.sms.length, 2, "one alert per day, not one per message");
+  assert.equal(b.db.ai.length, 2, "a blocked message costs nothing and adds no call row");
+  b.clock.advance(60 * 24);
+  await b.say("ابغا ذاك اللي جربته قبل اسبوع", ph(5)); assert.equal(n, 3, "next day the model is back");
+  // monthly budget, a zero budget, the alert phones of the AI card, dry mode
+  n = 0;
+  const m = liveWorld({ waBot: { llm: { enabled: true, budgetMonthSar: 0.001, alertPhones: ["0544775082"] } }, llm: model });
+  await m.say("ابغا ذاك اللي جربته قبل اسبوع", ph(1)); m.clock.advance(1);
+  const m2 = await m.say("ابغا ذاك اللي جربته قبل اسبوع", ph(2));
+  assert.equal(n, 1); assert.equal(m2.log.detail, "llm off: budget_month"); assert.equal(m.sms.length, 1); assert.match(m.sms[0].body, /monthly budget/);
+  n = 0;
+  const z = liveWorld({ waBot: { llm: { enabled: true, budgetDaySar: 0 } }, llm: model });
+  await z.say("ابغا ذاك اللي جربته قبل اسبوع"); assert.equal(n, 0);
+  const dry = liveWorld({ waBot: { mode: "dry", llm: { enabled: true, budgetDaySar: 0 } }, llm: model });
+  await dry.say("ابغا ذاك اللي جربته قبل اسبوع"); assert.equal(dry.sms.length, 0, "dry mode alerts nobody");
+  // the cost database is unreachable ⇒ no spending blind
+  n = 0;
+  const down = liveWorld({ waBot: { llm: { enabled: true } }, llm: model, failDb: /FROM ai_calls/ });
+  const dn = await down.say("ابغا ذاك اللي جربته قبل اسبوع"); assert.equal(n, 0); assert.equal(dn.log.detail, "llm off: cost_db_down");
+  // the card
+  w.db.tpl = [{ category: "utility", n: 40 }, { category: "marketing", n: 10 }];
+  const card = (await w.call("GET", "/api/cms/wabot/cost")).body;
+  assert.deepEqual([card.ok, card.enabled, card.model, card.ai.today.calls, card.ai.month.costSar, card.ai.month.perChatSar, card.ai.month.avgMs, card.ai.share.messages, card.ai.share.modelCalls, card.ai.share.pct],
+    [true, true, "claude-haiku-5-5", 1, 0.001309, 0.001309, 1700, 2, 1, 50]);
+  assert.deepEqual([card.ai.budget.budgetMonthSar, card.ai.budget.budgetDaySar, card.ai.budget.stop, card.ai.prices.date], [30, 3, null, "2026-10-06"]);
+  assert.deepEqual(card.wa.replies, { used: 2, free: 1000, left: 998, billable: 0, rateSar: 0.0401, costSar: 0 });
+  assert.deepEqual(card.wa.templates, [{ category: "marketing", sent: 10, rateSar: 0.2159, costSar: 2.16 }, { category: "utility", sent: 40, rateSar: 0.0401, costSar: 1.6 }, { category: "authentication", sent: 0, rateSar: 0.0401, costSar: 0 }]);
+  assert.equal(card.wa.totalSar, 3.76);
+  const audit = (await w.call("GET", "/api/cms/wabot/ai-calls")).body;
+  assert.equal(audit.rows.length, 1); assert.equal(audit.rows[0].sent_text, row.sent_text);
+  w.setOwner(false); assert.equal((await w.call("GET", "/api/cms/wabot/ai-calls")).status, 403);
+}));
+
+/* ── الإعدادات الكاملة: السطر السفلي، المخطط، سجل التعديلات، تنقيب الأسئلة ──────────── */
+test("footer «للرجوع… أو موظف»: not under every message (smart, the default); always / first are dashboard options; a way to a person is always there", withEnv(LOCKS_OPEN, async () => {
+  assert.equal(R.botConfig({}).footerMode, "smart"); assert.equal(R.configFromBody({ footerMode: "loud" }).ok, false);
+  const foot = (p) => (p.type === "interactive" ? p.interactive.footer?.text || null : null);
+  const run = async (mode) => {
+    const w = liveWorld({ waBot: { footerMode: mode }, disclosure: true, greetMenu: true });
+    const out = {};
+    const g = await w.say("السلام عليكم"); out.greetLink = foot(g.sent[0]); out.greetMenu = foot(g.sent[1]); out.greetBody = bodyOf(g.sent[0]); out.menuRows = rowsOf(g.sent[1]).map((r) => r.id);
+    w.clock.advance(1); out.cta = foot((await w.say("كم رسوم التوصيل")).sent[0]);
+    w.clock.advance(1); const l = (await w.say("القائمة")).sent[0]; out.list = foot(l);
+    w.clock.advance(1); out.box = foot((await w.press("box:box-mixgrill-duo", "x")).sent[0]);
+    w.clock.advance(1); const nm = (await w.say("عندكم ستيك")).sent[0]; out.notmenu = foot(nm); out.notmenuBtns = nm.interactive.action.buttons.map((b) => b.reply.id);
+    const u = liveWorld({ waBot: { footerMode: mode, unknownWaitMin: 0 } });
+    out.unknown = foot((await u.say("قفغفغ")).sent[0]);
+    const o = liveWorld({ waBot: { footerMode: mode, optin: { enabled: true } }, orders: [order({ status: "on_the_way" })] });
+    const st = await o.say("وين طلبي"); out.status = foot(st.sent[0]); out.optin = foot(st.sent[1]);
+    return out;
+  };
+  const smart = await run("smart");
+  assert.match(smart.greetBody, /^معك المساعد الآلي لفريش كاتس 🤖 للتحدث مع موظف اكتب: موظف/, "the first message says how to reach a person");
+  assert.deepEqual([smart.greetLink, smart.greetMenu], [FOOTER, null], "first message of the conversation: footer once, not on the menu right after it");
+  assert.ok(smart.menuRows.includes("m:human"), "the menu itself carries «كلّم موظف»");
+  assert.deepEqual([smart.cta, smart.list, smart.box, smart.notmenu, smart.status], [null, null, null, null, null], "no footer on ordinary answers");
+  assert.ok(smart.notmenuBtns.includes("bot:human"));
+  assert.equal(smart.unknown, FOOTER, "the not-understood reply keeps it");
+  assert.equal(smart.optin, FOOTER, "buttons with no way back (yes / no) keep it");
+  const always = await run("always");
+  assert.deepEqual([always.greetLink, always.greetMenu, always.cta, always.list, always.box, always.notmenu, always.unknown, always.status, always.optin], Array(9).fill(FOOTER));
+  const first = await run("first");
+  assert.deepEqual([first.greetLink, first.greetMenu, first.cta, first.list, first.box, first.notmenu, first.status, first.optin], [FOOTER, null, null, null, null, null, null, null]);
+  // «موظف» typed works in every mode, footer or not
+  const h = liveWorld({ waBot: { footerMode: "first" } });
+  await h.say("كم رسوم التوصيل"); h.clock.advance(1);
+  assert.equal((await h.say("موظف")).log.handoff, "asked_human");
+}));
+
+test("settings are complete: every tunable has a schema row (type, limits, default, Arabic name), out-of-range saves are refused, every save is logged with who and what", withEnv(LOCKS_OPEN, async () => {
+  // every key of DEFAULTS (nested for llm / optin / links) is described
+  const flat = [];
+  for (const [k, v] of Object.entries(R.DEFAULTS)) { if (["llm", "optin", "links"].includes(k)) for (const k2 of Object.keys(v)) flat.push(`${k}.${k2}`); else flat.push(k); }
+  flat.push("waRates");
+  assert.deepEqual(flat.filter((k) => !R.SCHEMA[k]), [], "a setting without a schema row");
+  assert.deepEqual(Object.keys(R.SCHEMA).filter((k) => !flat.includes(k)), [], "a schema row without a setting");
+  const def = R.botConfig({});
+  for (const [key, s] of Object.entries(R.SCHEMA)) {
+    assert.ok(s.ar && R.SCHEMA_GROUPS[s.group], key);
+    if (s.type !== "number") continue;
+    const at = (v) => { const o = {}; const ks = key.split("."); let c = o; ks.forEach((k, i) => { if (i === ks.length - 1) c[k] = v; else c = c[k] = {}; }); return o; };
+    const get = (cfg) => key.split(".").reduce((a, k) => a[k], cfg);
+    assert.ok(Number.isFinite(s.min) && Number.isFinite(s.max) && get(def) >= s.min && get(def) <= s.max, `${key}: default inside its limits`);
+    for (const ok of [s.min, s.max]) { const v = R.configFromBody(at(ok)); assert.equal(v.ok, true, `${key}=${ok}`); assert.equal(get(R.botConfig({ waBot: v.value })), ok, `${key} stored and read back`); }
+    for (const bad of [s.min - 1, s.max + 1, "", "abc", null]) assert.equal(R.configFromBody(at(bad)).ok, false, `${key}=${JSON.stringify(bad)} must be refused`);
+  }
+  const w = liveWorld();
+  const sch = (await w.call("GET", "/api/cms/wabot/schema")).body;
+  const row = sch.settings.find((x) => x.key === "humanPauseMin");
+  assert.deepEqual([row.type, row.min, row.max, row.default, row.value, row.unit, row.groupAr, Boolean(row.ar && row.help)], ["number", 1, 720, 30, 30, "دقيقة", "البوت والموظف", true]);
+  assert.equal(sch.faq.length, R.FAQ_KEYS.length); assert.ok(sch.texts.length > 50);
+  // audit trail
+  assert.equal((await w.call("PUT", "/api/cms/wabot/config", { humanPauseMin: 45, llm: { budgetDaySar: 2 } })).status, 200);
+  assert.equal((await w.call("PUT", "/api/cms/wabot/config", { humanPauseMin: 45 })).status, 200);
+  assert.equal(w.db.cfgLog.length, 1, "a save that changes nothing adds no row");
+  assert.equal(w.db.cfgLog[0].who, "عمر");
+  assert.deepEqual(w.db.cfgLog[0].changes.map((x) => [x.path, x.to]).filter((x) => ["humanPauseMin", "llm.budgetDaySar"].includes(x[0])), [["humanPauseMin", 45], ["llm.budgetDaySar", 2]]);
+  assert.equal((await w.call("PUT", "/api/cms/wabot/config", { humanPauseMin: 100000 })).status, 400);
+  assert.equal(w.db.cfgLog.length, 1);
+  assert.equal((await w.call("GET", "/api/cms/wabot/config-log")).body.rows.length, 1);
+  w.setOwner(false); assert.equal((await w.call("GET", "/api/cms/wabot/config-log")).status, 403);
+  assert.deepEqual(R.configDiff({ a: 1, b: { c: [1] } }, { a: 2, b: { c: [1] }, d: true }), [{ path: "a", from: 1, to: 2 }, { path: "d", from: null, to: true }]);
+}));
+
+test("the settings that used to be constants really drive the behaviour", withEnv(LOCKS_OPEN, async () => {
+  // unknownHandoverAfter: 3 ⇒ two fallbacks, the third hands over
+  const u = liveWorld({ waBot: { unknownWaitMin: 0, unknownHandoverAfter: 3, duplicateSeconds: 0 } });
+  assert.equal((await u.say("قفغفغ")).log.handoff, null); u.clock.advance(1);
+  assert.equal((await u.say("ثصضص")).log.handoff, null); u.clock.advance(1);
+  assert.equal((await u.say("لالالا بيس")).log.handoff, "not_understood_twice");
+  // disclosureHours: 2 ⇒ introduced again after two hours, not after one
+  const d = liveWorld({ waBot: { disclosureHours: 2 }, disclosure: true });
+  assert.match(bodyOf((await d.say("وين موقعكم")).sent[0]), /^معك المساعد الآلي/); d.clock.advance(60);
+  assert.doesNotMatch(bodyOf((await d.say("طرق الدفع")).sent[0]), /المساعد الآلي/); d.clock.advance(61);
+  assert.match(bodyOf((await d.say("متى تقفلون")).sent[0]), /^معك المساعد الآلي/);
+  // offerEndWithinDays
+  const now = new Date("2026-10-12T10:00:00Z");
+  assert.equal(R.endsSoon("2026-10-15", now, "ar"), " (لين 15/10)"); assert.equal(R.endsSoon("2026-10-15", now, "ar", 2), ""); assert.equal(R.endsSoon("2026-11-10", now, "ar", 30), " (لين 10/11)");
+  // optinAnswerWindowMin: a typed «تمام» counts only inside the window
+  const o = liveWorld({ waBot: { optin: { enabled: true }, optinAnswerWindowMin: 10 }, orders: [order({ status: "on_the_way" })] });
+  await o.say("وين طلبي"); o.clock.advance(11);
+  assert.equal((await o.say("تمام")).log.reason, "ack");
+}));
+
+test("FAQ mining: the unanswered and handed-over questions grouped by similarity, with counts and examples", withEnv(LOCKS_OPEN, async () => {
+  const g = R.mineQuestions([
+    { text: "عندكم توصيل لمكة؟", key: "unknown", phone: "1" }, { text: "توصلون مكة", key: "unknown", phone: "2" }, { text: "هل فيه توصيل الى مكة", key: "staff", handoff: "needs_staff", phone: "3" },
+    { text: "ابي فاتورة ضريبية", key: "staff", handoff: "needs_staff", phone: "4" }, { text: "ممكن فاتورة ضريبية للطلب", key: "staff", handoff: "needs_staff", phone: "4" },
+    { text: "فيه وظايف", key: "staff", handoff: "needs_staff", phone: "5" }, { text: "؟؟", key: "unknown", phone: "6" }]);
+  assert.deepEqual(g.map((x) => [x.count, x.customers, x.handoffs]), [[3, 3, 1], [2, 1, 2]]);
+  assert.match(g[0].words.join(" "), /مكه/); assert.equal(g[0].examples.length, 3); assert.ok(g[1].words.includes("فاتوره") || g[1].words.includes("فاتورة"));
+  const w = liveWorld({ waBot: { unknownWaitMin: 0, duplicateSeconds: 0 } });
+  let i = 0; const from = () => ({ from: `96650000${2000 + ++i}` });
+  for (const t of ["ابي فاتورة ضريبية", "ممكن فاتورة ضريبية", "فاتورة ضريبية لو سمحت", "كم رسوم التوصيل", "ايش نوع اللحم", "اللحم بلدي ولا مستورد", "فيه وظايف عندكم؟"]) { await w.say(t, from()); w.clock.advance(1); }
+  const r = (await w.call("GET", "/api/cms/wabot/faq-mining", {}, { days: "30" })).body;
+  assert.equal(r.ok, true); assert.equal(r.messages, 7);
+  assert.ok(r.intents.find((x) => x.key === "delivery" && x.n === 1));
+  assert.deepEqual([r.unanswered.groups[0].count, r.unanswered.groups[0].handoffs], [3, 3]); assert.match(r.unanswered.groups[0].examples.join(" "), /فاتورة/);
+  assert.deepEqual(r.faqWaiting, [{ key: "meat", q: R.FAQ_DEFS.meat.q, n: 2 }], "questions waiting for the owner's FAQ answer, by how often they were asked");
+  assert.ok(r.unanswered.singles.some((x) => /وظايف/.test(x)));
 }));
 
 test("replay: the stored inbound messages run through the current classifier offline — nothing sent, nothing logged", withEnv(LOCKS_OPEN, async () => {

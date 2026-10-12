@@ -16,6 +16,7 @@
 const ANTHROPIC_URL = "https://api.anthropic.com/v1/messages";
 const ANTHROPIC_VERSION = "2023-06-01";
 
+import { createHash } from "node:crypto";
 export const LLM_INTENTS = Object.freeze({
   greet: "تحية بس", main: "عايز القائمة / يختار", boxes: "يسأل عن البوكسات عموماً", tier: "بوكسات نوع معيّن (tier: 0 فردي، 1 لشخصين، 2 مشاركة/عائلة)",
   box: "بوكس معيّن بالاسم (box = slug)", cats: "المنيو / الأقسام / الأسعار عموماً", cat: "قسم معيّن (category_id)", item: "صنف معيّن: سعره أو مكوناته (item_id)",
@@ -25,8 +26,30 @@ export const LLM_INTENTS = Object.freeze({
   human: "عايز موظف / مدير / اتصال", thanks: "شكر / وداع", faq: "سؤال معلومات (faq = واحد من المفاتيح المسموحة)", spicy: "عايز أكل حار", unknown: "مش واضح / مش من دول",
 });
 
+/* الإخفاء قبل ما النص يطلع من السيرفر (موافقة عمر ١٢/١٠: النص يروح للمزوّد بشرط إخفاء الأرقام والأسماء والعناوين).
+   بيتشال: الروابط، الإيميلات، الإحداثيات، أرقام الطلبات، أي رقم ٧ خانات أو أكتر (جوالات/بطاقات) حتى لو متقطّع بمسافات،
+   الاسم بعد «اسمي/معك/باسم…»، وتفاصيل العنوان (شارع، عمارة، شقة، دور، معلم قريب). **الحي بيفضل** («حي السلامة») عشان سؤال التوصيل يتفهم.
+   حد معروف: اسم مكتوب من غير كلمة تدل عليه («احمد ابي بوكس») مايتعرفش بقواعد — مفيش ضمان إخفاء كل الأسماء. */
+const WORD = "[^\\s،,.؟?!\\[\\]]+";
+const NAME_STOP = "ابي|ابغى|ابغا|أبي|أبغى|عايز|عاوز|اريد|أريد|بدي|ودي|من|في|على|و|عندي|طلبت|طلبي|كم|هل|وين|فين|متى|لو|ممكن|رقم|اطلب|حاب|ابي اطلب|and|i|want|from";
+const LANDMARK = "مسجد|جامع|مدرسه|مدرسة|مستشفى|مستشفي|مستوصف|مول|سوق|محطه|محطة|صيدليه|صيدلية|بنك|حديقه|حديقة|كوبري|جسر|سوبرماركت|بقاله|بقالة|مركز|مجمع|فندق|جامعه|جامعة|دوار";
+const RX = {
+  url: /https?:\/\/\S+|www\.\S+/gi,
+  email: /[\w.+-]+@[\w-]+\.[\w.-]+/g,
+  coords: /-?\d{1,3}\.\d{3,}\s*[,،]\s*-?\d{1,3}\.\d{3,}/g,
+  order: /(^|[^A-Za-z0-9])[Ww]\s?-?\d{5,}/g,
+  digits: /(?:\+|00)?\d[\d\s().-]{5,}\d/g,
+  name: new RegExp(`(?<![\\p{L}])(انا اسمي|أنا اسمي|اسمي|إسمي|الاسم|باسم|بإسم|معك|معاك|معكم|my name is|name is|this is)\\s*[:：]?\\s+(${WORD})(\\s+(?!(?:${NAME_STOP})(?![\\p{L}]))${WORD})?`, "giu"),
+  street: new RegExp(`(?<![\\p{L}])(?:شارع|طريق|street|st\\.|road)\\s+${WORD}(?:\\s+${WORD}){0,2}`, "giu"),
+  unit: new RegExp(`(?<![\\p{L}])(?:عماره|عمارة|مبنى|مبني|برج|فيلا|فله|فلة|شقه|شقة|الدور|دور|بيت رقم|منزل رقم|building|villa|apartment|apt|flat|floor)\\s*(?:رقم\\s*)?[:#]?\\s*${WORD}`, "giu"),
+  near: new RegExp(`(?<![\\p{L}])(?:بجوار|جنب|مقابل|قدام|خلف|ورا|قريب من|قريبه من|عند|near|next to|behind)\\s+(?:ال)?(?:${LANDMARK})(?:\\s+${WORD}){0,2}`, "giu"),
+};
 export function maskText(text) {
-  return String(text || "").replace(/[٠-٩]/g, (d) => String(d.charCodeAt(0) - 0x660)).replace(/\d{7,}/g, "#").replace(/\s+/g, " ").trim().slice(0, 300);
+  let s = String(text || "").replace(/[٠-٩]/g, (d) => String(d.charCodeAt(0) - 0x660)).replace(/[۰-۹]/g, (d) => String(d.charCodeAt(0) - 0x6f0));
+  s = s.replace(RX.url, " [رابط] ").replace(RX.email, " [ايميل] ").replace(RX.coords, " [موقع] ").replace(RX.order, "$1[طلب]");
+  s = s.replace(RX.digits, (m) => (m.replace(/\D/g, "").length >= 7 ? "[رقم]" : m));
+  s = s.replace(RX.name, "$1 [اسم]").replace(RX.street, "[عنوان]").replace(RX.unit, "[عنوان]").replace(RX.near, "[عنوان]");
+  return s.replace(/\s+/g, " ").trim().slice(0, 300);
 }
 
 export function buildPrompt({ menu, bundles, faqKeys = [] }) {
@@ -70,7 +93,9 @@ export function providerOf(env = process.env) {
   return null;
 }
 
-/* ⇒ async ({text, menu, bundles, cfg:{model, timeoutMs}}) ⇒ {key, arg, confidence, ms} | null. عمرها ما بترمي. */
+/* ⇒ async ({text, menu, bundles, cfg:{model, timeoutMs, onCall}}) ⇒ {key, arg, confidence, ms} | null. عمرها ما بترمي.
+   cfg.onCall(meta) بيتنادى مرة لكل نداء فعلي للمزوّد (نجح أو فشل): { provider, model, usage, usageKind, ms, outcome, sent, promptChars, promptHash }
+   — ده اللي بيتسجّل في ai_calls للتكلفة والمراجعة. outcome: ok | invalid | refusal | http_<code> | timeout | error. */
 export function makeClassifier({ fetch: doFetch = globalThis.fetch, env = process.env, faqKeys = [] } = {}) {
   return async function classify({ text, menu, bundles, cfg = {} }) {
     const provider = providerOf(env);
@@ -81,27 +106,38 @@ export function makeClassifier({ fetch: doFetch = globalThis.fetch, env = proces
     const ctl = new AbortController();
     const timer = setTimeout(() => ctl.abort(), Math.max(500, Number(cfg.timeoutMs) || 2500));
     const t0 = Date.now();
+    const meta = { provider: provider.kind === "anthropic" ? "anthropic" : `litellm:${hostOf(provider.base)}`, model, usage: null, usageKind: provider.kind === "anthropic" ? "anthropic" : "openai",
+      ms: 0, outcome: "error", sent: user, promptChars: system.length, promptHash: createHash("sha1").update(system).digest("hex").slice(0, 12) };
     try {
       let out = "";
       if (provider.kind === "anthropic") {
         const res = await doFetch(ANTHROPIC_URL, { method: "POST", signal: ctl.signal,
           headers: { "content-type": "application/json", "x-api-key": provider.key, "anthropic-version": ANTHROPIC_VERSION },
           body: JSON.stringify({ model, max_tokens: 1024, system, messages: [{ role: "user", content: user }], output_config: { effort: "low" } }) });
-        if (!res.ok) return null;
+        if (!res.ok) { meta.outcome = `http_${res.status || 0}`; return null; }
         const data = await res.json();
-        if (data.stop_reason === "refusal") return null;
+        meta.usage = data.usage || null;
+        if (data.stop_reason === "refusal") { meta.outcome = "refusal"; return null; }
         out = (data.content || []).filter((b) => b.type === "text").map((b) => b.text).join("");
       } else {
         const res = await doFetch(`${provider.base}/chat/completions`, { method: "POST", signal: ctl.signal,
           headers: { "content-type": "application/json", authorization: `Bearer ${provider.key}` },
           body: JSON.stringify({ model: model.includes("/") ? model : `anthropic/${model}`, max_tokens: 1024, messages: [{ role: "system", content: system }, { role: "user", content: user }] }) });
-        if (!res.ok) return null;
+        if (!res.ok) { meta.outcome = `http_${res.status || 0}`; return null; }
         const data = await res.json();
+        meta.usage = data.usage || null;
         out = String(data.choices?.[0]?.message?.content || "");
       }
       const v = validate(out, { menu, bundles, faqKeys });
+      meta.outcome = v ? "ok" : "invalid";
       return v ? { ...v, ms: Date.now() - t0 } : null;
-    } catch { return null; }
-    finally { clearTimeout(timer); }
+    } catch (e) { meta.outcome = e && e.name === "AbortError" ? "timeout" : "error"; return null; }
+    finally { clearTimeout(timer); meta.ms = Date.now() - t0; try { if (typeof cfg.onCall === "function") cfg.onCall(meta); } catch { /* التسجيل مايوقعش الرد */ } }
   };
+}
+const hostOf = (u) => { try { return new URL(u).host; } catch { return "proxy"; } };
+/* للعرض في اللوحة: مين المزوّد وأنهي موديل (من غير أي مفتاح). */
+export function providerInfo(env = process.env) {
+  const p = providerOf(env);
+  return p ? { ready: true, kind: p.kind, via: p.kind === "anthropic" ? "api.anthropic.com" : hostOf(p.base), vendor: "Anthropic" } : { ready: false };
 }
