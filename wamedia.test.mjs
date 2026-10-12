@@ -40,9 +40,10 @@ function world({ portalUser = { id: "s1", name: "سلمى", role: "cashier" }, d
   const pool = { async query(sql, p = []) {
     const s = String(sql).replace(/\s+/g, " ").trim();
     if (/^SELECT id, phone_norm, media FROM wa_messages WHERE id=\$1/i.test(s)) return { rows: db.msgs.filter((m) => m.id === p[0]) };
-    if (/^SELECT mime, size, bytes FROM wa_media_cache/i.test(s)) { const c = db.cache.get(`${p[0]}:${p[1]}`); return { rows: c ? [c] : [] }; }
-    if (/^INSERT INTO wa_media_cache/i.test(s)) { db.cache.set(`${p[0]}:${p[1]}`, { mime: p[2], size: p[3], bytes: p[4], at: Date.now() }); return { rows: [], rowCount: 1 }; }
-    if (/^DELETE FROM wa_media_cache WHERE fetched_at </i.test(s)) { db.cleanupDays = p[0]; const n = db.cache.size; db.cache.clear(); return { rows: [], rowCount: n }; }
+    if (/^SELECT mime, size, bytes, on_disk FROM wa_media_cache/i.test(s)) { const c = db.cache.get(`${p[0]}:${p[1]}`); return { rows: c ? [c] : [] }; }
+    if (/^INSERT INTO wa_media_cache/i.test(s)) { db.cache.set(`${p[0]}:${p[1]}`, { msg_id: p[0], variant: p[1], mime: p[2], size: p[3], bytes: p[4], on_disk: p[5], at: Date.now() }); return { rows: [], rowCount: 1 }; }
+    if (/^DELETE FROM wa_media_cache WHERE fetched_at </i.test(s)) { db.cleanupDays = p[0]; const rows = [...db.cache.values()]; db.cache.clear(); return { rows, rowCount: rows.length }; }
+    if (/^SELECT count\(\*\)::int AS files/i.test(s)) { const l = [...db.cache.values()]; return { rows: [{ files: l.length, bytes: l.reduce((a, x) => a + x.size, 0), db_bytes: l.filter((x) => !x.on_disk).reduce((a, x) => a + x.size, 0), converted: l.filter((x) => x.variant !== "orig").length, oldest: null }] }; }
     if (/^SELECT phone_norm FROM wa_threads WHERE md5/i.test(s)) { const hit = [A, B].find((t) => keyOf(t) === p[1] && p[0] === SALT); return { rows: hit ? [{ phone_norm: hit }] : [] }; }
     if (/^SELECT t\.phone_norm, t\.last_in_at, t\.last_at, t\.unread, t\.order_no/i.test(s)) return { rows: p[0] === A ? [{ phone_norm: A, last_in_at: "2026-10-13T12:02:00Z", last_at: "2026-10-13T12:02:00Z", unread: 0 }] : [] };
     if (/^SELECT wamid, direction, status, error, body, template, category, order_no, created_at, source, pricing, id, media FROM wa_messages/i.test(s)) return { rows: db.msgs.filter((m) => m.phone_norm === p[0]).reverse() };
@@ -63,7 +64,7 @@ function world({ portalUser = { id: "s1", name: "سلمى", role: "cashier" }, d
   hub = H.register(app, ctx, { whoami: async () => users.dash, wa, staff: () => st, keySalt: SALT, log: { error() {} }, timer: false });
   const call = (route, { query = {}, param = {}, json = {} } = {}) => app.routes[route]({
     req: { json: async () => json, header: () => undefined, query: (n) => query[n], param: (n) => param[n] }, json: (body, status = 200) => ({ body, status }), body: (buf, status, headers) => ({ buf, status, headers }) });
-  return { db, st, wa, calls, users, call, tc, files };
+  return { db, st, wa, calls, users, call, tc, files, pool };
 }
 
 test("mediaOf: the file's details from Meta's message; nothing for text, a location or a bad id", () => {
@@ -165,7 +166,7 @@ test("pure rules: served types, transcode need, keep days; the module holds no t
   assert.deepEqual(M.servedType("document", "application/pdf"), { type: "application/octet-stream", inline: false });
   assert.deepEqual(M.servedType("audio", "audio/ogg; codecs=opus"), { type: "audio/ogg", inline: true });
   assert.deepEqual([M.needsTranscode("audio/ogg; codecs=opus"), M.needsTranscode("audio/mpeg"), M.needsTranscode("audio/mp4")], [true, false, false]);
-  assert.deepEqual([M.keepDays({}), M.keepDays({ waInbox: { mediaKeepDays: 0 } }), M.keepDays({ waInbox: { mediaKeepDays: 999 } }), M.keepDays({ waInbox: { mediaKeepDays: 14 } })], [30, 1, 180, 14]);
+  assert.deepEqual([M.keepDays({}), M.keepDays({ waInbox: { mediaKeepDays: 0 } }), M.keepDays({ waInbox: { mediaKeepDays: 999 } }), M.keepDays({ waInbox: { mediaKeepDays: 14 } })], [30, 0, 365, 14]);
   const src = fs.readFileSync(new URL("./wamedia.js", import.meta.url), "utf8");
   assert.ok(!/graph\.facebook|WHATSAPP_TOKEN|fetch\(/.test(src));
   const w = world();
@@ -175,7 +176,37 @@ test("pure rules: served types, transcode need, keep days; the module holds no t
   const set = await w.call("POST /api/cms/wa/threads-hold", { json: { mediaKeepDays: 60 } });
   assert.equal(set.body.mediaKeepDays, 60); assert.equal(set.body.holdAutoReleaseMin, 20); assert.equal(w.db.settings.waInbox.holdAutoReleaseMin, undefined);
   assert.equal((await w.call("POST /api/cms/wa/threads-hold", { json: { mediaKeepDays: 500 } })).status, 400);
+  /* MD2: لحد ٣٦٥ يوم، و٠ = بدون حذف (التنضيف مابيمسحش حاجة) */
+  assert.equal((await w.call("POST /api/cms/wa/threads-hold", { json: { mediaKeepDays: 365 } })).body.mediaKeepDays, 365);
+  assert.equal((await w.call("POST /api/cms/wa/threads-hold", { json: { mediaKeepDays: 0 } })).body.mediaKeepDays, 0);
+  w.db.cache.set("11:orig", { msg_id: 11, variant: "orig", mime: "image/jpeg", size: 8, bytes: JPEG, on_disk: false });
+  assert.equal(await w.st.media.cleanup(), 0, "0 days = never delete"); assert.equal(w.db.cache.size, 1);
+  const g = await w.call("GET /api/cms/wa/threads-hold");
+  assert.deepEqual(g.body.mediaKeep, { def: 30, min: 0, max: 365 });
+  assert.deepEqual(g.body.mediaUsage, { files: 1, bytes: 8, dbBytes: 8, diskBytes: 0, converted: 0, oldestAt: null, storage: "database" });
 });
+
+test("MD2 disk storage: with a private folder the bytes go to a file and the row holds none; served from the file; a lost file is fetched again; cleanup removes the file; an unwritable folder falls back to the database", withEnv(CONFIGURED, async () => {
+  const files = new Map(); let failWrite = false;
+  const fsFake = { mkdir: async () => {}, writeFile: async (pth, buf) => { if (failWrite) throw new Error("EACCES"); files.set(String(pth).replace(/\\/g, "/"), buf); }, readFile: async (pth) => { const k = String(pth).replace(/\\/g, "/"); if (!files.has(k)) throw new Error("ENOENT"); return files.get(k); }, unlink: async (pth) => { files.delete(String(pth).replace(/\\/g, "/")); } };
+  const w = world();
+  const md = M.create({ pool: w.pool, wa: w.wa, getSettingsData: async () => ({ waInbox: { mediaKeepDays: 30 } }), log: { error() {} }, noTimer: true, fs: fsFake, dir: "/data/wa-media" });
+  const a = await md.get({ phoneNorm: A, ref: "11" });
+  assert.equal(a.ok, true); assert.deepEqual(a.buf, JPEG);
+  assert.deepEqual(files.get("/data/wa-media/11-orig.bin"), JPEG);
+  const row = w.db.cache.get("11:orig"); assert.equal(row.on_disk, true); assert.equal(row.bytes, null, "no bytes in the database row");
+  const n = w.calls.length;
+  assert.deepEqual((await md.get({ phoneNorm: A, ref: "11" })).buf, JPEG); assert.equal(w.calls.length, n, "second open reads the file");
+  assert.equal((await md.usage()).storage, "disk"); assert.deepEqual([(await md.usage()).dbBytes, (await md.usage()).diskBytes], [0, 8]);
+  files.delete("/data/wa-media/11-orig.bin");
+  assert.deepEqual((await md.get({ phoneNorm: A, ref: "11" })).buf, JPEG); assert.equal(w.calls.length, n + 2, "a lost file is fetched from Meta again");
+  assert.equal(await md.cleanup(), 1); assert.equal(files.has("/data/wa-media/11-orig.bin"), false, "cleanup removes the file too");
+  assert.equal(M.fileName("11", "orig"), "11-orig.bin"); assert.equal(M.fileName("11", "../x"), "11-x.bin");
+  failWrite = true;
+  const md2 = M.create({ pool: w.pool, wa: w.wa, getSettingsData: async () => ({}), log: { error() {} }, noTimer: true, fs: fsFake, dir: "/nope" });
+  await md2.get({ phoneNorm: A, ref: "12" });
+  assert.equal(w.db.cache.get("12:orig").on_disk, false); assert.deepEqual(w.db.cache.get("12:orig").bytes, OGG); assert.equal((await md2.usage()).storage, "database");
+}));
 
 test("the webhook keeps the file's details for a customer's voice note and for a photo the cashier sent from the phone; a text message writes none", withEnv(CONFIGURED, async () => {
   const w = world();

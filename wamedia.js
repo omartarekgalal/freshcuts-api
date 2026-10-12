@@ -15,9 +15,13 @@
    • رسايل ما قبل الشريحة مالهاش بيانات ملف ⇒ مابتتفتحش (media = null)، والشاشة بتقول كده.
 ═══════════════════════════════════════════════════════════════════════════ */
 import { spawn } from "node:child_process";
+import fs from "node:fs/promises";
+import path from "node:path";
 
 export const MAX_BYTES = 25 * 1024 * 1024;
-export const KEEP = Object.freeze({ def: 30, min: 1, max: 180 });
+/* MD2 (١٣/١٠، سؤال عمر «ليه ٣٠ يوم بس؟»): ٣٠ = نفس المدة اللي ميتا نفسها بتحتفظ فيها بالملف. المدة بقت لحد ٣٦٥ يوم،
+   و٠ = «بدون حذف». بعد ٣٠ يوم نسختنا هي الوحيدة: لو اتمسحت الملف مابيرجعش. */
+export const KEEP = Object.freeze({ def: 30, min: 0, max: 365 });
 const SAFE = {
   image: ["image/jpeg", "image/png", "image/webp"],
   sticker: ["image/webp"],
@@ -67,7 +71,12 @@ export function ffmpegMp3(buf, { bin = "ffmpeg", timeoutMs = 20_000 } = {}) {
 const DDL = `CREATE TABLE IF NOT EXISTS wa_media_cache (
   msg_id BIGINT NOT NULL, variant TEXT NOT NULL DEFAULT 'orig', mime TEXT, size INT NOT NULL, bytes BYTEA NOT NULL,
   fetched_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), PRIMARY KEY (msg_id, variant));
-CREATE INDEX IF NOT EXISTS wa_media_cache_at ON wa_media_cache (fetched_at)`;
+CREATE INDEX IF NOT EXISTS wa_media_cache_at ON wa_media_cache (fetched_at);
+ALTER TABLE wa_media_cache ALTER COLUMN bytes DROP NOT NULL;
+ALTER TABLE wa_media_cache ADD COLUMN IF NOT EXISTS on_disk BOOLEAN NOT NULL DEFAULT FALSE`;
+/* MD2: البايتات على قرص خاص (بره جذر الويب) لو WA_MEDIA_DIR متظبط ومكتوب فيه؛ غير كده في القاعدة زي الأول.
+   على القرص: الجدول فيه صف من غير بايتات، فنسخة القاعدة الليلية مابتكبرش بالصور. اسم الملف = رقم الرسالة-النسخة (أرقام وحروف بس). */
+export const fileName = (id, variant) => `${Number(id)}-${String(variant).replace(/[^a-z0-9]/gi, "")}.bin`;
 
 /* deps: { pool, wa: { fetchMedia(id, {maxBytes}) }, getSettingsData, transcode?(buf) ⇒ Buffer|null, log?, noTimer? } */
 export function create(deps) {
@@ -75,17 +84,38 @@ export function create(deps) {
   const log = deps.log || console;
   const transcode = deps.transcode || ((buf) => ffmpegMp3(buf));
   const ready = pool.query(DDL).then(() => true).catch((e) => { log.error("[wa-media] schema:", e.message); return false; });
+  const fsx = deps.fs || fs;
+  const DIR = deps.dir !== undefined ? deps.dir : (process.env.WA_MEDIA_DIR || "").trim() || null;
+  /* القرص متاح؟ بنجرّب نكتب مرة واحدة؛ الفشل ⇒ القاعدة (والسبب في السجل) */
+  let diskOk = null;
+  const disk = async () => {
+    if (!DIR) return false;
+    if (diskOk === null) { try { await fsx.mkdir(DIR, { recursive: true }); await fsx.writeFile(path.join(DIR, ".write-test"), "ok"); diskOk = true; } catch (e) { diskOk = false; log.error("[wa-media] disk:", e.message); } }
+    return diskOk;
+  };
   const fail = (status, error, message) => ({ ok: false, status, error, message });
   const AR = { not_found: "الملف مش موجود في المحادثة دي", expired: "الملف مابقاش متاح عند واتساب (بيتمسح بعد مدة)", too_large: "الملف أكبر من ٢٥ ميجا — افتحه من موبايل المطعم",
     unavailable: "تعذر جلب الملف من واتساب — جرّب تاني", transcode_unavailable: "تحويل الصوت مش متاح على السيرفر — حمّل الملف" };
 
   async function cached(id, variant) {
-    const r = await pool.query("SELECT mime, size, bytes FROM wa_media_cache WHERE msg_id=$1 AND variant=$2", [id, variant]);
-    return r.rows[0] || null;
+    const r = await pool.query("SELECT mime, size, bytes, on_disk FROM wa_media_cache WHERE msg_id=$1 AND variant=$2", [id, variant]);
+    const row = r.rows[0] || null;
+    if (!row) return null;
+    if (row.on_disk) {
+      if (!DIR) return null;
+      try { return { mime: row.mime, size: row.size, bytes: await fsx.readFile(path.join(DIR, fileName(id, variant))) }; }
+      catch { return null; }      // الملف مش على القرص ⇒ يتجاب تاني من ميتا لو لسه عندهم
+    }
+    return row.bytes ? row : null;
   }
-  const store = (id, variant, mime, buf) => pool.query(
-    `INSERT INTO wa_media_cache(msg_id, variant, mime, size, bytes) VALUES ($1,$2,$3,$4,$5) ON CONFLICT (msg_id, variant) DO UPDATE SET mime=$3, size=$4, bytes=$5, fetched_at=NOW()`,
-    [id, variant, mime, buf.length, buf]).catch((e) => log.error("[wa-media] store:", e.message));
+  async function store(id, variant, mime, buf) {
+    try {
+      let onDisk = false;
+      if (await disk()) { try { await fsx.writeFile(path.join(DIR, fileName(id, variant)), buf); onDisk = true; } catch (e) { log.error("[wa-media] write:", e.message); } }
+      await pool.query(`INSERT INTO wa_media_cache(msg_id, variant, mime, size, bytes, on_disk) VALUES ($1,$2,$3,$4,$5,$6)
+        ON CONFLICT (msg_id, variant) DO UPDATE SET mime=$3, size=$4, bytes=$5, on_disk=$6, fetched_at=NOW()`, [id, variant, mime, buf.length, onDisk ? null : buf, onDisk]);
+    } catch (e) { log.error("[wa-media] store:", e.message); }
+  }
 
   /* الملف نفسه: {ok, buf, type, inline, filename} أو {ok:false, status, error, message}. phoneNorm = صاحب المحادثة اللي في الرابط. */
   async function get({ phoneNorm, ref, as = null }) {
@@ -131,10 +161,25 @@ export function create(deps) {
   }
   /* بيمسح النسخ الأقدم من مدة الاحتفاظ (settings.waInbox.mediaKeepDays). الملف يتجاب تاني من ميتا لو لسه عندهم. */
   async function cleanup() {
-    try { await ready; const d = keepDays(await getSettingsData().catch(() => ({}))); const r = await pool.query("DELETE FROM wa_media_cache WHERE fetched_at < NOW() - make_interval(days => $1::int)", [d]); return r.rowCount || 0; }
-    catch (e) { log.error("[wa-media] cleanup:", e.message); return 0; }
+    try {
+      await ready; const d = keepDays(await getSettingsData().catch(() => ({})));
+      if (d === 0) return 0;      // «بدون حذف»
+      const r = await pool.query("DELETE FROM wa_media_cache WHERE fetched_at < NOW() - make_interval(days => $1::int) RETURNING msg_id, variant, on_disk", [d]);
+      for (const x of r.rows || []) if (x.on_disk && DIR) await fsx.unlink(path.join(DIR, fileName(x.msg_id, x.variant))).catch(() => {});
+      return r.rowCount || 0;
+    } catch (e) { log.error("[wa-media] cleanup:", e.message); return 0; }
+  }
+  /* كام ملف وكام بايت عندنا، وفين — للوحة (من غير أي محتوى) */
+  async function usage() {
+    try {
+      await ready;
+      const r = (await pool.query(`SELECT count(*)::int AS files, COALESCE(sum(size),0)::bigint AS bytes, COALESCE(sum(size) FILTER (WHERE NOT on_disk),0)::bigint AS db_bytes,
+        count(*) FILTER (WHERE variant <> 'orig')::int AS converted, min(fetched_at) AS oldest FROM wa_media_cache`)).rows[0] || {};
+      return { files: r.files || 0, bytes: Number(r.bytes) || 0, dbBytes: Number(r.db_bytes) || 0, diskBytes: (Number(r.bytes) || 0) - (Number(r.db_bytes) || 0), converted: r.converted || 0,
+        oldestAt: r.oldest ? new Date(r.oldest).toISOString() : null, storage: (await disk()) ? "disk" : "database" };
+    } catch (e) { log.error("[wa-media] usage:", e.message); return null; }
   }
   let timer = null;
   if (!deps.noTimer) { timer = setInterval(() => { cleanup().catch(() => {}); }, 6 * 3600_000); if (timer.unref) timer.unref(); }
-  return { ready, get, serve, cleanup, stop: () => { if (timer) clearInterval(timer); } };
+  return { ready, get, serve, cleanup, usage, stop: () => { if (timer) clearInterval(timer); } };
 }

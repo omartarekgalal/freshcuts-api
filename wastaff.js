@@ -176,7 +176,7 @@ export function register(app, ctx, deps = {}) {
   app.get("/api/cms/wa/threads-hold", async (c) => {
     const err = await requireAdmin(c); if (err) return err;
     return c.json({ ok: true, holdAutoReleaseMin: await owner.minutes(), default: waowner.HOLD.def, min: waowner.HOLD.min, max: waowner.HOLD.max,
-      mediaKeepDays: wamedia.keepDays(await getSettingsData().catch(() => ({}))), mediaKeep: wamedia.KEEP });
+      mediaKeepDays: wamedia.keepDays(await getSettingsData().catch(() => ({}))), mediaKeep: wamedia.KEEP, mediaUsage: await media.usage() });
   });
   app.post("/api/cms/wa/threads-hold", async (c) => {
     const err = await requireAdmin(c); if (err) return err;
@@ -191,7 +191,7 @@ export function register(app, ctx, deps = {}) {
     }
     if (b.mediaKeepDays !== undefined) {      // MD1: مدة الاحتفاظ بنسخ الصور والصوت عندنا
       const d = Number(b.mediaKeepDays);
-      if (!Number.isFinite(d) || d < wamedia.KEEP.min || d > wamedia.KEEP.max) return c.json({ ok: false, error: "bad_value", message: `مدة الاحتفاظ من ${wamedia.KEEP.min} لـ${wamedia.KEEP.max} يوم` }, 400);
+      if (!Number.isFinite(d) || d < wamedia.KEEP.min || d > wamedia.KEEP.max) return c.json({ ok: false, error: "bad_value", message: `مدة الاحتفاظ من ١ لـ${wamedia.KEEP.max} يوم، أو ٠ = بدون حذف` }, 400);
       next.mediaKeepDays = Math.round(d);
     }
     await pool.query(`UPDATE settings SET data = jsonb_set(COALESCE(data,'{}'::jsonb), '{waInbox}', $1::jsonb, true) WHERE id=1`, [JSON.stringify(next)]);
