@@ -2004,7 +2004,8 @@ test("the chef's worked examples (12/10), and the two live misses: a named dish 
   assert.equal(R.classify({ text: "بدون بصل لو سمحت", type: "text" }, KNOW).key, "change", "no dish named ⇒ not a dish question («بصل» is not «حلقات بصل»)");
   // chef's example 1 (sesame and the burger): recorded and fixed ⇒ yes, cannot be made without it — and not where it is
   x = await ask("برجر لحم كلاسيك فيه سمسم؟");
-  assert.equal(x.body, "نعم، يوجد سمسم في «برجر لحم كلاسيك»، ولا يمكن تجهيز الطلب بدون سمسم."); assert.doesNotMatch(x.body, /خبز/);
+  assert.equal(x.body, `نعم، يوجد سمسم في «برجر لحم كلاسيك»، وذلك في الخبز.\nللتأكد من إمكانية بديل عن الخبز اكتب: موظف\n${KITCHEN}`);
+  assert.deepEqual([x.r.log.detail, x.r.log.handoff, x.w.sms.length], ["fact:present_fixed_visible", null, 0], "revision 4: the bun is a visible component ⇒ the place is said, staff only if he asks");
   // live miss 2: the classic burger and egg — the burger has a bought-in part of unknown label and egg is not recorded ⇒ «not sure» + staff is the right answer
   x = await ask("البرجر الكلاسيك فيه بيض؟");
   assert.equal(x.body, `ما عندي تأكيد كافٍ عن هذا المكوّن. حوّلت سؤالك لموظف يتأكد لك من المطبخ.\n${HAND}`); assert.equal(x.r.log.detail, "fact:unknown:has_unlabelled_part");
@@ -2030,11 +2031,25 @@ test("dish facts wording: no pronoun tied to the dish name (reads right for any 
     const r = await w.say("برجر لحم كلاسيك فيه سمسم؟");
     assert.deepEqual(r.sent, [txt(ME, "نعم، يوجد سمسم في «برجر لحم كلاسيك»، وذلك في الخبز.\nللتأكد من إمكانية بديل عن الخبز اكتب: موظف\nمطبخنا واحد لكل الأصناف وقد يحصل تلامس بين المكونات أثناء التحضير.")]);
     assert.deepEqual([r.log.detail, r.log.handoff, w.sms.length], ["fact:present_fixed_visible", null, 0]);
-    // gluten in the same dish is NOT flagged visible in this data ⇒ no place is said
-    assert.equal(bodyOf((await liveWorld({ waBot: { dishFactsEnabled: true } }).say("برجر لحم كلاسيك فيه جلوتين؟")).sent[0]), "نعم، يوجد جلوتين في «برجر لحم كلاسيك»، ولا يمكن تجهيز الطلب بدون جلوتين.");
+    // milk in the same dish is NOT flagged visible ⇒ no place is said
+    assert.equal(bodyOf((await liveWorld({ waBot: { dishFactsEnabled: true } }).say("برجر لحم كلاسيك فيه حليب؟")).sent[0]), "نعم، يوجد حليب في «برجر لحم كلاسيك»، ولا يمكن تجهيز الطلب بدون حليب.");
   } finally { DF._setFactsForTests(real); }
-  // today's data has no visible flag at all, so no reply names a place for a fixed allergen
-  assert.equal(Object.values(real.dishes).some((d) => Object.values(d.a || {}).some((a) => a.v)), false);
+  // revision 4 of the chef's data (12/10): 59 visible cases in 24 dishes; bread on the burgers, nothing inside a dough, marinade or mix
+  assert.equal(real.revision, 4);
+  const vis = Object.entries(real.dishes).flatMap(([id, d]) => Object.entries(d.a || {}).filter(([, a]) => a.v).map(([g, a]) => [id, g, a.v.ar]));
+  assert.deepEqual([vis.length, new Set(vis.map((v) => v[0])).size], [59, 24]);
+  assert.ok(vis.every(([, , place]) => !/عجين|تتبيل|خلط|marinad|dough|batter/i.test(place)), "no place names a dough, marinade or mix");
+  assert.ok(vis.every(([id, g]) => real.dishes[id].a[g].r === false), "a place is only for an allergen that can not be left out");
+  assert.deepEqual([real.dishes["71"].a.sesame.v, real.dishes["71"].a.gluten_wheat.v, real.dishes["71"].a.milk.v], [{ ar: "الخبز", en: "bun" }, { ar: "الخبز", en: "bun" }, undefined]);
+  // on the real data: the burger's sesame is on the bun (said, no handover); the egg of a crepe is in the dough (no place is said)
+  const on = () => liveWorld({ waBot: { dishFactsEnabled: true } });
+  const b = on(); const br = await b.say("برجر لحم كلاسيك فيه سمسم؟");
+  assert.deepEqual(br.sent, [txt(ME, "نعم، يوجد سمسم في «برجر لحم كلاسيك»، وذلك في الخبز.\nللتأكد من إمكانية بديل عن الخبز اكتب: موظف\nمطبخنا واحد لكل الأصناف وقد يحصل تلامس بين المكونات أثناء التحضير.")]);
+  assert.deepEqual([br.log.handoff, b.sms.length, b.portal.length], [null, 0, 0]);
+  const cr = await on().say("كريب زنجر سوبريم فيه بيض؟");
+  assert.deepEqual(cr.sent, [txt(ME, "نعم، يوجد بيض في «كريب زنجر سوبريم»، ولا يمكن تجهيز الطلب بدون بيض.")]); assert.equal(real.dishes["8"].a.egg.v, undefined);
+  // «موظف» after the bun answer is an ordinary handover
+  b.clock.advance(1); assert.equal((await b.say("موظف")).log.handoff, "asked_human");
 }));
 
 test("replay: the stored inbound messages run through the current classifier offline — nothing sent, nothing logged", withEnv(LOCKS_OPEN, async () => {
