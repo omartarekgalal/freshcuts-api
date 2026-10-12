@@ -124,6 +124,13 @@ export function register(app, ctx, deps = {}) {
     const d = k.replace(/\D/g, "").replace(/^966/, "").replace(/^0/, "");
     return full && /^5\d{8}$/.test(d) ? d : null;
   }
+  /* حالة الإرسال للي بيسأل: القفل المقفول باسمه (نفس أقفال الحارس) — عشان خانة الرد تتقفل قبل ما الكاشير يكتب.
+     gate: disabled (مفتاح الخادم) | unconfigured | settings_unreadable | master_off | settings_off | null = مفتوح */
+  async function sendState() {
+    let gate = "disabled";
+    try { gate = wa && typeof wa.gate === "function" ? await wa.gate() : "disabled"; } catch { gate = "settings_unreadable"; }
+    return { ok: !gate, gate: gate || null };
+  }
   const pauseMinNow = async () => { try { const cfg = await bot()?.botConfig?.(); return Number(cfg?.humanPauseMin) || 30; } catch { return 30; } };
 
   /* ═══ N1: القايمة ═══ */
@@ -241,8 +248,9 @@ export function register(app, ctx, deps = {}) {
     const a = await access(c); if (a.res) return a.res;
     await ready;
     try {
-      return c.json(await listThreads({ filter: c.req.query("filter") || c.req.query("f") || "all", q: c.req.query("q") || "", limit: c.req.query("limit"),
-        before: c.req.query("before") || null, full: a.full }));
+      const out = await listThreads({ filter: c.req.query("filter") || c.req.query("f") || "all", q: c.req.query("q") || "", limit: c.req.query("limit"),
+        before: c.req.query("before") || null, full: a.full });
+      return c.json({ ...out, send: await sendState() });
     } catch (e) { log.error("[wa-hub] threads:", e.message); return c.json({ ok: false, error: "unavailable" }, 500); }
   });
   app.get("/api/cms/wa/threads/:key", async (c) => {
@@ -251,7 +259,10 @@ export function register(app, ctx, deps = {}) {
     if (!pn) return c.json({ ok: false, error: "not_found" }, 404);
     try {
       const r = await getThread(pn, { limit: c.req.query("limit"), before: c.req.query("before") || null, full: a.full });
-      return c.json(r, r.ok ? 200 : 404);
+      if (!r.ok) return c.json(r, 404);
+      /* للمحادثة نفسها: قفل القناة أولاً، وبعده النافذة (نص حر بره الـ٢٤ ساعة مرفوض — القالب للمالك والعمليات) */
+      const st = await sendState();
+      return c.json({ ...r, send: st.ok && !r.window.open ? { ok: false, gate: "window_closed" } : st });
     } catch (e) { log.error("[wa-hub] thread:", e.message); return c.json({ ok: false, error: "unavailable" }, 500); }
   });
   app.post("/api/cms/wa/threads/:key/read", async (c) => {

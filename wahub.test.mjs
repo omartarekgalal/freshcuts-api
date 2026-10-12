@@ -61,7 +61,7 @@ function world({ role = "owner", settings = {}, threads = [], messages = [], bot
   const inboxCalls = [];
   const api = register(app, { pool, requireAdmin: async (c) => (user ? null : c.json({ ok: false, error: "unauthorized" }, 401)), getSettingsData: async () => JSON.parse(JSON.stringify(db.settings)) },
     { whoami: async () => user, now: () => NOW, timer: false, keySalt: "test-salt", fetch, log: { error() {} },
-      wa: { token: () => "systok", idsInUse: () => ({ wabaId: "WABA1" }) },
+      wa: { token: () => "systok", idsInUse: () => ({ wabaId: "WABA1" }), gate: async () => { if (db.gateThrows) throw new Error("x"); return db.gate === undefined ? "disabled" : db.gate; } },
       waInbox: () => ({ replyText: async (a) => { inboxCalls.push(["text", a]); return db.nextReply || { ok: true, wamid: "wamid.R1", window: { open: true } }; },
         replyTemplate: async (a) => { inboxCalls.push(["template", a]); return db.nextReply || { ok: true, wamid: "wamid.T1" }; } }),
       bot: () => ({ unmuteChat: async (pn) => { db.unmuted.push(pn); return { ok: true }; }, botConfig: async () => ({ humanPauseMin: 30 }) }) });
@@ -329,4 +329,23 @@ test("master-switch counts: website orders per day over the last 7 closed busine
   assert.equal(sectionOf("/api/cms/wa/master-counts"), "settings", "owner only");
   const q = w.db.sql.find((s) => /FROM wa_send_queue q JOIN wa_send_jobs j/.test(s));
   assert.ok(q.includes("q.status = 'pending'") && q.includes("COALESCE(q.channel, j.channel) = 'wa_cloud'") && q.includes("j.status IN ('running','paused')"));
+});
+
+/* ══ send: حالة الإرسال للي بيسأل (طلب مصمّم القسم ١٣/١٠) ═════════════════════ */
+test("send state: the list and the chat tell the caller — cashier included — whether a reply can go, and which lock is closed", async () => {
+  const w = world({ role: "kitchen", threads: [T("512345678"), T("533333333", { last_in_at: ago(60 * 30), last_at: ago(60 * 30) })] });
+  let l = (await w.call("GET", "/api/cms/wa/threads")).body;
+  assert.deepEqual(l.send, { ok: false, gate: "disabled" });
+  for (const g of ["unconfigured", "master_off", "settings_off"]) { w.db.gate = g; assert.deepEqual((await w.call("GET", "/api/cms/wa/threads")).body.send, { ok: false, gate: g }); }
+  w.db.gate = "master_off";
+  assert.deepEqual((await w.call("GET", "/api/cms/wa/threads/:key", { params: { key: "512345678" } })).body.send, { ok: false, gate: "master_off" }, "the channel lock comes before the window");
+  w.db.gate = null;
+  l = (await w.call("GET", "/api/cms/wa/threads")).body;
+  assert.deepEqual(l.send, { ok: true, gate: null });
+  assert.deepEqual((await w.call("GET", "/api/cms/wa/threads/:key", { params: { key: "512345678" } })).body.send, { ok: true, gate: null });
+  assert.deepEqual((await w.call("GET", "/api/cms/wa/threads/:key", { params: { key: "533333333" } })).body.send, { ok: false, gate: "window_closed" });
+  w.db.gateThrows = true;
+  assert.deepEqual((await w.call("GET", "/api/cms/wa/threads")).body.send, { ok: false, gate: "settings_unreadable" }, "if the state cannot be read the box stays locked");
+  const m = world({ role: "marketing", threads: [T("512345678")] });
+  assert.equal((await m.call("GET", "/api/cms/wa/threads")).body.send, undefined, "a refused role learns nothing");
 });
