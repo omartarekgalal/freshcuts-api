@@ -158,7 +158,8 @@ function world({ jobs = [], queue = [], settings = {}, sentToday = 0, links = ["
     if (/^SELECT 1 FROM cms_links WHERE slug=\$1 AND active/i.test(s)) return { rows: [], rowCount: links.includes(p[0]) ? 1 : 0 };
     if (/^SELECT 1 FROM cms_links WHERE slug=\$1/i.test(s)) return { rows: [], rowCount: links.includes(p[0]) ? 1 : 0 };
     if (/^INSERT INTO wa_send_jobs/i.test(s)) { db.newJobs.push(p); return { rows: [{ id: 77 }] }; }
-    if (/^INSERT INTO cms_links/i.test(s)) { db.newLinks.push(p[0]); return { rows: [] }; }
+    if (/^INSERT INTO wa_send_queue\(job_id, phone_norm, name, message, score, status/i.test(s)) { (db.queued = db.queued || []).push({ pn: p[1], status: p[5] }); return { rows: [], rowCount: 1 }; }
+    if (/^INSERT INTO cms_links/i.test(s)) { db.newLinks.push(p[0]); (db.linkRows = db.linkRows || []).push(p); return { rows: [] }; }
     if (/^SELECT 1 FROM wa_messages WHERE phone_norm=\$1 AND direction='in'/i.test(s)) return { rows: inbound.includes(p[0]) ? [{}] : [] };
     if (/FROM wa_optins WHERE phone_norm/i.test(s)) return { rows: db.optins[p[0]] ? [db.optins[p[0]]] : [] };
     if (/^INSERT INTO wa_messages/i.test(s)) { db.msgs.push({ wamid: p[0], phone_norm: p[1], template: p[2], status: p[6], source: p[10] }); return { rows: [], rowCount: 1 }; }
@@ -324,4 +325,85 @@ test("التكملة ورفع السقوف للمالك بس؛ الإيقاف ل
   assert.equal((await call(w.app, "POST /api/cms/wa-sender/cloud", { json: { enabled: false }, auth: MK })).status, 200);
   const up = await call(w.app, "POST /api/cms/wa-sender/cloud", { json: { spendDaySar: 80, brakeStopPct: 3, dailyCap: 220 }, auth: OWNER });
   assert.deepEqual([up.body.cfg.spendDaySar, up.body.cfg.brakeStopPct, up.body.cfg.dailyCap], [80, 3, 220]);
+}));
+
+/* ══ LK1 (١٣/١٠): الرابط بيفتح إيه + المجموعة المحجوزة بالعدد ═══════════════ */
+const L = await import("./cmslinks.js");
+const R = await import("./smsrules.js");
+const fs = await import("node:fs");
+
+test("LK1 هدف الرابط: كل أنواع محرر الروابط مقبولة (box / gather / cart)، والنوع المجهول خطأ مش «الرئيسية»", () => {
+  const T = (link) => S.jobInput({ channel: "wa_web", link }, { hosts: HOSTS });
+  const tgt = (link) => { const r = T(link); return [r.link.target_type, r.link.target_id, r.errs.map((e) => e[0])]; };
+  assert.deepEqual(tgt({ target_type: "box", target_id: "taste-it-all" }), ["box", "taste-it-all", []]);
+  assert.deepEqual(tgt({ target_type: "gather", target_id: "ignored" }), ["gather", null, []]);
+  assert.deepEqual(tgt({ target_type: "cart", target_id: "AB12CD34" }), ["cart", "ab12cd34", []]);
+  for (const t of ["collection", "product", "offer"]) assert.deepEqual(tgt({ target_type: t, target_id: "7" }), [t, "7", []]);
+  assert.deepEqual(tgt({}), ["home", null, []]); assert.deepEqual(tgt({ target_type: "home", target_id: "x" }), ["home", null, []]);
+  // ده اللي كان بيتخزّن «home» في صمت
+  assert.deepEqual(tgt({ target_type: "bundle", target_id: "taste-it-all" })[2], ["bad_target"]);
+  assert.match(T({ target_type: "bundle", target_id: "x" }).errs[0][1], /«bundle» مش معروف/);
+  assert.deepEqual(tgt({ target_type: "box" })[2], ["target_missing"]);
+  assert.deepEqual(tgt({ target_type: "cart", target_id: "no!" })[2], ["bad_cart_code"]);
+  // مصدر واحد: مفيش قايمة تانية في wasender ولا في cms
+  assert.deepEqual([...L.LINK_TARGET_TYPES], ["home", "collection", "product", "offer", "cart", "box", "gather"]);
+  const src = (f) => fs.readFileSync(new URL(f, import.meta.url), "utf8");
+  assert.doesNotMatch(src("./wasender.js"), /const TARGETS\b/);
+  assert.doesNotMatch(src("./cms.js"), /\["home", "collection", "product", "offer"/);
+  assert.match(src("./cms.js"), /LINK_TARGET_TYPES\.includes\(b\.target_type\)/); assert.match(src("./cms.js"), /for \(const \[k, v\] of linkTargetParams\(l\)\) q\.set\(k, v\);/);
+  // شكل رابط الهبوط لكل نوع (نفس اللي المحوّل ‎/l/<slug>‎ بيبنيه)
+  assert.deepEqual(L.linkTargetParams({ target_type: "box", target_id: "taste-it-all" }), [["go", "offers"], ["box", "taste-it-all"]]);
+  assert.deepEqual(L.linkTargetParams({ target_type: "box", target_id: "b", autocart: true }), [["go", "offers"], ["box", "b"], ["bxadd", "1"]]);
+  assert.deepEqual(L.linkTargetParams({ target_type: "gather" }), [["go", "offers"], ["gather", "1"]]);
+  assert.deepEqual(L.linkTargetParams({ target_type: "offer", target_id: "9" }), [["go", "offers"], ["offer", "9"]]);
+  assert.deepEqual(L.linkTargetParams({ target_type: "collection", target_id: "3" }), [["col", "3"]]);
+  assert.deepEqual(L.linkTargetParams({ target_type: "product", target_id: "103" }), [["p", "103"]]);
+  assert.deepEqual(L.linkTargetParams({ target_type: "home" }), []);
+  assert.deepEqual([L.linkTargetPath({ target_type: "home" }), L.linkTargetPath({ target_type: "box", target_id: "taste-it-all" }), L.linkTargetPath({ target_type: "cart", target_id: "ab12cd34" })],
+    ["/", "/?go=offers&box=taste-it-all", "/?cart=ab12cd34"]);
+  assert.deepEqual(L.linkTarget("nope", "x", { unknown: "home" }), { ok: true, target_type: "home", target_id: null }, "محرر الروابط بيفضل على سلوكه القديم");
+});
+
+test("LK1 حملة برابط بوكس: الرابط بيتخزّن «box» بهدفه، والمعاينة بتعرض الزر هيفتح إيه؛ والنوع المجهول مايتحفظش", withEnv(ALLOW, async () => {
+  const BOX = { ...WEEKEND, link: { target_type: "box", target_id: "taste-it-all" } };
+  const w = world();
+  const pv = await call(w.app, "POST /api/cms/wa-sender/preview", { json: BOX, auth: MK });
+  assert.deepEqual(pv.body.link, { slug: null, targetType: "box", targetId: "taste-it-all", url: "freshcuts.sa/l/w…-xxxxxx", opens: "https://freshcuts.sa/?go=offers&box=taste-it-all", coupon: null });
+  assert.deepEqual(pv.body.problems, []);
+  const ok = await call(w.app, "POST /api/cms/wa-sender/jobs", { json: { ...BOX, name: "بوكس التشكيلة" }, auth: OWNER });
+  assert.equal(ok.status, 200, JSON.stringify(ok.body));
+  assert.deepEqual([w.db.linkRows[0][0], w.db.linkRows[0][2], w.db.linkRows[0][3]], ["w77", "box", "taste-it-all"]);
+  assert.deepEqual(ok.body.target, { type: "box", id: "taste-it-all", opens: "https://freshcuts.sa/?go=offers&box=taste-it-all" });
+  // باقات التجمّعات: من غير هدف
+  const g = world();
+  await call(g.app, "POST /api/cms/wa-sender/jobs", { json: { ...WEEKEND, link: { target_type: "gather" } }, auth: OWNER });
+  assert.deepEqual([g.db.linkRows[0][2], g.db.linkRows[0][3]], ["gather", null]);
+  // من غير link خالص: الرئيسية زي الأول
+  const h = world();
+  await call(h.app, "POST /api/cms/wa-sender/jobs", { json: WEEKEND, auth: OWNER });
+  assert.deepEqual([h.db.linkRows[0][2], h.db.linkRows[0][3]], ["home", null]);
+  assert.equal((await call(h.app, "POST /api/cms/wa-sender/preview", { json: WEEKEND, auth: MK })).body.link.opens, "https://freshcuts.sa/");
+  // نوع مجهول: المعاينة بتقول، والبدء بيترفض قبل أي حفظ
+  const bad = world(), BAD = { ...WEEKEND, link: { target_type: "bundle", target_id: "taste-it-all" } };
+  assert.deepEqual((await call(bad.app, "POST /api/cms/wa-sender/preview", { json: BAD, auth: MK })).body.problems.map((p) => p.error), ["bad_target"]);
+  const r = await call(bad.app, "POST /api/cms/wa-sender/jobs", { json: BAD, auth: OWNER });
+  assert.deepEqual([r.status, r.body.error], [422, "bad_target"]); assert.equal(bad.db.newJobs.length, 0); assert.equal((bad.db.linkRows || []).length, 0);
+}));
+
+test("LK1 المجموعة المحجوزة بالعدد: ١٠٪ من ٣٠ = ٣ بالظبط (كانت «عملة» لكل رقم: ٠ أو ٧)، وثابتة لنفس الحملة", withEnv(ALLOW, async () => {
+  const phones = (n, base = 510000000) => Array.from({ length: n }, (_, i) => String(base + i));
+  for (const [n, want] of [[30, 3], [28, 3], [20, 2], [8, 1], [4, 0], [5, 1], [1000, 100]]) assert.equal(R.holdoutSet("wa9", phones(n), 10).size, want, `${n}`);
+  assert.equal(R.holdoutSet("wa9", phones(30), 0).size, 0); assert.equal(R.holdoutSet("wa9", phones(30), 90).size, 15, "السقف ٥٠٪");
+  assert.equal(R.holdoutSet("wa9", [], 10).size, 0);
+  const a = R.holdoutSet("wa9", phones(30), 10), b = R.holdoutSet("wa9", phones(30).reverse(), 10);
+  assert.deepEqual([...a].sort(), [...b].sort(), "نفس القايمة بأي ترتيب ⇒ نفس المحجوزين");
+  assert.notDeepEqual([...a].sort(), [...R.holdoutSet("wa10", phones(30), 10)].sort(), "حملة تانية ⇒ اختيار تاني");
+  assert.deepEqual([R.holdoutCount(30, 10), R.holdoutCount(8, 10), R.holdoutCount(28, 10), R.holdoutCount(0, 10), R.holdoutCount(30, 0)], [3, 1, 3, 0, 0]);
+  // في المسار: المعاينة والبدء نفس العدد
+  const w = world({ people: 30 });
+  const body = { ...WEEKEND, holdoutPct: 10, filters: { audience: "lapsed", limit: 500 } };
+  assert.equal((await call(w.app, "POST /api/cms/wa-sender/preview", { json: body, auth: MK })).body.holdoutEst, 3);
+  const r = await call(w.app, "POST /api/cms/wa-sender/jobs", { json: body, auth: OWNER });
+  assert.deepEqual([r.body.total, r.body.holdout], [30, 3]);
+  assert.deepEqual([w.db.queued.filter((q) => q.status === "holdout").length, w.db.queued.filter((q) => q.status === "pending").length], [3, 27]);
 }));

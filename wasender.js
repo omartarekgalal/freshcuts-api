@@ -35,7 +35,8 @@
    لنفس تبويب الردود.
 ═══════════════════════════════════════════════════════════════════════════ */
 import crypto from "node:crypto";
-import { staffPhoneSet, inHoldout, normLocal } from "./smsrules.js";
+import { staffPhoneSet, holdoutSet, holdoutCount, normLocal } from "./smsrules.js";
+import { linkTarget, linkTargetPath, LINK_TARGET_TYPES } from "./cmslinks.js";
 import {
   TEMPLATE_VARS, renderTemplate, templateProblem, recipientLink, effectiveDailyCap, isOptOutText,
   creditOrders, dropPosMirrors, summarizeResults,
@@ -137,7 +138,6 @@ const sha = (t) => crypto.createHash("sha256").update(String(t)).digest("hex");
    imageUrl  صورة عرض (https من دوميناتنا بس)
    offer     {oneTime, percent, freeDelivery, validDays, minTotal} — كوبون مرة واحدة لكل عميل */
 export const SLUG_RE = /^[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?$/;
-const TARGETS = ["home", "collection", "product", "offer"];
 export function imageUrlOk(u, hosts) {
   try {
     const x = new URL(String(u));
@@ -153,9 +153,12 @@ export function jobInput(b = {}, { hosts = [] } = {}) {
   const L = b.link && typeof b.link === "object" ? b.link : {};
   const slug = String(L.slug || "").trim().toLowerCase();
   if (slug && !SLUG_RE.test(slug)) errs.push(["bad_slug", "اسم الرابط: حروف إنجليزي صغيرة وأرقام وشرطة بس"]);
-  const target_type = TARGETS.includes(L.target_type) ? L.target_type : "home";
-  const target_id = target_type === "home" ? null : String(L.target_id || "").trim().slice(0, 64) || null;
-  if (target_type !== "home" && !target_id) errs.push(["target_missing", "اختار العرض/الصنف/التجميعة اللي الرابط يفتحها"]);
+  /* LK1 (١٣/١٠): أنواع الهدف من cmslinks.js (نفس محرر الروابط: + box / gather / cart). نوع مش معروف = خطأ صريح — كان بيتخزّن
+     «home» في صمت، فأزرار حملة البوكسات فتحت الصفحة الرئيسية. من غير نوع خالص = الرئيسية (زي الأول). */
+  const lt = linkTarget(L.target_type, L.target_id);
+  const target_type = lt.ok ? lt.target_type : "home", target_id = lt.ok ? lt.target_id : null;
+  if (!lt.ok) errs.push(lt.error === "bad_target" ? ["bad_target", `نوع الرابط «${lt.type}» مش معروف — الأنواع: ${LINK_TARGET_TYPES.join(" / ")}`]
+    : lt.error === "bad_cart_code" ? ["bad_cart_code", "كود السلة الجاهزة مش صح"] : ["target_missing", "اختار العرض/الصنف/التجميعة/البوكس اللي الرابط يفتحه"]);
   const staticCoupon = String(L.coupon || "").trim().toUpperCase().slice(0, 40) || null;
   const holdoutPct = Math.min(50, Math.max(0, Math.round(Number(b.holdoutPct) || 0)));
   const imageUrl = String(b.imageUrl || "").trim() || null;
@@ -671,7 +674,7 @@ export function register(app, ctx, deps = {}) {
       vars: { ...x.vars, link: recipientLink(host, slug, "xxxxxx"), coupon: couponEx || "", coupon_days: input.offer ? String(input.offer.validDays) : "" },
       message: messageFor(x, { template: tpl, footer: r.cfg.footer, host, slug, code: "xxxxxx", coupon: couponEx, couponDays: input.offer?.validDays }),
       ...(input.channel === "wa_cloud" && TEMPLATES[input.cloudTemplate] ? { cloud: cloudSample(input, x, slug, couponEx) } : {}) }));
-    const hold = input.holdoutPct ? r.picked.filter((x) => inHoldout("preview", x.pn, input.holdoutPct)).length : 0;
+    const hold = holdoutCount(r.picked.length, input.holdoutPct);      // LK1: العدد بالظبط (مش تقدير) — نفس اللي البدء هيحجزه
     let days = Math.ceil((r.picked.length - hold) / Math.max(1, effectiveDailyCap(r.cfg, now())));
     let cloudExtra = {};
     if (input.channel === "wa_cloud") {
@@ -691,7 +694,10 @@ export function register(app, ctx, deps = {}) {
         appOnly: r.appOnly,
         spec: campaignSpec(input.cloudTemplate), gate: wa ? await wa.gate() : "disabled", enabled: cc.enabled };
     }
-    return c.json({ ok: true, ...cloudExtra, audience: r.audience, inAudience: r.inAudience, afterFilters: r.afterFilters,
+    /* LK1: الزر هيفتح إيه — النوع والهدف وشكل رابط الهبوط، عشان المالك يشوفه قبل البدء */
+    const linkView = { slug: input.link.slug || null, targetType: input.link.target_type, targetId: input.link.target_id,
+      url: recipientLink(host, slug, "xxxxxx"), opens: `${host}${linkTargetPath(input.link)}`, coupon: input.link.coupon || null };
+    return c.json({ ok: true, ...cloudExtra, link: linkView, audience: r.audience, inAudience: r.inAudience, afterFilters: r.afterFilters,
       excluded: r.excluded, eligible: r.eligible, willQueue: r.picked.length, holdoutEst: hold, estDays: days, sample,
       customTemplate: Boolean(input.template), template: tpl, footer: r.cfg.footer, channel: input.channel,
       problems: input.errs.map(([error, message]) => ({ error, message })) });
@@ -755,8 +761,10 @@ export function register(app, ctx, deps = {}) {
         [slug, `واتساب: ${name}`.slice(0, 80), input.link.target_type, input.link.target_id, input.link.coupon, `wa-${jobId}`, by]);
       await client.query("UPDATE wa_send_jobs SET link_slug=$2 WHERE id=$1", [jobId, slug]);
       const codes = new Set();
+      /* LK1: المحجوزين بالعدد (round(n × النسبة)) مش «عملة» لكل رقم — حملة صغيرة كانت بتطلع ٠ أو ٢٣٪ بدل ١٠٪ */
+      const held = holdoutSet(`wa${jobId}`, r.picked.map((x) => x.pn), input.holdoutPct);
       for (const x of r.picked) {
-        const hold = input.holdoutPct > 0 && inHoldout(`wa${jobId}`, x.pn, input.holdoutPct);
+        const hold = held.has(String(x.pn));
         let code; do { code = newLinkCode(); } while (codes.has(code)); codes.add(code);
         let coupon = input.link.coupon || null;
         if (input.offer && !hold) {
@@ -786,7 +794,8 @@ export function register(app, ctx, deps = {}) {
       }
       throw e;
     } finally { client.release(); }
-    return c.json({ ok: true, jobId, total: r.picked.length, holdout: holdN, slug, link: recipientLink(host, slug, null), channel: input.channel });
+    return c.json({ ok: true, jobId, total: r.picked.length, holdout: holdN, slug, link: recipientLink(host, slug, null), channel: input.channel,
+      target: { type: input.link.target_type, id: input.link.target_id, opens: `${host}${linkTargetPath(input.link)}` } });
   });
 
   /* ── التحكم في الطابور وهو شغّال (طلب عمر ٢٦/٩) ────────────────────────

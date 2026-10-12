@@ -64,6 +64,18 @@ export function inHoldout(campaignId, phone, pct) {
   return (h.readUInt32BE(0) % 100) < Math.min(50, p);
 }
 
+/* LK1 (١٣/١٠): مجموعة محجوزة **بالعدد** لحملة واحدة — للحملات الصغيرة. inHoldout بيرمي «عملة» لكل رقم، فحملة ٣٠ رقم بـ١٠٪ ممكن
+   يطلع فيها ٠ أو ٧ محجوزين (ده توزيع طبيعي مش عطل). هنا العدد = round(n × pct ÷ 100) بالظبط، والاختيار ثابت: أصغر قيم نفس الهاش
+   (حملة، رقم) — نفس القايمة ⇒ نفس المحجوزين. بترجع Set بالأرقام المحجوزة. */
+export function holdoutSet(campaignId, phones, pct) {
+  const p = Math.min(50, Number(pct) || 0), list = [...new Set((phones || []).map(String))];
+  const k = p > 0 ? Math.round((list.length * p) / 100) : 0;
+  if (k <= 0) return new Set();
+  const rank = (ph) => crypto.createHash("sha1").update(`${campaignId}:${ph}`).digest("hex");
+  return new Set(list.map((ph) => [rank(ph), ph]).sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : a[1] < b[1] ? -1 : 1)).slice(0, k).map((x) => x[1]));
+}
+export const holdoutCount = (n, pct) => { const p = Math.min(50, Number(pct) || 0); return p > 0 ? Math.round(((Number(n) || 0) * p) / 100) : 0; };
+
 export const normLocal = (p) => {
   const d = String(p || "").replace(/\D/g, "").replace(/^00/, "").replace(/^966/, "").replace(/^0/, "");
   return /^5\d{8}$/.test(d) ? d : null;

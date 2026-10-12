@@ -28,6 +28,7 @@ import { promisify } from "node:util";
 // نفس قواعد الهوية والقناة اللي المؤشرات بتستخدمها — مفيش نسخة تانية
 import { IDENT_SQL, SALES_ONLY, deliverySql, WEBSITE_SQL } from "./analytics.js";
 import { FIRST_ORDER_CTE, shopPaidSql, maskPhone, appSourceSql } from "./identity.js";
+import { LINK_TARGET_TYPES, linkTargetParams } from "./cmslinks.js";
 import { logSms } from "./smslog.js";
 import { parseRecipientSlug, recipientLink } from "./wamsg.js";
 import { couponQueries, firstEligibility } from "./couponrules.js";
@@ -2038,7 +2039,7 @@ export function register(app, ctx, deps = {}) {
     // «offer» (14 سبتمبر): رابط يفتح عرض واحد على طول — /l/96-kilo و /l/96-box
     // «cart» (١٠/١٠): الرابط يهبط على سلة جاهزة (cartpresets.js) — target_id = كود السلة
     // «box» (١٠/١٠): رابط يفتح منتقي بوكس واحد (باقة) بالـslug — /l/box-…
-    const target_type = ["home", "collection", "product", "offer", "cart", "box", "gather"].includes(b.target_type) ? b.target_type : "home";
+    const target_type = LINK_TARGET_TYPES.includes(b.target_type) ? b.target_type : "home";      // LK1: القايمة من cmslinks.js (مصدر واحد)
     const utm_source = clip(b.utm_source, 30) || "other";
     return {
       label: clip(b.label, 80), target_type,
@@ -2197,13 +2198,9 @@ export function register(app, ctx, deps = {}) {
       if (pr) { q.set("cart", pr.code); if (!cpn && pr.coupon) cpn = pr.coupon; }
     }
     if (cpn) q.set("c", cpn);
-    if (l.target_type === "collection" && l.target_id) q.set("col", l.target_id);
-    if (l.target_type === "product" && l.target_id) q.set("p", l.target_id);
-    // عرض: ?go=offers&offer=<id> — المتجر بيفتح منتقي العرض على طول (مسار ٠١)
-    if (l.target_type === "offer" && l.target_id) { q.set("go", "offers"); q.set("offer", l.target_id); }
-    // بوكس: ?go=offers&box=<slug> — المتجر بيفتح منتقي البوكس على طول؛ نسخة قديمة بتنزل على قسم البوكسات
-    if (l.target_type === "box" && l.target_id) { q.set("go", "offers"); q.set("box", l.target_id); if (l.autocart === true) q.set("bxadd", "1"); }
-    if (l.target_type === "gather") { q.set("go", "offers"); q.set("gather", "1"); }
+    /* LK1: باراميترات الهدف من cmslinks.js (نفس اللي معاينة حملة واتساب بتعرضه): تجميعة ?col= · صنف ?p= · عرض ?go=offers&offer= ·
+       بوكس ?go=offers&box= (+bxadd=1) · باقات التجمّعات ?go=offers&gather=1 */
+    for (const [k, v] of linkTargetParams(l)) q.set(k, v);
     q.set("fc_link", l.slug);
     return c.json({ ok: true, url: "/?" + q.toString() });
   });
