@@ -1,0 +1,3792 @@
+[
+ {
+  "id": "as3-salt",
+  "group": "fewer handovers",
+  "world": {
+   "profile": "new"
+  },
+  "expect": {
+   "noCart": true,
+   "noHandover": true
+  },
+  "turns": [
+   {
+    "i": 0,
+    "customer": "عندكم ملح ؟",
+    "cls": "unknown",
+    "raw": "unknown",
+    "by": "assistant",
+    "reply": "للأسف ما عندي معلومة مؤكدة عن هذا الموضوع. تقدر تكتب «موظف» عشان يرد عليك أحد من الفريق. وإذا تبي تطلب شي، أقدر أساعدك في المنيو.",
+    "cart": null,
+    "handover": null,
+    "outcome": "sent",
+    "tools": [
+     {
+      "name": "ask_knowledge",
+      "input": {
+       "question": "عندكم ملح ؟"
+      },
+      "result": {
+       "ok": true,
+       "found": false,
+       "rule": "no saved answer. Say plainly in one line that you have no confirmed information about this and that they can type «موظف» to ask the team; do not guess; keep helping with the order."
+      },
+      "ms": 1
+     }
+    ],
+    "verdicts": [
+     {
+      "ok": true,
+      "problems": [],
+      "text": "للأسف ما عندي معلومة مؤكدة عن هذا الموضوع. تقدر تكتب «موظف» عشان يرد عليك أحد من الفريق. وإذا تبي تطلب شي، أقدر أساعدك في المنيو."
+     }
+    ],
+    "calls": [
+     {
+      "model": "claude-haiku-5-5",
+      "tier": "fast",
+      "ms": 1418,
+      "outcome": "ok",
+      "in": 1117,
+      "out": 138,
+      "cached": 8759,
+      "costSar": 0.003962
+     },
+     {
+      "model": "claude-haiku-5-5",
+      "tier": "fast",
+      "ms": 1172,
+      "outcome": "ok",
+      "in": 274,
+      "out": 92,
+      "cached": 9649,
+      "costSar": 0.003894
+     }
+    ],
+    "ms": 2612,
+    "costSar": 0.007856,
+    "model": "claude-haiku-5-5",
+    "suggestions": [],
+    "context": {
+     "open_now": true,
+     "closes_at": "2 فجراً",
+     "location_shared": false,
+     "customer": {
+      "known": false,
+      "name": null,
+      "orders": 0,
+      "status": "no_orders",
+      "days_since_last": null,
+      "usual_basket_sar": null,
+      "usual_mode": null,
+      "usual_hour": null,
+      "favourites": [],
+      "taste": null,
+      "last_order": null,
+      "districts": [],
+      "loyalty": {
+       "every": 3,
+       "progress": 0,
+       "left": 3,
+       "reward": "free_delivery",
+       "min_total": 60,
+       "status": null
+      },
+      "unused_rewards": [],
+      "first_order_offer": true,
+      "language": "ar"
+     },
+     "offers": {
+      "first_order": {
+       "eligible": true,
+       "code": "FIRST",
+       "free_delivery": true,
+       "min_total": 60,
+       "reason": null
+      },
+      "loyalty": {
+       "every": 3,
+       "progress": 0,
+       "left": 3,
+       "reward": "free_delivery",
+       "min_total": 60,
+       "status": null
+      }
+     },
+     "branch": "📍 فرعنا في حي السلامة بجدة، عند دوار رامي.",
+     "boxes": [
+      "box-solo-crepe: بوكس الكريب الفردي",
+      "box-solo-mixgrill: بوكس الميكس جريل الفردي",
+      "box-solo-burger: بوكس البرجر الفردي",
+      "box-solo-pasta: بوكس الباستا الفردي",
+      "box-solo-hawawshi: بوكس الحواوشي الفردي",
+      "box-solo-meal: بوكس وجبة المشاوي الفردي",
+      "box-crepe-duo: بوكس الكريب لشخصين",
+      "box-mixgrill-duo: ميكس جريل لشخصين",
+      "box-pizza-pasta: بيتزا وباستا لشخصين",
+      "box-meals-duo: وجبتين مشاوي لشخصين",
+      "box-burger-duo: بوكس البرجر لشخصين",
+      "box-late-night: بوكس السهرة",
+      "box-taste-all: بوكس التشكيلة",
+      "box-grill-half-half: بوكس المشاوي نص ونص",
+      "box-family: بوكس العائلة — مشاوي وبيتزا وباستا",
+      "box-pizza-night: بوكس سهرة البيتزا",
+      "box-mashakel: بوكس المشكل المخصوص",
+      "box-ribs-grill: بوكس الريش والمشاوي"
+     ]
+    },
+    "tier": "fast",
+    "escalated": false,
+    "lang": "ar"
+   }
+  ],
+  "carts": [],
+  "costSar": 0.007856,
+  "grade": {
+   "pass": true,
+   "fails": [],
+   "review": []
+  }
+ },
+ {
+  "id": "as3-name",
+  "group": "fewer handovers",
+  "world": {
+   "profile": "new"
+  },
+  "expect": {
+   "noCart": true,
+   "noHandover": true
+  },
+  "turns": [
+   {
+    "i": 0,
+    "customer": "ما اسمك",
+    "cls": "unknown",
+    "raw": "unknown",
+    "by": "assistant",
+    "reply": "أنا المساعد الآلي لمطعم فريش كاتس، وأقدر أساعدك في المنيو والطلب. تحب أرشح لك شيئاً لو ما تعرف وش تطلب؟",
+    "cart": null,
+    "handover": null,
+    "outcome": "sent",
+    "tools": [],
+    "verdicts": [
+     {
+      "ok": true,
+      "problems": [],
+      "text": "أنا المساعد الآلي لمطعم فريش كاتس، وأقدر أساعدك في المنيو والطلب. تحب أرشح لك شيئاً لو ما تعرف وش تطلب؟"
+     }
+    ],
+    "calls": [
+     {
+      "model": "claude-haiku-5-5",
+      "tier": "fast",
+      "ms": 1840,
+      "outcome": "ok",
+      "in": 1112,
+      "out": 158,
+      "cached": 8759,
+      "costSar": 0.003998
+     }
+    ],
+    "ms": 1881,
+    "costSar": 0.003998,
+    "model": "claude-haiku-5-5",
+    "suggestions": [],
+    "context": {
+     "open_now": true,
+     "closes_at": "2 فجراً",
+     "location_shared": false,
+     "customer": {
+      "known": false,
+      "name": null,
+      "orders": 0,
+      "status": "no_orders",
+      "days_since_last": null,
+      "usual_basket_sar": null,
+      "usual_mode": null,
+      "usual_hour": null,
+      "favourites": [],
+      "taste": null,
+      "last_order": null,
+      "districts": [],
+      "loyalty": {
+       "every": 3,
+       "progress": 0,
+       "left": 3,
+       "reward": "free_delivery",
+       "min_total": 60,
+       "status": null
+      },
+      "unused_rewards": [],
+      "first_order_offer": true,
+      "language": "ar"
+     },
+     "offers": {
+      "first_order": {
+       "eligible": true,
+       "code": "FIRST",
+       "free_delivery": true,
+       "min_total": 60,
+       "reason": null
+      },
+      "loyalty": {
+       "every": 3,
+       "progress": 0,
+       "left": 3,
+       "reward": "free_delivery",
+       "min_total": 60,
+       "status": null
+      }
+     },
+     "branch": "📍 فرعنا في حي السلامة بجدة، عند دوار رامي.",
+     "boxes": [
+      "box-solo-crepe: بوكس الكريب الفردي",
+      "box-solo-mixgrill: بوكس الميكس جريل الفردي",
+      "box-solo-burger: بوكس البرجر الفردي",
+      "box-solo-pasta: بوكس الباستا الفردي",
+      "box-solo-hawawshi: بوكس الحواوشي الفردي",
+      "box-solo-meal: بوكس وجبة المشاوي الفردي",
+      "box-crepe-duo: بوكس الكريب لشخصين",
+      "box-mixgrill-duo: ميكس جريل لشخصين",
+      "box-pizza-pasta: بيتزا وباستا لشخصين",
+      "box-meals-duo: وجبتين مشاوي لشخصين",
+      "box-burger-duo: بوكس البرجر لشخصين",
+      "box-late-night: بوكس السهرة",
+      "box-taste-all: بوكس التشكيلة",
+      "box-grill-half-half: بوكس المشاوي نص ونص",
+      "box-family: بوكس العائلة — مشاوي وبيتزا وباستا",
+      "box-pizza-night: بوكس سهرة البيتزا",
+      "box-mashakel: بوكس المشكل المخصوص",
+      "box-ribs-grill: بوكس الريش والمشاوي"
+     ]
+    },
+    "tier": "fast",
+    "escalated": false,
+    "lang": "ar"
+   }
+  ],
+  "carts": [],
+  "costSar": 0.003998,
+  "grade": {
+   "pass": true,
+   "fails": [],
+   "review": []
+  }
+ },
+ {
+  "id": "as3-wifi-age",
+  "group": "fewer handovers",
+  "world": {
+   "profile": "new"
+  },
+  "expect": {
+   "noCart": true,
+   "noHandover": true,
+   "mustNotContain": [
+    "منذ \\d+",
+    "\\d+ (سنة|سنوات|سنين)"
+   ]
+  },
+  "turns": [
+   {
+    "i": 0,
+    "customer": "عندكم واي فاي في المطعم؟",
+    "cls": "unknown",
+    "raw": "unknown",
+    "by": "assistant",
+    "reply": "ما عندي معلومة مؤكدة عن الواي فاي حالياً. تقدر تكتب «موظف» عشان يرد عليك أحد من الفريق. وإذا تبي تطلب، أقدر أساعدك في المنيو والبوكسات.",
+    "cart": null,
+    "handover": null,
+    "outcome": "sent",
+    "tools": [
+     {
+      "name": "ask_knowledge",
+      "input": {
+       "question": "عندكم واي فاي في المطعم؟"
+      },
+      "result": {
+       "ok": true,
+       "found": false,
+       "rule": "no saved answer. Say plainly in one line that you have no confirmed information about this and that they can type «موظف» to ask the team; do not guess; keep helping with the order."
+      },
+      "ms": 0
+     }
+    ],
+    "verdicts": [
+     {
+      "ok": true,
+      "problems": [],
+      "text": "ما عندي معلومة مؤكدة عن الواي فاي حالياً. تقدر تكتب «موظف» عشان يرد عليك أحد من الفريق. وإذا تبي تطلب، أقدر أساعدك في المنيو والبوكسات."
+     }
+    ],
+    "calls": [
+     {
+      "model": "claude-haiku-5-5",
+      "tier": "fast",
+      "ms": 1816,
+      "outcome": "ok",
+      "in": 1124,
+      "out": 132,
+      "cached": 8759,
+      "costSar": 0.003954
+     },
+     {
+      "model": "claude-haiku-5-5",
+      "tier": "fast",
+      "ms": 1444,
+      "outcome": "ok",
+      "in": 266,
+      "out": 94,
+      "cached": 9655,
+      "costSar": 0.003897
+     }
+    ],
+    "ms": 3292,
+    "costSar": 0.007851,
+    "model": "claude-haiku-5-5",
+    "suggestions": [],
+    "context": {
+     "open_now": true,
+     "closes_at": "2 فجراً",
+     "location_shared": false,
+     "customer": {
+      "known": false,
+      "name": null,
+      "orders": 0,
+      "status": "no_orders",
+      "days_since_last": null,
+      "usual_basket_sar": null,
+      "usual_mode": null,
+      "usual_hour": null,
+      "favourites": [],
+      "taste": null,
+      "last_order": null,
+      "districts": [],
+      "loyalty": {
+       "every": 3,
+       "progress": 0,
+       "left": 3,
+       "reward": "free_delivery",
+       "min_total": 60,
+       "status": null
+      },
+      "unused_rewards": [],
+      "first_order_offer": true,
+      "language": "ar"
+     },
+     "offers": {
+      "first_order": {
+       "eligible": true,
+       "code": "FIRST",
+       "free_delivery": true,
+       "min_total": 60,
+       "reason": null
+      },
+      "loyalty": {
+       "every": 3,
+       "progress": 0,
+       "left": 3,
+       "reward": "free_delivery",
+       "min_total": 60,
+       "status": null
+      }
+     },
+     "branch": "📍 فرعنا في حي السلامة بجدة، عند دوار رامي.",
+     "boxes": [
+      "box-solo-crepe: بوكس الكريب الفردي",
+      "box-solo-mixgrill: بوكس الميكس جريل الفردي",
+      "box-solo-burger: بوكس البرجر الفردي",
+      "box-solo-pasta: بوكس الباستا الفردي",
+      "box-solo-hawawshi: بوكس الحواوشي الفردي",
+      "box-solo-meal: بوكس وجبة المشاوي الفردي",
+      "box-crepe-duo: بوكس الكريب لشخصين",
+      "box-mixgrill-duo: ميكس جريل لشخصين",
+      "box-pizza-pasta: بيتزا وباستا لشخصين",
+      "box-meals-duo: وجبتين مشاوي لشخصين",
+      "box-burger-duo: بوكس البرجر لشخصين",
+      "box-late-night: بوكس السهرة",
+      "box-taste-all: بوكس التشكيلة",
+      "box-grill-half-half: بوكس المشاوي نص ونص",
+      "box-family: بوكس العائلة — مشاوي وبيتزا وباستا",
+      "box-pizza-night: بوكس سهرة البيتزا",
+      "box-mashakel: بوكس المشكل المخصوص",
+      "box-ribs-grill: بوكس الريش والمشاوي"
+     ]
+    },
+    "tier": "fast",
+    "escalated": false,
+    "lang": "ar"
+   },
+   {
+    "i": 1,
+    "customer": "وكم عمر المطعم؟",
+    "cls": "unknown",
+    "raw": "unknown",
+    "by": "assistant",
+    "reply": "ما عندي معلومة مؤكدة عن عمر المطعم حالياً. تقدر تكتب «موظف» عشان يرد عليك أحد من الفريق. وإذا تبي تطلب، أقدر أساعدك في المنيو والبوكسات.",
+    "cart": null,
+    "handover": null,
+    "outcome": "sent",
+    "tools": [
+     {
+      "name": "ask_knowledge",
+      "input": {
+       "question": "وكم عمر المطعم؟"
+      },
+      "result": {
+       "ok": true,
+       "found": false,
+       "rule": "no saved answer. Say plainly in one line that you have no confirmed information about this and that they can type «موظف» to ask the team; do not guess; keep helping with the order."
+      },
+      "ms": 0
+     }
+    ],
+    "verdicts": [
+     {
+      "ok": true,
+      "problems": [],
+      "text": "ما عندي معلومة مؤكدة عن عمر المطعم حالياً. تقدر تكتب «موظف» عشان يرد عليك أحد من الفريق. وإذا تبي تطلب، أقدر أساعدك في المنيو والبوكسات."
+     }
+    ],
+    "calls": [
+     {
+      "model": "claude-haiku-5-5",
+      "tier": "fast",
+      "ms": 1193,
+      "outcome": "ok",
+      "in": 254,
+      "out": 62,
+      "cached": 9866,
+      "costSar": 0.003911
+     },
+     {
+      "model": "claude-haiku-5-5",
+      "tier": "fast",
+      "ms": 1117,
+      "outcome": "ok",
+      "in": 179,
+      "out": 95,
+      "cached": 10066,
+      "costSar": 0.00402
+     }
+    ],
+    "ms": 2317,
+    "costSar": 0.007931,
+    "model": "claude-haiku-5-5",
+    "suggestions": [],
+    "context": {
+     "open_now": true,
+     "closes_at": "2 فجراً",
+     "location_shared": false
+    },
+    "tier": "fast",
+    "escalated": false,
+    "lang": "ar"
+   }
+  ],
+  "carts": [],
+  "costSar": 0.015782,
+  "grade": {
+   "pass": true,
+   "fails": [],
+   "review": []
+  }
+ },
+ {
+  "id": "as3-beef-allergy-general",
+  "group": "allergy, open answers",
+  "world": {
+   "profile": "new"
+  },
+  "expect": {
+   "noCart": true,
+   "noHandover": true,
+   "mustNotContain": [
+    "خالي من",
+    "آمن",
+    "مضمون"
+   ]
+  },
+  "turns": [
+   {
+    "i": 0,
+    "customer": "عندي حساسية من اللحم البقري",
+    "cls": "faq",
+    "raw": "faq:allergens",
+    "by": "assistant",
+    "reply": "نشوف لك التفاصيل، هذا وصف لحومنا:\nنشوي على فحم طبيعي ونحضّر كل طلب بعد استلامه.\nالكفتة والطرب: لحم غنم مع لحم بقري برازيلي مبرّد.\nالبرجر والحواوشي والسجق: لحم بقري برازيلي مبرّد مع لحم بلدي بقري وغنم.\nالريش والكباب: لحم غنم أسترالي. والدجاج مبرّد.\nوكل لحومنا ودجاجنا حلال.\n\nأي طبق تفكر فيه حتى أتأكد لك من مكوناته؟",
+    "cart": null,
+    "handover": null,
+    "outcome": "sent",
+    "tools": [
+     {
+      "name": "faq",
+      "input": {
+       "topic": "meat"
+      },
+      "result": {
+       "ok": true,
+       "topic": "meat",
+       "say": "نشوي على فحم طبيعي ونحضّر كل طلب بعد استلامه.\nالكفتة والطرب: لحم غنم مع لحم بقري برازيلي مبرّد.\nالبرجر والحواوشي والسجق: لحم بقري برازيلي مبرّد مع لحم بلدي بقري وغنم.\nالريش والكباب: لحم غنم أسترالي. والدجاج مبرّد.\nوكل لحومنا ودجاجنا حلال.",
+       "rule": "send this text as it is"
+      },
+      "ms": 0
+     },
+     {
+      "name": "faq",
+      "input": {
+       "topic": "meat"
+      },
+      "result": {
+       "ok": true,
+       "topic": "meat",
+       "say": "نشوي على فحم طبيعي ونحضّر كل طلب بعد استلامه.\nالكفتة والطرب: لحم غنم مع لحم بقري برازيلي مبرّد.\nالبرجر والحواوشي والسجق: لحم بقري برازيلي مبرّد مع لحم بلدي بقري وغنم.\nالريش والكباب: لحم غنم أسترالي. والدجاج مبرّد.\nوكل لحومنا ودجاجنا حلال.",
+       "rule": "send this text as it is"
+      },
+      "ms": 0
+     }
+    ],
+    "verdicts": [
+     {
+      "ok": true,
+      "problems": [],
+      "text": "نشوف لك التفاصيل، هذا وصف لحومنا:\nنشوي على فحم طبيعي ونحضّر كل طلب بعد استلامه.\nالكفتة والطرب: لحم غنم مع لحم بقري برازيلي مبرّد.\nالبرجر والحواوشي والسجق: لحم بقري برازيلي مبرّد مع لحم بلدي بقري وغنم.\nالريش والكباب: لحم غنم أسترالي. والدجاج مبرّد.\nوكل لحومنا ودجاجنا حلال.\n\nأي طبق تفكر فيه حتى أتأكد لك من مكوناته؟"
+     }
+    ],
+    "calls": [
+     {
+      "model": "claude-haiku-5-5",
+      "tier": "fast",
+      "ms": 1784,
+      "outcome": "ok",
+      "in": 1151,
+      "out": 206,
+      "cached": 8759,
+      "costSar": 0.004102
+     },
+     {
+      "model": "claude-haiku-5-5",
+      "tier": "fast",
+      "ms": 943,
+      "outcome": "ok",
+      "in": 525,
+      "out": 48,
+      "cached": 9676,
+      "costSar": 0.003915
+     },
+     {
+      "model": "claude-haiku-5-5",
+      "tier": "fast",
+      "ms": 1770,
+      "outcome": "ok",
+      "in": 325,
+      "out": 228,
+      "cached": 10094,
+      "costSar": 0.004335
+     }
+    ],
+    "ms": 4507,
+    "costSar": 0.012352,
+    "model": "claude-haiku-5-5",
+    "suggestions": [],
+    "context": {
+     "open_now": true,
+     "closes_at": "2 فجراً",
+     "location_shared": false,
+     "hint": {
+      "intent": "faq",
+      "topic": "allergens"
+     },
+     "customer": {
+      "known": false,
+      "name": null,
+      "orders": 0,
+      "status": "no_orders",
+      "days_since_last": null,
+      "usual_basket_sar": null,
+      "usual_mode": null,
+      "usual_hour": null,
+      "favourites": [],
+      "taste": null,
+      "last_order": null,
+      "districts": [],
+      "loyalty": {
+       "every": 3,
+       "progress": 0,
+       "left": 3,
+       "reward": "free_delivery",
+       "min_total": 60,
+       "status": null
+      },
+      "unused_rewards": [],
+      "first_order_offer": true,
+      "language": "ar"
+     },
+     "offers": {
+      "first_order": {
+       "eligible": true,
+       "code": "FIRST",
+       "free_delivery": true,
+       "min_total": 60,
+       "reason": null
+      },
+      "loyalty": {
+       "every": 3,
+       "progress": 0,
+       "left": 3,
+       "reward": "free_delivery",
+       "min_total": 60,
+       "status": null
+      }
+     },
+     "branch": "📍 فرعنا في حي السلامة بجدة، عند دوار رامي.",
+     "boxes": [
+      "box-solo-crepe: بوكس الكريب الفردي",
+      "box-solo-mixgrill: بوكس الميكس جريل الفردي",
+      "box-solo-burger: بوكس البرجر الفردي",
+      "box-solo-pasta: بوكس الباستا الفردي",
+      "box-solo-hawawshi: بوكس الحواوشي الفردي",
+      "box-solo-meal: بوكس وجبة المشاوي الفردي",
+      "box-crepe-duo: بوكس الكريب لشخصين",
+      "box-mixgrill-duo: ميكس جريل لشخصين",
+      "box-pizza-pasta: بيتزا وباستا لشخصين",
+      "box-meals-duo: وجبتين مشاوي لشخصين",
+      "box-burger-duo: بوكس البرجر لشخصين",
+      "box-late-night: بوكس السهرة",
+      "box-taste-all: بوكس التشكيلة",
+      "box-grill-half-half: بوكس المشاوي نص ونص",
+      "box-family: بوكس العائلة — مشاوي وبيتزا وباستا",
+      "box-pizza-night: بوكس سهرة البيتزا",
+      "box-mashakel: بوكس المشكل المخصوص",
+      "box-ribs-grill: بوكس الريش والمشاوي"
+     ]
+    },
+    "tier": "fast",
+    "escalated": false,
+    "lang": "ar"
+   },
+   {
+    "i": 1,
+    "customer": "طيب كريب هوت دوج فيه لحم؟",
+    "cls": "dishfact",
+    "raw": "ingredients",
+    "by": "assistant",
+    "reply": "نعم، يوجد لحم في «كريب هوت دوج»، ولا يمكن تجهيز الطلب بدون لحم.\nتحب أشوف لك أطباق ثانية ما فيها بقري؟",
+    "cart": null,
+    "handover": null,
+    "outcome": "sent",
+    "tools": [
+     {
+      "name": "dish_fact",
+      "input": {
+       "id": "4",
+       "question": "لحم بقري",
+       "remove": false
+      },
+      "result": {
+       "ok": true,
+       "status": "present_fixed",
+       "say": "نعم، يوجد لحم في «كريب هوت دوج»، ولا يمكن تجهيز الطلب بدون لحم.",
+       "rule": "send this text as it is; you may add one short next step"
+      },
+      "ms": 1
+     }
+    ],
+    "verdicts": [
+     {
+      "ok": true,
+      "problems": [],
+      "text": "نعم، يوجد لحم في «كريب هوت دوج»، ولا يمكن تجهيز الطلب بدون لحم.\nتحب أشوف لك أطباق ثانية ما فيها بقري؟"
+     }
+    ],
+    "calls": [
+     {
+      "model": "claude-haiku-5-5",
+      "tier": "fast",
+      "ms": 1233,
+      "outcome": "ok",
+      "in": 478,
+      "out": 97,
+      "cached": 10352,
+      "costSar": 0.004243
+     },
+     {
+      "model": "claude-haiku-5-5",
+      "tier": "fast",
+      "ms": 1189,
+      "outcome": "ok",
+      "in": 242,
+      "out": 72,
+      "cached": 10731,
+      "costSar": 0.00425
+     }
+    ],
+    "ms": 2428,
+    "costSar": 0.008493,
+    "model": "claude-haiku-5-5",
+    "suggestions": [],
+    "context": {
+     "open_now": true,
+     "closes_at": "2 فجراً",
+     "location_shared": false,
+     "hint": {
+      "intent": "question_about_one_dish",
+      "dish_id": "4",
+      "wants_it_removed": false
+     }
+    },
+    "tier": "fast",
+    "escalated": false,
+    "lang": "ar"
+   }
+  ],
+  "carts": [],
+  "costSar": 0.020845000000000002,
+  "grade": {
+   "pass": true,
+   "fails": [],
+   "review": []
+  }
+ },
+ {
+  "id": "as3-do-dishes-cause-allergy",
+  "group": "allergy, open answers",
+  "world": {
+   "profile": "new"
+  },
+  "expect": {
+   "noCart": true,
+   "noHandover": true,
+   "mustNotContain": [
+    "خالي من",
+    "آمن",
+    "مضمون",
+    "ما عندنا مكسرات"
+   ]
+  },
+  "turns": [
+   {
+    "i": 0,
+    "customer": "هل الاصناف تسبب الحساسية",
+    "cls": "faq",
+    "raw": "faq:allergens",
+    "by": "assistant",
+    "reply": null,
+    "cart": null,
+    "handover": "needs_staff",
+    "outcome": "handover:needs_staff",
+    "tools": [
+     {
+      "name": "faq",
+      "input": {
+       "topic": "allergens"
+      },
+      "result": {
+       "ok": false,
+       "error": "no_approved_answer",
+       "rule": "call handover(needs_staff)"
+      },
+      "ms": 0
+     },
+     {
+      "name": "handover",
+      "input": {
+       "reason": "needs_staff"
+      },
+      "result": {
+       "ok": true,
+       "sent": "a fixed handover message is being sent to the customer"
+      },
+      "ms": 0
+     }
+    ],
+    "verdicts": [],
+    "calls": [
+     {
+      "model": "claude-haiku-5-5",
+      "tier": "fast",
+      "ms": 1223,
+      "outcome": "ok",
+      "in": 1152,
+      "out": 49,
+      "cached": 8759,
+      "costSar": 0.003809
+     },
+     {
+      "model": "claude-haiku-5-5",
+      "tier": "fast",
+      "ms": 1097,
+      "outcome": "ok",
+      "in": 124,
+      "out": 51,
+      "cached": 9677,
+      "costSar": 0.003771
+     }
+    ],
+    "ms": 2322,
+    "costSar": 0.00758,
+    "model": "claude-haiku-5-5",
+    "suggestions": [],
+    "context": {
+     "open_now": true,
+     "closes_at": "2 فجراً",
+     "location_shared": false,
+     "hint": {
+      "intent": "faq",
+      "topic": "allergens"
+     },
+     "customer": {
+      "known": false,
+      "name": null,
+      "orders": 0,
+      "status": "no_orders",
+      "days_since_last": null,
+      "usual_basket_sar": null,
+      "usual_mode": null,
+      "usual_hour": null,
+      "favourites": [],
+      "taste": null,
+      "last_order": null,
+      "districts": [],
+      "loyalty": {
+       "every": 3,
+       "progress": 0,
+       "left": 3,
+       "reward": "free_delivery",
+       "min_total": 60,
+       "status": null
+      },
+      "unused_rewards": [],
+      "first_order_offer": true,
+      "language": "ar"
+     },
+     "offers": {
+      "first_order": {
+       "eligible": true,
+       "code": "FIRST",
+       "free_delivery": true,
+       "min_total": 60,
+       "reason": null
+      },
+      "loyalty": {
+       "every": 3,
+       "progress": 0,
+       "left": 3,
+       "reward": "free_delivery",
+       "min_total": 60,
+       "status": null
+      }
+     },
+     "branch": "📍 فرعنا في حي السلامة بجدة، عند دوار رامي.",
+     "boxes": [
+      "box-solo-crepe: بوكس الكريب الفردي",
+      "box-solo-mixgrill: بوكس الميكس جريل الفردي",
+      "box-solo-burger: بوكس البرجر الفردي",
+      "box-solo-pasta: بوكس الباستا الفردي",
+      "box-solo-hawawshi: بوكس الحواوشي الفردي",
+      "box-solo-meal: بوكس وجبة المشاوي الفردي",
+      "box-crepe-duo: بوكس الكريب لشخصين",
+      "box-mixgrill-duo: ميكس جريل لشخصين",
+      "box-pizza-pasta: بيتزا وباستا لشخصين",
+      "box-meals-duo: وجبتين مشاوي لشخصين",
+      "box-burger-duo: بوكس البرجر لشخصين",
+      "box-late-night: بوكس السهرة",
+      "box-taste-all: بوكس التشكيلة",
+      "box-grill-half-half: بوكس المشاوي نص ونص",
+      "box-family: بوكس العائلة — مشاوي وبيتزا وباستا",
+      "box-pizza-night: بوكس سهرة البيتزا",
+      "box-mashakel: بوكس المشكل المخصوص",
+      "box-ribs-grill: بوكس الريش والمشاوي"
+     ]
+    },
+    "tier": "fast",
+    "escalated": false,
+    "lang": "ar",
+    "note": ""
+   }
+  ],
+  "carts": [],
+  "costSar": 0.00758,
+  "grade": {
+   "pass": false,
+   "fails": [
+    {
+     "type": "wrong_handover",
+     "turn": 0,
+     "detail": "needs_staff"
+    }
+   ],
+   "review": []
+  }
+ },
+ {
+  "id": "as3-burger-egg",
+  "group": "owner facts",
+  "world": {
+   "profile": "new"
+  },
+  "expect": {
+   "noCart": true,
+   "noHandover": true,
+   "mustContain": [
+    "قد يوجد بيض",
+    "الصوص",
+    "ملاحظة"
+   ]
+  },
+  "turns": [
+   {
+    "i": 0,
+    "customer": "هل البرجر الكلاسيك فيه بيض",
+    "cls": "dishfact",
+    "raw": "allergy_dish",
+    "by": "assistant",
+    "reply": "قد يوجد بيض في الصوص المستخدم مع «برجر لحم كلاسيك». يمكن تجهيز الطلب بدون الصوص: اكتبها في ملاحظة الصنف عند الطلب.\nمطبخنا واحد لكل الأصناف وقد يحصل تلامس بين المكونات أثناء التحضير.\nواكتب لنا حساسيتك في ملاحظة الطلب وننتبه لها.",
+    "cart": null,
+    "handover": null,
+    "outcome": "sent",
+    "tools": [
+     {
+      "name": "dish_fact",
+      "input": {
+       "id": "71",
+       "question": "بيض",
+       "remove": false
+      },
+      "result": {
+       "ok": true,
+       "status": "present_maybe_removable",
+       "say": "قد يوجد بيض في الصوص المستخدم مع «برجر لحم كلاسيك». يمكن تجهيز الطلب بدون الصوص: اكتبها في ملاحظة الصنف عند الطلب.\nمطبخنا واحد لكل الأصناف وقد يحصل تلامس بين المكونات أثناء التحضير.\nواكتب لنا حساسيتك في ملاحظة الطلب وننتبه لها.",
+       "rule": "send this text as it is; you may add one short next step"
+      },
+      "ms": 16
+     }
+    ],
+    "verdicts": [
+     {
+      "ok": true,
+      "problems": [],
+      "text": "قد يوجد بيض في الصوص المستخدم مع «برجر لحم كلاسيك». يمكن تجهيز الطلب بدون الصوص: اكتبها في ملاحظة الصنف عند الطلب.\nمطبخنا واحد لكل الأصناف وقد يحصل تلامس بين المكونات أثناء التحضير.\nواكتب لنا حساسيتك في ملاحظة الطلب وننتبه لها."
+     }
+    ],
+    "calls": [
+     {
+      "model": "claude-haiku-5-5",
+      "tier": "fast",
+      "ms": 1202,
+      "outcome": "ok",
+      "in": 1174,
+      "out": 145,
+      "cached": 8759,
+      "costSar": 0.003997
+     },
+     {
+      "model": "claude-haiku-5-5",
+      "tier": "fast",
+      "ms": 1163,
+      "outcome": "ok",
+      "in": 445,
+      "out": 158,
+      "cached": 9695,
+      "costSar": 0.004099
+     }
+    ],
+    "ms": 2392,
+    "costSar": 0.008095999999999999,
+    "model": "claude-haiku-5-5",
+    "suggestions": [],
+    "context": {
+     "open_now": true,
+     "closes_at": "2 فجراً",
+     "location_shared": false,
+     "hint": {
+      "intent": "question_about_one_dish",
+      "dish_id": "71",
+      "wants_it_removed": false
+     },
+     "customer": {
+      "known": false,
+      "name": null,
+      "orders": 0,
+      "status": "no_orders",
+      "days_since_last": null,
+      "usual_basket_sar": null,
+      "usual_mode": null,
+      "usual_hour": null,
+      "favourites": [],
+      "taste": null,
+      "last_order": null,
+      "districts": [],
+      "loyalty": {
+       "every": 3,
+       "progress": 0,
+       "left": 3,
+       "reward": "free_delivery",
+       "min_total": 60,
+       "status": null
+      },
+      "unused_rewards": [],
+      "first_order_offer": true,
+      "language": "ar"
+     },
+     "offers": {
+      "first_order": {
+       "eligible": true,
+       "code": "FIRST",
+       "free_delivery": true,
+       "min_total": 60,
+       "reason": null
+      },
+      "loyalty": {
+       "every": 3,
+       "progress": 0,
+       "left": 3,
+       "reward": "free_delivery",
+       "min_total": 60,
+       "status": null
+      }
+     },
+     "branch": "📍 فرعنا في حي السلامة بجدة، عند دوار رامي.",
+     "boxes": [
+      "box-solo-crepe: بوكس الكريب الفردي",
+      "box-solo-mixgrill: بوكس الميكس جريل الفردي",
+      "box-solo-burger: بوكس البرجر الفردي",
+      "box-solo-pasta: بوكس الباستا الفردي",
+      "box-solo-hawawshi: بوكس الحواوشي الفردي",
+      "box-solo-meal: بوكس وجبة المشاوي الفردي",
+      "box-crepe-duo: بوكس الكريب لشخصين",
+      "box-mixgrill-duo: ميكس جريل لشخصين",
+      "box-pizza-pasta: بيتزا وباستا لشخصين",
+      "box-meals-duo: وجبتين مشاوي لشخصين",
+      "box-burger-duo: بوكس البرجر لشخصين",
+      "box-late-night: بوكس السهرة",
+      "box-taste-all: بوكس التشكيلة",
+      "box-grill-half-half: بوكس المشاوي نص ونص",
+      "box-family: بوكس العائلة — مشاوي وبيتزا وباستا",
+      "box-pizza-night: بوكس سهرة البيتزا",
+      "box-mashakel: بوكس المشكل المخصوص",
+      "box-ribs-grill: بوكس الريش والمشاوي"
+     ]
+    },
+    "tier": "fast",
+    "escalated": false,
+    "lang": "ar"
+   }
+  ],
+  "carts": [],
+  "costSar": 0.008095999999999999,
+  "grade": {
+   "pass": true,
+   "fails": [],
+   "review": []
+  }
+ },
+ {
+  "id": "as3-kofta-sesame",
+  "group": "owner facts",
+  "world": {
+   "profile": "new"
+  },
+  "expect": {
+   "noCart": true,
+   "noHandover": true,
+   "mustContain": [
+    "الطحينة فقط",
+    "الكفتة نفسها بدون سمسم",
+    "ملاحظة"
+   ]
+  },
+  "turns": [
+   {
+    "i": 0,
+    "customer": "هل وجبة الكفتة فيها سمسم حساسية ؟",
+    "cls": "dishfact",
+    "raw": "allergy_dish",
+    "by": "assistant",
+    "reply": "نعم، يوجد سمسم في «وجبة كفتة»، وذلك في الطحينة فقط، والكفتة نفسها بدون سمسم. يمكن تجهيز الطلب بدون الطحينة: اكتبها في ملاحظة الصنف عند الطلب.\nمطبخنا واحد لكل الأصناف وقد يحصل تلامس بين المكونات أثناء التحضير.\nواكتب لنا حساسيتك في ملاحظة الطلب وننتبه لها.",
+    "cart": null,
+    "handover": null,
+    "outcome": "sent",
+    "tools": [
+     {
+      "name": "dish_fact",
+      "input": {
+       "id": "17",
+       "question": "سمسم",
+       "remove": false
+      },
+      "result": {
+       "ok": true,
+       "status": "present_removable_only",
+       "say": "نعم، يوجد سمسم في «وجبة كفتة»، وذلك في الطحينة فقط، والكفتة نفسها بدون سمسم. يمكن تجهيز الطلب بدون الطحينة: اكتبها في ملاحظة الصنف عند الطلب.\nمطبخنا واحد لكل الأصناف وقد يحصل تلامس بين المكونات أثناء التحضير.\nواكتب لنا حساسيتك في ملاحظة الطلب وننتبه لها.",
+       "rule": "send this text as it is; you may add one short next step"
+      },
+      "ms": 1
+     }
+    ],
+    "verdicts": [
+     {
+      "ok": true,
+      "problems": [],
+      "text": "نعم، يوجد سمسم في «وجبة كفتة»، وذلك في الطحينة فقط، والكفتة نفسها بدون سمسم. يمكن تجهيز الطلب بدون الطحينة: اكتبها في ملاحظة الصنف عند الطلب.\nمطبخنا واحد لكل الأصناف وقد يحصل تلامس بين المكونات أثناء التحضير.\nواكتب لنا حساسيتك في ملاحظة الطلب وننتبه لها."
+     }
+    ],
+    "calls": [
+     {
+      "model": "claude-haiku-5-5",
+      "tier": "fast",
+      "ms": 1235,
+      "outcome": "ok",
+      "in": 1182,
+      "out": 95,
+      "cached": 8759,
+      "costSar": 0.003906
+     },
+     {
+      "model": "claude-haiku-5-5",
+      "tier": "fast",
+      "ms": 1493,
+      "outcome": "ok",
+      "in": 406,
+      "out": 173,
+      "cached": 9701,
+      "costSar": 0.004115
+     }
+    ],
+    "ms": 2732,
+    "costSar": 0.008021,
+    "model": "claude-haiku-5-5",
+    "suggestions": [],
+    "context": {
+     "open_now": true,
+     "closes_at": "2 فجراً",
+     "location_shared": false,
+     "hint": {
+      "intent": "question_about_one_dish",
+      "dish_id": "17",
+      "wants_it_removed": false
+     },
+     "customer": {
+      "known": false,
+      "name": null,
+      "orders": 0,
+      "status": "no_orders",
+      "days_since_last": null,
+      "usual_basket_sar": null,
+      "usual_mode": null,
+      "usual_hour": null,
+      "favourites": [],
+      "taste": null,
+      "last_order": null,
+      "districts": [],
+      "loyalty": {
+       "every": 3,
+       "progress": 0,
+       "left": 3,
+       "reward": "free_delivery",
+       "min_total": 60,
+       "status": null
+      },
+      "unused_rewards": [],
+      "first_order_offer": true,
+      "language": "ar"
+     },
+     "offers": {
+      "first_order": {
+       "eligible": true,
+       "code": "FIRST",
+       "free_delivery": true,
+       "min_total": 60,
+       "reason": null
+      },
+      "loyalty": {
+       "every": 3,
+       "progress": 0,
+       "left": 3,
+       "reward": "free_delivery",
+       "min_total": 60,
+       "status": null
+      }
+     },
+     "branch": "📍 فرعنا في حي السلامة بجدة، عند دوار رامي.",
+     "boxes": [
+      "box-solo-crepe: بوكس الكريب الفردي",
+      "box-solo-mixgrill: بوكس الميكس جريل الفردي",
+      "box-solo-burger: بوكس البرجر الفردي",
+      "box-solo-pasta: بوكس الباستا الفردي",
+      "box-solo-hawawshi: بوكس الحواوشي الفردي",
+      "box-solo-meal: بوكس وجبة المشاوي الفردي",
+      "box-crepe-duo: بوكس الكريب لشخصين",
+      "box-mixgrill-duo: ميكس جريل لشخصين",
+      "box-pizza-pasta: بيتزا وباستا لشخصين",
+      "box-meals-duo: وجبتين مشاوي لشخصين",
+      "box-burger-duo: بوكس البرجر لشخصين",
+      "box-late-night: بوكس السهرة",
+      "box-taste-all: بوكس التشكيلة",
+      "box-grill-half-half: بوكس المشاوي نص ونص",
+      "box-family: بوكس العائلة — مشاوي وبيتزا وباستا",
+      "box-pizza-night: بوكس سهرة البيتزا",
+      "box-mashakel: بوكس المشكل المخصوص",
+      "box-ribs-grill: بوكس الريش والمشاوي"
+     ]
+    },
+    "tier": "fast",
+    "escalated": false,
+    "lang": "ar"
+   }
+  ],
+  "carts": [],
+  "costSar": 0.008021,
+  "grade": {
+   "pass": true,
+   "fails": [],
+   "review": []
+  }
+ },
+ {
+  "id": "as3-hawawshi-sesame",
+  "group": "owner facts",
+  "world": {
+   "profile": "new"
+  },
+  "expect": {
+   "noCart": true,
+   "noHandover": true,
+   "mustContain": [
+    "خبز الحواوشي بدون سمسم"
+   ]
+  },
+  "turns": [
+   {
+    "i": 0,
+    "customer": "حواوشي موتزاريلا فيه سمسم؟",
+    "cls": "dishfact",
+    "raw": "allergy_dish",
+    "by": "assistant",
+    "reply": "نعم، يوجد سمسم في «حواوشي موتزاريلا»، وذلك في الطحينة فقط، وخبز الحواوشي بدون سمسم. يمكن تجهيز الطلب بدون الطحينة: اكتبها في ملاحظة الصنف عند الطلب.\nمطبخنا واحد لكل الأصناف وقد يحصل تلامس بين المكونات أثناء التحضير.\nواكتب لنا حساسيتك في ملاحظة الطلب وننتبه لها.\nتحب أضيفه لطلبك؟",
+    "cart": null,
+    "handover": null,
+    "outcome": "sent",
+    "tools": [
+     {
+      "name": "dish_fact",
+      "input": {
+       "id": "19",
+       "question": "سمسم",
+       "remove": false
+      },
+      "result": {
+       "ok": true,
+       "status": "present_removable_only",
+       "say": "نعم، يوجد سمسم في «حواوشي موتزاريلا»، وذلك في الطحينة فقط، وخبز الحواوشي بدون سمسم. يمكن تجهيز الطلب بدون الطحينة: اكتبها في ملاحظة الصنف عند الطلب.\nمطبخنا واحد لكل الأصناف وقد يحصل تلامس بين المكونات أثناء التحضير.\nواكتب لنا حساسيتك في ملاحظة الطلب وننتبه لها.",
+       "rule": "send this text as it is; you may add one short next step"
+      },
+      "ms": 1
+     }
+    ],
+    "verdicts": [
+     {
+      "ok": true,
+      "problems": [],
+      "text": "نعم، يوجد سمسم في «حواوشي موتزاريلا»، وذلك في الطحينة فقط، وخبز الحواوشي بدون سمسم. يمكن تجهيز الطلب بدون الطحينة: اكتبها في ملاحظة الصنف عند الطلب.\nمطبخنا واحد لكل الأصناف وقد يحصل تلامس بين المكونات أثناء التحضير.\nواكتب لنا حساسيتك في ملاحظة الطلب وننتبه لها.\nتحب أضيفه لطلبك؟"
+     }
+    ],
+    "calls": [
+     {
+      "model": "claude-haiku-5-5",
+      "tier": "fast",
+      "ms": 1446,
+      "outcome": "ok",
+      "in": 1177,
+      "out": 145,
+      "cached": 8759,
+      "costSar": 0.003998
+     },
+     {
+      "model": "claude-haiku-5-5",
+      "tier": "fast",
+      "ms": 1446,
+      "outcome": "ok",
+      "in": 475,
+      "out": 191,
+      "cached": 9697,
+      "costSar": 0.004173
+     }
+    ],
+    "ms": 2904,
+    "costSar": 0.008171,
+    "model": "claude-haiku-5-5",
+    "suggestions": [],
+    "context": {
+     "open_now": true,
+     "closes_at": "2 فجراً",
+     "location_shared": false,
+     "hint": {
+      "intent": "question_about_one_dish",
+      "dish_id": "19",
+      "wants_it_removed": false
+     },
+     "customer": {
+      "known": false,
+      "name": null,
+      "orders": 0,
+      "status": "no_orders",
+      "days_since_last": null,
+      "usual_basket_sar": null,
+      "usual_mode": null,
+      "usual_hour": null,
+      "favourites": [],
+      "taste": null,
+      "last_order": null,
+      "districts": [],
+      "loyalty": {
+       "every": 3,
+       "progress": 0,
+       "left": 3,
+       "reward": "free_delivery",
+       "min_total": 60,
+       "status": null
+      },
+      "unused_rewards": [],
+      "first_order_offer": true,
+      "language": "ar"
+     },
+     "offers": {
+      "first_order": {
+       "eligible": true,
+       "code": "FIRST",
+       "free_delivery": true,
+       "min_total": 60,
+       "reason": null
+      },
+      "loyalty": {
+       "every": 3,
+       "progress": 0,
+       "left": 3,
+       "reward": "free_delivery",
+       "min_total": 60,
+       "status": null
+      }
+     },
+     "branch": "📍 فرعنا في حي السلامة بجدة، عند دوار رامي.",
+     "boxes": [
+      "box-solo-crepe: بوكس الكريب الفردي",
+      "box-solo-mixgrill: بوكس الميكس جريل الفردي",
+      "box-solo-burger: بوكس البرجر الفردي",
+      "box-solo-pasta: بوكس الباستا الفردي",
+      "box-solo-hawawshi: بوكس الحواوشي الفردي",
+      "box-solo-meal: بوكس وجبة المشاوي الفردي",
+      "box-crepe-duo: بوكس الكريب لشخصين",
+      "box-mixgrill-duo: ميكس جريل لشخصين",
+      "box-pizza-pasta: بيتزا وباستا لشخصين",
+      "box-meals-duo: وجبتين مشاوي لشخصين",
+      "box-burger-duo: بوكس البرجر لشخصين",
+      "box-late-night: بوكس السهرة",
+      "box-taste-all: بوكس التشكيلة",
+      "box-grill-half-half: بوكس المشاوي نص ونص",
+      "box-family: بوكس العائلة — مشاوي وبيتزا وباستا",
+      "box-pizza-night: بوكس سهرة البيتزا",
+      "box-mashakel: بوكس المشكل المخصوص",
+      "box-ribs-grill: بوكس الريش والمشاوي"
+     ]
+    },
+    "tier": "fast",
+    "escalated": false,
+    "lang": "ar"
+   }
+  ],
+  "carts": [],
+  "costSar": 0.008171,
+  "grade": {
+   "pass": true,
+   "fails": [],
+   "review": []
+  }
+ },
+ {
+  "id": "as3-celery-skillet",
+  "group": "owner facts",
+  "world": {
+   "profile": "new"
+  },
+  "expect": {
+   "noCart": true,
+   "noHandover": true,
+   "mustContain": [
+    "كرفس",
+    "الصوص"
+   ]
+  },
+  "turns": [
+   {
+    "i": 0,
+    "customer": "طاسة الأكيلة فيها كرفس؟",
+    "cls": "dishfact",
+    "raw": "allergy_dish",
+    "by": "assistant",
+    "reply": "نعم، يوجد كرفس في «طاسة الأكيلة»، وذلك في الصوص.\nللتأكد من إمكانية بديل عن الصوص اكتب: موظف\nمطبخنا واحد لكل الأصناف وقد يحصل تلامس بين المكونات أثناء التحضير.\nواكتب لنا حساسيتك في ملاحظة الطلب وننتبه لها.",
+    "cart": null,
+    "handover": null,
+    "outcome": "sent",
+    "tools": [
+     {
+      "name": "dish_fact",
+      "input": {
+       "id": "51",
+       "question": "كرفس",
+       "remove": false
+      },
+      "result": {
+       "ok": true,
+       "status": "present_fixed_visible",
+       "say": "نعم، يوجد كرفس في «طاسة الأكيلة»، وذلك في الصوص.\nللتأكد من إمكانية بديل عن الصوص اكتب: موظف\nمطبخنا واحد لكل الأصناف وقد يحصل تلامس بين المكونات أثناء التحضير.\nواكتب لنا حساسيتك في ملاحظة الطلب وننتبه لها.",
+       "rule": "send this text as it is; you may add one short next step"
+      },
+      "ms": 0
+     }
+    ],
+    "verdicts": [
+     {
+      "ok": true,
+      "problems": [],
+      "text": "نعم، يوجد كرفس في «طاسة الأكيلة»، وذلك في الصوص.\nللتأكد من إمكانية بديل عن الصوص اكتب: موظف\nمطبخنا واحد لكل الأصناف وقد يحصل تلامس بين المكونات أثناء التحضير.\nواكتب لنا حساسيتك في ملاحظة الطلب وننتبه لها."
+     }
+    ],
+    "calls": [
+     {
+      "model": "claude-haiku-5-5",
+      "tier": "fast",
+      "ms": 1147,
+      "outcome": "ok",
+      "in": 1174,
+      "out": 139,
+      "cached": 8759,
+      "costSar": 0.003986
+     },
+     {
+      "model": "claude-haiku-5-5",
+      "tier": "fast",
+      "ms": 1147,
+      "outcome": "ok",
+      "in": 421,
+      "out": 143,
+      "cached": 9695,
+      "costSar": 0.004062
+     }
+    ],
+    "ms": 2303,
+    "costSar": 0.008048,
+    "model": "claude-haiku-5-5",
+    "suggestions": [],
+    "context": {
+     "open_now": true,
+     "closes_at": "2 فجراً",
+     "location_shared": false,
+     "hint": {
+      "intent": "question_about_one_dish",
+      "dish_id": "51",
+      "wants_it_removed": false
+     },
+     "customer": {
+      "known": false,
+      "name": null,
+      "orders": 0,
+      "status": "no_orders",
+      "days_since_last": null,
+      "usual_basket_sar": null,
+      "usual_mode": null,
+      "usual_hour": null,
+      "favourites": [],
+      "taste": null,
+      "last_order": null,
+      "districts": [],
+      "loyalty": {
+       "every": 3,
+       "progress": 0,
+       "left": 3,
+       "reward": "free_delivery",
+       "min_total": 60,
+       "status": null
+      },
+      "unused_rewards": [],
+      "first_order_offer": true,
+      "language": "ar"
+     },
+     "offers": {
+      "first_order": {
+       "eligible": true,
+       "code": "FIRST",
+       "free_delivery": true,
+       "min_total": 60,
+       "reason": null
+      },
+      "loyalty": {
+       "every": 3,
+       "progress": 0,
+       "left": 3,
+       "reward": "free_delivery",
+       "min_total": 60,
+       "status": null
+      }
+     },
+     "branch": "📍 فرعنا في حي السلامة بجدة، عند دوار رامي.",
+     "boxes": [
+      "box-solo-crepe: بوكس الكريب الفردي",
+      "box-solo-mixgrill: بوكس الميكس جريل الفردي",
+      "box-solo-burger: بوكس البرجر الفردي",
+      "box-solo-pasta: بوكس الباستا الفردي",
+      "box-solo-hawawshi: بوكس الحواوشي الفردي",
+      "box-solo-meal: بوكس وجبة المشاوي الفردي",
+      "box-crepe-duo: بوكس الكريب لشخصين",
+      "box-mixgrill-duo: ميكس جريل لشخصين",
+      "box-pizza-pasta: بيتزا وباستا لشخصين",
+      "box-meals-duo: وجبتين مشاوي لشخصين",
+      "box-burger-duo: بوكس البرجر لشخصين",
+      "box-late-night: بوكس السهرة",
+      "box-taste-all: بوكس التشكيلة",
+      "box-grill-half-half: بوكس المشاوي نص ونص",
+      "box-family: بوكس العائلة — مشاوي وبيتزا وباستا",
+      "box-pizza-night: بوكس سهرة البيتزا",
+      "box-mashakel: بوكس المشكل المخصوص",
+      "box-ribs-grill: بوكس الريش والمشاوي"
+     ]
+    },
+    "tier": "fast",
+    "escalated": false,
+    "lang": "ar"
+   }
+  ],
+  "carts": [],
+  "costSar": 0.008048,
+  "grade": {
+   "pass": true,
+   "fails": [],
+   "review": []
+  }
+ },
+ {
+  "id": "as3-burger-other-bread",
+  "group": "owner facts",
+  "world": {
+   "profile": "new"
+  },
+  "expect": {
+   "handover": "needs_staff",
+   "noCart": true
+  },
+  "turns": [
+   {
+    "i": 0,
+    "customer": "ابي برجر لحم كلاسيك بس بخبز توست بدل خبز البرجر",
+    "cls": "item",
+    "raw": "item_info",
+    "by": "assistant",
+    "reply": null,
+    "cart": null,
+    "handover": "needs_staff",
+    "outcome": "handover:needs_staff",
+    "tools": [
+     {
+      "name": "handover",
+      "input": {
+       "reason": "needs_staff",
+       "note": "Customer wants classic beef burger with toast bread instead of burger bun"
+      },
+      "result": {
+       "ok": true,
+       "sent": "a fixed handover message is being sent to the customer"
+      },
+      "ms": 0
+     }
+    ],
+    "verdicts": [],
+    "calls": [
+     {
+      "model": "claude-sonnet-5-5",
+      "tier": "strong",
+      "ms": 1914,
+      "outcome": "ok",
+      "in": 1146,
+      "out": 94,
+      "cached": 8759,
+      "costSar": 0.018689
+     }
+    ],
+    "ms": 1916,
+    "costSar": 0.018689,
+    "model": "claude-sonnet-5-5",
+    "suggestions": [],
+    "context": {
+     "open_now": true,
+     "closes_at": "2 فجراً",
+     "location_shared": false,
+     "customer": {
+      "known": false,
+      "name": null,
+      "orders": 0,
+      "status": "no_orders",
+      "days_since_last": null,
+      "usual_basket_sar": null,
+      "usual_mode": null,
+      "usual_hour": null,
+      "favourites": [],
+      "taste": null,
+      "last_order": null,
+      "districts": [],
+      "loyalty": {
+       "every": 3,
+       "progress": 0,
+       "left": 3,
+       "reward": "free_delivery",
+       "min_total": 60,
+       "status": null
+      },
+      "unused_rewards": [],
+      "first_order_offer": true,
+      "language": "ar"
+     },
+     "offers": {
+      "first_order": {
+       "eligible": true,
+       "code": "FIRST",
+       "free_delivery": true,
+       "min_total": 60,
+       "reason": null
+      },
+      "loyalty": {
+       "every": 3,
+       "progress": 0,
+       "left": 3,
+       "reward": "free_delivery",
+       "min_total": 60,
+       "status": null
+      }
+     },
+     "branch": "📍 فرعنا في حي السلامة بجدة، عند دوار رامي.",
+     "boxes": [
+      "box-solo-crepe: بوكس الكريب الفردي",
+      "box-solo-mixgrill: بوكس الميكس جريل الفردي",
+      "box-solo-burger: بوكس البرجر الفردي",
+      "box-solo-pasta: بوكس الباستا الفردي",
+      "box-solo-hawawshi: بوكس الحواوشي الفردي",
+      "box-solo-meal: بوكس وجبة المشاوي الفردي",
+      "box-crepe-duo: بوكس الكريب لشخصين",
+      "box-mixgrill-duo: ميكس جريل لشخصين",
+      "box-pizza-pasta: بيتزا وباستا لشخصين",
+      "box-meals-duo: وجبتين مشاوي لشخصين",
+      "box-burger-duo: بوكس البرجر لشخصين",
+      "box-late-night: بوكس السهرة",
+      "box-taste-all: بوكس التشكيلة",
+      "box-grill-half-half: بوكس المشاوي نص ونص",
+      "box-family: بوكس العائلة — مشاوي وبيتزا وباستا",
+      "box-pizza-night: بوكس سهرة البيتزا",
+      "box-mashakel: بوكس المشكل المخصوص",
+      "box-ribs-grill: بوكس الريش والمشاوي"
+     ]
+    },
+    "tier": "strong",
+    "escalated": false,
+    "lang": "ar",
+    "note": "Customer wants classic beef burger with toast bread instead of burger bun"
+   }
+  ],
+  "carts": [],
+  "costSar": 0.018689,
+  "grade": {
+   "pass": true,
+   "fails": [],
+   "review": []
+  }
+ },
+ {
+  "id": "as3-zinger-not-spicy",
+  "group": "owner facts",
+  "world": {
+   "profile": "new"
+  },
+  "expect": {
+   "noHandover": true,
+   "mustContain": [
+    "كريب ستربس"
+   ]
+  },
+  "turns": [
+   {
+    "i": 0,
+    "customer": "ابي كريب زنجر سوبريم بس بدون حار",
+    "cls": "dishfact",
+    "raw": "remove_question",
+    "by": "assistant",
+    "reply": "عندنا «كريب ستربس» بـ 25 ر.س، وهو نفس فكرة الزنجر لكن بدون الحار. تبيه بدل «كريب زنجر سوبريم»؟",
+    "cart": null,
+    "handover": null,
+    "outcome": "sent",
+    "tools": [
+     {
+      "name": "search_menu",
+      "input": {
+       "query": "كريب ستربس"
+      },
+      "result": {
+       "ok": true,
+       "results": [
+        {
+         "id": "83",
+         "name": "كريب ستربس",
+         "name_en": "Chicken Strips Crepe",
+         "price": 25,
+         "section": "كريبات",
+         "kind": "main",
+         "sold_out": false,
+         "by_weight": false
+        },
+        {
+         "id": "8",
+         "name": "كريب زنجر سوبريم",
+         "name_en": "Zinger Supreme Crepe",
+         "price": 25,
+         "section": "كريبات",
+         "kind": "main",
+         "sold_out": false,
+         "by_weight": false
+        },
+        {
+         "id": "9",
+         "name": "كريب سوبر كرانشي",
+         "name_en": "Super Crunchy Crepe",
+         "price": 28,
+         "section": "كريبات",
+         "kind": "main",
+         "sold_out": false,
+         "by_weight": false
+        },
+        {
+         "id": "3",
+         "name": "كريب ميكس دجاج",
+         "name_en": "Mixed Chicken Crepe",
+         "price": 29,
+         "section": "كريبات",
+         "kind": "main",
+         "sold_out": false,
+         "by_weight": false
+        },
+        {
+         "id": "11",
+         "name": "كريب بطاطس",
+         "name_en": "Potato Crepe",
+         "price": 15,
+         "section": "كريبات",
+         "kind": "main",
+         "sold_out": false,
+         "by_weight": false
+        },
+        {
+         "id": "10",
+         "name": "كريب ميكس جبن",
+         "name_en": "Mixed Cheese Crepe",
+         "price": 20,
+         "section": "كريبات",
+         "kind": "main",
+         "sold_out": false,
+         "by_weight": false
+        },
+        {
+         "id": "4",
+         "name": "كريب هوت دوج",
+         "name_en": "Hot Dog Crepe",
+         "price": 23,
+         "section": "كريبات",
+         "kind": "main",
+         "sold_out": false,
+         "by_weight": false
+        },
+        {
+         "id": "7",
+         "name": "كريب فاهيتا دجاج",
+         "name_en": "Chicken Fajita Crepe",
+         "price": 24,
+         "section": "كريبات",
+         "kind": "main",
+         "sold_out": false,
+         "by_weight": false
+        }
+       ]
+      },
+      "ms": 4
+     }
+    ],
+    "verdicts": [
+     {
+      "ok": true,
+      "problems": [],
+      "text": "عندنا «كريب ستربس» بـ 25 ر.س، وهو نفس فكرة الزنجر لكن بدون الحار. تبيه بدل «كريب زنجر سوبريم»؟"
+     }
+    ],
+    "calls": [
+     {
+      "model": "claude-sonnet-5-5",
+      "tier": "strong",
+      "ms": 2043,
+      "outcome": "ok",
+      "in": 1261,
+      "out": 148,
+      "cached": 8759,
+      "costSar": 0.021577
+     },
+     {
+      "model": "claude-sonnet-5-5",
+      "tier": "strong",
+      "ms": 1382,
+      "outcome": "ok",
+      "in": 934,
+      "out": 74,
+      "cached": 9764,
+      "costSar": 0.017103
+     }
+    ],
+    "ms": 3436,
+    "costSar": 0.03868,
+    "model": "claude-sonnet-5-5",
+    "suggestions": [],
+    "context": {
+     "open_now": true,
+     "closes_at": "2 فجراً",
+     "location_shared": false,
+     "hint": {
+      "intent": "dish_without_something",
+      "dish_id": "8",
+      "how": "ordering it that way = a note on the dish; asking whether it is possible = dish_fact",
+      "same_dish_without_it": {
+       "id": "83",
+       "name": "كريب ستربس",
+       "name_en": "Chicken Strips Crepe"
+      }
+     },
+     "customer": {
+      "known": false,
+      "name": null,
+      "orders": 0,
+      "status": "no_orders",
+      "days_since_last": null,
+      "usual_basket_sar": null,
+      "usual_mode": null,
+      "usual_hour": null,
+      "favourites": [],
+      "taste": null,
+      "last_order": null,
+      "districts": [],
+      "loyalty": {
+       "every": 3,
+       "progress": 0,
+       "left": 3,
+       "reward": "free_delivery",
+       "min_total": 60,
+       "status": null
+      },
+      "unused_rewards": [],
+      "first_order_offer": true,
+      "language": "ar"
+     },
+     "offers": {
+      "first_order": {
+       "eligible": true,
+       "code": "FIRST",
+       "free_delivery": true,
+       "min_total": 60,
+       "reason": null
+      },
+      "loyalty": {
+       "every": 3,
+       "progress": 0,
+       "left": 3,
+       "reward": "free_delivery",
+       "min_total": 60,
+       "status": null
+      }
+     },
+     "branch": "📍 فرعنا في حي السلامة بجدة، عند دوار رامي.",
+     "boxes": [
+      "box-solo-crepe: بوكس الكريب الفردي",
+      "box-solo-mixgrill: بوكس الميكس جريل الفردي",
+      "box-solo-burger: بوكس البرجر الفردي",
+      "box-solo-pasta: بوكس الباستا الفردي",
+      "box-solo-hawawshi: بوكس الحواوشي الفردي",
+      "box-solo-meal: بوكس وجبة المشاوي الفردي",
+      "box-crepe-duo: بوكس الكريب لشخصين",
+      "box-mixgrill-duo: ميكس جريل لشخصين",
+      "box-pizza-pasta: بيتزا وباستا لشخصين",
+      "box-meals-duo: وجبتين مشاوي لشخصين",
+      "box-burger-duo: بوكس البرجر لشخصين",
+      "box-late-night: بوكس السهرة",
+      "box-taste-all: بوكس التشكيلة",
+      "box-grill-half-half: بوكس المشاوي نص ونص",
+      "box-family: بوكس العائلة — مشاوي وبيتزا وباستا",
+      "box-pizza-night: بوكس سهرة البيتزا",
+      "box-mashakel: بوكس المشكل المخصوص",
+      "box-ribs-grill: بوكس الريش والمشاوي"
+     ]
+    },
+    "tier": "strong",
+    "escalated": false,
+    "lang": "ar"
+   }
+  ],
+  "carts": [],
+  "costSar": 0.03868,
+  "grade": {
+   "pass": true,
+   "fails": [],
+   "review": []
+  }
+ },
+ {
+  "id": "as3-skillet-sauce",
+  "group": "owner facts",
+  "world": {
+   "profile": "new"
+  },
+  "expect": {
+   "noCart": true,
+   "noHandover": true,
+   "mustContain": [
+    "جانب"
+   ]
+  },
+  "turns": [
+   {
+    "i": 0,
+    "customer": "طاسة برجر الصوص يجي عليها ولا جنبها؟",
+    "cls": "item",
+    "raw": "item_info",
+    "by": "assistant",
+    "reply": "الصوص يُقدَّم جانباً مع طاسة برجر، وسعرها 32 ر.س.",
+    "cart": null,
+    "handover": null,
+    "outcome": "sent",
+    "tools": [
+     {
+      "name": "search_menu",
+      "input": {
+       "query": "طاسة برجر"
+      },
+      "result": {
+       "ok": true,
+       "results": [
+        {
+         "id": "53",
+         "name": "طاسة برجر",
+         "name_en": "Burger Skillet",
+         "price": 32,
+         "section": "طاسات",
+         "kind": "main",
+         "sold_out": false,
+         "by_weight": false
+        },
+        {
+         "id": "66",
+         "name": "جريلد تشيكن ساندوتش",
+         "name_en": "Grilled Chicken Burger",
+         "price": 19,
+         "section": "برجر",
+         "kind": "main",
+         "sold_out": false,
+         "by_weight": false
+        },
+        {
+         "id": "71",
+         "name": "برجر لحم كلاسيك",
+         "name_en": "Classic Beef Burger",
+         "price": 21,
+         "section": "برجر",
+         "kind": "main",
+         "sold_out": false,
+         "by_weight": false
+        },
+        {
+         "id": "67",
+         "name": "كريمي مشروم تشيكن",
+         "name_en": "Creamy Mushroom Chicken Burger",
+         "price": 28,
+         "section": "برجر",
+         "kind": "main",
+         "sold_out": false,
+         "by_weight": false
+        },
+        {
+         "id": "52",
+         "name": "طاسة هوت دوج",
+         "name_en": "Hot Dog Skillet",
+         "price": 29,
+         "section": "طاسات",
+         "kind": "main",
+         "sold_out": false,
+         "by_weight": false
+        },
+        {
+         "id": "38",
+         "name": "بيتزا برجر",
+         "name_en": "Burger Pizza",
+         "price": 30,
+         "section": "بيتزا",
+         "kind": "main",
+         "sold_out": false,
+         "by_weight": false
+        },
+        {
+         "id": "70",
+         "name": "مشروم بيف بيكون برجر",
+         "name_en": "Mushroom Beef Bacon Burger",
+         "price": 30,
+         "section": "برجر",
+         "kind": "main",
+         "sold_out": false,
+         "by_weight": false
+        },
+        {
+         "id": "54",
+         "name": "طاسة صدور مشوية",
+         "name_en": "Grilled Chicken Breast Skillet",
+         "price": 32,
+         "section": "طاسات",
+         "kind": "main",
+         "sold_out": false,
+         "by_weight": false
+        }
+       ]
+      },
+      "ms": 5
+     },
+     {
+      "name": "get_item",
+      "input": {
+       "id": "53"
+      },
+      "result": {
+       "ok": true,
+       "item": {
+        "id": "53",
+        "name": "طاسة برجر",
+        "name_en": "Burger Skillet",
+        "price": 32,
+        "section": "طاسات",
+        "kind": "main",
+        "sold_out": false,
+        "by_weight": false,
+        "description": "طاسة جبن مع برجر لحم، فلفل، بصل وزيتون",
+        "owner_note": {
+         "ar": "الصوص يُقدَّم جانبياً.",
+         "en": "The sauce is served on the side."
+        },
+        "addons": [],
+        "addons_known": true,
+        "note": "description is the menu description, not a full ingredient list"
+       }
+      },
+      "ms": 1
+     }
+    ],
+    "verdicts": [
+     {
+      "ok": true,
+      "problems": [],
+      "text": "الصوص يُقدَّم جانباً مع طاسة برجر، وسعرها 32 ر.س."
+     }
+    ],
+    "calls": [
+     {
+      "model": "claude-haiku-5-5",
+      "tier": "fast",
+      "ms": 1164,
+      "outcome": "ok",
+      "in": 1137,
+      "out": 110,
+      "cached": 8759,
+      "costSar": 0.003917
+     },
+     {
+      "model": "claude-haiku-5-5",
+      "tier": "fast",
+      "ms": 819,
+      "outcome": "ok",
+      "in": 896,
+      "out": 47,
+      "cached": 9665,
+      "costSar": 0.004049
+     },
+     {
+      "model": "claude-haiku-5-5",
+      "tier": "fast",
+      "ms": 949,
+      "outcome": "ok",
+      "in": 302,
+      "out": 40,
+      "cached": 10380,
+      "costSar": 0.004081
+     }
+    ],
+    "ms": 2950,
+    "costSar": 0.012047000000000002,
+    "model": "claude-haiku-5-5",
+    "suggestions": [],
+    "context": {
+     "open_now": true,
+     "closes_at": "2 فجراً",
+     "location_shared": false,
+     "customer": {
+      "known": false,
+      "name": null,
+      "orders": 0,
+      "status": "no_orders",
+      "days_since_last": null,
+      "usual_basket_sar": null,
+      "usual_mode": null,
+      "usual_hour": null,
+      "favourites": [],
+      "taste": null,
+      "last_order": null,
+      "districts": [],
+      "loyalty": {
+       "every": 3,
+       "progress": 0,
+       "left": 3,
+       "reward": "free_delivery",
+       "min_total": 60,
+       "status": null
+      },
+      "unused_rewards": [],
+      "first_order_offer": true,
+      "language": "ar"
+     },
+     "offers": {
+      "first_order": {
+       "eligible": true,
+       "code": "FIRST",
+       "free_delivery": true,
+       "min_total": 60,
+       "reason": null
+      },
+      "loyalty": {
+       "every": 3,
+       "progress": 0,
+       "left": 3,
+       "reward": "free_delivery",
+       "min_total": 60,
+       "status": null
+      }
+     },
+     "branch": "📍 فرعنا في حي السلامة بجدة، عند دوار رامي.",
+     "boxes": [
+      "box-solo-crepe: بوكس الكريب الفردي",
+      "box-solo-mixgrill: بوكس الميكس جريل الفردي",
+      "box-solo-burger: بوكس البرجر الفردي",
+      "box-solo-pasta: بوكس الباستا الفردي",
+      "box-solo-hawawshi: بوكس الحواوشي الفردي",
+      "box-solo-meal: بوكس وجبة المشاوي الفردي",
+      "box-crepe-duo: بوكس الكريب لشخصين",
+      "box-mixgrill-duo: ميكس جريل لشخصين",
+      "box-pizza-pasta: بيتزا وباستا لشخصين",
+      "box-meals-duo: وجبتين مشاوي لشخصين",
+      "box-burger-duo: بوكس البرجر لشخصين",
+      "box-late-night: بوكس السهرة",
+      "box-taste-all: بوكس التشكيلة",
+      "box-grill-half-half: بوكس المشاوي نص ونص",
+      "box-family: بوكس العائلة — مشاوي وبيتزا وباستا",
+      "box-pizza-night: بوكس سهرة البيتزا",
+      "box-mashakel: بوكس المشكل المخصوص",
+      "box-ribs-grill: بوكس الريش والمشاوي"
+     ]
+    },
+    "tier": "fast",
+    "escalated": false,
+    "lang": "ar"
+   }
+  ],
+  "carts": [],
+  "costSar": 0.012047000000000002,
+  "grade": {
+   "pass": true,
+   "fails": [],
+   "review": []
+  }
+ },
+ {
+  "id": "as3-fried-chicken-what",
+  "group": "owner facts",
+  "world": {
+   "profile": "new"
+  },
+  "expect": {
+   "noCart": true,
+   "noHandover": true,
+   "mustContain": [
+    "ثاوزند|مقرمش"
+   ]
+  },
+  "turns": [
+   {
+    "i": 0,
+    "customer": "فرايد تشيكن ايش هو بالضبط؟",
+    "cls": "item",
+    "raw": "item_info",
+    "by": "assistant",
+    "reply": "فرايد تشيكن هو صدور دجاج مقرمشة (ستربس) تُقدَّم مع صوص ثاوزند آيلاند، وسعره 10 ر.س.\n\nتحب أضيفه لطلبك، ولا تبي أشوف لك وجبة أو بوكس فيه؟",
+    "cart": null,
+    "handover": null,
+    "outcome": "sent",
+    "tools": [
+     {
+      "name": "search_menu",
+      "input": {
+       "query": "فرايد تشيكن"
+      },
+      "result": {
+       "ok": true,
+       "results": [
+        {
+         "id": "73",
+         "name": "فرايد تشيكن",
+         "name_en": "Fried Chicken",
+         "price": 10,
+         "section": "إضافات",
+         "kind": "side",
+         "sold_out": false,
+         "by_weight": false
+        },
+        {
+         "id": "74",
+         "name": "فرايد موتزاريلا",
+         "name_en": "Fried Mozzarella",
+         "price": 16,
+         "section": "إضافات",
+         "kind": "side",
+         "sold_out": false,
+         "by_weight": false
+        },
+        {
+         "id": "66",
+         "name": "جريلد تشيكن ساندوتش",
+         "name_en": "Grilled Chicken Burger",
+         "price": 19,
+         "section": "برجر",
+         "kind": "main",
+         "sold_out": false,
+         "by_weight": false
+        },
+        {
+         "id": "56",
+         "name": "تشيكن بنا الفريدو",
+         "name_en": "Chicken Penne Alfredo",
+         "price": 25,
+         "section": "باستا",
+         "kind": "main",
+         "sold_out": false,
+         "by_weight": false
+        },
+        {
+         "id": "42",
+         "name": "بيتزا تشيكن باربكيو",
+         "name_en": "Chicken BBQ Pizza",
+         "price": 28,
+         "section": "بيتزا",
+         "kind": "main",
+         "sold_out": false,
+         "by_weight": false
+        },
+        {
+         "id": "43",
+         "name": "بيتزا تشيكن رانش",
+         "name_en": "Chicken Ranch Pizza",
+         "price": 28,
+         "section": "بيتزا",
+         "kind": "main",
+         "sold_out": false,
+         "by_weight": false
+        },
+        {
+         "id": "59",
+         "name": "بنا تشيكن كازرول",
+         "name_en": "Penne Chicken Casserole",
+         "price": 28,
+         "section": "باستا",
+         "kind": "main",
+         "sold_out": false,
+         "by_weight": false
+        },
+        {
+         "id": "67",
+         "name": "كريمي مشروم تشيكن",
+         "name_en": "Creamy Mushroom Chicken Burger",
+         "price": 28,
+         "section": "برجر",
+         "kind": "main",
+         "sold_out": false,
+         "by_weight": false
+        }
+       ]
+      },
+      "ms": 12
+     },
+     {
+      "name": "get_item",
+      "input": {
+       "id": "73"
+      },
+      "result": {
+       "ok": true,
+       "item": {
+        "id": "73",
+        "name": "فرايد تشيكن",
+        "name_en": "Fried Chicken",
+        "price": 10,
+        "section": "إضافات",
+        "kind": "side",
+        "sold_out": false,
+        "by_weight": false,
+        "description": "قطع دجاج مقرمشة تُقدَّم مع صوص ثاوزند آيلاند",
+        "owner_note": {
+         "ar": "صدور دجاج مقرمشة (ستربس) تُقدَّم مع صوص ثاوزند آيلاند.",
+         "en": "Crispy chicken breast strips, served with Thousand Island sauce."
+        },
+        "addons": [],
+        "addons_known": true,
+        "note": "description is the menu description, not a full ingredient list"
+       }
+      },
+      "ms": 0
+     }
+    ],
+    "verdicts": [
+     {
+      "ok": true,
+      "problems": [],
+      "text": "فرايد تشيكن هو صدور دجاج مقرمشة (ستربس) تُقدَّم مع صوص ثاوزند آيلاند، وسعره 10 ر.س.\n\nتحب أضيفه لطلبك، ولا تبي أشوف لك وجبة أو بوكس فيه؟"
+     }
+    ],
+    "calls": [
+     {
+      "model": "claude-haiku-5-5",
+      "tier": "fast",
+      "ms": 1334,
+      "outcome": "ok",
+      "in": 1131,
+      "out": 98,
+      "cached": 8759,
+      "costSar": 0.003893
+     },
+     {
+      "model": "claude-haiku-5-5",
+      "tier": "fast",
+      "ms": 923,
+      "outcome": "ok",
+      "in": 896,
+      "out": 47,
+      "cached": 9660,
+      "costSar": 0.004047
+     },
+     {
+      "model": "claude-haiku-5-5",
+      "tier": "fast",
+      "ms": 1803,
+      "outcome": "ok",
+      "in": 364,
+      "out": 195,
+      "cached": 10375,
+      "costSar": 0.004393
+     }
+    ],
+    "ms": 4085,
+    "costSar": 0.012333,
+    "model": "claude-haiku-5-5",
+    "suggestions": [],
+    "context": {
+     "open_now": true,
+     "closes_at": "2 فجراً",
+     "location_shared": false,
+     "customer": {
+      "known": false,
+      "name": null,
+      "orders": 0,
+      "status": "no_orders",
+      "days_since_last": null,
+      "usual_basket_sar": null,
+      "usual_mode": null,
+      "usual_hour": null,
+      "favourites": [],
+      "taste": null,
+      "last_order": null,
+      "districts": [],
+      "loyalty": {
+       "every": 3,
+       "progress": 0,
+       "left": 3,
+       "reward": "free_delivery",
+       "min_total": 60,
+       "status": null
+      },
+      "unused_rewards": [],
+      "first_order_offer": true,
+      "language": "ar"
+     },
+     "offers": {
+      "first_order": {
+       "eligible": true,
+       "code": "FIRST",
+       "free_delivery": true,
+       "min_total": 60,
+       "reason": null
+      },
+      "loyalty": {
+       "every": 3,
+       "progress": 0,
+       "left": 3,
+       "reward": "free_delivery",
+       "min_total": 60,
+       "status": null
+      }
+     },
+     "branch": "📍 فرعنا في حي السلامة بجدة، عند دوار رامي.",
+     "boxes": [
+      "box-solo-crepe: بوكس الكريب الفردي",
+      "box-solo-mixgrill: بوكس الميكس جريل الفردي",
+      "box-solo-burger: بوكس البرجر الفردي",
+      "box-solo-pasta: بوكس الباستا الفردي",
+      "box-solo-hawawshi: بوكس الحواوشي الفردي",
+      "box-solo-meal: بوكس وجبة المشاوي الفردي",
+      "box-crepe-duo: بوكس الكريب لشخصين",
+      "box-mixgrill-duo: ميكس جريل لشخصين",
+      "box-pizza-pasta: بيتزا وباستا لشخصين",
+      "box-meals-duo: وجبتين مشاوي لشخصين",
+      "box-burger-duo: بوكس البرجر لشخصين",
+      "box-late-night: بوكس السهرة",
+      "box-taste-all: بوكس التشكيلة",
+      "box-grill-half-half: بوكس المشاوي نص ونص",
+      "box-family: بوكس العائلة — مشاوي وبيتزا وباستا",
+      "box-pizza-night: بوكس سهرة البيتزا",
+      "box-mashakel: بوكس المشكل المخصوص",
+      "box-ribs-grill: بوكس الريش والمشاوي"
+     ]
+    },
+    "tier": "fast",
+    "escalated": false,
+    "lang": "ar"
+   }
+  ],
+  "carts": [],
+  "costSar": 0.012333,
+  "grade": {
+   "pass": true,
+   "fails": [],
+   "review": []
+  }
+ },
+ {
+  "id": "as3-crunchy-fries-beef",
+  "group": "owner facts",
+  "world": {
+   "profile": "new"
+  },
+  "expect": {
+   "noCart": true,
+   "noHandover": true,
+   "mustContain": [
+    "نعم"
+   ]
+  },
+  "turns": [
+   {
+    "i": 0,
+    "customer": "كرانشي فرايز تشيز فيها لحم بقري؟",
+    "cls": "faq",
+    "raw": "faq:meat",
+    "by": "assistant",
+    "reply": "نعم، شرائح اللحم البقري ضمن «كرانشي فرايز تشيز». يمكن تجهيز الطلب بدون شرائح اللحم البقري: اكتبها في ملاحظة الصنف عند الطلب.",
+    "cart": null,
+    "handover": null,
+    "outcome": "sent",
+    "tools": [
+     {
+      "name": "dish_fact",
+      "input": {
+       "id": "77",
+       "question": "لحم بقري",
+       "remove": false
+      },
+      "result": {
+       "ok": true,
+       "status": "present_removable",
+       "say": "نعم، شرائح اللحم البقري ضمن «كرانشي فرايز تشيز». يمكن تجهيز الطلب بدون شرائح اللحم البقري: اكتبها في ملاحظة الصنف عند الطلب.",
+       "rule": "send this text as it is; you may add one short next step"
+      },
+      "ms": 1
+     }
+    ],
+    "verdicts": [
+     {
+      "ok": true,
+      "problems": [],
+      "text": "نعم، شرائح اللحم البقري ضمن «كرانشي فرايز تشيز». يمكن تجهيز الطلب بدون شرائح اللحم البقري: اكتبها في ملاحظة الصنف عند الطلب."
+     }
+    ],
+    "calls": [
+     {
+      "model": "claude-haiku-5-5",
+      "tier": "fast",
+      "ms": 1595,
+      "outcome": "ok",
+      "in": 1181,
+      "out": 197,
+      "cached": 8759,
+      "costSar": 0.004097
+     },
+     {
+      "model": "claude-haiku-5-5",
+      "tier": "fast",
+      "ms": 1190,
+      "outcome": "ok",
+      "in": 414,
+      "out": 101,
+      "cached": 9700,
+      "costSar": 0.003982
+     }
+    ],
+    "ms": 2789,
+    "costSar": 0.008079,
+    "model": "claude-haiku-5-5",
+    "suggestions": [],
+    "context": {
+     "open_now": true,
+     "closes_at": "2 فجراً",
+     "location_shared": false,
+     "hint": {
+      "intent": "question_about_one_dish",
+      "dish_id": "77",
+      "wants_it_removed": false
+     },
+     "customer": {
+      "known": false,
+      "name": null,
+      "orders": 0,
+      "status": "no_orders",
+      "days_since_last": null,
+      "usual_basket_sar": null,
+      "usual_mode": null,
+      "usual_hour": null,
+      "favourites": [],
+      "taste": null,
+      "last_order": null,
+      "districts": [],
+      "loyalty": {
+       "every": 3,
+       "progress": 0,
+       "left": 3,
+       "reward": "free_delivery",
+       "min_total": 60,
+       "status": null
+      },
+      "unused_rewards": [],
+      "first_order_offer": true,
+      "language": "ar"
+     },
+     "offers": {
+      "first_order": {
+       "eligible": true,
+       "code": "FIRST",
+       "free_delivery": true,
+       "min_total": 60,
+       "reason": null
+      },
+      "loyalty": {
+       "every": 3,
+       "progress": 0,
+       "left": 3,
+       "reward": "free_delivery",
+       "min_total": 60,
+       "status": null
+      }
+     },
+     "branch": "📍 فرعنا في حي السلامة بجدة، عند دوار رامي.",
+     "boxes": [
+      "box-solo-crepe: بوكس الكريب الفردي",
+      "box-solo-mixgrill: بوكس الميكس جريل الفردي",
+      "box-solo-burger: بوكس البرجر الفردي",
+      "box-solo-pasta: بوكس الباستا الفردي",
+      "box-solo-hawawshi: بوكس الحواوشي الفردي",
+      "box-solo-meal: بوكس وجبة المشاوي الفردي",
+      "box-crepe-duo: بوكس الكريب لشخصين",
+      "box-mixgrill-duo: ميكس جريل لشخصين",
+      "box-pizza-pasta: بيتزا وباستا لشخصين",
+      "box-meals-duo: وجبتين مشاوي لشخصين",
+      "box-burger-duo: بوكس البرجر لشخصين",
+      "box-late-night: بوكس السهرة",
+      "box-taste-all: بوكس التشكيلة",
+      "box-grill-half-half: بوكس المشاوي نص ونص",
+      "box-family: بوكس العائلة — مشاوي وبيتزا وباستا",
+      "box-pizza-night: بوكس سهرة البيتزا",
+      "box-mashakel: بوكس المشكل المخصوص",
+      "box-ribs-grill: بوكس الريش والمشاوي"
+     ]
+    },
+    "tier": "fast",
+    "escalated": false,
+    "lang": "ar"
+   }
+  ],
+  "carts": [],
+  "costSar": 0.008079,
+  "grade": {
+   "pass": true,
+   "fails": [],
+   "review": []
+  }
+ },
+ {
+  "id": "as3-while-waiting-for-staff",
+  "group": "pending handover",
+  "world": {
+   "profile": "new"
+  },
+  "expect": {
+   "handover": "asked_human",
+   "noAssistantHandover": true,
+   "owner": {
+    "0": "rules",
+    "1": "assistant"
+   },
+   "mustNotContain": [
+    "خلال \\d+",
+    "\\d+ ?دقيق",
+    "بعد شوي يرد",
+    "حالاً"
+   ]
+  },
+  "turns": [
+   {
+    "i": 0,
+    "customer": "ابي اكلم موظف",
+    "cls": "human",
+    "raw": "human",
+    "by": "rules",
+    "reply": null,
+    "cart": null,
+    "handover": "asked_human",
+    "outcome": "rules:human",
+    "tools": [],
+    "verdicts": [],
+    "calls": [],
+    "ms": 0,
+    "costSar": 0,
+    "model": null,
+    "suggestions": []
+   },
+   {
+    "i": 1,
+    "customer": "طيب على ما يرد، عندكم عروض؟",
+    "cls": "offers",
+    "raw": "offers",
+    "by": "assistant",
+    "reply": "عندنا عرض لطلبك الأول: توصيل مجاني بكود FIRST، والحد الأدنى للطلب 60 ر.س.\n\nولو تجمعون أكثر من شخص، عندنا باقات تجمّع بأسعار خاصة حتى 15 أكتوبر 2026: للـ4 إلى 6 أشخاص بـ 225 ر.س، وللـ8 إلى 10 أشخاص بـ 395 ر.س، وللـ15 شخص وأكثر بـ 595 ر.س.\n\nالموظف رح يرد عليك هنا قريب. تحب أعرض لك الباقات بالتفصيل؟",
+    "cart": null,
+    "handover": null,
+    "outcome": "sent",
+    "tools": [
+     {
+      "name": "get_offers",
+      "input": {},
+      "result": {
+       "ok": true,
+       "first_order": {
+        "eligible": true,
+        "code": "FIRST",
+        "free_delivery": true,
+        "min_total": 60,
+        "reason": null
+       },
+       "loyalty": {
+        "every": 3,
+        "progress": 0,
+        "left": 3,
+        "reward": "free_delivery",
+        "min_total": 60,
+        "status": null
+       },
+       "timed": [
+        {
+         "title": "باقة مناسبة ١٥ شخص وأكتر",
+         "price": 595,
+         "until": "2026-10-15"
+        },
+        {
+         "title": "باقة تجمّع ٤–٦ أشخاص",
+         "price": 225,
+         "until": "2026-10-15"
+        },
+        {
+         "title": "باقة تجمّع ٨–١٠ أشخاص",
+         "price": 395,
+         "until": "2026-10-15"
+        }
+       ],
+       "rewards": [],
+       "timed_known": true
+      },
+      "ms": 1
+     }
+    ],
+    "verdicts": [
+     {
+      "ok": true,
+      "problems": [],
+      "text": "عندنا عرض لطلبك الأول: توصيل مجاني بكود FIRST، والحد الأدنى للطلب 60 ر.س.\n\nولو تجمعون أكثر من شخص، عندنا باقات تجمّع بأسعار خاصة حتى 15 أكتوبر 2026: للـ4 إلى 6 أشخاص بـ 225 ر.س، وللـ8 إلى 10 أشخاص بـ 395 ر.س، وللـ15 شخص وأكثر بـ 595 ر.س.\n\nالموظف رح يرد عليك هنا قريب. تحب أعرض لك الباقات بالتفصيل؟"
+     }
+    ],
+    "calls": [
+     {
+      "model": "claude-haiku-5-5",
+      "tier": "fast",
+      "ms": 1615,
+      "outcome": "ok",
+      "in": 1164,
+      "out": 154,
+      "cached": 8759,
+      "costSar": 0.00401
+     },
+     {
+      "model": "claude-haiku-5-5",
+      "tier": "fast",
+      "ms": 2418,
+      "outcome": "ok",
+      "in": 509,
+      "out": 337,
+      "cached": 9687,
+      "costSar": 0.004455
+     }
+    ],
+    "ms": 4041,
+    "costSar": 0.008465,
+    "model": "claude-haiku-5-5",
+    "suggestions": [],
+    "context": {
+     "open_now": true,
+     "closes_at": "2 فجراً",
+     "location_shared": false,
+     "staff_already_asked": {
+      "reason": "asked_human",
+      "minutes_ago": 2
+     },
+     "customer": {
+      "known": false,
+      "name": null,
+      "orders": 0,
+      "status": "no_orders",
+      "days_since_last": null,
+      "usual_basket_sar": null,
+      "usual_mode": null,
+      "usual_hour": null,
+      "favourites": [],
+      "taste": null,
+      "last_order": null,
+      "districts": [],
+      "loyalty": {
+       "every": 3,
+       "progress": 0,
+       "left": 3,
+       "reward": "free_delivery",
+       "min_total": 60,
+       "status": null
+      },
+      "unused_rewards": [],
+      "first_order_offer": true,
+      "language": "ar"
+     },
+     "offers": {
+      "first_order": {
+       "eligible": true,
+       "code": "FIRST",
+       "free_delivery": true,
+       "min_total": 60,
+       "reason": null
+      },
+      "loyalty": {
+       "every": 3,
+       "progress": 0,
+       "left": 3,
+       "reward": "free_delivery",
+       "min_total": 60,
+       "status": null
+      }
+     },
+     "branch": "📍 فرعنا في حي السلامة بجدة، عند دوار رامي.",
+     "boxes": [
+      "box-solo-crepe: بوكس الكريب الفردي",
+      "box-solo-mixgrill: بوكس الميكس جريل الفردي",
+      "box-solo-burger: بوكس البرجر الفردي",
+      "box-solo-pasta: بوكس الباستا الفردي",
+      "box-solo-hawawshi: بوكس الحواوشي الفردي",
+      "box-solo-meal: بوكس وجبة المشاوي الفردي",
+      "box-crepe-duo: بوكس الكريب لشخصين",
+      "box-mixgrill-duo: ميكس جريل لشخصين",
+      "box-pizza-pasta: بيتزا وباستا لشخصين",
+      "box-meals-duo: وجبتين مشاوي لشخصين",
+      "box-burger-duo: بوكس البرجر لشخصين",
+      "box-late-night: بوكس السهرة",
+      "box-taste-all: بوكس التشكيلة",
+      "box-grill-half-half: بوكس المشاوي نص ونص",
+      "box-family: بوكس العائلة — مشاوي وبيتزا وباستا",
+      "box-pizza-night: بوكس سهرة البيتزا",
+      "box-mashakel: بوكس المشكل المخصوص",
+      "box-ribs-grill: بوكس الريش والمشاوي"
+     ]
+    },
+    "tier": "fast",
+    "escalated": false,
+    "lang": "ar"
+   },
+   {
+    "i": 2,
+    "customer": "ومتى يرد الموظف؟",
+    "cls": "human",
+    "raw": "human",
+    "by": "rules",
+    "reply": null,
+    "cart": null,
+    "handover": "asked_human",
+    "outcome": "rules:human",
+    "tools": [],
+    "verdicts": [],
+    "calls": [],
+    "ms": 0,
+    "costSar": 0,
+    "model": null,
+    "suggestions": []
+   }
+  ],
+  "carts": [],
+  "costSar": 0.008465,
+  "grade": {
+   "pass": true,
+   "fails": [],
+   "review": []
+  }
+ },
+ {
+  "id": "as3-custom-offer-then-order",
+  "group": "pending handover",
+  "world": {
+   "profile": "new"
+  },
+  "expect": {
+   "handover": "custom_offer",
+   "cart": {
+    "option": "pickup",
+    "items": [
+     {
+      "id": 83,
+      "qty": 1
+     }
+    ]
+   }
+  },
+  "turns": [
+   {
+    "i": 0,
+    "customer": "عندنا عزيمة خمسين شخص وابي عرض مخصص",
+    "cls": "packs",
+    "raw": "packs",
+    "by": "assistant",
+    "reply": "مبروك العزيمة 👋 عندنا باقات تجمّع، وأقربها لعدد 50 شخص باقة ١٥ شخصاً وأكثر بـ 595 ر.س: ٤ كيلو مشاوي + دجاجتين كاملتين على الفحم + أرز وبطاطس وكولسلو + ١٢ مشروب.\nللعرض المخصص لـ 50 شخص أحتاج: يوم العزيمة ووقتها، وتوصيل ولا استلام؟",
+    "cart": null,
+    "handover": null,
+    "outcome": "sent",
+    "tools": [
+     {
+      "name": "list_packs",
+      "input": {},
+      "result": {
+       "ok": true,
+       "packs": [
+        {
+         "slug": "gathering-4",
+         "name": "باقة تجمّع ٤–٦ أشخاص",
+         "name_en": "Gathering Pack — 4 to 6 People",
+         "price": 225,
+         "description": "كيلو مشاوي × ٢ من اختيارك + أرز وبطاطس وكولسلو + ٤ مشروبات",
+         "description_en": "2 kilos of grills of your choice + rice, fries and coleslaw + 4 soft drinks"
+        },
+        {
+         "slug": "gathering-8",
+         "name": "باقة تجمّع ٨–١٠ أشخاص",
+         "name_en": "Gathering Pack — 8 to 10 People",
+         "price": 395,
+         "description": "٣ كيلو مشاوي + دجاجة كاملة على الفحم + أرز وبطاطس وكولسلو + ٨ مشروبات",
+         "description_en": "3 kilos of grills + a whole charcoal chicken + rice, fries and coleslaw + 8 soft drinks"
+        },
+        {
+         "slug": "gathering-15",
+         "name": "باقة مناسبة ١٥ شخصاً وأكثر",
+         "name_en": "Occasion Pack — 15+ People",
+         "price": 595,
+         "description": "٤ كيلو مشاوي + دجاجتين كاملتين على الفحم + أرز وبطاطس وكولسلو + ١٢ مشروب",
+         "description_en": "4 kilos of grills + 2 whole charcoal chickens + rice, fries and coleslaw + 12 soft drinks"
+        }
+       ],
+       "online_only": true
+      },
+      "ms": 1
+     }
+    ],
+    "verdicts": [
+     {
+      "ok": true,
+      "problems": [],
+      "text": "مبروك العزيمة 👋 عندنا باقات تجمّع، وأقربها لعدد 50 شخص باقة ١٥ شخصاً وأكثر بـ 595 ر.س: ٤ كيلو مشاوي + دجاجتين كاملتين على الفحم + أرز وبطاطس وكولسلو + ١٢ مشروب.\nللعرض المخصص لـ 50 شخص أحتاج: يوم العزيمة ووقتها، وتوصيل ولا استلام؟"
+     }
+    ],
+    "calls": [
+     {
+      "model": "claude-haiku-5-5",
+      "tier": "fast",
+      "ms": 1337,
+      "outcome": "ok",
+      "in": 1156,
+      "out": 61,
+      "cached": 8759,
+      "costSar": 0.003833
+     },
+     {
+      "model": "claude-haiku-5-5",
+      "tier": "fast",
+      "ms": 1771,
+      "outcome": "ok",
+      "in": 727,
+      "out": 190,
+      "cached": 9680,
+      "costSar": 0.004259
+     }
+    ],
+    "ms": 3117,
+    "costSar": 0.008092,
+    "model": "claude-haiku-5-5",
+    "suggestions": [],
+    "context": {
+     "open_now": true,
+     "closes_at": "2 فجراً",
+     "location_shared": false,
+     "hint": {
+      "intent": "gathering"
+     },
+     "customer": {
+      "known": false,
+      "name": null,
+      "orders": 0,
+      "status": "no_orders",
+      "days_since_last": null,
+      "usual_basket_sar": null,
+      "usual_mode": null,
+      "usual_hour": null,
+      "favourites": [],
+      "taste": null,
+      "last_order": null,
+      "districts": [],
+      "loyalty": {
+       "every": 3,
+       "progress": 0,
+       "left": 3,
+       "reward": "free_delivery",
+       "min_total": 60,
+       "status": null
+      },
+      "unused_rewards": [],
+      "first_order_offer": true,
+      "language": "ar"
+     },
+     "offers": {
+      "first_order": {
+       "eligible": true,
+       "code": "FIRST",
+       "free_delivery": true,
+       "min_total": 60,
+       "reason": null
+      },
+      "loyalty": {
+       "every": 3,
+       "progress": 0,
+       "left": 3,
+       "reward": "free_delivery",
+       "min_total": 60,
+       "status": null
+      }
+     },
+     "branch": "📍 فرعنا في حي السلامة بجدة، عند دوار رامي.",
+     "boxes": [
+      "box-solo-crepe: بوكس الكريب الفردي",
+      "box-solo-mixgrill: بوكس الميكس جريل الفردي",
+      "box-solo-burger: بوكس البرجر الفردي",
+      "box-solo-pasta: بوكس الباستا الفردي",
+      "box-solo-hawawshi: بوكس الحواوشي الفردي",
+      "box-solo-meal: بوكس وجبة المشاوي الفردي",
+      "box-crepe-duo: بوكس الكريب لشخصين",
+      "box-mixgrill-duo: ميكس جريل لشخصين",
+      "box-pizza-pasta: بيتزا وباستا لشخصين",
+      "box-meals-duo: وجبتين مشاوي لشخصين",
+      "box-burger-duo: بوكس البرجر لشخصين",
+      "box-late-night: بوكس السهرة",
+      "box-taste-all: بوكس التشكيلة",
+      "box-grill-half-half: بوكس المشاوي نص ونص",
+      "box-family: بوكس العائلة — مشاوي وبيتزا وباستا",
+      "box-pizza-night: بوكس سهرة البيتزا",
+      "box-mashakel: بوكس المشكل المخصوص",
+      "box-ribs-grill: بوكس الريش والمشاوي"
+     ]
+    },
+    "tier": "fast",
+    "escalated": false,
+    "lang": "ar"
+   },
+   {
+    "i": 1,
+    "customer": "ابي عرض مخصص: 50 شخص، السبت 8 مساء، توصيل",
+    "cls": "packs",
+    "raw": "catering",
+    "by": "assistant",
+    "reply": null,
+    "cart": null,
+    "handover": "custom_offer",
+    "outcome": "handover:custom_offer",
+    "tools": [
+     {
+      "name": "handover",
+      "input": {
+       "reason": "custom_offer",
+       "note": "50 people, Saturday 8 PM, delivery. Customer wants tailored offer after seeing packs."
+      },
+      "result": {
+       "ok": true,
+       "sent": "a fixed handover message is being sent to the customer"
+      },
+      "ms": 0
+     }
+    ],
+    "verdicts": [],
+    "calls": [
+     {
+      "model": "claude-sonnet-5-5",
+      "tier": "strong",
+      "ms": 1910,
+      "outcome": "ok",
+      "in": 2294,
+      "out": 106,
+      "cached": 8759,
+      "costSar": 0.027749
+     }
+    ],
+    "ms": 1911,
+    "costSar": 0.027749,
+    "model": "claude-sonnet-5-5",
+    "suggestions": [],
+    "context": {
+     "open_now": true,
+     "closes_at": "2 فجراً",
+     "location_shared": false,
+     "hint": {
+      "intent": "gathering"
+     }
+    },
+    "tier": "strong",
+    "escalated": false,
+    "lang": "ar",
+    "note": "50 people, Saturday 8 PM, delivery. Customer wants tailored offer after seeing packs."
+   },
+   {
+    "i": 2,
+    "customer": "وعلى ما يردون علي ابي لنفسي الحين كريب ستربس استلام",
+    "cls": "item",
+    "raw": "item_info",
+    "by": "assistant",
+    "reply": "كريب ستربس بـ 25 ر.س، والموظف بيرد عليك بخصوص العزيمة هنا.\nتحب أضيف لك مشروبات غازية بـ 3 ر.س؟",
+    "cart": null,
+    "handover": null,
+    "outcome": "sent",
+    "tools": [
+     {
+      "name": "search_menu",
+      "input": {
+       "query": "كريب ستربس"
+      },
+      "result": {
+       "ok": true,
+       "results": [
+        {
+         "id": "83",
+         "name": "كريب ستربس",
+         "name_en": "Chicken Strips Crepe",
+         "price": 25,
+         "section": "كريبات",
+         "kind": "main",
+         "sold_out": false,
+         "by_weight": false
+        },
+        {
+         "id": "8",
+         "name": "كريب زنجر سوبريم",
+         "name_en": "Zinger Supreme Crepe",
+         "price": 25,
+         "section": "كريبات",
+         "kind": "main",
+         "sold_out": false,
+         "by_weight": false
+        },
+        {
+         "id": "9",
+         "name": "كريب سوبر كرانشي",
+         "name_en": "Super Crunchy Crepe",
+         "price": 28,
+         "section": "كريبات",
+         "kind": "main",
+         "sold_out": false,
+         "by_weight": false
+        },
+        {
+         "id": "3",
+         "name": "كريب ميكس دجاج",
+         "name_en": "Mixed Chicken Crepe",
+         "price": 29,
+         "section": "كريبات",
+         "kind": "main",
+         "sold_out": false,
+         "by_weight": false
+        },
+        {
+         "id": "11",
+         "name": "كريب بطاطس",
+         "name_en": "Potato Crepe",
+         "price": 15,
+         "section": "كريبات",
+         "kind": "main",
+         "sold_out": false,
+         "by_weight": false
+        },
+        {
+         "id": "10",
+         "name": "كريب ميكس جبن",
+         "name_en": "Mixed Cheese Crepe",
+         "price": 20,
+         "section": "كريبات",
+         "kind": "main",
+         "sold_out": false,
+         "by_weight": false
+        },
+        {
+         "id": "4",
+         "name": "كريب هوت دوج",
+         "name_en": "Hot Dog Crepe",
+         "price": 23,
+         "section": "كريبات",
+         "kind": "main",
+         "sold_out": false,
+         "by_weight": false
+        },
+        {
+         "id": "7",
+         "name": "كريب فاهيتا دجاج",
+         "name_en": "Chicken Fajita Crepe",
+         "price": 24,
+         "section": "كريبات",
+         "kind": "main",
+         "sold_out": false,
+         "by_weight": false
+        }
+       ]
+      },
+      "ms": 6
+     },
+     {
+      "name": "preview_cart",
+      "input": {
+       "items": [
+        {
+         "id": "83",
+         "qty": 1
+        }
+       ],
+       "option": "pickup"
+      },
+      "result": {
+       "ok": true,
+       "option": "pickup",
+       "lines": [
+        {
+         "id": "83",
+         "name": "كريب ستربس",
+         "name_en": "Chicken Strips Crepe",
+         "price": 25,
+         "qty": 1,
+         "total": 25,
+         "kind": "main"
+        }
+       ],
+       "subtotal": 25,
+       "problems": [],
+       "note": "prices include VAT; the delivery fee is separate and shown by quote_delivery and again on the site before payment",
+       "saved": false,
+       "suggestion": {
+        "kind": "drink",
+        "item": {
+         "id": "82",
+         "name": "مشروبات غازية",
+         "name_en": "Soft Drinks",
+         "price": 3,
+         "section": "إضافات",
+         "kind": "drink",
+         "sold_out": false,
+         "by_weight": false
+        }
+       },
+       "suggestion_say": "a plain add-on: «تحب أضيف لك مشروبات غازية بـ 3 ر.س؟» — no pressure.",
+       "suggestion_rule": "you may offer this ONE suggestion as a short question; nothing else"
+      },
+      "ms": 3
+     }
+    ],
+    "verdicts": [
+     {
+      "ok": true,
+      "problems": [],
+      "text": "كريب ستربس بـ 25 ر.س، والموظف بيرد عليك بخصوص العزيمة هنا.\nتحب أضيف لك مشروبات غازية بـ 3 ر.س؟"
+     }
+    ],
+    "calls": [
+     {
+      "model": "claude-sonnet-5-5",
+      "tier": "strong",
+      "ms": 1453,
+      "outcome": "ok",
+      "in": 389,
+      "out": 54,
+      "cached": 10591,
+      "costSar": 0.012886
+     },
+     {
+      "model": "claude-sonnet-5-5",
+      "tier": "strong",
+      "ms": 1145,
+      "outcome": "ok",
+      "in": 816,
+      "out": 85,
+      "cached": 10899,
+      "costSar": 0.017482
+     },
+     {
+      "model": "claude-sonnet-5-5",
+      "tier": "strong",
+      "ms": 1217,
+      "outcome": "ok",
+      "in": 501,
+      "out": 75,
+      "cached": 11550,
+      "costSar": 0.015233
+     }
+    ],
+    "ms": 3832,
+    "costSar": 0.045601,
+    "model": "claude-sonnet-5-5",
+    "suggestions": [
+     {
+      "kind": "drink",
+      "ref": "82",
+      "name": "مشروبات غازية",
+      "numbers": {
+       "kind": "drink",
+       "item": {
+        "id": "82",
+        "name": "مشروبات غازية",
+        "name_en": "Soft Drinks",
+        "price": 3,
+        "section": "إضافات",
+        "kind": "drink",
+        "sold_out": false,
+        "by_weight": false
+       }
+      },
+      "outcome": "offered"
+     }
+    ],
+    "context": {
+     "open_now": true,
+     "closes_at": "2 فجراً",
+     "location_shared": false,
+     "staff_already_asked": {
+      "reason": "custom_offer",
+      "minutes_ago": 2
+     }
+    },
+    "tier": "strong",
+    "escalated": false,
+    "lang": "ar"
+   },
+   {
+    "i": 3,
+    "customer": "لا شكراً، ارسل رابط السلة",
+    "cls": "order",
+    "raw": "how_to_order",
+    "by": "assistant",
+    "reply": "سلتك: كريب ستربس × 1 = 25 ر.س (استلام). اضغط الزر وأكمل الطلب والدفع 👇",
+    "cart": {
+     "link": "https://freshcuts.sa/c/ev000001",
+     "code": "ev000001",
+     "subtotal": 25,
+     "option": "pickup",
+     "lines": [
+      {
+       "id": "83",
+       "name": "كريب ستربس",
+       "name_en": "Chicken Strips Crepe",
+       "price": 25,
+       "qty": 1,
+       "total": 25,
+       "kind": "main"
+      }
+     ]
+    },
+    "handover": null,
+    "outcome": "sent",
+    "tools": [
+     {
+      "name": "note_suggestion",
+      "input": {
+       "kind": "drink",
+       "outcome": "declined"
+      },
+      "result": {
+       "ok": true
+      },
+      "ms": 0
+     },
+     {
+      "name": "build_cart",
+      "input": {
+       "option": "pickup",
+       "items": [
+        {
+         "id": "83",
+         "qty": 1
+        }
+       ]
+      },
+      "result": {
+       "ok": true,
+       "option": "pickup",
+       "lines": [
+        {
+         "id": "83",
+         "name": "كريب ستربس",
+         "name_en": "Chicken Strips Crepe",
+         "price": 25,
+         "qty": 1,
+         "total": 25,
+         "kind": "main"
+        }
+       ],
+       "subtotal": 25,
+       "problems": [],
+       "note": "prices include VAT; the delivery fee is separate and shown by quote_delivery and again on the site before payment",
+       "saved": true,
+       "link_attached": "a button with the cart link is attached to your message automatically; do not write a link"
+      },
+      "ms": 0
+     }
+    ],
+    "verdicts": [
+     {
+      "ok": true,
+      "problems": [],
+      "text": "سلتك: كريب ستربس × 1 = 25 ر.س (استلام). اضغط الزر وأكمل الطلب والدفع 👇"
+     }
+    ],
+    "calls": [
+     {
+      "model": "claude-sonnet-5-5",
+      "tier": "strong",
+      "ms": 2101,
+      "outcome": "ok",
+      "in": 274,
+      "out": 157,
+      "cached": 11949,
+      "costSar": 0.016904
+     },
+     {
+      "model": "claude-sonnet-5-5",
+      "tier": "strong",
+      "ms": 981,
+      "outcome": "ok",
+      "in": 496,
+      "out": 54,
+      "cached": 12165,
+      "costSar": 0.014869
+     }
+    ],
+    "ms": 3093,
+    "costSar": 0.031772999999999996,
+    "model": "claude-sonnet-5-5",
+    "suggestions": [
+     {
+      "kind": "drink",
+      "ref": "82",
+      "name": "مشروبات غازية",
+      "outcome": "declined"
+     }
+    ],
+    "context": {
+     "open_now": true,
+     "closes_at": "2 فجراً",
+     "location_shared": false,
+     "staff_already_asked": {
+      "reason": "custom_offer",
+      "minutes_ago": 2
+     }
+    },
+    "tier": "strong",
+    "escalated": false,
+    "lang": "ar"
+   }
+  ],
+  "carts": [
+   {
+    "code": "ev000001",
+    "phone": "512345678",
+    "source": "assistant",
+    "plan": {
+     "ok": true,
+     "raw": {
+      "83": {
+       "item": {
+        "id": 83
+       },
+       "qty": 1
+      }
+     },
+     "items": [
+      {
+       "id": "83",
+       "n": "كريب ستربس",
+       "q": 1,
+       "p": 25
+      }
+     ],
+     "removed": [],
+     "repriced": [],
+     "review": []
+    },
+    "option": "pickup",
+    "days": 7
+   }
+  ],
+  "costSar": 0.113215,
+  "grade": {
+   "pass": true,
+   "fails": [],
+   "review": [
+    {
+     "type": "number_not_in_tools",
+     "turn": 0,
+     "detail": "50"
+    },
+    {
+     "type": "number_not_in_tools",
+     "turn": 0,
+     "detail": "50"
+    }
+   ]
+  }
+ },
+ {
+  "id": "as3-asks-for-person-mid-order",
+  "group": "real handovers",
+  "world": {
+   "profile": "new"
+  },
+  "expect": {
+   "handover": "asked_human",
+   "owner": {
+    "1": "rules"
+   }
+  },
+  "turns": [
+   {
+    "i": 0,
+    "customer": "ابي بيتزا",
+    "cls": "cat",
+    "raw": "menu",
+    "by": "assistant",
+    "reply": "عندنا بيتزا مارجريتا بـ 20 ر.س، بيتزا بيبروني بـ 29 ر.س، وبيتزا تشيكن باربكيو بـ 28 ر.س. أي نوع تبي؟",
+    "cart": null,
+    "handover": null,
+    "outcome": "sent",
+    "tools": [
+     {
+      "name": "search_menu",
+      "input": {
+       "query": "بيتزا"
+      },
+      "result": {
+       "ok": true,
+       "results": [
+        {
+         "id": "45",
+         "name": "بيتزا مارجريتا",
+         "name_en": "Margherita Pizza",
+         "price": 20,
+         "section": "بيتزا",
+         "kind": "main",
+         "sold_out": false,
+         "by_weight": false
+        },
+        {
+         "id": "44",
+         "name": "بيتزا خضروات",
+         "name_en": "Vegetable Pizza",
+         "price": 22,
+         "section": "بيتزا",
+         "kind": "main",
+         "sold_out": false,
+         "by_weight": false
+        },
+        {
+         "id": "37",
+         "name": "بيتزا كواترو تشيز",
+         "name_en": "Quattro Cheese Pizza",
+         "price": 25,
+         "section": "بيتزا",
+         "kind": "main",
+         "sold_out": false,
+         "by_weight": false
+        },
+        {
+         "id": "42",
+         "name": "بيتزا تشيكن باربكيو",
+         "name_en": "Chicken BBQ Pizza",
+         "price": 28,
+         "section": "بيتزا",
+         "kind": "main",
+         "sold_out": false,
+         "by_weight": false
+        },
+        {
+         "id": "43",
+         "name": "بيتزا تشيكن رانش",
+         "name_en": "Chicken Ranch Pizza",
+         "price": 28,
+         "section": "بيتزا",
+         "kind": "main",
+         "sold_out": false,
+         "by_weight": false
+        },
+        {
+         "id": "40",
+         "name": "بيتزا بيبروني",
+         "name_en": "Pepperoni Pizza",
+         "price": 29,
+         "section": "بيتزا",
+         "kind": "main",
+         "sold_out": false,
+         "by_weight": false
+        },
+        {
+         "id": "46",
+         "name": "بيتزا تشيكن ديناميت",
+         "name_en": "Chicken Dynamite Pizza",
+         "price": 30,
+         "section": "بيتزا",
+         "kind": "main",
+         "sold_out": false,
+         "by_weight": false
+        },
+        {
+         "id": "36",
+         "name": "بيتزا تشيكن الباتشينو",
+         "name_en": "Chicken Pacino Pizza",
+         "price": 30,
+         "section": "بيتزا",
+         "kind": "main",
+         "sold_out": false,
+         "by_weight": false
+        }
+       ]
+      },
+      "ms": 5
+     }
+    ],
+    "verdicts": [
+     {
+      "ok": true,
+      "problems": [],
+      "text": "عندنا بيتزا مارجريتا بـ 20 ر.س، بيتزا بيبروني بـ 29 ر.س، وبيتزا تشيكن باربكيو بـ 28 ر.س. أي نوع تبي؟"
+     }
+    ],
+    "calls": [
+     {
+      "model": "claude-sonnet-5-5",
+      "tier": "strong",
+      "ms": 1431,
+      "outcome": "ok",
+      "in": 1114,
+      "out": 52,
+      "cached": 8759,
+      "costSar": 0.016874
+     },
+     {
+      "model": "claude-sonnet-5-5",
+      "tier": "strong",
+      "ms": 1574,
+      "outcome": "ok",
+      "in": 850,
+      "out": 86,
+      "cached": 9647,
+      "costSar": 0.016835
+     }
+    ],
+    "ms": 3019,
+    "costSar": 0.033709,
+    "model": "claude-sonnet-5-5",
+    "suggestions": [],
+    "context": {
+     "open_now": true,
+     "closes_at": "2 فجراً",
+     "location_shared": false,
+     "customer": {
+      "known": false,
+      "name": null,
+      "orders": 0,
+      "status": "no_orders",
+      "days_since_last": null,
+      "usual_basket_sar": null,
+      "usual_mode": null,
+      "usual_hour": null,
+      "favourites": [],
+      "taste": null,
+      "last_order": null,
+      "districts": [],
+      "loyalty": {
+       "every": 3,
+       "progress": 0,
+       "left": 3,
+       "reward": "free_delivery",
+       "min_total": 60,
+       "status": null
+      },
+      "unused_rewards": [],
+      "first_order_offer": true,
+      "language": "ar"
+     },
+     "offers": {
+      "first_order": {
+       "eligible": true,
+       "code": "FIRST",
+       "free_delivery": true,
+       "min_total": 60,
+       "reason": null
+      },
+      "loyalty": {
+       "every": 3,
+       "progress": 0,
+       "left": 3,
+       "reward": "free_delivery",
+       "min_total": 60,
+       "status": null
+      }
+     },
+     "branch": "📍 فرعنا في حي السلامة بجدة، عند دوار رامي.",
+     "boxes": [
+      "box-solo-crepe: بوكس الكريب الفردي",
+      "box-solo-mixgrill: بوكس الميكس جريل الفردي",
+      "box-solo-burger: بوكس البرجر الفردي",
+      "box-solo-pasta: بوكس الباستا الفردي",
+      "box-solo-hawawshi: بوكس الحواوشي الفردي",
+      "box-solo-meal: بوكس وجبة المشاوي الفردي",
+      "box-crepe-duo: بوكس الكريب لشخصين",
+      "box-mixgrill-duo: ميكس جريل لشخصين",
+      "box-pizza-pasta: بيتزا وباستا لشخصين",
+      "box-meals-duo: وجبتين مشاوي لشخصين",
+      "box-burger-duo: بوكس البرجر لشخصين",
+      "box-late-night: بوكس السهرة",
+      "box-taste-all: بوكس التشكيلة",
+      "box-grill-half-half: بوكس المشاوي نص ونص",
+      "box-family: بوكس العائلة — مشاوي وبيتزا وباستا",
+      "box-pizza-night: بوكس سهرة البيتزا",
+      "box-mashakel: بوكس المشكل المخصوص",
+      "box-ribs-grill: بوكس الريش والمشاوي"
+     ]
+    },
+    "tier": "strong",
+    "escalated": false,
+    "lang": "ar"
+   },
+   {
+    "i": 1,
+    "customer": "لا خلاص ابي اكلم موظف",
+    "cls": "human",
+    "raw": "human",
+    "by": "rules",
+    "reply": null,
+    "cart": null,
+    "handover": "asked_human",
+    "outcome": "rules:human",
+    "tools": [],
+    "verdicts": [],
+    "calls": [],
+    "ms": 0,
+    "costSar": 0,
+    "model": null,
+    "suggestions": []
+   }
+  ],
+  "carts": [],
+  "costSar": 0.033709,
+  "grade": {
+   "pass": true,
+   "fails": [],
+   "review": []
+  }
+ },
+ {
+  "id": "as3-complaint",
+  "group": "real handovers",
+  "world": {
+   "profile": "new"
+  },
+  "expect": {
+   "handover": "complaint",
+   "owner": {
+    "0": "rules"
+   },
+   "noCart": true
+  },
+  "turns": [
+   {
+    "i": 0,
+    "customer": "الاكل وصل بارد وناقص",
+    "cls": "complaint",
+    "raw": "complaint",
+    "by": "rules",
+    "reply": null,
+    "cart": null,
+    "handover": "complaint",
+    "outcome": "rules:complaint",
+    "tools": [],
+    "verdicts": [],
+    "calls": [],
+    "ms": 0,
+    "costSar": 0,
+    "model": null,
+    "suggestions": []
+   }
+  ],
+  "carts": [],
+  "costSar": 0,
+  "grade": {
+   "pass": true,
+   "fails": [],
+   "review": []
+  }
+ }
+]

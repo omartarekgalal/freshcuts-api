@@ -544,7 +544,7 @@ export function makeAssistLoop(deps) {
       case "faq": {
         const topic = String(a.topic || "");
         const text = deps.faq ? await deps.faq(topic, lang) : null;
-        if (!text) return { ok: false, error: "no_approved_answer", rule: "call handover(needs_staff)" };
+        if (!text) { T.trace.unanswered.push({ source: "no_answer", question: `faq: ${topic}` }); return { ok: false, error: "no_approved_answer", rule: "there is no approved answer for this topic yet. Say plainly in one line that you have no confirmed information about it and that they can type «موظف» to ask the team. Do not guess and do not hand over by yourself." }; }
         if (topic === "apps") st.apps = true;
         st.say.push(text);
         return { ok: true, topic, say: text, rule: "send this text as it is" };

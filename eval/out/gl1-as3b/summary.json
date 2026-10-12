@@ -1,0 +1,49 @@
+{
+ "set": "as3",
+ "name": "gl1-as3b",
+ "over": {
+  "routing": "escalate",
+  "thinking": "adaptive",
+  "effort": "low",
+  "timeoutMs": 60000
+ },
+ "capped": false,
+ "spentRun": 0.028074,
+ "spentTodayBefore": 27.924659999999953,
+ "cap": 60,
+ "conversations": 3,
+ "passed": 3,
+ "failed": [],
+ "customerTurns": 4,
+ "modelTurns": 4,
+ "answeredByAssistant": 4,
+ "rulesOwned": 0,
+ "fallbacks": {},
+ "validatorRetries": 0,
+ "escalations": 0,
+ "costSar": 0.0281,
+ "costPerConversationSar": 0.0094,
+ "costPerModelTurnSar": 0.007,
+ "latencyMs": {
+  "p50": 2955,
+  "p90": 2961,
+  "max": 2961,
+  "n": 4
+ },
+ "modelCalls": 7,
+ "byModel": {
+  "claude-haiku-5-5": {
+   "calls": 7,
+   "in": 2205,
+   "out": 899,
+   "cached": 68161,
+   "sar": 0.0281,
+   "callP50ms": 1457,
+   "callP90ms": 2930
+  }
+ },
+ "failTypes": {},
+ "reviewFlags": {},
+ "text": "conversations 3 · passed 3 · failed 0\ncustomer turns 4: assistant answered 4, rules owned 0, fallbacks {}\nvalidator retries 0 · escalations fast→strong 0 · model calls 7\ncost 0.0281 SAR (0.0094 per conversation, 0.007 per model turn)\nlatency per answered turn: p50 2955 ms · p90 2961 ms · max 2961 ms (n=4)\nby model {\"claude-haiku-5-5\":{\"calls\":7,\"in\":2205,\"out\":899,\"cached\":68161,\"sar\":0.0281,\"callP50ms\":1457,\"callP90ms\":2930}}\nfail types {}\nreview flags {}",
+ "markdown": "# Assistant evaluation: gl1-as3b\n\n```\nconversations 3 · passed 3 · failed 0\ncustomer turns 4: assistant answered 4, rules owned 0, fallbacks {}\nvalidator retries 0 · escalations fast→strong 0 · model calls 7\ncost 0.0281 SAR (0.0094 per conversation, 0.007 per model turn)\nlatency per answered turn: p50 2955 ms · p90 2961 ms · max 2961 ms (n=4)\nby model {\"claude-haiku-5-5\":{\"calls\":7,\"in\":2205,\"out\":899,\"cached\":68161,\"sar\":0.0281,\"callP50ms\":1457,\"callP90ms\":2930}}\nfail types {}\nreview flags {}\n```\n\n## Conversations\n\n### PASS · as3-salt (fewer handovers) · 0.0078 SAR\n\n- **العميل:** عندكم ملح ؟\n  - **المساعد** (fast, 2955 ms, 0.0078 SAR, tools: ask_knowledge): ما عندي معلومة مؤكدة عن هذا الموضوع حالياً. تقدر تكتب «موظف» للتواصل مع الفريق. وإذا تبي تطلب، أقدر أساعدك في المنيو والبوكسات.\n\n### PASS · as3-beef-allergy-general (allergy, open answers) · 0.0127 SAR\n\n- **العميل:** عندي حساسية من اللحم البقري\n  - **المساعد** (fast, 2961 ms, 0.0042 SAR): ما عندنا تفاصيل المكونات لكل صنف هنا بشكل عام، لذلك أحتاج أعرف الصنف اللي تبيه بالتحديد. أي صنف تفكر فيه؟ أتأكد لك منه قبل ما أقترح عليك شي.\n- **العميل:** طيب كريب هوت دوج فيه لحم؟\n  - **المساعد** (fast, 2848 ms, 0.0085 SAR, tools: dish_fact, search_menu): نعم، يوجد لحم في «كريب هوت دوج»، ولا يمكن تجهيز الطلب بدون لحم.\n\n### PASS · as3-do-dishes-cause-allergy (allergy, open answers) · 0.0075 SAR\n\n- **العميل:** هل الاصناف تسبب الحساسية\n  - **المساعد** (fast, 2914 ms, 0.0075 SAR, tools: faq): ما عندي معلومات مؤكدة عن هذا الموضوع الحين. تقدر تكتب «موظف» عشان يرد عليك أحد من الفريق.\n"
+}

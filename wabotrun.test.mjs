@@ -3181,3 +3181,12 @@ test("GL1 go-live — owner only, a preview that lists what will happen, a typed
   const z = await w.call("POST", "/api/cms/wabot/assist/go-live", { audience: "all", dailyCustomers: 0, budgetDaySar: 0 });
   assert.deepEqual(z.body.blockers.map((x) => x.code), ["zero_customers", "zero_budget"]);
 }));
+
+test("GL1 found by the readiness check — «the payment does not work» in its common wordings is a payment PROBLEM (urgent, to staff), not the payment-methods answer; asking how to pay stays information", withEnv(LOCKS_OPEN, async () => {
+  for (const t of ["الدفع ما يشتغل معي", "الدفع فشل", "مو راضي يكمل الدفع", "الدفع مو شغال", "فيه مشكلة في الدفع", "payment not working", "I can't pay"]) {
+    const c = R.classify({ text: t, type: "text" }, {}); assert.deepEqual([c.key, c.rawIntent], ["problem", "payment_issue"], t);
+  }
+  for (const t of ["طرق الدفع", "كيف ادفع", "تقبلون مدى؟", "الدفع عند الاستلام؟"]) assert.notEqual(R.classify({ text: t, type: "text" }, {}).key, "problem", t);
+  const w = liveWorld(); const r = await w.say("الدفع ما يشتغل معي");
+  assert.equal(r.log.handoff, "problem"); assert.equal(r.sent.length, 1);
+}));

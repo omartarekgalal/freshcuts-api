@@ -1,0 +1,64 @@
+{
+ "set": "as3",
+ "name": "gl1-as3",
+ "over": {
+  "routing": "escalate",
+  "thinking": "adaptive",
+  "effort": "low",
+  "timeoutMs": 60000
+ },
+ "capped": false,
+ "spentRun": 0.333614,
+ "spentTodayBefore": 27.220787999999956,
+ "cap": 60,
+ "conversations": 18,
+ "passed": 17,
+ "failed": [
+  "as3-do-dishes-cause-allergy"
+ ],
+ "customerTurns": 26,
+ "modelTurns": 22,
+ "answeredByAssistant": 22,
+ "rulesOwned": 4,
+ "fallbacks": {},
+ "validatorRetries": 0,
+ "escalations": 0,
+ "costSar": 0.3336,
+ "costPerConversationSar": 0.0185,
+ "costPerModelTurnSar": 0.0152,
+ "latencyMs": {
+  "p50": 2904,
+  "p90": 4041,
+  "max": 4507,
+  "n": 22
+ },
+ "modelCalls": 45,
+ "byModel": {
+  "claude-haiku-5-5": {
+   "calls": 34,
+   "in": 24654,
+   "out": 4288,
+   "cached": 320327,
+   "sar": 0.1374,
+   "callP50ms": 1235,
+   "callP90ms": 1803
+  },
+  "claude-sonnet-5-5": {
+   "calls": 11,
+   "in": 10075,
+   "out": 985,
+   "cached": 111601,
+   "sar": 0.1962,
+   "callP50ms": 1453,
+   "callP90ms": 2043
+  }
+ },
+ "failTypes": {
+  "wrong_handover": 1
+ },
+ "reviewFlags": {
+  "number_not_in_tools": 2
+ },
+ "text": "conversations 18 · passed 17 · failed 1\ncustomer turns 26: assistant answered 22, rules owned 4, fallbacks {}\nvalidator retries 0 · escalations fast→strong 0 · model calls 45\ncost 0.3336 SAR (0.0185 per conversation, 0.0152 per model turn)\nlatency per answered turn: p50 2904 ms · p90 4041 ms · max 4507 ms (n=22)\nby model {\"claude-haiku-5-5\":{\"calls\":34,\"in\":24654,\"out\":4288,\"cached\":320327,\"sar\":0.1374,\"callP50ms\":1235,\"callP90ms\":1803},\"claude-sonnet-5-5\":{\"calls\":11,\"in\":10075,\"out\":985,\"cached\":111601,\"sar\":0.1962,\"callP50ms\":1453,\"callP90ms\":2043}}\nfail types {\"wrong_handover\":1}\nreview flags {\"number_not_in_tools\":2}",
+ "markdown": "# Assistant evaluation: gl1-as3\n\n```\nconversations 18 · passed 17 · failed 1\ncustomer turns 26: assistant answered 22, rules owned 4, fallbacks {}\nvalidator retries 0 · escalations fast→strong 0 · model calls 45\ncost 0.3336 SAR (0.0185 per conversation, 0.0152 per model turn)\nlatency per answered turn: p50 2904 ms · p90 4041 ms · max 4507 ms (n=22)\nby model {\"claude-haiku-5-5\":{\"calls\":34,\"in\":24654,\"out\":4288,\"cached\":320327,\"sar\":0.1374,\"callP50ms\":1235,\"callP90ms\":1803},\"claude-sonnet-5-5\":{\"calls\":11,\"in\":10075,\"out\":985,\"cached\":111601,\"sar\":0.1962,\"callP50ms\":1453,\"callP90ms\":2043}}\nfail types {\"wrong_handover\":1}\nreview flags {\"number_not_in_tools\":2}\n```\n\n## Conversations\n\n### PASS · as3-salt (fewer handovers) · 0.0079 SAR\n\n- **العميل:** عندكم ملح ؟\n  - **المساعد** (fast, 2612 ms, 0.0079 SAR, tools: ask_knowledge): للأسف ما عندي معلومة مؤكدة عن هذا الموضوع. تقدر تكتب «موظف» عشان يرد عليك أحد من الفريق. وإذا تبي تطلب شي، أقدر أساعدك في المنيو.\n\n### PASS · as3-name (fewer handovers) · 0.0040 SAR\n\n- **العميل:** ما اسمك\n  - **المساعد** (fast, 1881 ms, 0.0040 SAR): أنا المساعد الآلي لمطعم فريش كاتس، وأقدر أساعدك في المنيو والطلب. تحب أرشح لك شيئاً لو ما تعرف وش تطلب؟\n\n### PASS · as3-wifi-age (fewer handovers) · 0.0158 SAR\n\n- **العميل:** عندكم واي فاي في المطعم؟\n  - **المساعد** (fast, 3292 ms, 0.0079 SAR, tools: ask_knowledge): ما عندي معلومة مؤكدة عن الواي فاي حالياً. تقدر تكتب «موظف» عشان يرد عليك أحد من الفريق. وإذا تبي تطلب، أقدر أساعدك في المنيو والبوكسات.\n- **العميل:** وكم عمر المطعم؟\n  - **المساعد** (fast, 2317 ms, 0.0079 SAR, tools: ask_knowledge): ما عندي معلومة مؤكدة عن عمر المطعم حالياً. تقدر تكتب «موظف» عشان يرد عليك أحد من الفريق. وإذا تبي تطلب، أقدر أساعدك في المنيو والبوكسات.\n\n### PASS · as3-beef-allergy-general (allergy, open answers) · 0.0208 SAR\n\n- **العميل:** عندي حساسية من اللحم البقري\n  - **المساعد** (fast, 4507 ms, 0.0124 SAR, tools: faq, faq): نشوف لك التفاصيل، هذا وصف لحومنا: ⏎ نشوي على فحم طبيعي ونحضّر كل طلب بعد استلامه. ⏎ الكفتة والطرب: لحم غنم مع لحم بقري برازيلي مبرّد. ⏎ البرجر والحواوشي والسجق: لحم بقري برازيلي مبرّد مع لحم بلدي بقري وغنم. ⏎ الريش والكباب: لحم غنم أسترالي. والدجاج مبرّد. ⏎ وكل لحومنا ودجاجنا حلال. ⏎  ⏎ أي طبق تفكر فيه حتى أتأكد لك من مكوناته؟\n- **العميل:** طيب كريب هوت دوج فيه لحم؟\n  - **المساعد** (fast, 2428 ms, 0.0085 SAR, tools: dish_fact): نعم، يوجد لحم في «كريب هوت دوج»، ولا يمكن تجهيز الطلب بدون لحم. ⏎ تحب أشوف لك أطباق ثانية ما فيها بقري؟\n\n### FAIL · as3-do-dishes-cause-allergy (allergy, open answers) · 0.0076 SAR\n\n**Fails:** wrong_handover@0 «needs_staff»\n\n- **العميل:** هل الاصناف تسبب الحساسية\n  - **تحويل لموظف** (needs_staff; 2322 ms, tools: faq, handover)\n\n### PASS · as3-burger-egg (owner facts) · 0.0081 SAR\n\n- **العميل:** هل البرجر الكلاسيك فيه بيض\n  - **المساعد** (fast, 2392 ms, 0.0081 SAR, tools: dish_fact): قد يوجد بيض في الصوص المستخدم مع «برجر لحم كلاسيك». يمكن تجهيز الطلب بدون الصوص: اكتبها في ملاحظة الصنف عند الطلب. ⏎ مطبخنا واحد لكل الأصناف وقد يحصل تلامس بين المكونات أثناء التحضير. ⏎ واكتب لنا حساسيتك في ملاحظة الطلب وننتبه لها.\n\n### PASS · as3-kofta-sesame (owner facts) · 0.0080 SAR\n\n- **العميل:** هل وجبة الكفتة فيها سمسم حساسية ؟\n  - **المساعد** (fast, 2732 ms, 0.0080 SAR, tools: dish_fact): نعم، يوجد سمسم في «وجبة كفتة»، وذلك في الطحينة فقط، والكفتة نفسها بدون سمسم. يمكن تجهيز الطلب بدون الطحينة: اكتبها في ملاحظة الصنف عند الطلب. ⏎ مطبخنا واحد لكل الأصناف وقد يحصل تلامس بين المكونات أثناء التحضير. ⏎ واكتب لنا حساسيتك في ملاحظة الطلب وننتبه لها.\n\n### PASS · as3-hawawshi-sesame (owner facts) · 0.0082 SAR\n\n- **العميل:** حواوشي موتزاريلا فيه سمسم؟\n  - **المساعد** (fast, 2904 ms, 0.0082 SAR, tools: dish_fact): نعم، يوجد سمسم في «حواوشي موتزاريلا»، وذلك في الطحينة فقط، وخبز الحواوشي بدون سمسم. يمكن تجهيز الطلب بدون الطحينة: اكتبها في ملاحظة الصنف عند الطلب. ⏎ مطبخنا واحد لكل الأصناف وقد يحصل تلامس بين المكونات أثناء التحضير. ⏎ واكتب لنا حساسيتك في ملاحظة الطلب وننتبه لها. ⏎ تحب أضيفه لطلبك؟\n\n### PASS · as3-celery-skillet (owner facts) · 0.0080 SAR\n\n- **العميل:** طاسة الأكيلة فيها كرفس؟\n  - **المساعد** (fast, 2303 ms, 0.0080 SAR, tools: dish_fact): نعم، يوجد كرفس في «طاسة الأكيلة»، وذلك في الصوص. ⏎ للتأكد من إمكانية بديل عن الصوص اكتب: موظف ⏎ مطبخنا واحد لكل الأصناف وقد يحصل تلامس بين المكونات أثناء التحضير. ⏎ واكتب لنا حساسيتك في ملاحظة الطلب وننتبه لها.\n\n### PASS · as3-burger-other-bread (owner facts) · 0.0187 SAR\n\n- **العميل:** ابي برجر لحم كلاسيك بس بخبز توست بدل خبز البرجر\n  - **تحويل لموظف** (needs_staff: Customer wants classic beef burger with toast bread instead of burger bun; 1916 ms, tools: handover)\n\n### PASS · as3-zinger-not-spicy (owner facts) · 0.0387 SAR\n\n- **العميل:** ابي كريب زنجر سوبريم بس بدون حار\n  - **المساعد** (strong, 3436 ms, 0.0387 SAR, tools: search_menu): عندنا «كريب ستربس» بـ 25 ر.س، وهو نفس فكرة الزنجر لكن بدون الحار. تبيه بدل «كريب زنجر سوبريم»؟\n\n### PASS · as3-skillet-sauce (owner facts) · 0.0120 SAR\n\n- **العميل:** طاسة برجر الصوص يجي عليها ولا جنبها؟\n  - **المساعد** (fast, 2950 ms, 0.0120 SAR, tools: search_menu, get_item): الصوص يُقدَّم جانباً مع طاسة برجر، وسعرها 32 ر.س.\n\n### PASS · as3-fried-chicken-what (owner facts) · 0.0123 SAR\n\n- **العميل:** فرايد تشيكن ايش هو بالضبط؟\n  - **المساعد** (fast, 4085 ms, 0.0123 SAR, tools: search_menu, get_item): فرايد تشيكن هو صدور دجاج مقرمشة (ستربس) تُقدَّم مع صوص ثاوزند آيلاند، وسعره 10 ر.س. ⏎  ⏎ تحب أضيفه لطلبك، ولا تبي أشوف لك وجبة أو بوكس فيه؟\n\n### PASS · as3-crunchy-fries-beef (owner facts) · 0.0081 SAR\n\n- **العميل:** كرانشي فرايز تشيز فيها لحم بقري؟\n  - **المساعد** (fast, 2789 ms, 0.0081 SAR, tools: dish_fact): نعم، شرائح اللحم البقري ضمن «كرانشي فرايز تشيز». يمكن تجهيز الطلب بدون شرائح اللحم البقري: اكتبها في ملاحظة الصنف عند الطلب.\n\n### PASS · as3-while-waiting-for-staff (pending handover) · 0.0085 SAR\n\n- **العميل:** ابي اكلم موظف\n  - _بوت القواعد_ (rules:human, handover asked_human)\n- **العميل:** طيب على ما يرد، عندكم عروض؟\n  - **المساعد** (fast, 4041 ms, 0.0085 SAR, tools: get_offers): عندنا عرض لطلبك الأول: توصيل مجاني بكود FIRST، والحد الأدنى للطلب 60 ر.س. ⏎  ⏎ ولو تجمعون أكثر من شخص، عندنا باقات تجمّع بأسعار خاصة حتى 15 أكتوبر 2026: للـ4 إلى 6 أشخاص بـ 225 ر.س، وللـ8 إلى 10 أشخاص بـ 395 ر.س، وللـ15 شخص وأكثر بـ 595 ر.س. ⏎  ⏎ الموظف رح يرد عليك هنا قريب. تحب أعرض لك الباقات بالتفصيل؟\n- **العميل:** ومتى يرد الموظف؟\n  - _بوت القواعد_ (rules:human, handover asked_human)\n\n### PASS · as3-custom-offer-then-order (pending handover) · 0.1132 SAR\n\nReview: number_not_in_tools@0 «50»; number_not_in_tools@0 «50»\n\n- **العميل:** عندنا عزيمة خمسين شخص وابي عرض مخصص\n  - **المساعد** (fast, 3117 ms, 0.0081 SAR, tools: list_packs): مبروك العزيمة 👋 عندنا باقات تجمّع، وأقربها لعدد 50 شخص باقة ١٥ شخصاً وأكثر بـ 595 ر.س: ٤ كيلو مشاوي + دجاجتين كاملتين على الفحم + أرز وبطاطس وكولسلو + ١٢ مشروب. ⏎ للعرض المخصص لـ 50 شخص أحتاج: يوم العزيمة ووقتها، وتوصيل ولا استلام؟\n- **العميل:** ابي عرض مخصص: 50 شخص، السبت 8 مساء، توصيل\n  - **تحويل لموظف** (custom_offer: 50 people, Saturday 8 PM, delivery. Customer wants tailored offer after seeing packs.; 1911 ms, tools: handover)\n- **العميل:** وعلى ما يردون علي ابي لنفسي الحين كريب ستربس استلام\n  - **المساعد** (strong, 3832 ms, 0.0456 SAR, tools: search_menu, preview_cart): كريب ستربس بـ 25 ر.س، والموظف بيرد عليك بخصوص العزيمة هنا. ⏎ تحب أضيف لك مشروبات غازية بـ 3 ر.س؟\n- **العميل:** لا شكراً، ارسل رابط السلة\n  - **المساعد** (strong, 3093 ms, 0.0318 SAR, tools: note_suggestion, build_cart, cart 25 pickup): سلتك: كريب ستربس × 1 = 25 ر.س (استلام). اضغط الزر وأكمل الطلب والدفع 👇\n\n### PASS · as3-asks-for-person-mid-order (real handovers) · 0.0337 SAR\n\n- **العميل:** ابي بيتزا\n  - **المساعد** (strong, 3019 ms, 0.0337 SAR, tools: search_menu): عندنا بيتزا مارجريتا بـ 20 ر.س، بيتزا بيبروني بـ 29 ر.س، وبيتزا تشيكن باربكيو بـ 28 ر.س. أي نوع تبي؟\n- **العميل:** لا خلاص ابي اكلم موظف\n  - _بوت القواعد_ (rules:human, handover asked_human)\n\n### PASS · as3-complaint (real handovers) · 0.0000 SAR\n\n- **العميل:** الاكل وصل بارد وناقص\n  - _بوت القواعد_ (rules:complaint, handover complaint)\n"
+}
