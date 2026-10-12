@@ -44,6 +44,7 @@ import { makeAssistTools, validateReply, profileSummaryAr } from "./waassist.js"
 import { lookupFact, groupsIn, SEVERE_RE, factsCoverage, pickDish, factNote } from "./wadishfacts.js";
 import { makeAiCost, pricesOf, waRatesOf, pricesFromBody, waRatesFromBody, BUDGET_DEFAULTS } from "./waaicost.js";
 import { providerInfo, maskText } from "./wabotllm.js";
+import { kbTokens } from "./wakb.js";
 import { ASSIST_CFG_DEFAULTS, ASSIST_SCHEMA, PROMPT_HASH, assistConfig, assistFromBody, assistEligible, makeAssistLoop, makeAssistStore, makeModelCaller, newSession, noteRulesTurn, buildContext, hintOf } from "./waassistrun.js";
 import { WA_UPDATES_TEXTS, WA_UPDATES_CURRENT, recordWaUpdatesBot, recordWaMarketingBot, ensureWaConsentSchema } from "./waconsent.js";
 
@@ -100,7 +101,7 @@ export const DEFAULTS = Object.freeze({
   alertPhones: [],             // فاضي = أرقام الإنذارات (settings.delivery.alertPhones)
   maxAlertsPerHour: 6,
   firstCode: "FIRST",
-  links: { organic: "wab-boxes", ads: "wa-boxes", adMap: {} },   // adMap: { "<ad source_id>": "<slug>" }
+  links: { organic: "wab-boxes", ads: "wa-boxes", packs: "wab-packs", adMap: {} },   // adMap: { "<ad source_id>": "<slug>" } · packs = رابط رد «باقات التجمعات»
   intentsOff: [],              // مفاتيح ردود مقفولة ⇒ تحويل لموظف بدل الرد
   texts: {},                   // { key: { ar, en } } — الفاضي = الافتراضي
 });
@@ -112,6 +113,10 @@ export const SEED_LINKS = Object.freeze([
   // رابط أجوبة الأصناف: الرئيسية + ‎#item-<id> (المتصفح بيحتفظ بالـ# بعد تحويل ‎/l/، والمتجر بيفتح الصنف)
   { slug: "wab-menu", label: "بوت واتساب — صنف من المنيو", target_type: "home", target_id: null,
     coupon: "FIRST", utm_source: "whatsapp", utm_medium: "bot", utm_campaign: "wa-bot" },
+  // باقات التجمعات (طلب عمر ١٢/١٠: زر رد «الباقات» كان بينزّل على أول قسم العروض = البوكسات). النوع gather ⇒ ‎?go=offers&gather=1‎:
+  // المتجر الحالي بينزل على قسم العروض، ولما المتجر يدعم gather=1 ينزل على عنوان «باقات التجمّعات» نفسه.
+  { slug: "wab-packs", label: "بوت واتساب — باقات التجمعات", target_type: "gather", target_id: null,
+    coupon: null, utm_source: "whatsapp", utm_medium: "bot", utm_campaign: "wa-bot" },
 ]);
 
 /* أسئلة مالهاش إجابة في البيانات (نوع اللحم، الحلال، الحساسية…): الإجابة يكتبها ويوافق عليها المالك من اللوحة.
@@ -435,7 +440,7 @@ export function botConfig(settings) {
     alertPhones: staffPhones(x.alertPhones),
     maxAlertsPerHour: num(x.maxAlertsPerHour, 0, 60, DEFAULTS.maxAlertsPerHour),
     firstCode: /^[A-Z0-9-]{2,20}$/.test(String(x.firstCode || "")) ? String(x.firstCode) : DEFAULTS.firstCode,
-    links: { organic: slugOk(L.organic) ? L.organic : DEFAULTS.links.organic, ads: slugOk(L.ads) ? L.ads : DEFAULTS.links.ads, adMap },
+    links: { organic: slugOk(L.organic) ? L.organic : DEFAULTS.links.organic, ads: slugOk(L.ads) ? L.ads : DEFAULTS.links.ads, packs: slugOk(L.packs) ? L.packs : DEFAULTS.links.packs, adMap },
     intentsOff: (Array.isArray(x.intentsOff) ? x.intentsOff : []).filter((k) => REPLY_KEYS.includes(k)),
     texts: x.texts && typeof x.texts === "object" ? x.texts : {},
   };
@@ -523,7 +528,7 @@ export function configFromBody(b, prev = {}) {
   if ("firstCode" in src) { if (/^[A-Z0-9-]{2,20}$/.test(String(src.firstCode || ""))) out.firstCode = String(src.firstCode); else errors.push("firstCode"); }
   if ("links" in src) {
     const L = src.links || {}, cur = { ...(prev.links || {}) };
-    for (const k of ["organic", "ads"]) if (k in L) { if (slugOk(L[k])) cur[k] = String(L[k]); else errors.push(`links.${k}`); }
+    for (const k of ["organic", "ads", "packs"]) if (k in L) { if (slugOk(L[k])) cur[k] = String(L[k]); else errors.push(`links.${k}`); }
     if ("adMap" in L) {
       const m = {};
       for (const [k, v] of Object.entries(L.adMap || {})) { if (/^\d{5,25}$/.test(String(k)) && slugOk(v)) m[String(k)] = String(v); else errors.push(`links.adMap.${k}`); }
@@ -697,6 +702,7 @@ export const SCHEMA = Object.freeze({
   firstCode: S("orders", "code", "كود أول طلب", "الكود اللي سطر «أول طلب» بيقرا شروطه من الكوبونات."),
   "links.organic": S("links", "slug", "رابط المحادثات العادية", "من «روابط الحملات»."),
   "links.ads": S("links", "slug", "رابط محادثات الإعلانات", ""),
+  "links.packs": S("links", "slug", "رابط رد «باقات التجمعات»", "الزر تحت قايمة الباقات بيفتح الرابط ده. لو الرابط مقفول أو مش موجود، الزر يرجع للرابط العادي."),
   "links.adMap": S("links", "map", "رابط لكل إعلان", "رقم الإعلان ← الرابط."),
   adWindowHours: S("links", "number", "المحادثة تفضل محسوبة على الإعلان", "بعدها ترجع للرابط العادي.", { min: 1, max: 168, unit: "ساعة" }),
   offerEndWithinDays: S("data", "number", "اذكر تاريخ نهاية العرض لو باقي عليه", "عرض بينتهي بعد أكتر من كده: مايتذكرش تاريخ.", { min: 0, max: 60, unit: "يوم" }),
@@ -897,10 +903,12 @@ export function buildReply(key, c) {
       const packs = (data.bundles || []).filter((b2) => !String(b2.section || "").trim() && Number(b2.price) > 0)
         .filter((b2) => !b2.offer_id || !act || act.has(String(b2.offer_id))).sort((a, b2) => Number(a.price) - Number(b2.price));
       if (!packs.length) throw new DataMissing("packs");
+      /* زر الباقات بيفتح رابط الباقات (links.packs) لو شغّال؛ غير كده الرابط العادي زي الأول. */
+      const packsCta = data.links && data.links[cfg.links.packs] === true ? { cta: { title: T("cta_order"), url: linkUrl(cfg.links.packs) }, link: cfg.links.packs } : {};
       return { ...withLink("packs_body", { lines: packs.map((b2) => `• ${(lang === "en" && b2.name_en) || b2.name}: ${lang === "en" ? `SAR ${money(b2.price)}` : `${money(b2.price)} ر.س`}${
         b2.offer_id && act ? endsSoon(act.get(String(b2.offer_id))?.until, data.now, lang, cfg.offerEndWithinDays) : ""}`).join("\n") }, "cta_order"),
         /* رسالة تانية: عروض مخصصة للتجمعات + زر بيحوّل لموظف بعد ما يطلب التفاصيل (عدد الأشخاص، الوقت، توصيل/استلام) */
-        ...(c.factual ? {} : { extra: [{ body: T("packs_custom"), buttons: [{ id: "bot:custom", title: T("btn_custom") }, { id: "bot:menu", title: T("btn_main") }] }] }) };
+        ...packsCta, ...(c.factual ? {} : { extra: [{ body: T("packs_custom"), buttons: [{ id: "bot:custom", title: T("btn_custom") }, { id: "bot:menu", title: T("btn_main") }] }] }) };
     }
     case "pickup": {
       const f = (data.settings?.storefront?.seo?.faq || []).find((x) => /الاستلام|استلام/.test(String(x?.q || "")));
@@ -1499,6 +1507,14 @@ export function register(app, ctx, deps = {}) {
       UPDATE wa_bot_chats SET handoff_at = COALESCE(handoff_at, updated_at), handoff_reason = COALESCE(handoff_reason, mute_reason), muted_until = NULL, mute_reason = NULL
        WHERE muted_until IS NOT NULL AND mute_reason IS DISTINCT FROM 'manual';
       CREATE INDEX IF NOT EXISTS wa_bot_log_at_idx ON wa_bot_log(at DESC);
+      -- محادثات الإعلانات (١٢/١٠): صف لكل (رقم، إعلان) من أول رسالة جاية من إعلان — لتقرير «كل إعلان: محادثات / سلات / طلبات مدفوعة».
+      -- wa_bot_chats.referral بيحتفظ بآخر إعلان بس (بيتكتب فوقه)، و wa_bot_log.referral علامة نعم/لا من غير رقم الإعلان.
+      CREATE TABLE IF NOT EXISTS wa_ad_chats (
+        phone_norm TEXT NOT NULL, ad_id TEXT NOT NULL DEFAULT '', headline TEXT, source_type TEXT,
+        first_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), last_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), clicks INT NOT NULL DEFAULT 1,
+        PRIMARY KEY (phone_norm, ad_id)
+      );
+      CREATE INDEX IF NOT EXISTS wa_ad_chats_first_idx ON wa_ad_chats(first_at DESC);
     `);
     for (const l of SEED_LINKS) {
       await pool.query(
@@ -1625,7 +1641,7 @@ export function register(app, ctx, deps = {}) {
       if (r === null) data.orderDbFailed = true;        // القاعدة ماردّتش ⇒ مانقولش «مافيه طلب» — نحوّل لموظف
       data.order = r && r[0] ? r[0] : null;
     }
-    const slugs = [...new Set([cfg.links.organic, cfg.links.ads, "wab-menu", ...(key === "box" && arg ? [String(arg)] : []), ...Object.values(cfg.links.adMap)])];
+    const slugs = [...new Set([cfg.links.organic, cfg.links.ads, cfg.links.packs, "wab-menu", ...(key === "box" && arg ? [String(arg)] : []), ...Object.values(cfg.links.adMap)])];
     const lr = await q("SELECT slug FROM cms_links WHERE slug = ANY($1::text[]) AND active", [slugs]);
     for (const x of lr || []) data.links[x.slug] = true;
     return data;
@@ -1718,6 +1734,9 @@ export function register(app, ctx, deps = {}) {
         const ref = { source_id: r.source_id || null, source_type: r.source_type || null, source_url: r.source_url || null, headline: r.headline ? String(r.headline).slice(0, 120) : null, ctwa_clid: r.ctwa_clid || null };
         await q(`INSERT INTO wa_bot_chats(phone_norm, referral, referral_at) VALUES ($1,$2,NOW())
                  ON CONFLICT (phone_norm) DO UPDATE SET referral=$2, referral_at=NOW(), updated_at=NOW()`, [phone, jb(ref)]);
+        await q(`INSERT INTO wa_ad_chats(phone_norm, ad_id, headline, source_type) VALUES ($1,$2,$3,$4)
+                 ON CONFLICT (phone_norm, ad_id) DO UPDATE SET last_at=NOW(), clicks = wa_ad_chats.clicks + 1, headline = COALESCE(EXCLUDED.headline, wa_ad_chats.headline)`,
+          [phone, String(ref.source_id || "").slice(0, 40), ref.headline, ref.source_type ? String(ref.source_type).slice(0, 20) : null]);
       }
       const ok = /^5\d{8}$/.test(phone);
       const chat = await chatOf(phone);
@@ -1773,6 +1792,12 @@ export function register(app, ctx, deps = {}) {
       if (assistOn) { try { ar = await assistTurn({ ev, logId, settings, cfg, d, cls, chat, data, know, now, echoAt, phone, held }); } catch (e) { console.error("[assist] turn:", e.message); ar = null; } }
       if (ar && ar.d) d = ar.d;
       const assistDone = async (x) => { if (ar && ar.done) { try { await ar.done(x); } catch (e) { console.error("[assist] done:", e.message); } } };
+      /* رسالة القواعد مافهمتهاش (هترد «ما فهمت» الحين أو بعد انتظار الموظف) ⇒ تنزل في طابور أسئلة المدير لو فيها كلمتين معنى على الأقل
+         (مش «؟؟» ولا «تمام»). مرة واحدة: مش في الرد المؤجّل، وبس للمحادثات اللي البوت بيرد فيها فعلاً (live، أو رقم تجربة في وضع test)، ومش لو المساعد هو اللي رد. */
+      if (!afterWait && (cfg.mode === "live" || (cfg.mode === "test" && cfg.testPhones.includes(phone))) && d.key === "unknown" && (d.act === "reply" || d.act === "wait") && ev.type === "text" && String(ev.text || "").trim()) {
+        const kb = kbApi();
+        if (kb && kbTokens(maskText(ev.text)).size >= 2) { try { await kb.queue({ question: ev.text, lang: d.lang === "en" ? "en" : "ar", source: "rules_unknown" }); } catch (e) { console.error("[wabot] kb:", e.message); } }
+      }
 
       /* زرار الرجوع تحت رسالة الإيقاف: اختيار صريح من العميل بنفسه. «تحديثات طلبي فقط» ⇒ موافقة تحديثات عن طريق waconsent (بتتغلب على الإيقاف
          للتحديثات بس). «كل الرسائل والعروض» ⇒ نفس «اشتراك» (applyIntent start) + صف إثبات تسويقي. التجربة الصامتة مابتسجّلش حاجة. */
@@ -1981,9 +2006,29 @@ export function register(app, ctx, deps = {}) {
   const withAlt = (cls) => { if (!cls || cls.key !== "dishfact" || cls.rawIntent !== "remove_question" || !cls.arg || !cls.arg.id) return cls;
     const f = lookupFact(cls.arg.id, cls.arg.text, { remove: true }); return f.status === "alternative" ? { ...cls, alt: { id: f.altId, name: f.alt, name_en: f.altEn } } : cls; };
   const locFresh = (loc, now) => Boolean(chatLocation(loc, now, tune.assist.locationHours));      // نفس القاعدة اللي بتتبعت للمتجر مع السلة: موقع بوقته وعمره أقل من الإعداد
-  async function assistContext({ fresh, phone, cfg, lang, chat, know, data, now, cls, pending = null }) {
+  /* قاعدة معرفة المدير (wakb.js): بتتسجّل بعد البورتال، فبنوصل لها وقت الاستخدام. مش موجودة ⇒ المساعد يشتغل من غيرها. */
+  const kbApi = () => { try { return typeof deps.kb === "function" ? deps.kb() : deps.kb || null; } catch { return null; } };
+  /* العميل جاي من إعلان (الرسالة دي معاها referral، أو محادثته لسه جوّه مدة الإعلان): عنوان الإعلان من غير أرقام (السعر من الأدوات بس)،
+     والعرض المُعلن لو الإعلان مربوط برابط (links.adMap) هدفه بوكس أو عرض شغّال. */
+  async function adContext({ ev, chat, cfg, know, settings, now }) {
+    const ref = (ev && ev.referral) || (chat.referral && chat.referral_at && now.getTime() - Date.parse(chat.referral_at) < cfg.adWindowHours * 3600_000 ? chat.referral : null);
+    if (!ref) return null;
+    const headline = String(ref.headline || "").replace(/[0-9٠-٩%٪]+/g, " ").replace(/\s+/g, " ").trim().slice(0, 120);
+    const slug = ref.source_id ? cfg.links.adMap[String(ref.source_id)] || null : null;
+    let advertised = null;
+    if (slug) {
+      const r = await q("SELECT target_type, target_id FROM cms_links WHERE slug=$1 AND active", [slug]);
+      const l = r && r[0] ? r[0] : null;
+      if (l && l.target_type === "box") { const b = (know.bundles || []).find((x) => String(x.slug) === String(l.target_id)); if (b) advertised = { kind: "box", slug: String(b.slug), name: b.name, ...(b.name_en ? { name_en: b.name_en } : {}), price: Number(b.price) }; }
+      else if (l && l.target_type === "offer") { let list = null; try { list = await liveOffers(settings, now); } catch { list = null; } const o = (list || []).find((x) => String(x.id) === String(l.target_id)); if (o) advertised = { kind: "offer", title: o.title, price: Number(o.price), ...(o.until ? { until: o.until } : {}) }; }
+    }
+    return headline || advertised ? { ...(headline ? { ad_text: headline } : {}), ...(advertised ? { advertised } : {}) } : null;
+  }
+  async function assistContext({ fresh, phone, cfg, lang, chat, know, data, now, cls, pending = null, ev = null, settings = null }) {
     const hours = await assist.get_hours();
-    let profile = null, offers = null, reorder = null;
+    let profile = null, offers = null, reorder = null, notes = null, ad = null;
+    if (fresh || (ev && ev.referral)) { try { ad = await adContext({ ev, chat, cfg, know, settings, now }); } catch (e) { console.error("[assist] ad:", e.message); ad = null; } }
+    if (fresh) { const kb = kbApi(); if (kb) { try { notes = await kb.notesFor(lang); } catch { notes = null; } } }
     if (fresh) {
       const [p, o] = await Promise.all([assist.customer_profile(phone), assist.get_offers(phone)]);
       profile = p && p.ok ? p.profile : null; offers = o && o.ok ? o : null;
@@ -1996,7 +2041,7 @@ export function register(app, ctx, deps = {}) {
       if (ro) reorder = { day: orderDay(ro.at, lang), lines: ro.plan.lines.map((l) => ({ name: lang === "en" ? l.nameEn : l.name, qty: l.q })), note: "a one-tap button for the same order is attached under your message" };
     }
     let branch = null; try { branch = fresh ? textOf(cfg, "location", lang) : null; } catch { branch = null; }
-    return { profile, reorder, context: buildContext({ first: fresh, hours: hours && hours.ok ? hours : null, profile, offers, reorder, locationShared: locFresh(chat.last_loc, now), justShared: cls.key === "area", branch, boxes: fresh ? know.bundles : null, hint: hintOf(withAlt(cls)), handover: pending }) };
+    return { profile, reorder, context: buildContext({ first: fresh, hours: hours && hours.ok ? hours : null, profile, offers, reorder, locationShared: locFresh(chat.last_loc, now), justShared: cls.key === "area", branch, boxes: fresh ? know.bundles : null, hint: hintOf(withAlt(cls)), handover: pending, notes, ad }) };
   }
   const assistDeps = (cfg, settings, logId) => ({ tools: assist, callModel: assistCall, now: clock,
     knowOf: async () => ({ menu: await menuIndex(settings, clock()), boxes: (await bundles()) || [] }),
@@ -2007,6 +2052,7 @@ export function register(app, ctx, deps = {}) {
       return FAQ_DEFS[topic] ? pick(cfg.faq && cfg.faq[topic]) : null;
     },
     dishFactSay: async (a) => { let open = null; try { open = settings?.hours ? openState(settings, clock()) : null; } catch { open = null; } return dishFactSay(cfg, { settings, now: clock(), open }, a); },
+    kbSearch: async (question, lang) => { const kb = kbApi(); return kb ? kb.search(question, lang) : null; },
     deliveryInfo: async () => { const r = await q("SELECT config FROM dl_policies WHERE active ORDER BY priority DESC, id LIMIT 1", []); const pol = r && r[0] ? r[0].config : null; const fees = pol ? feeLines(pol, "ar") : "";
       return pol && fees ? { ok: true, delivers_up_to_km: Number(pol.maxKm) || null, far_zone_up_to_km: pol.farZoneEnabled !== false ? Number(pol.farZoneMaxKm) || null : null, far_zone_extra_per_km: pol.farZoneEnabled !== false ? Number(pol.farZonePerKm) || null : null,
         fee_by_order_total: fees.split("\n"), note: "the exact fee for the customer is shown on the website before payment" } : null; },
@@ -2050,7 +2096,7 @@ export function register(app, ctx, deps = {}) {
     if (fresh) session = newSession(now);
     /* تحويل عادي لسه مستني موظف: المساعد يعرف (مايحوّلش نفس الحاجة تاني، ويقول للعميل إن الموظف هيرد) ويكمل يساعد. */
     const pending = handoverOpenOf(chat, cfg, echoAt, now) ? { reason: String(chat.handoff_reason || "handover"), minutes_ago: Math.max(0, Math.round((now.getTime() - Date.parse(chat.handoff_at)) / 60_000)) } : null;
-    const cx = await assistContext({ fresh, phone, cfg, lang, chat, know, data, now, cls, pending });
+    const cx = await assistContext({ fresh, phone, cfg, lang, chat, know, data, now, cls, pending, ev, settings });
     const loop = makeAssistLoop(assistDeps(cfg, settings, logId));
     const text = cls.key === "area" ? "📍" : String(ev.text || "");      // الموقع نفسه مابيتبعتش للموديل: علامة بس، والسياق بيقول إنه شارك موقعه
     const r = await loop.runTurn({ phone, text, lang, session, acfg, context: cx.context, profile: cx.profile });
@@ -2076,6 +2122,13 @@ export function register(app, ctx, deps = {}) {
       await assistStore.saveSession(phone, session, now);
       const turnId = await turnRow({ handledBy: "assistant", outcome, masked: tr.sent, text: r.handover ? reply.body : r.text, trace: tr, cartCode: r.cart ? r.cart.code : null, handover: r.handover ? r.handover.reason : null });
       await assistStore.recordSuggestions(phone, session.id, turnId, tr.suggestions.filter((s) => s.outcome !== "computed"), r.cart ? r.cart.code : null);
+      /* قاعدة المعرفة: الإجابة اللي اتستخدمت تتعدّ، والسؤال اللي المساعد ماعرفش يجاوبه (أو حوّله لموظف) ينزل في طابور المدير — مقنّع ومن غير أي ربط بالعميل. */
+      { const kb = kbApi();
+        if (kb) { try {
+          if (tr.kb && tr.kb.used) await kb.markUsed(tr.kb.used);
+          for (const u of tr.unanswered || []) await kb.queue({ question: u.question, lang: L, source: u.source === "dish_fact" ? "dish_fact" : "no_answer" });
+          if (r.handover && r.handover.reason === "needs_staff" && !(tr.unanswered || []).length && !/موظف|انسان|إنسان|شخص|بشري|staff|human|agent|person/i.test(String(ev.text || ""))) await kb.queue({ question: tr.sent || maskText(ev.text), lang: L, source: "handover" });
+        } catch (e) { console.error("[assist] kb:", e.message); } } }
       if (r.cart) {
         await assistStore.tagCart(r.cart.code, (session.state.lastCart && session.state.lastCart.accepted) || [], session.id);
         if (acfg.followUpEnabled) await scheduleFollowUp(phone, { code: r.cart.code, sentAt: clock().toISOString(), lang: L }, acfg);
@@ -2514,6 +2567,36 @@ export function register(app, ctx, deps = {}) {
     return c.json({ ok: true, mode: cfg.assist.mode, botMode: cfg.mode, testPhones: cfg.testPhones.length, promptVersion: PROMPT_HASH, provider: providerInfo(), models: { strong: cfg.assist.model, simple: cfg.assist.modelSimple, routing: cfg.assist.routing },
       storeReady: (await q("SELECT 1 FROM wa_assist_turns LIMIT 1", [])) !== null && (await q("SELECT 1 FROM wa_assist_suggestions LIMIT 1", [])) !== null && (await q("SELECT 1 FROM wa_assist_chats LIMIT 1", [])) !== null,
       ...(await assistStore.stats(Number(c.req.query("days")) || 7)), followups });
+  });
+  /* تقرير الإعلانات (قراءة بس): لكل إعلان — كام محادثة فتحها، كام واحد منهم اتجهّزت له سلة (واتفتحت)، وكام طلب مدفوع من الموقع ومبلغه.
+     «طلب من الإعلان» = طلب مدفوع من نفس الرقم خلال adWindowHours من أول رسالته من الإعلان (نفس مدة «المحادثة محسوبة على الإعلان»). أرقام التجربة برّه العدّ. */
+  app.get("/api/cms/wabot/ads", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    await ready;
+    const cfg = botConfig((await getSettingsData()) || {});
+    const days = Math.min(180, Math.max(1, Math.round(Number(c.req.query("days")) || 30)));
+    const win = Math.max(1, Math.ceil(cfg.adWindowHours));
+    const rows = await q(
+      `SELECT a.ad_id, max(a.headline) AS headline, count(*)::int AS chats, COALESCE(sum(a.clicks),0)::int AS clicks, min(a.first_at) AS first_at, max(a.last_at) AS last_at,
+              count(*) FILTER (WHERE cr.n > 0)::int AS carts, count(*) FILTER (WHERE cr.opened > 0)::int AS carts_opened,
+              count(*) FILTER (WHERE od.n > 0)::int AS buyers, COALESCE(sum(od.n),0)::int AS orders, COALESCE(sum(od.total),0)::float AS revenue
+         FROM wa_ad_chats a
+         LEFT JOIN LATERAL (SELECT count(*)::int AS n, count(*) FILTER (WHERE k.opens > 0)::int AS opened FROM wa_bot_carts k
+                             WHERE k.phone_norm = a.phone_norm AND k.created_at >= a.first_at AND k.created_at < a.first_at + make_interval(hours => $2::int)) cr ON TRUE
+         LEFT JOIN LATERAL (SELECT count(*)::int AS n, COALESCE(sum(o.total),0) AS total FROM shop_orders o
+                             WHERE o.phone_norm = a.phone_norm AND NOT COALESCE(o.is_test,false)
+                               AND o.status NOT IN ('pending_payment','expired','rejected_refunded','refund_failed','paid_pos_failed')
+                               AND o.created_at >= a.first_at AND o.created_at < a.first_at + make_interval(hours => $2::int)) od ON TRUE
+        WHERE a.first_at > NOW() - make_interval(days => $1::int) AND a.phone_norm <> ALL($3::text[])
+        GROUP BY a.ad_id ORDER BY count(*) DESC, a.ad_id LIMIT 200`, [days, win, cfg.testPhones]);
+    if (rows === null) return c.json({ ok: false, error: "unavailable" }, 503);
+    const r2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
+    const ads = rows.map((r) => ({ adId: r.ad_id || null, headline: r.headline || null, link: (r.ad_id && cfg.links.adMap[String(r.ad_id)]) || cfg.links.ads, mapped: Boolean(r.ad_id && cfg.links.adMap[String(r.ad_id)]),
+      chats: r.chats, clicks: r.clicks, carts: r.carts, cartsOpened: r.carts_opened, buyers: r.buyers, orders: r.orders, revenue: r2(r.revenue),
+      firstAt: r.first_at ? new Date(r.first_at).toISOString() : null, lastAt: r.last_at ? new Date(r.last_at).toISOString() : null }));
+    const sum = (k) => ads.reduce((s, a) => s + (Number(a[k]) || 0), 0);
+    return c.json({ ok: true, days, windowHours: win, since: "2026-10-12: محادثات الإعلانات بتتسجّل بالإعلان من تاريخ تشغيل الشريحة دي؛ اللي قبلها مالوش رقم إعلان محفوظ",
+      totals: { ads: ads.length, chats: sum("chats"), carts: sum("carts"), cartsOpened: sum("cartsOpened"), buyers: sum("buyers"), orders: sum("orders"), revenue: r2(sum("revenue")) }, ads });
   });
   /* مخطط الإعدادات للّوحة: كل إعداد بنوعه وحدوده وافتراضيه وقيمته واسمه وشرحه بالعربي (قراءة بس). */
   app.get("/api/cms/wabot/schema", async (c) => {

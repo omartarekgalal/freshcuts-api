@@ -281,11 +281,16 @@ export function makeAssistTools(deps = {}) {
   async function quote_delivery(phone, { lat, lng, total = 0 } = {}) {
     let la = Number(lat), ln = Number(lng), from = "given";
     if (!(Number.isFinite(la) && Number.isFinite(ln))) { const l = deps.lastLocation ? await deps.lastLocation(phone) : null; if (l && Number.isFinite(Number(l.lat))) { la = Number(l.lat); ln = Number(l.lng); from = "shared_in_chat"; } }
-    if (!(Number.isFinite(la) && Number.isFinite(ln))) return { ok: false, error: "need_location", hint: "ask the customer to share their location pin in the chat" };
+    if (!(Number.isFinite(la) && Number.isFinite(ln))) return { ok: false, error: "need_location", hint: "ask the customer to share their location pin in the chat; until it arrives do not say whether we deliver to them or what the fee is" };
     let r; try { r = await deps.quote({ lat: la, lng: ln, orderTotal: Number(total) || 0 }); } catch { r = null; }
     if (!r || typeof r.deliverable !== "boolean") return unavailable("delivery_quote");
     if (r.deliverable) return { ok: true, deliverable: true, fee: Number(r.fee), for_total: Number(total) || 0, to_next_tier: Number(r.toNextTier) > 0 ? round2(r.toNextTier) : null, next_tier_fee: Number.isFinite(Number(r.nextTierFee)) ? Number(r.nextTierFee) : null,
-      to_free: Number(r.toFree) > 0 ? round2(r.toFree) : null, far_zone_extra: r.farZone ? Number(r.farZone.surcharge) : 0, location: from, raw: { fee: r.fee, toNextTier: r.toNextTier, nextTierFee: r.nextTierFee, deliverable: true } };
+      to_free: Number(r.toFree) > 0 ? round2(r.toFree) : null, far_zone_extra: r.farZone ? Number(r.farZone.surcharge) : 0, location: from,
+      /* حد التوصيل المجاني كقيمة طلب (مش «باقي كام»): بيتقال للعميل اللي لسه ماعندوش سلة. مسافة الطريق لموقعه. */
+      ...(Number(r.toFree) > 0 ? { free_from_total: round2((Number(total) || 0) + Number(r.toFree)) } : Number(r.fee) === 0 ? { free_now: true } : {}),
+      ...(Number(r.routeKm) > 0 ? { distance_km: Math.round(Number(r.routeKm) * 10) / 10 } : {}),
+      /* وقت التوصيل: بيتقال «تقريباً» **بس** لو التسعيرة رجّعت تقدير حقيقي (النهارده مابترجّعش ⇒ المساعد مايذكرش وقت). */
+      ...(Number(r.etaMinutes) > 0 ? { about_minutes: Math.round(Number(r.etaMinutes)) } : {}), raw: { fee: r.fee, toNextTier: r.toNextTier, nextTierFee: r.nextTierFee, deliverable: true } };
     return { ok: true, deliverable: false, reason: r.reason, min_order: r.minOrderTotal ?? null, far_zone_offer_extra: r.farZoneOffer ? Number(r.farZoneOffer.surcharge) : null, pickup_available: true, location: from };
   }
   async function get_offers(phone) {

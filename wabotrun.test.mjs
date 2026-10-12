@@ -52,10 +52,10 @@ const LOCKS_OPEN = { ...CONFIGURED, WHATSAPP_ENABLED: "1" };
 
 /* ── عالم صغير: قاعدة في الذاكرة + ساعة + Graph مزيّف ─────────────────────── */
 function world({ waBot = {}, notifications = { whatsappEnabled: true }, orders = [], bundles = BUNDLES, policy = POLICY, first = FIRST, links = ["wab-boxes", "wa-boxes", "wa-box-d4"],
-  at = OPEN_AT, graph = null, failDb = null, extraSettings = {}, disclosure = false, pages = LIVE.pages, quote = null, llm = null, greetMenu = false, offers = LIVE.offers, resolveMapsLink = null, lastCart = null, assistModel = null, assistStore = null } = {}) {
+  at = OPEN_AT, graph = null, failDb = null, extraSettings = {}, disclosure = false, pages = LIVE.pages, quote = null, llm = null, greetMenu = false, offers = LIVE.offers, resolveMapsLink = null, lastCart = null, assistModel = null, assistStore = null, kb = null, adReport = [] } = {}) {
   let nowMs = Date.parse(at);
   const clock = { now: () => new Date(nowMs), advance: (min) => { nowMs += min * 60_000; }, set: (iso) => { nowMs = Date.parse(iso); } };
-  const db = { msgs: [], log: [], jobs: [], proofs: [], consentLog: [], ai: [], aiAlerts: [], tpl: [], cfgLog: [], botCarts: [], chats: new Map(), optouts: [], optins: {}, links: links.map((s) => ({ slug: s, active: true, clicks: 0 })), settings: null };
+  const db = { msgs: [], log: [], jobs: [], proofs: [], consentLog: [], ai: [], aiAlerts: [], tpl: [], cfgLog: [], botCarts: [], chats: new Map(), optouts: [], optins: {}, links: links.map((s) => (typeof s === "string" ? { slug: s, active: true, clicks: 0 } : { active: true, clicks: 0, ...s })), adChats: [], adReportParams: null, settings: null };
   db.settings = { hours: HOURS, notifications, googlePlace: { mapsUrl: "https://maps.google.com/?cid=14767749764292326433" }, storefront: { seo: { faq: FAQ } },
     cms: { loyalty: { enabled: true, every: 3, reward: "free_delivery", minTotal: 60 } }, delivery: { alertPhones: ["0544775082", "0506338246"], staffSmsLanguage: "en" }, waBot: { footerMode: "always", ...waBot },
     waMaster: { enabled: true },   // SEC: مفتاح المالك الرئيسي (whatsapp.js guardSend) — مفتوح في العالم الافتراضي للاختبار
@@ -98,6 +98,9 @@ function world({ waBot = {}, notifications = { whatsappEnabled: true }, orders =
       if (/ai_budget_alerts/i.test(s)) return { rows: db.aiAlerts.map((key) => ({ key })) };
       if (/^SELECT count\(\*\)::int AS n FROM wa_bot_log WHERE at >= \(date_trunc\('month'/i.test(s)) return { rows: [{ n: db.log.length }] };
       if (/FROM wa_messages WHERE direction='out' AND template IS NOT NULL/i.test(s)) return { rows: db.tpl };
+      if (/^INSERT INTO wa_ad_chats/i.test(s)) { const x = db.adChats.find((r) => r.phone_norm === p[0] && r.ad_id === p[1]); if (x) x.clicks++; else db.adChats.push({ phone_norm: p[0], ad_id: p[1], headline: p[2], source_type: p[3], clicks: 1 }); return { rows: [] }; }
+      if (/FROM wa_ad_chats a/i.test(s)) { db.adReportParams = p; return { rows: adReport }; }
+      if (/^SELECT target_type, target_id FROM cms_links WHERE slug=\$1 AND active/i.test(s)) return { rows: db.links.filter((l) => l.slug === p[0] && l.active).map((l) => ({ target_type: l.target_type || "home", target_id: l.target_id || null })) };
       if (/^INSERT INTO cms_links/i.test(s)) { if (!db.links.find((l) => l.slug === p[0])) db.links.push({ slug: p[0], active: true, clicks: 0, seeded: true }); return { rows: [] }; }
       if (/FROM cms_links WHERE slug = ANY/i.test(s)) return { rows: db.links.filter((l) => p[0].includes(l.slug) && l.active) };
       // SEC: نافذة الـ٢٤ ساعة اللي الحارس المركزي بيتأكد منها قبل أي رد حر
@@ -226,7 +229,7 @@ function world({ waBot = {}, notifications = { whatsappEnabled: true }, orders =
       quote: async (x) => (typeof quote === "function" ? quote(x.lat, x.lng) : quote), buildProfile: async () => ({ identity: { name: "أحمد" }, summary: { orders: 2, status: "repeat" }, orders: [], favorites: { items: [] }, addresses: [] }) }, whoami: async () => actor.who, ...(resolveMapsLink ? { resolveMapsLink } : { resolveMapsLink: async () => null }), sendSms: async (x) => { sms.push(x); return { ok: true }; },
     portalEmit: (ev2, data) => portalEvents.push([ev2, data]), whoami: async () => actor.who, ...(resolveMapsLink ? { resolveMapsLink } : { resolveMapsLink: async () => null }), sendSms: async (x) => { sms.push(x); return { ok: true }; },
     fetchMenuPages: async () => { if (pages === null) throw new Error("menu down"); return pages; }, quote: async (lat, lng) => (typeof quote === "function" ? quote(lat, lng) : quote), llm,
-    fetchOffers: async () => { if (offers === null) throw new Error("offers down"); return offers; }, ...(assistModel ? { assistCallModel: assistModel } : {}), ...(assistStore ? { assistStore } : {}) });
+    fetchOffers: async () => { if (offers === null) throw new Error("offers down"); return offers; }, ...(assistModel ? { assistCallModel: assistModel } : {}), ...(assistStore ? { assistStore } : {}), ...(kb ? { kb: () => kb } : {}) });
   let seq = 0;
   const hook = (field, value) => ({ object: "whatsapp_business_account", entry: [{ id: "WABA", changes: [{ field, value: { messaging_product: "whatsapp", metadata: { display_phone_number: BIZ, phone_number_id: "PHONE1" }, ...value } }] }] });
   const ts = (agoMin = 0) => String(Math.floor((nowMs - agoMin * 60_000) / 1000));
@@ -957,7 +960,11 @@ test("free text about the menu is answered from the data — or handed over hone
 test("gathering packs, pickup, hours + location, and the delivery check from a shared location", withEnv(LOCKS_OPEN, async () => {
   const w = liveWorld({ extraSettings: { storefront: { seo: { faq: [...FAQ, { q: "هل يمكن الاستلام من الفرع؟", a: "نعم، اختر «استلام» في صفحة الطلب وسيكون طلبك جاهزاً في فرع حي السلامة." }] } } } });
   const pk = await w.say("ابي طلب لـ ٥٠ شخص");
-  assert.deepEqual(pk.sent[0], cta(ME, "باقات التجمعات 👥\n• باقة تجمّع ٤–٦ أشخاص: 225 ر.س (لين 15/10)\n• باقة تجمّع ٨–١٠ أشخاص: 395 ر.س (لين 15/10)\n• باقة مناسبة ١٥ شخصاً وأكثر: 595 ر.س (لين 15/10)", "اطلب الآن", "https://freshcuts.sa/l/wab-boxes"));
+  assert.deepEqual(pk.sent[0], cta(ME, "باقات التجمعات 👥\n• باقة تجمّع ٤–٦ أشخاص: 225 ر.س (لين 15/10)\n• باقة تجمّع ٨–١٠ أشخاص: 395 ر.س (لين 15/10)\n• باقة مناسبة ١٥ شخصاً وأكثر: 595 ر.س (لين 15/10)", "اطلب الآن", "https://freshcuts.sa/l/wab-packs"));
+  assert.equal(pk.log.link_slug, "wab-packs");
+  // the packs link switched off in the dashboard ⇒ the button falls back to the ordinary link (never a dead link)
+  { const w2 = liveWorld(); w2.db.links.push({ slug: "wab-packs", active: false, clicks: 0 });
+    const p2 = await w2.say("ابي طلب لـ ٥٠ شخص"); assert.equal(p2.sent[0].interactive.action.parameters.url, "https://freshcuts.sa/l/wab-boxes"); }
   assert.equal(bodyOf(pk.sent[1]), "وعندنا عروض مخصصة للتجمعات والمناسبات وطلبات الشركات 👇");
   assert.deepEqual(pk.sent[1].interactive.action.buttons.map((b) => [b.reply.id, b.reply.title]), [["bot:custom", "أبغى عرض مخصص"], ["bot:menu", "📋 القائمة"]]);
   // «أبغى عرض مخصص»: the details are asked first, then it is handed to staff (one alert); with the reopening time when closed
@@ -2594,4 +2601,91 @@ test("fewer handovers: «not sure» about an ingredient is said plainly by the a
   // severe allergy never reaches the model
   const s = aWorld([], { waBot: { dishFactsEnabled: true } }); const sr = await s.say("عندي حساسية شديدة من السمسم، وجبة كفتة تنفع؟");
   assert.equal(s.m.used(), 0); assert.equal(sr.log.handoff, "allergy_severe"); assert.match(bodyOf(msgs(sr)[0]), /والمساعد الآلي يترك المحادثة له\.$/, "a serious handover keeps the old line: the assistant does step back");
+}));
+
+const ctxOf = (seenCall) => { const t = seenCall.messages.map((m) => (Array.isArray(m.content) ? m.content.map((b) => b.text || "").join("\n") : String(m.content || ""))).join("\n"); const m = /<context [^>]*>([\s\S]*?)<\/context>/.exec(t); return m ? JSON.parse(m[1]) : null; };
+function fakeKb({ answers = [], notes = null } = {}) {
+  const calls = { queue: [], used: [], search: [] };
+  return { calls, search: async (q, lang) => { calls.search.push([q, lang]); return answers; }, markUsed: async (id) => { calls.used.push(id); }, queue: async (x) => { calls.queue.push(x); return { id: calls.queue.length, created: true }; }, notesFor: async () => notes };
+}
+
+test("AS4 ads — a chat opened from an ad: the assistant opens on the advertised box (from the ad's link), the ad's numbers never reach it, and every ad chat is counted per ad", withEnv(CONFIGURED, async () => {
+  const AD = "120251225139440593";
+  const referral = { source_url: "https://fb.me/abc", source_id: AD, source_type: "ad", headline: "بوكس الكريب الفردي بـ 19 ريال خصم 50%", ctwa_clid: "CLID123" };
+  const links = [...ALL_LINKS, { slug: "ad-crepe", target_type: "box", target_id: "box-solo-crepe" }];
+  const w = aWorld([mSay("هلا 👋 بوكس الكريب الفردي بـ 29 ر.س.\nتبيه توصيل ولا استلام؟")], { links, waBot: { links: { organic: "wab-boxes", ads: "wa-boxes", adMap: { [AD]: "ad-crepe" } } } });
+  const r = await w.say("مرحبا", { referral });
+  assert.deepEqual([r.log.decision, r.log.reply_key], ["replied", "assist"]);
+  const cx = ctxOf(w.m.seen[0]);
+  assert.deepEqual(cx.came_from_ad.advertised, { kind: "box", slug: "box-solo-crepe", name: "بوكس الكريب الفردي", name_en: "Crepe Solo Box", price: 29 });
+  assert.ok(!/\d|%/.test(cx.came_from_ad.ad_text), "prices and percentages written in the ad are stripped: " + cx.came_from_ad.ad_text);
+  assert.ok(!JSON.stringify(w.m.seen).includes(AD) && !JSON.stringify(w.m.seen).includes("CLID123"), "no ad id or click id goes to the model");
+  assert.deepEqual(w.db.adChats, [{ phone_norm: "512345678", ad_id: AD, headline: "بوكس الكريب الفردي بـ 19 ريال خصم 50%", source_type: "ad", clicks: 1 }]);
+  // an ad with no link of its own: the ad text only, no «advertised»; a second click on the first ad is the same row
+  const w2 = aWorld([mSay("هلا 👋 وش تحب تطلب اليوم؟")], { links });
+  await w2.say("مرحبا", { referral: { source_id: "777777777", source_type: "ad", headline: "عشاء لشخصين" } });
+  assert.deepEqual(ctxOf(w2.m.seen[0]).came_from_ad, { ad_text: "عشاء لشخصين" });
+  w.m.push(mSay("أكيد، تبيه توصيل ولا استلام؟")); await w.say("ابي العرض", { referral });
+  assert.equal(w.db.adChats.length, 1); assert.equal(w.db.adChats[0].clicks, 2);
+  // not from an ad ⇒ nothing about ads in the context
+  const w3 = aWorld([mSay("هلا 👋 وش تحب تطلب اليوم؟")], { links }); await w3.say("مرحبا");
+  assert.equal(ctxOf(w3.m.seen[0]).came_from_ad, undefined); assert.equal(w3.db.adChats.length, 0);
+  // the rules bot counts ad chats too (assistant off)
+  const lw = liveWorld(); await lw.say("مرحبا", { referral });
+  assert.equal(lw.db.adChats.length, 1);
+}));
+
+test("AS4 ads — the per-ad report: chats, carts, opened carts, buyers, paid orders and revenue; test numbers left out", withEnv(CONFIGURED, async () => {
+  const w = liveWorld({ waBot: { testPhones: ["0512345678"], adWindowHours: 48, links: { organic: "wab-boxes", ads: "wa-boxes", adMap: { "111111111": "wa-box-d4" } } },
+    adReport: [{ ad_id: "111111111", headline: "بوكس", chats: 12, clicks: 14, first_at: "2026-10-12T10:00:00Z", last_at: "2026-10-13T10:00:00Z", carts: 5, carts_opened: 4, buyers: 3, orders: 4, revenue: 356.4 },
+      { ad_id: "", headline: null, chats: 2, clicks: 2, first_at: "2026-10-12T10:00:00Z", last_at: "2026-10-12T11:00:00Z", carts: 0, carts_opened: 0, buyers: 0, orders: 0, revenue: 0 }] });
+  const r = await w.call("GET", "/api/cms/wabot/ads", {}, { days: "14" });
+  assert.equal(r.status, 200); assert.equal(r.body.ok, true); assert.deepEqual([r.body.days, r.body.windowHours], [14, 48]);
+  assert.deepEqual(w.db.adReportParams, [14, 48, ["512345678"]]);
+  assert.deepEqual(r.body.ads[0], { adId: "111111111", headline: "بوكس", link: "wa-box-d4", mapped: true, chats: 12, clicks: 14, carts: 5, cartsOpened: 4, buyers: 3, orders: 4, revenue: 356.4, firstAt: "2026-10-12T10:00:00.000Z", lastAt: "2026-10-13T10:00:00.000Z" });
+  assert.deepEqual([r.body.ads[1].adId, r.body.ads[1].link, r.body.ads[1].mapped], [null, "wa-boxes", false]);
+  assert.deepEqual(r.body.totals, { ads: 2, chats: 14, carts: 5, cartsOpened: 4, buyers: 3, orders: 4, revenue: 356.4 });
+}));
+
+test("AS4 delivery — a shared pin goes to the assistant even as the first message; the coordinates never reach the model", withEnv(CONFIGURED, async () => {
+  const w = aWorld([mUse(tUse("quote_delivery", { total: 0 })), mSay("نوصل لموقعك 👍 رسوم التوصيل 15 ر.س.\nوش تحب تطلب؟")], { quote: { deliverable: true, fee: 15, toFree: 150, routeKm: 6.4 } });
+  const r = await w.say(null, { raw: { type: "location", location: { latitude: 21.58, longitude: 39.15 } } });
+  assert.deepEqual([r.log.decision, r.log.reply_key], ["replied", "assist"]);
+  assert.equal(ctxOf(w.m.seen[0]).customer_just_shared_a_location_pin, true); assert.equal(ctxOf(w.m.seen[0]).location_shared, true);
+  assert.ok(!/21\.58|39\.15/.test(JSON.stringify(w.m.seen)), "the pin itself stays in our system");
+  const res = JSON.parse(w.m.seen[1].messages.at(-1).content[0].content);
+  assert.deepEqual([res.deliverable, res.fee, res.free_from_total, res.distance_km, "about_minutes" in res], [true, 15, 150, 6.4, false]);
+  // assistant off ⇒ the rules bot's zone answer, as before
+  const off = aWorld([], { waBot: { assist: { mode: "off" } }, quote: { deliverable: true } });
+  assert.equal((await off.say(null, { raw: { type: "location", location: { latitude: 21.58, longitude: 39.15 } } })).log.reply_key, "area");
+}));
+
+test("AS4 knowledge base, wired: notes reach the first context, a used answer is counted, an unanswered question is queued with no customer link, and a message the rules do not understand is queued too", withEnv(CONFIGURED, async () => {
+  const kb = fakeKb({ answers: [{ id: 7, question: "عندكم واي فاي؟", say: "نعم، عندنا واي فاي للضيوف في الصالة." }], notes: "الصالة فيها قسم عائلات." });
+  const w = aWorld([mUse(tUse("ask_knowledge", { question: "عندكم واي فاي؟" })), mSay("نعم، عندنا واي فاي للضيوف في الصالة.\nتحب أجهّز لك طلب؟")], { kb });
+  const r = await w.say("عندكم واي فاي في المطعم؟");
+  assert.equal(r.log.reply_key, "assist"); assert.equal(ctxOf(w.m.seen[0]).manager_notes, "الصالة فيها قسم عائلات.");
+  assert.deepEqual(kb.calls.used, [7]); assert.deepEqual(kb.calls.queue, []);
+  // nothing saved ⇒ queued once, as the model worded the question, with the language; no phone anywhere
+  const kb2 = fakeKb();
+  const w2 = aWorld([mUse(tUse("ask_knowledge", { question: "فيه مصلى؟" })), mSay("ما عندي معلومة مؤكدة عن هذا، ولو تحب تسأل الفريق اكتب: موظف")], { kb: kb2 });
+  await w2.say("فيه مصلى عندكم؟ رقمي 0512345678");
+  assert.deepEqual(kb2.calls.queue, [{ question: "فيه مصلى؟", lang: "ar", source: "no_answer" }]); assert.deepEqual(kb2.calls.used, []);
+  // the knowledge base is down ⇒ the assistant still answers
+  const w3 = aWorld([mUse(tUse("ask_knowledge", { question: "فيه مصلى؟" })), mSay("ما عندي معلومة مؤكدة عن هذا، ولو تحب تسأل الفريق اكتب: موظف")], { kb: { search: async () => null, notesFor: async () => { throw new Error("down"); }, queue: async () => { throw new Error("down"); }, markUsed: async () => {} } });
+  assert.equal((await w3.say("فيه مصلى عندكم؟")).log.reply_key, "assist");
+  // rules bot (assistant off): «ما فهمت» ⇒ the question is queued when it has two meaning words; noise is not
+  const kb4 = fakeKb(); const lw = liveWorld({ kb: kb4 });
+  const u = await lw.say("زبطوني بمصلى للحريم");
+  assert.equal(u.log.reply_key, "unknown");
+  assert.deepEqual(kb4.calls.queue, [{ question: "زبطوني بمصلى للحريم", lang: "ar", source: "rules_unknown" }]);
+  const kb5 = fakeKb(); const lw5 = liveWorld({ kb: kb5 }); await lw5.say("؟؟؟"); await lw5.say("زبطوني");
+  assert.deepEqual(kb5.calls.queue, []);
+}));
+
+test("AS4 gatherings — the link type «gather» is seeded for the packs reply and the setting is in the dashboard schema", withEnv(LOCKS_OPEN, async () => {
+  const w = liveWorld(); await w.say("ابي طلب لـ ٥٠ شخص");
+  assert.ok(w.db.links.find((l) => l.slug === "wab-packs" && l.seeded), "seeded when missing");
+  assert.equal(R.SEED_LINKS.find((l) => l.slug === "wab-packs").target_type, "gather");
+  assert.equal(R.botConfig({}).links.packs, "wab-packs"); assert.equal(R.botConfig({ waBot: { links: { packs: "my-packs" } } }).links.packs, "my-packs");
 }));

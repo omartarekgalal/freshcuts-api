@@ -1,0 +1,64 @@
+{
+ "set": "as4",
+ "name": "as4-a",
+ "over": {
+  "routing": "escalate",
+  "thinking": "adaptive",
+  "effort": "low",
+  "timeoutMs": 60000
+ },
+ "capped": false,
+ "spentRun": 0.251411,
+ "spentTodayBefore": 22.999733999999965,
+ "cap": 26,
+ "conversations": 15,
+ "passed": 13,
+ "failed": [
+  "as4-delivery-pin-out",
+  "as4-ad-box"
+ ],
+ "customerTurns": 21,
+ "modelTurns": 20,
+ "answeredByAssistant": 20,
+ "rulesOwned": 1,
+ "fallbacks": {},
+ "validatorRetries": 0,
+ "escalations": 1,
+ "costSar": 0.2514,
+ "costPerConversationSar": 0.0168,
+ "costPerModelTurnSar": 0.0126,
+ "latencyMs": {
+  "p50": 2693,
+  "p90": 3340,
+  "max": 6581,
+  "n": 20
+ },
+ "modelCalls": 34,
+ "byModel": {
+  "claude-haiku-5-5": {
+   "calls": 30,
+   "in": 49478,
+   "out": 3693,
+   "cached": 238125,
+   "sar": 0.1148,
+   "callP50ms": 1364,
+   "callP90ms": 2706
+  },
+  "claude-sonnet-5-5": {
+   "calls": 4,
+   "in": 13339,
+   "out": 378,
+   "cached": 29885,
+   "sar": 0.1366,
+   "callP50ms": 2368,
+   "callP90ms": 2760
+  }
+ },
+ "failTypes": {
+  "must_contain": 1,
+  "no_cart": 1
+ },
+ "reviewFlags": {},
+ "text": "conversations 15 · passed 13 · failed 2\ncustomer turns 21: assistant answered 20, rules owned 1, fallbacks {}\nvalidator retries 0 · escalations fast→strong 1 · model calls 34\ncost 0.2514 SAR (0.0168 per conversation, 0.0126 per model turn)\nlatency per answered turn: p50 2693 ms · p90 3340 ms · max 6581 ms (n=20)\nby model {\"claude-haiku-5-5\":{\"calls\":30,\"in\":49478,\"out\":3693,\"cached\":238125,\"sar\":0.1148,\"callP50ms\":1364,\"callP90ms\":2706},\"claude-sonnet-5-5\":{\"calls\":4,\"in\":13339,\"out\":378,\"cached\":29885,\"sar\":0.1366,\"callP50ms\":2368,\"callP90ms\":2760}}\nfail types {\"must_contain\":1,\"no_cart\":1}\nreview flags {}",
+ "markdown": "# Assistant evaluation: as4-a\n\n```\nconversations 15 · passed 13 · failed 2\ncustomer turns 21: assistant answered 20, rules owned 1, fallbacks {}\nvalidator retries 0 · escalations fast→strong 1 · model calls 34\ncost 0.2514 SAR (0.0168 per conversation, 0.0126 per model turn)\nlatency per answered turn: p50 2693 ms · p90 3340 ms · max 6581 ms (n=20)\nby model {\"claude-haiku-5-5\":{\"calls\":30,\"in\":49478,\"out\":3693,\"cached\":238125,\"sar\":0.1148,\"callP50ms\":1364,\"callP90ms\":2706},\"claude-sonnet-5-5\":{\"calls\":4,\"in\":13339,\"out\":378,\"cached\":29885,\"sar\":0.1366,\"callP50ms\":2368,\"callP90ms\":2760}}\nfail types {\"must_contain\":1,\"no_cart\":1}\nreview flags {}\n```\n\n## Conversations\n\n### PASS · as4-delivery-ask-pin (delivery by pin) · 0.0049 SAR\n\n- **العميل:** توصلون حي الصفا؟ وكم التوصيل؟\n  - **المساعد** (fast, 3064 ms, 0.0049 SAR): ما نقدر نحدد التوصيل لحي الصفا بالاسم، لأن التغطية والرسوم تعتمد على موقعك بالضبط. أرسل لنا موقعك هنا في واتساب (📎 ثم «الموقع»)، وأعطيك التوصيل ورسومه مباشرة.\n\n### PASS · as4-delivery-pin-then-fee (delivery by pin) · 0.0121 SAR\n\n- **العميل:** كم رسوم التوصيل عندكم؟\n  - **المساعد** (fast, 2782 ms, 0.0047 SAR): رسوم التوصيل تختلف حسب موقعك. شارك موقعك معنا هنا في واتساب (📎 ثم «الموقع») وأقولك الرسوم بالضبط.\n- **العميل:** [location]\n  - **المساعد** (fast, 2275 ms, 0.0074 SAR, tools: quote_delivery): وصلنا موقعك، والتوصيل متاح لك. رسوم التوصيل 20 ر.س، وتكون مجانية للطلبات من 150 ر.س. تحب تبدأ بطلب؟\n\n### PASS · as4-delivery-time-question (delivery by pin) · 0.0120 SAR\n\n- **العميل:** [location]\n  - **المساعد** (fast, 3300 ms, 0.0080 SAR, tools: quote_delivery): وصلنا موقعك، والتوصيل متاح لك. رسوم التوصيل 20 ر.س، وتصير 15 ر.س إذا وصل الطلب 60 ر.س، والتوصيل مجاني من 150 ر.س. ⏎  ⏎ تبي تطلب إيش الحين؟\n- **العميل:** كم ياخذ التوصيل؟\n  - **المساعد** (fast, 2090 ms, 0.0040 SAR): ما عندي مدة توصيل محددة لموقعك الآن. إذا تبي معلومة الوقت بالضبط، اكتب «موظف» ونوصلك بأحد من فريقنا. ⏎  ⏎ تبي تطلب إيش الحين؟\n\n### PASS · as4-delivery-time-when-known (delivery by pin) · 0.0110 SAR\n\n- **العميل:** [location]\n  - **المساعد** (fast, 2693 ms, 0.0072 SAR, tools: quote_delivery): نقدر نوصل لموقعك. رسوم التوصيل 20 ر.س، وتصير 15 ر.س إذا وصل الطلب 60 ر.س، والتوصيل مجاناً من 150 ر.س. الوقت التقريبي 38 دقيقة. ⏎  ⏎ تبي تطلب إيش؟ عندي بوكسات للشخصين أو للعائلة، أو وجبات فردية.\n- **العميل:** كم ياخذ التوصيل تقريبا؟\n  - **المساعد** (fast, 1262 ms, 0.0037 SAR): التوصيل إلى موقعك تقريباً 38 دقيقة. هذا وقت تقريبي وليس وعداً. ⏎  ⏎ تبي تبدأ الطلب بأي صنف؟\n\n### FAIL · as4-delivery-pin-out (delivery by pin) · 0.0145 SAR\n\n**Fails:** must_contain «استلام»\n\n- **العميل:** توصلون لي؟\n  - **المساعد** (fast, 2368 ms, 0.0072 SAR, tools: quote_delivery): أكيد نقدر نوصّل، لكن نحتاج نعرف موقعك بدقة. أرسل موقعك هنا في واتساب (📎 ثم «الموقع») وأحدد لك الرسوم مباشرة.\n- **العميل:** [location]\n  - **المساعد** (fast, 2298 ms, 0.0073 SAR, tools: quote_delivery): للأسف موقعك خارج نطاق التوصيل. تقدر تستلم طلبك من فرعنا في حي السلامة بجدة، عند دوار رامي، بدون رسوم توصيل.\n\n### PASS · as4-pin-first-message (delivery by pin) · 0.0072 SAR\n\n- **العميل:** [location]\n  - **المساعد** (fast, 3216 ms, 0.0072 SAR, tools: quote_delivery): وصلنا موقعك، والتوصيل متاح لك. رسوم التوصيل 20 ر.س، وتصير 15 ر.س إذا وصل الطلب 60 ر.س، والتوصيل مجاني من 150 ر.س. ⏎  ⏎ تحب تبدأ بطلبك؟ تبي مشاوي، كريب، برجر، ولا شي ثاني؟\n\n### FAIL · as4-ad-box (from an ad) · 0.1404 SAR\n\n**Fails:** no_cart «»\n\n- **العميل:** مرحبا\n  - **المساعد** (strong↑, 6581 ms, 0.1160 SAR, tools: get_box): هلا وغلا 👋 ⏎ بوكس الكريب الفردي بـ 29 ر.س: كريب من اختيارك + صنف جانبي (بطاطس أو كولسلو أو دوريتوس) + مشروب غازي. ⏎ أي كريب تبي؟ كريب زنجر سوبريم، كريب شيش طاووق، كريب ستربس، أو كريب فاهيتا دجاج بدون إضافة، وكريب سوبر كرانشي أو ميكس لحوم أو ميكس دجاج بزيادة 4 ر.س.\n- **العميل:** استلام\n  - **المساعد** (strong, 1194 ms, 0.0114 SAR): تمام، استلام. أي كريب تبي في البوكس؟\n- **العميل:** لا شكراً، ارسل رابط السلة\n  - **المساعد** (strong, 1639 ms, 0.0130 SAR): أبشر، أجهز لك السلة. بس البوكس يحتاج اختيار الكريب والصنف الجانبي. أي كريب تبي؟\n\n### PASS · as4-ad-other-question (from an ad) · 0.0000 SAR\n\n- **العميل:** السلام عليكم متى تقفلون؟\n  - _بوت القواعد_ (rules:hours)\n\n### PASS · as4-ad-text-only (from an ad) · 0.0042 SAR\n\n- **العميل:** هلا\n  - **المساعد** (fast, 2712 ms, 0.0042 SAR): هلا بك 👋 تبي عشاء لشخصين، تفضّل مشاوي ولا بيتزا وباستا ولا كريب؟\n\n### PASS · as4-kb-answer (knowledge base) · 0.0072 SAR\n\n- **العميل:** عندكم واي فاي؟\n  - **المساعد** (fast, 2156 ms, 0.0072 SAR, tools: ask_knowledge): نعم، عندنا واي فاي للضيوف في الصالة.\n\n### PASS · as4-kb-no-answer (knowledge base) · 0.0074 SAR\n\n- **العميل:** فيه مصلى عندكم؟\n  - **المساعد** (fast, 2763 ms, 0.0074 SAR, tools: ask_knowledge): ما عندي معلومة مؤكدة عن هذا الموضوع حالياً. تقدر تكتب «موظف» عشان يرد عليك أحد من الفريق. وإذا تبي تطلب شي، أقدر أساعدك في المنيو.\n\n### PASS · as4-kb-near-miss (knowledge base) · 0.0074 SAR\n\n- **العميل:** الواي فاي عندكم سريع ولا بطيء؟\n  - **المساعد** (fast, 2546 ms, 0.0074 SAR, tools: ask_knowledge): عندنا واي فاي للضيوف في الصالة، لكن ما عندي معلومة مؤكدة عن سرعته. إذا تبي موظف يرد عليك، اكتب «موظف».\n\n### PASS · as4-kb-notes (knowledge base) · 0.0078 SAR\n\n- **العميل:** الصالة تكفي كم شخص؟\n  - **المساعد** (fast, 3340 ms, 0.0078 SAR, tools: faq): الصالة تتسع لحوالي 40 شخص، وفيها قسم للعائلات. الجلوس متاح طوال ساعات العمل، والجلسات داخلية فقط. ⏎  ⏎ تبي تحجز طاولة لعدد معيّن، ولا تفضّل الطلب للتوصيل أو الاستلام؟\n\n### PASS · as4-kb-notes-not-instructions (knowledge base) · 0.0077 SAR\n\n- **العميل:** كم سعر كريب زنجر سوبريم؟\n  - **المساعد** (fast, 2613 ms, 0.0077 SAR, tools: search_menu): كريب زنجر سوبريم بـ 25 ر.س. ⏎  ⏎ تحب أضيفه لطلبك؟\n\n### PASS · as4-gathering (gatherings) · 0.0076 SAR\n\n- **العميل:** عندي عزيمة 10 اشخاص ايش تنصحني؟\n  - **المساعد** (fast, 2814 ms, 0.0076 SAR, tools: list_packs): وعليكم السلام، لعزيمة 10 أشخاص عندنا باقات تجمّع: ⏎ باقة تجمّع ٨–١٠ أشخاص بـ 395 ر.س: ٣ كيلو مشاوي + دجاجة كاملة على الفحم + أرز وبطاطس وكولسلو + ٨ مشروبات. ⏎  ⏎ إذا تبي باقة مخصصة لعزيمتك، أقدر أحوّل طلبك للفريق. تحب أكمل بهذه الباقة ولا أحوّلك للفريق؟\n"
+}

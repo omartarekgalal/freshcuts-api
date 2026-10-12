@@ -69,5 +69,6 @@ export const BATCH20 = [
 ];
 import { FULL_EXTRA } from "./scenarios-full.mjs";
 import { AS3 } from "./scenarios-as3.mjs";
+import { AS4 } from "./scenarios-as4.mjs";
 for (const s of BATCH20) s.sets = ["batch20", "full"];
-export const SCENARIOS = [...BATCH20, ...FULL_EXTRA, ...AS3];
+export const SCENARIOS = [...BATCH20, ...FULL_EXTRA, ...AS3, ...AS4];

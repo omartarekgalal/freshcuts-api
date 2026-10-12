@@ -72,7 +72,7 @@ async function runOne(sc) {
     const hours = await W.tools.get_hours();
     let profile = null, offers = null;
     if (fresh || first) { const p = await W.tools.customer_profile(PHONE); profile = p && p.ok ? p.profile : null; offers = await W.tools.get_offers(PHONE); }
-    const context = AR.buildContext({ first: fresh, hours, profile, offers, reorder: fresh ? W.reorder : null, locationShared: Boolean(W.state.loc), justShared: Boolean(t.location), branch: fresh ? R.textOf(W.cfg, "location", lang) : null, boxes: fresh ? W.boxes : null, hint: AR.hintOf(withAlt(cls)), handover: handoverOpen && !serious ? { reason: handoverOpen, minutes_ago: 2 } : null });
+    const context = AR.buildContext({ first: fresh, hours, profile, offers, reorder: fresh ? W.reorder : null, locationShared: Boolean(W.state.loc), justShared: Boolean(t.location), branch: fresh ? R.textOf(W.cfg, "location", lang) : null, boxes: fresh ? W.boxes : null, notes: fresh ? (sc.world || {}).notes || null : null, ad: fresh ? (sc.world || {}).ad || null : null, hint: AR.hintOf(withAlt(cls)), handover: handoverOpen && !serious ? { reason: handoverOpen, minutes_ago: 2 } : null });
     rec.context = context;
     first = false;
     const text = t.location ? "📍" : ev.text;

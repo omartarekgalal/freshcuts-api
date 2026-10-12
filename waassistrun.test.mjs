@@ -47,10 +47,11 @@ test("who answers: the rules keep stop, complaints, staff, media, order status, 
   // an unknown message waits for staff in the rules bot: the assistant answers it instead
   assert.equal(E({ key: "unknown" }, { d: { act: "wait", waitKind: "unknown_wait" } }).run, true);
   assert.equal(E({ key: "delivery" }, { d: { act: "wait", waitKind: "staff_wait" } }).why, "staff_pause", "a staff member is in the chat");
-  // «لا شكراً» / «تمام» and a shared pin belong to the assistant only inside its own conversation
+  // «لا شكراً» / «تمام» belong to the assistant only inside its own conversation
   assert.equal(E({ key: "nack" }, { d: { act: "silent", reason: "ack" } }).run, false);
   assert.equal(E({ key: "nack" }, { d: { act: "silent", reason: "ack" }, sessionActive: true }).run, true);
-  assert.equal(E({ key: "area" }).run, false); assert.equal(E({ key: "area" }, { sessionActive: true }).run, true);
+  // 12/10: a shared pin goes to the assistant even with no conversation yet (coverage + fee for that pin, then the order)
+  assert.equal(E({ key: "area" }).run, true); assert.equal(E({ key: "area" }, { sessionActive: true }).run, true);
   // blocks: mode, list, tap, delayed reply, open handover, mute and the other silences, the loop guard
   assert.equal(E({ key: "cats" }, { acfg: { mode: "off" } }).why, "assist_off");
   assert.equal(E({ key: "cats" }, { cfg: { mode: "dry", testPhones: [PHONE] } }).why, "bot_mode"); assert.equal(E({ key: "cats" }, { cfg: { mode: "off", testPhones: [PHONE] } }).run, false);
@@ -365,4 +366,66 @@ test("a general FAQ word inside a question about ONE named dish is a question ab
   assert.deepEqual(AR.hintOf({ key: "faq", arg: "meat", entities: { items: ["77"] } }), { intent: "question_about_one_dish", dish_id: "77", wants_it_removed: false });
   assert.deepEqual(AR.hintOf({ key: "faq", arg: "meat", entities: { items: ["77", "17"] } }), { intent: "faq", topic: "meat" }, "two dishes ⇒ still the general topic");
   assert.deepEqual(AR.hintOf({ key: "faq", arg: "meat", entities: {} }), { intent: "faq", topic: "meat" });
+});
+
+test("AS4 — the manager's knowledge base: a saved answer goes out as written and is counted; no fitting answer ⇒ a plain «no confirmed information» and the question is kept for the manager", async () => {
+  const kb = [{ id: 7, question: "عندكم واي فاي في المطعم؟", ar: "نعم، عندنا واي فاي للضيوف في الصالة." }, { id: 9, question: "فيه كراسي اطفال؟", ar: "نعم، عندنا كراسي أطفال." }];
+  const m = scripted([use(tu("ask_knowledge", { question: "عندكم واي فاي؟" })), (a) => { const r = lastResults(a)[0]; return say(`${r.saved_answers[0].say}\nتحب أجهّز لك طلب؟`); }]);
+  const W = makeWorld({ kb }, { callModel: m.callModel });
+  const r = await turn(W, null, "عندكم واي فاي؟");
+  assert.equal(r.ok, true); assert.match(r.text, /^نعم، عندنا واي فاي للضيوف في الصالة\./);
+  assert.deepEqual(r.trace.kb, { question: "عندكم واي فاي؟", candidates: [7], used: 7 }); assert.deepEqual(r.trace.unanswered, []);
+  const res = lastResults(m.seen[1])[0];
+  assert.equal(res.found, true); assert.deepEqual(Object.keys(res.saved_answers[0]).sort(), ["asked_before", "say"]);            // no ids, nothing about who asked
+  // nothing saved ⇒ found:false, and the reply is the plain line; the question lands in trace.unanswered once
+  const m2 = scripted([use(tu("ask_knowledge", { question: "فيه مصلى في المطعم؟" })), say("ما عندي معلومة مؤكدة عن هذا، ولو تحب تسأل الفريق اكتب: موظف")]);
+  const r2 = await turn(makeWorld({ kb }, { callModel: m2.callModel }), null, "فيه مصلى في المطعم؟");
+  assert.equal(lastResults(m2.seen[1])[0].found, false); assert.equal(r2.handover, null);
+  assert.deepEqual(r2.trace.unanswered, [{ source: "no_answer", question: "فيه مصلى في المطعم؟" }]);
+  // candidates came back but the model judged that none answers this question ⇒ still unanswered, nothing counted as used
+  const m3 = scripted([use(tu("ask_knowledge", { question: "الواي فاي سريع؟" })), say("ما عندي معلومة مؤكدة عن سرعته، ولو تحب تسأل الفريق اكتب: موظف")]);
+  const r3 = await turn(makeWorld({ kb }, { callModel: m3.callModel }), null, "الواي فاي سريع؟");
+  assert.equal(r3.trace.kb.used, null); assert.deepEqual(r3.trace.unanswered.map((u) => u.source), ["no_answer"]);
+  // a stored answer that breaks the rules never reaches the model (re-checked at read time)
+  const m4 = scripted([use(tu("ask_knowledge", { question: "عندكم واي فاي؟" })), say("ما عندي معلومة مؤكدة عن هذا، ولو تحب تسأل الفريق اكتب: موظف")]);
+  await turn(makeWorld({ kb: [{ id: 1, question: "عندكم واي فاي؟", ar: "نعم ونشتري الراوتر من المورد الفلاني" }] }, { callModel: m4.callModel }), null, "عندكم واي فاي؟");
+  assert.equal(lastResults(m4.seen[1])[0].found, false);
+  // the tool's name and the context keys are internal: a reply that names them is refused
+  for (const t of ["حسب ask_knowledge ما فيه", "في manager_notes مكتوب", "came_from_ad"]) assert.ok(AR.checkReply(t, { lang: "ar" }).problems.some((p) => p.type === "internal_leak"), t);
+});
+
+test("AS4 — context: the manager's notes on the first turn only, the ad on any turn that carries it; delivery quote says the free threshold and the distance, a time only when the quote has one", async () => {
+  const c1 = AR.buildContext({ first: true, notes: "الصالة تتسع 40 شخص.", ad: { ad_text: "بوكس العيلة", advertised: { kind: "box", slug: "box-family", name: "بوكس العيلة", price: 149 } } });
+  assert.equal(c1.manager_notes, "الصالة تتسع 40 شخص."); assert.equal(c1.came_from_ad.advertised.slug, "box-family");
+  const c2 = AR.buildContext({ first: false, notes: "x", ad: { ad_text: "y" } });
+  assert.equal(c2.manager_notes, undefined); assert.deepEqual(c2.came_from_ad, { ad_text: "y" });
+  assert.equal(AR.buildContext({ first: true }).came_from_ad, undefined);
+  const W = makeWorld({}, {}); W.state.loc = { lat: 21.6, lng: 39.15 };
+  const q0 = await W.tools.quote_delivery(PHONE, { total: 0 });
+  assert.equal(q0.deliverable, true); assert.equal(q0.free_from_total, 150); assert.equal(q0.distance_km, 6.4); assert.equal("about_minutes" in q0, false);
+  const q1 = await W.tools.quote_delivery(PHONE, { total: 60 });
+  assert.equal(q1.free_from_total, 150); assert.equal(q1.to_free, 90);
+  const q2 = await W.tools.quote_delivery(PHONE, { total: 200 });
+  assert.equal(q2.free_now, true); assert.equal("free_from_total" in q2, false);
+  const W2 = makeWorld({ eta: 38 }, {}); W2.state.loc = { lat: 21.6, lng: 39.15 };
+  assert.equal((await W2.tools.quote_delivery(PHONE, { total: 0 })).about_minutes, 38);
+  const W3 = makeWorld({}, {});
+  assert.equal((await W3.tools.quote_delivery(PHONE, { total: 0 })).error, "need_location");
+  // the prompt: ask for the pin, never judge from a district name, time only as «تقريباً» when present; ads; knowledge base
+  for (const s of ["share their location here in WhatsApp", "never judge coverage from a district name", "if it is absent say nothing about time", "came_from_ad", "ask_knowledge", "manager_notes"]) assert.ok(AR.SYSTEM_PROMPT.includes(s), s);
+  assert.ok(AR.TOOL_DEFS.some((t) => t.name === "ask_knowledge" && t.input_schema.required.includes("question")));
+});
+
+test("AS4 — «وعليكم السلام» is an answer to a greeting: when the customer did not greet, the code removes it from the start of the reply", async () => {
+  assert.equal(AR.stripSalam("وعليكم السلام، لعزيمة 10 أشخاص عندنا باقات."), "لعزيمة 10 أشخاص عندنا باقات.");
+  assert.equal(AR.stripSalam("وعليكم السلام ورحمة الله وبركاته 👋\nهلا بك"), "هلا بك");
+  assert.equal(AR.stripSalam("هلا 👋 وعليكم السلام"), "هلا 👋 وعليكم السلام", "only at the very start");
+  const m = scripted([say("وعليكم السلام 👋 وش تحب تطلب اليوم؟")]);
+  const r = await turn(makeWorld({}, { callModel: m.callModel }), null, "ابي اطلب");
+  assert.equal(r.text, "وش تحب تطلب اليوم؟");
+  const m2 = scripted([say("وعليكم السلام 👋 وش تحب تطلب اليوم؟")]);
+  const r2 = await turn(makeWorld({}, { callModel: m2.callModel }), null, "السلام عليكم");
+  assert.equal(r2.text, "وعليكم السلام 👋 وش تحب تطلب اليوم؟", "the customer greeted: kept");
+  assert.ok(AR.SYSTEM_PROMPT.includes("until the pin arrives do not say that we do or do not deliver"));
+  assert.ok(AR.SYSTEM_PROMPT.includes("Never offer a service that no tool result or context mentions"));
 });

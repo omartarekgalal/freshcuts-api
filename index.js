@@ -67,6 +67,7 @@ import * as wabotrun from "./wabotrun.js";
 import * as wahandover from "./wahandover.js";
 import * as wahub from "./wahub.js";
 import * as wastaff from "./wastaff.js";
+import * as wakb from "./wakb.js";
 import * as wabotllm from "./wabotllm.js";
 import * as extsettle from "./extsettle.js";
 import * as wasender from "./wasender.js";
@@ -3219,7 +3220,7 @@ smstemplates.register(app, moduleCtx, { sendSms: (m) => accounts.sendSms(m), sen
 const waBotApi = wabot.register(app, moduleCtx, { app });
 /* 🤖 ١٢/١٠: بوت واتساب v1 (wabotrun.js) — بيمسك الوارد من whatsapp.js (setBotRuntime). الوضع وكل إعداداته من اللوحة
    (settings.waBot: off الافتراضي / dry / test / live) — مفيش مفتاح env. off = مابيلمسش أي رسالة. */
-wabotApi = wabotrun.register(app, moduleCtx, { app, wa: waApi, sendSms: accounts.sendSms, whoami: (c) => cmsApi.whoami(c), assist: { expandBundle: (...a) => cmsApi.expandBundle(...a), modifiersCatalog: () => modifiersApi.catalog(), modifiersResolve: (id, ids) => modifiersApi.resolve(id, ids), quote: (x) => deliveryApi.quote(x), buildProfile: (pn) => c360Api.buildProfile(pn) }, portalEmit: (event, data) => { try { if (event === "wa_handover" && waHandoverApi) waHandoverApi.emit(data).catch(() => {}); else if (portalApi && typeof portalApi.broadcast === "function") portalApi.broadcast(event, data); } catch (e) { console.error("[wabot] portal emit:", e.message); } }, llm: wabotllm.makeClassifier({ faqKeys: wabotrun.FAQ_KEYS }) });
+wabotApi = wabotrun.register(app, moduleCtx, { app, wa: waApi, sendSms: accounts.sendSms, whoami: (c) => cmsApi.whoami(c), assist: { expandBundle: (...a) => cmsApi.expandBundle(...a), modifiersCatalog: () => modifiersApi.catalog(), modifiersResolve: (id, ids) => modifiersApi.resolve(id, ids), quote: (x) => deliveryApi.quote(x), buildProfile: (pn) => c360Api.buildProfile(pn) }, kb: () => waKbApi, portalEmit: (event, data) => { try { if (event === "wa_handover" && waHandoverApi) waHandoverApi.emit(data).catch(() => {}); else if (portalApi && typeof portalApi.broadcast === "function") portalApi.broadcast(event, data); } catch (e) { console.error("[wabot] portal emit:", e.message); } }, llm: wabotllm.makeClassifier({ faqKeys: wabotrun.FAQ_KEYS }) });
 /* 👁 قاعدة واحدة لإظهار جوال العميل كامل في اللوحة (phones.js): المالك دايماً،
    وعضو الفريق لو دوره عنده «عرض» على قسم العملاء. بتتحط على moduleCtx بعد ما
    الـCMS يتسجّل، والموديولات بتناديها وقت الطلب (ctx.canSeePhones) مش وقت التسجيل. */
@@ -3258,6 +3259,8 @@ preorder.register(app, moduleCtx);
 let courierOpsApi = null;
 const portalApi = portal.register(app, moduleCtx, { shop: () => shopApi, delivery: () => deliveryApi, cmsWhoami: (c) => cmsApi.whoami(c), courierOps: () => courierOpsApi, wa: () => waInboxApi });
 waHandoverApi = wahandover.register(app, moduleCtx, { requirePortal: portalApi.requirePortal, broadcast: portalApi.broadcast, push: () => portalApi.push });
+let waKbApi = null;         // wakb.register: assistant knowledge base (manager answers) - portal manager + dashboard
+waKbApi = wakb.register(app, moduleCtx, { requirePortal: portalApi.requirePortal, broadcast: portalApi.broadcast, actor: async (c) => { const u = await cmsApi.whoami(c); return (u && (u.name || u.username)) || null; } });
 let waStaffApi = null;      // wastaff.register: رد الموظف على محادثة واتساب من اللوحة ومن البورتال (نفس حارس الإرسال)
 waHubApi = wahub.register(app, moduleCtx, { whoami: (c) => cmsApi.whoami(c), wa: waApi, waInbox: () => waInboxApi, bot: () => wabotApi, staff: () => waStaffApi });
 waStaffApi = wastaff.register(app, moduleCtx, { wa: waApi, hub: () => waHubApi, requirePortal: portalApi.requirePortal, audit: portalApi.audit });

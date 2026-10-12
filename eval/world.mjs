@@ -8,6 +8,7 @@ import { makeAssistTools } from "../waassist.js";
 import * as AR from "../waassistrun.js";
 import * as R from "../wabotrun.js";
 import { factNote } from "../wadishfacts.js";
+import { kbCandidates, kbCheck } from "../wakb.js";
 
 const J = (f) => JSON.parse(fs.readFileSync(new URL(`./fixtures/${f}`, import.meta.url), "utf8"));
 export const FX = { pages: J("menu.json").data.pages, bundles: J("bundles.json").bundles, mods: J("modifiers.json").items, offers: J("offers.json").offers || [], faq: J("faq.json") };
@@ -55,7 +56,7 @@ export function makeWorld(w = {}, { callModel, onCall, acfg: acfgIn = {} } = {})
     expandBundle: async (slug, choices, qty, _option, extra) => { const b = raw.find((x) => x.slug === slug); return b ? expandBundle(b, choices, qty, resolve, extra) : { ok: false, error: "bundle_not_found" }; },
     modifiers: { catalogItems: async () => FX.mods, resolve: async (pid, ids) => { const opts = (FX.mods[String(pid)] || []).flatMap((g) => g.options); const bad = ids.filter((id) => !opts.some((o) => o.id === id));
       return bad.length ? { ok: false, error: "unknown_modifier", ids: bad } : { ok: true, shown: ids.reduce((a, id) => a + opts.find((o) => o.id === id).shown, 0) }; } },
-    quote: async ({ orderTotal }) => (w.loc === "out" ? { deliverable: false, reason: "out_of_range" } : { deliverable: true, fee: feeFor(orderTotal) + (w.loc === "far" ? 9 : 0), toNextTier: nextAt(orderTotal) ? nextAt(orderTotal) - orderTotal : 0, nextTierFee: nextAt(orderTotal) ? feeFor(nextAt(orderTotal)) : null, toFree: Math.max(0, 150 - orderTotal), ...(w.loc === "far" ? { farZone: { surcharge: 9 } } : {}) }),
+    quote: async ({ orderTotal }) => (w.loc === "out" ? { deliverable: false, reason: "out_of_range" } : { deliverable: true, fee: feeFor(orderTotal) + (w.loc === "far" ? 9 : 0), toNextTier: nextAt(orderTotal) ? nextAt(orderTotal) - orderTotal : 0, nextTierFee: nextAt(orderTotal) ? feeFor(nextAt(orderTotal)) : null, toFree: Math.max(0, 150 - orderTotal), routeKm: w.loc === "far" ? 21.3 : 6.4, ...(w.eta ? { etaMinutes: w.eta } : {}), ...(w.loc === "far" ? { farZone: { surcharge: 9 } } : {}) }),
     offers: async () => (w.offers === "none" ? [] : FX.offers.filter((o) => (!o.until || o.until >= nowIso.slice(0, 10))).map((o) => ({ title: o.title, price: o.price, until: o.until || null }))),
     openState: async () => { const o = openState(settings, now()); let opens = null; try { opens = o.open ? null : openingText(HOURS, now(), "ar"); } catch { opens = null; } return { open: o.open, closesText: o.closesAt ? fmtTime(o.closesAt, "ar") : null, opensText: opens, deliveryPaused: false }; },
     settings: async () => settings, buildProfile: async () => (w.profile === "returning" ? RETURNING : NEW),
@@ -69,6 +70,8 @@ export function makeWorld(w = {}, { callModel, onCall, acfg: acfgIn = {} } = {})
   };
   const loop = AR.makeAssistLoop({ tools, callModel, onCall, now, faq, knowOf: async () => ({ menu, boxes }),
     dishFactSay: async (a) => R.dishFactSay(cfg, { open: { open: !w.closed } }, a),
+    /* manager knowledge base: w.kb = [{ id, question, ar, en? }] (same matching and the same re-check as the store) */
+    kbSearch: async (question, lang) => kbCandidates((w.kb || []).map((r) => ({ ...r, examples: r.examples || [] })), question).map((r) => ({ id: r.id, question: r.question, say: (lang === "en" && r.en) || r.ar })).filter((r) => kbCheck(r.say).ok),
     deliveryInfo: async () => ({ ok: true, delivers_up_to_km: POLICY.maxKm, far_zone_up_to_km: POLICY.farZoneMaxKm, far_zone_extra_per_km: POLICY.farZonePerKm, fee_by_order_total: R.feeLines(POLICY, "ar").split("\n"), note: "the exact fee is shown on the website before payment" }) });
   const acfg = { ...AR.assistConfig({ mode: "test", ...acfgIn }) };
   const reorder = w.reorder ? { day: "يوم الثلاثاء 6/10", lines: [{ name: "كريب زنجر سوبريم", qty: 2 }, { name: "وجبة كفتة", qty: 1 }], note: "a one-tap button «نفس طلبي السابق» is attached under your message" } : null;

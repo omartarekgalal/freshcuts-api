@@ -2038,11 +2038,11 @@ export function register(app, ctx, deps = {}) {
     // «offer» (14 سبتمبر): رابط يفتح عرض واحد على طول — /l/96-kilo و /l/96-box
     // «cart» (١٠/١٠): الرابط يهبط على سلة جاهزة (cartpresets.js) — target_id = كود السلة
     // «box» (١٠/١٠): رابط يفتح منتقي بوكس واحد (باقة) بالـslug — /l/box-…
-    const target_type = ["home", "collection", "product", "offer", "cart", "box"].includes(b.target_type) ? b.target_type : "home";
+    const target_type = ["home", "collection", "product", "offer", "cart", "box", "gather"].includes(b.target_type) ? b.target_type : "home";
     const utm_source = clip(b.utm_source, 30) || "other";
     return {
       label: clip(b.label, 80), target_type,
-      target_id: target_type === "home" ? null
+      target_id: target_type === "home" || target_type === "gather" ? null
         : target_type === "cart" ? clip(String(b.target_id || "").toLowerCase(), 16) : clip(b.target_id, 64),
       coupon: clip(String(b.coupon || "").toUpperCase(), 40),
       // الوسيط الصريح بيكسب — من غيره بوستات السوشال العضوية كانت بتتسجّل «paid»
@@ -2203,6 +2203,7 @@ export function register(app, ctx, deps = {}) {
     if (l.target_type === "offer" && l.target_id) { q.set("go", "offers"); q.set("offer", l.target_id); }
     // بوكس: ?go=offers&box=<slug> — المتجر بيفتح منتقي البوكس على طول؛ نسخة قديمة بتنزل على قسم البوكسات
     if (l.target_type === "box" && l.target_id) { q.set("go", "offers"); q.set("box", l.target_id); if (l.autocart === true) q.set("bxadd", "1"); }
+    if (l.target_type === "gather") { q.set("go", "offers"); q.set("gather", "1"); }
     q.set("fc_link", l.slug);
     return c.json({ ok: true, url: "/?" + q.toString() });
   });
