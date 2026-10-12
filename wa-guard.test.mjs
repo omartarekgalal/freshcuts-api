@@ -53,6 +53,7 @@ function world({ settings = {}, optins = {}, inbound = [], suppressed = [] } = {
   const pool = { db, async query(sql, p = []) {
     const s = String(sql).replace(/\s+/g, " ").trim();
     if (/^SELECT 1 FROM wa_messages WHERE phone_norm=\$1 AND direction='in'/i.test(s)) return { rows: db.inbound.includes(p[0]) ? [{}] : [] };
+    if (/^SELECT 1 FROM wa_messages WHERE wamid=\$1 AND phone_norm=\$2 AND direction='in'/i.test(s)) return { rows: (db.inboundIds || []).includes(`${p[0]}|${p[1]}`) ? [{}] : [] };      // sendTyping: الرسالة واردة من نفس الرقم
     if (/FROM wa_optins WHERE phone_norm/i.test(s)) return { rows: db.optins[p[0]] ? [db.optins[p[0]]] : [] };
     if (/^INSERT INTO wa_optins/i.test(s)) { const c = db.optins[p[0]] || {}; db.optins[p[0]] = { ...c, updates: p[1] ?? c.updates ?? false, marketing: p[2] ?? c.marketing ?? false }; return { rows: [] }; }
     if (/^UPDATE wa_optins SET stopped_at=NOW\(\)/i.test(s)) { db.optins[p[0]] = { ...(db.optins[p[0]] || {}), stopped_at: new Date().toISOString() }; return { rows: [] }; }
@@ -128,7 +129,7 @@ test("call sites: nobody builds a Graph messages URL by hand, and every deliver(
       callers.push(`${rel(f)}:${enc.name}`);
     });
   }
-  assert.deepEqual(callers.sort(), ["wacloud.js:/api/cms/wa-cloud/demo/send", "whatsapp.js:sendFreeform", "whatsapp.js:sendTemplate", "whatsapp.js:sendText"],
+  assert.deepEqual(callers.sort(), ["wacloud.js:/api/cms/wa-cloud/demo/send", "whatsapp.js:sendFreeform", "whatsapp.js:sendTemplate", "whatsapp.js:sendText", "whatsapp.js:sendTyping"],
     "the list of functions that may hand a message to Graph — adding one is a deliberate decision, update this list with the review");
   // مفيش حد بره whatsapp.js بيكلّم graphPost بتاعه، والتوكن مابيتبعتش لـ/messages من ملف تاني
   const wsrc = fs.readFileSync(path.join(HERE, "whatsapp.js"), "utf8");
@@ -500,6 +501,35 @@ test("R5: the general settings save and the settings patch route cannot touch th
 });
 
 /* ══ الحالة ══════════════════════════════════════════════════════════════════ */
+/* «مقروء + جاري الكتابة» (لمساعد الطلبات): مش رسالة، بس بتعدّي من نفس الحارس ونفس deliver — ومفيش «to» في جسم Graph */
+test("typing indicator: only on the customer's own inbound message, under the same locks, window and test list as a free-form reply; the Graph body carries no «to»", withEnv(ALLOW, async () => {
+  const w = world({ inbound: [CUST, STAFF] }); w.db.inboundIds = [`wamid.IN1|${CUST}`, `wamid.IN2|${STAFF}`];
+  assert.deepEqual(await w.wa.sendTyping({ phoneNorm: CUST, wamid: "wamid.IN1" }), { ok: true });
+  assert.deepEqual(w.calls.map((c) => [c.url.replace(/^.*\/v[\d.]+\//, ""), c.body]), [["PHONE1/messages", { messaging_product: "whatsapp", status: "read", message_id: "wamid.IN1", typing_indicator: { type: "text" } }]]);
+  assert.equal(w.db.msgs.length, 0, "nothing is logged as an outgoing message");
+  // not his message, an unknown message, no message id, a bad phone: refused before any network call
+  for (const [a, why] of [[{ phoneNorm: CUST, wamid: "wamid.IN2" }, "not_his_message"], [{ phoneNorm: CUST, wamid: "wamid.NOPE" }, "not_his_message"], [{ phoneNorm: CUST, wamid: "" }, "no_message"], [{ phoneNorm: "123", wamid: "wamid.IN1" }, "invalid_phone"]])
+    assert.equal((await w.wa.sendTyping(a)).skipped, why, why);
+  // the customer wrote, but more than 24 hours ago (the guard's own window)
+  const old = world({ inbound: [] }); old.db.inboundIds = [`wamid.IN1|${CUST}`];
+  assert.equal((await old.wa.sendTyping({ phoneNorm: CUST, wamid: "wamid.IN1" })).skipped, "window_closed");
+  // every lock of a customer send applies
+  const off = world({ inbound: [CUST], settings: { waMaster: { enabled: false } } }); off.db.inboundIds = [`wamid.IN1|${CUST}`];
+  assert.equal((await off.wa.sendTyping({ phoneNorm: CUST, wamid: "wamid.IN1" })).skipped, "master_off");
+  assert.equal(w.calls.length, 1); assert.equal(old.calls.length + off.calls.length, 0);
+  // test mode: the dashboard's test numbers only (a caller's list cannot widen it)
+  assert.equal((await w.wa.sendTyping({ phoneNorm: CUST, wamid: "wamid.IN1", allowList: [CUST] })).skipped, "not_in_allow_list");
+  assert.deepEqual(await w.wa.sendTyping({ phoneNorm: STAFF, wamid: "wamid.IN2", allowList: [STAFF] }), { ok: true });
+  // deliver(): a receipt needs a session ticket for the same phone, like any message
+  const g = await w.wa.guardSend({ phoneNorm: CUST, kind: "session" });
+  await assert.rejects(w.wa.deliver(g.ticket, { messaging_product: "whatsapp", to: "966598765432", status: "read", message_id: "wamid.IN1", typing_indicator: { type: "text" } }), (e) => e.code === "WA_GUARD_MISMATCH");
+  await assert.rejects(w.wa.deliver(null, { messaging_product: "whatsapp", to: "966512345678", status: "read", message_id: "wamid.IN1" }), (e) => e.code === "WA_NO_GUARD");
+  assert.equal(w.calls.length, 2);
+}));
+test("typing indicator: the server kill switch stops it for test numbers too", withEnv({ ...CONFIGURED, WHATSAPP_ENABLED: "0" }, async () => {
+  const w = world({ inbound: [STAFF] }); w.db.inboundIds = [`wamid.IN2|${STAFF}`];
+  assert.equal((await w.wa.sendTyping({ phoneNorm: STAFF, wamid: "wamid.IN2", allowList: [STAFF] })).skipped, "disabled"); assert.equal(w.calls.length, 0);
+}));
 test("status: /api/wa/status names the closed lock without any secret", withEnv(ALLOW, async () => {
   const w = world({ settings: { waMaster: { enabled: false } } });
   const r = await w.app.routes["GET /api/wa/status"](fakeCtx());

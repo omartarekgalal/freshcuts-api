@@ -688,7 +688,10 @@ export function register(app, ctx, deps = {}) {
     if (Date.now() - ticket.at > TICKET_TTL_MS) refuse("WA_GUARD_EXPIRED");
     if (!payload || String(payload.to) !== ticket.to) refuse("WA_GUARD_MISMATCH");
     if ((payload.type === "template") !== (ticket.kind === "template")) refuse("WA_GUARD_MISMATCH");
-    return graphPost(`${ticket.fromId || phoneId()}/messages`, payload);
+    /* «مقروء + جاري الكتابة» (sendTyping): مش رسالة — جسم Graph بتاعها مافيهوش «to». الرقم بيتراجع هنا على التذكرة زي أي إرسال، وبعدها بيتشال من الجسم. */
+    let body = payload;
+    if (payload.status === "read" && payload.message_id) { if (ticket.kind !== "session") refuse("WA_GUARD_MISMATCH"); const { to: _to, ...receipt } = payload; body = receipt; }
+    return graphPost(`${ticket.fromId || phoneId()}/messages`, body);
   }
 
   async function recordOptIn({ phone, updates, marketing, source = "checkout", orderNo = null }) {
@@ -804,6 +807,23 @@ export function register(app, ctx, deps = {}) {
     }
   }
 
+  /* «مقروء + جاري الكتابة» على رسالة عميل لسه واصلة (لمساعد الطلبات: العميل يشوف إن الرد بيتكتب بدل سكوت كام ثانية).
+     نفس قواعد الرد الحر بالظبط: تذكرة من guardSend (نفس الأقفال والنافذة، وقايمة التجربة في وضع التجربة) + الرسالة نفسها لازم تكون رسالة **واردة**
+     من نفس الرقم في آخر ٢٤ ساعة (مانعلّمش «مقروء» على رسالة مش بتاعته ولا قديمة). مابتتسجّلش كرسالة صادرة: مفيش محتوى. عمرها ما بترمي. */
+  async function sendTyping({ phoneNorm, wamid, allowList = null, test = false }) {
+    await ready;
+    const to = toWaId(phoneNorm);
+    if (!to) return { ok: false, skipped: "invalid_phone" };
+    if (!wamid) return { ok: false, skipped: "no_message" };
+    try {
+      const own = await pool.query(`SELECT 1 FROM wa_messages WHERE wamid=$1 AND phone_norm=$2 AND direction='in' AND created_at > NOW() - INTERVAL '24 hours' LIMIT 1`, [String(wamid), phoneNorm]);
+      if (!(own.rows && own.rows.length)) return { ok: false, skipped: "not_his_message" };
+      const g = await guardSend({ phoneNorm, kind: "session", source: "bot", test, allowList });
+      if (!g.ok) return { ok: false, skipped: g.reason };
+      await deliver(g.ticket, { messaging_product: "whatsapp", to, status: "read", message_id: String(wamid), typing_indicator: { type: "text" } });
+      return { ok: true };
+    } catch (e) { return { ok: false, error: String(e.code || "send_failed"), message: String(e.message || "").slice(0, 200) }; }
+  }
   /* رسالة حرة — بتشتغل بس جوّه نافذة الـ٢٤ ساعة (العميل كلّمنا). ببلاش. */
   async function sendText({ phoneNorm, text, previewUrl = true }) {
     await ready;
@@ -1170,7 +1190,7 @@ export function register(app, ctx, deps = {}) {
     return c.json({ ok: true, results });
   });
 
-  return { sendTemplate, sendText, sendFreeform, sendOrderUpdate, sendOrderTemplateOnce, recordOptIn, applyIntent, gate, configured, masterOn, ready, setInbox,
+  return { sendTemplate, sendText, sendFreeform, sendTyping, sendOrderUpdate, sendOrderTemplateOnce, recordOptIn, applyIntent, gate, configured, masterOn, ready, setInbox,
     guardSend, deliver, envState, dashMasterOn: async () => dashMasterOf(await settingsSnap()), testPhones: async () => testPhonesOf(await settingsSnap()),
     on, processWebhook, token, phoneId, wabaId, setBot, setBotRuntime, humanActive,
     setActiveIds, idsInUse, setWebhookAccept };
