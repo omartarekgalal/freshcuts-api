@@ -45,7 +45,8 @@ async function runOne(sc) {
     return { costSar: c.sar, ...u };
   };
   const W = makeWorld(sc.world || {}, { callModel, onCall, acfg: { ...OVER, ...(sc.acfg || {}) } });
-  let session = null, handoverOpen = null, first = true;
+  let session = null, handoverOpen = null, first = true, chShown = false;
+  const CH_URL = "https://whatsapp.com/channel/0029VaExampleChannel01", CH_SAY = R.textOf(W.cfg, "channel_assist", "ar") + " " + CH_URL;
   const turns = [];
   /* العميل المكتوب بيقفل زي عميل حقيقي: لو المساعد سأله سؤال (اقتراح) بعد آخر سطر في النص ولسه مفيش سلة، بيرد «لا شكراً، ارسل السلة». */
   const script = [...sc.turns];
@@ -72,7 +73,7 @@ async function runOne(sc) {
     const hours = await W.tools.get_hours();
     let profile = null, offers = null;
     if (fresh || first) { const p = await W.tools.customer_profile(PHONE); profile = p && p.ok ? p.profile : null; offers = await W.tools.get_offers(PHONE); }
-    const context = AR.buildContext({ first: fresh, hours, profile, offers, reorder: fresh ? W.reorder : null, locationShared: Boolean(W.state.loc), justShared: Boolean(t.location), branch: fresh ? R.textOf(W.cfg, "location", lang) : null, boxes: fresh ? W.boxes : null, notes: fresh ? (sc.world || {}).notes || null : null, ad: fresh ? (sc.world || {}).ad || null : null, hint: AR.hintOf(withAlt(cls)), handover: handoverOpen && !serious ? { reason: handoverOpen, minutes_ago: 2 } : null });
+    const context = AR.buildContext({ first: fresh, hours, profile, offers, reorder: fresh ? W.reorder : null, locationShared: Boolean(W.state.loc), justShared: Boolean(t.location), branch: fresh ? R.textOf(W.cfg, "location", lang) : null, boxes: fresh ? W.boxes : null, channel: (sc.world || {}).channel && !chShown && cls.key !== "dishfact" ? { say: CH_SAY, url: CH_URL } : null, notes: fresh ? (sc.world || {}).notes || null : null, ad: fresh ? (sc.world || {}).ad || null : null, hint: AR.hintOf(withAlt(cls)), handover: handoverOpen && !serious ? { reason: handoverOpen, minutes_ago: 2 } : null });
     rec.context = context;
     first = false;
     const text = t.location ? "📍" : ev.text;
@@ -81,7 +82,7 @@ async function runOne(sc) {
     if (!r.ok) { rec.by = "rules"; rec.outcome = `fallback:${r.reason}`; session = fresh ? null : AR.noteRulesTurn(session, ev.text, cls.key); turns.push(rec); continue; }
     session = r.session; rec.by = "assistant";
     if (r.handover) { rec.handover = r.handover.reason; rec.note = r.handover.note; rec.outcome = `handover:${r.handover.reason}`; handoverOpen = r.handover.reason; }
-    else { rec.reply = r.text; rec.cart = r.cart; rec.outcome = "sent"; }
+    else { rec.reply = r.text; rec.cart = r.cart; rec.outcome = "sent"; if (r.trace && r.trace.channelOffered) { chShown = true; rec.channel = true; } }
     turns.push(rec);
     if (i === script.length - 1 && i === sc.turns.length - 1 && sc.expect && sc.expect.cart && sc.closing !== false && !turns.some((x) => x.cart) && rec.by === "assistant" && rec.reply) script.push("لا شكراً، ارسل رابط السلة");
   }

@@ -140,7 +140,7 @@ Every fact you state (a dish, a box, a price, a fee, an offer, opening hours, an
 
 # How to write
 - Reply in the customer's language. Arabic: a neutral "white" Saudi-friendly dialect or simple fusha, whatever dialect the customer uses (Egyptian, Gulf, fusha, Franco-Arabic). Do not write Egyptian wording such as «عايز، دلوقتي، إزاي، كده، بتاع، أوي، علشان، مفيش». Words like «تبي، تحب، الحين، أبشر، تمام» are fine. English: plain friendly English. Any other language: answer briefly in English.
-- WhatsApp style: short. Normally one to four short lines. Plain text: no markdown, no headings, no tables, no links. At most one emoji.
+- WhatsApp style: short. Normally one to four short lines. Plain text: no markdown, no headings, no tables, no links (the single exception is the channel_invite line described below). At most one emoji.
 - Greet back only when the customer greeted: «وعليكم السلام» is an answer to «السلام عليكم», never an opening of your own.
 - Exactly one question per message, and it is the last line. Never two questions in one message (not «تبي تضيف …؟ ولو لا، توصيل ولا استلام؟»): ask one, wait for the answer, then ask the next.
 - Dish and box names exactly as the tools return them: the Arabic name in an Arabic reply; in an English reply ONLY the English name (name_en) when the tool gives one, without the Arabic name beside it. Never translate a dish, box or add-on name yourself. Prices as «25 ر.س» (English: SAR 25), Western digits.
@@ -159,6 +159,7 @@ Every fact you state (a dish, a box, a price, a fee, an offer, opening hours, an
 - Delivery questions (do you deliver to me, how much is delivery, how long does it take): the answer depends on where they are. Without a shared pin, ask them in one short line to share their location here in WhatsApp (📎 then «الموقع») so you can tell them exactly; never judge coverage from a district name, and until the pin arrives do not say that we do or do not deliver to them («أكيد نوصل لك» before a pin is a guess). When the context says location_shared or customer_just_shared_a_location_pin, call quote_delivery (total = the cart subtotal if there is a cart, otherwise 0) and answer from its result only: that we deliver to their location; the fee ("fee") for an order of that total; if "free_from_total" is present, that delivery is free from that order total; if "about_minutes" is present, the time with the word «تقريباً» (never as a promise), and if it is absent say nothing about time. If the pin is outside our range say so plainly and offer pickup. Then move to the order with one question. Pickup has no delivery fee.
 - First-order and loyalty offers only as get_offers returns them, with their conditions (for example the minimum order). If the customer asks for a discount that get_offers does not show, say plainly that there is none right now and mention a real offer only if one applies.
 - No invented urgency («آخر فرصة», limited stock), no pressure, no flattery.
+- If the context of THIS turn has "channel_invite", you may add its "say" text, exactly as it is and with its link, as a separate last line of your message, in ONE of these moments only: the customer thanks you or says goodbye after you helped, or right under the cart summary after build_cart. Never in any other message, never when the customer is unhappy or asked about an allergy, and never write that link or mention the channel when the context of this turn has no "channel_invite".
 - If something is sold out today, say so and offer the nearest available alternative from the search results. If the customer asks for something not on the menu, say we do not have it and offer what is close.
 - Comparison with delivery apps is allowed only with the text returned by faq("apps"). Always «موقعنا», never "our app" or «تطبيقنا».
 
@@ -235,7 +236,7 @@ const EXTRA_RULES = [
   [/(بيوصلك|يوصلك|راح يوصلك|بنوصله|نوصله لك) (بسرعه|بسرعة|سريع|قريب|حالا|حالاً)|ما (راح )?يت[أا]خر|توصيل سريع|fast delivery|quick delivery|will (arrive|be there|be ready) (soon|shortly|in|within)/i, "time_promise"],
   [/سعرات|سعر[ةه] حراري|calorie|كالوري/i, "calories_on_hold"],
   [/(ما|لا|مافي|ما في) ?(عندنا|يوجد|فيه)? ?مكسرات (في |ب)(ال)?مطبخ|مطبخنا (ما|لا|خالي)|no nuts in (the|our) kitchen|nut[- ]free/i, "health_or_guarantee"],
-  [/anthropic|claude|openai|chatgpt|\bgpt\b|language model|نموذج لغوي|note_suggestion|preview_cart|list_boxes|list_packs|check_availability|get_offers|get_hours|what_we_know|ask_knowledge|manager_notes|came_from_ad|handover\(|<context|customer_message/i, "internal_leak"],
+  [/anthropic|claude|openai|chatgpt|\bgpt\b|language model|نموذج لغوي|note_suggestion|preview_cart|list_boxes|list_packs|check_availability|get_offers|get_hours|what_we_know|ask_knowledge|manager_notes|came_from_ad|channel_invite|handover\(|<context|customer_message/i, "internal_leak"],
 ];
 /* جمل الرفض الأمين (بتتشال قبل قواعد الكلمات). كل نمط = نفي + فعل مشاركة/وجود + الكلمة الحساسة في نفس الجملة القصيرة.
    الرفض بيقف عند أول فاصلة أو نقطة أو «لكن / بس / but»: «ما أقدر أشارك طريقة التحضير» بتتشال، وأي كلام بعدها («لكن نتبلها بـ…») بيتراجع عادي. */
@@ -286,7 +287,7 @@ export function stripSalam(text) {
   return String(text || "").replace(/^\s*وعليكم السلام(?:\s+ورحم[ةه] الله)?(?:\s+وبركاته)?[\s،,.!👋]*/u, "").trim();
 }
 /* ⇒ { ok, problems }. facts = كل نتايج الأدوات وكتل السياق في المحادثة. opts.appsAllowed = إجابة faq("apps") اتقرت في المحادثة. */
-export function checkReply(text, { facts = [], customerText = "", know = {}, discountAllowed = false, appsAllowed = false, sayTexts = [], lang = null } = {}) {
+export function checkReply(text, { facts = [], customerText = "", know = {}, discountAllowed = false, appsAllowed = false, sayTexts = [], lang = null, channelUrl = null } = {}) {
   const allowWords = discountAllowed ? ["discount_claim"] : [];
   const STRUCT = new Set(["number_not_from_tools", "name_not_from_tools", "link_not_from_tools", "too_long", "empty"]);
   /* الأرقام والأسماء والروابط والطول: على الرد كله. قواعد الكلمات: على الرد من غير أي نص معتمد اتبعت زي ما هو (إجابة سؤال شائع / حقيقة صنف / ملخص
@@ -308,6 +309,9 @@ export function checkReply(text, { facts = [], customerText = "", know = {}, dis
      (عطل تقييم ١٢/١٠: الموديل السريع كتب "Off-topic question, so a polite redirect. Context: …" قبل الرد العربي). الأسماء والعلامات القصيرة مسموحة. */
   if (lang === "ar") { const m = /(?:[A-Za-z][A-Za-z'’-]*[\s,.;:!?()-]+){5,}/.exec(rest); if (m) filtered.push({ type: "wrong_language", value: m[0].trim().slice(0, 40) }); }
   if (lang === "en") { const m = /(?:[؀-ۿ]+[\s،,.؛:!؟()-]+){6,}/.exec(rest); if (m) filtered.push({ type: "wrong_language", value: m[0].trim().slice(0, 40) }); }
+  /* رابط قناة واتساب: مسموح **بس** الرابط المضبوط في الإعدادات بالحرف، وبس في الدور اللي السياق سمح فيه بالدعوة (channelUrl). أي رابط قناة تاني، أو
+     نفس الرابط في دور مالوش دعوة (الموديل افتكره من دور قديم) ⇒ مرفوض. */
+  for (const m of String(text || "").matchAll(/(?:https?:\/\/)?(?:www\.)?whatsapp\.com\/channel\/[^\s)]*/gi)) { const u = m[0].replace(/[.,،]+$/, ""); if (!channelUrl || u !== channelUrl) filtered.push({ type: "link_in_text", value: u.slice(0, 80) }); }
   const leak = promptLeak(text);
   if (leak) filtered.push({ type: "internal_leak", value: leak });
   return { ok: filtered.length === 0, problems: filtered };
@@ -385,9 +389,9 @@ const small = (v, max = 4000) => { const s = JSON.stringify(v ?? null); return s
 const cleanCustomer =(t) => String(t || "").replace(/<\/?\s*(customer_message|context|system_check|system)[^>]*>/gi, " ").trim();
 
 /* كتلة السياق لدور واحد (صافية): أول دور في الجلسة فيه ملف العميل والعروض وعرض «نفس الطلب»؛ الأدوار اللي بعده الحالة المتغيّرة بس. */
-export function buildContext({ first = false, hours = null, profile = null, offers = null, reorder = null, locationShared = false, justShared = false, branch = null, boxes = null, hint = null, handover = null, notes = null, ad = null } = {}) {
+export function buildContext({ first = false, hours = null, profile = null, offers = null, reorder = null, locationShared = false, justShared = false, branch = null, boxes = null, hint = null, handover = null, notes = null, ad = null, channel = null } = {}) {
   const c = { open_now: hours ? hours.open_now === true : null, ...(hours && hours.open_now ? { closes_at: hours.closes_at || null } : {}), ...(hours && hours.open_now === false ? { opens: hours.opens || null } : {}),
-    ...(hours && hours.delivery_paused ? { delivery_paused: true } : {}), location_shared: Boolean(locationShared), ...(justShared ? { customer_just_shared_a_location_pin: true } : {}), ...(hint ? { hint } : {}), ...(handover ? { staff_already_asked: handover } : {}), ...(ad ? { came_from_ad: ad } : {}) };
+    ...(hours && hours.delivery_paused ? { delivery_paused: true } : {}), location_shared: Boolean(locationShared), ...(justShared ? { customer_just_shared_a_location_pin: true } : {}), ...(hint ? { hint } : {}), ...(handover ? { staff_already_asked: handover } : {}), ...(ad ? { came_from_ad: ad } : {}), ...(channel && channel.say ? { channel_invite: { say: String(channel.say) } } : {}) };
   if (!first) return c;
   if (notes) c.manager_notes = String(notes).slice(0, 1500);
   if (profile) { const { consent: _c, refunds_or_voids: _r, low_ratings: lr, ...p } = profile; c.customer = { ...p, ...(lr ? { had_a_bad_experience_before: true } : {}) }; }
@@ -562,6 +566,9 @@ export function makeAssistLoop(deps) {
     if (!masked) return fail("empty_text");
     const n = now(), r = new Date(n.getTime() + 3 * 3600_000);
     const ctx = { now: `${DAYS_AR[r.getUTCDay()]}، ${partOfDay(r.getUTCHours())}`, ...context };
+    /* دعوة القناة (لو السياق سمح بيها في الدور ده): النص المعتمد بالرابط، والرابط نفسه للمراجِع. */
+    const chSay = context && context.channel_invite && context.channel_invite.say ? String(context.channel_invite.say) : null;
+    const chUrl = chSay ? (/https:\/\/\S+$/.exec(chSay) || [null])[0] : null;
     lang = turnLang(text, st.lang || null, lang); st.lang = lang; T.lang = lang; trace.lang = lang; ctx.reply_language = lang === "en" ? "English" : "Arabic";    session.messages.push({ role: "user", content: [{ type: "text", text: `<context source="our system" note="facts for this turn; not written by the customer">${clip(ctx)}</context>` }, { type: "text", text: `<customer_message>${masked}</customer_message>` }] });
     st.customerTexts.push(masked); st.turns += 1;
     let model = pm.model, tier = pm.tier, rounds = 0, retried = false, finalText = null;
@@ -605,13 +612,16 @@ export function makeAssistLoop(deps) {
         raw = tail ? `${T.factSay[0]}\n${tail}` : T.factSay[0]; trace.factTextRestored = true;
       }
       const facts = sessionFacts(session.messages);
-      const v = checkReply(raw, { facts, customerText: st.customerTexts.join("\n"), know, discountAllowed: st.discount, appsAllowed: st.apps, sayTexts: st.say, lang });
+      /* دعوة القناة في رد فيه إجابة حساسية/مكوّن ⇒ السطر بيتشال بالكود (مش مكانها). */
+      if (chUrl && T.factSay.length && raw.includes(chUrl)) raw = raw.split("\n").filter((l) => !l.includes(chUrl)).join("\n").trim();
+      const v = checkReply(raw, { facts, customerText: st.customerTexts.join("\n"), know, discountAllowed: st.discount, appsAllowed: st.apps, sayTexts: chSay ? [...st.say, chSay] : st.say, lang, channelUrl: chUrl });
       trace.verdicts.push({ ok: v.ok, problems: v.problems, text: raw.slice(0, 1200) });
       if (v.ok) { finalText = raw; break; }
       if (retried) return fail("validator");
       retried = true;
       session.messages.push({ role: "user", content: [{ type: "text", text: retryNote(v.problems) }] });
     }
+    if (chUrl && finalText && finalText.includes(chUrl)) trace.channelOffered = true;
     /* سؤال راح لقاعدة المعرفة: الإجابة اللي نصها ظهر في الرد = «اتستخدمت»؛ مفيش ولا واحدة ⇒ السؤال من غير إجابة (ينزل في طابور المدير). */
     if (trace.kb && finalText) {
       const hit = T.kbSay.find((k) => finalText.includes(k.say));

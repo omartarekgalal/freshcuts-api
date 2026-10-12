@@ -101,7 +101,7 @@ export const DEFAULTS = Object.freeze({
   alertPhones: [],             // فاضي = أرقام الإنذارات (settings.delivery.alertPhones)
   maxAlertsPerHour: 6,
   firstCode: "FIRST",
-  links: { organic: "wab-boxes", ads: "wa-boxes", packs: "wab-packs", adMap: {} },   // adMap: { "<ad source_id>": "<slug>" } · packs = رابط رد «باقات التجمعات»
+  links: { organic: "wab-boxes", ads: "wa-boxes", packs: "wab-packs", adMap: {}, channel: { url: "", enabled: false, everyDays: 30 } },   // adMap: { "<ad source_id>": "<slug>" } · packs = رابط رد «باقات التجمعات»
   intentsOff: [],              // مفاتيح ردود مقفولة ⇒ تحويل لموظف بدل الرد
   texts: {},                   // { key: { ar, en } } — الفاضي = الافتراضي
 });
@@ -266,6 +266,11 @@ export const TEXTS = Object.freeze({
   row_status: t("صف: حالة الطلب", "📦 حالة طلبي", "📦 My order status", [], [], LIMITS.rowTitle),
   row_hours: t("صف: المواعيد والموقع", "⏰ المواعيد والموقع", "⏰ Hours & location", [], [], LIMITS.rowTitle),
   row_packs: t("صف: باقات التجمعات", "👥 باقات التجمعات", "👥 Gathering packs", [], [], LIMITS.rowTitle),
+  row_channel: t("صف: قناة العروض", "🔔 قناة العروض", "🔔 Offers channel", [], [], LIMITS.rowTitle),
+  channel_body: t("قناة واتساب: رد صف «قناة العروض»", "قناتنا على واتساب: عروض الطلب من موقعنا وجديد المنيو أول بأول 👇", "Our WhatsApp channel: website offers and new menu items as they come 👇", [], [], 300),
+  channel_line: t("قناة واتساب: السطر بعد نهاية المحادثة", "وتابع قناتنا على واتساب لعروض الطلب من موقعنا 👇", "Follow our WhatsApp channel for our website offers 👇", [], [], 300),
+  channel_assist: t("قناة واتساب: سطر المساعد (الرابط بيتحط بعده)", "وتابع قناتنا على واتساب لعروض الطلب من موقعنا:", "Follow our WhatsApp channel for our website offers:", [], [], 200),
+  cta_channel: t("زر: تابع القناة", "تابع القناة", "Follow channel", [], [], LIMITS.ctaText),
   row_pay: t("صف: الدفع", "💳 طرق الدفع", "💳 Payment methods", [], [], LIMITS.rowTitle),
   row_human: t("صف: موظف", "👤 كلّم موظف", "👤 Talk to staff", [], [], LIMITS.rowTitle),
   row_back: t("صف: رجوع", "↩️ القائمة الرئيسية", "↩️ Main menu", [], [], LIMITS.rowTitle),
@@ -334,11 +339,11 @@ export const INTENT_MAP = Object.freeze({
   cancel_order: "change", modify_order: "change", cancel_or_stop: "change", special_request: "change",
   human: "human", thanks: "thanks", bye: "thanks", stop: "stop", start: "start", media: "media", unknown: "unknown",
 });
-export const TREE_KEYS = ["main", "boxes", "tier", "box", "cats", "cat", "item", "items", "best", "notmenu", "packs", "pickup", "spicy", "faq", "area", "hoursloc", "optin_yes", "optin_no", "resume_all", "resume_updates", "reorder", "custom_offer", "secret", "dishfact"];
+export const TREE_KEYS = ["channel", "main", "boxes", "tier", "box", "cats", "cat", "item", "items", "best", "notmenu", "packs", "pickup", "spicy", "faq", "area", "hoursloc", "optin_yes", "optin_no", "resume_all", "resume_updates", "reorder", "custom_offer", "secret", "dishfact"];
 export const REPLY_KEYS = ["greet", "menu", "order", "offers", "delivery", "hours", "location", "payment", "status", "complaint", "problem", "change", "human", "staff", "media", "unknown", "thanks", "stop", "start"];
 const HANDOFF_KEYS = { custom_offer: ["custom_offer", "normal"], complaint: ["complaint", "urgent"], problem: ["problem", "urgent"], change: ["order_change", "urgent"], human: ["asked_human", "normal"], staff: ["needs_staff", "normal"], media: ["media", "normal"] };
 const BUTTON_IDS = { "bot:menu": "main", "bot:status": "status", "bot:human": "human", "optin:yes": "optin_yes", "optin:no": "optin_no", "resume:all": "resume_all", "resume:updates": "resume_updates", "re:last": "reorder", "bot:custom": "custom_offer" };
-const MENU_IDS = { main: "main", boxes: "boxes", cats: "cats", offers: "offers", delivery: "delivery", pickup: "pickup", status: "status", hours: "hoursloc", location: "location", packs: "packs", pay: "payment", human: "human" };
+const MENU_IDS = { main: "main", boxes: "boxes", cats: "cats", offers: "offers", delivery: "delivery", pickup: "pickup", status: "status", hours: "hoursloc", location: "location", packs: "packs", pay: "payment", human: "human", channel: "channel" };
 const IGNORED_TYPES = new Set(["reaction", "sticker", "unsupported", "system", "ephemeral", "request_welcome", "order"]);
 const MEDIA_TYPES = new Set(["image", "audio", "voice", "video", "document", "contacts", "location"]);
 /* intents اللي مايتعدّاش عليها بحث المنيو/البوكس/الأسئلة الشائعة */
@@ -385,6 +390,11 @@ export function findBoxes(n, bundles) {
 /* ── الإعدادات ──────────────────────────────────────────────────────────── */
 const num = (v, lo, hi, d) => { const n = Number(v); return Number.isFinite(n) ? Math.min(hi, Math.max(lo, n)) : d; };
 const slugOk = (s) => /^[a-z0-9][a-z0-9-]{0,39}$/.test(String(s || ""));
+/* قناة واتساب (قرار عمر ١٢/١٠): الرابط لازم يكون رابط قناة واتساب بالظبط. فاضي أو مقفول ⇒ ولا سطر ولا صف (نايمة). */
+export const channelUrlOk = (u) => /^https:\/\/(www\.)?whatsapp\.com\/channel\/[A-Za-z0-9]{8,64}$/.test(String(u || ""));
+const channelCfg = (x) => { const c = x && typeof x === "object" ? x : {}; const d = Math.round(Number(c.everyDays));
+  return { url: channelUrlOk(c.url) ? String(c.url) : "", enabled: c.enabled === true, everyDays: Number.isFinite(d) && d >= 1 && d <= 365 ? d : 30 }; };
+export const channelOn = (cfg) => Boolean(cfg && cfg.links && cfg.links.channel && cfg.links.channel.enabled === true && channelUrlOk(cfg.links.channel.url));
 export function botConfig(settings) {
   const x = (settings && settings.waBot) || {};
   const L = x.links || {};
@@ -440,7 +450,7 @@ export function botConfig(settings) {
     alertPhones: staffPhones(x.alertPhones),
     maxAlertsPerHour: num(x.maxAlertsPerHour, 0, 60, DEFAULTS.maxAlertsPerHour),
     firstCode: /^[A-Z0-9-]{2,20}$/.test(String(x.firstCode || "")) ? String(x.firstCode) : DEFAULTS.firstCode,
-    links: { organic: slugOk(L.organic) ? L.organic : DEFAULTS.links.organic, ads: slugOk(L.ads) ? L.ads : DEFAULTS.links.ads, packs: slugOk(L.packs) ? L.packs : DEFAULTS.links.packs, adMap },
+    links: { organic: slugOk(L.organic) ? L.organic : DEFAULTS.links.organic, ads: slugOk(L.ads) ? L.ads : DEFAULTS.links.ads, packs: slugOk(L.packs) ? L.packs : DEFAULTS.links.packs, adMap, channel: channelCfg(L.channel) },
     intentsOff: (Array.isArray(x.intentsOff) ? x.intentsOff : []).filter((k) => REPLY_KEYS.includes(k)),
     texts: x.texts && typeof x.texts === "object" ? x.texts : {},
   };
@@ -533,6 +543,13 @@ export function configFromBody(b, prev = {}) {
       const m = {};
       for (const [k, v] of Object.entries(L.adMap || {})) { if (/^\d{5,25}$/.test(String(k)) && slugOk(v)) m[String(k)] = String(v); else errors.push(`links.adMap.${k}`); }
       cur.adMap = m;
+    }
+    if ("channel" in L) {
+      const C = L.channel && typeof L.channel === "object" ? L.channel : {}, ch = { ...channelCfg(cur.channel) };
+      if ("url" in C) { const u = String(C.url || "").trim().replace(/\/+$/, ""); if (!u) ch.url = ""; else if (channelUrlOk(u)) ch.url = u; else errors.push("links.channel.url: لازم يكون رابط قناة واتساب (https://whatsapp.com/channel/…)"); }
+      if ("enabled" in C) ch.enabled = C.enabled === true;
+      if ("everyDays" in C) { const d = Number(C.everyDays); if (Number.isInteger(d) && d >= 1 && d <= 365) ch.everyDays = d; else errors.push("links.channel.everyDays: من 1 إلى 365"); }
+      cur.channel = ch;
     }
     out.links = cur;
   }
@@ -704,6 +721,9 @@ export const SCHEMA = Object.freeze({
   "links.ads": S("links", "slug", "رابط محادثات الإعلانات", ""),
   "links.packs": S("links", "slug", "رابط رد «باقات التجمعات»", "الزر تحت قايمة الباقات بيفتح الرابط ده. لو الرابط مقفول أو مش موجود، الزر يرجع للرابط العادي."),
   "links.adMap": S("links", "map", "رابط لكل إعلان", "رقم الإعلان ← الرابط."),
+  "links.channel.enabled": S("links", "boolean", "دعوة قناة واتساب", "صف «قناة العروض» في قايمة الترحيب + سطر واحد بعد ما المحادثة تخلص. من غير رابط القناة مفيش حاجة بتظهر."),
+  "links.channel.url": S("links", "url", "رابط القناة", "لازم يبدأ بـ https://whatsapp.com/channel/ (من «معلومات القناة» ← «رابط القناة»). فاضي = الدعوة نايمة."),
+  "links.channel.everyDays": S("links", "number", "الدعوة مرة واحدة للعميل كل", "البوت والمساعد بيعدّوا على نفس العدّاد.", { min: 1, max: 365, unit: "يوم" }),
   adWindowHours: S("links", "number", "المحادثة تفضل محسوبة على الإعلان", "بعدها ترجع للرابط العادي.", { min: 1, max: 168, unit: "ساعة" }),
   offerEndWithinDays: S("data", "number", "اذكر تاريخ نهاية العرض لو باقي عليه", "عرض بينتهي بعد أكتر من كده: مايتذكرش تاريخ.", { min: 0, max: 60, unit: "يوم" }),
   boxesCacheMin: S("data", "number", "تحديث البوكسات كل", "أقصى تأخير بين تعديل بوكس وظهوره في ردود البوت.", { min: 1, max: 60, unit: "دقيقة" }),
@@ -830,6 +850,11 @@ export function buildReply(key, c) {
   const order = data.order || null;
   const withLink = (k, vars, ctaKey) => { const slug = pickLink(cfg, data, c.referral); return { body: F(k, vars), cta: { title: T(ctaKey), url: linkUrl(slug) }, link: slug }; };
   switch (key) {
+    /* صف «قناة العروض»: العميل هو اللي ضغط. القناة اتقفلت بعد ما القايمة اتبعتت ⇒ القائمة الرئيسية بدل رابط ميت. */
+    case "channel": {
+      if (!channelOn(cfg)) return buildReply("main", c);
+      return { body: T("channel_body"), cta: { title: T("cta_channel"), url: cfg.links.channel.url }, channel: "rules_menu" };
+    }
     case "main": {
       const tiers = boxTiers(data.bundles);
       const boxDesc = tiers.length ? tiers.map((x) => (lang === "en" ? `${x.section_en} from ${money(x.min)}` : `${x.section.replace(/^بوكسات /, "")} من ${money(x.min)}`)).join(" · ") : "";
@@ -934,7 +959,7 @@ export function buildReply(key, c) {
     case "hoursloc": { const h = buildReply("hours", c); return { ...h, extra: [buildReply("location", c)] }; }
     case "optin_yes": case "optin_no": return { body: T(key) };
     case "greet": {
-      const rows = [["m:boxes", "row_boxes"], ["m:cats", "row_cats"], ["m:offers", "row_offers"], ["m:delivery", "row_delivery"], ["m:status", "row_status"], ["m:human", "row_human"]].map(([id, k]) => ({ id, title: T(k) }));
+      const rows = [["m:boxes", "row_boxes"], ["m:cats", "row_cats"], ["m:offers", "row_offers"], ["m:delivery", "row_delivery"], ["m:status", "row_status"], ...(channelOn(cfg) ? [["m:channel", "row_channel"]] : []), ["m:human", "row_human"]].map(([id, k]) => ({ id, title: T(k) }));
       const vars = { paused: pausedLine(cfg, lang, data), closed: closedLine(cfg, lang, data, "closed_short") };
       const name = greetName(data.customerName);
       if (cfg.reorderEnabled && data.reorder && data.reorder.plan && data.reorder.plan.ok) rows.unshift({ id: "re:last", title: T("row_reorder"), description: `${orderDay(data.reorder.at, "en").split(" ").pop()}: ${planSummary(data.reorder.plan, lang, LIMITS.rowDesc - 7)}` });
@@ -1083,7 +1108,7 @@ export function payloadProblem(p) {
   if (i.type === "cta_url") {
     const a = i.action?.parameters || {};
     if (!a.display_text || [...a.display_text].length > LIMITS.ctaText || /…$/.test(a.display_text)) return "cta_title";
-    if (!/^https:\/\/(freshcuts\.sa\/(l\/[a-z0-9-]+(#item-\d{1,6})?|track\/W\d{6,20}|c\/[a-z0-9]{6,16})$|maps\.google\.com\/|www\.google\.com\/maps|maps\.app\.goo\.gl\/|g\.page\/)/.test(String(a.url || ""))) return "cta_url";
+    if (!/^https:\/\/(freshcuts\.sa\/(l\/[a-z0-9-]+(#item-\d{1,6})?|track\/W\d{6,20}|c\/[a-z0-9]{6,16})$|maps\.google\.com\/|www\.google\.com\/maps|maps\.app\.goo\.gl\/|g\.page\/|(www\.)?whatsapp\.com\/channel\/[A-Za-z0-9]{8,64}$)/.test(String(a.url || ""))) return "cta_url";      // آخر نمط: رابط قناة واتساب (links.channel.url) بشكله المضبوط بس
     return null;
   }
   if (i.type === "list") {
@@ -1390,6 +1415,12 @@ export function decide(ev, ctx) {
   }
   // رسالة تانية (اختيارية): بعد التحية القائمة الرئيسية؛ بعد حالة الطلب سؤال الموافقة على تحديثات الطلب
   const replies = [reply, ...(Array.isArray(reply.extra) ? reply.extra : [])];
+  /* دعوة القناة: رسالة تانية بعد «شكراً / مع السلامة» بس (محادثة خلصت عادي)، ولو العميل مستحقها (ctx.data.channelOk: القناة شغّالة، مااتعرضتش عليه
+     في آخر everyDays، مفيش تحويل مفتوح، وماكتبش «إيقاف»). مش في رد «حقايق بس» (محادثة عند موظف) ولا مع أي تحويل. */
+  let channel = reply.channel || null;
+  if (key === "thanks" && !factual && !problem && !handoff && ctx.data?.channelOk === true && channelOn(cfg)) {
+    try { replies.push({ body: textOf(cfg, "channel_line", c.lang), cta: { title: textOf(cfg, "cta_channel", c.lang), url: cfg.links.channel.url } }); channel = "rules_close"; } catch { /* الدعوة إضافة */ }
+  }
   let optinAsk = null;
   if (!factual && !problem) {
     try {
@@ -1419,7 +1450,7 @@ export function decide(ev, ctx) {
   }
   return { act: "reply", reason: problem ? `data_missing:${problem}` : (ctx.afterWait ? `after_${ctx.afterWait}` : null), ...base, key, payloads, fallback, handoff,
     detail: faqGap ? `faq:${faqGap}` : regreet ? "regreet" : reply.fact ? `fact:${reply.fact}` : null, greet: key === "greet", resume: key === "resume_all" ? "all" : key === "resume_updates" ? "updates" : null, optout, link: reply.link || null, unknown: key === "unknown", disclose, factual,
-    optinAsk, optinAnswer: key === "optin_yes" ? "yes" : key === "optin_no" ? "no" : null };
+    optinAsk, optinAnswer: key === "optin_yes" ? "yes" : key === "optin_no" ? "no" : null, channel };
 }
 
 /* نص تنبيه الفريق — رسالة SMS واحدة (fitOneSms حارس أخير). مفيش اسم العميل ولا نص رسالته. */
@@ -1477,6 +1508,10 @@ export function register(app, ctx, deps = {}) {
       ALTER TABLE wa_bot_chats ADD COLUMN IF NOT EXISTS handoff_reason TEXT;
       ALTER TABLE wa_bot_chats ADD COLUMN IF NOT EXISTS last_disclosed_at TIMESTAMPTZ;
       ALTER TABLE wa_bot_chats ADD COLUMN IF NOT EXISTS muted_by TEXT;
+      -- دعوة قناة واتساب: آخر مرة اتعرضت على العميل (عدّاد واحد للبوت والمساعد) + سجل لكل عرض (للعدّ اليومي)
+      ALTER TABLE wa_bot_chats ADD COLUMN IF NOT EXISTS channel_offered_at TIMESTAMPTZ;
+      CREATE TABLE IF NOT EXISTS wa_channel_offers (id BIGSERIAL PRIMARY KEY, at TIMESTAMPTZ NOT NULL DEFAULT NOW(), phone_norm TEXT NOT NULL, via TEXT NOT NULL);
+      CREATE INDEX IF NOT EXISTS wa_channel_offers_at_idx ON wa_channel_offers(at DESC);
       ALTER TABLE wa_bot_chats ADD COLUMN IF NOT EXISTS released_at TIMESTAMPTZ;   -- SR2: الموظف ساب المحادثة للبوت ⇒ ردوده اللي قبل كده مابتسكّتش البوت
       ALTER TABLE wa_bot_log ADD COLUMN IF NOT EXISTS resume_at TIMESTAMPTZ;
       ALTER TABLE wa_bot_log ADD COLUMN IF NOT EXISTS reply_arg TEXT;       -- صنف/قسم/بوكس الرد — «نفس الرد» = نفس المفتاح ونفس الهدف
@@ -1787,6 +1822,14 @@ export function register(app, ctx, deps = {}) {
       const assistOn = cfg.assist.mode === "test" && (cfg.mode === "test" || cfg.mode === "live") && cfg.testPhones.includes(phone);
       const held = assistOn && seriousHeld(chat, cfg, now);
       data.assistOn = assistOn;
+      /* دعوة القناة: مرة لكل عميل كل everyDays (نفس العدّاد للبوت والمساعد)، مش مع تحويل مفتوح ولا محادثة مكتومة ولا لعميل كتب «إيقاف».
+         مانعرفش (القاعدة ماردّتش) ⇒ مانعرضش. */
+      data.channelOk = false;
+      if (channelOn(cfg) && ok && !afterWait && !chat.handoff_at && !(chat.muted_until && Date.parse(chat.muted_until) > now.getTime())
+        && !(chat.channel_offered_at && now.getTime() - Date.parse(chat.channel_offered_at) < cfg.links.channel.everyDays * 86400_000)) {
+        const so = await q("SELECT stopped_at, marketing_off_at FROM wa_optins WHERE phone_norm=$1", [phone]);
+        data.channelOk = so !== null && !(so[0] && (so[0].stopped_at || so[0].marketing_off_at));
+      }
       let d = decide(ev, { cfg: assistOn ? { ...cfg, humanPauseMin: cfg.assist.staffStepBackMin } : cfg, now, chat: assistOn && !held ? { ...chat, handoff_at: null, handoff_reason: null } : chat,
         lastEchoAt: echoAt, repliesLastHour: rc.n, rate: rc.rate, lastSame: rc.lastSame, failedRecently: rc.failedRecently, data, cls, afterWait, assistOn });
       /* مساعد الطلبات (وضع التجربة، أرقام التجربة بس): لو الرسالة من نصيبه ومفيش مانع، ردّه بيبدّل قرار القواعد. أي فشل (مهلة، سقف، خطأ، رد اترفض
@@ -1859,6 +1902,11 @@ export function register(app, ctx, deps = {}) {
                    last_key = $4, last_key_at = NOW(), updated_at = NOW()`, [phone, d.greet === true, d.unknown === true, d.key, d.disclose === true]);
         if (askSent) await q("UPDATE wa_bot_chats SET optin_asked_at=NOW() WHERE phone_norm=$1", [phone]);
         if (d.key === "handoff_remind") await q("UPDATE wa_bot_chats SET handoff_reminded_at=NOW() WHERE phone_norm=$1", [phone]);
+        /* الدعوة اتبعتت فعلاً (كل الرسايل وصلت) ⇒ العدّاد + سطر في السجل اليومي. التجربة الصامتة مابتعدّش. */
+        if (d.channel && cfg.mode !== "dry" && sent === d.payloads.length) {
+          await q(`INSERT INTO wa_bot_chats(phone_norm, channel_offered_at) VALUES ($1, NOW()) ON CONFLICT (phone_norm) DO UPDATE SET channel_offered_at=NOW(), updated_at=NOW()`, [phone]);
+          await q("INSERT INTO wa_channel_offers(phone_norm, via) VALUES ($1,$2)", [phone, String(d.channel).slice(0, 20)]);
+        }
         /* إجابة سؤال الموافقة: «نعم» ⇒ wa_optins.updates (نفس الجدول اللي الشيك أوت بيكتب فيه) + إثبات بنص السؤال والوقت.
            التسويق مابيتلمسش هنا — سؤال منفصل وصريح بعدين. dry: مفيش حاجة بتتسجّل (محدش اتسأل فعلاً). */
         if (d.optinAnswer && cfg.mode !== "dry") {
@@ -2032,6 +2080,9 @@ export function register(app, ctx, deps = {}) {
     let profile = null, offers = null, reorder = null, notes = null, ad = null;
     if (fresh || (ev && ev.referral)) { try { ad = await adContext({ ev, chat, cfg, know, settings, now }); } catch (e) { console.error("[assist] ad:", e.message); ad = null; } }
     if (fresh) { const kb = kbApi(); if (kb) { try { notes = await kb.notesFor(lang); } catch { notes = null; } } }
+    /* دعوة القناة للمساعد: نفس شرط البوت (data.channelOk) + مش في سؤال حساسية/مكوّن ولا مع تحويل مستني موظف. النص المعتمد + الرابط المضبوط بالظبط. */
+    let channel = null;
+    if (data && data.channelOk === true && channelOn(cfg) && !pending && cls.key !== "dishfact") { try { channel = { say: `${textOf(cfg, "channel_assist", lang)} ${cfg.links.channel.url}`, url: cfg.links.channel.url }; } catch { channel = null; } }
     if (fresh) {
       const [p, o] = await Promise.all([assist.customer_profile(phone), assist.get_offers(phone)]);
       profile = p && p.ok ? p.profile : null; offers = o && o.ok ? o : null;
@@ -2044,7 +2095,7 @@ export function register(app, ctx, deps = {}) {
       if (ro) reorder = { day: orderDay(ro.at, lang), lines: ro.plan.lines.map((l) => ({ name: lang === "en" ? l.nameEn : l.name, qty: l.q })), note: "a one-tap button for the same order is attached under your message" };
     }
     let branch = null; try { branch = fresh ? textOf(cfg, "location", lang) : null; } catch { branch = null; }
-    return { profile, reorder, context: buildContext({ first: fresh, hours: hours && hours.ok ? hours : null, profile, offers, reorder, locationShared: locFresh(chat.last_loc, now), justShared: cls.key === "area", branch, boxes: fresh ? know.bundles : null, hint: hintOf(withAlt(cls)), handover: pending, notes, ad }) };
+    return { profile, reorder, context: buildContext({ first: fresh, hours: hours && hours.ok ? hours : null, profile, offers, reorder, locationShared: locFresh(chat.last_loc, now), justShared: cls.key === "area", branch, boxes: fresh ? know.bundles : null, hint: hintOf(withAlt(cls)), handover: pending, notes, ad, channel }) };
   }
   const assistDeps = (cfg, settings, logId) => ({ tools: assist, callModel: assistCall, now: clock,
     knowOf: async () => ({ menu: await menuIndex(settings, clock()), boxes: (await bundles()) || [] }),
@@ -2118,7 +2169,7 @@ export function register(app, ctx, deps = {}) {
     const outcome = r.handover ? `handover:${r.handover.reason}` : "sent";
     const nd = { act: "reply", reason: "assistant", key: "assist", rawIntent: cls.rawIntent, lang: cls.lang, score: cls.score, payloads, fallback: fb, handoff, note: r.handover ? r.handover.note : null,
       detail: `assist ${tr.tier}${tr.escalated ? "↑" : ""} ${tr.calls.length} calls ${tr.ms}ms ${Math.round(tr.costSar * 10000) / 10000} SAR${r.handover ? ` → ${r.handover.reason}` : ""}`,
-      greet: cls.key === "greet", resume: null, optout: null, link: null, unknown: false, disclose, factual: false, optinAsk: null, optinAnswer: null };
+      greet: cls.key === "greet", resume: null, optout: null, link: null, unknown: false, disclose, factual: false, optinAsk: null, optinAnswer: null, channel: tr.channelOffered && !r.handover ? "assistant" : null };
     return { d: nd, done: async ({ okSent, error }) => {
       if (!okSent) { await turnRow({ handledBy: "assistant", outcome: `send_failed${error ? `:${String(error).slice(0, 60)}` : ""}`, masked: tr.sent, text: r.text, trace: tr, handover: r.handover ? r.handover.reason : null }); return; }
       session = r.session;
@@ -2612,6 +2663,20 @@ export function register(app, ctx, deps = {}) {
     const sum = (k) => ads.reduce((s, a) => s + (Number(a[k]) || 0), 0);
     return c.json({ ok: true, days, windowHours: win, since: "2026-10-12: محادثات الإعلانات بتتسجّل بالإعلان من تاريخ تشغيل الشريحة دي؛ اللي قبلها مالوش رقم إعلان محفوظ",
       totals: { ads: ads.length, chats: sum("chats"), carts: sum("carts"), cartsOpened: sum("cartsOpened"), buyers: sum("buyers"), orders: sum("orders"), revenue: r2(sum("revenue")) }, ads });
+  });
+  /* دعوة قناة واتساب: كام مرة اتعرضت كل يوم (بتوقيت الرياض) ومن أي طريق — سطر نهاية المحادثة، صف القايمة، أو المساعد. قراءة بس، من غير أرقام عملاء. */
+  app.get("/api/cms/wabot/channel", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    await ready;
+    const cfg = botConfig((await getSettingsData()) || {});
+    const days = Math.min(180, Math.max(1, Math.round(Number(c.req.query("days")) || 30)));
+    const rows = await q(`SELECT to_char((at AT TIME ZONE 'Asia/Riyadh')::date, 'YYYY-MM-DD') AS day, via, count(*)::int AS n, count(DISTINCT phone_norm)::int AS people
+                            FROM wa_channel_offers WHERE at > NOW() - make_interval(days => $1::int) AND phone_norm <> ALL($2::text[]) GROUP BY 1, 2 ORDER BY 1 DESC, 2`, [days, cfg.testPhones]);
+    if (rows === null) return c.json({ ok: false, error: "unavailable" }, 503);
+    const byDay = new Map(), totals = { rules_close: 0, rules_menu: 0, assistant: 0, total: 0 };
+    for (const r of rows) { const d = byDay.get(r.day) || { day: r.day, rules_close: 0, rules_menu: 0, assistant: 0, total: 0 }; if (r.via in totals) { d[r.via] += r.n; totals[r.via] += r.n; } d.total += r.n; totals.total += r.n; byDay.set(r.day, d); }
+    const ch = cfg.links.channel;
+    return c.json({ ok: true, days, enabled: ch.enabled, hasUrl: Boolean(ch.url), active: channelOn(cfg), everyDays: ch.everyDays, totals, byDay: [...byDay.values()] });
   });
   /* مخطط الإعدادات للّوحة: كل إعداد بنوعه وحدوده وافتراضيه وقيمته واسمه وشرحه بالعربي (قراءة بس). */
   app.get("/api/cms/wabot/schema", async (c) => {

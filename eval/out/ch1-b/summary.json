@@ -1,0 +1,58 @@
+{
+ "set": "ch1",
+ "name": "ch1-b",
+ "over": {
+  "routing": "escalate",
+  "thinking": "adaptive",
+  "effort": "low",
+  "timeoutMs": 60000
+ },
+ "capped": false,
+ "spentRun": 0.07196,
+ "spentTodayBefore": 25.412520999999956,
+ "cap": 30,
+ "conversations": 2,
+ "passed": 2,
+ "failed": [],
+ "customerTurns": 5,
+ "modelTurns": 5,
+ "answeredByAssistant": 5,
+ "rulesOwned": 0,
+ "fallbacks": {},
+ "validatorRetries": 0,
+ "escalations": 0,
+ "costSar": 0.072,
+ "costPerConversationSar": 0.036,
+ "costPerModelTurnSar": 0.0144,
+ "latencyMs": {
+  "p50": 2282,
+  "p90": 4762,
+  "max": 4762,
+  "n": 5
+ },
+ "modelCalls": 9,
+ "byModel": {
+  "claude-haiku-5-5": {
+   "calls": 4,
+   "in": 246,
+   "out": 179,
+   "cached": 39916,
+   "sar": 0.0154,
+   "callP50ms": 1282,
+   "callP90ms": 1406
+  },
+  "claude-sonnet-5-5": {
+   "calls": 5,
+   "in": 14,
+   "out": 473,
+   "cached": 51629,
+   "sar": 0.0566,
+   "callP50ms": 1511,
+   "callP90ms": 1983
+  }
+ },
+ "failTypes": {},
+ "reviewFlags": {},
+ "text": "conversations 2 · passed 2 · failed 0\ncustomer turns 5: assistant answered 5, rules owned 0, fallbacks {}\nvalidator retries 0 · escalations fast→strong 0 · model calls 9\ncost 0.072 SAR (0.036 per conversation, 0.0144 per model turn)\nlatency per answered turn: p50 2282 ms · p90 4762 ms · max 4762 ms (n=5)\nby model {\"claude-haiku-5-5\":{\"calls\":4,\"in\":246,\"out\":179,\"cached\":39916,\"sar\":0.0154,\"callP50ms\":1282,\"callP90ms\":1406},\"claude-sonnet-5-5\":{\"calls\":5,\"in\":14,\"out\":473,\"cached\":51629,\"sar\":0.0566,\"callP50ms\":1511,\"callP90ms\":1983}}\nfail types {}\nreview flags {}",
+ "markdown": "# Assistant evaluation: ch1-b\n\n```\nconversations 2 · passed 2 · failed 0\ncustomer turns 5: assistant answered 5, rules owned 0, fallbacks {}\nvalidator retries 0 · escalations fast→strong 0 · model calls 9\ncost 0.072 SAR (0.036 per conversation, 0.0144 per model turn)\nlatency per answered turn: p50 2282 ms · p90 4762 ms · max 4762 ms (n=5)\nby model {\"claude-haiku-5-5\":{\"calls\":4,\"in\":246,\"out\":179,\"cached\":39916,\"sar\":0.0154,\"callP50ms\":1282,\"callP90ms\":1406},\"claude-sonnet-5-5\":{\"calls\":5,\"in\":14,\"out\":473,\"cached\":51629,\"sar\":0.0566,\"callP50ms\":1511,\"callP90ms\":1983}}\nfail types {}\nreview flags {}\n```\n\n## Conversations\n\n### PASS · ch1-thanks-after-help (channel invite) · 0.0154 SAR\n\n- **العميل:** كم سعر كريب زنجر سوبريم؟\n  - **المساعد** (fast, 2282 ms, 0.0074 SAR, tools: search_menu): كريب زنجر سوبريم بـ 25 ر.س.\n- **العميل:** تمام شكرا يعطيك العافية\n  - **المساعد** (fast, 1294 ms, 0.0040 SAR): الله يعافيك، بالتوفيق 🌟 ⏎ وتابع قناتنا على واتساب لعروض الطلب من موقعنا: https://whatsapp.com/channel/0029VaExampleChannel01\n- **العميل:** طيب وكريب ستربس بكم؟\n  - **المساعد** (fast, 1048 ms, 0.0040 SAR): كريب ستربس بـ 25 ر.س.\n\n### PASS · ch1-after-cart (channel invite) · 0.0566 SAR\n\n- **العميل:** ابي كريب زنجر سوبريم استلام\n  - **المساعد** (strong, 4762 ms, 0.0301 SAR, tools: search_menu, preview_cart): كريب زنجر سوبريم بـ 25 ر.س، استلام. ⏎ تحب أضيف لك مشروبات غازية بـ 3 ر.س؟\n- **العميل:** لا شكرا بس كذا\n  - **المساعد** (strong, 3050 ms, 0.0265 SAR, tools: note_suggestion, build_cart, cart 25 pickup): سلتك: كريب زنجر سوبريم × 1 = 25 ر.س (استلام). اضغط الزر وأكمل طلبك وادفع 👇 ⏎ وتابع قناتنا على واتساب لعروض الطلب من موقعنا: https://whatsapp.com/channel/0029VaExampleChannel01\n"
+}

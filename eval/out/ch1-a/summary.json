@@ -1,0 +1,63 @@
+{
+ "set": "ch1",
+ "name": "ch1-a",
+ "over": {
+  "routing": "escalate",
+  "thinking": "adaptive",
+  "effort": "low",
+  "timeoutMs": 60000
+ },
+ "capped": false,
+ "spentRun": 0.231018,
+ "spentTodayBefore": 25.181502999999957,
+ "cap": 30,
+ "conversations": 6,
+ "passed": 4,
+ "failed": [
+  "ch1-thanks-after-help",
+  "ch1-after-cart"
+ ],
+ "customerTurns": 11,
+ "modelTurns": 10,
+ "answeredByAssistant": 10,
+ "rulesOwned": 1,
+ "fallbacks": {},
+ "validatorRetries": 0,
+ "escalations": 0,
+ "costSar": 0.231,
+ "costPerConversationSar": 0.0385,
+ "costPerModelTurnSar": 0.0231,
+ "latencyMs": {
+  "p50": 2964,
+  "p90": 5103,
+  "max": 5103,
+  "n": 10
+ },
+ "modelCalls": 18,
+ "byModel": {
+  "claude-haiku-5-5": {
+   "calls": 11,
+   "in": 29152,
+   "out": 877,
+   "cached": 84169,
+   "sar": 0.0441,
+   "callP50ms": 1322,
+   "callP90ms": 1975
+  },
+  "claude-sonnet-5-5": {
+   "calls": 7,
+   "in": 15912,
+   "out": 634,
+   "cached": 58350,
+   "sar": 0.1869,
+   "callP50ms": 1459,
+   "callP90ms": 2281
+  }
+ },
+ "failTypes": {
+  "link_in_text": 2
+ },
+ "reviewFlags": {},
+ "text": "conversations 6 · passed 4 · failed 2\ncustomer turns 11: assistant answered 10, rules owned 1, fallbacks {}\nvalidator retries 0 · escalations fast→strong 0 · model calls 18\ncost 0.231 SAR (0.0385 per conversation, 0.0231 per model turn)\nlatency per answered turn: p50 2964 ms · p90 5103 ms · max 5103 ms (n=10)\nby model {\"claude-haiku-5-5\":{\"calls\":11,\"in\":29152,\"out\":877,\"cached\":84169,\"sar\":0.0441,\"callP50ms\":1322,\"callP90ms\":1975},\"claude-sonnet-5-5\":{\"calls\":7,\"in\":15912,\"out\":634,\"cached\":58350,\"sar\":0.1869,\"callP50ms\":1459,\"callP90ms\":2281}}\nfail types {\"link_in_text\":2}\nreview flags {}",
+ "markdown": "# Assistant evaluation: ch1-a\n\n```\nconversations 6 · passed 4 · failed 2\ncustomer turns 11: assistant answered 10, rules owned 1, fallbacks {}\nvalidator retries 0 · escalations fast→strong 0 · model calls 18\ncost 0.231 SAR (0.0385 per conversation, 0.0231 per model turn)\nlatency per answered turn: p50 2964 ms · p90 5103 ms · max 5103 ms (n=10)\nby model {\"claude-haiku-5-5\":{\"calls\":11,\"in\":29152,\"out\":877,\"cached\":84169,\"sar\":0.0441,\"callP50ms\":1322,\"callP90ms\":1975},\"claude-sonnet-5-5\":{\"calls\":7,\"in\":15912,\"out\":634,\"cached\":58350,\"sar\":0.1869,\"callP50ms\":1459,\"callP90ms\":2281}}\nfail types {\"link_in_text\":2}\nreview flags {}\n```\n\n## Conversations\n\n### PASS · ch1-normal-question (channel invite) · 0.0084 SAR\n\n- **العميل:** كم سعر كريب زنجر سوبريم؟\n  - **المساعد** (fast, 2995 ms, 0.0084 SAR, tools: search_menu): كريب زنجر سوبريم بـ 25 ر.س.\n\n### FAIL · ch1-thanks-after-help (channel invite) · 0.0164 SAR\n\n**Fails:** link_in_text@1 «»\n\n- **العميل:** كم سعر كريب زنجر سوبريم؟\n  - **المساعد** (fast, 2964 ms, 0.0084 SAR, tools: search_menu): كريب زنجر سوبريم بـ 25 ر.س.\n- **العميل:** تمام شكرا يعطيك العافية\n  - **المساعد** (fast, 1337 ms, 0.0040 SAR): الله يعافيك، بالتوفيق 🌙 ⏎ وتابع قناتنا على واتساب لعروض الطلب من موقعنا: https://whatsapp.com/channel/0029VaExampleChannel01\n- **العميل:** طيب وكريب ستربس بكم؟\n  - **المساعد** (fast, 1123 ms, 0.0040 SAR): كريب ستربس بـ 25 ر.س.\n\n### FAIL · ch1-after-cart (channel invite) · 0.1522 SAR\n\n**Fails:** link_in_text@1 «»\n\n- **العميل:** ابي كريب زنجر سوبريم استلام\n  - **المساعد** (strong, 5103 ms, 0.1202 SAR, tools: search_menu, preview_cart): كريب زنجر سوبريم بـ 25 ر.س، استلام. ⏎ تحب أضيف لك مشروبات غازية بـ 3 ر.س؟\n- **العميل:** لا شكرا بس كذا\n  - **المساعد** (strong, 3896 ms, 0.0320 SAR, tools: note_suggestion, build_cart, cart 25 pickup): سلتك: كريب زنجر سوبريم × 1 = 25 ر.س (استلام). اضغط الزر وأكمل طلبك وادفع 👇 ⏎ وتابع قناتنا على واتساب لعروض الطلب من موقعنا: https://whatsapp.com/channel/0029VaExampleChannel01\n\n### PASS · ch1-allergy (channel invite) · 0.0080 SAR\n\n- **العميل:** وجبة كفتة فيها سمسم؟ عندي حساسية\n  - **المساعد** (fast, 2993 ms, 0.0080 SAR, tools: dish_fact): نعم، يوجد سمسم في «وجبة كفتة»، وذلك في الطحينة فقط، والكفتة نفسها بدون سمسم. يمكن تجهيز الطلب بدون الطحينة: اكتبها في ملاحظة الصنف عند الطلب. ⏎ مطبخنا واحد لكل الأصناف وقد يحصل تلامس بين المكونات أثناء التحضير. ⏎ واكتب لنا حساسيتك في ملاحظة الطلب وننتبه لها.\n\n### PASS · ch1-unhappy (channel invite) · 0.0347 SAR\n\n- **العميل:** ابي بيتزا\n  - **المساعد** (strong, 2925 ms, 0.0347 SAR, tools: search_menu): عندنا بيتزا بأكثر من نوع، منها: ⏎ - بيتزا مارجريتا بـ 20 ر.س ⏎ - بيتزا تشيكن باربكيو بـ 28 ر.س ⏎ - بيتزا بيبروني بـ 29 ر.س ⏎  ⏎ أي نوع تبي؟\n- **العميل:** انتم بطيئين مرة وما عجبني الوضع\n  - _بوت القواعد_ (rules:complaint, handover complaint)\n\n### PASS · ch1-not-allowed (channel invite) · 0.0114 SAR\n\n- **العميل:** عندكم عروض؟\n  - **المساعد** (fast, 2488 ms, 0.0076 SAR, tools: get_offers): أيوه عندنا عروض: ⏎  ⏎ - عرض أول طلب: توصيل مجاني على الطلب من 60 ر.س أو أكثر، والكود FIRST. ⏎ - باقات التجمّع حتى 15 أكتوبر 2026: ⏎ - لـ 4 إلى 6 أشخاص: 225 ر.س ⏎ - لـ 8 إلى 10 أشخاص: 395 ر.س ⏎ - لـ 15 شخص فأكثر: 595 ر.س ⏎  ⏎ تحب تطلب لكم شي اليوم؟\n- **العميل:** شكرا\n  - **المساعد** (fast, 934 ms, 0.0038 SAR): العفو، يسعدني خدمتك. بالتوفيق 👋\n"
+}

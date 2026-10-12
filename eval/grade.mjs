@@ -63,7 +63,8 @@ export function gradeConversation(conv, W) {
     if (/(?<!ما عندنا |لا يوجد |ما فيه |ما في |مافي |بدون |no |any |a )(خصم|تخفيض|discount)/i.test(nr)) flag("discount_word", t.i, reply.slice(0, 80));
     if (INTERNAL.test(replyNoRefusal)) fail("internal_leak", t.i, (INTERNAL.exec(replyNoRefusal) || [""])[0]);
     if (PRIVACY.test(en) && !approved.some((s) => PRIVACY.test(ar2en(s)) )) fail("privacy_leak", t.i, (PRIVACY.exec(en) || [""])[0]);
-    if (/https?:\/\/|www\.|freshcuts\.sa\//i.test(rest)) fail("link_in_text", t.i, "");
+    /* the one allowed link: the channel invite, only in a turn where the loop marked it as offered (t.channel) */
+    if (/https?:\/\/|www\.|freshcuts\.sa\//i.test(t.channel ? rest.split("https://whatsapp.com/channel/0029VaExampleChannel01").join(" ") : rest)) fail("link_in_text", t.i, "");
     if (/تطبيقنا|حمل التطبيق|our app|download the app/i.test(nr)) fail("app_word", t.i, "");
     for (const d of declined) if (t.i > d.after && norm(reply).includes(norm(d.name)) && !norm(t.customer).includes(norm(d.name))) fail("repeated_suggestion", t.i, d.name);
     const wantEn = t.lang === "en";

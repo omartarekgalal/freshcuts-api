@@ -52,10 +52,10 @@ const LOCKS_OPEN = { ...CONFIGURED, WHATSAPP_ENABLED: "1" };
 
 /* ── عالم صغير: قاعدة في الذاكرة + ساعة + Graph مزيّف ─────────────────────── */
 function world({ waBot = {}, notifications = { whatsappEnabled: true }, orders = [], bundles = BUNDLES, policy = POLICY, first = FIRST, links = ["wab-boxes", "wa-boxes", "wa-box-d4"],
-  at = OPEN_AT, graph = null, failDb = null, extraSettings = {}, disclosure = false, pages = LIVE.pages, quote = null, llm = null, greetMenu = false, offers = LIVE.offers, resolveMapsLink = null, lastCart = null, assistModel = null, assistStore = null, kb = null, adReport = [] } = {}) {
+  at = OPEN_AT, graph = null, failDb = null, extraSettings = {}, disclosure = false, pages = LIVE.pages, quote = null, llm = null, greetMenu = false, offers = LIVE.offers, resolveMapsLink = null, lastCart = null, assistModel = null, assistStore = null, kb = null, adReport = [], channelReport = [] } = {}) {
   let nowMs = Date.parse(at);
   const clock = { now: () => new Date(nowMs), advance: (min) => { nowMs += min * 60_000; }, set: (iso) => { nowMs = Date.parse(iso); } };
-  const db = { msgs: [], log: [], jobs: [], proofs: [], consentLog: [], ai: [], aiAlerts: [], tpl: [], cfgLog: [], botCarts: [], chats: new Map(), optouts: [], optins: {}, links: links.map((s) => (typeof s === "string" ? { slug: s, active: true, clicks: 0 } : { active: true, clicks: 0, ...s })), adChats: [], adReportParams: null, settings: null };
+  const db = { msgs: [], log: [], jobs: [], proofs: [], consentLog: [], ai: [], aiAlerts: [], tpl: [], cfgLog: [], botCarts: [], chats: new Map(), optouts: [], optins: {}, links: links.map((s) => (typeof s === "string" ? { slug: s, active: true, clicks: 0 } : { active: true, clicks: 0, ...s })), adChats: [], adReportParams: null, channelOffers: [], channelReportParams: null, settings: null };
   db.settings = { hours: HOURS, notifications, googlePlace: { mapsUrl: "https://maps.google.com/?cid=14767749764292326433" }, storefront: { seo: { faq: FAQ } },
     cms: { loyalty: { enabled: true, every: 3, reward: "free_delivery", minTotal: 60 } }, delivery: { alertPhones: ["0544775082", "0506338246"], staffSmsLanguage: "en" }, waBot: { footerMode: "always", ...waBot },
     waMaster: { enabled: true },   // SEC: مفتاح المالك الرئيسي (whatsapp.js guardSend) — مفتوح في العالم الافتراضي للاختبار
@@ -98,6 +98,9 @@ function world({ waBot = {}, notifications = { whatsappEnabled: true }, orders =
       if (/ai_budget_alerts/i.test(s)) return { rows: db.aiAlerts.map((key) => ({ key })) };
       if (/^SELECT count\(\*\)::int AS n FROM wa_bot_log WHERE at >= \(date_trunc\('month'/i.test(s)) return { rows: [{ n: db.log.length }] };
       if (/FROM wa_messages WHERE direction='out' AND template IS NOT NULL/i.test(s)) return { rows: db.tpl };
+      if (/^INSERT INTO wa_bot_chats\(phone_norm, channel_offered_at\)/i.test(s)) { chat(p[0]).channel_offered_at = iso(); return { rows: [] }; }
+      if (/^INSERT INTO wa_channel_offers/i.test(s)) { db.channelOffers.push({ phone_norm: p[0], via: p[1], at: iso() }); return { rows: [] }; }
+      if (/FROM wa_channel_offers/i.test(s)) { db.channelReportParams = p; return { rows: channelReport }; }
       if (/^INSERT INTO wa_ad_chats/i.test(s)) { const x = db.adChats.find((r) => r.phone_norm === p[0] && r.ad_id === p[1]); if (x) x.clicks++; else db.adChats.push({ phone_norm: p[0], ad_id: p[1], headline: p[2], source_type: p[3], clicks: 1 }); return { rows: [] }; }
       if (/FROM wa_ad_chats a/i.test(s)) { db.adReportParams = p; return { rows: adReport }; }
       if (/^SELECT target_type, target_id FROM cms_links WHERE slug=\$1 AND active/i.test(s)) return { rows: db.links.filter((l) => l.slug === p[0] && l.active).map((l) => ({ target_type: l.target_type || "home", target_id: l.target_id || null })) };
@@ -1545,7 +1548,7 @@ test("footer «للرجوع… أو موظف»: not under every message (smart, 
 test("settings are complete: every tunable has a schema row (type, limits, default, Arabic name), out-of-range saves are refused, every save is logged with who and what", withEnv(LOCKS_OPEN, async () => {
   // every key of DEFAULTS (nested for llm / optin / links) is described
   const flat = [];
-  for (const [k, v] of Object.entries(R.DEFAULTS)) { if (["llm", "optin", "links", "assist"].includes(k)) for (const k2 of Object.keys(v)) flat.push(`${k}.${k2}`); else flat.push(k); }
+  for (const [k, v] of Object.entries(R.DEFAULTS)) { if (["llm", "optin", "links", "assist"].includes(k)) for (const k2 of Object.keys(v)) { if (k === "links" && k2 === "channel") for (const k3 of Object.keys(v[k2])) flat.push(`${k}.${k2}.${k3}`); else flat.push(`${k}.${k2}`); } else flat.push(k); }
   flat.push("waRates");
   assert.deepEqual(flat.filter((k) => !R.SCHEMA[k]), [], "a setting without a schema row");
   assert.deepEqual(Object.keys(R.SCHEMA).filter((k) => !flat.includes(k)), [], "a schema row without a setting");
@@ -2741,3 +2744,108 @@ test("SR2 hooks: a hold in minutes silences the bot and ends by itself; releasin
   assert.equal(kc.muted_until, null); assert.ok(kc.handoff_at, "the handover is still open"); assert.equal(kc.released_at || null, null);
 }));
 
+
+/* ── قناة واتساب (CH1) ─────────────────────────────────────────────────── */
+const CH = "https://whatsapp.com/channel/0029VaExampleChannel01";
+const AR = await import("./waassistrun.js");
+const chOn = (extra = {}) => ({ links: { organic: "wab-boxes", ads: "wa-boxes", channel: { url: CH, enabled: true, everyDays: 30, ...extra } } });
+
+test("CH1 settings — the link must be a WhatsApp channel link; empty or switched off = dormant (no row, no line)", withEnv(LOCKS_OPEN, async () => {
+  assert.deepEqual(R.botConfig({}).links.channel, { url: "", enabled: false, everyDays: 30 });
+  for (const ok of [CH, "https://www.whatsapp.com/channel/0029VaExampleChannel01"]) assert.equal(R.channelUrlOk(ok), true, ok);
+  for (const bad of ["http://whatsapp.com/channel/0029VaExampleChannel01", "https://whatsapp.com/channel/", "https://wa.me/966500000000", "https://whatsapp.com.evil.sa/channel/0029VaExampleChannel01", "https://chat.whatsapp.com/AbCdEf", "https://whatsapp.com/channel/0029Va?x=1", "https://whatsapp.com/channel/0029VaExampleChannel01/extra", ""]) assert.equal(R.channelUrlOk(bad), false, bad);
+  const v = R.configFromBody({ links: { channel: { url: CH + "/", enabled: true, everyDays: 14 } } });
+  assert.equal(v.ok, true); assert.deepEqual(R.botConfig({ waBot: v.value }).links.channel, { url: CH, enabled: true, everyDays: 14 });
+  assert.equal(R.configFromBody({ links: { channel: { url: "https://example.com/channel/x" } } }).ok, false);
+  assert.equal(R.configFromBody({ links: { channel: { everyDays: 0 } } }).ok, false);
+  assert.equal(R.configFromBody({ links: { channel: { url: "" } } }).ok, true, "clearing the link is allowed");
+  // a bad url already stored (edited outside the route) is read as empty
+  assert.equal(R.botConfig({ waBot: { links: { channel: { url: "https://evil.sa/x", enabled: true } } } }).links.channel.url, "");
+  assert.equal(R.channelOn(R.botConfig({ waBot: { links: { channel: { url: CH, enabled: false } } } })), false);
+  assert.equal(R.channelOn(R.botConfig({ waBot: { links: { channel: { url: "", enabled: true } } } })), false);
+  // dormant: the greeting list has no channel row and «شكراً» is one message
+  const w = liveWorld({ disclosure: true });
+  const g = await w.say("السلام عليكم");
+  assert.ok(!JSON.stringify(g.sent).includes("m:channel"));
+  assert.equal((await w.say("شكرا")).sent.length, 1);
+  assert.equal(w.db.channelOffers.length, 0);
+}));
+
+test("CH1 rules bot — a row in the greeting list, and one closing line with the link after «شكراً», once per customer per everyDays; never with an open handover or after «إيقاف»", withEnv(LOCKS_OPEN, async () => {
+  const w = liveWorld({ waBot: chOn(), disclosure: true });
+  const g = await w.say("السلام عليكم");
+  const list = g.sent.find((p) => p.interactive && p.interactive.type === "list");
+  assert.deepEqual(rowsOf(list).map((r) => r.id).slice(-2), ["m:channel", "m:human"]);
+  assert.equal(rowsOf(list).find((r) => r.id === "m:channel").title, "🔔 قناة العروض");
+  // the customer taps the row: body + a button that opens the channel; counted as shown (rules_menu)
+  const t = await w.press("m:channel", "🔔 قناة العروض");
+  assert.equal(urlOf(t.sent[0]), CH); assert.equal(t.sent[0].interactive.action.parameters.display_text, "تابع القناة");
+  assert.deepEqual(w.db.channelOffers.map((o) => o.via), ["rules_menu"]);
+  // «شكراً» right after: already shown within the period ⇒ no second invite
+  const th = await w.say("شكرا");
+  assert.equal(th.sent.length, 1); assert.equal(w.db.channelOffers.length, 1);
+  // 31 days later: the closing line comes with the thanks reply, as its own message, and is counted (rules_close)
+  w.clock.advance(31 * 24 * 60);
+  const th2 = await w.say("مشكور");
+  assert.equal(th2.sent.length, 2); assert.equal(bodyOf(th2.sent[1]), "وتابع قناتنا على واتساب لعروض الطلب من موقعنا 👇"); assert.equal(urlOf(th2.sent[1]), CH);
+  assert.deepEqual(w.db.channelOffers.map((o) => o.via), ["rules_menu", "rules_close"]);
+  // a new customer who only says thanks gets it once
+  const a = liveWorld({ waBot: chOn() });
+  assert.equal((await a.say("شكرا")).sent.length, 2); w.clock.advance(1);
+  assert.equal((await a.say("شكرا")).sent.length <= 1, true);
+  // an open handover (complaint): the thanks reply carries no invite
+  const c = liveWorld({ waBot: chOn() });
+  await c.say("الاكل وصل بارد وناقص"); c.clock.advance(1);
+  const ct = await c.say("شكرا");
+  assert.ok(!JSON.stringify(ct.sent).includes("whatsapp.com/channel")); assert.equal(c.db.channelOffers.length, 0);
+  // the customer wrote «إيقاف» before (or switched marketing off): no invite
+  const s = liveWorld({ waBot: chOn() }); s.db.optins["512345678"] = { updates: false, marketing: false, stopped_at: "2026-10-01T10:00:00Z" };
+  const st = await s.say("شكرا");
+  assert.ok(!JSON.stringify(st.sent).includes("whatsapp.com/channel")); assert.equal(s.db.channelOffers.length, 0);
+  // the channel was switched off after the list went out: the row answers with the main list, not a dead link
+  const off = liveWorld();
+  const po = await off.press("m:channel", "🔔 قناة العروض");
+  assert.ok(!JSON.stringify(po.sent).includes("whatsapp.com")); assert.equal(off.db.channelOffers.length, 0);
+}));
+
+test("CH1 assistant — the invite line is offered only when the context allows it, with exactly the configured link; shared counter with the rules bot; never with an allergy answer", withEnv(CONFIGURED, async () => {
+  const say = `وتابع قناتنا على واتساب لعروض الطلب من موقعنا: ${CH}`;
+  const w = aWorld([mSay(`العفو، بالعافية 🌟\n${say}`)], { waBot: chOn() });
+  const r = await w.say("شكرا على المساعدة يعطيك العافية", {});
+  if (r.log.reply_key === "assist") {
+    assert.deepEqual(ctxOf(w.m.seen[0]).channel_invite, { say });
+    assert.equal(bodyOf(msgs(r)[0]).includes(CH), true); assert.deepEqual(w.db.channelOffers.map((o) => o.via), ["assistant"]);
+  } else { assert.equal(r.log.reply_key, "thanks"); assert.deepEqual(w.db.channelOffers.map((o) => o.via), ["rules_close"]); }
+  // a normal question: the context allows the invite, the model does not use it ⇒ nothing is counted
+  const w2 = aWorld([mSay("هلا 👋 وش تحب تطلب اليوم؟"), mSay("أكيد، تفضّل مشاوي ولا كريب؟")], { waBot: chOn() });
+  const a = await w2.say("ابي اطلب عشا");
+  assert.equal(a.log.reply_key, "assist"); assert.deepEqual(ctxOf(w2.m.seen[0]).channel_invite, { say }); assert.equal(w2.db.channelOffers.length, 0);
+  // shown once (by the rules bot's row) ⇒ the assistant's next context has no invite, and the link written anyway is refused by the validator
+  await w2.press("m:channel", "🔔 قناة العروض"); assert.deepEqual(w2.db.channelOffers.map((o) => o.via), ["rules_menu"]);
+  w2.clock.advance(1);
+  const b = await w2.say("ابي شي حار");
+  assert.equal(ctxOf({ messages: w2.m.seen[1].messages.slice(-1) }).channel_invite, undefined);
+  assert.equal(b.log.reply_key, "assist"); assert.equal(w2.db.channelOffers.length, 1);
+  // channel off ⇒ never in the context
+  const w3 = aWorld([mSay("هلا 👋 وش تحب تطلب اليوم؟")]); await w3.say("ابي اطلب عشا");
+  assert.equal(ctxOf(w3.m.seen[0]).channel_invite, undefined);
+  // the validator: exactly the configured link, only in a turn that allows it
+  const P = (t, o) => AR.checkReply(t, { lang: "ar", ...o }).problems.map((p) => p.type);
+  assert.deepEqual(P(`بالعافية 🌟\n${say}`, { sayTexts: [say], channelUrl: CH, facts: [{ channel_invite: { say } }] }), []);
+  assert.ok(P(`بالعافية 🌟\n${say}`, { sayTexts: [], channelUrl: null, facts: [{ channel_invite: { say } }] }).includes("link_in_text"), "no invite in this turn");
+  assert.ok(P("تابعنا https://whatsapp.com/channel/0029VaSomeOtherChannel99", { sayTexts: [say], channelUrl: CH, facts: [{ channel_invite: { say } }] }).includes("link_in_text"), "another channel");
+  assert.ok(P(`تابعنا ${CH}x`, { sayTexts: [say], channelUrl: CH, facts: [{ channel_invite: { say } }] }).includes("link_in_text"), "not exactly the configured link");
+  assert.ok(P(`تابعنا على ${CH} وكمان https://example.com/x`, { sayTexts: [say], channelUrl: CH, facts: [{ channel_invite: { say } }] }).length > 0, "any other link is still refused");
+  assert.ok(AR.SYSTEM_PROMPT.includes('"channel_invite"'));
+}));
+
+test("CH1 stats — offers shown per day and per route; test numbers left out", withEnv(CONFIGURED, async () => {
+  const w = liveWorld({ waBot: { ...chOn({ everyDays: 21 }), testPhones: ["0512345678"] },
+    channelReport: [{ day: "2026-10-13", via: "rules_close", n: 4, people: 4 }, { day: "2026-10-13", via: "assistant", n: 2, people: 2 }, { day: "2026-10-12", via: "rules_menu", n: 1, people: 1 }] });
+  const r = await w.call("GET", "/api/cms/wabot/channel", {}, { days: "7" });
+  assert.equal(r.status, 200); assert.deepEqual(w.db.channelReportParams, [7, ["512345678"]]);
+  assert.deepEqual([r.body.enabled, r.body.hasUrl, r.body.active, r.body.everyDays, r.body.days], [true, true, true, 21, 7]);
+  assert.deepEqual(r.body.byDay, [{ day: "2026-10-13", rules_close: 4, rules_menu: 0, assistant: 2, total: 6 }, { day: "2026-10-12", rules_close: 0, rules_menu: 1, assistant: 0, total: 1 }]);
+  assert.deepEqual(r.body.totals, { rules_close: 4, rules_menu: 1, assistant: 2, total: 7 });
+  assert.ok(!JSON.stringify(r.body).includes("whatsapp.com"), "the report does not repeat the link");
+}));

@@ -429,3 +429,25 @@ test("AS4 — «وعليكم السلام» is an answer to a greeting: when the
   assert.ok(AR.SYSTEM_PROMPT.includes("until the pin arrives do not say that we do or do not deliver"));
   assert.ok(AR.SYSTEM_PROMPT.includes("Never offer a service that no tool result or context mentions"));
 });
+
+test("CH1 — the channel invite in the loop: sent as written when the turn allows it, marked as offered; removed by code from an allergy answer; refused in a turn that does not allow it", async () => {
+  const URL = "https://whatsapp.com/channel/0029VaExampleChannel01", line = `وتابع قناتنا على واتساب لعروض الطلب من موقعنا: ${URL}`;
+  const go = async (steps, text, withInvite, session = null) => {
+    const W = makeWorld({}, { callModel: scripted(steps).callModel }); const s = session || AR.newSession(W.now()); const hours = await W.tools.get_hours();
+    return W.loop.runTurn({ phone: PHONE, text, lang: "ar", session: s, acfg: W.acfg, context: AR.buildContext({ first: !session, hours, boxes: W.boxes, channel: withInvite ? { say: line, url: URL } : null }) });
+  };
+  const r = await go([say(`العفو، بالعافية 🌟\n${line}`)], "شكرا يعطيك العافية", true);
+  assert.equal(r.ok, true); assert.equal(r.trace.channelOffered, true); assert.ok(r.text.endsWith(line));
+  // allowed but not used ⇒ not marked
+  const r2 = await go([say("هلا 👋 وش تحب تطلب اليوم؟")], "ابي اطلب", true);
+  assert.equal(r2.ok, true); assert.equal(r2.trace.channelOffered, undefined);
+  // the same link in a turn whose context has no invite ⇒ refused twice ⇒ the rules bot answers
+  const r3 = await go([say(`العفو 🌟\n${line}`), say(`العفو 🌟\n${line}`)], "شكرا", false);
+  assert.equal(r3.ok, false); assert.equal(r3.reason, "validator");
+  assert.ok(r3.trace.verdicts[0].problems.some((p) => p.type === "link_in_text"));
+  // an allergy answer never carries the invite: the line is removed by code and nothing is marked
+  const r4 = await go([use(tu("dish_fact", { id: "17", question: "سمسم" })), (a) => say(`${lastResults(a)[0].say}\n${line}`)], "وجبة كفتة فيها سمسم؟", true);
+  assert.equal(r4.ok, true); assert.ok(!r4.text.includes("whatsapp.com")); assert.equal(r4.trace.channelOffered, undefined);
+  assert.equal(AR.buildContext({ channel: null }).channel_invite, undefined);
+  assert.deepEqual(AR.buildContext({ first: false, channel: { say: line, url: URL } }).channel_invite, { say: line });
+});
