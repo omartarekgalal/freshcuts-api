@@ -109,6 +109,21 @@ export async function recordWaUpdatesBot(pool, { phoneNorm, value, text, wamid =
   return { ok: true, updates: value, version };
 }
 
+/* العميل ضغط زر «رجّع كل الرسائل» تحت رسالة الإيقاف في المحادثة: صف إثبات في نفس السجل (kind = marketing).
+   الأعمدة نفسها (marketing / stopped_at) بتتظبط من whatsapp.js applyIntent("start") — هنا الإثبات بس: الرقم = مُرسِل الرسالة،
+   النص اللي اتعرض ونسخته، المصدر bot، wamid الضغطة. */
+export async function recordWaMarketingBot(pool, { phoneNorm, value, text, wamid = null }) {
+  if (!/^5\d{8}$/.test(String(phoneNorm || ""))) return { ok: false, error: "invalid_phone" };
+  if (typeof value !== "boolean" || !String(text || "").trim()) return { ok: false, error: "bad_answer" };
+  await ensureWaConsentSchema(pool);
+  const version = `bot-${createHash("sha1").update(String(text)).digest("hex").slice(0, 10)}`;
+  await pool.query(
+    `INSERT INTO wa_optin_log(phone_norm, kind, value, text_version, text, source, order_no, ip, ua)
+     VALUES ($1, 'marketing', $2, $3, $4, 'bot', NULL, NULL, $5)`,
+    [phoneNorm, value, version, String(text).slice(0, 1000), wamid ? `wa:${wamid}` : null]);
+  return { ok: true, version };
+}
+
 /* تسجيل الإجابة. phoneNorm لازم يكون جاي من رقم متحقق (جلسة OTP) — المتصل هو المسؤول عن ده.
    بيحدّث updates بس؛ عمود marketing مابيتلمسش. */
 export async function recordWaUpdates(pool, { phoneNorm, answer, orderNo = null, ip = null, ua = null }) {

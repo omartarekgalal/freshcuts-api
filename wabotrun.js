@@ -41,7 +41,7 @@ import { MAPS_URL } from "./watemplates.js";
 import { isOpenNow } from "./carts.js";
 import { makeAiCost, pricesOf, waRatesOf, pricesFromBody, waRatesFromBody, BUDGET_DEFAULTS } from "./waaicost.js";
 import { providerInfo } from "./wabotllm.js";
-import { WA_UPDATES_TEXTS, WA_UPDATES_CURRENT, recordWaUpdatesBot, ensureWaConsentSchema } from "./waconsent.js";
+import { WA_UPDATES_TEXTS, WA_UPDATES_CURRENT, recordWaUpdatesBot, recordWaMarketingBot, ensureWaConsentSchema } from "./waconsent.js";
 
 export const STORE = "https://freshcuts.sa";
 export const MODES = ["off", "dry", "test", "live"];
@@ -123,8 +123,10 @@ export const FAQ_KEYS = Object.keys(FAQ_DEFS);
    متغيّر إجباري مالوش قيمة ⇒ الرد كله مايتبعتش (DataMissing) ويتحوّل لموظف. */
 const t = (label, ar, en, vars = [], opt = [], max = 900) => ({ label, ar, en, vars, opt, max });
 export const TEXTS = Object.freeze({
-  greet: t("التحية (أول رسالة)", "حيّاك الله في فريش كاتس 👋\n{boxes}\n{first}\n{paused}\n{closed}",
-    "Welcome to Fresh Cuts 👋\n{boxes}\n{first}\n{paused}\n{closed}", ["boxes"], ["first", "paused", "closed"]),
+  /* التحية قصيرة (طلب عمر ١٢/١٠: «رسالة طويلة فيها البوكسات»): ترحيب + القائمة. البوكسات والرسوم والعروض في فروعها. */
+  greet: t("التحية (أول رسالة)", "حيّاك الله في فريش كاتس 👋 اختر من القائمة.\n{paused}\n{closed}", "Welcome to Fresh Cuts 👋 Pick from the menu.\n{paused}\n{closed}", [], ["paused", "closed"], 300),
+  greet_back: t("تحية عميل طلب قبل كده (بالاسم)", "حيّاك الله {name} 👋 اختر من القائمة.\n{paused}\n{closed}", "Welcome back {name} 👋 Pick from the menu.\n{paused}\n{closed}", ["name"], ["paused", "closed"], 300),
+  closed_short: t("سطر «مقفل الحين» القصير (في التحية)", "🌙 المطعم مقفل الحين ونفتح {opens}.", "🌙 We're closed now and open {opens}.", ["opens"], [], 200),
   menu: t("المنيو / الأسعار", "{boxes}\nوالمنيو كامل بالصور والأسعار في موقعنا 👇\n{closed}",
     "{boxes}\nThe full menu with photos and prices is on our website 👇\n{closed}", ["boxes"], ["closed"]),
   order: t("أبي أطلب", "الطلب من موقعنا يأخذ دقيقة 👇\nاختر طلبك، حدّد موقعك على الخريطة وادفع إلكترونياً، ونبلّغك بكل تحديث.\n{first}\n{paused}\n{closed}",
@@ -163,7 +165,13 @@ export const TEXTS = Object.freeze({
   rate_burst: t("رسائل كثيرة في دقيقة", "لحظة من فضلك 🙏 وصلتنا رسائل كثيرة متتالية، ونكمل معك بعد دقيقة.", "One moment 🙏 We received many messages in a row and will continue in a minute.", [], [], 300),
   handoff_remind: t("تذكير: المحادثة عند الموظف (مرة واحدة)", "محادثتك عند الموظف 🙏\n{wait}", "Your chat is with our staff 🙏\n{wait}", [], ["wait"]),
   thanks: t("شكر / وداع", "العفو، حيّاك الله 🌟", "You're welcome 🌟"),
-  stop: t("إيقاف العروض", "تم إيقاف رسائل العروض ✅ تحديثات طلباتك توصلك عادي.\nللرجوع اكتب: اشتراك", "Offer messages are stopped ✅ You will still get your order updates.\nTo resume, type: start"),
+  /* «إيقاف» = كل رسايلنا المبادِرة (العروض وتحديثات الطلب) — حارس الإرسال بيسكّت كل القوالب. الرد على سؤاله في المحادثة شغّال. */
+  stop: t("تأكيد الإيقاف (ومعاه زرارين للرجوع)", "تم إيقاف رسائلنا لك على واتساب ✅ (العروض وتحديثات الطلب)\nلو سألت عن طلبك هنا نرد عليك عادي.\nضغطت بالغلط؟ اختر من الأزرار 👇",
+    "We've stopped our WhatsApp messages to you ✅ (offers and order updates)\nIf you ask about your order here we still answer.\nStopped by mistake? Use the buttons 👇", [], [], 500),
+  btn_resume_all: t("زر: رجّع كل الرسائل", "كل الرسائل والعروض", "All messages", [], [], LIMITS.btnTitle),
+  btn_resume_updates: t("زر: تحديثات الطلب فقط", "تحديثات طلبي فقط", "Order updates only", [], [], LIMITS.btnTitle),
+  resume_all: t("رجّع كل الرسائل", "تم ✅ رجّعنا لك رسائلنا: تحديثات طلباتك والعروض.\nللإيقاف في أي وقت اكتب: إيقاف", "Done ✅ Our messages are back on: your order updates and offers.\nTo stop at any time type: stop", [], [], 300),
+  resume_updates: t("رجّع تحديثات الطلب فقط", "تم ✅ رجّعنا تحديثات طلباتك فقط، والعروض موقوفة.\nللإيقاف في أي وقت اكتب: إيقاف", "Done ✅ Order updates only are back on; offers stay off.\nTo stop at any time type: stop", [], [], 300),
   start: t("رجوع الاشتراك", "تم تفعيل رسائل العروض ✅\nللإيقاف اكتب: إيقاف", "Offer messages are on ✅\nTo stop, type: stop"),
   // ── القائمة والشجرة (١٢/١٠)
   main_body: t("القائمة الرئيسية", "القائمة الرئيسية 👇 اختر اللي تبيه.", "Main menu 👇 pick what you need.", [], [], 300),
@@ -184,8 +192,9 @@ export const TEXTS = Object.freeze({
   pickup_body: t("الاستلام من الفرع", "🏃 {pickup}", "🏃 {pickup}", ["pickup"]),
   spicy_body: t("الأصناف الحارة (من الوصف)", "أصناف مكتوب في وصفها إنها حارة 🌶️ اختر الصنف لتفاصيله.", "Dishes described as spicy 🌶️ pick one for details.", [], [], 300),
   faq_body: t("إجابة سؤال شائع", "{answer}", "{answer}", ["answer"]),
-  area_in: t("الموقع داخل النطاق", "✅ موقعك داخل نطاق التوصيل. الرسوم حسب قيمة الطلب وتظهر لك قبل الدفع.", "✅ Your location is inside our delivery zone. The fee depends on the order total and shows before you pay.", [], [], 400),
-  area_far: t("الموقع في النطاق البعيد", "موقعك خارج النطاق الأساسي: نوصّل له برسوم مسافة إضافية تظهر لك في صفحة الطلب، أو تقدر تستلم من الفرع.", "Your location is outside the main zone: we deliver with an extra distance charge shown on the order page, or you can pick up.", [], [], 400),
+  area_in: t("الموقع داخل النطاق", "✅ موقعك داخل نطاق التوصيل.\nرسوم التوصيل حسب قيمة الطلب:\n{fees}\n{first}", "✅ Your location is inside our delivery zone.\nDelivery fee by order total:\n{fees}\n{first}", [], ["fees", "first"], 700),
+  area_far: t("الموقع في النطاق البعيد", "موقعك خارج النطاق الأساسي: نوصّل له برسوم مسافة إضافية{extra} فوق رسوم التوصيل، أو تقدر تستلم من الفرع.\nرسوم التوصيل حسب قيمة الطلب:\n{fees}",
+    "Your location is outside the main zone: we deliver with an extra distance charge{extra} on top of the delivery fee, or you can pick up.\nDelivery fee by order total:\n{fees}", [], ["extra", "fees"], 700),
   area_out: t("الموقع خارج النطاق", "موقعك خارج نطاق التوصيل حالياً 🙏 تقدر تطلب استلام من الفرع.", "Your location is outside our delivery range for now 🙏 You can order for pickup.", [], [], 400),
   optin_ask: t("سؤال الموافقة على تحديثات الطلب (نفس نص المتجر — waconsent.js)", WA_UPDATES_TEXTS[WA_UPDATES_CURRENT].ar, WA_UPDATES_TEXTS[WA_UPDATES_CURRENT].en, [], [], 400),
   optin_yes: t("رد «نعم» على الموافقة", "تم ✅ نبلّغك بتحديثات طلباتك هنا. للإيقاف في أي وقت اكتب: إيقاف", "Done ✅ You'll get your order updates here. To stop at any time type: stop", [], [], 300),
@@ -265,10 +274,10 @@ export const INTENT_MAP = Object.freeze({
   cancel_order: "change", modify_order: "change", cancel_or_stop: "change", special_request: "change",
   human: "human", thanks: "thanks", bye: "thanks", stop: "stop", start: "start", media: "media", unknown: "unknown",
 });
-export const TREE_KEYS = ["main", "boxes", "tier", "box", "cats", "cat", "item", "items", "best", "notmenu", "packs", "pickup", "spicy", "faq", "area", "hoursloc", "optin_yes", "optin_no"];
+export const TREE_KEYS = ["main", "boxes", "tier", "box", "cats", "cat", "item", "items", "best", "notmenu", "packs", "pickup", "spicy", "faq", "area", "hoursloc", "optin_yes", "optin_no", "resume_all", "resume_updates"];
 export const REPLY_KEYS = ["greet", "menu", "order", "offers", "delivery", "hours", "location", "payment", "status", "complaint", "problem", "change", "human", "staff", "media", "unknown", "thanks", "stop", "start"];
 const HANDOFF_KEYS = { complaint: ["complaint", "urgent"], problem: ["problem", "urgent"], change: ["order_change", "urgent"], human: ["asked_human", "normal"], staff: ["needs_staff", "normal"], media: ["media", "normal"] };
-const BUTTON_IDS = { "bot:menu": "main", "bot:status": "status", "bot:human": "human", "optin:yes": "optin_yes", "optin:no": "optin_no" };
+const BUTTON_IDS = { "bot:menu": "main", "bot:status": "status", "bot:human": "human", "optin:yes": "optin_yes", "optin:no": "optin_no", "resume:all": "resume_all", "resume:updates": "resume_updates" };
 const MENU_IDS = { main: "main", boxes: "boxes", cats: "cats", offers: "offers", delivery: "delivery", pickup: "pickup", status: "status", hours: "hoursloc", location: "location", packs: "packs", pay: "payment", human: "human" };
 const IGNORED_TYPES = new Set(["reaction", "sticker", "unsupported", "system", "ephemeral", "request_welcome", "order"]);
 const MEDIA_TYPES = new Set(["image", "audio", "voice", "video", "document", "contacts", "location"]);
@@ -702,6 +711,24 @@ export function mineQuestions(rows, { minCount = 2, max = 30, similarity = 0.6 }
     .map((g) => ({ count: g.count, customers: g.phones.size, handoffs: g.handoffs, lastKey: g.key, words: Object.entries(g.freq).sort((a, b) => b[1] - a[1]).slice(0, 4).map((x) => g.show[x[0]] || x[0]), examples: g.examples }));
 }
 
+/* اسم العميل للتحية: أول كلمة من الاسم اللي كتبه في طلب سابق — حروف بس، ٢ إلى ١٥ حرف. أي حاجة تانية ⇒ من غير اسم. */
+export function greetName(raw) {
+  const first = String(raw || "").trim().split(/\s+/)[0] || "";
+  return /^[\p{L}]{2,15}$/u.test(first) && !/^(test|تجربة|عميل|customer|guest|زائر)$/i.test(first) ? first : "";
+}
+/* إحداثيات من نص لصقه العميل (رابط خرايط جوجل أو «lat,lng»). رابط مختصر (maps.app.goo.gl) مافيهوش إحداثيات ⇒ null (بيتحلّ في الـruntime). */
+export function coordsFromText(text) {
+  const t = String(text || "");
+  const ok = (a, b) => { const lat = Number(a), lng = Number(b); return Number.isFinite(lat) && Number.isFinite(lng) && Math.abs(lat) <= 90 && Math.abs(lng) <= 180 && !(lat === 0 && lng === 0) ? { lat, lng } : null; };
+  let m = /[?&](?:q|query|ll|destination|daddr)=(?:loc:)?(-?\d{1,2}\.\d{3,})(?:,|%2C)\s*(-?\d{1,3}\.\d{3,})/i.exec(t); if (m) return ok(m[1], m[2]);
+  m = /!3d(-?\d{1,2}\.\d{3,})!4d(-?\d{1,3}\.\d{3,})/.exec(t); if (m) return ok(m[1], m[2]);
+  m = /@(-?\d{1,2}\.\d{3,}),(-?\d{1,3}\.\d{3,})/.exec(t); if (m) return ok(m[1], m[2]);
+  if (/google\.[a-z.]+\/maps|maps\.google\./i.test(t)) { m = /(-?\d{1,2}\.\d{3,}),\s*(-?\d{1,3}\.\d{3,})/.exec(t); if (m) return ok(m[1], m[2]); }
+  m = /^\s*(-?\d{1,2}\.\d{4,})\s*[,،]\s*(-?\d{1,3}\.\d{4,})\s*$/.exec(t); if (m) return ok(m[1], m[2]);
+  return null;
+}
+export const shortMapsLink = (text) => (/https?:\/\/(?:maps\.app\.goo\.gl|goo\.gl\/maps|g\.co\/kgs)\/[A-Za-z0-9_\-\/?=&%.]+/i.exec(String(text || "")) || [null])[0];
+
 /* ── بناء الرد (مجرّد): { body, footer?, cta?:{title,url}, buttons?:[{id,title}] } ───────── */
 const linkUrl = (slug) => `${STORE}/l/${slug}`;
 export function pickLink(cfg, data, referral) {
@@ -813,14 +840,22 @@ export function buildReply(key, c) {
     case "area": {
       const qv = data.quote;
       if (!qv || typeof qv.deliverable !== "boolean") throw new DataMissing("quote");
-      if (qv.deliverable) return withLink("area_in", {}, "cta_order");
-      if (qv.farZoneOffer) return withLink("area_far", {}, "cta_order");
+      /* جوّه النطاق: سلّم الرسوم الحقيقي (البوت مامعاهوش سلة، فالرسم بيتحدد بقيمة الطلب). النطاق البعيد: قيمة الرسم الإضافي لموقعه لو النظام رجّعها. */
+      const fees = data.policy ? feeLines(data.policy, lang) : "";
+      if (qv.deliverable) return withLink("area_in", { fees, first: fees ? firstLine(cfg, lang, data) : "" }, "cta_order");
+      if (qv.farZoneOffer) { const x = Number(qv.farZoneOffer.surcharge); return withLink("area_far", { fees, extra: Number.isFinite(x) && x > 0 ? (lang === "en" ? ` of SAR ${money(x)}` : ` ${money(x)} ر.س`) : "" }, "cta_order"); }
       if (qv.reason === "out_of_range" || qv.reason === "out_of_zone") return withLink("area_out", {}, "cta_order");
       throw new DataMissing(`quote:${qv.reason}`);
     }
     case "hoursloc": { const h = buildReply("hours", c); return { ...h, extra: [buildReply("location", c)] }; }
     case "optin_yes": case "optin_no": return { body: T(key) };
-    case "greet": return withLink("greet", { boxes: boxesBlock(cfg, lang, data), first: firstLine(cfg, lang, data), paused: pausedLine(cfg, lang, data), closed: closedLine(cfg, lang, data) }, "cta_order");
+    case "greet": {
+      const rows = [["m:boxes", "row_boxes"], ["m:cats", "row_cats"], ["m:offers", "row_offers"], ["m:delivery", "row_delivery"], ["m:status", "row_status"], ["m:human", "row_human"]].map(([id, k]) => ({ id, title: T(k) }));
+      const vars = { paused: pausedLine(cfg, lang, data), closed: closedLine(cfg, lang, data, "closed_short") };
+      const name = greetName(data.customerName);
+      return { body: name ? F("greet_back", { ...vars, name }) : F("greet", vars), list: { button: T("list_btn"), rows } };
+    }
+    case "resume_all": case "resume_updates": return { body: T(key) };
     case "menu": return withLink("menu", { boxes: boxesBlock(cfg, lang, data), closed: closedLine(cfg, lang, data) }, "cta_menu");
     case "order": return withLink("order", { first: firstLine(cfg, lang, data), paused: pausedLine(cfg, lang, data), closed: closedLine(cfg, lang, data) }, "cta_order");
     case "offers": return withLink("offers", { first: firstLine(cfg, lang, data), loyalty: loyaltyLine(cfg, lang, data), timed: timedBlock(cfg, lang, data), boxes: boxesBlock(cfg, lang, data) }, "cta_order");
@@ -869,7 +904,8 @@ export function buildReply(key, c) {
       return { body: F(key, { wait: wait() }) };
     case "rate": case "rate_burst": return { body: T(key) };
     case "unknown": return { body: T("unknown"), buttons: [{ id: "bot:menu", title: T("btn_main") }, { id: "bot:status", title: T("btn_status") }, { id: "bot:human", title: T("btn_human") }] };
-    case "thanks": case "stop": case "start": return { body: T(key) };
+    case "stop": return { body: T("stop"), buttons: [{ id: "resume:updates", title: T("btn_resume_updates") }, { id: "resume:all", title: T("btn_resume_all") }] };
+    case "thanks": case "start": return { body: T(key) };
     default: throw new DataMissing(`key:${key}`);
   }
 }
@@ -966,7 +1002,8 @@ export function classify(ev, know = {}) {
     if (["tier", "box", "cat", "item"].includes(k) && /^[a-z0-9-]{1,60}$/i.test(v)) return out(k, v, `list:${id}`);
   }
   if (IGNORED_TYPES.has(type)) return out(null, null, `type:${type}`, 0);
-  if (type === "location" && ev.location && Number.isFinite(ev.location.lat) && Number.isFinite(ev.location.lng)) return out("area", { lat: ev.location.lat, lng: ev.location.lng }, "location");
+  if (ev.location && Number.isFinite(ev.location.lat) && Number.isFinite(ev.location.lng)) return out("area", { lat: ev.location.lat, lng: ev.location.lng }, "location");
+  { const co = coordsFromText(text); if (co) return out("area", co, "maps_link"); }
   if (MEDIA_TYPES.has(type) && !text.trim()) return out("media", null, `media:${type}`);
   if (ev.intent === "stop" || ev.intent === "start") return out(ev.intent, null, ev.intent, 12);
   const n = normalize(text);
@@ -1045,9 +1082,9 @@ export function pauseState({ cfg, now, open, lastEchoAt, hours }) {
   const until = t + cfg.humanPauseMin * 60_000;
   return { paused: until > now.getTime(), until, kind: "staff_pause" };
 }
-const FACTUAL_KEYS = new Set(["hours", "hoursloc", "location", "status", "thanks", "stop", "start", "optin_yes", "optin_no"]);
+const FACTUAL_KEYS = new Set(["hours", "hoursloc", "location", "status", "thanks", "stop", "start", "optin_yes", "optin_no", "resume_all", "resume_updates"]);
 /* أسئلة المنيو والأسعار والتوصيل: معلومات. بتتجاوب حتى والمحادثة عند الموظف — إلا لو التحويل شكوى/مشكلة (SERIOUS). */
-const MENU_KEYS = new Set(["main", "menu", "cats", "cat", "item", "items", "boxes", "tier", "box", "best", "spicy", "notmenu", "packs", "payment", "pickup", "delivery", "area"]);
+const MENU_KEYS = new Set(["main", "menu", "cats", "cat", "item", "items", "boxes", "tier", "box", "best", "spicy", "notmenu", "packs", "payment", "pickup", "delivery", "area", "faq"]);
 const SERIOUS = new Set(["complaint", "problem", "order_change", "order_late", "order_issue", "send_failed"]);
 const iso = (ms) => new Date(ms).toISOString();
 
@@ -1101,6 +1138,9 @@ export function decide(ev, ctx) {
   const ho = hoReason && !(staffTook && !SERIOUS.has(hoReason)) ? hoReason : null;
   const hoUntil = ho ? iso(hoAt + cfg.handoffOpenHours * 3600_000) : null;
   let factual = Boolean(ho);
+  /* قرار عمر ١٢/١٠: شكوى والموظف رد عليها ⇒ البوت «يسكت خالص» (ولا معلومات ولا تذكير) لحد ما التحويل يخلص أو «رجّع البوت».
+     «إيقاف» وزرار الرجوع بيتنفّذوا ويتأكدوا للعميل برضه (ده حقه). */
+  if (ho && SERIOUS.has(ho) && staffTook && !["stop", "start", "resume_all", "resume_updates"].includes(key)) return silent("complaint_with_staff", { key, resumeAt: hoUntil, detail: ho });
   const escalates = Boolean(ho && HANDOFF_KEYS[key] && SERIOUS.has(HANDOFF_KEYS[key][0]) && !SERIOUS.has(ho));
   // «تمام/لا»: إجابة على سؤال الموافقة لو لسه مطروح، وإلا مفيش رد (العميل بيقفل الكلام)
   if (key === "ack" || key === "nack") {
@@ -1131,7 +1171,7 @@ export function decide(ev, ctx) {
   if (key === "unknown" && Number(chat.unknown_streak) >= cfg.unknownHandoverAfter - 1) { key = "human"; handoff = ["not_understood_twice", "normal"]; }
   /* حارس الحلقات: مش تحويل لموظف. طلب موظف/شكوى بيعدّوا دايماً. عند الحد: سطر هادي مرة واحدة في الساعة، وبعدها سكوت لحد ما المدة تعدّي. */
   const rt = ctx.rate || { text: Number(ctx.repliesLastHour) || 0, taps: 0, minute: 0 };
-  if (!optout && !HANDOFF_KEYS[key] && key !== "handoff_remind") {
+  if (!optout && !HANDOFF_KEYS[key] && key !== "handoff_remind" && key !== "resume_all" && key !== "resume_updates") {
     const isTap = Boolean(ev.interactiveId);
     const cap = rt.minute >= cfg.maxRepliesPerMinute ? "burst" : (isTap ? rt.taps >= cfg.maxTapsPerHour : rt.text >= cfg.maxRepliesPerHour) ? "hour" : null;
     if (cap) {
@@ -1158,6 +1198,11 @@ export function decide(ev, ctx) {
     if (e instanceof FaqMissing) faqGap = e.faq;      // سؤال مالوش إجابة معتمدة ⇒ «أحوّلك لموظف» (مش «معلومة ناقصة») والسجل بيقول أنهي سؤال
     else problem = e instanceof DataMissing ? e.what : `error:${e.message}`;
   }
+  if (faqGap && ho) {            // سؤال مالوش إجابة والمحادثة عند الموظف أصلاً ⇒ مانفتحش تحويل تاني: تذكير مرة واحدة ثم سكوت
+    const reminded = chat.handoff_reminded_at && Date.parse(chat.handoff_reminded_at) >= hoAt;
+    if (reminded) return silent("handoff_open", { key, resumeAt: hoUntil, detail: ho });
+    try { key = "handoff_remind"; reply = buildReply(key, bc); faqGap = null; } catch (e2) { return silent("handoff_open", { key, resumeAt: hoUntil, detail: ho }); }
+  }
   if (faqGap) {
     try { reply = buildReply("staff", bc); handoff = HANDOFF_KEYS.staff; key = "staff"; }
     catch (e2) { problem = `faq:${faqGap}`; }
@@ -1181,7 +1226,6 @@ export function decide(ev, ctx) {
   let optinAsk = null;
   if (!factual && !problem) {
     try {
-      if (key === "greet") replies.push({ ...buildReply("main", bc), body: textOf(cfg, "greet_more", c.lang) });
       const askedAt = chat.optin_asked_at ? Date.parse(chat.optin_asked_at) : NaN;
       if (key === "status" && !handoff && cfg.optin.enabled && ctx.data?.order && ctx.data.optinUpdates === false
         && !(Number.isFinite(askedAt) && nowMs - askedAt < cfg.optin.askAfterHours * 3600_000)) {
@@ -1201,7 +1245,7 @@ export function decide(ev, ctx) {
   const pp = [...payloads, ...fallback].map(payloadProblem).find(Boolean);
   if (pp) return { act: "silent", reason: "payload_invalid", ...base, key, detail: pp, handoff: handoff || ["data_missing", "normal"] };
   return { act: "reply", reason: problem ? `data_missing:${problem}` : (ctx.afterWait ? `after_${ctx.afterWait}` : null), ...base, key, payloads, fallback, handoff,
-    detail: faqGap ? `faq:${faqGap}` : null, greet: key === "greet", optout, link: reply.link || null, unknown: key === "unknown", disclose, factual,
+    detail: faqGap ? `faq:${faqGap}` : null, greet: key === "greet", resume: key === "resume_all" ? "all" : key === "resume_updates" ? "updates" : null, optout, link: reply.link || null, unknown: key === "unknown", disclose, factual,
     optinAsk, optinAnswer: key === "optin_yes" ? "yes" : key === "optin_no" ? "no" : null };
 }
 
@@ -1266,6 +1310,7 @@ export function register(app, ctx, deps = {}) {
       ALTER TABLE wa_bot_chats ADD COLUMN IF NOT EXISTS optin_asked_at TIMESTAMPTZ;
       ALTER TABLE wa_bot_chats ADD COLUMN IF NOT EXISTS optin_answered_at TIMESTAMPTZ;
       ALTER TABLE wa_bot_chats ADD COLUMN IF NOT EXISTS handoff_reminded_at TIMESTAMPTZ;
+      ALTER TABLE wa_bot_chats ADD COLUMN IF NOT EXISTS last_loc JSONB;        -- آخر موقع شاركه العميل { lat, lng, at, via } — لفحص النطاق ولمساعد الطلبات
       CREATE TABLE IF NOT EXISTS wa_optin_proofs (
         id BIGSERIAL PRIMARY KEY,
         phone_norm TEXT NOT NULL, kind TEXT NOT NULL,        -- updates (تحديثات الطلب). التسويق سؤال منفصل لاحقاً.
@@ -1356,6 +1401,17 @@ export function register(app, ctx, deps = {}) {
     } catch (e) { console.error("[wabot] whoami:", e.message); }
     return "unknown";
   }
+  /* رابط خرايط مختصر ⇒ إحداثيات: طلب واحد من غير متابعة تلقائية، للنطاقات المسموحة بس، ٣ قفزات، ٣ ثواني. فشل ⇒ null (الرسالة تتعامل كنص عادي). */
+  const resolveMapsLink = deps.resolveMapsLink || (async (url) => {
+    let u = url;
+    for (let i = 0; i < 3; i++) {
+      if (!/^https:\/\/(maps\.app\.goo\.gl|goo\.gl|g\.co|www\.google\.com|maps\.google\.com|google\.com)\//i.test(u)) return null;
+      const ctl = new AbortController(); const tm = setTimeout(() => ctl.abort(), 3000);
+      try { const r = await fetch(u, { method: "GET", redirect: "manual", signal: ctl.signal }); const loc = r.headers.get("location"); if (!loc) return null; const co = coordsFromText(loc); if (co) return co; u = loc; }
+      catch { return null; } finally { clearTimeout(tm); }
+    }
+    return null;
+  });
   const llm = deps.llm || null;      // wabotllm.classify — تصنيف بس
   const aicost = makeAiCost({ pool, sendSms: deps.sendSms || null, now: deps.now || (() => new Date()) });   // كل نداء للموديل بيتسجّل بتكلفته + السقف
   const q = async (sql, params) => { try { return (await pool.query(sql, params)).rows; } catch (e) { console.error("[wabot] db:", e.message); return null; } };
@@ -1371,8 +1427,12 @@ export function register(app, ctx, deps = {}) {
     if (need("area") && arg && Number.isFinite(arg.lat)) { try { data.quote = await quoteAt(arg.lat, arg.lng); } catch { data.quote = null; } }
     if (need("status") && /^5\d{8}$/.test(String(phone || ""))) { /* false = الرقم ده ماجاوبش على السؤال قبل كده (لا في المتجر ولا هنا) ⇒ ينفع يتسأل. جاوب «نعم» أو «لا» ⇒ مايتسألش تاني. */
       const o = await q("SELECT updates, updates_answered_at FROM wa_optins WHERE phone_norm=$1", [phone]); data.optinUpdates = o === null ? null : Boolean(o[0] && (o[0].updates === true || o[0].updates_answered_at)); }
-    if (need("delivery")) { const r = await q("SELECT config FROM dl_policies WHERE active ORDER BY priority DESC, id LIMIT 1", []); data.policy = r && r[0] ? r[0].config : null; }
-    if (need("greet", "order", "offers", "delivery", "main")) {
+    if (need("greet") && /^5\d{8}$/.test(String(phone || ""))) {   // عميل طلب من الموقع قبل كده ⇒ نحيّيه باسمه (الاسم اللي كتبه هو في آخر طلب)
+      const r = await q(`SELECT customer->>'name' AS name FROM shop_orders WHERE phone_norm=$1 AND NOT COALESCE(is_test,false) AND status NOT IN ('expired','pending_payment') ORDER BY created_at DESC LIMIT 1`, [phone]);
+      data.customerName = r && r[0] ? r[0].name : null;
+    }
+    if (need("delivery", "area")) { const r = await q("SELECT config FROM dl_policies WHERE active ORDER BY priority DESC, id LIMIT 1", []); data.policy = r && r[0] ? r[0].config : null; }
+    if (need("order", "offers", "delivery", "main", "area")) {
       const r = await q(`SELECT code, min_total, free_delivery, once_per_customer, active, expires_at FROM shop_coupons WHERE code=$1 AND active AND phone_norm IS NULL LIMIT 1`, [cfg.firstCode]);
       data.first = r && r[0] ? r[0] : null;
     }
@@ -1463,7 +1523,13 @@ export function register(app, ctx, deps = {}) {
     const phone = String(ev.phone || "");
     const now = clock();
     const know = { menu: await menuIndex(settings, now), bundles: await bundles() };
+    /* رابط خرايط مختصر ملصوق كنص ⇒ نحلّه لإحداثيات (زي ما لو شارك موقعه) */
+    if (!afterWait && !ev.location && !ev.interactiveId) { const sl = shortMapsLink(ev.text); if (sl) { let co = null; try { co = await resolveMapsLink(sl); } catch { co = null; } if (co) ev = { ...ev, location: co }; } }
     let cls = classify(ev, know);
+    /* آخر موقع شاركه العميل بيتحفظ على محادثته (لفحص النطاق، ولمساعد الطلبات عشان مايسألش عن العنوان تاني) */
+    if (!afterWait && cls.key === "area" && cls.arg && /^5\d{8}$/.test(phone)) {
+      await q(`INSERT INTO wa_bot_chats(phone_norm, last_loc) VALUES ($1,$2) ON CONFLICT (phone_norm) DO UPDATE SET last_loc=$2, updated_at=NOW()`, [phone, jb({ lat: cls.arg.lat, lng: cls.arg.lng, at: now.toISOString(), via: cls.rawIntent })]);
+    }
     const finish = (d) => finishLog(logId, d);
     try {
       // ٢) الإعلان: نحفظ مصدره على المحادثة من أول رسالة (حتى لو هنسكت)
@@ -1509,6 +1575,15 @@ export function register(app, ctx, deps = {}) {
       data.chat = chat;
       const d = decide(ev, { cfg, now, chat, lastEchoAt: echoAt, repliesLastHour: rc.n, rate: rc.rate, lastSame: rc.lastSame, failedRecently: rc.failedRecently, data, cls, afterWait });
 
+      /* زرار الرجوع تحت رسالة الإيقاف: اختيار صريح من العميل بنفسه. «تحديثات طلبي فقط» ⇒ موافقة تحديثات عن طريق waconsent (بتتغلب على الإيقاف
+         للتحديثات بس). «كل الرسائل والعروض» ⇒ نفس «اشتراك» (applyIntent start) + صف إثبات تسويقي. التجربة الصامتة مابتسجّلش حاجة. */
+      if (d.resume && d.act === "reply" && cfg.mode !== "dry" && !afterWait) {
+        const shown = textOf(cfg, "stop", d.lang === "en" ? "en" : "ar");
+        try {
+          if (d.resume === "updates") await recordWaUpdatesBot(pool, { phoneNorm: phone, value: true, text: `${shown}\n[${textOf(cfg, "btn_resume_updates", d.lang === "en" ? "en" : "ar")}]`, wamid: ev.wamid || null });
+          else { if (typeof wa.applyIntent === "function") await wa.applyIntent(phone, "start"); await recordWaMarketingBot(pool, { phoneNorm: phone, value: true, text: `${shown}\n[${textOf(cfg, "btn_resume_all", d.lang === "en" ? "en" : "ar")}]`, wamid: ev.wamid || null }); }
+        } catch (e) { console.error("[wabot] resume:", e.message); }
+      }
       // «إيقاف/اشتراك» بصياغة أوسع من اللي whatsapp.js بيمسكها ⇒ نطبّقها هنا (حتى لو هنسكت)
       if (d.optout && !ev.intent && !afterWait && typeof wa.applyIntent === "function") { try { await wa.applyIntent(phone, d.optout); } catch (e) { console.error("[wabot] optout:", e.message); } }
 
