@@ -1,0 +1,49 @@
+{
+ "set": "batch20",
+ "name": "ps3-gather",
+ "over": {
+  "routing": "escalate",
+  "thinking": "adaptive",
+  "effort": "low",
+  "timeoutMs": 60000
+ },
+ "capped": false,
+ "spentRun": 0.016708,
+ "spentTodayBefore": 2.2973209999999997,
+ "cap": 80,
+ "conversations": 1,
+ "passed": 1,
+ "failed": [],
+ "customerTurns": 2,
+ "modelTurns": 2,
+ "answeredByAssistant": 2,
+ "rulesOwned": 0,
+ "fallbacks": {},
+ "validatorRetries": 0,
+ "escalations": 0,
+ "costSar": 0.0167,
+ "costPerConversationSar": 0.0167,
+ "costPerModelTurnSar": 0.0084,
+ "latencyMs": {
+  "p50": 4736,
+  "p90": 4736,
+  "max": 4736,
+  "n": 2
+ },
+ "modelCalls": 3,
+ "byModel": {
+  "claude-haiku-5-5": {
+   "calls": 3,
+   "in": 1197,
+   "out": 436,
+   "cached": 41175,
+   "sar": 0.0167,
+   "callP50ms": 1946,
+   "callP90ms": 2715
+  }
+ },
+ "failTypes": {},
+ "reviewFlags": {},
+ "text": "conversations 1 · passed 1 · failed 0\ncustomer turns 2: assistant answered 2, rules owned 0, fallbacks {}\nvalidator retries 0 · escalations fast→strong 0 · model calls 3\ncost 0.0167 SAR (0.0167 per conversation, 0.0084 per model turn)\nlatency per answered turn: p50 4736 ms · p90 4736 ms · max 4736 ms (n=2)\nby model {\"claude-haiku-5-5\":{\"calls\":3,\"in\":1197,\"out\":436,\"cached\":41175,\"sar\":0.0167,\"callP50ms\":1946,\"callP90ms\":2715}}\nfail types {}\nreview flags {}",
+ "markdown": "# Assistant evaluation: ps3-gather\n\n```\nconversations 1 · passed 1 · failed 0\ncustomer turns 2: assistant answered 2, rules owned 0, fallbacks {}\nvalidator retries 0 · escalations fast→strong 0 · model calls 3\ncost 0.0167 SAR (0.0167 per conversation, 0.0084 per model turn)\nlatency per answered turn: p50 4736 ms · p90 4736 ms · max 4736 ms (n=2)\nby model {\"claude-haiku-5-5\":{\"calls\":3,\"in\":1197,\"out\":436,\"cached\":41175,\"sar\":0.0167,\"callP50ms\":1946,\"callP90ms\":2715}}\nfail types {}\nreview flags {}\n```\n\n## Conversations\n\n### PASS · family-gathering-custom-offer (family gathering) · 0.0167 SAR\n\n- **العميل:** عندنا عزيمة يوم الجمعة لخمسة وعشرين شخص، وش عندكم؟\n  - **المساعد** (fast, 4736 ms, 0.0109 SAR, tools: list_packs): أبشر، معك ماجد، المساعد الرقمي لفريش كاتس. لخمسة وعشرين شخص عندنا هذي الباقات: ⏎  ⏎ باقة ١٥ شخصاً وأكثر بـ 595 ر.س: ٤ كيلو مشاوي + دجاجتين كاملتين على الفحم + أرز وبطاطس وكولسلو + ١٢ مشروب. ⏎  ⏎ تقدر تطلب الباقات من موقعنا. نقدر نجهّز لك عرض مخصص للعزيمة، تبي أحوّلك لفريق المطعم؟\n- **العميل:** ابي عرض مخصص: 25 شخص، الجمعة الساعة 9 مساء، توصيل\n  - **تحويل لموظف** (custom_offer: عزيمة 25 شخص، يوم الجمعة الساعة 9 مساءً، توصيل. يريدون عرضاً مخصصاً.; 1575 ms, tools: handover)\n"
+}

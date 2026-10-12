@@ -180,7 +180,8 @@ test("the loop: every way it can fail returns «not ok» with a reason (the rule
 
 test("the loop: handover stops the turn at once; the customer's message is the fixed text of the rules bot", async () => {
   const m = scripted([use(tu("handover", { reason: "custom_offer", note: "25 people, Friday 9 pm, delivery" }))]);
-  const r = await turn(makeWorld({}, { callModel: m.callModel }), null, "ابي عرض مخصص 25 شخص");
+  const W0 = makeWorld({}, { callModel: m.callModel }), s0 = AR.newSession(W0.now()); s0.state.packs = true;      // PS3: a tailored offer is handed over after the packs were shown in an earlier message
+  const r = await turn(W0, s0, "ابي عرض مخصص 25 شخص");
   assert.equal(r.ok, true); assert.equal(r.text, null); assert.deepEqual(r.handover, { reason: "custom_offer", note: "25 people, Friday 9 pm, delivery" });
   assert.equal(m.used(), 1, "no second model call"); assert.equal(r.session.messages.at(-1).role, "assistant");
   const m2 = scripted([use(tu("handover", { reason: "fire the chef" }))]);

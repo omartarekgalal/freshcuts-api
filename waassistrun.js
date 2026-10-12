@@ -53,6 +53,8 @@ export const ASSIST_CFG_DEFAULTS = Object.freeze({
   compactAfterChars: 36000,            // PS2: المحادثة الطويلة — لما اللي الموديل شايفه يعدّي الحجم ده، الأدوار القديمة تتلخّص (كلام العميل وردود المساعد) وتتشال نتايج أدواتها
   compactKeepTurns: 4,                 // …وآخر كام دور يفضلوا زي ما هم
   cacheTtl: "5m",                      // PS2: مدة كاش التعليمات والأدوات عند المزوّد: 5m (الكتابة ١٫٢٥×) أو 1h (الكتابة ٢×، وبتفضل ساعة — أرخص لما الموديل القوي بيتنده أكتر من مرة في الساعة)
+  remindersEnabled: true,              // PS3: العميل أجّل («بكرة»، «بعدين») ⇒ المساعد يعرض يفكّره، ولو وافق وقال الوقت: رسالة واحدة في الميعاد (جوّه نافذة الـ٢٤ ساعة بس)
+  reminderQuietStart: 2, reminderQuietEnd: 12,      // …ومفيش تذكير في الساعات دي (بتوقيت الرياض، من ← إلى)، ولا والمطعم مقفول
   rulesFirstPrice: false,              // PS2: سؤال سعر صنف واحد في أول المحادثة يرد عليه بوت القواعد ببطاقة الصنف (ببلاش) والمساعد يكمل من بعدها
   imagesEnabled: false,                // صورة من العميل: نظرة واحدة بالموديل السريع ⇒ ملخص مقنّع يكمل بيه المساعد (أو تحويل لموظف مع اللي اتفهم)
   voiceEnabled: false,                 // رسالة صوتية: تتحوّل لنص (محتاج موديل تحويل في البروكسي) وتمشي في دور المساعد العادي
@@ -66,9 +68,9 @@ export const ASSIST_CFG_DEFAULTS = Object.freeze({
   personaName: "ماجد", personaNameEn: "Majed",
 });
 const NUMS = { budgetDaySar: [0, 1000], budgetMonthSar: [0, 10000], maxToolRounds: [1, 8], maxRepliesPerChatDay: [1, 60], timeoutMs: [5000, 60000], sessionMin: [10, 720], staffStepBackMin: [1, 60], seriousHoldMin: [0, 240], locationHours: [1, 24], keepDays: [7, 730],
-  fastCartLines: [0, 6], compactAfterChars: [8000, 200000], compactKeepTurns: [1, 12], followUpMin: [5, 720], followUpCloseGuardMin: [0, 240], searchMax: [3, 15], nudgeGapSar: [0, 100], topSellerDays: [7, 180], profileOrders: [5, 200], maxCartLines: [1, 40], liveDailyCustomers: [0, 5000], voiceMaxSec: [10, 300], mediaBudgetDaySar: [0, 50], sttSarPerMin: [0, 1] };
+  fastCartLines: [0, 6], reminderQuietStart: [0, 23], reminderQuietEnd: [0, 23], compactAfterChars: [8000, 200000], compactKeepTurns: [1, 12], followUpMin: [5, 720], followUpCloseGuardMin: [0, 240], searchMax: [3, 15], nudgeGapSar: [0, 100], topSellerDays: [7, 180], profileOrders: [5, 200], maxCartLines: [1, 40], liveDailyCustomers: [0, 5000], voiceMaxSec: [10, 300], mediaBudgetDaySar: [0, 50], sttSarPerMin: [0, 1] };
 const ENUMS = { mode: ASSIST_MODES, routing: ["escalate", "strong", "fast"], effort: ["low", "medium", "high"], thinking: ["adaptive", "off"], sttProvider: ["openai", "groq", "elevenlabs"], liveAudience: LIVE_AUDIENCES, cacheTtl: ["5m", "1h"] };
-const BOOLS = ["typing", "followUpEnabled", "forceSuggestion", "imagesEnabled", "voiceEnabled", "fastSimplePreview", "orderWordsStrong", "rulesFirstPrice"];
+const BOOLS = ["typing", "followUpEnabled", "forceSuggestion", "imagesEnabled", "voiceEnabled", "fastSimplePreview", "orderWordsStrong", "rulesFirstPrice", "remindersEnabled"];
 const MODEL_RE = /^[a-z0-9./-]{3,60}$/;
 /* PS1 — اسم الشخصية: حروف ومسافات بس (٢–٢٠ حرف)؛ مفيش أرقام ولا رموز ولا سطر جديد، عشان مايبقاش باب لحقن نص في الرسالة أو في سياق الموديل. */
 const NAMES = { personaName: /^[ء-ي][ء-ي ]{1,19}$/, personaNameEn: /^[A-Za-z][A-Za-z ]{1,19}$/ };
@@ -134,6 +136,9 @@ export const ASSIST_SCHEMA = Object.freeze({
   "assist.compactAfterChars": N("compactAfterChars", "المحادثة الطويلة تتلخّص بعد", "لما اللي الموديل شايفه من المحادثة يعدّي الحجم ده: الأدوار القديمة تتحوّل لملخص (كلام العميل وردود المساعد بالحرف) وتتشال نتايج أدواتها. بيقلل تكلفة المحادثات الطويلة.", "حرف"),
   "assist.compactKeepTurns": N("compactKeepTurns", "…وآخر كام دور يفضلوا كاملين", "", "دور"),
   "assist.cacheTtl": { group: "assist", type: "enum", ar: "مدة كاش التعليمات عند المزوّد", help: "5m: الكتابة أرخص وبتعيش ٥ دقايق من آخر استخدام. 1h: الكتابة أغلى وبتعيش ساعة — أرخص لما الموديل القوي بيتنده مرتين أو أكتر في الساعة، وأغلى لو أقل.", options: ENUMS.cacheTtl },
+  "assist.remindersEnabled": { group: "assist", type: "boolean", ar: "تذكير العميل اللي أجّل طلبه", help: "العميل قال «بكرة» أو «بعدين»: المساعد يعرض عليه يفكّره. لو وافق وحدد وقت، رسالة واحدة بتتبعت في الميعاد — بس لو الميعاد جوّه ٢٤ ساعة من آخر رسالة للعميل (غير كده واتساب مابيسمحش برسالة حرة)، ومش في ساعات الهدوء ولا والمطعم مقفول. بتتلغي لو طلب، أو كتب «إيقاف»، أو المحادثة راحت لموظف. تذكير واحد للعميل في المرة." },
+  "assist.reminderQuietStart": N("reminderQuietStart", "ساعات الهدوء للتذكير: من الساعة", "بتوقيت الرياض (0–23). مفيش تذكير بيتبعت من الساعة دي…", "س"),
+  "assist.reminderQuietEnd": N("reminderQuietEnd", "ساعات الهدوء للتذكير: لحد الساعة", "…لحد الساعة دي.", "س"),
   "assist.rulesFirstPrice": { group: "assist", type: "boolean", ar: "سؤال سعر صنف واحد: بوت القواعد يرد", help: "في أول المحادثة بس: بطاقة الصنف بسعره وزر الطلب من بوت القواعد (من غير تكلفة موديل)، والمساعد يكمل من الرسالة اللي بعدها وهو عارف الصنف. مقفول: المساعد يرد بالسعر ومعاه اقتراح." },
   "assist.imagesEnabled": { group: "assist", type: "boolean", ar: "المساعد يشوف الصور", help: "صورة منيو أو إعلان: يرد عليها زي النص. إيصال دفع أو صورة طلب فيه مشكلة: يحوّلها لموظف ومعاها اللي فهمه. مقفول = رد «ما أقدر أفتح الصور» وتحويل لموظف زي الأول." },
   "assist.voiceEnabled": { group: "assist", type: "boolean", ar: "المساعد يسمع الرسايل الصوتية", help: "محتاج موديل تحويل الصوت لنص متضاف في مزوّد الموديلات. المساعد بيتأكد من العميل من اللي سمعه قبل ما يجهّز سلة. مقفول أو التحويل فشل = تحويل لموظف زي الأول." },
@@ -158,6 +163,7 @@ const RULES_NOTICE = new Set(["rate", "rate_burst", "handoff_remind"]);
 const IN_SESSION = new Set(["hours", "hoursloc", "location", "payment", "thanks", "weight"]);      // EX6: طلب بالوزن جوّه جلسة المساعد بيفضل معاه (السلة بتاعته)
 /* «خلها بدون طحينة» / «بدون بصل» وهو بيجهّز السلة = ملاحظة على الصنف، مش «تعديل طلب». تعديل طلب **اتدفع** بيفضل للموظف: لو له طلب حديث، القواعد تمسكها. */
 const CART_EDIT = new Set(["special_request", "modify_order"]);
+const REMIND_ASK_RE = /(^| )(ذكرني|ذكروني|فكرني|فكروني|نبهني|نبهوني)( |$)|\bremind me\b/i;
 export function assistEligible({ acfg, cfg, phone, ev, cls, d, afterWait = null, sessionActive = false, handoverOpen = false, recentOrder = false, allowed = false }) {
   const no = (why) => ({ run: false, why, ...(why === "rules:item_price" ? { seed: true } : {}) });
   if (!acfg || !["test", "live"].includes(acfg.mode)) return no("assist_off");
@@ -169,7 +175,9 @@ export function assistEligible({ acfg, cfg, phone, ev, cls, d, afterWait = null,
   if (!cls || !cls.key || !d) return no("no_class");
   if (handoverOpen) return no("handover_open");
   const cartEdit = cls.key === "change" && CART_EDIT.has(String(cls.rawIntent || "")) && !recentOrder;
-  if (RULES_OWN.has(cls.key) && !(sessionActive && IN_SESSION.has(cls.key)) && !cartEdit) return no(`rules:${cls.key}`);
+  /* PS3: «ذكّرني الساعة ٨» كانت بتتصنّف «مواعيد» وبوت القواعد يرد بالمواعيد. طلب تذكير (مش «نبّهني لما تفتحوا» — دي قايمة الانتظار بتاعة القواعد) ⇒ المساعد. */
+  const remindAsk = Boolean(acfg.remindersEnabled) && (cls.key === "hours" || cls.key === "hoursloc") && REMIND_ASK_RE.test(normalize(String((ev && ev.text) || ""))) && !/تفتح|فتحتو|open/i.test(normalize(String((ev && ev.text) || "")));
+  if (RULES_OWN.has(cls.key) && !(sessionActive && IN_SESSION.has(cls.key)) && !cartEdit && !remindAsk) return no(`rules:${cls.key}`);
   if (cls.key === "dishfact" && cls.rawIntent === "allergy_severe") return no("rules:allergy_severe");
   /* PS2: «بكم <صنف>؟» في أول المحادثة ⇒ بطاقة الصنف من القواعد (سعر حي + زر الطلب، من غير موديل). جوّه محادثة المساعد بتفضل معاه. إعداد، مقفول افتراضياً. */
   if (acfg.rulesFirstPrice && !sessionActive && cls.key === "item" && cls.rawIntent === "item_price" && d.act === "reply" && !ORDER_RE.test(normalize(String((ev && ev.text) || "")))) return no("rules:item_price");
@@ -217,6 +225,8 @@ Every fact you state (a dish, a box, a price, a fee, an offer, opening hours, an
 - Your whole output is sent to the customer exactly as it is. Write only the message: no notes to yourself, no plan, no label such as "Off-topic:" or "Reply:", nothing before or after the message, no numbered lists.
 - The context may carry "hint": how our fixed-menu bot classified this message (for example faq + topic, or a question about one dish). Trust it when it fits: for a faq hint call faq with that topic before anything else.
 - Answer what was asked, no more. Do not list the whole menu; offer two or three fitting options.
+- Never volunteer what we do NOT have. Say that something is missing, unavailable or not offered only when the customer asked about that exact thing in this conversation (or ordered it). Asked about seating, say what seating we have; do not add what we lack.
+- "Where are you" comes in short and Egyptian spellings («فين المكان», «في المكان», «المكان فين», «انتو فين»): read them as a question about our location. Answer any location question with faq("branch_location") only: the map button is attached to that message automatically.
 
 # Selling, honestly
 - Your job is to take the order to the end. Once the customer names what they want: confirm the items in one line, ask delivery or pickup, for delivery ask for the location pin and check coverage and the fee with quote_delivery, then build_cart and tell them to tap the button and pay. Do not stop at prices or at a suggestion when the customer is ready to order; one step per message, each ending with the next question.
@@ -305,6 +315,7 @@ export const TOOL_DEFS = Object.freeze([
   T("ask_knowledge", "Answers the restaurant manager saved for general questions customers asked before (services, the place, what we have). Call it before saying you do not know. Returns up to three similar saved questions with their answers; use one only if it answers this customer's question, and send its text as it is.", { question: { type: "string", description: "the customer's question, in the customer's own words" } }, ["question"]),
   T("what_we_know", "A plain summary of what our system holds about this customer, to send as it is when they ask."),
   T("note_suggestion", "Record that the customer accepted or declined the suggestion you offered.", { kind: { type: "string", enum: ["box_saves", "next_tier", "drink", "side", "top_seller"] }, outcome: { type: "string", enum: ["accepted", "declined"] } }, ["kind", "outcome"]),
+  T("remind_me", "Schedule ONE reminder message to this customer at a time they chose, or cancel it. Call it only after the customer agreed to be reminded AND gave a time. It answers whether and exactly when the message can be sent (we may only message a customer within 24 hours of their last message, not in quiet hours, not while we are closed): tell the customer what it answers, honestly, also when the time had to be moved or it cannot be done.", { day: { type: "string", enum: ["today", "tomorrow"], description: "the day the customer meant" }, time: { type: "string", description: "24-hour HH:MM, Riyadh time, e.g. 20:00 for «٨ بالليل»" }, dish_id: { type: "string", description: "the dish they were looking at, if any (id from the tools)" }, box_slug: { type: "string", description: "or the box they were looking at" }, cancel: { type: "boolean", description: "true = the customer no longer wants the reminder" } }),
   T("handover", "Pass the chat to a staff member. A fixed message is sent to the customer; do not write anything after calling it.", { reason: { type: "string", enum: ["allergy_severe", "complaint", "problem", "order_change", "custom_offer", "needs_staff"] }, note: { type: "string", description: "short note for staff, e.g. people / day / time / mode for a tailored offer" } }, ["reason"]),
 ]);
 const TOOL_NAMES = new Set(TOOL_DEFS.map((t) => t.name));
@@ -325,7 +336,7 @@ const EXTRA_RULES = [
   [/عزيزي العميل|عزيزتي العميل[ةه]|عميلنا العزيز|عملائنا الكرام|نسعد بخدمت(?:ك|كم)|يسعدنا تواصل(?:ك|كم)|شكرا(?:ً)? لتواصل(?:ك|كم)|كيف يمكنني مساعدت(?:ك|كم)|لا تتردد(?:وا)? في|dear (?:valued )?customer|how may i assist you|thank you for contacting/i, "canned_phrase"],
   [/🤖|المساعد ال[آا]لي|مساعد [آا]لي|رد [آا]لي|automated (?:assistant|reply|message)/u, "robot_wording"],
   [/(ما|لا|مافي|ما في) ?(عندنا|يوجد|فيه)? ?مكسرات (في |ب)(ال)?مطبخ|مطبخنا (ما|لا|خالي)|no nuts in (the|our) kitchen|nut[- ]free/i, "health_or_guarantee"],
-  [/anthropic|claude|openai|chatgpt|\bgpt\b|language model|نموذج لغوي|note_suggestion|preview_cart|list_boxes|list_packs|check_availability|get_offers|get_hours|what_we_know|ask_knowledge|manager_notes|came_from_ad|channel_invite|heard_from_voice_note|seen_in_a_picture|delivery_savers|introduce_yourself|customer_is_ordering|staff_handled|staff_told_customer|still_to_do|boxes_reaching|handover\(|<context|customer_message/i, "internal_leak"],
+  [/anthropic|claude|openai|chatgpt|\bgpt\b|language model|نموذج لغوي|note_suggestion|preview_cart|list_boxes|list_packs|check_availability|get_offers|get_hours|what_we_know|ask_knowledge|manager_notes|came_from_ad|channel_invite|heard_from_voice_note|seen_in_a_picture|delivery_savers|remind_me|order_for_later|customer_is_postponing|introduce_yourself|customer_is_ordering|staff_handled|staff_told_customer|still_to_do|boxes_reaching|handover\(|<context|customer_message/i, "internal_leak"],
 ];
 /* جمل الرفض الأمين (بتتشال قبل قواعد الكلمات). كل نمط = نفي + فعل مشاركة/وجود + الكلمة الحساسة في نفس الجملة القصيرة.
    الرفض بيقف عند أول فاصلة أو نقطة أو «لكن / بس / but»: «ما أقدر أشارك طريقة التحضير» بتتشال، وأي كلام بعدها («لكن نتبلها بـ…») بيتراجع عادي. */
@@ -426,9 +437,33 @@ export function stripSalam(text) {
 /* ⇒ { ok, problems }. facts = كل نتايج الأدوات وكتل السياق في المحادثة. opts.appsAllowed = إجابة faq("apps") اتقرت في المحادثة. */
 /* كوبون / كود: أي كلام عنه لازم يكون بعد get_offers في المحادثة، أو الكلمة نفسها راجعة من أداة/سياق (مراجعة الخبير: المساعد قال معلومة كوبون من غير ما ينادي get_offers). */
 const COUPON_RE = /كوبون|قسيم[هة]|كود (?:ال)?(?:خصم|ترحيب|هديه|هدية)|برومو ?كود|coupon|promo ?code|discount code|voucher/i;
+const NEG_RE = /(?:لا (?:توجد|يوجد|تتوفر|يتوفر|نقدم|نوفر)|ما (?:عندنا|فيه|في|نقدم|نوفر|يوجد|توجد)|ماعندنا|مافي|ليس (?:لدينا|عندنا)|غير (?:متوفر[ةه]?|متاح[ةه]?)|we (?:do not|don'?t) (?:have|offer|serve)|there (?:is|are) no|(?:is|are) not available|no (?:outdoor|indoor))\s+((?:[\p{L}]+\s?){1,4})/giu;
+const NEG_SKIP = new Set(["اي", "أي", "حاليا", "حالياً", "اليوم", "الان", "الآن", "الحين", "عندنا", "لدينا", "هذا", "هذه", "شي", "شيء", "غير", "الا", "إلا", "سوى", "معلومه", "معلومة", "معلومات", "فكره", "مشكله", "مشكلة", "مانع", "any", "a", "an", "the", "right", "now", "today", "other", "information", "problem"]);
+const ASKS_AVAIL = /عندكم|عندك|عندكو|فيه|في عندكم|يوجد|متوفر|موجود|تقدمون|تسوون|تبيعون|هل |ولا لا|do you|have you|is there|are there|any /i;
+const stem = (w) => normalize(w).replace(/^(ال|وال|بال|لل)(?=.{3,})/, "").slice(0, 3);
+export function unsolicitedNegative(reply, customer) {
+  const cust = String(customer || "");
+  if (ASKS_AVAIL.test(normalize(cust)) || ASKS_AVAIL.test(cust)) return null;
+  const have = new Set(cust.split(/[^\p{L}]+/u).filter((w) => [...w].length >= 3).map(stem));
+  for (const m of String(reply || "").matchAll(NEG_RE)) {
+    const objs = m[1].trim().split(/\s+/).filter((w) => [...w].length >= 3 && !NEG_SKIP.has(normalize(w)) && !NEG_SKIP.has(w.toLowerCase()));
+    if (!objs.length) continue;
+    if (!objs.some((w) => have.has(stem(w)))) return m[0].trim().slice(0, 50);
+  }
+  return null;
+}
+const REMIND_RE = /(?:[أا]ذك[ّ]?رك|بذك[ّ]?رك|راح [أا]ذك[ّ]?رك|س[أا]ذك[ّ]?رك|[أا]رسل لك تذكير|[أا]نبهك|i(?:'ll| will) remind you|reminder is set|i(?:'ll| will) message you)/giu;
+export function reminderPromise(reply) {
+  const t = String(reply || "");
+  for (const m of t.matchAll(REMIND_RE)) { const end = t.slice(m.index).search(/[.!؟?\n]/); const stop = end < 0 ? "" : t[m.index + end];
+    const before = t.slice(Math.max(0, t.lastIndexOf("\n", m.index), t.slice(0, m.index).search(/[.!؟?][^.!؟?]*$/) + 1), m.index);
+    if (stop === "؟" || stop === "?" || /تحب|تبي|تبغى|ودك|هل |would you|shall i|do you want|want me/i.test(before)) continue;      // عرض في صيغة سؤال
+    return m[0]; }
+  return null;
+}
 const INTRO_RE = /معك\s+[\u0621-\u064A]{2,20}(?:\s[\u0621-\u064A]{2,20})?\s*[،,]?\s+المساعد الرقمي|\bthis is [a-z]{2,20}(?: [a-z]{2,20})?, fresh cuts'?s? digital assistant/i;
 export const WHO_RE = /بوت|روبوت|[إا]نسان|بشر|شخص|حقيقي|[آا]لي|مين|منو|من معي|من انت|اسمك|موظف|ذكاء|\b(?:bot|robot|human|real|person|who|name|ai|staff|agent)\b/i;
-export function checkReply(text, { facts = [], customerText = "", know = {}, discountAllowed = false, appsAllowed = false, offersSeen = true, sayTexts = [], lang = null, channelUrl = null, introAllowed = true, turnText = "", freeCode = null } = {}) {
+export function checkReply(text, { facts = [], customerText = "", know = {}, discountAllowed = false, appsAllowed = false, offersSeen = true, sayTexts = [], lang = null, channelUrl = null, introAllowed = true, turnText = "", freeCode = null, recentCustomer = null, reminderSet = true } = {}) {
   const allowWords = discountAllowed ? ["discount_claim"] : [];
   const STRUCT = new Set(["number_not_from_tools", "name_not_from_tools", "link_not_from_tools", "too_long", "empty"]);
   /* الأرقام والأسماء والروابط والطول: على الرد كله. قواعد الكلمات: على الرد من غير أي نص معتمد اتبعت زي ما هو (إجابة سؤال شائع / حقيقة صنف / ملخص
@@ -458,6 +493,11 @@ export function checkReply(text, { facts = [], customerText = "", know = {}, dis
   /* PS1: جملة التعريف («معك <الاسم>، المساعد الرقمي…») مرة واحدة: في الدور اللي سياقه فيه introduce_yourself، أو لما العميل يسأل «مين معي / انت بوت؟». غير كده = تكرار المقدمة اللي عمر اشتكى منها.
      الإجابة الصريحة عن طبيعته («أنا المساعد الرقمي… ولست إنساناً») عمرها ما بتترفض هنا: الصدق مايتمنعش. */
   if (!introAllowed && INTRO_RE.test(rest) && !WHO_RE.test(String(turnText || ""))) filtered.push({ type: "intro_repeated", value: (INTRO_RE.exec(rest) || [""])[0] });
+  /* PS3 (عمر ١٣/١٠: «مش حابب نقول معندناش إلا لو كان سأل»): جملة نفي عن حاجة مش عندنا، والعميل ماسألش عنها. بتتراجع على كلام المساعد نفسه (النصوص المعتمدة اتشالت من rest).
+     مسموح: العميل سأل «عندكم / فيه …؟» (أي إجابة نفي عليه مطلوبة)، أو كلمة من المنفي موجودة في آخر كلامه، أو «ما عندي معلومة» (عدم معرفة مش نفي وجود). */
+  if (recentCustomer !== null) { const p = unsolicitedNegative(rest, recentCustomer); if (p) filtered.push({ type: "unsolicited_negative", value: p }); }
+  /* PS3: وعد بتذكير («بذكّرك بكرة») من غير ما أداة التذكير تقول «تم» في نفس الدور = وعد مش هيتنفّذ. السؤال «تحب أذكّرك؟» مسموح. */
+  if (!reminderSet) { const p = reminderPromise(rest); if (p) filtered.push({ type: "reminder_not_scheduled", value: p }); }
   /* PS1: التوصيل المجاني اللي جاي من كود (أول طلب / مكافأة) مايتقالش من غير الكود — «توصيله مجاني» لوحدها وعد ناقص شرطه. */
   if (freeCode && /توصيل\S*\s+(?:ال)?مجان|مجان\S*\s+(?:ال)?توصيل|free delivery|delivery (?:is |would be )?free/i.test(String(text || "")) && !String(text || "").toUpperCase().includes(String(freeCode).toUpperCase())) filtered.push({ type: "free_delivery_without_code", value: freeCode });
   const leak = promptLeak(text);
@@ -475,6 +515,8 @@ const PROBLEM_HELP = {
   claims_human: "a claim or hint that you are a human, a staff member or a real person, or a denial that you are a digital assistant (say honestly, in one friendly line, that you are Fresh Cuts' digital assistant and that typing «موظف» brings someone from the team)",
   canned_phrase: "a stock customer-service phrase (write like a person from the team: short and direct)", robot_wording: "«آلي» / «روبوت» / 🤖 / automated about yourself (the wording is «المساعد الرقمي» / digital assistant)",
   free_delivery_without_code: "free delivery that depends on a code, said without the code (say the code and that it is for the first delivery order, exactly as the tool gave it)",
+  unsolicited_negative: "you said what we do NOT have although the customer did not ask about that thing (say only what we have; a negative only as the answer to a direct question about it)",
+  reminder_not_scheduled: "you told the customer you will remind or message them, but remind_me did not confirm a reminder in this turn (offer it as a question, or call remind_me once they gave a time)",
   intro_repeated: "you introduced yourself again (your name and what you are are said once, in the first message, or when the customer asks who you are)",
   wrong_language: "text in the wrong language, or notes to yourself, inside the message (write ONLY the message for the customer, in the customer's language)",
 };
@@ -521,6 +563,8 @@ export const billableUsage = (u) => { const n = (v) => Math.max(0, Math.round(Nu
 
 /* ── أدوار تجهيز الطلب: كلمات طلب صريحة ⇒ الموديل القوي من أول نداء ───────── */
 const ORDER_RE = /(^| )(ابي|ابغى|ابغا|ابا|بدي|ودي|اريد|عايز|عاوز|اطلب|اطلبلي|جهز|جهزلي|حط|ضيف|اضف|زود|هات)( لي)? |(^| )(ال)?سله( |$)|\b(order|i want|i'?ll (have|take)|add|cart)\b|\b(abi|abgha|3ayez|ayez|awez)\b/i;
+/* PS3: العميل بيأجّل («بكرة»، «بعدين»، «الليلة»، «بعد الصلاة»…) ⇒ قاعدة التأجيل والتذكير بتتبعت مع الدور ده (بعد normalize: ة ⇒ ه) */
+export const POSTPONE_RE = /(^| )(ل|ال)?(بكره|بكرا|بعدين|لاحقا|وقت تاني|وقت ثاني|مره ثانيه|مره تانيه|الليله|بالليل|بعد الصلاه|بعد المغرب|بعد العشا|بعد العشاء|بعد الدوام|مو الحين|مش دلوقتي|بعد شوي|بعد شويه)( |$)|\b(later|tomorrow|tonight|not now|another time)\b/i;
 const CART_TOOLS = new Set(["preview_cart", "build_cart", "get_box"]);
 /* PS2 — امتى الدور محتاج الموديل القوي: بوكس (اختيارات)، سلة أكبر من «البسيطة»، أو اعتراض على رسوم التوصيل (delivery_savers). غير كده السريع يكمل:
    السعر والإجمالي والاقتراح من الكود، والمدقّق بيراجع الأرقام والأسماء في الحالتين. */
@@ -559,6 +603,37 @@ const small = (v, max = 4000) => { const s = JSON.stringify(v ?? null); return s
 const cleanCustomer =(t) => String(t || "").replace(/<\/?\s*(customer_message|context|system_check|system)[^>]*>/gi, " ").trim();
 
 /* كتلة السياق لدور واحد (صافية): أول دور في الجلسة فيه ملف العميل والعروض وعرض «نفس الطلب»؛ الأدوار اللي بعده الحالة المتغيّرة بس. */
+/* PS3 — التذكير: امتى رسالة التذكير تتبعت فعلاً؟ (صافي)
+   واتساب بيسمح برسالة حرة جوّه ٢٤ ساعة من آخر رسالة للعميل بس. الميعاد المطلوب بعد النافذة ⇒ بيتقدّم لآخر وقت مسموح (والعميل بيتقال له بصراحة). ميعاد في ساعات الهدوء أو
+   والمطعم مقفول ⇒ مفيش تذكير (ولو طلب العميل نفسه: يختار وقت تاني؛ لو الوقت المتقدّم هو اللي وقع فيها: اعتذار صريح). عمره ما بيرجّع «تم» لحاجة مش هتتبعت.
+   day: today|tomorrow · time: HH:MM (الرياض) · lastInMs: وقت آخر رسالة من العميل · isOpenAt(Date) ⇒ true|false|null · «بكرة» قبل ٥ الفجر = النهار اللي جاي (نفس تاريخ التقويم). */
+const RIYADH = 3 * 3600_000;
+const partAr = (h) => (h < 5 ? "بعد منتصف الليل" : h < 12 ? "صباحاً" : h < 16 ? "ظهراً" : h < 19 ? "عصراً" : "مساءً");
+export function clockLabel(ms, lang = "ar") { const d = new Date(ms + RIYADH), h = d.getUTCHours(), m = d.getUTCMinutes(), h12 = h % 12 === 0 ? 12 : h % 12, mm = m ? `:${String(m).padStart(2, "0")}` : "";
+  return lang === "en" ? `${h12}${mm} ${h < 12 ? "am" : "pm"}` : `${h12}${mm} ${partAr(h)}`; }
+export function planReminder({ now, day = "today", time = "", lastInMs = null, quietStart = 2, quietEnd = 12, isOpenAt = null, marginMin = 20, lang = "ar" } = {}) {
+  const no = (error, rule, extra = {}) => ({ ok: false, error, rule, ...extra });
+  const m = /^([01]?\d|2[0-3]):([0-5]\d)$/.exec(String(time || "").trim());
+  if (!m) return no("need_time", "ask the customer, in one short question, what time suits them");
+  const nowMs = now.getTime(), loc = new Date(nowMs + RIYADH), early = loc.getUTCHours() < 5;
+  let at = Date.UTC(loc.getUTCFullYear(), loc.getUTCMonth(), loc.getUTCDate(), Number(m[1]), Number(m[2])) - RIYADH;
+  if (day === "tomorrow" && (!early || Number(m[1]) < 5)) at += 86400_000;      // بعد نص الليل: «بكرة ٨ بالليل» = نفس التاريخ؛ «بكرة ١ الفجر» = الليلة الجاية
+  if (at <= nowMs + 5 * 60_000) return no("time_passed", "that time has already passed or is only minutes away: ask for a later time, or simply help them now");
+  const windowEnd = (Number.isFinite(Number(lastInMs)) ? Number(lastInMs) : nowMs) + 24 * 3600_000 - marginMin * 60_000;
+  let moved = false;
+  if (at > windowEnd + (marginMin - 5) * 60_000) { at = Math.floor(windowEnd / 300_000) * 300_000; moved = true; }      // لحد ٥ دقايق قبل قفل النافذة: الميعاد زي ما طلبه
+  const hour = new Date(at + RIYADH).getUTCHours(), qs = Math.round(quietStart), qe = Math.round(quietEnd);
+  const quiet = qs === qe ? false : qs < qe ? hour >= qs && hour < qe : hour >= qs || hour < qe;
+  let open = null; try { open = typeof isOpenAt === "function" ? isOpenAt(new Date(at)) : null; } catch { open = null; }
+  const label = (ms) => `${lang === "en" ? (day === "tomorrow" ? "tomorrow at" : "today at") : (day === "tomorrow" ? "بكرة الساعة" : "اليوم الساعة")} ${clockLabel(ms, lang)}`;
+  if (quiet || open === false) return moved
+    ? no("cannot_send", "We cannot message this customer at that time, and the latest moment we may message them falls when we are closed. Say honestly, in one warm line, that you cannot send a reminder for then, and that they can write to you any time. Do not promise anything.")
+    : no(open === false ? "closed_then" : "quiet_hours", "We do not send reminders at that hour (we are closed or it is a quiet hour). Ask, in one short question, for another time while we are open.");
+  return { ok: true, at: new Date(at).toISOString(), when: label(at), moved,
+    rule: moved ? "Tell the customer honestly, in one line: the latest you can message them is this time (\"when\"), not the time they asked for, and that the reminder is set for it. Then stop: no question."
+      : "Confirm in one short warm line that you will remind them at this time (\"when\"). Then stop: no question, no selling." };
+}
+
 /* PS2 — قواعد بتتقال مع مفتاح السياق بتاعها بس (بنفس نصها اللي كان في التعليمات): رسالة صوتية، صورة، إعلان، دعوة القناة، «نفس الطلب»، محادثة الفريق لسه قافلها.
    التعليمات الثابتة بتتدفع في كل نداء (وبتتكتب في الكاش بسعر أعلى مع كل بداية باردة)؛ القواعد دي بتتدفع في الدور اللي محتاجها بس. مفيش أرقام في نصوصها (السياق بيتحسب «حقايق» عند المراجِع). */
 export const CTX_RULES = Object.freeze({
@@ -567,16 +642,18 @@ export const CTX_RULES = Object.freeze({
   picture: "The customer's message is our system's short description of a picture they sent (a menu item, an offer or an ad), not their own words. Answer about what it shows, with names and prices from the tools only (a price in the description is what the picture said, not our price: check it with the tools). If it is not clear what they want from the picture, ask in one line. Do not claim details of the picture that the description does not state.",
   staff: "Someone from the team has just been talking to this customer in this chat and has closed it: \"staff_told_customer\" is what they said, \"outcome_label\" how it ended, \"staff_note\" what they left for you. Carry on from there as the same conversation: no greeting, no introduction (unless this turn also carries \"introduce_yourself\"), do not repeat or re-ask what the team already settled, and never contradict it. If \"still_to_do\" is true, help with what the staff note says is left. If the customer's message is about what the team was handling (a complaint, a refund, a change to a paid order), do not take it over: say in one line that the team is following it here, and help with anything else. A price or fee still comes only from the tools.",
   ad: "The customer opened this chat from one of our ads. If it names an \"advertised\" box, offer or dish, open on exactly that: one or two lines saying what it is with its price (for a box call get_box with its slug first; an offer's title and price are in the context; an advertised dish sold by weight carries its weights: give them with their prices in one line and ask which weight, for example «تبيه نصف كيلو ولا كيلو؟»), then one question that moves to the order (the choice the box needs, the weight, or delivery or pickup). Do not list the menu and do not ask what they feel like. If the customer asked about something else, answer that instead. Do not mention the ad's number or any tracking detail.",
+  postpone: "The customer is putting the order off to a later time. Do not just say goodbye and do not wish them luck. In ONE graceful line accept it and offer to remind them, asking what time suits them («على راحتك 🌟 تحب أذكّرك بكرة؟ أي وقت يناسبك؟»). That is the whole message: one offer, nothing after it. If they give a time, call remind_me and tell them what it answered, nothing more. If they decline, one warm line («على راحتك، حيّاك الله في أي وقت»). Never say that you will remind or message them unless remind_me answered ok in this turn.",
+  later: "The customer can order now for a later time slot: you build the cart as usual, and on the website they choose «اطلب لوقت لاحق» and the slot before paying (payment is now). Mention it, in a few words, only when the customer wants the ORDER ITSELF at a later time (for tomorrow's lunch, for nine tonight); it is not a second offer beside a reminder. Never name a slot or a time yourself.",
   reorder: "Ask in one short line whether they want the same as their previous order (a button «نفس طلبي السابق» for it is attached automatically). If they answer yes in words: when the previous order was ordinary dishes, build the same dishes yourself (search_menu, then preview_cart); when it had a box, ask them to tap the button, because it restores their exact choices.",
 });
 export const heardContext = (kind) => (kind === "voice" ? { heard_from_voice_note: { rule: CTX_RULES.voice } } : kind === "image" ? { seen_in_a_picture: { rule: CTX_RULES.picture } } : {});
 /* PS1 — الشخصية في السياق (التعليمات ثابتة عشان الكاش؛ الاسم إعداد): you = الاسم (أول دور في الجلسة)، introduce_yourself = جملة التعريف بالحرف (الدور اللي التعريف مستحق فيه بس:
    أول رد في المحادثة / مرة كل disclosureHours)، واللي الفريق قاله للعميل قبل ما المساعد يرجع بييجي من ST2 (handback ⇒ staff_handled_this_chat) — آلية واحدة، وصياغة التعليمات في قسم «Who you are». */
 export const introSay = (name, lang) => (lang === "en" ? `This is ${name}, Fresh Cuts' digital assistant` : `معك ${name}، المساعد الرقمي لفريش كاتس`);
-export function buildContext({ first = false, hours = null, profile = null, offers = null, reorder = null, locationShared = false, justShared = false, branch = null, boxes = null, hint = null, handover = null, notes = null, ad = null, channel = null, heard = null, handback = null, persona = null, introduce = null } = {}) {
+export function buildContext({ first = false, hours = null, profile = null, offers = null, reorder = null, locationShared = false, justShared = false, branch = null, boxes = null, hint = null, handover = null, notes = null, ad = null, channel = null, heard = null, handback = null, persona = null, introduce = null, later = false } = {}) {
   const c = { open_now: hours ? hours.open_now === true : null, ...(hours && hours.open_now ? { closes_at: hours.closes_at || null } : {}), ...(hours && hours.open_now === false ? { opens: hours.opens || null, closed_rule: "we are closed now: say so in this reply with the opening time, and offer to prepare the cart for when we open" } : {}),
     ...(hours && hours.delivery_paused ? { delivery_paused: true } : {}), location_shared: Boolean(locationShared), ...(justShared ? { customer_just_shared_a_location_pin: true } : {}), ...(hint ? { hint } : {}), ...(handover ? { staff_already_asked: handover } : {}), ...(handback ? { staff_handled_this_chat: { ...handback, rule: CTX_RULES.staff } } : {}), ...(ad ? { came_from_ad: { ...ad, rule: CTX_RULES.ad } } : {}), ...(channel && channel.say ? { channel_invite: { say: String(channel.say), rule: CTX_RULES.channel } } : {}),
-    ...heardContext(heard),
+    ...heardContext(heard), ...(later ? { order_for_later: { rule: CTX_RULES.later } } : {}),
     ...(introduce ? { introduce_yourself: { say: String(introduce), rule: "use this phrase once in this message, exactly as it is" } } : {}) };
   if (persona && persona.name && (first || introduce)) c.you = { name: String(persona.name), ...(persona.name_en ? { name_en: String(persona.name_en) } : {}), what: "Fresh Cuts' digital assistant (not a human)" };  if (!first) return c;
   if (notes) c.manager_notes = String(notes).slice(0, 1500);
@@ -611,6 +688,7 @@ export function hintOf(cls) {
     ...(cls.alt ? { same_dish_without_it: cls.alt } : {}) };
   if (cls.key === "dishfact" && cls.arg && cls.arg.id) return { intent: "question_about_one_dish", dish_id: String(cls.arg.id), wants_it_removed: cls.arg.remove === true };
   if (cls.key === "change") return { intent: "note_or_change_to_the_cart_being_built" };
+  if (cls.key === "location" || cls.key === "hoursloc") return { intent: "where_are_we", do: "faq branch_location", ...(cls.rawIntent === "where_typo" ? { unless: "you have just asked delivery or pickup: then it means eating at the restaurant" } : {}) };
   if (cls.key === "packs") return { intent: "gathering" };
   return null;
 }
@@ -695,7 +773,7 @@ export function makeAssistLoop(deps) {
       case "get_item": return tools.get_item(phone, { id: a.id });
       case "list_boxes": return tools.list_boxes();
       case "get_box": return tools.get_box(phone, { slug: a.slug });
-      case "list_packs": return tools.list_packs();
+      case "list_packs": { const r = await tools.list_packs(); if (r && r.ok) T.packsNow = true; return r; }
       case "recommend": return tools.recommend();
       case "check_availability": return tools.check_availability(phone, { ids: a.ids });
       case "get_offers": { const r = await tools.get_offers(phone); st.offers = true; if (r && ((r.rewards || []).some((x) => Number(x.percent) > 0) || /%/.test(String(r.loyalty && r.loyalty.reward)))) st.discount = true; return r; }
@@ -752,7 +830,8 @@ export function makeAssistLoop(deps) {
       }
       case "faq": {
         const topic = String(a.topic || "");
-        const text = deps.faq ? await deps.faq(topic, lang) : null;
+        const text = deps.faq ? await deps.faq(topic, lang, st.customerTexts.slice(-2).join("\n")) : null;
+        if (topic === "branch_location" && text) T.location = true;      // PS3: رد الموقع بيتبعت معاه زر الخريطة (wabotrun)
         if (!text) { T.trace.unanswered.push({ source: "no_answer", question: `faq: ${topic}` }); return { ok: false, error: "no_approved_answer", rule: "there is no approved answer for this topic yet. Say plainly in one line that you have no confirmed information about it and that they can type «موظف» to ask the team. Do not guess and do not hand over by yourself." }; }
         if (topic === "apps") st.apps = true;
         st.say.push(text);
@@ -782,8 +861,20 @@ export function makeAssistLoop(deps) {
         T.trace.suggestions.push({ kind, ref: o ? o.ref : null, name: o ? o.name : null, outcome });
         return { ok: true };
       }
+      /* PS3 — التذكير: الأداة بتقول امتى الرسالة تتبعت فعلاً (أو إنها ماينفعش)؛ الجدولة نفسها بتحصل بعد ما رد الدور ده يتبعت للعميل (wabotrun). */
+      case "remind_me": {
+        if (!T.acfg || !T.acfg.remindersEnabled || !deps.reminder) return { ok: false, error: "unavailable", rule: "Reminders are not available. Say in one warm line that they can write to you any time. Do not promise a reminder." };
+        if (a.cancel === true) { T.reminder = { cancel: true }; return { ok: true, cancelled: true, rule: "Confirm in a few words that the reminder is cancelled." }; }
+        const ref = a.box_slug ? { slug: String(a.box_slug).slice(0, 60) } : a.dish_id ? { id: String(a.dish_id).slice(0, 20) } : null;
+        const p = await deps.reminder({ phone, day: a.day === "tomorrow" ? "tomorrow" : "today", time: String(a.time || ""), lang });
+        if (p && p.ok) T.reminder = { at: p.at, ref, lang };
+        const { at: _at, ...seen } = p || { ok: false, error: "unavailable" };
+        return seen;
+      }
       case "handover": {
         const reason = ["allergy_severe", "complaint", "problem", "order_change", "custom_offer", "needs_staff"].includes(a.reason) ? a.reason : "needs_staff";
+        /* PS3 (وقعت ٢ من ٥ تشغيلات تقييم): «عزيمة لـ٢٥ شخص» اتحوّلت لموظف في نفس الدور اللي اتقرت فيه الباقات، فالعميل ماشافش ولا باقة. العرض المخصص بيتحوّل بعد ما الباقات تتعرض في رسالة سابقة. */
+        if (reason === "custom_offer" && !st.packs) return { ok: false, error: "show_packs_first", rule: "Not handed over. First show the gathering packs from list_packs in this message (names and prices) and ask whether one fits or they want a tailored offer. Hand over with custom_offer only in a later turn, after the customer has seen the packs." };
         T.handover = { reason, note: String(a.note || "").replace(/\s+/g, " ").trim().slice(0, 200) };
         return { ok: true, sent: "a fixed handover message is being sent to the customer" };
       }
@@ -797,7 +888,7 @@ export function makeAssistLoop(deps) {
     const st = session.state;
     const pm = pickModel(acfg, session, text);
     const trace = { tools: [], verdicts: [], calls: [], suggestions: [], unanswered: [], ms: 0, model: pm.model, tier: pm.tier, costSar: 0, in: 0, out: 0, cached: 0, sent: null, ...(session.compacted && session.compacted !== (session0.compacted || 0) ? { compacted: true } : {}) };
-    const T = { phone, lang, session, trace, cart: null, handover: null, profile, acfg, factSay: [], kbSay: [] };
+    const T = { phone, lang, session, trace, cart: null, handover: null, profile, acfg, factSay: [], kbSay: [], location: false, reminder: null };
     const fail = (reason) => { trace.ms = Date.now() - t0; return { ok: false, reason, session: session0, trace }; };
     const masked = cleanCustomer(maskText(text));
     trace.sent = masked;
@@ -805,6 +896,7 @@ export function makeAssistLoop(deps) {
     const n = now(), r = new Date(n.getTime() + 3 * 3600_000);
     const ctx = { now: `${DAYS_AR[r.getUTCDay()]}، ${partOfDay(r.getUTCHours())}`, ...context,
       /* PS2: دور طلب («ابي …») على الموديل السريع: في التقييم رد بالسعر من البحث ونسي preview_cart (فمفيش اقتراح محسوب ولا بيع إضافي). السياق بيقولها له صريحة. */
+      ...(acfg.remindersEnabled && POSTPONE_RE.test(normalize(String(text || ""))) ? { customer_is_postponing: { rule: CTX_RULES.postpone } } : {}),
       ...(ORDER_RE.test(normalize(String(text || ""))) && !(context && context.heard_from_voice_note) ? { customer_is_ordering: "find what they named, then call preview_cart BEFORE you answer: it gives the real price and the one suggestion to offer" } : {}) };
     /* دعوة القناة (لو السياق سمح بيها في الدور ده): النص المعتمد بالرابط، والرابط نفسه للمراجِع. */
     const chSay = context && context.channel_invite && context.channel_invite.say ? String(context.channel_invite.say) : null;
@@ -854,7 +946,7 @@ export function makeAssistLoop(deps) {
       const facts = sessionFacts(session.messages);
       /* دعوة القناة في رد فيه إجابة حساسية/مكوّن ⇒ السطر بيتشال بالكود (مش مكانها). */
       if (chUrl && T.factSay.length && raw.includes(chUrl)) raw = raw.split("\n").filter((l) => !l.includes(chUrl)).join("\n").trim();
-      const v = checkReply(raw, { facts, customerText: st.customerTexts.join("\n"), know, discountAllowed: st.discount, appsAllowed: st.apps, offersSeen: st.offers === true, sayTexts: chSay ? [...st.say, chSay] : st.say, lang, channelUrl: chUrl, introAllowed: Boolean(context && context.introduce_yourself), turnText: text, freeCode: T.freeCode || null });
+      const v = checkReply(raw, { facts, customerText: st.customerTexts.join("\n"), know, discountAllowed: st.discount, appsAllowed: st.apps, offersSeen: st.offers === true, sayTexts: chSay ? [...st.say, chSay] : st.say, lang, channelUrl: chUrl, introAllowed: Boolean(context && context.introduce_yourself), turnText: text, freeCode: T.freeCode || null, recentCustomer: st.customerTexts.slice(-3).join("\n"), reminderSet: Boolean(T.reminder && T.reminder.at) });
       trace.verdicts.push({ ok: v.ok, problems: v.problems, text: raw.slice(0, 1200) });
       if (v.ok) { finalText = raw; break; }
       if (retried) return fail("validator");
@@ -875,9 +967,10 @@ export function makeAssistLoop(deps) {
         if (shown && !st.offered.some((o) => o.kind === s.kind && o.ref === s.ref && o.outcome === "offered")) { s.outcome = "offered"; st.offered.push({ kind: s.kind, ref: s.ref, name: s.name, outcome: "offered", at: n.toISOString() }); }
       }
     }
+    if (T.packsNow && finalText) st.packs = true;
     if (T.cart) st.lastCart = { code: T.cart.code, at: n.toISOString(), subtotal: T.cart.subtotal, option: T.cart.option, accepted: st.offered.filter((o) => o.outcome === "accepted").map((o) => ({ kind: o.kind, ref: o.ref, name: o.name })) };
     trace.ms = Date.now() - t0;
-    return { ok: true, text: finalText, cart: T.cart, handover: T.handover, session, trace };
+    return { ok: true, text: finalText, cart: T.cart, handover: T.handover, session, trace, location: T.location === true, reminder: T.reminder };
   }
   return { runTurn, exec };
 }

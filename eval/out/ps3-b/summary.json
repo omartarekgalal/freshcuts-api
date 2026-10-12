@@ -1,0 +1,53 @@
+{
+ "set": "ps3",
+ "name": "ps3-b",
+ "over": {
+  "routing": "escalate",
+  "thinking": "adaptive",
+  "effort": "low",
+  "timeoutMs": 60000
+ },
+ "capped": false,
+ "spentRun": 0.083634,
+ "spentTodayBefore": 0.8788839999999997,
+ "cap": 80,
+ "conversations": 3,
+ "passed": 3,
+ "failed": [],
+ "customerTurns": 10,
+ "modelTurns": 10,
+ "answeredByAssistant": 10,
+ "rulesOwned": 0,
+ "fallbacks": {},
+ "validatorRetries": 1,
+ "escalations": 0,
+ "costSar": 0.0836,
+ "costPerConversationSar": 0.0279,
+ "costPerModelTurnSar": 0.0084,
+ "latencyMs": {
+  "p50": 1909,
+  "p90": 3697,
+  "max": 3697,
+  "n": 10
+ },
+ "modelCalls": 15,
+ "byModel": {
+  "claude-haiku-5-5": {
+   "calls": 15,
+   "in": 9877,
+   "out": 793,
+   "cached": 209182,
+   "sar": 0.0836,
+   "callP50ms": 1180,
+   "callP90ms": 1839
+  }
+ },
+ "failTypes": {},
+ "reviewFlags": {
+  "same_closing": 1,
+  "intro_by_code": 1,
+  "validator_retry": 1
+ },
+ "text": "conversations 3 · passed 3 · failed 0\ncustomer turns 10: assistant answered 10, rules owned 0, fallbacks {}\nvalidator retries 1 · escalations fast→strong 0 · model calls 15\ncost 0.0836 SAR (0.0279 per conversation, 0.0084 per model turn)\nlatency per answered turn: p50 1909 ms · p90 3697 ms · max 3697 ms (n=10)\nby model {\"claude-haiku-5-5\":{\"calls\":15,\"in\":9877,\"out\":793,\"cached\":209182,\"sar\":0.0836,\"callP50ms\":1180,\"callP90ms\":1839}}\nfail types {}\nreview flags {\"same_closing\":1,\"intro_by_code\":1,\"validator_retry\":1}",
+ "markdown": "# Assistant evaluation: ps3-b\n\n```\nconversations 3 · passed 3 · failed 0\ncustomer turns 10: assistant answered 10, rules owned 0, fallbacks {}\nvalidator retries 1 · escalations fast→strong 0 · model calls 15\ncost 0.0836 SAR (0.0279 per conversation, 0.0084 per model turn)\nlatency per answered turn: p50 1909 ms · p90 3697 ms · max 3697 ms (n=10)\nby model {\"claude-haiku-5-5\":{\"calls\":15,\"in\":9877,\"out\":793,\"cached\":209182,\"sar\":0.0836,\"callP50ms\":1180,\"callP90ms\":1839}}\nfail types {}\nreview flags {\"same_closing\":1,\"intro_by_code\":1,\"validator_retry\":1}\n```\n\n## Conversations\n\n### PASS · ps3-real-chat (the real chat) · 0.0388 SAR\n\nReview: same_closing@2 «فرعنا في حي السلامه بجده عند دوار رامي»\n\n- **العميل:** مرحبا\n  - **المساعد** (fast, 1893 ms, 0.0053 SAR): هلا والله 👋 معك ماجد، المساعد الرقمي لفريش كاتس. وش تحب تطلب اليوم؟\n- **العميل:** في المكان\n  - _(زر «افتح الخريطة» مع الرسالة)_\n  - **المساعد** (fast, 2043 ms, 0.0108 SAR, tools: faq): 📍 فرعنا في حي السلامة بجدة، عند دوار رامي.\n- **العميل:** فين جده ولا فين\n  - _(زر «افتح الخريطة» مع الرسالة)_\n  - **المساعد** (fast, 1909 ms, 0.0111 SAR, tools: faq): 📍 فرعنا في حي السلامة بجدة، عند دوار رامي.\n- **العميل:** لا انشالله بكره\n  - **المساعد** (fast, 1163 ms, 0.0058 SAR): على راحتك 🌟 تحب أذكّرك بكرة؟ أي وقت يناسبك؟\n- **العميل:** شكرا\n  - **المساعد** (fast, 1197 ms, 0.0058 SAR): العفو، حيّاك الله في أي وقت 🌟\n\n### PASS · ps3-reminder-when-closed (reminder) · 0.0223 SAR\n\nReview: intro_by_code@0 «»; validator_retry@1 «reminder_not_scheduled:أذكّرك»\n\n- **العميل:** بعدين ان شاء الله\n  - **المساعد** (fast, 1911 ms, 0.0054 SAR): معك ماجد، المساعد الرقمي لفريش كاتس. ⏎ على راحتك 🌟 تحب أذكّرك بكرة؟ أي وقت يناسبك؟\n- **العميل:** ذكرني بكرة الساعة ٩ الصبح\n  - **المساعد** (fast, 3697 ms, 0.0169 SAR, tools: remind_me): ما قدرت أحجز تذكير الساعة 9 الصبح بكرة، لأن الوقت خارج أوقات الرسائل. تحب تختار وقت ثاني بكرة؟\n\n### PASS · ps3-postpone-no-reminder-wanted (reminder) · 0.0226 SAR\n\n- **العميل:** ابي بيتزا\n  - **المساعد** (fast, 3409 ms, 0.0110 SAR, tools: search_menu): أبشر، معك ماجد، المساعد الرقمي لفريش كاتس. عندنا بيتزا بأنواع كثيرة، من مارجريتا بـ 20 ر.س إلى تشيكن الباتشينو بـ 30 ر.س. تفضّل أي نوع، ولا تبي أشوف لك بوكس بيتزا لشخصين؟\n- **العميل:** مو الحين، بعدين\n  - **المساعد** (fast, 1176 ms, 0.0057 SAR): على راحتك 🌟 تحب أذكّرك بكرة؟ أي وقت يناسبك؟\n- **العميل:** لا مو لازم شكراً\n  - **المساعد** (fast, 984 ms, 0.0058 SAR): العفو، حيّاك الله في أي وقت 🌟\n"
+}

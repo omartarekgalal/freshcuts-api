@@ -43,7 +43,7 @@ test("routing in the loop: a two-dish order is priced and built by the fast mode
 });
 
 test("prompt: rules that belong to a context key travel with that key, word for word, and the fixed prompt is smaller; the leak detector still knows them", () => {
-  assert.ok(AR.SYSTEM_PROMPT.length < 22600, `fixed prompt ${AR.SYSTEM_PROMPT.length} chars (25.5k before PS2)`);
+  assert.ok(AR.SYSTEM_PROMPT.length < 23000, `fixed prompt ${AR.SYSTEM_PROMPT.length} chars (25.5k before PS2; PS3 added two short rules and kept the postponement rule in the context)`);
   for (const k of ["heard_from_voice_note", "seen_in_a_picture", "came_from_ad", "staff_handled_this_chat", "reorder_offer"]) assert.ok(!AR.SYSTEM_PROMPT.includes(`"${k}"`), `${k} is no longer explained in the fixed prompt`);
   assert.match(AR.SYSTEM_PROMPT, /Some context keys carry their own "rule"/); assert.match(AR.SYSTEM_PROMPT, /Never write a channel link or mention the channel in a turn whose context has no "channel_invite"/);
   for (const [k, v] of Object.entries(AR.CTX_RULES)) { assert.ok(v.length > 120, k); assert.doesNotMatch(v, /\d/, `${k}: no digits (a context block counts as facts for the validator's number check)`); }

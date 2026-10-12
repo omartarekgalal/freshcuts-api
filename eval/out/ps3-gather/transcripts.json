@@ -1,0 +1,244 @@
+[
+ {
+  "id": "family-gathering-custom-offer",
+  "group": "family gathering",
+  "world": {
+   "profile": "new"
+  },
+  "expect": {
+   "handover": "custom_offer",
+   "noCart": true,
+   "turnMustContain": {
+    "0": "باق"
+   }
+  },
+  "turns": [
+   {
+    "i": 0,
+    "customer": "عندنا عزيمة يوم الجمعة لخمسة وعشرين شخص، وش عندكم؟",
+    "cls": "packs",
+    "raw": "packs",
+    "by": "assistant",
+    "reply": "أبشر، معك ماجد، المساعد الرقمي لفريش كاتس. لخمسة وعشرين شخص عندنا هذي الباقات:\n\nباقة ١٥ شخصاً وأكثر بـ 595 ر.س: ٤ كيلو مشاوي + دجاجتين كاملتين على الفحم + أرز وبطاطس وكولسلو + ١٢ مشروب.\n\nتقدر تطلب الباقات من موقعنا. نقدر نجهّز لك عرض مخصص للعزيمة، تبي أحوّلك لفريق المطعم؟",
+    "cart": null,
+    "handover": null,
+    "outcome": "sent",
+    "tools": [
+     {
+      "name": "list_packs",
+      "input": {},
+      "result": {
+       "ok": true,
+       "packs": [
+        {
+         "slug": "gathering-4",
+         "name": "باقة تجمّع ٤–٦ أشخاص",
+         "name_en": "Gathering Pack — 4 to 6 People",
+         "price": 225,
+         "description": "كيلو مشاوي × ٢ من اختيارك + أرز وبطاطس وكولسلو + ٤ مشروبات",
+         "description_en": "2 kilos of grills of your choice + rice, fries and coleslaw + 4 soft drinks"
+        },
+        {
+         "slug": "gathering-8",
+         "name": "باقة تجمّع ٨–١٠ أشخاص",
+         "name_en": "Gathering Pack — 8 to 10 People",
+         "price": 395,
+         "description": "٣ كيلو مشاوي + دجاجة كاملة على الفحم + أرز وبطاطس وكولسلو + ٨ مشروبات",
+         "description_en": "3 kilos of grills + a whole charcoal chicken + rice, fries and coleslaw + 8 soft drinks"
+        },
+        {
+         "slug": "gathering-15",
+         "name": "باقة مناسبة ١٥ شخصاً وأكثر",
+         "name_en": "Occasion Pack — 15+ People",
+         "price": 595,
+         "description": "٤ كيلو مشاوي + دجاجتين كاملتين على الفحم + أرز وبطاطس وكولسلو + ١٢ مشروب",
+         "description_en": "4 kilos of grills + 2 whole charcoal chickens + rice, fries and coleslaw + 12 soft drinks"
+        }
+       ],
+       "online_only": true
+      },
+      "ms": 1
+     }
+    ],
+    "verdicts": [
+     {
+      "ok": true,
+      "problems": [],
+      "text": "أبشر، معك ماجد، المساعد الرقمي لفريش كاتس. لخمسة وعشرين شخص عندنا هذي الباقات:\n\nباقة ١٥ شخصاً وأكثر بـ 595 ر.س: ٤ كيلو مشاوي + دجاجتين كاملتين على الفحم + أرز وبطاطس وكولسلو + ١٢ مشروب.\n\nتقدر تطلب الباقات من موقعنا. نقدر نجهّز لك عرض مخصص للعزيمة، تبي أحوّلك لفريق المطعم؟"
+     }
+    ],
+    "calls": [
+     {
+      "model": "claude-haiku-5-5",
+      "tier": "fast",
+      "ms": 2715,
+      "outcome": "ok",
+      "in": 4,
+      "out": 27,
+      "cached": 13543,
+      "costSar": 0.005131
+     },
+     {
+      "model": "claude-haiku-5-5",
+      "tier": "fast",
+      "ms": 1946,
+      "outcome": "ok",
+      "in": 685,
+      "out": 208,
+      "cached": 13543,
+      "costSar": 0.005726
+     }
+    ],
+    "ms": 4736,
+    "costSar": 0.010857,
+    "model": "claude-haiku-5-5",
+    "suggestions": [],
+    "context": {
+     "open_now": true,
+     "closes_at": "2 فجراً",
+     "location_shared": false,
+     "hint": {
+      "intent": "gathering"
+     },
+     "introduce_yourself": {
+      "say": "معك ماجد، المساعد الرقمي لفريش كاتس",
+      "rule": "use this phrase once in this message, exactly as it is"
+     },
+     "you": {
+      "name": "ماجد",
+      "name_en": "Majed",
+      "what": "Fresh Cuts' digital assistant (not a human)"
+     },
+     "customer": {
+      "known": false,
+      "name": null,
+      "orders": 0,
+      "status": "no_orders",
+      "days_since_last": null,
+      "usual_basket_sar": null,
+      "usual_mode": null,
+      "usual_hour": null,
+      "favourites": [],
+      "taste": null,
+      "last_order": null,
+      "districts": [],
+      "loyalty": {
+       "every": 3,
+       "progress": 0,
+       "left": 3,
+       "reward": "free_delivery",
+       "min_total": 60,
+       "status": null
+      },
+      "unused_rewards": [],
+      "first_order_offer": true,
+      "language": "ar"
+     },
+     "offers": {
+      "first_order": {
+       "eligible": true,
+       "code": "FIRST",
+       "free_delivery": true,
+       "min_total": 60,
+       "reason": null
+      },
+      "loyalty": {
+       "every": 3,
+       "progress": 0,
+       "left": 3,
+       "reward": "free_delivery",
+       "min_total": 60,
+       "status": null
+      }
+     },
+     "branch": "📍 فرعنا في حي السلامة بجدة، عند دوار رامي.",
+     "boxes": [
+      "box-solo-crepe: بوكس الكريب الفردي",
+      "box-solo-mixgrill: بوكس الميكس جريل الفردي",
+      "box-solo-burger: بوكس البرجر الفردي",
+      "box-solo-pasta: بوكس الباستا الفردي",
+      "box-solo-hawawshi: بوكس الحواوشي الفردي",
+      "box-solo-meal: بوكس وجبة المشاوي الفردي",
+      "box-crepe-duo: بوكس الكريب لشخصين",
+      "box-mixgrill-duo: ميكس جريل لشخصين",
+      "box-pizza-pasta: بيتزا وباستا لشخصين",
+      "box-meals-duo: وجبتين مشاوي لشخصين",
+      "box-burger-duo: بوكس البرجر لشخصين",
+      "box-late-night: بوكس السهرة",
+      "box-taste-all: بوكس التشكيلة",
+      "box-grill-half-half: بوكس المشاوي نص ونص",
+      "box-family: بوكس العائلة — مشاوي وبيتزا وباستا",
+      "box-pizza-night: بوكس سهرة البيتزا",
+      "box-mashakel: بوكس المشكل المخصوص",
+      "box-ribs-grill: بوكس الريش والمشاوي"
+     ]
+    },
+    "tier": "fast",
+    "escalated": false,
+    "lang": "ar",
+    "introByModel": true
+   },
+   {
+    "i": 1,
+    "customer": "ابي عرض مخصص: 25 شخص، الجمعة الساعة 9 مساء، توصيل",
+    "cls": "packs",
+    "raw": "catering",
+    "by": "assistant",
+    "reply": null,
+    "cart": null,
+    "handover": "custom_offer",
+    "outcome": "handover:custom_offer",
+    "tools": [
+     {
+      "name": "handover",
+      "input": {
+       "reason": "custom_offer",
+       "note": "عزيمة 25 شخص، يوم الجمعة الساعة 9 مساءً، توصيل. يريدون عرضاً مخصصاً."
+      },
+      "result": {
+       "ok": true,
+       "sent": "a fixed handover message is being sent to the customer"
+      },
+      "ms": 1
+     }
+    ],
+    "verdicts": [],
+    "calls": [
+     {
+      "model": "claude-haiku-5-5",
+      "tier": "fast",
+      "ms": 1565,
+      "outcome": "ok",
+      "in": 508,
+      "out": 201,
+      "cached": 14089,
+      "costSar": 0.005851
+     }
+    ],
+    "ms": 1575,
+    "costSar": 0.005851,
+    "model": "claude-haiku-5-5",
+    "suggestions": [],
+    "context": {
+     "open_now": true,
+     "closes_at": "2 فجراً",
+     "location_shared": false,
+     "hint": {
+      "intent": "gathering"
+     }
+    },
+    "tier": "fast",
+    "escalated": false,
+    "lang": "ar",
+    "note": "عزيمة 25 شخص، يوم الجمعة الساعة 9 مساءً، توصيل. يريدون عرضاً مخصصاً."
+   }
+  ],
+  "carts": [],
+  "costSar": 0.016708,
+  "grade": {
+   "pass": true,
+   "fails": [],
+   "review": []
+  }
+ }
+]

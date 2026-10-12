@@ -39,6 +39,7 @@ import { staffPhones, fitOneSms, staffConfig } from "./staffalerts.js";
 import { loyaltyCfgOf } from "./loyalty.js";
 import { MAPS_URL } from "./watemplates.js";
 import { isOpenNow } from "./carts.js";
+import { preorderCfg } from "./preorder.js";
 import { makeBotCarts, reorderPlan, planSummary, orderDay, chatLocation } from "./wabotcart.js";
 import { makeAssistTools, validateReply, profileSummaryAr } from "./waassist.js";
 import { lookupFact, groupsIn, SEVERE_RE, factsCoverage, pickDish, factNote, dishAllergens } from "./wadishfacts.js";
@@ -50,7 +51,7 @@ import { ECHO, STAFF_ECHO_SQL } from "./waecho.js";
 import { makeStt, STT_PROVIDERS } from "./wasttkey.js";
 const STT_LABEL = Object.fromEntries(STT_PROVIDERS.map((p) => [p.id, p.label]));
 import { lookImage, makeTranscriber, voiceSeconds, transcriptUsable, IMAGE_MAX_BYTES, VOICE_MAX_BYTES } from "./waassistmedia.js";
-import { ASSIST_CFG_DEFAULTS, ASSIST_SCHEMA, PROMPT_HASH, LIVE_AUDIENCES, assistConfig, assistFromBody, assistEligible, makeAssistLoop, makeAssistStore, makeModelCaller, billableUsage, newSession, noteRulesTurn, buildContext, hintOf, introSay, ensureIntro, hasIntro, heardContext } from "./waassistrun.js";
+import { ASSIST_CFG_DEFAULTS, ASSIST_SCHEMA, PROMPT_HASH, LIVE_AUDIENCES, assistConfig, assistFromBody, assistEligible, makeAssistLoop, makeAssistStore, makeModelCaller, billableUsage, newSession, noteRulesTurn, buildContext, hintOf, introSay, ensureIntro, hasIntro, heardContext, planReminder } from "./waassistrun.js";
 import { WA_UPDATES_TEXTS, WA_UPDATES_CURRENT, recordWaUpdatesBot, recordWaMarketingBot, ensureWaConsentSchema } from "./waconsent.js";
 
 export const STORE = "https://freshcuts.sa";
@@ -215,6 +216,9 @@ export const TEXTS = Object.freeze({
   cta_reorder: t("زر: كمّل طلبك", "كمّل طلبك", "Complete order", [], [], LIMITS.ctaText),
   /* مساعد الطلبات: المتابعة الواحدة بعد رابط السلة (نص ثابت + نفس الرابط بزر «كمّل طلبك») */
   assist_followup: t("مساعد الطلبات: متابعة بعد رابط السلة", "سلتك ما زالت جاهزة 🛒 تقدر تكمّل طلبك من الزر 👇\nوإذا تحتاج شي ثاني اكتب لي.", "Your cart is still ready 🛒 You can complete your order from the button 👇\nIf you need anything else, just write.", [], [], 300),
+  /* PS3 — التذكير اللي العميل طلبه: بيفتح الكلام تاني باسم ماجد وبالصنف اللي كان بيسأل عنه (لو معروف ولسه متاح). مش رسالة تسويق: بتتبعت بس لعميل قال «فكّرني» وحدد الوقت. */
+  assist_reminder: t("مساعد الطلبات: التذكير اللي العميل طلبه", "هلا 👋 معك {name}، المساعد الرقمي لفريش كاتس، وهذا تذكيرك مثل ما اتفقنا.\n{about}\nأجهّز لك طلبك الحين؟", "Hi 👋 This is {name}, Fresh Cuts' digital assistant, with the reminder you asked for.\n{about}\nShall I get your order ready now?", ["name"], ["about"], 400),
+  assist_reminder_about: t("التذكير: سطر الصنف اللي كان بيسأل عنه", "كنت تفكّر في {dish}.", "You were looking at {dish}.", ["dish"], [], 200),
   unsupported_line: t("رسالة نوعها مش مدعوم جوّه محادثة شغّالة", "ما وصلتني رسالتك بشكل واضح، اكتبها نص لو سمحت 🙏", "Your message did not come through clearly. Please type it as text 🙏"),
   paid_note: t("تأكيد الطلب بعد الدفع", "وصلنا طلبك رقم {order_no} ✅ نبدأ نجهّزه الحين.\nتقدر تتابعه من الزر 👇", "We received your order {order_no} ✅ We are starting on it now.\nYou can follow it from the button 👇", ["order_no"], [], 400),
   lead_followup: t("متابعة محادثة ماخدتش رد مفيد", "{who}\nوصلتنا رسالتك وما قدرنا نخدمك وقتها، نعتذر منك 🙏\nوش تحب تطلب؟ اكتب لي الصنف وأجهّز لك طلبك.", "{who}\nWe got your message and could not help you at the time, sorry 🙏\nWhat would you like to order? Tell me the dish and I will get your order ready.", ["who"], [], 600),
@@ -1057,7 +1061,7 @@ export function buildReply(key, c) {
     }
     case "faq": {
       const row = cfg.faq?.[String(c.arg)] || {};
-      const ans = String((lang === "en" ? row.en || row.ar : row.ar) || "").trim();      // مفيش ترجمة ⇒ العربي المعتمد
+      const ans = faqAnswer(String((lang === "en" ? row.en || row.ar : row.ar) || ""), c.asked || "");      // مفيش ترجمة ⇒ العربي المعتمد. السطور المشروطة: بس لو العميل سأل عنها (PS3)
       if (!ans) throw new FaqMissing(String(c.arg));
       return { body: F("faq_body", { answer: ans }) };
     }
@@ -1316,6 +1320,9 @@ const EXTRA_INTENTS = [
   [/^(الو+|هالو|اخبارك|اخبارك ايه|ايش اخبارك|وش اخبارك|كيف حالك|كيف الحال|كيفك|شلونك|عامل ايه|ازيك)( يا [\p{L}]+)?$/u, "greet", null, "greet"],
   [/^(اشكرك|اشكركم|نشكركم|شاكر لك|شاكره لك|ممنون|ممنونك)( جدا| كثير| جزيلا)?$/, "thanks", null, "thanks"],
   [/^(ثواني|ثانيه|ثانيه بس|لحظه|لحظات|دقيقه|دقيقه بس|لحظه بس|ثواني بس|sec|one sec|one moment|wait)$/, "ack", null, "ack"],
+  /* PS3: صيغ «فين المكان» القصيرة والمصرية. «في المكان» لوحدها = «فين المكان» (rawIntent where_typo: جوّه محادثة المساعد بعد سؤال «توصيل ولا استلام» ممكن تبقى «آكل عندكم» — التلميح بيقول له). */
+  [/^(في|فى) (ال)?(مكان|مكانكم)$/, "location", null, "where_typo"],
+  [/^(فين|وين|اين|فينكم|وينكم)( (ال)?(مكان|مكانكم|موقع|موقعكم|محل|محلكم|مطعم|مطعمكم|فرع|فرعكم|عنوان|عنوانكم|لوكيشن))?( بالضبط| بالظبط)?$|^(ال)?(مكان|مكانكم|موقع|موقعكم|محل|محلكم|مطعم|مطعمكم|فرع|فرعكم|عنوان|عنوانكم|لوكيشن) (فين|وين|اين)( بالضبط| بالظبط)?$|^(انتو|انتوا|انتم|انت) (فين|وين)( بالضبط| بالظبط)?$|^(فين|وين) [^ ]+( [^ ]+)? ولا (فين|وين)$|^(ابعت|ابعتلي|ارسل|ارسلي|ارسل لي|عطني) (ال)?(لوكيشن|موقع|موقعكم|عنوان)$/, "location", null, "where"],
   [/^(ما|وش|ايش|ايه|شنو) ?(هو )?اسمك$|^اسمك (ايه|ايش|وش)$|^what('s| is) your name$/, "whoami", null, "who_are_you"],
   [/(مش|مو|ماني|مب|ما) (عارف|عارفه|ادري) (اكل|اطلب|اخذ|اختار) (ايه|ايش|وش|شنو)|^(انا )?(جوعان|جوعانه|جعان|جعانه)$|^(ايش|وش|ايه|شنو) (تقترح|تقترحون|تقترحوا|ترشح|ترشحون|ترشحلي|تنصح|تنصحون)( لي| علي)?$|^(اقترح|رشح|انصحني|اقترحلي|رشحلي)( لي| علي)?( شي| حاجه)?$/, "best", null, "recommend"],
   /* EX4 (عمر ١٣/١٠: «عملت ايقاف وملقيتش تشغيل»): طلب صريح برجوع العروض ⇒ نفس «اشتراك». الصيغ القصيرة المبهمة («استمرار»، «تشغيل»، «غلطت») في RESUME_SOFT_RE: بس لو هو موقّف فعلاً. */
@@ -1538,6 +1545,21 @@ export const personaOn = (cfg) => cfg.disclosureMode !== "classic";
 export const personaNameOf = (cfg, lang) => (lang === "en" ? cfg.assist.personaNameEn : cfg.assist.personaName);
 const honestText = (cfg, key, lang) => { const name = personaNameOf(cfg, lang), L = lang === "en" ? "en" : "ar"; const own = fill(key, textOf(cfg, key, L), { name }); return hasIntro(own, name) ? own : fill(key, TEXTS[key][L], { name }); };
 export const introLine = (cfg, lang) => honestText(cfg, "intro", lang);
+/* PS3 (عمر ١٣/١٠: «مش حابب نقول معندناش إلا لو كان سأل»): سطر في إجابة سؤال شائع ممكن يبقى مشروط:
+     [لو سأل: خارجي، خارجية، برا] لا توجد جلسات خارجية.        ·        [if asked: outdoor, outside] There is no outdoor seating.
+   السطر ده بيتبعت بس لو كلام العميل فيه واحدة من الكلمات (بعد التوحيد). أي سطر بادئ بالقوس ومش مفهوم ⇒ مايتبعتش (عمر العميل ما يشوف القوس). */
+const FAQ_IF = /^\s*\[\s*(?:لو س[أا]ل|اذا س[أا]ل|إذا س[أا]ل|if asked)\s*[:：]?\s*([^\]]*)\]\s*(.*)$/i;
+export function faqAnswer(raw, asked = "") {
+  const n = normalize(String(asked || "")), low = String(asked || "").toLowerCase();
+  const out = [];
+  for (const line of String(raw || "").split("\n")) {
+    if (!/^\s*\[/.test(line)) { out.push(line); continue; }
+    const m = FAQ_IF.exec(line); if (!m) continue;
+    const keys = m[1].split(/[,،;]+/).map((k) => k.trim()).filter(Boolean);
+    if (m[2].trim() && keys.some((k) => (normalize(k) && n.includes(normalize(k))) || low.includes(k.toLowerCase()))) out.push(m[2].trim());
+  }
+  return out.join("\n").replace(/\n{3,}/g, "\n\n").trim();
+}
 export function disclosureLine(cfg, lang, settings) {
   if (personaOn(cfg)) return introLine(cfg, lang);
   const phone = publicPhoneOf(cfg, settings);
@@ -1679,7 +1701,7 @@ export function decide(ev, ctx) {
   if (HANDOFF_KEYS[key] && !handoff) handoff = HANDOFF_KEYS[key];
 
   const interactive = cfg.interactive && ctx.interactive !== false;
-  const bc = { cfg, lang: c.lang, data: ctx.data, referral: ev.referral || null, factual, arg: c.arg ?? null };
+  const bc = { cfg, lang: c.lang, data: ctx.data, referral: ev.referral || null, factual, arg: c.arg ?? null, asked: ev.text || "" };
   let reply, problem = null, faqGap = null;
   try { reply = buildReply(key, bc); }
   catch (e) {
@@ -2607,6 +2629,7 @@ export function register(app, ctx, deps = {}) {
         if (j.kind === "assist_followup") { await runFollowUp(j, settings, cfg, now, end); ran++; continue; }
         if (j.kind === "paid_note") { await runPaidNote(j, settings, cfg, now, end); ran++; continue; }
         if (j.kind === "lead_followup") { await runLeadFollowUp(j, settings, cfg, now, end); ran++; continue; }
+        if (j.kind === "assist_reminder") { await runReminder(j, settings, cfg, now, end); ran++; continue; }
         if (j.kind === "handover_check") { await runHandoverCheck(j, settings, cfg, now, end); ran++; continue; }
         if (now.getTime() - new Date(j.due_at).getTime() > cfg.maxAgeMinutes * 60_000) { await cancel("stale"); continue; }
         const echo = await q(`SELECT 1 FROM wa_messages WHERE phone_norm=$1 AND source='echo' AND created_at > $2 AND ${STAFF_ECHO_SQL} LIMIT 1`, [j.phone_norm, ev.at || new Date(j.due_at).toISOString()]);
@@ -2858,6 +2881,8 @@ export function register(app, ctx, deps = {}) {
   }
   /* ST2: الموظف قفل المحادثة ⇒ أول دور للمساعد بعدها بياخد ملخص اللي الموظف قاله + النتيجة والملاحظة (waflow.handbackFor). مرة واحدة: بيتشال بعد ما رد المساعد يتبعت. */
   const flowApi = () => { try { return (typeof deps.flow === "function" ? deps.flow() : deps.flow) || null; } catch { return null; } };
+  /* PS3: «اطلب لوقت لاحق» متاح في المتجر؟ (settings.preorder) — المساعد يعرضه على اللي أجّل بس لو متاح فعلاً. */
+  const laterOk = (settings) => { try { const p = preorderCfg(settings || {}); return p.enabled === true && Array.isArray(p.slots) && p.slots.length > 0; } catch { return false; } };
   async function assistContext({ fresh, phone, cfg, lang, chat, know, data, now, cls, pending = null, ev = null, settings = null }) {
     const hours = await assist.get_hours();
     let handback = null; { const fl = flowApi(); if (fl && typeof fl.handbackFor === "function") { try { handback = await fl.handbackFor(phone); } catch (e) { console.error("[assist] handback:", e.message); handback = null; } } }
@@ -2879,12 +2904,12 @@ export function register(app, ctx, deps = {}) {
       if (ro) reorder = { day: orderDay(ro.at, lang), lines: ro.plan.lines.map((l) => ({ name: lang === "en" ? l.nameEn : l.name, qty: l.q })), note: "a one-tap button for the same order is attached under your message" };
     }
     let branch = null; try { branch = fresh ? textOf(cfg, "location", lang) : null; } catch { branch = null; }
-    return { profile, reorder, context: buildContext({ first: fresh, hours: hours && hours.ok ? hours : null, profile, offers, reorder, locationShared: locFresh(chat.last_loc, now), justShared: cls.key === "area", branch, boxes: fresh ? know.bundles : null, hint: hintOf(withAlt(cls)), handover: pending, notes, ad, channel, handback }), handback: Boolean(handback) };
+    return { profile, reorder, context: buildContext({ first: fresh, hours: hours && hours.ok ? hours : null, profile, offers, reorder, locationShared: locFresh(chat.last_loc, now), justShared: cls.key === "area", branch, boxes: fresh ? know.bundles : null, hint: hintOf(withAlt(cls)), handover: pending, notes, ad, channel, handback, later: laterOk(settings) }), handback: Boolean(handback) };
   }
   const assistDeps = (cfg, settings, logId) => ({ tools: assist, callModel: assistCall, now: clock,
     knowOf: async () => ({ menu: await menuIndex(settings, clock()), boxes: (await bundles()) || [] }),
-    faq: async (topic, lang) => {
-      const pick = (o) => String((o && (lang === "en" ? o.en || "" : o.ar || "")) || "").trim() || null;
+    faq: async (topic, lang, asked = "") => {
+      const pick = (o) => faqAnswer(String((o && (lang === "en" ? o.en || "" : o.ar || "")) || ""), asked) || null;
       if (topic === "payment") { const f = (settings?.storefront?.seo?.faq || []).find((x) => /دفع/.test(String(x?.q || ""))); return f ? String((lang === "en" ? f.a_en : f.a) || f.a || "").trim() || null : null; }
       if (topic === "branch_location") { try { return textOf(cfg, "location", lang); } catch { return null; } }
       return FAQ_DEFS[topic] ? pick(cfg.faq && cfg.faq[topic]) : null;
@@ -2894,6 +2919,9 @@ export function register(app, ctx, deps = {}) {
     deliveryInfo: async () => { const r = await q("SELECT config FROM dl_policies WHERE active ORDER BY priority DESC, id LIMIT 1", []); const pol = r && r[0] ? r[0].config : null; const fees = pol ? feeLines(pol, "ar") : "";
       return pol && fees ? { ok: true, delivers_up_to_km: Number(pol.maxKm) || null, far_zone_up_to_km: pol.farZoneEnabled !== false ? Number(pol.farZoneMaxKm) || null : null, far_zone_extra_per_km: pol.farZoneEnabled !== false ? Number(pol.farZonePerKm) || null : null,
         fee_by_order_total: fees.split("\n"), ladder: Array.isArray(pol.feeByTotal) ? pol.feeByTotal.map((x) => ({ over: Number(x.over), fee: Number(x.fee) })) : null, note: "the exact fee for the customer is shown on the website before payment" } : null; },
+    /* PS3: خطة التذكير — آخر رسالة للعميل = الرسالة دي (النافذة ٢٤ ساعة منها)، ساعات الهدوء من الإعدادات، والمطعم لازم يكون فاتح في الميعاد. */
+    reminder: async ({ day, time, lang }) => planReminder({ now: clock(), day, time, lastInMs: clock().getTime(), quietStart: cfg.assist.reminderQuietStart, quietEnd: cfg.assist.reminderQuietEnd, lang,
+      isOpenAt: (dt) => { try { return settings?.hours ? isOpenNow(settings.hours, dt) : null; } catch { return null; } } }),
     onCall: async (m) => { const rec = await aicost.record({ ...m, purpose: "assistant", logId }, cfg.llm.prices); return { costSar: rec.costSar, in: rec.in, out: rec.out, cached: rec.cached }; } });
   async function assistTurn({ ev, logId, settings, cfg, d, cls, chat, data, know, now, echoAt, phone, held = false, allowed = false }) {
     const acfg = cfg.assist;
@@ -2902,11 +2930,11 @@ export function register(app, ctx, deps = {}) {
     let session = await assistStore.loadSession(phone, now, acfg.sessionMin);
     /* PS2: «جلسة بذرة» = بوت القواعد رد على سؤال سعر صنف في أول المحادثة (rulesFirstPrice) وسجّل السؤال، والمساعد لسه مادخلش. مش محادثة مساعد شغّالة (المواعيد والموقع والشكر
        يفضلوا مع القواعد ببلاش)، وأول دور للمساعد بعدها بياخد سياق أول دور كامل (ملف العميل، العروض، البوكسات) وهو شايف سؤال العميل اللي فات. */
-    const seeded = Boolean(session && session.state && session.state.seed === true);
+    const seeded = Boolean(session && session.state && (session.state.seed === true || session.state.seed === "reminder")), cardSeed = Boolean(session && session.state && session.state.seed === true);
     /* «بدون بصل» وهو بيجهّز سلة = ملاحظة للمساعد؛ بس لو له طلب حديث من الموقع تبقى «تعديل طلب» للموظف زي النهارده (ومانعرفش ⇒ نفترض إن له طلب). */
     let recentOrder = false;
     if (cls.key === "change") { const ro = await q(`SELECT 1 FROM shop_orders WHERE phone_norm=$1 AND NOT COALESCE(is_test,false) AND status NOT IN ('expired','pending_payment') AND created_at > NOW() - INTERVAL '24 hours' LIMIT 1`, [phone]); recentOrder = ro === null || ro.length > 0; }
-    const el = assistEligible({ acfg, cfg, phone, ev, cls, d, afterWait: null, sessionActive: Boolean(session) && !seeded, handoverOpen: held, recentOrder, allowed });
+    const el = assistEligible({ acfg, cfg, phone, ev, cls, d, afterWait: null, sessionActive: Boolean(session) && !cardSeed, handoverOpen: held, recentOrder, allowed });
     const lang = cls.lang === "en" ? "en" : "ar";
     const ruleKey = () => String((d && d.key) || cls.key || "reply");
     const turnRow = (x) => assistStore.addTurn({ phone, sessionId: session ? session.id : null, logId, wamid: ev.wamid || null, lang, ...x });
@@ -2960,7 +2988,8 @@ export function register(app, ctx, deps = {}) {
     let reply, handoff = null;
     try {
       if (r.handover) { const [k, tuple] = ASSIST_HANDOVER[r.handover.reason] || ASSIST_HANDOVER.needs_staff; reply = buildReply(k, k === "dishfact" ? { ...bc, arg: { id: null, text: "حساسية شديدة" } } : bc); handoff = tuple; reply = { body: reply.body }; }
-      else reply = { body: r.text, ...(r.cart ? { cta: { title: textOf(cfg, "cta_reorder", L), url: r.cart.link } } : fresh && cx.reorder ? { buttons: [{ id: "re:last", title: textOf(cfg, "row_reorder", L) }] } : {}) };
+      else { let map = null; if (r.location && !r.cart) { try { map = buildReply("location", bc).cta || null; } catch { map = null; } }      // PS3: رد الموقع ⇒ زر «افتح الخريطة» (نفس رابط بوت القواعد). السلة لها الأولوية (زر واحد في الرسالة)
+        reply = { body: r.text, ...(r.cart ? { cta: { title: textOf(cfg, "cta_reorder", L), url: r.cart.link } } : map ? { cta: map } : fresh && cx.reorder ? { buttons: [{ id: "re:last", title: textOf(cfg, "row_reorder", L) }] } : {}) }; }
     } catch (e) { if (fresh) session = null; return fallback("reply_build", tr); }
     const disclose = discloseDue;
     /* persona: المساعد قال التعريف في مكانه الطبيعي؛ لو ماقالوش (أو الرد نص تحويل ثابت) الكود بيحطه — التعريف مضمون بالكود مش بالموديل. classic: السطر القديم فوق الرد. */
@@ -2985,6 +3014,7 @@ export function register(app, ctx, deps = {}) {
           for (const u of tr.unanswered || []) await kb.queue({ question: u.question, lang: L, source: u.source === "dish_fact" ? "dish_fact" : "no_answer" });
           if (r.handover && r.handover.reason === "needs_staff" && !(tr.unanswered || []).length && !/موظف|انسان|إنسان|شخص|بشري|staff|human|agent|person/i.test(String(ev.text || ""))) await kb.queue({ question: tr.sent || maskText(ev.text), lang: L, source: "handover" });
         } catch (e) { console.error("[assist] kb:", e.message); } } }
+      if (r.reminder) { try { if (r.reminder.cancel) await cancelReminder(phone, "customer_cancelled"); else if (r.reminder.at) await scheduleReminder(phone, { at: r.reminder.at, ref: r.reminder.ref || null, lang: L, setAt: clock().toISOString() }); } catch (e) { console.error("[assist] reminder:", e.message); } }
       if (r.cart) {
         await assistStore.tagCart(r.cart.code, (session.state.lastCart && session.state.lastCart.accepted) || [], session.id);
         if (acfg.followUpEnabled) await scheduleFollowUp(phone, { code: r.cart.code, sentAt: clock().toISOString(), lang: L }, acfg);
@@ -2997,6 +3027,72 @@ export function register(app, ctx, deps = {}) {
     await q(`UPDATE wa_bot_jobs SET status='cancelled', reason='replaced', done_at=NOW() WHERE phone_norm=$1 AND kind='assist_followup' AND status='pending'`, [phone]);
     return q(`INSERT INTO wa_bot_jobs(wamid, phone_norm, kind, due_at, ev, log_id) VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT (wamid) DO NOTHING RETURNING id`,
       [`fu:${ev.code}`, phone, "assist_followup", new Date(Date.parse(ev.sentAt) + acfg.followUpMin * 60_000).toISOString(), jb(ev), null]);
+  }
+  /* ── PS3 — التذكير اللي العميل طلبه ─────────────────────────────────────────
+     صف واحد «pending» للعميل في wa_bot_jobs (الجديد بيلغي القديم). وقت التنفيذ كل الشروط بتتراجع من جديد (runReminder): أي فحص مانعرفش نتيجته ⇒ مانبعتش. */
+  const cancelReminder = (phone, reason) => q(`UPDATE wa_bot_jobs SET status='cancelled', reason=$2, done_at=NOW() WHERE phone_norm=$1 AND kind='assist_reminder' AND status='pending'`, [phone, String(reason).slice(0, 80)]);
+  async function scheduleReminder(phone, ev) {
+    await cancelReminder(phone, "replaced");
+    return q(`INSERT INTO wa_bot_jobs(wamid, phone_norm, kind, due_at, ev, log_id) VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT (wamid) DO NOTHING RETURNING id`, [`rm:${phone}:${Date.parse(ev.at)}`, phone, "assist_reminder", ev.at, jb(ev), null]);
+  }
+  /* مايتبعتش لو: الوضع أو المساعد أو التذكير اتقفل، الرقم بره الجمهور، الميعاد فات بكتير، العميل طلب من ساعة ما اتفقنا، وقّف الرسايل، المحادثة مكتومة أو عند موظف أو موظف كتب له،
+     بره نافذة الـ٢٤ ساعة (هنا وكمان الحارس)، ساعة هدوء، أو المطعم مقفول. */
+  async function runReminder(j, settings, cfg, now, end) {
+    const acfg = cfg.assist, phone = String(j.phone_norm || ""), ev = typeof j.ev === "string" ? JSON.parse(j.ev) : (j.ev || {});
+    const no = (reason) => end("cancelled", reason);
+    if (cfg.mode !== "test" && cfg.mode !== "live") return no("mode_off");
+    if (!["test", "live"].includes(acfg.mode) || !acfg.remindersEnabled) return no("assist_off");
+    if (!(await assistAudience({ cfg, phone, chat: {}, now, hasReferral: false, count: false })).on) return no("not_in_audience");
+    if (now.getTime() - new Date(j.due_at).getTime() > cfg.maxAgeMinutes * 60_000) return no("stale");
+    if (!ev.at || !ev.setAt) return no("bad_job");
+    const ord = await q("SELECT 1 FROM shop_orders WHERE phone_norm=$1 AND created_at > $2 AND status <> 'expired' LIMIT 1", [phone, ev.setAt]);
+    if (ord === null) return no("order_check_failed"); if (ord.length) return no("ordered");
+    const m = await q(`SELECT max(created_at) FILTER (WHERE direction='in' AND COALESCE(source,'api') <> 'history') AS last_in,
+                              count(*) FILTER (WHERE source='echo' AND created_at > $2 AND COALESCE(echo_kind,'staff') <> 'auto')::int AS staff
+                         FROM wa_messages WHERE phone_norm=$1 AND created_at > NOW() - INTERVAL '25 hours'`, [phone, ev.setAt]);
+    if (m === null || !m[0]) return no("window_check_failed");
+    if (Number(m[0].staff) > 0) return no("staff_in_chat");
+    if (!m[0].last_in || now.getTime() - new Date(m[0].last_in).getTime() > (24 * 60 - 5) * 60_000) return no("window_closed");
+    /* «إيقاف» بعد ما اتفقنا على التذكير (حتى لو وقّف العروض بس) ⇒ مفيش تذكير: العميل قال مش عايز رسايل مننا. */
+    const op = await q("SELECT stopped_at, marketing_off_at FROM wa_optins WHERE phone_norm=$1", [phone]);
+    if (op === null) return no("optout_check_failed");
+    if (op[0] && (op[0].stopped_at || (op[0].marketing_off_at && new Date(op[0].marketing_off_at).getTime() >= Date.parse(ev.setAt)))) return no("stopped");
+    const chat = await chatOf(phone);
+    if (chat.muted_until && Date.parse(chat.muted_until) > now.getTime()) return no("muted");
+    if (chat.handoff_at && now.getTime() - Date.parse(chat.handoff_at) < cfg.handoffOpenHours * 3600_000) return no("handover_open");
+    const hr = new Date(now.getTime() + 3 * 3600_000).getUTCHours(), qs = Math.round(acfg.reminderQuietStart), qe = Math.round(acfg.reminderQuietEnd);
+    if (qs !== qe && (qs < qe ? hr >= qs && hr < qe : hr >= qs || hr < qe)) return no("quiet_hours");
+    let open = null; try { open = settings?.hours ? openState(settings, now) : null; } catch { open = null; }
+    if (!open) return no("hours_unknown"); if (open.open !== true) return no("closed");
+    const lang = ev.lang === "en" ? "en" : "ar";
+    /* الصنف اللي كان بيسأل عنه: من المنيو / البوكسات الحيّة وقت الإرسال (اتشال أو خلص ⇒ التذكير يطلع من غير السطر ده) */
+    let dish = null;
+    try { if (ev.ref && ev.ref.slug) { const b = ((await bundles()) || []).find((x) => String(x.slug) === String(ev.ref.slug)); if (b) dish = { slug: String(b.slug), name: lang === "en" ? b.name_en || b.name : b.name }; }
+      else if (ev.ref && ev.ref.id) { const mi = await menuIndex(settings, now); const it = mi && mi.items ? mi.items.find((x) => String(x.id) === String(ev.ref.id)) : null; if (it && !it.soldOut) dish = { id: String(it.id), name: lang === "en" ? it.nameEn || it.name : it.name }; } }
+    catch { dish = null; }
+    let body, pl;
+    try { body = fill("assist_reminder", textOf(cfg, "assist_reminder", lang), { name: personaNameOf(cfg, lang), about: dish ? fill("assist_reminder_about", textOf(cfg, "assist_reminder_about", lang), { dish: dish.name }) : "" });
+      if (!hasIntro(body, personaNameOf(cfg, lang))) body = fill("assist_reminder", TEXTS.assist_reminder[lang], { name: personaNameOf(cfg, lang), about: dish ? fill("assist_reminder_about", TEXTS.assist_reminder_about[lang], { dish: dish.name }) : "" });      // رسالة بنبدأها إحنا: لازم تقول هي مين
+      pl = toPayload({ body }, { cfg, lang, interactive: false, footer: false }); } catch { return no("text_invalid"); }
+    if (payloadProblem(pl)) return no("payload_invalid");
+    const allow = cfg.mode === "test" || acfg.mode !== "live" ? cfg.testPhones : null;
+    const r = await wa.sendFreeform({ phoneNorm: phone, payload: pl, source: "bot", allowList: allow });
+    const err = r.ok ? null : (r.skipped ? `skipped:${r.skipped}` : String(r.error || "send_failed"));
+    const lg = await q(
+      `INSERT INTO wa_bot_log(wamid, msg_at, phone_norm, mode, msg_type, text, intent, reply_key, score, lang, decision, referral)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'pending',$11) ON CONFLICT (wamid) DO NOTHING RETURNING id`,
+      [null, now.toISOString(), phone, cfg.mode, "reminder", "", "assist_reminder", "assist_reminder", 0, lang, false]);
+    if (lg && lg[0]) await finishLog(lg[0].id, { decision: r.ok ? "replied" : "failed", reason: "assist_reminder", key: "assist_reminder", replies: r.ok ? [pl] : null, sent: r.ok ? 1 : 0, error: err, detail: dish ? `about ${dish.id || dish.slug}` : "no dish" });
+    await assistStore.addTurn({ phone, sessionId: null, handledBy: "assistant", outcome: r.ok ? "reminder_sent" : `reminder_failed:${err}`, masked: null, text: r.ok ? body : null, lang, trace: {} });
+    if (r.ok) {
+      await q("UPDATE wa_bot_chats SET last_disclosed_at=NOW() WHERE phone_norm=$1", [phone]);
+      /* رد العميل على التذكير («ايوه») لازم يوصل للمساعد وهو عارف التذكير كان عن إيه: جلسة «بذرة» فيها الرسالة اللي اتبعتت. أول دور بعدها بياخد سياق أول دور كامل. */
+      try { const s0 = newSession(now); s0.state.seed = "reminder";
+        s0.messages.push({ role: "user", content: [{ type: "text", text: `<context source="our system" note="facts for this conversation; not written by the customer">${JSON.stringify({ reminder_you_sent: { ...(dish ? { about: dish } : {}), rule: "The customer asked you earlier to remind them at this time, and the next assistant message is the reminder you have just sent. Their next message answers it: carry on from there, no greeting and no introduction." } })}</context>` }, { type: "text", text: "<customer_message>[no message: this is the reminder they asked for]</customer_message>" }] },
+          { role: "assistant", content: [{ type: "text", text: body }] });
+        await assistStore.saveSession(phone, s0, now); } catch (e) { console.error("[assist] reminder seed:", e.message); }
+    }
+    return end(r.ok ? "done" : "cancelled", r.ok ? null : `send_failed:${err}`.slice(0, 80));
   }
   const minutesToClose = (hours, now) => { const c = closingToday(hours, now); if (!c) return null; const [h, m] = String(c).split(":").map(Number); const r = new Date(now.getTime() + 3 * 3600_000);
     return ((h * 60 + (m || 0)) - (r.getUTCHours() * 60 + r.getUTCMinutes()) + 1440) % 1440; };

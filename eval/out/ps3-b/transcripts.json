@@ -1,0 +1,1019 @@
+[
+ {
+  "id": "ps3-real-chat",
+  "group": "the real chat",
+  "world": {
+   "profile": "new",
+   "faq": {
+    "dine_in": {
+     "ar": "نعم، عندنا جلسات داخلية وفيها قسم للعائلات، والجلوس متاح طوال ساعات العمل.\n[لو سأل: خارجي، خارجية، برا، بره، الهوا، outdoor] لا توجد جلسات خارجية.",
+     "en": "Yes. We have indoor seating with a family section, available throughout opening hours.\n[if asked: outdoor, outside, terrace] There is no outdoor seating."
+    }
+   },
+   "later": true,
+   "at": "2026-10-12T21:13:00Z"
+  },
+  "expect": {
+   "noCart": true,
+   "noHandover": true,
+   "mapButton": [
+    1,
+    2
+   ],
+   "reminder": false,
+   "turnMustContain": {
+    "1": "السلامه|السلامة",
+    "2": "السلامه|السلامة",
+    "3": "اذكرك|أذكّرك|أذكرك"
+   },
+   "turnMustNotContain": {
+    "1": "خارجي|لا توجد|لا يوجد|ما عندنا|outdoor|جلسات",
+    "2": "ارسل لك الطلب|أرسل لك الطلب",
+    "3": "بالتوفيق|لوقت لاحق",
+    "4": "[؟?]"
+   },
+   "mustNotContain": [
+    "بالتوفيق"
+   ]
+  },
+  "turns": [
+   {
+    "i": 0,
+    "customer": "مرحبا",
+    "cls": "greet",
+    "raw": "greeting",
+    "by": "assistant",
+    "reply": "هلا والله 👋 معك ماجد، المساعد الرقمي لفريش كاتس. وش تحب تطلب اليوم؟",
+    "cart": null,
+    "handover": null,
+    "outcome": "sent",
+    "tools": [],
+    "verdicts": [
+     {
+      "ok": true,
+      "problems": [],
+      "text": "هلا والله 👋 معك ماجد، المساعد الرقمي لفريش كاتس. وش تحب تطلب اليوم؟"
+     }
+    ],
+    "calls": [
+     {
+      "model": "claude-haiku-5-5",
+      "tier": "fast",
+      "ms": 1839,
+      "outcome": "ok",
+      "in": 1439,
+      "out": 51,
+      "cached": 12502,
+      "costSar": 0.005324
+     }
+    ],
+    "ms": 1893,
+    "costSar": 0.005324,
+    "model": "claude-haiku-5-5",
+    "suggestions": [],
+    "context": {
+     "open_now": true,
+     "closes_at": "2 فجراً",
+     "location_shared": false,
+     "order_for_later": {
+      "rule": "The customer can order now for a later time slot: you build the cart as usual, and on the website they choose «اطلب لوقت لاحق» and the slot before paying (payment is now). Mention it, in a few words, only when the customer wants the ORDER ITSELF at a later time (for tomorrow's lunch, for nine tonight); it is not a second offer beside a reminder. Never name a slot or a time yourself."
+     },
+     "introduce_yourself": {
+      "say": "معك ماجد، المساعد الرقمي لفريش كاتس",
+      "rule": "use this phrase once in this message, exactly as it is"
+     },
+     "you": {
+      "name": "ماجد",
+      "name_en": "Majed",
+      "what": "Fresh Cuts' digital assistant (not a human)"
+     },
+     "customer": {
+      "known": false,
+      "name": null,
+      "orders": 0,
+      "status": "no_orders",
+      "days_since_last": null,
+      "usual_basket_sar": null,
+      "usual_mode": null,
+      "usual_hour": null,
+      "favourites": [],
+      "taste": null,
+      "last_order": null,
+      "districts": [],
+      "loyalty": {
+       "every": 3,
+       "progress": 0,
+       "left": 3,
+       "reward": "free_delivery",
+       "min_total": 60,
+       "status": null
+      },
+      "unused_rewards": [],
+      "first_order_offer": true,
+      "language": "ar"
+     },
+     "offers": {
+      "first_order": {
+       "eligible": true,
+       "code": "FIRST",
+       "free_delivery": true,
+       "min_total": 60,
+       "reason": null
+      },
+      "loyalty": {
+       "every": 3,
+       "progress": 0,
+       "left": 3,
+       "reward": "free_delivery",
+       "min_total": 60,
+       "status": null
+      }
+     },
+     "branch": "📍 فرعنا في حي السلامة بجدة، عند دوار رامي.",
+     "boxes": [
+      "box-solo-crepe: بوكس الكريب الفردي",
+      "box-solo-mixgrill: بوكس الميكس جريل الفردي",
+      "box-solo-burger: بوكس البرجر الفردي",
+      "box-solo-pasta: بوكس الباستا الفردي",
+      "box-solo-hawawshi: بوكس الحواوشي الفردي",
+      "box-solo-meal: بوكس وجبة المشاوي الفردي",
+      "box-crepe-duo: بوكس الكريب لشخصين",
+      "box-mixgrill-duo: ميكس جريل لشخصين",
+      "box-pizza-pasta: بيتزا وباستا لشخصين",
+      "box-meals-duo: وجبتين مشاوي لشخصين",
+      "box-burger-duo: بوكس البرجر لشخصين",
+      "box-late-night: بوكس السهرة",
+      "box-taste-all: بوكس التشكيلة",
+      "box-grill-half-half: بوكس المشاوي نص ونص",
+      "box-family: بوكس العائلة — مشاوي وبيتزا وباستا",
+      "box-pizza-night: بوكس سهرة البيتزا",
+      "box-mashakel: بوكس المشكل المخصوص",
+      "box-ribs-grill: بوكس الريش والمشاوي"
+     ]
+    },
+    "tier": "fast",
+    "escalated": false,
+    "lang": "ar",
+    "introByModel": true
+   },
+   {
+    "i": 1,
+    "customer": "في المكان",
+    "cls": "location",
+    "raw": "where_typo",
+    "by": "assistant",
+    "reply": "📍 فرعنا في حي السلامة بجدة، عند دوار رامي.",
+    "cart": null,
+    "handover": null,
+    "outcome": "sent",
+    "tools": [
+     {
+      "name": "faq",
+      "input": {
+       "topic": "branch_location"
+      },
+      "result": {
+       "ok": true,
+       "topic": "branch_location",
+       "say": "📍 فرعنا في حي السلامة بجدة، عند دوار رامي.",
+       "rule": "send this text as it is"
+      },
+      "ms": 0
+     }
+    ],
+    "verdicts": [
+     {
+      "ok": true,
+      "problems": [],
+      "text": "📍 فرعنا في حي السلامة بجدة، عند دوار رامي."
+     }
+    ],
+    "calls": [
+     {
+      "model": "claude-haiku-5-5",
+      "tier": "fast",
+      "ms": 1166,
+      "outcome": "ok",
+      "in": 456,
+      "out": 50,
+      "cached": 13650,
+      "costSar": 0.005384
+     },
+     {
+      "model": "claude-haiku-5-5",
+      "tier": "fast",
+      "ms": 864,
+      "outcome": "ok",
+      "in": 151,
+      "out": 31,
+      "cached": 14011,
+      "costSar": 0.005369
+     }
+    ],
+    "ms": 2043,
+    "costSar": 0.010752999999999999,
+    "model": "claude-haiku-5-5",
+    "suggestions": [],
+    "context": {
+     "open_now": true,
+     "closes_at": "2 فجراً",
+     "location_shared": false,
+     "hint": {
+      "intent": "where_are_we",
+      "do": "faq branch_location",
+      "unless": "you have just asked delivery or pickup: then it means eating at the restaurant"
+     },
+     "order_for_later": {
+      "rule": "The customer can order now for a later time slot: you build the cart as usual, and on the website they choose «اطلب لوقت لاحق» and the slot before paying (payment is now). Mention it, in a few words, only when the customer wants the ORDER ITSELF at a later time (for tomorrow's lunch, for nine tonight); it is not a second offer beside a reminder. Never name a slot or a time yourself."
+     }
+    },
+    "tier": "fast",
+    "escalated": false,
+    "lang": "ar",
+    "mapButton": true
+   },
+   {
+    "i": 2,
+    "customer": "فين جده ولا فين",
+    "cls": "location",
+    "raw": "where",
+    "by": "assistant",
+    "reply": "📍 فرعنا في حي السلامة بجدة، عند دوار رامي.",
+    "cart": null,
+    "handover": null,
+    "outcome": "sent",
+    "tools": [
+     {
+      "name": "faq",
+      "input": {
+       "topic": "branch_location"
+      },
+      "result": {
+       "ok": true,
+       "topic": "branch_location",
+       "say": "📍 فرعنا في حي السلامة بجدة، عند دوار رامي.",
+       "rule": "send this text as it is"
+      },
+      "ms": 0
+     }
+    ],
+    "verdicts": [
+     {
+      "ok": true,
+      "problems": [],
+      "text": "📍 فرعنا في حي السلامة بجدة، عند دوار رامي."
+     }
+    ],
+    "calls": [
+     {
+      "model": "claude-haiku-5-5",
+      "tier": "fast",
+      "ms": 1118,
+      "outcome": "ok",
+      "in": 401,
+      "out": 50,
+      "cached": 14130,
+      "costSar": 0.005543
+     },
+     {
+      "model": "claude-haiku-5-5",
+      "tier": "fast",
+      "ms": 783,
+      "outcome": "ok",
+      "in": 151,
+      "out": 31,
+      "cached": 14447,
+      "costSar": 0.005532
+     }
+    ],
+    "ms": 1909,
+    "costSar": 0.011075,
+    "model": "claude-haiku-5-5",
+    "suggestions": [],
+    "context": {
+     "open_now": true,
+     "closes_at": "2 فجراً",
+     "location_shared": false,
+     "hint": {
+      "intent": "where_are_we",
+      "do": "faq branch_location"
+     },
+     "order_for_later": {
+      "rule": "The customer can order now for a later time slot: you build the cart as usual, and on the website they choose «اطلب لوقت لاحق» and the slot before paying (payment is now). Mention it, in a few words, only when the customer wants the ORDER ITSELF at a later time (for tomorrow's lunch, for nine tonight); it is not a second offer beside a reminder. Never name a slot or a time yourself."
+     }
+    },
+    "tier": "fast",
+    "escalated": false,
+    "lang": "ar",
+    "mapButton": true
+   },
+   {
+    "i": 3,
+    "customer": "لا انشالله بكره",
+    "cls": "unknown",
+    "raw": "unknown",
+    "by": "assistant",
+    "reply": "على راحتك 🌟 تحب أذكّرك بكرة؟ أي وقت يناسبك؟",
+    "cart": null,
+    "handover": null,
+    "outcome": "sent",
+    "tools": [],
+    "verdicts": [
+     {
+      "ok": true,
+      "problems": [],
+      "text": "على راحتك 🌟 تحب أذكّرك بكرة؟ أي وقت يناسبك؟"
+     }
+    ],
+    "calls": [
+     {
+      "model": "claude-haiku-5-5",
+      "tier": "fast",
+      "ms": 1155,
+      "outcome": "ok",
+      "in": 636,
+      "out": 40,
+      "cached": 14566,
+      "costSar": 0.005776
+     }
+    ],
+    "ms": 1163,
+    "costSar": 0.005776,
+    "model": "claude-haiku-5-5",
+    "suggestions": [],
+    "context": {
+     "open_now": true,
+     "closes_at": "2 فجراً",
+     "location_shared": false,
+     "order_for_later": {
+      "rule": "The customer can order now for a later time slot: you build the cart as usual, and on the website they choose «اطلب لوقت لاحق» and the slot before paying (payment is now). Mention it, in a few words, only when the customer wants the ORDER ITSELF at a later time (for tomorrow's lunch, for nine tonight); it is not a second offer beside a reminder. Never name a slot or a time yourself."
+     }
+    },
+    "tier": "fast",
+    "escalated": false,
+    "lang": "ar"
+   },
+   {
+    "i": 4,
+    "customer": "شكرا",
+    "cls": "thanks",
+    "raw": "thanks",
+    "by": "assistant",
+    "reply": "العفو، حيّاك الله في أي وقت 🌟",
+    "cart": null,
+    "handover": null,
+    "outcome": "sent",
+    "tools": [],
+    "verdicts": [
+     {
+      "ok": true,
+      "problems": [],
+      "text": "العفو، حيّاك الله في أي وقت 🌟"
+     }
+    ],
+    "calls": [
+     {
+      "model": "claude-haiku-5-5",
+      "tier": "fast",
+      "ms": 1189,
+      "outcome": "ok",
+      "in": 372,
+      "out": 23,
+      "cached": 15071,
+      "costSar": 0.005834
+     }
+    ],
+    "ms": 1197,
+    "costSar": 0.005834,
+    "model": "claude-haiku-5-5",
+    "suggestions": [],
+    "context": {
+     "open_now": true,
+     "closes_at": "2 فجراً",
+     "location_shared": false,
+     "order_for_later": {
+      "rule": "The customer can order now for a later time slot: you build the cart as usual, and on the website they choose «اطلب لوقت لاحق» and the slot before paying (payment is now). Mention it, in a few words, only when the customer wants the ORDER ITSELF at a later time (for tomorrow's lunch, for nine tonight); it is not a second offer beside a reminder. Never name a slot or a time yourself."
+     }
+    },
+    "tier": "fast",
+    "escalated": false,
+    "lang": "ar"
+   }
+  ],
+  "carts": [],
+  "costSar": 0.038762,
+  "grade": {
+   "pass": true,
+   "fails": [],
+   "review": [
+    {
+     "type": "same_closing",
+     "turn": 2,
+     "detail": "فرعنا في حي السلامه بجده عند دوار رامي"
+    }
+   ]
+  }
+ },
+ {
+  "id": "ps3-reminder-when-closed",
+  "group": "reminder",
+  "world": {
+   "profile": "new",
+   "faq": {
+    "dine_in": {
+     "ar": "نعم، عندنا جلسات داخلية وفيها قسم للعائلات، والجلوس متاح طوال ساعات العمل.\n[لو سأل: خارجي، خارجية، برا، بره، الهوا، outdoor] لا توجد جلسات خارجية.",
+     "en": "Yes. We have indoor seating with a family section, available throughout opening hours.\n[if asked: outdoor, outside, terrace] There is no outdoor seating."
+    }
+   },
+   "later": true
+  },
+  "expect": {
+   "noCart": true,
+   "noHandover": true,
+   "reminder": false,
+   "turnMustContain": {
+    "1": "[؟?]"
+   },
+   "turnMustNotContain": {
+    "1": "تم|ضبطت|بذكرك|بذكّرك"
+   }
+  },
+  "turns": [
+   {
+    "i": 0,
+    "customer": "بعدين ان شاء الله",
+    "cls": "unknown",
+    "raw": "unknown",
+    "by": "assistant",
+    "reply": "معك ماجد، المساعد الرقمي لفريش كاتس.\nعلى راحتك 🌟 تحب أذكّرك بكرة؟ أي وقت يناسبك؟",
+    "cart": null,
+    "handover": null,
+    "outcome": "sent",
+    "tools": [],
+    "verdicts": [
+     {
+      "ok": true,
+      "problems": [],
+      "text": "على راحتك 🌟 تحب أذكّرك بكرة؟ أي وقت يناسبك؟"
+     }
+    ],
+    "calls": [
+     {
+      "model": "claude-haiku-5-5",
+      "tier": "fast",
+      "ms": 1855,
+      "outcome": "ok",
+      "in": 1704,
+      "out": 40,
+      "cached": 12502,
+      "costSar": 0.005402
+     }
+    ],
+    "ms": 1911,
+    "costSar": 0.005402,
+    "model": "claude-haiku-5-5",
+    "suggestions": [],
+    "context": {
+     "open_now": true,
+     "closes_at": "2 فجراً",
+     "location_shared": false,
+     "order_for_later": {
+      "rule": "The customer can order now for a later time slot: you build the cart as usual, and on the website they choose «اطلب لوقت لاحق» and the slot before paying (payment is now). Mention it, in a few words, only when the customer wants the ORDER ITSELF at a later time (for tomorrow's lunch, for nine tonight); it is not a second offer beside a reminder. Never name a slot or a time yourself."
+     },
+     "introduce_yourself": {
+      "say": "معك ماجد، المساعد الرقمي لفريش كاتس",
+      "rule": "use this phrase once in this message, exactly as it is"
+     },
+     "you": {
+      "name": "ماجد",
+      "name_en": "Majed",
+      "what": "Fresh Cuts' digital assistant (not a human)"
+     },
+     "customer": {
+      "known": false,
+      "name": null,
+      "orders": 0,
+      "status": "no_orders",
+      "days_since_last": null,
+      "usual_basket_sar": null,
+      "usual_mode": null,
+      "usual_hour": null,
+      "favourites": [],
+      "taste": null,
+      "last_order": null,
+      "districts": [],
+      "loyalty": {
+       "every": 3,
+       "progress": 0,
+       "left": 3,
+       "reward": "free_delivery",
+       "min_total": 60,
+       "status": null
+      },
+      "unused_rewards": [],
+      "first_order_offer": true,
+      "language": "ar"
+     },
+     "offers": {
+      "first_order": {
+       "eligible": true,
+       "code": "FIRST",
+       "free_delivery": true,
+       "min_total": 60,
+       "reason": null
+      },
+      "loyalty": {
+       "every": 3,
+       "progress": 0,
+       "left": 3,
+       "reward": "free_delivery",
+       "min_total": 60,
+       "status": null
+      }
+     },
+     "branch": "📍 فرعنا في حي السلامة بجدة، عند دوار رامي.",
+     "boxes": [
+      "box-solo-crepe: بوكس الكريب الفردي",
+      "box-solo-mixgrill: بوكس الميكس جريل الفردي",
+      "box-solo-burger: بوكس البرجر الفردي",
+      "box-solo-pasta: بوكس الباستا الفردي",
+      "box-solo-hawawshi: بوكس الحواوشي الفردي",
+      "box-solo-meal: بوكس وجبة المشاوي الفردي",
+      "box-crepe-duo: بوكس الكريب لشخصين",
+      "box-mixgrill-duo: ميكس جريل لشخصين",
+      "box-pizza-pasta: بيتزا وباستا لشخصين",
+      "box-meals-duo: وجبتين مشاوي لشخصين",
+      "box-burger-duo: بوكس البرجر لشخصين",
+      "box-late-night: بوكس السهرة",
+      "box-taste-all: بوكس التشكيلة",
+      "box-grill-half-half: بوكس المشاوي نص ونص",
+      "box-family: بوكس العائلة — مشاوي وبيتزا وباستا",
+      "box-pizza-night: بوكس سهرة البيتزا",
+      "box-mashakel: بوكس المشكل المخصوص",
+      "box-ribs-grill: بوكس الريش والمشاوي"
+     ]
+    },
+    "tier": "fast",
+    "escalated": false,
+    "lang": "ar",
+    "introByModel": false
+   },
+   {
+    "i": 1,
+    "customer": "ذكرني بكرة الساعة ٩ الصبح",
+    "cls": "hours",
+    "raw": "waitlist_join",
+    "by": "assistant",
+    "reply": "ما قدرت أحجز تذكير الساعة 9 الصبح بكرة، لأن الوقت خارج أوقات الرسائل. تحب تختار وقت ثاني بكرة؟",
+    "cart": null,
+    "handover": null,
+    "outcome": "sent",
+    "tools": [
+     {
+      "name": "remind_me",
+      "input": {
+       "day": "tomorrow",
+       "time": "09:00"
+      },
+      "result": {
+       "ok": false,
+       "error": "closed_then",
+       "rule": "We do not send reminders at that hour (we are closed or it is a quiet hour). Ask, in one short question, for another time while we are open."
+      },
+      "ms": 2
+     }
+    ],
+    "verdicts": [
+     {
+      "ok": false,
+      "problems": [
+       {
+        "type": "reminder_not_scheduled",
+        "value": "أذكّرك"
+       }
+      ],
+      "text": "ما أقدر أذكّرك الساعة 9 الصبح بكرة، لأننا مو مفتوحين في هذا الوقت. تحب تختار وقت ثاني وقت ما نكون مفتوحين فيه؟"
+     },
+     {
+      "ok": true,
+      "problems": [],
+      "text": "ما قدرت أحجز تذكير الساعة 9 الصبح بكرة، لأن الوقت خارج أوقات الرسائل. تحب تختار وقت ثاني بكرة؟"
+     }
+    ],
+    "calls": [
+     {
+      "model": "claude-haiku-5-5",
+      "tier": "fast",
+      "ms": 1180,
+      "outcome": "ok",
+      "in": 649,
+      "out": 75,
+      "cached": 13862,
+      "costSar": 0.005582
+     },
+     {
+      "model": "claude-haiku-5-5",
+      "tier": "fast",
+      "ms": 1202,
+      "outcome": "ok",
+      "in": 192,
+      "out": 83,
+      "cached": 14378,
+      "costSar": 0.005619
+     },
+     {
+      "model": "claude-haiku-5-5",
+      "tier": "fast",
+      "ms": 1295,
+      "outcome": "ok",
+      "in": 262,
+      "out": 71,
+      "cached": 14530,
+      "costSar": 0.00568
+     }
+    ],
+    "ms": 3697,
+    "costSar": 0.016881,
+    "model": "claude-haiku-5-5",
+    "suggestions": [],
+    "context": {
+     "open_now": true,
+     "closes_at": "2 فجراً",
+     "location_shared": false,
+     "order_for_later": {
+      "rule": "The customer can order now for a later time slot: you build the cart as usual, and on the website they choose «اطلب لوقت لاحق» and the slot before paying (payment is now). Mention it, in a few words, only when the customer wants the ORDER ITSELF at a later time (for tomorrow's lunch, for nine tonight); it is not a second offer beside a reminder. Never name a slot or a time yourself."
+     }
+    },
+    "tier": "fast",
+    "escalated": false,
+    "lang": "ar"
+   }
+  ],
+  "carts": [],
+  "costSar": 0.022283,
+  "grade": {
+   "pass": true,
+   "fails": [],
+   "review": [
+    {
+     "type": "intro_by_code",
+     "turn": 0,
+     "detail": ""
+    },
+    {
+     "type": "validator_retry",
+     "turn": 1,
+     "detail": "reminder_not_scheduled:أذكّرك"
+    }
+   ]
+  }
+ },
+ {
+  "id": "ps3-postpone-no-reminder-wanted",
+  "group": "reminder",
+  "world": {
+   "profile": "new",
+   "faq": {
+    "dine_in": {
+     "ar": "نعم، عندنا جلسات داخلية وفيها قسم للعائلات، والجلوس متاح طوال ساعات العمل.\n[لو سأل: خارجي، خارجية، برا، بره، الهوا، outdoor] لا توجد جلسات خارجية.",
+     "en": "Yes. We have indoor seating with a family section, available throughout opening hours.\n[if asked: outdoor, outside, terrace] There is no outdoor seating."
+    }
+   },
+   "later": true
+  },
+  "expect": {
+   "noCart": true,
+   "noHandover": true,
+   "reminder": false,
+   "turnMustContain": {
+    "1": "اذكرك|أذكّرك|أذكرك"
+   },
+   "turnMustNotContain": {
+    "2": "[؟?]|اذكرك|أذكّرك"
+   }
+  },
+  "turns": [
+   {
+    "i": 0,
+    "customer": "ابي بيتزا",
+    "cls": "cat",
+    "raw": "menu",
+    "by": "assistant",
+    "reply": "أبشر، معك ماجد، المساعد الرقمي لفريش كاتس. عندنا بيتزا بأنواع كثيرة، من مارجريتا بـ 20 ر.س إلى تشيكن الباتشينو بـ 30 ر.س. تفضّل أي نوع، ولا تبي أشوف لك بوكس بيتزا لشخصين؟",
+    "cart": null,
+    "handover": null,
+    "outcome": "sent",
+    "tools": [
+     {
+      "name": "search_menu",
+      "input": {
+       "query": "بيتزا"
+      },
+      "result": {
+       "ok": true,
+       "results": [
+        {
+         "id": "45",
+         "name": "بيتزا مارجريتا",
+         "name_en": "Margherita Pizza",
+         "price": 20,
+         "section": "بيتزا",
+         "kind": "main",
+         "sold_out": false,
+         "by_weight": false
+        },
+        {
+         "id": "44",
+         "name": "بيتزا خضروات",
+         "name_en": "Vegetable Pizza",
+         "price": 22,
+         "section": "بيتزا",
+         "kind": "main",
+         "sold_out": false,
+         "by_weight": false
+        },
+        {
+         "id": "37",
+         "name": "بيتزا كواترو تشيز",
+         "name_en": "Quattro Cheese Pizza",
+         "price": 25,
+         "section": "بيتزا",
+         "kind": "main",
+         "sold_out": false,
+         "by_weight": false
+        },
+        {
+         "id": "42",
+         "name": "بيتزا تشيكن باربكيو",
+         "name_en": "Chicken BBQ Pizza",
+         "price": 28,
+         "section": "بيتزا",
+         "kind": "main",
+         "sold_out": false,
+         "by_weight": false
+        },
+        {
+         "id": "43",
+         "name": "بيتزا تشيكن رانش",
+         "name_en": "Chicken Ranch Pizza",
+         "price": 28,
+         "section": "بيتزا",
+         "kind": "main",
+         "sold_out": false,
+         "by_weight": false
+        },
+        {
+         "id": "40",
+         "name": "بيتزا بيبروني",
+         "name_en": "Pepperoni Pizza",
+         "price": 29,
+         "section": "بيتزا",
+         "kind": "main",
+         "sold_out": false,
+         "by_weight": false
+        },
+        {
+         "id": "46",
+         "name": "بيتزا تشيكن ديناميت",
+         "name_en": "Chicken Dynamite Pizza",
+         "price": 30,
+         "section": "بيتزا",
+         "kind": "main",
+         "sold_out": false,
+         "by_weight": false
+        },
+        {
+         "id": "36",
+         "name": "بيتزا تشيكن الباتشينو",
+         "name_en": "Chicken Pacino Pizza",
+         "price": 30,
+         "section": "بيتزا",
+         "kind": "main",
+         "sold_out": false,
+         "by_weight": false
+        }
+       ]
+      },
+      "ms": 6
+     }
+    ],
+    "verdicts": [
+     {
+      "ok": true,
+      "problems": [],
+      "text": "أبشر، معك ماجد، المساعد الرقمي لفريش كاتس. عندنا بيتزا بأنواع كثيرة، من مارجريتا بـ 20 ر.س إلى تشيكن الباتشينو بـ 30 ر.س. تفضّل أي نوع، ولا تبي أشوف لك بوكس بيتزا لشخصين؟"
+     }
+    ],
+    "calls": [
+     {
+      "model": "claude-haiku-5-5",
+      "tier": "fast",
+      "ms": 1839,
+      "outcome": "ok",
+      "in": 1492,
+      "out": 52,
+      "cached": 12502,
+      "costSar": 0.005345
+     },
+     {
+      "model": "claude-haiku-5-5",
+      "tier": "fast",
+      "ms": 1517,
+      "outcome": "ok",
+      "in": 850,
+      "out": 133,
+      "cached": 13692,
+      "costSar": 0.005703
+     }
+    ],
+    "ms": 3409,
+    "costSar": 0.011047999999999999,
+    "model": "claude-haiku-5-5",
+    "suggestions": [],
+    "context": {
+     "open_now": true,
+     "closes_at": "2 فجراً",
+     "location_shared": false,
+     "order_for_later": {
+      "rule": "The customer can order now for a later time slot: you build the cart as usual, and on the website they choose «اطلب لوقت لاحق» and the slot before paying (payment is now). Mention it, in a few words, only when the customer wants the ORDER ITSELF at a later time (for tomorrow's lunch, for nine tonight); it is not a second offer beside a reminder. Never name a slot or a time yourself."
+     },
+     "introduce_yourself": {
+      "say": "معك ماجد، المساعد الرقمي لفريش كاتس",
+      "rule": "use this phrase once in this message, exactly as it is"
+     },
+     "you": {
+      "name": "ماجد",
+      "name_en": "Majed",
+      "what": "Fresh Cuts' digital assistant (not a human)"
+     },
+     "customer": {
+      "known": false,
+      "name": null,
+      "orders": 0,
+      "status": "no_orders",
+      "days_since_last": null,
+      "usual_basket_sar": null,
+      "usual_mode": null,
+      "usual_hour": null,
+      "favourites": [],
+      "taste": null,
+      "last_order": null,
+      "districts": [],
+      "loyalty": {
+       "every": 3,
+       "progress": 0,
+       "left": 3,
+       "reward": "free_delivery",
+       "min_total": 60,
+       "status": null
+      },
+      "unused_rewards": [],
+      "first_order_offer": true,
+      "language": "ar"
+     },
+     "offers": {
+      "first_order": {
+       "eligible": true,
+       "code": "FIRST",
+       "free_delivery": true,
+       "min_total": 60,
+       "reason": null
+      },
+      "loyalty": {
+       "every": 3,
+       "progress": 0,
+       "left": 3,
+       "reward": "free_delivery",
+       "min_total": 60,
+       "status": null
+      }
+     },
+     "branch": "📍 فرعنا في حي السلامة بجدة، عند دوار رامي.",
+     "boxes": [
+      "box-solo-crepe: بوكس الكريب الفردي",
+      "box-solo-mixgrill: بوكس الميكس جريل الفردي",
+      "box-solo-burger: بوكس البرجر الفردي",
+      "box-solo-pasta: بوكس الباستا الفردي",
+      "box-solo-hawawshi: بوكس الحواوشي الفردي",
+      "box-solo-meal: بوكس وجبة المشاوي الفردي",
+      "box-crepe-duo: بوكس الكريب لشخصين",
+      "box-mixgrill-duo: ميكس جريل لشخصين",
+      "box-pizza-pasta: بيتزا وباستا لشخصين",
+      "box-meals-duo: وجبتين مشاوي لشخصين",
+      "box-burger-duo: بوكس البرجر لشخصين",
+      "box-late-night: بوكس السهرة",
+      "box-taste-all: بوكس التشكيلة",
+      "box-grill-half-half: بوكس المشاوي نص ونص",
+      "box-family: بوكس العائلة — مشاوي وبيتزا وباستا",
+      "box-pizza-night: بوكس سهرة البيتزا",
+      "box-mashakel: بوكس المشكل المخصوص",
+      "box-ribs-grill: بوكس الريش والمشاوي"
+     ]
+    },
+    "tier": "fast",
+    "escalated": false,
+    "lang": "ar",
+    "introByModel": true
+   },
+   {
+    "i": 1,
+    "customer": "مو الحين، بعدين",
+    "cls": "unknown",
+    "raw": "unknown",
+    "by": "assistant",
+    "reply": "على راحتك 🌟 تحب أذكّرك بكرة؟ أي وقت يناسبك؟",
+    "cart": null,
+    "handover": null,
+    "outcome": "sent",
+    "tools": [],
+    "verdicts": [
+     {
+      "ok": true,
+      "problems": [],
+      "text": "على راحتك 🌟 تحب أذكّرك بكرة؟ أي وقت يناسبك؟"
+     }
+    ],
+    "calls": [
+     {
+      "model": "claude-haiku-5-5",
+      "tier": "fast",
+      "ms": 1171,
+      "outcome": "ok",
+      "in": 753,
+      "out": 40,
+      "cached": 14370,
+      "costSar": 0.005746
+     }
+    ],
+    "ms": 1176,
+    "costSar": 0.005746,
+    "model": "claude-haiku-5-5",
+    "suggestions": [],
+    "context": {
+     "open_now": true,
+     "closes_at": "2 فجراً",
+     "location_shared": false,
+     "order_for_later": {
+      "rule": "The customer can order now for a later time slot: you build the cart as usual, and on the website they choose «اطلب لوقت لاحق» and the slot before paying (payment is now). Mention it, in a few words, only when the customer wants the ORDER ITSELF at a later time (for tomorrow's lunch, for nine tonight); it is not a second offer beside a reminder. Never name a slot or a time yourself."
+     }
+    },
+    "tier": "fast",
+    "escalated": false,
+    "lang": "ar"
+   },
+   {
+    "i": 2,
+    "customer": "لا مو لازم شكراً",
+    "cls": "thanks",
+    "raw": "thanks",
+    "by": "assistant",
+    "reply": "العفو، حيّاك الله في أي وقت 🌟",
+    "cart": null,
+    "handover": null,
+    "outcome": "sent",
+    "tools": [],
+    "verdicts": [
+     {
+      "ok": true,
+      "problems": [],
+      "text": "العفو، حيّاك الله في أي وقت 🌟"
+     }
+    ],
+    "calls": [
+     {
+      "model": "claude-haiku-5-5",
+      "tier": "fast",
+      "ms": 980,
+      "outcome": "ok",
+      "in": 369,
+      "out": 23,
+      "cached": 14969,
+      "costSar": 0.005795
+     }
+    ],
+    "ms": 984,
+    "costSar": 0.005795,
+    "model": "claude-haiku-5-5",
+    "suggestions": [],
+    "context": {
+     "open_now": true,
+     "closes_at": "2 فجراً",
+     "location_shared": false,
+     "order_for_later": {
+      "rule": "The customer can order now for a later time slot: you build the cart as usual, and on the website they choose «اطلب لوقت لاحق» and the slot before paying (payment is now). Mention it, in a few words, only when the customer wants the ORDER ITSELF at a later time (for tomorrow's lunch, for nine tonight); it is not a second offer beside a reminder. Never name a slot or a time yourself."
+     }
+    },
+    "tier": "fast",
+    "escalated": false,
+    "lang": "ar"
+   }
+  ],
+  "carts": [],
+  "costSar": 0.022588999999999998,
+  "grade": {
+   "pass": true,
+   "fails": [],
+   "review": []
+  }
+ }
+]

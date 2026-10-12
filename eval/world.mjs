@@ -28,7 +28,7 @@ const undress = (b) => ({ ...b, slots: normalizeSlots(b.slots.map((s) => (s.type
 
 /* w = { profile: "new"|"returning", closed, soldOut:[ids], loc: null|"in"|"far"|"out", offers: "none"|undefined, firstUsed, reorder, down:[source] } */
 export function makeWorld(w = {}, { callModel, onCall, acfg: acfgIn = {} } = {}) {
-  const nowIso = w.closed ? CLOSED_AT : OPEN_AT, now = () => new Date(nowIso);
+  const nowIso = w.at || (w.closed ? CLOSED_AT : OPEN_AT), now = () => new Date(nowIso);
   const soldOut = Object.fromEntries((w.soldOut || []).map((id) => [String(id), true]));
   const menu = indexMenu(FX.pages, { hiddenIds: [], soldOut, variants: w.noWeights ? null : FX.variants });      // M3: the live weights and prices of the by-weight dishes (fixtures/variants.json)
   const boxes = FX.bundles, raw = boxes.map(undress);
@@ -63,15 +63,17 @@ export function makeWorld(w = {}, { callModel, onCall, acfg: acfgIn = {} } = {})
     lastLocation: async () => state.loc, botCarts: { create: async (x) => { const code = `ev${String(carts.length + 1).padStart(6, "0")}`; carts.push({ code, ...x }); return { code }; } } });
   const state = { loc: null };
   const cfg = R.botConfig({ waBot: { mode: "test", testPhones: [`0${PHONE}`], dishFactsEnabled: true, ...(w.waBot || {}) } });
-  const faq = async (topic, lang) => {
+  const faq = async (topic, lang, asked = "") => {
     if (topic === "payment") return lang === "en" ? "Online payment with Apple Pay, mada, credit cards and STC Pay." : "الدفع الإلكتروني عبر Apple Pay وmada والبطاقات الائتمانية وSTC Pay.";
     if (topic === "branch_location") return R.textOf(cfg, "location", lang);
-    const a = FX.faq[topic]; return a ? (lang === "en" ? a.en : a.ar) || null : null;
+    const a = (w.faq && w.faq[topic]) || FX.faq[topic]; return a ? R.faqAnswer((lang === "en" ? a.en : a.ar) || "", asked) || null : null;      // PS3: conditional lines, as in the bot (w.faq = the answer as the owner would store it)
   };
   const loop = AR.makeAssistLoop({ tools, callModel, onCall, now, faq, knowOf: async () => ({ menu, boxes }),
     dishFactSay: async (a) => R.dishFactSay(cfg, { open: { open: !w.closed } }, a),
     /* manager knowledge base: w.kb = [{ id, question, ar, en? }] (same matching and the same re-check as the store) */
     kbSearch: async (question, lang) => kbCandidates((w.kb || []).map((r) => ({ ...r, examples: r.examples || [] })), question).map((r) => ({ id: r.id, question: r.question, say: (lang === "en" && r.en) || r.ar })).filter((r) => kbCheck(r.say).ok),
+    /* PS3: the reminder plan with the world's clock and opening hours (the customer's last message = now) */
+    reminder: async ({ day, time, lang }) => AR.planReminder({ now: now(), day, time, lastInMs: now().getTime(), lang, isOpenAt: (dt) => openState(settings, dt).open === true }),
     deliveryInfo: async () => ({ ok: true, delivers_up_to_km: POLICY.maxKm, far_zone_up_to_km: POLICY.farZoneMaxKm, far_zone_extra_per_km: POLICY.farZonePerKm, fee_by_order_total: R.feeLines(POLICY, "ar").split("\n"), ladder: POLICY.feeByTotal.map((x) => ({ over: x.over, fee: x.fee })), note: "the exact fee is shown on the website before payment" }) });
   const acfg = { ...AR.assistConfig({ mode: "test", ...acfgIn }) };
   const reorder = w.reorder ? { day: "يوم الثلاثاء 6/10", lines: [{ name: "كريب زنجر سوبريم", qty: 2 }, { name: "وجبة كفتة", qty: 1 }], note: "a one-tap button «نفس طلبي السابق» is attached under your message" } : null;
