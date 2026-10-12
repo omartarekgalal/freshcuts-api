@@ -203,7 +203,12 @@ export const TEXTS = Object.freeze({
   sold_line: t("سطر «خلص اليوم»", "⚠️ خلص اليوم.", "⚠️ Sold out today.", [], [], 120),
   items_body: t("أسعار كذا صنف", "{lines}", "{lines}", ["lines"]),
   notmenu: t("صنف مش عندنا", "ما عندنا {what} في المنيو 🙏 تقدر تشوف الأقسام من هنا:", "We don't have {what} on the menu 🙏 Browse the sections here:", ["what"], [], 300),
-  packs_body: t("باقات التجمعات", "باقات التجمعات 👥\n{lines}\nللطلبات الأكبر أو طلبات الشركات اكتب: موظف", "Gathering packs 👥\n{lines}\nFor bigger or company orders type: staff", ["lines"]),
+  packs_body: t("باقات التجمعات", "باقات التجمعات 👥\n{lines}", "Gathering packs 👥\n{lines}", ["lines"]),
+  packs_custom: t("التجمعات: عرض مخصص (رسالة بزر)", "وعندنا عروض مخصصة للتجمعات والمناسبات وطلبات الشركات 👇", "We also make tailored offers for gatherings, events and company orders 👇", [], [], 300),
+  btn_custom: t("زر: أبغى عرض مخصص", "أبغى عرض مخصص", "Tailored offer", [], [], LIMITS.btnTitle),
+  custom_offer: t("طلب عرض مخصص (تحويل لموظف)", "أبشر 🙏 عشان نجهّز لك عرض مخصص اكتب لنا هنا: عدد الأشخاص، اليوم والوقت، وتوصيل أو استلام.\nحوّلت طلبك لموظف.\n{wait}", "Sure 🙏 To prepare a tailored offer please write here: how many people, the day and time, and delivery or pickup.\nI've passed your request to a staff member.\n{wait}", [], ["wait"]),
+  /* أسرار الشغل (قرار عمر ١٢/١٠): المقادير والتتبيلة وطريقة التحضير والمورّدين مابتتقالش — رد واحد مهذب من غير تحويل */
+  secret: t("سؤال عن الوصفة / المقادير / طريقة التحضير", "تفاصيل التحضير والمقادير من أسرار مطبخنا 🙂 أقدر أساعدك في المنيو والأسعار والطلب.", "How we prepare our dishes is our kitchen's secret 🙂 I can help with the menu, prices and ordering.", [], [], 300),
   pickup_body: t("الاستلام من الفرع", "🏃 {pickup}", "🏃 {pickup}", ["pickup"]),
   spicy_body: t("الأصناف الحارة (من الوصف)", "أصناف مكتوب في وصفها إنها حارة 🌶️ اختر الصنف لتفاصيله.", "Dishes described as spicy 🌶️ pick one for details.", [], [], 300),
   faq_body: t("إجابة سؤال شائع", "{answer}", "{answer}", ["answer"]),
@@ -289,10 +294,10 @@ export const INTENT_MAP = Object.freeze({
   cancel_order: "change", modify_order: "change", cancel_or_stop: "change", special_request: "change",
   human: "human", thanks: "thanks", bye: "thanks", stop: "stop", start: "start", media: "media", unknown: "unknown",
 });
-export const TREE_KEYS = ["main", "boxes", "tier", "box", "cats", "cat", "item", "items", "best", "notmenu", "packs", "pickup", "spicy", "faq", "area", "hoursloc", "optin_yes", "optin_no", "resume_all", "resume_updates", "reorder"];
+export const TREE_KEYS = ["main", "boxes", "tier", "box", "cats", "cat", "item", "items", "best", "notmenu", "packs", "pickup", "spicy", "faq", "area", "hoursloc", "optin_yes", "optin_no", "resume_all", "resume_updates", "reorder", "custom_offer", "secret"];
 export const REPLY_KEYS = ["greet", "menu", "order", "offers", "delivery", "hours", "location", "payment", "status", "complaint", "problem", "change", "human", "staff", "media", "unknown", "thanks", "stop", "start"];
-const HANDOFF_KEYS = { complaint: ["complaint", "urgent"], problem: ["problem", "urgent"], change: ["order_change", "urgent"], human: ["asked_human", "normal"], staff: ["needs_staff", "normal"], media: ["media", "normal"] };
-const BUTTON_IDS = { "bot:menu": "main", "bot:status": "status", "bot:human": "human", "optin:yes": "optin_yes", "optin:no": "optin_no", "resume:all": "resume_all", "resume:updates": "resume_updates", "re:last": "reorder" };
+const HANDOFF_KEYS = { custom_offer: ["custom_offer", "normal"], complaint: ["complaint", "urgent"], problem: ["problem", "urgent"], change: ["order_change", "urgent"], human: ["asked_human", "normal"], staff: ["needs_staff", "normal"], media: ["media", "normal"] };
+const BUTTON_IDS = { "bot:menu": "main", "bot:status": "status", "bot:human": "human", "optin:yes": "optin_yes", "optin:no": "optin_no", "resume:all": "resume_all", "resume:updates": "resume_updates", "re:last": "reorder", "bot:custom": "custom_offer" };
 const MENU_IDS = { main: "main", boxes: "boxes", cats: "cats", offers: "offers", delivery: "delivery", pickup: "pickup", status: "status", hours: "hoursloc", location: "location", packs: "packs", pay: "payment", human: "human" };
 const IGNORED_TYPES = new Set(["reaction", "sticker", "unsupported", "system", "ephemeral", "request_welcome", "order"]);
 const MEDIA_TYPES = new Set(["image", "audio", "voice", "video", "document", "contacts", "location"]);
@@ -845,8 +850,10 @@ export function buildReply(key, c) {
       const packs = (data.bundles || []).filter((b2) => !String(b2.section || "").trim() && Number(b2.price) > 0)
         .filter((b2) => !b2.offer_id || !act || act.has(String(b2.offer_id))).sort((a, b2) => Number(a.price) - Number(b2.price));
       if (!packs.length) throw new DataMissing("packs");
-      return withLink("packs_body", { lines: packs.map((b2) => `• ${(lang === "en" && b2.name_en) || b2.name}: ${lang === "en" ? `SAR ${money(b2.price)}` : `${money(b2.price)} ر.س`}${
-        b2.offer_id && act ? endsSoon(act.get(String(b2.offer_id))?.until, data.now, lang, cfg.offerEndWithinDays) : ""}`).join("\n") }, "cta_order");
+      return { ...withLink("packs_body", { lines: packs.map((b2) => `• ${(lang === "en" && b2.name_en) || b2.name}: ${lang === "en" ? `SAR ${money(b2.price)}` : `${money(b2.price)} ر.س`}${
+        b2.offer_id && act ? endsSoon(act.get(String(b2.offer_id))?.until, data.now, lang, cfg.offerEndWithinDays) : ""}`).join("\n") }, "cta_order"),
+        /* رسالة تانية: عروض مخصصة للتجمعات + زر بيحوّل لموظف بعد ما يطلب التفاصيل (عدد الأشخاص، الوقت، توصيل/استلام) */
+        ...(c.factual ? {} : { extra: [{ body: T("packs_custom"), buttons: [{ id: "bot:custom", title: T("btn_custom") }, { id: "bot:menu", title: T("btn_main") }] }] }) };
     }
     case "pickup": {
       const f = (data.settings?.storefront?.seo?.faq || []).find((x) => /الاستلام|استلام/.test(String(x?.q || "")));
@@ -933,7 +940,8 @@ export function buildReply(key, c) {
       return r;
     }
     case "complaint": return { body: order ? F("complaint_known", { order_no: order.order_no, wait: wait() }) : F("complaint_ask", { wait: wait() }) };
-    case "problem": case "change": case "human": case "staff": case "media": case "data_missing": case "handoff_remind":
+    case "secret": return { body: T("secret"), buttons: [{ id: "bot:menu", title: T("btn_main") }, { id: "bot:human", title: T("btn_human") }] };
+    case "problem": case "change": case "human": case "staff": case "media": case "data_missing": case "handoff_remind": case "custom_offer":
       return { body: F(key, { wait: wait() }) };
     case "rate": case "rate_burst": return { body: T(key) };
     case "unknown": return { body: T("unknown"), buttons: [{ id: "bot:menu", title: T("btn_main") }, { id: "bot:status", title: T("btn_status") }, { id: "bot:human", title: T("btn_human") }] };
@@ -1021,7 +1029,9 @@ const EXTRA = [
 /* know = { menu (wabot.indexMenu من المنيو الحي), bundles } — من غيرهم التصنيف شغّال بس من غير أصناف/بوكسات بالاسم.
    ⇒ { key, arg, rawIntent, lang, score, entities }. arg: رقم القسم/الصنف، slug البوكس، رقم النوع، مفتاح السؤال الشائع… */
 /* سؤال عن مكونات صنف (بعد التطبيع). الجزء الأخير: «… فيه/فيها <كلمة>؟» بعلامة استفهام أو «هل …» — مش «شي فيه دجاج» اللي هو طلب اقتراح. */
-const INGR_RE = /مكونات|مكوناته|مكوناتها|يحتوي|تحتوي|معمول من|مصنوع من|ingredients?|what'?s in|\bcontains?\b|made (of|with)|(ايش|وش|شنو|ايه|شو) (اللي )?(فيه|فيها|داخله|جواه|جواها)|^هل .*(فيه|فيها|فيهم) \S+|(فيه|فيها|فيهم) (ال)?[^\s؟?]+ ?[؟?]\s*$/i;
+const INGR_RE = /(^هل .*(فيه|فيها|فيهم) (?!ايش|ايه|شنو)\S+)|((فيه|فيها|فيهم) (ال)?(?!ايش|ايه|شنو)[^\s؟?]+ ?[؟?]\s*$)|\bcontains?\b|\bdoes .* have\b|\bwithout\b.*\?/i;
+/* الوصفة والمقادير وطريقة التحضير والتتبيلة والمورّد: أسرار شغل (قرار عمر ١٢/١٠) ⇒ رد «secret»، من غير تحويل ومن غير أي تفصيلة */
+const RECIPE_RE = /تتبيل|متبل ب|مقادير|المقدار|كم (جرام|غرام|جم)|بالجرام|جرامات|طريقه (ال)?(عمل|تحضير|طبخ|تسويه|كفته|شوي)|كيف (تسوون|تسووا|تعملون|تعملوا|تحضرون|تطبخون|تتبلون)|اعطني طريقه|عطني طريقه|ريسبي|الوصفه|وصفه (ال)?|خلطه|الخلطه|سر (ال)?(طعم|نكهه|خلطه)|المورد|موردكم|recipe|marinade|how (do|did) you (make|cook|prepare|marinate)|how many grams|supplier/i;
 /* «نفس الطلب / زي آخر مرة / كرر الطلب / المعتاد» — بعد التطبيع (ة⇒ه، أ⇒ا) */
 const REORDER_RE = /(نفس|زي|مثل) (ال)?(طلب|طلبي|طلبنا|اخر مره|المره اللي فاتت|المره الماضيه)|كرر(وا|و)? ?(لي )?(ال)?(طلب|طلبي)|(ال)?معتاد|same (order|as last)|re-?order|the usual/i;
 export function classify(ev, know = {}) {
@@ -1056,6 +1066,7 @@ export function classify(ev, know = {}) {
   /* ١٢/١٠ — «الساعة كم» اتصنّفت شكوى: كلمة مدة لوحدها (درجة ٣) كانت كفاية. الشكوى لازم لها إشارة شكوى فعلية
      (بارد/ناقص/غلط/متأخر… ⇒ درجة ٥+). إشارة ضعيفة + كلام عن الطلب ⇒ «وين طلبي» (حالة حقيقية، وبتحوّل لو متأخر فعلاً). */
   if (intent === "complaint" && m.score < 5) intent = orderNo || /طلب|اوردر|order|مندوب|driver/.test(n) ? "order_status" : "unknown";
+  if (RECIPE_RE.test(n) && !HARD_INTENTS.has(intent)) return done("secret", null, "recipe");
   if (TIME_RE.test(n) && !HARD_INTENTS.has(intent)) return done("hours", null, "time_question");
   if (REORDER_RE.test(n) && (!HARD_INTENTS.has(intent) || intent === "order_status")) return done("reorder", null, "reorder");
   if (!HARD_INTENTS.has(intent)) {
@@ -1078,7 +1089,8 @@ export function classify(ev, know = {}) {
     if (e.notOnMenu) return done("notmenu", e.notOnMenu);
     /* سؤال مكونات عن صنف («ايش مكونات…»، «… فيه جبن؟»): وصف المنيو مش قايمة مكونات كاملة (ملاحظة الشيف ١٢/١٠: وصف البرجر الكلاسيك
        مافيهوش صوص الشيدر ولا الثاوزند آيلاند) ⇒ مانردّش بالوصف كأنه المكونات؛ نحوّل لموظف لحد ما ملف حقايق الأصناف يتوافق عليه. */
-    if ((INGR_RE.test(n) || INGR_RE.test(text)) && (e.itemId || (e.items || []).length || e.categoryId)) return done("staff", null, "ingredients");
+    if ((INGR_RE.test(n) || INGR_RE.test(text)) && (e.itemId || (e.items || []).length || e.categoryId)) return done("staff", null, "ingredients");      // «… فيه جبن؟»: نعم/لا من ملف الحقايق المعتمد — لحد ما يتوافق عليه: موظف
+    /* «ايش مكونات X / وش فيه X»: وصف المنيو العام وبس (الرد العادي للصنف تحت) — مش قايمة مكونات ومش وصفة. */
     const ids = e.itemId ? [String(e.itemId)] : (e.items || []).map(String);
     if (ids.length === 1) return done("item", ids[0]);
     // «عندكم برجر دجاج»: الأصناف اللي فيها الكلمة مبعثرة على أقسام تانية ⇒ قسم البرجر نفسه أوضح. «وجبة كفتة»: كلهم من نفس القسم ⇒ هم.
@@ -1201,12 +1213,12 @@ export function decide(ev, ctx) {
     }
   }
 
+  let regreet = false;
   if (key === "greet") {
     const hasAd = Boolean(ev.referral) || Boolean(chat.referral_at && nowMs - Date.parse(chat.referral_at) < cfg.adWindowHours * 3600_000);
-    if (cfg.greetScope === "ads" && !hasAd) return silent("greet_ads_only");
-    if (chat.last_greet_at && nowMs - Date.parse(chat.last_greet_at) < cfg.greetWindowHours * 3600_000) {
-      return silent("already_greeted", { resumeAt: iso(Date.parse(chat.last_greet_at) + cfg.greetWindowHours * 3600_000) });
-    }
+    /* عميل قال «هلا» مايتردّش عليه بسكوت أبداً (عطل ١٢/١٠: «السلام عليكم» بعد ٣ ساعات من التحية ⇒ ولا حرف).
+       جوّه مدة التحية، أو تحية غير محادثات الإعلانات لما التحية للإعلانات بس ⇒ القائمة الرئيسية القصيرة (من غير اسم ولا ترحيب مكرر). */
+    if ((cfg.greetScope === "ads" && !hasAd) || (chat.last_greet_at && nowMs - Date.parse(chat.last_greet_at) < cfg.greetWindowHours * 3600_000)) { key = "main"; regreet = true; }
   }
   const wasUnknown = key === "unknown";
   if (key === "unknown" && Number(chat.unknown_streak) >= cfg.unknownHandoverAfter - 1) { key = "human"; handoff = ["not_understood_twice", "normal"]; }
@@ -1284,17 +1296,23 @@ export function decide(ev, ctx) {
   const payloads = replies.map((r, i) => toPayload(r, { cfg, lang: c.lang, interactive, footer: showFooter(r, i) }));
   const fallback = replies.map((r) => toPayload(r, { cfg, lang: c.lang, interactive: false }));
   const pp = [...payloads, ...fallback].map(payloadProblem).find(Boolean);
-  if (pp) return { act: "silent", reason: "payload_invalid", ...base, key, detail: pp, handoff: handoff || ["data_missing", "normal"] };
+  if (pp) {   // الرد اتبنى غلط (نص اتعدّل، حد واتساب…) ⇒ العميل مايتسابش من غير رد: سطر «حوّلت سؤالك لموظف» + تنبيه. لو ده كمان مايتبنيش ⇒ سكوت + تنبيه.
+    try {
+      const safe = toPayload(buildReply("data_missing", bc), { cfg, lang: c.lang, interactive: false });
+      if (!payloadProblem(safe)) return { act: "reply", reason: `payload_invalid:${pp}`, ...base, key: "data_missing", payloads: [safe], fallback: [safe], handoff: handoff || ["data_missing", "normal"], detail: `${key}:${pp}`, greet: false, resume: null, optout, link: null, unknown: false, disclose: false, factual, optinAsk: null, optinAnswer: null };
+    } catch { /* تحت */ }
+    return { act: "silent", reason: "payload_invalid", ...base, key, detail: pp, handoff: handoff || ["data_missing", "normal"] };
+  }
   return { act: "reply", reason: problem ? `data_missing:${problem}` : (ctx.afterWait ? `after_${ctx.afterWait}` : null), ...base, key, payloads, fallback, handoff,
-    detail: faqGap ? `faq:${faqGap}` : null, greet: key === "greet", resume: key === "resume_all" ? "all" : key === "resume_updates" ? "updates" : null, optout, link: reply.link || null, unknown: key === "unknown", disclose, factual,
+    detail: faqGap ? `faq:${faqGap}` : regreet ? "regreet" : null, greet: key === "greet", resume: key === "resume_all" ? "all" : key === "resume_updates" ? "updates" : null, optout, link: reply.link || null, unknown: key === "unknown", disclose, factual,
     optinAsk, optinAnswer: key === "optin_yes" ? "yes" : key === "optin_no" ? "no" : null };
 }
 
 /* نص تنبيه الفريق — رسالة SMS واحدة (fitOneSms حارس أخير). مفيش اسم العميل ولا نص رسالته. */
 const REASON_EN = { complaint: "complaint", problem: "payment/site problem", order_change: "change/cancel order", asked_human: "asked for staff", needs_staff: "question for staff",
   media: "sent photo/voice", not_understood_twice: "not understood", rate_limit: "many messages", data_missing: "bot could not answer", order_not_found: "order not found",
-  order_late: "LATE order", order_issue: "order issue", send_failed: "bot reply failed" };
-const REASON_AR = { complaint: "شكوى", problem: "مشكلة دفع/موقع", order_change: "تعديل/الغاء طلب", asked_human: "طلب موظف", needs_staff: "سؤال", media: "صورة/صوت",
+  custom_offer: "wants a tailored group offer", order_late: "LATE order", order_issue: "order issue", send_failed: "bot reply failed" };
+const REASON_AR = { custom_offer: "عرض مخصص لتجمع", complaint: "شكوى", problem: "مشكلة دفع/موقع", order_change: "تعديل/الغاء طلب", asked_human: "طلب موظف", needs_staff: "سؤال", media: "صورة/صوت",
   not_understood_twice: "غير مفهوم", rate_limit: "رسائل كثيرة", data_missing: "البوت لم يجب", order_not_found: "طلب غير موجود", order_late: "طلب متاخر", order_issue: "مشكلة طلب", send_failed: "فشل رد البوت" };
 export function alertText({ phone, reason, orderNo = null }, lang = "en") {
   const ph = `0${phone}`;
@@ -1717,6 +1735,8 @@ export function register(app, ctx, deps = {}) {
                ON CONFLICT (phone_norm) DO UPDATE SET handoff_at = NOW(), handoff_reason = $2, unknown_streak = 0, updated_at = NOW()`, [phone, handoff[0]]);
     }
     if (cfg.mode === "dry") return "would";
+    /* البوابة (الكاشير): حدث حيّ wa_handover على نفس قناة الطلبات — بيتبعت في وضع التجربة كمان (الكاشير هو اللي بيرد). الواجهة والصوت عند صاحب البورتال. */
+    if (typeof deps.portalEmit === "function") { try { deps.portalEmit("wa_handover", { phone: `0${phone}`, phoneMasked: `…${String(phone).slice(-4)}`, reason: handoff[0], reasonAr: REASON_AR[handoff[0]] || handoff[0], urgent: handoff[1] === "urgent", orderNo: orderNo || null, at: clock().toISOString(), test: cfg.mode === "test" }); } catch (e) { console.error("[wabot] portal:", e.message); } }
     if (cfg.mode === "test" && !cfg.alertInTest) return "would";
     return alertStaff(settings, cfg, { phone, reason: handoff[0], orderNo });
   }

@@ -1257,6 +1257,7 @@ export function register(app, ctx, deps = {}) {
     requirePortal, audit,
     tabsenseDown: (detail) => push.tabsenseDown(detail).catch(() => null),
     pollNewOrders, scan, refresh, loadFeed, loadInfo, push, hub, limiter, scheduleRefresh,
+    broadcast,      // بوت واتساب بينده عليه بحدث wa_handover (عميل عايز موظف) — نفس قناة SSE بتاعة الطلبات
     stop() {
       try { unsub?.(); } catch {}
       clearInterval(pollTimer);

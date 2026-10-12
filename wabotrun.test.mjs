@@ -210,7 +210,8 @@ function world({ waBot = {}, notifications = { whatsappEnabled: true }, orders =
   const sms = [];
   const botCarts = { ensure: async () => {}, lastOrderCarts: async (ph, days, o) => { const v = typeof lastCart === "function" ? lastCart(ph, days, o) : lastCart; return (Array.isArray(v) ? v : v ? [v] : []).map((x, i) => ({ latest: i === 0, ...x })); },
     create: async (x) => { if (failDb && failDb.test("INSERT INTO wa_bot_carts")) return null; const code = `rc${String(db.botCarts.length + 1).padStart(6, "0")}`; db.botCarts.push({ code, ...x }); return { code }; }, open: async () => null, restore: async () => null, coverage: async () => ({ orders: 40, with_snapshot: 30, with_raw: 28, usable: 26, avg_diff: 0, mismatched: 2, links: db.botCarts.length, opened: 0 }) };
-  const bot = R.register(app, ctx, { app, wa, now: clock.now, noTimer: true, botCarts, whoami: async () => actor.who, ...(resolveMapsLink ? { resolveMapsLink } : { resolveMapsLink: async () => null }), sendSms: async (x) => { sms.push(x); return { ok: true }; },
+  const portalEvents = [];
+  const bot = R.register(app, ctx, { app, wa, now: clock.now, noTimer: true, botCarts, portalEmit: (ev2, data) => portalEvents.push([ev2, data]), whoami: async () => actor.who, ...(resolveMapsLink ? { resolveMapsLink } : { resolveMapsLink: async () => null }), sendSms: async (x) => { sms.push(x); return { ok: true }; },
     fetchMenuPages: async () => { if (pages === null) throw new Error("menu down"); return pages; }, quote: async (lat, lng) => (typeof quote === "function" ? quote(lat, lng) : quote), llm,
     fetchOffers: async () => { if (offers === null) throw new Error("offers down"); return offers; } });
   let seq = 0;
@@ -229,7 +230,7 @@ function world({ waBot = {}, notifications = { whatsappEnabled: true }, orders =
   const call = async (method, path, json = {}, query = {}) => routes[`${method} ${path}`]({ req: { json: async () => json, query: (k) => query[k], header: () => undefined, text: async () => "" }, json: (body, status = 200) => ({ body, status }) });
   /* وقت الرد المؤجّل: نقدّم الساعة ونشغّل دورة الردود المؤجّلة؛ بيرجّع اللي اتبعت فيها */
   const tick = async (min = 0) => { clock.advance(min); const before = calls.length; await bot.runDueJobs(); return calls.slice(before).map((c) => c.body); };
-  return { db, clock, calls, sms, say, press, cashier, call, wa, bot, tick, setOwner: (v) => { owner = v; }, setActor: (v) => { actor.who = v; }, setMode: (m) => { db.settings.waBot = { ...db.settings.waBot, mode: m }; } };
+  return { db, clock, calls, sms, portal: portalEvents, say, press, cashier, call, wa, bot, tick, setOwner: (v) => { owner = v; }, setActor: (v) => { actor.who = v; }, setMode: (m) => { db.settings.waBot = { ...db.settings.waBot, mode: m }; } };
 }
 const cta = (to, body, title, url) => ({ messaging_product: "whatsapp", recipient_type: "individual", to, type: "interactive",
   interactive: { type: "cta_url", body: { text: body }, footer: { text: FOOTER }, action: { name: "cta_url", parameters: { display_text: title, url } } } });
@@ -372,7 +373,8 @@ test("click-to-WhatsApp: the ad is captured on the chat and its replies use the 
   assert.equal((await w3.say("كم رسوم التوصيل", { referral })).log.reply_key, "delivery");
   // greet only ad chats (dashboard choice)
   const w4 = world({ waBot: { mode: "live", greetScope: "ads" } });
-  assert.equal((await w4.say("السلام عليكم")).log.reason, "greet_ads_only");
+  const na = await w4.say("السلام عليكم");
+  assert.equal(na.log.reply_key, "main"); assert.equal(bodyOf(na.sent[0]), "القائمة الرئيسية 👇 اختر اللي تبيه.", "greeting kept for ad chats ⇒ an organic hello still gets the main menu, never silence");
   assert.equal((await w4.say("السلام عليكم", { from: "966598765432", referral })).sent.length, 1);
   assert.equal((await w4.say("المنيو")).sent.length, 1, "questions are still answered for everyone");
 }));
@@ -726,10 +728,10 @@ test("the log says why the bot stayed silent and when it answers again; this mon
   const w = world({ waBot: { mode: "live", freeRepliesPerMonth: 2, replyRateSar: 0.0401 } });
   const g = await w.say("السلام عليكم"); w.clock.advance(1);
   const g2 = await w.say("هلا");
-  assert.equal(g2.log.reason, "already_greeted"); assert.equal(mins(g2.log.resume_at, g.log.at), 24 * 60);
+  assert.equal(g2.log.reply_key, "main"); assert.equal(g2.sent.length, 1); assert.ok(g.log.at);
   await w.say("وين موقعكم", { from: "966598765432" }); await w.say("طرق الدفع", { from: "966577777777" }); await w.say("المنيو", { from: "966566666666" });
   const st = await w.call("GET", "/api/cms/wabot/stats", {}, { days: "7" });
-  assert.deepEqual(st.body.month, { replies: 4, free: 2, billable: 2, rateSar: 0.0401, costSar: 0.08 });
+  assert.deepEqual(st.body.month, { replies: 5, free: 2, billable: 3, rateSar: 0.0401, costSar: 0.12 });
   const log = await w.call("GET", "/api/cms/wabot/log", {}, { decision: "waiting" });
   assert.equal(log.status, 200);
   const cfg = await w.call("GET", "/api/cms/wabot/config");
@@ -797,7 +799,7 @@ test("conversation: greeting (link + main menu) → order → delivery → hours
   assert.equal(w.db.log.length, 1);
   w.clock.advance(1);
   const again = await w.say("هلا");
-  assert.equal(again.sent.length, 0); assert.equal(again.log.reason, "already_greeted");
+  assert.equal(again.sent.length, 1); assert.equal(again.log.reply_key, "main"); assert.equal(bodyOf(again.sent[0]), "القائمة الرئيسية 👇 اختر اللي تبيه.");
   w.clock.advance(1);
   assert.deepEqual((await w.say("ابي اطلب")).sent, [cta(ME, `الطلب من موقعنا يأخذ دقيقة 👇\nاختر طلبك، حدّد موقعك على الخريطة وادفع إلكترونياً، ونبلّغك بكل تحديث.\n${FIRST_LINE}`, "اطلب الآن", "https://freshcuts.sa/l/wab-boxes")]);
   w.clock.advance(1);
@@ -941,7 +943,17 @@ test("free text about the menu is answered from the data — or handed over hone
 
 test("gathering packs, pickup, hours + location, and the delivery check from a shared location", withEnv(LOCKS_OPEN, async () => {
   const w = liveWorld({ extraSettings: { storefront: { seo: { faq: [...FAQ, { q: "هل يمكن الاستلام من الفرع؟", a: "نعم، اختر «استلام» في صفحة الطلب وسيكون طلبك جاهزاً في فرع حي السلامة." }] } } } });
-  assert.deepEqual((await w.say("ابي طلب لـ ٥٠ شخص")).sent, [cta(ME, "باقات التجمعات 👥\n• باقة تجمّع ٤–٦ أشخاص: 225 ر.س (لين 15/10)\n• باقة تجمّع ٨–١٠ أشخاص: 395 ر.س (لين 15/10)\n• باقة مناسبة ١٥ شخصاً وأكثر: 595 ر.س (لين 15/10)\nللطلبات الأكبر أو طلبات الشركات اكتب: موظف", "اطلب الآن", "https://freshcuts.sa/l/wab-boxes")]);
+  const pk = await w.say("ابي طلب لـ ٥٠ شخص");
+  assert.deepEqual(pk.sent[0], cta(ME, "باقات التجمعات 👥\n• باقة تجمّع ٤–٦ أشخاص: 225 ر.س (لين 15/10)\n• باقة تجمّع ٨–١٠ أشخاص: 395 ر.س (لين 15/10)\n• باقة مناسبة ١٥ شخصاً وأكثر: 595 ر.س (لين 15/10)", "اطلب الآن", "https://freshcuts.sa/l/wab-boxes"));
+  assert.equal(bodyOf(pk.sent[1]), "وعندنا عروض مخصصة للتجمعات والمناسبات وطلبات الشركات 👇");
+  assert.deepEqual(pk.sent[1].interactive.action.buttons.map((b) => [b.reply.id, b.reply.title]), [["bot:custom", "أبغى عرض مخصص"], ["bot:menu", "📋 القائمة"]]);
+  // «أبغى عرض مخصص»: the details are asked first, then it is handed to staff (one alert); with the reopening time when closed
+  { const cw = liveWorld();
+    const co = await cw.press("bot:custom", "أبغى عرض مخصص");
+    assert.deepEqual(co.sent, [txt(ME, `أبشر 🙏 عشان نجهّز لك عرض مخصص اكتب لنا هنا: عدد الأشخاص، اليوم والوقت، وتوصيل أو استلام.\nحوّلت طلبك لموظف.\n${HAND}`)]);
+    assert.equal(co.log.handoff, "custom_offer"); assert.equal(cw.sms.length, 2); assert.match(cw.sms[0].body, /wants a tailored group offer/);
+    const cc = await liveWorld({ at: CLOSED_AT }).press("bot:custom", "x");
+    assert.match(bodyOf(cc.sent[0]), /يرد عليك موظف هنا أول ما نفتح اليوم الساعة 12 ظهراً/); }
   w.clock.advance(1);
   assert.deepEqual((await w.press("m:pickup", "x")).sent, [cta(ME, "🏃 نعم، اختر «استلام» في صفحة الطلب وسيكون طلبك جاهزاً في فرع حي السلامة.", "اطلب الآن", "https://freshcuts.sa/l/wab-boxes")]);
   w.clock.advance(1);
@@ -1827,22 +1839,67 @@ test("«نفس طلبي الأخير»: a row in the returning customer's greeti
   assert.equal(R.configFromBody({ reorderLinkDays: 99 }).ok, false); assert.equal(R.configFromBody({ reorderEnabled: false }).value.reorderEnabled, false);
 }));
 
-test("an ingredient question about a dish is handed to staff: the menu description is not an ingredient list (chef's finding 12/10)", withEnv(LOCKS_OPEN, async () => {
+test("trade secrets (Omar 12/10): «what is in X» gets the public menu description only; «does X contain Y» goes to staff until the facts file is approved; recipe, quantities, marinade, method, supplier are never discussed", withEnv(LOCKS_OPEN, async () => {
   const K = (t) => R.classify({ text: t, type: "text" }, KNOW);
-  for (const t of ["ايش مكونات البرجر الكلاسيك", "كريب زنجر فيه جبن؟", "وش فيه كريب زنجر", "هل البيتزا فيها مشروم", "what's in the zinger crepe", "البرجر الكلاسيك يحتوي على ايش", "هل كريب زنجر فيه بصل"]) {
-    const c = K(t); assert.deepEqual([c.key, c.rawIntent], ["staff", "ingredients"], t);
-  }
-  // allergy wording keeps its own path (the general allergens answer stays empty by design ⇒ handover)
-  for (const t of ["البرجر الكلاسيك فيه سمسم؟", "عندي حساسية من البيض هل الكريب فيه بيض", "does the burger contain sesame"]) assert.deepEqual([K(t).key, K(t).arg], ["faq", "allergens"], t);
-  // ordinary dish questions are untouched: price, the dish itself, a section, a box's contents, a suggestion
-  for (const [t, key] of [["كم سعر كريب زنجر", "item"], ["كريب زنجر", "item"], ["كم سعر البيتزا", "cat"], ["ايش فيه بوكس الشخصين", "tier"], ["ايش فيه بوكس السهرة", "box"], ["عندكم برجر دجاج", "cat"], ["بكم الكفتة", "items"]]) assert.equal(K(t).key, key, t);
+  // general: the dish screen (name, price, the menu description) — the same thing the website shows
+  for (const t of ["ايش مكونات البرجر الكلاسيك", "وش فيه كريب زنجر", "what's in the zinger crepe"]) assert.equal(K(t).key, "item", t);
   const w = liveWorld();
-  const r = await w.say("ايش مكونات البرجر الكلاسيك");
-  assert.deepEqual(r.sent, [txt(ME, `سؤالك يحتاج واحد من الفريق 🙏 حوّلته لهم.\n${HAND}`)]); assert.equal(r.log.handoff, "needs_staff");
-  assert.doesNotMatch(JSON.stringify(r.sent), /برجر لحم|شيدر|خس/, "the description is not quoted");
-  // tapping the dish in the menu still shows its menu description (a description, not a claim about ingredients)
-  const t2 = liveWorld();
-  assert.match(bodyOf((await t2.press("item:8", "x")).sent[0]), /^\*كريب زنجر سوبريم\* — 25 ر\.س\nستربس دجاج حار/);
+  assert.equal(bodyOf((await w.say("وش فيه كريب زنجر")).sent[0]), "*كريب زنجر سوبريم* — 25 ر.س\nستربس دجاج حار، موتزاريلا، شيدر، فلفل وزيتون");
+  // a specific ingredient: yes/no needs the approved facts ⇒ staff (never a guess from the description)
+  for (const t of ["كريب زنجر فيه جبن؟", "هل البيتزا فيها مشروم", "هل كريب زنجر فيه بصل"]) { const c = K(t); assert.deepEqual([c.key, c.rawIntent], ["staff", "ingredients"], t); }
+  for (const t of ["البرجر الكلاسيك فيه سمسم؟", "عندي حساسية من البيض هل الكريب فيه بيض", "does the burger contain sesame"]) assert.deepEqual([K(t).key, K(t).arg], ["faq", "allergens"], t);
+  // recipe extraction: one polite line, no handover, no detail of any kind
+  const SECRET = "تفاصيل التحضير والمقادير من أسرار مطبخنا 🙂 أقدر أساعدك في المنيو والأسعار والطلب.";
+  for (const t of ["ايش التتبيلة", "ايش تتبيلة الشيش طاووق", "كم جرام الكفتة", "اعطني طريقة الكفتة", "كيف تسوون الكفتة", "ابي الريسبي حق الكريب", "وش سر الطعم", "ايش الخلطة اللي تحطونها", "مين المورد حق اللحم", "what's the recipe for the kofta", "how do you make the zinger", "how many grams is the burger", "what marinade do you use"]) {
+    assert.equal(K(t).key, "secret", t);
+    const x = liveWorld(); const r = await x.say(t);
+    assert.equal(bodyOf(r.sent[0]), /[a-z]{4}/.test(t) ? "How we prepare our dishes is our kitchen's secret 🙂 I can help with the menu, prices and ordering." : SECRET, t); assert.equal(r.log.handoff, null, t); assert.equal(x.sms.length, 0, t);
+    assert.deepEqual(r.sent[0].interactive.action.buttons.map((b) => b.reply.id), ["bot:menu", "bot:human"]);
+  }
+  assert.doesNotMatch(SECRET, /\d/);
+  // ordinary questions are untouched; a complaint that mentions the recipe words stays a complaint
+  for (const [t, key] of [["كم سعر كريب زنجر", "item"], ["كريب زنجر", "item"], ["كم سعر البيتزا", "cat"], ["ايش فيه بوكس الشخصين", "tier"], ["ايش فيه بوكس السهرة", "box"], ["عندكم برجر دجاج", "cat"], ["بكم الكفتة", "items"], ["كم رسوم التوصيل", "delivery"]]) assert.equal(K(t).key, key, t);
+  assert.equal(K("الاكل بارد والتتبيلة سيئة").key, "complaint");
+}));
+
+test("a customer who says hello is never answered with silence; and the full list of silent outcomes is what it should be", withEnv(LOCKS_OPEN, async () => {
+  // Omar 12/10 07:12: greeted at 04:34, wrote «هلا» and «السلام عليكم» again inside the 24-hour greeting window and got nothing
+  const w = liveWorld({ orders: [{ ...order({ status: "delivered" }), customer: { name: "أحمد" } }], waBot: { greetWindowHours: 24 } });
+  assert.equal(bodyOf((await w.say("السلام عليكم")).sent[0]), "حيّاك الله أحمد 👋 اختر من القائمة.");
+  w.clock.advance(158);
+  for (const hello of ["هلا", "السلام عليكم"]) {
+    const r = await w.say(hello); w.clock.advance(3);
+    assert.equal(r.sent.length, 1, hello); assert.equal(r.log.reply_key, "main"); assert.equal(r.log.detail, "regreet");
+    assert.equal(bodyOf(r.sent[0]), "القائمة الرئيسية 👇 اختر اللي تبيه.", "the short main menu: no welcome again, no name, no introduction line");
+    assert.equal(rowsOf(r.sent[0]).length, 10);
+  }
+  w.clock.advance(24 * 60);
+  assert.match(bodyOf((await w.say("هلا")).sent[0]), /حيّاك الله أحمد 👋 اختر من القائمة\.$/, "after the window: a proper greeting again");
+  // a reply that can not be built correctly is not silence either: the plain «handed to staff» line goes out, with the alert
+  const b = liveWorld({ waBot: { texts: {} } });
+  b.db.settings.waBot.texts = { thanks: { ar: "العفو undefined" } };
+  const br = await b.say("شكرا");
+  assert.deepEqual(br.sent, [txt(ME, `ما قدرت أجيب المعلومة الحين 🙏 حوّلت سؤالك لموظف.\n${HAND}`)]); assert.match(br.log.reason, /^payload_invalid:/); assert.equal(b.sms.length, 2);
+  // every reason that may still end in silence, and that each is one of the allowed kinds
+  const src = fs.readFileSync(new URL("./wabotrun.js", import.meta.url), "utf8");
+  const reasons = [...new Set([...src.matchAll(/silent\("([a-z_]+)"/g)].map((m) => m[1]))].sort();
+  assert.deepEqual(reasons, ["ack", "complaint_with_staff", "duplicate", "handoff_open", "ignored_type", "manual_mute", "not_saudi_mobile", "off", "outside_window", "rate_limited", "recent_send_failure", "stale", "test_mode_not_listed"],
+    "adding a new silent outcome must be a deliberate decision: update this list and the table in the slice README");
+}));
+
+test("handover also rings the restaurant portal: one live event per handover alert, with the contract the portal UI reads", withEnv(LOCKS_OPEN, async () => {
+  const w = liveWorld({ orders: [order({ status: "delivered" })] });
+  const r = await w.say("الطلب وصل بارد");
+  assert.equal(r.log.handoff, "complaint");
+  assert.deepEqual(w.portal, [["wa_handover", { phone: "0512345678", phoneMasked: "…5678", reason: "complaint", reasonAr: "شكوى", urgent: true, orderNo: "W1790011111111", at: w.portal[0][1].at, test: false }]]);
+  assert.match(w.portal[0][1].at, /^2026-10-12T/); assert.equal(w.sms.length, 2, "the SMS to Omar and the manager still goes");
+  w.clock.advance(1); await w.say("المنيو");
+  assert.equal(w.portal.length, 1, "no second ring for the same open handover");
+  // test mode: the cashier is the one who answers, so the portal rings even though the SMS is held back; dry mode rings nobody
+  const t = liveWorld({ waBot: { mode: "test", testPhones: ["0512345678"] } });
+  await t.say("ابي اكلم موظف"); assert.deepEqual([t.portal.length, t.portal[0][1].test, t.portal[0][1].urgent, t.sms.length], [1, true, false, 0]);
+  const d = liveWorld({ waBot: { mode: "dry" } });
+  await d.say("ابي اكلم موظف"); assert.equal(d.portal.length, 0);
 }));
 
 test("replay: the stored inbound messages run through the current classifier offline — nothing sent, nothing logged", withEnv(LOCKS_OPEN, async () => {
