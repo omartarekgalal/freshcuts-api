@@ -1,0 +1,1444 @@
+[
+ {
+  "id": "english-pizza-box-crust-notes",
+  "group": "box choices with crust and notes (English)",
+  "world": {
+   "profile": "new"
+  },
+  "expect": {
+   "cart": {
+    "option": "pickup",
+    "boxes": [
+     {
+      "slug": "box-pizza-night",
+      "choices": [
+       43,
+       40
+      ],
+      "addons": [
+       17
+      ],
+      "note": "olive|زيتون",
+      "price": 90
+     }
+    ],
+    "only": true,
+    "subtotal": 90
+   }
+  },
+  "turns": [
+   {
+    "i": 0,
+    "customer": "Hi, I'd like the pizza night box please",
+    "cls": "boxes",
+    "raw": "boxes",
+    "by": "assistant",
+    "reply": "Hi! This is Majed, Fresh Cuts' digital assistant. The Pizza Night Box is SAR 85. It comes with two medium pizzas of your choice, fried mozzarella, fries, coleslaw and 2 soft drinks.\n\nWhich pizza would you like for the first one? Our most ordered is the Chicken Ranch Pizza. Other options are Super Supreme, Pepperoni, Chicken BBQ, Chicken Dynamite, Chicken Pacino, Burger, Tuna and Super Crunchy.",
+    "cart": null,
+    "handover": null,
+    "outcome": "sent",
+    "tools": [
+     {
+      "name": "get_box",
+      "input": {
+       "slug": "box-pizza-night"
+      },
+      "result": {
+       "ok": true,
+       "box": {
+        "slug": "box-pizza-night",
+        "name": "بوكس سهرة البيتزا",
+        "name_en": "Pizza Night Box",
+        "price": 85,
+        "description": "بيتزتين وسط من اختيارك + فرايد موتزاريلا + بطاطس + كولسلو + مشروبين غازيين.",
+        "description_en": "Two medium pizzas of your choice + fried mozzarella + fries + coleslaw + 2 soft drinks.",
+        "section": "بوكسات المشاركة والعائلة",
+        "slots": [
+         {
+          "key": "pizza1",
+          "label": "البيتزا الأولى (وسط)",
+          "type": "choice",
+          "quantity": 1,
+          "choices": [
+           {
+            "product_id": "43",
+            "variant_option_id": 36,
+            "name": "بيتزا تشيكن رانش",
+            "variant": "وسط",
+            "extra": 0,
+            "name_en": "Chicken Ranch Pizza",
+            "addons": [
+             {
+              "id": 15,
+              "name": "بدون حشو أطراف",
+              "price": 0,
+              "group": "حشو أطراف"
+             },
+             {
+              "id": 16,
+              "name": "حشو أطراف كيري",
+              "price": 3,
+              "group": "حشو أطراف"
+             },
+             {
+              "id": 17,
+              "name": "حشو أطراف موتزاريلا",
+              "price": 5,
+              "group": "حشو أطراف"
+             }
+            ]
+           },
+           {
+            "product_id": "41",
+            "variant_option_id": 34,
+            "name": "بيتزا سوبر سوبريم",
+            "variant": "وسط",
+            "extra": 0,
+            "name_en": "Super Supreme Pizza",
+            "addons": [
+             {
+              "id": 15,
+              "name": "بدون حشو أطراف",
+              "price": 0,
+              "group": "حشو أطراف"
+             },
+             {
+              "id": 16,
+              "name": "حشو أطراف كيري",
+              "price": 3,
+              "group": "حشو أطراف"
+             },
+             {
+              "id": 17,
+              "name": "حشو أطراف موتزاريلا",
+              "price": 5,
+              "group": "حشو أطراف"
+             }
+            ]
+           },
+           {
+            "product_id": "40",
+            "variant_option_id": 33,
+            "name": "بيتزا بيبروني",
+            "variant": "وسط",
+            "extra": 0,
+            "name_en": "Pepperoni Pizza",
+            "addons": [
+             {
+              "id": 15,
+              "name": "بدون حشو أطراف",
+              "price": 0,
+              "group": "حشو أطراف"
+             },
+             {
+              "id": 16,
+              "name": "حشو أطراف كيري",
+              "price": 3,
+              "group": "حشو أطراف"
+             },
+             {
+              "id": 17,
+              "name": "حشو أطراف موتزاريلا",
+              "price": 5,
+              "group": "حشو أطراف"
+             }
+            ]
+           },
+           {
+            "product_id": "42",
+            "variant_option_id": 35,
+            "name": "بيتزا تشيكن باربكيو",
+            "variant": "وسط",
+            "extra": 0,
+            "name_en": "Chicken BBQ Pizza",
+            "addons": [
+             {
+              "id": 15,
+              "name": "بدون حشو أطراف",
+              "price": 0,
+              "group": "حشو أطراف"
+             },
+             {
+              "id": 16,
+              "name": "حشو أطراف كيري",
+              "price": 3,
+              "group": "حشو أطراف"
+             },
+             {
+              "id": 17,
+              "name": "حشو أطراف موتزاريلا",
+              "price": 5,
+              "group": "حشو أطراف"
+             }
+            ]
+           },
+           {
+            "product_id": "46",
+            "variant_option_id": 39,
+            "name": "بيتزا تشيكن ديناميت",
+            "variant": "وسط",
+            "extra": 0,
+            "name_en": "Chicken Dynamite Pizza",
+            "addons": [
+             {
+              "id": 15,
+              "name": "بدون حشو أطراف",
+              "price": 0,
+              "group": "حشو أطراف"
+             },
+             {
+              "id": 16,
+              "name": "حشو أطراف كيري",
+              "price": 3,
+              "group": "حشو أطراف"
+             },
+             {
+              "id": 17,
+              "name": "حشو أطراف موتزاريلا",
+              "price": 5,
+              "group": "حشو أطراف"
+             }
+            ]
+           },
+           {
+            "product_id": "36",
+            "variant_option_id": 29,
+            "name": "بيتزا تشيكن الباتشينو",
+            "variant": "وسط",
+            "extra": 0,
+            "name_en": "Chicken Pacino Pizza",
+            "addons": [
+             {
+              "id": 15,
+              "name": "بدون حشو أطراف",
+              "price": 0,
+              "group": "حشو أطراف"
+             },
+             {
+              "id": 16,
+              "name": "حشو أطراف كيري",
+              "price": 3,
+              "group": "حشو أطراف"
+             },
+             {
+              "id": 17,
+              "name": "حشو أطراف موتزاريلا",
+              "price": 5,
+              "group": "حشو أطراف"
+             }
+            ]
+           },
+           {
+            "product_id": "38",
+            "variant_option_id": 31,
+            "name": "بيتزا برجر",
+            "variant": "وسط",
+            "extra": 0,
+            "name_en": "Burger Pizza",
+            "addons": [
+             {
+              "id": 15,
+              "name": "بدون حشو أطراف",
+              "price": 0,
+              "group": "حشو أطراف"
+             },
+             {
+              "id": 16,
+              "name": "حشو أطراف كيري",
+              "price": 3,
+              "group": "حشو أطراف"
+             },
+             {
+              "id": 17,
+              "name": "حشو أطراف موتزاريلا",
+              "price": 5,
+              "group": "حشو أطراف"
+             }
+            ]
+           },
+           {
+            "product_id": "48",
+            "variant_option_id": 41,
+            "name": "بيتزا تونة",
+            "variant": "وسط",
+            "extra": 0,
+            "name_en": "Tuna Pizza",
+            "addons": [
+             {
+              "id": 15,
+              "name": "بدون حشو أطراف",
+              "price": 0,
+              "group": "حشو أطراف"
+             },
+             {
+              "id": 16,
+              "name": "حشو أطراف كيري",
+              "price": 3,
+              "group": "حشو أطراف"
+             },
+             {
+              "id": 17,
+              "name": "حشو أطراف موتزاريلا",
+              "price": 5,
+              "group": "حشو أطراف"
+             }
+            ]
+           },
+           {
+            "product_id": "47",
+            "variant_option_id": 40,
+            "name": "بيتزا سوبر كرانشي",
+            "variant": "وسط",
+            "extra": 0,
+            "name_en": "Super Crunchy Pizza",
+            "addons": [
+             {
+              "id": 15,
+              "name": "بدون حشو أطراف",
+              "price": 0,
+              "group": "حشو أطراف"
+             },
+             {
+              "id": 16,
+              "name": "حشو أطراف كيري",
+              "price": 3,
+              "group": "حشو أطراف"
+             },
+             {
+              "id": 17,
+              "name": "حشو أطراف موتزاريلا",
+              "price": 5,
+              "group": "حشو أطراف"
+             }
+            ]
+           }
+          ],
+          "label_en": "First pizza (medium)",
+          "most_ordered": {
+           "product_id": "43",
+           "name": "بيتزا تشيكن رانش"
+          }
+         },
+         {
+          "key": "pizza2",
+          "label": "البيتزا الثانية (وسط)",
+          "type": "choice",
+          "quantity": 1,
+          "choices": [
+           {
+            "product_id": "43",
+            "variant_option_id": 36,
+            "name": "بيتزا تشيكن رانش",
+            "variant": "وسط",
+            "extra": 0,
+            "name_en": "Chicken Ranch Pizza",
+            "addons": [
+             {
+              "id": 15,
+              "name": "بدون حشو أطراف",
+              "price": 0,
+              "group": "حشو أطراف"
+             },
+             {
+              "id": 16,
+              "name": "حشو أطراف كيري",
+              "price": 3,
+              "group": "حشو أطراف"
+             },
+             {
+              "id": 17,
+              "name": "حشو أطراف موتزاريلا",
+              "price": 5,
+              "group": "حشو أطراف"
+             }
+            ]
+           },
+           {
+            "product_id": "41",
+            "variant_option_id": 34,
+            "name": "بيتزا سوبر سوبريم",
+            "variant": "وسط",
+            "extra": 0,
+            "name_en": "Super Supreme Pizza",
+            "addons": [
+             {
+              "id": 15,
+              "name": "بدون حشو أطراف",
+              "price": 0,
+              "group": "حشو أطراف"
+             },
+             {
+              "id": 16,
+              "name": "حشو أطراف كيري",
+              "price": 3,
+              "group": "حشو أطراف"
+             },
+             {
+              "id": 17,
+              "name": "حشو أطراف موتزاريلا",
+              "price": 5,
+              "group": "حشو أطراف"
+             }
+            ]
+           },
+           {
+            "product_id": "40",
+            "variant_option_id": 33,
+            "name": "بيتزا بيبروني",
+            "variant": "وسط",
+            "extra": 0,
+            "name_en": "Pepperoni Pizza",
+            "addons": [
+             {
+              "id": 15,
+              "name": "بدون حشو أطراف",
+              "price": 0,
+              "group": "حشو أطراف"
+             },
+             {
+              "id": 16,
+              "name": "حشو أطراف كيري",
+              "price": 3,
+              "group": "حشو أطراف"
+             },
+             {
+              "id": 17,
+              "name": "حشو أطراف موتزاريلا",
+              "price": 5,
+              "group": "حشو أطراف"
+             }
+            ]
+           },
+           {
+            "product_id": "42",
+            "variant_option_id": 35,
+            "name": "بيتزا تشيكن باربكيو",
+            "variant": "وسط",
+            "extra": 0,
+            "name_en": "Chicken BBQ Pizza",
+            "addons": [
+             {
+              "id": 15,
+              "name": "بدون حشو أطراف",
+              "price": 0,
+              "group": "حشو أطراف"
+             },
+             {
+              "id": 16,
+              "name": "حشو أطراف كيري",
+              "price": 3,
+              "group": "حشو أطراف"
+             },
+             {
+              "id": 17,
+              "name": "حشو أطراف موتزاريلا",
+              "price": 5,
+              "group": "حشو أطراف"
+             }
+            ]
+           },
+           {
+            "product_id": "46",
+            "variant_option_id": 39,
+            "name": "بيتزا تشيكن ديناميت",
+            "variant": "وسط",
+            "extra": 0,
+            "name_en": "Chicken Dynamite Pizza",
+            "addons": [
+             {
+              "id": 15,
+              "name": "بدون حشو أطراف",
+              "price": 0,
+              "group": "حشو أطراف"
+             },
+             {
+              "id": 16,
+              "name": "حشو أطراف كيري",
+              "price": 3,
+              "group": "حشو أطراف"
+             },
+             {
+              "id": 17,
+              "name": "حشو أطراف موتزاريلا",
+              "price": 5,
+              "group": "حشو أطراف"
+             }
+            ]
+           },
+           {
+            "product_id": "36",
+            "variant_option_id": 29,
+            "name": "بيتزا تشيكن الباتشينو",
+            "variant": "وسط",
+            "extra": 0,
+            "name_en": "Chicken Pacino Pizza",
+            "addons": [
+             {
+              "id": 15,
+              "name": "بدون حشو أطراف",
+              "price": 0,
+              "group": "حشو أطراف"
+             },
+             {
+              "id": 16,
+              "name": "حشو أطراف كيري",
+              "price": 3,
+              "group": "حشو أطراف"
+             },
+             {
+              "id": 17,
+              "name": "حشو أطراف موتزاريلا",
+              "price": 5,
+              "group": "حشو أطراف"
+             }
+            ]
+           },
+           {
+            "product_id": "38",
+            "variant_option_id": 31,
+            "name": "بيتزا برجر",
+            "variant": "وسط",
+            "extra": 0,
+            "name_en": "Burger Pizza",
+            "addons": [
+             {
+              "id": 15,
+              "name": "بدون حشو أطراف",
+              "price": 0,
+              "group": "حشو أطراف"
+             },
+             {
+              "id": 16,
+              "name": "حشو أطراف كيري",
+              "price": 3,
+              "group": "حشو أطراف"
+             },
+             {
+              "id": 17,
+              "name": "حشو أطراف موتزاريلا",
+              "price": 5,
+              "group": "حشو أطراف"
+             }
+            ]
+           },
+           {
+            "product_id": "48",
+            "variant_option_id": 41,
+            "name": "بيتزا تونة",
+            "variant": "وسط",
+            "extra": 0,
+            "name_en": "Tuna Pizza",
+            "addons": [
+             {
+              "id": 15,
+              "name": "بدون حشو أطراف",
+              "price": 0,
+              "group": "حشو أطراف"
+             },
+             {
+              "id": 16,
+              "name": "حشو أطراف كيري",
+              "price": 3,
+              "group": "حشو أطراف"
+             },
+             {
+              "id": 17,
+              "name": "حشو أطراف موتزاريلا",
+              "price": 5,
+              "group": "حشو أطراف"
+             }
+            ]
+           },
+           {
+            "product_id": "47",
+            "variant_option_id": 40,
+            "name": "بيتزا سوبر كرانشي",
+            "variant": "وسط",
+            "extra": 0,
+            "name_en": "Super Crunchy Pizza",
+            "addons": [
+             {
+              "id": 15,
+              "name": "بدون حشو أطراف",
+              "price": 0,
+              "group": "حشو أطراف"
+             },
+             {
+              "id": 16,
+              "name": "حشو أطراف كيري",
+              "price": 3,
+              "group": "حشو أطراف"
+             },
+             {
+              "id": 17,
+              "name": "حشو أطراف موتزاريلا",
+              "price": 5,
+              "group": "حشو أطراف"
+             }
+            ]
+           }
+          ],
+          "label_en": "Second pizza (medium)",
+          "most_ordered": {
+           "product_id": "41",
+           "name": "بيتزا سوبر سوبريم"
+          }
+         },
+         {
+          "key": "mozz",
+          "label": "فرايد موتزاريلا",
+          "type": "fixed",
+          "quantity": 1,
+          "item": {
+           "product_id": "74",
+           "name": "فرايد موتزاريلا",
+           "variant": null,
+           "name_en": "Fried Mozzarella"
+          },
+          "label_en": "Fried mozzarella"
+         },
+         {
+          "key": "fries",
+          "label": "بطاطس محمرة",
+          "type": "fixed",
+          "quantity": 1,
+          "item": {
+           "product_id": "79",
+           "name": "بطاطس محمرة",
+           "variant": null,
+           "name_en": "French Fries"
+          },
+          "label_en": "French fries"
+         },
+         {
+          "key": "coleslaw",
+          "label": "كولسلو",
+          "type": "fixed",
+          "quantity": 1,
+          "item": {
+           "product_id": "72",
+           "name": "كولسلو",
+           "variant": null,
+           "name_en": "Coleslaw"
+          },
+          "label_en": "Coleslaw"
+         },
+         {
+          "key": "drinks",
+          "label": "مشروبات غازية",
+          "type": "fixed",
+          "quantity": 2,
+          "item": {
+           "product_id": "82",
+           "name": "مشروبات غازية",
+           "variant": "كان",
+           "name_en": "Soft Drinks"
+          },
+          "label_en": "Soft drinks"
+         }
+        ],
+        "online_only": true
+       }
+      },
+      "ms": 5
+     }
+    ],
+    "verdicts": [
+     {
+      "ok": true,
+      "problems": [],
+      "text": "Hi! This is Majed, Fresh Cuts' digital assistant. The Pizza Night Box is SAR 85. It comes with two medium pizzas of your choice, fried mozzarella, fries, coleslaw and 2 soft drinks.\n\nWhich pizza would you like for the first one? Our most ordered is the Chicken Ranch Pizza. Other options are Super Supreme, Pepperoni, Chicken BBQ, Chicken Dynamite, Chicken Pacino, Burger, Tuna and Super Crunchy."
+     }
+    ],
+    "calls": [
+     {
+      "model": "claude-haiku-5-5",
+      "tier": "fast",
+      "ms": 2531,
+      "outcome": "ok",
+      "in": 4,
+      "out": 155,
+      "cached": 14130,
+      "costSar": 0.005591
+     },
+     {
+      "model": "claude-sonnet-5-5",
+      "tier": "strong",
+      "ms": 1149,
+      "outcome": "ok",
+      "in": 4,
+      "out": 54,
+      "cached": 14130,
+      "costSar": 0.012652
+     },
+     {
+      "model": "claude-sonnet-5-5",
+      "tier": "strong",
+      "ms": 2676,
+      "outcome": "ok",
+      "in": 2,
+      "out": 183,
+      "cached": 18365,
+      "costSar": 0.020651
+     }
+    ],
+    "ms": 6392,
+    "costSar": 0.038894,
+    "model": "claude-sonnet-5-5",
+    "suggestions": [],
+    "context": {
+     "open_now": true,
+     "closes_at": "2 فجراً",
+     "location_shared": false,
+     "introduce_yourself": {
+      "say": "This is Majed, Fresh Cuts' digital assistant",
+      "rule": "use this phrase once in this message, exactly as it is"
+     },
+     "you": {
+      "name": "ماجد",
+      "name_en": "Majed",
+      "what": "Fresh Cuts' digital assistant (not a human)"
+     },
+     "customer": {
+      "known": false,
+      "name": null,
+      "orders": 0,
+      "status": "no_orders",
+      "days_since_last": null,
+      "usual_basket_sar": null,
+      "usual_mode": null,
+      "usual_hour": null,
+      "favourites": [],
+      "taste": null,
+      "last_order": null,
+      "districts": [],
+      "loyalty": {
+       "every": 3,
+       "progress": 0,
+       "left": 3,
+       "reward": "free_delivery",
+       "min_total": 60,
+       "status": null
+      },
+      "unused_rewards": [],
+      "first_order_offer": true,
+      "language": "ar"
+     },
+     "offers": {
+      "first_order": {
+       "eligible": true,
+       "code": "FIRST",
+       "free_delivery": true,
+       "min_total": 60,
+       "reason": null
+      },
+      "loyalty": {
+       "every": 3,
+       "progress": 0,
+       "left": 3,
+       "reward": "free_delivery",
+       "min_total": 60,
+       "status": null
+      }
+     },
+     "branch": "📍 Our branch is in Al Salamah, Jeddah, by Rami Roundabout.",
+     "boxes": [
+      "box-solo-crepe: بوكس الكريب الفردي",
+      "box-solo-mixgrill: بوكس الميكس جريل الفردي",
+      "box-solo-burger: بوكس البرجر الفردي",
+      "box-solo-pasta: بوكس الباستا الفردي",
+      "box-solo-hawawshi: بوكس الحواوشي الفردي",
+      "box-solo-meal: بوكس وجبة المشاوي الفردي",
+      "box-crepe-duo: بوكس الكريب لشخصين",
+      "box-mixgrill-duo: ميكس جريل لشخصين",
+      "box-pizza-pasta: بيتزا وباستا لشخصين",
+      "box-meals-duo: وجبتين مشاوي لشخصين",
+      "box-burger-duo: بوكس البرجر لشخصين",
+      "box-late-night: بوكس السهرة",
+      "box-taste-all: بوكس التشكيلة",
+      "box-grill-half-half: بوكس المشاوي نص ونص",
+      "box-family: بوكس العائلة — مشاوي وبيتزا وباستا",
+      "box-pizza-night: بوكس سهرة البيتزا",
+      "box-mashakel: بوكس المشكل المخصوص",
+      "box-ribs-grill: بوكس الريش والمشاوي"
+     ]
+    },
+    "tier": "strong",
+    "escalated": true,
+    "lang": "en",
+    "introByModel": true
+   },
+   {
+    "i": 1,
+    "customer": "Chicken ranch and pepperoni. Mozzarella stuffed crust on the pepperoni, and no olives on the chicken ranch.",
+    "cls": "faq",
+    "raw": "faq:stuffed_crust",
+    "by": "assistant",
+    "reply": "Here's your order:\n- Pizza Night Box: Chicken Ranch Pizza (note for the kitchen: no olives) and Pepperoni Pizza with mozzarella stuffed crust (+SAR 5).\n- Total: SAR 90.\n\nWould you like delivery or pickup?",
+    "cart": null,
+    "handover": null,
+    "outcome": "sent",
+    "tools": [
+     {
+      "name": "preview_cart",
+      "input": {
+       "boxes": [
+        {
+         "slug": "box-pizza-night",
+         "qty": 1,
+         "picks": [
+          {
+           "slot": "pizza1",
+           "product_id": "43",
+           "variant_option_id": 36,
+           "note": "no olives"
+          },
+          {
+           "slot": "pizza2",
+           "product_id": "40",
+           "variant_option_id": 33,
+           "addons": [
+            17
+           ]
+          }
+         ]
+        }
+       ]
+      },
+      "result": {
+       "ok": true,
+       "option": "delivery",
+       "lines": [
+        {
+         "slug": "box-pizza-night",
+         "name": "بوكس سهرة البيتزا",
+         "name_en": "Pizza Night Box",
+         "price": 90,
+         "qty": 1,
+         "total": 90,
+         "kind": "box",
+         "picks": [
+          {
+           "slot": "البيتزا الأولى (وسط)",
+           "name": "بيتزا تشيكن رانش",
+           "variant": null,
+           "note": "no olives"
+          },
+          {
+           "slot": "البيتزا الثانية (وسط)",
+           "name": "بيتزا بيبروني",
+           "variant": null
+          },
+          {
+           "slot": "فرايد موتزاريلا",
+           "name": "فرايد موتزاريلا",
+           "variant": null
+          },
+          {
+           "slot": "بطاطس محمرة",
+           "name": "بطاطس محمرة",
+           "variant": null
+          },
+          {
+           "slot": "كولسلو",
+           "name": "كولسلو",
+           "variant": null
+          },
+          {
+           "slot": "مشروبات غازية",
+           "name": "مشروبات غازية",
+           "variant": null
+          }
+         ],
+         "base_price": 85,
+         "choices_extra": 0,
+         "addons_extra": 5
+        }
+       ],
+       "subtotal": 90,
+       "problems": [],
+       "note": "prices include VAT; the delivery fee is separate and shown by quote_delivery and again on the site before payment",
+       "saved": false,
+       "suggestion": null,
+       "suggestion_rule": "no suggestion: do not offer any add-on or upgrade"
+      },
+      "ms": 5
+     }
+    ],
+    "verdicts": [
+     {
+      "ok": true,
+      "problems": [],
+      "text": "Here's your order:\n- Pizza Night Box: Chicken Ranch Pizza (note for the kitchen: no olives) and Pepperoni Pizza with mozzarella stuffed crust (+SAR 5).\n- Total: SAR 90.\n\nWould you like delivery or pickup?"
+     }
+    ],
+    "calls": [
+     {
+      "model": "claude-sonnet-5-5",
+      "tier": "strong",
+      "ms": 3427,
+      "outcome": "ok",
+      "in": 452,
+      "out": 149,
+      "cached": 18365,
+      "costSar": 0.022751
+     },
+     {
+      "model": "claude-sonnet-5-5",
+      "tier": "strong",
+      "ms": 1582,
+      "outcome": "ok",
+      "in": 754,
+      "out": 99,
+      "cached": 18723,
+      "costSar": 0.02341
+     }
+    ],
+    "ms": 5023,
+    "costSar": 0.046161,
+    "model": "claude-sonnet-5-5",
+    "suggestions": [],
+    "context": {
+     "open_now": true,
+     "closes_at": "2 فجراً",
+     "location_shared": false,
+     "hint": {
+      "intent": "question_about_one_dish",
+      "dish_id": "43",
+      "wants_it_removed": false
+     }
+    },
+    "tier": "strong",
+    "escalated": false,
+    "lang": "en",
+    "list": [
+     "Chicken Ranch Pizza",
+     "Super Supreme Pizza",
+     "Pepperoni Pizza",
+     "Chicken BBQ Pizza",
+     "Chicken Dynamite Pizza",
+     "Chicken Pacino Pizza",
+     "Burger Pizza",
+     "Tuna Pizza",
+     "Super Crunchy Pizza"
+    ]
+   },
+   {
+    "i": 2,
+    "customer": "Pickup",
+    "cls": "pickup",
+    "raw": "how_to_order",
+    "by": "assistant",
+    "reply": "Your cart is ready, for pickup:\n- Pizza Night Box: Chicken Ranch Pizza (no olives) and Pepperoni Pizza with mozzarella stuffed crust.\n- Total: SAR 90.\n\nTap the button and pay 👇",
+    "cart": {
+     "link": "https://freshcuts.sa/c/ev000001",
+     "code": "ev000001",
+     "subtotal": 90,
+     "option": "pickup",
+     "lines": [
+      {
+       "slug": "box-pizza-night",
+       "name": "بوكس سهرة البيتزا",
+       "name_en": "Pizza Night Box",
+       "price": 90,
+       "qty": 1,
+       "total": 90,
+       "kind": "box",
+       "contains": [
+        "74",
+        "79",
+        "72",
+        "82",
+        "43",
+        "40"
+       ],
+       "picks": [
+        {
+         "slot": "البيتزا الأولى (وسط)",
+         "name": "بيتزا تشيكن رانش",
+         "variant": null,
+         "note": "no olives"
+        },
+        {
+         "slot": "البيتزا الثانية (وسط)",
+         "name": "بيتزا بيبروني",
+         "variant": null
+        },
+        {
+         "slot": "فرايد موتزاريلا",
+         "name": "فرايد موتزاريلا",
+         "variant": null
+        },
+        {
+         "slot": "بطاطس محمرة",
+         "name": "بطاطس محمرة",
+         "variant": null
+        },
+        {
+         "slot": "كولسلو",
+         "name": "كولسلو",
+         "variant": null
+        },
+        {
+         "slot": "مشروبات غازية",
+         "name": "مشروبات غازية",
+         "variant": null
+        }
+       ],
+       "base_price": 85,
+       "choices_extra": 0,
+       "addons_extra": 5
+      }
+     ]
+    },
+    "handover": null,
+    "outcome": "sent",
+    "tools": [
+     {
+      "name": "build_cart",
+      "input": {
+       "option": "pickup",
+       "boxes": [
+        {
+         "slug": "box-pizza-night",
+         "qty": 1,
+         "picks": [
+          {
+           "slot": "pizza1",
+           "product_id": "43",
+           "variant_option_id": 36,
+           "note": "no olives"
+          },
+          {
+           "slot": "pizza2",
+           "product_id": "40",
+           "variant_option_id": 33,
+           "addons": [
+            17
+           ]
+          }
+         ]
+        }
+       ]
+      },
+      "result": {
+       "ok": true,
+       "option": "pickup",
+       "lines": [
+        {
+         "slug": "box-pizza-night",
+         "name": "بوكس سهرة البيتزا",
+         "name_en": "Pizza Night Box",
+         "price": 90,
+         "qty": 1,
+         "total": 90,
+         "kind": "box",
+         "picks": [
+          {
+           "slot": "البيتزا الأولى (وسط)",
+           "name": "بيتزا تشيكن رانش",
+           "variant": null,
+           "note": "no olives"
+          },
+          {
+           "slot": "البيتزا الثانية (وسط)",
+           "name": "بيتزا بيبروني",
+           "variant": null
+          },
+          {
+           "slot": "فرايد موتزاريلا",
+           "name": "فرايد موتزاريلا",
+           "variant": null
+          },
+          {
+           "slot": "بطاطس محمرة",
+           "name": "بطاطس محمرة",
+           "variant": null
+          },
+          {
+           "slot": "كولسلو",
+           "name": "كولسلو",
+           "variant": null
+          },
+          {
+           "slot": "مشروبات غازية",
+           "name": "مشروبات غازية",
+           "variant": null
+          }
+         ],
+         "base_price": 85,
+         "choices_extra": 0,
+         "addons_extra": 5
+        }
+       ],
+       "subtotal": 90,
+       "problems": [],
+       "note": "prices include VAT; the delivery fee is separate and shown by quote_delivery and again on the site before payment",
+       "saved": true,
+       "link_attached": "a button with the cart link is attached to your message automatically; do not write a link"
+      },
+      "ms": 3
+     }
+    ],
+    "verdicts": [
+     {
+      "ok": true,
+      "problems": [],
+      "text": "Your cart is ready, for pickup:\n- Pizza Night Box: Chicken Ranch Pizza (no olives) and Pepperoni Pizza with mozzarella stuffed crust.\n- Total: SAR 90.\n\nTap the button and pay 👇"
+     }
+    ],
+    "calls": [
+     {
+      "model": "claude-sonnet-5-5",
+      "tier": "strong",
+      "ms": 2009,
+      "outcome": "ok",
+      "in": 247,
+      "out": 180,
+      "cached": 19324,
+      "costSar": 0.023095
+     },
+     {
+      "model": "claude-sonnet-5-5",
+      "tier": "strong",
+      "ms": 1381,
+      "outcome": "ok",
+      "in": 771,
+      "out": 90,
+      "cached": 19518,
+      "costSar": 0.023796
+     }
+    ],
+    "ms": 3405,
+    "costSar": 0.046891,
+    "model": "claude-sonnet-5-5",
+    "suggestions": [],
+    "context": {
+     "open_now": true,
+     "closes_at": "2 فجراً",
+     "location_shared": false
+    },
+    "tier": "strong",
+    "escalated": false,
+    "lang": "en"
+   }
+  ],
+  "carts": [
+   {
+    "code": "ev000001",
+    "phone": "512345678",
+    "source": "assistant",
+    "plan": {
+     "ok": true,
+     "raw": {
+      "b:box-pizza-night:pizza1=43:36|pizza2=40:33:m17|n16fbkeb": {
+       "key": "b:box-pizza-night:pizza1=43:36|pizza2=40:33:m17|n16fbkeb",
+       "bundle": {
+        "slug": "box-pizza-night",
+        "name": "بوكس سهرة البيتزا",
+        "name_en": "Pizza Night Box",
+        "description": "بيتزتين وسط من اختيارك + فرايد موتزاريلا + بطاطس + كولسلو + مشروبين غازيين.",
+        "image": "https://freshcuts-api.o2m8.me/api/content/media/md_66a07c8f1578.jpg",
+        "badge": "",
+        "price": 85,
+        "order_kinds": [
+         "delivery",
+         "pickup",
+         "dine_in"
+        ],
+        "offer_id": null,
+        "slots": [
+         {
+          "key": "pizza1",
+          "label": "البيتزا الأولى (وسط)",
+          "label_en": "First pizza (medium)",
+          "type": "choice",
+          "quantity": 1,
+          "choices": [
+           {
+            "product_id": "43",
+            "variant_option_id": 36,
+            "name": "بيتزا تشيكن رانش",
+            "variant_name": "وسط",
+            "image": "https://d3ectyws4rj41r.cloudfront.net/prod_freshcuts/18/cropped-image-(7).jpg",
+            "price_incl": 28
+           },
+           {
+            "product_id": "41",
+            "variant_option_id": 34,
+            "name": "بيتزا سوبر سوبريم",
+            "variant_name": "وسط",
+            "image": "https://d3ectyws4rj41r.cloudfront.net/prod_freshcuts/14/cropped-image-(3).jpg",
+            "price_incl": 31
+           },
+           {
+            "product_id": "40",
+            "variant_option_id": 33,
+            "name": "بيتزا بيبروني",
+            "variant_name": "وسط",
+            "image": "https://d3ectyws4rj41r.cloudfront.net/prod_freshcuts/13/cropped-image-(2).jpg",
+            "price_incl": 29
+           },
+           {
+            "product_id": "42",
+            "variant_option_id": 35,
+            "name": "بيتزا تشيكن باربكيو",
+            "variant_name": "وسط",
+            "image": "https://d3ectyws4rj41r.cloudfront.net/prod_freshcuts/16/cropped-image-(5).jpg",
+            "price_incl": 28
+           },
+           {
+            "product_id": "46",
+            "variant_option_id": 39,
+            "name": "بيتزا تشيكن ديناميت",
+            "variant_name": "وسط",
+            "image": "https://d3ectyws4rj41r.cloudfront.net/prod_freshcuts/20/cropped-image-(9).jpg",
+            "price_incl": 30
+           },
+           {
+            "product_id": "36",
+            "variant_option_id": 29,
+            "name": "بيتزا تشيكن الباتشينو",
+            "variant_name": "وسط",
+            "image": "https://d3ectyws4rj41r.cloudfront.net/prod_freshcuts/17/cropped-image-(6).jpg",
+            "price_incl": 30
+           },
+           {
+            "product_id": "38",
+            "variant_option_id": 31,
+            "name": "بيتزا برجر",
+            "variant_name": "وسط",
+            "image": "https://d3ectyws4rj41r.cloudfront.net/prod_freshcuts/21/cropped-image-(10).jpg",
+            "price_incl": 30
+           },
+           {
+            "product_id": "48",
+            "variant_option_id": 41,
+            "name": "بيتزا تونة",
+            "variant_name": "وسط",
+            "image": "https://d3ectyws4rj41r.cloudfront.net/prod_freshcuts/70/cropped-image-(58).jpg",
+            "price_incl": 30
+           },
+           {
+            "product_id": "47",
+            "variant_option_id": 40,
+            "name": "بيتزا سوبر كرانشي",
+            "variant_name": "وسط",
+            "image": "https://d3ectyws4rj41r.cloudfront.net/prod_freshcuts/89/بيتزا-سوبر-كرانشي.jpg",
+            "price_incl": 34
+           }
+          ]
+         },
+         {
+          "key": "pizza2",
+          "label": "البيتزا الثانية (وسط)",
+          "label_en": "Second pizza (medium)",
+          "type": "choice",
+          "quantity": 1,
+          "choices": [
+           {
+            "product_id": "43",
+            "variant_option_id": 36,
+            "name": "بيتزا تشيكن رانش",
+            "variant_name": "وسط",
+            "image": "https://d3ectyws4rj41r.cloudfront.net/prod_freshcuts/18/cropped-image-(7).jpg",
+            "price_incl": 28
+           },
+           {
+            "product_id": "41",
+            "variant_option_id": 34,
+            "name": "بيتزا سوبر سوبريم",
+            "variant_name": "وسط",
+            "image": "https://d3ectyws4rj41r.cloudfront.net/prod_freshcuts/14/cropped-image-(3).jpg",
+            "price_incl": 31
+           },
+           {
+            "product_id": "40",
+            "variant_option_id": 33,
+            "name": "بيتزا بيبروني",
+            "variant_name": "وسط",
+            "image": "https://d3ectyws4rj41r.cloudfront.net/prod_freshcuts/13/cropped-image-(2).jpg",
+            "price_incl": 29
+           },
+           {
+            "product_id": "42",
+            "variant_option_id": 35,
+            "name": "بيتزا تشيكن باربكيو",
+            "variant_name": "وسط",
+            "image": "https://d3ectyws4rj41r.cloudfront.net/prod_freshcuts/16/cropped-image-(5).jpg",
+            "price_incl": 28
+           },
+           {
+            "product_id": "46",
+            "variant_option_id": 39,
+            "name": "بيتزا تشيكن ديناميت",
+            "variant_name": "وسط",
+            "image": "https://d3ectyws4rj41r.cloudfront.net/prod_freshcuts/20/cropped-image-(9).jpg",
+            "price_incl": 30
+           },
+           {
+            "product_id": "36",
+            "variant_option_id": 29,
+            "name": "بيتزا تشيكن الباتشينو",
+            "variant_name": "وسط",
+            "image": "https://d3ectyws4rj41r.cloudfront.net/prod_freshcuts/17/cropped-image-(6).jpg",
+            "price_incl": 30
+           },
+           {
+            "product_id": "38",
+            "variant_option_id": 31,
+            "name": "بيتزا برجر",
+            "variant_name": "وسط",
+            "image": "https://d3ectyws4rj41r.cloudfront.net/prod_freshcuts/21/cropped-image-(10).jpg",
+            "price_incl": 30
+           },
+           {
+            "product_id": "48",
+            "variant_option_id": 41,
+            "name": "بيتزا تونة",
+            "variant_name": "وسط",
+            "image": "https://d3ectyws4rj41r.cloudfront.net/prod_freshcuts/70/cropped-image-(58).jpg",
+            "price_incl": 30
+           },
+           {
+            "product_id": "47",
+            "variant_option_id": 40,
+            "name": "بيتزا سوبر كرانشي",
+            "variant_name": "وسط",
+            "image": "https://d3ectyws4rj41r.cloudfront.net/prod_freshcuts/89/بيتزا-سوبر-كرانشي.jpg",
+            "price_incl": 34
+           }
+          ]
+         },
+         {
+          "key": "mozz",
+          "label": "فرايد موتزاريلا",
+          "label_en": "Fried mozzarella",
+          "type": "fixed",
+          "quantity": 1,
+          "item": {
+           "product_id": "74",
+           "variant_option_id": null,
+           "name": "فرايد موتزاريلا",
+           "variant_name": null,
+           "image": "https://d3ectyws4rj41r.cloudfront.net/prod_freshcuts/59/cropped-image-(48).jpg",
+           "price_incl": 16
+          }
+         },
+         {
+          "key": "fries",
+          "label": "بطاطس محمرة",
+          "label_en": "French fries",
+          "type": "fixed",
+          "quantity": 1,
+          "item": {
+           "product_id": "79",
+           "variant_option_id": null,
+           "name": "بطاطس محمرة",
+           "variant_name": null,
+           "image": "https://d3ectyws4rj41r.cloudfront.net/prod_freshcuts/57/cropped-image-(46).jpg",
+           "price_incl": 6
+          }
+         },
+         {
+          "key": "coleslaw",
+          "label": "كولسلو",
+          "label_en": "Coleslaw",
+          "type": "fixed",
+          "quantity": 1,
+          "item": {
+           "product_id": "72",
+           "variant_option_id": null,
+           "name": "كولسلو",
+           "variant_name": null,
+           "image": "https://d3ectyws4rj41r.cloudfront.net/prod_freshcuts/58/cropped-image-(47).jpg",
+           "price_incl": 6
+          }
+         },
+         {
+          "key": "drinks",
+          "label": "مشروبات غازية",
+          "label_en": "Soft drinks",
+          "type": "fixed",
+          "quantity": 2,
+          "item": {
+           "product_id": "82",
+           "variant_option_id": 42,
+           "name": "مشروبات غازية",
+           "variant_name": "كان",
+           "image": "https://d3ectyws4rj41r.cloudfront.net/prod_freshcuts/91/بيبسي-كان.jpg",
+           "price_incl": 3
+          }
+         }
+        ],
+        "section": "بوكسات المشاركة والعائلة",
+        "section_en": "Sharing & family boxes",
+        "featured": false,
+        "description_en": "Two medium pizzas of your choice + fried mozzarella + fries + coleslaw + 2 soft drinks.",
+        "image_wide": "https://freshcuts-api.o2m8.me/api/content/media/md_e8d6cd1c5616.jpg",
+        "value_max": 102,
+        "value_min": 90
+       },
+       "choices": {
+        "pizza1": {
+         "product_id": "43",
+         "variant_option_id": 36,
+         "name": "بيتزا تشيكن رانش",
+         "variant_name": "وسط",
+         "image": "https://d3ectyws4rj41r.cloudfront.net/prod_freshcuts/18/cropped-image-(7).jpg",
+         "price_incl": 28
+        },
+        "pizza2": {
+         "product_id": "40",
+         "variant_option_id": 33,
+         "name": "بيتزا بيبروني",
+         "variant_name": "وسط",
+         "image": "https://d3ectyws4rj41r.cloudfront.net/prod_freshcuts/13/cropped-image-(2).jpg",
+         "price_incl": 29
+        }
+       },
+       "qty": 1,
+       "mods": {
+        "pizza2": [
+         17
+        ]
+       },
+       "notes": {
+        "pizza1": "no olives"
+       },
+       "modsIncl": 5,
+       "surIncl": 0,
+       "item": {
+        "id": "b:box-pizza-night",
+        "name": "بوكس سهرة البيتزا",
+        "local_name": "Pizza Night Box",
+        "retail_price": 85,
+        "price": 73.91,
+        "image": "https://freshcuts-api.o2m8.me/api/content/media/md_66a07c8f1578.jpg"
+       }
+      }
+     },
+     "items": [
+      {
+       "id": "b:box-pizza-night:pizza1=43:36|pizza2=40:33:m17|n16fbkeb",
+       "n": "بوكس سهرة البيتزا",
+       "q": 1,
+       "p": 90
+      }
+     ],
+     "removed": [],
+     "repriced": [],
+     "review": []
+    },
+    "option": "pickup",
+    "days": 7
+   }
+  ],
+  "costSar": 0.131946,
+  "grade": {
+   "pass": true,
+   "fails": [],
+   "review": []
+  }
+ }
+]

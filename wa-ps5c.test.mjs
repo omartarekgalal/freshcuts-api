@@ -109,3 +109,10 @@ test("a grill the customer names in his message must be in the cart: «والط�
   const b = chat([use(["preview_cart", { option: "pickup", items: [{ id: "90", qty: 1 }] }]), say("وجبة شيش طاووق بـ 27 ر.س، بدون طرب. شي ثاني؟")]);
   assert.equal((await b.turn("ابي وجبة شيش طاووق بدون طرب")).trace.tools[0].result.ok, true, "«بدون طرب» is not an order for tarb");
 });
+
+test("the recap in English never carries Arabic names: a correct English summary of a box is left alone, and plain dishes use their English names", async () => {
+  const cart = { option: "pickup", subtotal: 29, lines: [{ name: "كريب زنجر سوبريم", name_en: "Zinger Supreme Crepe", qty: 1, total: 25 }, { name: "بيبسي زجاج", name_en: "Pepsi Glass", qty: 1, total: 4, note: "cold" }] };
+  const en = R.cartRecapOf(cfg, cart, "en");
+  assert.equal(en, "Your cart (Pickup):\n• Zinger Supreme Crepe × 1 = SAR 25\n• Pepsi Glass × 1 = SAR 4\n↳ Kitchen note: cold\nTotal: SAR 29\nCheck the cart, and if it is all right tap the button to pay 👇");
+  assert.doesNotMatch(R.cartRecapOf(cfg, { option: "pickup", subtotal: 90, lines: [{ name: "بوكس سهرة البيتزا", name_en: "Pizza Night Box", qty: 1, total: 90, picks: [{ name: "بيتزا تشيكن رانش", note: "no olives" }, { name: "بيتزا بيبروني" }] }] }, "en"), /[\u0600-\u06FF]/);
+});

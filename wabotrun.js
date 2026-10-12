@@ -1600,7 +1600,7 @@ export function cartRecapOf(cfg, cart, lang) {
   const L = lang === "en" ? "en" : "ar", T2 = (k, v = {}) => fill(k, textOf(cfg, k, L), v), en = L === "en";
   const out = [T2("cart_recap_head", { mode: cart.option === "pickup" ? T2("btn_fee_pickup") : T2("btn_delivery") })];
   for (const l of cart.lines || []) { const nm = en ? l.name_en || l.name : l.name, w = l.weight ? (en ? l.weight_en || l.weight : l.weight) : "";
-    const picks = (l.picks || []).map((p) => `${p.name}${p.note ? ` (${p.note})` : ""}`).join("، ");
+    const picks = en ? (l.picks || []).filter((p) => p.note).map((p) => p.note).join(", ") : (l.picks || []).map((p) => `${p.name}${p.note ? ` (${p.note})` : ""}`).join("، ");      // إنجليزي: أسماء الاختيارات عربي بس ⇒ الملاحظات فقط
     out.push(T2("cart_recap_line", { name: `${nm}${w ? ` — ${w}` : ""}${picks ? ` (${picks})` : ""}`, qty: String(l.qty), total: money(l.total) }));
     if (l.note) out.push(T2("cart_recap_note", { note: l.note })); }
   out.push(T2("cart_recap_total", { total: money(cart.subtotal) }), T2("cart_recap_close"));

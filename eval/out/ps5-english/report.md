@@ -1,0 +1,24 @@
+# Assistant evaluation: ps5-english
+
+```
+conversations 1 · passed 1 · failed 0
+customer turns 3: assistant answered 3, rules owned 0, fallbacks {}
+validator retries 0 · escalations fast→strong 1 · model calls 7
+cost 0.1319 SAR (0.1319 per conversation, 0.044 per model turn)
+latency per answered turn: p50 5023 ms · p90 6392 ms · max 6392 ms (n=3)
+by model {"claude-haiku-5-5":{"calls":1,"in":4,"out":155,"cached":14130,"sar":0.0056,"callP50ms":2531,"callP90ms":2531},"claude-sonnet-5-5":{"calls":6,"in":2230,"out":755,"cached":108425,"sar":0.1264,"callP50ms":2009,"callP90ms":3427}}
+fail types {}
+review flags {}
+```
+
+## Conversations
+
+### PASS · english-pizza-box-crust-notes (box choices with crust and notes (English)) · 0.1319 SAR
+
+- **العميل:** Hi, I'd like the pizza night box please
+  - **المساعد** (strong↑, 6392 ms, 0.0389 SAR, tools: get_box): Hi! This is Majed, Fresh Cuts' digital assistant. The Pizza Night Box is SAR 85. It comes with two medium pizzas of your choice, fried mozzarella, fries, coleslaw and 2 soft drinks. ⏎  ⏎ Which pizza would you like for the first one? Our most ordered is the Chicken Ranch Pizza. Other options are Super Supreme, Pepperoni, Chicken BBQ, Chicken Dynamite, Chicken Pacino, Burger, Tuna and Super Crunchy.
+- **العميل:** Chicken ranch and pepperoni. Mozzarella stuffed crust on the pepperoni, and no olives on the chicken ranch.
+  - _(قايمة: Chicken Ranch Pizza · Super Supreme Pizza · Pepperoni Pizza · Chicken BBQ Pizza · Chicken Dynamite Pizza · Chicken Pacino Pizza · Burger Pizza · Tuna Pizza · Super Crunchy Pizza)_
+  - **المساعد** (strong, 5023 ms, 0.0462 SAR, tools: preview_cart): Here's your order: ⏎ - Pizza Night Box: Chicken Ranch Pizza (note for the kitchen: no olives) and Pepperoni Pizza with mozzarella stuffed crust (+SAR 5). ⏎ - Total: SAR 90. ⏎  ⏎ Would you like delivery or pickup?
+- **العميل:** Pickup
+  - **المساعد** (strong, 3405 ms, 0.0469 SAR, tools: build_cart, cart 90 pickup): Your cart is ready, for pickup: ⏎ - Pizza Night Box: Chicken Ranch Pizza (no olives) and Pepperoni Pizza with mozzarella stuffed crust. ⏎ - Total: SAR 90. ⏎  ⏎ Tap the button and pay 👇

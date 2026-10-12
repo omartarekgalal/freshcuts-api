@@ -1153,8 +1153,10 @@ export function makeAssistLoop(deps) {
       }
       /* PS5: ملخص السلة قبل الرابط لازم يسمّي كل سطر زي المنيو (والوزن والملاحظة) عشان العميل يلحق الغلط. لو رد الموديل ناقصه سطر/وزن/ملاحظة ⇒ الكود بيبعت الملخص المبني من السلة نفسها. */
       if (T.cart && raw && deps.cartRecap) { const ls = T.cart.lines || [];
-        const whole = ls.every((l) => raw.includes(l.name) && (!l.weight || raw.includes(l.weight)) && (!l.note || raw.includes(l.note)) && (l.picks || []).every((p) => !p.note || raw.includes(p.note)));
-        if (!whole) { let rc = null; try { rc = await deps.cartRecap(T.cart, lang); } catch { rc = null; } if (rc) { raw = rc; trace.cartRecapRestored = true; } } }
+        const en = lang === "en", low = raw.toLowerCase(), has = (s) => !s || raw.includes(s) || low.includes(String(s).toLowerCase());
+        const whole = ls.every((l) => has(en ? l.name_en || l.name : l.name) && has(en ? l.weight_en || l.weight : l.weight) && has(l.note) && (l.picks || []).every((p) => has(p.note)));
+        /* إنجليزي + بوكس: أسماء الاختيارات عندنا بالعربي بس في سطر السلة ⇒ ملخص الموديل (بأسماء get_box الإنجليزية) يفضل زي ما هو */
+        if (!whole && !(en && ls.some((l) => (l.picks || []).length))) { let rc = null; try { rc = await deps.cartRecap(T.cart, lang); } catch { rc = null; } if (rc) { raw = rc; trace.cartRecapRestored = true; } } }
       const facts = sessionFacts(session.messages);
       /* دعوة القناة في رد فيه إجابة حساسية/مكوّن ⇒ السطر بيتشال بالكود (مش مكانها). */
       if (chUrl && T.factSay.length && raw.includes(chUrl)) raw = raw.split("\n").filter((l) => !l.includes(chUrl)).join("\n").trim();
