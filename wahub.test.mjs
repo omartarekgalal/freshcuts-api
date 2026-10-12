@@ -126,7 +126,7 @@ test("N1 list: works with the sending switch off; rows carry the window, the bot
     assert.deepEqual(r.counts, { all: 3, waiting: 1, bot: 1, muted: 0, ad: 0, unread: 2, held: 0, mine: 0, unreadMessages: 3, oldestWaitingAt: ago(4) });
     assert.equal(r.threads.length, 2);
     const a = r.threads[0];
-    assert.deepEqual(Object.keys(a).sort(), ["ad", "bot", "key", "lastAt", "lastDir", "lastSource", "lastText", "name", "orderNo", "orders", "owner", "phone", "phoneMasked", "unread", "window"]);
+    assert.deepEqual(Object.keys(a).sort(), ["ad", "bot", "key", "lastAt", "lastDir", "lastSource", "lastText", "name", "orderNo", "orders", "owner", "phone", "phoneMasked", "unanswered", "unread", "window"]);
     assert.equal(a.phone, "0511111111"); assert.equal(a.phoneMasked, "…1111"); assert.equal(a.unread, 2);
     assert.deepEqual(a.bot, { state: "waiting", reason: "complaint", mutedUntil: null, mutedBy: null, handoffAt: ago(4) });
     assert.equal(a.window.open, true); assert.ok(a.window.msLeft > 23 * 3600_000);
@@ -143,7 +143,10 @@ test("N1 list: filters are fixed SQL conditions; search by name or by number —
   const w = world({ threads: [T("512345678")] });
   await w.call("GET", "/api/cms/wa/threads", { query: { filter: "waiting", q: "0512" } });
   let s = w.db.sql.find((x) => /^SELECT t\.phone_norm, t\.last_in_at, t\.last_at, t\.last_text/.test(x));
-  assert.ok(s.includes("b.handoff_at IS NOT NULL AND NOT COALESCE(b.muted_until > NOW(), FALSE)"));
+  /* SW1: «مستنية رد» = تحويل مفتوح **أو** آخر رسالة من العميل ومحدش رد ولا علّم «تم» (والنافذة مفتوحة) — ومش مسحوبة */
+  assert.ok(s.includes("NOT COALESCE(b.muted_until > NOW(), FALSE) AND (b.handoff_at IS NOT NULL OR (t.last_in_at > NOW() - INTERVAL '24 hours'"));
+  assert.ok(s.includes("ORDER BY m.id DESC LIMIT 1) = 'in'") && s.includes("(to_jsonb(t)->>'handled_at')::timestamptz < t.last_in_at"));
+  assert.ok(s.includes("COALESCE(m.echo_kind,'staff') <> 'auto' ORDER BY m.id DESC LIMIT 1) = 'in'"), "M1: an auto echo is not an answer");
   assert.ok(s.includes("t.phone_norm LIKE '%' || $1 || '%'"));
   assert.equal((await w.call("GET", "/api/cms/wa/threads", { query: { filter: "'; DROP TABLE x;--" } })).body.filter, "all");
   const k = world({ role: "kitchen", settings: { waHub: { inboxRoles: ["kitchen"], phoneRoles: [] } }, threads: [T("512345678")] });
@@ -393,4 +396,27 @@ test("LR1 tick: one small read gives a signature for the list and one for the op
   assert.equal((await w.call("GET", "/api/cms/wa/threads-tick", { query: { chat: "f".repeat(32) } })).body.chat, null, "an unknown chat key just has no chat signature");
   w.setUser({ id: 9, username: "mk", name: "تسويق", role: "marketing" });
   assert.equal((await w.call("GET", "/api/cms/wa/threads-tick", {})).status, 403);
+});
+
+/* ══ SW1: «مستنية رد» ═══════════════════════════════════════════════════════ */
+test("SW1 waiting: an unanswered customer message is flagged without a handover; «تم» is recorded on the chat; the bell count uses the same rule", async () => {
+  const w = world({ threads: [
+    T("511111111", { last_at: ago(5), unanswered: true, lm_dir: "out", unread: 1 }),             // صورة من عميل وبعدها الرد الآلي بس: القاعدة حسبتها «محتاجة رد»
+    T("522222222", { last_at: ago(6), unanswered: false, lm_dir: "in" }),                        // القاعدة قالت لأ (اتعلّم «تم» / النافذة قفلت)
+    T("533333333", { last_at: ago(7) }),
+  ] });
+  const r = (await w.call("GET", "/api/cms/wa/threads", {})).body;
+  /* العلامة = نتيجة شرط الاستعلام نفسه (مش آخر صف معروض): الرد الآلي ممكن يبقى آخر صف والمحادثة لسه محتاجة رد */
+  assert.deepEqual(r.threads.map((t) => [t.phoneMasked, t.unanswered]), [["…1111", true], ["…2222", false], ["…3333", false]]);
+  const list = w.db.sql.find((x) => /^SELECT t\.phone_norm, t\.last_in_at, t\.last_at, t\.last_text/.test(x));
+  assert.ok(list.includes("COALESCE(m.echo_kind,'staff') <> 'auto' ORDER BY m.id DESC LIMIT 1) = 'in' AND COALESCE((to_jsonb(t)->>'handled_at')::timestamptz < t.last_in_at, TRUE)) AS unanswered"), "the flag is the filter's own condition, auto echoes ignored, «تم» respected");
+  const count = w.db.sql.find((x) => /^SELECT count\(\*\)::int AS total,/.test(x));
+  assert.ok(count.includes("(b.handoff_at IS NOT NULL OR (t.last_in_at > NOW() - INTERVAL '24 hours'"), "the waiting count includes unanswered chats");
+  await w.call("POST", "/api/cms/wa/threads/:key/handled", { params: { key: "511111111" } });
+  assert.deepEqual(w.db.unmuted, ["511111111"]);
+  assert.ok(w.db.sql.some((x) => /^UPDATE wa_threads SET handled_at = NOW\(\) WHERE phone_norm = \$1/.test(x)), "«تم» is stored on the chat");
+  await w.call("GET", "/api/cms/wa/threads-tick", {});
+  const tick = w.db.sql.find((x) => /^SELECT \(SELECT count\(\*\) FROM wa_threads\)::int AS n,/.test(x));
+  assert.ok(tick.includes("<> 'auto' ORDER BY m.id DESC LIMIT 1) = 'in'") && tick.includes("b.handoff_at IS NOT NULL OR"), "the tick counts the same chats");
+  assert.ok(w.db.sql.some((x) => /^ALTER TABLE IF EXISTS wa_threads ADD COLUMN IF NOT EXISTS handled_at TIMESTAMPTZ/.test(x)));
 });

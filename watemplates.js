@@ -172,6 +172,18 @@ export const TEMPLATES = [
       stage: "pickup_ready", send: "auto", fallbackSms: "فريش كاتس: طلبك {order_no} جاهز للاستلام من الفرع", existing: "whatsapp.js fc_order_ready_pickup",
       notes: "١٢/١٠: النسخة الأولى (زر «موقع الفرع» → خرائط جوجل + «تقدر تستلمه من…») رفضتها ميتا INCORRECT_CATEGORY — القالب الخدمي الوحيد اللي زره مش رابط الطلب نفسه. الزر بقى رابط تتبّع الطلب زي باقي قوالب الطلب المعتمدة، والنص عن الطلب بس. ١٢/١٠ (تاني): التعديل اترفض برضه INCORRECT_CATEGORY والزر كان رابط الطلب ⇒ الباقي المختلف عن القوالب المعتمدة هو جملة الفرع والحي والمدينة — اتشالت، والنص بقى حالة الطلب + تعليمة الاستلام بس." } }),
 
+  /* SW1 (١٣/١٠ — M6-3): fc_order_ready_pickup مرفوض عند ميتا. ده اسم جديد بصياغة خدمية بحتة: رقم الطلب + «جاهز للاستلام» + الفرع.
+     **موقوف (HOLD)** لحد ما المالك يوافق على النص — مش مربوط بمرحلة ولا بيتقدّم. المرحلة pickup_ready بتفضل SMS بس. */
+  T({ name: "fc_order_pickup_ready", category: "UTILITY", group: "order",
+    body: "طلبك رقم {{1}} جاهز للاستلام من فرع فريش كاتس في حي السلامة بجدة.",
+    vars: [ORDER_NO], buttons: [TRACK("تفاصيل الطلب")],
+    meta: { purpose: "طلب استلام صار جاهز — صياغة جديدة باسم جديد", trigger: "pos_ready_at لطلب option=pickup", send: "auto-candidate", replaces: "fc_order_ready_pickup",
+      fallbackSms: "فريش كاتس: طلبك {order_no} جاهز للاستلام من الفرع" } }),
+  T({ name: "fc_order_pickup_ready", category: "UTILITY", group: "order", language: "en",
+    body: "Your order {{1}} is ready for pickup at the Fresh Cuts branch in As Salamah, Jeddah.",
+    vars: [ORDER_NO], buttons: [TRACK("Order details")],
+    meta: { purpose: "Pickup order is ready — new wording under a new name", trigger: "pos_ready_at, option=pickup", send: "auto-candidate", replaces: "fc_order_ready_pickup", fallbackSms: null } }),
+
   T({ name: "fc_courier_assigned", category: "UTILITY", group: "order",
     body: "رتّبنا مندوب لطلبك رقم {{1}} 🛵\nيستلم الطلب أول ما يجهز من المطبخ، وتقدر تتابع من الرابط.",
     vars: [ORDER_NO], buttons: [TRACK()],
@@ -368,6 +380,15 @@ export const TEMPLATES = [
     [{ path: "watch.problem", ex: "3 payment sessions failed in 20 min", exAr: "٣ محاولات دفع فشلت خلال ٢٠ دقيقة", label: "المشكلة (checkoutwatch)" },
       { path: "watch.lastOrderAgo", ex: "95 min ago", exAr: "قبل ٩٥ دقيقة", label: "آخر طلب ناجح" }],
     { purpose: "حارس الشيك أوت — صياغة تشغيلية", trigger: "checkoutwatch.js / ops/checkout-watch-run.mjs", send: "auto", fallbackSms: "checkoutwatch SMS",
+      reclassRisk: "medium", replaces: "fc_staff_checkout_watchdog" }),
+  /* SW1 (M6-4): fc_staff_checkout_watchdog اتصنّف «تسويق» عند ميتا. صياغة تالتة باسم جديد: إشعار نظام بحت، من غير أي طلب فعل ولا كلمة بيع.
+     **موقوف (HOLD)** لحد ما المالك يوافق — وfc_staff_payment_alert (١٢/١٠) موجود بنفس الغرض: المالك يختار واحد. */
+  ...staffPair("fc_staff_checkout_notice",
+    { body: "Fresh Cuts ordering system notice: {{1}}. Last paid order: {{2}}. This is an automated operations message.",
+      ar: "إشعار من نظام طلبات فريش كاتس: {{1}}. آخر طلب مدفوع: {{2}}. هذه رسالة تشغيلية آلية." },
+    [{ path: "watch.problem", ex: "3 payment sessions failed in 20 min", exAr: "٣ محاولات دفع فشلت خلال ٢٠ دقيقة", label: "المشكلة (checkoutwatch)" },
+      { path: "watch.lastOrderAgo", ex: "95 min ago", exAr: "قبل ٩٥ دقيقة", label: "آخر طلب ناجح" }],
+    { purpose: "حارس الشيك أوت — إشعار نظام (اسم جديد)", trigger: "checkoutwatch.js / ops/checkout-watch-run.mjs", send: "auto-candidate", fallbackSms: "checkoutwatch SMS",
       reclassRisk: "medium", replaces: "fc_staff_checkout_watchdog" }),
   ...staffPair("fc_staff_day_report",
     { body: "End-of-day operations report for {{1}}: {{2}} online orders handled, {{3}} SAR collected, average customer rating {{4}}. The full report is in the dashboard.",
@@ -568,6 +589,9 @@ export const HOLD = Object.freeze({
   fc_scheduled_reminder: "الطلب المسبق مقفول (settings.preorder.enabled=false)",
   fc_welcome_account: "غير مربوط بمُرسل (الزر اتشال ١٢/١٠ فالنص خدمي؛ يتقدّم لما يتقرّر إرساله)",
   fc_ad_lead_last_call: "يحتاج عرضاً له تاريخ انتهاء؛ البوكسات بلا تاريخ انتهاء — لا شيء صادق يُكتب في المتغيّرين",
+  /* SW1 (١٣/١٠): صياغتان جديدتان باسمين جديدين — بانتظار موافقة المالك على النص (العربي والإنجليزي في README الشريحة SW1) */
+  fc_order_pickup_ready: "بانتظار موافقة المالك على النص (بديل fc_order_ready_pickup المرفوض) — غير مربوط بمرحلة",
+  fc_staff_checkout_notice: "بانتظار موافقة المالك على النص (بديل fc_staff_checkout_watchdog المصنَّف تسويق؛ fc_staff_payment_alert موجود لنفس الغرض)",
 });
 
 /* دفعات التقديم بالأولوية. الدفعة ١ = قائمة «أول ٨» الأصلية. */

@@ -29,7 +29,7 @@ const ORDERS = [
 ];
 const byNo = (no) => ORDERS.find((o) => o.order_no === no);
 
-function world({ optins = { [PHONE]: { updates: true, marketing: false } }, notifications = { whatsappEnabled: true, whatsappLoyaltyStatus: true, pushEnabled: false },
+function world({ optins = { [PHONE]: { updates: true, marketing: false } }, notifications = { whatsappEnabled: true, whatsappStages: ["delivered"], whatsappLoyaltyStatus: true, pushEnabled: false },      // SW1: مرحلة «اتوصّل» مشغّلة
   loyalty = { enabled: true, every: 3, reward: "free_delivery", startedAt: START } } = {}) {
   const msgs = [], calls = [];
   const pool = { msgs, async query(sql, p = []) {

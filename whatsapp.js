@@ -41,6 +41,7 @@ import * as CAT from "./watemplates.js";
 import { staffPhones } from "./staffalerts.js";
 import { termsCoverOrder, TERMS_CURRENT, TERMS_VERSIONS } from "./waconsent.js";
 import { custCapOf, custCapReason } from "./waquality.js";
+import { waStageOn } from "./waswitches.js";
 
 const env = (k, d) => (process.env[k] || d || "").toString().trim();
 export const GRAPH_VERSION = "v23.0";
@@ -621,13 +622,17 @@ export function register(app, ctx, deps = {}) {
   async function settingsSnap() {
     try { return (await getSettingsData()) || {}; } catch { return null; }   // مش قادرين نقرا الإعدادات = مقفول
   }
-  /* أقفال القناة (من غير العميل): السبب اللي بيمنع، أو null. نفس الترتيب القديم + مفتاح المالك. */
-  function channelBlock(s) {
+  /* أقفال القناة (من غير العميل): السبب اللي بيمنع، أو null. نفس الترتيب القديم + مفتاح المالك.
+     SW1 (١٣/١٠ — M6): المسارين اتفصلوا.
+       kind "session"  = رد حر جوّه نافذة الـ٢٤ ساعة (البوت + رد الموظف): مفتاح الخادم + الإعداد + مفتاح المالك. **مش** محتاج
+                         notifications.whatsappEnabled — المفتاح ده بتاع القوالب (تحديثات الطلب والحملات) ومايصحّش يقفل الرد على عميل كلّمنا.
+       kind "template" = القوالب: الأربعة زي الأول (الافتراضي، وأي منادي قديم بيفضل على الأربعة). */
+  function channelBlock(s, kind = "template") {
     if (envState() !== "allow") return "disabled";
     if (!configured()) return "unconfigured";
     if (!s) return "settings_unreadable";
     if (!dashMasterOf(s)) return "master_off";
-    if (!(s.notifications && s.notifications.whatsappEnabled === true)) return "settings_off";
+    if (kind !== "session" && !(s.notifications && s.notifications.whatsappEnabled === true)) return "settings_off";
     return null;
   }
 
@@ -637,9 +642,9 @@ export function register(app, ctx, deps = {}) {
     catch { return null; }
   }
 
-  /* السبب اللي بيمنع الإرسال، أو null لو كله تمام. */
-  async function gate() {
-    return channelBlock(await settingsSnap());
+  /* السبب اللي بيمنع الإرسال، أو null لو كله تمام. SW1: gate("session") = أقفال الرد الحر (من غير مفتاح تحديثات الطلب). */
+  async function gate(kind = "template") {
+    return channelBlock(await settingsSnap(), kind === "session" ? "session" : "template");
   }
 
   /* موافقة العميل. stopped = كتب «إيقاف» على واتساب ولسه مارجعش. للتحديثات: موافقة صريحة **بعد** الإيقاف بترجّعها
@@ -717,7 +722,7 @@ export function register(app, ctx, deps = {}) {
       if (kind === "session" && !(await windowOpen(pn))) return no("window_closed");
       return grant();
     }
-    const blocked = channelBlock(s);
+    const blocked = channelBlock(s, kind);      // SW1: الرد الحر مابيقفش على مفتاح تحديثات الطلب
     if (blocked) return no(blocked);
     if (kind === "session") {
       // رد حر: العميل لازم يكون كلّمنا في آخر ٢٤ ساعة (رسالة حقيقية وصلت على الويب هوك، مش تاريخ مستورد)
@@ -936,6 +941,10 @@ export function register(app, ctx, deps = {}) {
   async function sendOrderUpdate(order, stage, { fallbackSms = null } = {}) {
     const template = STAGE_TEMPLATES[stage];
     if (!template) return { ok: false, skipped: "no_template_for_stage" };
+    /* SW1 (M6-2): المرحلة لازم تكون متعلّم عليها في notifications.whatsappStages (الافتراضي [] ⇒ ولا تحديث طلب بيطلع على واتساب
+       لحد ما المالك يختار). الفحص هنا مش عند المنادي بس، عشان أي منادي جديد يبقى محكوم بنفس القاعدة. */
+    const snap = await settingsSnap();
+    if (!waStageOn(snap && snap.notifications, stage)) return { ok: false, skipped: "stage_off" };
     let row = {};
     try {
       const r = await pool.query(

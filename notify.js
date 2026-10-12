@@ -28,6 +28,7 @@ import { sendSms } from "./accounts.js";
 import { emitOrder } from "./order-events.js";
 import { renderTemplate } from "./smstemplates.js";
 import { READY_TEXT, orderKind } from "./prepstatus.js";
+import { waStageOn, waReplacesSms } from "./waswitches.js";
 import { loyaltyCfgOf, loyaltyStatusFor, LOYALTY_COUNTED_SQL } from "./loyalty.js";
 
 const env = (k, d) => (process.env[k] || d || "").toString().trim();
@@ -384,9 +385,11 @@ export function register(app, ctx, deps = {}) {
     // WhatsApp بالقوالب (whatsapp.js): بيتجرّب الأول عشان نعرف نستغنى عن SMS ولا لأ.
     // whatsappReplacesSms=true → لو اتقبل على واتساب مابنبعتش SMS، ولو فشل
     // لاحقاً (ويب هوك failed) whatsapp.js بيبعت نفس النص SMS.
+    /* SW1 (M6-2): لكل مرحلة مفتاحها (notifications.whatsappStages، الافتراضي فاضي ⇒ مفيش قالب) و«يغني عن الـSMS» بتاعها. */
     let waResult = null;
-    if (wa && cfg.whatsappEnabled === true) {
-      const replaces = cfg.whatsappReplacesSms === true;
+    const waReplaces = waReplacesSms(cfg, status);
+    if (wa && cfg.whatsappEnabled === true && waStageOn(cfg, status)) {
+      const replaces = waReplaces;
       try {
         waResult = await wa.sendOrderUpdate(order, status, {
           fallbackSms: replaces && cfg.smsEnabled === true && smsStages.includes(status) ? text : null });
@@ -397,7 +400,7 @@ export function register(app, ctx, deps = {}) {
         attempts.push(Promise.resolve());
       }
     }
-    const smsSkippedForWa = Boolean(waResult?.ok && cfg.whatsappReplacesSms === true);
+    const smsSkippedForWa = Boolean(waResult?.ok && waReplaces);
 
     /* 🎁 رصيد الولاء (قالب خدمي fc_loyalty_status) — بعد ما الطلب «اتسلّم» (توصيل/استلام/طاولة: نفس اللي المحرّك بيعدّه)،
        مرة وحدة للطلب، واتساب بس (مفيش SMS بديل: رصيد مش مستاهل رسالة بفلوس، وكود المكافأة له رسالته).
@@ -701,7 +704,7 @@ export function register(app, ctx, deps = {}) {
     if (kind === "pickup" && wa && typeof wa.sendOrderUpdate === "function") {
       try {
         const cfg = (await getSettingsData()).notifications || {};
-        if (cfg.whatsappEnabled === true) {
+        if (cfg.whatsappEnabled === true && waStageOn(cfg, "pickup_ready")) {      // SW1: المرحلة لازم تكون مشغّلة
           const w = await wa.sendOrderUpdate(o, "pickup_ready");
           if (w.skipped !== "no_template_for_stage") emitNotify(o.order_no, "pickup_ready", "whatsapp", w.ok === true,
             w.ok ? {} : { error: String(w.skipped || w.error || "send_failed").slice(0, 60) });

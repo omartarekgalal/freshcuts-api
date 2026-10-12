@@ -23,7 +23,8 @@
       الويب هوك (آخر حدث)، ومفاتيح الـenv.
    كل ردود التشخيص HTTP 200 مع ok:false (Cloudflare بيبلع الـ5xx).
 ═══════════════════════════════════════════════════════════════════════════ */
-import { GRAPH_VERSION, TEMPLATES, renderTemplateText, registerTemplates } from "./whatsapp.js";
+import { GRAPH_VERSION, TEMPLATES, STAGE_TEMPLATES, renderTemplateText, registerTemplates } from "./whatsapp.js";
+import { waStagesOf, waReplacesSms, stageRows, stagesProblem, checklistView, MANDATORY_SMS_STAGES } from "./waswitches.js";
 import * as CAT from "./watemplates.js";
 import { qualityCfg, QUALITY_KEYS, QUALITY_DEFAULTS, WARMUP_DEFAULTS, migrateQuality } from "./waquality.js";
 
@@ -778,8 +779,10 @@ export function register(app, ctx, deps = {}) {
     const s = await getSettingsData();
     const m = (s.waMaster && typeof s.waMaster === "object") ? s.waMaster : {};
     const blockedBy = wa && wa.gate ? await wa.gate() : "disabled";
+    const sessionBlockedBy = wa && wa.gate ? await wa.gate("session") : "disabled";      // SW1: الرد الحر (بوت + موظف) له أقفاله
     return { enabled: m.enabled === true, by: m.by || null, at: m.at || null, log: Array.isArray(m.log) ? m.log.slice(-20) : [],
       envState: wa && wa.envState ? wa.envState() : "unset", blockedBy: blockedBy || null, sending: !blockedBy,
+      sessionBlockedBy: sessionBlockedBy || null, sessionSending: !sessionBlockedBy,
       testPhones: wa && wa.testPhones ? (await wa.testPhones()).length : 0 };
   };
   app.get("/api/cms/wa-cloud/master", async (c) => {
@@ -798,6 +801,63 @@ export function register(app, ctx, deps = {}) {
     await pool.query("UPDATE settings SET data = jsonb_set(COALESCE(data,'{}'::jsonb), '{waMaster}', $1::jsonb, true), updated_at=NOW() WHERE id=1",
       [JSON.stringify(next)]);
     return c.json({ ok: true, master: await masterView() });
+  });
+
+  /* ══ SW1 (١٣/١٠ — M6): مفاتيح مستقلة ══════════════════════════════════════════════════════════════════
+     GET  /api/cms/wa-cloud/checklist   (أي أدمن — قراءة): الأقفال الأربعة، حالة مفتاح الخادم، قفل كل مسار (رد حر / قوالب)،
+                                         المراحل وحالة قالب كل مرحلة عند ميتا، وإيه اللي هيبدأ يتبعت لو المفتاح الرئيسي اتفتح.
+     POST /api/cms/wa-cloud/stages      (المالك): {stages:[…], replacesSms:[…]} — مراحل تحديثات الطلب على واتساب و«يغني عن الـSMS» لكل مرحلة.
+                                         إضافة مرحلة محتاجة قالبها معتمد وخدمي عند ميتا (قراءة جديدة)؛ الشيل مسموح دايماً. */
+  async function stagesNow(s, { fresh = false } = {}) {
+    let tpl = null; try { tpl = await templateInfo({ fresh }); } catch { tpl = null; }
+    return { tpl, rows: stageRows({ stageTemplates: STAGE_TEMPLATES, notifications: (s && s.notifications) || {}, metaList: (tpl && tpl.list) || [], metaOk: Boolean(tpl && tpl.ok === true), mandatorySms: MANDATORY_SMS_STAGES }) };
+  }
+  /* رسايل حملات Cloud اللي في الطابور (شغّالة / موقوفة) وسبب وقوف القناة — null لو الجداول مش مقروءة */
+  async function queuedCloud() {
+    try {
+      const r = (await pool.query(
+        `SELECT count(*) FILTER (WHERE j.status='running')::int AS rm, count(DISTINCT q.job_id) FILTER (WHERE j.status='running')::int AS rj,
+                count(*) FILTER (WHERE j.status='paused')::int AS pm, count(DISTINCT q.job_id) FILTER (WHERE j.status='paused')::int AS pj
+           FROM wa_send_queue q JOIN wa_send_jobs j ON j.id = q.job_id
+          WHERE q.status IN ('pending','sending') AND j.status IN ('running','paused') AND COALESCE(q.channel, j.channel) = 'wa_cloud'`)).rows[0] || {};
+      return { runningJobs: r.rj || 0, runningMessages: r.rm || 0, pausedJobs: r.pj || 0, pausedMessages: r.pm || 0 };
+    } catch { return null; }
+  }
+  const cloudStopped = async () => { try { return (await pool.query("SELECT stopped_reason FROM wa_sender_state WHERE id=2")).rows[0]?.stopped_reason || null; } catch { return null; } };
+  app.get("/api/cms/wa-cloud/checklist", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    await ready;
+    let s = null; try { s = (await getSettingsData()) || {}; } catch { s = null; }
+    const st = s || {}, m = (st.waMaster && typeof st.waMaster === "object") ? st.waMaster : {}, bot = (st.waBot && typeof st.waBot === "object") ? st.waBot : {};
+    const blockOf = async (kind) => { try { return wa && wa.gate ? await wa.gate(kind) : "disabled"; } catch { return "settings_unreadable"; } };
+    const { rows } = await stagesNow(st, { fresh: c.req.query("fresh") === "1" });
+    return c.json({ ok: true, ...checklistView({
+      envState: wa && wa.envState ? wa.envState() : "unset", configured: Boolean(wa && wa.configured && wa.configured()), settingsReadable: Boolean(s),
+      master: { enabled: m.enabled === true, by: m.by || null, at: m.at || null }, notifications: st.notifications || {},
+      waBot: { mode: bot.mode, liveScope: bot.liveScope, assist: { mode: bot.assist && bot.assist.mode } }, waCloud: { enabled: Boolean(st.waCloud && st.waCloud.enabled === true) },
+      stages: rows, sessionBlock: (await blockOf("session")) || null, templateBlock: (await blockOf("template")) || null,
+      queued: await queuedCloud(), stoppedReason: await cloudStopped(), testPhones: wa && wa.testPhones ? (await wa.testPhones().catch(() => [])).length : 0 }) });
+  });
+  app.post("/api/cms/wa-cloud/stages", async (c) => {
+    const err = await ownerOnly(c); if (err) return err;
+    await ready;
+    const b = await c.req.json().catch(() => ({}));
+    const s = (await getSettingsData()) || {};
+    const n = (s.notifications && typeof s.notifications === "object") ? s.notifications : {};
+    const current = waStagesOf(n);
+    const { tpl } = await stagesNow(s, { fresh: true });
+    const p = stagesProblem({ want: b.stages, replaces: b.replacesSms, stageTemplates: STAGE_TEMPLATES, current, metaList: (tpl && tpl.list) || [], metaOk: Boolean(tpl && tpl.ok === true) });
+    if (p) return c.json({ ok: false, ...p }, ["meta_unreadable", "template_not_approved", "template_not_utility"].includes(p.error) ? 409 : 400);
+    const want = [...new Set(b.stages.map(String))];
+    /* «يغني عن الـSMS» لو مااتبعتش: اللي كان متعلّم يفضل (للمراحل اللي لسه مشغّلة) — والمفتاح القديم العام بيتحوّل لقايمة بنفس المعنى */
+    const replaces = Array.isArray(b.replacesSms) ? [...new Set(b.replacesSms.map(String))] : want.filter((x) => waReplacesSms(n, x));
+    await pool.query(
+      `UPDATE settings SET data = jsonb_set(jsonb_set(jsonb_set(COALESCE(data,'{}'::jsonb), '{notifications}', COALESCE(data->'notifications','{}'::jsonb), true),
+                                                      '{notifications,whatsappStages}', $1::jsonb, true), '{notifications,whatsappReplacesSmsStages}', $2::jsonb, true), updated_at=NOW() WHERE id=1`,
+      [J(want), J(replaces)]);
+    const next = { ...s, notifications: { ...n, whatsappStages: want, whatsappReplacesSmsStages: replaces } };
+    return c.json({ ok: true, by: (await who(c)).name, stages: (await stagesNow(next)).rows, enabled: want, replacesSms: replaces,
+      orderUpdatesSwitch: n.whatsappEnabled === true });
   });
 
   app.post("/api/cms/wa-cloud/demo/template", async (c) => {

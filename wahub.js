@@ -58,6 +58,8 @@ export function watchedValues(settings) {
      ولا واحد منهم مكتوب فالقايمة كانت بتطلع من غيرهم. */
   put("notifications.whatsappEnabled", (s.notifications || {}).whatsappEnabled === true);
   for (const [k, v] of Object.entries(s.notifications || {})) if (/^whatsapp/i.test(k) && k !== "whatsappEnabled") put(`notifications.${k}`, v);
+  /* SW1: مراحل تحديثات الطلب (قوايم) بتتسجّل كنص */
+  for (const k of ["whatsappStages", "whatsappReplacesSmsStages"]) if (Array.isArray((s.notifications || {})[k])) put(`notifications.${k}`, (s.notifications || {})[k].map(String).join(","));
   put("waMaster.enabled", (s.waMaster || {}).enabled === true);
   put("waCloud.enabled", (s.waCloud || {}).enabled === true);
   for (const k of ["dailyCap", "hourCap", "perTick", "tierLimit", "reserveUtility",
@@ -104,6 +106,11 @@ export function register(app, ctx, deps = {}) {
   const SALT = String(deps.keySalt || tokenSecret(process.env) || "");
   const keyOf = (pn) => crypto.createHash("md5").update(`${SALT}:${pn}`).digest("hex");
   const ready = pool.query(DDL).then(() => true).catch((e) => { log.error("[wa-hub] schema:", e.message); return false; });
+  /* SW1: «تم» من اللوحة/البورتال بيتسجّل على المحادثة (استعلام لوحده: فشله مايأثّرش على جداول القسم) */
+  ready.then(() => pool.query("ALTER TABLE IF EXISTS wa_threads ADD COLUMN IF NOT EXISTS handled_at TIMESTAMPTZ")).catch((e) => log.error("[wa-hub] handled_at:", e.message));
+  async function markHandled(pn) {
+    try { await pool.query("UPDATE wa_threads SET handled_at = NOW() WHERE phone_norm = $1", [pn]); } catch (e) { log.error("[wa-hub] handled:", e.message); }
+  }
 
   const meOf = (u) => (u ? { id: u.username || u.id, name: u.name || u.username, role: u.role, via: "dashboard" } : null);      // SR2: حساب اللوحة
   /* ── مين يدخل ── */
@@ -133,7 +140,7 @@ export function register(app, ctx, deps = {}) {
      gate: disabled (مفتاح الخادم) | unconfigured | settings_unreadable | master_off | settings_off | null = مفتوح */
   async function sendState() {
     let gate = "disabled";
-    try { gate = wa && typeof wa.gate === "function" ? await wa.gate() : "disabled"; } catch { gate = "settings_unreadable"; }
+    try { gate = wa && typeof wa.gate === "function" ? await wa.gate("session") : "disabled"; } catch { gate = "settings_unreadable"; }      // SW1: خانة الرد = رد حر
     return { ok: !gate, gate: gate || null };
   }
   const pauseMinNow = async () => { try { const cfg = await bot()?.botConfig?.(); return Number(cfg?.humanPauseMin) || 30; } catch { return 30; } };
@@ -151,10 +158,19 @@ export function register(app, ctx, deps = {}) {
       LEFT JOIN cms_contacts c ON c.phone_norm = t.phone_norm
       LEFT JOIN wa_contact_names n ON n.phone_norm = t.phone_norm AND NOT n.removed
       LEFT JOIN wa_bot_chats b ON b.phone_norm = t.phone_norm`;
+  /* SW1 («مستنية رد» كانت تحويلات مفتوحة بس — صورة من عميل محدش رد عليها ماكانتش بتظهر):
+     «محتاجة رد» = آخر رسالة متخزّنة للمحادثة من العميل (مش تاريخ مستورد)، النافذة لسه مفتوحة (ينفع نرد)، ومحدش علّم «تم» بعدها.
+     آخر رسالة من أكبر id (نفس قاعدة LR1: last_dir في wa_threads ممكن يتأخر رسالة). handled_at بيتقري بـto_jsonb عشان الاستعلام
+     مايقعش على قاعدة العمود لسه مااتضافش فيها.
+     M1 (EX1): الرد الآلي من تطبيق واتساب بزنس (echo_kind='auto') **مش رد موظف** — فبيتشال من «آخر رسالة»: عميل كتب وجاله الرد الآلي بس لسه «محتاج رد».
+     رد البوت والمساعد والموظف (من اللوحة/البورتال/الموبايل) بيتحسبوا رد. */
+  const UNANSWERED = `(t.last_in_at > NOW() - INTERVAL '24 hours'
+      AND (SELECT m.direction FROM wa_messages m WHERE m.phone_norm = t.phone_norm AND COALESCE(m.source, 'api') <> 'history' AND COALESCE(m.echo_kind,'staff') <> 'auto' ORDER BY m.id DESC LIMIT 1) = 'in'
+      AND COALESCE((to_jsonb(t)->>'handled_at')::timestamptz < t.last_in_at, TRUE))`;
   const COND = {
     all: "TRUE",
     muted: "b.muted_until > NOW()",
-    waiting: "b.handoff_at IS NOT NULL AND NOT COALESCE(b.muted_until > NOW(), FALSE)",
+    waiting: `NOT COALESCE(b.muted_until > NOW(), FALSE) AND (b.handoff_at IS NOT NULL OR ${UNANSWERED})`,
     bot: "b.handoff_at IS NULL AND NOT COALESCE(b.muted_until > NOW(), FALSE) AND t.last_in_at > NOW() - INTERVAL '24 hours'",
     ad: "b.referral IS NOT NULL",
     unread: "t.unread > 0",
@@ -186,6 +202,7 @@ export function register(app, ctx, deps = {}) {
       `SELECT t.phone_norm, t.last_in_at, t.last_at, t.last_text, t.last_dir, t.unread, t.order_no,
               COALESCE(c.name, n.full_name, n.profile_name) AS name, c.orders AS orders,
               b.muted_until, b.mute_reason, b.muted_by, b.handoff_at, b.handoff_reason, (b.referral IS NOT NULL) AS ad,
+              ${UNANSWERED} AS unanswered,
               lm.source AS last_source, lm.direction AS lm_dir, lm.body AS lm_body, lm.template AS lm_template, lm.created_at AS lm_at,
               (SELECT max(m.created_at) FROM wa_messages m WHERE m.phone_norm = t.phone_norm AND m.source = 'echo' AND COALESCE(m.echo_kind,'staff') <> 'auto') AS last_echo_at
        ${FROM}
@@ -215,6 +232,8 @@ export function register(app, ctx, deps = {}) {
         ...lastOf(r),
         unread: Number(r.unread) || 0, window: windowState(iso(r.last_in_at), t0), bot: botState(r, { now: t0, pauseMin }), ad: r.ad === true,
         owner: owners.get(r.phone_norm) || null,
+        /* SW1: آخر رسالة من العميل ومحدش رد ولا علّم «تم» (والنافذة مفتوحة) — ده اللي بيدخّلها «مستنية رد» من غير تحويل */
+        unanswered: r.unanswered === true,      // نفس شرط الفلتر بالظبط (محسوب في الاستعلام)
       })),
       nextBefore: rows.length > lim ? iso(page[page.length - 1].last_at) : null,
     };
@@ -286,7 +305,7 @@ export function register(app, ctx, deps = {}) {
               (SELECT COALESCE(sum(unread), 0) FROM wa_threads)::int AS u,
               (SELECT (extract(epoch FROM max(GREATEST(last_at, COALESCE(read_at, last_at)))) * 1000)::bigint FROM wa_threads) AS tl,
               (SELECT (extract(epoch FROM max(updated_at)) * 1000)::bigint FROM wa_bot_chats) AS tb,
-              (SELECT count(*) FROM wa_bot_chats WHERE handoff_at IS NOT NULL AND NOT COALESCE(muted_until > NOW(), FALSE))::int AS w,
+              (SELECT count(*) FROM wa_threads t LEFT JOIN wa_bot_chats b ON b.phone_norm = t.phone_norm WHERE ${COND.waiting})::int AS w,
               (SELECT count(*) FROM wa_bot_chats WHERE muted_until > NOW())::int AS h,
               (SELECT (extract(epoch FROM max(GREATEST(created_at, updated_at))) * 1000)::bigint FROM wa_messages WHERE phone_norm = $1) AS tm,
               (SELECT count(*) FROM wa_messages WHERE phone_norm = $1)::int AS cm,
@@ -356,6 +375,7 @@ export function register(app, ctx, deps = {}) {
       try {
         const r = await own[fn](pn, meOf(a.user), { force: b && b.force === true });
         if (!r.ok) return c.json({ ok: false, error: r.error, owner: r.owner || undefined, message: r.message }, r.status || 409);
+        if (fn === "done") await markHandled(pn);
         return c.json({ ok: true, owner: r.owner });
       } catch (e) { log.error(`[wa-hub] ${fn}:`, e.message); return c.json({ ok: false, error: "unavailable" }, 503); }
     });
@@ -368,6 +388,7 @@ export function register(app, ctx, deps = {}) {
     const b = bot();
     if (!b || typeof b.unmuteChat !== "function") return c.json({ ok: false, error: "bot_unavailable" }, 503);
     await b.unmuteChat(pn);
+    await markHandled(pn);
     return c.json({ ok: true });
   });
   /* الرد: نفس أقفال الصندوق (wainbox ⇒ الحارس المركزي). الرفض بيرجّع اسم القفل في gate. */
@@ -527,5 +548,5 @@ export function register(app, ctx, deps = {}) {
     catch (e) { log.error("[wa-hub] counts:", e.message); return c.json({ ok: false, error: "unavailable" }, 500); }
   });
 
-  return { ready, listThreads, getThread, templatesView, sweep, sweepFor, masterCounts, keyOf, tick };
+  return { ready, listThreads, getThread, templatesView, sweep, sweepFor, masterCounts, keyOf, tick, markHandled };
 }

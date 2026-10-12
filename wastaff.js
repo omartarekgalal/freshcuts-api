@@ -115,7 +115,7 @@ export function register(app, ctx, deps = {}) {
   async function sendStateFor(pn) {
     if (!wa || typeof wa.gate !== "function") return { ok: false, gate: "disabled", test: false };
     if (await isStopped(pn)) return { ok: false, gate: "opted_out", test: false };
-    let gate; try { gate = await wa.gate(); } catch { gate = "settings_unreadable"; }
+    let gate; try { gate = await wa.gate("session"); } catch { gate = "settings_unreadable"; }      // SW1: أقفال الرد الحر (من غير مفتاح تحديثات الطلب)
     let test = false;
     if (gate) {
       /* القناة مقفولة: رقم تجربة بس، ومن غير القفل الصلب ومع رقم/توكن متظبطين */
@@ -129,7 +129,7 @@ export function register(app, ctx, deps = {}) {
   /* حالة القناة من غير محادثة معيّنة (للقايمة) */
   async function channelState() {
     if (!wa || typeof wa.gate !== "function") return { ok: false, gate: "disabled" };
-    let gate; try { gate = await wa.gate(); } catch { gate = "settings_unreadable"; }
+    let gate; try { gate = await wa.gate("session"); } catch { gate = "settings_unreadable"; }
     return { ok: !gate, gate: gate || null };
   }
 
@@ -226,6 +226,7 @@ export function register(app, ctx, deps = {}) {
         const r = await owner[fn](pn, a.me, { force: b && b.force === true });
         try { deps.audit?.(a.user, `wa_${fn}`, null, r.ok, { via: "portal", error: r.ok ? null : r.error }, null, { emit: false }); } catch { /* السجل مايوقّفش */ }
         if (!r.ok) return c.json({ ok: false, error: r.error, owner: r.owner || undefined, message: r.message }, r.status || 409);
+        if (fn === "done") await a.h.markHandled?.(pn);      // SW1: «خلصت» ⇒ المحادثة تخرج من «مستنية رد» حتى لو آخر رسالة من العميل
         return c.json({ ok: true, owner: r.owner });
       } catch (e) { log.error(`[wa-staff] ${fn}:`, e.message); return c.json({ ok: false, error: "unavailable" }, 503); }
     };

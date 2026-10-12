@@ -35,6 +35,8 @@ export const SERVER_OWNED_PATHS = [
   "delivery.districtCouriers",  // districts.js
   "cms",                        // cms.js (perms, campaigns + brake, loyalty, dailyTarget)
   "staffAlerts",                // staffcontrol.js
+  "notifications.whatsappStages",            // SW1: wacloud.js (POST /api/cms/wa-cloud/stages — المالك، بعد التأكد إن القالب معتمد)
+  "notifications.whatsappReplacesSmsStages", // SW1: نفس المسار
   "googlePlace",                // reviews.js (كاش تقييم جوجل)
   "reviews",                    // reviews.js
   "webPushKeys",                // notify.js (مفاتيح VAPID — سر)

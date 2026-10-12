@@ -48,7 +48,8 @@ const fakeCtx = ({ json = {}, headers = {}, query = {} } = {}) => ({
 
 /* عالم صغير: إعدادات + موافقات + وارد + «إيقاف» التسويق، وfetch بيسجّل كل طلب لـGraph */
 function world({ settings = {}, optins = {}, inbound = [], suppressed = [] } = {}) {
-  const db = { settings: { notifications: { whatsappEnabled: true }, waMaster: { enabled: true }, waBot: { testPhones: ["0544775082"] }, ...settings },
+  /* SW1: كل مراحل تحديثات الطلب مشغّلة في العالم الافتراضي (الافتراضي الحقيقي: ولا مرحلة — wa-switches.test.mjs) */
+  const db = { settings: { notifications: { whatsappEnabled: true, whatsappStages: Object.keys(W.STAGE_TEMPLATES) }, waMaster: { enabled: true }, waBot: { testPhones: ["0544775082"] }, ...settings },
     optins: { ...optins }, inbound: [...inbound], suppressed: [...suppressed], msgs: [] };
   const pool = { db, async query(sql, p = []) {
     const s = String(sql).replace(/\s+/g, " ").trim();
@@ -181,7 +182,6 @@ test("master: the server flag is a hard kill above the owner's dashboard switch 
     [ALLOW, { waMaster: undefined }, "master_off"],                                        // الافتراضي مقفول
     [ALLOW, { waMaster: { enabled: "true" } }, "master_off"],                              // true الحقيقية بس
     [ALLOW, { waMaster: true }, "master_off"],
-    [ALLOW, { notifications: { whatsappEnabled: false } }, "settings_off"],
   ];
   for (const [env, settings, want] of cases) {
     await withEnv(env, async () => {
@@ -194,6 +194,13 @@ test("master: the server flag is a hard kill above the owner's dashboard switch 
     const w = world({ optins, inbound: [CUST] });
     assert.deepEqual(await tries(w), ["sent", "sent", "sent", "open"]);
     assert.equal(w.calls.length, 3);
+  })();
+  /* SW1 (M6-1): مفتاح «تحديثات الطلب» بيقفل القوالب بس — الرد الحر (بوت / موظف) جوّه النافذة مابيقفش عليه */
+  await withEnv(ALLOW, async () => {
+    const w = world({ settings: { notifications: { whatsappEnabled: false } }, optins, inbound: [CUST] });
+    assert.deepEqual(await tries(w), ["settings_off", "sent", "sent", "settings_off"]);
+    assert.equal(await w.wa.gate("session"), null); assert.equal(await w.wa.gate("template"), "settings_off");
+    assert.equal(w.calls.length, 2);
   })();
 });
 

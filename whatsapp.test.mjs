@@ -288,7 +288,7 @@ function notifyWith({ waResult, notifications }) {
 
 test("notify: WhatsApp accepted + whatsappReplacesSms → no SMS, fallback text handed over", async () => {
   const { api, sms, calls } = notifyWith({ waResult: { ok: true, wamid: "w" },
-    notifications: { pushEnabled: false, smsEnabled: true, whatsappEnabled: true, whatsappReplacesSms: true } });
+    notifications: { pushEnabled: false, smsEnabled: true, whatsappEnabled: true, whatsappStages: ["pos_created"], whatsappReplacesSms: true } });      // SW1: المرحلة مشغّلة
   await api.orderStatusChanged("W1", "pos_created");
   assert.equal(sms.length, 0);
   assert.equal(calls.length, 1);
@@ -297,7 +297,7 @@ test("notify: WhatsApp accepted + whatsappReplacesSms → no SMS, fallback text 
 
 test("notify: WhatsApp skipped (no opt-in) → SMS goes as before", async () => {
   const { api, sms } = notifyWith({ waResult: { ok: false, skipped: "no_optin" },
-    notifications: { pushEnabled: false, smsEnabled: true, whatsappEnabled: true, whatsappReplacesSms: true } });
+    notifications: { pushEnabled: false, smsEnabled: true, whatsappEnabled: true, whatsappStages: ["pos_created"], whatsappReplacesSms: true } });      // SW1: المرحلة مشغّلة
   await api.orderStatusChanged("W1", "pos_created");
   assert.equal(sms.length, 1);
 });

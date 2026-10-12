@@ -86,7 +86,6 @@ test("الرفض باسم القفل ومن غير أي طلب شبكة: الخ�
   await run({ ...CONFIGURED, WHATSAPP_ENABLED: "0" }, {}); assert.equal(run.last.r.gate, "disabled");
   await run({ WHATSAPP_ENABLED: "1" }, {}); assert.equal(run.last.r.gate, "unconfigured");
   await run(ALLOW, { settings: { waMaster: { enabled: false } } }); assert.equal(run.last.r.gate, "master_off");
-  await run(ALLOW, { settings: { notifications: { whatsappEnabled: false } } }); assert.equal(run.last.r.gate, "settings_off");
   await run(ALLOW, { inbound: [] }); assert.equal(run.last.r.gate, "window_closed");
   await run(ALLOW, { optins: { [CUST]: { stopped_at: "2026-10-10T00:00:00Z" } } }); assert.equal(run.last.r.gate, "opted_out");
   // M2 (12/10): the customer stopped all messages and then wrote to us himself ⇒ the reply box is open (he started it); with no message after the stop it stays locked

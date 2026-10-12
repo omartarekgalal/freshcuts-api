@@ -124,7 +124,7 @@ export function register(ctx, deps = {}) {
   async function status() {
     let settingsOn = false;
     try { settingsOn = (await getSettingsData())?.notifications?.whatsappEnabled === true; } catch { /* off */ }
-    const gate = wa ? await wa.gate() : "disabled";
+    const gate = wa ? await wa.gate("session") : "disabled";      // SW1: الصندوق = رد حر ⇒ أقفال الرد الحر
     return {
       enabled: masterOn(),
       configured: wa ? wa.configured() : false,

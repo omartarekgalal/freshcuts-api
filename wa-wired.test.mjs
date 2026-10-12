@@ -48,7 +48,9 @@ const withEnv = (vals, fn) => async () => {
   try { await fn(); } finally { for (const k of ENV) { if (saved[k] === undefined) delete process.env[k]; else process.env[k] = saved[k]; } }
 };
 const ON = { WHATSAPP_ENABLED: "1", WHATSAPP_TOKEN: "tok", WHATSAPP_PHONE_ID: "PHONE1" };
-function setup({ pool, fetch, settings = { notifications: { whatsappEnabled: true }, waMaster: { enabled: true } } } = {}) {
+/* SW1: تحديثات الطلب بقت لكل مرحلة (notifications.whatsappStages، الافتراضي فاضي) — الاختبارات دي عن النص والحارس، فكل المراحل مشغّلة فيها. */
+const ALL_STAGES = Object.keys(W.STAGE_TEMPLATES);
+function setup({ pool, fetch, settings = { notifications: { whatsappEnabled: true, whatsappStages: ALL_STAGES }, waMaster: { enabled: true } } } = {}) {
   const app = fakeApp();
   const f = fetch || fakeFetch();
   const p = pool || memPool();
@@ -185,7 +187,7 @@ test("notify: «جاهز» on a pickup order sends fc_order_ready_pickup; table 
     pool.query = async (sql, p) => (/FROM shop_orders WHERE order_no/.test(String(sql)) && /phone_norm, option/.test(String(sql))
       ? { rows: [{ order_no: no, phone_norm: PHONE, option: ORDERS[no].option, total: ORDERS[no].total, table_no: ORDERS[no].table_no }] } : orig(sql, p));
     const { api, fetch } = setup({ pool });
-    const notify = registerNotify(fakeApp(), { pool, requireAdmin: async () => null, getSettingsData: async () => ({ notifications: { whatsappEnabled: true, pushEnabled: false } }),
+    const notify = registerNotify(fakeApp(), { pool, requireAdmin: async () => null, getSettingsData: async () => ({ notifications: { whatsappEnabled: true, whatsappStages: ["pickup_ready"], pushEnabled: false } }),
       jb: (x) => JSON.stringify(x), normPhone: (x) => x }, { wa: api, sendSms: async () => ({ ok: true }) });
     await notify.orderReady(no);
     await flush();

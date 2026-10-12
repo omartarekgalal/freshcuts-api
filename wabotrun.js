@@ -2649,7 +2649,7 @@ export function register(app, ctx, deps = {}) {
     await ready;
     const settings = (await getSettingsData()) || {};
     const cfg = botConfig(settings); tune = cfg;
-    const gate = wa && wa.gate ? await wa.gate() : "no_wa";
+    const gate = wa && wa.gate ? await wa.gate("session") : "no_wa";      // SW1: البوت = رد حر ⇒ أقفال الرد الحر (من غير مفتاح تحديثات الطلب)
     const slugs = [...new Set([cfg.links.organic, cfg.links.ads, ...Object.values(cfg.links.adMap)])];
     const lr = (await q("SELECT slug, active, clicks, target_type, target_id, utm_campaign, coupon FROM cms_links WHERE slug = ANY($1::text[])", [slugs])) || [];
     const llmReady = Boolean(process.env.ANTHROPIC_API_KEY || process.env.LITELLM_KEY);
@@ -3089,7 +3089,7 @@ export function register(app, ctx, deps = {}) {
     const served = await q(`SELECT count(*)::int AS n FROM wa_assist_live_day WHERE day = ${LIVE_DAY}`, []);
     const cost = await q(`SELECT COALESCE(sum(cost_sar) FILTER (WHERE at >= ${MEDIA_DAY}), 0)::float AS day, COALESCE(sum(cost_sar), 0)::float AS month FROM ai_calls WHERE at >= ${MONTH0} AND ($1::text IS NULL OR purpose = $1)`, ["assistant"]);
     /* قفل الإرسال (whatsapp.js gate): null = مفتوح، نص = سبب القفل. مانعرفش ⇒ unknown. */
-    let gate = "unknown"; try { gate = typeof wa.gate === "function" ? await wa.gate() : "unknown"; } catch { gate = "unknown"; }
+    let gate = "unknown"; try { gate = typeof wa.gate === "function" ? await wa.gate("session") : "unknown"; } catch { gate = "unknown"; }      // SW1: أقفال الرد الحر
     const n = served && served[0] ? served[0].n : null, day = cost && cost[0] ? Math.round(cost[0].day * 100) / 100 : null, month = cost && cost[0] ? Math.round(cost[0].month * 100) / 100 : null;
     const stopped = a.mode !== "live" ? null : (day !== null && a.budgetDaySar > 0 && day >= a.budgetDaySar) ? "budget_day" : (month !== null && a.budgetMonthSar > 0 && month >= a.budgetMonthSar) ? "budget_month" : (n !== null && n >= a.liveDailyCustomers) ? "daily_cap" : null;
     return { ok: true, mode: a.mode, botMode: cfg.mode, audience: a.liveAudience, audienceAr: AUD_AR[a.liveAudience], dailyCustomers: a.liveDailyCustomers, servedToday: n,
