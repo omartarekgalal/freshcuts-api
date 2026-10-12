@@ -1391,8 +1391,7 @@ export function register(app, ctx, deps = {}) {
       "UPDATE shop_orders SET mf_invoice_id=$2, updated_at=NOW() WHERE order_no=$1",
       [row.order_no, res.InvoiceId != null ? String(res.InvoiceId) : null]
     );
-    return c.json({ ok: true, paymentUrl: res.PaymentURL || res.InvoiceURL || null, invoiceId: res.InvoiceId,
-      ...(couponIgnored ? { couponIgnored } : {}) });
+    return c.json({ ok: true, paymentUrl: res.PaymentURL || res.InvoiceURL || null, invoiceId: res.InvoiceId });
   });
 
   /* ── confirmOrder — the one door to "paid" (webhook / browser / sweep) ── */
