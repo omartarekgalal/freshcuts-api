@@ -67,13 +67,20 @@ function world({ waBot = {}, notifications = { whatsappEnabled: true }, orders =
       const s = String(sql).replace(/\s+/g, " ").trim();
       if (failDb && failDb.test(s)) throw new Error("db down");
       if (/^CREATE TABLE|^DELETE FROM wa_bot_log|wa_webhook_health|wa_contact_names|wa_threads/i.test(s)) return { rows: [], rowCount: 0 };
+      // ── EX5: رد آلي وارد + حارس الحلقات
+      if (/^SELECT max\(created_at\) FILTER \(WHERE template IS NOT NULL\) AS tpl_at/i.test(s)) { const o = db.msgs.filter((m) => m.phone_norm === p[0] && m.direction === "out" && m.source !== "echo" && !["failed", "skipped"].includes(m.status) && nowMs - Date.parse(m.created_at) < 600_000);
+        const mx = (l) => l.map((m) => m.created_at).sort().pop() || null; return { rows: [{ tpl_at: mx(o.filter((m) => m.template)), out_at: mx(o) }] }; }
+      if (/^DELETE FROM wa_replies WHERE phone_norm=\$1 AND ext_id=\$2 AND NOT is_optout/i.test(s)) { const hit = (db.replies || []).filter((r) => r.phone_norm === p[0] && r.ext_id === p[1] && !r.is_optout); db.replies = (db.replies || []).filter((r) => !hit.includes(r)); return { rows: hit.map((r) => ({ queue_id: r.queue_id })) }; }
+      if (/^UPDATE wa_send_queue SET replied_at=NULL WHERE id=\$1 AND NOT EXISTS/i.test(s)) { const qr = (db.queue || []).find((x) => x.id === p[0]); if (qr && !(db.replies || []).some((r) => r.queue_id === p[0])) qr.replied_at = null; return { rows: [] }; }
+      if (/^SELECT text FROM wa_bot_log WHERE phone_norm=\$1 AND id <> \$2/i.test(s)) return { rows: db.log.filter((l) => l.phone_norm === p[0] && l.id !== p[1] && nowMs - Date.parse(l.at) < p[2] * 1000).slice(-1).map((l) => ({ text: l.text })) };
+      if (/^INSERT INTO wa_bot_chats\(phone_norm, loop_streak, loop_at\)/i.test(s)) { const ch = chat(p[0]); ch.loop_streak = ch.loop_at && nowMs - Date.parse(ch.loop_at) < p[1] * 1000 ? (ch.loop_streak || 0) + 1 : 1; ch.loop_at = iso(); return { rows: [{ loop_streak: ch.loop_streak }] }; }
+      if (/^UPDATE wa_bot_chats SET loop_streak=0/i.test(s)) { chat(p[0]).loop_streak = 0; return { rows: [] }; }
       // ── M4/M5 (مراجعة الخبير)
       if (/^SELECT acked_at FROM wa_handovers WHERE phone_norm=\$1/i.test(s)) return { rows: db.acks && db.acks[p[0]] ? [{ acked_at: db.acks[p[0]] }] : [] };
       if (/^SELECT count\(\*\)::int AS n FROM wa_bot_log WHERE phone_norm=\$1 AND msg_type IN \('image'/i.test(s)) return { rows: [{ n: db.log.filter((l) => l.phone_norm === p[0] && ["image", "video", "document", "audio", "voice", "sticker"].includes(l.msg_type) && nowMs - Date.parse(l.at) < p[1] * 60_000).length }] };
       if (/^SELECT phone_norm FROM cms_contacts WHERE is_staff/i.test(s)) return { rows: (db.staffContacts || []).map((phone_norm) => ({ phone_norm })) };
       if (/^SELECT DISTINCT driver->>'phone' AS phone FROM dl_shipments/i.test(s)) return { rows: (db.drivers || []).map((phone) => ({ phone })) };
       if (/^SELECT 1 FROM wa_messages WHERE phone_norm=\$1 AND created_at < \$2::timestamptz LIMIT 1/i.test(s)) return { rows: db.msgs.filter((m) => m.phone_norm === p[0] && Date.parse(m.created_at) < Date.parse(p[1])).slice(0, 1).map(() => ({})) };
-      if (/^UPDATE wa_bot_chats SET mute_reason='media_flood'/i.test(s)) { chat(p[0]).mute_reason = "media_flood"; return { rows: [] }; }
       // ── مساعد الطلبات: «جاري الكتابة» والمتابعة بعد رابط السلة
       if (/^SELECT 1 FROM wa_messages WHERE wamid=\$1 AND phone_norm=\$2 AND direction='in'/i.test(s)) return { rows: db.msgs.filter((m) => m.wamid === p[0] && m.phone_norm === p[1] && m.direction === "in" && nowMs - Date.parse(m.created_at) < 24 * 3600_000).map(() => ({})) };
       if (/^SELECT max\(created_at\) FILTER \(WHERE direction='in'/i.test(s)) { const mine = db.msgs.filter((m) => m.phone_norm === p[0] && nowMs - Date.parse(m.created_at) < 25 * 3600_000);
@@ -3649,7 +3656,7 @@ test("M5: a flood of pictures with no text mutes the chat for 24 h with ONE hand
   assert.equal(w.portal.length, portalBefore + 1); assert.equal(w.portal.at(-1)[1].reason, "media_flood");
   assert.ok(w.sms.length >= smsBefore);
   const chat = w.db.chats.get("512345678");
-  assert.equal(chat.mute_reason, "media_flood"); assert.equal(Math.round((Date.parse(chat.muted_until) - w.clock.now().getTime()) / 3600_000), 24);
+  assert.deepEqual([chat.mute_reason, chat.muted_by], ["manual", "media_flood"], "EX5: stored as a manual mute with its cause in muted_by — a mute with any other reason was cleared at every restart"); assert.equal(Math.round((Date.parse(chat.muted_until) - w.clock.now().getTime()) / 3600_000), 24);
   const p2 = w.portal.length;
   for (let i = 0; i < 6; i++) { const x = await img(); assert.equal(x.sent.length, 0); }
   assert.equal(w.portal.length, p2, "one handover, not one per picture");
@@ -3774,4 +3781,95 @@ test("EX4: order status is for an OPEN order only — «وين طلبي / كم �
   // an order the restaurant refused and refunded keeps its real status: that is what the customer is asking about
   assert.match(bodyOf((await liveWorld({ orders: [order({ status: "rejected_refunded", refund_id: "RF1" })] }).say("وين طلبي")).sent[0]), /استرجاع المبلغ/);
   assert.equal(R.TEXT_KEYS.includes("status_none"), false); assert.ok(R.TEXT_KEYS.includes("status_no_open") && R.TEXT_KEYS.includes("status_last_closed"));
+}));
+
+/* ── EX5 (١٣/١٠، أول «رد عميل» بعد الحملة كان رد آلي من نشاط تجاري) ─────────────────────────── */
+const CITY_DOORS = "شكرا لك على تواصلك مع \n*مدينة الابواب - City Doors. *\nيرجى إخبارنا بما يمكننا القيام به لمساعدتك.\nفضلاً تحديد المدينه وعدد الابواب لاخباركم بكافة العروض والتخفيضات الساريه 👈\nيمكنكم زيارة موقعنا الالكتروني واكتشف المزيد عن اختياراتنا المتنوعة https://citydoors.example";
+const AWAY_AR = "شكراً لك على رسالتك. نحن لسنا متوفرين في الوقت الحالي، ولكننا سنرد عليك في أسرع وقت ممكن.";
+
+test("EX5: what an automatic reply looks like — the two messages of 13/10, the usual Arabic and English boilerplate, and what a customer writes", () => {
+  for (const text of [CITY_DOORS, AWAY_AR, "شكراً لتواصلك معنا", "نحن غير متواجدين حالياً", "سنرد عليك في أقرب وقت", "سيتم الرد عليكم خلال ساعات العمل", "أنت تراسلنا خارج أوقات العمل", "هذا رد آلي", "Thank you for contacting ACME Trading!", "We are currently away",
+    "we're currently unavailable", "Thanks for your message. We'll get back to you as soon as possible.", "You reached us outside business hours", "This is an automated reply", "Hello! How can we help you?"])
+    assert.equal(R.autoInboundKind({ text }), "pattern", text);
+  for (const text of ["شكرا", "شكرا على الرد السريع", "ايش اوقات العمل؟", "what are your business hours?", "السلام عليكم ابي اطلب بوكس", "متى ترد علي؟ ابي الرد في اقرب وقت", "غير متوفر عندكم برجر؟", "how can I order", "مو متوفرين اليوم؟", "ابي اتواصل مع موظف"])
+    assert.equal(R.autoInboundKind({ text }), null, text);
+  // the time rule: only after OUR template, only a text of 25+ characters, only inside the window
+  const long = "اهلا وسهلا بكم في مؤسسة النور للمقاولات العامة";
+  assert.equal(R.autoInboundKind({ text: long, sinceTemplateSec: 4 }), "after_template");
+  assert.equal(R.autoInboundKind({ text: long, sinceTemplateSec: 16 }), null); assert.equal(R.autoInboundKind({ text: long, sinceTemplateSec: null }), null);
+  assert.equal(R.autoInboundKind({ text: "ابي اطلب", sinceTemplateSec: 4 }), null, "a short reply right after a campaign is a person");
+  assert.equal(R.autoInboundKind({ text: long, sinceTemplateSec: 4, cfg: R.botConfig({ waBot: { autoInboundSec: 0 } }) }), null);
+  assert.equal(R.autoInboundKind({ text: AWAY_AR, cfg: R.botConfig({ waBot: { autoInboundPatterns: false } }) }), null);
+  assert.deepEqual([R.botConfig({}).autoInboundSec, R.botConfig({}).autoInboundPatterns, R.botConfig({}).loopGuardCount, R.botConfig({}).loopGuardFastSec, R.botConfig({}).loopGuardSeconds, R.botConfig({}).loopGuardMuteHours], [15, true, 3, 5, 120, 12]);
+  for (const k of ["autoInboundPatterns", "autoInboundSec", "loopGuardCount", "loopGuardFastSec", "loopGuardSeconds", "loopGuardMuteHours"]) assert.ok(R.SCHEMA[k].ar, k);
+});
+
+test("EX5: a business auto-responder answering our campaign gets no reply, no assistant turn, no handover — and is not a campaign reply", withEnv(LOCKS_OPEN, async () => {
+  const BIZ_PN = "545161910";
+  const w = aWorld([mSay("هذه الرسالة لا تخص مطعم فريش كاتس")], { waBot: { mode: "live", liveScope: "all", assist: { mode: "live", liveAudience: "campaign", liveDailyCustomers: 30 } } });
+  const tpl = () => w.db.msgs.push({ wamid: `wamid.TPL${w.db.msgs.length}`, direction: "out", phone_norm: BIZ_PN, template: "fc_frame_video", category: "MARKETING", status: "sent", source: "cloud", created_at: w.clock.now().toISOString() });
+  tpl(); w.db.queue = [{ id: 7, phone_norm: BIZ_PN, replied_at: w.clock.now().toISOString() }];
+  w.db.replies = [{ phone_norm: BIZ_PN, ext_id: "wamid.CD1", queue_id: 7, is_optout: false }, { phone_norm: BIZ_PN, ext_id: "wamid.CD2", queue_id: 7, is_optout: false }];
+  w.clock.advanceSec(3);
+  const a = await w.say(CITY_DOORS, { from: "966545161910", id: "wamid.CD1" });
+  assert.deepEqual([a.sent.length, a.log.decision, a.log.reason, a.log.detail, a.log.handoff], [0, "silent", "auto_inbound", "pattern", null]);
+  w.clock.advanceSec(1);
+  const b = await w.say(AWAY_AR, { from: "966545161910", id: "wamid.CD2" });
+  assert.deepEqual([b.sent.length, b.log.decision, b.log.reason], [0, "silent", "auto_inbound"], "it was answered «العفو، حيّاك الله» on 13/10");
+  assert.equal(w.m.used(), 0, "no model call"); assert.equal(w.sms.length, 0); assert.equal(w.portal.length, 0);
+  assert.deepEqual(w.db.replies, [], "not a campaign reply"); assert.equal(w.db.queue[0].replied_at, null);
+  assert.equal(w.db.jobs.length, 0, "nothing is parked for it");
+  // boilerplate we have no pattern for, a few seconds after our template: the time rule
+  const other = "966577000001"; w.db.msgs.push({ wamid: "wamid.TPLx", direction: "out", phone_norm: "577000001", template: "fc_frame_video", status: "sent", source: "cloud", created_at: w.clock.now().toISOString() });
+  w.clock.advanceSec(6);
+  const c = await w.say("اهلا وسهلا بكم في مؤسسة النور للمقاولات العامة والتوريدات", { from: other });
+  assert.deepEqual([c.sent.length, c.log.reason, c.log.detail], [0, "auto_inbound", "after_template:6s"]);
+  // real customers after the same campaign are answered: a short reply at once, a long one after the window, a tap, and «إيقاف» is always honoured
+  for (const [from, text, wait] of [["966577000002", "ابي اطلب", 4], ["966577000003", "ابي اطلب بوكس الكريب لشخصين مع توصيل لحي السلامة", 40]]) {
+    w.db.msgs.push({ wamid: `wamid.T${from}`, direction: "out", phone_norm: from.slice(3), template: "fc_frame_video", category: "MARKETING", status: "sent", source: "cloud", created_at: w.clock.now().toISOString() });
+    w.clock.advanceSec(wait);
+    const r = await w.say(text, { from }); assert.equal(r.sent.length >= 1, true, text); assert.notEqual(r.log.reason, "auto_inbound", text);
+  }
+  w.db.msgs.push({ wamid: "wamid.T4", direction: "out", phone_norm: "577000004", template: "fc_frame_video", category: "MARKETING", status: "sent", source: "cloud", created_at: w.clock.now().toISOString() });
+  w.clock.advanceSec(2);
+  const st = await w.say("إيقاف", { from: "966577000004" }); assert.equal(st.log.reply_key, "stop"); assert.equal(w.db.optins["577000004"].marketing, false);
+  // simulate says the same for the two texts
+  for (const text of [CITY_DOORS, AWAY_AR]) { const sm = (await w.call("POST", "/api/cms/wabot/simulate", { text })).body; assert.deepEqual([sm.decision.act, sm.decision.reason, sm.payloads.length], ["silent", "auto_inbound", 0], text.slice(0, 30)); }
+  assert.equal((await w.call("POST", "/api/cms/wabot/simulate", { text: "كم رسوم التوصيل" })).body.decision.act, "reply");
+  // with both switches off: as before
+  const off = liveWorld({ waBot: { autoInboundPatterns: false, autoInboundSec: 0 } });
+  assert.notEqual((await off.say(AWAY_AR)).log.reason, "auto_inbound", "both switches off: as before");
+}));
+
+test("EX5: the loop guard — three fast long messages in a row after our replies mute the chat with one portal note; a person is never caught", withEnv(LOCKS_OPEN, async () => {
+  const LOOP = "عميلنا العزيز تابع احدث العروض والتخفيضات لدينا عبر الموقع";      // no pattern matches it, and the rules bot has an answer for it every time (offers)
+  assert.equal(R.autoInboundKind({ text: LOOP }), null);
+  const w = liveWorld();
+  const seen = [];
+  for (let i = 0; i < 4; i++) { const r = await w.say(`${LOOP} ${1000 + i}`); seen.push([r.sent.length > 0, r.log.reason || null]); w.clock.advanceSec(1); }
+  assert.deepEqual(seen.map((x) => x[0]), [true, true, true, false], "the first is an ordinary message; the third fast one in a row is not answered");
+  assert.equal(seen[3][1], "loop_guard");
+  const chat = w.db.chats.get("512345678");
+  assert.deepEqual([chat.mute_reason, chat.muted_by], ["manual", "loop_guard"]); assert.equal(Math.round((Date.parse(chat.muted_until) - w.clock.now().getTime()) / 3600_000), 12);
+  const notes = () => w.portal.filter((e) => e[1].reason === "loop_guard");
+  assert.deepEqual([notes().length, notes()[0][1].note], [1, true]); assert.equal(w.sms.length, 0, "a note, not an alarm");
+  for (let i = 0; i < 5; i++) { const r = await w.say(`${LOOP} ${2000 + i}`); assert.deepEqual([r.sent.length, r.log.reason, r.log.detail], [0, "manual_mute", "loop_guard"]); w.clock.advanceSec(1); }
+  assert.equal(notes().length, 1, "one note");
+  assert.equal((await w.say("مرحبا", { from: "966598765432" })).sent.length, 1, "other chats are not affected");
+  // the same short text bounced back at once is a loop too
+  const s = liveWorld({ waBot: { sameTextSeconds: 0 } }); const out = [];
+  for (let i = 0; i < 4; i++) { out.push((await s.say("تم الاستلام")).log.reason || "replied"); s.clock.advanceSec(1); }
+  assert.equal(out[3], "loop_guard");
+  // a person: long messages at a human pace, and quick short ones, never trip it
+  const h = liveWorld();
+  for (const text of ["ابي اطلب بوكس الكريب لشخصين مع توصيل", "وكم رسوم التوصيل لحي السلامة لو سمحت", "طيب وعندكم عروض على البيتزا اليوم ولا لا", "تمام ابي اعرف طرق الدفع المتاحة عندكم"]) { assert.notEqual((await h.say(text)).log.reason, "loop_guard", text); h.clock.advanceSec(12); }
+  const q2 = liveWorld();
+  for (const text of ["السلام عليكم", "ابي اطلب", "كم التوصيل", "وين موقعكم", "طرق الدفع"]) { assert.notEqual((await q2.say(text)).log.reason, "loop_guard", text); q2.clock.advanceSec(1); }
+  // two fast ones, then a pause: the chain starts again
+  const p2 = liveWorld();
+  await p2.say(`${LOOP} 1`); p2.clock.advanceSec(1); await p2.say(`${LOOP} 2`); p2.clock.advanceSec(1); await p2.say(`${LOOP} 3`); p2.clock.advanceSec(30);
+  assert.notEqual((await p2.say(`${LOOP} 4`)).log.reason, "loop_guard"); assert.equal(p2.db.chats.get("512345678").loop_streak, 0);
+  // 0 = off
+  const off = liveWorld({ waBot: { loopGuardCount: 0 } });
+  for (let i = 0; i < 6; i++) { assert.notEqual((await off.say(`${LOOP} ${i}`)).log.reason, "loop_guard"); off.clock.advanceSec(1); }
 }));
