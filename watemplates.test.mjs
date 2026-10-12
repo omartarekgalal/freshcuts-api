@@ -34,8 +34,9 @@ test("المطلوب بالاسم موجود", () => {
 
 test("كل قالب تسويقي: فوتر «للإيقاف ردّ: إيقاف» + زر «إيقاف»", () => {
   for (const t of TEMPLATES.filter((x) => x.category === "MARKETING")) {
-    assert.equal(footerOf(t), OPTOUT_FOOTER, t.name);
-    assert.ok(buttonsOf(t).some((b) => b.type === "QUICK_REPLY" && b.text === OPTOUT_BUTTON), t.name);
+    const en = t.language === "en";      // FR1: الإنجليزي بكلمة STOP
+    assert.equal(footerOf(t), en ? "To stop, reply: STOP" : OPTOUT_FOOTER, t.name);
+    assert.ok(buttonsOf(t).some((b) => b.type === "QUICK_REPLY" && b.text === (en ? "STOP" : OPTOUT_BUTTON)), t.name);
   }
 });
 

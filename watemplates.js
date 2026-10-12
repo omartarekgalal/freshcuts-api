@@ -110,6 +110,38 @@ const COUPON_LINK = (text = "استخدم الكود") => url(text, `${STORE}/?c
 /* كل قالب تسويقي ثاني: رابطنا المتتبَّع ‎/l/<slug>-<code> (cms.js يحسب الضغطة على صف المُرسَل إليه، وكوبونه الشخصي يركب في ‎?c=). */
 const TRACKED = (text, ex) => url(text, `${STORE}/l/`, { path: "link.suffix", ex });
 const MKT = { footer: OPTOUT_FOOTER };
+/* FR1: زر الرد في الإطارات + نسخة الإنجليزي. «STOP» كلمة الإيقاف اللي الويب هوك بيفهمها (STOP_RE). */
+export const ORDER_BUTTON = "أبغى أطلب";
+export const ORDER_BUTTON_EN = "I want to order";
+export const OPTOUT_FOOTER_EN = "To stop, reply: STOP";
+export const OPTOUT_BUTTON_EN = "STOP";
+const V = (path, label, ex, fmt) => ({ path, label, ex, ...(fmt ? { fmt } : {}) });
+const FRAMES_DEF = [
+  { name: "fc_frame_offer_img", header: { image: true }, purpose: "إطار عرض بصورة (اسم + تفاصيل + سعر)", btnAr: "اطلب الآن", btnEn: "Order now",
+    ar: "من فريش كاتس 🔥\n{{1}}: {{2}}.\nالسعر {{3}} ر.س، واطلبه من موقعنا للتوصيل أو الاستلام.",
+    en: "From Fresh Cuts 🔥\n{{1}}: {{2}}.\nPrice {{3}} SAR. Order it from our website for delivery or pickup.",
+    vars: [V("offer.title", "اسم العرض", "بوكس التشكيلة"), V("offer.line", "اللي فيه (سطر واحد)", "مشاوي على الفحم مع بيتزا وباستا وأصناف جانبية ومشروبات"), V("offer.price", "السعر", "105", "money")],
+    varsEn: [V("offer.title", "Offer name", "Taste-it-all box"), V("offer.line", "What is in it (one line)", "charcoal grills with pizza, pasta, sides and drinks"), V("offer.price", "Price", "105", "money")],
+    notes: "إطار: القيم من العرض المختار. لا نكتب عدد أشخاص لصنف بالوزن ولا مقارنة بالتطبيقات." },
+  { name: "fc_frame_video", header: { video: true }, purpose: "إطار فيديو (عنوان + تفاصيل)", btnAr: "اطلب الآن", btnEn: "Order now",
+    ar: "من فريش كاتس 🎬\n{{1}}: {{2}}.\nاطلب من موقعنا للتوصيل أو الاستلام.",
+    en: "From Fresh Cuts 🎬\n{{1}}: {{2}}.\nOrder from our website for delivery or pickup.",
+    vars: [V("offer.title", "العنوان", "اطلب من موقعنا مباشرة"), V("offer.line", "التفاصيل (سطر واحد — السعر وآخر يوم بيتكتبوا هنا لو موجودين)", "اختر البوكس، حدّد عنوانك على الخريطة وادفع أونلاين، وأول طلب توصيله مجاني للطلبات من 60 ر.س")],
+    varsEn: [V("offer.title", "Title", "Order directly from our website"), V("offer.line", "Details (one line)", "pick your box, set your address on the map and pay online; delivery is free on your first order from 60 SAR")],
+    notes: "الفيديو mp4 لحد ١٦ ميجا من مخزن الوسائط بتاعنا. من غير خانة سعر عشان ينفع لفيديو «طريقة الطلب» ولأي عرض." },
+  { name: "fc_frame_limited_img", header: { image: true }, purpose: "إطار عرض بصورة له آخر يوم", btnAr: "اطلب الآن", btnEn: "Order now",
+    ar: "عرض لفترة محدودة من فريش كاتس 🎉\n{{1}}: {{2}}.\nالسعر {{3}} ر.س، والعرض لين {{4}}. اطلبه من موقعنا للتوصيل أو الاستلام.",
+    en: "A limited-time offer from Fresh Cuts 🎉\n{{1}}: {{2}}.\nPrice {{3}} SAR, valid until {{4}}. Order it from our website for delivery or pickup.",
+    vars: [V("offer.title", "اسم العرض", "باقة تجمّع ٤–٦ أشخاص"), V("offer.line", "اللي فيه (سطر واحد)", "مشاوي على الفحم مع الأرز والأصناف الجانبية والمشروبات"), V("offer.price", "السعر", "225", "money"), V("offer.untilText", "آخر يوم", "السبت 18 أكتوبر")],
+    varsEn: [V("offer.title", "Offer name", "Gathering pack for 4-6"), V("offer.line", "What is in it (one line)", "charcoal grills with rice, sides and drinks"), V("offer.price", "Price", "225", "money"), V("offer.untilText", "Last day", "Saturday 18 October")],
+    notes: "آخر يوم لازم يكون تاريخ العرض الفعلي في اللوحة — مفيش استعجال مخترع." },
+  { name: "fc_frame_news_text", header: null, purpose: "إطار خبر/عرض نص بس", btnAr: "شوف التفاصيل", btnEn: "See details",
+    ar: "جديد من فريش كاتس 👋\n{{1}}: {{2}}.\nالتفاصيل والطلب من موقعنا للتوصيل أو الاستلام.",
+    en: "New from Fresh Cuts 👋\n{{1}}: {{2}}.\nDetails and ordering on our website, for delivery or pickup.",
+    vars: [V("offer.title", "العنوان", "بوكسات فردية"), V("offer.line", "التفاصيل (سطر واحد)", "كريب أو برجر أو باستا أو حواوشي أو وجبة مشاوي مع صنف جانبي ومشروب، من 29 ر.س")],
+    varsEn: [V("offer.title", "Title", "Solo boxes"), V("offer.line", "Details (one line)", "crepe, burger, pasta, hawawshi or a grill meal with a side and a drink, from 29 SAR")],
+    notes: "من غير صورة أو من غير سعر." },
+];
 
 export const TEMPLATES = [
   /* ── ١) دورة الطلب — UTILITY ─────────────────────────────────────────── */
@@ -425,38 +457,19 @@ export const TEMPLATES = [
     meta: { purpose: "عرض الباقات/البوكس (صورة)", trigger: "يدوي أو شريحة «طلبات كبيرة»", send: "manual", fallbackSms: null,
       notes: "المحتوى من offer_registry كما هو — لا نضيف عدد أشخاص لأي صنف بالوزن («مشكل مخصوص» خصوصاً)" } }),
 
-  /* ── OF1 (١٣/١٠): «إطارات» العروض — كلام ثابت قليل حوالين متغيرات، والصورة/الفيديو والرابط بيتغيروا مع كل إرسال.
+  /* ── OF1 (١٣/١٠) + FR1: «إطارات» العروض — كلام ثابت قليل حوالين متغيرات، والصورة/الفيديو والرابط بيتغيروا مع كل إرسال.
      بتتعتمد مرة واحدة وبعدها أي عرض جديد من مكتبة العروض (waoffers.js) بيتبعت بيها من غير اعتماد جديد.
      قواعد ميتا المتراعاة: مفيش متغير في أول ولا آخر النص، مفيش متغيرين ملزوقين، وكلام ثابت كفاية حوالين المتغيرات.
-     في HOLD لحد ما عمر يوافق على الصياغة. ── */
-  T({ name: "fc_frame_offer_img", category: "MARKETING", group: "marketing", ...MKT, header: { image: true },
-    body: "من فريش كاتس 🔥\n{{1}}: {{2}}.\nالسعر {{3}} ر.س، واطلبه من موقعنا للتوصيل أو الاستلام.",
-    vars: [{ path: "offer.title", label: "اسم العرض", ex: "بوكس التشكيلة" }, { path: "offer.line", label: "اللي فيه (سطر واحد)", ex: "مشاوي على الفحم مع بيتزا وباستا وأصناف جانبية ومشروبات" },
-      { path: "offer.price", label: "السعر", ex: "105", fmt: "money" }],
-    buttons: [TRACKED("اطلب الآن", "wa-offer-ab12cd"), qr(OPTOUT_BUTTON)],
-    meta: { purpose: "إطار عرض بصورة (اسم + تفاصيل + سعر)", trigger: "مكتبة عروض واتساب ← حملة", send: "manual", fallbackSms: null,
-      notes: "إطار: القيم من العرض المختار. لا نكتب عدد أشخاص لصنف بالوزن ولا «حصري» ولا مقارنة بالتطبيقات." } }),
-
-  T({ name: "fc_frame_video", category: "MARKETING", group: "marketing", ...MKT, header: { video: true },
-    body: "من فريش كاتس 🎬\n{{1}}: {{2}}.\nاطلب من موقعنا للتوصيل أو الاستلام.",
-    vars: [{ path: "offer.title", label: "العنوان", ex: "اطلب من موقعنا مباشرة" }, { path: "offer.line", label: "التفاصيل (سطر واحد — السعر وآخر يوم بيتكتبوا هنا لو موجودين)", ex: "اختر البوكس، حدّد عنوانك على الخريطة وادفع أونلاين، وأول طلب توصيله مجاني للطلبات من 60 ر.س" }],
-    buttons: [TRACKED("اطلب الآن", "wa-offer-ab12cd"), qr(OPTOUT_BUTTON)],
-    meta: { purpose: "إطار فيديو (عنوان + تفاصيل)", trigger: "مكتبة عروض واتساب ← حملة", send: "manual", fallbackSms: null,
-      notes: "الفيديو mp4 لحد ١٦ ميجا من مخزن الوسائط بتاعنا. من غير خانة سعر عشان ينفع لفيديو «طريقة الطلب» ولأي عرض." } }),
-
-  T({ name: "fc_frame_limited_img", category: "MARKETING", group: "marketing", ...MKT, header: { image: true },
-    body: "عرض لفترة محدودة من فريش كاتس 🎉\n{{1}}: {{2}}.\nالسعر {{3}} ر.س، والعرض لين {{4}}. اطلبه من موقعنا للتوصيل أو الاستلام.",
-    vars: [{ path: "offer.title", label: "اسم العرض", ex: "باقة تجمّع ٤–٦ أشخاص" }, { path: "offer.line", label: "اللي فيه (سطر واحد)", ex: "مشاوي على الفحم مع الأرز والأصناف الجانبية والمشروبات" },
-      { path: "offer.price", label: "السعر", ex: "225", fmt: "money" }, { path: "offer.untilText", label: "آخر يوم", ex: "السبت 18 أكتوبر" }],
-    buttons: [TRACKED("اطلب الآن", "wa-offer-ab12cd"), qr(OPTOUT_BUTTON)],
-    meta: { purpose: "إطار عرض بصورة له آخر يوم", trigger: "مكتبة عروض واتساب ← حملة (العرض له تاريخ انتهاء حقيقي)", send: "manual", fallbackSms: null,
-      notes: "آخر يوم لازم يكون تاريخ العرض الفعلي في اللوحة — مفيش استعجال مخترع." } }),
-
-  T({ name: "fc_frame_news_text", category: "MARKETING", group: "marketing", ...MKT,
-    body: "جديد من فريش كاتس 👋\n{{1}}: {{2}}.\nالتفاصيل والطلب من موقعنا للتوصيل أو الاستلام.",
-    vars: [{ path: "offer.title", label: "العنوان", ex: "بوكسات فردية" }, { path: "offer.line", label: "التفاصيل (سطر واحد)", ex: "كريب أو برجر أو باستا أو حواوشي أو وجبة مشاوي مع صنف جانبي ومشروب، من 29 ر.س" }],
-    buttons: [TRACKED("شوف التفاصيل", "wa-offer-ab12cd"), qr(OPTOUT_BUTTON)],
-    meta: { purpose: "إطار خبر/عرض نص بس", trigger: "مكتبة عروض واتساب ← حملة (من غير صورة أو من غير سعر)", send: "manual", fallbackSms: null } }),
+     FR1 (قرار عمر ١٣/١٠ «ابدا على طول»): الصياغة اتوافق عليها ⇒ خرجت من HOLD، اتضاف زر رد «أبغى أطلب» (بيفتح نافذة
+     المحادثة والبوت بيفهمه كطلب)، ونسخة إنجليزي لكل إطار. ترتيب الأزرار: الرابط، وبعده أزرار الرد مع بعض (شرط ميتا). ── */
+  ...FRAMES_DEF.flatMap((f) => [
+    T({ name: f.name, category: "MARKETING", group: "marketing", ...MKT, header: f.header, body: f.ar, vars: f.vars,
+      buttons: [TRACKED(f.btnAr, "wa-offer-ab12cd"), qr(ORDER_BUTTON), qr(OPTOUT_BUTTON)],
+      meta: { purpose: f.purpose, trigger: "مكتبة عروض واتساب ← حملة", send: "manual", fallbackSms: null, notes: f.notes } }),
+    T({ name: f.name, category: "MARKETING", group: "marketing", language: "en", footer: OPTOUT_FOOTER_EN, header: f.header, body: f.en, vars: f.varsEn,
+      buttons: [TRACKED(f.btnEn, "wa-offer-ab12cd"), qr(ORDER_BUTTON_EN), qr(OPTOUT_BUTTON_EN)],
+      meta: { purpose: `${f.purpose} (English)`, trigger: "مكتبة عروض واتساب ← حملة", send: "manual", fallbackSms: null, notes: f.notes } }),
+  ]),
 
   T({ name: "fc_cart_1h", category: "MARKETING", group: "marketing", ...MKT,
     body: "سلتك في فريش كاتس محفوظة 🛒\nكمّل طلبك بضغطة من الرابط، ولو عندك سؤال ردّ علينا هنا.",
@@ -555,10 +568,6 @@ export const HOLD = Object.freeze({
   fc_scheduled_reminder: "الطلب المسبق مقفول (settings.preorder.enabled=false)",
   fc_welcome_account: "غير مربوط بمُرسل (الزر اتشال ١٢/١٠ فالنص خدمي؛ يتقدّم لما يتقرّر إرساله)",
   fc_ad_lead_last_call: "يحتاج عرضاً له تاريخ انتهاء؛ البوكسات بلا تاريخ انتهاء — لا شيء صادق يُكتب في المتغيّرين",
-  fc_frame_offer_img: "إطار جديد (OF1) — الصياغة في انتظار موافقة عمر قبل التقديم لميتا",
-  fc_frame_video: "إطار جديد (OF1) — الصياغة في انتظار موافقة عمر، والفيديو النموذجي لسه مااتاختارش",
-  fc_frame_limited_img: "إطار جديد (OF1) — الصياغة في انتظار موافقة عمر قبل التقديم لميتا",
-  fc_frame_news_text: "إطار جديد (OF1) — الصياغة في انتظار موافقة عمر قبل التقديم لميتا",
 });
 
 /* دفعات التقديم بالأولوية. الدفعة ١ = قائمة «أول ٨» الأصلية. */
@@ -572,8 +581,11 @@ export const SUBMIT_BATCHES = Object.freeze([
   ["fc_new_item", "fc_weekend_offer", "fc_bundle_offer", "fc_occasion"],
   // ١٢/١٠ «خدمي ولا تسويقي»: النسخ الخدمية الجديدة — من الأضمن للأخطر، واحد في المرة، ونقف عند أول قالب ميتا تصنّفه تسويق
   ["fc_payment_failed", "fc_feedback_received", "fc_loyalty_status", "fc_staff_payment_alert", "fc_staff_day_report", "fc_open_notice"],
+  // FR1 (١٣/١٠): إطارات العروض — النصي الأول (مافيهوش رفع)، وبعده الصور، وآخرهم الفيديو. كل اسم = عربي + إنجليزي
+  ["fc_frame_news_text", "fc_frame_offer_img", "fc_frame_limited_img", "fc_frame_video"],
 ]);
 export const RECOMMENDED_FIRST = SUBMIT_BATCHES[0];
+export const FRAME_BATCH = SUBMIT_BATCHES[SUBMIT_BATCHES.length - 1];      // FR1: دفعة الإطارات
 
 /* الفئة الفعلية عند ميتا لما تختلف عن فئتنا (ميتا غيّرتها وقت الاعتماد — previous_category=UTILITY، قراءة ١٢/١٠ 03:46).
    المفتاح name:language. القوالب دي تتحاسب بسعر التسويق وتترفض للي وقّف «العروض» ⇒ **لا تتربط بمُرسل** لحد ما مراجعة ميتا
@@ -662,8 +674,9 @@ export function validateTemplate(t) {
   const kinds = btns.map((b) => (b.type === "QUICK_REPLY" ? "q" : "c")).join("");
   if (/q+c+q|c+q+c/.test(kinds)) e.push("الأزرار مخلوطة (لازم مجموعات)");
   if (t.category === "MARKETING") {
-    if (footerOf(t) !== OPTOUT_FOOTER) e.push("التسويق: فوتر الإيقاف مطلوب");
-    if (!qrs.some((b) => b.text === OPTOUT_BUTTON)) e.push("التسويق: زر «إيقاف» مطلوب");
+    /* FR1: القالب الإنجليزي بياخد المقابل الإنجليزي (STOP) — الويب هوك بيفهم الكلمتين */
+    if (footerOf(t) !== (t.language === "en" ? OPTOUT_FOOTER_EN : OPTOUT_FOOTER)) e.push("التسويق: فوتر الإيقاف مطلوب");
+    if (!qrs.some((b) => b.text === (t.language === "en" ? OPTOUT_BUTTON_EN : OPTOUT_BUTTON))) e.push("التسويق: زر «إيقاف» مطلوب");
   }
   if (t.category === "UTILITY" && /(^|[\s،.])(خصم|كود|كوبون|عرض|العرض|عروض|مجاني|مجانا)|٪|%|discount|coupon|offer|promo/i.test(text)) {
     e.push("UTILITY فيه كلام ترويجي — ميتا بتصنّفه تسويق");

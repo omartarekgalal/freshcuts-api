@@ -14,13 +14,18 @@ const IMG = "https://freshcuts-api.o2m8.me/api/content/media/md_1.jpg", VID = "h
 const NOW = new Date("2026-10-13T12:00:00Z");
 const base = { title: "بوكس التشكيلة", details: "مشاوي على الفحم مع بيتزا وباستا وأصناف جانبية ومشروبات", price: 105, media: { kind: "image", url: IMG }, link: { target_type: "box", target_id: "box-taste-all" }, source: { type: "bundle", id: "box-taste-all", price: 105 } };
 
-test("the four frames are in the catalogue, valid by the catalogue's Meta rules, manual, marketing, and HELD until the wording is approved", () => {
+test("the four frames are in the catalogue in Arabic and English, valid by the catalogue's Meta rules, manual, marketing, no longer held, with the «أبغى أطلب» reply button", () => {
   const names = Object.values(O.FRAMES);
   assert.deepEqual(names, ["fc_frame_offer_img", "fc_frame_video", "fc_frame_limited_img", "fc_frame_news_text"]);
   for (const n of names) {
     const t = CAT.findTemplate(n, "ar");
     assert.ok(t, n); assert.deepEqual(CAT.validateTemplate(t), []); assert.equal(t.category, "MARKETING"); assert.equal(t.meta.send, "manual");
-    assert.ok(CAT.HOLD[n], `${n} cannot be submitted yet`);
+    assert.equal(CAT.HOLD[n], undefined, `${n} may be submitted (Omar's go, 13/10)`);
+    const en = CAT.findTemplate(n, "en");
+    assert.ok(en, `${n} has an English version`); assert.deepEqual(CAT.validateTemplate(en), []);
+    assert.deepEqual(en.meta.vars.map((v) => v.path), t.meta.vars.map((v) => v.path), "same variables in both languages");
+    assert.equal(CAT.footerOf(en), "To stop, reply: STOP"); assert.deepEqual(CAT.buttonsOf(en).map((b) => [b.type, b.text]).slice(1), [["QUICK_REPLY", "I want to order"], ["QUICK_REPLY", "STOP"]]);
+    assert.ok(!/[\u0600-\u06FF]/.test(CAT.bodyOf(en)) && !/exclusive|cheaper|discount|app\b/i.test(CAT.bodyOf(en)));
     const body = CAT.bodyOf(t);
     assert.ok(!/^\s*\{\{/.test(body) && !/\}\}\s*$/.test(body), "no variable at the start or the end");
     assert.ok(!/\}\}\s*\{\{/.test(body), "no two variables side by side");
@@ -28,7 +33,9 @@ test("the four frames are in the catalogue, valid by the catalogue's Meta rules,
     assert.ok(words >= vars * 3, `${n}: ${words} fixed words for ${vars} variables`);
     assert.ok(!/حصري|أرخص|التطبيقات|خصم/.test(body));
     assert.equal(CAT.footerOf(t), CAT.OPTOUT_FOOTER);
-    assert.deepEqual(CAT.buttonsOf(t).map((b) => b.type), ["URL", "QUICK_REPLY"]);
+    /* الرابط الأول وبعده أزرار الرد مع بعض (ميتا بترفض الخلط) */
+    assert.deepEqual(CAT.buttonsOf(t).map((b) => [b.type, b.text]).slice(1), [["QUICK_REPLY", "أبغى أطلب"], ["QUICK_REPLY", "إيقاف"]]); assert.equal(CAT.buttonsOf(t)[0].type, "URL");
+    for (const b of CAT.buttonsOf(t)) assert.ok(b.text.length <= 25, b.text);
     assert.match(CAT.buttonsOf(t)[0].url, /^https:\/\/freshcuts\.sa\/l\/\{\{1\}\}$/);
   }
   const hdr = (n) => (CAT.findTemplate(n).components.find((c) => c.type === "HEADER") || {}).format || null;
@@ -132,4 +139,12 @@ test("the module sends nothing and calls nobody; index.js registers it with the 
   assert.ok(!/graph\.facebook|fetch\(|sendTemplate|guardSend|deliver\(/.test(src.replace(/\/\*[\s\S]*?\*\//g, "")));
   const index = fs.readFileSync(new URL("./index.js", import.meta.url), "latin1");
   assert.ok(index.includes("waoffers.register(app, moduleCtx, { hosts: () => waSenderApi.imageHosts()"));
+});
+
+test("FR1: the two reply buttons mean what we need — the bot reads «أبغى أطلب» / «I want to order» as an order, the webhook reads «إيقاف» / «STOP» as a stop", async () => {
+  const R = await import("./wabotrun.js");
+  assert.equal(R.classify({ type: "text", text: CAT.ORDER_BUTTON }).key, "order");
+  assert.equal(R.classify({ type: "text", text: CAT.ORDER_BUTTON_EN }).key, "order");
+  assert.equal(WA.intentOf(CAT.OPTOUT_BUTTON), "stop"); assert.equal(WA.intentOf(CAT.OPTOUT_BUTTON_EN), "stop");
+  assert.deepEqual([...CAT.FRAME_BATCH].sort(), Object.values(O.FRAMES).sort());
 });

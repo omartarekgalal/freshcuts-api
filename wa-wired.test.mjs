@@ -249,9 +249,11 @@ test("catalogue: all valid; marketing = tracked link + working opt-out; copy rul
       assert.match(b.url, /^https:\/\/(freshcuts\.sa\/|maps\.google\.com\/\?cid=14767749764292326433$|freshcuts-invite\.o2m8\.me\/)/, `${t.name}: button domain ${b.url}`);
     }
     if (t.category === "MARKETING") {
-      assert.equal(C.footerOf(t), "للإيقاف ردّ: إيقاف", t.name);
-      assert.ok(C.buttonsOf(t).some((b) => b.type === "QUICK_REPLY" && b.text === "إيقاف"), t.name);
-      assert.equal(W.intentOf("إيقاف"), "stop", "the quick reply text is an opt-out keyword the webhook understands");
+      /* FR1: القالب الإنجليزي بياخد كلمة الإيقاف الإنجليزي (STOP) — والاتنين الويب هوك بيفهمهم */
+      const stopWord = t.language === "en" ? "STOP" : "إيقاف";
+      assert.equal(C.footerOf(t), t.language === "en" ? "To stop, reply: STOP" : "للإيقاف ردّ: إيقاف", t.name);
+      assert.ok(C.buttonsOf(t).some((b) => b.type === "QUICK_REPLY" && b.text === stopWord), t.name);
+      assert.equal(W.intentOf(stopWord), "stop", "the quick reply text is an opt-out keyword the webhook understands");
     }
     if (t.category === "UTILITY") assert.equal(C.footerOf(t), "", `${t.name}: utility carries no marketing footer`);
   }
