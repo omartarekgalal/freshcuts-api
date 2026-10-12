@@ -105,7 +105,18 @@ export function orderDay(at, lang = "ar") {
   return lang === "en" ? `${EN[d.getUTCDay()]} ${dm}` : `يوم ${AR[d.getUTCDay()]} ${dm}`;
 }
 
-export function makeBotCarts({ pool, log = console.error }) {
+/* موقع العميل اللي شاركه في محادثة واتساب (wa_bot_chats.last_loc) ⇒ { lat, lng, at } لو سليم وعمره أقل من hours؛ غير كده null.
+   at لازم يكون موجود (من غير وقت مشاركة مانعرفش عمره ⇒ مايتبعتش)، والوقت اللي في المستقبل مرفوض. */
+export function chatLocation(loc, now = new Date(), hours = 24) {
+  if (!isObj(loc)) return null;
+  const lat = Number(loc.lat), lng = Number(loc.lng), at = Date.parse(loc.at);
+  if (!Number.isFinite(lat) || !Number.isFinite(lng) || Math.abs(lat) > 90 || Math.abs(lng) > 180 || !Number.isFinite(at)) return null;
+  const age = now.getTime() - at;
+  if (age < 0 || age >= Math.max(1, Number(hours) || 24) * 3600_000) return null;
+  return { lat, lng, at: new Date(at).toISOString() };
+}
+/* locationHours: async () ⇒ عدد الساعات (إعداد assist.locationHours من اللوحة)؛ من غيره ٢٤. */
+export function makeBotCarts({ pool, log = console.error, locationHours = null, now = () => new Date() }) {
   let schemaP = null;
   const ensure = () => (schemaP ||= pool.query(BOT_CART_DDL).catch((e) => { schemaP = null; throw e; }));
   const q = async (sql, params) => { try { return (await pool.query(sql, params)).rows; } catch (e) { log("[wabot-cart] db:", e.message); return null; } };
@@ -159,9 +170,13 @@ export function makeBotCarts({ pool, log = console.error }) {
   }
   async function restore(code) {
     if (!BOT_CART_CODE_RE.test(String(code || ""))) return null;
-    const r = await q(`SELECT items, cart_raw, option FROM wa_bot_carts WHERE code=$1 AND expires_at > NOW()`, [code]);
+    /* موقع المحادثة: بتاع **نفس الرقم صاحب السلة** بس (الربط بـphone_norm جوّه الاستعلام — الرقم مابيطلعش في الإجابة)، ولو اتشارك خلال المدة.
+       المتجر بيحطه على الخريطة «غير مؤكد» والعميل يأكده. مفيش أي حاجة منه في أي رابط. المفتاح مابيتبعتش أصلاً لو مفيش موقع صالح. */
+    const r = await q(`SELECT c.items, c.cart_raw, c.option, ch.last_loc FROM wa_bot_carts c LEFT JOIN wa_bot_chats ch ON ch.phone_norm = c.phone_norm WHERE c.code=$1 AND c.expires_at > NOW()`, [code]);
     if (!r || !r[0]) return null;
-    return { ok: true, items: Array.isArray(r[0].items) ? r[0].items : [], raw: isObj(r[0].cart_raw) && Object.keys(r[0].cart_raw).length ? r[0].cart_raw : null, option: r[0].option || "delivery", subtotal: 0, ordered: false };
+    let hours = 24; try { if (typeof locationHours === "function") hours = Number(await locationHours()) || 24; } catch { hours = 24; }
+    const location = chatLocation(r[0].last_loc, now(), hours);
+    return { ok: true, items: Array.isArray(r[0].items) ? r[0].items : [], raw: isObj(r[0].cart_raw) && Object.keys(r[0].cart_raw).length ? r[0].cart_raw : null, option: r[0].option || "delivery", subtotal: 0, ordered: false, ...(location ? { location } : {}) };
   }
   /* تشخيص (قراءة بس): من طلبات آخر N يوم، كام طلب له لقطة سلة مربوطة بيه، وكام لقطة إجماليها بيساوي إجمالي أصناف الطلب.
      لو التساوي قليل ⇒ العرض مش هيظهر لمعظم العملاء، ولازم نعرف ليه قبل ما نعتمد عليه. أرقام بس، من غير جوالات. */

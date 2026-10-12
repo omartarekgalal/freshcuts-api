@@ -31,6 +31,7 @@ export const ASSIST_CFG_DEFAULTS = Object.freeze({
   maxRepliesPerChatDay: 12,
   timeoutMs: 20000,
   sessionMin: 90,                      // المحادثة الواحدة (الذاكرة اللي الموديل شايفها) بتتقفل بعد سكوت بالمدة دي
+  locationHours: 24,                   // موقع شاركه العميل في المحادثة بيتحسب (لرسوم التوصيل، وبيتبعت للمتجر مع رابط السلة) طول المدة دي
   keepDays: 90,                        // سجل الأدوار
   typing: true,                        // «مقروء + جاري الكتابة» أول ما المساعد يبدأ
   forceSuggestion: true,               // رابط السلة مايطلعش قبل ما اقتراح النظام (لو فيه) يتعرض مرة — بالكود، مش اعتماداً على الموديل
@@ -38,7 +39,7 @@ export const ASSIST_CFG_DEFAULTS = Object.freeze({
   searchMax: ASSIST_DEFAULTS.searchMax, nudgeGapSar: ASSIST_DEFAULTS.nudgeGapSar, topSellerDays: ASSIST_DEFAULTS.topSellerDays,
   profileOrders: ASSIST_DEFAULTS.profileOrders, maxCartLines: ASSIST_DEFAULTS.maxCartLines,
 });
-const NUMS = { budgetDaySar: [0, 1000], budgetMonthSar: [0, 10000], maxToolRounds: [1, 8], maxRepliesPerChatDay: [1, 60], timeoutMs: [5000, 60000], sessionMin: [10, 720], keepDays: [7, 730],
+const NUMS = { budgetDaySar: [0, 1000], budgetMonthSar: [0, 10000], maxToolRounds: [1, 8], maxRepliesPerChatDay: [1, 60], timeoutMs: [5000, 60000], sessionMin: [10, 720], locationHours: [1, 24], keepDays: [7, 730],
   followUpMin: [5, 720], followUpCloseGuardMin: [0, 240], searchMax: [3, 15], nudgeGapSar: [0, 100], topSellerDays: [7, 180], profileOrders: [5, 200], maxCartLines: [1, 40] };
 const ENUMS = { mode: ASSIST_MODES, routing: ["escalate", "strong", "fast"], effort: ["low", "medium", "high"], thinking: ["adaptive", "off"] };
 const BOOLS = ["typing", "followUpEnabled", "forceSuggestion"];
@@ -79,6 +80,7 @@ export const ASSIST_SCHEMA = Object.freeze({
   "assist.maxRepliesPerChatDay": N("maxRepliesPerChatDay", "أقصى ردود للمساعد لكل عميل في اليوم", "بعدها بوت القواعد يكمل (من غير تحويل لموظف).", "رد"),
   "assist.timeoutMs": N("timeoutMs", "مهلة رد المساعد", "لو اتأخر عنها: بوت القواعد يرد.", "مللي ثانية"),
   "assist.sessionMin": N("sessionMin", "المحادثة تتقفل بعد سكوت", "بعدها المساعد يبدأ محادثة جديدة (والأسعار كلها تتقري من جديد).", "دقيقة"),
+  "assist.locationHours": N("locationHours", "موقع العميل من المحادثة صالح لمدة", "الموقع اللي العميل شاركه في واتساب بيتحسب بيه رسوم التوصيل وبيتحط على خريطة الموقع (غير مؤكد لحد ما العميل يأكده) مع رابط السلة. المتجر نفسه مابياخدش موقع أقدم من 24 ساعة.", "ساعة"),
   "assist.keepDays": N("keepDays", "الاحتفاظ بسجل محادثات المساعد", "الأقدم بيتمسح تلقائي.", "يوم"),
   "assist.typing": { group: "assist", type: "boolean", ar: "«جاري الكتابة» وقت تجهيز الرد", help: "بيعلّم رسالة العميل مقروءة ويظهر له إن الرد بيتكتب." },
   "assist.forceSuggestion": { group: "assist", type: "boolean", ar: "اقتراح واحد قبل رابط السلة", help: "لو النظام حسب اقتراح أمين (بوكس أوفر، باقي على رسوم أقل، مشروب أو جانبي ناقص) ومااتعرضش: المساعد يعرضه مرة واحدة قبل ما يبعت الرابط. مقفول = الاقتراح على مزاج المساعد." },

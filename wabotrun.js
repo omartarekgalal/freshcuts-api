@@ -39,7 +39,7 @@ import { staffPhones, fitOneSms, staffConfig } from "./staffalerts.js";
 import { loyaltyCfgOf } from "./loyalty.js";
 import { MAPS_URL } from "./watemplates.js";
 import { isOpenNow } from "./carts.js";
-import { makeBotCarts, reorderPlan, planSummary, orderDay } from "./wabotcart.js";
+import { makeBotCarts, reorderPlan, planSummary, orderDay, chatLocation } from "./wabotcart.js";
 import { makeAssistTools, validateReply, profileSummaryAr } from "./waassist.js";
 import { lookupFact, groupsIn, SEVERE_RE, factsCoverage, pickDish } from "./wadishfacts.js";
 import { makeAiCost, pricesOf, waRatesOf, pricesFromBody, waRatesFromBody, BUDGET_DEFAULTS } from "./waaicost.js";
@@ -1549,7 +1549,7 @@ export function register(app, ctx, deps = {}) {
     }
     return null;
   });
-  const botCarts = deps.botCarts || makeBotCarts({ pool });      // السلات الجاهزة (نفس الطلب الأخير؛ ومساعد الطلبات بعدين)
+  const botCarts = deps.botCarts || makeBotCarts({ pool, now: deps.now || (() => new Date()), locationHours: async () => botConfig((await getSettingsData()) || {}).assist.locationHours });      // السلات الجاهزة (نفس الطلب الأخير؛ ومساعد الطلبات بعدين)
   const llm = deps.llm || null;      // wabotllm.classify — تصنيف بس
   const aicost = makeAiCost({ pool, sendSms: deps.sendSms || null, now: deps.now || (() => new Date()) });   // كل نداء للموديل بيتسجّل بتكلفته + السقف
   /* مساعد الطلبات: المخزن (الجلسة، سجل الأدوار، الاقتراحات) ونداء الموديل. الحلقة نفسها بتتركّب تحت بعد الأدوات. */
@@ -1875,7 +1875,7 @@ export function register(app, ctx, deps = {}) {
     const reason = String(chat.handoff_reason || "handover"), staffTook = Boolean(echoAt && Date.parse(echoAt) > hoAt);
     return !(staffTook && !SERIOUS.has(reason));
   };
-  const locFresh = (loc, now) => Boolean(loc && Number.isFinite(Number(loc.lat)) && (!loc.at || now.getTime() - Date.parse(loc.at) < 24 * 3600_000));
+  const locFresh = (loc, now) => Boolean(chatLocation(loc, now, tune.assist.locationHours));      // نفس القاعدة اللي بتتبعت للمتجر مع السلة: موقع بوقته وعمره أقل من الإعداد
   async function assistContext({ fresh, phone, cfg, lang, chat, know, data, now, cls }) {
     const hours = await assist.get_hours();
     let profile = null, offers = null, reorder = null;

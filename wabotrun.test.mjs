@@ -1765,7 +1765,7 @@ test("ready-cart store: last order's snapshot only when it really is that order'
     if (/FROM cart_recovery WHERE code=\$1 UNION ALL/.test(s)) return { rows: rows.taken.has(p[0]) || rows.bot.some((b) => b.code === p[0]) ? [{}] : [] };
     if (/^INSERT INTO wa_bot_carts/.test(s)) { rows.bot.push({ code: p[0], phone_norm: p[1], source: p[2], from_order: p[3], items: JSON.parse(p[4]), cart_raw: JSON.parse(p[5]), option: p[6], note: JSON.parse(p[7]), exp: nowMs + p[8] * 86400_000, opens: 0 }); return { rows: [{ code: p[0] }] }; }
     if (/^UPDATE wa_bot_carts SET opens/.test(s)) { const b = rows.bot.find((x) => x.code === p[0] && x.exp > nowMs); if (!b) return { rows: [] }; b.opens++; return { rows: [{ source: b.source }] }; }
-    if (/^SELECT items, cart_raw, option FROM wa_bot_carts/.test(s)) { const b = rows.bot.find((x) => x.code === p[0] && x.exp > nowMs); return { rows: b ? [b] : [] }; }
+    if (/^SELECT c.items, c.cart_raw, c.option, ch.last_loc FROM wa_bot_carts c LEFT JOIN wa_bot_chats ch/.test(s)) { const b = rows.bot.find((x) => x.code === p[0] && x.exp > nowMs); return { rows: b ? [b] : [] }; }
     throw new Error("unexpected sql: " + s.slice(0, 60));
   } };
   const st = BC.makeBotCarts({ pool, log: () => {} });
