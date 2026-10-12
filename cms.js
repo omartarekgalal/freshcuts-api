@@ -27,7 +27,7 @@ import * as smsRules from "./smsrules.js";
 import { promisify } from "node:util";
 // نفس قواعد الهوية والقناة اللي المؤشرات بتستخدمها — مفيش نسخة تانية
 import { IDENT_SQL, SALES_ONLY, deliverySql, WEBSITE_SQL } from "./analytics.js";
-import { FIRST_ORDER_CTE, shopPaidSql, maskPhone } from "./identity.js";
+import { FIRST_ORDER_CTE, shopPaidSql, maskPhone, appSourceSql } from "./identity.js";
 import { logSms } from "./smslog.js";
 import { parseRecipientSlug, recipientLink } from "./wamsg.js";
 import { couponQueries, firstEligibility } from "./couponrules.js";
@@ -2249,14 +2249,15 @@ export function register(app, ctx, deps = {}) {
       pool.query(`SELECT phone_norm AS pn, max(NULLIF(btrim(customer->>'name'), '')) AS name FROM shop_orders
                    WHERE phone_norm ~ '${PHONE_RE}' GROUP BY 1`),
       /* عملاء تطبيقات التوصيل: عدد طلباتهم هناك + أصناف الطلبات دي.
-         كان مقصور على كيتا؛ بقى أي مصدر تطبيق (source_note) عشان لو جالنا
+         كان مقصور على كيتا؛ بقى أي مصدر تطبيق (source = delivery_app — identity.js appSourceSql؛ طلبات متجرنا
+         بتتكتب في نفس الجدول بـsource = website ورقم الطلب في النوت، ودي مش تطبيق) عشان لو جالنا
          أرقام من هنقرستيشن/نينجا بكرة تدخل لوحدها. عملياً كيتا هو الوحيد
          اللي بيدّي جوال حقيقي (الاتنين التانيين بيخفوه). */
       pool.query(`
         WITH k AS (
           SELECT s.phone_norm AS pn, o.order_id, btrim(s.source_note) AS app
             FROM order_sources s JOIN ts_orders o ON o.order_id = s.order_id
-           WHERE btrim(COALESCE(s.source_note, '')) <> '' AND s.phone_norm ~ '${PHONE_RE}' AND ${SALES_ONLY}),
+           WHERE ${appSourceSql("s")} AND s.phone_norm ~ '${PHONE_RE}' AND ${SALES_ONLY}),
         n AS (SELECT pn, count(*)::int AS orders, string_agg(DISTINCT app, ',') AS apps FROM k GROUP BY 1)
         SELECT k.pn, n.orders, n.apps, i.name, COALESCE(sum(i.amount), 0)::float AS amount,
                COALESCE(sum(i.qty), 0)::float AS qty
@@ -3093,7 +3094,7 @@ ${smsRules.optoutLine(cfg, { code: c?.optout_code, host: STORE_PUBLIC(), sender:
       customerRows(),
       pool.query(`
         WITH app AS (SELECT DISTINCT phone_norm AS pn FROM order_sources
-                      WHERE btrim(COALESCE(source_note, '')) <> '' AND phone_norm ~ '${PHONE_RE}')
+                      WHERE ${appSourceSql("order_sources")} AND phone_norm ~ '${PHONE_RE}')
         SELECT a.pn,
                min(s.created_at) FILTER (WHERE s.status = 'sent')    AS first_sent,
                min(s.created_at) FILTER (WHERE s.status = 'holdout') AS first_hold,
@@ -3103,7 +3104,7 @@ ${smsRules.optoutLine(cfg, { code: c?.optout_code, host: STORE_PUBLIC(), sender:
          GROUP BY a.pn`),
       pool.query(`
         WITH app AS (SELECT DISTINCT phone_norm AS pn FROM order_sources
-                      WHERE btrim(COALESCE(source_note, '')) <> '' AND phone_norm ~ '${PHONE_RE}')
+                      WHERE ${appSourceSql("order_sources")} AND phone_norm ~ '${PHONE_RE}')
         SELECT o.phone_norm AS pn, o.created_at, o.total::float AS total
           FROM shop_orders o JOIN app a ON a.pn = o.phone_norm
          WHERE ${PAID_ONLINE} ORDER BY o.created_at`),

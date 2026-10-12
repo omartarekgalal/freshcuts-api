@@ -30,7 +30,7 @@
    exported from here. scorecard.js reads these instead of keeping its own copy
    — a second definition of "this order came through Keeta" is exactly how two
    screens start disagreeing. */
-import { FIRST_ORDER_CTE } from "./identity.js";
+import { FIRST_ORDER_CTE, appNoteSql, websiteSourceSql } from "./identity.js";
 import { POS_NAME_SQL } from "./posnames.js";
 export const TZ = "Asia/Riyadh";
 // Hour (Riyadh local) at which TabSense rolls the business day over. See note 3.
@@ -64,10 +64,10 @@ export const deliverySql = (appsParam) =>
 // (filled by the FeedUs connector or the cashier); the aggregator payment
 // method is the fallback, and 'external' means "delivery, app unknown".
 export const channelSql = (appsParam) => `
-  CASE WHEN ${WEBSITE_SQL} THEN 'website'
+  CASE WHEN ${WEBSITE_SQL} OR ${websiteSourceSql("s")} THEN 'website'
        WHEN ${deliverySql(appsParam)} THEN
     lower(COALESCE(
-      NULLIF(s.source_note, ''),
+      ${appNoteSql("s")},
       (SELECT k FROM jsonb_object_keys(o.payments) k WHERE lower(k) = ANY(${appsParam}) LIMIT 1),
       'external'))
   ELSE 'inhouse' END`;

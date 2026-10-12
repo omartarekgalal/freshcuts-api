@@ -72,7 +72,7 @@ const DELIVERY_APPS = ["ninja", "keeta", "hungerstation", "jahez", "toyou", "mrs
 // a notification and the insights page can never disagree about a channel.
 const CHANNEL_SQL = `
   lower(COALESCE(
-    NULLIF(s.source_note, ''),
+    CASE WHEN s.source = 'website' THEN 'website' WHEN s.source = 'delivery_app' THEN NULLIF(btrim(s.source_note), '') END,
     (SELECT k FROM jsonb_object_keys(o.payments) k WHERE lower(k) = ANY($CH_APPS)),
     CASE WHEN o.order_type ILIKE '%external%' THEN 'external' ELSE 'inhouse' END))`;
 

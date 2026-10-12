@@ -67,15 +67,15 @@ const deliverySql = (appsParam) =>
 // (FeedUs connector or cashier); the aggregator payment method is the
 // fallback; 'external' means "delivery, app unknown".
 const channelSql = (appsParam) => `
-  CASE WHEN (o.order_type ILIKE '%qr-menu%') THEN 'website'
+  CASE WHEN (o.order_type ILIKE '%qr-menu%') OR ${websiteSourceSql("s")} THEN 'website'
        WHEN ${deliverySql(appsParam)} THEN
     lower(COALESCE(
-      NULLIF(s.source_note, ''),
+      ${appNoteSql("s")},
       (SELECT k FROM jsonb_object_keys(o.payments) k WHERE lower(k) = ANY(${appsParam}) LIMIT 1),
       'external'))
   ELSE 'inhouse' END`;
 
-import { FIRST_ORDER_CTE } from "./identity.js";
+import { FIRST_ORDER_CTE, appSourceSql, appNoteSql, websiteSourceSql } from "./identity.js";
 // First time we ever saw each phone, across BOTH identity sources: the
 // TabSense directory and the cashier station's typed phone.
 // ١٩/٩: نفس قاعدة «أول طلب على الإطلاق» المشتركة (identity.js) — قبل كده
@@ -1156,7 +1156,7 @@ export function register(app, ctx) {
                AND COALESCE(trim(o.staff_name), '') <> '')::int                   AS staff_count,
            (SELECT count(*) FROM order_sources s JOIN ts_orders o ON o.order_id = s.order_id
              WHERE o.calendar_day BETWEEN $2::date AND $1::date
-               AND COALESCE(NULLIF(s.source_note, ''), '') <> '')::int            AS tagged_orders,
+               AND ${appSourceSql("s")})::int            AS tagged_orders,
            (SELECT count(*) FROM order_sources s JOIN ts_orders o ON o.order_id = s.order_id
              WHERE o.calendar_day BETWEEN $2::date AND $1::date AND s.phone_norm <> '')::int AS phoned_orders,
            (SELECT count(*) FROM mk_entries e

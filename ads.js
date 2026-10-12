@@ -2578,7 +2578,8 @@ export function register(app, ctx, deps = {}) {
   function channelOf(row) {
     const isDelivery = row.src === "delivery_app" || /external/i.test(row.order_type || "");
     if (!isDelivery) return "instore";
-    const app = (row.src_note || "").trim().toLowerCase();
+    if (row.src === "website") return "website";          // نسخة نقطة البيع لطلب متجرنا (External) — النوت فيها رقم الطلب مش اسم تطبيق
+    const app = row.src === "delivery_app" ? (row.src_note || "").trim().toLowerCase() : "";
     return app ? `delivery:${app}` : "delivery";
   }
 

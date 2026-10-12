@@ -40,6 +40,7 @@
 // The "who counts as a new customer" rule is defined once, in analytics.js, so
 // this screen and the analytics screens can never drift apart again.
 import { FIRST_ORDER_DAY_CTE } from "./analytics.js";
+import { appNoteSql, websiteSourceSql } from "./identity.js";
 
 const TZ = "Asia/Riyadh";
 // Hour (Riyadh local) at which TabSense rolls the business day over. See rule 3.
@@ -71,10 +72,10 @@ const deliverySql = (appsParam, a = "o") =>
 // method is the fallback, and 'external' means "delivery, app unknown".
 // Requires an `order_sources s` join.
 const channelSql = (appsParam, a = "o") => `
-  CASE WHEN (${a}.order_type ILIKE '%qr-menu%') THEN 'website'
+  CASE WHEN (${a}.order_type ILIKE '%qr-menu%') OR ${websiteSourceSql("s")} THEN 'website'
        WHEN ${deliverySql(appsParam, a)} THEN
     lower(COALESCE(
-      NULLIF(s.source_note, ''),
+      ${appNoteSql("s")},
       (SELECT k FROM jsonb_object_keys(${a}.payments) k WHERE lower(k) = ANY(${appsParam}) LIMIT 1),
       'external'))
   ELSE 'inhouse' END`;

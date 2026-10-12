@@ -152,7 +152,7 @@ export function register(app, ctx) {
              to_char(o.order_date + ${TZ_SHIFT}, 'HH24:MI') AS time,
              COALESCE(NULLIF(tc.name,''), NULLIF(s.customer_name,'')) AS customer,
              COALESCE(NULLIF(tc.phone_norm,''), NULLIF(s.phone_norm,'')) AS phone,
-             COALESCE(s.source_note,'') AS app,
+             COALESCE(CASE WHEN s.source = 'delivery_app' THEN NULLIF(btrim(s.source_note),'') END,'') AS app,
              (m.customer_id IS NOT NULL) AS is_internal,
              COALESCE(g.local_name, g.name, '') AS group_name
         FROM ts_orders o

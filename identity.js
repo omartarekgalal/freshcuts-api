@@ -36,6 +36,19 @@
 ═══════════════════════════════════════════════════════════════════════════ */
 
 export const TZ = "Asia/Riyadh";
+
+/* ── «طلب تطبيق توصيل» — القاعدة الوحيدة (١٣/١٠) ──
+   صف order_sources بيتكتب من ٣ أماكن: رابط FeedUs والكاشير (source = 'delivery_app'، source_note = اسم التطبيق)،
+   ومتجرنا (posnames.js: source = 'website'، source_note = **رقم الطلب**). فـ«النوت مش فاضية» مش معناها تطبيق:
+   القاعدة القديمة علّمت ١٦٧ من ١٧١ عميل موقع «عميل كيتا» وحطّت ١٠٣ منهم في شريحتَي كيتا.
+   الحكم بقيمة source، والنوت اسم التطبيق بس لما المصدر تطبيق. */
+export const APP_SOURCE = "delivery_app";
+export const appSourceSql = (a = "s") => `(${a}.source = '${APP_SOURCE}' AND btrim(COALESCE(${a}.source_note, '')) <> '')`;
+/* اسم التطبيق (أو NULL لو الصف مش طلب تطبيق) — بدل NULLIF(source_note,'') في «الطلب جه من أنهي تطبيق» */
+export const appNoteSql = (a = "s") => `(CASE WHEN ${a}.source = '${APP_SOURCE}' THEN NULLIF(btrim(${a}.source_note), '') END)`;
+/* نسخة نقطة البيع لطلب من متجرنا (تاب سينس بيسجّلها External زي طلبات التطبيقات) */
+export const websiteSourceSql = (a = "s") => `(${a}.source = 'website')`;
+export const isAppSource = (row) => Boolean(row) && row.source === APP_SOURCE && String(row.source_note ?? row.sourceNote ?? "").trim() !== "";
 export const BIZ_DAY_START_HOUR = 4; // نفس analytics.js — تاب سينس بيقلب اليوم ٤ الفجر
 
 const AR = "٠١٢٣٤٥٦٧٨٩", FA = "۰۱۲۳۴۵۶۷۸۹";

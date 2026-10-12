@@ -169,7 +169,7 @@ async function buildFacts(pool, from, to) {
           WHERE calendar_day BETWEEN $3::date AND $2::date AND ${VALID}
             AND order_type ILIKE '%external%'
        )
-       SELECT COALESCE(NULLIF(s.source_note,''),'(غير محدد)') AS channel,
+       SELECT COALESCE(CASE WHEN s.source = 'website' THEN 'موقعنا' WHEN s.source = 'delivery_app' THEN NULLIF(btrim(s.source_note),'') END,'(غير محدد)') AS channel,
               count(*) FILTER (WHERE o.calendar_day >= $1::date)::int AS orders_cur,
               COALESCE(sum(o.total) FILTER (WHERE o.calendar_day >= $1::date),0) AS revenue_cur,
               count(*) FILTER (WHERE o.calendar_day <  $1::date)::int AS orders_prev,
@@ -180,7 +180,7 @@ async function buildFacts(pool, from, to) {
     // 6. "How did this customer hear about us" mix, from the cashier station.
     pool.query(
       `SELECT COALESCE(NULLIF(s.source,''),'unknown') AS source,
-              COALESCE(NULLIF(s.source_note,''),'')   AS note,
+              COALESCE(CASE WHEN s.source = 'delivery_app' THEN NULLIF(btrim(s.source_note),'') END,'')   AS note,
               count(*)::int AS orders, COALESCE(sum(o.total),0) AS revenue
          FROM order_sources s JOIN ts_orders o ON o.order_id = s.order_id
         WHERE o.calendar_day BETWEEN $1::date AND $2::date AND ${valid('o.')}
