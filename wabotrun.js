@@ -39,6 +39,7 @@ import { staffPhones, fitOneSms, staffConfig } from "./staffalerts.js";
 import { loyaltyCfgOf } from "./loyalty.js";
 import { MAPS_URL } from "./watemplates.js";
 import { isOpenNow } from "./carts.js";
+import { WA_UPDATES_TEXTS, WA_UPDATES_CURRENT, recordWaUpdatesBot, ensureWaConsentSchema } from "./waconsent.js";
 
 export const STORE = "https://freshcuts.sa";
 export const MODES = ["off", "dry", "test", "live"];
@@ -169,7 +170,7 @@ export const TEXTS = Object.freeze({
   area_in: t("الموقع داخل النطاق", "✅ موقعك داخل نطاق التوصيل. الرسوم حسب قيمة الطلب وتظهر لك قبل الدفع.", "✅ Your location is inside our delivery zone. The fee depends on the order total and shows before you pay.", [], [], 400),
   area_far: t("الموقع في النطاق البعيد", "موقعك خارج النطاق الأساسي: نوصّل له برسوم مسافة إضافية تظهر لك في صفحة الطلب، أو تقدر تستلم من الفرع.", "Your location is outside the main zone: we deliver with an extra distance charge shown on the order page, or you can pick up.", [], [], 400),
   area_out: t("الموقع خارج النطاق", "موقعك خارج نطاق التوصيل حالياً 🙏 تقدر تطلب استلام من الفرع.", "Your location is outside our delivery range for now 🙏 You can order for pickup.", [], [], 400),
-  optin_ask: t("سؤال الموافقة على تحديثات الطلب", "نبلّغك بتحديثات طلباتك على واتساب؟ (استلام الطلب، خروجه مع المندوب، وصوله)", "Shall we send your order updates on WhatsApp? (received, out for delivery, delivered)", [], [], 300),
+  optin_ask: t("سؤال الموافقة على تحديثات الطلب (نفس نص المتجر — waconsent.js)", WA_UPDATES_TEXTS[WA_UPDATES_CURRENT].ar, WA_UPDATES_TEXTS[WA_UPDATES_CURRENT].en, [], [], 400),
   optin_yes: t("رد «نعم» على الموافقة", "تم ✅ نبلّغك بتحديثات طلباتك هنا. للإيقاف في أي وقت اكتب: إيقاف", "Done ✅ You'll get your order updates here. To stop at any time type: stop", [], [], 300),
   optin_no: t("رد «لا» على الموافقة", "تمام، ما نرسل لك تحديثات على واتساب.", "No problem, we won't send updates on WhatsApp.", [], [], 300),
   btn_yes: t("زر: نعم", "نعم، بلّغوني", "Yes, notify me", [], [], LIMITS.btnTitle),
@@ -1109,7 +1110,7 @@ export function register(app, ctx, deps = {}) {
     // الخصوصية: سجل البوت ٩٠ يوم
     await pool.query("DELETE FROM wa_bot_log WHERE at < NOW() - INTERVAL '90 days'").catch(() => {});
   }
-  const ready = ensureSchema().then(() => console.log("[wabot] runtime ready")).catch((e) => console.error("[wabot] init failed:", e.message));
+  const ready = ensureSchema().then(() => ensureWaConsentSchema(pool).catch((e) => console.error('[wabot] consent schema:', e.message))).then(() => console.log("[wabot] runtime ready")).catch((e) => console.error("[wabot] init failed:", e.message));
 
   let bundleCache = { at: 0, rows: null };
   async function bundles() {
@@ -1165,7 +1166,8 @@ export function register(app, ctx, deps = {}) {
     data.bundles = know?.bundles || (await bundles());
     if (need("offers", "packs")) data.offers = await liveOffers(settings, now);
     if (need("area") && arg && Number.isFinite(arg.lat)) { try { data.quote = await quoteAt(arg.lat, arg.lng); } catch { data.quote = null; } }
-    if (need("status") && /^5\d{8}$/.test(String(phone || ""))) { const o = await q("SELECT updates FROM wa_optins WHERE phone_norm=$1", [phone]); data.optinUpdates = o === null ? null : Boolean(o[0] && o[0].updates); }
+    if (need("status") && /^5\d{8}$/.test(String(phone || ""))) { /* false = الرقم ده ماجاوبش على السؤال قبل كده (لا في المتجر ولا هنا) ⇒ ينفع يتسأل. جاوب «نعم» أو «لا» ⇒ مايتسألش تاني. */
+      const o = await q("SELECT updates, updates_answered_at FROM wa_optins WHERE phone_norm=$1", [phone]); data.optinUpdates = o === null ? null : Boolean(o[0] && (o[0].updates === true || o[0].updates_answered_at)); }
     if (need("delivery")) { const r = await q("SELECT config FROM dl_policies WHERE active ORDER BY priority DESC, id LIMIT 1", []); data.policy = r && r[0] ? r[0].config : null; }
     if (need("greet", "order", "offers", "delivery", "main")) {
       const r = await q(`SELECT code, min_total, free_delivery, once_per_customer, active, expires_at FROM shop_coupons WHERE code=$1 AND active AND phone_norm IS NULL LIMIT 1`, [cfg.firstCode]);
@@ -1336,7 +1338,8 @@ export function register(app, ctx, deps = {}) {
           await q(`INSERT INTO wa_optin_proofs(phone_norm, kind, answer, wording, lang, asked_at, answer_wamid) VALUES ($1,'updates',$2,$3,$4,$5,$6)`,
             [phone, d.optinAnswer, textOf(cfg, "optin_ask", lang2), lang2, chat.optin_asked_at || null, ev.wamid || null]);
           await q("UPDATE wa_bot_chats SET optin_answered_at=NOW() WHERE phone_norm=$1", [phone]);
-          if (d.optinAnswer === "yes" && typeof wa.recordOptIn === "function") { try { await wa.recordOptIn({ phone, updates: true, source: "wa_bot" }); } catch (e) { console.error("[wabot] optin:", e.message); } }
+          /* نفس التخزين والسجل بتوع الشيك أوت (waconsent.js): الرقم = مُرسِل الرسالة، المصدر bot، والنص اللي اتعرض بنسخته. «لا» بتتسجّل برضه. */
+          try { await recordWaUpdatesBot(pool, { phoneNorm: phone, value: d.optinAnswer === "yes", text: textOf(cfg, "optin_ask", lang2), wamid: ev.wamid || null }); } catch (e) { console.error("[wabot] optin:", e.message); }
         }
       }
       // ٥) التحويل: يتسجّل «مفتوح» على المحادثة + تنبيه. فشل الإرسال نفسه = تحويل (العميل ماوصلوش حاجة) من غير محاولة تانية.

@@ -17,6 +17,7 @@
 
 /* النص اللي العميل شافه، لكل نسخة — المتجر بيبعت رقم النسخة بس، والنص بيتسجّل من هنا (إثبات).
    أي تغيير في الصياغة = نسخة جديدة (ومفتاح جديد في المتجر: checkout2.js WA_TEXT). */
+import { createHash } from "node:crypto";
 export const WA_UPDATES_TEXTS = Object.freeze({
   "wa-updates-v1": Object.freeze({
     ar: "تحديثات طلبك على واتساب؟ نرسل لك من فريش كاتس على هذا الرقم: تأكيد الطلب، وقت جاهزيته، وخروجه مع المندوب. توقفها في أي وقت بإرسال كلمة «إيقاف».",
@@ -76,12 +77,8 @@ export function ensureWaConsentSchema(pool) {
 }
 export function _resetSchemaForTests() { schemaP = null; }
 
-/* تسجيل الإجابة. phoneNorm لازم يكون جاي من رقم متحقق (جلسة OTP) — المتصل هو المسؤول عن ده.
-   بيحدّث updates بس؛ عمود marketing مابيتلمسش. */
-export async function recordWaUpdates(pool, { phoneNorm, answer, orderNo = null, ip = null, ua = null }) {
-  if (!/^5\d{8}$/.test(String(phoneNorm || ""))) return { ok: false, error: "invalid_phone" };
-  const a = answer && typeof answer.value === "boolean" && WA_UPDATES_TEXTS[answer.version] ? answer : null;
-  if (!a) return { ok: false, error: "bad_answer" };
+/* الكتابة الوحيدة في wa_optins.updates وسجل الإثبات — الشيك أوت/الحساب وسؤال البوت بيعدّوا من هنا. */
+async function writeAnswer(pool, { phoneNorm, value, version, text, source, orderNo = null, ip = null, ua = null }) {
   await ensureWaConsentSchema(pool);
   await pool.query(
     `INSERT INTO wa_optins(phone_norm, updates, marketing, source, order_no, updates_answered_at, updates_version)
@@ -89,11 +86,36 @@ export async function recordWaUpdates(pool, { phoneNorm, answer, orderNo = null,
      ON CONFLICT (phone_norm) DO UPDATE SET
        updates = $2, source = $3, order_no = COALESCE($4, wa_optins.order_no),
        updates_answered_at = NOW(), updates_version = $5, updated_at = NOW()`,
-    [phoneNorm, a.value, a.source, clip(orderNo, 30), a.version]);
+    [phoneNorm, value, source, clip(orderNo, 30), version]);
   await pool.query(
     `INSERT INTO wa_optin_log(phone_norm, kind, value, text_version, text, source, order_no, ip, ua)
      VALUES ($1, 'updates', $2, $3, $4, $5, $6, $7, $8)`,
-    [phoneNorm, a.value, a.version, WA_UPDATES_TEXTS[a.version].ar, a.source, clip(orderNo, 30), clip(ip, 60), clip(ua, 200)]);
+    [phoneNorm, value, version, text, source, clip(orderNo, 30), clip(ip, 60), clip(ua, 200)]);
+}
+
+/* نسخة نص سؤال البوت: نفس نص المتجر الحالي ⇒ نفس رقم النسخة؛ نص اتعدّل من اللوحة ⇒ «bot-<بصمة النص>» والنص نفسه في السجل. */
+export function botTextVersion(text) {
+  const t = String(text || ""), cur = WA_UPDATES_TEXTS[WA_UPDATES_CURRENT];
+  return t === cur.ar || t === cur.en ? WA_UPDATES_CURRENT : `bot-${createHash("sha1").update(t).digest("hex").slice(0, 10)}`;
+}
+
+/* إجابة سؤال البوت في محادثة واتساب. الرقم المتحقق = مُرسِل الرسالة نفسه (واتساب هو اللي بيثبته في الويب هوك الموقّع)،
+   المصدر "bot"، والنص اللي اتعرض فعلاً بيتسجّل بنسخته. wamid رسالة الإجابة بيتحفظ في عمود ua كـ«wa:<id>». */
+export async function recordWaUpdatesBot(pool, { phoneNorm, value, text, wamid = null, orderNo = null }) {
+  if (!/^5\d{8}$/.test(String(phoneNorm || ""))) return { ok: false, error: "invalid_phone" };
+  if (typeof value !== "boolean" || !String(text || "").trim()) return { ok: false, error: "bad_answer" };
+  const version = botTextVersion(text);
+  await writeAnswer(pool, { phoneNorm, value, version, text: String(text).slice(0, 1000), source: "bot", orderNo, ua: wamid ? `wa:${wamid}` : null });
+  return { ok: true, updates: value, version };
+}
+
+/* تسجيل الإجابة. phoneNorm لازم يكون جاي من رقم متحقق (جلسة OTP) — المتصل هو المسؤول عن ده.
+   بيحدّث updates بس؛ عمود marketing مابيتلمسش. */
+export async function recordWaUpdates(pool, { phoneNorm, answer, orderNo = null, ip = null, ua = null }) {
+  if (!/^5\d{8}$/.test(String(phoneNorm || ""))) return { ok: false, error: "invalid_phone" };
+  const a = answer && typeof answer.value === "boolean" && WA_UPDATES_TEXTS[answer.version] ? answer : null;
+  if (!a) return { ok: false, error: "bad_answer" };
+  await writeAnswer(pool, { phoneNorm, value: a.value, version: a.version, text: WA_UPDATES_TEXTS[a.version].ar, source: a.source, orderNo, ip, ua });
   return { ok: true, updates: a.value, version: a.version };
 }
 

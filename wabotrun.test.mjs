@@ -8,6 +8,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import fs from "node:fs";
+import * as C from "./waconsent.js";
 const W = await import("./whatsapp.js");
 const R = await import("./wabotrun.js");
 const LLM = await import("./wabotllm.js");
@@ -51,7 +52,7 @@ function world({ waBot = {}, notifications = { whatsappEnabled: true }, orders =
   at = OPEN_AT, graph = null, failDb = null, extraSettings = {}, disclosure = false, pages = LIVE.pages, quote = null, llm = null, greetMenu = false, offers = LIVE.offers } = {}) {
   let nowMs = Date.parse(at);
   const clock = { now: () => new Date(nowMs), advance: (min) => { nowMs += min * 60_000; }, set: (iso) => { nowMs = Date.parse(iso); } };
-  const db = { msgs: [], log: [], jobs: [], proofs: [], chats: new Map(), optouts: [], optins: {}, links: links.map((s) => ({ slug: s, active: true, clicks: 0 })), settings: null };
+  const db = { msgs: [], log: [], jobs: [], proofs: [], consentLog: [], chats: new Map(), optouts: [], optins: {}, links: links.map((s) => ({ slug: s, active: true, clicks: 0 })), settings: null };
   db.settings = { hours: HOURS, notifications, googlePlace: { mapsUrl: "https://maps.google.com/?cid=14767749764292326433" }, storefront: { seo: { faq: FAQ } },
     cms: { loyalty: { enabled: true, every: 3, reward: "free_delivery", minTotal: 60 } }, delivery: { alertPhones: ["0544775082", "0506338246"], staffSmsLanguage: "en" }, waBot, ...extraSettings };
   const iso = () => new Date(nowMs).toISOString();
@@ -104,7 +105,10 @@ function world({ waBot = {}, notifications = { whatsappEnabled: true }, orders =
       if (/^UPDATE wa_bot_log SET reply_arg=\$2/i.test(s)) { const l = db.log.find((x) => x.id === p[0]); if (l) l.reply_arg = p[1]; return { rows: [] }; }
       if (/^UPDATE wa_bot_log SET intent=\$2, reply_key=\$3, detail=\$4/i.test(s)) { const l = db.log.find((x) => x.id === p[0]); Object.assign(l, { intent: p[1], reply_key: p[2], detail: p[3] }); return { rows: [] }; }
       if (/FROM wa_messages WHERE direction='in'/i.test(s)) return { rows: db.msgs.filter((m) => m.direction === "in").map((m) => ({ wamid: m.wamid, phone_norm: m.phone_norm, body: m.body, msg_type: "text", created_at: m.created_at })).reverse() };
-      if (/^INSERT INTO wa_optins/i.test(s)) { const cur = db.optins[p[0]] || {}; db.optins[p[0]] = { updates: p[1] ?? cur.updates ?? false, marketing: p[2] ?? cur.marketing ?? false }; return { rows: [] }; }
+      if (/^INSERT INTO wa_optins\(phone_norm, updates, marketing, source, order_no, updates_answered_at, updates_version\)/i.test(s)) {   // waconsent.js — the shared consent storage
+        const cur = db.optins[p[0]] || {}; db.optins[p[0]] = { updates: p[1], marketing: cur.marketing ?? false, source: p[2], updates_answered_at: iso(), updates_version: p[4] }; return { rows: [] }; }
+      if (/^INSERT INTO wa_optin_log/i.test(s)) { db.consentLog.push({ phone_norm: p[0], kind: "updates", value: p[1], text_version: p[2], text: p[3], source: p[4], order_no: p[5], ip: p[6], ua: p[7], at: iso() }); return { rows: [] }; }
+      if (/^INSERT INTO wa_optins/i.test(s)) { const cur = db.optins[p[0]] || {}; db.optins[p[0]] = { ...cur, updates: p[1] ?? cur.updates ?? false, marketing: p[2] ?? cur.marketing ?? false }; return { rows: [] }; }
       if (/^UPDATE cms_contacts/i.test(s)) { db.optouts.push(p[0]); return { rows: [], rowCount: 1 }; }
       if (/FROM cms_contacts/i.test(s)) return { rows: [], rowCount: db.optouts.includes(p[0]) ? 1 : 0 };
       if (/^INSERT INTO wa_bot_log/i.test(s)) {
@@ -1080,7 +1084,7 @@ test("missing data: never a partial or placeholder text — a plain «handed to 
 
 /* ── سؤال الموافقة على تحديثات الطلب ────────────────────────────────────── */
 test("opt-in: one question after an order-status answer, stored with its wording as proof; never marketing; never nagging", withEnv(LOCKS_OPEN, async () => {
-  const ASK = { messaging_product: "whatsapp", recipient_type: "individual", to: ME, type: "interactive", interactive: { type: "button", body: { text: "نبلّغك بتحديثات طلباتك على واتساب؟ (استلام الطلب، خروجه مع المندوب، وصوله)" }, footer: { text: FOOTER },
+  const ASK = { messaging_product: "whatsapp", recipient_type: "individual", to: ME, type: "interactive", interactive: { type: "button", body: { text: "تحديثات طلبك على واتساب؟ نرسل لك من فريش كاتس على هذا الرقم: تأكيد الطلب، وقت جاهزيته، وخروجه مع المندوب. توقفها في أي وقت بإرسال كلمة «إيقاف»." }, footer: { text: FOOTER },
     action: { buttons: [{ type: "reply", reply: { id: "optin:yes", title: "نعم، بلّغوني" } }, { type: "reply", reply: { id: "optin:no", title: "لا، شكراً" } }] } } };
   const mk = (o = {}) => liveWorld({ orders: [order({ status: "on_the_way" })], ...o, waBot: { optin: { enabled: true }, ...(o.waBot || {}) } });
   assert.equal(R.botConfig({}).optin.enabled, false, "off by default");
@@ -1093,21 +1097,37 @@ test("opt-in: one question after an order-status answer, stored with its wording
   w.clock.advance(1);
   const y = await w.press("optin:yes", "نعم، بلّغوني");
   assert.deepEqual(y.sent, [txt(ME, "تم ✅ نبلّغك بتحديثات طلباتك هنا. للإيقاف في أي وقت اكتب: إيقاف")]);
-  assert.deepEqual(w.db.optins["512345678"], { updates: true, marketing: false }, "order updates only — marketing consent is a separate question");
+  assert.equal(R.TEXTS.optin_ask.ar, C.WA_UPDATES_TEXTS[C.WA_UPDATES_CURRENT].ar, "the bot asks with the storefront's consent wording");
+  const row = w.db.optins["512345678"];
+  assert.deepEqual([row.updates, row.marketing, row.source, row.updates_version, Boolean(row.updates_answered_at)], [true, false, "bot", "wa-updates-v1", true], "order updates only — marketing consent is a separate question");
+  // the builder's append-only consent log: verified phone = the WhatsApp sender, source bot, the wording shown and its version
+  assert.deepEqual(w.db.consentLog.map((l) => [l.phone_norm, l.kind, l.value, l.text_version, l.text, l.source, l.ua]), [["512345678", "updates", true, "wa-updates-v1", ASK.interactive.body.text, "bot", `wa:${y.wamid}`]]);
   assert.equal(w.db.proofs.length, 1);
-  assert.deepEqual([w.db.proofs[0].phone_norm, w.db.proofs[0].answer, w.db.proofs[0].wording, w.db.proofs[0].lang, w.db.proofs[0].answer_wamid], ["512345678", "yes", "نبلّغك بتحديثات طلباتك على واتساب؟ (استلام الطلب، خروجه مع المندوب، وصوله)", "ar", y.wamid]);
+  assert.deepEqual([w.db.proofs[0].phone_norm, w.db.proofs[0].answer, w.db.proofs[0].wording, w.db.proofs[0].lang, w.db.proofs[0].answer_wamid], ["512345678", "yes", "تحديثات طلبك على واتساب؟ نرسل لك من فريش كاتس على هذا الرقم: تأكيد الطلب، وقت جاهزيته، وخروجه مع المندوب. توقفها في أي وقت بإرسال كلمة «إيقاف».", "ar", y.wamid]);
   assert.ok(w.db.proofs[0].asked_at && w.db.proofs[0].at);
   w.clock.advance(60 * 24 * 40);
   assert.equal((await w.say("وين طلبي")).sent.length, 1, "already opted in ⇒ never asked again");
-  // «لا»: recorded as proof too, no opt-in, and the question waits askAfterHours before it may come back
+  // «لا»: recorded in the same storage and log, no opt-in, and never asked again (here or at checkout: one answer per number)
   const n = mk({ orders: [order({ status: "delivered" })] });
   await n.say("وين طلبي"); n.clock.advance(1);
   assert.deepEqual((await n.press("optin:no", "لا، شكراً")).sent, [txt(ME, "تمام، ما نرسل لك تحديثات على واتساب.")]);
-  assert.equal(n.db.proofs[0].answer, "no"); assert.equal(n.db.optins["512345678"], undefined);
-  n.clock.advance(60 * 24 * 10);
-  assert.equal((await n.say("وين طلبي")).sent.length, 1, "10 days later: still not asked (30 days)");
-  n.clock.advance(60 * 24 * 21);
-  assert.equal((await n.say("وين طلبي")).sent.length, 2, "after askAfterHours it may be asked once more");
+  assert.equal(n.db.proofs[0].answer, "no"); assert.equal(n.db.optins["512345678"].updates, false); assert.ok(n.db.optins["512345678"].updates_answered_at);
+  assert.deepEqual([n.db.consentLog[0].value, n.db.consentLog[0].source], [false, "bot"]);
+  n.clock.advance(60 * 24 * 40);
+  assert.equal((await n.say("وين طلبي")).sent.length, 1, "answered «لا» ⇒ not asked again");
+  // asked but never answered ⇒ may be asked once more after askAfterHours, not before
+  const u = mk({ orders: [order({ status: "delivered" })] });
+  await u.say("وين طلبي"); u.clock.advance(60 * 24 * 10);
+  assert.equal((await u.say("وين طلبي")).sent.length, 1, "10 days later: still not asked (30 days)");
+  u.clock.advance(60 * 24 * 21);
+  assert.equal((await u.say("وين طلبي")).sent.length, 2);
+  // answered at checkout (yes or no) ⇒ the bot never asks
+  for (const updates of [true, false]) { const k = mk(); k.db.optins["512345678"] = { updates, marketing: false, updates_answered_at: new Date().toISOString() }; assert.equal((await k.say("وين طلبي")).sent.length, 1, `checkout answer ${updates}`); }
+  // the owner edited the wording in the dashboard ⇒ the log keeps that exact text under its own version
+  const e = mk({ waBot: { texts: { optin_ask: { ar: "تبغى نرسل لك تحديثات طلبك من فريش كاتس على واتساب؟" } } } });
+  await e.say("وين طلبي"); e.clock.advance(1); await e.press("optin:yes", "x");
+  assert.equal(e.db.consentLog[0].text, "تبغى نرسل لك تحديثات طلبك من فريش كاتس على واتساب؟"); assert.match(e.db.consentLog[0].text_version, /^bot-[0-9a-f]{10}$/);
+  assert.equal(C.botTextVersion(C.WA_UPDATES_TEXTS["wa-updates-v1"].en), "wa-updates-v1");
   // a typed answer right after the question counts; the same word any other time is just an acknowledgement
   const t = mk();
   await t.say("وين طلبي"); t.clock.advance(1);
@@ -1125,10 +1145,10 @@ test("opt-in: one question after an order-status answer, stored with its wording
   const d = mk({ waBot: { mode: "dry" } });
   const ds = await d.say("وين طلبي"); assert.equal(ds.log.replies.length, 2);
   d.clock.advance(1); await d.press("optin:yes", "x");
-  assert.equal(d.db.proofs.length, 0); assert.equal(d.db.optins["512345678"], undefined);
+  assert.equal(d.db.proofs.length, 0); assert.equal(d.db.optins["512345678"], undefined); assert.equal(d.db.consentLog.length, 0);
   // «إيقاف» is honoured as always and does not touch the order-updates consent
   w.clock.advance(1); await w.say("إيقاف");
-  assert.deepEqual(w.db.optins["512345678"], { updates: true, marketing: false }); assert.deepEqual(w.db.optouts, ["512345678"]);
+  assert.equal(w.db.optins["512345678"].updates, true); assert.equal(w.db.optins["512345678"].marketing, false); assert.deepEqual(w.db.optouts, ["512345678"]);
   const pr = await w.call("GET", "/api/cms/wabot/optins");
   assert.equal(pr.status, 200);
 }));
