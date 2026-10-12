@@ -993,7 +993,7 @@ export function register(app, ctx, deps = {}) {
     await touchThread({ phoneNorm: pn, direction: "in", text: m.text || `[${m.type}]`, at: m.at || null });
     await applyIntent(pn, m.intent);
     const ev = { phone: pn, phoneNorm: pn, wamid: m.wamid, text: m.text || "", type: m.type, interactiveId: m.interactiveId || null,
-      referral: m.referral || null, location: m.location || null, isEcho: false, ts: m.at, at: m.at, intent: m.intent, source: "api" };
+      referral: m.referral || null, location: m.location || null, media: m.media || null, isEcho: false, ts: m.at, at: m.at, intent: m.intent, source: "api" };
     await emit("inbound", ev);
     if (botRuntime) {
       let owned = false;

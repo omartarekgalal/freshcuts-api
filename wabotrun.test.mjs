@@ -52,7 +52,7 @@ const LOCKS_OPEN = { ...CONFIGURED, WHATSAPP_ENABLED: "1" };
 
 /* ── عالم صغير: قاعدة في الذاكرة + ساعة + Graph مزيّف ─────────────────────── */
 function world({ waBot = {}, notifications = { whatsappEnabled: true }, orders = [], bundles = BUNDLES, policy = POLICY, first = FIRST, links = ["wab-boxes", "wa-boxes", "wa-box-d4"],
-  at = OPEN_AT, graph = null, failDb = null, extraSettings = {}, disclosure = false, pages = LIVE.pages, quote = null, llm = null, greetMenu = false, offers = LIVE.offers, resolveMapsLink = null, lastCart = null, assistModel = null, assistStore = null, kb = null, adReport = [], channelReport = [] } = {}) {
+  at = OPEN_AT, graph = null, failDb = null, extraSettings = {}, disclosure = false, pages = LIVE.pages, quote = null, llm = null, greetMenu = false, offers = LIVE.offers, resolveMapsLink = null, lastCart = null, assistModel = null, assistStore = null, kb = null, adReport = [], channelReport = [], mediaFile = null, transcribe = null } = {}) {
   let nowMs = Date.parse(at);
   const clock = { now: () => new Date(nowMs), advance: (min) => { nowMs += min * 60_000; }, set: (iso) => { nowMs = Date.parse(iso); } };
   const db = { msgs: [], log: [], jobs: [], proofs: [], consentLog: [], ai: [], aiAlerts: [], tpl: [], cfgLog: [], botCarts: [], chats: new Map(), optouts: [], optins: {}, links: links.map((s) => (typeof s === "string" ? { slug: s, active: true, clicks: 0 } : { active: true, clicks: 0, ...s })), adChats: [], adReportParams: null, channelOffers: [], channelReportParams: null, settings: null };
@@ -82,6 +82,8 @@ function world({ waBot = {}, notifications = { whatsappEnabled: true }, orders =
       // ── ai_calls (waaicost.js)
       if (/^INSERT INTO ai_calls/i.test(s)) { db.ai.push({ id: db.ai.length + 1, at: iso(), purpose: p[0], provider: p[1], model: p[2], in_tokens: p[3], out_tokens: p[4], cached_tokens: p[5], estimated: p[6], cost_sar: p[7], priced: p[8], price_date: p[9],
         ms: p[10], chat_hash: p[11], outcome: p[12], detail: p[13], sent_text: p[14], prompt_chars: p[15], prompt_hash: p[16], log_id: p[17] }); return { rows: [] }; }
+      if (/AS s FROM ai_calls WHERE purpose='assistant' AND detail LIKE 'media:%'/i.test(s)) { const k0 = AIC.riyadhKeys(new Date(nowMs)); return { rows: [{ s: db.ai.filter((a) => a.purpose === "assistant" && /^media:/.test(String(a.detail || "")) && AIC.riyadhKeys(new Date(a.at)).day === k0.day).reduce((x, a) => x + Number(a.cost_sar), 0) }] }; }
+      if (/THEN 'voice' ELSE 'images' END AS kind/i.test(s)) { const g = {}; for (const a of db.ai.filter((x) => x.purpose === "assistant" && /^media:/.test(String(x.detail || "")))) { const kd = /^media:stt/.test(a.detail) ? "voice" : "images"; g[kd] = g[kd] || { kind: kd, n: 0, ok: 0, sar: 0 }; g[kd].n++; if (a.outcome === "ok") g[kd].ok++; g[kd].sar += Number(a.cost_sar); } return { rows: Object.values(g) }; }
       if (/FROM ai_calls/i.test(s)) {
         const k = AIC.riyadhKeys(new Date(nowMs)), kOf = (a) => AIC.riyadhKeys(new Date(a.at)), sum = (l) => l.reduce((x, a) => x + Number(a.cost_sar), 0);
         if (/AS day, COALESCE\(sum\(cost_sar\), 0\)::float AS month/i.test(s)) { const m = db.ai.filter((a) => kOf(a).month === k.month && (!p[0] || a.purpose === p[0])); return { rows: [{ day: sum(m.filter((a) => kOf(a).day === k.day)), month: sum(m) }] }; }
@@ -93,6 +95,7 @@ function world({ waBot = {}, notifications = { whatsappEnabled: true }, orders =
         if (/GROUP BY 1/i.test(s)) { const g = {}; for (const a of db.ai) g[a.outcome] = (g[a.outcome] || 0) + 1; return { rows: Object.entries(g).map(([outcome, n]) => ({ outcome, n })) }; }
         return { rows: [...db.ai].reverse().slice(0, p[0]) };
       }
+      if (/^UPDATE wa_bot_log SET text=.2 WHERE id=.1/i.test(s)) { const l = db.log.find((x) => x.id === p[0]); if (l) l.text = p[1]; return { rows: [] }; }
       if (/^UPDATE wa_bot_log SET detail=.2 WHERE id=.1/i.test(s)) { const l = db.log.find((x) => x.id === p[0]); if (l) l.detail = p[1]; return { rows: [] }; }
       if (/^INSERT INTO ai_budget_alerts/i.test(s)) { if (db.aiAlerts.includes(p[0])) return { rows: [] }; db.aiAlerts.push(p[0]); return { rows: [{ key: p[0] }] }; }
       if (/ai_budget_alerts/i.test(s)) return { rows: db.aiAlerts.map((key) => ({ key })) };
@@ -224,6 +227,8 @@ function world({ waBot = {}, notifications = { whatsappEnabled: true }, orders =
   const ctx = { pool, requireAdmin: async () => null, getSettingsData: async () => JSON.parse(JSON.stringify(db.settings)), jb: (x) => JSON.stringify(x),
     normPhone: (x) => String(x || "").replace(/\D/g, "").replace(/^966/, "").replace(/^0/, ""), isOwner: () => owner };
   const wa = W.register(app, ctx, { fetch, sendSms: async () => ({ ok: true }) });
+  const mediaAsked = [];
+  if (mediaFile) wa.fetchMedia = async (id, o) => { mediaAsked.push([id, o]); return typeof mediaFile === "function" ? mediaFile(id, o) : mediaFile; };
   const sms = [];
   const botCarts = { ensure: async () => {}, lastOrderCarts: async (ph, days, o) => { const v = typeof lastCart === "function" ? lastCart(ph, days, o) : lastCart; return (Array.isArray(v) ? v : v ? [v] : []).map((x, i) => ({ latest: i === 0, ...x })); },
     create: async (x) => { if (failDb && failDb.test("INSERT INTO wa_bot_carts")) return null; const code = `rc${String(db.botCarts.length + 1).padStart(6, "0")}`; db.botCarts.push({ code, ...x }); return { code }; }, open: async () => null, restore: async () => null, coverage: async () => ({ orders: 40, with_snapshot: 30, with_raw: 28, usable: 26, avg_diff: 0, mismatched: 2, links: db.botCarts.length, opened: 0 }) };
@@ -233,7 +238,7 @@ function world({ waBot = {}, notifications = { whatsappEnabled: true }, orders =
       quote: async (x) => (typeof quote === "function" ? quote(x.lat, x.lng) : quote), buildProfile: async () => ({ identity: { name: "أحمد" }, summary: { orders: 2, status: "repeat" }, orders: [], favorites: { items: [] }, addresses: [] }) }, whoami: async () => actor.who, ...(resolveMapsLink ? { resolveMapsLink } : { resolveMapsLink: async () => null }), sendSms: async (x) => { sms.push(x); return { ok: true }; },
     portalEmit: (ev2, data) => portalEvents.push([ev2, data]), whoami: async () => actor.who, ...(resolveMapsLink ? { resolveMapsLink } : { resolveMapsLink: async () => null }), sendSms: async (x) => { sms.push(x); return { ok: true }; },
     fetchMenuPages: async () => { if (pages === null) throw new Error("menu down"); return pages; }, quote: async (lat, lng) => (typeof quote === "function" ? quote(lat, lng) : quote), llm,
-    fetchOffers: async () => { if (offers === null) throw new Error("offers down"); return offers; }, ...(assistModel ? { assistCallModel: assistModel } : {}), ...(assistStore ? { assistStore } : {}), ...(kb ? { kb: () => kb } : {}) });
+    fetchOffers: async () => { if (offers === null) throw new Error("offers down"); return offers; }, ...(assistModel ? { assistCallModel: assistModel } : {}), ...(assistStore ? { assistStore } : {}), ...(kb ? { kb: () => kb } : {}), ...(transcribe ? { transcribe } : {}) });
   let seq = 0;
   const hook = (field, value) => ({ object: "whatsapp_business_account", entry: [{ id: "WABA", changes: [{ field, value: { messaging_product: "whatsapp", metadata: { display_phone_number: BIZ, phone_number_id: "PHONE1" }, ...value } }] }] });
   const ts = (agoMin = 0) => String(Math.floor((nowMs - agoMin * 60_000) / 1000));
@@ -250,7 +255,7 @@ function world({ waBot = {}, notifications = { whatsappEnabled: true }, orders =
   const call = async (method, path, json = {}, query = {}) => routes[`${method} ${path}`]({ req: { json: async () => json, query: (k) => query[k], header: () => undefined, text: async () => "" }, json: (body, status = 200) => ({ body, status }) });
   /* وقت الرد المؤجّل: نقدّم الساعة ونشغّل دورة الردود المؤجّلة؛ بيرجّع اللي اتبعت فيها */
   const tick = async (min = 0) => { clock.advance(min); const before = calls.length; await bot.runDueJobs(); return calls.slice(before).map((c) => c.body); };
-  return { db, clock, calls, sms, portal: portalEvents, say, press, cashier, call, wa, bot, tick, setOwner: (v) => { owner = v; }, setActor: (v) => { actor.who = v; }, setMode: (m) => { db.settings.waBot = { ...db.settings.waBot, mode: m }; } };
+  return { db, clock, calls, sms, portal: portalEvents, mediaAsked, say, press, cashier, call, wa, bot, tick, setOwner: (v) => { owner = v; }, setActor: (v) => { actor.who = v; }, setMode: (m) => { db.settings.waBot = { ...db.settings.waBot, mode: m }; } };
 }
 const cta = (to, body, title, url) => ({ messaging_product: "whatsapp", recipient_type: "individual", to, type: "interactive",
   interactive: { type: "cta_url", body: { text: body }, footer: { text: FOOTER }, action: { name: "cta_url", parameters: { display_text: title, url } } } });
@@ -2848,4 +2853,115 @@ test("CH1 stats — offers shown per day and per route; test numbers left out", 
   assert.deepEqual(r.body.byDay, [{ day: "2026-10-13", rules_close: 4, rules_menu: 0, assistant: 2, total: 6 }, { day: "2026-10-12", rules_close: 0, rules_menu: 1, assistant: 0, total: 1 }]);
   assert.deepEqual(r.body.totals, { rules_close: 4, rules_menu: 1, assistant: 2, total: 7 });
   assert.ok(!JSON.stringify(r.body).includes("whatsapp.com"), "the report does not repeat the link");
+}));
+
+/* ── «يشوف ويسمع» (VM1) ─────────────────────────────────────────────────── */
+const OGG = (sec) => { const b = Buffer.alloc(64); b.write("OggS", 0, "latin1"); b.write("OggS", 30, "latin1"); b.writeBigUInt64LE(BigInt(Math.round(sec * 48000)), 36); return b; };
+const JPG = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 1, 2, 3, 4]);
+const voiceMsg = { type: "audio", audio: { id: "111222333444", mime_type: "audio/ogg; codecs=opus", voice: true } };
+const imageMsg = (caption) => ({ type: "image", image: { id: "555666777888", mime_type: "image/jpeg", ...(caption ? { caption } : {}) } });
+const look = (o) => mSay(JSON.stringify(o));
+const MEDIA_ON = { assist: { imagesEnabled: true, voiceEnabled: true } };
+const OLD = /ما أقدر أفتح الصور والمقاطع الصوتية/;
+
+test("VM1 off by default — a photo or a voice note gets today's reply and handover, nothing is fetched, no model is called", withEnv(CONFIGURED, async () => {
+  const cfg = R.botConfig({}).assist;
+  assert.deepEqual([cfg.imagesEnabled, cfg.voiceEnabled, cfg.voiceMaxSec, cfg.mediaBudgetDaySar, cfg.sttModel, cfg.visionModel], [false, false, 60, 2, "gpt-4o-transcribe", "claude-haiku-5-5"]);
+  for (const k of ["assist.imagesEnabled", "assist.voiceEnabled", "assist.voiceMaxSec", "assist.mediaBudgetDaySar", "assist.sttSarPerMin", "assist.sttModel", "assist.visionModel"]) assert.ok(R.SCHEMA[k] && R.SCHEMA[k].ar, k);
+  const w = aWorld([], { mediaFile: { ok: true, buf: OGG(8), mime: "audio/ogg" }, transcribe: async () => { throw new Error("must not be called"); } });
+  const v = await w.say(null, { raw: voiceMsg });
+  assert.match(bodyOf(msgs(v)[0]), OLD); assert.equal(v.log.handoff, "media"); assert.equal(w.mediaAsked.length, 0); assert.equal(w.m.used(), 0);
+  const w2 = aWorld([], { mediaFile: { ok: true, buf: JPG, mime: "image/jpeg" } });
+  const i = await w2.say(null, { raw: imageMsg() });
+  assert.match(bodyOf(msgs(i)[0]), OLD); assert.equal(w2.mediaAsked.length, 0); assert.equal(w2.m.used(), 0);
+  // switched on, but the assistant is off for this number ⇒ still today's reply
+  const w3 = aWorld([], { waBot: { assist: { mode: "off", imagesEnabled: true, voiceEnabled: true } }, mediaFile: { ok: true, buf: JPG, mime: "image/jpeg" } });
+  assert.match(bodyOf(msgs(await w3.say(null, { raw: imageMsg() }))[0]), OLD); assert.equal(w3.mediaAsked.length, 0);
+}));
+
+test("VM1 voice — the note is transcribed, the assistant gets the text marked as heard from a voice note, the cost is recorded by the minute; too long / unclear / failed ⇒ today's handover", withEnv(CONFIGURED, async () => {
+  const heard = [];
+  const w = aWorld([mUse(tUse("search_menu", { query: "كريب زنجر سوبريم" })), mSay("سمعت إنك تبي كريب زنجر سوبريم استلام، صح؟")], { waBot: MEDIA_ON, mediaFile: { ok: true, buf: OGG(12), mime: "audio/ogg; codecs=opus" },
+    transcribe: async (a) => { heard.push({ model: a.model, mime: a.mime, bytes: a.buf.length }); return { ok: true, text: "ابي كريب زنجر سوبريم استلام ورقمي 0512345678", ms: 800, provider: "stt:llm.o2m8.me" }; } });
+  const r = await w.say(null, { raw: voiceMsg });
+  assert.deepEqual([r.log.decision, r.log.reply_key], ["replied", "assist"]);
+  assert.equal(bodyOf(msgs(r)[0]), "سمعت إنك تبي كريب زنجر سوبريم استلام، صح؟");
+  assert.deepEqual(heard, [{ model: "gpt-4o-transcribe", mime: "audio/ogg; codecs=opus", bytes: 64 }]);
+  assert.deepEqual(w.mediaAsked[0], ["111222333444", { maxBytes: 4_000_000 }]);
+  assert.equal(ctxOf(w.m.seen[0]).heard_from_voice_note, true);
+  assert.ok(!JSON.stringify(w.m.seen).includes("512345678"), "the transcript is masked before the model like any text");
+  assert.equal(r.log.text, "🎤 ابي كريب زنجر سوبريم استلام ورقمي [رقم]");
+  const stt = w.db.ai.find((a) => /^media:stt/.test(a.detail));
+  assert.deepEqual([stt.purpose, stt.model, stt.outcome, stt.detail, stt.cost_sar, stt.sent_text], ["assistant", "gpt-4o-transcribe", "ok", "media:stt 12s", 0.0045, null]);
+  // the three ways out: longer than the setting (not sent to the transcriber at all), an unclear transcript, a provider error
+  let called = 0;
+  const long = aWorld([], { waBot: MEDIA_ON, mediaFile: { ok: true, buf: OGG(75), mime: "audio/ogg" }, transcribe: async () => { called++; return { ok: true, text: "x" }; } });
+  const l = await long.say(null, { raw: voiceMsg });
+  assert.match(bodyOf(msgs(l)[0]), OLD); assert.equal(l.log.handoff, "media"); assert.equal(called, 0); assert.match(l.log.detail, /voice_too_long_75s/);
+  const un = aWorld([], { waBot: MEDIA_ON, mediaFile: { ok: true, buf: OGG(3), mime: "audio/ogg" }, transcribe: async () => ({ ok: true, text: "..", ms: 5 }) });
+  const u = await un.say(null, { raw: voiceMsg }); assert.match(bodyOf(msgs(u)[0]), OLD); assert.match(u.log.detail, /stt_unclear/);
+  const er = aWorld([], { waBot: MEDIA_ON, mediaFile: { ok: true, buf: OGG(3), mime: "audio/ogg" }, transcribe: async () => ({ ok: false, reason: "http_404", ms: 5 }) });
+  const e = await er.say(null, { raw: voiceMsg }); assert.match(bodyOf(msgs(e)[0]), OLD); assert.equal(e.log.handoff, "media"); assert.match(e.log.detail, /stt_http_404/);
+  assert.equal(er.db.ai.find((a) => /^media:stt/.test(a.detail)).cost_sar, 0, "a failed transcription costs nothing");
+  // Meta no longer has the file
+  const gone = aWorld([], { waBot: MEDIA_ON, mediaFile: { ok: false, error: "expired" } });
+  assert.match(bodyOf(msgs(await gone.say(null, { raw: voiceMsg }))[0]), OLD);
+  // a voice note that is a complaint is the rules bot's, as if typed
+  const cw = aWorld([], { waBot: MEDIA_ON, mediaFile: { ok: true, buf: OGG(5), mime: "audio/ogg" }, transcribe: async () => ({ ok: true, text: "الاكل وصل بارد وناقص", ms: 5 }) });
+  const c = await cw.say(null, { raw: voiceMsg }); assert.equal(c.log.handoff, "complaint"); assert.equal(cw.m.used(), 0);
+}));
+
+test("VM1 images — a menu or ad screenshot is answered like text from a masked description; payment and order-problem photos go to staff with what was understood; a location screenshot asks for the pin; anything else is today's handover", withEnv(CONFIGURED, async () => {
+  const file = { ok: true, buf: JPG, mime: "image/jpeg" };
+  const w = aWorld([look({ kind: "menu_or_ad", summary: "إعلان بوكس الكريب الفردي بسعر 29، رقم التواصل 0512345678", clear: true }), mSay("هلا 👋 بوكس الكريب الفردي عندنا. تبيه توصيل ولا استلام؟")], { waBot: MEDIA_ON, mediaFile: file });
+  const r = await w.say(null, { raw: imageMsg("كم هذا؟") });
+  assert.deepEqual([r.log.decision, r.log.reply_key], ["replied", "assist"]);
+  // call 1 = the look: the fast model, the image as base64, no tools, nothing about the customer
+  const c1 = w.m.seen[0];
+  assert.equal(c1.model, "claude-haiku-5-5"); assert.equal(c1.messages[0].content[0].type, "image"); assert.equal(c1.messages[0].content[0].source.media_type, "image/jpeg");
+  assert.equal(c1.messages[0].content[0].source.data, JPG.toString("base64"));
+  // call 2 = the normal turn: the description (masked), the caption, the flag; never the image
+  const c2 = JSON.stringify(w.m.seen[1].messages);
+  assert.ok(!c2.includes(JPG.toString("base64")) && !c2.includes("512345678"));
+  assert.ok(c2.includes("كم هذا؟") && c2.includes("[صورة من العميل]") && c2.includes("بوكس الكريب الفردي"));
+  assert.equal(ctxOf(w.m.seen[1]).seen_in_a_picture, true);
+  assert.equal(r.log.text, "🖼 إعلان بوكس الكريب الفردي بسعر 29، رقم التواصل [رقم]");
+  const vis = w.db.ai.find((a) => /^media:vision/.test(a.detail));
+  assert.deepEqual([vis.purpose, vis.model, vis.detail, vis.sent_text], ["assistant", "claude-haiku-5-5", "media:vision menu_or_ad", null]);
+  // payment screenshot: fixed text, urgent handover, the note has no number at all
+  const p = aWorld([look({ kind: "payment", summary: "إيصال دفع ناجح بمبلغ 125.50 من بطاقة تنتهي بـ 4821", clear: true })], { waBot: MEDIA_ON, mediaFile: file });
+  const pr = await p.say(null, { raw: imageMsg() });
+  assert.match(bodyOf(msgs(pr)[0]), /^وصلتني صورة عن الدفع 🙏 حوّلتها لموظف يراجعها معك\./); assert.equal(pr.log.handoff, "problem"); assert.equal(p.m.used(), 1);
+  assert.ok(!/\d/.test(pr.log.text), pr.log.text); assert.ok(!JSON.stringify(p.portal).match(/4821|125/));
+  // order problem: apology + urgent complaint handover
+  const o = aWorld([look({ kind: "order_problem", summary: "صورة وجبة الصوص منسكب فيها والبطاطس ناقصة", clear: true })], { waBot: MEDIA_ON, mediaFile: file });
+  const or = await o.say(null, { raw: imageMsg() });
+  assert.match(bodyOf(msgs(or)[0]), /^نعتذر منك 🙏 وصلتني صورة الطلب وحوّلتها لموظف يتابعها معك\./); assert.equal(or.log.handoff, "complaint");
+  // location screenshot: ask for the pin, no handover
+  const lo = aWorld([look({ kind: "location", summary: "لقطة شاشة لخريطة", clear: true })], { waBot: MEDIA_ON, mediaFile: file });
+  const lr = await lo.say(null, { raw: imageMsg() });
+  assert.match(bodyOf(msgs(lr)[0]), /أرسل الموقع نفسه من واتساب/); assert.equal(lr.log.handoff, null);
+  // other / unclear / unreadable answer / refused ⇒ today's reply + handover
+  for (const step of [look({ kind: "other", summary: "صورة شخصية", clear: true }), look({ kind: "menu_or_ad", summary: "غير واضحة", clear: false }), mSay("لا أستطيع"), { ok: false, error: "http_500", ms: 5, provider: "x", usage: null }]) {
+    const x = aWorld([step], { waBot: MEDIA_ON, mediaFile: file }); const xr = await x.say(null, { raw: imageMsg() });
+    assert.match(bodyOf(msgs(xr)[0]), OLD); assert.equal(xr.log.handoff, "media"); assert.equal(x.m.used(), 1);
+  }
+  // a video or a document is never looked at
+  const vd = aWorld([], { waBot: MEDIA_ON, mediaFile: file });
+  assert.match(bodyOf(msgs(await vd.say(null, { raw: { type: "video", video: { id: "999000111222", mime_type: "video/mp4" } } }))[0]), OLD); assert.equal(vd.mediaAsked.length, 0);
+}));
+
+test("VM1 budget — the media line inside the assistant's budget: at the limit photos and voice go back to the handover; the stats card shows both lines", withEnv(CONFIGURED, async () => {
+  const file = { ok: true, buf: JPG, mime: "image/jpeg" };
+  const w = aWorld([look({ kind: "location", summary: "خريطة", clear: true })], { waBot: { assist: { imagesEnabled: true, voiceEnabled: true, mediaBudgetDaySar: 0.5 } }, mediaFile: file });
+  w.db.ai.push({ id: 1, at: w.clock.now().toISOString(), purpose: "assistant", model: "gpt-4o-transcribe", in_tokens: 0, out_tokens: 0, cached_tokens: 0, cost_sar: 0.5, outcome: "ok", detail: "media:stt 60s", ms: 1 });
+  const r = await w.say(null, { raw: imageMsg() });
+  assert.match(bodyOf(msgs(r)[0]), OLD); assert.equal(w.m.used(), 0); assert.equal(w.mediaAsked.length, 0); assert.match(r.log.detail, /media_budget_day/);
+  const st = await w.call("GET", "/api/cms/wabot/assist/stats", {}, {});
+  assert.deepEqual(st.body.media, { imagesEnabled: true, voiceEnabled: true, budgetDaySar: 0.5, daySar: 0.5, voice: { n: 1, ok: 1, sar: 0.5 }, images: { n: 0, ok: 0, sar: 0 }, known: true });
+  // zero = closed; out-of-range values are refused on save
+  const z = aWorld([], { waBot: { assist: { imagesEnabled: true, mediaBudgetDaySar: 0 } }, mediaFile: file });
+  assert.match(bodyOf(msgs(await z.say(null, { raw: imageMsg() }))[0]), OLD); assert.equal(z.m.used(), 0);
+  for (const bad of [{ voiceMaxSec: 5 }, { voiceMaxSec: 301 }, { mediaBudgetDaySar: 51 }, { sttSarPerMin: 2 }, { sttModel: "bad model!" }]) assert.equal(R.configFromBody({ assist: bad }).ok, false, JSON.stringify(bad));
+  assert.equal(R.configFromBody({ assist: { voiceEnabled: true, voiceMaxSec: 90, sttModel: "groq/whisper-large-v3" } }).ok, true);
 }));

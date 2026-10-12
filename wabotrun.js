@@ -45,7 +45,8 @@ import { lookupFact, groupsIn, SEVERE_RE, factsCoverage, pickDish, factNote } fr
 import { makeAiCost, pricesOf, waRatesOf, pricesFromBody, waRatesFromBody, BUDGET_DEFAULTS } from "./waaicost.js";
 import { providerInfo, maskText } from "./wabotllm.js";
 import { kbTokens } from "./wakb.js";
-import { ASSIST_CFG_DEFAULTS, ASSIST_SCHEMA, PROMPT_HASH, assistConfig, assistFromBody, assistEligible, makeAssistLoop, makeAssistStore, makeModelCaller, newSession, noteRulesTurn, buildContext, hintOf } from "./waassistrun.js";
+import { lookImage, makeTranscriber, voiceSeconds, transcriptUsable, IMAGE_MAX_BYTES, VOICE_MAX_BYTES } from "./waassistmedia.js";
+import { ASSIST_CFG_DEFAULTS, ASSIST_SCHEMA, PROMPT_HASH, assistConfig, assistFromBody, assistEligible, makeAssistLoop, makeAssistStore, makeModelCaller, billableUsage, newSession, noteRulesTurn, buildContext, hintOf } from "./waassistrun.js";
 import { WA_UPDATES_TEXTS, WA_UPDATES_CURRENT, recordWaUpdatesBot, recordWaMarketingBot, ensureWaConsentSchema } from "./waconsent.js";
 
 export const STORE = "https://freshcuts.sa";
@@ -174,6 +175,9 @@ export const TEXTS = Object.freeze({
     "Sure 🙏 I've passed your chat to a staff member.\n{wait}", [], ["wait"]),
   staff: t("سؤال يحتاج موظف", "سؤالك يحتاج واحد من الفريق 🙏 حوّلته لهم.\n{wait}",
     "Your question needs one of the team 🙏 I've passed it on.\n{wait}", [], ["wait"]),
+  media_payment: t("صورة دفع أو إيصال (المساعد شافها) ⇒ موظف", "وصلتني صورة عن الدفع 🙏 حوّلتها لموظف يراجعها معك.\n{wait}", "I got your payment screenshot 🙏 I passed it to a staff member to check it with you.\n{wait}", [], ["wait"], 400),
+  media_order: t("صورة طلب فيه مشكلة (المساعد شافها) ⇒ موظف", "نعتذر منك 🙏 وصلتني صورة الطلب وحوّلتها لموظف يتابعها معك.\n{wait}", "We're sorry 🙏 I got the photo of your order and passed it to a staff member.\n{wait}", [], ["wait"], 400),
+  media_location: t("صورة موقع (المساعد شافها)", "وصلتني صورة موقع 📍 عشان أتأكد من التوصيل والرسوم لموقعك أرسل الموقع نفسه من واتساب: 📎 ثم «الموقع».", "I got a location screenshot 📍 To check delivery and the fee, please share the location itself from WhatsApp: 📎 then “Location”.", [], [], 400),
   media: t("صورة / صوت / ملف", "ما أقدر أفتح الصور والمقاطع الصوتية 🙏 حوّلت محادثتك لموظف.\n{wait}",
     "I can't open photos or voice notes 🙏 I've passed your chat to a staff member.\n{wait}", [], ["wait"]),
   unknown: t("غير مفهوم (أول مرة)", "ما فهمت طلبك تماماً 🙏 اختر من الأزرار، أو اكتب: موظف", "I didn't quite get that 🙏 Pick a button, or type: staff"),
@@ -1045,7 +1049,8 @@ export function buildReply(key, c) {
       return { body: F("df_unknown", { note: T("df_note_line") }), fact: `unknown:${f.why || ""}` };
     }
     case "secret": return { body: T("secret"), buttons: [{ id: "bot:menu", title: T("btn_main") }, { id: "bot:human", title: T("btn_human") }] };
-    case "problem": case "change": case "human": case "staff": case "media": case "data_missing": case "handoff_remind": case "custom_offer":
+    case "media_location": return { body: T(key) };
+    case "problem": case "change": case "human": case "staff": case "media": case "media_payment": case "media_order": case "data_missing": case "handoff_remind": case "custom_offer":
       return { body: F(key, { wait: wait() }) };
     case "rate": case "rate_burst": return { body: T(key) };
     case "unknown": return { body: T("unknown"), buttons: [{ id: "bot:menu", title: T("btn_main") }, { id: "bot:status", title: T("btn_status") }, { id: "bot:human", title: T("btn_human") }] };
@@ -1635,6 +1640,7 @@ export function register(app, ctx, deps = {}) {
   /* مساعد الطلبات: المخزن (الجلسة، سجل الأدوار، الاقتراحات) ونداء الموديل. الحلقة نفسها بتتركّب تحت بعد الأدوات. */
   const assistStore = deps.assistStore || makeAssistStore({ pool, jb: (v) => JSON.stringify(v) });
   const assistCall = deps.assistCallModel || makeModelCaller();
+  const transcribe = deps.transcribe || makeTranscriber();      // الصوت ⇒ نص (waassistmedia.js). في الاختبارات بيتبدّل بمحوّل وهمي.
   const q = async (sql, params) => { try { return (await pool.query(sql, params)).rows; } catch (e) { console.error("[wabot] db:", e.message); return null; } };
 
   /* البيانات الحية لرسالة واحدة. أي مصدر وقع ⇒ قيمته null/فاضية ⇒ الرد اللي محتاجه بيتحوّل لموظف. */
@@ -1832,10 +1838,23 @@ export function register(app, ctx, deps = {}) {
       }
       let d = decide(ev, { cfg: assistOn ? { ...cfg, humanPauseMin: cfg.assist.staffStepBackMin } : cfg, now, chat: assistOn && !held ? { ...chat, handoff_at: null, handoff_reason: null } : chat,
         lastEchoAt: echoAt, repliesLastHour: rc.n, rate: rc.rate, lastSame: rc.lastSame, failedRecently: rc.failedRecently, data, cls, afterWait, assistOn });
+      /* «يشوف ويسمع» (١٢/١٠): صورة أو رسالة صوتية كانت هتاخد رد «ما أقدر أفتح الصور…» + تحويل. لو المساعد شغّال للرقم ده والمفتاح مفتوح والسقف يسمح:
+         - الصوت بيتحوّل لنص، والصورة (منيو/إعلان) لملخص مقنّع ⇒ الرسالة بتتعالج من الأول كأنها نص (ومعاها علامة heard للمساعد).
+         - صورة دفع / طلب فيه مشكلة ⇒ تحويل لموظف بنص ثابت + اللي اتفهم في ملاحظة الموظف. صورة موقع ⇒ نطلب الموقع نفسه.
+         - أي حاجة تانية أو أي فشل (مقفول، سقف، طويلة، مش واضحة، المزوّد واقع) ⇒ القرار زي ما هو (تحويل لموظف). */
+      let mediaDone = false, seenEv = null;
+      /* صورة معاها تعليق: التعليق اتصنّف كنص عادي، بس الصورة لازم تتشاف برضه (الفشل ⇒ الرد على التعليق لوحده زي الأول). */
+      if (assistOn && !held && !ev.heard && ev.media && (d.act === "reply" || (d.act === "wait" && d.waitKind === "unknown_wait")) && (d.key === "media" || (ev.media.kind === "image" && ev.type === "image"))) {
+        let mu = null;
+        try { mu = await understandMedia({ ev, cfg, phone, logId, lang: cls.lang === "en" ? "en" : "ar", data }); } catch (e) { console.error("[assist] media:", e.message); mu = null; }
+        if (mu && mu.ev) return work(mu.ev, logId, settings, cfg, afterWait);
+        if (mu && mu.seen) seenEv = mu.seen;      // صورة منيو/إعلان: الوصف بيروح للمساعد مباشرة (مش لتصنيف القواعد: ده مش كلام العميل). فشل المساعد ⇒ القرار الأصلي زي ما هو.
+        if (mu && mu.d) { d = { ...d, ...mu.d }; mediaDone = true; }
+      }
       /* مساعد الطلبات (وضع التجربة، أرقام التجربة بس): لو الرسالة من نصيبه ومفيش مانع، ردّه بيبدّل قرار القواعد. أي فشل (مهلة، سقف، خطأ، رد اترفض
          مرتين) ⇒ ar.d = null ⇒ قرار القواعد زي ما هو. ar.done بيتنادى بعد التنفيذ عشان الجلسة والسجل والمتابعة يتكتبوا **بعد** ما الرسالة تتبعت فعلاً. */
       let ar = null;
-      if (assistOn) { try { ar = await assistTurn({ ev, logId, settings, cfg, d, cls, chat, data, know, now, echoAt, phone, held }); } catch (e) { console.error("[assist] turn:", e.message); ar = null; } }
+      if (assistOn && !mediaDone) { try { ar = await assistTurn({ ev: seenEv || ev, logId, settings, cfg, d, cls: seenEv ? { ...cls, key: "seen", rawIntent: "picture", arg: null, entities: {} } : cls, chat, data, know, now, echoAt, phone, held }); } catch (e) { console.error("[assist] turn:", e.message); ar = null; } }
       if (ar && ar.d) d = ar.d;
       const assistDone = async (x) => { if (ar && ar.done) { try { await ar.done(x); } catch (e) { console.error("[assist] done:", e.message); } } };
       /* رسالة القواعد مافهمتهاش (هترد «ما فهمت» الحين أو بعد انتظار الموظف) ⇒ تنزل في طابور أسئلة المدير لو فيها كلمتين معنى على الأقل
@@ -1860,7 +1879,7 @@ export function register(app, ctx, deps = {}) {
       if (d.act === "wait") {
         // رد مؤجّل: صف في القاعدة (بيعيش بعد إعادة التشغيل). وقت التنفيذ كل الشروط بتتراجع من جديد.
         const evLite = { phone, phoneNorm: phone, wamid: ev.wamid || null, text: String(ev.text || "").slice(0, 1000), type: ev.type || "text",
-          interactiveId: ev.interactiveId || null, referral: ev.referral || null, location: ev.location || null, at: ev.at || now.toISOString(), intent: ev.intent || null,
+          interactiveId: ev.interactiveId || null, referral: ev.referral || null, location: ev.location || null, media: ev.media || null, at: ev.at || now.toISOString(), intent: ev.intent || null,
           cls: /^llm:/.test(String(cls.rawIntent || "")) ? { key: cls.key, arg: cls.arg ?? null, rawIntent: cls.rawIntent, score: cls.score } : null };
         const j = await q(`INSERT INTO wa_bot_jobs(wamid, phone_norm, kind, due_at, ev, log_id) VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT (wamid) DO NOTHING RETURNING id`,
           [ev.wamid || null, phone, d.waitKind, d.dueAt, jb(evLite), logId]);
@@ -2057,6 +2076,65 @@ export function register(app, ctx, deps = {}) {
   const withAlt = (cls) => { if (!cls || cls.key !== "dishfact" || cls.rawIntent !== "remove_question" || !cls.arg || !cls.arg.id) return cls;
     const f = lookupFact(cls.arg.id, cls.arg.text, { remove: true }); return f.status === "alternative" ? { ...cls, alt: { id: f.altId, name: f.alt, name_en: f.altEn } } : cls; };
   const locFresh = (loc, now) => Boolean(chatLocation(loc, now, tune.assist.locationHours));      // نفس القاعدة اللي بتتبعت للمتجر مع السلة: موقع بوقته وعمره أقل من الإعداد
+  /* ── «يشوف ويسمع» ─────────────────────────────────────────────────────────
+     ⇒ { ev } (الرسالة بقت نص: تتعالج من الأول) أو { d } (حقول قرار جاهزة: رد ثابت ± تحويل) أو null (القرار الأصلي: «ما أقدر أفتح…» + تحويل).
+     مصروف الصور والصوت بيتسجّل على غرض المساعد نفسه (فبيتحسب في سقفه اليومي) ومتعلّم بـ‎detail = media:…‎ عشان سطر السقف الخاص بيه. */
+  const MEDIA_DAY = `(date_trunc('day', NOW() AT TIME ZONE 'Asia/Riyadh') AT TIME ZONE 'Asia/Riyadh')`;
+  const mediaSpentToday = async () => { const r = await q(`SELECT COALESCE(sum(cost_sar),0)::float AS s FROM ai_calls WHERE purpose='assistant' AND detail LIKE 'media:%' AND at >= ${MEDIA_DAY}`, []); return r === null ? null : Number(r[0] && r[0].s) || 0; };
+  /* سطر الصور والصوت في كارت سقف المساعد: مصروف النهارده وحدّه، وعدد ومصروف كل نوع. */
+  async function mediaStats(cfg) {
+    const r = await q(`SELECT CASE WHEN detail LIKE 'media:stt%' THEN 'voice' ELSE 'images' END AS kind, count(*)::int AS n, count(*) FILTER (WHERE outcome='ok')::int AS ok, COALESCE(sum(cost_sar),0)::float AS sar
+                         FROM ai_calls WHERE purpose='assistant' AND detail LIKE 'media:%' AND at >= ${MEDIA_DAY} GROUP BY 1`, []);
+    const a = cfg.assist, out = { imagesEnabled: a.imagesEnabled, voiceEnabled: a.voiceEnabled, budgetDaySar: a.mediaBudgetDaySar, daySar: 0, voice: { n: 0, ok: 0, sar: 0 }, images: { n: 0, ok: 0, sar: 0 }, known: r !== null };
+    for (const x of r || []) { out[x.kind] = { n: x.n, ok: x.ok, sar: Math.round(x.sar * 1e4) / 1e4 }; out.daySar += x.sar; }
+    out.daySar = Math.round(out.daySar * 1e4) / 1e4;
+    return out;
+  }
+  async function understandMedia({ ev, cfg, phone, logId, lang, data }) {
+    const acfg = cfg.assist, m = ev.media || {};
+    const kind = m.kind === "image" ? "image" : m.kind === "audio" ? "voice" : null;
+    if (!kind || !m.id) return null;
+    if (kind === "image" ? !acfg.imagesEnabled : !acfg.voiceEnabled) return null;
+    const why = async (t) => { await q("UPDATE wa_bot_log SET detail=$2 WHERE id=$1", [logId, `media off: ${t}`.slice(0, 200)]); return null; };
+    const spent = await mediaSpentToday();
+    if (spent === null) return why("cost_db_down");
+    if (!(acfg.mediaBudgetDaySar > 0) || spent >= acfg.mediaBudgetDaySar) return why("media_budget_day");
+    const stop = await aicost.gate({ purpose: "assistant", budget: { budgetMonthSar: acfg.budgetMonthSar, budgetDaySar: acfg.budgetDaySar }, alert: false });
+    if (stop) return why(stop);
+    if (typeof wa.fetchMedia !== "function") return why("no_fetch");
+    let f = null; try { f = await wa.fetchMedia(String(m.id), { maxBytes: kind === "image" ? IMAGE_MAX_BYTES : VOICE_MAX_BYTES }); } catch (e) { f = null; }
+    if (!f || !f.ok || !f.buf) return why(`fetch_${(f && f.error) || "failed"}`);
+    const mime = f.mime || m.mime || "";
+    if (kind === "voice") {
+      const dur = voiceSeconds(f.buf);
+      if (dur.sec > acfg.voiceMaxSec) return why(`voice_too_long_${Math.round(dur.sec)}s`);
+      const r = await transcribe({ buf: f.buf, mime, model: acfg.sttModel, timeoutMs: acfg.timeoutMs });
+      const cost = r && r.ok ? Math.round((Math.max(1, dur.sec) / 60) * acfg.sttSarPerMin * 1e6) / 1e6 : 0;
+      await q(`INSERT INTO ai_calls(purpose, provider, model, in_tokens, out_tokens, cached_tokens, estimated, cost_sar, priced, price_date, ms, chat_hash, outcome, detail, sent_text, prompt_chars, prompt_hash, log_id)
+               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)`,
+        ["assistant", (r && r.provider) || null, String(acfg.sttModel).slice(0, 60), 0, 0, 0, !dur.exact, cost, true, null, Math.round(Number(r && r.ms) || 0), null, r && r.ok ? "ok" : String((r && r.reason) || "error").slice(0, 40), `media:stt ${Math.round(dur.sec)}s`, null, null, null, logId]);
+      if (!r || !r.ok) return why(`stt_${(r && r.reason) || "error"}`);
+      if (!transcriptUsable(r.text)) return why("stt_unclear");
+      await q("UPDATE wa_bot_log SET text=$2 WHERE id=$1", [logId, `🎤 ${maskText(r.text)}`.slice(0, 500)]);
+      return { ev: { ...ev, text: r.text, type: "text", media: null, referral: null, heard: "voice" } };
+    }
+    const r = await lookImage({ buf: f.buf, mime, callModel: assistCall, model: acfg.visionModel, timeoutMs: acfg.timeoutMs });
+    if (r && r.usage) { try { await aicost.record({ purpose: "assistant", provider: r.provider, model: acfg.visionModel, usage: billableUsage(r.usage), usageKind: "anthropic", ms: r.ms, phone, outcome: r.ok ? "ok" : String(r.reason).slice(0, 40), detail: `media:vision ${r.ok ? r.kind : ""}`.trim(), sent: null, logId }, cfg.llm.prices); } catch (e) { console.error("[assist] media cost:", e.message); } }
+    if (!r || !r.ok) return why(`vision_${(r && r.reason) || "error"}`);
+    if (!r.clear || r.kind === "other") return why(`vision_${r.clear ? "other" : "unclear"}`);
+    await q("UPDATE wa_bot_log SET text=$2 WHERE id=$1", [logId, `🖼 ${r.summary}`.slice(0, 500)]);
+    if (r.kind === "menu_or_ad") {
+      const cap = String(m.caption || "").replace(/\s+/g, " ").trim().slice(0, 300);
+      return { seen: { ...ev, text: `${cap ? `${cap}\n` : ""}[صورة من العميل] ${r.summary}`, type: "text", media: null, heard: "image" } };
+    }
+    /* رد ثابت (نص قابل للتعديل) — الموديل مابيكتبش حاجة للعميل هنا. */
+    const key = r.kind === "payment" ? "media_payment" : r.kind === "order_problem" ? "media_order" : "media_location";
+    let reply; try { reply = buildReply(key, { cfg, lang, data: data || {}, referral: null, factual: false, arg: null }); } catch (e) { return why(`reply_${key}`); }
+    const p = toPayload({ body: reply.body }, { cfg, lang, interactive: false, footer: false });
+    if (payloadProblem(p)) return why(`payload_${key}`);
+    return { d: { key, payloads: [p], fallback: [p], handoff: key === "media_payment" ? ["problem", "urgent"] : key === "media_order" ? ["complaint", "urgent"] : null,
+      note: key === "media_location" ? null : `صورة: ${r.summary}`.slice(0, 200), detail: `media:vision ${r.kind}`, disclose: false, unknown: false, link: null, channel: null } };
+  }
   /* قاعدة معرفة المدير (wakb.js): بتتسجّل بعد البورتال، فبنوصل لها وقت الاستخدام. مش موجودة ⇒ المساعد يشتغل من غيرها. */
   const kbApi = () => { try { return typeof deps.kb === "function" ? deps.kb() : deps.kb || null; } catch { return null; } };
   /* العميل جاي من إعلان (الرسالة دي معاها referral، أو محادثته لسه جوّه مدة الإعلان): عنوان الإعلان من غير أرقام (السعر من الأدوات بس)،
@@ -2151,6 +2229,7 @@ export function register(app, ctx, deps = {}) {
     /* تحويل عادي لسه مستني موظف: المساعد يعرف (مايحوّلش نفس الحاجة تاني، ويقول للعميل إن الموظف هيرد) ويكمل يساعد. */
     const pending = handoverOpenOf(chat, cfg, echoAt, now) ? { reason: String(chat.handoff_reason || "handover"), minutes_ago: Math.max(0, Math.round((now.getTime() - Date.parse(chat.handoff_at)) / 60_000)) } : null;
     const cx = await assistContext({ fresh, phone, cfg, lang, chat, know, data, now, cls, pending, ev, settings });
+    if (ev.heard) cx.context = { ...cx.context, ...(ev.heard === "voice" ? { heard_from_voice_note: true } : { seen_in_a_picture: true }) };
     const loop = makeAssistLoop(assistDeps(cfg, settings, logId));
     const text = cls.key === "area" ? "📍" : String(ev.text || "");      // الموقع نفسه مابيتبعتش للموديل: علامة بس، والسياق بيقول إنه شارك موقعه
     const r = await loop.runTurn({ phone, text, lang, session, acfg, context: cx.context, profile: cx.profile });
@@ -2632,7 +2711,7 @@ export function register(app, ctx, deps = {}) {
     const followups = (await q(`SELECT status, COALESCE(reason,'sent') AS reason, count(*)::int AS n FROM wa_bot_jobs WHERE kind='assist_followup' AND created_at > NOW() - make_interval(days => $1::int) GROUP BY 1,2 ORDER BY 3 DESC`, [Math.min(90, Math.max(1, Number(c.req.query("days")) || 7))])) || [];
     return c.json({ ok: true, mode: cfg.assist.mode, botMode: cfg.mode, testPhones: cfg.testPhones.length, promptVersion: PROMPT_HASH, provider: providerInfo(), models: { strong: cfg.assist.model, simple: cfg.assist.modelSimple, routing: cfg.assist.routing },
       storeReady: (await q("SELECT 1 FROM wa_assist_turns LIMIT 1", [])) !== null && (await q("SELECT 1 FROM wa_assist_suggestions LIMIT 1", [])) !== null && (await q("SELECT 1 FROM wa_assist_chats LIMIT 1", [])) !== null,
-      ...(await assistStore.stats(Number(c.req.query("days")) || 7)), followups });
+      ...(await assistStore.stats(Number(c.req.query("days")) || 7)), followups, media: await mediaStats(cfg) });
   });
   /* تقرير الإعلانات (قراءة بس): لكل إعلان — كام محادثة فتحها، كام واحد منهم اتجهّزت له سلة (واتفتحت)، وكام طلب مدفوع من الموقع ومبلغه.
      «طلب من الإعلان» = طلب مدفوع من نفس الرقم خلال adWindowHours من أول رسالته من الإعلان (نفس مدة «المحادثة محسوبة على الإعلان»). أرقام التجربة برّه العدّ. */

@@ -2088,3 +2088,15 @@
 {"at":"2026-10-12T11:51:34.392Z","day":"2026-10-12","run":"ch1-b","scenario":"ch1-after-cart","model":"claude-sonnet-5-5","in":2,"out":59,"cached":10446,"sar":0.010062,"ms":1280,"outcome":"ok","tier":"strong r2"}
 {"at":"2026-10-12T11:51:35.912Z","day":"2026-10-12","run":"ch1-b","scenario":"ch1-after-cart","model":"claude-sonnet-5-5","in":4,"out":157,"cached":10677,"sar":0.013925,"ms":1511,"outcome":"ok","tier":"strong r0"}
 {"at":"2026-10-12T11:51:37.442Z","day":"2026-10-12","run":"ch1-b","scenario":"ch1-after-cart","model":"claude-sonnet-5-5","in":2,"out":113,"cached":11078,"sar":0.012561,"ms":1527,"outcome":"ok","tier":"strong r1"}
+{"at":"2026-10-12T12:51:54.405Z","day":"2026-10-12","run":"media-a","scenario":"menu-item","model":"claude-haiku-5-5","in":1706,"out":113,"cached":0,"sar":0.000852,"ms":2233,"outcome":"ok","tier":"look"}
+{"at":"2026-10-12T12:51:55.825Z","day":"2026-10-12","run":"media-a","scenario":"menu-item","model":"claude-sonnet-5-5","in":11818,"out":59,"cached":0,"sar":0.090848,"ms":1370,"outcome":"ok","tier":"turn"}
+{"at":"2026-10-12T12:51:56.961Z","day":"2026-10-12","run":"media-a","scenario":"menu-item","model":"claude-sonnet-5-5","in":820,"out":48,"cached":9451,"sar":0.015038,"ms":1129,"outcome":"ok","tier":"turn"}
+{"at":"2026-10-12T12:51:58.132Z","day":"2026-10-12","run":"media-a","scenario":"ad-box","model":"claude-haiku-5-5","in":852,"out":96,"cached":683,"sar":0.000756,"ms":1151,"outcome":"ok","tier":"look"}
+{"at":"2026-10-12T12:51:59.534Z","day":"2026-10-12","run":"media-a","scenario":"ad-box","model":"claude-sonnet-5-5","in":848,"out":55,"cached":8759,"sar":0.014992,"ms":1396,"outcome":"ok","tier":"turn"}
+{"at":"2026-10-12T12:52:01.454Z","day":"2026-10-12","run":"media-a","scenario":"ad-box","model":"claude-sonnet-5-5","in":1372,"out":174,"cached":9434,"sar":0.023891,"ms":1916,"outcome":"ok","tier":"turn"}
+{"at":"2026-10-12T12:52:02.970Z","day":"2026-10-12","run":"media-a","scenario":"receipt-ok","model":"claude-haiku-5-5","in":852,"out":111,"cached":683,"sar":0.000784,"ms":1510,"outcome":"ok","tier":"look"}
+{"at":"2026-10-12T12:52:04.637Z","day":"2026-10-12","run":"media-a","scenario":"transfer-failed","model":"claude-haiku-5-5","in":852,"out":90,"cached":683,"sar":0.000744,"ms":1665,"outcome":"ok","tier":"look"}
+{"at":"2026-10-12T12:52:05.791Z","day":"2026-10-12","run":"media-a","scenario":"map","model":"claude-haiku-5-5","in":852,"out":83,"cached":683,"sar":0.000731,"ms":1153,"outcome":"ok","tier":"look"}
+{"at":"2026-10-12T12:52:08.029Z","day":"2026-10-12","run":"media-a","scenario":"injection","model":"claude-haiku-5-5","in":852,"out":103,"cached":683,"sar":0.000769,"ms":2236,"outcome":"ok","tier":"look"}
+{"at":"2026-10-12T12:52:09.487Z","day":"2026-10-12","run":"media-a","scenario":"other-settings","model":"claude-haiku-5-5","in":852,"out":92,"cached":683,"sar":0.000748,"ms":1457,"outcome":"ok","tier":"look"}
+{"at":"2026-10-12T12:52:11.002Z","day":"2026-10-12","run":"media-a","scenario":"chat-wrong-order","model":"claude-haiku-5-5","in":852,"out":103,"cached":683,"sar":0.000769,"ms":1514,"outcome":"ok","tier":"look"}
