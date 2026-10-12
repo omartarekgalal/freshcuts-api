@@ -1359,6 +1359,10 @@ export function register(app, ctx, deps = {}) {
       discountSource, feeInPos, currency: "SAR",
       sessionId: session.SessionId, countryCode: session.CountryCode || "SAU",
       resumeKey: k, trackKey: k,
+      /* C1: كود توصيل مجاني اتشال بهدوء من طلب استلام/طاولة — الرد بيقول كده (معلومة بس: المتجر بيشرحها للعميل من عنده).
+         ⚠️ السطر ده اتحط بالغلط في ‎/api/shop/execute‎ (١٢/١٠، 2350a6c) حيث المتغيّر مش معرّف ⇒ كل محاولة دفع رجّعت 500
+         لحد الإصلاح العاجل b3b317f. مكانه الصح هنا: couponIgnored متعرّف في نفس المسار ده (فوق، مع coupon). */
+      ...(couponIgnored ? { couponIgnored } : {}),
     });
   });
 

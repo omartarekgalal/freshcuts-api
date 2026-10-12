@@ -55,7 +55,13 @@ test("the checkout route uses the rule and tells the storefront when it ignored 
   assert.ok(seg.includes("nonDeliveryCoupon(coupon, { option, code: b.coupon, table: Boolean(tableSid),"));
   assert.ok(seg.includes("couponIgnored = nd.ignored;") && seg.includes("coupon = nd.coupon;"));
   assert.ok(seg.includes('if (coupon && option !== "delivery")'), "delivery orders skip the rule");
-  assert.ok(shop.includes("...(couponIgnored ? { couponIgnored } : {}) });"), "the success answer carries couponIgnored");
+  /* the field must sit in the CHECKOUT route (where the variable lives), not anywhere in the file: on 12/10 this assertion
+     accepted the same text in /api/shop/execute, where the variable does not exist, and every payment attempt returned 500.
+     The behaviour itself is tested end to end in shop-pay-routes.test.mjs. */
+  const co = shop.slice(shop.indexOf('app.post("/api/shop/checkout"'), shop.indexOf('app.post("/api/shop/execute"'));
+  const ex = shop.slice(shop.indexOf('app.post("/api/shop/execute"'), shop.indexOf("async function confirmOrder("));
+  assert.ok(co.includes("let coupon = null, couponIgnored = null;") && co.includes("...(couponIgnored ? { couponIgnored } : {}),"), "declared and returned in the checkout route");
+  assert.ok(!ex.includes("couponIgnored"), "the execute route knows nothing about it");
   // the authoritative re-check against the real total is still there for a coupon that is applied
   assert.ok(shop.includes('if (!recheck.ok) return fail("coupon_" + recheck.error, 422, { coupon: recheck });'));
 });
