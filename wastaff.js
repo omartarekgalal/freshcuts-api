@@ -22,6 +22,7 @@
        POST /api/portal/wa/chats/:key/reply   {text}
        POST /api/portal/wa/chats/:key/read
        GET  /api/portal/wa/quick-replies
+       GET  /api/portal/wa/chats/:key/media/:ref[?as=mp3]      (MD1 — wamedia.js: صورة / صوت / فيديو / ملف الرسالة)
        POST /api/portal/wa/chats/:key/take {force?} · /release · /done      (SR2 — waowner.js: مين ماسك المحادثة)
      اللوحة: GET /api/cms/wa/threads-quick (الردود السريعة)، والرد نفسه على مسار wahub الموجود
        POST /api/cms/wa/threads/:key/reply — بيتحوّل هنا (reply) لما الملف ده متسجّل.
@@ -31,6 +32,7 @@ import crypto from "node:crypto";
 import { tokenSecret } from "./portal-core.js";
 import { FAQ_DEFS } from "./wabotrun.js";
 import * as waowner from "./waowner.js";
+import * as wamedia from "./wamedia.js";
 
 export const MAX_TEXT = 4096;
 export const GATES = Object.freeze(["disabled", "unconfigured", "settings_unreadable", "master_off", "settings_off", "window_closed", "opted_out", "not_in_allow_list"]);
@@ -76,6 +78,8 @@ export function register(app, ctx, deps = {}) {
   const ready = pool.query(DDL).then(() => true).catch((e) => { log.error("[wa-staff] schema:", e.message); return false; });
   /* SR2: مين ماسك المحادثة (سحب / سيبها للبوت / خلصت) — المنطق كله في waowner.js */
   const keyOf = (pn) => crypto.createHash("md5").update(`${SALT}:${pn}`).digest("hex");
+  /* MD1: ملفات الرسايل (صور / صوت / فيديو) — بتتجاب من ميتا بتوكن السيرفر وبتتخزن خاص */
+  const media = wamedia.create({ pool, wa, getSettingsData, log, transcode: deps.transcode, noTimer: deps.noTimer });
   const owner = waowner.create({ pool, getSettingsData, bot: deps.bot, keyOf, broadcast: deps.broadcast, log, noTimer: deps.noTimer, now: deps.now });
 
   async function phoneOfKey(raw) {
@@ -171,18 +175,28 @@ export function register(app, ctx, deps = {}) {
   /* SR2: مهلة رجوع المحادثة المسحوبة للبوت (settings.waInbox.holdAutoReleaseMin) — القراءة لأي دور في قسم «الطلبات»، الحفظ للمالك */
   app.get("/api/cms/wa/threads-hold", async (c) => {
     const err = await requireAdmin(c); if (err) return err;
-    return c.json({ ok: true, holdAutoReleaseMin: await owner.minutes(), default: waowner.HOLD.def, min: waowner.HOLD.min, max: waowner.HOLD.max });
+    return c.json({ ok: true, holdAutoReleaseMin: await owner.minutes(), default: waowner.HOLD.def, min: waowner.HOLD.min, max: waowner.HOLD.max,
+      mediaKeepDays: wamedia.keepDays(await getSettingsData().catch(() => ({}))), mediaKeep: wamedia.KEEP });
   });
   app.post("/api/cms/wa/threads-hold", async (c) => {
     const err = await requireAdmin(c); if (err) return err;
     if (!(ctx.isOwner && (await ctx.isOwner(c)))) return c.json({ ok: false, error: "owner_only", message: "تعديل المهلة للمالك بس" }, 403);
     let b = {}; try { b = await c.req.json(); } catch { return c.json({ ok: false, error: "bad_json" }, 400); }
-    const v = Number(b.holdAutoReleaseMin);
-    if (!Number.isFinite(v) || v < waowner.HOLD.min || v > waowner.HOLD.max) return c.json({ ok: false, error: "bad_value", message: `المهلة من ${waowner.HOLD.min} لـ${waowner.HOLD.max} دقيقة` }, 400);
     const cur = ((await getSettingsData().catch(() => ({}))) || {}).waInbox;
-    const next = { ...(cur && typeof cur === "object" ? cur : {}), holdAutoReleaseMin: Math.round(v) };
+    const next = { ...(cur && typeof cur === "object" ? cur : {}) };
+    if (b.holdAutoReleaseMin !== undefined || b.mediaKeepDays === undefined) {
+      const v = Number(b.holdAutoReleaseMin);
+      if (!Number.isFinite(v) || v < waowner.HOLD.min || v > waowner.HOLD.max) return c.json({ ok: false, error: "bad_value", message: `المهلة من ${waowner.HOLD.min} لـ${waowner.HOLD.max} دقيقة` }, 400);
+      next.holdAutoReleaseMin = Math.round(v);
+    }
+    if (b.mediaKeepDays !== undefined) {      // MD1: مدة الاحتفاظ بنسخ الصور والصوت عندنا
+      const d = Number(b.mediaKeepDays);
+      if (!Number.isFinite(d) || d < wamedia.KEEP.min || d > wamedia.KEEP.max) return c.json({ ok: false, error: "bad_value", message: `مدة الاحتفاظ من ${wamedia.KEEP.min} لـ${wamedia.KEEP.max} يوم` }, 400);
+      next.mediaKeepDays = Math.round(d);
+    }
     await pool.query(`UPDATE settings SET data = jsonb_set(COALESCE(data,'{}'::jsonb), '{waInbox}', $1::jsonb, true) WHERE id=1`, [JSON.stringify(next)]);
-    return c.json({ ok: true, holdAutoReleaseMin: next.holdAutoReleaseMin, default: waowner.HOLD.def, min: waowner.HOLD.min, max: waowner.HOLD.max });
+    return c.json({ ok: true, holdAutoReleaseMin: waowner.holdMinutes({ waInbox: next }), default: waowner.HOLD.def, min: waowner.HOLD.min, max: waowner.HOLD.max,
+      mediaKeepDays: wamedia.keepDays({ waInbox: next }), mediaKeep: wamedia.KEEP });
   });
 
   /* ── البورتال ── */
@@ -205,6 +219,12 @@ export function register(app, ctx, deps = {}) {
         return c.json({ ok: true, owner: r.owner });
       } catch (e) { log.error(`[wa-staff] ${fn}:`, e.message); return c.json({ ok: false, error: "unavailable" }, 503); }
     };
+    app.get("/api/portal/wa/chats/:key/media/:ref", async (c) => {
+      const a = await gateP(c); if (a.res) return a.res;
+      const pn = await phoneOfKey(c.req.param("key"));
+      if (!pn) return c.json({ ok: false, error: "not_found" }, 404);
+      return media.serve(c, { phoneNorm: pn, ref: c.req.param("ref"), as: c.req.query("as") || null });
+    });
     app.post("/api/portal/wa/chats/:key/take", ownerAct("take"));
     app.post("/api/portal/wa/chats/:key/release", ownerAct("release"));
     app.post("/api/portal/wa/chats/:key/done", ownerAct("done"));
@@ -249,5 +269,5 @@ export function register(app, ctx, deps = {}) {
     });
   }
 
-  return { ready, reply, sendStateFor, channelState, annotate, quick, phoneOfKey, owner };
+  return { ready, reply, sendStateFor, channelState, annotate, quick, phoneOfKey, owner, media };
 }

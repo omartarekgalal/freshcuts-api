@@ -33,7 +33,7 @@ function world({ role = "owner", settings = {}, threads = [], messages = [], bot
       return { rows: rows.slice(0, p[p.length - 1]) };
     }
     if (/^SELECT t\.phone_norm, t\.last_in_at, t\.last_at, t\.unread/i.test(s)) return { rows: db.threads.filter((t) => t.phone_norm === p[0]).map((t) => ({ ...t, optin_updates: true, optin_marketing: false, stopped_at: null })) };
-    if (/^SELECT wamid, direction, status, error, body, template, category, order_no, created_at, source, pricing FROM wa_messages/i.test(s)) {
+    if (/^SELECT wamid, direction, status, error, body, template, category, order_no, created_at, source, pricing, id, media FROM wa_messages/i.test(s)) {
       let rows = messages.filter((m) => m.phone_norm === p[0]).sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at));
       if (p[1]) rows = rows.filter((m) => Date.parse(m.created_at) < Date.parse(p[1]));
       return { rows: rows.slice(0, p[2]) };
@@ -60,7 +60,7 @@ function world({ role = "owner", settings = {}, threads = [], messages = [], bot
     return metaList ? { ok: true, status: 200, json: async () => ({ data: metaList }) } : { ok: false, status: 400, json: async () => ({ error: { message: "nope" } }) }; };
   const inboxCalls = [];
   const api = register(app, { pool, requireAdmin: async (c) => (user ? null : c.json({ ok: false, error: "unauthorized" }, 401)), getSettingsData: async () => JSON.parse(JSON.stringify(db.settings)) },
-    { whoami: async () => user, now: () => NOW, timer: false, keySalt: "test-salt", fetch, log: { error() {} },
+    { whoami: async () => user, now: () => NOW, timer: false, keySalt: "test-salt", fetch, log: { error(...a) { if (process.env.DBG) console.log("LOG", ...a); } },
       wa: { token: () => "systok", idsInUse: () => ({ wabaId: "WABA1" }), gate: async () => { if (db.gateThrows) throw new Error("x"); return db.gate === undefined ? "disabled" : db.gate; } },
       waInbox: () => ({ replyText: async (a) => { inboxCalls.push(["text", a]); return db.nextReply || { ok: true, wamid: "wamid.R1", window: { open: true } }; },
         replyTemplate: async (a) => { inboxCalls.push(["template", a]); return db.nextReply || { ok: true, wamid: "wamid.T1" }; } }),

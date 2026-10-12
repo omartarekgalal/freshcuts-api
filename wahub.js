@@ -21,6 +21,7 @@ import { tokenSecret } from "./portal-core.js";
 import { bizDay, bizStart, shiftDay } from "./bizday.js";
 import * as CAT from "./watemplates.js";
 import { TEMPLATES as REG, STAGE_TEMPLATES, GRAPH_VERSION } from "./whatsapp.js";
+import { publicMedia } from "./wamedia.js";
 
 export const DEFAULT_INBOX_ROLES = Object.freeze(["owner", "operations", "kitchen"]);
 const ROLE_IDS = ["owner", "marketing", "operations", "accounting", "kitchen"];
@@ -219,7 +220,7 @@ export function register(app, ctx, deps = {}) {
     if (!head) return { ok: false, error: "not_found" };
     const b4 = before && Number.isFinite(Date.parse(before)) ? new Date(before).toISOString() : null;
     const msgs = (await pool.query(
-      `SELECT wamid, direction, status, error, body, template, category, order_no, created_at, source, pricing
+      `SELECT wamid, direction, status, error, body, template, category, order_no, created_at, source, pricing, id, media
          FROM wa_messages WHERE phone_norm = $1 AND ($2::timestamptz IS NULL OR created_at < $2)
         ORDER BY created_at DESC LIMIT $3`, [pn, b4, lim + 1])).rows || [];
     const page = msgs.slice(0, lim).reverse();
@@ -249,7 +250,7 @@ export function register(app, ctx, deps = {}) {
         const pr = m.pricing && typeof m.pricing === "object" && "billable" in m.pricing ? { billable: m.pricing.billable === true, category: m.pricing.category || null } : null;
         return { id: m.wamid || `${m.direction}:${iso(m.created_at)}`, dir: m.direction, text: m.body || (m.template ? `[قالب: ${m.template}]` : ""),
           template: m.template || null, category: m.category || null, status: m.status || null, error: m.error || null, orderNo: m.order_no || null,
-          source: m.source || "api", at: iso(m.created_at), cost: pr,
+          source: m.source || "api", at: iso(m.created_at), cost: pr, media: publicMedia(m),      // MD1: ملف الرسالة (من غير رقم ميتا)
           bot: d ? { decision: d.decision || null, replyKey: d.reply_key || null, reason: d.reason || null } : null };
       }),
       events,
@@ -287,6 +288,15 @@ export function register(app, ctx, deps = {}) {
     if (!pn) return c.json({ ok: false, error: "not_found" }, 404);
     await pool.query("UPDATE wa_threads SET unread=0, read_at=NOW(), read_by=$2, updated_at=NOW() WHERE phone_norm=$1", [pn, clip(a.user.name || a.user.role, 60)]);
     return c.json({ ok: true });
+  });
+  /* MD1: ملف الرسالة (صورة / صوت / فيديو / ملف) — نفس صلاحية المحادثة، والرسالة لازم تكون من نفس المحادثة */
+  app.get("/api/cms/wa/threads/:key/media/:ref", async (c) => {
+    const a = await access(c); if (a.res) return a.res;
+    const pn = await phoneOfKey(c.req.param("key"), a.full);
+    if (!pn) return c.json({ ok: false, error: "not_found" }, 404);
+    const md = staff()?.media || null;
+    if (!md) return c.json({ ok: false, error: "unavailable" }, 503);
+    return md.serve(c, { phoneNorm: pn, ref: c.req.param("ref"), as: c.req.query("as") || null });
   });
   /* SR2: سحب المحادثة / سيبها للبوت / خلصت — نفس دوال البورتال (waowner.js)؛ المالك والعمليات يقدروا ياخدوا محادثة حد تاني (force) */
   for (const fn of ["take", "release", "done"]) {

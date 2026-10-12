@@ -224,7 +224,7 @@ test("lists and the chat carry owner; filters held / mine and their counts; the 
 
 test("the hold time is a setting: anyone in the section reads it, only the owner saves it, inside 5–240", async () => {
   const w = world();
-  assert.deepEqual((await w.call("GET /api/cms/wa/threads-hold")).body, { ok: true, holdAutoReleaseMin: 20, default: 20, min: 5, max: 240 });
+  assert.deepEqual((await w.call("GET /api/cms/wa/threads-hold")).body, { ok: true, holdAutoReleaseMin: 20, default: 20, min: 5, max: 240, mediaKeepDays: 30, mediaKeep: { def: 30, min: 1, max: 180 } });
   assert.equal((await w.call("POST /api/cms/wa/threads-hold", { json: { holdAutoReleaseMin: 30 } })).status, 403);
   w.users.owner = true;
   assert.equal((await w.call("POST /api/cms/wa/threads-hold", { json: { holdAutoReleaseMin: 3 } })).status, 400);

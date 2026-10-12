@@ -327,6 +327,18 @@ export function messageText(m) {
   if (m?.type === "template") return "[قالب]";
   return m?.type ? `[${MEDIA_AR[m.type] || m.type}]` : "";
 }
+/* MD1 (١٣/١٠): بيانات ملف الرسالة (صورة / صوت / فيديو / ملف / ملصق) زي ما ميتا بعتتها — بتتحفظ في wa_messages.media
+   عشان الصندوق يقدر يفتح الملف بعدين (wamedia.js). رقم الملف ده مابيطلعش للمتصفح. */
+const MEDIA_KINDS = ["image", "video", "audio", "document", "sticker"];
+export function mediaOf(m) {
+  const kind = MEDIA_KINDS.includes(m?.type) ? m.type : null;
+  const o = kind ? m[kind] : null;
+  if (!o || !o.id || !/^\d{5,40}$/.test(String(o.id))) return null;
+  return { kind, id: String(o.id), mime: o.mime_type ? String(o.mime_type).slice(0, 80) : null, sha256: o.sha256 ? String(o.sha256).slice(0, 100) : null,
+    ...(kind === "audio" ? { voice: o.voice === true } : {}), ...(o.filename ? { filename: String(o.filename).slice(0, 120) } : {}), ...(o.caption ? { caption: String(o.caption).slice(0, 1000) } : {}) };
+}
+export const MEDIA_HOSTS = [".fbsbx.com", ".facebook.com", ".fbcdn.net", ".whatsapp.net"];
+export const mediaHostOk = (url) => { try { const u = new URL(String(url)); return u.protocol === "https:" && MEDIA_HOSTS.some((h) => u.hostname.endsWith(h)); } catch { return false; } };
 export const intentOf = (text) => (STOP_RE.test(text || "") || isOptOutText(text || "") ? "stop" : START_RE.test(text || "") ? "start" : null);
 
 /* بيفرد الويب هوك — بيتجاهل أي حاجة مش شكلها صح.
@@ -387,10 +399,11 @@ export function parseWebhook(body, { phoneId = null, phoneIds = [], ownNumbers =
           // موقع العميل (مشاركة الموقع) — البوت بيتأكد بيه إن التوصيل يوصله (wabotrun: area)
           location: m.type === "location" && Number.isFinite(Number(m.location?.latitude)) && Number.isFinite(Number(m.location?.longitude))
             ? { lat: Number(m.location.latitude), lng: Number(m.location.longitude) } : null,
+          ...(mediaOf(m) ? { media: mediaOf(m) } : {}),
           intent: m.type === "reaction" ? null : intentOf(text) });
       }
       for (const m of v.message_echoes || []) {
-        out.echoes.push({ wamid: m.id, from: m.from, to: m.to, type: m.type, text: messageText(m), at: isoOf(m.timestamp) });
+        out.echoes.push({ wamid: m.id, from: m.from, to: m.to, type: m.type, text: messageText(m), at: isoOf(m.timestamp), ...(mediaOf(m) ? { media: mediaOf(m) } : {}) });
       }
       for (const s of v.state_sync || []) {
         const c = s?.contact || {};
@@ -536,6 +549,7 @@ export function register(app, ctx, deps = {}) {
       -- Coexistence (٢٨/٩): مصدر الرسالة — api | echo (من الموبايل) | history | campaign
       ALTER TABLE wa_messages ADD COLUMN IF NOT EXISTS source TEXT;
       ALTER TABLE wa_messages ADD COLUMN IF NOT EXISTS msg_type TEXT;
+      ALTER TABLE wa_messages ADD COLUMN IF NOT EXISTS media JSONB;      -- MD1: بيانات ملف الرسالة (mediaOf)
       -- SEC (١٢/١٠): العميل كتب «إيقاف» على واتساب ⇒ ولا قالب (تسويق ولا تحديثات) لحد ما يرجع يوافق.
       -- عمود مستقل عشان source بيتكتب فوقه مع كل طلب (shop.js) فماينفعش يبقى هو العلامة.
       ALTER TABLE wa_optins ADD COLUMN IF NOT EXISTS stopped_at TIMESTAMPTZ;
@@ -773,6 +787,24 @@ export function register(app, ctx, deps = {}) {
     return data;
   }
 
+  /* MD1: ملف رسالة من ميتا — قراءة بس (مش إرسال، فمفيش حارس): رقم الملف ⇒ رابط مؤقت ⇒ البايتات، والاتنين بتوكن السيرفر.
+     التوكن بيتبعت لدومينات ميتا بس (mediaHostOk). بيرجّع {ok, buf, mime} أو {ok:false, error: expired|too_large|unconfigured|bad_id|bad_host|unavailable}. */
+  async function fetchMedia(mediaId, { maxBytes = 25 * 1024 * 1024 } = {}) {
+    if (!/^\d{5,40}$/.test(String(mediaId || ""))) return { ok: false, error: "bad_id" };
+    if (!configured()) return { ok: false, error: "unconfigured" };
+    let meta;
+    try { meta = await graphGet(String(mediaId)); }
+    catch (e) { return { ok: false, error: /^WA_(100|404)$/.test(String(e.code || "")) ? "expired" : "unavailable" }; }
+    if (!meta || !meta.url || !mediaHostOk(meta.url)) return { ok: false, error: "bad_host" };
+    if (Number(meta.file_size) > maxBytes) return { ok: false, error: "too_large" };
+    const resp = await doFetch(String(meta.url), { method: "GET", headers: { Authorization: `Bearer ${token()}` } });
+    if (!resp.ok) return { ok: false, error: resp.status === 404 ? "expired" : "unavailable" };
+    const buf = Buffer.from(await resp.arrayBuffer());
+    if (buf.length > maxBytes) return { ok: false, error: "too_large" };
+    if (!buf.length) return { ok: false, error: "unavailable" };
+    return { ok: true, buf, mime: meta.mime_type ? String(meta.mime_type) : null };
+  }
+
   /* الإرسال الأساسي. مابيرميش — بيرجّع {ok, wamid?, skipped?, error?, code?}.
      source/body اختياريين: الحملات بتبعت نص القالب بعد التعويض عشان يظهر في
      المحادثة زي ما العميل شافه (مش «[قالب: …]»). */
@@ -955,6 +987,7 @@ export function register(app, ctx, deps = {}) {
        VALUES ($1,'in',$2,'received',$3,$4,'api',$5) ON CONFLICT (wamid) DO NOTHING RETURNING id`,
       [m.wamid, pn, String(m.text || `[${m.type}]`).slice(0, 1000), m.referral ? jb({ referral: m.referral }) : null, m.type || null]);
     if (ins.rowCount === 0) return; // ويب هوك مكرر — اتعالج قبل كده
+    if (m.media) await pool.query("UPDATE wa_messages SET media=$2::jsonb WHERE wamid=$1", [m.wamid, jb(m.media)]).catch((e) => console.error("[wa] media meta:", e.message));
     if (!pn) return;
     /* يفتح/يجدّد نافذة الـ٢٤ ساعة ويرفع «غير مقروء» للكاشير. */
     await touchThread({ phoneNorm: pn, direction: "in", text: m.text || `[${m.type}]`, at: m.at || null });
@@ -986,6 +1019,7 @@ export function register(app, ctx, deps = {}) {
        VALUES ($1,'out',$2,'sent',$3,'echo',$4, COALESCE($5::timestamptz, NOW())) ON CONFLICT (wamid) DO NOTHING RETURNING id`,
       [e.wamid, pn, String(e.text || `[${e.type}]`).slice(0, 1000), e.type || null, e.at]);
     if (ins.rowCount === 0 || !pn) return;
+    if (e.media) await pool.query("UPDATE wa_messages SET media=$2::jsonb WHERE wamid=$1", [e.wamid, jb(e.media)]).catch((x) => console.error("[wa] media meta:", x.message));
     await touchThread({ phoneNorm: pn, direction: "out", text: e.text || `[${e.type}]`, at: e.at || null });
     // المستمعين يعرفوا إن إنسان بيرد (البوت بيسكت) — isEcho:true = مش رسالة عميل
     await emit("inbound", { phone: pn, phoneNorm: pn, wamid: e.wamid, text: e.text || "", type: e.type, interactiveId: null,
@@ -1218,7 +1252,7 @@ export function register(app, ctx, deps = {}) {
     return c.json({ ok: true, results });
   });
 
-  return { sendTemplate, sendText, sendFreeform, sendTyping, sendOrderUpdate, sendOrderTemplateOnce, recordOptIn, applyIntent, gate, configured, masterOn, ready, setInbox,
+  return { fetchMedia, sendTemplate, sendText, sendFreeform, sendTyping, sendOrderUpdate, sendOrderTemplateOnce, recordOptIn, applyIntent, gate, configured, masterOn, ready, setInbox,
     guardSend, deliver, envState, dashMasterOn: async () => dashMasterOf(await settingsSnap()), testPhones: async () => testPhonesOf(await settingsSnap()),
     on, processWebhook, token, phoneId, wabaId, setBot, setBotRuntime, humanActive,
     setActiveIds, idsInUse, setWebhookAccept };
