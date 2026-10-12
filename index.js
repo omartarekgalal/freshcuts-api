@@ -64,6 +64,7 @@ import * as staffcontrol from "./staffcontrol.js";
 import * as smstemplates from "./smstemplates.js";
 import * as wabot from "./wabot.js";
 import * as wabotrun from "./wabotrun.js";
+import * as wahandover from "./wahandover.js";
 import * as wabotllm from "./wabotllm.js";
 import * as extsettle from "./extsettle.js";
 import * as wasender from "./wasender.js";
@@ -3134,6 +3135,7 @@ import("./watemplates.js").then((m) => {
 const notifyApi = notify.register(app, moduleCtx, { wa: waApi });
 // السلات المتروكة: لقطات من المتجر + سلّم استرداد (إشعار ثم SMS) + أرقام اللوحة
 let wabotApi = null;   // wabotrun.register (below): its ready-cart store answers /c/<code> through carts.js
+let waHandoverApi = null;   // wahandover.register (بعد البوابة): بيسجّل تحويلات واتساب ويرنّها على البوابة
 const cartsApi = carts.register(app, moduleCtx, { notify: notifyApi, botCarts: () => (wabotApi ? wabotApi.carts : null) });
 freebar.register(app, moduleCtx);
 // رحلة العميل (٠٢): دفعات أحداث المتجر + checkout_result/order_paid من السيرفر + تقرير #store/analytics/journey
@@ -3212,7 +3214,7 @@ smstemplates.register(app, moduleCtx, { sendSms: (m) => accounts.sendSms(m), sen
 const waBotApi = wabot.register(app, moduleCtx, { app });
 /* 🤖 ١٢/١٠: بوت واتساب v1 (wabotrun.js) — بيمسك الوارد من whatsapp.js (setBotRuntime). الوضع وكل إعداداته من اللوحة
    (settings.waBot: off الافتراضي / dry / test / live) — مفيش مفتاح env. off = مابيلمسش أي رسالة. */
-wabotApi = wabotrun.register(app, moduleCtx, { app, wa: waApi, sendSms: accounts.sendSms, whoami: (c) => cmsApi.whoami(c), assist: { expandBundle: (...a) => cmsApi.expandBundle(...a), modifiersCatalog: () => modifiersApi.catalog(), modifiersResolve: (id, ids) => modifiersApi.resolve(id, ids), quote: (x) => deliveryApi.quote(x), buildProfile: (pn) => c360Api.buildProfile(pn) }, portalEmit: (event, data) => { try { if (portalApi && typeof portalApi.broadcast === "function") portalApi.broadcast(event, data); } catch (e) { console.error("[wabot] portal emit:", e.message); } }, llm: wabotllm.makeClassifier({ faqKeys: wabotrun.FAQ_KEYS }) });
+wabotApi = wabotrun.register(app, moduleCtx, { app, wa: waApi, sendSms: accounts.sendSms, whoami: (c) => cmsApi.whoami(c), assist: { expandBundle: (...a) => cmsApi.expandBundle(...a), modifiersCatalog: () => modifiersApi.catalog(), modifiersResolve: (id, ids) => modifiersApi.resolve(id, ids), quote: (x) => deliveryApi.quote(x), buildProfile: (pn) => c360Api.buildProfile(pn) }, portalEmit: (event, data) => { try { if (event === "wa_handover" && waHandoverApi) waHandoverApi.emit(data).catch(() => {}); else if (portalApi && typeof portalApi.broadcast === "function") portalApi.broadcast(event, data); } catch (e) { console.error("[wabot] portal emit:", e.message); } }, llm: wabotllm.makeClassifier({ faqKeys: wabotrun.FAQ_KEYS }) });
 /* 👁 قاعدة واحدة لإظهار جوال العميل كامل في اللوحة (phones.js): المالك دايماً،
    وعضو الفريق لو دوره عنده «عرض» على قسم العملاء. بتتحط على moduleCtx بعد ما
    الـCMS يتسجّل، والموديولات بتناديها وقت الطلب (ctx.canSeePhones) مش وقت التسجيل. */
@@ -3250,6 +3252,7 @@ preorder.register(app, moduleCtx);
 // بعد shop/delivery/cms — بيستخدم دوالهم نفسها (مفيش نسخة تانية من القواعد).
 let courierOpsApi = null;
 const portalApi = portal.register(app, moduleCtx, { shop: () => shopApi, delivery: () => deliveryApi, cmsWhoami: (c) => cmsApi.whoami(c), courierOps: () => courierOpsApi, wa: () => waInboxApi });
+waHandoverApi = wahandover.register(app, moduleCtx, { requirePortal: portalApi.requirePortal, broadcast: portalApi.broadcast, push: () => portalApi.push });
 // 🍽 QR الطاولات: مفاتيح الطاولات + نداء الويتر (بيبعت إشعار البوابة) + تحليلات لكل طاولة
 tableOrder.register(app, moduleCtx, { portal: () => portalApi, shop: () => shopApi });
 /* 🚨 حارس الدفع (٢٢/٩): ناس بتوصل لخطوة الدفع ومحدش بيدفع ⇒ SMS للمدير.
