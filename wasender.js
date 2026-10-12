@@ -43,7 +43,8 @@ import {
 import { shopPaidSql } from "./identity.js";
 import { nextStatus, TEMPLATES } from "./whatsapp.js";
 import { cloudCfg, cloudPacing, classifyError, fallbackFor, campaignParams, cloudJobProblem, defaultChannel,
-  CAMPAIGN_TEMPLATES } from "./wacloud.js";
+  CAMPAIGN_TEMPLATES, campaignTemplateNames, campaignSpec, brakeCheck, campaignCost, mediaProblem, MEDIA_LIMITS, CLOUD_KEYS, CLOUD_CEILINGS, CLOUD_DEFAULTS } from "./wacloud.js";
+import { waRatesOf } from "./waaicost.js";
 
 export const MIN_GAP_DAYS = 3;
 export const DEFAULTS = {
@@ -156,6 +157,12 @@ export function jobInput(b = {}, { hosts = [] } = {}) {
   const holdoutPct = Math.min(50, Math.max(0, Math.round(Number(b.holdoutPct) || 0)));
   const imageUrl = String(b.imageUrl || "").trim() || null;
   if (imageUrl && !imageUrlOk(imageUrl, hosts)) errs.push(["bad_image", "رابط الصورة لازم يبقى https من صورنا المرفوعة"]);
+  /* حملات واتساب (١٣/١٠): فيديو الهيدر — نفس القاعدة: https من مخزن الوسائط بتاعنا بس */
+  const videoUrl = String(b.videoUrl || "").trim() || null;
+  if (videoUrl && !imageUrlOk(videoUrl, hosts)) errs.push(["bad_video", "رابط الفيديو لازم يبقى https من الفيديوهات المرفوعة عندنا"]);
+  const capRaw = b.spendCapSar === "" || b.spendCapSar == null ? null : Number(b.spendCapSar);
+  if (capRaw != null && !(Number.isFinite(capRaw) && capRaw > 0 && capRaw <= 100000)) errs.push(["bad_spend_cap", "سقف صرف الحملة: رقم أكبر من صفر"]);
+  const spendCapSar = capRaw != null && Number.isFinite(capRaw) && capRaw > 0 ? Math.round(capRaw * 100) / 100 : null;
   const O = b.offer && typeof b.offer === "object" ? b.offer : {};
   let offer = null;
   if (O.oneTime === true) {
@@ -172,12 +179,17 @@ export function jobInput(b = {}, { hosts = [] } = {}) {
   let cloudTemplate = null, cloudVars = null;
   if (channel === "wa_cloud") {
     cloudTemplate = String(b.cloudTemplate || "").trim();
-    cloudVars = { offer: String((b.cloudVars && b.cloudVars.offer) || "").replace(/\r/g, "").trim().slice(0, 400) };
-    const p = cloudJobProblem({ cloudTemplate, cloudVars, imageUrl, offer, link: { coupon: staticCoupon } });
+    const cv = b.cloudVars && typeof b.cloudVars === "object" ? b.cloudVars : {};
+    const values = {};
+    for (const [k, v] of Object.entries(cv.values && typeof cv.values === "object" ? cv.values : {})) {
+      if (/^[a-zA-Z][a-zA-Z0-9_.]{0,60}$/.test(k)) values[k] = String(v ?? "").replace(/\r/g, "").trim().slice(0, 400);
+    }
+    cloudVars = { offer: String(cv.offer || "").replace(/\r/g, "").trim().slice(0, 400), ...(Object.keys(values).length ? { values } : {}) };
+    const p = cloudJobProblem({ cloudTemplate, cloudVars, imageUrl, videoUrl, offer, link: { coupon: staticCoupon } });
     if (p) errs.push(p);
   }
-  return { errs, template, link: { slug: slug || null, target_type, target_id, coupon: staticCoupon }, holdoutPct, imageUrl, offer,
-    channel, cloudTemplate, cloudVars, fallback: channel === "wa_cloud" ? fallback : "none" };
+  return { errs, template, link: { slug: slug || null, target_type, target_id, coupon: staticCoupon }, holdoutPct, imageUrl, videoUrl, offer,
+    channel, cloudTemplate, cloudVars, fallback: channel === "wa_cloud" ? fallback : "none", spendCapSar: channel === "wa_cloud" ? spendCapSar : null };
 }
 
 /* كود الرابط لكل مستلم + كود الكوبون (من غير حروف متشابهة) */
@@ -209,6 +221,33 @@ export function register(app, ctx, deps = {}) {
   const imageHosts = () => [...new Set([API_BASE(), STORE(), "https://freshcuts-api.o2m8.me", "https://freshcuts.sa", "https://www.freshcuts.sa"]
     .map((u) => { try { return new URL(u).hostname.toLowerCase(); } catch { return null; } }).filter(Boolean))];
   const ATTR_DAYS = 7;
+  const WEB_ORDERERS = "web_orderers";
+  const doFetch = deps.fetch || globalThis.fetch;
+  /* سعر الرسالة التسويقية من بطاقة الأسعار المخزّنة عند البوت (settings.waBot.waRates) — مفيش سعر في الملف ده */
+  const rateOf = (s) => { const r = waRatesOf(((s || {}).waBot || {}).waRates); return { rateSar: Number(r.marketing) || 0, rateDate: r.date || null }; };
+  const ownerOnly = (c) => c.json({ ok: false, error: "owner_only", message: "الخطوة دي للمالك بس" }, 403);
+  /* الوسيط (صورة/فيديو) قبل الإرسال: نوعه وحجمه بحدود ميتا — بنسأل الرابط (HEAD) من غير ما ننزّل الملف */
+  async function checkMedia(kind, url) {
+    if (!url) return null;
+    try {
+      const r = await doFetch(url, { method: "HEAD" });
+      if (!r.ok) return ["media_unreachable", `الرابط مابيفتحش (HTTP ${r.status})`];
+      let mime = r.headers?.get?.("content-type"), bytes = r.headers?.get?.("content-length");
+      if (!(Number(bytes) > 0)) {
+        /* السيرفر مارجّعش الحجم في HEAD: ننزّل الملف (من دوميناتنا بس — الرابط اتفحص في jobInput) ونقيسه */
+        const g = await doFetch(url);
+        if (!g.ok) return ["media_unreachable", `الرابط مابيفتحش (HTTP ${g.status})`];
+        mime = g.headers?.get?.("content-type") || mime;
+        bytes = (await g.arrayBuffer()).byteLength;
+      }
+      return mediaProblem(kind, { mime, bytes });
+    } catch { return ["media_unreachable", "ماقدرناش نوصل لرابط الوسيط"]; }
+  }
+  async function mediaErr(input) {
+    const spec = campaignSpec(input.cloudTemplate);
+    if (!spec || !spec.header) return null;
+    return checkMedia(spec.header, spec.header === "video" ? input.videoUrl : input.imageUrl);
+  }
   const whoOf = async (c) => {
     try {
       const t = (c.req.header("authorization") || "").replace(/^Bearer\s+/i, "");
@@ -304,7 +343,12 @@ export function register(app, ctx, deps = {}) {
       ALTER TABLE wa_send_queue ADD COLUMN IF NOT EXISTS delivered_at TIMESTAMPTZ;
       ALTER TABLE wa_send_queue ADD COLUMN IF NOT EXISTS read_at TIMESTAMPTZ;
       ALTER TABLE wa_send_queue ADD COLUMN IF NOT EXISTS error_code INT;
-      ALTER TABLE wa_send_queue ADD COLUMN IF NOT EXISTS fallback_from TEXT;    -- «wa_cloud:<سبب>» لو اتحوّلت لقناة تانية
+      ALTER TABLE wa_send_queue ADD COLUMN IF NOT EXISTS fallback_from TEXT;
+      -- حملات واتساب (١٣/١٠): فيديو الهيدر، سقف صرف للحملة، سبب الوقوف الآلي، وسعر الرسالة وقت الإنشاء
+      ALTER TABLE wa_send_jobs ADD COLUMN IF NOT EXISTS video_url TEXT;
+      ALTER TABLE wa_send_jobs ADD COLUMN IF NOT EXISTS spend_cap_sar NUMERIC;
+      ALTER TABLE wa_send_jobs ADD COLUMN IF NOT EXISTS stop_reason TEXT;
+      ALTER TABLE wa_send_jobs ADD COLUMN IF NOT EXISTS rate_sar NUMERIC;    -- «wa_cloud:<سبب>» لو اتحوّلت لقناة تانية
       CREATE INDEX IF NOT EXISTS wa_send_queue_wamid_idx ON wa_send_queue(wamid) WHERE wamid IS NOT NULL;
       INSERT INTO wa_sender_state(id) VALUES (2) ON CONFLICT DO NOTHING;      -- حالة قناة Cloud لوحدها
       CREATE TABLE IF NOT EXISTS wa_invalid_numbers (
@@ -406,6 +450,7 @@ export function register(app, ctx, deps = {}) {
      بـ«segment:<id>» — نفس تعريف الشريحة في الحملات والأتمتة. */
   async function audienceList() {
     const out = outreach ? Object.entries(outreach.AUDIENCES).map(([id, a]) => ({ id, ...a, group: "wa" })) : [];
+    out.push({ id: WEB_ORDERERS, label: "طلبوا من الموقع", hint: "كل اللي دفع طلب من الموقع ولو مرة واحدة", group: "wa" });
     const cms = cmsApi();
     if (cms && typeof cms.segmentList === "function") {
       for (const s of cms.segmentList()) out.push({ id: `segment:${s.id}`, label: `${s.icon || ""} ${s.label}`.trim(), hint: s.hint, group: "cms" });
@@ -413,6 +458,10 @@ export function register(app, ctx, deps = {}) {
     return out;
   }
   async function resolveAudience(aud) {
+    if (aud === WEB_ORDERERS) {
+      const r = await pool.query(`SELECT DISTINCT so.phone_norm FROM shop_orders so WHERE ${shopPaidSql("so")} AND so.phone_norm IS NOT NULL`).catch(() => null);
+      return r ? { aud, segmentPhones: new Set(r.rows.map((x) => x.phone_norm)) } : null;
+    }
     if (typeof aud === "string" && aud.startsWith("segment:")) {
       const cms = cmsApi();
       const id = aud.slice(8);
@@ -574,8 +623,22 @@ export function register(app, ctx, deps = {}) {
       message: messageFor(x, { template: tpl, footer: r.cfg.footer, host, slug, code: "xxxxxx", coupon: couponEx, couponDays: input.offer?.validDays }),
       ...(input.channel === "wa_cloud" && TEMPLATES[input.cloudTemplate] ? { cloud: cloudSample(input, x, slug, couponEx) } : {}) }));
     const hold = input.holdoutPct ? r.picked.filter((x) => inHoldout("preview", x.pn, input.holdoutPct)).length : 0;
-    const days = Math.ceil((r.picked.length - hold) / Math.max(1, effectiveDailyCap(r.cfg, now())));
-    return c.json({ ok: true, audience: r.audience, inAudience: r.inAudience, afterFilters: r.afterFilters,
+    let days = Math.ceil((r.picked.length - hold) / Math.max(1, effectiveDailyCap(r.cfg, now())));
+    let cloudExtra = {};
+    if (input.channel === "wa_cloud") {
+      /* العدد بالظبط بعد الاستبعادات والمجموعة المحجوزة × سعر الرسالة التسويقية = التكلفة؛ والسعة: السقف اليومي، سقف الصرف، حد ميتا */
+      const cc = cloudCfg(s), { rateSar, rateDate } = rateOf(s), st = await stateNow("wa_cloud").catch(() => ({}));
+      const messages = r.picked.length - hold;
+      const perDayMoney = rateSar > 0 ? Math.floor(cc.spendDaySar / rateSar + 1e-9) : cc.dailyCap;
+      const perDay = Math.max(0, Math.min(cc.dailyCap, perDayMoney, cc.tierLimit - cc.reserveUtility));
+      days = perDay > 0 ? Math.ceil(messages / perDay) : null;
+      const capped = input.spendCapSar != null && rateSar > 0 ? Math.min(messages, Math.floor(input.spendCapSar / rateSar + 1e-9)) : messages;
+      cloudExtra = { cost: { messages, rateSar: rateSar || null, rateDate, sar: campaignCost(messages, rateSar), spendCapSar: input.spendCapSar, willSendUnderCap: capped, sarUnderCap: campaignCost(capped, rateSar) },
+        capacity: { perDay, dailyCap: cc.dailyCap, spendDaySar: cc.spendDaySar, tierLimit: cc.tierLimit, reserveUtility: cc.reserveUtility, sentToday: st.today || 0, uniq24h: st.uniq24h || 0,
+          brake: { minSends: cc.brakeMinSends, stopPct: cc.brakeStopPct, failPct: cc.brakeFailPct } },
+        spec: campaignSpec(input.cloudTemplate), gate: wa ? await wa.gate() : "disabled", enabled: cc.enabled };
+    }
+    return c.json({ ok: true, ...cloudExtra, audience: r.audience, inAudience: r.inAudience, afterFilters: r.afterFilters,
       excluded: r.excluded, eligible: r.eligible, willQueue: r.picked.length, holdoutEst: hold, estDays: days, sample,
       customTemplate: Boolean(input.template), template: tpl, footer: r.cfg.footer, channel: input.channel,
       problems: input.errs.map(([error, message]) => ({ error, message })) });
@@ -585,7 +648,10 @@ export function register(app, ctx, deps = {}) {
     const err = await requireAdmin(c); if (err) return err;
     let b = {}; try { b = await c.req.json(); } catch { return bad(c, "bad_json", "بيانات غلط"); }
     const input = jobInput(b, { hosts: imageHosts() });
+    /* حملة واتساب بتتبعت من السيرفر لعملاء حقيقيين وبفلوس: البدء للمالك بس (التسويق يجهّز ويعاين) */
+    if (input.channel === "wa_cloud" && !(await isOwner(c))) return ownerOnly(c);
     if (input.errs.length) return bad(c, input.errs[0][0], input.errs[0][1], 422);
+    if (input.channel === "wa_cloud") { const mp = await mediaErr(input); if (mp) return bad(c, mp[0], mp[1], 422); }
     if (input.link.coupon) {
       const ok = (await pool.query("SELECT 1 FROM shop_coupons WHERE upper(code)=$1 AND active", [input.link.coupon])).rowCount;
       if (!ok) return bad(c, "coupon_invalid", `الكوبون ${input.link.coupon} مش موجود أو مقفول`, 422);
@@ -611,11 +677,12 @@ export function register(app, ctx, deps = {}) {
       await client.query("BEGIN");
       jobId = Number((await client.query(
         `INSERT INTO wa_send_jobs(name, filters, total, created_by, template, holdout_pct, image_url, offer, audience_label,
-                                  channel, cloud_template, cloud_vars, fallback)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING id`,
+                                  channel, cloud_template, cloud_vars, fallback, video_url, spend_cap_sar, rate_sar)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16) RETURNING id`,
         [name, J(b.filters || {}), r.picked.length, by, input.template || null, input.holdoutPct, input.imageUrl,
           input.offer ? J(input.offer) : null, aud ? aud.label : r.audience,
-          input.channel, input.cloudTemplate, input.cloudVars ? J(input.cloudVars) : null, input.fallback])).rows[0].id);
+          input.channel, input.cloudTemplate, input.cloudVars ? J(input.cloudVars) : null, input.fallback,
+          input.videoUrl, input.spendCapSar, input.channel === "wa_cloud" ? (rateOf(s).rateSar || null) : null])).rows[0].id);
       /* الرابط المتتبّع: /l/<slug> (utm_source=whatsapp, utm_campaign=wa-<id>) —
          وكل عميل بياخد /l/<slug>-<code> عشان نعرف مين ضغط (cms.js resolve). */
       slug = input.link.slug || `w${jobId}`;
@@ -690,7 +757,10 @@ export function register(app, ctx, deps = {}) {
     const a = c.req.param("action");
     const [from, to] = a === "pause" ? ["running", "paused"] : a === "resume" ? ["paused", "running"] : [null, null];
     if (!from) return bad(c, "bad_action", "أمر مش معروف");
-    const r = await pool.query("UPDATE wa_send_jobs SET status=$2 WHERE status=$1 RETURNING id", [from, to]);
+    /* تكملة حملات Cloud (بتبعت من السيرفر) للمالك بس — غير المالك بيكمّل حملات واتساب ويب بس. الإيقاف لأي حد. */
+    const owner = to === "running" ? await isOwner(c) : true;
+    const r = await pool.query(`UPDATE wa_send_jobs SET status=$2, stop_reason = CASE WHEN $2='running' THEN NULL ELSE stop_reason END
+                                 WHERE status=$1 AND ($3::boolean OR COALESCE(channel,'wa_web') <> 'wa_cloud') RETURNING id`, [from, to, owner]);
     return c.json({ ok: true, changed: r.rowCount });
   });
   /* نص جديد لكل اللي لسه في الطابور: نفس المتغيرات (المتخزّنة مع كل صف)، ونفس
@@ -734,8 +804,13 @@ export function register(app, ctx, deps = {}) {
     if (action === "retemplate") return retemplate(c, id);
     const to = { pause: "paused", resume: "running", cancel: "cancelled" }[action];
     if (!to) return bad(c, "bad_action", "أمر مش معروف");
+    if (to === "running") {
+      const ch = (await pool.query("SELECT channel FROM wa_send_jobs WHERE id=$1", [id])).rows[0];
+      if (ch && ch.channel === "wa_cloud" && !(await isOwner(c))) return ownerOnly(c);
+    }
     const r = await pool.query(
-      `UPDATE wa_send_jobs SET status=$2, finished_at = CASE WHEN $2='cancelled' THEN NOW() ELSE finished_at END
+      `UPDATE wa_send_jobs SET status=$2, finished_at = CASE WHEN $2='cancelled' THEN NOW() ELSE finished_at END,
+              stop_reason = CASE WHEN $2='running' THEN NULL ELSE stop_reason END
         WHERE id=$1 AND status NOT IN ('done','cancelled') RETURNING id`, [id, to]);
     if (!r.rowCount) return bad(c, "not_found", "الحملة خلصت أو مش موجودة", 404);
     if (to === "cancelled") await pool.query("UPDATE wa_send_queue SET status='skipped', reason='cancelled' WHERE job_id=$1 AND status='pending'", [id]);
@@ -805,6 +880,7 @@ export function register(app, ctx, deps = {}) {
     const job = (await pool.query("SELECT * FROM wa_send_jobs WHERE id=$1", [Number(c.req.param("id"))])).rows[0];
     if (!job) return bad(c, "not_found", "مش موجودة", 404);
     const jobId = Number(job.id);
+    const sNow = await getSettingsData().catch(() => ({}));
     const rows = (await pool.query(
       `SELECT phone_norm pn, status, reason, sent_at, clicks, replied_at, optout_at, media, coupon, channel, cloud_status, error_code, fallback_from
          FROM wa_send_queue WHERE job_id=$1`, [jobId])).rows;
@@ -822,7 +898,11 @@ export function register(app, ctx, deps = {}) {
       clicks: linkRow ? Number(linkRow.clicks) : null, clickers: count((x) => Number(x.clicks) > 0),
       images: count((x) => x.media === "image"), imageFallbacks: count((x) => x.status === "sent" && x.media === "text" && job.image_url),
       channel: job.channel || "wa_web", cloudTemplate: job.cloud_template || null, fallback: job.fallback || "none",
-      cloud: cloudStats(rows) };
+      cloud: cloudStats(rows), stopReason: job.stop_reason || null, spendCapSar: job.spend_cap_sar != null ? Number(job.spend_cap_sar) : null,
+      videos: count((x) => x.media === "video"),
+      /* التكلفة = الرسايل اللي ميتا قبلتها على قناة Cloud × سعر الرسالة وقت إنشاء الحملة (تقدير — الفاتورة من ميتا) */
+      cost: job.channel === "wa_cloud" ? (() => { const n = count((x) => x.channel === "wa_cloud" && x.status === "sent"); const rate = Number(job.rate_sar) > 0 ? Number(job.rate_sar) : rateOf(sNow).rateSar;
+        return { messages: n, rateSar: rate || null, sar: campaignCost(n, rate) }; })() : null };
     if (!pns.length) return c.json({ ...base, direct: null, apps: null, web: null, pos: null });
     const from = new Date(Math.min(t0h.getTime(), ...sent.map((x) => new Date(x.sent_at).getTime())));
     const to = new Date(Math.max(t0h.getTime(), ...sent.map((x) => new Date(x.sent_at).getTime())) + ATTR_DAYS * 86400000);
@@ -946,16 +1026,21 @@ export function register(app, ctx, deps = {}) {
     const gate = wa ? await wa.gate() : "disabled";
     const cl = cloudApi();
     const phone = cl && !gate ? await cl.phoneInfo().catch(() => null) : null;
-    const tpl = cl && !gate ? await cl.templateInfo().catch(() => null) : null;
+    /* حالة القوالب عند ميتا بتتقري حتى والإرسال مقفول (قراءة بس) — عشان الحملة تتجهّز وتتعاين قبل فتح المفتاح */
+    const tpl = cl ? await cl.templateInfo().catch(() => null) : null;
     const approved = new Map(((tpl && tpl.list) || []).map((t) => [t.name, t.status]));
     const { configId, ...pubCfg } = cc;
     return { cfg: pubCfg, state: { today: st.today || 0, lastHour: st.lastHour || 0, uniq24h: st.uniq24h || 0, stoppedReason: st.stoppedReason || null },
       pace: cloudPacing(cc, st, inWindow(cfg, now())), gate: gate || null, phoneStatus: phone?.status || null,
       quality: phone?.quality || null, tier: phone?.tier || null,
       defaultChannel: defaultChannel({ gate, phoneStatus: phone?.status }),
-      templates: CAMPAIGN_TEMPLATES().map((n) => ({ name: n, label: TEMPLATES[n].campaign.label, needs: TEMPLATES[n].campaign.needs || [],
-        status: approved.get(n) || (tpl && tpl.ok ? "NOT_SUBMITTED" : null),
-        body: TEMPLATES[n].components.find((c) => c.type === "BODY")?.text || "" })) };
+      defaults: (({ configId: _c, ...d }) => d)(CLOUD_DEFAULTS),
+      rate: rateOf(s), spentTodaySar: campaignCost(st.today || 0, rateOf(s).rateSar), mediaLimits: MEDIA_LIMITS, ceilingKeys: CLOUD_CEILINGS,
+      testPhones: wa && typeof wa.testPhones === "function" ? await wa.testPhones().catch(() => []) : [],
+      templates: campaignTemplateNames().map((n) => { const sp = campaignSpec(n); const legacy = TEMPLATES[n].campaign;
+        return { name: n, label: sp.label, needs: [...(legacy ? legacy.needs || [] : []), ...(sp.header && !(legacy && (legacy.needs || []).includes(sp.header)) ? [sp.header] : []), ...(sp.needsCoupon && !(legacy && (legacy.needs || []).includes("coupon")) ? ["coupon"] : [])],
+          status: approved.get(n) || (tpl && tpl.ok ? "NOT_SUBMITTED" : null), body: sp.body, footer: sp.footer, header: sp.header, button: sp.button, buttonText: sp.buttonText,
+          fields: sp.fields, auto: sp.auto, held: sp.held === true }; }) };
   }
 
   function cloudStats(rows) {
@@ -973,6 +1058,26 @@ export function register(app, ctx, deps = {}) {
       fellBack: cl.filter((x) => x.fallback_from).length };
   }
 
+  /* عدّادات الحملة (على قناة Cloud): اتبعت / فشل / «إيقاف» */
+  async function jobCounts(jobId) {
+    const r = (await pool.query(
+      `SELECT count(*) FILTER (WHERE status='sent' AND COALESCE(cloud_status,'') <> 'failed')::int AS sent,
+              count(*) FILTER (WHERE status='failed' OR cloud_status='failed')::int AS failed,
+              count(*) FILTER (WHERE optout_at IS NOT NULL)::int AS stopped
+         FROM wa_send_queue WHERE job_id=$1 AND (channel='wa_cloud' OR fallback_from LIKE 'wa_cloud%')`, [jobId])).rows[0] || {};
+    return { sent: r.sent || 0, failed: r.failed || 0, stopped: r.stopped || 0 };
+  }
+  const pauseJob = (jobId, reason) => pool.query("UPDATE wa_send_jobs SET status='paused', stop_reason=$2 WHERE id=$1 AND status='running'", [jobId, String(reason).slice(0, 80)]);
+  /* الفرامل وسقف صرف الحملة. بترجع سبب الوقوف (والحملة اتوقفت) أو null. */
+  async function jobBrake(job, cc, rateSar) {
+    const n = await jobCounts(job.id);
+    const b = brakeCheck(n, cc);
+    if (b) { const why = `${b.reason}:${b.pct}`; await pauseJob(job.id, why); return why; }
+    const rate = Number(job.rate_sar) > 0 ? Number(job.rate_sar) : rateSar;
+    if (job.spend_cap_sar != null && rate > 0 && (n.sent + 1) * rate > Number(job.spend_cap_sar) + 1e-9) { await pauseJob(job.id, "campaign_spend_cap"); return "campaign_spend_cap"; }
+    return null;
+  }
+
   async function sendCloudRow(q, job, cfg, staff) {
     const why = await skipReason(q.phone_norm, cfg, staff);
     if (why) { await pool.query("UPDATE wa_send_queue SET status='skipped', reason=$2 WHERE id=$1", [q.id, why]); return { skipped: why }; }
@@ -984,7 +1089,8 @@ export function register(app, ctx, deps = {}) {
     const r = await wa.sendTemplate({ phoneNorm: q.phone_norm, template: job.cloud_template, params: built.params,
       requireOptIn: true, source: "campaign", body: built.text });
     if (r.ok) {
-      await markSent(q, { channel: "wa_cloud", wamid: r.wamid, media: job.image_url && TEMPLATES[job.cloud_template]?.components.some((c) => c.format === "IMAGE") ? "image" : "text" });
+      const hdrFmt = TEMPLATES[job.cloud_template]?.components.find((c) => c.type === "HEADER")?.format;
+      await markSent(q, { channel: "wa_cloud", wamid: r.wamid, media: hdrFmt === "VIDEO" && job.video_url ? "video" : hdrFmt === "IMAGE" && job.image_url ? "image" : "text" });
       return { sent: true, wamid: r.wamid };
     }
     if (r.skipped) {
@@ -1073,8 +1179,12 @@ export function register(app, ctx, deps = {}) {
       }
       const cfg = senderCfg(s);
       const st = await stateNow("wa_cloud");
+      const { rateSar } = rateOf(s);
+      st.rateSar = rateSar;
       const p = cloudPacing(cc, st, inWindow(cfg, now()));
       if (!p.allow) return { reason: p.reason };
+      /* «إيقاف» بييجي بعد التسليم: نراجع فرامل كل حملة شغّالة قبل ما نبعت أي حاجة في الدورة دي */
+      for (const j of (await pool.query("SELECT id, spend_cap_sar, rate_sar FROM wa_send_jobs WHERE status='running' AND channel='wa_cloud'")).rows) await jobBrake(j, cc, rateSar);
       const staff = staffPhoneSet(s);
       const out = { sent: 0, skipped: 0, failed: 0 };
       // «فشلت بسبب مؤقت» ترجع — الصفوف اللي علقت في sending أكتر من ١٠ دقايق
@@ -1093,11 +1203,15 @@ export function register(app, ctx, deps = {}) {
           out.reason = "queue_empty";
           break;
         }
-        const job = (await pool.query("SELECT id, cloud_template, cloud_vars, image_url, link_slug, offer, fallback FROM wa_send_jobs WHERE id=$1", [q.job_id])).rows[0];
+        const job = (await pool.query("SELECT id, cloud_template, cloud_vars, image_url, video_url, link_slug, offer, fallback, spend_cap_sar, rate_sar FROM wa_send_jobs WHERE id=$1", [q.job_id])).rows[0];
+        /* سقف صرف الحملة قبل الإرسال: لو الرسالة دي هتعدّيه، الصف يرجع للطابور والحملة تقف */
+        const pre = await jobBrake(job, cc, rateSar);
+        if (pre) { await pool.query("UPDATE wa_send_queue SET status='pending', attempts=GREATEST(attempts-1,0) WHERE id=$1", [q.id]); out.braked = pre; continue; }
         const r = await sendCloudRow(q, job, cfg, staff);
         if (r.sent) { out.sent++; budget--; }
         else if (r.skipped) out.skipped++;
         else if (r.failed) { out.failed++; budget--; }
+        if (r.sent || r.failed) { const post = await jobBrake(job, cc, rateSar); if (post) out.braked = post; }
         if (r.halt || r.stop) { out.reason = r.halt || r.stop; if (r.stop) out.stopped = true; break; }
       }
       return out;
@@ -1161,19 +1275,52 @@ export function register(app, ctx, deps = {}) {
     t.unref?.();
   }
 
+  /* إرسال تجربة: نفس قالب ومحتوى الحملة اللي في المعاينة، لرقم من أرقام التجربة بس (الحارس بيرفض أي رقم تاني)، ومن غير
+     ما يتعمل حملة ولا يتحسب في عدّادها. الرابط في التجربة = رابط الحملة لو اسمه موجود، وإلا الصفحة الرئيسية للمتجر مش هتتفتح
+     بالاسم ده — فبنبعت اسم رابط موجود (cms_links) أو بنرفض. للمالك بس. */
+  app.post("/api/cms/wa-sender/cloud/test", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    if (!(await isOwner(c))) return ownerOnly(c);
+    if (!wa) return bad(c, "disabled", "واتساب مش متاح", 503);
+    let b = {}; try { b = await c.req.json(); } catch { return bad(c, "bad_json", "بيانات غلط"); }
+    const input = jobInput({ ...b, channel: "wa_cloud" }, { hosts: imageHosts() });
+    const errs = input.errs.filter(([e]) => !["name_required"].includes(e));
+    if (errs.length) return bad(c, errs[0][0], errs[0][1], 422);
+    const mp = await mediaErr(input); if (mp) return bad(c, mp[0], mp[1], 422);
+    const pn = normLocal(b.phone);
+    const tests = typeof wa.testPhones === "function" ? await wa.testPhones().catch(() => []) : [];
+    if (!pn || !tests.includes(pn)) return bad(c, "not_in_allow_list", "الرقم لازم يكون من أرقام التجربة في اللوحة", 422);
+    const spec = campaignSpec(input.cloudTemplate);
+    let slug = "";
+    if (spec.button === "link") {
+      slug = String(b.testLinkSlug || input.link.slug || "").trim().toLowerCase();
+      const okSlug = slug && SLUG_RE.test(slug) ? (await pool.query("SELECT 1 FROM cms_links WHERE slug=$1 AND active", [slug])).rowCount : 0;
+      if (!okSlug) return bad(c, "test_link_required", "زر القالب بيفتح رابط متتبّع: اختار رابط حملة موجود للتجربة (رابط الحملة نفسها بيتعمل وقت البدء)", 422);
+    }
+    const coupon = spec.needsCoupon ? String(b.testCoupon || input.link.coupon || "").trim().toUpperCase().slice(0, 40) : "";
+    if (spec.needsCoupon && !coupon) return bad(c, "test_coupon_required", "القالب فيه كود: اكتب كود موجود للتجربة", 422);
+    let built;
+    try { built = campaignParams(input.cloudTemplate, { name: String(b.testName || "تجربة").slice(0, 30), vars: {}, link_code: "", coupon },
+      { link_slug: slug, image_url: input.imageUrl, video_url: input.videoUrl, cloud_vars: input.cloudVars }); }
+    catch { return bad(c, "bad_template", "القالب مش معروف", 422); }
+    const r = await wa.sendTemplate({ phoneNorm: pn, template: input.cloudTemplate, params: built.params, source: "campaign", body: built.text, test: true });
+    if (r.ok) return c.json({ ok: true, wamid: r.wamid, to: `0${pn}`, template: input.cloudTemplate, text: built.text, by: await whoOf(c) });
+    return c.json({ ok: false, error: r.skipped || r.error || "send_failed", gate: r.skipped || null, detail: r.detail || r.message || null }, 409);
+  });
+
   // نشغّل/نوقّف قناة Cloud من شاشة الإرسال الآلي (نفس settings.waCloud)
   app.post("/api/cms/wa-sender/cloud", async (c) => {
     const err = await requireAdmin(c); if (err) return err;
     let b = {}; try { b = await c.req.json(); } catch { return bad(c, "bad_json", "بيانات غلط"); }
     /* SEC (١٢/١٠): المسار ده كان بأي أدمن (دور التسويق يقدر يشغّل قناة Cloud ويرفع السقوف) وهو بيكتب نفس settings.waCloud
        اللي مسار المالك (POST /api/cms/wa-cloud/settings) بيحميه. دلوقتي: غير المالك يقدر **يوقّف** بس. */
-    const keys = ["enabled", "dailyCap", "hourCap", "perTick", "tierLimit", "reserveUtility"].filter((k) => b[k] !== undefined);
+    const keys = CLOUD_KEYS.filter((k) => b[k] !== undefined);
     const onlyOff = keys.length === 1 && keys[0] === "enabled" && b.enabled === false;
     if (!onlyOff && !(await isOwner(c))) return c.json({ ok: false, error: "owner_only", message: "تشغيل القناة وتعديل السقوف للمالك بس" }, 403);
     const s = await getSettingsData();
     const cur = (s.waCloud && typeof s.waCloud === "object") ? s.waCloud : {};
     const next = { ...cur };
-    for (const k of ["enabled", "dailyCap", "hourCap", "perTick", "tierLimit", "reserveUtility"]) if (b[k] !== undefined) next[k] = b[k];
+    for (const k of CLOUD_KEYS) if (b[k] !== undefined) next[k] = b[k];
     const clean = cloudCfg({ waCloud: next });
     await pool.query(`UPDATE settings SET data = jsonb_set(COALESCE(data,'{}'::jsonb), '{waCloud}', $1::jsonb, true) WHERE id=1`, [J(clean)]);
     if (b.enabled === true) await pool.query("UPDATE wa_sender_state SET stopped_reason=NULL, fail_streak=0 WHERE id=2");

@@ -23,7 +23,8 @@
       الويب هوك (آخر حدث)، ومفاتيح الـenv.
    كل ردود التشخيص HTTP 200 مع ok:false (Cloudflare بيبلع الـ5xx).
 ═══════════════════════════════════════════════════════════════════════════ */
-import { GRAPH_VERSION, TEMPLATES, renderTemplateText } from "./whatsapp.js";
+import { GRAPH_VERSION, TEMPLATES, renderTemplateText, registerTemplates } from "./whatsapp.js";
+import * as CAT from "./watemplates.js";
 
 const env = (k, d) => (process.env[k] || d || "").toString().trim();
 export const APP_ID = "1073414588466040";
@@ -57,15 +58,25 @@ const clampN = (v, lo, hi, d) => { const n = Number(v); return Number.isFinite(n
    (رسايل بتبدأ منّا = قوالب). reserveUtility: بنسيب جزء لتحديثات الطلبات
    عشان الحملة ماتاكلش الحد وطلب عميل مايوصلوش تحديث. */
 export const CLOUD_DEFAULTS = {
-  enabled: false, dailyCap: 150, hourCap: 60, perTick: 5, tierLimit: 250, reserveUtility: 50,
+  enabled: false, dailyCap: 200, hourCap: 60, perTick: 5, tierLimit: 250, reserveUtility: 50,
+  /* حملات واتساب (١٣/١٠ — قرار عمر): سقف صرف يومي، وفرامل آلية على نسبة الفشل ونسبة «إيقاف» بعد أول N رسالة من الحملة */
+  spendDaySar: 50, brakeMinSends: 20, brakeStopPct: 5, brakeFailPct: 10,
   configId: DEFAULT_CONFIG_ID,
 };
+export const CLOUD_KEYS = Object.freeze(["enabled", "dailyCap", "hourCap", "perTick", "tierLimit", "reserveUtility", "spendDaySar", "brakeMinSends", "brakeStopPct", "brakeFailPct"]);
+/* مفاتيح «رفع السقف» = للمالك بس؛ تقليلها أو قفل القناة مسموح لأي دور يدخل الشاشة */
+export const CLOUD_CEILINGS = Object.freeze(["dailyCap", "hourCap", "perTick", "tierLimit", "spendDaySar", "brakeStopPct", "brakeFailPct"]);
+const clampF = (v, lo, hi, d) => { const n = Number(v); return Number.isFinite(n) && v !== null && v !== "" ? Math.min(hi, Math.max(lo, Math.round(n * 100) / 100)) : d; };
 export function cloudCfg(settings) {
   const x = { ...CLOUD_DEFAULTS, ...(((settings || {}).waCloud) || {}) };
   const tier = clampN(x.tierLimit, 1, 100000, 250);
   return {
     enabled: x.enabled === true,
-    dailyCap: clampN(x.dailyCap, 1, 100000, 150),
+    dailyCap: clampN(x.dailyCap, 1, 100000, 200),
+    spendDaySar: clampF(x.spendDaySar, 0, 100000, 50),          // صفر = مفيش إرسال حملات
+    brakeMinSends: clampN(x.brakeMinSends, 5, 1000, 20),
+    brakeStopPct: clampF(x.brakeStopPct, 0.5, 100, 5),
+    brakeFailPct: clampF(x.brakeFailPct, 1, 100, 10),
     hourCap: clampN(x.hourCap, 1, 10000, 60),
     perTick: clampN(x.perTick, 1, 50, 5),
     tierLimit: tier,
@@ -87,7 +98,13 @@ export function cloudPacing(cc, st, inHours) {
   if (hour <= 0) return { allow: 0, reason: "hour_cap" };
   const tier = cc.tierLimit - cc.reserveUtility - (st.uniq24h || 0);
   if (tier <= 0) return { allow: 0, reason: "tier_limit" };
-  return { allow: Math.max(0, Math.min(cc.perTick, day, hour, tier)), reason: null };
+  /* سقف الصرف اليومي: رسايل النهارده × سعر الرسالة التسويقية (من بطاقة الأسعار المخزّنة — st.rateSar). من غير سعر معروف مفيش سقف صرف. */
+  let money = Infinity;
+  if (Number.isFinite(Number(cc.spendDaySar)) && Number(st.rateSar) > 0) {
+    money = Math.floor((Number(cc.spendDaySar) - (st.today || 0) * Number(st.rateSar)) / Number(st.rateSar) + 1e-9);
+    if (money <= 0) return { allow: 0, reason: "spend_cap" };
+  }
+  return { allow: Math.max(0, Math.min(cc.perTick, day, hour, tier, money)), reason: null };
 }
 
 /* ── أكواد أخطاء ميتا → قرار ──────────────────────────────────────────────
@@ -151,17 +168,109 @@ export function fallbackFor(cls, jobFallback) {
    row: صف wa_send_queue (vars, link_code, coupon)  ·  job: wa_send_jobs
    زرار الرابط = /l/<slug>-<code> نفس روابط الحملة المتتبّعة (cms.js). */
 export const CAMPAIGN_TEMPLATES = () => Object.entries(TEMPLATES).filter(([, t]) => t.campaign && t.category === "MARKETING").map(([n]) => n);
+
+/* قالب الفيديو (١٣/١٠): نفس fc_offer_img بهيدر فيديو. بيتسجّل في السجل عشان يتقدّم لميتا ويتبعت — **مايتبعتش قبل ما ميتا تعتمده**.
+   مش في CAMPAIGN_TEMPLATES القديمة (قايمتها ثابتة باختبار)، وبيظهر في campaignTemplateNames(). */
+export const VIDEO_TEMPLATE = "fc_offer_video";
+/* بيتنادى وقت الإقلاع (register تحت) ومن الاختبارات — مش وقت الاستيراد، عشان عدّ القوالب المبنية في الاختبارات القديمة مايتغيّرش */
+export function registerCampaignTemplates() {
+  if (TEMPLATES[VIDEO_TEMPLATE]) return false;
+  registerTemplates({ [VIDEO_TEMPLATE]: {
+  category: "MARKETING", campaignVideo: { label: "عرض بفيديو" },
+  components: [
+    { type: "HEADER", format: "VIDEO", example: { header_handle: ["<upload handle — بيتجاب وقت التقديم>"] } },
+    { type: "BODY", text: "أهلاً {{1}} 👋\n{{2}}\nاطلبه من موقع فريش كاتس للتوصيل أو الاستلام 🔥", example: { body_text: [["محمد", "بوكس التشكيلة من فريش كاتس بـ105 ريال"]] } },
+    { type: "FOOTER", text: "للإيقاف ردّ: إيقاف" },
+    { type: "BUTTONS", buttons: [{ type: "URL", text: "اطلب الآن", url: "https://freshcuts.sa/l/{{1}}", example: ["w12-a1b2c3"] }, { type: "QUICK_REPLY", text: "إيقاف" }] },
+  ],
+  bind: (x) => ({ header: x.videoUrl ? { video: x.videoUrl } : null, body: [x.name || "عميلنا", x.offer || ""], button: [x.linkSuffix || ""] }),
+  } });
+  return true;
+}
+
+/* حدود ميتا للوسائط في رسالة قالب (Cloud API): صورة JPEG/PNG لحد ٥ ميجا؛ فيديو MP4/3GP (H.264 + AAC) لحد ١٦ ميجا. */
+export const MEDIA_LIMITS = Object.freeze({
+  image: { maxBytes: 5 * 1024 * 1024, mimes: ["image/jpeg", "image/png"], label: "صورة JPG أو PNG لحد ٥ ميجا" },
+  video: { maxBytes: 16 * 1024 * 1024, mimes: ["video/mp4", "video/3gpp"], label: "فيديو MP4 (H.264 + صوت AAC) لحد ١٦ ميجا" },
+});
+/* {mime, bytes} (من رد HEAD على الرابط) ⇒ null لو تمام، أو [كود، رسالة] */
+export function mediaProblem(kind, { mime, bytes } = {}) {
+  const L = MEDIA_LIMITS[kind];
+  if (!L) return ["bad_media_kind", "نوع الوسيط مش معروف"];
+  const m = String(mime || "").split(";")[0].trim().toLowerCase();
+  if (!L.mimes.includes(m)) return ["media_type", `${kind === "video" ? "الفيديو" : "الصورة"} لازم: ${L.label} (الملف نوعه ${m || "مش معروف"})`];
+  const n = Number(bytes);
+  if (!Number.isFinite(n) || n <= 0) return ["media_size_unknown", "ماقدرناش نعرف حجم الملف — ارفعه على مخزن الوسائط بتاعنا تاني"];
+  if (n > L.maxBytes) return ["media_too_big", `الملف ${(n / 1048576).toFixed(1)} ميجا — ميتا بتقبل ${L.label}`];
+  return null;
+}
+
+/* وصف قالب للحملة: الهيدر، الزر، والخانات اللي الحملة لازم تملاها. null = القالب ماينفعش لحملة.
+   المتغيّرات «التلقائية»: الاسم الأول للعميل، كوبونه (لو الحملة بكوبون)، ورابطه المتتبّع ‎/l/<slug>-<code>. */
+const AUTO_VARS = { "customer.name": "name", "coupon.code": "coupon" };
+export function campaignSpec(name) {
+  const t = TEMPLATES[name];
+  if (!t || t.category !== "MARKETING") return null;
+  const comps = t.components || [];
+  const hdr = comps.find((c) => c.type === "HEADER");
+  const header = hdr && hdr.format === "IMAGE" ? "image" : hdr && hdr.format === "VIDEO" ? "video" : null;
+  const body = comps.find((c) => c.type === "BODY")?.text || "";
+  const footer = comps.find((c) => c.type === "FOOTER")?.text || "";
+  const urlBtn = (comps.find((c) => c.type === "BUTTONS")?.buttons || []).find((b) => b.type === "URL") || null;
+  const base = { name, header, body, footer, buttonText: urlBtn ? urlBtn.text : null };
+  if (t.campaign || t.campaignVideo) {
+    const needs = t.campaign ? (t.campaign.needs || []) : ["video"];
+    const offerLine = name === "fc_offer_img" || name === VIDEO_TEMPLATE;
+    return { ...base, kind: "legacy", label: (t.campaign || t.campaignVideo).label, needsCoupon: needs.includes("coupon"), button: "link",
+      fields: offerLine ? [{ key: "offer", label: "سطر العرض", example: "بوكس التشكيلة من فريش كاتس بـ105 ريال", max: 200 }] : [], auto: ["name"] };
+  }
+  if (!t.catalog) return null;
+  const c = CAT.findTemplate(name, t.language || "ar");
+  if (!c || !c.meta) return null;
+  /* قوالب الكتالوج اللي إرسالها «يدوي» بس (عرض، صنف جديد، مناسبة…): قيمها واحدة لكل المستلمين. القوالب الآلية
+     (ولاء، استرجاع، كوبون شخصي…) قيمها بتيجي من بيانات كل عميل ومكانها الأتمتة، مش حملة بقيم مكتوبة بالإيد. */
+  if (c.meta.send !== "manual") return null;
+  const bv = (c.meta.buttonVars || [])[0] || null;
+  let button = urlBtn ? "static" : null;
+  if (bv) { if (bv.path === "link.suffix") button = "link"; else if (bv.path === "coupon.code") button = "coupon"; else return null; }   // زر سلة/طلب: مش حملة
+  const fields = [], auto = [];
+  for (const v of c.meta.vars || []) {
+    if (AUTO_VARS[v.path]) { auto.push(AUTO_VARS[v.path]); continue; }
+    fields.push({ key: v.path, label: v.label || v.path, example: v.example || "", max: 200 });
+  }
+  return { ...base, kind: "catalog", label: c.meta.purpose || name, needsCoupon: auto.includes("coupon") || button === "coupon", button, fields, auto,
+    held: Boolean(CAT.HOLD && CAT.HOLD[name]) };
+}
+export const campaignTemplateNames = () => Object.keys(TEMPLATES).filter((n) => campaignSpec(n)).sort();
+
+const setPath = (obj, path, val) => { const ks = String(path).split("."); let o = obj; ks.forEach((k, i) => { if (i === ks.length - 1) o[k] = val; else o = o[k] = (o[k] && typeof o[k] === "object" ? o[k] : {}); }); };
+export const campaignValues = (cloudVars) => { const v = (cloudVars && cloudVars.values && typeof cloudVars.values === "object") ? cloudVars.values : {}; return { ...v, ...(cloudVars && cloudVars.offer ? { offer: cloudVars.offer } : {}) }; };
+
 export function campaignParams(template, row, job) {
   const t = TEMPLATES[template];
   if (!t) throw new Error(`unknown template ${template}`);
   const v = row.vars || {};
   const first = String(v.first_name || "").trim() || String(v.name || row.name || "").trim().split(/\s+/)[0] || "";
   const slug = job.link_slug || "";
+  const linkSuffix = slug && row.link_code ? `${slug}-${row.link_code}` : slug;
+  const spec = campaignSpec(template);
+  if (spec && spec.kind === "catalog") {
+    /* قالب كتالوج: كائن البيانات بمسارات المتغيّرات — قيم الحملة + الاسم + الكوبون + الرابط المتتبّع، وbind بتاع الكتالوج يرتّبها ويطلّع الناقص */
+    const data = {};
+    for (const [k, val] of Object.entries(campaignValues(job.cloud_vars))) if (k !== "offer") setPath(data, k, val);
+    setPath(data, "customer.name", first || "عميلنا");
+    if (row.coupon) setPath(data, "coupon.code", row.coupon);
+    setPath(data, "link.suffix", linkSuffix);
+    const b = t.bind(data);
+    const params = { ...b, header: spec.header === "image" && job.image_url ? { image: job.image_url } : spec.header === "video" && job.video_url ? { video: job.video_url } : null };
+    return { params, text: renderTemplateText(template, params) };
+  }
   const params = t.bind({
     name: first || "عميلنا",
     offer: (job.cloud_vars && job.cloud_vars.offer) || "",
     imageUrl: job.image_url || null,
-    linkSuffix: slug && row.link_code ? `${slug}-${row.link_code}` : slug,
+    videoUrl: job.video_url || null,
+    linkSuffix,
     dish: String(v.fav_dish || v.last_items || "").trim(),
     coupon: row.coupon || "",
   });
@@ -169,22 +278,38 @@ export function campaignParams(template, row, job) {
 }
 
 /* حملة على قناة Cloud: القالب لازم يبقى قالب حملة، وكل اللي محتاجه موجود. */
-export function cloudJobProblem({ cloudTemplate, cloudVars, imageUrl, offer, link }) {
-  const t = TEMPLATES[cloudTemplate];
-  if (!t || !t.campaign || t.category !== "MARKETING") return ["bad_template", "اختار قالب واتساب معتمد للحملة"];
-  const needs = t.campaign.needs || [];
-  if (needs.includes("image") && !imageUrl) return ["image_required", "القالب ده بصورة — اختار صورة العرض"];
-  if (needs.includes("coupon") && !(offer && offer.oneTime) && !(link && link.coupon)) {
+export function cloudJobProblem({ cloudTemplate, cloudVars, imageUrl, videoUrl, offer, link }) {
+  const spec = campaignSpec(cloudTemplate);
+  if (!spec) return ["bad_template", "اختار قالب واتساب تسويقي ينفع لحملة"];
+  if (spec.header === "image" && !imageUrl) return ["image_required", "القالب ده بصورة — اختار صورة العرض"];
+  if (spec.header === "video" && !videoUrl) return ["video_required", "القالب ده بفيديو — ارفع الفيديو واختاره"];
+  if (spec.needsCoupon && !(offer && offer.oneTime) && !(link && link.coupon)) {
     return ["coupon_required", "القالب ده فيه كود — فعّل «كوبون مرة واحدة لكل عميل» أو حط كوبون ثابت"];
   }
-  if (cloudTemplate === "fc_offer_img") {
-    const o = String(cloudVars?.offer || "").trim();
-    if (!o) return ["offer_line_required", "اكتب سطر العرض اللي هيظهر في الرسالة"];
-    if (o.length > 200) return ["offer_line_long", "سطر العرض طويل (أقصى ٢٠٠ حرف)"];
-    if (/[\n\t]/.test(o)) return ["offer_line_newline", "سطر العرض لازم يبقى سطر واحد"];
+  const vals = campaignValues(cloudVars);
+  for (const f of spec.fields) {
+    const o = String(vals[f.key] ?? "").trim();
+    const what = f.key === "offer" ? "سطر العرض" : `«${f.label}»`;
+    if (!o) return [f.key === "offer" ? "offer_line_required" : "value_required", f.key === "offer" ? "اكتب سطر العرض اللي هيظهر في الرسالة" : `اكتب ${what}`];
+    if (o.length > f.max) return [f.key === "offer" ? "offer_line_long" : "value_long", `${what} طويل (أقصى ${f.max} حرف)`];
+    if (/[\n\t]/.test(o)) return [f.key === "offer" ? "offer_line_newline" : "value_newline", `${what} لازم يبقى سطر واحد`];
   }
   return null;
 }
+
+/* فرامل الحملة (زي فرامل الـ٥٪ بتاعة SMS): بعد أول brakeMinSends محاولة، لو نسبة الفشل أو نسبة «إيقاف» عدّت الحد ⇒ الحملة تقف.
+   n = { sent, failed, stopped } لنفس الحملة. بترجع null أو { reason:"fail_rate"|"stop_rate", pct, limit }. */
+export function brakeCheck(n, cc) {
+  const sent = Number(n?.sent) || 0, failed = Number(n?.failed) || 0, stopped = Number(n?.stopped) || 0;
+  const tried = sent + failed;
+  if (tried < cc.brakeMinSends) return null;
+  const failPct = (failed / tried) * 100, stopPct = sent ? (stopped / sent) * 100 : 0;
+  const r1 = (x) => Math.round(x * 10) / 10;
+  if (failPct >= cc.brakeFailPct) return { reason: "fail_rate", pct: r1(failPct), limit: cc.brakeFailPct };
+  if (stopPct >= cc.brakeStopPct) return { reason: "stop_rate", pct: r1(stopPct), limit: cc.brakeStopPct };
+  return null;
+}
+export const campaignCost = (messages, rateSar) => (Number(rateSar) > 0 ? Math.round((Number(messages) || 0) * Number(rateSar) * 100) / 100 : null);
 
 /* القناة الافتراضية لحملة جديدة: Cloud لو كله جاهز، وإلا واتساب ويب */
 export function defaultChannel({ gate, phoneStatus }) {
@@ -194,6 +319,7 @@ export function defaultChannel({ gate, phoneStatus }) {
 /* ═══════════════════════════════════════════════════════════════════════════ */
 export function register(app, ctx, deps = {}) {
   const { pool, requireAdmin, getSettingsData, jb } = ctx;
+  registerCampaignTemplates();
   const doFetch = deps.fetch || globalThis.fetch;
   const wa = deps.wa || null;                 // الراجع من whatsapp.js
   const now = deps.now || (() => Date.now());
@@ -669,7 +795,7 @@ export function register(app, ctx, deps = {}) {
     const s = await getSettingsData();
     const cur = (s.waCloud && typeof s.waCloud === "object") ? s.waCloud : {};
     const next = { ...cur };
-    for (const k of ["enabled", "dailyCap", "hourCap", "perTick", "tierLimit", "reserveUtility", "configId"]) if (b[k] !== undefined) next[k] = b[k];
+    for (const k of [...CLOUD_KEYS, "configId"]) if (b[k] !== undefined) next[k] = b[k];
     const clean = cloudCfg({ waCloud: next });
     await pool.query(`UPDATE settings SET data = jsonb_set(COALESCE(data,'{}'::jsonb), '{waCloud}', $1::jsonb, true) WHERE id=1`, [J(clean)]);
     // التشغيل من تاني بيمسح «اتوقف» (المالك بص وقرر)

@@ -264,6 +264,9 @@ export function buildTemplatePayload(name, to, params = {}, lang = "ar") {
   const components = [];
   if (params.header?.image) {
     components.push({ type: "header", parameters: [{ type: "image", image: { link: params.header.image } }] });
+  } else if (params.header?.video) {
+    // حملات واتساب (١٣/١٠): قالب بهيدر فيديو — رابط https عام لملف mp4 (wacloud.js mediaRule)
+    components.push({ type: "header", parameters: [{ type: "video", video: { link: params.header.video } }] });
   }
   if (Array.isArray(params.body) && params.body.length) {
     components.push({ type: "body", parameters: params.body.map((v) => ({ type: "text", text: cleanParam(v) })) });
@@ -1167,10 +1170,11 @@ export function register(app, ctx, deps = {}) {
       const tag = l && templateLanguages(n).length > 1 ? { language: l } : {};
       try {
         const sub = templateSubmission(n, l);
-        const hdr = sub.components.find((x) => x.type === "HEADER" && x.format === "IMAGE");
+        const hdr = sub.components.find((x) => x.type === "HEADER" && (x.format === "IMAGE" || x.format === "VIDEO"));
         if (hdr) {
-          if (!b.sampleImageUrl) { results.push({ name: n, ...tag, ok: false, error: "sample_image_required" }); continue; }
-          const h = await uploadHandle(String(b.sampleImageUrl));
+          const sampleUrl = hdr.format === "VIDEO" ? b.sampleVideoUrl : b.sampleImageUrl;
+          if (!sampleUrl) { results.push({ name: n, ...tag, ok: false, error: hdr.format === "VIDEO" ? "sample_video_required" : "sample_image_required" }); continue; }
+          const h = await uploadHandle(String(sampleUrl));
           sub.components = sub.components.map((x) => (x === hdr ? { ...x, example: { header_handle: [h] } } : x));
         }
         /* edit:true = تعديل قالب موجود عند ميتا بنفس الاسم واللغة (مرفوض/موقوف: من غير حد؛ معتمد: مرة في اليوم) بدل إنشاء
