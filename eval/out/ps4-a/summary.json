@@ -1,0 +1,66 @@
+{
+ "set": "ps4",
+ "name": "ps4-a",
+ "over": {
+  "routing": "escalate",
+  "thinking": "adaptive",
+  "effort": "low",
+  "timeoutMs": 60000
+ },
+ "capped": false,
+ "spentRun": 0.5153099999999999,
+ "spentTodayBefore": 2.3140289999999997,
+ "cap": 99,
+ "conversations": 9,
+ "passed": 7,
+ "failed": [
+  "ps4-fee-first-order-same-total",
+  "ps4-big-box-family"
+ ],
+ "customerTurns": 18,
+ "modelTurns": 17,
+ "answeredByAssistant": 17,
+ "rulesOwned": 1,
+ "fallbacks": {},
+ "validatorRetries": 0,
+ "escalations": 3,
+ "costSar": 0.5153,
+ "costPerConversationSar": 0.0573,
+ "costPerModelTurnSar": 0.0303,
+ "latencyMs": {
+  "p50": 2825,
+  "p90": 5260,
+  "max": 5714,
+  "n": 17
+ },
+ "modelCalls": 35,
+ "byModel": {
+  "claude-haiku-5-5": {
+   "calls": 25,
+   "in": 86273,
+   "out": 3130,
+   "cached": 295213,
+   "sar": 0.1489,
+   "callP50ms": 1211,
+   "callP90ms": 2713
+  },
+  "claude-sonnet-5-5": {
+   "calls": 10,
+   "in": 30756,
+   "out": 930,
+   "cached": 134451,
+   "sar": 0.3664,
+   "callP50ms": 1632,
+   "callP90ms": 2069
+  }
+ },
+ "failTypes": {
+  "must_contain": 4,
+  "no_buttons": 2
+ },
+ "reviewFlags": {
+  "intro_by_code": 1
+ },
+ "text": "conversations 9 · passed 7 · failed 2\ncustomer turns 18: assistant answered 17, rules owned 1, fallbacks {}\nvalidator retries 0 · escalations fast→strong 3 · model calls 35\ncost 0.5153 SAR (0.0573 per conversation, 0.0303 per model turn)\nlatency per answered turn: p50 2825 ms · p90 5260 ms · max 5714 ms (n=17)\nby model {\"claude-haiku-5-5\":{\"calls\":25,\"in\":86273,\"out\":3130,\"cached\":295213,\"sar\":0.1489,\"callP50ms\":1211,\"callP90ms\":2713},\"claude-sonnet-5-5\":{\"calls\":10,\"in\":30756,\"out\":930,\"cached\":134451,\"sar\":0.3664,\"callP50ms\":1632,\"callP90ms\":2069}}\nfail types {\"must_contain\":4,\"no_buttons\":2}\nreview flags {\"intro_by_code\":1}",
+ "markdown": "# Assistant evaluation: ps4-a\n\n```\nconversations 9 · passed 7 · failed 2\ncustomer turns 18: assistant answered 17, rules owned 1, fallbacks {}\nvalidator retries 0 · escalations fast→strong 3 · model calls 35\ncost 0.5153 SAR (0.0573 per conversation, 0.0303 per model turn)\nlatency per answered turn: p50 2825 ms · p90 5260 ms · max 5714 ms (n=17)\nby model {\"claude-haiku-5-5\":{\"calls\":25,\"in\":86273,\"out\":3130,\"cached\":295213,\"sar\":0.1489,\"callP50ms\":1211,\"callP90ms\":2713},\"claude-sonnet-5-5\":{\"calls\":10,\"in\":30756,\"out\":930,\"cached\":134451,\"sar\":0.3664,\"callP50ms\":1632,\"callP90ms\":2069}}\nfail types {\"must_contain\":4,\"no_buttons\":2}\nreview flags {\"intro_by_code\":1}\n```\n\n## Conversations\n\n### PASS · ps4-fee-real-0930 (fee moment) · 0.0923 SAR\n\n- **العميل:** السعر اغلي من كيتا\n  - **المساعد** (fast, 5714 ms, 0.0131 SAR, tools: faq): معك ماجد، المساعد الرقمي لفريش كاتس. نعم، تجدنا على كيتا وهنقرستيشن ونينجا. والطلب من موقعنا freshcuts.sa بسعر المطعم نفسه، وأسعار الأصناف في التطبيقات أعلى. تحب أساعدك تختار طلبك من الموقع؟\n- **العميل:** يعني طلب ب 40 ريال تدفع علي رسوم 20 ريال و في الابلكيشن ببلاش\n  - _(أزرار: [أكمّلها 60 ر.س] [استلام من الفرع])_\n  - **المساعد** (strong↑, 4564 ms, 0.0639 SAR, tools: delivery_savers): معك حق، التوصيل يفرق على الطلب الصغير. ⏎ طلبك 40 ر.س + توصيل 20 = 60 ر.س. ⏎ وإذا زدت عليه 20 ر.س يصير التوصيل 15 ر.س، والإجمالي 75 ر.س. ⏎ أو استلام من الفرع بدون رسوم توصيل = 40 ر.س. ⏎ وعندنا بوكس الكريب لشخصين بـ 65 ر.س وتوصيله 15 ر.س. أيهم يناسبك؟\n- **العميل:** لا\n  - **المساعد** (strong, 1309 ms, 0.0153 SAR): ولا يهمك، متى ما حبيت اكتب لي.\n\n### FAIL · ps4-fee-first-order-same-total (fee moment) · 0.0430 SAR\n\n**Fails:** must_contain «40 ر.س \\+ توصيل 20 = 60 ر.س»; must_contain «بكود FIRST = 60»; must_contain «نفس المبلغ»; no_buttons@1 «60 ← none»\n\n- **العميل:** ابي ثلث كيلو كفتة مشوية توصيل\n  - **المساعد** (fast, 4177 ms, 0.0185 SAR, tools: search_menu, preview_cart): أبشر، معك ماجد، المساعد الرقمي لفريش كاتس. ثلث كيلو كفتة مشوية بـ 40 ر.س. تحب أضيف لك بطاطس محمرة بـ 6 ر.س؟\n- **العميل:** لا شكراً\n  - **المساعد** (fast, 2421 ms, 0.0121 SAR, tools: note_suggestion): تمام. أرسل لي موقعك بالواتساب (📎 ثم «الموقع») حتى أتأكد من التوصيل وأحسب الرسوم.\n- **العميل:** استلام من الفرع\n  - **المساعد** (fast, 2196 ms, 0.0124 SAR, tools: build_cart, cart 40 pickup): سلتك: ثلث كيلو كفتة مشوية = 40 ر.س، استلام من الفرع بدون رسوم توصيل. اضغط الزر، حدّد موقعك وادفع 👇\n\n### PASS · ps4-menu-then-chicken (menu / short answer) · 0.0176 SAR\n\n- **العميل:** احتاج اعمل اوردر\n  - **المساعد** (fast, 2367 ms, 0.0066 SAR): وعليكم... لا، الرسالة ما فيها تحية. نبدأ: معك ماجد، المساعد الرقمي لفريش كاتس. أبشر بالطلب، تبي تطلب وجبة لشخص ولا لأكثر؟\n- **العميل:** ابي المنيو\n  - _بوت القواعد_ (rules:menu)\n- **العميل:** نوع الدجاج ايه\n  - **المساعد** (fast, 2778 ms, 0.0110 SAR, tools: faq): الدجاج عندنا مبرّد، وكل لحومنا ودجاجنا حلال. ⏎  ⏎ تبي نرشّح لك شي من المشاوي ولا الكريب والبرجر؟\n\n### FAIL · ps4-big-box-family (big box / pick for me) · 0.2281 SAR\n\n**Fails:** must_contain «125»; no_buttons@1 «كفت ← none»\n\nReview: intro_by_code@0 «»\n\n- **العميل:** اى البوكس العائلى\n  - _(أزرار: [بوكس العائلة — مشاو…] [بوكس المشكل المخصوص])_\n  - **المساعد** (strong↑, 5260 ms, 0.1925 SAR, tools: get_box): معك ماجد، المساعد الرقمي لفريش كاتس. ⏎ بوكس العائلة بـ 179 ر.س: نوعين مشاوي (نصف كيلو لكل نوع) + بيتزا وسط + باستا + ٣ أطباق أرز + بطاطس + كولسلو + ٤ مشروبات غازية. ⏎ وفيه خيار أخف: بوكس المشكل المخصوص بـ 145 ر.س. ⏎ أي بوكس أجهّز لك؟\n- **العميل:** بوكس العائلة\n  - **المساعد** (strong, 1484 ms, 0.0176 SAR): أبشر. المشوي الأول (نصف كيلو): كفتة، شيش طاووق، طرب ولا سجق؟\n- **العميل:** تمام جهزه\n  - **المساعد** (strong, 1724 ms, 0.0180 SAR): أجهّزه بالأكثر طلباً عندنا: كفتة مشوية للمشوي الأول والثاني، بيتزا تشيكن رانش، وبنا تشيكن كازرول. أعتمده؟\n\n### PASS · ps4-pick-for-me-meals (big box / pick for me) · 0.0766 SAR\n\n- **العميل:** ابي بوكس وجبتين مشاوي لشخصين\n  - _(قايمة: وجبة كفتة · وجبة صدور مشوية · وجبة طرب · وجبة شيش طاووق · طبق كبدة اسكندراني · وجبة نصف دجاجة على الفحم)_\n  - **المساعد** (strong↑, 4379 ms, 0.0598 SAR, tools: get_box): أبشر، معك ماجد، المساعد الرقمي لفريش كاتس. بوكس «وجبتين مشاوي لشخصين» بـ 65 ر.س: وجبتين مشاوي من اختيارك + بطاطس + كولسلو + دوريتوس + مشروبين غازيين. ⏎ الوجبة الأولى تبيها أي وحدة: وجبة كفتة، وجبة صدور مشوية، وجبة طرب، وجبة شيش طاووق، طبق كبدة اسكندراني، ولا وجبة نصف دجاجة على الفحم؟\n- **العميل:** تمام جهزه\n  - **المساعد** (strong, 1484 ms, 0.0167 SAR): أبشر، أجهّزه بوجبة نصف دجاجة على الفحم للوجبتين، وهي الأكثر طلباً عندنا. أعتمده؟\n\n### PASS · ps4-pair-crepe-solo-box (pairing) · 0.0168 SAR\n\n- **العميل:** ابي كريب زنجر سوبريم\n  - **المساعد** (fast, 3302 ms, 0.0168 SAR, tools: search_menu, preview_cart): معك ماجد، المساعد الرقمي لفريش كاتس. كريب زنجر سوبريم بـ 25 ر.س. ⏎ تحب أضيف لك «بوكس الكريب الفردي» بـ 29 ر.س؟ يشمل الكريب مع صنف جانبي (بطاطس أو كولسلو أو دوريتوس) ومشروب غازي.\n\n### PASS · ps4-pair-two-crepes (pairing) · 0.0168 SAR\n\n- **العميل:** ابي ٢ كريب زنجر سوبريم\n  - **المساعد** (fast, 3360 ms, 0.0168 SAR, tools: search_menu, preview_cart): معك ماجد، المساعد الرقمي لفريش كاتس. اثنين كريب زنجر سوبريم بـ 50 ر.س. ⏎ تحب أحوّلها لبوكس الكريب لشخصين بـ 65 ر.س؟ يجيك معه كريبين من اختيارك، تشيز فرايز، صنف جانبي، ومشروبين غازيين.\n\n### PASS · ps4-pair-kilo-half-and-half (pairing) · 0.0177 SAR\n\n- **العميل:** ابي كيلو كفتة مشوية\n  - **المساعد** (fast, 3871 ms, 0.0177 SAR, tools: search_menu, preview_cart): معك ماجد، المساعد الرقمي لفريش كاتس. كفتة مشوية بالوزن، كيلو بـ 120 ر.س. ⏎ تحب أضيف لك «بوكس المشاوي نص ونص» بـ 125 ر.س؟ فيه كيلو مشاوي نص ونص مع نوعين من اختيارك، طبقين أرز، بطاطس، كولسلو، والسلطة والطحينة والخبز.\n\n### PASS · ps4-ad-first-reply (ad chat) · 0.0065 SAR\n\n- **العميل:** مرحبًا! هل يمكنني الحصول على مزيد من المعلومات حول هذا؟\n  - _(أزرار: [توصيل] [استلام من الفرع] [أبغى شي ثاني])_\n  - **المساعد** (fast, 2825 ms, 0.0065 SAR): هلا والله 👋 معك ماجد، المساعد الرقمي لفريش كاتس. «مشكل مخصوص بالوزن» بالأسعار: ثلث كيلو: 53 ر.س · نصف كيلو: 78 ر.س · كيلو: 155 ر.س. أي وزن تبيه؟\n"
+}

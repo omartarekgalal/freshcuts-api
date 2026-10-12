@@ -32,7 +32,7 @@ export const BATCH20 = [
     turns: ["مين بيفوز بالدوري السعودي هالموسم؟", "اكتب لي قصيدة عن جدة", "انت غبي وما تفهم شي"],
     expect: { noCart: true, mustNotContain: ["الهلال", "النصر", "الاتحاد", "الاهلي"] } },
   { id: "egyptian-solo-lunch", group: "lunch solo (Egyptian)", sets: B20, world: { profile: "new" },
-    turns: ["عايز اتغدى لوحدي، حاجة مشوية كده", "تمام هات بوكس الميكس جريل الفردي، وجبة ميكس جريل ومعاها بطاطس", "توصيل"],
+    turns: ["عايز اتغدى لوحدي، حاجة مشوية كده", "تمام هات بوكس الميكس جريل الفردي، وجبة ميكس جريل ومعاها بطاطس", "توصيل", "لا شكراً، ارسل رابط السلة", "خلها زي ما هي توصيل"], closing: false,      // PS4: a delivery cart under the first fee step gets the fee moment once; the customer keeps it as it is
     expect: { cart: { option: "delivery", boxes: [{ slug: "box-solo-mixgrill", choices: [18, 79], price: 39 }], only: true, subtotal: 39 } } },
   { id: "english-pizza-box-crust-notes", group: "box choices with crust and notes (English)", sets: B20, world: { profile: "new" },
     turns: ["Hi, I'd like the pizza night box please", "Chicken ranch and pepperoni. Mozzarella stuffed crust on the pepperoni, and no olives on the chicken ranch.", "Pickup"],
@@ -55,7 +55,7 @@ export const BATCH20 = [
   { id: "family-gathering-custom-offer", group: "family gathering", sets: B20, world: { profile: "new" },
     turns: ["عندنا عزيمة يوم الجمعة لخمسة وعشرين شخص، وش عندكم؟", "ابي عرض مخصص: 25 شخص، الجمعة الساعة 9 مساء، توصيل"],
     expect: { handover: "custom_offer", noCart: true, turnMustContain: { 0: "باق" } } },
-  { id: "upsell-accepted", group: "upsell accepted", sets: B20, world: { profile: "new" },
+  { id: "upsell-accepted", group: "upsell accepted", sets: B20, world: { profile: "new" }, acfg: { pairingEnabled: false },      // the plain add-on path (PS4's pairing table has its own set)
     turns: ["ابي كريب ميكس لحوم", "ايوه ضيفه", "استلام"],
     expect: { cart: { option: "pickup", items: [{ id: 1, qty: 1 }, { id: 82, qty: 1 }], only: true, subtotal: 33 } } },
   { id: "stop-opt-out", group: "stop / opt-out", sets: B20, world: { profile: "new" },
@@ -77,5 +77,6 @@ import { M45 } from "./scenarios-m45.mjs";
 import { EX6 } from "./scenarios-ex6.mjs";
 import { PS1 } from "./scenarios-ps1.mjs";
 import { PS3 } from "./scenarios-ps3.mjs";
+import { PS4 } from "./scenarios-ps4.mjs";
 for (const s of BATCH20) s.sets = ["batch20", "full"];
-export const SCENARIOS = [...BATCH20, ...FULL_EXTRA, ...AS3, ...AS4, ...CH1, ...M3, ...M45, ...EX6, ...PS1, ...PS3];
+export const SCENARIOS = [...BATCH20, ...FULL_EXTRA, ...AS3, ...AS4, ...CH1, ...M3, ...M45, ...EX6, ...PS1, ...PS3, ...PS4];

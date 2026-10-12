@@ -203,7 +203,7 @@ test("the loop: no cart link before the system's one suggestion was offered once
   const items = { option: "pickup", items: [{ id: "8", qty: 1 }] };
   const m = scripted([use(tu("build_cart", items)), say("كريب زنجر سوبريم بـ 25 ر.س. تحب أضيف لك مشروبات غازية بـ 3 ر.س؟"),
     use(tu("note_suggestion", { kind: "drink", outcome: "declined" }), tu("build_cart", items)), say("سلتك: كريب زنجر سوبريم = 25 ر.س. اضغط الزر وادفع 👇")]);
-  const W = makeWorld({}, { callModel: m.callModel });
+  const W = makeWorld({}, { callModel: m.callModel, acfg: { pairingEnabled: false } });      // the plain add-on path; the pairing table has its own tests (PS4)
   const a = await turn(W, null, "ابي كريب زنجر سوبريم استلام");
   const gate = lastResults(m.seen[1])[0];
   assert.deepEqual([gate.ok, gate.error, gate.suggestion.kind, gate.suggestion.item.name, gate.subtotal], [false, "offer_suggestion_first", "drink", "مشروبات غازية", 25]);
@@ -216,7 +216,7 @@ test("the loop: no cart link before the system's one suggestion was offered once
   assert.deepEqual(b.session.state.lastCart.accepted, []);
   // accepted: the suggested item is in the cart ⇒ recorded even if the model forgot to say so; and no second suggestion step in the same conversation
   const m2 = scripted([use(tu("preview_cart", items)), say("كريب زنجر سوبريم بـ 25 ر.س. تحب أضيف لك مشروبات غازية بـ 3 ر.س؟"), use(tu("build_cart", { option: "pickup", items: [{ id: "8" }, { id: "82" }] })), say("سلتك: كريب زنجر سوبريم ومشروبات غازية = 28 ر.س 👇")]);
-  const W2 = makeWorld({}, { callModel: m2.callModel });
+  const W2 = makeWorld({}, { callModel: m2.callModel, acfg: { pairingEnabled: false } });
   const c = await turn(W2, null, "ابي كريب زنجر سوبريم"); const d = await turn(W2, c.session, "ايوه ضيفه، استلام");
   assert.equal(d.cart.subtotal, 28); assert.deepEqual(d.session.state.lastCart.accepted.map((x) => [x.kind, x.ref]), [["drink", "82"]]); assert.ok(d.trace.suggestions.some((s) => s.outcome === "accepted" && s.inferred));
   // the setting off ⇒ the cart is built at once

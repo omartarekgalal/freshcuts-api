@@ -1,0 +1,2332 @@
+[
+ {
+  "id": "egyptian-solo-lunch",
+  "group": "lunch solo (Egyptian)",
+  "world": {
+   "profile": "new"
+  },
+  "expect": {
+   "cart": {
+    "option": "delivery",
+    "boxes": [
+     {
+      "slug": "box-solo-mixgrill",
+      "choices": [
+       18,
+       79
+      ],
+      "price": 39
+     }
+    ],
+    "only": true,
+    "subtotal": 39
+   }
+  },
+  "turns": [
+   {
+    "i": 0,
+    "customer": "عايز اتغدى لوحدي، حاجة مشوية كده",
+    "cls": "unknown",
+    "raw": "unknown",
+    "by": "assistant",
+    "reply": "أبشر، معك ماجد، المساعد الرقمي لفريش كاتس. للغداء لوحدك عندي خيارين مشويين:\nبوكس وجبة المشاوي الفردي بـ 29 ر.س: وجبة مشاوي من اختيارك (كفتة، صدور مشوية، شيش طاووق وغيرها) + صنف جانبي + مشروب غازي.\nبوكس الميكس جريل الفردي بـ 39 ر.س: وجبة ميكس جريل أو كفتة وطرب + صنف جانبي + مشروب غازي.\nأي بوكس تحب؟",
+    "cart": null,
+    "handover": null,
+    "outcome": "sent",
+    "tools": [
+     {
+      "name": "get_box",
+      "input": {
+       "slug": "box-solo-mixgrill"
+      },
+      "result": {
+       "ok": true,
+       "box": {
+        "slug": "box-solo-mixgrill",
+        "name": "بوكس الميكس جريل الفردي",
+        "name_en": "Mixed Grill Solo Box",
+        "price": 39,
+        "description": "وجبة ميكس جريل أو وجبة كفتة وطرب + صنف جانبي (بطاطس أو كولسلو أو دوريتوس) + مشروب غازي.",
+        "description_en": "Mixed grill meal or kofta & tarb meal + a side (fries, coleslaw or Doritos) + a soft drink.",
+        "section": "بوكسات فردية",
+        "slots": [
+         {
+          "key": "meal",
+          "label": "اختر الوجبة",
+          "type": "choice",
+          "quantity": 1,
+          "choices": [
+           {
+            "product_id": "18",
+            "variant_option_id": null,
+            "name": "وجبة ميكس جريل",
+            "variant": null,
+            "extra": 0,
+            "name_en": "Mixed Grill Meal",
+            "addons": []
+           },
+           {
+            "product_id": "87",
+            "variant_option_id": null,
+            "name": "وجبة كفتة وطرب",
+            "variant": null,
+            "extra": 0,
+            "name_en": "Kofta & Tarb Meal",
+            "addons": []
+           }
+          ],
+          "label_en": "Choose your meal",
+          "most_ordered": {
+           "product_id": "18",
+           "name": "وجبة ميكس جريل"
+          }
+         },
+         {
+          "key": "side",
+          "label": "اختر الصنف الجانبي",
+          "type": "choice",
+          "quantity": 1,
+          "choices": [
+           {
+            "product_id": "79",
+            "variant_option_id": null,
+            "name": "بطاطس محمرة",
+            "variant": null,
+            "extra": 0,
+            "name_en": "French Fries",
+            "addons": []
+           },
+           {
+            "product_id": "72",
+            "variant_option_id": null,
+            "name": "كولسلو",
+            "variant": null,
+            "extra": 0,
+            "name_en": "Coleslaw",
+            "addons": []
+           },
+           {
+            "product_id": "119",
+            "variant_option_id": null,
+            "name": "دوريتوس",
+            "variant": null,
+            "extra": 0,
+            "name_en": "Doritos",
+            "addons": []
+           }
+          ],
+          "label_en": "Choose your side",
+          "most_ordered": {
+           "product_id": "79",
+           "name": "بطاطس محمرة"
+          }
+         },
+         {
+          "key": "drink",
+          "label": "مشروب غازي",
+          "type": "fixed",
+          "quantity": 1,
+          "item": {
+           "product_id": "82",
+           "name": "مشروبات غازية",
+           "variant": "كان",
+           "name_en": "Soft Drinks"
+          },
+          "label_en": "Soft drink"
+         }
+        ],
+        "online_only": true
+       }
+      },
+      "ms": 2
+     },
+     {
+      "name": "get_box",
+      "input": {
+       "slug": "box-solo-meal"
+      },
+      "result": {
+       "ok": true,
+       "box": {
+        "slug": "box-solo-meal",
+        "name": "بوكس وجبة المشاوي الفردي",
+        "name_en": "Grill Meal Solo Box",
+        "price": 29,
+        "description": "وجبة مشاوي من اختيارك + صنف جانبي (بطاطس أو كولسلو أو دوريتوس) + مشروب غازي.",
+        "description_en": "A grill meal of your choice + a side (fries, coleslaw or Doritos) + a soft drink.",
+        "section": "بوكسات فردية",
+        "slots": [
+         {
+          "key": "meal",
+          "label": "اختر الوجبة",
+          "type": "choice",
+          "quantity": 1,
+          "choices": [
+           {
+            "product_id": "17",
+            "variant_option_id": null,
+            "name": "وجبة كفتة",
+            "variant": null,
+            "extra": 0,
+            "name_en": "Kofta Meal",
+            "addons": []
+           },
+           {
+            "product_id": "15",
+            "variant_option_id": null,
+            "name": "وجبة صدور مشوية",
+            "variant": null,
+            "extra": 0,
+            "name_en": "Grilled Chicken Breast Meal",
+            "addons": []
+           },
+           {
+            "product_id": "16",
+            "variant_option_id": null,
+            "name": "وجبة طرب",
+            "variant": null,
+            "extra": 4,
+            "name_en": "Tarb Meal",
+            "addons": []
+           },
+           {
+            "product_id": "90",
+            "variant_option_id": null,
+            "name": "وجبة شيش طاووق",
+            "variant": null,
+            "extra": 4,
+            "name_en": "Shish Tawook Meal",
+            "addons": []
+           },
+           {
+            "product_id": "84",
+            "variant_option_id": null,
+            "name": "طبق كبدة اسكندراني",
+            "variant": null,
+            "extra": 0,
+            "name_en": "Alexandrian Liver Plate",
+            "addons": []
+           },
+           {
+            "product_id": "13",
+            "variant_option_id": null,
+            "name": "وجبة نصف دجاجة على الفحم",
+            "variant": null,
+            "extra": 4,
+            "name_en": "Half Charcoal Chicken Meal",
+            "addons": []
+           }
+          ],
+          "label_en": "Choose your meal",
+          "most_ordered": {
+           "product_id": "17",
+           "name": "وجبة كفتة"
+          }
+         },
+         {
+          "key": "side",
+          "label": "اختر الصنف الجانبي",
+          "type": "choice",
+          "quantity": 1,
+          "choices": [
+           {
+            "product_id": "79",
+            "variant_option_id": null,
+            "name": "بطاطس محمرة",
+            "variant": null,
+            "extra": 0,
+            "name_en": "French Fries",
+            "addons": []
+           },
+           {
+            "product_id": "72",
+            "variant_option_id": null,
+            "name": "كولسلو",
+            "variant": null,
+            "extra": 0,
+            "name_en": "Coleslaw",
+            "addons": []
+           },
+           {
+            "product_id": "119",
+            "variant_option_id": null,
+            "name": "دوريتوس",
+            "variant": null,
+            "extra": 0,
+            "name_en": "Doritos",
+            "addons": []
+           }
+          ],
+          "label_en": "Choose your side",
+          "most_ordered": {
+           "product_id": "79",
+           "name": "بطاطس محمرة"
+          }
+         },
+         {
+          "key": "drink",
+          "label": "مشروب غازي",
+          "type": "fixed",
+          "quantity": 1,
+          "item": {
+           "product_id": "82",
+           "name": "مشروبات غازية",
+           "variant": "كان",
+           "name_en": "Soft Drinks"
+          },
+          "label_en": "Soft drink"
+         }
+        ],
+        "online_only": true
+       }
+      },
+      "ms": 3
+     }
+    ],
+    "verdicts": [
+     {
+      "ok": true,
+      "problems": [],
+      "text": "أبشر، معك ماجد، المساعد الرقمي لفريش كاتس. للغداء لوحدك عندي خيارين مشويين:\nبوكس وجبة المشاوي الفردي بـ 29 ر.س: وجبة مشاوي من اختيارك (كفتة، صدور مشوية، شيش طاووق وغيرها) + صنف جانبي + مشروب غازي.\nبوكس الميكس جريل الفردي بـ 39 ر.س: وجبة ميكس جريل أو كفتة وطرب + صنف جانبي + مشروب غازي.\nأي بوكس تحب؟"
+     }
+    ],
+    "calls": [
+     {
+      "model": "claude-haiku-5-5",
+      "tier": "fast",
+      "ms": 2696,
+      "outcome": "ok",
+      "in": 4,
+      "out": 290,
+      "cached": 13700,
+      "costSar": 0.005683
+     },
+     {
+      "model": "claude-sonnet-5-5",
+      "tier": "strong",
+      "ms": 1612,
+      "outcome": "ok",
+      "in": 4,
+      "out": 108,
+      "cached": 13700,
+      "costSar": 0.014355
+     },
+     {
+      "model": "claude-sonnet-5-5",
+      "tier": "strong",
+      "ms": 2216,
+      "outcome": "ok",
+      "in": 2,
+      "out": 218,
+      "cached": 15678,
+      "costSar": 0.019949
+     }
+    ],
+    "ms": 6572,
+    "costSar": 0.039987,
+    "model": "claude-sonnet-5-5",
+    "suggestions": [],
+    "context": {
+     "open_now": true,
+     "closes_at": "2 فجراً",
+     "location_shared": false,
+     "introduce_yourself": {
+      "say": "معك ماجد، المساعد الرقمي لفريش كاتس",
+      "rule": "use this phrase once in this message, exactly as it is"
+     },
+     "you": {
+      "name": "ماجد",
+      "name_en": "Majed",
+      "what": "Fresh Cuts' digital assistant (not a human)"
+     },
+     "customer": {
+      "known": false,
+      "name": null,
+      "orders": 0,
+      "status": "no_orders",
+      "days_since_last": null,
+      "usual_basket_sar": null,
+      "usual_mode": null,
+      "usual_hour": null,
+      "favourites": [],
+      "taste": null,
+      "last_order": null,
+      "districts": [],
+      "loyalty": {
+       "every": 3,
+       "progress": 0,
+       "left": 3,
+       "reward": "free_delivery",
+       "min_total": 60,
+       "status": null
+      },
+      "unused_rewards": [],
+      "first_order_offer": true,
+      "language": "ar"
+     },
+     "offers": {
+      "first_order": {
+       "eligible": true,
+       "code": "FIRST",
+       "free_delivery": true,
+       "min_total": 60,
+       "reason": null
+      },
+      "loyalty": {
+       "every": 3,
+       "progress": 0,
+       "left": 3,
+       "reward": "free_delivery",
+       "min_total": 60,
+       "status": null
+      }
+     },
+     "branch": "📍 فرعنا في حي السلامة بجدة، عند دوار رامي.",
+     "boxes": [
+      "box-solo-crepe: بوكس الكريب الفردي",
+      "box-solo-mixgrill: بوكس الميكس جريل الفردي",
+      "box-solo-burger: بوكس البرجر الفردي",
+      "box-solo-pasta: بوكس الباستا الفردي",
+      "box-solo-hawawshi: بوكس الحواوشي الفردي",
+      "box-solo-meal: بوكس وجبة المشاوي الفردي",
+      "box-crepe-duo: بوكس الكريب لشخصين",
+      "box-mixgrill-duo: ميكس جريل لشخصين",
+      "box-pizza-pasta: بيتزا وباستا لشخصين",
+      "box-meals-duo: وجبتين مشاوي لشخصين",
+      "box-burger-duo: بوكس البرجر لشخصين",
+      "box-late-night: بوكس السهرة",
+      "box-taste-all: بوكس التشكيلة",
+      "box-grill-half-half: بوكس المشاوي نص ونص",
+      "box-family: بوكس العائلة — مشاوي وبيتزا وباستا",
+      "box-pizza-night: بوكس سهرة البيتزا",
+      "box-mashakel: بوكس المشكل المخصوص",
+      "box-ribs-grill: بوكس الريش والمشاوي"
+     ]
+    },
+    "tier": "strong",
+    "escalated": true,
+    "lang": "ar",
+    "introByModel": true,
+    "list": [
+     "وجبة كفتة",
+     "وجبة صدور مشوية",
+     "وجبة طرب (+ 4 ر.س)",
+     "وجبة شيش طاووق (+ 4 ر.س)",
+     "طبق كبدة اسكندراني",
+     "وجبة نصف دجاجة على الفحم (+ 4 ر.س)"
+    ]
+   },
+   {
+    "i": 1,
+    "customer": "تمام هات بوكس الميكس جريل الفردي، وجبة ميكس جريل ومعاها بطاطس",
+    "cls": "box",
+    "raw": "box",
+    "by": "assistant",
+    "reply": "تمام، بوكس الميكس جريل الفردي بوجبة ميكس جريل وبطاطس محمرة ومشروب غازي، المجموع 39 ر.س. توصيل ولا استلام؟",
+    "cart": null,
+    "handover": null,
+    "outcome": "sent",
+    "tools": [
+     {
+      "name": "preview_cart",
+      "input": {
+       "boxes": [
+        {
+         "slug": "box-solo-mixgrill",
+         "picks": [
+          {
+           "slot": "meal",
+           "product_id": "18"
+          },
+          {
+           "slot": "side",
+           "product_id": "79"
+          }
+         ]
+        }
+       ]
+      },
+      "result": {
+       "ok": true,
+       "option": "delivery",
+       "lines": [
+        {
+         "slug": "box-solo-mixgrill",
+         "name": "بوكس الميكس جريل الفردي",
+         "name_en": "Mixed Grill Solo Box",
+         "price": 39,
+         "qty": 1,
+         "total": 39,
+         "kind": "box",
+         "picks": [
+          {
+           "slot": "اختر الوجبة",
+           "name": "وجبة ميكس جريل",
+           "variant": null
+          },
+          {
+           "slot": "اختر الصنف الجانبي",
+           "name": "بطاطس محمرة",
+           "variant": null
+          },
+          {
+           "slot": "مشروب غازي",
+           "name": "مشروبات غازية",
+           "variant": null
+          }
+         ],
+         "base_price": 39,
+         "choices_extra": 0,
+         "addons_extra": 0
+        }
+       ],
+       "subtotal": 39,
+       "problems": [],
+       "note": "prices include VAT; the delivery fee is separate and shown by quote_delivery and again on the site before payment",
+       "saved": false,
+       "suggestion": null,
+       "suggestion_rule": "no suggestion: do not offer any add-on"
+      },
+      "ms": 4
+     }
+    ],
+    "verdicts": [
+     {
+      "ok": true,
+      "problems": [],
+      "text": "تمام، بوكس الميكس جريل الفردي بوجبة ميكس جريل وبطاطس محمرة ومشروب غازي، المجموع 39 ر.س. توصيل ولا استلام؟"
+     }
+    ],
+    "calls": [
+     {
+      "model": "claude-sonnet-5-5",
+      "tier": "strong",
+      "ms": 1595,
+      "outcome": "ok",
+      "in": 507,
+      "out": 108,
+      "cached": 15678,
+      "costSar": 0.019611
+     },
+     {
+      "model": "claude-sonnet-5-5",
+      "tier": "strong",
+      "ms": 1194,
+      "outcome": "ok",
+      "in": 552,
+      "out": 76,
+      "cached": 16080,
+      "costSar": 0.01905
+     }
+    ],
+    "ms": 2807,
+    "costSar": 0.038661,
+    "model": "claude-sonnet-5-5",
+    "suggestions": [],
+    "context": {
+     "open_now": true,
+     "closes_at": "2 فجراً",
+     "location_shared": false
+    },
+    "tier": "strong",
+    "escalated": false,
+    "lang": "ar"
+   },
+   {
+    "i": 2,
+    "customer": "توصيل",
+    "cls": "delivery",
+    "raw": "delivery",
+    "by": "assistant",
+    "reply": "أبشر، شارك موقعك هنا في الواتساب (📎 ثم «الموقع») وأقول لك رسوم التوصيل بالضبط.",
+    "cart": null,
+    "handover": null,
+    "outcome": "sent",
+    "tools": [],
+    "verdicts": [
+     {
+      "ok": true,
+      "problems": [],
+      "text": "أبشر، شارك موقعك هنا في الواتساب (📎 ثم «الموقع») وأقول لك رسوم التوصيل بالضبط."
+     }
+    ],
+    "calls": [
+     {
+      "model": "claude-sonnet-5-5",
+      "tier": "strong",
+      "ms": 1576,
+      "outcome": "ok",
+      "in": 222,
+      "out": 57,
+      "cached": 16520,
+      "costSar": 0.016192
+     }
+    ],
+    "ms": 1582,
+    "costSar": 0.016192,
+    "model": "claude-sonnet-5-5",
+    "suggestions": [],
+    "context": {
+     "open_now": true,
+     "closes_at": "2 فجراً",
+     "location_shared": false
+    },
+    "tier": "strong",
+    "escalated": false,
+    "lang": "ar"
+   },
+   {
+    "i": 3,
+    "customer": "لا شكراً، ارسل رابط السلة",
+    "cls": "order",
+    "raw": "how_to_order",
+    "by": "assistant",
+    "reply": "طلبك 39 ر.س + توصيل 20 = 59 ر.س.\nوإذا وصل طلبك 60 ر.س، أول طلب توصيله مجاني بكود FIRST = 60 ر.س.\nأو استلام من الفرع بدون رسوم توصيل = 39 ر.س.\nالرسوم هذي حسب قيمة الطلب، وتتأكد لموقعك في موقعنا قبل الدفع.\nأيهم يناسبك؟",
+    "cart": null,
+    "handover": null,
+    "outcome": "sent",
+    "tools": [
+     {
+      "name": "build_cart",
+      "input": {
+       "option": "delivery",
+       "boxes": [
+        {
+         "slug": "box-solo-mixgrill",
+         "picks": [
+          {
+           "slot": "meal",
+           "product_id": "18"
+          },
+          {
+           "slot": "side",
+           "product_id": "79"
+          }
+         ]
+        }
+       ]
+      },
+      "result": {
+       "ok": false,
+       "error": "fee_options_first",
+       "lines": [
+        {
+         "slug": "box-solo-mixgrill",
+         "name": "بوكس الميكس جريل الفردي",
+         "name_en": "Mixed Grill Solo Box",
+         "price": 39,
+         "qty": 1,
+         "total": 39,
+         "kind": "box",
+         "picks": [
+          {
+           "slot": "اختر الوجبة",
+           "name": "وجبة ميكس جريل",
+           "variant": null
+          },
+          {
+           "slot": "اختر الصنف الجانبي",
+           "name": "بطاطس محمرة",
+           "variant": null
+          },
+          {
+           "slot": "مشروب غازي",
+           "name": "مشروبات غازية",
+           "variant": null
+          }
+         ],
+         "base_price": 39,
+         "choices_extra": 0,
+         "addons_extra": 0
+        }
+       ],
+       "subtotal": 39,
+       "option": "delivery",
+       "say": "طلبك 39 ر.س + توصيل 20 = 59 ر.س.\nوإذا وصل طلبك 60 ر.س، أول طلب توصيله مجاني بكود FIRST = 60 ر.س.\nأو استلام من الفرع بدون رسوم توصيل = 39 ر.س.\nالرسوم هذي حسب قيمة الطلب، وتتأكد لموقعك في موقعنا قبل الدفع.",
+       "boxes_reaching": [
+        {
+         "slug": "box-crepe-duo",
+         "name": "بوكس الكريب لشخصين",
+         "name_en": "Crepe Box for Two",
+         "price": 65,
+         "section": "بوكسات لشخصين",
+         "section_en": "Boxes for two",
+         "delivery_fee_with_it": 0,
+         "free_only_with_code": "FIRST"
+        },
+        {
+         "slug": "box-meals-duo",
+         "name": "وجبتين مشاوي لشخصين",
+         "name_en": "Grill Meals for Two",
+         "price": 65,
+         "section": "بوكسات لشخصين",
+         "section_en": "Boxes for two",
+         "delivery_fee_with_it": 0,
+         "free_only_with_code": "FIRST"
+        },
+        {
+         "slug": "box-burger-duo",
+         "name": "بوكس البرجر لشخصين",
+         "name_en": "Burger Box for Two",
+         "price": 65,
+         "section": "بوكسات لشخصين",
+         "section_en": "Boxes for two",
+         "delivery_fee_with_it": 0,
+         "free_only_with_code": "FIRST"
+        }
+       ],
+       "rule": "No cart link yet. In this message: send the \"say\" text exactly as it is, then ONE either-or question («أيهم يناسبك؟»). Two buttons are attached. After the customer answers, call build_cart again: pickup → option pickup with the same items; as it is → the same cart; more food → add what they choose first."
+      },
+      "ms": 23
+     }
+    ],
+    "verdicts": [
+     {
+      "ok": true,
+      "problems": [],
+      "text": "طلبك 39 ر.س + توصيل 20 = 59 ر.س.\nوإذا وصل طلبك 60 ر.س، أول طلب توصيله مجاني بكود FIRST = 60 ر.س.\nأو استلام من الفرع بدون رسوم توصيل = 39 ر.س.\nالرسوم هذي حسب قيمة الطلب، وتتأكد لموقعك في موقعنا قبل الدفع.\nأيهم يناسبك؟"
+     }
+    ],
+    "calls": [
+     {
+      "model": "claude-sonnet-5-5",
+      "tier": "strong",
+      "ms": 1814,
+      "outcome": "ok",
+      "in": 274,
+      "out": 134,
+      "cached": 16694,
+      "costSar": 0.019601
+     },
+     {
+      "model": "claude-sonnet-5-5",
+      "tier": "strong",
+      "ms": 1445,
+      "outcome": "ok",
+      "in": 1246,
+      "out": 168,
+      "cached": 16910,
+      "costSar": 0.028328
+     }
+    ],
+    "ms": 3292,
+    "costSar": 0.047929,
+    "model": "claude-sonnet-5-5",
+    "suggestions": [],
+    "context": {
+     "open_now": true,
+     "closes_at": "2 فجراً",
+     "location_shared": false
+    },
+    "tier": "strong",
+    "escalated": false,
+    "lang": "ar",
+    "buttons": [
+     "أكمّلها 60 ر.س",
+     "استلام من الفرع"
+    ]
+   },
+   {
+    "i": 4,
+    "customer": "خلها زي ما هي توصيل",
+    "cls": "delivery",
+    "raw": "delivery",
+    "by": "assistant",
+    "reply": "سلتك: بوكس الميكس جريل الفردي (وجبة ميكس جريل، بطاطس محمرة، مشروب غازي) = 39 ر.س. اضغط الزر، حدّد موقعك وادفع 👇",
+    "cart": {
+     "link": "https://freshcuts.sa/c/ev000001",
+     "code": "ev000001",
+     "subtotal": 39,
+     "option": "delivery",
+     "lines": [
+      {
+       "slug": "box-solo-mixgrill",
+       "name": "بوكس الميكس جريل الفردي",
+       "name_en": "Mixed Grill Solo Box",
+       "price": 39,
+       "qty": 1,
+       "total": 39,
+       "kind": "box",
+       "contains": [
+        "82",
+        "18",
+        "79"
+       ],
+       "picks": [
+        {
+         "slot": "اختر الوجبة",
+         "name": "وجبة ميكس جريل",
+         "variant": null
+        },
+        {
+         "slot": "اختر الصنف الجانبي",
+         "name": "بطاطس محمرة",
+         "variant": null
+        },
+        {
+         "slot": "مشروب غازي",
+         "name": "مشروبات غازية",
+         "variant": null
+        }
+       ],
+       "base_price": 39,
+       "choices_extra": 0,
+       "addons_extra": 0
+      }
+     ]
+    },
+    "handover": null,
+    "outcome": "sent",
+    "tools": [
+     {
+      "name": "build_cart",
+      "input": {
+       "option": "delivery",
+       "boxes": [
+        {
+         "slug": "box-solo-mixgrill",
+         "picks": [
+          {
+           "slot": "meal",
+           "product_id": "18"
+          },
+          {
+           "slot": "side",
+           "product_id": "79"
+          }
+         ]
+        }
+       ]
+      },
+      "result": {
+       "ok": true,
+       "option": "delivery",
+       "lines": [
+        {
+         "slug": "box-solo-mixgrill",
+         "name": "بوكس الميكس جريل الفردي",
+         "name_en": "Mixed Grill Solo Box",
+         "price": 39,
+         "qty": 1,
+         "total": 39,
+         "kind": "box",
+         "picks": [
+          {
+           "slot": "اختر الوجبة",
+           "name": "وجبة ميكس جريل",
+           "variant": null
+          },
+          {
+           "slot": "اختر الصنف الجانبي",
+           "name": "بطاطس محمرة",
+           "variant": null
+          },
+          {
+           "slot": "مشروب غازي",
+           "name": "مشروبات غازية",
+           "variant": null
+          }
+         ],
+         "base_price": 39,
+         "choices_extra": 0,
+         "addons_extra": 0
+        }
+       ],
+       "subtotal": 39,
+       "problems": [],
+       "note": "prices include VAT; the delivery fee is separate and shown by quote_delivery and again on the site before payment",
+       "saved": true,
+       "link_attached": "a button with the cart link is attached to your message automatically; do not write a link"
+      },
+      "ms": 1
+     }
+    ],
+    "verdicts": [
+     {
+      "ok": true,
+      "problems": [],
+      "text": "سلتك: بوكس الميكس جريل الفردي (وجبة ميكس جريل، بطاطس محمرة، مشروب غازي) = 39 ر.س. اضغط الزر، حدّد موقعك وادفع 👇"
+     }
+    ],
+    "calls": [
+     {
+      "model": "claude-sonnet-5-5",
+      "tier": "strong",
+      "ms": 1591,
+      "outcome": "ok",
+      "in": 348,
+      "out": 134,
+      "cached": 17905,
+      "costSar": 0.021064
+     },
+     {
+      "model": "claude-sonnet-5-5",
+      "tier": "strong",
+      "ms": 1113,
+      "outcome": "ok",
+      "in": 576,
+      "out": 85,
+      "cached": 18180,
+      "costSar": 0.021142
+     }
+    ],
+    "ms": 2716,
+    "costSar": 0.042206,
+    "model": "claude-sonnet-5-5",
+    "suggestions": [],
+    "context": {
+     "open_now": true,
+     "closes_at": "2 فجراً",
+     "location_shared": false
+    },
+    "tier": "strong",
+    "escalated": false,
+    "lang": "ar"
+   }
+  ],
+  "carts": [
+   {
+    "code": "ev000001",
+    "phone": "512345678",
+    "source": "assistant",
+    "plan": {
+     "ok": true,
+     "raw": {
+      "b:box-solo-mixgrill:meal=18:|side=79:": {
+       "key": "b:box-solo-mixgrill:meal=18:|side=79:",
+       "bundle": {
+        "slug": "box-solo-mixgrill",
+        "name": "بوكس الميكس جريل الفردي",
+        "name_en": "Mixed Grill Solo Box",
+        "description": "وجبة ميكس جريل أو وجبة كفتة وطرب + صنف جانبي (بطاطس أو كولسلو أو دوريتوس) + مشروب غازي.",
+        "image": "https://freshcuts-api.o2m8.me/api/content/media/md_eebc84b6b316.jpg",
+        "badge": "",
+        "price": 39,
+        "order_kinds": [
+         "delivery",
+         "pickup",
+         "dine_in"
+        ],
+        "offer_id": null,
+        "slots": [
+         {
+          "key": "meal",
+          "label": "اختر الوجبة",
+          "label_en": "Choose your meal",
+          "type": "choice",
+          "quantity": 1,
+          "choices": [
+           {
+            "product_id": "18",
+            "variant_option_id": null,
+            "name": "وجبة ميكس جريل",
+            "variant_name": null,
+            "image": "https://d3ectyws4rj41r.cloudfront.net/prod_freshcuts/120/mixgrill-meal-1tarb-1000.jpg",
+            "price_incl": 37
+           },
+           {
+            "product_id": "87",
+            "variant_option_id": null,
+            "name": "وجبة كفتة وطرب",
+            "variant_name": null,
+            "image": "https://d3ectyws4rj41r.cloudfront.net/prod_freshcuts/106/كفته-مشويه.jpg",
+            "price_incl": 37
+           }
+          ]
+         },
+         {
+          "key": "side",
+          "label": "اختر الصنف الجانبي",
+          "label_en": "Choose your side",
+          "type": "choice",
+          "quantity": 1,
+          "choices": [
+           {
+            "product_id": "79",
+            "variant_option_id": null,
+            "name": "بطاطس محمرة",
+            "variant_name": null,
+            "image": "https://d3ectyws4rj41r.cloudfront.net/prod_freshcuts/57/cropped-image-(46).jpg",
+            "price_incl": 6
+           },
+           {
+            "product_id": "72",
+            "variant_option_id": null,
+            "name": "كولسلو",
+            "variant_name": null,
+            "image": "https://d3ectyws4rj41r.cloudfront.net/prod_freshcuts/58/cropped-image-(47).jpg",
+            "price_incl": 6
+           },
+           {
+            "product_id": "119",
+            "variant_option_id": null,
+            "name": "دوريتوس",
+            "variant_name": null,
+            "image": "https://d3ectyws4rj41r.cloudfront.net/prod_freshcuts/103/دوريتوس.jpg",
+            "price_incl": 5
+           }
+          ]
+         },
+         {
+          "key": "drink",
+          "label": "مشروب غازي",
+          "label_en": "Soft drink",
+          "type": "fixed",
+          "quantity": 1,
+          "item": {
+           "product_id": "82",
+           "variant_option_id": 42,
+           "name": "مشروبات غازية",
+           "variant_name": "كان",
+           "image": "https://d3ectyws4rj41r.cloudfront.net/prod_freshcuts/91/بيبسي-كان.jpg",
+           "price_incl": 3
+          }
+         }
+        ],
+        "section": "بوكسات فردية",
+        "section_en": "Solo boxes",
+        "featured": false,
+        "description_en": "Mixed grill meal or kofta & tarb meal + a side (fries, coleslaw or Doritos) + a soft drink.",
+        "image_wide": "https://freshcuts-api.o2m8.me/api/content/media/md_e666576d6e90.jpg",
+        "value_max": 46,
+        "value_min": 45
+       },
+       "choices": {
+        "meal": {
+         "product_id": "18",
+         "variant_option_id": null,
+         "name": "وجبة ميكس جريل",
+         "variant_name": null,
+         "image": "https://d3ectyws4rj41r.cloudfront.net/prod_freshcuts/120/mixgrill-meal-1tarb-1000.jpg",
+         "price_incl": 37
+        },
+        "side": {
+         "product_id": "79",
+         "variant_option_id": null,
+         "name": "بطاطس محمرة",
+         "variant_name": null,
+         "image": "https://d3ectyws4rj41r.cloudfront.net/prod_freshcuts/57/cropped-image-(46).jpg",
+         "price_incl": 6
+        }
+       },
+       "qty": 1,
+       "mods": {},
+       "notes": {},
+       "modsIncl": 0,
+       "surIncl": 0,
+       "item": {
+        "id": "b:box-solo-mixgrill",
+        "name": "بوكس الميكس جريل الفردي",
+        "local_name": "Mixed Grill Solo Box",
+        "retail_price": 39,
+        "price": 33.91,
+        "image": "https://freshcuts-api.o2m8.me/api/content/media/md_eebc84b6b316.jpg"
+       }
+      }
+     },
+     "items": [
+      {
+       "id": "b:box-solo-mixgrill:meal=18:|side=79:",
+       "n": "بوكس الميكس جريل الفردي",
+       "q": 1,
+       "p": 39
+      }
+     ],
+     "removed": [],
+     "repriced": [],
+     "review": []
+    },
+    "option": "delivery",
+    "days": 7
+   }
+  ],
+  "costSar": 0.18497499999999997,
+  "grade": {
+   "pass": true,
+   "fails": [],
+   "review": []
+  }
+ },
+ {
+  "id": "upsell-accepted",
+  "group": "upsell accepted",
+  "world": {
+   "profile": "new"
+  },
+  "expect": {
+   "cart": {
+    "option": "pickup",
+    "items": [
+     {
+      "id": 1,
+      "qty": 1
+     },
+     {
+      "id": 82,
+      "qty": 1
+     }
+    ],
+    "only": true,
+    "subtotal": 33
+   }
+  },
+  "turns": [
+   {
+    "i": 0,
+    "customer": "ابي كريب ميكس لحوم",
+    "cls": "item",
+    "raw": "item_info",
+    "by": "assistant",
+    "reply": "أبشر، معك ماجد، المساعد الرقمي لفريش كاتس. كريب ميكس لحوم بـ 30 ر.س. تحب أضيف لك مشروبات غازية بـ 3 ر.س؟",
+    "cart": null,
+    "handover": null,
+    "outcome": "sent",
+    "tools": [
+     {
+      "name": "search_menu",
+      "input": {
+       "query": "كريب ميكس لحوم"
+      },
+      "result": {
+       "ok": true,
+       "results": [
+        {
+         "id": "1",
+         "name": "كريب ميكس لحوم",
+         "name_en": "Mixed Meat Crepe",
+         "price": 30,
+         "section": "كريبات",
+         "kind": "main",
+         "sold_out": false,
+         "by_weight": false
+        },
+        {
+         "id": "10",
+         "name": "كريب ميكس جبن",
+         "name_en": "Mixed Cheese Crepe",
+         "price": 20,
+         "section": "كريبات",
+         "kind": "main",
+         "sold_out": false,
+         "by_weight": false
+        },
+        {
+         "id": "3",
+         "name": "كريب ميكس دجاج",
+         "name_en": "Mixed Chicken Crepe",
+         "price": 29,
+         "section": "كريبات",
+         "kind": "main",
+         "sold_out": false,
+         "by_weight": false
+        },
+        {
+         "id": "11",
+         "name": "كريب بطاطس",
+         "name_en": "Potato Crepe",
+         "price": 15,
+         "section": "كريبات",
+         "kind": "main",
+         "sold_out": false,
+         "by_weight": false
+        },
+        {
+         "id": "4",
+         "name": "كريب هوت دوج",
+         "name_en": "Hot Dog Crepe",
+         "price": 23,
+         "section": "كريبات",
+         "kind": "main",
+         "sold_out": false,
+         "by_weight": false
+        },
+        {
+         "id": "7",
+         "name": "كريب فاهيتا دجاج",
+         "name_en": "Chicken Fajita Crepe",
+         "price": 24,
+         "section": "كريبات",
+         "kind": "main",
+         "sold_out": false,
+         "by_weight": false
+        },
+        {
+         "id": "8",
+         "name": "كريب زنجر سوبريم",
+         "name_en": "Zinger Supreme Crepe",
+         "price": 25,
+         "section": "كريبات",
+         "kind": "main",
+         "sold_out": false,
+         "by_weight": false
+        },
+        {
+         "id": "6",
+         "name": "كريب شيش طاووق",
+         "name_en": "Shish Tawook Crepe",
+         "price": 25,
+         "section": "كريبات",
+         "kind": "main",
+         "sold_out": false,
+         "by_weight": false
+        }
+       ]
+      },
+      "ms": 4
+     },
+     {
+      "name": "preview_cart",
+      "input": {
+       "items": [
+        {
+         "id": "1",
+         "qty": 1
+        }
+       ]
+      },
+      "result": {
+       "ok": true,
+       "option": "delivery",
+       "lines": [
+        {
+         "id": "1",
+         "name": "كريب ميكس لحوم",
+         "name_en": "Mixed Meat Crepe",
+         "price": 30,
+         "qty": 1,
+         "total": 30,
+         "kind": "main"
+        }
+       ],
+       "subtotal": 30,
+       "problems": [],
+       "note": "prices include VAT; the delivery fee is separate and shown by quote_delivery and again on the site before payment",
+       "saved": false,
+       "suggestion": {
+        "kind": "drink",
+        "item": {
+         "id": "82",
+         "name": "مشروبات غازية",
+         "name_en": "Soft Drinks",
+         "price": 3,
+         "section": "إضافات",
+         "kind": "drink",
+         "sold_out": false,
+         "by_weight": false
+        }
+       },
+       "suggestion_say": "a plain add-on: «تحب أضيف لك مشروبات غازية بـ 3 ر.س؟» — no pressure.",
+       "suggestion_rule": "you may offer this ONE suggestion as a short question; nothing else"
+      },
+      "ms": 4
+     }
+    ],
+    "verdicts": [
+     {
+      "ok": true,
+      "problems": [],
+      "text": "أبشر، معك ماجد، المساعد الرقمي لفريش كاتس. كريب ميكس لحوم بـ 30 ر.س. تحب أضيف لك مشروبات غازية بـ 3 ر.س؟"
+     }
+    ],
+    "calls": [
+     {
+      "model": "claude-haiku-5-5",
+      "tier": "fast",
+      "ms": 1947,
+      "outcome": "ok",
+      "in": 4,
+      "out": 100,
+      "cached": 13690,
+      "costSar": 0.005323
+     },
+     {
+      "model": "claude-haiku-5-5",
+      "tier": "fast",
+      "ms": 1002,
+      "outcome": "ok",
+      "in": 876,
+      "out": 62,
+      "cached": 13690,
+      "costSar": 0.005579
+     },
+     {
+      "model": "claude-haiku-5-5",
+      "tier": "fast",
+      "ms": 1015,
+      "outcome": "ok",
+      "in": 477,
+      "out": 83,
+      "cached": 14389,
+      "costSar": 0.00573
+     }
+    ],
+    "ms": 4084,
+    "costSar": 0.016631999999999997,
+    "model": "claude-haiku-5-5",
+    "suggestions": [
+     {
+      "kind": "drink",
+      "ref": "82",
+      "name": "مشروبات غازية",
+      "numbers": {
+       "kind": "drink",
+       "item": {
+        "id": "82",
+        "name": "مشروبات غازية",
+        "name_en": "Soft Drinks",
+        "price": 3,
+        "section": "إضافات",
+        "kind": "drink",
+        "sold_out": false,
+        "by_weight": false
+       }
+      },
+      "outcome": "offered"
+     }
+    ],
+    "context": {
+     "open_now": true,
+     "closes_at": "2 فجراً",
+     "location_shared": false,
+     "introduce_yourself": {
+      "say": "معك ماجد، المساعد الرقمي لفريش كاتس",
+      "rule": "use this phrase once in this message, exactly as it is"
+     },
+     "you": {
+      "name": "ماجد",
+      "name_en": "Majed",
+      "what": "Fresh Cuts' digital assistant (not a human)"
+     },
+     "customer": {
+      "known": false,
+      "name": null,
+      "orders": 0,
+      "status": "no_orders",
+      "days_since_last": null,
+      "usual_basket_sar": null,
+      "usual_mode": null,
+      "usual_hour": null,
+      "favourites": [],
+      "taste": null,
+      "last_order": null,
+      "districts": [],
+      "loyalty": {
+       "every": 3,
+       "progress": 0,
+       "left": 3,
+       "reward": "free_delivery",
+       "min_total": 60,
+       "status": null
+      },
+      "unused_rewards": [],
+      "first_order_offer": true,
+      "language": "ar"
+     },
+     "offers": {
+      "first_order": {
+       "eligible": true,
+       "code": "FIRST",
+       "free_delivery": true,
+       "min_total": 60,
+       "reason": null
+      },
+      "loyalty": {
+       "every": 3,
+       "progress": 0,
+       "left": 3,
+       "reward": "free_delivery",
+       "min_total": 60,
+       "status": null
+      }
+     },
+     "branch": "📍 فرعنا في حي السلامة بجدة، عند دوار رامي.",
+     "boxes": [
+      "box-solo-crepe: بوكس الكريب الفردي",
+      "box-solo-mixgrill: بوكس الميكس جريل الفردي",
+      "box-solo-burger: بوكس البرجر الفردي",
+      "box-solo-pasta: بوكس الباستا الفردي",
+      "box-solo-hawawshi: بوكس الحواوشي الفردي",
+      "box-solo-meal: بوكس وجبة المشاوي الفردي",
+      "box-crepe-duo: بوكس الكريب لشخصين",
+      "box-mixgrill-duo: ميكس جريل لشخصين",
+      "box-pizza-pasta: بيتزا وباستا لشخصين",
+      "box-meals-duo: وجبتين مشاوي لشخصين",
+      "box-burger-duo: بوكس البرجر لشخصين",
+      "box-late-night: بوكس السهرة",
+      "box-taste-all: بوكس التشكيلة",
+      "box-grill-half-half: بوكس المشاوي نص ونص",
+      "box-family: بوكس العائلة — مشاوي وبيتزا وباستا",
+      "box-pizza-night: بوكس سهرة البيتزا",
+      "box-mashakel: بوكس المشكل المخصوص",
+      "box-ribs-grill: بوكس الريش والمشاوي"
+     ]
+    },
+    "tier": "fast",
+    "escalated": false,
+    "lang": "ar",
+    "introByModel": true
+   },
+   {
+    "i": 1,
+    "customer": "ايوه ضيفه",
+    "cls": "unknown",
+    "raw": "unknown",
+    "by": "assistant",
+    "reply": "تمام، أضفت المشروبات الغازية. السلة: كريب ميكس لحوم = 30 ر.س، ومشروبات غازية = 3 ر.س، والمجموع 33 ر.س. توصيل ولا استلام؟",
+    "cart": null,
+    "handover": null,
+    "outcome": "sent",
+    "tools": [
+     {
+      "name": "note_suggestion",
+      "input": {
+       "kind": "drink",
+       "outcome": "accepted"
+      },
+      "result": {
+       "ok": true
+      },
+      "ms": 0
+     },
+     {
+      "name": "preview_cart",
+      "input": {
+       "items": [
+        {
+         "id": "1",
+         "qty": 1
+        },
+        {
+         "id": "82",
+         "qty": 1
+        }
+       ]
+      },
+      "result": {
+       "ok": true,
+       "option": "delivery",
+       "lines": [
+        {
+         "id": "1",
+         "name": "كريب ميكس لحوم",
+         "name_en": "Mixed Meat Crepe",
+         "price": 30,
+         "qty": 1,
+         "total": 30,
+         "kind": "main"
+        },
+        {
+         "id": "82",
+         "name": "مشروبات غازية",
+         "name_en": "Soft Drinks",
+         "price": 3,
+         "qty": 1,
+         "total": 3,
+         "kind": "drink"
+        }
+       ],
+       "subtotal": 33,
+       "problems": [],
+       "note": "prices include VAT; the delivery fee is separate and shown by quote_delivery and again on the site before payment",
+       "saved": false,
+       "suggestion": {
+        "kind": "side",
+        "item": {
+         "id": "79",
+         "name": "بطاطس محمرة",
+         "name_en": "French Fries",
+         "price": 6,
+         "section": "إضافات",
+         "kind": "side",
+         "sold_out": false,
+         "by_weight": false
+        }
+       },
+       "suggestion_say": "a plain add-on: «تحب أضيف لك بطاطس محمرة بـ 6 ر.س؟» — no pressure.",
+       "suggestion_rule": "you may offer this ONE suggestion as a short question; nothing else"
+      },
+      "ms": 2
+     }
+    ],
+    "verdicts": [
+     {
+      "ok": true,
+      "problems": [],
+      "text": "تمام، أضفت المشروبات الغازية. السلة: كريب ميكس لحوم = 30 ر.س، ومشروبات غازية = 3 ر.س، والمجموع 33 ر.س. توصيل ولا استلام؟"
+     }
+    ],
+    "calls": [
+     {
+      "model": "claude-haiku-5-5",
+      "tier": "fast",
+      "ms": 1245,
+      "outcome": "ok",
+      "in": 237,
+      "out": 153,
+      "cached": 14769,
+      "costSar": 0.005914
+     },
+     {
+      "model": "claude-haiku-5-5",
+      "tier": "fast",
+      "ms": 1908,
+      "outcome": "ok",
+      "in": 736,
+      "out": 243,
+      "cached": 14955,
+      "costSar": 0.00634
+     }
+    ],
+    "ms": 3161,
+    "costSar": 0.012254000000000001,
+    "model": "claude-haiku-5-5",
+    "suggestions": [
+     {
+      "kind": "drink",
+      "ref": "82",
+      "name": "مشروبات غازية",
+      "outcome": "accepted"
+     },
+     {
+      "kind": "side",
+      "ref": "79",
+      "name": "بطاطس محمرة",
+      "numbers": {
+       "kind": "side",
+       "item": {
+        "id": "79",
+        "name": "بطاطس محمرة",
+        "name_en": "French Fries",
+        "price": 6,
+        "section": "إضافات",
+        "kind": "side",
+        "sold_out": false,
+        "by_weight": false
+       }
+      },
+      "outcome": "computed"
+     }
+    ],
+    "context": {
+     "open_now": true,
+     "closes_at": "2 فجراً",
+     "location_shared": false
+    },
+    "tier": "fast",
+    "escalated": false,
+    "lang": "ar"
+   },
+   {
+    "i": 2,
+    "customer": "استلام",
+    "cls": "pickup",
+    "raw": "how_to_order",
+    "by": "assistant",
+    "reply": "سلتك: كريب ميكس لحوم = 30 ر.س، مشروبات غازية = 3 ر.س، المجموع 33 ر.س. اضغط الزر، أكمل الدفع من موقعنا، والاستلام من فرعنا في حي السلامة.",
+    "cart": {
+     "link": "https://freshcuts.sa/c/ev000001",
+     "code": "ev000001",
+     "subtotal": 33,
+     "option": "pickup",
+     "lines": [
+      {
+       "id": "1",
+       "name": "كريب ميكس لحوم",
+       "name_en": "Mixed Meat Crepe",
+       "price": 30,
+       "qty": 1,
+       "total": 30,
+       "kind": "main"
+      },
+      {
+       "id": "82",
+       "name": "مشروبات غازية",
+       "name_en": "Soft Drinks",
+       "price": 3,
+       "qty": 1,
+       "total": 3,
+       "kind": "drink"
+      }
+     ]
+    },
+    "handover": null,
+    "outcome": "sent",
+    "tools": [
+     {
+      "name": "build_cart",
+      "input": {
+       "items": [
+        {
+         "id": "1",
+         "qty": 1
+        },
+        {
+         "id": "82",
+         "qty": 1
+        }
+       ],
+       "option": "pickup"
+      },
+      "result": {
+       "ok": true,
+       "option": "pickup",
+       "lines": [
+        {
+         "id": "1",
+         "name": "كريب ميكس لحوم",
+         "name_en": "Mixed Meat Crepe",
+         "price": 30,
+         "qty": 1,
+         "total": 30,
+         "kind": "main"
+        },
+        {
+         "id": "82",
+         "name": "مشروبات غازية",
+         "name_en": "Soft Drinks",
+         "price": 3,
+         "qty": 1,
+         "total": 3,
+         "kind": "drink"
+        }
+       ],
+       "subtotal": 33,
+       "problems": [],
+       "note": "prices include VAT; the delivery fee is separate and shown by quote_delivery and again on the site before payment",
+       "saved": true,
+       "link_attached": "a button with the cart link is attached to your message automatically; do not write a link"
+      },
+      "ms": 2
+     }
+    ],
+    "verdicts": [
+     {
+      "ok": true,
+      "problems": [],
+      "text": "سلتك: كريب ميكس لحوم = 30 ر.س، مشروبات غازية = 3 ر.س، المجموع 33 ر.س. اضغط الزر، أكمل الدفع من موقعنا، والاستلام من فرعنا في حي السلامة."
+     }
+    ],
+    "calls": [
+     {
+      "model": "claude-haiku-5-5",
+      "tier": "fast",
+      "ms": 1148,
+      "outcome": "ok",
+      "in": 429,
+      "out": 101,
+      "cached": 15542,
+      "costSar": 0.006179
+     },
+     {
+      "model": "claude-haiku-5-5",
+      "tier": "fast",
+      "ms": 1204,
+      "outcome": "ok",
+      "in": 421,
+      "out": 98,
+      "cached": 15882,
+      "costSar": 0.006297
+     }
+    ],
+    "ms": 2363,
+    "costSar": 0.012476,
+    "model": "claude-haiku-5-5",
+    "suggestions": [],
+    "context": {
+     "open_now": true,
+     "closes_at": "2 فجراً",
+     "location_shared": false
+    },
+    "tier": "fast",
+    "escalated": false,
+    "lang": "ar"
+   }
+  ],
+  "carts": [
+   {
+    "code": "ev000001",
+    "phone": "512345678",
+    "source": "assistant",
+    "plan": {
+     "ok": true,
+     "raw": {
+      "1": {
+       "item": {
+        "id": 1
+       },
+       "qty": 1
+      },
+      "82": {
+       "item": {
+        "id": 82
+       },
+       "qty": 1
+      }
+     },
+     "items": [
+      {
+       "id": "1",
+       "n": "كريب ميكس لحوم",
+       "q": 1,
+       "p": 30
+      },
+      {
+       "id": "82",
+       "n": "مشروبات غازية",
+       "q": 1,
+       "p": 3
+      }
+     ],
+     "removed": [],
+     "repriced": [],
+     "review": []
+    },
+    "option": "pickup",
+    "days": 7
+   }
+  ],
+  "costSar": 0.041361999999999996,
+  "grade": {
+   "pass": true,
+   "fails": [],
+   "review": []
+  }
+ },
+ {
+  "id": "ps4-pair-crepe-solo-box",
+  "group": "pairing",
+  "world": {
+   "profile": "new"
+  },
+  "expect": {
+   "noHandover": true,
+   "turnMustContain": {
+    "0": "29"
+   },
+   "turnMustNotContain": {
+    "0": "مشروبات غازية"
+   }
+  },
+  "turns": [
+   {
+    "i": 0,
+    "customer": "ابي كريب زنجر سوبريم",
+    "cls": "item",
+    "raw": "item_info",
+    "by": "assistant",
+    "reply": "معك ماجد، المساعد الرقمي لفريش كاتس. كريب زنجر سوبريم بـ 25 ر.س. وبـ 29 ر.س يصير بوكس الكريب الفردي: كريب من اختيارك + صنف جانبي (بطاطس أو كولسلو أو دوريتوس) + مشروب غازي. أحوّله بوكس؟",
+    "cart": null,
+    "handover": null,
+    "outcome": "sent",
+    "tools": [
+     {
+      "name": "search_menu",
+      "input": {
+       "query": "كريب زنجر سوبريم"
+      },
+      "result": {
+       "ok": true,
+       "results": [
+        {
+         "id": "8",
+         "name": "كريب زنجر سوبريم",
+         "name_en": "Zinger Supreme Crepe",
+         "price": 25,
+         "section": "كريبات",
+         "kind": "main",
+         "sold_out": false,
+         "by_weight": false
+        },
+        {
+         "id": "9",
+         "name": "كريب سوبر كرانشي",
+         "name_en": "Super Crunchy Crepe",
+         "price": 28,
+         "section": "كريبات",
+         "kind": "main",
+         "sold_out": false,
+         "by_weight": false
+        },
+        {
+         "id": "11",
+         "name": "كريب بطاطس",
+         "name_en": "Potato Crepe",
+         "price": 15,
+         "section": "كريبات",
+         "kind": "main",
+         "sold_out": false,
+         "by_weight": false
+        },
+        {
+         "id": "10",
+         "name": "كريب ميكس جبن",
+         "name_en": "Mixed Cheese Crepe",
+         "price": 20,
+         "section": "كريبات",
+         "kind": "main",
+         "sold_out": false,
+         "by_weight": false
+        },
+        {
+         "id": "4",
+         "name": "كريب هوت دوج",
+         "name_en": "Hot Dog Crepe",
+         "price": 23,
+         "section": "كريبات",
+         "kind": "main",
+         "sold_out": false,
+         "by_weight": false
+        },
+        {
+         "id": "7",
+         "name": "كريب فاهيتا دجاج",
+         "name_en": "Chicken Fajita Crepe",
+         "price": 24,
+         "section": "كريبات",
+         "kind": "main",
+         "sold_out": false,
+         "by_weight": false
+        },
+        {
+         "id": "6",
+         "name": "كريب شيش طاووق",
+         "name_en": "Shish Tawook Crepe",
+         "price": 25,
+         "section": "كريبات",
+         "kind": "main",
+         "sold_out": false,
+         "by_weight": false
+        },
+        {
+         "id": "83",
+         "name": "كريب ستربس",
+         "name_en": "Chicken Strips Crepe",
+         "price": 25,
+         "section": "كريبات",
+         "kind": "main",
+         "sold_out": false,
+         "by_weight": false
+        }
+       ]
+      },
+      "ms": 2
+     },
+     {
+      "name": "preview_cart",
+      "input": {
+       "items": [
+        {
+         "id": "8",
+         "qty": 1
+        }
+       ]
+      },
+      "result": {
+       "ok": true,
+       "option": "delivery",
+       "lines": [
+        {
+         "id": "8",
+         "name": "كريب زنجر سوبريم",
+         "name_en": "Zinger Supreme Crepe",
+         "price": 25,
+         "qty": 1,
+         "total": 25,
+         "kind": "main"
+        }
+       ],
+       "subtotal": 25,
+       "problems": [],
+       "note": "prices include VAT; the delivery fee is separate and shown by quote_delivery and again on the site before payment",
+       "saved": false,
+       "suggestion": {
+        "kind": "pair",
+        "when": "crepe_x1",
+        "name": "بوكس الكريب الفردي",
+        "box": {
+         "slug": "box-solo-crepe",
+         "name": "بوكس الكريب الفردي",
+         "name_en": "Crepe Solo Box",
+         "price": 29,
+         "description": "كريب من اختيارك + صنف جانبي (بطاطس أو كولسلو أو دوريتوس) + مشروب غازي."
+        },
+        "cart_subtotal": 25
+       },
+       "suggestion_say": "what goes with this order: the box «بوكس الكريب الفردي» for 29 SAR (كريب من اختيارك + صنف جانبي (بطاطس أو كولسلو أو دوريتوس) + مشروب غازي.); the cart now is 25 SAR. This box REPLACES the items in the cart, it is not added to them: state the item's price, then offer it as «وبـ 29 ر.س يصير بوكس: …» with what the box adds in a few words, and ask «أحوّله بوكس؟». Never «أضيف لك بوكس». Do not subtract or compare the amounts yourself.",
+       "suggestion_rule": "you may offer this ONE suggestion as a short question; nothing else"
+      },
+      "ms": 2
+     }
+    ],
+    "verdicts": [
+     {
+      "ok": true,
+      "problems": [],
+      "text": "معك ماجد، المساعد الرقمي لفريش كاتس. كريب زنجر سوبريم بـ 25 ر.س. وبـ 29 ر.س يصير بوكس الكريب الفردي: كريب من اختيارك + صنف جانبي (بطاطس أو كولسلو أو دوريتوس) + مشروب غازي. أحوّله بوكس؟"
+     }
+    ],
+    "calls": [
+     {
+      "model": "claude-haiku-5-5",
+      "tier": "fast",
+      "ms": 1975,
+      "outcome": "ok",
+      "in": 4,
+      "out": 59,
+      "cached": 13691,
+      "costSar": 0.005246
+     },
+     {
+      "model": "claude-haiku-5-5",
+      "tier": "fast",
+      "ms": 1085,
+      "outcome": "ok",
+      "in": 2,
+      "out": 62,
+      "cached": 14345,
+      "costSar": 0.005496
+     },
+     {
+      "model": "claude-haiku-5-5",
+      "tier": "fast",
+      "ms": 1179,
+      "outcome": "ok",
+      "in": 2,
+      "out": 136,
+      "cached": 14959,
+      "costSar": 0.005865
+     }
+    ],
+    "ms": 4291,
+    "costSar": 0.016607,
+    "model": "claude-haiku-5-5",
+    "suggestions": [
+     {
+      "kind": "pair",
+      "ref": "box-solo-crepe",
+      "name": "بوكس الكريب الفردي",
+      "numbers": {
+       "kind": "pair",
+       "when": "crepe_x1",
+       "name": "بوكس الكريب الفردي",
+       "box": {
+        "slug": "box-solo-crepe",
+        "name": "بوكس الكريب الفردي",
+        "name_en": "Crepe Solo Box",
+        "price": 29,
+        "description": "كريب من اختيارك + صنف جانبي (بطاطس أو كولسلو أو دوريتوس) + مشروب غازي."
+       },
+       "cart_subtotal": 25
+      },
+      "outcome": "offered"
+     }
+    ],
+    "context": {
+     "open_now": true,
+     "closes_at": "2 فجراً",
+     "location_shared": false,
+     "introduce_yourself": {
+      "say": "معك ماجد، المساعد الرقمي لفريش كاتس",
+      "rule": "use this phrase once in this message, exactly as it is"
+     },
+     "you": {
+      "name": "ماجد",
+      "name_en": "Majed",
+      "what": "Fresh Cuts' digital assistant (not a human)"
+     },
+     "customer": {
+      "known": false,
+      "name": null,
+      "orders": 0,
+      "status": "no_orders",
+      "days_since_last": null,
+      "usual_basket_sar": null,
+      "usual_mode": null,
+      "usual_hour": null,
+      "favourites": [],
+      "taste": null,
+      "last_order": null,
+      "districts": [],
+      "loyalty": {
+       "every": 3,
+       "progress": 0,
+       "left": 3,
+       "reward": "free_delivery",
+       "min_total": 60,
+       "status": null
+      },
+      "unused_rewards": [],
+      "first_order_offer": true,
+      "language": "ar"
+     },
+     "offers": {
+      "first_order": {
+       "eligible": true,
+       "code": "FIRST",
+       "free_delivery": true,
+       "min_total": 60,
+       "reason": null
+      },
+      "loyalty": {
+       "every": 3,
+       "progress": 0,
+       "left": 3,
+       "reward": "free_delivery",
+       "min_total": 60,
+       "status": null
+      }
+     },
+     "branch": "📍 فرعنا في حي السلامة بجدة، عند دوار رامي.",
+     "boxes": [
+      "box-solo-crepe: بوكس الكريب الفردي",
+      "box-solo-mixgrill: بوكس الميكس جريل الفردي",
+      "box-solo-burger: بوكس البرجر الفردي",
+      "box-solo-pasta: بوكس الباستا الفردي",
+      "box-solo-hawawshi: بوكس الحواوشي الفردي",
+      "box-solo-meal: بوكس وجبة المشاوي الفردي",
+      "box-crepe-duo: بوكس الكريب لشخصين",
+      "box-mixgrill-duo: ميكس جريل لشخصين",
+      "box-pizza-pasta: بيتزا وباستا لشخصين",
+      "box-meals-duo: وجبتين مشاوي لشخصين",
+      "box-burger-duo: بوكس البرجر لشخصين",
+      "box-late-night: بوكس السهرة",
+      "box-taste-all: بوكس التشكيلة",
+      "box-grill-half-half: بوكس المشاوي نص ونص",
+      "box-family: بوكس العائلة — مشاوي وبيتزا وباستا",
+      "box-pizza-night: بوكس سهرة البيتزا",
+      "box-mashakel: بوكس المشكل المخصوص",
+      "box-ribs-grill: بوكس الريش والمشاوي"
+     ]
+    },
+    "tier": "fast",
+    "escalated": false,
+    "lang": "ar",
+    "introByModel": true
+   }
+  ],
+  "carts": [],
+  "costSar": 0.016607,
+  "grade": {
+   "pass": true,
+   "fails": [],
+   "review": []
+  }
+ },
+ {
+  "id": "ps4-pair-two-crepes",
+  "group": "pairing",
+  "world": {
+   "profile": "new"
+  },
+  "expect": {
+   "noHandover": true,
+   "turnMustContain": {
+    "0": "65"
+   }
+  },
+  "turns": [
+   {
+    "i": 0,
+    "customer": "ابي ٢ كريب زنجر سوبريم",
+    "cls": "item",
+    "raw": "item_info",
+    "by": "assistant",
+    "reply": "معك ماجد، المساعد الرقمي لفريش كاتس 🙂\nكريب زنجر سوبريم بـ 25 ر.س للقطعة، والاثنين بـ 50 ر.س. وبـ 65 ر.س يصير بوكس الكريب لشخصين: كريبين من اختيارك + تشيز فرايز + صنف جانبي (بطاطس أو كولسلو أو دوريتوس) + مشروبين غازيين. أحوّله بوكس؟",
+    "cart": null,
+    "handover": null,
+    "outcome": "sent",
+    "tools": [
+     {
+      "name": "search_menu",
+      "input": {
+       "query": "كريب زنجر سوبريم"
+      },
+      "result": {
+       "ok": true,
+       "results": [
+        {
+         "id": "8",
+         "name": "كريب زنجر سوبريم",
+         "name_en": "Zinger Supreme Crepe",
+         "price": 25,
+         "section": "كريبات",
+         "kind": "main",
+         "sold_out": false,
+         "by_weight": false
+        },
+        {
+         "id": "9",
+         "name": "كريب سوبر كرانشي",
+         "name_en": "Super Crunchy Crepe",
+         "price": 28,
+         "section": "كريبات",
+         "kind": "main",
+         "sold_out": false,
+         "by_weight": false
+        },
+        {
+         "id": "11",
+         "name": "كريب بطاطس",
+         "name_en": "Potato Crepe",
+         "price": 15,
+         "section": "كريبات",
+         "kind": "main",
+         "sold_out": false,
+         "by_weight": false
+        },
+        {
+         "id": "10",
+         "name": "كريب ميكس جبن",
+         "name_en": "Mixed Cheese Crepe",
+         "price": 20,
+         "section": "كريبات",
+         "kind": "main",
+         "sold_out": false,
+         "by_weight": false
+        },
+        {
+         "id": "4",
+         "name": "كريب هوت دوج",
+         "name_en": "Hot Dog Crepe",
+         "price": 23,
+         "section": "كريبات",
+         "kind": "main",
+         "sold_out": false,
+         "by_weight": false
+        },
+        {
+         "id": "7",
+         "name": "كريب فاهيتا دجاج",
+         "name_en": "Chicken Fajita Crepe",
+         "price": 24,
+         "section": "كريبات",
+         "kind": "main",
+         "sold_out": false,
+         "by_weight": false
+        },
+        {
+         "id": "6",
+         "name": "كريب شيش طاووق",
+         "name_en": "Shish Tawook Crepe",
+         "price": 25,
+         "section": "كريبات",
+         "kind": "main",
+         "sold_out": false,
+         "by_weight": false
+        },
+        {
+         "id": "83",
+         "name": "كريب ستربس",
+         "name_en": "Chicken Strips Crepe",
+         "price": 25,
+         "section": "كريبات",
+         "kind": "main",
+         "sold_out": false,
+         "by_weight": false
+        }
+       ]
+      },
+      "ms": 4
+     },
+     {
+      "name": "preview_cart",
+      "input": {
+       "items": [
+        {
+         "id": "8",
+         "qty": 2
+        }
+       ]
+      },
+      "result": {
+       "ok": true,
+       "option": "delivery",
+       "lines": [
+        {
+         "id": "8",
+         "name": "كريب زنجر سوبريم",
+         "name_en": "Zinger Supreme Crepe",
+         "price": 25,
+         "qty": 2,
+         "total": 50,
+         "kind": "main"
+        }
+       ],
+       "subtotal": 50,
+       "problems": [],
+       "note": "prices include VAT; the delivery fee is separate and shown by quote_delivery and again on the site before payment",
+       "saved": false,
+       "suggestion": {
+        "kind": "pair",
+        "when": "crepe_x2",
+        "name": "بوكس الكريب لشخصين",
+        "box": {
+         "slug": "box-crepe-duo",
+         "name": "بوكس الكريب لشخصين",
+         "name_en": "Crepe Box for Two",
+         "price": 65,
+         "description": "كريبين من اختيارك + تشيز فرايز + صنف جانبي (بطاطس أو كولسلو أو دوريتوس) + مشروبين غازيين."
+        },
+        "cart_subtotal": 50
+       },
+       "suggestion_say": "what goes with this order: the box «بوكس الكريب لشخصين» for 65 SAR (كريبين من اختيارك + تشيز فرايز + صنف جانبي (بطاطس أو كولسلو أو دوريتوس) + مشروبين غازيين.); the cart now is 50 SAR. This box REPLACES the items in the cart, it is not added to them: state the item's price, then offer it as «وبـ 65 ر.س يصير بوكس: …» with what the box adds in a few words, and ask «أحوّله بوكس؟». Never «أضيف لك بوكس». Do not subtract or compare the amounts yourself.",
+       "suggestion_rule": "you may offer this ONE suggestion as a short question; nothing else"
+      },
+      "ms": 2
+     }
+    ],
+    "verdicts": [
+     {
+      "ok": true,
+      "problems": [],
+      "text": "معك ماجد، المساعد الرقمي لفريش كاتس 🙂\nكريب زنجر سوبريم بـ 25 ر.س للقطعة، والاثنين بـ 50 ر.س. وبـ 65 ر.س يصير بوكس الكريب لشخصين: كريبين من اختيارك + تشيز فرايز + صنف جانبي (بطاطس أو كولسلو أو دوريتوس) + مشروبين غازيين. أحوّله بوكس؟"
+     }
+    ],
+    "calls": [
+     {
+      "model": "claude-haiku-5-5",
+      "tier": "fast",
+      "ms": 1966,
+      "outcome": "ok",
+      "in": 4,
+      "out": 59,
+      "cached": 13694,
+      "costSar": 0.005247
+     },
+     {
+      "model": "claude-haiku-5-5",
+      "tier": "fast",
+      "ms": 994,
+      "outcome": "ok",
+      "in": 2,
+      "out": 62,
+      "cached": 14348,
+      "costSar": 0.005498
+     },
+     {
+      "model": "claude-haiku-5-5",
+      "tier": "fast",
+      "ms": 1321,
+      "outcome": "ok",
+      "in": 804,
+      "out": 174,
+      "cached": 14348,
+      "costSar": 0.006008
+     }
+    ],
+    "ms": 4327,
+    "costSar": 0.016753,
+    "model": "claude-haiku-5-5",
+    "suggestions": [
+     {
+      "kind": "pair",
+      "ref": "box-crepe-duo",
+      "name": "بوكس الكريب لشخصين",
+      "numbers": {
+       "kind": "pair",
+       "when": "crepe_x2",
+       "name": "بوكس الكريب لشخصين",
+       "box": {
+        "slug": "box-crepe-duo",
+        "name": "بوكس الكريب لشخصين",
+        "name_en": "Crepe Box for Two",
+        "price": 65,
+        "description": "كريبين من اختيارك + تشيز فرايز + صنف جانبي (بطاطس أو كولسلو أو دوريتوس) + مشروبين غازيين."
+       },
+       "cart_subtotal": 50
+      },
+      "outcome": "offered"
+     }
+    ],
+    "context": {
+     "open_now": true,
+     "closes_at": "2 فجراً",
+     "location_shared": false,
+     "introduce_yourself": {
+      "say": "معك ماجد، المساعد الرقمي لفريش كاتس",
+      "rule": "use this phrase once in this message, exactly as it is"
+     },
+     "you": {
+      "name": "ماجد",
+      "name_en": "Majed",
+      "what": "Fresh Cuts' digital assistant (not a human)"
+     },
+     "customer": {
+      "known": false,
+      "name": null,
+      "orders": 0,
+      "status": "no_orders",
+      "days_since_last": null,
+      "usual_basket_sar": null,
+      "usual_mode": null,
+      "usual_hour": null,
+      "favourites": [],
+      "taste": null,
+      "last_order": null,
+      "districts": [],
+      "loyalty": {
+       "every": 3,
+       "progress": 0,
+       "left": 3,
+       "reward": "free_delivery",
+       "min_total": 60,
+       "status": null
+      },
+      "unused_rewards": [],
+      "first_order_offer": true,
+      "language": "ar"
+     },
+     "offers": {
+      "first_order": {
+       "eligible": true,
+       "code": "FIRST",
+       "free_delivery": true,
+       "min_total": 60,
+       "reason": null
+      },
+      "loyalty": {
+       "every": 3,
+       "progress": 0,
+       "left": 3,
+       "reward": "free_delivery",
+       "min_total": 60,
+       "status": null
+      }
+     },
+     "branch": "📍 فرعنا في حي السلامة بجدة، عند دوار رامي.",
+     "boxes": [
+      "box-solo-crepe: بوكس الكريب الفردي",
+      "box-solo-mixgrill: بوكس الميكس جريل الفردي",
+      "box-solo-burger: بوكس البرجر الفردي",
+      "box-solo-pasta: بوكس الباستا الفردي",
+      "box-solo-hawawshi: بوكس الحواوشي الفردي",
+      "box-solo-meal: بوكس وجبة المشاوي الفردي",
+      "box-crepe-duo: بوكس الكريب لشخصين",
+      "box-mixgrill-duo: ميكس جريل لشخصين",
+      "box-pizza-pasta: بيتزا وباستا لشخصين",
+      "box-meals-duo: وجبتين مشاوي لشخصين",
+      "box-burger-duo: بوكس البرجر لشخصين",
+      "box-late-night: بوكس السهرة",
+      "box-taste-all: بوكس التشكيلة",
+      "box-grill-half-half: بوكس المشاوي نص ونص",
+      "box-family: بوكس العائلة — مشاوي وبيتزا وباستا",
+      "box-pizza-night: بوكس سهرة البيتزا",
+      "box-mashakel: بوكس المشكل المخصوص",
+      "box-ribs-grill: بوكس الريش والمشاوي"
+     ]
+    },
+    "tier": "fast",
+    "escalated": false,
+    "lang": "ar",
+    "introByModel": true
+   }
+  ],
+  "carts": [],
+  "costSar": 0.016753,
+  "grade": {
+   "pass": true,
+   "fails": [],
+   "review": []
+  }
+ }
+]

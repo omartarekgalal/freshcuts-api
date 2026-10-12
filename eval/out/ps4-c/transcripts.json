@@ -1,0 +1,1919 @@
+[
+ {
+  "id": "ps4-fee-first-order-same-total",
+  "group": "fee moment",
+  "world": {
+   "profile": "new",
+   "loc": "in"
+  },
+  "expect": {
+   "cart": {
+    "option": "pickup",
+    "subtotal": 40
+   },
+   "noHandover": true,
+   "mustContain": [
+    "40 ر.س \\+ توصيل 20 = 60 ر.س",
+    "بكود FIRST = 60",
+    "نفس المبلغ"
+   ],
+   "turnButtons": {
+    "1": "60"
+   }
+  },
+  "turns": [
+   {
+    "i": 0,
+    "customer": "ابي ثلث كيلو كفتة مشوية توصيل",
+    "cls": "weight",
+    "raw": "weight_order",
+    "by": "assistant",
+    "reply": "أبشر، معك ماجد، المساعد الرقمي لفريش كاتس. ثلث كيلو كفتة مشوية بـ 40 ر.س. تحب أضيف لك بطاطس محمرة بـ 6 ر.س؟",
+    "cart": null,
+    "handover": null,
+    "outcome": "sent",
+    "tools": [
+     {
+      "name": "search_menu",
+      "input": {
+       "query": "كفتة مشوية"
+      },
+      "result": {
+       "ok": true,
+       "results": [
+        {
+         "id": "91",
+         "name": "كفتة مشوية بالوزن",
+         "name_en": "Grilled Kofta (by the kilo)",
+         "section": "مشاوي بالوزن",
+         "kind": "main",
+         "sold_out": false,
+         "by_weight": true,
+         "weights": [
+          {
+           "label": "ثلث كيلو",
+           "label_en": "1/3 Kilo",
+           "price": 40,
+           "variant_option_id": 44
+          },
+          {
+           "label": "نصف كيلو",
+           "label_en": "1/2 Kilo",
+           "price": 60,
+           "variant_option_id": 45
+          },
+          {
+           "label": "كيلو",
+           "label_en": "Kilo",
+           "price": 120,
+           "variant_option_id": 46
+          }
+         ],
+         "how_to_price": "sold by weight: every price belongs to ONE of the weights above; always say the weight with its price"
+        },
+        {
+         "id": "17",
+         "name": "وجبة كفتة",
+         "name_en": "Kofta Meal",
+         "price": 24,
+         "section": "وجبات",
+         "kind": "main",
+         "sold_out": false,
+         "by_weight": false
+        },
+        {
+         "id": "87",
+         "name": "وجبة كفتة وطرب",
+         "name_en": "Kofta & Tarb Meal",
+         "price": 37,
+         "section": "وجبات",
+         "kind": "main",
+         "sold_out": false,
+         "by_weight": false
+        },
+        {
+         "id": "15",
+         "name": "وجبة صدور مشوية",
+         "name_en": "Grilled Chicken Breast Meal",
+         "price": 25,
+         "section": "وجبات",
+         "kind": "main",
+         "sold_out": false,
+         "by_weight": false
+        },
+        {
+         "id": "111",
+         "name": "صدور مشوية بالوزن",
+         "name_en": "Grilled Chicken Breast (by the kilo)",
+         "section": "مشاوي بالوزن",
+         "kind": "main",
+         "sold_out": false,
+         "by_weight": true,
+         "weights": [
+          {
+           "label": "ثلث كيلو",
+           "label_en": "1/3 Kilo",
+           "price": 30,
+           "variant_option_id": 65
+          },
+          {
+           "label": "نصف كيلو",
+           "label_en": "1/2 Kilo",
+           "price": 45,
+           "variant_option_id": 66
+          },
+          {
+           "label": "كيلو",
+           "label_en": "Kilo",
+           "price": 90,
+           "variant_option_id": 67
+          }
+         ],
+         "how_to_price": "sold by weight: every price belongs to ONE of the weights above; always say the weight with its price"
+        },
+        {
+         "id": "54",
+         "name": "طاسة صدور مشوية",
+         "name_en": "Grilled Chicken Breast Skillet",
+         "price": 32,
+         "section": "طاسات",
+         "kind": "main",
+         "sold_out": false,
+         "by_weight": false
+        },
+        {
+         "id": "108",
+         "name": "كبدة مشوية بالوزن",
+         "name_en": "Grilled Liver (by the kilo)",
+         "section": "مشاوي بالوزن",
+         "kind": "main",
+         "sold_out": false,
+         "by_weight": true,
+         "weights": [
+          {
+           "label": "ثلث كيلو",
+           "label_en": "1/3 Kilo",
+           "price": 33,
+           "variant_option_id": 62
+          },
+          {
+           "label": "نصف كيلو",
+           "label_en": "1/2 Kilo",
+           "price": 50,
+           "variant_option_id": 63
+          },
+          {
+           "label": "كيلو",
+           "label_en": "Kilo",
+           "price": 100,
+           "variant_option_id": 64
+          }
+         ],
+         "how_to_price": "sold by weight: every price belongs to ONE of the weights above; always say the weight with its price"
+        },
+        {
+         "id": "100",
+         "name": "ريش مشوية بالوزن",
+         "name_en": "Grilled Lamb Chops (by the kilo)",
+         "section": "مشاوي بالوزن",
+         "kind": "main",
+         "sold_out": false,
+         "by_weight": true,
+         "weights": [
+          {
+           "label": "ثلث كيلو",
+           "label_en": "1/3 Kilo",
+           "price": 62,
+           "variant_option_id": 53
+          },
+          {
+           "label": "نصف كيلو",
+           "label_en": "1/2 Kilo",
+           "price": 93,
+           "variant_option_id": 54
+          },
+          {
+           "label": "كيلو",
+           "label_en": "Kilo",
+           "price": 185,
+           "variant_option_id": 55
+          }
+         ],
+         "how_to_price": "sold by weight: every price belongs to ONE of the weights above; always say the weight with its price"
+        }
+       ]
+      },
+      "ms": 3
+     },
+     {
+      "name": "preview_cart",
+      "input": {
+       "items": [
+        {
+         "id": "91",
+         "variant_option_id": 44,
+         "qty": 1
+        }
+       ],
+       "option": "delivery"
+      },
+      "result": {
+       "ok": true,
+       "option": "delivery",
+       "lines": [
+        {
+         "id": "91",
+         "name": "كفتة مشوية بالوزن",
+         "name_en": "Grilled Kofta (by the kilo)",
+         "weight": "ثلث كيلو",
+         "weight_en": "1/3 Kilo",
+         "variant_option_id": 44,
+         "price": 40,
+         "qty": 1,
+         "total": 40,
+         "kind": "main"
+        }
+       ],
+       "subtotal": 40,
+       "problems": [],
+       "note": "prices include VAT; the delivery fee is separate and shown by quote_delivery and again on the site before payment",
+       "saved": false,
+       "suggestion": {
+        "kind": "side",
+        "item": {
+         "id": "79",
+         "name": "بطاطس محمرة",
+         "name_en": "French Fries",
+         "price": 6,
+         "section": "إضافات",
+         "kind": "side",
+         "sold_out": false,
+         "by_weight": false
+        }
+       },
+       "suggestion_say": "a plain add-on: «تحب أضيف لك بطاطس محمرة بـ 6 ر.س؟» — no pressure.",
+       "suggestion_rule": "you may offer this ONE suggestion as a short question; nothing else"
+      },
+      "ms": 4
+     }
+    ],
+    "verdicts": [
+     {
+      "ok": true,
+      "problems": [],
+      "text": "أبشر، معك ماجد، المساعد الرقمي لفريش كاتس. ثلث كيلو كفتة مشوية بـ 40 ر.س. تحب أضيف لك بطاطس محمرة بـ 6 ر.س؟"
+     }
+    ],
+    "calls": [
+     {
+      "model": "claude-haiku-5-5",
+      "tier": "fast",
+      "ms": 1517,
+      "outcome": "ok",
+      "in": 4,
+      "out": 55,
+      "cached": 13699,
+      "costSar": 0.005242
+     },
+     {
+      "model": "claude-haiku-5-5",
+      "tier": "fast",
+      "ms": 1060,
+      "outcome": "ok",
+      "in": 2,
+      "out": 95,
+      "cached": 15039,
+      "costSar": 0.005819
+     },
+     {
+      "model": "claude-haiku-5-5",
+      "tier": "fast",
+      "ms": 1011,
+      "outcome": "ok",
+      "in": 2,
+      "out": 89,
+      "cached": 15494,
+      "costSar": 0.005978
+     }
+    ],
+    "ms": 3700,
+    "costSar": 0.017039000000000002,
+    "model": "claude-haiku-5-5",
+    "suggestions": [
+     {
+      "kind": "side",
+      "ref": "79",
+      "name": "بطاطس محمرة",
+      "numbers": {
+       "kind": "side",
+       "item": {
+        "id": "79",
+        "name": "بطاطس محمرة",
+        "name_en": "French Fries",
+        "price": 6,
+        "section": "إضافات",
+        "kind": "side",
+        "sold_out": false,
+        "by_weight": false
+       }
+      },
+      "outcome": "offered"
+     }
+    ],
+    "context": {
+     "open_now": true,
+     "closes_at": "2 فجراً",
+     "location_shared": false,
+     "introduce_yourself": {
+      "say": "معك ماجد، المساعد الرقمي لفريش كاتس",
+      "rule": "use this phrase once in this message, exactly as it is"
+     },
+     "you": {
+      "name": "ماجد",
+      "name_en": "Majed",
+      "what": "Fresh Cuts' digital assistant (not a human)"
+     },
+     "customer": {
+      "known": false,
+      "name": null,
+      "orders": 0,
+      "status": "no_orders",
+      "days_since_last": null,
+      "usual_basket_sar": null,
+      "usual_mode": null,
+      "usual_hour": null,
+      "favourites": [],
+      "taste": null,
+      "last_order": null,
+      "districts": [],
+      "loyalty": {
+       "every": 3,
+       "progress": 0,
+       "left": 3,
+       "reward": "free_delivery",
+       "min_total": 60,
+       "status": null
+      },
+      "unused_rewards": [],
+      "first_order_offer": true,
+      "language": "ar"
+     },
+     "offers": {
+      "first_order": {
+       "eligible": true,
+       "code": "FIRST",
+       "free_delivery": true,
+       "min_total": 60,
+       "reason": null
+      },
+      "loyalty": {
+       "every": 3,
+       "progress": 0,
+       "left": 3,
+       "reward": "free_delivery",
+       "min_total": 60,
+       "status": null
+      }
+     },
+     "branch": "📍 فرعنا في حي السلامة بجدة، عند دوار رامي.",
+     "boxes": [
+      "box-solo-crepe: بوكس الكريب الفردي",
+      "box-solo-mixgrill: بوكس الميكس جريل الفردي",
+      "box-solo-burger: بوكس البرجر الفردي",
+      "box-solo-pasta: بوكس الباستا الفردي",
+      "box-solo-hawawshi: بوكس الحواوشي الفردي",
+      "box-solo-meal: بوكس وجبة المشاوي الفردي",
+      "box-crepe-duo: بوكس الكريب لشخصين",
+      "box-mixgrill-duo: ميكس جريل لشخصين",
+      "box-pizza-pasta: بيتزا وباستا لشخصين",
+      "box-meals-duo: وجبتين مشاوي لشخصين",
+      "box-burger-duo: بوكس البرجر لشخصين",
+      "box-late-night: بوكس السهرة",
+      "box-taste-all: بوكس التشكيلة",
+      "box-grill-half-half: بوكس المشاوي نص ونص",
+      "box-family: بوكس العائلة — مشاوي وبيتزا وباستا",
+      "box-pizza-night: بوكس سهرة البيتزا",
+      "box-mashakel: بوكس المشكل المخصوص",
+      "box-ribs-grill: بوكس الريش والمشاوي"
+     ]
+    },
+    "tier": "fast",
+    "escalated": false,
+    "lang": "ar",
+    "introByModel": true
+   },
+   {
+    "i": 1,
+    "customer": "[location]",
+    "cls": "area",
+    "raw": "location",
+    "by": "assistant",
+    "reply": "وصلنا موقعك ونوصل لك. رسوم التوصيل 20 ر.س.\nطلبك 40 ر.س + توصيل 20 = 60 ر.س.\nوإذا وصل طلبك 60 ر.س، أول طلب توصيله مجاني بكود FIRST = 60 ر.س. نفس المبلغ، وأكل بزيادة 20 ر.س.\nأو استلام من الفرع بدون رسوم توصيل = 40 ر.س.\nأيهم يناسبك: توصيل ولا استلام؟",
+    "cart": null,
+    "handover": null,
+    "outcome": "sent",
+    "tools": [
+     {
+      "name": "quote_delivery",
+      "input": {
+       "total": 40
+      },
+      "result": {
+       "ok": true,
+       "deliverable": true,
+       "fee": 20,
+       "for_total": 40,
+       "to_next_tier": 20,
+       "next_tier_fee": 15,
+       "to_free": 110,
+       "far_zone_extra": 0,
+       "location": "shared_in_chat",
+       "free_from_total": 150,
+       "distance_km": 6.4,
+       "fee_moment": {
+        "say": "طلبك 40 ر.س + توصيل 20 = 60 ر.س.\nوإذا وصل طلبك 60 ر.س، أول طلب توصيله مجاني بكود FIRST = 60 ر.س. نفس المبلغ، وأكل بزيادة 20 ر.س.\nأو استلام من الفرع بدون رسوم توصيل = 40 ر.س.",
+        "boxes_reaching": [
+         {
+          "slug": "box-crepe-duo",
+          "name": "بوكس الكريب لشخصين",
+          "name_en": "Crepe Box for Two",
+          "price": 65,
+          "section": "بوكسات لشخصين",
+          "section_en": "Boxes for two",
+          "delivery_fee_with_it": 0,
+          "free_only_with_code": "FIRST"
+         },
+         {
+          "slug": "box-meals-duo",
+          "name": "وجبتين مشاوي لشخصين",
+          "name_en": "Grill Meals for Two",
+          "price": 65,
+          "section": "بوكسات لشخصين",
+          "section_en": "Boxes for two",
+          "delivery_fee_with_it": 0,
+          "free_only_with_code": "FIRST"
+         },
+         {
+          "slug": "box-burger-duo",
+          "name": "بوكس البرجر لشخصين",
+          "name_en": "Burger Box for Two",
+          "price": 65,
+          "section": "بوكسات لشخصين",
+          "section_en": "Boxes for two",
+          "delivery_fee_with_it": 0,
+          "free_only_with_code": "FIRST"
+         }
+        ],
+        "rule": "Instead of only stating the fee: confirm in a few words that we deliver to them, then send this \"say\" text exactly as it is, then ONE either-or question («أيهم يناسبك؟»). Two buttons are attached. No other suggestion in this message."
+       }
+      },
+      "ms": 4
+     }
+    ],
+    "verdicts": [
+     {
+      "ok": true,
+      "problems": [],
+      "text": "وصلنا موقعك ونوصل لك. رسوم التوصيل 20 ر.س.\nطلبك 40 ر.س + توصيل 20 = 60 ر.س.\nوإذا وصل طلبك 60 ر.س، أول طلب توصيله مجاني بكود FIRST = 60 ر.س. نفس المبلغ، وأكل بزيادة 20 ر.س.\nأو استلام من الفرع بدون رسوم توصيل = 40 ر.س.\nأيهم يناسبك: توصيل ولا استلام؟"
+     }
+    ],
+    "calls": [
+     {
+      "model": "claude-haiku-5-5",
+      "tier": "fast",
+      "ms": 1061,
+      "outcome": "ok",
+      "in": 258,
+      "out": 50,
+      "cached": 15494,
+      "costSar": 0.006001
+     },
+     {
+      "model": "claude-haiku-5-5",
+      "tier": "fast",
+      "ms": 1568,
+      "outcome": "ok",
+      "in": 906,
+      "out": 194,
+      "cached": 15697,
+      "costSar": 0.00659
+     }
+    ],
+    "ms": 2649,
+    "costSar": 0.012591000000000001,
+    "model": "claude-haiku-5-5",
+    "suggestions": [],
+    "context": {
+     "open_now": true,
+     "closes_at": "2 فجراً",
+     "location_shared": true,
+     "customer_just_shared_a_location_pin": true
+    },
+    "tier": "fast",
+    "escalated": false,
+    "lang": "ar",
+    "buttons": [
+     "أكمّلها 60 ر.س",
+     "استلام من الفرع"
+    ]
+   },
+   {
+    "i": 2,
+    "customer": "استلام من الفرع",
+    "cls": "pickup",
+    "raw": "how_to_order",
+    "by": "assistant",
+    "reply": "سلتك: ثلث كيلو كفتة مشوية = 40 ر.س، استلام من الفرع بدون رسوم توصيل. اضغط الزر، حدّد موقعك وادفع 👇",
+    "cart": {
+     "link": "https://freshcuts.sa/c/ev000001",
+     "code": "ev000001",
+     "subtotal": 40,
+     "option": "pickup",
+     "lines": [
+      {
+       "id": "91",
+       "name": "كفتة مشوية بالوزن",
+       "name_en": "Grilled Kofta (by the kilo)",
+       "weight": "ثلث كيلو",
+       "weight_en": "1/3 Kilo",
+       "variant_option_id": 44,
+       "price": 40,
+       "qty": 1,
+       "total": 40,
+       "kind": "main"
+      }
+     ]
+    },
+    "handover": null,
+    "outcome": "sent",
+    "tools": [
+     {
+      "name": "build_cart",
+      "input": {
+       "items": [
+        {
+         "id": "91",
+         "variant_option_id": 44,
+         "qty": 1
+        }
+       ],
+       "option": "pickup"
+      },
+      "result": {
+       "ok": true,
+       "option": "pickup",
+       "lines": [
+        {
+         "id": "91",
+         "name": "كفتة مشوية بالوزن",
+         "name_en": "Grilled Kofta (by the kilo)",
+         "weight": "ثلث كيلو",
+         "weight_en": "1/3 Kilo",
+         "variant_option_id": 44,
+         "price": 40,
+         "qty": 1,
+         "total": 40,
+         "kind": "main"
+        }
+       ],
+       "subtotal": 40,
+       "problems": [],
+       "note": "prices include VAT; the delivery fee is separate and shown by quote_delivery and again on the site before payment",
+       "saved": true,
+       "link_attached": "a button with the cart link is attached to your message automatically; do not write a link"
+      },
+      "ms": 1
+     }
+    ],
+    "verdicts": [
+     {
+      "ok": true,
+      "problems": [],
+      "text": "سلتك: ثلث كيلو كفتة مشوية = 40 ر.س، استلام من الفرع بدون رسوم توصيل. اضغط الزر، حدّد موقعك وادفع 👇"
+     }
+    ],
+    "calls": [
+     {
+      "model": "claude-haiku-5-5",
+      "tier": "fast",
+      "ms": 1337,
+      "outcome": "ok",
+      "in": 374,
+      "out": 97,
+      "cached": 16420,
+      "costSar": 0.00648
+     },
+     {
+      "model": "claude-haiku-5-5",
+      "tier": "fast",
+      "ms": 1100,
+      "outcome": "ok",
+      "in": 401,
+      "out": 75,
+      "cached": 16716,
+      "costSar": 0.00656
+     }
+    ],
+    "ms": 2449,
+    "costSar": 0.01304,
+    "model": "claude-haiku-5-5",
+    "suggestions": [],
+    "context": {
+     "open_now": true,
+     "closes_at": "2 فجراً",
+     "location_shared": true
+    },
+    "tier": "fast",
+    "escalated": false,
+    "lang": "ar"
+   }
+  ],
+  "carts": [
+   {
+    "code": "ev000001",
+    "phone": "512345678",
+    "source": "assistant",
+    "plan": {
+     "ok": true,
+     "raw": {
+      "91:v44": {
+       "item": {
+        "id": 91
+       },
+       "qty": 1,
+       "variant": {
+        "id": 44,
+        "name": "ثلث كيلو",
+        "local_name": "1/3 Kilo",
+        "retail_price": 40,
+        "price": 34.7826087
+       }
+      }
+     },
+     "items": [
+      {
+       "id": "91",
+       "n": "كفتة مشوية بالوزن (ثلث كيلو)",
+       "q": 1,
+       "p": 40,
+       "v": 44
+      }
+     ],
+     "removed": [],
+     "repriced": [],
+     "review": []
+    },
+    "option": "pickup",
+    "days": 7
+   }
+  ],
+  "costSar": 0.04267,
+  "grade": {
+   "pass": true,
+   "fails": [],
+   "review": []
+  }
+ },
+ {
+  "id": "ps4-big-box-family",
+  "group": "big box / pick for me",
+  "world": {
+   "profile": "new"
+  },
+  "expect": {
+   "noHandover": true,
+   "turnMustContain": {
+    "0": "179",
+    "2": "اعتمد|أعتمد"
+   },
+   "mustContain": [
+    "125"
+   ],
+   "turnMustNotContain": {
+    "0": "المشوي الأول|المشوي الاول"
+   },
+   "turnButtons": {
+    "0": "نص ونص|العائل",
+    "1": "كفت"
+   }
+  },
+  "turns": [
+   {
+    "i": 0,
+    "customer": "اى البوكس العائلى",
+    "cls": "tier",
+    "raw": "box_tier",
+    "by": "assistant",
+    "reply": "معك ماجد، المساعد الرقمي لفريش كاتس.\nبوكس العائلة بـ 179 ر.س: نوعين مشاوي نصف كيلو لكل نوع، وبيتزا وسط، وباستا، و٣ أطباق أرز، وبطاطس، وكولسلو، و٤ مشروبات غازية. المشاوي معها السلطة والطحينة والخبز.\nوإذا تبي أخف، عندنا بوكس المشاوي نص ونص بـ 125 ر.س.\nأي واحد أجهّز لك؟",
+    "cart": null,
+    "handover": null,
+    "outcome": "sent",
+    "tools": [
+     {
+      "name": "get_box",
+      "input": {
+       "slug": "box-family"
+      },
+      "result": {
+       "ok": true,
+       "box": {
+        "slug": "box-family",
+        "name": "بوكس العائلة — مشاوي وبيتزا وباستا",
+        "name_en": "Family Box — Grills, Pizza & Pasta",
+        "price": 179,
+        "description": "نوعين مشاوي من اختيارك (نصف كيلو لكل نوع) + بيتزا وسط + باستا + ٣ أطباق أرز + بطاطس + كولسلو + ٤ مشروبات غازية، والمشاوي معها السلطة والطحينة والخبز.",
+        "description_en": "Two grills of your choice (half a kilo each) + a medium pizza + a pasta + 3 basmati rice + fries + coleslaw + 4 soft drinks. The grills come with salad, tahini and bread.",
+        "section": "بوكسات المشاركة والعائلة",
+        "slots": [
+         {
+          "key": "grill1",
+          "label": "المشوي الأول (نصف كيلو)",
+          "type": "choice",
+          "quantity": 1,
+          "choices": [
+           {
+            "product_id": "91",
+            "variant_option_id": 45,
+            "name": "كفتة مشوية بالوزن",
+            "variant": "نصف كيلو",
+            "extra": 0,
+            "name_en": "Grilled Kofta (by the kilo)",
+            "addons": []
+           },
+           {
+            "product_id": "114",
+            "variant_option_id": 69,
+            "name": "شيش طاووق مشوي بالوزن",
+            "variant": "نصف كيلو",
+            "extra": 0,
+            "name_en": "Grilled Shish Tawook (by the kilo)",
+            "addons": []
+           },
+           {
+            "product_id": "94",
+            "variant_option_id": 48,
+            "name": "طرب مشوي بالوزن",
+            "variant": "نصف كيلو",
+            "extra": 0,
+            "name_en": "Grilled Tarb (by the kilo)",
+            "addons": []
+           },
+           {
+            "product_id": "105",
+            "variant_option_id": 60,
+            "name": "سجق مشوي بالوزن",
+            "variant": "نصف كيلو",
+            "extra": 0,
+            "name_en": "Grilled Sausage (by the kilo)",
+            "addons": []
+           }
+          ],
+          "label_en": "First grill (half kilo)",
+          "most_ordered": {
+           "product_id": "91",
+           "name": "كفتة مشوية بالوزن"
+          }
+         },
+         {
+          "key": "grill2",
+          "label": "المشوي الثاني (نصف كيلو)",
+          "type": "choice",
+          "quantity": 1,
+          "choices": [
+           {
+            "product_id": "91",
+            "variant_option_id": 45,
+            "name": "كفتة مشوية بالوزن",
+            "variant": "نصف كيلو",
+            "extra": 0,
+            "name_en": "Grilled Kofta (by the kilo)",
+            "addons": []
+           },
+           {
+            "product_id": "114",
+            "variant_option_id": 69,
+            "name": "شيش طاووق مشوي بالوزن",
+            "variant": "نصف كيلو",
+            "extra": 0,
+            "name_en": "Grilled Shish Tawook (by the kilo)",
+            "addons": []
+           },
+           {
+            "product_id": "94",
+            "variant_option_id": 48,
+            "name": "طرب مشوي بالوزن",
+            "variant": "نصف كيلو",
+            "extra": 0,
+            "name_en": "Grilled Tarb (by the kilo)",
+            "addons": []
+           },
+           {
+            "product_id": "105",
+            "variant_option_id": 60,
+            "name": "سجق مشوي بالوزن",
+            "variant": "نصف كيلو",
+            "extra": 0,
+            "name_en": "Grilled Sausage (by the kilo)",
+            "addons": []
+           }
+          ],
+          "label_en": "Second grill (half kilo)",
+          "most_ordered": {
+           "product_id": "114",
+           "name": "شيش طاووق مشوي بالوزن"
+          }
+         },
+         {
+          "key": "pizza",
+          "label": "اختر البيتزا (وسط)",
+          "type": "choice",
+          "quantity": 1,
+          "choices": [
+           {
+            "product_id": "43",
+            "variant_option_id": 36,
+            "name": "بيتزا تشيكن رانش",
+            "variant": "وسط",
+            "extra": 0,
+            "name_en": "Chicken Ranch Pizza",
+            "addons": [
+             {
+              "id": 15,
+              "name": "بدون حشو أطراف",
+              "price": 0,
+              "group": "حشو أطراف"
+             },
+             {
+              "id": 16,
+              "name": "حشو أطراف كيري",
+              "price": 3,
+              "group": "حشو أطراف"
+             },
+             {
+              "id": 17,
+              "name": "حشو أطراف موتزاريلا",
+              "price": 5,
+              "group": "حشو أطراف"
+             }
+            ]
+           },
+           {
+            "product_id": "41",
+            "variant_option_id": 34,
+            "name": "بيتزا سوبر سوبريم",
+            "variant": "وسط",
+            "extra": 0,
+            "name_en": "Super Supreme Pizza",
+            "addons": [
+             {
+              "id": 15,
+              "name": "بدون حشو أطراف",
+              "price": 0,
+              "group": "حشو أطراف"
+             },
+             {
+              "id": 16,
+              "name": "حشو أطراف كيري",
+              "price": 3,
+              "group": "حشو أطراف"
+             },
+             {
+              "id": 17,
+              "name": "حشو أطراف موتزاريلا",
+              "price": 5,
+              "group": "حشو أطراف"
+             }
+            ]
+           },
+           {
+            "product_id": "40",
+            "variant_option_id": 33,
+            "name": "بيتزا بيبروني",
+            "variant": "وسط",
+            "extra": 0,
+            "name_en": "Pepperoni Pizza",
+            "addons": [
+             {
+              "id": 15,
+              "name": "بدون حشو أطراف",
+              "price": 0,
+              "group": "حشو أطراف"
+             },
+             {
+              "id": 16,
+              "name": "حشو أطراف كيري",
+              "price": 3,
+              "group": "حشو أطراف"
+             },
+             {
+              "id": 17,
+              "name": "حشو أطراف موتزاريلا",
+              "price": 5,
+              "group": "حشو أطراف"
+             }
+            ]
+           },
+           {
+            "product_id": "42",
+            "variant_option_id": 35,
+            "name": "بيتزا تشيكن باربكيو",
+            "variant": "وسط",
+            "extra": 0,
+            "name_en": "Chicken BBQ Pizza",
+            "addons": [
+             {
+              "id": 15,
+              "name": "بدون حشو أطراف",
+              "price": 0,
+              "group": "حشو أطراف"
+             },
+             {
+              "id": 16,
+              "name": "حشو أطراف كيري",
+              "price": 3,
+              "group": "حشو أطراف"
+             },
+             {
+              "id": 17,
+              "name": "حشو أطراف موتزاريلا",
+              "price": 5,
+              "group": "حشو أطراف"
+             }
+            ]
+           },
+           {
+            "product_id": "46",
+            "variant_option_id": 39,
+            "name": "بيتزا تشيكن ديناميت",
+            "variant": "وسط",
+            "extra": 0,
+            "name_en": "Chicken Dynamite Pizza",
+            "addons": [
+             {
+              "id": 15,
+              "name": "بدون حشو أطراف",
+              "price": 0,
+              "group": "حشو أطراف"
+             },
+             {
+              "id": 16,
+              "name": "حشو أطراف كيري",
+              "price": 3,
+              "group": "حشو أطراف"
+             },
+             {
+              "id": 17,
+              "name": "حشو أطراف موتزاريلا",
+              "price": 5,
+              "group": "حشو أطراف"
+             }
+            ]
+           },
+           {
+            "product_id": "36",
+            "variant_option_id": 29,
+            "name": "بيتزا تشيكن الباتشينو",
+            "variant": "وسط",
+            "extra": 0,
+            "name_en": "Chicken Pacino Pizza",
+            "addons": [
+             {
+              "id": 15,
+              "name": "بدون حشو أطراف",
+              "price": 0,
+              "group": "حشو أطراف"
+             },
+             {
+              "id": 16,
+              "name": "حشو أطراف كيري",
+              "price": 3,
+              "group": "حشو أطراف"
+             },
+             {
+              "id": 17,
+              "name": "حشو أطراف موتزاريلا",
+              "price": 5,
+              "group": "حشو أطراف"
+             }
+            ]
+           },
+           {
+            "product_id": "38",
+            "variant_option_id": 31,
+            "name": "بيتزا برجر",
+            "variant": "وسط",
+            "extra": 0,
+            "name_en": "Burger Pizza",
+            "addons": [
+             {
+              "id": 15,
+              "name": "بدون حشو أطراف",
+              "price": 0,
+              "group": "حشو أطراف"
+             },
+             {
+              "id": 16,
+              "name": "حشو أطراف كيري",
+              "price": 3,
+              "group": "حشو أطراف"
+             },
+             {
+              "id": 17,
+              "name": "حشو أطراف موتزاريلا",
+              "price": 5,
+              "group": "حشو أطراف"
+             }
+            ]
+           },
+           {
+            "product_id": "48",
+            "variant_option_id": 41,
+            "name": "بيتزا تونة",
+            "variant": "وسط",
+            "extra": 0,
+            "name_en": "Tuna Pizza",
+            "addons": [
+             {
+              "id": 15,
+              "name": "بدون حشو أطراف",
+              "price": 0,
+              "group": "حشو أطراف"
+             },
+             {
+              "id": 16,
+              "name": "حشو أطراف كيري",
+              "price": 3,
+              "group": "حشو أطراف"
+             },
+             {
+              "id": 17,
+              "name": "حشو أطراف موتزاريلا",
+              "price": 5,
+              "group": "حشو أطراف"
+             }
+            ]
+           },
+           {
+            "product_id": "47",
+            "variant_option_id": 40,
+            "name": "بيتزا سوبر كرانشي",
+            "variant": "وسط",
+            "extra": 0,
+            "name_en": "Super Crunchy Pizza",
+            "addons": [
+             {
+              "id": 15,
+              "name": "بدون حشو أطراف",
+              "price": 0,
+              "group": "حشو أطراف"
+             },
+             {
+              "id": 16,
+              "name": "حشو أطراف كيري",
+              "price": 3,
+              "group": "حشو أطراف"
+             },
+             {
+              "id": 17,
+              "name": "حشو أطراف موتزاريلا",
+              "price": 5,
+              "group": "حشو أطراف"
+             }
+            ]
+           },
+           {
+            "product_id": "37",
+            "variant_option_id": 30,
+            "name": "بيتزا كواترو تشيز",
+            "variant": "وسط",
+            "extra": 0,
+            "name_en": "Quattro Cheese Pizza",
+            "addons": [
+             {
+              "id": 15,
+              "name": "بدون حشو أطراف",
+              "price": 0,
+              "group": "حشو أطراف"
+             },
+             {
+              "id": 16,
+              "name": "حشو أطراف كيري",
+              "price": 3,
+              "group": "حشو أطراف"
+             },
+             {
+              "id": 17,
+              "name": "حشو أطراف موتزاريلا",
+              "price": 5,
+              "group": "حشو أطراف"
+             }
+            ]
+           }
+          ],
+          "label_en": "Choose your pizza (medium)",
+          "most_ordered": {
+           "product_id": "43",
+           "name": "بيتزا تشيكن رانش"
+          }
+         },
+         {
+          "key": "pasta",
+          "label": "اختر الباستا",
+          "type": "choice",
+          "quantity": 1,
+          "choices": [
+           {
+            "product_id": "59",
+            "variant_option_id": null,
+            "name": "بنا تشيكن كازرول",
+            "variant": null,
+            "extra": 0,
+            "name_en": "Penne Chicken Casserole",
+            "addons": []
+           },
+           {
+            "product_id": "61",
+            "variant_option_id": null,
+            "name": "باستا بشاميل",
+            "variant": null,
+            "extra": 0,
+            "name_en": "Pasta Béchamel",
+            "addons": []
+           },
+           {
+            "product_id": "56",
+            "variant_option_id": null,
+            "name": "تشيكن بنا الفريدو",
+            "variant": null,
+            "extra": 0,
+            "name_en": "Chicken Penne Alfredo",
+            "addons": []
+           },
+           {
+            "product_id": "60",
+            "variant_option_id": null,
+            "name": "نجرسكو",
+            "variant": null,
+            "extra": 0,
+            "name_en": "Negresco",
+            "addons": []
+           },
+           {
+            "product_id": "55",
+            "variant_option_id": null,
+            "name": "بيف الفريدو",
+            "variant": null,
+            "extra": 0,
+            "name_en": "Beef Alfredo",
+            "addons": []
+           },
+           {
+            "product_id": "63",
+            "variant_option_id": null,
+            "name": "سي فود الفريدو",
+            "variant": null,
+            "extra": 0,
+            "name_en": "Seafood Alfredo",
+            "addons": []
+           },
+           {
+            "product_id": "62",
+            "variant_option_id": null,
+            "name": "ماك اند تشيز",
+            "variant": null,
+            "extra": 0,
+            "name_en": "Mac and Cheese",
+            "addons": []
+           }
+          ],
+          "label_en": "Choose your pasta",
+          "most_ordered": {
+           "product_id": "59",
+           "name": "بنا تشيكن كازرول"
+          }
+         },
+         {
+          "key": "rice",
+          "label": "طبق أرز بسمتي",
+          "type": "fixed",
+          "quantity": 3,
+          "item": {
+           "product_id": "123",
+           "name": "طبق أرز بسمتي",
+           "variant": null
+          },
+          "label_en": "Basmati rice"
+         },
+         {
+          "key": "fries",
+          "label": "بطاطس محمرة",
+          "type": "fixed",
+          "quantity": 1,
+          "item": {
+           "product_id": "79",
+           "name": "بطاطس محمرة",
+           "variant": null,
+           "name_en": "French Fries"
+          },
+          "label_en": "French fries"
+         },
+         {
+          "key": "coleslaw",
+          "label": "كولسلو",
+          "type": "fixed",
+          "quantity": 1,
+          "item": {
+           "product_id": "72",
+           "name": "كولسلو",
+           "variant": null,
+           "name_en": "Coleslaw"
+          },
+          "label_en": "Coleslaw"
+         },
+         {
+          "key": "drinks",
+          "label": "مشروبات غازية",
+          "type": "fixed",
+          "quantity": 4,
+          "item": {
+           "product_id": "82",
+           "name": "مشروبات غازية",
+           "variant": "كان",
+           "name_en": "Soft Drinks"
+          },
+          "label_en": "Soft drinks"
+         }
+        ],
+        "online_only": true,
+        "lighter_option": {
+         "slug": "box-grill-half-half",
+         "name": "بوكس المشاوي نص ونص",
+         "name_en": "Charcoal Grill Box (Half & Half)",
+         "price": 125,
+         "description": "كيلو مشاوي نص ونص: نوعين من اختيارك + طبقين أرز + بطاطس + كولسلو، مع السلطة والطحينة والخبز."
+        },
+        "before_the_choices": "This is a big box. In THIS message: its price and what it holds, then the lighter option with its price, and ONE question: which of the two to prepare (two buttons are attached). Do NOT ask for the choices in this message; ask them after the customer picks."
+       }
+      },
+      "ms": 4
+     }
+    ],
+    "verdicts": [
+     {
+      "ok": true,
+      "problems": [],
+      "text": "بوكس العائلة بـ 179 ر.س: نوعين مشاوي نصف كيلو لكل نوع، وبيتزا وسط، وباستا، و٣ أطباق أرز، وبطاطس، وكولسلو، و٤ مشروبات غازية. المشاوي معها السلطة والطحينة والخبز.\nوإذا تبي أخف، عندنا بوكس المشاوي نص ونص بـ 125 ر.س.\nأي واحد أجهّز لك؟"
+     }
+    ],
+    "calls": [
+     {
+      "model": "claude-haiku-5-5",
+      "tier": "fast",
+      "ms": 1544,
+      "outcome": "ok",
+      "in": 4,
+      "out": 50,
+      "cached": 13638,
+      "costSar": 0.00521
+     },
+     {
+      "model": "claude-sonnet-5-5",
+      "tier": "strong",
+      "ms": 1436,
+      "outcome": "ok",
+      "in": 4,
+      "out": 50,
+      "cached": 13638,
+      "costSar": 0.012134
+     },
+     {
+      "model": "claude-sonnet-5-5",
+      "tier": "strong",
+      "ms": 1981,
+      "outcome": "ok",
+      "in": 2,
+      "out": 175,
+      "cached": 17953,
+      "costSar": 0.020042
+     }
+    ],
+    "ms": 5002,
+    "costSar": 0.037386,
+    "model": "claude-sonnet-5-5",
+    "suggestions": [],
+    "context": {
+     "open_now": true,
+     "closes_at": "2 فجراً",
+     "location_shared": false,
+     "introduce_yourself": {
+      "say": "معك ماجد، المساعد الرقمي لفريش كاتس",
+      "rule": "use this phrase once in this message, exactly as it is"
+     },
+     "you": {
+      "name": "ماجد",
+      "name_en": "Majed",
+      "what": "Fresh Cuts' digital assistant (not a human)"
+     },
+     "customer": {
+      "known": false,
+      "name": null,
+      "orders": 0,
+      "status": "no_orders",
+      "days_since_last": null,
+      "usual_basket_sar": null,
+      "usual_mode": null,
+      "usual_hour": null,
+      "favourites": [],
+      "taste": null,
+      "last_order": null,
+      "districts": [],
+      "loyalty": {
+       "every": 3,
+       "progress": 0,
+       "left": 3,
+       "reward": "free_delivery",
+       "min_total": 60,
+       "status": null
+      },
+      "unused_rewards": [],
+      "first_order_offer": true,
+      "language": "ar"
+     },
+     "offers": {
+      "first_order": {
+       "eligible": true,
+       "code": "FIRST",
+       "free_delivery": true,
+       "min_total": 60,
+       "reason": null
+      },
+      "loyalty": {
+       "every": 3,
+       "progress": 0,
+       "left": 3,
+       "reward": "free_delivery",
+       "min_total": 60,
+       "status": null
+      }
+     },
+     "branch": "📍 فرعنا في حي السلامة بجدة، عند دوار رامي.",
+     "boxes": [
+      "box-solo-crepe: بوكس الكريب الفردي",
+      "box-solo-mixgrill: بوكس الميكس جريل الفردي",
+      "box-solo-burger: بوكس البرجر الفردي",
+      "box-solo-pasta: بوكس الباستا الفردي",
+      "box-solo-hawawshi: بوكس الحواوشي الفردي",
+      "box-solo-meal: بوكس وجبة المشاوي الفردي",
+      "box-crepe-duo: بوكس الكريب لشخصين",
+      "box-mixgrill-duo: ميكس جريل لشخصين",
+      "box-pizza-pasta: بيتزا وباستا لشخصين",
+      "box-meals-duo: وجبتين مشاوي لشخصين",
+      "box-burger-duo: بوكس البرجر لشخصين",
+      "box-late-night: بوكس السهرة",
+      "box-taste-all: بوكس التشكيلة",
+      "box-grill-half-half: بوكس المشاوي نص ونص",
+      "box-family: بوكس العائلة — مشاوي وبيتزا وباستا",
+      "box-pizza-night: بوكس سهرة البيتزا",
+      "box-mashakel: بوكس المشكل المخصوص",
+      "box-ribs-grill: بوكس الريش والمشاوي"
+     ]
+    },
+    "tier": "strong",
+    "escalated": true,
+    "lang": "ar",
+    "introByModel": false,
+    "buttons": [
+     "بوكس العائلة",
+     "بوكس المشاوي نص ونص"
+    ]
+   },
+   {
+    "i": 1,
+    "customer": "بوكس العائلة",
+    "cls": "box",
+    "raw": "box",
+    "by": "assistant",
+    "reply": "أبشر. المشوي الأول نصف كيلو، تختار من: كفتة، شيش طاووق، طرب، سجق. أيهم تبي؟",
+    "cart": null,
+    "handover": null,
+    "outcome": "sent",
+    "tools": [],
+    "verdicts": [
+     {
+      "ok": true,
+      "problems": [],
+      "text": "أبشر. المشوي الأول نصف كيلو، تختار من: كفتة، شيش طاووق، طرب، سجق. أيهم تبي؟"
+     }
+    ],
+    "calls": [
+     {
+      "model": "claude-sonnet-5-5",
+      "tier": "strong",
+      "ms": 1487,
+      "outcome": "ok",
+      "in": 351,
+      "out": 57,
+      "cached": 17953,
+      "costSar": 0.018235
+     }
+    ],
+    "ms": 1493,
+    "costSar": 0.018235,
+    "model": "claude-sonnet-5-5",
+    "suggestions": [],
+    "context": {
+     "open_now": true,
+     "closes_at": "2 فجراً",
+     "location_shared": false
+    },
+    "tier": "strong",
+    "escalated": false,
+    "lang": "ar",
+    "list": [
+     "كفتة مشوية بالوزن",
+     "شيش طاووق مشوي بالوزن",
+     "طرب مشوي بالوزن",
+     "سجق مشوي بالوزن"
+    ]
+   },
+   {
+    "i": 2,
+    "customer": "تمام جهزه",
+    "cls": "unknown",
+    "raw": "unknown",
+    "by": "assistant",
+    "reply": "أجهّزه لك بالأكثر طلباً عندنا:\nالمشوي الأول كفتة مشوية بالوزن، والثاني شيش طاووق مشوي بالوزن، والبيتزا بيتزا تشيكن رانش، والباستا بنا تشيكن كازرول.\nأعتمده؟",
+    "cart": null,
+    "handover": null,
+    "outcome": "sent",
+    "tools": [],
+    "verdicts": [
+     {
+      "ok": true,
+      "problems": [],
+      "text": "أجهّزه لك بالأكثر طلباً عندنا:\nالمشوي الأول كفتة مشوية بالوزن، والثاني شيش طاووق مشوي بالوزن، والبيتزا بيتزا تشيكن رانش، والباستا بنا تشيكن كازرول.\nأعتمده؟"
+     }
+    ],
+    "calls": [
+     {
+      "model": "claude-sonnet-5-5",
+      "tier": "strong",
+      "ms": 2338,
+      "outcome": "ok",
+      "in": 202,
+      "out": 190,
+      "cached": 18230,
+      "costSar": 0.022313
+     }
+    ],
+    "ms": 2349,
+    "costSar": 0.022313,
+    "model": "claude-sonnet-5-5",
+    "suggestions": [],
+    "context": {
+     "open_now": true,
+     "closes_at": "2 فجراً",
+     "location_shared": false
+    },
+    "tier": "strong",
+    "escalated": false,
+    "lang": "ar"
+   }
+  ],
+  "carts": [],
+  "costSar": 0.077934,
+  "grade": {
+   "pass": true,
+   "fails": [],
+   "review": [
+    {
+     "type": "intro_by_code",
+     "turn": 0,
+     "detail": ""
+    }
+   ]
+  }
+ },
+ {
+  "id": "ps4-pick-for-me-meals",
+  "group": "big box / pick for me",
+  "world": {
+   "profile": "new"
+  },
+  "expect": {
+   "noHandover": true,
+   "turnMustContain": {
+    "0": "65",
+    "1": "اعتمد|أعتمد"
+   },
+   "turnButtons": {
+    "0": "."
+   }
+  },
+  "turns": [
+   {
+    "i": 0,
+    "customer": "ابي بوكس وجبتين مشاوي لشخصين",
+    "cls": "box",
+    "raw": "box",
+    "by": "assistant",
+    "reply": "أبشر، معك ماجد، المساعد الرقمي لفريش كاتس. بوكس «وجبتين مشاوي لشخصين» بـ 65 ر.س: وجبتين مشاوي من اختيارك + بطاطس + كولسلو + دوريتوس + مشروبين غازيين.\nالوجبة الأولى تبيها أي واحدة من: وجبة كفتة، وجبة صدور مشوية، وجبة طرب، وجبة شيش طاووق، طبق كبدة اسكندراني، أو وجبة نصف دجاجة على الفحم؟",
+    "cart": null,
+    "handover": null,
+    "outcome": "sent",
+    "tools": [
+     {
+      "name": "get_box",
+      "input": {
+       "slug": "box-meals-duo"
+      },
+      "result": {
+       "ok": true,
+       "box": {
+        "slug": "box-meals-duo",
+        "name": "وجبتين مشاوي لشخصين",
+        "name_en": "Grill Meals for Two",
+        "price": 65,
+        "description": "وجبتين مشاوي من اختيارك + بطاطس + كولسلو + دوريتوس + مشروبين غازيين.",
+        "description_en": "Two grill meals of your choice + fries + coleslaw + Doritos + 2 soft drinks.",
+        "section": "بوكسات لشخصين",
+        "slots": [
+         {
+          "key": "meal1",
+          "label": "الوجبة الأولى",
+          "type": "choice",
+          "quantity": 1,
+          "choices": [
+           {
+            "product_id": "17",
+            "variant_option_id": null,
+            "name": "وجبة كفتة",
+            "variant": null,
+            "extra": 0,
+            "name_en": "Kofta Meal",
+            "addons": []
+           },
+           {
+            "product_id": "15",
+            "variant_option_id": null,
+            "name": "وجبة صدور مشوية",
+            "variant": null,
+            "extra": 0,
+            "name_en": "Grilled Chicken Breast Meal",
+            "addons": []
+           },
+           {
+            "product_id": "16",
+            "variant_option_id": null,
+            "name": "وجبة طرب",
+            "variant": null,
+            "extra": 0,
+            "name_en": "Tarb Meal",
+            "addons": []
+           },
+           {
+            "product_id": "90",
+            "variant_option_id": null,
+            "name": "وجبة شيش طاووق",
+            "variant": null,
+            "extra": 0,
+            "name_en": "Shish Tawook Meal",
+            "addons": []
+           },
+           {
+            "product_id": "84",
+            "variant_option_id": null,
+            "name": "طبق كبدة اسكندراني",
+            "variant": null,
+            "extra": 0,
+            "name_en": "Alexandrian Liver Plate",
+            "addons": []
+           },
+           {
+            "product_id": "13",
+            "variant_option_id": null,
+            "name": "وجبة نصف دجاجة على الفحم",
+            "variant": null,
+            "extra": 0,
+            "name_en": "Half Charcoal Chicken Meal",
+            "addons": []
+           }
+          ],
+          "label_en": "First meal",
+          "most_ordered": {
+           "product_id": "13",
+           "name": "وجبة نصف دجاجة على الفحم"
+          }
+         },
+         {
+          "key": "meal2",
+          "label": "الوجبة الثانية",
+          "type": "choice",
+          "quantity": 1,
+          "choices": [
+           {
+            "product_id": "17",
+            "variant_option_id": null,
+            "name": "وجبة كفتة",
+            "variant": null,
+            "extra": 0,
+            "name_en": "Kofta Meal",
+            "addons": []
+           },
+           {
+            "product_id": "15",
+            "variant_option_id": null,
+            "name": "وجبة صدور مشوية",
+            "variant": null,
+            "extra": 0,
+            "name_en": "Grilled Chicken Breast Meal",
+            "addons": []
+           },
+           {
+            "product_id": "16",
+            "variant_option_id": null,
+            "name": "وجبة طرب",
+            "variant": null,
+            "extra": 0,
+            "name_en": "Tarb Meal",
+            "addons": []
+           },
+           {
+            "product_id": "90",
+            "variant_option_id": null,
+            "name": "وجبة شيش طاووق",
+            "variant": null,
+            "extra": 0,
+            "name_en": "Shish Tawook Meal",
+            "addons": []
+           },
+           {
+            "product_id": "84",
+            "variant_option_id": null,
+            "name": "طبق كبدة اسكندراني",
+            "variant": null,
+            "extra": 0,
+            "name_en": "Alexandrian Liver Plate",
+            "addons": []
+           },
+           {
+            "product_id": "13",
+            "variant_option_id": null,
+            "name": "وجبة نصف دجاجة على الفحم",
+            "variant": null,
+            "extra": 0,
+            "name_en": "Half Charcoal Chicken Meal",
+            "addons": []
+           }
+          ],
+          "label_en": "Second meal",
+          "most_ordered": {
+           "product_id": "17",
+           "name": "وجبة كفتة"
+          }
+         },
+         {
+          "key": "fries",
+          "label": "بطاطس محمرة",
+          "type": "fixed",
+          "quantity": 1,
+          "item": {
+           "product_id": "79",
+           "name": "بطاطس محمرة",
+           "variant": null,
+           "name_en": "French Fries"
+          },
+          "label_en": "French fries"
+         },
+         {
+          "key": "coleslaw",
+          "label": "كولسلو",
+          "type": "fixed",
+          "quantity": 1,
+          "item": {
+           "product_id": "72",
+           "name": "كولسلو",
+           "variant": null,
+           "name_en": "Coleslaw"
+          },
+          "label_en": "Coleslaw"
+         },
+         {
+          "key": "doritos",
+          "label": "دوريتوس",
+          "type": "fixed",
+          "quantity": 1,
+          "item": {
+           "product_id": "119",
+           "name": "دوريتوس",
+           "variant": null,
+           "name_en": "Doritos"
+          },
+          "label_en": "Doritos"
+         },
+         {
+          "key": "drinks",
+          "label": "مشروبات غازية",
+          "type": "fixed",
+          "quantity": 2,
+          "item": {
+           "product_id": "82",
+           "name": "مشروبات غازية",
+           "variant": "كان",
+           "name_en": "Soft Drinks"
+          },
+          "label_en": "Soft drinks"
+         }
+        ],
+        "online_only": true
+       }
+      },
+      "ms": 2
+     }
+    ],
+    "verdicts": [
+     {
+      "ok": true,
+      "problems": [],
+      "text": "أبشر، معك ماجد، المساعد الرقمي لفريش كاتس. بوكس «وجبتين مشاوي لشخصين» بـ 65 ر.س: وجبتين مشاوي من اختيارك + بطاطس + كولسلو + دوريتوس + مشروبين غازيين.\nالوجبة الأولى تبيها أي واحدة من: وجبة كفتة، وجبة صدور مشوية، وجبة طرب، وجبة شيش طاووق، طبق كبدة اسكندراني، أو وجبة نصف دجاجة على الفحم؟"
+     }
+    ],
+    "calls": [
+     {
+      "model": "claude-haiku-5-5",
+      "tier": "fast",
+      "ms": 1501,
+      "outcome": "ok",
+      "in": 4,
+      "out": 54,
+      "cached": 13698,
+      "costSar": 0.00524
+     },
+     {
+      "model": "claude-sonnet-5-5",
+      "tier": "strong",
+      "ms": 1485,
+      "outcome": "ok",
+      "in": 4,
+      "out": 54,
+      "cached": 13698,
+      "costSar": 0.012329
+     },
+     {
+      "model": "claude-sonnet-5-5",
+      "tier": "strong",
+      "ms": 1943,
+      "outcome": "ok",
+      "in": 2,
+      "out": 208,
+      "cached": 15283,
+      "costSar": 0.019277
+     }
+    ],
+    "ms": 4975,
+    "costSar": 0.036846000000000004,
+    "model": "claude-sonnet-5-5",
+    "suggestions": [],
+    "context": {
+     "open_now": true,
+     "closes_at": "2 فجراً",
+     "location_shared": false,
+     "introduce_yourself": {
+      "say": "معك ماجد، المساعد الرقمي لفريش كاتس",
+      "rule": "use this phrase once in this message, exactly as it is"
+     },
+     "you": {
+      "name": "ماجد",
+      "name_en": "Majed",
+      "what": "Fresh Cuts' digital assistant (not a human)"
+     },
+     "customer": {
+      "known": false,
+      "name": null,
+      "orders": 0,
+      "status": "no_orders",
+      "days_since_last": null,
+      "usual_basket_sar": null,
+      "usual_mode": null,
+      "usual_hour": null,
+      "favourites": [],
+      "taste": null,
+      "last_order": null,
+      "districts": [],
+      "loyalty": {
+       "every": 3,
+       "progress": 0,
+       "left": 3,
+       "reward": "free_delivery",
+       "min_total": 60,
+       "status": null
+      },
+      "unused_rewards": [],
+      "first_order_offer": true,
+      "language": "ar"
+     },
+     "offers": {
+      "first_order": {
+       "eligible": true,
+       "code": "FIRST",
+       "free_delivery": true,
+       "min_total": 60,
+       "reason": null
+      },
+      "loyalty": {
+       "every": 3,
+       "progress": 0,
+       "left": 3,
+       "reward": "free_delivery",
+       "min_total": 60,
+       "status": null
+      }
+     },
+     "branch": "📍 فرعنا في حي السلامة بجدة، عند دوار رامي.",
+     "boxes": [
+      "box-solo-crepe: بوكس الكريب الفردي",
+      "box-solo-mixgrill: بوكس الميكس جريل الفردي",
+      "box-solo-burger: بوكس البرجر الفردي",
+      "box-solo-pasta: بوكس الباستا الفردي",
+      "box-solo-hawawshi: بوكس الحواوشي الفردي",
+      "box-solo-meal: بوكس وجبة المشاوي الفردي",
+      "box-crepe-duo: بوكس الكريب لشخصين",
+      "box-mixgrill-duo: ميكس جريل لشخصين",
+      "box-pizza-pasta: بيتزا وباستا لشخصين",
+      "box-meals-duo: وجبتين مشاوي لشخصين",
+      "box-burger-duo: بوكس البرجر لشخصين",
+      "box-late-night: بوكس السهرة",
+      "box-taste-all: بوكس التشكيلة",
+      "box-grill-half-half: بوكس المشاوي نص ونص",
+      "box-family: بوكس العائلة — مشاوي وبيتزا وباستا",
+      "box-pizza-night: بوكس سهرة البيتزا",
+      "box-mashakel: بوكس المشكل المخصوص",
+      "box-ribs-grill: بوكس الريش والمشاوي"
+     ]
+    },
+    "tier": "strong",
+    "escalated": true,
+    "lang": "ar",
+    "introByModel": true,
+    "list": [
+     "وجبة كفتة",
+     "وجبة صدور مشوية",
+     "وجبة طرب",
+     "وجبة شيش طاووق",
+     "طبق كبدة اسكندراني",
+     "وجبة نصف دجاجة على الفحم"
+    ]
+   },
+   {
+    "i": 1,
+    "customer": "تمام جهزه",
+    "cls": "unknown",
+    "raw": "unknown",
+    "by": "assistant",
+    "reply": "أجهّزه لك بوجبة نصف دجاجة على الفحم للأولى ووجبة كفتة للثانية، الأكثر طلباً عندنا. أعتمده؟",
+    "cart": null,
+    "handover": null,
+    "outcome": "sent",
+    "tools": [],
+    "verdicts": [
+     {
+      "ok": true,
+      "problems": [],
+      "text": "أجهّزه لك بوجبة نصف دجاجة على الفحم للأولى ووجبة كفتة للثانية، الأكثر طلباً عندنا. أعتمده؟"
+     }
+    ],
+    "calls": [
+     {
+      "model": "claude-sonnet-5-5",
+      "tier": "strong",
+      "ms": 1556,
+      "outcome": "ok",
+      "in": 391,
+      "out": 67,
+      "cached": 15283,
+      "costSar": 0.016907
+     }
+    ],
+    "ms": 1592,
+    "costSar": 0.016907,
+    "model": "claude-sonnet-5-5",
+    "suggestions": [],
+    "context": {
+     "open_now": true,
+     "closes_at": "2 فجراً",
+     "location_shared": false
+    },
+    "tier": "strong",
+    "escalated": false,
+    "lang": "ar"
+   }
+  ],
+  "carts": [],
+  "costSar": 0.053753,
+  "grade": {
+   "pass": true,
+   "fails": [],
+   "review": []
+  }
+ }
+]

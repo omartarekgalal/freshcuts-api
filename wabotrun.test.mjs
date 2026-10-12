@@ -58,7 +58,7 @@ function world({ waBot = {}, notifications = { whatsappEnabled: true }, orders =
   const clock = { now: () => new Date(nowMs), advance: (min) => { nowMs += min * 60_000; }, advanceSec: (s) => { nowMs += s * 1000; }, set: (iso) => { nowMs = Date.parse(iso); } };
   const db = { msgs: [], log: [], jobs: [], proofs: [], consentLog: [], ai: [], aiAlerts: [], tpl: [], cfgLog: [], botCarts: [], chats: new Map(), optouts: [], optins: {}, links: links.map((s) => (typeof s === "string" ? { slug: s, active: true, clicks: 0 } : { active: true, clicks: 0, ...s })), adChats: [], adReportParams: null, channelOffers: [], channelReportParams: null, sttKey: null, liveDay: [], marketingTo: [], settings: null };
   db.settings = { hours: HOURS, notifications, googlePlace: { mapsUrl: "https://maps.google.com/?cid=14767749764292326433" }, storefront: { seo: { faq: FAQ } },
-    cms: { loyalty: { enabled: true, every: 3, reward: "free_delivery", minTotal: 60 } }, delivery: { alertPhones: ["0544775082", "0506338246"], staffSmsLanguage: "en" }, waBot: { footerMode: "always", disclosureMode: "classic", ...waBot },
+    cms: { loyalty: { enabled: true, every: 3, reward: "free_delivery", minTotal: 60 } }, delivery: { alertPhones: ["0544775082", "0506338246"], staffSmsLanguage: "en" }, waBot: { footerMode: "always", disclosureMode: "classic", ...waBot, assist: { menuToRules: false, ...((waBot || {}).assist || {}) } },      // PS4: the sections list alone, as the older tests expect; the menu link under it is tested on its own
     waMaster: { enabled: true },   // SEC: مفتاح المالك الرئيسي (whatsapp.js guardSend) — مفتوح في العالم الافتراضي للاختبار
     ...extraSettings };
   const iso = () => new Date(nowMs).toISOString();
@@ -2359,9 +2359,11 @@ function memStore() {
     recordSuggestions: async (_p, _sid, _tid, list) => { st.sugg.push(...list); }, tagCart: async (code, acc) => { st.tags.push([code, acc]); }, chats: async () => [{ phone_norm: "512345678", turns: st.turns.length }], turns: async () => st.turns, stats: async () => ({ turns: { turns: st.turns.length } }) };
 }
 const TESTERS = ["0512345678"];
+/* PS4: the older assistant tests keep the behaviour they were written for; PS4 has its own tests (wa-ps4.test.mjs and the PS4 tests below) */
+const LEGACY_ASSIST = { feeMoment: false, menuToRules: false, pickForMe: false, choiceList: false, bigBoxSar: 0, pairingEnabled: false, adButtons: false, weightToAssistant: false, faqShort: false };
 function aWorld(steps, o = {}) {
   const m = aModel(steps), store = memStore();
-  const w = world({ bundles: LIVE.bundles, links: ALL_LINKS, ...o, waBot: { mode: "test", testPhones: TESTERS, footerMode: "smart", ...(o.waBot || {}), assist: { mode: "test", forceSuggestion: false, typing: false, orderWordsStrong: true, ...((o.waBot || {}).assist || {}) } }, assistModel: m.callModel, assistStore: store });
+  const w = world({ bundles: LIVE.bundles, links: ALL_LINKS, ...o, waBot: { mode: "test", testPhones: TESTERS, footerMode: "smart", ...(o.waBot || {}), assist: { mode: "test", forceSuggestion: false, typing: false, orderWordsStrong: true, ...LEGACY_ASSIST, ...((o.waBot || {}).assist || {}) } }, assistModel: m.callModel, assistStore: store });
   return { ...w, m, store: store.st };
 }
 const msgs = (r) => r.sent.filter((b) => b.type);                    // رسايل فعلية (من غير «مقروء + جاري الكتابة»)
@@ -4266,4 +4268,21 @@ test("PS3 — the reminder is not sent when the customer ordered, stopped our me
   const d = aWorld([mSay("تمام، بذكّرك بكرة إن شاء الله."), mSay("أكيد، راح أذكرك بكرة.")]);
   const r = await d.say("خلها بكرة"); assert.notEqual(r.log.reply_key, "assist"); assert.equal(d.db.jobs.filter((j) => j.kind === "assist_reminder").length, 0);
   assert.match(d.store.turns.at(-1).outcome, /fallback:validator/);
+}));
+
+test("PS4 — on WhatsApp: «المنيو» is the sections list + the menu link from the rules bot (no model call); the fee moment goes out with its two reply buttons, and a tap on one comes back to the assistant", withEnv(CONFIGURED, async () => {
+  const PS4 = { feeMoment: true, menuToRules: true, pickForMe: true, choiceList: true, bigBoxSar: 140, pairingEnabled: true, adButtons: true, weightToAssistant: true, faqShort: true, orderWordsStrong: false };
+  const w = aWorld([mSay("هلا والله 👋 وش تحب تطلب اليوم؟"), mUse(tUse("delivery_savers", { total: 40 })), mUse(tUse("delivery_savers", { total: 40 })), mSay("معك حق.\nأيهم يناسبك؟"), mSay("أبشر، استلام من الفرع. وش تحب تطلب؟")], { waBot: { assist: PS4 } });
+  await w.say("مرحبا"); w.clock.advance(1);
+  const m = await w.say("ابي المنيو");
+  assert.equal(w.m.used(), 1, "the menu request costs no model call"); assert.equal(m.log.reply_key, "cats");
+  const out = msgs(m); assert.equal(out.length, 2); assert.equal(out[0].interactive.type, "list"); assert.equal(out[1].interactive.type, "cta_url"); assert.match(out[1].interactive.action.parameters.url, /^https:\/\/freshcuts\.sa\/l\//);
+  w.clock.advance(1);
+  const f = await w.say("يعني طلب ب 40 ريال تدفع علي رسوم 20 ريال");
+  const p = msgs(f)[0];
+  assert.equal(p.interactive.type, "button"); assert.match(p.interactive.body.text, /طلبك 40 ر\.س \+ توصيل 20 = 60 ر\.س\./); assert.match(p.interactive.body.text, /أو استلام من الفرع بدون رسوم توصيل = 40 ر\.س\./);
+  assert.deepEqual(p.interactive.action.buttons.map((b) => [b.reply.id, b.reply.title]), [["as:reach", "أكمّلها 60 ر.س"], ["as:pickup", "استلام من الفرع"]]);
+  w.clock.advance(1);
+  const t = await w.press("as:pickup", "استلام من الفرع");
+  assert.equal(t.log.reply_key, "assist", "the assistant's own button returns to the assistant, as text"); assert.match(JSON.stringify(w.m.seen.at(-1).messages.at(-1)), /استلام من الفرع/);
 }));

@@ -86,7 +86,7 @@ async function runOne(sc) {
     if (!r.ok) { rec.by = "rules"; rec.outcome = `fallback:${r.reason}`; session = fresh ? null : AR.noteRulesTurn(session, ev.text, cls.key); turns.push(rec); continue; }
     session = r.session; rec.by = "assistant";
     if (r.handover) { rec.handover = r.handover.reason; rec.note = r.handover.note; rec.outcome = `handover:${r.handover.reason}`; handoverOpen = r.handover.reason; }
-    else { rec.reply = introduce ? AR.ensureIntro(r.text, introduce, pName) : r.text; if (introduce) { rec.introByModel = AR.hasIntro(r.text, pName); disclosed = true; } rec.cart = r.cart; rec.outcome = "sent"; if (r.location) rec.mapButton = true; if (r.reminder) rec.reminder = r.reminder; if (r.trace && r.trace.channelOffered) { chShown = true; rec.channel = true; } }
+    else { rec.reply = introduce ? AR.ensureIntro(r.text, introduce, pName) : r.text; if (introduce) { rec.introByModel = AR.hasIntro(r.text, pName); disclosed = true; } rec.cart = r.cart; rec.outcome = "sent"; if (r.location) rec.mapButton = true; if (r.reminder) rec.reminder = r.reminder; { const ex = R.assistExtras(W.cfg, rec.lang, r); if (!r.cart && ex.buttons) rec.buttons = ex.buttons.map((b) => b.title); if (!r.cart && ex.list) rec.list = ex.list.rows.map((x) => x.title + (x.description ? ` (${x.description})` : "")); } if (r.trace && r.trace.channelOffered) { chShown = true; rec.channel = true; } }
     turns.push(rec);
     if (i === script.length - 1 && i === sc.turns.length - 1 && sc.expect && sc.expect.cart && sc.closing !== false && !turns.some((x) => x.cart) && rec.by === "assistant" && rec.reply) script.push("لا شكراً، ارسل رابط السلة");
   }

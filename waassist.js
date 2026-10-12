@@ -107,6 +107,54 @@ export function profileSummaryAr(m) {
   return out.join("\n");
 }
 
+/* ── ٣أ) جدول الاقتران (PS4) ───────────────────────────────────────────────
+   «العميل طلب إيه» ⇒ الاقتراح الأول، من اللي بيتاكل مع بعض فعلاً في مبيعات نقطة البيع (كتاب البيع، قسم D): مشوي بالوزن ⇒ أرز، كيلو من نوع ⇒ بوكس نص ونص،
+   كريب ⇒ البوكس الفردي، كريبين ⇒ بوكس لشخصين… الجدول إعداد (assist.pairing): سطر = { when, box: slug } أو { when, item: "جزء من اسم الصنف" }، بالترتيب.
+   السطر اللي هدفه مش موجود في المنيو/البوكسات الحيّة، أو خلص، أو في السلة أصلاً ⇒ بيتعدّى. مفيش سعر هنا: السعر من المنيو والبوكسات وقت الاقتراح. */
+export const PAIR_WHENS = Object.freeze(["grill_kilo", "grill_weight", "pizza_pasta", "pizza_x2", "crepe_x2", "meal_x2", "burger_x2", "crepe_x1", "burger_x1", "meal_x1", "hawawshi", "pasta", "skillet"]);
+export const PAIRING_DEFAULT = Object.freeze([
+  { when: "grill_kilo", box: "box-grill-half-half" }, { when: "grill_weight", item: "أرز بسمتي" },
+  { when: "pizza_pasta", box: "box-pizza-pasta" }, { when: "pizza_x2", box: "box-pizza-night" }, { when: "crepe_x2", box: "box-crepe-duo" }, { when: "meal_x2", box: "box-meals-duo" }, { when: "burger_x2", box: "box-burger-duo" },
+  { when: "crepe_x1", box: "box-solo-crepe" }, { when: "burger_x1", box: "box-solo-burger" }, { when: "meal_x1", box: "box-solo-meal" },
+  { when: "hawawshi", item: "بطاطس محمرة" }, { when: "pasta", item: "كولسلو" },
+]);
+/* ⇒ { ok, value } أو { ok:false, errors }. لحد ٤٠ سطر؛ when من القايمة؛ box = slug، item = اسم (٢–٤٠ حرف، من غير أرقام ولا رموز). */
+export function pairingOf(raw) {
+  let v = raw;
+  if (typeof v === "string") { try { v = JSON.parse(v); } catch { return { ok: false, errors: ["pairing: JSON غير صحيح"] }; } }
+  if (!Array.isArray(v)) return { ok: false, errors: ["pairing: لازم تبقى قايمة"] };
+  const out = [], errors = [];
+  for (const [i, r] of v.slice(0, 40).entries()) {
+    if (!isObj(r) || !PAIR_WHENS.includes(r.when)) { errors.push(`pairing[${i}].when`); continue; }
+    if (typeof r.box === "string" && /^[a-z0-9-]{2,60}$/.test(r.box)) out.push({ when: r.when, box: r.box });
+    else if (typeof r.item === "string" && /^[\p{L} ]{2,40}$/u.test(r.item.trim())) out.push({ when: r.when, item: r.item.trim() });
+    else errors.push(`pairing[${i}]: box (slug) أو item (اسم)`);
+  }
+  return errors.length ? { ok: false, errors } : { ok: true, value: out };
+}
+const KILO_RE = /كيلو|kilo|\bkg\b/i, PART_RE = /نصف|نص|ثلث|تلت|ربع|half|third|quarter/i;
+/* عيلات السلة (من أقسام المنيو الحيّة بأسمائها الإنجليزية الثابتة) ⇒ Set من مفاتيح when */
+export function cartFamilies(cart, menu) {
+  const items = menu && Array.isArray(menu.items) ? menu.items : [];
+  const n = {}; let kilo = false, weight = false;
+  for (const l of (cart && cart.lines) || []) {
+    if (l.slug) continue;
+    const it = items.find((i) => String(i.id) === String(l.id)); if (!it || kindOf(it) !== "main") continue;
+    if (it.byWeight || l.weight) { weight = true; if (KILO_RE.test(String(l.weight || "")) && !PART_RE.test(String(l.weight || ""))) kilo = true; }
+    n[it.category] = (n[it.category] || 0) + (Number(l.qty) || 1);
+  }
+  const mains = Object.values(n).reduce((a, b) => a + b, 0), only = (c) => mains === (n[c] || 0);
+  const f = new Set();
+  if (kilo) f.add("grill_kilo"); if (weight) f.add("grill_weight");
+  if (n.Pizza >= 1 && n.Pasta >= 1) f.add("pizza_pasta");
+  if (n.Pizza >= 2 && only("Pizza")) f.add("pizza_x2");
+  if (n.Crepes === 2 && only("Crepes")) f.add("crepe_x2"); if (n.Crepes === 1 && mains === 1) f.add("crepe_x1");
+  if (n.Meals === 2 && only("Meals")) f.add("meal_x2"); if (n.Meals === 1 && mains === 1) f.add("meal_x1");
+  if (n.Burgers === 2 && only("Burgers")) f.add("burger_x2"); if (n.Burgers === 1 && mains === 1) f.add("burger_x1");
+  if (n.Hawawshi >= 1) f.add("hawawshi"); if (n.Pasta >= 1) f.add("pasta"); if (n.Skillets >= 1) f.add("skillet");
+  return f;
+}
+
 /* ── ٣) حاسبة الاقتراح (صافية) — اقتراح واحد بالكتير ──────────────────────
    cart = { lines:[{ id?, slug?, name, price, qty, kind }], subtotal, option }
    ctx  = { menu, boxes, quote, offers, topSellers:[id], declined:[kind], profile }
@@ -139,6 +187,23 @@ export function suggestOne(cart, ctx = {}, cfg = ASSIST_DEFAULTS) {
     }
     if (best) return best;
   }
+  /* (أ٢) PS4 — جدول الاقتران: أول سطر عيلته في السلة وهدفه متاح. مفيش بوكس في السلة، والعميل مارفضش اقتران قبل كده. */
+  if (!declined.has("pair") && !hasBox && Array.isArray(ctx.pairing) && ctx.pairing.length) {
+    const fam = cartFamilies(cart, menu);
+    for (const r of ctx.pairing) {
+      if (!fam.has(r.when)) continue;
+      if (r.box) { const b = (ctx.boxes || []).find((x) => String(x.slug) === String(r.box)); if (!b || !(Number(b.price) > 0)) continue;
+        /* كل صنف رئيسي في السلة لازم يكون اختيار في خانة من خانات البوكس (كل خانة مرة)، وزيادته جوّه البوكس بتتحسب في السعر اللي بيتقال. غير كده السطر بيتعدّى: مانعرضش بوكس مافيهوش اللي العميل طلبه. */
+        const free = (b.slots || []).filter((s) => s.type === "choice").map((s) => ({ s, used: false })); let extra = 0, fits = true;
+        for (const l of cart.lines) { const it = items.find((i) => String(i.id) === String(l.id)); if (!it || kindOf(it) !== "main") continue;
+          for (let q = 0; q < (Number(l.qty) || 1); q++) { const slot = free.find((f) => !f.used && (f.s.choices || []).some((c) => String(c.product_id) === String(l.id))); if (!slot) { fits = false; break; }
+            slot.used = true; extra += Number(((slot.s.choices || []).find((c) => String(c.product_id) === String(l.id)) || {}).surcharge) || 0; }
+          if (!fits) break; }
+        if (!fits) continue;
+        return { kind: "pair", when: r.when, name: b.name, box: { slug: b.slug, name: b.name, ...(b.name_en ? { name_en: b.name_en } : {}), price: round2(Number(b.price) + extra), ...(extra > 0 ? { base_price: Number(b.price), their_choice_extra: round2(extra) } : {}), description: b.description || "" }, cart_subtotal: cart.subtotal }; }
+      else if (r.item) { const k = normalize(r.item); const it = items.find((i) => normalize(i.name).includes(k) && !inCart.has(String(i.id)) && !avoid.has(i.name)); if (it) return { kind: "pair", when: r.when, name: it.name, item: itemBrief(it) }; }
+    }
+  }
   // (ب) فرق بسيط للشريحة الجاية من رسوم التوصيل (من عرض السعر الحقيقي لموقعه)
   const qv = ctx.quote;
   if (!declined.has("next_tier") && cart.option !== "pickup" && qv && qv.deliverable && Number(qv.toNextTier) > 0 && Number(qv.toNextTier) <= cfg.nudgeGapSar && Number.isFinite(Number(qv.nextTierFee))) {
@@ -153,8 +218,10 @@ export function suggestOne(cart, ctx = {}, cfg = ASSIST_DEFAULTS) {
   const best = (k) => { const c = items.filter((i) => kindOf(i) === k && !inCart.has(String(i.id)) && !avoid.has(i.name));
     const order = (a, b) => (rank.has(String(a.id)) ? rank.get(String(a.id)) : 1e6) - (rank.has(String(b.id)) ? rank.get(String(b.id)) : 1e6) || a.price - b.price;
     const nw = c.filter((i) => !WATER.test(normalize(`${i.name} ${i.nameEn}`))); return (nw.length ? nw : c).sort(order)[0] || null; };
-  if (!declined.has("drink") && !has("drink")) { const d = best("drink"); if (d) return { kind: "drink", item: itemBrief(d) }; }
-  if (!declined.has("side") && !has("side")) { const s2 = best("side"); if (s2) return { kind: "side", item: itemBrief(s2) }; }
+  const grill = Array.isArray(ctx.pairing) && cart.lines.some((l) => { const it = l.id ? (menu && menu.items ? menu.items.find((i) => String(i.id) === String(l.id)) : null) : null; return Boolean(l.weight) || Boolean(it && (it.byWeight || it.category === "Meals")); });      // PS4: المشروب مش أول اقتراح للمشاوي
+  const tryDrink = () => { if (!declined.has("drink") && !has("drink")) { const d = best("drink"); if (d) return { kind: "drink", item: itemBrief(d) }; } return null; };
+  const trySide = () => { if (!declined.has("side") && !has("side")) { const s2 = best("side"); if (s2) return { kind: "side", item: itemBrief(s2) }; } return null; };
+  { const first = grill ? trySide() || tryDrink() : tryDrink() || trySide(); if (first) return first; }
   /* صنف رئيسي من الأكثر مبيعاً: بس لو السلة مافيهاش صنف رئيسي ولا بوكس (العميل طالب مشروب/جانبي بس) — «زوّد وجبة تانية» مش اقتراح أمين. */
   if (!declined.has("top_seller") && Array.isArray(ctx.topSellers) && !hasBox && !cart.lines.some((l) => l.kind === "main")) {
     const t = ctx.topSellers.map((id) => items.find((i) => String(i.id) === String(id))).find((i) => i && !inCart.has(String(i.id)) && kindOf(i) === "main" && !avoid.has(i.name));
@@ -195,7 +262,13 @@ export function deliverySavers({ total = 0, offers = null, quote = null, ladder 
     .map((b) => ({ slug: b.slug, name: b.name, ...(b.name_en ? { name_en: b.name_en } : {}), price: Number(b.price), section: b.section || "", ...(b.section_en ? { section_en: b.section_en } : {}),
       delivery_fee_with_it: free && Number(b.price) >= free.order_from ? 0 : cheaper ? cheaper.fee_then : null,
       ...(free && free.with_code && Number(b.price) >= free.order_from ? { free_only_with_code: free.with_code } : {}) }));
-  return { ok: true, for_total: t, deliverable: located ? true : null, fee_now: feeNow, ...(located ? {} : { fee_note: "no location pin yet: fees here are the standard ones; the exact fee for their location is shown on the website before payment" }),
+  /* PS4 — لحظة الرسوم: التلات اختيارات بحسابها جاهز (الموديل مايجمعش من دماغه): زي ما هو · استلام · أقرب حد (أرخص درجة، أو المجاني بكود). vs_as_is = فرق الإجمالي عن «زي ما هو» (صفر = نفس المبلغ). */
+  const asIs = t > 0 && feeNow !== null ? { order: t, delivery: feeNow, total: round2(t + feeNow) } : null;
+  const near = cheaper ? { order: cheaper.order_from, delivery: cheaper.fee_then, total: round2(cheaper.order_from + cheaper.fee_then), extra_food: cheaper.missing }
+    : free && free.missing > 0 ? { order: free.order_from, delivery: 0, total: free.order_from, extra_food: free.missing, ...(free.with_code ? { with_code: free.with_code } : {}), condition: free.condition } : null;
+  const options = t > 0 ? { as_is: asIs, pickup: { order: t, delivery: 0, total: t }, reach: near && asIs ? { ...near, vs_as_is: round2(near.total - asIs.total) } : near } : null;
+  const firstStep = steps.find((s) => s.over > 0) || null;
+  return { ok: true, for_total: t, deliverable: located ? true : null, fee_now: feeNow, below_first_step: firstStep ? t < firstStep.over : null, ...(options ? { options } : {}), ...(located ? {} : { fee_note: "no location pin yet: fees here are the standard ones; the exact fee for their location is shown on the website before payment" }),
     pickup: { fee: 0 }, cheaper, free, boxes_reaching: reach,
     rule: "In ONE short message offer the real ways out: pickup from the branch (no delivery fee), and ONE way to cheaper or free delivery: the missing amount, or one box from boxes_reaching (its name and price as given, the one that fits what they wanted). If delivery is free only with a code (with_code / free_only_with_code), say the code and its condition in the same sentence. End with one either-or question. Offer this once; if they still decline, accept warmly and do not push." };
 }
@@ -482,7 +555,8 @@ export function makeAssistTools(deps = {}) {
     let freeAnyway = false;
     if (cart.option !== "pickup") { try { const of = await get_offers(phone); freeAnyway = Boolean((of.first_order && of.first_order.eligible && of.first_order.free_delivery && cart.subtotal >= (of.first_order.min_total || 0)) || (of.rewards || []).some((r) => r.freeDelivery && cart.subtotal >= (r.minTotal || 0))); } catch { freeAnyway = false; } }
     if (cart.option !== "pickup" && !freeAnyway) { const qv = await quote_delivery(phone, { total: cart.subtotal }); if (qv.ok && qv.deliverable) quote = { deliverable: true, fee: qv.fee, toNextTier: qv.to_next_tier, nextTierFee: qv.next_tier_fee }; }
-    return { ok: true, suggestion: suggestOne(cart, { menu, boxes: boxes || [], quote, topSellers: tops, declined, profile }, await tuneOf()) };
+    const tune = await tuneOf();
+    return { ok: true, suggestion: suggestOne(cart, { menu, boxes: boxes || [], quote, topSellers: tops, declined, profile, pairing: tune.pairingEnabled === false ? null : (Array.isArray(tune.pairing) ? tune.pairing : PAIRING_DEFAULT) }, tune) };
   }
   /* باقات التجمعات (الباقات اللي مالهاش قسم بوكسات): الاسم والسعر والوصف العام */
   async function list_packs() {

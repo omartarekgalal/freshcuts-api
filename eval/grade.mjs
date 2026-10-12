@@ -103,6 +103,7 @@ export function gradeConversation(conv, W) {
   const replies = conv.turns.map((t) => t.reply || "").join("\n"), nAll = norm(replies);
   for (const s of E.mustNotContain || []) if (new RegExp(s, "i").test(replies) || new RegExp(s, "i").test(nAll)) fail("must_not_contain", null, s);
   for (const s of E.mustContain || []) if (!(new RegExp(s, "i").test(replies) || new RegExp(s, "i").test(nAll))) fail("must_contain", null, s);
+  for (const [i, re] of Object.entries(E.turnButtons || {})) { const t = conv.turns[i]; const got = t ? [...(t.buttons || []), ...(t.list || [])].join(" | ") : ""; if (!new RegExp(re, "i").test(got) && !new RegExp(re, "i").test(norm(got))) fail("no_buttons", Number(i), `${re} ← ${got || "none"}`); }
   for (const i of E.mapButton || []) { const t = conv.turns[i]; if (!t || !(t.mapButton || (t.by === "rules" && t.cls === "location"))) fail("no_map_button", Number(i), "a location answer without the map button"); }
   if (E.reminder != null) { const t = conv.turns.find((x) => x.reminder && x.reminder.at); if (E.reminder === false ? Boolean(t) : !t) fail(E.reminder === false ? "unexpected_reminder" : "no_reminder", null, ""); else if (t && typeof E.reminder === "string" && !String(t.reminder.at).startsWith(E.reminder)) fail("wrong_reminder_time", t.i, t.reminder.at); }
   for (const [i, name] of Object.entries(E.turnTool || {})) { const t = conv.turns[i]; if (!t || !(t.tools || []).some((x) => x.name === name && x.result && x.result.ok !== false)) fail("tool_not_called", Number(i), name); }
@@ -180,6 +181,7 @@ export function summarize(results, meta) {
     for (const t of c.turns || []) {
       md.push(`- **العميل:** ${String(t.customer).replace(/\n/g, " ")}`);
       const tl = (t.tools || []).map((x) => x.name).join(", ");
+      if (t.by === "assistant" && t.reply && (t.buttons || t.list)) md.push(`  - _(${t.buttons ? `أزرار: ${t.buttons.map((b) => `[${b}]`).join(" ")}` : `قايمة: ${t.list.join(" · ")}`})_`);
       if (t.by === "assistant" && t.reply && (t.mapButton || t.reminder)) md.push(`  - _(${t.mapButton ? "زر «افتح الخريطة» مع الرسالة" : ""}${t.reminder && t.reminder.at ? `تذكير اتجدول: ${t.reminder.at}` : ""})_`);
       if (t.by === "assistant" && t.reply) md.push(`  - **المساعد** (${t.tier}${t.escalated ? "↑" : ""}, ${t.ms} ms, ${(t.costSar || 0).toFixed(4)} SAR${tl ? `, tools: ${tl}` : ""}${t.cart ? `, cart ${t.cart.subtotal} ${t.cart.option}` : ""}): ${t.reply.replace(/\n/g, " ⏎ ")}`);
       else if (t.by === "assistant") md.push(`  - **تحويل لموظف** (${t.handover}${t.note ? `: ${t.note}` : ""}; ${t.ms} ms${tl ? `, tools: ${tl}` : ""})`);

@@ -219,6 +219,20 @@ export const TEXTS = Object.freeze({
   /* PS3 — التذكير اللي العميل طلبه: بيفتح الكلام تاني باسم ماجد وبالصنف اللي كان بيسأل عنه (لو معروف ولسه متاح). مش رسالة تسويق: بتتبعت بس لعميل قال «فكّرني» وحدد الوقت. */
   assist_reminder: t("مساعد الطلبات: التذكير اللي العميل طلبه", "هلا 👋 معك {name}، المساعد الرقمي لفريش كاتس، وهذا تذكيرك مثل ما اتفقنا.\n{about}\nأجهّز لك طلبك الحين؟", "Hi 👋 This is {name}, Fresh Cuts' digital assistant, with the reminder you asked for.\n{about}\nShall I get your order ready now?", ["name"], ["about"], 400),
   assist_reminder_about: t("التذكير: سطر الصنف اللي كان بيسأل عنه", "كنت تفكّر في {dish}.", "You were looking at {dish}.", ["dish"], [], 200),
+  /* PS4 — لحظة الرسوم: الحساب جاهز من النظام (كل {…} رقم محسوب: مفيش رقم مكتوب في النص). السطور بتتركّب بالترتيب: زي ما هو ← أقرب حد ← الاستلام. */
+  fee_asis: t("لحظة الرسوم: طلبك + التوصيل", "طلبك {order} ر.س + توصيل {fee} = {total} ر.س.", "Your order SAR {order} + delivery {fee} = SAR {total}.", ["order", "fee", "total"], [], 200),
+  fee_first: t("لحظة الرسوم: التوصيل المجاني بكود أول طلب", "وإذا وصل طلبك {from} ر.س، أول طلب توصيله مجاني بكود {code} = {from} ر.س.", "If your order reaches SAR {from}, your first delivery is free with code {code} = SAR {from}.", ["from", "code"], [], 200),
+  fee_reward: t("لحظة الرسوم: التوصيل المجاني بكود المكافأة", "وإذا وصل طلبك {from} ر.س، توصيله مجاني بكود مكافأتك {code} = {from} ر.س.", "If your order reaches SAR {from}, delivery is free with your reward code {code} = SAR {from}.", ["from", "code"], [], 200),
+  fee_same: t("لحظة الرسوم: نفس المبلغ", "نفس المبلغ، وأكل بزيادة {extra} ر.س.", "The same total, with SAR {extra} more food.", ["extra"], [], 200),
+  fee_step: t("لحظة الرسوم: الدرجة الجاية", "وإذا زدت عليه {extra} ر.س يصير التوصيل {fee} ر.س، والإجمالي {total} ر.س.", "Add SAR {extra} and delivery becomes SAR {fee}, SAR {total} in total.", ["extra", "fee", "total"], [], 200),
+  fee_step_free: t("لحظة الرسوم: الدرجة الجاية مجانية", "وإذا زدت عليه {extra} ر.س يصير التوصيل مجاني، والإجمالي {total} ر.س.", "Add SAR {extra} and delivery is free, SAR {total} in total.", ["extra", "total"], [], 200),
+  fee_unlocated: t("لحظة الرسوم: من غير موقع", "الرسوم هذي حسب قيمة الطلب، وتتأكد لموقعك في موقعنا قبل الدفع.", "These fees go by the order total; the exact fee for your location shows on our website before payment.", [], [], 200),
+  fee_pickup: t("لحظة الرسوم: الاستلام", "أو استلام من الفرع بدون رسوم توصيل = {order} ر.س.", "Or pickup from the branch with no delivery fee = SAR {order}.", ["order"], [], 200),
+  btn_fee_reach: t("زر: أكمّل للحد", "أكمّلها {from} ر.س", "Make it SAR {from}", ["from"], [], LIMITS.btnTitle),
+  btn_fee_pickup: t("زر: استلام من الفرع", "استلام من الفرع", "Pickup", [], [], LIMITS.btnTitle),
+  btn_delivery: t("زر: توصيل", "توصيل", "Delivery", [], [], LIMITS.btnTitle),
+  btn_other: t("زر: أبغى شي ثاني", "أبغى شي ثاني", "Something else", [], [], LIMITS.btnTitle),
+  menu_link_line: t("تحت قايمة الأقسام: رابط المنيو", "وهذا المنيو كامل بالصور والأسعار 👇", "And here is the full menu with photos and prices 👇", [], [], 200),
   unsupported_line: t("رسالة نوعها مش مدعوم جوّه محادثة شغّالة", "ما وصلتني رسالتك بشكل واضح، اكتبها نص لو سمحت 🙏", "Your message did not come through clearly. Please type it as text 🙏"),
   paid_note: t("تأكيد الطلب بعد الدفع", "وصلنا طلبك رقم {order_no} ✅ نبدأ نجهّزه الحين.\nتقدر تتابعه من الزر 👇", "We received your order {order_no} ✅ We are starting on it now.\nYou can follow it from the button 👇", ["order_no"], [], 400),
   lead_followup: t("متابعة محادثة ماخدتش رد مفيد", "{who}\nوصلتنا رسالتك وما قدرنا نخدمك وقتها، نعتذر منك 🙏\nوش تحب تطلب؟ اكتب لي الصنف وأجهّز لك طلبك.", "{who}\nWe got your message and could not help you at the time, sorry 🙏\nWhat would you like to order? Tell me the dish and I will get your order ready.", ["who"], [], 600),
@@ -994,7 +1008,8 @@ export function buildReply(key, c) {
         return { id: `cat:${x.id}`, title: lang === "en" ? x.title : x.titleAr,
           description: lang === "en" ? `${cnt} items · from SAR ${money(min)}` : `${cnt} ${cnt >= 3 && cnt <= 10 ? "أصناف" : "صنف"} · من ${money(min)} ر.س` };
       });
-      return { body: T("cats_body"), list: { button: T("list_btn"), rows } };
+      let more = null; if (cfg.assist && cfg.assist.menuToRules && key === "cats") { try { more = withLink("menu_link_line", {}, "cta_menu"); } catch { more = null; } }      // PS4: «المنيو» = قايمة الأقسام + زر رابط المنيو
+      return { body: T("cats_body"), list: { button: T("list_btn"), rows }, ...(more ? { extra: [more], link: more.link } : {}) };
     }
     case "cat": case "spicy": {
       const menu = data.menu;
@@ -1560,6 +1575,32 @@ export function faqAnswer(raw, asked = "") {
   }
   return out.join("\n").replace(/\n{3,}/g, "\n\n").trim();
 }
+/* PS4 — نص لحظة الرسوم من الاختيارات المحسوبة (waassist.deliverySavers ⇒ options). ⇒ { text, reach } أو null لو مفيش «زي ما هو». كل رقم من options. */
+export function feeSayOf(cfg, options, lang, { located = true } = {}) {
+  const o = options || {}, L = lang === "en" ? "en" : "ar", a = o.as_is, r = o.reach, p = o.pickup;
+  if (!a || !(Number(a.delivery) > 0) || !p) return null;
+  const T2 = (k, v) => fill(k, textOf(cfg, k, L), v);
+  const lines = [T2("fee_asis", { order: money(a.order), fee: money(a.delivery), total: money(a.total) })];
+  if (r && Number(r.extra_food) > 0) {
+    if (r.with_code) lines.push(T2(/first/i.test(String(r.condition || "")) ? "fee_first" : "fee_reward", { from: money(r.order), code: String(r.with_code) }) + (Number(r.vs_as_is) === 0 ? ` ${T2("fee_same", { extra: money(r.extra_food) })}` : ""));
+    else lines.push(Number(r.delivery) === 0 ? T2("fee_step_free", { extra: money(r.extra_food), total: money(r.total) }) : T2("fee_step", { extra: money(r.extra_food), fee: money(r.delivery), total: money(r.total) }));
+  }
+  lines.push(T2("fee_pickup", { order: money(p.order) }));
+  if (!located) lines.push(T2("fee_unlocated"));      // من غير دبوس موقع: الأرقام من سلّم الرسوم العام، والعميل بيتقال له
+  return { text: lines.join("\n"), reach: r && Number(r.extra_food) > 0 ? Number(r.order) : null };
+}
+/* PS4 — أزرار وقوايم ردود المساعد (المعرّف as:… بيرجّع الضغطة للمساعد بعنوانها كنص). ⇒ { buttons } | { list } | {} */
+export function assistExtras(cfg, lang, r) {
+  const L = lang === "en" ? "en" : "ar", T2 = (k, v = {}) => fill(k, textOf(cfg, k, L), v), fit = (s) => { const a = [...String(s || "").trim()]; return a.length <= LIMITS.btnTitle ? a.join("") : a.slice(0, LIMITS.btnTitle - 1).join("").trim() + "…"; };
+  const b = r && r.buttons;
+  if (b && b.kind === "fee") return { buttons: [...(b.reach ? [{ id: "as:reach", title: fit(T2("btn_fee_reach", { from: money(b.reach) })) }] : []), { id: "as:pickup", title: T2("btn_fee_pickup") }] };
+  if (b && b.kind === "bigbox" && b.a && b.b) return { buttons: [{ id: `as:box:${b.a.slug}`, title: fit(b.a.name) }, { id: `as:box:${b.b.slug}`, title: fit(b.b.name) }] };
+  if (b && b.kind === "ad") return { buttons: [{ id: "as:delivery", title: T2("btn_delivery") }, { id: "as:pickup", title: T2("btn_fee_pickup") }, { id: "as:other", title: T2("btn_other") }] };
+  if (r && r.list && Array.isArray(r.list.rows) && r.list.rows.length >= 2) return { list: { button: T2("list_btn"), rows: r.list.rows.slice(0, LIMITS.rows).map((x) => ({ id: x.id, title: x.title, ...(Number(x.extra) > 0 ? { description: L === "en" ? `+ SAR ${money(x.extra)}` : `+ ${money(x.extra)} ر.س` } : {}) })) } };
+  return {};
+}
+/* PS4 — صورة الصنف المُعلن في أول رد لمحادثة الإعلان: **الخطّاف بس**. مفيش صورة بتتبعت لحد ما عمر يعتمد مكتبة الصور (كتاب البيع، بند ٦: «الميكس جريل بقطعتين طرب»). */
+export const adPictureFor = (_cfg, _advertised) => null;
 export function disclosureLine(cfg, lang, settings) {
   if (personaOn(cfg)) return introLine(cfg, lang);
   const phone = publicPhoneOf(cfg, settings);
@@ -2919,6 +2960,7 @@ export function register(app, ctx, deps = {}) {
     deliveryInfo: async () => { const r = await q("SELECT config FROM dl_policies WHERE active ORDER BY priority DESC, id LIMIT 1", []); const pol = r && r[0] ? r[0].config : null; const fees = pol ? feeLines(pol, "ar") : "";
       return pol && fees ? { ok: true, delivers_up_to_km: Number(pol.maxKm) || null, far_zone_up_to_km: pol.farZoneEnabled !== false ? Number(pol.farZoneMaxKm) || null : null, far_zone_extra_per_km: pol.farZoneEnabled !== false ? Number(pol.farZonePerKm) || null : null,
         fee_by_order_total: fees.split("\n"), ladder: Array.isArray(pol.feeByTotal) ? pol.feeByTotal.map((x) => ({ over: Number(x.over), fee: Number(x.fee) })) : null, note: "the exact fee for the customer is shown on the website before payment" } : null; },
+    feeSay: async (options, lang, o) => feeSayOf(cfg, options, lang, o),      // PS4: نص لحظة الرسوم من نصوص اللوحة
     /* PS3: خطة التذكير — آخر رسالة للعميل = الرسالة دي (النافذة ٢٤ ساعة منها)، ساعات الهدوء من الإعدادات، والمطعم لازم يكون فاتح في الميعاد. */
     reminder: async ({ day, time, lang }) => planReminder({ now: clock(), day, time, lastInMs: clock().getTime(), quietStart: cfg.assist.reminderQuietStart, quietEnd: cfg.assist.reminderQuietEnd, lang,
       isOpenAt: (dt) => { try { return settings?.hours ? isOpenNow(settings.hours, dt) : null; } catch { return null; } } }),
@@ -2989,7 +3031,8 @@ export function register(app, ctx, deps = {}) {
     try {
       if (r.handover) { const [k, tuple] = ASSIST_HANDOVER[r.handover.reason] || ASSIST_HANDOVER.needs_staff; reply = buildReply(k, k === "dishfact" ? { ...bc, arg: { id: null, text: "حساسية شديدة" } } : bc); handoff = tuple; reply = { body: reply.body }; }
       else { let map = null; if (r.location && !r.cart) { try { map = buildReply("location", bc).cta || null; } catch { map = null; } }      // PS3: رد الموقع ⇒ زر «افتح الخريطة» (نفس رابط بوت القواعد). السلة لها الأولوية (زر واحد في الرسالة)
-        reply = { body: r.text, ...(r.cart ? { cta: { title: textOf(cfg, "cta_reorder", L), url: r.cart.link } } : map ? { cta: map } : fresh && cx.reorder ? { buttons: [{ id: "re:last", title: textOf(cfg, "row_reorder", L) }] } : {}) }; }
+        let extras = {}; if (!r.cart && !map) { try { extras = assistExtras(cfg, L, r); } catch { extras = {}; } }      // PS4: زرّين لحظة الرسوم / بوكس كبير وبديله / أزرار الإعلان / قايمة اختيارات البوكس
+        reply = { body: r.text, ...(r.cart ? { cta: { title: textOf(cfg, "cta_reorder", L), url: r.cart.link } } : map ? { cta: map } : extras.buttons || extras.list ? extras : fresh && cx.reorder ? { buttons: [{ id: "re:last", title: textOf(cfg, "row_reorder", L) }] } : {}) }; }
     } catch (e) { if (fresh) session = null; return fallback("reply_build", tr); }
     const disclose = discloseDue;
     /* persona: المساعد قال التعريف في مكانه الطبيعي؛ لو ماقالوش (أو الرد نص تحويل ثابت) الكود بيحطه — التعريف مضمون بالكود مش بالموديل. classic: السطر القديم فوق الرد. */
