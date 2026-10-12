@@ -611,6 +611,33 @@ function staffPair(name, texts, vars, meta, buttonsEn = [link("Open portal", POR
   ];
 }
 
+/* ══ ST1 (١٢/١٠) — تواصل الفريق على واتساب (wateam.js) ═══════════════════════════════════════════
+   بلوك مستقل: قالبين للفريق بيتضافوا على الكتالوج هنا (مش جوّه القايمة فوق) عشان مايتعارضوش مع أي تعديل في قوالب العملاء.
+   الاتنين UTILITY، للموظفين بس (الحارس بيرفض أي رقم مش في دليل الفريق: not_staff)، وفيهم زر رد واحد «جدّد التنبيهات»:
+   ضغطته رسالة واردة ⇒ نافذة الـ٢٤ ساعة بتاعة الموظف بتتفتح والتنبيهات اللي بعدها بتوصله حرة ببلاش.
+   نص القالبين العربي فصحى مبسّطة زي باقي قوالب الكتالوج (بيتراجع من ميتا، واختبار الكتالوج بيرفض العامية المصرية) — الرسايل الحرة للفريق هي اللي بالمصري.
+   زر القالب من غير إيموجي (ميتا بترفض الإيموجي في أزرار القوالب) — زر الرسالة الحرة هو «✅ جدّد التنبيهات».
+     • fc_staff_alerts_renew  — النافذة قفلت: مرة واحدة لكل قفلة، وبعدها نستنى الضغطة.
+     • fc_staff_team_notice   — تنبيه (تحويل لموظف / حاجة غريبة / الملخص) لموظف نافذته مقفولة: سطر واحد من غير نص العميل. */
+export const STAFF_RENEW_BUTTON = "جدّد التنبيهات";
+export const STAFF_RENEW_BUTTON_EN = "Renew alerts";
+TEMPLATES.push(
+  ...staffPair("fc_staff_alerts_renew",
+    { body: "Fresh Cuts team alerts: WhatsApp alerts for your number are paused because the chat window has closed. Tap the button below to keep receiving team alerts here. This is an automated operations message.",
+      ar: "تنبيهات فريق فريش كاتس: تنبيهات واتساب لرقمك متوقفة حالياً لأن نافذة المحادثة أُغلقت. اضغط الزر بالأسفل لتستمر تنبيهات الفريق في الوصول إليك هنا. هذه رسالة تشغيلية آلية." },
+    [],
+    { purpose: "تجديد نافذة تنبيهات الموظف (حارس النافذة)", trigger: "wateam.js keeper — نافذة الموظف قفلت؛ مرة واحدة لكل قفلة", send: "auto",
+      fallbackSms: "Fresh Cuts: your WhatsApp alerts are paused. Send the word ALERTS to the restaurant WhatsApp number" },
+    [qr(STAFF_RENEW_BUTTON_EN)], [qr(STAFF_RENEW_BUTTON)]),
+  ...staffPair("fc_staff_team_notice",
+    { body: "Fresh Cuts team notice from the WhatsApp chat system: {{1}}. Open the WhatsApp inbox for the details. This is an automated operations message.",
+      ar: "تنبيه لفريق فريش كاتس من نظام محادثات واتساب: {{1}}. افتح صندوق المحادثات للتفاصيل. هذه رسالة تشغيلية آلية." },
+    [{ path: "notice.text", ex: "a customer ending 5678 needs a staff reply (complaint)", exAr: "عميل آخر رقمه 5678 محتاج موظف (شكوى)", label: "سطر التنبيه ≤120 (آخر ٤ أرقام بس، من غير نص العميل)" }],
+    { purpose: "تنبيه فريق لموظف نافذته مقفولة (تحويل / حاجة غريبة / ملخص)", trigger: "wateam.js sendToStaff — النافذة مقفولة والقالب معتمد", send: "auto",
+      fallbackSms: "Fresh Cuts WhatsApp: customer needs staff ({reason})" },
+    [qr(STAFF_RENEW_BUTTON_EN), link("Open portal", PORTAL_URL)], [qr(STAFF_RENEW_BUTTON), link("فتح البورتال", PORTAL_URL)]),
+);
+
 /* ── مراجعة ١٢/١٠/٢٠٢٦ (كل القوالب، قبل التقديم) ─────────────────────────────
    HOLD = قوالب **لا تُقدَّم** لميتا الآن، وكل واحد بسببه. مسار التقديم (whatsapp.js) يرفضها بـ«held»
    إلا بـ force:true من المالك. الباقي يتقدّم على دفعات SUBMIT_BATCHES بالترتيب، واحد في الطلب. */
@@ -642,6 +669,8 @@ export const SUBMIT_BATCHES = Object.freeze([
   ["fc_frame_news_text", "fc_frame_offer_img", "fc_frame_limited_img", "fc_frame_video"],
   // RF1 (١٤/١٠): إطارات «الرد أولاً» — النصي الأول (مافيهوش رفع) وبعده الفيديو. كل اسم = عربي + إنجليزي
   ["fc_frame_ask_text", "fc_frame_ask_video"],
+  // ST1 (١٢/١٠): قوالب تواصل الفريق — التجديد أولاً (من غير متغيّرات)، وبعده سطر التنبيه. كل اسم = إنجليزي + عربي
+  ["fc_staff_alerts_renew", "fc_staff_team_notice"],
 ]);
 export const RECOMMENDED_FIRST = SUBMIT_BATCHES[0];
 export const FRAME_BATCH = SUBMIT_BATCHES.find((b) => b.includes("fc_frame_news_text"));      // FR1: دفعة الإطارات (بالرابط)

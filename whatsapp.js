@@ -42,6 +42,7 @@ import { staffPhones } from "./staffalerts.js";
 import { termsCoverOrder, TERMS_CURRENT, TERMS_VERSIONS } from "./waconsent.js";
 import { custCapOf, custCapReason } from "./waquality.js";
 import { waStageOn } from "./waswitches.js";
+import { staffRoleOf } from "./wateam.js";
 
 const env = (k, d) => (process.env[k] || d || "").toString().trim();
 export const GRAPH_VERSION = "v23.0";
@@ -700,7 +701,7 @@ export function register(app, ctx, deps = {}) {
   }
   const TICKETS = new WeakSet();
   const TICKET_TTL_MS = 60_000;
-  async function guardSend({ phoneNorm, kind, template = null, purpose = null, source = null, test = false, allowList = null, fromId = null, orderNo = null } = {}) {
+  async function guardSend({ phoneNorm, kind, template = null, purpose = null, source = null, test = false, allowList = null, fromId = null, orderNo = null, staff = false } = {}) {
     const no = (reason) => ({ ok: false, reason });
     await ready;
     const pn = String(phoneNorm || "");
@@ -724,7 +725,9 @@ export function register(app, ctx, deps = {}) {
       if (kind === "session" && !(await windowOpen(pn))) return no("window_closed");
       return grant();
     }
-    const blocked = channelBlock(s, kind);      // SW1: الرد الحر مابيقفش على مفتاح تحديثات الطلب
+    /* ST1: قالب لموظف (staff) مش «تحديث طلب لعميل» ⇒ أقفال الرد الحر (الخادم + الإعداد + مفتاح المالك) من غير مفتاح تحديثات الطلب */
+    const staffTpl = staff === true && kind === "template";
+    const blocked = channelBlock(s, staffTpl ? "session" : kind);      // SW1: الرد الحر مابيقفش على مفتاح تحديثات الطلب
     if (blocked) return no(blocked);
     if (kind === "session") {
       // رد حر: العميل لازم يكون كلّمنا في آخر ٢٤ ساعة (رسالة حقيقية وصلت على الويب هوك، مش تاريخ مستورد)
@@ -733,6 +736,16 @@ export function register(app, ctx, deps = {}) {
     }
     const t = TEMPLATES[template];
     if (!t) return no("unknown_template");
+    /* ST1 (١٢/١٠ — تنبيهات الفريق على واتساب): قالب فريق لموظف. الحارس نفسه بيتأكد — المنادي مايقدرش يدّعي:
+         • الرقم في دليل الفريق في الإعدادات (settings.waTeam.members، أو أرقام التنبيهات لحد ما الدليل يتكتب) وإلا not_staff
+         • القالب من مجموعة «الفريق» في الكتالوج، فئته UTILITY، وميتا ماحوّلتوش تسويق، ومش حملة — وإلا not_staff_template
+       موافقة العميل (wa_optins) مابتتطلبش: ده موظف عندنا مش عميل. أي رقم تاني أو أي قالب تاني بيكمل على قواعد العملاء تحت زي ما هو. */
+    if (staff === true) {
+      if (!staffRoleOf(s, pn)) return no("not_staff");
+      const reclassed = Object.keys(CAT.META_CATEGORY || {}).some((k) => k.startsWith(`${template}:`));
+      if (t.group !== "staff" || t.category !== "UTILITY" || reclassed || purpose === "marketing" || source === "campaign") return no("not_staff_template");
+      return grant();
+    }
     const marketing = t.category === "MARKETING" || purpose === "marketing" || source === "campaign";
     if (t.category === "AUTHENTICATION" && !marketing) return grant();   // كود تحقق العميل طلبه بنفسه
     const o = await optInOf(pn);
@@ -848,7 +861,7 @@ export function register(app, ctx, deps = {}) {
      source/body اختياريين: الحملات بتبعت نص القالب بعد التعويض عشان يظهر في
      المحادثة زي ما العميل شافه (مش «[قالب: …]»). */
   async function sendTemplate({ phoneNorm, template, params = {}, orderNo = null, stage = null, fallbackSms = null,
-    requireOptIn = true, source = null, body = null, lang = null, allowList = null, test = false }) {
+    requireOptIn = true, source = null, body = null, lang = null, allowList = null, test = false, staff = false }) {
     await ready;
     const t = TEMPLATES[template];
     if (!t) return { ok: false, error: "unknown_template" };
@@ -858,7 +871,7 @@ export function register(app, ctx, deps = {}) {
        مطلوبة)؛ الاستثناء الوحيد = أرقام التجربة اللي في اللوحة (test / allowList). */
     void requireOptIn;
     const g = await guardSend({ phoneNorm, kind: "template", template, source, purpose: source === "campaign" ? "marketing" : null,
-      test, allowList, orderNo });
+      test, allowList, orderNo, staff });
     if (!g.ok) return { ok: false, skipped: g.reason };
     const language = lang || t.language || "ar";
     const bad = paramProblem(template, params, language);
@@ -880,6 +893,14 @@ export function register(app, ctx, deps = {}) {
       const code = Number(String(e.code || "").replace(/^WA_/, "")) || null;
       return { ok: false, error: String(e.code || "send_failed"), code, message: String(e.message || "").slice(0, 200) };
     }
+  }
+
+  /* ST1: قالب فريق لموظف من دليل الفريق (wateam.js). المتغيّرات بتتبني من بيانات الكتالوج، والحارس بيتأكد إن الرقم موظف والقالب قالب فريق. */
+  async function sendStaffTemplate({ phoneNorm, template, data = {}, lang = "ar" }) {
+    const t = TEMPLATES[template];
+    if (!t || typeof t.bind !== "function") return { ok: false, error: "unknown_template" };
+    const language = t.variants && t.variants[lang] ? lang : (t.language || "ar");
+    return sendTemplate({ phoneNorm, template, params: t.bind(data || {}), lang: language, source: "team", staff: true });
   }
 
   /* رسالة حرة بجسم Cloud API جاهز (نص / interactive) — للبوت. جوّه نافذة الـ٢٤ ساعة بس (المنادي مسؤول عنها).
@@ -1322,7 +1343,7 @@ export function register(app, ctx, deps = {}) {
     return c.json({ ok: true, results });
   });
 
-  return { fetchMedia, sendTemplate, sendText, sendFreeform, sendTyping, sendOrderUpdate, sendOrderTemplateOnce, recordOptIn, applyIntent, gate, configured, masterOn, ready, setInbox,
+  return { fetchMedia, sendTemplate, sendStaffTemplate, sendText, sendFreeform, sendTyping, sendOrderUpdate, sendOrderTemplateOnce, recordOptIn, applyIntent, gate, configured, masterOn, ready, setInbox,
     guardSend, deliver, envState, dashMasterOn: async () => dashMasterOf(await settingsSnap()), testPhones: async () => testPhonesOf(await settingsSnap()),
     on, processWebhook, token, phoneId, wabaId, setBot, setBotRuntime, humanActive,
     setActiveIds, idsInUse, setWebhookAccept };
