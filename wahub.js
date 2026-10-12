@@ -136,6 +136,13 @@ export function register(app, ctx, deps = {}) {
   }
   const pauseMinNow = async () => { try { const cfg = await bot()?.botConfig?.(); return Number(cfg?.humanPauseMin) || 30; } catch { return 30; } };
 
+  /* آخر رسالة في صف القايمة: من آخر صف متخزّن (lm_*) لو موجود، وإلا من صف المحادثة زي الأول */
+  const lastOf = (r) => {
+    if (!r.lm_dir) return { lastText: r.last_text || "", lastDir: r.last_dir || null, lastSource: r.last_source || null, lastAt: iso(r.last_at) };
+    const at = r.lm_at && r.last_at ? new Date(Math.max(new Date(r.lm_at).getTime(), new Date(r.last_at).getTime())) : r.lm_at || r.last_at;
+    return { lastText: String(r.lm_body || (r.lm_template ? `[قالب: ${r.lm_template}]` : r.last_text || "")).replace(/\s+/g, " ").trim().slice(0, 200), lastDir: r.lm_dir, lastSource: r.last_source || null, lastAt: iso(at) };
+  };
+
   /* ═══ N1: القايمة ═══ */
   const FROM = `
       FROM wa_threads t
@@ -177,9 +184,13 @@ export function register(app, ctx, deps = {}) {
       `SELECT t.phone_norm, t.last_in_at, t.last_at, t.last_text, t.last_dir, t.unread, t.order_no,
               COALESCE(c.name, n.full_name, n.profile_name) AS name, c.orders AS orders,
               b.muted_until, b.mute_reason, b.muted_by, b.handoff_at, b.handoff_reason, (b.referral IS NOT NULL) AS ad,
-              (SELECT m.source FROM wa_messages m WHERE m.phone_norm = t.phone_norm ORDER BY m.created_at DESC LIMIT 1) AS last_source,
+              lm.source AS last_source, lm.direction AS lm_dir, lm.body AS lm_body, lm.template AS lm_template, lm.created_at AS lm_at,
               (SELECT max(m.created_at) FROM wa_messages m WHERE m.phone_norm = t.phone_norm AND m.source = 'echo') AS last_echo_at
        ${FROM}
+       /* LR1 (عطل ١٣/١٠): آخر رسالة = آخر صف اتخزّن للمحادثة (أكبر id). wa_threads.last_text بيتحدّث بمقارنة أوقات بالثانية،
+          فلما رسالتين يتخزّنوا في أقل من ثانية (رسالة العميل بوقت واتساب ورد البوت بوقت السيرفر) المعاينة كانت بتفضل على اللي قبلها. */
+       LEFT JOIN LATERAL (SELECT m.source, m.direction, m.body, m.template, m.created_at FROM wa_messages m
+                           WHERE m.phone_norm = t.phone_norm AND COALESCE(m.source, 'api') <> 'history' ORDER BY m.id DESC LIMIT 1) lm ON TRUE
        WHERE ${pageWhere.join(" AND ")}
        ORDER BY t.last_at DESC LIMIT $${p.length}`, p)).rows || [];
     const cnt = (await pool.query(
@@ -199,7 +210,7 @@ export function register(app, ctx, deps = {}) {
       threads: page.map((r) => ({
         key: keyOf(r.phone_norm), phone: full ? `0${r.phone_norm}` : maskPhone(r.phone_norm), phoneMasked: maskPhone(r.phone_norm),
         name: r.name || null, orders: Number(r.orders) || 0, orderNo: r.order_no || null,
-        lastText: r.last_text || "", lastDir: r.last_dir || null, lastSource: r.last_source || null, lastAt: iso(r.last_at),
+        ...lastOf(r),
         unread: Number(r.unread) || 0, window: windowState(iso(r.last_in_at), t0), bot: botState(r, { now: t0, pauseMin }), ad: r.ad === true,
         owner: owners.get(r.phone_norm) || null,
       })),
@@ -258,6 +269,35 @@ export function register(app, ctx, deps = {}) {
     };
   }
 
+  /* ═══ LR1: «فيه جديد؟» — قراءة خفيفة للتحديث التلقائي ═══
+     استعلام واحد صغير بيرجّع «بصمة» للقايمة وبصمة للمحادثة المفتوحة. الشاشة بتسأل كل كام ثانية، ولما البصمة تتغيّر
+     بتجيب القايمة/المحادثة الكاملة. البصمة بتتغيّر مع: رسالة جديدة (وارد/صادر)، تغيّر حالة رسالة (وصلت/اتقرت)، قراءة،
+     سحب/ترك/قفل، تحويل لموظف أو كتم. مفيهاش أي محتوى ولا أرقام.
+     الحاجة الوحيدة اللي بتتغيّر بالوقت من غير صف بيتعدّل (مهلة السحب خلصت، النافذة قفلت) مش في البصمة — الشاشة بتعيد
+     التحميل الكامل كل دقيقة احتياطي. */
+  async function tick(pn = null) {
+    const r = (await pool.query(
+      `SELECT (SELECT count(*) FROM wa_threads)::int AS n,
+              (SELECT COALESCE(sum(unread), 0) FROM wa_threads)::int AS u,
+              (SELECT (extract(epoch FROM max(GREATEST(last_at, COALESCE(read_at, last_at)))) * 1000)::bigint FROM wa_threads) AS tl,
+              (SELECT (extract(epoch FROM max(updated_at)) * 1000)::bigint FROM wa_bot_chats) AS tb,
+              (SELECT count(*) FROM wa_bot_chats WHERE handoff_at IS NOT NULL AND NOT COALESCE(muted_until > NOW(), FALSE))::int AS w,
+              (SELECT count(*) FROM wa_bot_chats WHERE muted_until > NOW())::int AS h,
+              (SELECT (extract(epoch FROM max(GREATEST(created_at, updated_at))) * 1000)::bigint FROM wa_messages WHERE phone_norm = $1) AS tm,
+              (SELECT count(*) FROM wa_messages WHERE phone_norm = $1)::int AS cm,
+              (SELECT (extract(epoch FROM updated_at) * 1000)::bigint FROM wa_bot_chats WHERE phone_norm = $1) AS tc`, [pn])).rows[0] || {};
+    const list = [r.n || 0, r.u || 0, r.tl || 0, r.tb || 0, r.w || 0, r.h || 0].join(".");
+    return { ok: true, list, chat: pn ? [r.cm || 0, r.tm || 0, r.tc || 0, r.h || 0].join(".") : null, waiting: r.w || 0, unread: r.u || 0 };
+  }
+  app.get("/api/cms/wa/threads-tick", async (c) => {
+    const a = await access(c); if (a.res) return a.res;
+    try {
+      const k = c.req.query("chat");
+      const pn = k ? await phoneOfKey(k, a.full) : null;
+      return c.json(await tick(pn));
+    } catch (e) { log.error("[wa-hub] tick:", e.message); return c.json({ ok: false, error: "unavailable" }, 500); }
+  });
+
   app.get("/api/cms/wa/threads", async (c) => {
     const a = await access(c); if (a.res) return a.res;
     await ready;
@@ -287,6 +327,7 @@ export function register(app, ctx, deps = {}) {
     const pn = await phoneOfKey(c.req.param("key"), a.full);
     if (!pn) return c.json({ ok: false, error: "not_found" }, 404);
     await pool.query("UPDATE wa_threads SET unread=0, read_at=NOW(), read_by=$2, updated_at=NOW() WHERE phone_norm=$1", [pn, clip(a.user.name || a.user.role, 60)]);
+    staff()?.chatUpdate?.(pn, "read");      // LR1: البورتال يعرف إن المحادثة اتقرت من اللوحة
     return c.json({ ok: true });
   });
   /* MD1: ملف الرسالة (صورة / صوت / فيديو / ملف) — نفس صلاحية المحادثة، والرسالة لازم تكون من نفس المحادثة */
@@ -481,5 +522,5 @@ export function register(app, ctx, deps = {}) {
     catch (e) { log.error("[wa-hub] counts:", e.message); return c.json({ ok: false, error: "unavailable" }, 500); }
   });
 
-  return { ready, listThreads, getThread, templatesView, sweep, sweepFor, masterCounts, keyOf };
+  return { ready, listThreads, getThread, templatesView, sweep, sweepFor, masterCounts, keyOf, tick };
 }

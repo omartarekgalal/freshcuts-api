@@ -458,11 +458,17 @@ export function register(app, ctx, deps = {}) {
      رايحة/جاية تحدّث صف المحادثة. فاضي = الصندوق مش مركّب، وكله شغّال زي ما هو. */
   let inbox = null;
   const setInbox = (i) => { inbox = i; };
-  const touchThread = (a) => { try { return inbox?.touch?.(a); } catch { /* الصندوق مايوقّفش رسالة */ } };
+  /* LR1: كل رسالة اتخزّنت لمحادثة (عميل / بوت / مساعد / رد موظف / موبايل المطعم / قالب) ⇒ حدث «chat» للمستمعين
+     (wastaff بيبعته لشاشة البورتال: wa_chat_update). رسايل التاريخ القديم (silent) مابتبعتش حدث. من غير نص ولا اسم. */
+  const touchThread = async (a) => {
+    let r; try { r = await inbox?.touch?.(a); } catch { /* الصندوق مايوقّفش رسالة */ }
+    if (a && a.phoneNorm && !a.silent) { try { await emit("chat", { phoneNorm: a.phoneNorm, what: "message", dir: a.direction === "in" ? "in" : "out", at: a.at || null }); } catch { /* الحدث مايوقّفش رسالة */ } }
+    return r;
+  };
 
   /* مستمعين للويب هوك (wasender بيسجّل هنا عشان حالات رسايل الحملة وردودها
      تحدّث صفوف الطابور). مستمع بيقع مابيوقّفش الباقي. */
-  const hooks = { inbound: [], status: [], account: [] };
+  const hooks = { inbound: [], status: [], account: [], chat: [] };
   const on = (ev, fn) => { if (hooks[ev] && typeof fn === "function") hooks[ev].push(fn); };
   const emit = async (ev, x) => {
     for (const fn of hooks[ev] || []) { try { await fn(x); } catch (e) { console.error(`[wa] ${ev} hook:`, e.message); } }
@@ -953,6 +959,7 @@ export function register(app, ctx, deps = {}) {
        WHERE wamid=$1 RETURNING id, phone_norm, order_no, fallback_sms, fallback_done, status`,
       [s.wamid, s.status, s.pricing ? jb(s.pricing) : null, errOf(s)]);
     const row = r.rows[0];
+    if (row && row.phone_norm) await emit("chat", { phoneNorm: row.phone_norm, what: "status", dir: "out", at: s.at || null });      // LR1: علامات ✓✓ بتتحدّث لوحدها
     await emit("status", { ...s, error: errOf(s), code: s.errors?.[0]?.code != null ? Number(s.errors[0].code) : null });
     const finalStatus = row?.status || s.status;
     if (finalStatus !== "failed" || !row?.fallback_sms || row.fallback_done) return;

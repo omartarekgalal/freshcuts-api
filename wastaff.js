@@ -22,6 +22,7 @@
        POST /api/portal/wa/chats/:key/reply   {text}
        POST /api/portal/wa/chats/:key/read
        GET  /api/portal/wa/quick-replies
+       GET  /api/portal/wa/chats-tick[?chat=<key>]     (LR1 — «فيه جديد؟»: بصمة القايمة وبصمة المحادثة، للتحديث التلقائي)
        GET  /api/portal/wa/chats/:key/media/:ref[?as=mp3]      (MD1 — wamedia.js: صورة / صوت / فيديو / ملف الرسالة)
        POST /api/portal/wa/chats/:key/take {force?} · /release · /done      (SR2 — waowner.js: مين ماسك المحادثة)
      اللوحة: GET /api/cms/wa/threads-quick (الردود السريعة)، والرد نفسه على مسار wahub الموجود
@@ -78,6 +79,12 @@ export function register(app, ctx, deps = {}) {
   const ready = pool.query(DDL).then(() => true).catch((e) => { log.error("[wa-staff] schema:", e.message); return false; });
   /* SR2: مين ماسك المحادثة (سحب / سيبها للبوت / خلصت) — المنطق كله في waowner.js */
   const keyOf = (pn) => crypto.createHash("md5").update(`${SALT}:${pn}`).digest("hex");
+  /* LR1: حدث حي لشاشة البورتال — محادثة اتغيّرت (رسالة اتخزّنت / حالة رسالة / اتقرت). مفتاح المحادثة بس: من غير نص ولا رقم ولا اسم. */
+  const chatUpdate = (pn, what, dir = null, at = null) => {
+    try { if (deps.broadcast && SALT && /^5\d{8}$/.test(String(pn || ""))) deps.broadcast("wa_chat_update", { key: keyOf(pn), what, dir, at: at || new Date().toISOString() }); }
+    catch (e) { log.error("[wa-staff] chat event:", e.message); }
+  };
+  if (wa && typeof wa.on === "function") wa.on("chat", (e) => chatUpdate(e.phoneNorm, e.what, e.dir, e.at));
   /* MD1: ملفات الرسايل (صور / صوت / فيديو) — بتتجاب من ميتا بتوكن السيرفر وبتتخزن خاص */
   const media = wamedia.create({ pool, wa, getSettingsData, log, transcode: deps.transcode, noTimer: deps.noTimer });
   const owner = waowner.create({ pool, getSettingsData, bot: deps.bot, keyOf, broadcast: deps.broadcast, log, noTimer: deps.noTimer, now: deps.now });
@@ -251,6 +258,7 @@ export function register(app, ctx, deps = {}) {
       const pn = await phoneOfKey(c.req.param("key"));
       if (!pn) return c.json({ ok: false, error: "not_found" }, 404);
       await pool.query("UPDATE wa_threads SET unread=0, read_at=NOW(), read_by=$2, updated_at=NOW() WHERE phone_norm=$1", [pn, clip(a.user.name || a.user.role, 60)]);
+      chatUpdate(pn, "read");
       return c.json({ ok: true });
     });
     app.post("/api/portal/wa/chats/:key/reply", async (c) => {
@@ -263,11 +271,17 @@ export function register(app, ctx, deps = {}) {
       if (!r.ok) return c.json(refusal(r), status(r));
       return c.json({ ok: true, wamid: r.wamid, test: r.test, send: await sendStateFor(pn), owner: await owner.ownerFor(pn, a.me).catch(() => null) });
     });
+    app.get("/api/portal/wa/chats-tick", async (c) => {
+      const a = await gateP(c); if (a.res) return a.res;
+      if (typeof a.h.tick !== "function") return c.json({ ok: false, error: "unavailable" }, 503);
+      try { const k = c.req.query("chat"); return c.json(await a.h.tick(k ? await phoneOfKey(k) : null)); }
+      catch (e) { log.error("[wa-staff] tick:", e.message); return c.json({ ok: false, error: "unavailable" }, 500); }
+    });
     app.get("/api/portal/wa/quick-replies", async (c) => {
       const a = await gateP(c); if (a.res) return a.res;
       return c.json({ ok: true, replies: await quick() });
     });
   }
 
-  return { ready, reply, sendStateFor, channelState, annotate, quick, phoneOfKey, owner, media };
+  return { ready, reply, sendStateFor, channelState, annotate, quick, phoneOfKey, owner, media, chatUpdate };
 }

@@ -24,6 +24,7 @@ function world({ role = "owner", settings = {}, threads = [], messages = [], bot
       const hit = db.threads.find((t) => crypto.createHash("md5").update(`${p[0]}:${t.phone_norm}`).digest("hex") === p[1]);
       return { rows: hit ? [{ phone_norm: hit.phone_norm }] : [] };
     }
+    if (/^SELECT \(SELECT count\(\*\) FROM wa_threads\)::int AS n,/i.test(s)) { db.tickArgs = p; return { rows: [{ n: db.threads.length, u: db.threads.reduce((x, y) => x + (y.unread || 0), 0), tl: db.tl || 1000, tb: db.tb || 0, w: db.threads.filter((y) => y.handoff_at).length, h: 0, tm: p[0] ? (db.tm || 500) : null, cm: p[0] ? (db.cm || 3) : 0, tc: null }] }; }
     if (/^SELECT count\(\*\)::int AS total,/i.test(s)) return { rows: [{ total: db.threads.length, waiting: db.threads.filter((t) => t.handoff_at).length, bot: 1, muted: 0, ad: 0,
       unread: db.threads.filter((t) => t.unread).length, unread_messages: db.threads.reduce((a, t) => a + t.unread, 0), oldest_waiting: db.threads.map((t) => t.handoff_at).filter(Boolean).sort()[0] || null }] };
     if (/^SELECT t\.phone_norm, t\.last_in_at, t\.last_at, t\.last_text/i.test(s)) {
@@ -373,4 +374,23 @@ test("staff reply (wastaff.js): when registered, the dashboard reply and the cha
   w.setUser({ name: "x", role: "marketing" });
   assert.equal((await w.call("POST", "/api/cms/wa/threads/:key/reply", { params: { key: "512345678" }, json: { text: "x" } })).status, 403);
   assert.equal(calls.length, 4);
+});
+
+test("LR1 tick: one small read gives a signature for the list and one for the open chat; they change when something changes; no content, no numbers", async () => {
+  const w = world({ threads: [T("511111111", { last_at: ago(5), unread: 2 })] });
+  const key = (await w.call("GET", "/api/cms/wa/threads", {})).body.threads[0].key;
+  const a = await w.call("GET", "/api/cms/wa/threads-tick", {});
+  assert.equal(a.status, 200); assert.equal(a.body.ok, true); assert.equal(typeof a.body.list, "string"); assert.equal(a.body.chat, null); assert.deepEqual(w.db.tickArgs, [null]);
+  assert.deepEqual(Object.keys(a.body).sort(), ["chat", "list", "ok", "unread", "waiting"]);
+  const b = await w.call("GET", "/api/cms/wa/threads-tick", { query: { chat: key } });
+  assert.equal(typeof b.body.chat, "string"); assert.equal(b.body.list, a.body.list, "same state, same signature"); assert.match(String(w.db.tickArgs[0]), /^5\d{8}$/);
+  w.db.tm = 900;                                   // رسالة جديدة أو حالة رسالة اتغيّرت في المحادثة
+  const c = await w.call("GET", "/api/cms/wa/threads-tick", { query: { chat: key } });
+  assert.notEqual(c.body.chat, b.body.chat); assert.equal(c.body.list, a.body.list);
+  w.db.tl = 2000;                                  // أي محادثة اتحرّكت
+  assert.notEqual((await w.call("GET", "/api/cms/wa/threads-tick", {})).body.list, a.body.list);
+  assert.ok(!/5\d{8}/.test(JSON.stringify(c.body).replace(/\d+\.\d+/g, "")), "no phone number in the answer");
+  assert.equal((await w.call("GET", "/api/cms/wa/threads-tick", { query: { chat: "f".repeat(32) } })).body.chat, null, "an unknown chat key just has no chat signature");
+  w.setUser({ id: 9, username: "mk", name: "تسويق", role: "marketing" });
+  assert.equal((await w.call("GET", "/api/cms/wa/threads-tick", {})).status, 403);
 });

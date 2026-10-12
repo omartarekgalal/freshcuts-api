@@ -49,7 +49,7 @@ function world({ settings = {}, optins = {}, inbound = [CUST, TESTER], threads =
     normPhone: (x) => String(x || "").replace(/\D/g, "").replace(/^966/, "").replace(/^0/, "") };
   const wa = W.register(waApp, ctx, { fetch, sendSms: async () => ({ ok: true }) });
   const hubCalls = [];
-  const hub = { listThreads: async (o) => { hubCalls.push(["list", o]); return { ok: true, counts: { waiting: 1 }, threads: [{ key: keyOf(CUST), phone: "0" + CUST }], nextBefore: null }; },
+  const hub = { tick: async (pn) => { hubCalls.push(["tick", pn]); return { ok: true, list: "1.0.5.0.0.0", chat: pn ? "3.9.0.0" : null, waiting: 0, unread: 0 }; }, listThreads: async (o) => { hubCalls.push(["list", o]); return { ok: true, counts: { waiting: 1 }, threads: [{ key: keyOf(CUST), phone: "0" + CUST }], nextBefore: null }; },
     getThread: async (pn, o) => { hubCalls.push(["get", pn, o]); return threads.includes(pn) ? { ok: true, key: keyOf(pn), phone: "0" + pn, window: { open: db.inbound.includes(pn) },
       messages: [{ id: "wamid.G1", dir: "out", source: "echo", text: "x" }, { id: "wamid.PHONE", dir: "out", source: "echo", text: "من الموبايل" }, { id: "m-in", dir: "in", source: "api", text: "هلا" }] } : { ok: false, error: "not_found" }; } };
   const audits = [];
@@ -180,4 +180,14 @@ test("الردود السريعة = إجابات المالك للأسئلة ا�
 test("cleanText", () => {
   assert.deepEqual(S.cleanText(" هلا \r\n وسهلا "), { ok: true, body: "هلا \n وسهلا" });
   assert.equal(S.cleanText(null).error, "empty"); assert.equal(S.cleanText("x".repeat(4096)).ok, true); assert.equal(S.cleanText("x".repeat(4097)).error, "too_long");
+});
+
+test("LR1 portal tick: cashier and manager get the same light answer; the chat key is resolved to the chat; kitchen and no session are refused", async () => {
+  const w = world();
+  const a = await call(w.app, "GET /api/portal/wa/chats-tick", { query: {} });
+  assert.deepEqual(a.body, { ok: true, list: "1.0.5.0.0.0", chat: null, waiting: 0, unread: 0 });
+  const b = await call(w.app, "GET /api/portal/wa/chats-tick", { query: { chat: keyOf(CUST) } });
+  assert.equal(b.body.chat, "3.9.0.0"); assert.deepEqual(w.hubCalls.slice(-1)[0], ["tick", CUST]);
+  assert.equal((await call(world({ portalUser: { id: "k", name: "مطبخ", role: "kitchen" } }).app, "GET /api/portal/wa/chats-tick", { query: {} })).status, 403);
+  assert.equal((await call(world({ portalUser: null }).app, "GET /api/portal/wa/chats-tick", { query: {} })).status, 401);
 });
