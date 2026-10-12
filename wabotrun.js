@@ -45,6 +45,7 @@ import { lookupFact, groupsIn, SEVERE_RE, factsCoverage, pickDish, factNote, dis
 import { makeAiCost, pricesOf, waRatesOf, pricesFromBody, waRatesFromBody, BUDGET_DEFAULTS } from "./waaicost.js";
 import { providerInfo, maskText } from "./wabotllm.js";
 import { kbTokens } from "./wakb.js";
+import { teamConfig, staffRoleOf, nonCustomerKind } from "./wateam.js";
 import { ECHO, STAFF_ECHO_SQL } from "./waecho.js";
 import { makeStt, STT_PROVIDERS } from "./wasttkey.js";
 const STT_LABEL = Object.fromEntries(STT_PROVIDERS.map((p) => [p.id, p.label]));
@@ -282,8 +283,10 @@ export const TEXTS = Object.freeze({
   df_severe: t("حساسية شديدة ⇒ موظف", "سلامتك أهم 🙏 ما دام الحساسية شديدة، حوّلت محادثتك لموظف يتأكد من المطبخ بنفسه قبل أي طلب.\n{wait}", "Your safety comes first 🙏 Since the allergy is severe, I've passed your chat to a team member who will check with the kitchen before any order.\n{wait}", [], ["wait"]),
   kitchen_line: t("سطر المطبخ الواحد", "مطبخنا واحد لكل الأصناف وقد يحصل تلامس بين المكونات أثناء التحضير.", "We have one kitchen for all dishes, so ingredients can touch during preparation.", [], [], 300),
   fryer_line: t("سطر القلاية المشتركة", "ونوضّح لك أن البطاطس تُقلى في نفس القلاية مع أصناف مقرمشة أخرى.", "Note that the fries share a fryer with other crispy items.", [], [], 300),
-  /* أسرار الشغل (قرار عمر ١٢/١٠): المقادير والتتبيلة وطريقة التحضير والمورّدين مابتتقالش — رد واحد مهذب من غير تحويل */
-  secret: t("سؤال عن الوصفة / المقادير / طريقة التحضير", "تفاصيل التحضير والمقادير من أسرار مطبخنا 🙂 أقدر أساعدك في المنيو والأسعار والطلب.", "How we prepare our dishes is our kitchen's secret 🙂 I can help with the menu, prices and ordering.", [], [], 300),
+  /* أسرار الشغل (قرار عمر ١٢/١٠): المقادير والتتبيلة وطريقة التحضير والمورّدين مابتتقالش — رد واحد مهذب من غير تحويل.
+     ST1 (طلب عمر): الصياغة القديمة «من أسرار مطبخنا» اتشالت — سطر مهني قصير من غير أي شرح، ومعاه زر «موظف»؛ ومفيش تحويل لوحده
+     (العميل لو عايز موظف يكتب «موظف» أو يضغط الزر)، وتنبيه «حاجة غريبة» بالمحادثة للمدير والملاك (wateam.js). */
+  secret: t("سؤال عن الوصفة / المقادير / طريقة التحضير", "عذراً، هذي المعلومة ما أقدر أزوّدك بها 🙏 أقدر أساعدك في المنيو والطلب، أو اكتب «موظف» وأحوّلك.", "Sorry, I can't share that information 🙏 I can help with the menu and ordering, or type \"staff\" and I'll connect you.", [], [], 300),
   pickup_body: t("الاستلام من الفرع", "🏃 {pickup}", "🏃 {pickup}", ["pickup"]),
   spicy_body: t("الأصناف الحارة (من الوصف)", "أصناف مكتوب في وصفها إنها حارة 🌶️ اختر الصنف لتفاصيله.", "Dishes described as spicy 🌶️ pick one for details.", [], [], 300),
   faq_body: t("إجابة سؤال شائع", "{answer}", "{answer}", ["answer"]),
@@ -2029,16 +2032,28 @@ export function register(app, ctx, deps = {}) {
     return r && r[0] && r[0].at ? isoOf(r[0].at) : null;
   }
 
-  async function alertStaff(settings, cfg, { phone, reason, orderNo }) {
+  /* ST1: تنبيه الفريق بقى على واتساب أولاً (wateam.js: حر لو نافذة الموظف مفتوحة ⇒ قالب فريق معتمد ⇒ SMS كآخر حل). stage = new | reminder | reopened.
+     واتساب الفريق مقفول من اللوحة، أو مفيش ولا مستلم للموضوع ده في الدليل ⇒ المسار القديم (SMS لأرقام التنبيهات) زي ما هو بالظبط. */
+  const teamApi = () => { try { return typeof deps.team === "function" ? deps.team() : deps.team || null; } catch { return null; } };
+  async function alertStaff(settings, cfg, { phone, reason, orderNo, urgent = null, stage = "new", waitedMin = null }) {
     if (!cfg.staffAlert) return "off";
-    if (!sendSms) return "no_sender";
     const sc = staffConfig(settings);
-    const phones = cfg.alertPhones.length ? cfg.alertPhones : sc.alertPhones;
-    if (!phones.length) return "no_phones";
     const cap = await q("SELECT count(*)::int AS n FROM wa_bot_log WHERE alert='sent' AND at > NOW() - INTERVAL '1 hour'", []);
     /* السقف في الساعة للتنبيهات العادية. العاجل (شكوى، مشكلة دفع، تعديل طلب، حساسية شديدة…) مابيتقفلش بيه — له حد أعلى بكتير ضد السيل بس (٥ أضعاف). */
-    if (cfg.maxAlertsPerHour && cap && Number(cap[0]?.n) >= cfg.maxAlertsPerHour * (SERIOUS.has(String(reason)) ? 5 : 1)) return "capped";
+    const capped = Boolean(cfg.maxAlertsPerHour && cap && Number(cap[0]?.n) >= cfg.maxAlertsPerHour * (SERIOUS.has(String(reason)) ? 5 : 1));
     const body = alertText({ phone, reason, orderNo }, sc.lang);
+    const team = teamApi();
+    if (team && typeof team.handover === "function" && teamConfig(settings).enabled) {
+      if (capped) return "capped";
+      let r = null;
+      try { r = await team.handover({ settings, phone, reason, reasonAr: REASON_AR[reason] || reason, urgent: urgent === null ? SERIOUS.has(String(reason)) : urgent === true, orderNo: orderNo || null, stage, waitedMin, sms: sendSms ? body : null }); }
+      catch (e) { console.error("[wabot] team alert:", e.message); r = null; }
+      if (r) return r.sent ? "sent" : "failed";
+    }
+    if (!sendSms) return "no_sender";
+    const phones = cfg.alertPhones.length ? cfg.alertPhones : sc.alertPhones;
+    if (!phones.length) return "no_phones";
+    if (capped) return "capped";
     let sent = 0;
     for (const p of phones) {
       try { const r = await sendSms({ phoneNorm: p, body, kind: "staff", ref: `wabot ${reason}` }); if (!(r && r.suppressed)) sent++; }
@@ -2052,10 +2067,22 @@ export function register(app, ctx, deps = {}) {
     [logId, d.decision, d.reason || null, d.detail ? String(d.detail).slice(0, 200) : null, d.key || null, d.replies ? jb(d.replies) : null,
       d.sent || 0, d.error ? String(d.error).slice(0, 200) : null, d.handoff || null, d.alert || null, d.link || null, d.resumeAt || null]);
 
+  /* ST1 — «حاجات غريبة» للمدير والملاك (wateam.js: مفتاح لكل نوع + سقف في الساعة + وضع ملخص). بتتبعت بس في وضع العملاء (أو التجربة لو alertInTest)،
+     زي تنبيهات التحويل. عمرها ما بترمي ومابتوقّفش رد العميل. */
+  async function oddThing(settings, cfg, kind, phone, x = {}) {
+    if (!(cfg.mode === "live" || (cfg.mode === "test" && cfg.alertInTest))) return null;
+    const team = teamApi();
+    if (!team || typeof team.odd !== "function") return null;
+    try { return await team.odd({ kind, phone: /^5\d{8}$/.test(String(phone || "")) ? phone : null, settings, ...x }); } catch (e) { console.error("[wabot] odd:", e.message); return null; }
+  }
+
   /* رسالة واردة واحدة. بترجّع true لو البوت «ماسك» (أي وضع غير off). عمرها ما بترمي. */
   async function handle(ev) {
     let settings;
     try { settings = (await getSettingsData()) || {}; } catch { return false; }
+    /* ST1: رقم من دليل الفريق مش عميل — ضغطة «جدّد التنبيهات» وأوامر الفريق بتتنفّذ في wateam، وأي رسالة تانية منه بتعدّي في صمت
+       (لا ترحيب ولا بيع ولا تحويل عن نفسه) — في أي وضع للبوت، حتى off. */
+    if (!ev.isEcho) { const team = teamApi(); if (team && typeof team.inbound === "function") { let mine = false; try { mine = (await team.inbound(ev, settings)) === true; } catch (e) { console.error("[wabot] team inbound:", e.message); } if (mine) return true; } }
     const cfg = botConfig(settings); tune = cfg;
     if (cfg.mode === "off") return false;
     if (ev.isEcho) return true;
@@ -2090,6 +2117,19 @@ export function register(app, ctx, deps = {}) {
       await q(`INSERT INTO wa_bot_chats(phone_norm, last_loc) VALUES ($1,$2) ON CONFLICT (phone_norm) DO UPDATE SET last_loc=$2, updated_at=NOW()`, [phone, jb({ lat: cls.arg.lat, lng: cls.arg.lng, at: now.toISOString(), via: cls.rawIntent })]);
     }
     const finish = (d) => finishLog(logId, d);
+    /* ST1 — الحاجات الغريبة اللي بتتعرف بعد القرار (بعد ما رد العميل اتبعت): سؤال الأسرار، مش عميل، شكوى، مشكلة دفع، البوت كرر نفس الكارت،
+       رسالة مش مدعومة فتحت محادثة، عميل وقّف. كل نوع له مفتاحه في اللوحة؛ التكرار لنفس العميل ونفس النوع بيتمسك في wateam (repeatMin). */
+    const oddAfter = async ({ d, handoff, okSent }) => {
+      const ho = handoff ? handoff[0] : null, typed = !ev.interactiveId && ev.opener !== "unsupported" && String(ev.type || "text") === "text" ? String(ev.text || "") : "";
+      if (d.key === "secret" && okSent) await oddThing(settings, cfg, "secret", phone, { detail: "سأل عن وصفة / مقادير / مورّد — خد الرد المهني من غير أي تفصيلة" });
+      const nc = typed ? nonCustomerKind(typed) : null;
+      if (nc) await oddThing(settings, cfg, "non_customer", phone, { detail: nc === "job_seeker" ? "شكله بيدوّر على شغل" : "شكله عرض من مورّد / شركة" });
+      if (ho === "complaint") await oddThing(settings, cfg, "complaint", phone);
+      if (ho === "problem") await oddThing(settings, cfg, "payment_problem", phone);
+      if (ho === "repeated_card") await oddThing(settings, cfg, "repeated_card", phone);
+      if (ev.opener === "unsupported" && okSent) await oddThing(settings, cfg, "unsupported_opener", phone, { detail: "أول رسالة نوعها مش مدعوم — اترد عليها بالترحيب" });
+      if (d.optout === "stop" || d.optout === "stop_all") await oddThing(settings, cfg, "customer_stopped", phone, { detail: d.optout === "stop_all" ? "وقّف كل الرسايل (العروض وتحديثات الطلب)" : "وقّف العروض" });
+    };
     try {
       // ٢) الإعلان: نحفظ مصدره على المحادثة من أول رسالة (حتى لو هنسكت)
       if (!afterWait && !ev.autoWaited && ev.referral && /^5\d{8}$/.test(phone)) {
@@ -2132,6 +2172,7 @@ export function register(app, ctx, deps = {}) {
             for (const d0 of del || []) if (d0.queue_id != null) await q("UPDATE wa_send_queue SET replied_at=NULL WHERE id=$1 AND NOT EXISTS (SELECT 1 FROM wa_replies WHERE queue_id=$1)", [d0.queue_id]);
           }
           await finish({ decision: "silent", reason: "auto_inbound", key: cls.key, detail: kind === "pattern" ? "pattern" : `after_template:${Math.max(0, Math.round(sinceTpl))}s` });
+          await oddThing(settings, cfg, "auto_inbound", phone, { detail: kind === "pattern" ? "نص شكله رد آلي من نشاط تجاري" : "رد وصل بعد قالبنا بثواني" });
           return;
         }
         /* حارس الحلقات (مستقل عن اللي فوق): رسالة «سريعة» = وصلت خلال loopGuardFastSec من آخر رسالة طالعة مننا للرقم، ونصها ٢٥ حرف+ أو نفس نص رسالته اللي قبلها.
@@ -2152,6 +2193,7 @@ export function register(app, ctx, deps = {}) {
               await q("UPDATE wa_bot_chats SET loop_streak=0 WHERE phone_norm=$1", [phone]);
               if (typeof deps.portalEmit === "function") { try { deps.portalEmit("wa_handover", { phone: `0${phone}`, phoneMasked: `…${phone.slice(-4)}`, reason: "loop_guard", reasonAr: REASON_AR.loop_guard, urgent: false, orderNo: null, at: now.toISOString(), test: cfg.mode === "test", note: true }); } catch (e) { console.error("[wabot] portal:", e.message); } }
               await finish({ decision: "silent", reason: "loop_guard", key: cls.key, detail: `${st[0].loop_streak} fast in a row`, resumeAt: new Date(now.getTime() + cfg.loopGuardMuteHours * 3600_000).toISOString() });
+              await oddThing(settings, cfg, "loop_guard", phone, { detail: `${st[0].loop_streak} رسايل سريعة ورا بعض — البوت اتكتم ${cfg.loopGuardMuteHours} ساعة` });
               return;
             }
           } else if (Number(chat.loop_streak) > 0) await q("UPDATE wa_bot_chats SET loop_streak=0 WHERE phone_norm=$1", [phone]);
@@ -2250,12 +2292,14 @@ export function register(app, ctx, deps = {}) {
           await muteChat(phone, cfg.mediaFloodMuteHours, "media_flood");
           const alert = await handoffNow(settings, cfg, phone, ["media_flood", "normal"], null, null, cls.lang);
           await finish({ decision: "silent", reason: "media_flood", key: "media", handoff: "media_flood", alert, resumeAt: new Date(now.getTime() + cfg.mediaFloodMuteHours * 3600_000).toISOString() });
+          await oddThing(settings, cfg, "media_flood", phone, { detail: `${fl[0].n} ملف في ${cfg.mediaFloodMinutes} دقيقة — البوت اتكتم ${cfg.mediaFloodMuteHours} ساعة` });
           return;
         }
       }
       const aud = (cfg.mode === "test" || cfg.mode === "live") && ok ? await assistAudience({ cfg, phone, chat, now, hasReferral: Boolean(ev.referral), count: !afterWait }) : { on: false, why: "bot_mode" };
       const assistOn = aud.on;
       data.assistWhy = aud.why;
+      if (!afterWait && aud.why === "daily_cap" && cfg.assist.liveDailyCustomers > 0) await oddThing(settings, cfg, "budget_cap", null, { detail: `سقف عملاء المساعد اليومي (${cfg.assist.liveDailyCustomers}) اتوصل له — الباقي بيرد عليهم بوت القواعد`, repeatMin: 1440 });
       const held = assistOn && seriousHeld(chat, cfg, now);
       data.assistOn = assistOn;
       /* دعوة القناة: مرة لكل عميل كل everyDays (نفس العدّاد للبوت والمساعد)، مش مع تحويل مفتوح ولا محادثة مكتومة ولا لعميل كتب «إيقاف».
@@ -2326,6 +2370,7 @@ export function register(app, ctx, deps = {}) {
         if (d.handoff) alert = await handoffNow(settings, cfg, phone, d.handoff, data.order?.order_no, null, d.lang);
         await finish({ decision: "silent", reason: d.reason, detail: d.detail, key: d.key, handoff: d.handoff ? d.handoff[0] : null, alert, resumeAt: d.resumeAt });
         await assistDone({ okSent: false });
+        if (!afterWait && !gate5.never) await oddAfter({ d, handoff: d.handoff, okSent: false });
         return;
       }
       // ٣) الإرسال: dry = مفيش. test = قايمة التجربة بس. live = الأقفال الكاملة. محاولة واحدة (+ نص عادي لو التفاعلي فشل).
@@ -2379,6 +2424,7 @@ export function register(app, ctx, deps = {}) {
       await finish({ decision: cfg.mode === "dry" ? "dry" : sent ? "replied" : "failed", reason: d.reason, detail: d.detail, key: d.key, replies: used, sent, error,
         handoff: handoff ? handoff[0] : null, alert, link: d.link });
       await assistDone({ okSent: okSent && cfg.mode !== "dry", error });
+      if (!afterWait) await oddAfter({ d, handoff, okSent: okSent && cfg.mode !== "dry" });
     } catch (e) {
       console.error("[wabot] work:", e.message);
       await finish({ decision: "failed", reason: "exception", error: e.message });
@@ -2403,7 +2449,7 @@ export function register(app, ctx, deps = {}) {
       if (hoAt) await scheduleHandoverCheck(phone, { hoAt, reason: handoff[0], urgent: handoff[1] === "urgent", orderNo: orderNo || null, lang: lang === "en" ? "en" : "ar", stage: cfg.handoverRealertMin > 0 ? "realert" : "note" }, cfg);
     }
     if (cfg.mode === "test" && !cfg.alertInTest) return "would";
-    return alertStaff(settings, cfg, { phone, reason: handoff[0], orderNo });
+    return alertStaff(settings, cfg, { phone, reason: handoff[0], orderNo, urgent: handoff[1] === "urgent", stage: "new" });
   }
 
   /* ── الردود المؤجّلة (قواعد ٢ و٥) ─────────────────────────────────────────
@@ -2578,14 +2624,14 @@ export function register(app, ctx, deps = {}) {
     if (ev.stage === "realert" && acked) { if (cfg.handoverCustomerNoteMin > 0) await scheduleHandoverCheck(phone, { ...ev, stage: "note" }, cfg); return end("done", "realert:skipped_acked"); }
     if (ev.stage !== "realert" && acked) {
       if (typeof deps.portalEmit === "function") { try { deps.portalEmit("wa_handover", { phone: `0${phone}`, phoneMasked: `…${phone.slice(-4)}`, reason: ev.reason, reasonAr: REASON_AR[ev.reason] || ev.reason, urgent: ev.urgent === true, orderNo: ev.orderNo || null, at: now.toISOString(), test: cfg.mode === "test", reopened: true }); } catch (e) { console.error("[wabot] portal:", e.message); } }
-      if (cfg.mode === "live" || cfg.alertInTest) await alertStaff(settings, cfg, { phone, reason: ev.reason, orderNo: ev.orderNo });
+      if (cfg.mode === "live" || cfg.alertInTest) await alertStaff(settings, cfg, { phone, reason: ev.reason, orderNo: ev.orderNo, urgent: ev.urgent === true, stage: "reopened" });
     }
     if (ev.stage === "realert") {
       const waited = Math.round((now.getTime() - Date.parse(ev.hoAt)) / 60_000);
       if (typeof deps.portalEmit === "function") { try { deps.portalEmit("wa_handover", { phone: `0${phone}`, phoneMasked: `…${phone.slice(-4)}`, reason: ev.reason, reasonAr: REASON_AR[ev.reason] || ev.reason, urgent: ev.urgent === true, orderNo: ev.orderNo || null,
         at: ev.hoAt, test: cfg.mode === "test", reminder: true, waitedMin: waited }); } catch (e) { console.error("[wabot] portal:", e.message); } }
       let alert = "would";
-      if (cfg.mode === "live" || cfg.alertInTest) alert = await alertStaff(settings, cfg, { phone, reason: ev.reason, orderNo: ev.orderNo });
+      if (cfg.mode === "live" || cfg.alertInTest) alert = await alertStaff(settings, cfg, { phone, reason: ev.reason, orderNo: ev.orderNo, urgent: ev.urgent === true, stage: "reminder", waitedMin: waited });
       if (cfg.handoverCustomerNoteMin > 0) await scheduleHandoverCheck(phone, { ...ev, stage: "note" }, cfg);
       return end("done", `realert:${alert}`);
     }
@@ -2684,6 +2730,10 @@ export function register(app, ctx, deps = {}) {
   /* ── M5: مين البوت نفسه يرد عليه ───────────────────────────────────────────────
      never: سبب إن الرقم ده مش عميل (never_list / alert_phone / courier / staff) أو null. out: بره نطاق التشغيل (liveScope) في وضع live.
      المستبعدين لوحدهم (كاش ١٠ دقايق): أرقام تنبيهات الفريق، أرقام فريق البورتال لو متسجّلة، وأرقام المناديب على طلبات آخر ٣٠ يوم. رقم في أرقام التجربة مابيتستبعدش لوحده. */
+  /* ST1: رقم في دليل الفريق (settings.waTeam.members) عمره ما يتعامل كعميل — حتى لو في أرقام التجربة. الاستثناء الوحيد بمفتاح من اللوحة
+     (waTeam.staffAsTesters): رقم فريق موجود في أرقام التجربة بيفضل يجرّب البوت. الدليل المؤقت (أرقام التنبيهات قبل ما الدليل يتكتب) على القاعدة القديمة:
+     مستبعد لوحده إلا لو رقم تجربة. */
+  const teamStaff = (settings, phone) => { const tc = teamConfig(settings); return !tc.fallback && Boolean(staffRoleOf(settings, phone)) && !(tc.staffAsTesters && staffPhones(settings?.waBot?.testPhones).includes(phone)); };
   let autoNever = { at: -1e15, map: new Map() };
   async function autoNeverMap(settings, cfg) {
     const t = clock().getTime();
@@ -2692,6 +2742,7 @@ export function register(app, ctx, deps = {}) {
     const sc = staffConfig(settings);
     for (const p of [...cfg.alertPhones, ...sc.alertPhones, ...(sc.newOrderPhones || [])].map(normPh)) if (/^5\d{8}$/.test(p)) m.set(p, "alert_phone");
     for (const s of Array.isArray(settings?.portal?.staff) ? settings.portal.staff : []) { const p = normPh(s && (s.phone || s.mobile)); if (/^5\d{8}$/.test(p)) m.set(p, "staff"); }
+    for (const tm of teamConfig(settings).members) if (tm.active && !m.has(tm.phone)) m.set(tm.phone, "staff");      // ST1: دليل الفريق
     const stf = await q("SELECT phone_norm FROM cms_contacts WHERE is_staff LIMIT 500", []);      // «موظف» في ملف العملاء (نفس القايمة اللي بتستبعدهم من الحملات)
     for (const r of stf || []) { const p = normPh(r.phone_norm); if (/^5\d{8}$/.test(p) && !m.has(p)) m.set(p, "staff"); }
     const dr = await q(`SELECT DISTINCT driver->>'phone' AS phone FROM dl_shipments WHERE driver IS NOT NULL AND updated_at > NOW() - INTERVAL '30 days' AND COALESCE(driver->>'phone','') <> '' LIMIT 500`, []);
@@ -2701,6 +2752,7 @@ export function register(app, ctx, deps = {}) {
   }
   async function liveGate5({ cfg, settings, phone, chat, ev, now }) {
     if (cfg.neverReplyPhones.includes(phone)) return { never: "never_list", out: false };
+    if (teamStaff(settings, phone)) return { never: "staff", out: false };
     if (cfg.testPhones.includes(phone)) return { never: null, out: false };
     let auto = null; try { auto = (await autoNeverMap(settings, cfg)).get(phone) || null; } catch { auto = null; }
     if (auto) return { never: auto, out: false };
@@ -2824,6 +2876,11 @@ export function register(app, ctx, deps = {}) {
     }
     const fallback = async (reason, trace = {}) => {
       await q("UPDATE wa_bot_log SET detail=$2 WHERE id=$1", [logId, `assist off: ${reason}`]);
+      /* ST1: رد للمساعد اترفض من المراجِع مرتين ⇒ «حاجة غريبة» ومعاها اللي كان هيقوله؛ وسقف المصروف / حد الردود اليومي ⇒ مرة في اليوم. */
+      if (reason === "validator") { const v = Array.isArray(trace.verdicts) ? trace.verdicts[trace.verdicts.length - 1] : null;
+        await oddThing(settings, cfg, "assist_refused", phone, { tried: v && v.text ? String(v.text) : null, detail: v && Array.isArray(v.problems) ? `سبب الرفض: ${v.problems.map((p) => p.type).slice(0, 4).join("، ")}` : null }); }
+      else if (reason === "budget_day" || reason === "budget_month") await oddThing(settings, cfg, "budget_cap", null, { detail: reason === "budget_day" ? "سقف مصروف المساعد اليومي اتوصل له — بوت القواعد مكمل" : "ميزانية المساعد الشهرية خلصت — بوت القواعد مكمل", repeatMin: 1440 });
+      else if (reason === "daily_replies") await oddThing(settings, cfg, "budget_cap", phone, { detail: `العميل وصل حد ردود المساعد في اليوم (${acfg.maxRepliesPerChatDay})`, repeatMin: 1440 });
       return { d: null, done: async ({ okSent }) => {
         if (okSent && session) await assistStore.saveSession(phone, noteRulesTurn(session, ev.text, ruleKey()), now);
         await turnRow({ handledBy: "rules", outcome: `fallback:${reason}`, masked: trace.sent ?? maskText(ev.text), trace });
@@ -3407,6 +3464,7 @@ export function register(app, ctx, deps = {}) {
     const phone = normPh(rawPhone); if (!/^5\d{8}$/.test(phone)) return null;
     const settings = (await getSettingsData()) || {}, cfg = botConfig(settings);
     if (cfg.neverReplyPhones.includes(phone)) return "never_list";
+    if (teamStaff(settings, phone)) return "staff";
     if (cfg.testPhones.includes(phone)) return null;
     try { return (await autoNeverMap(settings, cfg)).get(phone) || null; } catch { return null; }
   }

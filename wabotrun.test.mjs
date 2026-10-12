@@ -52,7 +52,7 @@ const LOCKS_OPEN = { ...CONFIGURED, WHATSAPP_ENABLED: "1" };
 
 /* ── عالم صغير: قاعدة في الذاكرة + ساعة + Graph مزيّف ─────────────────────── */
 function world({ waBot = {}, notifications = { whatsappEnabled: true }, orders = [], bundles = BUNDLES, policy = POLICY, first = FIRST, links = ["wab-boxes", "wa-boxes", "wa-box-d4"],
-  at = OPEN_AT, graph = null, failDb = null, extraSettings = {}, disclosure = false, pages = LIVE.pages, quote = null, llm = null, greetMenu = false, offers = LIVE.offers, resolveMapsLink = null, lastCart = null, assistModel = null, assistStore = null, kb = null, adReport = [], channelReport = [], mediaFile = null, transcribe = null, sttFetch = null, variants = null } = {}) {
+  at = OPEN_AT, graph = null, failDb = null, extraSettings = {}, disclosure = false, pages = LIVE.pages, quote = null, llm = null, greetMenu = false, offers = LIVE.offers, resolveMapsLink = null, lastCart = null, assistModel = null, assistStore = null, kb = null, adReport = [], channelReport = [], mediaFile = null, transcribe = null, sttFetch = null, variants = null, team = null } = {}) {
   let nowMs = Date.parse(at);
   const clock = { now: () => new Date(nowMs), advance: (min) => { nowMs += min * 60_000; }, advanceSec: (s) => { nowMs += s * 1000; }, set: (iso) => { nowMs = Date.parse(iso); } };
   const db = { msgs: [], log: [], jobs: [], proofs: [], consentLog: [], ai: [], aiAlerts: [], tpl: [], cfgLog: [], botCarts: [], chats: new Map(), optouts: [], optins: {}, links: links.map((s) => (typeof s === "string" ? { slug: s, active: true, clicks: 0 } : { active: true, clicks: 0, ...s })), adChats: [], adReportParams: null, channelOffers: [], channelReportParams: null, sttKey: null, liveDay: [], marketingTo: [], settings: null };
@@ -273,7 +273,7 @@ function world({ waBot = {}, notifications = { whatsappEnabled: true }, orders =
   const botCarts = { ensure: async () => {}, lastOrderCarts: async (ph, days, o) => { const v = typeof lastCart === "function" ? lastCart(ph, days, o) : lastCart; return (Array.isArray(v) ? v : v ? [v] : []).map((x, i) => ({ latest: i === 0, ...x })); },
     create: async (x) => { if (failDb && failDb.test("INSERT INTO wa_bot_carts")) return null; const code = `rc${String(db.botCarts.length + 1).padStart(6, "0")}`; db.botCarts.push({ code, ...x }); return { code }; }, open: async () => null, restore: async () => null, coverage: async () => ({ orders: 40, with_snapshot: 30, with_raw: 28, usable: 26, avg_diff: 0, mismatched: 2, links: db.botCarts.length, opened: 0 }) };
   const portalEvents = [];
-  const bot = R.register(app, ctx, { app, wa, now: clock.now, noTimer: true, botCarts,
+  const bot = R.register(app, ctx, { app, wa, now: clock.now, noTimer: true, botCarts, ...(team ? { team: () => team } : {}),
     assist: { expandBundle: async () => ({ ok: false, error: "bundle_not_found" }), modifiersCatalog: async () => ({ cfg: { enabled: true }, catalog: {} }), modifiersResolve: async () => ({ ok: true, shown: 0 }),
       quote: async (x) => (typeof quote === "function" ? quote(x.lat, x.lng) : quote), buildProfile: async () => ({ identity: { name: "أحمد" }, summary: { orders: 2, status: "repeat" }, orders: [], favorites: { items: [] }, addresses: [] }) }, whoami: async () => actor.who, ...(resolveMapsLink ? { resolveMapsLink } : { resolveMapsLink: async () => null }), sendSms: async (x) => { sms.push(x); return { ok: true }; },
     portalEmit: (ev2, data) => portalEvents.push([ev2, data]), whoami: async () => actor.who, ...(resolveMapsLink ? { resolveMapsLink } : { resolveMapsLink: async () => null }), sendSms: async (x) => { sms.push(x); return { ok: true }; },
@@ -1960,11 +1960,11 @@ test("trade secrets (Omar 12/10): «what is in X» gets the public menu descript
   assert.deepEqual([K("هل البيتزا فيها مشروم").key, K("هل البيتزا فيها مشروم").rawIntent], ["staff", "ingredients"], "a whole section, not one dish ⇒ staff");
   for (const t of ["عندي حساسية من البيض هل الكريب فيه بيض", "does the burger contain sesame", "عندي حساسية من المكسرات"]) assert.deepEqual([K(t).key, K(t).arg], ["faq", "allergens"], t);
   // recipe extraction: one polite line, no handover, no detail of any kind
-  const SECRET = "تفاصيل التحضير والمقادير من أسرار مطبخنا 🙂 أقدر أساعدك في المنيو والأسعار والطلب.";
+  const SECRET = "عذراً، هذي المعلومة ما أقدر أزوّدك بها 🙏 أقدر أساعدك في المنيو والطلب، أو اكتب «موظف» وأحوّلك.";      // ST1: السطر المهني الجديد (من غير «أسرار مطبخنا»)
   for (const t of ["ايش التتبيلة", "ايش تتبيلة الشيش طاووق", "كم جرام الكفتة", "اعطني طريقة الكفتة", "كيف تسوون الكفتة", "ابي الريسبي حق الكريب", "وش سر الطعم", "ايش الخلطة اللي تحطونها", "مين المورد حق اللحم", "what's the recipe for the kofta", "how do you make the zinger", "how many grams is the burger", "what marinade do you use"]) {
     assert.equal(K(t).key, "secret", t);
     const x = liveWorld(); const r = await x.say(t);
-    assert.equal(bodyOf(r.sent[0]), /[a-z]{4}/.test(t) ? "How we prepare our dishes is our kitchen's secret 🙂 I can help with the menu, prices and ordering." : SECRET, t); assert.equal(r.log.handoff, null, t); assert.equal(x.sms.length, 0, t);
+    assert.equal(bodyOf(r.sent[0]), /[a-z]{4}/.test(t) ? "Sorry, I can't share that information 🙏 I can help with the menu and ordering, or type \"staff\" and I'll connect you." : SECRET, t); assert.equal(r.log.handoff, null, t); assert.equal(x.sms.length, 0, t);
     assert.deepEqual(r.sent[0].interactive.action.buttons.map((b) => b.reply.id), ["bot:menu", "bot:human"]);
   }
   assert.doesNotMatch(SECRET, /\d/);
@@ -4046,4 +4046,118 @@ test("EX6: «متابعة المحادثة» — a customer left without an answ
   const f = await lead({ leadFollowUpMin: 0 }); assert.deepEqual(await f.tick(30), []); assert.equal(f.db.jobs.length, 0);
   const g = liveWorld({ waBot: { liveScope: "ads" }, at: "2026-10-12T22:50:00Z" }); await g.say("ممكن اعمل طلب"); g.db.settings.waBot.liveScope = "all"; assert.deepEqual(await g.tick(21), [], "closed by then");
   assert.equal(R.botConfig({}).leadFollowUpMin, 20);
+}));
+
+/* ══ ST1 (١٢/١٠) — تواصل الفريق على واتساب: ربط البوت بـwateam.js ═══════════════════════════════════════════
+   team هنا بديل بيسجّل النداءات (منطق wateam نفسه في wateam.test.mjs). */
+const teamStub = ({ staff = [], handover = () => ({ sent: 1, wa: 1, sms: 0, failed: 0, to: 1 }) } = {}) => {
+  const seen = { handover: [], odd: [], inbound: [] };
+  return { seen, handover: async (x) => { seen.handover.push(x); return handover(x); }, odd: async (x) => { seen.odd.push([x.kind, x.phone, x]); return "sent"; },
+    inbound: async (ev) => { const mine = staff.includes(String(ev.phone)); if (mine) seen.inbound.push(ev); return mine; } };
+};
+const TEAM5 = [{ phone: "0561000001", name: "منى", role: "cashier" }, { phone: "0506000003", name: "خالد", role: "manager" }, { phone: "0544775082", name: "عمر", role: "owner" }];
+
+test("ST1 secret question: the short professional line (no «أسرار»), the staff button, NO automatic handover — and an odd-things alert for the manager and owners", withEnv(LOCKS_OPEN, async () => {
+  const team = teamStub(); const w = liveWorld({ team });
+  const r = await w.say("ايش تتبيلة الشيش طاووق");
+  assert.equal(bodyOf(r.sent[0]), "عذراً، هذي المعلومة ما أقدر أزوّدك بها 🙏 أقدر أساعدك في المنيو والطلب، أو اكتب «موظف» وأحوّلك.");
+  assert.doesNotMatch(bodyOf(r.sent[0]), /أسرار|مطبخنا|secret/);
+  assert.deepEqual(r.sent[0].interactive.action.buttons.map((b) => b.reply.id), ["bot:menu", "bot:human"]);
+  assert.equal(r.log.handoff, null); assert.equal(team.seen.handover.length, 0); assert.equal(w.sms.length, 0); assert.equal(w.portal.length, 0);
+  assert.deepEqual(team.seen.odd.map((o) => [o[0], o[1]]), [["secret", "512345678"]]);
+  // he asks for a person ⇒ now it is a handover, through the team channel
+  const h = await w.press("bot:human", "موظف");
+  assert.equal(h.log.handoff, "asked_human");
+  assert.deepEqual(team.seen.handover.map((x) => [x.phone, x.reason, x.reasonAr, x.urgent, x.stage]), [["512345678", "asked_human", "طلب موظف", false, "new"]]);
+  assert.match(team.seen.handover[0].sms, /^Fresh Cuts WhatsApp: customer 0512345678 needs staff \(asked for staff\)/, "the SMS fallback body is the old alert text");
+  assert.equal(h.log.alert, "sent"); assert.equal(w.sms.length, 0, "no SMS from the bot itself any more");
+  // an owner-edited text still wins over the new default (the migration trap the slice verify reports)
+  const old = liveWorld({ team: teamStub(), waBot: { texts: { secret: { ar: "تفاصيل التحضير من أسرار مطبخنا 🙂" } } } });
+  assert.equal(bodyOf((await old.say("ايش التتبيلة")).sent[0]), "تفاصيل التحضير من أسرار مطبخنا 🙂");
+  assert.equal(R.TEXTS.secret.en, "Sorry, I can't share that information 🙏 I can help with the menu and ordering, or type \"staff\" and I'll connect you.");
+  const AR = await import("./waassistrun.js");
+  assert.deepEqual(AR.checkReply(R.TEXTS.secret.ar, { customerText: "ايش التتبيلة", lang: "ar" }), { ok: true, problems: [] }, "the assistant validator accepts the same line");
+  assert.deepEqual(AR.checkReply(R.TEXTS.secret.en, { customerText: "what is the recipe", lang: "en" }), { ok: true, problems: [] });
+}));
+
+test("ST1 handover alerts: urgent and reminder go to the team channel with their stage; team WhatsApp off or nobody routed ⇒ the old SMS exactly as before", withEnv(LOCKS_OPEN, async () => {
+  const team = teamStub(); const w = liveWorld({ team });
+  const c = await w.say("الاكل وصل بارد وسيء جدا");
+  assert.equal(c.log.handoff, "complaint"); assert.equal(c.log.alert, "sent");
+  assert.deepEqual(team.seen.handover.map((x) => [x.reason, x.urgent, x.stage]), [["complaint", true, "new"]]);
+  assert.equal(w.sms.length, 0);
+  // the team module hands it back (disabled there / nobody routed) ⇒ SMS to the alert phones, as before the slice
+  const back = liveWorld({ team: teamStub({ handover: () => null }) });
+  const b = await back.say("الاكل وصل بارد وسيء جدا");
+  assert.equal(b.log.alert, "sent"); assert.deepEqual(back.sms.map((s) => [s.phoneNorm, s.kind, s.ref]), [["544775082", "staff", "wabot complaint"], ["506338246", "staff", "wabot complaint"]]);
+  // switched off in the settings ⇒ the team module is not even asked
+  const offTeam = teamStub(); const off = liveWorld({ team: offTeam, extraSettings: { waTeam: { enabled: false } } });
+  await off.say("الاكل وصل بارد وسيء جدا");
+  assert.equal(offTeam.seen.handover.length, 0); assert.equal(off.sms.length, 2);
+  // all its sends failed ⇒ the log says failed (it does not pretend)
+  const bad = liveWorld({ team: teamStub({ handover: () => ({ sent: 0, wa: 0, sms: 0, failed: 3, to: 3 }) }) });
+  assert.equal((await bad.say("الاكل وصل بارد وسيء جدا")).log.alert, "failed");
+  // staffAlert off ⇒ nothing, as before
+  const mute = teamStub(); const m = liveWorld({ team: mute, waBot: { staffAlert: false } });
+  assert.equal((await m.say("الاكل وصل بارد وسيء جدا")).log.alert, "off"); assert.equal(mute.seen.handover.length, 0);
+}));
+
+test("ST1 odd things raised by the bot: complaint, a customer who stopped, a job seeker, an unsupported opener, the repeated card, a media flood, the loop guard", withEnv(LOCKS_OPEN, async () => {
+  const kinds = async (o, fn) => { const team = teamStub(); const w = liveWorld({ team, ...o }); await fn(w); return team.seen.odd.map((x) => x[0]); };
+  assert.deepEqual(await kinds({}, (w) => w.say("الاكل وصل بارد وسيء جدا")), ["complaint"]);
+  assert.deepEqual(await kinds({}, (w) => w.say("إيقاف")), ["customer_stopped"]);
+  assert.deepEqual(await kinds({}, (w) => w.say("السلام عليكم، ابحث عن عمل عندكم كاشير")), ["non_customer"]);
+  assert.deepEqual(await kinds({}, (w) => w.say(null, { raw: { type: "unsupported", errors: [{ code: 131051, title: "Message type unknown" }] } })), ["unsupported_opener"]);
+  assert.deepEqual(await kinds({ variants: VAR }, async (w) => { for (const t of ["كفتة", "الكفته", "كفته لو سمحت"]) { await w.say(t); w.clock.advance(1); } }), ["repeated_card"]);
+  assert.deepEqual(await kinds({}, async (w) => { for (let i = 0; i < 5; i++) { await w.say("", { type: "image" }); w.clock.advanceSec(10); } }), ["media_flood"]);
+  const LOOP = "عميلنا العزيز تابع احدث العروض والتخفيضات لدينا عبر الموقع";
+  assert.deepEqual(await kinds({}, async (w) => { for (let i = 0; i < 4; i++) { await w.say(`${LOOP} ${1000 + i}`); w.clock.advanceSec(1); } }), ["loop_guard"]);
+  // an ordinary conversation raises nothing; neither does anything in test mode (unless alertInTest), nor in dry mode
+  assert.deepEqual(await kinds({}, async (w) => { await w.say("السلام عليكم"); await w.say("كم رسوم التوصيل"); }), []);
+  const t = teamStub(); const tw = world({ team: t, waBot: { mode: "test", testPhones: ["0512345678"] }, bundles: LIVE.bundles, links: ALL_LINKS }); await tw.say("ايش التتبيلة"); assert.deepEqual(t.seen.odd, []);
+  const t2 = teamStub(); const tw2 = world({ team: t2, waBot: { mode: "test", testPhones: ["0512345678"], alertInTest: true }, bundles: LIVE.bundles, links: ALL_LINKS }); await tw2.say("ايش التتبيلة"); assert.deepEqual(t2.seen.odd.map((x) => x[0]), ["secret"]);
+  const d = teamStub(); const dw = world({ team: d, waBot: { mode: "dry" }, bundles: LIVE.bundles, links: ALL_LINKS }); await dw.say("ايش التتبيلة"); assert.deepEqual(d.seen.odd, []);
+}));
+
+test("ST1 odd things from the assistant: a reply the validator refused twice carries what it tried to say; the daily budget is reported with a once-a-day repeat", withEnv(CONFIGURED, async () => {
+  const team = teamStub();
+  const w = aWorld([mSay("بيتزا مارجريتا بـ 9 ر.س"), mSay("بيتزا مارجريتا بـ 8 ر.س")], { team, waBot: { alertInTest: true } });
+  const r = await w.say("ابي بيتزا");
+  assert.equal(r.log.detail, "assist off: validator");
+  const o = team.seen.odd.find((x) => x[0] === "assist_refused");
+  assert.ok(o, "reported"); assert.equal(o[2].tried, "بيتزا مارجريتا بـ 8 ر.س"); assert.match(o[2].detail, /^سبب الرفض: /);
+  const team2 = teamStub();
+  const b = aWorld([mSay("هلا 👋 وش تحب تطلب؟")], { team: team2, waBot: { alertInTest: true } });
+  b.db.ai.push({ id: 2, at: b.clock.now().toISOString(), purpose: "assistant", cost_sar: 10, ms: 1, in_tokens: 0, out_tokens: 0, cached_tokens: 0 });
+  await b.say("ابي بيتزا");
+  assert.deepEqual(team2.seen.odd.filter((x) => x[0] === "budget_cap").map((x) => [x[1], x[2].repeatMin]), [[null, 1440]]);
+}));
+
+test("ST1 staff phones are never customers: their taps and words go to the team module in any bot mode; a directory member is never answered by the bot even when it is a test phone", withEnv(LOCKS_OPEN, async () => {
+  const STAFF = "544775082";
+  for (const mode of ["live", "test", "dry", "off"]) {
+    const team = teamStub({ staff: [STAFF] });
+    const w = world({ team, waBot: { mode, testPhones: ["0544775082"] }, bundles: LIVE.bundles, links: ALL_LINKS });
+    const r = await w.say("السلام عليكم ابي اطلب", { from: `966${STAFF}` });
+    assert.deepEqual([r.sent.length, r.log], [0, null], `${mode}: no reply and not even a bot log row`);
+    await w.press("team:renew", "✅ جدّد التنبيهات", { from: `966${STAFF}` });
+    assert.deepEqual(team.seen.inbound.map((e) => e.interactiveId), [null, "team:renew"], mode);
+    assert.equal(team.seen.handover.length + team.seen.odd.length, 0, `${mode}: no handover and no odd thing about a staff member`);
+    assert.equal(w.sms.length, 0);
+  }
+  // even if the team module did not take the message: a member of the directory is not a customer for the rules bot or the assistant, test phone or not
+  const w = liveWorld({ team: teamStub(), waBot: { testPhones: ["0544775082"] }, extraSettings: { waTeam: { members: TEAM5 } } });
+  const r = await w.say("السلام عليكم", { from: "966544775082" });
+  assert.deepEqual([r.sent.length, r.log.decision, r.log.reason, r.log.detail], [0, "silent", "never_reply", "staff"]);
+  assert.equal(await w.bot.neverReplyOf("0544775082"), "staff"); assert.equal(await w.bot.neverReplyOf("0561000001"), "staff"); assert.equal(await w.bot.neverReplyOf("0512345678"), null);
+  const c = await w.say("الاكل بارد وسيء", { from: "966561000001" });
+  assert.deepEqual([c.sent.length, c.log.reason, c.log.handoff || null], [0, "never_reply", null], "a cashier's own complaint is not a customer handover");
+  // the owner's switch: a team phone that is also a test phone keeps testing the bot
+  const t = liveWorld({ team: teamStub(), waBot: { testPhones: ["0544775082"] }, extraSettings: { waTeam: { members: TEAM5, staffAsTesters: true } } });
+  assert.ok((await t.say("السلام عليكم", { from: "966544775082" })).sent.length >= 1);
+  assert.equal((await t.say("السلام عليكم", { from: "966506000003" })).log.reason, "never_reply", "not a test phone ⇒ still never answered");
+  // before the directory is written (alert phones only) the old rule stands: excluded on its own unless it is a test phone
+  const f = liveWorld({ team: teamStub(), waBot: { testPhones: ["0544775082"] } });
+  assert.ok((await f.say("السلام عليكم", { from: "966544775082" })).sent.length >= 1);
+  assert.equal((await f.say("السلام عليكم", { from: "966506338246" })).log.detail, "alert_phone");
 }));
