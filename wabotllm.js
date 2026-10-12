@@ -32,23 +32,30 @@ export const LLM_INTENTS = Object.freeze({
    حد معروف: اسم مكتوب من غير كلمة تدل عليه («احمد ابي بوكس») مايتعرفش بقواعد — مفيش ضمان إخفاء كل الأسماء. */
 const WORD = "[^\\s،,.؟?!\\[\\]]+";
 const NAME_STOP = "ابي|ابغى|ابغا|أبي|أبغى|عايز|عاوز|اريد|أريد|بدي|ودي|من|في|على|و|عندي|طلبت|طلبي|كم|هل|وين|فين|متى|لو|ممكن|رقم|اطلب|حاب|ابي اطلب|and|i|want|from";
+/* بعد «معك/معاك» في أول الرسالة: كلمة من دول مش اسم («معك بوكس الكريب؟») */
+const ORDER_WORDS = "بوكس|بوكسات|وجبه|وجبة|وجبات|كريب|بيتزا|برجر|باستا|حواوشي|طاسه|طاسة|مشاوي|كفته|كفتة|بطاطس|مشروب|طلب|سؤال|استفسار|مشكله|مشكلة|شكوى|order|question";
 const LANDMARK = "مسجد|جامع|مدرسه|مدرسة|مستشفى|مستشفي|مستوصف|مول|سوق|محطه|محطة|صيدليه|صيدلية|بنك|حديقه|حديقة|كوبري|جسر|سوبرماركت|بقاله|بقالة|مركز|مجمع|فندق|جامعه|جامعة|دوار";
+const ORDINAL = "(?:ال)?(?:اول|أول|ثاني|ثالث|رابع|خامس|سادس|ارضي|أرضي|اخير|أخير)[\\p{L}]*|1st|2nd|3rd|\\dth|ground";
+/* كلمة الدلالة لازم تكون **كلمة كاملة** (عطل ١٢/١٠: «دوريتوس» اتخفت «[عنوان]» عشان «دور» جوّاها — ونفس الخطر في «برجر» و«فيلادلفيا»).
+   «معك/معاك» = تعريف بالاسم في أول الرسالة بس («ابي اطلب معك بيتزا» مش اسم). «عن طريق …» مش عنوان. شقة / دور / طابق: لازم رقم أو ترتيب. */
 const RX = {
   url: /https?:\/\/\S+|www\.\S+/gi,
   email: /[\w.+-]+@[\w-]+\.[\w.-]+/g,
   coords: /-?\d{1,3}\.\d{3,}\s*[,،]\s*-?\d{1,3}\.\d{3,}/g,
   order: /(^|[^A-Za-z0-9])[Ww]\s?-?\d{5,}/g,
   digits: /(?:\+|00)?\d[\d\s().-]{5,}\d/g,
-  name: new RegExp(`(?<![\\p{L}])(انا اسمي|أنا اسمي|اسمي|إسمي|الاسم|باسم|بإسم|معك|معاك|معكم|my name is|name is|this is)\\s*[:：]?\\s+(${WORD})(\\s+(?!(?:${NAME_STOP})(?![\\p{L}]))${WORD})?`, "giu"),
-  street: new RegExp(`(?<![\\p{L}])(?:شارع|طريق|street|st\\.|road)\\s+${WORD}(?:\\s+${WORD}){0,2}`, "giu"),
-  unit: new RegExp(`(?<![\\p{L}])(?:عماره|عمارة|مبنى|مبني|برج|فيلا|فله|فلة|شقه|شقة|الدور|دور|بيت رقم|منزل رقم|building|villa|apartment|apt|flat|floor)\\s*(?:رقم\\s*)?[:#]?\\s*${WORD}`, "giu"),
-  near: new RegExp(`(?<![\\p{L}])(?:بجوار|جنب|مقابل|قدام|خلف|ورا|قريب من|قريبه من|عند|near|next to|behind)\\s+(?:ال)?(?:${LANDMARK})(?:\\s+${WORD}){0,2}`, "giu"),
+  name: new RegExp(`(?<![\\p{L}])(انا اسمي|أنا اسمي|اسمي|إسمي|الاسم|باسم|بإسم|my name is|name is|this is)(?![\\p{L}])\\s*[:：]?\\s+(${WORD})(\\s+(?!(?:${NAME_STOP})(?![\\p{L}]))${WORD})?`, "giu"),
+  nameLead: new RegExp(`(^|[.،,!؟?\\n]\\s*)((?:السلام عليكم|مرحبا|هلا|اهلا|أهلا|hi|hello)\\s+)?(معك|معاك|معكم)\\s+(?!(?:${NAME_STOP}|${ORDER_WORDS})(?![\\p{L}]))(${WORD})(\\s+(?!(?:${NAME_STOP}|${ORDER_WORDS})(?![\\p{L}]))${WORD})?`, "giu"),
+  street: new RegExp(`(?<![\\p{L}])(?<!عن )(?:شارع|طريق|street|st\\.|road)(?![\\p{L}])\\s+${WORD}(?:\\s+${WORD}){0,2}`, "giu"),
+  unit: new RegExp(`(?<![\\p{L}])(?:عماره|عمارة|مبنى|مبني|برج|فيلا|فله|فلة)(?![\\p{L}])\\s*(?:رقم\\s*)?[:#]?\\s*${WORD}`, "giu"),
+  unitNo: new RegExp(`(?<![\\p{L}])(?:شقه|شقة|الدور|دور|الطابق|طابق|بيت رقم|منزل رقم|building|villa|apartment|apt|flat|floor)(?![\\p{L}])\\s*(?:رقم\\s*)?[:#]?\\s*(?:\\d+[\\p{L}]?|[A-Za-z]\\d+|${ORDINAL})`, "giu"),
+  near: new RegExp(`(?<![\\p{L}])(?:بجوار|جنب|مقابل|قدام|خلف|ورا|قريب من|قريبه من|عند|near|next to|behind)(?![\\p{L}])\\s+(?:ال)?(?:${LANDMARK})(?![\\p{L}])(?:\\s+${WORD}){0,2}`, "giu"),
 };
 export function maskText(text) {
   let s = String(text || "").replace(/[٠-٩]/g, (d) => String(d.charCodeAt(0) - 0x660)).replace(/[۰-۹]/g, (d) => String(d.charCodeAt(0) - 0x6f0));
   s = s.replace(RX.url, " [رابط] ").replace(RX.email, " [ايميل] ").replace(RX.coords, " [موقع] ").replace(RX.order, "$1[طلب]");
   s = s.replace(RX.digits, (m) => (m.replace(/\D/g, "").length >= 7 ? "[رقم]" : m));
-  s = s.replace(RX.name, "$1 [اسم]").replace(RX.street, "[عنوان]").replace(RX.unit, "[عنوان]").replace(RX.near, "[عنوان]");
+  s = s.replace(RX.name, "$1 [اسم]").replace(RX.nameLead, "$1$2$3 [اسم]").replace(RX.street, "[عنوان]").replace(RX.unit, "[عنوان]").replace(RX.unitNo, "[عنوان]").replace(RX.near, "[عنوان]");
   return s.replace(/\s+/g, " ").trim().slice(0, 300);
 }
 

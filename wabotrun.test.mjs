@@ -14,6 +14,7 @@ import * as BC from "./wabotcart.js";
 const W = await import("./whatsapp.js");
 const R = await import("./wabotrun.js");
 const LLM = await import("./wabotllm.js");
+const R0 = await import("./wabot.js");
 /* المنيو والبوكسات الحيّة يوم ١٢/١٠ (ملف اختبار) — الشجرة والتصنيف بيتجرّبوا على الأسماء والأسعار الحقيقية */
 const LIVE = JSON.parse(fs.readFileSync(new URL("./wabot-live.fixture.json", import.meta.url), "utf8"));
 
@@ -1366,6 +1367,24 @@ test("masking before anything leaves the server: phones, order numbers, links, n
   ]) assert.equal(M(raw), out, raw);
   for (const leak of ["0544775082", "٠٥٤٤٧٧٥٠٨٢ احمد", "اسمي فهد 0561186075 شارع التحلية عمارة 4"]) assert.doesNotMatch(M(leak), /\d{7,}|فهد|التحلية/, leak);
   assert.equal(M("x".repeat(900)).length, 300);
+});
+
+test("masking never eats a dish: address and name cues must be whole words — «دوريتوس», «برجر», every menu and box name stay as written", () => {
+  const M = LLM.maskText;
+  const flat = (t) => t.replace(/[٠-٩]/g, (d) => String(d.charCodeAt(0) - 0x660)).replace(/\s+/g, " ").trim();      // maskText also writes digits Western and trims spaces
+  // the defect of 12/10: «دور» (floor) matched inside «دوريتوس», so the side choice reached the model as «[عنوان]»
+  assert.equal(M("كريب زنجر سوبريم وكريب ميكس دجاج، والجانبي دوريتوس، والزنجر بدون مخلل"), "كريب زنجر سوبريم وكريب ميكس دجاج، والجانبي دوريتوس، والزنجر بدون مخلل");
+  for (const same of ["والجانبي دوريتوس", "ابي برجر لحم كلاسيك", "برجرين ودوريتوس", "جبنة فيلادلفيا", "الدور عليك", "دوري ابطال", "شارعكم زحمة", "شقتي بعيدة", "ادفع عن طريق ابل باي", "اطلب عن طريق الموقع", "ابي اطلب معك بيتزا",
+    "معك بوكس الكريب؟", "معاك طلب لشخصين", "حيّاكم الله", "الحين مفتوحين؟", "flatbread please", "a floor of fries", "burger and doritos", "building my order", "the villa menu", "الطابق مو مهم"])
+    assert.equal(M(same), flat(same), same);
+  // every dish and box name of the live menu, alone and inside an order sentence, in both languages
+  const names = [...R0.indexMenu(LIVE.pages).items.flatMap((i) => [i.name, i.nameEn]), ...LIVE.bundles.flatMap((b) => [b.name, b.name_en])].filter(Boolean);
+  assert.ok(names.length > 150);
+  for (const n of names) for (const t of [n, `ابي ${n}`, `ابي 2 ${n} والجانبي دوريتوس`, `I want ${n} please`]) assert.equal(M(t), flat(t), t);
+  // real address and name details are still masked
+  for (const [raw, out] of [["برج العرب الدور الثاني شقة 4", "[عنوان] [عنوان] [عنوان]"], ["عمارة 12 الدور 3", "[عنوان] [عنوان]"], ["فيلا 22", "[عنوان]"], ["الطابق الثالث", "[عنوان]"], ["floor 3 apt 12", "[عنوان] [عنوان]"], ["apartment 5", "[عنوان]"],
+    ["شارع التحلية", "[عنوان]"], ["طريق المدينة الطالع", "[عنوان]"], ["معك خالد ابي اطلب", "معك [اسم] ابي اطلب"], ["السلام عليكم معاك ابو فهد", "السلام عليكم معاك [اسم]"], ["هلا معك سارة", "هلا معك [اسم]"],
+    ["الطلب باسم سارة", "الطلب باسم [اسم]"], ["انا في حي الصفا جنب مسجد النور", "انا في حي الصفا [عنوان]"]]) assert.equal(M(raw), out, raw);
 });
 
 test("AI cost: price table → SAR per call, unknown model never under-counted, projection, budgets, settings validation", () => {
