@@ -1689,12 +1689,15 @@ export function register(app, ctx, deps = {}) {
         if (blockedBySoldOut(b.slots)) continue;
         const slots = await dressSlots(b, menu);
         if (!slots) continue; // باقة مكسورة مابتتعرضش أبداً — أحسن من طلب بيفشل
+        // A2: قيمة الأصناف منفردة (أغلى/أرخص تركيبة بأسعار المنيو) — المتجر يعرض value_max مشطوباً بجانب سعر البوكس
+        const val = bundlesLib.bundleValue(slots);
         // offer_id (مسار ٠١): المتجر بيربط الباقة بعرضها من هنا بدل جدول مكتوب في app.js
         out.push({ slug: b.slug, name: b.name, name_en: b.name_en, description: b.description,
           image: b.image, badge: b.badge, price: b.price, order_kinds: b.order_kinds, offer_id: b.offer_id || null, slots,
           // البوكسات: القسم اللي الباقة بتتعرض تحته في المتجر + «هيرو» (أول القسم وفوق الصفحة)
           section: b.section || "", section_en: b.section_en || "", featured: b.featured === true,
-          description_en: b.description_en || "", image_wide: b.image_wide || "" });
+          description_en: b.description_en || "", image_wide: b.image_wide || "",
+          ...(val ? { value_max: val.max, value_min: val.min } : {}) });
       }
       return c.json({ ok: true, bundles: out });
     } catch (e) {

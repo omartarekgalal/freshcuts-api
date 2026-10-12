@@ -141,6 +141,29 @@ const pid = (v) => {
 };
 /* فرق سعر الاختيار: ريال شامل الضريبة، لأقرب هللة، بين 0 و SURCHARGE_MAX. أي شيء آخر = بلا فرق. */
 export const SURCHARGE_MAX = 200;
+/* A2 (١٢/١٠) — «قيمة الأصناف منفردة»: أغلى تركيبة صالحة بأسعار المنيو (شامل الضريبة) وأرخص تركيبة.
+   قرار عمر ١٠/١٠: رقم واحد ثابت لكل بوكس = الأغلى. المتجر كان يحسبه من نفس الرد؛ الآن الخادم مصدر الرقم
+   (bundles → value_max) والمتجر يعرضه كما هو. slots = الخانات «الملبّسة» (price_incl لكل اختيار/صنف ثابت).
+   أي سعر مجهول أو صفر ⇒ null: لا رقم أفضل من رقم خاطئ. فرق سعر الاختيار (surcharge) لا يدخل: هو ما يدفعه
+   العميل زيادة، لا قيمة منيو. */
+export function bundleValue(slots) {
+  let lo = 0, hi = 0;
+  for (const s of slots || []) {
+    const q = Math.max(1, Number(s.quantity) || 1);
+    if (s.type === "choice") {
+      const ps = (s.choices || []).map((c) => Number(c.price_incl));
+      if (!ps.length || ps.some((x) => !(x > 0))) return null;
+      lo += Math.min(...ps) * q; hi += Math.max(...ps) * q;
+    } else {
+      const x = Number(s.item && s.item.price_incl);
+      if (!(x > 0)) return null;
+      lo += x * q; hi += x * q;
+    }
+  }
+  const r = (x) => Math.round(x * 100) / 100;
+  return hi > 0 ? { min: r(lo), max: r(hi) } : null;
+}
+
 export function cleanSurcharge(v) {
   const n = Math.round(Number(v) * 100) / 100;
   return Number.isFinite(n) && n > 0 && n <= SURCHARGE_MAX ? n : 0;
