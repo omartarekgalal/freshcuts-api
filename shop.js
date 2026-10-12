@@ -857,8 +857,10 @@ export function register(app, ctx, deps = {}) {
   app.post("/api/shop/checkout", async (c) => {
     const t0 = Date.now();
     let b = {};
+    let dry = false;      // DR1: حساب تجريبي للمالك (شوف تحت) — مابيسجّلش حدث في رحلة العميل
     // fail(): نفس الـJSON والـstatus بالظبط زي قبل W1-02، + checkout_result لرحلة العميل (٠٢)
     const fail = (code, status, extra = {}) => {
+      if (dry) return c.json({ ok: false, error: code, dryRun: true, ...extra }, status);
       try {
         let meta = null;
         try { meta = parseCheckoutMeta(b || {}, (n) => c.req.header(n)); } catch { /* ignore */ }
@@ -878,6 +880,16 @@ export function register(app, ctx, deps = {}) {
     if (!pay.configured()) return fail("payments_not_configured", 503);
 
     try { b = await c.req.json(); } catch { b = {}; return fail("bad json", 400); }
+
+    /* DR1 (١٣/١٠): حساب تجريبي للمالك — dryRun:true بيمشي في **نفس** حساب الإجمالي (الكوبون، التوصيل، حساب نقطة البيع)
+       وبيرجع بالأرقام قبل جلسة الدفع: من غير طلب، من غير جلسة، من غير أي كتابة، ومن غير رمز تحقق (المالك بس).
+       الغرض: نتأكد إن اللي العميل بيدفعه = أسعار المنيو + التوصيل، قبل ما نكتب «بدون رسوم إضافية» في أي رسالة. */
+    dry = b && b.dryRun === true;
+    if (dry) {
+      const denied = await requireAdmin(c); if (denied) return denied;
+      const isOwner = deps.isOwner || ctx.isOwner;
+      if (!(typeof isOwner === "function" && (await isOwner(c)))) return c.json({ ok: false, error: "owner_only", message: "الحساب التجريبي للمالك بس" }, 403);
+    }
 
     /* ── الموعد ───────────────────────────────────────────────────────────
        طلب مسبق (٢٢/٩): العميل بيختار شباك من preorder.js ويدفع دلوقتي.
@@ -1055,7 +1067,7 @@ export function register(app, ctx, deps = {}) {
     // OTP إجباري لتأكيد الطلب: لازم نفس الجوال يكون متأكّد بجلسة حساب سارية.
     // العميل بيبعت Authorization: Bearer cust:<token> بعد ما يتحقق برمز الجوال.
     // لو غير متأكّد (أو التوكن لرقم تاني) → otp_required، والستورفرونت يعرض التحقق.
-    {
+    if (!dry) {
       const verified = await (accounts()?.customerOf?.(c) ?? null);
       if (!verified || String(verified.phone_norm) !== String(phoneNorm)) {
         return fail("otp_required", 401);
@@ -1250,6 +1262,14 @@ export function register(app, ctx, deps = {}) {
     const total = feeInPos ? posTotal : r2(posTotal + deliveryFee);
     const discountAmount = r2(((totals.total_amount_discount_excluded || 0) - (totals.total_amount || 0)) / calcMf2);
 
+    if (dry) {
+      /* نفس الأرقام اللي الطلب كان هيتسجّل بيها. extra = اللي في الإجمالي ومش متفسّر بأسعار المنيو والتوصيل والبقشيش والخصم. */
+      const explained = r2(foodTotal - discountAmount + deliveryFee + tip);
+      return c.json({ ok: true, dryRun: true, option, total, foodTotal, bundleTotal, posTotal, deliveryFee, feeInPos, tip, discount: discountAmount,
+        freeDeliveryByCoupon, farZoneSurcharge: dq && dq.farZone ? Number(dq.farZone.surcharge) || 0 : 0,
+        coupon: coupon && coupon.ok ? { code: coupon.code, freeDelivery: coupon.freeDelivery === true, percent: coupon.percent || 0 } : null, couponIgnored: couponIgnored || null,
+        explained, extra: r2(total - explained), currency: "SAR" });
+    }
     const orderNo = "W" + Date.now();
     let session;
     try {

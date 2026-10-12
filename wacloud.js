@@ -626,7 +626,14 @@ export function register(app, ctx, deps = {}) {
       try { d = await graph("GET", pid, { query: { fields: PHONE_FIELDS_MIN } }); }
       catch (e2) { const x = { ...errJ(e2), id: pid }; phoneCache = { at: now(), data: x }; return x; }
     }
-    const x = { ok: true, id: pid, number: d.display_phone_number || null, name: d.verified_name || null,
+    /* TL1 (١٣/١٠): ميتا بقت تحسب الحد على مستوى المحفظة (كل أرقام البزنس). الحقل على حساب واتساب نفسه؛ قراءة بس،
+       ولو الحقل مش متاح للتوكن ده بنرجّع السبب بدل ما نخمّن. حد الرقم (tier) بيفضل زي ما هو. */
+    let portfolio = null;
+    try {
+      const w = await graph("GET", wabaId() || KNOWN_WABA_ID, { query: { fields: "whatsapp_business_manager_messaging_limit" } });
+      portfolio = { ok: true, limit: w.whatsapp_business_manager_messaging_limit ?? null };
+    } catch (e) { portfolio = { ok: false, error: String(e.message || e).slice(0, 160) }; }
+    const x = { ok: true, id: pid, number: d.display_phone_number || null, name: d.verified_name || null, portfolio,
       status: d.status || null, quality: d.quality_rating || null, platform: d.platform_type || null,
       throughput: d.throughput?.level || null, tier: d.messaging_limit_tier || null,
       verification: d.code_verification_status || null, nameStatus: d.name_status || null,

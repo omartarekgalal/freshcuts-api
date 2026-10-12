@@ -228,6 +228,58 @@ export const APP_FOOD_SEGMENTS = FOOD_GROUPS.map((g) => ({
   test: (c) => appFresh(c) && c.appTopFood === g.id,
 }));
 
+/* ═══ KS1 (١٣/١٠): شرايح حملة واتساب لعملاء كيتا — ٤ أكلات × ٣ موجات = ١٢ شريحة ═══
+   قرار عمر: نبدأ بعملاء كيتا، برسالة حسب الأكل اللي بيطلبوه، وبالترتيب: المتكررين الأول.
+   العميل هنا: له طلب كيتا واحد على الأقل، **عمره ما طلب من الموقع**، و**مابيشتريش من المحل مباشرة** (دول لهم شرايحهم).
+   الأكل = أعلى مجموعة أكل في طلباته على التطبيق (crepe / grill / pasta، والباقي «بيتزا وغيرها»).
+   الموجة: ١ = طلب مرتين أو أكتر · ٢ = مرة واحدة وآخر طلب خلال ٣٠ يوم · ٣ = مرة واحدة وأقدم (بتتبعت بعد بوابة الأمان بس).
+   العدّ بطلبات التطبيق (keetaOrders) مش بكل طلبات نقطة البيع — فلاتر الحملة العادية ماكانتش بتفرّق. */
+export const KW_DISHES = Object.freeze([
+  { id: "crepe", label: "كريب", icon: "🌯" }, { id: "grill", label: "مشاوي", icon: "🔥" }, { id: "pasta", label: "باستا", icon: "🍝" }, { id: "other", label: "بيتزا وغيرها", icon: "🍕" }]);
+export const KW_WAVES = Object.freeze([
+  { id: 1, label: "طلبوا مرتين أو أكتر", test: (c) => (c.keetaOrders || 0) >= 2 },
+  { id: 2, label: "مرة واحدة، آخر ٣٠ يوم", test: (c) => (c.keetaOrders || 0) === 1 && (c.daysSince ?? 9999) <= 30 },
+  { id: 3, label: "مرة واحدة، أقدم من ٣٠ يوم", test: (c) => (c.keetaOrders || 0) === 1 && (c.daysSince ?? 9999) > 30 }]);
+export const kwDishOf = (c) => (["crepe", "grill", "pasta"].includes(c.appTopFood) ? c.appTopFood : "other");
+/* القاعدة المشتركة للـ١٢ شريحة */
+export const kwBase = (c) => (c.keetaOrders || 0) > 0 && /keeta/i.test(String(c.appNames || "")) && (c.online || 0) === 0 && ((c.orders || 0) - (c.appOrders || 0)) <= 0;
+export const KEETA_WA_SEGMENTS = KW_WAVES.flatMap((w) => KW_DISHES.map((d) => ({
+  id: `kw_w${w.id}_${d.id}`, icon: d.icon, label: `واتساب كيتا — ${d.label} · موجة ${w.id} (${w.label})`, allowApps: true,
+  hint: "عميل كيتا عمره ما طلب من الموقع ومابيشتريش من المحل مباشرة. للحملة على واتساب (مش SMS).",
+  test: (c) => kwBase(c) && kwDishOf(c) === d.id && w.test(c),
+})));
+export const KEETA_WA_IDS = KEETA_WA_SEGMENTS.map((s) => s.id);
+
+/* ═══ KS1: إيقاف SMS مؤقت لشرايح معيّنة (settings.cms.smsPause) ═══
+   قرار عمر ١٣/١٠: «نوقف الـsms دلوقتي على الشريحة دي ونبعتلهم واتس اب». القاعدة من اللوحة: [{ segments[], until:"YYYY-MM-DD", note }]
+   الافتراضي: مفيش حاجة موقوفة. الإيقاف بينتهي لوحده آخر يوم until (بتوقيت الرياض). بيعدّي من filterAudience، يعني الحملات
+   والأتمتة الاتنين. الخدمي (تأكيد طلب / رمز دخول / تتبع) مابيعدّيش من هنا ومش بيتأثر. */
+export function activeSmsPauses(settings, now = new Date()) {
+  const l = settings && settings.cms && Array.isArray(settings.cms.smsPause) ? settings.cms.smsPause : [];
+  const today = new Date(now.getTime() + 3 * 3600_000).toISOString().slice(0, 10);      // يوم الرياض
+  return l.filter((p) => p && Array.isArray(p.segments) && p.segments.length && /^\d{4}-\d{2}-\d{2}$/.test(String(p.until || "")) && String(p.until) >= today)
+    .map((p) => ({ segments: p.segments.map(String), until: String(p.until), note: String(p.note || "").slice(0, 120) }));
+}
+/* أرقام الموقوف عنهم SMS دلوقتي: أعضاء الشرايح المذكورة. segById = { id: {test} } · rows = صفوف العملاء */
+export function smsPausedSet(settings, rows, segById, now = new Date()) {
+  const out = new Set();
+  for (const p of activeSmsPauses(settings, now)) for (const id of p.segments) { const s = segById[id]; if (s) for (const c of rows) if (s.test(c)) out.add(c.pn); }
+  return out;
+}
+export function cleanSmsPauses(list, knownIds, now = new Date()) {
+  const errs = [], out = [];
+  for (const p of Array.isArray(list) ? list : []) {
+    const segments = [...new Set((Array.isArray(p && p.segments) ? p.segments : []).map(String))];
+    const bad = segments.filter((id) => !knownIds.includes(id));
+    if (!segments.length) { errs.push("اختار شريحة واحدة على الأقل"); continue; }
+    if (bad.length) { errs.push(`شريحة مش معروفة: ${bad.join(", ")}`); continue; }
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(String(p.until || "")) || !Number.isFinite(Date.parse(`${p.until}T00:00:00Z`))) { errs.push("تاريخ الانتهاء: يوم صحيح"); continue; }
+    if ((Date.parse(`${p.until}T23:59:59+03:00`) - now.getTime()) / 86400_000 > 92) { errs.push("الإيقاف لحد ٣ شهور بالكتير"); continue; }
+    out.push({ segments, until: String(p.until), note: String(p.note || "").replace(/\s+/g, " ").trim().slice(0, 120) });
+  }
+  return { ok: errs.length === 0, list: out, errors: errs };
+}
+
 /* ═══ الفاصل بين الرسايل التسويقية — قاعدة متدرّجة (قرار عمر ٢١/٩) ═══════
    عمر: «حاسس ان قاعدة منكلمش العميل ٧ ايام دي قاعدة مش حلوة».
    الـ٧ (والـ٢١ قبلها) كانت رقم واحد على كل الناس: نفس الفاصل للزبون اللي
@@ -293,7 +345,7 @@ export function gapReason(m, h, g) {
 /* فلترة الجمهور: بترجع القايمة + سبب كل استبعاد (بيتسجّل مع الحملة).
    history = Map(رقم → {days, in7, in30}); لو مش موجودة بنرجع للطريقة
    القديمة (Set لمين اتبعتله) عشان الأتمتة القديمة ماتقعش. */
-export function filterAudience(members, { staff = new Set(), optedOut = new Set(), recentlyMessaged = new Set(), recentOnline = new Set(), allowApps = false, history = null, gap = null, adBlocked = new Set() } = {}) {
+export function filterAudience(members, { paused = new Set(), staff = new Set(), optedOut = new Set(), recentlyMessaged = new Set(), recentOnline = new Set(), allowApps = false, history = null, gap = null, adBlocked = new Set() } = {}) {
   const excluded = { apps_only: 0, staff: 0, opted_out: 0, ad_blocked: 0, gap: 0, cap_week: 0, cap_month: 0, recent_online_order: 0 };
   const g = history ? gapOf(gap) : null;
   const list = [];
@@ -301,6 +353,7 @@ export function filterAudience(members, { staff = new Set(), optedOut = new Set(
     if (!allowApps && !directRelationship(m)) { excluded.apps_only++; continue; }
     if (staff.has(m.pn)) { excluded.staff++; continue; }
     if (optedOut.has(m.pn)) { excluded.opted_out++; continue; }
+    if (paused.has(m.pn)) { excluded.sms_paused = (excluded.sms_paused || 0) + 1; continue; }      // KS1: الشريحة موقوف عنها SMS مؤقتاً (بنكلّمها واتساب)
     /* حاجب الإعلانات عند المشغّل (٢٥/٩): تقرير تقنيات من ١٠ لـ٢٥ سبتمبر —
        الخدمي FreshCut وصل ٩٩٫٨٪، والدعائي FreshCut-AD وصل ٥٩٪ بس، لنفس
        العملاء. ٥٨٧ رقم عمرهم ما وصلهم أي دعائي، واتصرف عليهم ٩٤٤ رسالة.
@@ -321,6 +374,7 @@ export const EXCLUDE_LABELS = Object.freeze({
   staff: "موظف أو رقم مستبعد",
   opted_out: "أوقف الرسائل الإعلانية",
   ad_blocked: "حاجب الإعلانات عند شركة الاتصالات (مابتوصلوش أصلاً)",
+  sms_paused: "SMS موقوف مؤقتاً للشريحة دي (بنكلّمها واتساب)",
   recent_online_order: "طلب من الموقع آخر ٣ أيام",
   gap: "لسه ماعدّاش الفاصل بين رسالتين",
   cap_week: "وصل سقف رسايل الأسبوع",

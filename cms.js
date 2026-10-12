@@ -2388,6 +2388,7 @@ export function register(app, ctx, deps = {}) {
       test: (c) => (c.orders + (c.online || 0)) > 0 && c.daysSince >= 21 && c.daysSince <= 45 },
     ...smsRules.WAVE_SEGMENTS,
     ...smsRules.KEETA_SEGMENTS,
+    ...smsRules.KEETA_WA_SEGMENTS,      // KS1: حملة واتساب لعملاء كيتا (٤ أكلات × ٣ موجات)
     ...smsRules.APP_FOOD_SEGMENTS,
   ];
   const segById = Object.fromEntries(SEGMENTS.map((s) => [s.id, s]));
@@ -2403,6 +2404,27 @@ export function register(app, ctx, deps = {}) {
         return { ...pub(s), count: m.length, reachablePush: m.filter((x) => x.push).length };
       }),
     });
+  });
+
+  /* KS1: إيقاف SMS مؤقت لشرايح — اللوحة بتعرضه وبتعدّله (المالك). الافتراضي: مفيش. */
+  app.get("/api/cms/sms-pause", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    const s = await getSettingsData();
+    const rows = await customerRows();
+    const all = s && s.cms && Array.isArray(s.cms.smsPause) ? s.cms.smsPause : [];
+    const active = smsRules.activeSmsPauses(s);
+    return c.json({ ok: true, pauses: all, active, coveredNow: smsRules.smsPausedSet(s, rows, segById).size,
+      segments: SEGMENTS.map((x) => ({ id: x.id, label: x.label, count: rows.filter(x.test).length })),
+      keetaWaIds: smsRules.KEETA_WA_IDS, covers: ["sms_campaigns", "sms_automations"], notCovered: ["order_and_otp_sms", "cart_recovery_sms", "review_sms", "whatsapp", "push"] });
+  });
+  app.post("/api/cms/sms-pause", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    if ((await whoami(c))?.role !== "owner") return bad(c, "owner_only", 403);
+    let b = {}; try { b = await c.req.json(); } catch { return bad(c, "bad_json", 400); }
+    const r = smsRules.cleanSmsPauses(b.pauses, SEGMENTS.map((x) => x.id));
+    if (!r.ok) return c.json({ ok: false, error: "invalid", errors: r.errors, message: r.errors[0] }, 400);
+    await pool.query(`UPDATE settings SET data = jsonb_set(jsonb_set(COALESCE(data,'{}'::jsonb), '{cms}', COALESCE(data->'cms','{}'::jsonb), true), '{cms,smsPause}', $1::jsonb, true) WHERE id=1`, [JSON.stringify(r.list)]);
+    return c.json({ ok: true, pauses: r.list });
   });
 
   app.get("/api/cms/segments/:id", async (c) => {
@@ -2686,8 +2708,10 @@ export function register(app, ctx, deps = {}) {
        والخدمي مابيعدّيش من هنا أصلاً. */
     const smsBlock = typeof deps.smsBlock === "function" ? deps.smsBlock() : null;
     const adBlocked = smsBlock ? await smsBlock.blockedSet(pns).catch(() => new Set()) : new Set();
+    const sNow = await getSettingsData();
     const f = smsRules.filterAudience(m, {
-      staff: smsRules.staffPhoneSet(await getSettingsData()), optedOut, history, gap: cfg, recentOnline,
+      staff: smsRules.staffPhoneSet(sNow), optedOut, history, gap: cfg, recentOnline,
+      paused: smsRules.smsPausedSet(sNow, await customerRows(), segById),      // KS1: SMS موقوف مؤقتاً لشرايح (settings.cms.smsPause)
       allowApps: s.allowApps === true, adBlocked });
     const withCode = f.list.map((x) => ({ ...x, code: codes.get(x.pn)?.optout_code }));
     const holdout = withCode.filter((x) => smsRules.inHoldout(camp.id, x.pn, camp.holdout_pct));
@@ -3607,7 +3631,9 @@ ${smsRules.optoutLine(cfg, { code: c?.optout_code, host: STORE_PUBLIC(), sender:
       flow.channel === "sms" && smsBlock ? smsBlock.blockedSet(pns).catch(() => new Set()) : Promise.resolve(new Set()),
     ]);
     const optedOut = new Set([...codes.values()].filter((x) => x.opted_out_at).map((x) => x.phone_norm));
-    const f = smsRules.filterAudience(cand, { staff, optedOut, history, gap: flowGapOf(cfg), recentOnline, adBlocked,
+    /* KS1: الإيقاف المؤقت للـSMS بيمشي على الأتمتة كمان (قناة SMS بس — الإشعار مجاني والعميل بيقفله بنفسه) */
+    const pausedSms = flow.channel === "sms" ? smsRules.smsPausedSet(await getSettingsData(), await customerRows(), segById) : new Set();
+    const f = smsRules.filterAudience(cand, { paused: pausedSms, staff, optedOut, history, gap: flowGapOf(cfg), recentOnline, adBlocked,
       allowApps: flow.channel === "push" || seg.allowApps === true });
     for (const [k, n] of Object.entries(f.excluded)) bump(k, n);
     const eligible = f.list.map((x) => ({ ...x, code: codes.get(x.pn)?.optout_code }));

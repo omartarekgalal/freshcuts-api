@@ -150,3 +150,41 @@ test("checkout (pickup) with a free-delivery code: the order goes through withou
     assert.ok(ins, "the order was created");
   } finally { s.restore(); }
 });
+
+/* ── DR1: الحساب التجريبي للمالك ── */
+test("checkout dryRun (owner): the same totals as a real checkout, but no payment session, no order row, no OTP needed; not the owner ⇒ 403; a real checkout is unchanged", async () => {
+  let sessions = 0;
+  const pay = { configured: () => true, initiateSession: async () => { sessions++; return { SessionId: "S-1", CountryCode: "SAU" }; }, executePayment: async () => ({}) };
+  const real = build({ handler: couponDb, deps: { bundles: okBundles, accounts: verified(), pay } });
+  let realBody;
+  try { const r = await real.app.routes["POST /api/shop/checkout"](fakeCtx({ body: CART })); await tick(); assert.equal(r.status, 200); realBody = r.body; } finally { real.restore(); }
+  assert.equal(sessions, 1);
+  sessions = 0;
+  /* no customer session at all (accounts returns nobody): a dry run does not need the OTP */
+  const s = build({ handler: couponDb, deps: { bundles: okBundles, accounts: () => ({ customerOf: async () => null, customerDiscount: async () => null }), pay, isOwner: async () => true } });
+  try {
+    const r = await s.app.routes["POST /api/shop/checkout"](fakeCtx({ body: { ...CART, dryRun: true } }));
+    await tick();
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+    assert.equal(r.body.dryRun, true);
+    assert.equal(r.body.total, realBody.total, "same total as the real checkout of the same basket");
+    assert.equal(r.body.deliveryFee, realBody.deliveryFee); assert.equal(r.body.discount, realBody.discount);
+    assert.equal(r.body.extra, 0, "nothing in the total beyond menu prices, delivery, tip and discount");
+    assert.equal(r.body.explained, r.body.total);
+    assert.ok(!("sessionId" in r.body) && !("orderNo" in r.body));
+    assert.equal(sessions, 0, "no payment session");
+    assert.ok(!s.queries.some((q) => /^\s*(INSERT|UPDATE|DELETE)/i.test(q.sql)), "nothing written: " + s.queries.filter((q) => /^\s*(INSERT|UPDATE|DELETE)/i.test(q.sql)).map((q) => q.sql.slice(0, 40)).join(" | "));
+  } finally { s.restore(); }
+  const n = build({ handler: couponDb, deps: { bundles: okBundles, accounts: verified(), pay, isOwner: async () => false } });
+  try {
+    const r = await n.app.routes["POST /api/shop/checkout"](fakeCtx({ body: { ...CART, dryRun: true } }));
+    assert.equal(r.status, 403); assert.equal(r.body.error, "owner_only"); assert.equal(sessions, 0);
+  } finally { n.restore(); }
+  /* a refusal inside a dry run is a plain answer marked dryRun */
+  const f = build({ handler: couponDb, deps: { bundles: okBundles, accounts: verified(), pay, isOwner: async () => true } });
+  try {
+    const r = await f.app.routes["POST /api/shop/checkout"](fakeCtx({ body: { option: "delivery", items: CART.items, customer: CART.customer, dryRun: true } }));
+    assert.equal(r.status, 400); assert.equal(r.body.error, "address_required"); assert.equal(r.body.dryRun, true);
+  } finally { f.restore(); }
+});
+
