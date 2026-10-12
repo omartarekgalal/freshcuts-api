@@ -22,6 +22,7 @@
        POST /api/portal/wa/chats/:key/reply   {text}
        POST /api/portal/wa/chats/:key/read
        GET  /api/portal/wa/quick-replies
+       POST /api/portal/wa/chats/:key/take {force?} · /release · /done      (SR2 — waowner.js: مين ماسك المحادثة)
      اللوحة: GET /api/cms/wa/threads-quick (الردود السريعة)، والرد نفسه على مسار wahub الموجود
        POST /api/cms/wa/threads/:key/reply — بيتحوّل هنا (reply) لما الملف ده متسجّل.
    القراءة بتشتغل والإرسال مقفول (من دوال wahub، مش من صندوق البورتال القديم اللي بيرجّع disabled).
@@ -29,6 +30,7 @@
 import crypto from "node:crypto";
 import { tokenSecret } from "./portal-core.js";
 import { FAQ_DEFS } from "./wabotrun.js";
+import * as waowner from "./waowner.js";
 
 export const MAX_TEXT = 4096;
 export const GATES = Object.freeze(["disabled", "unconfigured", "settings_unreadable", "master_off", "settings_off", "window_closed", "opted_out", "not_in_allow_list"]);
@@ -72,6 +74,9 @@ export function register(app, ctx, deps = {}) {
   const requirePortal = deps.requirePortal || null;
   const SALT = String(deps.keySalt || tokenSecret(process.env) || "");
   const ready = pool.query(DDL).then(() => true).catch((e) => { log.error("[wa-staff] schema:", e.message); return false; });
+  /* SR2: مين ماسك المحادثة (سحب / سيبها للبوت / خلصت) — المنطق كله في waowner.js */
+  const keyOf = (pn) => crypto.createHash("md5").update(`${SALT}:${pn}`).digest("hex");
+  const owner = waowner.create({ pool, getSettingsData, bot: deps.bot, keyOf, broadcast: deps.broadcast, log, noTimer: deps.noTimer, now: deps.now });
 
   async function phoneOfKey(raw) {
     const k = String(raw || "").trim();
@@ -135,6 +140,7 @@ export function register(app, ctx, deps = {}) {
         [pn, r.wamid || null, clip(by, 60), clip(role, 20), clip(via, 20), st.test === true, t.body.length]);
       await pool.query("UPDATE wa_threads SET unread=0, read_at=NOW(), read_by=$2, updated_at=NOW() WHERE phone_norm=$1", [pn, clip(by || role, 60)]);
     } catch (e) { log.error("[wa-staff] log:", e.message); }
+    await owner.touch(pn);      // المحادثة مسحوبة ⇒ مهلة الرجوع للبوت تبدأ من جديد (الرد مابيسحبش محادثة مش مسحوبة)
     return { ok: true, wamid: r.wamid || null, test: st.test === true };
   }
 
@@ -162,18 +168,50 @@ export function register(app, ctx, deps = {}) {
     return c.json({ ok: true, replies: await quick() });
   });
 
+  /* SR2: مهلة رجوع المحادثة المسحوبة للبوت (settings.waInbox.holdAutoReleaseMin) — القراءة لأي دور في قسم «الطلبات»، الحفظ للمالك */
+  app.get("/api/cms/wa/threads-hold", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    return c.json({ ok: true, holdAutoReleaseMin: await owner.minutes(), default: waowner.HOLD.def, min: waowner.HOLD.min, max: waowner.HOLD.max });
+  });
+  app.post("/api/cms/wa/threads-hold", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    if (!(ctx.isOwner && (await ctx.isOwner(c)))) return c.json({ ok: false, error: "owner_only", message: "تعديل المهلة للمالك بس" }, 403);
+    let b = {}; try { b = await c.req.json(); } catch { return c.json({ ok: false, error: "bad_json" }, 400); }
+    const v = Number(b.holdAutoReleaseMin);
+    if (!Number.isFinite(v) || v < waowner.HOLD.min || v > waowner.HOLD.max) return c.json({ ok: false, error: "bad_value", message: `المهلة من ${waowner.HOLD.min} لـ${waowner.HOLD.max} دقيقة` }, 400);
+    const cur = ((await getSettingsData().catch(() => ({}))) || {}).waInbox;
+    const next = { ...(cur && typeof cur === "object" ? cur : {}), holdAutoReleaseMin: Math.round(v) };
+    await pool.query(`UPDATE settings SET data = jsonb_set(COALESCE(data,'{}'::jsonb), '{waInbox}', $1::jsonb, true) WHERE id=1`, [JSON.stringify(next)]);
+    return c.json({ ok: true, holdAutoReleaseMin: next.holdAutoReleaseMin, default: waowner.HOLD.def, min: waowner.HOLD.min, max: waowner.HOLD.max });
+  });
+
   /* ── البورتال ── */
   if (requirePortal) {
     const gateP = async (c) => {
       const a = await requirePortal(c); if (a.res) return a;
       if (!["cashier", "manager"].includes(a.user.role)) return { res: c.json({ ok: false, error: "forbidden", message: "المحادثات للكاشير والمدير" }, 403) };
       const h = hub(); if (!h) return { res: c.json({ ok: false, error: "unavailable" }, 503) };
-      return { user: a.user, h };
+      return { user: a.user, h, me: { id: a.user.id, name: a.user.name, role: a.user.role, via: "portal" } };
     };
+    const ownerAct = (fn) => async (c) => {
+      const a = await gateP(c); if (a.res) return a.res;
+      const pn = await phoneOfKey(c.req.param("key"));
+      if (!pn) return c.json({ ok: false, error: "not_found" }, 404);
+      let b = {}; try { b = await c.req.json(); } catch { b = {}; }
+      try {
+        const r = await owner[fn](pn, a.me, { force: b && b.force === true });
+        try { deps.audit?.(a.user, `wa_${fn}`, null, r.ok, { via: "portal", error: r.ok ? null : r.error }, null, { emit: false }); } catch { /* السجل مايوقّفش */ }
+        if (!r.ok) return c.json({ ok: false, error: r.error, owner: r.owner || undefined, message: r.message }, r.status || 409);
+        return c.json({ ok: true, owner: r.owner });
+      } catch (e) { log.error(`[wa-staff] ${fn}:`, e.message); return c.json({ ok: false, error: "unavailable" }, 503); }
+    };
+    app.post("/api/portal/wa/chats/:key/take", ownerAct("take"));
+    app.post("/api/portal/wa/chats/:key/release", ownerAct("release"));
+    app.post("/api/portal/wa/chats/:key/done", ownerAct("done"));
     app.get("/api/portal/wa/chats", async (c) => {
       const a = await gateP(c); if (a.res) return a.res;
       try {
-        const out = await a.h.listThreads({ filter: c.req.query("filter") || "waiting", q: c.req.query("q") || "", limit: c.req.query("limit"), before: c.req.query("before") || null, full: true });
+        const out = await a.h.listThreads({ filter: c.req.query("filter") || "waiting", q: c.req.query("q") || "", limit: c.req.query("limit"), before: c.req.query("before") || null, full: true, me: a.me });
         return c.json({ ...out, send: await channelState(), role: a.user.role });
       } catch (e) { log.error("[wa-staff] chats:", e.message); return c.json({ ok: false, error: "unavailable" }, 500); }
     });
@@ -182,7 +220,7 @@ export function register(app, ctx, deps = {}) {
       const pn = await phoneOfKey(c.req.param("key"));
       if (!pn) return c.json({ ok: false, error: "not_found" }, 404);
       try {
-        const r = await a.h.getThread(pn, { limit: c.req.query("limit"), before: c.req.query("before") || null, full: true });
+        const r = await a.h.getThread(pn, { limit: c.req.query("limit"), before: c.req.query("before") || null, full: true, me: a.me });
         if (!r.ok) return c.json(r, 404);
         await annotate(r.messages);
         return c.json({ ...r, send: await sendStateFor(pn), role: a.user.role });
@@ -203,7 +241,7 @@ export function register(app, ctx, deps = {}) {
       const r = await reply({ phoneNorm: pn, text: b.text, by: a.user.name || a.user.id, role: a.user.role, via: "portal" });
       try { deps.audit?.(a.user, "wa_reply", null, r.ok, { via: "portal", error: r.ok ? null : r.error }, null, { emit: false }); } catch { /* السجل مايوقّفش الرد */ }
       if (!r.ok) return c.json(refusal(r), status(r));
-      return c.json({ ok: true, wamid: r.wamid, test: r.test, send: await sendStateFor(pn) });
+      return c.json({ ok: true, wamid: r.wamid, test: r.test, send: await sendStateFor(pn), owner: await owner.ownerFor(pn, a.me).catch(() => null) });
     });
     app.get("/api/portal/wa/quick-replies", async (c) => {
       const a = await gateP(c); if (a.res) return a.res;
@@ -211,5 +249,5 @@ export function register(app, ctx, deps = {}) {
     });
   }
 
-  return { ready, reply, sendStateFor, channelState, annotate, quick, phoneOfKey };
+  return { ready, reply, sendStateFor, channelState, annotate, quick, phoneOfKey, owner };
 }

@@ -25,7 +25,7 @@ import { TEMPLATES as REG, STAGE_TEMPLATES, GRAPH_VERSION } from "./whatsapp.js"
 export const DEFAULT_INBOX_ROLES = Object.freeze(["owner", "operations", "kitchen"]);
 const ROLE_IDS = ["owner", "marketing", "operations", "accounting", "kitchen"];
 const TEMPLATE_SEND_ROLES = ["owner", "operations"];           // قالب مدفوع بره النافذة: المالك والعمليات بس
-const FILTERS = ["all", "waiting", "bot", "muted", "ad", "unread"];
+const FILTERS = ["all", "waiting", "bot", "muted", "ad", "unread", "held", "mine"];      // held/mine: SR2 (waowner.js)
 const clip = (v, n) => (v == null ? null : String(v).slice(0, n));
 const iso = (v) => (v instanceof Date ? v.toISOString() : v || null);
 export const maskPhone = (pn) => `…${String(pn || "").slice(-4)}`;
@@ -102,6 +102,7 @@ export function register(app, ctx, deps = {}) {
   const keyOf = (pn) => crypto.createHash("md5").update(`${SALT}:${pn}`).digest("hex");
   const ready = pool.query(DDL).then(() => true).catch((e) => { log.error("[wa-hub] schema:", e.message); return false; });
 
+  const meOf = (u) => (u ? { id: u.username || u.id, name: u.name || u.username, role: u.role, via: "dashboard" } : null);      // SR2: حساب اللوحة
   /* ── مين يدخل ── */
   async function access(c, { phoneOnly = false } = {}) {
     const err = await requireAdmin(c); if (err) return { res: err };
@@ -147,13 +148,19 @@ export function register(app, ctx, deps = {}) {
     bot: "b.handoff_at IS NULL AND NOT COALESCE(b.muted_until > NOW(), FALSE) AND t.last_in_at > NOW() - INTERVAL '24 hours'",
     ad: "b.referral IS NOT NULL",
     unread: "t.unread > 0",
+    held: "b.muted_until > NOW()",      // SR2: مسحوبة (نفس عمود الكتم)
+    mine: "b.muted_until > NOW()",      // + قايمة أرقام الحساب من waowner (تحت)
   };
-  async function listThreads({ filter = "all", q = "", limit = 40, before = null, full = false } = {}) {
+  async function listThreads({ filter = "all", q = "", limit = 40, before = null, full = false, me = null } = {}) {
     const f = FILTERS.includes(filter) ? filter : "all";
     const lim = Math.min(Math.max(Number(limit) || 40, 1), 100);
     const term = String(q || "").trim().slice(0, 40);
     const digits = term.replace(/\D/g, "");
     const p = [], where = [COND[f]];
+    /* SR2: مين ماسك — من waowner عن طريق wastaff. «محادثاتي» = أرقام الحساب ده بس. */
+    const own = staff()?.owner || null;
+    const minePhones = own && me ? await own.minePhones(me) : [];
+    if (f === "mine") { p.push(minePhones); where.push(`t.phone_norm = ANY($${p.length}::text[])`); }
     if (term) {
       if (digits && digits === term.replace(/[\s+-]/g, "")) {
         // بالرقم: اللي بيشوف الأرقام يبحث بأي جزء؛ غيره بآخر ٤ أرقام بس (مايقدرش يخمّن الرقم بالبحث)
@@ -182,22 +189,25 @@ export function register(app, ctx, deps = {}) {
        ${FROM}`)).rows[0] || {};
     const t0 = now(), pauseMin = await pauseMinNow();
     const page = rows.slice(0, lim);
+    const owners = own ? await own.ownersFor(page, me) : new Map();
     return {
       ok: true, filter: f,
       counts: { all: cnt.total || 0, waiting: cnt.waiting || 0, bot: cnt.bot || 0, muted: cnt.muted || 0, ad: cnt.ad || 0, unread: cnt.unread || 0,
+        held: cnt.muted || 0, mine: minePhones.length,
         unreadMessages: cnt.unread_messages || 0, oldestWaitingAt: iso(cnt.oldest_waiting) },
       threads: page.map((r) => ({
         key: keyOf(r.phone_norm), phone: full ? `0${r.phone_norm}` : maskPhone(r.phone_norm), phoneMasked: maskPhone(r.phone_norm),
         name: r.name || null, orders: Number(r.orders) || 0, orderNo: r.order_no || null,
         lastText: r.last_text || "", lastDir: r.last_dir || null, lastSource: r.last_source || null, lastAt: iso(r.last_at),
         unread: Number(r.unread) || 0, window: windowState(iso(r.last_in_at), t0), bot: botState(r, { now: t0, pauseMin }), ad: r.ad === true,
+        owner: owners.get(r.phone_norm) || null,
       })),
       nextBefore: rows.length > lim ? iso(page[page.length - 1].last_at) : null,
     };
   }
 
   /* ═══ N1: المحادثة ═══ */
-  async function getThread(pn, { limit = 80, before = null, full = false } = {}) {
+  async function getThread(pn, { limit = 80, before = null, full = false, me = null } = {}) {
     const lim = Math.min(Math.max(Number(limit) || 80, 1), 200);
     const head = (await pool.query(
       `SELECT t.phone_norm, t.last_in_at, t.last_at, t.unread, t.order_no, COALESCE(c.name, n.full_name, n.profile_name) AS name, c.orders AS orders,
@@ -225,13 +235,15 @@ export function register(app, ctx, deps = {}) {
     const byWamid = new Map(botRows.filter((r) => r.wamid).map((r) => [r.wamid, r]));
     const t0 = now();
     const state = botState(head, { now: t0, pauseMin: await pauseMinNow() });
+    const own = staff()?.owner || null;
+    const owner = own ? (await own.ownersFor([head], me)).get(pn) || null : null;      // SR2
     const events = botRows.filter((r) => r.handoff).map((r) => ({ at: iso(r.at), kind: "handover", reason: String(r.handoff).split(":")[0] }));
     if (state.state === "muted") events.push({ at: null, kind: "mute", until: state.mutedUntil, by: state.mutedBy, reason: state.reason });
     return {
       ok: true, key: keyOf(pn), phone: full ? `0${pn}` : maskPhone(pn), phoneMasked: maskPhone(pn),
       name: head.name || null, orders: Number(head.orders) || 0, orderNo: head.order_no || null, unread: Number(head.unread) || 0,
       optIn: { updates: head.optin_updates === true, marketing: head.optin_marketing === true, stopped: Boolean(head.stopped_at) },
-      window: windowState(iso(head.last_in_at), t0), bot: state, ad: head.ad === true,
+      window: windowState(iso(head.last_in_at), t0), bot: state, ad: head.ad === true, owner,
       messages: page.map((m) => {
         const d = m.direction === "in" && m.wamid ? byWamid.get(m.wamid) : null;
         const pr = m.pricing && typeof m.pricing === "object" && "billable" in m.pricing ? { billable: m.pricing.billable === true, category: m.pricing.category || null } : null;
@@ -250,7 +262,7 @@ export function register(app, ctx, deps = {}) {
     await ready;
     try {
       const out = await listThreads({ filter: c.req.query("filter") || c.req.query("f") || "all", q: c.req.query("q") || "", limit: c.req.query("limit"),
-        before: c.req.query("before") || null, full: a.full });
+        before: c.req.query("before") || null, full: a.full, me: meOf(a.user) });
       return c.json({ ...out, send: await sendState() });
     } catch (e) { log.error("[wa-hub] threads:", e.message); return c.json({ ok: false, error: "unavailable" }, 500); }
   });
@@ -259,7 +271,7 @@ export function register(app, ctx, deps = {}) {
     const pn = await phoneOfKey(c.req.param("key"), a.full);
     if (!pn) return c.json({ ok: false, error: "not_found" }, 404);
     try {
-      const r = await getThread(pn, { limit: c.req.query("limit"), before: c.req.query("before") || null, full: a.full });
+      const r = await getThread(pn, { limit: c.req.query("limit"), before: c.req.query("before") || null, full: a.full, me: meOf(a.user) });
       if (!r.ok) return c.json(r, 404);
       /* للمحادثة نفسها: قفل القناة أولاً، وبعده النافذة (نص حر بره الـ٢٤ ساعة مرفوض — القالب للمالك والعمليات) */
       /* wastaff: حالة الرد للمحادثة دي بالظبط (رقم تجربة والقناة مقفولة = مفتوح للتجربة؛ العميل وقّف الرسايل = مقفول) + مين رد من اللوحة/البورتال */
@@ -276,6 +288,22 @@ export function register(app, ctx, deps = {}) {
     await pool.query("UPDATE wa_threads SET unread=0, read_at=NOW(), read_by=$2, updated_at=NOW() WHERE phone_norm=$1", [pn, clip(a.user.name || a.user.role, 60)]);
     return c.json({ ok: true });
   });
+  /* SR2: سحب المحادثة / سيبها للبوت / خلصت — نفس دوال البورتال (waowner.js)؛ المالك والعمليات يقدروا ياخدوا محادثة حد تاني (force) */
+  for (const fn of ["take", "release", "done"]) {
+    app.post(`/api/cms/wa/threads/:key/${fn}`, async (c) => {
+      const a = await access(c); if (a.res) return a.res;
+      const pn = await phoneOfKey(c.req.param("key"), a.full);
+      if (!pn) return c.json({ ok: false, error: "not_found" }, 404);
+      const own = staff()?.owner || null;
+      if (!own) return c.json({ ok: false, error: "unavailable" }, 503);
+      let b = {}; try { b = await c.req.json(); } catch { b = {}; }
+      try {
+        const r = await own[fn](pn, meOf(a.user), { force: b && b.force === true });
+        if (!r.ok) return c.json({ ok: false, error: r.error, owner: r.owner || undefined, message: r.message }, r.status || 409);
+        return c.json({ ok: true, owner: r.owner });
+      } catch (e) { log.error(`[wa-hub] ${fn}:`, e.message); return c.json({ ok: false, error: "unavailable" }, 503); }
+    });
+  }
   /* «تم التعامل»: بيشيل التحويل المفتوح والكتم — نفس دالة البوت (مابنكتبش في جداوله) */
   app.post("/api/cms/wa/threads/:key/handled", async (c) => {
     const a = await access(c); if (a.res) return a.res;
@@ -298,7 +326,7 @@ export function register(app, ctx, deps = {}) {
     const sf = staff();
     if (sf) {
       const x = await sf.reply({ phoneNorm: pn, text: b.text, by: a.user.name || a.user.role, role: a.user.role, via: "dashboard" });
-      if (x.ok) return c.json({ ok: true, wamid: x.wamid, test: x.test, send: await sf.sendStateFor(pn) });
+      if (x.ok) return c.json({ ok: true, wamid: x.wamid, test: x.test, send: await sf.sendStateFor(pn), ...(sf.owner ? { owner: await sf.owner.ownerFor(pn, meOf(a.user)).catch(() => null) } : {}) });
       return c.json({ ok: false, error: x.error, gate: x.gate || null, message: x.message || undefined }, ["empty", "too_long", "bad_phone"].includes(x.error) ? 400 : 409);
     }
     const ib = inbox();

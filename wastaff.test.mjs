@@ -135,7 +135,7 @@ test("البورتال: كاشير ومدير بس، القراءة بتشتغل
     const w = world();
     const list = await call(w.app, "GET /api/portal/wa/chats", { query: {} });
     assert.equal(list.status, 200); assert.equal(list.body.threads.length, 1); assert.deepEqual(list.body.send, { ok: false, gate: "disabled" }); assert.equal(list.body.role, "cashier");
-    assert.deepEqual(w.hubCalls[0], ["list", { filter: "waiting", q: "", limit: undefined, before: null, full: true }]);     // الافتراضي: المستنيين موظف
+    assert.deepEqual(w.hubCalls[0], ["list", { filter: "waiting", q: "", limit: undefined, before: null, full: true, me: { id: "p1", name: "سلمى", role: "cashier", via: "portal" } }]);     // الافتراضي: المستنيين موظف
     const one = await call(w.app, "GET /api/portal/wa/chats/:key", { param: { key: keyOf(CUST) } });
     assert.equal(one.status, 200); assert.deepEqual(one.body.send, { ok: false, gate: "disabled", test: false }); assert.equal(one.body.messages.length, 3);
     const bad = await call(w.app, "POST /api/portal/wa/chats/:key/reply", { param: { key: keyOf(CUST) }, json: { text: "هلا" } });

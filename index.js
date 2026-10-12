@@ -3263,7 +3263,7 @@ let waKbApi = null;         // wakb.register: assistant knowledge base (manager 
 waKbApi = wakb.register(app, moduleCtx, { requirePortal: portalApi.requirePortal, broadcast: portalApi.broadcast, actor: async (c) => { const u = await cmsApi.whoami(c); return (u && (u.name || u.username)) || null; } });
 let waStaffApi = null;      // wastaff.register: رد الموظف على محادثة واتساب من اللوحة ومن البورتال (نفس حارس الإرسال)
 waHubApi = wahub.register(app, moduleCtx, { whoami: (c) => cmsApi.whoami(c), wa: waApi, waInbox: () => waInboxApi, bot: () => wabotApi, staff: () => waStaffApi });
-waStaffApi = wastaff.register(app, moduleCtx, { wa: waApi, hub: () => waHubApi, requirePortal: portalApi.requirePortal, audit: portalApi.audit });
+waStaffApi = wastaff.register(app, moduleCtx, { wa: waApi, hub: () => waHubApi, requirePortal: portalApi.requirePortal, audit: portalApi.audit, bot: () => wabotApi, broadcast: portalApi.broadcast });
 // 🍽 QR الطاولات: مفاتيح الطاولات + نداء الويتر (بيبعت إشعار البوابة) + تحليلات لكل طاولة
 tableOrder.register(app, moduleCtx, { portal: () => portalApi, shop: () => shopApi });
 /* 🚨 حارس الدفع (٢٢/٩): ناس بتوصل لخطوة الدفع ومحدش بيدفع ⇒ SMS للمدير.

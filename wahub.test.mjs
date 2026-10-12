@@ -122,10 +122,10 @@ test("N1 list: works with the sending switch off; rows carry the window, the bot
     ] });
     const r = (await w.call("GET", "/api/cms/wa/threads", { query: { limit: "2" } })).body;
     assert.equal(r.ok, true);
-    assert.deepEqual(r.counts, { all: 3, waiting: 1, bot: 1, muted: 0, ad: 0, unread: 2, unreadMessages: 3, oldestWaitingAt: ago(4) });
+    assert.deepEqual(r.counts, { all: 3, waiting: 1, bot: 1, muted: 0, ad: 0, unread: 2, held: 0, mine: 0, unreadMessages: 3, oldestWaitingAt: ago(4) });
     assert.equal(r.threads.length, 2);
     const a = r.threads[0];
-    assert.deepEqual(Object.keys(a).sort(), ["ad", "bot", "key", "lastAt", "lastDir", "lastSource", "lastText", "name", "orderNo", "orders", "phone", "phoneMasked", "unread", "window"]);
+    assert.deepEqual(Object.keys(a).sort(), ["ad", "bot", "key", "lastAt", "lastDir", "lastSource", "lastText", "name", "orderNo", "orders", "owner", "phone", "phoneMasked", "unread", "window"]);
     assert.equal(a.phone, "0511111111"); assert.equal(a.phoneMasked, "…1111"); assert.equal(a.unread, 2);
     assert.deepEqual(a.bot, { state: "waiting", reason: "complaint", mutedUntil: null, mutedBy: null, handoffAt: ago(4) });
     assert.equal(a.window.open, true); assert.ok(a.window.msLeft > 23 * 3600_000);
@@ -316,7 +316,7 @@ test("N7 wiring: every successful write on a settings route is followed by a swe
   assert.ok(index.slice(i, i + 400).includes("/^\\/api\\/(settings|notify\\/|cms\\/(wa-cloud|wa-sender|wabot\\/config))/.test(c.req.path)) waHubApi.sweepFor(c);"));
   assert.ok(i < index.indexOf("settingsGuard.register(app,"), "registered before the routes it watches");
   assert.ok(index.includes("waHubApi = wahub.register(app, moduleCtx, { whoami: (c) => cmsApi.whoami(c), wa: waApi, waInbox: () => waInboxApi, bot: () => wabotApi, staff: () => waStaffApi });"));
-  assert.ok(index.includes("waStaffApi = wastaff.register(app, moduleCtx, { wa: waApi, hub: () => waHubApi, requirePortal: portalApi.requirePortal, audit: portalApi.audit });"));
+  assert.ok(index.includes("waStaffApi = wastaff.register(app, moduleCtx, { wa: waApi, hub: () => waHubApi, requirePortal: portalApi.requirePortal, audit: portalApi.audit, bot: () => wabotApi, broadcast: portalApi.broadcast });"));
 });
 
 /* ══ العدّادان ═════════════════════════════════════════════════════════════ */
