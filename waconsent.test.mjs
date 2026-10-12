@@ -123,7 +123,7 @@ test("POST: the answer is stored for the SESSION's phone with ip and ua; a phone
 test("checkout: the answer travels with the order and is recorded with its proof; marketing stays a separate path", () => {
   const i = shop.indexOf("const waAnswer = parseWaUpdates({ updates: b.waUpdates, version: b.waUpdatesVersion,");
   assert.ok(i > 0);
-  const seg = shop.slice(i, i + 900);
+  const seg = shop.slice(i, i + 1800);
   assert.ok(seg.includes("recordWaUpdates(pool, { phoneNorm, answer: waAnswer, orderNo,"));
   assert.ok(seg.includes('if (wa() && typeof b.waMarketing === "boolean")'), "marketing opt-in is not mixed into the updates answer");
   assert.ok(!seg.includes("updates: typeof b.waUpdates"), "the old path that stored updates without proof is gone");
@@ -140,4 +140,77 @@ test("the public /api/wa/optin can no longer turn consent ON for an arbitrary ph
 test("nothing here sends: the module never touches the send path", () => {
   const src = readFileSync(new URL("./waconsent.js", import.meta.url), "utf8");
   for (const w of ["sendTemplate", "sendText", "graph.facebook.com", "/messages", "fetch("]) assert.ok(!src.includes(w), w);
+});
+
+/* ══ TC (١٣/١٠): قبول الشروط مع الطلب ═══════════════════════════════════════════════════════════════ */
+test("terms: the current version names WhatsApp order updates and carries the line the customer saw", () => {
+  const t = WC.TERMS_VERSIONS[WC.TERMS_CURRENT];
+  assert.equal(t.waOrderUpdates, true);
+  assert.match(t.line_ar, /الشروط والأحكام وسياسة الخصوصية/);
+  assert.doesNotMatch(t.line_ar, /واتساب/, "the line under the pay button stays generic (owner's decision)");
+  assert.equal(WC.parseTermsVersion(WC.TERMS_CURRENT), WC.TERMS_CURRENT);
+  for (const bad of [undefined, null, "", "terms-2026-09-19", "latest", true, 1, { v: WC.TERMS_CURRENT }]) assert.equal(WC.parseTermsVersion(bad), null);
+});
+
+function termsPool() {
+  const log = [];
+  return { log, async query(sql, p = []) {
+    const s = String(sql).replace(/\s+/g, " ").trim();
+    if (/^CREATE TABLE IF NOT EXISTS wa_optins/i.test(s)) return { rows: [] };
+    if (/^INSERT INTO wa_optin_log\(phone_norm, kind, value, text_version, text, source, order_no, ip, ua\) VALUES \(\$1, 'terms', TRUE/i.test(s)) {
+      log.push({ phone: p[0], kind: "terms", value: true, version: p[1], text: p[2], source: p[6], order_no: p[3], ip: p[4], ua: p[5] }); return { rows: [] };
+    }
+    if (/^SELECT text_version FROM wa_optin_log WHERE kind='terms' AND value AND order_no=\$1 AND phone_norm=\$2/i.test(s)) {
+      return { rows: log.filter((l) => l.kind === "terms" && l.order_no === p[0] && l.phone === p[1]).slice(-1).map((l) => ({ text_version: l.version })) };
+    }
+    throw new Error("unexpected SQL: " + s.slice(0, 70));
+  } };
+}
+
+test("terms: one proof row per order — verified phone, version, the line shown, order, ip and ua; wa_optins is not touched", async () => {
+  WC._resetSchemaForTests();
+  const pool = termsPool();
+  const r = await WC.recordTermsAcceptance(pool, { phoneNorm: PN, version: WC.TERMS_CURRENT, orderNo: "W1790000000001", ip: "1.2.3.4", ua: "UA" });
+  assert.deepEqual(r, { ok: true, version: WC.TERMS_CURRENT });
+  assert.deepEqual(pool.log, [{ phone: PN, kind: "terms", value: true, version: WC.TERMS_CURRENT, text: WC.TERMS_VERSIONS[WC.TERMS_CURRENT].line_ar,
+    source: "checkout", order_no: "W1790000000001", ip: "1.2.3.4", ua: "UA" }]);
+  assert.equal((await WC.recordTermsAcceptance(pool, { phoneNorm: PN, version: "terms-2026-09-19", orderNo: "W2" })).error, "unknown_version");
+  assert.equal((await WC.recordTermsAcceptance(pool, { phoneNorm: "123", version: WC.TERMS_CURRENT, orderNo: "W2" })).error, "invalid_phone");
+  assert.equal((await WC.recordTermsAcceptance(pool, { phoneNorm: PN, version: WC.TERMS_CURRENT, orderNo: "" })).error, "no_order");
+  assert.equal(pool.log.length, 1, "nothing recorded for a refused call");
+});
+
+test("terms: an order is covered only by its own recorded acceptance, for its own phone; anything else — or an error — is «not covered»", async () => {
+  WC._resetSchemaForTests();
+  const pool = termsPool();
+  await WC.recordTermsAcceptance(pool, { phoneNorm: PN, version: WC.TERMS_CURRENT, orderNo: "W1" });
+  assert.equal(await WC.termsCoverOrder(pool, PN, "W1"), true);
+  assert.equal(await WC.termsCoverOrder(pool, PN, "W2"), false, "another (older) order");
+  assert.equal(await WC.termsCoverOrder(pool, "598765432", "W1"), false, "another phone");
+  assert.equal(await WC.termsCoverOrder(pool, PN, null), false);
+  pool.log.push({ phone: PN, kind: "terms", order_no: "W3", version: "terms-unknown" });
+  assert.equal(await WC.termsCoverOrder(pool, PN, "W3"), false, "a version this code does not know proves nothing");
+  assert.equal(await WC.termsCoverOrder({ query: async () => { throw new Error("db down"); } }, PN, "W1"), false);
+});
+
+test("checkout: the terms version travels with the order and is recorded only when it is a known one", () => {
+  assert.ok(shop.includes("const termsV = parseTermsVersion(b.termsVersion);"));
+  const i = shop.indexOf("const termsV = parseTermsVersion(b.termsVersion);");
+  const seg = shop.slice(i, i + 420);
+  assert.ok(seg.includes("if (termsV) {") && seg.includes("recordTermsAcceptance(pool, { phoneNorm, version: termsV, orderNo,"));
+});
+
+/* ══ TC2 (١٣/١٠): التسجيل برقم الجوال بيتسجّل هو كمان ═══════════════════════════════════════════════ */
+test("terms: registration (OTP verified) is recorded too — source register, no order number, the registration line as shown", async () => {
+  WC._resetSchemaForTests();
+  const pool = termsPool();
+  const r = await WC.recordTermsAcceptance(pool, { phoneNorm: PN, version: WC.TERMS_CURRENT, source: "register", ip: "1.2.3.4", ua: "UA" });
+  assert.deepEqual(r, { ok: true, version: WC.TERMS_CURRENT });
+  assert.deepEqual(pool.log, [{ phone: PN, kind: "terms", value: true, version: WC.TERMS_CURRENT, text: WC.TERMS_VERSIONS[WC.TERMS_CURRENT].reg_ar, source: "register", order_no: null, ip: "1.2.3.4", ua: "UA" }]);
+  assert.match(WC.TERMS_VERSIONS[WC.TERMS_CURRENT].reg_ar, /بتسجيل رقمك أنت توافق على الشروط والأحكام وسياسة الخصوصية/);
+  assert.equal(await WC.termsCoverOrder(pool, PN, "W1"), false, "a registration row is not an order's row");
+  assert.equal((await WC.recordTermsAcceptance(pool, { phoneNorm: PN, version: WC.TERMS_CURRENT, source: "anything-else" })).error, "no_order", "only register may come without an order");
+  const acc = readFileSync(new URL("./accounts.js", import.meta.url), "utf8");
+  assert.ok(acc.includes("const termsV = parseTermsVersion(b.termsVersion);") && acc.includes('recordTermsAcceptance(pool, { phoneNorm, version: termsV, source: "register"'));
+  assert.ok(acc.indexOf('recordTermsAcceptance(pool, { phoneNorm, version: termsV, source: "register"') > acc.indexOf('await pool.query("DELETE FROM acct_otp WHERE phone_norm=$1", [phoneNorm]);'), "only after the code was verified");
 });

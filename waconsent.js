@@ -27,6 +27,29 @@ export const WA_UPDATES_TEXTS = Object.freeze({
 });
 export const WA_UPDATES_CURRENT = "wa-updates-v1";
 
+/* ── TC (١٣/١٠، قرار عمر: «نكتفي على الرسالة انه موافق على الشروط … التفاصيل تكون موجودة في صفحة الشروط») ─────────────
+   سؤال الزرّين اتشال من الشيك أوت. الموافقة على تحديثات الطلب على واتساب بقت جزءاً من الشروط نفسها:
+   السطر تحت زر الدفع عام زي ما هو، والمادة (١١) من الشروط + سياسة الخصوصية بيقولوا بوضوح إن فريش كاتس بيبعت رسايل الطلب
+   SMS وعلى واتساب، وإزاي تتوقف. وكل طلب بيتسجّل معاه **نسخة الشروط** اللي اتعمل تحتها + الوقت، في نفس سجل الإثبات.
+   waOrderUpdates = النسخة دي بتذكر واتساب لتحديثات الطلب (الحارس في whatsapp.js بيعتمد عليها). أي نسخة قبلها مش هنا
+   ⇒ طلباتها مش مغطّاة. تغيير نص المادة = نسخة جديدة هنا + نفس الرقم في المتجر (consent.js: FC_TERMS_VERSION). */
+export const TERMS_VERSIONS = Object.freeze({
+  "terms-2026-10-13": Object.freeze({
+    waOrderUpdates: true, effective: "2026-10-13",
+    line_ar: "بإتمام الطلب أنت توافق على الشروط والأحكام وسياسة الخصوصية",
+    line_en: "By placing your order you agree to the Terms & Conditions and Privacy Policy",
+    // السطر تحت زر «أرسل الكود» في خطوة رقم الجوال (التسجيل)
+    reg_ar: "بتسجيل رقمك أنت توافق على الشروط والأحكام وسياسة الخصوصية",
+    reg_en: "By registering your number you agree to the Terms & Conditions and Privacy Policy",
+  }),
+});
+export const TERMS_CURRENT = "terms-2026-10-13";
+/* نسخة الشروط اللي المتجر بعتها مع الطلب ⇒ الاسم لو معروفة، وإلا null (نسخة مش معروفة = مش إثبات، مايتسجّلش حاجة) */
+export function parseTermsVersion(raw) {
+  const v = typeof raw === "string" ? raw.trim() : "";
+  return TERMS_VERSIONS[v] ? v : null;
+}
+
 const SOURCES = ["otp_step", "summary", "checkout", "account"];
 const clip = (v, n) => (v == null ? null : String(v).slice(0, n));
 
@@ -122,6 +145,37 @@ export async function recordWaMarketingBot(pool, { phoneNorm, value, text, wamid
      VALUES ($1, 'marketing', $2, $3, $4, 'bot', NULL, NULL, $5)`,
     [phoneNorm, value, version, String(text).slice(0, 1000), wamid ? `wa:${wamid}` : null]);
   return { ok: true, version };
+}
+
+/* TC: قبول الشروط مع الطلب — صف إثبات واحد لكل طلب (kind = terms) في نفس السجل: الرقم المتحقق، نسخة الشروط، نص السطر
+   اللي اتعرض، الطلب، الوقت، IP/UA. مابيلمسش wa_optins (ده مش اختيار نعم/لا، ده الطلب اتعمل تحت أنهي شروط). */
+export async function recordTermsAcceptance(pool, { phoneNorm, version, orderNo, ip = null, ua = null, source = "checkout" }) {
+  if (!/^5\d{8}$/.test(String(phoneNorm || ""))) return { ok: false, error: "invalid_phone" };
+  const v = parseTermsVersion(version);
+  if (!v) return { ok: false, error: "unknown_version" };
+  /* TC2 (١٣/١٠): التسجيل برقم الجوال (OTP) بيتسجّل هو كمان — source = register ومن غير رقم طلب. الطلب لازم له رقم. */
+  const src = source === "register" ? "register" : "checkout";
+  if (src === "checkout" && !orderNo) return { ok: false, error: "no_order" };
+  await ensureWaConsentSchema(pool);
+  await pool.query(
+    `INSERT INTO wa_optin_log(phone_norm, kind, value, text_version, text, source, order_no, ip, ua)
+     VALUES ($1, 'terms', TRUE, $2, $3, $7, $4, $5, $6)`,
+    [phoneNorm, v, src === "register" ? TERMS_VERSIONS[v].reg_ar : TERMS_VERSIONS[v].line_ar, src === "register" ? null : clip(orderNo, 30), clip(ip, 60), clip(ua, 300), src]);
+  return { ok: true, version: v };
+}
+
+/* الطلب ده اتعمل تحت شروط بتذكر تحديثات الطلب على واتساب؟ (للحارس). الرقم لازم يكون رقم الطلب نفسه.
+   أي خطأ أو نسخة مش معروفة = لأ. */
+export async function termsCoverOrder(pool, phoneNorm, orderNo) {
+  if (!orderNo || !/^5\d{8}$/.test(String(phoneNorm || ""))) return false;
+  try {
+    await ensureWaConsentSchema(pool);
+    const r = await pool.query(
+      "SELECT text_version FROM wa_optin_log WHERE kind='terms' AND value AND order_no=$1 AND phone_norm=$2 ORDER BY id DESC LIMIT 1",
+      [String(orderNo), String(phoneNorm)]);
+    const v = r.rows && r.rows[0] && r.rows[0].text_version;
+    return Boolean(v && TERMS_VERSIONS[v] && TERMS_VERSIONS[v].waOrderUpdates === true);
+  } catch { return false; }
 }
 
 /* تسجيل الإجابة. phoneNorm لازم يكون جاي من رقم متحقق (جلسة OTP) — المتصل هو المسؤول عن ده.

@@ -187,14 +187,17 @@ test("utility without opt-in → skipped; with opt-in → sent + logged", withEn
   assert.equal(pool.msgs[0].status, "accepted");
 }));
 
-test("marketing needs marketing opt-in and respects cms opt-out", withEnv(ON, async () => {
+test("marketing goes to every customer unless they asked to stop (owner's decision 13/10) — a stop from any source wins", withEnv(ON, async () => {
   const fetch = fakeFetch();
-  const pool = memPool({ optins: { "512345678": { updates: true, marketing: false }, "598765432": { updates: false, marketing: true } }, suppressed: ["598765432"] });
+  const pool = memPool({ optins: { "512345678": { updates: true, marketing: false }, "598765432": { updates: false, marketing: true }, "577777777": { marketing: false, marketing_off_at: "2026-10-13T08:00:00Z" } }, suppressed: ["598765432"] });
   const { api } = setupWa({ pool, fetch });
   const p = { body: ["محمد"], button: ["k7q2m9"] };
-  assert.equal((await api.sendTemplate({ phoneNorm: "512345678", template: "fc_cart_reminder", params: p })).skipped, "no_optin");
-  assert.equal((await api.sendTemplate({ phoneNorm: "598765432", template: "fc_cart_reminder", params: p })).skipped, "opted_out");
-  assert.equal(fetch.calls.length, 0);
+  assert.equal((await api.sendTemplate({ phoneNorm: "512345678", template: "fc_cart_reminder", params: p })).ok, true, "no explicit opt-in is needed any more");
+  assert.equal((await api.sendTemplate({ phoneNorm: "566666666", template: "fc_cart_reminder", params: p })).ok, true, "a customer with no consent row at all");
+  assert.equal(fetch.calls.length, 2);
+  assert.equal((await api.sendTemplate({ phoneNorm: "598765432", template: "fc_cart_reminder", params: p })).skipped, "opted_out", "stopped marketing messages (SMS link / cashier)");
+  assert.equal((await api.sendTemplate({ phoneNorm: "577777777", template: "fc_cart_reminder", params: p })).skipped, "opted_out", "explicitly refused offers");
+  assert.equal(fetch.calls.length, 2);
 }));
 
 test("Graph error → ok:false, logged failed, never throws", withEnv(ON, async () => {

@@ -38,6 +38,7 @@ import { sendSms as defaultSendSms } from "./accounts.js";
 import { isOptOutText } from "./wamsg.js";
 import * as CAT from "./watemplates.js";
 import { staffPhones } from "./staffalerts.js";
+import { termsCoverOrder, TERMS_CURRENT, TERMS_VERSIONS } from "./waconsent.js";
 
 const env = (k, d) => (process.env[k] || d || "").toString().trim();
 export const GRAPH_VERSION = "v23.0";
@@ -538,6 +539,9 @@ export function register(app, ctx, deps = {}) {
       -- SEC (١٢/١٠): العميل كتب «إيقاف» على واتساب ⇒ ولا قالب (تسويق ولا تحديثات) لحد ما يرجع يوافق.
       -- عمود مستقل عشان source بيتكتب فوقه مع كل طلب (shop.js) فماينفعش يبقى هو العلامة.
       ALTER TABLE wa_optins ADD COLUMN IF NOT EXISTS stopped_at TIMESTAMPTZ;
+      -- TC2 (١٣/١٠، قرار المالك: العروض للكل إلا اللي طلب إيقاف): علامة «رفض العروض» الصريحة من أي مصدر (إيقاف في واتساب،
+      -- رفض من المتجر). عمود marketing لوحده مايكفيش: صف جديد بيتولد false من غير ما العميل يقول حاجة.
+      ALTER TABLE wa_optins ADD COLUMN IF NOT EXISTS marketing_off_at TIMESTAMPTZ;
       -- أسماء جهات الاتصال من تطبيق واتساب بزنس + اسم البروفايل من الوارد
       CREATE TABLE IF NOT EXISTS wa_contact_names (
         phone_norm TEXT PRIMARY KEY,
@@ -595,6 +599,12 @@ export function register(app, ctx, deps = {}) {
     return null;
   }
 
+  /* كام طلب متسجّل معاه قبول الشروط (للوحة والتحقق بعد النشر). الجدول مش موجود/خطأ = null */
+  async function termsRecorded() {
+    try { return (await pool.query("SELECT count(DISTINCT order_no)::int AS n FROM wa_optin_log WHERE kind='terms'")).rows[0]?.n ?? 0; }
+    catch { return null; }
+  }
+
   /* السبب اللي بيمنع الإرسال، أو null لو كله تمام. */
   async function gate() {
     return channelBlock(await settingsSnap());
@@ -604,13 +614,14 @@ export function register(app, ctx, deps = {}) {
      (waconsent.js بيكتب updates_answered_at)؛ للتسويق: «START» بس (بيمسح stopped_at). */
   async function optInOf(phoneNorm) {
     const r = await pool.query(
-      `SELECT updates, marketing, stopped_at, (to_jsonb(wa_optins)->>'updates_answered_at')::timestamptz AS answered_at
+      `SELECT updates, marketing, stopped_at, marketing_off_at, (to_jsonb(wa_optins)->>'updates_answered_at')::timestamptz AS answered_at
          FROM wa_optins WHERE phone_norm=$1`, [phoneNorm]);
     const o = r.rows[0] || {};
     const stoppedAt = o.stopped_at ? new Date(o.stopped_at).getTime() : null;
     const answeredAt = o.answered_at ? new Date(o.answered_at).getTime() : null;
-    return { updates: o.updates === true, marketing: o.marketing === true, stopped: Boolean(stoppedAt),
-      stoppedForUpdates: Boolean(stoppedAt) && !(answeredAt && answeredAt > stoppedAt) };
+    return { updates: o.updates === true, marketing: o.marketing === true, stopped: Boolean(stoppedAt), marketingOff: Boolean(o.marketing_off_at),
+      stoppedForUpdates: Boolean(stoppedAt) && !(answeredAt && answeredAt > stoppedAt),
+      saidNoToUpdates: Boolean(answeredAt) && o.updates !== true };   // جاوب «لا» بنفسه (سؤال قديم/الحساب/البوت)
   }
   async function marketingSuppressed(phoneNorm) {
     try {
@@ -625,6 +636,7 @@ export function register(app, ctx, deps = {}) {
      كل إرسال واتساب (قالب، رد حر من الصندوق/البورتال، حملة، أتمتة، بوت، تجربة) لازم يعدّي من هنا.
        kind:     "template" (بيتدفع، بره النافذة) | "session" (رد حر جوّه نافذة الـ٢٤ ساعة)
        template: اسم القالب (الفئة بتتاخد من السجل — المنادي مايقدرش يدّعي فئة)
+       orderNo:  الطلب اللي الرسالة عنه (للقوالب الخدمية: الموافقة = الطلب ده اتعمل تحت شروط بتذكر واتساب)
        purpose:  "marketing" بيفرض موافقة التسويق مهما كانت فئة القالب (الحملات)
        test:     إرسال تجربة — للأرقام اللي في قايمة التجربة في اللوحة **بس** (allowList بتضيّق، ماتوسّعش)
      بيرجّع {ok:true, ticket} أو {ok:false, reason}. التذكرة لرقم واحد، مرة واحدة، ودقيقة واحدة. */
@@ -637,7 +649,7 @@ export function register(app, ctx, deps = {}) {
   }
   const TICKETS = new WeakSet();
   const TICKET_TTL_MS = 60_000;
-  async function guardSend({ phoneNorm, kind, template = null, purpose = null, source = null, test = false, allowList = null, fromId = null } = {}) {
+  async function guardSend({ phoneNorm, kind, template = null, purpose = null, source = null, test = false, allowList = null, fromId = null, orderNo = null } = {}) {
     const no = (reason) => ({ ok: false, reason });
     await ready;
     const pn = String(phoneNorm || "");
@@ -674,11 +686,21 @@ export function register(app, ctx, deps = {}) {
     if (t.category === "AUTHENTICATION" && !marketing) return grant();   // كود تحقق العميل طلبه بنفسه
     const o = await optInOf(pn);
     if (marketing) {
-      if (o.stopped || await marketingSuppressed(pn)) return no("opted_out");
-      if (!o.marketing) return no("no_optin");
+      /* TC2 (١٣/١٠، قرار المالك بنصّه: «العروض التسويقية تكون للكل على مسئوليتي الا لو العميل طلب ايقاف»):
+         العروض بتتبعت لأي عميل **إلا** اللي طلب إيقاف — «إيقاف» في واتساب، رفض صريح للعروض من أي مصدر، أو إيقاف رسايل
+         التسويق عموماً (cms_contacts). مابقاش فيه شرط موافقة مسبقة على العروض. */
+      if (o.stopped || o.marketingOff || await marketingSuppressed(pn)) return no("opted_out");
     } else {
+      /* TC (١٣/١٠، قرار عمر): القالب الخدمي بيتبعت لو
+           • العميل مش موقِّف («إيقاف» بيغلب أي حاجة، حتى طلب جديد)، و
+           • (وافق صراحةً على التحديثات) أو (الرسالة عن طلب متسجّل إنه اتعمل تحت شروط بتذكر تحديثات الطلب على واتساب
+             — وما قالش «لا» بنفسه قبل كده).
+         من غير طلب، أو طلب قديم مالوش قبول متسجّل ⇒ no_optin. */
       if (o.stoppedForUpdates) return no("opted_out");
-      if (!o.updates) return no("no_optin");
+      if (!o.updates) {
+        if (o.saidNoToUpdates) return no("no_optin");
+        if (!(orderNo && await termsCoverOrder(pool, pn, orderNo))) return no("no_optin");
+      }
     }
     return grant();
   }
@@ -701,12 +723,13 @@ export function register(app, ctx, deps = {}) {
     const pn = normPhone(phone);
     if (!/^5\d{8}$/.test(pn)) return { ok: false, error: "invalid_phone" };
     await pool.query(
-      `INSERT INTO wa_optins(phone_norm, updates, marketing, source, order_no)
-       VALUES ($1, COALESCE($2,FALSE), COALESCE($3,FALSE), $4, $5)
+      `INSERT INTO wa_optins(phone_norm, updates, marketing, source, order_no, marketing_off_at)
+       VALUES ($1, COALESCE($2,FALSE), COALESCE($3,FALSE), $4, $5, CASE WHEN $3 IS FALSE THEN NOW() END)
        ON CONFLICT (phone_norm) DO UPDATE SET
          updates = COALESCE($2, wa_optins.updates),
          marketing = COALESCE($3, wa_optins.marketing),
          source = EXCLUDED.source, order_no = COALESCE(EXCLUDED.order_no, wa_optins.order_no),
+         marketing_off_at = CASE WHEN $3 IS FALSE THEN COALESCE(wa_optins.marketing_off_at, NOW()) WHEN $3 IS TRUE THEN NULL ELSE wa_optins.marketing_off_at END,
          updated_at = NOW()`,
       [pn, typeof updates === "boolean" ? updates : null, typeof marketing === "boolean" ? marketing : null,
        String(source).slice(0, 40), orderNo ? String(orderNo).slice(0, 30) : null]);
@@ -764,7 +787,7 @@ export function register(app, ctx, deps = {}) {
        مطلوبة)؛ الاستثناء الوحيد = أرقام التجربة اللي في اللوحة (test / allowList). */
     void requireOptIn;
     const g = await guardSend({ phoneNorm, kind: "template", template, source, purpose: source === "campaign" ? "marketing" : null,
-      test, allowList });
+      test, allowList, orderNo });
     if (!g.ok) return { ok: false, skipped: g.reason };
     const language = lang || t.language || "ar";
     const bad = paramProblem(template, params, language);
@@ -1111,6 +1134,7 @@ export function register(app, ctx, deps = {}) {
     const snap = await settingsSnap();
     return c.json({ ok: true, master: masterOn(), configured: configured(), settingsOn: await settingsOn(),
       envState: envState(), dashMaster: dashMasterOf(snap), blockedBy: channelBlock(snap), testPhones: testPhonesOf(snap).length,
+      terms: { current: TERMS_CURRENT, waOrderUpdates: TERMS_VERSIONS[TERMS_CURRENT].waOrderUpdates === true, ordersRecorded: await termsRecorded() },
       phoneId: phoneId() || null, wabaId: wabaId() || null,
       webhookSecret: Boolean(env("WHATSAPP_APP_SECRET")), verifyToken: Boolean(env("WHATSAPP_VERIFY_TOKEN")),
       optins: counts, last7, templates: Object.keys(TEMPLATES) });

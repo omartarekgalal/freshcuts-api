@@ -413,11 +413,11 @@ test("webhook route: bad signature → 200 ignored (logged), good signature → 
 test("campaign send logs the rendered template text (inbox shows what the customer saw)", withEnv(ON, async () => {
   const { api, pool, calls } = await setupWa();
   const { params, text } = C.campaignParams("fc_winback", { vars: { first_name: "محمد", fav_dish: "كفتة" }, link_code: "abc123", coupon: "W1X" }, { link_slug: "w1" });
-  // SEC: الحملة = تسويق ⇒ من غير موافقة تسويق صريحة مفيش إرسال، حتى لو المنادي كتب requireOptIn:false
-  const refused = await api.sendTemplate({ phoneNorm: "512345678", template: "fc_winback", params, requireOptIn: false, source: "campaign", body: text });
-  assert.equal(refused.skipped, "no_optin");
+  // TC2 (قرار المالك ١٣/١٠): الحملة بتتبعت لأي عميل إلا اللي طلب إيقاف
+  pool.db.optins["598765432"] = { updates: true, marketing: false, stopped_at: "2026-10-13T08:00:00Z" };
+  const refused = await api.sendTemplate({ phoneNorm: "598765432", template: "fc_winback", params, requireOptIn: false, source: "campaign", body: text });
+  assert.equal(refused.skipped, "opted_out");
   assert.equal(calls.length, 0);
-  pool.db.optins["512345678"] = { updates: false, marketing: true };
   const r = await api.sendTemplate({ phoneNorm: "512345678", template: "fc_winback", params, requireOptIn: false, source: "campaign", body: text });
   assert.equal(r.ok, true);
   const sent = JSON.parse(calls[0].init.body);

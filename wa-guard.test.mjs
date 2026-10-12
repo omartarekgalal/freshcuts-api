@@ -58,6 +58,10 @@ function world({ settings = {}, optins = {}, inbound = [], suppressed = [] } = {
     if (/^INSERT INTO wa_optins/i.test(s)) { const c = db.optins[p[0]] || {}; db.optins[p[0]] = { ...c, updates: p[1] ?? c.updates ?? false, marketing: p[2] ?? c.marketing ?? false }; return { rows: [] }; }
     if (/^UPDATE wa_optins SET stopped_at=NOW\(\)/i.test(s)) { db.optins[p[0]] = { ...(db.optins[p[0]] || {}), stopped_at: new Date().toISOString() }; return { rows: [] }; }
     if (/^UPDATE wa_optins SET stopped_at=NULL/i.test(s)) { db.optins[p[0]] = { ...(db.optins[p[0]] || {}), stopped_at: null }; return { rows: [] }; }
+    if (/^SELECT text_version FROM wa_optin_log WHERE kind='terms' AND value AND order_no=\$1 AND phone_norm=\$2/i.test(s)) {
+      return { rows: (db.terms || []).filter((t) => t.order === p[0] && t.phone === p[1]).slice(-1).map((t) => ({ text_version: t.version })) };
+    }
+    if (/FROM shop_orders WHERE order_no=\$1/i.test(s)) return { rows: (db.orders || []).filter((o) => o.order_no === p[0]) };
     if (/FROM cms_contacts/i.test(s)) return { rows: [], rowCount: db.suppressed.includes(p[0]) ? 1 : 0 };
     if (/^INSERT INTO wa_messages/i.test(s)) { db.msgs.push({ wamid: p[0], phone_norm: p[1], status: p[6] }); return { rows: [], rowCount: 1 }; }
     if (/^UPDATE settings SET data = jsonb_set\(COALESCE\(data,'\{\}'::jsonb\), '\{waMaster\}'/i.test(s)) { db.settings.waMaster = JSON.parse(p[0]); return { rows: [], rowCount: 1 }; }
@@ -203,37 +207,41 @@ test("master: settings that cannot be read ⇒ locked (never «assume on»)", wi
 }));
 
 /* ══ ٤) الموافقة حسب النوع ══════════════════════════════════════════════════ */
-test("consent: utility needs the updates opt-in, marketing needs the marketing opt-in, and requireOptIn:false no longer skips either", withEnv(ALLOW, async () => {
+test("consent: utility needs its own basis; marketing goes to everyone except those who asked to stop; requireOptIn:false changes nothing", withEnv(ALLOW, async () => {
   const marketingTpl = Object.keys(W.TEMPLATES).find((n) => W.TEMPLATES[n].category === "MARKETING");
   assert.ok(marketingTpl, "the registry has a marketing template");
   const send = (w, template, extra = {}) => w.wa.guardSend({ phoneNorm: CUST, kind: "template", template, ...extra });
   const none = world();
-  assert.equal((await send(none, "fc_order_preparing")).reason, "no_optin");
-  assert.equal((await send(none, marketingTpl)).reason, "no_optin");
+  assert.equal((await send(none, "fc_order_preparing")).reason, "no_optin", "an order message without an order or an explicit yes is still refused");
   assert.equal((await none.wa.sendTemplate({ phoneNorm: CUST, template: "fc_order_preparing", params: utilParams(), requireOptIn: false })).skipped, "no_optin");
+  assert.equal(none.calls.length, 0);
+  // owner's decision 13/10: offers go to every customer unless they asked to stop
+  assert.equal((await send(none, marketingTpl)).ok, true, "no consent row at all");
+  assert.equal((await send(none, "fc_order_preparing", { source: "campaign" })).ok, true, "a campaign is judged as marketing whatever the template category");
   const upd = world({ optins: { [CUST]: { updates: true, marketing: false } } });
   assert.equal((await send(upd, "fc_order_preparing")).ok, true);
-  assert.equal((await send(upd, marketingTpl)).reason, "no_optin", "an updates opt-in is not a marketing opt-in");
-  assert.equal((await send(upd, "fc_order_preparing", { source: "campaign" })).reason, "no_optin", "a campaign is marketing whatever the template category");
-  assert.equal((await send(upd, "fc_order_preparing", { purpose: "marketing" })).reason, "no_optin");
-  const mkt = world({ optins: { [CUST]: { updates: false, marketing: true } } });
-  assert.equal((await send(mkt, marketingTpl)).ok, true);
-  assert.equal((await send(mkt, "fc_order_preparing")).reason, "no_optin", "a marketing opt-in is not an updates opt-in");
-  const out = world({ optins: { [CUST]: { updates: true, marketing: true } }, suppressed: [CUST] });
-  assert.equal((await send(out, marketingTpl)).reason, "opted_out", "an opt-out recorded anywhere (SMS link, WhatsApp) always wins for marketing");
-  assert.equal((await send(out, "fc_order_preparing", { source: "campaign" })).reason, "opted_out");
+  assert.equal((await send(upd, marketingTpl)).ok, true, "marketing=false with no refusal on record is just «never asked»");
+  // every way of saying stop
+  const smsOut = world({ optins: { [CUST]: { updates: true, marketing: true } }, suppressed: [CUST] });
+  assert.equal((await send(smsOut, marketingTpl)).reason, "opted_out", "stopped marketing by SMS link / cashier");
+  assert.equal((await send(smsOut, "fc_order_preparing", { source: "campaign" })).reason, "opted_out");
+  assert.equal((await send(smsOut, "fc_order_preparing")).ok, true, "…their order messages are not affected");
+  const refused = world({ optins: { [CUST]: { marketing: false, marketing_off_at: "2026-10-13T08:00:00Z" } } });
+  assert.equal((await send(refused, marketingTpl)).reason, "opted_out", "explicitly refused offers");
+  const stopped = world({ optins: { [CUST]: { marketing: false, stopped_at: "2026-10-13T08:00:00Z" } } });
+  assert.equal((await send(stopped, marketingTpl)).reason, "opted_out", "wrote «إيقاف» on WhatsApp");
   assert.equal((await send(none, "no_such_template")).reason, "unknown_template");
   assert.equal((await none.wa.guardSend({ phoneNorm: "123", kind: "template", template: "fc_order_preparing" })).reason, "invalid_phone");
   assert.equal((await none.wa.guardSend({ phoneNorm: CUST, kind: "broadcast" })).reason, "bad_kind");
-  for (const w of [none, upd, mkt, out]) assert.equal(w.calls.length, 0);
 }));
 
-test("consent: an authentication code needs no opt-in — unless someone tries to use it as a campaign", withEnv(ALLOW, async () => {
+test("consent: an authentication code needs no consent; used as a campaign it follows the marketing rule (refused only for a customer who stopped)", withEnv(ALLOW, async () => {
   const auth = Object.keys(W.TEMPLATES).find((n) => W.TEMPLATES[n].category === "AUTHENTICATION");
   if (!auth) return;
-  const w = world();
-  assert.equal((await w.wa.guardSend({ phoneNorm: CUST, kind: "template", template: auth })).ok, true);
-  assert.equal((await w.wa.guardSend({ phoneNorm: CUST, kind: "template", template: auth, source: "campaign" })).reason, "no_optin");
+  const w = world({ optins: { "598765432": { stopped_at: "2026-10-13T08:00:00Z" } } });
+  assert.equal((await w.wa.guardSend({ phoneNorm: "598765432", kind: "template", template: auth })).ok, true, "a code the customer asked for goes even after «إيقاف»");
+  assert.equal((await w.wa.guardSend({ phoneNorm: "598765432", kind: "template", template: auth, source: "campaign" })).reason, "opted_out");
+  assert.equal((await w.wa.guardSend({ phoneNorm: CUST, kind: "template", template: auth, source: "campaign" })).ok, true);
 }));
 
 test("consent: a free-form reply needs a real inbound message in the last 24 h — checked by the guard, not left to the caller", withEnv(ALLOW, async () => {
@@ -366,15 +374,13 @@ test("R2: the campaign sender asks for the marketing opt-in, and the code no lon
   }
 });
 
-test("R2: end to end — a campaign row for a customer with only the «order updates» opt-in is not sent", withEnv(ALLOW, async () => {
+test("R2 (as decided 13/10): a campaign row is sent to a customer who never opted in, and skipped for one who stopped", withEnv(ALLOW, async () => {
   const marketingTpl = Object.keys(W.TEMPLATES).find((n) => W.TEMPLATES[n].category === "MARKETING");
-  const w = world({ optins: { [CUST]: { updates: true, marketing: false }, "598765432": { updates: false, marketing: true } } });
-  const params = { body: ["x"] };
-  const r1 = await w.wa.sendTemplate({ phoneNorm: CUST, template: marketingTpl, params, requireOptIn: false, source: "campaign" });
-  assert.equal(r1.skipped, "no_optin");
+  const w = world({ optins: { [CUST]: { updates: true, marketing: false }, "598765432": { marketing: true, stopped_at: "2026-10-13T08:00:00Z" } } });
+  assert.equal((await w.wa.guardSend({ phoneNorm: CUST, kind: "template", template: marketingTpl, source: "campaign" })).ok, true);
+  const r = await w.wa.sendTemplate({ phoneNorm: "598765432", template: marketingTpl, params: { body: ["x"] }, requireOptIn: false, source: "campaign" });
+  assert.equal(r.skipped, "opted_out");
   assert.equal(w.calls.length, 0);
-  const g = await w.wa.guardSend({ phoneNorm: "598765432", kind: "template", template: marketingTpl, source: "campaign" });
-  assert.equal(g.ok, true);
 }));
 
 /* ══ R3 — مسارات التجربة ════════════════════════════════════════════════════ */
@@ -553,3 +559,93 @@ test("test sends: a free-form test message needs the 24-hour window like any oth
   assert.equal(w.calls.length, 1);
   assert.equal((await w.wa.guardSend({ phoneNorm: CUST, kind: "session", test: true })).reason, "not_in_allow_list", "the allow-list is still checked first");
 }));
+
+/* ══ TC (١٣/١٠) — القالب الخدمي: الطلب نفسه اتعمل تحت شروط بتذكر واتساب ════════════════════════════ */
+const WC = await import("./waconsent.js");
+const TV = WC.TERMS_CURRENT;
+
+test("TC utility: sent for an order placed under terms that name WhatsApp updates — never about an old order, never without an order", withEnv(ALLOW, async () => {
+  const w = world();
+  w.db.terms = [{ order: "W-NEW", phone: CUST, version: TV }];
+  const g = (a) => w.wa.guardSend({ phoneNorm: CUST, kind: "template", template: "fc_order_preparing", ...a });
+  assert.equal((await g({ orderNo: "W-NEW" })).ok, true);
+  assert.equal((await g({ orderNo: "W-OLD" })).reason, "no_optin", "an order from before the new terms has no recorded acceptance");
+  assert.equal((await g({})).reason, "no_optin", "no order = nothing to rest the consent on");
+  assert.equal((await w.wa.guardSend({ phoneNorm: "598765432", kind: "template", template: "fc_order_preparing", orderNo: "W-NEW" })).reason, "no_optin",
+    "the acceptance belongs to the phone that placed the order");
+  w.db.terms.push({ order: "W-X", phone: CUST, version: "terms-2026-09-19" });
+  assert.equal((await g({ orderNo: "W-X" })).reason, "no_optin", "a terms version that does not name WhatsApp does not count");
+  // موافقة صريحة قديمة لسه بتعدّي من غير طلب
+  const explicit = world({ optins: { [CUST]: { updates: true } } });
+  assert.equal((await explicit.wa.guardSend({ phoneNorm: CUST, kind: "template", template: "fc_order_preparing" })).ok, true);
+}));
+
+test("TC utility: «إيقاف» and an explicit «لا» win over the terms, even for a brand-new order", withEnv(ALLOW, async () => {
+  const stopped = world({ optins: { [CUST]: { updates: false, marketing: false, stopped_at: "2026-10-13T08:00:00Z" } } });
+  stopped.db.terms = [{ order: "W-NEW", phone: CUST, version: TV }];
+  assert.equal((await stopped.wa.guardSend({ phoneNorm: CUST, kind: "template", template: "fc_order_preparing", orderNo: "W-NEW" })).reason, "opted_out");
+  const saidNo = world({ optins: { [CUST]: { updates: false, answered_at: "2026-10-12T20:00:00Z" } } });
+  saidNo.db.terms = [{ order: "W-NEW", phone: CUST, version: TV }];
+  assert.equal((await saidNo.wa.guardSend({ phoneNorm: CUST, kind: "template", template: "fc_order_preparing", orderNo: "W-NEW" })).reason, "no_optin");
+  assert.equal(stopped.calls.length + saidNo.calls.length, 0);
+}));
+
+test("TC: marketing does not depend on the terms record either way; a terms acceptance does not open free-form messages", withEnv(ALLOW, async () => {
+  const marketingTpl = Object.keys(W.TEMPLATES).find((n) => W.TEMPLATES[n].category === "MARKETING");
+  const w = world();
+  w.db.terms = [{ order: "W-NEW", phone: CUST, version: TV }];
+  assert.equal((await w.wa.guardSend({ phoneNorm: CUST, kind: "template", template: marketingTpl, orderNo: "W-NEW" })).ok, true);
+  assert.equal((await w.wa.guardSend({ phoneNorm: "598765432", kind: "template", template: marketingTpl })).ok, true, "a customer from before the new terms (owner: offers go to everyone)");
+  assert.equal((await w.wa.guardSend({ phoneNorm: CUST, kind: "session", orderNo: "W-NEW" })).reason, "window_closed");
+}));
+
+test("TC end to end: the order-status template goes out for the covered order with its order number, and not for the customer's older order", withEnv(ALLOW, async () => {
+  const w = world();
+  w.db.terms = [{ order: "W1790000000002", phone: CUST, version: TV }];
+  const stage = Object.keys(W.STAGE_TEMPLATES)[0];
+  const order = (no) => ({ order_no: no, phone_norm: CUST, option: "delivery", total: 80 });
+  w.db.orders = [{ name: "أحمد", option: "delivery", total: 80, refund_id: null, table_no: null, order_no: "W1790000000002" }];
+  const results = {};
+  for (const st of Object.keys(W.STAGE_TEMPLATES)) {
+    const r = await w.wa.sendOrderUpdate(order("W1790000000002"), st);
+    if (r.ok) { results.sent = st; break; }
+    assert.notEqual(r.skipped, "no_optin", `${st}: a covered order is never refused for consent`);
+  }
+  assert.ok(results.sent, "at least one wired stage sends for a covered order (first tried: " + stage + ")");
+  assert.equal(w.calls.length, 1);
+  assert.equal(w.calls[0].body.to, "966512345678");
+  const before = w.calls.length;
+  const old = await w.wa.sendOrderUpdate(order("W1780000000001"), results.sent);
+  assert.equal(old.skipped, "no_optin");
+  assert.equal(w.calls.length, before);
+}));
+
+/* ══ TC2 (١٣/١٠، قرار المالك): العروض للكل إلا اللي طلب إيقاف ═════════════════════════════════════════ */
+test("TC2: «إيقاف» → the bot's two buttons still work with the new rule: «تحديثات طلبي فقط» brings order messages back and keeps offers off; «كل الرسائل والعروض» brings everything back", withEnv(ALLOW, async () => {
+  const marketingTpl = Object.keys(W.TEMPLATES).find((n) => W.TEMPLATES[n].category === "MARKETING");
+  const w = world();
+  w.db.terms = [{ order: "W-NEW", phone: CUST, version: TV }];
+  const util = () => w.wa.guardSend({ phoneNorm: CUST, kind: "template", template: "fc_order_preparing", orderNo: "W-NEW" });
+  const mkt = () => w.wa.guardSend({ phoneNorm: CUST, kind: "template", template: marketingTpl });
+  assert.equal((await util()).ok, true); assert.equal((await mkt()).ok, true, "before any stop: both go");
+  await w.wa.applyIntent(CUST, "stop");
+  assert.equal((await util()).reason, "opted_out"); assert.equal((await mkt()).reason, "opted_out", "«إيقاف» stops everything");
+  // button «تحديثات طلبي فقط» (wabotrun: recordWaUpdatesBot yes ⇒ updates=true with a time after the stop)
+  Object.assign(w.db.optins[CUST], { updates: true, answered_at: new Date(Date.now() + 1000).toISOString() });
+  assert.equal((await util()).ok, true); assert.equal((await mkt()).reason, "opted_out", "order updates only");
+  // button «كل الرسائل والعروض» (wabotrun: applyIntent start)
+  await w.wa.applyIntent(CUST, "start");
+  assert.equal((await util()).ok, true); assert.equal((await mkt()).ok, true);
+  const bot = fs.readFileSync(path.join(HERE, "wabotrun.js"), "utf8");
+  assert.ok(bot.includes('case "stop": return { body: T("stop"), buttons: [{ id: "resume:updates", title: T("btn_resume_updates") }, { id: "resume:all", title: T("btn_resume_all") }] };'), "the stop reply still carries the two buttons");
+}));
+
+test("TC2: an explicit refusal of offers is remembered on its own column (a fresh row is not a refusal), and nothing else about the locks moved", () => {
+  const src = fs.readFileSync(path.join(HERE, "whatsapp.js"), "utf8");
+  assert.ok(src.includes("ALTER TABLE wa_optins ADD COLUMN IF NOT EXISTS marketing_off_at TIMESTAMPTZ;"));
+  assert.ok(src.includes("CASE WHEN $3 IS FALSE THEN NOW() END)"), "set when a new row is created with marketing:false");
+  assert.ok(src.includes("marketing_off_at = CASE WHEN $3 IS FALSE THEN COALESCE(wa_optins.marketing_off_at, NOW()) WHEN $3 IS TRUE THEN NULL ELSE wa_optins.marketing_off_at END"), "kept on updates that say nothing about offers; cleared by a yes");
+  assert.ok(src.includes("if (o.stopped || o.marketingOff || await marketingSuppressed(pn)) return no(\"opted_out\");"));
+  assert.ok(!/if \(!o\.marketing\) return no\("no_optin"\)/.test(src), "no prior opt-in is asked for offers any more");
+  for (const keep of ['if (envState() !== "allow") return "disabled";', 'if (!dashMasterOf(s)) return "master_off";', 'if (!testPhonesOf(s).includes(pn)) return no("not_in_allow_list");']) assert.ok(src.includes(keep), keep);
+});

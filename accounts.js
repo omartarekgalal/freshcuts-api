@@ -28,6 +28,7 @@ import { plausibleName, writableName } from "./posnames.js";
 import { logSms } from "./smslog.js";
 import { customerId } from "./customer-id.js";
 import { couponQueries, firstEligibility } from "./couponrules.js";
+import { parseTermsVersion, recordTermsAcceptance } from "./waconsent.js";
 
 const env = (k, d) => (process.env[k] || d || "").toString().trim();
 
@@ -603,6 +604,14 @@ export function register(app, ctx, deps = {}) {
 
     const token = crypto.randomBytes(32).toString("hex");
     await pool.query("INSERT INTO acct_sessions(token, phone_norm) VALUES ($1,$2)", [token, phoneNorm]);
+
+    /* TC2 (١٣/١٠): التسجيل تحت نسخة الشروط اللي المتجر عرض سطرها في خطوة رقم الجوال — صف إثبات (الرقم متحقق بالكود للتو).
+       من غير نسخة معروفة مايتسجّلش حاجة، وأي فشل هنا مايوقّفش الدخول. */
+    const termsV = parseTermsVersion(b.termsVersion);
+    if (termsV) {
+      recordTermsAcceptance(pool, { phoneNorm, version: termsV, source: "register", ip: ip === "?" ? null : ip, ua: c.req.header("user-agent") || null })
+        .catch((e) => console.error("[accounts] terms acceptance save failed:", e.message));
+    }
 
     // TabSense directory, Omar's rule: link if known, create only if new —
     // and never let a POS hiccup block a login.

@@ -52,7 +52,7 @@ import {
 import { resumeKey } from "./resume-key.js";
 import { freeBarCfg } from "./freebar.js";
 import { evaluateCoupon, couponQueries, isPureFreeDelivery, nonDeliveryCoupon } from "./couponrules.js";
-import { parseWaUpdates, recordWaUpdates } from "./waconsent.js";
+import { parseWaUpdates, recordWaUpdates, parseTermsVersion, recordTermsAcceptance } from "./waconsent.js";
 import { recordCheckoutConsent } from "./consent.js";
 import { makeNameResolver } from "./product-names.js";
 import { tableSessionForCheckout, tableGate, touchTableSession, tableCfg, tableBusy, TABLE_MSG, posOptionOf, tableNote, tableWho, tableTrackLabel, cleanCustomerText } from "./table-order.js";
@@ -1338,6 +1338,14 @@ export function register(app, ctx, deps = {}) {
       recordWaUpdates(pool, { phoneNorm, answer: waAnswer, orderNo,
         ip: c.req.header("cf-connecting-ip") || null, ua: c.req.header("user-agent") || null })
         .catch((e) => console.error(`[shop] ${orderNo}: wa updates consent save failed: ${e.message}`));
+    }
+    /* TC (١٣/١٠): نسخة الشروط اللي الطلب اتعمل تحتها — صف إثبات لكل طلب (الوقت + النسخة + الرقم المتحقق + IP/UA).
+       بتتسجّل بس لو المتجر بعت نسخة معروفة؛ طلب من صفحة قديمة (من غير نسخة) مايتسجّلش ⇒ مش مغطّى لرسايل واتساب. */
+    const termsV = parseTermsVersion(b.termsVersion);
+    if (termsV) {
+      recordTermsAcceptance(pool, { phoneNorm, version: termsV, orderNo,
+        ip: c.req.header("cf-connecting-ip") || null, ua: c.req.header("user-agent") || null })
+        .catch((e) => console.error(`[shop] ${orderNo}: terms acceptance save failed: ${e.message}`));
     }
     // موافقة تسويق واتساب (لو المتجر بعتها صراحةً) — مسار قديم زي ما هو، مالوش علاقة بتحديثات الطلب
     if (wa() && typeof b.waMarketing === "boolean") {
