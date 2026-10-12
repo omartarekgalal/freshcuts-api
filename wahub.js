@@ -22,6 +22,7 @@ import { bizDay, bizStart, shiftDay } from "./bizday.js";
 import * as CAT from "./watemplates.js";
 import { TEMPLATES as REG, STAGE_TEMPLATES, GRAPH_VERSION } from "./whatsapp.js";
 import { publicMedia } from "./wamedia.js";
+import { teamConfig } from "./wateam.js";
 
 export const DEFAULT_INBOX_ROLES = Object.freeze(["owner", "operations", "kitchen"]);
 const ROLE_IDS = ["owner", "marketing", "operations", "accounting", "kitchen"];
@@ -103,6 +104,9 @@ export function register(app, ctx, deps = {}) {
   const inbox = () => (typeof deps.waInbox === "function" ? deps.waInbox() : deps.waInbox) || null;
   const bot = () => (typeof deps.bot === "function" ? deps.bot() : deps.bot) || null;
   const staff = () => (typeof deps.staff === "function" ? deps.staff() : deps.staff) || null;      // wastaff.js: رد الموظف (لوحة + بورتال)
+  const flow = () => { try { return (typeof deps.flow === "function" ? deps.flow() : deps.flow) || null; } catch { return null; } };      // ST2: waflow.js
+  /* ST2: محادثات الفريق نفسه (تنبيهات، ضغطات، تجديد) مش محادثات عملاء: بتتشال من القوايم والعدّادات افتراضياً. الأرقام = دليل الفريق (أو أرقام التنبيهات لحد ما الدليل يتكتب). */
+  const teamPhones = async () => { try { return teamConfig((await getSettingsData()) || {}).members.map((m) => m.phone); } catch { return []; } };
   const SALT = String(deps.keySalt || tokenSecret(process.env) || "");
   const keyOf = (pn) => crypto.createHash("md5").update(`${SALT}:${pn}`).digest("hex");
   const ready = pool.query(DDL).then(() => true).catch((e) => { log.error("[wa-hub] schema:", e.message); return false; });
@@ -177,12 +181,15 @@ export function register(app, ctx, deps = {}) {
     held: "b.muted_until > NOW()",      // SR2: مسحوبة (نفس عمود الكتم)
     mine: "b.muted_until > NOW()",      // + قايمة أرقام الحساب من waowner (تحت)
   };
-  async function listThreads({ filter = "all", q = "", limit = 40, before = null, full = false, me = null } = {}) {
+  async function listThreads({ filter = "all", q = "", limit = 40, before = null, full = false, me = null, team = false } = {}) {
     const f = FILTERS.includes(filter) ? filter : "all";
     const lim = Math.min(Math.max(Number(limit) || 40, 1), 100);
     const term = String(q || "").trim().slice(0, 40);
     const digits = term.replace(/\D/g, "");
     const p = [], where = [COND[f]];
+    const tp = await teamPhones();
+    if (tp.length) { p.push(tp); where.push(team === true ? `t.phone_norm = ANY($${p.length}::text[])` : `NOT (t.phone_norm = ANY($${p.length}::text[]))`); }
+    else if (team === true) where.push("FALSE");
     /* SR2: مين ماسك — من waowner عن طريق wastaff. «محادثاتي» = أرقام الحساب ده بس. */
     const own = staff()?.owner || null;
     const minePhones = own && me ? await own.minePhones(me) : [];
@@ -197,7 +204,10 @@ export function register(app, ctx, deps = {}) {
     const b4 = before && Number.isFinite(Date.parse(before)) ? new Date(before).toISOString() : null;
     const pageWhere = [...where];
     if (b4) { p.push(b4); pageWhere.push(`t.last_at < $${p.length}`); }
-    p.push(lim + 1);
+    /* ST2: «مستنية رد» مترتبة بالأقدم انتظاراً (وقت التحويل، وإلا آخر رسالة من العميل) — قايمة قصيرة: من غير صفحات. */
+    const byWait = f === "waiting";
+    if (byWait && b4) { pageWhere.pop(); p.pop(); }
+    p.push(byWait ? 101 : lim + 1);
     const rows = (await pool.query(
       `SELECT t.phone_norm, t.last_in_at, t.last_at, t.last_text, t.last_dir, t.unread, t.order_no,
               COALESCE(c.name, n.full_name, n.profile_name) AS name, c.orders AS orders,
@@ -211,20 +221,22 @@ export function register(app, ctx, deps = {}) {
        LEFT JOIN LATERAL (SELECT m.source, m.direction, m.body, m.template, m.created_at FROM wa_messages m
                            WHERE m.phone_norm = t.phone_norm AND COALESCE(m.source, 'api') <> 'history' ORDER BY m.id DESC LIMIT 1) lm ON TRUE
        WHERE ${pageWhere.join(" AND ")}
-       ORDER BY t.last_at DESC LIMIT $${p.length}`, p)).rows || [];
+       ORDER BY ${byWait ? "COALESCE(b.handoff_at, t.last_in_at) ASC NULLS LAST, t.last_at DESC" : "t.last_at DESC"} LIMIT $${p.length}`, p)).rows || [];
     const cnt = (await pool.query(
       `SELECT count(*)::int AS total, count(*) FILTER (WHERE ${COND.waiting})::int AS waiting, count(*) FILTER (WHERE ${COND.bot})::int AS bot,
               count(*) FILTER (WHERE ${COND.muted})::int AS muted, count(*) FILTER (WHERE ${COND.ad})::int AS ad,
               count(*) FILTER (WHERE ${COND.unread})::int AS unread, COALESCE(sum(t.unread), 0)::int AS unread_messages,
-              min(b.handoff_at) FILTER (WHERE ${COND.waiting}) AS oldest_waiting
-       ${FROM}`)).rows[0] || {};
+              min(COALESCE(b.handoff_at, t.last_in_at)) FILTER (WHERE ${COND.waiting}) AS oldest_waiting
+       ${FROM}${tp.length ? " WHERE NOT (t.phone_norm = ANY($1::text[]))" : ""}`, tp.length ? [tp] : [])).rows[0] || {};
     const t0 = now(), pauseMin = await pauseMinNow();
-    const page = rows.slice(0, lim);
+    const page = rows.slice(0, byWait ? 100 : lim);
     const owners = own ? await own.ownersFor(page, me) : new Map();
+    const fl = flow(), flows = fl && team !== true ? await fl.flowsFor(page.map((r) => r.phone_norm), owners, me, new Map(page.map((r) => [r.phone_norm, { lastInAt: r.last_in_at, unanswered: r.unanswered === true }]))) : new Map();
+    const transferred = fl && typeof fl.transferredCount === "function" ? await fl.transferredCount().catch(() => 0) : 0;
     return {
-      ok: true, filter: f,
+      ok: true, filter: f, team: team === true,
       counts: { all: cnt.total || 0, waiting: cnt.waiting || 0, bot: cnt.bot || 0, muted: cnt.muted || 0, ad: cnt.ad || 0, unread: cnt.unread || 0,
-        held: cnt.muted || 0, mine: minePhones.length,
+        held: cnt.muted || 0, mine: minePhones.length, transferred,
         unreadMessages: cnt.unread_messages || 0, oldestWaitingAt: iso(cnt.oldest_waiting) },
       threads: page.map((r) => ({
         key: keyOf(r.phone_norm), phone: full ? `0${r.phone_norm}` : maskPhone(r.phone_norm), phoneMasked: maskPhone(r.phone_norm),
@@ -232,10 +244,11 @@ export function register(app, ctx, deps = {}) {
         ...lastOf(r),
         unread: Number(r.unread) || 0, window: windowState(iso(r.last_in_at), t0), bot: botState(r, { now: t0, pauseMin }), ad: r.ad === true,
         owner: owners.get(r.phone_norm) || null,
+        team: team === true, flow: flows.get(r.phone_norm) || null,      // ST2: الحالة والفعل الأساسي الواحد (waflow.flowOf)
         /* SW1: آخر رسالة من العميل ومحدش رد ولا علّم «تم» (والنافذة مفتوحة) — ده اللي بيدخّلها «مستنية رد» من غير تحويل */
         unanswered: r.unanswered === true,      // نفس شرط الفلتر بالظبط (محسوب في الاستعلام)
       })),
-      nextBefore: rows.length > lim ? iso(page[page.length - 1].last_at) : null,
+      nextBefore: !byWait && rows.length > lim ? iso(page[page.length - 1].last_at) : null,
     };
   }
 
@@ -273,13 +286,17 @@ export function register(app, ctx, deps = {}) {
     const state = botState(head, { now: t0, pauseMin: await pauseMinNow() });
     const own = staff()?.owner || null;
     const owner = own ? (await own.ownersFor([head], me)).get(pn) || null : null;      // SR2
+    const isTeam = (await teamPhones()).includes(pn);
+    const lastReal = [...msgs].filter((m) => (m.source || "api") !== "history").sort((a, b) => new Date(a.created_at) - new Date(b.created_at)).pop() || null;
+    const pending = Boolean(lastReal && lastReal.direction === "in" && head.last_in_at && Date.now() - new Date(head.last_in_at).getTime() < 24 * 3600_000);
+    const fl = flow(), flowObj = fl && !isTeam ? await fl.flowFor(pn, me, owner, { lastInAt: head.last_in_at, unanswered: pending }).catch(() => null) : null;      // ST2
     const events = botRows.filter((r) => r.handoff).map((r) => ({ at: iso(r.at), kind: "handover", reason: String(r.handoff).split(":")[0] }));
     if (state.state === "muted") events.push({ at: null, kind: "mute", until: state.mutedUntil, by: state.mutedBy, reason: state.reason });
     return {
       ok: true, key: keyOf(pn), phone: full ? `0${pn}` : maskPhone(pn), phoneMasked: maskPhone(pn),
       name: head.name || null, orders: Number(head.orders) || 0, orderNo: head.order_no || null, unread: Number(head.unread) || 0,
       optIn: { updates: head.optin_updates === true, marketing: head.optin_marketing === true, stopped: Boolean(head.stopped_at) },
-      window: windowState(iso(head.last_in_at), t0), bot: state, ad: head.ad === true, owner,
+      window: windowState(iso(head.last_in_at), t0), bot: state, ad: head.ad === true, owner, team: isTeam, flow: flowObj,
       messages: page.map((m) => {
         const d = m.direction === "in" && m.wamid ? byWamid.get(m.wamid) : null;
         const pr = m.pricing && typeof m.pricing === "object" && "billable" in m.pricing ? { billable: m.pricing.billable === true, category: m.pricing.category || null } : null;
@@ -300,18 +317,22 @@ export function register(app, ctx, deps = {}) {
      الحاجة الوحيدة اللي بتتغيّر بالوقت من غير صف بيتعدّل (مهلة السحب خلصت، النافذة قفلت) مش في البصمة — الشاشة بتعيد
      التحميل الكامل كل دقيقة احتياطي. */
   async function tick(pn = null) {
+    const tp = await teamPhones();
+    const X = tp.length ? " WHERE NOT (phone_norm = ANY($2::text[]))" : "", XT = tp.length ? " AND NOT (t.phone_norm = ANY($2::text[]))" : "";
     const r = (await pool.query(
-      `SELECT (SELECT count(*) FROM wa_threads)::int AS n,
-              (SELECT COALESCE(sum(unread), 0) FROM wa_threads)::int AS u,
-              (SELECT (extract(epoch FROM max(GREATEST(last_at, COALESCE(read_at, last_at)))) * 1000)::bigint FROM wa_threads) AS tl,
+      `SELECT (SELECT count(*) FROM wa_threads${X})::int AS n,
+              (SELECT COALESCE(sum(unread), 0) FROM wa_threads${X})::int AS u,
+              (SELECT (extract(epoch FROM max(GREATEST(last_at, COALESCE(read_at, last_at)))) * 1000)::bigint FROM wa_threads${X}) AS tl,
               (SELECT (extract(epoch FROM max(updated_at)) * 1000)::bigint FROM wa_bot_chats) AS tb,
-              (SELECT count(*) FROM wa_threads t LEFT JOIN wa_bot_chats b ON b.phone_norm = t.phone_norm WHERE ${COND.waiting})::int AS w,
+              (SELECT count(*) FROM wa_threads t LEFT JOIN wa_bot_chats b ON b.phone_norm = t.phone_norm WHERE ${COND.waiting}${XT})::int AS w,
               (SELECT count(*) FROM wa_bot_chats WHERE muted_until > NOW())::int AS h,
+              (SELECT min(COALESCE(b.handoff_at, t.last_in_at)) FROM wa_threads t LEFT JOIN wa_bot_chats b ON b.phone_norm = t.phone_norm WHERE ${COND.waiting}${XT}) AS ow,
               (SELECT (extract(epoch FROM max(GREATEST(created_at, updated_at))) * 1000)::bigint FROM wa_messages WHERE phone_norm = $1) AS tm,
               (SELECT count(*) FROM wa_messages WHERE phone_norm = $1)::int AS cm,
-              (SELECT (extract(epoch FROM updated_at) * 1000)::bigint FROM wa_bot_chats WHERE phone_norm = $1) AS tc`, [pn])).rows[0] || {};
-    const list = [r.n || 0, r.u || 0, r.tl || 0, r.tb || 0, r.w || 0, r.h || 0].join(".");
-    return { ok: true, list, chat: pn ? [r.cm || 0, r.tm || 0, r.tc || 0, r.h || 0].join(".") : null, waiting: r.w || 0, unread: r.u || 0 };
+              (SELECT (extract(epoch FROM updated_at) * 1000)::bigint FROM wa_bot_chats WHERE phone_norm = $1) AS tc`, tp.length ? [pn, tp] : [pn])).rows[0] || {};
+    const fl = flow(), transferred = fl && typeof fl.transferredCount === "function" ? await fl.transferredCount().catch(() => 0) : 0;
+    const list = [r.n || 0, r.u || 0, r.tl || 0, r.tb || 0, r.w || 0, r.h || 0, ...(fl ? [transferred] : [])].join(".");
+    return { ok: true, list, chat: pn ? [r.cm || 0, r.tm || 0, r.tc || 0, r.h || 0].join(".") : null, waiting: r.w || 0, unread: r.u || 0, oldestWaitingAt: iso(r.ow), transferred };
   }
   app.get("/api/cms/wa/threads-tick", async (c) => {
     const a = await access(c); if (a.res) return a.res;
@@ -327,7 +348,7 @@ export function register(app, ctx, deps = {}) {
     await ready;
     try {
       const out = await listThreads({ filter: c.req.query("filter") || c.req.query("f") || "all", q: c.req.query("q") || "", limit: c.req.query("limit"),
-        before: c.req.query("before") || null, full: a.full, me: meOf(a.user) });
+        before: c.req.query("before") || null, full: a.full, me: meOf(a.user), team: c.req.query("team") === "1" && a.user.role === "owner" });
       return c.json({ ...out, send: await sendState() });
     } catch (e) { log.error("[wa-hub] threads:", e.message); return c.json({ ok: false, error: "unavailable" }, 500); }
   });
@@ -373,6 +394,13 @@ export function register(app, ctx, deps = {}) {
       if (!own) return c.json({ ok: false, error: "unavailable" }, 503);
       let b = {}; try { b = await c.req.json(); } catch { b = {}; }
       try {
+        /* ST2: نفس الأفعال من waflow — «خلصت — اقفل» بنتيجة { outcome, note }، وكل رد معاه flow */
+        const fl = flow();
+        if (fl) {
+          const r = fn === "done" ? await fl.close(pn, meOf(a.user), { outcome: b && b.outcome, note: b && b.note }) : fn === "take" ? await fl.take(pn, meOf(a.user), { force: b && b.force === true }) : await fl.release(pn, meOf(a.user));
+          if (!r.ok) return c.json({ ok: false, error: r.error, owner: r.owner || undefined, message: r.message, outcomes: r.outcomes }, r.status || 409);
+          return c.json({ ok: true, owner: r.owner, flow: r.flow });
+        }
         const r = await own[fn](pn, meOf(a.user), { force: b && b.force === true });
         if (!r.ok) return c.json({ ok: false, error: r.error, owner: r.owner || undefined, message: r.message }, r.status || 409);
         if (fn === "done") await markHandled(pn);

@@ -46,7 +46,8 @@ export function ownerOf(row, hold, { now = Date.now(), me = null, handoffOpenHou
     return { ...base, state: "held",
       by: held ? { id: hold.by_id || null, name: hold.by_name || null, role: hold.role || null, via: hold.via || null } : { id: null, name: r.muted_by || null, role: null, via: "mute" },
       since: held ? iso(hold.since) : null, waitedMin: unanswered ? mins(r.last_in_at) : null,
-      mine: Boolean(held && acct && hold.by_key === acct.key), autoReleaseAt: iso(r.muted_until) };
+      /* ST2: محادثة اتسحبت من واتساب الموظف (by_id = wa:<رقم>) والحساب اللي بيسأل من نفس الدور — أو العكس — = نفس المكتب: «معايا». */
+      mine: Boolean(held && acct && (hold.by_key === acct.key || (hold.role === acct.role && (/^wa:/.test(String(hold.by_id || "")) || /^wa:/.test(String(acct.id)))))), autoReleaseAt: iso(r.muted_until) };
   }
   if (r.handoff_at && now - ms(r.handoff_at) < handoffOpenHours * 3600_000) {
     return { ...base, state: "waiting_staff", since: iso(r.handoff_at), waitedMin: mins(r.handoff_at), reason: r.handoff_reason || "handover" };

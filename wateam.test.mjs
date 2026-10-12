@@ -27,7 +27,7 @@ const MEMBERS = [{ phone: `0${CASH1}`, name: "منى", role: "cashier" }, { phon
   { phone: `0${OWN1}`, name: "عمر", role: "owner" }, { phone: `0${OWN2}`, name: "طارق", role: "owner" }];
 const NOON = "2026-10-13T12:00:00Z";      // ٣:٠٠ العصر بتوقيت الرياض — بره ساعات الهدوء
 
-function world({ at = NOON, waTeam = { members: MEMBERS }, settings = {}, lastIn = {}, approved = [], chat = [], graphFail = null } = {}) {
+function world({ at = NOON, waTeam = { members: MEMBERS }, settings = {}, lastIn = {}, approved = [], chat = [], graphFail = null, flow = null } = {}) {
   let nowMs = Date.parse(at);
   const clock = { now: () => new Date(nowMs), advance: (min) => { nowMs += min * 60_000; }, set: (iso) => { nowMs = Date.parse(iso); } };
   const db = { settings: { waMaster: { enabled: true }, notifications: { whatsappEnabled: false }, delivery: { alertPhones: [], staffSmsLanguage: "en" }, waBot: { testPhones: [] }, ...(waTeam ? { waTeam } : {}), ...settings },
@@ -89,7 +89,7 @@ function world({ at = NOON, waTeam = { members: MEMBERS }, settings = {}, lastIn
     normPhone: (x) => String(x || "").replace(/\D/g, "").replace(/^966/, "").replace(/^0/, "") };
   const wa = W.register(app, ctx, { fetch, sendSms: async () => ({ ok: true }) });
   const sms = [];
-  const team = T.register(app, ctx, { wa, sendSms: async (x) => { sms.push(x); return { ok: true }; }, now: clock.now, noTimer: true, log: { error() {} },
+  const team = T.register(app, ctx, { wa, sendSms: async (x) => { sms.push(x); return { ok: true }; }, now: clock.now, noTimer: true, log: { error() {} }, ...(flow ? { flow: () => flow } : {}),
     requirePortal: async (c) => (portalUser ? { user: portalUser } : { res: c.json({ ok: false }, 401) }) });
   const call = (method, path, json = {}) => routes[`${method} ${path}`]({ req: { json: async () => json, query: () => undefined, param: () => undefined }, json: (body, status = 200) => ({ body, status }) });
   const wrote = (phone, agoH = 0) => { db.lastIn[phone] = new Date(nowMs - agoH * H).toISOString(); };
@@ -497,4 +497,35 @@ test("routes: the owner saves the directory and switches; the test message only 
   w.wrote(OWN1, 1);
   assert.deepEqual((await w.call("POST", "/api/cms/wabot/team/test", { phone: `0${OWN1}` })).body, { ok: true, via: "wa_free", error: null });
   assert.equal(w.calls[0].body.to, wa966(OWN1));
+}));
+
+/* ══ ST2 — السلّم وأزرار المحادثة بيتسلّموا لـwaflow؛ والأزرار الإضافية والقايمة في الرسالة الحرة ═══════ */
+test("ST2: with the ladder on, a handover is waflow's to route; ladder off ⇒ the ST1 routing; chat buttons and a pending note go to waflow before the commands", withEnv(OPEN, async () => {
+  const seen = { handover: [], inbound: [] };
+  const flow = { onHandover: async (x) => { seen.handover.push(x); return { sent: 2, wa: 2, sms: 0, failed: 0, to: 2 }; }, staffInbound: async (ev, m) => { seen.inbound.push([ev.interactiveId || ev.text, m.role]); return /^flow:/.test(String(ev.interactiveId || "")); } };
+  const w = world({ flow }); allOpen(w);
+  assert.deepEqual(await w.team.handover({ phone: CUST, reason: "asked_human", reasonAr: "طلب موظف", sms: "x" }), { sent: 2, wa: 2, sms: 0, failed: 0, to: 2 });
+  assert.deepEqual(seen.handover.map((x) => [x.phone, x.reason, x.stage, x.cfg.ladder.enabled]), [[CUST, "asked_human", "new", true]]); assert.equal(w.calls.length, 0);
+  const off = world({ flow, waTeam: { members: MEMBERS, ladder: { enabled: false } } }); allOpen(off);
+  await off.team.handover({ phone: CUST, reason: "asked_human", reasonAr: "طلب موظف", sms: "x" });
+  assert.equal(seen.handover.length, 1); assert.deepEqual(off.to(), [CASH1, CASH2, MGR].map(wa966));
+  assert.equal(await w.team.inbound({ phone: CASH1, type: "interactive", interactiveId: "flow:take:7", text: "استلم المحادثة" }), true);
+  assert.equal(await w.team.inbound({ phone: CASH1, type: "text", text: "تنبيهات" }), true);
+  assert.deepEqual(seen.inbound, [["flow:take:7", "cashier"], ["تنبيهات", "cashier"]]);
+  assert.equal(w.calls.length, 1, "the command still ran after waflow passed on it");
+  assert.equal(await w.team.inbound({ phone: CUST, type: "interactive", interactiveId: "flow:take:7" }), false, "a customer can not press a staff button");
+}));
+
+test("ST2 free-form payload: extra buttons come before the renew button (3 at most); an outcome list is a list message; a refused interactive falls back to text", withEnv(OPEN, async () => {
+  const w = world(); allOpen(w);
+  const cfg = T.teamConfig(w.db.settings), m = cfg.members[0];
+  await w.team.sendToStaff(cfg, m, { topic: "handover", body: "x", buttons: [{ id: "flow:take:1", title: T.ACTIONS.take }] });
+  assert.deepEqual(w.calls[0].body.interactive.action.buttons.map((b) => b.reply.title), ["استلم المحادثة", "✅ جدّد التنبيهات"]);
+  await w.team.sendToStaff(cfg, m, { topic: "flow", body: "x", button: false, buttons: [{ id: "a", title: T.ACTIONS.done }, { id: "b", title: T.ACTIONS.transfer }, { id: "c", title: T.ACTIONS.release }] });
+  assert.deepEqual(w.calls[1].body.interactive.action.buttons.map((b) => b.reply.title), ["خلصت — اقفل", "حوّل للمدير", "رجّعها للبوت"]);
+  await w.team.sendToStaff(cfg, m, { topic: "flow", body: "اختار", button: false, list: { button: "نتيجة المحادثة", rows: T.OUTCOMES.map((o) => ({ id: `flow:out:1:${o.id}`, title: o.label })) } });
+  assert.deepEqual([w.calls[2].body.interactive.type, w.calls[2].body.interactive.action.button, w.calls[2].body.interactive.action.sections[0].rows.map((r) => r.title)], ["list", "نتيجة المحادثة", T.OUTCOMES.map((o) => o.label)]);
+  const bad = world({ graphFail: (b) => b.type === "interactive" }); allOpen(bad);
+  assert.deepEqual(await bad.team.sendToStaff(T.teamConfig(bad.db.settings), m, { topic: "flow", body: "نص", button: false, buttons: [{ id: "a", title: "x" }] }), { ok: true, via: "wa_free" });
+  assert.deepEqual(bad.calls.map((c) => c.body.type), ["interactive", "text"]);
 }));

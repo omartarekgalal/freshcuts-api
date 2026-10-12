@@ -52,7 +52,7 @@ const LOCKS_OPEN = { ...CONFIGURED, WHATSAPP_ENABLED: "1" };
 
 /* ── عالم صغير: قاعدة في الذاكرة + ساعة + Graph مزيّف ─────────────────────── */
 function world({ waBot = {}, notifications = { whatsappEnabled: true }, orders = [], bundles = BUNDLES, policy = POLICY, first = FIRST, links = ["wab-boxes", "wa-boxes", "wa-box-d4"],
-  at = OPEN_AT, graph = null, failDb = null, extraSettings = {}, disclosure = false, pages = LIVE.pages, quote = null, llm = null, greetMenu = false, offers = LIVE.offers, resolveMapsLink = null, lastCart = null, assistModel = null, assistStore = null, kb = null, adReport = [], channelReport = [], mediaFile = null, transcribe = null, sttFetch = null, variants = null, team = null } = {}) {
+  at = OPEN_AT, graph = null, failDb = null, extraSettings = {}, disclosure = false, pages = LIVE.pages, quote = null, llm = null, greetMenu = false, offers = LIVE.offers, resolveMapsLink = null, lastCart = null, assistModel = null, assistStore = null, kb = null, adReport = [], channelReport = [], mediaFile = null, transcribe = null, sttFetch = null, variants = null, team = null, flow = null } = {}) {
   let nowMs = Date.parse(at);
   const clock = { now: () => new Date(nowMs), advance: (min) => { nowMs += min * 60_000; }, advanceSec: (s) => { nowMs += s * 1000; }, set: (iso) => { nowMs = Date.parse(iso); } };
   const db = { msgs: [], log: [], jobs: [], proofs: [], consentLog: [], ai: [], aiAlerts: [], tpl: [], cfgLog: [], botCarts: [], chats: new Map(), optouts: [], optins: {}, links: links.map((s) => (typeof s === "string" ? { slug: s, active: true, clicks: 0 } : { active: true, clicks: 0, ...s })), adChats: [], adReportParams: null, channelOffers: [], channelReportParams: null, sttKey: null, liveDay: [], marketingTo: [], settings: null };
@@ -273,7 +273,7 @@ function world({ waBot = {}, notifications = { whatsappEnabled: true }, orders =
   const botCarts = { ensure: async () => {}, lastOrderCarts: async (ph, days, o) => { const v = typeof lastCart === "function" ? lastCart(ph, days, o) : lastCart; return (Array.isArray(v) ? v : v ? [v] : []).map((x, i) => ({ latest: i === 0, ...x })); },
     create: async (x) => { if (failDb && failDb.test("INSERT INTO wa_bot_carts")) return null; const code = `rc${String(db.botCarts.length + 1).padStart(6, "0")}`; db.botCarts.push({ code, ...x }); return { code }; }, open: async () => null, restore: async () => null, coverage: async () => ({ orders: 40, with_snapshot: 30, with_raw: 28, usable: 26, avg_diff: 0, mismatched: 2, links: db.botCarts.length, opened: 0 }) };
   const portalEvents = [];
-  const bot = R.register(app, ctx, { app, wa, now: clock.now, noTimer: true, botCarts, ...(team ? { team: () => team } : {}),
+  const bot = R.register(app, ctx, { app, wa, now: clock.now, noTimer: true, botCarts, ...(team ? { team: () => team } : {}), ...(flow ? { flow: () => flow } : {}),
     assist: { expandBundle: async () => ({ ok: false, error: "bundle_not_found" }), modifiersCatalog: async () => ({ cfg: { enabled: true }, catalog: {} }), modifiersResolve: async () => ({ ok: true, shown: 0 }),
       quote: async (x) => (typeof quote === "function" ? quote(x.lat, x.lng) : quote), buildProfile: async () => ({ identity: { name: "أحمد" }, summary: { orders: 2, status: "repeat" }, orders: [], favorites: { items: [] }, addresses: [] }) }, whoami: async () => actor.who, ...(resolveMapsLink ? { resolveMapsLink } : { resolveMapsLink: async () => null }), sendSms: async (x) => { sms.push(x); return { ok: true }; },
     portalEmit: (ev2, data) => portalEvents.push([ev2, data]), whoami: async () => actor.who, ...(resolveMapsLink ? { resolveMapsLink } : { resolveMapsLink: async () => null }), sendSms: async (x) => { sms.push(x); return { ok: true }; },
@@ -4160,4 +4160,43 @@ test("ST1 staff phones are never customers: their taps and words go to the team 
   const f = liveWorld({ team: teamStub(), waBot: { testPhones: ["0544775082"] } });
   assert.ok((await f.say("السلام عليكم", { from: "966544775082" })).sent.length >= 1);
   assert.equal((await f.say("السلام عليكم", { from: "966506338246" })).log.detail, "alert_phone");
+}));
+
+/* ══ ST2 — رجوع المساعد بعد قفل الموظف + سطر العميل الوحيد للتحويل ═══════════════════════════════════ */
+test("ST2 re-entry: the assistant's first turn after a staff close carries what staff said, the outcome and the note — and it is consumed only after the reply was sent", withEnv(CONFIGURED, async () => {
+  const HB = { outcome: "follow_up", outcome_label: "محتاج متابعة", staff_note: "عايز يضيف مشروب", staff_told_customer: ["طلبك اتسجّل"], closed_minutes_ago: 3, still_to_do: true };
+  let used = 0, have = HB;
+  const flow = { handbackFor: async () => have, handbackUsed: async () => { used++; have = null; } };
+  const w = aWorld([mSay("تمام، أي مشروب تحب أضيفه؟"), mSay("أبشر 👍")], { flow });
+  const r = await w.say("ابي بيتزا");
+  assert.equal(r.log.reply_key, "assist");
+  assert.match(w.m.seen[0].messages[0].content[0].text, /"staff_handled_this_chat":\{"outcome":"follow_up","outcome_label":"محتاج متابعة","staff_note":"عايز يضيف مشروب","staff_told_customer":\["طلبك اتسجّل"\],"closed_minutes_ago":3,"still_to_do":true\}/);
+  assert.equal(used, 1);
+  w.clock.advance(1); await w.say("وعندكم باستا؟");
+  assert.doesNotMatch(JSON.stringify(w.m.seen[1].messages.at(-1)), /staff_handled_this_chat/, "once");
+  assert.equal(used, 1);
+  // the model failed ⇒ the handback is kept for the next turn
+  let kept = 0; const f2 = { handbackFor: async () => HB, handbackUsed: async () => { kept++; } };
+  const bad = aWorld([{ ok: false, error: "timeout", ms: 20000, provider: "x", usage: null }], { flow: f2 });
+  await bad.say("ابي بيتزا"); assert.equal(kept, 0);
+  const AR = await import("./waassistrun.js");
+  assert.match(AR.SYSTEM_PROMPT || "", /staff_handled_this_chat/);
+}));
+
+test("ST2 transfer line: one fixed line to the customer through the guard — only inside the window, never to someone who stopped, never in dry / off mode", withEnv(LOCKS_OPEN, async () => {
+  const w = liveWorld();
+  await w.say("السلام عليكم");
+  const before = w.calls.length;
+  assert.equal(await w.bot.sendFlowLine("0512345678", "transfer_note"), "sent");
+  assert.deepEqual(w.calls.slice(before).map((c) => [c.body.to, bodyOf(c.body)]), [["966512345678", "حوّلنا محادثتك لمدير الفرع وبيكمل معك هنا 🙏"]]);
+  assert.equal(await w.bot.sendFlowLine("0512345678", "greet"), "bad_key");
+  assert.equal(await w.bot.sendFlowLine("0598765432", "transfer_note"), "window_closed", "never wrote ⇒ nothing");
+  w.clock.advance(25 * 60);
+  assert.equal(await w.bot.sendFlowLine("0512345678", "transfer_note"), "window_closed");
+  assert.equal(w.calls.length, before + 1);
+  const dry = world({ waBot: { mode: "dry" }, bundles: LIVE.bundles, links: ALL_LINKS }); await dry.say("السلام عليكم");
+  assert.equal(await dry.bot.sendFlowLine("0512345678", "transfer_note"), "mode_off");
+  const t = world({ waBot: { mode: "test", testPhones: ["0544775082"] }, bundles: LIVE.bundles, links: ALL_LINKS });
+  assert.equal(await t.bot.sendFlowLine("0512345678", "transfer_note"), "not_test_phone");
+  assert.equal(R.TEXTS.transfer_note.ar, "حوّلنا محادثتك لمدير الفرع وبيكمل معك هنا 🙏");
 }));

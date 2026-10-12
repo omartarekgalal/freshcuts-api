@@ -60,6 +60,16 @@ export const ODD_KINDS = Object.freeze({
   send_failures: "رسايل ورا بعض فشلت في الإرسال",
 });
 export const ODD_KEYS = Object.keys(ODD_KINDS);
+/* ST2 — أسماء الأفعال (نفس الكلام في البورتال واللوحة ورسايل وأزرار واتساب الفريق) ونتايج قفل المحادثة */
+export const ACTIONS = Object.freeze({ take: "استلم المحادثة", release: "رجّعها للبوت", done: "خلصت — اقفل", transfer: "حوّل للمدير" });
+export const OUTCOMES = Object.freeze([
+  { id: "ordered", label: "تم الطلب", hint: "العميل طلب أو هيطلب من الرابط — مفيش حاجة تانية مطلوبة" },
+  { id: "answered", label: "استفسار واترد عليه", hint: "سأل واتجاوب عليه" },
+  { id: "complaint_solved", label: "شكوى اتحلت", hint: "الشكوى اتحلت والعميل عرف الحل" },
+  { id: "follow_up", label: "محتاج متابعة", hint: "لسه فيه حاجة مطلوبة للعميل — اكتبها في الملاحظة" },
+  { id: "not_customer", label: "مش عميل", hint: "مورّد / طالب شغل / رقم غلط" },
+]);
+export const OUTCOME_IDS = OUTCOMES.map((o) => o.id);
 
 export const DEFAULTS = Object.freeze({
   enabled: true,                 // تنبيهات الفريق على واتساب (مقفول ⇒ SMS زي الأول بالظبط)
@@ -70,10 +80,15 @@ export const DEFAULTS = Object.freeze({
   keeper: Object.freeze({ enabled: true, renewAtHour: 20, quietFrom: "02:00", quietTo: "10:00", leadMin: 15, smsNudge: true }),
   odd: Object.freeze({ enabled: true, perHour: 12, digest: false, digestEveryMin: 30, repeatMin: 30, excerpt: 6, smsFallback: false, failStreak: 3, failWindowMin: 15 }),
   daily: Object.freeze({ enabled: true, at: "11:00" }),
+  /* ST2 — سلّم التصعيد، قفل المحادثة بنتيجة، وتحويل الكاشير للمدير (waflow.js) */
+  ladder: Object.freeze({ enabled: true, managerAfterMin: 5, ownersAfterMin: 10 }),
+  close: Object.freeze({ requireOutcome: true, remindAfterMin: 20 }),
+  transfer: Object.freeze({ enabled: true }),
 });
 export const LIMITS = Object.freeze({
   members: 30, name: 40,
   "keeper.renewAtHour": [12, 23], "keeper.leadMin": [5, 60],
+  "ladder.managerAfterMin": [1, 60], "ladder.ownersAfterMin": [1, 120], "close.remindAfterMin": [0, 240],
   "odd.perHour": [1, 60], "odd.digestEveryMin": [5, 240], "odd.repeatMin": [5, 720], "odd.excerpt": [0, 10], "odd.failStreak": [2, 20], "odd.failWindowMin": [5, 120],
 });
 
@@ -114,6 +129,7 @@ export function teamConfig(settings) {
     routing[r] = [...new Set(v.filter((t) => TOPICS.includes(t)))];
   }
   const k = x.keeper && typeof x.keeper === "object" ? x.keeper : {}, o = x.odd && typeof x.odd === "object" ? x.odd : {}, d = x.daily && typeof x.daily === "object" ? x.daily : {};
+  const la = x.ladder && typeof x.ladder === "object" ? x.ladder : {}, cl = x.close && typeof x.close === "object" ? x.close : {}, tr = x.transfer && typeof x.transfer === "object" ? x.transfer : {};
   const kinds = {};
   for (const key of ODD_KEYS) kinds[key] = !(o.kinds && o.kinds[key] === false);
   return {
@@ -129,6 +145,9 @@ export function teamConfig(settings) {
       excerpt: num(o.excerpt, LIMITS["odd.excerpt"], DEFAULTS.odd.excerpt), smsFallback: o.smsFallback === true,
       failStreak: num(o.failStreak, LIMITS["odd.failStreak"], DEFAULTS.odd.failStreak), failWindowMin: num(o.failWindowMin, LIMITS["odd.failWindowMin"], DEFAULTS.odd.failWindowMin), kinds },
     daily: { enabled: d.enabled !== false, at: hhmmOk(d.at) ? d.at : DEFAULTS.daily.at },
+    ladder: { enabled: la.enabled !== false, managerAfterMin: num(la.managerAfterMin, LIMITS["ladder.managerAfterMin"], DEFAULTS.ladder.managerAfterMin), ownersAfterMin: num(la.ownersAfterMin, LIMITS["ladder.ownersAfterMin"], DEFAULTS.ladder.ownersAfterMin) },
+    close: { requireOutcome: cl.requireOutcome !== false, remindAfterMin: num(cl.remindAfterMin, LIMITS["close.remindAfterMin"], DEFAULTS.close.remindAfterMin) },
+    transfer: { enabled: tr.enabled !== false },
   };
 }
 /* دور الرقم في دليل الفريق (الأعضاء الشغّالين بس) أو null. الدليل المؤقت (fallback) بيتحسب برضه: الأرقام دي أصلاً «مش عملاء» عند البوت. */
@@ -193,6 +212,9 @@ export function configFromBody(b, prev = {}) {
   group("keeper", ["enabled", "smsNudge"], ["renewAtHour", "leadMin"], ["quietFrom", "quietTo"]);
   group("odd", ["enabled", "digest", "smsFallback"], ["perHour", "digestEveryMin", "repeatMin", "excerpt", "failStreak", "failWindowMin"], []);
   group("daily", ["enabled"], [], ["at"]);
+  group("ladder", ["enabled"], ["managerAfterMin", "ownersAfterMin"], []);
+  group("close", ["requireOutcome"], ["remindAfterMin"], []);
+  group("transfer", ["enabled"], [], []);
   return errors.length ? { ok: false, errors } : { ok: true, value: out };
 }
 
@@ -334,6 +356,7 @@ export function register(app, ctx, deps = {}) {
     .then(() => pool.query("DELETE FROM wa_team_odd WHERE at < NOW() - INTERVAL '90 days'").catch(() => {})).then(() => true)
     .catch((e) => { log.error("[wa-team] schema:", e.message); return false; });
   const settingsNow = async () => { try { return (await getSettingsData()) || {}; } catch { return null; } };
+  const flowApi = () => { try { return (typeof deps.flow === "function" ? deps.flow() : deps.flow) || null; } catch { return null; } };      // ST2: waflow.js
 
   const lastInOf = async (phone) => {
     const r = await q(`SELECT max(created_at) AS at FROM wa_messages WHERE phone_norm=$1 AND direction='in' AND COALESCE(source,'api') <> 'history'`, [phone]);
@@ -348,9 +371,14 @@ export function register(app, ctx, deps = {}) {
   }
   const record = (m, x) => q("INSERT INTO wa_team_log(phone_norm, role, topic, kind, via, ok, error, ref4, urgent) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)",
     [m.phone, m.role || null, clip(x.topic, 20), x.kind ? clip(x.kind, 40) : null, x.via, x.ok === true, x.error ? clip(x.error, 120) : null, x.ref4 || null, x.urgent === true]);
-  const freePayload = (body, button = true) => (button
-    ? { type: "interactive", interactive: { type: "button", body: { text: clip(body, 1024) }, action: { buttons: [{ type: "reply", reply: { id: RENEW_ID, title: RENEW_TITLE } }] } } }
-    : { type: "text", text: { body: clip(body, 4096), preview_url: false } });
+  /* ST2: أزرار إضافية قبل زر التجديد (لحد ٣ أزرار في الرسالة)، أو قايمة اختيارات (نتيجة القفل) */
+  const freePayload = (body, button = true, extra = null, list = null) => {
+    if (list && Array.isArray(list.rows) && list.rows.length) return { type: "interactive", interactive: { type: "list", body: { text: clip(body, 1024) },
+      action: { button: clip(list.button, 20), sections: [{ title: clip(list.button, 24), rows: list.rows.slice(0, 10).map((r) => ({ id: clip(r.id, 200), title: clip(r.title, 24) })) }] } } };
+    const btns = [...(Array.isArray(extra) ? extra : []).map((b) => ({ type: "reply", reply: { id: clip(b.id, 256), title: clip(b.title, 20) } })), ...(button ? [{ type: "reply", reply: { id: RENEW_ID, title: RENEW_TITLE } }] : [])].slice(0, 3);
+    return btns.length ? { type: "interactive", interactive: { type: "button", body: { text: clip(body, 1024) }, action: { buttons: btns } } }
+      : { type: "text", text: { body: clip(body, 4096), preview_url: false } };
+  };
 
   /* إرسال لموظف واحد. msg: { topic, kind, body, button?, templates?: [{ name, data }], sms?: string|null, ref4?, urgent? }
      ⇒ { ok, via: "wa_free" | "wa_template" | "sms" | "none", error? }. عمرها ما بترمي، وكل محاولة بتتسجّل في wa_team_log. */
@@ -365,8 +393,9 @@ export function register(app, ctx, deps = {}) {
       const win = windowState(await lastInOf(m.phone), clock());
       why = "window_closed";
       if (win.open) {
-        let r = await wa.sendFreeform({ phoneNorm: m.phone, payload: freePayload(msg.body, msg.button !== false), source: "team", preview: clip(msg.body, 500) });
-        if (!r.ok && !r.skipped && msg.button !== false) r = await wa.sendFreeform({ phoneNorm: m.phone, payload: freePayload(msg.body, false), source: "team", preview: clip(msg.body, 500) });
+        const rich = freePayload(msg.body, msg.button !== false, msg.buttons || null, msg.list || null);
+        let r = await wa.sendFreeform({ phoneNorm: m.phone, payload: rich, source: "team", preview: clip(msg.body, 500) });
+        if (!r.ok && !r.skipped && rich.type === "interactive") r = await wa.sendFreeform({ phoneNorm: m.phone, payload: freePayload(msg.body, false), source: "team", preview: clip(msg.body, 500) });
         if (r.ok) return done("wa_free", true);
         why = r.skipped || r.error || "send_failed";
       }
@@ -404,6 +433,8 @@ export function register(app, ctx, deps = {}) {
   async function handover({ settings, phone, reason, reasonAr = null, urgent = false, orderNo = null, stage = "new", waitedMin = null, sms = null }) {
     const cfg = teamConfig(settings || (await settingsNow()) || {});
     if (!cfg.enabled) return null;
+    /* ST2: سلّم التصعيد شغّال ⇒ waflow هو اللي بيقرر مين يتبلّغ دلوقتي (الكاشير أولاً) وبيصعّد بعدين */
+    { const fl = flowApi(); if (fl && cfg.ladder.enabled && typeof fl.onHandover === "function") return fl.onHandover({ cfg, phone, reason, reasonAr, urgent, orderNo, stage, waitedMin, sms }); }
     const to = recipientsFor(cfg, urgent ? ["handover", "urgent"] : ["handover"]);
     if (!to.length) return null;
     const body = handoverText({ phone, reasonAr: reasonAr || reason, urgent, orderNo, stage, waitedMin, lastText: await lastCustomerText(phone) });
@@ -547,6 +578,8 @@ export function register(app, ctx, deps = {}) {
       const cfg = teamConfig(s), phone = normPh(ev.phone || ev.phoneNorm);
       const m = cfg.members.find((x) => x.phone === phone && x.active);
       if (!m) return false;
+      /* ST2: أزرار المحادثة («استلم المحادثة / رجّعها للبوت / خلصت — اقفل / حوّل للمدير»)، اختيار نتيجة القفل، وملاحظة التحويل المكتوبة */
+      { const fl = flowApi(); if (fl && typeof fl.staffInbound === "function") { let took = false; try { took = (await fl.staffInbound(ev, m, cfg)) === true; } catch (e) { log.error("[wa-team] flow inbound:", e.message); } if (took) return true; } }
       const cmd = staffCommand(ev);
       const tester = cfg.staffAsTesters && staffPhones(s.waBot && s.waBot.testPhones).includes(phone);
       if (!cmd) return !tester;
@@ -602,7 +635,8 @@ export function register(app, ctx, deps = {}) {
         return c.json({ ok: true, now: st.now, owner, config: { ...cfg, members: undefined }, fallbackDirectory: cfg.fallback, members: st.members, templates,
           odd: { sentLastHour: Number(oc && oc[0] && oc[0].sent_hour) || 0, cap: cfg.odd.perHour, pending: Number(oc && oc[0] && oc[0].pending) || 0, held: Number(oc && oc[0] && oc[0].held) || 0, byKind24h: byKind || [] },
           sends24h: via || [], recent: recent || [],
-          schema: { roles: ROLES.map((id) => ({ id, label: ROLE_AR[id] })), topics: TOPICS.map((id) => ({ id, label: TOPIC_AR[id] })), oddKinds: ODD_KEYS.map((id) => ({ id, label: ODD_KINDS[id] })), limits: LIMITS, defaults: DEFAULTS, renewButton: RENEW_TITLE } });
+          schema: { roles: ROLES.map((id) => ({ id, label: ROLE_AR[id] })), topics: TOPICS.map((id) => ({ id, label: TOPIC_AR[id] })), oddKinds: ODD_KEYS.map((id) => ({ id, label: ODD_KINDS[id] })), limits: LIMITS, defaults: DEFAULTS, renewButton: RENEW_TITLE,
+            actions: Object.entries(ACTIONS).map(([id, label]) => ({ id, label })), outcomes: OUTCOMES.map((o) => ({ id: o.id, label: o.label, hint: o.hint })) } });
       } catch (e) { log.error("[wa-team] status:", e.message); return c.json({ ok: false, error: "unavailable" }, 500); }
     });
     app.put("/api/cms/wabot/team", async (c) => {
@@ -638,5 +672,5 @@ export function register(app, ctx, deps = {}) {
     });
   }
 
-  return { ready, handover, odd, inbound, tick, status, sendToStaff, dailyDigest, flushOdd, stop: () => { if (timer) clearInterval(timer); } };
+  return { ready, handover, odd, inbound, tick, status, sendToStaff, fanOut, lastCustomerText, dailyDigest, flushOdd, stop: () => { if (timer) clearInterval(timer); } };
 }

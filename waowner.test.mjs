@@ -8,6 +8,7 @@ import fs from "node:fs";
 const O = await import("./waowner.js");
 const S = await import("./wastaff.js");
 const H = await import("./wahub.js");
+const FL = await import("./waflow.js");
 
 const A = "512345678", B = "598765432", SALT = "salt-1";
 const keyOf = (pn) => crypto.createHash("md5").update(`${SALT}:${pn}`).digest("hex");
@@ -15,7 +16,7 @@ const CASHIER = { id: "s1", name: "سلمى", role: "cashier", via: "portal" };
 const CASHIER2 = { id: "s2", name: "نورة", role: "cashier", via: "portal" };
 const MANAGER = { id: "m1", name: "خالد", role: "manager", via: "portal" };
 
-function world({ settings = {}, portalUser = CASHIER, dashUser = { id: 7, username: "ops1", name: "عمليات", role: "operations" } } = {}) {
+function world({ settings = {}, withFlow = false, portalUser = CASHIER, dashUser = { id: 7, username: "ops1", name: "عمليات", role: "operations" } } = {}) {
   let nowMs = Date.parse("2026-10-13T15:00:00Z");
   const at = (min = 0) => new Date(nowMs - min * 60_000).toISOString();
   const db = { settings: { ...settings }, threads: new Map([[A, { phone_norm: A, last_in_at: at(3), last_at: at(3), unread: 1 }], [B, { phone_norm: B, last_in_at: at(50), last_at: at(50), unread: 0 }]]),
@@ -61,16 +62,32 @@ function world({ settings = {}, portalUser = CASHIER, dashUser = { id: 7, userna
   const sent = [];
   const wa = { gate: async () => null, envState: () => "allow", configured: () => true, testPhones: async () => [],
     sendFreeform: async (o) => { sent.push(o); db.echoes.push({ pn: o.phoneNorm, at: at() }); return { ok: true, wamid: `wamid.S${sent.length}` }; } };
-  let hub = null;
+  let hub = null, flow = null;
+  const flowRows = new Map(), teamSent = [], botLines = [];
   const requirePortal = async (c) => (users.portal ? (users.portal.role === "kitchen" ? { res: c.json({ ok: false, error: "kitchen_only" }, 403) } : { user: users.portal }) : { res: c.json({ ok: false, error: "unauthorized" }, 401) });
-  const st = S.register(app, ctx, { wa, hub: () => hub, requirePortal, keySalt: SALT, log: { error() {} }, bot: () => bot, broadcast: (e, d) => events.push([e, d]), noTimer: true, now: () => nowMs });
-  hub = H.register(app, { ...ctx }, { whoami: async () => users.dash, wa, bot: () => bot, staff: () => st, keySalt: SALT, log: { error() {} }, now: () => nowMs });
+  const st = S.register(app, ctx, { wa, hub: () => hub, requirePortal, keySalt: SALT, log: { error() {} }, bot: () => bot, broadcast: (e, d) => events.push([e, d]), noTimer: true, now: () => nowMs, flow: () => flow });
+  hub = H.register(app, { ...ctx }, { whoami: async () => users.dash, wa, bot: () => bot, staff: () => st, keySalt: SALT, log: { error() {} }, now: () => nowMs, flow: () => flow });
+  if (withFlow) {      // ST2: waflow الحقيقي على نفس القاعدة (صفوف wa_flow في الذاكرة)
+    bot.sendFlowLine = async (pn, key) => { botLines.push([pn, key]); return "sent"; };
+    const base = pool.query.bind(pool);
+    pool.query = async (sql, p = []) => { const s = String(sql).replace(/\s+/g, " ").trim();
+      const up = (pn, patch) => { const cur = flowRows.get(pn) || { fid: flowRows.size + 1, phone_norm: pn, alerted: [], transfer: null, last_close: null, handback: null, step: null }; const n = { ...cur, ...patch }; flowRows.set(pn, n); return n; };
+      if (/^SELECT \* FROM wa_flow WHERE phone_norm=\$1/i.test(s)) return { rows: flowRows.has(p[0]) ? [{ ...flowRows.get(p[0]) }] : [] };
+      if (/^SELECT \* FROM wa_flow WHERE phone_norm = ANY/i.test(s)) return { rows: p[0].map((x) => flowRows.get(x)).filter(Boolean) };
+      if (/^INSERT INTO wa_flow\(phone_norm, transfer, step/i.test(s)) return { rows: [{ ...up(p[0], { transfer: JSON.parse(p[1]) }) }] };
+      if (/^INSERT INTO wa_flow\(phone_norm, step, transfer, last_close, handback/i.test(s)) { up(p[0], { transfer: null, last_close: JSON.parse(p[1]), handback: JSON.parse(p[2]) }); return { rows: [] }; }
+      if (/^UPDATE wa_flow SET step=NULL, transfer=NULL/i.test(s)) { if (flowRows.has(p[0])) flowRows.get(p[0]).transfer = null; return { rows: [] }; }
+      if (/^SELECT count\(\*\)::int AS n FROM wa_flow f WHERE f\.transfer IS NOT NULL/i.test(s)) return { rows: [{ n: [...flowRows.values()].filter((r) => r.transfer && !(db.holds.get(r.phone_norm) && db.holds.get(r.phone_norm).state === "held")).length }] };
+      return base(sql, p); };
+    flow = FL.register(app, ctx, { team: () => ({ fanOut: async (cfg, members, build) => { for (const m of members) teamSent.push({ to: m.phone, ...build(m) }); return { sent: members.length, wa: members.length, sms: 0, failed: 0, to: members.length }; }, lastCustomerText: async () => null, sendToStaff: async () => ({ ok: true }) }),
+      staff: () => st, bot: () => bot, hub: () => hub, requirePortal, broadcast: (e, d) => events.push([e, d]), now: () => new Date(nowMs), noTimer: true, log: { error() {} } });
+  }
   /* wa_messages: نافذة مفتوحة للعميل A */
   const q0 = pool.query.bind(pool);
   pool.query = async (sql, p = []) => { const s = String(sql).replace(/\s+/g, " ").trim(); if (/^SELECT 1 FROM wa_messages WHERE phone_norm=\$1 AND direction='in'/i.test(s)) return { rows: [{}] }; return q0(sql, p); };
   const call = (route, { json = {}, query = {}, param = {} } = {}) => app.routes[route]({
     req: { json: async () => { if (json === "BAD") throw new Error("bad"); return json; }, header: () => undefined, query: (n) => query[n], param: (n) => param[n] }, json: (body, status = 200) => ({ body, status }) });
-  return { db, st, bot, events, users, sent, call, chat, clock: { advance: (min) => { nowMs += min * 60_000; }, now: () => nowMs }, at,
+  return { db, st, bot, events, users, sent, call, chat, flowRows, teamSent, botLines, clock: { advance: (min) => { nowMs += min * 60_000; }, now: () => nowMs }, at,
     echo: (pn, min = 0) => db.echoes.push({ pn, at: at(min) }), inbound: (pn) => { db.threads.get(pn).last_in_at = at(); } };
 }
 
@@ -241,4 +258,66 @@ test("the bot module is missing ⇒ 503, nothing written", async () => {
   w.bot.holdChat = undefined;
   const r = await w.call("POST /api/portal/wa/chats/:key/take", { param: { key: keyOf(A) } });
   assert.equal(r.status, 503); assert.equal(r.body.error, "unavailable"); assert.equal(w.db.holds.size, 0);
+});
+
+/* ══ ST2 — نفس المسارات وwaflow مركّب: نتيجة القفل، حوّل للمدير، و flow في كل رد ═══════════════════════ */
+const TEAM = { waTeam: { members: [{ phone: "0561000001", name: "منى", role: "cashier" }, { phone: "0506000003", name: "خالد", role: "manager" }, { phone: "0544000004", name: "عمر", role: "owner" }] } };
+test("ST2 portal: «خلصت — اقفل» needs an outcome (400 with the list); take / release / done answer with flow; the list rows carry flow and team", async () => {
+  const w = world({ withFlow: true, settings: TEAM });
+  const k = { param: { key: keyOf(A) } };
+  const t = await w.call("POST /api/portal/wa/chats/:key/take", k);
+  assert.deepEqual([t.status, t.body.ok, t.body.flow.state, t.body.flow.primary, t.body.flow.actions], [200, true, "held", "done", ["done", "release", "transfer"]]);
+  const no = await w.call("POST /api/portal/wa/chats/:key/done", k);
+  assert.deepEqual([no.status, no.body.error, no.body.message, no.body.outcomes.map((o) => o.id)], [400, "outcome_required", "اختار نتيجة المحادثة", ["ordered", "answered", "complaint_solved", "follow_up", "not_customer"]]);
+  assert.equal(w.db.holds.get(A).state, "held");
+  assert.equal((await w.call("POST /api/portal/wa/chats/:key/done", { ...k, json: { outcome: "ordered", note: "x".repeat(301) } })).body.error, "note_too_long");
+  const d = await w.call("POST /api/portal/wa/chats/:key/done", { ...k, json: { outcome: "ordered", note: "طلب من الرابط" } });
+  assert.deepEqual([d.status, d.body.ok, d.body.flow.state, d.body.flow.primary, d.body.flow.lastClose.outcome, d.body.flow.lastClose.outcomeAr, d.body.flow.lastClose.note], [200, true, "closed", null, "ordered", "تم الطلب", "طلب من الرابط"]);
+  assert.equal(w.db.holds.get(A).state, "closed");
+  await w.call("POST /api/portal/wa/chats/:key/take", k);
+  const r = await w.call("POST /api/portal/wa/chats/:key/release", k);
+  assert.deepEqual([r.body.ok, r.body.flow.state], [true, "bot"]);
+  const list = (await w.call("GET /api/portal/wa/chats", { query: { filter: "all" } })).body;
+  assert.equal(list.team, false); assert.equal(list.counts.transferred, 0);
+  assert.ok(list.threads.every((x) => x.team === false && x.flow && typeof x.flow.state === "string" && "waitingSince" in x.flow && "primary" in x.flow));
+  const one = (await w.call("GET /api/portal/wa/chats/:key", k)).body;
+  assert.equal(one.team, false); assert.equal(one.flow.state, "bot");
+});
+
+test("ST2 portal: «حوّل للمدير» — cashier only, note required; the manager is told, the customer gets the one line, the chat shows «transferred»", async () => {
+  const w = world({ withFlow: true, settings: TEAM });
+  const k = { param: { key: keyOf(A) } };
+  await w.call("POST /api/portal/wa/chats/:key/take", k);
+  const no = await w.call("POST /api/portal/wa/chats/:key/transfer", k);
+  assert.deepEqual([no.status, no.body.error, no.body.message], [400, "note_required", "اكتب ملاحظة قصيرة للمدير"]);
+  const ok = await w.call("POST /api/portal/wa/chats/:key/transfer", { ...k, json: { note: "عايز استرجاع" } });
+  assert.deepEqual([ok.status, ok.body.ok, ok.body.flow.state, ok.body.flow.primary, ok.body.flow.transfer.note, ok.body.flow.transfer.by], [200, true, "transferred", null, "عايز استرجاع", "سلمى"]);
+  assert.deepEqual(w.teamSent.map((s) => [s.to, s.kind, s.buttons[0].title]), [["506000003", "transfer", "استلم المحادثة"]]);
+  assert.deepEqual(w.botLines, [[A, "transfer_note"]]);
+  assert.equal((await w.call("GET /api/portal/wa/chats", { query: { filter: "all" } })).body.counts.transferred, 1);
+  assert.ok(w.events.some((e) => e[0] === "wa_chat_transfer"));
+  w.users.portal = MANAGER;
+  assert.deepEqual([(await w.call("POST /api/portal/wa/chats/:key/transfer", { ...k, json: { note: "x" } })).status, (await w.call("POST /api/portal/wa/chats/:key/transfer", { ...k, json: { note: "x" } })).body.error], [403, "cashier_only"]);
+  const mt = await w.call("POST /api/portal/wa/chats/:key/take", k);
+  assert.deepEqual([mt.body.ok, mt.body.flow.state, mt.body.flow.primary, mt.body.owner.by.name], [true, "held", "done", "خالد"]);
+  const md = await w.call("POST /api/portal/wa/chats/:key/done", { ...k, json: { outcome: "complaint_solved" } });
+  assert.deepEqual([md.body.ok, md.body.flow.transfer, md.body.flow.lastClose.outcomeAr], [true, null, "شكوى اتحلت"]);
+  // no manager in the directory ⇒ refused, nothing sent
+  const nm = world({ withFlow: true, settings: { waTeam: { members: [TEAM.waTeam.members[0]] } } });
+  await nm.call("POST /api/portal/wa/chats/:key/take", k);
+  assert.deepEqual([(await nm.call("POST /api/portal/wa/chats/:key/transfer", { ...k, json: { note: "x" } })).status, nm.botLines.length], [409, 0]);
+});
+
+test("ST2 dashboard: done needs the outcome too; without waflow the routes behave exactly as before", async () => {
+  const w = world({ withFlow: true, settings: TEAM });
+  const k = { param: { key: keyOf(A) } };
+  await w.call("POST /api/cms/wa/threads/:key/take", k);
+  assert.deepEqual([(await w.call("POST /api/cms/wa/threads/:key/done", k)).status, (await w.call("POST /api/cms/wa/threads/:key/done", k)).body.error], [400, "outcome_required"]);
+  const d = await w.call("POST /api/cms/wa/threads/:key/done", { ...k, json: { outcome: "not_customer" } });
+  assert.deepEqual([d.body.ok, d.body.flow.state, d.body.flow.lastClose.outcomeAr], [true, "closed", "مش عميل"]);
+  const old = world();
+  await old.call("POST /api/portal/wa/chats/:key/take", k);
+  const od = await old.call("POST /api/portal/wa/chats/:key/done", k);
+  assert.deepEqual([od.status, od.body.ok, od.body.flow], [200, true, undefined]);
+  assert.equal((await old.call("POST /api/portal/wa/chats/:key/transfer", { ...k, json: { note: "x" } })).status, 503);
 });

@@ -24,7 +24,7 @@ function world({ role = "owner", settings = {}, threads = [], messages = [], bot
       const hit = db.threads.find((t) => crypto.createHash("md5").update(`${p[0]}:${t.phone_norm}`).digest("hex") === p[1]);
       return { rows: hit ? [{ phone_norm: hit.phone_norm }] : [] };
     }
-    if (/^SELECT \(SELECT count\(\*\) FROM wa_threads\)::int AS n,/i.test(s)) { db.tickArgs = p; return { rows: [{ n: db.threads.length, u: db.threads.reduce((x, y) => x + (y.unread || 0), 0), tl: db.tl || 1000, tb: db.tb || 0, w: db.threads.filter((y) => y.handoff_at).length, h: 0, tm: p[0] ? (db.tm || 500) : null, cm: p[0] ? (db.cm || 3) : 0, tc: null }] }; }
+    if (/^SELECT \(SELECT count\(\*\) FROM wa_threads( WHERE NOT \(phone_norm = ANY\(\$2::text\[\]\)\))?\)::int AS n,/i.test(s)) { db.tickArgs = p; return { rows: [{ n: db.threads.length, u: db.threads.reduce((x, y) => x + (y.unread || 0), 0), tl: db.tl || 1000, tb: db.tb || 0, w: db.threads.filter((y) => y.handoff_at).length, h: 0, tm: p[0] ? (db.tm || 500) : null, cm: p[0] ? (db.cm || 3) : 0, tc: null }] }; }
     if (/^SELECT count\(\*\)::int AS total,/i.test(s)) return { rows: [{ total: db.threads.length, waiting: db.threads.filter((t) => t.handoff_at).length, bot: 1, muted: 0, ad: 0,
       unread: db.threads.filter((t) => t.unread).length, unread_messages: db.threads.reduce((a, t) => a + t.unread, 0), oldest_waiting: db.threads.map((t) => t.handoff_at).filter(Boolean).sort()[0] || null }] };
     if (/^SELECT t\.phone_norm, t\.last_in_at, t\.last_at, t\.last_text/i.test(s)) {
@@ -123,10 +123,10 @@ test("N1 list: works with the sending switch off; rows carry the window, the bot
     ] });
     const r = (await w.call("GET", "/api/cms/wa/threads", { query: { limit: "2" } })).body;
     assert.equal(r.ok, true);
-    assert.deepEqual(r.counts, { all: 3, waiting: 1, bot: 1, muted: 0, ad: 0, unread: 2, held: 0, mine: 0, unreadMessages: 3, oldestWaitingAt: ago(4) });
+    assert.deepEqual(r.counts, { all: 3, waiting: 1, bot: 1, muted: 0, ad: 0, unread: 2, held: 0, mine: 0, transferred: 0, unreadMessages: 3, oldestWaitingAt: ago(4) });
     assert.equal(r.threads.length, 2);
     const a = r.threads[0];
-    assert.deepEqual(Object.keys(a).sort(), ["ad", "bot", "key", "lastAt", "lastDir", "lastSource", "lastText", "name", "orderNo", "orders", "owner", "phone", "phoneMasked", "unanswered", "unread", "window"]);
+    assert.deepEqual(Object.keys(a).sort(), ["ad", "bot", "flow", "key", "lastAt", "lastDir", "lastSource", "lastText", "name", "orderNo", "orders", "owner", "phone", "phoneMasked", "team", "unanswered", "unread", "window"]);
     assert.equal(a.phone, "0511111111"); assert.equal(a.phoneMasked, "…1111"); assert.equal(a.unread, 2);
     assert.deepEqual(a.bot, { state: "waiting", reason: "complaint", mutedUntil: null, mutedBy: null, handoffAt: ago(4) });
     assert.equal(a.window.open, true); assert.ok(a.window.msLeft > 23 * 3600_000);
@@ -319,8 +319,8 @@ test("N7 wiring: every successful write on a settings route is followed by a swe
   assert.ok(i > 0);
   assert.ok(index.slice(i, i + 400).includes("/^\\/api\\/(settings|notify\\/|cms\\/(wa-cloud|wa-sender|wabot\\/config))/.test(c.req.path)) waHubApi.sweepFor(c);"));
   assert.ok(i < index.indexOf("settingsGuard.register(app,"), "registered before the routes it watches");
-  assert.ok(index.includes("waHubApi = wahub.register(app, moduleCtx, { whoami: (c) => cmsApi.whoami(c), wa: waApi, waInbox: () => waInboxApi, bot: () => wabotApi, staff: () => waStaffApi });"));
-  assert.ok(index.includes("waStaffApi = wastaff.register(app, moduleCtx, { wa: waApi, hub: () => waHubApi, requirePortal: portalApi.requirePortal, audit: portalApi.audit, bot: () => wabotApi, broadcast: portalApi.broadcast });"));
+  assert.ok(index.includes("waHubApi = wahub.register(app, moduleCtx, { whoami: (c) => cmsApi.whoami(c), wa: waApi, waInbox: () => waInboxApi, bot: () => wabotApi, staff: () => waStaffApi, flow: () => waFlowApi });"));
+  assert.ok(index.includes("waStaffApi = wastaff.register(app, moduleCtx, { wa: waApi, hub: () => waHubApi, requirePortal: portalApi.requirePortal, audit: portalApi.audit, bot: () => wabotApi, broadcast: portalApi.broadcast, flow: () => waFlowApi });"));
 });
 
 /* ══ العدّادان ═════════════════════════════════════════════════════════════ */
@@ -384,7 +384,7 @@ test("LR1 tick: one small read gives a signature for the list and one for the op
   const key = (await w.call("GET", "/api/cms/wa/threads", {})).body.threads[0].key;
   const a = await w.call("GET", "/api/cms/wa/threads-tick", {});
   assert.equal(a.status, 200); assert.equal(a.body.ok, true); assert.equal(typeof a.body.list, "string"); assert.equal(a.body.chat, null); assert.deepEqual(w.db.tickArgs, [null]);
-  assert.deepEqual(Object.keys(a.body).sort(), ["chat", "list", "ok", "unread", "waiting"]);
+  assert.deepEqual(Object.keys(a.body).sort(), ["chat", "list", "ok", "oldestWaitingAt", "transferred", "unread", "waiting"]);
   const b = await w.call("GET", "/api/cms/wa/threads-tick", { query: { chat: key } });
   assert.equal(typeof b.body.chat, "string"); assert.equal(b.body.list, a.body.list, "same state, same signature"); assert.match(String(w.db.tickArgs[0]), /^5\d{8}$/);
   w.db.tm = 900;                                   // رسالة جديدة أو حالة رسالة اتغيّرت في المحادثة
@@ -419,4 +419,31 @@ test("SW1 waiting: an unanswered customer message is flagged without a handover;
   const tick = w.db.sql.find((x) => /^SELECT \(SELECT count\(\*\) FROM wa_threads\)::int AS n,/.test(x));
   assert.ok(tick.includes("<> 'auto' ORDER BY m.id DESC LIMIT 1) = 'in'") && tick.includes("b.handoff_at IS NOT NULL OR"), "the tick counts the same chats");
   assert.ok(w.db.sql.some((x) => /^ALTER TABLE IF EXISTS wa_threads ADD COLUMN IF NOT EXISTS handled_at TIMESTAMPTZ/.test(x)));
+});
+
+/* ══ ST2 — محادثات الفريق بره قوايم العملاء وعدّاداتهم؛ «مستنية رد» بالأقدم انتظاراً ═══════════════════ */
+test("ST2 team threads: hidden from the list, the counts and the tick by default; ?team=1 lists only them (owner); waiting is sorted by the longest wait", async () => {
+  const TEAM = { waTeam: { members: [{ phone: "0561000001", role: "cashier" }, { phone: "0544000004", role: "owner" }] } };
+  const w = world({ settings: TEAM, threads: [T("512345678")] });
+  const sqlOf = (re) => w.db.sql.filter((s) => re.test(s));
+  const r = (await w.call("GET", "/api/cms/wa/threads")).body;
+  assert.equal(r.ok, true); assert.equal(r.team, false);
+  const listSql = sqlOf(/^SELECT t\.phone_norm, t\.last_in_at, t\.last_at, t\.last_text/).pop(), cntSql = sqlOf(/^SELECT count\(\*\)::int AS total/).pop();
+  assert.match(listSql, /NOT \(t\.phone_norm = ANY\(\$1::text\[\]\)\)/); assert.match(cntSql, /WHERE NOT \(t\.phone_norm = ANY\(\$1::text\[\]\)\)$/);
+  assert.match(cntSql, /min\(COALESCE\(b\.handoff_at, t\.last_in_at\)\) FILTER/);
+  assert.match(listSql, /ORDER BY t\.last_at DESC LIMIT/);
+  await w.call("GET", "/api/cms/wa/threads", { query: { team: "1" } });
+  assert.match(sqlOf(/^SELECT t\.phone_norm, t\.last_in_at, t\.last_at, t\.last_text/).pop(), /AND t\.phone_norm = ANY\(\$1::text\[\]\)/);
+  await w.call("GET", "/api/cms/wa/threads", { query: { filter: "waiting" } });
+  assert.match(sqlOf(/^SELECT t\.phone_norm, t\.last_in_at, t\.last_at, t\.last_text/).pop(), /ORDER BY COALESCE\(b\.handoff_at, t\.last_in_at\) ASC NULLS LAST, t\.last_at DESC LIMIT/);
+  const tk = (await w.call("GET", "/api/cms/wa/threads-tick")).body;
+  assert.deepEqual([tk.ok, tk.transferred, "oldestWaitingAt" in tk, w.db.tickArgs], [true, 0, true, [null, ["561000001", "544000004"]]]);
+  const tickSql = sqlOf(/^SELECT \(SELECT count\(\*\) FROM wa_threads/).pop();
+  assert.equal((tickSql.match(/NOT \((t\.)?phone_norm = ANY\(\$2::text\[\]\)\)/g) || []).length, 5, "every list number of the tick leaves the team threads out");
+  // a non-owner asking for ?team=1 gets the customer list
+  w.setUser({ id: 2, username: "ops", name: "عمليات", role: "operations" });
+  assert.equal((await w.call("GET", "/api/cms/wa/threads", { query: { team: "1" } })).body.team, false);
+  // no directory and no alert phones ⇒ the queries are exactly the old ones
+  const plain = world({ threads: [T("512345678")] }); await plain.call("GET", "/api/cms/wa/threads"); await plain.call("GET", "/api/cms/wa/threads-tick");
+  assert.ok(plain.db.sql.every((s) => !/ANY\(\$[12]::text\[\]\)\)/.test(s) || /phone_norm = ANY\(\$1::text\[\]\)$/.test(s)));
 });

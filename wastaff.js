@@ -75,6 +75,7 @@ export function register(app, ctx, deps = {}) {
   const wa = deps.wa || null;
   const hub = () => (typeof deps.hub === "function" ? deps.hub() : deps.hub) || null;
   const requirePortal = deps.requirePortal || null;
+  const flow = () => { try { return (typeof deps.flow === "function" ? deps.flow() : deps.flow) || null; } catch { return null; } };      // ST2: waflow.js
   const SALT = String(deps.keySalt || tokenSecret(process.env) || "");
   const ready = pool.query(DDL).then(() => true).catch((e) => { log.error("[wa-staff] schema:", e.message); return false; });
   /* SR2: مين ماسك المحادثة (سحب / سيبها للبوت / خلصت) — المنطق كله في waowner.js */
@@ -223,6 +224,16 @@ export function register(app, ctx, deps = {}) {
       if (!pn) return c.json({ ok: false, error: "not_found" }, 404);
       let b = {}; try { b = await c.req.json(); } catch { b = {}; }
       try {
+        /* ST2: «استلم المحادثة / رجّعها للبوت / خلصت — اقفل { outcome, note } / حوّل للمدير { note }» من waflow؛ كل رد معاه flow */
+        const fl = flow();
+        if (fl || fn === "transfer") {
+          if (!fl) return c.json({ ok: false, error: "unavailable" }, 503);
+          const r = fn === "done" ? await fl.close(pn, a.me, { outcome: b && b.outcome, note: b && b.note }) : fn === "transfer" ? await fl.transfer(pn, a.me, { note: b && b.note })
+            : fn === "take" ? await fl.take(pn, a.me, { force: b && b.force === true }) : await fl.release(pn, a.me);
+          try { deps.audit?.(a.user, `wa_${fn}`, null, r.ok, { via: "portal", error: r.ok ? null : r.error, outcome: fn === "done" && r.ok ? b.outcome : undefined }, null, { emit: false }); } catch { /* السجل مايوقّفش */ }
+          if (!r.ok) return c.json({ ok: false, error: r.error, owner: r.owner || undefined, message: r.message, outcomes: r.outcomes }, r.status || 409);
+          return c.json({ ok: true, owner: r.owner, flow: r.flow });
+        }
         const r = await owner[fn](pn, a.me, { force: b && b.force === true });
         try { deps.audit?.(a.user, `wa_${fn}`, null, r.ok, { via: "portal", error: r.ok ? null : r.error }, null, { emit: false }); } catch { /* السجل مايوقّفش */ }
         if (!r.ok) return c.json({ ok: false, error: r.error, owner: r.owner || undefined, message: r.message }, r.status || 409);
@@ -239,10 +250,11 @@ export function register(app, ctx, deps = {}) {
     app.post("/api/portal/wa/chats/:key/take", ownerAct("take"));
     app.post("/api/portal/wa/chats/:key/release", ownerAct("release"));
     app.post("/api/portal/wa/chats/:key/done", ownerAct("done"));
+    app.post("/api/portal/wa/chats/:key/transfer", ownerAct("transfer"));      // ST2: «حوّل للمدير» (الكاشير بس)
     app.get("/api/portal/wa/chats", async (c) => {
       const a = await gateP(c); if (a.res) return a.res;
       try {
-        const out = await a.h.listThreads({ filter: c.req.query("filter") || "waiting", q: c.req.query("q") || "", limit: c.req.query("limit"), before: c.req.query("before") || null, full: true, me: a.me });
+        const out = await a.h.listThreads({ filter: c.req.query("filter") || "waiting", q: c.req.query("q") || "", limit: c.req.query("limit"), before: c.req.query("before") || null, full: true, me: a.me, team: c.req.query("team") === "1" && a.user.role === "manager" });
         return c.json({ ...out, send: await channelState(), role: a.user.role });
       } catch (e) { log.error("[wa-staff] chats:", e.message); return c.json({ ok: false, error: "unavailable" }, 500); }
     });

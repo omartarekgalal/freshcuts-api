@@ -336,6 +336,7 @@ export const TEXTS = Object.freeze({
     "This is Fresh Cuts' automated assistant 🤖 To reach a person type: staff, or call {phone}", ["phone"], [], 200),
   when_open_assist: t("سطر «الرد قريب» والمساعد مكمل معاه", "يرد عليك موظف هنا في أقرب وقت، وأنا معك لو تحتاج شي ثاني.", "A staff member will reply here shortly, and I'm here if you need anything else.", [], [], 200),
   wait_line_assist: t("سطر «الرد لما نفتح» والمساعد مكمل معاه", "المطعم مقفل الحين. يرد عليك موظف هنا أول ما نفتح {opens}، وأنا معك لو تحتاج شي ثاني.", "We're closed now. A staff member will reply here once we open {opens}, and I'm here if you need anything else.", ["opens"], [], 300),
+  transfer_note: t("سطر للعميل: الكاشير حوّل المحادثة للمدير (ST2)", "حوّلنا محادثتك لمدير الفرع وبيكمل معك هنا 🙏", "We've passed your chat to the branch manager, who will continue with you here 🙏", [], [], 300),
   handover_note: t("متابعة للعميل: الموظف اتأخر (مرة واحدة)", "نعتذر عن التأخير 🙏 نبّهنا الفريق مرة ثانية ويرد عليك موظف هنا.", "Sorry for the wait 🙏 We've alerted the team again and a staff member will reply here.", [], [], 300),
   handover_note_assist: t("متابعة للعميل: الموظف اتأخر، والمساعد معاه", "نعتذر عن التأخير 🙏 نبّهنا الفريق مرة ثانية ويرد عليك موظف هنا.\nوأنا معك لو تحتاج شي في المنيو أو الطلب.", "Sorry for the wait 🙏 We've alerted the team again and a staff member will reply here.\nMeanwhile I'm here for anything about the menu or your order.", [], [], 300),
   when_open: t("سطر «الرد قريب» (في الدوام بس)", "يرد عليك موظف هنا في أقرب وقت، والمساعد الآلي يترك المحادثة له.", "A staff member will reply here shortly, and the automated assistant leaves the chat to them.", [], [], 200),
@@ -2503,6 +2504,25 @@ export function register(app, ctx, deps = {}) {
     return err;
   }
   /* شروط مشتركة للرسالتين: الوضع، رقم التجربة، «مش عميل»، نافذة الـ٢٤ ساعة، الإيقاف، الكتم. ⇒ سبب المنع أو null (+ m = صف النافذة). */
+  /* ST2: سطر ثابت واحد للعميل من حركة الفريق (حوّل للمدير). نفس أقفال رسايل البوت: الوضع، أرقام التجربة، نافذة الـ٢٤ ساعة، «إيقاف». المحادثة المكتومة مش مانع هنا
+     (التحويل نفسه هو اللي كاتمها). ⇒ "sent" أو سبب المنع. */
+  async function sendFlowLine(rawPhone, key) {
+    if (key !== "transfer_note") return "bad_key";
+    const phone = normPh(rawPhone); if (!/^5\d{8}$/.test(phone)) return "bad_phone";
+    const settings = (await getSettingsData()) || {}, cfg = botConfig(settings), now = clock();
+    if (cfg.mode !== "test" && cfg.mode !== "live") return "mode_off";
+    if (cfg.mode === "test" && !cfg.testPhones.includes(phone)) return "not_test_phone";
+    const m = await q(WINDOW_SQL, [phone, now.toISOString()]);
+    if (m === null || !m[0]) return "window_check_failed";
+    if (!m[0].last_in || now.getTime() - new Date(m[0].last_in).getTime() > (24 * 60 - 10) * 60_000) return "window_closed";
+    const op = await q("SELECT stopped_at FROM wa_optins WHERE phone_norm=$1", [phone]);
+    if (op === null) return "optout_check_failed"; if (op[0] && op[0].stopped_at) return "stopped";
+    const lg = await q("SELECT lang FROM wa_bot_log WHERE phone_norm=$1 AND lang IS NOT NULL ORDER BY id DESC LIMIT 1", [phone]);
+    const lang = lg && lg[0] && lg[0].lang === "en" ? "en" : "ar";
+    let rep; try { rep = { body: textOf(cfg, key, lang) }; } catch { return "text_invalid"; }
+    const err = await sendOwn(phone, cfg, now, rep, lang, key, null);
+    return err ? `failed:${err}`.slice(0, 80) : "sent";
+  }
   async function ownGate(phone, settings, cfg, now, since) {
     if (cfg.mode !== "test" && cfg.mode !== "live") return ["mode_off"];
     if (cfg.mode === "test" && !cfg.testPhones.includes(phone)) return ["not_test_phone"];
@@ -2819,8 +2839,11 @@ export function register(app, ctx, deps = {}) {
     }
     return headline || advertised ? { ...(headline ? { ad_text: headline } : {}), ...(advertised ? { advertised } : {}) } : null;
   }
+  /* ST2: الموظف قفل المحادثة ⇒ أول دور للمساعد بعدها بياخد ملخص اللي الموظف قاله + النتيجة والملاحظة (waflow.handbackFor). مرة واحدة: بيتشال بعد ما رد المساعد يتبعت. */
+  const flowApi = () => { try { return (typeof deps.flow === "function" ? deps.flow() : deps.flow) || null; } catch { return null; } };
   async function assistContext({ fresh, phone, cfg, lang, chat, know, data, now, cls, pending = null, ev = null, settings = null }) {
     const hours = await assist.get_hours();
+    let handback = null; { const fl = flowApi(); if (fl && typeof fl.handbackFor === "function") { try { handback = await fl.handbackFor(phone); } catch (e) { console.error("[assist] handback:", e.message); handback = null; } } }
     let profile = null, offers = null, reorder = null, notes = null, ad = null;
     if (fresh || (ev && ev.referral)) { try { ad = await adContext({ ev, chat, cfg, know, settings, now }); } catch (e) { console.error("[assist] ad:", e.message); ad = null; } }
     if (fresh) { const kb = kbApi(); if (kb) { try { notes = await kb.notesFor(lang); } catch { notes = null; } } }
@@ -2839,7 +2862,7 @@ export function register(app, ctx, deps = {}) {
       if (ro) reorder = { day: orderDay(ro.at, lang), lines: ro.plan.lines.map((l) => ({ name: lang === "en" ? l.nameEn : l.name, qty: l.q })), note: "a one-tap button for the same order is attached under your message" };
     }
     let branch = null; try { branch = fresh ? textOf(cfg, "location", lang) : null; } catch { branch = null; }
-    return { profile, reorder, context: buildContext({ first: fresh, hours: hours && hours.ok ? hours : null, profile, offers, reorder, locationShared: locFresh(chat.last_loc, now), justShared: cls.key === "area", branch, boxes: fresh ? know.bundles : null, hint: hintOf(withAlt(cls)), handover: pending, notes, ad, channel }) };
+    return { profile, reorder, context: buildContext({ first: fresh, hours: hours && hours.ok ? hours : null, profile, offers, reorder, locationShared: locFresh(chat.last_loc, now), justShared: cls.key === "area", branch, boxes: fresh ? know.bundles : null, hint: hintOf(withAlt(cls)), handover: pending, notes, ad, channel, handback }), handback: Boolean(handback) };
   }
   const assistDeps = (cfg, settings, logId) => ({ tools: assist, callModel: assistCall, now: clock,
     knowOf: async () => ({ menu: await menuIndex(settings, clock()), boxes: (await bundles()) || [] }),
@@ -2924,6 +2947,7 @@ export function register(app, ctx, deps = {}) {
       if (!okSent) { await turnRow({ handledBy: "assistant", outcome: `send_failed${error ? `:${String(error).slice(0, 60)}` : ""}`, masked: tr.sent, text: r.text, trace: tr, handover: r.handover ? r.handover.reason : null }); return; }
       session = r.session;
       await assistStore.saveSession(phone, session, now);
+      if (cx.handback) { const fl = flowApi(); if (fl && typeof fl.handbackUsed === "function") { try { await fl.handbackUsed(phone); } catch (e) { console.error("[assist] handback used:", e.message); } } }
       const turnId = await turnRow({ handledBy: "assistant", outcome, masked: tr.sent, text: r.handover ? reply.body : r.text, trace: tr, cartCode: r.cart ? r.cart.code : null, handover: r.handover ? r.handover.reason : null });
       await assistStore.recordSuggestions(phone, session.id, turnId, tr.suggestions.filter((s) => s.outcome !== "computed"), r.cart ? r.cart.code : null);
       /* قاعدة المعرفة: الإجابة اللي اتستخدمت تتعدّ، والسؤال اللي المساعد ماعرفش يجاوبه (أو حوّله لموظف) ينزل في طابور المدير — مقنّع ومن غير أي ربط بالعميل. */
@@ -3720,5 +3744,5 @@ export function register(app, ctx, deps = {}) {
     return c.json({ ok: r.ok === true, result: r, to: `0${phone}`, template: tpl.name, language: lang });
   });
 
-  return { carts: botCarts, handle, ready, loadData, runDueJobs, muteChat, holdChat, unmuteChat, setNeverReply, neverReplyOf, stop: () => { if (timer) clearInterval(timer); }, botConfig: async () => botConfig((await getSettingsData()) || {}) };
+  return { carts: botCarts, handle, ready, loadData, runDueJobs, muteChat, holdChat, unmuteChat, setNeverReply, neverReplyOf, sendFlowLine, reasonAr: (r) => REASON_AR[r] || null, stop: () => { if (timer) clearInterval(timer); }, botConfig: async () => botConfig((await getSettingsData()) || {}) };
 }
