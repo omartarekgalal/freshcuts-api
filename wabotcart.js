@@ -109,7 +109,7 @@ export function makeBotCarts({ pool, log = console.error }) {
                          AND status NOT IN ('pending_payment','expired','rejected_refunded','refund_failed','paid_pos_failed')
                          AND created_at > NOW() - make_interval(days => $2::int) ORDER BY created_at DESC LIMIT 1`, [phone, Math.ceil(maxDays)]);
     if (!o || !o[0]) return null;
-    const c = await q(`SELECT items, cart_raw, subtotal, option FROM shop_carts WHERE phone_norm=$1 AND recovered_order=$2 AND cart_raw IS NOT NULL ORDER BY recovered_at DESC LIMIT 1`, [phone, o[0].order_no]);
+    const c = await q(`SELECT items, cart_raw, subtotal, option FROM shop_carts WHERE phone_norm=$1 AND recovered_order=$2 AND cart_raw IS NOT NULL ORDER BY abs(subtotal - $3::numeric), recovered_at DESC LIMIT 1`, [phone, o[0].order_no, Number(o[0].subtotal) || 0]);
     if (!c || !c[0] || !isObj(c[0].cart_raw)) return null;
     if (!same(c[0].subtotal, o[0].subtotal)) return null;
     return { orderNo: o[0].order_no, option: o[0].option || c[0].option || null, at: o[0].created_at, raw: c[0].cart_raw, items: Array.isArray(c[0].items) ? c[0].items : [] };
@@ -149,5 +149,20 @@ export function makeBotCarts({ pool, log = console.error }) {
     if (!r || !r[0]) return null;
     return { ok: true, items: Array.isArray(r[0].items) ? r[0].items : [], raw: isObj(r[0].cart_raw) && Object.keys(r[0].cart_raw).length ? r[0].cart_raw : null, option: r[0].option || "delivery", subtotal: 0, ordered: false };
   }
-  return { ensure, lastOrderCart, create, open, restore };
+  /* تشخيص (قراءة بس): من طلبات آخر N يوم، كام طلب له لقطة سلة مربوطة بيه، وكام لقطة إجماليها بيساوي إجمالي أصناف الطلب.
+     لو التساوي قليل ⇒ العرض مش هيظهر لمعظم العملاء، ولازم نعرف ليه قبل ما نعتمد عليه. أرقام بس، من غير جوالات. */
+  async function coverage(days = 30) {
+    const r = await q(`SELECT count(*)::int AS orders, count(c.subtotal)::int AS with_snapshot, count(*) FILTER (WHERE c.has_raw)::int AS with_raw,
+                              count(*) FILTER (WHERE c.has_raw AND abs(c.subtotal - o.subtotal) < 0.01)::int AS usable,
+                              round(avg(c.subtotal - o.subtotal) FILTER (WHERE c.has_raw)::numeric, 2)::float AS avg_diff,
+                              count(*) FILTER (WHERE c.has_raw AND abs(c.subtotal - o.subtotal) >= 0.01)::int AS mismatched
+                         FROM shop_orders o
+                         LEFT JOIN LATERAL (SELECT subtotal, (cart_raw IS NOT NULL) AS has_raw FROM shop_carts WHERE recovered_order = o.order_no AND phone_norm = o.phone_norm
+                                             ORDER BY (cart_raw IS NOT NULL) DESC, abs(subtotal - o.subtotal) LIMIT 1) c ON TRUE
+                        WHERE o.created_at > NOW() - make_interval(days => $1::int) AND NOT COALESCE(o.is_test,false)
+                          AND o.status NOT IN ('pending_payment','expired','rejected_refunded','refund_failed','paid_pos_failed')`, [Math.min(365, Math.max(1, Math.ceil(days)))]);
+    const made = await q(`SELECT count(*)::int AS links, count(*) FILTER (WHERE opens > 0)::int AS opened FROM wa_bot_carts WHERE created_at > NOW() - make_interval(days => $1::int)`, [Math.min(365, Math.max(1, Math.ceil(days)))]);
+    return r && r[0] ? { ...r[0], links: Number(made && made[0]?.links) || 0, opened: Number(made && made[0]?.opened) || 0 } : null;
+  }
+  return { ensure, lastOrderCart, create, open, restore, coverage };
 }

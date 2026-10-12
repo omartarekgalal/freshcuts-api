@@ -1983,6 +1983,24 @@ export function register(app, ctx, deps = {}) {
     return c.json({ ok: true, days, count: rows.length, menuItems: know.menu ? know.menu.items.length : 0, tally, rows });
   });
 
+  /* «نفس طلبي الأخير»: تشخيص للمالك (قراءة بس). من غير phone ⇒ أرقام التغطية (كام طلب له لقطة سلة تنفع). مع phone ⇒ اللي العميل ده
+     هيشوفه لو ضغط دلوقتي (الخطة من غير ما تتعمل سلة). */
+  app.get("/api/cms/wabot/reorder-check", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    await ready;
+    const settings = (await getSettingsData()) || {};
+    const cfg = botConfig(settings);
+    const out = { ok: true, enabled: cfg.reorderEnabled, maxDays: cfg.reorderMaxDays, coverage: typeof botCarts.coverage === "function" ? await botCarts.coverage(Number(c.req.query("days")) || 30) : null };
+    const ph = String(c.req.query("phone") || "").replace(/\D/g, "").replace(/^(00966|966|0)/, "");
+    if (/^5\d{8}$/.test(ph)) {
+      const snap = await botCarts.lastOrderCart(ph, cfg.reorderMaxDays);
+      const now = clock(), menu = await menuIndex(settings, now), bs = await bundles();
+      const plan = snap ? reorderPlan(snap, { menu, bundles: bs && bs.length ? bs : null }) : null;
+      out.customer = { hasSnapshot: Boolean(snap), fromOrder: snap ? snap.orderNo : null, plan: plan ? { ok: plan.ok, why: plan.why || null, lines: plan.lines, removed: plan.removed, repriced: plan.repriced, review: plan.review } : null };
+    }
+    return c.json(out);
+  });
+
   /* مخطط الإعدادات للّوحة: كل إعداد بنوعه وحدوده وافتراضيه وقيمته واسمه وشرحه بالعربي (قراءة بس). */
   app.get("/api/cms/wabot/schema", async (c) => {
     const err = await requireAdmin(c); if (err) return err;

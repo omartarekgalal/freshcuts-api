@@ -209,7 +209,7 @@ function world({ waBot = {}, notifications = { whatsappEnabled: true }, orders =
   const wa = W.register(app, ctx, { fetch, sendSms: async () => ({ ok: true }) });
   const sms = [];
   const botCarts = { ensure: async () => {}, lastOrderCart: async (ph) => (typeof lastCart === "function" ? lastCart(ph) : lastCart),
-    create: async (x) => { if (failDb && failDb.test("INSERT INTO wa_bot_carts")) return null; const code = `rc${String(db.botCarts.length + 1).padStart(6, "0")}`; db.botCarts.push({ code, ...x }); return { code }; }, open: async () => null, restore: async () => null };
+    create: async (x) => { if (failDb && failDb.test("INSERT INTO wa_bot_carts")) return null; const code = `rc${String(db.botCarts.length + 1).padStart(6, "0")}`; db.botCarts.push({ code, ...x }); return { code }; }, open: async () => null, restore: async () => null, coverage: async () => ({ orders: 40, with_snapshot: 30, with_raw: 28, usable: 26, avg_diff: 0, mismatched: 2, links: db.botCarts.length, opened: 0 }) };
   const bot = R.register(app, ctx, { app, wa, now: clock.now, noTimer: true, botCarts, whoami: async () => actor.who, ...(resolveMapsLink ? { resolveMapsLink } : { resolveMapsLink: async () => null }), sendSms: async (x) => { sms.push(x); return { ok: true }; },
     fetchMenuPages: async () => { if (pages === null) throw new Error("menu down"); return pages; }, quote: async (lat, lng) => (typeof quote === "function" ? quote(lat, lng) : quote), llm,
     fetchOffers: async () => { if (offers === null) throw new Error("offers down"); return offers; } });
@@ -1718,7 +1718,7 @@ test("ready-cart store: last order's snapshot only when it really is that order'
     const s = String(sql).replace(/\s+/g, " ").trim();
     if (/^CREATE TABLE/.test(s)) return { rows: [] };
     if (/FROM shop_orders WHERE phone_norm=\$1/.test(s)) return { rows: rows.orders.filter((o) => o.phone_norm === p[0] && nowMs - Date.parse(o.created_at) < p[1] * 86400_000).slice(-1) };
-    if (/FROM shop_carts WHERE phone_norm=\$1 AND recovered_order=\$2/.test(s)) return { rows: rows.carts.filter((c) => c.phone_norm === p[0] && c.recovered_order === p[1] && c.cart_raw) };
+    if (/FROM shop_carts WHERE phone_norm=\$1 AND recovered_order=\$2/.test(s)) return { rows: rows.carts.filter((c) => c.phone_norm === p[0] && c.recovered_order === p[1] && c.cart_raw).sort((a, b) => Math.abs(a.subtotal - p[2]) - Math.abs(b.subtotal - p[2])).slice(0, 1) };
     if (/FROM cart_recovery WHERE code=\$1 UNION ALL/.test(s)) return { rows: rows.taken.has(p[0]) || rows.bot.some((b) => b.code === p[0]) ? [{}] : [] };
     if (/^INSERT INTO wa_bot_carts/.test(s)) { rows.bot.push({ code: p[0], phone_norm: p[1], source: p[2], from_order: p[3], items: JSON.parse(p[4]), cart_raw: JSON.parse(p[5]), option: p[6], note: JSON.parse(p[7]), exp: nowMs + p[8] * 86400_000, opens: 0 }); return { rows: [{ code: p[0] }] }; }
     if (/^UPDATE wa_bot_carts SET opens/.test(s)) { const b = rows.bot.find((x) => x.code === p[0] && x.exp > nowMs); if (!b) return { rows: [] }; b.opens++; return { rows: [{ source: b.source }] }; }
@@ -1737,6 +1737,10 @@ test("ready-cart store: last order's snapshot only when it really is that order'
   assert.equal(await st.lastOrderCart("512345678", 90), null, "his latest order has no snapshot (other device) ⇒ no «same as last order»");
   rows.carts.push({ phone_norm: "512345678", recovered_order: "W2", cart_raw: snap.raw, items: snap.items, subtotal: 163, option: "delivery" });
   assert.equal(await st.lastOrderCart("512345678", 90), null, "snapshot total differs from the order's items total ⇒ not trusted");
+  // two device rows marked with the same order (an old abandoned cart on another device): the one whose total matches the order is taken
+  rows.carts.push({ phone_norm: "512345678", recovered_order: "W2", cart_raw: { 8: { item: { id: 8 }, qty: 1 } }, items: [{ id: 8, n: "x", q: 1, p: 40 }], subtotal: 40, option: "delivery" });
+  assert.deepEqual(Object.keys((await st.lastOrderCart("512345678", 90)).raw), ["8"]);
+  rows.orders.pop(); rows.carts.splice(1);
   const plan = BC.reorderPlan(snap, { menu: KNOW.menu, bundles: LIVE.bundles });
   const made = await st.create({ phone: "512345678", source: "reorder", fromOrder: "W1", plan, option: "pickup", days: 7 });
   assert.match(made.code, /^[a-z0-9]{8}$/); assert.equal(rows.bot[0].from_order, "W1"); assert.deepEqual(rows.bot[0].note, { removed: [], repriced: [], review: [] });
@@ -1794,6 +1798,10 @@ test("«نفس طلبي الأخير»: a row in the returning customer's greeti
   const h = liveWorld({ orders: prior, lastCart: SNAP() });
   await h.say("عندي شكوى"); h.clock.advance(1);
   assert.equal((await h.press("re:last", "x")).log.reply_key, "handoff_remind"); assert.equal(h.db.botCarts.length, 1, "the row made before the decision is an unused orphan, never sent");
+  // owner diagnostics: coverage numbers, and what one customer would get (nothing is created)
+  const chk = (await w.call("GET", "/api/cms/wabot/reorder-check", {}, { phone: "0512345678" })).body;
+  assert.deepEqual([chk.ok, chk.enabled, chk.coverage.usable, chk.customer.hasSnapshot, chk.customer.fromOrder, chk.customer.plan.ok, chk.customer.plan.lines.length], [true, true, 26, true, "W1790011111111", true, 3]);
+  assert.equal((await w.call("GET", "/api/cms/wabot/reorder-check")).body.customer, undefined); assert.equal(w.db.botCarts.length, 1);
   // settings
   assert.deepEqual([R.botConfig({}).reorderEnabled, R.botConfig({}).reorderMaxDays, R.botConfig({}).reorderLinkDays], [true, 90, 7]);
   assert.equal(R.configFromBody({ reorderLinkDays: 99 }).ok, false); assert.equal(R.configFromBody({ reorderEnabled: false }).value.reorderEnabled, false);
