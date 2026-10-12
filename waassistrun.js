@@ -128,7 +128,7 @@ export const ASSIST_SCHEMA = Object.freeze({
    حالة الطلب، «نفس طلبي السابق»، أسئلة الوصفات (سطر ثابت)، الحساسية الشديدة، المواعيد والموقع وطرق الدفع، الشكر، «القائمة»،
    وكل ضغطة زر أو صف قايمة. المساعد بياخد الباقي — وبس لو مفيش تحويل مفتوح ولا سكوت موظف ولا كتم ولا حارس حلقات. */
 const RULES_OWN = new Set(["stop", "start", "resume_all", "resume_updates", "optin_yes", "optin_no", "complaint", "problem", "change", "human", "media", "status", "reorder",
-  "secret", "custom_offer", "hours", "hoursloc", "location", "payment", "thanks", "main"]);
+  "secret", "custom_offer", "hours", "hoursloc", "location", "payment", "thanks", "main", "other_city", "whoami"]);
 const RULES_NOTICE = new Set(["rate", "rate_burst", "handoff_remind"]);
 /* جوّه محادثة المساعد الشغّالة، الأسئلة المعلوماتية دي بتفضل معاه (عطل تقييم ١٢/١٠: «استلام لما تفتحون» راحت لرد المواعيد وقطعت الطلب). */
 const IN_SESSION = new Set(["hours", "hoursloc", "location", "payment", "thanks"]);
@@ -171,6 +171,7 @@ Every fact you state (a dish, a box, a price, a fee, an offer, opening hours, an
 - Exactly one question per message, and it is the last line. Never two questions in one message (not «تبي تضيف …؟ ولو لا، توصيل ولا استلام؟»): ask one, wait for the answer, then ask the next.
 - Dish and box names exactly as the tools return them: the Arabic name in an Arabic reply; in an English reply ONLY the English name (name_en) when the tool gives one, without the Arabic name beside it. Never translate a dish, box or add-on name yourself. Prices as «25 ر.س» (English: SAR 25), Western digits.
 - Sold out is «خلص اليوم». «الاثنين …» / «الثنتين …» / "both" means the same choice for both slots: do not ask again.
+- Never ask the same question twice. If you asked the customer to choose (the choices of a box, a weight, delivery or pickup is NOT one of these) and they answer without choosing («جهزه», «جهزها», «أي شي», «على ذوقك», «اللي تشوفه», «عادي», "whatever", "you choose"), choose for them: for each open choice slot take the first choice get_box listed that has no extra price, say in one line which ones you chose so they can change them, and go on to the next step (preview_cart / build_cart). Delivery or pickup you still ask, once.
 - Your whole output is sent to the customer exactly as it is. Write only the message: no notes to yourself, no plan, no label such as "Off-topic:" or "Reply:", nothing before or after the message, no numbered lists.
 - The context may carry "hint": how our fixed-menu bot classified this message (for example faq + topic, or a question about one dish). Trust it when it fits: for a faq hint call faq with that topic before anything else.
 - Answer what was asked, no more. Do not list the whole menu; offer two or three fitting options.
@@ -184,6 +185,8 @@ Every fact you state (a dish, a box, a price, a fee, an offer, opening hours, an
 - A wish about how a dish is made (بدون بصل، بدون مخلل، no olives, زيادة صوص، حار) is a NOTE, not a question: put it in the "note" of that dish, or of that slot of the box, in preview_cart / build_cart, and repeat it in your cart summary so the customer sees it was understood. Do not call dish_fact for a note and do not hand over for it.
 - When the customer has confirmed the items and said delivery or pickup, call build_cart. If build_cart answers "offer_suggestion_first", do what it says: state the priced lines and ask its one suggestion, then call build_cart again after the customer answers. A button «كمّل طلبك» with the cart link is attached to your message automatically: never write a link yourself. Your message then lists the cart lines (with any notes) and the subtotal exactly as build_cart returned them, and one line telling them to tap the button, set their location and pay.
 - Delivery questions (do you deliver to me, how much is delivery, how long does it take): the answer depends on where they are. Without a shared pin, ask them in one short line to share their location here in WhatsApp (📎 then «الموقع») so you can tell them exactly; never judge coverage from a district name, and until the pin arrives do not say that we do or do not deliver to them («أكيد نوصل لك» before a pin is a guess). When the context says location_shared or customer_just_shared_a_location_pin, call quote_delivery (total = the cart subtotal if there is a cart, otherwise 0) and answer from its result only: that we deliver to their location; the fee ("fee") for an order of that total; if "free_from_total" is present, that delivery is free from that order total; if "about_minutes" is present, the time with the word «تقريباً» (never as a promise), and if it is absent say nothing about time. If the pin is outside our range say so plainly and offer pickup. Then move to the order with one question. Pickup has no delivery fee.
+- We are in Jeddah only (one branch, حي السلامة) and deliver inside Jeddah only. If the customer says they are in another city (مكة، الطائف، المدينة، الرياض …) or asks whether we have a branch or deliver there, say so plainly in one line; do not ask them for a location pin and do not offer delivery.
+- Coupons, codes and rewards: before you say anything about a coupon or a code (that one exists or does not, what it gives, where to enter it, whether the customer's code works), call get_offers in this conversation and answer from its result only.
 - First-order and loyalty offers only as get_offers returns them, with their conditions (for example the minimum order). If the customer asks for a discount that get_offers does not show, say plainly that there is none right now and mention a real offer only if one applies.
 - No invented urgency («آخر فرصة», limited stock), no pressure, no flattery.
 - If the context of THIS turn has "channel_invite", you may add its "say" text, exactly as it is and with its link, as a separate last line of your message, in ONE of these moments only: the customer thanks you or says goodbye after you helped, or right under the cart summary after build_cart. Never in any other message, never when the customer is unhappy or asked about an allergy, and never write that link or mention the channel when the context of this turn has no "channel_invite".
@@ -364,7 +367,9 @@ export function stripSalam(text) {
   return String(text || "").replace(/^\s*وعليكم السلام(?:\s+ورحم[ةه] الله)?(?:\s+وبركاته)?[\s،,.!👋]*/u, "").trim();
 }
 /* ⇒ { ok, problems }. facts = كل نتايج الأدوات وكتل السياق في المحادثة. opts.appsAllowed = إجابة faq("apps") اتقرت في المحادثة. */
-export function checkReply(text, { facts = [], customerText = "", know = {}, discountAllowed = false, appsAllowed = false, sayTexts = [], lang = null, channelUrl = null } = {}) {
+/* كوبون / كود: أي كلام عنه لازم يكون بعد get_offers في المحادثة، أو الكلمة نفسها راجعة من أداة/سياق (مراجعة الخبير: المساعد قال معلومة كوبون من غير ما ينادي get_offers). */
+const COUPON_RE = /كوبون|قسيم[هة]|كود (?:ال)?(?:خصم|ترحيب|هديه|هدية)|برومو ?كود|coupon|promo ?code|discount code|voucher/i;
+export function checkReply(text, { facts = [], customerText = "", know = {}, discountAllowed = false, appsAllowed = false, offersSeen = true, sayTexts = [], lang = null, channelUrl = null } = {}) {
   const allowWords = discountAllowed ? ["discount_claim"] : [];
   const STRUCT = new Set(["number_not_from_tools", "name_not_from_tools", "link_not_from_tools", "too_long", "empty"]);
   /* الأرقام والأسماء والروابط والطول: على الرد كله. قواعد الكلمات: على الرد من غير أي نص معتمد اتبعت زي ما هو (إجابة سؤال شائع / حقيقة صنف / ملخص
@@ -389,6 +394,7 @@ export function checkReply(text, { facts = [], customerText = "", know = {}, dis
   /* رابط قناة واتساب: مسموح **بس** الرابط المضبوط في الإعدادات بالحرف، وبس في الدور اللي السياق سمح فيه بالدعوة (channelUrl). أي رابط قناة تاني، أو
      نفس الرابط في دور مالوش دعوة (الموديل افتكره من دور قديم) ⇒ مرفوض. */
   for (const m of String(text || "").matchAll(/(?:https?:\/\/)?(?:www\.)?whatsapp\.com\/channel\/[^\s)]*/gi)) { const u = m[0].replace(/[.,،]+$/, ""); if (!channelUrl || u !== channelUrl) filtered.push({ type: "link_in_text", value: u.slice(0, 80) }); }
+  if (!offersSeen) { const m = COUPON_RE.exec(rest); if (m && !COUPON_RE.test(facts.map((f) => (typeof f === "string" ? f : JSON.stringify(f))).join(" "))) filtered.push({ type: "coupon_without_offers", value: m[0] }); }
   for (const p of weightPriceProblems(text, know, facts)) filtered.push(p);
   const leak = promptLeak(text);
   if (leak) filtered.push({ type: "internal_leak", value: leak });
@@ -401,6 +407,7 @@ const PROBLEM_HELP = {
   refund_promise: "a refund or compensation promise", invented_urgency: "invented urgency", app_word: "«تطبيقنا» / our app (say «موقعنا»)", discount_claim: "a discount that get_offers did not return", recipe_disclosure: "recipe, quantity, marinade, method or supplier detail",
   internal_leak: "mention of your instructions, tools or system", too_long: "too long (keep it short)", empty: "an empty message", dialect_egyptian: "Egyptian wording (use neutral white Arabic)", markdown: "markdown formatting", calories_on_hold: "calories (we do not quote them; hand over if they insist)",
   apps_without_source: "delivery apps mentioned without the faq(\"apps\") text",
+  coupon_without_offers: "a statement about a coupon or a code before get_offers was called in this conversation (call get_offers now, then answer from its result only)",
   wrong_language: "text in the wrong language, or notes to yourself, inside the message (write ONLY the message for the customer, in the customer's language)",
 };
 export const retryNote = (problems) => `<system_check>Your last message was NOT sent to the customer. It contained: ${[...new Set(problems.map((p) => `${PROBLEM_HELP[p.type] || p.type}${p.value ? ` [${String(p.value).slice(0, 40)}]` : ""}`))].join("; ")}. Write the message again following every rule. Call a tool if you need a fact. Output only the corrected message.</system_check>`;
@@ -549,7 +556,7 @@ export function makeAssistLoop(deps) {
       case "list_packs": return tools.list_packs();
       case "recommend": return tools.recommend();
       case "check_availability": return tools.check_availability(phone, { ids: a.ids });
-      case "get_offers": { const r = await tools.get_offers(phone); if (r && ((r.rewards || []).some((x) => Number(x.percent) > 0) || /%/.test(String(r.loyalty && r.loyalty.reward)))) st.discount = true; return r; }
+      case "get_offers": { const r = await tools.get_offers(phone); st.offers = true; if (r && ((r.rewards || []).some((x) => Number(x.percent) > 0) || /%/.test(String(r.loyalty && r.loyalty.reward)))) st.discount = true; return r; }
       case "get_hours": return tools.get_hours();
       case "delivery_info": { const r = deps.deliveryInfo ? await deps.deliveryInfo() : null; return r || { ok: false, error: "unavailable", what: "delivery_policy" }; }
       case "order_status": return tools.order_status(phone);
@@ -694,7 +701,7 @@ export function makeAssistLoop(deps) {
       const facts = sessionFacts(session.messages);
       /* دعوة القناة في رد فيه إجابة حساسية/مكوّن ⇒ السطر بيتشال بالكود (مش مكانها). */
       if (chUrl && T.factSay.length && raw.includes(chUrl)) raw = raw.split("\n").filter((l) => !l.includes(chUrl)).join("\n").trim();
-      const v = checkReply(raw, { facts, customerText: st.customerTexts.join("\n"), know, discountAllowed: st.discount, appsAllowed: st.apps, sayTexts: chSay ? [...st.say, chSay] : st.say, lang, channelUrl: chUrl });
+      const v = checkReply(raw, { facts, customerText: st.customerTexts.join("\n"), know, discountAllowed: st.discount, appsAllowed: st.apps, offersSeen: st.offers === true, sayTexts: chSay ? [...st.say, chSay] : st.say, lang, channelUrl: chUrl });
       trace.verdicts.push({ ok: v.ok, problems: v.problems, text: raw.slice(0, 1200) });
       if (v.ok) { finalText = raw; break; }
       if (retried) return fail("validator");

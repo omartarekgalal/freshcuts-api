@@ -1,0 +1,49 @@
+{
+ "set": "m45",
+ "name": "m45-second",
+ "over": {
+  "routing": "escalate",
+  "thinking": "adaptive",
+  "effort": "low",
+  "timeoutMs": 60000
+ },
+ "capped": false,
+ "spentRun": 0.063507,
+ "spentTodayBefore": 30.398820999999966,
+ "cap": 31.6,
+ "conversations": 3,
+ "passed": 3,
+ "failed": [],
+ "customerTurns": 4,
+ "modelTurns": 2,
+ "answeredByAssistant": 2,
+ "rulesOwned": 2,
+ "fallbacks": {},
+ "validatorRetries": 0,
+ "escalations": 0,
+ "costSar": 0.0635,
+ "costPerConversationSar": 0.0212,
+ "costPerModelTurnSar": 0.0318,
+ "latencyMs": {
+  "p50": 6146,
+  "p90": 6146,
+  "max": 6146,
+  "n": 2
+ },
+ "modelCalls": 5,
+ "byModel": {
+  "claude-sonnet-5-5": {
+   "calls": 5,
+   "in": 471,
+   "out": 456,
+   "cached": 57165,
+   "sar": 0.0635,
+   "callP50ms": 1835,
+   "callP90ms": 3103
+  }
+ },
+ "failTypes": {},
+ "reviewFlags": {},
+ "text": "conversations 3 · passed 3 · failed 0\ncustomer turns 4: assistant answered 2, rules owned 2, fallbacks {}\nvalidator retries 0 · escalations fast→strong 0 · model calls 5\ncost 0.0635 SAR (0.0212 per conversation, 0.0318 per model turn)\nlatency per answered turn: p50 6146 ms · p90 6146 ms · max 6146 ms (n=2)\nby model {\"claude-sonnet-5-5\":{\"calls\":5,\"in\":471,\"out\":456,\"cached\":57165,\"sar\":0.0635,\"callP50ms\":1835,\"callP90ms\":3103}}\nfail types {}\nreview flags {}",
+ "markdown": "# Assistant evaluation: m45-second\n\n```\nconversations 3 · passed 3 · failed 0\ncustomer turns 4: assistant answered 2, rules owned 2, fallbacks {}\nvalidator retries 0 · escalations fast→strong 0 · model calls 5\ncost 0.0635 SAR (0.0212 per conversation, 0.0318 per model turn)\nlatency per answered turn: p50 6146 ms · p90 6146 ms · max 6146 ms (n=2)\nby model {\"claude-sonnet-5-5\":{\"calls\":5,\"in\":471,\"out\":456,\"cached\":57165,\"sar\":0.0635,\"callP50ms\":1835,\"callP90ms\":3103}}\nfail types {}\nreview flags {}\n```\n\n## Conversations\n\n### PASS · m45-mecca (another city) · 0.0000 SAR\n\n- **العميل:** انا في مكة توصلون لي؟\n  - _بوت القواعد_ (rules:other_city)\n\n### PASS · m45-city-mid-order (another city) · 0.0635 SAR\n\n- **العميل:** ابي بيتزا تشكن رانش\n  - **المساعد** (strong, 4016 ms, 0.0319 SAR, tools: search_menu, preview_cart): بيتزا تشيكن رانش بـ 28 ر.س. تحب أضيف لك مشروبات غازية بـ 3 ر.س؟\n- **العميل:** توصيل لو سمحت، انا ساكن في عنيزة\n  - **المساعد** (strong, 6146 ms, 0.0316 SAR, tools: note_suggestion): للأسف نوصل داخل جدة فقط، وفرعنا الوحيد في حي السلامة بجدة، فما نقدر نوصل لعنيزة. إذا كنت في جدة أو تمر علينا، أجهز لك الطلب استلام. تبي استلام؟\n\n### PASS · m45-pay-transfer (payment by transfer) · 0.0000 SAR\n\n- **العميل:** ابي ادفع تحويل\n  - _بوت القواعد_ (rules:payment)\n"
+}

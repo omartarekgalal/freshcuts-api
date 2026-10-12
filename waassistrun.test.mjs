@@ -452,3 +452,12 @@ test("CH1 — the channel invite in the loop: sent as written when the turn allo
   assert.equal(AR.buildContext({ channel: null }).channel_invite, undefined);
   assert.deepEqual(AR.buildContext({ first: false, channel: { say: line, url: URL } }).channel_invite, { say: line });
 });
+
+test("serious: a coupon or code statement needs get_offers in this conversation (or the word coming from a tool / the context)", () => {
+  const types = (t, o = {}) => AR.checkReply(t, { facts: [], lang: "ar", ...o }).problems.map((p) => p.type);
+  for (const t of ["عندنا كوبون للطلب الأول", "كود الخصم تكتبه في صفحة الدفع", "ما عندنا كوبون حالياً"]) assert.ok(types(t, { offersSeen: false }).includes("coupon_without_offers"), t);
+  assert.deepEqual(types("عندنا كوبون للطلب الأول", { offersSeen: true }).filter((x) => x === "coupon_without_offers"), [], "after get_offers");
+  assert.deepEqual(types("الكوبون يتطبق في صفحة الدفع", { offersSeen: false, facts: [{ reorder: { coupon: "OMAR-9X4T" } }] }).filter((x) => x === "coupon_without_offers"), [], "the context itself talks about a coupon");
+  assert.deepEqual(types("أبشر، وش تحب تطلب؟", { offersSeen: false }), []);
+  assert.deepEqual(types("عندنا كوبون للطلب الأول").filter((x) => x === "coupon_without_offers"), [], "callers that do not pass the flag are not affected");
+});

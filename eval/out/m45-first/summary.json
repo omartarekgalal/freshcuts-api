@@ -1,0 +1,65 @@
+{
+ "set": "m45",
+ "name": "m45-first",
+ "over": {
+  "routing": "escalate",
+  "thinking": "adaptive",
+  "effort": "low",
+  "timeoutMs": 60000
+ },
+ "capped": false,
+ "spentRun": 0.30978500000000003,
+ "spentTodayBefore": 30.08903599999996,
+ "cap": 31.2,
+ "conversations": 6,
+ "passed": 3,
+ "failed": [
+  "m45-mecca",
+  "m45-city-mid-order",
+  "m45-pay-transfer"
+ ],
+ "customerTurns": 9,
+ "modelTurns": 6,
+ "answeredByAssistant": 6,
+ "rulesOwned": 3,
+ "fallbacks": {},
+ "validatorRetries": 0,
+ "escalations": 1,
+ "costSar": 0.3098,
+ "costPerConversationSar": 0.0516,
+ "costPerModelTurnSar": 0.0516,
+ "latencyMs": {
+  "p50": 4437,
+  "p90": 5655,
+  "max": 5655,
+  "n": 6
+ },
+ "modelCalls": 14,
+ "byModel": {
+  "claude-sonnet-5-5": {
+   "calls": 11,
+   "in": 20894,
+   "out": 1329,
+   "cached": 117972,
+   "sar": 0.295,
+   "callP50ms": 1856,
+   "callP90ms": 2252
+  },
+  "claude-haiku-5-5": {
+   "calls": 3,
+   "in": 26929,
+   "out": 362,
+   "cached": 10627,
+   "sar": 0.0148,
+   "callP50ms": 1991,
+   "callP90ms": 2413
+  }
+ },
+ "failTypes": {
+  "must_contain": 3,
+  "unexpected_cart": 1
+ },
+ "reviewFlags": {},
+ "text": "conversations 6 · passed 3 · failed 3\ncustomer turns 9: assistant answered 6, rules owned 3, fallbacks {}\nvalidator retries 0 · escalations fast→strong 1 · model calls 14\ncost 0.3098 SAR (0.0516 per conversation, 0.0516 per model turn)\nlatency per answered turn: p50 4437 ms · p90 5655 ms · max 5655 ms (n=6)\nby model {\"claude-sonnet-5-5\":{\"calls\":11,\"in\":20894,\"out\":1329,\"cached\":117972,\"sar\":0.295,\"callP50ms\":1856,\"callP90ms\":2252},\"claude-haiku-5-5\":{\"calls\":3,\"in\":26929,\"out\":362,\"cached\":10627,\"sar\":0.0148,\"callP50ms\":1991,\"callP90ms\":2413}}\nfail types {\"must_contain\":3,\"unexpected_cart\":1}\nreview flags {}",
+ "markdown": "# Assistant evaluation: m45-first\n\n```\nconversations 6 · passed 3 · failed 3\ncustomer turns 9: assistant answered 6, rules owned 3, fallbacks {}\nvalidator retries 0 · escalations fast→strong 1 · model calls 14\ncost 0.3098 SAR (0.0516 per conversation, 0.0516 per model turn)\nlatency per answered turn: p50 4437 ms · p90 5655 ms · max 5655 ms (n=6)\nby model {\"claude-sonnet-5-5\":{\"calls\":11,\"in\":20894,\"out\":1329,\"cached\":117972,\"sar\":0.295,\"callP50ms\":1856,\"callP90ms\":2252},\"claude-haiku-5-5\":{\"calls\":3,\"in\":26929,\"out\":362,\"cached\":10627,\"sar\":0.0148,\"callP50ms\":1991,\"callP90ms\":2413}}\nfail types {\"must_contain\":3,\"unexpected_cart\":1}\nreview flags {}\n```\n\n## Conversations\n\n### FAIL · m45-mecca (another city) · 0.0000 SAR\n\n**Fails:** must_contain «جدة»\n\n- **العميل:** انا في مكة توصلون لي؟\n  - _بوت القواعد_ (rules:other_city)\n\n### FAIL · m45-city-mid-order (another city) · 0.1697 SAR\n\n**Fails:** must_contain «جدة»; unexpected_cart@1 «»\n\n- **العميل:** ابي بيتزا تشكن رانش\n  - **المساعد** (strong, 4353 ms, 0.1327 SAR, tools: search_menu, preview_cart): بيتزا تشيكن رانش بـ 28 ر.س. تحب أضيف لك مشروبات غازية بـ 3 ر.س؟\n- **العميل:** توصيل لو سمحت، انا ساكن في بحرة\n  - **المساعد** (strong, 4006 ms, 0.0370 SAR, tools: note_suggestion, build_cart, cart 28 delivery): سلتك: بيتزا تشيكن رانش = 28 ر.س. اضغط الزر، حدّد موقعك وادفع 👇 ⏎ وإذا تبي تعرف رسوم التوصيل لموقعك بالضبط، شاركنا موقعك هنا في الواتساب (📎 ثم «الموقع»).\n\n### PASS · m45-jahzo (no repeated question) · 0.1304 SAR\n\n- **العميل:** ابغى بوكس الكريب لشخصين استلام\n  - **المساعد** (strong↑, 5655 ms, 0.0540 SAR, tools: get_box): بوكس الكريب لشخصين بـ 65 ر.س: كريبين من اختيارك + تشيز فرايز + صنف جانبي + مشروبين غازيين. ⏎ الكريبات المتاحة: كريب سوبر كرانشي، كريب زنجر سوبريم، كريب ميكس لحوم، كريب ميكس دجاج، كريب شيش طاووق، كريب ستربس، كريب فاهيتا دجاج. ⏎ أي كريب تبي للأول والثاني؟\n- **العميل:** جهزه\n  - **المساعد** (strong, 5480 ms, 0.0622 SAR, tools: preview_cart, build_cart, cart 65 pickup): اخترت لك كريب سوبر كرانشي للكريبين وبطاطس محمرة كصنف جانبي. تقدر تغيّرها من الموقع. ⏎ سلتك (استلام): بوكس الكريب لشخصين: كريبين سوبر كرانشي + تشيز فرايز + بطاطس محمرة + مشروبين غازيين = 65 ر.س. ⏎ اضغط الزر وادفع 👇\n- **العميل:** لا شكرا بس كذا\n  - **المساعد** (strong, 1864 ms, 0.0141 SAR): تمام، بالعافية عليك. إذا احتجت شي ثاني اكتب لنا.\n\n### PASS · m45-coupon-where (coupon only after get_offers) · 0.0097 SAR\n\n- **العميل:** عندي كود خصم، وين اكتبه؟\n  - **المساعد** (fast, 4437 ms, 0.0097 SAR, tools: get_offers): عندك عرض أول طلب، والكود هو FIRST. يعطي توصيلاً مجانياً على طلبك الأول بحد أدنى 60 ر.س. ما عندي تفاصيل عن مكان إدخال الكود، فإذا تبي المساعدة فيه اكتب «موظف». تبي تبدأ طلبك؟\n\n### PASS · m45-who-are-you (who are you) · 0.0000 SAR\n\n- **العميل:** انت بوت؟\n  - _بوت القواعد_ (rules:whoami)\n\n### FAIL · m45-pay-transfer (payment by transfer) · 0.0000 SAR\n\n**Fails:** must_contain «تحويل»\n\n- **العميل:** ابي ادفع تحويل\n  - _بوت القواعد_ (rules:payment)\n"
+}

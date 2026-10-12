@@ -59,6 +59,10 @@ export const DEFAULTS = Object.freeze({
   mode: "off",
   testPhones: [],              // 5XXXXXXXX — من اللوحة فقط
   autoEchoMaxSec: 8,           // M1: صدى من موبايل المطعم خلال الثواني دي من رسالة العميل (ونصه ٢٥ حرف+) = رد آلي من تطبيق واتساب بزنس، مش موظف. ٠ = كل صدى موظف
+  neverReplyPhones: [],        // M5: أرقام البوت مايردش عليها أبداً (مش عملاء: موظف، مورّد، مندوب، طالب وظيفة) — 5XXXXXXXX
+  liveScope: "all",            // M5: في وضع live — ads = محادثات الإعلانات بس · new = الإعلانات + الأرقام الجديدة (مالهاش رسايل قبل liveSince) · all = الكل. أرقام التجربة دايماً جوّه
+  liveSince: "",               // لحظة أول تشغيل للعملاء (ISO) — بتتسجّل لوحدها أول ما الوضع يبقى live وهي فاضية
+  mediaFloodCount: 5, mediaFloodMinutes: 2, mediaFloodMuteHours: 24,      // M5: الرقم ده من الصور/الملفات من غير نص خلال الدقايق دي ⇒ كتم بالساعات دي + تحويل واحد
   autoEchoTexts: [],           // نصوص ردود آلية يحددها المالك بالحرف: بتتحسب آلية لحد ٦٠ ثانية حتى لو قصيرة
   greetScope: "all",           // all | ads (تحية لمحادثات الإعلانات بس)
   humanPauseMin: 30,           // سكوت بعد **آخر** رد للموظف من الموبايل (في الدوام)
@@ -70,7 +74,7 @@ export const DEFAULTS = Object.freeze({
   handoffOpenHours: 24,        // التحويل لموظف «مفتوح» المدة دي: شكوى ⇒ معلومات بس، ومفيش تنبيه مكرر
   publicPhone: "",             // رقم المطعم في رسالة التعريف؛ فاضي = من سؤال «كيف أتواصل» في الأسئلة الشائعة
   faq: {},                     // { key: { ar, en } } — إجابات يوافق عليها المالك (FAQ_DEFS). الفاضي = «أحوّلك لموظف»، مش تخمين
-  llm: { enabled: false, minConfidence: 0.75, timeoutMs: 2500, model: "claude-haiku-5-5", budgetMonthSar: BUDGET_DEFAULTS.budgetMonthSar, budgetDaySar: BUDGET_DEFAULTS.budgetDaySar, alertPhones: [], prices: null },   // تصنيف بس للرسالة الغير مفهومة — مايكتبش ولا كلمة للعميل
+  llm: { enabled: false, minConfidence: 0.75, timeoutMs: 4000, model: "claude-haiku-5-5", budgetMonthSar: BUDGET_DEFAULTS.budgetMonthSar, budgetDaySar: BUDGET_DEFAULTS.budgetDaySar, alertPhones: [], prices: null },   // تصنيف بس للرسالة الغير مفهومة — مايكتبش ولا كلمة للعميل
   optin: { enabled: false, askAfterHours: 720 },   // سؤال «نبلّغك بتحديثات طلباتك على واتساب؟» بعد رد حالة الطلب — مرة كل askAfterHours
   assist: { ...ASSIST_CFG_DEFAULTS },   // مساعد الطلبات (waassistrun.js): مقفول افتراضياً؛ «test» = أرقام التجربة بس. طول ما هو واقف لأي سبب، القواعد اللي بترد
   freeRepliesPerMonth: 1000,   // تسعيرة ميتا ١/١٠/٢٠٢٦: أول ١٠٠٠ رد حر في الشهر ببلاش…
@@ -103,6 +107,7 @@ export const DEFAULTS = Object.freeze({
   interactive: true,           // أزرار/رابط بزر؛ false = نص عادي والرابط في آخره
   staffAlert: true,            // SMS للفريق عند التحويل (live؛ وفي test لو alertInTest)
   alertInTest: false,
+  handoverAckNeedsReply: true, // «تم» في البورتال من غير أي رد للعميل مابتلغيش رسالة الاعتذار له (ولا تنبيهها). false = السلوك القديم: «تم» بتقفل كل حاجة
   alertPhones: [],             // فاضي = أرقام الإنذارات (settings.delivery.alertPhones)
   maxAlertsPerHour: 6,
   firstCode: "FIRST",
@@ -208,6 +213,11 @@ export const TEXTS = Object.freeze({
   btn_stop_updates: t("زر: أوقف تحديثات الطلب", "أوقف تحديثات الطلب", "Stop order updates", [], [], LIMITS.btnTitle),
   btn_ok: t("زر: تمام", "تمام", "OK", [], [], LIMITS.btnTitle),
   cancel_what: t("«الغاء / وقف» لوحدها: نسأل قصده إيه", "تبي تلغي طلبك، ولا توقف رسائلنا؟ اختر 👇", "Do you want to cancel your order, or stop our messages? Pick below 👇"),
+  repeat_short: t("نفس السؤال اتكرر فوراً: رد قصير بزر موظف", "نفس المعلومة 👆 تبي أحوّلك لموظف؟", "Same answer as above 👆 Shall I pass you to a staff member?"),
+  other_city: t("عميل من مدينة تانية", "نحن في جدة، حي السلامة، والتوصيل داخل جدة فقط.", "We are in Jeddah (Al Salamah) and deliver inside Jeddah only."),
+  delivery_time: t("مدة التوصيل (من غير دقايق)", "الوقت يختلف حسب المسافة والزحمة، ويظهر لك تقدير قبل الدفع. أرسل موقعك 📍 وأشيك لك.", "The time depends on distance and traffic, and you see an estimate before paying. Share your location 📍 and I will check."),
+  payment_no_cash_transfer: t("سؤال «ادفع تحويل / كاش؟»: السطر الأول (قرار المالك)", "الدفع أونلاين من موقعنا عند إتمام الطلب، وما نستقبل تحويل بنكي أو كاش عبر المحادثة.", "Payment is online on our website when you place the order; we do not take bank transfers or cash through the chat."),
+  whoami: t("«انت بوت؟ / مين معي»: سطر التعريف + القائمة", "{who}\nاختر اللي تبيه 👇", "{who}\nPick what you need 👇", ["who"]),
   btn_cancel_order: t("زر: إلغاء طلبي", "إلغاء طلبي", "Cancel my order", [], [], LIMITS.btnTitle),
   btn_stop_msgs: t("زر: إيقاف الرسائل", "إيقاف الرسائل", "Stop messages", [], [], LIMITS.btnTitle),
   btn_resume_all: t("زر: رجّع كل الرسائل", "كل الرسائل والعروض", "All messages", [], [], LIMITS.btnTitle),
@@ -345,7 +355,7 @@ export const INTENT_MAP = Object.freeze({
   greeting: "greet", menu: "cats", item_price: "cats", item_info: "cats", recommend: "best", servings: "boxes", kids_menu: "faq:kids",
   catering: "packs", dine_in: "faq:dine_in", parking: "faq:parking", reservation: "faq:reservation", delivery_apps: "faq:apps",
   offers: "offers", how_to_order: "order",
-  delivery: "delivery", delivery_area: "delivery", delivery_fee: "delivery", min_order: "delivery", delivery_time: "delivery",
+  delivery: "delivery", delivery_area: "delivery", delivery_fee: "delivery", min_order: "delivery", delivery_time: "eta",
   hours: "hours", open_now: "hours", special_hours: "hours", waitlist_join: "hours",
   location: "location", payment: "payment", order_status: "status",
   complaint: "complaint", refund: "complaint",
@@ -353,7 +363,7 @@ export const INTENT_MAP = Object.freeze({
   cancel_order: "change", modify_order: "change", cancel_or_stop: "change", special_request: "change",
   human: "human", thanks: "thanks", bye: "thanks", stop: "stop", start: "start", media: "media", unknown: "unknown",
 });
-export const TREE_KEYS = ["cancel_what", "stop_updates", "channel", "main", "boxes", "tier", "box", "cats", "cat", "item", "items", "best", "notmenu", "packs", "pickup", "spicy", "faq", "area", "hoursloc", "optin_yes", "optin_no", "resume_all", "resume_updates", "reorder", "custom_offer", "secret", "dishfact"];
+export const TREE_KEYS = ["repeat_short", "other_city", "delivery_time", "whoami", "cancel_what", "stop_updates", "channel", "main", "boxes", "tier", "box", "cats", "cat", "item", "items", "best", "notmenu", "packs", "pickup", "spicy", "faq", "area", "hoursloc", "optin_yes", "optin_no", "resume_all", "resume_updates", "reorder", "custom_offer", "secret", "dishfact"];
 export const REPLY_KEYS = ["greet", "menu", "order", "offers", "delivery", "hours", "location", "payment", "status", "complaint", "problem", "change", "human", "staff", "media", "unknown", "thanks", "stop", "start"];
 const HANDOFF_KEYS = { custom_offer: ["custom_offer", "normal"], complaint: ["complaint", "urgent"], problem: ["problem", "urgent"], change: ["order_change", "urgent"], human: ["asked_human", "normal"], staff: ["needs_staff", "normal"], media: ["media", "normal"] };
 const BUTTON_IDS = { "bot:menu": "main", "bot:status": "status", "bot:human": "human", "optin:yes": "optin_yes", "optin:no": "optin_no", "resume:all": "resume_all", "resume:updates": "resume_updates", "re:last": "reorder", "bot:custom": "custom_offer",
@@ -409,6 +419,8 @@ const slugOk = (s) => /^[a-z0-9][a-z0-9-]{0,39}$/.test(String(s || ""));
 export const channelUrlOk = (u) => /^https:\/\/(www\.)?whatsapp\.com\/channel\/[A-Za-z0-9]{8,64}$/.test(String(u || ""));
 const channelCfg = (x) => { const c = x && typeof x === "object" ? x : {}; const d = Math.round(Number(c.everyDays));
   return { url: channelUrlOk(c.url) ? String(c.url) : "", enabled: c.enabled === true, everyDays: Number.isFinite(d) && d >= 1 && d <= 365 ? d : 30 }; };
+const phNorm = (v) => String(v || "").replace(/\D/g, "").replace(/^(00966|966|0)/, "");
+export const LIVE_SCOPES = Object.freeze(["ads", "new", "all"]);
 export const channelOn = (cfg) => Boolean(cfg && cfg.links && cfg.links.channel && cfg.links.channel.enabled === true && channelUrlOk(cfg.links.channel.url));
 export function botConfig(settings) {
   const x = (settings && settings.waBot) || {};
@@ -454,6 +466,10 @@ export function botConfig(settings) {
     maxAgeMinutes: num(x.maxAgeMinutes, 1, 120, DEFAULTS.maxAgeMinutes),
     sameTextSeconds: num(x.sameTextSeconds, 0, 120, DEFAULTS.sameTextSeconds),
     autoEchoMaxSec: num(x.autoEchoMaxSec, 0, ECHO.maxSecLimit, DEFAULTS.autoEchoMaxSec),
+    neverReplyPhones: [...new Set((Array.isArray(x.neverReplyPhones) ? x.neverReplyPhones : []).map(phNorm).filter((p) => /^5\d{8}$/.test(p)))].slice(0, 500),
+    liveScope: LIVE_SCOPES.includes(x.liveScope) ? x.liveScope : DEFAULTS.liveScope,
+    liveSince: Number.isFinite(Date.parse(x.liveSince)) ? new Date(x.liveSince).toISOString() : "",
+    mediaFloodCount: num(x.mediaFloodCount, 0, 50, DEFAULTS.mediaFloodCount), mediaFloodMinutes: num(x.mediaFloodMinutes, 1, 30, DEFAULTS.mediaFloodMinutes), mediaFloodMuteHours: num(x.mediaFloodMuteHours, 1, 168, DEFAULTS.mediaFloodMuteHours),
     autoEchoTexts: (Array.isArray(x.autoEchoTexts) ? x.autoEchoTexts : []).map((t) => String(t || "").replace(/\s+/g, " ").trim()).filter(Boolean).slice(0, ECHO.maxTexts),
     maxRepliesPerHour: num(x.maxRepliesPerHour, 5, 300, DEFAULTS.maxRepliesPerHour),
     maxTapsPerHour: num(x.maxTapsPerHour, 20, 1000, DEFAULTS.maxTapsPerHour),
@@ -463,6 +479,7 @@ export function botConfig(settings) {
     interactive: x.interactive !== false,
     staffAlert: x.staffAlert !== false,
     alertInTest: x.alertInTest === true,
+    handoverAckNeedsReply: x.handoverAckNeedsReply !== false,
     alertPhones: staffPhones(x.alertPhones),
     maxAlertsPerHour: num(x.maxAlertsPerHour, 0, 60, DEFAULTS.maxAlertsPerHour),
     firstCode: /^[A-Z0-9-]{2,20}$/.test(String(x.firstCode || "")) ? String(x.firstCode) : DEFAULTS.firstCode,
@@ -495,6 +512,12 @@ export function configFromBody(b, prev = {}) {
   const src = b && typeof b === "object" ? b : {};
   const out = { ...prev };
   if ("mode" in src) { if (MODES.includes(src.mode)) out.mode = src.mode; else errors.push("mode"); }
+  if ("neverReplyPhones" in src) {
+    const list = Array.isArray(src.neverReplyPhones) ? src.neverReplyPhones.map(phNorm) : null;
+    if (!list || list.length > 500 || list.some((p) => !/^5\d{8}$/.test(p))) errors.push("neverReplyPhones: أرقام سعودية 05XXXXXXXX (لحد ٥٠٠)"); else out.neverReplyPhones = [...new Set(list)];
+  }
+  if ("liveScope" in src) { if (LIVE_SCOPES.includes(src.liveScope)) out.liveScope = src.liveScope; else errors.push("liveScope: ads أو new أو all"); }
+  if ("liveSince" in src) { if (src.liveSince === "" || src.liveSince === null) out.liveSince = ""; else if (Number.isFinite(Date.parse(src.liveSince))) out.liveSince = new Date(src.liveSince).toISOString(); else errors.push("liveSince: تاريخ غير صحيح"); }
   if ("autoEchoTexts" in src) {
     const list = Array.isArray(src.autoEchoTexts) ? src.autoEchoTexts.map((t) => String(t ?? "").replace(/\s+/g, " ").trim()).filter(Boolean) : null;
     if (!list || list.length > ECHO.maxTexts || list.some((t) => [...t].length > 1000)) errors.push(`autoEchoTexts: قايمة نصوص (لحد ${ECHO.maxTexts} نص، كل نص لحد ١٠٠٠ حرف)`); else out.autoEchoTexts = [...new Set(list)];
@@ -512,10 +535,10 @@ export function configFromBody(b, prev = {}) {
   delete out.humanWindowHours;      // اتلغى (١٢/١٠) — أي حفظ بينضّف المخزّن القديم
   for (const k of ["humanPauseMin", "staffWaitMin", "closedEchoPauseMin", "manualMuteHours", "handoffOpenHours", "freeRepliesPerMonth", "replyRateSar", "disclosureHours", "unknownHandoverAfter", "adWindowHours", "optinAnswerWindowMin",
     "offerEndWithinDays", "boxesCacheMin", "menuCacheMin", "offersCacheMin", "staleCacheMin", "logKeepDays", "reorderMaxDays", "reorderLinkDays", "reorderMinTotal", "reorderLookback",
-    "handoverRealertMin", "handoverCustomerNoteMin", "greetWindowHours", "maxAgeMinutes", "sameTextSeconds", "autoEchoMaxSec", "maxRepliesPerHour", "maxTapsPerHour", "maxRepliesPerMinute", "orderLookbackHours", "lateAfterMinutes", "maxAlertsPerHour"]) {
+    "handoverRealertMin", "handoverCustomerNoteMin", "greetWindowHours", "maxAgeMinutes", "sameTextSeconds", "autoEchoMaxSec", "mediaFloodCount", "mediaFloodMinutes", "mediaFloodMuteHours", "maxRepliesPerHour", "maxTapsPerHour", "maxRepliesPerMinute", "orderLookbackHours", "lateAfterMinutes", "maxAlertsPerHour"]) {
     if (k in src) { if (Number.isFinite(Number(src[k])) && src[k] !== "" && src[k] !== null) out[k] = Number(src[k]); else errors.push(k); }
   }
-  for (const k of ["interactive", "staffAlert", "alertInTest", "reorderEnabled", "dishFactsEnabled"]) if (k in src) out[k] = src[k] === true;
+  for (const k of ["interactive", "staffAlert", "alertInTest", "handoverAckNeedsReply", "reorderEnabled", "dishFactsEnabled"]) if (k in src) out[k] = src[k] === true;
   if ("llm" in src) {
     const L = src.llm || {}, cur = { ...(prev.llm || {}) };
     if ("enabled" in L) cur.enabled = L.enabled === true;
@@ -704,6 +727,12 @@ const S = (group, type, ar, help, extra = {}) => Object.freeze({ group, type, ar
 export const SCHEMA = Object.freeze({
   mode: S("mode", "enum", "وضع البوت", "مقفول / تجربة صامتة / أرقام التجربة / شغّال للكل.", { options: ["off", "dry", "test", "live"] }),
   testPhones: S("mode", "phones", "أرقام التجربة", "الأرقام الوحيدة اللي البوت يرد عليها في وضع التجربة."),
+  neverReplyPhones: S("mode", "phones", "أرقام البوت مايردش عليها أبداً", "مش عملاء: موظف، مورّد، مندوب، طالب وظيفة. أرقام تنبيهات الفريق وأرقام المناديب بتتستبعد لوحدها (إلا لو الرقم في أرقام التجربة)."),
+  liveScope: S("mode", "enum", "نطاق التشغيل للعملاء", "الإعلانات بس / الإعلانات + الأرقام الجديدة / الكل. بره النطاق: البوت يسكت ويسجّل الرد اللي كان هيطلع. أرقام التجربة دايماً جوّه. لازم يتحدد وقت تحويل الوضع لـ«شغّال».", { options: ["ads", "new", "all"] }),
+  liveSince: S("mode", "datetime", "بداية التشغيل للعملاء", "بتتسجّل لوحدها أول مرة الوضع يبقى «شغّال». «الأرقام الجديدة» = اللي مالهاش أي رسالة قبل اللحظة دي."),
+  mediaFloodCount: S("limits", "number", "سيل صور/ملفات من غير نص: العدد", "العدد ده خلال المدة ⇒ البوت يكتم المحادثة ويحوّلها لموظف مرة واحدة. صفر = مقفول.", { min: 0, max: 50, unit: "ملف" }),
+  mediaFloodMinutes: S("limits", "number", "سيل صور/ملفات: خلال", "", { min: 1, max: 30, unit: "دقيقة" }),
+  mediaFloodMuteHours: S("limits", "number", "سيل صور/ملفات: مدة الكتم", "", { min: 1, max: 168, unit: "ساعة" }),
   autoEchoMaxSec: S("staff", "number", "رد آلي من تطبيق واتساب: خلال كام ثانية", "رسالة طالعة من موبايل المطعم خلال الثواني دي من رسالة العميل (ونصها ٢٥ حرف أو أكتر) بتتحسب رد آلي من التطبيق، مش موظف: البوت مايسكتش بسببها. صفر = كل رسالة من الموبايل = موظف.", { min: 0, max: ECHO.maxSecLimit, unit: "ثانية" }),
   autoEchoTexts: S("staff", "texts", "نصوص الردود الآلية بتاعة التطبيق", "نص مكتوب هنا بالحرف بيتحسب رد آلي لو طلع خلال دقيقة من رسالة العميل، حتى لو قصير."),
   greetScope: S("greeting", "enum", "مين يتحيّى", "كل محادثة جديدة، أو محادثات الإعلانات بس.", { options: ["all", "ads"] }),
@@ -721,6 +750,7 @@ export const SCHEMA = Object.freeze({
   handoffOpenHours: S("staff", "number", "التحويل لموظف يفضل مفتوح", "طول المدة دي البوت بيرد على المواعيد والموقع وحالة الطلب بس، ومفيش تنبيه مكرر.", { min: 1, max: 168, unit: "ساعة" }),
   staffAlert: S("alerts", "boolean", "SMS للفريق عند التحويل", "في وضع «شغّال»؛ وفي التجربة لو المفتاح اللي بعده مفتوح."),
   alertInTest: S("alerts", "boolean", "ابعت التنبيه في وضع التجربة", ""),
+  handoverAckNeedsReply: S("staff", "boolean", "«تم» من غير رد مايقفلش متابعة العميل", "لو الموظف ضغط «تم» في البورتال ومحدش كتب للعميل: التنبيه التاني بيتلغي، بس بعد مدة «رسالة العميل» العميل ياخد رسالة الاعتذار والكارت يرجع يظهر. اقفلها لو الفريق بيرد على العملاء بالتليفون."),
   alertPhones: S("alerts", "phones", "أرقام تنبيه التحويل", "فاضي = أرقام الإنذارات في إعدادات التوصيل."),
   maxAlertsPerHour: S("alerts", "number", "أقصى تنبيهات في الساعة", "", { min: 1, max: 30, unit: "تنبيه" }),
   maxAgeMinutes: S("limits", "number", "عمر الرسالة الأقصى", "رسالة وصلت متأخر أكتر من كده مابيتردش عليها.", { min: 1, max: 120, unit: "دقيقة" }),
@@ -1030,7 +1060,10 @@ export function buildReply(key, c) {
     case "payment": {
       const f = (data.settings?.storefront?.seo?.faq || []).find((x) => /طرق الدفع|الدفع/.test(String(x?.q || "")));
       const ans = f && (lang === "en" ? (f.a_en || "") : (f.a || ""));
-      return { body: F("payment", { payment: String(ans || "").trim() }) };
+      /* M4: «ادفع تحويل / كاش؟» ⇒ السطر المباشر (نص المالك payment_no_cash_transfer) أولاً، وبعده طرق الدفع. */
+      let first = ""; if (c.arg === "no_cash_transfer") { try { first = T("payment_no_cash_transfer"); } catch { first = ""; } }
+      const pay = F("payment", { payment: String(ans || "").trim() });
+      return { body: first ? `${first}\n${pay}` : pay };
     }
     case "status": {
       if (data.orderDbFailed) throw new DataMissing("orders_db");
@@ -1077,6 +1110,10 @@ export function buildReply(key, c) {
     case "unknown": return { body: T("unknown"), buttons: [{ id: "bot:menu", title: T("btn_main") }, { id: "bot:status", title: T("btn_status") }, { id: "bot:human", title: T("btn_human") }] };
     case "stop": return { body: T("stop"), buttons: [{ id: "stop:updates", title: T("btn_stop_updates") }, { id: "stop:ok", title: T("btn_ok") }] };
     case "stop_updates": return { body: T("stop_updates"), buttons: [{ id: "resume:updates", title: T("btn_resume_updates") }, { id: "resume:all", title: T("btn_resume_all") }] };
+    case "repeat_short": return { body: T("repeat_short"), buttons: [{ id: "bot:human", title: T("btn_human") }] };
+    case "other_city": return { body: T("other_city") };
+    case "delivery_time": return { body: T("delivery_time") };
+    case "whoami": { const m = buildReply("main", c); return { ...m, body: F("whoami", { who: disclosureLine(cfg, lang, data.settings) }) }; }
     case "cancel_what": return { body: T("cancel_what"), buttons: [{ id: "cw:order", title: T("btn_cancel_order") }, { id: "cw:stop", title: T("btn_stop_msgs") }] };
     case "thanks": case "start": return { body: T(key) };
     default: throw new DataMissing(`key:${key}`);
@@ -1186,11 +1223,49 @@ function dishOf(text, e, know) {
 }
 /* «نفس الطلب / زي آخر مرة / كرر الطلب / المعتاد» — بعد التطبيع (ة⇒ه، أ⇒ا) */
 const REORDER_RE = /(نفس|زي|مثل) (ال)?(طلب|طلبي|طلبنا|اخر مره|المره اللي فاتت|المره الماضيه)|كرر(وا|و)? ?(لي )?(ال)?(طلب|طلبي)|(ال)?معتاد|same (order|as last)|re-?order|the usual/i;
+const CITY_RE = /(?<![\p{L}])(?:(?:ب|ل|في )?(?:مكه|ينبع|رابغ|تبوك|نجران|جازان|جيزان|بريده|خميس مشيط|المدينه المنوره)|(?:ال|لل|بال)(?:رياض|طايف|طائف|دمام|ظهران|قصيم|جبيل|احساء|قنفذه|ليث|خبر الشرقيه)|makkah|mecca|taif|riyadh|dammam|khobar|madinah|medina|yanbu|abha|tabuk)(?![\p{L}])/u;
+const CITY_STREET_RE = /(?:طريق|شارع|حي|خط|كوبري|دوار|مخرج|جسر|مخطط|سوق|street|road|rd) (?:ال)?(?:مكه|مدينه|رياض|طايف|طائف|makkah|mecca|madinah|medina)/;
+const EXTRA_INTENTS = [
+  /* شكوى على الطلب / المندوب ⇒ موظف عاجل برقم الطلب */
+  [/(جاني|وصلني|جابو لي|جابوا لي|جاب لي|استلمت) طلب (غيري|غلط|ثاني|مو طلبي|مش طلبي)|(مو|مش|ما هو) طلبي|طلب غيري|(المندوب|السواق|السايق|الكابتن|الدليفري) (ما|مو|مش|لا|لسه ما|لسا ما) ?(يرد|رد|وصل|جا|جاء|لقاني|يلقاني|جاني)|المندوب مايرد|wrong order|driver (is not|isn't|not) (answering|here)/, "complaint", null, "order_issue"],
+  /* مصدر اللحم ⇒ إجابة المالك المعتمدة faq:meat (مش قايمة أصناف ولا أي تفصيلة مننا). «مين المورد» بيفضل secret: اسم المورّد سر تجاري (قاعدة عمر ١٢/١٠). */
+  [/من (وين|فين|اين) (تجيبون|تجيبوا|تجيبو|تاخذون|تشترون|تشتروا|جايبين) (ال)?(لحم|لحمه|لحوم|دجاج|فراخ)|مصدر (ال)?(لحم|لحوم|دجاج)|لحمكم (من وين|بلدي|مستورد)|where (do you get|is) (the|your) meat( from)?/, "faq", "meat", "meat_source"],
+  /* «انت بوت؟ / مين معي» ⇒ سطر التعريف + القائمة */
+  [/^(انت|انتي|انتم|هل انت|هل انتم) (بوت|روبوت|انسان|بشر|الي|رد الي|شخص حقيقي|موظف)( ولا (انسان|بوت|بشر|موظف))?$|^(مين|من|منو) (معي|معايا|يكلمني|بيكلمني|انت|انتم)$|^(اكلم|بكلم) مين$|are you (a )?(bot|robot|human|real)|who (is this|am i (talking|speaking) (to|with))/, "whoami", null, "who_are_you"],
+  /* الدفع تحويل / كاش / حساب بنكي ⇒ السطر المباشر + طرق الدفع */
+  [/(ادفع|دفع|الدفع|احاسب|احاسبكم) (ب)?(تحويل|كاش|نقد|نقدي|عند الاستلام)|تحويل بنكي|(ابي|ابغى|عايز|عايزه|عاوز|عاوزه|ودي|ممكن|اعطني|عطني|ارسل|ارسلي|ابعت|ابعتي) (لي )?(رقم )?(ال)?(حساب|ايبان)|حساب عشان (احول|احولك|احولكم)|احول (لك|لكم|عليكم|على حسابكم)|احولك|احولكم|pay (by|with|in) (cash|transfer)|bank transfer|cash on delivery/, "payment", "no_cash_transfer", "payment_method_q"],
+  /* «كم الحساب / المجموع» ⇒ حالة الطلب لو له طلب مفتوح، وإلا «كيف أطلب» (resolveByOrder بعد تحميل الطلب) */
+  [/^(كم|بكم|ايش|وش) (صار )?(ال)?(حساب|مجموع|اجمالي|توتال)( كله| الكلي)?$|^(ال)?(حساب|مجموع|اجمالي) (كم|بكم)$|^how much is (the|my) (total|bill)$/, "bill", null, "bill_question"],
+  /* «كم باقي / متى يوصل» ⇒ حالة الطلب لو له طلب مفتوح، وإلا رد مدة التوصيل القصير */
+  [/^(كم|قد ايش|قديش) (باقي|فاضل|بقى|يبقى)( له| عليه| على الطلب| ويوصل)?$|^باقي كم$|^(متى|امتى|امتا) (يوصل|يوصلني|توصل|يجي|يجيني|يجهز|بيوصل|هيوصل)( الطلب| طلبي)?$|^(كم|قد ايش) (ياخذ|ياخد|يستغرق|مده|وقت) (ال)?توصيل( تقريبا)?$|^how long (does|will) (the )?delivery take$|^when will it arrive$/, "eta", null, "eta_question"],
+  /* صيغ عامة من سجل الإعادة كانت «ما فهمت»: «الو / اخبارك / كيف حالك» ⇒ ترحيب · «اشكرك» ⇒ شكر · «ثواني / لحظة» ⇒ تمام (مفيش رد) · «ما اسمك» ⇒ تعريف · «مش عارف آكل إيه / جوعان / ايش تقترح» ⇒ الأكثر طلباً */
+  [/^(الو+|هالو|اخبارك|اخبارك ايه|ايش اخبارك|وش اخبارك|كيف حالك|كيف الحال|كيفك|شلونك|عامل ايه|ازيك)( يا [\p{L}]+)?$/u, "greet", null, "greet"],
+  [/^(اشكرك|اشكركم|نشكركم|شاكر لك|شاكره لك|ممنون|ممنونك)( جدا| كثير| جزيلا)?$/, "thanks", null, "thanks"],
+  [/^(ثواني|ثانيه|ثانيه بس|لحظه|لحظات|دقيقه|دقيقه بس|لحظه بس|ثواني بس|sec|one sec|one moment|wait)$/, "ack", null, "ack"],
+  [/^(ما|وش|ايش|ايه|شنو) ?(هو )?اسمك$|^اسمك (ايه|ايش|وش)$|^what('s| is) your name$/, "whoami", null, "who_are_you"],
+  [/(مش|مو|ماني|مب|ما) (عارف|عارفه|ادري) (اكل|اطلب|اخذ|اختار) (ايه|ايش|وش|شنو)|^(انا )?(جوعان|جوعانه|جعان|جعانه)$|^(ايش|وش|ايه|شنو) (تقترح|تقترحون|تقترحوا|ترشح|ترشحون|ترشحلي|تنصح|تنصحون)( لي| علي)?$|^(اقترح|رشح|انصحني|اقترحلي|رشحلي)( لي| علي)?( شي| حاجه)?$/, "best", null, "recommend"],
+  /* «محتاجه اعمل اوردر / عايز اطلب / ممكن اطلب» ⇒ كيف أطلب */
+  [/^(لو سمحت )?(محتاج|محتاجه|عايز|عايزه|عاوز|عاوزه|ابي|ابغى|ابغي|ودي|حاب|حابه|ممكن|اقدر|كيف) (اعمل|اسوي|اطلب|نطلب|اطلب منكم) ?(اوردر|طلب|order)?( لو سمحت)?$|^(اعمل|اسوي) (اوردر|طلب)$/, "order", null, "how_to_order"],
+];
+/* n = النص بعد التطبيع ⇒ [key, arg, rawIntent] أو null. مدينة غير جدة ⇒ other_city (إلا لو اسم شارع/حي في جدة: «طريق المدينة»، «شارع مكة»، «حي الرياض»). */
+export function extraIntent(n) {
+  const s = String(n || "").replace(/[؟?!.،,]+/g, " ").replace(/\s+/g, " ").trim();
+  if (!s) return null;
+  for (const [re, key, arg, raw] of EXTRA_INTENTS) if (re.test(s)) return [key, arg, raw];
+  if (CITY_RE.test(s) && !CITY_STREET_RE.test(s)) return ["other_city", null, "other_city"];
+  return null;
+}
 const BARE_CANCEL = new Set(["الغاء", "الغ", "الغي", "الغو", "الغوا", "وقف", "اوقف", "وقفوا", "وقفو", "قف", "كنسل", "كانسل", "كنسلوا", "cancel", "cancel it", "الغاء لو سمحت", "الغي لو سمحت", "ابي الغي", "ابغى الغي"].map((w) => normalize(w)));
 /* الطلب «شغّال» (لسه ممكن يتلغي): مدفوع ولسه ماتسلّمش. */
 const ORDER_DONE = new Set(["delivered", "rejected_refunded", "refund_failed", "expired", "pending_payment", "cancelled", "canceled"]);
 /* بعد تحميل الطلب: «الغاء» لوحدها وله طلب شغّال (أو مانعرفش: القاعدة ماردّتش) ⇒ إلغاء طلب لموظف عاجل. غير كده السؤال بزرارين زي ما هو. */
 export function resolveCancel(cls, data) {
+  /* M4: «كم الحساب» و«كم باقي / متى يوصل»: له طلب شغّال ⇒ حالة الطلب. مالوش ⇒ «كيف أطلب» للأولى ورد مدة التوصيل القصير للتانية. */
+  if (cls && (cls.key === "bill" || cls.key === "eta")) {
+    const o2 = data && data.order ? data.order : null;
+    if ((o2 && !ORDER_DONE.has(String(o2.status || ""))) || (data && data.orderDbFailed)) return { ...cls, key: "status" };
+    return { ...cls, key: cls.key === "bill" ? "order" : "delivery_time" };
+  }
   if (!cls || cls.key !== "cancel_what") return cls;
   const o = data && data.order ? data.order : null;
   if ((o && !ORDER_DONE.has(String(o.status || ""))) || (data && data.orderDbFailed)) return { ...cls, key: "change", rawIntent: "cancel_order", entities: { ...(cls.entities || {}), ...(o ? { orderNo: o.order_no } : {}) } };
@@ -1222,7 +1297,7 @@ export function classify(ev, know = {}) {
   const om = text.match(ORDER_NO_RE);
   const orderNo = om ? om[1].toUpperCase() : null;
   if (NAV_RE.test(n)) return out("main", null, "nav");
-  if (ACK_RE.test(n) || (!n && text.trim() && /^[\p{Extended_Pictographic}\uFE0F\u200D\s]+$/u.test(text.trim()))) return out("ack", null, "ack");
+  if (ACK_RE.test(n) || (!n && text.trim() && /^[\p{Extended_Pictographic}\u{1F3FB}-\u{1F3FF}\uFE0F\u200D\s]+$/u.test(text.trim()))) return out("ack", null, "ack");
   if (NACK_RE.test(n)) return out("nack", null, "nack");
   const m = matchIntent(text, { type: "text", menu: know.menu || null });
   let intent = m.intent;
@@ -1231,6 +1306,9 @@ export function classify(ev, know = {}) {
   /* ١٢/١٠ — «الساعة كم» اتصنّفت شكوى: كلمة مدة لوحدها (درجة ٣) كانت كفاية. الشكوى لازم لها إشارة شكوى فعلية
      (بارد/ناقص/غلط/متأخر… ⇒ درجة ٥+). إشارة ضعيفة + كلام عن الطلب ⇒ «وين طلبي» (حالة حقيقية، وبتحوّل لو متأخر فعلاً). */
   if (intent === "complaint" && m.score < 5) intent = orderNo || /طلب|اوردر|order|مندوب|driver/.test(n) ? "order_status" : "unknown";
+  /* M4 (مراجعة الخبير، من سجل المحادثات الحي): صيغ كانت بتقع «ما فهمت» أو في رد غلط. كل صيغة ليها مثالها في الاختبارات.
+     مابتغلبش نية صريحة (إيقاف، موظف، مشكلة دفع، استرجاع…)؛ الاستثناء الوحيد: شكوى المندوب/الطلب بتغلب «وين طلبي». */
+  { const x = extraIntent(n); if (x && (!HARD_INTENTS.has(intent) || (x[0] === "complaint" && intent === "order_status"))) return done(x[0], x[1] ?? null, x[2]); }
   if (RECIPE_RE.test(n) && !HARD_INTENTS.has(intent)) return done("secret", null, "recipe");
   if (TIME_RE.test(n) && !HARD_INTENTS.has(intent)) return done("hours", null, "time_question");
   if (REORDER_RE.test(n) && (!HARD_INTENTS.has(intent) || intent === "order_status")) return done("reorder", null, "reorder");
@@ -1316,7 +1394,7 @@ export function pauseState({ cfg, now, open, lastEchoAt, hours }) {
   const until = t + cfg.humanPauseMin * 60_000;
   return { paused: until > now.getTime(), until, kind: "staff_pause" };
 }
-const FACTUAL_KEYS = new Set(["hours", "hoursloc", "location", "status", "thanks", "stop", "stop_updates", "cancel_what", "start", "optin_yes", "optin_no", "resume_all", "resume_updates"]);
+const FACTUAL_KEYS = new Set(["other_city", "whoami", "delivery_time", "hours", "hoursloc", "location", "status", "thanks", "stop", "stop_updates", "cancel_what", "start", "optin_yes", "optin_no", "resume_all", "resume_updates"]);
 /* أسئلة المنيو والأسعار والتوصيل: معلومات. بتتجاوب حتى والمحادثة عند الموظف — إلا لو التحويل شكوى/مشكلة (SERIOUS). */
 const MENU_KEYS = new Set(["main", "menu", "cats", "cat", "item", "items", "boxes", "tier", "box", "best", "spicy", "notmenu", "packs", "payment", "pickup", "delivery", "area", "faq", "dishfact"]);
 const SERIOUS = new Set(["allergy_severe", "complaint", "problem", "order_change", "order_late", "order_issue", "send_failed"]);
@@ -1333,12 +1411,17 @@ export function decide(ev, ctx) {
   if (cfg.mode === "off") return silent("off");
   if (!/^5\d{8}$/.test(String(ev.phone || ""))) return silent("not_saudi_mobile");
   if (cfg.mode === "test" && !cfg.testPhones.includes(ev.phone)) return silent("test_mode_not_listed");
+  /* M5: رقم مش عميل (قايمة المالك، أو مستبعد لوحده: تنبيهات الفريق / مندوب) ⇒ ولا رد أبداً. بره نطاق التشغيل (liveScope) ⇒ سكوت والرد اللي كان هيطلع بيتسجّل (key). */
+  if (ctx.neverReply) return silent("never_reply", { detail: ctx.neverReply });
+  if (ctx.outOfScope) return silent("out_of_scope", { key: c.key, detail: `scope:${cfg.liveScope}` });
   if (!c.key) return silent("ignored_type");
   const at = ev.at ? Date.parse(ev.at) : now.getTime();
   const ageMin = (now.getTime() - (Number.isFinite(at) ? at : now.getTime())) / 60000;
   if (ageMin >= 24 * 60) return silent("outside_window");
   const waited = ctx.afterWait === "staff_wait" ? cfg.staffWaitMin : ctx.afterWait === "unknown_wait" ? cfg.unknownWaitMin : 0;
-  if (ageMin > cfg.maxAgeMinutes + waited) return silent("stale");
+  /* M4: رسالة وصلتنا متأخرة (ويب هوك اتأخر) مابتتسابش من غير رد: بتتحوّل لموظف والعميل بيتقال له. (الرد المؤجّل اللي فات ميعاده بيتلغي من منفّذ الردود المؤجّلة، مش هنا.) */
+  const stale = ageMin > cfg.maxAgeMinutes + waited;
+  if (stale && (ctx.afterWait || c.key === "ack" || c.key === "nack")) return silent("stale");
   const optout = c.key === "stop" || c.key === "start" ? c.key : c.key === "stop_updates" ? "stop_all" : null;
   const chat = ctx.chat || {};
   const nowMs = now.getTime();
@@ -1355,7 +1438,6 @@ export function decide(ev, ctx) {
     // ٢) نية معروفة: نستنى الموظف staffWaitMin وبعدها نرد. غير مفهوم: للموظف (هو في المحادثة).
     if (c.key === "ack" || c.key === "nack") return silent("ack");
     /* مع مساعد الطلبات (ctx.assistOn): الرسالة الغير مفهومة بتستنى الموظف زي غيرها وبعدين المساعد يرد عليها — مابتتسابش من غير رد (عطل ١٢/١٠: «انت بطيء اوي» فضلت من غير رد). */
-    if (c.key === "unknown" && !ctx.assistOn) return silent(ps.kind, { resumeAt: iso(ps.until), detail: "unknown_left_to_staff" });
     const due = Math.min(nowMs + cfg.staffWaitMin * 60_000, ps.until);
     return { act: "wait", waitKind: "staff_wait", dueAt: iso(due), resumeAt: iso(due), reason: ps.kind, ...base };
   }
@@ -1419,7 +1501,12 @@ export function decide(ev, ctx) {
   }
   /* التكرار = نفس نص الرسالة (أو نفس الضغطة) من نفس العميل خلال sameTextSeconds — ضغطتين ورا بعض أو إعادة إرسال. الويب هوك المكرر نفسه بيتمسك بالـwamid قبل كده.
      عميل بيكرر سؤاله بعد كده (حتى لو نفس الكلام) بيترد عليه: السكوت عليه كان بيبان إن البوت واقف (١٢/١٠). */
-  if (ctx.sameTextAt && cfg.sameTextSeconds > 0 && nowMs - Date.parse(ctx.sameTextAt) < cfg.sameTextSeconds * 1000) return silent("duplicate", { key });
+  /* M4: نفس النص جوّه المدة مابيتسكتش عليه: أول تكرار ⇒ رد قصير «نفس المعلومة 👆 تبي أحوّلك لموظف؟» بزر؛ التكرار اللي بعده ⇒ تحويل عادي لموظف. */
+  if (ctx.sameTextAt && cfg.sameTextSeconds > 0 && nowMs - Date.parse(ctx.sameTextAt) < cfg.sameTextSeconds * 1000 && !optout && !HANDOFF_KEYS[key] && key !== "handoff_remind") {
+    if (ctx.sameTextKey === "repeat_short") { key = "human"; handoff = ["repeated_question", "normal"]; }
+    else key = "repeat_short";
+  }
+  if (stale && !optout && !HANDOFF_KEYS[key]) { key = "staff"; handoff = ["late_message", "normal"]; }      // إيقاف/رجوع وشكوى متأخرين بياخدوا ردهم العادي
   // ٥) الرسالة الغير مفهومة بيترد عليها فوراً (سطر صريح + القائمة + «موظف»): مفيش «انتظار الموظف ٣ دقايق» — كان بيبان إن البوت مابيردّش (١٢/١٠).
   //    اللي لسه مستني من قبل التحديث (afterWait = unknown_wait) بيتنفّذ عادي.
   if (HANDOFF_KEYS[key] && !handoff) handoff = HANDOFF_KEYS[key];
@@ -1449,7 +1536,7 @@ export function decide(ev, ctx) {
   // تحويل مفتوح أصلاً ⇒ مفيش تنبيه تاني للفريق على نفس المحادثة (إلا لو الجديد أخطر من القديم)
   if (handoff && ho && !(SERIOUS.has(handoff[0]) && !SERIOUS.has(ho))) handoff = null;
   // ٧) التعريف: أول رسالة من البوت في المحادثة (مرة كل ٢٤ ساعة)
-  const disclose = !chat.last_disclosed_at || nowMs - Date.parse(chat.last_disclosed_at) >= cfg.disclosureHours * 3600_000;
+  const disclose = key !== "whoami" && (!chat.last_disclosed_at || nowMs - Date.parse(chat.last_disclosed_at) >= cfg.disclosureHours * 3600_000);
   let disclosed = false;       // سطر التعريف اتحط فعلاً فوق الرد
   if (disclose) {
     try { reply = { ...reply, body: `${disclosureLine(cfg, c.lang, ctx.data?.settings)}\n${reply.body}` }; disclosed = true; }
@@ -1496,10 +1583,10 @@ export function decide(ev, ctx) {
 }
 
 /* نص تنبيه الفريق — رسالة SMS واحدة (fitOneSms حارس أخير). مفيش اسم العميل ولا نص رسالته. */
-const REASON_EN = { complaint: "complaint", problem: "payment/site problem", order_change: "change/cancel order", asked_human: "asked for staff", needs_staff: "question for staff",
+const REASON_EN = { repeated_question: "repeated the same question", late_message: "message arrived late", media_flood: "many files with no text", complaint: "complaint", problem: "payment/site problem", order_change: "change/cancel order", asked_human: "asked for staff", needs_staff: "question for staff",
   media: "sent photo/voice", not_understood_twice: "not understood", rate_limit: "many messages", data_missing: "bot could not answer", order_not_found: "order not found",
   allergy_severe: "SEVERE ALLERGY question", custom_offer: "wants a tailored group offer", order_late: "LATE order", order_issue: "order issue", send_failed: "bot reply failed" };
-const REASON_AR = { allergy_severe: "حساسية شديدة", custom_offer: "عرض مخصص لتجمع", complaint: "شكوى", problem: "مشكلة دفع/موقع", order_change: "تعديل/الغاء طلب", asked_human: "طلب موظف", needs_staff: "سؤال", media: "صورة/صوت",
+const REASON_AR = { repeated_question: "كرر نفس السؤال", late_message: "رسالة وصلت متأخرة", media_flood: "صور/ملفات كتير من غير نص", allergy_severe: "حساسية شديدة", custom_offer: "عرض مخصص لتجمع", complaint: "شكوى", problem: "مشكلة دفع/موقع", order_change: "تعديل/الغاء طلب", asked_human: "طلب موظف", needs_staff: "سؤال", media: "صورة/صوت",
   not_understood_twice: "غير مفهوم", rate_limit: "رسائل كثيرة", data_missing: "البوت لم يجب", order_not_found: "طلب غير موجود", order_late: "طلب متاخر", order_issue: "مشكلة طلب", send_failed: "فشل رد البوت" };
 export function alertText({ phone, reason, orderNo = null }, lang = "en") {
   const ph = `0${phone}`;
@@ -1733,7 +1820,7 @@ export function register(app, ctx, deps = {}) {
       const r = await q(`SELECT code, min_total, free_delivery, once_per_customer, active, expires_at FROM shop_coupons WHERE code=$1 AND active AND phone_norm IS NULL LIMIT 1`, [cfg.firstCode]);
       data.first = r && r[0] ? r[0] : null;
     }
-    if (need("status", "complaint", "cancel_what", "change")) {
+    if (need("status", "complaint", "cancel_what", "change", "bill", "eta")) {
       const cols = `order_no, status, option, total, created_at, pos_ready_at, refund_id, to_jsonb(shop_orders)->>'handed_at' AS handed_at, NULLIF(to_jsonb(shop_orders)->>'table_no','')::int AS table_no`;
       const r = orderNo
         ? await q(`SELECT ${cols} FROM shop_orders WHERE order_no=$1 AND phone_norm=$2 AND status NOT IN ('expired','pending_payment') LIMIT 1`, [orderNo, phone])
@@ -1761,11 +1848,12 @@ export function register(app, ctx, deps = {}) {
                               count(*) FILTER (WHERE decision IN ('replied','dry') AND at > NOW() - INTERVAL '1 hour')::int AS n,
                               max(at) FILTER (WHERE decision IN ('replied','dry') AND reply_key=$2 AND COALESCE(reply_arg,'')=$3) AS same_at,
                               max(at) FILTER (WHERE decision IN ('replied','dry') AND $4::text <> '' AND COALESCE(text,'') = $4) AS same_text_at,
+                              (array_agg(reply_key ORDER BY at DESC) FILTER (WHERE decision IN ('replied','dry') AND $4::text <> '' AND COALESCE(text,'') = $4))[1] AS same_text_key,
                               max(at) FILTER (WHERE decision='failed' AND error NOT LIKE 'skipped:%' AND at > NOW() - INTERVAL '10 minutes') AS failed_at
                          FROM wa_bot_log WHERE phone_norm=$1 AND at > NOW() - INTERVAL '1 hour'`, [phone, key, argOf(arg), String(text || "")]);
     const x = (r && r[0]) || {};
     const at = (v) => (v ? isoOf(v) : null);
-    return { n: Number(x.n) || 0, rate: { text: Number(x.n_text) || 0, taps: Number(x.n_tap) || 0, minute: Number(x.n_min) || 0, oldestText: at(x.oldest_text), oldestTap: at(x.oldest_tap), oldestMinute: at(x.oldest_min), rateAt: at(x.rate_at), burstAt: at(x.burst_at) }, lastSame: x.same_at ? { key, at: isoOf(x.same_at) } : null, sameTextAt: x.same_text_at ? isoOf(x.same_text_at) : null, failedRecently: Boolean(x.failed_at) };
+    return { n: Number(x.n) || 0, rate: { text: Number(x.n_text) || 0, taps: Number(x.n_tap) || 0, minute: Number(x.n_min) || 0, oldestText: at(x.oldest_text), oldestTap: at(x.oldest_tap), oldestMinute: at(x.oldest_min), rateAt: at(x.rate_at), burstAt: at(x.burst_at) }, lastSame: x.same_at ? { key, at: isoOf(x.same_at) } : null, sameTextAt: x.same_text_at ? isoOf(x.same_text_at) : null, sameTextKey: x.same_text_key || null, failedRecently: Boolean(x.failed_at) };
   }
   /* M1 — الردود الآلية بتاعة تطبيق واتساب بزنس. autoRepliesActive: فيه صدى آلي اتسجّل في آخر ٧ أيام (كاش ٥ دقايق). autoEchoAfter: صدى آلي للعميل ده بعد اللحظة دي
      ⇒ true / false / null (القاعدة ماردّتش ⇒ مانأجّلش ومانسكتش: الرد يطلع عادي). */
@@ -1798,7 +1886,8 @@ export function register(app, ctx, deps = {}) {
     const phones = cfg.alertPhones.length ? cfg.alertPhones : sc.alertPhones;
     if (!phones.length) return "no_phones";
     const cap = await q("SELECT count(*)::int AS n FROM wa_bot_log WHERE alert='sent' AND at > NOW() - INTERVAL '1 hour'", []);
-    if (cfg.maxAlertsPerHour && cap && Number(cap[0]?.n) >= cfg.maxAlertsPerHour) return "capped";
+    /* السقف في الساعة للتنبيهات العادية. العاجل (شكوى، مشكلة دفع، تعديل طلب، حساسية شديدة…) مابيتقفلش بيه — له حد أعلى بكتير ضد السيل بس (٥ أضعاف). */
+    if (cfg.maxAlertsPerHour && cap && Number(cap[0]?.n) >= cfg.maxAlertsPerHour * (SERIOUS.has(String(reason)) ? 5 : 1)) return "capped";
     const body = alertText({ phone, reason, orderNo }, sc.lang);
     let sent = 0;
     for (const p of phones) {
@@ -1899,7 +1988,7 @@ export function register(app, ctx, deps = {}) {
           }
         }
       } else if (afterWait && ev.cls && ev.cls.key) cls = { ...cls, ...ev.cls };   // الرد المؤجّل بيكمل بنفس التصنيف اللي اتحسب وقت وصول الرسالة
-      const rc = cls.key ? await recent(phone, cls.key, cls.arg, ["text", "interactive", "button"].includes(String(ev.type || "text")) ? String(ev.text || "").slice(0, 300) : "") : { n: 0, lastSame: null, sameTextAt: null, failedRecently: false };
+      const rc = cls.key ? await recent(phone, cls.key, cls.arg, ["text", "interactive", "button"].includes(String(ev.type || "text")) ? String(ev.text || "").slice(0, 300) : "") : { n: 0, lastSame: null, sameTextAt: null, sameTextKey: null, failedRecently: false };
       await q("UPDATE wa_bot_log SET reply_arg=$2 WHERE id=$1", [logId, argOf(cls.arg)]);
       let data;
       try { data = await loadData({ settings, cfg, phone, orderNo: cls.entities?.orderNo || null, key: cls.key, now, know, arg: cls.arg }); }
@@ -1918,6 +2007,19 @@ export function register(app, ctx, deps = {}) {
          • الموظف كتب ⇒ المساعد يتراجع assist.staffStepBackMin (٥ د) بدل humanPauseMin (٣٠ د)، وبعدها يرجع لوحده.
          • تحويل عادي (طلب موظف، سؤال، عرض مخصص، صورة) مابيمسكش المحادثة: المساعد يكمل يرد على اللي يعرفه.
          • تحويل جدّي (شكوى، مشكلة دفع، تعديل طلب مدفوع، حساسية شديدة) بيمسكها assist.seriousHoldMin (١٥ د) بس، مش ٢٤ ساعة. */
+      /* M5: مين البوت يرد عليه أصلاً. أرقام التجربة دايماً جوّه. قايمة المالك بتغلب أي حاجة. */
+      const gate5 = ok ? await liveGate5({ cfg, settings, phone, chat, ev, now }) : { never: null, out: false };
+      /* M5: سيل صور/ملفات من غير نص ⇒ كتم + تحويل واحد (مش ٣٨ رد «ما أقدر أفتح الصور»). */
+      if (ok && !afterWait && cls.key === "media" && !gate5.never && !gate5.out && cfg.mediaFloodCount > 0 && (cfg.mode === "live" || (cfg.mode === "test" && cfg.testPhones.includes(phone))) && !(chat.muted_until && Date.parse(chat.muted_until) > now.getTime())) {
+        const fl = await q(`SELECT count(*)::int AS n FROM wa_bot_log WHERE phone_norm=$1 AND msg_type IN ('image','video','document','audio','voice','sticker') AND at > NOW() - make_interval(mins => $2::int)`, [phone, Math.ceil(cfg.mediaFloodMinutes)]);
+        if (fl && fl[0] && Number(fl[0].n) >= cfg.mediaFloodCount) {
+          await muteChat(phone, cfg.mediaFloodMuteHours, "media_flood");
+          await q("UPDATE wa_bot_chats SET mute_reason='media_flood' WHERE phone_norm=$1", [phone]);
+          const alert = await handoffNow(settings, cfg, phone, ["media_flood", "normal"], null, null, cls.lang);
+          await finish({ decision: "silent", reason: "media_flood", key: "media", handoff: "media_flood", alert, resumeAt: new Date(now.getTime() + cfg.mediaFloodMuteHours * 3600_000).toISOString() });
+          return;
+        }
+      }
       const aud = (cfg.mode === "test" || cfg.mode === "live") && ok ? await assistAudience({ cfg, phone, chat, now, hasReferral: Boolean(ev.referral), count: !afterWait }) : { on: false, why: "bot_mode" };
       const assistOn = aud.on;
       data.assistWhy = aud.why;
@@ -1932,7 +2034,7 @@ export function register(app, ctx, deps = {}) {
         data.channelOk = so !== null && !(so[0] && (so[0].stopped_at || so[0].marketing_off_at));
       }
       let d = decide(ev, { cfg: assistOn ? { ...cfg, humanPauseMin: cfg.assist.staffStepBackMin } : cfg, now, chat: assistOn && !held ? { ...chat, handoff_at: null, handoff_reason: null } : chat,
-        lastEchoAt: echoAt, repliesLastHour: rc.n, rate: rc.rate, lastSame: rc.lastSame, sameTextAt: afterWait ? null : rc.sameTextAt, failedRecently: rc.failedRecently, data, cls, afterWait, assistOn });
+        lastEchoAt: echoAt, repliesLastHour: rc.n, rate: rc.rate, lastSame: rc.lastSame, sameTextAt: afterWait ? null : rc.sameTextAt, sameTextKey: rc.sameTextKey, failedRecently: rc.failedRecently, data, cls, afterWait, assistOn, neverReply: gate5.never, outOfScope: gate5.out });
       /* «يشوف ويسمع» (١٢/١٠): صورة أو رسالة صوتية كانت هتاخد رد «ما أقدر أفتح الصور…» + تحويل. لو المساعد شغّال للرقم ده والمفتاح مفتوح والسقف يسمح:
          - الصوت بيتحوّل لنص، والصورة (منيو/إعلان) لملخص مقنّع ⇒ الرسالة بتتعالج من الأول كأنها نص (ومعاها علامة heard للمساعد).
          - صورة دفع / طلب فيه مشكلة ⇒ تحويل لموظف بنص ثابت + اللي اتفهم في ملاحظة الموظف. صورة موقع ⇒ نطلب الموقع نفسه.
@@ -2135,8 +2237,16 @@ export function register(app, ctx, deps = {}) {
     const echo = await q(`SELECT 1 FROM wa_messages WHERE phone_norm=$1 AND source='echo' AND created_at > $2 AND ${STAFF_ECHO_SQL} LIMIT 1`, [phone, ev.hoAt]);
     if (echo === null) return no("echo_check_failed"); if (echo.length) return no("staff_answered");
     const ack = await q(`SELECT acked_at FROM wa_handovers WHERE phone_norm=$1 AND at >= $2 ORDER BY at DESC LIMIT 1`, [phone, ev.hoAt]);      // «تم» في البوابة = حد مسكها
-    if (ack && ack[0] && ack[0].acked_at) return no("staff_acked");
+    /* «تم» في البورتال من غير أي رد للعميل (مراجعة الخبير): كانت بتلغي التنبيه التاني **و** رسالة العميل، فالعميل يفضل من غير رد خالص. دلوقتي: التنبيه التاني بيتلغي
+       (الكارت اتقفل)، بس لو ميعاد رسالة العميل جه ولسه محدش رد عليه ⇒ كارت جديد على البورتال + التنبيه، والعميل ياخد رسالته. */
+    const acked = Boolean(ack && ack[0] && ack[0].acked_at);
+    if (acked && !cfg.handoverAckNeedsReply) return no("staff_acked");
     const assistOn = (await assistAudience({ cfg, phone, chat, now, hasReferral: false, count: false })).on;
+    if (ev.stage === "realert" && acked) { if (cfg.handoverCustomerNoteMin > 0) await scheduleHandoverCheck(phone, { ...ev, stage: "note" }, cfg); return end("done", "realert:skipped_acked"); }
+    if (ev.stage !== "realert" && acked) {
+      if (typeof deps.portalEmit === "function") { try { deps.portalEmit("wa_handover", { phone: `0${phone}`, phoneMasked: `…${phone.slice(-4)}`, reason: ev.reason, reasonAr: REASON_AR[ev.reason] || ev.reason, urgent: ev.urgent === true, orderNo: ev.orderNo || null, at: now.toISOString(), test: cfg.mode === "test", reopened: true }); } catch (e) { console.error("[wabot] portal:", e.message); } }
+      if (cfg.mode === "live" || cfg.alertInTest) await alertStaff(settings, cfg, { phone, reason: ev.reason, orderNo: ev.orderNo });
+    }
     if (ev.stage === "realert") {
       const waited = Math.round((now.getTime() - Date.parse(ev.hoAt)) / 60_000);
       if (typeof deps.portalEmit === "function") { try { deps.portalEmit("wa_handover", { phone: `0${phone}`, phoneMasked: `…${phone.slice(-4)}`, reason: ev.reason, reasonAr: REASON_AR[ev.reason] || ev.reason, urgent: ev.urgent === true, orderNo: ev.orderNo || null,
@@ -2237,6 +2347,38 @@ export function register(app, ctx, deps = {}) {
     if (payloadProblem(p)) return why(`payload_${key}`);
     return { d: { key, payloads: [p], fallback: [p], handoff: key === "media_payment" ? ["problem", "urgent"] : key === "media_order" ? ["complaint", "urgent"] : null,
       note: key === "media_location" ? null : `صورة: ${r.summary}`.slice(0, 200), detail: `media:vision ${r.kind}`, disclose: false, unknown: false, link: null, channel: null } };
+  }
+  /* ── M5: مين البوت نفسه يرد عليه ───────────────────────────────────────────────
+     never: سبب إن الرقم ده مش عميل (never_list / alert_phone / courier / staff) أو null. out: بره نطاق التشغيل (liveScope) في وضع live.
+     المستبعدين لوحدهم (كاش ١٠ دقايق): أرقام تنبيهات الفريق، أرقام فريق البورتال لو متسجّلة، وأرقام المناديب على طلبات آخر ٣٠ يوم. رقم في أرقام التجربة مابيتستبعدش لوحده. */
+  let autoNever = { at: -1e15, map: new Map() };
+  async function autoNeverMap(settings, cfg) {
+    const t = clock().getTime();
+    if (t - autoNever.at < 600_000 && t >= autoNever.at) return autoNever.map;
+    const m = new Map();
+    const sc = staffConfig(settings);
+    for (const p of [...cfg.alertPhones, ...sc.alertPhones, ...(sc.newOrderPhones || [])].map(normPh)) if (/^5\d{8}$/.test(p)) m.set(p, "alert_phone");
+    for (const s of Array.isArray(settings?.portal?.staff) ? settings.portal.staff : []) { const p = normPh(s && (s.phone || s.mobile)); if (/^5\d{8}$/.test(p)) m.set(p, "staff"); }
+    const stf = await q("SELECT phone_norm FROM cms_contacts WHERE is_staff LIMIT 500", []);      // «موظف» في ملف العملاء (نفس القايمة اللي بتستبعدهم من الحملات)
+    for (const r of stf || []) { const p = normPh(r.phone_norm); if (/^5\d{8}$/.test(p) && !m.has(p)) m.set(p, "staff"); }
+    const dr = await q(`SELECT DISTINCT driver->>'phone' AS phone FROM dl_shipments WHERE driver IS NOT NULL AND updated_at > NOW() - INTERVAL '30 days' AND COALESCE(driver->>'phone','') <> '' LIMIT 500`, []);
+    for (const r of dr || []) { const p = normPh(r.phone); if (/^5\d{8}$/.test(p) && !m.has(p)) m.set(p, "courier"); }
+    autoNever = { at: t, map: m };
+    return m;
+  }
+  async function liveGate5({ cfg, settings, phone, chat, ev, now }) {
+    if (cfg.neverReplyPhones.includes(phone)) return { never: "never_list", out: false };
+    if (cfg.testPhones.includes(phone)) return { never: null, out: false };
+    let auto = null; try { auto = (await autoNeverMap(settings, cfg)).get(phone) || null; } catch { auto = null; }
+    if (auto) return { never: auto, out: false };
+    if (cfg.mode !== "live" || cfg.liveScope === "all") return { never: null, out: false };
+    const fromAd = Boolean(ev && ev.referral) || Boolean(chat && chat.referral_at && now.getTime() - Date.parse(chat.referral_at) < cfg.adWindowHours * 3600_000);
+    if (fromAd) return { never: null, out: false };
+    if (cfg.liveScope === "new" && cfg.liveSince) {
+      const old = await q("SELECT 1 FROM wa_messages WHERE phone_norm=$1 AND created_at < $2::timestamptz LIMIT 1", [phone, cfg.liveSince]);
+      if (old !== null && old.length === 0) return { never: null, out: false };
+    }
+    return { never: null, out: true };
   }
   /* ── مين ياخد المساعد (١٢/١٠: وضع العملاء على مراحل) ───────────────────────────
      off ⇒ محدش. test ⇒ أرقام التجربة. live ⇒ أرقام التجربة + جمهور assist.liveAudience، لحد assist.liveDailyCustomers عميل مختلف في اليوم.
@@ -2527,6 +2669,11 @@ export function register(app, ctx, deps = {}) {
     const prev = settings.waBot && typeof settings.waBot === "object" ? settings.waBot : {};
     const v = configFromBody(b, prev);
     if (!v.ok) return c.json({ ok: false, error: "invalid", errors: v.errors }, 400);
+    /* M5: تحويل البوت لـ«شغّال للعملاء» لازم يحدد النطاق في نفس الطلب (liveScope) — مفيش «الكل» بالغلط. وأول مرة بتتسجّل لحظة البداية (liveSince). */
+    if (v.value.mode === "live" && (prev.mode || "off") !== "live") {
+      if (!b || !LIVE_SCOPES.includes(b.liveScope)) return c.json({ ok: false, error: "invalid", errors: ["liveScope: اختار نطاق التشغيل للعملاء مع تحويل الوضع: ads (الإعلانات بس) أو new (الإعلانات + الأرقام الجديدة) أو all (الكل)"], scopeReason: "choose_scope" }, 400);
+      if (!v.value.liveSince) v.value.liveSince = clock().toISOString();
+    }
     /* وضع العملاء للمساعد مابيتفتحش ولا جمهوره بيتغيّر من الحفظ العادي: من «تشغيل للعملاء» بتأكيد المالك بس (‎/api/cms/wabot/assist/go-live‎). الرجوع لـ test / off مسموح من هنا. */
     { const was = botConfig({ waBot: prev }).assist, next = botConfig({ waBot: v.value }).assist;
       if (next.mode === "live" && (was.mode !== "live" || was.liveAudience !== next.liveAudience))
@@ -2690,6 +2837,10 @@ export function register(app, ctx, deps = {}) {
     data.chat = simChat;
     if (data.reorder) data.reorder.url = `${STORE}/c/preview0`;      // المحاكاة مابتعملش سلة
     const d = decide(ev, { cfg, now, chat: simChat, lastEchoAt: null, repliesLastHour: 0, lastSame: null, failedRecently: false, data, cls, afterWait: "unknown_wait" });
+    /* M5: المحاكاة بتقول لو الرقم ده بره نطاق التشغيل للعملاء أو «مش عميل» — ومعاها الرد اللي كان هيطلع (wouldSend). */
+    const g5 = await liveGate5({ cfg: { ...cfg, mode: "live" }, settings, phone, chat: {}, ev, now });
+    if (g5.never || g5.out) return c.json({ ok: true, classified: { key: cls.key, intent: cls.rawIntent, lang: cls.lang, score: cls.score }, open: data.open ? data.open.open : null,
+      decision: { act: "silent", reason: g5.never ? "never_reply" : "out_of_scope", detail: g5.never || `scope:${cfg.liveScope}`, key: d.key, handoff: null, link: null }, wouldSend: d.payloads || [], payloads: [], textFallback: [] });
     return c.json({ ok: true, classified: { key: cls.key, intent: cls.rawIntent, lang: cls.lang, score: cls.score }, open: data.open ? data.open.open : null,
       decision: { act: d.act, reason: /^after_/.test(d.reason || "") ? null : d.reason, key: d.key, handoff: d.handoff || null, link: d.link || null },
       payloads: d.payloads || [], textFallback: d.fallback || [] });
@@ -2890,6 +3041,35 @@ export function register(app, ctx, deps = {}) {
     const sum = (k) => ads.reduce((s, a) => s + (Number(a[k]) || 0), 0);
     return c.json({ ok: true, days, windowHours: win, since: "2026-10-12: محادثات الإعلانات بتتسجّل بالإعلان من تاريخ تشغيل الشريحة دي؛ اللي قبلها مالوش رقم إعلان محفوظ",
       totals: { ads: ads.length, chats: sum("chats"), carts: sum("carts"), cartsOpened: sum("cartsOpened"), buyers: sum("buyers"), orders: sum("orders"), revenue: r2(sum("revenue")) }, ads });
+  });
+  /* M5 — «مش عميل — البوت مايردش عليه أبداً» بضغطة من المحادثة. تحت ‎/api/cms/ops‎ ⇒ قسم «الطلبات» (نفس صلاحية كتم البوت). on:false بيشيله.
+     GET بيرجّع القايمة + المستبعدين لوحدهم (بالسبب). */
+  app.get("/api/cms/ops/wabot/never-reply", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    const settings = (await getSettingsData()) || {}, cfg = botConfig(settings);
+    let auto = []; try { auto = [...(await autoNeverMap(settings, cfg)).entries()].filter(([p]) => !cfg.testPhones.includes(p)).map(([p, why]) => ({ phone: `0${p}`, why })); } catch { auto = []; }
+    return c.json({ ok: true, phones: cfg.neverReplyPhones.map((p) => `0${p}`), auto });
+  });
+  /* نفس الفعل لأي واجهة (اللوحة من المسار ده، والبورتال / الوارد من bot().setNeverReply): ⇒ { ok, phone, on, count } أو { ok:false, error, message } */
+  async function setNeverReply(rawPhone, on, who) {
+    const phone = normPh(rawPhone);
+    if (!/^5\d{8}$/.test(phone)) return { ok: false, error: "bad_phone", message: "اكتب جوال سعودي 05XXXXXXXX" };
+    const settings = (await getSettingsData()) || {};
+    const prev = settings.waBot && typeof settings.waBot === "object" ? settings.waBot : {};
+    const cfg = botConfig(settings), cur = cfg.neverReplyPhones;
+    if (on && cfg.testPhones.includes(phone)) return { ok: false, error: "test_phone", message: "الرقم ده من أرقام التجربة: شيله من هناك الأول" };
+    const next = on ? [...new Set([...cur, phone])] : cur.filter((p) => p !== phone);
+    if (next.length > 500) return { ok: false, error: "too_many", message: "القايمة وصلت ٥٠٠ رقم" };
+    await pool.query("UPDATE settings SET data = jsonb_set(COALESCE(data,'{}'::jsonb), '{waBot}', $1::jsonb, true), updated_at=NOW() WHERE id=1", [JSON.stringify({ ...prev, neverReplyPhones: next })]);
+    await q("INSERT INTO wa_bot_config_log(who, changes) VALUES ($1, $2::jsonb)", [String(who || "").slice(0, 60) || null, JSON.stringify([{ path: "neverReplyPhones", from: on ? null : `0${phone}`, to: on ? `0${phone}` : null }])]);
+    if (on) await q(`UPDATE wa_bot_jobs SET status='cancelled', reason='never_reply', done_at=NOW() WHERE phone_norm=$1 AND status='pending'`, [phone]);
+    return { ok: true, phone: `0${phone}`, on: Boolean(on), count: next.length };
+  }
+  app.post("/api/cms/ops/wabot/never-reply", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    let bd = {}; try { bd = (await c.req.json()) || {}; } catch { bd = {}; }
+    const r = await setNeverReply(bd.phone, bd.on !== false, await actorOf(c));
+    return c.json(r, r.ok ? 200 : 400);
   });
   /* ── وضع العملاء للمساعد (المالك بس): الحالة، التشغيل بتأكيد، وزر الإيقاف ─────────────────
      GET  /api/cms/wabot/assist/live      الحالة الحين + المقترحات
@@ -3137,5 +3317,5 @@ export function register(app, ctx, deps = {}) {
     return c.json({ ok: r.ok === true, result: r, to: `0${phone}`, template: tpl.name, language: lang });
   });
 
-  return { carts: botCarts, handle, ready, loadData, runDueJobs, muteChat, holdChat, unmuteChat, stop: () => { if (timer) clearInterval(timer); }, botConfig: async () => botConfig((await getSettingsData()) || {}) };
+  return { carts: botCarts, handle, ready, loadData, runDueJobs, muteChat, holdChat, unmuteChat, setNeverReply, stop: () => { if (timer) clearInterval(timer); }, botConfig: async () => botConfig((await getSettingsData()) || {}) };
 }
