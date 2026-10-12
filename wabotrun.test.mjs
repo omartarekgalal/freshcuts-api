@@ -52,10 +52,10 @@ const LOCKS_OPEN = { ...CONFIGURED, WHATSAPP_ENABLED: "1" };
 
 /* ── عالم صغير: قاعدة في الذاكرة + ساعة + Graph مزيّف ─────────────────────── */
 function world({ waBot = {}, notifications = { whatsappEnabled: true }, orders = [], bundles = BUNDLES, policy = POLICY, first = FIRST, links = ["wab-boxes", "wa-boxes", "wa-box-d4"],
-  at = OPEN_AT, graph = null, failDb = null, extraSettings = {}, disclosure = false, pages = LIVE.pages, quote = null, llm = null, greetMenu = false, offers = LIVE.offers, resolveMapsLink = null, lastCart = null, assistModel = null, assistStore = null, kb = null, adReport = [], channelReport = [], mediaFile = null, transcribe = null } = {}) {
+  at = OPEN_AT, graph = null, failDb = null, extraSettings = {}, disclosure = false, pages = LIVE.pages, quote = null, llm = null, greetMenu = false, offers = LIVE.offers, resolveMapsLink = null, lastCart = null, assistModel = null, assistStore = null, kb = null, adReport = [], channelReport = [], mediaFile = null, transcribe = null, sttFetch = null } = {}) {
   let nowMs = Date.parse(at);
   const clock = { now: () => new Date(nowMs), advance: (min) => { nowMs += min * 60_000; }, set: (iso) => { nowMs = Date.parse(iso); } };
-  const db = { msgs: [], log: [], jobs: [], proofs: [], consentLog: [], ai: [], aiAlerts: [], tpl: [], cfgLog: [], botCarts: [], chats: new Map(), optouts: [], optins: {}, links: links.map((s) => (typeof s === "string" ? { slug: s, active: true, clicks: 0 } : { active: true, clicks: 0, ...s })), adChats: [], adReportParams: null, channelOffers: [], channelReportParams: null, settings: null };
+  const db = { msgs: [], log: [], jobs: [], proofs: [], consentLog: [], ai: [], aiAlerts: [], tpl: [], cfgLog: [], botCarts: [], chats: new Map(), optouts: [], optins: {}, links: links.map((s) => (typeof s === "string" ? { slug: s, active: true, clicks: 0 } : { active: true, clicks: 0, ...s })), adChats: [], adReportParams: null, channelOffers: [], channelReportParams: null, sttKey: null, settings: null };
   db.settings = { hours: HOURS, notifications, googlePlace: { mapsUrl: "https://maps.google.com/?cid=14767749764292326433" }, storefront: { seo: { faq: FAQ } },
     cms: { loyalty: { enabled: true, every: 3, reward: "free_delivery", minTotal: 60 } }, delivery: { alertPhones: ["0544775082", "0506338246"], staffSmsLanguage: "en" }, waBot: { footerMode: "always", ...waBot },
     waMaster: { enabled: true },   // SEC: مفتاح المالك الرئيسي (whatsapp.js guardSend) — مفتوح في العالم الافتراضي للاختبار
@@ -104,6 +104,10 @@ function world({ waBot = {}, notifications = { whatsappEnabled: true }, orders =
       if (/^INSERT INTO wa_bot_chats\(phone_norm, channel_offered_at\)/i.test(s)) { chat(p[0]).channel_offered_at = iso(); return { rows: [] }; }
       if (/^INSERT INTO wa_channel_offers/i.test(s)) { db.channelOffers.push({ phone_norm: p[0], via: p[1], at: iso() }); return { rows: [] }; }
       if (/FROM wa_channel_offers/i.test(s)) { db.channelReportParams = p; return { rows: channelReport }; }
+      if (/^SELECT provider, key_enc, last4, saved_at, saved_by, test FROM wa_stt_key/i.test(s)) return { rows: db.sttKey ? [{ ...db.sttKey }] : [] };
+      if (/^INSERT INTO wa_stt_key/i.test(s)) { db.sttKey = { provider: p[0], key_enc: p[1], last4: p[2], saved_at: iso(), saved_by: p[3], test: null }; return { rows: [{ provider: p[0] }] }; }
+      if (/^UPDATE wa_stt_key SET test=/i.test(s)) { if (db.sttKey) db.sttKey.test = JSON.parse(p[0]); return { rows: [] }; }
+      if (/^DELETE FROM wa_stt_key/i.test(s)) { db.sttKey = null; return { rows: [] }; }
       if (/^INSERT INTO wa_ad_chats/i.test(s)) { const x = db.adChats.find((r) => r.phone_norm === p[0] && r.ad_id === p[1]); if (x) x.clicks++; else db.adChats.push({ phone_norm: p[0], ad_id: p[1], headline: p[2], source_type: p[3], clicks: 1 }); return { rows: [] }; }
       if (/FROM wa_ad_chats a/i.test(s)) { db.adReportParams = p; return { rows: adReport }; }
       if (/^SELECT target_type, target_id FROM cms_links WHERE slug=\$1 AND active/i.test(s)) return { rows: db.links.filter((l) => l.slug === p[0] && l.active).map((l) => ({ target_type: l.target_type || "home", target_id: l.target_id || null })) };
@@ -238,7 +242,7 @@ function world({ waBot = {}, notifications = { whatsappEnabled: true }, orders =
       quote: async (x) => (typeof quote === "function" ? quote(x.lat, x.lng) : quote), buildProfile: async () => ({ identity: { name: "أحمد" }, summary: { orders: 2, status: "repeat" }, orders: [], favorites: { items: [] }, addresses: [] }) }, whoami: async () => actor.who, ...(resolveMapsLink ? { resolveMapsLink } : { resolveMapsLink: async () => null }), sendSms: async (x) => { sms.push(x); return { ok: true }; },
     portalEmit: (ev2, data) => portalEvents.push([ev2, data]), whoami: async () => actor.who, ...(resolveMapsLink ? { resolveMapsLink } : { resolveMapsLink: async () => null }), sendSms: async (x) => { sms.push(x); return { ok: true }; },
     fetchMenuPages: async () => { if (pages === null) throw new Error("menu down"); return pages; }, quote: async (lat, lng) => (typeof quote === "function" ? quote(lat, lng) : quote), llm,
-    fetchOffers: async () => { if (offers === null) throw new Error("offers down"); return offers; }, ...(assistModel ? { assistCallModel: assistModel } : {}), ...(assistStore ? { assistStore } : {}), ...(kb ? { kb: () => kb } : {}), ...(transcribe ? { transcribe } : {}) });
+    fetchOffers: async () => { if (offers === null) throw new Error("offers down"); return offers; }, ...(assistModel ? { assistCallModel: assistModel } : {}), ...(assistStore ? { assistStore } : {}), ...(kb ? { kb: () => kb } : {}), ...(transcribe ? { transcribe } : {}), ...(sttFetch ? { sttFetch } : {}) });
   let seq = 0;
   const hook = (field, value) => ({ object: "whatsapp_business_account", entry: [{ id: "WABA", changes: [{ field, value: { messaging_product: "whatsapp", metadata: { display_phone_number: BIZ, phone_number_id: "PHONE1" }, ...value } }] }] });
   const ts = (agoMin = 0) => String(Math.floor((nowMs - agoMin * 60_000) / 1000));
@@ -2965,3 +2969,91 @@ test("VM1 budget — the media line inside the assistant's budget: at the limit 
   for (const bad of [{ voiceMaxSec: 5 }, { voiceMaxSec: 301 }, { mediaBudgetDaySar: 51 }, { sttSarPerMin: 2 }, { sttModel: "bad model!" }]) assert.equal(R.configFromBody({ assist: bad }).ok, false, JSON.stringify(bad));
   assert.equal(R.configFromBody({ assist: { voiceEnabled: true, voiceMaxSec: 90, sttModel: "groq/whisper-large-v3" } }).ok, true);
 }));
+
+/* ── مفتاح تحويل الصوت من اللوحة (VM2) ───────────────────────────────────── */
+const STT_KEY = "sk-proj-TESTONLYnotARealKey0123456789abcdWXYZ";
+const withSecret = (fn) => async () => { const a = process.env.ADMIN_TOKEN, s = process.env.SECRETS_KEY; process.env.ADMIN_TOKEN = "admin-token-for-tests"; delete process.env.SECRETS_KEY;
+  try { await fn(); } finally { if (a === undefined) delete process.env.ADMIN_TOKEN; else process.env.ADMIN_TOKEN = a; if (s !== undefined) process.env.SECRETS_KEY = s; } };
+function sttProviderFake(first = { status: 200, body: { text: "السلام عليكم ورحمة الله" } }) {
+  const st = { calls: [], answer: first };
+  st.fetch = async (url, o) => { st.calls.push({ url: String(url), headers: o.headers, size: o.body.get("file").size, model: o.body.get("model") }); const a = st.answer; return { ok: a.status === 200, status: a.status, json: async () => a.body, text: async () => JSON.stringify(a.body) }; };
+  return st;
+}
+
+test("VM2 routes — owner only; the key is saved encrypted and never comes back; test → unlock → the switch; a new key or another model locks it again", withEnv(CONFIGURED, withSecret(async () => {
+  const pv = sttProviderFake();
+  const w = aWorld([], { sttFetch: pv.fetch });
+  const all = (o) => JSON.stringify(o);
+  // not the owner ⇒ 403 on all four, nothing happens
+  w.setOwner(false);
+  for (const [m, p, b] of [["GET", "/api/cms/wabot/assist/stt", {}], ["PUT", "/api/cms/wabot/assist/stt/key", { provider: "openai", key: STT_KEY }], ["DELETE", "/api/cms/wabot/assist/stt/key", {}], ["POST", "/api/cms/wabot/assist/stt/test", {}]]) { const r = await w.call(m, p, b); assert.deepEqual([r.status, r.body.error], [403, "owner_only"], `${m} ${p}`); }
+  assert.equal(w.db.sttKey, null); assert.equal(pv.calls.length, 0);
+  w.setOwner(true);
+  let s = await w.call("GET", "/api/cms/wabot/assist/stt");
+  assert.deepEqual([s.body.provider, s.body.model, s.body.key, s.body.canEnable, s.body.reason, s.body.voiceEnabled], ["openai", "gpt-4o-transcribe", { saved: false }, false, "no_key", false]);
+  // the switch cannot be turned on yet: the save is refused with the reason, and nothing is stored
+  let c = await w.call("PUT", "/api/cms/wabot/config", { assist: { voiceEnabled: true } });
+  assert.deepEqual([c.status, c.body.error, c.body.sttReason], [400, "invalid", "no_key"]); assert.match(c.body.errors[0], /^assist\.voiceEnabled: /);
+  assert.notEqual((w.db.settings.waBot.assist || {}).voiceEnabled, true);
+  // bad keys
+  for (const b of [{ provider: "openai", key: "sk-short" }, { provider: "groq", key: STT_KEY }, { provider: "x", key: STT_KEY }, {}]) assert.equal((await w.call("PUT", "/api/cms/wabot/assist/stt/key", b)).status, 400);
+  // save
+  const k = await w.call("PUT", "/api/cms/wabot/assist/stt/key", { provider: "openai", key: STT_KEY });
+  assert.equal(k.status, 200); assert.deepEqual([k.body.key.saved, k.body.key.last4, k.body.key.provider, k.body.key.savedBy, k.body.key.readable, k.body.key.under, k.body.voiceTurnedOff], [true, "WXYZ", "openai", "عمر (owner)", true, "ADMIN_TOKEN", false]);
+  assert.match(w.db.sttKey.key_enc, /^v1:/);
+  assert.ok(!all(k.body).includes("TESTONLY") && !all(w.db.sttKey).includes("TESTONLY") && !all(w.db.settings).includes("TESTONLY") && !all(w.db.cfgLog).includes("TESTONLY") && !all(w.db.log).includes("TESTONLY"), "the key is nowhere in the clear");
+  assert.deepEqual(w.db.cfgLog.at(-1).changes, [{ path: "assist.sttKey", from: null, to: "مفتاح تحويل الصوت: اتحفظ (OpenAI، آخره WXYZ)" }]);
+  s = await w.call("GET", "/api/cms/wabot/assist/stt");
+  assert.deepEqual([s.body.key.saved, s.body.route, s.body.canEnable, s.body.reason], [true, "direct", false, "not_tested"]); assert.ok(!all(s.body).includes("TESTONLY"));
+  c = await w.call("PUT", "/api/cms/wabot/config", { assist: { voiceEnabled: true } }); assert.deepEqual([c.status, c.body.sttReason], [400, "not_tested"]);
+  // test: one real-shaped call to the provider with the sample, recorded as the assistant's spend
+  const t = await w.call("POST", "/api/cms/wabot/assist/stt/test");
+  assert.deepEqual([t.status, t.body.ok, t.body.route, t.body.heard, t.body.costSar, t.body.canEnable], [200, true, "direct", "السلام عليكم ورحمة الله", 0.000938, true]); assert.equal("ran" in t.body, false);
+  assert.deepEqual([pv.calls.length, pv.calls[0].url, pv.calls[0].headers.authorization, pv.calls[0].model], [1, "https://api.openai.com/v1/audio/transcriptions", `Bearer ${STT_KEY}`, "gpt-4o-transcribe"]);
+  const row = w.db.ai.at(-1); assert.deepEqual([row.purpose, row.detail, row.outcome, row.cost_sar, row.sent_text], ["assistant", "media:stt test", "ok", 0.000938, null]);
+  assert.equal((await w.call("POST", "/api/cms/wabot/assist/stt/test")).status, 429, "cooldown");
+  // now the switch turns on
+  c = await w.call("PUT", "/api/cms/wabot/config", { assist: { voiceEnabled: true } });
+  assert.equal(c.status, 200); assert.equal(c.body.config.assist.voiceEnabled, true);
+  // changing the model while voice is on is refused (stale test) unless voice goes off in the same save
+  c = await w.call("PUT", "/api/cms/wabot/config", { assist: { sttModel: "whisper-1" } }); assert.deepEqual([c.status, c.body.sttReason], [400, "test_stale"]);
+  c = await w.call("PUT", "/api/cms/wabot/config", { assist: { sttModel: "whisper-1", voiceEnabled: false } }); assert.equal(c.status, 200);
+  c = await w.call("PUT", "/api/cms/wabot/config", { assist: { sttModel: "gpt-4o-transcribe", voiceEnabled: true } }); assert.equal(c.status, 200, "back to the tested model: the old test is current again");
+  // an unrelated save while voice is on and the test is current goes through
+  assert.equal((await w.call("PUT", "/api/cms/wabot/config", { assist: { voiceMaxSec: 90 } })).status, 200);
+  // a new key turns voice off and clears the test; so does deleting it
+  const k2 = await w.call("PUT", "/api/cms/wabot/assist/stt/key", { provider: "openai", key: STT_KEY.replace("WXYZ", "7777") });
+  assert.equal(k2.body.voiceTurnedOff, true); assert.equal(w.db.settings.waBot.assist.voiceEnabled, false);
+  assert.deepEqual(w.db.cfgLog.at(-1).changes.map((x) => x.path), ["assist.sttKey", "assist.voiceEnabled"]);
+  s = await w.call("GET", "/api/cms/wabot/assist/stt"); assert.deepEqual([s.body.test, s.body.reason, s.body.voiceEnabled], [null, "not_tested", false]);
+  const d = await w.call("DELETE", "/api/cms/wabot/assist/stt/key");
+  assert.deepEqual(d.body, { ok: true, key: { saved: false }, voiceTurnedOff: false }); assert.equal(w.db.sttKey, null);
+  assert.equal(w.db.cfgLog.at(-1).changes[0].to, "مفتاح تحويل الصوت: اتمسح");
+})));
+
+test("VM2 at run time — a voice note is transcribed with the saved key only while the test is current; a failed or stale test, a deleted key or a refused key ⇒ today's reply and handover", withEnv(CONFIGURED, withSecret(async () => {
+  const pv = sttProviderFake();
+  const file = { ok: true, buf: OGG(6), mime: "audio/ogg; codecs=opus" };
+  const w = aWorld([mSay("هلا 👋 وش تحب تطلب اليوم؟")], { sttFetch: pv.fetch, mediaFile: file, waBot: { assist: { imagesEnabled: true } } });
+  await w.call("PUT", "/api/cms/wabot/assist/stt/key", { provider: "openai", key: STT_KEY });
+  // voice forced on in storage without a test (cannot happen through the route): the bot still refuses to transcribe
+  w.db.settings.waBot = { ...w.db.settings.waBot, assist: { ...w.db.settings.waBot.assist, voiceEnabled: true } };
+  const a = await w.say(null, { raw: voiceMsg });
+  assert.match(bodyOf(msgs(a)[0]), OLD); assert.match(a.log.detail, /stt_not_tested/); assert.equal(pv.calls.length, 0); assert.equal(w.mediaAsked.length, 0, "the file is not even fetched");
+  // after a passing test the same note goes to the provider with the saved key, then to the assistant
+  w.clock.advance(1); await w.call("POST", "/api/cms/wabot/assist/stt/test"); assert.equal(pv.calls.length, 1);
+  pv.answer = { status: 200, body: { text: "السلام عليكم ابي اطلب عشا" } };
+  w.clock.advance(1); const b = await w.say(null, { raw: voiceMsg });
+  assert.deepEqual([b.log.reply_key, b.log.text], ["assist", "🎤 السلام عليكم ابي اطلب عشا"]);
+  assert.deepEqual([pv.calls.length, pv.calls[1].url, pv.calls[1].headers.authorization, pv.calls[1].size], [2, "https://api.openai.com/v1/audio/transcriptions", `Bearer ${STT_KEY}`, 64]);
+  assert.ok(!JSON.stringify([w.m.seen, w.db.ai, w.db.log, w.calls]).includes("TESTONLY"), "the key reaches neither the model, the cost log, the bot log nor Meta");
+  const cost = w.db.ai.filter((x) => /^media:stt \d/.test(x.detail)).at(-1); assert.deepEqual([cost.provider, cost.outcome], ["stt:api.openai.com", "ok"]);
+  // the provider starts refusing the key: this note falls back to the handover (the customer is never left without a reply)
+  pv.answer = { status: 401, body: { error: { message: "Incorrect API key" } } };
+  w.clock.advance(1); const c = await w.say(null, { raw: voiceMsg });
+  assert.match(bodyOf(msgs(c)[0]), OLD); assert.match(c.log.detail, /stt_unauthorized/);
+  // the key is deleted: voice is switched off by the route, the next note gets today's reply with no provider call
+  await w.call("DELETE", "/api/cms/wabot/assist/stt/key"); const n = pv.calls.length;
+  w.clock.advance(1); const d = await w.say(null, { raw: voiceMsg });
+  assert.notEqual(d.log.reply_key, "assist"); assert.equal(pv.calls.length, n); assert.equal(w.db.settings.waBot.assist.voiceEnabled, false);
+})));

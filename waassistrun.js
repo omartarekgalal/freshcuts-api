@@ -46,12 +46,13 @@ export const ASSIST_CFG_DEFAULTS = Object.freeze({
   voiceMaxSec: 60,                     // أطول من كده ⇒ رد الصور/الصوت العادي (تحويل لموظف)
   mediaBudgetDaySar: 2,                // سقف يومي للصور + الصوت، جوّه سقف المساعد اليومي نفسه
   sttSarPerMin: 0.0225,                // سعر دقيقة التحويل (للتكلفة والسقف) — يتعدّل لو المزوّد اتغيّر
+  sttProvider: "openai",               // openai | groq | elevenlabs (wasttkey.js)
   sttModel: "gpt-4o-transcribe",
   visionModel: "claude-haiku-5-5",
 });
 const NUMS = { budgetDaySar: [0, 1000], budgetMonthSar: [0, 10000], maxToolRounds: [1, 8], maxRepliesPerChatDay: [1, 60], timeoutMs: [5000, 60000], sessionMin: [10, 720], staffStepBackMin: [1, 60], seriousHoldMin: [0, 240], locationHours: [1, 24], keepDays: [7, 730],
   followUpMin: [5, 720], followUpCloseGuardMin: [0, 240], searchMax: [3, 15], nudgeGapSar: [0, 100], topSellerDays: [7, 180], profileOrders: [5, 200], maxCartLines: [1, 40], voiceMaxSec: [10, 300], mediaBudgetDaySar: [0, 50], sttSarPerMin: [0, 1] };
-const ENUMS = { mode: ASSIST_MODES, routing: ["escalate", "strong", "fast"], effort: ["low", "medium", "high"], thinking: ["adaptive", "off"] };
+const ENUMS = { mode: ASSIST_MODES, routing: ["escalate", "strong", "fast"], effort: ["low", "medium", "high"], thinking: ["adaptive", "off"], sttProvider: ["openai", "groq", "elevenlabs"] };
 const BOOLS = ["typing", "followUpEnabled", "forceSuggestion", "imagesEnabled", "voiceEnabled"];
 const MODEL_RE = /^[a-z0-9./-]{3,60}$/;
 export function assistConfig(raw) {
@@ -109,6 +110,7 @@ export const ASSIST_SCHEMA = Object.freeze({
   "assist.voiceMaxSec": N("voiceMaxSec", "أطول رسالة صوتية المساعد يسمعها", "الأطول بتتحوّل لموظف.", "ثانية"),
   "assist.mediaBudgetDaySar": N("mediaBudgetDaySar", "سقف الصور والصوت في اليوم", "جوّه سقف المساعد اليومي. أول ما يتوصل له: الصور والصوت يرجعوا للتحويل لموظف لباقي اليوم. صفر = مقفول.", "ر.س", { step: 0.5 }),
   "assist.sttSarPerMin": N("sttSarPerMin", "سعر دقيقة تحويل الصوت لنص", "بيتحسب بيه مصروف الصوت. عدّله لو المزوّد أو السعر اتغيّر.", "ر.س", { step: 0.0005 }),
+  "assist.sttProvider": { group: "assist", type: "enum", ar: "مزوّد تحويل الصوت لنص", help: "المفتاح بيتحفظ من نفس الصفحة. تغيير المزوّد أو الموديل محتاج اختبار جديد.", options: ENUMS.sttProvider },
   "assist.sttModel": { group: "assist", type: "model", ar: "موديل تحويل الصوت لنص", help: "الاسم زي ما هو متضاف في مزوّد الموديلات." },
   "assist.visionModel": { group: "assist", type: "model", ar: "موديل قراءة الصور", help: "الموديل السريع كفاية." },
 });

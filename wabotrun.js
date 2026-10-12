@@ -45,6 +45,8 @@ import { lookupFact, groupsIn, SEVERE_RE, factsCoverage, pickDish, factNote } fr
 import { makeAiCost, pricesOf, waRatesOf, pricesFromBody, waRatesFromBody, BUDGET_DEFAULTS } from "./waaicost.js";
 import { providerInfo, maskText } from "./wabotllm.js";
 import { kbTokens } from "./wakb.js";
+import { makeStt, STT_PROVIDERS } from "./wasttkey.js";
+const STT_LABEL = Object.fromEntries(STT_PROVIDERS.map((p) => [p.id, p.label]));
 import { lookImage, makeTranscriber, voiceSeconds, transcriptUsable, IMAGE_MAX_BYTES, VOICE_MAX_BYTES } from "./waassistmedia.js";
 import { ASSIST_CFG_DEFAULTS, ASSIST_SCHEMA, PROMPT_HASH, assistConfig, assistFromBody, assistEligible, makeAssistLoop, makeAssistStore, makeModelCaller, billableUsage, newSession, noteRulesTurn, buildContext, hintOf } from "./waassistrun.js";
 import { WA_UPDATES_TEXTS, WA_UPDATES_CURRENT, recordWaUpdatesBot, recordWaMarketingBot, ensureWaConsentSchema } from "./waconsent.js";
@@ -1640,6 +1642,8 @@ export function register(app, ctx, deps = {}) {
   /* مساعد الطلبات: المخزن (الجلسة، سجل الأدوار، الاقتراحات) ونداء الموديل. الحلقة نفسها بتتركّب تحت بعد الأدوات. */
   const assistStore = deps.assistStore || makeAssistStore({ pool, jb: (v) => JSON.stringify(v) });
   const assistCall = deps.assistCallModel || makeModelCaller();
+  /* مفتاح تحويل الصوت (wasttkey.js): محفوظ متشفّر، ومفتاح «المساعد يسمع» مربوط بآخر اختبار ناجح. deps.transcribe = محوّل وهمي للاختبارات (من غير بوابة الاختبار). */
+  const stt = deps.stt || makeStt({ pool, fetch: deps.sttFetch, now: clock });
   const transcribe = deps.transcribe || makeTranscriber();      // الصوت ⇒ نص (waassistmedia.js). في الاختبارات بيتبدّل بمحوّل وهمي.
   const q = async (sql, params) => { try { return (await pool.query(sql, params)).rows; } catch (e) { console.error("[wabot] db:", e.message); return null; } };
 
@@ -2101,6 +2105,8 @@ export function register(app, ctx, deps = {}) {
     if (!(acfg.mediaBudgetDaySar > 0) || spent >= acfg.mediaBudgetDaySar) return why("media_budget_day");
     const stop = await aicost.gate({ purpose: "assistant", budget: { budgetMonthSar: acfg.budgetMonthSar, budgetDaySar: acfg.budgetDaySar }, alert: false });
     if (stop) return why(stop);
+    /* الصوت: المفتاح لازم يكون متجرّب وناجح للمزوّد والموديل الحاليين (نفس شرط فتح المفتاح من اللوحة) — قبل ما أي ملف يتجاب. */
+    if (kind === "voice" && !deps.transcribe) { const ce = await stt.canEnable(acfg); if (!ce.ok) return why(`stt_${ce.reason}`); }
     if (typeof wa.fetchMedia !== "function") return why("no_fetch");
     let f = null; try { f = await wa.fetchMedia(String(m.id), { maxBytes: kind === "image" ? IMAGE_MAX_BYTES : VOICE_MAX_BYTES }); } catch (e) { f = null; }
     if (!f || !f.ok || !f.buf) return why(`fetch_${(f && f.error) || "failed"}`);
@@ -2108,7 +2114,7 @@ export function register(app, ctx, deps = {}) {
     if (kind === "voice") {
       const dur = voiceSeconds(f.buf);
       if (dur.sec > acfg.voiceMaxSec) return why(`voice_too_long_${Math.round(dur.sec)}s`);
-      const r = await transcribe({ buf: f.buf, mime, model: acfg.sttModel, timeoutMs: acfg.timeoutMs });
+      const r = deps.transcribe ? await transcribe({ buf: f.buf, mime, model: acfg.sttModel, timeoutMs: acfg.timeoutMs }) : await stt.transcribe({ acfg, buf: f.buf, mime, timeoutMs: acfg.timeoutMs });
       const cost = r && r.ok ? Math.round((Math.max(1, dur.sec) / 60) * acfg.sttSarPerMin * 1e6) / 1e6 : 0;
       await q(`INSERT INTO ai_calls(purpose, provider, model, in_tokens, out_tokens, cached_tokens, estimated, cost_sar, priced, price_date, ms, chat_hash, outcome, detail, sent_text, prompt_chars, prompt_hash, log_id)
                VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)`,
@@ -2387,6 +2393,9 @@ export function register(app, ctx, deps = {}) {
     const prev = settings.waBot && typeof settings.waBot === "object" ? settings.waBot : {};
     const v = configFromBody(b, prev);
     if (!v.ok) return c.json({ ok: false, error: "invalid", errors: v.errors }, 400);
+    /* «المساعد يسمع» مابيتفتحش (ومابيفضلش مفتوح) غير وآخر اختبار للمفتاح ناجح للمزوّد والموديل والمفتاح الحاليين. */
+    { const next = botConfig({ waBot: v.value }).assist;
+      if (next.voiceEnabled) { const ce = await stt.canEnable(next); if (!ce.ok) return c.json({ ok: false, error: "invalid", errors: [`assist.voiceEnabled: ${ce.message}`], sttReason: ce.reason }, 400); } }
     await pool.query("UPDATE settings SET data = jsonb_set(COALESCE(data,'{}'::jsonb), '{waBot}', $1::jsonb, true), updated_at=NOW() WHERE id=1", [JSON.stringify(v.value)]);
     /* مين غيّر إيه: كل حفظ صف بالفرق (من ← إلى) واسم اللي حفظ */
     { const changes = configDiff(prev, v.value); if (changes.length) await q("INSERT INTO wa_bot_config_log(who, changes) VALUES ($1, $2::jsonb)", [await actorOf(c), JSON.stringify(changes)]); }
@@ -2742,6 +2751,57 @@ export function register(app, ctx, deps = {}) {
     const sum = (k) => ads.reduce((s, a) => s + (Number(a[k]) || 0), 0);
     return c.json({ ok: true, days, windowHours: win, since: "2026-10-12: محادثات الإعلانات بتتسجّل بالإعلان من تاريخ تشغيل الشريحة دي؛ اللي قبلها مالوش رقم إعلان محفوظ",
       totals: { ads: ads.length, chats: sum("chats"), carts: sum("carts"), cartsOpened: sum("cartsOpened"), buyers: sum("buyers"), orders: sum("orders"), revenue: r2(sum("revenue")) }, ads });
+  });
+  /* ── مفتاح تحويل الصوت لنص (المالك بس) — العقد في slices/VM2-api-assist-stt-key/README.md ──
+     المفتاح مابيرجعش في أي رد ومابيتكتبش في أي سجل. حفظ أو مسح المفتاح بيقفل «المساعد يسمع» لحد اختبار جديد. */
+  const sttGate = async (c) => { const err = await requireAdmin(c); if (err) return err; return ownerOnly(c); };
+  const sttAssist = async () => botConfig((await getSettingsData()) || {}).assist;
+  async function voiceOff(c, why) {
+    const settings = (await getSettingsData()) || {};
+    const prev = settings.waBot && typeof settings.waBot === "object" ? settings.waBot : {};
+    const was = botConfig(settings).assist.voiceEnabled === true;
+    const changes = [{ path: "assist.sttKey", from: null, to: why }];
+    if (was) {
+      const next = { ...prev, assist: { ...(prev.assist || {}), voiceEnabled: false } };
+      await pool.query("UPDATE settings SET data = jsonb_set(COALESCE(data,'{}'::jsonb), '{waBot}', $1::jsonb, true), updated_at=NOW() WHERE id=1", [JSON.stringify(next)]);
+      changes.push({ path: "assist.voiceEnabled", from: true, to: false });
+    }
+    await q("INSERT INTO wa_bot_config_log(who, changes) VALUES ($1, $2::jsonb)", [await actorOf(c), JSON.stringify(changes)]);
+    return was;
+  }
+  app.get("/api/cms/wabot/assist/stt", async (c) => {
+    const no = await sttGate(c); if (no) return no;
+    const s = await stt.status(await sttAssist());
+    return s ? c.json(s) : c.json({ ok: false, error: "unavailable" }, 503);
+  });
+  app.put("/api/cms/wabot/assist/stt/key", async (c) => {
+    const no = await sttGate(c); if (no) return no;
+    let b = {}; try { b = await c.req.json(); } catch { b = {}; }
+    const r = await stt.saveKey({ provider: String((b && b.provider) || ""), key: b && b.key, who: await actorOf(c) });
+    if (!r.ok) return c.json({ ok: false, error: r.error, message: r.message }, r.status || 400);
+    const p = STT_LABEL[r.provider] || r.provider;
+    const voiceTurnedOff = await voiceOff(c, `مفتاح تحويل الصوت: اتحفظ (${p}، آخره ${r.last4})`);
+    const s = await stt.status(await sttAssist());
+    return c.json({ ok: true, key: s ? s.key : { saved: true, provider: r.provider, last4: r.last4 }, voiceTurnedOff });
+  });
+  app.delete("/api/cms/wabot/assist/stt/key", async (c) => {
+    const no = await sttGate(c); if (no) return no;
+    const r = await stt.deleteKey();
+    if (!r.ok) return c.json({ ok: false, error: "unavailable" }, 503);
+    const voiceTurnedOff = await voiceOff(c, "مفتاح تحويل الصوت: اتمسح");
+    return c.json({ ok: true, key: { saved: false }, voiceTurnedOff });
+  });
+  app.post("/api/cms/wabot/assist/stt/test", async (c) => {
+    const no = await sttGate(c); if (no) return no;
+    const acfg = await sttAssist();
+    const r = await stt.test(acfg);
+    if (r.status) { const { status, ...body } = r; return c.json(body, status); }
+    const { ran, ...body } = r;
+    /* الاختبار نداء حقيقي بفلوس (جزء من هللة): بيتسجّل في مصروف المساعد زي أي رسالة صوتية. */
+    if (ran) await q(`INSERT INTO ai_calls(purpose, provider, model, in_tokens, out_tokens, cached_tokens, estimated, cost_sar, priced, price_date, ms, chat_hash, outcome, detail, sent_text, prompt_chars, prompt_hash, log_id)
+                      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)`,
+      ["assistant", `stt:${body.route}:${body.provider}`, String(body.model).slice(0, 60), 0, 0, 0, false, body.costSar, true, null, body.ms, null, body.ok ? "ok" : String(body.error || "error").slice(0, 40), "media:stt test", null, null, null, null]);
+    return c.json(body);
   });
   /* دعوة قناة واتساب: كام مرة اتعرضت كل يوم (بتوقيت الرياض) ومن أي طريق — سطر نهاية المحادثة، صف القايمة، أو المساعد. قراءة بس، من غير أرقام عملاء. */
   app.get("/api/cms/wabot/channel", async (c) => {

@@ -53,7 +53,7 @@ export function encryptSecret(plain, m = keyMaterial()) {
   const ct = Buffer.concat([c.update(String(plain), "utf8"), c.final()]);
   return `v1:${iv.toString("base64url")}:${c.getAuthTag().toString("base64url")}:${ct.toString("base64url")}`;
 }
-export function decryptSecret(blob, m = keyMaterial()) {
+function decryptWith(blob, m) {
   if (!blob || !m) return null;
   const [v, iv, tag, ct] = String(blob).split(":");
   if (v !== "v1" || !iv || !tag || ct === undefined) return null;
@@ -63,6 +63,21 @@ export function decryptSecret(blob, m = keyMaterial()) {
     return Buffer.concat([d.update(Buffer.from(ct, "base64url")), d.final()]).toString("utf8");
   } catch { return null; }
 }
+/* أسرار السيرفر المتاحة بالترتيب: SECRETS_KEY (لو متضاف) وبعده ADMIN_TOKEN. التشفير الجديد دايماً بالأول؛ القراءة بتجرّب الاتنين،
+   فقيمة اتشفّرت بـADMIN_TOKEN قبل ما SECRETS_KEY يتضاف بتفضل مقروءة (١٢/١٠). GCM بيرفض المفتاح الغلط، فمفيش قراءة «نص نص». */
+export const secretSources = () => [["SECRETS_KEY", env("SECRETS_KEY")], ["ADMIN_TOKEN", env("ADMIN_TOKEN")]].filter(([, v]) => v).map(([name, value]) => ({ name, value }));
+export const activeSecretName = () => (secretSources()[0] || {}).name || null;
+/* ⇒ { plain, under } — under = اسم السر اللي القيمة متشفّرة بيه ("SECRETS_KEY" | "ADMIN_TOKEN")، أو { plain: null, under: null } لو ولا واحد بيفتحها. */
+export function readSecret(blob) {
+  for (const s of secretSources()) { const plain = decryptWith(blob, s.value); if (plain !== null) return { plain, under: s.name }; }
+  return { plain: null, under: null };
+}
+/* m متبعت صريح ⇒ السر ده بس (سلوك قديم للاختبارات). من غيره ⇒ كل أسرار السيرفر المتاحة. */
+export function decryptSecret(blob, m) {
+  return m === undefined ? readSecret(blob).plain : decryptWith(blob, m);
+}
+/* بصمة أي سر متاح (مش السر الأول بس): قيمة محفوظة ببصمة ADMIN_TOKEN مش «المفتاح اتغيّر» لمجرد إن SECRETS_KEY اتضاف. */
+export const knownFingerprints = () => secretSources().map((s) => keyFingerprint(s.value));
 const last4 = (s) => (s ? String(s).slice(-4) : null);
 
 /* ── pure helpers (unit-tested) ──────────────────────────────────────── */
@@ -169,7 +184,7 @@ export function register(app, ctx) {
 
   function publicStatus(r) {
     const fp = keyFingerprint();
-    const keyOk = !r.key_fp || r.key_fp === fp;
+    const keyOk = !r.key_fp || r.key_fp === fp || knownFingerprints().includes(r.key_fp);
     return {
       ok: true,
       appId: ttAppId(),
