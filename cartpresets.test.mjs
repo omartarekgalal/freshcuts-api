@@ -81,7 +81,7 @@ test("مسارات اللوحة في قسم «النمو» زي باقي الس�
 /* ── المسارات ────────────────────────────────────────────────────────── */
 
 /* داتابيز وهمية بجدولين: cart_presets و cart_recovery (+ shop_carts للالتقاط) */
-function makeApp({ admin = true, recovery = [], carts = [], orders = [], links = [], menuIds = null } = {}) {
+function makeApp({ admin = true, recovery = [], carts = [], orders = [], links = [], menuIds = null, botCarts = null } = {}) {
   const db = { presets: [], recovery: recovery.map((r) => ({ open_count: 0, ...r })), seq: 0 };
   const pool = {
     async query(sql, p = []) {
@@ -179,7 +179,7 @@ function makeApp({ admin = true, recovery = [], carts = [], orders = [], links =
     jb: (v) => JSON.stringify(v),
     normPhone: (v) => String(v || "").replace(/\D/g, "").replace(/^(966|0)/, ""),
   };
-  registerCarts(app, ctx, { presetMenuIds: menuIds ? async () => new Set(menuIds) : async () => null });
+  registerCarts(app, ctx, { presetMenuIds: menuIds ? async () => new Set(menuIds) : async () => null, ...(botCarts ? { botCarts: () => botCarts } : {}) });
   const call = async (method, path, body) => {
     const r = await app.request(path, { method, headers: { "content-type": "application/json" },
       body: body === undefined ? undefined : JSON.stringify(body) });
@@ -419,4 +419,22 @@ test("حفظ رابط حملة بهدف «cart»: النوع بيتقبل وال
   const r = await call("POST", "/api/cms/links", { slug: "ad-dinner", label: "x", target_type: "cart", target_id: "Dinner89", utm_source: "meta" });
   assert.equal(r.status, 200);
   assert.deepEqual(state.saved, { target_type: "cart", target_id: "dinner89" });
+});
+
+test("/c/<code> order of lookup: recovery link, then ad cart, then the WhatsApp bot's ready cart; unknown stays 404", async () => {
+  const seen = [];
+  const botCarts = { open: async (code) => { seen.push(["open", code]); return code === "botcart1" ? "/?cart=botcart1&utm_source=whatsapp&utm_medium=bot&utm_campaign=wa_reorder&fc_link=wa-reorder" : null; },
+    restore: async (code) => { seen.push(["restore", code]); return code === "botcart1" ? { ok: true, items: [{ id: "8", q: 2 }], raw: { 8: { item: { id: 8 }, qty: 2 } }, option: "delivery", subtotal: 0, ordered: false } : null; } };
+  const { call } = makeApp({ botCarts, recovery: [{ code: "abcd1234", phone_norm: "512345678", items: [{ id: "3", q: 1 }], cart_raw: null, option: "pickup", subtotal: "45", order_no: null }] });
+  const o = await call("POST", "/api/carts/restore/botcart1/open", {});
+  assert.equal(o.status, 200); assert.equal(new URL("https://x" + o.body.url).searchParams.get("fc_link"), "wa-reorder");
+  const g = await call("GET", "/api/carts/restore/botcart1");
+  assert.deepEqual(g.body.raw, { 8: { item: { id: 8 }, qty: 2 } }); assert.equal(g.body.ordered, false);
+  assert.equal((await call("POST", "/api/carts/restore/nosuch01/open", {})).status, 404); assert.equal((await call("GET", "/api/carts/restore/nosuch01")).status, 404);
+  seen.length = 0;
+  assert.equal((await call("GET", "/api/carts/restore/abcd1234")).body.option, "pickup");
+  assert.deepEqual(seen, [], "a recovery link never reaches the bot store");
+  // the bot store failing must not break the route
+  const bad = makeApp({ botCarts: { open: async () => { throw new Error("db"); }, restore: async () => { throw new Error("db"); } } });
+  assert.equal((await bad.call("GET", "/api/carts/restore/whatever1")).status, 404); assert.equal((await bad.call("POST", "/api/carts/restore/whatever1/open", {})).status, 404);
 });

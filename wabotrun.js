@@ -39,6 +39,7 @@ import { staffPhones, fitOneSms, staffConfig } from "./staffalerts.js";
 import { loyaltyCfgOf } from "./loyalty.js";
 import { MAPS_URL } from "./watemplates.js";
 import { isOpenNow } from "./carts.js";
+import { makeBotCarts, reorderPlan, planSummary } from "./wabotcart.js";
 import { makeAiCost, pricesOf, waRatesOf, pricesFromBody, waRatesFromBody, BUDGET_DEFAULTS } from "./waaicost.js";
 import { providerInfo } from "./wabotllm.js";
 import { WA_UPDATES_TEXTS, WA_UPDATES_CURRENT, recordWaUpdatesBot, recordWaMarketingBot, ensureWaConsentSchema } from "./waconsent.js";
@@ -71,6 +72,9 @@ export const DEFAULTS = Object.freeze({
   offerEndWithinDays: 7,       // تاريخ نهاية العرض يتذكر لو باقي عليه كده أو أقل
   boxesCacheMin: 5, menuCacheMin: 5, offersCacheMin: 2, staleCacheMin: 60,   // كاش المصادر الحيّة بالدقايق
   logKeepDays: 90,             // سجل البوت بيتمسح بعدها
+  reorderEnabled: true,        // «نفس طلبي الأخير» بضغطة: رابط سلة جاهزة من لقطة سلة آخر طلب (طلب عمر ١٢/١٠)
+  reorderMaxDays: 90,          // آخر طلب أقدم من كده مايتعرضش
+  reorderLinkDays: 7,          // صلاحية رابط السلة الجاهزة
   maxAgeMinutes: 20,           // رسالة أقدم من كده (ويب هوك متأخر) مابيتردش عليها
   duplicateSeconds: 120,       // نفس الرد لنفس العميل مايتكررش خلالها
   /* حارس الحلقات (مش سبب لتحويل لموظف — عطل ١٢/١٠: ٨ ردود كانت بتقطع عميل بيتصفّح القائمة وتحوّله لموظف):
@@ -163,6 +167,15 @@ export const TEXTS = Object.freeze({
     "I couldn't get that information right now 🙏 I've passed your question to a staff member.\n{wait}", [], ["wait"]),
   rate: t("حد الرسائل الآلية في الساعة", "وصلنا حد الرسائل الآلية لهذه الساعة 🙏 اكتب «موظف» لو تحتاج مساعدة.", "We have reached the automated message limit for this hour 🙏 Type “staff” if you need help.", [], [], 300),
   rate_burst: t("رسائل كثيرة في دقيقة", "لحظة من فضلك 🙏 وصلتنا رسائل كثيرة متتالية، ونكمل معك بعد دقيقة.", "One moment 🙏 We received many messages in a row and will continue in a minute.", [], [], 300),
+  /* «نفس طلبي الأخير» (١٢/١٠) */
+  row_reorder: t("صف: نفس طلبي الأخير", "🔁 نفس طلبي الأخير", "🔁 Same as last order", [], [], LIMITS.rowTitle),
+  reorder_body: t("نفس الطلب الأخير: السلة جاهزة", "جهّزنا لك نفس طلبك الأخير 🛒\n{lines}\n{changes}\n{closed}\nراجع السلة وكمّل الدفع من الرابط 👇", "Your last order is ready in the cart 🛒\n{lines}\n{changes}\n{closed}\nReview the cart and pay from the link 👇", ["lines"], ["changes", "closed"]),
+  reorder_none: t("نفس الطلب الأخير: مش متاح تلقائياً", "ما قدرنا نجهّز نفس طلبك الأخير تلقائياً 🙏 تقدر تطلب من الرابط 👇", "We couldn't rebuild your last order automatically 🙏 You can order from the link 👇", [], [], 300),
+  re_gone: t("سطر: صنف مش متاح", "غير متاح الآن وشلناه من السلة: {names}", "Not available now and removed from the cart: {names}", ["names"], [], 400),
+  re_sold: t("سطر: صنف خلص اليوم", "خلص اليوم وشلناه من السلة: {names}", "Sold out today and removed from the cart: {names}", ["names"], [], 400),
+  re_price: t("سطر: سعر اتغيّر", "سعر {name} الآن {now} ر.س (كان {was} ر.س)", "{name} is now SAR {now} (was SAR {was})", ["name", "now", "was"], [], 300),
+  re_review: t("سطر: راجع الإضافات", "راجع الإضافات والسعر في السلة قبل الدفع: {names}", "Please check the add-ons and price in the cart before paying: {names}", ["names"], [], 400),
+  cta_reorder: t("زر: كمّل طلبك", "كمّل طلبك", "Complete order", [], [], LIMITS.ctaText),
   handoff_remind: t("تذكير: المحادثة عند الموظف (مرة واحدة)", "محادثتك عند الموظف 🙏\n{wait}", "Your chat is with our staff 🙏\n{wait}", [], ["wait"]),
   thanks: t("شكر / وداع", "العفو، حيّاك الله 🌟", "You're welcome 🌟"),
   /* «إيقاف» = كل رسايلنا المبادِرة (العروض وتحديثات الطلب) — حارس الإرسال بيسكّت كل القوالب. الرد على سؤاله في المحادثة شغّال. */
@@ -274,10 +287,10 @@ export const INTENT_MAP = Object.freeze({
   cancel_order: "change", modify_order: "change", cancel_or_stop: "change", special_request: "change",
   human: "human", thanks: "thanks", bye: "thanks", stop: "stop", start: "start", media: "media", unknown: "unknown",
 });
-export const TREE_KEYS = ["main", "boxes", "tier", "box", "cats", "cat", "item", "items", "best", "notmenu", "packs", "pickup", "spicy", "faq", "area", "hoursloc", "optin_yes", "optin_no", "resume_all", "resume_updates"];
+export const TREE_KEYS = ["main", "boxes", "tier", "box", "cats", "cat", "item", "items", "best", "notmenu", "packs", "pickup", "spicy", "faq", "area", "hoursloc", "optin_yes", "optin_no", "resume_all", "resume_updates", "reorder"];
 export const REPLY_KEYS = ["greet", "menu", "order", "offers", "delivery", "hours", "location", "payment", "status", "complaint", "problem", "change", "human", "staff", "media", "unknown", "thanks", "stop", "start"];
 const HANDOFF_KEYS = { complaint: ["complaint", "urgent"], problem: ["problem", "urgent"], change: ["order_change", "urgent"], human: ["asked_human", "normal"], staff: ["needs_staff", "normal"], media: ["media", "normal"] };
-const BUTTON_IDS = { "bot:menu": "main", "bot:status": "status", "bot:human": "human", "optin:yes": "optin_yes", "optin:no": "optin_no", "resume:all": "resume_all", "resume:updates": "resume_updates" };
+const BUTTON_IDS = { "bot:menu": "main", "bot:status": "status", "bot:human": "human", "optin:yes": "optin_yes", "optin:no": "optin_no", "resume:all": "resume_all", "resume:updates": "resume_updates", "re:last": "reorder" };
 const MENU_IDS = { main: "main", boxes: "boxes", cats: "cats", offers: "offers", delivery: "delivery", pickup: "pickup", status: "status", hours: "hoursloc", location: "location", packs: "packs", pay: "payment", human: "human" };
 const IGNORED_TYPES = new Set(["reaction", "sticker", "unsupported", "system", "ephemeral", "request_welcome", "order"]);
 const MEDIA_TYPES = new Set(["image", "audio", "voice", "video", "document", "contacts", "location"]);
@@ -361,6 +374,7 @@ export function botConfig(settings) {
     boxesCacheMin: num(x.boxesCacheMin, 1, 60, DEFAULTS.boxesCacheMin), menuCacheMin: num(x.menuCacheMin, 1, 60, DEFAULTS.menuCacheMin),
     offersCacheMin: num(x.offersCacheMin, 1, 30, DEFAULTS.offersCacheMin), staleCacheMin: num(x.staleCacheMin, 5, 720, DEFAULTS.staleCacheMin),
     logKeepDays: num(x.logKeepDays, 7, 730, DEFAULTS.logKeepDays),
+    reorderEnabled: x.reorderEnabled !== false, reorderMaxDays: num(x.reorderMaxDays, 1, 365, DEFAULTS.reorderMaxDays), reorderLinkDays: num(x.reorderLinkDays, 1, 30, DEFAULTS.reorderLinkDays),
     maxAgeMinutes: num(x.maxAgeMinutes, 1, 120, DEFAULTS.maxAgeMinutes),
     duplicateSeconds: num(x.duplicateSeconds, 0, 3600, DEFAULTS.duplicateSeconds),
     maxRepliesPerHour: num(x.maxRepliesPerHour, 5, 300, DEFAULTS.maxRepliesPerHour),
@@ -415,11 +429,11 @@ export function configFromBody(b, prev = {}) {
   errors.push(...rangeErrors(src));
   delete out.humanWindowHours;      // اتلغى (١٢/١٠) — أي حفظ بينضّف المخزّن القديم
   for (const k of ["humanPauseMin", "staffWaitMin", "closedEchoPauseMin", "unknownWaitMin", "manualMuteHours", "handoffOpenHours", "freeRepliesPerMonth", "replyRateSar", "disclosureHours", "unknownHandoverAfter", "adWindowHours", "optinAnswerWindowMin",
-    "offerEndWithinDays", "boxesCacheMin", "menuCacheMin", "offersCacheMin", "staleCacheMin", "logKeepDays",
+    "offerEndWithinDays", "boxesCacheMin", "menuCacheMin", "offersCacheMin", "staleCacheMin", "logKeepDays", "reorderMaxDays", "reorderLinkDays",
     "greetWindowHours", "maxAgeMinutes", "duplicateSeconds", "maxRepliesPerHour", "maxTapsPerHour", "maxRepliesPerMinute", "orderLookbackHours", "lateAfterMinutes", "maxAlertsPerHour"]) {
     if (k in src) { if (Number.isFinite(Number(src[k])) && src[k] !== "" && src[k] !== null) out[k] = Number(src[k]); else errors.push(k); }
   }
-  for (const k of ["interactive", "staffAlert", "alertInTest"]) if (k in src) out[k] = src[k] === true;
+  for (const k of ["interactive", "staffAlert", "alertInTest", "reorderEnabled"]) if (k in src) out[k] = src[k] === true;
   if ("llm" in src) {
     const L = src.llm || {}, cur = { ...(prev.llm || {}) };
     if ("enabled" in L) cur.enabled = L.enabled === true;
@@ -624,6 +638,9 @@ export const SCHEMA = Object.freeze({
   intentsOff: S("limits", "keys", "ردود مقفولة", "أي رد هنا بيتحوّل لموظف بدل ما البوت يجاوب."),
   orderLookbackHours: S("orders", "number", "«وين طلبي» بيدوّر في آخر", "طلبات رقم المرسل نفسه بس.", { min: 1, max: 336, unit: "ساعة" }),
   lateAfterMinutes: S("orders", "number", "الطلب يعتبر متأخر بعد", "طلب نشط أقدم من كده: الحالة + تحويل لموظف.", { min: 20, max: 600, unit: "دقيقة" }),
+  reorderEnabled: S("orders", "boolean", "«نفس طلبي الأخير» بضغطة", "للعميل اللي طلب من الموقع قبل كده: صف في التحية، وبضغطة يوصله رابط سلة جاهزة بنفس طلبه (بعد التأكد إن الأصناف متاحة)."),
+  reorderMaxDays: S("orders", "number", "آخر طلب يتعرض لو عمره أقل من", "", { min: 1, max: 365, unit: "يوم" }),
+  reorderLinkDays: S("orders", "number", "صلاحية رابط السلة الجاهزة", "", { min: 1, max: 30, unit: "يوم" }),
   firstCode: S("orders", "code", "كود أول طلب", "الكود اللي سطر «أول طلب» بيقرا شروطه من الكوبونات."),
   "links.organic": S("links", "slug", "رابط المحادثات العادية", "من «روابط الحملات»."),
   "links.ads": S("links", "slug", "رابط محادثات الإعلانات", ""),
@@ -853,9 +870,20 @@ export function buildReply(key, c) {
       const rows = [["m:boxes", "row_boxes"], ["m:cats", "row_cats"], ["m:offers", "row_offers"], ["m:delivery", "row_delivery"], ["m:status", "row_status"], ["m:human", "row_human"]].map(([id, k]) => ({ id, title: T(k) }));
       const vars = { paused: pausedLine(cfg, lang, data), closed: closedLine(cfg, lang, data, "closed_short") };
       const name = greetName(data.customerName);
+      if (cfg.reorderEnabled && data.reorder && data.reorder.plan && data.reorder.plan.ok) rows.unshift({ id: "re:last", title: T("row_reorder"), description: planSummary(data.reorder.plan, lang, LIMITS.rowDesc) });
       return { body: name ? F("greet_back", { ...vars, name }) : F("greet", vars), list: { button: T("list_btn"), rows } };
     }
     case "resume_all": case "resume_updates": return { body: T(key) };
+    case "reorder": {
+      const ro = cfg.reorderEnabled ? data.reorder : null;
+      if (!ro || !ro.plan || !ro.plan.ok || !ro.url) return withLink("reorder_none", {}, "cta_order");
+      const p = ro.plan, nm = (x) => (lang === "en" ? x.nameEn || x.name : x.name), sep = lang === "en" ? ", " : "، ";
+      const lines = p.lines.map((l) => `• ${l.q > 1 ? `${l.q}× ` : ""}${nm(l)}`).join("\n");
+      const gone = p.removed.filter((x) => x.why !== "sold_out").map((x) => x.name), sold = p.removed.filter((x) => x.why === "sold_out").map((x) => x.name);
+      const changes = [gone.length ? F("re_gone", { names: gone.join(sep) }) : "", sold.length ? F("re_sold", { names: sold.join(sep) }) : "",
+        ...p.repriced.map((x) => F("re_price", { name: x.name, now: money(x.now), was: money(x.was) })), p.review.length ? F("re_review", { names: p.review.join(sep) }) : ""].filter(Boolean).join("\n");
+      return { body: F("reorder_body", { lines, changes, closed: closedLine(cfg, lang, data, "closed_short") }), cta: { title: T("cta_reorder"), url: ro.url }, link: "wa-reorder" };
+    }
     case "menu": return withLink("menu", { boxes: boxesBlock(cfg, lang, data), closed: closedLine(cfg, lang, data) }, "cta_menu");
     case "order": return withLink("order", { first: firstLine(cfg, lang, data), paused: pausedLine(cfg, lang, data), closed: closedLine(cfg, lang, data) }, "cta_order");
     case "offers": return withLink("offers", { first: firstLine(cfg, lang, data), loyalty: loyaltyLine(cfg, lang, data), timed: timedBlock(cfg, lang, data), boxes: boxesBlock(cfg, lang, data) }, "cta_order");
@@ -954,7 +982,7 @@ export function payloadProblem(p) {
   if (i.type === "cta_url") {
     const a = i.action?.parameters || {};
     if (!a.display_text || [...a.display_text].length > LIMITS.ctaText || /…$/.test(a.display_text)) return "cta_title";
-    if (!/^https:\/\/(freshcuts\.sa\/(l\/[a-z0-9-]+(#item-\d{1,6})?|track\/W\d{6,20})$|maps\.google\.com\/|www\.google\.com\/maps|maps\.app\.goo\.gl\/|g\.page\/)/.test(String(a.url || ""))) return "cta_url";
+    if (!/^https:\/\/(freshcuts\.sa\/(l\/[a-z0-9-]+(#item-\d{1,6})?|track\/W\d{6,20}|c\/[a-z0-9]{6,16})$|maps\.google\.com\/|www\.google\.com\/maps|maps\.app\.goo\.gl\/|g\.page\/)/.test(String(a.url || ""))) return "cta_url";
     return null;
   }
   if (i.type === "list") {
@@ -987,6 +1015,8 @@ const EXTRA = [
    ⇒ { act: "reply"|"silent", reason, key, rawIntent, lang, score, reply?, payloads?, handoff?, mute?, greet?, optout?, link? } */
 /* know = { menu (wabot.indexMenu من المنيو الحي), bundles } — من غيرهم التصنيف شغّال بس من غير أصناف/بوكسات بالاسم.
    ⇒ { key, arg, rawIntent, lang, score, entities }. arg: رقم القسم/الصنف، slug البوكس، رقم النوع، مفتاح السؤال الشائع… */
+/* «نفس الطلب / زي آخر مرة / كرر الطلب / المعتاد» — بعد التطبيع (ة⇒ه، أ⇒ا) */
+const REORDER_RE = /(نفس|زي|مثل) (ال)?(طلب|طلبي|طلبنا|اخر مره|المره اللي فاتت|المره الماضيه)|كرر(وا|و)? ?(لي )?(ال)?(طلب|طلبي)|(ال)?معتاد|same (order|as last)|re-?order|the usual/i;
 export function classify(ev, know = {}) {
   const type = String(ev.type || "text");
   const rawText = String(ev.text || "");
@@ -1020,6 +1050,7 @@ export function classify(ev, know = {}) {
      (بارد/ناقص/غلط/متأخر… ⇒ درجة ٥+). إشارة ضعيفة + كلام عن الطلب ⇒ «وين طلبي» (حالة حقيقية، وبتحوّل لو متأخر فعلاً). */
   if (intent === "complaint" && m.score < 5) intent = orderNo || /طلب|اوردر|order|مندوب|driver/.test(n) ? "order_status" : "unknown";
   if (TIME_RE.test(n) && !HARD_INTENTS.has(intent)) return done("hours", null, "time_question");
+  if (REORDER_RE.test(n) && (!HARD_INTENTS.has(intent) || intent === "order_status")) return done("reorder", null, "reorder");
   if (!HARD_INTENTS.has(intent)) {
     const fq = FAQ_RULES.find(([, re]) => re.test(n));
     if (fq) return done("faq", fq[0], `faq:${fq[0]}`);
@@ -1345,7 +1376,7 @@ export function register(app, ctx, deps = {}) {
     { const keep = botConfig((await getSettingsData().catch(() => null)) || {}).logKeepDays; await pool.query("DELETE FROM wa_bot_log WHERE at < NOW() - make_interval(days => $1::int)", [keep]).catch(() => {}); }
     await pool.query(`CREATE TABLE IF NOT EXISTS wa_bot_config_log (id BIGSERIAL PRIMARY KEY, at TIMESTAMPTZ NOT NULL DEFAULT NOW(), who TEXT, changes JSONB NOT NULL)`).catch((e) => console.error("[wabot] config log:", e.message));
   }
-  const ready = ensureSchema().then(() => aicost.ensure().catch((e) => console.error('[wabot] ai-cost schema:', e.message))).then(() => ensureWaConsentSchema(pool).catch((e) => console.error('[wabot] consent schema:', e.message))).then(() => console.log("[wabot] runtime ready")).catch((e) => console.error("[wabot] init failed:", e.message));
+  const ready = ensureSchema().then(() => botCarts.ensure().catch((e) => console.error('[wabot] cart schema:', e.message))).then(() => aicost.ensure().catch((e) => console.error('[wabot] ai-cost schema:', e.message))).then(() => ensureWaConsentSchema(pool).catch((e) => console.error('[wabot] consent schema:', e.message))).then(() => console.log("[wabot] runtime ready")).catch((e) => console.error("[wabot] init failed:", e.message));
 
   let tune = botConfig({});          // آخر إعدادات اتقرت — مدد الكاش بتتاخد منها (بتتحدّث مع كل رسالة وكل قراءة للإعدادات)
   let bundleCache = { at: 0, rows: null };
@@ -1412,6 +1443,7 @@ export function register(app, ctx, deps = {}) {
     }
     return null;
   });
+  const botCarts = deps.botCarts || makeBotCarts({ pool });      // السلات الجاهزة (نفس الطلب الأخير؛ ومساعد الطلبات بعدين)
   const llm = deps.llm || null;      // wabotllm.classify — تصنيف بس
   const aicost = makeAiCost({ pool, sendSms: deps.sendSms || null, now: deps.now || (() => new Date()) });   // كل نداء للموديل بيتسجّل بتكلفته + السقف
   const q = async (sql, params) => { try { return (await pool.query(sql, params)).rows; } catch (e) { console.error("[wabot] db:", e.message); return null; } };
@@ -1430,6 +1462,12 @@ export function register(app, ctx, deps = {}) {
     if (need("greet") && /^5\d{8}$/.test(String(phone || ""))) {   // عميل طلب من الموقع قبل كده ⇒ نحيّيه باسمه (الاسم اللي كتبه هو في آخر طلب)
       const r = await q(`SELECT customer->>'name' AS name FROM shop_orders WHERE phone_norm=$1 AND NOT COALESCE(is_test,false) AND status NOT IN ('expired','pending_payment') ORDER BY created_at DESC LIMIT 1`, [phone]);
       data.customerName = r && r[0] ? r[0].name : null;
+    }
+    if (need("greet", "reorder") && cfg.reorderEnabled) {   // لقطة سلة آخر طلب ⇒ خطة على المنيو والباقات الحيّة (مصدر ناقص ⇒ مفيش عرض)
+      try { const snap = await botCarts.lastOrderCart(phone, cfg.reorderMaxDays);
+        const plan = snap ? reorderPlan(snap, { menu: data.menu, bundles: data.bundles && data.bundles.length ? data.bundles : null }) : null;
+        data.reorder = plan && plan.ok ? { plan, orderNo: snap.orderNo, option: snap.option, url: null } : null; }
+      catch (e) { console.error("[wabot] reorder:", e.message); data.reorder = null; }
     }
     if (need("delivery", "area")) { const r = await q("SELECT config FROM dl_policies WHERE active ORDER BY priority DESC, id LIMIT 1", []); data.policy = r && r[0] ? r[0].config : null; }
     if (need("order", "offers", "delivery", "main", "area")) {
@@ -1571,6 +1609,11 @@ export function register(app, ctx, deps = {}) {
       catch (e) {   // مصدر بيانات وقع كله ⇒ بيانات فاضية: أي رد محتاج بيانات هيتحوّل لموظف من نفسه (DataMissing)
         console.error("[wabot] data:", e.message);
         data = { settings, now, bundles: [], policy: null, first: null, loyalty: null, order: null, orderDbFailed: true, links: {}, open: null };
+      }
+      /* «نفس طلبي الأخير»: السلة الجاهزة بتتعمل هنا (الرابط لازم يكون حقيقي قبل ما الرد يتبني). التجربة الصامتة مابتعملش صف. */
+      if (cls.key === "reorder" && data.reorder && data.reorder.plan) {
+        if (cfg.mode === "dry") data.reorder.url = `${STORE}/c/dryrun00`;
+        else { const made = await botCarts.create({ phone, source: "reorder", fromOrder: data.reorder.orderNo, plan: data.reorder.plan, option: data.reorder.option, days: cfg.reorderLinkDays }); data.reorder = made ? { ...data.reorder, url: `${STORE}/c/${made.code}`, code: made.code } : null; }
       }
       data.chat = chat;
       const d = decide(ev, { cfg, now, chat, lastEchoAt: echoAt, repliesLastHour: rc.n, rate: rc.rate, lastSame: rc.lastSame, failedRecently: rc.failedRecently, data, cls, afterWait });
@@ -1897,6 +1940,7 @@ export function register(app, ctx, deps = {}) {
     // first:false ⇒ رسالة تانية في نفس المحادثة (من غير التعريف) — عشان يتشاف شكل الرد العادي.
     const simChat = b.first === false ? { last_disclosed_at: now.toISOString() } : {};
     data.chat = simChat;
+    if (data.reorder) data.reorder.url = `${STORE}/c/preview0`;      // المحاكاة مابتعملش سلة
     const d = decide(ev, { cfg, now, chat: simChat, lastEchoAt: null, repliesLastHour: 0, lastSame: null, failedRecently: false, data, cls, afterWait: "unknown_wait" });
     return c.json({ ok: true, classified: { key: cls.key, intent: cls.rawIntent, lang: cls.lang, score: cls.score }, open: data.open ? data.open.open : null,
       decision: { act: d.act, reason: /^after_/.test(d.reason || "") ? null : d.reason, key: d.key, handoff: d.handoff || null, link: d.link || null },
@@ -1926,7 +1970,7 @@ export function register(app, ctx, deps = {}) {
       let out = { act: "silent", reason: "ignored_type", key: cls.key };
       if (cls.key) {
         let data;
-        try { data = await loadData({ settings, cfg, phone: "500000000", orderNo: null, key: cls.key, now, know, arg: cls.arg }); data.chat = { last_disclosed_at: now.toISOString() }; out = decide(ev, { cfg, now, chat: data.chat, lastEchoAt: null, repliesLastHour: 0, lastSame: null, failedRecently: false, data, cls, afterWait: "unknown_wait" }); }
+        try { data = await loadData({ settings, cfg, phone: "500000000", orderNo: null, key: cls.key, now, know, arg: cls.arg }); data.chat = { last_disclosed_at: now.toISOString() }; if (data.reorder) data.reorder.url = `${STORE}/c/preview0`; out = decide(ev, { cfg, now, chat: data.chat, lastEchoAt: null, repliesLastHour: 0, lastSame: null, failedRecently: false, data, cls, afterWait: "unknown_wait" }); }
         catch (e) { out = { act: "silent", reason: `data_failed:${e.message}`, key: cls.key }; }
       }
       const key = out.key || cls.key || "—";
@@ -2021,5 +2065,5 @@ export function register(app, ctx, deps = {}) {
     return c.json({ ok: r.ok === true, result: r, to: `0${phone}`, template: tpl.name, language: lang });
   });
 
-  return { handle, ready, loadData, runDueJobs, muteChat, unmuteChat, stop: () => { if (timer) clearInterval(timer); }, botConfig: async () => botConfig((await getSettingsData()) || {}) };
+  return { carts: botCarts, handle, ready, loadData, runDueJobs, muteChat, unmuteChat, stop: () => { if (timer) clearInterval(timer); }, botConfig: async () => botConfig((await getSettingsData()) || {}) };
 }

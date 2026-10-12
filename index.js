@@ -3133,7 +3133,8 @@ import("./watemplates.js").then((m) => {
 }).catch((e) => { if (e?.code !== "ERR_MODULE_NOT_FOUND") console.error("[wa] watemplates:", e.message); });
 const notifyApi = notify.register(app, moduleCtx, { wa: waApi });
 // السلات المتروكة: لقطات من المتجر + سلّم استرداد (إشعار ثم SMS) + أرقام اللوحة
-const cartsApi = carts.register(app, moduleCtx, { notify: notifyApi });
+let wabotApi = null;   // wabotrun.register (below): its ready-cart store answers /c/<code> through carts.js
+const cartsApi = carts.register(app, moduleCtx, { notify: notifyApi, botCarts: () => (wabotApi ? wabotApi.carts : null) });
 freebar.register(app, moduleCtx);
 // رحلة العميل (٠٢): دفعات أحداث المتجر + checkout_result/order_paid من السيرفر + تقرير #store/analytics/journey
 const journeyApi = journey.register(app, moduleCtx, { analytics: analyticsApi });
@@ -3211,7 +3212,7 @@ smstemplates.register(app, moduleCtx, { sendSms: (m) => accounts.sendSms(m), sen
 const waBotApi = wabot.register(app, moduleCtx, { app });
 /* 🤖 ١٢/١٠: بوت واتساب v1 (wabotrun.js) — بيمسك الوارد من whatsapp.js (setBotRuntime). الوضع وكل إعداداته من اللوحة
    (settings.waBot: off الافتراضي / dry / test / live) — مفيش مفتاح env. off = مابيلمسش أي رسالة. */
-wabotrun.register(app, moduleCtx, { app, wa: waApi, sendSms: accounts.sendSms, whoami: (c) => cmsApi.whoami(c), llm: wabotllm.makeClassifier({ faqKeys: wabotrun.FAQ_KEYS }) });
+wabotApi = wabotrun.register(app, moduleCtx, { app, wa: waApi, sendSms: accounts.sendSms, whoami: (c) => cmsApi.whoami(c), llm: wabotllm.makeClassifier({ faqKeys: wabotrun.FAQ_KEYS }) });
 /* 👁 قاعدة واحدة لإظهار جوال العميل كامل في اللوحة (phones.js): المالك دايماً،
    وعضو الفريق لو دوره عنده «عرض» على قسم العملاء. بتتحط على moduleCtx بعد ما
    الـCMS يتسجّل، والموديولات بتناديها وقت الطلب (ctx.canSeePhones) مش وقت التسجيل. */

@@ -10,6 +10,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import * as C from "./waconsent.js";
 import * as AIC from "./waaicost.js";
+import * as BC from "./wabotcart.js";
 const W = await import("./whatsapp.js");
 const R = await import("./wabotrun.js");
 const LLM = await import("./wabotllm.js");
@@ -50,10 +51,10 @@ const LOCKS_OPEN = { ...CONFIGURED, WHATSAPP_ENABLED: "1" };
 
 /* ── عالم صغير: قاعدة في الذاكرة + ساعة + Graph مزيّف ─────────────────────── */
 function world({ waBot = {}, notifications = { whatsappEnabled: true }, orders = [], bundles = BUNDLES, policy = POLICY, first = FIRST, links = ["wab-boxes", "wa-boxes", "wa-box-d4"],
-  at = OPEN_AT, graph = null, failDb = null, extraSettings = {}, disclosure = false, pages = LIVE.pages, quote = null, llm = null, greetMenu = false, offers = LIVE.offers, resolveMapsLink = null } = {}) {
+  at = OPEN_AT, graph = null, failDb = null, extraSettings = {}, disclosure = false, pages = LIVE.pages, quote = null, llm = null, greetMenu = false, offers = LIVE.offers, resolveMapsLink = null, lastCart = null } = {}) {
   let nowMs = Date.parse(at);
   const clock = { now: () => new Date(nowMs), advance: (min) => { nowMs += min * 60_000; }, set: (iso) => { nowMs = Date.parse(iso); } };
-  const db = { msgs: [], log: [], jobs: [], proofs: [], consentLog: [], ai: [], aiAlerts: [], tpl: [], cfgLog: [], chats: new Map(), optouts: [], optins: {}, links: links.map((s) => ({ slug: s, active: true, clicks: 0 })), settings: null };
+  const db = { msgs: [], log: [], jobs: [], proofs: [], consentLog: [], ai: [], aiAlerts: [], tpl: [], cfgLog: [], botCarts: [], chats: new Map(), optouts: [], optins: {}, links: links.map((s) => ({ slug: s, active: true, clicks: 0 })), settings: null };
   db.settings = { hours: HOURS, notifications, googlePlace: { mapsUrl: "https://maps.google.com/?cid=14767749764292326433" }, storefront: { seo: { faq: FAQ } },
     cms: { loyalty: { enabled: true, every: 3, reward: "free_delivery", minTotal: 60 } }, delivery: { alertPhones: ["0544775082", "0506338246"], staffSmsLanguage: "en" }, waBot: { footerMode: "always", ...waBot },
     waMaster: { enabled: true },   // SEC: مفتاح المالك الرئيسي (whatsapp.js guardSend) — مفتوح في العالم الافتراضي للاختبار
@@ -207,7 +208,9 @@ function world({ waBot = {}, notifications = { whatsappEnabled: true }, orders =
     normPhone: (x) => String(x || "").replace(/\D/g, "").replace(/^966/, "").replace(/^0/, ""), isOwner: () => owner };
   const wa = W.register(app, ctx, { fetch, sendSms: async () => ({ ok: true }) });
   const sms = [];
-  const bot = R.register(app, ctx, { app, wa, now: clock.now, noTimer: true, whoami: async () => actor.who, ...(resolveMapsLink ? { resolveMapsLink } : { resolveMapsLink: async () => null }), sendSms: async (x) => { sms.push(x); return { ok: true }; },
+  const botCarts = { ensure: async () => {}, lastOrderCart: async (ph) => (typeof lastCart === "function" ? lastCart(ph) : lastCart),
+    create: async (x) => { if (failDb && failDb.test("INSERT INTO wa_bot_carts")) return null; const code = `rc${String(db.botCarts.length + 1).padStart(6, "0")}`; db.botCarts.push({ code, ...x }); return { code }; }, open: async () => null, restore: async () => null };
+  const bot = R.register(app, ctx, { app, wa, now: clock.now, noTimer: true, botCarts, whoami: async () => actor.who, ...(resolveMapsLink ? { resolveMapsLink } : { resolveMapsLink: async () => null }), sendSms: async (x) => { sms.push(x); return { ok: true }; },
     fetchMenuPages: async () => { if (pages === null) throw new Error("menu down"); return pages; }, quote: async (lat, lng) => (typeof quote === "function" ? quote(lat, lng) : quote), llm,
     fetchOffers: async () => { if (offers === null) throw new Error("offers down"); return offers; } });
   let seq = 0;
@@ -1677,6 +1680,123 @@ test("location: a shared WhatsApp location or a pasted maps link gets the zone a
   await h.say("ابي اكلم موظف"); h.clock.advance(1);
   assert.equal((await h.say(null, { raw: { type: "location", location: { latitude: 21.58, longitude: 39.15 } } })).log.reply_key, "area");
   assert.equal((await mk(null).say(null, { raw: { type: "location", location: { latitude: 21.58, longitude: 39.15 } } })).log.reply_key, "data_missing");
+}));
+
+/* ── «نفس طلبي الأخير» بضغطة (طلب عمر ١٢/١٠) ────────────────────────────── */
+const SNAP = () => ({ orderNo: "W1790011111111", option: "delivery", at: "2026-10-05T17:00:00Z",
+  raw: { "8": { item: { id: 8 }, qty: 2 }, "59": { item: { id: 59 }, qty: 1, note: "بدون زيتون" },
+    "box-mixgrill-duo:k1": { key: "box-mixgrill-duo:k1", qty: 1, choices: { main1: "x", main2: "y" }, notes: {}, bundle: { slug: "box-mixgrill-duo", name: "ميكس جريل لشخصين", price: 85 } } },
+  items: [{ id: 8, n: "كريب زنجر سوبريم", q: 2, p: 25 }, { id: 59, n: "بنا تشيكن كازرول", q: 1, p: 28 }, { id: "box-mixgrill-duo:k1", n: "ميكس جريل لشخصين", q: 1, p: 85 }] });
+test("reorder plan: every line of the last order's cart is checked against the live menu and boxes; what changed is listed exactly", () => {
+  const live = { menu: KNOW.menu, bundles: LIVE.bundles };
+  const p = BC.reorderPlan(SNAP(), live);
+  assert.equal(p.ok, true);
+  assert.deepEqual(p.lines.map((l) => [l.name, l.q]), [["كريب زنجر سوبريم", 2], ["بنا تشيكن كازرول", 1], ["ميكس جريل لشخصين", 1]]);
+  assert.deepEqual([p.removed, p.repriced, p.review], [[], [], []]);
+  assert.deepEqual(p.raw["59"], { item: { id: "59" }, qty: 1, note: "بدون زيتون" }, "the customer's note travels with the line");
+  assert.deepEqual(p.raw["box-mixgrill-duo:k1"].choices, { main1: "x", main2: "y" }, "box choices are kept exactly as he made them");
+  assert.equal(BC.planSummary(p, "ar"), "2× كريب زنجر سوبريم، بنا تشيكن كازرول، ميكس جريل لشخصين");
+  assert.ok([...BC.planSummary({ lines: Array.from({ length: 9 }, (_, i) => ({ name: `صنف طويل الاسم رقم ${i}`, q: 1 })) }, "ar")].length <= 72);
+  // an item removed from the menu, one sold out today, a box that is gone, a box whose price changed, a line that had add-ons
+  const menu2 = { ...KNOW.menu, items: KNOW.menu.items.filter((i) => i.id !== "59").map((i) => (i.id === "8" ? { ...i, soldOut: true } : i)) };
+  const p2 = BC.reorderPlan({ ...SNAP(), raw: { ...SNAP().raw, "x:1": { qty: 1, bundle: { slug: "box-gone", name: "بوكس قديم", price: 50 } } } },
+    { menu: menu2, bundles: LIVE.bundles.map((b) => (b.slug === "box-mixgrill-duo" ? { ...b, price: 89 } : b)) });
+  assert.deepEqual(p2.removed, [{ name: "كريب زنجر سوبريم", why: "sold_out" }, { name: "بنا تشيكن كازرول", why: "gone" }, { name: "بوكس قديم", why: "gone" }]);
+  assert.deepEqual(p2.repriced, [{ name: "ميكس جريل لشخصين", was: 85, now: 89 }]);
+  assert.deepEqual(Object.keys(p2.raw), ["box-mixgrill-duo:k1"]); assert.equal(p2.raw["box-mixgrill-duo:k1"].bundle.price, 89);
+  const p3 = BC.reorderPlan({ raw: { "8": { item: { id: 8 }, qty: 1 } }, items: [{ id: 8, n: "كريب زنجر سوبريم", q: 1, p: 30 }] }, live);
+  assert.deepEqual(p3.review, ["كريب زنجر سوبريم"], "snapshot price differs from the menu ⇒ add-ons or a price change: the customer is asked to check, we do not guess which");
+  // nothing left, or a source that is down ⇒ no plan (never a guess)
+  assert.deepEqual([BC.reorderPlan({ raw: { "59": { item: { id: 59 }, qty: 1 } }, items: [] }, { menu: menu2, bundles: LIVE.bundles }).ok, BC.reorderPlan(SNAP(), { menu: null, bundles: LIVE.bundles }).why,
+    BC.reorderPlan(SNAP(), { menu: KNOW.menu, bundles: null }).why, BC.reorderPlan({ raw: {} }, live).why, BC.reorderPlan(null, live).why], [false, "menu_unavailable", "bundles_unavailable", "no_snapshot", "no_snapshot"]);
+});
+
+test("ready-cart store: last order's snapshot only when it really is that order's cart; codes never collide with recovery links or ad carts; expiry", async () => {
+  const rows = { orders: [], carts: [], bot: [], taken: new Set(["takencod"]) };
+  let nowMs = Date.parse("2026-10-12T15:00:00Z");
+  const pool = { async query(sql, p = []) {
+    const s = String(sql).replace(/\s+/g, " ").trim();
+    if (/^CREATE TABLE/.test(s)) return { rows: [] };
+    if (/FROM shop_orders WHERE phone_norm=\$1/.test(s)) return { rows: rows.orders.filter((o) => o.phone_norm === p[0] && nowMs - Date.parse(o.created_at) < p[1] * 86400_000).slice(-1) };
+    if (/FROM shop_carts WHERE phone_norm=\$1 AND recovered_order=\$2/.test(s)) return { rows: rows.carts.filter((c) => c.phone_norm === p[0] && c.recovered_order === p[1] && c.cart_raw) };
+    if (/FROM cart_recovery WHERE code=\$1 UNION ALL/.test(s)) return { rows: rows.taken.has(p[0]) || rows.bot.some((b) => b.code === p[0]) ? [{}] : [] };
+    if (/^INSERT INTO wa_bot_carts/.test(s)) { rows.bot.push({ code: p[0], phone_norm: p[1], source: p[2], from_order: p[3], items: JSON.parse(p[4]), cart_raw: JSON.parse(p[5]), option: p[6], note: JSON.parse(p[7]), exp: nowMs + p[8] * 86400_000, opens: 0 }); return { rows: [{ code: p[0] }] }; }
+    if (/^UPDATE wa_bot_carts SET opens/.test(s)) { const b = rows.bot.find((x) => x.code === p[0] && x.exp > nowMs); if (!b) return { rows: [] }; b.opens++; return { rows: [{ source: b.source }] }; }
+    if (/^SELECT items, cart_raw, option FROM wa_bot_carts/.test(s)) { const b = rows.bot.find((x) => x.code === p[0] && x.exp > nowMs); return { rows: b ? [b] : [] }; }
+    throw new Error("unexpected sql: " + s.slice(0, 60));
+  } };
+  const st = BC.makeBotCarts({ pool, log: () => {} });
+  const snap = SNAP();
+  rows.orders.push({ phone_norm: "512345678", order_no: "W1", option: "pickup", subtotal: 163, created_at: "2026-10-05T17:00:00Z" });
+  rows.carts.push({ phone_norm: "512345678", recovered_order: "W1", cart_raw: snap.raw, items: snap.items, subtotal: 163, option: "pickup" });
+  const lc = await st.lastOrderCart("512345678", 90);
+  assert.deepEqual([lc.orderNo, lc.option, Object.keys(lc.raw).length], ["W1", "pickup", 3]);
+  assert.equal(await st.lastOrderCart("598765432", 90), null, "another phone never sees it");
+  assert.equal(await st.lastOrderCart("512345678", 3), null, "older than the limit");
+  rows.orders.push({ phone_norm: "512345678", order_no: "W2", option: "delivery", subtotal: 40, created_at: "2026-10-11T17:00:00Z" });
+  assert.equal(await st.lastOrderCart("512345678", 90), null, "his latest order has no snapshot (other device) ⇒ no «same as last order»");
+  rows.carts.push({ phone_norm: "512345678", recovered_order: "W2", cart_raw: snap.raw, items: snap.items, subtotal: 163, option: "delivery" });
+  assert.equal(await st.lastOrderCart("512345678", 90), null, "snapshot total differs from the order's items total ⇒ not trusted");
+  const plan = BC.reorderPlan(snap, { menu: KNOW.menu, bundles: LIVE.bundles });
+  const made = await st.create({ phone: "512345678", source: "reorder", fromOrder: "W1", plan, option: "pickup", days: 7 });
+  assert.match(made.code, /^[a-z0-9]{8}$/); assert.equal(rows.bot[0].from_order, "W1"); assert.deepEqual(rows.bot[0].note, { removed: [], repriced: [], review: [] });
+  assert.equal(await st.create({ phone: "512345678", source: "reorder", plan: { ok: false } }), null); assert.equal(await st.create({ phone: "abc", source: "reorder", plan }), null);
+  assert.equal(await st.open(made.code), `/?cart=${made.code}&utm_source=whatsapp&utm_medium=bot&utm_campaign=wa_reorder&fc_link=wa-reorder`); assert.equal(rows.bot[0].opens, 1);
+  const back = await st.restore(made.code);
+  assert.deepEqual([back.ok, back.option, back.ordered, Object.keys(back.raw).length, back.items.length], [true, "pickup", false, 3, 3]);
+  assert.equal(await st.open("nope1234"), null); assert.equal(await st.restore("../etc"), null);
+  nowMs += 8 * 86400_000;
+  assert.equal(await st.open(made.code), null, "expired"); assert.equal(await st.restore(made.code), null);
+});
+
+test("«نفس طلبي الأخير»: a row in the returning customer's greeting; one tap sends his last order as a ready cart with what changed; honest when it can not be rebuilt", withEnv(LOCKS_OPEN, async () => {
+  const prior = [{ ...order({ status: "delivered" }), customer: { name: "أحمد" } }];
+  const w = liveWorld({ orders: prior, lastCart: SNAP() });
+  const g = await w.say("السلام عليكم");
+  assert.equal(bodyOf(g.sent[0]), "حيّاك الله أحمد 👋 اختر من القائمة.");
+  assert.deepEqual(rowsOf(g.sent[0])[0], { id: "re:last", title: "🔁 نفس طلبي الأخير", description: "2× كريب زنجر سوبريم، بنا تشيكن كازرول، ميكس جريل لشخصين" });
+  assert.equal(rowsOf(g.sent[0]).length, 7); assert.equal(w.db.botCarts.length, 0, "nothing is created until he taps");
+  w.clock.advance(1);
+  const r = await w.press("re:last", "🔁 نفس طلبي الأخير");
+  assert.deepEqual(r.sent, [cta(ME, "جهّزنا لك نفس طلبك الأخير 🛒\n• 2× كريب زنجر سوبريم\n• بنا تشيكن كازرول\n• ميكس جريل لشخصين\nراجع السلة وكمّل الدفع من الرابط 👇", "كمّل طلبك", "https://freshcuts.sa/c/rc000001")]);
+  assert.equal(r.log.reply_key, "reorder"); assert.equal(r.log.link_slug, "wa-reorder"); assert.equal(r.log.handoff, null);
+  assert.deepEqual([w.db.botCarts[0].phone, w.db.botCarts[0].source, w.db.botCarts[0].fromOrder, w.db.botCarts[0].option, w.db.botCarts[0].days], ["512345678", "reorder", "W1790011111111", "delivery", 7]);
+  // typed, in several wordings
+  for (const t of ["نفس الطلب", "ابي نفس طلبي", "زي اخر مره", "كرر الطلب", "المعتاد لو سمحت", "same order please", "reorder"]) assert.equal(R.classify({ text: t, type: "text" }, KNOW).key, "reorder", t);
+  for (const t of ["نفس الطلب اللي جاني بارد", "ابي الغي الطلب", "وين طلبي"]) assert.notEqual(R.classify({ text: t, type: "text" }, KNOW).key, "reorder", t);
+  // what changed since his order is said exactly: sold out today, removed from the menu, a box price, and add-ons to check
+  const pages2 = LIVE.pages.map((pg) => ({ ...pg, items: pg.items.filter((i) => String(i.id) !== "59") }));
+  const snap2 = SNAP(); snap2.items[0].p = 30;
+  const c = liveWorld({ orders: prior, lastCart: snap2, pages: pages2, bundles: LIVE.bundles.map((b) => (b.slug === "box-mixgrill-duo" ? { ...b, price: 89 } : b)) });
+  const cr = await c.say("نفس الطلب");
+  assert.equal(bodyOf(cr.sent[0]), "جهّزنا لك نفس طلبك الأخير 🛒\n• 2× كريب زنجر سوبريم\n• ميكس جريل لشخصين\nغير متاح الآن وشلناه من السلة: بنا تشيكن كازرول\nسعر ميكس جريل لشخصين الآن 89 ر.س (كان 85 ر.س)\nراجع الإضافات والسعر في السلة قبل الدفع: كريب زنجر سوبريم\nراجع السلة وكمّل الدفع من الرابط 👇");
+  assert.deepEqual(Object.keys(c.db.botCarts[0].plan.raw), ["8", "box-mixgrill-duo:k1"], "the cart behind the link holds only what is available");
+  const so = liveWorld({ orders: prior, lastCart: SNAP(), extraSettings: { catalog: { soldOut: { 8: {} } } } });
+  assert.match(bodyOf((await so.say("نفس الطلب")).sent[0]), /\nخلص اليوم وشلناه من السلة: كريب زنجر سوبريم\n/);
+  // closed: the cart is still prepared, with the reopening time
+  const cl = liveWorld({ orders: prior, lastCart: SNAP(), at: CLOSED_AT });
+  assert.match(bodyOf((await cl.press("re:last", "x")).sent[0]), /\n🌙 المطعم مقفل الحين ونفتح اليوم الساعة 12 ظهراً\.\nراجع السلة/);
+  // no snapshot / nothing left / store failure / switched off ⇒ no row in the greeting, and the tap gets an honest line with the ordinary link (no handover)
+  for (const o of [{ lastCart: null }, { lastCart: { ...SNAP(), raw: { "999999": { item: { id: 999999 }, qty: 1 } }, items: [] } }, { lastCart: SNAP(), failDb: /INSERT INTO wa_bot_carts/ }, { lastCart: SNAP(), waBot: { reorderEnabled: false } }]) {
+    const x = liveWorld({ orders: prior, ...o });
+    if (!o.failDb) assert.ok(!rowsOf((await x.say("هلا")).sent[0]).some((row) => row.id === "re:last"), JSON.stringify(Object.keys(o)));
+    x.clock.advance(1);
+    const y = await x.press("re:last", "x");
+    assert.deepEqual(y.sent, [cta(ME, "ما قدرنا نجهّز نفس طلبك الأخير تلقائياً 🙏 تقدر تطلب من الرابط 👇", "اطلب الآن", "https://freshcuts.sa/l/wab-boxes")]); assert.equal(y.log.handoff, null);
+  }
+  // dry mode: the reply is logged with a placeholder link and no cart row is created; simulate creates nothing either
+  const d = liveWorld({ orders: prior, lastCart: SNAP(), waBot: { mode: "dry" } });
+  const dr = await d.press("re:last", "x");
+  assert.equal(d.db.botCarts.length, 0); assert.match(JSON.stringify(dr.log.replies), /freshcuts\.sa\/c\/dryrun00/);
+  const sim = (await w.call("POST", "/api/cms/wabot/simulate", { text: "نفس الطلب", phone: "0512345678", first: false })).body;
+  assert.match(JSON.stringify(sim.payloads), /freshcuts\.sa\/c\/preview0/); assert.equal(w.db.botCarts.length, 1);
+  // a sales intent: not answered during a handover (one reminder), and never for a complaint
+  const h = liveWorld({ orders: prior, lastCart: SNAP() });
+  await h.say("عندي شكوى"); h.clock.advance(1);
+  assert.equal((await h.press("re:last", "x")).log.reply_key, "handoff_remind"); assert.equal(h.db.botCarts.length, 1, "the row made before the decision is an unused orphan, never sent");
+  // settings
+  assert.deepEqual([R.botConfig({}).reorderEnabled, R.botConfig({}).reorderMaxDays, R.botConfig({}).reorderLinkDays], [true, 90, 7]);
+  assert.equal(R.configFromBody({ reorderLinkDays: 99 }).ok, false); assert.equal(R.configFromBody({ reorderEnabled: false }).value.reorderEnabled, false);
 }));
 
 test("replay: the stored inbound messages run through the current classifier offline — nothing sent, nothing logged", withEnv(LOCKS_OPEN, async () => {

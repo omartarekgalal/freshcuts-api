@@ -488,7 +488,9 @@ export function register(app, ctx, deps = {}) {
     if (!f) {
       /* مش رابط استرداد ⇒ يمكن سلة جاهزة: بتتفتح للأبد، والكوبون بيتحط دايماً
          (الأهلية بتتراجع في المتجر/الدفع). موقوفة أو مش موجودة = نفس الـ404. */
-      const url = await presets.openPreset(code).catch(() => null);
+      let url = await presets.openPreset(code).catch(() => null);
+      /* مش سلة إعلان ⇒ يمكن سلة جهّزها بوت واتساب للعميل («نفس طلبك الأخير») — wabotcart.js */
+      if (!url && typeof deps.botCarts === "function") { const bc = deps.botCarts(); url = bc ? await bc.open(code).catch(() => null) : null; }
       return url ? c.json({ ok: true, url }) : c.json({ ok: false }, 404);
     }
     const cfg = cartCfg(await getSettingsData());
@@ -512,7 +514,8 @@ export function register(app, ctx, deps = {}) {
       `SELECT items, cart_raw, option, subtotal, order_no FROM cart_recovery
         WHERE code=$1 AND started_at > NOW() - INTERVAL '7 days'`, [code])).rows[0];
     if (!f) {
-      const preset = await presets.restorePreset(code).catch(() => null);
+      let preset = await presets.restorePreset(code).catch(() => null);
+      if (!preset && typeof deps.botCarts === "function") { const bc = deps.botCarts(); preset = bc ? await bc.restore(code).catch(() => null) : null; }
       return preset ? c.json(preset) : c.json({ ok: false, error: "expired" }, 404);
     }
     return c.json({ ok: true, items: f.items || [], raw: f.cart_raw || null, option: f.option,
