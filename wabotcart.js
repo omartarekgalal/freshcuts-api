@@ -116,7 +116,26 @@ export function chatLocation(loc, now = new Date(), hours = 24) {
   return { lat, lng, at: new Date(at).toISOString() };
 }
 /* locationHours: async () ⇒ عدد الساعات (إعداد assist.locationHours من اللوحة)؛ من غيره ٢٤. */
-export function makeBotCarts({ pool, log = console.error, locationHours = null, now = () => new Date() }) {
+/* M3 — سطر صنف بالوزن في سلة محفوظة شايل سعر الوزن وقت ما السلة اتعملت، والرابط بيعيش أيام. نقطة البيع بترفض وقت الحساب أي سعر مش مطابق لسعرها
+   (shop.js: «unit_amount and system price must match»)، فالعميل عمره ما يدفع سعر قديم — بس السلة كانت هتعرض رقم قديم والحساب يفشل. عشان كده وقت فتح الرابط:
+   كل سطر بوزن بيتحدّث بسعر الوزن ده **الحين**؛ وزن مابقاش معروض ⇒ السطر بيتشال. أوزان الصنف مش معروفة الحين ⇒ السطر زي ما هو (مانخمّنش).
+   byItem = { "<item id>": [{ variant_option_id, price, price_ex, label_ar, label_en }] } ⇒ { raw, repriced, dropped } */
+export function repriceVariants(raw, byItem) {
+  if (!isObj(raw) || !isObj(byItem)) return { raw, repriced: 0, dropped: 0 };
+  const out = {}; let repriced = 0, dropped = 0;
+  for (const [k, e] of Object.entries(raw)) {
+    const v = isObj(e) && isObj(e.variant) && e.variant.id != null ? e.variant : null, id = isObj(e) && isObj(e.item) ? String(e.item.id) : null;
+    const ws = v && id && Array.isArray(byItem[id]) ? byItem[id] : null;
+    if (!ws) { out[k] = e; continue; }
+    const w = ws.find((x) => String(x.variant_option_id) === String(v.id));
+    if (!w) { dropped++; continue; }
+    const next = { ...v, name: w.label_ar || v.name, ...(w.label_en ? { local_name: w.label_en } : {}), retail_price: w.price, ...(w.price_ex != null ? { price: w.price_ex } : {}) };
+    if (Number(v.retail_price) !== Number(w.price) || (w.price_ex != null && Number(v.price) !== Number(w.price_ex))) repriced++;
+    out[k] = { ...e, variant: next };
+  }
+  return { raw: out, repriced, dropped };
+}
+export function makeBotCarts({ pool, log = console.error, locationHours = null, weightsNow = null, now = () => new Date() }) {
   let schemaP = null;
   const ensure = () => (schemaP ||= pool.query(BOT_CART_DDL).catch((e) => { schemaP = null; throw e; }));
   const q = async (sql, params) => { try { return (await pool.query(sql, params)).rows; } catch (e) { log("[wabot-cart] db:", e.message); return null; } };
@@ -176,7 +195,9 @@ export function makeBotCarts({ pool, log = console.error, locationHours = null, 
     if (!r || !r[0]) return null;
     let hours = 24; try { if (typeof locationHours === "function") hours = Number(await locationHours()) || 24; } catch { hours = 24; }
     const location = chatLocation(r[0].last_loc, now(), hours);
-    return { ok: true, items: Array.isArray(r[0].items) ? r[0].items : [], raw: isObj(r[0].cart_raw) && Object.keys(r[0].cart_raw).length ? r[0].cart_raw : null, option: r[0].option || "delivery", subtotal: 0, ordered: false, ...(location ? { location } : {}) };
+    let raw = isObj(r[0].cart_raw) && Object.keys(r[0].cart_raw).length ? r[0].cart_raw : null;
+    if (raw && typeof weightsNow === "function") { try { const by = await weightsNow(); if (by) { const rp = repriceVariants(raw, by); raw = Object.keys(rp.raw).length ? rp.raw : null; } } catch (e) { log("[wa-cart] reprice:", e.message); } }
+    return { ok: true, items: Array.isArray(r[0].items) ? r[0].items : [], raw, option: r[0].option || "delivery", subtotal: 0, ordered: false, ...(location ? { location } : {}) };
   }
   /* تشخيص (قراءة بس): من طلبات آخر N يوم، كام طلب له لقطة سلة مربوطة بيه، وكام لقطة إجماليها بيساوي إجمالي أصناف الطلب.
      لو التساوي قليل ⇒ العرض مش هيظهر لمعظم العملاء، ولازم نعرف ليه قبل ما نعتمد عليه. أرقام بس، من غير جوالات. */

@@ -1689,7 +1689,9 @@ export function register(app, ctx, deps = {}) {
     }
     return null;
   });
-  const botCarts = deps.botCarts || makeBotCarts({ pool, now: deps.now || (() => new Date()), locationHours: async () => botConfig((await getSettingsData()) || {}).assist.locationHours });      // السلات الجاهزة (نفس الطلب الأخير؛ ومساعد الطلبات بعدين)
+  const botCarts = deps.botCarts || makeBotCarts({ pool, now: deps.now || (() => new Date()), locationHours: async () => botConfig((await getSettingsData()) || {}).assist.locationHours,
+    /* أوزان الأصناف بالوزن الحين (من فهرس المنيو الحي) — لتحديث سعر سطر الوزن وقت فتح رابط السلة */
+    weightsNow: async () => { const m = await menuIndex((await getSettingsData()) || {}, clock()); if (!m) return null; const by = {}; for (const i of m.items) if (i.byWeight && Array.isArray(i.weights) && i.weights.length) by[String(i.id)] = i.weights; return by; } });      // السلات الجاهزة (نفس الطلب الأخير؛ ومساعد الطلبات بعدين)
   const llm = deps.llm || null;      // wabotllm.classify — تصنيف بس
   const aicost = makeAiCost({ pool, sendSms: deps.sendSms || null, now: deps.now || (() => new Date()) });   // كل نداء للموديل بيتسجّل بتكلفته + السقف
   /* مساعد الطلبات: المخزن (الجلسة، سجل الأدوار، الاقتراحات) ونداء الموديل. الحلقة نفسها بتتركّب تحت بعد الأدوات. */
