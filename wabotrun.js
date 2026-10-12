@@ -343,6 +343,7 @@ export const TEXTS = Object.freeze({
   transfer_note: t("سطر للعميل: الكاشير حوّل المحادثة للمدير (ST2)", "حوّلت محادثتك لمدير الفرع، ويكمل معك هنا 🙏", "I've passed your chat to the branch manager, who will continue with you here 🙏", [], [], 300),
   handover_note: t("متابعة للعميل: الموظف اتأخر (مرة واحدة)", "نعتذر عن التأخير 🙏 نبّهنا الفريق مرة ثانية ويرد عليك موظف هنا.", "Sorry for the wait 🙏 We've alerted the team again and a staff member will reply here.", [], [], 300),
   handover_note_assist: t("متابعة للعميل: الموظف اتأخر، والمساعد معاه", "نعتذر عن التأخير 🙏 نبّهنا الفريق مرة ثانية ويرد عليك موظف هنا.\nوأنا معك لو تحتاج شي في المنيو أو الطلب.", "Sorry for the wait 🙏 We've alerted the team again and a staff member will reply here.\nMeanwhile I'm here for anything about the menu or your order.", [], [], 300),
+  call_line: t("رقم المطعم تحت سطر التحويل لموظف", "أو اتصل على {phone}", "Or call us on {phone}", ["phone"], [], 100),
   when_open: t("سطر «الرد قريب» (في الدوام بس)", "يرد عليك موظف هنا في أقرب وقت، وأنا أترك المحادثة له.", "A staff member will reply here shortly, and I'll leave the chat to them.", [], [], 200),
   wait_line: t("سطر «الرد لما نفتح»", "المطعم مقفل الحين. يرد عليك موظف هنا أول ما نفتح {opens}، وأنا أترك المحادثة له.", "We're closed now. A staff member will reply here once we open {opens}, and I'll leave the chat to them.", ["opens"], [], 200),
   paused_delivery: t("سطر «التوصيل متوقف»", "⚠️ التوصيل متوقف مؤقتاً، والاستلام من الفرع متاح.", "⚠️ Delivery is paused for now; pickup from the branch is available.", [], [], 200),
@@ -781,7 +782,7 @@ export const SCHEMA = Object.freeze({
   disclosureMode: S("greeting", "enum", "طريقة التعريف في أول المحادثة", "persona = المساعد بيعرّف نفسه باسمه مرة واحدة في أول رسالة («معك … المساعد الرقمي لفريش كاتس») ومفيش سطر «رد آلي» تحت الرسايل؛ كلمة «موظف» شغّالة دايماً وبتتذكر وقت ما تفيد. classic = السطر القديم «معك المساعد الآلي… اكتب: موظف» وسطر التذييل حسب الإعداد اللي تحت. في الحالتين: لو العميل سأل «انت بوت؟» بيتقال له بصراحة.", { options: ["persona", "classic"] }),
   disclosureHours: S("greeting", "number", "التعريف يتكرر كل", "التعريف بيتقال في أول رد في المحادثة، ويتكرر بعد المدة دي.", { min: 1, max: 168, unit: "ساعة" }),
   footerMode: S("greeting", "enum", "سطر «للرجوع… أو موظف» تحت الرسايل (وضع classic بس)", "كل رسالة / ذكي: الرسالة الغير مفهومة والأزرار اللي مافيهاش زر رجوع أو موظف (أول رسالة فيها التعريف فمش محتاجاه) / أول رسالة بس.", { options: ["always", "smart", "first"] }),
-  publicPhone: S("greeting", "phone", "رقم المطعم في التعريف", "فاضي = الرقم المكتوب في سؤال «كيف أتواصل» في الأسئلة الشائعة."),
+  publicPhone: S("greeting", "phone", "رقم المطعم (بيتقال عند التحويل لموظف)", "بيتكتب تحت سطر «يرد عليك موظف…» في أي تحويل لموظف، ومش في أي رسالة تانية (وفي وضع classic في سطر التعريف كمان). فاضي = الرقم المكتوب في سؤال «كيف أتواصل» في الأسئلة الشائعة."),
   humanPauseMin: S("staff", "number", "سكوت البوت بعد رد الموظف", "من آخر رسالة للموظف من موبايل المطعم، في وقت الدوام.", { min: 1, max: 720, unit: "دقيقة" }),
   staffWaitMin: S("staff", "number", "انتظار الموظف قبل ما البوت يرد", "العميل كتب وقت السكوت والموظف ماردّش: البوت يرد بعد المدة دي (أسئلة مفهومة بس).", { min: 1, max: 15, unit: "دقيقة" }),
   closedEchoPauseMin: S("staff", "number", "سكوت البوت لو الموظف رد والمطعم مقفول", "سكوت قصير بس.", { min: 0, max: 120, unit: "دقيقة" }),
@@ -939,7 +940,9 @@ export function buildReply(key, c) {
   // في الدوام: «يرد عليك في أقرب وقت». مقفول: ميعاد الفتح الحقيقي. حالة المواعيد مش معروفة: ولا وعد.
   /* مع مساعد الطلبات شغّال للعميل ده (data.assistOn) والتحويل مش شكوى/مشكلة/تعديل: المساعد مابيسيبش المحادثة — «وأنا معك لو تحتاج شي ثاني». */
   const softWait = Boolean(data.assistOn) && !["complaint", "problem", "change"].includes(key) && !(key === "dishfact" && c.arg && c.arg.id == null);
-  const wait = () => (data.open && data.open.open === true ? T(softWait ? "when_open_assist" : "when_open") : closedLine(cfg, lang, data, softWait ? "wait_line_assist" : "wait_line"));
+  /* PS1b (عمر ١٣/١٠: «الرقم يتقال عند التحويل لموظف بس»): سطر الانتظار في أي تحويل لموظف بينتهي برقم المطعم — من إعداد الرقم (publicPhone، وإلا رقم «كيف أتواصل» في الأسئلة الشائعة). مفيش رقم ⇒ مفيش سطر. */
+  const callLine = () => { try { const phone = publicPhoneOf(cfg, data.settings); return phone ? `\n${fill("call_line", textOf(cfg, "call_line", lang), { phone })}` : ""; } catch { return ""; } };
+  const wait = () => `${data.open && data.open.open === true ? T(softWait ? "when_open_assist" : "when_open") : closedLine(cfg, lang, data, softWait ? "wait_line_assist" : "wait_line")}${callLine()}`;
   const order = data.order || null;
   const withLink = (k, vars, ctaKey) => { const slug = pickLink(cfg, data, c.referral); return { body: F(k, vars), cta: { title: T(ctaKey), url: linkUrl(slug) }, link: slug }; };
   switch (key) {

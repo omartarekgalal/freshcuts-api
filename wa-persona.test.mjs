@@ -158,3 +158,22 @@ test("delivery_savers through the loop: the tool reads the real offers, quote, l
   assert.deepEqual(AR.checkReply(`معك حق. عندك حلّين: استلام من الفرع بدون رسوم توصيل، أو ${name} بـ 65 ر.س وتوصيله مجاني بكود FIRST. أيهم يناسبك؟`, { facts, know, lang: "ar", offersSeen: true }).problems, []);
   assert.ok(AR.checkReply(`${name} بـ 55 ر.س وتوصيله مجاني.`, { facts, know, lang: "ar" }).problems.some((p) => p.type === "number_not_from_tools"));
 });
+
+test("the restaurant number is said when a chat is handed to staff, and nowhere else (Omar 13/10); it comes from the phone setting, never from the code", () => {
+  const now = new Date("2026-10-12T15:00:00Z");
+  const run = (text, waBot, settings = {}, open = true) => { const cfg = R.botConfig({ waBot: { mode: "live", liveScope: "all", ...waBot }, ...settings }); const ev = { phone: PHONE, text, type: "text", at: now.toISOString() };
+    return R.decide(ev, { cfg, now, chat: { last_disclosed_at: now.toISOString() }, lastEchoAt: null, repliesLastHour: 0, data: { settings, open: { open }, hours: null }, cls: R.classify(ev, {}) }); };
+  const body = (d) => { const p = d.payloads[0]; return p.type === "text" ? p.text.body : p.interactive.body.text; };
+  const h = run("ابي اكلم موظف", { publicPhone: "0126001234" });
+  assert.ok(h.handoff); assert.equal(body(h), "أبشر 🙏 حوّلت محادثتك لموظف.\nيرد عليك موظف هنا في أقرب وقت، وأنا أترك المحادثة له.\nأو اتصل على 0126001234");
+  // the number of the storefront's «كيف أتواصل» answer when the bot setting is empty
+  const faq = { storefront: { seo: { faq: [{ q: "كيف أتواصل مع المطعم؟", a: "اتصل على 0546715683" }] } } };
+  assert.match(body(run("الطلب وصل بارد وناقص", {}, faq)), /\nأو اتصل على 0546715683$/);
+  assert.match(body(run("i want to talk to staff", { publicPhone: "0126001234" })), /\nOr call us on 0126001234$/);
+  // no number configured: no line
+  assert.equal(body(run("ابي اكلم موظف", {})), "أبشر 🙏 حوّلت محادثتك لموظف.\nيرد عليك موظف هنا في أقرب وقت، وأنا أترك المحادثة له.");
+  // nowhere else: greeting, who-am-I, unknown, thanks
+  for (const t of ["السلام عليكم", "انت بوت؟", "قفغقف ثقفثق", "شكرا"]) assert.doesNotMatch(JSON.stringify(run(t, { publicPhone: "0126001234" }, faq).payloads || []), /0126001234|0546715683/, t);
+  const first = R.decide({ phone: PHONE, text: "السلام عليكم", type: "text", at: now.toISOString() }, { cfg: R.botConfig({ waBot: { mode: "live", liveScope: "all", publicPhone: "0126001234" } }), now, chat: {}, lastEchoAt: null, repliesLastHour: 0, data: { settings: {}, open: { open: true } }, cls: R.classify({ phone: PHONE, text: "السلام عليكم", type: "text" }, {}) });
+  assert.doesNotMatch(body(first), /0126001234/, "the persona intro carries no phone number");
+});
