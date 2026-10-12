@@ -1,0 +1,58 @@
+{
+ "set": "batch20",
+ "name": "ex4-b5",
+ "over": {
+  "routing": "escalate",
+  "thinking": "adaptive",
+  "effort": "low",
+  "timeoutMs": 60000
+ },
+ "capped": false,
+ "spentRun": 0.4631989999999999,
+ "spentTodayBefore": 32.07247399999997,
+ "cap": 32.8,
+ "conversations": 5,
+ "passed": 5,
+ "failed": [],
+ "customerTurns": 14,
+ "modelTurns": 13,
+ "answeredByAssistant": 13,
+ "rulesOwned": 1,
+ "fallbacks": {},
+ "validatorRetries": 0,
+ "escalations": 1,
+ "costSar": 0.4632,
+ "costPerConversationSar": 0.0926,
+ "costPerModelTurnSar": 0.0356,
+ "latencyMs": {
+  "p50": 3582,
+  "p90": 5392,
+  "max": 5885,
+  "n": 13
+ },
+ "modelCalls": 29,
+ "byModel": {
+  "claude-sonnet-5-5": {
+   "calls": 26,
+   "in": 16892,
+   "out": 2559,
+   "cached": 303367,
+   "sar": 0.4502,
+   "callP50ms": 1704,
+   "callP90ms": 2440
+  },
+  "claude-haiku-5-5": {
+   "calls": 3,
+   "in": 3097,
+   "out": 210,
+   "cached": 30563,
+   "sar": 0.013,
+   "callP50ms": 1191,
+   "callP90ms": 1477
+  }
+ },
+ "failTypes": {},
+ "reviewFlags": {},
+ "text": "conversations 5 · passed 5 · failed 0\ncustomer turns 14: assistant answered 13, rules owned 1, fallbacks {}\nvalidator retries 0 · escalations fast→strong 1 · model calls 29\ncost 0.4632 SAR (0.0926 per conversation, 0.0356 per model turn)\nlatency per answered turn: p50 3582 ms · p90 5392 ms · max 5885 ms (n=13)\nby model {\"claude-sonnet-5-5\":{\"calls\":26,\"in\":16892,\"out\":2559,\"cached\":303367,\"sar\":0.4502,\"callP50ms\":1704,\"callP90ms\":2440},\"claude-haiku-5-5\":{\"calls\":3,\"in\":3097,\"out\":210,\"cached\":30563,\"sar\":0.013,\"callP50ms\":1191,\"callP90ms\":1477}}\nfail types {}\nreview flags {}",
+ "markdown": "# Assistant evaluation: ex4-b5\n\n```\nconversations 5 · passed 5 · failed 0\ncustomer turns 14: assistant answered 13, rules owned 1, fallbacks {}\nvalidator retries 0 · escalations fast→strong 1 · model calls 29\ncost 0.4632 SAR (0.0926 per conversation, 0.0356 per model turn)\nlatency per answered turn: p50 3582 ms · p90 5392 ms · max 5885 ms (n=13)\nby model {\"claude-sonnet-5-5\":{\"calls\":26,\"in\":16892,\"out\":2559,\"cached\":303367,\"sar\":0.4502,\"callP50ms\":1704,\"callP90ms\":2440},\"claude-haiku-5-5\":{\"calls\":3,\"in\":3097,\"out\":210,\"cached\":30563,\"sar\":0.013,\"callP50ms\":1191,\"callP90ms\":1477}}\nfail types {}\nreview flags {}\n```\n\n## Conversations\n\n### PASS · location-in-range-quote (location share in range) · 0.1308 SAR\n\n- **العميل:** ابي بوكس البرجر لشخصين، الاثنين برجر لحم كلاسيك\n  - **المساعد** (strong, 5366 ms, 0.0584 SAR, tools: get_box, preview_cart): بوكس البرجر لشخصين بـ 65 ر.س، وفيه برجر لحم كلاسيك مرتين، بطاطس عدد ٢، حلقات بصل، تشيز فرايز ومشروبين غازيين. وطلبك الأول عليه توصيل مجاني، لأن مجموعه فوق 60 ر.س. توصيل ولا استلام؟\n- **العميل:** [location]\n  - **المساعد** (strong, 5392 ms, 0.0348 SAR, tools: quote_delivery): نوصل لموقعك. رسوم التوصيل لطلب بقيمة 65 ر.س هي 15 ر.س. وبما أن هذا أول طلب لك ومجموعه فوق 60 ر.س، فعليه عرض التوصيل المجاني. أجهّز لك السلة بالتوصيل؟\n- **العميل:** تمام توصيل، جهز السلة\n  - **المساعد** (strong, 3582 ms, 0.0376 SAR, tools: build_cart, cart 65 delivery): سلتك: بوكس البرجر لشخصين (برجر لحم كلاسيك + برجر لحم كلاسيك، بطاطس عدد ٢، حلقات بصل، تشيز فرايز، مشروبين غازيين) = 65 ر.س. اضغط الزر، حدّد موقعك وادفع 👇\n\n### PASS · upsell-accepted (upsell accepted) · 0.1024 SAR\n\n- **العميل:** ابي كريب ميكس لحوم\n  - **المساعد** (strong, 3661 ms, 0.0487 SAR, tools: search_menu, preview_cart): كريب ميكس لحوم بـ 30 ر.س. تحب أضيف لك مشروبات غازية بـ 3 ر.س؟\n- **العميل:** ايوه ضيفه\n  - **المساعد** (strong, 2446 ms, 0.0243 SAR, tools: note_suggestion): تمام، أضفت المشروبات الغازية. توصيل ولا استلام؟\n- **العميل:** استلام\n  - **المساعد** (strong, 3279 ms, 0.0294 SAR, tools: build_cart, cart 33 pickup): سلتك (استلام): ⏎ كريب ميكس لحوم = 30 ر.س ⏎ مشروبات غازية = 3 ر.س ⏎ المجموع: 33 ر.س ⏎ اضغط الزر وكمّل طلبك وادفع 👇\n\n### PASS · stop-opt-out (stop / opt-out) · 0.0088 SAR\n\n- **العميل:** وش عندكم بيتزا؟\n  - **المساعد** (fast, 2710 ms, 0.0088 SAR, tools: search_menu): عندنا بيتزا بأسعار من 20 ر.س، منها: ⏎ مارجريتا بـ 20 ر.س ⏎ كواترو تشيز بـ 25 ر.س ⏎ بيتزا تشيكن باربكيو بـ 28 ر.س ⏎  ⏎ تحب أي نوع منها؟\n- **العميل:** إيقاف\n  - _بوت القواعد_ (rules:stop)\n\n### PASS · crepe-duo-box-choices-notes (box choices with notes (Gulf)) · 0.1297 SAR\n\n- **العميل:** ابغى بوكس الكريب لشخصين\n  - **المساعد** (strong↑, 5885 ms, 0.0525 SAR, tools: get_box): بوكس الكريب لشخصين بـ 65 ر.س: كريبين من اختيارك + تشيز فرايز + صنف جانبي + مشروبين غازيين. ⏎ الكريبات المتاحة: سوبر كرانشي، زنجر سوبريم، ميكس لحوم، ميكس دجاج، شيش طاووق، ستربس، فاهيتا دجاج. ⏎ وش الكريب الأول والثاني؟\n- **العميل:** كريب زنجر سوبريم وكريب ميكس دجاج، والجانبي دوريتوس، والزنجر بدون مخلل لو سمحت\n  - **المساعد** (strong, 3952 ms, 0.0369 SAR, tools: preview_cart): تمام، البوكس بـ 65 ر.س: كريب زنجر سوبريم (بدون مخلل) + كريب ميكس دجاج + تشيز فرايز + دوريتوس + مشروبين غازيين. ⏎ توصيل ولا استلام؟\n- **العميل:** توصيل\n  - **المساعد** (strong, 4456 ms, 0.0403 SAR, tools: build_cart, cart 65 delivery): سلتك: بوكس الكريب لشخصين: كريب زنجر سوبريم (بدون مخلل)، كريب ميكس دجاج، تشيز فرايز، دوريتوس، مشروبين غازيين = 65 ر.س. ⏎ وعندك عرض أول طلب: توصيل مجاني بكود FIRST لأن الطلب فوق 60 ر.س. ⏎ اضغط الزر، حدّد موقعك وادفع 👇\n\n### PASS · apps-comparison-and-delivery-fee (delivery apps comparison / typos) · 0.0915 SAR\n\n- **العميل:** ليش اطلب من موقعكم وانتو موجودين بهنقرستيشن؟ ارخص يعني؟\n  - **المساعد** (strong, 2659 ms, 0.0331 SAR, tools: faq): نعم، تجدنا على كيتا وهنقرستيشن ونينجا. ⏎ والطلب من موقعنا freshcuts.sa بسعر المطعم نفسه، وأسعار الأصناف في التطبيقات أعلى. ⏎ وأول طلب توصيل من الموقع توصيله مجاني للطلبات من 60 ر.س بكود FIRST.\n- **العميل:** وكم رسوم التوصيل عندكم\n  - **المساعد** (strong, 1613 ms, 0.0136 SAR): رسوم التوصيل تعتمد على موقعك وعلى قيمة الطلب. شاركنا موقعك هنا في واتساب (📎 ثم «الموقع») وأقول لك الرسوم بالضبط.\n- **العميل:** ابغا بيتزا تشكن رانش كم سعرها\n  - **المساعد** (strong, 3416 ms, 0.0447 SAR, tools: search_menu, preview_cart): بيتزا تشيكن رانش بـ 28 ر.س. ⏎ تحب أضيف لك مشروبات غازية بـ 3 ر.س؟\n"
+}

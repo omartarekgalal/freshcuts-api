@@ -1,0 +1,58 @@
+{
+ "set": "ex4",
+ "name": "ex4-first",
+ "over": {
+  "routing": "escalate",
+  "thinking": "adaptive",
+  "effort": "low",
+  "timeoutMs": 60000
+ },
+ "capped": false,
+ "spentRun": 0.139606,
+ "spentTodayBefore": 31.932867999999974,
+ "cap": 32.3,
+ "conversations": 2,
+ "passed": 2,
+ "failed": [],
+ "customerTurns": 3,
+ "modelTurns": 2,
+ "answeredByAssistant": 2,
+ "rulesOwned": 1,
+ "fallbacks": {},
+ "validatorRetries": 0,
+ "escalations": 0,
+ "costSar": 0.1396,
+ "costPerConversationSar": 0.0698,
+ "costPerModelTurnSar": 0.0698,
+ "latencyMs": {
+  "p50": 4236,
+  "p90": 4236,
+  "max": 4236,
+  "n": 2
+ },
+ "modelCalls": 4,
+ "byModel": {
+  "claude-haiku-5-5": {
+   "calls": 1,
+   "in": 13516,
+   "out": 48,
+   "cached": 0,
+   "sar": 0.0052,
+   "callP50ms": 1936,
+   "callP90ms": 1936
+  },
+  "claude-sonnet-5-5": {
+   "calls": 3,
+   "in": 14821,
+   "out": 176,
+   "cached": 22251,
+   "sar": 0.1344,
+   "callP50ms": 1064,
+   "callP90ms": 2134
+  }
+ },
+ "failTypes": {},
+ "reviewFlags": {},
+ "text": "conversations 2 · passed 2 · failed 0\ncustomer turns 3: assistant answered 2, rules owned 1, fallbacks {}\nvalidator retries 0 · escalations fast→strong 0 · model calls 4\ncost 0.1396 SAR (0.0698 per conversation, 0.0698 per model turn)\nlatency per answered turn: p50 4236 ms · p90 4236 ms · max 4236 ms (n=2)\nby model {\"claude-haiku-5-5\":{\"calls\":1,\"in\":13516,\"out\":48,\"cached\":0,\"sar\":0.0052,\"callP50ms\":1936,\"callP90ms\":1936},\"claude-sonnet-5-5\":{\"calls\":3,\"in\":14821,\"out\":176,\"cached\":22251,\"sar\":0.1344,\"callP50ms\":1064,\"callP90ms\":2134}}\nfail types {}\nreview flags {}",
+ "markdown": "# Assistant evaluation: ex4-first\n\n```\nconversations 2 · passed 2 · failed 0\ncustomer turns 3: assistant answered 2, rules owned 1, fallbacks {}\nvalidator retries 0 · escalations fast→strong 0 · model calls 4\ncost 0.1396 SAR (0.0698 per conversation, 0.0698 per model turn)\nlatency per answered turn: p50 4236 ms · p90 4236 ms · max 4236 ms (n=2)\nby model {\"claude-haiku-5-5\":{\"calls\":1,\"in\":13516,\"out\":48,\"cached\":0,\"sar\":0.0052,\"callP50ms\":1936,\"callP90ms\":1936},\"claude-sonnet-5-5\":{\"calls\":3,\"in\":14821,\"out\":176,\"cached\":22251,\"sar\":0.1344,\"callP50ms\":1064,\"callP90ms\":2134}}\nfail types {}\nreview flags {}\n```\n\n## Conversations\n\n### PASS · ex4-offers-back-how (resubscribe) · 0.0052 SAR\n\n- **العميل:** لو سمحت وقفت رسايل العروض بالغلط قبل شوي، كيف ارجعها؟\n  - **المساعد** (fast, 1963 ms, 0.0052 SAR): تقدر تكتب «اشتراك» لترجع رسائل العروض، و«إيقاف» إذا تبي توقفها.\n\n### PASS · ex4-status-no-order (status only for an open order) · 0.1344 SAR\n\n- **العميل:** ابي بيتزا تشكن رانش\n  - **المساعد** (strong, 4236 ms, 0.1344 SAR, tools: search_menu, preview_cart): بيتزا تشيكن رانش بـ 28 ر.س. تحب أضيف لك مشروبات غازية بـ 3 ر.س؟\n- **العميل:** طيب وطلبي اللي قبل وصل ولا لسه؟\n  - _بوت القواعد_ (rules:status)\n"
+}

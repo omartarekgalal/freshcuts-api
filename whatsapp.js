@@ -1016,11 +1016,17 @@ export function register(app, ctx, deps = {}) {
       await recordOptIn({ phone: pn, marketing: false, source: "wa_stop" });
       if (intent === "stop_all") await pool.query("UPDATE wa_optins SET stopped_at=NOW() WHERE phone_norm=$1", [pn]).catch(() => {});
       pool.query(
-        `UPDATE cms_contacts SET opted_out_at=COALESCE(opted_out_at, NOW()), optout_source='whatsapp'
-          WHERE phone_norm=$1`, [pn]).catch(() => {});
+        `UPDATE cms_contacts SET optout_source = CASE WHEN opted_out_at IS NULL THEN 'whatsapp' ELSE optout_source END, opted_out_at=COALESCE(opted_out_at, NOW())
+          WHERE phone_norm=$1`, [pn]).catch(() => {});      // EX4: إيقاف قديم من قناة تانية (رابط SMS / موظف) بيفضل بمصدره
     } else if (intent === "start") {
       await recordOptIn({ phone: pn, marketing: true, source: "wa_start" });
       await pool.query("UPDATE wa_optins SET stopped_at=NULL WHERE phone_norm=$1", [pn]).catch(() => {});
+      /* EX4 (١٣/١٠): الإيقاف من واتساب بيعلّم العميل «موقوف» في ملف العملاء كمان (cms_contacts.opted_out_at) والحارس والحملات بيقروه من هناك — و«اشتراك» ماكانتش بتشيله،
+         فالعميل يفضل محجوب عن العروض بعد ما رجع. دلوقتي الرجوع بيشيل الإيقاف اللي **مصدره واتساب بس** (إيقاف من رابط SMS أو من موظف بيفضل زي ما هو) ويتسجّل. */
+      try {
+        const cl = await pool.query("UPDATE cms_contacts SET opted_out_at=NULL, optout_source=NULL, optout_reason=NULL, optout_by=NULL WHERE phone_norm=$1 AND opted_out_at IS NOT NULL AND optout_source='whatsapp' RETURNING 1", [pn]);
+        if (cl.rowCount) await pool.query("INSERT INTO cms_optout_log(phone_norm, action, source) VALUES ($1,'resubscribe','whatsapp')", [pn]).catch(() => {});
+      } catch { /* ملف العملاء مش موجود في البيئة دي */ }
     }
   }
 

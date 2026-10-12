@@ -58,6 +58,7 @@ export const MODES = ["off", "dry", "test", "live"];
 export const DEFAULTS = Object.freeze({
   mode: "off",
   testPhones: [],              // 5XXXXXXXX — من اللوحة فقط
+  autoEchoSkipCovered: false,  // EX4 (عمر ١٣/١٠): true = البوت مايردش على تحية/«كيف أطلب»/عروض لو رد التطبيق الآلي غطّاها (وبيستنى autoEchoMaxSec). الافتراضي: البوت يرد عادي وفوراً
   autoEchoMaxSec: 8,           // M1: صدى من موبايل المطعم خلال الثواني دي من رسالة العميل (ونصه ٢٥ حرف+) = رد آلي من تطبيق واتساب بزنس، مش موظف. ٠ = كل صدى موظف
   neverReplyPhones: [],        // M5: أرقام البوت مايردش عليها أبداً (مش عملاء: موظف، مورّد، مندوب، طالب وظيفة) — 5XXXXXXXX
   liveScope: "all",            // M5: في وضع live — ads = محادثات الإعلانات بس · new = الإعلانات + الأرقام الجديدة (مالهاش رسايل قبل liveSince) · all = الكل. أرقام التجربة دايماً جوّه
@@ -170,8 +171,8 @@ export const TEXTS = Object.freeze({
   status_found: t("حالة الطلب", "طلبك رقم {order_no}: {status}", "Order {order_no}: {status}", ["order_no", "status"]),
   status_late: t("حالة طلب متأخر", "طلبك رقم {order_no}: {status}\nنعتذر عن التأخير 🙏 بلّغت الفريق يتابعه معك.\n{wait}",
     "Order {order_no}: {status}\nSorry for the delay 🙏 I've asked the team to follow it up with you.\n{wait}", ["order_no", "status"], ["wait"]),
-  status_none: t("مافيه طلب على الرقم", "ما لقيت طلب حديث من موقعنا على رقمك هذا 🙏\nحوّلت محادثتك لموظف يتأكد لك.\n{wait}",
-    "I couldn't find a recent website order on this number 🙏\nI've passed your chat to a staff member to check.\n{wait}", [], ["wait"]),
+  status_no_open: t("سأل عن طلبه ومافيش طلب مفتوح على رقمه", "ما فيه طلب مفتوح على رقمك هذا الحين.\nتبي تطلب، أو أحوّلك لموظف؟", "There is no open order under this number right now.\nWould you like to order, or talk to a staff member?"),
+  status_last_closed: t("سطر آخر طلب مقفول (تحت «ما فيه طلب مفتوح»)", "آخر طلب لك {order_no}: {status}", "Your last order {order_no}: {status}", ["order_no", "status"]),
   complaint_known: t("شكوى (الطلب معروف)", "نعتذر منك على اللي صار 🙏\nحوّلت محادثتك لمدير الفرع.\nطلبك رقم {order_no} قدّامنا.\n{wait}",
     "We're sorry about that 🙏\nI've passed your chat to the branch manager.\nWe have your order {order_no} in front of us.\n{wait}", ["order_no"], ["wait"]),
   complaint_ask: t("شكوى (نطلب رقم الطلب)", "نعتذر منك على اللي صار 🙏\nحوّلت محادثتك لمدير الفرع.\nلو تكرّمت اكتب رقم الطلب (يبدأ بحرف W) عشان نخدمك أسرع.\n{wait}",
@@ -208,14 +209,15 @@ export const TEXTS = Object.freeze({
   handoff_remind: t("تذكير: المحادثة عند الموظف (مرة واحدة)", "محادثتك عند الموظف 🙏\n{wait}", "Your chat is with our staff 🙏\n{wait}", [], ["wait"]),
   thanks: t("شكر / وداع", "العفو، حيّاك الله 🌟", "You're welcome 🌟"),
   /* «إيقاف» = كل رسايلنا المبادِرة (العروض وتحديثات الطلب) — حارس الإرسال بيسكّت كل القوالب. الرد على سؤاله في المحادثة شغّال. */
-  stop: t("تأكيد إيقاف العروض (ومعاه زر إيقاف تحديثات الطلب)", "تم إيقاف العروض ✅ تحديثات طلباتك مستمرة. تبي نوقفها أيضاً؟", "Offers stopped ✅ Your order updates continue. Stop those too?"),
+  stop: t("تأكيد إيقاف العروض (ومعاه زر الرجوع وزر إيقاف تحديثات الطلب)", "تم إيقاف العروض ✅ تحديثات طلباتك مستمرة.\nضغطت بالغلط؟ اضغط «رجّع العروض». وللرجوع في أي وقت اكتب: اشتراك", "Offers stopped ✅ Your order updates continue.\nTapped by mistake? Press «Offers back on». To come back any time, type: start"),
+  btn_stop_undo: t("زر: رجّع العروض (تراجع عن الإيقاف)", "↩️ رجّع العروض", "↩️ Offers back on", [], [], LIMITS.btnTitle),
   stop_updates: t("تأكيد إيقاف تحديثات الطلب كمان (ومعاه زرارين للرجوع)", "تم ✅ أوقفنا تحديثات الطلب أيضاً.\nلو سألت عن طلبك هنا نرد عليك عادي.\nغيّرت رأيك؟ اختر من الأزرار 👇", "Done ✅ Order updates are stopped too.\nIf you ask about your order here we still answer.\nChanged your mind? Pick below 👇"),
   btn_stop_updates: t("زر: أوقف تحديثات الطلب", "أوقف تحديثات الطلب", "Stop order updates", [], [], LIMITS.btnTitle),
   btn_ok: t("زر: تمام", "تمام", "OK", [], [], LIMITS.btnTitle),
   cancel_what: t("«الغاء / وقف» لوحدها: نسأل قصده إيه", "تبي تلغي طلبك، ولا توقف رسائلنا؟ اختر 👇", "Do you want to cancel your order, or stop our messages? Pick below 👇"),
   repeat_short: t("نفس السؤال اتكرر فوراً: رد قصير بزر موظف", "نفس المعلومة 👆 تبي أحوّلك لموظف؟", "Same answer as above 👆 Shall I pass you to a staff member?"),
   other_city: t("عميل من مدينة تانية", "نحن في جدة، حي السلامة، والتوصيل داخل جدة فقط.", "We are in Jeddah (Al Salamah) and deliver inside Jeddah only."),
-  delivery_time: t("مدة التوصيل (من غير دقايق)", "الوقت يختلف حسب المسافة والزحمة، ويظهر لك تقدير قبل الدفع. أرسل موقعك 📍 وأشيك لك.", "The time depends on distance and traffic, and you see an estimate before paying. Share your location 📍 and I will check."),
+  delivery_time: t("مدة التوصيل (من غير دقايق)", "الوقت يختلف حسب المسافة والزحمة. أرسل موقعك 📍 وأتأكد لك من التغطية والرسوم.", "The time depends on distance and traffic. Share your location 📍 and I will check coverage and the fee for you."),
   payment_no_cash_transfer: t("سؤال «ادفع تحويل / كاش؟»: السطر الأول (قرار المالك)", "الدفع أونلاين من موقعنا عند إتمام الطلب، وما نستقبل تحويل بنكي أو كاش عبر المحادثة.", "Payment is online on our website when you place the order; we do not take bank transfers or cash through the chat."),
   whoami: t("«انت بوت؟ / مين معي»: سطر التعريف + القائمة", "{who}\nاختر اللي تبيه 👇", "{who}\nPick what you need 👇", ["who"]),
   btn_cancel_order: t("زر: إلغاء طلبي", "إلغاء طلبي", "Cancel my order", [], [], LIMITS.btnTitle),
@@ -367,7 +369,7 @@ export const TREE_KEYS = ["repeat_short", "other_city", "delivery_time", "whoami
 export const REPLY_KEYS = ["greet", "menu", "order", "offers", "delivery", "hours", "location", "payment", "status", "complaint", "problem", "change", "human", "staff", "media", "unknown", "thanks", "stop", "start"];
 const HANDOFF_KEYS = { custom_offer: ["custom_offer", "normal"], complaint: ["complaint", "urgent"], problem: ["problem", "urgent"], change: ["order_change", "urgent"], human: ["asked_human", "normal"], staff: ["needs_staff", "normal"], media: ["media", "normal"] };
 const BUTTON_IDS = { "bot:menu": "main", "bot:status": "status", "bot:human": "human", "optin:yes": "optin_yes", "optin:no": "optin_no", "resume:all": "resume_all", "resume:updates": "resume_updates", "re:last": "reorder", "bot:custom": "custom_offer",
-  "cw:order": "change", "cw:stop": "stop", "stop:updates": "stop_updates", "stop:ok": "ack" };      // M2: «الغاء» لوحدها ⇒ سؤال بزرارين؛ الإيقاف ⇒ العروض بس + زر تحديثات الطلب
+  "cw:order": "change", "cw:stop": "stop", "stop:updates": "stop_updates", "stop:ok": "ack", "stop:undo": "start" };      // M2: «الغاء» لوحدها ⇒ سؤال بزرارين؛ الإيقاف ⇒ العروض بس + زر تحديثات الطلب
 const MENU_IDS = { main: "main", boxes: "boxes", cats: "cats", offers: "offers", delivery: "delivery", pickup: "pickup", status: "status", hours: "hoursloc", location: "location", packs: "packs", pay: "payment", human: "human", channel: "channel" };
 const IGNORED_TYPES = new Set(["reaction", "sticker", "unsupported", "system", "ephemeral", "request_welcome", "order"]);
 const MEDIA_TYPES = new Set(["image", "audio", "voice", "video", "document", "contacts", "location"]);
@@ -465,6 +467,7 @@ export function botConfig(settings) {
     reorderMinTotal: num(x.reorderMinTotal, 0, 500, DEFAULTS.reorderMinTotal), reorderLookback: num(x.reorderLookback, 1, 10, DEFAULTS.reorderLookback),
     maxAgeMinutes: num(x.maxAgeMinutes, 1, 120, DEFAULTS.maxAgeMinutes),
     sameTextSeconds: num(x.sameTextSeconds, 0, 120, DEFAULTS.sameTextSeconds),
+    autoEchoSkipCovered: x.autoEchoSkipCovered === true,
     autoEchoMaxSec: num(x.autoEchoMaxSec, 0, ECHO.maxSecLimit, DEFAULTS.autoEchoMaxSec),
     neverReplyPhones: [...new Set((Array.isArray(x.neverReplyPhones) ? x.neverReplyPhones : []).map(phNorm).filter((p) => /^5\d{8}$/.test(p)))].slice(0, 500),
     liveScope: LIVE_SCOPES.includes(x.liveScope) ? x.liveScope : DEFAULTS.liveScope,
@@ -538,7 +541,7 @@ export function configFromBody(b, prev = {}) {
     "handoverRealertMin", "handoverCustomerNoteMin", "greetWindowHours", "maxAgeMinutes", "sameTextSeconds", "autoEchoMaxSec", "mediaFloodCount", "mediaFloodMinutes", "mediaFloodMuteHours", "maxRepliesPerHour", "maxTapsPerHour", "maxRepliesPerMinute", "orderLookbackHours", "lateAfterMinutes", "maxAlertsPerHour"]) {
     if (k in src) { if (Number.isFinite(Number(src[k])) && src[k] !== "" && src[k] !== null) out[k] = Number(src[k]); else errors.push(k); }
   }
-  for (const k of ["interactive", "staffAlert", "alertInTest", "handoverAckNeedsReply", "reorderEnabled", "dishFactsEnabled"]) if (k in src) out[k] = src[k] === true;
+  for (const k of ["interactive", "staffAlert", "alertInTest", "autoEchoSkipCovered", "handoverAckNeedsReply", "reorderEnabled", "dishFactsEnabled"]) if (k in src) out[k] = src[k] === true;
   if ("llm" in src) {
     const L = src.llm || {}, cur = { ...(prev.llm || {}) };
     if ("enabled" in L) cur.enabled = L.enabled === true;
@@ -733,6 +736,7 @@ export const SCHEMA = Object.freeze({
   mediaFloodCount: S("limits", "number", "سيل صور/ملفات من غير نص: العدد", "العدد ده خلال المدة ⇒ البوت يكتم المحادثة ويحوّلها لموظف مرة واحدة. صفر = مقفول.", { min: 0, max: 50, unit: "ملف" }),
   mediaFloodMinutes: S("limits", "number", "سيل صور/ملفات: خلال", "", { min: 1, max: 30, unit: "دقيقة" }),
   mediaFloodMuteHours: S("limits", "number", "سيل صور/ملفات: مدة الكتم", "", { min: 1, max: 168, unit: "ساعة" }),
+  autoEchoSkipCovered: S("staff", "boolean", "اسكت لو الرد الآلي بتاع تطبيق واتساب رد", "مقفول (الافتراضي): البوت يرد على العميل عادي وفوراً حتى لو تطبيق واتساب بزنس بعت رده الآلي. مفتوح: التحية / «كيف أطلب» / العروض تستنى ثواني، ولو التطبيق رد البوت مايردّش فوقه. في الحالتين الرد الآلي مش بيتحسب «موظف»."),
   autoEchoMaxSec: S("staff", "number", "رد آلي من تطبيق واتساب: خلال كام ثانية", "رسالة طالعة من موبايل المطعم خلال الثواني دي من رسالة العميل (ونصها ٢٥ حرف أو أكتر) بتتحسب رد آلي من التطبيق، مش موظف: البوت مايسكتش بسببها. صفر = كل رسالة من الموبايل = موظف.", { min: 0, max: ECHO.maxSecLimit, unit: "ثانية" }),
   autoEchoTexts: S("staff", "texts", "نصوص الردود الآلية بتاعة التطبيق", "نص مكتوب هنا بالحرف بيتحسب رد آلي لو طلع خلال دقيقة من رسالة العميل، حتى لو قصير."),
   greetScope: S("greeting", "enum", "مين يتحيّى", "كل محادثة جديدة، أو محادثات الإعلانات بس.", { options: ["all", "ads"] }),
@@ -1067,7 +1071,13 @@ export function buildReply(key, c) {
     }
     case "status": {
       if (data.orderDbFailed) throw new DataMissing("orders_db");
-      if (!order) return { body: F("status_none", { wait: wait() }), handoff: ["order_not_found", "normal"] };
+      /* EX4 (عمر ١٣/١٠): حالة الطلب للطلب **المفتوح** بس. مفيش طلب، أو آخر طلب اتسلّم/اتلغى ⇒ سطر صريح + زرارين (القائمة / موظف)، من غير تحويل تلقائي.
+         طلب اترفض واترجّع فلوسه (أو الاسترجاع لسه معلّق) بياخد حالته الحقيقية: ده اللي العميل بيسأل عنه. */
+      if (!order || (ORDER_DONE.has(String(order.status || "")) && !["rejected_refunded", "refund_failed"].includes(String(order.status)))) {
+        const sk0 = order ? orderStatusKey(order) : null, lines0 = T("status_no_open").split("\n");
+        const last = sk0 ? F("status_last_closed", { order_no: order.order_no, status: T(sk0.key) }) : "";
+        return { body: last ? [lines0[0], last, ...lines0.slice(1)].join("\n") : lines0.join("\n"), buttons: [{ id: "bot:menu", title: T("btn_menu") }, { id: "bot:human", title: T("btn_human") }] };
+      }
       const sk = orderStatusKey(order);
       if (!sk) throw new DataMissing(`status:${order.status}`);
       const mins = (data.now.getTime() - Date.parse(order.created_at)) / 60000;
@@ -1108,7 +1118,7 @@ export function buildReply(key, c) {
       return { body: F(key, { wait: wait() }) };
     case "rate": case "rate_burst": return { body: T(key) };
     case "unknown": return { body: T("unknown"), buttons: [{ id: "bot:menu", title: T("btn_main") }, { id: "bot:status", title: T("btn_status") }, { id: "bot:human", title: T("btn_human") }] };
-    case "stop": return { body: T("stop"), buttons: [{ id: "stop:updates", title: T("btn_stop_updates") }, { id: "stop:ok", title: T("btn_ok") }] };
+    case "stop": return { body: T("stop"), buttons: [{ id: "stop:undo", title: T("btn_stop_undo") }, { id: "stop:updates", title: T("btn_stop_updates") }, { id: "stop:ok", title: T("btn_ok") }] };
     case "stop_updates": return { body: T("stop_updates"), buttons: [{ id: "resume:updates", title: T("btn_resume_updates") }, { id: "resume:all", title: T("btn_resume_all") }] };
     case "repeat_short": return { body: T("repeat_short"), buttons: [{ id: "bot:human", title: T("btn_human") }] };
     case "other_city": return { body: T("other_city") };
@@ -1244,6 +1254,10 @@ const EXTRA_INTENTS = [
   [/^(ثواني|ثانيه|ثانيه بس|لحظه|لحظات|دقيقه|دقيقه بس|لحظه بس|ثواني بس|sec|one sec|one moment|wait)$/, "ack", null, "ack"],
   [/^(ما|وش|ايش|ايه|شنو) ?(هو )?اسمك$|^اسمك (ايه|ايش|وش)$|^what('s| is) your name$/, "whoami", null, "who_are_you"],
   [/(مش|مو|ماني|مب|ما) (عارف|عارفه|ادري) (اكل|اطلب|اخذ|اختار) (ايه|ايش|وش|شنو)|^(انا )?(جوعان|جوعانه|جعان|جعانه)$|^(ايش|وش|ايه|شنو) (تقترح|تقترحون|تقترحوا|ترشح|ترشحون|ترشحلي|تنصح|تنصحون)( لي| علي)?$|^(اقترح|رشح|انصحني|اقترحلي|رشحلي)( لي| علي)?( شي| حاجه)?$/, "best", null, "recommend"],
+  /* EX4 (عمر ١٣/١٠: «عملت ايقاف وملقيتش تشغيل»): طلب صريح برجوع العروض ⇒ نفس «اشتراك». الصيغ القصيرة المبهمة («استمرار»، «تشغيل»، «غلطت») في RESUME_SOFT_RE: بس لو هو موقّف فعلاً. */
+  [/^(?:ممكن |لو سمحت )?(?:شغل|شغلو|شغلوا|شغلي|رجع|رجعو|رجعوا|رجعي|رجعلي|رجعولي|ارجع|فعل|فعلو|فعلوا|فعلي|كمل|كملو|كملوا|استمر|استمرو|استمروا)(?: لي| لنا)? (?:ارسال |رسايل |رسائل )?(?:ال)?(?:عروض|اعلانات|رسايل|رسائل|اشتراك|اشعارات)(?: و(?:ال)?(?:عروض|اعلانات|رسايل|رسائل))?(?: لو سمحت)?$|^(?:اشترك|اشتركت|ابي اشترك|ابغى اشترك|عايز اشترك|عاوز اشترك|رجعوني|رجع اشتراكي|subscribe|resubscribe|opt in|turn offers (?:back )?on)$/, "start", null, "resume_request"],
+  /* «وقف العروض / الغوا الرسايل» كانت بتترد عليها بقايمة العروض (اتلقت في EX4): إيقاف صريح. */
+  [/^(?:ممكن |لو سمحت )?(?:وقف|وقفو|وقفوا|وقفي|اوقف|اوقفو|اوقفوا|الغ|الغي|الغو|الغوا|شيل|شيلو|شيلوا|اقفل|اقفلو|اقفلوا|قفل|قفلو|قفلوا)(?: لي| عني)? (?:ارسال )?(?:ال)?(?:عروض|اعلانات|رسايل|رسائل|اشعارات)(?: و(?:ال)?(?:عروض|اعلانات|رسايل|رسائل))?(?: لو سمحت)?$/, "stop", null, "stop_request"],
   /* «محتاجه اعمل اوردر / عايز اطلب / ممكن اطلب» ⇒ كيف أطلب */
   [/^(لو سمحت )?(محتاج|محتاجه|عايز|عايزه|عاوز|عاوزه|ابي|ابغى|ابغي|ودي|حاب|حابه|ممكن|اقدر|كيف) (اعمل|اسوي|اطلب|نطلب|اطلب منكم) ?(اوردر|طلب|order)?( لو سمحت)?$|^(اعمل|اسوي) (اوردر|طلب)$/, "order", null, "how_to_order"],
 ];
@@ -1255,6 +1269,8 @@ export function extraIntent(n) {
   if (CITY_RE.test(s) && !CITY_STREET_RE.test(s)) return ["other_city", null, "other_city"];
   return null;
 }
+/* صيغ قصيرة معناها «رجّع» بس من حد لسه موقّف (خلال ٢٤ ساعة من الإيقاف) — غير كده بتتفهم عادي. */
+export const RESUME_SOFT_RE = /^(?:لا )?(?:استمرار|استمر|استمروا|كمل|كملوا|تشغيل|شغل|شغله|شغلها|شغلوها|غلطت|غلط|بالغلط|ضغطت بالغلط|ضغطت غلط|ضغطت بالخطا|بالخطا|رجعها|رجعه|رجعوها|رجعوه|تراجعت|تراجع|undo|by mistake|continue|resume)(?: لو سمحت)?$/;
 const BARE_CANCEL = new Set(["الغاء", "الغ", "الغي", "الغو", "الغوا", "وقف", "اوقف", "وقفوا", "وقفو", "قف", "كنسل", "كانسل", "كنسلوا", "cancel", "cancel it", "الغاء لو سمحت", "الغي لو سمحت", "ابي الغي", "ابغى الغي"].map((w) => normalize(w)));
 /* الطلب «شغّال» (لسه ممكن يتلغي): مدفوع ولسه ماتسلّمش. */
 const ORDER_DONE = new Set(["delivered", "rejected_refunded", "refund_failed", "expired", "pending_payment", "cancelled", "canceled"]);
@@ -1264,7 +1280,7 @@ export function resolveCancel(cls, data) {
   if (cls && (cls.key === "bill" || cls.key === "eta")) {
     const o2 = data && data.order ? data.order : null;
     if ((o2 && !ORDER_DONE.has(String(o2.status || ""))) || (data && data.orderDbFailed)) return { ...cls, key: "status" };
-    return { ...cls, key: cls.key === "bill" ? "order" : "delivery_time" };
+    return { ...cls, key: cls.key === "bill" ? "order" : "delivery_time" };      // مفيش طلب مفتوح ⇒ مفيش حالة طلب (نفس قاعدة status_no_open)
   }
   if (!cls || cls.key !== "cancel_what") return cls;
   const o = data && data.order ? data.order : null;
@@ -1951,7 +1967,7 @@ export function register(app, ctx, deps = {}) {
       /* M1 — من غير رد مكرر: تطبيق واتساب بزنس بيرد لوحده على التحية / «كيف أطلب» / «وش العرض». لو رده الآلي غطّى الرسالة دي (صدى auto بعدها)، البوت مايردّش فوقه
          (auto_reply_covered). وعشان الصدى ممكن يوصل بعد ويب هوك الرسالة: الرد على التلاتة دول بيتأجّل autoEchoMaxSec ثانية ويتراجع قبل الإرسال.
          بيتطبّق بس لو التطبيق فعلاً بيرد آلي (فيه صدى آلي في آخر ٧ أيام) — غير كده مفيش أي تأخير. الضغطات والأسئلة التانية بتتجاوب فوراً. */
-      if (ok && !afterWait && !ev.autoWaited && !ev.interactiveId && AUTO_COVERED.has(cls.key) && cfg.autoEchoMaxSec > 0 && (cfg.mode === "live" || cfg.mode === "test") && (await autoRepliesActive())) {
+      if (ok && cfg.autoEchoSkipCovered && !afterWait && !ev.autoWaited && !ev.interactiveId && AUTO_COVERED.has(cls.key) && cfg.autoEchoMaxSec > 0 && (cfg.mode === "live" || cfg.mode === "test") && (await autoRepliesActive())) {
         const at = ev.at || now.toISOString();
         const cov = await autoEchoAfter(phone, at);
         if (cov === true) { await finish({ decision: "silent", reason: "auto_reply_covered", key: cls.key }); return; }
@@ -1995,6 +2011,12 @@ export function register(app, ctx, deps = {}) {
       catch (e) {   // مصدر بيانات وقع كله ⇒ بيانات فاضية: أي رد محتاج بيانات هيتحوّل لموظف من نفسه (DataMissing)
         console.error("[wabot] data:", e.message);
         data = { settings, now, bundles: [], policy: null, first: null, loyalty: null, order: null, orderDbFailed: true, links: {}, open: null };
+      }
+      /* EX4: «استمرار / تشغيل / غلطت» من عميل وقّف العروض (أو كل الرسايل) خلال آخر ٢٤ ساعة ⇒ رجوع (نفس «اشتراك»). */
+      if (ok && !afterWait && !ev.interactiveId && !ev.intent && cls.key !== "stop" && RESUME_SOFT_RE.test(normalize(String(ev.text || "")).replace(/[؟?!.،,]+/g, " ").replace(/\s+/g, " ").trim())) {
+        const so = await q("SELECT stopped_at, marketing_off_at FROM wa_optins WHERE phone_norm=$1", [phone]);
+        const offAt = so && so[0] ? Math.max(so[0].marketing_off_at ? new Date(so[0].marketing_off_at).getTime() : 0, so[0].stopped_at ? new Date(so[0].stopped_at).getTime() : 0) : 0;
+        if (offAt && now.getTime() - offAt < 24 * 3600_000) cls = { ...cls, key: "start", arg: null, rawIntent: "resume_after_stop" };
       }
       cls = resolveCancel(cls, data);      // M2: «الغاء» لوحدها + طلب شغّال ⇒ إلغاء طلب (موظف عاجل)
       /* «نفس طلبي الأخير»: السلة الجاهزة بتتعمل هنا (الرابط لازم يكون حقيقي قبل ما الرد يتبني). التجربة الصامتة مابتعملش صف. */
@@ -2072,6 +2094,10 @@ export function register(app, ctx, deps = {}) {
       }
       // «إيقاف/اشتراك» بصياغة أوسع من اللي whatsapp.js بيمسكها ⇒ نطبّقها هنا (حتى لو هنسكت)
       if (d.optout && !ev.intent && !afterWait && typeof wa.applyIntent === "function") { try { await wa.applyIntent(phone, d.optout); } catch (e) { console.error("[wabot] optout:", e.message); } }
+      /* EX4: الرجوع من البوت (زر «رجّع العروض» أو صيغة مكتوبة) طلب صريح من العميل ⇒ صف إثبات تسويقي، زي زر «كل الرسائل والعروض». */
+      if (d.optout === "start" && !ev.intent && !afterWait && d.act === "reply" && cfg.mode !== "dry") {
+        try { await recordWaMarketingBot(pool, { phoneNorm: phone, value: true, text: ev.interactiveId ? `${textOf(cfg, "stop", d.lang === "en" ? "en" : "ar")}\n[${textOf(cfg, "btn_stop_undo", d.lang === "en" ? "en" : "ar")}]` : String(ev.text || "").slice(0, 300), wamid: ev.wamid || null }); } catch (e) { console.error("[wabot] start proof:", e.message); }
+      }
 
       if (d.act === "wait") {
         // رد مؤجّل: صف في القاعدة (بيعيش بعد إعادة التشغيل). وقت التنفيذ كل الشروط بتتراجع من جديد.
@@ -2198,7 +2224,7 @@ export function register(app, ctx, deps = {}) {
         if (echo.length) { await cancel("staff_answered"); continue; }
         if (j.kind === "auto_wait") {      // M1: استنينا الرد الآلي بتاع التطبيق. جه ⇒ مانردّش فوقه. ماجاش ⇒ الرسالة تتعالج عادي من الأول (ev.autoWaited بيمنع انتظار تاني).
           const cov = await autoEchoAfter(j.phone_norm, ev.at || new Date(j.due_at).toISOString());
-          if (cov === true) { await cancel("auto_reply_covered"); continue; }
+          if (cov === true && cfg.autoEchoSkipCovered) { await cancel("auto_reply_covered"); continue; }
           await work({ ...ev, autoWaited: true }, j.log_id, settings, cfg, null);
           await end("done", null); ran++; continue;
         }
@@ -3065,6 +3091,14 @@ export function register(app, ctx, deps = {}) {
     if (on) await q(`UPDATE wa_bot_jobs SET status='cancelled', reason='never_reply', done_at=NOW() WHERE phone_norm=$1 AND status='pending'`, [phone]);
     return { ok: true, phone: `0${phone}`, on: Boolean(on), count: next.length };
   }
+  /* ⇒ null (عميل عادي) أو السبب: never_list / alert_phone / staff / courier. رقم تجربة عمره ما يتستبعد لوحده. */
+  async function neverReplyOf(rawPhone) {
+    const phone = normPh(rawPhone); if (!/^5\d{8}$/.test(phone)) return null;
+    const settings = (await getSettingsData()) || {}, cfg = botConfig(settings);
+    if (cfg.neverReplyPhones.includes(phone)) return "never_list";
+    if (cfg.testPhones.includes(phone)) return null;
+    try { return (await autoNeverMap(settings, cfg)).get(phone) || null; } catch { return null; }
+  }
   app.post("/api/cms/ops/wabot/never-reply", async (c) => {
     const err = await requireAdmin(c); if (err) return err;
     let bd = {}; try { bd = (await c.req.json()) || {}; } catch { bd = {}; }
@@ -3317,5 +3351,5 @@ export function register(app, ctx, deps = {}) {
     return c.json({ ok: r.ok === true, result: r, to: `0${phone}`, template: tpl.name, language: lang });
   });
 
-  return { carts: botCarts, handle, ready, loadData, runDueJobs, muteChat, holdChat, unmuteChat, setNeverReply, stop: () => { if (timer) clearInterval(timer); }, botConfig: async () => botConfig((await getSettingsData()) || {}) };
+  return { carts: botCarts, handle, ready, loadData, runDueJobs, muteChat, holdChat, unmuteChat, setNeverReply, neverReplyOf, stop: () => { if (timer) clearInterval(timer); }, botConfig: async () => botConfig((await getSettingsData()) || {}) };
 }

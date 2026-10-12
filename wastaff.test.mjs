@@ -27,7 +27,7 @@ const call = (app, route, { json = {}, query = {}, param = {} } = {}) => app.rou
   req: { json: async () => { if (json === "BAD") throw new Error("bad"); return json; }, header: () => undefined, query: (n) => query[n], param: (n) => param[n] },
   json: (body, status = 200) => ({ body, status }) });
 
-function world({ settings = {}, optins = {}, inbound = [CUST, TESTER], threads = [CUST, TESTER], portalUser = { id: "p1", name: "سلمى", role: "cashier" }, faq = null } = {}) {
+function world({ settings = {}, optins = {}, inbound = [CUST, TESTER], threads = [CUST, TESTER], portalUser = { id: "p1", name: "سلمى", role: "cashier" }, faq = null, bot = null } = {}) {
   const db = { settings: { notifications: { whatsappEnabled: true }, waMaster: { enabled: true }, waBot: { testPhones: ["0" + TESTER], faq: faq || {} }, ...settings },
     optins: { ...optins }, inbound: [...inbound], msgs: [], staff: [], read: [], sql: [] };
   const pool = { db, async query(sql, p = []) {
@@ -55,7 +55,7 @@ function world({ settings = {}, optins = {}, inbound = [CUST, TESTER], threads =
   const audits = [];
   const app = fakeApp();
   const requirePortal = async (c) => (portalUser ? (portalUser.role === "kitchen" ? { res: c.json({ ok: false, error: "kitchen_only" }, 403) } : { user: portalUser }) : { res: c.json({ ok: false, error: "unauthorized" }, 401) });
-  const st = S.register(app, ctx, { wa, hub: () => hub, requirePortal, audit: (...a) => audits.push(a), keySalt: SALT, log: { error() {} } });
+  const st = S.register(app, ctx, { wa, hub: () => hub, requirePortal, audit: (...a) => audits.push(a), keySalt: SALT, log: { error() {} }, ...(bot ? { bot: () => bot } : {}) });
   return { db, app, st, wa, calls, hubCalls, audits };
 }
 
@@ -192,4 +192,30 @@ test("LR1 portal tick: cashier and manager get the same light answer; the chat k
   assert.equal(b.body.chat, "3.9.0.0"); assert.deepEqual(w.hubCalls.slice(-1)[0], ["tick", CUST]);
   assert.equal((await call(world({ portalUser: { id: "k", name: "مطبخ", role: "kitchen" } }).app, "GET /api/portal/wa/chats-tick", { query: {} })).status, 403);
   assert.equal((await call(world({ portalUser: null }).app, "GET /api/portal/wa/chats-tick", { query: {} })).status, 401);
+});
+
+test("EX4: the manager's «مش عميل» button — POST never-reply is manager only and answers what the bot answers; the chat carries neverReply", async () => {
+  await withEnv(ALLOW, async () => {
+    const calls = []; let listed = false;
+    const bot = { setNeverReply: async (pn, on, who) => { calls.push([pn, on, who]); listed = on; return pn === TESTER ? { ok: false, error: "test_phone", message: "x" } : { ok: true, phone: "0" + pn, on, count: on ? 1 : 0 }; },
+      neverReplyOf: async (pn) => (listed ? "never_list" : pn === TESTER ? "courier" : null) };
+    const m = world({ portalUser: { id: "p2", name: "خالد", role: "manager" }, bot });
+    assert.deepEqual((await call(m.app, "GET /api/portal/wa/chats/:key", { param: { key: keyOf(CUST) } })).body.neverReply, false);
+    const on = await call(m.app, "POST /api/portal/wa/chats/:key/never-reply", { param: { key: keyOf(CUST) }, json: { on: true } });
+    assert.deepEqual([on.status, on.body], [200, { ok: true, phone: "0" + CUST, on: true, count: 1 }]); assert.deepEqual(calls[0], [CUST, true, "خالد (portal)"]);
+    const one = (await call(m.app, "GET /api/portal/wa/chats/:key", { param: { key: keyOf(CUST) } })).body;
+    assert.deepEqual([one.neverReply, one.neverReplyWhy], [true, "never_list"]);
+    const off = await call(m.app, "POST /api/portal/wa/chats/:key/never-reply", { param: { key: keyOf(CUST) }, json: { on: false } });
+    assert.equal(off.body.on, false);
+    const auto = (await call(m.app, "GET /api/portal/wa/chats/:key", { param: { key: keyOf(TESTER) } })).body;
+    assert.deepEqual([auto.neverReply, auto.neverReplyWhy], [false, "courier"], "excluded automatically: shown with its reason, not as the owner's list");
+    assert.equal((await call(m.app, "POST /api/portal/wa/chats/:key/never-reply", { param: { key: keyOf(TESTER) }, json: { on: true } })).status, 400);
+    assert.equal((await call(m.app, "POST /api/portal/wa/chats/:key/never-reply", { param: { key: "nope" }, json: {} })).status, 404);
+    const c = world({ bot });
+    assert.equal((await call(c.app, "POST /api/portal/wa/chats/:key/never-reply", { param: { key: keyOf(CUST) }, json: { on: true } })).status, 403, "the cashier can not");
+    assert.equal((await call(world({ portalUser: null, bot }).app, "POST /api/portal/wa/chats/:key/never-reply", { param: { key: keyOf(CUST) }, json: {} })).status, 401);
+    const nobot = world({ portalUser: { id: "p2", name: "خالد", role: "manager" } });
+    assert.equal((await call(nobot.app, "POST /api/portal/wa/chats/:key/never-reply", { param: { key: keyOf(CUST) }, json: {} })).status, 503);
+    assert.equal((await call(nobot.app, "GET /api/portal/wa/chats/:key", { param: { key: keyOf(CUST) } })).body.neverReply, false);
+  });
 });

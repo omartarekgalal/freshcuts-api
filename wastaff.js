@@ -254,8 +254,25 @@ export function register(app, ctx, deps = {}) {
         const r = await a.h.getThread(pn, { limit: c.req.query("limit"), before: c.req.query("before") || null, full: true, me: a.me });
         if (!r.ok) return c.json(r, 404);
         await annotate(r.messages);
-        return c.json({ ...r, send: await sendStateFor(pn), role: a.user.role });
+        /* EX4: «مش عميل — البوت مايردش عليه» (never_list = من القايمة، والباقي مستبعد لوحده: alert_phone / staff / courier) */
+        let never = null; try { const bt = typeof deps.bot === "function" ? deps.bot() : null; if (bt && typeof bt.neverReplyOf === "function") never = await bt.neverReplyOf(pn); } catch { never = null; }
+        return c.json({ ...r, send: await sendStateFor(pn), role: a.user.role, neverReply: never === "never_list", neverReplyWhy: never });
       } catch (e) { log.error("[wa-staff] chat:", e.message); return c.json({ ok: false, error: "unavailable" }, 500); }
+    });
+    /* EX4: زر المدير «مش عميل — البوت مايردش عليه أبداً» { on } ⇒ إجابة setNeverReply. المدير بس. */
+    app.post("/api/portal/wa/chats/:key/never-reply", async (c) => {
+      const a = await gateP(c); if (a.res) return a.res;
+      if (a.user.role !== "manager") return c.json({ ok: false, error: "forbidden", message: "للمدير بس" }, 403);
+      const pn = await phoneOfKey(c.req.param("key"));
+      if (!pn) return c.json({ ok: false, error: "not_found" }, 404);
+      let b = {}; try { b = (await c.req.json()) || {}; } catch { b = {}; }
+      const bt = typeof deps.bot === "function" ? deps.bot() : null;
+      if (!bt || typeof bt.setNeverReply !== "function") return c.json({ ok: false, error: "bot_unavailable" }, 503);
+      try {
+        const r = await bt.setNeverReply(pn, b.on !== false, `${a.user.name || "manager"} (portal)`);
+        try { deps.audit?.(a.user, "wa_never_reply", null, r.ok, { via: "portal", on: b.on !== false, error: r.ok ? null : r.error }, null, { emit: false }); } catch { /* السجل مايوقّفش */ }
+        return c.json(r, r.ok ? 200 : 400);
+      } catch (e) { log.error("[wa-staff] never-reply:", e.message); return c.json({ ok: false, error: "unavailable" }, 503); }
     });
     app.post("/api/portal/wa/chats/:key/read", async (c) => {
       const a = await gateP(c); if (a.res) return a.res;

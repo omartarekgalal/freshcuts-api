@@ -168,6 +168,7 @@ test("offers, hours, order status: real terms for THIS phone; order status takes
   assert.deepEqual(await t.get_hours(), { ok: true, open_now: true, closes_at: "2 فجراً", opens: null, delivery_paused: false });
   const s = await t.order_status(ME, { phone: "598765432", order_no: "W1790022222222" });
   assert.deepEqual(s.orders, [{ order_no: "W1790011111111", status: "on_the_way", mode: "delivery", total: 110, track_url: "https://freshcuts.sa/track/W1790011111111" }], "arguments from the model are ignored: only the sender's orders");
+  assert.equal(s.has_open_order, true); assert.deepEqual(s.closed, []); assert.equal("note" in s, false);
   assert.equal((await t.order_status("")).error, "no_phone");
 });
 

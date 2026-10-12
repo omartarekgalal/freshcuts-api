@@ -331,7 +331,12 @@ export function makeAssistTools(deps = {}) {
     if (!okPhone(phone)) return { ok: false, error: "no_phone" };
     const r = await q(`SELECT order_no, status, option, total, created_at FROM shop_orders WHERE phone_norm=$1 AND NOT COALESCE(is_test,false) AND status NOT IN ('expired','pending_payment') AND created_at > NOW() - INTERVAL '72 hours' ORDER BY created_at DESC LIMIT 3`, [phone]);
     if (r === null) return unavailable("orders");
-    return { ok: true, orders: r.map((o) => ({ order_no: o.order_no, status: o.status, mode: o.option, total: round2(o.total), track_url: `${STORE}/track/${o.order_no}` })) };
+    /* EX4 (عمر ١٣/١٠): حالة الطلب للطلب المفتوح بس. المقفول (اتسلّم / اتلغى / اترجّع) بيرجع في closed للعلم، ومابيتقالش عنه «في الطريق». */
+    const CLOSED = new Set(["delivered", "rejected_refunded", "refund_failed", "cancelled", "canceled"]);
+    const row = (o) => ({ order_no: o.order_no, status: o.status, mode: o.option, total: round2(o.total), track_url: `${STORE}/track/${o.order_no}` });
+    const open = r.filter((o) => !CLOSED.has(String(o.status))), closed = r.filter((o) => CLOSED.has(String(o.status)));
+    return { ok: true, has_open_order: open.length > 0, orders: open.map(row), closed: closed.slice(0, 2).map(({ order_no, status }) => ({ order_no, status })),
+      ...(open.length ? {} : { note: "No open order under this number. Say so plainly; offer to order, or to type «موظف». Do not describe a closed order as being prepared or on its way." }) };
   }
   async function customer_profile(phone) {
     if (!okPhone(phone)) return { ok: true, profile: { known: false } };

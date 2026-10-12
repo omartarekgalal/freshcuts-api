@@ -181,8 +181,10 @@ function world({ waBot = {}, notifications = { whatsappEnabled: true }, orders =
       if (/^INSERT INTO wa_optins\(phone_norm, updates, marketing, source, order_no, updates_answered_at, updates_version\)/i.test(s)) {   // waconsent.js — the shared consent storage
         const cur = db.optins[p[0]] || {}; db.optins[p[0]] = { updates: p[1], marketing: cur.marketing ?? false, source: p[2], updates_answered_at: iso(), updates_version: p[4] }; return { rows: [] }; }
       if (/^INSERT INTO wa_optin_log/i.test(s) && /'updates'/.test(s)) { db.consentLog.push({ phone_norm: p[0], kind: "updates", value: p[1], text_version: p[2], text: p[3], source: p[4], order_no: p[5], ip: p[6], ua: p[7], at: iso() }); return { rows: [] }; }
-      if (/^INSERT INTO wa_optins/i.test(s)) { const cur = db.optins[p[0]] || {}; db.optins[p[0]] = { ...cur, updates: p[1] ?? cur.updates ?? false, marketing: p[2] ?? cur.marketing ?? false }; return { rows: [] }; }
-      if (/^UPDATE cms_contacts/i.test(s)) { db.optouts.push(p[0]); return { rows: [], rowCount: 1 }; }
+      if (/^INSERT INTO wa_optins/i.test(s)) { const cur = db.optins[p[0]] || {}; db.optins[p[0]] = { ...cur, updates: p[1] ?? cur.updates ?? false, marketing: p[2] ?? cur.marketing ?? false, marketing_off_at: p[2] === false ? (cur.marketing_off_at || iso()) : p[2] === true ? null : (cur.marketing_off_at || null) }; return { rows: [] }; }
+      if (/^UPDATE cms_contacts SET opted_out_at=NULL/i.test(s)) { const had = db.optouts.includes(p[0]) && !(db.smsOptouts || []).includes(p[0]); if (had) db.optouts = db.optouts.filter((x) => x !== p[0]); return { rows: had ? [{}] : [], rowCount: had ? 1 : 0 }; }
+      if (/^INSERT INTO cms_optout_log/i.test(s)) { (db.optoutLog ||= []).push([p[0], /resubscribe/.test(s) ? "resubscribe" : "other"]); return { rows: [], rowCount: 1 }; }
+      if (/^UPDATE cms_contacts/i.test(s)) { if (!db.optouts.includes(p[0])) db.optouts.push(p[0]); return { rows: [], rowCount: 1 }; }
       if (/FROM cms_contacts/i.test(s)) return { rows: [], rowCount: db.optouts.includes(p[0]) ? 1 : 0 };
       if (/^INSERT INTO wa_bot_log/i.test(s)) {
         if (p[0] && db.log.some((l) => l.wamid === p[0])) return { rows: [], rowCount: 0 };
@@ -358,7 +360,10 @@ test("order status: the real status + the order's own tracking link, per order k
   for (const [o, label] of cases) {
     const w = world({ waBot: { mode: "live" }, orders: [o] });
     const r = await w.say("وين طلبي؟");
-    assert.deepEqual(r.sent, [cta(ME, `طلبك رقم W1790011111111: ${label}`, "تتبّع الطلب", "https://freshcuts.sa/track/W1790011111111")], label);
+    if (o.status === "delivered") {      // EX4: a closed order is not «your order status» — one plain line, the last order for reference, two buttons, no handover
+      assert.equal(bodyOf(r.sent[0]), `ما فيه طلب مفتوح على رقمك هذا الحين.\nآخر طلب لك W1790011111111: ${label}\nتبي تطلب، أو أحوّلك لموظف؟`, label);
+      assert.deepEqual(r.sent[0].interactive.action.buttons.map((x) => x.reply.id), ["bot:menu", "bot:human"], label);
+    } else assert.deepEqual(r.sent, [cta(ME, `طلبك رقم W1790011111111: ${label}`, "تتبّع الطلب", "https://freshcuts.sa/track/W1790011111111")], label);
     assert.equal(r.log.handoff, null, label);
   }
 }));
@@ -433,9 +438,9 @@ test("click-to-WhatsApp: the ad is captured on the chat and its replies use the 
 test("«إيقاف» stops marketing (also in looser wording) and is confirmed; order-status questions still get answered", withEnv(LOCKS_OPEN, async () => {
   const w = world({ waBot: { mode: "live" }, orders: [order({ status: "on_the_way" })] });
   const s = await w.say("إيقاف");
-  const STOP = "تم إيقاف العروض ✅ تحديثات طلباتك مستمرة. تبي نوقفها أيضاً؟";
+  const STOP = "تم إيقاف العروض ✅ تحديثات طلباتك مستمرة.\nضغطت بالغلط؟ اضغط «رجّع العروض». وللرجوع في أي وقت اكتب: اشتراك";
   assert.equal(bodyOf(s.sent[0]), STOP);
-  assert.deepEqual(s.sent[0].interactive.action.buttons.map((b) => [b.reply.id, b.reply.title]), [["stop:updates", "أوقف تحديثات الطلب"], ["stop:ok", "تمام"]], "M2: «إيقاف» stops the offers; order updates stop only with the second button");
+  assert.deepEqual(s.sent[0].interactive.action.buttons.map((b) => [b.reply.id, b.reply.title]), [["stop:undo", "↩️ رجّع العروض"], ["stop:updates", "أوقف تحديثات الطلب"], ["stop:ok", "تمام"]], "M2: «إيقاف» stops the offers; order updates stop only with their button. EX4: the first button undoes the stop");
   assert.ok(!w.db.optins["512345678"].stopped_at, "order updates are still on");
   assert.deepEqual(w.db.optouts, ["512345678"]); assert.equal(w.db.optins["512345678"].marketing, false);
   w.clock.advance(1);
@@ -571,17 +576,17 @@ const DISC = "معك المساعد الآلي لفريش كاتس 🤖 للتح
 const mins = (a, b) => Math.round((Date.parse(a) - Date.parse(b)) / 60000);
 const CLOSE_AT = "2026-10-12T23:00:00Z";     // الثلاثاء ٠٢:٠٠ الرياض = قفلة وردية الاثنين
 
-test("order status: never another person's order; no order ⇒ say so plainly and hand over", withEnv(LOCKS_OPEN, async () => {
+test("order status: never another person's order; no open order ⇒ say so plainly with two buttons (order / staff), no automatic handover", withEnv(LOCKS_OPEN, async () => {
   const other = order({ order_no: "W1790099999999", phone_norm: "598765432", status: "on_the_way" });
   const w = world({ waBot: { mode: "live" }, orders: [other] });
   const r = await w.say("وين طلبي W1790099999999");
-  assert.deepEqual(r.sent, [txt(ME, `ما لقيت طلب حديث من موقعنا على رقمك هذا 🙏\nحوّلت محادثتك لموظف يتأكد لك.${SOON}`)]);
+  assert.equal(bodyOf(r.sent[0]), "ما فيه طلب مفتوح على رقمك هذا الحين.\nتبي تطلب، أو أحوّلك لموظف؟");
+  assert.deepEqual(r.sent[0].interactive.action.buttons.map((x) => [x.reply.id, x.reply.title]), [["bot:menu", "🎁 البوكسات والمنيو"], ["bot:human", "👤 كلّم موظف"]]);
   assert.doesNotMatch(JSON.stringify(r.sent), /W1790099999999|الطريق/);
-  assert.equal(r.log.handoff, "order_not_found");
-  assert.equal(w.sms.length, 2);
-  assert.equal(w.sms[0].body, "Fresh Cuts WhatsApp: customer 0512345678 needs staff (order not found). Reply from the restaurant phone.");
-  assert.deepEqual(w.sms.map((s) => s.phoneNorm), ["544775082", "506338246"], "the alert goes to Omar AND the manager");
-  assert.ok(w.sms.every((s) => s.kind === "staff" && s.body.length <= 160));
+  assert.equal(r.log.handoff, null); assert.equal(w.sms.length, 0, "nobody is alerted for «no open order»; the customer has the staff button");
+  w.clock.advance(1);
+  const hu = await w.press("bot:human", "👤 كلّم موظف");
+  assert.equal(hu.log.handoff, "asked_human"); assert.deepEqual(w.sms.map((s) => s.phoneNorm), ["544775082", "506338246"], "the alert goes to Omar AND the manager"); assert.ok(w.sms.every((s) => s.kind === "staff" && s.body.length <= 160));
   const mine = await w.say("وين طلبي", { from: "966598765432" });
   assert.match(mine.sent[0].interactive.body.text, /^طلبك رقم W1790099999999: طلبك مع المندوب وفي الطريق إليك 🛵$/);
 }));
@@ -1092,7 +1097,7 @@ test("rule 4b: with an open complaint the bot answers facts only — no order li
   w.clock.advance(2);
   assert.equal(urlOf((await w.say("وين موقعكم")).sent[0]), "https://maps.google.com/?cid=14767749764292326433");
   w.clock.advance(2);
-  assert.match(bodyOf((await w.say("وين طلبي")).sent[0]), /^طلبك رقم W1790011111111: تم توصيل طلبك ✅$/);
+  assert.match(bodyOf((await w.say("وين طلبي")).sent[0]), /^ما فيه طلب مفتوح على رقمك هذا الحين\.\nآخر طلب لك W1790011111111: تم توصيل طلبك ✅\n/);
   // an open COMPLAINT: no menu, no prices, no promotion. Told once that the chat is with staff (with the reopening time), then quiet
   w.clock.advance(2);
   const rem = await w.say("اسعاركم");
@@ -1254,7 +1259,7 @@ test("Omar's session of 12/10 morning: browsing the tree is never cut off, and a
   assert.deepEqual(seq.slice(7).map((x) => x.slice(1)), [["items", 1, null, null], ["cats", 1, null, null], ["cat", 1, null, null], ["item", 1, null, null]],
     "the tap that was answered «handover rate_limit» that morning is answered with the dish");
   assert.match(bodyOf(dish.sent[0]), /^\*كفتة مشوية بالوزن\*/);
-  assert.equal(w.sms.length, 2, "only the «no order found» handover alerted; the limit alerted nobody");
+  assert.equal(w.sms.length, 0, "EX4: «no open order» is said plainly with two buttons and alerts nobody; the limit alerted nobody either");
   // then a voice note: the bot can not open it ⇒ handover, said plainly
   const voice = await step("voice note", w.say(null, { raw: { type: "audio", audio: { id: "A1" } } }));
   assert.equal(voice.log.handoff, "media"); assert.match(bodyOf(voice.sent[0]), /^ما أقدر أفتح الصور والمقاطع الصوتية/);
@@ -1693,7 +1698,7 @@ test("Omar's «السلام عليكم» of 12/10: one short reply (welcome + ho
 }));
 
 test("«إيقاف»: confirmed with what was stopped and two buttons to turn messages back on; each choice is an explicit, logged consent", withEnv(LOCKS_OPEN, async () => {
-  const STOP = "تم إيقاف العروض ✅ تحديثات طلباتك مستمرة. تبي نوقفها أيضاً؟";
+  const STOP = "تم إيقاف العروض ✅ تحديثات طلباتك مستمرة.\nضغطت بالغلط؟ اضغط «رجّع العروض». وللرجوع في أي وقت اكتب: اشتراك";
   const w = liveWorld({ orders: [order({ status: "on_the_way" })] });
   const s = await w.say("إيقاف");
   assert.equal(bodyOf(s.sent[0]), STOP); assert.equal(R.payloadProblem(s.sent[0]), null);
@@ -3282,8 +3287,18 @@ test("M1 — an auto reply does not silence the bot: the echo is stored as «aut
   assert.equal(h.db.jobs.find((j) => j.kind === "handover_check").reason === "staff_answered", false, "the app's auto reply is not «staff took it»");
 }));
 
-test("M1 — no double reply: once the app is seen auto-replying, greet / order / offers wait autoEchoMaxSec; covered ⇒ silent «auto_reply_covered», not covered ⇒ the bot answers; other questions are never delayed", withEnv(LOCKS_OPEN, async () => {
-  const w = liveWorld({ disclosure: true });
+test("M1 — no double reply (EX4: only when the owner switches autoEchoSkipCovered on): greet / order / offers wait autoEchoMaxSec; covered ⇒ silent «auto_reply_covered», not covered ⇒ the bot answers; other questions are never delayed", withEnv(LOCKS_OPEN, async () => {
+  // the default (Omar 13/10: «خليه العميل يوصل ردود تفاعلية عادي حتى لو وصله ردود تانية»): the bot answers at once, and the auto echo still is not «staff»
+  assert.equal(R.botConfig({}).autoEchoSkipCovered, false); assert.ok(R.SCHEMA.autoEchoSkipCovered.ar);
+  const dflt = liveWorld({ disclosure: true });
+  await dflt.say("مرحبا", { from: "966577777771" }); dflt.clock.advanceSec(2); await dflt.cashier(AUTO_HELLO, "966577777771");
+  assert.equal(dflt.db.msgs.find((m) => m.source === "echo").echo_kind, "auto", "still classified as automatic");
+  dflt.clock.advance(1);
+  const dg = await dflt.say("السلام عليكم"); assert.deepEqual([dg.sent.length, dg.log.decision], [1, "replied"], "no wait");
+  dflt.clock.advanceSec(2); await dflt.cashier(AUTO_HELLO); dflt.clock.advance(1);
+  const dq = await dflt.say("ابي اطلب"); assert.deepEqual([dq.sent.length, dq.log.decision], [1, "replied"], "answered although the app's auto reply went out, and the auto reply did not pause the bot");
+  assert.equal(dflt.db.jobs.filter((j) => j.kind === "auto_wait").length, 0);
+  const w = liveWorld({ disclosure: true, waBot: { autoEchoSkipCovered: true } });
   // before any auto echo was ever seen: no delay at all
   assert.equal((await w.say("السلام عليكم", { from: "966577777770" })).log.decision, "replied");
   // an auto echo is seen once ⇒ from now on a greeting waits
@@ -3314,7 +3329,7 @@ test("M1 — no double reply: once the app is seen auto-replying, greet / order 
   const s = await w.say("السلام عليكم", { from: "966577777775" }); w.clock.advanceSec(6); await w.cashier("هلا", "966577777775"); w.clock.advanceSec(3); await w.tick(0);
   assert.equal(s.log.reason, "staff_answered");
   // autoEchoMaxSec = 0 switches the whole thing off
-  const off = liveWorld({ waBot: { autoEchoMaxSec: 0 } }); await off.say("مرحبا", { from: "966577777771" }); off.clock.advanceSec(2); await off.cashier(AUTO_HELLO, "966577777771");
+  const off = liveWorld({ waBot: { autoEchoMaxSec: 0, autoEchoSkipCovered: true } }); await off.say("مرحبا", { from: "966577777771" }); off.clock.advanceSec(2); await off.cashier(AUTO_HELLO, "966577777771");
   assert.equal(off.db.msgs.find((m) => m.source === "echo").echo_kind, "staff"); off.clock.advance(40);
   assert.equal((await off.say("السلام عليكم")).log.decision, "replied");
 }));
@@ -3333,7 +3348,7 @@ test("M2 — «الغاء» / «وقف» alone are not an opt-out: no recent ord
   // tap «إيقاف الرسائل» ⇒ offers stopped, order updates continue, and a second button to stop those too
   w.clock.advance(1);
   const st = await w.press("cw:stop", "إيقاف الرسائل");
-  assert.equal(bodyOf(st.sent[0]), "تم إيقاف العروض ✅ تحديثات طلباتك مستمرة. تبي نوقفها أيضاً؟");
+  assert.equal(bodyOf(st.sent[0]), "تم إيقاف العروض ✅ تحديثات طلباتك مستمرة.\nضغطت بالغلط؟ اضغط «رجّع العروض». وللرجوع في أي وقت اكتب: اشتراك");
   assert.equal(w.db.optins["512345678"].marketing, false); assert.ok(!w.db.optins["512345678"].stopped_at);
   w.clock.advance(1);
   const ok = await w.press("stop:ok", "تمام"); assert.equal(ok.sent.length, 0); assert.ok(!w.db.optins["512345678"].stopped_at);
@@ -3356,8 +3371,8 @@ test("M2 — opt-out wordings stop the OFFERS only and are never answered with t
   for (const t of ["عندكم عروض؟", "ابي عروض اليوم", "وش العروض"]) assert.equal(R.classify({ text: t, type: "text" }, {}).key, "offers", t);
   const w = liveWorld();
   const r = await w.say("لا ابي عروض");
-  assert.equal(bodyOf(r.sent[0]), "تم إيقاف العروض ✅ تحديثات طلباتك مستمرة. تبي نوقفها أيضاً؟"); assert.equal(r.sent.length, 1);
-  assert.deepEqual(r.sent[0].interactive.action.buttons.map((x) => x.reply.id), ["stop:updates", "stop:ok"]);
+  assert.equal(bodyOf(r.sent[0]), "تم إيقاف العروض ✅ تحديثات طلباتك مستمرة.\nضغطت بالغلط؟ اضغط «رجّع العروض». وللرجوع في أي وقت اكتب: اشتراك"); assert.equal(r.sent.length, 1);
+  assert.deepEqual(r.sent[0].interactive.action.buttons.map((x) => x.reply.id), ["stop:undo", "stop:updates", "stop:ok"]);
   assert.equal(w.db.optins["512345678"].marketing, false); assert.ok(!w.db.optins["512345678"].stopped_at, "order updates continue");
   w.clock.advance(1);
   const u = await w.press("stop:updates", "أوقف تحديثات الطلب");
@@ -3546,7 +3561,7 @@ test("M4: the live-log wordings that used to end in «ما فهمت» or in the 
   // «كم باقي / متى يوصل»: an open order ⇒ its status; none ⇒ the short answer without minutes (not the fee ladder)
   for (const t of ["كم باقي", "متى يوصل", "كم ياخذ التوصيل"]) {
     const r = await liveWorld().say(t);
-    assert.equal(r.log.reply_key, "delivery_time", t); assert.equal(bodyOf(r.sent[0]), "الوقت يختلف حسب المسافة والزحمة، ويظهر لك تقدير قبل الدفع. أرسل موقعك 📍 وأشيك لك.", t); assert.doesNotMatch(bodyOf(r.sent[0]), /\d/, t);
+    assert.equal(r.log.reply_key, "delivery_time", t); assert.equal(bodyOf(r.sent[0]), "الوقت يختلف حسب المسافة والزحمة. أرسل موقعك 📍 وأتأكد لك من التغطية والرسوم.", t); assert.doesNotMatch(bodyOf(r.sent[0]), /\d/, t);
     assert.equal(await keyOf(liveWorld({ orders: [order()] }), t), "status", t);
   }
   // generic wordings from the replay set that used to be «ما فهمت»
@@ -3682,4 +3697,81 @@ test("serious (assistant): another city and «انت بوت؟» are answered by 
   assert.equal(b.log.reply_key, "whoami");
   const AR3 = await import("./waassistrun.js");
   assert.match(AR3.SYSTEM_PROMPT, /deliver inside Jeddah only/); assert.match(AR3.SYSTEM_PROMPT, /Never ask the same question twice/); assert.match(AR3.SYSTEM_PROMPT, /before you say anything about a coupon or a code/);
+}));
+
+/* ── EX4 (عمر ١٣/١٠) ─────────────────────────────────────────────────────────────── */
+test("EX4: «إيقاف» is undoable in one tap, typed «رجّع» wordings resubscribe, and a resubscribe really lifts the block", withEnv(LOCKS_OPEN, async () => {
+  const START = "تم تفعيل رسائل العروض ✅\nللإيقاف اكتب: إيقاف";
+  const w = liveWorld();
+  const s = await w.say("إيقاف");
+  assert.deepEqual(s.sent[0].interactive.action.buttons.map((x) => [x.reply.id, x.reply.title]), [["stop:undo", "↩️ رجّع العروض"], ["stop:updates", "أوقف تحديثات الطلب"], ["stop:ok", "تمام"]]);
+  assert.match(bodyOf(s.sent[0]), /اكتب: اشتراك$/, "the stop message says how to come back later");
+  assert.equal(R.payloadProblem(s.sent[0]), null);
+  assert.equal(w.db.optins["512345678"].marketing, false); assert.deepEqual(w.db.optouts, ["512345678"], "the stop is immediate");
+  w.clock.advance(1);
+  const u = await w.press("stop:undo", "↩️ رجّع العروض");
+  assert.deepEqual(u.sent, [txt(ME, START)]); assert.equal(u.log.reply_key, "start");
+  assert.equal(w.db.optins["512345678"].marketing, true); assert.ok(!w.db.optins["512345678"].marketing_off_at);
+  assert.deepEqual(w.db.optouts, [], "the customers-file block set by the WhatsApp stop is lifted too (it was not, before EX4)");
+  assert.deepEqual(w.db.optoutLog, [["512345678", "resubscribe"]]);
+  assert.ok(w.db.consentLog.length >= 1, "the tap is a logged consent");
+  // an opt-out made elsewhere (SMS link / staff) is not lifted by a WhatsApp resubscribe
+  const sms = liveWorld(); sms.db.optouts = ["512345678"]; sms.db.smsOptouts = ["512345678"];
+  await sms.say("اشترك"); assert.deepEqual(sms.db.optouts, ["512345678"]);
+  // Omar's own words, and the rest of the list: explicit wordings resubscribe whoever writes them
+  for (const text of ["شغل الاعلانات والعروض", "شغل العروض", "شغل الاعلانات", "رجع العروض", "رجعوا الرسايل", "فعّل العروض", "اشترك"]) {
+    const x = liveWorld(); await x.say("إيقاف"); x.clock.advance(1);
+    const r = await x.say(text);
+    assert.deepEqual([r.log.reply_key, bodyOf(r.sent[0])], ["start", START], text); assert.equal(x.db.optins["512345678"].marketing, true, text); assert.deepEqual(x.db.optouts, [], text);
+  }
+  // short ambiguous words mean «undo» only from someone who stopped in the last 24 hours
+  for (const text of ["استمرار", "تشغيل", "غلطت", "ضغطت بالغلط"]) {
+    const x = liveWorld(); await x.say("إيقاف"); x.clock.advance(1);
+    const r = await x.say(text);
+    assert.equal(r.log.reply_key, "start", text); assert.equal(x.db.optins["512345678"].marketing, true, text);
+    const fresh = liveWorld(); const f = await fresh.say(text);
+    assert.notEqual(f.log.reply_key, "start", `${text}: from someone who never stopped it is not a subscription`); assert.equal(fresh.db.optins["512345678"], undefined, text);
+    const old = liveWorld(); await old.say("إيقاف"); old.clock.advance(25 * 60);
+    assert.notEqual((await old.say(text)).log.reply_key, "start", `${text}: a day later it is not an undo`);
+  }
+  // the questions about offers are still questions
+  for (const text of ["عندكم عروض؟", "وش العروض", "ابي عروض اليوم"]) assert.equal(R.classify({ text, type: "text" }, {}).key, "offers", text);
+  assert.equal(R.classify({ text: "وقف العروض", type: "text" }, {}).key, "stop");
+  // after «أوقف تحديثات الطلب» too: «اشترك» brings everything back
+  const all = liveWorld(); await all.say("إيقاف"); all.clock.advance(1); await all.press("stop:updates", "أوقف تحديثات الطلب"); all.clock.advance(1);
+  await all.say("اشترك"); assert.ok(!all.db.optins["512345678"].stopped_at); assert.equal(all.db.optins["512345678"].marketing, true);
+  assert.ok(R.TEXT_KEYS.includes("btn_stop_undo"));
+}));
+
+test("EX4: with the assistant on, a stopped customer who asks for the offers back gets the same resubscribe — the model is not asked", withEnv(CONFIGURED, async () => {
+  for (const text of ["استمرار", "شغل الاعلانات والعروض"]) {
+    const w = aWorld([]);
+    await w.say("إيقاف"); w.clock.advance(1);
+    const r = await w.say(text);
+    assert.deepEqual([r.log.reply_key, w.m.used()], ["start", 0], text); assert.equal(w.db.optins["512345678"].marketing, true, text);
+  }
+  const AR4 = await import("./waassistrun.js");
+  assert.match(AR4.SYSTEM_PROMPT, /You cannot switch our offer messages on or off/); assert.match(AR4.SYSTEM_PROMPT, /only when it returns has_open_order true/);
+}));
+
+test("EX4: order status is for an OPEN order only — «وين طلبي / كم الحساب / كم باقي / متى يوصل» with none, with a delivered one, with an open one", withEnv(LOCKS_OPEN, async () => {
+  const NONE = "ما فيه طلب مفتوح على رقمك هذا الحين.\nتبي تطلب، أو أحوّلك لموظف؟";
+  const none = liveWorld(), a = await none.say("وين طلبي");
+  assert.deepEqual([a.log.reply_key, bodyOf(a.sent[0]), a.log.handoff, none.sms.length, none.portal.length], ["status", NONE, null, 0, 0]);
+  none.clock.advance(1);
+  assert.equal(bodyOf((await none.press("bot:status", "📦 طلبي")).sent[0]), NONE, "the status button says the same");
+  const del = liveWorld({ orders: [order({ status: "delivered" })] }), b = await del.say("وين طلبي");
+  assert.equal(bodyOf(b.sent[0]), "ما فيه طلب مفتوح على رقمك هذا الحين.\nآخر طلب لك W1790011111111: تم توصيل طلبك ✅\nتبي تطلب، أو أحوّلك لموظف؟"); assert.equal(b.log.handoff, null);
+  assert.doesNotMatch(JSON.stringify(b.sent), /track\//, "no tracking link for a closed order");
+  const open = liveWorld({ orders: [order({ status: "on_the_way" })] });
+  assert.match(bodyOf((await open.say("وين طلبي")).sent[0]), /^طلبك رقم W1790011111111: طلبك مع المندوب/);
+  // the EX3 routes follow the same rule
+  for (const [text, key] of [["كم الحساب", "order"], ["كم المجموع", "order"], ["كم باقي", "delivery_time"], ["متى يوصل", "delivery_time"]]) {
+    for (const orders of [[], [order({ status: "delivered" })]]) { const r = await liveWorld({ orders }).say(text); assert.equal(r.log.reply_key, key, `${text} / ${orders.length}`); assert.doesNotMatch(bodyOf(r.sent[0]), /W1790011111111/, text); }
+    assert.equal((await liveWorld({ orders: [order({ status: "accepted" })] }).say(text)).log.reply_key, "status", text);
+  }
+  assert.equal(bodyOf((await liveWorld().say("كم باقي")).sent[0]), "الوقت يختلف حسب المسافة والزحمة. أرسل موقعك 📍 وأتأكد لك من التغطية والرسوم.");
+  // an order the restaurant refused and refunded keeps its real status: that is what the customer is asking about
+  assert.match(bodyOf((await liveWorld({ orders: [order({ status: "rejected_refunded", refund_id: "RF1" })] }).say("وين طلبي")).sent[0]), /استرجاع المبلغ/);
+  assert.equal(R.TEXT_KEYS.includes("status_none"), false); assert.ok(R.TEXT_KEYS.includes("status_no_open") && R.TEXT_KEYS.includes("status_last_closed"));
 }));
