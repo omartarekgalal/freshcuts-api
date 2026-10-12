@@ -187,10 +187,11 @@ function world({ waBot = {}, notifications = { whatsappEnabled: true }, orders =
         return { rows: [] };
       }
       if (/^INSERT INTO wa_bot_chats\(phone_norm, handoff_at, handoff_reason\)/i.test(s)) { Object.assign(chat(p[0]), { handoff_at: iso(), handoff_reason: p[1], unknown_streak: 0 }); return { rows: [] }; }
-      if (/^INSERT INTO wa_bot_chats\(phone_norm, muted_until, mute_reason, muted_by\)/i.test(s)) { Object.assign(chat(p[0]), { muted_until: new Date(nowMs + p[1] * 3600_000).toISOString(), mute_reason: "manual", muted_by: p[2] }); return { rows: [] }; }
+      if (/^INSERT INTO wa_bot_chats\(phone_norm, muted_until, mute_reason, muted_by\)/i.test(s)) { Object.assign(chat(p[0]), { muted_until: new Date(nowMs + p[1] * (/make_interval\(mins/.test(s) ? 60_000 : 3600_000)).toISOString(), mute_reason: "manual", muted_by: p[2] }); return { rows: [] }; }
+      if (/^UPDATE wa_bot_chats SET muted_until=NULL, mute_reason=NULL, muted_by=NULL, updated_at=NOW\(\) WHERE phone_norm=\$1 AND mute_reason='manual'/i.test(s)) { const c = chat(p[0]); if (c.mute_reason === "manual") Object.assign(c, { muted_until: null, mute_reason: null, muted_by: null }); return { rows: [] }; }
       if (/FROM wa_bot_chats c LEFT JOIN LATERAL/i.test(s)) return { rows: [...db.chats.values()].map((c) => ({ ...c })) };
       if (/FROM wa_bot_log WHERE decision='replied' AND at >=/i.test(s)) return { rows: [{ n: db.log.filter((l) => l.decision === "replied").length }] };
-      if (/^UPDATE wa_bot_chats SET muted_until=NULL/i.test(s)) { const clear = { muted_until: null, mute_reason: null, handoff_at: null, handoff_reason: null, unknown_streak: 0 }; if (p[0]) Object.assign(chat(p[0]), clear); else for (const c of db.chats.values()) Object.assign(c, clear, { last_greet_at: null }); return { rows: [] }; }
+      if (/^UPDATE wa_bot_chats SET muted_until=NULL/i.test(s)) { const clear = { muted_until: null, mute_reason: null, handoff_at: null, handoff_reason: null, unknown_streak: 0 }; if (p[0]) Object.assign(chat(p[0]), clear, /released_at=NOW\(\)/.test(s) ? { released_at: iso() } : {}); else for (const c of db.chats.values()) Object.assign(c, clear, { last_greet_at: null }); return { rows: [] }; }
       if (/FROM wa_bot_chats WHERE muted_until > NOW\(\)/i.test(s) && /count/.test(s)) return { rows: [{ n: [...db.chats.values()].filter((c) => c.muted_until && Date.parse(c.muted_until) > nowMs).length }] };
       if (/FROM dl_policies/i.test(s)) return { rows: policy ? [{ config: policy }] : [] };
       if (/FROM shop_coupons WHERE code=\$1/i.test(s)) return { rows: first && first.code === p[0] ? [first] : [] };
@@ -2689,3 +2690,54 @@ test("AS4 gatherings — the link type «gather» is seeded for the packs reply 
   assert.equal(R.SEED_LINKS.find((l) => l.slug === "wab-packs").target_type, "gather");
   assert.equal(R.botConfig({}).links.packs, "wab-packs"); assert.equal(R.botConfig({ waBot: { links: { packs: "my-packs" } } }).links.packs, "my-packs");
 }));
+
+/* ── SR2: سحب المحادثة بالدقايق + «سيبها للبوت» فوراً ─────────────────────── */
+test("SR2 hooks: a hold in minutes silences the bot and ends by itself; releasing lets the bot answer at once despite the staff's earlier reply", withEnv(LOCKS_OPEN, async () => {
+  // hold: minute precision, same columns as the manual mute, pending delayed reply cancelled
+  const w = world({ waBot: { mode: "live" } });
+  await w.cashier("هلا");
+  await w.say("المنيو");
+  assert.equal(w.db.jobs[0].status, "pending");
+  assert.deepEqual(await w.bot.holdChat("512345678", 20, "أحمد"), { ok: true, minutes: 20 });
+  assert.equal(w.db.jobs[0].status, "cancelled");
+  const c = w.db.chats.get("512345678");
+  assert.equal(c.mute_reason, "manual"); assert.equal(c.muted_by, "أحمد");
+  assert.equal(Math.round((Date.parse(c.muted_until) - w.clock.now().getTime()) / 60_000), 20);
+  const h = await w.say("وين موقعكم");
+  assert.equal(h.sent.length, 0); assert.equal(h.log.reason, "manual_mute");
+  w.clock.advance(31);                                    // the hold ran out, and the cashier's «هلا» is older than humanPauseMin
+  assert.equal((await w.say("وين موقعكم")).sent.length, 1, "a forgotten hold returns the chat to the bot");
+  assert.equal((await w.bot.holdChat("512345678", 0, null)).minutes, 1); assert.equal((await w.bot.holdChat("512345678", 99999, null)).minutes, 1440);
+
+  // without release: the staff's reply keeps the bot waiting (today's behaviour, unchanged)
+  const a = world({ waBot: { mode: "live" } });
+  await a.cashier("تفضل");
+  await a.bot.unmuteChat("512345678");
+  const a1 = await a.say("وين موقعكم");
+  assert.equal(a1.sent.length, 0); assert.equal(a1.log.reason, "staff_pause");
+
+  // release: the same staff reply no longer silences the bot…
+  const b = world({ waBot: { mode: "live" } });
+  await b.cashier("تفضل");
+  await b.bot.holdChat("512345678", 20, "أحمد");
+  b.clock.advance(1);
+  await b.bot.unmuteChat("512345678", { release: true });
+  const bc = b.db.chats.get("512345678");
+  assert.equal(bc.muted_until, null); assert.ok(bc.released_at);
+  b.clock.advance(1);
+  assert.equal((await b.say("وين موقعكم")).sent.length, 1, "the bot answers at once after «سيبها للبوت»");
+  // …but a staff reply AFTER the release pauses it again
+  b.clock.advance(1); await b.cashier("لحظة"); b.clock.advance(1);
+  const b2 = await b.say("كم سعر البوكس");
+  assert.equal(b2.sent.length, 0); assert.equal(b2.log.reason, "staff_pause");
+
+  // auto-release of a forgotten hold keeps an open handover
+  const k = world({ waBot: { mode: "live" } });
+  await k.say("أبغى أكلم موظف");
+  assert.ok(k.db.chats.get("512345678").handoff_at);
+  await k.bot.holdChat("512345678", 20, "أحمد");
+  await k.bot.unmuteChat("512345678", { keepHandover: true });
+  const kc = k.db.chats.get("512345678");
+  assert.equal(kc.muted_until, null); assert.ok(kc.handoff_at, "the handover is still open"); assert.equal(kc.released_at || null, null);
+}));
+

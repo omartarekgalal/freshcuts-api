@@ -1477,6 +1477,7 @@ export function register(app, ctx, deps = {}) {
       ALTER TABLE wa_bot_chats ADD COLUMN IF NOT EXISTS handoff_reason TEXT;
       ALTER TABLE wa_bot_chats ADD COLUMN IF NOT EXISTS last_disclosed_at TIMESTAMPTZ;
       ALTER TABLE wa_bot_chats ADD COLUMN IF NOT EXISTS muted_by TEXT;
+      ALTER TABLE wa_bot_chats ADD COLUMN IF NOT EXISTS released_at TIMESTAMPTZ;   -- SR2: الموظف ساب المحادثة للبوت ⇒ ردوده اللي قبل كده مابتسكّتش البوت
       ALTER TABLE wa_bot_log ADD COLUMN IF NOT EXISTS resume_at TIMESTAMPTZ;
       ALTER TABLE wa_bot_log ADD COLUMN IF NOT EXISTS reply_arg TEXT;       -- صنف/قسم/بوكس الرد — «نفس الرد» = نفس المفتاح ونفس الهدف
       -- ١٢/١٠: سؤال الموافقة على تحديثات الطلب (مرة كل فترة) + إثبات الإجابة بنص السؤال اللي اتعرض
@@ -1740,7 +1741,9 @@ export function register(app, ctx, deps = {}) {
       }
       const ok = /^5\d{8}$/.test(phone);
       const chat = await chatOf(phone);
-      const echoAt = ok ? await lastEcho(phone) : null;
+      let echoAt = ok ? await lastEcho(phone) : null;
+      /* SR2 (١٣/١٠): الموظف ساب المحادثة للبوت (unmuteChat بـrelease) ⇒ رسايله اللي قبل اللحظة دي مابتسكّتش البوت ولا المساعد. */
+      if (echoAt && chat.released_at && Date.parse(echoAt) <= Date.parse(chat.released_at)) echoAt = null;
       /* هجين (اختياري، من اللوحة): الرسالة اللي القواعد مافهمتهاش تتصنّف بموديل — **تصنيف بس**: بيرجّع اسم نية من قايمتنا
          (+ صنف/قسم/بوكس من البيانات) بدرجة ثقة، والرد نفسه نص ثابت بيتعبّى من البيانات الحيّة زي أي رد. فشل/تأخر/ثقة قليلة ⇒ «غير مفهوم». */
       if (cls.key === "unknown" && cfg.llm.enabled && llm && !afterWait && String(ev.text || "").trim().length >= 2) {
@@ -2205,10 +2208,22 @@ export function register(app, ctx, deps = {}) {
     await q(`UPDATE wa_bot_jobs SET status='cancelled', reason='manual_mute', done_at=NOW() WHERE phone_norm=$1 AND status='pending'`, [phone]);
     return { ok: true, hours: h };
   }
-  /* رجّع البوت: بيشيل الكتم اليدوي والتحويل المفتوح وعدّاد «غير مفهوم» */
-  async function unmuteChat(phone) {
+  /* SR2 (١٣/١٠): الموظف سحب المحادثة — نفس أعمدة الكتم اليدوي بس بالدقايق (المهلة بتتجدد مع كل رد للموظف، من wastaff.js). */
+  async function holdChat(phone, minutes, by) {
+    const m = Math.min(1440, Math.max(1, Math.ceil(Number(minutes) || 0)));
     await ready;
-    await q("UPDATE wa_bot_chats SET muted_until=NULL, mute_reason=NULL, muted_by=NULL, handoff_at=NULL, handoff_reason=NULL, unknown_streak=0, updated_at=NOW() WHERE phone_norm=$1", [phone]);
+    await q(`INSERT INTO wa_bot_chats(phone_norm, muted_until, mute_reason, muted_by) VALUES ($1, NOW() + make_interval(mins => $2::int), 'manual', $3)
+             ON CONFLICT (phone_norm) DO UPDATE SET muted_until = NOW() + make_interval(mins => $2::int), mute_reason='manual', muted_by=$3, updated_at=NOW()`, [phone, m, by ? String(by).slice(0, 60) : null]);
+    await q(`UPDATE wa_bot_jobs SET status='cancelled', reason='manual_mute', done_at=NOW() WHERE phone_norm=$1 AND status='pending'`, [phone]);
+    return { ok: true, minutes: m };
+  }
+  /* رجّع البوت: بيشيل الكتم اليدوي والتحويل المفتوح وعدّاد «غير مفهوم».
+     SR2: release=true ⇒ «سيبها للبوت» فوراً (released_at)؛ keepHandover=true ⇒ فك تلقائي لمحادثة منسية: التحويل المفتوح بيفضل. */
+  async function unmuteChat(phone, { release = false, keepHandover = false } = {}) {
+    await ready;
+    if (keepHandover) await q("UPDATE wa_bot_chats SET muted_until=NULL, mute_reason=NULL, muted_by=NULL, updated_at=NOW() WHERE phone_norm=$1 AND mute_reason='manual'", [phone]);
+    else if (release) await q("UPDATE wa_bot_chats SET muted_until=NULL, mute_reason=NULL, muted_by=NULL, handoff_at=NULL, handoff_reason=NULL, unknown_streak=0, released_at=NOW(), updated_at=NOW() WHERE phone_norm=$1", [phone]);
+    else await q("UPDATE wa_bot_chats SET muted_until=NULL, mute_reason=NULL, muted_by=NULL, handoff_at=NULL, handoff_reason=NULL, unknown_streak=0, updated_at=NOW() WHERE phone_norm=$1", [phone]);
     return { ok: true };
   }
   if (wa && typeof wa.setBotRuntime === "function") wa.setBotRuntime(handle);
@@ -2683,5 +2698,5 @@ export function register(app, ctx, deps = {}) {
     return c.json({ ok: r.ok === true, result: r, to: `0${phone}`, template: tpl.name, language: lang });
   });
 
-  return { carts: botCarts, handle, ready, loadData, runDueJobs, muteChat, unmuteChat, stop: () => { if (timer) clearInterval(timer); }, botConfig: async () => botConfig((await getSettingsData()) || {}) };
+  return { carts: botCarts, handle, ready, loadData, runDueJobs, muteChat, holdChat, unmuteChat, stop: () => { if (timer) clearInterval(timer); }, botConfig: async () => botConfig((await getSettingsData()) || {}) };
 }
