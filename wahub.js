@@ -53,9 +53,13 @@ const SCALAR = (v) => v === null || ["boolean", "number", "string"].includes(typ
 export function watchedValues(settings) {
   const s = settings || {}, out = {};
   const put = (k, v) => { if (v !== undefined && SCALAR(v)) out[k] = typeof v === "string" ? v.slice(0, 200) : v; };
-  for (const [k, v] of Object.entries(s.notifications || {})) if (/^whatsapp/i.test(k)) put(`notifications.${k}`, v);
-  put("waMaster.enabled", s.waMaster ? s.waMaster.enabled === true : undefined);
-  for (const k of ["enabled", "dailyCap", "hourCap", "perTick", "tierLimit", "reserveUtility"]) put(`waCloud.${k}`, (s.waCloud || {})[k]);
+  /* المفاتيح الثلاثة الأساسية بتتراقب دايماً حتى لو عمرها ما اتكتبت (غايبة = مقفولة) — على السيرفر الحي ماكانش فيه
+     ولا واحد منهم مكتوب فالقايمة كانت بتطلع من غيرهم. */
+  put("notifications.whatsappEnabled", (s.notifications || {}).whatsappEnabled === true);
+  for (const [k, v] of Object.entries(s.notifications || {})) if (/^whatsapp/i.test(k) && k !== "whatsappEnabled") put(`notifications.${k}`, v);
+  put("waMaster.enabled", (s.waMaster || {}).enabled === true);
+  put("waCloud.enabled", (s.waCloud || {}).enabled === true);
+  for (const k of ["dailyCap", "hourCap", "perTick", "tierLimit", "reserveUtility"]) put(`waCloud.${k}`, (s.waCloud || {})[k]);
   for (const [k, v] of Object.entries(s.waSender || {})) if (!/hash|token|secret|key/i.test(k)) put(`waSender.${k}`, v);
   for (const k of ["phoneId", "wabaId"]) put(`waCloudActive.${k}`, (s.waCloudActive || {})[k]);
   put("waBot.mode", (s.waBot || {}).mode);
@@ -65,7 +69,10 @@ export function diffWatched(prev, next) {
   const rows = [];
   for (const k of [...new Set([...Object.keys(prev || {}), ...Object.keys(next || {})])].sort()) {
     const a = (prev || {})[k], b = (next || {})[k];
-    if (a !== b) rows.push({ key: k, from: a === undefined ? null : a, to: b === undefined ? null : b });
+    if (a === b) continue;
+    if ((a === undefined || a === null) && b === false) continue;   // «مش مكتوب» و«مقفول» نفس الحالة — مش تغيير
+    if ((b === undefined || b === null) && a === false) continue;
+    rows.push({ key: k, from: a === undefined ? null : a, to: b === undefined ? null : b });
   }
   return rows;
 }

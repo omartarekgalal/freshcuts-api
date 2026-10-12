@@ -278,7 +278,14 @@ test("N7 watched keys: the WhatsApp switches and caps, never a secret", () => {
   assert.deepEqual(v, { "notifications.whatsappEnabled": true, "notifications.whatsappReplacesSms": false, "notifications.whatsappAutoReplyText": "أهلاً", "waMaster.enabled": true,
     "waCloud.enabled": false, "waCloud.dailyCap": 200, "waSender.enabled": true, "waSender.gapDays": 3, "waCloudActive.phoneId": "P1", "waCloudActive.wabaId": "W1", "waBot.mode": "test" });
   assert.ok(!JSON.stringify(v).includes("SECRET") && !("notifications.smsEnabled" in v));
-  assert.deepEqual(diffWatched({ a: 1, b: true, c: "x" }, { a: 2, b: true, d: false }), [{ key: "a", from: 1, to: 2 }, { key: "c", from: "x", to: null }, { key: "d", from: null, to: false }]);
+  assert.deepEqual(diffWatched({ a: 1, b: true, c: "x" }, { a: 2, b: true, d: false, e: true }), [{ key: "a", from: 1, to: 2 }, { key: "c", from: "x", to: null }, { key: "e", from: null, to: true }],
+    "«not written» → false is not a change");
+  assert.deepEqual(diffWatched({ x: false }, {}), []);
+  /* live on 13/10: none of the three main switches had ever been written — they must be watched anyway, as off */
+  const bare = watchedValues({ waSender: { enabled: true }, waBot: { mode: "test" } });
+  assert.deepEqual([bare["notifications.whatsappEnabled"], bare["waMaster.enabled"], bare["waCloud.enabled"]], [false, false, false]);
+  assert.deepEqual(diffWatched({ "waSender.enabled": true, "waBot.mode": "test" }, bare), [], "the snapshot taken before this fix produces no rows");
+  assert.deepEqual(diffWatched(bare, watchedValues({ waSender: { enabled: true }, waBot: { mode: "test" }, waMaster: { enabled: true } })), [{ key: "waMaster.enabled", from: false, to: true }]);
 });
 
 test("N7 log: the first look only takes a snapshot; each later change is one row with from → to and who did it", async () => {
@@ -293,7 +300,7 @@ test("N7 log: the first look only takes a snapshot; each later change is one row
   assert.equal(await w.api.sweep(null), 0, "no change, no row");
   const r = (await w.call("GET", "/api/cms/wa/settings-log")).body;
   assert.deepEqual(r.rows.map((x) => [x.key, x.from, x.to, x.who]).sort(), [
-    ["notifications.whatsappEnabled", false, true, "منى"], ["waCloud.dailyCap", null, 100, "عمر"], ["waCloud.enabled", null, true, "عمر"], ["waMaster.enabled", false, true, "عمر"]]);
+    ["notifications.whatsappEnabled", false, true, "منى"], ["waCloud.dailyCap", null, 100, "عمر"], ["waCloud.enabled", false, true, "عمر"], ["waMaster.enabled", false, true, "عمر"]]);
   assert.ok(r.rows.every((x) => x.at && x.id));
   assert.ok(r.watched.includes("waMaster.enabled"));
   w.db.settings.waBot = { mode: "live" };
