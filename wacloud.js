@@ -325,6 +325,23 @@ export function brakeCheck(n, cc) {
   if (stopPct >= cc.brakeStopPct) return { reason: "stop_rate", pct: r1(stopPct), limit: cc.brakeStopPct };
   return null;
 }
+/* TS1 (١٤/١٠): القالب عندنا (الكتالوج) زي النسخة اللي عند ميتا؟ — دالة صافية.
+   لما الكتالوج يتغيّر (مثلاً زر اتشال) النسخة المعتمدة عند ميتا بتفضل القديمة لحد ما التعديل يتراجع. بنقارن اللي العميل بيشوفه
+   واللي الإرسال بيعتمد عليه: نوع الهيدر، نص الجسم، الفوتر، والأزرار (النوع + النص + الرابط) بالترتيب. بترجع قايمة الفروق (فاضية = متطابق). */
+export function templateDiff(ours, theirs) {
+  const norm = (v) => String(v ?? "").replace(/\r\n/g, "\n").trim();
+  const part = (comps, type) => (Array.isArray(comps) ? comps : []).find((c) => String(c && c.type).toUpperCase() === type) || null;
+  const btns = (comps) => ((part(comps, "BUTTONS") || {}).buttons || []).map((b) => [String(b.type || "").toUpperCase(), norm(b.text), norm(b.url)].join("|"));
+  const out = [];
+  const ha = part(ours, "HEADER"), hb = part(theirs, "HEADER");
+  if (String((ha && ha.format) || "") !== String((hb && hb.format) || "")) out.push("header");
+  if (ha && hb && ha.format === "TEXT" && norm(ha.text) !== norm(hb.text)) out.push("header_text");
+  if (norm((part(ours, "BODY") || {}).text) !== norm((part(theirs, "BODY") || {}).text)) out.push("body");
+  if (norm((part(ours, "FOOTER") || {}).text) !== norm((part(theirs, "FOOTER") || {}).text)) out.push("footer");
+  const a = btns(ours), b = btns(theirs);
+  if (a.length !== b.length || a.some((x, i) => x !== b[i])) out.push("buttons");
+  return out;
+}
 export const campaignCost = (messages, rateSar) => (Number(rateSar) > 0 ? Math.round((Number(messages) || 0) * Number(rateSar) * 100) / 100 : null);
 
 /* القناة الافتراضية لحملة جديدة: Cloud لو كله جاهز، وإلا واتساب ويب */
@@ -669,6 +686,21 @@ export function register(app, ctx, deps = {}) {
   }
 
   let tplCache = { at: 0, data: null };
+  let tplComps = null;      // TS1: Map("name:lang" ⇒ مكوّنات القالب عند ميتا) من آخر قراءة ناجحة، أو null لو مااتقرتش
+  /* TS1: حالة قالب كتالوج قصاد نسخة ميتا للغة دي:
+       same      نفس النص والأزرار                        differs  مختلف (diffs = إيه اللي مختلف) ⇒ مايتبعتش في حملة
+       missing   مش موجود عند ميتا باللغة دي              unknown  ماقدرناش نقرا ميتا / المكوّنات */
+  async function templateSync(name, lang = "ar", { fresh = false } = {}) {
+    const t = TEMPLATES[name];
+    if (!t) return { state: "unknown", status: null, diffs: [], why: "unknown_template" };
+    let info = null; try { info = await templateInfo({ fresh }); } catch { info = null; }
+    if (!info || info.ok !== true || !tplComps) return { state: "unknown", status: null, diffs: [], why: info && info.ok === true ? "components_not_read" : "meta_not_read" };
+    const row = (info.list || []).find((x) => x.name === name && String(x.language || "").slice(0, 2) === lang);
+    const theirs = tplComps.get(`${name}:${lang}`);
+    if (!row || !theirs) return { state: "missing", status: row ? row.status : "NOT_SUBMITTED", diffs: [] };
+    const diffs = templateDiff((t.variants && t.variants[lang]) || t.components, theirs);
+    return { state: diffs.length ? "differs" : "same", status: row.status || null, diffs };
+  }
   async function templateInfo({ fresh = false } = {}) {
     const waba = wabaId() || KNOWN_WABA_ID;
     if (!fresh && tplCache.data && now() - tplCache.at < (tplCache.data.ok ? 10 * 60e3 : 60e3)) return tplCache.data;      // QP1: الفشل بيتخزّن دقيقة بس
@@ -677,8 +709,16 @@ export function register(app, ctx, deps = {}) {
       /* QP1: بنطلب جودة كل قالب (quality_score). لو ميتا رفضت الحقل، بنرجع للحقول القديمة عشان شاشات القوالب ماتقعش — وبنعلّم
          qualityRead=false: بوابة الجودة ساعتها بتوقف التسويق («ماقدرناش نقرا جودة القوالب») بدل ما تفترض إنها تمام. */
       let d, qualityRead = true;
-      try { d = await graph("GET", `${waba}/message_templates`, { query: { fields: "name,status,category,language,quality_score", limit: "200" } }); }
-      catch { d = await graph("GET", `${waba}/message_templates`, { query: { fields: "name,status,category,language", limit: "200" } }); qualityRead = false; }
+      /* TS1: + components — عشان نقارن النسخة اللي عند ميتا بالكتالوج (templateSync). لو الطلب الكامل اترفض بنرجع لأبسط شكل والمقارنة تبقى «مش معروف». */
+      let compsRead = true;
+      try { d = await graph("GET", `${waba}/message_templates`, { query: { fields: "name,status,category,language,quality_score,components", limit: "200" } }); }
+      catch {
+        compsRead = false;
+        try { d = await graph("GET", `${waba}/message_templates`, { query: { fields: "name,status,category,language,quality_score", limit: "200" } }); }
+        catch { d = await graph("GET", `${waba}/message_templates`, { query: { fields: "name,status,category,language", limit: "200" } }); qualityRead = false; }
+      }
+      /* مكوّنات ميتا بتتخزّن جنب الكاش (مش في الرد: حجمها كبير ومالهاش لازمة في الشاشات) */
+      tplComps = compsRead ? new Map((d.data || []).filter((t) => Array.isArray(t.components)).map((t) => [`${t.name}:${String(t.language || "").slice(0, 2)}`, t.components])) : null;
       const list = (d.data || []).map((t) => ({ name: t.name, status: t.status, category: t.category, language: t.language, quality: (t.quality_score && t.quality_score.score) || null }));
       const byStatus = {};
       for (const t of list) byStatus[t.status] = (byStatus[t.status] || 0) + 1;
@@ -696,6 +736,9 @@ export function register(app, ctx, deps = {}) {
             needsImage: (t.components || []).some((c) => c.type === "HEADER" && c.format === "IMAGE"),
             body: (t.components.find((c) => c.type === "BODY") || {}).text || "",
             statuses: Object.fromEntries(langs.map((l, i) => [l, st[i]])),
+            /* TS1: الكتالوج زي نسخة ميتا؟ لكل لغة: same | differs | missing | unknown */
+            sync: Object.fromEntries(langs.map((l) => { const th = tplComps && tplComps.get(`${n}:${l}`);
+              return [l, !tplComps ? "unknown" : !th ? "missing" : templateDiff((t.variants && t.variants[l]) || t.components, th).length ? "differs" : "same"]; })),
             status: st.every((x) => x === st[0]) ? st[0] : st.includes("REJECTED") ? "REJECTED" : st.includes("NOT_SUBMITTED") ? "NOT_SUBMITTED" : "PENDING" };
         }) };
       tplCache = { at: now(), data: x };
@@ -900,5 +943,5 @@ export function register(app, ctx, deps = {}) {
     return c.json({ ok: true, cfg: clean });
   });
 
-  return { phoneInfo, templateInfo, ready, cloudCfg, activeReady, webhookAccept, idsNow, qualityMigrated };
+  return { templateSync, phoneInfo, templateInfo, ready, cloudCfg, activeReady, webhookAccept, idsNow, qualityMigrated };
 }

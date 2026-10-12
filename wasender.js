@@ -516,6 +516,21 @@ export function register(app, ctx, deps = {}) {
   }
   const APP_ONLY_LABEL = "أرقام من تطبيقات التوصيل — لم يعطونا رقمهم مباشرة";
 
+  /* TS1 (١٤/١٠): القالب في الكتالوج لازم يطابق النسخة اللي عند ميتا قبل ما حملة تستعمله (زر اتشال/نص اتغيّر والتعديل لسه مااتراجعش ⇒ العميل يشوف
+     النسخة القديمة أو الإرسال يفشل). «differs» بيمنع البدء؛ «unknown» (ميتا مش مقروءة) مابيمنعش — بوابة الجودة بتوقف الإرسال ساعتها أصلاً. */
+  const SYNC_AR = { differs: "القالب عند ميتا لسه بالنسخة القديمة (التعديل ماتراجعش) — الحملة ماتبدأش بيه لحد ما ميتا تعتمد النسخة الجديدة",
+    missing: "القالب ده مش موجود عند ميتا بالعربي — قدّمه الأول", unknown: "ماقدرناش نقارن القالب بنسخة ميتا دلوقتي",
+    review: "القالب عند ميتا تحت المراجعة (مش معتمد دلوقتي) — الحملة ماتبدأش بيه لحد ما يتعتمد" };
+  /* بعد تعديل قالب معتمد ميتا بترجّعه للمراجعة: نصه بقى زي الكتالوج بس حالته مش APPROVED ⇒ الإرسال بيه يفشل ويوقّف القناة. يتمنع زي «differs». */
+  const syncBlock = (ts) => (ts.state === "differs" ? "template_differs" : ts.state === "same" && ts.status && ts.status !== "APPROVED" ? "template_not_approved" : null);
+  async function tplSync(name) {
+    const cl = cloudApi();
+    if (!name || !cl || typeof cl.templateSync !== "function") return { state: "unknown", status: null, diffs: [], message: SYNC_AR.unknown };
+    let r; try { r = await cl.templateSync(name, "ar"); } catch { r = { state: "unknown", status: null, diffs: [] }; }
+    const out = { state: r.state, status: r.status || null, diffs: r.diffs || [] };
+    return { ...out, message: syncBlock(out) === "template_not_approved" ? SYNC_AR.review : SYNC_AR[r.state] || null };
+  }
+
   async function build(filters, s, { channel = "wa_web" } = {}) {
     if (!outreach) throw new Error("outreach_missing");
     const cloud = channel === "wa_cloud";
@@ -692,7 +707,7 @@ export function register(app, ctx, deps = {}) {
           brake: { minSends: cc.brakeMinSends, stopPct: cc.brakeStopPct, failPct: cc.brakeFailPct, warnPct: cc.brakeWarnPct,
             lowRead: { minDelivered: cc.lowReadMinDelivered, hours: cc.lowReadHours, pct: cc.lowReadPct } },
           warmup: wv, custCap: { d7: cc.custCap7d, d30: cc.custCap30d, gapDays: Math.max(CLOUD_MIN_GAP_DAYS, r.cfg.gapDays) } },
-        appOnly: r.appOnly,
+        appOnly: r.appOnly, templateSync: await tplSync(input.cloudTemplate),
         spec: campaignSpec(input.cloudTemplate), gate: wa ? await wa.gate() : "disabled", enabled: cc.enabled };
     }
     /* LK1: الزر هيفتح إيه — النوع والهدف وشكل رابط الهبوط، عشان المالك يشوفه قبل البدء */
@@ -703,7 +718,8 @@ export function register(app, ctx, deps = {}) {
     return c.json({ ok: true, ...cloudExtra, link: linkView, audience: r.audience, inAudience: r.inAudience, afterFilters: r.afterFilters,
       excluded: r.excluded, eligible: r.eligible, willQueue: r.picked.length, holdoutEst: hold, estDays: days, sample,
       customTemplate: Boolean(input.template), template: tpl, footer: r.cfg.footer, channel: input.channel,
-      problems: input.errs.map(([error, message]) => ({ error, message })) });
+      problems: [...input.errs.map(([error, message]) => ({ error, message })),
+        ...(cloudExtra.templateSync && syncBlock(cloudExtra.templateSync) ? [{ error: syncBlock(cloudExtra.templateSync), message: cloudExtra.templateSync.message }] : [])] });
   });
 
   app.post("/api/cms/wa-sender/jobs", async (c) => {
@@ -714,6 +730,10 @@ export function register(app, ctx, deps = {}) {
     if (input.channel === "wa_cloud" && !(await isOwner(c))) return ownerOnly(c);
     if (input.errs.length) return bad(c, input.errs[0][0], input.errs[0][1], 422);
     if (input.channel === "wa_cloud") { const mp = await mediaErr(input); if (mp) return bad(c, mp[0], mp[1], 422); }
+    if (input.channel === "wa_cloud") {      // TS1: نسخة ميتا لسه مختلفة عن الكتالوج ⇒ مفيش بدء
+      const ts = await tplSync(input.cloudTemplate);
+      if (syncBlock(ts)) return c.json({ ok: false, error: syncBlock(ts), message: ts.message, templateSync: ts }, 409);
+    }
     if (input.link.coupon) {
       const ok = (await pool.query("SELECT 1 FROM shop_coupons WHERE upper(code)=$1 AND active", [input.link.coupon])).rowCount;
       if (!ok) return bad(c, "coupon_invalid", `الكوبون ${input.link.coupon} مش موجود أو مقفول`, 422);

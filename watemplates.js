@@ -503,11 +503,13 @@ export const TEMPLATES = [
      المحادثة والبوت بيفهمه كطلب)، ونسخة إنجليزي لكل إطار. ترتيب الأزرار: الرابط، وبعده أزرار الرد مع بعض (شرط ميتا). ── */
   ...FRAMES_DEF.flatMap((f) => [
     T({ name: f.name, category: "MARKETING", group: "marketing", ...MKT, header: f.header, body: f.ar, vars: f.vars,
-      buttons: [TRACKED(f.btnAr, "wa-offer-ab12cd"), qr(ORDER_BUTTON), qr(OPTOUT_BUTTON)],
-      meta: { purpose: f.purpose, trigger: "مكتبة عروض واتساب ← حملة", send: "manual", fallbackSms: null, notes: f.notes } }),
+      /* TS1 (١٤/١٠ — قرار عمر: «بالنسبة لإيقاف نخلي العميل يكتبها، متكونش زرار»): الإطارات الستة من غير زر «إيقاف».
+         سطر الفوتر «للإيقاف ردّ: إيقاف» باقي، والكلمة المكتوبة شغّالة زي ما هي (الويب هوك). باقي القوالب التسويقية زي ما هي. */
+      buttons: [TRACKED(f.btnAr, "wa-offer-ab12cd"), qr(ORDER_BUTTON)],
+      meta: { purpose: f.purpose, trigger: "مكتبة عروض واتساب ← حملة", send: "manual", fallbackSms: null, stopButton: false, notes: f.notes } }),
     T({ name: f.name, category: "MARKETING", group: "marketing", language: "en", footer: OPTOUT_FOOTER_EN, header: f.header, body: f.en, vars: f.varsEn,
-      buttons: [TRACKED(f.btnEn, "wa-offer-ab12cd"), qr(ORDER_BUTTON_EN), qr(OPTOUT_BUTTON_EN)],
-      meta: { purpose: `${f.purpose} (English)`, trigger: "مكتبة عروض واتساب ← حملة", send: "manual", fallbackSms: null, notes: f.notes } }),
+      buttons: [TRACKED(f.btnEn, "wa-offer-ab12cd"), qr(ORDER_BUTTON_EN)],
+      meta: { purpose: `${f.purpose} (English)`, trigger: "مكتبة عروض واتساب ← حملة", send: "manual", fallbackSms: null, stopButton: false, notes: f.notes } }),
   ]),
 
   /* RF1 (١٤/١٠ — ملاحظة عمر على أول موجة: «لازم نخلي العميل يبدأ يتكلم معانا»): إطارات «الرد أولاً».
@@ -516,11 +518,11 @@ export const TEMPLATES = [
      قابلة للتقديم (مش HOLD). */
   ...ASK_FRAMES_DEF.flatMap((f) => [
     T({ name: f.name, category: "MARKETING", group: "marketing", ...MKT, header: f.header, body: f.ar, vars: f.vars,
-      buttons: [qr(ORDER_BUTTON), qr(MENU_BUTTON), qr(OPTOUT_BUTTON)],
-      meta: { purpose: f.purpose, trigger: "مكتبة عروض واتساب ← حملة (الرد أولاً)", send: "manual", fallbackSms: null, replyFirst: true, notes: f.notes } }),
+      buttons: [qr(ORDER_BUTTON), qr(MENU_BUTTON)],
+      meta: { purpose: f.purpose, trigger: "مكتبة عروض واتساب ← حملة (الرد أولاً)", send: "manual", fallbackSms: null, replyFirst: true, stopButton: false, notes: f.notes } }),
     T({ name: f.name, category: "MARKETING", group: "marketing", language: "en", footer: OPTOUT_FOOTER_EN, header: f.header, body: f.en, vars: f.varsEn,
-      buttons: [qr(ORDER_BUTTON_EN), qr(MENU_BUTTON_EN), qr(OPTOUT_BUTTON_EN)],
-      meta: { purpose: `${f.purpose} (English)`, trigger: "مكتبة عروض واتساب ← حملة (الرد أولاً)", send: "manual", fallbackSms: null, replyFirst: true, notes: f.notes } }),
+      buttons: [qr(ORDER_BUTTON_EN), qr(MENU_BUTTON_EN)],
+      meta: { purpose: `${f.purpose} (English)`, trigger: "مكتبة عروض واتساب ← حملة (الرد أولاً)", send: "manual", fallbackSms: null, replyFirst: true, stopButton: false, notes: f.notes } }),
   ]),
 
   T({ name: "fc_cart_1h", category: "MARKETING", group: "marketing", ...MKT,
@@ -734,7 +736,9 @@ export function validateTemplate(t) {
   if (t.category === "MARKETING") {
     /* FR1: القالب الإنجليزي بياخد المقابل الإنجليزي (STOP) — الويب هوك بيفهم الكلمتين */
     if (footerOf(t) !== (t.language === "en" ? OPTOUT_FOOTER_EN : OPTOUT_FOOTER)) e.push("التسويق: فوتر الإيقاف مطلوب");
-    if (!qrs.some((b) => b.text === (t.language === "en" ? OPTOUT_BUTTON_EN : OPTOUT_BUTTON))) e.push("التسويق: زر «إيقاف» مطلوب");
+    /* TS1: القالب اللي meta.stopButton=false (الإطارات — قرار المالك) لازم **مايكونش** فيه زر إيقاف؛ الباقي لازم يكون فيه. الفوتر مطلوب في الاتنين. */
+    const hasStop = qrs.some((b) => b.text === (t.language === "en" ? OPTOUT_BUTTON_EN : OPTOUT_BUTTON));
+    if (t.meta?.stopButton === false ? hasStop : !hasStop) e.push(t.meta?.stopButton === false ? "التسويق: القالب ده من غير زر «إيقاف» (الإيقاف بالكتابة)" : "التسويق: زر «إيقاف» مطلوب");
   }
   if (t.category === "UTILITY" && /(^|[\s،.])(خصم|كود|كوبون|عرض|العرض|عروض|مجاني|مجانا)|٪|%|discount|coupon|offer|promo/i.test(text)) {
     e.push("UTILITY فيه كلام ترويجي — ميتا بتصنّفه تسويق");

@@ -24,7 +24,7 @@ test("the four frames are in the catalogue in Arabic and English, valid by the c
     const en = CAT.findTemplate(n, "en");
     assert.ok(en, `${n} has an English version`); assert.deepEqual(CAT.validateTemplate(en), []);
     assert.deepEqual(en.meta.vars.map((v) => v.path), t.meta.vars.map((v) => v.path), "same variables in both languages");
-    assert.equal(CAT.footerOf(en), "To stop, reply: STOP"); assert.deepEqual(CAT.buttonsOf(en).map((b) => [b.type, b.text]).slice(1), [["QUICK_REPLY", "I want to order"], ["QUICK_REPLY", "STOP"]]);
+    assert.equal(CAT.footerOf(en), "To stop, reply: STOP"); assert.deepEqual(CAT.buttonsOf(en).map((b) => [b.type, b.text]).slice(1), [["QUICK_REPLY", "I want to order"]]);
     assert.ok(!/[\u0600-\u06FF]/.test(CAT.bodyOf(en)) && !/exclusive|cheaper|discount|app\b/i.test(CAT.bodyOf(en)));
     const body = CAT.bodyOf(t);
     assert.ok(!/^\s*\{\{/.test(body) && !/\}\}\s*$/.test(body), "no variable at the start or the end");
@@ -34,7 +34,7 @@ test("the four frames are in the catalogue in Arabic and English, valid by the c
     assert.ok(!/حصري|أرخص|التطبيقات|خصم/.test(body));
     assert.equal(CAT.footerOf(t), CAT.OPTOUT_FOOTER);
     /* الرابط الأول وبعده أزرار الرد مع بعض (ميتا بترفض الخلط) */
-    assert.deepEqual(CAT.buttonsOf(t).map((b) => [b.type, b.text]).slice(1), [["QUICK_REPLY", "أبغى أطلب"], ["QUICK_REPLY", "إيقاف"]]); assert.equal(CAT.buttonsOf(t)[0].type, "URL");
+    assert.deepEqual(CAT.buttonsOf(t).map((b) => [b.type, b.text]).slice(1), [["QUICK_REPLY", "أبغى أطلب"]]);      // TS1: من غير زر «إيقاف» assert.equal(CAT.buttonsOf(t)[0].type, "URL");
     for (const b of CAT.buttonsOf(t)) assert.ok(b.text.length <= 25, b.text);
     assert.match(CAT.buttonsOf(t)[0].url, /^https:\/\/freshcuts\.sa\/l\/\{\{1\}\}$/);
   }

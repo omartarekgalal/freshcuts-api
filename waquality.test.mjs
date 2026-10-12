@@ -242,7 +242,7 @@ const GREEN = () => ({ ok: true, status: "CONNECTED", quality: "GREEN", tier: "T
 const WARM_DONE = { step: 3, since: "2026-09-01", startedAt: "2026-09-01" };
 
 function world({ jobs = [], queue = [], settings = {}, warmup = WARM_DONE, quality = null, phone = GREEN, templates = [], tplOk = true, cloud = true, sentToday = null, mk = {}, mkThrows = false,
-  appOnly = [], appOnlyThrows = false, people = 3, waContacts = [], stopped = null, linkClicks = 0 } = {}) {
+  tplSync = { state: "same", status: "APPROVED", diffs: [] }, appOnly = [], appOnlyThrows = false, people = 3, waContacts = [], stopped = null, linkClicks = 0 } = {}) {
   const db = { jobs, queue, state: { stopped_reason: stopped, warmup, quality }, events: [], sms: [], broadcasts: [], gapDays: [], newJobs: [], smsFallback: [], msgs: [], unmatched: [], replies: [], sqlLog: [],
     settings: { waCloud: { enabled: true }, waSender: {}, waMaster: { enabled: true }, notifications: { whatsappEnabled: true }, delivery: { alertPhones: ["0500000001"] }, ...settings } };
   const job = (id) => db.jobs.find((j) => j.id === Number(id));
@@ -339,7 +339,8 @@ function world({ jobs = [], queue = [], settings = {}, warmup = WARM_DONE, quali
   const app = fakeApp();
   const reads = { phone: 0, fresh: 0, tpl: 0 };
   const cloudApi = { phoneInfo: async (o = {}) => { reads.phone++; if (o.fresh) reads.fresh++; const x = typeof phone === "function" ? phone() : phone; if (x instanceof Error) throw x; return x; },
-    templateInfo: async () => { reads.tpl++; return tplOk ? { ok: true, list: templates } : { ok: false, error: "HTTP 500" }; } };
+    templateInfo: async () => { reads.tpl++; return tplOk ? { ok: true, list: templates } : { ok: false, error: "HTTP 500" }; },
+    templateSync: async () => ({ ...tplSync }) };
   const rows = Array.from({ length: people }, (_, i) => ({ pn: `51000000${i}`, name: `عميل ${i}`, orders: 2, spend: 100, daysAgo: 40, lastTotal: 60, score: 1, vars: { first_name: `عميل${i}` } }));
   const outreach = { AUDIENCES: { lapsed: { label: "غايبين" } }, audienceRows: async () => rows, cfg: async () => ({ template: "أهلاً {name}" }) };
   const cms = { waFallbackSms: async (x) => { db.smsFallback.push(x); return { ok: true }; } };
@@ -626,7 +627,7 @@ test("جودة القوالب من ميتا: لو الحقل اترفض شاشا
   const api = C.register(fakeApp(), { pool, requireAdmin: async () => null, getSettingsData: async () => ({}), jb: JSON.stringify }, { fetch, wa: { token: () => "tok", wabaId: () => "WABA1", phoneId: () => "P1" } });
   const t = await api.templateInfo({ fresh: true });
   assert.deepEqual([t.ok, t.qualityRead, t.total, t.list[0].status, t.list[0].quality], [true, false, 1, "APPROVED", null]);
-  assert.equal(urls.filter((u) => /message_templates/.test(u)).length, 2);
+  assert.equal(urls.filter((u) => /message_templates/.test(u)).length, 3, "بالمكوّنات والجودة ⇒ بالجودة ⇒ الحقول القديمة");
   // الحقل مقبول ⇒ الجودة بتتقري
   const ok = C.register(fakeApp(), { pool, requireAdmin: async () => null, getSettingsData: async () => ({}), jb: JSON.stringify },
     { fetch: async () => ({ ok: true, status: 200, json: async () => ({ data: [{ name: "fc_offer_img", status: "APPROVED", category: "MARKETING", language: "ar", quality_score: { score: "YELLOW" } }] }) }), wa: { token: () => "tok", wabaId: () => "WABA1", phoneId: () => "P1" } });
@@ -667,6 +668,8 @@ test("ترحيل الإقلاع: ٥٪/٢٠ المخزّنين بيتكتبوا �
 const BOTRUN = await import("./wabotrun.js");
 const statusHook = (wamid, status, at = null) => ({ entry: [{ id: "WABA1", changes: [{ field: "messages", value: { metadata: { phone_number_id: "PHONE1", display_phone_number: "966546715683" },
   statuses: [{ id: wamid, status, recipient_id: "966520000001", ...(at ? { timestamp: String(Math.floor(Date.parse(at) / 1000)) } : {}) }] } }] }] });
+const typedHook = (from, text, id) => ({ entry: [{ id: "WABA1", changes: [{ field: "messages", value: { metadata: { phone_number_id: "PHONE1", display_phone_number: "966546715683" },
+  messages: [{ id, from, type: "text", timestamp: String(Math.floor(AT_17 / 1000)), text: { body: text } }] } }] }] });
 const tapHook = (from, text, id) => ({ entry: [{ id: "WABA1", changes: [{ field: "messages", value: { metadata: { phone_number_id: "PHONE1", display_phone_number: "966546715683" },
   messages: [{ id, from, type: "button", timestamp: String(Math.floor(AT_17 / 1000)), button: { text, payload: text } }] } }] }] });
 
@@ -735,7 +738,7 @@ test("RF1 إطارات «الرد أولاً»: في الكتالوج بالعر
       assert.deepEqual(CAT.validateTemplate(t), [], `${name} ${lang}`);
       assert.equal(t.category, "MARKETING"); assert.equal(CAT.bodyOf(t), BODY[`${name}:${lang}`]);
       assert.deepEqual(CAT.buttonsOf(t).map((b) => [b.type, b.text]), lang === "ar"
-        ? [["QUICK_REPLY", "أبغى أطلب"], ["QUICK_REPLY", "ورّني المنيو"], ["QUICK_REPLY", "إيقاف"]] : [["QUICK_REPLY", "I want to order"], ["QUICK_REPLY", "Show me the menu"], ["QUICK_REPLY", "STOP"]]);
+        ? [["QUICK_REPLY", "أبغى أطلب"], ["QUICK_REPLY", "ورّني المنيو"]] : [["QUICK_REPLY", "I want to order"], ["QUICK_REPLY", "Show me the menu"]]);      // TS1: من غير زر «إيقاف»
       assert.equal(CAT.footerOf(t), lang === "ar" ? "للإيقاف ردّ: إيقاف" : "To stop, reply: STOP");
       assert.deepEqual(t.meta.vars.map((v) => v.path), ["offer.title", "offer.line"]); assert.deepEqual(t.meta.buttonVars, []);
     }
@@ -773,7 +776,7 @@ test("RF1 حملة «الرد أولاً»: بتتبعت من غير أي زر �
     assert.deepEqual(w.db.replies.map((x) => [x.pn, x.text, x.job_id, x.optout]), [["520000001", "أبغى أطلب", 1, false]]);
     assert.ok(w.db.queue[0].replied_at); assert.equal(w.db.queue[0].optout_at || null, null);
     // التاني ضغط «إيقاف»
-    await w.wa.processWebhook(tapHook("966520000002", "إيقاف", "wamid.TAP2"));
+    await w.wa.processWebhook(typedHook("966520000002", "إيقاف", "wamid.TAP2"));      // TS1: «إيقاف» بقت بالكتابة (مفيش زر)
     assert.deepEqual(w.db.replies[1].optout, true); assert.ok(w.db.queue[1].optout_at);
   }
   // بدء حملة «الرد أولاً» من اللوحة: من غير link خالص، ومعاينتها بتقول إن مفيش زر رابط
@@ -781,7 +784,100 @@ test("RF1 حملة «الرد أولاً»: بتتبعت من غير أي زر �
   const body = { channel: "wa_cloud", cloudTemplate: "fc_frame_ask_text", cloudVars: ASK.cloud_vars, filters: { audience: "lapsed" } };
   const pv = (await call(s.app, "POST /api/cms/wa-sender/preview", { json: body, auth: MK })).body;
   assert.deepEqual([pv.problems, pv.spec.button, pv.link.button], [[], null, false]);
-  assert.match(pv.sample[0].cloud.text, /تبي نجهز لك الطلب هنا؟/); assert.deepEqual(pv.sample[0].cloud.buttons, ["أبغى أطلب", "ورّني المنيو", "إيقاف"]);
+  assert.match(pv.sample[0].cloud.text, /تبي نجهز لك الطلب هنا؟/); assert.deepEqual(pv.sample[0].cloud.buttons, ["أبغى أطلب", "ورّني المنيو"]);
   const ok = await call(s.app, "POST /api/cms/wa-sender/jobs", { json: body });
   assert.equal(ok.status, 200, JSON.stringify(ok.body)); assert.equal(s.db.newJobs[0][10], "fc_frame_ask_text");
+}));
+
+/* ══ TS1 (١٤/١٠): الإطارات من غير زر «إيقاف» + الكتالوج لازم يطابق نسخة ميتا ═══════════════ */
+const FRAMES6 = ["fc_frame_offer_img", "fc_frame_limited_img", "fc_frame_video", "fc_frame_news_text", "fc_frame_ask_video", "fc_frame_ask_text"];
+
+test("TS1 الإطارات الستة (عربي + إنجليزي) من غير زر «إيقاف»؛ الفوتر باقي، والكلمة المكتوبة لسه إيقاف؛ وباقي القوالب التسويقية بزرها", () => {
+  for (const name of FRAMES6) for (const lang of ["ar", "en"]) {
+    const t = CAT.findTemplate(name, lang), btns = CAT.buttonsOf(t);
+    assert.deepEqual(CAT.validateTemplate(t), [], `${name} ${lang}`);
+    assert.ok(!btns.some((b) => ["إيقاف", "STOP"].includes(b.text)), `${name} ${lang}: no stop button`);
+    assert.equal(CAT.footerOf(t), lang === "ar" ? "للإيقاف ردّ: إيقاف" : "To stop, reply: STOP");
+    assert.equal(t.meta.stopButton, false);
+    const want = name.includes("_ask_") ? (lang === "ar" ? ["QUICK_REPLY:أبغى أطلب", "QUICK_REPLY:ورّني المنيو"] : ["QUICK_REPLY:I want to order", "QUICK_REPLY:Show me the menu"])
+      : ["URL", lang === "ar" ? "QUICK_REPLY:أبغى أطلب" : "QUICK_REPLY:I want to order"];
+    assert.deepEqual(btns.map((b) => (b.type === "URL" ? "URL" : `${b.type}:${b.text}`)), want, `${name} ${lang}`);
+  }
+  // الكلمة المكتوبة شغّالة زي ما هي
+  for (const x of ["إيقاف", "ايقاف", "STOP", "stop", " إيقاف "]) assert.equal(W.intentOf(x), "stop", x);
+  // القاعدة في الفاحص: إطار رجع له الزر = خطأ؛ وقالب تسويقي تاني من غير الزر = خطأ
+  const f = CAT.findTemplate("fc_frame_ask_text", "ar");
+  const withStop = { ...f, components: f.components.map((c) => (c.type === "BUTTONS" ? { ...c, buttons: [...c.buttons, { type: "QUICK_REPLY", text: "إيقاف" }] } : c)) };
+  assert.deepEqual(CAT.validateTemplate(withStop), ["التسويق: القالب ده من غير زر «إيقاف» (الإيقاف بالكتابة)"]);
+  const other = CAT.findTemplate("fc_weekend_offer", "ar");
+  assert.ok(CAT.buttonsOf(other).some((b) => b.text === "إيقاف"), "القوالب التانية زي ما هي");
+  const noStop = { ...other, components: other.components.map((c) => (c.type === "BUTTONS" ? { ...c, buttons: c.buttons.filter((b) => b.text !== "إيقاف") } : c)) };
+  assert.deepEqual(CAT.validateTemplate(noStop), ["التسويق: زر «إيقاف» مطلوب"]);
+});
+
+test("TS1 مقارنة الكتالوج بنسخة ميتا: نفس النص والأزرار = متطابق؛ زر زيادة عند ميتا / نص مختلف / هيدر مختلف = مختلف", () => {
+  const ours = W.TEMPLATES.fc_frame_ask_text.variants.ar;
+  const meta = (extra = [], body = null) => [{ type: "BODY", text: body || ours.find((c) => c.type === "BODY").text, example: { body_text: [["a", "b"]] } }, { type: "FOOTER", text: "للإيقاف ردّ: إيقاف" },
+    { type: "BUTTONS", buttons: [{ type: "QUICK_REPLY", text: "أبغى أطلب" }, { type: "QUICK_REPLY", text: "ورّني المنيو" }, ...extra] }];
+  assert.deepEqual(C.templateDiff(ours, meta()), []);
+  assert.deepEqual(C.templateDiff(ours, meta([{ type: "QUICK_REPLY", text: "إيقاف" }])), ["buttons"], "النسخة المعتمدة لسه فيها زر إيقاف");
+  assert.deepEqual(C.templateDiff(ours, meta([], "نص تاني")), ["body"]);
+  assert.deepEqual(C.templateDiff(ours, [{ type: "HEADER", format: "VIDEO" }, ...meta()]), ["header"]);
+  assert.deepEqual(C.templateDiff(ours, meta().filter((c) => c.type !== "FOOTER")), ["footer"]);
+  assert.deepEqual(C.templateDiff(ours, []), ["body", "footer", "buttons"]);
+  // رابط الزر جزء من المقارنة
+  const link = W.TEMPLATES.fc_frame_news_text.variants.ar, lm = JSON.parse(JSON.stringify(link));
+  assert.deepEqual(C.templateDiff(link, lm), []);
+  lm.find((c) => c.type === "BUTTONS").buttons[0].url = "https://freshcuts.sa/?c={{1}}";
+  assert.deepEqual(C.templateDiff(link, lm), ["buttons"]);
+});
+
+test("TS1 حالة القالب قصاد ميتا من القراءة الحية: same / differs / missing / unknown — وبتظهر في قايمة الكتالوج", withEnv(ALLOW, async () => {
+  const ours = (n, l = "ar") => JSON.parse(JSON.stringify(W.TEMPLATES[n].variants[l]));
+  const old = ours("fc_frame_ask_text"); old.find((c) => c.type === "BUTTONS").buttons.push({ type: "QUICK_REPLY", text: "إيقاف" });
+  const data = [{ name: "fc_frame_ask_text", language: "ar", status: "APPROVED", category: "MARKETING", components: old },
+    { name: "fc_frame_news_text", language: "ar", status: "APPROVED", category: "MARKETING", components: ours("fc_frame_news_text") }];
+  const mk = (fetch) => C.register(fakeApp(), { pool: { query: async () => ({ rows: [], rowCount: 0 }) }, requireAdmin: async () => null, getSettingsData: async () => ({}), jb: JSON.stringify },
+    { fetch, wa: { token: () => "tok", wabaId: () => "WABA1", phoneId: () => "P1" } });
+  const api = mk(async () => ({ ok: true, status: 200, json: async () => ({ data }) }));
+  assert.deepEqual(await api.templateSync("fc_frame_ask_text", "ar"), { state: "differs", status: "APPROVED", diffs: ["buttons"] });
+  assert.deepEqual(await api.templateSync("fc_frame_news_text", "ar"), { state: "same", status: "APPROVED", diffs: [] });
+  assert.deepEqual(await api.templateSync("fc_frame_video", "ar"), { state: "missing", status: "NOT_SUBMITTED", diffs: [] });
+  assert.equal((await api.templateSync("fc_frame_news_text", "en")).state, "missing");
+  const info = await api.templateInfo();
+  assert.ok(!JSON.stringify(info.list).includes("components"), "مكوّنات ميتا مش في رد الحالة");
+  const row = (n) => info.catalog.find((x) => x.name === n).sync;
+  assert.deepEqual([row("fc_frame_ask_text"), row("fc_frame_news_text"), row("fc_frame_video")], [{ ar: "differs", en: "missing" }, { ar: "same", en: "missing" }, { ar: "missing", en: "missing" }]);
+  // ميتا رفضت حقل components ⇒ الشاشات تفضل شغّالة والمقارنة «مش معروف»
+  const noComps = mk(async (url) => (/components/.test(String(url)) ? { ok: false, status: 400, json: async () => ({ error: { code: 100, message: "nope" } }) }
+    : { ok: true, status: 200, json: async () => ({ data: data.map(({ components, ...x }) => x) }) }));
+  assert.deepEqual(await noComps.templateSync("fc_frame_ask_text", "ar"), { state: "unknown", status: null, diffs: [], why: "components_not_read" });
+  assert.equal((await noComps.templateInfo()).ok, true);
+  const down = mk(async () => ({ ok: false, status: 500, json: async () => ({ error: { code: 2, message: "down" } }) }));
+  assert.equal((await down.templateSync("fc_frame_ask_text", "ar")).why, "meta_not_read");
+}));
+
+test("TS1 الحملة: قالب نسخته عند ميتا لسه مختلفة ⇒ المعاينة بتقول والبدء بيترفض؛ متطابق أو مش معروف ⇒ مفيش منع", withEnv(ALLOW, async () => {
+  const body = { channel: "wa_cloud", cloudTemplate: "fc_frame_ask_text", cloudVars: { values: { "offer.title": "بوكسات فردية", "offer.line": "كريب أو برجر، من 29 ر.س" } }, filters: { audience: "lapsed" } };
+  const d = world({ tplSync: { state: "differs", status: "APPROVED", diffs: ["buttons"] } });
+  const pv = (await call(d.app, "POST /api/cms/wa-sender/preview", { json: body, auth: MK })).body;
+  assert.deepEqual([pv.templateSync.state, pv.templateSync.diffs, pv.problems.map((p) => p.error)], ["differs", ["buttons"], ["template_differs"]]);
+  assert.match(pv.templateSync.message, /لسه بالنسخة القديمة/);
+  const no = await call(d.app, "POST /api/cms/wa-sender/jobs", { json: body });
+  assert.deepEqual([no.status, no.body.error, no.body.templateSync.state], [409, "template_differs", "differs"]); assert.equal(d.db.newJobs.length, 0);
+  for (const st of ["same", "unknown", "missing"]) {
+    const w = world({ tplSync: { state: st, status: st === "same" ? "APPROVED" : null, diffs: [] } });
+    const p = (await call(w.app, "POST /api/cms/wa-sender/preview", { json: body, auth: MK })).body;
+    assert.deepEqual([p.templateSync.state, p.problems], [st, []], st);
+    assert.equal((await call(w.app, "POST /api/cms/wa-sender/jobs", { json: body })).status, 200, st);
+  }
+  // بعد التعديل: النص بقى زي الكتالوج بس ميتا لسه بتراجعه ⇒ ممنوع برضه (الإرسال بقالب مش معتمد بيوقّف القناة)
+  const rv = world({ tplSync: { state: "same", status: "PENDING", diffs: [] } });
+  const prv = (await call(rv.app, "POST /api/cms/wa-sender/preview", { json: body, auth: MK })).body;
+  assert.deepEqual(prv.problems.map((p) => p.error), ["template_not_approved"]); assert.match(prv.templateSync.message, /تحت المراجعة/);
+  assert.deepEqual([(await call(rv.app, "POST /api/cms/wa-sender/jobs", { json: body })).status, rv.db.newJobs.length], [409, 0]);
+  // من غير قارئ ميتا خالص: «مش معروف»
+  assert.equal((await call(world({ cloud: false }).app, "POST /api/cms/wa-sender/preview", { json: body, auth: MK })).body.templateSync.state, "unknown");
+  // حملة واتساب ويب: مفيش الفحص ده
+  assert.equal((await call(d.app, "POST /api/cms/wa-sender/preview", { json: { channel: "wa_web", filters: { audience: "lapsed" } }, auth: MK })).body.templateSync, undefined);
 }));

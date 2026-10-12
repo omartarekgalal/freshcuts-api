@@ -32,11 +32,11 @@ test("المطلوب بالاسم موجود", () => {
   for (const n of need) assert.ok(TEMPLATES.some((t) => t.name === n), n);
 });
 
-test("كل قالب تسويقي: فوتر «للإيقاف ردّ: إيقاف» + زر «إيقاف»", () => {
+test("كل قالب تسويقي: فوتر «للإيقاف ردّ: إيقاف» + زر «إيقاف» (إلا الإطارات: الإيقاف بالكتابة بس — TS1)", () => {
   for (const t of TEMPLATES.filter((x) => x.category === "MARKETING")) {
     const en = t.language === "en";      // FR1: الإنجليزي بكلمة STOP
     assert.equal(footerOf(t), en ? "To stop, reply: STOP" : OPTOUT_FOOTER, t.name);
-    assert.ok(buttonsOf(t).some((b) => b.type === "QUICK_REPLY" && b.text === (en ? "STOP" : OPTOUT_BUTTON)), t.name);
+    assert.equal(buttonsOf(t).some((b) => b.type === "QUICK_REPLY" && b.text === (en ? "STOP" : OPTOUT_BUTTON)), t.meta.stopButton !== false, t.name);
   }
 });
 
