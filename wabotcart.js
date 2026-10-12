@@ -96,24 +96,38 @@ export function planSummary(plan, lang = "ar", max = 72) {
   return s;
 }
 
+/* «يوم الأحد 11/10» بتوقيت الرياض — عشان العميل يعرف أنهي طلب اللي اتجهّز */
+export function orderDay(at, lang = "ar") {
+  const d = new Date(new Date(at).getTime() + 3 * 3600_000);
+  if (Number.isNaN(d.getTime())) return "";
+  const AR = ["الأحد", "الاثنين", "الثلاثاء", "الأربعاء", "الخميس", "الجمعة", "السبت"], EN = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+  const dm = `${d.getUTCDate()}/${d.getUTCMonth() + 1}`;
+  return lang === "en" ? `${EN[d.getUTCDay()]} ${dm}` : `يوم ${AR[d.getUTCDay()]} ${dm}`;
+}
+
 export function makeBotCarts({ pool, log = console.error }) {
   let schemaP = null;
   const ensure = () => (schemaP ||= pool.query(BOT_CART_DDL).catch((e) => { schemaP = null; throw e; }));
   const q = async (sql, params) => { try { return (await pool.query(sql, params)).rows; } catch (e) { log("[wabot-cart] db:", e.message); return null; } };
 
-  /* آخر طلب للعميل ولقطة سلته: لازم اللقطة تكون مربوطة **بآخر طلب مدفوع** لنفس الرقم، وإجماليها يساوي إجمالي أصناف الطلب.
-     أي اختلاف ⇒ null (مانعرضش «نفس الطلب» على سلة مش متأكدين إنها هي). */
-  async function lastOrderCart(phone, maxDays) {
-    if (!/^5\d{8}$/.test(String(phone || ""))) return null;
-    const o = await q(`SELECT order_no, option, subtotal, created_at FROM shop_orders WHERE phone_norm=$1 AND NOT COALESCE(is_test,false)
-                         AND status NOT IN ('pending_payment','expired','rejected_refunded','refund_failed','paid_pos_failed')
-                         AND created_at > NOW() - make_interval(days => $2::int) ORDER BY created_at DESC LIMIT 1`, [phone, Math.ceil(maxDays)]);
-    if (!o || !o[0]) return null;
-    const c = await q(`SELECT items, cart_raw, subtotal, option FROM shop_carts WHERE phone_norm=$1 AND recovered_order=$2 AND cart_raw IS NOT NULL ORDER BY abs(subtotal - $3::numeric), recovered_at DESC LIMIT 1`, [phone, o[0].order_no, Number(o[0].subtotal) || 0]);
-    if (!c || !c[0] || !isObj(c[0].cart_raw)) return null;
-    if (!same(c[0].subtotal, o[0].subtotal)) return null;
-    return { orderNo: o[0].order_no, option: o[0].option || c[0].option || null, at: o[0].created_at, raw: c[0].cart_raw, items: Array.isArray(c[0].items) ? c[0].items : [] };
+  /* طلبات العميل الأخيرة اللي ليها لقطة سلة موثوقة — الأحدث أولاً (لحد limit). لقطة موثوقة = مربوطة بالطلب نفسه لنفس الرقم
+     وإجماليها يساوي إجمالي أصناف الطلب. طلبات التجربة (is_test) والطلبات الصغيرة جداً (أقل من minTotal — زي طلب تجربة بنص ريال)
+     بتتخطّى. المتصل بياخد أول واحدة خطتها تنفع على المنيو الحي: «آخر طلب يتجهّز»، مش «آخر طلب وخلاص». */
+  async function lastOrderCarts(phone, maxDays, { limit = 5, minTotal = 0 } = {}) {
+    if (!/^5\d{8}$/.test(String(phone || ""))) return [];
+    const os = await q(`SELECT order_no, option, subtotal, created_at FROM shop_orders WHERE phone_norm=$1 AND NOT COALESCE(is_test,false)
+                          AND status NOT IN ('pending_payment','expired','rejected_refunded','refund_failed','paid_pos_failed')
+                          AND created_at > NOW() - make_interval(days => $2::int) AND subtotal >= $4::numeric ORDER BY created_at DESC LIMIT $3`,
+      [phone, Math.ceil(maxDays), Math.min(10, Math.max(1, Math.round(limit))), Number(minTotal) || 0]);
+    const out = [];
+    for (const [i, o] of (os || []).entries()) {
+      const c = await q(`SELECT items, cart_raw, subtotal, option FROM shop_carts WHERE phone_norm=$1 AND recovered_order=$2 AND cart_raw IS NOT NULL ORDER BY abs(subtotal - $3::numeric), recovered_at DESC LIMIT 1`, [phone, o.order_no, Number(o.subtotal) || 0]);
+      if (!c || !c[0] || !isObj(c[0].cart_raw) || !same(c[0].subtotal, o.subtotal)) continue;
+      out.push({ orderNo: o.order_no, option: o.option || c[0].option || null, at: o.created_at, latest: i === 0, raw: c[0].cart_raw, items: Array.isArray(c[0].items) ? c[0].items : [] });
+    }
+    return out;
   }
+  const lastOrderCart = async (phone, maxDays, opts) => (await lastOrderCarts(phone, maxDays, { ...opts, limit: 1 }))[0] || null;
   async function taken(code) {
     const r = await q(`SELECT 1 FROM cart_recovery WHERE code=$1 UNION ALL SELECT 1 FROM cart_presets WHERE code=$1 LIMIT 1`, [code]);
     return r === null || r.length > 0;      // مانعرفش ⇒ نعتبره محجوز ونجرّب كود تاني
@@ -164,5 +178,5 @@ export function makeBotCarts({ pool, log = console.error }) {
     const made = await q(`SELECT count(*)::int AS links, count(*) FILTER (WHERE opens > 0)::int AS opened FROM wa_bot_carts WHERE created_at > NOW() - make_interval(days => $1::int)`, [Math.min(365, Math.max(1, Math.ceil(days)))]);
     return r && r[0] ? { ...r[0], links: Number(made && made[0]?.links) || 0, opened: Number(made && made[0]?.opened) || 0 } : null;
   }
-  return { ensure, lastOrderCart, create, open, restore, coverage };
+  return { ensure, lastOrderCart, lastOrderCarts, create, open, restore, coverage };
 }

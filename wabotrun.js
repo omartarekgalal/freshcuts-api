@@ -39,7 +39,7 @@ import { staffPhones, fitOneSms, staffConfig } from "./staffalerts.js";
 import { loyaltyCfgOf } from "./loyalty.js";
 import { MAPS_URL } from "./watemplates.js";
 import { isOpenNow } from "./carts.js";
-import { makeBotCarts, reorderPlan, planSummary } from "./wabotcart.js";
+import { makeBotCarts, reorderPlan, planSummary, orderDay } from "./wabotcart.js";
 import { makeAiCost, pricesOf, waRatesOf, pricesFromBody, waRatesFromBody, BUDGET_DEFAULTS } from "./waaicost.js";
 import { providerInfo } from "./wabotllm.js";
 import { WA_UPDATES_TEXTS, WA_UPDATES_CURRENT, recordWaUpdatesBot, recordWaMarketingBot, ensureWaConsentSchema } from "./waconsent.js";
@@ -75,6 +75,8 @@ export const DEFAULTS = Object.freeze({
   reorderEnabled: true,        // «نفس طلبي الأخير» بضغطة: رابط سلة جاهزة من لقطة سلة آخر طلب (طلب عمر ١٢/١٠)
   reorderMaxDays: 90,          // آخر طلب أقدم من كده مايتعرضش
   reorderLinkDays: 7,          // صلاحية رابط السلة الجاهزة
+  reorderMinTotal: 10,         // طلب أصنافه أقل من كده (ر.س) مايتعرضش — طلبات التجربة الصغيرة
+  reorderLookback: 5,          // لو آخر طلب مايتجهّزش، نجرّب اللي قبله لحد العدد ده
   maxAgeMinutes: 20,           // رسالة أقدم من كده (ويب هوك متأخر) مابيتردش عليها
   duplicateSeconds: 120,       // نفس الرد لنفس العميل مايتكررش خلالها
   /* حارس الحلقات (مش سبب لتحويل لموظف — عطل ١٢/١٠: ٨ ردود كانت بتقطع عميل بيتصفّح القائمة وتحوّله لموظف):
@@ -168,8 +170,8 @@ export const TEXTS = Object.freeze({
   rate: t("حد الرسائل الآلية في الساعة", "وصلنا حد الرسائل الآلية لهذه الساعة 🙏 اكتب «موظف» لو تحتاج مساعدة.", "We have reached the automated message limit for this hour 🙏 Type “staff” if you need help.", [], [], 300),
   rate_burst: t("رسائل كثيرة في دقيقة", "لحظة من فضلك 🙏 وصلتنا رسائل كثيرة متتالية، ونكمل معك بعد دقيقة.", "One moment 🙏 We received many messages in a row and will continue in a minute.", [], [], 300),
   /* «نفس طلبي الأخير» (١٢/١٠) */
-  row_reorder: t("صف: نفس طلبي الأخير", "🔁 نفس طلبي الأخير", "🔁 Same as last order", [], [], LIMITS.rowTitle),
-  reorder_body: t("نفس الطلب الأخير: السلة جاهزة", "جهّزنا لك نفس طلبك الأخير 🛒\n{lines}\n{changes}\n{closed}\nراجع السلة وكمّل الدفع من الرابط 👇", "Your last order is ready in the cart 🛒\n{lines}\n{changes}\n{closed}\nReview the cart and pay from the link 👇", ["lines"], ["changes", "closed"]),
+  row_reorder: t("صف: نفس طلبي السابق", "🔁 نفس طلبي السابق", "🔁 Same as before", [], [], LIMITS.rowTitle),
+  reorder_body: t("نفس الطلب السابق: السلة جاهزة", "جهّزنا لك نفس طلبك {day} 🛒\n{lines}\n{changes}\n{closed}\nراجع السلة وكمّل الدفع من الرابط 👇", "Your order of {day} is ready in the cart 🛒\n{lines}\n{changes}\n{closed}\nReview the cart and pay from the link 👇", ["lines"], ["day", "changes", "closed"]),
   reorder_none: t("نفس الطلب الأخير: مش متاح تلقائياً", "ما قدرنا نجهّز نفس طلبك الأخير تلقائياً 🙏 تقدر تطلب من الرابط 👇", "We couldn't rebuild your last order automatically 🙏 You can order from the link 👇", [], [], 300),
   re_gone: t("سطر: صنف مش متاح", "غير متاح الآن وشلناه من السلة: {names}", "Not available now and removed from the cart: {names}", ["names"], [], 400),
   re_sold: t("سطر: صنف خلص اليوم", "خلص اليوم وشلناه من السلة: {names}", "Sold out today and removed from the cart: {names}", ["names"], [], 400),
@@ -375,6 +377,7 @@ export function botConfig(settings) {
     offersCacheMin: num(x.offersCacheMin, 1, 30, DEFAULTS.offersCacheMin), staleCacheMin: num(x.staleCacheMin, 5, 720, DEFAULTS.staleCacheMin),
     logKeepDays: num(x.logKeepDays, 7, 730, DEFAULTS.logKeepDays),
     reorderEnabled: x.reorderEnabled !== false, reorderMaxDays: num(x.reorderMaxDays, 1, 365, DEFAULTS.reorderMaxDays), reorderLinkDays: num(x.reorderLinkDays, 1, 30, DEFAULTS.reorderLinkDays),
+    reorderMinTotal: num(x.reorderMinTotal, 0, 500, DEFAULTS.reorderMinTotal), reorderLookback: num(x.reorderLookback, 1, 10, DEFAULTS.reorderLookback),
     maxAgeMinutes: num(x.maxAgeMinutes, 1, 120, DEFAULTS.maxAgeMinutes),
     duplicateSeconds: num(x.duplicateSeconds, 0, 3600, DEFAULTS.duplicateSeconds),
     maxRepliesPerHour: num(x.maxRepliesPerHour, 5, 300, DEFAULTS.maxRepliesPerHour),
@@ -429,7 +432,7 @@ export function configFromBody(b, prev = {}) {
   errors.push(...rangeErrors(src));
   delete out.humanWindowHours;      // اتلغى (١٢/١٠) — أي حفظ بينضّف المخزّن القديم
   for (const k of ["humanPauseMin", "staffWaitMin", "closedEchoPauseMin", "unknownWaitMin", "manualMuteHours", "handoffOpenHours", "freeRepliesPerMonth", "replyRateSar", "disclosureHours", "unknownHandoverAfter", "adWindowHours", "optinAnswerWindowMin",
-    "offerEndWithinDays", "boxesCacheMin", "menuCacheMin", "offersCacheMin", "staleCacheMin", "logKeepDays", "reorderMaxDays", "reorderLinkDays",
+    "offerEndWithinDays", "boxesCacheMin", "menuCacheMin", "offersCacheMin", "staleCacheMin", "logKeepDays", "reorderMaxDays", "reorderLinkDays", "reorderMinTotal", "reorderLookback",
     "greetWindowHours", "maxAgeMinutes", "duplicateSeconds", "maxRepliesPerHour", "maxTapsPerHour", "maxRepliesPerMinute", "orderLookbackHours", "lateAfterMinutes", "maxAlertsPerHour"]) {
     if (k in src) { if (Number.isFinite(Number(src[k])) && src[k] !== "" && src[k] !== null) out[k] = Number(src[k]); else errors.push(k); }
   }
@@ -641,6 +644,8 @@ export const SCHEMA = Object.freeze({
   reorderEnabled: S("orders", "boolean", "«نفس طلبي الأخير» بضغطة", "للعميل اللي طلب من الموقع قبل كده: صف في التحية، وبضغطة يوصله رابط سلة جاهزة بنفس طلبه (بعد التأكد إن الأصناف متاحة)."),
   reorderMaxDays: S("orders", "number", "آخر طلب يتعرض لو عمره أقل من", "", { min: 1, max: 365, unit: "يوم" }),
   reorderLinkDays: S("orders", "number", "صلاحية رابط السلة الجاهزة", "", { min: 1, max: 30, unit: "يوم" }),
+  reorderMinTotal: S("orders", "number", "أقل قيمة أصناف لطلب يتعرض", "طلبات التجربة الصغيرة بتتخطّى.", { min: 0, max: 500, unit: "ر.س" }),
+  reorderLookback: S("orders", "number", "لو آخر طلب مايتجهّزش: نجرّب اللي قبله لحد", "أول طلب يتجهّز على المنيو الحالي هو اللي بيتعرض، والرد بيقول يوم الطلب.", { min: 1, max: 10, unit: "طلب" }),
   firstCode: S("orders", "code", "كود أول طلب", "الكود اللي سطر «أول طلب» بيقرا شروطه من الكوبونات."),
   "links.organic": S("links", "slug", "رابط المحادثات العادية", "من «روابط الحملات»."),
   "links.ads": S("links", "slug", "رابط محادثات الإعلانات", ""),
@@ -870,7 +875,7 @@ export function buildReply(key, c) {
       const rows = [["m:boxes", "row_boxes"], ["m:cats", "row_cats"], ["m:offers", "row_offers"], ["m:delivery", "row_delivery"], ["m:status", "row_status"], ["m:human", "row_human"]].map(([id, k]) => ({ id, title: T(k) }));
       const vars = { paused: pausedLine(cfg, lang, data), closed: closedLine(cfg, lang, data, "closed_short") };
       const name = greetName(data.customerName);
-      if (cfg.reorderEnabled && data.reorder && data.reorder.plan && data.reorder.plan.ok) rows.unshift({ id: "re:last", title: T("row_reorder"), description: planSummary(data.reorder.plan, lang, LIMITS.rowDesc) });
+      if (cfg.reorderEnabled && data.reorder && data.reorder.plan && data.reorder.plan.ok) rows.unshift({ id: "re:last", title: T("row_reorder"), description: `${orderDay(data.reorder.at, "en").split(" ").pop()}: ${planSummary(data.reorder.plan, lang, LIMITS.rowDesc - 7)}` });
       return { body: name ? F("greet_back", { ...vars, name }) : F("greet", vars), list: { button: T("list_btn"), rows } };
     }
     case "resume_all": case "resume_updates": return { body: T(key) };
@@ -882,7 +887,7 @@ export function buildReply(key, c) {
       const gone = p.removed.filter((x) => x.why !== "sold_out").map((x) => x.name), sold = p.removed.filter((x) => x.why === "sold_out").map((x) => x.name);
       const changes = [gone.length ? F("re_gone", { names: gone.join(sep) }) : "", sold.length ? F("re_sold", { names: sold.join(sep) }) : "",
         ...p.repriced.map((x) => F("re_price", { name: x.name, now: money(x.now), was: money(x.was) })), p.review.length ? F("re_review", { names: p.review.join(sep) }) : ""].filter(Boolean).join("\n");
-      return { body: F("reorder_body", { lines, changes, closed: closedLine(cfg, lang, data, "closed_short") }), cta: { title: T("cta_reorder"), url: ro.url }, link: "wa-reorder" };
+      return { body: F("reorder_body", { day: orderDay(ro.at, lang), lines, changes, closed: closedLine(cfg, lang, data, "closed_short") }), cta: { title: T("cta_reorder"), url: ro.url }, link: "wa-reorder" };
     }
     case "menu": return withLink("menu", { boxes: boxesBlock(cfg, lang, data), closed: closedLine(cfg, lang, data) }, "cta_menu");
     case "order": return withLink("order", { first: firstLine(cfg, lang, data), paused: pausedLine(cfg, lang, data), closed: closedLine(cfg, lang, data) }, "cta_order");
@@ -1015,6 +1020,8 @@ const EXTRA = [
    ⇒ { act: "reply"|"silent", reason, key, rawIntent, lang, score, reply?, payloads?, handoff?, mute?, greet?, optout?, link? } */
 /* know = { menu (wabot.indexMenu من المنيو الحي), bundles } — من غيرهم التصنيف شغّال بس من غير أصناف/بوكسات بالاسم.
    ⇒ { key, arg, rawIntent, lang, score, entities }. arg: رقم القسم/الصنف، slug البوكس، رقم النوع، مفتاح السؤال الشائع… */
+/* سؤال عن مكونات صنف (بعد التطبيع). الجزء الأخير: «… فيه/فيها <كلمة>؟» بعلامة استفهام أو «هل …» — مش «شي فيه دجاج» اللي هو طلب اقتراح. */
+const INGR_RE = /مكونات|مكوناته|مكوناتها|يحتوي|تحتوي|معمول من|مصنوع من|ingredients?|what'?s in|\bcontains?\b|made (of|with)|(ايش|وش|شنو|ايه|شو) (اللي )?(فيه|فيها|داخله|جواه|جواها)|^هل .*(فيه|فيها|فيهم) \S+|(فيه|فيها|فيهم) (ال)?[^\s؟?]+ ?[؟?]\s*$/i;
 /* «نفس الطلب / زي آخر مرة / كرر الطلب / المعتاد» — بعد التطبيع (ة⇒ه، أ⇒ا) */
 const REORDER_RE = /(نفس|زي|مثل) (ال)?(طلب|طلبي|طلبنا|اخر مره|المره اللي فاتت|المره الماضيه)|كرر(وا|و)? ?(لي )?(ال)?(طلب|طلبي)|(ال)?معتاد|same (order|as last)|re-?order|the usual/i;
 export function classify(ev, know = {}) {
@@ -1069,6 +1076,9 @@ export function classify(ev, know = {}) {
   }
   if (intent === "menu" || intent === "item_price" || intent === "item_info") {
     if (e.notOnMenu) return done("notmenu", e.notOnMenu);
+    /* سؤال مكونات عن صنف («ايش مكونات…»، «… فيه جبن؟»): وصف المنيو مش قايمة مكونات كاملة (ملاحظة الشيف ١٢/١٠: وصف البرجر الكلاسيك
+       مافيهوش صوص الشيدر ولا الثاوزند آيلاند) ⇒ مانردّش بالوصف كأنه المكونات؛ نحوّل لموظف لحد ما ملف حقايق الأصناف يتوافق عليه. */
+    if ((INGR_RE.test(n) || INGR_RE.test(text)) && (e.itemId || (e.items || []).length || e.categoryId)) return done("staff", null, "ingredients");
     const ids = e.itemId ? [String(e.itemId)] : (e.items || []).map(String);
     if (ids.length === 1) return done("item", ids[0]);
     // «عندكم برجر دجاج»: الأصناف اللي فيها الكلمة مبعثرة على أقسام تانية ⇒ قسم البرجر نفسه أوضح. «وجبة كفتة»: كلهم من نفس القسم ⇒ هم.
@@ -1464,9 +1474,14 @@ export function register(app, ctx, deps = {}) {
       data.customerName = r && r[0] ? r[0].name : null;
     }
     if (need("greet", "reorder") && cfg.reorderEnabled) {   // لقطة سلة آخر طلب ⇒ خطة على المنيو والباقات الحيّة (مصدر ناقص ⇒ مفيش عرض)
-      try { const snap = await botCarts.lastOrderCart(phone, cfg.reorderMaxDays);
-        const plan = snap ? reorderPlan(snap, { menu: data.menu, bundles: data.bundles && data.bundles.length ? data.bundles : null }) : null;
-        data.reorder = plan && plan.ok ? { plan, orderNo: snap.orderNo, option: snap.option, url: null } : null; }
+      try {   // أحدث طلب **يتجهّز**: الأحدث أولاً، وأول واحد خطته تنفع على المنيو الحي هو اللي بيتعرض
+        const snaps = await botCarts.lastOrderCarts(phone, cfg.reorderMaxDays, { limit: cfg.reorderLookback, minTotal: cfg.reorderMinTotal });
+        data.reorder = null;
+        for (const snap of snaps || []) {
+          const plan = reorderPlan(snap, { menu: data.menu, bundles: data.bundles && data.bundles.length ? data.bundles : null });
+          if (plan && plan.ok) { data.reorder = { plan, orderNo: snap.orderNo, option: snap.option, at: snap.at, url: null }; break; }
+        }
+      }
       catch (e) { console.error("[wabot] reorder:", e.message); data.reorder = null; }
     }
     if (need("delivery", "area")) { const r = await q("SELECT config FROM dl_policies WHERE active ORDER BY priority DESC, id LIMIT 1", []); data.policy = r && r[0] ? r[0].config : null; }
@@ -1993,10 +2008,11 @@ export function register(app, ctx, deps = {}) {
     const out = { ok: true, enabled: cfg.reorderEnabled, maxDays: cfg.reorderMaxDays, coverage: typeof botCarts.coverage === "function" ? await botCarts.coverage(Number(c.req.query("days")) || 30) : null };
     const ph = String(c.req.query("phone") || "").replace(/\D/g, "").replace(/^(00966|966|0)/, "");
     if (/^5\d{8}$/.test(ph)) {
-      const snap = await botCarts.lastOrderCart(ph, cfg.reorderMaxDays);
+      const snaps = await botCarts.lastOrderCarts(ph, cfg.reorderMaxDays, { limit: cfg.reorderLookback, minTotal: cfg.reorderMinTotal });
       const now = clock(), menu = await menuIndex(settings, now), bs = await bundles();
-      const plan = snap ? reorderPlan(snap, { menu, bundles: bs && bs.length ? bs : null }) : null;
-      out.customer = { hasSnapshot: Boolean(snap), fromOrder: snap ? snap.orderNo : null, plan: plan ? { ok: plan.ok, why: plan.why || null, lines: plan.lines, removed: plan.removed, repriced: plan.repriced, review: plan.review } : null };
+      const tried = snaps.map((snap) => { const plan = reorderPlan(snap, { menu, bundles: bs && bs.length ? bs : null }); return { fromOrder: snap.orderNo, day: orderDay(snap.at, "ar"), latest: snap.latest, ok: plan.ok, why: plan.why || null, lines: plan.lines, removed: plan.removed, repriced: plan.repriced, review: plan.review }; });
+      const pick = tried.find((t) => t.ok) || null;
+      out.customer = { hasSnapshot: snaps.length > 0, candidates: snaps.length, fromOrder: pick ? pick.fromOrder : null, plan: pick, tried: tried.map((t) => ({ fromOrder: t.fromOrder, day: t.day, ok: t.ok, why: t.why })) };
     }
     return c.json(out);
   });

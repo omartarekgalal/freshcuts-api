@@ -208,7 +208,7 @@ function world({ waBot = {}, notifications = { whatsappEnabled: true }, orders =
     normPhone: (x) => String(x || "").replace(/\D/g, "").replace(/^966/, "").replace(/^0/, ""), isOwner: () => owner };
   const wa = W.register(app, ctx, { fetch, sendSms: async () => ({ ok: true }) });
   const sms = [];
-  const botCarts = { ensure: async () => {}, lastOrderCart: async (ph) => (typeof lastCart === "function" ? lastCart(ph) : lastCart),
+  const botCarts = { ensure: async () => {}, lastOrderCarts: async (ph, days, o) => { const v = typeof lastCart === "function" ? lastCart(ph, days, o) : lastCart; return (Array.isArray(v) ? v : v ? [v] : []).map((x, i) => ({ latest: i === 0, ...x })); },
     create: async (x) => { if (failDb && failDb.test("INSERT INTO wa_bot_carts")) return null; const code = `rc${String(db.botCarts.length + 1).padStart(6, "0")}`; db.botCarts.push({ code, ...x }); return { code }; }, open: async () => null, restore: async () => null, coverage: async () => ({ orders: 40, with_snapshot: 30, with_raw: 28, usable: 26, avg_diff: 0, mismatched: 2, links: db.botCarts.length, opened: 0 }) };
   const bot = R.register(app, ctx, { app, wa, now: clock.now, noTimer: true, botCarts, whoami: async () => actor.who, ...(resolveMapsLink ? { resolveMapsLink } : { resolveMapsLink: async () => null }), sendSms: async (x) => { sms.push(x); return { ok: true }; },
     fetchMenuPages: async () => { if (pages === null) throw new Error("menu down"); return pages; }, quote: async (lat, lng) => (typeof quote === "function" ? quote(lat, lng) : quote), llm,
@@ -1717,7 +1717,7 @@ test("ready-cart store: last order's snapshot only when it really is that order'
   const pool = { async query(sql, p = []) {
     const s = String(sql).replace(/\s+/g, " ").trim();
     if (/^CREATE TABLE/.test(s)) return { rows: [] };
-    if (/FROM shop_orders WHERE phone_norm=\$1/.test(s)) return { rows: rows.orders.filter((o) => o.phone_norm === p[0] && nowMs - Date.parse(o.created_at) < p[1] * 86400_000).slice(-1) };
+    if (/FROM shop_orders WHERE phone_norm=\$1/.test(s)) return { rows: rows.orders.filter((o) => o.phone_norm === p[0] && nowMs - Date.parse(o.created_at) < p[1] * 86400_000 && Number(o.subtotal) >= p[3]).sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at)).slice(0, p[2]) };
     if (/FROM shop_carts WHERE phone_norm=\$1 AND recovered_order=\$2/.test(s)) return { rows: rows.carts.filter((c) => c.phone_norm === p[0] && c.recovered_order === p[1] && c.cart_raw).sort((a, b) => Math.abs(a.subtotal - p[2]) - Math.abs(b.subtotal - p[2])).slice(0, 1) };
     if (/FROM cart_recovery WHERE code=\$1 UNION ALL/.test(s)) return { rows: rows.taken.has(p[0]) || rows.bot.some((b) => b.code === p[0]) ? [{}] : [] };
     if (/^INSERT INTO wa_bot_carts/.test(s)) { rows.bot.push({ code: p[0], phone_norm: p[1], source: p[2], from_order: p[3], items: JSON.parse(p[4]), cart_raw: JSON.parse(p[5]), option: p[6], note: JSON.parse(p[7]), exp: nowMs + p[8] * 86400_000, opens: 0 }); return { rows: [{ code: p[0] }] }; }
@@ -1741,6 +1741,13 @@ test("ready-cart store: last order's snapshot only when it really is that order'
   rows.carts.push({ phone_norm: "512345678", recovered_order: "W2", cart_raw: { 8: { item: { id: 8 }, qty: 1 } }, items: [{ id: 8, n: "x", q: 1, p: 40 }], subtotal: 40, option: "delivery" });
   assert.deepEqual(Object.keys((await st.lastOrderCart("512345678", 90)).raw), ["8"]);
   rows.orders.pop(); rows.carts.splice(1);
+  // several orders: newest first, only those with a trusted snapshot; tiny and test orders are skipped by the query
+  rows.orders.push({ phone_norm: "512345678", order_no: "W3", option: "pickup", subtotal: 0.5, created_at: "2026-10-11T18:00:00Z" });
+  rows.carts.push({ phone_norm: "512345678", recovered_order: "W3", cart_raw: { 1: { item: { id: 1 }, qty: 1 } }, items: [], subtotal: 0.5, option: "pickup" });
+  assert.deepEqual((await st.lastOrderCarts("512345678", 90, { limit: 5, minTotal: 0 })).map((x) => [x.orderNo, x.latest]), [["W3", true], ["W1", false]]);
+  assert.deepEqual((await st.lastOrderCarts("512345678", 90, { limit: 5, minTotal: 10 })).map((x) => x.orderNo), ["W1"], "a 0.5 SAR test order is not offered");
+  assert.deepEqual(await st.lastOrderCarts("abc", 90), []);
+  rows.orders.pop(); rows.carts.pop();
   const plan = BC.reorderPlan(snap, { menu: KNOW.menu, bundles: LIVE.bundles });
   const made = await st.create({ phone: "512345678", source: "reorder", fromOrder: "W1", plan, option: "pickup", days: 7 });
   assert.match(made.code, /^[a-z0-9]{8}$/); assert.equal(rows.bot[0].from_order, "W1"); assert.deepEqual(rows.bot[0].note, { removed: [], repriced: [], review: [] });
@@ -1758,11 +1765,11 @@ test("«نفس طلبي الأخير»: a row in the returning customer's greeti
   const w = liveWorld({ orders: prior, lastCart: SNAP() });
   const g = await w.say("السلام عليكم");
   assert.equal(bodyOf(g.sent[0]), "حيّاك الله أحمد 👋 اختر من القائمة.");
-  assert.deepEqual(rowsOf(g.sent[0])[0], { id: "re:last", title: "🔁 نفس طلبي الأخير", description: "2× كريب زنجر سوبريم، بنا تشيكن كازرول، ميكس جريل لشخصين" });
+  assert.deepEqual(rowsOf(g.sent[0])[0], { id: "re:last", title: "🔁 نفس طلبي السابق", description: "5/10: 2× كريب زنجر سوبريم، بنا تشيكن كازرول، ميكس جريل لشخصين" });
   assert.equal(rowsOf(g.sent[0]).length, 7); assert.equal(w.db.botCarts.length, 0, "nothing is created until he taps");
   w.clock.advance(1);
   const r = await w.press("re:last", "🔁 نفس طلبي الأخير");
-  assert.deepEqual(r.sent, [cta(ME, "جهّزنا لك نفس طلبك الأخير 🛒\n• 2× كريب زنجر سوبريم\n• بنا تشيكن كازرول\n• ميكس جريل لشخصين\nراجع السلة وكمّل الدفع من الرابط 👇", "كمّل طلبك", "https://freshcuts.sa/c/rc000001")]);
+  assert.deepEqual(r.sent, [cta(ME, "جهّزنا لك نفس طلبك يوم الاثنين 5/10 🛒\n• 2× كريب زنجر سوبريم\n• بنا تشيكن كازرول\n• ميكس جريل لشخصين\nراجع السلة وكمّل الدفع من الرابط 👇", "كمّل طلبك", "https://freshcuts.sa/c/rc000001")]);
   assert.equal(r.log.reply_key, "reorder"); assert.equal(r.log.link_slug, "wa-reorder"); assert.equal(r.log.handoff, null);
   assert.deepEqual([w.db.botCarts[0].phone, w.db.botCarts[0].source, w.db.botCarts[0].fromOrder, w.db.botCarts[0].option, w.db.botCarts[0].days], ["512345678", "reorder", "W1790011111111", "delivery", 7]);
   // typed, in several wordings
@@ -1773,7 +1780,7 @@ test("«نفس طلبي الأخير»: a row in the returning customer's greeti
   const snap2 = SNAP(); snap2.items[0].p = 30;
   const c = liveWorld({ orders: prior, lastCart: snap2, pages: pages2, bundles: LIVE.bundles.map((b) => (b.slug === "box-mixgrill-duo" ? { ...b, price: 89 } : b)) });
   const cr = await c.say("نفس الطلب");
-  assert.equal(bodyOf(cr.sent[0]), "جهّزنا لك نفس طلبك الأخير 🛒\n• 2× كريب زنجر سوبريم\n• ميكس جريل لشخصين\nغير متاح الآن وشلناه من السلة: بنا تشيكن كازرول\nسعر ميكس جريل لشخصين الآن 89 ر.س (كان 85 ر.س)\nراجع الإضافات والسعر في السلة قبل الدفع: كريب زنجر سوبريم\nراجع السلة وكمّل الدفع من الرابط 👇");
+  assert.equal(bodyOf(cr.sent[0]), "جهّزنا لك نفس طلبك يوم الاثنين 5/10 🛒\n• 2× كريب زنجر سوبريم\n• ميكس جريل لشخصين\nغير متاح الآن وشلناه من السلة: بنا تشيكن كازرول\nسعر ميكس جريل لشخصين الآن 89 ر.س (كان 85 ر.س)\nراجع الإضافات والسعر في السلة قبل الدفع: كريب زنجر سوبريم\nراجع السلة وكمّل الدفع من الرابط 👇");
   assert.deepEqual(Object.keys(c.db.botCarts[0].plan.raw), ["8", "box-mixgrill-duo:k1"], "the cart behind the link holds only what is available");
   const so = liveWorld({ orders: prior, lastCart: SNAP(), extraSettings: { catalog: { soldOut: { 8: {} } } } });
   assert.match(bodyOf((await so.say("نفس الطلب")).sent[0]), /\nخلص اليوم وشلناه من السلة: كريب زنجر سوبريم\n/);
@@ -1800,11 +1807,42 @@ test("«نفس طلبي الأخير»: a row in the returning customer's greeti
   assert.equal((await h.press("re:last", "x")).log.reply_key, "handoff_remind"); assert.equal(h.db.botCarts.length, 1, "the row made before the decision is an unused orphan, never sent");
   // owner diagnostics: coverage numbers, and what one customer would get (nothing is created)
   const chk = (await w.call("GET", "/api/cms/wabot/reorder-check", {}, { phone: "0512345678" })).body;
-  assert.deepEqual([chk.ok, chk.enabled, chk.coverage.usable, chk.customer.hasSnapshot, chk.customer.fromOrder, chk.customer.plan.ok, chk.customer.plan.lines.length], [true, true, 26, true, "W1790011111111", true, 3]);
+  assert.deepEqual([chk.ok, chk.enabled, chk.coverage.usable, chk.customer.hasSnapshot, chk.customer.fromOrder, chk.customer.plan.ok, chk.customer.plan.lines.length, chk.customer.plan.day], [true, true, 26, true, "W1790011111111", true, 3, "يوم الاثنين 5/10"]);
   assert.equal((await w.call("GET", "/api/cms/wabot/reorder-check")).body.customer, undefined); assert.equal(w.db.botCarts.length, 1);
+  // Omar's own case (12/10): his LATEST order can not be rebuilt (a test item that is no longer on the menu) but an older one can ⇒ the older one is offered, and the reply says which day
+  const older = [{ ...SNAP(), orderNo: "W1791728428905", at: "2026-10-11T18:00:00Z", raw: { "999999": { item: { id: 999999 }, qty: 1 } }, items: [] }, { ...SNAP(), orderNo: "W1790000000002", at: "2026-10-03T16:30:00Z" }];
+  let askedWith = null;
+  const om = liveWorld({ orders: prior, lastCart: (ph, days, o) => { askedWith = [days, o]; return older; } });
+  const og = await om.say("السلام عليكم");
+  assert.equal(rowsOf(og.sent[0])[0].description, "3/10: 2× كريب زنجر سوبريم، بنا تشيكن كازرول، ميكس جريل لشخصين");
+  assert.deepEqual(askedWith, [90, { limit: 5, minTotal: 10 }], "the store is asked for the last 5 orders of at least 10 SAR (tiny test orders are skipped there)");
+  om.clock.advance(1);
+  const ot = await om.press("re:last", "x");
+  assert.match(bodyOf(ot.sent[0]), /^جهّزنا لك نفس طلبك يوم السبت 3\/10 🛒\n/); assert.equal(om.db.botCarts[0].fromOrder, "W1790000000002");
+  const oc = (await om.call("GET", "/api/cms/wabot/reorder-check", {}, { phone: "0512345678" })).body.customer;
+  assert.deepEqual(oc.tried, [{ fromOrder: "W1791728428905", day: "يوم الأحد 11/10", ok: false, why: "nothing_left" }, { fromOrder: "W1790000000002", day: "يوم السبت 3/10", ok: true, why: null }]);
+  assert.deepEqual([BC.orderDay("2026-10-11T22:30:00Z"), BC.orderDay("2026-10-11T22:30:00Z", "en"), BC.orderDay("nonsense")], ["يوم الاثنين 12/10", "Monday 12/10", ""], "the day is the Riyadh day");
   // settings
-  assert.deepEqual([R.botConfig({}).reorderEnabled, R.botConfig({}).reorderMaxDays, R.botConfig({}).reorderLinkDays], [true, 90, 7]);
+  assert.deepEqual([R.botConfig({}).reorderEnabled, R.botConfig({}).reorderMaxDays, R.botConfig({}).reorderLinkDays, R.botConfig({}).reorderMinTotal, R.botConfig({}).reorderLookback], [true, 90, 7, 10, 5]);
   assert.equal(R.configFromBody({ reorderLinkDays: 99 }).ok, false); assert.equal(R.configFromBody({ reorderEnabled: false }).value.reorderEnabled, false);
+}));
+
+test("an ingredient question about a dish is handed to staff: the menu description is not an ingredient list (chef's finding 12/10)", withEnv(LOCKS_OPEN, async () => {
+  const K = (t) => R.classify({ text: t, type: "text" }, KNOW);
+  for (const t of ["ايش مكونات البرجر الكلاسيك", "كريب زنجر فيه جبن؟", "وش فيه كريب زنجر", "هل البيتزا فيها مشروم", "what's in the zinger crepe", "البرجر الكلاسيك يحتوي على ايش", "هل كريب زنجر فيه بصل"]) {
+    const c = K(t); assert.deepEqual([c.key, c.rawIntent], ["staff", "ingredients"], t);
+  }
+  // allergy wording keeps its own path (the general allergens answer stays empty by design ⇒ handover)
+  for (const t of ["البرجر الكلاسيك فيه سمسم؟", "عندي حساسية من البيض هل الكريب فيه بيض", "does the burger contain sesame"]) assert.deepEqual([K(t).key, K(t).arg], ["faq", "allergens"], t);
+  // ordinary dish questions are untouched: price, the dish itself, a section, a box's contents, a suggestion
+  for (const [t, key] of [["كم سعر كريب زنجر", "item"], ["كريب زنجر", "item"], ["كم سعر البيتزا", "cat"], ["ايش فيه بوكس الشخصين", "tier"], ["ايش فيه بوكس السهرة", "box"], ["عندكم برجر دجاج", "cat"], ["بكم الكفتة", "items"]]) assert.equal(K(t).key, key, t);
+  const w = liveWorld();
+  const r = await w.say("ايش مكونات البرجر الكلاسيك");
+  assert.deepEqual(r.sent, [txt(ME, `سؤالك يحتاج واحد من الفريق 🙏 حوّلته لهم.\n${HAND}`)]); assert.equal(r.log.handoff, "needs_staff");
+  assert.doesNotMatch(JSON.stringify(r.sent), /برجر لحم|شيدر|خس/, "the description is not quoted");
+  // tapping the dish in the menu still shows its menu description (a description, not a claim about ingredients)
+  const t2 = liveWorld();
+  assert.match(bodyOf((await t2.press("item:8", "x")).sent[0]), /^\*كريب زنجر سوبريم\* — 25 ر\.س\nستربس دجاج حار/);
 }));
 
 test("replay: the stored inbound messages run through the current classifier offline — nothing sent, nothing logged", withEnv(LOCKS_OPEN, async () => {
