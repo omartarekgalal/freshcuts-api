@@ -1,0 +1,1032 @@
+{
+"note": "Live freshcuts.sa menu and boxes captured 2026-10-12 (trimmed) — test data only",
+"pages": [
+{
+"id": 38,
+"title": "Best Sellers",
+"local_title": "الأكثر طلباً",
+"items": [
+{
+"id": 59,
+"name": "بنا تشيكن كازرول",
+"local_name": "Penne Chicken Casserole",
+"description": "مكرونة بنا بصدور دجاج متبلة، شرائح لحم بقري وزيتون مع طبقة موتزاريلا وكيري",
+"retail_price": 28,
+"price": 24.34782609
+},
+{
+"id": 13,
+"name": "وجبة نصف دجاجة على الفحم",
+"local_name": "Half Charcoal Chicken Meal",
+"description": "نصف دجاجة مشوية على الفحم تُقدَّم مع الأرز والسلطة والطحينة",
+"retail_price": 28,
+"price": 24.34782609
+},
+{
+"id": 3,
+"name": "كريب ميكس دجاج",
+"local_name": "Mixed Chicken Crepe",
+"description": "ستربس دجاج، صدور دجاج متبلة، ديك رومي مدخن، موتزاريلا، شيدر، فلفل وزيتون",
+"retail_price": 29,
+"price": 25.2173913
+},
+{
+"id": 1,
+"name": "كريب ميكس لحوم",
+"local_name": "Mixed Meat Crepe",
+"description": "برجر، سجق، هوت دوج، موتزاريلا، صوص تكساس، فلفل وزيتون",
+"retail_price": 30,
+"price": 26.08695652
+},
+{
+"id": 18,
+"name": "وجبة ميكس جريل",
+"local_name": "Mixed Grill Meal",
+"description": "وجبة مشوية تحتوي على كفتة، طرب، صدور دجاج، شيش طاووق تُقدَّم مع الأرز والسلطة والطحينة",
+"retail_price": 37,
+"price": 32.17391304
+},
+{
+"id": 9,
+"name": "كريب سوبر كرانشي",
+"local_name": "Super Crunchy Crepe",
+"description": "ستربس دجاج، ديك رومي مدخن، موتزاريلا، فلفل وزيتون",
+"retail_price": 28,
+"price": 24.34782609
+},
+{
+"id": 8,
+"name": "كريب زنجر سوبريم",
+"local_name": "Zinger Supreme Crepe",
+"description": "ستربس دجاج حار، موتزاريلا، شيدر، فلفل وزيتون",
+"retail_price": 25,
+"price": 21.73913043
+},
+{
+"id": 61,
+"name": "باستا بشاميل",
+"local_name": "Pasta Béchamel",
+"description": "مكرونة بنا بشاميل باللحم المفروم مع طبقة موتزاريلا",
+"retail_price": 25,
+"price": 21.73913043
+},
+{
+"id": 84,
+"name": "طبق كبدة اسكندراني",
+"local_name": "Alexandrian Liver Plate",
+"description": "وجبة كبدة اسكندراني تُقدَّم مع الطحينة والسلطة والخبز",
+"retail_price": 25,
+"price": 21.73913043
+}
+]
+},
+{
+"id": 39,
+"title": "Offers",
+"local_title": "العروض",
+"items": []
+},
+{
+"id": 21,
+"title": "Meals",
+"local_title": "وجبات",
+"items": [
+{
+"id": 18,
+"name": "وجبة ميكس جريل",
+"local_name": "Mixed Grill Meal",
+"description": "وجبة مشوية تحتوي على كفتة، طرب، صدور دجاج، شيش طاووق تُقدَّم مع الأرز والسلطة والطحينة",
+"retail_price": 37,
+"price": 32.17391304
+},
+{
+"id": 87,
+"name": "وجبة كفتة وطرب",
+"local_name": "Kofta & Tarb Meal",
+"description": "وجبة مشوية تحتوي على كفتة وطرب تُقدَّم مع الأرز والسلطة والطحينة",
+"retail_price": 37,
+"price": 32.17391304
+},
+{
+"id": 13,
+"name": "وجبة نصف دجاجة على الفحم",
+"local_name": "Half Charcoal Chicken Meal",
+"description": "نصف دجاجة مشوية على الفحم تُقدَّم مع الأرز والسلطة والطحينة",
+"retail_price": 28,
+"price": 24.34782609
+},
+{
+"id": 14,
+"name": "وجبة دجاجة كاملة على الفحم",
+"local_name": "Whole Charcoal Chicken Meal",
+"description": "دجاجة كاملة مشوية على الفحم تُقدَّم مع الأرز والسلطة والطحينة",
+"retail_price": 52,
+"price": 45.2173913
+},
+{
+"id": 15,
+"name": "وجبة صدور مشوية",
+"local_name": "Grilled Chicken Breast Meal",
+"description": "وجبة صدور دجاج مشوية تُقدَّم مع الأرز والسلطة والطحينة",
+"retail_price": 25,
+"price": 21.73913043
+},
+{
+"id": 17,
+"name": "وجبة كفتة",
+"local_name": "Kofta Meal",
+"description": "وجبة كفتة مشوية تُقدَّم مع الأرز والسلطة والطحينة",
+"retail_price": 24,
+"price": 20.86956522
+},
+{
+"id": 16,
+"name": "وجبة طرب",
+"local_name": "Tarb Meal",
+"description": "وجبة طرب مشوية تُقدَّم مع الأرز والسلطة والطحينة",
+"retail_price": 27,
+"price": 23.47826087
+},
+{
+"id": 90,
+"name": "وجبة شيش طاووق",
+"local_name": "Shish Tawook Meal",
+"description": "وجبة شيش طاووق مشوية تُقدَّم مع الأرز والسلطة والطحينة",
+"retail_price": 27,
+"price": 23.47826087
+},
+{
+"id": 84,
+"name": "طبق كبدة اسكندراني",
+"local_name": "Alexandrian Liver Plate",
+"description": "وجبة كبدة اسكندراني تُقدَّم مع الطحينة والسلطة والخبز",
+"retail_price": 25,
+"price": 21.73913043
+},
+{
+"id": 85,
+"name": "ورقة سجق اسكندراني",
+"local_name": "Alexandrian Sausage in Foil",
+"description": "وجبة سجق اسكندراني تُقدَّم مع الطحينة والسلطة والخبز",
+"retail_price": 28,
+"price": 24.34782609
+}
+]
+},
+{
+"id": 43,
+"title": "Grills by the Kilo",
+"local_title": "مشاوي بالوزن",
+"items": [
+{
+"id": 97,
+"name": "كباب مشوي بالوزن",
+"local_name": "Grilled Kebab (by the kilo)",
+"description": "كباب مشوي على الفحم — متاح بثلث كيلو ونصف كيلو وكيلو",
+"retail_price": 47,
+"price": 40.86956522
+},
+{
+"id": 91,
+"name": "كفتة مشوية بالوزن",
+"local_name": "Grilled Kofta (by the kilo)",
+"description": "كفتة مشوية على الفحم — متاح بثلث كيلو ونصف كيلو وكيلو",
+"retail_price": 40,
+"price": 34.7826087
+},
+{
+"id": 105,
+"name": "سجق مشوي بالوزن",
+"local_name": "Grilled Sausage (by the kilo)",
+"description": "سجق مشوي على الفحم — متاح بثلث كيلو ونصف كيلو وكيلو",
+"retail_price": 40,
+"price": 34.7826087
+},
+{
+"id": 94,
+"name": "طرب مشوي بالوزن",
+"local_name": "Grilled Tarb (by the kilo)",
+"description": "طرب مشوي على الفحم — متاح بثلث كيلو ونصف كيلو وكيلو",
+"retail_price": 47,
+"price": 40.86956522
+},
+{
+"id": 108,
+"name": "كبدة مشوية بالوزن",
+"local_name": "Grilled Liver (by the kilo)",
+"description": "كبدة مشوية على الفحم — متاح بثلث كيلو ونصف كيلو وكيلو",
+"retail_price": 33,
+"price": 28.69565217
+},
+{
+"id": 111,
+"name": "صدور مشوية بالوزن",
+"local_name": "Grilled Chicken Breast (by the kilo)",
+"description": "صدور مشوية على الفحم — متاح بثلث كيلو ونصف كيلو وكيلو",
+"retail_price": 30,
+"price": 26.08695652
+},
+{
+"id": 114,
+"name": "شيش طاووق مشوي بالوزن",
+"local_name": "Grilled Shish Tawook (by the kilo)",
+"description": "شيش طاووق مشوي على الفحم — متاح بثلث كيلو ونصف كيلو وكيلو",
+"retail_price": 37,
+"price": 32.17391304
+},
+{
+"id": 100,
+"name": "ريش مشوية بالوزن",
+"local_name": "Grilled Lamb Chops (by the kilo)",
+"description": "ريش مشوية على الفحم — متاح بثلث كيلو ونصف كيلو وكيلو",
+"retail_price": 62,
+"price": 53.91304348
+},
+{
+"id": 103,
+"name": "مشكل مخصوص بالوزن",
+"local_name": "Special Mixed Grill (by the kilo)",
+"description": "مشكل مخصوص على الفحم — متاح بثلث كيلو ونصف كيلو وكيلو",
+"retail_price": 53,
+"price": 46.08695652
+}
+]
+},
+{
+"id": 23,
+"title": "Crepes",
+"local_title": "كريبات",
+"items": [
+{
+"id": 1,
+"name": "كريب ميكس لحوم",
+"local_name": "Mixed Meat Crepe",
+"description": "برجر، سجق، هوت دوج، موتزاريلا، صوص تكساس، فلفل وزيتون",
+"retail_price": 30,
+"price": 26.08695652
+},
+{
+"id": 3,
+"name": "كريب ميكس دجاج",
+"local_name": "Mixed Chicken Crepe",
+"description": "ستربس دجاج، صدور دجاج متبلة، ديك رومي مدخن، موتزاريلا، شيدر، فلفل وزيتون",
+"retail_price": 29,
+"price": 25.2173913
+},
+{
+"id": 9,
+"name": "كريب سوبر كرانشي",
+"local_name": "Super Crunchy Crepe",
+"description": "ستربس دجاج، ديك رومي مدخن، موتزاريلا، فلفل وزيتون",
+"retail_price": 28,
+"price": 24.34782609
+},
+{
+"id": 8,
+"name": "كريب زنجر سوبريم",
+"local_name": "Zinger Supreme Crepe",
+"description": "ستربس دجاج حار، موتزاريلا، شيدر، فلفل وزيتون",
+"retail_price": 25,
+"price": 21.73913043
+},
+{
+"id": 6,
+"name": "كريب شيش طاووق",
+"local_name": "Shish Tawook Crepe",
+"description": "شيش طاووق، موتزاريلا، فلفل وزيتون",
+"retail_price": 25,
+"price": 21.73913043
+},
+{
+"id": 7,
+"name": "كريب فاهيتا دجاج",
+"local_name": "Chicken Fajita Crepe",
+"description": "صدور دجاج متبلة، موتزاريلا، فلفل وزيتون",
+"retail_price": 24,
+"price": 20.86956522
+},
+{
+"id": 83,
+"name": "كريب ستربس",
+"local_name": "Chicken Strips Crepe",
+"description": "ستربس دجاج، موتزاريلا، شيدر، فلفل وزيتون",
+"retail_price": 25,
+"price": 21.73913043
+},
+{
+"id": 4,
+"name": "كريب هوت دوج",
+"local_name": "Hot Dog Crepe",
+"description": "هوت دوج، موتزاريلا، فلفل وزيتون",
+"retail_price": 23,
+"price": 20
+},
+{
+"id": 10,
+"name": "كريب ميكس جبن",
+"local_name": "Mixed Cheese Crepe",
+"description": "موتزاريلا، شيدر، جبنة رومي، فلفل وزيتون",
+"retail_price": 20,
+"price": 17.39130435
+},
+{
+"id": 11,
+"name": "كريب بطاطس",
+"local_name": "Potato Crepe",
+"description": "بطاطس، موتزاريلا، فلفل وزيتون",
+"retail_price": 15,
+"price": 13.04347826
+},
+{
+"id": 118,
+"name": "إضافة كومبو",
+"local_name": "Combo Add-on",
+"description": "بطاطس محمرة + علبة بيبسي",
+"retail_price": 6,
+"price": 5.2173913
+}
+]
+},
+{
+"id": 40,
+"title": "Pizza",
+"local_title": "بيتزا",
+"items": [
+{
+"id": 41,
+"name": "بيتزا سوبر سوبريم",
+"local_name": "Super Supreme Pizza",
+"description": "شرائح لحم بقري، سجق، بيبروني، موتزاريلا، فلفل وزيتون",
+"retail_price": 31,
+"price": 26.95652174
+},
+{
+"id": 47,
+"name": "بيتزا سوبر كرانشي",
+"local_name": "Super Crunchy Pizza",
+"description": "ستربس دجاج، ديك رومي مدخن، موتزاريلا، شيدر، فلفل وزيتون",
+"retail_price": 34,
+"price": 29.56521739
+},
+{
+"id": 39,
+"name": "بيتزا سي فود رانش",
+"local_name": "Seafood Ranch Pizza",
+"description": "جمبري، كاليماري، كابوريا، موتزاريلا وصوص رانش، فلفل وزيتون",
+"retail_price": 38,
+"price": 33.04347826
+},
+{
+"id": 40,
+"name": "بيتزا بيبروني",
+"local_name": "Pepperoni Pizza",
+"description": "بيبروني، موتزاريلا، فلفل وزيتون",
+"retail_price": 29,
+"price": 25.2173913
+},
+{
+"id": 42,
+"name": "بيتزا تشيكن باربكيو",
+"local_name": "Chicken BBQ Pizza",
+"description": "صدور دجاج متبلة، هوت دوج، موتزاريلا، باربكيو، فلفل وزيتون",
+"retail_price": 28,
+"price": 24.34782609
+},
+{
+"id": 43,
+"name": "بيتزا تشيكن رانش",
+"local_name": "Chicken Ranch Pizza",
+"description": "صدور دجاج متبلة، موتزاريلا، صوص رانش، فلفل، مشروم وهالابينو",
+"retail_price": 28,
+"price": 24.34782609
+},
+{
+"id": 46,
+"name": "بيتزا تشيكن ديناميت",
+"local_name": "Chicken Dynamite Pizza",
+"description": "ستربس دجاج، موتزاريلا، صوص ديناميت، هالابينو وزيتون",
+"retail_price": 30,
+"price": 26.08695652
+},
+{
+"id": 36,
+"name": "بيتزا تشيكن الباتشينو",
+"local_name": "Chicken Pacino Pizza",
+"description": "صدور دجاج متبلة، ديك رومي مدخن، موتزاريلا، ريكفورد، فلفل وزيتون",
+"retail_price": 30,
+"price": 26.08695652
+},
+{
+"id": 38,
+"name": "بيتزا برجر",
+"local_name": "Burger Pizza",
+"description": "برجر لحم، موتزاريلا، صوص تكساس، مشروم، فلفل وزيتون",
+"retail_price": 30,
+"price": 26.08695652
+},
+{
+"id": 48,
+"name": "بيتزا تونة",
+"local_name": "Tuna Pizza",
+"description": "تونة، موتزاريلا، ذرة، فلفل وزيتون",
+"retail_price": 30,
+"price": 26.08695652
+},
+{
+"id": 37,
+"name": "بيتزا كواترو تشيز",
+"local_name": "Quattro Cheese Pizza",
+"description": "موتزاريلا، شيدر، جبنة رومي، ريكفورد، فلفل وزيتون",
+"retail_price": 25,
+"price": 21.73913043
+},
+{
+"id": 44,
+"name": "بيتزا خضروات",
+"local_name": "Vegetable Pizza",
+"description": "موتزاريلا، مشروم، بصل، فلفل وزيتون",
+"retail_price": 22,
+"price": 19.13043478
+},
+{
+"id": 45,
+"name": "بيتزا مارجريتا",
+"local_name": "Margherita Pizza",
+"description": "بيتزا بطبقة جبنة موتزاريلا",
+"retail_price": 20,
+"price": 17.39130435
+}
+]
+},
+{
+"id": 42,
+"title": "Skillets",
+"local_title": "طاسات",
+"items": [
+{
+"id": 51,
+"name": "طاسة الأكيلة",
+"local_name": "Akeela Skillet",
+"description": "طاسة جبن مع بسطرمة، سجق، فلفل، بصل وزيتون",
+"retail_price": 41,
+"price": 35.65217391
+},
+{
+"id": 50,
+"name": "طاسة كرانشي",
+"local_name": "Crunchy Skillet",
+"description": "طاسة جبن مع ستربس دجاج، ديك رومي مدخن، فلفل، بصل وزيتون",
+"retail_price": 38,
+"price": 33.04347826
+},
+{
+"id": 54,
+"name": "طاسة صدور مشوية",
+"local_name": "Grilled Chicken Breast Skillet",
+"description": "طاسة جبن مع صدور دجاج متبلة، فلفل، بصل وزيتون",
+"retail_price": 32,
+"price": 27.82608696
+},
+{
+"id": 53,
+"name": "طاسة برجر",
+"local_name": "Burger Skillet",
+"description": "طاسة جبن مع برجر لحم، فلفل، بصل وزيتون",
+"retail_price": 32,
+"price": 27.82608696
+},
+{
+"id": 52,
+"name": "طاسة هوت دوج",
+"local_name": "Hot Dog Skillet",
+"description": "طاسة جبن مع هوت دوج، فلفل، بصل وزيتون",
+"retail_price": 29,
+"price": 25.2173913
+}
+]
+},
+{
+"id": 24,
+"title": "Pasta",
+"local_title": "باستا",
+"items": [
+{
+"id": 59,
+"name": "بنا تشيكن كازرول",
+"local_name": "Penne Chicken Casserole",
+"description": "مكرونة بنا بصدور دجاج متبلة، شرائح لحم بقري وزيتون مع طبقة موتزاريلا وكيري",
+"retail_price": 28,
+"price": 24.34782609
+},
+{
+"id": 61,
+"name": "باستا بشاميل",
+"local_name": "Pasta Béchamel",
+"description": "مكرونة بنا بشاميل باللحم المفروم مع طبقة موتزاريلا",
+"retail_price": 25,
+"price": 21.73913043
+},
+{
+"id": 56,
+"name": "تشيكن بنا الفريدو",
+"local_name": "Chicken Penne Alfredo",
+"description": "مكرونة بنا بقطع دجاج متبلة، بارميزان، زيتون ومشروم",
+"retail_price": 25,
+"price": 21.73913043
+},
+{
+"id": 58,
+"name": "بنا بيف كازرول",
+"local_name": "Penne Beef Casserole",
+"description": "مكرونة بنا بقطع اللحم، براون صوص ومشروم مع طبقة موتزاريلا",
+"retail_price": 35,
+"price": 30.43478261
+},
+{
+"id": 57,
+"name": "سي فود كازرول",
+"local_name": "Seafood Casserole Pasta",
+"description": "مكرونة بنا بجمبري، كاليماري، كابوريا مع طبقة موتزاريلا",
+"retail_price": 37,
+"price": 32.17391304
+},
+{
+"id": 63,
+"name": "سي فود الفريدو",
+"local_name": "Seafood Alfredo",
+"description": "مكرونة بجمبري، كابوريا، كاليماري، بارميزان وزيتون",
+"retail_price": 30,
+"price": 26.08695652
+},
+{
+"id": 55,
+"name": "بيف الفريدو",
+"local_name": "Beef Alfredo",
+"description": "مكرونة فيتوتشيني بقطع اللحم، بارميزان، زيتون ومشروم",
+"retail_price": 28,
+"price": 24.34782609
+},
+{
+"id": 62,
+"name": "ماك اند تشيز",
+"local_name": "Mac and Cheese",
+"description": "مكرونة فوسيلي بصدور دجاج متبلة، شرائح لحم بقري، شيدر وزيتون مع طبقة موتزاريلا",
+"retail_price": 33,
+"price": 28.69565217
+},
+{
+"id": 60,
+"name": "نجرسكو",
+"local_name": "Negresco",
+"description": "مكرونة بنا بصدور دجاج متبلة، فلفل، زيتون ومشروم مع طبقة موتزاريلا",
+"retail_price": 25,
+"price": 21.73913043
+}
+]
+},
+{
+"id": 41,
+"title": "Burgers",
+"local_title": "برجر",
+"items": [
+{
+"id": 71,
+"name": "برجر لحم كلاسيك",
+"local_name": "Classic Beef Burger",
+"description": "برجر لحم بقري، طماطم، خس، بصل، خيار",
+"retail_price": 21,
+"price": 18.26086957
+},
+{
+"id": 70,
+"name": "مشروم بيف بيكون برجر",
+"local_name": "Mushroom Beef Bacon Burger",
+"description": "برجر لحم بقري، بيكون، شيدر، ثاوزند آيلاند ومشروم",
+"retail_price": 30,
+"price": 26.08695652
+},
+{
+"id": 67,
+"name": "كريمي مشروم تشيكن",
+"local_name": "Creamy Mushroom Chicken Burger",
+"description": "برجر صدور دجاج مقلية، مشروم، شيدر، كيري، رانش وثاوزند آيلاند",
+"retail_price": 28,
+"price": 24.34782609
+},
+{
+"id": 66,
+"name": "جريلد تشيكن ساندوتش",
+"local_name": "Grilled Chicken Burger",
+"description": "صدور دجاج مشوية، خس، طماطم، صوص شيدر وثاوزند آيلاند",
+"retail_price": 19,
+"price": 16.52173913
+}
+]
+},
+{
+"id": 25,
+"title": "Hawawshi",
+"local_title": "حواوشي",
+"items": [
+{
+"id": 20,
+"name": "حواوشي كيري بسطرمة",
+"local_name": "Kiri Pastrami Hawawshi",
+"description": "حواوشي مع البسطرمة وجبنة كيري يُقدَّم مع مخلل وطحينة",
+"retail_price": 28,
+"price": 24.34782609
+},
+{
+"id": 19,
+"name": "حواوشي موتزاريلا",
+"local_name": "Mozzarella Hawawshi",
+"description": "حواوشي بالموتزاريلا يُقدَّم مع مخلل وطحينة",
+"retail_price": 23,
+"price": 20
+},
+{
+"id": 21,
+"name": "حواوشي سادة",
+"local_name": "Plain Hawawshi",
+"description": "حواوشي سادة يُقدَّم مع مخلل وطحينة",
+"retail_price": 20,
+"price": 17.39130435
+}
+]
+},
+{
+"id": 26,
+"title": "Sides & Drinks",
+"local_title": "إضافات",
+"items": [
+{
+"id": 73,
+"name": "فرايد تشيكن",
+"local_name": "Fried Chicken",
+"description": "قطع دجاج مقرمشة تُقدَّم مع صوص ثاوزند آيلاند",
+"retail_price": 10,
+"price": 8.69565217
+},
+{
+"id": 74,
+"name": "فرايد موتزاريلا",
+"local_name": "Fried Mozzarella",
+"description": "أصابع موتزاريلا مقلية ذهبية تُقدَّم مع صوص ثاوزند آيلاند",
+"retail_price": 16,
+"price": 13.91304348
+},
+{
+"id": 77,
+"name": "كرانشي فرايز تشيز",
+"local_name": "Crunchy Cheese Fries",
+"description": "بطاطس مقلية مع قطع ستربس الدجاج بصوص الجبنة",
+"retail_price": 19,
+"price": 16.52173913
+},
+{
+"id": 76,
+"name": "تشيلي تشيز فرايز",
+"local_name": "Chili Cheese Fries",
+"description": "بطاطس مقلية مع اللحم المفروم، صوص الجبنة، سويت تشيلي وفلفل هالابينو",
+"retail_price": 15,
+"price": 13.04347826
+},
+{
+"id": 78,
+"name": "تشيز فرايز",
+"local_name": "Cheese Fries",
+"description": "بطاطس مقلية مع صوص الجبنة",
+"retail_price": 10,
+"price": 8.69565217
+},
+{
+"id": 75,
+"name": "حلقات بصل",
+"local_name": "Onion Rings",
+"description": "حلقات بصل مقرمشة تُقدَّم مع صوص باربكيو",
+"retail_price": 10,
+"price": 8.69565217
+},
+{
+"id": 79,
+"name": "بطاطس محمرة",
+"local_name": "French Fries",
+"description": "بطاطس مقلية",
+"retail_price": 6,
+"price": 5.2173913
+},
+{
+"id": 72,
+"name": "كولسلو",
+"local_name": "Coleslaw",
+"description": "سلطة كولسلو طازجة بالملفوف والجزر بصوص كريمي",
+"retail_price": 6,
+"price": 5.2173913
+},
+{
+"id": 119,
+"name": "دوريتوس",
+"local_name": "Doritos",
+"description": "شرائح الدوريتوس الذهبية المقلية",
+"retail_price": 5,
+"price": 4.34782609
+},
+{
+"id": 86,
+"name": "بيبسي زجاج",
+"local_name": "Pepsi (Glass Bottle)",
+"description": "بيبسي عبوة زجاجية",
+"retail_price": 4,
+"price": 3.47826087
+},
+{
+"id": 82,
+"name": "مشروبات غازية",
+"local_name": "Soft Drinks",
+"description": "مشروبات غازية متنوعة",
+"retail_price": 3,
+"price": 2.60869565
+},
+{
+"id": 81,
+"name": "مياه",
+"local_name": "Water",
+"description": "مياه معدنية",
+"retail_price": 1,
+"price": 0.86956522
+}
+]
+}
+],
+"bundles": [
+{
+"slug": "gathering-4",
+"name": "باقة تجمّع ٤–٦ أشخاص",
+"name_en": "Gathering Pack — 4 to 6 People",
+"description": "كيلو مشاوي × ٢ من اختيارك + أرز وبطاطس وكولسلو + ٤ مشروبات",
+"description_en": "2 kilos of grills of your choice + rice, fries and coleslaw + 4 soft drinks",
+"price": 225,
+"section": "",
+"section_en": "",
+"offer_id": "gathering_4"
+},
+{
+"slug": "gathering-8",
+"name": "باقة تجمّع ٨–١٠ أشخاص",
+"name_en": "Gathering Pack — 8 to 10 People",
+"description": "٣ كيلو مشاوي + دجاجة كاملة على الفحم + أرز وبطاطس وكولسلو + ٨ مشروبات",
+"description_en": "3 kilos of grills + a whole charcoal chicken + rice, fries and coleslaw + 8 soft drinks",
+"price": 395,
+"section": "",
+"section_en": "",
+"offer_id": "gathering_8"
+},
+{
+"slug": "gathering-15",
+"name": "باقة مناسبة ١٥ شخصاً وأكثر",
+"name_en": "Occasion Pack — 15+ People",
+"description": "٤ كيلو مشاوي + دجاجتين كاملتين على الفحم + أرز وبطاطس وكولسلو + ١٢ مشروب",
+"description_en": "4 kilos of grills + 2 whole charcoal chickens + rice, fries and coleslaw + 12 soft drinks",
+"price": 595,
+"section": "",
+"section_en": "",
+"offer_id": "gathering_15"
+},
+{
+"slug": "box-solo-crepe",
+"name": "بوكس الكريب الفردي",
+"name_en": "Crepe Solo Box",
+"description": "كريب من اختيارك + صنف جانبي (بطاطس أو كولسلو أو دوريتوس) + مشروب غازي.",
+"description_en": "A crepe of your choice + a side (fries, coleslaw or Doritos) + a soft drink.",
+"price": 29,
+"section": "بوكسات فردية",
+"section_en": "Solo boxes",
+"offer_id": null
+},
+{
+"slug": "box-solo-mixgrill",
+"name": "بوكس الميكس جريل الفردي",
+"name_en": "Mixed Grill Solo Box",
+"description": "وجبة ميكس جريل أو وجبة كفتة وطرب + صنف جانبي (بطاطس أو كولسلو أو دوريتوس) + مشروب غازي.",
+"description_en": "Mixed grill meal or kofta & tarb meal + a side (fries, coleslaw or Doritos) + a soft drink.",
+"price": 39,
+"section": "بوكسات فردية",
+"section_en": "Solo boxes",
+"offer_id": null
+},
+{
+"slug": "box-solo-burger",
+"name": "بوكس البرجر الفردي",
+"name_en": "Burger Solo Box",
+"description": "برجر من اختيارك + بطاطس + حلقات بصل أو تشيز فرايز + مشروب غازي.",
+"description_en": "A burger of your choice + fries + onion rings or cheese fries + a soft drink.",
+"price": 29,
+"section": "بوكسات فردية",
+"section_en": "Solo boxes",
+"offer_id": null
+},
+{
+"slug": "box-solo-pasta",
+"name": "بوكس الباستا الفردي",
+"name_en": "Pasta Solo Box",
+"description": "باستا من اختيارك + صنف جانبي (بطاطس أو كولسلو أو دوريتوس) + مشروب غازي.",
+"description_en": "A pasta of your choice + a side (fries, coleslaw or Doritos) + a soft drink.",
+"price": 29,
+"section": "بوكسات فردية",
+"section_en": "Solo boxes",
+"offer_id": null
+},
+{
+"slug": "box-solo-hawawshi",
+"name": "بوكس الحواوشي الفردي",
+"name_en": "Hawawshi Solo Box",
+"description": "حواوشي من اختيارك + بطاطس + كولسلو أو دوريتوس + مشروب غازي.",
+"description_en": "A hawawshi of your choice + fries + coleslaw or Doritos + a soft drink.",
+"price": 29,
+"section": "بوكسات فردية",
+"section_en": "Solo boxes",
+"offer_id": null
+},
+{
+"slug": "box-solo-meal",
+"name": "بوكس وجبة المشاوي الفردي",
+"name_en": "Grill Meal Solo Box",
+"description": "وجبة مشاوي من اختيارك + صنف جانبي (بطاطس أو كولسلو أو دوريتوس) + مشروب غازي.",
+"description_en": "A grill meal of your choice + a side (fries, coleslaw or Doritos) + a soft drink.",
+"price": 29,
+"section": "بوكسات فردية",
+"section_en": "Solo boxes",
+"offer_id": null
+},
+{
+"slug": "box-crepe-duo",
+"name": "بوكس الكريب لشخصين",
+"name_en": "Crepe Box for Two",
+"description": "كريبين من اختيارك + تشيز فرايز + صنف جانبي (بطاطس أو كولسلو أو دوريتوس) + مشروبين غازيين.",
+"description_en": "Two crepes of your choice + cheese fries + a side (fries, coleslaw or Doritos) + 2 soft drinks.",
+"price": 65,
+"section": "بوكسات لشخصين",
+"section_en": "Boxes for two",
+"offer_id": null
+},
+{
+"slug": "box-mixgrill-duo",
+"name": "ميكس جريل لشخصين",
+"name_en": "Mixed Grill for Two",
+"description": "وجبتين من اختيارك (ميكس جريل أو كفتة وطرب) + بطاطس + كولسلو + مشروبين غازيين.",
+"description_en": "Two meals of your choice (mixed grill or kofta & tarb) + fries + coleslaw + 2 soft drinks.",
+"price": 85,
+"section": "بوكسات لشخصين",
+"section_en": "Boxes for two",
+"offer_id": null
+},
+{
+"slug": "box-pizza-pasta",
+"name": "بيتزا وباستا لشخصين",
+"name_en": "Pizza & Pasta for Two",
+"description": "بيتزا وسط + باستا من اختيارك + تشيز فرايز أو حلقات بصل + كولسلو + مشروبين غازيين.",
+"description_en": "A medium pizza + a pasta of your choice + cheese fries or onion rings + coleslaw + 2 soft drinks.",
+"price": 69,
+"section": "بوكسات لشخصين",
+"section_en": "Boxes for two",
+"offer_id": null
+},
+{
+"slug": "box-meals-duo",
+"name": "وجبتين مشاوي لشخصين",
+"name_en": "Grill Meals for Two",
+"description": "وجبتين مشاوي من اختيارك + بطاطس + كولسلو + دوريتوس + مشروبين غازيين.",
+"description_en": "Two grill meals of your choice + fries + coleslaw + Doritos + 2 soft drinks.",
+"price": 65,
+"section": "بوكسات لشخصين",
+"section_en": "Boxes for two",
+"offer_id": null
+},
+{
+"slug": "box-burger-duo",
+"name": "بوكس البرجر لشخصين",
+"name_en": "Burger Box for Two",
+"description": "برجرين من اختيارك + بطاطس عدد ٢ + حلقات بصل + تشيز فرايز + مشروبين غازيين.",
+"description_en": "Two burgers of your choice + 2 fries + onion rings + cheese fries + 2 soft drinks.",
+"price": 65,
+"section": "بوكسات لشخصين",
+"section_en": "Boxes for two",
+"offer_id": null
+},
+{
+"slug": "box-late-night",
+"name": "بوكس السهرة",
+"name_en": "Late-Night Box",
+"description": "طاسة جبن ساخنة (برجر، صدور مشوية أو هوت دوج) + كريب من اختيارك + تشيلي تشيز فرايز + حلقات بصل + مشروبين غازيين.",
+"description_en": "A hot cheese skillet (burger, grilled chicken breast or hot dog) + a crepe of your choice + chili cheese fries + onion rings + 2 soft drinks.",
+"price": 72,
+"section": "بوكسات لشخصين",
+"section_en": "Boxes for two",
+"offer_id": null
+},
+{
+"slug": "box-taste-all",
+"name": "بوكس التشكيلة",
+"name_en": "Variety Box",
+"description": "بيتزا وسط + باستا + كريب + حواوشي من اختيارك + بطاطس + كولسلو + مشروبين غازيين.",
+"description_en": "A medium pizza + pasta + crepe + hawawshi, all your choice + fries + coleslaw + 2 soft drinks.",
+"price": 105,
+"section": "بوكسات المشاركة والعائلة",
+"section_en": "Sharing & family boxes",
+"offer_id": null
+},
+{
+"slug": "box-grill-half-half",
+"name": "بوكس المشاوي نص ونص",
+"name_en": "Charcoal Grill Box (Half & Half)",
+"description": "كيلو مشاوي نص ونص: نوعين من اختيارك + طبقين أرز + بطاطس + كولسلو، مع السلطة والطحينة والخبز.",
+"description_en": "A kilo of grills, half and half: two kinds of your choice + 2 basmati rice + fries + coleslaw, with salad, tahini and bread.",
+"price": 125,
+"section": "بوكسات المشاركة والعائلة",
+"section_en": "Sharing & family boxes",
+"offer_id": null
+},
+{
+"slug": "box-family",
+"name": "بوكس العائلة — مشاوي وبيتزا وباستا",
+"name_en": "Family Box — Grills, Pizza & Pasta",
+"description": "نوعين مشاوي من اختيارك (نصف كيلو لكل نوع) + بيتزا وسط + باستا + ٣ أطباق أرز + بطاطس + كولسلو + ٤ مشروبات غازية، والمشاوي معها السلطة والطحينة والخبز.",
+"description_en": "Two grills of your choice (half a kilo each) + a medium pizza + a pasta + 3 basmati rice + fries + coleslaw + 4 soft drinks. The grills come with salad, tahini and bread.",
+"price": 179,
+"section": "بوكسات المشاركة والعائلة",
+"section_en": "Sharing & family boxes",
+"offer_id": null
+},
+{
+"slug": "box-pizza-night",
+"name": "بوكس سهرة البيتزا",
+"name_en": "Pizza Night Box",
+"description": "بيتزتين وسط من اختيارك + فرايد موتزاريلا + بطاطس + كولسلو + مشروبين غازيين.",
+"description_en": "Two medium pizzas of your choice + fried mozzarella + fries + coleslaw + 2 soft drinks.",
+"price": 85,
+"section": "بوكسات المشاركة والعائلة",
+"section_en": "Sharing & family boxes",
+"offer_id": null
+},
+{
+"slug": "box-mashakel",
+"name": "بوكس المشكل المخصوص",
+"name_en": "Special Mixed Grill Box",
+"description": "نصف كيلو مشكل مخصوص + نصف كيلو مشاوي من اختيارك + طبقين أرز + بطاطس + كولسلو، مع السلطة والطحينة والخبز.",
+"description_en": "Half a kilo of our special mixed grill + half a kilo of a grill of your choice + 2 basmati rice + fries + coleslaw, with salad, tahini and bread.",
+"price": 145,
+"section": "بوكسات المشاركة والعائلة",
+"section_en": "Sharing & family boxes",
+"offer_id": null
+},
+{
+"slug": "box-ribs-grill",
+"name": "بوكس الريش والمشاوي",
+"name_en": "Lamb Chops & Grill Box",
+"description": "ثلث كيلو ريش + نوعين مشاوي من اختيارك (نصف كيلو لكل نوع) + طبقين أرز + بطاطس + كولسلو + ٤ مشروبات غازية، مع السلطة والطحينة والخبز.",
+"description_en": "A third of a kilo of lamb chops + two grills of your choice (half a kilo each) + 2 basmati rice + fries + coleslaw + 4 soft drinks, with salad, tahini and bread.",
+"price": 189,
+"section": "بوكسات المشاركة والعائلة",
+"section_en": "Sharing & family boxes",
+"offer_id": null
+}
+],
+"offers": [
+{
+"id": "gathering_4",
+"title": "باقة تجمّع ٤–٦ أشخاص",
+"price": 225,
+"from": "2026-09-22",
+"until": "2026-10-15",
+"channels": {
+"delivery": true,
+"takeaway": true
+},
+"dineInOnly": false
+},
+{
+"id": "gathering_8",
+"title": "باقة تجمّع ٨–١٠ أشخاص",
+"price": 395,
+"from": "2026-09-22",
+"until": "2026-10-15",
+"channels": {
+"delivery": true,
+"takeaway": true
+},
+"dineInOnly": false
+},
+{
+"id": "gathering_15",
+"title": "باقة مناسبة ١٥ شخصاً وأكثر",
+"price": 595,
+"from": "2026-09-22",
+"until": "2026-10-15",
+"channels": {
+"delivery": true,
+"takeaway": true
+},
+"dineInOnly": false
+}
+]
+}

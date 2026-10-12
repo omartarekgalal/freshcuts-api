@@ -374,6 +374,9 @@ export function parseWebhook(body, { phoneId = null, phoneIds = [], ownNumbers =
           at: isoOf(m.timestamp),
           interactiveId: m.button?.payload ?? m.interactive?.button_reply?.id ?? m.interactive?.list_reply?.id ?? null,
           referral: m.referral || null, // رسالة جاية من إعلان Click-to-WhatsApp
+          // موقع العميل (مشاركة الموقع) — البوت بيتأكد بيه إن التوصيل يوصله (wabotrun: area)
+          location: m.type === "location" && Number.isFinite(Number(m.location?.latitude)) && Number.isFinite(Number(m.location?.longitude))
+            ? { lat: Number(m.location.latitude), lng: Number(m.location.longitude) } : null,
           intent: m.type === "reaction" ? null : intentOf(text) });
       }
       for (const m of v.message_echoes || []) {
@@ -804,7 +807,7 @@ export function register(app, ctx, deps = {}) {
     await touchThread({ phoneNorm: pn, direction: "in", text: m.text || `[${m.type}]`, at: m.at || null });
     await applyIntent(pn, m.intent);
     const ev = { phone: pn, phoneNorm: pn, wamid: m.wamid, text: m.text || "", type: m.type, interactiveId: m.interactiveId || null,
-      referral: m.referral || null, isEcho: false, ts: m.at, at: m.at, intent: m.intent, source: "api" };
+      referral: m.referral || null, location: m.location || null, isEcho: false, ts: m.at, at: m.at, intent: m.intent, source: "api" };
     await emit("inbound", ev);
     if (botRuntime) {
       let owned = false;
