@@ -57,7 +57,7 @@ export function lookupFact(dishId, askText, { askedWord = null, remove = false }
     const fryer = Array.isArray(d.fry) && d.fry.includes(g);
     if (a && remove) return a.r && a.ar ? { ...base, status: "can_remove", asked, part: a.ar, partEn: a.en || a.ar, kind: "allergen", fryer } : { ...base, status: "cannot_remove", asked, kind: "allergen", fryer };
     if (remove) return { ...base, status: "unknown_staff", asked, why: "not_recorded" };
-    if (a) return a.r && a.ar ? { ...base, status: "present_removable", asked, part: a.ar, partEn: a.en || a.ar, kind: "allergen", fryer } : { ...base, status: "present_fixed", asked, kind: "allergen", fryer };
+    if (a) return a.r && a.ar ? { ...base, status: "present_removable", asked, part: a.ar, partEn: a.en || a.ar, kind: "allergen", fryer } : { ...base, status: "present_fixed", asked, kind: "allergen", fryer, ...(a.v && a.v.ar ? { part: a.v.ar, partEn: a.v.en || a.v.ar } : {}) };      // v = جزء ظاهر علّمه الشيف (الخبز/صوص/جبن/طحينة/إضافة) ⇒ المكان بيتقال
     return d.u === "none" ? { ...base, status: "not_found", asked, kind: "allergen", fryer } : { ...base, status: "unknown_staff", asked, why: "has_unlabelled_part" };
   }
   /* مكوّن عادي: الكلمة لازم تطابق مكوّن مسجّل إنه بيتشال أو إنه ثابت. أي كلمة تانية ⇒ موظف (عمرنا ما نستنتج إن مكوّن مش موجود). */

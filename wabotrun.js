@@ -211,13 +211,15 @@ export const TEXTS = Object.freeze({
   btn_custom: t("زر: أبغى عرض مخصص", "أبغى عرض مخصص", "Tailored offer", [], [], LIMITS.btnTitle),
   custom_offer: t("طلب عرض مخصص (تحويل لموظف)", "أبشر 🙏 عشان نجهّز لك عرض مخصص اكتب لنا هنا: عدد الأشخاص، اليوم والوقت، وتوصيل أو استلام.\nحوّلت طلبك لموظف.\n{wait}", "Sure 🙏 To prepare a tailored offer please write here: how many people, the day and time, and delivery or pickup.\nI've passed your request to a staff member.\n{wait}", [], ["wait"]),
   /* حقايق الأصناف (١٢/١٠): إجابة على قد السؤال — من غير قايمة مكونات، من غير «خالٍ من / آمن» */
-  df_removable: t("الصنف فيه المسبّب، وجزؤه يتشال", "نعم، {dish} فيه {asked} في {part}. نقدر نجهّزه لك بدون {part}: اكتبها في ملاحظة الصنف عند الطلب.\n{kitchen}\n{fryer}",
+  df_removable: t("الصنف فيه المسبّب، وجزؤه يتشال", "نعم، يوجد {asked} في «{dish}»، وذلك في {part}. يمكن تجهيز الطلب بدون {part}: اكتبها في ملاحظة الصنف عند الطلب.\n{kitchen}\n{fryer}",
     "Yes, {dish} has {asked} in the {part}. We can make it without the {part}: write it in the item note when you order.\n{kitchen}\n{fryer}", ["dish", "asked", "part"], ["kitchen", "fryer"], 600),
-  df_removable_item: t("الصنف فيه المكوّن، ويتشال", "نعم، {dish} فيه {part}. نقدر نجهّزه لك بدون {part}: اكتبها في ملاحظة الصنف عند الطلب.", "Yes, {dish} comes with {part}. We can make it without the {part}: write it in the item note when you order.", ["dish", "part"], [], 400),
-  df_can_remove: t("ممكن الصنف بدون كذا؟ — أيوه", "أكيد، نجهّز {dish} لك بدون {part}. اكتبها في ملاحظة الصنف عند الطلب.", "Sure, we can make {dish} without the {part}. Write it in the item note when you order.", ["dish", "part"], [], 400),
-  df_cannot_remove: t("ممكن الصنف بدون كذا؟ — لأ", "{dish} ما نقدر نجهّزه بدون {asked}.", "We cannot make {dish} without {asked}.", ["dish", "asked"], [], 400),
-  df_fixed: t("الصنف فيه المكوّن، ومايتشالش", "نعم، {dish} فيه {asked}، وما نقدر نجهّزه بدونه.", "Yes, {dish} contains {asked}, and we cannot make it without it.", ["dish", "asked"], [], 400),
-  df_not_found: t("حسب بياناتنا الصنف مافيهوش", "حسب بياناتنا {dish} ما فيه {asked}.\n{kitchen}\n{fryer}\nوإذا حساسيتك شديدة اكتب «موظف» قبل الطلب.", "According to our data, {dish} does not contain {asked}.\n{kitchen}\n{fryer}\nIf your allergy is severe, type “staff” before ordering.", ["dish", "asked"], ["kitchen", "fryer"], 600),
+  df_removable_item: t("الصنف فيه المكوّن، ويتشال", "نعم، {part} ضمن «{dish}». يمكن تجهيز الطلب بدون {part}: اكتبها في ملاحظة الصنف عند الطلب.", "Yes, {dish} comes with {part}. We can make it without the {part}: write it in the item note when you order.", ["dish", "part"], [], 400),
+  df_can_remove: t("ممكن الصنف بدون كذا؟ — أيوه", "أكيد، يمكن تجهيز «{dish}» بدون {part}. اكتبها في ملاحظة الصنف عند الطلب.", "Sure, we can make {dish} without the {part}. Write it in the item note when you order.", ["dish", "part"], [], 400),
+  df_cannot_remove: t("ممكن الصنف بدون كذا؟ — لأ", "لا يمكن تجهيز «{dish}» بدون {asked}.", "We cannot make {dish} without {asked}.", ["dish", "asked"], [], 400),
+  df_fixed: t("الصنف فيه المكوّن، ومايتشالش (جوّه خلطة/عجينة: من غير مكان)", "نعم، يوجد {asked} في «{dish}»، ولا يمكن تجهيز الطلب بدون {asked}.", "Yes, {dish} contains {asked}, and we cannot make it without {asked}.", ["dish", "asked"], [], 400),
+  /* مسبّب في جزء ظاهر العميل عارفه (الخبز، صوص، جبن، طحينة، إضافة فوق): المكان بيتقال في كلمتين — مش سر وصفة. بيتبعت بس لو بيانات الشيف علّمت الجزء «ظاهر». */
+  df_fixed_visible: t("الصنف فيه المسبّب في جزء ظاهر", "نعم، يوجد {asked} في «{dish}»، وذلك في {part}.\nللتأكد من إمكانية بديل عن {part} اكتب: موظف\n{kitchen}", "Yes, {dish} has {asked}, in the {part}.\nTo check whether another {part} is possible, type: staff\n{kitchen}", ["dish", "asked", "part"], ["kitchen"], 500),
+  df_not_found: t("حسب بياناتنا الصنف مافيهوش", "حسب بياناتنا لا يوجد {asked} في «{dish}».\n{kitchen}\n{fryer}\nوإذا كانت الحساسية شديدة اكتب «موظف» قبل الطلب.", "According to our data, {dish} does not contain {asked}.\n{kitchen}\n{fryer}\nIf your allergy is severe, type “staff” before ordering.", ["dish", "asked"], ["kitchen", "fryer"], 600),
   df_unknown: t("مش متأكدين ⇒ موظف", "ما عندي تأكيد كافٍ عن هذا المكوّن. حوّلت سؤالك لموظف يتأكد لك من المطبخ.\n{wait}", "I cannot confirm that ingredient. I've passed your question to a team member who will check with the kitchen.\n{wait}", [], ["wait"]),
   df_severe: t("حساسية شديدة ⇒ موظف", "سلامتك أهم 🙏 ما دام الحساسية شديدة، حوّلت محادثتك لموظف يتأكد من المطبخ بنفسه قبل أي طلب.\n{wait}", "Your safety comes first 🙏 Since the allergy is severe, I've passed your chat to a team member who will check with the kitchen before any order.\n{wait}", [], ["wait"]),
   kitchen_line: t("سطر المطبخ الواحد", "مطبخنا واحد لكل الأصناف وقد يحصل تلامس بين المكونات أثناء التحضير.", "We have one kitchen for all dishes, so ingredients can touch during preparation.", [], [], 300),
@@ -967,6 +969,7 @@ export function buildReply(key, c) {
       const nm = lang === "en" ? f.dishEn : f.dish, part = lang === "en" ? f.partEn : f.part;
       const kitchen = f.kind === "allergen" ? T("kitchen_line") : "", fryer = f.fryer ? T("fryer_line") : "";
       if (f.status === "present_removable") return { body: f.kind === "allergen" ? F("df_removable", { dish: nm, asked: f.asked, part, kitchen, fryer }) : F("df_removable_item", { dish: nm, part }), fact: f.status };
+      if (f.status === "present_fixed" && part) return { body: F("df_fixed_visible", { dish: nm, asked: f.asked, part, kitchen: f.kind === "allergen" ? T("kitchen_line") : "" }), fact: "present_fixed_visible" };
       if (f.status === "present_fixed") return { body: F("df_fixed", { dish: nm, asked: f.asked }), fact: f.status };
       if (f.status === "can_remove") return { body: F("df_can_remove", { dish: nm, part }), fact: f.status };
       if (f.status === "cannot_remove") return { body: F("df_cannot_remove", { dish: nm, asked: f.asked }), fact: f.status };
