@@ -43,6 +43,8 @@ import { preorderCfg } from "./preorder.js";
 import { makeBotCarts, reorderPlan, planSummary, orderDay, chatLocation } from "./wabotcart.js";
 import { makeAssistTools, validateReply, profileSummaryAr, grillFamilies } from "./waassist.js";
 import { lookupFact, groupsIn, SEVERE_RE, factsCoverage, pickDish, factNote, dishAllergens } from "./wadishfacts.js";
+import { briefBlock, briefFromBody, briefForDashboard, menuDigest, BRIEF_SECTIONS, BRIEF_LIMITS } from "./wabrief.js";
+import { buildMajedReport, businessDay } from "./wamajed.js";
 import { makeAiCost, pricesOf, waRatesOf, pricesFromBody, waRatesFromBody, BUDGET_DEFAULTS } from "./waaicost.js";
 import { providerInfo, maskText } from "./wabotllm.js";
 import { kbTokens } from "./wakb.js";
@@ -247,6 +249,10 @@ export const TEXTS = Object.freeze({
   paid_note: t("تأكيد الطلب بعد الدفع", "وصلنا طلبك رقم {order_no} ✅ نبدأ نجهّزه الحين.\nتقدر تتابعه من الزر 👇", "We received your order {order_no} ✅ We are starting on it now.\nYou can follow it from the button 👇", ["order_no"], [], 400),
   lead_followup: t("متابعة محادثة ماخدتش رد مفيد", "{who}\nوصلتنا رسالتك وما قدرنا نخدمك وقتها، نعتذر منك 🙏\nوش تحب تطلب؟ اكتب لي الصنف وأجهّز لك طلبك.", "{who}\nWe got your message and could not help you at the time, sorry 🙏\nWhat would you like to order? Tell me the dish and I will get your order ready.", ["who"], [], 600),
   handoff_remind: t("تذكير: المحادثة عند الموظف (مرة واحدة)", "محادثتك عند الموظف 🙏\n{wait}", "Your chat is with our staff 🙏\n{wait}", [], ["wait"]),
+  lead_nudge_ad_weight: t("متابعة محادثة وقفت عند سؤال المساعد: إعلان صنف بالوزن", "بخصوص {dish}: {prices}.\nكم شخص أنتم؟ أرشّح لك الأنسب وأجهّز سلتك.", "About {dish}: {prices}.\nHow many of you are there? I will suggest what fits and get your cart ready.", ["dish", "prices"], [], 500),
+  lead_nudge_ad: t("متابعة محادثة وقفت عند سؤال المساعد: إعلان بوكس / صنف / عرض", "بخصوص {dish}: بـ {price} ر.س.\nأجهّزه لك توصيل ولا استلام؟", "About {dish}: SAR {price}.\nShall I get it ready for delivery or pickup?", ["dish", "price"], [], 400),
+  lead_nudge: t("متابعة محادثة وقفت عند سؤال المساعد: من غير إعلان", "أنا معك 🙂 قل لي كم شخص أنتم، وأرشّح لك طلب جاهز بسعره وأجهّز سلتك.", "Still with you 🙂 Tell me how many of you there are and I will suggest a ready order with its price and prepare your cart.", [], [], 400),
+  media_voice: t("رسالة صوتية والمساعد مابيسمعش ⇒ موظف + «اكتبها»", "ما أقدر أسمع المقاطع الصوتية 🙏 اكتب لي طلبك هنا وأجهّزه لك على طول.\nوحوّلت محادثتك لموظف يسمعها.\n{wait}", "I cannot listen to voice notes 🙏 Type your order here and I will get it ready right away.\nI have also passed your chat to a staff member who will listen to it.\n{wait}", [], ["wait"], 400),
   thanks: t("شكر / وداع", "العفو، حيّاك الله في أي وقت 🌟", "You're welcome, any time 🌟"),
   /* «إيقاف» = كل رسايلنا المبادِرة (العروض وتحديثات الطلب) — حارس الإرسال بيسكّت كل القوالب. الرد على سؤاله في المحادثة شغّال. */
   stop: t("تأكيد إيقاف العروض (ومعاه زر الرجوع وزر إيقاف تحديثات الطلب)", "تم إيقاف العروض ✅ تحديثات طلباتك مستمرة.\nضغطت بالغلط؟ اضغط «رجّع العروض». وللرجوع في أي وقت اكتب: اشتراك", "Offers stopped ✅ Your order updates continue.\nTapped by mistake? Press «Offers back on». To come back any time, type: start"),
@@ -422,7 +428,7 @@ const HANDOFF_KEYS = { custom_offer: ["custom_offer", "normal"], complaint: ["co
 const BUTTON_IDS = { "bot:menu": "main", "bot:status": "status", "bot:human": "human", "optin:yes": "optin_yes", "optin:no": "optin_no", "resume:all": "resume_all", "resume:updates": "resume_updates", "re:last": "reorder", "bot:custom": "custom_offer",
   "cw:order": "change", "cw:stop": "stop", "stop:updates": "stop_updates", "stop:ok": "ack", "stop:undo": "start" };      // M2: «الغاء» لوحدها ⇒ سؤال بزرارين؛ الإيقاف ⇒ العروض بس + زر تحديثات الطلب
 const MENU_IDS = { main: "main", boxes: "boxes", cats: "cats", offers: "offers", delivery: "delivery", pickup: "pickup", status: "status", hours: "hoursloc", location: "location", packs: "packs", pay: "payment", human: "human", channel: "channel" };
-const IGNORED_TYPES = new Set(["reaction", "sticker", "system", "ephemeral", "request_welcome", "order"]);
+const IGNORED_TYPES = new Set(["reaction", "sticker", "system", "ephemeral", "request_welcome", "order", "revoke"]);      // PK1: رسالة العميل مسحها (revoke) كانت بتوصل للمساعد كنص «[revoke]» وبيرد عليها بالإنجليزي (١٣/١٠)
 const MEDIA_TYPES = new Set(["image", "audio", "voice", "video", "document", "contacts", "location"]);
 /* intents اللي مايتعدّاش عليها بحث المنيو/البوكس/الأسئلة الشائعة */
 const HARD_INTENTS = new Set(["complaint", "refund", "payment_issue", "site_issue", "cancel_order", "modify_order", "cancel_or_stop", "coupon_help", "human", "stop", "start", "order_status", "special_request"]);
@@ -502,6 +508,7 @@ export function botConfig(settings) {
     waRates: waRatesOf(x.waRates),
     optin: { enabled: x.optin?.enabled === true, askAfterHours: num(x.optin?.askAfterHours, 24, 8760, DEFAULTS.optin.askAfterHours) },
     assist: assistConfig(x.assist),
+    brief: x.brief && typeof x.brief === "object" && !Array.isArray(x.brief) ? x.brief : {},      // PK1: «ملف معرفة البيزنس» — اللي المالك غيّره بس (wabrief.js؛ بيتحفظ من /api/cms/wabot/brief)
     freeRepliesPerMonth: num(x.freeRepliesPerMonth, 0, 100000, DEFAULTS.freeRepliesPerMonth),
     replyRateSar: num(x.replyRateSar, 0, 5, DEFAULTS.replyRateSar),
     greetWindowHours: num(x.greetWindowHours, 1, 168, DEFAULTS.greetWindowHours),
@@ -1215,7 +1222,7 @@ export function buildReply(key, c) {
     case "secret": return { body: T("secret"), buttons: [{ id: "bot:menu", title: T("btn_main") }, { id: "bot:human", title: T("btn_human") }] };
     case "media_location": return { body: T(key) };
     case "problem": case "change": case "human": case "staff": case "media": case "media_payment": case "media_order": case "data_missing": case "handoff_remind": case "custom_offer":
-      return { body: F(key, { wait: wait() }) };
+      return { body: F(key === "media" && c.arg === "voice" ? "media_voice" : key, { wait: wait() }) };      // PK1: الصوت ⇒ سطر «اكتب لي طلبك» + التحويل زي ما هو
     case "rate": case "rate_burst": return { body: T(key) };
     case "unknown": return { body: T("unknown"), buttons: [{ id: "bot:menu", title: T("btn_main") }, { id: "bot:status", title: T("btn_status") }, { id: "bot:human", title: T("btn_human") }] };
     case "stop": return { body: T("stop"), buttons: [{ id: "stop:undo", title: T("btn_stop_undo") }, { id: "stop:updates", title: T("btn_stop_updates") }, { id: "stop:ok", title: T("btn_ok") }] };
@@ -1232,9 +1239,9 @@ export function buildReply(key, c) {
 }
 /* حقيقة صنف لمساعد الطلبات: **نفس النص المعتمد** اللي بوت القواعد بيرد بيه (df_*)، والمساعد بيبعته زي ما هو — مفيش صياغة من الموديل في سؤال حساسية.
    ⇒ { status, say } أو { status, handover: "allergy_severe" | "needs_staff" } (حساسية شديدة، مقفول من اللوحة، أو مش مؤكد). */
-export function dishFactSay(cfg, data, { id, question, remove = false, lang = "ar" } = {}) {
+export function dishFactSay(cfg, data, { id, question, remove = false, list = false, lang = "ar" } = {}) {
   try {
-    const r = buildReply("dishfact", { cfg, lang: lang === "en" ? "en" : "ar", data: data || {}, referral: null, factual: false, arg: { id: String(id || ""), text: String(question || ""), remove: remove === true } });
+    const r = buildReply("dishfact", { cfg, lang: lang === "en" ? "en" : "ar", data: data || {}, referral: null, factual: false, arg: { id: String(id || ""), text: String(question || ""), remove: remove === true, ...(list === true ? { list: true } : {}) } });
     if (r.handoff) return { status: String(r.fact || "unknown"), handover: r.handoff[0] === "allergy_severe" ? "allergy_severe" : "needs_staff" };
     return { status: String(r.fact || ""), say: String(r.body || "").trim() };
   } catch { return { status: "unknown", handover: "needs_staff" }; }
@@ -1461,6 +1468,7 @@ export function resolveCancel(cls, data) {
   if ((o && !ORDER_DONE.has(String(o.status || ""))) || (data && data.orderDbFailed)) return { ...cls, key: "change", rawIntent: "cancel_order", entities: { ...(cls.entities || {}), ...(o ? { orderNo: o.order_no } : {}) } };
   return cls;
 }
+export const WHOLE_MENU_RE = /(?:منيو|مينيو|قائمه|قايمه)(?: \S+){0,2} (?:كامل|كامله|كله|كلها)|(?:كامل|كل) (?:ال)?(?:منيو|مينيو)|كل (?:وجبه|صنف|الاصناف|الوجبات) و?(?:سعرها|سعره|اسعارها|باسعارها|بسعرها)|\b(?:full|whole|entire) menu\b/;
 export function classify(ev, know = {}) {
   const type = String(ev.type || "text");
   const rawText = String(ev.text || "");
@@ -1480,7 +1488,7 @@ export function classify(ev, know = {}) {
   if (IGNORED_TYPES.has(type)) return out(null, null, `type:${type}`, 0);
   if (ev.location && Number.isFinite(ev.location.lat) && Number.isFinite(ev.location.lng)) return out("area", { lat: ev.location.lat, lng: ev.location.lng }, "location");
   { const co = coordsFromText(text); if (co) return out("area", co, "maps_link"); }
-  if (MEDIA_TYPES.has(type) && !text.trim()) return out("media", null, `media:${type}`);
+  if (MEDIA_TYPES.has(type) && !text.trim()) return out("media", type === "audio" || type === "voice" ? "voice" : null, `media:${type}`);
   if (ev.intent === "stop" || ev.intent === "start") return out(ev.intent, null, ev.intent, 12);
   /* M2: «الغاء / وقف / كنسل / cancel» لوحدها (كلمة أو كلمتين من غير مفعول) مش إيقاف رسايل ومش إلغاء طلب لحد ما نعرف: لو له طلب شغّال ⇒ تحويل عاجل لإلغاء الطلب
      (resolveCancel بعد تحميل الطلب)، وإلا سؤال بزرارين. مفيش أي تغيير في موافقاته قبل ما يضغط. */
@@ -1542,6 +1550,8 @@ export function classify(ev, know = {}) {
     return done("faq", { halal: "halal", vegetarian: "vegetarian", gluten: "allergens", allergy: "allergens", calories: "calories" }[e.topic] || "allergens", `faq:${e.topic}`);
   }
   if (intent === "menu" || intent === "item_price" || intent === "item_info") {
+    /* PK1 («ابغي أشوف المنيو كامل وكل وجبه وسعرها» اتصنّفت صنف واحد، والمساعد رد «الكامل ما أقدر أعرضه هنا»): طلب المنيو كله ⇒ قايمة الأقسام + زر المنيو فوراً. */
+    if (WHOLE_MENU_RE.test(n)) return done("cats", null, "menu");
     if (e.notOnMenu) return done("notmenu", e.notOnMenu);
     /* سؤال مكونات عن صنف («ايش مكونات…»، «… فيه جبن؟»): وصف المنيو مش قايمة مكونات كاملة (ملاحظة الشيف ١٢/١٠: وصف البرجر الكلاسيك
        مافيهوش صوص الشيدر ولا الثاوزند آيلاند) ⇒ مانردّش بالوصف كأنه المكونات؛ نحوّل لموظف لحد ما ملف حقايق الأصناف يتوافق عليه. */
@@ -2611,7 +2621,7 @@ const fl = await q(`SELECT count(*)::int AS n FROM wa_bot_log WHERE phone_norm=$
       const ls = await q(`SELECT l.phone_norm, l.at, l.lang FROM wa_bot_log l
                            WHERE l.at > NOW() - make_interval(mins => $1::int + 60) AND l.at <= NOW() - make_interval(mins => $1::int)
                              AND l.id = (SELECT max(x.id) FROM wa_bot_log x WHERE x.phone_norm = l.phone_norm)
-                             AND l.decision = 'silent' AND l.reason IN ('out_of_scope','ignored_type','auto_reply_covered')
+                             AND l.decision = 'silent' AND l.reason IN ('out_of_scope','ignored_type','auto_reply_covered') AND COALESCE(l.msg_type,'') <> 'revoke'
                            ORDER BY l.at LIMIT 20`, [Math.ceil(cfg.leadFollowUpMin)]);
       for (const l of ls || []) await q(`INSERT INTO wa_bot_jobs(wamid, phone_norm, kind, due_at, ev, log_id) VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT (wamid) DO NOTHING RETURNING id`, [`lead:${l.phone_norm}:${riyadhDay(now)}`, l.phone_norm, "lead_followup", now.toISOString(), jb({ at: new Date(l.at).toISOString(), lang: l.lang === "en" ? "en" : "ar" }), null]);
     }
@@ -2719,6 +2729,7 @@ const fl = await q(`SELECT count(*)::int AS n FROM wa_bot_log WHERE phone_norm=$
         if (j.kind === "assist_followup") { await runFollowUp(j, settings, cfg, now, end); ran++; continue; }
         if (j.kind === "paid_note") { await runPaidNote(j, settings, cfg, now, end); ran++; continue; }
         if (j.kind === "lead_followup") { await runLeadFollowUp(j, settings, cfg, now, end); ran++; continue; }
+        if (j.kind === "assist_nudge") { await runNudge(j, settings, cfg, now, end); ran++; continue; }
         if (j.kind === "assist_reminder") { await runReminder(j, settings, cfg, now, end); ran++; continue; }
         if (j.kind === "media_burst") { await runMediaBurst(j, ev, settings, cfg, now, end); ran++; continue; }
         if (j.kind === "handover_check") { await runHandoverCheck(j, settings, cfg, now, end); ran++; continue; }
@@ -3007,6 +3018,7 @@ const fl = await q(`SELECT count(*)::int AS n FROM wa_bot_log WHERE phone_norm=$
     },
     dishFactSay: async (a) => { let open = null; try { open = settings?.hours ? openState(settings, clock()) : null; } catch { open = null; } return dishFactSay(cfg, { settings, now: clock(), open }, a); },
     kbSearch: async (question, lang) => { const kb = kbApi(); return kb ? kb.search(question, lang) : null; },
+    brief: async () => briefBlock(cfg.brief, { menu: await menuIndex(settings, clock()), boxes: (await bundles()) || [], live: { cash: settings?.shop?.allowCash === true } }),      // PK1
     deliveryInfo: async () => { const r = await q("SELECT config FROM dl_policies WHERE active ORDER BY priority DESC, id LIMIT 1", []); const pol = r && r[0] ? r[0].config : null; const fees = pol ? feeLines(pol, "ar") : "";
       return pol && fees ? { ok: true, delivers_up_to_km: Number(pol.maxKm) || null, far_zone_up_to_km: pol.farZoneEnabled !== false ? Number(pol.farZoneMaxKm) || null : null, far_zone_extra_per_km: pol.farZoneEnabled !== false ? Number(pol.farZonePerKm) || null : null,
         fee_by_order_total: fees.split("\n"), ladder: Array.isArray(pol.feeByTotal) ? pol.feeByTotal.map((x) => ({ over: Number(x.over), fee: Number(x.fee) })) : null, note: "the exact fee for the customer is shown on the website before payment" } : null; },
@@ -3099,6 +3111,7 @@ const fl = await q(`SELECT count(*)::int AS n FROM wa_bot_log WHERE phone_norm=$
       if (r.handover) { const [k, tuple] = ASSIST_HANDOVER[r.handover.reason] || ASSIST_HANDOVER.needs_staff; reply = buildReply(k, k === "dishfact" ? { ...bc, arg: { id: null, text: "حساسية شديدة" } } : bc); handoff = tuple; reply = { body: reply.body }; }
       else { let map = null; if (r.photoItem && !r.cart && !r.location) { try { map = { title: textOf(cfg, "cta_menu", L), url: `${STORE}/l/wab-menu#item-${r.photoItem}` }; } catch { map = null; } }      // PS5: «كيف شكله؟» ⇒ زر يفتح صورة الصنف في المنيو
         if (r.location && !r.cart) { try { map = buildReply("location", bc).cta || null; } catch { map = null; } }      // PS3: رد الموقع ⇒ زر «افتح الخريطة» (نفس رابط بوت القواعد). السلة لها الأولوية (زر واحد في الرسالة)
+        if (r.menu && !r.cart && !map) { try { map = { title: textOf(cfg, "cta_menu", L), url: `${STORE}/l/wab-menu` }; } catch { map = null; } }      // PK1: «وش عندكم؟» ⇒ زر يفتح المنيو كامل
         let extras = {}; if (!r.cart && !map) { try { extras = assistExtras(cfg, L, r); } catch { extras = {}; } }      // PS4: زرّين لحظة الرسوم / بوكس كبير وبديله / أزرار الإعلان / قايمة اختيارات البوكس
         reply = { body: r.text, ...(r.cart ? { cta: { title: textOf(cfg, "cta_reorder", L), url: r.cart.link } } : map ? { cta: map } : extras.buttons || extras.list ? extras : fresh && cx.reorder ? { buttons: [{ id: "re:last", title: textOf(cfg, "row_reorder", L) }] } : {}) }; }
     } catch (e) { if (fresh) session = null; return fallback("reply_build", tr); }
@@ -3126,6 +3139,8 @@ const fl = await q(`SELECT count(*)::int AS n FROM wa_bot_log WHERE phone_norm=$
           if (r.handover && r.handover.reason === "needs_staff" && !(tr.unanswered || []).length && !/موظف|انسان|إنسان|شخص|بشري|staff|human|agent|person/i.test(String(ev.text || ""))) await kb.queue({ question: tr.sent || maskText(ev.text), lang: L, source: "handover" });
         } catch (e) { console.error("[assist] kb:", e.message); } } }
       if (r.reminder) { try { if (r.reminder.cancel) await cancelReminder(phone, "customer_cancelled"); else if (r.reminder.at) await scheduleReminder(phone, { at: r.reminder.at, ref: r.reminder.ref || null, lang: L, setAt: clock().toISOString() }); } catch (e) { console.error("[assist] reminder:", e.message); } }
+      /* PK1: الرد خلص بسؤال ومفيش سلة ولا تحويل ⇒ متابعة واحدة محددة لو العميل سكت (runNudge بيراجع كل الشروط وقتها). كل رد جديد بيأجّلها. */
+      if (acfg.nudgeMin > 0 && !r.cart && !r.handover && /[؟?]\s*$/.test(String(r.text || "").trim())) { try { await scheduleNudge(phone, { at: clock().toISOString(), lang: L }, acfg); } catch (e) { console.error("[assist] nudge:", e.message); } }
       if (r.cart) {
         await assistStore.tagCart(r.cart.code, (session.state.lastCart && session.state.lastCart.accepted) || [], session.id);
         if (acfg.followUpEnabled) await scheduleFollowUp(phone, { code: r.cart.code, sentAt: clock().toISOString(), lang: L }, acfg);
@@ -3138,6 +3153,60 @@ const fl = await q(`SELECT count(*)::int AS n FROM wa_bot_log WHERE phone_norm=$
     await q(`UPDATE wa_bot_jobs SET status='cancelled', reason='replaced', done_at=NOW() WHERE phone_norm=$1 AND kind='assist_followup' AND status='pending'`, [phone]);
     return q(`INSERT INTO wa_bot_jobs(wamid, phone_norm, kind, due_at, ev, log_id) VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT (wamid) DO NOTHING RETURNING id`,
       [`fu:${ev.code}`, phone, "assist_followup", new Date(Date.parse(ev.sentAt) + acfg.followUpMin * 60_000).toISOString(), jb(ev), null]);
+  }
+  /* ── PK1 — متابعة المحادثة اللي وقفت عند سؤال المساعد ──────────────────────────
+     يوم ١٣/١٠: ١١ محادثة بدأت بسؤال الإعلان الجاهز («وش عرض أول طلب؟»، «كيف أطلب من الموقع؟»)، ٧ منهم رسالة واحدة: اتردّ عليهم وماحصلش بعدها حاجة — متابعة الـ٢٠ دقيقة
+     (lead_followup) بتشتغل بس لما البوت يسكت، ونصها اعتذار عام. دي متابعة تانية: صف واحد للعميل في اليوم (nudge:<الرقم>:<اليوم>)، كل رد جديد من المساعد بسؤال بيأجّله،
+     ووقت التنفيذ كل الشروط بتتراجع من جديد. النص محدد: الصنف المعلن بأسعاره من المنيو الحي + سؤال واحد. */
+  async function scheduleNudge(phone, ev, acfg) {
+    const key = `nudge:${phone}:${riyadhDay(clock())}`, due = new Date(Date.parse(ev.at) + acfg.nudgeMin * 60_000).toISOString();
+    const u = await q(`UPDATE wa_bot_jobs SET status='pending', reason=NULL, done_at=NULL, due_at=$2, ev=$3 WHERE wamid=$1 AND status IN ('pending','cancelled') RETURNING id`, [key, due, jb(ev)]);
+    if (u && !u.length) await q(`INSERT INTO wa_bot_jobs(wamid, phone_norm, kind, due_at, ev, log_id) VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT (wamid) DO NOTHING RETURNING id`, [key, phone, "assist_nudge", due, jb(ev), null]);
+  }
+  /* نص المتابعة (صافي من ناحية الإرسال): من الإعلان اللي العميل جه منه لو مربوط بصنف، وإلا السؤال العام. ⇒ { body, buttons? } */
+  function nudgeReply(cfg, lang, ad) {
+    const L = lang === "en" ? "en" : "ar", a = ad && ad.advertised ? ad.advertised : null, nm = a ? ((L === "en" && a.name_en) || a.name || a.title) : null;
+    if (a && a.by_weight && Array.isArray(a.weights) && a.weights.length) return { body: fill("lead_nudge_ad_weight", textOf(cfg, "lead_nudge_ad_weight", L), { dish: nm, prices: a.weights.map((w) => (L === "en" ? `${w.label_en || w.label} SAR ${money(w.price)}` : `${w.label} ${money(w.price)} ر.س`)).join(" · ") }) };
+    if (a && nm && Number(a.price) > 0) return { body: fill("lead_nudge_ad", textOf(cfg, "lead_nudge_ad", L), { dish: nm, price: money(a.price) }), ...assistExtras(cfg, L, { buttons: { kind: "ad" } }) };
+    return { body: textOf(cfg, "lead_nudge", L) };
+  }
+  async function runNudge(j, settings, cfg, now, end) {
+    const acfg = cfg.assist, phone = String(j.phone_norm || ""), ev = typeof j.ev === "string" ? JSON.parse(j.ev) : (j.ev || {});
+    const no = (reason) => end("cancelled", reason);
+    if (!["test", "live"].includes(acfg.mode) || !(acfg.nudgeMin > 0)) return no("off"); if (!ev.at) return no("bad_job");
+    if (now.getTime() - new Date(j.due_at).getTime() > cfg.maxAgeMinutes * 60_000) return no("stale");
+    if (!(await assistAudience({ cfg, phone, chat: {}, now, hasReferral: false, count: false })).on) return no("not_in_audience");
+    const [why, m, chat, op] = await ownGate(phone, settings, cfg, now, ev.at);
+    if (why) return no(why);
+    if (Number(m.wrote) > 0) return no("customer_wrote"); if (Number(m.staff) > 0) return no("staff_in_chat");
+    if (op.marketing_off_at) return no("stopped");
+    if (chat.handoff_at && now.getTime() - Date.parse(chat.handoff_at) < cfg.handoffOpenHours * 3600_000) return no("handover_open");
+    const out = await q(OUT_AFTER_SQL, [phone, ev.at]);
+    if (out === null) return no("out_check_failed"); if (out.length) return no("already_answered");
+    const cmp = await q("SELECT 1 FROM wa_bot_log WHERE phone_norm=$1 AND at > NOW() - INTERVAL '24 hours' AND (reply_key IN ('complaint','problem','change') OR handoff IN ('complaint','problem','order_change','allergy_severe')) LIMIT 1", [phone]);
+    if (cmp === null) return no("complaint_check_failed"); if (cmp.length) return no("complaint_today");
+    const since = new Date(now.getTime() - 6 * 3600_000).toISOString();      // سلة أو طلب في آخر ٦ ساعات ⇒ مفيش متابعة (متابعة السلة لها رسالتها)
+    const cart = await q("SELECT 1 FROM wa_bot_carts WHERE phone_norm=$1 AND created_at > $2 LIMIT 1", [phone, since]);
+    if (cart === null) return no("cart_check_failed"); if (cart.length) return no("has_cart");
+    const ord = await q("SELECT 1 FROM shop_orders WHERE phone_norm=$1 AND created_at > $2 AND status <> 'expired' LIMIT 1", [phone, since]);
+    if (ord === null) return no("order_check_failed"); if (ord.length) return no("ordered");
+    const prior = await q(`SELECT 1 FROM wa_bot_jobs WHERE phone_norm=$1 AND kind IN ('assist_nudge','lead_followup','assist_followup') AND status='done' AND done_at > NOW() - INTERVAL '24 hours' LIMIT 1`, [phone]);
+    if (prior === null) return no("prior_check_failed"); if (prior.length) return no("already_followed_up");
+    let open = null; try { open = settings?.hours ? openState(settings, now) : null; } catch { open = null; }
+    if (!open || open.open !== true) return no("closed");
+    const left = minutesToClose(settings.hours, now);
+    if (left === null || left < acfg.followUpCloseGuardMin) return no("near_closing");
+    const lang = ev.lang === "en" ? "en" : "ar";
+    let rep, ad = null;
+    try { const know = { menu: await menuIndex(settings, now), bundles: await bundles() }; ad = await adContext({ ev: {}, chat, cfg, know, settings, now }); } catch { ad = null; }
+    try { rep = nudgeReply(cfg, lang, ad); } catch { return no("text_invalid"); }
+    const err = await sendOwn(phone, cfg, now, rep, lang, "lead_nudge", ad && ad.advertised ? `ad: ${String(ad.advertised.name || ad.advertised.title || "").slice(0, 60)}` : null);
+    if (!err) {
+      /* المساعد لازم يعرف إنه قال كده: الرسالة بتتلحق بجلسته (لو لسه شغّالة) عشان رد العميل («٣ أشخاص») يتفهم */
+      try { const s0 = await assistStore.loadSession(phone, now, acfg.sessionMin); if (s0) { const s1 = JSON.parse(JSON.stringify(s0)); s1.messages.push({ role: "assistant", content: [{ type: "text", text: rep.body }] }); s1.state.say = [...(s1.state.say || []), rep.body].slice(-20); await assistStore.saveSession(phone, s1, now); } } catch (e) { console.error("[assist] nudge session:", e.message); }
+      await assistStore.addTurn({ phone, sessionId: null, handledBy: "assistant", outcome: "nudge_sent", masked: null, text: rep.body, lang, trace: {} });
+    }
+    return end(err ? "cancelled" : "done", err ? `send_failed:${err}`.slice(0, 80) : null);
   }
   /* ── PS3 — التذكير اللي العميل طلبه ─────────────────────────────────────────
      صف واحد «pending» للعميل في wa_bot_jobs (الجديد بيلغي القديم). وقت التنفيذ كل الشروط بتتراجع من جديد (runReminder): أي فحص مانعرفش نتيجته ⇒ مانبعتش. */
@@ -3359,6 +3428,49 @@ const fl = await q(`SELECT count(*)::int AS n FROM wa_bot_log WHERE phone_norm=$
     { const changes = configDiff(prev, v.value); if (changes.length) await q("INSERT INTO wa_bot_config_log(who, changes) VALUES ($1, $2::jsonb)", [await actorOf(c), JSON.stringify(changes)]); }
     if (ctx.auditNote) { try { await ctx.auditNote(c, `🤖 بوت واتساب: ${prev.mode || "off"} → ${v.value.mode || "off"}${"testPhones" in (b || {}) ? ` · أرقام التجربة ${(v.value.testPhones || []).length}` : ""}`); } catch { /* سجل النشاط اختياري */ } }
     return c.json({ ok: true, config: botConfig({ waBot: v.value }) });
+  });
+
+  /* ── PK1 — «ملف معرفة البيزنس» ─────────────────────────────────────────────
+     GET: الحقول (عنوان، شرح، القيمة، الافتراضي ومصدره، مين يملاها) + المنيو الحي في سطور زي ما المساعد شايفه + الكتلة الكاملة. PUT (المالك): { fields: { key: نص | null } } — null = رجّع الافتراضي.
+     كل حقل بيتراجع وقت الحفظ ووقت القراءة: وصفة / مقادير / مورّد / ادعاء صحي / وعد وقت / رابط / خصم / عدد أشخاص للمشكل ⇒ مابيتحفظش ومابيتبعتش. */
+  const briefView = async (settings, cfg) => {
+    const menu = await menuIndex(settings, clock()), boxes = (await bundles()) || [], dg = menuDigest(menu, boxes);
+    const block = briefBlock(cfg.brief, { menu, boxes, live: { cash: settings?.shop?.allowCash === true } });
+    const fields = briefForDashboard(cfg.brief);
+    return { ok: true, enabled: cfg.assist.briefEnabled === true, sections: BRIEF_SECTIONS.map((x) => ({ id: x.id, title: x.ar })), fields, limits: BRIEF_LIMITS,
+      counts: { fields: fields.length, edited: fields.filter((f) => !f.isDefault).length, needOwner: fields.filter((f) => f.needsOwner).length, needConfirm: fields.filter((f) => f.needsConfirm).length, blocked: fields.filter((f) => f.problem).length },
+      liveMenu: dg ? dg.text : null, block, chars: block ? block.length : 0 };
+  };
+  app.get("/api/cms/wabot/brief", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    await ready;
+    const settings = (await getSettingsData()) || {};
+    return c.json(await briefView(settings, botConfig(settings)));
+  });
+  app.put("/api/cms/wabot/brief", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    const no = ownerOnly(c); if (no) return no;
+    let b; try { b = await c.req.json(); } catch { return c.json({ ok: false, error: "bad_json" }, 400); }
+    const settings = (await getSettingsData()) || {};
+    const prev = settings.waBot && typeof settings.waBot === "object" ? settings.waBot : {};
+    const v = briefFromBody(b, prev.brief);
+    if (!v.ok) return c.json({ ok: false, error: "invalid", errors: v.errors }, 400);
+    const next = { ...prev, brief: v.value };
+    await pool.query("UPDATE settings SET data = jsonb_set(COALESCE(data,'{}'::jsonb), '{waBot}', $1::jsonb, true), updated_at=NOW() WHERE id=1", [JSON.stringify(next)]);
+    { const changes = configDiff({ brief: prev.brief || {} }, { brief: v.value }); if (changes.length) await q("INSERT INTO wa_bot_config_log(who, changes) VALUES ($1, $2::jsonb)", [await actorOf(c), JSON.stringify(changes)]); }
+    return c.json(await briefView({ ...settings, waBot: next }, botConfig({ ...settings, waBot: next })));
+  });
+  /* ── PK1 — «تقرير ماجد» اليومي: ‎?day=YYYY-MM-DD‎ (يوم الشغل، ٤ الفجر لـ٤ الفجر بتوقيت الرياض؛ من غيره: أمس). قراءة بس. من غير أرقام جوالات. */
+  app.get("/api/cms/wabot/assist/daily", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    await ready;
+    const w = businessDay(c.req.query("day"), clock());
+    const turns = await q(`SELECT id, at, phone_norm, chat_hash, handled_by, outcome, customer_masked, final_text, lang, tool_calls, verdicts, cost_sar::float AS cost_sar, cart_code FROM wa_assist_turns WHERE at >= $1 AND at < $2 ORDER BY id LIMIT 5000`, [w.from, w.to]);
+    if (turns === null) return c.json({ ok: false, error: "unavailable" }, 503);
+    const orders = (await q(`SELECT o.phone_norm, o.total::float AS total, o.attribution->>'fc_link' AS link, o.created_at FROM shop_orders o
+                              WHERE o.created_at >= $1 AND o.created_at < $2 AND NOT COALESCE(o.is_test,false) AND o.status NOT IN ('pending_payment','expired','rejected_refunded','refund_failed','paid_pos_failed')`, [w.from, w.to])) || [];
+    const kbRows = (await q("SELECT id, status, question FROM wa_kb_questions ORDER BY last_at DESC LIMIT 400", [])) || [];
+    return c.json({ ok: true, from: w.from, to: w.to, report: buildMajedReport({ day: w.day, turns, orders, kbRows }) });
   });
 
   /* «اللي البوت عارفه دلوقتي»: نفس الحقايق اللي هيقولها لو اتسأل الحين، من نفس المصادر وبنفس الكاش — عشان المالك يتأكد

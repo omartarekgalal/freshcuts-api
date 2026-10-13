@@ -13,7 +13,7 @@
 ═══════════════════════════════════════════════════════════════════════════ */
 import { createHash } from "node:crypto";
 import { normalize } from "./wabot.js";
-import { validateReply, profileSummaryAr, ASSIST_DEFAULTS, deliverySavers, PAIRING_DEFAULT, pairingOf, grillFamilies, grillStemOf, weightsBrief } from "./waassist.js";
+import { validateReply, profileSummaryAr, ASSIST_DEFAULTS, deliverySavers, PAIRING_DEFAULT, pairingOf, grillFamilies, grillStemOf, weightsBrief, servingClaim } from "./waassist.js";
 import { providerOf, maskText } from "./wabotllm.js";
 import { chatHash } from "./waaicost.js";
 
@@ -80,13 +80,19 @@ export const ASSIST_CFG_DEFAULTS = Object.freeze({
   sttProvider: "openai",               // openai | groq | elevenlabs (wasttkey.js)
   sttModel: "gpt-4o-transcribe",
   visionModel: "claude-haiku-5-5",
+  /* PK1 — ملف معرفة البيزنس وسلوك البيع (١٤/١٠، من محادثات ١٣/١٠: ٨٥ رد من غير ولا سلة) — كل بند بإعداده */
+  briefEnabled: true,                  // «ملف معرفة البيزنس» (wabrief.js) + المنيو الحي في سطور بيتبعتوا للموديل مع التعليمات (كتلة تانية في الكاش)
+  allergenList: true,                  // «يسبب حساسية؟» عن صنف معروف ⇒ مسببات الحساسية المسجّلة للصنف فوراً (نص حقايق الأصناف) من غير «أي مكوّن؟»
+  menuButton: true,                    // «وش عندكم؟» ⇒ الأقسام في سطر + زر يفتح المنيو كامل
+  sellerClose: true,                   // قفلة الرد سؤال سهل يتجاوب («كم شخص أنتم؟») مش «تحب أجهّز لك طلب؟» — محاولة تصحيح واحدة، وماتوقّعش الرد
+  nudgeMin: 20,                        // متابعة المحادثة اللي وقفت عند سؤال من المساعد (من غير سلة): رسالة واحدة محددة بعد الدقايق دي (الصنف المعلن بأسعاره + سؤال واحد). صفر = مقفول. مرة في اليوم للعميل
   /* PS1 — الشخصية: اسم المساعد اللي بيعرّف بيه نفسه (مرة في أول المحادثة) وبيرد بيه على «مين معي؟». الاسم بس — طبيعته («المساعد الرقمي») ثابتة في النصوص ومابتتشالش. */
   personaName: "ماجد", personaNameEn: "Majed",
 });
 const NUMS = { budgetDaySar: [0, 1000], budgetMonthSar: [0, 10000], maxToolRounds: [1, 8], maxRepliesPerChatDay: [1, 60], timeoutMs: [5000, 60000], sessionMin: [10, 720], staffStepBackMin: [1, 60], seriousHoldMin: [0, 240], locationHours: [1, 24], keepDays: [7, 730],
-  fastCartLines: [0, 6], ackMaxChars: [0, 900], imageBurstSec: [0, 30], imageBurstMax: [1, 10], bigBoxSar: [0, 1000], reminderQuietStart: [0, 23], reminderQuietEnd: [0, 23], compactAfterChars: [8000, 200000], compactKeepTurns: [1, 12], followUpMin: [5, 720], followUpCloseGuardMin: [0, 240], searchMax: [3, 15], nudgeGapSar: [0, 100], topSellerDays: [7, 180], profileOrders: [5, 200], maxCartLines: [1, 40], liveDailyCustomers: [0, 5000], voiceMaxSec: [10, 300], mediaBudgetDaySar: [0, 50], sttSarPerMin: [0, 1] };
+  fastCartLines: [0, 6], ackMaxChars: [0, 900], imageBurstSec: [0, 30], imageBurstMax: [1, 10], bigBoxSar: [0, 1000], reminderQuietStart: [0, 23], reminderQuietEnd: [0, 23], compactAfterChars: [8000, 200000], compactKeepTurns: [1, 12], followUpMin: [5, 720], followUpCloseGuardMin: [0, 240], nudgeMin: [0, 180], searchMax: [3, 15], nudgeGapSar: [0, 100], topSellerDays: [7, 180], profileOrders: [5, 200], maxCartLines: [1, 40], liveDailyCustomers: [0, 5000], voiceMaxSec: [10, 300], mediaBudgetDaySar: [0, 50], sttSarPerMin: [0, 1] };
 const ENUMS = { mode: ASSIST_MODES, routing: ["escalate", "strong", "fast"], effort: ["low", "medium", "high"], thinking: ["adaptive", "off"], sttProvider: ["openai", "groq", "elevenlabs"], liveAudience: LIVE_AUDIENCES, cacheTtl: ["5m", "1h"] };
-const BOOLS = ["typing", "followUpEnabled", "forceSuggestion", "imagesEnabled", "voiceEnabled", "fastSimplePreview", "orderWordsStrong", "rulesFirstPrice", "remindersEnabled", "feeMoment", "menuToRules", "pickForMe", "choiceList", "pairingEnabled", "adButtons", "weightToAssistant", "faqShort", "firstLead", "grillFamilies", "oneOfferPerChat"];
+const BOOLS = ["typing", "followUpEnabled", "forceSuggestion", "imagesEnabled", "voiceEnabled", "fastSimplePreview", "orderWordsStrong", "rulesFirstPrice", "remindersEnabled", "feeMoment", "menuToRules", "pickForMe", "choiceList", "pairingEnabled", "adButtons", "weightToAssistant", "faqShort", "firstLead", "grillFamilies", "oneOfferPerChat", "briefEnabled", "allergenList", "menuButton", "sellerClose"];
 const MODEL_RE = /^[a-z0-9./-]{3,60}$/;
 /* PS1 — اسم الشخصية: حروف ومسافات بس (٢–٢٠ حرف)؛ مفيش أرقام ولا رموز ولا سطر جديد، عشان مايبقاش باب لحقن نص في الرسالة أو في سياق الموديل. */
 const NAMES = { personaName: /^[ء-ي][ء-ي ]{1,19}$/, personaNameEn: /^[A-Za-z][A-Za-z ]{1,19}$/ };
@@ -182,6 +188,11 @@ export const ASSIST_SCHEMA = Object.freeze({
   "assist.sttProvider": { group: "assist", type: "enum", ar: "مزوّد تحويل الصوت لنص", help: "المفتاح بيتحفظ من نفس الصفحة. تغيير المزوّد أو الموديل محتاج اختبار جديد.", options: ENUMS.sttProvider },
   "assist.sttModel": { group: "assist", type: "model", ar: "موديل تحويل الصوت لنص", help: "الاسم زي ما هو متضاف في مزوّد الموديلات." },
   "assist.visionModel": { group: "assist", type: "model", ar: "موديل قراءة الصور", help: "الموديل السريع كفاية." },
+  "assist.briefEnabled": { group: "assist", type: "boolean", ar: "ملف معرفة البيزنس", help: "اللي المالك كتبه في «ملف معرفة البيزنس» (خطوات الطلب، الدفع، التوصيل، المشاوي، أقترح إيه لكام شخص، اللي مش عندنا، العروض) + المنيو الحي بأسعاره بيتبعتوا للمساعد مع كل رد. مقفول: المساعد يشتغل من الأدوات بس زي قبل." },
+  "assist.allergenList": { group: "assist", type: "boolean", ar: "«يسبب حساسية؟» ⇒ مسببات الصنف فوراً", help: "العميل سأل عن الحساسية وفيه صنف معروف (سمّاه، أو المساعد لسه عارضه): الرد هو مسببات الحساسية المسجّلة للصنف من حقايق الأصناف + سطر المطبخ + «اكتب حساسيتك في ملاحظة الطلب»، من غير سؤال «أي مكوّن؟»." },
+  "assist.menuButton": { group: "assist", type: "boolean", ar: "«وش عندكم؟» ⇒ الأقسام + زر المنيو", help: "سؤال عام عن اللي عندنا: الأقسام في سطر واحد وسؤال «وش تشتهي؟» ومعاه زر يفتح المنيو كامل بالصور والأسعار، بدل أربع أصناف من الأكثر مبيعاً." },
+  "assist.sellerClose": { group: "assist", type: "boolean", ar: "القفلة سؤال يتجاوب", help: "الرد اللي آخره «تحب أجهّز لك طلب؟» بيترجع للمساعد مرة واحدة عشان يقفل بسؤال سهل («كم شخص أنتم؟»، «نصف ولا كيلو؟»). لو المحاولة التانية زيها بتتبعت عادي." },
+  "assist.nudgeMin": N("nudgeMin", "متابعة المحادثة اللي وقفت عند سؤال المساعد: بعد", "العميل سأل، المساعد رد بسؤال، والعميل سكت ومفيش سلة: رسالة واحدة محددة بعد المدة دي — الصنف المعلن بأسعاره (لو جاي من إعلان) وسؤال واحد «كم شخص أنتم؟». مرة في اليوم للعميل، ومابتتبعتش لو كتب، أو طلب، أو موظف دخل، أو وقّف الرسايل، أو فيه شكوى أو تحويل، أو المطعم مقفول أو قرب يقفل. صفر = مقفول.", "دقيقة"),
   "assist.personaName": { group: "assist", type: "name", ar: "اسم المساعد (عربي)", help: "الاسم اللي بيعرّف بيه نفسه مرة في أول المحادثة («معك … المساعد الرقمي لفريش كاتس») وبيرد بيه على «مين معي؟». حروف عربية بس. عمره ما بيقول إنه موظف أو شخص حقيقي، مهما كان الاسم." },
   "assist.personaNameEn": { group: "assist", type: "name", ar: "اسم المساعد (إنجليزي)", help: "نفس الاسم بحروف إنجليزية، للعميل اللي بيكتب إنجليزي." },
 });
@@ -286,7 +297,7 @@ Every fact you state (a dish, a box, a price, a fee, an offer, opening hours, an
 - A box (بوكس) is often the better deal for two or more people: use list_boxes / get_box. Boxes are ordered on the website only. The first context lists every box as slug and name ("boxes"): when the customer names a box, call get_box with its slug directly; use list_boxes only when you need prices or contents to compare. Ask for each choice slot of a box, offering only the choices get_box lists (and their extra price if any). Crust and other add-ons only as get_box / get_item list them.
 - As soon as the customer has named what they want (a dish, or a box with its choices), call preview_cart before you ask anything else: it returns the real prices and at most ONE "suggestion" computed by our system. If there is a suggestion, your message states the price and offers that one suggestion as its single short question («تحب أضيف لك …؟»), with its real benefit when it has one, exactly as "suggestion_say" explains (a cheaper delivery fee, or a box that costs less than the separate items); the delivery-or-pickup question comes in the next message. Never invent a suggestion, never offer more than one. If the customer declines or ignores it, call note_suggestion(kind, "declined") and never repeat it. If they accept, call note_suggestion(kind, "accepted") and include it in the cart.
 - If the context hint has "same_dish_without_it": the menu already has that dish made without it (for example the Zinger crepe without the heat is «كريب ستربس»). Say so and offer that dish instead of a note.
-- Dishes sold by weight (by_weight: true, the grills by the kilo): the tool gives "weights", each with its own price. Never state one price for such a dish without its weight: a price always goes with the weight it belongs to («ثلث كيلو: 53 ر.س · نصف كيلو: 78 ر.س · كيلو: 155 ر.س» — these numbers are placeholders). When the customer asks its price, give the weights with their prices in one line. To order it you need the weight: if they did not say, ask it in one question («تبيه نصف كيلو ولا كيلو؟»). In preview_cart / build_cart send the dish id with the variant_option_id of that weight, and qty = how many of that weight («٢ كيلو» = qty 2 with the kilo's variant_option_id; «كيلو ونص» = one kilo line + one half-kilo line). For «مشكل مخصوص» say only the weights and prices: never how many people it serves and never which pieces or how many are in it.
+- Dishes sold by weight (by_weight: true, the grills by the kilo): the tool gives "weights", each with its own price. Never state one price for such a dish without its weight: a price always goes with the weight it belongs to («ثلث كيلو: 53 ر.س · نصف كيلو: 78 ر.س · كيلو: 155 ر.س» — these numbers are placeholders). When the customer asks its price, give the weights with their prices in one line. To order it you need the weight: if they did not say, ask it in one question («تبيه نصف كيلو ولا كيلو؟»). In preview_cart / build_cart send the dish id with the variant_option_id of that weight, and qty = how many of that weight («٢ كيلو» = qty 2 with the kilo's variant_option_id; «كيلو ونص» = one kilo line + one half-kilo line). For «مشكل مخصوص»: never how many people it serves, and never which pieces or how many are in it.
 - A wish about how a dish is made (بدون بصل، بدون مخلل، no olives, زيادة صوص، حار) is a NOTE, not a question: put it in the "note" of that dish, or of that slot of the box, in preview_cart / build_cart, and repeat it in your cart summary so the customer sees it was understood. This includes how well done it is and mixed wishes («جزء مقمر وجزء مستوي عادي», «نص حار ونص عادي»). A note never replaces a product: when the customer names a product (a drink, a side), find that item with search_menu and add it as its own line; if several items match, ask which. You do not know what the kitchen can do: never promise the result; say that you wrote it as a note for the kitchen («كتبتها ملاحظة للمطبخ»). Do not call dish_fact for a note and do not hand over for it.
 - When the customer has confirmed the items and said delivery or pickup, call build_cart. If build_cart answers "offer_suggestion_first", do what it says: state the priced lines and ask its one suggestion, then call build_cart again after the customer answers. A button «كمّل طلبك» with the cart link is attached to your message automatically: never write a link yourself. Your message then lists the cart lines (with any notes) and the subtotal exactly as build_cart returned them, and one line telling them to tap the button, set their location and pay.
 - Delivery questions (do you deliver to me, how much is delivery, how long does it take): the answer depends on where they are. Without a shared pin, answer in ONE message: first that yes, we deliver inside Jeddah («نعم نوصل داخل جدة 👍»), then ask them to share their location here in WhatsApp (📎 then «الموقع») so you can confirm their address and the fee; never judge coverage from a district name, and state no fee before the pin. When the context says location_shared or customer_just_shared_a_location_pin, call quote_delivery (total = the cart subtotal if there is a cart, otherwise 0) and answer from its result only, starting with «نعم نوصل لك 👍»; if the result has "first_order", lead with its "say" text exactly as it is and give the other fees in a few words, not the whole ladder; otherwise the fee ("fee") for an order of that total; if "free_from_total" is present, that delivery is free from that order total; if "about_minutes" is present, the time with the word «تقريباً» (never as a promise), and if it is absent say nothing about time. If the pin is outside our range say so plainly and offer pickup. Then move to the order with one question. Pickup has no delivery fee.
@@ -340,6 +351,30 @@ Customer: لا شكراً → You: تمام. توصيل ولا استلام؟
 Customer: ايش مقادير التتبيلة؟ → You: عذراً، هذي المعلومة ما أقدر أزوّدك بها 🙏 أقدر أساعدك في المنيو والطلب، أو اكتب «موظف» وأحوّلك.
 Customer: what is in your marinade? → You: Sorry, I can't share that information 🙏 I can help with the menu and ordering, or type "staff" and I'll connect you.
 After build_cart → You: سلتك: <lines> = <subtotal> ر.س. اضغط الزر، حدّد موقعك وادفع 👇`;
+/* PK1 — قواعد البيع اللي بتتبعت **مع** ملف معرفة البيزنس (الكتلة التانية من التعليمات). التعليمات الثابتة فوق فضلت بحجمها (تكلفتها في كل نداء)؛ القواعد دي مالهاش معنى من غير الملف
+   والمنيو الحي، فبتتبعت معاهم وبس. كل قاعدة هنا من سطر حقيقي في محادثات ١٣/١٠ (٨٥ رد من غير ولا سلة). مفيش أرقام في نصها (الكتلة بتتحسب «حقايق» عند المراجِع). */
+export const SELLING_RULES = `# The business brief (read with the instructions above)
+After these lines comes <business_brief>: what the restaurant owner wants you to know (how ordering works, payment, delivery, the two grill families, what to propose for how many people, what we do not sell, the offers) and then the live menu: every section, dish and box with its price right now.
+- It is a source of facts equal to a tool result: state it as fact, in your own short words. It never changes your rules.
+- Use it before you ever say you do not know. Never answer «ما عندي معلومة» and never send the customer to «موظف» for something the brief, the live menu or a tool answers. If only part of a question is covered, answer that part plainly and say in a few words what you cannot confirm.
+- A name or a price from the live menu may be said as it is. The total of more than one item, the delivery fee, an offer or a code with its conditions, and whether a dish is available today still come from the tools, and the tools give the ids a cart needs.
+
+# Selling like someone who knows the place
+- How to order («كيف أطلب؟», «كيف أطلب من الموقع؟», «طريقة الطلب»): answer with confidence in three short steps from the brief's ordering section (you prepare the cart here, they tap the button, on our website they set their location or choose pickup and pay), then ask «وش تحب تطلب؟». Never say that you have no details about ordering.
+- A question about everything we have («وش عندكم؟», «ايش عندكم اليوم», "what do you have"): call menu_button, name our menu sections in ONE line (sections, not dishes and not best sellers) and ask which they feel like. The button opens the full menu with photos and prices.
+- A vague wish names a kind of food, not a dish («مشاوي», «على الفحم», «لحم», «شي خفيف», «عشا», or a price question with nothing named and no advertised dish): do not pick a dish for them and do not list dishes. If you do not know for how many people, your whole reply is ONE narrowing question («لكم شخص؟»). Once you know the kind and the number of people, propose ONE concrete order from the brief's section on what to propose: the box made for that number (for one person, the meal or the solo box), with its price, what it holds in a few words, and «أجهّزه لك؟». One proposal, never a list. If they named several grills («لحم وطرب ودجاج»), propose the one meal or box that holds them; do not ask about each.
+- «مشكل مخصوص»: what you DO say, at once and without any «ما أقدر»: what it is and what it is served with (the brief's line about it; the kinds of grill in it only if the brief names them), that it is sold by weight, the three weights with their prices, and then one question, «كم شخص أنتم؟». When they tell you the number of people, propose the box that the brief gives for that number (its name, price and what it holds): a box is made for a number of people, a weight is not. Asked how many skewers or pieces an amount buys: it is sold by weight, not by the piece; give the weights and prices and ask the same question. Never a number of people for a weight, never a number of pieces, never the weight of anything inside it.
+- Asked whether a dish or a box comes WITH something (حمص، متبل، أرز، خبز، سلطة): answer from its description and the brief: say what it does come with, and if the thing they named is not on our menu say so plainly with what we do have beside it. They asked directly, so you answer it yourself; never «اكتب موظف» for this.
+- Something that is not on the live menu and that they asked for by name: say plainly that we do not have it and offer the nearest thing the brief or the menu gives, with its price. Not «اكتب موظف».
+- Too expensive («غالي», «أسعاركم عالية», «ولا واحد» = none of these, not "one person"): ONE cheaper real option of the SAME kind they were looking at (a grill stays a grill: a meal instead of a kilo), with its price, as a short question. Never move them to another kind of food.
+- A general allergy question with no allergen named («يسبب حساسية؟», «فيه مسببات حساسية؟», «عندي حساسية») about a dish that is known (they named it, or you have just presented dishes: then it is those, two at most) is answered at once: call dish_fact with list: true for that dish and send its text as it is. Never answer it with «أي مكوّن؟» or «أي صنف؟» when a dish is known.
+- End with a question that is easy to answer and moves the order («كم شخص أنتم؟», «مشاوي ولا كريب؟», «نصف ولا كيلو؟», «توصيل ولا استلام؟»). Never end with a bare «تحب أجهّز لك طلب؟» or «تبي تبدأ طلبك؟»: it gives the customer nothing to answer.
+
+# Examples (names and prices are placeholders: use the brief and the tools)
+Customer: كيف أطلب من الموقع؟ → You: سهلة: تكتب لي اللي تبيه وأجهّز لك السلة، تضغط الزر، وعلى موقعنا تحدد موقعك وتدفع. وش تحب تطلب؟
+Customer: نفسي بمشاوي اليوم → You: أبشر. لكم شخص؟
+Customer: ثلاثة → You: <the box the brief gives for a family> بـ <price> ر.س: <what it holds>. أجهّزه لك؟
+Customer: المشكل يكفي كم شخص؟ → You: <the brief's line about it>، ويُباع بالوزن: <each weight with its price>. كم شخص أنتم؟`;
 
 const T = (name, description, properties = {}, required = []) => ({ name, description, input_schema: { type: "object", properties, required, additionalProperties: false } });
 const CART_ITEMS = { type: "array", description: "ordinary dishes", items: { type: "object", properties: { id: { type: "string", description: "dish id from search_menu / get_item" }, qty: { type: "integer", minimum: 1, maximum: 20 }, note: { type: "string", description: "the customer's note for this dish, e.g. بدون بصل" }, variant_option_id: { type: "integer", description: "ONLY for a dish sold by weight: the variant_option_id of the chosen weight from its weights list; qty is then how many of that weight (2 kilos = qty 2 with the kilo's id)" } }, required: ["id"], additionalProperties: false } };
@@ -363,21 +398,22 @@ export const TOOL_DEFS = Object.freeze([
   T("get_offers", "Real offers for this customer: first-order offer and its conditions, loyalty progress, unused reward codes, timed offers with their end dates."),
   T("get_hours", "Whether we are open now, closing time, next opening."),
   T("order_status", "This customer's own recent website orders (the sender's number only)."),
-  T("dish_fact", "The approved answer to ONE question about ONE dish: does it contain an ingredient or allergen, or can it be made without it. Returns the exact text to send (say), or handover.", { id: { type: "string", description: "dish id" }, question: { type: "string", description: "the ingredient or allergen in the customer's own words, e.g. سمسم or بدون طحينة" }, remove: { type: "boolean", description: "true when the customer asks to have the dish WITHOUT it" } }, ["id", "question"]),
+  T("dish_fact", "The approved answer to ONE question about ONE dish: does it contain an ingredient or allergen, or can it be made without it; or, with list: true, the allergens our kitchen has recorded for that dish (for a general allergy question that names no allergen). Returns the exact text to send (say), or handover.", { id: { type: "string", description: "dish id" }, question: { type: "string", description: "the ingredient or allergen in the customer's own words, e.g. سمسم or بدون طحينة; leave empty with list: true" }, remove: { type: "boolean", description: "true when the customer asks to have the dish WITHOUT it" }, list: { type: "boolean", description: "true = the customer asked about allergy in general, without naming an allergen: returns the recorded allergens of the dish" } }, ["id"]),
   T("faq", "The owner-approved answer for a topic. Send its text as it is.", { topic: { type: "string", enum: ["meat", "halal", "vegetarian", "kids", "stuffed_crust", "dine_in", "parking", "reservation", "apps", "payment", "branch_location"] }, about: { type: "string", description: "when the customer asked about ONE thing inside the topic, that one word in their own words (e.g. دجاج): only that part of the answer comes back" } }, ["topic"]),
   T("ask_knowledge", "Answers the restaurant manager saved for general questions customers asked before (services, the place, what we have). Call it before saying you do not know. Returns up to three similar saved questions with their answers; use one only if it answers this customer's question, and send its text as it is.", { question: { type: "string", description: "the customer's question, in the customer's own words" } }, ["question"]),
   T("what_we_know", "A plain summary of what our system holds about this customer, to send as it is when they ask."),
   T("note_suggestion", "Record that the customer accepted or declined the suggestion you offered.", { kind: { type: "string", enum: ["box_saves", "pair", "next_tier", "drink", "side", "top_seller"] }, outcome: { type: "string", enum: ["accepted", "declined"] } }, ["kind", "outcome"]),
   T("dish_photo", "The customer asks to see a dish, a sauce or an add-on, or asks you to photograph it. Tells you whether our menu has a photo of it (a button that opens it is then attached to your message) and what to say.", { id: { type: "string", description: "dish id from the tools; leave empty if the thing is not a dish of its own (a sauce, an add-on)" } }),
+  T("menu_button", "Attach a button that opens our full menu with photos and prices. Call it when the customer asks what we have in general or wants to see the whole menu; then name the sections in one line and ask what they feel like."),
   T("remind_me", "Schedule ONE reminder message to this customer at a time they chose, or cancel it. Call it only after the customer agreed to be reminded AND gave a time. It answers whether and exactly when the message can be sent (we may only message a customer within 24 hours of their last message, not in quiet hours, not while we are closed): tell the customer what it answers, honestly, also when the time had to be moved or it cannot be done.", { day: { type: "string", enum: ["today", "tomorrow"], description: "the day the customer meant" }, time: { type: "string", description: "24-hour HH:MM, Riyadh time, e.g. 20:00 for «٨ بالليل»" }, dish_id: { type: "string", description: "the dish they were looking at, if any (id from the tools)" }, box_slug: { type: "string", description: "or the box they were looking at" }, cancel: { type: "boolean", description: "true = the customer no longer wants the reminder" } }),
   T("handover", "Pass the chat to a staff member. A fixed message is sent to the customer; do not write anything after calling it.", { reason: { type: "string", enum: ["allergy_severe", "complaint", "problem", "order_change", "custom_offer", "needs_staff"] }, note: { type: "string", description: "short note for staff, e.g. people / day / time / mode for a tailored offer" } }, ["reason"]),
 ]);
 const TOOL_NAMES = new Set(TOOL_DEFS.map((t) => t.name));
-export const PROMPT_HASH = createHash("sha1").update(SYSTEM_PROMPT + JSON.stringify(TOOL_DEFS)).digest("hex").slice(0, 12);
+export const PROMPT_HASH = createHash("sha1").update(SYSTEM_PROMPT + SELLING_RULES + JSON.stringify(TOOL_DEFS)).digest("hex").slice(0, 12);
 
 /* ── قواعد إضافية فوق مراجِع الشريحة ١ ────────────────────────────────────── */
 const EXTRA_RULES = [
-  [/(?<![\p{L}])(عايز|عاوز|عايزه|دلوقتي|ازاي|إزاي|كده|كدا|بتاع|بتاعت|بتاعك|أوي|اوي|علشان|مفيش|مش|حضرتك|يا فندم|ايوه يا)(?![\p{L}])/u, "dialect_egyptian"],
+  [/(?<![\p{L}])(عايز|عاوز|عايزه|دلوقتي|ازاي|إزاي|كده|كدا|بتاع|بتاعت|بتاعك|أوي|اوي|علشان|مفيش|مش|كمان|حضرتك|يا فندم|ايوه يا)(?![\p{L}])/u, "dialect_egyptian"],
   [/https?:\/\/|www\.|freshcuts\.sa\/(?!$)/i, "link_in_text"],
   [/\*\*|^#{1,4} |^\s*\|.*\|\s*$/m, "markdown"],
   [/(بيوصلك|يوصلك|راح يوصلك|بنوصله|نوصله لك) (بسرعه|بسرعة|سريع|قريب|حالا|حالاً)|ما (راح )?يت[أا]خر|توصيل سريع|fast delivery|quick delivery|will (arrive|be there|be ready) (soon|shortly|in|within)/i, "time_promise"],
@@ -392,7 +428,7 @@ const EXTRA_RULES = [
   /* PS4 (تقييم ١٣/١٠: الموديل السريع كتب «وعليكم... لا، الرسالة ما فيها تحية. نبدأ: …» في الرسالة) — كلام الموديل لنفسه بالعربي */
   [/الرسال[ةه] (?:ما|لا|مو) (?:فيها|تحتوي)|(?:^|[.\n]\s*)(?:نبد[أا]|لنبد[أا]|الرد)\s*:|\.\.\.\s*لا،|العميل (?:ما|لم) (?:سل[ّ]?م|يسل[ّ]?م|حي[ّ]?ا)|(?:حسب|وفق|بحسب) (?:التعليمات|القواعد)/u, "self_talk"],
   [/(ما|لا|مافي|ما في) ?(عندنا|يوجد|فيه)? ?مكسرات (في |ب)(ال)?مطبخ|مطبخنا (ما|لا|خالي)|no nuts in (the|our) kitchen|nut[- ]free/i, "health_or_guarantee"],
-  [/anthropic|claude|openai|chatgpt|\bgpt\b|language model|نموذج لغوي|note_suggestion|preview_cart|list_boxes|list_packs|check_availability|get_offers|get_hours|what_we_know|ask_knowledge|manager_notes|came_from_ad|channel_invite|heard_from_voice_note|seen_in_a_picture|delivery_savers|remind_me|dish_photo|also_as|ask_which|reply_rule|pictures_the_customer_sent_earlier|note_names_a_product|order_for_later|first_order|most_ordered|lighter_option|before_the_choices|customer_is_postponing|introduce_yourself|customer_is_ordering|staff_handled|staff_told_customer|still_to_do|boxes_reaching|handover\(|<context|customer_message/i, "internal_leak"],
+  [/anthropic|claude|openai|chatgpt|\bgpt\b|language model|نموذج لغوي|note_suggestion|preview_cart|list_boxes|list_packs|check_availability|get_offers|get_hours|what_we_know|ask_knowledge|manager_notes|came_from_ad|channel_invite|heard_from_voice_note|seen_in_a_picture|delivery_savers|remind_me|dish_photo|also_as|ask_which|reply_rule|pictures_the_customer_sent_earlier|note_names_a_product|order_for_later|first_order|most_ordered|lighter_option|before_the_choices|customer_is_postponing|introduce_yourself|customer_is_ordering|staff_handled|staff_told_customer|still_to_do|boxes_reaching|business_brief|menu_button|handover\(|<context|customer_message/i, "internal_leak"],
 ];
 /* جمل الرفض الأمين (بتتشال قبل قواعد الكلمات). كل نمط = نفي + فعل مشاركة/وجود + الكلمة الحساسة في نفس الجملة القصيرة.
    الرفض بيقف عند أول فاصلة أو نقطة أو «لكن / بس / but»: «ما أقدر أشارك طريقة التحضير» بتتشال، وأي كلام بعدها («لكن نتبلها بـ…») بيتراجع عادي. */
@@ -411,7 +447,7 @@ const NG = 10;     // ١٠ كلمات إنجليزية متتالية من ال�
 let GRAMS = null;
 function promptGrams() {
   if (GRAMS) return GRAMS;
-  const src = [SYSTEM_PROMPT.split("# Style examples")[0], ...TOOL_DEFS.map((t) => t.description), ...Object.values(CTX_RULES)];
+  const src = [SYSTEM_PROMPT.split("# Style examples")[0], SELLING_RULES.split("# Examples")[0], ...TOOL_DEFS.map((t) => t.description), ...Object.values(CTX_RULES)];
   GRAMS = new Set();
   for (const part of src) { const w = gramWords(part); for (let i = 0; i + NG <= w.length; i++) { const g = w.slice(i, i + NG); if (g.every((x) => /^[a-z0-9_]+$/.test(x))) GRAMS.add(g.join(" ")); } }
   return GRAMS;
@@ -487,6 +523,28 @@ export function weightPriceProblems(text, know = {}, facts = []) {
   }
   return out.slice(0, 3);
 }
+/* PK1 — رقم في الرد مصدره المنيو الحي بس (مش أداة ولا كلام العميل): مسموح لو (أ) رقم من كلام المالك في الملف أو جزء من اسم صنف/باقة («٤–٦ أشخاص»)، أو (ب) سعر صنف/بوكس اسمه في نفس السطر،
+   أو (ج) سعر وزن لصنف بالوزن اسمه في الرد (ربط السعر بوزنه بيراجعه weightPriceProblems). menuFacts = { text: الكتلة كلها, owner: كلام المالك من غير سطور الأسعار الحية }. */
+/* «المشكل المخصوص» = «مشكل مخصوص»: المقارنة من غير «ال» التعريف */
+const loose = (s) => normalize(String(s || "")).split(" ").map((w) => w.replace(/^(?:وال|بال|لل|ال)(?=.{2,})/, "")).join(" ");
+const coreName = (n) => loose(String(n || "").replace(/بالوزن|\(by the kilo\)|by the kilo/gi, " ")).replace(/\s+/g, " ").trim();
+export function menuBound(text, v, know = {}, menuFacts = {}) {
+  if (!Number.isFinite(v)) return false;
+  const r2 = (n) => Math.round(Number(n) * 100) / 100, num = r2(v);
+  const numsIn = (s) => (AR_DIGITS(String(s || "")).match(/\d+(?:\.\d+)?/g) || []).map((x) => r2(x));
+  const items = (know.menu && know.menu.items) || [], boxes = know.boxes || [];
+  /* رقم مكتوب كسعر («… ر.س») لازم يتربط بصنفه (ب/ج). غير كده: رقم من كلام المالك أو من اسم صنف/باقة مسموح. */
+  const esc = String(num).replace(".", "\\."), priced = new RegExp(`(?<![\\d.])${esc}(?:\\.0+)?\\s*(?:ر\\.?\\s?س|ريال|sar)|(?:sar|ر\\.س)\\s*${esc}(?![\\d.])`, "i").test(AR_DIGITS(String(text || "")));
+  if (!priced && (numsIn(menuFacts.owner || "").includes(num) || [...items.map((i) => i.name), ...boxes.map((b) => b.name)].some((n) => numsIn(n).includes(num)))) return true;
+  const whole = loose(text), lines = AR_DIGITS(String(text || "")).split("\n").filter((l) => numsIn(l).includes(num)).map((l) => loose(l));
+  const named = (name, nameEn, where) => { const a = coreName(name), e = coreName(nameEn); return (a.length >= 4 && where.includes(a)) || (e.length >= 6 && where.includes(e)); };
+  for (const it of items) {
+    if (it.byWeight && Array.isArray(it.weights)) { if (it.weights.some((w) => r2(w.price) === num) && named(it.name, it.nameEn, whole)) return true; continue; }
+    if (r2(it.price) === num && lines.some((l) => named(it.name, it.nameEn, l))) return true;
+  }
+  for (const b of boxes) if (r2(b.price) === num && lines.some((l) => named(b.name, b.name_en, l))) return true;
+  return false;
+}
 export function stripSalam(text) {
   return String(text || "").replace(/^\s*وعليكم السلام(?:\s+ورحم[ةه] الله)?(?:\s+وبركاته)?[\s،,.!👋]*/u, "").trim();
 }
@@ -529,9 +587,13 @@ export function askedSlot(reply, lastBox) {
   for (const s of lastBox.slots) { const hits = (s.choices || []).filter((c) => (c.name && (n.includes(normalize(c.name)) || (core(c.name).length >= 3 && n.includes(core(c.name))))) || (c.name_en && low.includes(String(c.name_en).toLowerCase()))).length; if (hits >= 2 && (!best || hits > best.hits)) best = { key: s.key, hits }; }
   return best ? best.key : null;
 }
+export const WEAK_CLOSE_RE = /(?:تحب|تحبين|تبي|تبين|تبغى|تبغين|ودك) (?:[أا]جه[ّ]?ز|نجه[ّ]?ز) (?:لك|لكم) (?:طلب|طلبك|طلبكم|الطلب|شي|شيء)(?: الحين| الآن)?\s*[؟?]\s*$|(?:تبي|تبين|تبغى|تحب) تبد[أا](?:ين)? (?:طلبك|بطلبك|الطلب|نطلب)\s*[؟?]\s*$|(?:shall i|would you like me to|want me to) (?:prepare|start) (?:an|your) order\??\s*$/i;
+/* PK1: رد «ما أعرف» — بيتسجّل كسؤال من غير إجابة وينزل في طابور المدير (قاعدة المعرفة) عشان المعرفة تكبر من المحادثات الحقيقية. */
+export const NON_ANSWER_RE = /ما عندي (?:معلوم[ةه]|تفاصيل|ت[أا]كيد|فكر[ةه])|ما [أا]قدر [أا]فص[ّ]?ل|ما لقيت(?:ه|ها)? في المنيو|لا [أا]ملك معلوم|i (?:do not|don'?t) have (?:confirmed |any |that )?(?:information|details)/i;
+export const SOFT_PROBLEMS = new Set(["weak_close"]);
 const INTRO_RE = /معك\s+[\u0621-\u064A]{2,20}(?:\s[\u0621-\u064A]{2,20})?\s*[،,]?\s+المساعد الرقمي|\bthis is [a-z]{2,20}(?: [a-z]{2,20})?, fresh cuts'?s? digital assistant/i;
 export const WHO_RE = /بوت|روبوت|[إا]نسان|بشر|شخص|حقيقي|[آا]لي|مين|منو|من معي|من انت|اسمك|موظف|ذكاء|\b(?:bot|robot|human|real|person|who|name|ai|staff|agent)\b/i;
-export function checkReply(text, { facts = [], customerText = "", know = {}, discountAllowed = false, appsAllowed = false, offersSeen = true, sayTexts = [], lang = null, channelUrl = null, introAllowed = true, turnText = "", freeCode = null, recentCustomer = null, reminderSet = true } = {}) {
+export function checkReply(text, { facts = [], customerText = "", know = {}, discountAllowed = false, appsAllowed = false, offersSeen = true, sayTexts = [], lang = null, channelUrl = null, introAllowed = true, turnText = "", freeCode = null, recentCustomer = null, reminderSet = true, weakClose = false, menuFacts = null } = {}) {
   const allowWords = discountAllowed ? ["discount_claim"] : [];
   const STRUCT = new Set(["number_not_from_tools", "name_not_from_tools", "link_not_from_tools", "too_long", "empty"]);
   /* الأرقام والأسماء والروابط والطول: على الرد كله. قواعد الكلمات: على الرد من غير أي نص معتمد اتبعت زي ما هو (إجابة سؤال شائع / حقيقة صنف / ملخص
@@ -542,11 +604,14 @@ export function checkReply(text, { facts = [], customerText = "", know = {}, dis
      والعميل ياخد «ما فهمت»). أي نص من التعليمات نفسها بيتمسك بقاعدة مستقلة تحت (promptLeak) على الرد كله، فالاستثناء ده مابيفتحش تسريب. */
   for (const re of HONEST_REFUSALS) rest = rest.replace(re, " ");
   customerText = `${customerText}\n${numberWords(customerText)}`;
-  const filtered = [...validateReply(text, { facts, customerText, know, allowWords }).problems.filter((p) => STRUCT.has(p.type)),
-    ...validateReply(rest.trim() || "تمام", { facts, customerText, know, allowWords }).problems.filter((p) => !STRUCT.has(p.type))];
+  /* PK1: المنيو الحي اللي في ملف المعرفة مصدر للأسماء، وللأرقام بشرط: الرقم لازم يكون سعر صنف/بوكس اسمه في نفس السطر (أو أي وزن لصنف بالوزن اسمه في الرد)، أو رقم من كلام المالك نفسه.
+     من غير الشرط ده أي سعر في المنيو كان يعدّي جنب أي صنف («كريب زنجر بـ 19» و19 سعر صنف تاني). */
+  const nameFacts = menuFacts && menuFacts.text ? [menuFacts.text] : [];
+  const filtered = [...validateReply(text, { facts, customerText, know, allowWords, nameFacts }).problems.filter((p) => STRUCT.has(p.type) && !(p.type === "number_not_from_tools" && menuFacts && menuBound(text, Number(p.value), know, menuFacts))),
+    ...validateReply(rest.trim() || "تمام", { facts, customerText, know, allowWords, nameFacts }).problems.filter((p) => !STRUCT.has(p.type))];
   for (const [re, type] of EXTRA_RULES) { const m = re.exec(rest); if (m) filtered.push({ type, value: m[0] }); }
   if (!appsAllowed && APP_NAMES.test(rest)) filtered.push({ type: "apps_without_source", value: (APP_NAMES.exec(rest) || [""])[0] });
-  { const blob = facts.map((f) => (typeof f === "string" ? f : JSON.stringify(f))).join(String.fromCharCode(10)).toLowerCase(), low = String(text || "").toLowerCase();
+  { const blob = [...facts, ...nameFacts].map((f) => (typeof f === "string" ? f : JSON.stringify(f))).join(String.fromCharCode(10)).toLowerCase(), low = String(text || "").toLowerCase();
     const en = [...((know.menu && know.menu.items) || []).map((i) => i.nameEn), ...((know.boxes || []).map((b) => b.name_en))].filter((n) => n && /[a-z]/i.test(n) && n.length >= 6);
     for (const n of new Set(en)) { const k = n.toLowerCase(); if (low.includes(k) && !blob.includes(k)) filtered.push({ type: "name_not_from_tools", value: n }); } }
   /* لغة الرد = لغة العميل. جملة كاملة باللغة التانية جوّه الرد = يا رد باللغة الغلط يا «ملاحظات الموديل لنفسه» اتسرّبت في الرسالة
@@ -556,7 +621,7 @@ export function checkReply(text, { facts = [], customerText = "", know = {}, dis
   /* رابط قناة واتساب: مسموح **بس** الرابط المضبوط في الإعدادات بالحرف، وبس في الدور اللي السياق سمح فيه بالدعوة (channelUrl). أي رابط قناة تاني، أو
      نفس الرابط في دور مالوش دعوة (الموديل افتكره من دور قديم) ⇒ مرفوض. */
   for (const m of String(text || "").matchAll(/(?:https?:\/\/)?(?:www\.)?whatsapp\.com\/channel\/[^\s)]*/gi)) { const u = m[0].replace(/[.,،]+$/, ""); if (!channelUrl || u !== channelUrl) filtered.push({ type: "link_in_text", value: u.slice(0, 80) }); }
-  if (!offersSeen) { const m = COUPON_RE.exec(rest); if (m && !COUPON_RE.test(facts.map((f) => (typeof f === "string" ? f : JSON.stringify(f))).join(" "))) filtered.push({ type: "coupon_without_offers", value: m[0] }); }
+  if (!offersSeen) { const m = COUPON_RE.exec(rest); if (m && !COUPON_RE.test([...facts, ...nameFacts].map((f) => (typeof f === "string" ? f : JSON.stringify(f))).join(" "))) filtered.push({ type: "coupon_without_offers", value: m[0] }); }
   for (const p of weightPriceProblems(text, know, facts)) filtered.push(p);
   /* PS1: جملة التعريف («معك <الاسم>، المساعد الرقمي…») مرة واحدة: في الدور اللي سياقه فيه introduce_yourself، أو لما العميل يسأل «مين معي / انت بوت؟». غير كده = تكرار المقدمة اللي عمر اشتكى منها.
      الإجابة الصريحة عن طبيعته («أنا المساعد الرقمي… ولست إنساناً») عمرها ما بتترفض هنا: الصدق مايتمنعش. */
@@ -568,6 +633,11 @@ export function checkReply(text, { facts = [], customerText = "", know = {}, dis
   if (!reminderSet) { const p = reminderPromise(rest); if (p) filtered.push({ type: "reminder_not_scheduled", value: p }); }
   /* PS1: التوصيل المجاني اللي جاي من كود (أول طلب / مكافأة) مايتقالش من غير الكود — «توصيله مجاني» لوحدها وعد ناقص شرطه. */
   if (freeCode && /توصيل\S*\s+(?:ال)?مجان|مجان\S*\s+(?:ال)?توصيل|free delivery|delivery (?:is |would be )?free/i.test(String(text || "")) && !String(text || "").toUpperCase().includes(String(freeCode).toUpperCase())) filtered.push({ type: "free_delivery_without_code", value: freeCode });
+  /* PK1: «مشكل مخصوص» مايتقالش يكفي كام شخص، ولا عدد قطع/أسياخ (قرار عمر ١٠/١٠) — حتى لو اتكتبت في ملف المعرفة. */
+  { const sv = servingClaim(rest); if (sv) filtered.push({ type: "serving_count", value: sv });
+    else if (/مشكل/.test(rest)) { const pc = /\d+ ?(?:سيخ|[أا]سياخ|قطع[ةه]?|حب[ةه]|حبات)(?![\p{L}])|سيخين|قطعتين|حبتين/u.exec(AR_DIGITS(rest)); if (pc) filtered.push({ type: "serving_count", value: pc[0] }); } }
+  /* PK1: القفلة «تحب أجهّز لك طلب؟» مابتديش العميل حاجة يجاوب عليها (٧ محادثات إعلان يوم ١٣/١٠ وقفت عندها). مشكلة «خفيفة»: محاولة تصحيح واحدة وبس. */
+  if (weakClose) { const m = WEAK_CLOSE_RE.exec(String(text || "").trim()); if (m) filtered.push({ type: "weak_close", value: m[0].trim() }); }
   const leak = promptLeak(text);
   if (leak) filtered.push({ type: "internal_leak", value: leak });
   return { ok: filtered.length === 0, problems: filtered };
@@ -590,6 +660,8 @@ const PROBLEM_HELP = {
   repeated_offer: "you offered again a suggestion that was already offered earlier in this conversation and that the customer did not take up (an offer is made once: drop it and carry on with their order)",
   ack_too_long: "too long for an acknowledgement: the customer is adding items one by one (one short line: what you added, the new total, «شي ثاني؟»)",
   intro_repeated: "you introduced yourself again (your name and what you are are said once, in the first message, or when the customer asks who you are)",
+  serving_count: "for «مشكل مخصوص» you said how many people a weight is enough for, or a number of pieces or skewers (never: say what it is, that it is sold by weight, the weights with prices, and ask «كم شخص أنتم؟»; for a number of people propose a box)",
+  weak_close: "you ended with a bare offer to prepare an order (end with a question that is easy to answer: «كم شخص أنتم؟», «مشاوي ولا كريب؟», «نصف ولا كيلو؟»)",
   self_talk: "notes to yourself inside the message (write ONLY what the customer should read)",
   wrong_language: "text in the wrong language, or notes to yourself, inside the message (write ONLY the message for the customer, in the customer's language)",
 };
@@ -603,7 +675,7 @@ const bare = (m) => String(m || "").split("/").pop();
 function thinkingOff(model) { const b = bare(model); return /^claude-sonnet-5-5/.test(b) ? { type: "between_tools" } : /^claude-haiku-5-5/.test(b) ? { type: "disabled" } : null; }
 /* ⇒ async ({ model, system, tools, messages, effort, thinking, timeoutMs }) ⇒ { ok, content, stop, usage, ms, provider, error? }. عمرها ما بترمي. */
 export function makeModelCaller({ fetch: doFetch = globalThis.fetch, env = process.env } = {}) {
-  return async function callModel({ model, system, tools, messages, effort = "low", thinking = "adaptive", timeoutMs = 20000, maxTokens = 4096, cacheTtl = "5m" }) {
+  return async function callModel({ model, system, brief = null, tools, messages, effort = "low", thinking = "adaptive", timeoutMs = 20000, maxTokens = 4096, cacheTtl = "5m" }) {
     const provider = providerOf(env);
     if (!provider) return { ok: false, error: "no_provider", ms: 0, provider: null, usage: null };
     const direct = provider.kind === "anthropic";
@@ -615,7 +687,7 @@ export function makeModelCaller({ fetch: doFetch = globalThis.fetch, env = proce
     const off = thinking === "off" ? thinkingOff(model) : null;
     /* PS2: الجزء الثابت (الأدوات ثم التعليمات) ممكن يتخزّن ساعة؛ المحادثة نفسها دايماً ٥ دقايق (المدة الأطول لازم تيجي قبل الأقصر في الطلب). */
     const fixed = cacheTtl === "1h" ? { type: "ephemeral", ttl: "1h" } : { type: "ephemeral" };
-    const body = { model: sent, max_tokens: maxTokens, system: [{ type: "text", text: system, cache_control: fixed }],
+    const body = { model: sent, max_tokens: maxTokens, system: [{ type: "text", text: system, cache_control: fixed }, ...(brief ? [{ type: "text", text: String(brief), cache_control: fixed }] : [])],      // PK1: ملف المعرفة + المنيو الحي كتلة تانية (نقطة كاش لوحدها: تغيير سعر مايكسرش كاش التعليمات)
       tools: tools.map((t, i) => (i === tools.length - 1 ? { ...t, cache_control: fixed } : t)), messages: msgs, output_config: { effort }, ...(off ? { thinking: off } : {}) };
     const ctl = new AbortController();
     const timer = setTimeout(() => ctl.abort(), Math.max(1000, timeoutMs));
@@ -727,7 +799,7 @@ export const CTX_RULES = Object.freeze({
   voice: "The customer's message is our system's transcript of a voice note and may contain mishearings. If it is a simple question, answer it. If it names things to order, say back what you understood in one short line («سمعت إنك تبي … صح؟») and wait for the customer's yes before preview_cart or build_cart; never build a cart in the same turn as a voice note. If the transcript makes no sense, say you could not catch the voice note well and ask them to type it or send it again. Never say you \"listened\"; say «سمعت» / «وصلتني رسالتك الصوتية».",
   picture: "The customer's message is our system's short description of a picture they sent (a menu item, an offer or an ad), not their own words. Answer about what it shows, with names and prices from the tools only (a price in the description is what the picture said, not our price: check it with the tools). If it is not clear what they want from the picture, ask in one line. Do not claim details of the picture that the description does not state. When the message describes several pictures, they are usually ONE order: say back in one message what you understood as dishes and quantities (names and prices from the tools), and ask one question; if one picture is not clear, say which and ask about it. A screenshot of an item's page names the exact item the customer means (its name, its section, the weight if one is selected): it wins over a loose match on their words. If their words and the picture point to different items (a meal and the by-weight dish, for example), ask which one.",
   staff: "Someone from the team has just been talking to this customer in this chat and has closed it: \"staff_told_customer\" is what they said, \"outcome_label\" how it ended, \"staff_note\" what they left for you. Carry on from there as the same conversation: no greeting, no introduction (unless this turn also carries \"introduce_yourself\"), do not repeat or re-ask what the team already settled, and never contradict it. If \"still_to_do\" is true, help with what the staff note says is left. If the customer's message is about what the team was handling (a complaint, a refund, a change to a paid order), do not take it over: say in one line that the team is following it here, and help with anything else. A price or fee still comes only from the tools.",
-  ad: "The customer opened this chat from one of our ads. If it names an \"advertised\" box, offer or dish, open on exactly that: one or two lines saying what it is with its price (for a box call get_box with its slug first; an offer's title and price are in the context; an advertised dish sold by weight carries its weights: give them with their prices in one line and ask which weight, for example «تبيه نصف كيلو ولا كيلو؟»), then one question that moves to the order (the choice the box needs, the weight, or delivery or pickup). Do not list the menu and do not ask what they feel like. If the customer asked about something else, answer that instead. Do not mention the ad's number or any tracking detail.",
+  ad: "The customer opened this chat from one of our ads. If it names an \"advertised\" box, offer or dish, open on exactly that: one or two lines saying what it is with its price (for a box call get_box with its slug first; an offer's title and price are in the context; an advertised dish sold by weight carries its weights: give them with their prices in one line and ask which weight, for example «تبيه نصف كيلو ولا كيلو؟»), then one question that moves to the order (the choice the box needs, the weight, or delivery or pickup). Do not list the menu and do not ask what they feel like. If the customer asked about something else, answer that, and close with a question tied to the advertised dish (which weight, or for how many people), not a general offer to prepare an order. Do not mention the ad's number or any tracking detail.",
   postpone: "The customer is putting the order off to a later time. Do not just say goodbye and do not wish them luck. In ONE graceful line accept it and offer to remind them, asking what time suits them («على راحتك 🌟 تحب أذكّرك بكرة؟ أي وقت يناسبك؟»). That is the whole message: one offer, nothing after it. If they give a time, call remind_me and tell them what it answered, nothing more. If they decline, one warm line («على راحتك، حيّاك الله في أي وقت»). Never say that you will remind or message them unless remind_me answered ok in this turn.",
   earlier: "The customer sent these pictures earlier in this chat, while nobody could look at them. They are our system's descriptions, not the customer's words. Use them now exactly like pictures just sent: before you price or build anything, match each to its exact menu item with the tools.",
   later: "The customer can order now for a later time slot: you build the cart as usual, and on the website they choose «اطلب لوقت لاحق» and the slot before paying (payment is now). Mention it, in a few words, only when the customer wants the ORDER ITSELF at a later time (for tomorrow's lunch, for nine tonight); it is not a second offer beside a reminder. Never name a slot or a time yourself.",
@@ -777,6 +849,9 @@ export function hintOf(cls) {
   if (cls.key === "change") return { intent: "note_or_change_to_the_cart_being_built" };
   if (cls.key === "location" || cls.key === "hoursloc") return { intent: "where_are_we", do: "faq branch_location", ...(cls.rawIntent === "where_typo" ? { unless: "you have just asked delivery or pickup: then it means eating at the restaurant" } : {}) };
   if (cls.key === "packs") return { intent: "gathering" };
+  /* PK1: «كيف أطلب من الموقع؟» (سؤال الإعلان الجاهز) و«يكفي كم شخص؟» — التصنيف عارفهم؛ التلميح بيقول للمساعد يرد بإيه */
+  if (cls.rawIntent === "how_to_order") return { intent: "how_to_order_or_wants_to_order", do: "a question about HOW to order: the three steps from the brief, then «وش تحب تطلب؟». If they simply want to order: ask what they would like." };
+  if (cls.rawIntent === "servings") return { intent: "how_many_people_is_it_enough_for", do: "a box or a meal: say who it is for from the brief. A grill by weight or «مشكل مخصوص»: never a number of people; follow its rule and ask «كم شخص أنتم؟»" };
   return null;
 }
 /* الجلسة = اللي الموديل شايفه من المحادثة: رسايل Messages API زي ما هي (إلحاق بس — مابتتعدّلش) + حالة صغيرة للكود. */
@@ -916,7 +991,9 @@ export function makeAssistLoop(deps) {
       case "search_menu": { const r = await tools.search_menu(phone, { query: String(a.query || "") });
         /* PS5 — المشوي موجود وجبة وبالوزن والعميل ماحددش (مفيش «وجبة» ولا وزن في كلامه) ⇒ سؤال واحد بالاتنين وأسعارهم. الموديل مايختارش. */
         if (r && r.ok && T.acfg && T.acfg.grillFamilies) { const said = normalize(st.customerTexts.slice(-2).join(" ") + " " + String(a.query || ""));
-          const hit = (r.results || []).find((x) => x.also_as);
+          /* PK1 («بكم على الفحم» ⇒ اتسأل «صدور: وجبة ولا بالوزن؟»، و«لحم» ⇒ كفتة): سؤال «وجبة ولا بالوزن» بس لو العميل سمّى المشوي ده نفسه. طلب عام ⇒ قاعدة «كم شخص؟». */
+          const cust = normalize(st.customerTexts.slice(-2).join(" "));      // كلام العميل نفسه (من غير كلمة بحث الموديل)
+          const hit = (r.results || []).find((x) => x.also_as && cust.includes(grillStemOf((x.also_as.meal || x).name).split(" ")[0]));
           if (hit && !FAMILY_SAID_RE.test(said)) { st.familyAsked = { ...(st.familyAsked || {}), [grillStemOf((hit.also_as.meal || hit).name)]: st.customerTexts.length }; const meal = hit.also_as.meal ? hit.also_as.meal : { id: hit.id, name: hit.name, name_en: hit.name_en, price: hit.price, description: hit.description || "" }, bw = hit.also_as.by_weight ? hit.also_as.by_weight : { id: hit.id, name: hit.name, name_en: hit.name_en, weights: hit.weights };
             if (meal && bw && Array.isArray(bw.weights) && bw.weights.length && !meal.sold_out && !bw.sold_out) { r.ask_which = { meal, by_weight: bw, rule: "This grill is sold two ways and the customer did not say which. Ask ONE question that gives both with their prices, and nothing else: the meal with what its description says it comes with and its price, or by weight with each weight and its price («تبيها وجبة … بـ … ر.س، ولا بالوزن (ثلث كيلو … · نصف كيلو … · كيلو …)؟»). Two buttons are attached. Never choose for them, never offer to choose for them, and do not call preview_cart before they answer." };
               T.buttons = { kind: "family", meal: { id: String(meal.id) }, weight: { id: String(bw.id) } }; T.askWhich = { meal: Number(meal.price), weights: bw.weights.map((w) => Number(w.price)) }; } } }
@@ -1014,7 +1091,9 @@ export function makeAssistLoop(deps) {
         return { ...seen, link_attached: "a button with the cart link is attached to your message automatically; do not write a link" };
       }
       case "dish_fact": {
-        const r = deps.dishFactSay ? await deps.dishFactSay({ id: String(a.id || ""), question: String(a.question || ""), remove: a.remove === true, lang }) : null;
+        /* PK1 («يسبب الحساسية» ⇒ «أي صنف؟» ⇒ «برجر لحم كلاسيك» ⇒ «أي مكوّن؟»): سؤال حساسية عام عن صنف معروف ⇒ المسببات المسجّلة للصنف فوراً (نفس نص بوت القواعد df_list). */
+        const listAll = Boolean(T.acfg && T.acfg.allergenList) && a.remove !== true && (a.list === true || !String(a.question || "").trim() || /^(?:ال)?(?:حساسي[ةه]|مسببات(?: ال)?حساسي[ةه]|allerg(?:y|ens?|ies))$/i.test(String(a.question || "").trim()));
+        const r = deps.dishFactSay ? await deps.dishFactSay({ id: String(a.id || ""), question: String(a.question || ""), remove: a.remove === true, list: listAll, lang }) : null;
         if (!r || !r.say) return { ok: true, answer: "unknown", handover: r && r.handover ? r.handover : "needs_staff", rule: "call handover with this reason; give no dish advice" };
         st.say.push(r.say); T.factSay.push(r.say);
         if (/^unknown/.test(String(r.status || ""))) T.trace.unanswered.push({ source: "dish_fact", question: `${String(a.question || "").slice(0, 80)} (dish ${String(a.id || "")})` });
@@ -1065,6 +1144,8 @@ export function makeAssistLoop(deps) {
         return seen;
       }
       /* PS5: «ممكن تصورلي الصوص؟» — المساعد مابيصوّرش. لو للصنف صورة في المنيو: زر بيفتحها (wabotrun)؛ غير كده: سطر صريح + «موظف». */
+      case "menu_button": { if (!T.acfg || !T.acfg.menuButton) return { ok: false, error: "unavailable", rule: "No button. Name the sections in one line and ask what they feel like." }; T.menuBtn = true;
+        return { ok: true, attached: "a button that opens the full menu with photos and prices is attached to your message", rule: "Name our menu sections in ONE line and ask which they feel like. Do not list dishes and do not write a link." }; }
       case "dish_photo": {
         const know2 = deps.knowOf ? await deps.knowOf() : {}; const it = a.id && know2.menu && know2.menu.items ? know2.menu.items.find((i) => String(i.id) === String(a.id)) : null;
         if (it && it.image) { T.photoItem = String(it.id); return { ok: true, has_menu_photo: true, dish: it.name, rule: "Say in one honest line that you cannot take photos, and that the button under your message opens this dish's photo on our menu. Nothing else about how it looks." }; }
@@ -1087,7 +1168,7 @@ export function makeAssistLoop(deps) {
     const st = session.state;
     const pm = pickModel(acfg, session, text);
     const trace = { tools: [], verdicts: [], calls: [], suggestions: [], unanswered: [], ms: 0, model: pm.model, tier: pm.tier, costSar: 0, in: 0, out: 0, cached: 0, sent: null, ...(session.compacted && session.compacted !== (session0.compacted || 0) ? { compacted: true } : {}) };
-    const T = { phone, lang, session, trace, cart: null, handover: null, profile, acfg, factSay: [], kbSay: [], location: false, reminder: null, buttons: null, feeSay: null, photoItem: null, previewNow: false, askWhich: null };
+    const T = { phone, lang, session, trace, cart: null, handover: null, profile, acfg, factSay: [], kbSay: [], location: false, reminder: null, buttons: null, feeSay: null, photoItem: null, previewNow: false, askWhich: null, menuBtn: false };
     const fail = (reason) => { trace.ms = Date.now() - t0; return { ok: false, reason, session: session0, trace }; };
     const masked = cleanCustomer(maskText(text));
     trace.sent = masked;
@@ -1106,13 +1187,16 @@ export function makeAssistLoop(deps) {
     if (earlierPictures) st.customerTexts.push(String(earlierPictures).slice(0, 1500));      // PS5: وصف صور بعتها العميل قبل كده (كلامها بيتحسب: «بالوزن»، اسم الصنف)
     let model = pm.model, tier = pm.tier, rounds = 0, retried = false, finalText = null;
     const know = deps.knowOf ? await deps.knowOf() : {};
+    /* PK1: ملف معرفة البيزنس + المنيو الحي في سطور. بيتبعت كتلة تعليمات تانية (كاش)، وبيتحسب «حقايق» عند المراجِع (أسماء وأسعار المنيو الحي مسموح تتقال). فشل القراءة ⇒ من غيره. */
+    let brief = null; if (acfg.briefEnabled && deps.brief) { try { const bt = await deps.brief(); brief = bt ? `${SELLING_RULES}\n\n${bt}` : null; } catch { brief = null; } }
+    trace.briefChars = brief ? brief.length : 0;
     for (;;) {
       const left = deadline - Date.now();
       if (left < 1500) return fail("timeout");
-      const res = await deps.callModel({ model, system: SYSTEM_PROMPT, tools: TOOL_DEFS, messages: session.messages, effort: acfg.effort, thinking: acfg.thinking, timeoutMs: left, cacheTtl: acfg.cacheTtl });
+      const res = await deps.callModel({ model, system: SYSTEM_PROMPT, brief, tools: TOOL_DEFS, messages: session.messages, effort: acfg.effort, thinking: acfg.thinking, timeoutMs: left, cacheTtl: acfg.cacheTtl });
       const outcome = res.ok ? (res.stop === "refusal" ? "refusal" : "ok") : res.error;
       let cost = { costSar: 0, in: 0, out: 0, cached: 0 };
-      try { if (deps.onCall) cost = (await deps.onCall({ provider: res.provider, model, usage: res.usage ? billableUsage(res.usage) : null, usageKind: "anthropic", ms: res.ms, outcome, sent: masked, promptChars: SYSTEM_PROMPT.length, promptHash: PROMPT_HASH, phone, detail: `${tier} r${rounds}` })) || cost; } catch { /* التسجيل مايوقعش الدور */ }
+      try { if (deps.onCall) cost = (await deps.onCall({ provider: res.provider, model, usage: res.usage ? billableUsage(res.usage) : null, usageKind: "anthropic", ms: res.ms, outcome, sent: masked, promptChars: SYSTEM_PROMPT.length + (brief ? brief.length : 0), promptHash: PROMPT_HASH, phone, detail: `${tier} r${rounds}` })) || cost; } catch { /* التسجيل مايوقعش الدور */ }
       trace.calls.push({ model: bare(model), tier, ms: res.ms, outcome, in: cost.in || 0, out: cost.out || 0, cached: cost.cached || 0, costSar: cost.costSar || 0 });
       trace.costSar += cost.costSar || 0; trace.in += cost.in || 0; trace.out += cost.out || 0; trace.cached += cost.cached || 0;
       if (!res.ok) return fail(res.error === "timeout" ? "timeout" : `model_${res.error}`);
@@ -1158,9 +1242,11 @@ export function makeAssistLoop(deps) {
         /* إنجليزي + بوكس: أسماء الاختيارات عندنا بالعربي بس في سطر السلة ⇒ ملخص الموديل (بأسماء get_box الإنجليزية) يفضل زي ما هو */
         if (!whole && !(en && ls.some((l) => (l.picks || []).length))) { let rc = null; try { rc = await deps.cartRecap(T.cart, lang); } catch { rc = null; } if (rc) { raw = rc; trace.cartRecapRestored = true; } } }
       const facts = sessionFacts(session.messages);
+      /* PK1: ملف المعرفة مصدر للأسماء، وللأرقام بشرط الربط بالصنف (menuBound). كلام المالك = الكتلة من غير سطور الأسعار الحية ومن غير المنيو الحي. */
+      const menuFacts = brief ? { text: brief, owner: brief.split("## Live menu")[0].split("\n").filter((l) => !/^\(live prices/.test(l)).join("\n") } : null;
       /* دعوة القناة في رد فيه إجابة حساسية/مكوّن ⇒ السطر بيتشال بالكود (مش مكانها). */
       if (chUrl && T.factSay.length && raw.includes(chUrl)) raw = raw.split("\n").filter((l) => !l.includes(chUrl)).join("\n").trim();
-      const v = checkReply(raw, { facts, customerText: st.customerTexts.join("\n"), know, discountAllowed: st.discount, appsAllowed: st.apps, offersSeen: st.offers === true, sayTexts: chSay ? [...st.say, chSay] : st.say, lang, channelUrl: chUrl, introAllowed: Boolean(context && context.introduce_yourself), turnText: text, freeCode: T.freeCode || null, recentCustomer: st.customerTexts.slice(-3).join("\n"), reminderSet: Boolean(T.reminder && T.reminder.at) });
+      const v = checkReply(raw, { facts, customerText: st.customerTexts.join("\n"), know, discountAllowed: st.discount, appsAllowed: st.apps, offersSeen: st.offers === true, sayTexts: chSay ? [...st.say, chSay] : st.say, lang, channelUrl: chUrl, introAllowed: Boolean(context && context.introduce_yourself), turnText: text, freeCode: T.freeCode || null, recentCustomer: st.customerTexts.slice(-3).join("\n"), reminderSet: Boolean(T.reminder && T.reminder.at), weakClose: Boolean(acfg.sellerClose) && !T.cart && !T.handover, menuFacts });
       /* PS4: نفس سؤال الاختيار تاني والعميل قال «جهزه / أي شي»، أو تالت مرة ⇒ مرفوض: يقترح الأكثر مبيعاً ويسأل «أعتمده؟» */
       { const sk = askedSlot(raw, st.lastBox); if (acfg.pickForMe && sk && st.askedSlot && st.askedSlot.key === sk && (PICK_RE.test(normalize(String(text || ""))) || st.askedSlot.n >= 2)) { v.ok = false; v.problems.push({ type: "repeated_choice_question", value: sk }); } }
       /* PS5: سؤال «وجبة ولا بالوزن» مستحق في الدور ده ⇒ الرد لازم يكون السؤال نفسه: سعر الوجبة وسعر وزن واحد على الأقل وعلامة استفهام، ومن غير عرض «أجهّزها وجبة». */
@@ -1173,6 +1259,8 @@ export function makeAssistLoop(deps) {
       if (Number(acfg.ackMaxChars) > 0 && T.previewNow && !T.cart && (st.previews || 0) >= 2 && !trace.tools.some((x) => x.name === "get_box" || x.name === "delivery_savers" || x.name === "quote_delivery") && [...raw].length > Number(acfg.ackMaxChars)) { v.ok = false; v.problems.push({ type: "ack_too_long", value: String([...raw].length) }); }
       trace.verdicts.push({ ok: v.ok, problems: v.problems, text: raw.slice(0, 1200) });
       if (v.ok) { finalText = raw; break; }
+      /* PK1: مشكلة «خفيفة» بس (قفلة ضعيفة) والمحاولة التانية زيها ⇒ الرد يتبعت: مانوقّعش رد صحيح عشان قفلته. */
+      if (retried && v.problems.every((p) => SOFT_PROBLEMS.has(p.type))) { trace.softAccepted = true; finalText = raw; break; }
       if (retried) return fail("validator");
       retried = true;
       session.messages.push({ role: "user", content: [{ type: "text", text: retryNote(v.problems) }] });
@@ -1183,6 +1271,8 @@ export function makeAssistLoop(deps) {
       const hit = T.kbSay.find((k) => finalText.includes(k.say));
       if (hit) trace.kb.used = hit.id; else trace.unanswered.push({ source: "no_answer", question: trace.kb.question });
     }
+    /* PK1: الرد قال «ما عندي معلومة / ما أقدر أفصّل» ومفيش سؤال اتسجّل ⇒ سؤال العميل ينزل في طابور المدير (wabotrun بيعمل queue لكل trace.unanswered). */
+    if (finalText && NON_ANSWER_RE.test(finalText) && !trace.unanswered.length) trace.unanswered.push({ source: "no_answer", question: masked.slice(0, 300), by: "reply_text" });
     /* الاقتراح «اتعرض» لو اسمه (أو رقمه في حالة فرق الشريحة) ظهر في الرد اللي هيتبعت */
     if (finalText) {
       const nt = normalize(finalText);
@@ -1201,7 +1291,7 @@ export function makeAssistLoop(deps) {
     if (finalText && !T.cart && !T.buttons && !list && acfg.adButtons && context && context.came_from_ad && context.came_from_ad.advertised && st.turns === 1) T.buttons = { kind: "ad" };
     if (T.cart) st.lastCart = { code: T.cart.code, at: n.toISOString(), subtotal: T.cart.subtotal, option: T.cart.option, accepted: st.offered.filter((o) => o.outcome === "accepted").map((o) => ({ kind: o.kind, ref: o.ref, name: o.name })) };
     trace.ms = Date.now() - t0;
-    return { ok: true, text: finalText, cart: T.cart, handover: T.handover, session, trace, location: T.location === true, reminder: T.reminder, buttons: finalText && !T.cart ? T.buttons : null, list, photoItem: finalText && !T.cart ? T.photoItem : null };
+    return { ok: true, text: finalText, cart: T.cart, handover: T.handover, session, trace, location: T.location === true, reminder: T.reminder, buttons: finalText && !T.cart ? T.buttons : null, list, photoItem: finalText && !T.cart ? T.photoItem : null, menu: Boolean(finalText && !T.cart && T.menuBtn) };
   }
   return { runTurn, exec };
 }

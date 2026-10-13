@@ -73,7 +73,7 @@ function world({ waBot = {}, notifications = { whatsappEnabled: true }, orders =
       if (/^SELECT o\.order_no, o\.phone_norm FROM shop_orders o/i.test(s)) return { rows: orders.filter((o) => !o.is_test && ["paid", "pos_created", "accepted", "courier_requested", "courier_assigned", "on_the_way"].includes(o.status) && nowMs - Date.parse(o.created_at) < 7200_000
         && db.log.some((l) => l.phone_norm === o.phone_norm && l.decision === "replied" && Date.parse(l.at) < Date.parse(o.created_at) + 600_000 && Date.parse(l.at) > Date.parse(o.created_at) - 86400_000) && !db.jobs.some((j) => j.wamid === `paid:${o.order_no}`)).map((o) => ({ order_no: o.order_no, phone_norm: o.phone_norm })) };
       if (/^SELECT l\.phone_norm, l\.at, l\.lang FROM wa_bot_log l/i.test(s)) { const last = new Map(); for (const l of db.log) last.set(l.phone_norm, l);
-        return { rows: [...last.values()].filter((l) => nowMs - Date.parse(l.at) >= p[0] * 60_000 && nowMs - Date.parse(l.at) < (p[0] + 60) * 60_000 && l.decision === "silent" && ["out_of_scope", "ignored_type", "auto_reply_covered"].includes(l.reason)).map((l) => ({ phone_norm: l.phone_norm, at: l.at, lang: l.lang })) }; }
+        return { rows: [...last.values()].filter((l) => nowMs - Date.parse(l.at) >= p[0] * 60_000 && nowMs - Date.parse(l.at) < (p[0] + 60) * 60_000 && l.decision === "silent" && ["out_of_scope", "ignored_type", "auto_reply_covered"].includes(l.reason) && !(/<> 'revoke'/.test(s) && l.msg_type === "revoke")).map((l) => ({ phone_norm: l.phone_norm, at: l.at, lang: l.lang })) }; }
       if (/^SELECT 1 FROM wa_bot_log WHERE phone_norm=\$1 AND at > NOW\(\) - INTERVAL '24 hours' AND \(reply_key IN/i.test(s)) return { rows: db.log.filter((l) => l.phone_norm === p[0] && nowMs - Date.parse(l.at) < 86400_000 && (["complaint", "problem", "change"].includes(l.reply_key) || ["complaint", "problem", "order_change", "allergy_severe"].includes(l.handoff))).slice(0, 1).map(() => ({})) };
       // ── EX6: آخر ردّين (سياق الكارت)
       if (/^SELECT reply_key, reply_arg, msg_type FROM wa_bot_log WHERE phone_norm=\$1 AND id <> \$2/i.test(s)) return { rows: db.log.filter((l) => l.phone_norm === p[0] && l.id !== p[1] && ["replied", "dry"].includes(l.decision) && nowMs - Date.parse(l.at) < 900_000).slice(-2).reverse().map((l) => ({ reply_key: l.reply_key, reply_arg: l.reply_arg || null, msg_type: l.msg_type })) };
@@ -102,6 +102,10 @@ function world({ waBot = {}, notifications = { whatsappEnabled: true }, orders =
       if (/^SELECT ev, log_id FROM wa_bot_jobs WHERE phone_norm=\$1 AND kind='media_burst' AND status='done' AND reason='burst_merged'/i.test(s)) return { rows: db.jobs.filter((j) => j.phone_norm === p[0] && j.kind === "media_burst" && j.status === "done" && j.reason === "burst_merged").map((j) => ({ ev: j.ev, log_id: j.log_id })) };
       if (/^UPDATE wa_bot_jobs SET reason='burst_used'/i.test(s)) { for (const j of db.jobs) if (j.phone_norm === p[0] && j.kind === "media_burst" && j.reason === "burst_merged") j.reason = "burst_used"; return { rows: [] }; }
       if (/^UPDATE wa_bot_jobs SET status='cancelled', reason='replaced'/i.test(s)) { for (const j of db.jobs) if (j.phone_norm === p[0] && j.kind === "assist_followup" && j.status === "pending") { j.status = "cancelled"; j.reason = "replaced"; } return { rows: [] }; }
+      /* PK1: متابعة المحادثة اللي وقفت عند سؤال المساعد (assist_nudge) */
+      if (/^UPDATE wa_bot_jobs SET status='pending', reason=NULL, done_at=NULL, due_at=\$2, ev=\$3 WHERE wamid=\$1/i.test(s)) { const j = db.jobs.find((x) => x.wamid === p[0] && ["pending", "cancelled"].includes(x.status)); if (!j) return { rows: [] }; Object.assign(j, { status: "pending", reason: null, due_at: p[1], ev: JSON.parse(p[2]) }); return { rows: [{ id: j.id }] }; }
+      if (/^SELECT 1 FROM wa_bot_jobs WHERE phone_norm=\$1 AND kind IN \('assist_nudge'/i.test(s)) return { rows: db.jobs.filter((j) => j.phone_norm === p[0] && ["assist_nudge", "lead_followup", "assist_followup"].includes(j.kind) && j.status === "done").map(() => ({})) };
+      if (/^SELECT 1 FROM wa_bot_carts WHERE phone_norm=\$1 AND created_at > \$2/i.test(s)) return { rows: db.botCarts.filter((x) => x.phone === p[0]).map(() => ({})) };
       if (/^SELECT 1 FROM wa_bot_jobs WHERE phone_norm=\$1 AND kind='assist_followup' AND status='done'/i.test(s)) return { rows: db.jobs.filter((j) => j.phone_norm === p[0] && j.kind === "assist_followup" && j.status === "done").map(() => ({})) };
       if (/^SELECT last_loc FROM wa_bot_chats/i.test(s)) return { rows: db.chats.has(p[0]) ? [{ last_loc: db.chats.get(p[0]).last_loc || null }] : [] };
       if (/^INSERT INTO wa_bot_config_log/i.test(s)) { db.cfgLog.push({ id: db.cfgLog.length + 1, at: iso(), who: p[0], changes: JSON.parse(p[1]) }); return { rows: [] }; }
@@ -1058,7 +1062,7 @@ test("gathering packs, pickup, hours + location, and the delivery check from a s
 test("media, acknowledgements and other non-questions", withEnv(LOCKS_OPEN, async () => {
   const w = liveWorld();
   const v = await w.say(null, { raw: { type: "audio", audio: { id: "A1", voice: true } } });
-  assert.deepEqual(v.sent, [txt(ME, `ما أقدر أفتح الصور والمقاطع الصوتية 🙏 حوّلت محادثتك لموظف.\n${HAND}`)]); assert.equal(v.log.handoff, "media");
+  assert.deepEqual(v.sent, [txt(ME, `ما أقدر أسمع المقاطع الصوتية 🙏 اكتب لي طلبك هنا وأجهّزه لك على طول.\nوحوّلت محادثتك لموظف يسمعها.\n${HAND}`)]); assert.equal(v.log.handoff, "media");      // PK1
   const w2 = liveWorld();
   for (const raw of [{ type: "reaction", reaction: { message_id: "x", emoji: "👍" } }, { type: "sticker", sticker: { id: "S" } }]) {
     const r = await w2.say(null, { raw }); assert.equal(r.sent.length, 0); assert.equal(r.log.reason, "ignored_type");
@@ -1283,7 +1287,7 @@ test("Omar's session of 12/10 morning: browsing the tree is never cut off, and a
   assert.equal(w.sms.length, 0, "EX4: «no open order» is said plainly with two buttons and alerts nobody; the limit alerted nobody either");
   // then a voice note: the bot can not open it ⇒ handover, said plainly
   const voice = await step("voice note", w.say(null, { raw: { type: "audio", audio: { id: "A1" } } }));
-  assert.equal(voice.log.handoff, "media"); assert.match(bodyOf(voice.sent[0]), /^ما أقدر أفتح الصور والمقاطع الصوتية/);
+  assert.equal(voice.log.handoff, "media"); assert.match(bodyOf(voice.sent[0]), /^ما أقدر أسمع المقاطع الصوتية 🙏 اكتب لي طلبك هنا/);
   // with the chat at staff: location and prices are still answered; he is told once if he writes something else
   assert.equal((await step("وين موقعكم", w.say("وين موقعكم"))).sent.length, 1);
   const prices = await step("اسعاركم", w.say("اسعاركم"));
@@ -2353,7 +2357,7 @@ const AST = await import("./waassistrun.js");
 const tUse = (name, input = {}) => ({ type: "tool_use", id: `tu_${name}_${Math.random().toString(36).slice(2, 8)}`, name, input });
 const mSay = (text) => ({ ok: true, content: [{ type: "text", text }], stop: "end_turn", usage: { input_tokens: 1000, output_tokens: 100, cache_read_input_tokens: 6000 }, ms: 900, provider: "litellm:llm.o2m8.me" });
 const mUse = (...u) => ({ ok: true, content: u, stop: "tool_use", usage: { input_tokens: 1000, output_tokens: 60 }, ms: 700, provider: "litellm:llm.o2m8.me" });
-function aModel(steps) { const seen = []; let i = 0; return { seen, used: () => i, push: (...s) => steps.push(...s), callModel: async (a) => { seen.push({ model: a.model, messages: JSON.parse(JSON.stringify(a.messages)) }); const s = steps[i++]; if (!s) throw new Error("scripted model: no step left"); return s; } }; }
+function aModel(steps) { const seen = [], full = []; let i = 0; return { seen, full, used: () => i, push: (...s) => steps.push(...s), callModel: async (a) => { seen.push({ model: a.model, messages: JSON.parse(JSON.stringify(a.messages)) }); full.push({ system: a.system, brief: a.brief ?? null }); const s = steps[i++]; if (!s) throw new Error("scripted model: no step left"); return s; } }; }
 function memStore() {
   const st = { sessions: new Map(), turns: [], sugg: [], tags: [] };
   return { st, ensure: async () => {}, purge: async () => {}, loadSession: async (p, now, min) => { const x = st.sessions.get(p); return x && now.getTime() - x.at <= min * 60_000 ? JSON.parse(x.s) : null; },
@@ -2363,7 +2367,8 @@ function memStore() {
 }
 const TESTERS = ["0512345678"];
 /* PS4: the older assistant tests keep the behaviour they were written for; PS4 has its own tests (wa-ps4.test.mjs and the PS4 tests below) */
-const LEGACY_ASSIST = { imageBurstSec: 0, firstLead: false, grillFamilies: false, oneOfferPerChat: false, ackMaxChars: 0, feeMoment: false, menuToRules: false, pickForMe: false, choiceList: false, bigBoxSar: 0, pairingEnabled: false, adButtons: false, weightToAssistant: false, faqShort: false };
+const LEGACY_ASSIST = { imageBurstSec: 0, firstLead: false, grillFamilies: false, oneOfferPerChat: false, ackMaxChars: 0, feeMoment: false, menuToRules: false, pickForMe: false, choiceList: false, bigBoxSar: 0, pairingEnabled: false, adButtons: false, weightToAssistant: false, faqShort: false,
+  briefEnabled: false, sellerClose: false, nudgeMin: 0 };      // PK1: ملف المعرفة، قفلة السؤال ومتابعة السكوت — اختباراتهم في wa-pk1.test.mjs
 function aWorld(steps, o = {}) {
   const m = aModel(steps), store = memStore();
   const w = world({ bundles: LIVE.bundles, links: ALL_LINKS, ...o, waBot: { mode: "test", testPhones: TESTERS, footerMode: "smart", ...(o.waBot || {}), assist: { mode: "test", forceSuggestion: false, typing: false, orderWordsStrong: true, ...LEGACY_ASSIST, ...((o.waBot || {}).assist || {}) } }, assistModel: m.callModel, assistStore: store });
@@ -2936,7 +2941,7 @@ const voiceMsg = { type: "audio", audio: { id: "111222333444", mime_type: "audio
 const imageMsg = (caption) => ({ type: "image", image: { id: "555666777888", mime_type: "image/jpeg", ...(caption ? { caption } : {}) } });
 const look = (o) => mSay(JSON.stringify(o));
 const MEDIA_ON = { assist: { imagesEnabled: true, voiceEnabled: true } };
-const OLD = /ما أقدر أفتح الصور والمقاطع الصوتية/;
+const OLD = /ما أقدر (?:أفتح الصور والمقاطع الصوتية|أسمع المقاطع الصوتية 🙏 اكتب لي طلبك هنا)/;      // PK1: الصوت بقى له سطره («اكتب لي طلبك») والتحويل زي ما هو
 
 test("VM1 off by default — a photo or a voice note gets today's reply and handover, nothing is fetched, no model is called", withEnv(CONFIGURED, async () => {
   const cfg = R.botConfig({}).assist;
@@ -4329,4 +4334,91 @@ test("PS5 — «رجّع البوت» and the hub's «تم التعامل» real
   // a staff message AFTER the release pauses again
   w.clock.advance(1); await w.cashier("لحظة معك"); w.clock.advance(1);
   assert.equal((await w.say("طيب")).log.decision !== "replied" || false, true);
+}));
+
+/* ── PK1 (١٤/١٠) — محادثات يوم ١٣/١٠ بالحرف ─────────────────────────────────────────────────────────── */
+test("PK1 follow-up: an ad lead answered with a question who then goes silent gets ONE specific message after 20 minutes (the advertised dish with its live prices + one question); never if he wrote, staff stepped in, a cart exists, we are closed, or it is switched off", withEnv(CONFIGURED, async () => {
+  const AD = "120251224485800593", referral = { source_id: AD, source_type: "ad", headline: "مشكل مخصوص على الفحم — راسلنا واتساب", ctwa_clid: "C1" };
+  const links = [...ALL_LINKS, { slug: "ad-mashakel", target_type: "product", target_id: "103" }];
+  const FIRST_REPLY = "عرض أول طلب: توصيل مجاني بكود FIRST للطلبات من 60 ر.س.\nكم شخص أنتم؟";
+  const lead = (o = {}, steps = [mSay(FIRST_REPLY)]) => aWorld(steps, { links, variants: VAR, waBot: { links: { organic: "wab-boxes", ads: "wa-boxes", adMap: { [AD]: "ad-mashakel" } }, assist: { nudgeMin: 20, ...o } } });
+  assert.equal(R.botConfig({}).assist.nudgeMin, 20); assert.ok(R.SCHEMA["assist.nudgeMin"].ar);
+  // «وش عرض أول طلب؟» (the ad's canned question, 5 chats that day): answered, then silence
+  const w = lead(); const r = await w.say("وش عرض أول طلب؟", { referral });
+  assert.equal(r.log.reply_key, "assist");
+  assert.deepEqual(w.db.jobs.filter((j) => j.kind === "assist_nudge").map((j) => [j.wamid, j.status, Math.round((Date.parse(j.due_at) - w.clock.now().getTime()) / 60_000)]), [["nudge:512345678:2026-10-12", "pending", 20]]);
+  assert.deepEqual(await w.tick(19), [], "not before 20 minutes");
+  const out = await w.tick(2);
+  assert.equal(out.length, 1);
+  assert.equal(bodyOf(out[0]), "بخصوص مشكل مخصوص بالوزن: ثلث كيلو 53 ر.س · نصف كيلو 78 ر.س · كيلو 155 ر.س.\nكم شخص أنتم؟ أرشّح لك الأنسب وأجهّز سلتك.");
+  assert.doesNotMatch(bodyOf(out[0]), /يكفي|وصلتنا رسالتك|نعتذر/, "specific, no apology and no serving count");
+  assert.deepEqual([w.db.log.at(-1).reply_key, w.db.log.at(-1).decision], ["lead_nudge", "replied"]);
+  assert.equal(w.store.turns.at(-1).outcome, "nudge_sent");
+  // the assistant's own session knows what was sent, so «٣» is understood next
+  const sess = JSON.parse(w.store.sessions.get("512345678").s); assert.equal(sess.messages.at(-1).role, "assistant"); assert.match(sess.messages.at(-1).content[0].text, /^بخصوص مشكل مخصوص/);
+  assert.deepEqual(await w.tick(30), [], "once");
+  // no ad: the plain question
+  const p = lead(); await p.say("ابي اطلب"); const po = await p.tick(21); assert.equal(po.length, 1); assert.equal(bodyOf(po[0]), R.textOf(R.botConfig(p.db.settings), "lead_nudge", "ar"));
+  // each reason not to send
+  const a = lead({}, [mSay(FIRST_REPLY), mSay("أبشر. لكم شخص؟")]); await a.say("وش عرض أول طلب؟", { referral }); a.clock.advance(5); await a.say("مشاوي");
+  assert.deepEqual(await a.tick(16), [], "he wrote: the clock starts again from the new reply"); assert.equal((await a.tick(5)).length, 1, "20 minutes after the LAST question");
+  const b = lead(); await b.say("وش عرض أول طلب؟", { referral }); b.clock.advance(5); await b.cashier("تفضل"); assert.deepEqual(await b.tick(16), []); assert.equal(b.db.jobs.find((j) => j.kind === "assist_nudge").reason, "staff_in_chat");
+  const c = lead(); await c.say("وش عرض أول طلب؟", { referral }); c.db.botCarts.push({ code: "rc000009", phone: "512345678" }); assert.deepEqual(await c.tick(21), []); assert.equal(c.db.jobs.find((j) => j.kind === "assist_nudge").reason, "has_cart");
+  const d = lead(); await d.say("وش عرض أول طلب؟", { referral }); d.db.optins["512345678"] = { stopped_at: d.clock.now().toISOString() }; assert.deepEqual(await d.tick(21), []); assert.equal(d.db.jobs.find((j) => j.kind === "assist_nudge").reason, "stopped");
+  const e = lead({ nudgeMin: 0 }); await e.say("وش عرض أول طلب؟", { referral }); assert.equal(e.db.jobs.filter((j) => j.kind === "assist_nudge").length, 0, "off = nothing is scheduled");
+  // a reply that is not a question schedules nothing
+  const f = lead({}, [mSay("العفو، حيّاك الله في أي وقت 🌟")]); await f.say("تمام يعطيك العافيه على المعلومه"); assert.equal(f.db.jobs.filter((j) => j.kind === "assist_nudge").length, 0);
+}));
+
+test("PK1: a deleted message (revoke) is ignored silently — no reply, no model call, and no «we could not help you» follow-up; a voice note keeps its handover and now invites typing", withEnv(CONFIGURED, async () => {
+  const w = aWorld([]);
+  const r = await w.say(null, { raw: { type: "revoke", revoke: { original_message_id: "wamid.X" } } });
+  assert.deepEqual(msgs(r), []); assert.equal(w.m.used(), 0); assert.deepEqual([r.log.decision, r.log.reason, r.log.msg_type], ["silent", "ignored_type", "revoke"]);
+  assert.deepEqual(await w.tick(25), [], "the 20-minute lead follow-up is not for a deleted message"); assert.equal(w.db.jobs.filter((j) => j.kind === "lead_followup").length, 0);
+  const v = await w.say(null, { raw: { type: "audio", audio: { id: "A1", voice: true } } });
+  assert.match(bodyOf(msgs(v)[0]), /^ما أقدر أسمع المقاطع الصوتية 🙏 اكتب لي طلبك هنا وأجهّزه لك على طول\.\nوحوّلت محادثتك لموظف يسمعها\./); assert.equal(v.log.handoff, "media");
+  const i = aWorld([]); const im = await i.say(null, { raw: { type: "image", image: { id: "I1", mime_type: "image/jpeg" } } });
+  assert.match(bodyOf(msgs(im)[0]), /^ما أقدر أفتح الصور والمقاطع الصوتية/, "a picture keeps the old line");
+}));
+
+test("PK1: «ابغي أشوف المنيو كامل وكل وجبه وسعرها» gets the sections list and the menu link at once from the rules bot (it had been answered «الكامل ما أقدر أعرضه هنا»)", withEnv(CONFIGURED, async () => {
+  const w = aWorld([], { waBot: { assist: { menuToRules: true } } });
+  const r = await w.say("ابغي أشوف المنيو كامل وكل وجبه وسعرها");
+  assert.equal(w.m.used(), 0, "no model call"); assert.equal(r.log.reply_key, "cats");
+  const sent = msgs(r); assert.equal(sent[0].interactive.type, "list"); assert.ok(sent[0].interactive.action.sections[0].rows.length >= 5);
+  assert.equal(sent[1].interactive.type, "cta_url"); assert.match(sent[1].interactive.action.parameters.url, /^https:\/\/freshcuts\.sa\/l\//);
+}));
+
+test("PK1 business brief, wired: GET shows every field with its pre-filled value and who must fill it; PUT is the owner's, refuses a recipe, a supplier and a serving count for «مشكل مخصوص», and a saved field reaches the model in the second instructions block", withEnv(CONFIGURED, async () => {
+  const A = await import("./waassistrun.js"); const w = aWorld([mSay("هلا 👋 كم شخص أنتم؟")], { variants: VAR, waBot: { assist: { briefEnabled: true } } });
+  const g = await w.call("GET", "/api/cms/wabot/brief");
+  assert.equal(g.body.ok, true); assert.equal(g.body.enabled, true); assert.ok(g.body.fields.length >= 20);
+  const f = Object.fromEntries(g.body.fields.map((x) => [x.key, x]));
+  assert.match(f.order_steps.value, /تضغط زر «كمّل طلبك»/); assert.equal(f.order_steps.isDefault, true);
+  assert.deepEqual(g.body.fields.filter((x) => x.needsOwner).map((x) => x.key), ["car_pickup", "mashakel_kinds", "extra"], "the fields only the owner can fill are empty and marked");
+  assert.ok(g.body.fields.every((x) => x.label && x.source && x.section && typeof x.value === "string" && !x.problem));
+  assert.match(g.body.liveMenu, /مشكل مخصوص بالوزن: ثلث كيلو 53 · نصف كيلو 78 · كيلو 155/); assert.match(g.body.block, /^<business_brief/);
+  // the owner only
+  w.setOwner(false); assert.equal((await w.call("PUT", "/api/cms/wabot/brief", { fields: { extra: "عندنا مصلى" } })).status, 403); w.setOwner(true);
+  // refused: a serving count for the mashakel, a marinade, a supplier, a link, a delivery-time promise
+  for (const [key, bad] of [["mashakel_line", "مشكل مخصوص تشكيلة مشاوي، والكيلو يكفي ٤ أشخاص"], ["mashakel_kinds", "كفتة 100 جرام وطرب 100 جرام"], ["extra", "نشتري اللحم من مورد محلي"], ["extra", "شوف freshcuts.sa/menu"], ["delivery_area", "التوصيل خلال 30 دقيقة"], ["mashakel_kinds", "٣ أسياخ كفتة وسيخين طرب"]]) {
+    const bad1 = await w.call("PUT", "/api/cms/wabot/brief", { fields: { [key]: bad } });
+    assert.equal(bad1.status, 400, bad); assert.equal(bad1.body.errors.length, 1); assert.equal(w.db.settings.waBot.brief, undefined, "nothing saved");
+  }
+  // saved, kept by an ordinary settings save, and sent to the model
+  const ok = await w.call("PUT", "/api/cms/wabot/brief", { fields: { mashakel_kinds: "كفتة، طرب، كباب، وريش", car_pickup: "" } });
+  assert.equal(ok.status, 200); assert.deepEqual(w.db.settings.waBot.brief, { mashakel_kinds: "كفتة، طرب، كباب، وريش" }, "only what the owner changed is stored (an empty owner field equals its default)");
+  assert.equal((await w.call("PUT", "/api/cms/wabot/config", { greetWindowHours: 2 })).status, 200); assert.equal(w.db.settings.waBot.brief.mashakel_kinds, "كفتة، طرب، كباب، وريش", "an ordinary settings save keeps the brief");
+  await w.say("مرحبا");
+  const block = w.m.full[0].brief;
+  assert.match(block, /^# The business brief/); assert.match(block, /كفتة، طرب، كباب، وريش/); assert.match(block, /## Live menu/); assert.equal(w.m.full[0].system, A.SYSTEM_PROMPT, "the fixed instructions are unchanged: the brief is its own block");
+  // null = back to the pre-filled value
+  await w.call("PUT", "/api/cms/wabot/brief", { fields: { mashakel_kinds: null } }); assert.deepEqual(w.db.settings.waBot.brief, {});
+}));
+
+test("PK1 daily report, wired: GET /api/cms/wabot/assist/daily answers for a business day without any phone number", withEnv(CONFIGURED, async () => {
+  const w = aWorld([]);
+  const r = await w.call("GET", "/api/cms/wabot/assist/daily", {}, { day: "2026-10-13" });
+  assert.equal(r.body.ok, true); assert.deepEqual([r.body.from, r.body.to], ["2026-10-13T01:00:00.000Z", "2026-10-14T01:00:00.000Z"]);
+  assert.deepEqual([r.body.report.day, r.body.report.chats, r.body.report.funnel.carts], ["2026-10-13", 0, 0]); assert.doesNotMatch(JSON.stringify(r.body), /5\d{8}/);
 }));

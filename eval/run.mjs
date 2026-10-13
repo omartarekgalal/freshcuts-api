@@ -64,7 +64,8 @@ async function runOne(sc) {
     const rec = { i, customer: t.text || `[${ev.type}]`, cls: cls.key, raw: cls.rawIntent, by: null, reply: null, cart: null, handover: null, outcome: null, tools: [], verdicts: [], calls: [], ms: 0, costSar: 0, model: null, suggestions: [] };
     const rulesHandover = { complaint: "complaint", problem: "problem", change: "order_change", human: "asked_human", media: "media", custom_offer: "custom_offer" };
     if (!el.run) {
-      rec.by = "rules"; if (cls.key === "whoami" || cls.key === "thanks") { try { rec.reply = R.buildReply(cls.key, { cfg: W.cfg, lang: cls.lang === "en" ? "en" : "ar", data: { settings: {} }, referral: null, factual: false, arg: null }).body; rec.fixedText = true; } catch { /* the transcript shows the owner only */ } } rec.outcome = serious ? "rules:handover_open" : `rules:${el.why.replace(/^rules:/, "")}`;
+      rec.by = "rules"; if (!cls.key) rec.ignored = true;      // PK1: an ignored message type (a deleted message = revoke, a reaction): nobody answers
+      if (["whoami", "thanks", "media", "other_city"].includes(cls.key)) { try { rec.reply = R.buildReply(cls.key, { cfg: W.cfg, lang: cls.lang === "en" ? "en" : "ar", data: { settings: {} }, referral: null, factual: false, arg: cls.arg ?? null }).body; rec.fixedText = true; } catch { /* the transcript shows the owner only */ } } rec.outcome = serious ? "rules:handover_open" : `rules:${el.why.replace(/^rules:/, "")}`;
       if (!serious) { if (cls.key === "dishfact" && cls.rawIntent === "allergy_severe") { rec.handover = "allergy_severe"; handoverOpen = "allergy_severe"; } else if (rulesHandover[cls.key]) { rec.handover = rulesHandover[cls.key]; handoverOpen = rec.handover; } }
       if (session) session = AR.noteRulesTurn(session, ev.text, cls.key);
       turns.push(rec); continue;
@@ -77,7 +78,7 @@ async function runOne(sc) {
     /* PS1: the persona as the bot gives it — the name in the first context, the intro phrase in the first reply of the conversation only (the bot's «disclose» moment), and, when the
        scenario says staff handled the chat before this turn (turn.staff = their summary), the summary. Like the bot, the code guarantees the intro in that first reply (ensureIntro). */
     const persona = R.personaOn(W.cfg), pName = R.personaNameOf(W.cfg, lang), introduce = persona && !disclosed ? AR.introSay(pName, lang) : null;
-    const context = AR.buildContext({ persona: { name: W.cfg.assist.personaName, name_en: W.cfg.assist.personaNameEn }, introduce, later: (sc.world || {}).later === true, handback: t.staff ? { outcome: "answered", outcome_label: "استفسار واترد عليه", staff_note: null, staff_told_customer: [String(t.staff)], closed_minutes_ago: 3, still_to_do: false, ...(typeof t.staff === "object" ? t.staff : {}) } : null, first: fresh, hours, profile, offers, reorder: fresh ? W.reorder : null, locationShared: Boolean(W.state.loc), justShared: Boolean(t.location), branch: fresh ? R.textOf(W.cfg, "location", lang) : null, boxes: fresh ? W.boxes : null, channel: (sc.world || {}).channel && !chShown && cls.key !== "dishfact" ? { say: CH_SAY, url: CH_URL } : null, notes: fresh ? (sc.world || {}).notes || null : null, ad: fresh ? (sc.world || {}).ad || null : null, hint: AR.hintOf(withAlt(cls)), handover: handoverOpen && !serious ? { reason: handoverOpen, minutes_ago: 2 } : null });
+    const context = AR.buildContext({ persona: { name: W.cfg.assist.personaName, name_en: W.cfg.assist.personaNameEn }, introduce, later: (sc.world || {}).later === true, handback: t.staff ? { outcome: "answered", outcome_label: "استفسار واترد عليه", staff_note: null, staff_told_customer: [String(t.staff)], closed_minutes_ago: 3, still_to_do: false, ...(typeof t.staff === "object" ? t.staff : {}) } : null, first: fresh, hours, profile, offers, reorder: fresh ? W.reorder : null, locationShared: Boolean(W.state.loc), justShared: Boolean(t.location), branch: fresh ? R.textOf(W.cfg, "location", lang) : null, boxes: fresh ? W.boxes : null, channel: (sc.world || {}).channel && !chShown && cls.key !== "dishfact" ? { say: CH_SAY, url: CH_URL } : null, notes: fresh ? (sc.world || {}).notes || null : null, ad: fresh ? adOf(sc.world || {}, W) : null, hint: AR.hintOf(withAlt(cls)), handover: handoverOpen && !serious ? { reason: handoverOpen, minutes_ago: 2 } : null });
     rec.context = context;
     first = false;
     const text = t.location ? "📍" : ev.text;
@@ -86,15 +87,18 @@ async function runOne(sc) {
     if (!r.ok) { rec.by = "rules"; rec.outcome = `fallback:${r.reason}`; session = fresh ? null : AR.noteRulesTurn(session, ev.text, cls.key); turns.push(rec); continue; }
     session = r.session; rec.by = "assistant";
     if (r.handover) { rec.handover = r.handover.reason; rec.note = r.handover.note; rec.outcome = `handover:${r.handover.reason}`; handoverOpen = r.handover.reason; }
-    else { rec.reply = introduce ? AR.ensureIntro(r.text, introduce, pName) : r.text; if (introduce) { rec.introByModel = AR.hasIntro(r.text, pName); disclosed = true; } rec.cart = r.cart; rec.outcome = "sent"; if (r.location) rec.mapButton = true; if (r.reminder) rec.reminder = r.reminder; { const ex = R.assistExtras(W.cfg, rec.lang, r); if (!r.cart && ex.buttons) rec.buttons = ex.buttons.map((b) => b.title); if (!r.cart && ex.list) rec.list = ex.list.rows.map((x) => x.title + (x.description ? ` (${x.description})` : "")); } if (r.trace && r.trace.channelOffered) { chShown = true; rec.channel = true; } }
+    else { rec.reply = introduce ? AR.ensureIntro(r.text, introduce, pName) : r.text; if (introduce) { rec.introByModel = AR.hasIntro(r.text, pName); disclosed = true; } rec.cart = r.cart; rec.outcome = "sent"; if (r.location) rec.mapButton = true; if (r.menu) rec.menuButton = true; if (r.reminder) rec.reminder = r.reminder; { const ex = R.assistExtras(W.cfg, rec.lang, r); if (!r.cart && ex.buttons) rec.buttons = ex.buttons.map((b) => b.title); if (!r.cart && ex.list) rec.list = ex.list.rows.map((x) => x.title + (x.description ? ` (${x.description})` : "")); } if (r.trace && r.trace.channelOffered) { chShown = true; rec.channel = true; } }
     turns.push(rec);
     if (i === script.length - 1 && i === sc.turns.length - 1 && sc.expect && sc.expect.cart && sc.closing !== false && !turns.some((x) => x.cart) && rec.by === "assistant" && rec.reply) script.push("لا شكراً، ارسل رابط السلة");
   }
-  const conv = { id: sc.id, group: sc.group, world: sc.world || {}, expect: sc.expect || {}, turns, carts: W.carts, costSar: turns.reduce((a, t) => a + t.costSar, 0) };
+  const conv = { id: sc.id, group: sc.group, world: sc.world || {}, expect: sc.expect || {}, turns, carts: W.carts, costSar: turns.reduce((a, t) => a + t.costSar, 0), brief: W.brief || null };
   conv.grade = gradeConversation(conv, W);
   return conv;
 }
 
+/* PK1: world.adItem = the id of the dish the ad is about (as links.adMap resolves it in the bot): the advertised dish with its live weights and prices */
+const adOf = (w, W) => { if (w.ad) return w.ad; if (!w.adItem) return null; const it = W.menu.items.find((i) => String(i.id) === String(w.adItem)); if (!it) return null;
+  return { ad_text: String(w.adText || it.name), advertised: { kind: "item", id: String(it.id), name: it.name, ...(it.nameEn ? { name_en: it.nameEn } : {}), ...(it.byWeight && it.weights ? { by_weight: true, weights: it.weights.map((x) => ({ label: x.label_ar, label_en: x.label_en, price: x.price, variant_option_id: x.variant_option_id })) } : { price: it.price }) } }; };
 const withAlt = (cls) => { if (!cls || cls.key !== "dishfact" || cls.rawIntent !== "remove_question" || !cls.arg || !cls.arg.id) return cls; const f = lookupFact(cls.arg.id, cls.arg.text, { remove: true }); return f.status === "alternative" ? { ...cls, alt: { id: f.altId, name: f.alt, name_en: f.altEn } } : cls; };
 const results = [];
 const queue = [...list];

@@ -326,7 +326,7 @@ function factNumbers(facts) {
   for (const f of facts) walk(f, "");
   return out;
 }
-export function validateReply(reply, { facts = [], customerText = "", know = {}, allowWords = [] } = {}) {
+export function validateReply(reply, { facts = [], customerText = "", know = {}, allowWords = [], nameFacts = [] } = {}) {
   const text = String(reply || "");
   const problems = [];
   if (!text.trim()) return { ok: false, problems: [{ type: "empty", value: "" }] };
@@ -337,12 +337,34 @@ export function validateReply(reply, { facts = [], customerText = "", know = {},
   for (const n of numbersIn(text.replace(/https?:\/\/\S+/g, " "))) if (!okNums.has(round2(n))) problems.push({ type: "number_not_from_tools", value: String(n) });
   const urls = text.match(/https?:\/\/[^\s)]+/g) || [];
   for (const u of urls) if (!blob.includes(u.replace(/[.,،]$/, ""))) problems.push({ type: "link_not_from_tools", value: u });
-  const nb = normalize(blob), nt = normalize(text);
+  /* PK1: nameFacts = نصوص بتسمح بالأسماء بس (المنيو الحي اللي في ملف المعرفة) — أرقامها مابتتحسبش هنا: سعر من المنيو الحي لازم يكون جنب صنفه (المتصل بيراجعها: menuBound). */
+  const nb = normalize(`${blob}\n${nameFacts.map((f) => String(f)).join("\n")}`), nt = normalize(text);
   const names = [...((know.menu && know.menu.items) || []).map((i) => i.name), ...((know.boxes || []).map((b) => b.name))].filter((n) => [...String(n)].length >= 5);
   for (const n of new Set(names)) { const k = normalize(n); if (nt.includes(k) && !nb.includes(k)) problems.push({ type: "name_not_from_tools", value: n }); }
   for (const [re, type] of FORBIDDEN) { const m = re.exec(nt) || re.exec(text); if (m && !allowWords.includes(type)) problems.push({ type, value: m[0] }); }
   if ([...text].length > 900) problems.push({ type: "too_long", value: String([...text].length) });
   return { ok: problems.length === 0, problems };
+}
+
+/* ── ٤ب) PK1 — «مشكل مخصوص» مايتقالش يكفي كام شخص (قرار عمر ١٠/١٠) — صافي ─────────────
+   ⇒ الجملة المخالفة (مقصوصة) أو null. الجملة = سطر أو لحد علامة ترقيم. مخالفة = جملة عن المشكل (فيها «مشكل»، أو فيها وزن والنص كله عن المشكل، أو assume)
+   وفيها: فعل كفاية/مناسبة + عدد محدد · أو وزن + «لـ» + عدد · أو «لـ» + عدد أشخاص وبعده وزن. مسموح: السؤال («كم شخص أنتم؟»)، الرفض («ما نقول يكفي كم شخص»)،
+   وأي جملة عن بوكس / باقة / وجبة (دول معمولين لعدد أشخاص). بتتراجع على رد الموديل وعلى أي نص يكتبه المالك في ملف المعرفة. */
+const SV_N = "\\d+|واحد|شخص|شخصين|نفرين|فردين|اثنين|ثلاثه|ثلاث|اربعه|اربع|خمسه|خمس|سته|ست|سبعه|سبع|ثمانيه|عشره|افراد|اشخاص|انفار|عائله|عايله|people|persons?|two|three|four|five|six";
+const SV_VERB = new RegExp(`(?:^| )[وف]?(?:يكفي\\S*|تكفي\\S*|يشبع\\S*|تشبع\\S*|مناسب|مناسبه|يناسب|تناسب|serves?|enough for|feeds?|good for)(?: (?!كم(?: |$))\\S+){0,3}? (?:ل|لل|حق )?(?:${SV_N})(?= |$)`);
+const SV_WEIGHT_FOR = new RegExp(`(?:ثلث|تلت|نصف|نص|كيلو|kilo|half)(?: (?!كم(?: |$))\\S+){0,3}? (?:ل|لل) ?(?:${SV_N})(?= |$)`);
+const SV_FOR_WEIGHT = new RegExp(`(?:^| )(?:ل|لل)(?:شخص|شخصين|\\d+ ?اشخاص|\\d+ ?افراد|ثلاثه|اربعه|خمسه|سته|عائله|عايله)(?: (?!كم(?: |$))\\S+){0,6}? (?:ثلث|تلت|نصف|نص|كيلو)(?= |$)`);
+const SV_SKIP = /بوكس|باقه|باقات|وجبه|وجبات|box|pack|meal/;
+const SV_TOPIC = /مشكل|special mix/;
+export function servingClaim(text, { assume = false } = {}) {
+  if (!assume && !SV_TOPIC.test(normalize(String(text || "")))) return null;
+  for (const raw of String(text || "").split(/[\n.!؟?؛;]+/)) {
+    const s = normalize(raw); if (!s || SV_SKIP.test(s)) continue;
+    if (!(assume || SV_TOPIC.test(s) || /ثلث|تلت|نصف|(^| )نص |كيلو|kilo/.test(s))) continue;
+    const m = SV_VERB.exec(s) || SV_WEIGHT_FOR.exec(s) || SV_FOR_WEIGHT.exec(s);
+    if (m) return m[0].trim().slice(0, 50);
+  }
+  return null;
 }
 
 /* ── ٢) بنّاء السلة + باقي الأدوات (بتقرا من النظام) ─────────────────────

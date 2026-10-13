@@ -53,6 +53,7 @@ export function gradeConversation(conv, W) {
   const custNums = new Set();
   const declined = [];                                         // { name, afterTurn }
   let introSeen = false, prevClose = null;
+  if (conv.brief) numsOf(conv.brief, truth);      // PK1: the live menu the assistant is given with its instructions (names and prices) is a real source of numbers
   for (const t of conv.turns) {
     numsOf(t.customer, custNums); if (t.context) numsOf(t.context, truth);
     for (const x of t.tools || []) { numsOf(x.result, truth); if (x.result && typeof x.result.say === "string") approved.push(x.result.say); }

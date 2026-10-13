@@ -375,7 +375,7 @@ test("a general FAQ word inside a question about ONE named dish is a question ab
 
 test("AS4 — the manager's knowledge base: a saved answer goes out as written and is counted; no fitting answer ⇒ a plain «no confirmed information» and the question is kept for the manager", async () => {
   const kb = [{ id: 7, question: "عندكم واي فاي في المطعم؟", ar: "نعم، عندنا واي فاي للضيوف في الصالة." }, { id: 9, question: "فيه كراسي اطفال؟", ar: "نعم، عندنا كراسي أطفال." }];
-  const m = scripted([use(tu("ask_knowledge", { question: "عندكم واي فاي؟" })), (a) => { const r = lastResults(a)[0]; return say(`${r.saved_answers[0].say}\nتحب أجهّز لك طلب؟`); }]);
+  const m = scripted([use(tu("ask_knowledge", { question: "عندكم واي فاي؟" })), (a) => { const r = lastResults(a)[0]; return say(`${r.saved_answers[0].say}\nوش تحب تطلب؟`); }]);
   const W = makeWorld({ kb }, { callModel: m.callModel });
   const r = await turn(W, null, "عندكم واي فاي؟");
   assert.equal(r.ok, true); assert.match(r.text, /^نعم، عندنا واي فاي للضيوف في الصالة\./);

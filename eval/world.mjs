@@ -9,6 +9,7 @@ import * as AR from "../waassistrun.js";
 import * as R from "../wabotrun.js";
 import { factNote } from "../wadishfacts.js";
 import { kbCandidates, kbCheck } from "../wakb.js";
+import { briefBlock } from "../wabrief.js";
 
 const J = (f) => JSON.parse(fs.readFileSync(new URL(`./fixtures/${f}`, import.meta.url), "utf8"));
 export const FX = { pages: J("menu.json").data.pages, bundles: J("bundles.json").bundles, mods: J("modifiers.json").items, offers: J("offers.json").offers || [], faq: J("faq.json"), variants: J("variants.json").variants };
@@ -72,6 +73,8 @@ export function makeWorld(w = {}, { callModel, onCall, acfg: acfgIn = {} } = {})
     dishFactSay: async (a) => R.dishFactSay(cfg, { open: { open: !w.closed } }, a),
     /* manager knowledge base: w.kb = [{ id, question, ar, en? }] (same matching and the same re-check as the store) */
     kbSearch: async (question, lang) => kbCandidates((w.kb || []).map((r) => ({ ...r, examples: r.examples || [] })), question).map((r) => ({ id: r.id, question: r.question, say: (lang === "en" && r.en) || r.ar })).filter((r) => kbCheck(r.say).ok),
+    /* PK1: the business brief as the bot builds it — the owner's fields (w.brief = what the owner changed; none = the pre-filled values) + the live menu of the fixtures. w.brief === false = no brief (as before PK1). */
+    brief: async () => (w.brief === false ? null : briefBlock(w.brief || {}, { menu, boxes, live: { cash: false } })),
     feeSay: async (options, lang, o) => R.feeSayOf(cfg, options, lang, o),      // PS4
     cartRecap: async (cart, lang) => R.cartRecapOf(cfg, cart, lang),      // PS5
     firstLead: async (v, lang) => R.fill("first_lead", R.textOf(cfg, "first_lead", lang === "en" ? "en" : "ar"), { from: String(v.from), code: v.code }),      // PS5
@@ -80,5 +83,5 @@ export function makeWorld(w = {}, { callModel, onCall, acfg: acfgIn = {} } = {})
     deliveryInfo: async () => ({ ok: true, delivers_up_to_km: POLICY.maxKm, far_zone_up_to_km: POLICY.farZoneMaxKm, far_zone_extra_per_km: POLICY.farZonePerKm, fee_by_order_total: R.feeLines(POLICY, "ar").split("\n"), ladder: POLICY.feeByTotal.map((x) => ({ over: x.over, fee: x.fee })), note: "the exact fee is shown on the website before payment" }) });
   const acfg = { ...AR.assistConfig({ mode: "test", ...acfgIn }) };
   const reorder = w.reorder ? { day: "يوم الثلاثاء 6/10", lines: [{ name: "كريب زنجر سوبريم", qty: 2 }, { name: "وجبة كفتة", qty: 1 }], note: "a one-tap button «نفس طلبي السابق» is attached under your message" } : null;
-  return { tools, loop, menu, boxes, cfg, acfg, carts, state, now, reorder, know: { menu, bundles: boxes } };
+  return { tools, loop, menu, boxes, cfg, acfg, carts, state, now, reorder, know: { menu, bundles: boxes }, brief: w.brief === false ? null : briefBlock(w.brief || {}, { menu, boxes, live: { cash: false } }) };
 }

@@ -320,7 +320,7 @@ const isoOf = (ts) => {
   return Number.isFinite(n) && n > 0 ? new Date(n * 1000).toISOString() : null;
 };
 const MEDIA_AR = { image: "صورة", video: "فيديو", audio: "رسالة صوتية", voice: "رسالة صوتية", document: "ملف",
-  sticker: "ملصق", location: "موقع", contacts: "جهة اتصال", reaction: "تفاعل", unsupported: "رسالة مش مدعومة" };
+  sticker: "ملصق", location: "موقع", contacts: "جهة اتصال", reaction: "تفاعل", unsupported: "رسالة مش مدعومة", revoke: "رسالة اتمسحت" };
 
 /* نص أي رسالة (وارد/صدى/تاريخ) — والوسائط بتتكتب بين أقواس عشان الكاشير يفهم. */
 export function messageText(m) {
