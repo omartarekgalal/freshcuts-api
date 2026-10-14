@@ -152,7 +152,7 @@ test("settings: every new knob has a default (on), limits, an Arabic label in th
   const c = T.teamConfig({ waTeam: { members: [] } });
   assert.deepEqual(c.portalRing, { enabled: true, everyMin: 3, capMin: 45 });
   /* PO1: القيم اللي اتظبطت على اللايف ١٤/١٠ بقت الافتراضي + المفاتيح الجديدة (wa-po1.test.mjs بيغطّيها) */
-  assert.deepEqual(c.portalOffline, { enabled: true, afterMin: 10, repeatMin: 45, managerAfter: 3, managerWindowMin: 240, backStableMin: 2, dailyCap: 6, countBackground: true, backNotice: true });
+  assert.deepEqual(c.portalOffline, { enabled: true, afterMin: 10, repeatMin: 45, managerAfter: 3, backStableMin: 2, dailyCap: 6, countBackground: false, backNotice: true });
   assert.deepEqual([c.ladder.managerPush, c.ladder.managerDirect], [true, true]);
   const get = (o, k) => k.split(".").reduce((x, y) => (x == null ? undefined : x[y]), o);
   for (const k of T.KNOBS) {
@@ -170,5 +170,5 @@ test("settings: every new knob has a default (on), limits, an Arabic label in th
 });
 
 /* ── البورتال مقفول وقت الشغل ──────────────────────────────────────────────
-   PO1 (١٤/١٠ مساءً) غيّر الحالة كلها (حلقة بتخلص بالاستقرار، تكرار وسقف لكل رقم، سلّم بالعدّ في مدة) ⇒ الاختبارات في wa-po1.test.mjs:
+   PO1 (١٤/١٠ مساءً) غيّر الحالة كلها (حلقة بتخلص بالاستقرار، تكرار وسقف لكل رقم، سلّم جوّه المرة بتذكير للمدير) ⇒ الاختبارات في wa-po1.test.mjs:
    الساعات / الإيقاف / بوابة المدير / المفتاح، وحالة اللوحة، وإعادة يوم ١٤/١٠ بالظبط. */

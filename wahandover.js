@@ -19,13 +19,16 @@
 
    PO1 (١٤/١٠ مساءً — ٣٢ رسالة «البورتال مقفول» للكاشير في ٣.٥ ساعة): الحضور بقى = أي نشاط بوابة، مش استطلاع التحويلات بس:
      • requirePortal في portal.js بينده seen() بعد أي دخول ناجح (أي /api/portal/* و /api/tables/* ومسارات واتساب البوابة)،
-       وبث SSE عند الاتصال ومع كل نبضة (٢٠ ث) طول ما الاتصال مفتوح. نوع الإشارة (via): beat (نبضة البوابة الظاهرة) · poll (قايمة
+       ومنهم فتح بث SSE (مرة لما الجهاز يفتحه — نبضاته مابتتحسبش، شوف تحت). نوع الإشارة (via): beat (نبضة البوابة الظاهرة) · poll (قايمة
        التحويلات — بتتسحب والشاشة ظاهرة بس) · action (POST/PUT… = حد داس) · api (أي قراءة تانية، ممكن من تاب في الخلفية) · sse (البث).
        beat / poll / action = «ظاهرة» (last_visible)، الباقي = «متوصّلة» بس.
      • لسه كتابة واحدة في الدقيقة لكل موظف/جهاز بالكتير: أول إشارة في الدقيقة بتتكتب، والباقي بيتحفظ في الذاكرة وبيتكتب بعد ما الدقيقة
        تخلص (flush كل ١٥ ث) — فآخر ظهور مابيتأخرش دقيقة عن الحقيقة.
      • seen_since / visible_since = بداية «الفتحة» الحالية (فجوة أكتر من ٢.٥ دقيقة بين كتابتين ⇒ فتحة جديدة). wateam.js بيستخدمها
        عشان «رجع» يبقى بس لما البورتال يفضل مفتوح backStableMin دقيقة — بصّة سريعة مابتنهيش التنبيه.
+     • بعد المراجعة: الإشارة لازم تيجي من الجهاز نفسه. نبضة البث (ping كل ٢٠ ث) السيرفر هو اللي بيبعتها ومابيعرفش الجهاز استلمها ولا
+       لأ (تاب متجمّد أو تابلت فصل) ⇒ مابقتش حضور؛ البث بيتحسب مرة واحدة لما الجهاز يفتحه. وrequirePortal بيعلّم الطلب (a.seen) فالمسار
+       مابيعدّهوش تاني، وأي فشل في كتابة الحضور بيتسجّل (health()) بدل ما يضيع في صمت.
 ═══════════════════════════════════════════════════════════════════════════ */
 import { bizDay, bizStart } from "./bizday.js";
 
@@ -67,16 +70,19 @@ export const PRESENCE_WRITE_MS = 60_000;      // كتابة واحدة في ال
 export const PRESENCE_FLUSH_MS = 15_000;      // الإشارات اللي جت جوّه الدقيقة بتتكتب بعد ما تخلص (آخر ظهور دقيق لحد ~١٥ ث)
 export const STREAK_GAP_MS = 150_000;         // فجوة أكتر من كده بين كتابتين ⇒ «فتحة» جديدة (seen_since من الأول)
 export const VISIBLE_VIA = Object.freeze(["beat", "poll", "action"]);
-/* نوع إشارة الحضور من الطلب نفسه (PO1). null = مايتحسبش (الخروج). */
+/* نوع إشارة الحضور من الطلب نفسه (PO1). null = مايتحسبش (الخروج).
+   اشتراك الإشعارات بيتبعت لوحده أول ما البوابة تفتح (ممكن والتاب في الخلفية) ⇒ قراءة عادية مش «داس». */
 export function presenceVia(method, path) {
   const p = String(path || "").split("?")[0], m = String(method || "GET").toUpperCase();
   if (p === "/api/portal/logout") return null;
   if (p === "/api/portal/presence") return "beat";
   if (p === "/api/portal/stream") return "sse";
   if (p === "/api/portal/wa-handovers" && m === "GET") return "poll";
+  if (p.startsWith("/api/portal/push/") && p !== "/api/portal/push/test") return "api";
   if (!["GET", "HEAD", "OPTIONS"].includes(m)) return "action";
   return "api";
 }
+export const SAME_SIGNAL_MS = 1000;           // نفس الطلب اتبلّغ مرتين (requirePortal + المسار) ⇒ إشارة واحدة
 const GAP_SQL = `INTERVAL '${STREAK_GAP_MS / 1000} seconds'`;
 export const PRESENCE_UPSERT = `INSERT INTO portal_presence(staff_id, device, role, staff_name, last_seen, seen_since, via, last_visible, visible_since)
   VALUES ($1,$2,$3,$4,$5::timestamptz,$5::timestamptz,$6,$7::timestamptz,$7::timestamptz)
@@ -271,27 +277,38 @@ export function register(app, ctx, deps = {}) {
      أول إشارة في الدقيقة لكل موظف/جهاز بتتكتب على طول؛ اللي بعدها جوّه نفس الدقيقة بيتحفظ (الأحدث، والأحدث «الظاهر») وبيتكتب
      في flush بعد ما الدقيقة تخلص ⇒ كتابة واحدة في الدقيقة بالكتير، وآخر ظهور مابيقعش دقيقة ورا الحقيقة. */
   const seenAt = new Map();
+  /* صحة الكتابة (بعد المراجعة): الكتابة مش مستنيّة (مابتأخّرش الطلب)، بس أي فشل بيتعدّ ويتسجّل في اللوج — أول مرة وبعدها مرة كل ١٠ دقايق */
+  const health = { writes: 0, errors: 0, lastOkAt: null, lastError: null, lastErrorAt: null };
+  let loggedErrAt = -Infinity;
   const write = (r) => ready.then(() => pool.query(PRESENCE_UPSERT,
     [String(r.user.id).slice(0, 60), r.dev, String(r.user.role), r.user.name ? String(r.user.name).slice(0, 60) : null,
-      new Date(r.t).toISOString(), r.via, r.vis ? new Date(r.vis).toISOString() : null])).catch(() => {});
+      new Date(r.t).toISOString(), r.via, r.vis ? new Date(r.vis).toISOString() : null]))
+    .then(() => { health.writes++; health.lastOkAt = now().toISOString(); })
+    .catch((e) => {
+      health.errors++; health.lastError = clip(e && e.message, 160); health.lastErrorAt = now().toISOString();
+      const t = now().getTime();
+      if (t - loggedErrAt >= 10 * MIN) { loggedErrAt = t; try { log.error("[wa-handover] presence write failed:", health.lastError, `(${health.errors} so far)`); } catch { /* */ } }
+    });
   function prune(t) {
     if (seenAt.size <= 500) return;
     for (const [k, s] of seenAt) if (!s.p && t - s.w > 10 * MIN) seenAt.delete(k);
     if (seenAt.size > 500) for (const k of [...seenAt.keys()].slice(0, 200)) seenAt.delete(k);
   }
+  /* s = { w: وقت آخر كتابة (للحد)، wt: وقت الإشارة اللي اتكتبت، wv: وقتها «الظاهر» لو كانت ظاهرة، p: إشارة مستنية الـflush } */
   function touch(user, ua, via = "poll") {
     try {
       if (!via || !user || !user.id || user.admin === true || !["cashier", "manager"].includes(String(user.role))) return false;
       const dev = deviceOf(ua), k = `${user.id}|${dev}`, t = now().getTime(), vis = VISIBLE_VIA.includes(via);
       let s = seenAt.get(k);
-      if (!s) { s = { w: -Infinity, wt: null, p: null }; seenAt.set(k, s); prune(t); }
+      if (!s) { s = { w: -Infinity, wt: null, wv: null, p: null }; seenAt.set(k, s); prune(t); }
+      /* نفس الطلب اتبلّغ مرتين (requirePortal + المسار، أو مسار بينده requirePortal مرتين): الكتابة اللي حصلت فيها كل اللي في التانية */
+      if (s.wt !== null && t >= s.wt && t - s.wt < SAME_SIGNAL_MS && (!vis || (s.wv !== null && t - s.wv < SAME_SIGNAL_MS))) return false;
       if (t - s.w >= PRESENCE_WRITE_MS) {
         const r = { user, dev, t, via, vis: vis ? t : (s.p && s.p.vis) || null };
-        s.w = t; s.wt = t; s.p = null;
+        s.w = t; s.wt = t; s.wv = r.vis; s.p = null;
         write(r);
         return true;
       }
-      if (t === s.wt && !vis) return false;      // نفس الطلب اتعدّ مرتين (المسار + requirePortal)
       s.p = { user, dev, t, via, vis: vis ? t : (s.p && s.p.vis) || null };
       return false;
     } catch { return false; }
@@ -302,12 +319,12 @@ export function register(app, ctx, deps = {}) {
     let n = 0;
     for (const s of seenAt.values()) {
       if (!s.p || t - s.w < PRESENCE_WRITE_MS) continue;
-      const r = s.p; s.p = null; s.w = t; s.wt = r.t;
+      const r = s.p; s.p = null; s.w = t; s.wt = r.t; s.wv = r.vis;
       write(r); n++;
     }
     return n;
   }
-  /* من requirePortal / بث SSE (portal.js ⇒ index.js): { ua, method, path, via? } */
+  /* من requirePortal (portal.js ⇒ index.js): { ua, method, path, via? } — أي طلب بوابة ناجح، ومنهم فتح البث */
   function seen(user, info = {}) {
     const via = info.via || presenceVia(info.method, info.path);
     return via ? touch(user, info.ua, via) : false;
@@ -329,7 +346,7 @@ export function register(app, ctx, deps = {}) {
   const uaOf = (c) => (c.req && typeof c.req.header === "function" ? c.req.header("user-agent") : null);
   app.get("/api/portal/wa-handovers", async (c) => {
     const a = await deps.requirePortal(c); if (a.res) return a.res;
-    touch(a.user, uaOf(c), "poll");      // requirePortal بيسجّلها هو كمان (نفس الإشارة) — التانية مابتكتبش
+    if (!a.seen) touch(a.user, uaOf(c), "poll");      // requirePortal بتاع البوابة سجّلها خلاص (a.seen) ⇒ مفيش كتابة تانية
     try { return c.json({ ok: true, handovers: await openList() }); }
     catch (e) { log.error("[wa-handover] list:", e.message); return c.json({ ok: true, handovers: [] }); }
   });
@@ -348,9 +365,9 @@ export function register(app, ctx, deps = {}) {
   /* PO1: نبضة البوابة — البوابة بتبعتها كل دقيقة والشاشة ظاهرة بس (ومع الرجوع للشاشة). مفيش جسم مطلوب. */
   app.post("/api/portal/presence", async (c) => {
     const a = await deps.requirePortal(c); if (a.res) return a.res;
-    touch(a.user, uaOf(c), "beat");
+    if (!a.seen) touch(a.user, uaOf(c), "beat");
     return c.json({ ok: true });
   });
 
-  return { emit, openList, ringDue, escalate, touch, seen, flush, presence, ready, stop: () => { if (flushTimer) clearInterval(flushTimer); } };
+  return { emit, openList, ringDue, escalate, touch, seen, flush, presence, health: () => ({ ...health }), ready, stop: () => { if (flushTimer) clearInterval(flushTimer); } };
 }
