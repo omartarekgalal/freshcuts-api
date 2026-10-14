@@ -242,8 +242,8 @@ const GREEN = () => ({ ok: true, status: "CONNECTED", quality: "GREEN", tier: "T
 const WARM_DONE = { step: 3, since: "2026-09-01", startedAt: "2026-09-01" };
 
 function world({ jobs = [], queue = [], settings = {}, warmup = WARM_DONE, quality = null, phone = GREEN, templates = [], tplOk = true, cloud = true, sentToday = null, mk = {}, mkThrows = false,
-  tplSync = { state: "same", status: "APPROVED", diffs: [] }, appOnly = [], appOnlyThrows = false, people = 3, waContacts = [], stopped = null, linkClicks = 0 } = {}) {
-  const db = { jobs, queue, state: { stopped_reason: stopped, warmup, quality }, events: [], sms: [], broadcasts: [], gapDays: [], newJobs: [], smsFallback: [], msgs: [], unmatched: [], replies: [], sqlLog: [],
+  tplSync = { state: "same", status: "APPROVED", diffs: [] }, appOnly = [], appOnlyThrows = false, people = 3, waContacts = [], stopped = null, linkClicks = 0, fav = null } = {}) {
+  const db = { jobs, queue, state: { stopped_reason: stopped, warmup, quality }, events: [], sms: [], broadcasts: [], gapDays: [], newJobs: [], newQueue: [], smsFallback: [], msgs: [], unmatched: [], replies: [], sqlLog: [],
     settings: { waCloud: { enabled: true }, waSender: {}, waMaster: { enabled: true }, notifications: { whatsappEnabled: true }, delivery: { alertPhones: ["0500000001"] }, ...settings } };
   const job = (id) => db.jobs.find((j) => j.id === Number(id));
   const qrow = (id) => db.queue.find((q) => q.id === Number(id));
@@ -307,6 +307,7 @@ function world({ jobs = [], queue = [], settings = {}, warmup = WARM_DONE, quali
     if (/^UPDATE wa_send_queue SET status='sent'/i.test(s)) { Object.assign(qrow(p[0]), { status: "sent", _now: true, wamid: p[4] }); return { rows: [], rowCount: 1 }; }
     if (/^UPDATE wa_send_queue SET status='failed', reason=\$2, error_code=\$3, cloud_status='failed'/i.test(s)) { Object.assign(qrow(p[0]), { status: "failed", reason: p[1], error_code: p[2], cloud_status: "failed" }); return { rows: [] }; }
     if (/^UPDATE wa_send_queue SET status='skipped', reason=\$2 WHERE id/i.test(s)) { Object.assign(qrow(p[0]), { status: "skipped", reason: p[1] }); return { rows: [] }; }
+    { const m = /^UPDATE wa_send_queue SET status='skipped', reason='([a-z_]+)' WHERE id=\$1$/i.exec(s); if (m) { Object.assign(qrow(p[0]), { status: "skipped", reason: m[1] }); return { rows: [] }; } }      // FD1
     if (/^UPDATE wa_send_queue SET note=\$2, fallback_from=\$3/i.test(s)) { Object.assign(qrow(p[0]), { note: p[1], fallback_from: p[2] }); return { rows: [] }; }
     if (/FROM wa_contact_log WHERE phone_norm = ANY/i.test(s)) { db.gapDays.push(p[1]); return { rows: p[0].filter((x) => waContacts.includes(x)).map((x) => ({ pn: x })) }; }
     if (/sms_ad_blocked|cms_campaign_sends|cms_flow_log|FROM sms_log/i.test(s)) throw Object.assign(new Error("missing"), { code: "42P01" });
@@ -320,6 +321,7 @@ function world({ jobs = [], queue = [], settings = {}, warmup = WARM_DONE, quali
     if (/^SELECT 1 FROM wa_messages WHERE phone_norm=\$1 AND direction='in'/i.test(s)) return { rows: [] };
     if (/FROM wa_optins WHERE phone_norm/i.test(s)) return { rows: [] };
     if (/^INSERT INTO wa_send_jobs/i.test(s)) { db.newJobs.push(p); return { rows: [{ id: 77 }] }; }
+    if (/^INSERT INTO wa_send_queue\(job_id, phone_norm, name, message/i.test(s)) { db.newQueue.push(p); return { rows: [], rowCount: 1 }; }      // FD1
     if (/^SELECT \(SELECT count\(\*\)::int FROM wa_invalid_numbers\) AS invalid/i.test(s)) return { rows: [{ invalid: 0, replies7: 0, optouts7: 0 }] };
     if (/^SELECT 1 FROM cms_links WHERE slug=\$1/i.test(s)) return { rows: [], rowCount: 0 };
     if (/^UPDATE settings SET data = jsonb_set\(COALESCE\(data,'\{\}'::jsonb\), '\{waCloud\}'/i.test(s)) { db.settings.waCloud = JSON.parse(p[0]); return { rows: [], rowCount: 1 }; }
@@ -344,7 +346,7 @@ function world({ jobs = [], queue = [], settings = {}, warmup = WARM_DONE, quali
   const rows = Array.from({ length: people }, (_, i) => ({ pn: `51000000${i}`, name: `عميل ${i}`, orders: 2, spend: 100, daysAgo: 40, lastTotal: 60, score: 1, vars: { first_name: `عميل${i}` } }));
   const outreach = { AUDIENCES: { lapsed: { label: "غايبين" } }, audienceRows: async () => rows, cfg: async () => ({ template: "أهلاً {name}" }) };
   const cms = { waFallbackSms: async (x) => { db.smsFallback.push(x); return { ok: true }; } };
-  const api = S.register(app, ctx, { wa, fetch, outreach, cloudLoop: false, lock: false, now: () => AT_17, cms: () => cms, ...(cloud ? { cloud: () => cloudApi } : {}),
+  const api = S.register(app, ctx, { wa, fetch, outreach, cloudLoop: false, lock: false, now: () => AT_17, cms: () => cms, ...(cloud ? { cloud: () => cloudApi } : {}), ...(fav ? { fav: () => fav } : {}),
     sendSms: async (m) => { db.sms.push(m); return { ok: true }; }, broadcast: (ev, x) => db.broadcasts.push([ev, x]),
     sessionUser: async (t) => (t === "cms:mk" ? { name: "تسويق", role: "marketing" } : { name: "عمر", role: "owner" }) });
   return { db, pool, app, api, wa, calls, reads, fail: (code) => { failWith = code; } };
@@ -880,4 +882,105 @@ test("TS1 الحملة: قالب نسخته عند ميتا لسه مختلفة 
   assert.equal((await call(world({ cloud: false }).app, "POST /api/cms/wa-sender/preview", { json: body, auth: MK })).body.templateSync.state, "unknown");
   // حملة واتساب ويب: مفيش الفحص ده
   assert.equal((await call(d.app, "POST /api/cms/wa-sender/preview", { json: { channel: "wa_web", filters: { audience: "lapsed" } }, auth: MK })).body.templateSync, undefined);
+}));
+
+/* ══ FD1 (١٤/١٠): حملة «طبقك المفضل» — قيم القالب لكل مستلم + إعادة الحساب قبل كل رسالة ═══════════════ */
+const FAVROW = (i, x = {}) => ({ pn: `56000000${i}`, name: `عميل ${i}`, orders: 5, spend: 400 - i, daysAgo: 12, webOrders: 0, lastTotal: 70, skippedSmall: 0, noMeaningfulOrder: false, adBlocked: false,
+  favDish: "بيتزا تشيكن رانش", favGroup: "pizza",
+  vars: { name: `عميل ${i}`, first_name: `عميل${i}`, fav_dish: "بيتزا تشيكن رانش", cloud: { values: { "offer.title": "بوكس فيه طبقك المفضل", "offer.line": `عرض العميل ${i} بـ69 ر.س، وأول طلب من الموقع توصيله مجاني بكود FIRST` } },
+    fav: { v: 1, kind: "box", slug: "box-pizza-pasta", pid: "43", slot: "pizza", price: 69, at: iso(AT_17) } },
+  favView: { kind: "box", catOnly: false, ref: "box-pizza-pasta", price: 69, delivery: "no_location", via: "FIRST", fee: null, far: false, loc: null, km: null },
+  message: "", score: 1000 - i, ...x });
+const favStub = (rows, checks = {}) => ({ audienceRows: async () => Object.assign([...rows], { stats: { phones: rows.length } }), recheck: async (q) => (q.phone_norm in checks ? checks[q.phone_norm] : null) });
+const ASK_TEXT = (title, line) => `جديد من فريش كاتس 👋\n${title}: ${line}.\nتبي نجهز لك الطلب هنا؟ اضغط الزر وكمّل معنا في المحادثة.`;
+
+test("FD1 الحملة: قالب «الرد أولاً» بس، على Cloud ومن غير كوبون؛ القيم لكل صف (perRecipient) ماتتبعتش من بره من غير الشريحة؛ campaignParams بياخد قيم الصف بس في الحملة دي", () => {
+  const P = (b) => (S.jobInput({ filters: { audience: "fav_pick" }, ...b }, { hosts: [] }).errs[0] || [null])[0];
+  assert.equal(P({ channel: "wa_cloud", cloudTemplate: "fc_frame_ask_text" }), null);
+  const fi = S.jobInput({ filters: { audience: "fav_pick" }, channel: "wa_cloud", cloudTemplate: "fc_frame_ask_text", fallback: "sms", cloudVars: { values: { "offer.title": "عام", "offer.line": "عام" } } }, { hosts: [] });
+  assert.deepEqual([fi.cloudVars, fi.fallback, fi.perRecipient], [{ offer: "", perRecipient: true }, "none", true], "القيم العامة بتتجاهل، ومفيش قناة بديلة");
+  assert.equal(P({ channel: "wa_web" }), "fav_cloud_only");
+  assert.equal(P({ channel: "wa_cloud", cloudTemplate: "fc_frame_news_text" }), "fav_template");
+  assert.equal(P({ channel: "wa_cloud", cloudTemplate: "fc_frame_ask_text", link: { coupon: "FIRST" } }), "fav_no_coupon");
+  const plain = S.jobInput({ channel: "wa_cloud", cloudTemplate: "fc_frame_ask_text", cloudVars: { perRecipient: true, values: { "offer.title": "a", "offer.line": "b" } } }, { hosts: [] });
+  assert.deepEqual([plain.cloudVars.perRecipient, plain.perRecipient], [undefined, false]);
+  const per = { link_slug: "w1", cloud_vars: { offer: "", perRecipient: true } }, row = { vars: { cloud: { values: { "offer.title": "T", "offer.line": "L" } } } };
+  assert.deepEqual(C.campaignParams("fc_frame_ask_text", row, per).params.body, ["T", "L"]);
+  assert.deepEqual(C.campaignParams("fc_frame_ask_text", row, { link_slug: "w1", cloud_vars: { offer: "", values: { "offer.title": "J", "offer.line": "K" } } }).params.body, ["J", "K"], "حملة عادية: قيم الحملة مش الصف");
+  assert.deepEqual(C.campaignParams("fc_frame_ask_text", { vars: {} }, per).params.missing, ["offer.title", "offer.line"], "صف من غير قيمه = متغيّر ناقص (مايتبعتش)");
+  assert.equal(C.cloudJobProblem({ cloudTemplate: "fc_frame_ask_text", cloudVars: { offer: "", perRecipient: true } }), null);
+});
+
+test("FD1 المعاينة والبدء: رسالة كل عميل بقيمه، الفاصل الافتراضي ٥–٩٠ يوم، والبدء بيخزّن القيم والعرض مع كل صف ونص الصف = الرسالة نفسها", withEnv(ALLOW, async () => {
+  const rows = [FAVROW(1), FAVROW(2), FAVROW(3, { daysAgo: 2 }), FAVROW(4, { daysAgo: 95 })];
+  const s = world({ fav: favStub(rows) });
+  const body = { channel: "wa_cloud", cloudTemplate: "fc_frame_ask_text", filters: { audience: "fav_pick", limit: 100 } };
+  const res = await call(s.app, "POST /api/cms/wa-sender/preview", { json: body, auth: MK });
+  const pv = res.body;
+  assert.equal(res.status, 200, JSON.stringify(pv));
+  assert.deepEqual([pv.problems, pv.perRecipient, pv.fav.filters], [[], true, { minDaysSince: 5, maxDaysSince: 90 }]);
+  assert.equal(pv.willQueue, 2, "٢ و٩٥ يوم بره الفاصل الافتراضي");
+  assert.deepEqual(pv.sample.map((x) => x.cloud.text), [1, 2].map((i) => ASK_TEXT("بوكس فيه طبقك المفضل", `عرض العميل ${i} بـ69 ر.س، وأول طلب من الموقع توصيله مجاني بكود FIRST`)));
+  assert.deepEqual([pv.sample[0].fav.ref, pv.sample[0].cloud.buttons], ["box-pizza-pasta", ["أبغى أطلب", "ورّني المنيو"]]);
+  assert.deepEqual(pv.texts.map((t) => [t.phone, t.title, t.line]), [1, 2].map((i) => [`560••••0${i}`, "بوكس فيه طبقك المفضل", `عرض العميل ${i} بـ69 ر.س، وأول طلب من الموقع توصيله مجاني بكود FIRST`]), "كل الرسايل اللي هتتبعت، والجوال مخفي");
+  // فلتر صريح بيغلب الافتراضي
+  assert.equal((await call(s.app, "POST /api/cms/wa-sender/preview", { json: { ...body, filters: { audience: "fav_pick", minDaysSince: 0, maxDaysSince: 120 } }, auth: MK })).body.willQueue, 4);
+  // البدء: للمالك بس + العدد لازم يطابق المعاينة
+  assert.equal((await call(s.app, "POST /api/cms/wa-sender/jobs", { json: { ...body, confirmCount: 2 }, auth: MK })).status, 403);
+  assert.equal((await call(s.app, "POST /api/cms/wa-sender/jobs", { json: { ...body, confirmCount: 3 } })).body.error, "count_changed");
+  const ok = await call(s.app, "POST /api/cms/wa-sender/jobs", { json: { ...body, confirmCount: 2 } });
+  assert.equal(ok.status, 200, JSON.stringify(ok.body));
+  const j = s.db.newJobs[s.db.newJobs.length - 1];
+  assert.deepEqual([j[9], j[10], JSON.parse(j[11]), j[12]], ["wa_cloud", "fc_frame_ask_text", { offer: "", perRecipient: true }, "none"]);
+  assert.equal(s.db.newQueue.length, 2);
+  const [q0] = s.db.newQueue;
+  assert.equal(q0[1], "560000001");
+  assert.equal(q0[3], ASK_TEXT("بوكس فيه طبقك المفضل", "عرض العميل 1 بـ69 ر.س، وأول طلب من الموقع توصيله مجاني بكود FIRST"));
+  const v0 = JSON.parse(q0[9]);
+  assert.deepEqual([v0.cloud.values["offer.title"], v0.fav.slug, v0.fav.price], ["بوكس فيه طبقك المفضل", "box-pizza-pasta", 69]);
+  // الشريحة مش متوصّلة ⇒ رد واضح، مش شريحة تانية في صمت
+  const none = await call(world().app, "POST /api/cms/wa-sender/preview", { json: body, auth: MK });
+  assert.deepEqual([none.status, none.body.error], [503, "fav_unavailable"]);
+}));
+
+test("FD1 الإرسال: كل صف بقيمه هو، والعرض بيتحسب تاني قبل كل رسالة — اتغيّر/خلص ⇒ الصف يتخطّى بسببه والباقي يكمل؛ من غير التحقق ⇒ ولا رسالة", withEnv(ALLOW, async () => {
+  const JOBF = J({ cloud_template: "fc_frame_ask_text", image_url: null, cloud_vars: { offer: "", perRecipient: true } });
+  const V = (i) => ({ first_name: "محمد", cloud: { values: { "offer.title": "بوكس فيه طبقك المفضل", "offer.line": `عرض ${i} بـ65 ر.س، والتوصيل لعنوانك 15 ر.س` } }, fav: { v: 1, kind: "box", slug: "box-crepe-duo", pid: "6", slot: "crepe1", price: 65, at: iso(AT_17 - 3600_000) } });
+  const w = world({ jobs: [JOBF], queue: [R(1, { vars: V(1) }), R(2, { vars: V(2) }), R(3, { vars: V(3) }), R(4, { vars: { first_name: "x" } })], fav: favStub([], { "520000002": "offer_changed", "520000003": "offer_gone:sold_out" }) });
+  const r = await w.api.cloudTick();
+  assert.equal(r.sent, 1, JSON.stringify(r));
+  assert.equal(w.calls.length, 1);
+  assert.deepEqual(w.calls[0].body.template.components, [{ type: "body", parameters: [{ type: "text", text: "بوكس فيه طبقك المفضل" }, { type: "text", text: "عرض 1 بـ65 ر.س، والتوصيل لعنوانك 15 ر.س" }] }]);
+  assert.match(w.db.msgs[0].body, /^جديد من فريش كاتس 👋\nبوكس فيه طبقك المفضل: عرض 1 بـ65 ر.س/);
+  assert.deepEqual(w.db.queue.map((q) => [q.status, q.reason || null]), [["sent", null], ["skipped", "offer_changed"], ["skipped", "offer_gone:sold_out"], ["skipped", "missing_param"]], "صف من غير قيمه مابيتبعتش بقيمة عامة");
+  // من غير «طبقك المفضل» متوصّلة: مفيش تأكيد ⇒ مفيش إرسال
+  const w2 = world({ jobs: [JOBF], queue: [R(1, { vars: V(1) })] });
+  await w2.api.cloudTick();
+  assert.deepEqual([w2.calls.length, w2.db.queue[0].status, w2.db.queue[0].reason], [0, "skipped", "offer_unverified"]);
+}));
+
+test("مراجعة FD1 — البدء مربوط بالرسايل اللي اتقرت في المعاينة (confirmDigest: نفس العدد بسطر مختلف ⇒ 409)، والفاصل بيتبعت للشريحة قبل التسعير", withEnv(ALLOW, async () => {
+  let rows = [FAVROW(1), FAVROW(2)];
+  const seenWin = [];
+  const fav = { audienceRows: async (win) => { seenWin.push(win); return Object.assign(rows.map((r) => JSON.parse(JSON.stringify(r))), { stats: { phones: rows.length } }); }, recheck: async () => null };
+  const s = world({ fav });
+  const body = { channel: "wa_cloud", cloudTemplate: "fc_frame_ask_text", filters: { audience: "fav_pick", limit: 100 } };
+  const pv = (await call(s.app, "POST /api/cms/wa-sender/preview", { json: body, auth: MK })).body;
+  assert.match(pv.fav.digest, /^[0-9a-f]{16}$/);
+  assert.deepEqual(seenWin[0], { minDaysSince: 5, maxDaysSince: 90 }, "الفاصل الافتراضي بيوصل للشريحة");
+  // نفس البيانات ⇒ نفس البصمة
+  assert.equal((await call(s.app, "POST /api/cms/wa-sender/preview", { json: body, auth: MK })).body.fav.digest, pv.fav.digest);
+  // سطر عميل اتغيّر بين المعاينة والبدء (سعر / توصيل) والعدد زي ما هو ⇒ مايبدأش
+  rows = [FAVROW(1), FAVROW(2, { vars: { ...FAVROW(2).vars, cloud: { values: { "offer.title": "بوكس فيه طبقك المفضل", "offer.line": "عرض العميل 2 بـ75 ر.س، والتوصيل لعنوانك 15 ر.س" } } } })];
+  const bad = await call(s.app, "POST /api/cms/wa-sender/jobs", { json: { ...body, confirmCount: 2, confirmDigest: pv.fav.digest } });
+  assert.deepEqual([bad.status, bad.body.error], [409, "offers_changed"]);
+  assert.equal(s.db.newJobs.length, 0);
+  // معاينة جديدة ⇒ بصمة جديدة ⇒ يبدأ
+  const pv2 = (await call(s.app, "POST /api/cms/wa-sender/preview", { json: body, auth: MK })).body;
+  assert.notEqual(pv2.fav.digest, pv.fav.digest);
+  const ok = await call(s.app, "POST /api/cms/wa-sender/jobs", { json: { ...body, confirmCount: 2, confirmDigest: pv2.fav.digest } });
+  assert.equal(ok.status, 200, JSON.stringify(ok.body));
+  // فلتر صريح بيتبعت زي ما هو
+  await call(s.app, "POST /api/cms/wa-sender/preview", { json: { ...body, filters: { audience: "fav_pick", minDaysSince: 0, maxDaysSince: 120 } }, auth: MK });
+  assert.deepEqual(seenWin[seenWin.length - 1], { minDaysSince: 0, maxDaysSince: 120 });
 }));

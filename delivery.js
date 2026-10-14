@@ -1021,7 +1021,10 @@ export function register(app, ctx, deps = {}) {
   /* quote({lat, lng, orderTotal}) — the ONE entry point storefront + shop.js
      both use, so the customer can never be quoted one fee and charged
      another. */
-  async function quote({ lat, lng, orderTotal, farZoneAccepted = false, district = null }) {
+  /* FD1 (١٤/١٠): cacheOnly = مسافة الطريق من كاش جوجل بس (drive.peek) — مفيش نداء جديد. كاش مش موجود ⇒ التقدير الهوائي
+     زي أي فشل (distanceSource "straight")، والمتصل (حملة «طبقك المفضل») مابيقولش رقم غير لو distanceSource = "google". */
+  const peekDrive = { get: async (from, to) => (typeof drive.peek === "function" ? drive.peek(to) : null) };
+  async function quote({ lat, lng, orderTotal, farZoneAccepted = false, district = null, cacheOnly = false }) {
     const pol = await activePolicy();
     if (!pol) return { deliverable: false, reason: "no_policy" };
     const cfg = { ...DEFAULT_POLICY, ...pol.config };
@@ -1034,7 +1037,7 @@ export function register(app, ctx, deps = {}) {
     /* المشوار الحقيقي بالعربية من جوجل (drivedist.js)، ولو فشل لأي سبب
        بنرجع لتقدير هوائي × routeFactor زي الأول بالظبط. maxKm = سقف المشوار. */
     const rk = await resolveRouteKm({
-      cfg, straightKm: straight, drive,
+      cfg, straightKm: straight, drive: cacheOnly === true ? peekDrive : drive,
       from: { lat: STORE_LAT(), lng: STORE_LNG() }, to: { lat: Number(lat), lng: Number(lng) },
     });
     const route = rk.routeKm;

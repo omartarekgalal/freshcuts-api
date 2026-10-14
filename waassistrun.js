@@ -257,6 +257,9 @@ export function assistEligible({ acfg, cfg, phone, ev, cls, d, afterWait = null,
   /* الرد المؤجّل (بعد انتظار الموظف) بقى من نصيب المساعد برضه (١٢/١٠: كان بيروح للقواعد فالمساعد ماردّش ولا مرة). afterWait للتوثيق بس. */
   if (ev && ev.interactiveId && !/^as:/.test(String(ev.interactiveId))) return no("tap");      // PS4: أزرار المساعد نفسه (as:…) بترجع له بعنوانها كنص
   if (!cls || !cls.key || !d) return no("no_class");
+  /* FD1 (١٤/١٠): ضغطة «أبغى أطلب» / «نعم» أول رد على رسالة حملة «طبقك المفضل» (wabotrun بيحطها campaign_*) ⇒ القواعد (رابط سلة جاهزة بالعرض اللي وصله بالظبط).
+     أي رسالة تانية (حتى «أبغى أطلب» بعد كده أو جوّه محادثة المساعد) مابتاخدش التصنيف ده أصلاً ⇒ للمساعد عادي. */
+  if (/^campaign_/.test(String(cls.rawIntent || ""))) return no("rules:campaign_order");
   if (handoverOpen) return no("handover_open");
   const cartEdit = cls.key === "change" && (CART_EDIT.has(String(cls.rawIntent || "")) || (sessionActive && CART_EDIT_IN_SESSION.has(String(cls.rawIntent || "")))) && !recentOrder;
   /* PS3: «ذكّرني الساعة ٨» كانت بتتصنّف «مواعيد» وبوت القواعد يرد بالمواعيد. طلب تذكير (مش «نبّهني لما تفتحوا» — دي قايمة الانتظار بتاعة القواعد) ⇒ المساعد. */

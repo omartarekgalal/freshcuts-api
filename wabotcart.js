@@ -184,7 +184,9 @@ export function makeBotCarts({ pool, log = console.error, locationHours = null, 
     if (!r || !r[0]) return null;
     const p = new URLSearchParams();
     p.set("cart", code); p.set("utm_source", "whatsapp"); p.set("utm_medium", "bot");
-    p.set("utm_campaign", r[0].source === "assistant" ? "wa_assistant" : "wa_reorder"); p.set("fc_link", r[0].source === "assistant" ? "wa-assistant" : "wa-reorder");
+    /* FD1: سلة حملة «طبقك المفضل» (ضغطة «أبغى أطلب») ⇒ wa_campaign — مش «نفس الطلب» */
+    const src = r[0].source === "assistant" ? "assistant" : r[0].source === "campaign" ? "campaign" : "reorder";
+    p.set("utm_campaign", `wa_${src}`); p.set("fc_link", `wa-${src}`);
     return "/?" + p.toString();
   }
   async function restore(code) {

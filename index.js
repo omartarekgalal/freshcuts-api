@@ -77,6 +77,7 @@ import * as wakb from "./wakb.js";
 import * as wabotllm from "./wabotllm.js";
 import * as extsettle from "./extsettle.js";
 import * as wasender from "./wasender.js";
+import * as wafavpick from "./wafavpick.js";
 import * as waoffers from "./waoffers.js";
 import { sendAdSms as smsSendAd } from "./smsrules.js";
 // 🔎 البحث الشامل في اللوحة (Ctrl+K) + 👁 قاعدة إظهار الجوال الكاملة
@@ -3226,8 +3227,11 @@ const outreachApi = outreach.register(app, moduleCtx);
 /* ☁️ 28/9: WhatsApp Cloud API Coexistence — ربط Embedded Signup + حالة الرقم (wacloud.js)،
    وقناة wa_cloud في الإرسال الآلي (السيرفر بيبعت القالب بنفسه + حالات الويب هوك). */
 const waCloudApi = wacloud.register(app, moduleCtx, { wa: waApi, sessionUser: cmsApi.sessionUser });
+/* 🍽 FD1 (١٤/١٠): حملة «طبقك المفضل» — عرض لكل عميل + سعر توصيله (wafavpick.js). المنيو/البوكسات/العروض من بوت واتساب
+   (wabotApi.live — نفس الكاش، بيتسجّل تحت؛ النداء وقت التشغيل)، والتوصيل من delivery.quote نفسها (كاش المسافات بس). */
+const favPickApi = wafavpick.makeFavPick({ pool, getSettingsData, live: () => (wabotApi ? wabotApi.live : null), quote: (x) => deliveryApi.quote(x) });
 const waSenderApi = wasender.register(app, moduleCtx, { outreach: outreachApi, sessionUser: cmsApi.sessionUser, cms: () => cmsApi,
-  wa: waApi, cloud: () => waCloudApi,
+  wa: waApi, cloud: () => waCloudApi, fav: () => favPickApi,
   /* QP1: تنبيه المالك لما بوابة الجودة توقّف الحملات — SMS لأرقام تنبيهات الإدارة + حدث للبورتال (portalApi بيتعرّف تحت؛ النداء وقت التشغيل) */
   sendSms: (m) => accounts.sendSms(m), broadcast: (...a) => portalApi.broadcast(...a) });
 /* OF1: مكتبة عروض واتساب (طبقة فوق البوكسات/العروض الموجودة، في settings.waOffers) — الحملة نفسها من wasender */
@@ -3244,7 +3248,7 @@ smstemplates.register(app, moduleCtx, { sendSms: (m) => accounts.sendSms(m), sen
 const waBotApi = wabot.register(app, moduleCtx, { app });
 /* 🤖 ١٢/١٠: بوت واتساب v1 (wabotrun.js) — بيمسك الوارد من whatsapp.js (setBotRuntime). الوضع وكل إعداداته من اللوحة
    (settings.waBot: off الافتراضي / dry / test / live) — مفيش مفتاح env. off = مابيلمسش أي رسالة. */
-wabotApi = wabotrun.register(app, moduleCtx, { app, wa: waApi, team: () => waTeamApi, flow: () => waFlowApi, sendSms: accounts.sendSms, whoami: (c) => cmsApi.whoami(c), assist: { expandBundle: (...a) => cmsApi.expandBundle(...a), modifiersCatalog: () => modifiersApi.catalog(), modifiersResolve: (id, ids) => modifiersApi.resolve(id, ids), quote: (x) => deliveryApi.quote(x), buildProfile: (pn) => c360Api.buildProfile(pn) }, kb: () => waKbApi, portalEmit: (event, data) => { try { if (event === "wa_handover" && waHandoverApi) waHandoverApi.emit(data).catch(() => {}); else if (portalApi && typeof portalApi.broadcast === "function") portalApi.broadcast(event, data); } catch (e) { console.error("[wabot] portal emit:", e.message); } }, llm: wabotllm.makeClassifier({ faqKeys: wabotrun.FAQ_KEYS }) });
+wabotApi = wabotrun.register(app, moduleCtx, { app, wa: waApi, team: () => waTeamApi, flow: () => waFlowApi, sendSms: accounts.sendSms, whoami: (c) => cmsApi.whoami(c), assist: { expandBundle: (...a) => cmsApi.expandBundle(...a), modifiersCatalog: () => modifiersApi.catalog(), modifiersResolve: (id, ids) => modifiersApi.resolve(id, ids), quote: (x) => deliveryApi.quote(x), buildProfile: (pn) => c360Api.buildProfile(pn) }, fav: () => favPickApi, kb: () => waKbApi, portalEmit: (event, data) => { try { if (event === "wa_handover" && waHandoverApi) waHandoverApi.emit(data).catch(() => {}); else if (portalApi && typeof portalApi.broadcast === "function") portalApi.broadcast(event, data); } catch (e) { console.error("[wabot] portal emit:", e.message); } }, llm: wabotllm.makeClassifier({ faqKeys: wabotrun.FAQ_KEYS }) });
 /* 👁 قاعدة واحدة لإظهار جوال العميل كامل في اللوحة (phones.js): المالك دايماً،
    وعضو الفريق لو دوره عنده «عرض» على قسم العملاء. بتتحط على moduleCtx بعد ما
    الـCMS يتسجّل، والموديولات بتناديها وقت الطلب (ctx.canSeePhones) مش وقت التسجيل. */

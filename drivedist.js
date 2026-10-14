@@ -250,7 +250,16 @@ export function makeDriveDistance({
     return { results, billed };
   }
 
-  return { ensureSchema, get, getMany, stats, configured: () => Boolean(keyFn()) };
+  /* FD1 (١٤/١٠): الكاش بس، من غير أي نداء لجوجل — لحملة «طبقك المفضل» (سعر التوصيل لعنوان العميل في رسالة):
+     نفس المفتاح ونفس الصلاحية اللي get بيقرا بيها، فالرقم = اللي صفحة الدفع هتحسبه طول ما الكاش صالح. مفيش ⇒ null. */
+  async function peek(to) {
+    try {
+      const hit = await fromCache(cacheKey(to.lat, to.lng));
+      return hit ? { km: hit.km, durationSec: hit.durationSec, source: "cache" } : null;
+    } catch { return null; }
+  }
+
+  return { ensureSchema, get, getMany, peek, stats, configured: () => Boolean(keyFn()) };
 }
 
 /* resolveRouteKm — القرار كله في دالة واحدة عشان quote() تفضل بسيطة:

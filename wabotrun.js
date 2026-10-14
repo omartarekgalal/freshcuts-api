@@ -37,7 +37,7 @@
 import { matchIntent, detectLang, normalize, msgText, msgButtons, msgCta, msgList, LIMITS, openState, openingText, hoursLines, fmtTime, ORDER_NO_RE, indexMenu, closingToday, findItems } from "./wabot.js";
 import { staffPhones, fitOneSms, staffConfig } from "./staffalerts.js";
 import { loyaltyCfgOf } from "./loyalty.js";
-import { MAPS_URL } from "./watemplates.js";
+import { MAPS_URL, ORDER_BUTTON, ORDER_BUTTON_EN } from "./watemplates.js";
 import { isOpenNow } from "./carts.js";
 import { preorderCfg } from "./preorder.js";
 import { makeBotCarts, reorderPlan, planSummary, orderDay, chatLocation } from "./wabotcart.js";
@@ -131,6 +131,8 @@ export const DEFAULTS = Object.freeze({
   reorderLinkDays: 7,          // صلاحية رابط السلة الجاهزة
   reorderMinTotal: 10,         // طلب أصنافه أقل من كده (ر.س) مايتعرضش — طلبات التجربة الصغيرة
   reorderLookback: 5,          // لو آخر طلب مايتجهّزش، نجرّب اللي قبله لحد العدد ده
+  campaignCart: true,          // FD1 (١٤/١٠): «أبغى أطلب» على رسالة حملة «طبقك المفضل» ⇒ سلة جاهزة بالعرض اللي وصله بالظبط (بسعره وتوصيله الحين)
+  campaignOfferHours: 72,      // …العرض المخزّن بيفضل يتقرا للضغطة/«نعم» لحد المدة دي من الإرسال
   maxAgeMinutes: 20,           // رسالة أقدم من كده (ويب هوك متأخر) مابيتردش عليها
   sameTextSeconds: 8,          // نفس النص من نفس العميل خلال الثواني دي = تكرار ويب هوك/ضغطة مرتين ⇒ مايتردّش عليه تاني. عميل بيكرر سؤاله بعدها بيترد عليه (١٢/١٠)
   /* حارس الحلقات (مش سبب لتحويل لموظف — عطل ١٢/١٠: ٨ ردود كانت بتقطع عميل بيتصفّح القائمة وتحوّله لموظف):
@@ -241,6 +243,12 @@ export const TEXTS = Object.freeze({
   re_price: t("سطر: سعر اتغيّر", "سعر {name} الآن {now} ر.س (كان {was} ر.س)", "{name} is now SAR {now} (was SAR {was})", ["name", "now", "was"], [], 300),
   re_review: t("سطر: راجع الإضافات", "راجع الإضافات والسعر في السلة قبل الدفع: {names}", "Please check the add-ons and price in the cart before paying: {names}", ["names"], [], 400),
   cta_reorder: t("زر: كمّل طلبك", "كمّل طلبك", "Complete order", [], [], LIMITS.ctaText),
+  /* FD1 (١٤/١٠) — حملة «طبقك المفضل»: الرد على «أبغى أطلب» / «نعم». {offer} = نفس سطر الرسالة (العرض بسعره وسطر التوصيل) محسوب تاني الحين. */
+  camp_order_body: t("حملة «طبقك المفضل»: رد «أبغى أطلب» (السلة جاهزة بالعرض)", "جهّزنا لك طلبك في السلة 🛒\n{offer}.\n{picks}\n{paused}\n{closed}\nراجع السلة وكمّل الدفع من الزر 👇 ولو تبي تغيّر شي اكتب لي هنا.",
+    "Your order is ready in the cart 🛒\n{offer}.\n{picks}\n{paused}\n{closed}\nReview the cart and pay from the button 👇 If you'd like to change anything, write to me here.", ["offer"], ["picks", "paused", "closed"], 900),
+  camp_picks: t("حملة «طبقك المفضل»: سطر اختيارات البوكس في السلة", "اخترنا لك في البوكس: {names}.", "In the box we picked: {names}.", ["names"], [], 300),
+  camp_box_body: t("حملة «طبقك المفضل»: رد «أبغى أطلب» لبوكس من نوع أكله (يختار هو)", "{offer}.\n{paused}\n{closed}\nاختر اللي يعجبك في البوكس وكمّل طلبك من الزر 👇",
+    "{offer}.\n{paused}\n{closed}\nPick what you like in the box and complete your order from the button 👇", ["offer"], ["paused", "closed"], 900),
   /* مساعد الطلبات: المتابعة الواحدة بعد رابط السلة (نص ثابت + نفس الرابط بزر «كمّل طلبك») */
   assist_followup: t("مساعد الطلبات: متابعة بعد رابط السلة", "سلتك ما زالت جاهزة 🛒 تقدر تكمّل طلبك من الزر 👇\nوإذا تحتاج شي ثاني اكتب لي.", "Your cart is still ready 🛒 You can complete your order from the button 👇\nIf you need anything else, just write.", [], [], 300),
   /* PS3 — التذكير اللي العميل طلبه: بيفتح الكلام تاني باسم ماجد وبالصنف اللي كان بيسأل عنه (لو معروف ولسه متاح). مش رسالة تسويق: بتتبعت بس لعميل قال «فكّرني» وحدد الوقت. */
@@ -508,6 +516,21 @@ export const MANAGER_ASK_RE = /(?:^| )[وف]?(?:لل|[بلك])?(?:ال)?(?:مس�
 export const asksManager = (text) => MANAGER_ASK_RE.test(normalize(String(text || "")));
 const NAV_RE = /^(?:القايمه|القايمه الرييسيه|الرييسيه|رجوع|ارجع|menu|main menu|main|back|0)$/;      // بعد التطبيع: ئ ⇒ ي
 const ACK_RE = /^(?:تمام|تمم|اوكي|اوك|ok|okay|k|طيب|زين|ماشي|حلو|اها|اه|ايوه|ايوا|نعم|yes|yep|👍|👌|🙏)$/;
+/* FD1 (مراجعة ١٤/١٠): رد مكتوب على سؤال رسالة «طبقك المفضل» («تبي نجهز لك الطلب هنا؟») يتحسب «أبغى أطلب» بس لو موافقة صريحة:
+   نعم / ايوه / اي / اكيد / yes …، أو «أبغى / أبي / أريد (أطلب / العرض / البوكس)». مش «تمام / اوكي / 👍 / طيب / ماشي / حلو / اها / ايه» ولا
+   أي إيموجي (ممكن تبقى «وصلت» أو زعل) — ولا سؤال («نعم؟»)، ولا طلب صنف تاني («ابغى اطلب برجر» بتمشي في طريقها العادي).
+   «تمام/اوكي/ok» قبل فعل الطلب نفسه («تمام ابغى») = موافقة. النص بعد normalize (ى ⇒ ي، علامات الترقيم ⇒ مسافة). */
+const YES_LEAD = "(?:نعم|ايوه|ايوا|اي|اكيد|اكيدا|يب|yes|yeah|yep|yup|sure)";
+const YES_OK = "(?:تمام|اوكي|اوك|ok|okay|طيب|ماشي)";
+const YES_WANT = "(?:ابغي|ابغا|ابي|اريد|ودي|نبغي|نبي|حاب|حابب)";
+const YES_OBJ = "(?:اطلب|نطلب|اطلبه|اطلبها|الطلب|العرض|البوكس|هذا|هذي|ذا)";
+const YES_POLITE = "(?:لو سمحت|من فضلك|الله يعافيك|please|pls|plz)";
+export const CAMPAIGN_YES_RE = new RegExp(`^(?:${YES_LEAD}(?: ${YES_WANT}(?: ${YES_OBJ})?)?|${YES_OK} ${YES_WANT}(?: ${YES_OBJ})?|${YES_WANT}(?: ${YES_OBJ})?|i want(?: to order| it| this)?)(?: ${YES_POLITE})?$`);
+export const isCampaignYes = (text) => { const raw = String(text || ""); return !/[?؟]/.test(raw) && CAMPAIGN_YES_RE.test(normalize(raw)); };
+/* ضغطة زر الرد «أبغى أطلب» في قوالب «الرد أولاً» (الـpayload = نص الزر) */
+const CAMPAIGN_TAP_IDS = new Set([ORDER_BUTTON, ORDER_BUTTON_EN]);
+/* كود سلة مؤقت في الرد لحد ما السلة تتحفظ فعلاً (بعد القرار) — بيتبدّل بالكود الحقيقي قبل الإرسال، وعمره ما بيطلع لعميل */
+const CAMP_CART_PENDING = "fdpending0";
 const NACK_RE = /^(?:لا|لا شكرا|لا مشكور|no|nope|no thanks|مو لازم)$/;
 export const WINDOW_V2_STAGES = Object.freeze(["pos_created", "accepted", "on_the_way", "delivered", "rejected_refunded", "refund_failed", "review"]);
 /* SB4: الردود السريعة في القوالب (v2) والأزرار في تحديثات الطلب الحرة بتوصل بنصها كمعرّف ⇒ الرد المفيد */
@@ -603,6 +626,7 @@ export function botConfig(settings) {
     dishFactsEnabled: x.dishFactsEnabled === true,
     reorderEnabled: x.reorderEnabled !== false, reorderMaxDays: num(x.reorderMaxDays, 1, 365, DEFAULTS.reorderMaxDays), reorderLinkDays: num(x.reorderLinkDays, 1, 30, DEFAULTS.reorderLinkDays),
     reorderMinTotal: num(x.reorderMinTotal, 0, 500, DEFAULTS.reorderMinTotal), reorderLookback: num(x.reorderLookback, 1, 10, DEFAULTS.reorderLookback),
+    campaignCart: x.campaignCart !== false, campaignOfferHours: num(x.campaignOfferHours, 1, 168, DEFAULTS.campaignOfferHours),      // FD1
     maxAgeMinutes: num(x.maxAgeMinutes, 1, 120, DEFAULTS.maxAgeMinutes),
     sameTextSeconds: num(x.sameTextSeconds, 0, 120, DEFAULTS.sameTextSeconds),
     autoEchoSkipCovered: x.autoEchoSkipCovered === true,
@@ -688,10 +712,10 @@ export function configFromBody(b, prev = {}) {
   delete out.humanWindowHours;      // اتلغى (١٢/١٠) — أي حفظ بينضّف المخزّن القديم
   for (const k of ["humanPauseMin", "staffWaitMin", "closedEchoPauseMin", "manualMuteHours", "handoffOpenHours", "freeRepliesPerMonth", "replyRateSar", "disclosureHours", "unknownHandoverAfter", "adWindowHours", "optinAnswerWindowMin",
     "offerEndWithinDays", "boxesCacheMin", "menuCacheMin", "offersCacheMin", "staleCacheMin", "logKeepDays", "reorderMaxDays", "reorderLinkDays", "reorderMinTotal", "reorderLookback",
-    "handoverRealertMin", "handoverCustomerNoteMin", "greetWindowHours", "maxAgeMinutes", "sameTextSeconds", "autoEchoMaxSec", "autoInboundSec", "openerHours", "leadFollowUpMin", "reviewReplyHours", "reviewPaidGapMin", "windowKeeperHour", "windowKeeperDailyCap", "windowKeeperWeekly", "windowKeeperQuietStart", "windowKeeperQuietEnd", "loopGuardCount", "loopGuardFastSec", "loopGuardSeconds", "loopGuardMuteHours", "mediaFloodBuyerCount", "mediaFloodCount", "mediaFloodMinutes", "mediaFloodMuteHours", "maxRepliesPerHour", "maxTapsPerHour", "maxRepliesPerMinute", "orderLookbackHours", "lateAfterMinutes", "maxAlertsPerHour"]) {
+    "handoverRealertMin", "handoverCustomerNoteMin", "greetWindowHours", "maxAgeMinutes", "sameTextSeconds", "autoEchoMaxSec", "autoInboundSec", "openerHours", "leadFollowUpMin", "reviewReplyHours", "reviewPaidGapMin", "windowKeeperHour", "windowKeeperDailyCap", "windowKeeperWeekly", "windowKeeperQuietStart", "windowKeeperQuietEnd", "loopGuardCount", "loopGuardFastSec", "loopGuardSeconds", "loopGuardMuteHours", "mediaFloodBuyerCount", "mediaFloodCount", "mediaFloodMinutes", "mediaFloodMuteHours", "maxRepliesPerHour", "maxTapsPerHour", "maxRepliesPerMinute", "orderLookbackHours", "lateAfterMinutes", "maxAlertsPerHour", "campaignOfferHours"]) {
     if (k in src) { if (Number.isFinite(Number(src[k])) && src[k] !== "" && src[k] !== null) out[k] = Number(src[k]); else errors.push(k); }
   }
-  for (const k of ["interactive", "staffAlert", "alertInTest", "autoEchoSkipCovered", "autoInboundPatterns", "paidNoteEnabled", "reviewWhatsApp", "windowFreeUpdates", "windowSell", "windowKeeper", "courierContact", "courierTemplate", "followLink", "closedPolicy", "closedSkipPreparing", "mergeDeliveredReview", "handoverAckNeedsReply", "reorderEnabled", "dishFactsEnabled"]) if (k in src) out[k] = src[k] === true;
+  for (const k of ["interactive", "staffAlert", "alertInTest", "autoEchoSkipCovered", "autoInboundPatterns", "paidNoteEnabled", "reviewWhatsApp", "windowFreeUpdates", "windowSell", "windowKeeper", "courierContact", "courierTemplate", "followLink", "closedPolicy", "closedSkipPreparing", "mergeDeliveredReview", "handoverAckNeedsReply", "reorderEnabled", "dishFactsEnabled", "campaignCart"]) if (k in src) out[k] = src[k] === true;
   if ("llm" in src) {
     const L = src.llm || {}, cur = { ...(prev.llm || {}) };
     if ("enabled" in L) cur.enabled = L.enabled === true;
@@ -956,6 +980,8 @@ export const SCHEMA = Object.freeze({
   reorderLinkDays: S("orders", "number", "صلاحية رابط السلة الجاهزة", "", { min: 1, max: 30, unit: "يوم" }),
   reorderMinTotal: S("orders", "number", "أقل قيمة أصناف لطلب يتعرض", "طلبات التجربة الصغيرة بتتخطّى.", { min: 0, max: 500, unit: "ر.س" }),
   reorderLookback: S("orders", "number", "لو آخر طلب مايتجهّزش: نجرّب اللي قبله لحد", "أول طلب يتجهّز على المنيو الحالي هو اللي بيتعرض، والرد بيقول يوم الطلب.", { min: 1, max: 10, unit: "طلب" }),
+  campaignCart: S("orders", "boolean", "حملة «طبقك المفضل»: «أبغى أطلب» ⇒ سلة جاهزة بالعرض", "العميل وصلته رسالة الحملة (بوكس فيه طبقه المفضل أو طبقه نفسه بسعره وسعر التوصيل لعنوانه) وضغط «أبغى أطلب» أو رد «نعم»: البوت بيحسب نفس العرض تاني بالسعر والتوصيل الحين ويبعت رابط سلة جاهزة بيه. العرض اتغيّر أو خلص أو المفتاح مقفول ⇒ رد «أبي أطلب» العادي."),
+  campaignOfferHours: S("orders", "number", "حملة «طبقك المفضل»: العرض المخزّن بيتقرا لحد", "من وقت إرسال رسالة الحملة للعميل.", { min: 1, max: 168, unit: "ساعة" }),
   firstCode: S("orders", "code", "كود أول طلب", "الكود اللي سطر «أول طلب» بيقرا شروطه من الكوبونات."),
   "links.organic": S("links", "slug", "رابط المحادثات العادية", "من «روابط الحملات»."),
   "links.ads": S("links", "slug", "رابط محادثات الإعلانات", ""),
@@ -1245,7 +1271,18 @@ export function buildReply(key, c) {
       return { body: F("reorder_body", { day: orderDay(ro.at, lang), lines, changes, closed: closedLine(cfg, lang, data, "closed_short") }), cta: { title: T("cta_reorder"), url: ro.url }, link: "wa-reorder" };
     }
     case "menu": return withLink("menu", { boxes: boxesBlock(cfg, lang, data), closed: closedLine(cfg, lang, data) }, "cta_menu");
-    case "order": return withLink("order", { first: firstLine(cfg, lang, data), paused: pausedLine(cfg, lang, data), closed: closedLine(cfg, lang, data) }, "cta_order");
+    case "order": {
+      /* FD1: «أبغى أطلب» على رسالة حملة «طبقك المفضل» ⇒ نفس العرض اللي وصله (محسوب تاني الحين) + رابط سلة جاهزة بيه (اتعملت قبل البناء في work).
+         بوكس «من نوع أكله» من غير طبقه ⇒ البوكس نفسه يختار هو. العرض اتغيّر/خلص ⇒ data.campaign فاضي ⇒ الرد العادي تحت. */
+      const cp = data.campaign && data.campaign.ok ? data.campaign : null;
+      const vars = { offer: cp ? cp.line : "", paused: pausedLine(cfg, lang, data), closed: closedLine(cfg, lang, data, "closed_short") };
+      if (cp && cp.url) return { body: F("camp_order_body", { ...vars, picks: cp.picks && cp.picks.length ? F("camp_picks", { names: cp.picks.join(lang === "en" ? ", " : "، ") }) : "" }), cta: { title: T("cta_reorder"), url: cp.url }, link: "wa-campaign" };
+      if (cp && cp.boxSlug) {
+        if (data.links && data.links[cp.boxSlug] === true) return { body: F("camp_box_body", vars), cta: { title: T("cta_box"), url: linkUrl(cp.boxSlug) }, link: cp.boxSlug };
+        return withLink("camp_box_body", vars, "cta_box");
+      }
+      return withLink("order", { first: firstLine(cfg, lang, data), paused: pausedLine(cfg, lang, data), closed: closedLine(cfg, lang, data) }, "cta_order");
+    }
     case "offers": return withLink("offers", { first: firstLine(cfg, lang, data), loyalty: loyaltyLine(cfg, lang, data), timed: timedBlock(cfg, lang, data), boxes: boxesBlock(cfg, lang, data) }, "cta_order");
     case "delivery": {
       const p = data.policy;
@@ -2119,11 +2156,12 @@ export function register(app, ctx, deps = {}) {
 
   let tune = botConfig({});          // آخر إعدادات اتقرت — مدد الكاش بتتاخد منها (بتتحدّث مع كل رسالة وكل قراءة للإعدادات)
   let bundleCache = { at: 0, rows: null };
-  async function bundles() {
+  /* strict (FD1 — أسعار رسالة «طبقك المفضل»): الكاش لازم يكون اتحدّث في مدته العادية؛ التحديث فشل ⇒ [] (مش كاش لحد ساعة) */
+  async function bundles(strict = false) {
     if (bundleCache.rows && Date.now() - bundleCache.at < tune.boxesCacheMin * 60_000) return bundleCache.rows;
     try { const rows = await fetchBundles(); if (Array.isArray(rows) && rows.length) bundleCache = { at: Date.now(), rows }; }
     catch (e) { console.error("[wabot] bundles:", e.message); }
-    return bundleCache.rows && Date.now() - bundleCache.at < tune.staleCacheMin * 60_000 ? bundleCache.rows : [];   // كاش أقدم من ساعة مايتعرضش
+    return bundleCache.rows && Date.now() - bundleCache.at < (strict ? tune.boxesCacheMin + 1 : tune.staleCacheMin) * 60_000 ? bundleCache.rows : [];   // كاش أقدم من ساعة مايتعرضش
   }
   /* المنيو الحي (نفس اللي المتجر بيعرضه) ⇒ فهرس wabot.indexMenu. كاش ١٠ دقايق؛ كاش أقدم من ساعة مايتعرضش. */
   const storeBase = (process.env.STOREFRONT_PUBLIC_URL || STORE).split(",")[0].replace(/\/+$/, "");
@@ -2149,12 +2187,12 @@ export function register(app, ctx, deps = {}) {
     return out;
   }
   let menuCache = { at: 0, pages: null, variants: {} };
-  async function menuIndex(settings, now) {
+  async function menuIndex(settings, now, strict = false) {
     if (!menuCache.pages || Date.now() - menuCache.at > tune.menuCacheMin * 60_000) {
       try { const pg = await fetchMenuPages(); if (Array.isArray(pg) && pg.length) menuCache = { at: Date.now(), pages: pg, variants: await loadVariants(pg, menuCache.variants) }; }
       catch (e) { console.error("[wabot] menu:", e.message); }
     }
-    if (!menuCache.pages || Date.now() - menuCache.at > tune.staleCacheMin * 60_000) return null;
+    if (!menuCache.pages || Date.now() - menuCache.at > (strict ? tune.menuCacheMin + 1 : tune.staleCacheMin) * 60_000) return null;      // strict (FD1): التحديث فشل ⇒ مفيش أسعار
     const soldOut = {};
     for (const [k, v] of Object.entries(settings?.catalog?.soldOut || {})) if (!v?.until || Date.parse(v.until) > now.getTime()) soldOut[k] = true;
     try { return indexMenu(menuCache.pages, { hiddenIds: settings?.catalog?.hiddenIds || [], soldOut, variants: menuCache.variants }); } catch { return null; }
@@ -2162,12 +2200,13 @@ export function register(app, ctx, deps = {}) {
   /* العروض الشغّالة الحين من سجل العروض (نفس اللي المتجر بيعرضه) — كاش دقيقتين؛ وقع ⇒ null (نقول أقل) */
   const fetchOffers = deps.fetchOffers || (async () => { const r = await self.request("/api/offers"); if (!r.ok) throw new Error(`offers HTTP ${r.status}`); return (await r.json())?.offers || []; });
   let offersCache = { at: 0, rows: null };
-  async function liveOffers(settings, now) {
+  async function liveOffers(settings, now, strict = false) {
     if (!offersCache.rows || Date.now() - offersCache.at > tune.offersCacheMin * 60_000) {
       try { const rows = await fetchOffers(); if (Array.isArray(rows)) offersCache = { at: Date.now(), rows }; }
       catch (e) { console.error("[wabot] offers:", e.message); if (Date.now() - offersCache.at > tune.staleCacheMin * 60_000) offersCache = { at: 0, rows: null }; }
     }
     if (!offersCache.rows) return null;
+    if (strict && Date.now() - offersCache.at > (tune.offersCacheMin + 1) * 60_000) return null;      // FD1: العروض مااتحدّثتش ⇒ مانعرفش (مفيش باقات)
     const paused = settings?.catalog?.pausedOffers || {};
     const day = new Date(now.getTime() + 3 * 3600_000).toISOString().slice(0, 10);
     return offersCache.rows.filter((o) => o && o.id && (o.channels?.delivery || o.channels?.takeaway) && !o.dineInOnly)
@@ -2210,9 +2249,11 @@ export function register(app, ctx, deps = {}) {
   const stt = deps.stt || makeStt({ pool, fetch: deps.sttFetch, now: clock });
   const transcribe = deps.transcribe || makeTranscriber();      // الصوت ⇒ نص (waassistmedia.js). في الاختبارات بيتبدّل بمحوّل وهمي.
   const q = async (sql, params) => { try { return (await pool.query(sql, params)).rows; } catch (e) { console.error("[wabot] db:", e.message); return null; } };
+  /* FD1 (١٤/١٠): حملة «طبقك المفضل» (wafavpick.js) — العرض اللي وصل لكل رقم + حسابه تاني الحين + مدخلات السلة. مش متوصّلة ⇒ الرد العادي. */
+  const favApi = () => { try { return (typeof deps.fav === "function" ? deps.fav() : deps.fav) || null; } catch { return null; } };
 
   /* البيانات الحية لرسالة واحدة. أي مصدر وقع ⇒ قيمته null/فاضية ⇒ الرد اللي محتاجه بيتحوّل لموظف. */
-  async function loadData({ settings, cfg, phone, orderNo, key, now, know = null, arg = null }) {
+  async function loadData({ settings, cfg, phone, orderNo, key, now, know = null, arg = null, campaign = null }) {
     const data = { settings, now, bundles: [], policy: null, first: null, loyalty: null, order: null, links: {}, open: null, chat: null, menu: know?.menu || null, quote: null, optinUpdates: null };
     try { data.open = settings?.hours ? openState(settings, now) : null; } catch { data.open = null; }
     try { data.loyalty = loyaltyCfgOf(settings); } catch { data.loyalty = null; }
@@ -2251,7 +2292,10 @@ export function register(app, ctx, deps = {}) {
       if (r === null) data.orderDbFailed = true;        // القاعدة ماردّتش ⇒ مانقولش «مافيه طلب» — نحوّل لموظف
       data.order = r && r[0] ? r[0] : null;
     }
-    const slugs = [...new Set([cfg.links.organic, cfg.links.ads, cfg.links.packs, "wab-menu", ...(key === "box" && arg ? [String(arg)] : []), ...Object.values(cfg.links.adMap)])];
+    /* FD1: رد على رسالة «طبقك المفضل» (الضغطة أو «نعم» أول رد — القرار في work) ⇒ العرض المخزّن للرقم ده بس */
+    data.campaign = key === "order" && campaign && campaign.fav ? campaign : null;
+    const campSlug = data.campaign && data.campaign.fav.slug ? [String(data.campaign.fav.slug)] : [];
+    const slugs = [...new Set([cfg.links.organic, cfg.links.ads, cfg.links.packs, "wab-menu", ...(key === "box" && arg ? [String(arg)] : []), ...campSlug, ...Object.values(cfg.links.adMap)])];
     const lr = await q("SELECT slug FROM cms_links WHERE slug = ANY($1::text[]) AND active", [slugs]);
     for (const x of lr || []) data.links[x.slug] = true;
     return data;
@@ -2509,6 +2553,28 @@ export function register(app, ctx, deps = {}) {
       let echoAt = ok ? await lastEcho(phone) : null;
       /* SR2 (١٣/١٠): الموظف ساب المحادثة للبوت (unmuteChat بـrelease) ⇒ رسايله اللي قبل اللحظة دي مابتسكّتش البوت ولا المساعد. */
       if (echoAt && chat.released_at && Date.parse(echoAt) <= Date.parse(chat.released_at)) echoAt = null;
+      /* FD1 — رد على رسالة حملة «طبقك المفضل» («تبي نجهز لك الطلب هنا؟») ⇒ سلة جاهزة بالعرض اللي وصله. بيتحسب كده في حالتين بس (مراجعة ١٤/١٠):
+         (١) ضغطة زر الرد «أبغى أطلب» نفسه (الـpayload = نص الزر)، طول ما آخر رسالة حملة للرقم هي «طبقك المفضل» (campaignOfferHours).
+         (٢) موافقة مكتوبة صريحة (isCampaignYes: «نعم / ايوه / أبغى أطلب»، مش «تمام / 👍 / طيب / ماشي» ولا إيموجي) لو هي أول حاجة حصلت بعد الرسالة:
+             مش متأخرة، مفيش سؤال موافقة مستني، ولا رسالة تانية من العميل، ولا أي رسالة طلعت له (بوت/موظف/تحديث طلب)، ولا طلب من ساعتها (yesGate).
+         أي رسالة تانية في الـ٧٢ ساعة دي («أبغى أطلب برجر»، «كيف أطلب»، سؤال…) بتمشي في طريقها العادي (القواعد أو المساعد). مش بيتحفظ مع الانتظار. */
+      let campOffer = null;
+      if (ok && cfg.campaignCart && favApi()) {
+        const tap = Boolean(ev.interactiveId) && CAMPAIGN_TAP_IDS.has(String(ev.interactiveId).trim()) && cls.key === "order";
+        const typed = !tap && !afterWait && !ev.interactiveId && String(ev.type || "text") === "text" && ["ack", "order", "unknown", "offers"].includes(cls.key) && isCampaignYes(ev.text);      // «ابي العرض» بتتصنّف «عروض»؛ «تمام» على رسالة التقييم (review_ok) وغيره من التصنيفات المحددة مابيتلمسوش
+        if (tap || typed) {
+          let camp = null; try { camp = await favApi().lastOffer(phone, cfg.campaignOfferHours); } catch (e) { console.error("[wabot] campaign offer:", e.message); camp = null; }
+          if (camp && typed) {
+            const asked = chat.optin_asked_at ? Date.parse(chat.optin_asked_at) : NaN, answered = chat.optin_answered_at ? Date.parse(chat.optin_answered_at) : NaN;
+            const optinPending = Number.isFinite(asked) && now.getTime() - asked < cfg.optinAnswerWindowMin * 60_000 && !(Number.isFinite(answered) && answered >= asked);
+            const at0 = Date.parse(ev.at || ""), late = Number.isFinite(at0) && (now.getTime() - at0) / 60000 > cfg.maxAgeMinutes;
+            let why = optinPending ? "optin_pending" : late ? "late" : null;
+            if (!why) { try { why = await favApi().yesGate(phone, camp, { logId }); } catch (e) { console.error("[wabot] campaign yes:", e.message); why = "gate_failed"; } }
+            if (why) { await q("UPDATE wa_bot_log SET detail=$2 WHERE id=$1", [logId, `campaign_yes:${String(why).slice(0, 40)}`]); camp = null; }
+          }
+          if (camp) { campOffer = camp; cls = { ...cls, key: "order", rawIntent: tap ? "campaign_tap" : "campaign_yes" }; }
+        }
+      }
       /* هجين (اختياري، من اللوحة): الرسالة اللي القواعد مافهمتهاش تتصنّف بموديل — **تصنيف بس**: بيرجّع اسم نية من قايمتنا
          (+ صنف/قسم/بوكس من البيانات) بدرجة ثقة، والرد نفسه نص ثابت بيتعبّى من البيانات الحيّة زي أي رد. فشل/تأخر/ثقة قليلة ⇒ «غير مفهوم». */
       if (cls.key === "unknown" && cfg.llm.enabled && llm && !afterWait && String(ev.text || "").trim().length >= 2) {
@@ -2534,7 +2600,7 @@ export function register(app, ctx, deps = {}) {
       const rc = cls.key ? await recent(phone, cls.key, cls.arg, ["text", "interactive", "button"].includes(String(ev.type || "text")) ? String(ev.text || "").slice(0, 300) : "") : { n: 0, lastSame: null, sameTextAt: null, sameTextKey: null, failedRecently: false };
       await q("UPDATE wa_bot_log SET reply_arg=$2 WHERE id=$1", [logId, argOf(cls.arg)]);
       let data;
-      try { data = await loadData({ settings, cfg, phone, orderNo: cls.entities?.orderNo || null, key: cls.key, now, know, arg: cls.arg }); }
+      try { data = await loadData({ settings, cfg, phone, orderNo: cls.entities?.orderNo || null, key: cls.key, now, know, arg: cls.arg, campaign: campOffer }); }
       catch (e) {   // مصدر بيانات وقع كله ⇒ بيانات فاضية: أي رد محتاج بيانات هيتحوّل لموظف من نفسه (DataMissing)
         console.error("[wabot] data:", e.message);
         data = { settings, now, bundles: [], policy: null, first: null, loyalty: null, order: null, orderDbFailed: true, links: {}, open: null };
@@ -2585,6 +2651,17 @@ export function register(app, ctx, deps = {}) {
           }
         }
       }
+      /* FD1: رد على حملة «طبقك المفضل» (ضغطة «أبغى أطلب» أو «نعم» أول رد) ⇒ نفس العرض اللي اتبعت **بالحرف** محسوب الحين (سعر + توصيل + FIRST)
+         + سلة جاهزة بيه (نفس بنّاء سلة المساعد، مصدرها campaign). أي اختلاف عن الرسالة (السعر اتغيّر، التوصيل، خلص، السلة بسعر تاني) ⇒ الرد العادي
+         (مفيش سعر غير اللي اتقال). السلة هنا متجرّبة بس؛ بتتحفظ تحت بعد القرار لو الرد هيطلع فعلاً (مش سكوت/انتظار). الرد بالعربي (سطر العرض عربي).
+         للقواعد دايماً (rawIntent campaign_*) عشان الرابط يبقى مضمون. */
+      if (cls.key === "order" && data.campaign && data.campaign.fav && cfg.campaignCart && favApi()) {
+        let t = null;
+        try { t = await favApi().tapOffer(phone, data.campaign.fav, { assist, sent: data.campaign.values }); } catch (e) { console.error("[wabot] campaign cart:", e.message); t = null; }
+        data.campaign = t && t.ok ? { ...data.campaign, ...t, url: t.cart ? `${STORE}/c/${cfg.mode === "dry" ? "dryrun00" : CAMP_CART_PENDING}` : null, pending: Boolean(t.cart) && cfg.mode !== "dry" } : null;
+        if (!data.campaign && t && t.why) await q("UPDATE wa_bot_log SET detail=$2 WHERE id=$1", [logId, `campaign:${String(t.why).slice(0, 60)}`]);
+        if (data.campaign) cls = { ...cls, rawIntent: "campaign_order", lang: "ar" };
+      } else if (data.campaign) data.campaign = null;
       data.chat = chat;
       /* مساعد الطلبات شغّال للعميل ده (١٢/١٠، بعد تجربة عمر: المساعد ماردّش ولا مرة عشان التحويل والرد المؤجّل كانوا للقواعد):
          • الموظف كتب ⇒ المساعد يتراجع assist.staffStepBackMin (٥ د) بدل humanPauseMin (٣٠ د)، وبعدها يرجع لوحده.
@@ -2627,8 +2704,9 @@ const fl = await q(`SELECT count(*)::int AS n FROM wa_bot_log WHERE phone_norm=$
         const so = await q("SELECT stopped_at, marketing_off_at FROM wa_optins WHERE phone_norm=$1", [phone]);
         data.channelOk = so !== null && !(so[0] && (so[0].stopped_at || so[0].marketing_off_at));
       }
-      let d = decide(ev, { cfg: assistOn ? { ...cfg, humanPauseMin: cfg.assist.staffStepBackMin } : cfg, now, chat: assistOn && !held ? { ...chat, handoff_at: null, handoff_reason: null } : chat,
-        lastEchoAt: echoAt, repliesLastHour: rc.n, rate: rc.rate, lastSame: rc.lastSame, sameTextAt: afterWait ? null : rc.sameTextAt, sameTextKey: rc.sameTextKey, failedRecently: rc.failedRecently, data, cls, afterWait, assistOn, cardRun, neverReply: gate5.never, outOfScope: gate5.out });
+      const dctx = { cfg: assistOn ? { ...cfg, humanPauseMin: cfg.assist.staffStepBackMin } : cfg, now, chat: assistOn && !held ? { ...chat, handoff_at: null, handoff_reason: null } : chat,
+        lastEchoAt: echoAt, repliesLastHour: rc.n, rate: rc.rate, lastSame: rc.lastSame, sameTextAt: afterWait ? null : rc.sameTextAt, sameTextKey: rc.sameTextKey, failedRecently: rc.failedRecently, data, cls, afterWait, assistOn, cardRun, neverReply: gate5.never, outOfScope: gate5.out };
+      let d = decide(ev, dctx);
       /* «يشوف ويسمع» (١٢/١٠): صورة أو رسالة صوتية كانت هتاخد رد «ما أقدر أفتح الصور…» + تحويل. لو المساعد شغّال للرقم ده والمفتاح مفتوح والسقف يسمح:
          - الصوت بيتحوّل لنص، والصورة (منيو/إعلان) لملخص مقنّع ⇒ الرسالة بتتعالج من الأول كأنها نص (ومعاها علامة heard للمساعد).
          - صورة دفع / طلب فيه مشكلة ⇒ تحويل لموظف بنص ثابت + اللي اتفهم في ملاحظة الموظف. صورة موقع ⇒ نطلب الموقع نفسه.
@@ -2679,8 +2757,18 @@ const fl = await q(`SELECT count(*)::int AS n FROM wa_bot_log WHERE phone_norm=$
         try { await recordWaMarketingBot(pool, { phoneNorm: phone, value: true, text: ev.interactiveId ? `${textOf(cfg, "stop", d.lang === "en" ? "en" : "ar")}\n[${textOf(cfg, "btn_stop_undo", d.lang === "en" ? "en" : "ar")}]` : String(ev.text || "").slice(0, 300), wamid: ev.wamid || null }); } catch (e) { console.error("[wabot] start proof:", e.message); }
       }
 
+      /* FD1: سلة الحملة بتتحفظ (صف wa_bot_carts + كود) بس لما الرد هيطلع بيها فعلاً — مش لسكوت/انتظار/كتم/بره النطاق (مراجعة ١٤/١٠: كانت بتتعمل
+         قبل القرار فبتطلع سلات يتيمة، وسلة تانية بعد انتظار الموظف). نفس القرار بيتبني تاني بالرابط الحقيقي؛ الحفظ فشل ⇒ الرد العادي. */
+      if (d.act === "reply" && d.link === "wa-campaign" && data.campaign && data.campaign.pending && !(ar && ar.d) && !mediaDone) {
+        let sv = null;
+        try { sv = await favApi().saveCart(phone, data.campaign, { assist }); } catch (e) { console.error("[wabot] campaign cart save:", e.message); sv = null; }
+        if (sv && sv.ok) data.campaign = { ...data.campaign, url: sv.url, code: sv.code, pending: false };
+        else { await q("UPDATE wa_bot_log SET detail=$2 WHERE id=$1", [logId, `campaign:${String((sv && sv.why) || "cart_save_failed").slice(0, 60)}`]); data.campaign = null; }
+        d = decide(ev, dctx);
+      }
       if (d.act === "wait") {
         // رد مؤجّل: صف في القاعدة (بيعيش بعد إعادة التشغيل). وقت التنفيذ كل الشروط بتتراجع من جديد.
+        /* FD1: تصنيف «رد على الحملة» مابيتحفظش مع الانتظار — الضغطة بتتقرا تاني من زرها وقت التنفيذ، و«نعم» المكتوبة بعد انتظار الموظف بترجع «تمام» عادية */
         const evLite = { phone, phoneNorm: phone, wamid: ev.wamid || null, text: String(ev.text || "").slice(0, 1000), type: ev.type || "text",
           interactiveId: ev.interactiveId || null, referral: ev.referral || null, location: ev.location || null, media: ev.media || null, at: ev.at || now.toISOString(), intent: ev.intent || null,
           cls: /^llm:/.test(String(cls.rawIntent || "")) ? { key: cls.key, arg: cls.arg ?? null, rawIntent: cls.rawIntent, score: cls.score } : null };
@@ -4405,5 +4493,9 @@ const fl = await q(`SELECT count(*)::int AS n FROM wa_bot_log WHERE phone_norm=$
     return c.json({ ok: r.ok === true, result: r, to: `0${phone}`, template: tpl.name, language: lang });
   });
 
-  return { carts: botCarts, handle, ready, loadData, runDueJobs, muteChat, holdChat, unmuteChat, setNeverReply, neverReplyOf, sendFlowLine, reviewAsk, reasonAr: (r) => REASON_AR[r] || null, stop: () => { if (timer) clearInterval(timer); }, botConfig: async () => botConfig((await getSettingsData()) || {}) };
+  /* FD1: المنيو والبوكسات والعروض الحيّة بنفس كاش البوت — لحملة «طبقك المفضل» (wafavpick.js) وقت التجهيز والإرسال */
+  /* strict: نفس الكاش بس من غير «الكاش القديم لحد ساعة» لو التحديث فشل (الحملة مابتقولش سعر من كاش قديم) */
+  const live = { menu: async (o = {}) => menuIndex((await getSettingsData().catch(() => null)) || {}, clock(), Boolean(o && o.strict)), bundles: (o = {}) => bundles(Boolean(o && o.strict)),
+    offers: async (o = {}) => liveOffers((await getSettingsData().catch(() => null)) || {}, clock(), Boolean(o && o.strict)) };
+  return { carts: botCarts, live, handle, ready, loadData, runDueJobs, muteChat, holdChat, unmuteChat, setNeverReply, neverReplyOf, sendFlowLine, reviewAsk, reasonAr: (r) => REASON_AR[r] || null, stop: () => { if (timer) clearInterval(timer); }, botConfig: async () => botConfig((await getSettingsData()) || {}) };
 }

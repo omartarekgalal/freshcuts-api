@@ -53,7 +53,7 @@ const LOCKS_OPEN = { ...CONFIGURED, WHATSAPP_ENABLED: "1" };
 
 /* ── عالم صغير: قاعدة في الذاكرة + ساعة + Graph مزيّف ─────────────────────── */
 function world({ waBot = {}, notifications = { whatsappEnabled: true }, orders = [], bundles = BUNDLES, policy = POLICY, first = FIRST, links = ["wab-boxes", "wa-boxes", "wa-box-d4"],
-  at = OPEN_AT, graph = null, failDb = null, extraSettings = {}, disclosure = false, pages = LIVE.pages, quote = null, llm = null, greetMenu = false, offers = LIVE.offers, resolveMapsLink = null, lastCart = null, assistModel = null, assistStore = null, kb = null, adReport = [], channelReport = [], mediaFile = null, transcribe = null, sttFetch = null, variants = null, team = null, flow = null } = {}) {
+  at = OPEN_AT, graph = null, failDb = null, extraSettings = {}, disclosure = false, pages = LIVE.pages, quote = null, llm = null, greetMenu = false, offers = LIVE.offers, resolveMapsLink = null, lastCart = null, assistModel = null, assistStore = null, kb = null, adReport = [], channelReport = [], mediaFile = null, transcribe = null, sttFetch = null, variants = null, team = null, flow = null, fav = null, expandBundle = null } = {}) {
   let nowMs = Date.parse(at);
   const clock = { now: () => new Date(nowMs), advance: (min) => { nowMs += min * 60_000; }, advanceSec: (s) => { nowMs += s * 1000; }, set: (iso) => { nowMs = Date.parse(iso); } };
   const db = { msgs: [], log: [], jobs: [], proofs: [], consentLog: [], ai: [], aiAlerts: [], tpl: [], cfgLog: [], botCarts: [], chats: new Map(), optouts: [], optins: {}, links: links.map((s) => (typeof s === "string" ? { slug: s, active: true, clicks: 0 } : { active: true, clicks: 0, ...s })), adChats: [], adReportParams: null, channelOffers: [], channelReportParams: null, sttKey: null, liveDay: [], marketingTo: [], settings: null };
@@ -77,6 +77,8 @@ function world({ waBot = {}, notifications = { whatsappEnabled: true }, orders =
       if (/^SELECT l\.phone_norm, l\.at, l\.lang FROM wa_bot_log l/i.test(s)) { const last = new Map(); for (const l of db.log) last.set(l.phone_norm, l);
         return { rows: [...last.values()].filter((l) => nowMs - Date.parse(l.at) >= p[0] * 60_000 && nowMs - Date.parse(l.at) < (p[0] + 60) * 60_000 && l.decision === "silent" && ["out_of_scope", "ignored_type", "auto_reply_covered"].includes(l.reason) && !(/<> 'revoke'/.test(s) && l.msg_type === "revoke")).map((l) => ({ phone_norm: l.phone_norm, at: l.at, lang: l.lang })) }; }
       if (/^SELECT 1 FROM wa_bot_log WHERE phone_norm=\$1 AND at > NOW\(\) - INTERVAL '24 hours' AND \(reply_key IN/i.test(s)) return { rows: db.log.filter((l) => l.phone_norm === p[0] && nowMs - Date.parse(l.at) < 86400_000 && (["complaint", "problem", "change"].includes(l.reply_key) || ["complaint", "problem", "order_change", "allergy_severe"].includes(l.handoff))).slice(0, 1).map(() => ({})) };
+      // ── FD1: البوت رد على الرقم ده بعد رسالة الحملة؟
+      if (/^SELECT 1 FROM wa_bot_log WHERE phone_norm=\$1 AND id <> \$2 AND decision IN \('replied','dry'\) AND at > \$3::timestamptz/i.test(s)) return { rows: db.log.filter((l) => l.phone_norm === p[0] && l.id !== p[1] && ["replied", "dry"].includes(l.decision) && Date.parse(l.at) > Date.parse(p[2])).slice(0, 1).map(() => ({})) };
       // ── EX6: آخر ردّين (سياق الكارت)
       if (/^SELECT reply_key, reply_arg, msg_type FROM wa_bot_log WHERE phone_norm=\$1 AND id <> \$2/i.test(s)) return { rows: db.log.filter((l) => l.phone_norm === p[0] && l.id !== p[1] && ["replied", "dry"].includes(l.decision) && nowMs - Date.parse(l.at) < 900_000).slice(-2).reverse().map((l) => ({ reply_key: l.reply_key, reply_arg: l.reply_arg || null, msg_type: l.msg_type })) };
       // ── EX5: رد آلي وارد + حارس الحلقات
@@ -306,12 +308,12 @@ function world({ waBot = {}, notifications = { whatsappEnabled: true }, orders =
   const botCarts = { ensure: async () => {}, lastOrderCarts: async (ph, days, o) => { const v = typeof lastCart === "function" ? lastCart(ph, days, o) : lastCart; return (Array.isArray(v) ? v : v ? [v] : []).map((x, i) => ({ latest: i === 0, ...x })); },
     create: async (x) => { if (failDb && failDb.test("INSERT INTO wa_bot_carts")) return null; const code = `rc${String(db.botCarts.length + 1).padStart(6, "0")}`; db.botCarts.push({ code, ...x }); return { code }; }, open: async () => null, restore: async () => null, coverage: async () => ({ orders: 40, with_snapshot: 30, with_raw: 28, usable: 26, avg_diff: 0, mismatched: 2, links: db.botCarts.length, opened: 0 }) };
   const portalEvents = [];
-  const bot = R.register(app, ctx, { app, wa, now: clock.now, noTimer: true, botCarts, ...(team ? { team: () => team } : {}), ...(flow ? { flow: () => flow } : {}),
-    assist: { expandBundle: async () => ({ ok: false, error: "bundle_not_found" }), modifiersCatalog: async () => ({ cfg: { enabled: true }, catalog: {} }), modifiersResolve: async () => ({ ok: true, shown: 0 }),
+  const bot = R.register(app, ctx, { app, wa, now: clock.now, noTimer: true, botCarts, ...(team ? { team: () => team } : {}), ...(flow ? { flow: () => flow } : {}), ...(fav ? { fav: () => fav } : {}),
+    assist: { expandBundle: expandBundle || (async () => ({ ok: false, error: "bundle_not_found" })), modifiersCatalog: async () => ({ cfg: { enabled: true }, catalog: {} }), modifiersResolve: async () => ({ ok: true, shown: 0 }),
       quote: async (x) => (typeof quote === "function" ? quote(x.lat, x.lng) : quote), buildProfile: async () => ({ identity: { name: "أحمد" }, summary: { orders: 2, status: "repeat" }, orders: [], favorites: { items: [] }, addresses: [] }) }, whoami: async () => actor.who, ...(resolveMapsLink ? { resolveMapsLink } : { resolveMapsLink: async () => null }), sendSms: async (x) => { sms.push(x); return { ok: true }; },
     portalEmit: (ev2, data) => portalEvents.push([ev2, data]), whoami: async () => actor.who, ...(resolveMapsLink ? { resolveMapsLink } : { resolveMapsLink: async () => null }), sendSms: async (x) => { sms.push(x); return { ok: true }; },
     ...(variants ? { fetchVariants: async (id) => { if (variants[id] === "down") throw new Error("product down"); return variants[id] || []; } } : {}),
-    fetchMenuPages: async () => { if (pages === null) throw new Error("menu down"); return pages; }, quote: async (lat, lng) => (typeof quote === "function" ? quote(lat, lng) : quote), llm,
+    fetchMenuPages: async () => { const pg = typeof pages === "function" ? pages() : pages; if (pg === null) throw new Error("menu down"); return pg; }, quote: async (lat, lng) => (typeof quote === "function" ? quote(lat, lng) : quote), llm,
     fetchOffers: async () => { if (offers === null) throw new Error("offers down"); return offers; }, ...(assistModel ? { assistCallModel: assistModel } : {}), ...(assistStore ? { assistStore } : {}), ...(kb ? { kb: () => kb } : {}), ...(transcribe ? { transcribe } : {}), ...(sttFetch ? { sttFetch } : {}) });
   let seq = 0;
   const hook = (field, value) => ({ object: "whatsapp_business_account", entry: [{ id: "WABA", changes: [{ field, value: { messaging_product: "whatsapp", metadata: { display_phone_number: BIZ, phone_number_id: "PHONE1" }, ...value } }] }] });
@@ -4703,4 +4705,243 @@ test("policy settings: in the bot schema with Arabic labels, saved through the b
   assert.deepEqual([w.db.settings.waBot.closedSkipPreparing, w.db.settings.waBot.reviewPaidGapMin, w.db.settings.waBot.followNumber], [false, 45, "966546715683"]);
   assert.equal((await put({ reviewPaidGapMin: 999 })).status, 400);
   assert.equal((await put({ followNumber: "abc" })).status, 400);
+}));
+
+/* ══ FD1 (١٤/١٠): حملة «طبقك المفضل» — «أبغى أطلب» / «نعم» ⇒ سلة جاهزة بالعرض اللي وصل للرقم ده بالظبط ═══════════════
+   المنيو والبوكسات الحقيقية يوم ١٤/١٠ (wafavpick.fixture.json)؛ العرض المخزّن من صف wa_send_queue (vars.fav + vars.cloud اللي اتبعتت)؛ السلة من بنّاء سلة المساعد.
+   مراجعة ١٤/١٠: السلة للضغطة نفسها أو «نعم/أبغى» صريحة كأول حاجة بعد الرسالة بس، وبنفس العرض اللي اتبعت بالحرف، وبتتحفظ بس لو الرد طالع فعلاً. */
+const FAVP = await import("./wafavpick.js");
+const { assistEligible: FD1_ELIGIBLE } = await import("./waassistrun.js");
+const FXF = JSON.parse(fs.readFileSync(new URL("./wafavpick.fixture.json", import.meta.url), "utf8"));
+const CREPE_SPEC = { v: 1, kind: "box", slug: "box-crepe-duo", pid: "6", slot: "crepe1", favV: null, sg: "crepe", catOnly: false, direct: false, price: 65, at: "2026-10-12T14:00:00Z" };
+const CREPE_LINE = "بوكس الكريب لشخصين (كريب شيش طاووق وكريب ثاني من اختيارك مع تشيز فرايز وصنف جانبي ومشروبين) بـ65 ر.س، وأول طلب من الموقع توصيله مجاني بكود FIRST داخل نطاق التوصيل";
+const CREPE_VALUES = { "offer.title": "بوكس فيه طبقك المفضل", "offer.line": CREPE_LINE };
+const FD1_SENT_AT = new Date(Date.parse(OPEN_AT) - 10 * 60_000).toISOString();
+function fd1World({ spec = CREPE_SPEC, values = CREPE_VALUES, sent = true, perRecipient = true, template = "fc_frame_ask_text", web = null, newer = false, orderedSince = false, waBot = {}, links = [], extraSettings = {}, bundles = FXF.bundles } = {}) {
+  const holder = {};
+  const lastSent = sent ? { id: 7, job_id: 3, sent_at: FD1_SENT_AT, wamid: "wamid.CAMP7", cloud_template: template, cloud_vars: perRecipient ? { offer: "", perRecipient: true } : { offer: "عرض" },
+    vars: { fav: spec, cloud: { values } } } : null;
+  const favSql = [];
+  const fpool = { async query(sql, p = []) {
+    const S = FAVP.FAV_SQL, rows = (r) => ({ rows: r, rowCount: r.length });
+    favSql.push(sql);
+    if (sql === S.first) return rows([{ code: "FIRST", active: true, min_total: "60", free_delivery: true, percent: "0", expires_at: null }]);
+    if (sql === S.policy) return rows([{ config: FXF.policy }]);
+    if (sql === S.web) return rows(web ? [{ pn: p[0][0], ...web }] : []);
+    if ([S.firstUsed, S.lastDelivery, S.accounts, S.rewards].includes(sql)) return rows([]);
+    if (sql === S.lastSent) return rows(lastSent ? [lastSent] : []);
+    if (sql === S.newerTemplate) return rows(newer ? [{}] : []);
+    /* yesGate على نفس سجل البوت والرسايل بتوع العالم ده */
+    if (sql === S.inboundSince) return rows(holder.w.db.log.filter((l) => l.phone_norm === p[0] && l.id !== p[1] && Date.parse(l.at) > Date.parse(p[2])).slice(0, 1).map(() => ({})));
+    if (sql === S.outboundSince) return rows(holder.w.db.msgs.filter((m) => m.phone_norm === p[0] && m.direction === "out" && Date.parse(m.created_at) > Date.parse(p[1]) && (m.wamid || "") !== (p[2] || "") && !["failed", "skipped"].includes(m.status || "")).slice(0, 1).map(() => ({})));
+    if (sql === S.orderedSince) return rows(orderedSince ? [{}] : []);
+    throw new Error(`unexpected fav sql: ${sql.slice(0, 60)}`);
+  } };
+  const fav = { lastOffer: (...a) => holder.api.lastOffer(...a), yesGate: (...a) => holder.api.yesGate(...a), tapOffer: (...a) => holder.api.tapOffer(...a), saveCart: (...a) => holder.api.saveCart(...a) };
+  /* زيادة الاختيار من البوكس نفسه (زي cms.expandBundle) */
+  const expandBundle = async (slug, choices, qty) => {
+    const b = bundles.find((x) => x.slug === slug); if (!b) return { ok: false, error: "bundle_not_found" };
+    let sur = 0; for (const s of b.slots) if (s.type === "choice") { const c = s.choices.find((x) => String(x.product_id) === String(choices[s.key] && choices[s.key].product_id)); sur += Number(c && c.surcharge) || 0; }
+    return { ok: true, quantity: qty, surchargeIncl: sur * qty, picks: [] };
+  };
+  const w = liveWorld({ pages: FXF.pages, variants: FXF.variants, bundles, offers: FXF.offers.map((o) => ({ ...o, channels: { delivery: true, takeaway: true }, dineInOnly: false })), links: [...ALL_LINKS, ...links], fav, expandBundle, waBot, extraSettings });
+  holder.w = w;
+  holder.api = FAVP.makeFavPick({ pool: fpool, live: () => w.bot.live, quote: async () => null, now: () => Date.parse(OPEN_AT) });
+  /* رسالة الحملة نفسها في سجل الرسايل (زي guardSend) — قبل الوقت الحالي بعشر دقايق */
+  if (sent) w.db.msgs.push({ wamid: "wamid.CAMP7", direction: "out", phone_norm: "512345678", template, category: "MARKETING", status: "delivered", source: "campaign", created_at: new Date(Date.parse(FD1_SENT_AT) - 1000).toISOString() });
+  w.favSql = favSql;
+  return w;
+}
+const tapOrder = (w, o = {}) => w.say(null, { ...o, raw: { type: "button", button: { payload: "أبغى أطلب", text: "أبغى أطلب" } } });
+const FD1_BODY = `جهّزنا لك طلبك في السلة 🛒\n${CREPE_LINE}.\nاخترنا لك في البوكس: كريب شيش طاووق، كريب سوبر كرانشي، بطاطس محمرة.\nراجع السلة وكمّل الدفع من الزر 👇 ولو تبي تغيّر شي اكتب لي هنا.`;
+const GENERIC = /^الطلب من موقعنا يأخذ دقيقة 👇/;
+
+test("FD1 ضغطة «أبغى أطلب» على رسالة «طبقك المفضل»: نفس العرض بسعره وسطر التوصيل الحين + زر «كمّل طلبك» لسلة جاهزة بالبوكس وطبقه (مصدرها campaign)", withEnv(LOCKS_OPEN, async () => {
+  const w = fd1World();
+  const r = await tapOrder(w);
+  assert.equal(r.sent.length, 1, JSON.stringify(r.log));
+  assert.equal(bodyOf(r.sent[0]), FD1_BODY);
+  assert.equal(urlOf(r.sent[0]), "https://freshcuts.sa/c/rc000001");
+  assert.equal(r.sent[0].interactive.action.parameters.display_text, "كمّل طلبك");
+  assert.deepEqual([r.log.reply_key, r.log.link_slug], ["order", "wa-campaign"]);
+  assert.equal(w.db.botCarts.length, 1, "سلة واحدة بس (اتحفظت بعد القرار)");
+  const cart = w.db.botCarts[0];
+  assert.equal(cart.source, "campaign");
+  const [key] = Object.keys(cart.plan.raw);
+  assert.match(key, /^b:box-crepe-duo:crepe1=6:\|crepe2=9:\|side=79:$/);
+  assert.equal(cart.plan.items[0].p, 65, "سعر السلة = السعر اللي في الرسالة");
+  assert.ok(!JSON.stringify(r.sent).includes("fdpending0"), "الكود المؤقت عمره ما بيطلع");
+  // «ورّني المنيو» زي ما هو: أقسام المنيو
+  const m = await w.say(null, { raw: { type: "button", button: { payload: "ورّني المنيو", text: "ورّني المنيو" } } });
+  assert.equal(m.log.reply_key, "cats"); assert.equal(bodyOf(m.sent[0]), "أقسام المنيو 👇 اختر القسم وأعرض لك الأصناف بأسعارها.");
+}));
+
+test("FD1 العرض اتغيّر أو مش «طبقك المفضل» ⇒ رد «أبي أطلب» العادي (مفيش سعر غير اللي في الرسالة): الطبق خلص، السعر اتغيّر من ساعة الإرسال، حملة بقيمة واحدة، قالب تسويقي أحدث، مفيش رسالة، المفتاح مقفول", withEnv(LOCKS_OPEN, async () => {
+  const sold = fd1World({ extraSettings: { catalog: { soldOut: { 6: { until: null } } } } });
+  const r1 = await tapOrder(sold);
+  assert.match(bodyOf(r1.sent[0]), GENERIC); assert.equal(sold.db.botCarts.length, 0); assert.equal(r1.log.detail, "campaign:sold_out");
+  /* المراجعة: الرسالة قالت ٦٥ والبوكس بقى ٧٩ ⇒ كان بيرد بسلة بـ٧٩ من غير ما يقول. دلوقتي: الرد العادي وسبب «offer_changed» */
+  const b79 = JSON.parse(JSON.stringify(FXF.bundles)); b79.find((x) => x.slug === "box-crepe-duo").price = 79;
+  const pr = fd1World({ bundles: b79 });
+  const r2 = await tapOrder(pr);
+  assert.match(bodyOf(r2.sent[0]), GENERIC); assert.equal(pr.db.botCarts.length, 0); assert.equal(r2.log.detail, "campaign:offer_changed");
+  assert.ok(!/79|٧٩/.test(bodyOf(r2.sent[0])));
+  for (const o of [{ perRecipient: false }, { template: "fc_frame_news_text" }, { newer: true }, { sent: false }, { waBot: { campaignCart: false } }, { values: { "offer.title": "بوكس فيه طبقك المفضل", "offer.line": "سطر قديم بسعر تاني" } }]) {
+    const w = fd1World(o);
+    const r = await tapOrder(w);
+    assert.match(bodyOf(r.sent[0]), GENERIC, JSON.stringify(o)); assert.equal(w.db.botCarts.length, 0, JSON.stringify(o));
+  }
+}));
+
+test("FD1 «نعم» مكتوبة أول رد بعد رسالة الحملة = «أبغى أطلب»؛ «نعم» من غير حملة (أو بعد ما المحادثة اتحركت) فضلت زي ما هي (سكوت)", withEnv(LOCKS_OPEN, async () => {
+  for (const yes of ["نعم", "ايوه", "أكيد", "أبغى أطلب", "ابي العرض", "نعم ابغى", "تمام ابغى"]) {
+    const w = fd1World();
+    const r = await w.say(yes);
+    assert.equal(bodyOf(r.sent[0] || { type: "text", text: { body: "" } }), FD1_BODY, yes); assert.equal(r.log.reply_key, "order", yes); assert.deepEqual(w.db.botCarts.map((c) => c.source), ["campaign"], yes);
+  }
+  const w = fd1World();
+  await w.say("نعم");
+  const again = await w.say("تمام");                                  // المحادثة اتحركت ⇒ «تمام» كلام عادي
+  assert.deepEqual([again.sent.length, again.log.decision], [0, "silent"]);
+  const again2 = await w.say("نعم");                                  // ولا «نعم» تانية: مش أول رد
+  assert.deepEqual([again2.sent.length, again2.log.decision, w.db.botCarts.length], [0, "silent", 1]);
+  const none = fd1World({ sent: false });
+  const r2 = await none.say("نعم");
+  assert.deepEqual([r2.sent.length, r2.log.decision], [0, "silent"]);
+}));
+
+test("مراجعة FD1 — «تمام / 👍 / 😡 / 🤮 / 🙏 / اها / ماشي / طيب / حلو / ok / نعم؟» أول رد بعد الحملة: مش موافقة ⇒ سكوت زي قبل الحملة، ولا سلة", withEnv(LOCKS_OPEN, async () => {
+  for (const t of ["تمام", "👍", "😡", "🤮", "🙏", "اها", "ماشي", "طيب", "حلو", "ok", "زين", "نعم؟"]) {
+    const w = fd1World();
+    const r = await w.say(t);
+    assert.deepEqual([r.sent.length, r.log.decision, w.db.botCarts.length], [0, "silent", 0], t);
+  }
+  // «ايه» (= «إيش؟» عند ناس) مش موافقة: ردها العادي زي قبل الحملة («ما فهمت»)، مش سلة
+  const eh = fd1World();
+  const re = await eh.say("ايه");
+  assert.deepEqual([re.log.reply_key, eh.db.botCarts.length], ["unknown", 0]);
+  // العرض خلص + «😡» ⇒ برضه سكوت (مش «الطلب من موقعنا…»)
+  const sold = fd1World({ extraSettings: { catalog: { soldOut: { 6: { until: null } } } } });
+  const r = await sold.say("😡");
+  assert.deepEqual([r.sent.length, r.log.decision], [0, "silent"]);
+  // الوحدات: isCampaignYes
+  for (const t of ["نعم", "ايوه", "ايوا", "اي", "اكيد", "أكيد!", "yes", "Yes please", "sure", "ابغى", "أبغى أطلب", "ابي اطلب لو سمحت", "ودي اطلب", "تمام ابغى", "ok i want"]) assert.equal(R.isCampaignYes(t), t !== "ok i want" ? true : false, t);
+  for (const t of ["تمام", "اوكي", "ok", "👍", "😡", "🙏", "اها", "اه", "ايه", "طيب", "ماشي", "حلو", "زين", "شكرا", "لا", "نعم؟", "ابغى اطلب برجر", "كيف اطلب", "ابي بيتزا", ""]) assert.equal(R.isCampaignYes(t), false, t);
+}));
+
+test("مراجعة FD1 — في الـ٧٢ ساعة بعد الحملة: أي رسالة غير الضغطة / «نعم» أول رد بتمشي في طريقها العادي («أبغى أطلب برجر»، «كيف أطلب»، سؤال) — والضغطة بعدها لسه شغّالة", withEnv(LOCKS_OPEN, async () => {
+  const w = fd1World();
+  const a = await w.say("عندكم برجر؟");
+  assert.notEqual(a.log.link_slug, "wa-campaign"); assert.equal(w.db.botCarts.length, 0);
+  const b = await w.say("ابغى اطلب برجر");
+  assert.match(bodyOf(b.sent[0]), GENERIC); assert.notEqual(b.log.link_slug, "wa-campaign");
+  w.clock.advance(1);
+  const c = await w.say("كيف اطلب");
+  assert.match(bodyOf(c.sent[0]), GENERIC); assert.equal(w.db.botCarts.length, 0, "ولا سلة حملة لرسالة مش ليها");
+  w.clock.advance(1);
+  const t = await tapOrder(w);                                          // ضغطة الزر نفسه = طلب صريح للعرض ده
+  assert.equal(bodyOf(t.sent[0]), FD1_BODY); assert.equal(w.db.botCarts.length, 1);
+  // المساعد: رسالة «طلب» عادية بتروح له؛ الضغطة و«نعم» الأولى بس للقواعد
+  const base = { acfg: { mode: "test" }, cfg: { mode: "test", testPhones: ["512345678"] }, phone: "512345678", ev: { text: "ابغى اطلب برجر" }, d: { act: "reply", key: "order" } };
+  assert.equal(FD1_ELIGIBLE({ ...base, sessionActive: true, cls: { key: "order", rawIntent: "how_to_order" } }).run, true);
+}));
+
+test("مراجعة FD1 — «نعم/تمام» بعد ما المحادثة اتحركت: طلب من ساعتها، موظف رد، تحديث طلب، رسالة تانية قبلها، أو وصلت متأخرة ⇒ مش موافقة على العرض (ولا تحويل لموظف)", withEnv(LOCKS_OPEN, async () => {
+  // طلب جديد بعد الإرسال
+  const o = fd1World({ orderedSince: true });
+  const r1 = await o.say("نعم");
+  assert.deepEqual([r1.sent.length, r1.log.decision, o.db.botCarts.length], [0, "silent", 0]); assert.equal(r1.log.detail, "campaign_yes:ordered_since");
+  // موظف كتب من الموبايل بعد الحملة ⇒ «نعم» بتاعته، والبوت مايرميش سلة بعد انتظار الموظف
+  const s = fd1World();
+  await s.cashier("تم يا غالي، طلبك بيوصل خلال نص ساعة"); s.clock.advance(2);
+  const r2 = await s.say("نعم");
+  assert.equal(r2.sent.length, 0);
+  assert.equal(r2.log.detail, "campaign_yes:chat_moved_on");
+  const after = await s.tick(6);
+  assert.deepEqual([after.length, s.db.botCarts.length], [0, 0]);
+  const r2b = await s.say("تمام");
+  assert.equal(r2b.sent.length, 0);
+  assert.deepEqual((await s.tick(6)).length, 0);
+  // تحديث طلب (قالب UTILITY) طلع بعد الحملة
+  const u = fd1World();
+  u.db.msgs.push({ wamid: "wamid.UPD1", direction: "out", phone_norm: "512345678", template: "fc_order_on_the_way", category: "UTILITY", status: "delivered", source: "api", created_at: new Date(Date.parse(OPEN_AT) - 60_000).toISOString() });
+  const r3 = await u.say("نعم");
+  assert.deepEqual([r3.sent.length, u.db.botCarts.length, r3.log.detail], [0, 0, "campaign_yes:chat_moved_on"]);
+  // رسالة تانية من العميل قبلها (حتى لو البوت سكت عليها)
+  const f = fd1World();
+  await f.say("👍"); f.clock.advance(1);
+  const r4 = await f.say("نعم");
+  assert.deepEqual([r4.sent.length, f.db.botCarts.length, r4.log.detail], [0, 0, "campaign_yes:not_first_reply"]);
+  // «نعم» / «تمام» وصلت متأخرة ٣٠ دقيقة ⇒ سكوت (مش «سؤالك يحتاج واحد من الفريق» + تحويل)
+  for (const t of ["نعم", "تمام"]) {
+    const l = fd1World();
+    const r5 = await l.say(t, { agoMin: 30 });
+    assert.deepEqual([r5.sent.length, r5.log.decision, l.db.botCarts.length, l.portal.length], [0, "silent", 0, 0], t);
+  }
+}));
+
+test("مراجعة FD1 — سلة الحملة بتتحفظ بس لو الرد طالع: كتم / مش رقم تجربة ⇒ ولا صف؛ ضغطة وقت انتظار الموظف ⇒ سلة واحدة بس (بعد الانتظار)", withEnv(LOCKS_OPEN, async () => {
+  const m = fd1World();
+  m.db.chats.set("512345678", { phone_norm: "512345678", unknown_streak: 0, last_disclosed_at: new Date(Date.parse(OPEN_AT)).toISOString(), muted_until: new Date(Date.parse(OPEN_AT) + 3600_000).toISOString() });
+  const r1 = await tapOrder(m);
+  assert.deepEqual([r1.sent.length, r1.log.decision, m.db.botCarts.length], [0, "silent", 0]);
+  const t = fd1World({ waBot: { mode: "test", testPhones: ["0599999999"] } });
+  const r2 = await tapOrder(t);
+  assert.deepEqual([r2.sent.length, t.db.botCarts.length], [0, 0]);
+  // الموظف بيكلّم العميل ⇒ الضغطة بتستنى staffWaitMin وبعدها الرد بسلة واحدة
+  const s = fd1World();
+  await s.cashier("هلا"); s.clock.advance(1);
+  const r3 = await tapOrder(s);
+  assert.deepEqual([r3.sent.length, r3.log.decision, s.db.botCarts.length], [0, "waiting", 0]);
+  const out = await s.tick(6);
+  assert.equal(out.length, 1);
+  assert.equal(bodyOf(out[0]), FD1_BODY);
+  assert.deepEqual(s.db.botCarts.map((c) => c.source), ["campaign"]);
+}));
+
+test("مراجعة FD1 — «yes» بالإنجليزي: رد الحملة بالعربي كله (سطر العرض عربي) — مش إطار إنجليزي حوالين سطر عربي", withEnv(LOCKS_OPEN, async () => {
+  const w = fd1World();
+  const r = await w.say("yes");
+  assert.equal(bodyOf(r.sent[0]), FD1_BODY);
+  assert.equal(r.sent[0].interactive.action.parameters.display_text, "كمّل طلبك");
+}));
+
+test("FD1 بوكس «من نوع أكله» (من غير طبقه) ⇒ الرد بنفس العرض وزر «اطلب البوكس» يفتح البوكس نفسه يختار هو — من غير سلة", withEnv(LOCKS_OPEN, async () => {
+  const line = "بوكس الكريب الفردي (كريب من اختيارك مع صنف جانبي ومشروب غازي) بسعر يبدأ من 29 ر.س، ونوصله لك أو تستلمه من فرعنا، والتوصيل مجاني بكود FIRST داخل نطاق التوصيل لو طلبك من 60 ر.س";
+  const w = fd1World({ spec: { v: 1, kind: "box", slug: "box-solo-crepe", pid: "11", sg: "crepe", catOnly: true, direct: false, price: 29 }, values: { "offer.title": "بوكس يناسب ذوقك", "offer.line": line }, links: ["box-solo-crepe"] });
+  const r = await tapOrder(w);
+  assert.equal(bodyOf(r.sent[0]), `${line}.\nاختر اللي يعجبك في البوكس وكمّل طلبك من الزر 👇`);
+  assert.deepEqual([urlOf(r.sent[0]), r.sent[0].interactive.action.parameters.display_text, w.db.botCarts.length], ["https://freshcuts.sa/l/box-solo-crepe", "اطلب البوكس", 0]);
+}));
+
+test("FD1 المساعد: «أبغى أطلب» / «نعم» على الحملة للقواعد (الرابط مضمون)؛ اللي بعدها للمساعد عادي", () => {
+  const base = { acfg: { mode: "test" }, cfg: { mode: "test", testPhones: ["512345678"] }, phone: "512345678", ev: { text: "ابي اطلب" }, d: { act: "reply", key: "order" } };
+  for (const raw of ["campaign_order", "campaign_yes", "campaign_tap"]) assert.deepEqual(FD1_ELIGIBLE({ ...base, cls: { key: "order", rawIntent: raw } }), { run: false, why: "rules:campaign_order" }, raw);
+  assert.equal(FD1_ELIGIBLE({ ...base, cls: { key: "order", rawIntent: "how_to_order" } }).run, true);
+});
+
+test("FD1 الإعدادات: «أبغى أطلب» ⇒ سلة الحملة (افتراضي مفتوح) ومدة قراءة العرض ٧٢ ساعة (١–١٦٨) — في جدول اللوحة وبتتحفظ", () => {
+  const d = R.botConfig({});
+  assert.deepEqual([d.campaignCart, d.campaignOfferHours], [true, 72]);
+  assert.deepEqual([R.botConfig({ waBot: { campaignCart: false, campaignOfferHours: 999 } }).campaignCart, R.botConfig({ waBot: { campaignOfferHours: 999 } }).campaignOfferHours], [false, 168]);
+  assert.ok(R.SCHEMA.campaignCart && R.SCHEMA.campaignOfferHours);
+  const ok = R.configFromBody({ campaignCart: false, campaignOfferHours: 24 }, {});
+  assert.deepEqual([ok.ok, ok.value.campaignCart, ok.value.campaignOfferHours], [true, false, 24]);
+  assert.equal(R.configFromBody({ campaignOfferHours: 500 }, {}).ok, false);
+  for (const k of ["camp_order_body", "camp_picks", "camp_box_body"]) assert.ok(R.TEXT_KEYS.includes(k), k);
+});
+
+test("مراجعة FD1 — كاش البوت الصارم (live strict): المنيو مااتحدّثش في مدته ⇒ مفيش أسعار للحملة؛ ردود البوت العادية بتفضل بالكاش القديم لحد staleCacheMin", withEnv(LOCKS_OPEN, async () => {
+  let down = false;
+  const w = world({ waBot: { mode: "live" }, bundles: LIVE.bundles, links: ALL_LINKS, pages: () => (down ? null : LIVE.pages) });
+  const fresh = await w.bot.live.menu({ strict: true });
+  assert.ok(fresh && fresh.items.length > 0);
+  const realNow = Date.now;
+  try {
+    Date.now = () => realNow() + 7 * 60_000;      // menuCacheMin (٥) + ١ عدّوا، والتحديث فشل (المتجر واقع)
+    down = true;
+    assert.equal(await w.bot.live.menu({ strict: true }), null, "الحملة: مفيش سعر من كاش قديم");
+    const loose = await w.bot.live.menu();
+    assert.ok(loose && loose.items.length > 0, "البوت العادي: الكاش القديم لحد staleCacheMin زي ما هو");
+  } finally { Date.now = realNow; }
 }));

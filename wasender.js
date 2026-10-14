@@ -49,6 +49,7 @@ import { nextStatus, TEMPLATES } from "./whatsapp.js";
 import { cloudCfg, cloudPacing, classifyError, fallbackFor, campaignParams, cloudJobProblem, defaultChannel,
   CAMPAIGN_TEMPLATES, campaignTemplateNames, campaignSpec, brakeCheck, campaignCost, mediaProblem, MEDIA_LIMITS, CLOUD_KEYS, CLOUD_CEILINGS, CLOUD_DEFAULTS } from "./wacloud.js";
 import { waRatesOf } from "./waaicost.js";
+import { FAV_PICK, FAV_AUDIENCE, FAV_DEFAULT_FILTERS, favJobProblem, lineProblem } from "./wafavpick.js";
 
 export const MIN_GAP_DAYS = 3;
 export const DEFAULTS = {
@@ -182,6 +183,9 @@ export function jobInput(b = {}, { hosts = [] } = {}) {
   /* القناة (٢٨/٩): wa_web = الإضافة · wa_cloud = قالب معتمد من السيرفر */
   const channel = b.channel === "wa_cloud" ? "wa_cloud" : "wa_web";
   const fallback = ["none", "wa_web", "sms"].includes(b.fallback) ? b.fallback : "none";
+  /* FD1 (١٤/١٠): شريحة «طبقك المفضل» = قيم القالب لكل مستلم (perRecipient)، من غير كوبون، ومن غير قناة بديلة (نص الواتساب ويب/SMS
+     مايعرفش العرض بتاع كل عميل). القيم على مستوى الحملة بتتجاهل. perRecipient مايتبعتش من بره من غير الشريحة دي. */
+  const favAud = Boolean(b.filters && typeof b.filters === "object" && b.filters.audience === FAV_PICK);
   let cloudTemplate = null, cloudVars = null;
   if (channel === "wa_cloud") {
     cloudTemplate = String(b.cloudTemplate || "").trim();
@@ -190,12 +194,14 @@ export function jobInput(b = {}, { hosts = [] } = {}) {
     for (const [k, v] of Object.entries(cv.values && typeof cv.values === "object" ? cv.values : {})) {
       if (/^[a-zA-Z][a-zA-Z0-9_.]{0,60}$/.test(k)) values[k] = String(v ?? "").replace(/\r/g, "").trim().slice(0, 400);
     }
-    cloudVars = { offer: String(cv.offer || "").replace(/\r/g, "").trim().slice(0, 400), ...(Object.keys(values).length ? { values } : {}) };
+    cloudVars = favAud ? { offer: "", perRecipient: true }
+      : { offer: String(cv.offer || "").replace(/\r/g, "").trim().slice(0, 400), ...(Object.keys(values).length ? { values } : {}) };
     const p = cloudJobProblem({ cloudTemplate, cloudVars, imageUrl, videoUrl, offer, link: { coupon: staticCoupon } });
     if (p) errs.push(p);
   }
+  if (favAud) { const fp = favJobProblem({ channel, cloudTemplate, offer, coupon: staticCoupon }); if (fp) errs.push(fp); }
   return { errs, template, link: { slug: slug || null, target_type, target_id, coupon: staticCoupon }, holdoutPct, imageUrl, videoUrl, offer,
-    channel, cloudTemplate, cloudVars, fallback: channel === "wa_cloud" ? fallback : "none", spendCapSar: channel === "wa_cloud" ? spendCapSar : null };
+    channel, cloudTemplate, cloudVars, fallback: channel === "wa_cloud" && !favAud ? fallback : "none", spendCapSar: channel === "wa_cloud" ? spendCapSar : null, perRecipient: favAud };
 }
 
 /* كود الرابط لكل مستلم + كود الكوبون (من غير حروف متشابهة) */
@@ -218,6 +224,7 @@ export function register(app, ctx, deps = {}) {
   const { pool, requireAdmin, getSettingsData } = ctx;
   const outreach = deps.outreach || null;          // { AUDIENCES, audienceRows, cfg }
   const cmsApi = () => (typeof deps.cms === "function" ? deps.cms() : deps.cms) || null;   // شرايح لوحة المتجر
+  const favApi = () => { try { return (typeof deps.fav === "function" ? deps.fav() : deps.fav) || null; } catch { return null; } };   // FD1: «طبقك المفضل» (wafavpick.js)
   const now = deps.now || (() => Date.now());
   const J = (v) => JSON.stringify(v);
   const bad = (c, error, message, status = 400) => c.json({ ok: false, error, message }, status);
@@ -472,6 +479,7 @@ export function register(app, ctx, deps = {}) {
   async function audienceList() {
     const out = outreach ? Object.entries(outreach.AUDIENCES).map(([id, a]) => ({ id, ...a, group: "wa" })) : [];
     out.push({ id: WEB_ORDERERS, label: "طلبوا من الموقع", hint: "كل اللي دفع طلب من الموقع ولو مرة واحدة", group: "wa" });
+    if (favApi()) out.push({ id: FAV_PICK, ...FAV_AUDIENCE, group: "wa", cloudOnly: true, defaults: FAV_DEFAULT_FILTERS });
     const cms = cmsApi();
     if (cms && typeof cms.segmentList === "function") {
       for (const s of cms.segmentList()) out.push({ id: `segment:${s.id}`, label: `${s.icon || ""} ${s.label}`.trim(), hint: s.hint, group: "cms" });
@@ -479,6 +487,7 @@ export function register(app, ctx, deps = {}) {
     return out;
   }
   async function resolveAudience(aud) {
+    if (aud === FAV_PICK) return favApi() ? { aud, segmentPhones: null, fav: true } : null;
     if (aud === WEB_ORDERERS) {
       const r = await pool.query(`SELECT DISTINCT so.phone_norm FROM shop_orders so WHERE ${shopPaidSql("so")} AND so.phone_norm IS NOT NULL`).catch(() => null);
       return r ? { aud, segmentPhones: new Set(r.rows.map((x) => x.phone_norm)) } : null;
@@ -536,11 +545,21 @@ export function register(app, ctx, deps = {}) {
     const cloud = channel === "wa_cloud";
     const cfg = senderCfg(s);
     const A = (await resolveAudience(filters.audience)) || { aud: "never_online", segmentPhones: null };
+    /* FD1: «طبقك المفضل» مايرجعش لشريحة تانية في صمت لو مش متوصّلة (العروض محسوبة لكل عميل) */
+    if (filters.audience === FAV_PICK && !A.fav) throw Object.assign(new Error("شريحة «طبقك المفضل» مش متاحة دلوقتي"), { code: "fav_unavailable", status: 503 });
     const minLast = Number(filters.minLastOrder) > 0 ? Number(filters.minLastOrder) : 0;
-    const all = await outreach.audienceRows(A.aud, { canSee: true, minLastOrder: minLast, segmentPhones: A.segmentPhones });
+    /* الفاصل الافتراضي للشريحة دي (٥–٩٠ يوم) لو الحملة مابعتتش فلتر */
+    const blank = (v) => v === undefined || v === null || v === "";
+    const F = A.fav ? { ...filters, ...Object.fromEntries(Object.entries(FAV_DEFAULT_FILTERS).filter(([k]) => blank(filters[k]))) } : filters;
+    let all;
+    if (A.fav) {
+      /* الفاصل بيتبعت للشريحة: اللي برّاه مابيتحسبلوش عرض ولا سعر توصيل أصلاً (نفس شرط applyFilters تحت) */
+      try { all = await favApi().audienceRows({ minDaysSince: F.minDaysSince, maxDaysSince: F.maxDaysSince }); }
+      catch (e) { if (e && e.code === "FAV_CATALOG") throw Object.assign(new Error(`المنيو أو البوكسات مش متاحة دلوقتي (${String(e.message).replace(/^fav_pick: /, "")}) — جرّب بعد شوية`), { code: "fav_catalog", status: 503 }); throw e; }
+    } else all = await outreach.audienceRows(A.aud, { canSee: true, minLastOrder: minLast, segmentPhones: A.segmentPhones });
     // مفيش ولا طلب ≥ الحد (بيشتري مية/بيبسي بس) ⇒ مالوش رسالة تفكّره بأكلة
     const smallOnly = all.filter((r) => r.noMeaningfulOrder).length;
-    const filtered = applyFilters(all.filter((r) => !r.noMeaningfulOrder), filters);
+    const filtered = applyFilters(all.filter((r) => !r.noMeaningfulOrder), F);
     const pns = filtered.map((r) => r.pn);
     const staff = staffPhoneSet(s);
     const recent = await recentMap(pns, cfg.gapDays, cloud ? { waGapDays: CLOUD_MIN_GAP_DAYS } : {});
@@ -576,7 +595,15 @@ export function register(app, ctx, deps = {}) {
     let appOnly = null;
     if (cloud) { const set = await appOnlySet(picked.map((x) => x.pn)); appOnly = set ? { count: set.size, label: APP_ONLY_LABEL, needsConfirm: set.size > 0 } : { count: null, label: APP_ONLY_LABEL, needsConfirm: true, error: "unreadable" }; }
     return { audience: A.aud, inAudience: all.length, afterFilters: filtered.length, excluded, eligible: ok.length,
-      picked, cfg, globalTemplate: C.template, appOnly };
+      picked, cfg, globalTemplate: C.template, appOnly, ...(A.fav ? { fav: { filters: { minDaysSince: F.minDaysSince, maxDaysSince: F.maxDaysSince }, stats: all.stats || null, digest: favDigest(picked) } } : {}) };
+  }
+  /* FD1 (مراجعة ١٤/١٠): بصمة الرسايل نفسها (الرقم + العنوان + السطر لكل مستلم، بالترتيب). المعاينة بترجّعها والبدء بيقارنها (confirmDigest):
+     confirmCount بيقارن العدد بس — لكن العروض بتتحسب تاني وقت البدء، فممكن نفس العدد بعملاء/أسعار/سطور توصيل غير اللي المالك قراها. */
+  const favDigest = (picked) => sha(picked.map((x) => { const v = (x.vars && x.vars.cloud && x.vars.cloud.values) || {}; return `${x.pn}|${v["offer.title"] || ""}|${v["offer.line"] || ""}`; }).join("|~|")).slice(0, 16);
+  /* FD1: build بيرمي برسالة وحالة (شريحة «طبقك المفضل» مش متاحة / المنيو واقع) ⇒ رد واضح بدل 500 */
+  async function buildOr(c, filters, s, opts) {
+    try { return { r: await build(filters, s, opts) }; }
+    catch (e) { if (e && e.status) return { res: bad(c, e.code || "build_failed", e.message, e.status) }; throw e; }
   }
 
   // ── اللوحة ──────────────────────────────────────────────────────────────
@@ -676,12 +703,20 @@ export function register(app, ctx, deps = {}) {
     let b = {}; try { b = await c.req.json(); } catch { return bad(c, "bad_json", "بيانات غلط"); }
     const input = jobInput(b, { hosts: imageHosts() });
     const s = await getSettingsData();
-    const r = await build(b.filters || {}, s, { channel: input.channel });
+    const bo = await buildOr(c, b.filters || {}, s, { channel: input.channel });
+    if (bo.res) return bo.res;
+    const r = bo.r;
     const tpl = tplOf(r, input);
     // العينة: أول ٥ + مثال واحد اترجعنا فيه لطلب أقدم (عشان المالك يشوف الفلتر شغّال)
     const pick = r.picked.slice(0, 5);
     const ex = r.picked.find((x) => x.skippedSmall > 0);
     if (ex && !pick.includes(ex)) pick.push(ex);
+    /* FD1: «طبقك المفضل» — كل رسالة مختلفة: أول ٨ + أول مثال من كل نوع (بوكس فيه طبقه / من نوعه / باقة / طبقه نفسه) × كل حالة توصيل */
+    if (r.fav) {
+      for (const x of r.picked.slice(0, 8)) if (!pick.includes(x)) pick.push(x);
+      const seen = new Set(pick.map((x) => x.favView && `${x.favView.kind}:${x.favView.catOnly}:${x.favView.delivery}:${x.favView.via}`));
+      for (const x of r.picked) { const k = x.favView && `${x.favView.kind}:${x.favView.catOnly}:${x.favView.delivery}:${x.favView.via}`; if (k && !seen.has(k) && pick.length < 16) { seen.add(k); pick.push(x); } }
+    }
     const slug = input.link.slug || "w…";
     const couponEx = input.offer ? "W…" : input.link.coupon;
     const host = STORE();
@@ -689,6 +724,7 @@ export function register(app, ctx, deps = {}) {
       orders: x.orders, spend: x.spend, daysAgo: x.daysAgo, lastTotal: x.lastTotal, skippedSmall: x.skippedSmall || 0,
       vars: { ...x.vars, link: recipientLink(host, slug, "xxxxxx"), coupon: couponEx || "", coupon_days: input.offer ? String(input.offer.validDays) : "" },
       message: messageFor(x, { template: tpl, footer: r.cfg.footer, host, slug, code: "xxxxxx", coupon: couponEx, couponDays: input.offer?.validDays }),
+      ...(x.favView ? { fav: x.favView } : {}),
       ...(input.channel === "wa_cloud" && TEMPLATES[input.cloudTemplate] ? { cloud: cloudSample(input, x, slug, couponEx) } : {}) }));
     const hold = holdoutCount(r.picked.length, input.holdoutPct);      // LK1: العدد بالظبط (مش تقدير) — نفس اللي البدء هيحجزه
     let days = Math.ceil((r.picked.length - hold) / Math.max(1, effectiveDailyCap(r.cfg, now())));
@@ -717,6 +753,9 @@ export function register(app, ctx, deps = {}) {
       button: input.channel === "wa_cloud" ? Boolean(campaignSpec(input.cloudTemplate) && campaignSpec(input.cloudTemplate).button) : true };
     return c.json({ ok: true, ...cloudExtra, link: linkView, audience: r.audience, inAudience: r.inAudience, afterFilters: r.afterFilters,
       excluded: r.excluded, eligible: r.eligible, willQueue: r.picked.length, holdoutEst: hold, estDays: days, sample,
+      /* FD1: كل رسالة هتتبعت ({{1}} و{{2}} لكل مستلم) — المالك يراجعهم كلهم قبل البدء. الجوال مخفي. */
+      ...(r.fav ? { fav: r.fav, perRecipient: input.perRecipient === true, texts: r.picked.map((x) => ({ phone: `${x.pn.slice(0, 3)}••••${x.pn.slice(-2)}`, name: x.name || null,
+        title: (x.vars && x.vars.cloud && x.vars.cloud.values && x.vars.cloud.values["offer.title"]) || null, line: (x.vars && x.vars.cloud && x.vars.cloud.values && x.vars.cloud.values["offer.line"]) || null, ...(x.favView ? { fav: x.favView } : {}) })) } : {}),
       customTemplate: Boolean(input.template), template: tpl, footer: r.cfg.footer, channel: input.channel,
       problems: [...input.errs.map(([error, message]) => ({ error, message })),
         ...(cloudExtra.templateSync && syncBlock(cloudExtra.templateSync) ? [{ error: syncBlock(cloudExtra.templateSync), message: cloudExtra.templateSync.message }] : [])] });
@@ -743,10 +782,16 @@ export function register(app, ctx, deps = {}) {
       if (taken) return bad(c, "slug_taken", "اسم الرابط ده مستخدم — اختار اسم تاني أو سيبه فاضي", 409);
     }
     const s = await getSettingsData();
-    const r = await build(b.filters || {}, s, { channel: input.channel });
+    const bo = await buildOr(c, b.filters || {}, s, { channel: input.channel });
+    if (bo.res) return bo.res;
+    const r = bo.r;
     if (!r.picked.length) return bad(c, "empty", "مفيش حد مؤهل بالفلاتر دي");
     if (b.confirmCount != null && Number(b.confirmCount) !== r.picked.length) {
       return bad(c, "count_changed", `العدد اتغيّر (${r.picked.length}) — اعمل معاينة تاني`, 409);
+    }
+    /* FD1: «طبقك المفضل» — الرسايل اللي هتتحط في الطابور لازم تبقى نفس اللي اتقرت في المعاينة بالظبط (لو المعاينة بعتت بصمتها) */
+    if (r.fav && b.confirmDigest != null && String(b.confirmDigest) !== r.fav.digest) {
+      return bad(c, "offers_changed", "رسايل الحملة اتغيّرت من وقت المعاينة (سعر، توصيل، أو عملاء) — اعمل معاينة تاني واقراها قبل البدء", 409);
     }
     /* QP1 (M7-7): أرقام جاية من تطبيقات التوصيل بس ⇒ تأكيد صريح من المالك بالعدد نفسه. ماقدرناش نعدّ ⇒ مانبدأش. */
     if (input.channel === "wa_cloud") {
@@ -802,7 +847,8 @@ export function register(app, ctx, deps = {}) {
             if (ins.rowCount) { coupon = cc; break; }
           }
         }
-        const msg = messageFor(x, { template: tpl, footer: r.cfg.footer, host, slug, code, coupon, couponDays: input.offer?.validDays });
+        /* FD1: حملة قيمها لكل مستلم ⇒ نص الصف = نص قالب واتساب نفسه بقيم العميل ده (اللي هيتبعت فعلاً) — للوحة والسجل */
+        const msg = input.perRecipient ? (cloudText(input, x, slug, code) || "-") : messageFor(x, { template: tpl, footer: r.cfg.footer, host, slug, code, coupon, couponDays: input.offer?.validDays });
         if (hold) holdN++;
         await client.query(
           `INSERT INTO wa_send_queue(job_id, phone_norm, name, message, score, status, reason, link_code, coupon, vars)
@@ -868,6 +914,8 @@ export function register(app, ctx, deps = {}) {
     if (!tpl || tp) return bad(c, tp || "empty", tp === "name_required" ? "النص لازم يحتوي على {name}" : tp ? "في متغير مش معروف أو النص طويل" : "النص فاضي", 422);
     const job = (await pool.query("SELECT * FROM wa_send_jobs WHERE id=$1", [jobId])).rows[0];
     if (!job || ["done", "cancelled"].includes(job.status)) return bad(c, "not_found", "الحملة خلصت أو مش موجودة", 404);
+    /* FD1: رسايل «طبقك المفضل» محسوبة لكل عميل من قالب واتساب — مفيش نص حملة يتغيّر من هنا */
+    if (job.cloud_vars && job.cloud_vars.perRecipient === true) return bad(c, "per_recipient", "رسايل الحملة دي محسوبة لكل عميل (العرض والسعر والتوصيل) — النص مايتغيّرش من هنا", 409);
     const rows = (await pool.query("SELECT id, phone_norm, vars, link_code, coupon FROM wa_send_queue WHERE job_id=$1 AND status='pending'", [jobId])).rows;
     const missing = rows.filter((x) => !x.vars || !Object.keys(x.vars).length);
     let fresh = new Map();
@@ -1114,6 +1162,10 @@ export function register(app, ctx, deps = {}) {
   const wa = deps.wa || null;
   const cloudApi = () => (typeof deps.cloud === "function" ? deps.cloud() : deps.cloud) || null;
 
+  function cloudText(input, x, slug, code) {
+    try { return campaignParams(input.cloudTemplate, { vars: x.vars, name: x.name, link_code: code, coupon: null },
+      { link_slug: slug, image_url: input.imageUrl, video_url: input.videoUrl, cloud_vars: input.cloudVars }).text || null; } catch { return null; }
+  }
   function cloudSample(input, x, slug, couponEx) {
     try {
       const { text } = campaignParams(input.cloudTemplate, { vars: x.vars, name: x.name, link_code: "xxxxxx", coupon: couponEx || "W…" },
@@ -1206,6 +1258,14 @@ export function register(app, ctx, deps = {}) {
   async function sendCloudRow(q, job, cfg, staff) {
     const why = await skipReason(q.phone_norm, cfg, staff, { cloud: true });
     if (why) { await pool.query("UPDATE wa_send_queue SET status='skipped', reason=$2 WHERE id=$1", [q.id, why]); return { skipped: why }; }
+    /* FD1: حملة قيمها لكل مستلم (السعر والتوصيل في الرسالة) ⇒ نفس العرض بيتحسب تاني من البيانات الحيّة الحين، ولازم يطلع نفس النص بالحرف.
+       اتغيّر (سعر / خلص / اتشال / رسم التوصيل / FIRST) أو العميل طلب من ساعتها أو ماقدرناش نتأكد ⇒ الصف يتخطّى بسببه. مفيش سعر قديم يوصل لعميل. */
+    if (job.cloud_vars && job.cloud_vars.perRecipient === true) {
+      const fav = favApi();
+      let fw = "offer_unverified";
+      if (fav && typeof fav.recheck === "function") { try { fw = await fav.recheck(q); } catch (e) { console.error("[wasender] fav recheck:", e.message); fw = "offer_check_failed"; } }
+      if (fw) { await pool.query("UPDATE wa_send_queue SET status='skipped', reason=$2 WHERE id=$1", [q.id, String(fw).slice(0, 60)]); return { skipped: fw }; }
+    }
     let built;
     try { built = campaignParams(job.cloud_template, q, job); }
     catch { await pool.query("UPDATE wa_send_queue SET status='failed', reason='bad_template' WHERE id=$1", [q.id]); return { stop: "bad_template" }; }
@@ -1549,8 +1609,16 @@ export function register(app, ctx, deps = {}) {
     }
     const coupon = spec.needsCoupon ? String(b.testCoupon || input.link.coupon || "").trim().toUpperCase().slice(0, 40) : "";
     if (spec.needsCoupon && !coupon) return bad(c, "test_coupon_required", "القالب فيه كود: اكتب كود موجود للتجربة", 422);
+    /* FD1: حملة «طبقك المفضل» — القيم لكل عميل؛ التجربة بتاخد سطر عميل من المعاينة بالظبط (testValues {title, line}) لرقم تجربة بس */
+    let tvars = {};
+    if (input.perRecipient) {
+      const tv = b.testValues && typeof b.testValues === "object" ? b.testValues : {};
+      const title = String(tv.title || "").trim(), line = String(tv.line || "").trim();
+      if (!title || !line || lineProblem(title, line)) return bad(c, "test_values_required", "حملة «طبقك المفضل»: ابعت testValues {title, line} من عينة المعاينة (سطر واحد لكل واحد، من غير «:»)", 422);
+      tvars = { cloud: { values: { "offer.title": title, "offer.line": line } } };
+    }
     let built;
-    try { built = campaignParams(input.cloudTemplate, { name: String(b.testName || "تجربة").slice(0, 30), vars: {}, link_code: "", coupon },
+    try { built = campaignParams(input.cloudTemplate, { name: String(b.testName || "تجربة").slice(0, 30), vars: tvars, link_code: "", coupon },
       { link_slug: slug, image_url: input.imageUrl, video_url: input.videoUrl, cloud_vars: input.cloudVars }); }
     catch { return bad(c, "bad_template", "القالب مش معروف", 422); }
     const r = await wa.sendTemplate({ phoneNorm: pn, template: input.cloudTemplate, params: built.params, source: "campaign", body: built.text, test: true });

@@ -273,6 +273,9 @@ export function campaignParams(template, row, job) {
     /* قالب كتالوج: كائن البيانات بمسارات المتغيّرات — قيم الحملة + الاسم + الكوبون + الرابط المتتبّع، وbind بتاع الكتالوج يرتّبها ويطلّع الناقص */
     const data = {};
     for (const [k, val] of Object.entries(campaignValues(job.cloud_vars))) if (k !== "offer") setPath(data, k, val);
+    /* FD1 (١٤/١٠): حملة قيمها لكل مستلم (perRecipient — «طبقك المفضل»): قيم الصف نفسه (vars.cloud) هي اللي بتتبعت. الحملة مالهاش
+       قيم أصلاً، فصف من غير قيمه = متغيّر ناقص ⇒ الحارس مابيبعتش (missing_param) — عمره ما بيطلع بقيمة عامة. */
+    if (job.cloud_vars && job.cloud_vars.perRecipient === true) for (const [k, val] of Object.entries(campaignValues(v.cloud))) if (k !== "offer") setPath(data, k, val);
     setPath(data, "customer.name", first || "عميلنا");
     if (row.coupon) setPath(data, "coupon.code", row.coupon);
     setPath(data, "link.suffix", linkSuffix);
@@ -302,6 +305,8 @@ export function cloudJobProblem({ cloudTemplate, cloudVars, imageUrl, videoUrl, 
     return ["coupon_required", "القالب ده فيه كود — فعّل «كوبون مرة واحدة لكل عميل» أو حط كوبون ثابت"];
   }
   const vals = campaignValues(cloudVars);
+  /* FD1: القيم لكل مستلم (vars.cloud لكل صف) — مفيش قيم على مستوى الحملة تتراجع هنا؛ كل صف بيتراجع وقت الإرسال (bindTemplate) */
+  if (cloudVars && cloudVars.perRecipient === true) return null;
   for (const f of spec.fields) {
     const o = String(vals[f.key] ?? "").trim();
     const what = f.key === "offer" ? "سطر العرض" : `«${f.label}»`;
