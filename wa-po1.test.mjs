@@ -23,14 +23,20 @@ const isoMs = (v) => (v == null ? NaN : Date.parse(v instanceof Date ? v.toISOSt
 const later = (a, b) => (!a ? b : !b ? a : isoMs(a) >= isoMs(b) ? a : b);      // GREATEST في Postgres (بيتجاهل NULL)
 
 /* ── عالم واحد: wahandover (الحضور) + wateam (التنبيهات) فوق نفس القاعدة الوهمية ────────────────────────── */
-function world({ start = "2026-10-14T13:00:00Z", waTeam = {}, members = MEMBERS, settings = {}, preLog = [], preTo = [], app = null, owner = true } = {}) {
+function world({ start = "2026-10-14T13:00:00Z", waTeam = {}, members = MEMBERS, settings = {}, preLog = [], preTo = [], prePresence = [], app = null, owner = true, fail = () => false, failSql = null } = {}) {
   let nowMs = Date.parse(start);
   const ms = isoMs;
-  const db = { presence: new Map(), writes: [], portal: null, to: new Map(preTo.map((r) => [r.phone_norm, { ...r }])), log: [...preLog],
+  const db = { presence: new Map(prePresence.map((r) => [`${r.staff_id}|${r.device}`, { ...r }])), writes: [], portal: null, to: new Map(preTo.map((r) => [r.phone_norm, { ...r }])), log: [...preLog],
     settings: { waTeam: { members, keeper: { enabled: false }, odd: { enabled: false }, daily: { enabled: false }, ...waTeam }, ...settings } };
   const pool = { db, async query(sql, p = []) {
     const s = String(sql).replace(/\s+/g, " ").trim();
+    if (failSql && failSql.test(s)) throw new Error(`emulated failure: ${s.slice(0, 40)}`);
     if (/^CREATE TABLE/i.test(s)) return { rows: [] };
+    /* صفوف RG1 القديمة (via NULL ومن غير last_visible) ⇒ last_visible = last_seen، مرة واحدة */
+    if (/^UPDATE portal_presence SET last_visible = last_seen, visible_since = COALESCE\(visible_since, seen_since, last_seen\) WHERE via IS NULL AND last_visible IS NULL/i.test(s)) {
+      for (const x of db.presence.values()) if (x.via == null && !x.last_visible) { x.last_visible = x.last_seen; x.visible_since = x.visible_since || x.seen_since || x.last_seen; }
+      return { rows: [] };
+    }
     /* ── portal_presence: نفس منطق الـUPSERT (seen_since / visible_since بفجوة STREAK_GAP_MS) ── */
     if (/^INSERT INTO portal_presence/i.test(s)) {
       const [id, dev, role, name, ls, via, lv] = p, k = `${id}|${dev}`, o = db.presence.get(k), GAP = HO.STREAK_GAP_MS;
@@ -47,9 +53,11 @@ function world({ start = "2026-10-14T13:00:00Z", waTeam = {}, members = MEMBERS,
     /* ── wateam ── */
     if (/^SELECT max\(created_at\) AS at FROM wa_messages/i.test(s)) return { rows: [{ at: new Date(nowMs - 60 * MIN).toISOString() }] };      // كل النوافذ مفتوحة
     if (/^INSERT INTO wa_team_log/i.test(s)) { db.log.push({ at: nowMs, to: p[0], role: p[1], topic: p[2], kind: p[3], via: p[4], ok: p[5] }); return { rows: [] }; }
-    if (/^SELECT since, alerts, last_alert_at, manager_told, opened_at FROM wa_team_portal/i.test(s)) return { rows: db.portal ? [{ ...db.portal }] : [] };
+    if (/^SELECT since, alerts, last_alert_at, manager_told, opened_at, reopened_at FROM wa_team_portal/i.test(s)) return { rows: db.portal ? [{ ...db.portal }] : [] };
+    if (/^UPDATE wa_team_portal SET reopened_at=\$1 WHERE id='cashier' AND reopened_at IS NULL/i.test(s)) { if (db.portal && !db.portal.reopened_at) db.portal.reopened_at = p[0]; return { rows: [] }; }
+    if (/^UPDATE wa_team_portal SET reopened_at=NULL WHERE id='cashier'/i.test(s)) { if (db.portal) db.portal.reopened_at = null; return { rows: [] }; }
     if (/^DELETE FROM wa_team_portal WHERE id='cashier'/i.test(s)) { const r = db.portal; db.portal = null; return { rows: r ? [{ since: r.since }] : [] }; }
-    if (/^INSERT INTO wa_team_portal\(id, since, alerts, manager_told, opened_at\)/i.test(s)) { if (!db.portal) db.portal = { since: p[0], alerts: 0, last_alert_at: null, manager_told: false, opened_at: p[1] }; return { rows: [] }; }
+    if (/^INSERT INTO wa_team_portal\(id, since, alerts, manager_told, opened_at\)/i.test(s)) { if (!db.portal) db.portal = { since: p[0], alerts: 0, last_alert_at: null, manager_told: false, opened_at: p[1], reopened_at: null }; return { rows: [] }; }
     if (/^UPDATE wa_team_portal SET alerts=alerts\+1, last_alert_at=\$1/i.test(s)) { if (db.portal) { db.portal.alerts++; db.portal.last_alert_at = p[0]; } return { rows: [] }; }
     if (/^UPDATE wa_team_portal SET manager_told=TRUE/i.test(s)) { if (db.portal) db.portal.manager_told = true; return { rows: [] }; }
     if (/^INSERT INTO wa_team_portal_to\(phone_norm, last_at, last_mgr_at\) VALUES/i.test(s)) {      // الحجز
@@ -59,6 +67,8 @@ function world({ start = "2026-10-14T13:00:00Z", waTeam = {}, members = MEMBERS,
       return { rows: [{ phone_norm: ph }] };
     }
     if (/^UPDATE wa_team_portal_to SET last_back_at=\$2 WHERE phone_norm=\$1/i.test(s)) { const r = db.to.get(p[0]); if (r) r.last_back_at = p[1]; return { rows: [] }; }
+    if (/^SELECT last_at FROM wa_team_portal_to WHERE phone_norm=\$1/i.test(s)) { const r = db.to.get(p[0]); return { rows: r ? [{ last_at: r.last_at }] : [] }; }
+    if (/^SELECT phone_norm, last_at FROM wa_team_portal_to WHERE phone_norm = ANY\(\$1::text\[\]\)/i.test(s)) return { rows: p[0].filter((ph) => db.to.has(ph)).map((ph) => ({ phone_norm: ph, last_at: db.to.get(ph).last_at })) };
     if (/^INSERT INTO wa_team_portal_to\(phone_norm, last_at, last_mgr_at, last_back_at\) SELECT/i.test(s)) {      // البذرة من السجل (آخر يوم) + GREATEST
       const by = new Map();
       for (const l of db.log) {
@@ -72,35 +82,44 @@ function world({ start = "2026-10-14T13:00:00Z", waTeam = {}, members = MEMBERS,
       for (const [ph, r] of by) { const o = db.to.get(ph); db.to.set(ph, o ? { phone_norm: ph, last_at: later(o.last_at, r.last_at), last_mgr_at: later(o.last_mgr_at, r.last_mgr_at), last_back_at: later(o.last_back_at, r.last_back_at) } : { phone_norm: ph, ...r }); }
       return { rows: [] };
     }
-    if (/^SELECT phone_norm, count\(\*\) FILTER \(WHERE kind IN \('cashier','manager'\) AND at >= \$1::timestamptz\)::int AS day, max\(at\) FILTER \(WHERE kind='manager' AND ok AND at >= \$2::timestamptz\) AS last_mgr/i.test(s)) {
+    if (/^SELECT phone_norm, count\(\*\) FILTER \(WHERE kind IN \('cashier','manager'\) AND ok AND at >= \$1::timestamptz\)::int AS day, max\(at\) FILTER \(WHERE kind='manager' AND ok AND at >= \$2::timestamptz\) AS last_mgr, count\(\*\) FILTER \(WHERE kind='cashier' AND ok AND at >= \$2::timestamptz\)::int AS cash_ok/i.test(s)) {
       const day = ms(p[0]), from = ms(p[1]), lo = Math.min(day, from), by = new Map();
       for (const l of db.log) {
         if (l.topic !== "portal_offline" || l.at < lo) continue;
-        const r = by.get(l.to) || { phone_norm: l.to, day: 0, last_mgr: null };
-        if ((l.kind === "cashier" || l.kind === "manager") && l.at >= day) r.day++;
+        const r = by.get(l.to) || { phone_norm: l.to, day: 0, last_mgr: null, cash_ok: 0 };
+        if ((l.kind === "cashier" || l.kind === "manager") && l.ok && l.at >= day) r.day++;
+        if (l.kind === "cashier" && l.ok && l.at >= from) r.cash_ok++;
         if (l.kind === "manager" && l.ok && l.at >= from && (!r.last_mgr || l.at > ms(r.last_mgr))) r.last_mgr = new Date(l.at).toISOString();
         by.set(l.to, r);
       }
       return { rows: [...by.values()] };
     }
-    if (/^SELECT count\(\*\)::int AS n FROM wa_team_log WHERE topic='portal_offline' AND kind IN \('cashier','manager'\) AND at >= \$1/i.test(s))
-      return { rows: [{ n: db.log.filter((l) => l.topic === "portal_offline" && (l.kind === "cashier" || l.kind === "manager") && l.at >= ms(p[0])).length }] };
+    if (/^SELECT count\(\*\) FILTER \(WHERE ok\)::int AS n, count\(\*\) FILTER \(WHERE NOT ok\)::int AS failed FROM wa_team_log WHERE topic='portal_offline' AND kind IN \('cashier','manager'\) AND at >= \$1/i.test(s)) {
+      const ls = db.log.filter((l) => l.topic === "portal_offline" && (l.kind === "cashier" || l.kind === "manager") && l.at >= ms(p[0]));
+      return { rows: [{ n: ls.filter((l) => l.ok).length, failed: ls.filter((l) => !l.ok).length }] };
+    }
     if (/^UPDATE settings SET data = jsonb_set\(COALESCE\(data,'\{\}'::jsonb\), '\{waTeam\}'/i.test(s)) { db.settings.waTeam = JSON.parse(p[0]); return { rows: [], rowCount: 1 }; }
     return { rows: [], rowCount: 0 };
   } };
-  const sent = [];
-  const wa = { sendFreeform: async ({ phoneNorm, payload }) => { sent.push({ at: nowMs, to: phoneNorm, text: payload.interactive ? payload.interactive.body.text : payload.text.body }); return { ok: true }; } };
+  const sent = [], failed = [];
+  const wa = { sendFreeform: async ({ phoneNorm, payload }) => {
+    const text = payload.interactive ? payload.interactive.body.text : payload.text.body;
+    if (fail(phoneNorm, nowMs)) { failed.push({ at: nowMs, to: phoneNorm, text }); return { ok: false, error: "send_failed" }; }
+    sent.push({ at: nowMs, to: phoneNorm, text }); return { ok: true };
+  } };
   let ho = null, team = null;
   /* تشغيل جديد (deploy / وقوع): الذاكرة بتضيع (حدّ الكتابة، وقت الشغل اللي الدورة شافته)، والقاعدة زي ما هي */
+  const errors = [];
+  const logger = { error: (...a) => errors.push(a.join(" ")) };
   const boot = () => {
-    ho = HO.register({ get() {}, post() {} }, { pool }, { requirePortal: async () => ({ res: "no" }), now: () => new Date(nowMs), noTimer: true, log: { error() {} } });
+    ho = HO.register({ get() {}, post() {} }, { pool }, { requirePortal: async () => ({ res: "no" }), now: () => new Date(nowMs), noTimer: true, log: logger });
     team = T.register(app, { pool, requireAdmin: async () => null, isOwner: async () => owner, getSettingsData: async () => JSON.parse(JSON.stringify(db.settings)) },
-      { wa, now: () => new Date(nowMs), noTimer: true, log: { error() {} }, presence: () => ho });
-    return team.ready;
+      { wa, now: () => new Date(nowMs), noTimer: true, log: logger, presence: () => ho });
+    return Promise.all([team.ready, ho.ready]);
   };
   boot();
   const offLog = () => db.log.filter((l) => l.topic === "portal_offline");
-  return { db, get ho() { return ho; }, get team() { return team; }, restart: boot, sent, offLog, setNow: (t) => { nowMs = t; }, now: () => new Date(nowMs), nowMs: () => nowMs,
+  return { db, get ho() { return ho; }, get team() { return team; }, restart: boot, sent, failed, errors, offLog, setNow: (t) => { nowMs = t; }, now: () => new Date(nowMs), nowMs: () => nowMs,
     signal: (via = "poll", user = CASHIER, ua = TABLET) => ho.seen(user, { ua, via }) };
 }
 /* سيناريو بالثواني: إشارات + flush كل ١٥ ث (زي السيرفر) + دورات wateam + أحداث (تغيير إعدادات) ⇒ نتايج الدورات */
@@ -114,7 +133,7 @@ async function play(w, { from, to, signals = [], ticks, events = [] }) {
   const out = [];
   for (const e of ev) {
     w.setNow(e.t);
-    if (e.k === 0) { if (e.fn) e.fn(w); else w.signal(e.s.via, e.s.user, e.s.ua); }
+    if (e.k === 0) { if (e.fn) await e.fn(w); else w.signal(e.s.via, e.s.user, e.s.ua); }
     else if (e.k === 1) w.ho.flush();
     else { const r = await w.team.tick(); out.push({ t: e.t, portal: r.portal }); }
     await settle();
@@ -191,13 +210,14 @@ test("a presence write that fails is counted and logged (first time, then once p
   ho.touch(CASHIER, TABLET, "poll"); await settle(); await settle();
   nowMs += 61 * SEC; ho.touch(CASHIER, TABLET, "poll"); await settle(); await settle();
   let h = ho.health();
-  assert.deepEqual([h.writes, h.errors], [0, 2]); assert.match(h.lastError, /column "via" does not exist/);
+  assert.deepEqual([h.writes, h.errors, h.failing], [0, 2, true]); assert.match(h.lastError, /column "via" does not exist/);
   assert.equal(errs.length, 1, "logged once, not on every write"); assert.match(errs[0], /presence write failed/);
   nowMs += 11 * MIN; ho.touch(CASHIER, TABLET, "poll"); await settle(); await settle();
   assert.equal(errs.length, 2, "and again after 10 minutes");
   fail = false; nowMs += 61 * SEC; ho.touch(CASHIER, TABLET, "poll"); await settle(); await settle();
   h = ho.health();
   assert.deepEqual([h.writes, h.errors], [1, 3]); assert.equal(h.lastOkAt, new Date(nowMs).toISOString());
+  assert.equal(h.failing, false, "the count stays as history, but a later good write means it is not failing NOW (no permanent red banner)");
 });
 
 test("production wiring (portal.js + wahandover on one Hono app): every authenticated request reports once; the handover poll writes once (no duplicate a minute later); opening the SSE stream counts, the server's own heartbeats do not", async () => {
@@ -350,10 +370,11 @@ test("closed all day: the cashiers 3 times, then the manager every 45 min (a rem
   assert.deepEqual(at(w, MGR), ["10:25:47 manager", "11:10:47 manager", "11:55:47 manager", "12:40:47 manager", "13:25:47 manager", "14:10:47 manager"]);
   assertLimits(w);
   const m = texts(w, MGR);
-  assert.equal(m[0], "10:25:47 ⚠️ بورتال الكاشير مقفول من أول الشغل — الكاشير اتبعتله 3 تنبيهات ولسه مقفول. الطلبات ومحادثات واتساب مش بترن في المطعم.", "true at that moment: 3 alerts in this closure");
-  assert.equal(m[1], "11:10:47 ⚠️ تذكير: بورتال الكاشير لسه مقفول من أول الشغل. الطلبات ومحادثات واتساب مش بترن في المطعم.");
+  assert.equal(m[0], "10:25:47 ⚠️ بورتال الكاشير مقفول من أول الشغل رغم 3 تنبيهات للكاشير. الطلبات ومحادثات واتساب ممكن ماترنّش في المطعم.", "true at that moment: 3 delivered alerts in this closure; «may not ring» (portal push still rings)");
+  assert.equal(m[1], "11:10:47 ⚠️ تذكير: بورتال الكاشير لسه مقفول من أول الشغل. الطلبات ومحادثات واتساب ممكن ماترنّش في المطعم.", "no signal since his last message ⇒ «لسه»");
   const st = await w.team.portalStatus(T.teamConfig(w.db.settings), w.now());
   assert.deepEqual([st.muted, st.recipients.map((r) => [r.name, r.today, r.capped])], [true, [["منى", 6, true], ["سارة", 6, true], ["خالد", 6, true]]]);
+  assert.deepEqual([st.alerts.count, st.alerts.delivered, st.alerts.managerTold, st.alerts.managerLeft, st.alerts.cashierLeft, st.sentToday, st.failedToday], [6, 6, true, false, false, 18, 0]);
 });
 
 test("glances every 30 min all morning, then a genuine 2 h closure 14:30–16:30Z: messages keep coming inside the closure (cashiers back once the manager used his 6), and «back» reaches the manager when it is really open", async () => {
@@ -392,13 +413,18 @@ test("the manager's message is always true: after the cashier really opened the 
   assertLimits(w);
 });
 
-test("accepted trade-off (the repeat knob): a new closure that starts soon after a phone's last message waits until repeatMin since that message — held «repeat», visible in the tick result", async () => {
+test("per-phone repeat (the approved rule, default): a new closure soon after a phone's last message waits until repeatMin since that message — held «repeat» WITH the time it can go, in the tick result and on the dashboard («hold»); the manager is not told (managerOnHold off)", async () => {
   const w = world({ start: "2026-10-14T08:00:00Z" });
   const sig = [{ t: utc("08:00:00"), via: "poll" }, ...polls("09:45:00", "09:50:00"), ...polls("10:20:00", "12:00:00")];
-  const out = await play(w, { from: utc("08:00:00"), to: utc("12:00:00"), signals: sig, ticks: ticks47("08:00:47", "11:59:47") });
+  let st = null;
+  const out = await play(w, { from: utc("08:00:00"), to: utc("12:00:00"), signals: sig, ticks: ticks47("08:00:47", "11:59:47"),
+    events: [{ t: utc("10:06:00"), fn: async (x) => { st = await x.team.portalStatus(T.teamConfig(x.db.settings), x.now()); } }] });
   assert.deepEqual(at(w, CASH1), ["08:10:47 cashier", "08:55:47 cashier", "09:40:47 cashier"], "09:50–10:20: the cashier had a message at 09:40:47 ⇒ nothing before 10:25:17, and it reopened at 10:20");
+  assert.deepEqual(at(w, MGR), [], "managerOnHold off ⇒ the manager is not told about this short re-closure");
   const t = out.find((x) => x.t === utc("10:05:47")).portal;
-  assert.deepEqual([t.offline, t.stage, t.held.map((h) => h.why)], [true, "cashier", ["repeat", "repeat"]]);
+  assert.deepEqual([t.offline, t.stage, t.held.map((h) => [h.why, h.until])], [true, "cashier", [["repeat", "2026-10-14T10:25:17.000Z"], ["repeat", "2026-10-14T10:25:17.000Z"]]]);
+  assert.deepEqual([st.alerts.count, st.alerts.hold], [0, { lastAt: "2026-10-14T09:40:47.000Z", until: "2026-10-14T10:25:17.000Z" }], "the dashboard says when the next message can go");
+  assert.deepEqual(st.recipients.filter((r) => r.role === "cashier").map((r) => [r.lastAt, r.nextAt]), [["2026-10-14T09:40:47.000Z", "2026-10-14T10:25:17.000Z"], ["2026-10-14T09:40:47.000Z", "2026-10-14T10:25:17.000Z"]]);
 });
 
 test("«back» belongs to its own round: «back» right before the portal closes again does not swallow the next round's «back»", async () => {
@@ -476,7 +502,9 @@ test("dashboard devices: «on screen» means a visible signal in the last ~2.5 m
     [["منى", true, false, true, 9, "api"], ["سارة", true, true, false, 0, "beat"], ["خالد", false, false, false, 20, "poll"]], "منى: on screen 9 min ago, background now ⇒ not «on screen»");
   assert.deepEqual(st.cashier, { open: true, stable: true, lastSeen: "2026-10-14T14:59:20.000Z", offMin: 0, hidden: false });
   assert.deepEqual([st.working, st.alerts, st.sentToday, st.countBackground, st.afterMin, st.freshSec, st.dailyCap, st.muted], [true, null, 0, false, 10, 150, 6, false]);
-  assert.deepEqual(st.presence, { writes: 0, errors: 0, lastOkAt: null, lastError: null, lastErrorAt: null }, "the write health travels with the status (verify.py reads it)");
+  assert.deepEqual([st.repeatMin, st.backStableMin, st.keepMin, st.managerOnHold, st.failedToday, st.error], [45, 2, 45, false, 0, undefined]);
+  assert.deepEqual(st.presence, { writes: 0, errors: 0, lastOkAt: null, lastError: null, lastErrorAt: null, readErrors: 0, lastReadOkAt: "2026-10-14T15:00:00.000Z", lastReadError: null, lastReadErrorAt: null, failing: false, readFailing: false },
+    "the write/read health travels with the status (verify.py reads it); failing = the LAST attempt failed");
 });
 
 test("daily cap without a manager in the team: cashiers only, repeat + cap; a new business day starts again", async () => {
@@ -532,17 +560,33 @@ test("portalSignal: closed by the newest counted signal of any cashier device (e
   const c = T.portalSignal([d({ lastSeen: "2026-10-14T14:59:30Z", seenSince: "2026-10-14T14:57:00Z" })], now, on);
   assert.deepEqual([c.stable, c.streakStart], [true, "2026-10-14T14:57:00.000Z"]);
   assert.equal(T.portalSignal([d({ lastSeen: "2026-10-14T14:59:30Z" })], now, on).stable, false, "old row without a streak start = one signal");
-  assert.deepEqual(T.portalSignal([{ role: "manager", lastSeen: "2026-10-14T14:59:59Z" }], now, on), { lastSeen: null, offMin: null, closed: true, stable: false, streakStart: null, lastAny: null, hidden: false });
+  assert.deepEqual(T.portalSignal([{ role: "manager", lastSeen: "2026-10-14T14:59:59Z" }], now, on), { lastSeen: null, offMin: null, closed: true, stable: false, streakStart: null, openSince: null, lastAny: null, hidden: false });
+  /* openSince = بداية الفتحة اللي مخلّية البوابة «مش مقفولة» (أقدم بداية بين الأجهزة اللي إشارتها جوّه afterMin) — بداية فترة reopened_at */
+  const two = T.portalSignal([d({ lastSeen: "2026-10-14T14:57:00Z", seenSince: "2026-10-14T14:57:00Z" }), d({ lastSeen: "2026-10-14T14:59:30Z", seenSince: "2026-10-14T14:58:30Z" }), d({ lastSeen: "2026-10-14T14:40:00Z", seenSince: "2026-10-14T14:30:00Z" })], now, on);
+  assert.deepEqual([two.closed, two.openSince], [false, "2026-10-14T14:57:00.000Z"], "the device silent for 20 min does not count");
+  assert.equal(T.portalSignal([d({ lastSeen: "2026-10-14T14:45:00Z", seenSince: "2026-10-14T14:44:00Z" })], now, on).openSince, null, "closed ⇒ no open run");
+  assert.deepEqual([T.keepMinOf({ repeatMin: 45, afterMin: 10, backStableMin: 2 }), T.keepMinOf({ repeatMin: 5, afterMin: 10, backStableMin: 2 }), T.keepMinOf({ repeatMin: 5, afterMin: 60, backStableMin: 30 })], [45, 12, 90],
+    "always longer than afterMin (one glance keeps it «not closed» for exactly afterMin) and never shorter than repeatMin");
   const def = T.portalSignal([d({ lastSeen: "2026-10-14T14:59:00Z", lastVisible: "2026-10-14T14:40:00Z" })], now, { afterMin: 10 });
   assert.deepEqual([def.closed, def.hidden, def.offMin], [true, true, 20], "default = on screen only; still talking from the background ⇒ hidden");
   assert.equal(T.portalSignal([d({ lastSeen: "2026-10-14T14:45:00Z", lastVisible: "2026-10-14T14:40:00Z" })], now, { afterMin: 10 }).hidden, false, "silent everywhere ⇒ closed, not hidden");
 });
 
-test("settings: defaults (the live 10 / 45 / 3; background does not count — RG1's rule), 8 portalOffline knobs with Arabic labels in draw order, limits; the window knob is gone", () => {
+test("settings: defaults (the live 10 / 45 / 3; background does not count — RG1's rule; managerOnHold off), 9 portalOffline knobs with Arabic labels in draw order, limits (afterMin from 3); the window knob is gone", () => {
   const c = T.teamConfig({ waTeam: { members: [] } });
-  assert.deepEqual(c.portalOffline, { enabled: true, afterMin: 10, repeatMin: 45, managerAfter: 3, backStableMin: 2, dailyCap: 6, countBackground: false, backNotice: true });
+  assert.deepEqual(c.portalOffline, { enabled: true, afterMin: 10, repeatMin: 45, managerAfter: 3, backStableMin: 2, dailyCap: 6, countBackground: false, managerOnHold: false, backNotice: true });
   const keys = T.KNOBS.filter((k) => k.key.startsWith("portalOffline.")).map((k) => k.key.split(".")[1]);
-  assert.deepEqual(keys, ["enabled", "countBackground", "afterMin", "backStableMin", "repeatMin", "dailyCap", "managerAfter", "backNotice"]);
+  assert.deepEqual(keys, ["enabled", "countBackground", "afterMin", "backStableMin", "repeatMin", "dailyCap", "managerAfter", "managerOnHold", "backNotice"]);
+  /* afterMin من ٣: الحضور بيتكتب مرة في الدقيقة ⇒ بدقيقة واحدة بوابة ظاهرة طول الوقت كانت بتطلع «مقفولة» (المراجعة التانية) */
+  assert.deepEqual(T.LIMITS["portalOffline.afterMin"], [3, 60]);
+  assert.equal(T.configFromBody({ portalOffline: { afterMin: 2 } }, {}).ok, false);
+  assert.equal(T.teamConfig({ waTeam: { portalOffline: { afterMin: 1 } } }).portalOffline.afterMin, 10, "an old out-of-range value falls back to the default");
+  assert.equal(T.configFromBody({ portalOffline: { managerOnHold: "on" } }, {}).ok, false);
+  assert.equal(T.teamConfig({ waTeam: T.configFromBody({ portalOffline: { managerOnHold: true } }, {}).value }).portalOffline.managerOnHold, true);
+  /* نص مفتاح «المدير يتبلّغ بعد» زي الكود: الكاشير بيرجع ياخد لو مفيش مدير أو المدير وصل لأقصى عدد، والمدير مش «على طول» */
+  const ma = T.KNOBS.find((k) => k.key === "portalOffline.managerAfter").hint;
+  assert.match(ma, /المدير وصل لأقصى عدد ⇒ الكاشير ياخد تاني/); assert.match(ma, /في ميعاد رسالة الكاشير الجاية/); assert.doesNotMatch(ma, /على طول/);
+  assert.match(T.KNOBS.find((k) => k.key === "portalOffline.repeatMin").hint, /الرسالة الجاية بتستنى/, "the per-phone repeat trade-off is said where the owner sets it");
   for (const k of T.KNOBS.filter((x) => x.key.startsWith("portalOffline."))) {
     assert.match(k.label, /[؀-ۿ]/, k.key); assert.match(k.hint || "", /[؀-ۿ]/, `${k.key} hint`);
     if (k.type === "num") { assert.ok(Array.isArray(T.LIMITS[k.key]), k.key); assert.match(k.unit, /[؀-ۿ]/, k.key); }
@@ -553,22 +597,54 @@ test("settings: defaults (the live 10 / 45 / 3; background does not count — RG
   assert.equal(T.configFromBody({ portalOffline: { countBackground: "yes" } }, {}).ok, false);
   const ok = T.configFromBody({ portalOffline: { repeatMin: 120, managerAfter: 10, backStableMin: 5, countBackground: true, dailyCap: 4 } }, {});
   assert.equal(ok.ok, true, "any combination inside the limits saves (no cross-check left to trip on)");
-  assert.deepEqual(T.teamConfig({ waTeam: ok.value }).portalOffline, { enabled: true, afterMin: 10, repeatMin: 120, managerAfter: 10, backStableMin: 5, dailyCap: 4, countBackground: true, backNotice: true });
+  assert.deepEqual(T.teamConfig({ waTeam: ok.value }).portalOffline, { enabled: true, afterMin: 10, repeatMin: 120, managerAfter: 10, backStableMin: 5, dailyCap: 4, countBackground: true, managerOnHold: false, backNotice: true });
   assert.equal(T.teamConfig({ waTeam: { portalOffline: { dailyCap: 99 } } }).portalOffline.dailyCap, 6, "out of range ⇒ default");
   assert.equal(T.teamConfig({ waTeam: { portalOffline: { countBackground: "true" } } }).portalOffline.countBackground, false, "only a real true turns it on");
 });
 
-test("texts: cashier (closed / not on screen), manager (ignored / cap / reminder — each true when sent), «back» with the time it came back", () => {
+test("texts: cashier (closed / not on screen), manager (ignored / cap / reminder / closed again / hold / not reaching the cashier — each true when sent, «may not ring», no state said twice), «back» (stable / kept)", () => {
   assert.equal(T.portalOfflineText({ offMin: 10 }), "⚠️ البورتال مقفول من 10 دقايق — افتحه عشان الطلبات ومحادثات العملاء ترن عندك.\nافتح البورتال ↗ https://freshcuts-invite.o2m8.me/portal/");
   assert.equal(T.portalOfflineText({ offMin: 12, hidden: true }).split("\n")[0], "⚠️ البورتال مش ظاهر على الشاشة من 12 دقيقة — خليه مفتوح قدامك عشان الطلبات ومحادثات العملاء ترن عندك.");
   assert.equal(T.portalOfflineNotice({ offMin: 10 }), "البورتال مقفول من 10 دقايق — افتحه عشان الطلبات ومحادثات العملاء ترن عندك");
-  assert.equal(T.portalOfflineManagerText({ offMin: 25, alerts: 3 }).split("\n")[0], "⚠️ بورتال الكاشير مقفول من 25 دقيقة — الكاشير اتبعتله 3 تنبيهات ولسه مقفول. الطلبات ومحادثات واتساب مش بترن في المطعم.");
-  assert.equal(T.portalOfflineManagerText({ offMin: 25, reason: "cap", cap: 6 }).split("\n")[0], "⚠️ بورتال الكاشير مقفول من 25 دقيقة — الكاشير خد 6 تنبيهات النهارده (أقصى عدد) ومش هيوصله تاني النهارده. الطلبات ومحادثات واتساب مش بترن في المطعم.");
-  assert.equal(T.portalOfflineManagerText({ offMin: 70, reminder: true, hidden: true }).split("\n")[0], "⚠️ تذكير: بورتال الكاشير لسه مش ظاهر على الشاشة من ساعة و10 دقايق. الطلبات ومحادثات واتساب مش بترن في المطعم.");
-  assert.match(T.portalOfflineManagerText({ offMin: 5, alerts: 1 }), /اتبعتله تنبيه واحد ولسه مقفول/);
-  assert.equal(T.portalOfflineManagerNotice({ offMin: 25, alerts: 3 }), "بورتال الكاشير مقفول من 25 دقيقة — الكاشير اتبعتله 3 تنبيهات ولسه مقفول");
-  for (const x of [{ offMin: 600, alerts: 10 }, { offMin: 600, reason: "cap", cap: 30, hidden: true }, { offMin: 600, reminder: true }]) assert.ok(T.portalOfflineManagerNotice(x).length <= 120 && !/\n/.test(T.portalOfflineManagerNotice(x)));
+  const first = (x) => T.portalOfflineManagerText(x).split("\n")[0];
+  assert.equal(first({ offMin: 25, alerts: 3 }), "⚠️ بورتال الكاشير مقفول من 25 دقيقة رغم 3 تنبيهات للكاشير. الطلبات ومحادثات واتساب ممكن ماترنّش في المطعم.");
+  assert.equal(first({ offMin: 25, alerts: 3, hidden: true }), "⚠️ بورتال الكاشير مش ظاهر على الشاشة من 25 دقيقة رغم 3 تنبيهات للكاشير. الطلبات ومحادثات واتساب ممكن ماترنّش في المطعم.", "the state once, not twice");
+  assert.equal(first({ offMin: 25, reason: "cap", cap: 6 }), "⚠️ بورتال الكاشير مقفول من 25 دقيقة — الكاشير خد 6 تنبيهات النهارده (أقصى عدد) ومش هيوصله تاني النهارده. الطلبات ومحادثات واتساب ممكن ماترنّش في المطعم.");
+  assert.equal(first({ offMin: 70, reminder: true, hidden: true }), "⚠️ تذكير: بورتال الكاشير لسه مش ظاهر على الشاشة من ساعة و10 دقايق. الطلبات ومحادثات واتساب ممكن ماترنّش في المطعم.");
+  assert.equal(first({ offMin: 10, reminder: true, reopened: true }), "⚠️ تذكير: بورتال الكاشير اتقفل تاني — مقفول من 10 دقايق. الطلبات ومحادثات واتساب ممكن ماترنّش في المطعم.", "opened after his last message ⇒ not «still closed»");
+  assert.match(first({ offMin: 5, alerts: 1 }), /رغم تنبيه واحد للكاشير\./);
+  /* اللي وصل بس: محاولات فشلت بتتقال كده */
+  assert.equal(first({ offMin: 25, alerts: 3, delivered: 0 }), "⚠️ بورتال الكاشير مقفول من 25 دقيقة — ومش قادرين نوصل للكاشير على واتساب (3 محاولات). الطلبات ومحادثات واتساب ممكن ماترنّش في المطعم.");
+  assert.match(first({ offMin: 25, alerts: 3, delivered: 1 }), /رغم تنبيه واحد وصل للكاشير \(من 3 محاولات\)\./);
+  assert.match(first({ offMin: 25, alerts: 3, delivered: 2 }), /رغم تنبيهين وصلوا للكاشير \(من 3 محاولات\)\./);
+  /* اتقفل تاني بعد رسالة الكاشير بشوية (managerOnHold) */
+  const held = { lastAt: "2026-10-14T08:10:47Z", until: "2026-10-14T08:55:17Z" };
+  assert.equal(first({ offMin: 10, reason: "hold", held: { ...held, opened: true } }), "⚠️ بورتال الكاشير اتقفل تاني من 10 دقايق — الكاشير اتبعتله الساعة 11:10 وفتحه بعدها وقفله، ورسالته الجاية 11:55. الطلبات ومحادثات واتساب ممكن ماترنّش في المطعم.");
+  assert.equal(first({ offMin: 12, reason: "hold", held: { ...held, opened: false } }), "⚠️ بورتال الكاشير مقفول من 12 دقيقة — الكاشير اتبعتله الساعة 11:10 ولسه مافتحوش، ورسالته الجاية 11:55. الطلبات ومحادثات واتساب ممكن ماترنّش في المطعم.", "never «closed again» when it was not opened");
+  assert.equal(T.portalOfflineManagerNotice({ offMin: 25, alerts: 3 }), "بورتال الكاشير مقفول من 25 دقيقة رغم 3 تنبيهات للكاشير");
+  assert.equal(T.portalOfflineManagerNotice({ offMin: 145, reason: "cap", cap: 6, hidden: true }), "بورتال الكاشير مش ظاهر على الشاشة من ساعتين و25 دقيقة — الكاشير خد 6 تنبيهات النهارده (أقصى عدد)", "the review's cut case now fits whole");
   assert.equal(T.portalBackText({ at: "2026-10-14T13:05:00Z" }), "✅ تمام، بورتال الكاشير اتفتح تاني ومفتوح من 16:05.");
+  assert.equal(T.portalBackText({ at: "2026-10-14T10:30:00Z", kept: true, afterMin: 10 }), "✅ بورتال الكاشير رجع يتفتح من 13:30 — كل كام دقيقة، ومافضلش مقفول 10 دقايق ورا بعض (بس مش فاضل مفتوح على طول).", "kept: never claims it stayed on screen");
+  assert.equal(T.fitLine("كلمة ".repeat(40), 120).length <= 120, true); assert.match(T.fitLine("كلمة ".repeat(40), 120), /كلمة…$/, "cut at a word, with an ellipsis");
+});
+
+test("template lines (fc_staff_team_notice ≤120, one line): every manager / cashier variant fits whole for any duration 1–960 min and any cap 1–30 — no word cut in half", () => {
+  const held = { lastAt: "2026-10-14T20:59:00Z", until: "2026-10-14T21:44:00Z" };
+  let longest = 0;
+  for (let offMin = 1; offMin <= 960; offMin++) {
+    for (const hidden of [false, true]) {
+      const xs = [{ offMin, hidden, alerts: 10 }, { offMin, hidden, alerts: 30, delivered: 0 }, { offMin, hidden, alerts: 30, delivered: 12 }, { offMin, hidden, reminder: true }, { offMin, hidden, reminder: true, reopened: true },
+        { offMin, hidden, reason: "hold", held: { ...held, opened: true } }, { offMin, hidden, reason: "hold", held: { ...held, opened: false } }, ...[1, 6, 12, 30].map((cap) => ({ offMin, hidden, reason: "cap", cap }))];
+      for (const x of xs) {
+        const n = T.portalOfflineManagerNotice(x);
+        longest = Math.max(longest, n.length);
+        assert.ok(n.length <= 120 && !/\n/.test(n) && !n.endsWith("…"), `${JSON.stringify(x)} ⇒ ${n.length}: ${n}`);
+      }
+      const c = T.portalOfflineNotice({ offMin, hidden });
+      assert.ok(c.length <= 120 && !c.endsWith("…"), c);
+    }
+  }
+  assert.ok(longest <= 120, `longest manager line ${longest}`);
 });
 
 test("saving answers with the whole team payload (schema, portal, members…) — the dashboard replaces its state with the answer, so the cards no longer vanish after a save", async () => {
@@ -586,4 +662,158 @@ test("saving answers with the whole team payload (schema, portal, members…) �
   assert.equal(w.db.settings.waTeam.portalOffline.afterMin, 15);
   const bad = await routes["PUT /api/cms/wabot/team"](c({ portalOffline: { dailyCap: 0 } }));
   assert.deepEqual([bad.status, bad.body.error], [400, "invalid"]);
+});
+
+/* ═══ ٤) المراجعة التانية (١٤/١٠ بالليل): كل ملاحظة باختبار ═════════════════════════════════════════════ */
+const glances = (a, b, everyMin, day) => { const o = []; for (let t = utc(a, day); t <= utc(b, day); t += everyMin * MIN) o.push({ t, via: "poll" }); return o; };
+const DAYS7 = Object.fromEntries(["sun", "mon", "tue", "wed", "thu", "fri", "sat"].map((d) => [d, { open: "11:00", close: "03:00" }]));
+const HOURS = { enabled: true, days: DAYS7 };
+const OPEN_SERVICE = { delivery: { paused: false }, pickup: { paused: false } };
+
+test("R2 major — glances that keep the portal «not closed» end the round after keepMin (max(repeatMin, afterMin+backStableMin) = 45): the manager told in it gets an honest «back», and the next real closure starts with the cashier — not «تذكير: لسه مقفول من 10 دقايق» with the cashier skipped for hours", async () => {
+  /* سيناريو المراجعة (t4c): ٣ تنبيهات + المدير اتبلّغ، الكاشير بيبص كل ٤ دقايق ١٠:٣٠–١٤:٠٠Z، وبعدين قفلة حقيقية */
+  const w = world({ start: "2026-10-14T08:00:00Z" });
+  let mid = null;
+  const out = await play(w, { from: utc("08:00:00"), to: utc("19:00:00"), signals: [{ t: utc("08:00:00"), via: "poll" }, ...glances("10:30:00", "14:00:00", 4)], ticks: ticks47("08:00:47", "18:59:47"),
+    events: [{ t: utc("11:00:00"), fn: async (x) => { mid = await x.team.portalStatus(T.teamConfig(x.db.settings), x.now()); } }] });
+  assert.deepEqual(at(w, CASH1), ["08:10:47 cashier", "08:55:47 cashier", "09:40:47 cashier", "14:08:47 cashier", "14:53:47 cashier", "15:38:47 cashier"], "was: nothing for the cashier until 17:09:47");
+  assert.deepEqual(at(w, MGR), ["10:25:47 manager", "11:15:47 back", "16:23:47 manager", "17:08:47 manager", "17:53:47 manager", "18:38:47 manager"], "was: «تذكير … من 10 دقايق» at 14:08:47");
+  const m = texts(w, MGR);
+  assert.equal(m[1], "11:15:47 ✅ بورتال الكاشير رجع يتفتح من 13:30 — كل كام دقيقة، ومافضلش مقفول 10 دقايق ورا بعض (بس مش فاضل مفتوح على طول).");
+  assert.equal(m[2], "16:23:47 ⚠️ بورتال الكاشير مقفول من ساعتين و25 دقيقة — الكاشير خد 6 تنبيهات النهارده (أقصى عدد) ومش هيوصله تاني النهارده. الطلبات ومحادثات واتساب ممكن ماترنّش في المطعم.",
+    "the cashiers' 6th was at 15:38:47 ⇒ the cap reason (true); never «reminder» — the morning round ended at 11:15");
+  assert.equal(m[3], "17:08:47 ⚠️ تذكير: بورتال الكاشير لسه مقفول من 3 ساعات و10 دقايق. الطلبات ومحادثات واتساب ممكن ماترنّش في المطعم.");
+  const t1 = out.find((x) => x.t === utc("14:08:47")).portal;
+  assert.deepEqual([t1.stage, t1.round, t1.held], ["cashier", 1, []], "the real closure goes to the cashier first (was: held [manager_turn, manager_turn])");
+  assert.deepEqual([out.find((x) => x.t === utc("11:14:47")).portal.waitingStable, out.find((x) => x.t === utc("11:15:47")).portal.ended], [true, "kept"]);
+  assert.deepEqual([mid.alerts.reopenedAt, mid.alerts.endsAt, mid.alerts.managerTold, mid.cashier.open], ["2026-10-14T10:30:00.000Z", "2026-10-14T11:15:00.000Z", true, true], "the dashboard: open again since 10:30, the round ends by itself at 11:15");
+  assertLimits(w);
+});
+
+test("R2 major — glances right after the first alert: the morning round ends at keepMin, so the 14:10 closure needs 3 alerts of its own; a glance or two (shorter than keepMin) never end a round, and a reminder after the portal was opened again says «اتقفل تاني», not «لسه مقفول»", async () => {
+  /* t4-flap: تنبيه ٠٨:١٠ وبعدين بصّات كل ٤ دقايق ٠٨:١٢–١٤:٠٠ ⇒ كان المدير بياخد «٣ تنبيهات» وواحد منهم بتاع الصبح */
+  const w = world({ start: "2026-10-14T08:00:00Z" });
+  await play(w, { from: utc("08:00:00"), to: utc("16:30:00"), signals: [{ t: utc("08:00:00"), via: "poll" }, ...glances("08:12:00", "14:00:00", 4)], ticks: ticks47("08:00:47", "16:29:47") });
+  assert.deepEqual(at(w, CASH1), ["08:10:47 cashier", "14:10:47 cashier", "14:55:47 cashier", "15:40:47 cashier"]);
+  assert.deepEqual(at(w, MGR), ["16:25:47 manager"]);
+  assert.match(texts(w, MGR)[0], /^16:25:47 ⚠️ بورتال الكاشير مقفول من ساعتين و25 دقيقة رغم 3 تنبيهات للكاشير\./);
+  /* بصّتين بفرق ٥ دقايق: «مش مقفول» ١٥ دقيقة < ٤٥ ⇒ نفس المرة، والعدّ مابيبدأش من الأول */
+  const v = world({ start: "2026-10-14T08:00:00Z" });
+  await play(v, { from: utc("08:00:00"), to: utc("11:00:00"), signals: [{ t: utc("08:00:00"), via: "poll" }, { t: utc("09:00:00"), via: "poll" }, { t: utc("09:05:00"), via: "poll" }], ticks: ticks47("08:00:47", "10:59:47") });
+  assert.deepEqual([at(v, CASH1), at(v, MGR)], [["08:10:47 cashier", "08:55:47 cashier", "09:40:47 cashier"], ["10:25:47 manager"]]);
+  /* المدير اتبلّغ، الكاشير بص ١٠:٤٠–١١:٠٠ (٢٠ دقيقة < ٤٥) وقفل ⇒ التذكير «اتقفل تاني — مقفول من 10 دقايق»، واللي بعده «لسه مقفول» */
+  const r = world({ start: "2026-10-14T08:00:00Z" });
+  await play(r, { from: utc("08:00:00"), to: utc("12:00:00"), signals: [{ t: utc("08:00:00"), via: "poll" }, ...glances("10:40:00", "11:00:00", 4)], ticks: ticks47("08:00:47", "11:59:47") });
+  assert.deepEqual(texts(r, MGR), ["10:25:47 ⚠️ بورتال الكاشير مقفول من أول الشغل رغم 3 تنبيهات للكاشير. الطلبات ومحادثات واتساب ممكن ماترنّش في المطعم.",
+    "11:10:47 ⚠️ تذكير: بورتال الكاشير اتقفل تاني — مقفول من 10 دقايق. الطلبات ومحادثات واتساب ممكن ماترنّش في المطعم.",
+    "11:55:47 ⚠️ تذكير: بورتال الكاشير لسه مقفول من 55 دقيقة. الطلبات ومحادثات واتساب ممكن ماترنّش في المطعم."]);
+  assertLimits(w); assertLimits(v); assertLimits(r);
+});
+
+test("R2 major (kept by default, owner's switch added) — closed again soon after the cashier's message: by default the cashier waits for repeatMin (approved per-phone repeat); with «managerOnHold» the manager hears it at once, once per closure, truthfully — and gets «back»", async () => {
+  const sig34 = [{ t: utc("08:00:00"), via: "poll" }, ...polls("08:12:00", "08:16:00"), ...polls("08:50:00", "09:10:00")];
+  const sig74 = [{ t: utc("08:00:00"), via: "poll" }, ...polls("08:12:00", "08:16:00"), ...polls("09:30:00", "09:40:00")];
+  /* الافتراضي: نفس سيناريو المراجعة (t2) ⇒ مفيش رسالة للمدير، والكاشير بعد ٤٥ من رسالته */
+  const d = world({ start: "2026-10-14T08:00:00Z" });
+  const dout = await play(d, { from: utc("08:00:00"), to: utc("09:10:00"), signals: sig34, ticks: ticks47("08:00:47", "09:09:47") });
+  assert.deepEqual([at(d, CASH1), at(d, MGR)], [["08:10:47 cashier"], []]);
+  assert.deepEqual(dout.find((x) => x.t === utc("08:26:47")).portal.held.map((h) => [h.why, h.until]), [["repeat", "2026-10-14T08:55:17.000Z"], ["repeat", "2026-10-14T08:55:17.000Z"]]);
+  /* المفتاح شغّال: القفلة ٣٤ دقيقة بقت بتتقال للمدير ٠٨:٢٦:٤٧ (afterMin + أقل من دقيقة)، و«رجع» أول ما فضل مفتوح */
+  const w = world({ start: "2026-10-14T08:00:00Z", waTeam: { portalOffline: { managerOnHold: true } } });
+  const out = await play(w, { from: utc("08:00:00"), to: utc("09:10:00"), signals: sig34, ticks: ticks47("08:00:47", "09:09:47") });
+  assert.deepEqual([at(w, CASH1), at(w, MGR)], [["08:10:47 cashier"], ["08:26:47 manager", "08:52:47 back"]]);
+  assert.deepEqual(texts(w, MGR), ["08:26:47 ⚠️ بورتال الكاشير اتقفل تاني من 10 دقايق — الكاشير اتبعتله الساعة 11:10 وفتحه بعدها وقفله، ورسالته الجاية 11:55. الطلبات ومحادثات واتساب ممكن ماترنّش في المطعم.",
+    "08:52:47 ✅ تمام، بورتال الكاشير اتفتح تاني ومفتوح من 11:50."]);
+  const h = out.find((x) => x.t === utc("08:26:47")).portal;
+  assert.deepEqual([h.stage, h.manager.reason, h.manager.to[0].hold], ["cashier", "hold", true]);
+  /* القفلة ٧٤ دقيقة: المدير مرة واحدة (مش كل دقيقة)، والكاشير في ميعاده ٠٨:٥٥:٤٧ (أول تنبيه في المرة دي)، و«رجع» للمدير */
+  const l = world({ start: "2026-10-14T08:00:00Z", waTeam: { portalOffline: { managerOnHold: true } } });
+  await play(l, { from: utc("08:00:00"), to: utc("09:45:00"), signals: sig74, ticks: ticks47("08:00:47", "09:44:47") });
+  assert.deepEqual([at(l, CASH1), at(l, MGR)], [["08:10:47 cashier", "08:55:47 cashier"], ["08:26:47 manager", "09:32:47 back"]]);
+  assertLimits(w); assertLimits(l);
+});
+
+test("R2 minor — a restart during working hours, then a delivery-only pause that ends while pickup stayed open: nothing changes (resumedAt is read once after a boot) — the manager keeps his reminders and gets «back»", async () => {
+  const pauseDelivery = (on) => (x) => { const s = x.db.settings.service || {}; x.db.settings.service = { ...s, delivery: { paused: on }, pickup: { paused: false }, ...(on ? {} : { resumedAt: new Date(x.nowMs()).toISOString() }) }; };
+  const run = async (restart, sig) => {
+    const w = world({ start: "2026-10-14T07:55:00Z", settings: { hours: HOURS, service: OPEN_SERVICE } });
+    const events = [{ t: utc("11:20:00"), fn: pauseDelivery(true) }, { t: utc("11:40:00"), fn: pauseDelivery(false) }];
+    if (restart) events.push({ t: utc("09:00:10"), fn: (x) => x.restart() });
+    const out = await play(w, { from: utc("07:55:00"), to: utc("14:30:00"), signals: sig, ticks: ticks47("07:55:47", "14:29:47"), events });
+    return { w, out };
+  };
+  const closed = [{ t: utc("07:56:00"), via: "poll" }];
+  const a = await run(false, closed), b = await run(true, closed);
+  const WANT = ["10:25:47 manager", "11:10:47 manager", "11:55:47 manager", "12:40:47 manager", "13:25:47 manager", "14:10:47 manager"];
+  assert.deepEqual(at(a.w, MGR), WANT, "control");
+  assert.deepEqual(at(b.w, MGR), WANT, "with the restart: was 10:25, 11:10 then nothing until 14:05 (the round was wiped at 11:40:47)");
+  assert.deepEqual(at(b.w, CASH1), at(a.w, CASH1), "no extra cashier round after the resume");
+  assert.equal(b.out.find((x) => x.t === utc("11:40:47")).portal.cleared, undefined);
+  /* t3b: الكاشير فتح ١١:٤٢ وساب البورتال قدامه ⇒ «رجع» للمدير في الحالتين */
+  const sig = [{ t: utc("07:56:00"), via: "poll" }, ...polls("11:42:00", "12:30:00")];
+  for (const restart of [false, true]) { const { w } = await run(restart, sig); assert.deepEqual(at(w, MGR, (l) => l.at <= utc("12:30:00")), ["10:25:47 manager", "11:10:47 manager", "11:44:47 back"], `restart ${restart}`); }
+});
+
+test("R2 minor — the afterMin grace after a boot no longer wipes an open round: nothing new is sent during it, then the same round carries on (the manager's reminder, not a fresh cashier round)", async () => {
+  const w = world({ start: "2026-10-14T08:00:00Z", settings: { hours: HOURS, service: OPEN_SERVICE } });
+  const blip = (x) => { x.db.settings.service = { delivery: { paused: true }, pickup: { paused: true } }; };
+  const back = (x) => { x.db.settings.service = { ...OPEN_SERVICE, resumedAt: new Date(x.nowMs()).toISOString() }; };
+  const out = await play(w, { from: utc("08:00:00"), to: utc("11:30:00"), signals: [], ticks: ticks47("08:00:47", "11:29:47"),
+    events: [{ t: utc("10:40:10"), fn: blip }, { t: utc("10:40:30"), fn: back }, { t: utc("10:40:40"), fn: (x) => x.restart() }] });
+  const g = out.find((x) => x.t === utc("10:40:47")).portal;
+  assert.deepEqual([g.work, g.grace, g.cleared], [false, true, undefined], "boot inside the grace of a recorded resume: hold, keep the round");
+  assert.ok(w.db.portal && w.db.portal.manager_told === true, "the round (manager told 10:25:47) survived");
+  assert.deepEqual(at(w, CASH1, (l) => l.at > utc("10:00:00")), [], "was: a fresh cashier round at 10:50:47");
+  assert.deepEqual(at(w, MGR), ["10:25:47 manager", "11:10:47 manager"]);
+  assert.match(texts(w, MGR)[1], /^11:10:47 ⚠️ تذكير: بورتال الكاشير لسه مقفول/);
+});
+
+test("R2 minor — only what reached the phone counts: failed sends take nothing from the daily cap and are not «sent»; the ladder still moves (a cashier WhatsApp cannot reach must reach the manager), and his text says so; a failed manager message is not «told»", async () => {
+  /* كل رسايل الكاشيرين بتفشل */
+  const w = world({ start: "2026-10-14T08:00:00Z", fail: (ph) => ph === CASH1 || ph === CASH2 });
+  await play(w, { from: utc("08:00:00"), to: utc("11:30:00"), signals: [], ticks: ticks47("08:00:47", "11:29:47") });
+  assert.deepEqual(w.offLog().filter((l) => l.to === CASH1).map((l) => [hms(l.at), l.ok]), [["08:10:47", false], ["08:55:47", false], ["09:40:47", false]]);
+  assert.deepEqual(texts(w, MGR), ["10:25:47 ⚠️ بورتال الكاشير مقفول من أول الشغل — ومش قادرين نوصل للكاشير على واتساب (3 محاولات). الطلبات ومحادثات واتساب ممكن ماترنّش في المطعم.",
+    "11:10:47 ⚠️ تذكير: بورتال الكاشير لسه مقفول من أول الشغل. الطلبات ومحادثات واتساب ممكن ماترنّش في المطعم."], "was: «الكاشير اتبعتله 3 تنبيهات» with nothing delivered");
+  const st = await w.team.portalStatus(T.teamConfig(w.db.settings), w.now());
+  assert.deepEqual([st.sentToday, st.failedToday, st.alerts.count, st.alerts.delivered], [2, 6, 3, 0]);
+  assert.deepEqual(st.recipients.map((r) => [r.name, r.today, r.capped]), [["منى", 0, false], ["سارة", 0, false], ["خالد", 2, false]], "failures use none of the cashiers' budget");
+  /* كاشير واحد بس بيفشل ⇒ كل جولة وصلت لحد ⇒ «رغم 3 تنبيهات» */
+  const one = world({ start: "2026-10-14T08:00:00Z", fail: (ph) => ph === CASH2 });
+  await play(one, { from: utc("08:00:00"), to: utc("10:30:00"), signals: [], ticks: ticks47("08:00:47", "10:29:47") });
+  assert.match(texts(one, MGR)[0], /^10:25:47 ⚠️ بورتال الكاشير مقفول من أول الشغل رغم 3 تنبيهات للكاشير\./);
+  /* رسالة المدير فشلت ⇒ مش «اتبلّغ»: اللي بعدها مش «تذكير»، ومفيش «رجع» مستحقة */
+  const mf = world({ start: "2026-10-14T08:00:00Z", fail: (ph, t) => ph === MGR && t < utc("11:00:00") });
+  const out = await play(mf, { from: utc("08:00:00"), to: utc("12:00:00"), signals: polls("11:30:00", "12:00:00"), ticks: ticks47("08:00:47", "11:59:47") });
+  assert.equal(out.find((x) => x.t === utc("10:25:47")).portal.manager.sent, 0);
+  assert.deepEqual(at(mf, MGR), ["10:25:47 manager", "11:10:47 manager", "11:32:47 back"]);
+  assert.match(texts(mf, MGR)[0], /^11:10:47 ⚠️ بورتال الكاشير مقفول من أول الشغل رغم 3 تنبيهات للكاشير\./, "the first message that arrived is the first, not a «reminder»");
+  assertLimits(w); assertLimits(one); assertLimits(mf);
+});
+
+test("R2 minor — the database cannot be read: the tick says so in the log (once per 10 min) and the dashboard gets the card with an error and the read health, instead of nothing", async () => {
+  const w = world({ start: "2026-10-14T15:00:00Z", failSql: /FROM portal_presence/ });
+  assert.deepEqual((await w.team.tick()).portal, { skipped: "presence_db" });
+  w.setNow(utc("15:01:00")); await w.team.tick();
+  assert.equal(w.errors.filter((e) => /portal watch: presence_db/.test(e)).length, 1, "logged once, not every minute");
+  assert.equal(w.errors.filter((e) => /presence read failed/.test(e)).length, 1);
+  const st = await w.team.portalStatus(T.teamConfig(w.db.settings), w.now());
+  assert.deepEqual([st.error, st.presence.readFailing, st.presence.readErrors >= 2, st.devices, st.afterMin], ["presence_db", true, true, [], 10]);
+  const s2 = world({ start: "2026-10-14T15:00:00Z", failSql: /FROM wa_team_portal WHERE id='cashier'/ });
+  assert.deepEqual((await s2.team.tick()).portal, { skipped: "state_db" });
+  assert.equal((await s2.team.portalStatus(T.teamConfig(s2.db.settings), s2.now())).error, "state_db");
+});
+
+test("R2 minor — RG1-era presence rows (last_seen from on-screen polls only, no last_visible) get last_visible at boot: a deploy inside working hours does not tell the cashiers «مقفول من أول الشغل» for a portal seen minutes ago, and the dashboard says «مقفول من X», not «ماتفتحش»", async () => {
+  const rg1 = [{ staff_id: "s1", device: "tab", role: "cashier", staff_name: "منى", last_seen: "2026-10-14T22:35:00.000Z" },
+    { staff_id: "m1", device: "pc", role: "manager", staff_name: "خالد", last_seen: "2026-10-14T16:44:00.000Z" },
+    { staff_id: "s2", device: "ph", role: "cashier", staff_name: "سارة", last_seen: "2026-10-14T22:50:00.000Z", seen_since: "2026-10-14T22:40:00.000Z", via: "api", last_visible: null, visible_since: null }];
+  const w = world({ start: "2026-10-14T23:10:00Z", prePresence: rg1 });      // ٠٢:١٠ الرياض (خميس/جمعة لسه شغل لحد ٠٣:٠٠)
+  await w.team.ready; await w.ho.ready;
+  assert.equal(w.db.presence.get("s1|tab").last_visible, "2026-10-14T22:35:00.000Z", "RG1 row: last_visible = last_seen");
+  assert.equal(w.db.presence.get("s2|ph").last_visible, null, "a PO1 background row (via set) is left alone");
+  await play(w, { from: utc("23:11:00"), to: utc("23:11:00"), signals: [], ticks: [utc("23:11:00")] });
+  assert.equal(texts(w, CASH1)[0], "23:11:00 ⚠️ البورتال مقفول من 36 دقيقة — افتحه عشان الطلبات ومحادثات العملاء ترن عندك.", "was: «من أول الشغل»");
+  const st = await w.team.portalStatus(T.teamConfig(w.db.settings), w.now());
+  assert.deepEqual(st.devices.map((d) => [d.name, d.open, d.offMin]), [["سارة", false, 21], ["منى", false, 36], ["خالد", false, 387]], "a background-only device: «مقفول من 21 د» from its last request");
 });

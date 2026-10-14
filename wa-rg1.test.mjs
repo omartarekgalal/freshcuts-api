@@ -38,6 +38,7 @@ function hoWorld({ at = "2026-10-14T12:29:00Z" } = {}) {
       const r = db.rows.find((x) => x.id === p[0] && !x.acked_at && Date.parse(x.rung_at || x.at) <= Date.parse(p[2]));
       if (!r) return { rows: [], rowCount: 0 }; r.rung_at = p[1]; r.rings++; return { rows: [{ id: r.id }], rowCount: 1 };
     }
+    if (/^UPDATE portal_presence SET last_visible = last_seen/i.test(s)) return { rows: [], rowCount: 0 };      // PO1 (المراجعة التانية): نقل صفوف RG1 القديمة
     if (/^INSERT INTO portal_presence/i.test(s)) { db.presence.set(`${p[0]}|${p[1]}`, { staff_id: p[0], device: p[1], role: p[2], staff_name: p[3], last_seen: p[4], via: p[5], last_visible: p[6] }); return { rows: [], rowCount: 1 }; }
     if (/^SELECT staff_id, staff_name, role, device, last_seen, seen_since, via, last_visible, visible_since FROM portal_presence/i.test(s)) return { rows: [...db.presence.values()].filter((x) => Date.parse(x.last_seen) > Date.parse(p[0])) };
     throw new Error("unexpected SQL: " + s.slice(0, 90));
@@ -152,7 +153,7 @@ test("settings: every new knob has a default (on), limits, an Arabic label in th
   const c = T.teamConfig({ waTeam: { members: [] } });
   assert.deepEqual(c.portalRing, { enabled: true, everyMin: 3, capMin: 45 });
   /* PO1: القيم اللي اتظبطت على اللايف ١٤/١٠ بقت الافتراضي + المفاتيح الجديدة (wa-po1.test.mjs بيغطّيها) */
-  assert.deepEqual(c.portalOffline, { enabled: true, afterMin: 10, repeatMin: 45, managerAfter: 3, backStableMin: 2, dailyCap: 6, countBackground: false, backNotice: true });
+  assert.deepEqual(c.portalOffline, { enabled: true, afterMin: 10, repeatMin: 45, managerAfter: 3, backStableMin: 2, dailyCap: 6, countBackground: false, managerOnHold: false, backNotice: true });
   assert.deepEqual([c.ladder.managerPush, c.ladder.managerDirect], [true, true]);
   const get = (o, k) => k.split(".").reduce((x, y) => (x == null ? undefined : x[y]), o);
   for (const k of T.KNOBS) {

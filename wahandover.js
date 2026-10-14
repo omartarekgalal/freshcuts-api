@@ -29,6 +29,8 @@
      • بعد المراجعة: الإشارة لازم تيجي من الجهاز نفسه. نبضة البث (ping كل ٢٠ ث) السيرفر هو اللي بيبعتها ومابيعرفش الجهاز استلمها ولا
        لأ (تاب متجمّد أو تابلت فصل) ⇒ مابقتش حضور؛ البث بيتحسب مرة واحدة لما الجهاز يفتحه. وrequirePortal بيعلّم الطلب (a.seen) فالمسار
        مابيعدّهوش تاني، وأي فشل في كتابة الحضور بيتسجّل (health()) بدل ما يضيع في صمت.
+     • المراجعة التانية: صفوف RG1 القديمة بتاخد last_visible = last_seen مرة واحدة (PRESENCE_BACKFILL — كانت من استطلاع ظاهر بس)، وhealth()
+       فيها failing / readFailing (آخر كتابة / قراية فشلت) عشان التحذير يبقى «دلوقتي» مش «حصل مرة من يوم التشغيل».
 ═══════════════════════════════════════════════════════════════════════════ */
 import { bizDay, bizStart } from "./bizday.js";
 
@@ -95,6 +97,12 @@ export const PRESENCE_UPSERT = `INSERT INTO portal_presence(staff_id, device, ro
                               OR portal_presence.last_visible < EXCLUDED.last_visible - ${GAP_SQL}
                          THEN EXCLUDED.last_visible ELSE portal_presence.visible_since END,
     last_visible = GREATEST(portal_presence.last_visible, EXCLUDED.last_visible)`;
+/* المراجعة التانية: صفوف RG1 (قبل PO1) مالهاش last_visible، وكانت بتتكتب من استطلاع قايمة التحويلات بس — والبوابة مابتستطلعش غير والشاشة
+   ظاهرة (PortalApp: `if (document.visibilityState !== "visible") return`) ⇒ last_seen بتاعها إشارة «ظاهرة» فعلاً. من غير النقل ده أول دورة بعد
+   الـdeploy كانت بتشوف البوابة «ماتفتحتش خالص» (رسالة «مقفول من أول الشغل» لبوابة كانت ظاهرة من دقايق) واللوحة «ماتفتحش».
+   via IS NULL = الصف اتكتب بكود RG1 بس (PO1 دايماً بيكتب via). مرة واحدة بالطبيعة: بعدها last_visible مش NULL. */
+export const PRESENCE_BACKFILL = `UPDATE portal_presence SET last_visible = last_seen, visible_since = COALESCE(visible_since, seen_since, last_seen)
+  WHERE via IS NULL AND last_visible IS NULL`;
 const waitAr = (m) => (m < 1 ? "لسه دلوقتي" : m === 1 ? "دقيقة" : m === 2 ? "دقيقتين" : m <= 10 ? `${m} دقايق` : `${m} دقيقة`);
 /* بصمة الجهاز من غير أي بيانات شخصية: hash قصير للـuser-agent (تابلت الكاشير ≠ موبايله) */
 export function deviceOf(ua) {
@@ -151,7 +159,8 @@ export function register(app, ctx, deps = {}) {
   const { pool } = ctx;
   const now = deps.now || (() => new Date());
   const log = deps.log || console;
-  const ready = pool.query(DDL).then(() => true).catch((e) => { log.error("[wa-handover] schema:", e.message); return false; });
+  const ready = pool.query(DDL).then(() => pool.query(PRESENCE_BACKFILL).catch((e) => log.error("[wa-handover] presence backfill:", e.message)))
+    .then(() => true).catch((e) => { log.error("[wa-handover] schema:", e.message); return false; });
   const pushApi = () => { try { return typeof deps.push === "function" ? deps.push() : deps.push || null; } catch { return null; } };
   const say = (ev, d) => { try { deps.broadcast?.(ev, d); } catch (e) { log.error("[wa-handover] broadcast:", e.message); } };
 
@@ -277,9 +286,13 @@ export function register(app, ctx, deps = {}) {
      أول إشارة في الدقيقة لكل موظف/جهاز بتتكتب على طول؛ اللي بعدها جوّه نفس الدقيقة بيتحفظ (الأحدث، والأحدث «الظاهر») وبيتكتب
      في flush بعد ما الدقيقة تخلص ⇒ كتابة واحدة في الدقيقة بالكتير، وآخر ظهور مابيقعش دقيقة ورا الحقيقة. */
   const seenAt = new Map();
-  /* صحة الكتابة (بعد المراجعة): الكتابة مش مستنيّة (مابتأخّرش الطلب)، بس أي فشل بيتعدّ ويتسجّل في اللوج — أول مرة وبعدها مرة كل ١٠ دقايق */
-  const health = { writes: 0, errors: 0, lastOkAt: null, lastError: null, lastErrorAt: null };
-  let loggedErrAt = -Infinity;
+  /* صحة الكتابة (بعد المراجعة): الكتابة مش مستنيّة (مابتأخّرش الطلب)، بس أي فشل بيتعدّ ويتسجّل في اللوج — أول مرة وبعدها مرة كل ١٠ دقايق.
+     المراجعة التانية: العدّاد بيفضل (تاريخ)، بس «بيفشل دلوقتي» = آخر محاولة فشلت (failing: lastErrorAt بعد lastOkAt) — غلطة واحدة عدّت
+     وبعدها آلاف كتابات ناجحة مابقتش تعمل تحذير أحمر للأبد. ونفس الكلام للقراية (presence() فشلت ⇒ التنبيه واللوحة مش شايفين حاجة). */
+  const health = { writes: 0, errors: 0, lastOkAt: null, lastError: null, lastErrorAt: null, readErrors: 0, lastReadOkAt: null, lastReadError: null, lastReadErrorAt: null };
+  const after = (a, b) => Boolean(a) && (!b || Date.parse(a) >= Date.parse(b));
+  const healthNow = () => ({ ...health, failing: after(health.lastErrorAt, health.lastOkAt), readFailing: after(health.lastReadErrorAt, health.lastReadOkAt) });
+  let loggedErrAt = -Infinity, loggedReadErrAt = -Infinity;
   const write = (r) => ready.then(() => pool.query(PRESENCE_UPSERT,
     [String(r.user.id).slice(0, 60), r.dev, String(r.user.role), r.user.name ? String(r.user.name).slice(0, 60) : null,
       new Date(r.t).toISOString(), r.via, r.vis ? new Date(r.vis).toISOString() : null]))
@@ -338,9 +351,15 @@ export function register(app, ctx, deps = {}) {
       await ready;
       const r = await pool.query(`SELECT staff_id, staff_name, role, device, last_seen, seen_since, via, last_visible, visible_since FROM portal_presence
         WHERE last_seen > $1 ORDER BY last_seen DESC LIMIT 100`, [new Date(now().getTime() - 7 * 24 * 60 * MIN).toISOString()]);
+      health.lastReadOkAt = now().toISOString();
       return (r.rows || []).map((x) => ({ staffId: x.staff_id, name: x.staff_name || null, role: x.role, device: x.device, lastSeen: isoOf(x.last_seen),
         seenSince: isoOf(x.seen_since), via: x.via || null, lastVisible: isoOf(x.last_visible), visibleSince: isoOf(x.visible_since) }));
-    } catch { return null; }
+    } catch (e) {
+      health.readErrors++; health.lastReadError = clip(e && e.message, 160); health.lastReadErrorAt = now().toISOString();
+      const t = now().getTime();
+      if (t - loggedReadErrAt >= 10 * MIN) { loggedReadErrAt = t; try { log.error("[wa-handover] presence read failed:", health.lastReadError, `(${health.readErrors} so far)`); } catch { /* */ } }
+      return null;
+    }
   }
 
   const uaOf = (c) => (c.req && typeof c.req.header === "function" ? c.req.header("user-agent") : null);
@@ -369,5 +388,5 @@ export function register(app, ctx, deps = {}) {
     return c.json({ ok: true });
   });
 
-  return { emit, openList, ringDue, escalate, touch, seen, flush, presence, health: () => ({ ...health }), ready, stop: () => { if (flushTimer) clearInterval(flushTimer); } };
+  return { emit, openList, ringDue, escalate, touch, seen, flush, presence, health: healthNow, ready, stop: () => { if (flushTimer) clearInterval(flushTimer); } };
 }
