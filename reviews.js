@@ -452,6 +452,8 @@ export function register(app, ctx, deps = {}) {
           let r = null; try { r = await wr.reviewAsk({ phone: iv.phone_norm, orderNo: iv.order_no, code: iv.code }); } catch { r = null; }
           if (r && r.ok) { await pool.query("UPDATE review_invites SET sent_at=NOW(), channel=$2 WHERE order_no=$1", [iv.order_no, String(r.channel || "wa")]); out.sent++; out.wa = (out.wa || 0) + 1; continue; }
           if (r && r.final) { await mark("skip_reason", `wa_${String(r.skipped || "stopped")}`.slice(0, 80)); out.skipped++; continue; }
+          /* ١٤/١٠ (wapolicy): قالب بفلوس لنفس الطلب لسه طالع من دقايق ⇒ الدعوة تتأجل لحد «until» (مش SMS، ومش إلغاء) */
+          if (r && r.defer && r.until && Number.isFinite(Date.parse(r.until))) { await mark("due_at", new Date(r.until).toISOString()); out.deferred = (out.deferred || 0) + 1; continue; }
           if (r && r.skipped) await mark("wa_skip", String(r.skipped).slice(0, 80));
         }
         const body = askBody(cf.askText, `${STORE_PUBLIC()}/r?c=${iv.code}`);

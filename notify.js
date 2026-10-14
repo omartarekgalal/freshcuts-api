@@ -400,7 +400,8 @@ export function register(app, ctx, deps = {}) {
         attempts.push(Promise.resolve());
       }
     }
-    const smsSkippedForWa = Boolean(waResult?.ok && waReplaces);
+    /* ١٤/١٠ (wapolicy): واتساب شال المرحلة عمداً والنافذة مقفولة («بنجهّز») ⇒ مفيش SMS بدلها برضه لو المرحلة «تغني عن الـSMS» — الهدف توفير، والـPush وصفحة التتبع شغّالين */
+    const smsSkippedForWa = Boolean((waResult?.ok || waResult?.policy === true) && waReplaces);
 
     /* 🎁 رصيد الولاء (قالب خدمي fc_loyalty_status) — بعد ما الطلب «اتسلّم» (توصيل/استلام/طاولة: نفس اللي المحرّك بيعدّه)،
        مرة وحدة للطلب، واتساب بس (مفيش SMS بديل: رصيد مش مستاهل رسالة بفلوس، وكود المكافأة له رسالته).

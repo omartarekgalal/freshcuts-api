@@ -52,3 +52,16 @@ test("SMS only as the fallback, with the reason kept; a customer who stopped get
   const none = rig({ invites: IV() });
   await none.run(); assert.equal(none.sms.length, 1, "no WhatsApp module wired ⇒ exactly the old SMS path");
 });
+
+/* ١٤/١٠ (wapolicy): قالب بفلوس لنفس الطلب لسه طالع ⇒ reviewAsk بيرجّع defer ⇒ الدعوة تتأجل (due_at) — مش SMS ومش إلغاء؛ والمسح اللي بعده بيبعتها */
+test("defer: a paid template for the same order minutes ago ⇒ the invite moves to «until» — no SMS, no skip; the next sweep sends it", async () => {
+  const until = "2026-10-14T18:30:00.000Z";
+  let n = 0;
+  const a = rig({ invites: IV(), waReply: () => (++n === 1 ? { ok: false, skipped: "paid_gap", defer: true, until } : { ok: true, channel: "wa_template" }) });
+  const r = await a.run();
+  assert.deepEqual([r.sent, r.deferred, a.sms.length, a.invites[0].due_at, a.invites[0].skip_reason, a.invites[0].sent_at], [0, 1, 0, until, undefined, undefined]);
+  const r2 = await a.run();
+  assert.deepEqual([r2.sent, a.invites[0].channel, a.sms.length], [1, "wa_template", 0]);
+  const m = rig({ invites: IV(), waReply: { ok: true, channel: "wa_merged" } });
+  await m.run(); assert.deepEqual([m.invites[0].channel, m.sms.length], ["wa_merged", 0], "merged into the delivered message: marked sent, nothing else");
+});

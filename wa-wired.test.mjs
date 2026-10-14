@@ -50,7 +50,8 @@ const withEnv = (vals, fn) => async () => {
 const ON = { WHATSAPP_ENABLED: "1", WHATSAPP_TOKEN: "tok", WHATSAPP_PHONE_ID: "PHONE1" };
 /* SW1: تحديثات الطلب بقت لكل مرحلة (notifications.whatsappStages، الافتراضي فاضي) — الاختبارات دي عن النص والحارس، فكل المراحل مشغّلة فيها. */
 const ALL_STAGES = Object.keys(W.STAGE_TEMPLATES);
-function setup({ pool, fetch, settings = { notifications: { whatsappEnabled: true, whatsappStages: ALL_STAGES }, waMaster: { enabled: true } } } = {}) {
+/* ١٤/١٠: سياسة النافذة المقفولة (wapolicy.js، «بنجهّز» مابتطلعش قالب) مقفولة هنا — الاختبارات دي عن نص كل قالب. السياسة نفسها في wa-policy.test.mjs. */
+function setup({ pool, fetch, settings = { notifications: { whatsappEnabled: true, whatsappStages: ALL_STAGES }, waMaster: { enabled: true }, waBot: { closedPolicy: false } } } = {}) {
   const app = fakeApp();
   const f = fetch || fakeFetch();
   const p = pool || memPool();

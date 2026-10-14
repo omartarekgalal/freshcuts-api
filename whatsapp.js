@@ -34,6 +34,7 @@
 ═══════════════════════════════════════════════════════════════════════════ */
 
 import { courierOf, courierChatUrl } from "./couriercontact.js";      // SB5
+import { waPolicyCfg, closedWindowStage } from "./wapolicy.js";      // ١٤/١٠: سياسة النافذة المقفولة
 import crypto from "node:crypto";
 import { sendSms as defaultSendSms } from "./accounts.js";
 import { isOptOutText } from "./wamsg.js";
@@ -580,6 +581,13 @@ export function register(app, ctx, deps = {}) {
       -- رفض من المتجر). عمود marketing لوحده مايكفيش: صف جديد بيتولد false من غير ما العميل يقول حاجة.
       ALTER TABLE wa_optins ADD COLUMN IF NOT EXISTS marketing_off_at TIMESTAMPTZ;
       -- أسماء جهات الاتصال من تطبيق واتساب بزنس + اسم البروفايل من الوارد
+      -- ١٤/١٠ (wapolicy.js): رسايل طلب اتشالت عمداً والنافذة مقفولة («بنجهّز» / التقييم اندمج في التوصيل) — للتقرير اليومي (مش wa_messages: صف هناك = رسالة صادرة)
+      CREATE TABLE IF NOT EXISTS wa_policy_skips (
+        id BIGSERIAL PRIMARY KEY,
+        order_no TEXT, phone_norm TEXT, stage TEXT, reason TEXT,
+        at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS wa_policy_skips_at_idx ON wa_policy_skips(at);
       CREATE TABLE IF NOT EXISTS wa_contact_names (
         phone_norm TEXT PRIMARY KEY,
         full_name TEXT, first_name TEXT, profile_name TEXT,
@@ -1011,6 +1019,19 @@ export function register(app, ctx, deps = {}) {
           }
         }
       } catch (e) { console.error("[wa] window update:", e.message); }
+    }
+    /* ١٤/١٠ — «مانبعتش قالب بفلوس لكل مرحلة» (wapolicy.js): النافذة **مقفولة** ⇒ «بنجهّز» (accepted) مابتطلعش قالب (waBot.closedPolicy + closedSkipPreparing).
+       بنتأكد من النافذة بنفسنا (مش من فشل المسار الحر): مفتوحة والرسالة الحرة ماطلعتش لأي سبب ⇒ القالب زي الأول. الشطب بيتسجّل في wa_policy_skips للتقرير،
+       وnotify.js مابيبعتش SMS بدلها (policy:true). */
+    if (order.phone_norm) {
+      const dec = closedWindowStage(stage, waPolicyCfg(snap || {}));
+      if (!dec.send) {
+        let open = null; try { open = await windowOpen(String(order.phone_norm)); } catch { open = null; }
+        if (open === false) {
+          pool.query("INSERT INTO wa_policy_skips(order_no, phone_norm, stage, reason) VALUES ($1,$2,$3,$4)", [String(order.order_no).slice(0, 30), String(order.phone_norm), stage, dec.reason]).catch(() => {});
+          return { ok: false, skipped: `policy_${dec.reason}`, policy: true };
+        }
+      }
     }
     /* SB4: نسخة v2 (بزر رد سريع يفتح نافذة) بعد ما المالك يحط المرحلة في waBot.windowV2Stages (يعني ميتا اعتمدتها) */
     if (stage === "on_the_way" && wb.courierTemplate === true && courier && courier.first_name && courier.wa && TEMPLATES.fc_order_on_the_way_courier) {      // SB5: بعد اعتماد ميتا

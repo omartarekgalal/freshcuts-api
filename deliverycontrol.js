@@ -28,6 +28,7 @@ import { DEFAULT_COURIER_ROUTING, courierRoutingCfg, API_PROVIDER_IDS } from "./
 import { DEFAULT_DISPATCH_DELAY_MIN, dispatchDelayOf, dispatchMode, DISPATCH_MODES, DEFAULT_POLICY } from "./delivery.js";
 import { districtCfg } from "./districts.js";
 import { applyPathChanges } from "./settings-guard.js";
+import { trackEtaCfg } from "./tracketa.js";
 
 /* ── عنوان الحقل جوّه الإعدادات ──────────────────────────────────────────── */
 export function getAt(obj, path) {
@@ -129,6 +130,24 @@ export const FIELDS = [
   { path: "delivery.courierSla.farGuard.mode", group: "zone", type: "enum",
     label: "الطلب البعيد قبل طلب المندوب",
     options: ENUM({ v: "suggest", label: "يتبعت عادي + تنبيه (الافتراضي)" }, { v: "confirm", label: "يستنى تأكيد المدير" }, { v: "off", label: "مقفول" }) },
+
+  /* ── صفحة تتبّع العميل: «يوصلك تقريباً» (tracketa.js) — قبل الاستلام نطاق من مهل التحضير، وبعده وقت من موقع المندوب ── */
+  { path: "delivery.trackEta.enabled", group: "zone", type: "bool",
+    label: "صفحة التتبع — اعرض للعميل وقت الوصول المتوقع",
+    hint: "قبل ما المندوب يستلم: نطاق بس (بين كذا وكذا) من «تقدير التحضير» و«المعتاد: الكابتن في المطعم» و«تسليم الشنطة». بعد الاستلام: وقت واحد بيتحدّث مع كل موقع للمندوب. لو الوقت فات بيقول «قريب جداً»." },
+  { path: "delivery.trackEta.speedKmh", group: "zone", type: "num", min: 5, max: 80, step: 1,
+    label: "صفحة التتبع — سرعة المندوب جوّه المدينة (كم/س)" },
+  { path: "delivery.trackEta.roadFactor", group: "zone", type: "num", min: 1, max: 3, step: 0.05,
+    label: "صفحة التتبع — معامل الطريق (الخط المستقيم × كام)",
+    hint: "بيتستخدم لو الطلب مالوش مسافة طريق محفوظة وقت التسعير، أو المفتاح اللي تحت مقفول." },
+  { path: "delivery.trackEta.useRouteRatio", group: "zone", type: "bool",
+    label: "صفحة التتبع — استخدم مسافة الطريق المحفوظة للطلب (جوجل) بدل المعامل" },
+  { path: "delivery.trackEta.doorMin", group: "zone", type: "num", min: 0, max: 20, step: 1,
+    label: "صفحة التتبع — دقايق التسليم عند الباب" },
+  { path: "delivery.trackEta.rangeMin", group: "zone", type: "int", min: 5, max: 60,
+    label: "صفحة التتبع — عرض النطاق قبل الاستلام (د)" },
+  { path: "delivery.trackEta.staleMin", group: "zone", type: "int", min: 2, max: 30,
+    label: "صفحة التتبع — موقع المندوب أقدم من كده (د) = نحسب من وقت الاستلام" },
 
   /* ── عقد لاجلك ── */
   { path: "delivery.leajlakContract.flatExVat", group: "contract", type: "num", min: 0, max: 500, step: 0.01,
@@ -404,6 +423,7 @@ export function effectiveOf(path, settings, envRead) {
   if (path.startsWith("delivery.courierSla.")) return getAt({ x: e.courierSla }, "x." + path.slice("delivery.courierSla.".length));
   if (path.startsWith("delivery.leajlakContract.")) return e.leajlakContract[path.slice("delivery.leajlakContract.".length)];
   if (path.startsWith("delivery.sla.")) return e.sla[path.slice("delivery.sla.".length)];
+  if (path.startsWith("delivery.trackEta.")) return trackEtaCfg(settings)[path.slice("delivery.trackEta.".length)];
   const raw = getAt(settings || {}, path);
   return raw === undefined ? null : raw;
 }

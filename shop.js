@@ -57,6 +57,9 @@ import { recordCheckoutConsent } from "./consent.js";
 import { makeNameResolver } from "./product-names.js";
 import { tableSessionForCheckout, tableGate, touchTableSession, tableCfg, tableBusy, TABLE_MSG, posOptionOf, tableNote, tableWho, tableTrackLabel, cleanCustomerText } from "./table-order.js";
 import { posMilestones, prepCfg, prepCheck, prepSmsEnabled, orderKind, WEBHOOKS_SQL, PREP_DDL } from "./prepstatus.js";
+import { computeTrackEta, trackStages } from "./tracketa.js";
+import { courierOf, courierToken, COURIER_TEMPLATE_BASE } from "./couriercontact.js";
+import { followLinkOf } from "./wapolicy.js";
 
 /* ناقل أحداث الطلب (W1-01) وترحيل أعمدة shop_orders — تحميل كسول ودفاعي (W1-02):
    لو الملفات مش موجودة أو الـimport وقع، shop.js بيشتغل عادي والأحداث بتتجاهل.
@@ -1782,13 +1785,27 @@ export function register(app, ctx, deps = {}) {
     return r.rows[0]?.code || null;
   }
 
+  /* بطاقة المندوب في صفحة التتبع (١٤/١٠): اسمه الأول، رقمه مقنّع للعرض، و«راسل المندوب» = رابطنا الموقّع freshcuts.sa/m/<توقيع>
+     (بيموت لوحده بعد التسليم — couriercontact.js)، ونوع المركبة/اللوحة لو الشركة بعتتها (مفيش مزوّد بيبعتها لحد ١٤/١٠). */
+  function courierCard(sh, row) {
+    let d = sh && sh.driver;
+    if (typeof d === "string") { try { d = JSON.parse(d); } catch { d = null; } }
+    if (!d || typeof d !== "object") return {};
+    const co = courierOf(d, row.order_no);
+    const digits = String(d.phone || d.mobile || "").replace(/\D/g, "");
+    const masked = digits.length >= 7 ? `${digits.slice(0, 3)}${"•".repeat(Math.max(0, digits.length - 7))}${digits.slice(-4)}` : null;
+    const tok = co && co.wa ? courierToken(row.order_no) : null;
+    const vehicle = [d.vehicle, d.vehicle_type, d.vehicleType, d.car, d.plate, d.plate_number].map((x) => (x == null ? "" : String(x).trim())).filter(Boolean).join(" · ").slice(0, 60) || null;
+    return { firstName: co ? co.first_name : null, phoneMasked: masked, chatUrl: tok ? `${COURIER_TEMPLATE_BASE}${tok}` : null, vehicle };
+  }
+
   /* Customer tracking — delivery-app style stages + courier driver info. */
   app.get("/api/shop/track/:orderNo", async (c) => {
     const row = await getOrderRow(c.req.param("orderNo"));
     if (!row) return c.json({ ok: false, found: false }, 404);
     const stage = STAGES[row.status] || { label: row.status, step: 0 };
     let label = stage.label, step = stage.step;
-    let courier = null;
+    let courier = null, ship = null;
     const ready = Boolean(row.pos_ready_at);
 
     const tl = tableTrackLabel(row, { ready });
@@ -1835,13 +1852,16 @@ export function register(app, ctx, deps = {}) {
         label = "المطعم بيجهّز طلبك 👨‍🍳"; step = 2;
       }
       // المندوب بيظهر أول ما يتعيّن (مش بس بعد «جاهز»)
+      try { ship = await delivery.shipmentOf(row.order_no); } catch { ship = null; }
       if (ready || ["courier_assigned", "on_the_way", "delivered"].includes(row.status)) {
-        const sh = await delivery.shipmentOf(row.order_no);
+        const sh = ship;
         if (sh) {
           courier = {
             status: sh.status, driver: sh.driver || null,
             // محطّتا المندوب (١٧ سبتمبر) — العميل بيشوف إن الكابتن واصل فعلاً
             arrivedAt: sh.arrived_at || null, pickedAt: sh.picked_at || null,
+            assignedAt: sh.assigned_at || null, deliveredAt: sh.delivered_at || null,
+            ...courierCard(sh, row),
           };
           /* «الكابتن في المطعم» أوضح بكتير من «بيجهّز» وهو واقف عندنا فعلاً.
              بيتعرض بس لما الشركة تقول وصل ولسه ما استلمش. */
@@ -1852,9 +1872,20 @@ export function register(app, ctx, deps = {}) {
         }
       }
     }
+    /* ١٤/١٠ — صفحة تتبّع زي التطبيقات: المراحل الخمسة بأوقاتها + «يوصلك تقريباً» (نطاق قبل الاستلام، وقت بعده — tracketa.js)
+       + زر «تابع طلبك على واتساب» (wapolicy.js: بيفتح نافذة الـ٢٤ ساعة فالتحديثات بعدها ببلاش). أي فشل هنا مايوقفش التتبع. */
+    let stages = null, eta = null, wa = null;
+    try {
+      const st = await getSettingsData();
+      stages = trackStages({ row, sh: ship });
+      eta = computeTrackEta({ row, sh: ship, settings: st, now: Date.now() });
+      const fl = followLinkOf({ settings: st, orderNo: row.order_no, status: row.status });
+      wa = fl ? { follow: fl } : null;
+    } catch (e) { console.error("[shop] track extras:", e.message); }
     return c.json({
       ok: true, found: true, orderNo: row.order_no, status: row.status,
       label, step, option: row.option,
+      stages, eta, wa,
       // 🍽 رقم الطاولة: صفحة التتبع بتعرض خطوات الصالة بدل «جاهز للاستلام من الفرع»
       table: Number(row.table_no) > 0 ? Number(row.table_no) : null,
       // 🎁 الولاء: «كل N طلبات = توصيل مجاني» — العميل يشوف هو فين (من غير جوال)

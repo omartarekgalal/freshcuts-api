@@ -266,6 +266,7 @@ export function assistEligible({ acfg, cfg, phone, ev, cls, d, afterWait = null,
   const weightMine = cls.key === "weight" && acfg.weightToAssistant === true;      // PS4: وزن + مشوي ⇒ المساعد
   const nt = normalize(String((ev && ev.text) || ""));
   /* PS5: حالة الطلب للقواعد = سؤال حقيقي عن طلب + طلب مفتوح (openOrder: true، أو null = مانعرفش ⇒ القواعد). غير كده المساعد (وهو بيقرا حالة الطلب بأداته لو السؤال عنها). */
+  if (cls.key === "status" && cls.rawIntent === "follow_link") return no("rules:follow_link");      // ١٤/١٠: زر «تابع طلبك» ⇒ الحالة من القواعد دايماً (ببلاش ومضمونة)
   const statusMine = cls.key === "status" && !(STATUS_ASK_RE.test(nt) && !HYPO_RE.test(nt) && openOrder !== false);
   const coldMine = cls.key === "complaint" && !recentOrder && COLD_ASK_RE.test(nt) && !COMPLAINT_WORDS_RE.test(nt);
   if (RULES_OWN.has(cls.key) && !(sessionActive && IN_SESSION.has(cls.key)) && !cartEdit && !remindAsk && !weightMine && !statusMine && !coldMine) return no(`rules:${cls.key}`);

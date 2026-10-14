@@ -297,3 +297,18 @@ test("حفظ المراحل: للمالك بس، بقراءة جديدة من م
   const rm = await call(down.app, "POST /api/cms/wa-cloud/stages", { json: { stages: [] } });
   assert.deepEqual([rm.status, rm.body.enabled], [200, []]);
 }));
+
+/* ١٤/١٠ — سياسة النافذة المقفولة (wapolicy.js): «بنجهّز» مابتطلعش قالب، ومفيش SMS بدلها لو المرحلة «تغني عن الـSMS»؛ الاستلام والتوصيل قالب زي ما هم.
+   النافذة مفتوحة ⇒ المسار الحر زي النهارده (ولا شطب). المفتاح مقفول ⇒ كل مرحلة قالب زي الأول. */
+test("closed window policy: «preparing» is left out (no template, no SMS in its place), received + delivered still go; open window or switch off ⇒ unchanged", withEnv(ALLOW, async () => {
+  const mk = (waBot = {}, inbound = []) => world({ inbound, settings: { waBot: { windowFreeUpdates: false, ...waBot }, notifications: { whatsappEnabled: true, smsEnabled: true, smsStages: ["pos_created", "accepted", "delivered"], pushEnabled: false,
+    whatsappStages: ["pos_created", "accepted", "delivered"], whatsappReplacesSmsStages: ["pos_created", "accepted", "delivered"] } }, optins: { [CUST]: { updates: true } }, orders: { W1: ORDER } });
+  const run = async (w) => { for (const st of ["pos_created", "accepted", "delivered"]) await w.notify.orderStatusChanged("W1", st); await flush(); return { wa: w.calls.map((c) => c.body.template.name), sms: w.db.sms.map((m) => String(m.ref).split(":")[1]) }; };
+  const closed = mk();
+  assert.deepEqual(await run(closed), { wa: ["fc_order_received", "fc_order_delivered"], sms: [] }, "preparing skipped on WhatsApp AND no SMS instead");
+  assert.ok(closed.db.sql.some((s) => /^INSERT INTO wa_policy_skips/.test(s)), "the skip is recorded for the daily report");
+  assert.deepEqual((await closed.wa.sendOrderUpdate({ order_no: "W1", phone_norm: CUST, ...ORDER }, "accepted")), { ok: false, skipped: "policy_skip_preparing", policy: true });
+  assert.deepEqual(await run(mk({}, [CUST])), { wa: ["fc_order_received", "fc_order_preparing", "fc_order_delivered"], sms: [] }, "window open ⇒ nothing is left out (free path off here ⇒ templates as before)");
+  assert.deepEqual(await run(mk({ closedPolicy: false })), { wa: ["fc_order_received", "fc_order_preparing", "fc_order_delivered"], sms: [] }, "policy switched off ⇒ every stage as before");
+  assert.deepEqual(await run(mk({ closedSkipPreparing: false })), { wa: ["fc_order_received", "fc_order_preparing", "fc_order_delivered"], sms: [] }, "only that rule switched off ⇒ preparing goes");
+}));

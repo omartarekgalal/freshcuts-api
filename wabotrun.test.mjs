@@ -168,7 +168,7 @@ function world({ waBot = {}, notifications = { whatsappEnabled: true }, orders =
         const echo = /'echo'/.test(s), inbound = /'in'/.test(s);
         const row = inbound ? { wamid: p[0], direction: "in", phone_norm: p[1], body: p[2], source: "api", created_at: iso() }
           : echo ? { wamid: p[0], direction: "out", phone_norm: p[1], body: p[2], source: "echo", created_at: p[4] || iso() }
-            : { wamid: p[0], direction: "out", phone_norm: p[1], template: p[2], status: p[6], body: p[8], source: p[10], created_at: iso() };
+            : { wamid: p[0], direction: "out", phone_norm: p[1], template: p[2], category: p[3], order_no: p[4], stage: p[5], status: p[6], body: p[8], source: p[10], created_at: iso() };
         db.msgs.push(row);
         return { rows: [{ id: db.msgs.length }], rowCount: 1 };
       }
@@ -254,6 +254,12 @@ function world({ waBot = {}, notifications = { whatsappEnabled: true }, orders =
       if (/FROM shop_coupons WHERE code=\$1/i.test(s)) return { rows: first && first.code === p[0] ? [first] : [] };
       if (/FROM shop_orders WHERE order_no=\$1 AND phone_norm=\$2/i.test(s)) return { rows: orders.filter((o) => o.order_no === p[0] && o.phone_norm === p[1]) };
       if (/^SELECT customer->>'name' AS name FROM shop_orders/i.test(s)) return { rows: orders.filter((o) => o.phone_norm === p[0]).slice(-1).map((o) => ({ name: o.customer?.name ?? null })) };
+      /* ١٤/١٠: زر «تابع طلبك» + سياسة النافذة المقفولة (wapolicy.js) */
+      if (/^INSERT INTO wa_bot_chats\(phone_norm, follow_order, follow_at\)/i.test(s)) { Object.assign(chat(p[0]), { follow_order: p[1], follow_at: iso() }); return { rows: [] }; }
+      if (/^INSERT INTO wa_policy_skips/i.test(s)) { (db.policySkips ||= []).push({ order_no: p[0], phone_norm: p[1], stage: /'review'/.test(s) ? "review" : p[2], reason: /'review_merged'/.test(s) ? "review_merged" : p[3], at: iso() }); return { rows: [], rowCount: 1 }; }
+      if (/FROM wa_policy_skips WHERE at >= \$1/i.test(s)) return { rows: (db.policySkips || []).map((x) => ({ order_no: x.order_no, stage: x.stage, reason: x.reason })) };
+      if (/^SELECT template, source, stage, created_at AS at FROM wa_messages WHERE order_no=\$1 AND direction='out'/i.test(s)) return { rows: db.msgs.filter((m) => m.order_no === p[0] && m.direction === "out" && !["failed", "skipped"].includes(m.status)).map((m) => ({ template: m.template || null, source: m.source || null, stage: m.stage || null, at: m.created_at })).reverse() };
+      if (/^SELECT order_no, stage, template, source FROM wa_messages WHERE direction='out' AND order_no IS NOT NULL AND stage IS NOT NULL/i.test(s)) return { rows: db.msgs.filter((m) => m.direction === "out" && m.order_no && m.stage && !["failed", "skipped"].includes(m.status)).map((m) => ({ order_no: m.order_no, stage: m.stage, template: m.template || null, source: m.source || null })) };
       /* SB4: نوافذ الـ٢٤ ساعة */
       if (/^SELECT driver FROM dl_shipments WHERE shop_order_no=\$1/i.test(s)) return { rows: (db.shipments || []).filter((x) => x.order_no === p[0]).slice(-1).map((x) => ({ driver: x.driver })) };
       if (/^SELECT review_code, review_order, review_asked_at FROM wa_bot_chats/i.test(s)) { const ch = db.chats.get(p[0]); return { rows: ch ? [{ review_code: ch.review_code || null, review_order: ch.review_order || null, review_asked_at: ch.review_asked_at || null }] : [] }; }
@@ -4570,7 +4576,7 @@ test("SB4 window: the daily report carries paid templates vs free messages, SAR 
   const w = world({ waBot: { mode: "test", testPhones: TESTERS } });
   const r = await w.call("GET", "/api/cms/wabot/assist/daily");
   const win = r.body.report.window;
-  assert.deepEqual(Object.keys(win).sort(), ["free_messages", "free_order_updates", "keeper", "note", "paid_templates", "saved_sar"]);
+  assert.deepEqual(Object.keys(win).sort(), ["free_messages", "free_order_updates", "keeper", "note", "orders", "paid_templates", "saved_sar"]);      // ١٤/١٠: + orders (لكل طلب بفلوس/ببلاش/اتشال)
   assert.deepEqual(Object.keys(win.keeper).sort(), ["nothing_useful", "ordered", "replied", "sent"]);
   assert.equal(typeof win.paid_templates.sar, "number");
 }));
@@ -4623,4 +4629,78 @@ test("SB4 window: once the owner lists a stage in windowV2Stages (Meta approved)
   const b = w.calls.length; await w.wa.sendOrderUpdate({ order_no: "W1790012345678", phone_norm: "512345678", option: "delivery" }, "on_the_way");
   const tp = w.calls.slice(b).map((c) => c.body).find((x) => x.type === "template");
   assert.equal(tp.template.name, "fc_order_on_the_way_v2"); assert.equal(tp.template.components[0].parameters[0].text, "W1790012345678");
+}));
+
+/* ١٤/١٠ — زر «📲 تابع طلبك على واتساب» (صفحة الشكر/التتبع) + سياسة النافذة المقفولة (wapolicy.js) */
+test("follow button: «تابع طلبي W…» (ar/en) ⇒ that order's status from the rules + «سنرسل لك هنا كل تحديث» + tracking button; the chat is marked order-follow; never the assistant", withEnv(CONFIGURED, async () => {
+  const ORD = { order_no: "W1790012345678", phone_norm: "512345678", status: "accepted", option: "delivery", created_at: "2026-10-12T14:50:00Z" };
+  const w = world({ waBot: { mode: "test", testPhones: TESTERS }, orders: [ORD] });
+  const t = await w.say("تابع طلبي W1790012345678");
+  assert.equal(t.log.reply_key, "status", JSON.stringify(t.log));
+  const m = t.sent.find((b) => b.type);
+  assert.match(JSON.stringify(m), /طلبك رقم W1790012345678/); assert.match(JSON.stringify(m), /✅ تم — سنرسل لك هنا كل تحديث على طلبك\./);
+  assert.match(JSON.stringify(m), /freshcuts\.sa\/track\/W1790012345678/);
+  assert.equal(w.db.chats.get("512345678").follow_order, "W1790012345678");
+  for (const txt of ["تابع طلبي W1790012345678", "Track my order W1790012345678", "📲 تابع طلبي رقم W1790012345678", "track my order #w1790012345678"]) {
+    const c = R.classify({ type: "text", text: txt });
+    assert.deepEqual([c.key, c.rawIntent, c.entities.orderNo], ["status", "follow_link", "W1790012345678"], txt);
+  }
+  assert.notEqual(R.classify({ type: "text", text: "ابي اتابع طلبي W1790012345678 وين وصل وليش تأخر" }).rawIntent, "follow_link", "only the ready-made text, not any sentence");
+  const A = await import("./waassistrun.js");
+  const el = A.assistEligible({ acfg: { mode: "live" }, cfg: { mode: "live", testPhones: [] }, phone: "512345678", ev: { text: "تابع طلبي W1790012345678" }, cls: R.classify({ type: "text", text: "تابع طلبي W1790012345678" }), d: { act: "reply" }, allowed: true, openOrder: false });
+  assert.deepEqual([el.run, el.why], [false, "rules:follow_link"]);
+  // another phone cannot read the order by its number
+  const other = await w.say("تابع طلبي W1790012345678", { from: "966500000009" });
+  assert.doesNotMatch(JSON.stringify(other.sent), /W1790012345678: /);
+}));
+
+test("closed window: delivered went with «تمام 👍 / عندي ملاحظة» (v2 template or free) ⇒ NO separate paid review template for the order; plain delivered ⇒ the review waits reviewPaidGapMin after the last paid template", withEnv(LOCKS_OPEN, async () => {
+  const CAT = await import("./watemplates.js"); const WA = await import("./whatsapp.js"); WA.registerCatalog(CAT);
+  const O = { order_no: "W1790012345678", phone_norm: "512345678", option: "delivery" };
+  const mk = (waBot = {}) => world({ waBot: { mode: "test", testPhones: TESTERS, windowV2Stages: ["delivered"], ...waBot }, notifications: { whatsappEnabled: true, whatsappStages: ["delivered"] } });
+  // ١) v2 template (window closed) ⇒ merged
+  const a = mk(); await a.say("هلا"); a.clock.advance(25 * 60); a.db.optins["512345678"] = { updates: true };
+  await a.wa.sendOrderUpdate(O, "delivered");
+  assert.equal(a.calls.at(-1).body.template.name, "fc_order_delivered_v2");
+  a.clock.advance(31); const n0 = a.calls.length;
+  assert.deepEqual(await a.bot.reviewAsk({ phone: "0512345678", orderNo: O.order_no, code: "ab12cd34" }), { ok: true, channel: "wa_merged" });
+  assert.equal(a.calls.length, n0, "no review template went out");
+  assert.deepEqual(a.db.policySkips.map((x) => [x.order_no, x.stage, x.reason]), [[O.order_no, "review", "review_merged"]]);
+  assert.equal(a.db.chats.get("512345678").review_code, "ab12cd34", "a typed «تمام» still counts as the answer");
+  // the daily report: one order, 1 paid, 1 left out by the policy
+  const rep = (await a.call("GET", "/api/cms/wabot/assist/daily")).body.report.window.orders;
+  assert.deepEqual([rep.orders, rep.paid, rep.free, rep.policy_skipped], [1, 1, 0, 1]);
+  assert.deepEqual(rep.list[0].stages.map((s) => [s.stage, s.kind]), [["delivered", "paid"], ["review", "skipped"]]);
+  assert.ok(rep.saved_sar > 0);
+  // ٢) free delivered inside the window, review after the window closed ⇒ merged too
+  const f = mk(); await f.say("هلا"); f.db.optins["512345678"] = { updates: true };
+  assert.equal((await f.wa.sendOrderUpdate(O, "delivered")).free, true);
+  f.clock.advance(25 * 60);
+  assert.deepEqual(await f.bot.reviewAsk({ phone: "0512345678", orderNo: O.order_no, code: "ab12cd34" }), { ok: true, channel: "wa_merged" });
+  // ٣) old delivered template (no buttons) ⇒ the review waits 30 min after it, then goes
+  const p = mk({ windowV2Stages: [] }); await p.say("هلا"); p.clock.advance(25 * 60); p.db.optins["512345678"] = { updates: true };
+  await p.wa.sendOrderUpdate(O, "delivered"); assert.equal(p.calls.at(-1).body.template.name, "fc_order_delivered");
+  p.clock.advance(10);
+  const d = await p.bot.reviewAsk({ phone: "0512345678", orderNo: O.order_no, code: "ab12cd34" });
+  assert.deepEqual([d.ok, d.skipped, d.defer], [false, "paid_gap", true]); assert.ok(Date.parse(d.until) > p.clock.now().getTime());
+  p.clock.advance(21);
+  assert.deepEqual(await p.bot.reviewAsk({ phone: "0512345678", orderNo: O.order_no, code: "ab12cd34" }), { ok: true, channel: "wa_template" });
+  assert.equal(p.calls.at(-1).body.template.name, "fc_review_request");
+  // ٤) switches off ⇒ as before
+  const off = mk({ mergeDeliveredReview: false }); await off.say("هلا"); off.clock.advance(25 * 60); off.db.optins["512345678"] = { updates: true };
+  await off.wa.sendOrderUpdate(O, "delivered"); off.clock.advance(31);
+  assert.deepEqual(await off.bot.reviewAsk({ phone: "0512345678", orderNo: O.order_no, code: "ab12cd34" }), { ok: true, channel: "wa_template" });
+  const cfg = R.botConfig({ waBot: {} });
+  assert.deepEqual([cfg.followLink, cfg.followNumber, cfg.closedPolicy, cfg.closedSkipPreparing, cfg.mergeDeliveredReview, cfg.reviewPaidGapMin], [true, "966546715683", true, true, true, 30], "defaults ON");
+}));
+
+test("policy settings: in the bot schema with Arabic labels, saved through the bot settings route with validation", withEnv(CONFIGURED, async () => {
+  for (const k of ["followLink", "followNumber", "closedPolicy", "closedSkipPreparing", "mergeDeliveredReview", "reviewPaidGapMin"]) { assert.ok(R.SCHEMA[k], k); assert.match(R.SCHEMA[k].ar, /[؀-ۿ]/, k); }
+  const w = world({ waBot: { mode: "test", testPhones: TESTERS } });
+  const put = async (b) => w.call("PUT", "/api/cms/wabot/config", b);
+  const r1 = await put({ closedSkipPreparing: false, reviewPaidGapMin: 45, followNumber: "0546715683" });
+  assert.equal(r1.status, 200, JSON.stringify(r1.body));
+  assert.deepEqual([w.db.settings.waBot.closedSkipPreparing, w.db.settings.waBot.reviewPaidGapMin, w.db.settings.waBot.followNumber], [false, 45, "966546715683"]);
+  assert.equal((await put({ reviewPaidGapMin: 999 })).status, 400);
+  assert.equal((await put({ followNumber: "abc" })).status, 400);
 }));
