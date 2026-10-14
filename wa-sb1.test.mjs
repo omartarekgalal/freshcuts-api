@@ -271,3 +271,13 @@ test("(18) SB3 slim tool results: same prices and ids, no English names in an Ar
   assert.ok(JSON.stringify(sb).length < JSON.stringify(box).length, "the box: lighter"); assert.equal(sb.box.price, box.box.price);
   assert.equal(AR.slimForModel("get_offers", { a: 1 }, "ar").a, 1, "other tools untouched");
 });
+
+test("(19) batch20 regressions: the first-order line goes before the QUESTION sentence of a one-paragraph reply (not above the intro); «لا شكراً، ارسل رابط السلة» gets the cart, never a new suggestion", async () => {
+  assert.equal(S.placeLine("أبشر، معك ماجد، المساعد الرقمي لفريش كاتس. بوكس البرجر لشخصين بـ 65 ر.س. توصيل ولا استلام؟", "🎁 سطر"), "أبشر، معك ماجد، المساعد الرقمي لفريش كاتس. بوكس البرجر لشخصين بـ 65 ر.س.\n🎁 سطر\nتوصيل ولا استلام؟");
+  const c = chat([use(["preview_cart", { option: "pickup", items: [{ id: "8", qty: 1 }] }]), say("كريب زنجر سوبريم بـ 25 ر.س.")], { world: { profile: "returning" } });
+  const r = await c.turn("لا شكراً، ارسل رابط السلة استلام");
+  assert.equal(r.trace.tools[0].result.suggestion, null, "asked for the link: no offer in this turn");
+  const c2 = chat([say("ولا يهمك."), use(["preview_cart", { option: "pickup", items: [{ id: "8", qty: 1 }] }]), say("كريب زنجر سوبريم بـ 25 ر.س.")], { world: { profile: "returning" } });
+  await c2.turn("لا شكراً");
+  assert.equal((await c2.turn("كريب زنجر سوبريم استلام")).trace.tools[0].result.suggestion, null, "a plain «لا شكراً» = no more suggestions in this chat");
+});

@@ -1,0 +1,1823 @@
+[
+ {
+  "id": "sb1-buyer-returning-one-to-reward",
+  "group": "returning, 2 of 3 orders: loyalty line with the order; two meals ⇒ the box for two offered once, declined",
+  "world": {
+   "profile": "returning",
+   "loyaltyN": 2
+  },
+  "expect": {
+   "cart": {
+    "option": "pickup",
+    "items": [
+     {
+      "id": 17,
+      "qty": 1
+     },
+     {
+      "id": 16,
+      "qty": 1
+     }
+    ]
+   },
+   "mustContain": [
+    "باقي لك طلب واحد من الموقع",
+    "استلام من الفرع: بدون رسوم توصيل"
+   ],
+   "turnButtons": {
+    "1": "أضفه|لا شكراً"
+   },
+   "maxCount": [
+    [
+     "وجبتين مشاوي لشخصين",
+     1
+    ]
+   ],
+   "noHandover": true
+  },
+  "turns": [
+   {
+    "i": 0,
+    "customer": "هلا",
+    "cls": "greet",
+    "raw": "greeting",
+    "by": "assistant",
+    "reply": "هلا والله أحمد 👋 معك ماجد، المساعد الرقمي لفريش كاتس. آخر طلب لك كان *كريب زنجر سوبريم* ×٢ ووجبة كفتة. نفس الطلب؟",
+    "cart": null,
+    "handover": null,
+    "outcome": "sent",
+    "tools": [],
+    "verdicts": [
+     {
+      "ok": true,
+      "problems": [],
+      "text": "هلا والله أحمد 👋 معك ماجد، المساعد الرقمي لفريش كاتس. آخر طلب لك كان كريب زنجر سوبريم ×٢ ووجبة كفتة. نفس الطلب؟"
+     }
+    ],
+    "calls": [
+     {
+      "model": "claude-sonnet-5-5",
+      "tier": "strong",
+      "ms": 1948,
+      "outcome": "ok",
+      "in": 1536,
+      "out": 86,
+      "cached": 21652,
+      "costSar": 0.030984
+     }
+    ],
+    "ms": 2000,
+    "costSar": 0.030984,
+    "model": "claude-sonnet-5-5",
+    "suggestions": [],
+    "context": {
+     "open_now": true,
+     "closes_at": "2 فجراً",
+     "location_shared": false,
+     "introduce_yourself": {
+      "say": "معك ماجد، المساعد الرقمي لفريش كاتس",
+      "rule": "use this phrase once in this message, exactly as it is"
+     },
+     "you": {
+      "name": "ماجد",
+      "name_en": "Majed",
+      "what": "Fresh Cuts' digital assistant (not a human)"
+     },
+     "customer": {
+      "known": true,
+      "name": "أحمد",
+      "orders": 7,
+      "status": "repeat",
+      "days_since_last": 6,
+      "usual_basket_sar": 92.4,
+      "usual_mode": "delivery",
+      "usual_hour": 20,
+      "favourites": [
+       {
+        "name": "وجبة كفتة",
+        "times": 4
+       },
+       {
+        "name": "كريب زنجر سوبريم",
+        "times": 3
+       }
+      ],
+      "taste": "مشاوي",
+      "last_order": {
+       "days_ago": 6,
+       "channel": "website",
+       "mode": "delivery",
+       "total": 74,
+       "items": [
+        {
+         "name": "كريب زنجر سوبريم",
+         "qty": 2
+        },
+        {
+         "name": "وجبة كفتة",
+         "qty": 1
+        }
+       ]
+      },
+      "districts": [
+       "الصفا"
+      ],
+      "loyalty": {
+       "every": 3,
+       "progress": 2,
+       "left": 1,
+       "reward": "free_delivery",
+       "min_total": 60,
+       "status": "باقي طلب واحد"
+      },
+      "unused_rewards": [],
+      "first_order_offer": false,
+      "language": "ar",
+      "had_a_bad_experience_before": true
+     },
+     "offers": {
+      "first_order": {
+       "eligible": false,
+       "code": "FIRST",
+       "free_delivery": true,
+       "min_total": 60,
+       "reason": "used"
+      },
+      "loyalty": {
+       "every": 3,
+       "progress": 2,
+       "left": 1,
+       "reward": "free_delivery",
+       "min_total": 60,
+       "status": "باقي طلب واحد"
+      }
+     },
+     "branch": "📍 فرعنا في حي السلامة بجدة، عند دوار رامي.",
+     "boxes": [
+      "box-solo-crepe: بوكس الكريب الفردي",
+      "box-solo-mixgrill: بوكس الميكس جريل الفردي",
+      "box-solo-burger: بوكس البرجر الفردي",
+      "box-solo-pasta: بوكس الباستا الفردي",
+      "box-solo-hawawshi: بوكس الحواوشي الفردي",
+      "box-solo-meal: بوكس وجبة المشاوي الفردي",
+      "box-crepe-duo: بوكس الكريب لشخصين",
+      "box-mixgrill-duo: ميكس جريل لشخصين",
+      "box-pizza-pasta: بيتزا وباستا لشخصين",
+      "box-meals-duo: وجبتين مشاوي لشخصين",
+      "box-burger-duo: بوكس البرجر لشخصين",
+      "box-late-night: بوكس السهرة",
+      "box-taste-all: بوكس التشكيلة",
+      "box-grill-half-half: بوكس المشاوي نص ونص",
+      "box-family: بوكس العائلة — مشاوي وبيتزا وباستا",
+      "box-pizza-night: بوكس سهرة البيتزا",
+      "box-mashakel: بوكس المشكل المخصوص",
+      "box-ribs-grill: بوكس الريش والمشاوي"
+     ]
+    },
+    "tier": "strong",
+    "escalated": false,
+    "lang": "ar",
+    "introByModel": true,
+    "buttons": [
+     "إيه، جهّزه ✅",
+     "أبغى شي ثاني"
+    ]
+   },
+   {
+    "i": 1,
+    "customer": "ابي وجبة كفتة ووجبة طرب",
+    "cls": "items",
+    "raw": "item_info",
+    "by": "assistant",
+    "reply": "*وجبة كفتة* ووجبة طرب بـ 51 ر.س. وبـ 65 ر.س يصير *وجبتين مشاوي لشخصين*.\n⭐ باقي لك طلب واحد من الموقع وتاخذ توصيل مجاني على طلبك اللي بعده (للطلبات من 60 ر.س).\nأحوّله بوكس؟",
+    "cart": null,
+    "handover": null,
+    "outcome": "sent",
+    "tools": [
+     {
+      "name": "search_menu",
+      "input": {
+       "query": "وجبة كفتة"
+      },
+      "result": {
+       "ok": true,
+       "results": [
+        {
+         "id": "17",
+         "name": "وجبة كفتة",
+         "name_en": "Kofta Meal",
+         "price": 24,
+         "section": "وجبات",
+         "kind": "main",
+         "sold_out": false,
+         "by_weight": false,
+         "also_as": {
+          "by_weight": {
+           "id": "91",
+           "name": "كفتة مشوية بالوزن",
+           "name_en": "Grilled Kofta (by the kilo)",
+           "sold_out": false,
+           "weights": [
+            {
+             "label": "ثلث كيلو",
+             "label_en": "1/3 Kilo",
+             "price": 40,
+             "variant_option_id": 44
+            },
+            {
+             "label": "نصف كيلو",
+             "label_en": "1/2 Kilo",
+             "price": 60,
+             "variant_option_id": 45
+            },
+            {
+             "label": "كيلو",
+             "label_en": "Kilo",
+             "price": 120,
+             "variant_option_id": 46
+            }
+           ],
+           "description": "كفتة مشوية على الفحم — متاح بثلث كيلو ونصف كيلو وكيلو"
+          }
+         },
+         "description": "وجبة كفتة مشوية تُقدَّم مع الأرز والسلطة والطحينة"
+        },
+        {
+         "id": "87",
+         "name": "وجبة كفتة وطرب",
+         "name_en": "Kofta & Tarb Meal",
+         "price": 37,
+         "section": "وجبات",
+         "kind": "main",
+         "sold_out": false,
+         "by_weight": false
+        },
+        {
+         "id": "18",
+         "name": "وجبة ميكس جريل",
+         "name_en": "Mixed Grill Meal",
+         "price": 37,
+         "section": "وجبات",
+         "kind": "main",
+         "sold_out": false,
+         "by_weight": false
+        },
+        {
+         "id": "15",
+         "name": "وجبة صدور مشوية",
+         "name_en": "Grilled Chicken Breast Meal",
+         "price": 25,
+         "section": "وجبات",
+         "kind": "main",
+         "sold_out": false,
+         "by_weight": false,
+         "also_as": {
+          "by_weight": {
+           "id": "111",
+           "name": "صدور مشوية بالوزن",
+           "name_en": "Grilled Chicken Breast (by the kilo)",
+           "sold_out": false,
+           "weights": [
+            {
+             "label": "ثلث كيلو",
+             "label_en": "1/3 Kilo",
+             "price": 30,
+             "variant_option_id": 65
+            },
+            {
+             "label": "نصف كيلو",
+             "label_en": "1/2 Kilo",
+             "price": 45,
+             "variant_option_id": 66
+            },
+            {
+             "label": "كيلو",
+             "label_en": "Kilo",
+             "price": 90,
+             "variant_option_id": 67
+            }
+           ],
+           "description": "صدور مشوية على الفحم — متاح بثلث كيلو ونصف كيلو وكيلو"
+          }
+         },
+         "description": "وجبة صدور دجاج مشوية تُقدَّم مع الأرز والسلطة والطحينة"
+        },
+        {
+         "id": "16",
+         "name": "وجبة طرب",
+         "name_en": "Tarb Meal",
+         "price": 27,
+         "section": "وجبات",
+         "kind": "main",
+         "sold_out": false,
+         "by_weight": false,
+         "also_as": {
+          "by_weight": {
+           "id": "94",
+           "name": "طرب مشوي بالوزن",
+           "name_en": "Grilled Tarb (by the kilo)",
+           "sold_out": false,
+           "weights": [
+            {
+             "label": "ثلث كيلو",
+             "label_en": "1/3 Kilo",
+             "price": 47,
+             "variant_option_id": 47
+            },
+            {
+             "label": "نصف كيلو",
+             "label_en": "1/2 Kilo",
+             "price": 70,
+             "variant_option_id": 48
+            },
+            {
+             "label": "كيلو",
+             "label_en": "Kilo",
+             "price": 140,
+             "variant_option_id": 49
+            }
+           ],
+           "description": "طرب مشوي على الفحم — متاح بثلث كيلو ونصف كيلو وكيلو"
+          }
+         },
+         "description": "وجبة طرب مشوية تُقدَّم مع الأرز والسلطة والطحينة"
+        },
+        {
+         "id": "90",
+         "name": "وجبة شيش طاووق",
+         "name_en": "Shish Tawook Meal",
+         "price": 27,
+         "section": "وجبات",
+         "kind": "main",
+         "sold_out": false,
+         "by_weight": false,
+         "also_as": {
+          "by_weight": {
+           "id": "114",
+           "name": "شيش طاووق مشوي بالوزن",
+           "name_en": "Grilled Shish Tawook (by the kilo)",
+           "sold_out": false,
+           "weights": [
+            {
+             "label": "ثلث كيلو",
+             "label_en": "1/3 Kilo",
+             "price": 37,
+             "variant_option_id": 68
+            },
+            {
+             "label": "نصف كيلو",
+             "label_en": "1/2 Kilo",
+             "price": 55,
+             "variant_option_id": 69
+            },
+            {
+             "label": "كيلو",
+             "label_en": "Kilo",
+             "price": 110,
+             "variant_option_id": 70
+            }
+           ],
+           "description": "شيش طاووق مشوي على الفحم — متاح بثلث كيلو ونصف كيلو وكيلو"
+          }
+         },
+         "description": "وجبة شيش طاووق مشوية تُقدَّم مع الأرز والسلطة والطحينة"
+        },
+        {
+         "id": "13",
+         "name": "وجبة نصف دجاجة على الفحم",
+         "name_en": "Half Charcoal Chicken Meal",
+         "price": 28,
+         "section": "وجبات",
+         "kind": "main",
+         "sold_out": false,
+         "by_weight": false
+        },
+        {
+         "id": "91",
+         "name": "كفتة مشوية بالوزن",
+         "name_en": "Grilled Kofta (by the kilo)",
+         "section": "مشاوي بالوزن",
+         "kind": "main",
+         "sold_out": false,
+         "by_weight": true,
+         "weights": [
+          {
+           "label": "ثلث كيلو",
+           "label_en": "1/3 Kilo",
+           "price": 40,
+           "variant_option_id": 44
+          },
+          {
+           "label": "نصف كيلو",
+           "label_en": "1/2 Kilo",
+           "price": 60,
+           "variant_option_id": 45
+          },
+          {
+           "label": "كيلو",
+           "label_en": "Kilo",
+           "price": 120,
+           "variant_option_id": 46
+          }
+         ],
+         "how_to_price": "sold by weight: every price belongs to ONE of the weights above; always say the weight with its price",
+         "also_as": {
+          "meal": {
+           "id": "17",
+           "name": "وجبة كفتة",
+           "name_en": "Kofta Meal",
+           "price": 24,
+           "sold_out": false,
+           "description": "وجبة كفتة مشوية تُقدَّم مع الأرز والسلطة والطحينة"
+          }
+         }
+        }
+       ]
+      },
+      "ms": 18
+     },
+     {
+      "name": "search_menu",
+      "input": {
+       "query": "وجبة طرب"
+      },
+      "result": {
+       "ok": true,
+       "results": [
+        {
+         "id": "16",
+         "name": "وجبة طرب",
+         "name_en": "Tarb Meal",
+         "price": 27,
+         "section": "وجبات",
+         "kind": "main",
+         "sold_out": false,
+         "by_weight": false,
+         "also_as": {
+          "by_weight": {
+           "id": "94",
+           "name": "طرب مشوي بالوزن",
+           "name_en": "Grilled Tarb (by the kilo)",
+           "sold_out": false,
+           "weights": [
+            {
+             "label": "ثلث كيلو",
+             "label_en": "1/3 Kilo",
+             "price": 47,
+             "variant_option_id": 47
+            },
+            {
+             "label": "نصف كيلو",
+             "label_en": "1/2 Kilo",
+             "price": 70,
+             "variant_option_id": 48
+            },
+            {
+             "label": "كيلو",
+             "label_en": "Kilo",
+             "price": 140,
+             "variant_option_id": 49
+            }
+           ],
+           "description": "طرب مشوي على الفحم — متاح بثلث كيلو ونصف كيلو وكيلو"
+          }
+         },
+         "description": "وجبة طرب مشوية تُقدَّم مع الأرز والسلطة والطحينة"
+        },
+        {
+         "id": "18",
+         "name": "وجبة ميكس جريل",
+         "name_en": "Mixed Grill Meal",
+         "price": 37,
+         "section": "وجبات",
+         "kind": "main",
+         "sold_out": false,
+         "by_weight": false
+        },
+        {
+         "id": "17",
+         "name": "وجبة كفتة",
+         "name_en": "Kofta Meal",
+         "price": 24,
+         "section": "وجبات",
+         "kind": "main",
+         "sold_out": false,
+         "by_weight": false,
+         "also_as": {
+          "by_weight": {
+           "id": "91",
+           "name": "كفتة مشوية بالوزن",
+           "name_en": "Grilled Kofta (by the kilo)",
+           "sold_out": false,
+           "weights": [
+            {
+             "label": "ثلث كيلو",
+             "label_en": "1/3 Kilo",
+             "price": 40,
+             "variant_option_id": 44
+            },
+            {
+             "label": "نصف كيلو",
+             "label_en": "1/2 Kilo",
+             "price": 60,
+             "variant_option_id": 45
+            },
+            {
+             "label": "كيلو",
+             "label_en": "Kilo",
+             "price": 120,
+             "variant_option_id": 46
+            }
+           ],
+           "description": "كفتة مشوية على الفحم — متاح بثلث كيلو ونصف كيلو وكيلو"
+          }
+         },
+         "description": "وجبة كفتة مشوية تُقدَّم مع الأرز والسلطة والطحينة"
+        },
+        {
+         "id": "15",
+         "name": "وجبة صدور مشوية",
+         "name_en": "Grilled Chicken Breast Meal",
+         "price": 25,
+         "section": "وجبات",
+         "kind": "main",
+         "sold_out": false,
+         "by_weight": false,
+         "also_as": {
+          "by_weight": {
+           "id": "111",
+           "name": "صدور مشوية بالوزن",
+           "name_en": "Grilled Chicken Breast (by the kilo)",
+           "sold_out": false,
+           "weights": [
+            {
+             "label": "ثلث كيلو",
+             "label_en": "1/3 Kilo",
+             "price": 30,
+             "variant_option_id": 65
+            },
+            {
+             "label": "نصف كيلو",
+             "label_en": "1/2 Kilo",
+             "price": 45,
+             "variant_option_id": 66
+            },
+            {
+             "label": "كيلو",
+             "label_en": "Kilo",
+             "price": 90,
+             "variant_option_id": 67
+            }
+           ],
+           "description": "صدور مشوية على الفحم — متاح بثلث كيلو ونصف كيلو وكيلو"
+          }
+         },
+         "description": "وجبة صدور دجاج مشوية تُقدَّم مع الأرز والسلطة والطحينة"
+        },
+        {
+         "id": "90",
+         "name": "وجبة شيش طاووق",
+         "name_en": "Shish Tawook Meal",
+         "price": 27,
+         "section": "وجبات",
+         "kind": "main",
+         "sold_out": false,
+         "by_weight": false,
+         "also_as": {
+          "by_weight": {
+           "id": "114",
+           "name": "شيش طاووق مشوي بالوزن",
+           "name_en": "Grilled Shish Tawook (by the kilo)",
+           "sold_out": false,
+           "weights": [
+            {
+             "label": "ثلث كيلو",
+             "label_en": "1/3 Kilo",
+             "price": 37,
+             "variant_option_id": 68
+            },
+            {
+             "label": "نصف كيلو",
+             "label_en": "1/2 Kilo",
+             "price": 55,
+             "variant_option_id": 69
+            },
+            {
+             "label": "كيلو",
+             "label_en": "Kilo",
+             "price": 110,
+             "variant_option_id": 70
+            }
+           ],
+           "description": "شيش طاووق مشوي على الفحم — متاح بثلث كيلو ونصف كيلو وكيلو"
+          }
+         },
+         "description": "وجبة شيش طاووق مشوية تُقدَّم مع الأرز والسلطة والطحينة"
+        },
+        {
+         "id": "13",
+         "name": "وجبة نصف دجاجة على الفحم",
+         "name_en": "Half Charcoal Chicken Meal",
+         "price": 28,
+         "section": "وجبات",
+         "kind": "main",
+         "sold_out": false,
+         "by_weight": false
+        },
+        {
+         "id": "87",
+         "name": "وجبة كفتة وطرب",
+         "name_en": "Kofta & Tarb Meal",
+         "price": 37,
+         "section": "وجبات",
+         "kind": "main",
+         "sold_out": false,
+         "by_weight": false
+        },
+        {
+         "id": "94",
+         "name": "طرب مشوي بالوزن",
+         "name_en": "Grilled Tarb (by the kilo)",
+         "section": "مشاوي بالوزن",
+         "kind": "main",
+         "sold_out": false,
+         "by_weight": true,
+         "weights": [
+          {
+           "label": "ثلث كيلو",
+           "label_en": "1/3 Kilo",
+           "price": 47,
+           "variant_option_id": 47
+          },
+          {
+           "label": "نصف كيلو",
+           "label_en": "1/2 Kilo",
+           "price": 70,
+           "variant_option_id": 48
+          },
+          {
+           "label": "كيلو",
+           "label_en": "Kilo",
+           "price": 140,
+           "variant_option_id": 49
+          }
+         ],
+         "how_to_price": "sold by weight: every price belongs to ONE of the weights above; always say the weight with its price",
+         "also_as": {
+          "meal": {
+           "id": "16",
+           "name": "وجبة طرب",
+           "name_en": "Tarb Meal",
+           "price": 27,
+           "sold_out": false,
+           "description": "وجبة طرب مشوية تُقدَّم مع الأرز والسلطة والطحينة"
+          }
+         }
+        }
+       ]
+      },
+      "ms": 18
+     },
+     {
+      "name": "preview_cart",
+      "input": {
+       "items": [
+        {
+         "id": "17",
+         "qty": 1
+        },
+        {
+         "id": "16",
+         "qty": 1
+        }
+       ]
+      },
+      "result": {
+       "ok": true,
+       "option": "delivery",
+       "lines": [
+        {
+         "id": "17",
+         "name": "وجبة كفتة",
+         "name_en": "Kofta Meal",
+         "price": 24,
+         "qty": 1,
+         "total": 24,
+         "kind": "main"
+        },
+        {
+         "id": "16",
+         "name": "وجبة طرب",
+         "name_en": "Tarb Meal",
+         "price": 27,
+         "qty": 1,
+         "total": 27,
+         "kind": "main"
+        }
+       ],
+       "subtotal": 51,
+       "problems": [],
+       "note": "prices include VAT; the delivery fee is separate and shown by quote_delivery and again on the site before payment",
+       "saved": false,
+       "suggestion": {
+        "kind": "pair",
+        "when": "meal_x2",
+        "name": "وجبتين مشاوي لشخصين",
+        "box": {
+         "slug": "box-meals-duo",
+         "name": "وجبتين مشاوي لشخصين",
+         "name_en": "Grill Meals for Two",
+         "price": 65,
+         "description": "وجبتين مشاوي من اختيارك + بطاطس + كولسلو + دوريتوس + مشروبين غازيين."
+        },
+        "cart_subtotal": 51
+       },
+       "suggestion_say": "say this line as it is (computed by our system), as the only question of your message: «وبـ 65 ر.س يصير وجبتين مشاوي لشخصين. أحوّله بوكس؟»",
+       "suggestion_rule": "you may offer this ONE suggestion as a short question; nothing else. Two buttons «add it» / «no thanks» are attached automatically"
+      },
+      "ms": 11
+     }
+    ],
+    "verdicts": [
+     {
+      "ok": true,
+      "problems": [],
+      "text": "وجبة كفتة ووجبة طرب بـ 51 ر.س. وبـ 65 ر.س يصير وجبتين مشاوي لشخصين. أحوّله بوكس؟"
+     }
+    ],
+    "calls": [
+     {
+      "model": "claude-sonnet-5-5",
+      "tier": "strong",
+      "ms": 1547,
+      "outcome": "ok",
+      "in": 313,
+      "out": 106,
+      "cached": 22877,
+      "costSar": 0.02348
+     },
+     {
+      "model": "claude-sonnet-5-5",
+      "tier": "strong",
+      "ms": 1282,
+      "outcome": "ok",
+      "in": 4041,
+      "out": 74,
+      "cached": 23124,
+      "costSar": 0.050426
+     },
+     {
+      "model": "claude-sonnet-5-5",
+      "tier": "strong",
+      "ms": 1633,
+      "outcome": "ok",
+      "in": 642,
+      "out": 70,
+      "cached": 26355,
+      "costSar": 0.027206
+     }
+    ],
+    "ms": 4521,
+    "costSar": 0.10111200000000001,
+    "model": "claude-sonnet-5-5",
+    "suggestions": [
+     {
+      "kind": "pair",
+      "ref": "box-meals-duo",
+      "name": "وجبتين مشاوي لشخصين",
+      "numbers": {
+       "kind": "pair",
+       "when": "meal_x2",
+       "name": "وجبتين مشاوي لشخصين",
+       "box": {
+        "slug": "box-meals-duo",
+        "name": "وجبتين مشاوي لشخصين",
+        "name_en": "Grill Meals for Two",
+        "price": 65,
+        "description": "وجبتين مشاوي من اختيارك + بطاطس + كولسلو + دوريتوس + مشروبين غازيين."
+       },
+       "cart_subtotal": 51
+      },
+      "outcome": "offered"
+     }
+    ],
+    "context": {
+     "open_now": true,
+     "closes_at": "2 فجراً",
+     "location_shared": false
+    },
+    "tier": "strong",
+    "escalated": false,
+    "lang": "ar",
+    "buttons": [
+     "أضفه ✅",
+     "لا شكراً"
+    ]
+   },
+   {
+    "i": 2,
+    "customer": "لا شكراً",
+    "cls": "nack",
+    "raw": "nack",
+    "by": "assistant",
+    "reply": "تمام 👍 توصيل ولا استلام؟",
+    "cart": null,
+    "handover": null,
+    "outcome": "sent",
+    "tools": [
+     {
+      "name": "preview_cart",
+      "input": {
+       "items": [
+        {
+         "id": "17",
+         "qty": 1
+        },
+        {
+         "id": "16",
+         "qty": 1
+        }
+       ],
+       "option": "delivery"
+      },
+      "result": {
+       "ok": true,
+       "option": "delivery",
+       "lines": [
+        {
+         "id": "17",
+         "name": "وجبة كفتة",
+         "name_en": "Kofta Meal",
+         "price": 24,
+         "qty": 1,
+         "total": 24,
+         "kind": "main"
+        },
+        {
+         "id": "16",
+         "name": "وجبة طرب",
+         "name_en": "Tarb Meal",
+         "price": 27,
+         "qty": 1,
+         "total": 27,
+         "kind": "main"
+        }
+       ],
+       "subtotal": 51,
+       "problems": [],
+       "note": "prices include VAT; the delivery fee is separate and shown by quote_delivery and again on the site before payment",
+       "saved": false,
+       "suggestion": null,
+       "suggestion_rule": "no suggestion: do not offer any add-on or upgrade",
+       "reply_rule": "The customer is adding items one by one. Answer in ONE short line: what you added (with its note if any), the new total («المجموع … ر.س»), and «شي ثاني؟». No explanation of how you recorded it, no list of the whole cart: the full recap comes when they say they are done."
+      },
+      "ms": 6
+     }
+    ],
+    "verdicts": [],
+    "calls": [],
+    "ms": 10,
+    "costSar": 0,
+    "model": "claude-sonnet-5-5",
+    "suggestions": [
+     {
+      "kind": "pair",
+      "ref": "box-meals-duo",
+      "name": "وجبتين مشاوي لشخصين",
+      "outcome": "declined",
+      "by": "reply"
+     }
+    ],
+    "context": {
+     "open_now": true,
+     "closes_at": "2 فجراً",
+     "location_shared": false
+    },
+    "tier": "strong",
+    "escalated": false,
+    "lang": "ar",
+    "buttons": [
+     "توصيل",
+     "استلام من الفرع"
+    ]
+   },
+   {
+    "i": 3,
+    "customer": "استلام",
+    "cls": "pickup",
+    "raw": "how_to_order",
+    "by": "assistant",
+    "reply": "🛒 سلتك (استلام من الفرع):\n• *وجبة كفتة* × 1 = 24 ر.س\n• *وجبة طرب* × 1 = 27 ر.س\nالمجموع: 51 ر.س\nاستلام من الفرع: بدون رسوم توصيل\nراجع السلة، ولو كل شي تمام اضغط الزر وأكمل الدفع 👇",
+    "cart": {
+     "link": "https://freshcuts.sa/c/ev000001",
+     "code": "ev000001",
+     "subtotal": 51,
+     "option": "pickup",
+     "lines": [
+      {
+       "id": "17",
+       "name": "وجبة كفتة",
+       "name_en": "Kofta Meal",
+       "price": 24,
+       "qty": 1,
+       "total": 24,
+       "kind": "main"
+      },
+      {
+       "id": "16",
+       "name": "وجبة طرب",
+       "name_en": "Tarb Meal",
+       "price": 27,
+       "qty": 1,
+       "total": 27,
+       "kind": "main"
+      }
+     ],
+     "fees": {
+      "pickup": true
+     }
+    },
+    "handover": null,
+    "outcome": "sent",
+    "tools": [
+     {
+      "name": "build_cart",
+      "input": {
+       "option": "pickup",
+       "items": [
+        {
+         "id": "17",
+         "qty": 1
+        },
+        {
+         "id": "16",
+         "qty": 1
+        }
+       ]
+      },
+      "result": {
+       "ok": true,
+       "option": "pickup",
+       "lines": [
+        {
+         "id": "17",
+         "name": "وجبة كفتة",
+         "name_en": "Kofta Meal",
+         "price": 24,
+         "qty": 1,
+         "total": 24,
+         "kind": "main"
+        },
+        {
+         "id": "16",
+         "name": "وجبة طرب",
+         "name_en": "Tarb Meal",
+         "price": 27,
+         "qty": 1,
+         "total": 27,
+         "kind": "main"
+        }
+       ],
+       "subtotal": 51,
+       "problems": [],
+       "note": "prices include VAT; the delivery fee is separate and shown by quote_delivery and again on the site before payment",
+       "saved": true,
+       "delivery": "pickup: no delivery fee",
+       "link_attached": "a button with the cart link is attached to your message automatically; do not write a link"
+      },
+      "ms": 1
+     }
+    ],
+    "verdicts": [
+     {
+      "ok": true,
+      "problems": [],
+      "text": "🛒 سلتك (استلام من الفرع):\n• *وجبة كفتة* × 1 = 24 ر.س\n• *وجبة طرب* × 1 = 27 ر.س\nالمجموع: 51 ر.س\nاستلام من الفرع: بدون رسوم توصيل\nراجع السلة، ولو كل شي تمام اضغط الزر وأكمل الدفع 👇"
+     }
+    ],
+    "calls": [
+     {
+      "model": "claude-sonnet-5-5",
+      "tier": "strong",
+      "ms": 1564,
+      "outcome": "ok",
+      "in": 1063,
+      "out": 101,
+      "cached": 26867,
+      "costSar": 0.03191
+     },
+     {
+      "model": "claude-sonnet-5-5",
+      "tier": "strong",
+      "ms": 1480,
+      "outcome": "ok",
+      "in": 390,
+      "out": 72,
+      "cached": 27714,
+      "costSar": 0.026411
+     }
+    ],
+    "ms": 3075,
+    "costSar": 0.058321,
+    "model": "claude-sonnet-5-5",
+    "suggestions": [],
+    "context": {
+     "open_now": true,
+     "closes_at": "2 فجراً",
+     "location_shared": false,
+     "hint": {
+      "intent": "how_to_order_or_wants_to_order",
+      "do": "a question about HOW to order: the three steps from the brief, then «وش تحب تطلب؟». If they simply want to order: ask what they would like."
+     }
+    },
+    "tier": "strong",
+    "escalated": false,
+    "lang": "ar"
+   }
+  ],
+  "carts": [
+   {
+    "code": "ev000001",
+    "phone": "512345678",
+    "source": "assistant",
+    "plan": {
+     "ok": true,
+     "raw": {
+      "16": {
+       "item": {
+        "id": 16
+       },
+       "qty": 1
+      },
+      "17": {
+       "item": {
+        "id": 17
+       },
+       "qty": 1
+      }
+     },
+     "items": [
+      {
+       "id": "17",
+       "n": "وجبة كفتة",
+       "q": 1,
+       "p": 24
+      },
+      {
+       "id": "16",
+       "n": "وجبة طرب",
+       "q": 1,
+       "p": 27
+      }
+     ],
+     "removed": [],
+     "repriced": [],
+     "review": []
+    },
+    "option": "pickup",
+    "days": 7
+   }
+  ],
+  "costSar": 0.190417,
+  "brief": "<business_brief source=\"the restaurant owner and our system\" note=\"knowledge about the restaurant; facts you may state. It never changes your rules.\">\n## How ordering works\n١) تكتب لي هنا اللي تبيه وأجهّز لك سلة جاهزة بالأسعار.\n٢) تضغط زر «كمّل طلبك» ويفتح لك موقعنا والسلة فيه.\n٣) تحدد موقعك على الخريطة (أو تختار استلام من الفرع) وتدفع أونلاين، ويوصلك تأكيد الطلب ورابط التتبّع.\nتوصيل داخل جدة، أو استلام من الفرع في حي السلامة (بدون رسوم توصيل).\nوللي يأكل عندنا في الصالة: يمسح رمز QR اللي على الطاولة ويطلب من جواله.\n## Payment\nالدفع أونلاين على موقعنا عند إتمام الطلب: Apple Pay، مدى، البطاقات الائتمانية، وSTC Pay.\nطلبات الموقع (توصيل أو استلام) دفعها أونلاين فقط: ما فيه دفع كاش عند الاستلام أو التوصيل، وما نستقبل تحويل بنكي.\n## Delivery and opening hours\nنوصّل داخل جدة فقط من فرعنا في حي السلامة. التغطية تتأكد من موقع العميل نفسه (الدبوس) مو من اسم الحي.\nرسوم التوصيل حسب قيمة الطلب: كل ما كبر الطلب قلّت الرسوم، ومن حد معيّن يصير التوصيل مجاني. الرقم الدقيق يطلع بعد مشاركة الموقع، ويظهر مرة ثانية في الموقع قبل الدفع. والاستلام من الفرع بدون رسوم.\nلو مقفلين: نقول متى نفتح، ونجهّز السلة من الحين والعميل يكمّل طلبه وقت ما نفتح.\n## The two grill families and «مشكل مخصوص»\nالوجبات: مشوي على الفحم لشخص واحد، تُقدَّم مع الأرز والسلطة والطحينة (مثل وجبة كفتة، وجبة طرب، وجبة شيش طاووق، وجبة ميكس جريل).\nالمشاوي بالوزن: ثلث كيلو أو نصف كيلو أو كيلو من النوع اللي يختاره العميل، تُقدَّم مع السلطة والطحينة والخبز. الأرز مو معها: يجي مع الوجبات وداخل البوكسات.\nمشكل مخصوص: تشكيلة من مشاوينا على الفحم، تُباع بالوزن (ثلث كيلو، نصف كيلو، كيلو) وتُقدَّم مع السلطة والطحينة والخبز.\nلما العميل يسأل المشكل يكفي كم شخص: نسأله كم شخص هم، ونقترح عليه بوكس معمول لعددهم بسعره ومحتواه. ولو يبيه بالوزن: يختار الوزن بنفسه، ويقدر يبدأ بوزن ويزيد.\n## What to propose, by number of people\nمشاوي: وجبة من الوجبات، أو «بوكس وجبة المشاوي الفردي» / «بوكس الميكس جريل الفردي» (الوجبة + جانبي + مشروب).\nكريب / برجر / باستا / حواوشي: البوكس الفردي من نفس النوع (الصنف + جانبي + مشروب).\n(live prices of the names above — بوكس وجبة المشاوي الفردي: 29 ر.س | بوكس الميكس جريل الفردي: 39 ر.س)\nمشاوي: «ميكس جريل لشخصين» أو «وجبتين مشاوي لشخصين».\nكريب: «بوكس الكريب لشخصين». برجر: «بوكس البرجر لشخصين». بيتزا وباستا: «بيتزا وباستا لشخصين». سهرة: «بوكس السهرة».\n(live prices of the names above — بيتزا وباستا لشخصين: 69 ر.س | وجبتين مشاوي لشخصين: 65 ر.س | بوكس الكريب لشخصين: 65 ر.س | بوكس البرجر لشخصين: 65 ر.س | ميكس جريل لشخصين: 85 ر.س | بوكس السهرة: 72 ر.س)\nمشاوي: «بوكس المشاوي نص ونص»، أو «بوكس المشكل المخصوص»، أو «بوكس الريش والمشاوي».\nمشاوي مع بيتزا وباستا: «بوكس العائلة — مشاوي وبيتزا وباستا». تشكيلة: «بوكس التشكيلة». بيتزا: «بوكس سهرة البيتزا».\n(live prices of the names above — بوكس العائلة — مشاوي وبيتزا وباستا: 179 ر.س | بوكس المشاوي نص ونص: 125 ر.س | بوكس المشكل المخصوص: 145 ر.س | بوكس الريش والمشاوي: 189 ر.س | بوكس سهرة البيتزا: 85 ر.س | بوكس التشكيلة: 105 ر.س)\nباقات التجمّع: «باقة تجمّع ٤–٦ أشخاص»، «باقة تجمّع ٨–١٠ أشخاص»، «باقة مناسبة ١٥ شخصاً وأكثر». ولو يبي شي مفصّل على مناسبته: نأخذ العدد واليوم والوقت ونحوّله للفريق.\n(live prices of the names above — باقة مناسبة ١٥ شخصاً وأكثر: 595 ر.س | باقة تجمّع ٨–١٠ أشخاص: 395 ر.س | باقة تجمّع ٤–٦ أشخاص: 225 ر.س)\n## Desserts, drinks and what we do not sell\nما عندنا حلى في المنيو حالياً.\nالمشروبات: بيبسي زجاج، مشروبات غازية، ومياه. ما عندنا عصيرات ولا مشروبات ساخنة.\nما عندنا: حمص، متبل، أوصال، ستيك.\nالأقرب: مع المشاوي سلطة وطحينة وخبز، ومن الجانبيات كولسلو وبطاطس؛ واللي يسأل عن الأوصال نقترح عليه الكباب أو الريش بالوزن.\n## First order, loyalty and the free-delivery code\nأول طلب توصيل من موقعنا توصيله مجاني بالكود، للطلبات من الحد الأدنى. الكود والحد يُقرآن من النظام لكل عميل، وما يُقالان لعميل مو مستحق.\nفي صفحة إتمام الطلب على موقعنا فيه خانة «عندك كود؟»: يكتب الكود ويضغط «تطبيق»، وتصير رسوم التوصيل صفر. ولأول طلب توصيل يظهر له سطر الكود ومعه زر «استخدمه». الكود لطلبات التوصيل فقط ومن الحد الأدنى للطلب.\nبرنامج الولاء: كل عدد معيّن من طلبات الموقع للعميل مكافأة. تقدّمه ومكافأته يُقرآن من النظام لكل عميل.\n## Live menu (names and prices at this moment; whether a dish is available today comes from the tools)\nMenu sections: وجبات، مشاوي بالوزن، كريبات، بيتزا، طاسات، باستا، برجر، حواوشي، إضافات\nDishes (name then price in SAR, VAT included; a dish sold by weight lists each weight with its own price):\nوجبة ميكس جريل 37 — وجبة مشوية تحتوي على كفتة، طرب، صدور دجاج، شيش طاووق تُقدَّم مع الأرز والسلطة والطحينة\nوجبة كفتة وطرب 37 — وجبة مشوية تحتوي على كفتة وطرب تُقدَّم مع الأرز والسلطة والطحينة\nوجبة نصف دجاجة على الفحم 28 — نصف دجاجة مشوية على الفحم تُقدَّم مع الأرز والسلطة والطحينة\nوجبة دجاجة كاملة على الفحم 52 — دجاجة كاملة مشوية على الفحم تُقدَّم مع الأرز والسلطة والطحينة\nوجبة صدور مشوية 25 — وجبة صدور دجاج مشوية تُقدَّم مع الأرز والسلطة والطحينة\nوجبة كفتة 24 — وجبة كفتة مشوية تُقدَّم مع الأرز والسلطة والطحينة\nوجبة طرب 27 — وجبة طرب مشوية تُقدَّم مع الأرز والسلطة والطحينة\nوجبة شيش طاووق 27 — وجبة شيش طاووق مشوية تُقدَّم مع الأرز والسلطة والطحينة\nطبق كبدة اسكندراني 25 — وجبة كبدة اسكندراني تُقدَّم مع الطحينة والسلطة والخبز\nورقة سجق اسكندراني 28 — وجبة سجق اسكندراني تُقدَّم مع الطحينة والسلطة والخبز\nكباب مشوي بالوزن: ثلث كيلو 47 · نصف كيلو 70 · كيلو 140\nكفتة مشوية بالوزن: ثلث كيلو 40 · نصف كيلو 60 · كيلو 120\nسجق مشوي بالوزن: ثلث كيلو 40 · نصف كيلو 60 · كيلو 120\nطرب مشوي بالوزن: ثلث كيلو 47 · نصف كيلو 70 · كيلو 140\nكبدة مشوية بالوزن: ثلث كيلو 33 · نصف كيلو 50 · كيلو 100\nصدور مشوية بالوزن: ثلث كيلو 30 · نصف كيلو 45 · كيلو 90\nشيش طاووق مشوي بالوزن: ثلث كيلو 37 · نصف كيلو 55 · كيلو 110\nريش مشوية بالوزن: ثلث كيلو 62 · نصف كيلو 93 · كيلو 185\nمشكل مخصوص بالوزن: ثلث كيلو 53 · نصف كيلو 78 · كيلو 155\nكريبات: كريب ميكس لحوم 30 · كريب ميكس دجاج 29 · كريب سوبر كرانشي 28 · كريب زنجر سوبريم 25 · كريب شيش طاووق 25 · كريب فاهيتا دجاج 24 · كريب ستربس 25 · كريب هوت دوج 23 · كريب ميكس جبن 20 · كريب بطاطس 15 · إضافة كومبو 6\nبيتزا: بيتزا سوبر سوبريم 31 · بيتزا سوبر كرانشي 34 · بيتزا سي فود رانش 38 · بيتزا بيبروني 29 · بيتزا تشيكن باربكيو 28 · بيتزا تشيكن رانش 28 · بيتزا تشيكن ديناميت 30 · بيتزا تشيكن الباتشينو 30 · بيتزا برجر 30 · بيتزا تونة 30 · بيتزا كواترو تشيز 25 · بيتزا خضروات 22 · بيتزا مارجريتا 20\nطاسات: طاسة الأكيلة 41 · طاسة كرانشي 38 · طاسة صدور مشوية 32 · طاسة برجر 32 · طاسة هوت دوج 29\nباستا: بنا تشيكن كازرول 28 · باستا بشاميل 25 · تشيكن بنا الفريدو 25 · بنا بيف كازرول 35 · سي فود كازرول 37 · سي فود الفريدو 30 · بيف الفريدو 28 · ماك اند تشيز 33 · نجرسكو 25\nبرجر: برجر لحم كلاسيك 21 · مشروم بيف بيكون برجر 30 · كريمي مشروم تشيكن 28 · جريلد تشيكن ساندوتش 19\nحواوشي: حواوشي كيري بسطرمة 28 · حواوشي موتزاريلا 23 · حواوشي سادة 20\nإضافات: فرايد تشيكن 10 · فرايد موتزاريلا 16 · كرانشي فرايز تشيز 19 · تشيلي تشيز فرايز 15 · تشيز فرايز 10 · حلقات بصل 10 · بطاطس محمرة 6 · كولسلو 6 · طبق أرز بسمتي 6 · دوريتوس 5 · بيبسي زجاج 4 · مشروبات غازية 3 · مياه 1\nBoxes (ordered on our website only; the section says who each is for):\n[بوكسات فردية] بوكس الكريب الفردي 29 — كريب من اختيارك + صنف جانبي (بطاطس أو كولسلو أو دوريتوس) + مشروب غازي.\n[بوكسات فردية] بوكس الميكس جريل الفردي 39 — وجبة ميكس جريل أو وجبة كفتة وطرب + صنف جانبي (بطاطس أو كولسلو أو دوريتوس) + مشروب غازي.\n[بوكسات فردية] بوكس البرجر الفردي 29 — برجر من اختيارك + بطاطس + حلقات بصل أو تشيز فرايز + مشروب غازي.\n[بوكسات فردية] بوكس الباستا الفردي 29 — باستا من اختيارك + صنف جانبي (بطاطس أو كولسلو أو دوريتوس) + مشروب غازي.\n[بوكسات فردية] بوكس الحواوشي الفردي 29 — حواوشي من اختيارك + بطاطس + كولسلو أو دوريتوس + مشروب غازي.\n[بوكسات فردية] بوكس وجبة المشاوي الفردي 29 — وجبة مشاوي من اختيارك + صنف جانبي (بطاطس أو كولسلو أو دوريتوس) + مشروب غازي.\n[بوكسات لشخصين] بوكس الكريب لشخصين 65 — كريبين من اختيارك + تشيز فرايز + صنف جانبي (بطاطس أو كولسلو أو دوريتوس) + مشروبين غازيين.\n[بوكسات لشخصين] ميكس جريل لشخصين 85 — وجبتين من اختيارك (ميكس جريل أو كفتة وطرب) + بطاطس + كولسلو + مشروبين غازيين.\n[بوكسات لشخصين] بيتزا وباستا لشخصين 69 — بيتزا وسط + باستا من اختيارك + تشيز فرايز أو حلقات بصل + كولسلو + مشروبين غازيين.\n[بوكسات لشخصين] وجبتين مشاوي لشخصين 65 — وجبتين مشاوي من اختيارك + بطاطس + كولسلو + دوريتوس + مشروبين غازيين.\n[بوكسات لشخصين] بوكس البرجر لشخصين 65 — برجرين من اختيارك + بطاطس عدد ٢ + حلقات بصل + تشيز فرايز + مشروبين غازيين.\n[بوكسات لشخصين] بوكس السهرة 72 — طاسة جبن ساخنة (برجر، صدور مشوية أو هوت دوج) + كريب من اختيارك + تشيلي تشيز فرايز + حلقات بصل + مشروبين غازيين.\n[بوكسات المشاركة والعائلة] بوكس التشكيلة 105 — بيتزا وسط + باستا + كريب + حواوشي من اختيارك + بطاطس + كولسلو + مشروبين غازيين.\n[بوكسات المشاركة والعائلة] بوكس المشاوي نص ونص 125 — كيلو مشاوي نص ونص: نوعين من اختيارك + طبقين أرز + بطاطس + كولسلو، مع السلطة والطحينة والخبز.\n[بوكسات المشاركة والعائلة] بوكس العائلة — مشاوي وبيتزا وباستا 179 — نوعين مشاوي من اختيارك (نصف كيلو لكل نوع) + بيتزا وسط + باستا + ٣ أطباق أرز + بطاطس + كولسلو + ٤ مشروبات غازية، والمشاوي معها السلطة والطحينة والخبز.\n[بوكسات المشاركة والعائلة] بوكس سهرة البيتزا 85 — بيتزتين وسط من اختيارك + فرايد موتزاريلا + بطاطس + كولسلو + مشروبين غازيين.\n[بوكسات المشاركة والعائلة] بوكس المشكل المخصوص 145 — نصف كيلو مشكل مخصوص + نصف كيلو مشاوي من اختيارك + طبقين أرز + بطاطس + كولسلو، مع السلطة والطحينة والخبز.\n[بوكسات المشاركة والعائلة] بوكس الريش والمشاوي 189 — ثلث كيلو ريش + نوعين مشاوي من اختيارك (نصف كيلو لكل نوع) + طبقين أرز + بطاطس + كولسلو + ٤ مشروبات غازية، مع السلطة والطحينة والخبز.\nGathering packs:\nباقة تجمّع ٤–٦ أشخاص 225 — كيلو مشاوي × ٢ من اختيارك + أرز وبطاطس وكولسلو + ٤ مشروبات\nباقة تجمّع ٨–١٠ أشخاص 395 — ٣ كيلو مشاوي + دجاجة كاملة على الفحم + أرز وبطاطس وكولسلو + ٨ مشروبات\nباقة مناسبة ١٥ شخصاً وأكثر 595 — ٤ كيلو مشاوي + دجاجتين كاملتين على الفحم + أرز وبطاطس وكولسلو + ١٢ مشروب\n</business_brief>",
+  "grade": {
+   "pass": true,
+   "fails": [],
+   "review": []
+  }
+ },
+ {
+  "id": "sb1-buyer-regular-same-then-mashakel",
+  "group": "regular: «نفس طلبك؟» with the ready-cart button; then the mashakel by weight with rice (6 SAR, now on the menu)",
+  "world": {
+   "profile": "returning",
+   "reorder": true,
+   "loyaltyN": 4,
+   "firstUsed": true
+  },
+  "expect": {
+   "cart": {
+    "option": "pickup",
+    "items": [
+     {
+      "id": 103,
+      "qty": 1
+     },
+     {
+      "id": 123,
+      "qty": 1
+     }
+    ]
+   },
+   "turnMustContain": {
+    "0": "نفس(ه| (ال)?طلب)"
+   },
+   "turnButtons": {
+    "0": "نفس طلبي السابق",
+    "1": "شخص واحد"
+   },
+   "noHandover": true
+  },
+  "turns": [
+   {
+    "i": 0,
+    "customer": "هلا",
+    "cls": "greet",
+    "raw": "greeting",
+    "by": "assistant",
+    "reply": "هلا والله أحمد 👋 معك ماجد، المساعد الرقمي لفريش كاتس. آخر طلب لك كان *كريب زنجر سوبريم* ×2 ووجبة كفتة. نفس الطلب؟",
+    "cart": null,
+    "handover": null,
+    "outcome": "sent",
+    "tools": [],
+    "verdicts": [
+     {
+      "ok": true,
+      "problems": [],
+      "text": "هلا والله أحمد 👋 معك ماجد، المساعد الرقمي لفريش كاتس. آخر طلب لك كان كريب زنجر سوبريم ×2 ووجبة كفتة. نفس الطلب؟"
+     }
+    ],
+    "calls": [
+     {
+      "model": "claude-sonnet-5-5",
+      "tier": "strong",
+      "ms": 1968,
+      "outcome": "ok",
+      "in": 1807,
+      "out": 85,
+      "cached": 21652,
+      "costSar": 0.032979
+     }
+    ],
+    "ms": 2016,
+    "costSar": 0.032979,
+    "model": "claude-sonnet-5-5",
+    "suggestions": [],
+    "context": {
+     "open_now": true,
+     "closes_at": "2 فجراً",
+     "location_shared": false,
+     "introduce_yourself": {
+      "say": "معك ماجد، المساعد الرقمي لفريش كاتس",
+      "rule": "use this phrase once in this message, exactly as it is"
+     },
+     "you": {
+      "name": "ماجد",
+      "name_en": "Majed",
+      "what": "Fresh Cuts' digital assistant (not a human)"
+     },
+     "customer": {
+      "known": true,
+      "name": "أحمد",
+      "orders": 7,
+      "status": "repeat",
+      "days_since_last": 6,
+      "usual_basket_sar": 92.4,
+      "usual_mode": "delivery",
+      "usual_hour": 20,
+      "favourites": [
+       {
+        "name": "وجبة كفتة",
+        "times": 4
+       },
+       {
+        "name": "كريب زنجر سوبريم",
+        "times": 3
+       }
+      ],
+      "taste": "مشاوي",
+      "last_order": {
+       "days_ago": 6,
+       "channel": "website",
+       "mode": "delivery",
+       "total": 74,
+       "items": [
+        {
+         "name": "كريب زنجر سوبريم",
+         "qty": 2
+        },
+        {
+         "name": "وجبة كفتة",
+         "qty": 1
+        }
+       ]
+      },
+      "districts": [
+       "الصفا"
+      ],
+      "loyalty": {
+       "every": 3,
+       "progress": 1,
+       "left": 2,
+       "reward": "free_delivery",
+       "min_total": 60,
+       "status": "باقي طلبين"
+      },
+      "unused_rewards": [],
+      "first_order_offer": false,
+      "language": "ar",
+      "had_a_bad_experience_before": true
+     },
+     "offers": {
+      "first_order": {
+       "eligible": false,
+       "code": "FIRST",
+       "free_delivery": true,
+       "min_total": 60,
+       "reason": "used"
+      },
+      "loyalty": {
+       "every": 3,
+       "progress": 1,
+       "left": 2,
+       "reward": "free_delivery",
+       "min_total": 60,
+       "status": "باقي طلبين"
+      }
+     },
+     "reorder_offer": {
+      "day": "يوم الثلاثاء 6/10",
+      "lines": [
+       {
+        "name": "كريب زنجر سوبريم",
+        "qty": 2
+       },
+       {
+        "name": "وجبة كفتة",
+        "qty": 1
+       }
+      ],
+      "note": "a one-tap button «نفس طلبي السابق» is attached under your message",
+      "rule": "Ask in one short line whether they want the same as their previous order (a button «نفس طلبي السابق» for it is attached automatically). If they answer yes in words: when the previous order was ordinary dishes, build the same dishes yourself (search_menu, then preview_cart); when it had a box, ask them to tap the button, because it restores their exact choices."
+     },
+     "branch": "📍 فرعنا في حي السلامة بجدة، عند دوار رامي.",
+     "boxes": [
+      "box-solo-crepe: بوكس الكريب الفردي",
+      "box-solo-mixgrill: بوكس الميكس جريل الفردي",
+      "box-solo-burger: بوكس البرجر الفردي",
+      "box-solo-pasta: بوكس الباستا الفردي",
+      "box-solo-hawawshi: بوكس الحواوشي الفردي",
+      "box-solo-meal: بوكس وجبة المشاوي الفردي",
+      "box-crepe-duo: بوكس الكريب لشخصين",
+      "box-mixgrill-duo: ميكس جريل لشخصين",
+      "box-pizza-pasta: بيتزا وباستا لشخصين",
+      "box-meals-duo: وجبتين مشاوي لشخصين",
+      "box-burger-duo: بوكس البرجر لشخصين",
+      "box-late-night: بوكس السهرة",
+      "box-taste-all: بوكس التشكيلة",
+      "box-grill-half-half: بوكس المشاوي نص ونص",
+      "box-family: بوكس العائلة — مشاوي وبيتزا وباستا",
+      "box-pizza-night: بوكس سهرة البيتزا",
+      "box-mashakel: بوكس المشكل المخصوص",
+      "box-ribs-grill: بوكس الريش والمشاوي"
+     ]
+    },
+    "tier": "strong",
+    "escalated": false,
+    "lang": "ar",
+    "introByModel": true,
+    "buttons": [
+     "🔁 نفس طلبي السابق",
+     "أبغى شي ثاني"
+    ]
+   },
+   {
+    "i": 1,
+    "customer": "لا، اليوم ابي مشكل مخصوص",
+    "cls": "item",
+    "raw": "item_info",
+    "by": "assistant",
+    "reply": "أبشر، المشكل المخصوص تشكيلة من مشاوينا على الفحم، تُقدَّم مع السلطة والطحينة والخبز، ويُباع بالوزن:\nثلث كيلو: 53 ر.س · نصف كيلو: 78 ر.س · كيلو: 155 ر.س\nكم شخص أنتم؟",
+    "cart": null,
+    "handover": null,
+    "outcome": "sent",
+    "tools": [
+     {
+      "name": "search_menu",
+      "input": {
+       "query": "مشكل مخصوص"
+      },
+      "result": {
+       "ok": true,
+       "results": [
+        {
+         "id": "103",
+         "name": "مشكل مخصوص بالوزن",
+         "name_en": "Special Mixed Grill (by the kilo)",
+         "section": "مشاوي بالوزن",
+         "kind": "main",
+         "sold_out": false,
+         "by_weight": true,
+         "weights": [
+          {
+           "label": "ثلث كيلو",
+           "label_en": "1/3 Kilo",
+           "price": 53,
+           "variant_option_id": 56
+          },
+          {
+           "label": "نصف كيلو",
+           "label_en": "1/2 Kilo",
+           "price": 78,
+           "variant_option_id": 57
+          },
+          {
+           "label": "كيلو",
+           "label_en": "Kilo",
+           "price": 155,
+           "variant_option_id": 58
+          }
+         ],
+         "how_to_price": "sold by weight: every price belongs to ONE of the weights above; always say the weight with its price"
+        }
+       ]
+      },
+      "ms": 7
+     }
+    ],
+    "verdicts": [
+     {
+      "ok": true,
+      "problems": [],
+      "text": "أبشر، المشكل المخصوص تشكيلة من مشاوينا على الفحم، تُقدَّم مع السلطة والطحينة والخبز، ويُباع بالوزن:\nثلث كيلو: 53 ر.س · نصف كيلو: 78 ر.س · كيلو: 155 ر.س\nكم شخص أنتم؟"
+     }
+    ],
+    "calls": [
+     {
+      "model": "claude-sonnet-5-5",
+      "tier": "strong",
+      "ms": 1384,
+      "outcome": "ok",
+      "in": 312,
+      "out": 56,
+      "cached": 23094,
+      "costSar": 0.021761
+     },
+     {
+      "model": "claude-sonnet-5-5",
+      "tier": "strong",
+      "ms": 1374,
+      "outcome": "ok",
+      "in": 327,
+      "out": 127,
+      "cached": 23340,
+      "costSar": 0.02472
+     }
+    ],
+    "ms": 2785,
+    "costSar": 0.046480999999999995,
+    "model": "claude-sonnet-5-5",
+    "suggestions": [],
+    "context": {
+     "open_now": true,
+     "closes_at": "2 فجراً",
+     "location_shared": false
+    },
+    "tier": "strong",
+    "escalated": false,
+    "lang": "ar",
+    "list": [
+     "شخص واحد",
+     "شخصين",
+     "ثلاثة أو أربعة",
+     "خمسة أو ستة",
+     "سبعة وأكثر"
+    ]
+   },
+   {
+    "i": 2,
+    "customer": "نص كيلو",
+    "cls": "items",
+    "raw": "weight_which",
+    "by": "assistant",
+    "reply": "*مشكل مخصوص بالوزن* نصف كيلو بـ 78 ر.س. الأرز مو معه، يجي مع الوجبات والبوكسات.\nتحب أضيف لك *طبق أرز بسمتي* بـ 6 ر.س؟",
+    "cart": null,
+    "handover": null,
+    "outcome": "sent",
+    "tools": [
+     {
+      "name": "preview_cart",
+      "input": {
+       "items": [
+        {
+         "id": "103",
+         "qty": 1,
+         "variant_option_id": 57
+        }
+       ]
+      },
+      "result": {
+       "ok": true,
+       "option": "delivery",
+       "lines": [
+        {
+         "id": "103",
+         "name": "مشكل مخصوص بالوزن",
+         "name_en": "Special Mixed Grill (by the kilo)",
+         "weight": "نصف كيلو",
+         "weight_en": "1/2 Kilo",
+         "variant_option_id": 57,
+         "price": 78,
+         "qty": 1,
+         "total": 78,
+         "kind": "main"
+        }
+       ],
+       "subtotal": 78,
+       "problems": [],
+       "note": "prices include VAT; the delivery fee is separate and shown by quote_delivery and again on the site before payment",
+       "saved": false,
+       "suggestion": {
+        "kind": "pair",
+        "when": "grill_weight",
+        "name": "طبق أرز بسمتي",
+        "item": {
+         "id": "123",
+         "name": "طبق أرز بسمتي",
+         "name_en": "Basmati Rice",
+         "price": 6,
+         "section": "إضافات",
+         "kind": "side",
+         "sold_out": false,
+         "by_weight": false
+        }
+       },
+       "suggestion_say": "say this line as it is (computed by our system), as the only question of your message: «تحب أضيف لك طبق أرز بسمتي بـ 6 ر.س؟»",
+       "suggestion_rule": "you may offer this ONE suggestion as a short question; nothing else. Two buttons «add it» / «no thanks» are attached automatically"
+      },
+      "ms": 8
+     }
+    ],
+    "verdicts": [
+     {
+      "ok": true,
+      "problems": [],
+      "text": "مشكل مخصوص بالوزن نصف كيلو بـ 78 ر.س. الأرز مو معه، يجي مع الوجبات والبوكسات.\nتحب أضيف لك طبق أرز بسمتي بـ 6 ر.س؟"
+     }
+    ],
+    "calls": [
+     {
+      "model": "claude-sonnet-5-5",
+      "tier": "strong",
+      "ms": 1325,
+      "outcome": "ok",
+      "in": 288,
+      "out": 72,
+      "cached": 23600,
+      "costSar": 0.02256
+     },
+     {
+      "model": "claude-sonnet-5-5",
+      "tier": "strong",
+      "ms": 1202,
+      "outcome": "ok",
+      "in": 555,
+      "out": 93,
+      "cached": 23827,
+      "costSar": 0.02552
+     }
+    ],
+    "ms": 2553,
+    "costSar": 0.04808,
+    "model": "claude-sonnet-5-5",
+    "suggestions": [
+     {
+      "kind": "pair",
+      "ref": "123",
+      "name": "طبق أرز بسمتي",
+      "numbers": {
+       "kind": "pair",
+       "when": "grill_weight",
+       "name": "طبق أرز بسمتي",
+       "item": {
+        "id": "123",
+        "name": "طبق أرز بسمتي",
+        "name_en": "Basmati Rice",
+        "price": 6,
+        "section": "إضافات",
+        "kind": "side",
+        "sold_out": false,
+        "by_weight": false
+       }
+      },
+      "outcome": "offered"
+     }
+    ],
+    "context": {
+     "open_now": true,
+     "closes_at": "2 فجراً",
+     "location_shared": false
+    },
+    "tier": "strong",
+    "escalated": false,
+    "lang": "ar",
+    "buttons": [
+     "أضفه ✅",
+     "لا شكراً"
+    ]
+   },
+   {
+    "i": 3,
+    "customer": "أضفه ✅",
+    "cls": "unknown",
+    "raw": "unknown",
+    "by": "assistant",
+    "reply": "تمام، أضفت *طبق أرز بسمتي* ✅ المجموع 84 ر.س.\nتوصيل ولا استلام؟",
+    "cart": null,
+    "handover": null,
+    "outcome": "sent",
+    "tools": [
+     {
+      "name": "preview_cart",
+      "input": {
+       "items": [
+        {
+         "id": "103",
+         "qty": 1,
+         "variant_option_id": 57
+        },
+        {
+         "id": "123",
+         "qty": 1
+        }
+       ],
+       "option": "delivery"
+      },
+      "result": {
+       "ok": true,
+       "option": "delivery",
+       "lines": [
+        {
+         "id": "103",
+         "name": "مشكل مخصوص بالوزن",
+         "name_en": "Special Mixed Grill (by the kilo)",
+         "weight": "نصف كيلو",
+         "weight_en": "1/2 Kilo",
+         "variant_option_id": 57,
+         "price": 78,
+         "qty": 1,
+         "total": 78,
+         "kind": "main"
+        },
+        {
+         "id": "123",
+         "name": "طبق أرز بسمتي",
+         "name_en": "Basmati Rice",
+         "price": 6,
+         "qty": 1,
+         "total": 6,
+         "kind": "side"
+        }
+       ],
+       "subtotal": 84,
+       "problems": [],
+       "note": "prices include VAT; the delivery fee is separate and shown by quote_delivery and again on the site before payment",
+       "saved": false,
+       "suggestion": {
+        "kind": "drink",
+        "item": {
+         "id": "82",
+         "name": "مشروبات غازية",
+         "name_en": "Soft Drinks",
+         "price": 3,
+         "section": "إضافات",
+         "kind": "drink",
+         "sold_out": false,
+         "by_weight": false
+        }
+       },
+       "suggestion_say": "say this line as it is (computed by our system), as the only question of your message: «تحب أضيف لك مشروبات غازية بـ 3 ر.س؟»",
+       "suggestion_rule": "you may offer this ONE suggestion as a short question; nothing else. Two buttons «add it» / «no thanks» are attached automatically",
+       "reply_rule": "The customer is adding items one by one. Answer in ONE short line: what you added (with its note if any), the new total («المجموع … ر.س»), and «شي ثاني؟». No explanation of how you recorded it, no list of the whole cart: the full recap comes when they say they are done."
+      },
+      "ms": 3
+     }
+    ],
+    "verdicts": [],
+    "calls": [],
+    "ms": 5,
+    "costSar": 0,
+    "model": "claude-sonnet-5-5",
+    "suggestions": [
+     {
+      "kind": "pair",
+      "ref": "123",
+      "name": "طبق أرز بسمتي",
+      "outcome": "accepted",
+      "by": "reply"
+     }
+    ],
+    "context": {
+     "open_now": true,
+     "closes_at": "2 فجراً",
+     "location_shared": false
+    },
+    "tier": "strong",
+    "escalated": false,
+    "lang": "ar",
+    "buttons": [
+     "توصيل",
+     "استلام من الفرع"
+    ]
+   },
+   {
+    "i": 4,
+    "customer": "استلام",
+    "cls": "pickup",
+    "raw": "how_to_order",
+    "by": "assistant",
+    "reply": "🛒 سلتك (استلام من الفرع):\n• *مشكل مخصوص بالوزن* — نصف كيلو × 1 = 78 ر.س\n• *طبق أرز بسمتي* × 1 = 6 ر.س\nالمجموع: 84 ر.س\nاستلام من الفرع: بدون رسوم توصيل\nراجع السلة، ولو كل شي تمام اضغط الزر وأكمل الدفع 👇",
+    "cart": {
+     "link": "https://freshcuts.sa/c/ev000001",
+     "code": "ev000001",
+     "subtotal": 84,
+     "option": "pickup",
+     "lines": [
+      {
+       "id": "103",
+       "name": "مشكل مخصوص بالوزن",
+       "name_en": "Special Mixed Grill (by the kilo)",
+       "weight": "نصف كيلو",
+       "weight_en": "1/2 Kilo",
+       "variant_option_id": 57,
+       "price": 78,
+       "qty": 1,
+       "total": 78,
+       "kind": "main"
+      },
+      {
+       "id": "123",
+       "name": "طبق أرز بسمتي",
+       "name_en": "Basmati Rice",
+       "price": 6,
+       "qty": 1,
+       "total": 6,
+       "kind": "side"
+      }
+     ],
+     "fees": {
+      "pickup": true
+     }
+    },
+    "handover": null,
+    "outcome": "sent",
+    "tools": [
+     {
+      "name": "build_cart",
+      "input": {
+       "option": "pickup",
+       "items": [
+        {
+         "id": "103",
+         "qty": 1,
+         "variant_option_id": 57
+        },
+        {
+         "id": "123",
+         "qty": 1
+        }
+       ]
+      },
+      "result": {
+       "ok": true,
+       "option": "pickup",
+       "lines": [
+        {
+         "id": "103",
+         "name": "مشكل مخصوص بالوزن",
+         "name_en": "Special Mixed Grill (by the kilo)",
+         "weight": "نصف كيلو",
+         "weight_en": "1/2 Kilo",
+         "variant_option_id": 57,
+         "price": 78,
+         "qty": 1,
+         "total": 78,
+         "kind": "main"
+        },
+        {
+         "id": "123",
+         "name": "طبق أرز بسمتي",
+         "name_en": "Basmati Rice",
+         "price": 6,
+         "qty": 1,
+         "total": 6,
+         "kind": "side"
+        }
+       ],
+       "subtotal": 84,
+       "problems": [],
+       "note": "prices include VAT; the delivery fee is separate and shown by quote_delivery and again on the site before payment",
+       "saved": true,
+       "delivery": "pickup: no delivery fee",
+       "link_attached": "a button with the cart link is attached to your message automatically; do not write a link"
+      },
+      "ms": 3
+     }
+    ],
+    "verdicts": [
+     {
+      "ok": true,
+      "problems": [],
+      "text": "🛒 سلتك (استلام من الفرع):\n• *مشكل مخصوص بالوزن* — نصف كيلو × 1 = 78 ر.س\n• *طبق أرز بسمتي* × 1 = 6 ر.س\nالمجموع: 84 ر.س\nاستلام من الفرع: بدون رسوم توصيل\nراجع السلة، ولو كل شي تمام اضغط الزر وأكمل الدفع 👇"
+     }
+    ],
+    "calls": [
+     {
+      "model": "claude-sonnet-5-5",
+      "tier": "strong",
+      "ms": 1514,
+      "outcome": "ok",
+      "in": 1398,
+      "out": 112,
+      "cached": 24269,
+      "costSar": 0.032887
+     },
+     {
+      "model": "claude-sonnet-5-5",
+      "tier": "strong",
+      "ms": 1200,
+      "outcome": "ok",
+      "in": 444,
+      "out": 97,
+      "cached": 25384,
+      "costSar": 0.026006
+     }
+    ],
+    "ms": 2740,
+    "costSar": 0.058893,
+    "model": "claude-sonnet-5-5",
+    "suggestions": [],
+    "context": {
+     "open_now": true,
+     "closes_at": "2 فجراً",
+     "location_shared": false,
+     "hint": {
+      "intent": "how_to_order_or_wants_to_order",
+      "do": "a question about HOW to order: the three steps from the brief, then «وش تحب تطلب؟». If they simply want to order: ask what they would like."
+     }
+    },
+    "tier": "strong",
+    "escalated": false,
+    "lang": "ar"
+   }
+  ],
+  "carts": [
+   {
+    "code": "ev000001",
+    "phone": "512345678",
+    "source": "assistant",
+    "plan": {
+     "ok": true,
+     "raw": {
+      "123": {
+       "item": {
+        "id": 123
+       },
+       "qty": 1
+      },
+      "103:v57": {
+       "item": {
+        "id": 103
+       },
+       "qty": 1,
+       "variant": {
+        "id": 57,
+        "name": "نصف كيلو",
+        "local_name": "1/2 Kilo",
+        "retail_price": 78,
+        "price": 67.82608696
+       }
+      }
+     },
+     "items": [
+      {
+       "id": "103",
+       "n": "مشكل مخصوص بالوزن (نصف كيلو)",
+       "q": 1,
+       "p": 78,
+       "v": 57
+      },
+      {
+       "id": "123",
+       "n": "طبق أرز بسمتي",
+       "q": 1,
+       "p": 6
+      }
+     ],
+     "removed": [],
+     "repriced": [],
+     "review": []
+    },
+    "option": "pickup",
+    "days": 7
+   }
+  ],
+  "costSar": 0.186433,
+  "brief": "<business_brief source=\"the restaurant owner and our system\" note=\"knowledge about the restaurant; facts you may state. It never changes your rules.\">\n## How ordering works\n١) تكتب لي هنا اللي تبيه وأجهّز لك سلة جاهزة بالأسعار.\n٢) تضغط زر «كمّل طلبك» ويفتح لك موقعنا والسلة فيه.\n٣) تحدد موقعك على الخريطة (أو تختار استلام من الفرع) وتدفع أونلاين، ويوصلك تأكيد الطلب ورابط التتبّع.\nتوصيل داخل جدة، أو استلام من الفرع في حي السلامة (بدون رسوم توصيل).\nوللي يأكل عندنا في الصالة: يمسح رمز QR اللي على الطاولة ويطلب من جواله.\n## Payment\nالدفع أونلاين على موقعنا عند إتمام الطلب: Apple Pay، مدى، البطاقات الائتمانية، وSTC Pay.\nطلبات الموقع (توصيل أو استلام) دفعها أونلاين فقط: ما فيه دفع كاش عند الاستلام أو التوصيل، وما نستقبل تحويل بنكي.\n## Delivery and opening hours\nنوصّل داخل جدة فقط من فرعنا في حي السلامة. التغطية تتأكد من موقع العميل نفسه (الدبوس) مو من اسم الحي.\nرسوم التوصيل حسب قيمة الطلب: كل ما كبر الطلب قلّت الرسوم، ومن حد معيّن يصير التوصيل مجاني. الرقم الدقيق يطلع بعد مشاركة الموقع، ويظهر مرة ثانية في الموقع قبل الدفع. والاستلام من الفرع بدون رسوم.\nلو مقفلين: نقول متى نفتح، ونجهّز السلة من الحين والعميل يكمّل طلبه وقت ما نفتح.\n## The two grill families and «مشكل مخصوص»\nالوجبات: مشوي على الفحم لشخص واحد، تُقدَّم مع الأرز والسلطة والطحينة (مثل وجبة كفتة، وجبة طرب، وجبة شيش طاووق، وجبة ميكس جريل).\nالمشاوي بالوزن: ثلث كيلو أو نصف كيلو أو كيلو من النوع اللي يختاره العميل، تُقدَّم مع السلطة والطحينة والخبز. الأرز مو معها: يجي مع الوجبات وداخل البوكسات.\nمشكل مخصوص: تشكيلة من مشاوينا على الفحم، تُباع بالوزن (ثلث كيلو، نصف كيلو، كيلو) وتُقدَّم مع السلطة والطحينة والخبز.\nلما العميل يسأل المشكل يكفي كم شخص: نسأله كم شخص هم، ونقترح عليه بوكس معمول لعددهم بسعره ومحتواه. ولو يبيه بالوزن: يختار الوزن بنفسه، ويقدر يبدأ بوزن ويزيد.\n## What to propose, by number of people\nمشاوي: وجبة من الوجبات، أو «بوكس وجبة المشاوي الفردي» / «بوكس الميكس جريل الفردي» (الوجبة + جانبي + مشروب).\nكريب / برجر / باستا / حواوشي: البوكس الفردي من نفس النوع (الصنف + جانبي + مشروب).\n(live prices of the names above — بوكس وجبة المشاوي الفردي: 29 ر.س | بوكس الميكس جريل الفردي: 39 ر.س)\nمشاوي: «ميكس جريل لشخصين» أو «وجبتين مشاوي لشخصين».\nكريب: «بوكس الكريب لشخصين». برجر: «بوكس البرجر لشخصين». بيتزا وباستا: «بيتزا وباستا لشخصين». سهرة: «بوكس السهرة».\n(live prices of the names above — بيتزا وباستا لشخصين: 69 ر.س | وجبتين مشاوي لشخصين: 65 ر.س | بوكس الكريب لشخصين: 65 ر.س | بوكس البرجر لشخصين: 65 ر.س | ميكس جريل لشخصين: 85 ر.س | بوكس السهرة: 72 ر.س)\nمشاوي: «بوكس المشاوي نص ونص»، أو «بوكس المشكل المخصوص»، أو «بوكس الريش والمشاوي».\nمشاوي مع بيتزا وباستا: «بوكس العائلة — مشاوي وبيتزا وباستا». تشكيلة: «بوكس التشكيلة». بيتزا: «بوكس سهرة البيتزا».\n(live prices of the names above — بوكس العائلة — مشاوي وبيتزا وباستا: 179 ر.س | بوكس المشاوي نص ونص: 125 ر.س | بوكس المشكل المخصوص: 145 ر.س | بوكس الريش والمشاوي: 189 ر.س | بوكس سهرة البيتزا: 85 ر.س | بوكس التشكيلة: 105 ر.س)\nباقات التجمّع: «باقة تجمّع ٤–٦ أشخاص»، «باقة تجمّع ٨–١٠ أشخاص»، «باقة مناسبة ١٥ شخصاً وأكثر». ولو يبي شي مفصّل على مناسبته: نأخذ العدد واليوم والوقت ونحوّله للفريق.\n(live prices of the names above — باقة مناسبة ١٥ شخصاً وأكثر: 595 ر.س | باقة تجمّع ٨–١٠ أشخاص: 395 ر.س | باقة تجمّع ٤–٦ أشخاص: 225 ر.س)\n## Desserts, drinks and what we do not sell\nما عندنا حلى في المنيو حالياً.\nالمشروبات: بيبسي زجاج، مشروبات غازية، ومياه. ما عندنا عصيرات ولا مشروبات ساخنة.\nما عندنا: حمص، متبل، أوصال، ستيك.\nالأقرب: مع المشاوي سلطة وطحينة وخبز، ومن الجانبيات كولسلو وبطاطس؛ واللي يسأل عن الأوصال نقترح عليه الكباب أو الريش بالوزن.\n## First order, loyalty and the free-delivery code\nأول طلب توصيل من موقعنا توصيله مجاني بالكود، للطلبات من الحد الأدنى. الكود والحد يُقرآن من النظام لكل عميل، وما يُقالان لعميل مو مستحق.\nفي صفحة إتمام الطلب على موقعنا فيه خانة «عندك كود؟»: يكتب الكود ويضغط «تطبيق»، وتصير رسوم التوصيل صفر. ولأول طلب توصيل يظهر له سطر الكود ومعه زر «استخدمه». الكود لطلبات التوصيل فقط ومن الحد الأدنى للطلب.\nبرنامج الولاء: كل عدد معيّن من طلبات الموقع للعميل مكافأة. تقدّمه ومكافأته يُقرآن من النظام لكل عميل.\n## Live menu (names and prices at this moment; whether a dish is available today comes from the tools)\nMenu sections: وجبات، مشاوي بالوزن، كريبات، بيتزا، طاسات، باستا، برجر، حواوشي، إضافات\nDishes (name then price in SAR, VAT included; a dish sold by weight lists each weight with its own price):\nوجبة ميكس جريل 37 — وجبة مشوية تحتوي على كفتة، طرب، صدور دجاج، شيش طاووق تُقدَّم مع الأرز والسلطة والطحينة\nوجبة كفتة وطرب 37 — وجبة مشوية تحتوي على كفتة وطرب تُقدَّم مع الأرز والسلطة والطحينة\nوجبة نصف دجاجة على الفحم 28 — نصف دجاجة مشوية على الفحم تُقدَّم مع الأرز والسلطة والطحينة\nوجبة دجاجة كاملة على الفحم 52 — دجاجة كاملة مشوية على الفحم تُقدَّم مع الأرز والسلطة والطحينة\nوجبة صدور مشوية 25 — وجبة صدور دجاج مشوية تُقدَّم مع الأرز والسلطة والطحينة\nوجبة كفتة 24 — وجبة كفتة مشوية تُقدَّم مع الأرز والسلطة والطحينة\nوجبة طرب 27 — وجبة طرب مشوية تُقدَّم مع الأرز والسلطة والطحينة\nوجبة شيش طاووق 27 — وجبة شيش طاووق مشوية تُقدَّم مع الأرز والسلطة والطحينة\nطبق كبدة اسكندراني 25 — وجبة كبدة اسكندراني تُقدَّم مع الطحينة والسلطة والخبز\nورقة سجق اسكندراني 28 — وجبة سجق اسكندراني تُقدَّم مع الطحينة والسلطة والخبز\nكباب مشوي بالوزن: ثلث كيلو 47 · نصف كيلو 70 · كيلو 140\nكفتة مشوية بالوزن: ثلث كيلو 40 · نصف كيلو 60 · كيلو 120\nسجق مشوي بالوزن: ثلث كيلو 40 · نصف كيلو 60 · كيلو 120\nطرب مشوي بالوزن: ثلث كيلو 47 · نصف كيلو 70 · كيلو 140\nكبدة مشوية بالوزن: ثلث كيلو 33 · نصف كيلو 50 · كيلو 100\nصدور مشوية بالوزن: ثلث كيلو 30 · نصف كيلو 45 · كيلو 90\nشيش طاووق مشوي بالوزن: ثلث كيلو 37 · نصف كيلو 55 · كيلو 110\nريش مشوية بالوزن: ثلث كيلو 62 · نصف كيلو 93 · كيلو 185\nمشكل مخصوص بالوزن: ثلث كيلو 53 · نصف كيلو 78 · كيلو 155\nكريبات: كريب ميكس لحوم 30 · كريب ميكس دجاج 29 · كريب سوبر كرانشي 28 · كريب زنجر سوبريم 25 · كريب شيش طاووق 25 · كريب فاهيتا دجاج 24 · كريب ستربس 25 · كريب هوت دوج 23 · كريب ميكس جبن 20 · كريب بطاطس 15 · إضافة كومبو 6\nبيتزا: بيتزا سوبر سوبريم 31 · بيتزا سوبر كرانشي 34 · بيتزا سي فود رانش 38 · بيتزا بيبروني 29 · بيتزا تشيكن باربكيو 28 · بيتزا تشيكن رانش 28 · بيتزا تشيكن ديناميت 30 · بيتزا تشيكن الباتشينو 30 · بيتزا برجر 30 · بيتزا تونة 30 · بيتزا كواترو تشيز 25 · بيتزا خضروات 22 · بيتزا مارجريتا 20\nطاسات: طاسة الأكيلة 41 · طاسة كرانشي 38 · طاسة صدور مشوية 32 · طاسة برجر 32 · طاسة هوت دوج 29\nباستا: بنا تشيكن كازرول 28 · باستا بشاميل 25 · تشيكن بنا الفريدو 25 · بنا بيف كازرول 35 · سي فود كازرول 37 · سي فود الفريدو 30 · بيف الفريدو 28 · ماك اند تشيز 33 · نجرسكو 25\nبرجر: برجر لحم كلاسيك 21 · مشروم بيف بيكون برجر 30 · كريمي مشروم تشيكن 28 · جريلد تشيكن ساندوتش 19\nحواوشي: حواوشي كيري بسطرمة 28 · حواوشي موتزاريلا 23 · حواوشي سادة 20\nإضافات: فرايد تشيكن 10 · فرايد موتزاريلا 16 · كرانشي فرايز تشيز 19 · تشيلي تشيز فرايز 15 · تشيز فرايز 10 · حلقات بصل 10 · بطاطس محمرة 6 · كولسلو 6 · طبق أرز بسمتي 6 · دوريتوس 5 · بيبسي زجاج 4 · مشروبات غازية 3 · مياه 1\nBoxes (ordered on our website only; the section says who each is for):\n[بوكسات فردية] بوكس الكريب الفردي 29 — كريب من اختيارك + صنف جانبي (بطاطس أو كولسلو أو دوريتوس) + مشروب غازي.\n[بوكسات فردية] بوكس الميكس جريل الفردي 39 — وجبة ميكس جريل أو وجبة كفتة وطرب + صنف جانبي (بطاطس أو كولسلو أو دوريتوس) + مشروب غازي.\n[بوكسات فردية] بوكس البرجر الفردي 29 — برجر من اختيارك + بطاطس + حلقات بصل أو تشيز فرايز + مشروب غازي.\n[بوكسات فردية] بوكس الباستا الفردي 29 — باستا من اختيارك + صنف جانبي (بطاطس أو كولسلو أو دوريتوس) + مشروب غازي.\n[بوكسات فردية] بوكس الحواوشي الفردي 29 — حواوشي من اختيارك + بطاطس + كولسلو أو دوريتوس + مشروب غازي.\n[بوكسات فردية] بوكس وجبة المشاوي الفردي 29 — وجبة مشاوي من اختيارك + صنف جانبي (بطاطس أو كولسلو أو دوريتوس) + مشروب غازي.\n[بوكسات لشخصين] بوكس الكريب لشخصين 65 — كريبين من اختيارك + تشيز فرايز + صنف جانبي (بطاطس أو كولسلو أو دوريتوس) + مشروبين غازيين.\n[بوكسات لشخصين] ميكس جريل لشخصين 85 — وجبتين من اختيارك (ميكس جريل أو كفتة وطرب) + بطاطس + كولسلو + مشروبين غازيين.\n[بوكسات لشخصين] بيتزا وباستا لشخصين 69 — بيتزا وسط + باستا من اختيارك + تشيز فرايز أو حلقات بصل + كولسلو + مشروبين غازيين.\n[بوكسات لشخصين] وجبتين مشاوي لشخصين 65 — وجبتين مشاوي من اختيارك + بطاطس + كولسلو + دوريتوس + مشروبين غازيين.\n[بوكسات لشخصين] بوكس البرجر لشخصين 65 — برجرين من اختيارك + بطاطس عدد ٢ + حلقات بصل + تشيز فرايز + مشروبين غازيين.\n[بوكسات لشخصين] بوكس السهرة 72 — طاسة جبن ساخنة (برجر، صدور مشوية أو هوت دوج) + كريب من اختيارك + تشيلي تشيز فرايز + حلقات بصل + مشروبين غازيين.\n[بوكسات المشاركة والعائلة] بوكس التشكيلة 105 — بيتزا وسط + باستا + كريب + حواوشي من اختيارك + بطاطس + كولسلو + مشروبين غازيين.\n[بوكسات المشاركة والعائلة] بوكس المشاوي نص ونص 125 — كيلو مشاوي نص ونص: نوعين من اختيارك + طبقين أرز + بطاطس + كولسلو، مع السلطة والطحينة والخبز.\n[بوكسات المشاركة والعائلة] بوكس العائلة — مشاوي وبيتزا وباستا 179 — نوعين مشاوي من اختيارك (نصف كيلو لكل نوع) + بيتزا وسط + باستا + ٣ أطباق أرز + بطاطس + كولسلو + ٤ مشروبات غازية، والمشاوي معها السلطة والطحينة والخبز.\n[بوكسات المشاركة والعائلة] بوكس سهرة البيتزا 85 — بيتزتين وسط من اختيارك + فرايد موتزاريلا + بطاطس + كولسلو + مشروبين غازيين.\n[بوكسات المشاركة والعائلة] بوكس المشكل المخصوص 145 — نصف كيلو مشكل مخصوص + نصف كيلو مشاوي من اختيارك + طبقين أرز + بطاطس + كولسلو، مع السلطة والطحينة والخبز.\n[بوكسات المشاركة والعائلة] بوكس الريش والمشاوي 189 — ثلث كيلو ريش + نوعين مشاوي من اختيارك (نصف كيلو لكل نوع) + طبقين أرز + بطاطس + كولسلو + ٤ مشروبات غازية، مع السلطة والطحينة والخبز.\nGathering packs:\nباقة تجمّع ٤–٦ أشخاص 225 — كيلو مشاوي × ٢ من اختيارك + أرز وبطاطس وكولسلو + ٤ مشروبات\nباقة تجمّع ٨–١٠ أشخاص 395 — ٣ كيلو مشاوي + دجاجة كاملة على الفحم + أرز وبطاطس وكولسلو + ٨ مشروبات\nباقة مناسبة ١٥ شخصاً وأكثر 595 — ٤ كيلو مشاوي + دجاجتين كاملتين على الفحم + أرز وبطاطس وكولسلو + ١٢ مشروب\n</business_brief>",
+  "grade": {
+   "pass": true,
+   "fails": [],
+   "review": []
+  }
+ }
+]

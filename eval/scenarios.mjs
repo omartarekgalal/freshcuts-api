@@ -48,7 +48,7 @@ export const BATCH20 = [
     expect: { turnMustContain: { 0: "مقفل|مغلق|نفتح|مقفلين" } } },
   { id: "location-in-range-quote", group: "location share in range", sets: B20, world: { profile: "new", loc: "in" },
     turns: ["ابي بوكس البرجر لشخصين، الاثنين برجر لحم كلاسيك", { location: "in" }, "تمام توصيل، جهز السلة"],
-    expect: { cart: { option: "delivery", boxes: [{ slug: "box-burger-duo", choices: [71, 71], price: 65 }], only: true, subtotal: 65 }, mustContain: ["15"] } },
+    expect: { cart: { option: "delivery", boxes: [{ slug: "box-burger-duo", choices: [71, 71], price: 65 }], only: true, subtotal: 65 }, mustContain: ["15|مجاني بكود FIRST"] } },      // SB1: a first-timer's 65 SAR delivery cart is free with FIRST (the code's recap says it); a returning customer would see 15
   { id: "location-out-of-range", group: "location share out of range", sets: B20, world: { profile: "new", loc: "out" },
     turns: ["ابي وجبة ميكس جريل توصيل", { location: "out" }, "تمام خلها استلام"],
     expect: { cart: { option: "pickup", items: [{ id: 18, qty: 1 }] }, turnMustContain: { 1: "خارج|استلام" } } },

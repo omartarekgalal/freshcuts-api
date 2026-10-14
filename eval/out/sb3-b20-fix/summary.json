@@ -1,0 +1,60 @@
+{
+ "set": "batch20",
+ "name": "sb3-b20-fix",
+ "over": {
+  "routing": "escalate",
+  "thinking": "adaptive",
+  "effort": "low",
+  "timeoutMs": 60000
+ },
+ "capped": false,
+ "spentRun": 0.230799,
+ "spentTodayBefore": 9.522922999999997,
+ "cap": 100,
+ "conversations": 2,
+ "passed": 2,
+ "failed": [],
+ "customerTurns": 7,
+ "modelTurns": 6,
+ "answeredByAssistant": 7,
+ "rulesOwned": 0,
+ "fallbacks": {},
+ "validatorRetries": 0,
+ "escalations": 1,
+ "costSar": 0.2308,
+ "costPerConversationSar": 0.1154,
+ "costPerModelTurnSar": 0.0385,
+ "latencyMs": {
+  "p50": 3153,
+  "p90": 6111,
+  "max": 6111,
+  "n": 6
+ },
+ "modelCalls": 14,
+ "byModel": {
+  "claude-haiku-5-5": {
+   "calls": 7,
+   "in": 4974,
+   "out": 858,
+   "cached": 165114,
+   "sar": 0.0654,
+   "callP50ms": 1151,
+   "callP90ms": 2813
+  },
+  "claude-sonnet-5-5": {
+   "calls": 7,
+   "in": 1764,
+   "out": 692,
+   "cached": 168301,
+   "sar": 0.1654,
+   "callP50ms": 1401,
+   "callP90ms": 1714
+  }
+ },
+ "failTypes": {},
+ "reviewFlags": {
+  "many_emoji": 1
+ },
+ "text": "conversations 2 · passed 2 · failed 0\ncustomer turns 7: assistant answered 7, rules owned 0, fallbacks {}\nvalidator retries 0 · escalations fast→strong 1 · model calls 14\ncost 0.2308 SAR (0.1154 per conversation, 0.0385 per model turn)\nlatency per answered turn: p50 3153 ms · p90 6111 ms · max 6111 ms (n=6)\nby model {\"claude-haiku-5-5\":{\"calls\":7,\"in\":4974,\"out\":858,\"cached\":165114,\"sar\":0.0654,\"callP50ms\":1151,\"callP90ms\":2813},\"claude-sonnet-5-5\":{\"calls\":7,\"in\":1764,\"out\":692,\"cached\":168301,\"sar\":0.1654,\"callP50ms\":1401,\"callP90ms\":1714}}\nfail types {}\nreview flags {\"many_emoji\":1}",
+ "markdown": "# Assistant evaluation: sb3-b20-fix\n\n```\nconversations 2 · passed 2 · failed 0\ncustomer turns 7: assistant answered 7, rules owned 0, fallbacks {}\nvalidator retries 0 · escalations fast→strong 1 · model calls 14\ncost 0.2308 SAR (0.1154 per conversation, 0.0385 per model turn)\nlatency per answered turn: p50 3153 ms · p90 6111 ms · max 6111 ms (n=6)\nby model {\"claude-haiku-5-5\":{\"calls\":7,\"in\":4974,\"out\":858,\"cached\":165114,\"sar\":0.0654,\"callP50ms\":1151,\"callP90ms\":2813},\"claude-sonnet-5-5\":{\"calls\":7,\"in\":1764,\"out\":692,\"cached\":168301,\"sar\":0.1654,\"callP50ms\":1401,\"callP90ms\":1714}}\nfail types {}\nreview flags {\"many_emoji\":1}\n```\n\n## Conversations\n\n### PASS · returning-reorder-declined-upsell (returning customer) · 0.0566 SAR\n\n- **العميل:** هلا\n  - _(أزرار: [🔁 نفس طلبي السابق] [أبغى شي ثاني])_\n  - **المساعد** (fast, 2900 ms, 0.0095 SAR): هلا والله أحمد 👋 معك ماجد، المساعد الرقمي لفريش كاتس. آخر طلب لك كان *كريب زنجر سوبريم* × 2 ووجبة كفتة. نفس طلبي السابق؟\n- **العميل:** لا، اليوم بس كريب زنجر سوبريم\n  - _(أزرار: [أضفه ✅] [لا شكراً])_\n  - **المساعد** (fast, 3301 ms, 0.0276 SAR, tools: search_menu, preview_cart): *كريب زنجر سوبريم* بـ 25 ر.س. ⏎ وبـ 29 ر.س يصير *بوكس الكريب الفردي*. أحوّله بوكس؟\n- **العميل:** لا شكراً\n  - _(أزرار: [توصيل] [استلام من الفرع])_\n  - **المساعد** (fast, 6 ms, 0.0000 SAR, tools: preview_cart): تمام 👍 توصيل ولا استلام؟\n- **العميل:** استلام\n  - **المساعد** (fast, 2176 ms, 0.0195 SAR, tools: build_cart, cart 25 pickup): 🛒 سلتك (استلام من الفرع): ⏎ • *كريب زنجر سوبريم* × 1 = 25 ر.س ⏎ المجموع: 25 ر.س ⏎ استلام من الفرع: بدون رسوم توصيل ⏎ راجع السلة، ولو كل شي تمام اضغط الزر وأكمل الدفع 👇\n\n### PASS · location-in-range-quote (location share in range) · 0.1742 SAR\n\nReview: many_emoji@2 «»\n\n- **العميل:** ابي بوكس البرجر لشخصين، الاثنين برجر لحم كلاسيك\n  - _(أزرار: [توصيل] [استلام من الفرع])_\n  - **المساعد** (strong↑, 6111 ms, 0.0724 SAR, tools: get_box, preview_cart): معك ماجد، المساعد الرقمي لفريش كاتس. أبشر، *بوكس البرجر لشخصين* بـ 65 ر.س ببرجرين لحم كلاسيك، مع بطاطس عدد ٢ وحلقات بصل وتشيز فرايز ومشروبين غازيين. ⏎ 🎁 أول طلب توصيل لك من موقعنا مجاني للطلبات من 60 ر.س بكود FIRST. ⏎ توصيل ولا استلام؟\n- **العميل:** [location]\n  - **المساعد** (strong, 2829 ms, 0.0473 SAR, tools: quote_delivery): نعم نوصل لك 👍 أول طلب توصيل لك من موقعنا توصيله مجاني للطلبات من 60 ر.س بكود FIRST. وطلبك 65 ر.س فينطبق عليه. أجهّز لك السلة؟\n- **العميل:** تمام توصيل، جهز السلة\n  - **المساعد** (strong, 3153 ms, 0.0545 SAR, tools: build_cart, cart 65 delivery): 🛒 سلتك (توصيل): ⏎ • *بوكس البرجر لشخصين* (*برجر لحم كلاسيك*، برجر لحم كلاسيك، بطاطس محمرة، حلقات بصل، تشيز فرايز، *مشروبات غازية*) × 1 = 65 ر.س ⏎ المجموع: 65 ر.س ⏎ التوصيل: مجاني بكود FIRST 🎁 ⏎ الإجمالي: 65 ر.س ⏎ راجع السلة، ولو كل شي تمام اضغط الزر وأكمل الدفع 👇\n"
+}

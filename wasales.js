@@ -92,10 +92,15 @@ export function placeLine(text, line, { question = false } = {}) {
   if (lastIdx < 0) return line;
   const last = ls[lastIdx].trim(), endsQ = /[؟?]\s*$/.test(last);
   if (question) {
-    if (endsQ) { const m = /^(.*[.!،\p{Extended_Pictographic}])\s*([^.!،؟?\p{Extended_Pictographic}]*[؟?])\s*$/u.exec(last); if (m && m[1].trim()) ls[lastIdx] = m[1].trim(); else ls.splice(lastIdx, 1); }
+    if (endsQ) { const m = /^(.*[.!،\p{Extended_Pictographic}])\s+((?:[^.!،؟?\p{Extended_Pictographic}]|ر\.س)*[؟?])\s*$/u.exec(last); if (m && m[1].trim()) ls[lastIdx] = m[1].trim(); else ls.splice(lastIdx, 1); }
     return [...ls.filter((x, i) => i <= lastIdx || x.trim()), line].join("\n").replace(/\n{3,}/g, "\n\n").trim();
   }
-  if (endsQ) { ls.splice(lastIdx, 0, line); return ls.join("\n").trim(); }
+  if (endsQ) {
+    /* السطر الأخير فقرة («… بـ 65 ر.س. توصيل ولا استلام؟»): السطر الجديد قبل جملة السؤال بس، مش فوق الفقرة كلها (batch20: سطر أول طلب طلع فوق التعريف) */
+    const m = /^(.*[.!،\p{Extended_Pictographic}])\s+((?:[^.!،؟?\p{Extended_Pictographic}]|ر\.س)*[؟?])\s*$/u.exec(last);
+    if (m && m[1].trim()) ls.splice(lastIdx, 1, m[1].trim(), line, m[2].trim()); else ls.splice(lastIdx, 0, line);
+    return ls.join("\n").trim();
+  }
   return `${String(text || "").trim()}\n${line}`;
 }
 

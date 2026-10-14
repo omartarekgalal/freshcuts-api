@@ -1,0 +1,49 @@
+{
+ "set": "sb1",
+ "name": "sb3-buyers",
+ "over": {
+  "routing": "strong",
+  "thinking": "adaptive",
+  "effort": "medium",
+  "timeoutMs": 60000
+ },
+ "capped": false,
+ "spentRun": 0.37685,
+ "spentTodayBefore": 9.753721999999993,
+ "cap": 100,
+ "conversations": 2,
+ "passed": 2,
+ "failed": [],
+ "customerTurns": 9,
+ "modelTurns": 7,
+ "answeredByAssistant": 9,
+ "rulesOwned": 0,
+ "fallbacks": {},
+ "validatorRetries": 0,
+ "escalations": 0,
+ "costSar": 0.3769,
+ "costPerConversationSar": 0.1884,
+ "costPerModelTurnSar": 0.0538,
+ "latencyMs": {
+  "p50": 2740,
+  "p90": 4521,
+  "max": 4521,
+  "n": 7
+ },
+ "modelCalls": 13,
+ "byModel": {
+  "claude-sonnet-5-5": {
+   "calls": 13,
+   "in": 13116,
+   "out": 1151,
+   "cached": 313755,
+   "sar": 0.3769,
+   "callP50ms": 1480,
+   "callP90ms": 1948
+  }
+ },
+ "failTypes": {},
+ "reviewFlags": {},
+ "text": "conversations 2 · passed 2 · failed 0\ncustomer turns 9: assistant answered 9, rules owned 0, fallbacks {}\nvalidator retries 0 · escalations fast→strong 0 · model calls 13\ncost 0.3769 SAR (0.1884 per conversation, 0.0538 per model turn)\nlatency per answered turn: p50 2740 ms · p90 4521 ms · max 4521 ms (n=7)\nby model {\"claude-sonnet-5-5\":{\"calls\":13,\"in\":13116,\"out\":1151,\"cached\":313755,\"sar\":0.3769,\"callP50ms\":1480,\"callP90ms\":1948}}\nfail types {}\nreview flags {}",
+ "markdown": "# Assistant evaluation: sb3-buyers\n\n```\nconversations 2 · passed 2 · failed 0\ncustomer turns 9: assistant answered 9, rules owned 0, fallbacks {}\nvalidator retries 0 · escalations fast→strong 0 · model calls 13\ncost 0.3769 SAR (0.1884 per conversation, 0.0538 per model turn)\nlatency per answered turn: p50 2740 ms · p90 4521 ms · max 4521 ms (n=7)\nby model {\"claude-sonnet-5-5\":{\"calls\":13,\"in\":13116,\"out\":1151,\"cached\":313755,\"sar\":0.3769,\"callP50ms\":1480,\"callP90ms\":1948}}\nfail types {}\nreview flags {}\n```\n\n## Conversations\n\n### PASS · sb1-buyer-returning-one-to-reward (returning, 2 of 3 orders: loyalty line with the order; two meals ⇒ the box for two offered once, declined) · 0.1904 SAR\n\n- **العميل:** هلا\n  - _(أزرار: [إيه، جهّزه ✅] [أبغى شي ثاني])_\n  - **المساعد** (strong, 2000 ms, 0.0310 SAR): هلا والله أحمد 👋 معك ماجد، المساعد الرقمي لفريش كاتس. آخر طلب لك كان *كريب زنجر سوبريم* ×٢ ووجبة كفتة. نفس الطلب؟\n- **العميل:** ابي وجبة كفتة ووجبة طرب\n  - _(أزرار: [أضفه ✅] [لا شكراً])_\n  - **المساعد** (strong, 4521 ms, 0.1011 SAR, tools: search_menu, search_menu, preview_cart): *وجبة كفتة* ووجبة طرب بـ 51 ر.س. وبـ 65 ر.س يصير *وجبتين مشاوي لشخصين*. ⏎ ⭐ باقي لك طلب واحد من الموقع وتاخذ توصيل مجاني على طلبك اللي بعده (للطلبات من 60 ر.س). ⏎ أحوّله بوكس؟\n- **العميل:** لا شكراً\n  - _(أزرار: [توصيل] [استلام من الفرع])_\n  - **المساعد** (strong, 10 ms, 0.0000 SAR, tools: preview_cart): تمام 👍 توصيل ولا استلام؟\n- **العميل:** استلام\n  - **المساعد** (strong, 3075 ms, 0.0583 SAR, tools: build_cart, cart 51 pickup): 🛒 سلتك (استلام من الفرع): ⏎ • *وجبة كفتة* × 1 = 24 ر.س ⏎ • *وجبة طرب* × 1 = 27 ر.س ⏎ المجموع: 51 ر.س ⏎ استلام من الفرع: بدون رسوم توصيل ⏎ راجع السلة، ولو كل شي تمام اضغط الزر وأكمل الدفع 👇\n\n### PASS · sb1-buyer-regular-same-then-mashakel (regular: «نفس طلبك؟» with the ready-cart button; then the mashakel by weight with rice (6 SAR, now on the menu)) · 0.1864 SAR\n\n- **العميل:** هلا\n  - _(أزرار: [🔁 نفس طلبي السابق] [أبغى شي ثاني])_\n  - **المساعد** (strong, 2016 ms, 0.0330 SAR): هلا والله أحمد 👋 معك ماجد، المساعد الرقمي لفريش كاتس. آخر طلب لك كان *كريب زنجر سوبريم* ×2 ووجبة كفتة. نفس الطلب؟\n- **العميل:** لا، اليوم ابي مشكل مخصوص\n  - _(قايمة: شخص واحد · شخصين · ثلاثة أو أربعة · خمسة أو ستة · سبعة وأكثر)_\n  - **المساعد** (strong, 2785 ms, 0.0465 SAR, tools: search_menu): أبشر، المشكل المخصوص تشكيلة من مشاوينا على الفحم، تُقدَّم مع السلطة والطحينة والخبز، ويُباع بالوزن: ⏎ ثلث كيلو: 53 ر.س · نصف كيلو: 78 ر.س · كيلو: 155 ر.س ⏎ كم شخص أنتم؟\n- **العميل:** نص كيلو\n  - _(أزرار: [أضفه ✅] [لا شكراً])_\n  - **المساعد** (strong, 2553 ms, 0.0481 SAR, tools: preview_cart): *مشكل مخصوص بالوزن* نصف كيلو بـ 78 ر.س. الأرز مو معه، يجي مع الوجبات والبوكسات. ⏎ تحب أضيف لك *طبق أرز بسمتي* بـ 6 ر.س؟\n- **العميل:** أضفه ✅\n  - _(أزرار: [توصيل] [استلام من الفرع])_\n  - **المساعد** (strong, 5 ms, 0.0000 SAR, tools: preview_cart): تمام، أضفت *طبق أرز بسمتي* ✅ المجموع 84 ر.س. ⏎ توصيل ولا استلام؟\n- **العميل:** استلام\n  - **المساعد** (strong, 2740 ms, 0.0589 SAR, tools: build_cart, cart 84 pickup): 🛒 سلتك (استلام من الفرع): ⏎ • *مشكل مخصوص بالوزن* — نصف كيلو × 1 = 78 ر.س ⏎ • *طبق أرز بسمتي* × 1 = 6 ر.س ⏎ المجموع: 84 ر.س ⏎ استلام من الفرع: بدون رسوم توصيل ⏎ راجع السلة، ولو كل شي تمام اضغط الزر وأكمل الدفع 👇\n"
+}

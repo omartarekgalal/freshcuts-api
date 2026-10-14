@@ -1040,7 +1040,7 @@ export function makeAssistLoop(deps) {
   /* مسموح اقتراح في الدور ده؟ عقل البيع: لحد maxOffersPerChat في المحادثة، ومفيش بعد أي «لا». من غيره: قاعدة PS5 (اقتراح واحد). */
   function offerAllowed(T) {
     const st = T.session.state, a = T.acfg || {};
-    if (a.salesBrain) return !st.declined.length && st.offered.length < Math.round(Number(a.maxOffersPerChat) || 0) && !T.sgNow;
+    if (a.salesBrain) return !st.declined.length && !st.noOffers && !T.noOffer && st.offered.length < Math.round(Number(a.maxOffersPerChat) || 0) && !T.sgNow;
     return !(a.oneOfferPerChat && st.offered.length);
   }
   /* الاقتراح بترتيب عقل البيع: بوكس يشيل أصناف السلة (أوفر أو بوكس الاقتران) ⇒ أقرب حد رسوم بصنف واحد ⇒ اقتراح الاقتران/المشروب/الجانبي القديم. مفيش حاجة اتعرضت قبل كده. */
@@ -1099,6 +1099,7 @@ export function makeAssistLoop(deps) {
   /* قبل نداء الموديل: البطاقة، رد العميل على زرّي الاقتراح، وكتلة العروض. */
   const SG_YES_RE = /^(?:[أا]ضف(?:ه|ها|هم)?|ضيف(?:ه|ها|هم)|اي(?:وه|ه)?،? ضيف(?:ه|ها)?|نعم،? ضيف(?:ه|ها)?|تمام ضيف(?:ه|ها)?|add it|yes,? add(?: it)?)(?:\s|$)/i;
   const SG_NO_RE = /^(?:لا،? شكرا|لا مشكور|لا ما ابي|لا مابي|لا ما ابغى|لا خلاص|no,? thanks?)(?:\s|$)/i;
+  const SEND_CART_RE = /(ارسل|ارسلي|رسل|ابعث|ابعت|هات|جهز) (لي )?(ال)?(رابط|سله|السله|لينك)|(^| )(بس كذا|بس كذه|خلاص كذا|كذا تمام|send (me )?the (cart|link))( |$)/i;
   const GENERIC_W = new Set(["وجبه", "مشويه", "مشوي", "بالوزن", "الفحم", "علي", "سوبر", "بوكس", "طبق", "لشخصين", "الفردي"]);
   async function salesPre(T, ctx, text, context) {
     const st = T.session.state, a = T.acfg;
@@ -1112,6 +1113,10 @@ export function makeAssistLoop(deps) {
     const pend = [...st.offered].reverse().find((o) => o.outcome === "offered"), clean = nt.replace(/[✅👍🙏!.،]/g, " ").replace(/\s+/g, " ").trim();
     if (pend && SG_YES_RE.test(clean)) { pend.outcome = "accepted"; T.trace.suggestions.push({ kind: pend.kind, ref: pend.ref, name: pend.name, outcome: "accepted", by: "reply" });
       ctx.suggestion_answer = { accepted: pend.name, rule: "The customer accepted the suggestion you offered: add exactly that to their cart (preview_cart with it added, or build_cart if they already chose delivery or pickup) and confirm in one short line with the new total. No other suggestion." }; }
+    /* «لا شكراً» من غير اقتراح مستني = رفض عام ⇒ مفيش اقتراحات تانية في المحادثة؛ «ارسل السلة / بس كذا / خلاص» ⇒ مفيش اقتراح في الدور ده (batch20: «لا شكراً، ارسل رابط السلة» خد عرض بوكس بدل السلة) */
+    if (!pend && SG_NO_RE.test(clean)) st.noOffers = true;
+    if (SEND_CART_RE.test(clean)) T.noOffer = true;
+    if (pend && SG_NO_RE.test(clean) && SEND_CART_RE.test(clean)) T.noOffer = true;
     else if (pend && SG_NO_RE.test(clean)) { pend.outcome = "declined"; if (!st.declined.includes(pend.kind)) st.declined.push(pend.kind); T.trace.suggestions.push({ kind: pend.kind, ref: pend.ref, name: pend.name, outcome: "declined", by: "reply" });
       ctx.suggestion_answer = { declined: pend.name, rule: "The customer said no thanks to the suggestion: accept it in a few words and carry on with their order (the next step). Offer nothing else in this conversation." }; }
     if (a.offersBlock && T.sales.topics.offers && !st.offersShown) { const b = await offersBlock(T);
