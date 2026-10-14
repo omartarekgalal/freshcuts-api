@@ -33,6 +33,7 @@ import * as keeta from "./keeta.js";
 import * as keetaControl from "./keeta_control.js";
 import * as hsControl from "./hs_control.js";
 import * as appSync from "./app_sync.js";
+import * as hsPortal from "./hs_portal.js";
 import * as funnel from "./funnel.js";
 import * as audiences from "./audiences.js";
 import * as autopilot from "./autopilot.js";
@@ -3051,6 +3052,9 @@ const keetaControlApi = keetaControl.register(app, moduleCtx);
 const hsControlApi = hsControl.register(app, moduleCtx);
 // صنف عندنا = صنف في كيتا = صنف في هنقرستيشن — «خلص» من البوابة بيقفل الاتنين (app_sync.js)
 const appSyncApi = appSync.register(app, moduleCtx, { keeta: keetaControlApi, hs: hsControlApi });
+// دخول بوابة شركاء هنقرستيشن (للعروض) — hs_portal.js
+const hsPortalApi = hsPortal.register(app, moduleCtx);
+void hsPortalApi;
 // attribution.register hands back { sweepAndRoll, linkOrder, overviewData }.
 // It registers BEFORE funnel so a storefront Purchase can link itself to the
 // ad lead that produced it the moment it lands, and before autopilot so the

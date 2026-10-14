@@ -153,6 +153,7 @@ const PATH_SECTIONS = [
   [/^\/api\/keeta\/control\/settings/, "settings"],
   [/^\/api\/keeta\/control/, "products"],
   [/^\/api\/hs\/control/, "products"],
+  [/^\/api\/hs\/portal/, "products"],
   [/^\/api\/apps\//, "products"],
   [/^\/api\/(analytics|reports|insights|keeta-reports|hungerstation|ninja|keeta\b|keeta\/)/, "analytics"],
 ];
