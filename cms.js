@@ -152,6 +152,7 @@ const PATH_SECTIONS = [
   // وإعداداته للمالك بس — لازم يسبقوا سطر keeta العام بتاع التحليلات.
   [/^\/api\/keeta\/control\/settings/, "settings"],
   [/^\/api\/keeta\/control/, "products"],
+  [/^\/api\/hs\/control/, "products"],
   [/^\/api\/(analytics|reports|insights|keeta-reports|hungerstation|ninja|keeta\b|keeta\/)/, "analytics"],
 ];
 export function sectionOf(path) {
