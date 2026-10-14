@@ -14,7 +14,7 @@ const MEMBERS = [{ phone: `0${CASH1}`, name: "منى", role: "cashier" }, { phon
 const P_CASHIER = { id: "s1", name: "سلمى", role: "cashier", via: "portal" }, P_MANAGER = { id: "m1", name: "خالد", role: "manager", via: "portal" };
 const MIN = 60_000;
 
-function world({ waTeam = { members: MEMBERS }, at = "2026-10-13T15:00:00Z" } = {}) {
+function world({ waTeam = { members: MEMBERS }, at = "2026-10-13T15:00:00Z", handoverApi = null } = {}) {
   let nowMs = Date.parse(at);
   const clock = { now: () => new Date(nowMs), advance: (m) => { nowMs += m * MIN; } };
   const iso = (v) => new Date(v).toISOString();
@@ -77,7 +77,7 @@ function world({ waTeam = { members: MEMBERS }, at = "2026-10-13T15:00:00Z" } = 
   const app = { get: (p, h) => { routes[`GET ${p}`] = h; }, post: (p, h) => { routes[`POST ${p}`] = h; } };
   let portalUser = P_CASHIER;
   const flow = F.register(app, ctx, { team: () => team, staff: () => ({ owner }), bot: () => bot, hub: () => ({ keyOf: (pn) => `k${pn}`, markHandled: async (pn) => { db.handled.push(pn); } }),
-    broadcast: (e, d) => events.push([e, d]), now: clock.now, noTimer: true, log: { error() {} }, requirePortal: async () => ({ user: portalUser }) });
+    broadcast: (e, d) => events.push([e, d]), now: clock.now, noTimer: true, log: { error() {} }, requirePortal: async () => ({ user: portalUser }), ...(handoverApi ? { handover: () => handoverApi } : {}) });
   const cfg = () => T.teamConfig(db.settings);
   const handover = (o = {}) => { chat(CUST).handoff_at = iso(nowMs); chat(CUST).handoff_reason = o.reason || "asked_human";
     return flow.onHandover({ cfg: cfg(), phone: CUST, reason: "asked_human", reasonAr: "طلب موظف", urgent: false, orderNo: null, stage: "new", sms: "SMS", ...o }); };
@@ -312,4 +312,44 @@ test("SOP: numbered Egyptian instructions with the live minutes, the action name
   w.setPortalUser({ role: "kitchen" });
   assert.equal((await w.call("GET /api/portal/wa/sop")).status, 403);
   assert.equal((await w.call("GET /api/cms/wa/threads-sop")).body.role, "manager");
+});
+
+/* ══ RG1 (١٤/١٠): البوابة بترنّ لحد ما حد يستلم، والتصعيد يوصل بوابة المدير، و«طلب مسؤول» ══════════════ */
+function hoStub() {
+  const calls = { esc: [], ring: [] };
+  return { calls, escalate: async (x) => { calls.esc.push(x); return { id: 1 }; }, ringDue: async (r, now) => { calls.ring.push([r, now.toISOString()]); return { settled: 0, rung: 0 }; } };
+}
+test("RG1 ladder: the manager step also escalates on the portal (manager devices, waited minutes); the owners step adds nothing on the portal; managerPush off ⇒ event only", async () => {
+  const h = hoStub(), w = world({ handoverApi: h });
+  await w.handover(); assert.equal(h.calls.esc.length, 0, "an ordinary handover starts at the cashiers");
+  w.clock.advance(5); await w.flow.tick();
+  assert.deepEqual(h.calls.esc, [{ phone: CUST, waitedMin: 5, direct: false, push: true, reason: "asked_human", reasonAr: "طلب موظف" }]);
+  w.clock.advance(10); await w.flow.tick();
+  assert.deepEqual(roles(w, 3), ["owner", "owner"]); assert.equal(h.calls.esc.length, 1, "owners get WhatsApp only");
+  const h2 = hoStub(), off = world({ handoverApi: h2, waTeam: { members: MEMBERS, ladder: { managerPush: false } } });
+  await off.handover(); off.clock.advance(5); await off.flow.tick();
+  assert.equal(h2.calls.esc[0].push, false);
+  const bare = world(); await bare.handover(); bare.clock.advance(5); await bare.flow.tick();
+  assert.equal(bare.events.filter((e) => e[0] === "wa_handover_escalated").length, 1, "without wahandover the event still goes out");
+});
+test("RG1 «طلب مسؤول»: the cashiers AND the manager at once (WhatsApp + manager portal), the manager's copy says the customer asked; switch off ⇒ cashiers first as before", async () => {
+  const h = hoStub(), w = world({ handoverApi: h });
+  await w.handover({ reason: "asked_manager", reasonAr: "طلب مسؤول" });
+  assert.deepEqual(roles(w), ["cashier", "cashier", "manager"]);
+  assert.match(w.sent[0].body, /^💬 تحويل لموظف — طلب مسؤول\n/); assert.match(w.sent[2].body, /^🙋 العميل طالب مسؤول — رد عليه دلوقتي — طلب مسؤول\n/);
+  assert.deepEqual(h.calls.esc, [{ phone: CUST, waitedMin: 0, direct: true, push: true, reason: "asked_manager", reasonAr: "طلب مسؤول" }]);
+  w.clock.advance(5); await w.flow.tick(); assert.equal(w.sent.length, 3, "already at the manager: no second manager alert");
+  w.clock.advance(10); await w.flow.tick(); assert.deepEqual(roles(w, 3), ["owner", "owner"]);
+  const off = world({ handoverApi: hoStub(), waTeam: { members: MEMBERS, ladder: { managerDirect: false } } });
+  await off.handover({ reason: "asked_manager", reasonAr: "طلب مسؤول" }); assert.deepEqual(roles(off), ["cashier", "cashier"]);
+  assert.deepEqual(F.firstSteps(T.teamConfig({ waTeam: { members: MEMBERS.slice(2) } }), false, "asked_manager"), ["manager"], "no cashier ⇒ the manager first");
+});
+test("RG1: «استلم» closes the portal card (wa_handover_ack) so it stops ringing; the minute tick drives the portal ring even with team WhatsApp off", async () => {
+  const h = hoStub(), w = world({ handoverApi: h });
+  await w.handover(); w.db.handovers.push({ id: 7, phone: CUST, acked_at: null });
+  assert.equal((await w.flow.take(CUST, P_CASHIER)).ok, true);
+  assert.deepEqual(w.events.filter((e) => e[0] === "wa_handover_ack"), [["wa_handover_ack", { id: 7, by: "سلمى" }]]);
+  const t = await w.flow.tick(); assert.deepEqual(t.ring, { settled: 0, rung: 0 }); assert.deepEqual(h.calls.ring[0][0], { enabled: true, everyMin: 3, capMin: 45 });
+  const h2 = hoStub(), off = world({ handoverApi: h2, waTeam: { members: MEMBERS, enabled: false } });
+  const t2 = await off.flow.tick(); assert.equal(t2.skipped, "off"); assert.equal(h2.calls.ring.length, 1);
 });

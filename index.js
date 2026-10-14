@@ -3279,8 +3279,8 @@ let waStaffApi = null;      // wastaff.register: رد الموظف على محا
 waHubApi = wahub.register(app, moduleCtx, { whoami: (c) => cmsApi.whoami(c), wa: waApi, waInbox: () => waInboxApi, bot: () => wabotApi, staff: () => waStaffApi, flow: () => waFlowApi });
 waStaffApi = wastaff.register(app, moduleCtx, { wa: waApi, hub: () => waHubApi, requirePortal: portalApi.requirePortal, audit: portalApi.audit, bot: () => wabotApi, broadcast: portalApi.broadcast, flow: () => waFlowApi });
 /* 👥 ST1 (١٢/١٠): تواصل الفريق على واتساب — كل إرسال من حارس whatsapp.js، وللأرقام اللي في دليل الفريق بس. */
-waTeamApi = wateam.register(app, moduleCtx, { wa: waApi, sendSms: accounts.sendSms, requirePortal: portalApi.requirePortal, flow: () => waFlowApi });
-waFlowApi = waflow.register(app, moduleCtx, { team: () => waTeamApi, staff: () => waStaffApi, bot: () => wabotApi, hub: () => waHubApi, requirePortal: portalApi.requirePortal, broadcast: portalApi.broadcast });
+waTeamApi = wateam.register(app, moduleCtx, { wa: waApi, sendSms: accounts.sendSms, requirePortal: portalApi.requirePortal, flow: () => waFlowApi , presence: () => waHandoverApi });
+waFlowApi = waflow.register(app, moduleCtx, { team: () => waTeamApi, staff: () => waStaffApi, bot: () => wabotApi, hub: () => waHubApi, requirePortal: portalApi.requirePortal, broadcast: portalApi.broadcast , handover: () => waHandoverApi });
 // 🍽 QR الطاولات: مفاتيح الطاولات + نداء الويتر (بيبعت إشعار البوابة) + تحليلات لكل طاولة
 tableOrder.register(app, moduleCtx, { portal: () => portalApi, shop: () => shopApi });
 /* 🚨 حارس الدفع (٢٢/٩): ناس بتوصل لخطوة الدفع ومحدش بيدفع ⇒ SMS للمدير.

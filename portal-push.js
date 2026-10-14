@@ -144,8 +144,8 @@ export function makePortalPush({ pool, getSettingsData, webpush = webpushLib, lo
     }
   }
 
-  /* يبعت لكل الاشتراكات (أو لموظف/endpoint بعينه). بيرجّع {sent, of}. */
-  async function sendToSubs(payload, { staffId = null, endpoint = null } = {}) {
+  /* يبعت لكل الاشتراكات (أو لموظف/endpoint بعينه، أو لدور بعينه: role = "manager" ⇒ أجهزة المديرين بس — RG1). بيرجّع {sent, of}. */
+  async function sendToSubs(payload, { staffId = null, endpoint = null, role = null } = {}) {
     try {
       await ensureSchema();
       const v = await vapid();
@@ -157,6 +157,7 @@ export function makePortalPush({ pool, getSettingsData, webpush = webpushLib, lo
       const where = [], vals = [];
       if (staffId) { vals.push(String(staffId)); where.push(`staff_id=$${vals.length}`); }
       if (endpoint) { vals.push(String(endpoint)); where.push(`endpoint=$${vals.length}`); }
+      if (role) { vals.push(String(role)); where.push(`role=$${vals.length}`); }
       let rows = (await pool.query(
         `SELECT id, sub, staff_id FROM portal_push_subs ${where.length ? `WHERE ${where.join(" AND ")}` : ""}
           ORDER BY id DESC LIMIT ${MAX_SUBS}`, vals)).rows || [];

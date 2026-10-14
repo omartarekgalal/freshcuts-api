@@ -1094,7 +1094,7 @@ test("after a handover the assistant really leaves the chat: facts only, until s
   for (const phrase of ["موظف", "كلموني", "ابي اكلم موظف", "ابغى خدمة العملاء", "agent", "customer service please", "ابي المدير", "محد يرد علي"]) {
     const w = liveWorld();
     const r = await w.say(phrase);
-    assert.equal(r.log.reply_key, "human", phrase); assert.equal(r.log.handoff, "asked_human", phrase); assert.equal(w.sms.length, 2, phrase);
+    assert.equal(r.log.reply_key, "human", phrase); assert.equal(r.log.handoff, phrase === "ابي المدير" ? "asked_manager" : "asked_human", phrase); assert.equal(w.sms.length, 2, phrase);      // RG1: «المدير» = طلب مسؤول
   }
   const w = liveWorld();
   assert.deepEqual((await w.say("ابي اكلم موظف")).sent, [txt(ME, `أبشر 🙏 حوّلت محادثتك لموظف.\n${HAND}`)]);

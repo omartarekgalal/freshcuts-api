@@ -492,6 +492,10 @@ const IGNORED_TYPES = new Set(["reaction", "sticker", "system", "ephemeral", "re
 const MEDIA_TYPES = new Set(["image", "audio", "voice", "video", "document", "contacts", "location"]);
 /* intents اللي مايتعدّاش عليها بحث المنيو/البوكس/الأسئلة الشائعة */
 const HARD_INTENTS = new Set(["complaint", "refund", "payment_issue", "site_issue", "cancel_order", "modify_order", "cancel_or_stop", "coupon_help", "human", "stop", "start", "order_status", "special_request"]);
+/* RG1 (١٤/١٠): «ابغي اتواصل مع احد المسؤولين» ⇒ مش «طلب موظف» عادي: طلب مسؤول (asked_manager) — بيروح للمدير على طول مع الكاشير
+   (waTeam.ladder.managerDirect). بعد normalize (ؤ ⇒ و، ة ⇒ ه، أ ⇒ ا). بيتطبّق بس لما النية أصلاً «موظف» (human). */
+export const MANAGER_ASK_RE = /(?:^| )[وف]?(?:لل|[بلك])?(?:ال)?(?:مسوول|مسوولين|مسوولي|مسوولون|مسووله|مدير|مديره|مديرين|مديركم|مدراء|مدرا|اداره|ادارتكم|مشرف|مشرفين|مشرفه)(?= |$)|(?:^| )(?:manager|managers|supervisor|supervisors|management)(?= |$)/;
+export const asksManager = (text) => MANAGER_ASK_RE.test(normalize(String(text || "")));
 const NAV_RE = /^(?:القايمه|القايمه الرييسيه|الرييسيه|رجوع|ارجع|menu|main menu|main|back|0)$/;      // بعد التطبيع: ئ ⇒ ي
 const ACK_RE = /^(?:تمام|تمم|اوكي|اوك|ok|okay|k|طيب|زين|ماشي|حلو|اها|اه|ايوه|ايوا|نعم|yes|yep|👍|👌|🙏)$/;
 const NACK_RE = /^(?:لا|لا شكرا|لا مشكور|no|nope|no thanks|مو لازم)$/;
@@ -1894,6 +1898,7 @@ export function decide(ev, ctx) {
   // ٥) الرسالة الغير مفهومة بيترد عليها فوراً (سطر صريح + القائمة + «موظف»): مفيش «انتظار الموظف ٣ دقايق» — كان بيبان إن البوت مابيردّش (١٢/١٠).
   //    اللي لسه مستني من قبل التحديث (afterWait = unknown_wait) بيتنفّذ عادي.
   if (HANDOFF_KEYS[key] && !handoff) handoff = HANDOFF_KEYS[key];
+  if (key === "human" && handoff && handoff[0] === "asked_human" && !ev.interactiveId && asksManager(ev.text)) handoff = ["asked_manager", "normal"];      // RG1: طلب مسؤول
 
   const interactive = cfg.interactive && ctx.interactive !== false;
   const bc = { cfg, lang: c.lang, data: ctx.data, referral: ev.referral || null, factual, arg: c.arg ?? null, asked: ev.text || "" };
@@ -1967,10 +1972,10 @@ export function decide(ev, ctx) {
 }
 
 /* نص تنبيه الفريق — رسالة SMS واحدة (fitOneSms حارس أخير). مفيش اسم العميل ولا نص رسالته. */
-const REASON_EN = { repeated_card: "the bot repeated the same card and the customer kept asking", loop_guard: "automatic messages in a loop, bot muted", repeated_question: "repeated the same question", late_message: "message arrived late", media_flood: "many files with no text", complaint: "complaint", problem: "payment/site problem", order_change: "change/cancel order", asked_human: "asked for staff", needs_staff: "question for staff",
+const REASON_EN = { repeated_card: "the bot repeated the same card and the customer kept asking", loop_guard: "automatic messages in a loop, bot muted", repeated_question: "repeated the same question", late_message: "message arrived late", media_flood: "many files with no text", complaint: "complaint", problem: "payment/site problem", order_change: "change/cancel order", asked_human: "asked for staff", asked_manager: "asked for a MANAGER", needs_staff: "question for staff",
   media: "sent photo/voice", not_understood_twice: "not understood", rate_limit: "many messages", data_missing: "bot could not answer", order_not_found: "order not found",
   allergy_severe: "SEVERE ALLERGY question", custom_offer: "wants a tailored group offer", order_late: "LATE order", order_issue: "order issue", send_failed: "bot reply failed" };
-const REASON_AR = { repeated_card: "البوت كرر نفس الرد والعميل لسه بيسأل", loop_guard: "رسايل آلية متكررة من الرقم — البوت اتكتم", repeated_question: "كرر نفس السؤال", late_message: "رسالة وصلت متأخرة", media_flood: "صور/ملفات كتير من غير نص", allergy_severe: "حساسية شديدة", custom_offer: "عرض مخصص لتجمع", complaint: "شكوى", problem: "مشكلة دفع/موقع", order_change: "تعديل/الغاء طلب", asked_human: "طلب موظف", needs_staff: "سؤال", media: "صورة/صوت",
+const REASON_AR = { repeated_card: "البوت كرر نفس الرد والعميل لسه بيسأل", loop_guard: "رسايل آلية متكررة من الرقم — البوت اتكتم", repeated_question: "كرر نفس السؤال", late_message: "رسالة وصلت متأخرة", media_flood: "صور/ملفات كتير من غير نص", allergy_severe: "حساسية شديدة", custom_offer: "عرض مخصص لتجمع", complaint: "شكوى", problem: "مشكلة دفع/موقع", order_change: "تعديل/الغاء طلب", asked_human: "طلب موظف", asked_manager: "طلب مسؤول", needs_staff: "سؤال", media: "صورة/صوت",
   not_understood_twice: "غير مفهوم", rate_limit: "رسائل كثيرة", data_missing: "البوت لم يجب", order_not_found: "طلب غير موجود", order_late: "طلب متاخر", order_issue: "مشكلة طلب", send_failed: "فشل رد البوت" };
 export function alertText({ phone, reason, orderNo = null }, lang = "en") {
   const ph = `0${phone}`;

@@ -74,9 +74,11 @@ export function nextStep({ step, hoAt, now, ladder }) {
   return null;
 }
 /* خطوات أول تبليغ: العادي ⇒ الكاشير. العاجل ⇒ التلاتة مع بعض. خطوة مافيهاش حد في الدليل بتتخطّى للي بعدها. */
-export function firstSteps(cfg, urgent) {
+/* RG1: «طلب مسؤول» (asked_manager) والمفتاح ladder.managerDirect شغّال ⇒ الكاشير والمدير مع بعض من أول لحظة (الملاك بالسلّم بعدها). */
+export function firstSteps(cfg, urgent, reason = null) {
   const has = (s) => cfg.members.some((m) => m.active && m.role === STEP_ROLE[s]);
   if (urgent) return STEPS.filter(has);
+  if (reason === "asked_manager" && cfg.ladder && cfg.ladder.managerDirect !== false) { const d = ["cashier", "manager"].filter(has); if (d.length) return d; }
   const s = STEPS.find(has);
   return s ? [s] : [];
 }
@@ -84,7 +86,7 @@ export function firstSteps(cfg, urgent) {
 /* ── نصوص رسايل الفريق (مصري) ─────────────────────────────────────────────── */
 const waitAr = (m) => (m == null ? null : m < 1 ? "لسه دلوقتي" : m === 1 ? "دقيقة" : m === 2 ? "دقيقتين" : m <= 10 ? `${m} دقايق` : `${m} دقيقة`);
 export function ladderText({ step, to, kindAr, urgent = false, name = null, phone, orderNo = null, lastText = null, waitedMin = null, alerted = [], stage = "new", manager = null }) {
-  const head = stage === "reminder" ? "🔔 تذكير: العميل لسه مستني" : stage === "reopened" ? "♻️ التحويل اتقفل من غير رد للعميل" : step === "manager" && !urgent ? "⬆️ تصعيد للمدير: محدش رد على العميل" : step === "owners" && !urgent ? "⬆️ تصعيد للملاك: العميل لسه من غير رد" : urgent ? "🚨 تحويل عاجل لموظف" : "💬 تحويل لموظف";
+  const head = stage === "reminder" ? "🔔 تذكير: العميل لسه مستني" : stage === "reopened" ? "♻️ التحويل اتقفل من غير رد للعميل" : stage === "direct" ? "🙋 العميل طالب مسؤول — رد عليه دلوقتي" : step === "manager" && !urgent ? "⬆️ تصعيد للمدير: محدش رد على العميل" : step === "owners" && !urgent ? "⬆️ تصعيد للملاك: العميل لسه من غير رد" : urgent ? "🚨 تحويل عاجل لموظف" : "💬 تحويل لموظف";
   const who = `${name ? `${clip(name, 30)} ` : ""}${last4(phone)}`;
   const before = alerted.filter((a) => a && a.role).map((a) => STEP_AR[a.role] || a.role);
   const lines = [`${head} — ${kindAr || "تحويل"}`, `العميل: ${who}${orderNo ? ` · طلب ${orderNo}` : ""}`];
@@ -157,7 +159,7 @@ export function register(app, ctx, deps = {}) {
   const log = deps.log || console;
   const clock = deps.now || (() => new Date());
   const lazy = (k) => () => { try { return (typeof deps[k] === "function" ? deps[k]() : deps[k]) || null; } catch { return null; } };
-  const team = lazy("team"), staff = lazy("staff"), bot = lazy("bot"), hub = lazy("hub");
+  const team = lazy("team"), staff = lazy("staff"), bot = lazy("bot"), hub = lazy("hub"), handovers = lazy("handover");      // RG1: wahandover.js (الرنّة + تصعيد البوابة)
   const q = async (sql, p = []) => { try { return (await pool.query(sql, p)).rows || []; } catch (e) { log.error("[wa-flow] db:", e.message); return null; } };
   const ready = pool.query(DDL).then(() => true).catch((e) => { log.error("[wa-flow] schema:", e.message); return false; });
   const cfgNow = async () => { try { return teamConfig((await getSettingsData()) || {}); } catch { return teamConfig({}); } };
@@ -209,6 +211,13 @@ export function register(app, ctx, deps = {}) {
       templates: [{ name: "fc_staff_team_notice", data: { notice: { text: summary } } }, { name: "fc_staff_wa_handoff", data: { handoff: { reasonText: row.reason_ar || row.reason, summary: `عميل ${last4(pn)}${row.order_no ? ` طلب ${row.order_no}` : ""}` } } }],
       sms: cfg.smsFallback ? sms : null, smsRef: `wabot ${row.reason}` }));
   }
+  /* RG1: تصعيد للمدير على البوابة (حدث wa_handover_escalated + إشعار لأجهزة المدير لو ladder.managerPush). من غير wahandover ⇒ الحدث بس. */
+  async function escalatePortal(cfg, row, waitedMin, direct) {
+    const h = handovers();
+    if (h && typeof h.escalate === "function") return h.escalate({ phone: row.phone_norm, waitedMin, direct, push: cfg.ladder.managerPush !== false, reason: row.reason, reasonAr: row.reason_ar || row.reason });
+    say("wa_handover_escalated", { id: null, phone: `0${row.phone_norm}`, phoneMasked: last4(row.phone_norm), reason: row.reason, reasonAr: row.reason_ar || row.reason, urgent: row.urgent === true, orderNo: row.order_no || null, at: iso(row.ho_at), step: "manager", role: "manager", waitedMin, direct });
+    return null;
+  }
   const sum = (a, b) => ({ sent: a.sent + b.sent, wa: a.wa + b.wa, sms: a.sms + b.sms, failed: a.failed + b.failed, to: a.to + b.to });
   /* من wateam.handover لما السلّم شغّال. ⇒ null لو مفيش ولا مستلم (المنادي يكمل بالـSMS القديم). */
   async function onHandover({ cfg, phone, reason, reasonAr = null, urgent = false, orderNo = null, stage = "new", waitedMin = null, sms = null }) {
@@ -216,8 +225,9 @@ export function register(app, ctx, deps = {}) {
     const now = clock();
     let row = await rowOf(phone);
     if (stage === "new" || !row || !row.step) {
-      const steps = firstSteps(cfg, urgent);
+      const steps = firstSteps(cfg, urgent, reason);
       if (!steps.length) return null;
+      const direct = !urgent && reason === "asked_manager" && steps.includes("manager") && steps.length > 1;
       const ho = await q("SELECT handoff_at FROM wa_bot_chats WHERE phone_norm=$1", [phone]);
       const hoAt = ho && ho[0] && ho[0].handoff_at ? iso(ho[0].handoff_at) : now.toISOString();
       const alerted = steps.map((s) => ({ role: s, at: now.toISOString() }));
@@ -227,7 +237,9 @@ export function register(app, ctx, deps = {}) {
       if (!up || !up[0]) return null;
       row = { ...up[0], alerted: [] };      // أول تبليغ: محدش اتبلّغ قبل كده
       let out = { sent: 0, wa: 0, sms: 0, failed: 0, to: 0 };
-      for (const s of steps) out = sum(out, await alertStep(cfg, row, s, { stage: stage === "new" ? "new" : stage, sms, waitedMin: stage === "new" ? 0 : waitedMin }));
+      for (const s of steps) out = sum(out, await alertStep(cfg, row, s, { stage: stage === "new" ? (direct && s === "manager" ? "direct" : "new") : stage, sms, waitedMin: stage === "new" ? 0 : waitedMin }));
+      /* RG1: العميل طلب مسؤول ⇒ بوابة المدير بترنّ ببانر التصعيد + إشعار لأجهزة المدير (من غير ما نستنى السلّم) */
+      if (direct && stage === "new") await escalatePortal(cfg, row, 0, true);
       return out;
     }
     /* تذكير / اتفتح تاني: لنفس اللي اتبلّغوا لحد دلوقتي */
@@ -262,6 +274,7 @@ export function register(app, ctx, deps = {}) {
       const claim = await q("UPDATE wa_flow SET step=$3, alerted=$4::jsonb, updated_at=NOW() WHERE phone_norm=$1 AND step=$2 RETURNING fid", [row.phone_norm, row.step, next, jb(alerted)]);
       if (!claim || !claim.length) continue;
       await alertStep(cfg, row, next, { stage: "new" });
+      if (next === "manager") await escalatePortal(cfg, row, Math.floor((now.getTime() - ms(row.ho_at)) / MIN), false);      // RG1: خطوة الملاك مالهاش جديد على البوابة (الملاك على واتساب)
       say("wa_handover", { phone: `0${row.phone_norm}`, phoneMasked: last4(row.phone_norm), reason: row.reason, reasonAr: row.reason_ar || row.reason, urgent: row.urgent === true, orderNo: row.order_no || null, at: iso(row.ho_at),
         step: next, escalated: true, waitedMin: Math.floor((now.getTime() - ms(row.ho_at)) / MIN), reminder: true });
       n++;
@@ -307,6 +320,10 @@ export function register(app, ctx, deps = {}) {
     const r = await own.take(pn, me, opts);
     if (!r.ok) return r;
     await q("UPDATE wa_flow SET step=NULL, close_reminded_at=NULL, updated_at=NOW() WHERE phone_norm=$1", [pn]);
+    /* RG1: «استلم» = التحويل اتاستلم ⇒ كارت البوابة بيقفل ويبطّل يرنّ على كل الأجهزة */
+    const by = clip((me && (me.name || me.role)) || "استلمها موظف", 60);
+    const ack = await q("UPDATE wa_handovers SET acked_at=NOW(), acked_by=$2 WHERE phone_norm=$1 AND acked_at IS NULL RETURNING id", [pn, by]);
+    for (const a of ack || []) say("wa_handover_ack", { id: Number(a.id), by });
     return { ...r, flow: flowOf(r.owner, await rowOf(pn), me) };
   }
   async function release(pn, me) {
@@ -440,8 +457,11 @@ export function register(app, ctx, deps = {}) {
   async function tick() {
     if (ticking) return { skipped: "busy" };
     ticking = true;
-    try { await ready; const cfg = await cfgNow(), now = clock(); if (!cfg.enabled) return { skipped: "off" };
-      return { escalated: await climb(cfg, now), closeReminders: await closeReminders(cfg, now) }; }
+    try { await ready; const cfg = await cfgNow(), now = clock();
+      /* RG1: رنّة البوابة المتكررة مالهاش دعوة بواتساب الفريق (شغّالة حتى لو تنبيهات واتساب مقفولة) */
+      const h = handovers(), ring = h && typeof h.ringDue === "function" ? await h.ringDue(cfg.portalRing, now) : null;
+      if (!cfg.enabled) return { skipped: "off", ...(ring ? { ring } : {}) };
+      return { escalated: await climb(cfg, now), closeReminders: await closeReminders(cfg, now), ...(ring ? { ring } : {}) }; }
     catch (e) { log.error("[wa-flow] tick:", e.message); return { escalated: 0, closeReminders: 0 }; }
     finally { ticking = false; }
   }
