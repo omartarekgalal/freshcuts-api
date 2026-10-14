@@ -58,6 +58,7 @@ import { ASSIST_CFG_DEFAULTS, ASSIST_SCHEMA, PROMPT_HASH, LIVE_AUDIENCES, assist
 import { WA_UPDATES_TEXTS, WA_UPDATES_CURRENT, recordWaUpdatesBot, recordWaMarketingBot, ensureWaConsentSchema } from "./waconsent.js";
 
 export const STORE = "https://freshcuts.sa";
+export const UNSUPPORTED_OPENER_BODY = "[فتح المحادثة برسالة واتساب مابيعرضهاش — غالباً ضغطة «راسلنا» من إعلان]";
 export const MODES = ["off", "dry", "test", "live"];
 
 export const DEFAULTS = Object.freeze({
@@ -2355,7 +2356,13 @@ export function register(app, ctx, deps = {}) {
     let cls = classify(ev, know);
     if (!afterWait && cls.key === "unsupported" && /^5\d{8}$/.test(phone)) {
       const prior = await q(OUT_AFTER_SQL, [phone, new Date(now.getTime() - tuneOr(cfg).openerHours * 3600_000).toISOString()]);
-      if (prior && prior.length === 0) { ev = { ...ev, type: "text", text: "مرحبا", opener: "unsupported" }; cls = { ...classify(ev, know), rawIntent: "unsupported_opener" }; }
+      if (prior && prior.length === 0) {
+        ev = { ...ev, type: "text", text: "مرحبا", opener: "unsupported" }; cls = { ...classify(ev, know), rawIntent: "unsupported_opener" };
+        /* ١٤/١٠: أول رسالة نوعها مش مدعوم (ميتا 131060/131051) = غالباً ضغطة «راسلنا» من إعلان. صندوق المحادثات يقول كده بدل «[رسالة مش مدعومة]»، والمحادثة تتعلّم «من إعلان (غالباً)» لو مالهاش مصدر. */
+        if (ev.wamid) await q("UPDATE wa_messages SET body=$2 WHERE wamid=$1 AND msg_type='unsupported'", [ev.wamid, UNSUPPORTED_OPENER_BODY]);
+        await q(`INSERT INTO wa_bot_chats(phone_norm, referral, referral_at) VALUES ($1,$2,NOW())
+                 ON CONFLICT (phone_norm) DO UPDATE SET referral=COALESCE(wa_bot_chats.referral, $2), referral_at=COALESCE(wa_bot_chats.referral_at, NOW()), updated_at=NOW()`, [phone, jb({ source_type: "unsupported_opener", guess: true, headline: null })]);
+      }
     }
     /* SB2: «تمام» / «عندي ملاحظة» مكتوبة بعد رسالة التقييم (خلال reviewReplyHours ولسه مااتردّش عليها) = نفس الزرار. الضغطة نفسها بتوصل بمعرّفها (classify). */
     if (!afterWait && cfg.reviewWhatsApp && /^5\d{8}$/.test(phone) && !ev.interactiveId && (cls.key === "ack" || REVIEW_NOTE_RE.test(normalize(String(ev.text || ""))))) {

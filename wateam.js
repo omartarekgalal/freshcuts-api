@@ -61,6 +61,8 @@ export const ODD_KINDS = Object.freeze({
   send_failures: "رسايل ورا بعض فشلت في الإرسال",
 });
 export const ODD_KEYS = Object.keys(ODD_KINDS);
+/* أنواع بتتعدّ في الملخص اليومي ولوحة الفريق بس — مابتبعتش تنبيه لحظي (رسالة واتساب مابيعرضهاش، غالباً من إعلان: ١٤/١٠ عمر «مش منطقي يجي إشعار كل مرة») */
+export const ODD_QUIET_DEFAULT = Object.freeze({ unsupported_opener: true });
 /* ST2 — أسماء الأفعال (نفس الكلام في البورتال واللوحة ورسايل وأزرار واتساب الفريق) ونتايج قفل المحادثة */
 export const ACTIONS = Object.freeze({ take: "استلم المحادثة", release: "رجّعها للبوت", done: "خلصت — اقفل", transfer: "حوّل للمدير" });
 export const OUTCOMES = Object.freeze([
@@ -152,6 +154,8 @@ export function teamConfig(settings) {
   const la = x.ladder && typeof x.ladder === "object" ? x.ladder : {}, cl = x.close && typeof x.close === "object" ? x.close : {}, tr = x.transfer && typeof x.transfer === "object" ? x.transfer : {};
   const kinds = {};
   for (const key of ODD_KEYS) kinds[key] = !(o.kinds && o.kinds[key] === false);
+  const quiet = {};
+  for (const key of ODD_KEYS) quiet[key] = o.quiet && typeof o.quiet[key] === "boolean" ? o.quiet[key] : ODD_QUIET_DEFAULT[key] === true;
   return {
     enabled: x.enabled !== false, members, fallback, routing,
     smsFallback: x.smsFallback !== false,
@@ -163,7 +167,7 @@ export function teamConfig(settings) {
     odd: { enabled: o.enabled !== false, perHour: num(o.perHour, LIMITS["odd.perHour"], DEFAULTS.odd.perHour), digest: o.digest === true,
       digestEveryMin: num(o.digestEveryMin, LIMITS["odd.digestEveryMin"], DEFAULTS.odd.digestEveryMin), repeatMin: num(o.repeatMin, LIMITS["odd.repeatMin"], DEFAULTS.odd.repeatMin),
       excerpt: num(o.excerpt, LIMITS["odd.excerpt"], DEFAULTS.odd.excerpt), smsFallback: o.smsFallback === true,
-      failStreak: num(o.failStreak, LIMITS["odd.failStreak"], DEFAULTS.odd.failStreak), failWindowMin: num(o.failWindowMin, LIMITS["odd.failWindowMin"], DEFAULTS.odd.failWindowMin), kinds },
+      failStreak: num(o.failStreak, LIMITS["odd.failStreak"], DEFAULTS.odd.failStreak), failWindowMin: num(o.failWindowMin, LIMITS["odd.failWindowMin"], DEFAULTS.odd.failWindowMin), kinds, quiet },
     daily: { enabled: d.enabled !== false, at: hhmmOk(d.at) ? d.at : DEFAULTS.daily.at },
     ladder: { enabled: la.enabled !== false, managerAfterMin: num(la.managerAfterMin, LIMITS["ladder.managerAfterMin"], DEFAULTS.ladder.managerAfterMin), ownersAfterMin: num(la.ownersAfterMin, LIMITS["ladder.ownersAfterMin"], DEFAULTS.ladder.ownersAfterMin),
       managerPush: la.managerPush !== false, managerDirect: la.managerDirect !== false },
@@ -230,6 +234,11 @@ export function configFromBody(b, prev = {}) {
       const kk = g.kinds && typeof g.kinds === "object" ? g.kinds : null;
       if (!kk || Object.keys(kk).some((x) => !ODD_KEYS.includes(x) || typeof kk[x] !== "boolean")) errors.push(`odd.kinds: مفاتيح من ${ODD_KEYS.join(" / ")} بقيمة true أو false`);
       else next.kinds = { ...(next.kinds || {}), ...kk };
+    }
+    if (name === "odd" && "quiet" in g) {
+      const kk = g.quiet && typeof g.quiet === "object" ? g.quiet : null;
+      if (!kk || Object.keys(kk).some((x) => !ODD_KEYS.includes(x) || typeof kk[x] !== "boolean")) errors.push(`odd.quiet: مفاتيح من ${ODD_KEYS.join(" / ")} بقيمة true أو false`);
+      else next.quiet = { ...(next.quiet || {}), ...kk };
     }
     out[name] = next;
   };
@@ -514,6 +523,7 @@ export function register(app, ctx, deps = {}) {
       const ins = await q("INSERT INTO wa_team_odd(at, kind, phone_norm, detail, tried, status) VALUES ($1,$2,$3,$4,$5,'pending') RETURNING id", [now.toISOString(), kind, p, detail ? clip(maskText(detail), 200) : null, tried ? clip(tried, 300) : null]);
       if (!ins || !ins.length) return "failed";
       const id = ins[0].id;
+      if (cfg.odd.quiet && cfg.odd.quiet[kind]) { await q("UPDATE wa_team_odd SET status='quiet' WHERE id=$1", [id]); return "quiet"; }      // بيتعدّ بس (الملخص اليومي + اللوحة)
       if (cfg.odd.digest) return "queued";
       const n = await q("SELECT count(*)::int AS n FROM wa_team_odd WHERE status='sent' AND sent_at > $1", [new Date(now.getTime() - H).toISOString()]);
       if (n === null || Number(n[0] && n[0].n) >= cfg.odd.perHour) { await q("UPDATE wa_team_odd SET status='held' WHERE id=$1", [id]); return "held"; }
@@ -751,7 +761,7 @@ export function register(app, ctx, deps = {}) {
         return c.json({ ok: true, now: st.now, owner, config: { ...cfg, members: undefined }, fallbackDirectory: cfg.fallback, members: st.members, templates, portal,
           odd: { sentLastHour: Number(oc && oc[0] && oc[0].sent_hour) || 0, cap: cfg.odd.perHour, pending: Number(oc && oc[0] && oc[0].pending) || 0, held: Number(oc && oc[0] && oc[0].held) || 0, byKind24h: byKind || [] },
           sends24h: via || [], recent: recent || [],
-          schema: { knobs: KNOBS, roles: ROLES.map((id) => ({ id, label: ROLE_AR[id] })), topics: TOPICS.map((id) => ({ id, label: TOPIC_AR[id] })), oddKinds: ODD_KEYS.map((id) => ({ id, label: ODD_KINDS[id] })), limits: LIMITS, defaults: DEFAULTS, renewButton: RENEW_TITLE,
+          schema: { knobs: KNOBS, roles: ROLES.map((id) => ({ id, label: ROLE_AR[id] })), topics: TOPICS.map((id) => ({ id, label: TOPIC_AR[id] })), oddKinds: ODD_KEYS.map((id) => ({ id, label: ODD_KINDS[id], quietDefault: ODD_QUIET_DEFAULT[id] === true })), limits: LIMITS, defaults: DEFAULTS, renewButton: RENEW_TITLE,
             actions: Object.entries(ACTIONS).map(([id, label]) => ({ id, label })), outcomes: OUTCOMES.map((o) => ({ id: o.id, label: o.label, hint: o.hint })) } });
       } catch (e) { log.error("[wa-team] status:", e.message); return c.json({ ok: false, error: "unavailable" }, 500); }
     });

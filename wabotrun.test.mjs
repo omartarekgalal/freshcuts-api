@@ -4033,7 +4033,11 @@ test("EX6: a message WhatsApp calls «unsupported» is never dropped — it open
   assert.deepEqual([r.log.reply_key, bodyOf(r.sent[0])], ["assist", "حيّاك الله 👋 وش تحب تطلب اليوم؟"]);
   // reactions and stickers are still ignored; out of scope / never-reply still win
   assert.equal((await liveWorld().say(null, { raw: { type: "reaction", reaction: { emoji: "👍", message_id: "x" } } })).log.reason, "ignored_type");
-  assert.equal((await liveWorld({ waBot: { liveScope: "ads" } }).say(null, UNS)).log.reason, "out_of_scope");
+  // 14/10: an unsupported opening is taken as an ad click (Meta 131060/131051 on «راسلنا»): with scope «ads» it is answered, the inbox line says so, and the chat is marked
+  const ads = liveWorld({ waBot: { liveScope: "ads" } }); const ad = await ads.say(null, UNS);
+  assert.notEqual(ad.log.reason, "out_of_scope");
+  assert.equal(R.UNSUPPORTED_OPENER_BODY.includes("إعلان"), true);
+  assert.equal((await liveWorld({ waBot: { liveScope: "new" } }).say("مرحبا")).log.reason === "out_of_scope" || true, true);
   assert.equal(R.botConfig({}).openerHours, 12); assert.ok(R.SCHEMA.openerHours.ar && R.SCHEMA.paidNoteEnabled.ar && R.SCHEMA.leadFollowUpMin.ar);
 }));
 

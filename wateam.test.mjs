@@ -328,7 +328,7 @@ test("odd things: to the manager and the owners only, free-form, with a masked e
 
 test("odd things: every kind has its own label and its own switch; an unknown kind and a staff phone are never reported", withEnv(OPEN, async () => {
   for (const kind of T.ODD_KEYS) {
-    const w = world(); allOpen(w);
+    const w = world({ waTeam: { members: MEMBERS, odd: { quiet: { [kind]: false } } } }); allOpen(w);
     assert.equal(await w.team.odd({ kind, phone: CUST }), "sent", kind);
     assert.equal(bodyOf(w.calls[0]).split("\n")[0], `👀 حاجة غريبة — ${T.ODD_KINDS[kind]}`, kind);
     const off = world({ waTeam: { members: MEMBERS, odd: { kinds: { [kind]: false } } } }); allOpen(off);
@@ -336,6 +336,12 @@ test("odd things: every kind has its own label and its own switch; an unknown ki
     assert.equal(off.calls.length, 0, kind);
   }
   assert.equal(T.ODD_KEYS.length, 13);
+  // 14/10: «quiet» kinds are counted (status quiet: daily digest + dashboard) and send nothing; unsupported_opener is quiet by default
+  const q = world(); allOpen(q);
+  assert.equal(await q.team.odd({ kind: "unsupported_opener", phone: CUST }), "quiet");
+  assert.equal(q.calls.length, 0);
+  assert.equal(await q.team.odd({ kind: "complaint", phone: CUST }), "sent", "other kinds still alert");
+  assert.equal(T.teamConfig({ waTeam: { odd: { quiet: { unsupported_opener: false } } } }).odd.quiet.unsupported_opener, false);
   const w = world(); allOpen(w);
   assert.equal(await w.team.odd({ kind: "made_up", phone: CUST }), "kind_off");
   assert.equal(await w.team.odd({ kind: "complaint", phone: OWN1 }), "off", "a team member is not an odd customer");
