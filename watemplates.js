@@ -1,3 +1,4 @@
+import { COURIER_TEMPLATE_BASE } from "./couriercontact.js";      // SB5
 /* ═══════════════════════════════════════════════════════════════════════════
    كتالوج قوالب واتساب (Cloud API) — فريش كاتس، جدة. (٢٨/٩/٢٠٢٦)
 
@@ -244,6 +245,19 @@ export const TEMPLATES = [
     body: "طلبك رقم {{1}} مع المندوب وفي الطريق إليك 🛵\nخلّ جوالك قريب، ممكن يتصل عليك المندوب عند الوصول.",
     vars: [ORDER_NO], buttons: [qr("تابع طلبي"), TRACK("تتبّع المندوب")],
     meta: { purpose: "مع المندوب + «تابع طلبي»", trigger: "on_the_way لما المرحلة في waBot.windowV2Stages", send: "auto-candidate", replaces: "fc_order_on_the_way", fallbackSms: "order.on_the_way" } }),
+  /* SB5 (عمر ١٤/١٠: «في رسالة المندوب في الطريق يكون فيها بيانات المندوب وامكانية انه يتواصل معاه واتساب»): اسم المندوب الأول + زر «راسل المندوب» (رابطنا اللي بيحوّل
+     لواتساب المندوب ما دام الطلب معه، ومابيحملش رقمه) + زر التتبع. مالوش stage: بيتبعت بدل fc_order_on_the_way بس لما waBot.courierTemplate مفتوح (بعد اعتماد ميتا)
+     وللمندوب اسم وجوال؛ غير كده القالب القديم. */
+  T({ name: "fc_order_on_the_way_courier", category: "UTILITY", group: "order",
+    body: "طلبك رقم {{1}} مع المندوب {{2}} وفي الطريق إليك 🛵\nتقدر تراسله على واتساب من الزر، أو تتابع الطلب من الرابط.",
+    vars: [ORDER_NO, { path: "courier.first_name", label: "اسم المندوب الأول", ex: "أحمد" }],
+    buttons: [url("راسل المندوب", COURIER_TEMPLATE_BASE, { path: "courier.link", ex: "W1790012345678.Ab12Cd34Ef56" }), TRACK("تتبّع الطلب")],
+    meta: { purpose: "مع المندوب: اسمه وزر واتساب له وزر التتبع", trigger: "on_the_way لما waBot.courierTemplate مفتوح وللمندوب اسم وجوال", send: "auto-candidate", replaces: "fc_order_on_the_way", fallbackSms: "order.on_the_way" } }),
+  T({ name: "fc_order_on_the_way_courier", category: "UTILITY", group: "order", language: "en",
+    body: "Your order {{1}} is with your courier {{2}} and on its way 🛵\nYou can message the courier on WhatsApp from the button, or follow the order from the link.",
+    vars: [ORDER_NO, { path: "courier.first_name", label: "Courier first name", ex: "Ahmed" }],
+    buttons: [url("Message the courier", COURIER_TEMPLATE_BASE, { path: "courier.link", ex: "W1790012345678.Ab12Cd34Ef56" }), TRACK("Track order")],
+    meta: { purpose: "With the courier: name, WhatsApp button, tracking", trigger: "on_the_way when waBot.courierTemplate is on", send: "auto-candidate", replaces: "fc_order_on_the_way", fallbackSms: null } }),
   T({ name: "fc_order_delivered_v2", category: "UTILITY", group: "order",
     body: "تم توصيل طلبك رقم {{1}} ✅ بالعافية عليك.\nوصلك الطلب مثل ما تبي؟",
     vars: [ORDER_NO], buttons: [qr("تمام 👍"), qr("عندي ملاحظة")],
@@ -705,6 +719,7 @@ export const SUBMIT_BATCHES = Object.freeze([
   // ST1 (١٢/١٠): قوالب تواصل الفريق — التجديد أولاً (من غير متغيّرات)، وبعده سطر التنبيه. كل اسم = إنجليزي + عربي
   ["fc_staff_alerts_renew", "fc_staff_team_notice"],
   // SB4 (١٤/١٠): نسخ v2 بزر رد سريع يفتح نافذة ٢٤ ساعة — التوصيل والتقييم أولاً (الضغطة = رأيه)، بعدين التتبع، وآخرهم الاسترجاع
+  ["fc_order_on_the_way_courier"],      // SB5
   ["fc_order_delivered_v2", "fc_review_request_v2", "fc_order_on_the_way_v2", "fc_order_preparing_v2", "fc_order_received_v2", "fc_order_refunded_v2", "fc_refund_in_progress_v2"],
 ]);
 export const RECOMMENDED_FIRST = SUBMIT_BATCHES[0];

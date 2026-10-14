@@ -66,6 +66,8 @@ export const DEFAULTS = Object.freeze({
   openerHours: 12,             // EX6: رسالة نوعها مش مدعوم من رقم مابعتناش له حاجة في الساعات دي = بداية محادثة ⇒ تاخد الترحيب (مش سكوت)
   reviewWhatsApp: true,        // SB2: طلب التقييم بعد التوصيل على واتساب (رسالة حرة بزرّين جوّه النافذة، وإلا القالب المعتمد fc_review_request) بدل الـSMS؛ الـSMS احتياطي بس
   /* SB4 — نوافذ الـ٢٤ ساعة (عمر ١٤/١٠: «حاول نفتح مع العملاء نوافذ ٢٤ ساعة باي طريقة ذكية… من غير ما نضايق العميل… وتوفر علينا») */
+  courierContact: true,        // SB5: رسالة «طلبك مع المندوب» فيها اسمه وزر «راسل المندوب» (رسالة حرة جوّه النافذة — شغّال من غير اعتماد)
+  courierTemplate: false,      // SB5: القالب الجديد fc_order_on_the_way_courier بدل القديم بره النافذة — يتفتح بعد ما ميتا تعتمده
   windowFreeUpdates: true,     // تحديث الطلب والنافذة مفتوحة (العميل كلّمنا آخر ٢٤ ساعة) ⇒ رسالة حرة ببلاش بنفس النص بدل القالب (whatsapp.js sendOrderUpdate)
   windowV2Stages: [],          // المراحل اللي نسختها v2 (بزر رد سريع يفتح نافذة) اتعتمدت عند ميتا ⇒ تتبعت بدل القديمة. «review» = طلب التقييم
   windowSell: true,            // ضغطة «تمام 👍» على التوصيل/التقييم ⇒ ردها فيه سطر الولاء (مرة في النافذة، جوّه نفس الرسالة)
@@ -590,6 +592,7 @@ export function botConfig(settings) {
     sameTextSeconds: num(x.sameTextSeconds, 0, 120, DEFAULTS.sameTextSeconds),
     autoEchoSkipCovered: x.autoEchoSkipCovered === true,
     openerHours: num(x.openerHours, 1, 72, DEFAULTS.openerHours), paidNoteEnabled: x.paidNoteEnabled !== false, reviewWhatsApp: x.reviewWhatsApp !== false, reviewReplyHours: num(x.reviewReplyHours, 1, 72, DEFAULTS.reviewReplyHours),
+    courierContact: x.courierContact !== false, courierTemplate: x.courierTemplate === true,
     windowFreeUpdates: x.windowFreeUpdates !== false, windowSell: x.windowSell !== false, windowKeeper: x.windowKeeper !== false,
     windowV2Stages: (Array.isArray(x.windowV2Stages) ? x.windowV2Stages : []).filter((k) => WINDOW_V2_STAGES.includes(k)),
     windowKeeperHour: num(x.windowKeeperHour, 12, 23, DEFAULTS.windowKeeperHour), windowKeeperDailyCap: num(x.windowKeeperDailyCap, 0, 500, DEFAULTS.windowKeeperDailyCap), windowKeeperWeekly: num(x.windowKeeperWeekly, 0, 7, DEFAULTS.windowKeeperWeekly),
@@ -672,7 +675,7 @@ export function configFromBody(b, prev = {}) {
     "handoverRealertMin", "handoverCustomerNoteMin", "greetWindowHours", "maxAgeMinutes", "sameTextSeconds", "autoEchoMaxSec", "autoInboundSec", "openerHours", "leadFollowUpMin", "reviewReplyHours", "windowKeeperHour", "windowKeeperDailyCap", "windowKeeperWeekly", "windowKeeperQuietStart", "windowKeeperQuietEnd", "loopGuardCount", "loopGuardFastSec", "loopGuardSeconds", "loopGuardMuteHours", "mediaFloodBuyerCount", "mediaFloodCount", "mediaFloodMinutes", "mediaFloodMuteHours", "maxRepliesPerHour", "maxTapsPerHour", "maxRepliesPerMinute", "orderLookbackHours", "lateAfterMinutes", "maxAlertsPerHour"]) {
     if (k in src) { if (Number.isFinite(Number(src[k])) && src[k] !== "" && src[k] !== null) out[k] = Number(src[k]); else errors.push(k); }
   }
-  for (const k of ["interactive", "staffAlert", "alertInTest", "autoEchoSkipCovered", "autoInboundPatterns", "paidNoteEnabled", "reviewWhatsApp", "windowFreeUpdates", "windowSell", "windowKeeper", "handoverAckNeedsReply", "reorderEnabled", "dishFactsEnabled"]) if (k in src) out[k] = src[k] === true;
+  for (const k of ["interactive", "staffAlert", "alertInTest", "autoEchoSkipCovered", "autoInboundPatterns", "paidNoteEnabled", "reviewWhatsApp", "windowFreeUpdates", "windowSell", "windowKeeper", "courierContact", "courierTemplate", "handoverAckNeedsReply", "reorderEnabled", "dishFactsEnabled"]) if (k in src) out[k] = src[k] === true;
   if ("llm" in src) {
     const L = src.llm || {}, cur = { ...(prev.llm || {}) };
     if ("enabled" in L) cur.enabled = L.enabled === true;
@@ -872,6 +875,8 @@ export const SCHEMA = Object.freeze({
   openerHours: S("limits", "number", "رسالة مش مدعومة: بداية محادثة لو مابعتناش للرقم خلال", "رسالة واتساب مابيوصّلش محتواها (نوع مش مدعوم) من رقم مابعتناش له حاجة في المدة دي بتاخد الترحيب العادي. جوّه محادثة شغّالة بتاخد سطر «اكتبها نص لو سمحت».", { min: 1, max: 72, unit: "ساعة" }),
   paidNoteEnabled: S("mode", "boolean", "تأكيد الطلب في المحادثة بعد الدفع", "العميل اللي كلّم البوت أو المساعد ودفع طلبه خلال ٢٤ ساعة ونافذة المحادثة لسه مفتوحة: سطر واحد برقم الطلب وزر التتبع. رسالة حرة جوّه النافذة، مش قالب."),
   reviewWhatsApp: S("mode", "boolean", "طلب التقييم بعد التوصيل على واتساب", "بعد التوصيل بالمدة المضبوطة في «التقييمات»: لو العميل كلّمنا في آخر ٢٤ ساعة ⇒ رسالة بزرّين «تمام 👍 / عندي ملاحظة»، وإلا القالب المعتمد «fc_review_request» برابط التقييم. الـSMS بيتبعت بس لو واتساب ماوصلش (القالب اترفض، القناة مقفولة، البوت مش شغّال للعملاء). رسالة واحدة للطلب، ومابتتبعتش أبداً لعميل كتب «إيقاف». مقفول = SMS زي الأول. «تمام» ⇒ رابط التقييم؛ «ملاحظة» ⇒ تحويل للمدير برقم الطلب."),
+  courierContact: S("mode", "boolean", "«طلبك مع المندوب»: اسمه وزر «راسل المندوب»", "لو عندنا جوال المندوب (لاجلك / Cervo / خارجي): الرسالة الحرة (والعميل كلّمنا آخر ٢٤ ساعة) فيها اسمه الأول وزر يفتح واتساب المندوب برسالة جاهزة فيها رقم الطلب، ورابط التتبع. الزر رابطنا (مش رقم المندوب) وبيموت بعد التسليم. من غير جوال: زي الأول."),
+  courierTemplate: S("mode", "boolean", "«طلبك مع المندوب» بره النافذة: القالب الجديد", "افتحه بعد ما ميتا تعتمد fc_order_on_the_way_courier: بره نافذة الـ٢٤ ساعة يتبعت هو بدل fc_order_on_the_way (لو للمندوب اسم وجوال؛ غير كده القديم)."),
   windowFreeUpdates: S("mode", "boolean", "نوافذ ٢٤ ساعة: تحديث الطلب ببلاش والنافذة مفتوحة", "العميل كلّمنا (أو ضغط زر) في آخر ٢٤ ساعة: تحديث الطلب بيطلع رسالة حرة ببلاش بنفس نص القالب وزر التتبع (والتوصيل بزرّين «تمام 👍 / عندي ملاحظة») بدل القالب المدفوع. نفس الأقفال والموافقة. مقفول = القالب دايماً."),
   windowV2Stages: S("mode", "keys", "نوافذ ٢٤ ساعة: المراحل اللي نسختها بزر رد سريع اتعتمدت", "بعد ما ميتا تعتمد القالب v2 (نفس النص + زر «تابع طلبي» / «تمام 👍» / «عندي سؤال»)، حط مرحلته هنا فيتبعت بداله. الضغطة على الزر بتفتح نافذة ٢٤ ساعة ببلاش. review = طلب التقييم.", { options: ["pos_created", "accepted", "on_the_way", "delivered", "rejected_refunded", "refund_failed", "review"] }),
   windowSell: S("mode", "boolean", "نوافذ ٢٤ ساعة: سطر الولاء في رد «تمام 👍»", "العميل ضغط «تمام 👍» بعد التوصيل أو التقييم: الرد (رابط التقييم) فيه سطر تقدّم الولاء أو المكافأة، مرة في النافذة، في نفس الرسالة — مش رسالة زيادة."),

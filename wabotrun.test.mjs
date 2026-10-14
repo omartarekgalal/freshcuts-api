@@ -255,6 +255,7 @@ function world({ waBot = {}, notifications = { whatsappEnabled: true }, orders =
       if (/FROM shop_orders WHERE order_no=\$1 AND phone_norm=\$2/i.test(s)) return { rows: orders.filter((o) => o.order_no === p[0] && o.phone_norm === p[1]) };
       if (/^SELECT customer->>'name' AS name FROM shop_orders/i.test(s)) return { rows: orders.filter((o) => o.phone_norm === p[0]).slice(-1).map((o) => ({ name: o.customer?.name ?? null })) };
       /* SB4: نوافذ الـ٢٤ ساعة */
+      if (/^SELECT driver FROM dl_shipments WHERE shop_order_no=\$1/i.test(s)) return { rows: (db.shipments || []).filter((x) => x.order_no === p[0]).slice(-1).map((x) => ({ driver: x.driver })) };
       if (/^SELECT review_code, review_order, review_asked_at FROM wa_bot_chats/i.test(s)) { const ch = db.chats.get(p[0]); return { rows: ch ? [{ review_code: ch.review_code || null, review_order: ch.review_order || null, review_asked_at: ch.review_asked_at || null }] : [] }; }
       if (/^SELECT code, order_no FROM review_invites WHERE phone_norm=\$1/i.test(s)) return { rows: (db.invites || []).filter((x) => x.phone_norm === p[0]).slice(-1) };
       if (/^UPDATE review_invites SET sent_at=COALESCE/i.test(s)) { const iv = (db.invites || []).find((x) => x.code === p[0]); if (iv) { iv.sent_at = iv.sent_at || iso(); iv.channel = iv.channel || "wa_tap"; } return { rows: [] }; }
@@ -4581,3 +4582,41 @@ test("SB4 window: the v2 templates are UTILITY, carry their quick replies, pass 
     assert.deepEqual(C.validateTemplate(t), [], t.name);
   }
 });
+
+/* SB5 — «طلبك مع المندوب» باسمه وزر «راسل المندوب» */
+test("SB5: inside the window the on-the-way update names the courier and its button opens our courier-chat link (no phone in it) + the tracking link in the text; no phone ⇒ the tracking button as before; outside the window with courierTemplate on ⇒ fc_order_on_the_way_courier with both button variables", withEnv(LOCKS_OPEN, async () => {
+  const CC = await import("./couriercontact.js"); const CAT = await import("./watemplates.js"); const WA = await import("./whatsapp.js"); WA.registerCatalog(CAT);
+  const mk = (waBot = {}) => world({ waBot: { mode: "test", testPhones: TESTERS, ...waBot }, notifications: { whatsappEnabled: true, whatsappStages: ["on_the_way"] } });
+  const w = mk(); await w.say("هلا"); w.db.optins["512345678"] = { updates: true };
+  w.db.shipments = [{ order_no: "W1790012345678", driver: { name: "أحمد علي", phone: "0551234567", location: { latitude: "21.5", longitude: "39.1" } } }];
+  const b0 = w.calls.length;
+  const r = await w.wa.sendOrderUpdate({ order_no: "W1790012345678", phone_norm: "512345678", option: "delivery" }, "on_the_way");
+  assert.equal(r.free, true);
+  const p = w.calls.slice(b0).map((c) => c.body).find((b) => b.type);
+  assert.equal(p.interactive.type, "cta_url"); assert.equal(p.interactive.action.parameters.display_text, "راسل المندوب");
+  assert.equal(p.interactive.action.parameters.url, CC.courierChatUrl("W1790012345678")); assert.doesNotMatch(p.interactive.action.parameters.url, /0551234567|966551234567/);
+  assert.match(p.interactive.body.text, /مع المندوب أحمد وفي الطريق إليك/); assert.match(p.interactive.body.text, /https:\/\/freshcuts\.sa\/track\/W1790012345678/);
+  w.db.shipments = [{ order_no: "W1790012345678", driver: { name: "أحمد" } }];
+  const b1 = w.calls.length; await w.wa.sendOrderUpdate({ order_no: "W1790012345678", phone_norm: "512345678", option: "delivery" }, "on_the_way");
+  const p1 = w.calls.slice(b1).map((c) => c.body).find((b) => b.type);
+  assert.equal(p1.interactive.action.parameters.url, "https://freshcuts.sa/track/W1790012345678", "no courier phone ⇒ the tracking button as today");
+  const t = mk({ courierTemplate: true }); await t.say("هلا"); t.clock.advance(25 * 60); t.db.optins["512345678"] = { updates: true };
+  t.db.shipments = [{ order_no: "W1790012345678", driver: { name: "أحمد علي", phone: "0551234567" } }];
+  const b2 = t.calls.length; await t.wa.sendOrderUpdate({ order_no: "W1790012345678", phone_norm: "512345678", option: "delivery" }, "on_the_way");
+  const tp = t.calls.slice(b2).map((c) => c.body).find((b) => b.type === "template");
+  assert.equal(tp.template.name, "fc_order_on_the_way_courier");
+  assert.deepEqual(tp.template.components.map((c) => [c.type, c.index ?? null, c.parameters.map((x) => x.text)]), [["body", null, ["W1790012345678", "أحمد"]], ["button", "0", [CC.courierToken("W1790012345678")]], ["button", "1", ["W1790012345678"]]]);
+  const old = mk(); await old.say("هلا"); old.clock.advance(25 * 60); old.db.optins["512345678"] = { updates: true };
+  old.db.shipments = [{ order_no: "W1790012345678", driver: { name: "أحمد", phone: "0551234567" } }];
+  const b3 = old.calls.length; await old.wa.sendOrderUpdate({ order_no: "W1790012345678", phone_norm: "512345678", option: "delivery" }, "on_the_way");
+  assert.equal(old.calls.slice(b3).map((c) => c.body).find((b) => b.type === "template").template.name, "fc_order_on_the_way", "until approved (courierTemplate off): the current template");
+}));
+
+test("SB4 window: once the owner lists a stage in windowV2Stages (Meta approved), outside the window its v2 template goes out with the right variables", withEnv(LOCKS_OPEN, async () => {
+  const CAT = await import("./watemplates.js"); const WA = await import("./whatsapp.js"); WA.registerCatalog(CAT);
+  const w = world({ waBot: { mode: "test", testPhones: TESTERS, windowV2Stages: ["on_the_way"] }, notifications: { whatsappEnabled: true, whatsappStages: ["on_the_way"] } });
+  await w.say("هلا"); w.clock.advance(25 * 60); w.db.optins["512345678"] = { updates: true };
+  const b = w.calls.length; await w.wa.sendOrderUpdate({ order_no: "W1790012345678", phone_norm: "512345678", option: "delivery" }, "on_the_way");
+  const tp = w.calls.slice(b).map((c) => c.body).find((x) => x.type === "template");
+  assert.equal(tp.template.name, "fc_order_on_the_way_v2"); assert.equal(tp.template.components[0].parameters[0].text, "W1790012345678");
+}));

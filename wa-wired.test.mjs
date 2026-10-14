@@ -271,7 +271,7 @@ test("every UTILITY order template for the customer has only the order's own tra
   for (const t of C.TEMPLATES.filter((x) => x.category === "UTILITY" && x.meta.group === "order" && !C.HOLD[x.name])) {
     for (const b of C.buttonsOf(t)) {
       if (b.type !== "URL") continue;
-      assert.match(b.url, /^https:\/\/freshcuts\.sa\/(track\/\{\{1\}\}|r\?c=\{\{1\}\})$/, `${t.name}: ${b.url}`);
+      assert.match(b.url, t.name === "fc_order_on_the_way_courier" ? /^https:\/\/freshcuts\.sa\/(track|m)\/\{\{1\}\}$/ : /^https:\/\/freshcuts\.sa\/(track\/\{\{1\}\}|r\?c=\{\{1\}\})$/, `${t.name}: ${b.url}`);      // SB5: «راسل المندوب» = رابط الطلب نفسه على دومين المتجر (freshcuts.sa/m/<توقيع الطلب>) — قرار مقصود، خطر تصنيف متوسط
     }
   }
   const p = C.findTemplate("fc_order_ready_pickup");

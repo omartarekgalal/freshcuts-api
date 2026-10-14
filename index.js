@@ -54,6 +54,7 @@ import * as modifiers from "./modifiers.js";
 import * as posnames from "./posnames.js";
 import * as cms from "./cms.js";
 import * as reviews from "./reviews.js";
+import * as couriercontact from "./couriercontact.js";
 import * as customer360 from "./customer360.js";
 import * as outreach from "./outreach.js";
 import * as smsblock from "./smsblock.js";
@@ -3199,6 +3200,7 @@ let smsBlockApi = null;
 const cmsApi = cms.register(app, moduleCtx, { notify: () => notifyApi, smsBlock: () => smsBlockApi, modifiers: () => modifiersApi });
 /* 📵 حاجبين الإعلانات عند المشغّل — بيتشالوا من FreshCut-AD بس */
 smsBlockApi = smsblock.register(app, moduleCtx);
+couriercontact.register(app, moduleCtx);      // SB5: «راسل المندوب» (تحويل لواتساب المندوب ما دام الطلب معه)
 reviews.register(app, moduleCtx, { notify: () => notifyApi, sessionUser: cmsApi.sessionUser, waReview: () => wabotApi });      // SB2: طلب التقييم على واتساب أولاً (wabotApi بيتسجّل تحت)
 // 26/9: external-courier settlement (cost + paid tasks)
 extsettle.register(app, moduleCtx, { sessionUser: cmsApi.sessionUser });

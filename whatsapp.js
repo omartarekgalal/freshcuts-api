@@ -33,6 +33,7 @@
    بيحدّثوا طابور الحملات (wasender.js). الربط نفسه وحالته في wacloud.js.
 ═══════════════════════════════════════════════════════════════════════════ */
 
+import { courierOf, courierChatUrl } from "./couriercontact.js";      // SB5
 import crypto from "node:crypto";
 import { sendSms as defaultSendSms } from "./accounts.js";
 import { isOptOutText } from "./wamsg.js";
@@ -280,11 +281,11 @@ export function buildTemplatePayload(name, to, params = {}, lang = "ar") {
     if (t.category === "AUTHENTICATION") {
       components.push({ type: "button", sub_type: "url", index: "0", parameters: [{ type: "text", text: String(params.button[0]) }] });
     } else {
-      const urlIdx = (t.components.find((c) => c.type === "BUTTONS")?.buttons || []).findIndex((b) => b.type === "URL");
-      if (urlIdx >= 0) {
-        components.push({ type: "button", sub_type: "url", index: String(urlIdx),
-          parameters: [{ type: "text", text: String(params.button[0] ?? "") }] });
-      }
+      /* SB5: قالب فيه زرّين رابط بمتغيّر (راسل المندوب + التتبع) ⇒ كل زر بمتغيّره بالترتيب. زر واحد ⇒ زي الأول. */
+      const btns = t.components.find((c) => c.type === "BUTTONS")?.buttons || [];
+      const dyn = btns.map((b, i) => (b.type === "URL" && /\{\{1\}\}/.test(b.url || "") ? i : -1)).filter((i) => i >= 0);
+      const idxs = dyn.length ? dyn : [btns.findIndex((b) => b.type === "URL")].filter((i) => i >= 0);
+      idxs.forEach((idx, k) => { if (params.button[k] == null && k > 0) return; components.push({ type: "button", sub_type: "url", index: String(idx), parameters: [{ type: "text", text: String(params.button[k] ?? "") }] }); });
     }
   }
   return { messaging_product: "whatsapp", recipient_type: "individual", to, type: "template",
@@ -985,6 +986,9 @@ export function register(app, ctx, deps = {}) {
        (وزر التتبع، أو «تمام / عندي ملاحظة» للتوصيل) بدل قالب بفلوس. نفس الحارس (guardSend session: كل الأقفال + النافذة) ونفس موافقة القالب الخدمي:
        موقِّف التحديثات / قال «لا» / مالوش قبول ولا الطلب تحت الشروط الجديدة ⇒ مفيش رسالة حرة (والقالب بعده بيتمنع بنفس السبب). waBot.windowFreeUpdates مقفول ⇒ زي الأول. */
     const wb = (snap && snap.waBot) || {};
+    /* SB5: «طلبك مع المندوب» ⇒ اسم المندوب وزر «راسل المندوب» (رابطنا، مش رقمه) لو عندنا جواله */
+    let courier = null;
+    if (stage === "on_the_way" && wb.courierContact !== false) { try { const sr = await pool.query("SELECT driver FROM dl_shipments WHERE shop_order_no=$1 ORDER BY id DESC LIMIT 1", [order.order_no]); courier = courierOf(sr.rows && sr.rows[0] ? sr.rows[0].driver : null, order.order_no); } catch { courier = null; } }
     if (wb.windowFreeUpdates !== false && order.phone_norm && !channelBlock(snap, "template")) {      // نفس أقفال القالب (ومنها مفتاح تحديثات الطلب) — الرسالة الحرة هنا مابتعدّيش قفل القالب
       try {
         const pn = String(order.phone_norm), op = await optInOf(pn);
@@ -994,7 +998,11 @@ export function register(app, ctx, deps = {}) {
             const body = renderTemplateText(template, params).slice(0, 1000);
             const ub = (t.components.find((c) => c.type === "BUTTONS")?.buttons || []).find((b) => b.type === "URL");
             const url = ub ? String(ub.url).replace("{{1}}", String((params.button || [])[0] || "")) : null;
-            const payload = stage === "delivered"
+            const cUrl = courier && courier.wa ? courierChatUrl(order.order_no) : null;
+            const cBody = cUrl && courier.first_name && TEMPLATES.fc_order_on_the_way_courier ? renderTemplateText("fc_order_on_the_way_courier", { body: [order.order_no, courier.first_name] }) : body;
+            const payload = cUrl
+              ? { type: "interactive", interactive: { type: "cta_url", body: { text: `${cBody}\n${url ? `🔗 ${url}` : ""}`.trim().slice(0, 1000) }, action: { name: "cta_url", parameters: { display_text: "راسل المندوب", url: cUrl } } } }
+              : stage === "delivered"
               ? { type: "interactive", interactive: { type: "button", body: { text: body }, action: { buttons: [{ type: "reply", reply: { id: "تمام 👍", title: "تمام 👍" } }, { type: "reply", reply: { id: "عندي ملاحظة", title: "عندي ملاحظة" } }] } } }
               : url && /^https:\/\/freshcuts\.sa\//.test(url) && !/\{\{/.test(url) ? { type: "interactive", interactive: { type: "cta_url", body: { text: body }, action: { name: "cta_url", parameters: { display_text: String(ub.text).slice(0, 20), url } } } }
               : { type: "text", text: { body, preview_url: false } };
@@ -1005,9 +1013,15 @@ export function register(app, ctx, deps = {}) {
       } catch (e) { console.error("[wa] window update:", e.message); }
     }
     /* SB4: نسخة v2 (بزر رد سريع يفتح نافذة) بعد ما المالك يحط المرحلة في waBot.windowV2Stages (يعني ميتا اعتمدتها) */
+    if (stage === "on_the_way" && wb.courierTemplate === true && courier && courier.first_name && courier.wa && TEMPLATES.fc_order_on_the_way_courier) {      // SB5: بعد اعتماد ميتا
+      const cp = TEMPLATES.fc_order_on_the_way_courier.bind({ ...orderData(o), courier });
+      if (!(cp.missing && cp.missing.length)) return sendTemplate({ phoneNorm: order.phone_norm, template: "fc_order_on_the_way_courier", params: cp, orderNo: order.order_no, stage, fallbackSms });
+    }
     const v2 = `${template}_v2`;
-    if (Array.isArray(wb.windowV2Stages) && wb.windowV2Stages.includes(stage) && TEMPLATES[v2] && typeof TEMPLATES[v2].bind === "function")
-      return sendTemplate({ phoneNorm: order.phone_norm, template: v2, params: TEMPLATES[v2].bind(o), orderNo: order.order_no, stage, fallbackSms });
+    if (Array.isArray(wb.windowV2Stages) && wb.windowV2Stages.includes(stage) && TEMPLATES[v2] && typeof TEMPLATES[v2].bind === "function") {
+      const p2 = TEMPLATES[v2].bind({ ...orderData(o), ...o });      // كتالوج: مسارات order.* / customer.*
+      if (!(p2.missing && p2.missing.length)) return sendTemplate({ phoneNorm: order.phone_norm, template: v2, params: p2, orderNo: order.order_no, stage, fallbackSms });
+    }
     return sendTemplate({ phoneNorm: order.phone_norm, template, params, orderNo: order.order_no, stage, fallbackSms });
   }
 
