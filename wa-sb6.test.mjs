@@ -69,7 +69,9 @@ test("(2) the per-phone record: habits per dish type at ≥60% and ≥2 orders, 
   const r = P.personalOf(prof, { menu: W0.menu, now: NOW });
   assert.deepEqual(r.usual, { crepe: [{ id: "86", qty: 1, pct: 75 }] }, "بيبسي زجاج in 3 of 4 crepe orders; the boxed crepe counts as a crepe order, its contents are not add-ons");
   assert.equal(r.usual.weight, undefined, "the free rice of the offer (0 SAR) is not a habit");
-  assert.deepEqual([r.orders, r.sd, r.drink, r.neverSide, r.neverDrink], [6, [], { id: "86", qty: 1 }, false, false], "the void order and the one older than habitDays are out");
+  assert.deepEqual([r.orders, r.sd, r.drink, r.neverSide, r.neverDrink], [6, [], null, false, false], "the void order and the one older than habitDays are out; بيبسي زجاج is in 3 of 6 orders (50% < 60%) ⇒ no «usual drink» across types (review 15/10), while the crepe habit above still holds");
+  const daily = P.personalOf({ ...prof, orders: prof.orders.map((o) => (o.source === "pos" && !o.void && /كفتة/.test(o.items[0].name) ? { ...o, items: [...o.items, { name: "بيبسي زجاج", qty: 1, amount: 4 }] } : o)) }, { menu: W0.menu, now: NOW });
+  assert.deepEqual(daily.drink, { id: "86", qty: 1 }, "the same Pepsi in 5 of 6 orders ⇒ his usual drink");
   assert.deepEqual(r.avoid.sort(), ["72", "8", "82"], "the items of an order rated 2 are never suggested to him");
   assert.ok(JSON.stringify(r).length < 1024);
   assert.equal(P.personalOf({ ...prof, identity: { isStaff: true } }, { menu: W0.menu, now: NOW }), null, "staff numbers: no record");

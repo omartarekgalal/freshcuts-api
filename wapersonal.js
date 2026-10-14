@@ -111,7 +111,8 @@ export function personalOf(profile, { menu = null, now = new Date(), cfg = {}, s
     if (list.length) usual[t] = list;
     if (habit(T.n, { c: T.sd })) sd.push(t);
   }
-  const dk = [...drinkOrders.x.entries()].filter(([, e]) => habit(drinkOrders.n, e)).sort((a, b) => b[1].c - a[1].c)[0];
+  /* «مشروبه المعتاد» = نفس المشروب في ≥ habitMinShare٪ من **كل** طلباته (مش من الطلبات اللي فيها مشروب بس) — مراجعة ١٥/١٠: «زي العادة» لازم تبقى حقيقة */
+  const dk = [...drinkOrders.x.entries()].filter(([, e]) => habit(orders.length, e)).sort((a, b) => b[1].c - a[1].c)[0];
   /* أصناف طلب قيّمه ٢ أو أقل (التقييم مربوط برقم طلب الموقع) ⇒ مانقترحهاش عليه */
   const avoid = new Set();
   for (const r of Array.isArray(profile.reviews) ? profile.reviews : []) {
