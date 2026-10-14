@@ -86,10 +86,11 @@ function world({ start = "2026-10-14T13:00:00Z", waTeam = {}, members = MEMBERS,
       const day = ms(p[0]), from = ms(p[1]), lo = Math.min(day, from), by = new Map();
       for (const l of db.log) {
         if (l.topic !== "portal_offline" || l.at < lo) continue;
-        const r = by.get(l.to) || { phone_norm: l.to, day: 0, last_mgr: null, cash_ok: 0 };
+        const r = by.get(l.to) || { phone_norm: l.to, day: 0, last_mgr: null, cash_ok: 0, mgr_fail: 0, last_mgr_fail: null };
         if ((l.kind === "cashier" || l.kind === "manager") && l.ok && l.at >= day) r.day++;
         if (l.kind === "cashier" && l.ok && l.at >= from) r.cash_ok++;
         if (l.kind === "manager" && l.ok && l.at >= from && (!r.last_mgr || l.at > ms(r.last_mgr))) r.last_mgr = new Date(l.at).toISOString();
+        if (l.kind === "manager" && !l.ok && l.at >= from) { r.mgr_fail++; if (!r.last_mgr_fail || l.at > ms(r.last_mgr_fail)) r.last_mgr_fail = new Date(l.at).toISOString(); }
         by.set(l.to, r);
       }
       return { rows: [...by.values()] };
@@ -816,4 +817,22 @@ test("R2 minor — RG1-era presence rows (last_seen from on-screen polls only, n
   assert.equal(texts(w, CASH1)[0], "23:11:00 ⚠️ البورتال مقفول من 36 دقيقة — افتحه عشان الطلبات ومحادثات العملاء ترن عندك.", "was: «من أول الشغل»");
   const st = await w.team.portalStatus(T.teamConfig(w.db.settings), w.now());
   assert.deepEqual(st.devices.map((d) => [d.name, d.open, d.offMin]), [["سارة", false, 21], ["منى", false, 36], ["خالد", false, 387]], "a background-only device: «مقفول من 21 د» from its last request");
+});
+
+test("R3 — a manager WhatsApp cannot reach does not silence everyone: after MGR_FAIL_MAX failed manager attempts in the round (none delivered after them) the turn goes back to the cashiers, within the cap and repeat limits; one delivered manager message makes him reachable again", async () => {
+  assert.equal(T.MGR_FAIL_MAX, 2);
+  const w = world({ start: "2026-10-14T13:00:00Z", fail: (ph) => ph === MGR });
+  await play(w, { from: utc("13:00:00"), to: utc("23:30:00"), signals: [], ticks: ticks47("13:00:47", "23:29:47") });
+  const mgr = w.offLog().filter((l) => l.to === MGR && l.kind === "manager");
+  assert.equal(mgr.length, 2, "two failed manager attempts, then the cashiers take over");
+  assert.ok(mgr.every((l) => l.ok === false));
+  const lastFail = Math.max(...mgr.map((l) => l.at));
+  const cash = w.offLog().filter((l) => l.to === CASH1 && l.kind === "cashier" && l.ok);
+  assert.ok(cash.some((l) => l.at > lastFail), "the cashier hears again after the manager proved unreachable (was: silence until the end of the day)");
+  assert.ok(cash.length <= 6, "daily cap kept");
+  /* a manager failing once and then reached keeps his turn (the earlier R2 case) */
+  const once = world({ start: "2026-10-14T08:00:00Z", fail: (ph, t) => ph === MGR && t < utc("11:00:00") });
+  await play(once, { from: utc("08:00:00"), to: utc("11:30:00"), signals: [], ticks: ticks47("08:00:47", "11:29:47") });
+  assert.deepEqual(once.offLog().filter((l) => l.to === MGR && l.kind === "manager").map((l) => l.ok), [false, true]);
+  assertLimits(w); assertLimits(once);
 });

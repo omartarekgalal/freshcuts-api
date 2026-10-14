@@ -456,6 +456,7 @@ export function workStartOf(settings, now, maxMin = 18 * 60) {
        طولها ≥ backStableMin وآخر إشارة فيها لسه طازة), streakStart, lastAny (آخر إشارة من أي نوع), hidden (مقفول بالقاعدة بس البوابة شغّالة
        في الخلفية — countBackground مقفول) }. countBackground=false (الافتراضي) ⇒ الإشارات «الظاهرة» بس (last_visible / visible_since). */
 export const PORTAL_FRESH_MS = 150_000;      // = STREAK_GAP_MS في wahandover.js: الجهاز المفتوح بيكتب كل ~٦٠–٧٥ ث
+export const MGR_FAIL_MAX = 2;               // محاولتين للمدير فشلوا في نفس المرة من غير ما واحدة توصل بعدهم ⇒ نرجع للكاشير
 export const PORTAL_SLACK_MS = 30_000;       // تذبذب الدورة: التكرار كل ٤٥ مايبقاش ٤٦
 /* المراجعة التانية — الحلقة بتخلص لو البورتال مااتقفلش (بقاعدة التنبيه) المدة دي ورا بعض، حتى من غير ما يفضل ظاهر backStableMin.
    أكبر من afterMin دايماً ⇒ بصّة واحدة (بتخلّيه «مش مقفول» afterMin بالظبط) عمرها ما بتنهي الحلقة؛ ومش أقل من repeatMin ⇒ اللي بيتشاف
@@ -771,11 +772,13 @@ export function register(app, ctx, deps = {}) {
     const day = bizStart(bizDay(now)).toISOString();
     const rows = await q(`SELECT phone_norm, count(*) FILTER (WHERE kind IN ('cashier','manager') AND ok AND at >= $1::timestamptz)::int AS day,
         max(at) FILTER (WHERE kind='manager' AND ok AND at >= $2::timestamptz) AS last_mgr,
-        count(*) FILTER (WHERE kind='cashier' AND ok AND at >= $2::timestamptz)::int AS cash_ok FROM wa_team_log
+        count(*) FILTER (WHERE kind='cashier' AND ok AND at >= $2::timestamptz)::int AS cash_ok,
+        count(*) FILTER (WHERE kind='manager' AND NOT ok AND at >= $2::timestamptz)::int AS mgr_fail,
+        max(at) FILTER (WHERE kind='manager' AND NOT ok AND at >= $2::timestamptz) AS last_mgr_fail FROM wa_team_log
         WHERE topic='portal_offline' AND at >= LEAST($1::timestamptz, $2::timestamptz) GROUP BY phone_norm`, [day, from || day]);
     if (rows === null) return null;
     const m = new Map();
-    for (const r of rows) m.set(r.phone_norm, { day: Number(r.day) || 0, lastMgr: tms(r.last_mgr), cashOk: Number(r.cash_ok) || 0 });
+    for (const r of rows) m.set(r.phone_norm, { day: Number(r.day) || 0, lastMgr: tms(r.last_mgr), cashOk: Number(r.cash_ok) || 0, mgrFail: Number(r.mgr_fail) || 0, lastMgrFail: tms(r.last_mgr_fail) });
     return m;
   }
   /* وقت الشغل زي ما الدورة شافته (في الذاكرة): open = المواعيد + المطعم مش متوقف (من غير مهلة) · work = عدّت مهلة afterMin من بداية الشغل أو من
@@ -870,7 +873,7 @@ export function register(app, ctx, deps = {}) {
     const opened = e.opened_at || e.since || null;
     const log = await portalLog(now, isoOf(opened));
     if (log === null) { dbTrouble("log_db"); return { ...base, skipped: "log_db" }; }
-    const of = (m) => log.get(m.phone) || { day: 0, lastMgr: NaN, cashOk: 0 };
+    const of = (m) => log.get(m.phone) || { day: 0, lastMgr: NaN, cashOk: 0, mgrFail: 0, lastMgrFail: NaN };
     const capped = (m) => of(m).day >= po.dailyCap;
     /* alerts = جولات اتبعتت للكاشير في المرة دي (السلّم بيمشي بيها حتى لو الإرسال فشل — رقم كاشير مش بيوصله واتساب لازم يوصل للمدير برضه)،
        delivered = جولات وصلت لكاشير واحد على الأقل (من السجل) ⇒ رسالة المدير بتقول اللي وصل بس */
@@ -878,7 +881,10 @@ export function register(app, ctx, deps = {}) {
     /* الدور على مين؟ الكاشير لحد managerAfter جولة في المرة دي؛ بعدها — أو لو الكاشير وصل للسقف اليومي — المدير. المدير وصل للسقف (أو
        مفيش مدير) ⇒ الكاشير يكمّل لحد سقفه: الرسايل ماتقفش طول ما فيه حد ليه رصيد. */
     const reason = !cashiers.some((m) => !capped(m)) ? "cap" : alerts >= po.managerAfter ? "ignored" : null;
-    const managerTurn = reason !== null && managers.some((m) => !capped(m));
+    /* مدير واتساب مش بيوصله (MGR_FAIL_MAX محاولات فشلت في المرة دي ومفيش رسالة وصلت بعد آخر فشل) = مش متاح: الدور يرجع للكاشير بدل ما الكل يسكت
+       طول القفلة (مراجعة ١٥/١٠: الفشل مابيتحسبش في السقف، فمدير رقمه بايظ كان بيمسك الدور للأبد) */
+    const unreachable = (m) => { const o = of(m); return o.mgrFail >= MGR_FAIL_MAX && !(o.lastMgr > o.lastMgrFail); };
+    const managerTurn = reason !== null && managers.some((m) => !capped(m) && !unreachable(m));
     const heldOf = (m, c) => ({ to: last4(m.phone), why: c.db ? "state_db" : "repeat", ...(c.until ? { lastAt: c.lastAt, until: c.until } : {}) });
     const sent = [], held = [];
     if (managerTurn) for (const m of cashiers) held.push({ to: last4(m.phone), why: capped(m) ? "daily_cap" : "manager_turn" });
