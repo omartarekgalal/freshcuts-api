@@ -234,9 +234,10 @@ test("(11) the loop: his usual that crosses a fee step says it in the same line;
   const c = chat([use(["preview_cart", { option: "delivery", items: [{ id: "8", qty: 1 }, { id: "9", qty: 1 }, { id: "4", qty: 1 }] }]), say("ثلاث كريبات: المجموع 76 ر.س.")], { world: { profile: "returning" }, personal: REC });
   const r = await c.turn("ابي كريب زنجر سوبريم وكريب سوبر كرانشي وكريب هوت دوج توصيل");
   const sg = r.trace.tools[0].result.suggestion;
-  assert.deepEqual([sg.rule, sg.personal, sg.tier.fee_now, sg.tier.fee_then], ["habit", true, 15, 10]);
-  assert.match(r.text, /زي العادة \*بيبسي زجاج\* بـ 4 ر.س، ومعه ينزل التوصيل من 15 إلى 10 ر.س\. أضيفه؟$/);
-  assert.equal(r.trace.suggestions.find((s) => s.outcome === "offered").numbers.fee_drop, 5);
+  /* مراجعة ١٥/١٠: ٤ ر.س بيبسي تنزّل الرسوم ١٥ ⇒ ١٠ (٥ ر.س) = خسارة ⇒ «زي العادة» من غير سطر الرسوم (tierNetOnly) */
+  assert.deepEqual([sg.rule, sg.personal, Boolean(sg.tier && sg.tier.cross)], ["habit", true, false]);
+  assert.match(r.text, /زي العادة، أضيف لك \*بيبسي زجاج\* بـ 4 ر.س؟$/);
+  assert.doesNotMatch(r.text, /ينزل التوصيل/);
   const g = chat([use(["preview_cart", { option: "pickup", items: [{ id: "8", qty: 1 }, { id: "61", qty: 1 }] }]), say("المجموع 50 ر.س.")], { world: { profile: "new" } });
   const gr = await g.turn("غالي شوي، بس ابي كريب زنجر سوبريم وباستا بشاميل");
   assert.equal(gr.trace.tools[0].result.suggestion, null, "«غالي»: no add-on (the model offers one cheaper option of the same kind)");
@@ -311,4 +312,13 @@ test("(14) settings: every S1 knob is in the dashboard schema with an Arabic lab
   assert.ok(A.PAIR_WHENS.includes("pasta_x1") && A.PAIR_WHENS.includes("hawawshi_x1"));
   assert.deepEqual(AR.assistFromBody({ pairing: '[{"when":"pasta_x1","box":"box-solo-pasta"}]' }, {}).value.pairing, [{ when: "pasta_x1", box: "box-solo-pasta" }], "the new families are accepted in the table");
   assert.ok(A.cartFamilies({ lines: [L(61)] }, W0.menu).has("pasta_x1") && A.cartFamilies({ lines: [L(21)] }, W0.menu).has("hawawshi_x1") && !A.cartFamilies({ lines: [L(21), L(61)] }, W0.menu).has("pasta_x1"));
+});
+
+test("(review 15/10) a non-free fee step is never mentioned when the add-on costs less than the fee drop", () => {
+  const ladder = [{ over: 0, fee: 20 }, { over: 60, fee: 15 }, { over: 80, fee: 10 }, { over: 100, fee: 5 }, { over: 150, fee: 0 }];
+  const pep = { item: { id: "86", name: "بيبسي زجاج", price: 4 }, qty: 1, total: 4 };
+  const lose = S.feePlan({ cart: { subtotal: 76, option: "delivery" }, ladder, pick: pep, netOnly: true });
+  assert.ok(!lose || !lose.cross, "76 + 4 = 80 drops the fee 15 → 10: 4 SAR in, 5 given up ⇒ no fee line");
+  const ok = S.feePlan({ cart: { subtotal: 76, option: "delivery" }, ladder, pick: { item: { id: "79", name: "بطاطس محمرة", price: 6 }, qty: 1, total: 6 }, netOnly: true });
+  assert.equal(ok && ok.cross, true, "a 6-SAR item covers the 5-SAR drop ⇒ the fee line stays");
 });

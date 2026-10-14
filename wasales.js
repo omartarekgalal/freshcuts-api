@@ -161,7 +161,9 @@ export function feePlan({ cart, ladder = null, quote = null, first = null, rewar
   /* (أ) اقتراح القواعد بيعدّي درجة ⇒ نفس السطر بيقول الرسوم الجديدة */
   if (pick && tot(pick) > 0) {
     const v = r2(t + tot(pick)), f = feeAt(v);
-    if (Number.isFinite(f.fee) && f.fee < feeNow) return { cross: true, fee_now: feeNow, fee_then: f.fee, free: f.fee === 0, ...(f.code ? { with_code: f.code } : {}), total_now: r2(t + feeNow), total_then: r2(v + f.fee), order_from: f.from, located };
+    /* مراجعة ١٥/١٠: درجة مش مجانية بصنف أرخص من اللي هينزل من الرسوم = خسارة (المندوب بياخد نفس المبلغ) ⇒ مانذكرش الرسوم (netOnly) */
+    const loses = netOnly && f.fee > 0 && tot(pick) < r2(feeNow - f.fee);
+    if (Number.isFinite(f.fee) && f.fee < feeNow && !loses) return { cross: true, fee_now: feeNow, fee_then: f.fee, free: f.fee === 0, ...(f.code ? { with_code: f.code } : {}), total_now: r2(t + feeNow), total_then: r2(v + f.fee), order_from: f.from, located };
   }
   const plan = (target, feeThen, code, c) => ({ kind: "next_tier", rule: "tier", add_sar: r2(target - t), fee_now: feeNow, fee_then: feeThen, free: feeThen === 0, ...(code ? { with_code: code } : {}), located,
     item: { id: String(c.id), name: c.name, price: Number(c.price) }, qty: Number(c.qty) || 1, total: tot(c), total_now: r2(t + feeNow), total_then: r2(t + tot(c) + feeThen), order_from: target, ...(c.via === "habit" ? { usual: true } : {}), ...(c.via ? { via: c.via } : {}) });
