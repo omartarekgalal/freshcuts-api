@@ -495,6 +495,7 @@ export function register(app, ctx, deps = {}) {
       items: (Array.isArray(o.items) ? o.items : []).map((i) => ({
         name: i.name || i.product_name || `صنف ${i.product_id ?? ""}`, qty: Number(i.quantity ?? i.qty) || 1,
         amount: i.unit_amount && i.mf ? Math.round((Number(i.unit_amount) / Number(i.mf)) * 1.15 * 100) / 100 : null,
+        ...(i.bundle || i.bundle_name || i.bundle_line != null ? { box: true } : {}),      // S1 (البيع الشخصي): سطر جوّه بوكس مش «إضافة» اختارها العميل
       })),
     }));
     const webPaid = webAll.filter((o) => o.paid);

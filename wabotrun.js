@@ -56,6 +56,7 @@ import { makeStt, STT_PROVIDERS } from "./wasttkey.js";
 const STT_LABEL = Object.fromEntries(STT_PROVIDERS.map((p) => [p.id, p.label]));
 import { lookImage, makeTranscriber, voiceSeconds, transcriptUsable, IMAGE_MAX_BYTES, VOICE_MAX_BYTES } from "./waassistmedia.js";
 import { ASSIST_CFG_DEFAULTS, ASSIST_SCHEMA, PROMPT_HASH, LIVE_AUDIENCES, assistConfig, assistFromBody, assistEligible, makeAssistLoop, makeAssistStore, makeModelCaller, billableUsage, newSession, noteRulesTurn, buildContext, hintOf, introSay, ensureIntro, hasIntro, heardContext, planReminder } from "./waassistrun.js";
+import { declineMemory } from "./wapersonal.js";      // S1: ذاكرة الرفض بين المحادثات
 import { WA_UPDATES_TEXTS, WA_UPDATES_CURRENT, recordWaUpdatesBot, recordWaMarketingBot, ensureWaConsentSchema } from "./waconsent.js";
 
 export const STORE = "https://freshcuts.sa";
@@ -294,6 +295,18 @@ export const TEXTS = Object.freeze({
   sb_add_item: t("الاقتراح: صنف واحد معاه", "تحب أضيف لك {item} بـ {price} ر.س؟", "Shall I add {item} for SAR {price}?", ["item", "price"], [], 300),
   sb_ask_mode: t("رد الكود بعد «لا شكراً» على الاقتراح", "تمام 👍 توصيل ولا استلام؟", "Sure 👍 Delivery or pickup?", [], [], 200),
   sb_added_mode: t("رد الكود بعد «أضفه ✅»", "تمام، أضفت {item} ✅ المجموع {total} ر.س.\nتوصيل ولا استلام؟", "Done, I added {item} ✅ Total SAR {total}.\nDelivery or pickup?", ["item", "total"], [], 300),
+  /* S1 — البيع الشخصي (١٤/١٠): «زي العادة» من طلبات العميل نفسه، الأرز مع المشاوي بالوزن، مشروب لكل شخص، بوكس العيلة من غير مشروبات، الكومبو، والتوصيل المجاني بعد «أضفه».
+     كل {…} اسم أو رقم من النظام (المنيو الحي، البوكسات، سلّم الرسوم)؛ «زي العادة» بيتقال بس لو العادة متحققة (الإعدادات: «العادة: …»). */
+  sb_usual: t("الاقتراح: عادة العميل («زي العادة»)", "زي العادة، أضيف لك {item} بـ {price} ر.س؟", "As usual, shall I add {item} for SAR {price}?", ["item", "price"], [], 300),
+  sb_usual_qty: t("الاقتراح: عادة العميل بكمية", "زي العادة، أضيف لكم {item} × {qty} بـ {total} ر.س؟", "As usual, shall I add {item} × {qty} for SAR {total}?", ["item", "qty", "total"], [], 300),
+  sb_tier_usual: t("الاقتراح: عادته، وبها تنزل رسوم التوصيل", "زي العادة {item} بـ {price} ر.س، ومعه ينزل التوصيل من {fee_now} إلى {fee_then} ر.س. أضيفه؟", "{item} as usual for SAR {price}, and delivery drops from SAR {fee_now} to SAR {fee_then}. Add it?", ["item", "price", "fee_now", "fee_then"], ["total_now", "total_then", "code", "from"], 300),
+  sb_tier_usual_free: t("الاقتراح: عادته، وبها يصير التوصيل مجاني", "زي العادة {item} بـ {price} ر.س، ومعه يصير التوصيل مجاني بدل {fee_now} ر.س، والإجمالي {total_then} ر.س. أضيفه؟", "{item} as usual for SAR {price}, and delivery becomes free instead of SAR {fee_now}, SAR {total_then} in total. Add it?", ["item", "price", "fee_now", "total_then"], ["fee_then", "total_now", "code", "from"], 300),
+  sb_rice_weight: t("الاقتراح: الأرز مع المشاوي بالوزن", "الأرز ما يجي مع المشاوي بالوزن، أضيف لك {item} بـ {price} ر.س؟", "Rice doesn't come with grills by weight. Shall I add {item} for SAR {price}?", ["item", "price"], [], 300),
+  sb_drinks_people: t("الاقتراح: مشروب لكل شخص", "أضيف لكم {item} × {qty} (واحد لكل شخص) بـ {total} ر.س؟", "Shall I add {item} × {qty} (one each) for SAR {total}?", ["item", "qty", "total"], [], 300),
+  sb_box_drinks: t("الاقتراح: بوكس العيلة ما فيه مشروبات (عدد الأشخاص معروف)", "{box} ما فيه مشروبات، أضيف لكم {item} × {qty} بـ {total} ر.س؟", "{box} has no drinks. Shall I add {item} × {qty} for SAR {total}?", ["box", "item", "qty", "total"], [], 300),
+  sb_drink_each: t("الاقتراح: بوكس العيلة ما فيه مشروبات (العدد مش معروف: سعر الواحد)", "{box} ما فيه مشروبات، و{item} الواحد بـ {price} ر.س. أضيف لكم؟", "{box} has no drinks; {item} is SAR {price} each. Shall I add some?", ["box", "item", "price"], [], 300),
+  sb_combo: t("الاقتراح: الكومبو مع الكريب أو البرجر ({contents} = وصفه في المنيو)", "أضيف لك {item} ({contents}) بـ {price} ر.س؟", "Shall I add {item} for SAR {price}?", ["item", "price"], ["contents"], 300),
+  sb_added_free: t("رد الكود بعد «أضفه ✅» والمجموع وصل التوصيل المجاني ({note} = سطر الكود لو لسه ماتقالش)", "تمام، أضفت {item} ✅ المجموع {total} ر.س، ولو توصيل يصير مجاني 🎁\n{note}\nتوصيل ولا استلام؟", "Done, I added {item} ✅ Total SAR {total}, and delivery would be free 🎁\n{note}\nDelivery or pickup?", ["item", "total"], ["note"], 600),
   sb_offers_head: t("العروض الحية: العنوان", "🔥 عروضنا الحين:", "🔥 Our offers now:", [], [], 100),
   sb_offer_line: t("العروض الحية: سطر", "• {name} — {price} ر.س", "• {name} — SAR {price}", ["name", "price"], [], 200),
   sb_offer_line_until: t("العروض الحية: سطر بتاريخ نهاية", "• {name} — {price} ر.س (لين {until})", "• {name} — SAR {price} (until {until})", ["name", "price", "until"], [], 200),
@@ -3360,15 +3373,18 @@ const fl = await q(`SELECT count(*)::int AS n FROM wa_bot_log WHERE phone_norm=$
   async function assistContext({ fresh, phone, cfg, lang, chat, know, data, now, cls, pending = null, ev = null, settings = null }) {
     const hours = await assist.get_hours();
     let handback = null; { const fl = flowApi(); if (fl && typeof fl.handbackFor === "function") { try { handback = await fl.handbackFor(phone); } catch (e) { console.error("[assist] handback:", e.message); handback = null; } } }
-    let profile = null, offers = null, reorder = null, notes = null, ad = null;
+    let profile = null, offers = null, reorder = null, notes = null, ad = null, personal = undefined, mem = null;
     if (fresh || (ev && ev.referral)) { try { ad = await adContext({ ev, chat, cfg, know, settings, now }); } catch (e) { console.error("[assist] ad:", e.message); ad = null; } }
     if (fresh) { const kb = kbApi(); if (kb) { try { notes = await kb.notesFor(lang); } catch { notes = null; } } }
     /* دعوة القناة للمساعد: نفس شرط البوت (data.channelOk) + مش في سؤال حساسية/مكوّن ولا مع تحويل مستني موظف. النص المعتمد + الرابط المضبوط بالظبط. */
     let channel = null;
     if (data && data.channelOk === true && channelOn(cfg) && !pending && cls.key !== "dishfact") { try { channel = { say: `${textOf(cfg, "channel_assist", lang)} ${cfg.links.channel.url}`, url: cfg.links.channel.url }; } catch { channel = null; } }
     if (fresh) {
-      const [p, o] = await Promise.all([assist.customer_profile(phone), assist.get_offers(phone)]);
-      profile = p && p.ok ? p.profile : null; offers = o && o.ok ? o : null;
+      /* S1: السجل الشخصي (عادته…) من نفس نداء ملف العميل، وذاكرة الرفض (قراية واحدة لأول دور) — للكود بس، مابيدخلوش سياق الموديل */
+      const a0 = cfg.assist || {}, memDays = Math.max(Number(a0.declineCoolDays) || 0, 60 + (Number(a0.declineMuteDays) || 0));
+      const [p, o, rows] = await Promise.all([assist.customer_profile(phone), assist.get_offers(phone), typeof assistStore.declinesOf === "function" ? assistStore.declinesOf(phone, memDays).catch(() => []) : []]);
+      profile = p && p.ok ? p.profile : null; offers = o && o.ok ? o : null; personal = p && p.ok ? p.personal || null : null;
+      try { mem = declineMemory(rows || [], now, a0); } catch (e) { console.error("[assist] decline memory:", e.message); mem = null; }
       let ro = data && data.reorder && data.reorder.plan ? data.reorder : null;
       if (!ro && cfg.reorderEnabled) {
         try { const snaps = await botCarts.lastOrderCarts(phone, cfg.reorderMaxDays, { limit: cfg.reorderLookback, minTotal: cfg.reorderMinTotal });
@@ -3378,7 +3394,7 @@ const fl = await q(`SELECT count(*)::int AS n FROM wa_bot_log WHERE phone_norm=$
       if (ro) reorder = { day: orderDay(ro.at, lang), lines: ro.plan.lines.map((l) => ({ name: lang === "en" ? l.nameEn : l.name, qty: l.q })), note: "a one-tap button for the same order is attached under your message" };
     }
     let branch = null; try { branch = fresh ? textOf(cfg, "location", lang) : null; } catch { branch = null; }
-    return { profile, reorder, context: buildContext({ first: fresh, hours: hours && hours.ok ? hours : null, profile, offers, reorder, locationShared: locFresh(chat.last_loc, now), justShared: cls.key === "area", branch, boxes: fresh ? know.bundles : null, hint: hintOf(withAlt(cls)), handover: pending, notes, ad, channel, handback, later: laterOk(settings) }), handback: Boolean(handback) };
+    return { profile, personal, mem, reorder, context: buildContext({ first: fresh, hours: hours && hours.ok ? hours : null, profile, offers, reorder, locationShared: locFresh(chat.last_loc, now), justShared: cls.key === "area", branch, boxes: fresh ? know.bundles : null, hint: hintOf(withAlt(cls)), handover: pending, notes, ad, channel, handback, later: laterOk(settings) }), handback: Boolean(handback) };
   }
   const assistDeps = (cfg, settings, logId) => ({ tools: assist, callModel: assistCall, now: clock,
     knowOf: async () => ({ menu: await menuIndex(settings, clock()), boxes: (await bundles()) || [] }),
@@ -3475,7 +3491,7 @@ const fl = await q(`SELECT count(*)::int AS n FROM wa_bot_log WHERE phone_norm=$
     } catch (e) { console.error("[assist] earlier pictures:", e.message); earlierPictures = null; } }
     const loop = makeAssistLoop(assistDeps(cfg, settings, logId));
     const text = cls.key === "area" ? "📍" : String(ev.text || "");      // الموقع نفسه مابيتبعتش للموديل: علامة بس، والسياق بيقول إنه شارك موقعه
-    const r = await loop.runTurn({ phone, text, lang, session, acfg, context: cx.context, profile: cx.profile, earlierPictures });
+    const r = await loop.runTurn({ phone, text, lang, session, acfg, context: cx.context, profile: cx.profile, earlierPictures, personal: cx.personal, mem: cx.mem, tap: ev.interactiveId || null });      // S1: السجل الشخصي + ذاكرة الرفض (أول دور) + معرّف الزر
     if (!r.ok) { if (fresh) session = null; if (/^model_http_400/.test(r.reason)) { await assistStore.dropSession(phone); session = null; } return fallback(r.reason, r.trace); }
     const tr = r.trace, nowMs = now.getTime(), L = tr.lang === "en" ? "en" : tr.lang === "ar" ? "ar" : lang;      // لغة الدور زي ما المساعد حدّدها («Pickup» وسط محادثة إنجليزية = إنجليزي)
     const bc = { cfg, lang: L, data, referral: null, factual: false, arg: null };
@@ -3503,7 +3519,7 @@ const fl = await q(`SELECT count(*)::int AS n FROM wa_bot_log WHERE phone_norm=$
       await assistStore.saveSession(phone, session, now);
       if (cx.handback) { const fl = flowApi(); if (fl && typeof fl.handbackUsed === "function") { try { await fl.handbackUsed(phone); } catch (e) { console.error("[assist] handback used:", e.message); } } }
       const turnId = await turnRow({ handledBy: "assistant", outcome, masked: tr.sent, text: r.handover ? reply.body : r.text, trace: tr, cartCode: r.cart ? r.cart.code : null, handover: r.handover ? r.handover.reason : null });
-      await assistStore.recordSuggestions(phone, session.id, turnId, tr.suggestions.filter((s) => s.outcome !== "computed"), r.cart ? r.cart.code : null);
+      await assistStore.recordSuggestions(phone, session.id, turnId, tr.suggestions, r.cart ? r.cart.code : null);      // S1: المحسوب اللي ماتعرضش بيتسجّل كمان (بسببه)
       /* قاعدة المعرفة: الإجابة اللي اتستخدمت تتعدّ، والسؤال اللي المساعد ماعرفش يجاوبه (أو حوّله لموظف) ينزل في طابور المدير — مقنّع ومن غير أي ربط بالعميل. */
       { const kb = kbApi();
         if (kb) { try {
@@ -4177,7 +4193,7 @@ const fl = await q(`SELECT count(*)::int AS n FROM wa_bot_log WHERE phone_norm=$
     const owns = assistEligible({ acfg: { ...acfg, mode: "test" }, cfg: { ...cfg, mode: cfg.mode === "live" ? "live" : "test" }, phone, ev, cls, d: cls.key === "unknown" ? { act: "wait", waitKind: "unknown_wait" } : cls.key === "ack" || cls.key === "nack" ? { act: "silent", reason: "ack" } : { act: "reply", key: cls.key }, sessionActive: !fresh, handoverOpen: false });
     const cx = await assistContext({ fresh, phone, cfg, lang, chat: await chatOf(phone), know, data: {}, now, cls });
     const dry = { ...assist, build_cart: async (ph, input, o = {}) => { const r = await assist.build_cart(ph, input, { save: false }); return o.save === false || !r || !r.ok ? r : { ...r, saved: true, link: `${STORE}/c/preview0`, code: "preview0" }; } };
-    const r = await makeAssistLoop({ ...assistDeps(cfg, settings, null), tools: dry }).runTurn({ phone, text, lang, session, acfg, context: cx.context, profile: cx.profile });
+    const r = await makeAssistLoop({ ...assistDeps(cfg, settings, null), tools: dry }).runTurn({ phone, text, lang, session, acfg, context: cx.context, profile: cx.profile, personal: cx.personal, mem: cx.mem });
     if (r.ok) simSessions.set(phone, { session: r.session, at: now.getTime() });
     const tr = r.trace;
     await assistStore.addTurn({ phone, sessionId: session.id, handledBy: "simulate", outcome: r.ok ? (r.handover ? `handover:${r.handover.reason}` : "sent") : `fallback:${r.reason}`, masked: tr.sent, text: r.ok ? r.text : null, lang, trace: tr, handover: r.ok && r.handover ? r.handover.reason : null });

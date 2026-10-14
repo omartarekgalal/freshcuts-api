@@ -117,7 +117,7 @@ test("(7) basket builder: a by-weight grill gets rice (now orderable, 6 SAR) wit
   const r = await c.turn("نص كيلو كفتة بالوزن");
   const sg = r.trace.tools[0].result.suggestion;
   assert.deepEqual([sg.kind, sg.item.name, sg.item.price], ["pair", "طبق أرز بسمتي", 6]);
-  assert.match(r.text, /تحب أضيف لك \*طبق أرز بسمتي\* بـ 6 ر.س؟$/, "the model left it out: the code line is added (and the name in bold)");
+  assert.match(r.text, /الأرز ما يجي مع المشاوي بالوزن، أضيف لك \*طبق أرز بسمتي\* بـ 6 ر.س؟$/, "the model left it out: the code line is added (and the name in bold); S1: the rice line says why (by-weight grills come without rice)");
   assert.equal(r.trace.sgLineByCode, true);
   assert.deepEqual(r.buttons, { kind: "sg" });
   assert.deepEqual(R.assistExtras(cfg, "ar", r).buttons.map((b) => b.title), ["أضفه ✅", "لا شكراً"]);

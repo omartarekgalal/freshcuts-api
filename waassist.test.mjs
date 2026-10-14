@@ -201,7 +201,7 @@ test("upsell: at most one suggestion, computed from real numbers, never repeated
   const ctx = { menu: MENU, boxes: BOXES, topSellers: ["79", "18", "8"] };
   // the same items exist as a box for less: kofta meal 24 + fries 6 + soft drink 3 = 33 separately, the box is 29
   const same = { lines: [L(17), L(79), L(82)], subtotal: 33, option: "delivery" };
-  assert.deepEqual(A.suggestOne(same, ctx), { kind: "box_saves", slug: "box-kofta-solo", name: "بوكس الكفتة الفردي", box_price: 29, separate: 33, saves: 4 });
+  assert.deepEqual(A.suggestOne(same, ctx), { kind: "box_saves", rule: "box_saves", slug: "box-kofta-solo", name: "بوكس الكفتة الفردي", box_price: 29, separate: 33, saves: 4 });
   assert.equal(A.suggestOne({ ...same, lines: [L(17), L(79)] }, { ...ctx, declined: ["drink", "side", "top_seller"] }), null, "the box is not suggested when the cart does not hold everything in it");
   // a small gap to a cheaper delivery tier — only with a real quote for his location
   const c70 = { lines: [L(18), L(13), L(72)], subtotal: 71, option: "delivery" };
@@ -213,11 +213,12 @@ test("upsell: at most one suggestion, computed from real numbers, never repeated
   assert.deepEqual(A.suggestOne({ lines: [L(18)], subtotal: 148, option: "delivery" }, { ...ctx, quote: { deliverable: true, fee: 5, toNextTier: 2, nextTierFee: 0 } }).free, true);
   // missing drink, then missing side, then a real best seller; each only once and never after it was declined
   const main = { lines: [L(71)], subtotal: 21, option: "pickup" };
-  assert.deepEqual(A.suggestOne(main, ctx), { kind: "drink", item: A.itemBrief(item(82)) }, "never water as «the drink» while another drink exists: the cheapest other drink when sales do not rank one");
-  assert.deepEqual(A.suggestOne(main, { ...ctx, topSellers: ["79", "86", "82"] }), { kind: "drink", item: A.itemBrief(item(86)) }, "the drink that really sells most (POS rank), not the cheapest");
-  assert.deepEqual(A.suggestOne(main, { ...ctx, declined: ["drink"] }), { kind: "side", item: A.itemBrief(item(79)) }, "the best-selling side");
+  const G = (kind, id) => ({ kind, rule: "generic", item: A.itemBrief(item(id)), qty: 1, total: item(id).price });      // S1: كل اقتراح بقاعدته وكميته وإجماليه
+  assert.deepEqual(A.suggestOne(main, ctx), G("drink", 82), "never water as «the drink» while another drink exists: the cheapest other drink when sales do not rank one");
+  assert.deepEqual(A.suggestOne(main, { ...ctx, topSellers: ["79", "86", "82"] }), G("drink", 86), "the drink that really sells most (POS rank), not the cheapest");
+  assert.deepEqual(A.suggestOne(main, { ...ctx, declined: ["drink"] }), G("side", 79), "the best-selling side");
   assert.equal(A.suggestOne(main, { ...ctx, declined: ["drink", "side"] }), null, "«add another main dish» is not offered to someone who already has one");
-  assert.deepEqual(A.suggestOne({ lines: [L(82)], subtotal: 3, option: "pickup" }, { ...ctx, declined: ["side"] }), { kind: "top_seller", item: A.itemBrief(item(18)) }, "a best-selling main only when the cart has no main dish and no box");
+  assert.deepEqual(A.suggestOne({ lines: [L(82)], subtotal: 3, option: "pickup" }, { ...ctx, declined: ["side"] }), G("top_seller", 18), "a best-selling main only when the cart has no main dish and no box");
   // nothing that is already inside a box of the cart (12/10: a mixed grill meal was offered on top of the mixed grill box)
   assert.equal(A.suggestOne({ lines: [{ slug: "box-x", name: "x", price: 85, qty: 1, kind: "box", contains: ["18", "87", "79", "72", "82"] }], subtotal: 85, option: "pickup" }, ctx), null);
   const onlyWater = { ...MENU, items: MENU.items.filter((i) => A.itemBrief(i).kind !== "drink" || i.id === "81") };

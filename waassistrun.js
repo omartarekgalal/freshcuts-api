@@ -13,8 +13,9 @@
 ═══════════════════════════════════════════════════════════════════════════ */
 import { createHash } from "node:crypto";
 import { normalize } from "./wabot.js";
-import { validateReply, profileSummaryAr, ASSIST_DEFAULTS, deliverySavers, PAIRING_DEFAULT, pairingOf, grillFamilies, grillStemOf, weightsBrief, servingClaim, cartFamilies, kindOf, servingGuide, servingAsked, servingMismatch } from "./waassist.js";
-import { salesCard, cardForModel, topicsOf, proactiveLine, lineAlreadySaid, placeLine, thresholdPlan, choiceButtons, boldNames, formatReply, suggestionVars, dayMonth } from "./wasales.js";
+import { validateReply, profileSummaryAr, ASSIST_DEFAULTS, deliverySavers, PAIRING_DEFAULT, pairingOf, grillFamilies, grillStemOf, weightsBrief, servingClaim, cartFamilies, kindOf, servingGuide, servingAsked, servingMismatch, cartCover } from "./waassist.js";
+import { salesCard, cardForModel, topicsOf, proactiveLine, lineAlreadySaid, placeLine, feePlan, choiceButtons, boldNames, formatReply, suggestionVars, dayMonth, PEOPLE_Q_RE } from "./wasales.js";
+import { peopleOf, isUpgrade } from "./wapersonal.js";      // S1
 import { providerOf, maskText } from "./wabotllm.js";
 import { chatHash } from "./waaicost.js";
 
@@ -103,12 +104,30 @@ export const ASSIST_CFG_DEFAULTS = Object.freeze({
   codeFastPath: true,                  // «أضفه ✅ / لا شكراً» على اقتراح صنف والتوصيل/الاستلام معروف ⇒ الكود يحدّث السلة ويبعت الملخص أو سؤال توصيل/استلام بالأزرار، من غير أي نداء موديل
   servingGuidance: "asked",            // SB4 (عمر ١٤/١٠): «الثلث يكفي شخص تقريباً» — asked = بس لما العميل يسأل وبأرقام ملف المعرفة («المشاوي بالوزن»)، ولكل المشاوي بالوزن ومنها المشكل · never = ولا مرة (زي قبل)
   slimTools: true,                     // نتايج الأدوات للموديل من غير الحقول اللي مالهاش لازمة في لغة المحادثة (الأسماء الإنجليزية في محادثة عربي، الإضافات الفاضية، الشرح المكرر)
+  /* S1 — البيع الشخصي (١٤/١٠، تصميم personal-upsell): الاقتراح من عادة العميل نفسه + البوكس اللي فيه طبقه + مشروب لكل شخص. القرار بالكود والنص من «نصوص البوت» — كل بند بإعداده */
+  personalSell: true,                  // «زي العادة»: الإضافة اللي العميل بيطلبها مع نفس النوع قبل الاقتراح العام. مقفول = بوكس المالك والاقترانات العامة بس
+  habitMinShare: 60,                   // العادة: في كام ٪ من طلباته من نفس النوع
+  habitMinOrders: 2,                   // …وأقل عدد مرات
+  habitDays: 180,                      // …من طلبات آخر كام يوم
+  addonMinSar: 3, addonMaxSar: 20,     // الإضافة اللي تستاهل سؤال: سعرها من … لحد … (المياه بريال مابتتسألش)
+  boxForDish: true,                    // الطبق الواحد ⇒ البوكس اللي فيه نفس الطبق (قبل الإضافات)، بفحص القيمة
+  boxUpgradeMaxPerMainSar: 10,         // …العميل يدفع لحد كده زيادة لكل طبق
+  valueMinGainSar: 2,                  // …واللي البوكس بيزوّده بأسعار المنيو أكبر من الزيادة بكده على الأقل
+  drinksPerPerson: true,               // مشروب لكل شخص (طبقين وأكتر، أو العميل قال كام شخص)
+  familyOutside: true,                 // بعد بوكس العيلة: إضافة واحدة من بره البوكس (مشروبات لو مافيهوش)
+  comboFallback: true,                 // الكومبو مع الكريب والبرجر لو مفيش بوكس فيه طبقه
+  skipNeverTakes: true,                // مانعرضش جانبي/مشروب على اللي عمره ما طلبه (٣ طلبات وأكتر)
+  tierNetOnly: true,                   // رسوم أقل (مش مجاني) بإضافة: سعرها لازم يغطي اللي هينزل من التوصيل (المندوب بيتدفع له نفس المبلغ). التوصيل المجاني مش متأثر
+  declineCoolDays: 14,                 // الصنف اللي رفضه في محادثة مايتعرضش عليه تاني لمدة كده
+  declineMuteAfter: 2, declineMuteDays: 60,      // نوع اقتراح اترفض في كذا محادثة (خلال ٦٠ يوم) ⇒ يسكت للعميل ده المدة دي
 });
 const NUMS = { budgetDaySar: [0, 1000], budgetMonthSar: [0, 10000], maxToolRounds: [1, 8], maxRepliesPerChatDay: [1, 60], timeoutMs: [5000, 60000], sessionMin: [10, 720], staffStepBackMin: [1, 60], seriousHoldMin: [0, 240], locationHours: [1, 24], keepDays: [7, 730],
-  fastCartLines: [0, 6], ackMaxChars: [0, 900], imageBurstSec: [0, 30], imageBurstMax: [1, 10], bigBoxSar: [0, 1000], reminderQuietStart: [0, 23], reminderQuietEnd: [0, 23], compactAfterChars: [8000, 200000], compactKeepTurns: [1, 12], followUpMin: [5, 720], followUpCloseGuardMin: [0, 240], nudgeMin: [0, 180], searchMax: [3, 15], nudgeGapSar: [0, 100], topSellerDays: [7, 180], profileOrders: [5, 200], maxCartLines: [1, 40], liveDailyCustomers: [0, 5000], voiceMaxSec: [10, 300], mediaBudgetDaySar: [0, 50], sttSarPerMin: [0, 1], maxOffersPerChat: [0, 3] };
+  fastCartLines: [0, 6], ackMaxChars: [0, 900], imageBurstSec: [0, 30], imageBurstMax: [1, 10], bigBoxSar: [0, 1000], reminderQuietStart: [0, 23], reminderQuietEnd: [0, 23], compactAfterChars: [8000, 200000], compactKeepTurns: [1, 12], followUpMin: [5, 720], followUpCloseGuardMin: [0, 240], nudgeMin: [0, 180], searchMax: [3, 15], nudgeGapSar: [0, 100], topSellerDays: [7, 180], profileOrders: [5, 200], maxCartLines: [1, 40], liveDailyCustomers: [0, 5000], voiceMaxSec: [10, 300], mediaBudgetDaySar: [0, 50], sttSarPerMin: [0, 1], maxOffersPerChat: [0, 3],
+  habitMinShare: [30, 100], habitMinOrders: [2, 10], habitDays: [30, 365], addonMinSar: [0, 20], addonMaxSar: [3, 100], boxUpgradeMaxPerMainSar: [0, 40], valueMinGainSar: [0, 20], declineCoolDays: [0, 90], declineMuteAfter: [1, 5], declineMuteDays: [7, 180] };
 const ENUMS = { servingGuidance: ["asked", "never"], mode: ASSIST_MODES, routing: ["escalate", "strong", "fast"], effort: ["low", "medium", "high"], thinking: ["adaptive", "off"], sttProvider: ["openai", "groq", "elevenlabs"], liveAudience: LIVE_AUDIENCES, cacheTtl: ["5m", "1h"] };
 const BOOLS = ["typing", "followUpEnabled", "forceSuggestion", "imagesEnabled", "voiceEnabled", "fastSimplePreview", "orderWordsStrong", "rulesFirstPrice", "remindersEnabled", "feeMoment", "menuToRules", "pickForMe", "choiceList", "pairingEnabled", "adButtons", "weightToAssistant", "faqShort", "firstLead", "grillFamilies", "oneOfferPerChat", "briefEnabled", "allergenList", "menuButton", "sellerClose",
-  "salesBrain", "proactiveLines", "thresholdNudge", "offerButtons", "choiceButtons", "codeRecap", "offersBlock", "boldNames", "codeFastPath", "slimTools"];
+  "salesBrain", "proactiveLines", "thresholdNudge", "offerButtons", "choiceButtons", "codeRecap", "offersBlock", "boldNames", "codeFastPath", "slimTools",
+  "personalSell", "boxForDish", "drinksPerPerson", "familyOutside", "comboFallback", "skipNeverTakes", "tierNetOnly"];
 const MODEL_RE = /^[a-z0-9./-]{3,60}$/;
 /* PS1 — اسم الشخصية: حروف ومسافات بس (٢–٢٠ حرف)؛ مفيش أرقام ولا رموز ولا سطر جديد، عشان مايبقاش باب لحقن نص في الرسالة أو في سياق الموديل. */
 const NAMES = { personaName: /^[ء-ي][ء-ي ]{1,19}$/, personaNameEn: /^[A-Za-z][A-Za-z ]{1,19}$/ };
@@ -185,7 +204,7 @@ export const ASSIST_SCHEMA = Object.freeze({
   "assist.choiceList": { group: "assist", type: "boolean", ar: "اختيارات البوكس قايمة تفاعلية", help: "سؤال الاختيار في البوكس بيتبعت معاه قايمة بالاختيارات (لحد ١٠) بدل سطر أسماء." },
   "assist.bigBoxSar": N("bigBoxSar", "بوكس كبير: السعر + بديل أخف قبل الاختيارات، من سعر", "بوكس سعره من الرقم ده: أول رسالة فيها سعره ومحتواه وبديل أخف بسعره، وأسئلة الاختيار بعد ما العميل يختار. صفر = مقفول.", "ر.س"),
   "assist.pairingEnabled": { group: "assist", type: "boolean", ar: "جدول الاقتران: أول اقتراح لكل عيلة", help: "الاقتراح الأول من اللي بيتاكل مع بعض فعلاً (الجدول تحت)، والمشروب مايبقاش أول اقتراح للمشاوي. مقفول: الاقتراح القديم (مشروب ثم جانبي)." },
-  "assist.pairing": { group: "assist", type: "json", ar: "جدول الاقتران", help: "قايمة JSON بالترتيب: كل سطر { \"when\": عيلة الطلب, \"box\": رابط البوكس } أو { \"when\": …, \"item\": جزء من اسم الصنف }. العيلات: grill_kilo, grill_weight, pizza_pasta, pizza_x2, crepe_x2, meal_x2, burger_x2, crepe_x1, burger_x1, meal_x1, hawawshi, pasta, skillet. السطر اللي هدفه مش في المنيو أو خلص بيتعدّى. الأسعار من المنيو وقت الاقتراح." },
+  "assist.pairing": { group: "assist", type: "json", ar: "جدول الاقتران", help: "قايمة JSON بالترتيب: كل سطر { \"when\": عيلة الطلب, \"box\": رابط البوكس } أو { \"when\": …, \"item\": جزء من اسم الصنف }. العيلات: grill_kilo, grill_weight, pizza_pasta, pizza_x2, crepe_x2, meal_x2, burger_x2, crepe_x1, burger_x1, meal_x1, pasta_x1, hawawshi_x1, hawawshi, pasta, skillet. السطر اللي هدفه مش في المنيو أو خلص بيتعدّى. الأسعار من المنيو وقت الاقتراح. سطور البوكسات بتتجرّب الأول، وبعدها (لو «الصنف الواحد ⇒ البوكس» شغّال) البوكس الحي اللي فيه نفس الطبق، وبعدها سطور الأصناف." },
   "assist.adButtons": { group: "assist", type: "boolean", ar: "محادثة الإعلان: أزرار في أول رد", help: "أول رد لعميل جاي من إعلان مربوط بصنف (links.adMap): الصنف بأسعاره من المنيو + أزرار «توصيل / استلام / أبغى شي ثاني»." },
   "assist.weightToAssistant": { group: "assist", type: "boolean", ar: "وزن + مشوي ⇒ المساعد", help: "«نص كيلو كفتة» تروح للمساعد (سعر الوزن + اقتراح + سلة) بدل بطاقة بوت القواعد. مقفول: بوت القواعد يرد بالبطاقة ببلاش لو مفيش محادثة مساعد شغّالة." },
   "assist.faqShort": { group: "assist", type: "boolean", ar: "سؤال قصير = إجابة قصيرة", help: "سؤال عن جزء من إجابة شائعة (مثلاً الدجاج من إجابة اللحوم): السطر المطلوب بس، وبعده سؤال يرجّع للطلب." },
@@ -223,6 +242,24 @@ export const ASSIST_SCHEMA = Object.freeze({
   "assist.codeFastPath": { group: "assist", type: "boolean", ar: "رد الكود على «أضفه / لا شكراً»", help: "العميل ضغط «أضفه ✅» أو «لا شكراً» على اقتراح صنف: الكود يحدّث السلة بنفسه ويبعت الملخص بالرابط (لو قال استلام، أو توصيل وشارك موقعه) أو «توصيل ولا استلام؟» بالأزرار — من غير نداء موديل (أرخص وأسرع). مقفول = المساعد يرد زي أي رسالة." },
   "assist.slimTools": { group: "assist", type: "boolean", ar: "نتايج أدوات أخف للموديل", help: "الموديل بياخد من نتايج الأدوات اللي يحتاجه للغة المحادثة بس (من غير الأسماء الإنجليزية في محادثة عربي، ومن غير القوايم الفاضية والشرح المكرر). نفس الأسعار ونفس الأرقام." },
   "assist.boldNames": { group: "assist", type: "boolean", ar: "أسماء الأصناف بخط عريض", help: "اسم الصنف أو البوكس في الرد بيتكتب *عريض* (أول مرة)، والسطر الطويل بيتقسم سطور قصيرة." },
+  /* S1 — البيع الشخصي */
+  "assist.personalSell": { group: "assist", type: "boolean", ar: "البيع الشخصي: عادة العميل الأول", help: "العميل اللي له طلبات قبل كده: لو فيه إضافة بيطلبها مع نفس النوع (مثلاً بيبسي زجاج مع الكريب) في النسبة والعدد اللي تحت، ماجد يقول «زي العادة، أضيف لك … بـ … ر.س؟» قبل أي اقتراح عام. الحساب من طلباته هو بس (الموقع ونقطة البيع والتطبيقات)، ومابيتقالش عدد ولا تاريخ ولا قناة. مقفول = بوكس المالك والاقترانات العامة بس." },
+  "assist.habitMinShare": N("habitMinShare", "العادة: في كام ٪ من طلباته من نفس النوع", "الإضافة لازم تكون في النسبة دي على الأقل من طلباته اللي فيها نفس نوع الأكل.", "٪"),
+  "assist.habitMinOrders": N("habitMinOrders", "العادة: أقل عدد مرات", "…وطلبها العدد ده من المرات على الأقل.", "مرة"),
+  "assist.habitDays": N("habitDays", "العادة: من طلبات آخر … يوم", "الطلبات الأقدم مابتتحسبش.", "يوم"),
+  "assist.addonMinSar": N("addonMinSar", "أقل سعر لإضافة تستاهل سؤال", "الإضافة الأرخص من كده مابتتعرضش كاقتراح (المياه بريال مثلاً).", "ر.س"),
+  "assist.addonMaxSar": N("addonMaxSar", "أقصى سعر لإضافة تستاهل سؤال", "الإضافة الأغلى من كده مابتتعرضش كاقتراح.", "ر.س"),
+  "assist.boxForDish": { group: "assist", type: "boolean", ar: "الصنف الواحد ⇒ البوكس اللي فيه نفس الصنف (قبل الإضافات)", help: "طبق واحد (أو طبقين من نفس النوع، أو نصين كيلو مشاوي) ومفيش بوكس في السلة: سطور البوكسات في جدول الاقتران الأول، وبعدها البوكس الحي اللي فيه نفس الطبق بالظبط (زي بوكس الباستا / الحواوشي / الميكس جريل الفردي، وميكس جريل لشخصين) — بس لو الزيادة والقيمة في الحدود اللي تحت. مقفول = جدول الاقتران زي قبل." },
+  "assist.boxUpgradeMaxPerMainSar": N("boxUpgradeMaxPerMainSar", "البوكس بدل الصنف: أقصى زيادة لكل طبق", "سعر البوكس (بزيادة اختيار العميل) ناقص سعر أطباقه، مقسوم على عدد الأطباق، مايعدّيش الرقم ده.", "ر.س"),
+  "assist.valueMinGainSar": N("valueMinGainSar", "البوكس بدل الصنف: أقل فايدة للعميل", "اللي البوكس بيزوّده (الثابت فيه + أرخص اختيار من غير زيادة، بأسعار المنيو) لازم يكون أكبر من الزيادة بالرقم ده على الأقل.", "ر.س"),
+  "assist.drinksPerPerson": { group: "assist", type: "boolean", ar: "مشروب لكل شخص", help: "طبقين وأكتر في السلة، أو العميل قال كام شخص، والمشروبات أقل من العدد (اللي جوّه البوكسات والكومبو محسوبة): مشروبه المعتاد وإلا الأكثر مبيعاً (مش المياه)، بعدد الناقص بالظبط." },
+  "assist.familyOutside": { group: "assist", type: "boolean", ar: "بعد بوكس العيلة: إضافة واحدة من بره البوكس، ومشروبات لو مافيهوش", help: "بوكس مشاركة في السلة (زي نص ونص والمشكل المخصوص): مافيهوش مشروبات ⇒ مشروبات لعدد الأشخاص (العدد مش معروف ⇒ سعر الواحد وسؤال)؛ فيه مشروبات ⇒ جانبي واحد مش جوّه البوكس. إضافة واحدة بس." },
+  "assist.comboFallback": { group: "assist", type: "boolean", ar: "الكومبو مع الكريب والبرجر لو مافيش بوكس", help: "كريب أو برجر لوحده من غير بطاطس ولا مشروب، والطبق مش اختيار في أي بوكس (أو البوكس خلص): «إضافة كومبو» بمحتواها من وصف المنيو وسعرها." },
+  "assist.skipNeverTakes": { group: "assist", type: "boolean", ar: "مانعرضش جانبي أو مشروب على اللي عمره ما طلبه (٣ طلبات وأكتر)", help: "عميل له ٣ طلبات وأكتر ولا مرة خد جانبي (أو مشروب): الاقتراح ده مايتعرضش عليه (ولا البوكس بدل الصنف لو عمره ما خد جانبي)." },
+  "assist.tierNetOnly": { group: "assist", type: "boolean", ar: "رسوم أقل (مش مجاني): سعر الإضافة لازم يغطي اللي هينزل من التوصيل", help: "اقتراح صنف عشان رسوم التوصيل تنزل درجة (مش لحد المجاني): بس لو سعر الصنف ≥ اللي هينزل من الرسوم — المندوب بياخد نفس المبلغ مهما العميل دفع. التوصيل المجاني (كود أول طلب، مكافأة العميل، أو ١٥٠) مش متأثر." },
+  "assist.declineCoolDays": N("declineCoolDays", "اللي رفضه مايتعرضش تاني لمدة", "صنف قال له «لا شكراً» (أو تجاهله في محادثتين) مايتقترحش عليه في محادثة جديدة المدة دي. صفر = من غير ذاكرة بين المحادثات.", "يوم"),
+  "assist.declineMuteAfter": N("declineMuteAfter", "نوع اقتراح اترفض في كذا محادثة ⇒ يسكت", "نفس نوع الاقتراح (عادته، البوكس، المشروب لكل شخص…) اترفض في العدد ده من المحادثات خلال ٦٠ يوم ⇒ يسكت للعميل ده.", "محادثة"),
+  "assist.declineMuteDays": N("declineMuteDays", "…ويسكت لمدة", "", "يوم"),
 });
 
 /* ── مين يرد على الرسالة: القواعد ولا المساعد (صافي) ─────────────────────────
@@ -990,6 +1027,20 @@ export function makeAssistLoop(deps) {
       : `a plain add-on: «تحب أضيف لك ${s.item ? s.item.name : ""} بـ ${s.item ? s.item.price : ""} ر.س؟» — no pressure.`);
   const refOf = (s) => (s && s.kind === "box_saves" ? String(s.slug) : s && s.box ? String(s.box.slug) : s && s.item ? String(s.item.id) : null);
   const cartHas = (cart, ref) => Boolean(cart && cart.ok && ref && (cart.lines || []).some((l) => String(l.id || "") === ref || String(l.slug || "") === ref));
+  /* S1 — القياس: كل اقتراح اتحسب بيتسجّل (اتعرض / اتقبل / اترفض، أو «محسوب» بسبب ماتعرضش). numbers = الاقتراح نفسه + القاعدة، شخصي ولا لأ، نوع العميل،
+     اللحظة، الكمية والسعر، اللي بيزوّده على السلة (صنف = السعر × الكمية؛ بوكس = سعره ناقص الأطباق اللي بيحل محلها؛ بوكس أوفر = بالسالب)، واللي بينزل من التوصيل. */
+  const r2n = (n) => Math.round(Number(n) * 100) / 100;
+  function sgNumbers(T, s, moment, reason = null) {
+    const card = T.session.state.card || null, qty = Math.max(1, Math.round(Number(s.qty) || 1));
+    const price = s.item ? Number(s.item.price) : s.box ? Number(s.box.price) : s.kind === "box_saves" ? Number(s.box_price) : null;
+    const added = s.kind === "box_saves" ? -Number(s.saves) : s.box ? r2n(Number(s.box.price) - Number(s.replaces || 0)) : Number(s.total) > 0 ? Number(s.total) : Number.isFinite(price) ? r2n(price * qty) : null;
+    const fee = s.tier || (s.kind === "next_tier" ? s : null), drop = fee && Number.isFinite(Number(fee.fee_now)) && Number.isFinite(Number(fee.fee_then)) ? r2n(Number(fee.fee_now) - Number(fee.fee_then)) : null;
+    return { ...s, rule: s.rule || null, personal: s.personal === true || s.usual === true, seg: card ? card.segment : null, moment, qty, price: Number.isFinite(price) ? price : null, added_sar: Number.isFinite(added) ? added : null, ...(drop !== null ? { fee_drop: drop } : {}), ...(reason ? { reason } : {}) };
+  }
+  const pushSg = (T, s, { moment, reason = null, forced = false } = {}) => T.trace.suggestions.push({ kind: s.kind, ref: refOf(s), name: s.name || (s.item && s.item.name) || null, numbers: sgNumbers(T, s, moment, reason), outcome: "computed",
+    ...(s.qty > 1 ? { qty: s.qty } : {}), ...(s.qty_open ? { qty_open: true } : {}), ...(reason ? { reason, blocked: true } : {}), ...(forced ? { forced: true } : {}) });
+  /* اقتراح اتشال جوّه الحاسبة (رفضه قبل كده / مابياخدهوش): صف «محسوب» بسببه، من غير ما يتعدّ «اتعرض» */
+  const pushSkipped = (T, k, moment) => { if (!k || !k.rule) return; T.trace.suggestions.push({ kind: k.kind || "side", ref: k.ref || null, name: k.name || null, numbers: { rule: k.rule, moment, reason: k.reason, seg: (T.session.state.card || {}).segment || null }, outcome: "computed", reason: k.reason, blocked: true }); };
 
   /* PS4 — لحظة الرسوم: الاختيارات بحسابها + النص الجاهز (نصوص اللوحة) + الزرّين. بتتنده من أداة delivery_savers ومن بوابة build_cart. */
   async function feeOptions(T, total, { smallOnly = false } = {}) {
@@ -1050,13 +1101,46 @@ export function makeAssistLoop(deps) {
   }
   /* ── SB1 «عقل البيع» ──────────────────────────────────────────────────────── */
   const sbText = (key, vars, lang) => { try { return deps.sales ? deps.sales(key, vars, lang) : null; } catch { return null; } };
-  /* مسموح اقتراح في الدور ده؟ عقل البيع: لحد maxOffersPerChat في المحادثة، ومفيش بعد أي «لا». من غيره: قاعدة PS5 (اقتراح واحد). */
-  function offerAllowed(T) {
-    const st = T.session.state, a = T.acfg || {};
-    if (a.salesBrain) return !st.declined.length && !st.noOffers && !T.noOffer && st.offered.length < Math.round(Number(a.maxOffersPerChat) || 0) && !T.sgNow;
-    return !(a.oneOfferPerChat && st.offered.length);
+  /* مسموح اقتراح في الدور ده؟ عقل البيع: لحد maxOffersPerChat في المحادثة، ومفيش بعد أي «لا». من غيره: قاعدة PS5 (اقتراح واحد).
+     S1: ⇒ سبب المنع (بيتسجّل مع الاقتراح المحسوب) أو null. كمان: تحويل مستني موظف، أول دور بعد ما الفريق رجّع المحادثة، شكوى، «غالي» في المحادثة، شكر/تأجيل. */
+  function offerBlock(T) {
+    const st = T.session.state, a = T.acfg || {}, c = T.ctxIn || {};
+    if (!a.salesBrain) return a.oneOfferPerChat && st.offered.length ? "limit" : null;
+    if (c.staff_already_asked || T.handover) return "handover";
+    if (c.staff_handled_this_chat) return "staff_handback";
+    if (c.open_now === false && st.turns <= 1) return "closed";      // أول رد والمطعم مقفل: الرد بيقول المواعيد ويعرض يجهّز السلة — مش وقت إضافة
+    if (T.complaint) return "complaint";
+    if (st.pricey) return "pricey";
+    if (st.declined.length || st.noOffers) return "declined_in_chat";
+    if (T.noOffer) return T.noOfferWhy || "send_cart";
+    if (st.offered.length >= Math.round(Number(a.maxOffersPerChat) || 0) || T.sgNow) return "limit";
+    return null;
   }
-  /* الاقتراح بترتيب عقل البيع: بوكس يشيل أصناف السلة (أوفر أو بوكس الاقتران) ⇒ أقرب حد رسوم بصنف واحد ⇒ اقتراح الاقتران/المشروب/الجانبي القديم. مفيش حاجة اتعرضت قبل كده. */
+  const offerAllowed = (T) => !offerBlock(T);
+  /* S1: عدد الأشخاص = اللي العميل قاله (صف «كم شخص» / «لشخصين» / رقم رداً على «كم شخص؟») */
+  const peopleNow = (T) => { const st = T.session.state; return Number(st.people) >= 1 ? Number(st.people) : peopleOf(st.customerTexts || []); };
+  /* S1: الأصناف اللي توصّل حد رسوم، بالأهمية (مش الأرخص): عادته ⇒ الاقتران ⇒ مشروب لكل شخص ⇒ الأكثر مبيعاً. كلها متاحة وفي نطاق السعر، ومش في السلة ولا اترفضت قبل كده. */
+  function reachCandidates(T, cart, items, { tops = [], know = {} } = {}) {
+    const st = T.session.state, a = T.acfg || {}, P = st.personal || null, byId = new Map(items.map((i) => [String(i.id), i]));
+    const inCart = new Set([...(cart.lines || []).filter((l) => l.id).map((l) => String(l.id)), ...(cart.lines || []).flatMap((l) => (Array.isArray(l.contains) ? l.contains.map(String) : []))]);
+    const avoid = new Set(((P && P.avoid) || []).map(String)), mem = new Set((st.mem && st.mem.items) || []);
+    const min = Number.isFinite(Number(a.addonMinSar)) ? Number(a.addonMinSar) : 0, max = Number.isFinite(Number(a.addonMaxSar)) ? Number(a.addonMaxSar) : Infinity;
+    const ok = (it) => it && !it.soldOut && !it.byWeight && Number(it.price) > 0 && Number(it.price) >= min && Number(it.price) <= max && !inCart.has(String(it.id)) && !avoid.has(String(it.id)) && !mem.has(String(it.id));
+    const out = [], seen = new Set(), add = (it, qty, via) => { if (!ok(it) || seen.has(String(it.id))) return; seen.add(String(it.id)); const q = Math.max(1, Math.round(Number(qty) || 1)); out.push({ id: String(it.id), name: it.name, price: Number(it.price), qty: q, total: Math.round(Number(it.price) * q * 100) / 100, via }); };
+    const cover = cartCover(cart, { menu: know.menu, boxes: know.boxes });
+    if (a.personalSell && P) { for (const t of new Set(cover.types)) for (const u of (P.usual && P.usual[t]) || []) add(byId.get(String(u.id)), 1, "habit"); if (P.drink) add(byId.get(String(P.drink.id)), 1, "habit"); }
+    if (a.pairingEnabled !== false && !st.declined.includes("pair")) { const fam = cartFamilies(cart, know.menu); for (const r of Array.isArray(a.pairing) ? a.pairing : PAIRING_DEFAULT) if (r.item && fam.has(r.when)) add(items.find((i) => normalize(i.name).includes(normalize(r.item))), 1, "pair"); }
+    const rank = new Map((tops || []).map((id, i) => [String(id), i]));
+    const extras = items.filter((i) => ["side", "drink"].includes(kindOf(i)) && !isUpgrade(i) && !/مياه|ماء|water/i.test(normalize(`${i.name} ${i.nameEn || ""}`)))
+      .sort((x, y) => (rank.has(String(x.id)) ? rank.get(String(x.id)) : 1e6) - (rank.has(String(y.id)) ? rank.get(String(y.id)) : 1e6) || Number(x.price) - Number(y.price));
+    const own = cover.mains - cover.shareMains, n = peopleNow(T) || (own >= 2 ? own : 0);
+    if (a.drinksPerPerson && cover.known && n >= 2 && cover.drink < n) add(extras.find((i) => kindOf(i) === "drink" && ok(i)), n - cover.drink, "drinks_people");
+    for (const it of extras) add(it, 1, "rank");
+    return out;
+  }
+  /* الاقتراح بترتيب عقل البيع: بوكس يشيل أصناف السلة (أوفر أو بوكس الاقتران) ⇒ أقرب حد رسوم بصنف واحد ⇒ اقتراح الاقتران/المشروب/الجانبي القديم. مفيش حاجة اتعرضت قبل كده.
+     S1 (التوصيل معروف): (أ) اقتراح القواعد نفسه بيعدّي درجة رسوم ⇒ نفس السطر بيقول الرسوم الجديدة (s.tier)؛ (ب) التوصيل المجاني (أول طلب / مكافأته / ١٥٠) في المتناول ⇒ أهم صنف
+     بيوصّله يحل محل الاقتراح؛ (ج) درجة أرخص مش مجانية: بس لو الاقتراح مش «زي العادة»، والصنف (tierNetOnly) سعره ≥ اللي هينزل من الرسوم. الترتيب بالأهمية مش بالأرخص. */
   async function salesSuggest(T, cart, s0, { modeKnown = false } = {}) {
     const st = T.session.state, a = T.acfg || {};
     const offeredRefs = new Set(st.offered.map((o) => String(o.ref)));
@@ -1065,20 +1149,16 @@ export function makeAssistLoop(deps) {
     /* الحد الجاي = كلام عن رسوم التوصيل: بس لما التوصيل معروف (العميل قاله، أو شارك موقعه، أو السلة الفعلية توصيل) — كتاب البيع: «الإضافة مع توصيل ولا استلام أو بعدها» */
     const said = (st.customerTexts || []).map((x) => normalize(String(x || ""))), deliverySaid = st.pin || said.some((x) => /(^| )(توصيل|التوصيل|وصلوه|delivery|deliver)( |$)/.test(x)), pickupSaid = said.some((x) => /(^| )(استلام|استلم|اجي اخذه|pickup|pick up)( |$)/.test(x));
     if (!a.thresholdNudge || cart.option === "pickup" || st.declined.includes("next_tier") || !(modeKnown || (deliverySaid && !pickupSaid))) return fresh(s0);
-    const know2 = deps.knowOf ? await deps.knowOf() : {}; const items = (know2.menu && know2.menu.items) || [];
+    const know2 = deps.knowOf ? await deps.knowOf() : {}; const items = ((know2.menu && know2.menu.items) || []).filter((i) => !i.soldOut);
     const [of, info, qv, tops] = await Promise.all([tools.get_offers(T.phone).catch(() => null), deps.deliveryInfo ? deps.deliveryInfo().catch(() => null) : null, tools.quote_delivery(T.phone, { total: cart.subtotal }).catch(() => null), tools.top_sellers().catch(() => [])]);
     const inCart = new Set([...(cart.lines || []).filter((l) => l.id).map((l) => String(l.id)), ...(cart.lines || []).flatMap((l) => (Array.isArray(l.contains) ? l.contains.map(String) : []))]);
-    const fam = cartFamilies(cart, know2.menu), pairing = Array.isArray(a.pairing) ? a.pairing : PAIRING_DEFAULT;
-    const pick = [], seen = new Set(), add = (it) => { if (it && !it.soldOut && !it.byWeight && Number(it.price) > 0 && !seen.has(String(it.id))) { seen.add(String(it.id)); pick.push({ id: String(it.id), name: it.name, price: Number(it.price) }); } };
-    if (a.pairingEnabled !== false) for (const r of pairing) if (r.item && fam.has(r.when)) add(items.find((i) => normalize(i.name).includes(normalize(r.item))));
-    const rank = new Map((tops || []).map((id, i) => [String(id), i]));
-    const extras = items.filter((i) => ["side", "drink"].includes(kindOf(i))).sort((x, y) => Number(x.price) - Number(y.price) || (rank.has(String(x.id)) ? rank.get(String(x.id)) : 1e6) - (rank.has(String(y.id)) ? rank.get(String(y.id)) : 1e6));
-    const nPair = pick.length; for (const it of extras) add(it);
-    const fo = of && of.ok && of.first_order;
-    const t = thresholdPlan({ cart, ladder: info && Array.isArray(info.ladder) ? info.ladder : null, quote: qv && qv.ok ? qv : null, first: fo && fo.eligible === true && fo.free_delivery ? { eligible: true, from: Number(fo.min_total) || 0, code: String(fo.code) } : null,
-      candidates: [...pick.slice(0, nPair).filter((c) => !st.declined.includes("pair")), ...pick.slice(nPair)], maxGap: Number(a.nudgeGapSar) || 20, inCart });
+    const fo = of && of.ok && of.first_order, rw = ((of && of.ok && of.rewards) || []).find((r) => r && r.freeDelivery && r.code);
+    const p = feePlan({ cart, ladder: info && Array.isArray(info.ladder) ? info.ladder : null, quote: qv && qv.ok ? qv : null, first: fo && fo.eligible === true && fo.free_delivery ? { eligible: true, from: Number(fo.min_total) || 0, code: String(fo.code) } : null,
+      reward: rw ? { free: true, from: Number(rw.minTotal) || 0, code: String(rw.code) } : null, pick: s0 && s0.item && Number(s0.total) > 0 && s0.kind !== "top_seller" ? s0 : null,
+      candidates: reachCandidates(T, cart, items, { tops, know: know2 }), maxGap: Number(a.nudgeGapSar) || 20, inCart, netOnly: a.tierNetOnly === true, allowStep: !(s0 && s0.personal === true) });
     if (of && of.ok) st.offers = true;
-    if (t && fresh(t)) { if (t.with_code) T.freeCode = t.with_code; return t; }
+    if (p && p.cross) { const s = fresh({ ...s0, tier: { fee_now: p.fee_now, fee_then: p.fee_then, free: p.free, ...(p.with_code ? { with_code: p.with_code } : {}), total_now: p.total_now, total_then: p.total_then, order_from: p.order_from } }); if (s && p.with_code) T.freeCode = p.with_code; return s; }
+    if (p && fresh(p)) { if (p.with_code) T.freeCode = p.with_code; return p; }
     return fresh(s0);
   }
   /* التوصيل في ملخص السلة: استلام / مجاني بكود (أول طلب أو مكافأته) / رسوم موقعه / «تظهر قبل الدفع» — من الأدوات بس */
@@ -1126,7 +1206,13 @@ export function makeAssistLoop(deps) {
   }
   /* قبل نداء الموديل: البطاقة، رد العميل على زرّي الاقتراح، وكتلة العروض. */
   const SG_YES_RE = /^(?:[أا]ضف(?:ه|ها|هم)?|ضيف(?:ه|ها|هم)|اي(?:وه|ه)?،? ضيف(?:ه|ها)?|نعم،? ضيف(?:ه|ها)?|تمام ضيف(?:ه|ها)?|add it|yes,? add(?: it)?)(?:\s|$)/i;
-  const SG_NO_RE = /^(?:لا،? شكرا|لا مشكور|لا ما ابي|لا مابي|لا ما ابغى|لا خلاص|no,? thanks?)(?:\s|$)/i;
+  const SG_NO_RE = /^(?:لا،? شكرا|لا مشكور|لا ما ابي|لا مابي|لا ما ابغى|لا خلاص|بدونه|بدونها|لحاله|لحالها|no,? thanks?)(?:\s|$)/i;
+  /* S1: دور فيه شكوى، أو العميل قال «غالي» في المحادثة، أو شكر/وداع ⇒ مفيش اقتراح (الغالي: الموديل يعرض بديل أرخص من نفس النوع بس — قواعد البيع) */
+  const COMPLAINT_SG_RE = /(^| )(شكوى|شكوي|اشتكي|زفت|خايس|مقرف|سيئ|سيء|مو زين|ما وصل|ماوصل|وصل بارد|وصلني بارد|وصلنا بارد)( |$)/;
+  const PRICEY_RE = /(^| )(غالي|غاليه|غالين|غاليين|مكلف|مكلفه|اسعاركم غاليه|اسعاركم عاليه|الاسعار عاليه|expensive|pricey|too much)( |$)/i;
+  const THANKS_SG_RE = /^(?:شكرا|مشكور|مشكورين|يعطيك العافيه|تسلم|الله يعطيك العافيه|thanks?|thank you|مع السلامه|في امان الله)(?: (?:لك|لكم|جزيلا|كثير|يا الغالي|so much))?$/i;
+  const BARE_PEOPLE_RE = /^(?:احنا |نحن |حنا )?(\d{1,2}|واحد|اثنين|ثنين|ثلاثه|ثلاث|اربعه|اربع|خمسه|خمس|سته|ست|سبعه|سبع|ثمانيه|عشره)(?: (?:اشخاص|اشخاص تقريبا|افراد|نفر|انفار))?$/;
+  const PEOPLE_WORDS = { واحد: 1, اثنين: 2, ثنين: 2, ثلاثه: 3, ثلاث: 3, اربعه: 4, اربع: 4, خمسه: 5, خمس: 5, سته: 6, ست: 6, سبعه: 7, سبع: 7, ثمانيه: 8, عشره: 10 };
   const SEND_CART_RE = /(ارسل|ارسلي|رسل|ابعث|ابعت|هات|جهز) (لي )?(ال)?(رابط|سله|السله|لينك)|(^| )(بس كذا|بس كذه|خلاص كذا|كذا تمام|send (me )?the (cart|link))( |$)/i;
   const GENERIC_W = new Set(["وجبه", "مشويه", "مشوي", "بالوزن", "الفحم", "علي", "سوبر", "بوكس", "طبق", "لشخصين", "الفردي"]);
   async function salesPre(T, ctx, text, context) {
@@ -1139,16 +1225,26 @@ export function makeAssistLoop(deps) {
     if (st.turns === 0 && card) ctx.sales_card = cardForModel(card);
     /* الصنف المُعلن بالوزن (محادثة إعلان): أوزانه للأزرار لو الرد سأل «أي وزن؟» */
     { const adv = context && context.came_from_ad && context.came_from_ad.advertised; if (adv && Array.isArray(adv.weights) && adv.weights.length >= 2 && !T.weightsNow) T.weightsNow = adv.weights.map((w) => ({ label: w.label, label_en: w.label_en, price: w.price, variant_option_id: w.variant_option_id })); }
-    /* زرّين الاقتراح (أو نفس الكلام مكتوب): القبول والرفض بيتسجّلوا بالكود، والموديل بيتقال له يعمل إيه */
+    /* زرّين الاقتراح (أو نفس الكلام مكتوب): القبول والرفض بيتسجّلوا بالكود، والموديل بيتقال له يعمل إيه.
+       S1: الضغطة بتتقري من معرّف الزر (as:sg:yes / as:sg:no) الأول — عنوان الزر بيتغيّر من اللوحة؛ الكلام المكتوب احتياطي. */
     const pend = [...st.offered].reverse().find((o) => o.outcome === "offered"), clean = nt.replace(/[✅👍🙏!.،]/g, " ").replace(/\s+/g, " ").trim();
-    if (pend && SG_YES_RE.test(clean)) { pend.outcome = "accepted"; T.trace.suggestions.push({ kind: pend.kind, ref: pend.ref, name: pend.name, outcome: "accepted", by: "reply" });
-      ctx.suggestion_answer = { accepted: pend.name, rule: "The customer accepted the suggestion you offered: add exactly that to their cart (preview_cart with it added, or build_cart if they already chose delivery or pickup) and confirm in one short line with the new total. No other suggestion." }; }
+    const tapId = String(T.tap || ""), tapSg = /^as:sg:/.test(tapId);
+    const saidYes = tapId === "as:sg:yes" || (!tapSg && SG_YES_RE.test(clean)), saidNo = tapId === "as:sg:no" || (!tapSg && SG_NO_RE.test(clean));
+    if (pend && saidYes) { pend.outcome = "accepted"; T.trace.suggestions.push({ kind: pend.kind, ref: pend.ref, name: pend.name, outcome: "accepted", by: tapSg ? "tap" : "reply" });
+      ctx.suggestion_answer = { accepted: pend.name, ...(pend.qty > 1 ? { qty: pend.qty } : {}), rule: pend.qty_open ? "The customer accepted the suggestion you offered but the number is not known yet: ask in one short question how many they want (one per person), then add exactly that many. No other suggestion."
+        : `The customer accepted the suggestion you offered: add exactly that${pend.qty > 1 ? ` (quantity ${pend.qty})` : ""} to their cart (preview_cart with it added, or build_cart if they already chose delivery or pickup) and confirm in one short line with the new total. No other suggestion.` }; }
     /* «لا شكراً» من غير اقتراح مستني = رفض عام ⇒ مفيش اقتراحات تانية في المحادثة؛ «ارسل السلة / بس كذا / خلاص» ⇒ مفيش اقتراح في الدور ده (batch20: «لا شكراً، ارسل رابط السلة» خد عرض بوكس بدل السلة) */
-    if (!pend && SG_NO_RE.test(clean)) st.noOffers = true;
+    if (!pend && saidNo) st.noOffers = true;
     if (SEND_CART_RE.test(clean)) T.noOffer = true;
-    if (pend && SG_NO_RE.test(clean) && SEND_CART_RE.test(clean)) T.noOffer = true;
-    else if (pend && SG_NO_RE.test(clean)) { pend.outcome = "declined"; if (!st.declined.includes(pend.kind)) st.declined.push(pend.kind); T.trace.suggestions.push({ kind: pend.kind, ref: pend.ref, name: pend.name, outcome: "declined", by: "reply" });
+    if (pend && saidNo && SEND_CART_RE.test(clean)) T.noOffer = true;
+    else if (pend && saidNo) { pend.outcome = "declined"; if (!st.declined.includes(pend.kind)) st.declined.push(pend.kind); T.trace.suggestions.push({ kind: pend.kind, ref: pend.ref, name: pend.name, outcome: "declined", by: tapSg ? "tap" : "reply" });
       ctx.suggestion_answer = { declined: pend.name, rule: "The customer said no thanks to the suggestion: accept it in a few words and carry on with their order (the next step). Offer nothing else in this conversation." }; }
+    /* S1: الدور ده مفيهوش اقتراح لو فيه شكوى أو شكر/وداع أو تأجيل؛ و«غالي» = مفيش إضافات لباقي المحادثة. رقم لوحده رداً على «كم شخص؟» = عدد الأشخاص. */
+    if (COMPLAINT_SG_RE.test(nt)) T.complaint = true;
+    if (PRICEY_RE.test(nt)) st.pricey = true;
+    if (THANKS_SG_RE.test(clean)) { T.noOffer = true; T.noOfferWhy = "thanks"; }
+    if (POSTPONE_RE.test(nt)) { T.noOffer = true; T.noOfferWhy = "reminder"; }
+    if (st.askedPeople) { const m = BARE_PEOPLE_RE.exec(AR_DIGITS(clean)); if (m) { const n = /^\d+$/.test(m[1]) ? Number(m[1]) : PEOPLE_WORDS[m[1]]; if (n >= 1 && n <= 50) st.people = n; } st.askedPeople = false; }
     if (a.offersBlock && T.sales.topics.offers && !st.offersShown) { const b = await offersBlock(T, text);
       if (b) { st.offersShown = true; st.say.push(b); T.blocks.push(b); ctx.offers_now = { say: b, rule: "The customer asked about our offers: send this block exactly as it is (our system built it from the live offers), with at most one short line before it, then ONE question that moves to an order. Add no other offer." }; } }
   }
@@ -1158,9 +1254,12 @@ export function makeAssistLoop(deps) {
     const st = T.session.state, a = T.acfg || {}; let out = String(text || "");
     if (!a.salesBrain || !out || !T.sales) return out;
     const blocked = Boolean(T.handover || T.factSay.length || T.askWhich || T.feeSay);
+    /* S1: سؤال اختيار في البوكس ماينفعش يتبدّل بسطر الاقتراح (سؤال واحد في الرسالة) — والسبب بيتسجّل مع الاقتراح اللي ماتقالش */
+    const boxChoice = Boolean(T.sgNow && askedSlot(out, st.lastBox));
+    T.sgBlockedWhy = T.handover ? "handover" : T.factSay.length ? "dish_fact" : T.askWhich ? "meal_or_weight" : T.feeSay ? "fee_options" : boxChoice ? "box_choice" : T.cart ? "cart_link" : null;
     let sgShown = false;
     const inCartNow = (nm) => Boolean(nm && T.cartNow && T.cartNow.lines.some((l) => normalize(l.name).includes(nm)));
-    if (T.sgNow && !T.cart && !blocked && !inCartNow(T.sgNow.name ? normalize(T.sgNow.name) : null)) {
+    if (T.sgNow && !T.cart && !blocked && !boxChoice && !inCartNow(T.sgNow.name ? normalize(T.sgNow.name) : null)) {
       const nm = T.sgNow.name ? normalize(T.sgNow.name) : null;
       if (nm && !normalize(out).includes(nm) && T.sgNow.line) { out = placeLine(out, T.sgNow.line, { question: true }); T.trace.sgLineByCode = true; }
       sgShown = Boolean(nm && normalize(out).includes(nm));
@@ -1172,7 +1271,12 @@ export function makeAssistLoop(deps) {
         if (lineAlreadySaid(pd.kind, out, T.sales.card)) { st.proactive = pd.kind; if (pd.buttons === "same") T.sameBtn = true; }
         else if (!(pd.question && (sgShown || T.cart))) {
           const line = sbText(pd.key, pd.vars, T.lang);
-          if (line) { out = T.cart ? insertBeforeLast(out, line) : placeLine(out, line, { question: Boolean(pd.question) }); st.proactive = pd.kind; T.trace.proactive = pd.kind; if (pd.buttons === "same") T.sameBtn = true; }
+          /* S1: سطر معلومة ورا سطر اقتراح من القالب ⇒ قبل سطر الاقتراح كله (placeLine كان بيقسم «زي العادة، أضيف لك …؟» عند الفاصلة) */
+          const sgL = sgShown && T.sgNow && T.sgNow.line ? T.sgNow.line : null, ls = out.split("\n"), li = (() => { for (let k = ls.length - 1; k >= 0; k--) if (ls[k].trim()) return k; return -1; })();
+          const beforeSg = !pd.question && !T.cart && sgL && li >= 0 && ls[li].trim().endsWith(sgL);
+          if (line && beforeSg) { const pre = ls[li].trim().slice(0, -sgL.length).trim(); ls.splice(li, 1, ...(pre ? [pre] : []), line, sgL); out = ls.join("\n"); }
+          else if (line) out = T.cart ? insertBeforeLast(out, line) : placeLine(out, line, { question: Boolean(pd.question) });
+          if (line) { st.proactive = pd.kind; T.trace.proactive = pd.kind; if (pd.buttons === "same") T.sameBtn = true; }
         }
       }
     }
@@ -1269,14 +1373,18 @@ export function makeAssistLoop(deps) {
         const cart = await tools.build_cart(phone, mapCart(a), { save: false });
         if (!cart || !cart.ok) return cart;
         st.lastInput = JSON.parse(JSON.stringify(a));      // SB3: آخر سلة اتسعّرت (للرد بالكود على «أضفه / لا شكراً»)
-        const sg = await tools.suggest(phone, { cart, declined: st.declined, profile: T.profile || null });
+        /* S1: السجل الشخصي وذاكرة الرفض من حالة المحادثة (اتقروا أول دور)، وعدد الأشخاص اللي العميل قاله — مش T.profile (بيبقى null بعد أول دور) */
+        const sg = await tools.suggest(phone, { cart, declined: st.declined, personal: st.personal || null, mem: st.mem || null, people: peopleNow(T) });
         /* PS5 (…٦٨٦٩: «أحوّله بوكس؟» في تلات ردود ورا بعض): اقتراح واحد في المحادثة. اتعرض قبل كده (اتقبل، اترفض، أو العميل تجاهله وكمّل) ⇒ مفيش اقتراح في المعاينة دي.
-           SB1: عقل البيع ⇒ لحد maxOffersPerChat، ومفيش بعد «لا»، والترتيب: بوكس ⇒ أقرب حد رسوم بصنف واحد ⇒ الباقي. */
+           SB1: عقل البيع ⇒ لحد maxOffersPerChat، ومفيش بعد «لا»، والترتيب: بوكس ⇒ أقرب حد رسوم بصنف واحد ⇒ الباقي. S1: الممنوع بيتسجّل محسوب بسببه. */
+        const s0 = sg && sg.suggestion ? sg.suggestion : null, block = offerBlock(T);
         let s = null;
-        if (offerAllowed(T)) { s = sg && sg.suggestion ? sg.suggestion : null; if (T.acfg && T.acfg.salesBrain) { try { s = await salesSuggest(T, cart, s); } catch (e) { s = null; } } }
+        if (!block) { s = s0; if (T.acfg && T.acfg.salesBrain) { try { s = await salesSuggest(T, cart, s0); } catch (e) { s = null; } } }
         st.previews = (st.previews || 0) + 1; T.previewNow = true; T.cartNow = { subtotal: cart.subtotal, lines: cart.lines.map((l) => ({ name: l.name, qty: l.qty, ...(l.weight ? { weight: l.weight } : {}) })) };
         const sv = s && T.acfg && T.acfg.salesBrain ? suggestionVars(s) : null, sLine = sv ? sbText(sv.key, sv.vars, lang) : null;
-        if (s) { T.sgNow = { ...s, ref: refOf(s), name: s.name || (s.item && s.item.name) || null, line: sLine }; T.trace.suggestions.push({ kind: s.kind, ref: refOf(s), name: s.name || (s.item && s.item.name) || null, numbers: s, outcome: "computed" }); }
+        if (s) { T.sgNow = { ...s, ref: refOf(s), name: s.name || (s.item && s.item.name) || null, line: sLine }; pushSg(T, s, { moment: "preview" }); }
+        else if (s0 && block) pushSg(T, s0, { moment: "preview", reason: block });
+        for (const k of (sg && sg.skipped) || []) pushSkipped(T, k, "preview");
         return { ...cart, lines: cart.lines.map(({ contains: _x, ...l }) => l), suggestion: s, ...(s ? { suggestion_say: sLine ? `say this line as it is (computed by our system), as the only question of your message: «${sLine}»` : sayHint(s) } : {}), suggestion_rule: s ? `you may offer this ONE suggestion as a short question; nothing else${T.acfg && T.acfg.offerButtons && T.acfg.salesBrain ? ". Two buttons «add it» / «no thanks» are attached automatically" : ""}` : "no suggestion: do not offer any add-on or upgrade",
           ...(st.previews >= 2 ? { reply_rule: "The customer is adding items one by one. Answer in ONE short line: what you added (with its note if any), the new total («المجموع … ر.س»), and «شي ثاني؟». No explanation of how you recorded it, no list of the whole cart: the full recap comes when they say they are done." } : {}) };
       }
@@ -1298,10 +1406,11 @@ export function makeAssistLoop(deps) {
         if (T.acfg && T.acfg.forceSuggestion && !st.gate && !st.offered.length && !st.declined.length && (!T.acfg.salesBrain || offerAllowed(T))) {
           const pre = await tools.build_cart(phone, mapCart(a), { save: false });
           if (pre && pre.ok) {
-            const sg = await tools.suggest(phone, { cart: pre, declined: st.declined, profile: T.profile || null });
+            const sg = await tools.suggest(phone, { cart: pre, declined: st.declined, personal: st.personal || null, mem: st.mem || null, people: peopleNow(T) });
             let s = sg && sg.suggestion ? sg.suggestion : null;
             if (T.acfg.salesBrain) { try { s = await salesSuggest(T, pre, s, { modeKnown: true }); } catch { /* الاقتراح القديم */ } }
-            if (s) { st.gate = true; T.trace.suggestions.push({ kind: s.kind, ref: refOf(s), name: s.name || (s.item && s.item.name) || null, numbers: s, outcome: "computed", forced: true });
+            for (const k of (sg && sg.skipped) || []) pushSkipped(T, k, "build_gate");
+            if (s) { st.gate = true; pushSg(T, s, { moment: "build_gate", forced: true });
               const sv = T.acfg.salesBrain ? suggestionVars(s) : null, sLine = sv ? sbText(sv.key, sv.vars, lang) : null;
               T.sgNow = { ...s, ref: refOf(s), name: s.name || (s.item && s.item.name) || null, line: sLine };
               return { ok: false, error: "offer_suggestion_first", lines: pre.lines.map(({ contains: _x, ...l }) => l), subtotal: pre.subtotal, option: pre.option, suggestion: s, suggestion_say: sLine ? `say this line as it is (computed by our system): «${sLine}»` : sayHint(s), rule: "No cart link yet. In this message: state these priced lines, then ask this ONE suggestion as the only question. After the customer answers, call note_suggestion and then build_cart again (with the item added if they accepted)." }; }
@@ -1394,6 +1503,15 @@ export function makeAssistLoop(deps) {
   /* SB3 — الرد بالكود على زرّين الاقتراح. شروط: آخر سلة اتسعّرت معروفة، والاقتراح صنف (مش بوكس)، والطريقة معروفة (استلام، أو توصيل والموقع متشارك) — غير كده null والموديل يرد.
      بيتسجّل في الجلسة كأن المساعد نده الأداة (tool_use + tool_result + الرد) عشان الدور الجاي يفهم اللي حصل وأرقامه تفضل «حقايق» للمراجِع. */
   const MODE_PICK_RE = /(^| )(استلام|استلم|بستلم|pickup|pick up)( |$)/, MODE_DELIV_RE = /(^| )(توصيل|التوصيل|وصلوه|delivery|deliver)( |$)/;
+  /* S1: المجموع ده توصيله مجاني؟ أول طلب (كوده لرقمه) ⇒ مكافأته ⇒ آخر سلّم الرسوم. ⇒ { kind, code?, from?, until? } أو null */
+  async function freeReach(T, sub) {
+    const card = T.session.state.card || null, v = Number(sub) || 0;
+    if (card && card.first && card.first.eligible && v >= Number(card.first.from)) return { kind: "first", code: card.first.code, from: card.first.from };
+    if (card && card.reward && card.reward.free_delivery && v >= Number(card.reward.min_total)) return { kind: "reward", code: card.reward.code, from: card.reward.min_total, until: card.reward.expires || null };
+    let info = null; try { info = deps.deliveryInfo ? await deps.deliveryInfo() : null; } catch { info = null; }
+    const zero = info && Array.isArray(info.ladder) ? info.ladder.filter((x) => Number(x.fee) === 0).sort((a, b) => Number(a.over) - Number(b.over))[0] : null;
+    return zero && v >= Number(zero.over) ? { kind: "ladder" } : null;
+  }
   async function fastPath(T, ctx, know) {
     const st = T.session.state, ans = ctx.suggestion_answer, input0 = st.lastInput;
     if (!input0 || !ans) return null;
@@ -1402,10 +1520,12 @@ export function makeAssistLoop(deps) {
     const accepted = Boolean(ans.accepted), o = [...st.offered].reverse().find((x) => x.outcome === (accepted ? "accepted" : "declined"));
     if (!o) return null;
     const input = JSON.parse(JSON.stringify(input0));
+    /* S1: الكمية من الاقتراح نفسه (مشروب لكل شخص، «زي العادة» × ٢…). العدد لسه مش معروف (بوكس العيلة من غير عدد أشخاص) ⇒ الموديل يسأل كام. */
+    const qty = Math.max(1, Math.round(Number(o.qty) || 1));
     if (accepted) {
       const it = o.ref && know.menu && know.menu.items ? know.menu.items.find((i) => String(i.id) === String(o.ref)) : null;
-      if (!it || it.byWeight || o.kind === "box_saves" || (o.kind === "pair" && !it)) return null;      // بوكس أو صنف بالوزن ⇒ الموديل (اختيارات / وزن)
-      input.items = [...(input.items || []), { id: String(it.id), qty: 1 }];
+      if (!it || it.byWeight || o.kind === "box_saves" || (o.kind === "pair" && !it) || o.qty_open) return null;      // بوكس أو صنف بالوزن أو عدد مش معروف ⇒ الموديل (اختيارات / وزن / كام)
+      input.items = [...(input.items || []), { id: String(it.id), qty }];
     }
     const mode = lastMode === "pickup" ? "pickup" : lastMode === "delivery" && st.pin ? "delivery" : null;
     const calls = [];
@@ -1422,8 +1542,14 @@ export function makeAssistLoop(deps) {
       const pv = await run("preview_cart", input);
       if (!pv || pv.ok === false) return null;
       T.sgNow = null; T.trace.suggestions = T.trace.suggestions.filter((x) => x.outcome !== "computed");      // مفيش اقتراح تاني في رد الكود
-      text = accepted ? sbText("sb_added_mode", { item: o.name, total: pv.subtotal }, T.lang) : sbText("sb_ask_mode", {}, T.lang);
+      /* S1 (قاعدة المالك: التوصيل المجاني يتقال دايماً أول ما السلة تعدّي حده): المجموع الجديد وصل حد أول طلب / مكافأته / آخر السلّم ⇒ sb_added_free،
+         ولو بكود لسه ماتقالش في المحادثة: سطر الكود تحته (نفس نص «أول طلب» / «مكافأة» من اللوحة). */
+      const label = qty > 1 ? `${o.name} × ${qty}` : o.name, fr = accepted ? await freeReach(T, pv.subtotal) : null;
+      let note = "";
+      if (fr && fr.kind !== "ladder" && T.session.state.proactive !== fr.kind) { note = sbText(fr.kind === "first" ? "sb_first" : fr.until ? "sb_reward_until" : "sb_reward", { from: fr.from, code: fr.code, until: fr.until ? dayMonth(fr.until) : "" }, T.lang) || ""; if (note) T.session.state.proactive = fr.kind; }
+      text = accepted ? (fr ? sbText("sb_added_free", { item: label, total: pv.subtotal, note }, T.lang) : null) || sbText("sb_added_mode", { item: label, total: pv.subtotal }, T.lang) : sbText("sb_ask_mode", {}, T.lang);
       if (!text) return null;
+      if (fr) T.trace.freeLine = fr.kind;
       T.buttons = { kind: "mode" };
     }
     const ids = calls.map((c, i) => `fp${Date.now().toString(36)}${i}`);
@@ -1438,13 +1564,19 @@ export function makeAssistLoop(deps) {
     if (T.cartNow) st.cartNow = T.cartNow;
     return { ok: true, text: out, cart: T.cart, handover: null, session: T.session, trace: T.trace, location: false, reminder: null, buttons: T.cart ? null : T.buttons, list: null, photoItem: null, menu: false };
   }
-  async function runTurn({ phone, text, lang = "ar", session: session0, acfg, context = {}, profile = null, earlierPictures = null }) {
+  async function runTurn({ phone, text, lang = "ar", session: session0, acfg, context: context0 = {}, profile = null, earlierPictures = null, personal = undefined, mem = null, tap = null }) {
     const t0 = Date.now(), deadline = t0 + acfg.timeoutMs;
     const session = compactSession(JSON.parse(JSON.stringify(session0)), { maxChars: acfg.compactAfterChars, keepTurns: acfg.compactKeepTurns });          // الجلسة الأصلية ماتتلمسش لو الدور فشل؛ الطويلة بتتلخّص (PS2)
     const st = session.state;
+    /* S1: السجل الشخصي وذاكرة الرفض بييجوا مع أول دور في المحادثة (assistContext) ويفضلوا في حالة المحادثة للكود بس — مابيدخلوش سياق الموديل.
+       معرّف الزر (as:sg:yes …) بييجي من الضغطة نفسها؛ مابيتبعتش للموديل. */
+    if (personal !== undefined && !("personal" in st)) st.personal = personal || null;
+    if (mem && typeof mem === "object" && !st.mem) st.mem = { items: (mem.items || []).slice(0, 40), rules: (mem.rules || []).slice(0, 20) };
+    const { tap: tapCtx = null, ...context } = context0 && typeof context0 === "object" ? context0 : {};
     const pm = pickModel(acfg, session, text);
     const trace = { tools: [], verdicts: [], calls: [], suggestions: [], unanswered: [], ms: 0, model: pm.model, tier: pm.tier, costSar: 0, in: 0, out: 0, cached: 0, sent: null, ...(session.compacted && session.compacted !== (session0.compacted || 0) ? { compacted: true } : {}) };
-    const T = { phone, lang, session, trace, cart: null, handover: null, profile, acfg, factSay: [], kbSay: [], location: false, reminder: null, buttons: null, feeSay: null, photoItem: null, previewNow: false, askWhich: null, menuBtn: false, sgNow: null, weightsNow: null, cartNow: null, blocks: [], sales: null };
+    const T = { phone, lang, session, trace, cart: null, handover: null, profile, acfg, factSay: [], kbSay: [], location: false, reminder: null, buttons: null, feeSay: null, photoItem: null, previewNow: false, askWhich: null, menuBtn: false, sgNow: null, weightsNow: null, cartNow: null, blocks: [], sales: null,
+      ctxIn: context, tap: tap || tapCtx || null, complaint: false, noOfferWhy: null, sgBlockedWhy: null };
     const fail = (reason) => { trace.ms = Date.now() - t0; return { ok: false, reason, session: session0, trace }; };
     const masked = cleanCustomer(maskText(text));
     trace.sent = masked;
@@ -1548,7 +1680,7 @@ export function makeAssistLoop(deps) {
         if (!/[؟?]/.test(raw) || !nums.has(T.askWhich.meal) || !T.askWhich.weights.some((p) => nums.has(p)) || /[أا]جه[ّ]?ز(ه|ها|هم)? ?(لك )?(وجب|بالوزن)/.test(raw)) { v.ok = false; v.problems.push({ type: "must_ask_meal_or_weight", value: "" }); } }
       /* PS5: نفس الاقتراح اللي اتعرض في دور سابق بيتعرض تاني (والعميل ماجابش سيرته) ⇒ مرفوض. والعميل بيملّي أصناف: رد التأكيد مايبقاش فقرة. */
       if (acfg.oneOfferPerChat) { const nr = normalize(raw), nt2 = normalize(String(text || ""));
-        const rep = st.offered.find((o) => o.name && o.outcome !== "accepted" && nr.includes(normalize(o.name)) && !nt2.includes(normalize(o.name)) && OFFER_RE.test(raw) && !trace.suggestions.some((x) => x.outcome === "computed" && x.ref === o.ref));
+        const rep = st.offered.find((o) => o.name && o.outcome !== "accepted" && nr.includes(normalize(o.name)) && !nt2.includes(normalize(o.name)) && OFFER_RE.test(raw) && !trace.suggestions.some((x) => x.outcome === "computed" && !x.blocked && x.ref === o.ref));
         if (rep) { v.ok = false; v.problems.push({ type: "repeated_offer", value: rep.name }); } }
       if (Number(acfg.ackMaxChars) > 0 && T.previewNow && !T.cart && (st.previews || 0) >= 2 && !trace.tools.some((x) => x.name === "get_box" || x.name === "delivery_savers" || x.name === "quote_delivery") && [...raw].length > Number(acfg.ackMaxChars)) { v.ok = false; v.problems.push({ type: "ack_too_long", value: String([...raw].length) }); }
       trace.verdicts.push({ ok: v.ok, problems: v.problems, text: raw.slice(0, 1200) });
@@ -1571,11 +1703,14 @@ export function makeAssistLoop(deps) {
     /* الاقتراح «اتعرض» لو اسمه (أو رقمه في حالة فرق الشريحة) ظهر في الرد اللي هيتبعت */
     if (finalText) {
       const nt = normalize(finalText);
-      for (const s of trace.suggestions.filter((x) => x.outcome === "computed")) {
+      for (const s of trace.suggestions.filter((x) => x.outcome === "computed" && !x.blocked)) {
         const shown = s.kind === "next_tier" && !(s.numbers && s.numbers.item && s.numbers.item.name) ? new RegExp(`(?<!\\d)${String(s.numbers.add_sar).replace(".", "\\.")}(?!\\d)`).test(finalText) : Boolean(s.name && nt.includes(normalize(s.name)));
-        if (shown && !st.offered.some((o) => o.kind === s.kind && o.ref === s.ref && o.outcome === "offered")) { s.outcome = "offered"; st.offered.push({ kind: s.kind, ref: s.ref, name: s.name, outcome: "offered", at: n.toISOString() }); }
+        if (shown && !st.offered.some((o) => o.kind === s.kind && o.ref === s.ref && o.outcome === "offered")) { s.outcome = "offered"; st.offered.push({ kind: s.kind, ref: s.ref, name: s.name, outcome: "offered", at: n.toISOString(), ...(s.qty > 1 ? { qty: s.qty } : {}), ...(s.qty_open ? { qty_open: true } : {}), ...(s.numbers && s.numbers.rule ? { rule: s.numbers.rule } : {}) }); }
       }
     }
+    /* S1: اقتراح اتحسب وماتعرضش ⇒ بيتسجّل «محسوب» بسببه (سؤال وجبة ولا بالوزن، لحظة الرسوم، إجابة حساسية، سؤال اختيار البوكس، رابط السلة، أو الرد ماقالهوش) */
+    for (const s of trace.suggestions.filter((x) => x.outcome === "computed" && !x.reason)) { s.reason = T.sgBlockedWhy || (finalText ? "not_shown" : "no_reply"); if (s.numbers) s.numbers.reason = s.reason; }
+    if (finalText && !T.cart) st.askedPeople = PEOPLE_Q_RE.test(finalText.split("\n").filter((l) => l.trim()).pop() || "");      // رقم لوحده في الرسالة الجاية = عدد الأشخاص
     if (T.packsNow && finalText) st.packs = true;
     /* PS4: سؤال اختيار خانة في البوكس ⇒ قايمة تفاعلية بالاختيارات (wabotrun بيبنيها)؛ وعدّاد «اتسأل كام مرة» */
     let list = null;
@@ -1626,11 +1761,12 @@ export const ASSIST_DDL = `
     id BIGSERIAL PRIMARY KEY, at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     phone_norm TEXT, chat_hash TEXT, session_id TEXT, turn_id BIGINT,
     kind TEXT NOT NULL, ref TEXT, name TEXT, numbers JSONB,
-    outcome TEXT NOT NULL,               -- offered | accepted | declined
+    outcome TEXT NOT NULL,               -- computed (اتحسب وماتعرضش: السبب في numbers.reason) | offered | accepted | declined
     outcome_at TIMESTAMPTZ, cart_code TEXT
   );
   CREATE INDEX IF NOT EXISTS wa_assist_sugg_at_idx ON wa_assist_suggestions(at DESC);
   CREATE INDEX IF NOT EXISTS wa_assist_sugg_session_idx ON wa_assist_suggestions(session_id, kind);
+  CREATE INDEX IF NOT EXISTS wa_assist_sugg_phone_idx ON wa_assist_suggestions(phone_norm, at DESC);
   ALTER TABLE wa_bot_carts ADD COLUMN IF NOT EXISTS suggestions JSONB;
 `;
 const PAID = `NOT COALESCE(o.is_test,false) AND o.status NOT IN ('pending_payment','expired','rejected_refunded','refund_failed','paid_pos_failed')`;
@@ -1665,15 +1801,30 @@ export function makeAssistStore({ pool, log = console.error, jb = (v) => JSON.st
         jb(tr.verdicts || []), jb(tr.calls || []), tr.model ? bare(tr.model) : null, tr.tier || null, tr.in || 0, tr.out || 0, tr.cached || 0, Math.round((tr.costSar || 0) * 1e6) / 1e6, tr.ms || null, t.cartCode || null, t.handover || null]);
     return r && r[0] ? r[0].id : null;
   }
-  /* الاقتراحات: اتعرض ⇒ صف جديد. اتقبل / اترفض ⇒ تحديث آخر صف «اتعرض» لنفس النوع في الجلسة (أو صف جديد لو مالوش). */
+  /* الاقتراحات: اتعرض ⇒ صف جديد. اتقبل / اترفض ⇒ تحديث آخر صف «اتعرض» لنفس النوع في الجلسة (أو صف جديد لو مالوش).
+     S1: اتحسب وماتعرضش ⇒ صف «computed» بسببه (numbers.reason) — مرة لكل (نوع، صنف، سبب) في الدور. */
   async function recordSuggestions(phone, sessionId, turnId, list, cartCode = null) {
+    const seenComputed = new Set();
     for (const s of list || []) {
-      if (s.outcome === "offered") await q(`INSERT INTO wa_assist_suggestions(phone_norm, chat_hash, session_id, turn_id, kind, ref, name, numbers, outcome) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'offered')`, [phone, chatHash(phone), sessionId, turnId, s.kind, s.ref || null, s.name || null, jb(s.numbers || null)]);
+      if (s.outcome === "computed") {
+        const k = `${s.kind}|${s.ref || ""}|${s.reason || ""}`;
+        if (seenComputed.has(k) || (list || []).some((x) => x !== s && x.outcome !== "computed" && x.kind === s.kind && String(x.ref || "") === String(s.ref || ""))) continue;
+        seenComputed.add(k);
+        await q(`INSERT INTO wa_assist_suggestions(phone_norm, chat_hash, session_id, turn_id, kind, ref, name, numbers, outcome) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'computed')`, [phone, chatHash(phone), sessionId, turnId, s.kind || "side", s.ref || null, s.name || null, jb({ ...(s.numbers || {}), reason: s.reason || (s.numbers && s.numbers.reason) || "not_shown" })]);
+      }
+      else if (s.outcome === "offered") await q(`INSERT INTO wa_assist_suggestions(phone_norm, chat_hash, session_id, turn_id, kind, ref, name, numbers, outcome) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'offered')`, [phone, chatHash(phone), sessionId, turnId, s.kind, s.ref || null, s.name || null, jb(s.numbers || null)]);
       else if (s.outcome === "accepted" || s.outcome === "declined") {
         const u = await q(`UPDATE wa_assist_suggestions SET outcome=$3, outcome_at=NOW(), cart_code=COALESCE($4, cart_code) WHERE id = (SELECT id FROM wa_assist_suggestions WHERE session_id=$1 AND kind=$2 AND outcome='offered' ORDER BY id DESC LIMIT 1) RETURNING id`, [sessionId, s.kind, s.outcome, cartCode]);
         if (u && !u.length) await q(`INSERT INTO wa_assist_suggestions(phone_norm, chat_hash, session_id, turn_id, kind, ref, name, numbers, outcome, outcome_at, cart_code) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,NOW(),$10)`, [phone, chatHash(phone), sessionId, turnId, s.kind, s.ref || null, s.name || null, jb(s.numbers || null), s.outcome, cartCode]);
       }
     }
+  }
+  /* S1 — ذاكرة الرفض: اقتراحات الرقم ده في آخر N يوم (اتعرض / اتقبل / اترفض) ⇒ wapersonal.declineMemory. قراية واحدة أول المحادثة (فهرس phone_norm, at). */
+  async function declinesOf(phone, days = 60) {
+    if (!/^5\d{8}$/.test(String(phone || ""))) return [];
+    const r = await q(`SELECT kind, numbers->>'rule' AS rule, ref, outcome, at, session_id FROM wa_assist_suggestions
+                        WHERE phone_norm=$1 AND at > NOW() - make_interval(days => $2::int) AND outcome IN ('offered','accepted','declined') AND ref IS NOT NULL ORDER BY at DESC LIMIT 200`, [phone, Math.min(400, Math.max(1, Math.ceil(Number(days) || 60)))]);
+    return r || [];
   }
   /* السلة اللي اتبعت رابطها: الاقتراحات اللي اتقبلت وموجودة فيها */
   async function tagCart(code, accepted, sessionId) {
@@ -1692,11 +1843,14 @@ export function makeAssistStore({ pool, log = console.error, jb = (v) => JSON.st
                        FROM wa_assist_turns WHERE ($1::text IS NULL OR phone_norm=$1) AND ($2::text IS NULL OR chat_hash=$2) AND ($4::bigint IS NULL OR id < $4) ORDER BY id DESC LIMIT $3`, [phone, hash, Math.min(300, Math.max(1, Math.ceil(limit))), before])) || [];
   }
   /* تقرير البيع الإضافي + أرقام المساعد. الإيراد = طلبات مدفوعة رابطها wa-assistant، ومنها اللي سلتها (آخر سلة للمساعد لنفس الرقم قبل الطلب، خلال ٧ أيام) فيها اقتراح اتقبل. */
+  /* S1: «اتعرض» = الصفوف اللي اتعرضت بس (المحسوبة اللي ماتعرضتش لوحدها)؛ + القاعدة (عادته، البوكس، الأرز، مشروب لكل شخص…) بنسبة القبول، واللي اتزوّد على السلال وفي طلبات مدفوعة،
+     ورسوم التوصيل اللي نزلت. «اتزوّد في طلب مدفوع» = الصنف (أو البوكس) اللي اتقبل موجود في طلب مدفوع من نفس الرقم برابط المساعد خلال ٧ أيام. */
   async function stats(days = 7) {
     const d = Math.min(90, Math.max(1, Math.ceil(days)));
-    const [byKind, t, lat, ord] = await Promise.all([
+    const SHOWN = `outcome IN ('offered','accepted','declined')`, ADDED = `COALESCE(CASE WHEN jsonb_typeof(numbers->'added_sar')='number' THEN (numbers->>'added_sar')::numeric END,0)`;
+    const [byKind, t, lat, ord, byRule, blocked, upsell] = await Promise.all([
       q(`SELECT kind, count(*)::int AS offered, count(*) FILTER (WHERE outcome='accepted')::int AS accepted, count(*) FILTER (WHERE outcome='declined')::int AS declined,
-                count(*) FILTER (WHERE outcome='offered')::int AS no_answer FROM wa_assist_suggestions WHERE at > NOW() - make_interval(days => $1::int) GROUP BY 1 ORDER BY 2 DESC`, [d]),
+                count(*) FILTER (WHERE outcome='offered')::int AS no_answer FROM wa_assist_suggestions WHERE at > NOW() - make_interval(days => $1::int) AND ${SHOWN} GROUP BY 1 ORDER BY 2 DESC`, [d]),
       q(`SELECT count(*)::int AS turns, count(*) FILTER (WHERE handled_by='assistant')::int AS answered, count(*) FILTER (WHERE outcome LIKE 'fallback:%')::int AS fallbacks,
                 count(*) FILTER (WHERE outcome LIKE 'handover:%')::int AS handovers, count(cart_code)::int AS carts, count(DISTINCT phone_norm)::int AS chats, COALESCE(sum(cost_sar),0)::float AS cost_sar
            FROM wa_assist_turns WHERE at > NOW() - make_interval(days => $1::int)`, [d]),
@@ -1705,12 +1859,25 @@ export function makeAssistStore({ pool, log = console.error, jb = (v) => JSON.st
                 count(*) FILTER (WHERE jsonb_array_length(COALESCE(c.suggestions,'[]'::jsonb)) > 0)::int AS orders_with_accepted, COALESCE(sum(o.total) FILTER (WHERE jsonb_array_length(COALESCE(c.suggestions,'[]'::jsonb)) > 0),0)::float AS revenue_with_accepted
            FROM shop_orders o LEFT JOIN LATERAL (SELECT suggestions FROM wa_bot_carts b WHERE b.phone_norm = o.phone_norm AND b.source='assistant' AND b.created_at <= o.created_at AND b.created_at > o.created_at - INTERVAL '7 days' ORDER BY b.created_at DESC LIMIT 1) c ON TRUE
           WHERE o.attribution->>'fc_link' = 'wa-assistant' AND ${PAID} AND o.created_at > NOW() - make_interval(days => $1::int)`, [d]),
+      q(`SELECT COALESCE(numbers->>'rule', kind) AS rule, count(*) FILTER (WHERE ${SHOWN})::int AS offered, count(*) FILTER (WHERE outcome='accepted')::int AS accepted, count(*) FILTER (WHERE outcome='declined')::int AS declined,
+                count(*) FILTER (WHERE outcome='offered')::int AS no_answer, count(*) FILTER (WHERE outcome='computed')::int AS computed, count(*) FILTER (WHERE ${SHOWN} AND numbers->>'personal'='true')::int AS personal,
+                COALESCE(sum(${ADDED}) FILTER (WHERE outcome='accepted'),0)::float AS added_sar
+           FROM wa_assist_suggestions WHERE at > NOW() - make_interval(days => $1::int) GROUP BY 1 ORDER BY 2 DESC, 6 DESC`, [d]),
+      q(`SELECT COALESCE(numbers->>'reason','not_shown') AS reason, count(*)::int AS n FROM wa_assist_suggestions WHERE outcome='computed' AND at > NOW() - make_interval(days => $1::int) GROUP BY 1 ORDER BY 2 DESC`, [d]),
+      q(`SELECT COALESCE(sum(${ADDED}) FILTER (WHERE s.outcome='accepted' AND s.cart_code IS NOT NULL),0)::float AS added_sar_carts,
+                COALESCE(sum(${ADDED}) FILTER (WHERE s.outcome='accepted' AND p.paid),0)::float AS added_sar_paid, count(*) FILTER (WHERE s.outcome='accepted' AND p.paid)::int AS accepted_paid,
+                COALESCE(sum(CASE WHEN jsonb_typeof(s.numbers->'fee_drop')='number' THEN (s.numbers->>'fee_drop')::numeric END) FILTER (WHERE s.outcome='accepted'),0)::float AS fee_given_up
+           FROM wa_assist_suggestions s LEFT JOIN LATERAL (SELECT true AS paid FROM shop_orders o
+                  WHERE o.phone_norm = s.phone_norm AND o.created_at >= s.at AND o.created_at < s.at + INTERVAL '7 days' AND o.attribution->>'fc_link' = 'wa-assistant' AND ${PAID} AND s.ref IS NOT NULL
+                    AND EXISTS (SELECT 1 FROM jsonb_array_elements(CASE WHEN jsonb_typeof(o.items)='array' THEN o.items ELSE '[]'::jsonb END) it WHERE it->>'product_id' = s.ref OR it->>'bundle' = s.ref) LIMIT 1) p ON TRUE
+          WHERE s.at > NOW() - make_interval(days => $1::int) AND s.outcome='accepted'`, [d]),
     ]);
     const fb = await q(`SELECT outcome, count(*)::int AS n FROM wa_assist_turns WHERE (outcome LIKE 'fallback:%' OR outcome LIKE 'handover:%') AND at > NOW() - make_interval(days => $1::int) GROUP BY 1 ORDER BY 2 DESC`, [d]);
     return { days: d, turns: (t && t[0]) || {}, latencyMs: (lat && lat[0]) || {}, suggestions: byKind || [], orders: (ord && ord[0]) || {}, reasons: fb || [],
-      note: "orders = paid website orders whose link tag is wa-assistant; the cart is matched as the customer's latest assistant cart before the order (within 7 days)" };
+      rules: (byRule || []).map((r) => ({ ...r, accept_rate: r.offered ? Math.round((r.accepted / r.offered) * 1000) / 10 : null })), blocked: blocked || [], upsell: (upsell && upsell[0]) || {},
+      note: "suggestions/rules: offered = shown to the customer (computed = worked out but not shown, with the reason in «blocked»); orders = paid website orders whose link tag is wa-assistant; the cart is matched as the customer's latest assistant cart before the order (within 7 days); revenue_with_accepted is the whole order total, upsell.added_sar_paid only what the accepted suggestions added" };
   }
   const purge = (keepDays) => Promise.all([q("DELETE FROM wa_assist_turns WHERE at < NOW() - make_interval(days => $1::int)", [keepDays]), q("DELETE FROM wa_assist_suggestions WHERE at < NOW() - make_interval(days => $1::int)", [keepDays]),
     q("UPDATE wa_assist_chats SET session=NULL WHERE updated_at < NOW() - INTERVAL '2 days' AND session IS NOT NULL", [])]);
-  return { ensure, loadSession, saveSession, dropSession, repliesToday, addTurn, recordSuggestions, tagCart, chats, turns, stats, purge };
+  return { ensure, loadSession, saveSession, dropSession, repliesToday, addTurn, recordSuggestions, tagCart, chats, turns, stats, purge, declinesOf };
 }

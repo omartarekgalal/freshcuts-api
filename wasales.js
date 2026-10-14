@@ -133,6 +133,56 @@ export function thresholdPlan({ cart, ladder = null, quote = null, first = null,
   return { kind: "next_tier", add_sar: gap, fee_now: feeNow, fee_then: feeThen, free: feeThen === 0, ...(withCode ? { with_code: withCode } : {}), located, item: { id: String(item.id), name: item.name, price: Number(item.price) }, total_now: totalNow, total_then: totalThen, order_from: target };
 }
 
+/* ── ٣ب) S1 — الرسوم مع الاقتراح (١٤/١٠): ترتيب بالأهمية مش بالأرخص، والدرجة اللي مش مجانية بس لو الإضافة بتغطي اللي هينزل ──
+   cart · ladder · quote · first = card.first · reward = { free, from, code } (مكافأة توصيل مجاني) · pick = اقتراح القواعد ({ item, qty, total })
+   candidates = أصناف بالترتيب (عادته ⇒ الاقتران ⇒ مشروب لكل شخص ⇒ الأكثر مبيعاً) كل واحد { id, name, price, qty, total, via }
+   netOnly (tierNetOnly) · allowStep = false لو الاقتراح عادته («زي العادة» مايتبدّلش بدرجة رسوم مش مجانية)
+   ⇒ null
+     | { cross: true, fee_now, fee_then, free, with_code?, total_now, total_then, order_from }      — الاقتراح نفسه بينزّل الرسوم: نفس السطر بيقولها
+     | { kind: "next_tier", rule: "tier", add_sar, fee_now, fee_then, free, with_code?, item, qty, total, total_now, total_then, order_from, usual? }      — التوصيل المجاني قريب / درجة أرخص */
+export function feePlan({ cart, ladder = null, quote = null, first = null, reward = null, pick = null, candidates = [], maxGap = 20, inCart = new Set(), netOnly = false, allowStep = true } = {}) {
+  if (!cart || cart.option === "pickup" || !(Number(cart.subtotal) > 0)) return null;
+  if (quote && quote.ok && quote.deliverable === false) return null;
+  const t = r2(cart.subtotal), located = Boolean(quote && quote.ok && quote.deliverable === true);
+  const steps = (Array.isArray(ladder) ? ladder : []).map((x) => ({ over: Number(x.over), fee: Number(x.fee) })).filter((x) => Number.isFinite(x.over) && Number.isFinite(x.fee)).sort((a, b) => a.over - b.over);
+  const far = located ? Number(quote.far_zone_extra) || 0 : 0;
+  const stepFee = (v) => { const s = [...steps].reverse().find((x) => v >= x.over); return s ? s.fee + (s.fee > 0 || far ? far : 0) : null; };
+  /* التوصيل المجاني: كود أول طلب (لحده)، مكافأة العميل، أو آخر السلّم. من غير كود أحسن من بكود لما الاتنين ينفعوا. */
+  const frees = [];
+  if (first && first.eligible && Number(first.from) > 0) frees.push({ from: Number(first.from), code: String(first.code || "FIRST") });
+  if (reward && reward.free && reward.code) frees.push({ from: Number(reward.from) || 0, code: String(reward.code) });
+  const zero = steps.find((s) => s.fee === 0); if (zero && far === 0) frees.push({ from: zero.over, code: null });
+  const freeAt = (v) => frees.filter((f) => v >= f.from).sort((a, b) => (a.code ? 1 : 0) - (b.code ? 1 : 0))[0] || null;
+  if (freeAt(t)) return null;                                           // التوصيل مجاني أصلاً
+  const feeNow = located ? Number(quote.fee) : stepFee(t);
+  if (!(feeNow > 0)) return null;
+  const feeAt = (v) => { const f = freeAt(v); return f ? { fee: 0, code: f.code, from: f.from } : { fee: stepFee(v), code: null, from: (steps.filter((s) => v >= s.over).pop() || {}).over }; };
+  const tot = (c) => r2(Number(c.total ?? Number(c.price) * (Number(c.qty) || 1)));
+  /* (أ) اقتراح القواعد بيعدّي درجة ⇒ نفس السطر بيقول الرسوم الجديدة */
+  if (pick && tot(pick) > 0) {
+    const v = r2(t + tot(pick)), f = feeAt(v);
+    if (Number.isFinite(f.fee) && f.fee < feeNow) return { cross: true, fee_now: feeNow, fee_then: f.fee, free: f.fee === 0, ...(f.code ? { with_code: f.code } : {}), total_now: r2(t + feeNow), total_then: r2(v + f.fee), order_from: f.from, located };
+  }
+  const plan = (target, feeThen, code, c) => ({ kind: "next_tier", rule: "tier", add_sar: r2(target - t), fee_now: feeNow, fee_then: feeThen, free: feeThen === 0, ...(code ? { with_code: code } : {}), located,
+    item: { id: String(c.id), name: c.name, price: Number(c.price) }, qty: Number(c.qty) || 1, total: tot(c), total_now: r2(t + feeNow), total_then: r2(t + tot(c) + feeThen), order_from: target, ...(c.via === "habit" ? { usual: true } : {}), ...(c.via ? { via: c.via } : {}) });
+  /* (ب) التوصيل المجاني في المتناول ⇒ أهم صنف بيوصّله (مش الأرخص) */
+  const nf = frees.filter((f) => f.from > t).sort((a, b) => a.from - b.from)[0];
+  if (nf && r2(nf.from - t) <= Number(maxGap)) {
+    const c = (candidates || []).find((x) => x && tot(x) >= r2(nf.from - t) && !inCart.has(String(x.id)));
+    if (c) return plan(nf.from, 0, nf.code, c);
+  }
+  /* (ج) درجة أرخص (مش مجانية): بس لو مفيش «زي العادة»، والصنف (netOnly) سعره ≥ اللي هينزل من الرسوم */
+  if (allowStep) {
+    const up = steps.find((s) => s.over > t && stepFee(s.over) < feeNow);
+    if (up && r2(up.over - t) <= Number(maxGap)) {
+      const fThen = stepFee(up.over), drop = r2(feeNow - fThen), gap = r2(up.over - t);
+      const c = (candidates || []).find((x) => x && tot(x) >= gap && (!netOnly || tot(x) >= drop) && !inCart.has(String(x.id)));
+      if (c) return plan(up.over, fThen, null, c);
+    }
+  }
+  return null;
+}
+
 /* ── ٤) الأزرار: أي سؤال اختيار ⇒ أزرار أو قايمة ──────────────────────────────
    text = الرد النهائي · ctx = { weights: [{ label, price, variant_option_id }] (صنف بالوزن في الدور ده), lang }
    ⇒ { kind, … } أو null. الترتيب: أوزان ⇒ تأكيد ⇒ توصيل/استلام ⇒ كام شخص. */
@@ -182,12 +232,27 @@ export function formatReply(text, { maxLine = 150 } = {}) {
   }
   return out.join("\n").replace(/\n{3,}/g, "\n\n").trim();
 }
-/* الاقتراح الواحد بقالب ثابت (لو الموديل ماقالهوش): الأرقام كلها من الحساب */
+/* الاقتراح الواحد بقالب ثابت (لو الموديل ماقالهوش): الأرقام كلها من الحساب.
+   S1: كل قاعدة بقالبها (نصوص اللوحة): «زي العادة» (sb_usual / sb_usual_qty)، الأرز مع المشاوي بالوزن (sb_rice_weight)، مشروب لكل شخص (sb_drinks_people)،
+   بوكس العيلة من غير مشروبات (sb_box_drinks، والعدد مش معروف: sb_drink_each)، الكومبو (sb_combo)، والرسوم: الاقتراح نفسه بينزّل الرسوم (s.tier) أو صنف
+   بيوصّل حد (next_tier) — «زي العادة» بـ sb_tier_usual / sb_tier_usual_free. الكمية > ١ ⇒ «الصنف × الكمية» بالإجمالي. */
 export function suggestionVars(s) {
   if (!s) return null;
-  if (s.kind === "next_tier" && s.item) return { key: s.free ? (s.with_code ? "sb_tier_first" : "sb_tier_free") : "sb_tier", vars: { item: s.item.name, price: s.item.price, fee_now: s.fee_now, fee_then: s.fee_then, code: s.with_code || "", from: s.order_from, total_now: s.total_now, total_then: s.total_then }, name: s.item.name };
+  const qty = Math.max(1, Math.round(Number(s.qty) || 1)), it = s.item || null;
+  const label = it ? (qty > 1 ? `${it.name} × ${qty}` : it.name) : null, price = it ? (qty > 1 ? s.total : it.price) : null;
+  const tierKey = (x, usual) => (x.free ? (x.with_code ? "sb_tier_first" : usual ? "sb_tier_usual_free" : "sb_tier_free") : usual ? "sb_tier_usual" : "sb_tier");
+  const tierVars = (x) => ({ item: label, price, fee_now: x.fee_now, fee_then: x.fee_then, code: x.with_code || "", from: x.order_from, total_now: x.total_now, total_then: x.total_then });
+  if (s.kind === "next_tier" && it) return { key: tierKey(s, s.usual === true), vars: tierVars(s), name: it.name };
   if (s.kind === "box_saves") return { key: "sb_box_saves", vars: { box: s.name, price: s.box_price, separate: s.separate }, name: s.name };
   if (s.kind === "pair" && s.box) return { key: "sb_pair_box", vars: { box: s.box.name, price: s.box.price }, name: s.box.name };
-  if (s.item) return { key: "sb_add_item", vars: { item: s.item.name, price: s.item.price }, name: s.item.name };
-  return null;
+  if (!it) return null;
+  if (s.tier && s.tier.fee_then < s.tier.fee_now) return { key: tierKey(s.tier, s.personal === true), vars: tierVars(s.tier), name: it.name };
+  if (s.rule === "box_drinks" && s.kind === "drink" && s.box_name) return s.people_known === false
+    ? { key: "sb_drink_each", vars: { box: s.box_name, item: it.name, price: it.price }, name: it.name }
+    : { key: "sb_box_drinks", vars: { box: s.box_name, item: it.name, qty, total: s.total }, name: it.name };
+  if (s.personal === true) return qty > 1 ? { key: "sb_usual_qty", vars: { item: it.name, qty, total: s.total }, name: it.name } : { key: "sb_usual", vars: { item: it.name, price: it.price }, name: it.name };
+  if (s.rule === "rice_weight") return { key: "sb_rice_weight", vars: { item: it.name, price: it.price }, name: it.name };
+  if (s.rule === "drinks_people" && qty > 1) return { key: "sb_drinks_people", vars: { item: it.name, qty, total: s.total }, name: it.name };
+  if (s.rule === "combo" && s.contents) return { key: "sb_combo", vars: { item: it.name, contents: s.contents, price: it.price }, name: it.name };
+  return { key: "sb_add_item", vars: { item: label, price }, name: it.name };
 }

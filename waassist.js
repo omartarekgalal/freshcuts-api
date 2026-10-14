@@ -15,6 +15,7 @@
 import { normalize } from "./wabot.js";
 import { loyaltyCfgOf, loyaltyStatusFor, LOYALTY_COUNTED_SQL } from "./loyalty.js";
 import { firstEligibility, couponQueries } from "./couponrules.js";
+import { itemKind, coversOf, isUpgrade, dishType, habitPick, personalOf } from "./wapersonal.js";      // S1: البيع الشخصي (ملف صافي)
 
 export const ASSIST_DEFAULTS = Object.freeze({
   searchMax: 8,              // أقصى نتايج بحث المنيو
@@ -31,9 +32,9 @@ const qtyOf = (v) => Math.min(20, Math.max(1, Math.round(Number(v) || 1)));
 const SPELL = { ببسي: "بيبسي", بيبس: "بيبسي", ببس: "بيبسي", بيبسى: "بيبسي", بيبسي: "بيبسي", pepsi: "بيبسي", بطاطا: "بطاطس", كولسلوو: "كولسلو", مويه: "مياه", مويا: "مياه", ماء: "مياه" };
 const words = (s) => normalize(String(s || "")).replace(/[^\p{L}\p{N}\s]/gu, " ").split(/\s+/).map((w) => w.replace(/^(ال|وال|بال|لل)(?=.{2,})/, "")).map((w) => SPELL[w] || w).filter((w) => w.length > 1);
 export const grillStemOf = (name) => grillStem(name);
-const DRINK_RE = /بيبسي|سفن|ميرندا|كولا|مياه|ماء|عصير|مشروب|شاي|قهوه|لبن|pepsi|7up|seven|mirinda|cola|water|juice|drink|tea/i;
-const SIDE_RE = /بطاطس|كولسلو|سلطه|ارز|رز|خبز|صوص|طحينه|ثوم|حمص|fries|coleslaw|salad|rice|bread|sauce|dip/i;
-export const kindOf = (it) => (/Sides|Drinks|إضافات/i.test(`${it.category} ${it.categoryAr}`) ? (DRINK_RE.test(normalize(`${it.name} ${it.nameEn}`)) ? "drink" : "side") : "main");
+/* main / side / drink من قسم المنيو الحي. S1: «إضافة …» (الكومبو، في قسم الكريبات) = جانبي بيغطي جانبي ومشروب، مش طبق رئيسي
+   (كان: كريب + كومبو = «كريبين» ⇒ بوكس لشخصين، ومشروب فوق علبة الكومبو). التصنيف نفسه في wapersonal.itemKind. */
+export const kindOf = (it) => itemKind(it);
 
 /* ── ١) بحث المنيو (صافي) ─────────────────────────────────────────────── */
 export function searchMenu(menu, query, max = ASSIST_DEFAULTS.searchMax) {
@@ -132,7 +133,7 @@ export function alsoAs(it, fam) {
    «العميل طلب إيه» ⇒ الاقتراح الأول، من اللي بيتاكل مع بعض فعلاً في مبيعات نقطة البيع (كتاب البيع، قسم D): مشوي بالوزن ⇒ أرز، كيلو من نوع ⇒ بوكس نص ونص،
    كريب ⇒ البوكس الفردي، كريبين ⇒ بوكس لشخصين… الجدول إعداد (assist.pairing): سطر = { when, box: slug } أو { when, item: "جزء من اسم الصنف" }، بالترتيب.
    السطر اللي هدفه مش موجود في المنيو/البوكسات الحيّة، أو خلص، أو في السلة أصلاً ⇒ بيتعدّى. مفيش سعر هنا: السعر من المنيو والبوكسات وقت الاقتراح. */
-export const PAIR_WHENS = Object.freeze(["grill_kilo", "grill_weight", "pizza_pasta", "pizza_x2", "crepe_x2", "meal_x2", "burger_x2", "crepe_x1", "burger_x1", "meal_x1", "hawawshi", "pasta", "skillet"]);
+export const PAIR_WHENS = Object.freeze(["grill_kilo", "grill_weight", "pizza_pasta", "pizza_x2", "crepe_x2", "meal_x2", "burger_x2", "crepe_x1", "burger_x1", "meal_x1", "pasta_x1", "hawawshi_x1", "hawawshi", "pasta", "skillet"]);      // S1: pasta_x1 / hawawshi_x1 (طبق واحد بس) لسطور بوكس اختيارية
 export const PAIRING_DEFAULT = Object.freeze([
   { when: "grill_kilo", box: "box-grill-half-half" }, { when: "grill_weight", item: "أرز بسمتي" },
   { when: "pizza_pasta", box: "box-pizza-pasta" }, { when: "pizza_x2", box: "box-pizza-night" }, { when: "crepe_x2", box: "box-crepe-duo" }, { when: "meal_x2", box: "box-meals-duo" }, { when: "burger_x2", box: "box-burger-duo" },
@@ -172,25 +173,135 @@ export function cartFamilies(cart, menu) {
   if (n.Crepes === 2 && only("Crepes")) f.add("crepe_x2"); if (n.Crepes === 1 && mains === 1) f.add("crepe_x1");
   if (n.Meals === 2 && only("Meals")) f.add("meal_x2"); if (n.Meals === 1 && mains === 1) f.add("meal_x1");
   if (n.Burgers === 2 && only("Burgers")) f.add("burger_x2"); if (n.Burgers === 1 && mains === 1) f.add("burger_x1");
+  if (n.Pasta === 1 && mains === 1) f.add("pasta_x1"); if (n.Hawawshi === 1 && mains === 1) f.add("hawawshi_x1");
   if (n.Hawawshi >= 1) f.add("hawawshi"); if (n.Pasta >= 1) f.add("pasta"); if (n.Skillets >= 1) f.add("skillet");
   return f;
 }
 
+/* ── S1 — السلة بتغطي إيه (صافية) ───────────────────────────────────────────
+   أطباق رئيسية / جانبي / مشروب: الأصناف بكمياتها + جوّه البوكسات بكميات خاناتها من البوكس الحي (والكومبو = جانبي ومشروب).
+   بوكس خاناته مش معروفة ⇒ known:false (والكود بيفترض إنه فيه مشروب وجانبي زي قبل S1). */
+const RICE_RE = /(?:^| )(?:ارز|رز)(?: |$)/;
+const SHARE_RE = /مشارك|عائل|عايل|family|sharing/i;      // بوكسات المشاركة والعائلة (وباقات التجمعات: مالهاش قسم)
+export function cartCover(cart, { menu = null, boxes = null } = {}) {
+  const byId = new Map(((menu && menu.items) || []).map((i) => [String(i.id), i]));
+  const out = { mains: 0, side: 0, drink: 0, types: [], boxes: [], known: true, rice: false, shareMains: 0 };      // shareMains: أطباق جوّه بوكس مشاركة — مش عدد أشخاص (نص كيلو مايتقالش يكفي كام)
+  for (const l of (cart && cart.lines) || []) {
+    const q = Math.max(1, Number(l.qty) || 1);
+    if (l.slug) {
+      const b = (Array.isArray(boxes) ? boxes : []).find((x) => String(x.slug) === String(l.slug));
+      if (!b || !Array.isArray(b.slots) || !b.slots.length) { out.known = false; continue; }
+      const info = { slug: String(b.slug), name: b.name, section: String(b.section || ""), mains: 0, side: 0, drink: 0, rice: false, share: SHARE_RE.test(String(b.section || "")) || !String(b.section || "").trim() };
+      for (const s of b.slots) {
+        const sq = (Number(s.quantity) || 1) * q;
+        const it = s.type === "fixed" ? byId.get(String(s.item && s.item.product_id)) : (s.choices || []).map((c) => byId.get(String(c.product_id))).find(Boolean);
+        if (!it) continue;
+        if (itemKind(it) === "main") { info.mains += sq; const t = dishType(it); if (t) for (let i = 0; i < sq; i++) out.types.push(t); }
+        else for (const k of coversOf(it)) info[k] += sq;
+        if (RICE_RE.test(normalize(it.name))) info.rice = true;
+      }
+      out.mains += info.mains; out.side += info.side; out.drink += info.drink; if (info.rice) out.rice = true; if (info.share) out.shareMains += info.mains;
+      out.boxes.push(info);
+      continue;
+    }
+    const it = byId.get(String(l.id)); if (!it) continue;
+    if (itemKind(it) === "main") { out.mains += q; const t = dishType(it); if (t) for (let i = 0; i < q; i++) out.types.push(t); continue; }
+    for (const k of coversOf(it)) out[k] += q;
+    if (RICE_RE.test(normalize(it.name))) out.rice = true;
+  }
+  return out;
+}
+/* البوكس اللي بيشيل أطباق السلة: كل طبق رئيسي في السلة (بكميته) لازم يلاقي خانة اختيار فيها نفس الصنف، كل خانة مرة.
+   variant: true ⇒ والوزن كمان (نصف كيلو = خانة «نصف كيلو»). exact: true ⇒ مفيش خانة طبق رئيسي فاضية في البوكس، ومفيش طبق رئيسي ثابت.
+   ⇒ { price (بزيادة اختيارات العميل)، base, extra, mainsTotal, mains, value (اللي البوكس بيزوّده بأسعار المنيو: الثابت + أرخص اختيار من غير زيادة) } أو null */
+export function boxFit(b, cart, byId, { variant = false, exact = false } = {}) {
+  if (!b || !(Number(b.price) > 0) || !Array.isArray(b.slots) || !b.slots.length) return null;
+  const isMain = (pid) => { const it = byId.get(String(pid)); return Boolean(it) && itemKind(it) === "main"; };
+  if (exact && b.slots.some((s) => s.type === "fixed" && s.item && isMain(s.item.product_id))) return null;
+  const free = b.slots.filter((s) => s.type === "choice").map((s) => ({ s, used: false }));
+  const match = (c, l) => String(c.product_id) === String(l.id) && (!variant || l.variant_option_id == null || c.variant_option_id == null || Number(c.variant_option_id) === Number(l.variant_option_id));
+  let extra = 0, mainsTotal = 0, n = 0;
+  for (const l of (cart && cart.lines) || []) {
+    if (l.slug) return null;
+    const it = byId.get(String(l.id)); if (!it || itemKind(it) !== "main") continue;
+    for (let q = 0; q < (Number(l.qty) || 1); q++) {
+      const slot = free.find((f) => !f.used && (f.s.choices || []).some((c) => match(c, l)));
+      if (!slot) return null;
+      slot.used = true; n += 1;
+      extra += Number(((slot.s.choices || []).find((c) => match(c, l)) || {}).surcharge) || 0;
+      mainsTotal += Number(l.price) || 0;
+    }
+  }
+  if (!n) return null;
+  if (exact && free.some((f) => !f.used && (f.s.choices || []).some((c) => isMain(c.product_id)))) return null;
+  let value = 0;
+  for (const s of b.slots) {
+    const sq = Number(s.quantity) || 1;
+    if (s.type === "fixed") { const it = s.item ? byId.get(String(s.item.product_id)) : null; if (it && itemKind(it) !== "main") value += Number(it.price) * sq; continue; }
+    if (free.find((f) => f.s === s && f.used)) continue;
+    const opts = (s.choices || []).filter((c) => !(Number(c.surcharge) > 0)).map((c) => byId.get(String(c.product_id))).filter((it) => it && itemKind(it) !== "main" && Number(it.price) > 0);
+    if (opts.length) value += Math.min(...opts.map((it) => Number(it.price))) * sq;
+  }
+  return { price: round2(Number(b.price) + extra), base: Number(b.price), extra: round2(extra), mainsTotal: round2(mainsTotal), mains: n, value: round2(value) };
+}
+
 /* ── ٣) حاسبة الاقتراح (صافية) — اقتراح واحد بالكتير ──────────────────────
-   cart = { lines:[{ id?, slug?, name, price, qty, kind }], subtotal, option }
-   ctx  = { menu, boxes, quote, offers, topSellers:[id], declined:[kind], profile }
-   ⇒ null أو { kind, ...أرقام حقيقية } . الترتيب: بوكس أوفر ⇒ فرق الشريحة ⇒ مشروب ⇒ جانبي ⇒ الأكثر مبيعاً. اللي العميل رفضه مايتكررش. */
+   cart = { lines:[{ id?, slug?, name, price, qty, kind, contains? }], subtotal, option }
+   ctx  = { menu, boxes, quote, topSellers:[id], declined:[kind], pairing, personal (wapersonal.personalOf), mem (declineMemory), people, skipped:[] }
+   ⇒ null أو { kind, rule, item?, qty, total, … أرقام حقيقية }. اللي العميل رفضه مايتكررش.
+   S1 (١٤/١٠) — الترتيب (كل بند بإعداده؛ البنود الجديدة بتشتغل بس لما الإعداد بتاعها true في cfg = إعدادات اللوحة):
+     ١ box_saves: بوكس فيه نفس الأصناف أرخص (زي ما هو، دايماً الأول)
+     ٢ habit: «زي العادة» — إضافة في ≥٦٠٪ من طلباته من نفس النوع (personalSell). عادته جانبي ومشروب ⇒ البوكس الأول (habit_box)
+     ٣ owner_box ثم box_for_dish: سطور البوكسات في جدول الاقتران، وبعدها البوكس الحي اللي خانات أطباقه = أطباق السلة بالظبط، بفحص القيمة (boxForDish)
+     ٤ rice_weight: أرز مع المشاوي بالوزن (سطر grill_weight في الجدول)
+     ٥ box_drinks: بوكس مشاركة من غير مشروبات ⇒ مشروبات لعدد الأشخاص (familyOutside) · drinks_people: مشروب لكل شخص (drinksPerPerson)
+     ٦ pair_item: باقي سطور الأصناف في الجدول · ٧ combo: الكومبو مع كريب/برجر لو مفيش بوكس (comboFallback) · ٨ generic: مشروب/جانبي الأكثر مبيعاً
+   الرسوم (الحد الجاي / التوصيل المجاني) مع عقل البيع في waassistrun.salesSuggest؛ من غيره البند القديم «next_tier» هنا. */
+const numOr = (v, d) => (v !== null && v !== undefined && v !== "" && Number.isFinite(Number(v)) ? Number(v) : d);
+const OFFER_ONLY = (it) => it.category === "Offers" || /داخل\s+الصال[ةه]\s+فقط/.test(String(it.name || ""));
 export function suggestOne(cart, ctx = {}, cfg = ASSIST_DEFAULTS) {
   if (!cart || !Array.isArray(cart.lines) || !cart.lines.length) return null;
   const declined = new Set(ctx.declined || []);
-  const menu = ctx.menu, items = menu && Array.isArray(menu.items) ? menu.items.filter((i) => !i.soldOut) : [];
+  const menu = ctx.menu, all = menu && Array.isArray(menu.items) ? menu.items : [], items = all.filter((i) => !i.soldOut);
+  const byId = new Map(all.map((i) => [String(i.id), i]));
+  const on = (k) => Boolean(cfg) && cfg[k] === true;
+  const P = ctx.personal && typeof ctx.personal === "object" ? ctx.personal : null;
+  const memItems = new Set((ctx.mem && ctx.mem.items) || []), muted = new Set((ctx.mem && ctx.mem.rules) || []);
+  const people = Number(ctx.people) >= 1 ? Math.round(Number(ctx.people)) : null;
+  const skipped = Array.isArray(ctx.skipped) ? ctx.skipped : null;
+  const KIND_OF_RULE = { box_saves: "box_saves", owner_box: "pair", habit_box: "pair", box_for_dish: "pair", rice_weight: "pair", pair_item: "pair", drinks_people: "drink", box_drinks: "drink", combo: "side" };
+  const skip = (rule, ref, name, reason, kind = null) => { const r = ref == null ? null : String(ref); if (skipped && !skipped.some((x) => x.rule === rule && x.ref === r)) skipped.push({ rule, kind: kind || KIND_OF_RULE[rule] || "side", ref: r, name: name || null, reason }); };
   /* اللي في السلة = الأصناف + كل اللي جوّه البوكسات (الثابت والمختار) — مانقترحش على العميل حاجة هو واخدها جوّه البوكس (عطل تقييم ١٢/١٠: «وجبة ميكس جريل» فوق بوكس الميكس جريل). */
   const inCart = new Set([...cart.lines.filter((l) => l.id).map((l) => String(l.id)), ...cart.lines.flatMap((l) => (Array.isArray(l.contains) ? l.contains.map(String) : []))]);
   const hasBox = cart.lines.some((l) => l.slug);
-  const avoid = new Set((ctx.profile && ctx.profile.low_ratings && ctx.profile.low_ratings.items) || []);
-  // (أ) بوكس فيه نفس الأصناف بسعر أقل — حساب بحت
-  if (!declined.has("box_saves") && Array.isArray(ctx.boxes)) {
-    let best = null;
+  const avoid = new Set(((P && P.avoid) || []).map(String));      // S1: أصناف طلبات قيّمها ٢ أو أقل (السجل الشخصي) — قبل كده كانت بتتقرا من حقل مالوش وجود
+  const minSar = numOr(cfg && cfg.addonMinSar, 0), maxSar = numOr(cfg && cfg.addonMaxSar, Infinity);
+  const cover = cartCover(cart, { menu, boxes: ctx.boxes });
+  /* S1: «في السلة مشروب/جانبي؟» من اللي جوّه البوكسات فعلاً (نص ونص والمشكل مافيهمش مشروبات) والكومبو بيغطي الاتنين. بوكس مش معروف ⇒ زي قبل (فيه). */
+  const has = (k) => !cover.known || cover[k] > 0;
+  const never = (k) => on("skipNeverTakes") && Boolean(P) && (k === "side" ? P.neverSide === true : k === "drink" ? P.neverDrink === true : false);
+  const ruleOn = (rule) => { if (!muted.has(rule)) return true; skip(rule, null, null, "remembered_decline"); return false; };
+  const okAddon = (it, rule) => {
+    if (!it || it.soldOut || it.byWeight || !(Number(it.price) > 0) || inCart.has(String(it.id)) || avoid.has(String(it.id)) || OFFER_ONLY(it)) return false;
+    if (Number(it.price) < minSar || Number(it.price) > maxSar) return false;
+    if (memItems.has(String(it.id))) { skip(rule, it.id, it.name, "remembered_decline", KIND_OF_RULE[rule] || (kindOf(it) === "drink" ? "drink" : "side")); return false; }
+    return true;
+  };
+  const one = (kind, rule, it, qty = 1, extra = {}) => ({ kind, rule, item: itemBrief(it), qty, total: round2(Number(it.price) * qty), ...extra });
+  const rank = new Map((Array.isArray(ctx.topSellers) ? ctx.topSellers : []).map((id, i) => [String(id), i]));
+  const WATER = /مياه|ماء|water/i;
+  /* مشروب / جانبي: الأكثر مبيعاً فعلاً (ترتيب مبيعات نقطة البيع) مش الأرخص؛ المياه مابتتقترحش كـ«المشروب» إلا لو مفيش غيرها (قرار ١٢/١٠). S1: الترقيات («إضافة …») ليها بندها. */
+  const best = (k, rule) => { const c = items.filter((i) => kindOf(i) === k && !isUpgrade(i) && okAddon(i, rule));
+    const order = (a, b) => (rank.has(String(a.id)) ? rank.get(String(a.id)) : 1e6) - (rank.has(String(b.id)) ? rank.get(String(b.id)) : 1e6) || a.price - b.price;
+    const nw = c.filter((i) => !WATER.test(normalize(`${i.name} ${i.nameEn}`))); return (nw.length ? nw : c).sort(order)[0] || null; };
+  /* المشروب المقترح: مشروبه المعتاد (السجل الشخصي) لو ينفع، وإلا الأكثر مبيعاً (مش المياه) */
+  const drinkPick = (rule) => { const u = P && P.drink ? byId.get(String(P.drink.id)) : null;
+    if (u && kindOf(u) === "drink" && on("personalSell") && okAddon(u, rule)) return { it: u, personal: true };
+    const d = best("drink", rule); return d ? { it: d, personal: false } : null; };
+
+  // ١ بوكس فيه نفس الأصناف بسعر أقل — حساب بحت
+  if (!declined.has("box_saves") && Array.isArray(ctx.boxes) && ruleOn("box_saves")) {
+    let bestBox = null;
     for (const b of ctx.boxes) {
       const need = [];
       let okBox = Array.isArray(b.slots) && b.slots.length > 0;
@@ -203,50 +314,104 @@ export function suggestOne(cart, ctx = {}, cfg = ASSIST_DEFAULTS) {
         if ((prev ? prev.used : q) > hit.qty) { okBox = false; break; }
       }
       if (!okBox) continue;
+      if (memItems.has(String(b.slug))) { skip("box_saves", b.slug, b.name, "remembered_decline", "box_saves"); continue; }      // S1: رفضه في محادثة قبل كده
       const separate = round2(need.reduce((a, n) => a + n.line.price * n.used, 0)), saves = round2(separate - Number(b.price));
-      if (saves >= 1 && (!best || saves > best.saves)) best = { kind: "box_saves", slug: b.slug, name: b.name, box_price: Number(b.price), separate, saves };
+      if (saves >= 1 && (!bestBox || saves > bestBox.saves)) bestBox = { kind: "box_saves", rule: "box_saves", slug: b.slug, name: b.name, box_price: Number(b.price), separate, saves };
     }
-    if (best) return best;
+    if (bestBox) return bestBox;
   }
-  /* (أ٢) PS4 — جدول الاقتران: أول سطر عيلته في السلة وهدفه متاح. مفيش بوكس في السلة، والعميل مارفضش اقتران قبل كده. */
-  if (!declined.has("pair") && !hasBox && Array.isArray(ctx.pairing) && ctx.pairing.length) {
-    const fam = cartFamilies(cart, menu);
-    for (const r of ctx.pairing) {
-      if (!fam.has(r.when)) continue;
-      if (r.box) { const b = (ctx.boxes || []).find((x) => String(x.slug) === String(r.box)); if (!b || !(Number(b.price) > 0)) continue;
-        /* كل صنف رئيسي في السلة لازم يكون اختيار في خانة من خانات البوكس (كل خانة مرة)، وزيادته جوّه البوكس بتتحسب في السعر اللي بيتقال. غير كده السطر بيتعدّى: مانعرضش بوكس مافيهوش اللي العميل طلبه. */
-        const free = (b.slots || []).filter((s) => s.type === "choice").map((s) => ({ s, used: false })); let extra = 0, fits = true;
-        for (const l of cart.lines) { const it = items.find((i) => String(i.id) === String(l.id)); if (!it || kindOf(it) !== "main") continue;
-          for (let q = 0; q < (Number(l.qty) || 1); q++) { const slot = free.find((f) => !f.used && (f.s.choices || []).some((c) => String(c.product_id) === String(l.id))); if (!slot) { fits = false; break; }
-            slot.used = true; extra += Number(((slot.s.choices || []).find((c) => String(c.product_id) === String(l.id)) || {}).surcharge) || 0; }
-          if (!fits) break; }
-        if (!fits) continue;
-        return { kind: "pair", when: r.when, name: b.name, box: { slug: b.slug, name: b.name, ...(b.name_en ? { name_en: b.name_en } : {}), price: round2(Number(b.price) + extra), ...(extra > 0 ? { base_price: Number(b.price), their_choice_extra: round2(extra) } : {}), description: b.description || "" }, cart_subtotal: cart.subtotal }; }
-      else if (r.item) { const k = normalize(r.item); const it = items.find((i) => normalize(i.name).includes(k) && !inCart.has(String(i.id)) && !avoid.has(i.name)); if (it) return { kind: "pair", when: r.when, name: it.name, item: itemBrief(it) }; }
+  const pairing = Array.isArray(ctx.pairing) && ctx.pairing.length ? ctx.pairing : null;
+  const fam = cartFamilies(cart, menu);
+  const pairBox = (b, f, when, rule) => ({ kind: "pair", rule, when, name: b.name, box: { slug: b.slug, name: b.name, ...(b.name_en ? { name_en: b.name_en } : {}), price: f.price, ...(f.extra > 0 ? { base_price: f.base, their_choice_extra: f.extra } : {}), description: b.description || "" }, cart_subtotal: cart.subtotal, replaces: f.mainsTotal });
+  /* فحص القيمة (S1): العميل يدفع لحد boxUpgradeMaxPerMainSar زيادة لكل طبق، واللي البوكس بيزوّده (بأسعار المنيو) أكبر من الزيادة بـ valueMinGainSar على الأقل */
+  const valueOk = (f) => { const extra = f.price - f.mainsTotal; return extra / f.mains <= numOr(cfg && cfg.boxUpgradeMaxPerMainSar, 10) && f.value >= extra + numOr(cfg && cfg.valueMinGainSar, 2); };
+  /* ٣ البوكس اللي فيه طبقه: سطور البوكسات في جدول الاقتران الأول (بترتيبها)، وبعدها (boxForDish) البوكس الحي اللي خانات أطباقه = أطباق السلة بالظبط
+     (البوكس الفردي لطبق واحد، بوكس الاتنين لطبقين من نوع واحد أو نصين كيلو مشاوي). من غير boxForDish: سطور الجدول زي PS4 (من غير فحص القيمة). */
+  const boxStep = (override) => {
+    if (declined.has("pair") || hasBox) return null;
+    if (on("boxForDish") && never("side")) { skip(override || "owner_box", null, null, "never_takes"); return null; }      // ٣ طلبات وأكتر ومافيش جانبي ولا مرة
+    if (pairing) for (const r of pairing) {
+      if (!r.box || !fam.has(r.when)) continue;
+      const b = (ctx.boxes || []).find((x) => String(x.slug) === String(r.box)); const f = boxFit(b, cart, byId);
+      if (!f || (on("boxForDish") && !valueOk(f))) continue;
+      if (memItems.has(String(b.slug))) { skip(override || "owner_box", b.slug, b.name, "remembered_decline", "pair"); continue; }
+      if (!ruleOn(override || "owner_box")) return null;
+      return pairBox(b, f, r.when, override || "owner_box");
+    }
+    if (!on("boxForDish")) return null;
+    const types = [...new Set(cover.types)];
+    if (!(cover.mains === 1 || (cover.mains === 2 && types.length === 1))) return null;
+    const fits = (Array.isArray(ctx.boxes) ? ctx.boxes : []).map((b) => ({ b, f: boxFit(b, cart, byId, { variant: true, exact: true }) })).filter((x) => x.f && valueOk(x.f) && !(memItems.has(String(x.b.slug)) && (skip(override || "box_for_dish", x.b.slug, x.b.name, "remembered_decline", "pair"), true)))
+      .sort((x, y) => x.f.price - y.f.price || (y.b.featured ? 1 : 0) - (x.b.featured ? 1 : 0));
+    if (!fits.length || !ruleOn(override || "box_for_dish")) return null;
+    const when = [...fam].find((w) => /_x[12]$|^grill_/.test(w)) || "box_for_dish";
+    return pairBox(fits[0].b, fits[0].f, when, override || "box_for_dish");
+  };
+
+  // ٢ عادة العميل («زي العادة») — بس لو عادته لنفس النوع اللي في السلة. عادته جانبي ومشروب مع بعض ⇒ البوكس الأول
+  let hp = { pick: null, sdFirst: null };
+  if (on("personalSell") && P) {
+    hp = habitPick(cart, P, { items, cover, people, ok: (it) => okAddon(it, "habit") && !declined.has(kindOf(it) === "drink" ? "drink" : "side") });
+    if (hp.sdFirst) { const b = boxStep("habit_box"); if (b) return b; }
+    if (hp.pick && ruleOn("habit")) return one(hp.pick.kind, "habit", hp.pick.item, hp.pick.qty, { personal: true });
+  }
+  if (!hp.sdFirst) { const b = boxStep(null); if (b) return b; }
+
+  // ٤ الأرز مع المشاوي بالوزن (سطر grill_weight في الجدول) — مش مع الوجبات، ومش لو فيه أرز (أو بوكس فيه أرز)
+  if (!declined.has("pair") && !hasBox && pairing && fam.has("grill_weight") && !cover.rice) {
+    const row = pairing.find((r) => r.when === "grill_weight" && r.item);
+    const it = row ? items.find((i) => normalize(i.name).includes(normalize(row.item)) && okAddon(i, "rice_weight")) : null;
+    if (it && ruleOn("rice_weight")) return { kind: "pair", rule: "rice_weight", when: "grill_weight", name: it.name, item: itemBrief(it), qty: 1, total: round2(Number(it.price)) };
+  }
+  // ٥أ بوكس مشاركة/عائلة في السلة: مافيهوش مشروبات ⇒ مشروبات لعدد الأشخاص (العدد مش معروف ⇒ سعر الواحد وسؤال)؛ فيه مشروبات ⇒ جانبي واحد من بره البوكس
+  if (on("familyOutside") && cover.known) {
+    const fb = cover.boxes.find((b) => b.share);
+    if (fb && fb.drink === 0 && !declined.has("drink") && ruleOn("box_drinks")) {
+      if (never("drink")) skip("box_drinks", null, null, "never_takes");
+      else { const d = drinkPick("box_drinks");
+        if (d) { const known = people !== null, qty = known ? people - cover.drink : 1;
+          if (qty > 0) return one("drink", "box_drinks", d.it, qty, { box_name: fb.name, people_known: known, ...(known ? { people } : { qty_open: true }), ...(d.personal ? { personal: true } : {}) }); } }
+    } else if (fb && fb.drink > 0 && !declined.has("side") && ruleOn("box_drinks")) {
+      const s = best("side", "box_drinks"); if (s) return one("side", "box_drinks", s, 1, { box_name: fb.name });
     }
   }
-  // (ب) فرق بسيط للشريحة الجاية من رسوم التوصيل (من عرض السعر الحقيقي لموقعه)
+  // ٥ب مشروب لكل شخص: طبقين وأكتر أو العميل قال كام شخص، والمشروبات أقل من الأشخاص (اللي جوّه البوكسات والكومبو محسوبة)
+  if (on("drinksPerPerson") && cover.known && !declined.has("drink")) {
+    const own = cover.mains - cover.shareMains, n = people || (own >= 2 ? own : 0);      // أطباق بوكس المشاركة مش عدد أشخاص: من غير عدد من العميل ⇒ بند بوكس العيلة بس
+    if (n >= 2 && cover.drink < n && ruleOn("drinks_people")) {
+      if (never("drink")) skip("drinks_people", null, null, "never_takes");
+      else { const d = drinkPick("drinks_people"); if (d) return one("drink", "drinks_people", d.it, n - cover.drink, { people: n, ...(d.personal ? { personal: true } : {}) }); }
+    }
+  }
+  // ٦ باقي سطور الأصناف في جدول الاقتران (حواوشي ⇒ بطاطس…) بعد البوكسات
+  if (!declined.has("pair") && !hasBox && pairing) for (const r of pairing) {
+    if (!r.item || r.when === "grill_weight" || !fam.has(r.when)) continue;
+    const k = normalize(r.item); const it = items.find((i) => normalize(i.name).includes(k) && okAddon(i, "pair_item"));
+    if (it && ruleOn("pair_item")) return { kind: "pair", rule: "pair_item", when: r.when, name: it.name, item: itemBrief(it), qty: 1, total: round2(Number(it.price)) };
+  }
+  // ٧ الكومبو: كريب أو برجر لوحده من غير بطاطس ولا مشروب، ومفيش بوكس فيه طبقه (أو خلص). المحتوى من وصف المنيو الحي.
+  if (on("comboFallback") && !hasBox && cover.mains === 1 && ["crepe", "burger"].includes(cover.types[0]) && !has("side") && !has("drink") && !declined.has("side")
+    && !(Array.isArray(ctx.boxes) ? ctx.boxes : []).some((b) => boxFit(b, cart, byId, { variant: true, exact: true })) && ruleOn("combo")) {      // طبقه اختيار في بوكس حي ⇒ البوكس هو العرض، مش الكومبو
+    const it = items.find((i) => isUpgrade(i) && coversOf(i).length === 2);
+    if (it && never("side")) skip("combo", it.id, it.name, "never_takes");
+    else if (it && okAddon(it, "combo")) return one("side", "combo", it, 1, { contents: String(it.desc || "").replace(/\s+/g, " ").trim() });
+  }
+  // (قبل عقل البيع) فرق بسيط للشريحة الجاية من رسوم التوصيل — مع عقل البيع الرسوم في salesSuggest
   const qv = ctx.quote;
-  if (!declined.has("next_tier") && cart.option !== "pickup" && qv && qv.deliverable && Number(qv.toNextTier) > 0 && Number(qv.toNextTier) <= cfg.nudgeGapSar && Number.isFinite(Number(qv.nextTierFee))) {
+  if (!(cfg && cfg.salesBrain === true) && !declined.has("next_tier") && cart.option !== "pickup" && qv && qv.deliverable && Number(qv.toNextTier) > 0 && Number(qv.toNextTier) <= numOr(cfg && cfg.nudgeGapSar, 20) && Number.isFinite(Number(qv.nextTierFee))) {
     const gap = round2(qv.toNextTier);
-    const pick = items.filter((i) => !inCart.has(String(i.id)) && i.price >= gap && !avoid.has(i.name)).sort((a, b) => a.price - b.price)[0] || null;
-    return { kind: "next_tier", add_sar: gap, fee_now: Number(qv.fee), fee_then: Number(qv.nextTierFee), free: Number(qv.nextTierFee) === 0, item: pick ? itemBrief(pick) : null };
+    const pick = items.filter((i) => !inCart.has(String(i.id)) && i.price >= gap && !avoid.has(String(i.id))).sort((a, b) => a.price - b.price)[0] || null;
+    return { kind: "next_tier", rule: "tier", add_sar: gap, fee_now: Number(qv.fee), fee_then: Number(qv.nextTierFee), free: Number(qv.nextTierFee) === 0, item: pick ? itemBrief(pick) : null };
   }
-  const has = (k) => cart.lines.some((l) => l.kind === k || l.slug);            // البوكسات فيها مشروب وجانبي غالباً ⇒ مانقترحش عليهم
-  /* مشروب / جانبي: الأكثر مبيعاً فعلاً (ترتيب مبيعات نقطة البيع) مش الأرخص؛ المياه مابتتقترحش كـ«المشروب» إلا لو مفيش غيرها (قرار ١٢/١٠). */
-  const rank = new Map((Array.isArray(ctx.topSellers) ? ctx.topSellers : []).map((id, i) => [String(id), i]));
-  const WATER = /مياه|ماء|water/i;
-  const best = (k) => { const c = items.filter((i) => kindOf(i) === k && !inCart.has(String(i.id)) && !avoid.has(i.name));
-    const order = (a, b) => (rank.has(String(a.id)) ? rank.get(String(a.id)) : 1e6) - (rank.has(String(b.id)) ? rank.get(String(b.id)) : 1e6) || a.price - b.price;
-    const nw = c.filter((i) => !WATER.test(normalize(`${i.name} ${i.nameEn}`))); return (nw.length ? nw : c).sort(order)[0] || null; };
-  const grill = Array.isArray(ctx.pairing) && cart.lines.some((l) => { const it = l.id ? (menu && menu.items ? menu.items.find((i) => String(i.id) === String(l.id)) : null) : null; return Boolean(l.weight) || Boolean(it && (it.byWeight || it.category === "Meals")); });      // PS4: المشروب مش أول اقتراح للمشاوي
-  const tryDrink = () => { if (!declined.has("drink") && !has("drink")) { const d = best("drink"); if (d) return { kind: "drink", item: itemBrief(d) }; } return null; };
-  const trySide = () => { if (!declined.has("side") && !has("side")) { const s2 = best("side"); if (s2) return { kind: "side", item: itemBrief(s2) }; } return null; };
+  // ٨ مشروب / جانبي الأكثر مبيعاً (للمشاوي الجانبي الأول — PS4)
+  const grill = Array.isArray(ctx.pairing) && cart.lines.some((l) => { const it = l.id ? byId.get(String(l.id)) : null; return Boolean(l.weight) || Boolean(it && (it.byWeight || it.category === "Meals")); });
+  const tryDrink = () => { if (!declined.has("drink") && !has("drink") && ruleOn("generic")) { if (never("drink")) { skip("generic", null, null, "never_takes"); return null; } const d = best("drink", "generic"); if (d) return one("drink", "generic", d); } return null; };
+  const trySide = () => { if (!declined.has("side") && !has("side") && ruleOn("generic")) { if (never("side")) { skip("generic", null, null, "never_takes"); return null; } const s2 = best("side", "generic"); if (s2) return one("side", "generic", s2); } return null; };
   { const first = grill ? trySide() || tryDrink() : tryDrink() || trySide(); if (first) return first; }
   /* صنف رئيسي من الأكثر مبيعاً: بس لو السلة مافيهاش صنف رئيسي ولا بوكس (العميل طالب مشروب/جانبي بس) — «زوّد وجبة تانية» مش اقتراح أمين. */
   if (!declined.has("top_seller") && Array.isArray(ctx.topSellers) && !hasBox && !cart.lines.some((l) => l.kind === "main")) {
-    const t = ctx.topSellers.map((id) => items.find((i) => String(i.id) === String(id))).find((i) => i && !inCart.has(String(i.id)) && kindOf(i) === "main" && !avoid.has(i.name));
-    if (t) return { kind: "top_seller", item: itemBrief(t) };
+    const t = ctx.topSellers.map((id) => items.find((i) => String(i.id) === String(id))).find((i) => i && !inCart.has(String(i.id)) && kindOf(i) === "main" && !avoid.has(String(i.id)));
+    if (t) return { kind: "top_seller", rule: "generic", item: itemBrief(t), ...(t.byWeight ? {} : { qty: 1, total: round2(Number(t.price)) }) };
   }
   return null;
 }
@@ -362,8 +527,8 @@ const SV_TOPIC = /مشكل|special mix/;
 const SG_WORDS = { واحد: 1, شخص: 1, نفر: 1, فرد: 1, شخصين: 2, نفرين: 2, فردين: 2, اثنين: 2, ثنين: 2, ثلاث: 3, ثلاثه: 3, تلاته: 3, اربع: 4, اربعه: 4, خمس: 5, خمسه: 5, ست: 6, سته: 6, one: 1, two: 2, three: 3, four: 4, five: 5, six: 6 };
 const sgDigits = (s) => String(s || "").replace(/[٠-٩]/g, (d) => String(d.charCodeAt(0) - 0x660));
 const SG_KIND = [[/(?:^| )(?:و?ال|بال|لل|و)?(?:ثلث|تلت)(?= |$)|\bthird\b/, "third"], [/(?:^| )(?:و?ال|بال|لل|و)?(?:نصف|نص)(?= |$)|\bhalf\b/, "half"], [/(?:^| )(?:و?ال|بال|لل|و)?كيلو(?= |$)|\b(?:kilo|kg)\b/, "kilo"]];
-/* أرقام الأشخاص في جملة (بعد الوزن): «شخص» = 1، «شخصين» = 2، «٣–٤ أشخاص» = [3,4]، «3 إلى 4» */
-function sgPeople(s) {
+/* أرقام الأشخاص في جملة (بعد الوزن): «شخص» = 1، «شخصين» = 2، «٣–٤ أشخاص» = [3,4]، «3 إلى 4». S1: wapersonal.peopleOf بيستخدمها لعدد الأشخاص اللي العميل قاله. */
+export function sgPeople(s) {
   const t = normalize(sgDigits(String(s || "")).replace(/(\d) ?[–—-] ?(\d)/g, "$1 الى $2"));
   const r = /(\d+) ?(?:-|الى|الي|إلى|او|أو|to|or) ?(\d+)/.exec(t); if (r) return [Number(r[1]), Number(r[2])];
   const d = /(\d+) ?(?:اشخاص|شخص|افراد|انفار|people|persons?)/.exec(t); if (d) return [Number(d[1]), Number(d[1])];
@@ -540,7 +705,10 @@ export function makeAssistTools(deps = {}) {
     let firstEligible = null; try { const fr = await q(`SELECT code, percent, active, expires_at, free_delivery FROM shop_coupons WHERE upper(code)='FIRST' LIMIT 1`, []); if (fr && fr[0]) firstEligible = (await firstEligibility(fr[0], phone, couponQueries(pool), now())).eligible; } catch { firstEligible = null; }
     const co = await q(`SELECT updates, marketing, stopped_at FROM wa_optins WHERE phone_norm=$1`, [phone]);
     const consent = co && co[0] ? { updates: co[0].updates === true, marketing: co[0].marketing === true, stopped: Boolean(co[0].stopped_at) } : null;
-    return { ok: true, profile: profileForModel(p, { loyalty: await loyaltyOf(phone), rewards: await rewardsOf(phone), firstEligible, consent, lang: deps.langOf ? await deps.langOf(phone) : "ar" }, now(), await tuneOf()) };
+    const tune = await tuneOf();
+    /* S1: السجل الشخصي من نفس ملف العميل (عادته، مشروبه، اللي مابياخدوش، أصناف التقييم الوحش) — للكود بس، مابيدخلش سياق الموديل. */
+    let personal = null; try { personal = personalOf(p, { menu: await menuOf(), now: now(), cfg: tune }); } catch (e) { (deps.log || console.error)("[assist] personal:", e.message); personal = null; }
+    return { ok: true, profile: profileForModel(p, { loyalty: await loyaltyOf(phone), rewards: await rewardsOf(phone), firstEligible, consent, lang: deps.langOf ? await deps.langOf(phone) : "ar" }, now(), tune), personal };
   }
 
   /* بنّاء السلة. input = { option: "delivery"|"pickup", items:[{ id, qty, note }], boxes:[{ slug, qty, choices:{ slot:{product_id,variant_option_id} }, addons:{ slot:[id] }, notes:{ slot:"…" } }] }
@@ -628,24 +796,33 @@ export function makeAssistTools(deps = {}) {
     if (!made) return { ...out, saved: false, error_link: "cannot_save" };
     return { ...out, saved: true, link: `${STORE}/c/${made.code}`, code: made.code };
   }
-  /* الأكثر مبيعاً فعلاً (نقطة البيع، آخر N يوم) ⇒ معرّفات المنيو بترتيب المبيعات */
+  /* الأكثر مبيعاً فعلاً (نقطة البيع، آخر N يوم) ⇒ معرّفات المنيو بترتيب المبيعات. S1: كاش ١٠ دقايق (كان بيتقرا لحد ٣ مرات في المعاينة الواحدة). */
+  let topCache = { at: 0, days: null, ids: null };
   async function top_sellers() {
     const menu = await menuOf(); if (!menu) return [];
+    const days = (await tuneOf()).topSellerDays;
+    if (topCache.ids && topCache.days === days && Date.now() - topCache.at < 10 * 60_000) return topCache.ids;
     const r = await q(`SELECT i.name, sum(i.qty)::float AS qty FROM ts_order_items i JOIN ts_orders o ON o.order_id = i.order_id
-                        WHERE o.order_date > NOW() - make_interval(days => $1::int) AND COALESCE(o.order_type,'') NOT ILIKE '%void%' AND COALESCE(o.order_type,'') NOT ILIKE '%refund%' GROUP BY 1 ORDER BY 2 DESC LIMIT 40`, [(await tuneOf()).topSellerDays]);
+                        WHERE o.order_date > NOW() - make_interval(days => $1::int) AND COALESCE(o.order_type,'') NOT ILIKE '%void%' AND COALESCE(o.order_type,'') NOT ILIKE '%refund%' GROUP BY 1 ORDER BY 2 DESC LIMIT 40`, [days]);
     const byName = new Map(menu.items.map((i) => [normalize(i.name), i.id]));
-    return (r || []).map((x) => byName.get(normalize(x.name))).filter(Boolean);
+    const ids = (r || []).map((x) => byName.get(normalize(x.name))).filter(Boolean);
+    if (r) topCache = { at: Date.now(), days, ids };      // قراية فشلت ⇒ مفيش كاش (المرة الجاية تتقري تاني)
+    return ids;
   }
-  /* اقتراح واحد على سلة اتبنت: بيجمع المدخلات الحقيقية وينده suggestOne */
-  async function suggest(phone, { cart, declined = [], profile = null } = {}) {
-    if (!cart || !cart.ok) return { ok: true, suggestion: null };
-    const [menu, boxes, tops] = await Promise.all([menuOf(), boxesOf(), top_sellers()]);
+  /* اقتراح واحد على سلة اتبنت: بيجمع المدخلات الحقيقية وينده suggestOne.
+     S1: personal = السجل الشخصي (حالة المحادثة)، mem = ذاكرة الرفض بين المحادثات، people = عدد الأشخاص اللي العميل قاله.
+     ⇒ { ok, suggestion, skipped:[{ rule, ref, name, reason }] } — skipped = اقتراحات اتحسبت واتشالت (رفضها قبل كده / مابياخدهاش) للقياس بس. */
+  async function suggest(phone, { cart, declined = [], personal = null, mem = null, people = null } = {}) {
+    if (!cart || !cart.ok) return { ok: true, suggestion: null, skipped: [] };
+    const [menu, boxes, tops, tune] = await Promise.all([menuOf(), boxesOf(), top_sellers(), tuneOf()]);
     let quote = null;
     let freeAnyway = false;
-    if (cart.option !== "pickup") { try { const of = await get_offers(phone); freeAnyway = Boolean((of.first_order && of.first_order.eligible && of.first_order.free_delivery && cart.subtotal >= (of.first_order.min_total || 0)) || (of.rewards || []).some((r) => r.freeDelivery && cart.subtotal >= (r.minTotal || 0))); } catch { freeAnyway = false; } }
-    if (cart.option !== "pickup" && !freeAnyway) { const qv = await quote_delivery(phone, { total: cart.subtotal }); if (qv.ok && qv.deliverable) quote = { deliverable: true, fee: qv.fee, toNextTier: qv.to_next_tier, nextTierFee: qv.next_tier_fee }; }
-    const tune = await tuneOf();
-    return { ok: true, suggestion: suggestOne(cart, { menu, boxes: boxes || [], quote, topSellers: tops, declined, profile, pairing: tune.pairingEnabled === false ? null : (Array.isArray(tune.pairing) ? tune.pairing : PAIRING_DEFAULT) }, tune) };
+    /* عقل البيع شغّال ⇒ الرسوم بتتحسب في salesSuggest (بعروض العميل وسلّم الرسوم) — مالهاش لازمة هنا */
+    if (tune.salesBrain !== true && cart.option !== "pickup") { try { const of = await get_offers(phone); freeAnyway = Boolean((of.first_order && of.first_order.eligible && of.first_order.free_delivery && cart.subtotal >= (of.first_order.min_total || 0)) || (of.rewards || []).some((r) => r.freeDelivery && cart.subtotal >= (r.minTotal || 0))); } catch { freeAnyway = false; } }
+    if (tune.salesBrain !== true && cart.option !== "pickup" && !freeAnyway) { const qv = await quote_delivery(phone, { total: cart.subtotal }); if (qv.ok && qv.deliverable) quote = { deliverable: true, fee: qv.fee, toNextTier: qv.to_next_tier, nextTierFee: qv.next_tier_fee }; }
+    const skipped = [];
+    const s = suggestOne(cart, { menu, boxes: boxes || [], quote, topSellers: tops, declined, personal, mem, people, skipped, pairing: tune.pairingEnabled === false ? null : (Array.isArray(tune.pairing) ? tune.pairing : PAIRING_DEFAULT) }, tune);
+    return { ok: true, suggestion: s, skipped };
   }
   /* باقات التجمعات (الباقات اللي مالهاش قسم بوكسات): الاسم والسعر والوصف العام */
   async function list_packs() {

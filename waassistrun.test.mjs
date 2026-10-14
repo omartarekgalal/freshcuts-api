@@ -205,7 +205,7 @@ test("the loop: no cart link before the system's one suggestion was offered once
   const items = { option: "pickup", items: [{ id: "8", qty: 1 }] };
   const m = scripted([use(tu("build_cart", items)), say("كريب زنجر سوبريم بـ 25 ر.س. تحب أضيف لك مشروبات غازية بـ 3 ر.س؟"),
     use(tu("note_suggestion", { kind: "drink", outcome: "declined" }), tu("build_cart", items)), say("سلتك: كريب زنجر سوبريم = 25 ر.س. اضغط الزر وادفع 👇")]);
-  const W = makeWorld({}, { callModel: m.callModel, acfg: { pairingEnabled: false } });      // the plain add-on path; the pairing table has its own tests (PS4)
+  const W = makeWorld({}, { callModel: m.callModel, acfg: { pairingEnabled: false, boxForDish: false } });      // the plain add-on path; the pairing table has its own tests (PS4), the box for the dish its own (S1, wa-sb6)
   const a = await turn(W, null, "ابي كريب زنجر سوبريم استلام");
   const gate = lastResults(m.seen[1])[0];
   assert.deepEqual([gate.ok, gate.error, gate.suggestion.kind, gate.suggestion.item.name, gate.subtotal], [false, "offer_suggestion_first", "drink", "مشروبات غازية", 25]);
@@ -218,7 +218,7 @@ test("the loop: no cart link before the system's one suggestion was offered once
   assert.deepEqual(b.session.state.lastCart.accepted, []);
   // accepted: the suggested item is in the cart ⇒ recorded even if the model forgot to say so; and no second suggestion step in the same conversation
   const m2 = scripted([use(tu("preview_cart", items)), say("كريب زنجر سوبريم بـ 25 ر.س. تحب أضيف لك مشروبات غازية بـ 3 ر.س؟"), use(tu("build_cart", { option: "pickup", items: [{ id: "8" }, { id: "82" }] })), say("سلتك: كريب زنجر سوبريم ومشروبات غازية = 28 ر.س 👇")]);
-  const W2 = makeWorld({}, { callModel: m2.callModel, acfg: { pairingEnabled: false } });
+  const W2 = makeWorld({}, { callModel: m2.callModel, acfg: { pairingEnabled: false, boxForDish: false } });
   const c = await turn(W2, null, "ابي كريب زنجر سوبريم"); const d = await turn(W2, c.session, "ايوه ضيفه، استلام");
   assert.equal(d.cart.subtotal, 28); assert.deepEqual(d.session.state.lastCart.accepted.map((x) => [x.kind, x.ref]), [["drink", "82"]]); assert.ok(d.trace.suggestions.some((s) => s.outcome === "accepted" && s.inferred));
   // the setting off ⇒ the cart is built at once
@@ -229,7 +229,7 @@ test("the loop: no cart link before the system's one suggestion was offered once
 test("the loop: a box with choices, an extra-price crust and notes is priced by the checkout functions; a delivery cart is refused outside the range", async () => {
   const boxes = [{ slug: "box-pizza-night", picks: [{ slot: "pizza1", product_id: "43", variant_option_id: 36, note: "بدون زيتون" }, { slot: "pizza2", product_id: "40", variant_option_id: 33, addons: [17] }] }];
   const m = scripted([use(tu("build_cart", { option: "pickup", boxes })), say("سلتك: بوكس سهرة البيتزا (بيتزا تشيكن رانش بدون زيتون + بيتزا بيبروني بحشو أطراف موتزاريلا) = 90 ر.س 👇")]);
-  const W = makeWorld({}, { callModel: m.callModel });
+  const W = makeWorld({}, { callModel: m.callModel, acfg: { familyOutside: false } });      // S1: the one add-on outside a sharing box has its own test (wa-sb6)
   const r = await turn(W, null, "ابي بوكس سهرة البيتزا تشيكن رانش بدون زيتون وبيبروني بحشو موتزاريلا، استلام");
   assert.equal(r.cart.subtotal, 90, "85 + 5 mozzarella crust");
   const raw = Object.values(W.carts[0].plan.raw)[0];
@@ -302,9 +302,10 @@ test("the store: every statement has as many parameters as placeholders; a sessi
   assert.equal(id, 7);
   const ins = seen.find(([q]) => /INSERT INTO wa_assist_turns/.test(q))[1];
   assert.equal(ins[0], PHONE); assert.match(ins[1], /^[0-9a-f]{16}$/); assert.equal(ins[13], "claude-sonnet-5-5"); assert.equal(ins[18], 0.012346); assert.ok(JSON.parse(ins[10])[0].result.truncated.length <= 4000, "a huge tool result is clipped in the log");
-  await st.recordSuggestions(PHONE, s.id, 7, [{ kind: "drink", ref: "82", name: "مشروبات غازية", numbers: { kind: "drink" }, outcome: "offered" }, { kind: "drink", outcome: "declined" }, { kind: "side", outcome: "computed" }]);
+  await st.recordSuggestions(PHONE, s.id, 7, [{ kind: "drink", ref: "82", name: "مشروبات غازية", numbers: { kind: "drink" }, outcome: "offered" }, { kind: "drink", outcome: "declined" }, { kind: "side", outcome: "computed", reason: "fee_options" }]);
   await st.tagCart("ev000001", [{ kind: "drink", ref: "82" }], s.id); await st.repliesToday(PHONE); await st.chats({}); await st.turns({ phone: PHONE }); await st.stats(7); await st.purge(90); await st.dropSession(PHONE);
-  assert.equal(seen.filter(([q]) => /INSERT INTO wa_assist_suggestions/.test(q)).length, 2, "offered = a row; declined with no open offer = a row; computed only = nothing");
+  assert.equal(seen.filter(([q]) => /INSERT INTO wa_assist_suggestions/.test(q)).length, 3, "offered = a row; declined with no open offer = a row; S1: computed (worked out, not shown) = a row with its reason");
+  assert.equal(JSON.parse(seen.find(([q]) => /INSERT INTO wa_assist_suggestions/.test(q) && /computed/.test(q))[1][7]).reason, "fee_options");
   // a message the rules answered inside the assistant's conversation is appended, never edited in
   const n = AR.noteRulesTurn({ ...s, messages: [{ role: "user", content: [{ type: "text", text: "x" }] }, { role: "assistant", content: [{ type: "text", text: "y" }] }] }, "وين طلبي 0544775082", "status");
   assert.deepEqual(n.messages.slice(2).map((m) => [m.role, m.content[0].text]), [["user", "<customer_message>وين طلبي [رقم]</customer_message>"], ["assistant", "[answered by the fixed menu bot: status]"]]);

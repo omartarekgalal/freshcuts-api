@@ -2394,7 +2394,8 @@ function memStore() {
 const TESTERS = ["0512345678"];
 /* PS4: the older assistant tests keep the behaviour they were written for; PS4 has its own tests (wa-ps4.test.mjs and the PS4 tests below) */
 const LEGACY_ASSIST = { salesBrain: false, imageBurstSec: 0, firstLead: false, grillFamilies: false, oneOfferPerChat: false, ackMaxChars: 0, feeMoment: false, menuToRules: false, pickForMe: false, choiceList: false, bigBoxSar: 0, pairingEnabled: false, adButtons: false, weightToAssistant: false, faqShort: false,
-  briefEnabled: false, sellerClose: false, nudgeMin: 0 };      // PK1: ملف المعرفة، قفلة السؤال ومتابعة السكوت — اختباراتهم في wa-pk1.test.mjs
+  briefEnabled: false, sellerClose: false, nudgeMin: 0,      // PK1: ملف المعرفة، قفلة السؤال ومتابعة السكوت — اختباراتهم في wa-pk1.test.mjs
+  personalSell: false, boxForDish: false, drinksPerPerson: false, familyOutside: false, comboFallback: false, skipNeverTakes: false, tierNetOnly: false };      // S1: البيع الشخصي — اختباراته في wa-sb6.test.mjs
 function aWorld(steps, o = {}) {
   const m = aModel(steps), store = memStore();
   const w = world({ bundles: LIVE.bundles, links: ALL_LINKS, ...o, waBot: { mode: "test", testPhones: TESTERS, footerMode: "smart", ...(o.waBot || {}), assist: { mode: "test", forceSuggestion: false, typing: false, orderWordsStrong: true, ...LEGACY_ASSIST, ...((o.waBot || {}).assist || {}) } }, assistModel: m.callModel, assistStore: store });
