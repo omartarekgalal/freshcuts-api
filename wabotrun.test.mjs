@@ -252,6 +252,11 @@ function world({ waBot = {}, notifications = { whatsappEnabled: true }, orders =
       if (/FROM shop_coupons WHERE code=\$1/i.test(s)) return { rows: first && first.code === p[0] ? [first] : [] };
       if (/FROM shop_orders WHERE order_no=\$1 AND phone_norm=\$2/i.test(s)) return { rows: orders.filter((o) => o.order_no === p[0] && o.phone_norm === p[1]) };
       if (/^SELECT customer->>'name' AS name FROM shop_orders/i.test(s)) return { rows: orders.filter((o) => o.phone_norm === p[0]).slice(-1).map((o) => ({ name: o.customer?.name ?? null })) };
+      /* SB2: طلب التقييم على واتساب */
+      if (/^SELECT review_code, review_order, review_asked_at, review_answered_at FROM wa_bot_chats/i.test(s)) { const ch = db.chats.get(p[0]); return { rows: ch ? [{ review_code: ch.review_code || null, review_order: ch.review_order || null, review_asked_at: ch.review_asked_at || null, review_answered_at: ch.review_answered_at || null }] : [] }; }
+      if (/^INSERT INTO wa_bot_chats\(phone_norm, review_code, review_order, review_asked_at, review_answered_at\)/i.test(s)) { Object.assign(chat(p[0]), { review_code: p[1], review_order: p[2], review_asked_at: iso(), review_answered_at: null }); return { rows: [] }; }
+      if (/^UPDATE wa_bot_chats SET review_answered_at=NOW\(\)/i.test(s)) { chat(p[0]).review_answered_at = iso(); return { rows: [] }; }
+      if (/^UPDATE review_invites SET wa_answer=\$2/i.test(s)) { (db.reviewAnswers ||= []).push([p[0], p[1]]); return { rows: [] }; }
       if (/^INSERT INTO wa_bot_chats\(phone_norm, last_loc\)/i.test(s)) { chat(p[0]).last_loc = JSON.parse(p[1]); return { rows: [] }; }
       if (/^INSERT INTO wa_optin_log\(phone_norm, kind, value, text_version, text, source, order_no, ip, ua\) VALUES \(\$1, 'marketing'/i.test(s)) { db.consentLog.push({ phone_norm: p[0], kind: "marketing", value: p[1], text_version: p[2], text: p[3], source: "bot", ua: p[4], at: iso() }); return { rows: [] }; }
       if (/FROM shop_orders WHERE phone_norm=\$1/i.test(s)) return { rows: orders.filter((o) => o.phone_norm === p[0]).slice(-1) };
@@ -4434,4 +4439,57 @@ test("SB1 end to end: «توصيل ولا استلام؟» goes out as two reply
   assert.ok([...p.interactive.body.text].length <= 1024);
   const r2 = await w.say("أضفه ✅", { interactiveId: "as:sg:yes" });
   assert.equal(r2.log.reply_key, "assist", "a tap on an assistant button returns to the assistant as its title");
+}));
+
+/* SB2 — طلب التقييم بعد التوصيل على واتساب (عمر ١٤/١٠: «ليه مشغلتش رسالة التقييم تجيله على الواتس الى بتيجي للعميل بعد الطلب») */
+test("SB2: inside the 24h window the review ask is a free-form message with «تمام 👍 / عندي ملاحظة»; «تمام» ⇒ the rating link, «ملاحظة» ⇒ the manager with the order number; typed replies count too", withEnv(CONFIGURED, async () => {
+  const w = world({ waBot: { mode: "test", testPhones: TESTERS } });
+  await w.say("شكراً");
+  const before = w.calls.length;
+  const r = await w.bot.reviewAsk({ phone: "0512345678", orderNo: "W1790012345678", code: "ab12cd34" });
+  assert.deepEqual(r, { ok: true, channel: "wa" });
+  const p = w.calls.slice(before).map((c) => c.body).find((b) => b.type);
+  assert.equal(p.type, "interactive");
+  assert.match(p.interactive.body.text, /كيف كان طلبك رقم W1790012345678؟ 🌟/);
+  assert.deepEqual(p.interactive.action.buttons.map((b) => [b.reply.id, b.reply.title]), [["rv:ok:ab12cd34", "تمام 👍"], ["rv:note:ab12cd34:W1790012345678", "عندي ملاحظة"]]);
+  const ok = await w.press("rv:ok:ab12cd34", "تمام 👍");
+  assert.equal(ok.log.reply_key, "review_ok", JSON.stringify(ok.log));
+  const okMsg = ok.sent.find((b) => b.type);
+  assert.match(JSON.stringify(okMsg), /https:\/\/freshcuts\.sa\/r\?c=ab12cd34/, "the rating page of THIS order");
+  assert.deepEqual(w.db.reviewAnswers.at(-1), ["ab12cd34", "ok"]);
+  const note = await w.press("rv:note:ab12cd34:W1790012345678", "عندي ملاحظة");
+  assert.equal(note.log.reply_key, "review_note"); assert.equal(note.log.handoff, "review_note");
+  assert.match(JSON.stringify(note.sent.find((b) => b.type)), /طلب رقم W1790012345678/);
+  // typed: «تمام» after a fresh ask = the button; with nothing pending it stays a plain «تمام» (no reply)
+  const w2 = world({ waBot: { mode: "test", testPhones: TESTERS } });
+  await w2.say("هلا");
+  await w2.bot.reviewAsk({ phone: "0512345678", orderNo: "W1790012340000", code: "zz99yy88" });
+  const typed = await w2.say("تمام");
+  assert.equal(typed.log.reply_key, "review_ok"); assert.match(JSON.stringify(typed.sent), /r\?c=zz99yy88/);
+  const again = await w2.say("تمام");
+  assert.equal(again.sent.filter((b) => b.type).length, 0, "answered once: a second «تمام» is just an acknowledgement");
+  const w3 = world({ waBot: { mode: "test", testPhones: TESTERS } });
+  await w3.say("هلا"); await w3.bot.reviewAsk({ phone: "0512345678", orderNo: "W1790012341111", code: "qq11ww22" });
+  const tn = await w3.say("عندي ملاحظة");
+  assert.equal(tn.log.reply_key, "review_note"); assert.match(JSON.stringify(tn.sent), /W1790012341111/);
+}));
+
+test("SB2: outside the window ⇒ the approved utility template fc_review_request (order number + the rating link button); stopped ⇒ nothing at all; switch off / bot not on ⇒ SMS as before", withEnv(CONFIGURED, async () => {
+  const CAT = await import("./watemplates.js"); const WA = await import("./whatsapp.js"); WA.registerCatalog(CAT);
+  const w = world({ waBot: { mode: "test", testPhones: TESTERS } });
+  await w.say("هلا"); w.clock.advance(25 * 60);
+  const before = w.calls.length;
+  const r = await w.bot.reviewAsk({ phone: "0512345678", orderNo: "W1790012345678", code: "ab12cd34" });
+  assert.deepEqual(r, { ok: true, channel: "wa_template" });
+  const t = w.calls.slice(before).map((c) => c.body).find((b) => b.type === "template");
+  assert.equal(t.template.name, "fc_review_request");
+  assert.deepEqual(t.template.components, [{ type: "body", parameters: [{ type: "text", text: "W1790012345678" }] }, { type: "button", sub_type: "url", index: "0", parameters: [{ type: "text", text: "ab12cd34" }] }]);
+  const s = world({ waBot: { mode: "test", testPhones: TESTERS } }); s.db.optins["512345678"] = { stopped_at: new Date().toISOString() };
+  assert.deepEqual(await s.bot.reviewAsk({ phone: "0512345678", orderNo: "W1", code: "ab12cd34" }), { ok: false, skipped: "stopped", final: true }, "«إيقاف» ⇒ no WhatsApp and no SMS");
+  const off = world({ waBot: { mode: "test", testPhones: TESTERS, reviewWhatsApp: false } });
+  assert.deepEqual(await off.bot.reviewAsk({ phone: "0512345678", orderNo: "W1", code: "ab12cd34" }), { ok: false, skipped: "off" });
+  const dark = world({ waBot: { mode: "off" } });
+  assert.deepEqual(await dark.bot.reviewAsk({ phone: "0512345678", orderNo: "W1", code: "ab12cd34" }), { ok: false, skipped: "bot_not_live" }, "the replies need the bot: SMS instead");
+  const sch = R.configSchema ? R.configSchema() : null; void sch;
+  assert.equal(R.botConfig({ waBot: {} }).reviewWhatsApp, true); assert.equal(R.botConfig({ waBot: { reviewWhatsApp: false } }).reviewWhatsApp, false);
 }));

@@ -3199,7 +3199,7 @@ let smsBlockApi = null;
 const cmsApi = cms.register(app, moduleCtx, { notify: () => notifyApi, smsBlock: () => smsBlockApi, modifiers: () => modifiersApi });
 /* 📵 حاجبين الإعلانات عند المشغّل — بيتشالوا من FreshCut-AD بس */
 smsBlockApi = smsblock.register(app, moduleCtx);
-reviews.register(app, moduleCtx, { notify: () => notifyApi, sessionUser: cmsApi.sessionUser });
+reviews.register(app, moduleCtx, { notify: () => notifyApi, sessionUser: cmsApi.sessionUser, waReview: () => wabotApi });      // SB2: طلب التقييم على واتساب أولاً (wabotApi بيتسجّل تحت)
 // 26/9: external-courier settlement (cost + paid tasks)
 extsettle.register(app, moduleCtx, { sessionUser: cmsApi.sessionUser });
 // 👥 Customer 360 — ملف العميل + سجل الرسايل + قايمة الإيقاف (identity.js = قاعدة العميل الجديد)

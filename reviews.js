@@ -138,6 +138,10 @@ export function register(app, ctx, deps = {}) {
       ALTER TABLE reviews ADD COLUMN IF NOT EXISTS hidden_reason TEXT;
       ALTER TABLE reviews ADD COLUMN IF NOT EXISTS hidden_by TEXT;
       CREATE INDEX IF NOT EXISTS reviews_order_idx ON reviews(order_no);
+      -- SB2 (١٤/١٠): طلب التقييم على واتساب — رد العميل على الزرّين، وسبب الرجوع للـSMS
+      ALTER TABLE review_invites ADD COLUMN IF NOT EXISTS wa_answer TEXT;
+      ALTER TABLE review_invites ADD COLUMN IF NOT EXISTS wa_answered_at TIMESTAMPTZ;
+      ALTER TABLE review_invites ADD COLUMN IF NOT EXISTS wa_skip TEXT;
       CREATE INDEX IF NOT EXISTS reviews_phone_idx ON reviews(phone_norm);
       CREATE TABLE IF NOT EXISTS cms_migrations (id TEXT PRIMARY KEY, at TIMESTAMPTZ NOT NULL DEFAULT NOW());
     `);
@@ -441,6 +445,15 @@ export function register(app, ctx, deps = {}) {
         if (staff.has(iv.phone_norm)) { await mark("skip_reason", "staff"); out.skipped++; continue; }
         const oo = (await pool.query("SELECT opted_out_at FROM cms_contacts WHERE phone_norm=$1", [iv.phone_norm])).rows[0];
         if (oo?.opted_out_at) { await mark("skip_reason", "opted_out"); out.skipped++; continue; }
+        /* SB2 (عمر ١٤/١٠: «ليه مشغلتش رسالة التقييم تجيله على الواتس»): واتساب أولاً (رسالة حرة بزرّين جوّه النافذة، وإلا القالب المعتمد) — القرار والأقفال في
+           wabotrun.reviewAsk (إعداد البوت reviewWhatsApp). العميل موقِّف ⇒ ولا رسالة (ولا SMS). أي سبب تاني ⇒ الـSMS زي الأول، والسبب بيتسجّل. رسالة واحدة للطلب (الصف ده). */
+        const wr = typeof deps.waReview === "function" ? deps.waReview() : null;
+        if (wr && typeof wr.reviewAsk === "function") {
+          let r = null; try { r = await wr.reviewAsk({ phone: iv.phone_norm, orderNo: iv.order_no, code: iv.code }); } catch { r = null; }
+          if (r && r.ok) { await pool.query("UPDATE review_invites SET sent_at=NOW(), channel=$2 WHERE order_no=$1", [iv.order_no, String(r.channel || "wa")]); out.sent++; out.wa = (out.wa || 0) + 1; continue; }
+          if (r && r.final) { await mark("skip_reason", `wa_${String(r.skipped || "stopped")}`.slice(0, 80)); out.skipped++; continue; }
+          if (r && r.skipped) await mark("wa_skip", String(r.skipped).slice(0, 80));
+        }
         const body = askBody(cf.askText, `${STORE_PUBLIC()}/r?c=${iv.code}`);
         try {
           const ok = await n?.sendSmsTo?.(iv.phone_norm, body, { kind: "review_invite", ref: iv.order_no });

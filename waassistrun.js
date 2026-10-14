@@ -222,7 +222,7 @@ export const ASSIST_SCHEMA = Object.freeze({
    القواعد بتفضل ماسكة: إيقاف/اشتراك وأزرار الرجوع، سؤال الموافقة، الشكوى والمشكلة وتعديل الطلب، طلب موظف، الصور والصوت،
    حالة الطلب، «نفس طلبي السابق»، أسئلة الوصفات (سطر ثابت)، الحساسية الشديدة، المواعيد والموقع وطرق الدفع، الشكر، «القائمة»،
    وكل ضغطة زر أو صف قايمة. المساعد بياخد الباقي — وبس لو مفيش تحويل مفتوح ولا سكوت موظف ولا كتم ولا حارس حلقات. */
-const RULES_OWN = new Set(["stop", "start", "resume_all", "resume_updates", "optin_yes", "optin_no", "complaint", "problem", "change", "human", "media", "status", "reorder",
+const RULES_OWN = new Set(["review_ok", "review_note", "stop", "start", "resume_all", "resume_updates", "optin_yes", "optin_no", "complaint", "problem", "change", "human", "media", "status", "reorder",
   "secret", "custom_offer", "hours", "hoursloc", "location", "payment", "thanks", "main", "other_city", "whoami", "weight"]);
 const RULES_NOTICE = new Set(["rate", "rate_burst", "handoff_remind"]);
 /* جوّه محادثة المساعد الشغّالة، الأسئلة المعلوماتية دي بتفضل معاه (عطل تقييم ١٢/١٠: «استلام لما تفتحون» راحت لرد المواعيد وقطعت الطلب). */
