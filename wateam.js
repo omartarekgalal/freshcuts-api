@@ -406,11 +406,13 @@ const DDL = `
   CREATE TABLE IF NOT EXISTS wa_team_portal (id TEXT PRIMARY KEY, since TIMESTAMPTZ, alerts INT NOT NULL DEFAULT 0, last_alert_at TIMESTAMPTZ, manager_told BOOLEAN NOT NULL DEFAULT FALSE);
   ALTER TABLE wa_team_portal ADD COLUMN IF NOT EXISTS resolved_at TIMESTAMPTZ;
   CREATE TABLE IF NOT EXISTS wa_team_portal_to (phone_norm TEXT PRIMARY KEY, last_at TIMESTAMPTZ, last_mgr_at TIMESTAMPTZ, last_back_at TIMESTAMPTZ);
-  INSERT INTO wa_team_portal_to(phone_norm, last_at, last_mgr_at, last_back_at)
-    SELECT phone_norm, max(at), max(at) FILTER (WHERE kind='manager'), max(at) FILTER (WHERE kind='back') FROM wa_team_log
-     WHERE topic='portal_offline' AND at > NOW() - INTERVAL '1 day' GROUP BY phone_norm
-    ON CONFLICT (phone_norm) DO NOTHING;
 `;
+/* PO1: أول تشغيل ⇒ حجز كل رقم بيبدأ من آخر رسالة portal_offline في السجل (مفيش رسالة على طول بعد الـdeploy لحد اتبعتله من دقيقتين).
+   استعلام لوحده بعد الجداول: لو فشل مايرجّعش إنشاء الجداول معاه. */
+const PORTAL_TO_SEED = `INSERT INTO wa_team_portal_to(phone_norm, last_at, last_mgr_at, last_back_at)
+  SELECT phone_norm, max(at), max(at) FILTER (WHERE kind='manager'), max(at) FILTER (WHERE kind='back') FROM wa_team_log
+   WHERE topic='portal_offline' AND at > NOW() - INTERVAL '1 day' GROUP BY phone_norm
+  ON CONFLICT (phone_norm) DO NOTHING`;
 
 /* ── RG1: «البورتال مقفول وقت الشغل» (صافي) ──────────────────────────────────
    وقت الشغل = مواعيد المطعم (settings.hours) والمطعم فاتح وفيه توصيل أو استلام شغّال (مش متوقف)؛ من غير مواعيد ⇒ اليوم التشغيلي ١١:٠٠→٠٣:٠٠ الرياض.
@@ -470,7 +472,8 @@ export function register(app, ctx, deps = {}) {
   const clock = deps.now || (() => new Date());
   const log = deps.log || console;
   const q = async (sql, p = []) => { try { return (await pool.query(sql, p)).rows || []; } catch (e) { log.error("[wa-team] db:", e.message); return null; } };
-  const ready = pool.query(DDL).then(() => pool.query("DELETE FROM wa_team_log WHERE at < NOW() - INTERVAL '90 days'").catch(() => {}))
+  const ready = pool.query(DDL).then(() => pool.query(PORTAL_TO_SEED).catch((e) => log.error("[wa-team] portal seed:", e.message)))
+    .then(() => pool.query("DELETE FROM wa_team_log WHERE at < NOW() - INTERVAL '90 days'").catch(() => {}))
     .then(() => pool.query("DELETE FROM wa_team_odd WHERE at < NOW() - INTERVAL '90 days'").catch(() => {})).then(() => true)
     .catch((e) => { log.error("[wa-team] schema:", e.message); return false; });
   const settingsNow = async () => { try { return (await getSettingsData()) || {}; } catch { return null; } };

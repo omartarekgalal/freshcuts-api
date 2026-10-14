@@ -19,10 +19,10 @@ const hms = (ms) => new Date(ms).toISOString().slice(11, 19);
 const settle = () => new Promise((r) => setImmediate(r));
 
 /* ── عالم واحد: wahandover (الحضور) + wateam (التنبيهات) فوق نفس القاعدة الوهمية ────────────────────────── */
-function world({ start = "2026-10-14T13:00:00Z", waTeam = {}, members = MEMBERS, settings = {} } = {}) {
+function world({ start = "2026-10-14T13:00:00Z", waTeam = {}, members = MEMBERS, settings = {}, preLog = [] } = {}) {
   let nowMs = Date.parse(start);
   const ms = (v) => (v ? Date.parse(v) : NaN);
-  const db = { presence: new Map(), writes: [], portal: null, to: new Map(), log: [],
+  const db = { presence: new Map(), writes: [], portal: null, to: new Map(), log: [...preLog],
     settings: { waTeam: { members, keeper: { enabled: false }, odd: { enabled: false }, daily: { enabled: false }, ...waTeam }, ...settings } };
   const pool = { db, async query(sql, p = []) {
     const s = String(sql).replace(/\s+/g, " ").trim();
@@ -60,6 +60,14 @@ function world({ start = "2026-10-14T13:00:00Z", waTeam = {}, members = MEMBERS,
       const [ph, at, cut, since] = p, r = db.to.get(ph);
       if (!r || !(ms(r.last_mgr_at) >= ms(since)) || (r.last_at && ms(r.last_at) > ms(cut)) || ms(r.last_back_at) >= ms(since)) return { rows: [] };
       r.last_at = at; r.last_back_at = at; return { rows: [{ phone_norm: ph }] };
+    }
+    if (/^INSERT INTO wa_team_portal_to\(phone_norm, last_at, last_mgr_at, last_back_at\) SELECT/i.test(s)) {      // البذرة من السجل (آخر يوم)
+      for (const l of db.log) {
+        if (l.topic !== "portal_offline" || l.at <= nowMs - 24 * 60 * MIN || db.to.has(l.to)) continue;
+        const mine = db.log.filter((x) => x.to === l.to && x.topic === "portal_offline" && x.at > nowMs - 24 * 60 * MIN), mx = (f) => { const a = mine.filter(f).map((x) => x.at); return a.length ? new Date(Math.max(...a)).toISOString() : null; };
+        db.to.set(l.to, { phone_norm: l.to, last_at: mx(() => true), last_mgr_at: mx((x) => x.kind === "manager"), last_back_at: mx((x) => x.kind === "back") });
+      }
+      return { rows: [] };
     }
     if (/^SELECT phone_norm, last_mgr_at, last_back_at FROM wa_team_portal_to/i.test(s)) return { rows: [...db.to.values()].filter((r) => p[0].includes(r.phone_norm)).map((r) => ({ ...r })) };
     if (/^SELECT phone_norm, count\(\*\) FILTER \(WHERE kind='cashier'/i.test(s)) {
@@ -249,6 +257,20 @@ test("14/10 replay, new rules (10 / 45 / 3, stable 2 min, cap 6): ≤ 3 messages
   }
   assert.equal(inWin.length, 8, "8 WhatsApp messages instead of 40");
   assert.match(w.sent.find((x) => x.to === MGR).text, /^⚠️ بورتال الكاشير مقفول من 10 دقايق — الكاشير اتبعتله 3 تنبيهات في آخر 4 ساعات ولسه ماتفتحش/);
+});
+
+test("deploy over a live log: the per-phone claims start from the last message in wa_team_log (no message right after the restart), and 14/10 itself is already over every cap", async () => {
+  const row = (t, to, kind) => ({ at: utc(t), to, role: kind === "cashier" ? "cashier" : "manager", topic: "portal_offline", kind, via: "wa_free", ok: true });
+  const w = world({ start: "2026-10-14T17:05:00Z", preLog: [row("17:00:00", CASH1, "cashier"), row("17:00:00", CASH2, "cashier")] });
+  await w.team.ready;
+  assert.equal(w.db.to.get(CASH1).last_at, "2026-10-14T17:00:00.000Z", "seeded from the log");
+  await play(w, { from: utc("17:05:00"), to: utc("17:46:30"), signals: [], ticks: everySec(utc("17:05:30"), utc("17:46:30"), 60) });
+  assert.deepEqual(w.offLog().filter((l) => l.to === CASH1).map((l) => hms(l.at)), ["17:00:00", "17:44:30"], "the old 17:00 message still counts: next one 45 min after it, not at the restart");
+  /* اليوم نفسه: ١٦ مرة × كاشيرين + ٥ مدير + ٣ «رجع» قبل الـdeploy ⇒ كله فوق السقف (٦) ⇒ ولا رسالة لآخر اليوم التشغيلي */
+  const pre = rg1Replay(DAY_SIGNALS, DAY_TICKS).flatMap(([t, k]) => (k === "cashier" ? [CASH1, CASH2].map((to) => ({ ...row("00:00:00", to, k), at: t })) : [{ ...row("00:00:00", MGR, k), at: t }]));
+  const d = world({ start: "2026-10-14T17:20:00Z", preLog: pre });
+  await play(d, { from: utc("17:20:00"), to: utc("23:59:30"), signals: [], ticks: everySec(utc("17:20:30"), utc("23:59:30"), 60) });
+  assert.equal(d.offLog().length, pre.length, "nothing new for the rest of 14/10");
 });
 
 test("a portal genuinely closed for 30 min: the first message comes within afterMin+1 min of the last signal, and only once in the 30 min", async () => {
