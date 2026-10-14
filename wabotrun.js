@@ -261,6 +261,8 @@ export const TEXTS = Object.freeze({
   sb_box_saves: t("الاقتراح: بوكس فيه نفس الأصناف أرخص", "ونفس الأصناف تجي في {box} بـ {price} ر.س بدل {separate} ر.س. أحوّلها بوكس؟", "The same items come as {box} for SAR {price} instead of SAR {separate}. Switch to the box?", ["box", "price", "separate"], [], 300),
   sb_pair_box: t("الاقتراح: بوكس من نفس الطلب", "وبـ {price} ر.س يصير {box}. أحوّله بوكس؟", "For SAR {price} it becomes {box}. Make it a box?", ["box", "price"], [], 300),
   sb_add_item: t("الاقتراح: صنف واحد معاه", "تحب أضيف لك {item} بـ {price} ر.س؟", "Shall I add {item} for SAR {price}?", ["item", "price"], [], 300),
+  sb_ask_mode: t("رد الكود بعد «لا شكراً» على الاقتراح", "تمام 👍 توصيل ولا استلام؟", "Sure 👍 Delivery or pickup?", [], [], 200),
+  sb_added_mode: t("رد الكود بعد «أضفه ✅»", "تمام، أضفت {item} ✅ المجموع {total} ر.س.\nتوصيل ولا استلام؟", "Done, I added {item} ✅ Total SAR {total}.\nDelivery or pickup?", ["item", "total"], [], 300),
   sb_offers_head: t("العروض الحية: العنوان", "🔥 عروضنا الحين:", "🔥 Our offers now:", [], [], 100),
   sb_offer_line: t("العروض الحية: سطر", "• {name} — {price} ر.س", "• {name} — SAR {price}", ["name", "price"], [], 200),
   sb_offer_line_until: t("العروض الحية: سطر بتاريخ نهاية", "• {name} — {price} ر.س (لين {until})", "• {name} — SAR {price} (until {until})", ["name", "price", "until"], [], 200),

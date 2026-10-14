@@ -226,3 +226,48 @@ test("(15) eval sb1-b regressions: the code's own recap «المجموع: 60 ر.
   assert.equal(S.choiceButtons("أبشر، ويُباع بالوزن: ثلث كيلو 53 ر.س · نصف كيلو 78 ر.س · كيلو 155 ر.س. كم شخص أنتم؟", { weights: w }).kind, "people");
   assert.equal(S.choiceButtons("مشكل مخصوص، الكيلو بـ 155 ر.س. تجهّزه لك كيلو؟").kind, "confirm");
 });
+
+test("(16) SB3 fast path: «أضفه ✅» with pickup already said ⇒ the code adds the item, builds the cart and sends the recap — no model call", async () => {
+  let calls = 0;
+  const steps = [use(["preview_cart", { option: "pickup", items: [{ id: "91", qty: 1, variant_option_id: 45 }] }]), say("كفتة مشوية بالوزن، نصف كيلو بـ 60 ر.س. تحب أضيف لك طبق أرز بسمتي بـ 6 ر.س؟")];
+  const W = makeWorld({ profile: "new" }, { callModel: async () => { calls++; return steps.shift() || say("تمام."); }, onCall: async () => ({ costSar: 0, in: 0, out: 0, cached: 0 }), acfg: { forceSuggestion: false } });
+  let session = AR.newSession(W.now());
+  const turn = async (text) => { const r = await W.loop.runTurn({ phone: PHONE, text, lang: "ar", session, acfg: { ...W.acfg, routing: "strong" }, context: AR.buildContext({ first: session.messages.length === 0, hours: await W.tools.get_hours(), boxes: W.boxes }) }); if (r.ok) session = r.session; return r; };
+  await turn("نص كيلو كفتة بالوزن استلام");
+  const before = calls;
+  const r = await turn("أضفه ✅");
+  assert.equal(calls, before, "no model call");
+  assert.equal(r.trace.fastPath, "accepted:pickup");
+  assert.deepEqual(r.cart.lines.map((l) => l.name), ["كفتة مشوية بالوزن", "طبق أرز بسمتي"]);
+  assert.match(r.text, /المجموع: 66 ر.س\nاستلام من الفرع: بدون رسوم توصيل/);
+  const m = r.session.messages.slice(-3).map((x) => x.role + ":" + x.content.map((b) => b.type).join(","));
+  assert.deepEqual(m, ["assistant:tool_use", "user:tool_result", "assistant:text"], "recorded as if the assistant called the tool: the next turn understands it");
+  assert.equal(r.session.state.offered.at(-1).outcome, "accepted");
+});
+
+test("(17) SB3 fast path: «لا شكراً» before delivery-or-pickup is known ⇒ «تمام 👍 توصيل ولا استلام؟» with the two buttons — no model call", async () => {
+  let calls = 0; const steps = [use(["preview_cart", { option: "delivery", items: [{ id: "91", qty: 1, variant_option_id: 45 }] }]), say("كفتة مشوية بالوزن، نصف كيلو بـ 60 ر.س.")];
+  const W = makeWorld({ profile: "new" }, { callModel: async () => { calls++; return steps.shift() || say("تمام."); }, onCall: async () => ({ costSar: 0, in: 0, out: 0, cached: 0 }), acfg: { forceSuggestion: false } });
+  let session = AR.newSession(W.now());
+  const turn = async (text) => { const r = await W.loop.runTurn({ phone: PHONE, text, lang: "ar", session, acfg: { ...W.acfg, routing: "strong" }, context: AR.buildContext({ first: session.messages.length === 0, hours: await W.tools.get_hours(), boxes: W.boxes }) }); if (r.ok) session = r.session; return r; };
+  await turn("نص كيلو كفتة بالوزن");
+  const before = calls;
+  const r = await turn("لا شكراً");
+  assert.equal(calls, before); assert.equal(r.text, "تمام 👍 توصيل ولا استلام؟"); assert.deepEqual(r.buttons, { kind: "mode" });
+  assert.deepEqual(r.session.state.declined, ["pair"]);
+});
+
+test("(18) SB3 slim tool results: same prices and ids, no English names in an Arabic chat, one pricing note instead of one per dish", async () => {
+  const W = makeWorld({}, {});
+  const full = await W.tools.search_menu(PHONE, { query: "كفتة" });
+  const ar = AR.slimForModel("search_menu", full, "ar"), en = AR.slimForModel("search_menu", full, "en");
+  assert.ok(JSON.stringify(ar).length < JSON.stringify(full).length * 0.9, `${JSON.stringify(ar).length} vs ${JSON.stringify(full).length}`);
+  assert.doesNotMatch(JSON.stringify(ar), /name_en/); assert.match(JSON.stringify(en), /name_en/);
+  const nums = (o) => (JSON.stringify(o).match(/\d+(?:\.\d+)?/g) || []).sort().join(",");
+  const core = (r) => r.results.map((x) => [x.id, x.price, (x.weights || []).map((w) => [w.price, w.variant_option_id])]); assert.equal(nums(core(ar)), nums(core(full)));
+  assert.equal((JSON.stringify(ar).match(/how_to_price/g) || []).length, 1);
+  const box = await W.tools.get_box(PHONE, { slug: "box-pizza-night" });
+  const sb = AR.slimForModel("get_box", box, "ar");
+  assert.ok(JSON.stringify(sb).length < JSON.stringify(box).length, "the box: lighter"); assert.equal(sb.box.price, box.box.price);
+  assert.equal(AR.slimForModel("get_offers", { a: 1 }, "ar").a, 1, "other tools untouched");
+});

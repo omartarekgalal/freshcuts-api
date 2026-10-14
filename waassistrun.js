@@ -99,12 +99,15 @@ export const ASSIST_CFG_DEFAULTS = Object.freeze({
   codeRecap: true,                     // ملخص السلة دايماً من قالب الكود: سطر لكل صنف (الوزن والملاحظة)، المجموع، التوصيل، الإجمالي، الزر
   offersBlock: true,                   // «وش العروض؟» ⇒ العروض الحية بقالب الكود (عروض بتاريخها، بوكس لكل فئة، أول طلب / مكافأتك) + سؤال واحد
   boldNames: true,                     // أسماء الأصناف والبوكسات في الرد بخط عريض واتساب *…*، وسطور قصيرة
+  /* SB3 — التكلفة (١٤/١٠): الجزء المحسوب بالكود مايروحش للموديل */
+  codeFastPath: true,                  // «أضفه ✅ / لا شكراً» على اقتراح صنف والتوصيل/الاستلام معروف ⇒ الكود يحدّث السلة ويبعت الملخص أو سؤال توصيل/استلام بالأزرار، من غير أي نداء موديل
+  slimTools: true,                     // نتايج الأدوات للموديل من غير الحقول اللي مالهاش لازمة في لغة المحادثة (الأسماء الإنجليزية في محادثة عربي، الإضافات الفاضية، الشرح المكرر)
 });
 const NUMS = { budgetDaySar: [0, 1000], budgetMonthSar: [0, 10000], maxToolRounds: [1, 8], maxRepliesPerChatDay: [1, 60], timeoutMs: [5000, 60000], sessionMin: [10, 720], staffStepBackMin: [1, 60], seriousHoldMin: [0, 240], locationHours: [1, 24], keepDays: [7, 730],
   fastCartLines: [0, 6], ackMaxChars: [0, 900], imageBurstSec: [0, 30], imageBurstMax: [1, 10], bigBoxSar: [0, 1000], reminderQuietStart: [0, 23], reminderQuietEnd: [0, 23], compactAfterChars: [8000, 200000], compactKeepTurns: [1, 12], followUpMin: [5, 720], followUpCloseGuardMin: [0, 240], nudgeMin: [0, 180], searchMax: [3, 15], nudgeGapSar: [0, 100], topSellerDays: [7, 180], profileOrders: [5, 200], maxCartLines: [1, 40], liveDailyCustomers: [0, 5000], voiceMaxSec: [10, 300], mediaBudgetDaySar: [0, 50], sttSarPerMin: [0, 1], maxOffersPerChat: [0, 3] };
 const ENUMS = { mode: ASSIST_MODES, routing: ["escalate", "strong", "fast"], effort: ["low", "medium", "high"], thinking: ["adaptive", "off"], sttProvider: ["openai", "groq", "elevenlabs"], liveAudience: LIVE_AUDIENCES, cacheTtl: ["5m", "1h"] };
 const BOOLS = ["typing", "followUpEnabled", "forceSuggestion", "imagesEnabled", "voiceEnabled", "fastSimplePreview", "orderWordsStrong", "rulesFirstPrice", "remindersEnabled", "feeMoment", "menuToRules", "pickForMe", "choiceList", "pairingEnabled", "adButtons", "weightToAssistant", "faqShort", "firstLead", "grillFamilies", "oneOfferPerChat", "briefEnabled", "allergenList", "menuButton", "sellerClose",
-  "salesBrain", "proactiveLines", "thresholdNudge", "offerButtons", "choiceButtons", "codeRecap", "offersBlock", "boldNames"];
+  "salesBrain", "proactiveLines", "thresholdNudge", "offerButtons", "choiceButtons", "codeRecap", "offersBlock", "boldNames", "codeFastPath", "slimTools"];
 const MODEL_RE = /^[a-z0-9./-]{3,60}$/;
 /* PS1 — اسم الشخصية: حروف ومسافات بس (٢–٢٠ حرف)؛ مفيش أرقام ولا رموز ولا سطر جديد، عشان مايبقاش باب لحقن نص في الرسالة أو في سياق الموديل. */
 const NAMES = { personaName: /^[ء-ي][ء-ي ]{1,19}$/, personaNameEn: /^[A-Za-z][A-Za-z ]{1,19}$/ };
@@ -215,6 +218,8 @@ export const ASSIST_SCHEMA = Object.freeze({
   "assist.choiceButtons": { group: "assist", type: "boolean", ar: "أسئلة الاختيار بأزرار", help: "أي رد بيسأل العميل يختار بيطلع معاه أزرار: أوزان الصنف بأسعارها، «توصيل / استلام»، «إيه، جهّزه / شي ثاني»، وقايمة «كم شخص». الكتابة العادية شغّالة دايماً." },
   "assist.codeRecap": { group: "assist", type: "boolean", ar: "ملخص السلة من قالب ثابت", help: "رسالة الرابط دايماً بالقالب: سطر لكل صنف بالوزن والملاحظة، المجموع، التوصيل (مجاني بالكود / الرسوم لموقعه / تظهر قبل الدفع)، الإجمالي، والزر. النصوص من «ملخص السلة» تحت." },
   "assist.offersBlock": { group: "assist", type: "boolean", ar: "«وش العروض؟» بقالب العروض الحية", help: "العروض اللي لها تاريخ، بوكس لكل فئة (فردي / لشخصين / عائلة) بسعره، وسطر أول طلب أو مكافأة العميل — من النظام، والمساعد يضيف سطر وسؤال." },
+  "assist.codeFastPath": { group: "assist", type: "boolean", ar: "رد الكود على «أضفه / لا شكراً»", help: "العميل ضغط «أضفه ✅» أو «لا شكراً» على اقتراح صنف: الكود يحدّث السلة بنفسه ويبعت الملخص بالرابط (لو قال استلام، أو توصيل وشارك موقعه) أو «توصيل ولا استلام؟» بالأزرار — من غير نداء موديل (أرخص وأسرع). مقفول = المساعد يرد زي أي رسالة." },
+  "assist.slimTools": { group: "assist", type: "boolean", ar: "نتايج أدوات أخف للموديل", help: "الموديل بياخد من نتايج الأدوات اللي يحتاجه للغة المحادثة بس (من غير الأسماء الإنجليزية في محادثة عربي، ومن غير القوايم الفاضية والشرح المكرر). نفس الأسعار ونفس الأرقام." },
   "assist.boldNames": { group: "assist", type: "boolean", ar: "أسماء الأصناف بخط عريض", help: "اسم الصنف أو البوكس في الرد بيتكتب *عريض* (أول مرة)، والسطر الطويل بيتقسم سطور قصيرة." },
 });
 
@@ -767,6 +772,29 @@ export function turnLang(text, prev = null, fallback = "ar") {
 const partOfDay = (h) => (h < 5 ? "بعد منتصف الليل" : h < 12 ? "الصباح" : h < 16 ? "الظهر" : h < 19 ? "العصر" : "المساء");
 const clip = (v, max = 14000) => { const s = JSON.stringify(v); return s.length > max ? `${s.slice(0, max)}…` : s; };
 const small = (v, max = 4000) => { const s = JSON.stringify(v ?? null); return s.length <= max ? (v ?? null) : { truncated: s.slice(0, max) }; };
+/* SB3 — نتيجة الأداة زي ما الموديل محتاجها: في محادثة عربي من غير الأسماء/الأوصاف الإنجليزية، من غير القوايم الفاضية، و«how_to_price» مرة واحدة للنتايج كلها.
+   الأرقام والمعرّفات والأسماء العربية زي ما هي (الكود نفسه بيشتغل على النتيجة الكاملة: trace والجلسة بيخزّنوا اللي اتبعت للموديل بس). */
+const EN_KEYS = new Set(["name_en", "description_en", "section_en", "label_en", "group_en", "weight_en"]);
+export function slimForModel(tool, out, lang = "ar") {
+  if (!out || typeof out !== "object" || !["search_menu", "get_item", "get_box", "list_boxes", "list_packs", "recommend", "preview_cart", "build_cart"].includes(tool)) return out;
+  let howTo = null;
+  const walk = (v) => {
+    if (Array.isArray(v)) return v.map(walk);
+    if (!v || typeof v !== "object") return v;
+    const o = {};
+    for (const [k, x] of Object.entries(v)) {
+      if (lang !== "en" && EN_KEYS.has(k)) continue;
+      if (k === "how_to_price") { howTo = howTo || x; continue; }
+      if (Array.isArray(x) && !x.length && (k === "addons" || k === "problems")) continue;
+      if (k === "extra" && x === 0) continue;
+      o[k] = walk(x);
+    }
+    return o;
+  };
+  const r = walk(out);
+  if (howTo && r && typeof r === "object" && !Array.isArray(r)) r.how_to_price = howTo;
+  return r;
+}
 const cleanCustomer =(t) => String(t || "").replace(/<\/?\s*(customer_message|context|system_check|system)[^>]*>/gi, " ").trim();
 
 /* كتلة السياق لدور واحد (صافية): أول دور في الجلسة فيه ملف العميل والعروض وعرض «نفس الطلب»؛ الأدوار اللي بعده الحالة المتغيّرة بس. */
@@ -1205,6 +1233,7 @@ export function makeAssistLoop(deps) {
         { const fg = await familyGate(T, mapCart(a)); if (fg) return fg; } notesGate(T, mapCart(a), false);
         const cart = await tools.build_cart(phone, mapCart(a), { save: false });
         if (!cart || !cart.ok) return cart;
+        st.lastInput = JSON.parse(JSON.stringify(a));      // SB3: آخر سلة اتسعّرت (للرد بالكود على «أضفه / لا شكراً»)
         const sg = await tools.suggest(phone, { cart, declined: st.declined, profile: T.profile || null });
         /* PS5 (…٦٨٦٩: «أحوّله بوكس؟» في تلات ردود ورا بعض): اقتراح واحد في المحادثة. اتعرض قبل كده (اتقبل، اترفض، أو العميل تجاهله وكمّل) ⇒ مفيش اقتراح في المعاينة دي.
            SB1: عقل البيع ⇒ لحد maxOffersPerChat، ومفيش بعد «لا»، والترتيب: بوكس ⇒ أقرب حد رسوم بصنف واحد ⇒ الباقي. */
@@ -1327,6 +1356,53 @@ export function makeAssistLoop(deps) {
     }
   }
 
+  /* SB3 — الرد بالكود على زرّين الاقتراح. شروط: آخر سلة اتسعّرت معروفة، والاقتراح صنف (مش بوكس)، والطريقة معروفة (استلام، أو توصيل والموقع متشارك) — غير كده null والموديل يرد.
+     بيتسجّل في الجلسة كأن المساعد نده الأداة (tool_use + tool_result + الرد) عشان الدور الجاي يفهم اللي حصل وأرقامه تفضل «حقايق» للمراجِع. */
+  const MODE_PICK_RE = /(^| )(استلام|استلم|بستلم|pickup|pick up)( |$)/, MODE_DELIV_RE = /(^| )(توصيل|التوصيل|وصلوه|delivery|deliver)( |$)/;
+  async function fastPath(T, ctx, know) {
+    const st = T.session.state, ans = ctx.suggestion_answer, input0 = st.lastInput;
+    if (!input0 || !ans) return null;
+    const said = st.customerTexts.map((x) => normalize(String(x || "")));
+    const lastMode = [...said].reverse().map((x) => (MODE_PICK_RE.test(x) ? "pickup" : MODE_DELIV_RE.test(x) ? "delivery" : null)).find(Boolean) || null;
+    const accepted = Boolean(ans.accepted), o = [...st.offered].reverse().find((x) => x.outcome === (accepted ? "accepted" : "declined"));
+    if (!o) return null;
+    const input = JSON.parse(JSON.stringify(input0));
+    if (accepted) {
+      const it = o.ref && know.menu && know.menu.items ? know.menu.items.find((i) => String(i.id) === String(o.ref)) : null;
+      if (!it || it.byWeight || o.kind === "box_saves" || (o.kind === "pair" && !it)) return null;      // بوكس أو صنف بالوزن ⇒ الموديل (اختيارات / وزن)
+      input.items = [...(input.items || []), { id: String(it.id), qty: 1 }];
+    }
+    const mode = lastMode === "pickup" ? "pickup" : lastMode === "delivery" && st.pin ? "delivery" : null;
+    const calls = [];
+    const run = async (name, inp) => { const s0 = Date.now(); const out = await exec(name, inp, T); T.trace.tools.push({ name, input: inp, result: out, ms: Date.now() - s0 }); calls.push({ name, inp, out }); return out; };
+    let text = null, cartOut = null;
+    if (mode) {
+      input.option = mode;
+      cartOut = await run("build_cart", input);
+      if (!cartOut || cartOut.ok === false || !T.cart) return null;      // بوابة (لحظة الرسوم / اقتراح) ⇒ الموديل
+      text = deps.cartRecap ? await deps.cartRecap(T.cart, T.lang) : null;
+      if (!text) return null;
+    } else {
+      input.option = input.option === "pickup" ? "pickup" : "delivery";
+      const pv = await run("preview_cart", input);
+      if (!pv || pv.ok === false) return null;
+      T.sgNow = null; T.trace.suggestions = T.trace.suggestions.filter((x) => x.outcome !== "computed");      // مفيش اقتراح تاني في رد الكود
+      text = accepted ? sbText("sb_added_mode", { item: o.name, total: pv.subtotal }, T.lang) : sbText("sb_ask_mode", {}, T.lang);
+      if (!text) return null;
+      T.buttons = { kind: "mode" };
+    }
+    const ids = calls.map((c, i) => `fp${Date.now().toString(36)}${i}`);
+    T.session.messages.push({ role: "assistant", content: calls.map((c, i) => ({ type: "tool_use", id: ids[i], name: c.name, input: c.inp })) });
+    T.session.messages.push({ role: "user", content: calls.map((c, i) => ({ type: "tool_result", tool_use_id: ids[i], content: clip(T.acfg.slimTools ? slimForModel(c.name, c.out, T.lang) : c.out) })) });
+    let out = salesPostA(T, text);
+    T.session.messages.push({ role: "assistant", content: [{ type: "text", text: out }] });
+    if (T.cart) { st.lastCart = { code: T.cart.code, at: now().toISOString(), subtotal: T.cart.subtotal, option: T.cart.option, accepted: st.offered.filter((x) => x.outcome === "accepted").map((x) => ({ kind: x.kind, ref: x.ref, name: x.name })) };
+      for (const x of st.offered) if (x.outcome === "offered") x.outcome = "declined"; }
+    out = salesPostB(T, out, { list: null, know });
+    T.trace.fastPath = accepted ? `accepted:${mode || "ask_mode"}` : `declined:${mode || "ask_mode"}`;
+    if (T.cartNow) st.cartNow = T.cartNow;
+    return { ok: true, text: out, cart: T.cart, handover: null, session: T.session, trace: T.trace, location: false, reminder: null, buttons: T.cart ? null : T.buttons, list: null, photoItem: null, menu: false };
+  }
   async function runTurn({ phone, text, lang = "ar", session: session0, acfg, context = {}, profile = null, earlierPictures = null }) {
     const t0 = Date.now(), deadline = t0 + acfg.timeoutMs;
     const session = compactSession(JSON.parse(JSON.stringify(session0)), { maxChars: acfg.compactAfterChars, keepTurns: acfg.compactKeepTurns });          // الجلسة الأصلية ماتتلمسش لو الدور فشل؛ الطويلة بتتلخّص (PS2)
@@ -1354,6 +1430,8 @@ export function makeAssistLoop(deps) {
     if (earlierPictures) st.customerTexts.push(String(earlierPictures).slice(0, 1500));      // PS5: وصف صور بعتها العميل قبل كده (كلامها بيتحسب: «بالوزن»، اسم الصنف)
     let model = pm.model, tier = pm.tier, rounds = 0, retried = false, finalText = null;
     const know = deps.knowOf ? await deps.knowOf() : {};
+    /* SB3: «أضفه ✅ / لا شكراً» على اقتراح صنف ⇒ الكود يكمّل من غير موديل (السلة والملخص والأزرار كلهم كود أصلاً) */
+    if (acfg.salesBrain && acfg.codeFastPath && ctx.suggestion_answer) { try { const fp = await fastPath(T, ctx, know); if (fp) { trace.ms = Date.now() - t0; return fp; } } catch (e) { (deps.log || console.error)("[assist] fast path:", e.message); } }
     /* PK1: ملف معرفة البيزنس + المنيو الحي في سطور. بيتبعت كتلة تعليمات تانية (كاش)، وبيتحسب «حقايق» عند المراجِع (أسماء وأسعار المنيو الحي مسموح تتقال). فشل القراءة ⇒ من غيره. */
     let brief = null; if (acfg.briefEnabled && deps.brief) { try { const bt = await deps.brief(); brief = bt ? `${SELLING_RULES}\n\n${bt}` : null; } catch { brief = null; } }
     trace.briefChars = brief ? brief.length : 0;
@@ -1380,7 +1458,7 @@ export function makeAssistLoop(deps) {
           const s0 = Date.now(); let out;
           try { out = TOOL_NAMES.has(u.name) ? await exec(u.name, u.input, T) : { ok: false, error: "unknown_tool" }; } catch (e) { out = { ok: false, error: "unavailable", what: u.name }; }
           trace.tools.push({ name: u.name, input: u.input, result: out, ms: Date.now() - s0 });
-          return { type: "tool_result", tool_use_id: u.id, content: clip(out), ...(out && out.ok === false ? { is_error: true } : {}) };
+          return { type: "tool_result", tool_use_id: u.id, content: clip(acfg.slimTools ? slimForModel(u.name, out, T.lang) : out), ...(out && out.ok === false ? { is_error: true } : {}) };
         }));
         session.messages.push({ role: "user", content: results });
         if (T.handover) { session.messages.push({ role: "assistant", content: [{ type: "text", text: "[handed over to staff]" }] }); break; }
