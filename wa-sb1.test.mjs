@@ -281,3 +281,17 @@ test("(19) batch20 regressions: the first-order line goes before the QUESTION se
   await c2.turn("لا شكراً");
   assert.equal((await c2.turn("كريب زنجر سوبريم استلام")).trace.tools[0].result.suggestion, null, "a plain «لا شكراً» = no more suggestions in this chat");
 });
+
+test("(20) eval sb1-a polish: an ad chat asking «تبيه نصف كيلو ولا كيلو؟» gets the advertised dish's weight buttons (not delivery/pickup); «… توصيل ولا استلام؟» after box choices gets the two buttons, not the choice list again", async () => {
+  const W0 = makeWorld({ profile: "new" }, {}); const it = W0.menu.items.find((i) => String(i.id) === "103");
+  const ad = { ad_text: "مشكل مخصوص على الفحم", advertised: { kind: "item", id: "103", name: it.name, by_weight: true, weights: it.weights.map((x) => ({ label: x.label_ar, label_en: x.label_en, price: x.price, variant_option_id: x.variant_option_id })) } };
+  const c = chat([say("مشكل مخصوص بالوزن: ثلث كيلو 53 ر.س · نصف كيلو 78 ر.س · كيلو 155 ر.س. تبيه نصف كيلو ولا كيلو؟")], { world: { profile: "new" } });
+  const r = await c.turn("كم السعر", { ctx: { ad } });
+  assert.equal(r.buttons.kind, "weights"); assert.deepEqual(r.buttons.weights.map((x) => x.price), [53, 78, 155]);
+  const b = chat([use(["get_box", { slug: "box-crepe-duo" }]), say("الكريب الأول وش تبيه؟ كريب زنجر سوبريم ولا كريب ميكس دجاج؟"),
+    say("تمام: بوكس الكريب لشخصين (كريب زنجر سوبريم + كريب ميكس دجاج) بـ 65 ر.س. توصيل ولا استلام؟")], { world: { profile: "new" } });
+  const r1 = await b.turn("ابغى بوكس الكريب لشخصين");
+  assert.ok(r1.list, "the choice question still gets its list");
+  const r2 = await b.turn("كريب زنجر سوبريم وكريب ميكس دجاج");
+  assert.equal(r2.list, null); assert.deepEqual(r2.buttons, { kind: "mode" });
+});

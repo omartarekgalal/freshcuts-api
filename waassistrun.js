@@ -1109,6 +1109,8 @@ export function makeAssistLoop(deps) {
     if (context && (context.location_shared || context.customer_just_shared_a_location_pin)) st.pin = true;
     T.sales = { card, topics: { ...topicsOf(text), pin: Boolean(context && context.customer_just_shared_a_location_pin), opening: st.turns === 0, named } };
     if (st.turns === 0 && card) ctx.sales_card = cardForModel(card);
+    /* الصنف المُعلن بالوزن (محادثة إعلان): أوزانه للأزرار لو الرد سأل «أي وزن؟» */
+    { const adv = context && context.came_from_ad && context.came_from_ad.advertised; if (adv && Array.isArray(adv.weights) && adv.weights.length >= 2 && !T.weightsNow) T.weightsNow = adv.weights.map((w) => ({ label: w.label, label_en: w.label_en, price: w.price, variant_option_id: w.variant_option_id })); }
     /* زرّين الاقتراح (أو نفس الكلام مكتوب): القبول والرفض بيتسجّلوا بالكود، والموديل بيتقال له يعمل إيه */
     const pend = [...st.offered].reverse().find((o) => o.outcome === "offered"), clean = nt.replace(/[✅👍🙏!.،]/g, " ").replace(/\s+/g, " ").trim();
     if (pend && SG_YES_RE.test(clean)) { pend.outcome = "accepted"; T.trace.suggestions.push({ kind: pend.kind, ref: pend.ref, name: pend.name, outcome: "accepted", by: "reply" });
@@ -1544,9 +1546,10 @@ export function makeAssistLoop(deps) {
     let list = null;
     if (finalText && !T.cart) { const sk = askedSlot(finalText, st.lastBox);
       st.askedSlot = sk ? { key: sk, n: st.askedSlot && st.askedSlot.key === sk ? st.askedSlot.n + 1 : 1 } : null;
-      if (sk && acfg.choiceList && !T.buttons) { const sl = st.lastBox.slots.find((s) => s.key === sk); list = { slot: sk, rows: sl.choices.map((c) => ({ id: `as:c:${c.id}`, title: lang === "en" ? c.name_en || c.name : c.name, extra: c.extra })) }; } }
+      const askMode = Boolean(acfg.salesBrain && acfg.choiceButtons && (choiceButtons(finalText) || {}).kind === "mode");      // SB1: «… توصيل ولا استلام؟» بعد اختيارات البوكس = سؤال توصيل/استلام، مش قايمة الاختيارات تاني
+      if (sk && acfg.choiceList && !T.buttons && !askMode) { const sl = st.lastBox.slots.find((s) => s.key === sk); list = { slot: sk, rows: sl.choices.map((c) => ({ id: `as:c:${c.id}`, title: lang === "en" ? c.name_en || c.name : c.name, extra: c.extra })) }; } }
     /* PS4: أول رد لمحادثة إعلان مربوط بصنف ⇒ أزرار «توصيل / استلام / أبغى شي ثاني» */
-    if (finalText && !T.cart && !T.buttons && !list && acfg.adButtons && context && context.came_from_ad && context.came_from_ad.advertised && st.turns === 1) T.buttons = { kind: "ad" };
+    if (finalText && !T.cart && !T.buttons && !list && acfg.adButtons && context && context.came_from_ad && context.came_from_ad.advertised && st.turns === 1 && !(acfg.salesBrain && acfg.choiceButtons && choiceButtons(finalText, { weights: T.weightsNow }))) T.buttons = { kind: "ad" };      // SB1: الرد بيسأل سؤال اختيار (الوزن مثلاً) ⇒ أزراره هو
     if (T.cart) st.lastCart = { code: T.cart.code, at: n.toISOString(), subtotal: T.cart.subtotal, option: T.cart.option, accepted: st.offered.filter((o) => o.outcome === "accepted").map((o) => ({ kind: o.kind, ref: o.ref, name: o.name })) };
     if (finalText) finalText = salesPostB(T, finalText, { list, know });      // SB1: الأزرار + التنسيق
     if (T.cartNow) st.cartNow = T.cartNow;
