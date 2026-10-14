@@ -17,7 +17,7 @@ function chat(steps, acfg = {}, world = {}) { let i = 0; const seen = [];
   const W = makeWorld(world, { callModel: async (a) => { seen.push({ system: a.system, brief: a.brief ?? null }); const s = steps[i++]; if (!s) throw new Error("no step left"); return s; }, onCall: async () => ({ costSar: 0, in: 0, out: 0, cached: 0 }), acfg: { pairingEnabled: false, forceSuggestion: false, feeMoment: false, ...acfg } });
   let session = null; const turn = async (text) => { const hours = await W.tools.get_hours(); const fresh = !session; if (fresh) session = AR.newSession(W.now());
     const cls = R.classify({ phone: PHONE, text, type: "text" }, W.know);
-    const r = await W.loop.runTurn({ phone: PHONE, text, lang: "ar", session, acfg: { ...W.acfg, routing: "strong" }, context: AR.buildContext({ first: fresh, hours, boxes: W.boxes, hint: AR.hintOf(cls) }) }); if (r.ok) session = r.session; return r; };
+    const r = await W.loop.runTurn({ phone: PHONE, text, lang: "ar", session, acfg: { ...W.acfg, routing: "strong", salesBrain: false }, context: AR.buildContext({ first: fresh, hours, boxes: W.boxes, hint: AR.hintOf(cls) }) }); if (r.ok) session = r.session; return r; };
   return { W, turn, seen, used: () => i }; }
 const W0 = makeWorld({}, { callModel: async () => say("x"), onCall: async () => ({}) });
 const know = { menu: W0.menu, boxes: W0.boxes };

@@ -33,7 +33,7 @@ const words = (s) => normalize(String(s || "")).replace(/[^\p{L}\p{N}\s]/gu, " "
 export const grillStemOf = (name) => grillStem(name);
 const DRINK_RE = /بيبسي|سفن|ميرندا|كولا|مياه|ماء|عصير|مشروب|شاي|قهوه|لبن|pepsi|7up|seven|mirinda|cola|water|juice|drink|tea/i;
 const SIDE_RE = /بطاطس|كولسلو|سلطه|ارز|رز|خبز|صوص|طحينه|ثوم|حمص|fries|coleslaw|salad|rice|bread|sauce|dip/i;
-const kindOf = (it) => (/Sides|Drinks|إضافات/i.test(`${it.category} ${it.categoryAr}`) ? (DRINK_RE.test(normalize(`${it.name} ${it.nameEn}`)) ? "drink" : "side") : "main");
+export const kindOf = (it) => (/Sides|Drinks|إضافات/i.test(`${it.category} ${it.categoryAr}`) ? (DRINK_RE.test(normalize(`${it.name} ${it.nameEn}`)) ? "drink" : "side") : "main");
 
 /* ── ١) بحث المنيو (صافي) ─────────────────────────────────────────────── */
 export function searchMenu(menu, query, max = ASSIST_DEFAULTS.searchMax) {
@@ -432,7 +432,7 @@ export function makeAssistTools(deps = {}) {
   }
   async function list_boxes() {
     const bs = await boxesOf(); if (!bs) return unavailable("boxes");
-    return { ok: true, boxes: bs.filter((b) => String(b.section || "").trim()).map((b) => ({ slug: b.slug, name: b.name, name_en: b.name_en || null, price: Number(b.price), section: b.section, section_en: b.section_en || null, description: b.description || "", description_en: b.description_en || null })), online_only: true };
+    return { ok: true, boxes: bs.filter((b) => String(b.section || "").trim()).map((b) => ({ slug: b.slug, name: b.name, name_en: b.name_en || null, price: Number(b.price), section: b.section, section_en: b.section_en || null, description: b.description || "", description_en: b.description_en || null, ...(b.featured ? { featured: true } : {}) })), online_only: true };
   }
   async function check_availability(_p, { ids = [] } = {}) {
     const menu = await menuOf(); if (!menu) return unavailable("menu");

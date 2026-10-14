@@ -13,7 +13,7 @@ const say = (text) => ({ ok: true, content: [{ type: "text", text }], stop: "end
 const use = (...u) => ({ ok: true, content: u.map(([name, input], i) => ({ type: "tool_use", id: `u${i}${name}`, name, input })), stop: "tool_use", usage: { input_tokens: 5, output_tokens: 5 }, ms: 1, provider: "t" });
 function chat(world, steps, acfg = {}) { let i = 0; const W = makeWorld(world, { callModel: async () => steps[i++], onCall: async () => ({ costSar: 0, in: 0, out: 0, cached: 0 }), acfg });
   let session = null; const turn = async (text) => { const hours = await W.tools.get_hours(); const fresh = !session; if (fresh) session = AR.newSession(W.now());
-    const r = await W.loop.runTurn({ phone: PHONE, text, lang: "ar", session, acfg: { ...W.acfg, routing: "strong" }, context: AR.buildContext({ first: fresh, hours, boxes: W.boxes }) }); if (r.ok) session = r.session; return r; };
+    const r = await W.loop.runTurn({ phone: PHONE, text, lang: "ar", session, acfg: { ...W.acfg, routing: "strong", salesBrain: false }, context: AR.buildContext({ first: fresh, hours, boxes: W.boxes }) }); if (r.ok) session = r.session; return r; };
   return { W, turn }; }
 
 test("the two grill families come from the live menu: a meal (as its description says) and by weight; a grill named without saying which gets ONE question with both and two buttons", async () => {

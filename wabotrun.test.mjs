@@ -58,7 +58,7 @@ function world({ waBot = {}, notifications = { whatsappEnabled: true }, orders =
   const clock = { now: () => new Date(nowMs), advance: (min) => { nowMs += min * 60_000; }, advanceSec: (s) => { nowMs += s * 1000; }, set: (iso) => { nowMs = Date.parse(iso); } };
   const db = { msgs: [], log: [], jobs: [], proofs: [], consentLog: [], ai: [], aiAlerts: [], tpl: [], cfgLog: [], botCarts: [], chats: new Map(), optouts: [], optins: {}, links: links.map((s) => (typeof s === "string" ? { slug: s, active: true, clicks: 0 } : { active: true, clicks: 0, ...s })), adChats: [], adReportParams: null, channelOffers: [], channelReportParams: null, sttKey: null, liveDay: [], marketingTo: [], settings: null };
   db.settings = { hours: HOURS, notifications, googlePlace: { mapsUrl: "https://maps.google.com/?cid=14767749764292326433" }, storefront: { seo: { faq: FAQ } },
-    cms: { loyalty: { enabled: true, every: 3, reward: "free_delivery", minTotal: 60 } }, delivery: { alertPhones: ["0544775082", "0506338246"], staffSmsLanguage: "en" }, waBot: { footerMode: "always", disclosureMode: "classic", ...waBot, assist: { menuToRules: false, grillFamilies: false, ...((waBot || {}).assist || {}) } },      // PS4: the sections list alone, as the older tests expect; the menu link under it is tested on its own
+    cms: { loyalty: { enabled: true, every: 3, reward: "free_delivery", minTotal: 60 } }, delivery: { alertPhones: ["0544775082", "0506338246"], staffSmsLanguage: "en" }, waBot: { footerMode: "always", disclosureMode: "classic", ...waBot, assist: { menuToRules: false, grillFamilies: false, salesBrain: false, ...((waBot || {}).assist || {}) } },      // PS4: the sections list alone, as the older tests expect; the menu link under it is tested on its own
     waMaster: { enabled: true },   // SEC: مفتاح المالك الرئيسي (whatsapp.js guardSend) — مفتوح في العالم الافتراضي للاختبار
     ...extraSettings };
   const iso = () => new Date(nowMs).toISOString();
@@ -2367,7 +2367,7 @@ function memStore() {
 }
 const TESTERS = ["0512345678"];
 /* PS4: the older assistant tests keep the behaviour they were written for; PS4 has its own tests (wa-ps4.test.mjs and the PS4 tests below) */
-const LEGACY_ASSIST = { imageBurstSec: 0, firstLead: false, grillFamilies: false, oneOfferPerChat: false, ackMaxChars: 0, feeMoment: false, menuToRules: false, pickForMe: false, choiceList: false, bigBoxSar: 0, pairingEnabled: false, adButtons: false, weightToAssistant: false, faqShort: false,
+const LEGACY_ASSIST = { salesBrain: false, imageBurstSec: 0, firstLead: false, grillFamilies: false, oneOfferPerChat: false, ackMaxChars: 0, feeMoment: false, menuToRules: false, pickForMe: false, choiceList: false, bigBoxSar: 0, pairingEnabled: false, adButtons: false, weightToAssistant: false, faqShort: false,
   briefEnabled: false, sellerClose: false, nudgeMin: 0 };      // PK1: ملف المعرفة، قفلة السؤال ومتابعة السكوت — اختباراتهم في wa-pk1.test.mjs
 function aWorld(steps, o = {}) {
   const m = aModel(steps), store = memStore();
@@ -3137,7 +3137,7 @@ test("VM2 at run time — a voice note is transcribed with the saved key only wh
 const C1 = "966598765432", C2 = "966577777771", C3 = "966577777772", C4 = "966577777773";
 const liveA = (steps, assist = {}, o = {}) => {
   const m = aModel(steps), store = memStore();
-  const w = world({ bundles: LIVE.bundles, links: ALL_LINKS, ...o, waBot: { mode: "live", testPhones: TESTERS, footerMode: "smart", ...(o.waBot || {}), assist: { mode: "live", liveAudience: "ads", liveDailyCustomers: 2, forceSuggestion: false, typing: false, ...assist } }, assistModel: m.callModel, assistStore: store });
+  const w = world({ bundles: LIVE.bundles, links: ALL_LINKS, ...o, waBot: { mode: "live", testPhones: TESTERS, footerMode: "smart", ...(o.waBot || {}), assist: { mode: "live", liveAudience: "ads", liveDailyCustomers: 2, forceSuggestion: false, typing: false, salesBrain: false, ...assist } }, assistModel: m.callModel, assistStore: store });
   return { ...w, m, store: store.st };
 };
 const AD = { source_id: "120251225139440593", source_type: "ad", headline: "بوكس", ctwa_clid: "X" };
@@ -4421,4 +4421,17 @@ test("PK1 daily report, wired: GET /api/cms/wabot/assist/daily answers for a bus
   const r = await w.call("GET", "/api/cms/wabot/assist/daily", {}, { day: "2026-10-13" });
   assert.equal(r.body.ok, true); assert.deepEqual([r.body.from, r.body.to], ["2026-10-13T01:00:00.000Z", "2026-10-14T01:00:00.000Z"]);
   assert.deepEqual([r.body.report.day, r.body.report.chats, r.body.report.funnel.carts], ["2026-10-13", 0, 0]); assert.doesNotMatch(JSON.stringify(r.body), /5\d{8}/);
+}));
+
+/* SB1 — «عقل البيع» من أول الويب هوك لجسم Graph: سؤال الاختيار بيطلع أزرار، والأسماء بخط عريض، والكود بيكمّل السطر المبادِر. */
+test("SB1 end to end: «توصيل ولا استلام؟» goes out as two reply buttons, the dish name in bold; a tap on «أضفه ✅» comes back to the assistant", withEnv(CONFIGURED, async () => {
+  const w = aWorld([mUse(tUse("search_menu", { query: "كريب زنجر سوبريم" })), mSay("كريب زنجر سوبريم بـ 25 ر.س. توصيل ولا استلام؟"), mSay("تمام 👍 وش تحب تضيف؟")], { waBot: { assist: { salesBrain: true } } });
+  const r = await w.say("ابي كريب زنجر سوبريم");
+  const p = msgs(r)[0];
+  assert.equal(p.type, "interactive"); assert.equal(p.interactive.type, "button");
+  assert.deepEqual(p.interactive.action.buttons.map((b) => [b.reply.id, b.reply.title]), [["as:delivery", "توصيل"], ["as:pickup", "استلام من الفرع"]]);
+  assert.match(p.interactive.body.text, /^\*كريب زنجر سوبريم\* بـ 25 ر.س\./);
+  assert.ok([...p.interactive.body.text].length <= 1024);
+  const r2 = await w.say("أضفه ✅", { interactiveId: "as:sg:yes" });
+  assert.equal(r2.log.reply_key, "assist", "a tap on an assistant button returns to the assistant as its title");
 }));

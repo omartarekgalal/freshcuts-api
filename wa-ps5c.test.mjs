@@ -13,7 +13,7 @@ const say = (text) => ({ ok: true, content: [{ type: "text", text }], stop: "end
 const use = (...u) => ({ ok: true, content: u.map(([name, input], i) => ({ type: "tool_use", id: `u${i}${name}`, name, input })), stop: "tool_use", usage: { input_tokens: 5, output_tokens: 5 }, ms: 1, provider: "t" });
 function chat(steps, acfg = {}) { let i = 0; const W = makeWorld({}, { callModel: async () => steps[i++], onCall: async () => ({ costSar: 0, in: 0, out: 0, cached: 0 }), acfg: { pairingEnabled: false, forceSuggestion: false, feeMoment: false, ...acfg } });
   let session = null; const turn = async (text, extra = {}) => { const hours = await W.tools.get_hours(); const fresh = !session; if (fresh) session = AR.newSession(W.now());
-    const r = await W.loop.runTurn({ phone: PHONE, text, lang: "ar", session, acfg: { ...W.acfg, routing: "strong" }, context: AR.buildContext({ first: fresh, hours, boxes: W.boxes }), ...extra }); if (r.ok) session = r.session; return r; };
+    const r = await W.loop.runTurn({ phone: PHONE, text, lang: "ar", session, acfg: { ...W.acfg, routing: "strong", salesBrain: false }, context: AR.buildContext({ first: fresh, hours, boxes: W.boxes }), ...extra }); if (r.ok) session = r.session; return r; };
   return { W, turn }; }
 const ASK = "تبيها وجبة مع الأرز والسلطة والطحينة بـ 27 ر.س، ولا بالوزن (ثلث كيلو: 37 ر.س · نصف كيلو: 55 ر.س · كيلو: 110 ر.س)؟";
 
@@ -73,7 +73,7 @@ test("(4) the recap before the cart link names every line as on the menu, with i
   const a = chat([use(["build_cart", { option: "delivery", items }]), say("سلتك جاهزة: طرب، موتزاريلا، تشيلي فرايز وبيبسي = 113 ر.س 👇")]);
   const t = await a.turn("طرب بالوزن نص كيلو جزء مقمر وجزء مستوي عادي، وفرايد موتزاريلا، وتشيلي تشيز فرايز اكسترا سبايسي، وثلاثه ببسي، توصيل");
   assert.equal(t.trace.cartRecapRestored, true);
-  assert.equal(t.text, "سلتك (توصيل):\n• طرب مشوي بالوزن — نصف كيلو × 1 = 70 ر.س\n↳ ملاحظة للمطبخ: جزء مقمر وجزء مستوي عادي\n• فرايد موتزاريلا × 1 = 16 ر.س\n• تشيلي تشيز فرايز × 1 = 15 ر.س\n↳ ملاحظة للمطبخ: اكسترا سبايسي\n• بيبسي زجاج × 3 = 12 ر.س\nالمجموع: 113 ر.س\nراجع السلة، ولو كل شي تمام اضغط الزر وأكمل الدفع 👇");
+  assert.equal(t.text, "🛒 سلتك (توصيل):\n• طرب مشوي بالوزن — نصف كيلو × 1 = 70 ر.س\n↳ ملاحظة للمطبخ: جزء مقمر وجزء مستوي عادي\n• فرايد موتزاريلا × 1 = 16 ر.س\n• تشيلي تشيز فرايز × 1 = 15 ر.س\n↳ ملاحظة للمطبخ: اكسترا سبايسي\n• بيبسي زجاج × 3 = 12 ر.س\nالمجموع: 113 ر.س\nراجع السلة، ولو كل شي تمام اضغط الزر وأكمل الدفع 👇");
   assert.equal(t.cart.subtotal, 113);
   // a summary that already names every line, weight and note is left alone
   const full = "سلتك: طرب مشوي بالوزن نصف كيلو (جزء مقمر وجزء مستوي عادي) 70 ر.س، فرايد موتزاريلا 16 ر.س، تشيلي تشيز فرايز (اكسترا سبايسي) 15 ر.س، بيبسي زجاج × 3 = 12 ر.س. المجموع 113 ر.س 👇";
@@ -94,7 +94,7 @@ test("(5) the kitchen notes survive a corrected cart: a note given on the tarb m
   const done = await a.turn("ايوه نفس الملاحظات");
   assert.equal(done.cart.subtotal, 85); assert.deepEqual(done.cart.lines.map((l) => l.note), ["جزء مقمر وجزء مستوي عادي", "اكسترا سبايسي"]);
   assert.match(done.text, /طرب مشوي بالوزن — نصف كيلو/); assert.match(done.text, /↳ ملاحظة للمطبخ: جزء مقمر وجزء مستوي عادي/);
-  assert.equal(R.cartRecapOf(cfg, { option: "pickup", lines: [{ name: "بيبسي زجاج", qty: 2, total: 8 }], subtotal: 8 }, "ar").split("\n")[0], "سلتك (استلام من الفرع):");
+  assert.equal(R.cartRecapOf(cfg, { option: "pickup", lines: [{ name: "بيبسي زجاج", qty: 2, total: 8 }], subtotal: 8 }, "ar").split("\n")[0], "🛒 سلتك (استلام من الفرع):");
 });
 
 test("a grill the customer names in his message must be in the cart: «والطرب ابغا وجبة، جزء منه مقمر…» priced without the tarb is refused (the note had gone to the shish)", async () => {
@@ -113,6 +113,6 @@ test("a grill the customer names in his message must be in the cart: «والط�
 test("the recap in English never carries Arabic names: a correct English summary of a box is left alone, and plain dishes use their English names", async () => {
   const cart = { option: "pickup", subtotal: 29, lines: [{ name: "كريب زنجر سوبريم", name_en: "Zinger Supreme Crepe", qty: 1, total: 25 }, { name: "بيبسي زجاج", name_en: "Pepsi Glass", qty: 1, total: 4, note: "cold" }] };
   const en = R.cartRecapOf(cfg, cart, "en");
-  assert.equal(en, "Your cart (Pickup):\n• Zinger Supreme Crepe × 1 = SAR 25\n• Pepsi Glass × 1 = SAR 4\n↳ Kitchen note: cold\nTotal: SAR 29\nCheck the cart, and if it is all right tap the button to pay 👇");
+  assert.equal(en, "🛒 Your cart (Pickup):\n• Zinger Supreme Crepe × 1 = SAR 25\n• Pepsi Glass × 1 = SAR 4\n↳ Kitchen note: cold\nTotal: SAR 29\nCheck the cart, and if it is all right tap the button to pay 👇");
   assert.doesNotMatch(R.cartRecapOf(cfg, { option: "pickup", subtotal: 90, lines: [{ name: "بوكس سهرة البيتزا", name_en: "Pizza Night Box", qty: 1, total: 90, picks: [{ name: "بيتزا تشيكن رانش", note: "no olives" }, { name: "بيتزا بيبروني" }] }] }, "en"), /[\u0600-\u06FF]/);
 });

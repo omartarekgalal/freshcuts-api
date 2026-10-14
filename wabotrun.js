@@ -234,11 +234,44 @@ export const TEXTS = Object.freeze({
   fee_pickup: t("لحظة الرسوم: الاستلام", "أو استلام من الفرع بدون رسوم توصيل = {order} ر.س.", "Or pickup from the branch with no delivery fee = SAR {order}.", ["order"], [], 200),
   btn_fee_reach: t("زر: أكمّل للحد", "أكمّلها {from} ر.س", "Make it SAR {from}", ["from"], [], LIMITS.btnTitle),
   btn_fee_pickup: t("زر: استلام من الفرع", "استلام من الفرع", "Pickup", [], [], LIMITS.btnTitle),
-  cart_recap_head: t("ملخص السلة: العنوان", "سلتك ({mode}):", "Your cart ({mode}):", ["mode"], [], 100),
+  cart_recap_head: t("ملخص السلة: العنوان", "🛒 سلتك ({mode}):", "🛒 Your cart ({mode}):", ["mode"], [], 100),
   cart_recap_line: t("ملخص السلة: سطر", "• {name} × {qty} = {total} ر.س", "• {name} × {qty} = SAR {total}", ["name", "qty", "total"], [], 300),
   cart_recap_note: t("ملخص السلة: ملاحظة السطر", "↳ ملاحظة للمطبخ: {note}", "↳ Kitchen note: {note}", ["note"], [], 300),
   cart_recap_total: t("ملخص السلة: المجموع", "المجموع: {total} ر.س", "Total: SAR {total}", ["total"], [], 100),
   cart_recap_close: t("ملخص السلة: القفلة", "راجع السلة، ولو كل شي تمام اضغط الزر وأكمل الدفع 👇", "Check the cart, and if it is all right tap the button to pay 👇", [], [], 200),
+  /* SB1 — ملخص السلة: التوصيل والإجمالي (القيم من النظام وقت بناء السلة) */
+  cart_recap_fee: t("ملخص السلة: رسوم التوصيل لموقعه", "التوصيل: {fee} ر.س", "Delivery: SAR {fee}", ["fee"], [], 100),
+  cart_recap_fee_free: t("ملخص السلة: التوصيل مجاني بكود", "التوصيل: مجاني بكود {code} 🎁", "Delivery: free with code {code} 🎁", ["code"], [], 100),
+  cart_recap_fee_zero: t("ملخص السلة: التوصيل مجاني (حد الطلب)", "التوصيل: مجاني 🎁", "Delivery: free 🎁", [], [], 100),
+  cart_recap_fee_later: t("ملخص السلة: الرسوم تظهر قبل الدفع (من غير موقع)", "التوصيل: يظهر لموقعك قبل الدفع", "Delivery: shown for your location before payment", [], [], 120),
+  cart_recap_pickup: t("ملخص السلة: استلام", "استلام من الفرع: بدون رسوم توصيل", "Pickup from the branch: no delivery fee", [], [], 120),
+  cart_recap_grand: t("ملخص السلة: الإجمالي", "الإجمالي: {total} ر.س", "Total: SAR {total}", ["total"], [], 100),
+  /* SB1 — «عقل البيع»: السطر المبادِر (مرة في المحادثة) والاقتراح الواحد — كل {…} رقم أو اسم من النظام */
+  sb_first: t("عقل البيع: أول طلب توصيله مجاني", "🎁 أول طلب توصيل لك من موقعنا مجاني للطلبات من {from} ر.س بكود {code}.", "🎁 Your first delivery order on our website is free on orders from SAR {from} with code {code}.", ["from", "code"], [], 250),
+  sb_reward: t("عقل البيع: عنده مكافأة مااستخدمهاش", "🎁 عندك مكافأة توصيل مجاني بكود {code} للطلبات من {from} ر.س، اكتبه في خانة الكود وقت الدفع.", "🎁 You have a free-delivery reward, code {code}, on orders from SAR {from}: enter it in the code box at checkout.", ["code", "from"], [], 250),
+  sb_reward_until: t("عقل البيع: مكافأة مااستخدمهاش (بتاريخها)", "🎁 عندك مكافأة توصيل مجاني بكود {code} للطلبات من {from} ر.س، صالحة لين {until}. اكتبه في خانة الكود وقت الدفع.", "🎁 You have a free-delivery reward, code {code}, on orders from SAR {from}, valid until {until}: enter it in the code box at checkout.", ["code", "from", "until"], [], 250),
+  sb_loyalty_one: t("عقل البيع: باقي طلب واحد على المكافأة", "⭐ باقي لك طلب واحد من الموقع وتاخذ توصيل مجاني على طلبك اللي بعده (للطلبات من {from} ر.س).", "⭐ One more order on our website and your next one gets free delivery (orders from SAR {from}).", ["from"], [], 250),
+  sb_loyalty_left: t("عقل البيع: تقدّم الولاء", "⭐ كل {every} طلبات من الموقع لك توصيل مجاني، وباقي لك {left} على المكافأة.", "⭐ Every {every} orders on our website earn free delivery: {left} to go.", ["every", "left"], [], 250),
+  sb_same: t("عقل البيع: نفس طلبك؟ (العميل الدايم)", "آخر طلب لك كان {items}. تبيه نفسه؟", "Your last order was {items}. Same again?", ["items"], [], 300),
+  sb_tier: t("الاقتراح: الحد الجاي للرسوم", "لو أضفت {item} بـ {price} ر.س، ينزل التوصيل من {fee_now} إلى {fee_then} ر.س، والإجمالي {total_then} ر.س. أضيفه؟", "Add {item} for SAR {price} and delivery drops from SAR {fee_now} to SAR {fee_then}, SAR {total_then} in total. Add it?", ["item", "price", "fee_now", "fee_then", "total_then"], ["total_now", "code"], 300),
+  sb_tier_free: t("الاقتراح: الحد الجاي = توصيل مجاني", "لو أضفت {item} بـ {price} ر.س، يصير التوصيل مجاني بدل {fee_now} ر.س، والإجمالي {total_then} ر.س. أضيفه؟", "Add {item} for SAR {price} and delivery is free instead of SAR {fee_now}, SAR {total_then} in total. Add it?", ["item", "price", "fee_now", "total_then"], ["fee_then", "total_now", "code"], 300),
+  sb_tier_first: t("الاقتراح: يوصل حد أول طلب (توصيل مجاني بكود)", "لو أضفت {item} بـ {price} ر.س، يوصل طلبك {from} ر.س ويصير توصيله مجاني بكود {code}: الإجمالي {total_then} ر.س بدل {total_now} ر.س. أضيفه؟", "Add {item} for SAR {price}: your order reaches SAR {from} and delivery is free with code {code}, SAR {total_then} in total instead of SAR {total_now}. Add it?", ["item", "price", "from", "code", "total_then", "total_now"], ["fee_now", "fee_then"], 300),
+  sb_box_saves: t("الاقتراح: بوكس فيه نفس الأصناف أرخص", "ونفس الأصناف تجي في {box} بـ {price} ر.س بدل {separate} ر.س. أحوّلها بوكس؟", "The same items come as {box} for SAR {price} instead of SAR {separate}. Switch to the box?", ["box", "price", "separate"], [], 300),
+  sb_pair_box: t("الاقتراح: بوكس من نفس الطلب", "وبـ {price} ر.س يصير {box}. أحوّله بوكس؟", "For SAR {price} it becomes {box}. Make it a box?", ["box", "price"], [], 300),
+  sb_add_item: t("الاقتراح: صنف واحد معاه", "تحب أضيف لك {item} بـ {price} ر.س؟", "Shall I add {item} for SAR {price}?", ["item", "price"], [], 300),
+  sb_offers_head: t("العروض الحية: العنوان", "🔥 عروضنا الحين:", "🔥 Our offers now:", [], [], 100),
+  sb_offer_line: t("العروض الحية: سطر", "• {name} — {price} ر.س", "• {name} — SAR {price}", ["name", "price"], [], 200),
+  sb_offer_line_until: t("العروض الحية: سطر بتاريخ نهاية", "• {name} — {price} ر.س (لين {until})", "• {name} — SAR {price} (until {until})", ["name", "price", "until"], [], 200),
+  btn_sg_add: t("زر: أضف الاقتراح", "أضفه ✅", "Add it ✅", [], [], LIMITS.btnTitle),
+  btn_sg_no: t("زر: لا شكراً (الاقتراح)", "لا شكراً", "No thanks", [], [], LIMITS.btnTitle),
+  btn_confirm_yes: t("زر: أعتمد الاقتراح", "إيه، جهّزه ✅", "Yes, prepare it ✅", [], [], LIMITS.btnTitle),
+  btn_confirm_no: t("زر: شي ثاني", "أبغى شي ثاني", "Something else", [], [], LIMITS.btnTitle),
+  list_people_btn: t("قايمة: كام شخص (زر القايمة)", "اختر العدد", "Choose", [], [], LIMITS.listButton),
+  row_people_1: t("قايمة كام شخص: ١", "شخص واحد", "Just me", [], [], LIMITS.rowTitle),
+  row_people_2: t("قايمة كام شخص: ٢", "شخصين", "Two", [], [], LIMITS.rowTitle),
+  row_people_3: t("قايمة كام شخص: ٣–٤", "ثلاثة أو أربعة", "Three or four", [], [], LIMITS.rowTitle),
+  row_people_5: t("قايمة كام شخص: ٥–٦", "خمسة أو ستة", "Five or six", [], [], LIMITS.rowTitle),
+  row_people_7: t("قايمة كام شخص: ٧+", "سبعة وأكثر", "Seven or more", [], [], LIMITS.rowTitle),
   btn_meal: t("زر: وجبة", "وجبة", "Meal", [], [], LIMITS.btnTitle),
   btn_weight: t("زر: بالوزن", "بالوزن", "By weight", [], [], LIMITS.btnTitle),
   item_two_ways: t("بطاقة مشوي له وجبة وبالوزن", "*{meal}* — {meal_price}\n{meal_desc}\n*{weight}* — {weight_prices}\nتبيها وجبة ولا بالوزن؟", "*{meal}* — {meal_price}\n{meal_desc}\n*{weight}* — {weight_prices}\nAs a meal or by weight?", ["meal", "meal_price", "weight", "weight_prices"], ["meal_desc"], 900),
@@ -1609,12 +1642,27 @@ export function faqAnswer(raw, asked = "") {
 export function cartRecapOf(cfg, cart, lang) {
   const L = lang === "en" ? "en" : "ar", T2 = (k, v = {}) => fill(k, textOf(cfg, k, L), v), en = L === "en";
   const out = [T2("cart_recap_head", { mode: cart.option === "pickup" ? T2("btn_fee_pickup") : T2("btn_delivery") })];
+  const f = cart.fees || null;      // SB1: التوصيل والإجمالي (عقل البيع) — من غيرها: الملخص القديم
   for (const l of cart.lines || []) { const nm = en ? l.name_en || l.name : l.name, w = l.weight ? (en ? l.weight_en || l.weight : l.weight) : "";
     const picks = en ? (l.picks || []).filter((p) => p.note).map((p) => p.note).join(", ") : (l.picks || []).map((p) => `${p.name}${p.note ? ` (${p.note})` : ""}`).join("، ");      // إنجليزي: أسماء الاختيارات عربي بس ⇒ الملاحظات فقط
-    out.push(T2("cart_recap_line", { name: `${nm}${w ? ` — ${w}` : ""}${picks ? ` (${picks})` : ""}`, qty: String(l.qty), total: money(l.total) }));
+    out.push(T2("cart_recap_line", { name: `${f ? `*${nm}*` : nm}${w ? ` — ${w}` : ""}${picks ? ` (${picks})` : ""}`, qty: String(l.qty), total: money(l.total) }));
     if (l.note) out.push(T2("cart_recap_note", { note: l.note })); }
-  out.push(T2("cart_recap_total", { total: money(cart.subtotal) }), T2("cart_recap_close"));
+  out.push(T2("cart_recap_total", { total: money(cart.subtotal) }));
+  if (f) {
+    if (f.pickup) out.push(T2("cart_recap_pickup"));
+    else if (f.free) out.push(f.code ? T2("cart_recap_fee_free", { code: f.code }) : T2("cart_recap_fee_zero"));
+    else if (Number.isFinite(Number(f.fee))) out.push(T2("cart_recap_fee", { fee: money(f.fee) }));
+    else out.push(T2("cart_recap_fee_later"));
+    if (!f.pickup && (f.free || Number.isFinite(Number(f.fee)))) out.push(T2("cart_recap_grand", { total: money(Math.round((Number(cart.subtotal) + (f.free ? 0 : Number(f.fee))) * 100) / 100) }));
+  }
+  out.push(T2("cart_recap_close"));
   return out.join("\n");
+}
+/* SB1 — نص من نصوص عقل البيع بأرقام النظام (الأرقام بتتكتب بـ money: «27» مش «27.00»). مفيش نص ⇒ null (السطر مابيتقالش). */
+export function salesTextOf(cfg, key, vars = {}, lang = "ar") {
+  const L = lang === "en" ? "en" : "ar", v = {};
+  for (const [k, x] of Object.entries(vars || {})) v[k] = typeof x === "number" ? money(x) : x;
+  try { return fill(key, textOf(cfg, key, L), v); } catch { return null; }
 }
 export function feeSayOf(cfg, options, lang, { located = true } = {}) {
   const o = options || {}, L = lang === "en" ? "en" : "ar", a = o.as_is, r = o.reach, p = o.pickup;
@@ -1637,6 +1685,13 @@ export function assistExtras(cfg, lang, r) {
   if (b && b.kind === "bigbox" && b.a && b.b) return { buttons: [{ id: `as:box:${b.a.slug}`, title: fit(b.a.name) }, { id: `as:box:${b.b.slug}`, title: fit(b.b.name) }] };
   if (b && b.kind === "family" && b.meal && b.weight) return { buttons: [{ id: `as:meal:${b.meal.id}`, title: T2("btn_meal") }, { id: `as:weight:${b.weight.id}`, title: T2("btn_weight") }] };
   if (b && b.kind === "ad") return { buttons: [{ id: "as:delivery", title: T2("btn_delivery") }, { id: "as:pickup", title: T2("btn_fee_pickup") }, { id: "as:other", title: T2("btn_other") }] };
+  /* SB1 — أزرار عقل البيع: الاقتراح، نفس الطلب، والأسئلة: الوزن، التأكيد، توصيل/استلام، كام شخص (الضغطة بترجع للمساعد بعنوانها كنص) */
+  if (b && b.kind === "sg") return { buttons: [{ id: "as:sg:yes", title: T2("btn_sg_add") }, { id: "as:sg:no", title: T2("btn_sg_no") }] };
+  if (b && b.kind === "same") return { buttons: [{ id: "re:last", title: fit(T2("row_reorder")) }, { id: "as:other", title: T2("btn_other") }] };
+  if (b && b.kind === "weights" && Array.isArray(b.weights) && b.weights.length >= 2) return { buttons: b.weights.slice(0, LIMITS.btns).map((w) => ({ id: `as:w:${w.variant_option_id}`, title: fit(L === "en" ? `${w.label_en || w.label} · SAR ${money(w.price)}` : `${w.label} · ${money(w.price)} ر.س`) })) };
+  if (b && b.kind === "confirm") return { buttons: [{ id: "as:yes", title: T2("btn_confirm_yes") }, { id: "as:no", title: T2("btn_confirm_no") }] };
+  if (b && b.kind === "mode") return { buttons: [{ id: "as:delivery", title: T2("btn_delivery") }, { id: "as:pickup", title: T2("btn_fee_pickup") }] };
+  if (b && b.kind === "people") return { list: { button: T2("list_people_btn"), rows: ["row_people_1", "row_people_2", "row_people_3", "row_people_5", "row_people_7"].map((k, i) => ({ id: `as:p:${i + 1}`, title: T2(k) })) } };
   if (r && r.list && Array.isArray(r.list.rows) && r.list.rows.length >= 2) return { list: { button: T2("list_btn"), rows: r.list.rows.slice(0, LIMITS.rows).map((x) => ({ id: x.id, title: x.title, ...(Number(x.extra) > 0 ? { description: L === "en" ? `+ SAR ${money(x.extra)}` : `+ ${money(x.extra)} ر.س` } : {}) })) } };
   return {};
 }
@@ -3024,6 +3079,7 @@ const fl = await q(`SELECT count(*)::int AS n FROM wa_bot_log WHERE phone_norm=$
         fee_by_order_total: fees.split("\n"), ladder: Array.isArray(pol.feeByTotal) ? pol.feeByTotal.map((x) => ({ over: Number(x.over), fee: Number(x.fee) })) : null, note: "the exact fee for the customer is shown on the website before payment" } : null; },
     feeSay: async (options, lang, o) => feeSayOf(cfg, options, lang, o),
     cartRecap: async (cart, lang) => cartRecapOf(cfg, cart, lang),      // PS5
+    sales: (key, vars, lang) => salesTextOf(cfg, key, vars, lang),      // SB1: نصوص عقل البيع (من اللوحة) بأرقام النظام
     firstLead: async (v, lang) => fill("first_lead", textOf(cfg, "first_lead", lang === "en" ? "en" : "ar"), { from: money(v.from), code: v.code }),      // PS5      // PS4: نص لحظة الرسوم من نصوص اللوحة
     /* PS3: خطة التذكير — آخر رسالة للعميل = الرسالة دي (النافذة ٢٤ ساعة منها)، ساعات الهدوء من الإعدادات، والمطعم لازم يكون فاتح في الميعاد. */
     reminder: async ({ day, time, lang }) => planReminder({ now: clock(), day, time, lastInMs: clock().getTime(), quietStart: cfg.assist.reminderQuietStart, quietEnd: cfg.assist.reminderQuietEnd, lang,

@@ -40,8 +40,8 @@ export function makeWorld(w = {}, { callModel, onCall, acfg: acfgIn = {} } = {})
     const s = String(sql).replace(/\s+/g, " ").trim();
     if (/FROM shop_coupons WHERE upper\(code\)='FIRST'/.test(s)) return { rows: [{ code: "FIRST", percent: 0, active: true, expires_at: null, free_delivery: true, min_total: 60 }] };
     if (/shop_coupons/.test(s) && /used|coupon = /.test(s) && !/cms_loyalty/.test(s)) return { rows: w.firstUsed || w.profile === "returning" ? [{ x: 1 }] : [], rowCount: w.firstUsed || w.profile === "returning" ? 1 : 0 };
-    if (/FROM cms_loyalty l JOIN shop_coupons/.test(s)) return { rows: [] };
-    if (/count\(\*\)::int AS n FROM shop_orders WHERE phone_norm=\$1 AND created_at >=/.test(s)) return { rows: [{ n: w.profile === "returning" ? 4 : 0 }] };
+    if (/FROM cms_loyalty l JOIN shop_coupons/.test(s)) return { rows: (w.rewards || []).map((r) => ({ code: r.code, percent: 0, free_delivery: true, min_total: r.min_total ?? 60, expires: r.expires || null })) };      // SB1: w.rewards = unused reward coupons
+    if (/count\(\*\)::int AS n FROM shop_orders WHERE phone_norm=\$1 AND created_at >=/.test(s)) return { rows: [{ n: w.loyaltyN ?? (w.profile === "returning" ? 4 : 0) }] };      // SB1: w.loyaltyN = website orders counted for loyalty
     if (/FROM shop_orders WHERE phone_norm=\$1 AND NOT COALESCE\(is_test,false\) AND status NOT IN \('expired','pending_payment'\) AND created_at > NOW\(\) - INTERVAL '72 hours'/.test(s)) return { rows: w.orders || [] };
     if (/FROM shop_orders/.test(s)) return { rows: w.profile === "returning" ? [{ x: 1 }] : [], rowCount: w.profile === "returning" ? 1 : 0 };
     if (/FROM wa_optins/.test(s)) return { rows: [] };
@@ -77,6 +77,7 @@ export function makeWorld(w = {}, { callModel, onCall, acfg: acfgIn = {} } = {})
     brief: async () => (w.brief === false ? null : briefBlock(w.brief || {}, { menu, boxes, live: { cash: false } })),
     feeSay: async (options, lang, o) => R.feeSayOf(cfg, options, lang, o),      // PS4
     cartRecap: async (cart, lang) => R.cartRecapOf(cfg, cart, lang),      // PS5
+    sales: (key, vars, lang) => R.salesTextOf(cfg, key, vars, lang),      // SB1
     firstLead: async (v, lang) => R.fill("first_lead", R.textOf(cfg, "first_lead", lang === "en" ? "en" : "ar"), { from: String(v.from), code: v.code }),      // PS5
     /* PS3: the reminder plan with the world's clock and opening hours (the customer's last message = now) */
     reminder: async ({ day, time, lang }) => AR.planReminder({ now: now(), day, time, lastInMs: now().getTime(), lang, isOpenAt: (dt) => openState(settings, dt).open === true }),

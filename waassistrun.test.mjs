@@ -19,7 +19,7 @@ const lastResults = (seenCall) => seenCall.messages.at(-1).content.filter((b) =>
 async function turn(W, session, text, over = {}) {
   const s = session || AR.newSession(W.now());
   const hours = await W.tools.get_hours();
-  return W.loop.runTurn({ phone: PHONE, text, lang: "ar", session: s, acfg: { ...W.acfg, orderWordsStrong: true, ...over }, context: AR.buildContext({ first: !session, hours, locationShared: Boolean(W.state.loc), boxes: W.boxes }) });
+  return W.loop.runTurn({ phone: PHONE, text, lang: "ar", session: s, acfg: { ...W.acfg, orderWordsStrong: true, salesBrain: false, ...over }, context: AR.buildContext({ first: !session, hours, locationShared: Boolean(W.state.loc), boxes: W.boxes }) });
 }
 
 test("settings: off by default, only off / test exist, every value has limits and a schema row with an Arabic name", () => {

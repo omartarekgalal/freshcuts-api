@@ -12,7 +12,7 @@ const say = (text) => ({ ok: true, content: [{ type: "text", text }], stop: "end
 const use = (...u) => ({ ok: true, content: u.map(([name, input], i) => ({ type: "tool_use", id: `t${i}${name}`, name, input })), stop: "tool_use", usage: { input_tokens: 5, output_tokens: 5 }, ms: 1, provider: "t" });
 function loop(world, steps, acfg = {}) { let i = 0; const W = makeWorld(world, { callModel: async () => steps[i++], onCall: async () => ({ costSar: 0, in: 0, out: 0, cached: 0 }), acfg });
   let session = null; const turn = async (text, ctx = {}) => { const hours = await W.tools.get_hours(); const fresh = !session; if (fresh) session = AR.newSession(W.now());
-    const r = await W.loop.runTurn({ phone: PHONE, text, lang: "ar", session, acfg: { ...W.acfg, routing: "strong" }, context: AR.buildContext({ first: fresh, hours, boxes: W.boxes, locationShared: Boolean(W.state.loc), ...ctx }) }); if (r.ok) session = r.session; return r; };
+    const r = await W.loop.runTurn({ phone: PHONE, text, lang: "ar", session, acfg: { ...W.acfg, routing: "strong", salesBrain: false }, context: AR.buildContext({ first: fresh, hours, boxes: W.boxes, locationShared: Boolean(W.state.loc), ...ctx }) }); if (r.ok) session = r.session; return r; };
   return { W, turn, used: () => i }; }
 
 test("all the PS4 rows are settings (on by default), and the pairing table is validated", () => {
@@ -142,7 +142,8 @@ test("row 4 — the pairing table: the first suggestion by family, the box price
   const kilo = S([{ ...line(91), weight: "كيلو", price: 120 }]);
   assert.deepEqual([kilo.when, kilo.box.slug], ["grill_kilo", "box-grill-half-half"]);
   const half = S([{ ...line(91), weight: "نصف كيلو", price: 60 }]);
-  assert.equal(half.kind, "side", "no rice on the online menu ⇒ the rice line is skipped; for a grill the side comes before the drink"); assert.notEqual(half.item.kind, "drink");
+  /* RC1/SB1 (١٤/١٠): «طبق أرز بسمتي» (6 ر.س) بقى على المنيو الأونلاين ⇒ الاقتران بيلاقيه (كان بيتعدّى ويتعرض جانبي) */
+  assert.deepEqual([half.kind, half.item.name, half.item.price], ["pair", "طبق أرز بسمتي", 6], "rice is on the online menu now: the by-weight grill's pairing is rice"); assert.notEqual(half.item.kind, "drink");
   assert.equal(S([line(8)], { pairing: null }).kind, "drink", "table off: the old order, drink first");
   assert.equal(S([line(8)], { declined: ["pair"] }).kind, "drink"); assert.notEqual((S([line(8), { slug: "box-solo-burger", name: "x", price: 29, qty: 1 }]) || {}).kind, "pair", "a box is already in the cart: no pairing");
   assert.deepEqual([...A.cartFamilies({ lines: [line(8), line(71)] }, W.menu)], [], "a crepe and a burger: no family, so no «switch to a box» that would not hold both");
