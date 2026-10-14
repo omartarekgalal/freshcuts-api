@@ -1003,11 +1003,15 @@ export function register(app, ctx, deps = {}) {
         const consent = !op.stoppedForUpdates && (op.updates || (!op.saidNoToUpdates && await termsCoverOrder(pool, pn, order.order_no)));
         if (consent && await windowOpen(pn)) {
           {
-            const body = renderTemplateText(template, params).slice(0, 1000);
+            /* ETA1: «يوصلك تقريباً قبل 9:45 م» في رسالة «في الطريق» الحرة بس (جوّه النافذة، من غير قوالب جديدة) — من الموديل الذكي وبنفس الوعد المتحفّظ. */
+            let etaLine = null;
+            if (stage === "on_the_way") { try { const { etaWaLine } = await import("./smarteta.js"); etaLine = await etaWaLine(order.order_no); } catch { etaLine = null; } }
+            const withEta = (txt) => (etaLine ? `${txt}\n⏱ ${etaLine}` : txt);
+            const body = withEta(renderTemplateText(template, params)).slice(0, 1000);
             const ub = (t.components.find((c) => c.type === "BUTTONS")?.buttons || []).find((b) => b.type === "URL");
             const url = ub ? String(ub.url).replace("{{1}}", String((params.button || [])[0] || "")) : null;
             const cUrl = courier && courier.wa ? courierChatUrl(order.order_no) : null;
-            const cBody = cUrl && courier.first_name && TEMPLATES.fc_order_on_the_way_courier ? renderTemplateText("fc_order_on_the_way_courier", { body: [order.order_no, courier.first_name] }) : body;
+            const cBody = cUrl && courier.first_name && TEMPLATES.fc_order_on_the_way_courier ? withEta(renderTemplateText("fc_order_on_the_way_courier", { body: [order.order_no, courier.first_name] })) : body;
             const payload = cUrl
               ? { type: "interactive", interactive: { type: "cta_url", body: { text: `${cBody}\n${url ? `🔗 ${url}` : ""}`.trim().slice(0, 1000) }, action: { name: "cta_url", parameters: { display_text: "راسل المندوب", url: cUrl } } } }
               : stage === "delivered"

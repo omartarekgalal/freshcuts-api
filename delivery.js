@@ -1052,7 +1052,7 @@ export function register(app, ctx, deps = {}) {
     // nudge) need the thresholds, not just the verdict.
     return {
       ...res, straightKm: r2(straight), routeKm: r2(route),
-      driveKm: rk.driveKm != null ? r2(rk.driveKm) : null, distanceSource: rk.distanceSource,
+      driveKm: rk.driveKm != null ? r2(rk.driveKm) : null, distanceSource: rk.distanceSource, driveMin: rk.driveMin ?? null,
       /* ١٠/١٠ (QA): اسم السياسة الداخلي مايطلعش في تسعيرة عامة — كان فيه «أرخص من التطبيقات» (عبارة ممنوعة).
          المتجر واللوحة مابيقروهوش من هنا؛ اللوحة بتجيبه من مسارات الإدارة. */
       policyId: pol.id, policy: publicPolicy(cfg, dcfg), ...gaps(cfg, orderTotal),

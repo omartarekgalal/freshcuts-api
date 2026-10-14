@@ -16,6 +16,7 @@
 import { courierSlaCfg } from "./courierops.js";
 import { routeKmOfRow } from "./delivery.js";
 import { STORE_LAT, STORE_LNG } from "./tsstore.js";
+import { classifyItems, promise as smartPromise, promiseFromPosition, hourBand, riyadh } from "./smarteta-core.js";
 
 export const TRACK_ETA_DEFAULTS = Object.freeze({
   enabled: true,        // «يوصلك تقريباً» على صفحة التتبع
@@ -112,10 +113,15 @@ const driveMin = (km, cfg) => (km / cfg.speedKmh) * 60;
 
 /* ⇒ null (مفيش وقت يتقال) أو { at, minutes, basis, soon, range? }
      basis: "prep" (نطاق قبل الاستلام) | "position" (من موقع المندوب) | "route" (من وقت الاستلام + المشوار) */
-export function computeTrackEta({ row, sh = null, settings = {}, now = Date.now() } = {}) {
+export function computeTrackEta({ row, sh = null, settings = {}, now = Date.now(), smart = null } = {}) {
   if (!row || row.option !== "delivery" || Number(row.table_no) > 0) return null;
   const cfg = trackEtaCfg(settings);
   if (!cfg.enabled) return null;
+  /* ETA1: الموديل الذكي (smarteta.js) لو متسجّل ومفتوح — وأي خطأ فيه يرجّع للحساب القديم تحت، مايوقّفش التتبع */
+  if (smart && smart.model && smart.cfg && smart.cfg.enabled) {
+    try { const e = computeSmartEta({ row, sh, settings, now, smart, cfg }); if (e !== undefined) return e; }
+    catch (e) { console.error("[tracketa] smart:", e.message); }
+  }
   const status = String(row.status || "");
   if (status === "delivered" || (sh && ["delivered", "cancelled"].includes(String(sh.status)))) return null;
   const cust = customerOf(row);
@@ -185,5 +191,70 @@ export function trackStages({ row, sh = null } = {}) {
   return {
     current: idx,
     steps: steps.map((s, i) => ({ ...s, state: i < idx || (idx === 4 && i === 4) ? "done" : i === idx ? "active" : "pending", ...(i > idx ? { at: null } : {}) })),
+  };
+}
+
+/* ═══ ETA1 — الوقت المتوقع الذكي على صفحة التتبع ═════════════════════════════════════════════════════════
+   نفس شكل الرد القديم (at, minutes, basis, soon, range) — والإضافات بس: low/high/promise/promiseMin/confidence/stage/parts/model.
+     • قبل الاستلام: basis "prep" + range{from,to} — to = الوعد (الحد الأعلى المتحفّظ)، from = الوسيط أو (to − أقصى عرض). مفيش at.
+     • بعد الاستلام + موقع حيّ: basis "position" — at = الوعد المتحفّظ (مش الوسيط)، والهامش بيصغر مع اقتراب المندوب.
+     • بعد الاستلام من غير موقع: basis "route" — من وقت الاستلام + مشوار جوجل المتعايَر + هامش.
+   undefined ⇒ الحساب القديم (مفيش حاجة نقدر نبني عليها). null ⇒ مانقولش وقت (فوق الحد الأقصى = الطلب فيه مشكلة). */
+export function computeSmartEta({ row, sh = null, settings = {}, now = Date.now(), smart, cfg = trackEtaCfg(settings) }) {
+  const status = String(row.status || "");
+  if (status === "delivered" || (sh && ["delivered", "cancelled"].includes(String(sh.status)))) return null;
+  const { model, cfg: scfg } = smart;
+  const cust = customerOf(row);
+  const facts = { ...classifyItems(row.items), load: Number(smart.load) || 0, gMin: smart.gMin ?? null, routeKm: (() => { try { return routeKmOfRow(row); } catch { return null; } })() };
+  const paidAt = historyAt(row, "paid") ?? ms(row.created_at) ?? now;
+  const picked = pickedAtOf(row, sh);
+  const iso5 = (t) => iso(t);
+  const conf = (stage) => (stage === "s2" ? "high" : stage === "s1" ? "medium" : model.source === "learned" && (model.n?.delivery || 0) >= 150 ? "medium" : "low");
+  const extra = (p, basis) => ({
+    low: iso5(p.lowAt), high: iso5(p.highAt), promise: iso5(p.highAt), promiseMin: Math.max(1, Math.ceil((p.highAt - now) / 60000)),
+    confidence: conf(p.stage), stage: p.stage, model: model.version, modelSource: model.source,
+    parts: { prep: r0(p.parts.prep), wait: r0(p.parts.wait), drive: r0(p.parts.drive), door: r0(p.parts.door || 0), pad: p.padMin },
+    basis,
+  });
+  if (picked != null || status === "on_the_way") {
+    const sla = courierSlaCfg(settings);
+    const drv = driverOf(sh);
+    const pos = drv ? driverLatLng(drv) : { lat: null, lng: null };
+    const posAt = ms(sh && sh.updated_at);
+    const fresh = pos.lat != null && posAt != null && now - posAt <= cfg.staleMin * 60_000;
+    if (fresh && cust) {
+      const straight = haversineKm(pos, cust);
+      if (straight != null && straight <= (Number(sla.nearKm) || 0.4)) return { at: null, minutes: 0, basis: "position", soon: true, model: model.version };
+      const { ratio, source } = roadRatio(row, cust, cfg);
+      const remKm = straight * ratio;
+      const trip = tripKm(row, cust, cfg) || remKm;
+      const p = promiseFromPosition(model, scfg, { now, remKm, tripKm: trip, band: hourBand(riyadh(now).hour), doorMin: cfg.doorMin });
+      const minutes = Math.max(1, Math.ceil((p.highAt - now) / 60000));
+      return { at: iso(p.highAt), minutes, soon: minutes <= 2, ratio: source, ...extra(p, "position") };
+    }
+    const state = stateOf(row, sh, paidAt, now, picked ?? now);
+    const p = smartPromise(model, scfg, state, facts);
+    if (p.hidden) return null;
+    if (p.highAt - now <= 60_000) return { at: null, minutes: 0, basis: "route", soon: true, model: model.version };
+    const minutes = Math.max(1, Math.ceil((p.highAt - now) / 60000));
+    return { at: iso(p.highAt), minutes, soon: minutes <= 2, ...extra(p, "route") };
+  }
+  if (!PRE_PICKUP.has(status)) return null;
+  const p = smartPromise(model, scfg, stateOf(row, sh, paidAt, now, null), facts);
+  if (p.hidden) return null;
+  return {
+    at: null, minutes: null, soon: false,
+    range: { from: iso(p.lowAt), to: iso(p.highAt), fromMin: Math.max(1, Math.round((p.lowAt - now) / 60000)), toMin: Math.max(1, Math.round((p.highAt - now) / 60000)) },
+    ...extra(p, "prep"),
+  };
+}
+const r0 = (x) => (x == null || !Number.isFinite(x) ? 0 : Math.round(x));
+function stateOf(row, sh, paidAt, now, pickedAt) {
+  const k = (v) => { const t = ms(v); return t != null && t <= now ? t : null; };
+  return {
+    paidAt, now,
+    acceptedAt: k(row.accepted_at), readyAt: k(row.pos_ready_at),
+    requestedAt: sh ? k(sh.created_at) : null, assignedAt: sh ? k(sh.assigned_at) : null, arrivedAt: sh ? k(sh.arrived_at) : null,
+    pickedAt,
   };
 }

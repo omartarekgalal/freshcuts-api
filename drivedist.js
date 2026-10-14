@@ -271,5 +271,7 @@ export async function resolveRouteKm({ cfg, straightKm, from, to, drive }) {
   if (cfg.maxStraightKm != null && straightKm > Number(cfg.maxStraightKm)) return fallback;
   const d = await drive.get(from, to);
   if (!d || !isFinite(d.km)) return fallback;
-  return { routeKm: d.km, driveKm: d.km, distanceSource: "google", driveCached: d.source === "cache" };
+  /* ETA1: مدة جوجل (من غير زحمة) من نفس الرد/الكاش — صفحة التتبع بتبني عليها المشوار من غير أي طلب زيادة */
+  return { routeKm: d.km, driveKm: d.km, distanceSource: "google", driveCached: d.source === "cache",
+    driveMin: Number.isFinite(Number(d.durationSec)) && Number(d.durationSec) > 0 ? Math.round((Number(d.durationSec) / 60) * 10) / 10 : null };
 }

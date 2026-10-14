@@ -106,6 +106,7 @@ import * as courierlive from "./courierlive.js";
 import * as cervotrial from "./cervotrial.js";
 import * as districts from "./districts.js";
 import * as etaMod from "./eta.js";
+import * as smartEta from "./smarteta.js";
 import * as deliveryControl from "./deliverycontrol.js";
 import * as adsctl from "./adsctl.js";
 import * as kitchen from "./kitchen.js";
@@ -3135,6 +3136,8 @@ deliveryControl.register(app, moduleCtx);
    مابيتعرضش للعميل غير لما التقييم الخارجي يعدّي البوابة — /api/delivery/eta/model
    بيقول ليه مقفول. */
 etaMod.register(app, moduleCtx);
+/* ETA1 (١٤/١٠): الوقت المتوقع الذكي — موديل ليلي (تحضير حسب النوع/الساعة/الزحمة + مشوار جوجل متعايَر) لصفحة التتبع وسطر الواتساب */
+smartEta.register(app, moduleCtx);
 // مطابقة فاتورة لاجلك (١٩/٩): المتوقَّع من العقد × المفوتَر من الفاتورة + الشذوذ + تصدير
 ljRecon.register(app, moduleCtx, { providers: () => deliveryApi.PROVIDERS });
 // إشعارات العميل (متصفح/SMS/واتساب بمفاتيح من لوحة التحكم) — قبل shop

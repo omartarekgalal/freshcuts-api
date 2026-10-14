@@ -58,6 +58,7 @@ import { makeNameResolver } from "./product-names.js";
 import { tableSessionForCheckout, tableGate, touchTableSession, tableCfg, tableBusy, TABLE_MSG, posOptionOf, tableNote, tableWho, tableTrackLabel, cleanCustomerText } from "./table-order.js";
 import { posMilestones, prepCfg, prepCheck, prepSmsEnabled, orderKind, WEBHOOKS_SQL, PREP_DDL } from "./prepstatus.js";
 import { computeTrackEta, trackStages } from "./tracketa.js";
+import { smartTrackContext, recordShownEta } from "./smarteta.js";
 import { courierOf, courierToken, COURIER_TEMPLATE_BASE } from "./couriercontact.js";
 import { followLinkOf } from "./wapolicy.js";
 
@@ -1878,7 +1879,10 @@ export function register(app, ctx, deps = {}) {
     try {
       const st = await getSettingsData();
       stages = trackStages({ row, sh: ship });
-      eta = computeTrackEta({ row, sh: ship, settings: st, now: Date.now() });
+      /* ETA1: الوقت المتوقع الذكي (smarteta.js) — الوعد المتحفّظ + تسجيله لحساب «دقة الوقت المتوقع». مقفول/فشل ⇒ حساب TR1 زي ما هو. */
+      const smart = await smartTrackContext(row, st).catch(() => null);
+      eta = computeTrackEta({ row, sh: ship, settings: st, now: Date.now(), smart });
+      if (eta && eta.promise) recordShownEta(row.order_no, eta, "track");
       const fl = followLinkOf({ settings: st, orderNo: row.order_no, status: row.status });
       wa = fl ? { follow: fl } : null;
     } catch (e) { console.error("[shop] track extras:", e.message); }

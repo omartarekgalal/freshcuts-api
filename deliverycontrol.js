@@ -29,6 +29,7 @@ import { DEFAULT_DISPATCH_DELAY_MIN, dispatchDelayOf, dispatchMode, DISPATCH_MOD
 import { districtCfg } from "./districts.js";
 import { applyPathChanges } from "./settings-guard.js";
 import { trackEtaCfg } from "./tracketa.js";
+import { smartEtaCfg, MIX_KEYS, MIX_LABELS, PERCENTILES } from "./smarteta-core.js";
 
 /* ── عنوان الحقل جوّه الإعدادات ──────────────────────────────────────────── */
 export function getAt(obj, path) {
@@ -149,6 +150,35 @@ export const FIELDS = [
   { path: "delivery.trackEta.staleMin", group: "zone", type: "int", min: 2, max: 30,
     label: "صفحة التتبع — موقع المندوب أقدم من كده (د) = نحسب من وقت الاستلام" },
 
+  /* ── ETA1: الوقت المتوقع الذكي (smarteta.js) — متعلّم من التاريخ كل ليلة، والعميل بيشوف الحد الأعلى المتحفّظ ── */
+  { path: "delivery.smartEta.enabled", group: "eta", type: "bool",
+    label: "الوقت المتوقع الذكي (متعلّم من الطلبات اللي فاتت)",
+    hint: "مقفول = صفحة التتبع ترجع للحساب البسيط (مهل ثابتة + سرعة). مفتوح = التحضير حسب نوع الطلب والساعة والزحمة + مشوار جوجل متعايَر على توصيلاتنا + هامش." },
+  { path: "delivery.smartEta.percentile", group: "eta", type: "enum",
+    label: "درجة التحفّظ (الوعد يتحقق في كام ٪ من الطلبات تقريباً قبل الهامش)",
+    options: ENUM(...PERCENTILES.filter((p) => p >= 70).map((p) => ({ v: String(p), label: p === 80 ? `${p}٪ (الافتراضي)` : `${p}٪` }))),
+    hint: "أعلى = وقت أبعد بس بيتكسر أقل. على التاريخ: ٨٠٪ + هامش ٥ د ⇒ الوعد اتحقق في ~٩٧٪ من الطلبات." },
+  { path: "delivery.smartEta.bufferMin", group: "eta", type: "int", min: 0, max: 30,
+    label: "هامش ثابت فوق التقدير (دقيقة)" },
+  { path: "delivery.smartEta.roundMin", group: "eta", type: "enum",
+    label: "التقريب لفوق",
+    options: ENUM({ v: "1", label: "لأقرب دقيقة" }, { v: "5", label: "لأقرب ٥ دقايق (الافتراضي)" }, { v: "10", label: "لأقرب ١٠ دقايق" }) },
+  { path: "delivery.smartEta.minTotalMin", group: "eta", type: "int", min: 0, max: 90,
+    label: "أقل وقت نوعد بيه من الدفع (دقيقة)", hint: "قبل ما المندوب يستلم: الوعد عمره ما يبقى أقرب من كده من لحظة الدفع." },
+  { path: "delivery.smartEta.maxTotalMin", group: "eta", type: "int", min: 45, max: 240,
+    label: "أقصى وقت نقوله (دقيقة من الدفع)", hint: "لو التقدير طلع فوق كده الطلب غالباً فيه مشكلة — مانعرضش وقت بدل ما نوعد بوعد كبير." },
+  { path: "delivery.smartEta.maxRangeMin", group: "eta", type: "int", min: 5, max: 60,
+    label: "عرض النطاق قبل الاستلام (دقيقة)", hint: "العميل بيشوف «بين X و Y» — Y هو الوعد، وX = Y ناقص العرض ده (أو الوقت العادي لو أقرب)." },
+  { path: "delivery.smartEta.whatsappLine", group: "eta", type: "bool",
+    label: "سطر «يوصلك تقريباً قبل …» في رسالة واتساب «في الطريق»",
+    hint: "في الرسالة المجانية جوّه نافذة الـ٢٤ ساعة بس — القوالب المدفوعة مابتتغيّرش." },
+  { path: "delivery.smartEta.learn", group: "eta", type: "bool",
+    label: "استخدم الأرقام المتعلّمة كل ليلة", hint: "مقفول = الأرقام الثابتة من تحليل ١٤/١٠." },
+  { path: "delivery.smartEta.minSamples", group: "eta", type: "int", min: 20, max: 1000,
+    label: "أقل عدد توصيلات عشان الأرقام المتعلّمة تتستخدم" },
+  ...MIX_KEYS.map((k) => ({ path: `delivery.smartEta.prepOverride.${k}`, group: "eta", type: "int", min: 0, max: 120,
+    label: `وقت تحضير ثابت — ${MIX_LABELS[k]} (دقيقة، ٠ = المتعلّم)` })),
+
   /* ── عقد لاجلك ── */
   { path: "delivery.leajlakContract.flatExVat", group: "contract", type: "num", min: 0, max: 500, step: 0.01,
     label: "الأجرة الثابتة قبل الضريبة (ر.س)" },
@@ -249,6 +279,7 @@ export const GROUPS = Object.freeze([
   { id: "provider", label: "المزوّد الحالي", icon: "🔌" },
   { id: "dispatch", label: "توقيت طلب المندوب", icon: "⏱" },
   { id: "zone", label: "النطاق والرسوم", icon: "📏" },
+  { id: "eta", label: "الوقت المتوقع للعميل (ذكي)", icon: "⏰" },
   { id: "contract", label: "عقد لاجلك والتكاليف", icon: "📜" },
   { id: "alerts", label: "تنبيهات ومسؤولين", icon: "📟" },
   { id: "district", label: "التوصيل بالحي (مقفول)", icon: "🏘️" },
@@ -424,6 +455,11 @@ export function effectiveOf(path, settings, envRead) {
   if (path.startsWith("delivery.leajlakContract.")) return e.leajlakContract[path.slice("delivery.leajlakContract.".length)];
   if (path.startsWith("delivery.sla.")) return e.sla[path.slice("delivery.sla.".length)];
   if (path.startsWith("delivery.trackEta.")) return trackEtaCfg(settings)[path.slice("delivery.trackEta.".length)];
+  if (path.startsWith("delivery.smartEta.")) {
+    const c = smartEtaCfg(settings), k = path.slice("delivery.smartEta.".length);
+    if (k.startsWith("prepOverride.")) return c.prepOverride[k.slice("prepOverride.".length)];
+    return k === "percentile" || k === "roundMin" ? String(c[k]) : c[k];
+  }
   const raw = getAt(settings || {}, path);
   return raw === undefined ? null : raw;
 }
