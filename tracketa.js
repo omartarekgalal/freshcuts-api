@@ -16,7 +16,7 @@
 import { courierSlaCfg } from "./courierops.js";
 import { routeKmOfRow } from "./delivery.js";
 import { STORE_LAT, STORE_LNG } from "./tsstore.js";
-import { classifyItems, promise as smartPromise, promiseFromPosition, hourBand, riyadh } from "./smarteta-core.js";
+import { classifyItems, promise as smartPromise, promiseFromPosition, hourBand, riyadh, stickDeadline, displayWindow } from "./smarteta-core.js";
 
 export const TRACK_ETA_DEFAULTS = Object.freeze({
   enabled: true,        // «يوصلك تقريباً» على صفحة التتبع
@@ -205,15 +205,23 @@ export function computeSmartEta({ row, sh = null, settings = {}, now = Date.now(
   if (status === "delivered" || (sh && ["delivered", "cancelled"].includes(String(sh.status)))) return null;
   const { model, cfg: scfg } = smart;
   const cust = customerOf(row);
-  const facts = { ...classifyItems(row.items), load: Number(smart.load) || 0, gMin: smart.gMin ?? null, routeKm: (() => { try { return routeKmOfRow(row); } catch { return null; } })() };
+  const facts = { ...classifyItems(row.items), subtotal: Number(row.subtotal) || 0, load: Number(smart.load) || 0, gMin: smart.gMin ?? null, routeKm: (() => { try { return routeKmOfRow(row); } catch { return null; } })() };
   const paidAt = historyAt(row, "paid") ?? ms(row.created_at) ?? now;
   const picked = pickedAtOf(row, sh);
   const iso5 = (t) => iso(t);
   const conf = (stage) => (stage === "s2" ? "high" : stage === "s1" ? "medium" : model.source === "learned" && (model.n?.delivery || 0) >= 150 ? "medium" : "low");
+  /* «قبل الساعة» ثابت: بيتأخّر لو التقدير عدّاه، وبيتقدّم بس بعد الاستلام وبفرق ≥ stickyStepMin (stickDeadline) */
+  const stick = (p) => {
+    const s = stickDeadline({ prevAt: smart.prevAt ?? null, nextAt: p.highAt, rawAt: p.rawHighAt ?? p.highAt, stage: p.stage, now, cfg: scfg });
+    const width = (Number(scfg.maxRangeMin) || 10) * 60000;
+    return { ...p, highAt: s.at, lowAt: Math.max(Math.min(p.lowAt, s.at - 5 * 60000), s.at - width), moved: s.moved };
+  };
   const extra = (p, basis) => ({
     low: iso5(p.lowAt), high: iso5(p.highAt), promise: iso5(p.highAt), promiseMin: Math.max(1, Math.ceil((p.highAt - now) / 60000)),
+    window: displayWindow(p.highAt, now, scfg),
     confidence: conf(p.stage), stage: p.stage, model: model.version, modelSource: model.source,
     parts: { prep: r0(p.parts.prep), wait: r0(p.parts.wait), drive: r0(p.parts.drive), door: r0(p.parts.door || 0), pad: p.padMin },
+    rules: (p.timeline && p.timeline.prep && p.timeline.prep.rules) || [],
     basis,
   });
   if (picked != null || status === "on_the_way") {
@@ -228,20 +236,22 @@ export function computeSmartEta({ row, sh = null, settings = {}, now = Date.now(
       const { ratio, source } = roadRatio(row, cust, cfg);
       const remKm = straight * ratio;
       const trip = tripKm(row, cust, cfg) || remKm;
-      const p = promiseFromPosition(model, scfg, { now, remKm, tripKm: trip, band: hourBand(riyadh(now).hour), doorMin: cfg.doorMin });
+      const p = stick(promiseFromPosition(model, scfg, { now, remKm, tripKm: trip, band: hourBand(riyadh(now).hour), doorMin: cfg.doorMin }));
       const minutes = Math.max(1, Math.ceil((p.highAt - now) / 60000));
       return { at: iso(p.highAt), minutes, soon: minutes <= 2, ratio: source, ...extra(p, "position") };
     }
     const state = stateOf(row, sh, paidAt, now, picked ?? now);
-    const p = smartPromise(model, scfg, state, facts);
-    if (p.hidden) return null;
+    const p0 = smartPromise(model, scfg, state, facts);
+    if (p0.hidden) return null;
+    const p = stick(p0);
     if (p.highAt - now <= 60_000) return { at: null, minutes: 0, basis: "route", soon: true, model: model.version };
     const minutes = Math.max(1, Math.ceil((p.highAt - now) / 60000));
     return { at: iso(p.highAt), minutes, soon: minutes <= 2, ...extra(p, "route") };
   }
   if (!PRE_PICKUP.has(status)) return null;
-  const p = smartPromise(model, scfg, stateOf(row, sh, paidAt, now, null), facts);
-  if (p.hidden) return null;
+  const p0 = smartPromise(model, scfg, stateOf(row, sh, paidAt, now, null), facts);
+  if (p0.hidden) return null;
+  const p = stick(p0);
   return {
     at: null, minutes: null, soon: false,
     range: { from: iso(p.lowAt), to: iso(p.highAt), fromMin: Math.max(1, Math.round((p.lowAt - now) / 60000)), toMin: Math.max(1, Math.round((p.highAt - now) / 60000)) },

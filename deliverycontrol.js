@@ -168,9 +168,31 @@ export const FIELDS = [
   { path: "delivery.smartEta.maxTotalMin", group: "eta", type: "int", min: 45, max: 240,
     label: "أقصى وقت نقوله (دقيقة من الدفع)", hint: "لو التقدير طلع فوق كده الطلب غالباً فيه مشكلة — مانعرضش وقت بدل ما نوعد بوعد كبير." },
   { path: "delivery.smartEta.maxRangeMin", group: "eta", type: "int", min: 5, max: 60,
-    label: "عرض النطاق قبل الاستلام (دقيقة)", hint: "العميل بيشوف «بين X و Y» — Y هو الوعد، وX = Y ناقص العرض ده (أو الوقت العادي لو أقرب)." },
+    label: "عرض النطاق اللي العميل بيشوفه (دقيقة)", hint: "«زمن الوصول المتوقع 20~30 دقيقة · قبل الساعة 4:00» — 30 = الدقايق لحد «قبل الساعة»، و20 = 30 ناقص العرض ده." },
+  { path: "delivery.smartEta.stickyStepMin", group: "eta", type: "int", min: 1, max: 30,
+    label: "«قبل الساعة» مايتقدّمش غير بفرق كده أو أكتر (دقيقة)",
+    hint: "الوقت بيتحدّث لوحده من غير أي رسالة للعميل. بيتأخّر لو التقدير عدّاه، وبيتقدّم (أبكر) بس بعد ما المندوب يستلم ولو الفرق كده أو أكتر — عشان الرقم مايرقصش." },
+  /* قواعد المالك (عمر ١٤/١٠) — أرضيات فوق الموديل المتعلّم */
+  { path: "delivery.smartEta.ownerRules", group: "eta", type: "bool",
+    label: "قواعد المالك للتحضير (المشاوي / الطلب الكبير / الطلب المجمّع)",
+    hint: "أرضيات فوق الأرقام المتعلّمة — مابتنزّلش أي وقت، بتزوّده بس." },
+  { path: "delivery.smartEta.grillFloorMin", group: "eta", type: "int", min: 0, max: 90,
+    label: "طلب فيه مشاوي أو وجبات: التحضير مش أقل من (دقيقة)", hint: "٠ = مقفولة." },
+  { path: "delivery.smartEta.bigOrderSar", group: "eta", type: "int", min: 0, max: 5000,
+    label: "«طلب كبير» = قيمة الأصناف من (ر.س)", hint: "٠ = مقفولة." },
+  { path: "delivery.smartEta.bigOrderExtraMin", group: "eta", type: "int", min: 0, max: 60,
+    label: "الطلب الكبير: زوّد على التحضير (دقيقة)" },
+  { path: "delivery.smartEta.manyItemsQty", group: "eta", type: "int", min: 2, max: 50,
+    label: "«طلب مجمّع» = أكتر من كام صنف (بالكمية)" },
+  { path: "delivery.smartEta.manyItemsFloorMin", group: "eta", type: "int", min: 0, max: 120,
+    label: "الطلب المجمّع: التحضير مش أقل من (دقيقة)", hint: "٠ = مقفولة." },
+  { path: "delivery.smartEta.manyItemsBusyOnly", group: "eta", type: "bool",
+    label: "أرضية الطلب المجمّع وقت الزحمة بس",
+    hint: "الزحمة = ذروة (٦–٩ م أو ١١ م–١ ص) أو طلبات المطبخ آخر ٣٠ د (نقطة البيع كل القنوات + طلبات الموقع المفتوحة) من العدد اللي تحت وفوق. مقفول = الأرضية دايماً." },
+  { path: "delivery.smartEta.busyLoad", group: "eta", type: "int", min: 1, max: 50,
+    label: "«زحمة» = طلبات في المطبخ آخر ٣٠ دقيقة من" },
   { path: "delivery.smartEta.whatsappLine", group: "eta", type: "bool",
-    label: "سطر «يوصلك تقريباً قبل …» في رسالة واتساب «في الطريق»",
+    label: "سطر «⏱ يوصلك خلال 20~30 دقيقة · قبل 4:00» في رسالة واتساب «في الطريق»",
     hint: "في الرسالة المجانية جوّه نافذة الـ٢٤ ساعة بس — القوالب المدفوعة مابتتغيّرش." },
   { path: "delivery.smartEta.learn", group: "eta", type: "bool",
     label: "استخدم الأرقام المتعلّمة كل ليلة", hint: "مقفول = الأرقام الثابتة من تحليل ١٤/١٠." },
@@ -458,6 +480,7 @@ export function effectiveOf(path, settings, envRead) {
   if (path.startsWith("delivery.smartEta.")) {
     const c = smartEtaCfg(settings), k = path.slice("delivery.smartEta.".length);
     if (k.startsWith("prepOverride.")) return c.prepOverride[k.slice("prepOverride.".length)];
+    if (k === "ownerRules" || k === "manyItemsBusyOnly") return c[k] === true;
     return k === "percentile" || k === "roundMin" ? String(c[k]) : c[k];
   }
   const raw = getAt(settings || {}, path);

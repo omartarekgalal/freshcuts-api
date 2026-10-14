@@ -8,7 +8,7 @@
    • كل وعد العميل شافه بيتسجّل في eta_shown (أول وعد، آخر وعد، أول وعد بعد الاستلام، وعد الواتساب) — ومنه «دقة الوقت المتوقع».
    كل الاستعلامات هنا قراية، ماعدا eta_models / eta_shown (جداولنا).
 ═══════════════════════════════════════════════════════════════════════════ */
-import { fitModel, backtest, activeModel, smartEtaCfg, riyadh, hmArabic, COLD_START, SMART_ETA_DEFAULTS, MIX_KEYS, MIX_LABELS } from "./smarteta-core.js";
+import { fitModel, backtest, activeModel, smartEtaCfg, riyadh, COLD_START, SMART_ETA_DEFAULTS, MIX_KEYS, MIX_LABELS } from "./smarteta-core.js";
 import { cacheKey } from "./drivedist.js";
 import { bizDaySql } from "./bizday.js";
 
@@ -26,7 +26,7 @@ const ms = (v) => { if (v == null || v === "") return null; const t = new Date(v
    مش يدوي (الطلب اللي اتبعت مرتين بيتحسب مرة بالتسليم اللي العميل عاشه). load = طلبات نقطة البيع كلها (كل القنوات) آخر ٣٠ د قبل الدفع. */
 export const SAMPLES_SQL = `
 WITH o AS (
-  SELECT s.order_no, s.option, s.items, s.accepted_at, s.pos_ready_at, s.collected_at, s.created_at,
+  SELECT s.order_no, s.option, s.items, s.subtotal::float8 AS subtotal, s.accepted_at, s.pos_ready_at, s.collected_at, s.created_at,
          s.address->>'latitude' AS lat1, s.address->>'longitude' AS lng1, s.address->>'lat' AS lat2, s.address->>'lng' AS lng2,
          s.delivery_quote->>'routeKm' AS route_km, s.delivery_quote->>'distanceKm' AS dist_km, s.delivery_quote->>'driveMin' AS drive_min,
          (SELECT min((h->>'at')::timestamptz)
@@ -69,7 +69,7 @@ export function rowsToSamples(rows, durByKey = new Map()) {
       paidAt, acceptedAt: ms(r.accepted_at), readyAt: ms(r.pos_ready_at),
       requestedAt: ms(r.requested_at), assignedAt: ms(r.assigned_at), arrivedAt: ms(r.arrived_at), pickedAt: ms(r.picked_at),
       deliveredAt: r.option === "delivery" ? ms(r.delivered_at) : null,
-      items: r.items, load: Number(r.load) || 0,
+      items: r.items, load: Number(r.load) || 0, subtotal: num(r.subtotal),
       gMin: dq != null && dq > 0 ? dq : (dc != null && dc > 0 ? dc / 60 : null),
       routeKm: num(r.route_km) || num(r.our_km) || num(r.dist_km),
     });
@@ -206,7 +206,13 @@ let loadCache = { at: 0, v: 0 };
 async function liveLoad(pool) {
   if (Date.now() - loadCache.at < 60_000) return loadCache.v;
   try {
-    const r = await pool.query("SELECT count(*)::int AS n FROM ts_orders WHERE order_date > NOW() - interval '30 minutes' AND COALESCE(order_status,0) <> 3");
+    /* زحمة المطبخ = طلبات نقطة البيع آخر ٣٠ د (كل القنوات، ومنها نسخ طلبات الموقع) + طلبات الموقع المفتوحة الأقدم من ٣٠ د
+       (لسه مش جاهزة — مش في نافذة نقطة البيع فمابتتعدّش مرتين). */
+    const r = await pool.query(`SELECT
+        (SELECT count(*) FROM ts_orders WHERE order_date > NOW() - interval '30 minutes' AND COALESCE(order_status,0) <> 3)
+      + (SELECT count(*) FROM shop_orders WHERE status IN ('paid','pos_created','accepted','courier_requested','courier_assigned')
+           AND pos_ready_at IS NULL AND NOT COALESCE(is_test,false) AND COALESCE(table_no,0) = 0
+           AND created_at <= NOW() - interval '30 minutes' AND created_at > NOW() - interval '3 hours') AS n`);
     loadCache = { at: Date.now(), v: Number(r.rows[0] && r.rows[0].n) || 0 };
   } catch { loadCache = { at: Date.now(), v: loadCache.v }; }
   return loadCache.v;
@@ -231,6 +237,19 @@ async function gMinOf(pool, row) {
   return v;
 }
 
+/* آخر «قبل الساعة» العميل شافه (ذاكرة، وإلا eta_shown.last_high) — عشان الوقت مايرقصش بين تحديث وتاني */
+const deadlineMemo = new Map();
+async function prevDeadline(pool, orderNo) {
+  const k = String(orderNo || "");
+  if (!k) return null;
+  if (deadlineMemo.has(k)) return deadlineMemo.get(k);
+  let v = null;
+  try { const r = await pool.query("SELECT last_high FROM eta_shown WHERE order_no=$1", [k]); v = r.rows[0] && r.rows[0].last_high ? new Date(r.rows[0].last_high).getTime() : null; } catch { v = null; }
+  if (deadlineMemo.size > 5000) deadlineMemo.clear();
+  deadlineMemo.set(k, v);
+  return v;
+}
+
 /** اللي computeTrackEta محتاجه عشان يحسب بالموديل الذكي — null لو المفتاح مقفول أو الموديول مش متسجّل. */
 export async function smartTrackContext(row, settingsData = null) {
   if (!RT || !row || row.option !== "delivery") return null;
@@ -238,8 +257,8 @@ export async function smartTrackContext(row, settingsData = null) {
   const cfg = smartEtaCfg(st);
   if (!cfg.enabled) return null;
   const model = activeModel(RT.learned, cfg);
-  const [gMin, load] = await Promise.all([gMinOf(RT.pool, row), liveLoad(RT.pool)]);
-  return { model, cfg: { ...cfg, dispatchDelayMin: dispatchDelayFrom(st) }, gMin, load };
+  const [gMin, load, prevAt] = await Promise.all([gMinOf(RT.pool, row), liveLoad(RT.pool), prevDeadline(RT.pool, row.order_no)]);
+  return { model, cfg: { ...cfg, dispatchDelayMin: dispatchDelayFrom(st) }, gMin, load, prevAt };
 }
 
 /* ── تسجيل الوعد اللي العميل شافه ─────────────────────────────────────────
@@ -248,6 +267,7 @@ const shownMemo = new Map();
 export function recordShownEta(orderNo, eta, source = "track") {
   if (!RT || !orderNo || !eta || !eta.promise) return;
   const key = String(orderNo);
+  if (source !== "wa") deadlineMemo.set(key, Date.parse(eta.promise));
   const prev = shownMemo.get(key);
   const sig = `${eta.stage}|${eta.promise}`;
   if (source === "track" && prev && prev.sig === sig && Date.now() - prev.at < 60_000) return;
@@ -305,7 +325,7 @@ export async function accuracy(pool) {
   return { d7: shape(a.rows[0] || {}), d30: shape(b.rows[0] || {}) };
 }
 
-/* ── سطر الواتساب: «يوصلك تقريباً قبل 9:45 م» — للرسالة الحرة جوّه النافذة بس (whatsapp.js). null = مانقولش وقت. ── */
+/* ── سطر الواتساب: «يوصلك خلال 20~30 دقيقة · قبل 9:45 م» — للرسالة الحرة جوّه النافذة بس (whatsapp.js). null = مانقولش وقت. ── */
 export async function etaWaLine(orderNo) {
   if (!RT || !orderNo) return null;
   const st = await RT.getSettingsData();
@@ -319,9 +339,10 @@ export async function etaWaLine(orderNo) {
   const smart = await smartTrackContext(row, st);
   if (!smart) return null;
   const eta = computeTrackEta({ row, sh: s.rows[0] || null, settings: st, now: Date.now(), smart });
-  if (!eta || !eta.promise || eta.soon) return null;
+  if (!eta || !eta.promise || eta.soon || !eta.window) return null;
+  recordShownEta(row.order_no, eta, "track");      // نفس «قبل الساعة» اللي صفحة التتبع هتعرضه
   recordShownEta(row.order_no, eta, "wa");
-  return `يوصلك تقريباً قبل ${hmArabic(Date.parse(eta.promise))}`;
+  return `يوصلك خلال ${eta.window.text}`;
 }
 
 export { SMART_ETA_DEFAULTS, MIX_KEYS, MIX_LABELS };

@@ -3,6 +3,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
+  stickDeadline, displayWindow,
   COLD_START, SMART_ETA_DEFAULTS, smartEtaCfg, classifyItems, hourBand, predictPrep, predictDrive, timeline, promise,
   promiseFromPosition, fitModel, backtest, activeModel, hmArabic, stateAt, sampleFacts,
 } from "./smarteta-core.js";
@@ -217,14 +218,14 @@ test("rowsToSamples: Google duration from the quote first, then the drive cache;
   assert.equal(rowsToSamples([{ ...base, option: "pickup", picked_at: null, delivered_at: null }], dur).length, 1, "pickup orders feed the prep table");
 });
 
-test("WhatsApp line «يوصلك تقريباً قبل …» comes from the same padded promise, records it, and is off with the switch", async () => {
+test("WhatsApp line «يوصلك خلال 20~30 دقيقة · قبل 4:00 م» comes from the same padded promise, records it, and is off with the switch", async () => {
   const picked = new Date(Date.now() - 2 * 60_000).toISOString();
   const order = { ...row({ status: "on_the_way", pos_ready_at: picked }), history: [{ status: "paid", at: new Date(Date.now() - 30 * 60_000).toISOString() }] };
   const pool = fakePool(order, { status: "picked", picked_at: picked, updated_at: new Date(Date.now() - 20 * 60_000).toISOString() });
   let st = {};
   registerSmart({ get() {} }, { pool, requireAdmin: async () => null, getSettingsData: async () => st, startJobs: false, log: { log() {}, error() {} } });
   const line = await etaWaLine(order.order_no);
-  assert.match(line, /^يوصلك تقريباً قبل \d{1,2}:\d{2} [صم]$/);
+  assert.match(line, /^يوصلك خلال \d+~\d+ دقيقة · قبل \d{1,2}:\d{2} [صم]$/);
   await new Promise((r) => setTimeout(r, 10));
   assert.ok(pool.calls.some((c) => /INSERT INTO eta_shown\(order_no, wa_high/.test(c.sql)), "the promise said on WhatsApp is recorded for the hit rate");
   st = { delivery: { smartEta: { whatsappLine: false } } };
@@ -243,4 +244,72 @@ test("cold start is internally consistent (every residual table has every percen
   for (const s of ["s0", "s1", "s2"]) for (const p of [50, 70, 80, 85, 90, 95]) assert.ok(Number.isFinite(COLD_START.resid[s][p]), `${s} P${p}`);
   for (const k of ["grill_heavy", "grill", "pizza", "pasta", "light", "side"]) assert.ok(COLD_START.prep.base[k] > 10, k);
   assert.ok(ceil5(1) > 0);
+});
+
+/* ── قواعد المالك (عمر ١٤/١٠) + «قبل الساعة» الثابت + شكل العرض ── */
+test("owner rules: grill/meal ≥30, many items (>6) ≥40, big order (≥200 SAR) +10 — floors on top, never lower; switchable", () => {
+  const x = (items, extra = {}) => ({ ...classifyItems(items), band: "night", dow: 2, load: 0, ...extra });
+  const grill = predictPrep(COLD_START, x([{ name: "كفتة مشوية بالوزن", variant_name: "ثلث كيلو" }]), cfg);
+  assert.equal(grill.med, 30); assert.deepEqual(grill.rules, ["grill_floor"]);
+  const meal = predictPrep(COLD_START, x([{ name: "وجبة نصف دجاجة على الفحم" }]), cfg);
+  assert.equal(meal.med, 30);
+  const crepe = predictPrep(COLD_START, x(CREPE), cfg);
+  assert.ok(crepe.med < 30 && crepe.rules.length === 0, "a crepe keeps its learned time");
+  const many = predictPrep(COLD_START, x(HEAVY), cfg);   // 7 items, 2 kg grill
+  assert.equal(many.med, 40); assert.ok(many.rules.includes("many_items_floor"));
+  const big = predictPrep(COLD_START, x(HEAVY, { subtotal: 260 }), cfg);
+  assert.equal(big.med, 50); assert.ok(big.rules.includes("big_order"));
+  // busy-only: quiet night ⇒ no 40 floor, peak or a loaded kitchen ⇒ floor
+  const busyOnly = { ...cfg, manyItemsBusyOnly: true };
+  assert.equal(predictPrep(COLD_START, x(HEAVY), busyOnly).med, 30);
+  assert.equal(predictPrep(COLD_START, x(HEAVY, { load: 5 }), busyOnly).med, 40);
+  assert.equal(predictPrep(COLD_START, x(HEAVY, { band: "peak1" }), busyOnly).med, 40);
+  // switched off ⇒ the learned number
+  const off = predictPrep(COLD_START, x(HEAVY, { subtotal: 260 }), { ...cfg, ownerRules: false });
+  assert.equal(off.med, off.learned); assert.deepEqual(off.rules, []);
+  // a learned value already above a floor stays (floors never lower)
+  { const hi = predictPrep(COLD_START, x(CREPE), { ...cfg, prepOverride: { ...cfg.prepOverride, light: 45 } }); assert.equal(hi.med, hi.learned); assert.ok(hi.med > 40 && hi.rules.length === 0); }
+  // settings + dashboard fields
+  const c = smartEtaCfg({ delivery: { smartEta: { grillFloorMin: 25, manyItemsQty: 8, manyItemsBusyOnly: "true", bigOrderSar: 0 } } });
+  assert.equal(c.grillFloorMin, 25); assert.equal(c.manyItemsQty, 8); assert.equal(c.manyItemsBusyOnly, true); assert.equal(c.bigOrderSar, 0);
+  for (const p of ["ownerRules", "grillFloorMin", "bigOrderSar", "bigOrderExtraMin", "manyItemsQty", "manyItemsFloorMin", "manyItemsBusyOnly", "busyLoad", "stickyStepMin"]) {
+    const f = FIELD_BY_PATH["delivery.smartEta." + p]; assert.ok(f, p); assert.equal(f.group, "eta"); assert.match(f.label, /[؀-ۿ]/);
+  }
+  assert.equal(effectiveOf("delivery.smartEta.grillFloorMin", {}), 30);
+  assert.equal(effectiveOf("delivery.smartEta.manyItemsFloorMin", {}), 40);
+  assert.equal(validatePatch({ "delivery.smartEta.manyItemsQty": 1 }).ok, false);
+});
+
+test("«قبل الساعة» is sticky: later when the estimate passes it, earlier only after pickup by ≥5 min, otherwise unchanged", () => {
+  const now = PEAK, D = PEAK + 30 * M;
+  assert.deepEqual(stickDeadline({ prevAt: null, nextAt: D, stage: "s0", now }), { at: D, moved: "first" });
+  // jitter: new estimate 4 min earlier / 3 min earlier before pickup ⇒ kept
+  assert.equal(stickDeadline({ prevAt: D, nextAt: D - 5 * M, rawAt: D - 4 * M, stage: "s0", now }).at, D);
+  assert.equal(stickDeadline({ prevAt: D, nextAt: D - 10 * M, rawAt: D - 12 * M, stage: "s1", now }).at, D, "never earlier before pickup");
+  // raw estimate passes the deadline ⇒ later (silently)
+  const later = stickDeadline({ prevAt: D, nextAt: D + 5 * M, rawAt: D + 1 * M, stage: "s0", now });
+  assert.equal(later.at, D + 5 * M); assert.equal(later.moved, "later");
+  // after pickup, clearly earlier ⇒ earlier; only slightly earlier ⇒ kept
+  assert.equal(stickDeadline({ prevAt: D, nextAt: D - 10 * M, rawAt: D - 11 * M, stage: "s2", now }).at, D - 10 * M);
+  assert.equal(stickDeadline({ prevAt: D, nextAt: D - 5 * M, rawAt: D - 6 * M, stage: "s2", now }).at, D, "needs 2 more minutes of margin");
+  // the old deadline has (almost) passed ⇒ the new one
+  assert.equal(stickDeadline({ prevAt: now + M, nextAt: now + 15 * M, stage: "s1", now }).at, now + 15 * M);
+});
+
+test("display: «18~28 دقيقة · قبل 4:00 م» — the high end is the minutes to the deadline, the low end = high − width", () => {
+  const w = displayWindow(Date.parse("2026-10-14T13:00:00Z"), Date.parse("2026-10-14T12:31:30Z"), cfg);
+  assert.equal(w.toMin, 28); assert.equal(w.fromMin, 18); assert.equal(w.text, "18~28 دقيقة · قبل 4:00 م"); assert.equal(w.before, "2026-10-14T13:00:00.000Z");
+  const close = displayWindow(PEAK + 4 * M, PEAK, cfg);
+  assert.equal(close.fromMin, 1); assert.equal(close.toMin, 4);
+});
+
+test("track: eta.window carries the two values and follows the sticky deadline across refreshes", () => {
+  const e1 = computeTrackEta({ row: row(), settings: {}, now: PEAK, smart });
+  assert.ok(e1.window && e1.window.before === e1.promise && e1.window.toMin === Math.floor((Date.parse(e1.promise) - PEAK) / M));
+  assert.match(e1.window.text, /^\d+~\d+ دقيقة · قبل \d{1,2}:\d{2} [صم]$/);
+  assert.ok(e1.rules.includes("grill_floor") || e1.rules.includes("many_items_floor"), JSON.stringify(e1.rules));
+  // a minute later the kitchen load jumped by one: the shown deadline must not move earlier, and a small later wobble inside the deadline keeps it
+  const e2 = computeTrackEta({ row: row(), settings: {}, now: PEAK + M, smart: { ...smart, load: 0, prevAt: Date.parse(e1.promise) + 5 * M } });
+  assert.equal(e2.promise, new Date(Date.parse(e1.promise) + 5 * M).toISOString(), "before pickup the deadline is never pulled earlier");
+  assert.equal(e2.range.to, e2.promise);
 });

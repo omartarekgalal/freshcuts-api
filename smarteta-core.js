@@ -38,14 +38,25 @@ export const SMART_ETA_DEFAULTS = Object.freeze({
   roundMin: 5,          // التقريب لفوق
   minTotalMin: 35,      // أقل وعد من الدفع (د) — قبل الاستلام
   maxTotalMin: 120,     // فوق كده من الدفع مانقولش وقت (الطلب فيه مشكلة — رقم هنا كذب)
-  maxRangeMin: 20,      // عرض النطاق اللي العميل بيشوفه (بداية = max(الوسيط، النهاية − ده))
+  maxRangeMin: 10,      // عرض النطاق بالدقايق اللي العميل بيشوفه («20~30 دقيقة» = 10) — النهاية = الدقايق لحد «قبل الساعة»
   learn: true,          // استخدم المعاملات المتعلّمة كل ليلة (مقفول ⇒ الافتراضي من التحليل)
   minSamples: 60,       // أقل عدد طلبات متسلّمة عشان المتعلّم يتستخدم
-  whatsappLine: true,   // «يوصلك تقريباً قبل X» في رسالة «في الطريق» الحرة (جوّه النافذة بس)
+  whatsappLine: true,   // «⏱ يوصلك خلال 20~30 دقيقة · قبل 4:00» في رسالة «في الطريق» الحرة (جوّه النافذة بس)
+  /* قواعد المالك (عمر ١٤/١٠) — أرضيات فوق الموديل المتعلّم، كلها من اللوحة */
+  ownerRules: true,          // مفتاح القواعد كلها
+  grillFloorMin: 30,         // أي طلب فيه مشاوي/وجبات مشوية: التحضير مش أقل من كده
+  bigOrderSar: 200,          // «طلب كبير» = قيمة الأصناف من كده وفوق (٠ = مقفول)
+  bigOrderExtraMin: 10,      // … + الدقايق دي على التحضير
+  manyItemsQty: 6,           // «طلب مجمّع» = أكتر من كده صنف (بالكمية)
+  manyItemsFloorMin: 40,     // … التحضير مش أقل من كده
+  manyItemsBusyOnly: false,  // الأرضية دي وقت الزحمة بس (ذروة أو طلبات المطبخ ≥ busyLoad)
+  busyLoad: 4,               // «زحمة» = طلبات المطبخ آخر ٣٠ د (نقطة البيع كل القنوات + طلبات الموقع المفتوحة) من كده وفوق
+  stickyStepMin: 5,          // «قبل الساعة» مابيتحركش لقدّام غير بعد الاستلام ولو الفرق ٥ د أو أكتر — مفيش رقص
   prepOverride: Object.freeze(Object.fromEntries(MIX_KEYS.map((k) => [k, 0]))),   // ٠ = المتعلّم
 });
 export const SMART_ETA_LIMITS = Object.freeze({
   bufferMin: [0, 30], roundMin: [1, 10], minTotalMin: [0, 90], maxTotalMin: [45, 240], maxRangeMin: [5, 60], minSamples: [20, 1000],
+  grillFloorMin: [0, 90], bigOrderSar: [0, 5000], bigOrderExtraMin: [0, 60], manyItemsQty: [2, 50], manyItemsFloorMin: [0, 120], busyLoad: [1, 50], stickyStepMin: [1, 30],
 });
 
 const num = (v) => { if (v === null || v === undefined || v === "") return null; const n = Number(v); return Number.isFinite(n) ? n : null; };
@@ -57,6 +68,8 @@ export function smartEtaCfg(settings = {}) {
   out.enabled = isOn(raw.enabled);
   out.learn = isOn(raw.learn);
   out.whatsappLine = isOn(raw.whatsappLine);
+  out.ownerRules = isOn(raw.ownerRules);
+  out.manyItemsBusyOnly = isOn(raw.manyItemsBusyOnly, false);
   const p = num(raw.percentile);
   if (p != null && PERCENTILES.includes(p)) out.percentile = p;
   for (const [k, [lo, hi]] of Object.entries(SMART_ETA_LIMITS)) {
@@ -239,7 +252,8 @@ export function fitModel(rawSamples = [], { now = Date.now(), dispatchDelayMin =
     drive, resid: null,
   };
   /* البواقي لكل مرحلة: الطلب اللي اتسلّم فعلاً، لو وقفنا عند المرحلة دي وتوقّعنا — كان الفرق كام؟ */
-  const cfg = { ...SMART_ETA_DEFAULTS, dispatchDelayMin };
+  /* البواقي على الموديل المتعلّم **من غير** قواعد المالك — عشان الأرضيات تفضل تحفّظ زيادة فوق الـP80، مش تتاكل في الهامش */
+  const cfg = { ...SMART_ETA_DEFAULTS, dispatchDelayMin, ownerRules: false };
   const resid = { s0: [], s1: [], s2: [] };
   for (const s of D) {
     for (const st of STAGES) {
@@ -289,8 +303,16 @@ export function predictPrep(model, x, cfg = SMART_ETA_DEFAULTS) {
   const qty = (p.qtySlope || 0) * Math.max(0, (x.qty || 1) - (p.qtyFrom || 3));
   const load = (p.loadSlope || 0) * Math.max(0, (x.load || 0) - (p.loadRef || 0));
   /* التعديلات السالبة (ذروة أسرع!) متقاسة، بس الأساس مابينزلش تحت ٧٠٪ منه — مايصحش التعديل يخلي التحضير ٥ دقايق. */
-  const med = Math.max(base * 0.7, base + hour + day + qty + load);
-  return { med, base, override: ov != null, hour, day, qty, load };
+  const learned = Math.max(base * 0.7, base + hour + day + qty + load);
+  /* قواعد المالك: أرضيات + إضافة فوق المتعلّم (مابتنزّلش رقم أبداً). */
+  let med = learned; const rules = [];
+  if (cfg.ownerRules !== false) {
+    if ((x.mix === "grill_heavy" || x.mix === "grill") && cfg.grillFloorMin > 0 && med < cfg.grillFloorMin) { med = cfg.grillFloorMin; rules.push("grill_floor"); }
+    const busy = Number(x.load || 0) >= (cfg.busyLoad || 4) || x.band === "peak1" || x.band === "peak2";
+    if ((x.qty || 0) > (cfg.manyItemsQty || 6) && cfg.manyItemsFloorMin > 0 && (!cfg.manyItemsBusyOnly || busy) && med < cfg.manyItemsFloorMin) { med = cfg.manyItemsFloorMin; rules.push("many_items_floor"); }
+    if (cfg.bigOrderSar > 0 && Number(x.subtotal) >= cfg.bigOrderSar && cfg.bigOrderExtraMin > 0) { med += cfg.bigOrderExtraMin; rules.push("big_order"); }
+  }
+  return { med, learned, base, override: ov != null, hour, day, qty, load, rules };
 }
 function driveMedRaw(d, x) {
   const g = num(x.gMin), km = num(x.routeKm);
@@ -359,7 +381,8 @@ export function promise(model, cfg, state, x) {
   const tl = timeline(model, cfg, state, x);
   const pad = padOf(model, cfg, tl.stage);
   const step = Math.max(1, Number(cfg.roundMin) || 5);
-  let high = ceilTo(tl.deliveredAt + pad * 60000, step);
+  const rawHighAt = tl.deliveredAt + pad * 60000;
+  let high = ceilTo(rawHighAt, step);
   if (tl.stage !== "s2" && state.paidAt && cfg.minTotalMin > 0) high = Math.max(high, ceilTo(state.paidAt + cfg.minTotalMin * 60000, step));
   high = Math.max(high, ceilTo(now + 5 * 60000, step));
   if (state.paidAt && cfg.maxTotalMin > 0 && high - state.paidAt > cfg.maxTotalMin * 60000) return { hidden: true, reason: "over_max", stage: tl.stage, highAt: high, timeline: tl };
@@ -369,7 +392,7 @@ export function promise(model, cfg, state, x) {
   let low = Math.max(floorTo(medAt, step), ceilTo(now, step));
   low = Math.max(low, high - (Number(cfg.maxRangeMin) || 20) * 60000);
   if (low >= high) low = high - step * 60000;
-  return { hidden: false, stage: tl.stage, lowAt: low, highAt: high, medAt, padMin: r1(pad), timeline: tl, parts: tl.parts };
+  return { hidden: false, stage: tl.stage, lowAt: low, highAt: high, rawHighAt, medAt, padMin: r1(pad), timeline: tl, parts: tl.parts };
 }
 
 /** بعد الاستلام ومعانا موقع حيّ للمندوب: الباقي من الكيلو + هامش متناسب مع الجزء الفاضل من المشوار. */
@@ -379,9 +402,10 @@ export function promiseFromPosition(model, cfg, { now = Date.now(), remKm, tripK
   const f = tripKm > 0 ? clamp(remKm / tripKm, 0, 1) : 1;
   const pad = Math.max(0, padOf(model, cfg, "s2") - (Number(cfg.bufferMin) || 0)) * Math.max(0.3, f) + (Number(cfg.bufferMin) || 0);
   const medAt = now + med * 60000;
-  const high = Math.max(ceilTo(medAt + pad * 60000, step), ceilTo(now + 3 * 60000, step));
+  const rawHighAt = medAt + pad * 60000;
+  const high = Math.max(ceilTo(rawHighAt, step), ceilTo(now + 3 * 60000, step));
   const low = Math.max(floorTo(medAt, step), ceilTo(now, step), high - (Number(cfg.maxRangeMin) || 20) * 60000);
-  return { stage: "s2", lowAt: Math.min(low, high - step * 60000), highAt: high, medAt, padMin: r1(pad), parts: { prep: 0, wait: 0, drive: med - doorMin, door: doorMin } };
+  return { stage: "s2", lowAt: Math.min(low, high - step * 60000), highAt: high, rawHighAt, medAt, padMin: r1(pad), parts: { prep: 0, wait: 0, drive: med - doorMin, door: doorMin } };
 }
 
 /** أي موديل يتستخدم: المتعلّم لو مفتوح وعيّنته كفاية، وإلا الافتراضي. */
@@ -437,4 +461,27 @@ export function hmArabic(t) {
   const h = z.getUTCHours(), m = z.getUTCMinutes();
   const h12 = h % 12 === 0 ? 12 : h % 12;
   return `${h12}:${String(m).padStart(2, "0")} ${h < 12 ? "ص" : "م"}`;
+}
+
+/* ── «قبل الساعة» ثابت (عمر ١٤/١٠: يتحدّث بهدوء، من غير «اتأخر/اتحدّث»، ومن غير رقص) ──────────────────────
+   prevAt = آخر «قبل الساعة» العميل شافه. القواعد:
+     • مفيش سابق، أو السابق فات/قرّب أوي (أقل من دقيقتين) ⇒ الجديد.
+     • التقدير الخام عدّى السابق ⇒ نأخّر للجديد (الصدق أهم — والتأخير بيبقى بخطوة ٥ د على الأقل بالتقريب).
+     • نقدّم (أبكر) بس بعد الاستلام (s2) ولو الجديد أبكر بـstickyStepMin أو أكتر والخام أبكر بدقيقتين زيادة (هامش ضد الرقص).
+     • غير كده السابق زي ما هو. */
+export function stickDeadline({ prevAt = null, nextAt, rawAt = nextAt, stage, now = Date.now(), cfg = SMART_ETA_DEFAULTS }) {
+  const step = (Number(cfg.stickyStepMin) || 5) * 60000;
+  const p = num(prevAt);
+  if (p == null || p <= now + 2 * 60000) return { at: nextAt, moved: p == null ? "first" : "expired" };
+  if (rawAt > p) return { at: Math.max(nextAt, p), moved: nextAt > p ? "later" : "kept" };
+  if (stage === "s2" && nextAt <= p - step && rawAt <= p - step - 2 * 60000) return { at: nextAt, moved: "earlier" };
+  return { at: p, moved: "kept" };
+}
+/** «20~30 دقيقة · قبل 4:00 م»: النهاية = الدقايق لحد «قبل الساعة» بالظبط (لتحت)، والبداية = النهاية − عرض النطاق. */
+export function displayWindow(beforeAt, now = Date.now(), cfg = SMART_ETA_DEFAULTS) {
+  const toMin = Math.max(1, Math.floor((beforeAt - now) / 60000));
+  const width = Number(cfg.maxRangeMin) || 10;
+  const fromMin = Math.max(1, toMin - width);
+  return { fromMin, toMin, widthMin: width, before: new Date(beforeAt).toISOString(), beforeText: hmArabic(beforeAt),
+    text: `${fromMin === toMin ? toMin : `${fromMin}~${toMin}`} دقيقة · قبل ${hmArabic(beforeAt)}` };
 }
