@@ -1878,7 +1878,7 @@ test("ready-cart store: last order's snapshot only when it really is that order'
     if (/FROM cart_recovery WHERE code=\$1 UNION ALL/.test(s)) return { rows: rows.taken.has(p[0]) || rows.bot.some((b) => b.code === p[0]) ? [{}] : [] };
     if (/^INSERT INTO wa_bot_carts/.test(s)) { rows.bot.push({ code: p[0], phone_norm: p[1], source: p[2], from_order: p[3], items: JSON.parse(p[4]), cart_raw: JSON.parse(p[5]), option: p[6], note: JSON.parse(p[7]), exp: nowMs + p[8] * 86400_000, opens: 0 }); return { rows: [{ code: p[0] }] }; }
     if (/^UPDATE wa_bot_carts SET opens/.test(s)) { const b = rows.bot.find((x) => x.code === p[0] && x.exp > nowMs); if (!b) return { rows: [] }; b.opens++; return { rows: [{ source: b.source }] }; }
-    if (/^SELECT c.items, c.cart_raw, c.option, ch.last_loc FROM wa_bot_carts c LEFT JOIN wa_bot_chats ch/.test(s)) { const b = rows.bot.find((x) => x.code === p[0] && x.exp > nowMs); return { rows: b ? [b] : [] }; }
+    if (/^SELECT c\.items, c\.cart_raw, c\.option, ch\.last_loc, c\.source, c\.note FROM wa_bot_carts c LEFT JOIN wa_bot_chats ch/.test(s)) { const b = rows.bot.find((x) => x.code === p[0] && x.exp > nowMs); return { rows: b ? [b] : [] }; }
     throw new Error("unexpected sql: " + s.slice(0, 60));
   } };
   const st = BC.makeBotCarts({ pool, log: () => {} });
@@ -4717,7 +4717,7 @@ const CREPE_SPEC = { v: 1, kind: "box", slug: "box-crepe-duo", pid: "6", slot: "
 const CREPE_LINE = "بوكس الكريب لشخصين (كريب شيش طاووق وكريب ثاني من اختيارك مع تشيز فرايز وصنف جانبي ومشروبين) بـ65 ر.س، وأول طلب من الموقع توصيله مجاني بكود FIRST داخل نطاق التوصيل";
 const CREPE_VALUES = { "offer.title": "بوكس فيه طبقك المفضل", "offer.line": CREPE_LINE };
 const FD1_SENT_AT = new Date(Date.parse(OPEN_AT) - 10 * 60_000).toISOString();
-function fd1World({ spec = CREPE_SPEC, values = CREPE_VALUES, sent = true, perRecipient = true, template = "fc_frame_ask_text", web = null, newer = false, orderedSince = false, waBot = {}, links = [], extraSettings = {}, bundles = FXF.bundles } = {}) {
+function fd1World({ spec = CREPE_SPEC, values = CREPE_VALUES, sent = true, perRecipient = true, template = "fc_frame_ask_text", web = null, newer = false, orderedSince = false, waBot = {}, links = [], extraSettings = {}, bundles = FXF.bundles, loc = null } = {}) {
   const holder = {};
   const lastSent = sent ? { id: 7, job_id: 3, sent_at: FD1_SENT_AT, wamid: "wamid.CAMP7", cloud_template: template, cloud_vars: perRecipient ? { offer: "", perRecipient: true } : { offer: "عرض" },
     vars: { fav: spec, cloud: { values } } } : null;
@@ -4728,8 +4728,9 @@ function fd1World({ spec = CREPE_SPEC, values = CREPE_VALUES, sent = true, perRe
     if (sql === S.first) return rows([{ code: "FIRST", active: true, min_total: "60", free_delivery: true, percent: "0", expires_at: null }]);
     if (sql === S.policy) return rows([{ config: FXF.policy }]);
     if (sql === S.web) return rows(web ? [{ pn: p[0][0], ...web }] : []);
-    if ([S.firstUsed, S.lastDelivery, S.accounts, S.rewards].includes(sql)) return rows([]);
-    if (sql === S.lastSent) return rows(lastSent ? [lastSent] : []);
+    if (sql === S.lastDelivery) return rows(loc ? [{ pn: p[0][0], lat: loc.lat, lng: loc.lng, district: null }] : []);
+    if ([S.firstUsed, S.accounts, S.rewards].includes(sql)) return rows([]);
+    if (sql === S.lastSent) return rows(lastSent && (p[2] == null || lastSent.wamid === p[2]) ? [lastSent] : []);      // $3 = wamid الرسالة اللي اتضغط زرها
     if (sql === S.newerTemplate) return rows(newer ? [{}] : []);
     /* yesGate على نفس سجل البوت والرسايل بتوع العالم ده */
     if (sql === S.inboundSince) return rows(holder.w.db.log.filter((l) => l.phone_norm === p[0] && l.id !== p[1] && Date.parse(l.at) > Date.parse(p[2])).slice(0, 1).map(() => ({})));
@@ -4746,7 +4747,9 @@ function fd1World({ spec = CREPE_SPEC, values = CREPE_VALUES, sent = true, perRe
   };
   const w = liveWorld({ pages: FXF.pages, variants: FXF.variants, bundles, offers: FXF.offers.map((o) => ({ ...o, channels: { delivery: true, takeaway: true }, dineInOnly: false })), links: [...ALL_LINKS, ...links], fav, expandBundle, waBot, extraSettings });
   holder.w = w;
-  holder.api = FAVP.makeFavPick({ pool: fpool, live: () => w.bot.live, quote: async () => null, now: () => Date.parse(OPEN_AT) });
+  /* loc ⇒ عنوان مؤكد (كاش جوجل) والرسم من سلّم الرسوم بتاع ١٤/١٠ (جوّه ١٠ كم مفيش رسم كيلو) */
+  const ladderFee = (t) => [...FXF.policy.feeByTotal].sort((a, b) => b.over - a.over).find((x) => t >= x.over).fee;
+  holder.api = FAVP.makeFavPick({ pool: fpool, live: () => w.bot.live, quote: async (x) => (loc ? { deliverable: true, fee: ladderFee(x.orderTotal), distanceSource: "google", routeKm: loc.km } : null), now: () => Date.parse(OPEN_AT) });
   /* رسالة الحملة نفسها في سجل الرسايل (زي guardSend) — قبل الوقت الحالي بعشر دقايق */
   if (sent) w.db.msgs.push({ wamid: "wamid.CAMP7", direction: "out", phone_norm: "512345678", template, category: "MARKETING", status: "delivered", source: "campaign", created_at: new Date(Date.parse(FD1_SENT_AT) - 1000).toISOString() });
   w.favSql = favSql;
@@ -4922,9 +4925,10 @@ test("FD1 المساعد: «أبغى أطلب» / «نعم» على الحملة
 
 test("FD1 الإعدادات: «أبغى أطلب» ⇒ سلة الحملة (افتراضي مفتوح) ومدة قراءة العرض ٧٢ ساعة (١–١٦٨) — في جدول اللوحة وبتتحفظ", () => {
   const d = R.botConfig({});
-  assert.deepEqual([d.campaignCart, d.campaignOfferHours], [true, 72]);
+  assert.deepEqual([d.campaignCart, d.campaignOfferHours, d.campaignYesQuietMin], [true, 72, 60]);
+  assert.deepEqual([R.botConfig({ waBot: { campaignYesQuietMin: 0 } }).campaignYesQuietMin, R.botConfig({ waBot: { campaignYesQuietMin: 5000 } }).campaignYesQuietMin], [0, 720]);
   assert.deepEqual([R.botConfig({ waBot: { campaignCart: false, campaignOfferHours: 999 } }).campaignCart, R.botConfig({ waBot: { campaignOfferHours: 999 } }).campaignOfferHours], [false, 168]);
-  assert.ok(R.SCHEMA.campaignCart && R.SCHEMA.campaignOfferHours);
+  assert.ok(R.SCHEMA.campaignCart && R.SCHEMA.campaignOfferHours && R.SCHEMA.campaignYesQuietMin);
   const ok = R.configFromBody({ campaignCart: false, campaignOfferHours: 24 }, {});
   assert.deepEqual([ok.ok, ok.value.campaignCart, ok.value.campaignOfferHours], [true, false, 24]);
   assert.equal(R.configFromBody({ campaignOfferHours: 500 }, {}).ok, false);
@@ -4943,5 +4947,82 @@ test("مراجعة FD1 — كاش البوت الصارم (live strict): الم�
     assert.equal(await w.bot.live.menu({ strict: true }), null, "الحملة: مفيش سعر من كاش قديم");
     const loose = await w.bot.live.menu();
     assert.ok(loose && loose.items.length > 0, "البوت العادي: الكاش القديم لحد staleCacheMin زي ما هو");
+  } finally { Date.now = realNow; }
+}));
+
+/* ══ مراجعة FD1 ٣ (١٤/١٠): الضغطة بتتعرف بالرسالة اللي اتضغط زرها، «نعم» محتاجة محادثة هادية قبل الحملة، والسلة على نفس العنوان ═══ */
+const tapOn = (w, ctxId, o = {}) => w.say(null, { ...o, raw: { type: "button", button: { payload: "أبغى أطلب", text: "أبغى أطلب" }, ...(ctxId ? { context: { from: BIZ, id: ctxId } } : {}) } });
+const sayQuoting = (w, text, ctxId) => w.say(null, { raw: { type: "text", text: { body: text }, context: { from: BIZ, id: ctxId } } });
+
+test("مراجعة FD1 ٣ — كل الأطر فيها نفس زر «أبغى أطلب»: الضغطة تحت إطار حملة تانية ⇒ ردها العادي (مش سلة «طبقك المفضل»)؛ الضغطة على رسالة «طبقك المفضل» نفسها ⇒ السلة حتى لو جه بعدها قالب تاني", withEnv(LOCKS_OPEN, async () => {
+  const old = fd1World();
+  const r1 = await tapOn(old, "wamid.OLDFRAME");
+  assert.match(bodyOf(r1.sent[0]), GENERIC); assert.equal(old.db.botCarts.length, 0); assert.notEqual(r1.log.link_slug, "wa-campaign");
+  const mine = fd1World({ newer: true });
+  const r2 = await tapOn(mine, "wamid.CAMP7");
+  assert.equal(bodyOf(r2.sent[0]), FD1_BODY); assert.deepEqual(mine.db.botCarts.map((c) => c.source), ["campaign"]);
+  // من غير context (مايحصلش من ميتا): زي الأول — آخر رسالة حملة ومفيش قالب أحدث
+  const bare = fd1World({ newer: true });
+  assert.match(bodyOf((await tapOn(bare, null)).sent[0]), GENERIC);
+  // الضغطة وقت انتظار الموظف: بعد الانتظار بتتقرا على نفس الرسالة
+  const s = fd1World();
+  await s.cashier("هلا"); s.clock.advance(1);
+  const r3 = await tapOn(s, "wamid.OLDFRAME");
+  assert.equal(r3.log.decision, "waiting");
+  const out = await s.tick(6);
+  assert.deepEqual([out.length, s.db.botCarts.length], [1, 0]); assert.match(bodyOf(out[0]), GENERIC);
+}));
+
+test("مراجعة FD1 ٣ — «نعم» مقتبسة على رسالة تانية مش موافقة على الحملة؛ «نعم» والمحادثة كانت شغّالة قبل الحملة بأقل من campaignYesQuietMin ⇒ طريقها العادي — إلا لو مقتبسة على رسالة الحملة نفسها", withEnv(LOCKS_OPEN, async () => {
+  const q = fd1World();
+  const r1 = await sayQuoting(q, "نعم", "wamid.BOTQ1");
+  assert.deepEqual([r1.sent.length, q.db.botCarts.length, r1.log.detail], [0, 0, "campaign_yes:replied_to_other"]);
+  const qq = fd1World();
+  const r1b = await sayQuoting(qq, "نعم", "wamid.CAMP7");
+  assert.equal(bodyOf(r1b.sent[0]), FD1_BODY);
+  // البوت/المساعد رد عليه قبل الحملة بعشرين دقيقة (سؤال «أجهز لك السلة؟» مثلاً)
+  const before = new Date(Date.parse(FD1_SENT_AT) - 20 * 60_000).toISOString();
+  const pre = () => { const w = fd1World(); w.db.msgs.push({ wamid: "wamid.BOT0", direction: "out", phone_norm: "512345678", template: null, category: null, status: "delivered", source: "api", created_at: before }); return w; };
+  const a = pre();
+  const r2 = await a.say("نعم");
+  assert.deepEqual([r2.sent.length, a.db.botCarts.length, r2.log.detail], [0, 0, "campaign_yes:chat_before_campaign"]);
+  // نفس الحالة بس «نعم» مقتبسة على رسالة الحملة ⇒ موافقة عليها هي
+  const b = pre();
+  assert.equal(bodyOf((await sayQuoting(b, "نعم", "wamid.CAMP7")).sent[0]), FD1_BODY);
+  // الشرط من اللوحة: ٠ = من غيره
+  const c = fd1World({ waBot: { campaignYesQuietMin: 0 } });
+  c.db.msgs.push({ wamid: "wamid.BOT0", direction: "out", phone_norm: "512345678", status: "delivered", source: "api", created_at: before });
+  assert.equal(bodyOf((await c.say("نعم")).sent[0]), FD1_BODY);
+  // الضغطة نفسها مش داخلة في الشرط ده
+  const d = pre();
+  assert.equal(bodyOf((await tapOn(d, "wamid.CAMP7")).sent[0]), FD1_BODY);
+}));
+
+test("مراجعة FD1 ٣ — رسالة قالت رسم «لعنوانك» ⇒ سلة الضغطة مابتشيلش موقع المحادثة (note.noChatLoc)؛ من غير عنوان معروف ⇒ زي الأول", withEnv(LOCKS_OPEN, async () => {
+  const line = "بوكس الكريب لشخصين (كريب شيش طاووق وكريب ثاني من اختيارك مع تشيز فرايز وصنف جانبي ومشروبين) بـ65 ر.س، والتوصيل لعنوانك 15 ر.س";
+  const w = fd1World({ loc: { lat: 21.6, lng: 39.16, km: 0.9 }, web: { n: 2, deliv: 2 }, values: { "offer.title": "بوكس فيه طبقك المفضل", "offer.line": line } });
+  const r = await tapOn(w, "wamid.CAMP7");
+  assert.equal(bodyOf(r.sent[0]), FD1_BODY.replace(CREPE_LINE, line));
+  assert.deepEqual([w.db.botCarts.length, w.db.botCarts[0].plan.noChatLoc], [1, true]);
+  const n = fd1World();
+  await tapOn(n, "wamid.CAMP7");
+  assert.equal(n.db.botCarts[0].plan.noChatLoc, undefined);
+}));
+
+test("مراجعة FD1 ٣ — كاش المنيو الصارم: صنف بالوزن جلب أوزانه فشل ⇒ الحملة من غير أوزانه (مفيش سعر وزن قديم)، والبوت العادي بأوزانه المعروفة زي ما هو", withEnv(LOCKS_OPEN, async () => {
+  const V = JSON.parse(JSON.stringify(FXF.variants));
+  const w = world({ waBot: { mode: "live" }, bundles: FXF.bundles, links: ALL_LINKS, pages: FXF.pages, variants: V });
+  const w97 = (m) => ((m && m.items.find((i) => String(i.id) === "97")) || {}).weights || [];
+  assert.ok(w97(await w.bot.live.menu({ strict: true })).length > 0);
+  const realNow = Date.now;
+  try {
+    Date.now = () => realNow() + 7 * 60_000;      // الكاش قدم (menuCacheMin ٥) ⇒ المنيو اتجاب تاني بنجاح، بس /api/product/97 وقع
+    V["97"] = "down";
+    const strict = await w.bot.live.menu({ strict: true });
+    assert.ok(strict && strict.items.length > 0, "المنيو نفسه اتحدّث");
+    assert.deepEqual(w97(strict), [], "الحملة: أوزان ٩٧ من جلب قديم ⇒ مش موجودة");
+    assert.ok(w97(await w.bot.live.menu()).length > 0, "البوت العادي: آخر أوزان معروفة");
+    const w94 = ((strict.items.find((i) => String(i.id) === "94")) || {}).weights || [];
+    assert.ok(w94.length > 0, "صنف تاني بالوزن (طرب ٩٤) جلبه نجح ⇒ أوزانه موجودة");
   } finally { Date.now = realNow; }
 }));

@@ -172,7 +172,7 @@ export function makeBotCarts({ pool, log = console.error, locationHours = null, 
       const r = await q(`INSERT INTO wa_bot_carts(code, phone_norm, source, from_order, items, cart_raw, option, note, expires_at)
                          VALUES ($1,$2,$3,$4,$5::jsonb,$6::jsonb,$7,$8::jsonb, NOW() + make_interval(days => $9::int)) ON CONFLICT (code) DO NOTHING RETURNING code`,
         [code, phone, String(source).slice(0, 20), fromOrder, JSON.stringify(plan.items || []), JSON.stringify(plan.raw || {}), option ? String(option).slice(0, 12) : null,
-          JSON.stringify({ removed: plan.removed || [], repriced: plan.repriced || [], review: plan.review || [] }), Math.max(1, Math.ceil(days))]);
+          JSON.stringify({ removed: plan.removed || [], repriced: plan.repriced || [], review: plan.review || [], ...(plan.noChatLoc === true ? { noChatLoc: true } : {}) }), Math.max(1, Math.ceil(days))]);
       if (r && r[0]) return { code: r[0].code };
     }
     return null;
@@ -193,10 +193,13 @@ export function makeBotCarts({ pool, log = console.error, locationHours = null, 
     if (!BOT_CART_CODE_RE.test(String(code || ""))) return null;
     /* موقع المحادثة: بتاع **نفس الرقم صاحب السلة** بس (الربط بـphone_norm جوّه الاستعلام — الرقم مابيطلعش في الإجابة)، ولو اتشارك خلال المدة.
        المتجر بيحطه على الخريطة «غير مؤكد» والعميل يأكده. مفيش أي حاجة منه في أي رابط. المفتاح مابيتبعتش أصلاً لو مفيش موقع صالح. */
-    const r = await q(`SELECT c.items, c.cart_raw, c.option, ch.last_loc FROM wa_bot_carts c LEFT JOIN wa_bot_chats ch ON ch.phone_norm = c.phone_norm WHERE c.code=$1 AND c.expires_at > NOW()`, [code]);
+    const r = await q(`SELECT c.items, c.cart_raw, c.option, ch.last_loc, c.source, c.note FROM wa_bot_carts c LEFT JOIN wa_bot_chats ch ON ch.phone_norm = c.phone_norm WHERE c.code=$1 AND c.expires_at > NOW()`, [code]);
     if (!r || !r[0]) return null;
     let hours = 24; try { if (typeof locationHours === "function") hours = Number(await locationHours()) || 24; } catch { hours = 24; }
-    const location = chatLocation(r[0].last_loc, now(), hours);
+    /* FD1 مراجعة ٣: سلة حملة «طبقك المفضل» اللي رسالتها قالت رسم توصيل «لعنوانك» (note.noChatLoc) مابتشيلش موقع المحادثة —
+       الرسم اللي اتقال محسوب لعنوان آخر طلب، ودبوس تاني من المحادثة كان هيفتح السلة على رسم تاني */
+    const noLoc = r[0].source === "campaign" && isObj(r[0].note) && r[0].note.noChatLoc === true;
+    const location = noLoc ? null : chatLocation(r[0].last_loc, now(), hours);
     let raw = isObj(r[0].cart_raw) && Object.keys(r[0].cart_raw).length ? r[0].cart_raw : null;
     if (raw && typeof weightsNow === "function") { try { const by = await weightsNow(); if (by) { const rp = repriceVariants(raw, by); raw = Object.keys(rp.raw).length ? rp.raw : null; } } catch (e) { log("[wa-cart] reprice:", e.message); } }
     return { ok: true, items: Array.isArray(r[0].items) ? r[0].items : [], raw, option: r[0].option || "delivery", subtotal: 0, ordered: false, ...(location ? { location } : {}) };

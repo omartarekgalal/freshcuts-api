@@ -75,3 +75,27 @@ test("the limit is a dashboard setting: assist.locationHours, 24 by default, 1 t
   for (const bad of [0, 25, "", "x", null]) assert.equal(R.configFromBody({ assist: { locationHours: bad } }).ok, false, String(bad));
   assert.equal(AR.assistConfig({ locationHours: 99 }).locationHours, 24); assert.equal(Object.keys(AR.ASSIST_SCHEMA).length, Object.keys(AR.ASSIST_CFG_DEFAULTS).length);
 });
+
+test("FD1 مراجعة ٣: سلة حملة «طبقك المفضل» اللي رسالتها قالت رسم «لعنوانك» (note.noChatLoc) مابتشيلش موقع المحادثة؛ سلة حملة من غيره أو سلة مساعد بالعلامة دي ⇒ زي الأول", async () => {
+  const pin = { lat: 21.581, lng: 39.1502, at: ago(1) };
+  const rows = { c1: { source: "campaign", note: { removed: [], repriced: [], review: [], noChatLoc: true } }, c2: { source: "campaign", note: { removed: [], repriced: [], review: [] } }, c3: { source: "assistant", note: { noChatLoc: true } } };
+  const pool = { async query(sql, p = []) {
+    const s = String(sql).replace(/\s+/g, " ").trim();
+    if (/^SELECT c\.items, c\.cart_raw, c\.option, ch\.last_loc, c\.source, c\.note FROM wa_bot_carts c LEFT JOIN wa_bot_chats ch ON ch\.phone_norm = c\.phone_norm WHERE c\.code=\$1/.test(s)) {
+      const c = rows[{ cam00001: "c1", cam00002: "c2", ast00003: "c3" }[p[0]]];
+      return { rows: c ? [{ items: ITEMS, cart_raw: RAW, option: "delivery", last_loc: pin, source: c.source, note: c.note }] : [] };
+    }
+    return { rows: [] };
+  } };
+  const bc = makeBotCarts({ pool, log: () => {}, now: () => NOW });
+  assert.ok(!("location" in (await bc.restore("cam00001"))), "الرسم اتقال لعنوان آخر طلب ⇒ مفيش دبوس تاني");
+  assert.deepEqual((await bc.restore("cam00002")).location, pin);
+  assert.deepEqual((await bc.restore("ast00003")).location, pin, "العلامة بتاعة سلات الحملة بس");
+  // create بيحط العلامة في note بس لو الخطة طالبة كده
+  const made = [];
+  const pool2 = { async query(sql, p = []) { const s = String(sql).replace(/\s+/g, " ").trim(); if (/^INSERT INTO wa_bot_carts/.test(s)) { made.push(JSON.parse(p[7])); return { rows: [{ code: p[0] }] }; } return { rows: [] }; } };
+  const bc2 = makeBotCarts({ pool: pool2, log: () => {} });
+  await bc2.create({ phone: "512345678", source: "campaign", plan: { ok: true, raw: RAW, items: ITEMS, noChatLoc: true }, option: "delivery" });
+  await bc2.create({ phone: "512345678", source: "assistant", plan: { ok: true, raw: RAW, items: ITEMS }, option: "delivery" });
+  assert.deepEqual(made, [{ removed: [], repriced: [], review: [], noChatLoc: true }, { removed: [], repriced: [], review: [] }]);
+});

@@ -546,7 +546,7 @@ export function makeAssistTools(deps = {}) {
   /* بنّاء السلة. input = { option: "delivery"|"pickup", items:[{ id, qty, note }], boxes:[{ slug, qty, choices:{ slot:{product_id,variant_option_id} }, addons:{ slot:[id] }, notes:{ slot:"…" } }] }
      كل سطر بيتراجع على النظام؛ أي سطر مايتبنيش بيرجع بسببه (والباقي يتبني). السعر: الأصناف من المنيو الحي، البوكس من cms.expandBundle + modifiers.resolve.
      save=true ⇒ يتعمل صف في wa_bot_carts ويرجع الرابط؛ save=false ⇒ معاينة بس. الأصناف بالوزن والإضافات على صنف عادي مش مدعومين هنا ⇒ بيترجعوا كـ«اختاره من صفحته». */
-  async function build_cart(phone, input = {}, { save = true, source = "assistant" } = {}) {
+  async function build_cart(phone, input = {}, { save = true, source = "assistant", chatLocation = true } = {}) {
     const menu = await menuOf(); if (!menu) return unavailable("menu");
     const option = input.option === "pickup" ? "pickup" : "delivery";
     const lines = [], problems = [], raw = {}, items = [];
@@ -624,7 +624,7 @@ export function makeAssistTools(deps = {}) {
     if (!save) return { ...out, saved: false };
     if (!okPhone(phone) || !deps.botCarts) return { ...out, saved: false, error_link: "cannot_save" };
     /* FD1: سلة حملة «طبقك المفضل» (ضغطة «أبغى أطلب») مصدرها campaign — عشان رابطها يتحسب على الحملة مش على المساعد */
-    const made = await deps.botCarts.create({ phone, source: source === "campaign" ? "campaign" : "assistant", plan: { ok: true, raw, items, removed: [], repriced: [], review: [] }, option, days: deps.linkDays || 7 });
+    const made = await deps.botCarts.create({ phone, source: source === "campaign" ? "campaign" : "assistant", plan: { ok: true, raw, items, removed: [], repriced: [], review: [], ...(chatLocation === false ? { noChatLoc: true } : {}) }, option, days: deps.linkDays || 7 });
     if (!made) return { ...out, saved: false, error_link: "cannot_save" };
     return { ...out, saved: true, link: `${STORE}/c/${made.code}`, code: made.code };
   }

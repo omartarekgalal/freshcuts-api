@@ -19,15 +19,18 @@ const ago = (d) => new Date(NOW - d * 86400000).toISOString();
 const H = (...o) => o.map(([d, total, names]) => ({ at: ago(d), total, names }));
 const clone = (x) => JSON.parse(JSON.stringify(x));
 const menuOf = ({ soldOut = {}, hiddenIds = [], pages = FX.pages } = {}) => WB.indexMenu(pages, { hiddenIds, soldOut, variants: FX.variants });
-const liveOf = (o = {}) => F.buildLive({ menu: menuOf(o), bundles: o.bundles || FX.bundles, offers: o.offers === undefined ? FX.offers : o.offers });
+const liveOf = (o = {}) => F.buildLive({ menu: menuOf(o), bundles: o.bundles || FX.bundles, offers: o.offers === undefined ? FX.offers : o.offers, now: o.now ?? NOW });
 /* نفس دالة الرسوم بتاعة الدفع على مسافة طريق معروفة (كاش جوجل) — زي delivery.quote */
-const quoteAt = (km) => (x) => ({ ...D.computeDeliveryFee(FX.policy, { distanceKm: km, straightKm: km / 1.3, orderTotal: x.orderTotal, farZoneAccepted: x.farZoneAccepted }), distanceSource: "google", routeKm: km });
+const quoteAt = (km, policy = FX.policy) => (x) => ({ ...D.computeDeliveryFee(policy, { distanceKm: km, straightKm: km / 1.3, orderTotal: x.orderTotal, farZoneAccepted: x.farZoneAccepted }), distanceSource: "google", routeKm: km });
 const LADDER = FX.policy.feeByTotal;
 const line = (live, p, { km = null, firstElig = false, reward = null, webOrders = 0 } = {}) => {
   const r = F.renderPick(p.spec, live);
   assert.ok(r.ok, JSON.stringify(r));
   const q = km == null ? null : quoteAt(km)({ orderTotal: r.price, farZoneAccepted: true });
-  const dl = F.deliveryLine({ price: r.price, located: km != null, q, firstElig, firstMin: 60, reward, webOrders, ladder: LADDER });
+  /* زي renderSpec: تسعيرة نفس العنوان على حد المجاني (لـ«ومجاني لو طلبك من …») */
+  const free = F.freeTierOf(LADDER);
+  const freeAt = q && free && r.price < free.over ? quoteAt(km)({ orderTotal: free.over, farZoneAccepted: true }) : null;
+  const dl = F.deliveryLine({ price: r.price, located: km != null, q, firstElig, firstMin: 60, reward, webOrders, ladder: LADDER, freeAt });
   return { title: r.title, line: `${r.main}، ${dl.text}`, price: r.price, dl };
 };
 
@@ -90,7 +93,8 @@ test("الباقات (عروض الجمعات): لعميل تاريخه فيه �
   const big = H([16, 470, "طرب مشوي بالوزن - كيلو ×4|طبق أرز بسمتي ×4"], [41, 72, "طرب مشوي بالوزن - نصف كيلو"]);
   const p = F.pickFor({ H: big, live: liveOf(), firstElig: true, now: NOW });
   assert.deepEqual([p.spec.kind, p.spec.slug, p.spec.slot, p.spec.favV], ["pack", "gathering-4", "grill1", 49]);
-  assert.equal(line(liveOf(), p, { firstElig: true }).line, "باقة تجمّع 4–6 أشخاص (2 كيلو مشاوي من اختيارك مع أرز وبطاطس وكولسلو و4 مشروبات) بـ225 ر.س، وأول طلب من الموقع توصيله مجاني بكود FIRST داخل نطاق التوصيل");
+  // مراجعة FD1 ٣: آخر يوم العرض في السطر («حتى 15 أكتوبر») — نفس النص وقت التجهيز والإرسال والضغطة
+  assert.equal(line(liveOf(), p, { firstElig: true }).line, "باقة تجمّع 4–6 أشخاص (2 كيلو مشاوي من اختيارك مع أرز وبطاطس وكولسلو و4 مشروبات) بـ225 ر.س حتى 15 أكتوبر، وأول طلب من الموقع توصيله مجاني بكود FIRST داخل نطاق التوصيل");
   assert.equal(line(liveOf(), p, { firstElig: true }).title, "باقة لجمعتكم");
   // العرض خلص (مش في العروض الشغّالة) ⇒ مفيش باقة، ولو اتخزّنت قبل كده ⇒ إعادة الحساب ترفض
   const ended = liveOf({ offers: [] });
@@ -107,7 +111,8 @@ test("التوصيل: الرسم لعنوانه من نفس دالة الدفع�
   const at = (km, price) => quoteAt(km)({ orderTotal: price, farZoneAccepted: true });
   assert.equal(DL(85, { located: true, q: at(3.8, 85) }).text, "والتوصيل لعنوانك 10 ر.س");
   assert.equal(DL(65, { located: true, q: at(3, 65) }).text, "والتوصيل لعنوانك 15 ر.س");
-  assert.equal(DL(125, { located: true, q: at(0.9, 125) }).text, "والتوصيل لعنوانك 5 ر.س، ومجاني لو طلبك من 150 ر.س");
+  assert.equal(DL(125, { located: true, q: at(0.9, 125), freeAt: at(0.9, 150) }).text, "والتوصيل لعنوانك 5 ر.س، ومجاني لو طلبك من 150 ر.س");
+  assert.equal(DL(125, { located: true, q: at(0.9, 125) }).text, "والتوصيل لعنوانك 5 ر.س", "مفيش تسعيرة على حد المجاني ⇒ مفيش وعد");
   assert.equal(DL(395, { located: true, q: at(2.6, 395) }).text, "والتوصيل لعنوانك مجاني");
   assert.equal(DL(29, { located: true, q: at(6.7, 29), firstElig: true }).text, "والتوصيل لعنوانك 20 ر.س، ومجاني بكود FIRST لو طلبك من 60 ر.س");
   assert.deepEqual(DL(65, { located: true, q: at(2, 65), firstElig: true }), { text: "والتوصيل لعنوانك مجاني بكود FIRST لأول طلب من الموقع", status: "fee", fee: 0, via: "FIRST", far: false });
@@ -241,7 +246,7 @@ test("الترتيب: الفلوس + عدد الطلبات × الحداثة (ك
 });
 
 // ═════════ ٧) التشغيل على قاعدة وهمية ═════════
-function favWorld({ people = {}, bundles = FX.bundles, offers = FX.offers, soldOut = {}, settings = {}, first = { code: "FIRST", active: true, min_total: "60", free_delivery: true, percent: "0", expires_at: null }, lastSent = null, newer = false } = {}) {
+function favWorld({ people = {}, bundles = FX.bundles, offers = FX.offers, soldOut = {}, settings = {}, first = { code: "FIRST", active: true, min_total: "60", free_delivery: true, percent: "0", expires_at: null }, lastSent = null, newer = false, policy = FX.policy, now = NOW } = {}) {
   const calls = { quote: [], sql: [], live: [], params: [] };
   const st = { menu: menuOf({ soldOut }), bundles, offers, kmAt: new Map() };
   for (const [pn, p] of Object.entries(people)) if (p.loc) st.kmAt.set(`${p.loc.lat},${p.loc.lng}`, p.loc.km);
@@ -257,21 +262,23 @@ function favWorld({ people = {}, bundles = FX.bundles, offers = FX.offers, soldO
     if (sql === S.history) return rows(P(params[0]).flatMap((pn) => (people[pn].hist || []).map((o) => ({ pn, ...o }))));
     if (sql === S.names) return rows(P(params[0]).filter((pn) => people[pn].name).map((pn) => ({ pn, name: people[pn].name })));
     if (sql === S.web) return rows(P(params[0]).filter((pn) => people[pn].web).map((pn) => ({ pn, n: people[pn].web.n, deliv: people[pn].web.deliv })));
-    if (sql === S.lastDelivery) return rows(P(params[0]).filter((pn) => people[pn].loc).map((pn) => ({ pn, lat: people[pn].loc.lat, lng: people[pn].loc.lng })));
+    if (sql === S.lastDelivery) return rows(P(params[0]).filter((pn) => people[pn].loc).map((pn) => ({ pn, lat: people[pn].loc.lat, lng: people[pn].loc.lng, district: people[pn].loc.district || null })));
     if (sql === S.accounts) return rows([]);
-    if (sql === S.rewards) return rows(P(params[0]).flatMap((pn) => (people[pn].rewards || []).map((r) => ({ pn, code: r.code, percent: 0, free_delivery: true, min_total: r.minTotal }))));
+    /* params[1] = الساعات اللي المكافأة لازم تفضل صالحة فيها (hoursLeft = فاضل كام ساعة على انتهائها) */
+    if (sql === S.rewards) return rows(P(params[0]).flatMap((pn) => (people[pn].rewards || []).filter((r) => r.hoursLeft == null || r.hoursLeft > Number(params[1])).map((r) => ({ pn, code: r.code, percent: 0, free_delivery: true, min_total: r.minTotal }))));
     if (sql === S.first) return rows(first ? [first] : []);
-    if (sql === S.policy) return rows([{ config: FX.policy }]);
+    if (sql === S.policy) return rows([{ config: policy }]);
     if (sql === S.orderedSince) return rows(people[params[0]] && people[params[0]].orderedSince ? [{ "?column?": 1 }] : []);
-    if (sql === S.lastSent) return rows(lastSent ? [lastSent] : []);
+    if (sql === S.lastSent) return rows(lastSent && (params[2] == null || lastSent.wamid === params[2]) ? [lastSent] : []);      // $3 = wamid الرسالة اللي اتضغطت
     if (sql === S.newerTemplate) return rows(newer ? [{ "?column?": 1 }] : []);
-    if (sql === S.inboundSince) return rows(people[params[0]] && people[params[0]].inboundSince ? [{ "?column?": 1 }] : []);
-    if (sql === S.outboundSince) return rows(people[params[0]] && people[params[0]].outboundSince ? [{ "?column?": 1 }] : []);
+    /* inboundAt / outboundAt = أوقات رسايل العميل / اللي طلعت له (بعد $3 / $2) — inboundSince / outboundSince = «فيه» من غير وقت */
+    if (sql === S.inboundSince) { const x = people[params[0]]; return rows(x && (x.inboundSince || (x.inboundAt || []).some((t) => Date.parse(t) > Date.parse(params[2]))) ? [{ "?column?": 1 }] : []); }
+    if (sql === S.outboundSince) { const x = people[params[0]]; return rows(x && (x.outboundSince || (x.outboundAt || []).some((t) => Date.parse(t) > Date.parse(params[1]))) ? [{ "?column?": 1 }] : []); }
     throw new Error(`unexpected sql: ${sql.slice(0, 80)}`);
   } };
-  const api = F.makeFavPick({ pool, now: () => NOW, getSettingsData: async () => ({ delivery: { alertPhones: ["0500000001"] }, ...settings }),
+  const api = F.makeFavPick({ pool, now: () => now, getSettingsData: async () => ({ delivery: { alertPhones: ["0500000001"] }, ...settings }),
     live: () => ({ menu: async (o) => { calls.live.push(["menu", o]); return st.menu; }, bundles: async (o) => { calls.live.push(["bundles", o]); return st.bundles; }, offers: async (o) => { calls.live.push(["offers", o]); return st.offers; } }),
-    quote: async (x) => { calls.quote.push(x); const km = st.kmAt.get(`${x.lat},${x.lng}`); return km == null ? { deliverable: true, fee: 20, distanceSource: "straight" } : quoteAt(km)(x); } });
+    quote: async (x) => { calls.quote.push(x); const km = st.kmAt.get(`${x.lat},${x.lng}`); return km == null ? { deliverable: true, fee: 20, distanceSource: "straight" } : quoteAt(km, policy)(x); } });
   return { api, calls, st, people };
 }
 /* عملاء وهميين بالكامل (أرقام وأسماء وإحصائيات وأكواد مخترعة) — مراجعة FD1: ولا صف هنا منقول من عميل حقيقي */
@@ -486,4 +493,170 @@ test("delivery.quote cacheOnly: مسافة الطريق من كاش جوجل ب�
   await drive.get(STORE, to);                                    // الدفع سأل جوجل مرة ⇒ الكاش اتملى
   const hit = await DD.resolveRouteKm({ cfg: FX.policy, straightKm: straight, from: STORE, to, drive: peekDrive });
   assert.deepEqual([hit.distanceSource, hit.routeKm, calls.length], ["google", 4.7, 1]);
+});
+
+// ═════════ مراجعة FD1 ٣ (١٤/١٠) ═════════
+test("مراجعة FD1 ٣ — «ومجاني لو طلبك من 150» بس لو تسعيرة نفس العنوان على 150 = 0 (رسم الكيلو الزيادة بعد baseKm بيفضل فوق السلّم)", async () => {
+  const perKm = { ...FX.policy, baseKm: 3, perKm: 2 };
+  // ٦ كم: السلّم مجاني من ١٥٠ بس الكيلوهات الزيادة (٣ × ٢) بتفضل ⇒ الدفع على ١٥٠ = ٦ ⇒ مفيش «ومجاني لو…»
+  const q6 = quoteAt(6, perKm)({ orderTotal: 125, farZoneAccepted: true }), f6 = quoteAt(6, perKm)({ orderTotal: 150, farZoneAccepted: true });
+  assert.deepEqual([q6.fee, f6.fee], [11, 6]);
+  assert.equal(F.deliveryLine({ price: 125, located: true, q: q6, freeAt: f6, ladder: perKm.feeByTotal }).text, "والتوصيل لعنوانك 11 ر.س");
+  // ٢ كم (جوّه baseKm): ٠ على ١٥٠ ⇒ الوعد صح
+  const q2 = quoteAt(2, perKm)({ orderTotal: 125, farZoneAccepted: true }), f2 = quoteAt(2, perKm)({ orderTotal: 150, farZoneAccepted: true });
+  assert.equal(F.deliveryLine({ price: 125, located: true, q: q2, freeAt: f2, ladder: perKm.feeByTotal }).text, "والتوصيل لعنوانك 5 ر.س، ومجاني لو طلبك من 150 ر.س");
+  // من أولها لآخرها: renderSpec بيسعّر نفس العنوان تاني على ١٥٠ (نفس memo)، ووقت الإرسال نفس النص
+  const people = { "501000077": { name: "تجربة كيلو", orders: 6, spend: 700, daysAgo: 9, web: { n: 2, deliv: 2 }, loc: { lat: 21.62, lng: 39.18, km: 6 }, hist: H([9, 120, "كفتة مشوية بالوزن - كيلو|طبق أرز بسمتي"], [21, 96, "كفتة مشوية بالوزن - كيلو"]) } };
+  const w = favWorld({ people, policy: perKm });
+  const [r] = await w.api.audienceRows();
+  assert.equal(r.vars.cloud.values["offer.line"], "بوكس المشاوي نص ونص (نص كيلو كفتة مشوية ونص كيلو ثاني من اختيارك مع طبقين أرز وبطاطس وكولسلو) بـ125 ر.س، والتوصيل لعنوانك 11 ر.س");
+  assert.deepEqual(w.calls.quote.map((x) => x.orderTotal), [125, 150]);
+  assert.ok(w.calls.quote[0].memo && w.calls.quote[0].memo === w.calls.quote[1].memo, "تسعيرات البناء الواحد بنفس memo");
+  assert.equal(await w.api.recheck({ id: 1, phone_norm: "501000077", vars: r.vars }), null);
+  // السياسة الحيّة (baseKm = maxKm = ١٠): نفس العميل ⇒ الوعد بيتقال
+  const live10 = favWorld({ people });
+  assert.match((await live10.api.audienceRows())[0].vars.cloud.values["offer.line"], /والتوصيل لعنوانك 5 ر\.س، ومجاني لو طلبك من 150 ر\.س$/);
+});
+
+test("مراجعة FD1 ٣ — الباقة بتقول آخر يوم عرضها («حتى 15 أكتوبر») ومابتتجهّزش ولا بتتبعت في آخر يوم؛ الضغطة في آخر يوم لسه بنفس النص", async () => {
+  const big = H([16, 470, "طرب مشوي بالوزن - كيلو ×4|طبق أرز بسمتي ×4"], [41, 72, "طرب مشوي بالوزن - نصف كيلو"]);
+  const DAY1 = NOW + 86400000;      // ١٥/١٠ ٢٠:٣٠ الرياض = آخر يوم الباقات
+  assert.equal(F.packDaysLeft(liveOf().boxes.get("gathering-4"), liveOf()), 1);
+  assert.equal(F.packDaysLeft(liveOf().boxes.get("gathering-4"), liveOf({ now: DAY1 })), 0);
+  const p14 = F.pickFor({ H: big, live: liveOf(), firstElig: true, now: NOW });
+  assert.equal(p14.spec.kind, "pack");
+  assert.notEqual(F.pickFor({ H: big, live: liveOf({ now: DAY1 }), firstElig: true, now: DAY1 }).spec.kind, "pack", "آخر يوم ⇒ مفيش باقة جديدة");
+  assert.equal(F.renderPick(p14.spec, liveOf({ now: DAY1 })).main, F.renderPick(p14.spec, liveOf()).main, "الضغطة يوم ١٥: نفس السطر بتاريخه");
+  // اتجهّزت يوم ١٤ واتبعتت يوم ١٥ ⇒ offer_ending
+  const people = { "501000044": { name: "تجربة جمعات", orders: 3, spend: 620, daysAgo: 16, web: { n: 1, deliv: 0 }, hist: big } };
+  const [row] = await favWorld({ people }).api.audienceRows();
+  assert.equal(row.vars.fav.kind, "pack");
+  assert.match(row.vars.cloud.values["offer.line"], / بـ225 ر\.س حتى 15 أكتوبر، /);
+  assert.equal(await favWorld({ people }).api.recheck({ id: 1, phone_norm: "501000044", vars: row.vars }), null);
+  assert.equal(await favWorld({ people, now: DAY1 }).api.recheck({ id: 1, phone_norm: "501000044", vars: row.vars }), "offer_ending");
+  // التاريخ اتغيّر من اللوحة (اتمدّ) ⇒ النص اتغيّر ⇒ مايتبعتش بالتاريخ القديم
+  const longer = FX.offers.map((o) => ({ ...o, until: "2026-10-20" }));
+  assert.equal(await favWorld({ people, offers: longer }).api.recheck({ id: 1, phone_norm: "501000044", vars: row.vars }), "offer_changed");
+  // عرض من غير نهاية ⇒ من غير تاريخ ومن غير حد
+  assert.ok(!/حتى/.test(F.renderPick(p14.spec, liveOf({ offers: FX.offers.map((o) => ({ ...o, until: null })) })).main));
+  assert.deepEqual([F.untilAr("2026-10-15"), F.untilAr("2026-01-02T00:00:00Z"), F.untilAr("x"), F.untilAr(null)], ["حتى 15 أكتوبر", "حتى 2 يناير", "", ""]);
+});
+
+test("مراجعة FD1 ٣ — الصيغة العامة (شكل البوكس اتغيّر) بأرقام لاتينية، وزيادة الاختيار × كمية الخانة زي expandBundle", () => {
+  const b = clone(FX.bundles); const g4 = b.find((x) => x.slug === "gathering-4"); g4.slots = g4.slots.filter((s) => s.key !== "coleslaw");
+  const r = F.renderPick({ kind: "pack", slug: "gathering-4", pid: "94", slot: "grill1", favV: 49, sg: "grill_kilo" }, liveOf({ bundles: b }));
+  assert.equal(r.main, "باقة تجمّع 4–6 أشخاص (فيه طرب مشوي) بـ225 ر.س حتى 15 أكتوبر");
+  assert.equal(F.latinDigits("٤–٦ و۱۵"), "4–6 و15");
+  // خانة كميتها ٢ وطبقه فيها بزيادة ٤ ⇒ ٢٩ + ٤ × ٢ (الإصدار السابق: ٣٣)
+  const q2 = clone(FX.bundles); q2.find((x) => x.slug === "box-solo-crepe").slots.find((s) => s.key === "crepe").quantity = 2;
+  const lq = liveOf({ bundles: q2 });
+  assert.equal(F.renderPick({ kind: "box", slug: "box-solo-crepe", pid: "9", slot: "crepe", sg: "crepe" }, lq).price, 37);
+  const it = lq.items.get("9");
+  const pick = F.chooseOffer({ it, sg: "crepe", basketM: 34, live: lq });
+  assert.deepEqual([pick.b.slug, pick.price], ["box-solo-crepe", 37], "الاختيار نفسه بيقارن بالسعر الصح");
+  assert.equal(F.boxPrice({ price: 29 }, { sur: 4, q: 1 }), 33);
+  assert.equal(F.boxPrice({ price: 29 }, null), 29);
+});
+
+test("مراجعة FD1 ٣ — التسعيرة بالحي زي صفحة الدفع، المكافأة لازم تفضل صالحة مدة قراءة العرض (والضغطة بالحين)، والتوصيل الموقوف من البوابة = «استنى» مش تخطّي", async () => {
+  const people = {
+    "501000088": { name: "تجربة حي", orders: 6, spend: 500, daysAgo: 8, web: { n: 2, deliv: 2 }, loc: { lat: 21.61, lng: 39.17, km: 3.2, district: "حي تجريبي" }, hist: H([8, 85, "وجبة ميكس جريل ×2"], [20, 90, "وجبة ميكس جريل"]) },
+    "501000099": { name: "تجربة مكافأة", orders: 6, spend: 280, daysAgo: 13, web: { n: 3, deliv: 0 }, firstUsed: true, loc: { lat: 21.59, lng: 39.15, km: 1.4 }, rewards: [{ code: "FCTEST9Z8Y", minTotal: 60, hoursLeft: 30 }], hist: H([13, 58, "كريب سوبر كرانشي|كريب شيش طاووق"], [29, 63, "كريب سوبر كرانشي"]) },
+  };
+  const w = favWorld({ people });
+  const rows = await w.api.audienceRows();
+  assert.equal(w.calls.quote.find((x) => x.lat === 21.61).district, "حي تجريبي", "الحي بيتبعت للتسعيرة زي shop.js");
+  const rw = rows.find((r) => r.pn === "501000099");
+  assert.equal(rw.vars.cloud.values["offer.line"].endsWith("والتوصيل لعنوانك 15 ر.س"), true, "الكود بيخلص بعد ٣٠ ساعة (أقل من ٧٢) ⇒ مايتقالش");
+  assert.equal(w.calls.params[w.calls.sql.indexOf(F.FAV_SQL.rewards)][1], 72);
+  // مدة قراءة العرض من إعداد البوت (campaignOfferHours)
+  const w24 = favWorld({ people, settings: { waBot: { campaignOfferHours: 24 } } });
+  const r24 = (await w24.api.audienceRows()).find((r) => r.pn === "501000099");
+  assert.match(r24.vars.cloud.values["offer.line"], /والتوصيل لعنوانك مجاني بكود مكافأتك FCTEST9Z8Y$/);
+  assert.equal(F.offerHoursOf({ waBot: { campaignOfferHours: 24 } }), 24); assert.equal(F.offerHoursOf({}), 72); assert.equal(F.offerHoursOf({ waBot: { campaignOfferHours: 999 } }), 168);
+  // الضغطة: صالحة الحين وكفاية (٠ ساعة)
+  const assist = { build_cart: async (pn, input, o) => ({ ok: true, lines: [{}], subtotal: 65, ...(o.save ? { link: "https://freshcuts.sa/c/abc12345", code: "abc12345" } : {}) }) };
+  const t = await w24.api.tapOffer("501000099", r24.vars.fav, { assist, sent: r24.vars.cloud.values });
+  assert.equal(t.ok, true, JSON.stringify(t));
+  assert.equal(w24.calls.params[w24.calls.sql.lastIndexOf(F.FAV_SQL.rewards)][1], 0);
+  // التوصيل موقوف من البوابة الحين ⇒ delivery_paused (الصف بيستنى)، وبعد ما الإيقاف يخلص ⇒ يتبعت
+  const mix = rows.find((r) => r.pn === "501000088");
+  const paused = (until) => favWorld({ people, settings: { service: { delivery: { paused: true, until } } } });
+  assert.equal(await paused(new Date(NOW + 1800_000).toISOString()).api.recheck({ id: 1, phone_norm: "501000088", vars: mix.vars }), "delivery_paused");
+  assert.equal(await paused(new Date(NOW - 60_000).toISOString()).api.recheck({ id: 1, phone_norm: "501000088", vars: mix.vars }), null);
+  assert.equal(await w.api.recheck({ id: 1, phone_norm: "501000088", vars: mix.vars }), null);
+  assert.deepEqual([...F.FAV_HOLD], ["delivery_paused", "pickup_paused"]);
+});
+
+test("مراجعة FD1 ٣ — السلة على نفس العنوان: رسم «لعنوانك» ⇒ السلة من غير موقع المحادثة؛ «تستلمه من فرعنا» ⇒ سلة استلام", async () => {
+  const people = { "501000055": { name: "تجربة ضغطة", orders: 12, spend: 520, daysAgo: 5, web: { n: 3, deliv: 3 }, loc: { lat: 21.6, lng: 39.16, km: 0.9 }, hist: [] } };
+  const seen = [];
+  const assist = { build_cart: async (pn, input, o) => { seen.push({ input, o }); return { ok: true, lines: [{}], subtotal: 65, ...(o.save ? { link: "https://freshcuts.sa/c/abc12345", code: "abc12345" } : {}) }; } };
+  const w = favWorld({ people });
+  const sent = { "offer.title": "بوكس فيه طبقك المفضل", "offer.line": "بوكس الكريب لشخصين (كريب شيش طاووق وكريب ثاني من اختيارك مع تشيز فرايز وصنف جانبي ومشروبين) بـ65 ر.س، والتوصيل لعنوانك 15 ر.س" };
+  const t = await w.api.tapOffer("501000055", CREPE_FAV, { assist, sent });
+  assert.deepEqual([t.ok, t.noChatLoc, t.cartInput.option], [true, true, "delivery"], JSON.stringify(t));
+  await w.api.saveCart("501000055", t, { assist });
+  assert.deepEqual(seen[1].o, { save: true, source: "campaign", chatLocation: false });
+  // العنوان بره النطاق (مسافة مؤكدة ١٦ كم) ⇒ «وتقدر تستلمه من فرعنا» والسلة استلام، وموقع المحادثة عادي
+  w.st.kmAt.set("21.6,39.16", 16);
+  const out = { "offer.title": sent["offer.title"], "offer.line": sent["offer.line"].replace("والتوصيل لعنوانك 15 ر.س", "وتقدر تستلمه من فرعنا") };
+  const t2 = await w.api.tapOffer("501000055", CREPE_FAV, { assist, sent: out });
+  assert.deepEqual([t2.ok, t2.noChatLoc, t2.cartInput.option], [true, undefined, "pickup"], JSON.stringify(t2));
+  // من غير عنوان معروف ⇒ زي الأول (السلة بتاخد موقع المحادثة لو اتشارك)
+  const none = favWorld({ people: { "501000055": { ...people["501000055"], loc: null, web: { n: 0, deliv: 0 } } } });
+  const t3 = await none.api.tapOffer("501000055", CREPE_FAV, { assist, sent: CREPE_SENT });
+  assert.deepEqual([t3.ok, t3.noChatLoc, t3.cartInput.option], [true, undefined, "delivery"], JSON.stringify(t3));
+});
+
+test("مراجعة FD1 ٣ — الضغطة بتتقرا على الرسالة اللي اتضغط زرها (context.id)، و«نعم» المكتوبة محتاجة المحادثة هادية قبل الحملة", async () => {
+  const row = { id: 7, job_id: 3, sent_at: ago(0.05), wamid: "wamid.CAMP7", vars: { fav: CREPE_FAV, cloud: { values: CREPE_SENT } }, cloud_template: "fc_frame_ask_text", cloud_vars: { offer: "", perRecipient: true } };
+  const people = { "501000055": { name: "تجربة ضغطة", orders: 12, spend: 520, daysAgo: 5, hist: [] } };
+  // الضغطة على رسالة «طبقك المفضل» نفسها ⇒ صفها، حتى لو جه بعدها قالب تسويقي تاني (هو ضغط عليها هي)
+  const w = favWorld({ people, lastSent: row, newer: true });
+  const lo = await w.api.lastOffer("501000055", 72, { wamid: "wamid.CAMP7" });
+  assert.deepEqual([lo && lo.queueId, lo && lo.tapped], [7, true]);
+  const i = w.calls.sql.lastIndexOf(F.FAV_SQL.lastSent);
+  assert.deepEqual(w.calls.params[i], ["501000055", 72, "wamid.CAMP7"]);
+  assert.ok(!w.calls.sql.slice(i).includes(F.FAV_SQL.newerTemplate));
+  // الضغطة على إطار حملة تانية (wamid تاني) ⇒ مش «طبقك المفضل»
+  assert.equal(await w.api.lastOffer("501000055", 72, { wamid: "wamid.OLDFRAME" }), null);
+  // من غير wamid («نعم» المكتوبة): آخر صف + فحص القالب الأحدث زي الأول
+  assert.equal(await w.api.lastOffer("501000055", 72), null);
+  assert.equal(w.calls.params[w.calls.sql.lastIndexOf(F.FAV_SQL.lastSent)][2], null);
+  // yesGate: البوت/المساعد/الموظف ردّ قبل الحملة بعشر دقايق ⇒ «نعم» دي ممكن تكون على سؤالهم
+  const offer = { sentAt: row.sent_at, wamid: "wamid.CAMP7", fav: CREPE_FAV, values: CREPE_SENT };
+  const tenBefore = new Date(Date.parse(row.sent_at) - 10 * 60_000).toISOString();
+  const q1 = favWorld({ people: { "501000055": { ...people["501000055"], outboundAt: [tenBefore] } } });
+  assert.equal(await q1.api.yesGate("501000055", offer, { logId: 41, quietMin: 60 }), "chat_before_campaign");
+  assert.equal(await q1.api.yesGate("501000055", offer, { logId: 41, quietMin: 5 }), null, "قبلها بأكتر من المدة ⇒ عادي");
+  assert.equal(await q1.api.yesGate("501000055", offer, { logId: 41 }), null, "quietMin ٠ ⇒ من غير الشرط");
+  const q2 = favWorld({ people: { "501000055": { ...people["501000055"], inboundAt: [tenBefore] } } });
+  assert.equal(await q2.api.yesGate("501000055", offer, { logId: 41, quietMin: 60 }), "chat_before_campaign", "العميل نفسه كان بيكلّمنا قبلها");
+  // بعد الحملة لسه بنفس الأسباب
+  const q3 = favWorld({ people: { "501000055": { ...people["501000055"], inboundAt: [new Date(Date.parse(row.sent_at) + 60_000).toISOString()] } } });
+  assert.equal(await q3.api.yesGate("501000055", offer, { logId: 41, quietMin: 60 }), "not_first_reply");
+});
+
+test("مراجعة FD1 ٣ — delivery.quote بـmemo: السياسة والإعدادات من قراءة واحدة لكل تسعيرات البناء (صف الإعدادات ~١٤٠ ك.ب)؛ من غيره (الدفع والمتجر) قراءة لكل تسعيرة زي الأول", async () => {
+  const keep = { a: process.env.FA_POLL_MINUTES, b: process.env.DISPATCH_LOST_SWEEP_SECONDS, err: console.error, log: console.log };
+  process.env.FA_POLL_MINUTES = "0"; process.env.DISPATCH_LOST_SWEEP_SECONDS = "0";      // من غير مؤقتات الشحنات في الاختبار
+  console.error = () => {}; console.log = () => {};
+  try {
+    let pol = 0, settings = 0;
+    const pool = { async query(sql) { if (/FROM dl_policies WHERE active/.test(sql)) { pol++; return { rows: [{ id: 1, name: "p", config: FX.policy }] }; } return { rows: [], rowCount: 0 }; } };
+    const api = D.register(new Proxy({}, { get: () => () => {} }), { pool, requireAdmin: async () => null, getSettingsData: async () => { settings++; return {}; }, jb: JSON.stringify },
+      { drive: { ensureSchema: async () => {}, get: async () => null, peek: async () => ({ km: 3.8, durationSec: 600, source: "cache" }) }, zone: { ensureSchema: async () => {}, schedule: () => {} } });
+    const memo = {};
+    const a = await api.quote({ lat: 21.6, lng: 39.16, orderTotal: 125, farZoneAccepted: true, cacheOnly: true, memo });
+    const b = await api.quote({ lat: 21.6, lng: 39.16, orderTotal: 150, farZoneAccepted: true, cacheOnly: true, memo });
+    assert.deepEqual([a.fee, b.fee, a.distanceSource, pol, settings], [5, 0, "google", 1, 1]);
+    await api.quote({ lat: 21.6, lng: 39.16, orderTotal: 125 });
+    await api.quote({ lat: 21.6, lng: 39.16, orderTotal: 125 });
+    assert.deepEqual([pol, settings], [3, 3]);
+  } finally {
+    console.error = keep.err; console.log = keep.log;
+    if (keep.a === undefined) delete process.env.FA_POLL_MINUTES; else process.env.FA_POLL_MINUTES = keep.a;
+    if (keep.b === undefined) delete process.env.DISPATCH_LOST_SWEEP_SECONDS; else process.env.DISPATCH_LOST_SWEEP_SECONDS = keep.b;
+  }
 });

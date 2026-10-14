@@ -49,7 +49,7 @@ import { nextStatus, TEMPLATES } from "./whatsapp.js";
 import { cloudCfg, cloudPacing, classifyError, fallbackFor, campaignParams, cloudJobProblem, defaultChannel,
   CAMPAIGN_TEMPLATES, campaignTemplateNames, campaignSpec, brakeCheck, campaignCost, mediaProblem, MEDIA_LIMITS, CLOUD_KEYS, CLOUD_CEILINGS, CLOUD_DEFAULTS } from "./wacloud.js";
 import { waRatesOf } from "./waaicost.js";
-import { FAV_PICK, FAV_AUDIENCE, FAV_DEFAULT_FILTERS, favJobProblem, lineProblem } from "./wafavpick.js";
+import { FAV_PICK, FAV_AUDIENCE, FAV_DEFAULT_FILTERS, FAV_HOLD, favJobProblem, lineProblem } from "./wafavpick.js";
 
 export const MIN_GAP_DAYS = 3;
 export const DEFAULTS = {
@@ -790,7 +790,12 @@ export function register(app, ctx, deps = {}) {
       return bad(c, "count_changed", `العدد اتغيّر (${r.picked.length}) — اعمل معاينة تاني`, 409);
     }
     /* FD1: «طبقك المفضل» — الرسايل اللي هتتحط في الطابور لازم تبقى نفس اللي اتقرت في المعاينة بالظبط (لو المعاينة بعتت بصمتها) */
-    if (r.fav && b.confirmDigest != null && String(b.confirmDigest) !== r.fav.digest) {
+    /* مراجعة FD1 ٣: البصمة **لازمة** — من غيرها البدء مش مربوط بالرسايل اللي اتقرت (اللوحة بتعرض رسالة واحدة بس ومابتبعتش البصمة).
+       البدء بيتعمل من start.py (بيقرا كل الرسايل وبيبعت confirmDigest) لحد ما اللوحة تعرضهم كلهم. */
+    if (r.fav && (b.confirmDigest == null || String(b.confirmDigest).trim() === "")) {
+      return bad(c, "digest_required", "حملة «طبقك المفضل»: كل عميل له رسالة بسعره وتوصيله — البدء محتاج بصمة المعاينة (fav.digest) بعد قراءة كل الرسايل، مش من الزرار ده", 409);
+    }
+    if (r.fav && String(b.confirmDigest) !== r.fav.digest) {
       return bad(c, "offers_changed", "رسايل الحملة اتغيّرت من وقت المعاينة (سعر، توصيل، أو عملاء) — اعمل معاينة تاني واقراها قبل البدء", 409);
     }
     /* QP1 (M7-7): أرقام جاية من تطبيقات التوصيل بس ⇒ تأكيد صريح من المالك بالعدد نفسه. ماقدرناش نعدّ ⇒ مانبدأش. */
@@ -878,6 +883,9 @@ export function register(app, ctx, deps = {}) {
     if (!msg) return bad(c, "empty", "الرسالة فاضية");
     if (msg.length > MAX_MSG) return bad(c, "too_long", `الرسالة أطول من ${MAX_MSG} حرف`);
     if (/\{\w+\}/.test(msg)) return bad(c, "raw_only", "التعديل الفردي نص نهائي — من غير متغيرات زي {name}");
+    /* مراجعة FD1 ٣: رسالة «طبقك المفضل» بتتبعت من قيم القالب المحسوبة للعميل (vars.cloud)، مش من النص ده — تعديله كان بيغيّر اللي بيتعرض بس */
+    const jr = (await pool.query("SELECT j.cloud_vars FROM wa_send_queue q JOIN wa_send_jobs j ON j.id = q.job_id WHERE q.id=$1", [Number(c.req.param("id"))])).rows[0];
+    if (jr && jr.cloud_vars && jr.cloud_vars.perRecipient === true) return bad(c, "per_recipient", "رسايل الحملة دي محسوبة لكل عميل (العرض والسعر والتوصيل) — الرسالة مابتتعدّلش من هنا؛ شيلها من الطابور لو مش عايزها تتبعت", 409);
     const r = await pool.query(
       "UPDATE wa_send_queue SET message=$2, edited_by=$3 WHERE id=$1 AND status='pending' RETURNING id",
       [Number(c.req.param("id")), msg, await whoOf(c)]);
@@ -1264,6 +1272,9 @@ export function register(app, ctx, deps = {}) {
       const fav = favApi();
       let fw = "offer_unverified";
       if (fav && typeof fav.recheck === "function") { try { fw = await fav.recheck(q); } catch (e) { console.error("[wasender] fav recheck:", e.message); fw = "offer_check_failed"; } }
+      /* مراجعة FD1 ٣: التوصيل (أو الاستلام لسطر «تستلمه من فرعنا») موقوف من البوابة الحين ⇒ الصف يرجع للطابور والدورة تقف — بيتبعت لما الخدمة ترجع،
+         مش «والتوصيل لعنوانك …» وصفحة الدفع رافضة التوصيل */
+      if (fw && FAV_HOLD.includes(fw)) { await pool.query("UPDATE wa_send_queue SET status='pending', attempts=GREATEST(attempts-1,0) WHERE id=$1", [q.id]); return { halt: fw }; }
       if (fw) { await pool.query("UPDATE wa_send_queue SET status='skipped', reason=$2 WHERE id=$1", [q.id, String(fw).slice(0, 60)]); return { skipped: fw }; }
     }
     let built;

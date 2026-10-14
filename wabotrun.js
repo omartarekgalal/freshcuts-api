@@ -133,6 +133,7 @@ export const DEFAULTS = Object.freeze({
   reorderLookback: 5,          // لو آخر طلب مايتجهّزش، نجرّب اللي قبله لحد العدد ده
   campaignCart: true,          // FD1 (١٤/١٠): «أبغى أطلب» على رسالة حملة «طبقك المفضل» ⇒ سلة جاهزة بالعرض اللي وصله بالظبط (بسعره وتوصيله الحين)
   campaignOfferHours: 72,      // …العرض المخزّن بيفضل يتقرا للضغطة/«نعم» لحد المدة دي من الإرسال
+  campaignYesQuietMin: 60,     // FD1 مراجعة ٣: «نعم» المكتوبة مابتتحسبش موافقة على الحملة لو المحادثة كان فيها كلام في المدة دي قبل الرسالة (رد على سؤال تاني)
   maxAgeMinutes: 20,           // رسالة أقدم من كده (ويب هوك متأخر) مابيتردش عليها
   sameTextSeconds: 8,          // نفس النص من نفس العميل خلال الثواني دي = تكرار ويب هوك/ضغطة مرتين ⇒ مايتردّش عليه تاني. عميل بيكرر سؤاله بعدها بيترد عليه (١٢/١٠)
   /* حارس الحلقات (مش سبب لتحويل لموظف — عطل ١٢/١٠: ٨ ردود كانت بتقطع عميل بيتصفّح القائمة وتحوّله لموظف):
@@ -627,6 +628,7 @@ export function botConfig(settings) {
     reorderEnabled: x.reorderEnabled !== false, reorderMaxDays: num(x.reorderMaxDays, 1, 365, DEFAULTS.reorderMaxDays), reorderLinkDays: num(x.reorderLinkDays, 1, 30, DEFAULTS.reorderLinkDays),
     reorderMinTotal: num(x.reorderMinTotal, 0, 500, DEFAULTS.reorderMinTotal), reorderLookback: num(x.reorderLookback, 1, 10, DEFAULTS.reorderLookback),
     campaignCart: x.campaignCart !== false, campaignOfferHours: num(x.campaignOfferHours, 1, 168, DEFAULTS.campaignOfferHours),      // FD1
+    campaignYesQuietMin: num(x.campaignYesQuietMin, 0, 720, DEFAULTS.campaignYesQuietMin),
     maxAgeMinutes: num(x.maxAgeMinutes, 1, 120, DEFAULTS.maxAgeMinutes),
     sameTextSeconds: num(x.sameTextSeconds, 0, 120, DEFAULTS.sameTextSeconds),
     autoEchoSkipCovered: x.autoEchoSkipCovered === true,
@@ -712,7 +714,7 @@ export function configFromBody(b, prev = {}) {
   delete out.humanWindowHours;      // اتلغى (١٢/١٠) — أي حفظ بينضّف المخزّن القديم
   for (const k of ["humanPauseMin", "staffWaitMin", "closedEchoPauseMin", "manualMuteHours", "handoffOpenHours", "freeRepliesPerMonth", "replyRateSar", "disclosureHours", "unknownHandoverAfter", "adWindowHours", "optinAnswerWindowMin",
     "offerEndWithinDays", "boxesCacheMin", "menuCacheMin", "offersCacheMin", "staleCacheMin", "logKeepDays", "reorderMaxDays", "reorderLinkDays", "reorderMinTotal", "reorderLookback",
-    "handoverRealertMin", "handoverCustomerNoteMin", "greetWindowHours", "maxAgeMinutes", "sameTextSeconds", "autoEchoMaxSec", "autoInboundSec", "openerHours", "leadFollowUpMin", "reviewReplyHours", "reviewPaidGapMin", "windowKeeperHour", "windowKeeperDailyCap", "windowKeeperWeekly", "windowKeeperQuietStart", "windowKeeperQuietEnd", "loopGuardCount", "loopGuardFastSec", "loopGuardSeconds", "loopGuardMuteHours", "mediaFloodBuyerCount", "mediaFloodCount", "mediaFloodMinutes", "mediaFloodMuteHours", "maxRepliesPerHour", "maxTapsPerHour", "maxRepliesPerMinute", "orderLookbackHours", "lateAfterMinutes", "maxAlertsPerHour", "campaignOfferHours"]) {
+    "handoverRealertMin", "handoverCustomerNoteMin", "greetWindowHours", "maxAgeMinutes", "sameTextSeconds", "autoEchoMaxSec", "autoInboundSec", "openerHours", "leadFollowUpMin", "reviewReplyHours", "reviewPaidGapMin", "windowKeeperHour", "windowKeeperDailyCap", "windowKeeperWeekly", "windowKeeperQuietStart", "windowKeeperQuietEnd", "loopGuardCount", "loopGuardFastSec", "loopGuardSeconds", "loopGuardMuteHours", "mediaFloodBuyerCount", "mediaFloodCount", "mediaFloodMinutes", "mediaFloodMuteHours", "maxRepliesPerHour", "maxTapsPerHour", "maxRepliesPerMinute", "orderLookbackHours", "lateAfterMinutes", "maxAlertsPerHour", "campaignOfferHours", "campaignYesQuietMin"]) {
     if (k in src) { if (Number.isFinite(Number(src[k])) && src[k] !== "" && src[k] !== null) out[k] = Number(src[k]); else errors.push(k); }
   }
   for (const k of ["interactive", "staffAlert", "alertInTest", "autoEchoSkipCovered", "autoInboundPatterns", "paidNoteEnabled", "reviewWhatsApp", "windowFreeUpdates", "windowSell", "windowKeeper", "courierContact", "courierTemplate", "followLink", "closedPolicy", "closedSkipPreparing", "mergeDeliveredReview", "handoverAckNeedsReply", "reorderEnabled", "dishFactsEnabled", "campaignCart"]) if (k in src) out[k] = src[k] === true;
@@ -982,6 +984,7 @@ export const SCHEMA = Object.freeze({
   reorderLookback: S("orders", "number", "لو آخر طلب مايتجهّزش: نجرّب اللي قبله لحد", "أول طلب يتجهّز على المنيو الحالي هو اللي بيتعرض، والرد بيقول يوم الطلب.", { min: 1, max: 10, unit: "طلب" }),
   campaignCart: S("orders", "boolean", "حملة «طبقك المفضل»: «أبغى أطلب» ⇒ سلة جاهزة بالعرض", "العميل وصلته رسالة الحملة (بوكس فيه طبقه المفضل أو طبقه نفسه بسعره وسعر التوصيل لعنوانه) وضغط «أبغى أطلب» أو رد «نعم»: البوت بيحسب نفس العرض تاني بالسعر والتوصيل الحين ويبعت رابط سلة جاهزة بيه. العرض اتغيّر أو خلص أو المفتاح مقفول ⇒ رد «أبي أطلب» العادي."),
   campaignOfferHours: S("orders", "number", "حملة «طبقك المفضل»: العرض المخزّن بيتقرا لحد", "من وقت إرسال رسالة الحملة للعميل.", { min: 1, max: 168, unit: "ساعة" }),
+  campaignYesQuietMin: S("orders", "number", "حملة «طبقك المفضل»: «نعم» المكتوبة مش موافقة لو المحادثة كانت شغّالة قبل الرسالة بـ", "رد «نعم» على سؤال من البوت أو المساعد أو الموظف اتسأل قبل الحملة بالمدة دي بيمشي في طريقه العادي (ضغطة زر «أبغى أطلب» نفسه مش داخلة في الشرط ده). ٠ = من غير الشرط.", { min: 0, max: 720, unit: "دقيقة" }),
   firstCode: S("orders", "code", "كود أول طلب", "الكود اللي سطر «أول طلب» بيقرا شروطه من الكوبونات."),
   "links.organic": S("links", "slug", "رابط المحادثات العادية", "من «روابط الحملات»."),
   "links.ads": S("links", "slug", "رابط محادثات الإعلانات", ""),
@@ -2179,23 +2182,29 @@ export function register(app, ctx, deps = {}) {
     return (await r.json())?.data?.variant?.options || [];
   });
   const isByWeight = (p, it) => p.title === "Grills by the Kilo" || /بالوزن/.test(String(it.name || it.local_name || ""));
-  async function loadVariants(pages, prev) {
-    if (!fetchVariants) return prev || {};
+  /* FD1 مراجعة ٣: وقت آخر جلب ناجح لكل صنف (variantsAt) — الصنف اللي جلبه فشل بيفضل بأوزانه القديمة للبوت، بس الحملة (strict) مابتاخدهاش:
+     كاش المنيو نفسه كان بيتختم «جديد» حتى لو أوزان صنف فضلت قديمة، فسعر «كباب نص كيلو» القديم كان ممكن يطلع في رسالة. */
+  async function loadVariants(pages, prev, prevAt = {}) {
+    if (!fetchVariants) return { variants: prev || {}, at: prevAt || {} };
     const ids = [...new Set(pages.flatMap((p) => (p.items || []).filter((it) => isByWeight(p, it)).map((it) => String(it.id))))].slice(0, 40);
-    const out = {};
-    await Promise.all(ids.map(async (id) => { try { const o = await fetchVariants(id); if (Array.isArray(o) && o.length) out[id] = o; else if (prev && prev[id]) out[id] = prev[id]; } catch (e) { if (prev && prev[id]) out[id] = prev[id]; } }));
-    return out;
+    const out = {}, at = {}, t = Date.now();
+    const keep = (id) => { if (prev && prev[id]) { out[id] = prev[id]; if (prevAt && prevAt[id]) at[id] = prevAt[id]; } };
+    await Promise.all(ids.map(async (id) => { try { const o = await fetchVariants(id); if (Array.isArray(o) && o.length) { out[id] = o; at[id] = t; } else keep(id); } catch (e) { keep(id); } }));
+    return { variants: out, at };
   }
-  let menuCache = { at: 0, pages: null, variants: {} };
+  let menuCache = { at: 0, pages: null, variants: {}, variantsAt: {} };
   async function menuIndex(settings, now, strict = false) {
     if (!menuCache.pages || Date.now() - menuCache.at > tune.menuCacheMin * 60_000) {
-      try { const pg = await fetchMenuPages(); if (Array.isArray(pg) && pg.length) menuCache = { at: Date.now(), pages: pg, variants: await loadVariants(pg, menuCache.variants) }; }
+      try { const pg = await fetchMenuPages(); if (Array.isArray(pg) && pg.length) { const lv = await loadVariants(pg, menuCache.variants, menuCache.variantsAt); menuCache = { at: Date.now(), pages: pg, variants: lv.variants, variantsAt: lv.at }; } }
       catch (e) { console.error("[wabot] menu:", e.message); }
     }
     if (!menuCache.pages || Date.now() - menuCache.at > (strict ? tune.menuCacheMin + 1 : tune.staleCacheMin) * 60_000) return null;      // strict (FD1): التحديث فشل ⇒ مفيش أسعار
     const soldOut = {};
     for (const [k, v] of Object.entries(settings?.catalog?.soldOut || {})) if (!v?.until || Date.parse(v.until) > now.getTime()) soldOut[k] = true;
-    try { return indexMenu(menuCache.pages, { hiddenIds: settings?.catalog?.hiddenIds || [], soldOut, variants: menuCache.variants }); } catch { return null; }
+    /* strict: أوزان الصنف اللي ماتجابتش في مدة الكاش ⇒ مش موجودة (الحملة مابتقولش سعر وزن قديم) — الأصناف التانية زي ما هي */
+    let variants = menuCache.variants;
+    if (strict && fetchVariants) { variants = {}; const lim = (tune.menuCacheMin + 1) * 60_000; for (const [id, o] of Object.entries(menuCache.variants || {})) if (Date.now() - (Number((menuCache.variantsAt || {})[id]) || 0) <= lim) variants[id] = o; }
+    try { return indexMenu(menuCache.pages, { hiddenIds: settings?.catalog?.hiddenIds || [], soldOut, variants }); } catch { return null; }
   }
   /* العروض الشغّالة الحين من سجل العروض (نفس اللي المتجر بيعرضه) — كاش دقيقتين؛ وقع ⇒ null (نقول أقل) */
   const fetchOffers = deps.fetchOffers || (async () => { const r = await self.request("/api/offers"); if (!r.ok) throw new Error(`offers HTTP ${r.status}`); return (await r.json())?.offers || []; });
@@ -2563,13 +2572,17 @@ export function register(app, ctx, deps = {}) {
         const tap = Boolean(ev.interactiveId) && CAMPAIGN_TAP_IDS.has(String(ev.interactiveId).trim()) && cls.key === "order";
         const typed = !tap && !afterWait && !ev.interactiveId && String(ev.type || "text") === "text" && ["ack", "order", "unknown", "offers"].includes(cls.key) && isCampaignYes(ev.text);      // «ابي العرض» بتتصنّف «عروض»؛ «تمام» على رسالة التقييم (review_ok) وغيره من التصنيفات المحددة مابيتلمسوش
         if (tap || typed) {
-          let camp = null; try { camp = await favApi().lastOffer(phone, cfg.campaignOfferHours); } catch (e) { console.error("[wabot] campaign offer:", e.message); camp = null; }
+          /* مراجعة FD1 ٣: كل قوالب الحملات فيها نفس زر «أبغى أطلب» — الضغطة بتتقرا على الرسالة اللي اتضغط زرها نفسها (context.id من ميتا)،
+             فضغطة تحت إطار حملة تانية قديمة مابتجيبش سلة «طبقك المفضل». ردّ مكتوب «نعم» مقتبس على رسالة تانية (context.id غير رسالة الحملة) مش موافقة عليها. */
+          const ctxId = ev.contextId ? String(ev.contextId) : null;
+          let camp = null; try { camp = await favApi().lastOffer(phone, cfg.campaignOfferHours, tap && ctxId ? { wamid: ctxId } : {}); } catch (e) { console.error("[wabot] campaign offer:", e.message); camp = null; }
           if (camp && typed) {
             const asked = chat.optin_asked_at ? Date.parse(chat.optin_asked_at) : NaN, answered = chat.optin_answered_at ? Date.parse(chat.optin_answered_at) : NaN;
             const optinPending = Number.isFinite(asked) && now.getTime() - asked < cfg.optinAnswerWindowMin * 60_000 && !(Number.isFinite(answered) && answered >= asked);
             const at0 = Date.parse(ev.at || ""), late = Number.isFinite(at0) && (now.getTime() - at0) / 60000 > cfg.maxAgeMinutes;
-            let why = optinPending ? "optin_pending" : late ? "late" : null;
-            if (!why) { try { why = await favApi().yesGate(phone, camp, { logId }); } catch (e) { console.error("[wabot] campaign yes:", e.message); why = "gate_failed"; } }
+            let why = optinPending ? "optin_pending" : late ? "late" : ctxId && ctxId !== String(camp.wamid || "") ? "replied_to_other" : null;
+            /* «نعم» مقتبسة على رسالة الحملة نفسها = رد عليها أكيد ⇒ من غير شرط الهدوء قبلها */
+            if (!why) { try { why = await favApi().yesGate(phone, camp, { logId, quietMin: ctxId && ctxId === String(camp.wamid || "") ? 0 : cfg.campaignYesQuietMin }); } catch (e) { console.error("[wabot] campaign yes:", e.message); why = "gate_failed"; } }
             if (why) { await q("UPDATE wa_bot_log SET detail=$2 WHERE id=$1", [logId, `campaign_yes:${String(why).slice(0, 40)}`]); camp = null; }
           }
           if (camp) { campOffer = camp; cls = { ...cls, key: "order", rawIntent: tap ? "campaign_tap" : "campaign_yes" }; }
@@ -2771,6 +2784,7 @@ const fl = await q(`SELECT count(*)::int AS n FROM wa_bot_log WHERE phone_norm=$
         /* FD1: تصنيف «رد على الحملة» مابيتحفظش مع الانتظار — الضغطة بتتقرا تاني من زرها وقت التنفيذ، و«نعم» المكتوبة بعد انتظار الموظف بترجع «تمام» عادية */
         const evLite = { phone, phoneNorm: phone, wamid: ev.wamid || null, text: String(ev.text || "").slice(0, 1000), type: ev.type || "text",
           interactiveId: ev.interactiveId || null, referral: ev.referral || null, location: ev.location || null, media: ev.media || null, at: ev.at || now.toISOString(), intent: ev.intent || null,
+          ...(ev.contextId ? { contextId: String(ev.contextId).slice(0, 200) } : {}),      // FD1 مراجعة ٣: الضغطة بعد الانتظار بتتقرا على نفس الرسالة
           cls: /^llm:/.test(String(cls.rawIntent || "")) ? { key: cls.key, arg: cls.arg ?? null, rawIntent: cls.rawIntent, score: cls.score } : null };
         const j = await q(`INSERT INTO wa_bot_jobs(wamid, phone_norm, kind, due_at, ev, log_id) VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT (wamid) DO NOTHING RETURNING id`,
           [ev.wamid || null, phone, d.waitKind, d.dueAt, jb(evLite), logId]);

@@ -308,6 +308,9 @@ function world({ jobs = [], queue = [], settings = {}, warmup = WARM_DONE, quali
     if (/^UPDATE wa_send_queue SET status='failed', reason=\$2, error_code=\$3, cloud_status='failed'/i.test(s)) { Object.assign(qrow(p[0]), { status: "failed", reason: p[1], error_code: p[2], cloud_status: "failed" }); return { rows: [] }; }
     if (/^UPDATE wa_send_queue SET status='skipped', reason=\$2 WHERE id/i.test(s)) { Object.assign(qrow(p[0]), { status: "skipped", reason: p[1] }); return { rows: [] }; }
     { const m = /^UPDATE wa_send_queue SET status='skipped', reason='([a-z_]+)' WHERE id=\$1$/i.exec(s); if (m) { Object.assign(qrow(p[0]), { status: "skipped", reason: m[1] }); return { rows: [] }; } }      // FD1
+    /* مراجعة FD1 ٣: تعديل صف واحد — نوع الحملة الأول، وبعدين التعديل */
+    if (/^SELECT j\.cloud_vars FROM wa_send_queue q JOIN wa_send_jobs j ON j\.id = q\.job_id WHERE q\.id=\$1/i.test(s)) { const q = qrow(p[0]); const jj = q && job(q.job_id); return { rows: jj ? [{ cloud_vars: jj.cloud_vars }] : [] }; }
+    if (/^UPDATE wa_send_queue SET message=\$2, edited_by=\$3 WHERE id=\$1 AND status='pending'/i.test(s)) { const q = qrow(p[0]); if (!q || q.status !== "pending") return { rows: [], rowCount: 0 }; q.message = p[1]; q.edited_by = p[2]; return { rows: [{ id: q.id }], rowCount: 1 }; }
     if (/^UPDATE wa_send_queue SET note=\$2, fallback_from=\$3/i.test(s)) { Object.assign(qrow(p[0]), { note: p[1], fallback_from: p[2] }); return { rows: [] }; }
     if (/FROM wa_contact_log WHERE phone_norm = ANY/i.test(s)) { db.gapDays.push(p[1]); return { rows: p[0].filter((x) => waContacts.includes(x)).map((x) => ({ pn: x })) }; }
     if (/sms_ad_blocked|cms_campaign_sends|cms_flow_log|FROM sms_log/i.test(s)) throw Object.assign(new Error("missing"), { code: "42P01" });
@@ -928,7 +931,11 @@ test("FD1 المعاينة والبدء: رسالة كل عميل بقيمه، �
   // البدء: للمالك بس + العدد لازم يطابق المعاينة
   assert.equal((await call(s.app, "POST /api/cms/wa-sender/jobs", { json: { ...body, confirmCount: 2 }, auth: MK })).status, 403);
   assert.equal((await call(s.app, "POST /api/cms/wa-sender/jobs", { json: { ...body, confirmCount: 3 } })).body.error, "count_changed");
-  const ok = await call(s.app, "POST /api/cms/wa-sender/jobs", { json: { ...body, confirmCount: 2 } });
+  /* مراجعة FD1 ٣: من غير بصمة المعاينة مايبدأش (اللوحة بتعرض رسالة واحدة ومابتبعتش البصمة) */
+  const nod = await call(s.app, "POST /api/cms/wa-sender/jobs", { json: { ...body, confirmCount: 2 } });
+  assert.deepEqual([nod.status, nod.body.error, s.db.newJobs.length], [409, "digest_required", 0]);
+  assert.equal((await call(s.app, "POST /api/cms/wa-sender/jobs", { json: { ...body, confirmCount: 2, confirmDigest: "" } })).body.error, "digest_required");
+  const ok = await call(s.app, "POST /api/cms/wa-sender/jobs", { json: { ...body, confirmCount: 2, confirmDigest: pv.fav.digest } });
   assert.equal(ok.status, 200, JSON.stringify(ok.body));
   const j = s.db.newJobs[s.db.newJobs.length - 1];
   assert.deepEqual([j[9], j[10], JSON.parse(j[11]), j[12]], ["wa_cloud", "fc_frame_ask_text", { offer: "", perRecipient: true }, "none"]);
@@ -983,4 +990,35 @@ test("مراجعة FD1 — البدء مربوط بالرسايل اللي ات�
   // فلتر صريح بيتبعت زي ما هو
   await call(s.app, "POST /api/cms/wa-sender/preview", { json: { ...body, filters: { audience: "fav_pick", minDaysSince: 0, maxDaysSince: 120 } }, auth: MK });
   assert.deepEqual(seenWin[seenWin.length - 1], { minDaysSince: 0, maxDaysSince: 120 });
+}));
+
+test("مراجعة FD1 ٣ — التوصيل موقوف من البوابة وقت الإرسال ⇒ الصف بيرجع للطابور والدورة تقف (مش تخطّي ولا إرسال)؛ الخدمة رجعت ⇒ بيتبعت", withEnv(ALLOW, async () => {
+  const JOBF = J({ cloud_template: "fc_frame_ask_text", image_url: null, cloud_vars: { offer: "", perRecipient: true } });
+  const V = (i) => ({ first_name: "x", cloud: { values: { "offer.title": "بوكس فيه طبقك المفضل", "offer.line": `عرض ${i} بـ65 ر.س، والتوصيل لعنوانك 15 ر.س` } }, fav: { v: 1, kind: "box", slug: "box-crepe-duo", pid: "6", slot: "crepe1", price: 65, at: iso(AT_17 - 3600_000) } });
+  let hold = "delivery_paused";
+  const fav = { audienceRows: async () => [], recheck: async () => hold };
+  const w = world({ jobs: [JOBF], queue: [R(1, { vars: V(1) }), R(2, { vars: V(2) })], fav });
+  const r = await w.api.cloudTick();
+  assert.deepEqual([r.sent || 0, r.reason, w.calls.length], [0, "delivery_paused", 0], JSON.stringify(r));
+  assert.deepEqual(w.db.queue.map((q) => [q.status, q.reason || null]), [["pending", null], ["pending", null]], "مااتخطّاش ولا اتبعت");
+  hold = "pickup_paused";
+  assert.equal((await w.api.cloudTick()).reason, "pickup_paused");
+  hold = null;
+  const r2 = await w.api.cloudTick();
+  assert.equal(r2.sent, 2, JSON.stringify(r2));
+  // سبب تاني (العرض اتغيّر) ⇒ تخطّي زي الأول
+  hold = "offer_changed";
+  const w2 = world({ jobs: [JOBF], queue: [R(1, { vars: V(1) })], fav });
+  await w2.api.cloudTick();
+  assert.deepEqual([w2.db.queue[0].status, w2.db.queue[0].reason], ["skipped", "offer_changed"]);
+}));
+
+test("مراجعة FD1 ٣ — تعديل رسالة صف واحد مقفول لحملة قيمها لكل عميل (اللي بيتبعت قيم القالب مش النص)؛ الحملات التانية زي ما هي", withEnv(ALLOW, async () => {
+  const JOBF = J({ cloud_template: "fc_frame_ask_text", image_url: null, cloud_vars: { offer: "", perRecipient: true } });
+  const w = world({ jobs: [JOBF], queue: [R(1, { message: "نص القالب بقيم العميل" })] });
+  const r = await call(w.app, "POST /api/cms/wa-sender/items/:id/edit", { json: { message: "نص جديد" }, param: { id: "1" } });
+  assert.deepEqual([r.status, r.body.error, w.db.queue[0].message], [409, "per_recipient", "نص القالب بقيم العميل"]);
+  const n = world({ jobs: [J()], queue: [R(1)] });
+  const r2 = await call(n.app, "POST /api/cms/wa-sender/items/:id/edit", { json: { message: "نص جديد" }, param: { id: "1" } });
+  assert.deepEqual([r2.status, n.db.queue[0].message], [200, "نص جديد"]);
 }));

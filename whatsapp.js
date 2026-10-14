@@ -410,6 +410,8 @@ export function parseWebhook(body, { phoneId = null, phoneIds = [], ownNumbers =
         out.messages.push({ wamid: m.id, from: m.from, type: m.type, text,
           at: isoOf(m.timestamp),
           interactiveId: m.button?.payload ?? m.interactive?.button_reply?.id ?? m.interactive?.list_reply?.id ?? null,
+          /* FD1 مراجعة ٣: الرسالة اللي العميل ضغط زرها أو رد عليها (wamid) — كل قوالب الحملات فيها نفس زر «أبغى أطلب»، فالضغطة بتتعرف بالرسالة دي */
+          contextId: typeof m.context?.id === "string" && m.context.id ? m.context.id.slice(0, 200) : null,
           referral: m.referral || null, // رسالة جاية من إعلان Click-to-WhatsApp
           /* EX6: رسالة نوعها مش مدعوم (أول رسالة من إعلان اتشافت كده ١٣/١٠) — نحفظ اللي ميتا قالته عنها: الأخطاء وأسماء الحقول اللي جت، عشان نعرف هي إيه. */
           ...(m.type === "unsupported" || Array.isArray(m.errors) ? { unsupported: { errors: (Array.isArray(m.errors) ? m.errors : []).slice(0, 3).map((e) => ({ code: e.code ?? null, title: String(e.title || e.message || "").slice(0, 120), details: String(e.error_data?.details || "").slice(0, 200) })), keys: Object.keys(m).slice(0, 20), context: m.context ? Object.keys(m.context).slice(0, 10) : null } } : {}),
@@ -1137,7 +1139,7 @@ export function register(app, ctx, deps = {}) {
     /* يفتح/يجدّد نافذة الـ٢٤ ساعة ويرفع «غير مقروء» للكاشير. */
     await touchThread({ phoneNorm: pn, direction: "in", text: m.text || `[${m.type}]`, at: m.at || null });
     await applyIntent(pn, m.intent);
-    const ev = { phone: pn, phoneNorm: pn, wamid: m.wamid, text: m.text || "", type: m.type, interactiveId: m.interactiveId || null,
+    const ev = { phone: pn, phoneNorm: pn, wamid: m.wamid, text: m.text || "", type: m.type, interactiveId: m.interactiveId || null, contextId: m.contextId || null,
       referral: m.referral || null, location: m.location || null, media: m.media || null, isEcho: false, ts: m.at, at: m.at, intent: m.intent, source: "api" };
     await emit("inbound", ev);
     if (botRuntime) {

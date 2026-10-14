@@ -1024,15 +1024,21 @@ export function register(app, ctx, deps = {}) {
   /* FD1 (١٤/١٠): cacheOnly = مسافة الطريق من كاش جوجل بس (drive.peek) — مفيش نداء جديد. كاش مش موجود ⇒ التقدير الهوائي
      زي أي فشل (distanceSource "straight")، والمتصل (حملة «طبقك المفضل») مابيقولش رقم غير لو distanceSource = "google". */
   const peekDrive = { get: async (from, to) => (typeof drive.peek === "function" ? drive.peek(to) : null) };
-  async function quote({ lat, lng, orderTotal, farZoneAccepted = false, district = null, cacheOnly = false }) {
-    const pol = await activePolicy();
+  /* FD1 مراجعة ٣: memo = كائن فاضي بيبعته المتصل لتسعيرات كتير ورا بعض في لحظة واحدة (بناء حملة «طبقك المفضل» — تسعيرة لكل عميل):
+     السياسة وجدول الأحياء والإعدادات بيتقروا مرة واحدة للكائن ده بدل كل تسعيرة (صف الإعدادات ~١٤٠ ك.ب). من غيره (الدفع والمتجر) = زي الأول بالظبط. */
+  async function quote({ lat, lng, orderTotal, farZoneAccepted = false, district = null, cacheOnly = false, memo = null }) {
+    const M = memo && typeof memo === "object" ? memo : null;
+    let pol;
+    if (M && M.pol !== undefined) pol = M.pol;
+    else { pol = await activePolicy(); if (M) M.pol = pol; }
     if (!pol) return { deliverable: false, reason: "no_policy" };
     const cfg = { ...DEFAULT_POLICY, ...pol.config };
     /* جدول التوصيل بالحي (districts.js) — بيتقرا من الإعدادات كل تسعيرة
        عشان أي تعديل من اللوحة يبان فوراً من غير إعادة تشغيل. عطل في
        قراءة الإعدادات = الجدول مقفول، مش سعر عشوائي. */
     let dcfg = null;
-    try { dcfg = districtCfg(await getSettingsData()); } catch { dcfg = null; }
+    if (M && M.dcfg !== undefined) dcfg = M.dcfg;
+    else { try { dcfg = districtCfg(await getSettingsData()); } catch { dcfg = null; } if (M) M.dcfg = dcfg; }
     const straight = haversineKm(STORE_LAT(), STORE_LNG(), Number(lat), Number(lng));
     /* المشوار الحقيقي بالعربية من جوجل (drivedist.js)، ولو فشل لأي سبب
        بنرجع لتقدير هوائي × routeFactor زي الأول بالظبط. maxKm = سقف المشوار. */
@@ -1046,7 +1052,9 @@ export function register(app, ctx, deps = {}) {
     const g0 = cfg.neverBeatenByApps;
     if (g0 && g0.enabled && g0.courierCost == null) {
       try {
-        const all = await getSettingsData();
+        let all;
+        if (M && M.all !== undefined) all = M.all;
+        else { all = await getSettingsData(); if (M) M.all = all; }
         cfg.neverBeatenByApps = { ...g0, courierCost: contractCourierCost(Math.min(route, Number(cfg.maxKm) || route), courierContract(all.delivery || {})) };
       } catch { /* الافتراضي في APPS_GUARD_DEFAULTS */ }
     }

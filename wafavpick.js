@@ -22,8 +22,13 @@
    الكوبون نفسه) ومكافأة الولاء بنفس قواعد الدفع: بيلغوا الرسم الأساسي بس (رسم المسافة الإضافية بيفضل)، والرقم المحسوب بالكود بيتقال
    معاه اسم الكود. من غير مسافة مؤكدة FIRST بيتقال دايماً «داخل نطاق التوصيل» (مراجعة FD1: مفيش وعد مجاني صفحة الدفع مش هتنفّذه).
 
-   الرد (wabotrun): ضغطة «أبغى أطلب» على الرسالة، أو «نعم/أبغى» مكتوبة كأول حاجة بعدها (yesGate) ⇒ سلة جاهزة بنفس العرض بالحرف
-   (tapOffer: أي اختلاف عن اللي اتبعت ⇒ الرد العادي). أي رسالة تانية (حتى «أبغى أطلب برجر») بتمشي في طريقها العادي.
+   الرد (wabotrun): ضغطة «أبغى أطلب» على الرسالة دي نفسها (context.id = wamid صفها)، أو «نعم/أبغى» مكتوبة كأول حاجة بعدها والمحادثة كانت
+   هادية قبلها (yesGate) ⇒ سلة جاهزة بنفس العرض بالحرف (tapOffer: أي اختلاف عن اللي اتبعت ⇒ الرد العادي). أي رسالة تانية (حتى «أبغى أطلب برجر»)
+   بتمشي في طريقها العادي.
+
+   مراجعة FD1 ٣ (١٤/١٠): «ومجاني لو طلبك من X» بس لو تسعيرة نفس العنوان على X = ٠؛ الباقة بتقول آخر يوم عرضها («حتى 15 أكتوبر») ومابتتبعتش
+   في آخر يوم؛ مكافأة الولاء لازم تفضل صالحة مدة قراءة العرض؛ التوصيل موقوف من البوابة ⇒ الإرسال بيستنى؛ زيادة الاختيار × كمية الخانة؛ الحي
+   بيتبعت للتسعيرة زي صفحة الدفع؛ أوزان الصنف بالوزن من كاش مااتحدّثش ⇒ مفيش سعر.
 
    الشريحة (audienceRows): عملاء طلبوا (موقع أو نقطة بيع) في آخر poolDays يوم، ومش النهارده، من غير الفريق/التجربة/خصم
    المالك/الموقفين/أرقام تطبيقات التوصيل بس. الفاصل (٥–٩٠ يوم) والعدد من فلاتر الحملة العادية (wasender: minDaysSince /
@@ -38,11 +43,12 @@ import { staffFromSettings, OWNER_COUPONS } from "./uploadgate.js";
 import { teamConfig } from "./wateam.js";
 import { findTemplate } from "./watemplates.js";
 import { pausedOffersOf } from "./soldout.js";
+import { serviceBlock } from "./service.js";
 
 export const FAV_PICK = "fav_pick";
 export const FAV_AUDIENCE = Object.freeze({
   label: "🍽 طبقك المفضل + سعر التوصيل (لكل عميل)",
-  hint: "كل عميل بيوصله بوكس فيه طبقه المفضل (أو طبقه نفسه) بسعره الحي وسعر التوصيل لعنوانه — قالب «الرد أولاً» بس",
+  hint: "كل عميل بيوصله بوكس فيه طبقه المفضل (أو طبقه نفسه) بسعره الحي وسعر التوصيل لعنوانه — قالب «الرد أولاً» بس. البدء بعد قراءة كل الرسايل وببصمة المعاينة (fav.digest)",
 });
 /* الفاصل الافتراضي للشريحة دي (لو الحملة مابعتتش فلتر): آخر طلب من ٥ لـ٩٠ يوم */
 export const FAV_DEFAULT_FILTERS = Object.freeze({ minDaysSince: 5, maxDaysSince: 90 });
@@ -57,12 +63,24 @@ export const FAV_RULES = Object.freeze({
   firstBasket: 38,          // عميل مستحق FIRST وسلّته ≥٣٨: البوكس المستهدف فوق حد FIRST
   nudgeFree: 30, nudgeFirst: 35,                     // «ومجاني لو طلبك من …» لو الفرق ≤ كده
   recencyFull: 30, recencyFloor: 0.45, recencySpan: 110, spendCap: 3000, ordersCap: 20, perOrder: 25,
+  packMinDaysLeft: 1,       // مراجعة FD1 ٣: باقة عرضها آخر يوم النهارده مابتتجهّزش ولا بتتبعت (الضغطة بعد نص الليل بتلاقي العرض خلص)
 });
+/* أسباب «استنى» وقت الإرسال (مش تخطّي): الخدمة اللي الرسالة بتتكلم عنها موقوفة من البوابة الحين ⇒ الصف بيرجع للطابور (wasender) */
+export const FAV_HOLD = Object.freeze(["delivery_paused", "pickup_paused"]);
+/* مدة قراءة العرض للضغطة/«نعم» (نفس إعداد البوت campaignOfferHours ١–١٦٨، الافتراضي ٧٢): مكافأة الولاء بتتقال بس لو صالحة طول المدة دي */
+export const offerHoursOf = (s) => { const n = Number(s && s.waBot && s.waBot.campaignOfferHours); return Number.isFinite(n) && n >= 1 ? Math.min(168, Math.round(n)) : 72; };
 
 const DAY = 86400000;
 const nz = (v) => (v == null ? "" : String(v));
 const money = (n) => { const x = Number(n); return Number.isInteger(x) ? String(x) : x.toFixed(2).replace(/\.?0+$/, ""); };
 export const maskPn = (pn) => `${nz(pn).slice(0, 2)}•••••${nz(pn).slice(-2)}`;
+/* أرقام عربية-هندية ⇒ لاتينية (النص كله بأرقام لاتينية جنب «ر.س») */
+export const latinDigits = (s) => nz(s).replace(/[٠-٩]/g, (d) => String(d.charCodeAt(0) - 0x660)).replace(/[۰-۹]/g, (d) => String(d.charCodeAt(0) - 0x6f0));
+/* اليوم في الرياض (التقويم) — نفس اللي فلتر عروض البوت (liveOffers) بيقارن بيه until */
+export const riyadhDay = (ms) => new Date(Number(ms) + 3 * 3600_000).toISOString().slice(0, 10);
+/* «حتى 15 أكتوبر» — نفس صيغة offers.untilText (المتجر والتصميم) */
+const AR_MONTHS = ["يناير", "فبراير", "مارس", "أبريل", "مايو", "يونيو", "يوليو", "أغسطس", "سبتمبر", "أكتوبر", "نوفمبر", "ديسمبر"];
+export const untilAr = (day) => { const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(nz(day)); return m && Number(m[2]) >= 1 && Number(m[2]) <= 12 ? `حتى ${Number(m[3])} ${AR_MONTHS[Number(m[2]) - 1]}` : ""; };
 
 /* ── الأسماء ─────────────────────────────────────────────────────────────── */
 const ALIAS = [[/موتزريلا/g, "موتزاريلا"], [/بينا/g, "بنا"], [/الاكيلة/g, "الأكيلة"]];
@@ -111,8 +129,9 @@ function normBox(b) {
 }
 /* menu = wabot.indexMenu (المخفي مش موجود فيه، و«خلص اليوم» soldOut) · bundles = ‎/api/shop/bundles (المتاح بس) · offers = العروض الشغّالة (null = مش معروفة ⇒ مفيش باقات)
    paused = settings.catalog.pausedOffers الشغّالة الحين (soldout.pausedOffersOf — بالـslug أو رقم العرض): باقة اتوقفت من البوابة بتختفي فوراً، من غير ما نستنى كاش البوكسات.
-   الرسالة بتقول «والتوصيل لعنوانك …»: بوكس قنواته معروفة ومافيهاش توصيل (استلام/صالة بس) مابيتعرضش. */
-export function buildLive({ menu, bundles, offers, paused = null } = {}) {
+   الرسالة بتقول «والتوصيل لعنوانك …»: بوكس قنواته معروفة ومافيهاش توصيل (استلام/صالة بس) مابيتعرضش.
+   offerUntil = آخر يوم لكل عرض (الباقة بتقول «حتى …» ومابتتبعتش في آخر يوم)، today = يوم الرياض الحين. */
+export function buildLive({ menu, bundles, offers, paused = null, now = Date.now() } = {}) {
   const items = new Map(), byClean = new Map();
   for (const it of (menu && menu.items) || []) {
     items.set(nz(it.id), it);
@@ -132,9 +151,22 @@ export function buildLive({ menu, bundles, offers, paused = null } = {}) {
     const c = cleanKey(b.name);
     if (c && !boxByClean.has(c)) boxByClean.set(c, b);
   }
-  const offerIds = new Set((Array.isArray(offers) ? offers : []).map((o) => nz(o && o.id)).filter(Boolean));
-  return { items, byClean, boxes, boxByClean, offerIds };
+  const offerIds = new Set(), offerUntil = new Map();
+  for (const o of Array.isArray(offers) ? offers : []) {
+    const id = nz(o && o.id);
+    if (!id) continue;
+    offerIds.add(id);
+    offerUntil.set(id, /^\d{4}-\d{2}-\d{2}/.test(nz(o.until)) ? nz(o.until).slice(0, 10) : null);
+  }
+  return { items, byClean, boxes, boxByClean, offerIds, offerUntil, today: riyadhDay(Number(now) || Date.now()) };
 }
+/* الباقة المربوطة بعرض: فاضل كام يوم على آخر يوم (٠ = النهارده آخر يوم) — عرض من غير نهاية ⇒ null */
+export function packDaysLeft(b, live) {
+  const u = b && b.offerId && live && live.offerUntil ? live.offerUntil.get(b.offerId) : null;
+  if (!u || !live.today) return null;
+  return Math.round((Date.parse(`${u}T00:00:00Z`) - Date.parse(`${live.today}T00:00:00Z`)) / DAY);
+}
+const packEnding = (b, live) => { const d = packDaysLeft(b, live); return d != null && d < FAV_RULES.packMinDaysLeft; };
 const inMenu = (live, pid) => live.items.get(nz(pid)) || null;
 /* اختيار شغّال: مش «خلص اليوم». صنف مش في المنيو (مخفي) البوكسات نفسها بتقرّر عليه — ماينفعش يبقى اختيار افتراضي بس */
 const choiceOk = (live, c) => { const it = inMenu(live, c.pid); return !(it && it.soldOut); };
@@ -150,11 +182,13 @@ export function boxLive(b, live) {
 export function inBox(b, pid) {
   const id = nz(pid);
   for (const s of b.slots) {
-    if (s.type === "fixed" && s.item.pid === id) return { slot: s.key, fixed: true, sur: 0, v: s.item.v };
-    if (s.type === "choice") { const c = s.choices.find((x) => x.pid === id); if (c) return { slot: s.key, fixed: false, sur: c.sur, v: c.v }; }
+    if (s.type === "fixed" && s.item.pid === id) return { slot: s.key, fixed: true, sur: 0, v: s.item.v, q: s.q };
+    if (s.type === "choice") { const c = s.choices.find((x) => x.pid === id); if (c) return { slot: s.key, fixed: false, sur: c.sur, v: c.v, q: s.q }; }
   }
   return null;
 }
+/* سعر البوكس بطبقه: زيادة الاختيار × كمية الخانة (نفس bundles.expandBundle: surcharge × max(1, quantity)) */
+export const boxPrice = (b, m) => b.price + (m && m.sur > 0 ? m.sur * Math.max(1, Number(m.q) || 1) : 0);
 function boxHasGroup(b, sg, live) {
   if (!FOOD_SG.has(sg)) return false;
   return b.slots.some((s) => (s.type === "fixed" ? [s.item] : s.choices).some((c) => subgroupOf(inMenu(live, c.pid)) === sg));
@@ -217,11 +251,13 @@ export function chooseOffer({ it, sg, basketM, maxT = 0, bigGroup = false, first
     const m = inBox(b, it.id);
     const catOnly = !m && boxHasGroup(b, sg, live);
     if (!m && !catOnly) continue;
-    const price = b.price + (m ? m.sur : 0);
+    const price = boxPrice(b, m);
     const theme = THEME[sg] && THEME[sg].test(b.slug) ? 0.15 : 0;
     let rank;
     if (b.tier === "group") {
       if (!bigGroup || !(m || sg === "grill_kilo")) continue;
+      if (packEnding(b, live)) continue;      // عرضها آخر يوم النهارده
+
       if (price > maxT * R.packCeil) continue;
       rank = (m ? 0 : 0.5) - 0.3 + Math.abs(Math.log(price / Math.max(60, basketM, 0.6 * maxT)));
     } else {
@@ -296,7 +332,8 @@ export const BOX_SIG = {
 export function boxPhrase(b, fav, sg, pid) {
   const fn = BOX_COPY[b.slug];
   if (fn && BOX_SIG[b.slug] === b.sig) return fn(fav || null, sg || null, pid != null ? nz(pid) : null);
-  return fav ? `${b.name} (فيه ${fav})` : b.name;
+  /* الصيغة العامة: اسم البوكس زي ما هو في اللوحة — أسماء الباقات فيها أرقام عربية («٤–٦ أشخاص») ⇒ لاتينية زي باقي السطر */
+  return latinDigits(fav ? `${b.name} (فيه ${fav})` : b.name);
 }
 
 export const FAV_TITLES = Object.freeze({ item: "طبقك المفضل", boxFav: "بوكس فيه طبقك المفضل", boxTaste: "بوكس يناسب ذوقك", pack: "باقة لجمعتكم" });
@@ -330,11 +367,15 @@ export function renderPick(spec, live) {
     if (!m) return { ok: false, why: "not_in_box" };
     fav = dishName(it); sg = subgroupOf(it);
   }
-  const price = b.price + (m ? m.sur : 0);
+  const price = boxPrice(b, m);
   const from = !m && !spec.direct && hasSur(b);
   const phrase = boxPhrase(b, fav, sg, spec.pid);
   const title = b.tier === "group" ? FAV_TITLES.pack : (m || spec.direct) ? FAV_TITLES.boxFav : FAV_TITLES.boxTaste;
-  return { ok: true, kind: b.tier === "group" ? "pack" : "box", title, main: from ? `${phrase} بسعر يبدأ من ${money(price)} ر.س` : `${phrase} بـ${money(price)} ر.س`, price, phrase, from };
+  /* مراجعة FD1 ٣: الباقة المربوطة بعرض ليه آخر يوم ⇒ السطر بيقول «حتى 15 أكتوبر» (الضغطة بعد آخر يوم بترجع الرد العادي، والعميل عارف ليه).
+     التاريخ نفسه مش «فاضل كام يوم» — نفس النص وقت التجهيز والإرسال والضغطة؛ التاريخ اتغيّر من اللوحة ⇒ النص اتغيّر ⇒ مايتبعتش (offer_changed). */
+  const until = b.tier === "group" && b.offerId && live.offerUntil ? untilAr(live.offerUntil.get(b.offerId)) : "";
+  const tail = until ? ` ${until}` : "";
+  return { ok: true, kind: b.tier === "group" ? "pack" : "box", title, main: from ? `${phrase} بسعر يبدأ من ${money(price)} ر.س${tail}` : `${phrase} بـ${money(price)} ر.س${tail}`, price, phrase, from, ...(until ? { until } : {}) };
 }
 
 /* ── التوصيل ────────────────────────────────────────────────────────────────
@@ -345,10 +386,15 @@ export function renderPick(spec, live) {
    • مسافة تقديرية (مش في الكاش): التقدير بيقول بره النطاق ⇒ الاستلام بس؛ المنطقة البعيدة ⇒ من غير رقم ومن غير «مجاني».
    • مفيش عنوان مؤكد (أو تقدير جوّه النطاق الأساسي): «مجاني بكود FIRST» دايماً بشرط «داخل نطاق التوصيل» — نفس صياغة سطر «أول طلب»
      في البوت (first_line)، لأن المنطقة البعيدة عليها رسم مسافة وبعد ١٥ كم مفيش توصيل.
-   alt = صياغة أقصر صادقة لو السطر كله عدّى ٢٠٠ حرف (renderSpec). */
+   alt = صياغة أقصر صادقة لو السطر كله عدّى ٢٠٠ حرف (renderSpec).
+   freeAt = تسعيرة نفس العنوان على حد المجاني في السلّم (renderSpec بيطلبها لما السلة قريبة من الحد): «ومجاني لو طلبك من X» بتتقال
+   بس لو الدفع فعلاً هيقول ٠ عند X — السلّم لوحده مايكفيش (رسم الكيلو الزيادة بعد baseKm بيتحسب فوقه، مراجعة FD1 ٣). */
 const PICKUP_ONLY = "وتقدر تستلمه من فرعنا";
 const DELIVER_OR_PICKUP = "ونوصله لك أو تستلمه من فرعنا";
-export function deliveryLine({ price, located = false, q = null, firstElig = false, firstMin = 60, reward = null, webOrders = 0, ladder = null }) {
+/* أول درجة مجانية في سلّم الرسوم (feeByTotal) ⇒ {over} أو null */
+export const freeTierOf = (ladder) => (Array.isArray(ladder) ? ladder : []).map((t) => ({ over: Number(t && t.over), fee: Number(t && t.fee) })).filter((t) => t.fee === 0 && Number.isFinite(t.over)).sort((a, b) => a.over - b.over)[0] || null;
+const freeConfirmed = (fq) => Boolean(fq && fq.distanceSource === "google" && fq.deliverable && Math.round(Number(fq.fee) || 0) === 0);
+export function deliveryLine({ price, located = false, q = null, firstElig = false, firstMin = 60, reward = null, webOrders = 0, ladder = null, freeAt = null }) {
   const R = FAV_RULES, p = Number(price) || 0, again = webOrders > 0;
   if (located && q && q.distanceSource === "google") {
     if (!q.deliverable) return { text: PICKUP_ONLY, status: "out_of_range" };
@@ -366,8 +412,8 @@ export function deliveryLine({ price, located = false, q = null, firstElig = fal
     if (via === "reward") return { text: fee === 0 ? `والتوصيل لعنوانك مجاني بكود مكافأتك ${reward.code}` : `والتوصيل لعنوانك ${money(fee)} ر.س بكود مكافأتك ${reward.code}`, status: "fee", fee, via, far };
     if (fee === 0) return { text: "والتوصيل لعنوانك مجاني", status: "fee", fee: 0, via: null, far };
     let text = `والتوصيل لعنوانك ${money(fee)} ر.س`;
-    const free = (Array.isArray(ladder) ? ladder : []).map((t) => ({ over: Number(t.over), fee: Number(t.fee) })).filter((t) => t.fee === 0 && Number.isFinite(t.over)).sort((a, b) => a.over - b.over)[0] || null;
-    if (keep === 0 && free && p < free.over && free.over - p <= R.nudgeFree) text += `، ومجاني لو طلبك من ${money(free.over)} ر.س`;
+    const free = freeTierOf(ladder);
+    if (keep === 0 && free && p < free.over && free.over - p <= R.nudgeFree && freeConfirmed(freeAt)) text += `، ومجاني لو طلبك من ${money(free.over)} ر.س`;
     else if (keep === 0 && firstElig && p < firstMin && firstMin - p <= R.nudgeFirst) text += `، ومجاني بكود FIRST لو طلبك من ${money(firstMin)} ر.س`;
     return { text, status: "fee", fee, via: null, far };
   }
@@ -413,9 +459,10 @@ export function favJobProblem({ channel, cloudTemplate, offer = null, coupon = n
    الصنف: سطر واحد (بوزنه). البوكس: طبقه في خانته + أول اختيار متاح من غير زيادة في باقي الخانات (عشان سعر السلة = السعر اللي اتقال).
    بوكس «من نفس النوع» من غير طبقه ⇒ null (الرد بيفتح البوكس نفسه يختار هو). */
 const pickName = (c) => `${dishName({ name: c.name })}${c.vname ? ` ${showW(normW(c.vname) || c.vname)}` : ""}`;
-export function cartInput(spec, live) {
+export function cartInput(spec, live, { option: opt = "delivery" } = {}) {
   if (!spec) return null;
-  if (spec.kind === "item") return { input: { option: "delivery", items: [{ id: nz(spec.pid), qty: 1, ...(spec.vid != null ? { variant_option_id: spec.vid } : {}) }] }, picks: [] };
+  const option = opt === "pickup" ? "pickup" : "delivery";
+  if (spec.kind === "item") return { input: { option, items: [{ id: nz(spec.pid), qty: 1, ...(spec.vid != null ? { variant_option_id: spec.vid } : {}) }] }, picks: [] };
   if (spec.catOnly) return null;
   const b = live.boxes.get(nz(spec.slug));
   if (!b) return null;
@@ -433,7 +480,7 @@ export function cartInput(spec, live) {
     choices[s.key] = { product_id: c.pid, variant_option_id: c.v ?? null };
     picks.push(pickName(c));
   }
-  return { input: { option: "delivery", boxes: [{ slug: b.slug, qty: 1, choices }] }, picks };
+  return { input: { option, boxes: [{ slug: b.slug, qty: 1, choices }] }, picks };
 }
 
 /* ── اختيار عرض عميل واحد (وقت التجهيز) ───────────────────────────────────── */
@@ -520,15 +567,18 @@ export const FAV_SQL = Object.freeze({
           FROM shop_orders so WHERE so.phone_norm = ANY($1::text[]) AND ${PAID} GROUP BY 1`,
   /* FIRST اتستخدم على توصيل (نفس couponrules.usedOnceSql للكوبون الصِرف) */
   firstUsed: "SELECT DISTINCT phone_norm pn FROM shop_orders WHERE phone_norm = ANY($1::text[]) AND upper(COALESCE(coupon,''))='FIRST' AND option='delivery' AND status NOT IN ('pending_payment','expired')",
+  /* + الحي (district/area) زي ما صفحة الدفع بتبعته للتسعيرة (shop.js) — «التوصيل بالحي» بيتحسب بيه */
   lastDelivery: `SELECT DISTINCT ON (so.phone_norm) so.phone_norm pn,
           CASE WHEN so.address->>'latitude' ~ ${NUM_RE} THEN (so.address->>'latitude')::float END lat,
-          CASE WHEN so.address->>'longitude' ~ ${NUM_RE} THEN (so.address->>'longitude')::float END lng
+          CASE WHEN so.address->>'longitude' ~ ${NUM_RE} THEN (so.address->>'longitude')::float END lng,
+          NULLIF(btrim(COALESCE(so.address->>'district', so.address->>'area', '')), '') district
      FROM shop_orders so WHERE so.phone_norm = ANY($1::text[]) AND so.option='delivery' AND ${PAID} AND so.address ? 'latitude'
     ORDER BY so.phone_norm, so.created_at DESC`,
   accounts: "SELECT phone_norm pn, addresses FROM acct_customers WHERE phone_norm = ANY($1::text[]) AND (CASE WHEN jsonb_typeof(addresses) = 'array' THEN jsonb_array_length(addresses) ELSE 0 END) > 0",
-  /* مكافآت الولاء اللي لسه صالحة (نفس waassist.rewardsOf) */
+  /* مكافآت الولاء اللي لسه صالحة (نفس waassist.rewardsOf) — وصالحة لحد $2 ساعة من الحين (وقت التجهيز والإرسال = مدة قراءة العرض للضغطة، وقت الضغطة = ٠):
+     مراجعة FD1 ٣ — كود بيخلص بعد الإرسال بساعات مايتقالش في رسالة الضغطة عليها بتفضل شغّالة ٧٢ ساعة */
   rewards: `SELECT l.phone_norm pn, s.code, s.percent, s.free_delivery, s.min_total FROM cms_loyalty l JOIN shop_coupons s ON s.code = l.coupon
-     WHERE l.phone_norm = ANY($1::text[]) AND s.active AND s.used_count < COALESCE(s.max_uses,1) AND (s.expires_at IS NULL OR s.expires_at > NOW())
+     WHERE l.phone_norm = ANY($1::text[]) AND s.active AND s.used_count < COALESCE(s.max_uses,1) AND (s.expires_at IS NULL OR s.expires_at > NOW() + make_interval(hours => $2::int))
        AND (s.phone_norm IS NULL OR s.phone_norm = l.phone_norm)
        AND NOT EXISTS (SELECT 1 FROM shop_orders o WHERE o.phone_norm = l.phone_norm AND o.coupon = s.code AND o.status NOT IN ('pending_payment','expired'))
      ORDER BY l.created_at DESC`,
@@ -538,9 +588,11 @@ export const FAV_SQL = Object.freeze({
   orderedSince: `SELECT 1 FROM shop_orders so WHERE so.phone_norm = $1 AND so.created_at > $2::timestamptz AND so.status NOT IN ('expired','pending_payment')
     UNION ALL SELECT 1 FROM ts_orders o LEFT JOIN order_sources s ON s.order_id = o.order_id LEFT JOIN ts_customers tc ON tc.customer_id = o.customer_id
      WHERE (s.phone_norm = $1 OR tc.phone_norm = $1) AND o.order_date > $2::timestamptz AND ${NOT_VOID} LIMIT 1`,
-  /* آخر رسالة حملة اتبعتت للرقم (أي حملة) — الضغطة على «أبغى أطلب» بتتقرا على آخر رسالة بس */
+  /* آخر رسالة حملة اتبعتت للرقم (أي حملة) — «نعم» المكتوبة بتتقرا على آخر رسالة بس. $3 = wamid الرسالة اللي العميل ضغط زرها
+     (context.id من ميتا): الضغطة بتتقرا على **الرسالة دي نفسها** — ضغطة «أبغى أطلب» تحت إطار حملة تانية مش ضغطة على «طبقك المفضل» (مراجعة FD1 ٣) */
   lastSent: `SELECT q.id, q.job_id, q.sent_at, q.wamid, q.vars, j.cloud_template, j.cloud_vars FROM wa_send_queue q JOIN wa_send_jobs j ON j.id = q.job_id
-     WHERE q.phone_norm = $1 AND q.status = 'sent' AND q.sent_at > NOW() - make_interval(hours => $2::int) ORDER BY q.sent_at DESC LIMIT 1`,
+     WHERE q.phone_norm = $1 AND q.status = 'sent' AND q.sent_at > NOW() - make_interval(hours => $2::int) AND ($3::text IS NULL OR q.wamid = $3::text)
+     ORDER BY q.sent_at DESC LIMIT 1`,
   newerTemplate: `SELECT 1 FROM wa_messages WHERE phone_norm = $1 AND direction = 'out' AND template IS NOT NULL AND category = 'MARKETING' AND template <> $2
        AND created_at > $3::timestamptz + interval '1 minute' AND COALESCE(status,'') NOT IN ('failed','skipped') LIMIT 1`,
   /* «نعم» المكتوبة = «أبغى أطلب» بس لو هي أول كلام بعد رسالة الحملة: مفيش رسالة تانية من العميل (أي رسالة اتسجّلت عند البوت، حتى اللي سكت عليها)… */
@@ -577,29 +629,31 @@ export function makeFavPick(deps = {}) {
     const first = ((await pool.query(FAV_SQL.first)).rows || [])[0] || null;
     const firstLive = Boolean(first && first.active && first.free_delivery && !(Number(first.percent) > 0) && !(first.expires_at && new Date(first.expires_at) < todayStart(now())));
     const pol = ((await pool.query(FAV_SQL.policy)).rows || [])[0] || null;
-    return { ok: true, live: buildLive({ menu, bundles, offers, paused: pausedOffersOf(s, now()) }), firstLive, firstMin: first ? Number(first.min_total) || 0 : 0,
+    return { ok: true, live: buildLive({ menu, bundles, offers, paused: pausedOffersOf(s, now()), now: now() }), firstLive, firstMin: first ? Number(first.min_total) || 0 : 0,
       ladder: pol && pol.config && Array.isArray(pol.config.feeByTotal) ? pol.config.feeByTotal : null, settings: s };
   }
 
-  /* لكل رقم: طلبات الموقع، FIRST، الموقع، مكافآت الولاء */
-  async function contextFor(pns, g) {
+  /* لكل رقم: طلبات الموقع، FIRST، الموقع (وحيّه)، مكافآت الولاء.
+     rewardHours: المكافأة لازم تفضل صالحة المدة دي من الحين (التجهيز والإرسال = مدة قراءة العرض للضغطة؛ الضغطة نفسها = ٠) */
+  async function contextFor(pns, g, { rewardHours = 0 } = {}) {
     const out = new Map(pns.map((pn) => [pn, { webOrders: 0, webDeliv: 0, firstUsed: false, loc: null, rewards: [] }]));
     if (!pns.length) return out;
+    const dist = (v) => { const t = nz(v).trim(); return t ? t.slice(0, 80) : null; };
     for (const r of (await pool.query(FAV_SQL.web, [pns])).rows || []) { const x = out.get(r.pn); if (x) { x.webOrders = Number(r.n) || 0; x.webDeliv = Number(r.deliv) || 0; } }
     for (const pn of await sets(FAV_SQL.firstUsed, [pns])) { const x = out.get(pn); if (x) x.firstUsed = true; }
     for (const r of (await pool.query(FAV_SQL.lastDelivery, [pns])).rows || []) {
       const x = out.get(r.pn);
-      if (x && Number.isFinite(Number(r.lat)) && Number.isFinite(Number(r.lng)) && r.lat != null && r.lng != null) x.loc = { lat: Number(r.lat), lng: Number(r.lng), src: "last_delivery" };
+      if (x && Number.isFinite(Number(r.lat)) && Number.isFinite(Number(r.lng)) && r.lat != null && r.lng != null) x.loc = { lat: Number(r.lat), lng: Number(r.lng), src: "last_delivery", district: dist(r.district) };
     }
     for (const r of (await pool.query(FAV_SQL.accounts, [pns])).rows || []) {
       const x = out.get(r.pn);
       if (!x || x.loc || !Array.isArray(r.addresses)) continue;
       const ok = r.addresses.filter((a) => a && Number.isFinite(Number(a.latitude)) && Number.isFinite(Number(a.longitude)) && a.latitude !== "" && a.longitude !== "" && a.latitude != null && a.longitude != null);
       ok.sort((a, b) => (Date.parse(b.used_at || b.created_at || 0) || 0) - (Date.parse(a.used_at || a.created_at || 0) || 0) || (b.is_default ? 1 : 0) - (a.is_default ? 1 : 0));
-      if (ok[0]) x.loc = { lat: Number(ok[0].latitude), lng: Number(ok[0].longitude), src: "account" };
+      if (ok[0]) x.loc = { lat: Number(ok[0].latitude), lng: Number(ok[0].longitude), src: "account", district: dist(ok[0].district || ok[0].area) };
     }
     try {
-      for (const r of (await pool.query(FAV_SQL.rewards, [pns])).rows || []) {
+      for (const r of (await pool.query(FAV_SQL.rewards, [pns, Math.max(0, Math.round(Number(rewardHours) || 0))])).rows || []) {
         const x = out.get(r.pn);
         if (x) x.rewards.push({ code: r.code, freeDelivery: r.free_delivery === true, percent: Number(r.percent) || 0, minTotal: Number(r.min_total) || 0 });
       }
@@ -608,16 +662,23 @@ export function makeFavPick(deps = {}) {
     return out;
   }
 
-  /* العرض المخزّن ⇒ {{1}} و{{2}} بالبيانات الحيّة الحين (السعر + سطر التوصيل) */
-  async function renderSpec(spec, g, ctx) {
+  /* العرض المخزّن ⇒ {{1}} و{{2}} بالبيانات الحيّة الحين (السعر + سطر التوصيل).
+     التسعيرة = delivery.quote نفسها بنفس مدخلات صفحة الدفع (الحي كمان). memo = نفس السياسة والإعدادات لكل التسعيرات في بناء واحد
+     (مراجعة FD1 ٣: كل تسعيرة كانت بتقرا صف الإعدادات كله ~١٤٠ ك.ب)؛ بيتعمل جديد لكل بناء/إرسال/ضغطة — مابيعيشش أكتر من كده. */
+  async function renderSpec(spec, g, ctx, { memo = null } = {}) {
     const r = renderPick(spec, g.live);
     if (!r.ok) return r;
-    let q = null;
-    if (ctx && ctx.loc && typeof deps.quote === "function") {
-      try { q = await deps.quote({ lat: ctx.loc.lat, lng: ctx.loc.lng, orderTotal: r.price, farZoneAccepted: true, cacheOnly: true }); } catch { q = null; }
-    }
+    const M = memo || {};
+    const quoteAt = async (orderTotal) => {
+      try { return await deps.quote({ lat: ctx.loc.lat, lng: ctx.loc.lng, orderTotal, farZoneAccepted: true, cacheOnly: true, district: ctx.loc.district || null, memo: M }); } catch { return null; }
+    };
+    const located = Boolean(ctx && ctx.loc && typeof deps.quote === "function");
+    const q = located ? await quoteAt(r.price) : null;
+    /* «ومجاني لو طلبك من X»: بنسعّر نفس العنوان على X ونقولها بس لو الدفع هيقول ٠ هناك (السلّم لوحده مش كفاية — رسم الكيلو الزيادة فوقه) */
+    const free = freeTierOf(g.ladder);
+    const freeAt = q && q.distanceSource === "google" && q.deliverable && free && r.price < free.over && free.over - r.price <= FAV_RULES.nudgeFree ? await quoteAt(free.over) : null;
     let dl = deliveryLine({ price: r.price, located: Boolean(ctx && ctx.loc), q, firstElig: Boolean(ctx && ctx.firstElig), firstMin: g.firstMin,
-      reward: pickReward(ctx && ctx.rewards, r.price), webOrders: (ctx && ctx.webOrders) || 0, ladder: g.ladder });
+      reward: pickReward(ctx && ctx.rewards, r.price), webOrders: (ctx && ctx.webOrders) || 0, ladder: g.ladder, freeAt });
     let line = `${r.main}، ${dl.text}`;
     /* السطر طويل (بوكس اسمه طويل + سطر FIRST بشرطه) ⇒ الصياغة الأقصر الصادقة (من غير FIRST) بدل ما العميل يقع من الشريحة */
     if (lineProblem(r.title, line) === "line_too_long" && dl.alt) { dl = { ...dl, text: dl.alt.text, via: dl.alt.via, short: true }; line = `${r.main}، ${dl.text}`; }
@@ -675,7 +736,8 @@ export function makeFavPick(deps = {}) {
     if (P.length) for (const r of (await pool.query(FAV_SQL.history, [P, FAV_RULES.histPerSource])).rows || []) { if (!hist.has(r.pn)) hist.set(r.pn, []); hist.get(r.pn).push(r); }
     for (const H of hist.values()) H.sort((a, b) => atMs(b.at) - atMs(a.at));
     const names = new Map(P.length ? ((await pool.query(FAV_SQL.names, [P])).rows || []).map((r) => [r.pn, r.name]) : []);
-    const ctx = await contextFor(P, g);
+    const ctx = await contextFor(P, g, { rewardHours: offerHoursOf(s) });
+    const memo = {};      // سياسة التوصيل وإعداداته مرة واحدة للبناء كله
     const rows = [];
     for (const b of pool2) {
       const H = hist.get(b.pn) || [];
@@ -683,7 +745,7 @@ export function makeFavPick(deps = {}) {
       const c = ctx.get(b.pn) || { firstElig: false, webOrders: 0, loc: null, rewards: [] };
       const p = pickFor({ H, live: g.live, firstElig: c.firstElig, firstMin: g.firstMin, spend: b.spend, orders: b.orders, now: T });
       if (!p.ok) { stats.noOffer[p.why] = (stats.noOffer[p.why] || 0) + 1; continue; }
-      const r = await renderSpec(p.spec, g, c);
+      const r = await renderSpec(p.spec, g, c, { memo });
       if (!r.ok) { stats.noOffer[r.why] = (stats.noOffer[r.why] || 0) + 1; continue; }
       if (p.weightGuessed) stats.weightGuessed++;
       if (c.firstElig) stats.firstEligible++;
@@ -710,39 +772,57 @@ export function makeFavPick(deps = {}) {
     return Object.assign(rows, { stats });
   }
 
-  /* ── وقت الإرسال: العرض المخزّن لسه نفسه بالظبط؟ null = ابعت، غير كده سبب التخطّي ── */
+  /* ── وقت الإرسال: العرض المخزّن لسه نفسه بالظبط؟ null = ابعت، غير كده سبب التخطّي ──
+     FAV_HOLD (التوصيل/الاستلام موقوف من البوابة الحين): مش تخطّي — الصف بيرجع للطابور والإرسال بيستنى لحد ما الخدمة ترجع
+     (wasender.sendCloudRow). الرسالة بتقول «والتوصيل لعنوانك …» وصفحة الدفع رافضة التوصيل الحين (shop.js serviceBlock) ⇒ مانبعتهاش دلوقتي. */
   async function recheck(q) {
     const v = (q && q.vars) || {}, spec = v.fav, vals = (v.cloud && v.cloud.values) || {};
     if (!spec || !vals["offer.title"] || !vals["offer.line"]) return "offer_missing";
     if (spec.at && ((await pool.query(FAV_SQL.orderedSince, [q.phone_norm, spec.at])).rows || []).length) return "ordered_since";
     const g = await globals();
     if (!g.ok) return "offer_unverified";
-    const c = (await contextFor([q.phone_norm], g)).get(q.phone_norm);
-    const r = await renderSpec(spec, g, c);
+    const c = (await contextFor([q.phone_norm], g, { rewardHours: offerHoursOf(g.settings) })).get(q.phone_norm);
+    const r = await renderSpec(spec, g, c, { memo: {} });
     if (!r.ok) return `offer_gone:${r.why}`.slice(0, 60);
     if (r.title !== vals["offer.title"] || r.line !== vals["offer.line"]) return "offer_changed";
+    /* الباقة عرضها آخر يوم النهارده (اتجهّزت امبارح واتبعتت النهارده) ⇒ مانبعتهاش: الضغطة بعد نص الليل بتلاقيه خلص */
+    if (spec.kind === "pack" && packEnding(g.live.boxes.get(nz(spec.slug)), g.live)) return "offer_ending";
+    const ch = r.dl && r.dl.status === "out_of_range" ? "pickup" : "delivery";
+    let blocked = null; try { blocked = serviceBlock(g.settings || {}, ch, new Date(now())); } catch { blocked = null; }
+    if (blocked) return ch === "pickup" ? "pickup_paused" : "delivery_paused";
     return null;
   }
 
   /* ── الرد على رسالة الحملة: آخر رسالة حملة للرقم ده لو كانت «طبقك المفضل» (ومفيش قالب تسويقي أحدث منها) ──
-     الضغطة على «أبغى أطلب» بتتقرا عليها لحد campaignOfferHours. «نعم» المكتوبة لازم كمان تعدّي yesGate. */
-  async function lastOffer(phone, hours = 72) {
+     الضغطة على «أبغى أطلب» بتتقرا عليها لحد campaignOfferHours. «نعم» المكتوبة لازم كمان تعدّي yesGate.
+     wamid = الرسالة اللي العميل ضغط زرها (context.id): بنقرا **صفها هي** — إطار حملة تانية ⇒ null (الرد العادي زي قبل FD1)، ورسالة
+     «طبقك المفضل» نفسها حتى لو جه بعدها قالب تاني (هو ضغط عليها هي بالذات، والعرض بيتراجع بالحرف في tapOffer). */
+  async function lastOffer(phone, hours = 72, { wamid = null } = {}) {
     if (!/^5\d{8}$/.test(nz(phone))) return null;
-    const x = ((await pool.query(FAV_SQL.lastSent, [phone, Math.max(1, Math.round(Number(hours) || 72))])).rows || [])[0];
+    const tapped = wamid ? nz(wamid).slice(0, 200) : null;
+    const x = ((await pool.query(FAV_SQL.lastSent, [phone, Math.max(1, Math.round(Number(hours) || 72)), tapped])).rows || [])[0];
     if (!x || !(x.cloud_vars && x.cloud_vars.perRecipient === true) || !/^fc_frame_ask_/.test(nz(x.cloud_template)) || !(x.vars && x.vars.fav)) return null;
     const sentAt = x.sent_at instanceof Date ? x.sent_at.toISOString() : nz(x.sent_at);
-    if (((await pool.query(FAV_SQL.newerTemplate, [phone, x.cloud_template, sentAt])).rows || []).length) return null;
-    return { queueId: Number(x.id), jobId: Number(x.job_id), sentAt, wamid: x.wamid || null, fav: x.vars.fav, values: (x.vars.cloud && x.vars.cloud.values) || null };
+    if (!tapped && ((await pool.query(FAV_SQL.newerTemplate, [phone, x.cloud_template, sentAt])).rows || []).length) return null;
+    return { queueId: Number(x.id), jobId: Number(x.job_id), sentAt, wamid: x.wamid || null, fav: x.vars.fav, values: (x.vars.cloud && x.vars.cloud.values) || null, ...(tapped ? { tapped: true } : {}) };
   }
   /* «نعم» المكتوبة (مش الضغطة) = «أبغى أطلب» بس لو دي أول حاجة حصلت في المحادثة بعد رسالة الحملة:
      ولا رسالة تانية من العميل، ولا أي رسالة طلعت له (رد بوت / موظف / تحديث طلب / قالب)، ولا طلب جديد (موقع أو نقطة بيع).
+     quietMin (مراجعة FD1 ٣): ولا كلام في المحادثة قبل الرسالة بالمدة دي — «نعم» على سؤال المساعد/البوت/الموظف اللي اتسأل قبل الحملة
+     بدقايق مش موافقة على العرض (بتمشي في طريقها العادي).
      null = تمام، غير كده السبب. logId = صف الرسالة دي نفسها في wa_bot_log. */
-  async function yesGate(phone, offer, { logId = null } = {}) {
+  async function yesGate(phone, offer, { logId = null, quietMin = 0 } = {}) {
     if (!offer || !offer.sentAt) return "no_offer";
     const has = async (sql, params) => ((await pool.query(sql, params)).rows || []).length > 0;
     if (await has(FAV_SQL.inboundSince, [phone, Number(logId) || 0, offer.sentAt])) return "not_first_reply";
     if (await has(FAV_SQL.outboundSince, [phone, offer.sentAt, offer.wamid || null])) return "chat_moved_on";
     if (await has(FAV_SQL.orderedSince, [phone, offer.sentAt])) return "ordered_since";
+    const qm = Math.max(0, Number(quietMin) || 0), t0 = Date.parse(offer.sentAt);
+    if (qm > 0 && Number.isFinite(t0)) {
+      const before = new Date(t0 - qm * 60_000).toISOString();
+      if (await has(FAV_SQL.inboundSince, [phone, Number(logId) || 0, before])) return "chat_before_campaign";
+      if (await has(FAV_SQL.outboundSince, [phone, before, offer.wamid || null])) return "chat_before_campaign";
+    }
     return null;
   }
   /* الضغطة: نفس العرض اللي اتبعت بالحرف (العنوان والسطر بسعره وتوصيله) محسوب تاني الحين — اتغيّر أي حاجة (سعر، توصيل، FIRST، خلص)
@@ -753,11 +833,16 @@ export function makeFavPick(deps = {}) {
     const g = await globals();
     if (!g.ok) return { ok: false, why: g.why };
     const c = (await contextFor([phone], g)).get(phone);
-    const r = await renderSpec(spec, g, c);
+    const r = await renderSpec(spec, g, c, { memo: {} });
     if (!r.ok) return { ok: false, why: r.why };
     if (r.title !== sent["offer.title"] || r.line !== sent["offer.line"]) return { ok: false, why: "offer_changed" };
     const out = { ok: true, kind: r.kind, title: r.title, line: r.line, price: r.price, delivery: r.dl.status, slug: spec.slug || null };
-    const ci = cartInput(spec, g.live);
+    /* مراجعة FD1 ٣ — السلة على نفس العنوان اللي الرسالة اتكلمت عنه:
+       • الرسالة قالت رسم «لعنوانك» (status fee) ⇒ السلة مابتشيلش موقع المحادثة (wa_bot_chats.last_loc) — كان ممكن تفتح على دبوس تاني برسم تاني.
+       • العنوان بره النطاق («وتقدر تستلمه من فرعنا») ⇒ السلة استلام. */
+    const pickupOnly = r.dl.status === "out_of_range";
+    const noChatLoc = r.dl.status === "fee";
+    const ci = cartInput(spec, g.live, { option: pickupOnly ? "pickup" : "delivery" });
     if (!ci) return spec.kind !== "item" && spec.slug ? { ...out, cart: false, boxSlug: spec.slug } : { ok: false, why: "no_cart_input" };
     if (!assist || typeof assist.build_cart !== "function") return { ok: false, why: "no_cart_builder" };
     let made = null;
@@ -765,13 +850,13 @@ export function makeFavPick(deps = {}) {
     if (!made || !made.ok || !(made.lines || []).length) return { ok: false, why: `cart:${(made && made.error) || "failed"}` };
     /* السلة لازم تبقى بنفس السعر اللي اتقال (السعر من نفس المنيو/البوكسات — اختلاف = حاجة اتغيّرت في النص) */
     if (Math.abs((Number(made.subtotal) || 0) - r.price) > 0.01) return { ok: false, why: "cart_price_mismatch" };
-    return { ...out, cart: true, cartInput: ci.input, picks: ci.picks };
+    return { ...out, cart: true, cartInput: ci.input, picks: ci.picks, ...(noChatLoc ? { noChatLoc: true } : {}) };
   }
   /* حفظ السلة الجاهزة (صف wa_bot_carts + الرابط) — بعد ما البوت قرر إن الرد هيطلع بيها. نفس السعر تاني وإلا مفيش رابط. */
   async function saveCart(phone, t, { assist = null } = {}) {
     if (!t || !t.cartInput || !assist || typeof assist.build_cart !== "function") return { ok: false, why: "no_cart" };
     let made = null;
-    try { made = await assist.build_cart(phone, t.cartInput, { save: true, source: "campaign" }); } catch { made = null; }
+    try { made = await assist.build_cart(phone, t.cartInput, { save: true, source: "campaign", ...(t.noChatLoc ? { chatLocation: false } : {}) }); } catch { made = null; }
     if (!made || !made.ok || !made.link || !(made.lines || []).length) return { ok: false, why: `cart:${(made && (made.error || made.error_link)) || "failed"}` };
     if (Math.abs((Number(made.subtotal) || 0) - Number(t.price)) > 0.01) return { ok: false, why: "cart_price_mismatch" };
     return { ok: true, url: made.link, code: made.code || null };
