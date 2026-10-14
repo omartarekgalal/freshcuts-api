@@ -205,7 +205,7 @@ test("الرد الحر لسه محكوم بالأقفال التلاتة وال
 });
 
 test("تحديثات الطلب لكل مرحلة: المرحلة المتعلّم عليها بس هي اللي بتتبعت، بنصها ورقم الطلب", withEnv(ALLOW, async () => {
-  const w = world({ settings: { notifications: { whatsappEnabled: true, whatsappStages: ["accepted"], smsEnabled: false, pushEnabled: false } },
+  const w = world({ settings: { notifications: { whatsappEnabled: true, whatsappStages: ["accepted"], smsEnabled: false, pushEnabled: false }, waBot: { windowFreeUpdates: false } },
     optins: { [CUST]: { updates: true } }, orders: { W1: ORDER } });
   for (const st of ["pos_created", "accepted", "on_the_way", "delivered"]) await w.notify.orderStatusChanged("W1", st);
   await flush();
@@ -222,7 +222,7 @@ test("تحديثات الطلب لكل مرحلة: المرحلة المتعلّ
 }));
 
 test("«يغني عن الـSMS» لكل مرحلة: المرحلة اللي عليها العلامة مابيطلعش لها SMS، والباقي واتساب + SMS زي الأول", withEnv(ALLOW, async () => {
-  const mk = (notifications) => world({ settings: { notifications: { whatsappEnabled: true, smsEnabled: true, smsStages: ["accepted", "delivered", "pos_created"], pushEnabled: false, ...notifications } },
+  const mk = (notifications) => world({ settings: { waBot: { windowFreeUpdates: false }, notifications: { whatsappEnabled: true, smsEnabled: true, smsStages: ["accepted", "delivered", "pos_created"], pushEnabled: false, ...notifications } },
     optins: { [CUST]: { updates: true } }, orders: { W1: ORDER } });
   const run = async (w, stages) => { for (const st of stages) await w.notify.orderStatusChanged("W1", st); await flush(); return { wa: w.calls.map((c) => c.body.template.name), sms: w.db.sms.map((m) => String(m.ref).split(":")[1]) }; };
   // لكل مرحلة

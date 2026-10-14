@@ -46,6 +46,7 @@ import { lookupFact, groupsIn, SEVERE_RE, factsCoverage, pickDish, factNote, dis
 import { briefBlock, briefFromBody, briefForDashboard, menuDigest, BRIEF_SECTIONS, BRIEF_LIMITS } from "./wabrief.js";
 import { buildMajedReport, businessDay } from "./wamajed.js";
 import { makeAiCost, pricesOf, waRatesOf, pricesFromBody, waRatesFromBody, BUDGET_DEFAULTS } from "./waaicost.js";
+import { dayMonth } from "./wasales.js";      // SB4
 import { providerInfo, maskText } from "./wabotllm.js";
 import { kbTokens } from "./wakb.js";
 import { teamConfig, staffRoleOf, nonCustomerKind } from "./wateam.js";
@@ -64,6 +65,15 @@ export const DEFAULTS = Object.freeze({
   testPhones: [],              // 5XXXXXXXX — من اللوحة فقط
   openerHours: 12,             // EX6: رسالة نوعها مش مدعوم من رقم مابعتناش له حاجة في الساعات دي = بداية محادثة ⇒ تاخد الترحيب (مش سكوت)
   reviewWhatsApp: true,        // SB2: طلب التقييم بعد التوصيل على واتساب (رسالة حرة بزرّين جوّه النافذة، وإلا القالب المعتمد fc_review_request) بدل الـSMS؛ الـSMS احتياطي بس
+  /* SB4 — نوافذ الـ٢٤ ساعة (عمر ١٤/١٠: «حاول نفتح مع العملاء نوافذ ٢٤ ساعة باي طريقة ذكية… من غير ما نضايق العميل… وتوفر علينا») */
+  windowFreeUpdates: true,     // تحديث الطلب والنافذة مفتوحة (العميل كلّمنا آخر ٢٤ ساعة) ⇒ رسالة حرة ببلاش بنفس النص بدل القالب (whatsapp.js sendOrderUpdate)
+  windowV2Stages: [],          // المراحل اللي نسختها v2 (بزر رد سريع يفتح نافذة) اتعتمدت عند ميتا ⇒ تتبعت بدل القديمة. «review» = طلب التقييم
+  windowSell: true,            // ضغطة «تمام 👍» على التوصيل/التقييم ⇒ ردها فيه سطر الولاء (مرة في النافذة، جوّه نفس الرسالة)
+  windowKeeper: true,          // قبل ما النافذة تقفل: رسالة حرة واحدة بس لو مفيدة فعلاً (طلب شغّال / مكافأة قربت تنتهي / سلة ماكمّلتش) — وإلا ولا حاجة
+  windowKeeperHour: 20,        // …بعد الساعات دي من آخر رسالة للعميل (والنافذة لسه مفتوحة)
+  windowKeeperDailyCap: 40,    // …أقصى عدد في اليوم كله
+  windowKeeperWeekly: 1,       // …وأقصى عدد للعميل الواحد في ٧ أيام
+  windowKeeperQuietStart: 2, windowKeeperQuietEnd: 11,      // …ومفيش في الساعات دي (الرياض)
   reviewReplyHours: 24,        // SB2: «تمام» / «عندي ملاحظة» مكتوبة (مش ضغطة) بتتحسب رد على رسالة التقييم لحد المدة دي
   paidNoteEnabled: true,       // EX6: العميل دفع طلب بعد ما كلّم البوت/المساعد والنافذة مفتوحة ⇒ سطر تأكيد برقم الطلب
   leadFollowUpMin: 20,         // EX6: «متابعة المحادثة» — رسالة عميل ماخدتش رد مفيد (سكوت، بره النطاق، «ما فهمت») ومحدش رد ⇒ متابعة واحدة بعد الدقايق دي. صفر = مقفول. مرة في اليوم للمحادثة
@@ -281,6 +291,9 @@ export const TEXTS = Object.freeze({
   btn_rv_ok: t("زر التقييم: تمام", "تمام 👍", "All good 👍", [], [], LIMITS.btnTitle),
   btn_rv_note: t("زر التقييم: عندي ملاحظة", "عندي ملاحظة", "I have a note", [], [], LIMITS.btnTitle),
   rv_ok: t("رد «تمام» على طلب التقييم", "يسعدنا ذلك 🌟 وإذا تحب تقيّمنا، التقييم ياخذ أقل من دقيقة 👇", "Glad to hear it 🌟 If you'd like to rate us, it takes less than a minute 👇", [], [], 300),
+  rv_ok_nolink: t("رد «تمام 👍» من غير دعوة تقييم للطلب", "يسعدنا ذلك 🌟 بالعافية عليك.", "Glad to hear it 🌟 Enjoy your meal.", [], [], 200),
+  wk_order: t("قبل قفل النافذة: طلبه شغّال", "طلبك رقم {order_no} ما زال معنا 🛵 تقدر تتابعه من الزر 👇", "Your order {order_no} is still on its way with us 🛵 You can follow it from the button 👇", ["order_no"], [], 300),
+  wk_cart: t("قبل قفل النافذة: سلة ماكمّلهاش", "سلتك ما زالت جاهزة 🛒 تكمّلها من الزر متى ما حبيت 👇", "Your cart is still ready 🛒 Complete it from the button whenever you like 👇", [], [], 300),
   cta_rate: t("زر: قيّم طلبك", "قيّم طلبك", "Rate your order", [], [], LIMITS.ctaText),
   rv_note: t("رد «عندي ملاحظة» على طلب التقييم (تحويل للمدير)", "آسفين لو فيه شي ما كان مثل ما تبي 🙏 حوّلت ملاحظتك للمدير ويرد عليك هنا.\nطلب رقم {order_no}\nاكتب لنا وش صار.\n{wait}", "Sorry if something was not right 🙏 I have passed your note to the manager, who will reply here.\nOrder {order_no}\nTell us what happened.\n{wait}", [], ["order_no", "wait"], 500),
   btn_meal: t("زر: وجبة", "وجبة", "Meal", [], [], LIMITS.btnTitle),
@@ -479,6 +492,9 @@ const HARD_INTENTS = new Set(["complaint", "refund", "payment_issue", "site_issu
 const NAV_RE = /^(?:القايمه|القايمه الرييسيه|الرييسيه|رجوع|ارجع|menu|main menu|main|back|0)$/;      // بعد التطبيع: ئ ⇒ ي
 const ACK_RE = /^(?:تمام|تمم|اوكي|اوك|ok|okay|k|طيب|زين|ماشي|حلو|اها|اه|ايوه|ايوا|نعم|yes|yep|👍|👌|🙏)$/;
 const NACK_RE = /^(?:لا|لا شكرا|لا مشكور|no|nope|no thanks|مو لازم)$/;
+export const WINDOW_V2_STAGES = Object.freeze(["pos_created", "accepted", "on_the_way", "delivered", "rejected_refunded", "refund_failed", "review"]);
+/* SB4: الردود السريعة في القوالب (v2) والأزرار في تحديثات الطلب الحرة بتوصل بنصها كمعرّف ⇒ الرد المفيد */
+export const QR_IDS = Object.freeze({ "تابع طلبي": "status", "track my order": "status", "تمام 👍": "review_ok", "all good 👍": "review_ok", "عندي ملاحظة": "review_note", "i have a note": "review_note", "عندي سؤال": "human", "نفس الطلب مرة ثانية": "reorder" });
 export const REVIEW_NOTE_RE = /^(?:عندي ملاحظه|عندي ملاحظات|ملاحظه|ملاحظات|فيه ملاحظه|في ملاحظه|i have a note|a note)$/;      // SB2: بعد normalize (ة ⇒ ه)
 const TIME_RE = /(?:^| )(?:الساعه كم|كم الساعه|ساعه كم|(?:الى|لين|لحد|لغايه|حتى) (?:الساعه )?(?:كم|متى)|تقفلون الساعه كم|تفتحون الساعه كم)(?: |$)/;
 const FAQ_RULES = [
@@ -573,7 +589,11 @@ export function botConfig(settings) {
     maxAgeMinutes: num(x.maxAgeMinutes, 1, 120, DEFAULTS.maxAgeMinutes),
     sameTextSeconds: num(x.sameTextSeconds, 0, 120, DEFAULTS.sameTextSeconds),
     autoEchoSkipCovered: x.autoEchoSkipCovered === true,
-    openerHours: num(x.openerHours, 1, 72, DEFAULTS.openerHours), paidNoteEnabled: x.paidNoteEnabled !== false, reviewWhatsApp: x.reviewWhatsApp !== false, reviewReplyHours: num(x.reviewReplyHours, 1, 72, DEFAULTS.reviewReplyHours), leadFollowUpMin: num(x.leadFollowUpMin, 0, 180, DEFAULTS.leadFollowUpMin),
+    openerHours: num(x.openerHours, 1, 72, DEFAULTS.openerHours), paidNoteEnabled: x.paidNoteEnabled !== false, reviewWhatsApp: x.reviewWhatsApp !== false, reviewReplyHours: num(x.reviewReplyHours, 1, 72, DEFAULTS.reviewReplyHours),
+    windowFreeUpdates: x.windowFreeUpdates !== false, windowSell: x.windowSell !== false, windowKeeper: x.windowKeeper !== false,
+    windowV2Stages: (Array.isArray(x.windowV2Stages) ? x.windowV2Stages : []).filter((k) => WINDOW_V2_STAGES.includes(k)),
+    windowKeeperHour: num(x.windowKeeperHour, 12, 23, DEFAULTS.windowKeeperHour), windowKeeperDailyCap: num(x.windowKeeperDailyCap, 0, 500, DEFAULTS.windowKeeperDailyCap), windowKeeperWeekly: num(x.windowKeeperWeekly, 0, 7, DEFAULTS.windowKeeperWeekly),
+    windowKeeperQuietStart: num(x.windowKeeperQuietStart, 0, 23, DEFAULTS.windowKeeperQuietStart), windowKeeperQuietEnd: num(x.windowKeeperQuietEnd, 0, 23, DEFAULTS.windowKeeperQuietEnd), leadFollowUpMin: num(x.leadFollowUpMin, 0, 180, DEFAULTS.leadFollowUpMin),
     autoInboundPatterns: x.autoInboundPatterns !== false, autoInboundSec: num(x.autoInboundSec, 0, 120, DEFAULTS.autoInboundSec),
     loopGuardCount: num(x.loopGuardCount, 0, 20, DEFAULTS.loopGuardCount), loopGuardFastSec: num(x.loopGuardFastSec, 1, 30, DEFAULTS.loopGuardFastSec),
     loopGuardSeconds: num(x.loopGuardSeconds, 10, 600, DEFAULTS.loopGuardSeconds), loopGuardMuteHours: num(x.loopGuardMuteHours, 1, 168, DEFAULTS.loopGuardMuteHours),
@@ -649,10 +669,10 @@ export function configFromBody(b, prev = {}) {
   delete out.humanWindowHours;      // اتلغى (١٢/١٠) — أي حفظ بينضّف المخزّن القديم
   for (const k of ["humanPauseMin", "staffWaitMin", "closedEchoPauseMin", "manualMuteHours", "handoffOpenHours", "freeRepliesPerMonth", "replyRateSar", "disclosureHours", "unknownHandoverAfter", "adWindowHours", "optinAnswerWindowMin",
     "offerEndWithinDays", "boxesCacheMin", "menuCacheMin", "offersCacheMin", "staleCacheMin", "logKeepDays", "reorderMaxDays", "reorderLinkDays", "reorderMinTotal", "reorderLookback",
-    "handoverRealertMin", "handoverCustomerNoteMin", "greetWindowHours", "maxAgeMinutes", "sameTextSeconds", "autoEchoMaxSec", "autoInboundSec", "openerHours", "leadFollowUpMin", "reviewReplyHours", "loopGuardCount", "loopGuardFastSec", "loopGuardSeconds", "loopGuardMuteHours", "mediaFloodBuyerCount", "mediaFloodCount", "mediaFloodMinutes", "mediaFloodMuteHours", "maxRepliesPerHour", "maxTapsPerHour", "maxRepliesPerMinute", "orderLookbackHours", "lateAfterMinutes", "maxAlertsPerHour"]) {
+    "handoverRealertMin", "handoverCustomerNoteMin", "greetWindowHours", "maxAgeMinutes", "sameTextSeconds", "autoEchoMaxSec", "autoInboundSec", "openerHours", "leadFollowUpMin", "reviewReplyHours", "windowKeeperHour", "windowKeeperDailyCap", "windowKeeperWeekly", "windowKeeperQuietStart", "windowKeeperQuietEnd", "loopGuardCount", "loopGuardFastSec", "loopGuardSeconds", "loopGuardMuteHours", "mediaFloodBuyerCount", "mediaFloodCount", "mediaFloodMinutes", "mediaFloodMuteHours", "maxRepliesPerHour", "maxTapsPerHour", "maxRepliesPerMinute", "orderLookbackHours", "lateAfterMinutes", "maxAlertsPerHour"]) {
     if (k in src) { if (Number.isFinite(Number(src[k])) && src[k] !== "" && src[k] !== null) out[k] = Number(src[k]); else errors.push(k); }
   }
-  for (const k of ["interactive", "staffAlert", "alertInTest", "autoEchoSkipCovered", "autoInboundPatterns", "paidNoteEnabled", "reviewWhatsApp", "handoverAckNeedsReply", "reorderEnabled", "dishFactsEnabled"]) if (k in src) out[k] = src[k] === true;
+  for (const k of ["interactive", "staffAlert", "alertInTest", "autoEchoSkipCovered", "autoInboundPatterns", "paidNoteEnabled", "reviewWhatsApp", "windowFreeUpdates", "windowSell", "windowKeeper", "handoverAckNeedsReply", "reorderEnabled", "dishFactsEnabled"]) if (k in src) out[k] = src[k] === true;
   if ("llm" in src) {
     const L = src.llm || {}, cur = { ...(prev.llm || {}) };
     if ("enabled" in L) cur.enabled = L.enabled === true;
@@ -710,6 +730,7 @@ export function configFromBody(b, prev = {}) {
     }
     out.links = cur;
   }
+  if ("windowV2Stages" in src) { const v = Array.isArray(src.windowV2Stages) ? src.windowV2Stages : []; const bad = v.filter((k) => !WINDOW_V2_STAGES.includes(k)); if (bad.length) errors.push(`windowV2Stages: ${bad.join(",")}`); else out.windowV2Stages = [...new Set(v)]; }
   if ("intentsOff" in src) out.intentsOff = (Array.isArray(src.intentsOff) ? src.intentsOff : []).filter((k) => REPLY_KEYS.includes(k));
   if ("texts" in src) {
     const cur = { ...(prev.texts || {}) };
@@ -851,6 +872,15 @@ export const SCHEMA = Object.freeze({
   openerHours: S("limits", "number", "رسالة مش مدعومة: بداية محادثة لو مابعتناش للرقم خلال", "رسالة واتساب مابيوصّلش محتواها (نوع مش مدعوم) من رقم مابعتناش له حاجة في المدة دي بتاخد الترحيب العادي. جوّه محادثة شغّالة بتاخد سطر «اكتبها نص لو سمحت».", { min: 1, max: 72, unit: "ساعة" }),
   paidNoteEnabled: S("mode", "boolean", "تأكيد الطلب في المحادثة بعد الدفع", "العميل اللي كلّم البوت أو المساعد ودفع طلبه خلال ٢٤ ساعة ونافذة المحادثة لسه مفتوحة: سطر واحد برقم الطلب وزر التتبع. رسالة حرة جوّه النافذة، مش قالب."),
   reviewWhatsApp: S("mode", "boolean", "طلب التقييم بعد التوصيل على واتساب", "بعد التوصيل بالمدة المضبوطة في «التقييمات»: لو العميل كلّمنا في آخر ٢٤ ساعة ⇒ رسالة بزرّين «تمام 👍 / عندي ملاحظة»، وإلا القالب المعتمد «fc_review_request» برابط التقييم. الـSMS بيتبعت بس لو واتساب ماوصلش (القالب اترفض، القناة مقفولة، البوت مش شغّال للعملاء). رسالة واحدة للطلب، ومابتتبعتش أبداً لعميل كتب «إيقاف». مقفول = SMS زي الأول. «تمام» ⇒ رابط التقييم؛ «ملاحظة» ⇒ تحويل للمدير برقم الطلب."),
+  windowFreeUpdates: S("mode", "boolean", "نوافذ ٢٤ ساعة: تحديث الطلب ببلاش والنافذة مفتوحة", "العميل كلّمنا (أو ضغط زر) في آخر ٢٤ ساعة: تحديث الطلب بيطلع رسالة حرة ببلاش بنفس نص القالب وزر التتبع (والتوصيل بزرّين «تمام 👍 / عندي ملاحظة») بدل القالب المدفوع. نفس الأقفال والموافقة. مقفول = القالب دايماً."),
+  windowV2Stages: S("mode", "keys", "نوافذ ٢٤ ساعة: المراحل اللي نسختها بزر رد سريع اتعتمدت", "بعد ما ميتا تعتمد القالب v2 (نفس النص + زر «تابع طلبي» / «تمام 👍» / «عندي سؤال»)، حط مرحلته هنا فيتبعت بداله. الضغطة على الزر بتفتح نافذة ٢٤ ساعة ببلاش. review = طلب التقييم.", { options: ["pos_created", "accepted", "on_the_way", "delivered", "rejected_refunded", "refund_failed", "review"] }),
+  windowSell: S("mode", "boolean", "نوافذ ٢٤ ساعة: سطر الولاء في رد «تمام 👍»", "العميل ضغط «تمام 👍» بعد التوصيل أو التقييم: الرد (رابط التقييم) فيه سطر تقدّم الولاء أو المكافأة، مرة في النافذة، في نفس الرسالة — مش رسالة زيادة."),
+  windowKeeper: S("mode", "boolean", "نوافذ ٢٤ ساعة: رسالة واحدة قبل ما تقفل لو مفيدة", "بعد الساعات المضبوطة من آخر رسالة للعميل: رسالة حرة واحدة بس لو فيه سبب مفيد له (طلبه شغّال، مكافأته بتنتهي خلال ٣ أيام، سلة ماكمّلهاش) — غير كده ولا حاجة. مش في ساعات الهدوء، ومش لو اتبعتله رسالة من غير ما يطلب في نفس النافذة، وبسقف يومي وأسبوعي. كل إرسال ونتيجته (رد؟ طلب؟) في التقرير اليومي."),
+  windowKeeperHour: S("mode", "number", "رسالة قبل قفل النافذة: بعد", "", { min: 12, max: 23, unit: "ساعة من آخر رسالة للعميل" }),
+  windowKeeperDailyCap: S("mode", "number", "رسالة قبل قفل النافذة: أقصى عدد في اليوم", "صفر = مقفول.", { min: 0, max: 500, unit: "رسالة" }),
+  windowKeeperWeekly: S("mode", "number", "رسالة قبل قفل النافذة: أقصى عدد للعميل في ٧ أيام", "", { min: 0, max: 7, unit: "رسالة" }),
+  windowKeeperQuietStart: S("mode", "number", "رسالة قبل قفل النافذة: ساعات الهدوء من", "بتوقيت الرياض.", { min: 0, max: 23, unit: "س" }),
+  windowKeeperQuietEnd: S("mode", "number", "رسالة قبل قفل النافذة: ساعات الهدوء لحد", "", { min: 0, max: 23, unit: "س" }),
   reviewReplyHours: S("mode", "number", "رسالة التقييم: الرد المكتوب بيتحسب لحد", "«تمام» أو «عندي ملاحظة» مكتوبة بإيد العميل (مش ضغطة زرار) خلال المدة دي من رسالة التقييم بتتعامل كأنها الزرار.", { min: 1, max: 72, unit: "ساعة" }),
   leadFollowUpMin: S("mode", "number", "متابعة المحادثة اللي ماخدتش رد مفيد: بعد", "عميل كتب وماخدش رد مفيد (البوت سكت، كان بره النطاق، أو «ما فهمت») ومحدش من الفريق رد: رسالة متابعة واحدة بعد المدة دي. مرة في اليوم للمحادثة، ومابتتبعتش بعد إيقاف أو شكوى أو تحويل مفتوح أو والمطعم مقفل. صفر = مقفول.", { min: 0, max: 180, unit: "دقيقة" }),
   autoInboundPatterns: S("limits", "boolean", "تجاهل الردود الآلية الواردة (بالنص)", "رسالة من رقم نشاط تجاري شكلها رد آلي («شكراً لتواصلك»، «لسنا متوفرين حالياً»، thank you for contacting us…): البوت والمساعد مايردّوش عليها، مفيش تحويل، ومابتتحسبش رد على الحملة."),
@@ -1282,7 +1312,9 @@ export function buildReply(key, c) {
     case "cancel_what": return { body: T("cancel_what"), buttons: [{ id: "cw:order", title: T("btn_cancel_order") }, { id: "cw:stop", title: T("btn_stop_msgs") }] };
     case "thanks": case "start": return { body: T(key) };
     /* SB2 — الرد على رسالة التقييم: «تمام» ⇒ رابط صفحة التقييم بتاعة الطلب (نفس التوجيه المعروف)، «ملاحظة» ⇒ المدير برقم الطلب */
-    case "review_ok": { const code = c.arg && c.arg.code; if (!/^[a-z0-9]{4,16}$/i.test(String(code || ""))) throw new DataMissing("review_code"); return { body: T("rv_ok"), cta: { title: T("cta_rate"), url: `${STORE}/r?c=${encodeURIComponent(code)}` } }; }
+    case "review_ok": { const code = c.arg && c.arg.code, extra = c.arg && c.arg.extra ? `\n${c.arg.extra}` : "";      // SB4: سطر الولاء (مرة في النافذة) في نفس الرسالة
+      if (!/^[a-z0-9]{4,16}$/i.test(String(code || ""))) return { body: `${T("rv_ok_nolink")}${extra}` };
+      return { body: `${T("rv_ok")}${extra}`, cta: { title: T("cta_rate"), url: `${STORE}/r?c=${encodeURIComponent(code)}` } }; }
     case "review_note": return { body: F("rv_note", { order_no: (c.arg && c.arg.order) || "", wait: wait() }), handoff: HANDOFF_KEYS.review_note };
     default: throw new DataMissing(`key:${key}`);
   }
@@ -1529,6 +1561,7 @@ export function classify(ev, know = {}) {
   if (ev.interactiveId) {
     const id = String(ev.interactiveId);
     if (BUTTON_IDS[id]) return out(BUTTON_IDS[id], null, `button:${id}`);
+    { const qk = QR_IDS[id.trim().toLowerCase()] || QR_IDS[id.trim()]; if (qk) return out(qk, qk.startsWith("review") ? { code: null, order: null } : null, `qr:${qk}`); }
     const i = id.indexOf(":"), k = i > 0 ? id.slice(0, i) : "", v = i > 0 ? id.slice(i + 1) : "";
     if (k === "m" && MENU_IDS[v]) return out(MENU_IDS[v], null, `list:${id}`);
     if (["tier", "box", "cat", "item"].includes(k) && /^[a-z0-9-]{1,60}$/i.test(v)) return out(k, v, `list:${id}`);
@@ -1983,6 +2016,7 @@ export function register(app, ctx, deps = {}) {
       ALTER TABLE wa_bot_chats ADD COLUMN IF NOT EXISTS last_disclosed_at TIMESTAMPTZ;
       ALTER TABLE wa_bot_chats ADD COLUMN IF NOT EXISTS muted_by TEXT;
       ALTER TABLE wa_bot_chats ADD COLUMN IF NOT EXISTS review_code TEXT;
+      ALTER TABLE wa_bot_chats ADD COLUMN IF NOT EXISTS window_sell_at TIMESTAMPTZ;
       ALTER TABLE wa_bot_chats ADD COLUMN IF NOT EXISTS review_order TEXT;
       ALTER TABLE wa_bot_chats ADD COLUMN IF NOT EXISTS review_asked_at TIMESTAMPTZ;
       ALTER TABLE wa_bot_chats ADD COLUMN IF NOT EXISTS review_answered_at TIMESTAMPTZ;
@@ -2317,6 +2351,23 @@ export function register(app, ctx, deps = {}) {
       const rv = await q("SELECT review_code, review_order, review_asked_at, review_answered_at FROM wa_bot_chats WHERE phone_norm=$1", [phone]), c0 = rv && rv[0];
       if (c0 && c0.review_code && c0.review_asked_at && !c0.review_answered_at && now.getTime() - Date.parse(c0.review_asked_at) < cfg.reviewReplyHours * 3600_000)
         cls = { ...cls, key: REVIEW_NOTE_RE.test(normalize(String(ev.text || ""))) ? "review_note" : "review_ok", arg: { code: c0.review_code, order: c0.review_order || null }, rawIntent: "review_typed" };
+    }
+    /* SB4: «تمام 👍 / عندي ملاحظة» من قالب أو تحديث حر (من غير كود) ⇒ دعوة التقييم المستنية، وإلا آخر دعوة للرقم (٤٨ ساعة) — وبتتعلّم «اتبعتت» عشان طلب التقييم مايتبعتش تاني */
+    if (!afterWait && (cls.key === "review_ok" || cls.key === "review_note") && (!cls.arg || !cls.arg.code) && /^5\d{8}$/.test(phone)) {
+      const c1 = ((await q("SELECT review_code, review_order, review_asked_at FROM wa_bot_chats WHERE phone_norm=$1", [phone])) || [])[0];
+      let code = c1 && c1.review_code && c1.review_asked_at && now.getTime() - Date.parse(c1.review_asked_at) < 48 * 3600_000 ? c1.review_code : null, order = code ? c1.review_order || null : null;
+      if (!code) { const iv = ((await q("SELECT code, order_no FROM review_invites WHERE phone_norm=$1 AND created_at > NOW() - INTERVAL '48 hours' ORDER BY created_at DESC LIMIT 1", [phone])) || [])[0];
+        if (iv) { code = iv.code; order = iv.order_no; await q("UPDATE review_invites SET sent_at=COALESCE(sent_at, NOW()), channel=COALESCE(channel, 'wa_tap') WHERE code=$1", [code]); } }
+      cls = { ...cls, arg: { code, order } };
+    }
+    if (!afterWait && cls.key === "review_ok" && cfg.windowSell && assist && /^5\d{8}$/.test(phone)) {
+      try { const c2 = ((await q("SELECT window_sell_at FROM wa_bot_chats WHERE phone_norm=$1", [phone])) || [])[0];
+        if (!(c2 && c2.window_sell_at && now.getTime() - Date.parse(c2.window_sell_at) < 24 * 3600_000)) {
+          const of = await assist.get_offers(phone), lo = of && of.loyalty, rw = ((of && of.rewards) || []).find((r) => r.freeDelivery), L = cls.lang === "en" ? "en" : "ar";
+          const line = rw ? salesTextOf(cfg, rw.expires ? "sb_reward_until" : "sb_reward", { code: rw.code, from: rw.minTotal, until: rw.expires ? dayMonth(rw.expires) : "" }, L)
+            : lo && lo.reward === "free_delivery" && lo.progress > 0 ? salesTextOf(cfg, lo.left === 1 ? "sb_loyalty_one" : "sb_loyalty_left", { from: lo.min_total, every: lo.every, left: lo.left }, L) : null;
+          if (line) { cls = { ...cls, arg: { ...(cls.arg || {}), extra: line } }; await q("UPDATE wa_bot_chats SET window_sell_at=NOW() WHERE phone_norm=$1", [phone]); }
+        } } catch (e) { console.error("[wabot] window sell:", e.message); }
     }
     if (!afterWait && (cls.key === "review_ok" || cls.key === "review_note") && cls.arg && /^5\d{8}$/.test(phone)) {
       await q("UPDATE wa_bot_chats SET review_answered_at=NOW() WHERE phone_norm=$1", [phone]);
@@ -2705,6 +2756,12 @@ const fl = await q(`SELECT count(*)::int AS n FROM wa_bot_log WHERE phone_norm=$
                            ORDER BY o.created_at LIMIT 10`, []);
       for (const o of os || []) await q(`INSERT INTO wa_bot_jobs(wamid, phone_norm, kind, due_at, ev, log_id) VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT (wamid) DO NOTHING RETURNING id`, [`paid:${o.order_no}`, o.phone_norm, "paid_note", now.toISOString(), jb({ orderNo: o.order_no }), null]);
     }
+    /* SB4: النوافذ اللي هتقفل قريب (آخر رسالة للعميل من windowKeeperHour لـ٢٣٫٥ ساعة) ⇒ شغلة فحص واحدة لكل نافذة (wk:<الرقم>:<وقت آخر رسالة>). الإرسال والشروط في runWindowKeep. */
+    if (cfg.windowKeeper && cfg.windowKeeperDailyCap > 0 && cfg.windowKeeperWeekly > 0) {
+      const ws = await q(`SELECT phone_norm, max(created_at) AS last_in FROM wa_messages WHERE direction='in' AND COALESCE(source,'api') <> 'history' AND created_at > NOW() - INTERVAL '24 hours'
+                           GROUP BY 1 HAVING max(created_at) <= NOW() - make_interval(hours => $1::int) AND max(created_at) > NOW() - INTERVAL '23 hours 30 minutes' LIMIT 50`, [Math.round(cfg.windowKeeperHour)]);
+      for (const w of ws || []) await q(`INSERT INTO wa_bot_jobs(wamid, phone_norm, kind, due_at, ev, log_id) VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT (wamid) DO NOTHING RETURNING id`, [`wk:${w.phone_norm}:${Date.parse(w.last_in)}`, w.phone_norm, "window_keep", now.toISOString(), jb({ lastIn: new Date(w.last_in).toISOString() }), null]);
+    }
     if (cfg.leadFollowUpMin > 0) {
       const ls = await q(`SELECT l.phone_norm, l.at, l.lang FROM wa_bot_log l
                            WHERE l.at > NOW() - make_interval(mins => $1::int + 60) AND l.at <= NOW() - make_interval(mins => $1::int)
@@ -2774,7 +2831,7 @@ const fl = await q(`SELECT count(*)::int AS n FROM wa_bot_log WHERE phone_norm=$
         let rep; try { rep = { body: fill("rv_ask", textOf(cfg, "rv_ask", lang), { order_no: orderNo }), buttons: [{ id: `rv:ok:${code}`, title: textOf(cfg, "btn_rv_ok", lang) }, { id: `rv:note:${code}:${String(orderNo).slice(0, 30)}`, title: textOf(cfg, "btn_rv_note", lang) }] }; } catch { rep = null; }
         if (rep) { const err = await sendOwn(phone, cfg, now, rep, lang, "review_ask", `order ${orderNo}`); if (!err) { await mark(); return { ok: true, channel: "wa" }; } if (/opted_out|stopped/.test(err)) return { ok: false, skipped: err, final: true }; }
       }
-      const r = await wa.sendTemplate({ phoneNorm: phone, template: "fc_review_request", params: { body: [String(orderNo)], button: [String(code)] }, orderNo: String(orderNo), stage: "review", source: "review", allowList: cfg.mode === "test" ? cfg.testPhones : null });
+      const r = await wa.sendTemplate({ phoneNorm: phone, template: cfg.windowV2Stages.includes("review") ? "fc_review_request_v2" : "fc_review_request", params: { body: [String(orderNo)], button: [String(code)] }, orderNo: String(orderNo), stage: "review", source: "review", allowList: cfg.mode === "test" ? cfg.testPhones : null });
       if (r && r.ok) { await mark(); return { ok: true, channel: "wa_template" }; }
       if (r && r.skipped === "opted_out") return { ok: false, skipped: "opted_out", final: true };
       return { ok: false, skipped: String((r && (r.skipped || r.error)) || "template_failed").slice(0, 60) };
@@ -2792,6 +2849,44 @@ const fl = await q(`SELECT count(*)::int AS n FROM wa_bot_log WHERE phone_norm=$
     const chat = await chatOf(phone);
     if (chat.muted_until && Date.parse(chat.muted_until) > now.getTime()) return ["muted"];
     return [null, m[0], chat, op[0] || {}];
+  }
+  /* ── SB4 — رسالة واحدة قبل ما النافذة تقفل، بس لو مفيدة للعميل ده ─────────────────────────────────────────
+     الترتيب: طلبه شغّال (زر التتبع) ⇒ مكافأة بتنتهي خلال ٣ أيام (ومش موقِّف العروض) ⇒ سلة من المحادثة ماكمّلهاش (زر السلة). مفيش سبب ⇒ ولا حاجة (nothing_useful).
+     مايتبعتش: الوضع / التجربة / «مش عميل» / النافذة قفلت / «إيقاف» / مكتوم (ownGate) · ساعات الهدوء · اتبعتله رسالة من غير ما يطلب في نفس النافذة · سقف اليوم / الأسبوع ·
+     تحويل مفتوح أو شكوى النهارده. كل شغلة بتتقفل بسببها (done sent:<السبب> أو cancelled <السبب>) والتقرير اليومي بيعدّ: اتبعت كام، رد كام، طلب كام. */
+  async function runWindowKeep(j, settings, cfg, now, end) {
+    const phone = String(j.phone_norm || ""), ev = typeof j.ev === "string" ? JSON.parse(j.ev) : (j.ev || {});
+    const no = (reason) => end("cancelled", reason);
+    if (!cfg.windowKeeper) return no("off"); if (!ev.lastIn) return no("bad_job");
+    const [why, m, chat, op] = await ownGate(phone, settings, cfg, now, ev.lastIn);
+    if (why) return no(why);
+    if (Number(m.wrote) > 0) return no("customer_wrote");
+    const hr = new Date(now.getTime() + 3 * 3600_000).getUTCHours(), qs = Math.round(cfg.windowKeeperQuietStart), qe = Math.round(cfg.windowKeeperQuietEnd);
+    if (qs !== qe && (qs < qe ? hr >= qs && hr < qe : hr >= qs || hr < qe)) return no("quiet_hours");
+    if (chat.handoff_at && now.getTime() - Date.parse(chat.handoff_at) < cfg.handoffOpenHours * 3600_000) return no("handover_open");
+    if (chat.window_sell_at && Date.parse(chat.window_sell_at) > Date.parse(ev.lastIn)) return no("window_used");
+    const used = await q(`SELECT 1 FROM wa_bot_jobs WHERE phone_norm=$1 AND kind IN ('assist_followup','assist_nudge','lead_followup','window_keep','assist_reminder') AND status='done' AND done_at > $2 LIMIT 1`, [phone, ev.lastIn]);
+    if (used === null) return no("used_check_failed"); if (used.length) return no("window_used");
+    const caps = await q(`SELECT count(*) FILTER (WHERE done_at >= (date_trunc('day', NOW() AT TIME ZONE 'Asia/Riyadh') AT TIME ZONE 'Asia/Riyadh'))::int AS today,
+                                 count(*) FILTER (WHERE phone_norm=$1 AND done_at > NOW() - INTERVAL '7 days')::int AS week
+                            FROM wa_bot_jobs WHERE kind='window_keep' AND status='done' AND done_at > NOW() - INTERVAL '7 days'`, [phone]);
+    if (caps === null || !caps[0]) return no("cap_check_failed");
+    if (Number(caps[0].today) >= cfg.windowKeeperDailyCap) return no("daily_cap"); if (Number(caps[0].week) >= cfg.windowKeeperWeekly) return no("weekly_cap");
+    const cmp = await q("SELECT 1 FROM wa_bot_log WHERE phone_norm=$1 AND at > NOW() - INTERVAL '24 hours' AND (reply_key IN ('complaint','problem','change') OR handoff IN ('complaint','problem','order_change','allergy_severe')) LIMIT 1", [phone]);
+    if (cmp === null) return no("complaint_check_failed"); if (cmp.length) return no("complaint_today");
+    const lg = await q("SELECT lang FROM wa_bot_log WHERE phone_norm=$1 AND lang IS NOT NULL ORDER BY id DESC LIMIT 1", [phone]);
+    const lang = lg && lg[0] && lg[0].lang === "en" ? "en" : "ar";
+    let rep = null, reason = null;
+    const ord = await q(`SELECT order_no FROM shop_orders WHERE phone_norm=$1 AND NOT COALESCE(is_test,false) AND status IN ('pos_created','accepted','courier_requested','courier_assigned','on_the_way') AND created_at > NOW() - INTERVAL '12 hours' ORDER BY created_at DESC LIMIT 1`, [phone]);
+    if (ord && ord[0]) { reason = "open_order"; rep = { body: fill("wk_order", textOf(cfg, "wk_order", lang), { order_no: ord[0].order_no }), cta: { title: textOf(cfg, "cta_track", lang), url: `${STORE}/track/${encodeURIComponent(ord[0].order_no)}` } }; }
+    if (!rep && assist && !op.marketing_off_at) { try { const of = await assist.get_offers(phone), soon = ((of && of.rewards) || []).find((r) => r.freeDelivery && r.expires && Date.parse(`${r.expires}T23:59:59+03:00`) - now.getTime() < 3 * 86400_000);
+      if (soon) { const line = salesTextOf(cfg, "sb_reward_until", { code: soon.code, from: soon.minTotal, until: dayMonth(soon.expires) }, lang); if (line) { reason = "reward_expiring"; rep = { body: line }; } } } catch { /* من غير المكافأة */ } }
+    if (!rep) { const cart = await q(`SELECT b.code FROM wa_bot_carts b WHERE b.phone_norm=$1 AND b.created_at > $2::timestamptz - INTERVAL '2 hours' AND b.expires_at > NOW()
+                                        AND NOT EXISTS (SELECT 1 FROM shop_orders o WHERE o.phone_norm=b.phone_norm AND o.created_at > b.created_at AND o.status <> 'expired') ORDER BY b.created_at DESC LIMIT 1`, [phone, ev.lastIn]);
+      if (cart && cart[0]) { reason = "open_cart"; rep = { body: textOf(cfg, "wk_cart", lang), cta: { title: textOf(cfg, "cta_reorder", lang), url: `${STORE}/c/${cart[0].code}` } }; } }
+    if (!rep) return no("nothing_useful");
+    const err = await sendOwn(phone, cfg, now, rep, lang, "window_keep", reason);
+    return end(err ? "cancelled" : "done", err ? `send_failed:${err}`.slice(0, 80) : `sent:${reason}`);
   }
   async function runPaidNote(j, settings, cfg, now, end) {
     const phone = String(j.phone_norm || ""), ev = typeof j.ev === "string" ? JSON.parse(j.ev) : (j.ev || {});
@@ -2846,6 +2941,7 @@ const fl = await q(`SELECT count(*)::int AS n FROM wa_bot_log WHERE phone_norm=$
         if (cfg.mode === "off") { await cancel("mode_off"); continue; }
         if (j.kind === "assist_followup") { await runFollowUp(j, settings, cfg, now, end); ran++; continue; }
         if (j.kind === "paid_note") { await runPaidNote(j, settings, cfg, now, end); ran++; continue; }
+        if (j.kind === "window_keep") { await runWindowKeep(j, settings, cfg, now, end); ran++; continue; }
         if (j.kind === "lead_followup") { await runLeadFollowUp(j, settings, cfg, now, end); ran++; continue; }
         if (j.kind === "assist_nudge") { await runNudge(j, settings, cfg, now, end); ran++; continue; }
         if (j.kind === "assist_reminder") { await runReminder(j, settings, cfg, now, end); ran++; continue; }
@@ -3589,7 +3685,22 @@ const fl = await q(`SELECT count(*)::int AS n FROM wa_bot_log WHERE phone_norm=$
     const orders = (await q(`SELECT o.phone_norm, o.total::float AS total, o.attribution->>'fc_link' AS link, o.created_at FROM shop_orders o
                               WHERE o.created_at >= $1 AND o.created_at < $2 AND NOT COALESCE(o.is_test,false) AND o.status NOT IN ('pending_payment','expired','rejected_refunded','refund_failed','paid_pos_failed')`, [w.from, w.to])) || [];
     const kbRows = (await q("SELECT id, status, question FROM wa_kb_questions ORDER BY last_at DESC LIMIT 400", [])) || [];
-    return c.json({ ok: true, from: w.from, to: w.to, report: buildMajedReport({ day: w.day, turns, orders, kbRows }) });
+    /* SB4: قوالب بفلوس مقابل رسايل ببلاش، والتوفير (تحديثات الطلب اللي طلعت حرة بدل قالب خدمي)، ونتيجة رسالة «قبل قفل النافذة» */
+    const cfgD = botConfig((await getSettingsData()) || {}), rate = cfgD.waRates || {};
+    const wm = ((await q(`SELECT count(*) FILTER (WHERE template IS NOT NULL AND category='UTILITY' AND COALESCE(source,'') <> 'campaign')::int AS utility,
+                                count(*) FILTER (WHERE template IS NOT NULL AND (category='MARKETING' OR source='campaign'))::int AS marketing,
+                                count(*) FILTER (WHERE template IS NULL AND COALESCE(source,'') <> 'echo')::int AS free,
+                                count(*) FILTER (WHERE template IS NULL AND source='window')::int AS free_updates
+                           FROM wa_messages WHERE direction='out' AND COALESCE(status,'') NOT IN ('failed','skipped') AND created_at >= $1 AND created_at < $2`, [w.from, w.to])) || [])[0] || {};
+    const kp = ((await q(`SELECT count(*) FILTER (WHERE j.status='done')::int AS sent, count(*) FILTER (WHERE j.status='cancelled' AND j.reason='nothing_useful')::int AS nothing_useful,
+                                count(*) FILTER (WHERE j.status='done' AND EXISTS (SELECT 1 FROM wa_messages m WHERE m.phone_norm=j.phone_norm AND m.direction='in' AND m.created_at > j.done_at AND m.created_at < j.done_at + INTERVAL '24 hours'))::int AS replied,
+                                count(*) FILTER (WHERE j.status='done' AND EXISTS (SELECT 1 FROM shop_orders o WHERE o.phone_norm=j.phone_norm AND o.created_at > j.done_at AND o.created_at < j.done_at + INTERVAL '24 hours' AND o.status NOT IN ('pending_payment','expired')))::int AS ordered
+                           FROM wa_bot_jobs j WHERE j.kind='window_keep' AND j.due_at >= $1 AND j.due_at < $2`, [w.from, w.to])) || [])[0] || {};
+    const ru = Number(rate.utility) || 0.0401, rmk = Number(rate.marketing) || 0.2159, r2 = (n) => Math.round(n * 10000) / 10000;
+    const window = { paid_templates: { utility: wm.utility || 0, marketing: wm.marketing || 0, sar: r2((wm.utility || 0) * ru + (wm.marketing || 0) * rmk) }, free_messages: wm.free || 0,
+      free_order_updates: wm.free_updates || 0, saved_sar: r2((wm.free_updates || 0) * ru), keeper: { sent: kp.sent || 0, nothing_useful: kp.nothing_useful || 0, replied: kp.replied || 0, ordered: kp.ordered || 0 },
+      note: "saved_sar = order updates that went out free inside an open window × the utility rate; keeper replied / ordered = within 24 h of the message" };
+    return c.json({ ok: true, from: w.from, to: w.to, report: { ...buildMajedReport({ day: w.day, turns, orders, kbRows }), window } });
   });
 
   /* «اللي البوت عارفه دلوقتي»: نفس الحقايق اللي هيقولها لو اتسأل الحين، من نفس المصادر وبنفس الكاش — عشان المالك يتأكد

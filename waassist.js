@@ -356,6 +356,45 @@ const SV_WEIGHT_FOR = new RegExp(`(?:ثلث|تلت|نصف|نص|كيلو|kilo|hal
 const SV_FOR_WEIGHT = new RegExp(`(?:^| )(?:ل|لل)(?:شخص|شخصين|\\d+ ?اشخاص|\\d+ ?افراد|ثلاثه|اربعه|خمسه|سته|عائله|عايله)(?: (?!كم(?: |$))\\S+){0,6}? (?:ثلث|تلت|نصف|نص|كيلو)(?= |$)`);
 const SV_SKIP = /بوكس|باقه|باقات|وجبه|وجبات|box|pack|meal/;
 const SV_TOPIC = /مشكل|special mix/;
+/* SB4 (قرار عمر ١٤/١٠): «الثلث يكفي شخص تقريباً» مسموحة في المحادثة الفردية **لما العميل يسأل بس**، لكل المشاوي بالوزن ومنها المشكل المخصوص.
+   الأرقام من ملف معرفة البيزنس (حقل «المشاوي بالوزن») مش من الكود: servingGuide(نص المالك) ⇒ { third:[من,إلى], half:[…], kilo:[…] } (أي وزن مش مذكور ⇒ مش موجود).
+   servingAsked(نص العميل) = بيسأل يكفي كام شخص. servingMismatch(الرد، guide) ⇒ أول جملة عدد أشخاص لوزن بره الدليل (أو لوزن مالوش دليل) أو null. */
+const SG_WORDS = { واحد: 1, شخص: 1, نفر: 1, فرد: 1, شخصين: 2, نفرين: 2, فردين: 2, اثنين: 2, ثنين: 2, ثلاث: 3, ثلاثه: 3, تلاته: 3, اربع: 4, اربعه: 4, خمس: 5, خمسه: 5, ست: 6, سته: 6, one: 1, two: 2, three: 3, four: 4, five: 5, six: 6 };
+const sgDigits = (s) => String(s || "").replace(/[٠-٩]/g, (d) => String(d.charCodeAt(0) - 0x660));
+const SG_KIND = [[/(?:^| )(?:و?ال|بال|لل|و)?(?:ثلث|تلت)(?= |$)|\bthird\b/, "third"], [/(?:^| )(?:و?ال|بال|لل|و)?(?:نصف|نص)(?= |$)|\bhalf\b/, "half"], [/(?:^| )(?:و?ال|بال|لل|و)?كيلو(?= |$)|\b(?:kilo|kg)\b/, "kilo"]];
+/* أرقام الأشخاص في جملة (بعد الوزن): «شخص» = 1، «شخصين» = 2، «٣–٤ أشخاص» = [3,4]، «3 إلى 4» */
+function sgPeople(s) {
+  const t = normalize(sgDigits(String(s || "")).replace(/(\d) ?[–—-] ?(\d)/g, "$1 الى $2"));
+  const r = /(\d+) ?(?:-|الى|الي|إلى|او|أو|to|or) ?(\d+)/.exec(t); if (r) return [Number(r[1]), Number(r[2])];
+  const d = /(\d+) ?(?:اشخاص|شخص|افراد|انفار|people|persons?)/.exec(t); if (d) return [Number(d[1]), Number(d[1])];
+  for (const w of t.split(" ")) { const k = w.replace(/^(ل|لل)/, ""); if (SG_WORDS[k] && /^(?:ل|لل)?(?:شخص|شخصين|نفر|نفرين|فرد|فردين)$/.test(w)) return [SG_WORDS[k], SG_WORDS[k]]; }
+  const n = t.split(" ").map((w) => SG_WORDS[w.replace(/^(ل|لل)/, "")]).find(Boolean); return n ? [n, n] : null;
+}
+const sgKindOf = (s) => { let best = null; for (const [re, k] of SG_KIND) { const m = re.exec(s); if (m && (!best || m.index < best.at)) best = { k, at: m.index }; }
+  if (best && best.k === "kilo") { const before = s.slice(0, best.at); if (/(?:ثلث|تلت|نصف|نص)\s*$/.test(before)) return null; } return best ? best.k : null; };
+export function servingGuide(text) {
+  const out = {};
+  for (const raw of String(text || "").split(/[\n.؛;،,·]+/)) {
+    const s = normalize(sgDigits(raw).replace(/(\d) ?[–—-] ?(\d)/g, "$1 الى $2")); if (!/يكفي|تكفي|يكفيك|يشبع|تقريب|serves|enough/.test(s)) continue;
+    for (const part of s.split(/ و(?=(?:ال)?(?:ثلث|تلت|نص|نصف|كيلو))/)) { const k = sgKindOf(part), p = k ? sgPeople(part.slice(part.search(/ثلث|تلت|نص|كيلو|third|half|kilo/))) : null; if (k && p && !out[k]) out[k] = p; }
+  }
+  return out;
+}
+export const SERVING_ASK_RE = /(?:يكفي|تكفي|يكفو|يكفوا|يشبع|تشبع)\S* ?(?:ل)?(?:كم|كام)|(?:كم|كام) (?:شخص|نفر|فرد) (?:يكفي|تكفي|يشبع)|(?:^| )ل(?:كم|كام) شخص|كم شخص (?:ياكل|يكفيه|يكفيها)|how many (?:people|persons) (?:does|will|it)|serves how many|enough for how many/;
+export const servingAsked = (text) => SERVING_ASK_RE.test(normalize(String(text || "")));
+export function servingMismatch(text, guide = {}) {
+  for (const raw of sgDigits(String(text || "")).replace(/(\d) ?[–—-] ?(\d)/g, "$1 الى $2").split(/[\n.!؟?؛;]+/)) {
+    const s = normalize(raw); if (!s || SV_SKIP.test(s)) continue;
+    if (!(SV_VERB.exec(s) || SV_WEIGHT_FOR.exec(s) || SV_FOR_WEIGHT.exec(s))) continue;
+    for (const part of s.split(/ و(?=(?:ال)?(?:ثلث|تلت|نص|نصف|كيلو))|، ?|, ?/)) {
+      const k = sgKindOf(part); if (!k) continue;
+      const p = sgPeople(part.slice(part.search(/ثلث|تلت|نص|كيلو|third|half|kilo/)));
+      if (!p) continue;
+      const g = guide[k]; if (!g || p[0] < g[0] || p[1] > g[1]) return raw.trim().slice(0, 60);
+    }
+  }
+  return null;
+}
 export function servingClaim(text, { assume = false } = {}) {
   if (!assume && !SV_TOPIC.test(normalize(String(text || "")))) return null;
   for (const raw of String(text || "").split(/[\n.!؟?؛;]+/)) {

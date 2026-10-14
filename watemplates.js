@@ -228,6 +228,39 @@ export const TEMPLATES = [
       send: "auto", fallbackSms: "review.invite", reclassRisk: "medium",
       notes: "مرتبط بطلب محدد ⇒ UTILITY، لكن ميتا أحياناً تصنّف الاستبيانات تسويق. صفحة /r فيها التوجيه الحالي (٤–٥★ جوجل) — انتبه لملاحظة review gating في freshcuts-seo-compliance" } }),
 
+  /* SB4 — «نوافذ الـ٢٤ ساعة» (عمر ١٤/١٠): نسخ v2 من قوالب الطلب فيها رد سريع مفيد للعميل. الضغطة رسالة واردة ⇒ نافذة ٢٤ ساعة ببلاش،
+     والتحديثات اللي بعدها بتطلع رسالة حرة (whatsapp.js sendOrderUpdate). نفس النص الخدمي بالحرف + زر رد سريع؛ مفيش كلام ترويجي (وإلا ميتا تصنّفه تسويق).
+     **مالهاش stage**: مش مربوطة بمرحلة لحد ما المالك يقدّمها وتتعتمد ويحط المرحلة في waBot.windowV2Stages. الرد السريع بيوصل للبوت بنصه (wabotrun QR_IDS). */
+  T({ name: "fc_order_received_v2", category: "UTILITY", group: "order",
+    body: "أهلاً {{1}}، استلمنا طلبك رقم {{2}} وتم الدفع بنجاح ✅\nالإجمالي: {{3}} ر.س\nنبلّغك هنا بكل تحديث على طلبك.",
+    vars: [FIRST_NAME, ORDER_NO, { path: "order.total", label: "الإجمالي", ex: "86.50", fmt: "money" }],
+    buttons: [qr("تابع طلبي"), TRACK()],
+    meta: { purpose: "تأكيد الطلب + رد سريع «تابع طلبي» يفتح نافذة ٢٤ ساعة", trigger: "pos_created لما المرحلة في waBot.windowV2Stages", send: "auto-candidate", replaces: "fc_order_received", fallbackSms: "order.pos_created" } }),
+  T({ name: "fc_order_preparing_v2", category: "UTILITY", group: "order",
+    body: "طلبك رقم {{1}} صار في المطبخ 👨‍🍳\nنطبخ الأكل طازج عند الطلب، ونبلّغك أول ما يجهز.",
+    vars: [ORDER_NO], buttons: [qr("تابع طلبي"), TRACK()],
+    meta: { purpose: "الطلب في المطبخ + «تابع طلبي»", trigger: "accepted لما المرحلة في waBot.windowV2Stages", send: "auto-candidate", replaces: "fc_order_preparing", fallbackSms: "order.accepted" } }),
+  T({ name: "fc_order_on_the_way_v2", category: "UTILITY", group: "order",
+    body: "طلبك رقم {{1}} مع المندوب وفي الطريق إليك 🛵\nخلّ جوالك قريب، ممكن يتصل عليك المندوب عند الوصول.",
+    vars: [ORDER_NO], buttons: [qr("تابع طلبي"), TRACK("تتبّع المندوب")],
+    meta: { purpose: "مع المندوب + «تابع طلبي»", trigger: "on_the_way لما المرحلة في waBot.windowV2Stages", send: "auto-candidate", replaces: "fc_order_on_the_way", fallbackSms: "order.on_the_way" } }),
+  T({ name: "fc_order_delivered_v2", category: "UTILITY", group: "order",
+    body: "تم توصيل طلبك رقم {{1}} ✅ بالعافية عليك.\nوصلك الطلب مثل ما تبي؟",
+    vars: [ORDER_NO], buttons: [qr("تمام 👍"), qr("عندي ملاحظة")],
+    meta: { purpose: "تأكيد التوصيل + «تمام / عندي ملاحظة» (الضغطة = رأيه في الطلب ويفتح نافذة)", trigger: "delivered لما المرحلة في waBot.windowV2Stages", send: "auto-candidate", replaces: "fc_order_delivered", fallbackSms: "order.delivered" } }),
+  T({ name: "fc_order_refunded_v2", category: "UTILITY", group: "order",
+    body: "نعتذر منك، ما قدرنا ننفّذ طلبك رقم {{1}} وتم استرجاع المبلغ كاملاً لوسيلة الدفع 💳\nيظهر المبلغ في حسابك حسب إجراءات البنك.",
+    vars: [ORDER_NO], buttons: [qr("عندي سؤال")],
+    meta: { purpose: "الاسترجاع نجح + «عندي سؤال» (موظف)", trigger: "rejected_refunded لما المرحلة في waBot.windowV2Stages", send: "auto-candidate", replaces: "fc_order_refunded", mandatory: true, fallbackSms: "order.rejected_refunded" } }),
+  T({ name: "fc_refund_in_progress_v2", category: "UTILITY", group: "order",
+    body: "نعتذر منك بخصوص طلبك رقم {{1}} 🙏\nاسترجاع المبلغ جاري وفريقنا يتابعه، وبنتواصل معك للتأكيد.",
+    vars: [ORDER_NO], buttons: [qr("عندي سؤال")],
+    meta: { purpose: "الاسترجاع جاري + «عندي سؤال» (موظف)", trigger: "refund_failed لما المرحلة في waBot.windowV2Stages", send: "auto-candidate", replaces: "fc_refund_in_progress", mandatory: true, fallbackSms: "order.refund_failed" } }),
+  T({ name: "fc_review_request_v2", category: "UTILITY", group: "order",
+    body: "كيف كانت تجربتك مع طلب رقم {{1}}؟ 🌟\nاختر من الأزرار، أو قيّم الطلب من الرابط.",
+    vars: [ORDER_NO], buttons: [qr("تمام 👍"), qr("عندي ملاحظة"), url("قيّم طلبك", `${STORE}/r?c=`, { path: "review.code", ex: "ab12cd" })],
+    meta: { purpose: "طلب التقييم بره النافذة + «تمام / عندي ملاحظة»", trigger: "reviews.js — لما waBot.windowV2Stages فيها review", send: "auto-candidate", replaces: "fc_review_request", fallbackSms: "review.invite" } }),
+
   T({ name: "fc_order_delayed", category: "UTILITY", group: "order",
     body: "نعتذر منك، طلبك رقم {{1}} تأخر عن الوقت المتوقع 🙏\nفريقنا يتابعه الحين ونبلّغك أول ما يتحرك، وتقدر تتابع حالته من الرابط.",
     vars: [ORDER_NO], buttons: [TRACK()],
@@ -671,6 +704,8 @@ export const SUBMIT_BATCHES = Object.freeze([
   ["fc_frame_ask_text", "fc_frame_ask_video"],
   // ST1 (١٢/١٠): قوالب تواصل الفريق — التجديد أولاً (من غير متغيّرات)، وبعده سطر التنبيه. كل اسم = إنجليزي + عربي
   ["fc_staff_alerts_renew", "fc_staff_team_notice"],
+  // SB4 (١٤/١٠): نسخ v2 بزر رد سريع يفتح نافذة ٢٤ ساعة — التوصيل والتقييم أولاً (الضغطة = رأيه)، بعدين التتبع، وآخرهم الاسترجاع
+  ["fc_order_delivered_v2", "fc_review_request_v2", "fc_order_on_the_way_v2", "fc_order_preparing_v2", "fc_order_received_v2", "fc_order_refunded_v2", "fc_refund_in_progress_v2"],
 ]);
 export const RECOMMENDED_FIRST = SUBMIT_BATCHES[0];
 export const FRAME_BATCH = SUBMIT_BATCHES.find((b) => b.includes("fc_frame_news_text"));      // FR1: دفعة الإطارات (بالرابط)

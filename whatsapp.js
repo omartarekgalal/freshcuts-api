@@ -906,7 +906,7 @@ export function register(app, ctx, deps = {}) {
   /* رسالة حرة بجسم Cloud API جاهز (نص / interactive) — للبوت. جوّه نافذة الـ٢٤ ساعة بس (المنادي مسؤول عنها).
      allowList = وضع التجربة: للأرقام دي بس ومن غير مفاتيح العملاء. من غيرها = البوابة الكاملة (gate).
      محاولة واحدة، مفيش إعادة. بيرجّع {ok, wamid?} أو {ok:false, skipped|error, code?, message?}. */
-  async function sendFreeform({ phoneNorm, payload, source = "bot", allowList = null, preview = null, test = false }) {
+  async function sendFreeform({ phoneNorm, payload, source = "bot", allowList = null, preview = null, test = false, orderNo = null, stage = null, fallbackSms = null }) {
     await ready;
     const to = toWaId(phoneNorm);
     if (!to) return { ok: false, skipped: "invalid_phone" };
@@ -917,7 +917,7 @@ export function register(app, ctx, deps = {}) {
     try {
       const data = await deliver(g.ticket, { ...payload, messaging_product: "whatsapp", recipient_type: "individual", to });
       const wamid = data.messages?.[0]?.id || null;
-      await logOut({ wamid, phone_norm: phoneNorm, status: "accepted", source, body: text });
+      await logOut({ wamid, phone_norm: phoneNorm, status: "accepted", source, body: text, order_no: orderNo, stage, fallback_sms: fallbackSms });      // SB4: تحديث الطلب الحر بيتسجّل بطلبه ومرحلته وبديل الـSMS
       return { ok: true, wamid };
     } catch (e) {
       const code = Number(String(e.code || "").replace(/^WA_/, "")) || null;
@@ -981,6 +981,33 @@ export function register(app, ctx, deps = {}) {
     const t = TEMPLATES[template];
     if (typeof t.guard === "function" && !t.guard(o)) return { ok: false, skipped: "stage_not_applicable" };
     const params = t.bind(o);
+    /* SB4 (عمر ١٤/١٠: «حاول نفتح مع العملاء نوافذ ٢٤ ساعة… توفر علينا»): العميل كلّمنا في آخر ٢٤ ساعة ⇒ التحديث رسالة حرة ببلاش بنفس نص القالب
+       (وزر التتبع، أو «تمام / عندي ملاحظة» للتوصيل) بدل قالب بفلوس. نفس الحارس (guardSend session: كل الأقفال + النافذة) ونفس موافقة القالب الخدمي:
+       موقِّف التحديثات / قال «لا» / مالوش قبول ولا الطلب تحت الشروط الجديدة ⇒ مفيش رسالة حرة (والقالب بعده بيتمنع بنفس السبب). waBot.windowFreeUpdates مقفول ⇒ زي الأول. */
+    const wb = (snap && snap.waBot) || {};
+    if (wb.windowFreeUpdates !== false && order.phone_norm && !channelBlock(snap, "template")) {      // نفس أقفال القالب (ومنها مفتاح تحديثات الطلب) — الرسالة الحرة هنا مابتعدّيش قفل القالب
+      try {
+        const pn = String(order.phone_norm), op = await optInOf(pn);
+        const consent = !op.stoppedForUpdates && (op.updates || (!op.saidNoToUpdates && await termsCoverOrder(pool, pn, order.order_no)));
+        if (consent && await windowOpen(pn)) {
+          {
+            const body = renderTemplateText(template, params).slice(0, 1000);
+            const ub = (t.components.find((c) => c.type === "BUTTONS")?.buttons || []).find((b) => b.type === "URL");
+            const url = ub ? String(ub.url).replace("{{1}}", String((params.button || [])[0] || "")) : null;
+            const payload = stage === "delivered"
+              ? { type: "interactive", interactive: { type: "button", body: { text: body }, action: { buttons: [{ type: "reply", reply: { id: "تمام 👍", title: "تمام 👍" } }, { type: "reply", reply: { id: "عندي ملاحظة", title: "عندي ملاحظة" } }] } } }
+              : url && /^https:\/\/freshcuts\.sa\//.test(url) && !/\{\{/.test(url) ? { type: "interactive", interactive: { type: "cta_url", body: { text: body }, action: { name: "cta_url", parameters: { display_text: String(ub.text).slice(0, 20), url } } } }
+              : { type: "text", text: { body, preview_url: false } };
+            const r = await sendFreeform({ phoneNorm: pn, payload, source: "window", preview: body, orderNo: order.order_no, stage, fallbackSms });      // الحارس الكامل جوّه sendFreeform
+            if (r.ok) return { ok: true, wamid: r.wamid, free: true };
+          }
+        }
+      } catch (e) { console.error("[wa] window update:", e.message); }
+    }
+    /* SB4: نسخة v2 (بزر رد سريع يفتح نافذة) بعد ما المالك يحط المرحلة في waBot.windowV2Stages (يعني ميتا اعتمدتها) */
+    const v2 = `${template}_v2`;
+    if (Array.isArray(wb.windowV2Stages) && wb.windowV2Stages.includes(stage) && TEMPLATES[v2] && typeof TEMPLATES[v2].bind === "function")
+      return sendTemplate({ phoneNorm: order.phone_norm, template: v2, params: TEMPLATES[v2].bind(o), orderNo: order.order_no, stage, fallbackSms });
     return sendTemplate({ phoneNorm: order.phone_norm, template, params, orderNo: order.order_no, stage, fallbackSms });
   }
 

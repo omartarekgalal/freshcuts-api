@@ -68,6 +68,8 @@ function world({ waBot = {}, notifications = { whatsappEnabled: true }, orders =
       const s = String(sql).replace(/\s+/g, " ").trim();
       if (failDb && failDb.test(s)) throw new Error("db down");
       if (/^CREATE TABLE|^DELETE FROM wa_bot_log|wa_webhook_health|wa_contact_names|wa_threads/i.test(s)) return { rows: [], rowCount: 0 };
+      if (/^SELECT phone_norm, max\(created_at\) AS last_in FROM wa_messages WHERE direction='in'/i.test(s)) { const last = new Map(); for (const m of db.msgs) if (m.direction === "in" && m.source !== "history") last.set(m.phone_norm, m.created_at > (last.get(m.phone_norm) || "") ? m.created_at : last.get(m.phone_norm));
+        return { rows: [...last.entries()].filter(([, at]) => nowMs - Date.parse(at) >= p[0] * 3600_000 && nowMs - Date.parse(at) < 23.5 * 3600_000).map(([phone_norm, last_in]) => ({ phone_norm, last_in })) }; }
       // ── EX6: رسالة مش مدعومة، تأكيد الدفع، متابعة المحادثة
       if (/^SELECT 1 FROM wa_messages WHERE phone_norm=\$1 AND direction='out' AND COALESCE\(source,'api'\) <> 'echo' AND created_at > \$2/i.test(s)) return { rows: db.msgs.filter((m) => m.phone_norm === p[0] && m.direction === "out" && m.source !== "echo" && Date.parse(m.created_at) > Date.parse(p[1])).slice(0, 1).map(() => ({})) };
       if (/^SELECT o\.order_no, o\.phone_norm FROM shop_orders o/i.test(s)) return { rows: orders.filter((o) => !o.is_test && ["paid", "pos_created", "accepted", "courier_requested", "courier_assigned", "on_the_way"].includes(o.status) && nowMs - Date.parse(o.created_at) < 7200_000
@@ -252,6 +254,16 @@ function world({ waBot = {}, notifications = { whatsappEnabled: true }, orders =
       if (/FROM shop_coupons WHERE code=\$1/i.test(s)) return { rows: first && first.code === p[0] ? [first] : [] };
       if (/FROM shop_orders WHERE order_no=\$1 AND phone_norm=\$2/i.test(s)) return { rows: orders.filter((o) => o.order_no === p[0] && o.phone_norm === p[1]) };
       if (/^SELECT customer->>'name' AS name FROM shop_orders/i.test(s)) return { rows: orders.filter((o) => o.phone_norm === p[0]).slice(-1).map((o) => ({ name: o.customer?.name ?? null })) };
+      /* SB4: نوافذ الـ٢٤ ساعة */
+      if (/^SELECT review_code, review_order, review_asked_at FROM wa_bot_chats/i.test(s)) { const ch = db.chats.get(p[0]); return { rows: ch ? [{ review_code: ch.review_code || null, review_order: ch.review_order || null, review_asked_at: ch.review_asked_at || null }] : [] }; }
+      if (/^SELECT code, order_no FROM review_invites WHERE phone_norm=\$1/i.test(s)) return { rows: (db.invites || []).filter((x) => x.phone_norm === p[0]).slice(-1) };
+      if (/^UPDATE review_invites SET sent_at=COALESCE/i.test(s)) { const iv = (db.invites || []).find((x) => x.code === p[0]); if (iv) { iv.sent_at = iv.sent_at || iso(); iv.channel = iv.channel || "wa_tap"; } return { rows: [] }; }
+      if (/^SELECT window_sell_at FROM wa_bot_chats/i.test(s)) return { rows: [{ window_sell_at: (db.chats.get(p[0]) || {}).window_sell_at || null }] };
+      if (/^UPDATE wa_bot_chats SET window_sell_at=NOW\(\)/i.test(s)) { chat(p[0]).window_sell_at = iso(); return { rows: [] }; }
+      if (/^SELECT 1 FROM wa_bot_jobs WHERE phone_norm=\$1 AND kind IN \('assist_followup','assist_nudge','lead_followup','window_keep'/i.test(s)) return { rows: db.jobs.filter((j) => j.phone_norm === p[0] && ["assist_followup", "assist_nudge", "lead_followup", "window_keep", "assist_reminder"].includes(j.kind) && j.status === "done").map(() => ({})) };
+      if (/count\(\*\) FILTER \(WHERE done_at >= \(date_trunc/i.test(s)) { const d = db.jobs.filter((j) => j.kind === "window_keep" && j.status === "done"); return { rows: [{ today: d.length, week: d.filter((j) => j.phone_norm === p[0]).length }] }; }
+      if (/^SELECT order_no FROM shop_orders WHERE phone_norm=\$1 AND NOT COALESCE\(is_test,false\) AND status IN \('pos_created'/i.test(s)) return { rows: orders.filter((o) => o.phone_norm === p[0] && ["pos_created", "accepted", "courier_requested", "courier_assigned", "on_the_way"].includes(o.status)).slice(-1) };
+      if (/^SELECT b\.code FROM wa_bot_carts b/i.test(s)) return { rows: db.botCarts.filter((x) => x.phone === p[0] && !x.expired).slice(-1).map((x) => ({ code: x.code })) };
       /* SB2: طلب التقييم على واتساب */
       if (/^SELECT review_code, review_order, review_asked_at, review_answered_at FROM wa_bot_chats/i.test(s)) { const ch = db.chats.get(p[0]); return { rows: ch ? [{ review_code: ch.review_code || null, review_order: ch.review_order || null, review_asked_at: ch.review_asked_at || null, review_answered_at: ch.review_answered_at || null }] : [] }; }
       if (/^INSERT INTO wa_bot_chats\(phone_norm, review_code, review_order, review_asked_at, review_answered_at\)/i.test(s)) { Object.assign(chat(p[0]), { review_code: p[1], review_order: p[2], review_asked_at: iso(), review_answered_at: null }); return { rows: [] }; }
@@ -3523,7 +3535,7 @@ test("M3 validator — a price of a by-weight dish must sit with its own weight:
   // two by-weight dishes in one reply: each line is judged with its own dish
   ok("كباب مشوي بالوزن: ثلث كيلو 47 ر.س · نصف كيلو 70 ر.س · كيلو 140 ر.س\nمشكل مخصوص بالوزن: ثلث كيلو 53 ر.س · نصف كيلو 78 ر.س · كيلو 155 ر.س");
   bad("كباب مشوي بالوزن: الكيلو 47 ر.س\nمشكل مخصوص بالوزن: ثلث كيلو 53 ر.س");
-  assert.ok(AR3.SYSTEM_PROMPT.includes("Never state one price for such a dish without its weight")); assert.ok(AR3.SYSTEM_PROMPT.includes("never how many people it serves"));
+  assert.ok(AR3.SYSTEM_PROMPT.includes("Never state one price for such a dish without its weight")); assert.ok(AR3.SYSTEM_PROMPT.includes("How many people a weight serves: never volunteered"));      // SB4: «لما العميل يسأل بس»
   assert.ok(AR3.TOOL_DEFS.find((t) => t.name === "build_cart").input_schema.properties.items.items.properties.variant_option_id);
 });
 
@@ -4493,3 +4505,79 @@ test("SB2: outside the window ⇒ the approved utility template fc_review_reques
   const sch = R.configSchema ? R.configSchema() : null; void sch;
   assert.equal(R.botConfig({ waBot: {} }).reviewWhatsApp, true); assert.equal(R.botConfig({ waBot: { reviewWhatsApp: false } }).reviewWhatsApp, false);
 }));
+
+/* SB4 — نوافذ الـ٢٤ ساعة (عمر ١٤/١٠: «حاول نفتح مع العملاء نوافذ ٢٤ ساعة باي طريقة ذكية… من غير ما نضايق العميل… وتوفر علينا») */
+test("SB4 window: an order update inside an open window goes FREE (same text + tracking button; delivered with «تمام 👍 / عندي ملاحظة»); stopped updates ⇒ no free message; switch off ⇒ template path", withEnv(LOCKS_OPEN, async () => {
+  const w = world({ waBot: { mode: "test", testPhones: TESTERS }, notifications: { whatsappEnabled: true, whatsappStages: ["on_the_way", "delivered"] } });
+  await w.say("هلا"); w.db.optins["512345678"] = { updates: true };
+  const before = w.calls.length;
+  const r = await w.wa.sendOrderUpdate({ order_no: "W1790012345678", phone_norm: "512345678", option: "delivery" }, "on_the_way");
+  assert.equal(r.ok, true, JSON.stringify(r)); assert.equal(r.free, true);
+  const p = w.calls.slice(before).map((c) => c.body).find((b) => b.type);
+  assert.equal(p.type, "interactive"); assert.equal(p.interactive.type, "cta_url");
+  assert.match(p.interactive.body.text, /طلبك رقم W1790012345678 مع المندوب/); assert.equal(p.interactive.action.parameters.url, "https://freshcuts.sa/track/W1790012345678");
+  const b2 = w.calls.length;
+  await w.wa.sendOrderUpdate({ order_no: "W1790012345678", phone_norm: "512345678", option: "delivery" }, "delivered");
+  const d = w.calls.slice(b2).map((c) => c.body).find((b) => b.type);
+  assert.deepEqual(d.interactive.action.buttons.map((x) => x.reply.id), ["تمام 👍", "عندي ملاحظة"]);
+  w.db.optins["512345678"] = { updates: true, stopped_at: new Date().toISOString() };
+  const b3 = w.calls.length; const s3 = await w.wa.sendOrderUpdate({ order_no: "W1790012345678", phone_norm: "512345678", option: "delivery" }, "on_the_way");
+  assert.notEqual(s3.free, true); assert.equal(w.calls.slice(b3).filter((c) => c.body.type && c.body.type !== "template").length, 0, "stopped ⇒ no free message");
+  const off = world({ waBot: { mode: "test", testPhones: TESTERS, windowFreeUpdates: false }, notifications: { whatsappEnabled: true, whatsappStages: ["on_the_way"] } });
+  await off.say("هلا"); off.db.optins["512345678"] = { updates: true };
+  assert.notEqual((await off.wa.sendOrderUpdate({ order_no: "W1790012345678", phone_norm: "512345678", option: "delivery" }, "on_the_way")).free, true, "switch off ⇒ the template path as before");
+}));
+
+test("SB4 window: a quick-reply tap «تمام 👍» (template or free update) answers with the order's rating link and marks the invite so no second review ask; «تابع طلبي» = order status", withEnv(CONFIGURED, async () => {
+  const w = world({ waBot: { mode: "test", testPhones: TESTERS } });
+  w.db.invites = [{ phone_norm: "512345678", code: "kk55jj66", order_no: "W1790012349999" }];
+  const t = await w.say(null, { raw: { type: "button", button: { text: "تمام 👍", payload: "تمام 👍" } } });
+  assert.equal(t.log.reply_key, "review_ok", JSON.stringify(t.log)); assert.match(JSON.stringify(t.sent), /r\?c=kk55jj66/);
+  assert.equal(w.db.invites[0].channel, "wa_tap");
+  assert.equal(R.classify({ type: "button", text: "تابع طلبي", interactiveId: "تابع طلبي" }).key, "status");
+  const none = world({ waBot: { mode: "test", testPhones: TESTERS } });
+  const n = await none.say(null, { raw: { type: "button", button: { text: "تمام 👍", payload: "تمام 👍" } } });
+  assert.equal(n.log.reply_key, "review_ok"); assert.match(JSON.stringify(n.sent), /بالعافية عليك/, "no invite: a warm line, no link");
+  const cfg = R.botConfig({ waBot: {} });
+  assert.match(R.buildReply("review_ok", { cfg, lang: "ar", data: { settings: {} }, arg: { code: "kk55jj66", extra: "⭐ باقي لك طلب واحد" } }).body, /⭐ باقي لك طلب واحد$/, "the loyalty line rides in the SAME message");
+}));
+
+test("SB4 window keeper: ~20 h after the customer's last message ONE free message only when useful (open order ⇒ tracking); nothing useful ⇒ nothing; quiet hours respected", withEnv(CONFIGURED, async () => {
+  const quiet = world({ at: "2026-10-12T09:00:00Z", waBot: { mode: "test", testPhones: TESTERS, paidNoteEnabled: false }, orders: [{ order_no: "W1790012347777", phone_norm: "512345678", status: "on_the_way", option: "delivery", created_at: "2026-10-13T04:30:00Z" }] });
+  await quiet.say("هلا");
+  const q1 = await quiet.tick(20 * 60 + 5);      // 05:05 UTC = 08:05 Riyadh: quiet (02–11)
+  assert.equal(q1.filter((b) => b.type).length, 0, "quiet hours " + JSON.stringify(q1) + JSON.stringify(quiet.db.jobs.map((j) => [j.kind, j.status, j.reason])));
+  assert.equal(quiet.db.jobs.find((j) => j.kind === "window_keep").reason, "quiet_hours");
+  const w = world({ at: "2026-10-12T15:00:00Z", waBot: { mode: "test", testPhones: TESTERS, paidNoteEnabled: false }, orders: [{ order_no: "W1790012347777", phone_norm: "512345678", status: "on_the_way", option: "delivery", created_at: "2026-10-13T10:30:00Z" }] });
+  await w.say("هلا");
+  const s = await w.tick(20 * 60 + 5);           // 11:05 UTC = 14:05 Riyadh
+  const m = s.find((b) => b.type);
+  assert.ok(m, "one message"); assert.match(JSON.stringify(m), /طلبك رقم W1790012347777 ما زال معنا/); assert.match(JSON.stringify(m), /track\/W1790012347777/);
+  assert.equal(w.db.jobs.find((j) => j.kind === "window_keep").reason, "sent:open_order");
+  const n = world({ at: "2026-10-12T15:00:00Z", waBot: { mode: "test", testPhones: TESTERS, paidNoteEnabled: false } });
+  await n.say("هلا");
+  assert.equal((await n.tick(20 * 60 + 5)).filter((b) => b.type).length, 0);
+  assert.equal(n.db.jobs.find((j) => j.kind === "window_keep").reason, "nothing_useful", "no reason ⇒ nothing sent");
+  const c = R.botConfig({ waBot: { windowKeeperHour: 30, windowKeeperDailyCap: -1 } }); assert.deepEqual([c.windowKeeperHour, c.windowKeeperDailyCap], [23, 0]);
+}));
+
+test("SB4 window: the daily report carries paid templates vs free messages, SAR paid and saved, and the window-keeper outcome", withEnv(CONFIGURED, async () => {
+  const w = world({ waBot: { mode: "test", testPhones: TESTERS } });
+  const r = await w.call("GET", "/api/cms/wabot/assist/daily");
+  const win = r.body.report.window;
+  assert.deepEqual(Object.keys(win).sort(), ["free_messages", "free_order_updates", "keeper", "note", "paid_templates", "saved_sar"]);
+  assert.deepEqual(Object.keys(win.keeper).sort(), ["nothing_useful", "ordered", "replied", "sent"]);
+  assert.equal(typeof win.paid_templates.sar, "number");
+}));
+
+test("SB4 window: the v2 templates are UTILITY, carry their quick replies, pass the catalogue lint, and are never wired to a stage on their own", async () => {
+  const C = await import("./watemplates.js");
+  const v2 = C.TEMPLATES.filter((t) => /_v2$/.test(t.name));
+  assert.deepEqual(v2.map((t) => t.name).sort(), ["fc_order_delivered_v2", "fc_order_on_the_way_v2", "fc_order_preparing_v2", "fc_order_received_v2", "fc_order_refunded_v2", "fc_refund_in_progress_v2", "fc_review_request_v2"]);
+  for (const t of v2) {
+    assert.equal(t.category, "UTILITY", t.name); assert.equal(t.meta.stage, undefined, `${t.name} must not auto-wire`);
+    const qrs = t.components.find((c) => c.type === "BUTTONS").buttons.filter((b) => b.type === "QUICK_REPLY").map((b) => b.text);
+    assert.ok(qrs.length >= 1, t.name);
+    assert.deepEqual(C.validateTemplate(t), [], t.name);
+  }
+});
