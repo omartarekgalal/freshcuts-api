@@ -278,6 +278,7 @@ export const TEXTS = Object.freeze({
   sb_offers_head: t("العروض الحية: العنوان", "🔥 عروضنا الحين:", "🔥 Our offers now:", [], [], 100),
   sb_offer_line: t("العروض الحية: سطر", "• {name} — {price} ر.س", "• {name} — SAR {price}", ["name", "price"], [], 200),
   sb_offer_line_until: t("العروض الحية: سطر بتاريخ نهاية", "• {name} — {price} ر.س (لين {until})", "• {name} — SAR {price} (until {until})", ["name", "price", "until"], [], 200),
+  sb_offers_more: t("العروض الحية: سطر «بوكسات تانية»", "📦 وعندنا {n} بوكسات ثانية — قل لي كم شخص أنتم وأرشّح لك الأنسب.", "📦 We have {n} more boxes — tell me how many of you and I'll suggest the best fit.", ["n"], [], 200),
   btn_sg_add: t("زر: أضف الاقتراح", "أضفه ✅", "Add it ✅", [], [], LIMITS.btnTitle),
   btn_sg_no: t("زر: لا شكراً (الاقتراح)", "لا شكراً", "No thanks", [], [], LIMITS.btnTitle),
   btn_confirm_yes: t("زر: أعتمد الاقتراح", "إيه، جهّزه ✅", "Yes, prepare it ✅", [], [], LIMITS.btnTitle),

@@ -1090,14 +1090,29 @@ export function makeAssistLoop(deps) {
     return { unknown: true };
   }
   /* «وش العروض؟» ⇒ كتلة العروض الحية بقالب ثابت: العروض اللي لها تاريخ، بوكس لكل فئة (المميّز، وإلا الأرخص)، وسطر أول طلب أو مكافأة العميل. */
-  async function offersBlock(T) {
+  /* «عروض فيها بيتزا؟» ⇒ الصنف اللي العميل ذكره يحدد البوكسات (البوكسات من العروض). من غير صنف ⇒ عرضين بتاريخ + بوكس لكل فئة، وسطر بعدد الباقي. */
+  const OFFER_TOPICS = [[/بيتز|pizza/i, /بيتز|pizza/i], [/كريب|crepe/i, /كريب|crepe/i], [/مشاوي|مشوي|مشكل|كباب|كفت|طرب|ريش|grill|kebab/i, /مشاوي|مشوي|مشكل|كباب|كفت|طرب|ريش|grill|kebab/i],
+    [/برجر|برقر|burger/i, /برجر|برقر|burger/i], [/باستا|مكرون|pasta/i, /باستا|مكرون|pasta/i], [/حواوشي|hawawshi/i, /حواوشي|hawawshi/i]];
+  function offersTopic(text) { const t = String(text || ""); const hit = OFFER_TOPICS.find(([q]) => q.test(t)); return hit ? hit[1] : null; }
+  async function offersBlock(T, text = "") {
     const lang = T.lang, en = lang === "en";
     const [of, bx] = await Promise.all([tools.get_offers(T.phone).catch(() => null), tools.list_boxes().catch(() => null)]);
     if (of && of.ok) T.session.state.offers = true;
-    const lines = [];
-    for (const o of ((of && of.timed) || []).slice(0, 3)) { const l = sbText(o.until ? "sb_offer_line_until" : "sb_offer_line", { name: o.title, price: o.price, until: o.until ? String(o.until).slice(5).split("-").reverse().map(Number).join("/") : "" }, lang); if (l) lines.push(l); }
-    const bySection = new Map(); for (const b of ((bx && bx.boxes) || [])) { const k = String(b.section || ""); const cur = bySection.get(k); if (!cur || (b.featured && !cur.featured) || (Boolean(b.featured) === Boolean(cur.featured) && Number(b.price) < Number(cur.price))) bySection.set(k, b); }
-    for (const b of [...bySection.values()].sort((x, y) => Number(x.price) - Number(y.price)).slice(0, Math.max(0, 5 - lines.length))) { const l = sbText("sb_offer_line", { name: en ? b.name_en || b.name : b.name, price: b.price }, lang); if (l) lines.push(l); }
+    const lines = [], boxes = (bx && bx.boxes) || [], timed = (of && of.timed) || [];
+    const offerLine = (o) => sbText(o.until ? "sb_offer_line_until" : "sb_offer_line", { name: o.title, price: o.price, until: o.until ? String(o.until).slice(5).split("-").reverse().map(Number).join("/") : "" }, lang);
+    const boxLine = (b) => sbText("sb_offer_line", { name: en ? b.name_en || b.name : b.name, price: b.price }, lang);
+    const topic = offersTopic(text);
+    const topicBoxes = topic ? boxes.filter((b) => topic.test(`${b.name || ""} ${b.name_en || ""} ${b.description || ""}`)).sort((x, y) => Number(x.price) - Number(y.price)) : [];
+    let shown = 0;
+    if (topicBoxes.length) {
+      for (const o of timed.filter((o) => topic.test(String(o.title || ""))).slice(0, 2)) { const l = offerLine(o); if (l) lines.push(l); }
+      for (const b of topicBoxes.slice(0, Math.max(0, 6 - lines.length))) { const l = boxLine(b); if (l) { lines.push(l); shown++; } }
+    } else {
+      for (const o of timed.slice(0, 2)) { const l = offerLine(o); if (l) lines.push(l); }
+      const bySection = new Map(); for (const b of boxes) { const k = String(b.section || ""); const cur = bySection.get(k); if (!cur || (b.featured && !cur.featured) || (Boolean(b.featured) === Boolean(cur.featured) && Number(b.price) < Number(cur.price))) bySection.set(k, b); }
+      for (const b of [...bySection.values()].sort((x, y) => Number(x.price) - Number(y.price)).slice(0, Math.max(0, 6 - lines.length))) { const l = boxLine(b); if (l) { lines.push(l); shown++; } }
+      const rest = boxes.length - shown; if (rest > 0) { const l = sbText("sb_offers_more", { n: rest }, lang); if (l) lines.push(l); }
+    }
     if (!lines.length) return null;
     const head = sbText("sb_offers_head", {}, lang);
     const fo = of && of.ok ? of.first_order : null, rw = ((of && of.rewards) || []).find((r) => r.freeDelivery);
@@ -1130,7 +1145,7 @@ export function makeAssistLoop(deps) {
     if (pend && SG_NO_RE.test(clean) && SEND_CART_RE.test(clean)) T.noOffer = true;
     else if (pend && SG_NO_RE.test(clean)) { pend.outcome = "declined"; if (!st.declined.includes(pend.kind)) st.declined.push(pend.kind); T.trace.suggestions.push({ kind: pend.kind, ref: pend.ref, name: pend.name, outcome: "declined", by: "reply" });
       ctx.suggestion_answer = { declined: pend.name, rule: "The customer said no thanks to the suggestion: accept it in a few words and carry on with their order (the next step). Offer nothing else in this conversation." }; }
-    if (a.offersBlock && T.sales.topics.offers && !st.offersShown) { const b = await offersBlock(T);
+    if (a.offersBlock && T.sales.topics.offers && !st.offersShown) { const b = await offersBlock(T, text);
       if (b) { st.offersShown = true; st.say.push(b); T.blocks.push(b); ctx.offers_now = { say: b, rule: "The customer asked about our offers: send this block exactly as it is (our system built it from the live offers), with at most one short line before it, then ONE question that moves to an order. Add no other offer." }; } }
   }
   /* بعد المراجِع (أ): الاقتراح المحسوب لازم يتقال (لو الموديل نسيه ⇒ سطر القالب)، والسطر المبادِر في لحظته — مرة واحدة. */

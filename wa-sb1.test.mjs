@@ -199,6 +199,17 @@ test("(12) «وش العروض؟»: the live offers block from code (dated offer
   assert.equal(r.session.state.proactive, "first", "the first-order line was in the block: not repeated later");
 });
 
+test("(12b) «عروض فيها بيتزا؟»: the block lists the boxes that hold the dish the customer named (boxes are offers); with no dish, a line counts the other boxes", async () => {
+  const c = chat([say("أبشر")], { world: { profile: "new", at: "2026-10-13T15:00:00Z" } });
+  const r = await c.turn("عندكم عروض فيها بيتزا؟");
+  assert.match(r.text, /🔥 عروضنا الحين:\n/);
+  assert.match(r.text, /\*بوكس سهرة البيتزا\*/);
+  assert.doesNotMatch(r.text, /بوكس الكريب الفردي/, "a crepe box is not a pizza offer");
+  const c2 = chat([say("أبشر")], { world: { profile: "new", at: "2026-10-13T15:00:00Z" } });
+  const r2 = await c2.turn("وش العروض اللي عندكم؟");
+  assert.match(r2.text, /📦 وعندنا \d+ بوكسات ثانية/);
+});
+
 test("(13) formatting: dish names in bold once, a long paragraph becomes short lines, «ريال» ⇒ «ر.س»", () => {
   assert.equal(S.boldNames("كريب زنجر سوبريم بـ 25 ر.س، وكريب زنجر سوبريم مرة ثانية", ["كريب زنجر سوبريم"]), "*كريب زنجر سوبريم* بـ 25 ر.س، وكريب زنجر سوبريم مرة ثانية");
   assert.equal(S.boldNames("عندنا «بوكس المشاوي نص ونص» بـ 125 ر.س", ["بوكس المشاوي نص ونص"]), "عندنا *بوكس المشاوي نص ونص* بـ 125 ر.س");
