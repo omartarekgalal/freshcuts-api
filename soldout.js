@@ -236,7 +236,7 @@ export function groupMenu(menuJson, active) {
 }
 
 /* المسارات: البورتال (مدير، أو كاشير لو settings.portal.cashierCanSoldOut) + اللوحة. */
-export function register(app, { pool, getSettingsData, requireAdmin, requirePortal, audit, cmsWho, onChange, log = console, fetchMenu, now, refreshOffers = null }) {
+export function register(app, { pool, getSettingsData, requireAdmin, requirePortal, audit, cmsWho, onChange, log = console, fetchMenu, now, refreshOffers = null, appsSync = null }) {
   const store = makeSoldOutStore({ pool, getSettingsData, now, onChange });
   const STORE_BASE = () => (process.env.CATALOG_MENU_BASE || process.env.STOREFRONT_PUBLIC_URL || "https://freshcuts.sa").replace(/\/+$/, "");
   let menuCache = { at: 0, json: null };
@@ -261,7 +261,14 @@ export function register(app, { pool, getSettingsData, requireAdmin, requirePort
   async function change(body, by) {
     const soldOut = body?.soldOut === true;
     const until = body?.until === null || body?.until === "manual" ? null : (body?.until || "reopen_next_open");
-    return store.set(body?.productId, { soldOut, until, by, name: body?.name || null });
+    const r = await store.set(body?.productId, { soldOut, until, by, name: body?.name || null });
+    /* نفس الصنف في كيتا وهنقرستيشن (app_sync.js) — المتجر اتقفل خلاص، ده
+       زيادة: لو تطبيق رفض، المدير بيشوف ده في الرد بدل ما يفتكر إنه اتقفل. */
+    if (r.ok && appsSync) {
+      try { r.apps = await appsSync({ productId: r.productId, soldOut, until: r.entry?.until ?? until, by }); }
+      catch (e) { r.apps = { keeta: { ok: false, error: e.message }, hs: { ok: false, error: e.message } }; }
+    }
+    return r;
   }
 
   /* ⏸️ العروض والباقات — نفس أزرار «خلص» بالظبط. مع كل عرض بنرجّع أرقام

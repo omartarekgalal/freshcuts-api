@@ -32,6 +32,7 @@ import * as ads from "./ads.js";
 import * as keeta from "./keeta.js";
 import * as keetaControl from "./keeta_control.js";
 import * as hsControl from "./hs_control.js";
+import * as appSync from "./app_sync.js";
 import * as funnel from "./funnel.js";
 import * as audiences from "./audiences.js";
 import * as autopilot from "./autopilot.js";
@@ -3045,9 +3046,11 @@ let attribApi = null;
 const adsApi = ads.register(app, moduleCtx, { attribution: () => attribApi });
 keeta.register(app, moduleCtx);
 // تحكم كيتا (الإتاحة + العروض) — keeta_control.js، صلاحية «المنتجات»
-keetaControl.register(app, moduleCtx);
+const keetaControlApi = keetaControl.register(app, moduleCtx);
 // تحكم هنقرستيشن (إتاحة الأصناف) — hs_control.js، نفس صلاحية «المنتجات»
-hsControl.register(app, moduleCtx);
+const hsControlApi = hsControl.register(app, moduleCtx);
+// صنف عندنا = صنف في كيتا = صنف في هنقرستيشن — «خلص» من البوابة بيقفل الاتنين (app_sync.js)
+const appSyncApi = appSync.register(app, moduleCtx, { keeta: keetaControlApi, hs: hsControlApi });
 // attribution.register hands back { sweepAndRoll, linkOrder, overviewData }.
 // It registers BEFORE funnel so a storefront Purchase can link itself to the
 // ad lead that produced it the moment it lands, and before autopilot so the
@@ -3271,7 +3274,7 @@ preorder.register(app, moduleCtx);
 // بوابة المطعم (كاشير + مدير): PIN، طلبات حيّة (SSE)، خط زمني، طلب/إلغاء مندوب، Push للفريق، تقارير.
 // بعد shop/delivery/cms — بيستخدم دوالهم نفسها (مفيش نسخة تانية من القواعد).
 let courierOpsApi = null;
-const portalApi = portal.register(app, moduleCtx, { shop: () => shopApi, delivery: () => deliveryApi, cmsWhoami: (c) => cmsApi.whoami(c), courierOps: () => courierOpsApi, wa: () => waInboxApi });
+const portalApi = portal.register(app, moduleCtx, { shop: () => shopApi, delivery: () => deliveryApi, cmsWhoami: (c) => cmsApi.whoami(c), courierOps: () => courierOpsApi, wa: () => waInboxApi, appsSync: (args) => appSyncApi.sync(args) });
 waHandoverApi = wahandover.register(app, moduleCtx, { requirePortal: portalApi.requirePortal, broadcast: portalApi.broadcast, push: () => portalApi.push });
 let waKbApi = null;         // wakb.register: assistant knowledge base (manager answers) - portal manager + dashboard
 waKbApi = wakb.register(app, moduleCtx, { requirePortal: portalApi.requirePortal, broadcast: portalApi.broadcast, actor: async (c) => { const u = await cmsApi.whoami(c); return (u && (u.name || u.username)) || null; } });

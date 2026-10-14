@@ -1250,6 +1250,8 @@ export function register(app, ctx, deps = {}) {
        طول بدل ما بطل الصفحة يفضل بيبيع المقفول لحد الدورة الجاية (٢٤/٩). */
     refreshOffers: () => loadOffers(pool),
     cmsWho: async (c) => { try { const u = await deps.cmsWhoami?.(c); return u?.name || u?.username || null; } catch { return null; } },
+    // المدير قفل صنف ← يتقفل في كيتا وهنقرستيشن كمان (app_sync.js)
+    appsSync: deps.appsSync ? (args) => deps.appsSync(args) : null,
   });
 
   return {

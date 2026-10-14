@@ -31,6 +31,7 @@ export const DEFAULT_CONTROL = {
   enabled: true,            // المالك يقفل الكتابة كلها من اللوحة بزرار واحد
   maxDiscountPercent: 50,   // حارس غلطة الكتابة: ٥٠٠ بدل ٥٠
   maxItemsPerAction: 40,    // المنيو كله ٧٦ صنف — أكتر من كده في ضغطة واحدة غالباً غلط
+  syncPortal: true,         // «خلص» من البوابة بيقفل نفس الصنف في كيتا وهنقرستيشن (app_sync.js)
 };
 
 export function controlSettings(settings) {
@@ -38,6 +39,7 @@ export function controlSettings(settings) {
   const n = (v, d, lo, hi) => (Number.isFinite(Number(v)) ? Math.min(hi, Math.max(lo, Number(v))) : d);
   return {
     enabled: s.enabled !== false,
+    syncPortal: s.syncPortal !== false,
     maxDiscountPercent: n(s.maxDiscountPercent, DEFAULT_CONTROL.maxDiscountPercent, 1, 90),
     maxItemsPerAction: n(s.maxItemsPerAction, DEFAULT_CONTROL.maxItemsPerAction, 1, 200),
   };
@@ -192,13 +194,13 @@ export function register(app, ctx) {
 
   async function logAction(c, action, summary, request, result, ok, verified) {
     let auditId = null;
-    try { const p = c.get("cmsAudit"); auditId = p ? await p : null; } catch { /* */ }
+    try { const p = c?.get("cmsAudit"); auditId = p ? await p : null; } catch { /* */ }
     await pool.query(
       `INSERT INTO keeta_actions(audit_id, action, summary, request, result, ok, verified)
        VALUES ($1,$2,$3,$4,$5,$6,$7)`,
       [auditId, action, summary, JSON.stringify(request ?? null), JSON.stringify(result ?? null), !!ok, verified ?? null]
     ).catch((e) => console.error("[keeta-control] log:", e.message));
-    await auditNote?.(c, `كيتا: ${summary}`);
+    if (c) await auditNote?.(c, `كيتا: ${summary}`);
   }
 
   /* ── قراءات (كاش قصير — اللوحة بتتحدّث بعد كل كتابة) ── */
@@ -297,21 +299,20 @@ export function register(app, ctx) {
   });
 
   /* ── متاح / غير متاح ── */
-  app.post("/api/keeta/control/availability", async (c) => {
-    const g = await guard(c); if (g) return g;
-    const b = await c.req.json().catch(() => ({}));
+  /* متاح / غير متاح — دالة واحدة للشاشة وللبوابة (app_sync.js). c = null لما
+     الطلب جاي من البوابة (المدير قفل الصنف عندنا) — السطر بيتسجّل باسمه في via. */
+  async function applyAvailability({ ids: rawIds, available, until, c = null, via = null }) {
     const settings = await getSettingsData();
     const cfg = controlSettings(settings);
-    if (!cfg.enabled) return c.json({ ok: false, error: "التحكم في كيتا مقفول من الإعدادات" });
-    const ids = [...new Set((b.spuIds || []).map(Number).filter((n) => Number.isFinite(n) && n > 0))];
-    if (!ids.length) return c.json({ ok: false, error: "اختار صنف واحد على الأقل" });
-    if (ids.length > cfg.maxItemsPerAction) return c.json({ ok: false, error: `أكتر من ${cfg.maxItemsPerAction} صنف في مرة واحدة` });
-    const available = b.available === true;
+    if (!cfg.enabled) return { ok: false, error: "التحكم في كيتا مقفول من الإعدادات" };
+    const ids = [...new Set((rawIds || []).map(Number).filter((n) => Number.isFinite(n) && n > 0))];
+    if (!ids.length) return { ok: false, error: "اختار صنف واحد على الأقل" };
+    if (ids.length > cfg.maxItemsPerAction) return { ok: false, error: `أكتر من ${cfg.maxItemsPerAction} صنف في مرة واحدة` };
     try {
       const menu = await readMenu(true);
       const unknown = ids.filter((id) => !menu.byId.has(id));
-      if (unknown.length) return c.json({ ok: false, error: `أصناف مش في منيو كيتا: ${unknown.join(", ")}` });
-      const onShelf = available ? null : untilToMs(b.until, { hours: settings.hours });
+      if (unknown.length) return { ok: false, error: `أصناف مش في منيو كيتا: ${unknown.join(", ")}` };
+      const onShelf = available ? null : untilToMs(until, { hours: settings.hours });
       const body = availabilityBody(ids, available, onShelf);
       const before = Object.fromEntries(ids.map((id) => [id, menu.byId.get(id).status]));
       const names = ids.map((id) => menu.byId.get(id).name);
@@ -325,14 +326,20 @@ export function register(app, ctx) {
       const after = settledMenu.value;
       const changed = after ? ids.filter((id) => after.byId.get(id)?.status === want) : [];
       const missed = ids.filter((id) => !changed.includes(id));
-      const verified = !!after && missed.length === 0;
-      const summary = `${available ? "متاح" : "غير متاح"}${available ? "" : onShelf ? ` لحد ${new Date(onShelf).toISOString()}` : " لحد ما يتفتح"}: ${names.join("، ")}`;
+      const verified = !!after && missed.length === 0 && !error;
+      const summary = `${via ? `${via} · ` : ""}${available ? "متاح" : "غير متاح"}${available ? "" : onShelf ? ` لحد ${new Date(onShelf).toISOString()}` : " لحد ما يتفتح"}: ${names.join("، ")}`;
       await logAction(c, available ? "item_on" : "item_off", summary,
-        { ids, names, before, body }, { keeta, error: error?.message || null, changed, missed }, !error && verified, verified);
-      if (error) return fail(c, error);
-      return c.json({ ok: verified, applied: true, verified, changed, missed,
-        error: verified ? null : "كيتا ردّت بنجاح بس الحالة ماتغيّرتش لكل الأصناف — راجع السجل" });
-    } catch (e) { return fail(c, e); }
+        { ids, names, before, body, via }, { keeta, error: error?.message || null, changed, missed }, verified, verified);
+      if (error) return { ok: false, expired: !!error.expired, error: error.message };
+      return { ok: verified, applied: true, verified, changed, missed,
+        error: verified ? null : "كيتا ردّت بنجاح بس الحالة ماتغيّرتش لكل الأصناف — راجع السجل" };
+    } catch (e) { return { ok: false, expired: !!e.expired, error: e.message }; }
+  }
+
+  app.post("/api/keeta/control/availability", async (c) => {
+    const g = await guard(c); if (g) return g;
+    const b = await c.req.json().catch(() => ({}));
+    return c.json(await applyAvailability({ ids: b.spuIds, available: b.available === true, until: b.until, c }));
   });
 
   /* ── عرض صنف ترويجي جديد ── */
@@ -448,4 +455,5 @@ export function register(app, ctx) {
   });
 
   console.log("[keeta-control] routes ready");
+  return { applyAvailability, readMenu: (force) => readMenu(force) };
 }

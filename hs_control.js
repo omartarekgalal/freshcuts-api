@@ -107,12 +107,12 @@ export function register(app, ctx) {
 
   async function logAction(c, action, summary, request, result, ok, verified) {
     let auditId = null;
-    try { const p = c.get("cmsAudit"); auditId = p ? await p : null; } catch { /* */ }
+    try { const p = c?.get("cmsAudit"); auditId = p ? await p : null; } catch { /* */ }
     await pool.query(
       `INSERT INTO keeta_actions(audit_id, action, summary, request, result, ok, verified) VALUES ($1,$2,$3,$4,$5,$6,$7)`,
       [auditId, action, summary, JSON.stringify(request ?? null), JSON.stringify(result ?? null), !!ok, verified ?? null]
     ).catch((e) => console.error("[hs-control] log:", e.message));
-    await auditNote?.(c, `هنقرستيشن: ${summary}`);
+    if (c) await auditNote?.(c, `هنقرستيشن: ${summary}`);
   }
 
   let cache = null;
@@ -165,20 +165,19 @@ export function register(app, ctx) {
     } catch (e) { return c.json({ ok: false, error: e.message }); }
   });
 
-  app.post("/api/hs/control/availability", async (c) => {
-    const g = await guard(c); if (g) return g;
-    const b = await c.req.json().catch(() => ({}));
+  /* دالة واحدة للشاشة وللبوابة (app_sync.js) — c = null لما الطلب من البوابة. */
+  async function applyAvailability({ ids: rawIds, available, until, c = null, via = null }) {
     const cfg = controlSettings(await getSettingsData());
-    if (!cfg.enabled) return c.json({ ok: false, error: "التحكم في التطبيقات مقفول من الإعدادات" });
-    const ids = [...new Set((b.productIds || []).map(String).filter((x) => /^\d{3,}$/.test(x)))];
-    if (!ids.length) return c.json({ ok: false, error: "اختار صنف واحد على الأقل" });
-    if (ids.length > cfg.maxItemsPerAction) return c.json({ ok: false, error: `أكتر من ${cfg.maxItemsPerAction} صنف في مرة واحدة` });
-    const available = b.available === true;
+    if (!cfg.enabled) return { ok: false, error: "التحكم في التطبيقات مقفول من الإعدادات" };
+    if (!configured()) return { ok: false, error: "هنقرستيشن غير مربوطة على السيرفر" };
+    const ids = [...new Set((rawIds || []).map(String).filter((x) => /^\d{3,}$/.test(x)))];
+    if (!ids.length) return { ok: false, error: "اختار صنف واحد على الأقل" };
+    if (ids.length > cfg.maxItemsPerAction) return { ok: false, error: `أكتر من ${cfg.maxItemsPerAction} صنف في مرة واحدة` };
     try {
       const menu = await readMenu(true);
       const unknown = ids.filter((id) => !menu.byId.has(id));
-      if (unknown.length) return c.json({ ok: false, error: `أصناف مش في منيو هنقرستيشن: ${unknown.join(", ")}` });
-      const schedules = available ? undefined : hsSchedules(b.until);
+      if (unknown.length) return { ok: false, error: `أصناف مش في منيو هنقرستيشن: ${unknown.join(", ")}` };
+      const schedules = available ? undefined : hsSchedules(until);
       const body = { available, ...(schedules ? { schedules } : {}), context: "MENU_UPDATE" };
       const names = ids.map((id) => menu.byId.get(id).name);
       const errors = [];
@@ -192,12 +191,19 @@ export function register(app, ctx) {
       const missed = ids.filter((id) => !changed.includes(id));
       const verified = settled.ok && !errors.length;
       const when = available ? "" : schedules?.[0]?.type === "AT_TIMESTAMP" ? ` لحد ${schedules[0].timestamp}` : schedules ? " لحد الفتح الجاي" : " لحد ما يتفتح";
-      await logAction(c, available ? "hs_item_on" : "hs_item_off", `${available ? "متاح" : "غير متاح"}${when}: ${names.join("، ")}`,
-        { ids, names, body }, { errors, changed, missed }, verified, verified);
-      return c.json({ ok: verified, applied: true, verified, changed, missed, errors,
-        error: verified ? null : errors.length ? errors[0].error : "هنقرستيشن ردّت بس الحالة ماتغيّرتش لكل الأصناف بعد ١٠ ثواني — حدّث بعد دقيقة" });
-    } catch (e) { return c.json({ ok: false, error: e.message }); }
+      await logAction(c, available ? "hs_item_on" : "hs_item_off", `${via ? `${via} · ` : ""}${available ? "متاح" : "غير متاح"}${when}: ${names.join("، ")}`,
+        { ids, names, body, via }, { errors, changed, missed }, verified, verified);
+      return { ok: verified, applied: true, verified, changed, missed, errors,
+        error: verified ? null : errors.length ? errors[0].error : "هنقرستيشن ردّت بس الحالة ماتغيّرتش لكل الأصناف بعد ١٠ ثواني — حدّث بعد دقيقة" };
+    } catch (e) { return { ok: false, error: e.message }; }
+  }
+
+  app.post("/api/hs/control/availability", async (c) => {
+    const g = await guard(c); if (g) return g;
+    const b = await c.req.json().catch(() => ({}));
+    return c.json(await applyAvailability({ ids: b.productIds, available: b.available === true, until: b.until, c }));
   });
 
   console.log("[hs-control] routes ready");
+  return { applyAvailability, readMenu: (force) => readMenu(force), configured };
 }
