@@ -194,7 +194,16 @@ export function register(app, ctx, deps = {}) {
     if (role === "manager" && a.user.role !== "manager") {
       return { res: c.json({ ok: false, error: "forbidden", message: "الإجراء ده للمدير بس" }, 403) };
     }
+    noteSeen(a.user, c);
     return a;
+  }
+  /* PO1 (١٤/١٠): أي دخول بوابة ناجح = إشارة حضور للموظف ده على الجهاز ده (wahandover.js ⇒ portal_presence، كتابة في الدقيقة بالكتير).
+     deps.onSeen بيتربط متأخر في index.js (wahandover بيتسجّل بعد البوابة). عمرها ما بترمي ولا بتأخّر الطلب. */
+  function noteSeen(user, c, via = null, ua = undefined) {
+    try {
+      if (typeof deps.onSeen !== "function" || !user) return;
+      deps.onSeen(user, { ua: ua !== undefined ? ua : (c?.req?.header?.("user-agent") || null), method: c?.req?.method || "GET", path: c?.req?.path || "", via });
+    } catch { /* الحضور مايوقّفش حاجة */ }
   }
 
   /* ── السجل + الأحداث (مابيرميش) ── */
@@ -521,6 +530,7 @@ export function register(app, ctx, deps = {}) {
       return c.json({ ok: false, error: "too_many_streams", fallback: "poll" }, 429);
     }
     const snapshot = c.req.query("snapshot") === "1";
+    const ua = c.req.header("user-agent") || null;      // PO1: نبضة البث بتتحسب حضور لنفس الجهاز
     const enc = new TextEncoder();
     const signal = c.req.raw?.signal;
     let client = null;
@@ -570,6 +580,7 @@ export function register(app, ctx, deps = {}) {
             }).catch(() => {});
           }
           client.send(sseFrame("ping", { now: new Date(now()).toISOString() }));
+          if (!closed) noteSeen(user, null, "sse", ua);      // PO1: البث لسه مفتوح ⇒ البوابة متوصّلة (ممكن في الخلفية)
         }, deps.heartbeatMs ?? HEARTBEAT_MS);
         hb.unref?.();
         life = setTimeout(() => { client.send(sseFrame("reconnect", { reason: "lifetime" })); cleanup(); },

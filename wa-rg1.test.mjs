@@ -38,14 +38,14 @@ function hoWorld({ at = "2026-10-14T12:29:00Z" } = {}) {
       const r = db.rows.find((x) => x.id === p[0] && !x.acked_at && Date.parse(x.rung_at || x.at) <= Date.parse(p[2]));
       if (!r) return { rows: [], rowCount: 0 }; r.rung_at = p[1]; r.rings++; return { rows: [{ id: r.id }], rowCount: 1 };
     }
-    if (/^INSERT INTO portal_presence/i.test(s)) { db.presence.set(`${p[0]}|${p[1]}`, { staff_id: p[0], device: p[1], role: p[2], staff_name: p[3], last_seen: p[4] }); return { rows: [], rowCount: 1 }; }
-    if (/^SELECT staff_id, staff_name, role, device, last_seen FROM portal_presence/i.test(s)) return { rows: [...db.presence.values()].filter((x) => Date.parse(x.last_seen) > Date.parse(p[0])) };
+    if (/^INSERT INTO portal_presence/i.test(s)) { db.presence.set(`${p[0]}|${p[1]}`, { staff_id: p[0], device: p[1], role: p[2], staff_name: p[3], last_seen: p[4], via: p[5], last_visible: p[6] }); return { rows: [], rowCount: 1 }; }
+    if (/^SELECT staff_id, staff_name, role, device, last_seen, seen_since, via, last_visible, visible_since FROM portal_presence/i.test(s)) return { rows: [...db.presence.values()].filter((x) => Date.parse(x.last_seen) > Date.parse(p[0])) };
     throw new Error("unexpected SQL: " + s.slice(0, 90));
   } };
   const routes = {}, events = [], pushes = [];
   const app = { get: (path, h) => { routes[`GET ${path}`] = h; }, post: (path, h) => { routes[`POST ${path}`] = h; } };
   let user = { id: "s1", name: "منى", role: "cashier" };
-  const make = () => HO.register(app, { pool }, { requirePortal: async () => ({ user }), broadcast: (e, d) => events.push([e, d]), now: () => new Date(nowMs), log: { error() {} },
+  const make = () => HO.register(app, { pool }, { requirePortal: async () => ({ user }), broadcast: (e, d) => events.push([e, d]), now: () => new Date(nowMs), log: { error() {} }, noTimer: true,
     push: () => ({ PORTAL_URL: "https://freshcuts-invite.o2m8.me/portal/", sendToSubs: async (pl, o = {}) => { pushes.push({ ...pl, to: o.role || "all" }); return { sent: 1, of: 1 }; } }) });
   const api = make();
   const poll = (ua = "iPhone Safari") => routes["GET /api/portal/wa-handovers"]({ req: { param: () => null, header: () => ua }, json: (body, status = 200) => ({ body, status }) });
@@ -151,7 +151,8 @@ test("asked_manager: «مسؤول / مدير / الإدارة / مشرف» and m
 test("settings: every new knob has a default (on), limits, an Arabic label in the schema, and is validated on save", () => {
   const c = T.teamConfig({ waTeam: { members: [] } });
   assert.deepEqual(c.portalRing, { enabled: true, everyMin: 3, capMin: 45 });
-  assert.deepEqual(c.portalOffline, { enabled: true, afterMin: 3, repeatMin: 15, managerAfter: 2, backNotice: true });
+  /* PO1: القيم اللي اتظبطت على اللايف ١٤/١٠ بقت الافتراضي + المفاتيح الجديدة (wa-po1.test.mjs بيغطّيها) */
+  assert.deepEqual(c.portalOffline, { enabled: true, afterMin: 10, repeatMin: 45, managerAfter: 3, managerWindowMin: 240, backStableMin: 2, dailyCap: 6, countBackground: true, backNotice: true });
   assert.deepEqual([c.ladder.managerPush, c.ladder.managerDirect], [true, true]);
   const get = (o, k) => k.split(".").reduce((x, y) => (x == null ? undefined : x[y]), o);
   for (const k of T.KNOBS) {
@@ -168,73 +169,6 @@ test("settings: every new knob has a default (on), limits, an Arabic label in th
   assert.deepEqual(T.teamConfig({ waTeam: { portalRing: { everyMin: 99 } } }).portalRing.everyMin, 3, "out of range ⇒ default");
 });
 
-/* ── البورتال مقفول وقت الشغل ──────────────────────────────────────────── */
-const CASH1 = "561000001", CASH2 = "561000002", MGR = "506000003", OWN = "544000004";
-const MEMBERS = [{ phone: `0${CASH1}`, name: "منى", role: "cashier" }, { phone: `0${CASH2}`, name: "سارة", role: "cashier" }, { phone: `0${MGR}`, name: "خالد", role: "manager" }, { phone: `0${OWN}`, name: "عمر", role: "owner" }];
-function teamWorld({ at = "2026-10-14T15:00:00Z", settings = {}, presence = [] } = {}) {      // ١٨:٠٠ الرياض
-  let nowMs = Date.parse(at);
-  const db = { settings: { waTeam: { members: MEMBERS, keeper: { enabled: false }, odd: { enabled: false }, daily: { enabled: false } }, ...settings }, portal: null, log: [], presence: [...presence] };
-  const pool = { db, async query(sql, p = []) {
-    const s = String(sql).replace(/\s+/g, " ").trim();
-    if (/^SELECT max\(created_at\) AS at FROM wa_messages/i.test(s)) return { rows: [{ at: new Date(nowMs - 60 * MIN).toISOString() }] };      // every window open
-    if (/^INSERT INTO wa_team_log/i.test(s)) { db.log.push({ to: p[0], role: p[1], topic: p[2], kind: p[3], via: p[4], ok: p[5] }); return { rows: [] }; }
-    if (/^SELECT since, alerts, last_alert_at, manager_told FROM wa_team_portal/i.test(s)) return { rows: db.portal ? [{ ...db.portal }] : [] };
-    if (/^DELETE FROM wa_team_portal/i.test(s)) { const r = db.portal; db.portal = null; return { rows: r ? [r] : [] }; }
-    if (/^INSERT INTO wa_team_portal/i.test(s)) {
-      if (db.portal && db.portal.last_alert_at && Date.parse(db.portal.last_alert_at) > Date.parse(p[2])) return { rows: [] };
-      db.portal = db.portal ? { ...db.portal, alerts: db.portal.alerts + 1, last_alert_at: p[1] } : { since: p[0], alerts: 1, last_alert_at: p[1], manager_told: false };
-      return { rows: [{ alerts: db.portal.alerts, manager_told: db.portal.manager_told }] };
-    }
-    if (/^UPDATE wa_team_portal SET manager_told=TRUE/i.test(s)) { db.portal.manager_told = true; return { rows: [] }; }
-    return { rows: [], rowCount: 0 };
-  } };
-  const sent = [];
-  const wa = { sendFreeform: async ({ phoneNorm, payload }) => { sent.push({ to: phoneNorm, text: payload.interactive ? payload.interactive.body.text : payload.text.body }); return { ok: true }; } };
-  const team = T.register(null, { pool, requireAdmin: async () => null, getSettingsData: async () => JSON.parse(JSON.stringify(db.settings)) },
-    { wa, now: () => new Date(nowMs), noTimer: true, log: { error() {} }, presence: () => ({ presence: async () => db.presence.map((x) => ({ ...x })) }) });
-  return { db, team, sent, advance: (m) => { nowMs += m * MIN; }, now: () => new Date(nowMs), seen: (role = "cashier") => { db.presence = [{ staffId: "s1", name: "منى", role, device: "d", lastSeen: new Date(nowMs).toISOString() }]; } };
-}
-
-test("portal closed during working hours ⇒ WhatsApp to the cashiers, every 15 minutes at most; after 2 unanswered alerts the manager too; back ⇒ one «تمام» to the manager", async () => {
-  const w = teamWorld();
-  w.seen(); w.advance(2);
-  assert.equal((await w.team.tick()).portal.offline, false, "seen 2 minutes ago: fine");
-  w.advance(1);
-  const r1 = (await w.team.tick()).portal;
-  assert.deepEqual([r1.offline, r1.alert, r1.cashiers.sent, r1.manager], [true, 1, 2, null]);
-  assert.deepEqual(w.sent.map((x) => x.to), [CASH1, CASH2]);
-  assert.equal(w.sent[0].text, "⚠️ البورتال مقفول من 3 دقايق — افتحه عشان الطلبات ومحادثات العملاء ترن عندك.\nافتح البورتال ↗ https://freshcuts-invite.o2m8.me/portal/");
-  assert.ok(w.db.log.every((l) => l.topic === "portal_offline"), "logged as portal_offline in the team log");
-  w.advance(10); assert.equal((await w.team.tick()).portal.waiting, true); assert.equal(w.sent.length, 2, "no repeat before 15 minutes");
-  w.advance(5); assert.equal((await w.team.tick()).portal.alert, 2); assert.equal(w.sent.length, 4);
-  w.advance(15); const r3 = (await w.team.tick()).portal;
-  assert.equal(r3.alert, 3); assert.equal(r3.manager.sent, 1);
-  assert.match(w.sent.at(-1).text, /^⚠️ بورتال الكاشير مقفول من 33 دقيقة — الكاشير اتبعتله 2 تنبيه ولسه ماتفتحش/); assert.equal(w.sent.at(-1).to, MGR);
-  w.seen(); const back = (await w.team.tick()).portal;
-  assert.equal(back.back, true); assert.match(w.sent.at(-1).text, /^✅ تمام، بورتال الكاشير رجع اتفتح/); assert.equal(w.sent.at(-1).to, MGR);
-  assert.equal(w.db.portal, null);
-  w.advance(1); await w.team.tick(); assert.equal(w.sent.at(-1).to, MGR, "nothing more once it is back");
-});
-
-test("portal watch: never outside working hours, never when the store is paused, a manager-only portal does not count, and the switch turns it off", async () => {
-  const night = teamWorld({ at: "2026-10-14T03:00:00Z" });      // ٠٦:٠٠ الرياض: بره اليوم التشغيلي
-  assert.equal((await night.team.tick()).portal.work, false); assert.equal(night.sent.length, 0);
-  assert.equal(T.workingNow({}, "2026-10-14T08:00:00Z", 3), false, "11:00 Riyadh exactly: the cashier is still opening up");
-  assert.equal(T.workingNow({}, "2026-10-14T08:05:00Z", 3), true); assert.equal(T.workingNow({}, "2026-10-14T08:01:00Z", 3), false, "opened a minute ago");
-  assert.equal(T.workingNow({}, "2026-10-14T23:30:00Z", 3), true, "02:30 Riyadh is still the business day"); assert.equal(T.workingNow({}, "2026-10-15T00:30:00Z", 3), false);
-  const mgrOnly = teamWorld({ presence: [{ staffId: "m1", role: "manager", device: "pc", lastSeen: "2026-10-14T15:00:00Z" }] });
-  assert.equal((await mgrOnly.team.tick()).portal.alert, 1, "the manager's PC is not a cashier portal");
-  const off = teamWorld({ settings: { waTeam: { members: MEMBERS, keeper: { enabled: false }, odd: { enabled: false }, daily: { enabled: false }, portalOffline: { enabled: false } } } });
-  assert.deepEqual((await off.team.tick()).portal, { skipped: "off" });
-  const noCash = teamWorld({ settings: { waTeam: { members: MEMBERS.slice(2), keeper: { enabled: false }, odd: { enabled: false }, daily: { enabled: false } } } });
-  assert.deepEqual((await noCash.team.tick()).portal, { skipped: "no_cashier" });
-  assert.deepEqual(T.cashierPortal([{ role: "cashier", lastSeen: "2026-10-14T14:50:00Z" }, { role: "cashier", lastSeen: "2026-10-14T14:58:00Z" }], "2026-10-14T15:00:00Z"), { lastSeen: "2026-10-14T14:58:00.000Z", offMin: 2 });
-});
-
-test("portal status for the dashboard: each portal device open / closed since N minutes, the cashier summary and the alert state", async () => {
-  const w = teamWorld({ presence: [{ staffId: "s1", name: "منى", role: "cashier", device: "tab", lastSeen: "2026-10-14T14:59:00Z" }, { staffId: "m1", name: "خالد", role: "manager", device: "pc", lastSeen: "2026-10-14T14:40:00Z" }] });
-  const st = await w.team.portalStatus(T.teamConfig(w.db.settings), w.now());
-  assert.deepEqual(st.cashier, { open: true, lastSeen: "2026-10-14T14:59:00.000Z", offMin: 1 });
-  assert.deepEqual(st.devices.map((d) => [d.name, d.open, d.offMin]), [["منى", true, 0], ["خالد", false, 20]]);
-  assert.equal(st.working, true); assert.equal(st.alerts, null);
-});
+/* ── البورتال مقفول وقت الشغل ──────────────────────────────────────────────
+   PO1 (١٤/١٠ مساءً) غيّر الحالة كلها (حلقة بتخلص بالاستقرار، تكرار وسقف لكل رقم، سلّم بالعدّ في مدة) ⇒ الاختبارات في wa-po1.test.mjs:
+   الساعات / الإيقاف / بوابة المدير / المفتاح، وحالة اللوحة، وإعادة يوم ١٤/١٠ بالظبط. */

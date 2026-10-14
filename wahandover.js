@@ -16,6 +16,16 @@
      • escalate: خطوة المدير في السلّم (أو «طلب مسؤول» من الأول) ⇒ حدث wa_handover_escalated + إشعار لأجهزة دور المدير بس.
      • presence: كل استطلاع لقايمة التحويلات من البوابة (كل ٢٠ ث والشاشة ظاهرة) = «البوابة مفتوحة» للموظف ده على الجهاز ده
        (كتابة واحدة في الدقيقة بالكتير). wateam.js بيستخدمه: مفيش بوابة كاشير مفتوحة وقت الشغل ⇒ واتساب للكاشير.
+
+   PO1 (١٤/١٠ مساءً — ٣٢ رسالة «البورتال مقفول» للكاشير في ٣.٥ ساعة): الحضور بقى = أي نشاط بوابة، مش استطلاع التحويلات بس:
+     • requirePortal في portal.js بينده seen() بعد أي دخول ناجح (أي /api/portal/* و /api/tables/* ومسارات واتساب البوابة)،
+       وبث SSE عند الاتصال ومع كل نبضة (٢٠ ث) طول ما الاتصال مفتوح. نوع الإشارة (via): beat (نبضة البوابة الظاهرة) · poll (قايمة
+       التحويلات — بتتسحب والشاشة ظاهرة بس) · action (POST/PUT… = حد داس) · api (أي قراءة تانية، ممكن من تاب في الخلفية) · sse (البث).
+       beat / poll / action = «ظاهرة» (last_visible)، الباقي = «متوصّلة» بس.
+     • لسه كتابة واحدة في الدقيقة لكل موظف/جهاز بالكتير: أول إشارة في الدقيقة بتتكتب، والباقي بيتحفظ في الذاكرة وبيتكتب بعد ما الدقيقة
+       تخلص (flush كل ١٥ ث) — فآخر ظهور مابيتأخرش دقيقة عن الحقيقة.
+     • seen_since / visible_since = بداية «الفتحة» الحالية (فجوة أكتر من ٢.٥ دقيقة بين كتابتين ⇒ فتحة جديدة). wateam.js بيستخدمها
+       عشان «رجع» يبقى بس لما البورتال يفضل مفتوح backStableMin دقيقة — بصّة سريعة مابتنهيش التنبيه.
 ═══════════════════════════════════════════════════════════════════════════ */
 import { bizDay, bizStart } from "./bizday.js";
 
@@ -47,9 +57,38 @@ const DDL = `
     last_seen TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     PRIMARY KEY (staff_id, device)
   );
+  ALTER TABLE portal_presence ADD COLUMN IF NOT EXISTS seen_since TIMESTAMPTZ;
+  ALTER TABLE portal_presence ADD COLUMN IF NOT EXISTS via TEXT;
+  ALTER TABLE portal_presence ADD COLUMN IF NOT EXISTS last_visible TIMESTAMPTZ;
+  ALTER TABLE portal_presence ADD COLUMN IF NOT EXISTS visible_since TIMESTAMPTZ;
 `;
 const MIN = 60_000;
 export const PRESENCE_WRITE_MS = 60_000;      // كتابة واحدة في الدقيقة لكل جهاز بالكتير
+export const PRESENCE_FLUSH_MS = 15_000;      // الإشارات اللي جت جوّه الدقيقة بتتكتب بعد ما تخلص (آخر ظهور دقيق لحد ~١٥ ث)
+export const STREAK_GAP_MS = 150_000;         // فجوة أكتر من كده بين كتابتين ⇒ «فتحة» جديدة (seen_since من الأول)
+export const VISIBLE_VIA = Object.freeze(["beat", "poll", "action"]);
+/* نوع إشارة الحضور من الطلب نفسه (PO1). null = مايتحسبش (الخروج). */
+export function presenceVia(method, path) {
+  const p = String(path || "").split("?")[0], m = String(method || "GET").toUpperCase();
+  if (p === "/api/portal/logout") return null;
+  if (p === "/api/portal/presence") return "beat";
+  if (p === "/api/portal/stream") return "sse";
+  if (p === "/api/portal/wa-handovers" && m === "GET") return "poll";
+  if (!["GET", "HEAD", "OPTIONS"].includes(m)) return "action";
+  return "api";
+}
+const GAP_SQL = `INTERVAL '${STREAK_GAP_MS / 1000} seconds'`;
+export const PRESENCE_UPSERT = `INSERT INTO portal_presence(staff_id, device, role, staff_name, last_seen, seen_since, via, last_visible, visible_since)
+  VALUES ($1,$2,$3,$4,$5::timestamptz,$5::timestamptz,$6,$7::timestamptz,$7::timestamptz)
+  ON CONFLICT (staff_id, device) DO UPDATE SET role=EXCLUDED.role, staff_name=EXCLUDED.staff_name, via=EXCLUDED.via,
+    seen_since = CASE WHEN portal_presence.seen_since IS NULL OR portal_presence.last_seen < EXCLUDED.last_seen - ${GAP_SQL}
+                      THEN EXCLUDED.last_seen ELSE portal_presence.seen_since END,
+    last_seen = GREATEST(portal_presence.last_seen, EXCLUDED.last_seen),
+    visible_since = CASE WHEN EXCLUDED.last_visible IS NULL THEN portal_presence.visible_since
+                         WHEN portal_presence.visible_since IS NULL OR portal_presence.last_visible IS NULL
+                              OR portal_presence.last_visible < EXCLUDED.last_visible - ${GAP_SQL}
+                         THEN EXCLUDED.last_visible ELSE portal_presence.visible_since END,
+    last_visible = GREATEST(portal_presence.last_visible, EXCLUDED.last_visible)`;
 const waitAr = (m) => (m < 1 ? "لسه دلوقتي" : m === 1 ? "دقيقة" : m === 2 ? "دقيقتين" : m <= 10 ? `${m} دقايق` : `${m} دقيقة`);
 /* بصمة الجهاز من غير أي بيانات شخصية: hash قصير للـuser-agent (تابلت الكاشير ≠ موبايله) */
 export function deviceOf(ua) {
@@ -228,33 +267,69 @@ export function register(app, ctx, deps = {}) {
   }
 
   /* ── حضور البوابة (طلب عمر ١٤/١٠: «البورتال مقفول وقت الشغل ⇒ واتساب للكاشير») ──
-     استطلاع حقيقي بس = حضور (تاب في الخلفية على آيفون بيوقف الاستطلاع ⇒ مش حاضر، وده المقصود: مابيقدرش يرن). */
+     PO1: أي نشاط بوابة لموظف كاشير/مدير (مش المطبخ، ومش مفتاح المالك من اللوحة). via = نوع الإشارة (presenceVia).
+     أول إشارة في الدقيقة لكل موظف/جهاز بتتكتب على طول؛ اللي بعدها جوّه نفس الدقيقة بيتحفظ (الأحدث، والأحدث «الظاهر») وبيتكتب
+     في flush بعد ما الدقيقة تخلص ⇒ كتابة واحدة في الدقيقة بالكتير، وآخر ظهور مابيقعش دقيقة ورا الحقيقة. */
   const seenAt = new Map();
-  function touch(user, ua) {
+  const write = (r) => ready.then(() => pool.query(PRESENCE_UPSERT,
+    [String(r.user.id).slice(0, 60), r.dev, String(r.user.role), r.user.name ? String(r.user.name).slice(0, 60) : null,
+      new Date(r.t).toISOString(), r.via, r.vis ? new Date(r.vis).toISOString() : null])).catch(() => {});
+  function prune(t) {
+    if (seenAt.size <= 500) return;
+    for (const [k, s] of seenAt) if (!s.p && t - s.w > 10 * MIN) seenAt.delete(k);
+    if (seenAt.size > 500) for (const k of [...seenAt.keys()].slice(0, 200)) seenAt.delete(k);
+  }
+  function touch(user, ua, via = "poll") {
     try {
-      if (!user || !user.id || !["cashier", "manager"].includes(String(user.role))) return false;
-      const dev = deviceOf(ua), k = `${user.id}|${dev}`, t = now().getTime();
-      if (t - (seenAt.get(k) || 0) < PRESENCE_WRITE_MS) return false;
-      seenAt.set(k, t);
-      if (seenAt.size > 500) for (const x of [...seenAt.keys()].slice(0, 200)) seenAt.delete(x);
-      ready.then(() => pool.query(`INSERT INTO portal_presence(staff_id, device, role, staff_name, last_seen) VALUES ($1,$2,$3,$4,$5)
-        ON CONFLICT (staff_id, device) DO UPDATE SET role=EXCLUDED.role, staff_name=EXCLUDED.staff_name, last_seen=EXCLUDED.last_seen`,
-        [String(user.id).slice(0, 60), dev, String(user.role), user.name ? String(user.name).slice(0, 60) : null, new Date(t).toISOString()])).catch(() => {});
-      return true;
+      if (!via || !user || !user.id || user.admin === true || !["cashier", "manager"].includes(String(user.role))) return false;
+      const dev = deviceOf(ua), k = `${user.id}|${dev}`, t = now().getTime(), vis = VISIBLE_VIA.includes(via);
+      let s = seenAt.get(k);
+      if (!s) { s = { w: -Infinity, wt: null, p: null }; seenAt.set(k, s); prune(t); }
+      if (t - s.w >= PRESENCE_WRITE_MS) {
+        const r = { user, dev, t, via, vis: vis ? t : (s.p && s.p.vis) || null };
+        s.w = t; s.wt = t; s.p = null;
+        write(r);
+        return true;
+      }
+      if (t === s.wt && !vis) return false;      // نفس الطلب اتعدّ مرتين (المسار + requirePortal)
+      s.p = { user, dev, t, via, vis: vis ? t : (s.p && s.p.vis) || null };
+      return false;
     } catch { return false; }
   }
-  /* آخر ظهور لكل موظف/جهاز (آخر ٧ أيام) ⇒ [{ staffId, name, role, device, lastSeen }] */
+  /* الإشارات اللي اتحفظت جوّه الدقيقة ⇒ كتابة واحدة بعد ما الدقيقة تخلص */
+  function flush() {
+    const t = now().getTime();
+    let n = 0;
+    for (const s of seenAt.values()) {
+      if (!s.p || t - s.w < PRESENCE_WRITE_MS) continue;
+      const r = s.p; s.p = null; s.w = t; s.wt = r.t;
+      write(r); n++;
+    }
+    return n;
+  }
+  /* من requirePortal / بث SSE (portal.js ⇒ index.js): { ua, method, path, via? } */
+  function seen(user, info = {}) {
+    const via = info.via || presenceVia(info.method, info.path);
+    return via ? touch(user, info.ua, via) : false;
+  }
+  const flushTimer = deps.noTimer ? null : setInterval(() => { try { flush(); } catch { /* */ } }, PRESENCE_FLUSH_MS);
+  if (flushTimer && typeof flushTimer.unref === "function") flushTimer.unref();
+  /* آخر ظهور لكل موظف/جهاز (آخر ٧ أيام) ⇒ [{ staffId, name, role, device, lastSeen, seenSince, via, lastVisible, visibleSince }] */
+  const isoOf = (v) => (v == null ? null : v instanceof Date ? v.toISOString() : String(v));
   async function presence() {
     try {
       await ready;
-      const r = await pool.query(`SELECT staff_id, staff_name, role, device, last_seen FROM portal_presence WHERE last_seen > $1 ORDER BY last_seen DESC LIMIT 100`, [new Date(now().getTime() - 7 * 24 * 60 * MIN).toISOString()]);
-      return (r.rows || []).map((x) => ({ staffId: x.staff_id, name: x.staff_name || null, role: x.role, device: x.device, lastSeen: x.last_seen instanceof Date ? x.last_seen.toISOString() : x.last_seen }));
+      const r = await pool.query(`SELECT staff_id, staff_name, role, device, last_seen, seen_since, via, last_visible, visible_since FROM portal_presence
+        WHERE last_seen > $1 ORDER BY last_seen DESC LIMIT 100`, [new Date(now().getTime() - 7 * 24 * 60 * MIN).toISOString()]);
+      return (r.rows || []).map((x) => ({ staffId: x.staff_id, name: x.staff_name || null, role: x.role, device: x.device, lastSeen: isoOf(x.last_seen),
+        seenSince: isoOf(x.seen_since), via: x.via || null, lastVisible: isoOf(x.last_visible), visibleSince: isoOf(x.visible_since) }));
     } catch { return null; }
   }
 
+  const uaOf = (c) => (c.req && typeof c.req.header === "function" ? c.req.header("user-agent") : null);
   app.get("/api/portal/wa-handovers", async (c) => {
     const a = await deps.requirePortal(c); if (a.res) return a.res;
-    touch(a.user, c.req.header ? c.req.header("user-agent") : null);
+    touch(a.user, uaOf(c), "poll");      // requirePortal بيسجّلها هو كمان (نفس الإشارة) — التانية مابتكتبش
     try { return c.json({ ok: true, handovers: await openList() }); }
     catch (e) { log.error("[wa-handover] list:", e.message); return c.json({ ok: true, handovers: [] }); }
   });
@@ -270,5 +345,12 @@ export function register(app, ctx, deps = {}) {
     return c.json({ ok: true, id, already: !r.rowCount });
   });
 
-  return { emit, openList, ringDue, escalate, touch, presence, ready };
+  /* PO1: نبضة البوابة — البوابة بتبعتها كل دقيقة والشاشة ظاهرة بس (ومع الرجوع للشاشة). مفيش جسم مطلوب. */
+  app.post("/api/portal/presence", async (c) => {
+    const a = await deps.requirePortal(c); if (a.res) return a.res;
+    touch(a.user, uaOf(c), "beat");
+    return c.json({ ok: true });
+  });
+
+  return { emit, openList, ringDue, escalate, touch, seen, flush, presence, ready, stop: () => { if (flushTimer) clearInterval(flushTimer); } };
 }

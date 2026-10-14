@@ -26,8 +26,20 @@
      PUT  /api/cms/wabot/team            حفظ الإعدادات (المالك بس)
      POST /api/cms/wabot/team/test       {phone} رسالة تجربة لموظف **من الدليل بس** (المالك بس)
      GET  /api/portal/wa/team-status     حالة نوافذ الفريق للبورتال (كاشير / مدير) — من غير أرقام
+
+   PO1 (١٤/١٠ مساءً — «البورتال مقفول» راح للكاشير ٣٢ مرة في ٣.٥ ساعة، والمدير ٥ + «رجع» ٣):
+     • «مقفول» = مفيش أي نشاط من أي جهاز كاشير (wahandover.js: أي طلب بوابة، البث، نبضة البوابة) لمدة afterMin. لو countBackground
+       مقفول: اللي يتحسب بس الإشارات «الظاهرة» (نبضة البوابة / قايمة التحويلات / داس على حاجة).
+     • «رجع» = جهاز كاشير فضل مفتوح backStableMin دقيقة ورا بعض. بصّة سريعة (طلب أو اتنين) مابتنهيش الحلقة.
+     • التكرار لكل رقم مش لكل حلقة: مفيش رسالة portal_offline (أي نوع) لنفس الموظف قبل repeatMin من آخر واحدة، حتى لو البورتال
+       فتح وقفل (wa_team_portal_to، الحجز قبل الإرسال). وسقف يومي لكل رقم (dailyCap، اليوم التشغيلي).
+     • السلّم بالعدّ في آخر managerWindowMin دقيقة (مش لكل حلقة): الكاشير ياخد لحد managerAfter تنبيه في المدة دي؛ بعدها لو لسه مقفول
+       في ميعاد التنبيه اللي عليه ⇒ المدير (مرة واحدة لكل حلقة) بدل الكاشير.
+     • «رجع» للمدير: مرة واحدة لكل حلقة، بس لو المدير نفسه اتبلّغ فيها، وبرضه مش قبل repeatMin من آخر رسالة ليه — لو لسه بدري
+       بتستنى، ولو البورتال قفل تاني قبلها بتتلغي.
 ═══════════════════════════════════════════════════════════════════════════ */
 import { staffPhones, fitOneSms, staffConfig } from "./staffalerts.js";
+import { bizDay, bizStart } from "./bizday.js";
 import { maskText } from "./wabotllm.js";
 import { openState } from "./wabot.js";
 
@@ -87,7 +99,8 @@ export const DEFAULTS = Object.freeze({
   ladder: Object.freeze({ enabled: true, managerAfterMin: 5, ownersAfterMin: 10, managerPush: true, managerDirect: true }),
   /* RG1 (١٤/١٠) — رنّة البوابة لحد ما حد يستلم، وتنبيه «البورتال مقفول وقت الشغل» */
   portalRing: Object.freeze({ enabled: true, everyMin: 3, capMin: 45 }),
-  portalOffline: Object.freeze({ enabled: true, afterMin: 3, repeatMin: 15, managerAfter: 2, backNotice: true }),
+  /* PO1: القيم اللي اتظبطت على اللايف ١٤/١٠ (١٠ / ٤٥ / ٣) بقت الافتراضي + المفاتيح الجديدة */
+  portalOffline: Object.freeze({ enabled: true, afterMin: 10, repeatMin: 45, managerAfter: 3, managerWindowMin: 240, backStableMin: 2, dailyCap: 6, countBackground: true, backNotice: true }),
   close: Object.freeze({ requireOutcome: true, remindAfterMin: 20 }),
   transfer: Object.freeze({ enabled: true }),
 });
@@ -96,6 +109,7 @@ export const LIMITS = Object.freeze({
   "keeper.renewAtHour": [12, 23], "keeper.leadMin": [5, 60],
   "ladder.managerAfterMin": [1, 60], "ladder.ownersAfterMin": [1, 120], "close.remindAfterMin": [0, 240],
   "portalRing.everyMin": [1, 30], "portalRing.capMin": [5, 180], "portalOffline.afterMin": [1, 60], "portalOffline.repeatMin": [5, 120], "portalOffline.managerAfter": [1, 10],
+  "portalOffline.managerWindowMin": [30, 720], "portalOffline.backStableMin": [1, 30], "portalOffline.dailyCap": [1, 30],
   "odd.perHour": [1, 60], "odd.digestEveryMin": [5, 240], "odd.repeatMin": [5, 720], "odd.excerpt": [0, 10], "odd.failStreak": [2, 20], "odd.failWindowMin": [5, 120],
 });
 
@@ -106,11 +120,15 @@ export const KNOBS = Object.freeze([
   { key: "portalRing.enabled", type: "bool", label: "البوابة تفضل ترنّ لحد ما حد يستلم", hint: "إشعار تاني لأجهزة البوابة طول ما العميل مستني ومحدش استلم ولا رد." },
   { key: "portalRing.everyMin", type: "num", label: "الرنّة تتكرر كل", unit: "دقيقة" },
   { key: "portalRing.capMin", type: "num", label: "الرنّة تقف بعد", unit: "دقيقة من التحويل" },
-  { key: "portalOffline.enabled", type: "bool", label: "البورتال مقفول وقت الشغل ⇒ واتساب للكاشير", hint: "لو مفيش بوابة كاشير مفتوحة (بتستطلع) وقت الشغل، الكاشير ياخد رسالة يفتحها." },
-  { key: "portalOffline.afterMin", type: "num", label: "يتبعت لما البورتال يبقى مقفول", unit: "دقيقة" },
-  { key: "portalOffline.repeatMin", type: "num", label: "يتكرر كل", unit: "دقيقة طول ما هو مقفول" },
-  { key: "portalOffline.managerAfter", type: "num", label: "المدير يتبلّغ بعد", unit: "تنبيه من غير ما يتفتح" },
-  { key: "portalOffline.backNotice", type: "bool", label: "«تمام، البورتال رجع» للمدير", hint: "لو المدير اتبلّغ، رسالة واحدة لما البورتال يرجع يتفتح." },
+  { key: "portalOffline.enabled", type: "bool", label: "البورتال مقفول وقت الشغل ⇒ واتساب للكاشير", hint: "لو مفيش ولا جهاز كاشير فاتح البورتال وقت الشغل، الكاشير ياخد رسالة يفتحه." },
+  { key: "portalOffline.countBackground", type: "bool", label: "البورتال المفتوح في الخلفية يتحسب مفتوح", hint: "يعني لسه متوصّل وبيستقبل الطلبات حتى لو الكاشير فاتح برنامج تاني. لو قفلته: لازم البورتال يبقى ظاهر على الشاشة." },
+  { key: "portalOffline.afterMin", type: "num", label: "يتبعت لما البورتال يبقى مقفول", unit: "دقيقة", hint: "مقفول = مفيش أي نشاط من أي جهاز كاشير طول المدة دي." },
+  { key: "portalOffline.backStableMin", type: "num", label: "يتحسب رجع لما يفضل مفتوح", unit: "دقيقة ورا بعض", hint: "فتحة سريعة (بصّة) مابتنهيش التنبيه." },
+  { key: "portalOffline.repeatMin", type: "num", label: "الموظف مايوصلوش أكتر من رسالة كل", unit: "دقيقة", hint: "للكاشير والمدير، حتى لو البورتال فتح وقفل كذا مرة." },
+  { key: "portalOffline.dailyCap", type: "num", label: "أقصى رسايل «البورتال مقفول» للموظف في اليوم", unit: "رسالة" },
+  { key: "portalOffline.managerAfter", type: "num", label: "المدير يتبلّغ بعد", unit: "تنبيهات للكاشير من غير ما يتفتح", hint: "بعدها الكاشير مايوصلوش تاني لحد ما التنبيهات القديمة تعدّي المدة اللي تحت، والمدير ياخد رسالة واحدة كل مرة البورتال يتقفل." },
+  { key: "portalOffline.managerWindowMin", type: "num", label: "تنبيهات الكاشير بتتعدّ في آخر", unit: "دقيقة", hint: "لازم تبقى على الأقل (المدير يتبلّغ بعد × الموظف مايوصلوش أكتر من رسالة كل)، وإلا المدير عمره ما هيتبلّغ." },
+  { key: "portalOffline.backNotice", type: "bool", label: "«تمام، البورتال رجع» للمدير", hint: "مرة واحدة لو المدير اتبلّغ، ومش قبل مدة التكرار من آخر رسالة ليه." },
 ]);
 
 const H = 3600_000;
@@ -173,7 +191,11 @@ export function teamConfig(settings) {
       managerPush: la.managerPush !== false, managerDirect: la.managerDirect !== false },
     portalRing: { enabled: pr.enabled !== false, everyMin: num(pr.everyMin, LIMITS["portalRing.everyMin"], DEFAULTS.portalRing.everyMin), capMin: num(pr.capMin, LIMITS["portalRing.capMin"], DEFAULTS.portalRing.capMin) },
     portalOffline: { enabled: po.enabled !== false, afterMin: num(po.afterMin, LIMITS["portalOffline.afterMin"], DEFAULTS.portalOffline.afterMin), repeatMin: num(po.repeatMin, LIMITS["portalOffline.repeatMin"], DEFAULTS.portalOffline.repeatMin),
-      managerAfter: num(po.managerAfter, LIMITS["portalOffline.managerAfter"], DEFAULTS.portalOffline.managerAfter), backNotice: po.backNotice !== false },
+      managerAfter: num(po.managerAfter, LIMITS["portalOffline.managerAfter"], DEFAULTS.portalOffline.managerAfter),
+      managerWindowMin: num(po.managerWindowMin, LIMITS["portalOffline.managerWindowMin"], DEFAULTS.portalOffline.managerWindowMin),
+      backStableMin: num(po.backStableMin, LIMITS["portalOffline.backStableMin"], DEFAULTS.portalOffline.backStableMin),
+      dailyCap: num(po.dailyCap, LIMITS["portalOffline.dailyCap"], DEFAULTS.portalOffline.dailyCap),
+      countBackground: po.countBackground !== false, backNotice: po.backNotice !== false },
     close: { requireOutcome: cl.requireOutcome !== false, remindAfterMin: num(cl.remindAfterMin, LIMITS["close.remindAfterMin"], DEFAULTS.close.remindAfterMin) },
     transfer: { enabled: tr.enabled !== false },
   };
@@ -247,9 +269,14 @@ export function configFromBody(b, prev = {}) {
   group("daily", ["enabled"], [], ["at"]);
   group("ladder", ["enabled", "managerPush", "managerDirect"], ["managerAfterMin", "ownersAfterMin"], []);
   group("portalRing", ["enabled"], ["everyMin", "capMin"], []);
-  group("portalOffline", ["enabled", "backNotice"], ["afterMin", "repeatMin", "managerAfter"], []);
+  group("portalOffline", ["enabled", "backNotice", "countBackground"], ["afterMin", "repeatMin", "managerAfter", "managerWindowMin", "backStableMin", "dailyCap"], []);
   group("close", ["requireOutcome"], ["remindAfterMin"], []);
   group("transfer", ["enabled"], [], []);
+  /* PO1: مدة العدّ لازم تشيل managerAfter تنبيه بالتكرار — وإلا المدير عمره ما هيتبلّغ */
+  if (!errors.length && "portalOffline" in src) {
+    const e = teamConfig({ waTeam: out }).portalOffline;
+    if (e.managerWindowMin < e.managerAfter * e.repeatMin) errors.push(`portalOffline.managerWindowMin: «تنبيهات الكاشير بتتعدّ في آخر» لازم تبقى ${e.managerAfter * e.repeatMin} دقيقة على الأقل (${e.managerAfter} تنبيهات × ${e.repeatMin} دقيقة) عشان المدير يتبلّغ`);
+  }
   return errors.length ? { ok: false, errors } : { ok: true, value: out };
 }
 
@@ -377,6 +404,12 @@ const DDL = `
     status TEXT NOT NULL DEFAULT 'pending', sent_at TIMESTAMPTZ);
   CREATE INDEX IF NOT EXISTS wa_team_odd_at_idx ON wa_team_odd(at DESC);
   CREATE TABLE IF NOT EXISTS wa_team_portal (id TEXT PRIMARY KEY, since TIMESTAMPTZ, alerts INT NOT NULL DEFAULT 0, last_alert_at TIMESTAMPTZ, manager_told BOOLEAN NOT NULL DEFAULT FALSE);
+  ALTER TABLE wa_team_portal ADD COLUMN IF NOT EXISTS resolved_at TIMESTAMPTZ;
+  CREATE TABLE IF NOT EXISTS wa_team_portal_to (phone_norm TEXT PRIMARY KEY, last_at TIMESTAMPTZ, last_mgr_at TIMESTAMPTZ, last_back_at TIMESTAMPTZ);
+  INSERT INTO wa_team_portal_to(phone_norm, last_at, last_mgr_at, last_back_at)
+    SELECT phone_norm, max(at), max(at) FILTER (WHERE kind='manager'), max(at) FILTER (WHERE kind='back') FROM wa_team_log
+     WHERE topic='portal_offline' AND at > NOW() - INTERVAL '1 day' GROUP BY phone_norm
+    ON CONFLICT (phone_norm) DO NOTHING;
 `;
 
 /* ── RG1: «البورتال مقفول وقت الشغل» (صافي) ──────────────────────────────────
@@ -390,6 +423,27 @@ export function workingNow(settings, now, afterMin = 0) {
   };
   return at(new Date(t)) && at(new Date(t - afterMin * 60_000));
 }
+/* PO1 — حالة بوابة الكاشير من قايمة الحضور (wahandover.presence) ⇒
+     { lastSeen, offMin, closed (مفيش أي إشارة من afterMin دقيقة — بالمللي، من غير تقريب), stable (جهاز «فتحته» الحالية طولها ≥ backStableMin
+       وآخر إشارة فيها لسه طازة), streakStart }. countBackground=false ⇒ الإشارات «الظاهرة» بس (last_visible / visible_since). */
+export const PORTAL_FRESH_MS = 150_000;      // = STREAK_GAP_MS في wahandover.js: الجهاز المفتوح بيكتب كل ~٦٠–٧٥ ث
+export const PORTAL_SLACK_MS = 30_000;       // تذبذب الدورة: التكرار كل ٤٥ مايبقاش ٤٦
+export function portalSignal(list, now, { afterMin = DEFAULTS.portalOffline.afterMin, backStableMin = DEFAULTS.portalOffline.backStableMin, countBackground = true } = {}) {
+  const t = new Date(now).getTime(), ms = (v) => (v ? new Date(v).getTime() : NaN);
+  const fresh = Math.min(PORTAL_FRESH_MS, afterMin * 60_000);
+  let last = null, streakStart = null;
+  for (const x of list || []) {
+    if (!x || x.role !== "cashier") continue;
+    const ls = ms(countBackground ? x.lastSeen : x.lastVisible);
+    if (!Number.isFinite(ls)) continue;
+    const ss0 = ms(countBackground ? x.seenSince : x.visibleSince), ss = Number.isFinite(ss0) && ss0 <= ls ? ss0 : ls;      // صف قديم من غير بداية ⇒ إشارة واحدة
+    if (last === null || ls > last) last = ls;
+    if (t - ls < fresh && ls - ss >= backStableMin * 60_000) streakStart = streakStart === null ? ss : Math.min(streakStart, ss);
+  }
+  const off = last === null ? null : Math.max(0, t - last);
+  return { lastSeen: last === null ? null : new Date(last).toISOString(), offMin: off === null ? null : Math.floor(off / 60_000),
+    closed: off === null || off >= afterMin * 60_000, stable: streakStart !== null, streakStart: streakStart === null ? null : new Date(streakStart).toISOString() };
+}
 /* حضور البوابة ⇒ آخر ظهور لبوابة كاشير، ومن كام دقيقة (null = ماظهرتش خالص في آخر ٧ أيام) */
 export function cashierPortal(list, now) {
   const t = new Date(now).getTime();
@@ -399,9 +453,13 @@ export function cashierPortal(list, now) {
 const offAr = (m) => (m == null ? "من أول الشغل" : m <= 1 ? "من دقيقة" : m === 2 ? "من دقيقتين" : m <= 10 ? `من ${m} دقايق` : `من ${m} دقيقة`);
 export const portalOfflineText = ({ offMin }) => `⚠️ البورتال مقفول ${offAr(offMin)} — افتحه عشان الطلبات ومحادثات العملاء ترن عندك.
 افتح البورتال ↗ ${PORTAL_URL}`;
-export const portalOfflineManagerText = ({ offMin, alerts }) => `⚠️ بورتال الكاشير مقفول ${offAr(offMin)} — الكاشير اتبعتله ${alerts} تنبيه ولسه ماتفتحش. الطلبات ومحادثات واتساب مش بترن في المطعم.
+const tanbihAr = (n) => (n === 1 ? "تنبيه واحد" : n === 2 ? "تنبيهين" : n <= 10 ? `${n} تنبيهات` : `${n} تنبيه`);
+const spanAr = (min) => (min % 60 ? `${min} دقيقة` : min === 60 ? "ساعة" : min === 120 ? "ساعتين" : min <= 600 ? `${min / 60} ساعات` : `${min / 60} ساعة`);
+/* alerts = عدد تنبيهات الكاشير (اللي اتبعتت فعلاً، مش ناقص واحد) · windowMin = مدة العدّ (null ⇒ «النهارده») */
+export const portalOfflineManagerText = ({ offMin, alerts, windowMin = null }) => `⚠️ بورتال الكاشير مقفول ${offAr(offMin)} — الكاشير اتبعتله ${tanbihAr(alerts)} ${windowMin ? `في آخر ${spanAr(windowMin)}` : "النهارده"} ولسه ماتفتحش. الطلبات ومحادثات واتساب مش بترن في المطعم.
 البورتال ↗ ${PORTAL_URL}`;
-export const portalBackText = ({ offMin }) => `✅ تمام، بورتال الكاشير رجع اتفتح${offMin ? ` (كان مقفول ${offAr(offMin).replace(/^من /, "")})` : ""}.`;
+/* at = البورتال مفتوح من إمتى (بداية الفتحة اللي خلّته «رجع») */
+export const portalBackText = ({ offMin, at = null }) => `✅ تمام، بورتال الكاشير مفتوح تاني${at ? ` من ${riyadhHHMM(at)}` : ""}${offMin ? ` (كان مقفول ${offAr(offMin).replace(/^من /, "")})` : ""}.`;
 
 /* ═══ التشغيل ═════════════════════════════════════════════════════════════ */
 export function register(app, ctx, deps = {}) {
@@ -593,8 +651,54 @@ export function register(app, ctx, deps = {}) {
     const total = d.odd.reduce((a, r) => a + Number(r.n || 0), 0);
     return fanOut(cfg, to, () => ({ topic: "digest", kind: "daily", body, templates: [{ name: TPL_NOTICE, data: { notice: { text: `ملخص آخر ٢٤ ساعة: ${d.handovers} تحويل لموظف و${total} حاجة غريبة` } } }], sms: null }));
   }
-  /* ── RG1: البورتال مقفول وقت الشغل ⇒ واتساب للكاشير (كل repeatMin بالكتير)، وبعد managerAfter تنبيه من غير ما يتفتح ⇒ المدير كمان.
-     أول ما بوابة كاشير تظهر تاني (استطلاع حقيقي) ⇒ الحالة بتتمسح، ورسالة «رجع» للمدير بس لو كان اتبلّغ. ⇒ وصف اللي حصل (للاختبار والسجل). */
+  /* ── RG1 + PO1: البورتال مقفول وقت الشغل ⇒ واتساب للكاشير، وبعدها المدير ──────────────────────────────
+     الحلقة (صف wa_team_portal id='cashier'): بتبدأ أول دورة البورتال فيها «مقفول»، وبتخلص بس لما يفضل مفتوح backStableMin
+     (resolved_at = من إمتى مفتوح). لو المدير اتبلّغ فيها ⇒ الصف بيفضل لحد ما «رجع» توصله (بعد repeatMin من آخر رسالة ليه)، ولو قفل تاني
+     قبلها ⇒ نفس الصف بيبقى حلقة جديدة و«رجع» بتتلغي. بره وقت الشغل ⇒ الصف بيتمسح في صمت.
+     كل رسالة بتتحجز للرقم قبل الإرسال (wa_team_portal_to): التكرار والسقف اليومي لكل موظف مش لكل حلقة. ⇒ وصف اللي حصل (للاختبار والسجل). */
+  const MIN = 60_000;
+  const tms = (v) => (v ? new Date(v).getTime() : NaN);
+  /* حجز رسالة لرقم: مفيش رسالة portal_offline (أي نوع) قبل repeatMin من آخر واحدة. kind: cashier | manager | back (backSince = بداية الحلقة:
+     «رجع» بس للمدير اللي اتبلّغ فيها ومرة واحدة). ⇒ true = اتحجز. */
+  async function claimTo(phone, now, po, kind, backSince = null) {
+    const at = now.toISOString(), cut = new Date(now.getTime() - po.repeatMin * MIN + PORTAL_SLACK_MS).toISOString();
+    const r = kind === "back"
+      ? await q(`UPDATE wa_team_portal_to SET last_at=$2, last_back_at=$2 WHERE phone_norm=$1 AND last_mgr_at >= $4::timestamptz
+          AND (last_at IS NULL OR last_at <= $3::timestamptz) AND (last_back_at IS NULL OR last_back_at < $4::timestamptz) RETURNING phone_norm`, [phone, at, cut, backSince])
+      : await q(`INSERT INTO wa_team_portal_to(phone_norm, last_at, last_mgr_at) VALUES ($1,$2::timestamptz,$4::timestamptz)
+          ON CONFLICT (phone_norm) DO UPDATE SET last_at=$2::timestamptz, last_mgr_at=COALESCE($4::timestamptz, wa_team_portal_to.last_mgr_at)
+          WHERE wa_team_portal_to.last_at IS NULL OR wa_team_portal_to.last_at <= $3::timestamptz RETURNING phone_norm`, [phone, at, cut, kind === "manager" ? at : null]);
+    return Boolean(r && r.length);
+  }
+  /* عدّ رسايل portal_offline من السجل لكل رقم: win = تنبيهات كاشير في آخر managerWindowMin · day = كل الأنواع في اليوم التشغيلي · lastCashier */
+  async function portalLog(now, po) {
+    const win = new Date(now.getTime() - po.managerWindowMin * MIN).toISOString(), day = bizStart(bizDay(now)).toISOString();
+    const rows = await q(`SELECT phone_norm, count(*) FILTER (WHERE kind='cashier' AND at > $1::timestamptz)::int AS win, count(*) FILTER (WHERE at >= $2::timestamptz)::int AS day,
+        max(at) FILTER (WHERE kind='cashier') AS last_cashier FROM wa_team_log WHERE topic='portal_offline' AND at >= LEAST($1::timestamptz, $2::timestamptz) GROUP BY phone_norm`, [win, day]);
+    if (rows === null) return null;
+    const m = new Map();
+    for (const r of rows) m.set(r.phone_norm, { win: Number(r.win) || 0, day: Number(r.day) || 0, lastCashier: tms(r.last_cashier) });
+    return m;
+  }
+  /* «رجع» للمديرين اللي اتبلّغوا في الحلقة دي ولسه ماوصلتهمش. كلهم خدوها (أو مش هياخدوها: السقف) ⇒ الحلقة بتتمسح. */
+  async function payBacks(cfg, managers, ep, now, po) {
+    const since = ep.since ? new Date(ep.since).toISOString() : null;
+    const rows = since && managers.length ? await q("SELECT phone_norm, last_mgr_at, last_back_at FROM wa_team_portal_to WHERE phone_norm = ANY($1::text[])", [managers.map((m) => m.phone)]) : [];
+    if (rows === null) return { error: "state_db" };
+    const owed = managers.filter((m) => { const r = rows.find((x) => x.phone_norm === m.phone); return r && tms(r.last_mgr_at) >= tms(since) && !(tms(r.last_back_at) >= tms(since)); });
+    const log = owed.length ? await portalLog(now, po) : new Map();
+    if (log === null) return { error: "log_db" };
+    const payable = owed.filter((m) => ((log.get(m.phone) || {}).day || 0) < po.dailyCap);
+    const sent = [];
+    for (const m of payable) {
+      if (!(await claimTo(m.phone, now, po, "back", since))) continue;
+      const mins = Math.max(0, Math.floor((tms(ep.resolved_at) - tms(since)) / MIN));
+      const r = await sendToStaff(cfg, m, { topic: "portal_offline", kind: "back", body: portalBackText({ offMin: Number.isFinite(mins) ? mins : null, at: ep.resolved_at }), button: false, templates: [], sms: null });
+      sent.push({ to: last4(m.phone), via: r.via, ok: r.ok });
+    }
+    if (sent.length === payable.length) await q("DELETE FROM wa_team_portal WHERE id='cashier'", []);
+    return { owed: owed.length, sent, done: sent.length === payable.length };
+  }
   async function portalWatch(cfg, settings, now) {
     const po = cfg.portalOffline;
     if (!po.enabled) return { skipped: "off" };
@@ -604,41 +708,57 @@ export function register(app, ctx, deps = {}) {
     if (!cashiers.length) return { skipped: "no_cashier" };
     const list = await pres.presence();
     if (list === null) return { skipped: "presence_db" };
-    const cp = cashierPortal(list, now), offline = cp.offMin === null || cp.offMin >= po.afterMin, work = workingNow(settings, now, po.afterMin);
-    const st0 = await q("SELECT since, alerts, last_alert_at, manager_told FROM wa_team_portal WHERE id='cashier'", []);
+    const sig = portalSignal(list, now, po), work = workingNow(settings, now, po.afterMin);
+    const st0 = await q("SELECT since, alerts, last_alert_at, manager_told, resolved_at FROM wa_team_portal WHERE id='cashier'", []);
     if (st0 === null) return { skipped: "state_db" };
-    const st = st0[0] || null;
-    if (!offline || !work) {
-      if (!st) return { offline, work, offMin: cp.offMin };
-      const del = await q("DELETE FROM wa_team_portal WHERE id='cashier' RETURNING since, alerts, manager_told", []);
-      const was = del && del[0];
-      if (was && was.manager_told && !offline && po.backNotice && managers.length) {
-        const mins = was.since ? Math.max(0, Math.floor((now.getTime() - new Date(was.since).getTime()) / 60_000)) : null;
-        await fanOut(cfg, managers, () => ({ topic: "portal_offline", kind: "back", body: portalBackText({ offMin: mins }), button: false, templates: [], sms: null }));
-        return { offline, work, back: true };
+    const ep = st0[0] || null, base = { offline: sig.closed, stable: sig.stable, work, offMin: sig.offMin };
+    if (!work) {
+      if (ep) await q("DELETE FROM wa_team_portal WHERE id='cashier'", []);
+      return { ...base, cleared: Boolean(ep) };
+    }
+    if (!sig.closed) {
+      if (!ep || !sig.stable) return { ...base, ...(ep ? { waitingStable: true } : {}) };      // بصّة: الحلقة مكمّلة من غير رسايل
+      if (!ep.resolved_at) {
+        if (!(ep.manager_told && po.backNotice && managers.length)) { await q("DELETE FROM wa_team_portal WHERE id='cashier'", []); return { ...base, ended: true }; }
+        await q("UPDATE wa_team_portal SET resolved_at=$1 WHERE id='cashier' AND resolved_at IS NULL", [sig.streakStart || now.toISOString()]);
+        ep.resolved_at = sig.streakStart || now.toISOString();
       }
-      return { offline, work, cleared: Boolean(was) };
+      return { ...base, ended: true, back: await payBacks(cfg, managers, ep, now, po) };
     }
-    const last = st && st.last_alert_at ? new Date(st.last_alert_at).getTime() : NaN;
-    if (Number.isFinite(last) && now.getTime() - last < po.repeatMin * 60_000) return { offline, work, offMin: cp.offMin, waiting: true };
-    /* الحجز قبل الإرسال: نسخة واحدة بس بتبعت، والسيرفر لو وقع في النص مايكررش */
-    const since = cp.lastSeen || now.toISOString();
-    const claim = await q(`INSERT INTO wa_team_portal(id, since, alerts, last_alert_at, manager_told) VALUES ('cashier',$1,1,$2,FALSE)
-      ON CONFLICT (id) DO UPDATE SET alerts=wa_team_portal.alerts+1, last_alert_at=$2 WHERE wa_team_portal.last_alert_at IS NULL OR wa_team_portal.last_alert_at <= $3 RETURNING alerts, manager_told`,
-      [since, now.toISOString(), new Date(now.getTime() - po.repeatMin * 60_000).toISOString()]);
-    if (!claim || !claim.length) return { offline, work, offMin: cp.offMin, waiting: true };
-    const n = Number(claim[0].alerts) || 1;
-    const offMin = cp.offMin;
-    const notice = clip(`البورتال مقفول ${offAr(offMin)} — افتحه عشان الطلبات ومحادثات العملاء ترن عندك`, 120);
-    const sent = await fanOut(cfg, cashiers, () => ({ topic: "portal_offline", kind: "cashier", body: portalOfflineText({ offMin }), button: true,
-      templates: [{ name: TPL_NOTICE, data: { notice: { text: notice } } }], sms: null }));
+    /* مقفول: حلقة جديدة (أو حلقة اتحلّت وقفلت تاني قبل «رجع» ⇒ تبدأ من الأول) */
+    let told = ep ? ep.manager_told === true : false;
+    if (!ep) await q("INSERT INTO wa_team_portal(id, since, alerts, manager_told) VALUES ('cashier', $1, 0, FALSE) ON CONFLICT (id) DO NOTHING", [sig.lastSeen || now.toISOString()]);
+    else if (ep.resolved_at) { await q("UPDATE wa_team_portal SET since=$1, alerts=0, last_alert_at=NULL, manager_told=FALSE, resolved_at=NULL WHERE id='cashier'", [sig.lastSeen || now.toISOString()]); told = false; }
+    const log = await portalLog(now, po);
+    if (log === null) return { ...base, skipped: "log_db" };
+    const of = (m) => log.get(m.phone) || { win: 0, day: 0, lastCashier: NaN };
+    const ladder = managers.length > 0;      // مفيش مدير ⇒ الكاشير بيفضل ياخد (بالتكرار والسقف بس)
+    const maxed = (m) => of(m).day >= po.dailyCap || (ladder && of(m).win >= po.managerAfter);
+    const offMin = sig.offMin, sent = [], held = [];
+    for (const m of cashiers) {
+      if (maxed(m)) { held.push({ to: last4(m.phone), why: of(m).day >= po.dailyCap ? "daily_cap" : "manager_turn" }); continue; }
+      if (!(await claimTo(m.phone, now, po, "cashier"))) { held.push({ to: last4(m.phone), why: "repeat" }); continue; }
+      const notice = clip(`البورتال مقفول ${offAr(offMin)} — افتحه عشان الطلبات ومحادثات العملاء ترن عندك`, 120);
+      const r = await sendToStaff(cfg, m, { topic: "portal_offline", kind: "cashier", body: portalOfflineText({ offMin }), button: true,
+        templates: [{ name: TPL_NOTICE, data: { notice: { text: notice } } }], sms: null });
+      sent.push({ to: last4(m.phone), via: r.via, ok: r.ok });
+    }
+    if (sent.length) await q("UPDATE wa_team_portal SET alerts=alerts+1, last_alert_at=$1 WHERE id='cashier'", [now.toISOString()]);
+    /* السلّم: كل الكاشيرية خلّصوا نصيبهم (managerAfter في المدة أو السقف اليومي) وميعاد التنبيه اللي عليهم جه والبورتال لسه مقفول ⇒ المدير، مرة لكل حلقة */
     let mgr = null;
-    if (n > po.managerAfter && managers.length) {
-      mgr = await fanOut(cfg, managers, () => ({ topic: "portal_offline", kind: "manager", body: portalOfflineManagerText({ offMin, alerts: n - 1 }), button: true,
-        templates: [{ name: TPL_NOTICE, data: { notice: { text: clip(`بورتال الكاشير مقفول ${offAr(offMin)} ولسه ماتفتحش بعد ${n - 1} تنبيه`, 120) } } }], sms: null }));
-      await q("UPDATE wa_team_portal SET manager_told=TRUE WHERE id='cashier'", []);
+    const lastCashier = Math.max(-Infinity, ...cashiers.map((m) => of(m).lastCashier).filter(Number.isFinite));
+    if (ladder && !told && !sent.length && cashiers.every(maxed) && Number.isFinite(lastCashier) && now.getTime() - lastCashier >= po.repeatMin * MIN - PORTAL_SLACK_MS) {
+      const inWin = Math.max(0, ...cashiers.map((m) => of(m).win)), n = inWin || Math.max(0, ...cashiers.map((m) => of(m).day));
+      const out = [];
+      for (const m of managers) {
+        if (of(m).day >= po.dailyCap || !(await claimTo(m.phone, now, po, "manager"))) continue;
+        const r = await sendToStaff(cfg, m, { topic: "portal_offline", kind: "manager", body: portalOfflineManagerText({ offMin, alerts: n, windowMin: inWin ? po.managerWindowMin : null }), button: true,
+          templates: [{ name: TPL_NOTICE, data: { notice: { text: clip(`بورتال الكاشير مقفول ${offAr(offMin)} والكاشير اتبعتله ${tanbihAr(n)} ولسه ماتفتحش`, 120) } } }], sms: null });
+        out.push({ to: last4(m.phone), via: r.via, ok: r.ok });
+      }
+      if (out.length) { await q("UPDATE wa_team_portal SET manager_told=TRUE WHERE id='cashier'", []); mgr = { sent: out.filter((x) => x.ok).length, to: out }; }
     }
-    return { offline, work, offMin, alert: n, cashiers: sent, manager: mgr };
+    return { ...base, round: sent.length ? (ep && !ep.resolved_at ? Number(ep.alerts || 0) + 1 : 1) : 0, cashiers: sent, held, manager: mgr };
   }
 
   /* دورة كل دقيقة: حارس النافذة لكل عضو، ملخص الحاجات الغريبة، سلسلة فشل الإرسال، والملخص اليومي. عمرها ما بترمي. */
@@ -712,18 +832,27 @@ export function register(app, ctx, deps = {}) {
     } catch (e) { log.error("[wa-team] inbound:", e.message); return true; }      // رقم فريق + عطل ⇒ برضه مايتعاملش كعميل
   }
 
-  /* RG1: حضور البوابة للوحة — كل موظف بوابة/جهاز: مفتوح (استطلع في آخر afterMin دقيقة) أو مقفول من كام دقيقة. null = مفيش مصدر. */
+  /* RG1 + PO1: حضور البوابة للوحة — كل موظف بوابة/جهاز: مفتوح (ظاهر / في الخلفية) أو مقفول من كام دقيقة، وحالة الحلقة. null = مفيش مصدر. */
   async function portalStatus(cfg, now) {
     const pres = presenceApi();
     if (!pres || typeof pres.presence !== "function") return null;
     const list = await pres.presence();
     if (list === null) return null;
-    const t = now.getTime(), afterMin = cfg.portalOffline.afterMin;
-    const devices = list.map((x) => { const m = Math.max(0, Math.floor((t - new Date(x.lastSeen).getTime()) / 60_000)); return { name: x.name, role: x.role, device: x.device, lastSeen: x.lastSeen, open: m < afterMin, offMin: m < afterMin ? 0 : m }; });
-    const st = await q("SELECT since, alerts, last_alert_at, manager_told FROM wa_team_portal WHERE id='cashier'", []);
-    const cp = cashierPortal(list, now);
-    return { afterMin, working: workingNow((await settingsNow()) || {}, now, 0), cashier: { open: cp.offMin !== null && cp.offMin < afterMin, lastSeen: cp.lastSeen, offMin: cp.offMin },
-      alerts: st && st[0] ? { count: Number(st[0].alerts) || 0, lastAt: st[0].last_alert_at || null, managerTold: st[0].manager_told === true } : null, devices };
+    const po = cfg.portalOffline, t = now.getTime(), afterMin = po.afterMin, lim = afterMin * 60_000;
+    const devices = list.map((x) => {
+      const ls = tms(x.lastSeen), lv = tms(x.lastVisible);
+      const connected = t - ls < lim, visible = Number.isFinite(lv) && t - lv < lim, open = po.countBackground ? connected : visible;
+      const ref = po.countBackground ? ls : lv;
+      return { name: x.name, role: x.role, device: x.device, lastSeen: x.lastSeen, lastVisible: x.lastVisible || null, via: x.via || null,
+        open, visible, background: connected && !visible, offMin: open ? 0 : Number.isFinite(ref) ? Math.max(0, Math.floor((t - ref) / 60_000)) : null };
+    });
+    const st = await q("SELECT since, alerts, last_alert_at, manager_told, resolved_at FROM wa_team_portal WHERE id='cashier'", []);
+    const today = await q("SELECT count(*)::int AS n FROM wa_team_log WHERE topic='portal_offline' AND at >= $1", [bizStart(bizDay(now)).toISOString()]);
+    const sig = portalSignal(list, now, po), e = st && st[0];
+    return { afterMin, countBackground: po.countBackground, working: workingNow((await settingsNow()) || {}, now, 0),
+      cashier: { open: !sig.closed, stable: sig.stable, lastSeen: sig.lastSeen, offMin: sig.offMin },
+      alerts: e ? { count: Number(e.alerts) || 0, lastAt: e.last_alert_at || null, managerTold: e.manager_told === true, since: e.since || null, resolvedAt: e.resolved_at || null } : null,
+      sentToday: Number(today && today[0] && today[0].n) || 0, devices };
   }
 
   /* ── الحالة (اللوحة والبورتال) ───────────────────────────────────────────── */
