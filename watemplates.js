@@ -260,7 +260,7 @@ export const TEMPLATES = [
     meta: { purpose: "With the courier: name, WhatsApp button, tracking", trigger: "on_the_way when waBot.courierTemplate is on", send: "auto-candidate", replaces: "fc_order_on_the_way", fallbackSms: null } }),
   T({ name: "fc_order_delivered_v2", category: "UTILITY", group: "order",
     body: "تم توصيل طلبك رقم {{1}} ✅ بالعافية عليك.\nوصلك الطلب مثل ما تبي؟",
-    vars: [ORDER_NO], buttons: [qr("تمام 👍"), qr("عندي ملاحظة")],
+    vars: [ORDER_NO], buttons: [qr("تمام"), qr("عندي ملاحظة")],
     meta: { purpose: "تأكيد التوصيل + «تمام / عندي ملاحظة» (الضغطة = رأيه في الطلب ويفتح نافذة)", trigger: "delivered لما المرحلة في waBot.windowV2Stages", send: "auto-candidate", replaces: "fc_order_delivered", fallbackSms: "order.delivered" } }),
   T({ name: "fc_order_refunded_v2", category: "UTILITY", group: "order",
     body: "نعتذر منك، ما قدرنا ننفّذ طلبك رقم {{1}} وتم استرجاع المبلغ كاملاً لوسيلة الدفع 💳\nيظهر المبلغ في حسابك حسب إجراءات البنك.",
@@ -272,7 +272,7 @@ export const TEMPLATES = [
     meta: { purpose: "الاسترجاع جاري + «عندي سؤال» (موظف)", trigger: "refund_failed لما المرحلة في waBot.windowV2Stages", send: "auto-candidate", replaces: "fc_refund_in_progress", mandatory: true, fallbackSms: "order.refund_failed" } }),
   T({ name: "fc_review_request_v2", category: "UTILITY", group: "order",
     body: "كيف كانت تجربتك مع طلب رقم {{1}}؟ 🌟\nاختر من الأزرار، أو قيّم الطلب من الرابط.",
-    vars: [ORDER_NO], buttons: [qr("تمام 👍"), qr("عندي ملاحظة"), url("قيّم طلبك", `${STORE}/r?c=`, { path: "review.code", ex: "ab12cd" })],
+    vars: [ORDER_NO], buttons: [qr("تمام"), qr("عندي ملاحظة"), url("قيّم طلبك", `${STORE}/r?c=`, { path: "review.code", ex: "ab12cd" })],
     meta: { purpose: "طلب التقييم بره النافذة + «تمام / عندي ملاحظة»", trigger: "reviews.js — لما waBot.windowV2Stages فيها review", send: "auto-candidate", replaces: "fc_review_request", fallbackSms: "review.invite" } }),
 
   T({ name: "fc_order_delayed", category: "UTILITY", group: "order",

@@ -496,7 +496,7 @@ const ACK_RE = /^(?:تمام|تمم|اوكي|اوك|ok|okay|k|طيب|زين|ما
 const NACK_RE = /^(?:لا|لا شكرا|لا مشكور|no|nope|no thanks|مو لازم)$/;
 export const WINDOW_V2_STAGES = Object.freeze(["pos_created", "accepted", "on_the_way", "delivered", "rejected_refunded", "refund_failed", "review"]);
 /* SB4: الردود السريعة في القوالب (v2) والأزرار في تحديثات الطلب الحرة بتوصل بنصها كمعرّف ⇒ الرد المفيد */
-export const QR_IDS = Object.freeze({ "تابع طلبي": "status", "track my order": "status", "تمام 👍": "review_ok", "all good 👍": "review_ok", "عندي ملاحظة": "review_note", "i have a note": "review_note", "عندي سؤال": "human", "نفس الطلب مرة ثانية": "reorder" });
+export const QR_IDS = Object.freeze({ "تابع طلبي": "status", "track my order": "status", "تمام 👍": "review_ok", "تمام": "review_ok", "all good 👍": "review_ok", "عندي ملاحظة": "review_note", "i have a note": "review_note", "عندي سؤال": "human", "نفس الطلب مرة ثانية": "reorder" });
 export const REVIEW_NOTE_RE = /^(?:عندي ملاحظه|عندي ملاحظات|ملاحظه|ملاحظات|فيه ملاحظه|في ملاحظه|i have a note|a note)$/;      // SB2: بعد normalize (ة ⇒ ه)
 const TIME_RE = /(?:^| )(?:الساعه كم|كم الساعه|ساعه كم|(?:الى|لين|لحد|لغايه|حتى) (?:الساعه )?(?:كم|متى)|تقفلون الساعه كم|تفتحون الساعه كم)(?: |$)/;
 const FAQ_RULES = [
