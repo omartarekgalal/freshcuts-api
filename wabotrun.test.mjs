@@ -350,6 +350,26 @@ function world({ waBot = {}, notifications = { whatsappEnabled: true }, orders =
       if (/count\(\*\) FILTER \(WHERE done_at >= \(date_trunc/i.test(s)) { const d = db.jobs.filter((j) => j.kind === "window_keep" && j.status === "done"); return { rows: [{ today: d.length, week: d.filter((j) => j.phone_norm === p[0]).length }] }; }
       if (/^SELECT order_no FROM shop_orders WHERE phone_norm=\$1 AND NOT COALESCE\(is_test,false\) AND status IN \('pos_created'/i.test(s)) return { rows: orders.filter((o) => o.phone_norm === p[0] && ["pos_created", "accepted", "courier_requested", "courier_assigned", "on_the_way"].includes(o.status)).slice(-1) };
       if (/^SELECT b\.code FROM wa_bot_carts b/i.test(s)) return { rows: db.botCarts.filter((x) => x.phone === p[0] && !x.expired).slice(-1).map((x) => ({ code: x.code })) };
+      /* RV1: النجوم جوّه واتساب (wareviews.js) — db.invites = دعوات التقييم، db.reviews = صفوف التقييم */
+      if (/^SELECT review_stars_at FROM wa_bot_chats WHERE phone_norm=\$1/i.test(s)) { const ch = db.chats.get(p[0]); return { rows: ch ? [{ review_stars_at: ch.review_stars_at || null }] : [] }; }
+      if (/^UPDATE wa_bot_chats SET review_stars_at = CASE WHEN \$2::boolean THEN NOW\(\) ELSE NULL END WHERE phone_norm=\$1/i.test(s)) { chat(p[0]).review_stars_at = p[1] ? iso() : null; return { rows: [] }; }
+      if (/^INSERT INTO wa_bot_chats\(phone_norm, review_code, review_order, review_stars_at\)/i.test(s)) { Object.assign(chat(p[0]), { review_code: p[1], review_order: p[2], review_stars_at: iso() }); return { rows: [] }; }
+      if (/^SELECT review_code, review_stars_at, review_answered_at FROM wa_bot_chats/i.test(s)) { const ch = db.chats.get(p[0]); return { rows: ch ? [{ review_code: ch.review_code || null, review_stars_at: ch.review_stars_at || null, review_answered_at: ch.review_answered_at || null }] : [] }; }
+      if (/^SELECT 1 FROM wa_messages WHERE phone_norm=\$1 AND direction='out' AND created_at > \$2::timestamptz \+ INTERVAL '15 seconds'/i.test(s)) return { rows: db.msgs.filter((m) => m.phone_norm === p[0] && m.direction === "out" && Date.parse(m.created_at) > Date.parse(p[1]) + 15_000).slice(0, 1).map(() => ({})) };
+      if (/^SELECT review_code FROM wa_bot_chats WHERE phone_norm=\$1 AND review_asked_at/i.test(s)) { const ch = db.chats.get(p[0]); return { rows: ch && ch.review_asked_at && nowMs - Date.parse(ch.review_asked_at) < 48 * 3600_000 ? [{ review_code: ch.review_code || null }] : [] }; }
+      if (/^SELECT kind, option, ref, rating FROM review_invites WHERE code=\$1 AND phone_norm=\$2/i.test(s)) return { rows: (db.invites || []).filter((x) => x.code === p[0] && x.phone_norm === p[1]).map((x) => ({ kind: x.kind || null, option: x.option || null, ref: x.ref || null, rating: x.rating ?? null })) };
+      if (/^SELECT order_no, code, phone_norm, option, kind, rating, review_id, ref FROM review_invites WHERE code=\$1/i.test(s)) return { rows: (db.invites || []).filter((x) => x.code === p[0]).map((x) => ({ option: null, kind: null, rating: null, review_id: null, ref: null, ...x })) };
+      if (/^SELECT order_no, code, phone_norm, option, kind, rating, review_id, ref FROM review_invites WHERE wa_msg_id=\$1 AND phone_norm=\$2/i.test(s)) return { rows: (db.invites || []).filter((x) => x.wa_msg_id && x.wa_msg_id === p[0] && x.phone_norm === p[1]).map((x) => ({ option: null, kind: null, rating: null, review_id: null, ref: null, ...x })) };
+      if (/^SELECT order_no, code, phone_norm, option, kind, rating, review_id, ref FROM review_invites WHERE phone_norm=\$1 AND created_at/i.test(s)) return { rows: (db.invites || []).filter((x) => x.phone_norm === p[0] && !/^TEST-/.test(x.order_no)).slice(-1).map((x) => ({ option: null, kind: null, rating: null, review_id: null, ref: null, ...x })) };
+      if (/^UPDATE review_invites SET rating=\$2, wa_answer=\$3/i.test(s)) { const iv = (db.invites || []).find((x) => x.code === p[0] && x.rating == null); if (!iv) return { rows: [] }; Object.assign(iv, { rating: p[1], wa_answer: p[2], sent_at: iv.sent_at || iso(), channel: iv.channel || "wa_tap" }); return { rows: [{ order_no: iv.order_no }] }; }
+      if (/^SELECT id FROM reviews WHERE phone_norm=\$1 AND channel='whatsapp'/i.test(s)) return { rows: (db.reviews || []).filter((r) => r.phone_norm === p[0] && nowMs - Date.parse(r.at) < 600_000).map((r) => ({ id: r.id })) };
+      if (/^INSERT INTO reviews\(rating, code, code_label, channel, order_no, phone_norm, is_test, rating_exact, kind\)/i.test(s)) { const r = { id: (db.reviews ||= []).length + 1, rating: p[0], code: p[1], code_label: p[2], channel: "whatsapp", order_no: p[3], phone_norm: p[4], is_test: p[5], rating_exact: p[6], kind: p[7], categories: [], comment: null, at: iso() }; db.reviews.push(r); return { rows: [{ id: r.id }] }; }
+      if (/^UPDATE review_invites SET review_id=\$2 WHERE code=\$1/i.test(s)) { const iv = (db.invites || []).find((x) => x.code === p[0]); if (iv) iv.review_id = p[1]; return { rows: [] }; }
+      if (/^INSERT INTO wa_bot_chats\(phone_norm, review_low_id, review_low_at\)/i.test(s)) { Object.assign(chat(p[0]), { review_low_id: p[1], review_low_at: iso() }); return { rows: [] }; }
+      if (/^SELECT review_low_id, review_low_at FROM wa_bot_chats/i.test(s)) { const ch = db.chats.get(p[0]); return { rows: ch ? [{ review_low_id: ch.review_low_id || null, review_low_at: ch.review_low_at || null }] : [] }; }
+      if (/^UPDATE reviews SET comment=\$3 WHERE id=\$1 AND phone_norm=\$2 AND comment IS NULL/i.test(s)) { const r = (db.reviews || []).find((x) => x.id === p[0] && x.phone_norm === p[1] && x.comment == null); if (r) r.comment = p[2]; return { rows: r ? [{ id: r.id }] : [] }; }
+      if (/^UPDATE reviews SET categories = CASE/i.test(s)) { const r = (db.reviews || []).find((x) => x.id === p[0] && x.phone_norm === p[1]); if (r && !r.categories.includes(p[2])) r.categories.push(p[2]); return { rows: r ? [{ id: r.id }] : [] }; }
+      if (/^UPDATE review_invites SET google_sent_at=/i.test(s)) { const iv = (db.invites || []).find((x) => x.code === p[0]); if (iv) iv.google_sent_at = iv.google_sent_at || iso(); return { rows: [] }; }
       /* SB2: طلب التقييم على واتساب */
       if (/^SELECT review_code, review_order, review_asked_at, review_answered_at FROM wa_bot_chats/i.test(s)) { const ch = db.chats.get(p[0]); return { rows: ch ? [{ review_code: ch.review_code || null, review_order: ch.review_order || null, review_asked_at: ch.review_asked_at || null, review_answered_at: ch.review_answered_at || null }] : [] }; }
       if (/^INSERT INTO wa_bot_chats\(phone_norm, review_code, review_order, review_asked_at, review_answered_at\)/i.test(s)) { Object.assign(chat(p[0]), { review_code: p[1], review_order: p[2], review_asked_at: iso(), review_answered_at: null }); return { rows: [] }; }
@@ -1723,7 +1743,7 @@ test("footer «للرجوع… أو موظف»: not under every message (smart, 
 test("settings are complete: every tunable has a schema row (type, limits, default, Arabic name), out-of-range saves are refused, every save is logged with who and what", withEnv(LOCKS_OPEN, async () => {
   // every key of DEFAULTS (nested for llm / optin / links) is described
   const flat = [];
-  for (const [k, v] of Object.entries(R.DEFAULTS)) { if (["llm", "optin", "links", "assist"].includes(k)) for (const k2 of Object.keys(v)) { if (k === "links" && k2 === "channel") for (const k3 of Object.keys(v[k2])) flat.push(`${k}.${k2}.${k3}`); else flat.push(`${k}.${k2}`); } else flat.push(k); }
+  for (const [k, v] of Object.entries(R.DEFAULTS)) { if (["llm", "optin", "links", "assist", "reviewFlow"].includes(k)) for (const k2 of Object.keys(v)) { if (k === "links" && k2 === "channel") for (const k3 of Object.keys(v[k2])) flat.push(`${k}.${k2}.${k3}`); else flat.push(`${k}.${k2}`); } else flat.push(k); }
   flat.push("waRates");
   assert.deepEqual(flat.filter((k) => !R.SCHEMA[k]), [], "a setting without a schema row");
   assert.deepEqual(Object.keys(R.SCHEMA).filter((k) => !flat.includes(k)), [], "a schema row without a setting");
@@ -4545,8 +4565,9 @@ test("SB1 end to end: «توصيل ولا استلام؟» goes out as two reply
 }));
 
 /* SB2 — طلب التقييم بعد التوصيل على واتساب (عمر ١٤/١٠: «ليه مشغلتش رسالة التقييم تجيله على الواتس الى بتيجي للعميل بعد الطلب») */
+/* RV1: الاختبار ده بيغطّي المسار القديم (reviewFlow مقفول): زرّين «تمام / عندي ملاحظة». المسار الجديد (قايمة النجوم) في اختبارات RV1 تحت. */
 test("SB2: inside the 24h window the review ask is a free-form message with «تمام 👍 / عندي ملاحظة»; «تمام» ⇒ the rating link, «ملاحظة» ⇒ the manager with the order number; typed replies count too", withEnv(CONFIGURED, async () => {
-  const w = world({ waBot: { mode: "test", testPhones: TESTERS } });
+  const w = world({ waBot: { mode: "test", testPhones: TESTERS, reviewFlow: { enabled: false } } });
   await w.say("شكراً");
   const before = w.calls.length;
   const r = await w.bot.reviewAsk({ phone: "0512345678", orderNo: "W1790012345678", code: "ab12cd34" });
@@ -4564,14 +4585,14 @@ test("SB2: inside the 24h window the review ask is a free-form message with «ت
   assert.equal(note.log.reply_key, "review_note"); assert.equal(note.log.handoff, "review_note");
   assert.match(JSON.stringify(note.sent.find((b) => b.type)), /طلب رقم W1790012345678/);
   // typed: «تمام» after a fresh ask = the button; with nothing pending it stays a plain «تمام» (no reply)
-  const w2 = world({ waBot: { mode: "test", testPhones: TESTERS } });
+  const w2 = world({ waBot: { mode: "test", testPhones: TESTERS, reviewFlow: { enabled: false } } });
   await w2.say("هلا");
   await w2.bot.reviewAsk({ phone: "0512345678", orderNo: "W1790012340000", code: "zz99yy88" });
   const typed = await w2.say("تمام");
   assert.equal(typed.log.reply_key, "review_ok"); assert.match(JSON.stringify(typed.sent), /r\?c=zz99yy88/);
   const again = await w2.say("تمام");
   assert.equal(again.sent.filter((b) => b.type).length, 0, "answered once: a second «تمام» is just an acknowledgement");
-  const w3 = world({ waBot: { mode: "test", testPhones: TESTERS } });
+  const w3 = world({ waBot: { mode: "test", testPhones: TESTERS, reviewFlow: { enabled: false } } });
   await w3.say("هلا"); await w3.bot.reviewAsk({ phone: "0512345678", orderNo: "W1790012341111", code: "qq11ww22" });
   const tn = await w3.say("عندي ملاحظة");
   assert.equal(tn.log.reply_key, "review_note"); assert.match(JSON.stringify(tn.sent), /W1790012341111/);
@@ -4619,17 +4640,18 @@ test("SB4 window: an order update inside an open window goes FREE (same text + t
   assert.notEqual((await off.wa.sendOrderUpdate({ order_no: "W1790012345678", phone_norm: "512345678", option: "delivery" }, "on_the_way")).free, true, "switch off ⇒ the template path as before");
 }));
 
+/* RV1: الاختبار ده بيغطّي المسار القديم (reviewFlow مقفول): «تمام» ⇒ رابط صفحة التقييم. المسار الجديد في اختبارات RV1 تحت. */
 test("SB4 window: a quick-reply tap «تمام 👍» (template or free update) answers with the order's rating link and marks the invite so no second review ask; «تابع طلبي» = order status", withEnv(CONFIGURED, async () => {
-  const w = world({ waBot: { mode: "test", testPhones: TESTERS } });
+  const w = world({ waBot: { mode: "test", testPhones: TESTERS, reviewFlow: { enabled: false } } });
   w.db.invites = [{ phone_norm: "512345678", code: "kk55jj66", order_no: "W1790012349999" }];
   const t = await w.say(null, { raw: { type: "button", button: { text: "تمام 👍", payload: "تمام 👍" } } });
   assert.equal(t.log.reply_key, "review_ok", JSON.stringify(t.log)); assert.match(JSON.stringify(t.sent), /r\?c=kk55jj66/);
   assert.equal(w.db.invites[0].channel, "wa_tap");
   assert.equal(R.classify({ type: "button", text: "تابع طلبي", interactiveId: "تابع طلبي" }).key, "status");
-  const none = world({ waBot: { mode: "test", testPhones: TESTERS } });
+  const none = world({ waBot: { mode: "test", testPhones: TESTERS, reviewFlow: { enabled: false } } });
   const n = await none.say(null, { raw: { type: "button", button: { text: "تمام 👍", payload: "تمام 👍" } } });
   assert.equal(n.log.reply_key, "review_ok"); assert.match(JSON.stringify(n.sent), /بالعافية عليك/, "no invite: a warm line, no link");
-  const cfg = R.botConfig({ waBot: {} });
+  const cfg = R.botConfig({ waBot: { reviewFlow: { enabled: false } } });
   assert.match(R.buildReply("review_ok", { cfg, lang: "ar", data: { settings: {} }, arg: { code: "kk55jj66", extra: "⭐ باقي لك طلب واحد" } }).body, /⭐ باقي لك طلب واحد$/, "the loyalty line rides in the SAME message");
 }));
 
@@ -5305,4 +5327,187 @@ test("FU1 ضغطة من غير حملة ولا صنف معيّن شافه: طب�
   await menuTap(s);
   const o2 = fuOut(await s.tick(41));
   assert.equal(o2.length, 1); assert.equal(bodyOf(o2[0]), FU_NEUTRAL); assert.equal(s.db.botCarts.length, 0);
+}));
+
+/* ═══ RV1 — التقييم بالنجوم جوّه واتساب (عمر ١٥/١٠: «ناخد التقييم من الواتساب بالنجوم، ولو أكثر من ٣ نبعتله رابط جوجل على الواتس») ═══
+   الرحلة كلها من الويب هوك الحقيقي لحد جسم رسالة Graph: سؤال النجوم ⇒ ضغطة ⇒ جوجل / الاعتذار والمدير، والتقييم بيتسجّل على الطلب والعميل. */
+const RV_GOOGLE = "https://g.page/r/CSG0gPAqlvHMEBM/review";
+const RV_GO = "https://freshcuts-api.o2m8.me/api/reviews/g/";
+const rvWorld = (o = {}) => {
+  const w = world({ waBot: { mode: "test", testPhones: TESTERS, ...(o.waBot || {}) }, extraSettings: { reviews: { threshold: 4, googleUrl: RV_GOOGLE, ...(o.reviews || {}) } }, ...(o.world || {}) });
+  w.db.invites = o.invites || [{ phone_norm: "512345678", code: "ab12cd34", order_no: "W1790012345678", kind: "delivery", ref: "W1790012345678" }];
+  return w;
+};
+const listTap = (w, id, title = "x") => w.say(null, { raw: { type: "interactive", interactive: { type: "list_reply", list_reply: { id, title } } } });
+const qrTap = (w, text, o = {}) => w.say(null, { raw: { type: "button", button: { text, payload: text }, ...(o.context ? { context: { id: o.context } } : {}) } });
+const firstOut = (r) => r.sent.find((b) => b.type);
+
+test("RV1: inside the window the review ask is a stars list (5→1, ids carry the invite); 5★ ⇒ ONE message: thanks + the tracked Google button; the rating is saved on the order and the customer; a second tap ⇒ «وصلنا تقييمك»", withEnv(CONFIGURED, async () => {
+  const w = rvWorld();
+  await w.say("شكراً");
+  const before = w.calls.length;
+  const r = await w.bot.reviewAsk({ phone: "0512345678", orderNo: "W1790012345678", code: "ab12cd34", kind: "delivery", ref: "W1790012345678" });
+  assert.deepEqual(r, { ok: true, channel: "wa_list" });
+  const p = w.calls.slice(before).map((c) => c.body).find((b) => b.type);
+  assert.equal(p.interactive.type, "list");
+  assert.match(p.interactive.body.text, /^كيف كان طلبك رقم W1790012345678؟ 🌟\nقيّمه بالنجوم من القائمة 👇/);
+  assert.deepEqual(p.interactive.action.sections[0].rows.map((x) => [x.id, x.title]),
+    [["rs:5:ab12cd34", "⭐⭐⭐⭐⭐ ممتاز"], ["rs:4:ab12cd34", "⭐⭐⭐⭐ جيد جداً"], ["rs:3:ab12cd34", "⭐⭐⭐ جيد"], ["rs:2:ab12cd34", "⭐⭐ مقبول"], ["rs:1:ab12cd34", "⭐ ضعيف"]]);
+  assert.equal(p.interactive.action.button, "اختر تقييمك");
+  assert.ok(w.db.chats.get("512345678").review_stars_at, "a stars question is pending (typed digits count from now)");
+  const five = await listTap(w, "rs:5:ab12cd34", "⭐⭐⭐⭐⭐ ممتاز");
+  assert.equal(five.log.reply_key, "review_star", JSON.stringify(five.log));
+  const g = firstOut(five);
+  assert.equal(g.interactive.type, "cta_url");
+  assert.equal(g.interactive.action.parameters.url, `${RV_GO}ab12cd34`, "our counter first, then Google");
+  assert.equal(g.interactive.action.parameters.display_text, "قيّمنا على جوجل");
+  assert.match(g.interactive.body.text, /^شكراً على تقييمك 🌟/);
+  assert.doesNotMatch(g.interactive.body.text, /خصم|كود|هدية|مجان|كيتا|هنقر|نينجا|تطبيق/, "no incentive and no app name next to a Google ask");
+  assert.equal(five.sent.filter((b) => b.type).length, 1, "one message");
+  assert.deepEqual(w.db.reviews.map((x) => [x.rating, x.order_no, x.phone_norm, x.kind, x.rating_exact, x.channel, x.code_label]), [[5, "W1790012345678", "512345678", "delivery", true, "whatsapp", "واتساب · توصيل"]]);
+  assert.deepEqual([w.db.invites[0].rating, w.db.invites[0].review_id, w.db.invites[0].wa_answer, Boolean(w.db.invites[0].google_sent_at)], [5, 1, "stars:5", true]);
+  const again = await listTap(w, "rs:4:ab12cd34");
+  assert.match(JSON.stringify(again.sent), /وصلنا تقييمك، شكراً لك 🌟/);
+  assert.equal(w.db.reviews.length, 1, "one rating per order");
+  // trackGoogle off ⇒ Google's own link (no counter)
+  const d = rvWorld({ waBot: { reviewFlow: { trackGoogle: false } } });
+  await d.say("هلا"); await d.bot.reviewAsk({ phone: "0512345678", orderNo: "W1790012345678", code: "ab12cd34", kind: "delivery" });
+  assert.equal(firstOut(await listTap(d, "rs:4:ab12cd34")).interactive.action.parameters.url, RV_GOOGLE);
+}));
+
+test("RV1: 3★ or less ⇒ apology + «وش اللي ما عجبك؟» (reasons list) + urgent manager handover with the order number — never Google; the reason and the first text land on the inbox row; no second alert", withEnv(CONFIGURED, async () => {
+  const w = rvWorld();
+  await w.say("هلا"); await w.bot.reviewAsk({ phone: "0512345678", orderNo: "W1790012345678", code: "ab12cd34", kind: "delivery", ref: "W1790012345678" });
+  const low = await listTap(w, "rs:2:ab12cd34", "⭐⭐ مقبول");
+  assert.equal(low.log.reply_key, "review_star");
+  assert.equal(low.log.handoff, "review_low");
+  const m = firstOut(low);
+  assert.equal(m.interactive.type, "list");
+  assert.match(m.interactive.body.text, /^نعتذر منك 🙏 ما كانت تجربتك مثل ما نتمنى\.\nوش اللي ما عجبك؟/);
+  assert.match(m.interactive.body.text, /رقم الطلب: W1790012345678/);
+  assert.doesNotMatch(JSON.stringify(low.sent), /جوجل|google|g\.page|\/api\/reviews\/g\//i, "a low rater is never sent to Google");
+  assert.deepEqual(m.interactive.action.sections[0].rows.map((x) => x.id), ["rr:food:1", "rr:wrong:1", "rr:time:1", "rr:delivery:1", "rr:service:1", "rr:price:1", "rr:other:1"]);
+  const ho = w.portal.find(([e, d0]) => e === "wa_handover" && d0.reason === "review_low");
+  assert.ok(ho, "portal card"); assert.equal(ho[1].urgent, true); assert.equal(ho[1].orderNo, "W1790012345678");
+  assert.match(ho[1].note, /^تقييم 2★ · طلب W1790012345678 · توصيل$/);
+  assert.equal(w.db.reviews[0].rating, 2);
+  const rs = await listTap(w, "rr:food:1", "الأكل (الطعم أو الجودة)");
+  assert.equal(rs.log.reply_key, "review_reason");
+  assert.match(bodyOf(firstOut(rs)), /^شكراً، وصلت ملاحظتك ✅/);
+  assert.deepEqual(w.db.reviews[0].categories, ["الأكل"]);
+  const alertsBefore = w.portal.filter(([e]) => e === "wa_handover").length;
+  await w.say("الأكل وصل بارد والبطاطس ناقصة");
+  assert.equal(w.db.reviews[0].comment, "الأكل وصل بارد والبطاطس ناقصة", "first text after a low rating = the inbox comment");
+  assert.equal(w.portal.filter(([e]) => e === "wa_handover").length, alertsBefore, "the complaint text does not open a second handover");
+  await w.say("وكمان المندوب تأخر");
+  assert.equal(w.db.reviews[0].comment, "الأكل وصل بارد والبطاطس ناقصة", "only the first text");
+  // a threshold of 3 on the rating page does not send a 3★ to Google here
+  const t3 = rvWorld({ reviews: { threshold: 3 } });
+  await t3.say("هلا"); await t3.bot.reviewAsk({ phone: "0512345678", orderNo: "W1790012345678", code: "ab12cd34", kind: "delivery" });
+  const three = await listTap(t3, "rs:3:ab12cd34");
+  assert.equal(three.log.handoff, "review_low"); assert.doesNotMatch(JSON.stringify(three.sent), /جوجل|\/api\/reviews\/g\//);
+}));
+
+test("RV1: outside the window ⇒ the stars template (after approval, switch on) for every kind, with the right subject; its «يحتاج تحسين» tap is matched to that invite ⇒ low path with rating_exact=false; switch off ⇒ old templates for website orders and nothing for till orders", withEnv(CONFIGURED, async () => {
+  const CAT = await import("./watemplates.js"); const WA = await import("./whatsapp.js"); WA.registerCatalog(CAT);
+  const w = rvWorld({ waBot: { reviewFlow: { starsTemplate: true } }, invites: [{ phone_norm: "512345678", code: "pp11qq22", order_no: "pos:9001", kind: "dinein", ref: "فاتورة 1043" }] });
+  const before = w.calls.length;
+  const r = await w.bot.reviewAsk({ phone: "0512345678", orderNo: "pos:9001", code: "pp11qq22", kind: "dinein", ref: "فاتورة 1043" });
+  assert.equal(r.ok, true, JSON.stringify(r)); assert.equal(r.channel, "wa_stars"); assert.ok(r.wamid);
+  const t = w.calls.slice(before).map((c) => c.body).find((b) => b.type === "template");
+  assert.equal(t.template.name, "fc_review_stars");
+  assert.deepEqual(t.template.components, [{ type: "body", parameters: [{ type: "text", text: "زيارتك للمطعم" }] }]);
+  w.db.invites[0].wa_msg_id = r.wamid;
+  const tap = await qrTap(w, "يحتاج تحسين", { context: r.wamid });
+  assert.equal(tap.log.reply_key, "review_star"); assert.equal(tap.log.handoff, "review_low");
+  assert.deepEqual([w.db.reviews[0].rating, w.db.reviews[0].rating_exact, w.db.reviews[0].order_no, w.db.reviews[0].kind], [3, false, "pos:9001", "dinein"]);
+  const m = firstOut(tap);
+  assert.doesNotMatch(m.interactive.body.text, /رقم الطلب/, "a till order has no website number to show");
+  assert.deepEqual(m.interactive.action.sections[0].rows.map((x) => x.id), ["rr:food:1", "rr:wrong:1", "rr:time:1", "rr:service:1", "rr:price:1", "rr:clean:1", "rr:other:1"], "dine-in: cleanliness, no courier");
+  const ho = w.portal.find(([e, d0]) => e === "wa_handover" && d0.reason === "review_low");
+  assert.equal(ho[1].orderNo, null, "no Arabic invoice text in the English staff SMS"); assert.match(ho[1].note, /«يحتاج تحسين» · طلب فاتورة 1043 · أكل في الصالة/);
+  // subjects per kind
+  for (const [kind, orderNo, ref, subj] of [["takeaway", "pos:9002", null, "طلبك من الفرع"], ["delivery", "W1790012345678", "W1790012345678", "طلبك رقم W1790012345678"], ["table", "W1790012349999", "W1790012349999", "طلبك رقم W1790012349999"]]) {
+    const x = rvWorld({ waBot: { reviewFlow: { starsTemplate: true } } });
+    const b0 = x.calls.length;
+    const rr = await x.bot.reviewAsk({ phone: "0512345678", orderNo, code: "zz99yy88", kind, ref });
+    assert.equal(rr.channel, "wa_stars", kind);
+    assert.equal(x.calls.slice(b0).map((c) => c.body).find((b) => b.type === "template").template.components[0].parameters[0].text, subj, kind);
+  }
+  // switch off (not approved yet): website order ⇒ the approved v1/v2 template as today; till order ⇒ nothing on WhatsApp (reviews.js decides SMS)
+  const off = rvWorld();
+  const b1 = off.calls.length;
+  assert.deepEqual(await off.bot.reviewAsk({ phone: "0512345678", orderNo: "W1790012345678", code: "ab12cd34", kind: "delivery" }), { ok: true, channel: "wa_template" });
+  assert.equal(off.calls.slice(b1).map((c) => c.body).find((b) => b.type === "template").template.name, "fc_review_request");
+  assert.deepEqual(await off.bot.reviewAsk({ phone: "0512345678", orderNo: "pos:9003", code: "ab12cd35", kind: "takeaway" }), { ok: false, skipped: "no_visit_template" });
+}));
+
+test("RV1: «تمام» on the delivered message ⇒ the stars list for that order (not the rating-page link); a typed «5» then counts as 5★; a typed «تمام» after a stars list is just an acknowledgement", withEnv(CONFIGURED, async () => {
+  const w = rvWorld({ invites: [{ phone_norm: "512345678", code: "kk55jj66", order_no: "W1790012347777", kind: "pickup", ref: "W1790012347777" }] });
+  const ok = await qrTap(w, "تمام 👍");
+  assert.equal(ok.log.reply_key, "review_ok", JSON.stringify(ok.log));
+  const l = firstOut(ok);
+  assert.equal(l.interactive.type, "list");
+  assert.match(l.interactive.body.text, /^يسعدنا ذلك 🌟\nكم نجمة تعطي طلبك؟/);
+  assert.equal(l.interactive.action.sections[0].rows[0].id, "rs:5:kk55jj66");
+  assert.doesNotMatch(JSON.stringify(ok.sent), /\/r\?c=/, "no detour through the rating page");
+  w.clock.advance(1);
+  const typed = await w.say("5");
+  assert.equal(typed.log.reply_key, "review_star", JSON.stringify(typed.log));
+  assert.equal(firstOut(typed).interactive.action.parameters.url, `${RV_GO}kk55jj66`);
+  assert.equal(w.db.reviews[0].rating, 5);
+  // typed «تمام» after an in-window stars ask is not a second «تمام» tap (no second list)
+  const w2 = rvWorld();
+  await w2.say("هلا"); await w2.bot.reviewAsk({ phone: "0512345678", orderNo: "W1790012345678", code: "ab12cd34", kind: "delivery" });
+  w2.clock.advance(1);
+  const ack = await w2.say("تمام");
+  assert.notEqual(ack.log.reply_key, "review_ok");
+  assert.equal(ack.sent.filter((b) => b.type === "interactive" && b.interactive.type === "list").length, 0);
+  // the old path is intact with the switch off
+  const old = rvWorld({ waBot: { reviewFlow: { enabled: false } }, invites: [{ phone_norm: "512345678", code: "kk55jj66", order_no: "W1790012347777" }] });
+  assert.match(JSON.stringify((await qrTap(old, "تمام 👍")).sent), /r\?c=kk55jj66/);
+}));
+
+test("RV1: classify understands only our own ids and buttons; settings render from the schema and refuse bad values; every review reply fits WhatsApp's limits in both languages", () => {
+  assert.deepEqual(R.classify({ type: "interactive", text: "x", interactiveId: "rs:4:ab12cd34" }).arg, { stars: 4, code: "ab12cd34", exact: true });
+  assert.deepEqual(R.classify({ type: "interactive", text: "x", interactiveId: "rr:wrong:17" }).arg, { reason: "wrong", cat: "الطلب ناقص أو غلط", reviewId: 17 });
+  assert.deepEqual(R.classify({ type: "button", text: "ممتاز ⭐⭐⭐⭐⭐", interactiveId: "ممتاز ⭐⭐⭐⭐⭐" }).arg, { stars: 5, exact: true, code: null });
+  assert.deepEqual(R.classify({ type: "button", text: "يحتاج تحسين", interactiveId: "يحتاج تحسين" }).arg, { stars: 3, exact: false, code: null });
+  for (const bad of ["rs:6:ab12cd34", "rs:5:AB", "rs:5:ab12cd34; DROP", "rr:steak:1", "rr:food:x"]) assert.notEqual(R.classify({ type: "interactive", text: "x", interactiveId: bad }).key, bad.startsWith("rs") ? "review_star" : "review_reason", bad);
+  const def = R.botConfig({});
+  assert.deepEqual([def.reviewFlow.enabled, def.reviewFlow.starsTemplate, def.reviewFlow.apps, def.reviewFlow.smsVisits, def.reviewFlow.dineinMin, def.reviewFlow.capDays], [true, false, false, false, 90, 7]);
+  assert.equal(R.configFromBody({ reviewFlow: { apps: "yes" } }).ok, false);
+  assert.equal(R.configFromBody({ reviewFlow: { quietFromHour: 24 } }).ok, false);
+  assert.deepEqual(R.configFromBody({ reviewFlow: { dineinMin: 75, smsVisits: true } }).value.reviewFlow, { dineinMin: 75, smsVisits: true });
+  assert.ok(R.SCHEMA_GROUPS.reviews && R.SCHEMA["reviewFlow.apps"].help.includes("كيتا"));
+  const cfg = R.botConfig({ waBot: { mode: "live" } });
+  for (const lang of ["ar", "en"]) for (const interactive of [true, false]) {
+    const data = { settings: {}, now: new Date(OPEN_AT), open: null, chat: {} };
+    const replies = [
+      R.buildReply("review_ok", { cfg, lang, data, arg: { code: "ab12cd34", order: "W1790012345678", ref: "W1790012345678", kind: "delivery" } }),
+      R.buildReply("review_star", { cfg, lang, data, arg: { route: "google", stars: 5, code: "ab12cd34", link: `${RV_GO}ab12cd34` } }),
+      R.buildReply("review_star", { cfg, lang, data, arg: { route: "low", stars: 1, exact: true, ref: "W1790012345678", kind: "delivery", reviewId: 12 } }),
+      R.buildReply("review_star", { cfg, lang, data, arg: { route: "low", stars: 3, exact: false, kind: "dinein", reviewId: 13 } }),
+      R.buildReply("review_star", { cfg, lang, data, arg: { route: "thanks", stars: 4 } }),
+      R.buildReply("review_star", { cfg, lang, data, arg: { route: "already" } }),
+      R.buildReply("review_reason", { cfg, lang, data, arg: { reason: "food", reviewId: 12 } }),
+    ];
+    for (const rp of replies) {
+      const pl = R.toPayload(rp, { cfg, lang, interactive });
+      assert.equal(R.payloadProblem(pl), null, `${lang} ${interactive} ${JSON.stringify(rp).slice(0, 80)}`);
+    }
+  }
+});
+
+test("RV1: a typed number counts as stars only while the stars question is the LAST thing we sent — «٢» after the chat moved on (a delivery question) is not a 2-star complaint", withEnv(CONFIGURED, async () => {
+  const w = rvWorld({ invites: [{ phone_norm: "512345678", code: "kk55jj66", order_no: "W1790012347777", kind: "pickup", ref: "W1790012347777" }] });
+  await qrTap(w, "تمام 👍");
+  w.clock.advance(1);
+  const q2 = await w.say("كم رسوم التوصيل");
+  assert.ok(q2.sent.length > 0, "the bot answered something else after the stars list");
+  w.clock.advance(1);
+  const two = await w.say("2");
+  assert.notEqual(two.log.reply_key, "review_star", JSON.stringify(two.log));
+  assert.equal((w.db.reviews || []).length, 0, "no rating saved");
+  assert.equal(w.portal.filter(([e, d0]) => e === "wa_handover" && d0.reason === "review_low").length, 0, "no manager alert");
 }));

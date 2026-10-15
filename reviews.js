@@ -29,6 +29,9 @@ import { staffPhoneSet } from "./smsrules.js";
 import { subscribe } from "./order-events.js";
 import { setLiveGoogleRating } from "./playbook.js";
 import { reviewDueAt } from "./prepstatus.js";
+/* RV1 (عمر ١٥/١٠): النجوم جوّه واتساب + كل أنواع الطلبات (موقع + كاشير) — القواعد والإعدادات في wareviews.js (waBot.reviewFlow) */
+import { reviewFlowConfig, dueFor, nextAllowed, inQuiet, kindOfInvite, posKindOf, kindOn, KIND_AR, PAGE_LABEL, VISIT_KINDS, APP_METHODS, reviewsDaily, bizDayWindow } from "./wareviews.js";
+import { KNOWN_WA_NUMBER } from "./wapolicy.js";
 
 const CATEGORIES = ["الأكل", "التوصيل", "الخدمة", "السعر", "النظافة", "الوقت"];
 export const DEFAULTS = {
@@ -143,6 +146,18 @@ export function register(app, ctx, deps = {}) {
       ALTER TABLE review_invites ADD COLUMN IF NOT EXISTS wa_answered_at TIMESTAMPTZ;
       ALTER TABLE review_invites ADD COLUMN IF NOT EXISTS wa_skip TEXT;
       CREATE INDEX IF NOT EXISTS reviews_phone_idx ON reviews(phone_norm);
+      -- RV1 (١٥/١٠): نوع الطلب (موقع/كاشير) ووقته، الرقم اللي العميل يعرفه، رسالة القالب (للضغطة)، ورابط جوجل (اتبعت/اتضغط)
+      ALTER TABLE review_invites ADD COLUMN IF NOT EXISTS kind TEXT;
+      ALTER TABLE review_invites ADD COLUMN IF NOT EXISTS order_at TIMESTAMPTZ;
+      ALTER TABLE review_invites ADD COLUMN IF NOT EXISTS ref TEXT;
+      ALTER TABLE review_invites ADD COLUMN IF NOT EXISTS wa_msg_id TEXT;
+      ALTER TABLE review_invites ADD COLUMN IF NOT EXISTS google_sent_at TIMESTAMPTZ;
+      ALTER TABLE review_invites ADD COLUMN IF NOT EXISTS google_clicked_at TIMESTAMPTZ;
+      CREATE INDEX IF NOT EXISTS review_invites_phone_idx ON review_invites(phone_norm, sent_at DESC);
+      CREATE INDEX IF NOT EXISTS review_invites_wamsg_idx ON review_invites(wa_msg_id) WHERE wa_msg_id IS NOT NULL;
+      -- «يحتاج تحسين» من القالب = ٣ أو أقل من غير رقم مضبوط ⇒ مابيدخلش المتوسط ولا توزيع النجوم
+      ALTER TABLE reviews ADD COLUMN IF NOT EXISTS rating_exact BOOLEAN NOT NULL DEFAULT TRUE;
+      ALTER TABLE reviews ADD COLUMN IF NOT EXISTS kind TEXT;
       CREATE TABLE IF NOT EXISTS cms_migrations (id TEXT PRIMARY KEY, at TIMESTAMPTZ NOT NULL DEFAULT NOW());
     `);
     // ربط التقييمات القديمة بطلبها (من الدعوة) وبجوال الطلب — كل إقلاع، idempotent
@@ -177,6 +192,11 @@ export function register(app, ctx, deps = {}) {
   }
   const STORE_PUBLIC = () => (process.env.STOREFRONT_PUBLIC_URL || "https://freshcuts.sa").replace(/\/+$/, "");
   const ipOf = (c) => c.req.header("cf-connecting-ip") || c.req.header("x-forwarded-for") || "";
+  /* RV1: إعدادات المسار الجديد من لوحة البوت (waBot.reviewFlow — المخطط في wareviews.js) */
+  const flowOf = (s) => reviewFlowConfig((((s || {}).waBot) || {}).reviewFlow);
+  /* اسم مصدر الدعوة (كان «توصيل» لأي حاجة مش استلام): للعميل في صفحة التقييم، وللفريق في الوارد */
+  const inviteLabel = (iv) => KIND_AR[kindOfInvite(iv)] || "توصيل";
+  const invitePageLabel = (iv) => PAGE_LABEL[kindOfInvite(iv)] || "توصيل";
 
   /* ═══ ⭐ تقييم جوجل الحقيقي — نسخة واحدة في settings.googlePlace ═════════
      بيتحدّث كل googleRefreshHours (٦ افتراضياً) من جوب في الخلفية، والمتجر
@@ -239,8 +259,8 @@ export function register(app, ctx, deps = {}) {
       if (!label) {
         const iv = await pool.query(
           `UPDATE review_invites SET opened_at = COALESCE(opened_at, NOW())
-            WHERE code=$1 RETURNING order_no, option`, [code]);
-        if (iv.rows[0]) label = iv.rows[0].option === "pickup" ? "استلام من الفرع" : "توصيل";
+            WHERE code=$1 RETURNING order_no, option, kind`, [code]);
+        if (iv.rows[0]) label = invitePageLabel(iv.rows[0]);
       }
     }
     return c.json({
@@ -280,10 +300,10 @@ export function register(app, ctx, deps = {}) {
       if (r.rows[0]) { label = r.rows[0].label; kind = r.rows[0].kind; }
       else {
         const iv = await pool.query(
-          `SELECT iv.order_no, iv.option, COALESCE(iv.phone_norm, so.phone_norm) AS phone_norm
+          `SELECT iv.order_no, iv.option, iv.kind, COALESCE(iv.phone_norm, so.phone_norm) AS phone_norm
              FROM review_invites iv LEFT JOIN shop_orders so ON so.order_no = iv.order_no WHERE iv.code=$1`, [code]);
         if (iv.rows[0]) {
-          kind = "sms"; label = iv.rows[0].option === "pickup" ? "استلام من الفرع" : "توصيل";
+          kind = "sms"; label = inviteLabel(iv.rows[0]);
           orderNo = iv.rows[0].order_no; invitePhone = iv.rows[0].phone_norm || null;
         }
       }
@@ -342,6 +362,25 @@ export function register(app, ctx, deps = {}) {
     return c.json({ ok: true });
   });
 
+  /* ── عام (RV1): زر «قيّمنا على جوجل» في واتساب بعد ٤–٥ نجوم — بيعدّ الضغطة على الدعوة والتقييم ويحوّل لجوجل.
+     الوجهة من الإعدادات بس (رابط جوجل / معرّف المكان)، مش من الطلب ⇒ مفيش open redirect. كود مش معروف ⇒ برضه جوجل (الضغطة مابتتعدّش). */
+  app.get("/api/reviews/g/:code", async (c) => {
+    const code = String(c.req.param("code") || "").toLowerCase();
+    const cf = await cfg();
+    const dest = cf.googleUrl || STORE_PUBLIC();
+    if (/^[a-z0-9]{4,16}$/.test(code) && !limited(ipOf(c))) {
+      try {
+        const r = await pool.query(
+          `UPDATE review_invites SET went_google=TRUE, google_clicked_at=COALESCE(google_clicked_at, NOW())
+            WHERE code=$1 RETURNING review_id`, [code]);
+        const rid = r.rows[0]?.review_id;
+        if (rid) await pool.query("UPDATE reviews SET went_google=TRUE WHERE id=$1", [rid]);
+      } catch (e) { console.error("[reviews] go-google:", e.message); }
+    }
+    c.header("Cache-Control", "no-store");
+    return c.redirect(dest, 302);
+  });
+
   /* ═══ 📩 دعوة التقييم بعد التوصيل ═══════════════════════════════════════
      عمر (١٧ سبتمبر): «بعد ما العميل يستلم الطلب نبعتله لينك التقييم بنص
      ساعة نأخد رأيه في الأكل، ولو كويس نبعته على جوجل زي ما عملنا».
@@ -357,11 +396,15 @@ export function register(app, ctx, deps = {}) {
     const cf = await cfg();
     if (cf.askAfterDelivery === false) return { ok: false, reason: "disabled" };
     const r = await pool.query(
-      "SELECT order_no, phone_norm, option, is_test, created_at FROM shop_orders WHERE order_no=$1", [String(orderNo)]);
+      "SELECT order_no, phone_norm, option, is_test, created_at, table_no FROM shop_orders WHERE order_no=$1", [String(orderNo)]);
     const o = r.rows[0];
     if (!o) return { ok: false, reason: "no_order" };
     if (o.is_test) return { ok: false, reason: "test_order" };
     if (!/^5\d{8}$/.test(o.phone_norm || "")) return { ok: false, reason: "no_phone" };
+    /* RV1: النوع (توصيل / استلام / طاولة QR) — كل نوع له مفتاحه وميعاده في لوحة البوت (waBot.reviewFlow) */
+    const flow = flowOf(await getSettingsData());
+    const kind = Number(o.table_no) > 0 ? "table" : o.option === "pickup" ? "pickup" : "delivery";
+    if (flow.enabled && !kindOn(kind, flow)) return { ok: false, reason: "kind_off" };
     const mins = Math.min(720, Math.max(1, Number(cf.askAfterMinutes) || 30));
     /* ١٠/١٠ — «بعد ما العميل يستلم بنص ساعة»: التوصيل بيتحسب من تأكيد المندوب.
        لو المندوب خارجي ومحدش أكّد من رابطه (المدير ضغط «العميل استلم» بإيده)
@@ -382,12 +425,53 @@ export function register(app, ctx, deps = {}) {
         }
       } catch { /* من غير بيانات الشحنة: الحساب العادي */ }
     }
-    const due = reviewDueAt({ deliveredAt: at, askAfterMin: mins, option: o.option, createdAt: o.created_at, pickedAt, courierConfirmed });
+    const due = flow.enabled
+      ? dueFor(kind, { orderAt: o.created_at, deliveredAt: at, createdAt: o.created_at, pickedAt, courierConfirmed }, flow)
+      : reviewDueAt({ deliveredAt: at, askAfterMin: mins, option: o.option, createdAt: o.created_at, pickedAt, courierConfirmed });
     const ins = await pool.query(
-      `INSERT INTO review_invites(order_no, code, phone_norm, option, due_at)
-       VALUES ($1,$2,$3,$4,$5) ON CONFLICT (order_no) DO NOTHING RETURNING code`,
-      [o.order_no, inviteCode(), o.phone_norm, o.option, due.toISOString()]);
+      `INSERT INTO review_invites(order_no, code, phone_norm, option, due_at, kind, order_at, ref)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT (order_no) DO NOTHING RETURNING code`,
+      [o.order_no, inviteCode(), o.phone_norm, o.option, due.toISOString(), kind, o.created_at || null, o.order_no]);
     return ins.rowCount ? { ok: true, code: ins.rows[0].code, due } : { ok: false, reason: "exists" };
+  }
+
+  /* ═══ RV1 — طلبات الكاشير (صالة / سفري، وتطبيقات لو المالك فتحها) ═══════════════════════════════
+     من كاش نقطة البيع ts_orders: طلب مقفول (مش ملغي/مرتجع/معلّق) عليه جوال عميل (الكاشير/FeedUs في order_sources، أو عميل
+     نقطة البيع ts_customers) ⇒ دعوة واحدة «pos:<رقم الطلب>». مش طلب موقع (QR-Menu أو order_sources.source='website')، ولا مرآة
+     طلب موقع (نفس الجوال له طلب موقع ±٣ ساعات). الجوال بيتربط بعد ~٣٠ دقيقة ⇒ بنبص على آخر posLookbackHours كل مسح. */
+  async function queuePosInvites(now, settings, flow) {
+    if (!flow.enabled || !(flow.dinein || flow.takeaway || flow.apps)) return 0;
+    const apps = (Array.isArray(settings?.deliveryAppMethods) && settings.deliveryAppMethods.length ? settings.deliveryAppMethods : APP_METHODS).map((x) => String(x).toLowerCase());
+    const since = new Date(now.getTime() - flow.posLookbackHours * 3600_000).toISOString();
+    const rows = (await pool.query(
+      `SELECT o.order_id, o.receipt, o.order_date, o.order_option,
+              COALESCE(NULLIF(s.phone_norm,''), NULLIF(tc.phone_norm,'')) AS pn,
+              (o.order_type ILIKE '%external%' OR EXISTS (SELECT 1 FROM jsonb_object_keys(o.payments) k WHERE lower(k) = ANY($2::text[]))) AS is_app,
+              EXISTS (SELECT 1 FROM shop_orders so WHERE so.phone_norm = COALESCE(NULLIF(s.phone_norm,''), NULLIF(tc.phone_norm,''))
+                         AND NOT COALESCE(so.is_test, false) AND so.status NOT IN ('pending_payment','expired','payment_failed','cancelled')
+                         AND so.created_at BETWEEN o.order_date - INTERVAL '3 hours' AND o.order_date + INTERVAL '3 hours') AS web_near
+         FROM ts_orders o
+         LEFT JOIN order_sources s ON s.order_id = o.order_id
+         LEFT JOIN ts_customers tc ON tc.customer_id = o.customer_id
+        WHERE o.order_date > $1::timestamptz
+          AND (o.order_type IS NULL OR (o.order_type NOT ILIKE '%void%' AND o.order_type NOT ILIKE '%refund%' AND o.order_type NOT ILIKE '%parked%' AND o.order_type NOT ILIKE '%qr-menu%'))
+          AND COALESCE(s.source, '') <> 'website'
+          AND NOT EXISTS (SELECT 1 FROM review_invites i WHERE i.order_no = 'pos:' || o.order_id)
+        ORDER BY o.order_date LIMIT 200`, [since, apps])).rows || [];
+    let n = 0;
+    for (const r of rows) {
+      if (!/^5\d{8}$/.test(String(r.pn || "")) || r.web_near) continue;
+      const kind = posKindOf(r);
+      if (!kind || !kindOn(kind, flow)) continue;
+      const due = dueFor(kind, { orderAt: r.order_date }, flow, now.getTime());
+      const ref = String(r.receipt || "").trim() ? `فاتورة ${String(r.receipt).trim().slice(0, 20)}` : null;
+      const ins = await pool.query(
+        `INSERT INTO review_invites(order_no, code, phone_norm, option, due_at, kind, order_at, ref)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT (order_no) DO NOTHING RETURNING code`,
+        [`pos:${r.order_id}`, inviteCode(), r.pn, kind, due.toISOString(), kind, r.order_date, ref]).catch(() => ({ rowCount: 0 }));
+      n += ins.rowCount || 0;
+    }
+    return n;
   }
 
   // الحدث بيوصل من shop.setStatus في نفس العملية. لو الحاوية اتبدّلت وقت
@@ -422,40 +506,81 @@ export function register(app, ctx, deps = {}) {
     try {
       const cf = await cfg();
       if (cf.askAfterDelivery === false) return { skipped: "disabled" };
+      const s = await getSettingsData();
+      const flow = flowOf(s);
       await backfillInvites().catch((e) => console.error("[reviews] backfill:", e.message));
+      /* RV1: طلبات الكاشير (صالة/سفري) بتاخد دعوتها هنا — نفس الجدول ونفس الحدود */
+      if (flow.enabled) await queuePosInvites(now, s, flow).catch((e) => console.error("[reviews] pos invites:", e.message));
       const maxAge = Math.min(72, Math.max(1, Number(cf.askMaxAgeHours) || 20));
-      // فات ميعادها بكتير ⇒ تتقفل بدل ما تتبعت بعد يومين
+      // فات ميعادها بكتير ⇒ تتقفل بدل ما تتبعت بعد يومين (العمر من وقت الطلب — طلب الكاشير بيتسجّل بعد ما جواله يتربط)
       await pool.query(
         `UPDATE review_invites SET skip_reason='expired'
           WHERE sent_at IS NULL AND skip_reason IS NULL
-            AND created_at < $1::timestamptz - ($2 || ' hours')::interval`,
+            AND COALESCE(order_at, created_at) < $1::timestamptz - ($2 || ' hours')::interval`,
         [now.toISOString(), String(maxAge)]);
-      if (inAskQuiet(riyadhHour(now), cf.askQuietStart, cf.askQuietEnd)) return { skipped: "quiet" };
+      /* ساعات الهدوء: المسار الجديد (٢٣:٣٠ ← ١١:٣٠ افتراضياً، دقيقة بدقيقة) بيأجّل اللي ميعاده جه لـ«resume» (١ الضهر) بدل ما يسيبه يطلع أول ما الهدوء يخلص.
+         المسار القديم: ساعات صفحة التقييمات زي ما كانت. */
+      if (flow.enabled) {
+        if (inQuiet(now, flow)) {
+          const until = nextAllowed(now, flow).toISOString();
+          const d0 = await pool.query(`UPDATE review_invites SET due_at=$2 WHERE sent_at IS NULL AND skip_reason IS NULL AND due_at < $2::timestamptz`, [now.toISOString(), until]);
+          return { skipped: "quiet", deferredTo: until, deferred: d0.rowCount || 0 };
+        }
+      } else if (inAskQuiet(riyadhHour(now), cf.askQuietStart, cf.askQuietEnd)) return { skipped: "quiet" };
       const due = (await pool.query(
-        `SELECT order_no, code, phone_norm FROM review_invites
+        `SELECT order_no, code, phone_norm, kind, option, ref FROM review_invites
           WHERE sent_at IS NULL AND skip_reason IS NULL AND due_at <= $1::timestamptz
           ORDER BY due_at LIMIT 40`, [now.toISOString()])).rows;
       if (!due.length) return { sent: 0 };
-      const s = await getSettingsData();
-      const staff = staffPhoneSet(s);
+      /* المستبعدين: أرقام الفريق (التنبيهات/الطلبات الجديدة/استبعاد الحملات) + أرقام تجربة البوت + «البوت مايردش عليها» + جهات الاتصال المتعلّمة موظف */
+      const bot = (s && s.waBot) || {};
+      const staff = new Set([...staffPhoneSet(s), ...[...(Array.isArray(bot.testPhones) ? bot.testPhones : []), ...(Array.isArray(bot.neverReplyPhones) ? bot.neverReplyPhones : []),
+        KNOWN_WA_NUMBER, bot.publicPhone || ""].map(norm).filter(Boolean)]);      // + رقم المطعم نفسه (لو اتكتب على طلب بالغلط)
       const n = notify();
       const out = { sent: 0, skipped: 0 };
+      const one = async (sql, p) => { try { return (await pool.query(sql, p)).rows.length > 0; } catch { return false; } };
       for (const iv of due) {
         const mark = (col, val) => pool.query(`UPDATE review_invites SET ${col}=$2 WHERE order_no=$1`, [iv.order_no, val]);
-        if (staff.has(iv.phone_norm)) { await mark("skip_reason", "staff"); out.skipped++; continue; }
+        const skip = async (why) => { await mark("skip_reason", why); out.skipped++; };
+        const kind = kindOfInvite(iv), visit = VISIT_KINDS.has(kind);
+        if (staff.has(iv.phone_norm)) { await skip("staff"); continue; }
         const oo = (await pool.query("SELECT opted_out_at FROM cms_contacts WHERE phone_norm=$1", [iv.phone_norm])).rows[0];
-        if (oo?.opted_out_at) { await mark("skip_reason", "opted_out"); out.skipped++; continue; }
+        if (oo?.opted_out_at) { await skip("opted_out"); continue; }
+        if (await one("SELECT 1 FROM cms_contacts WHERE phone_norm=$1 AND is_staff", [iv.phone_norm])) { await skip("staff"); continue; }
+        /* RV1: طلب كاشير والمسار اتقفل بعد ما الدعوة اتعملت ⇒ مفيش رسالة. النوع اتقفل من اللوحة ⇒ برضه. */
+        if (visit && !flow.enabled) { await skip("flow_off"); continue; }
+        if (flow.enabled && !kindOn(kind, flow)) { await skip("kind_off"); continue; }
+        /* طلب كاشير اتلغى/اترجع بعد ما الدعوة اتعملت (تاب سينس بيقلب نوعه Void/Refund) ⇒ مانسألش عن طلب ماحصلش */
+        if (/^pos:/.test(String(iv.order_no)) && await one(`SELECT 1 FROM ts_orders WHERE order_id=$1 AND (order_type ILIKE '%void%' OR order_type ILIKE '%refund%')`, [String(iv.order_no).slice(4)])) { await skip("voided"); continue; }
+        if (flow.enabled) {
+          /* طلب تقييم واحد للعميل كل capDays (أي قناة، أي نوع) · قيّم من قريب · محادثته عند موظف/مكتومة · عنده تقييم واطي لسه مااتقفلش ⇒ مانسألش */
+          if (flow.capDays > 0 && await one(`SELECT 1 FROM review_invites WHERE phone_norm=$1 AND order_no <> $2 AND sent_at IS NOT NULL AND order_no NOT LIKE 'TEST-%'
+                                               AND sent_at > $3::timestamptz - make_interval(days => $4::int) LIMIT 1`, [iv.phone_norm, iv.order_no, now.toISOString(), flow.capDays])) { await skip("cap_days"); continue; }
+          if (flow.capDays > 0 && await one(`SELECT 1 FROM reviews WHERE phone_norm=$1 AND NOT COALESCE(is_test,false) AND created_at > $2::timestamptz - make_interval(days => $3::int) LIMIT 1`,
+            [iv.phone_norm, now.toISOString(), flow.capDays])) { await skip("rated_recently"); continue; }
+          if (await one(`SELECT 1 FROM wa_bot_chats WHERE phone_norm=$1 AND (muted_until > $2::timestamptz OR handoff_at > $2::timestamptz - INTERVAL '24 hours')`, [iv.phone_norm, now.toISOString()])) { await skip("handover_open"); continue; }
+          if (await one(`SELECT 1 FROM reviews WHERE phone_norm=$1 AND rating < 4 AND NOT resolved AND NOT COALESCE(is_test,false) AND hidden_at IS NULL
+                          AND created_at > $2::timestamptz - INTERVAL '7 days' LIMIT 1`, [iv.phone_norm, now.toISOString()])) { await skip("open_complaint"); continue; }
+        }
         /* SB2 (عمر ١٤/١٠: «ليه مشغلتش رسالة التقييم تجيله على الواتس»): واتساب أولاً (رسالة حرة بزرّين جوّه النافذة، وإلا القالب المعتمد) — القرار والأقفال في
-           wabotrun.reviewAsk (إعداد البوت reviewWhatsApp). العميل موقِّف ⇒ ولا رسالة (ولا SMS). أي سبب تاني ⇒ الـSMS زي الأول، والسبب بيتسجّل. رسالة واحدة للطلب (الصف ده). */
+           wabotrun.reviewAsk (إعداد البوت reviewWhatsApp). العميل موقِّف ⇒ ولا رسالة (ولا SMS). أي سبب تاني ⇒ الـSMS زي الأول، والسبب بيتسجّل. رسالة واحدة للطلب (الصف ده).
+           RV1: المسار الجديد ⇒ جوّه النافذة قايمة نجوم؛ بره النافذة قالب النجوم (بعد اعتماده) أو القالب القديم لطلبات الموقع.
+           طلب الكاشير من غير واتساب ⇒ SMS بس لو المالك فتح smsVisits، وإلا مفيش رسالة (السبب بيتسجّل). */
         const wr = typeof deps.waReview === "function" ? deps.waReview() : null;
+        let waWhy = null;
         if (wr && typeof wr.reviewAsk === "function") {
-          let r = null; try { r = await wr.reviewAsk({ phone: iv.phone_norm, orderNo: iv.order_no, code: iv.code }); } catch { r = null; }
-          if (r && r.ok) { await pool.query("UPDATE review_invites SET sent_at=NOW(), channel=$2 WHERE order_no=$1", [iv.order_no, String(r.channel || "wa")]); out.sent++; out.wa = (out.wa || 0) + 1; continue; }
+          let r = null; try { r = await wr.reviewAsk({ phone: iv.phone_norm, orderNo: iv.order_no, code: iv.code, ...(iv.kind ? { kind: iv.kind } : {}), ...(iv.ref ? { ref: iv.ref } : {}) }); } catch { r = null; }
+          if (r && r.ok) {
+            await pool.query("UPDATE review_invites SET sent_at=NOW(), channel=$2 WHERE order_no=$1", [iv.order_no, String(r.channel || "wa")]);
+            if (r.wamid) await mark("wa_msg_id", String(r.wamid).slice(0, 200)).catch(() => {});      // ضغطة زر القالب بترجع بالرسالة دي (context.id)
+            out.sent++; out.wa = (out.wa || 0) + 1; continue;
+          }
           if (r && r.final) { await mark("skip_reason", `wa_${String(r.skipped || "stopped")}`.slice(0, 80)); out.skipped++; continue; }
           /* ١٤/١٠ (wapolicy): قالب بفلوس لنفس الطلب لسه طالع من دقايق ⇒ الدعوة تتأجل لحد «until» (مش SMS، ومش إلغاء) */
           if (r && r.defer && r.until && Number.isFinite(Date.parse(r.until))) { await mark("due_at", new Date(r.until).toISOString()); out.deferred = (out.deferred || 0) + 1; continue; }
-          if (r && r.skipped) await mark("wa_skip", String(r.skipped).slice(0, 80));
+          if (r && r.skipped) { waWhy = String(r.skipped).slice(0, 80); await mark("wa_skip", waWhy); }
         }
+        if (visit && !flow.smsVisits) { await skip(`no_sms_visit${waWhy ? `:${waWhy}` : ""}`.slice(0, 80)); continue; }
         const body = askBody(cf.askText, `${STORE_PUBLIC()}/r?c=${iv.code}`);
         try {
           const ok = await n?.sendSmsTo?.(iv.phone_norm, body, { kind: "review_invite", ref: iv.order_no });
@@ -508,14 +633,17 @@ export function register(app, ctx, deps = {}) {
   app.get("/api/cms/reviews/stats", async (c) => {
     const err = await requireAdmin(c); if (err) return err;
     const days = Math.min(365, Math.max(1, Number(c.req.query("days")) || 30));
+    /* RV1: «يحتاج تحسين» من قالب واتساب (٣ أو أقل من غير رقم) ⇒ في السلبي، بس مش في المتوسط ولا توزيع النجوم (needsImprovement لوحده) */
     const [tot, dist, open] = await Promise.all([
-      pool.query(`SELECT count(*)::int AS n, avg(rating)::float AS avg,
+      pool.query(`SELECT count(*)::int AS n, (avg(rating) FILTER (WHERE COALESCE(rating_exact, TRUE)))::float AS avg,
                          count(*) FILTER (WHERE rating >= 4)::int AS positive,
                          count(*) FILTER (WHERE rating < 4)::int AS negative,
-                         count(*) FILTER (WHERE went_google)::int AS to_google
+                         count(*) FILTER (WHERE went_google)::int AS to_google,
+                         count(*) FILTER (WHERE NOT COALESCE(rating_exact, TRUE))::int AS needs_improvement,
+                         count(*) FILTER (WHERE channel = 'whatsapp')::int AS via_whatsapp
                     FROM reviews WHERE ${REAL_REVIEW_SQL} AND created_at > NOW() - ($1||' days')::interval`, [String(days)]),
       pool.query(`SELECT rating, count(*)::int AS n FROM reviews
-                   WHERE ${REAL_REVIEW_SQL} AND created_at > NOW() - ($1||' days')::interval GROUP BY 1`, [String(days)]),
+                   WHERE ${REAL_REVIEW_SQL} AND COALESCE(rating_exact, TRUE) AND created_at > NOW() - ($1||' days')::interval GROUP BY 1`, [String(days)]),
       pool.query(`SELECT count(*)::int AS n FROM reviews WHERE ${REAL_REVIEW_SQL} AND resolved=FALSE AND rating < 4`),
     ]);
     const t = tot.rows[0];
@@ -538,6 +666,7 @@ export function register(app, ctx, deps = {}) {
       ok: true, days,
       total: t.n, avg: t.avg == null ? null : Number(t.avg),
       positive: t.positive, negative: t.negative, toGoogle: t.to_google,
+      needsImprovement: t.needs_improvement || 0, viaWhatsapp: t.via_whatsapp || 0,
       openNegative: open.rows[0].n, distribution,
       invites: {
         sent: iv.sent, opened: iv.opened, rated: iv.rated,
@@ -578,14 +707,24 @@ export function register(app, ctx, deps = {}) {
   app.get("/api/cms/reviews/invites", async (c) => {
     const err = await requireAdmin(c); if (err) return err;
     const rows = (await pool.query(
-      `SELECT order_no, code, option, due_at, sent_at, channel, skip_reason, opened_at, rating, went_google, created_at
+      `SELECT order_no, code, option, kind, ref, due_at, sent_at, channel, skip_reason, wa_skip, wa_answer, opened_at, rating, went_google,
+              google_sent_at, google_clicked_at, created_at
          FROM review_invites ORDER BY created_at DESC LIMIT 100`)).rows;
     const cf = await cfg();
     return c.json({ ok: true, invites: rows, config: {
       askAfterDelivery: cf.askAfterDelivery !== false, askAfterMinutes: cf.askAfterMinutes,
       askText: cf.askText, askQuietStart: cf.askQuietStart, askQuietEnd: cf.askQuietEnd,
       askMaxAgeHours: cf.askMaxAgeHours,
-    } });
+    }, flow: flowOf(await getSettingsData()) });      // RV1: إعدادات المسار الجديد (بتتعدّل من «كل إعدادات البوت» ← التقييمات على واتساب)
+  });
+  /* RV1: تقرير يوم (افتراضياً يوم العمل الحالي): اتبعت كام وبأنهي قناة، اتقيّم كام وبكام نجمة، روابط جوجل اتبعت/اتضغطت، والتقييمات الواطية اتعاملت ولا لأ.
+     نفس التقرير جوّه /api/cms/wabot/assist/daily ← report.reviews (يوم امبارح افتراضياً هناك). */
+  app.get("/api/cms/reviews/wa-daily", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    const w = bizDayWindow(c.req.query("day"));
+    const q = async (sql, p) => { try { return (await pool.query(sql, p)).rows; } catch (e) { console.error("[reviews] daily:", e.message); return null; } };
+    const r = await reviewsDaily(q, { from: w.from, to: w.to, place: await placeCache() });
+    return c.json({ ...r, day: w.day, from: w.from, to: w.to });
   });
   app.post("/api/cms/reviews/invites/run", async (c) => {
     const err = await requireAdmin(c); if (err) return err;
@@ -600,6 +739,23 @@ export function register(app, ctx, deps = {}) {
     if (!/^5\d{8}$/.test(phone || "")) return bad(c, "bad_phone");
     const cf = await cfg();
     const code = inviteCode();
+    /* RV1: {channel:"wa", kind} ⇒ نفس طلب التقييم على واتساب (قايمة النجوم جوّه النافذة، وإلا القالب) لرقم من أرقام تجربة البوت بس،
+       من غير حدود المسح (الحد/الهدوء/الموظفين) — عشان نجرّب الرحلة كلها: النجوم ⇒ جوجل أو الاعتذار والمدير. الدعوة باسم TEST- (بره الإحصائيات). */
+    if (b.channel === "wa") {
+      const s = await getSettingsData();
+      const testers = (Array.isArray(s?.waBot?.testPhones) ? s.waBot.testPhones : []).map(norm);
+      if (!testers.includes(phone)) return bad(c, "not_a_test_phone");
+      const kind = ["delivery", "pickup", "table", "dinein", "takeaway", "app"].includes(b.kind) ? b.kind : "delivery";
+      const orderNo = `TEST-${Date.now()}`;
+      await pool.query(`INSERT INTO review_invites(order_no, code, phone_norm, option, due_at, kind, order_at, ref) VALUES ($1,$2,$3,$4,NOW(),$5,NOW(),$6)`,
+        [orderNo, code, phone, kind, kind, kind === "delivery" || kind === "pickup" || kind === "table" ? "W1790000000000" : null]);
+      const wr = typeof deps.waReview === "function" ? deps.waReview() : null;
+      if (!wr || typeof wr.reviewAsk !== "function") return c.json({ ok: false, error: "bot_not_wired", code }, 200);
+      let r = null; try { r = await wr.reviewAsk({ phone, orderNo, code, kind, ...(kind === "delivery" || kind === "pickup" || kind === "table" ? { ref: "W1790000000000" } : {}) }); } catch (e) { r = { ok: false, skipped: String(e.message).slice(0, 80) }; }
+      if (r && r.ok) await pool.query("UPDATE review_invites SET sent_at=NOW(), channel=$2, wa_msg_id=$3 WHERE order_no=$1", [orderNo, String(r.channel || "wa"), r.wamid || null]);
+      else await pool.query("UPDATE review_invites SET skip_reason=$2 WHERE order_no=$1", [orderNo, `test:${String((r && r.skipped) || "failed")}`.slice(0, 80)]);
+      return c.json({ ok: Boolean(r && r.ok), result: r, code, orderNo, kind }, 200);
+    }
     await pool.query(
       `INSERT INTO review_invites(order_no, code, phone_norm, option, due_at, sent_at, channel)
        VALUES ($1,$2,$3,'test',NOW(),NOW(),'sms')`,
@@ -763,5 +919,5 @@ export function register(app, ctx, deps = {}) {
   }
 
   console.log("[reviews] routes registered");
-  return { queueInvite, runInvites, refreshPlace, placeCache };
+  return { queueInvite, runInvites, refreshPlace, placeCache, queuePosInvites };
 }

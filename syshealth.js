@@ -22,6 +22,7 @@
    POST /api/system/heartbeat/:name  (admin) — نبضة من برّه العملية (النسخ الاحتياطي)
 ═══════════════════════════════════════════════════════════════════════════ */
 import { isOpenNow } from "./carts.js";
+import { reviewFlowConfig } from "./wareviews.js";      // RV1: ساعات هدوء رسايل التقييم الجديدة
 
 const CACHE_MS = 60_000;
 const STOREFRONT = () => (process.env.STOREFRONT_PUBLIC_URL || "https://freshcuts.sa").replace(/\/+$/, "");
@@ -324,12 +325,17 @@ export function register(app, ctx, deps = {}) {
     add("reviews", "customers", "رسايل التقييم بعد التوصيل", async () => {
       const on = (s.reviews || {}).active !== false;
       const maxAge = Number((s.reviews || {}).askMaxAgeHours) || 20;
-      const r = await q1(`SELECT count(*) FILTER (WHERE sent_at IS NULL AND due_at < NOW() - interval '60 minutes' AND created_at > NOW() - make_interval(hours => $1))::int AS overdue,
+      /* RV1: الدعوة اللي اتقفلت بسبب (كاشير من غير واتساب/SMS، الحد، موظف…) مش متأخرة — مستبعدة (skip_reason) */
+      const r = await q1(`SELECT count(*) FILTER (WHERE sent_at IS NULL AND skip_reason IS NULL AND due_at < NOW() - interval '60 minutes' AND created_at > NOW() - make_interval(hours => $1))::int AS overdue,
                                  count(*) FILTER (WHERE sent_at > NOW() - interval '24 hours')::int AS sent24, max(sent_at) AS last
                             FROM review_invites`, [maxAge]);
       const st = !on ? "warn" : r.overdue >= 3 ? "warn" : "good";
+      const fl = reviewFlowConfig(((s.waBot || {}).reviewFlow));
+      const hm = (h, m) => `${ar(h)}:${ar(String(m).padStart(2, "0"))}`;
+      const quiet = fl.enabled ? `${hm(fl.quietFromHour, fl.quietFromMinute)}→${hm(fl.quietToHour, fl.quietToMinute)} وبتطلع ${hm(fl.resumeHour, fl.resumeMinute)}`
+        : `${ar((s.reviews || {}).askQuietStart ?? 2)}→${ar((s.reviews || {}).askQuietEnd ?? 11)}`;
       return comp("reviews", "customers", "رسايل التقييم بعد التوصيل", st,
-        on ? `${ar(r.sent24)} رسالة في ٢٤ ساعة، ${ar(r.overdue)} فات ميعادها (ساعات الهدوء ${ar((s.reviews || {}).askQuietStart ?? 2)}→${ar((s.reviews || {}).askQuietEnd ?? 11)} بتأخّرها عادي) — آخر إرسال ${ago(minsSince(r.last))}.`
+        on ? `${ar(r.sent24)} رسالة في ٢٤ ساعة، ${ar(r.overdue)} فات ميعادها (ساعات الهدوء ${quiet} بتأخّرها عادي) — آخر إرسال ${ago(minsSince(r.last))}.`
           : "رسايل التقييم مقفولة.",
         { last: r.last, detail: { enabled: on, ...r } });
     });

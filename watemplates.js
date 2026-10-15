@@ -118,6 +118,14 @@ export const ORDER_BUTTON_EN = "I want to order";
 export const MENU_BUTTON = "ورّني المنيو";
 export const MENU_BUTTON_EN = "Show me the menu";
 export const OPTOUT_FOOTER_EN = "To stop, reply: STOP";
+/* RV1 (١٥/١٠): أزرار قالب النجوم fc_review_stars. ميتا بتسمح لحد ١٠ ردود سريعة، بس أكتر من ٣ ⇒ الموبايل بيعرض أول اتنين و«عرض كل الخيارات»
+   (والكمبيوتر مابيفتحش القالب) ⇒ خمس نجوم = العالي ظاهر والواطي مستخبي. ٣ أزرار ظاهرين كلهم: ٥ / ٤ / «٣ أو أقل» (exact=false).
+   الضغطة بتوصل بنص الزر (wareviews.starOfQr) — أي تعديل هنا = تقديم القالب من جديد. */
+export const STAR_BUTTONS = Object.freeze([
+  Object.freeze({ text: "ممتاز ⭐⭐⭐⭐⭐", stars: 5, exact: true }),
+  Object.freeze({ text: "جيد جداً ⭐⭐⭐⭐", stars: 4, exact: true }),
+  Object.freeze({ text: "يحتاج تحسين", stars: 3, exact: false }),
+]);
 export const OPTOUT_BUTTON_EN = "STOP";
 const V = (path, label, ex, fmt) => ({ path, label, ex, ...(fmt ? { fmt } : {}) });
 const FRAMES_DEF = [
@@ -274,6 +282,16 @@ export const TEMPLATES = [
     body: "كيف كانت تجربتك مع طلب رقم {{1}}؟ 🌟\nاختر من الأزرار، أو قيّم الطلب من الرابط.",
     vars: [ORDER_NO], buttons: [qr("تمام"), qr("عندي ملاحظة"), url("قيّم طلبك", `${STORE}/r?c=`, { path: "review.code", ex: "ab12cd" })],
     meta: { purpose: "طلب التقييم بره النافذة + «تمام / عندي ملاحظة»", trigger: "reviews.js — لما waBot.windowV2Stages فيها review", send: "auto-candidate", replaces: "fc_review_request", fallbackSms: "review.invite" } }),
+  /* RV1 (عمر ١٥/١٠: «ناخد التقييم من الواتساب بالنجوم»): النجوم في القالب نفسه بره النافذة — ضغطة واحدة. ٤–٥ ⇒ رابط جوجل في المحادثة، «يحتاج تحسين» ⇒ اعتذار + المدير.
+     الضغطة رسالة واردة ⇒ الرد بعدها حر وببلاش. {{1}} = «طلبك رقم W…» (موقع) / «زيارتك للمطعم» (صالة) / «طلبك من الفرع» (سفري) — نصوص البوت rs_subj_*.
+     **موقوف (HOLD) لحد موافقة عمر على النص**؛ بعد اعتماد ميتا: waBot.reviewFlow.starsTemplate = مفتوح. */
+  T({ name: "fc_review_stars", category: "UTILITY", group: "order",
+    body: "فريش كاتس تشكرك 🌟\nكيف تقيّم {{1}}؟ اختر من الأزرار 👇",
+    vars: [{ path: "review.subject", label: "الطلب أو الزيارة (طلبك رقم … / زيارتك للمطعم / طلبك من الفرع)", ex: "طلبك رقم W1790012345678" }],
+    buttons: STAR_BUTTONS.map((b) => qr(b.text)),
+    meta: { purpose: "طلب التقييم بالنجوم بره النافذة (ممتاز / جيد جداً / يحتاج تحسين)", trigger: "reviews.js — لما waBot.reviewFlow.starsTemplate مفتوح (كل أنواع الطلبات)", send: "auto-candidate",
+      replaces: "fc_review_request_v2", reclassRisk: "medium", fallbackSms: "review.invite",
+      notes: "مربوط بطلب محدد ومافيهوش ترويج ⇒ UTILITY؛ ميتا ممكن تصنّف الاستبيانات تسويق — لو حصل ماتتربطش (خانة الفئة في الكتالوج). مفيش رابط في القالب: جوجل بيتبعت في المحادثة بعد ٤–٥ بس." } }),
 
   T({ name: "fc_order_delayed", category: "UTILITY", group: "order",
     body: "نعتذر منك، طلبك رقم {{1}} تأخر عن الوقت المتوقع 🙏\nفريقنا يتابعه الحين ونبلّغك أول ما يتحرك، وتقدر تتابع حالته من الرابط.",
@@ -699,6 +717,8 @@ export const HOLD = Object.freeze({
   /* SW1 (١٣/١٠): صياغتان جديدتان باسمين جديدين — بانتظار موافقة المالك على النص (العربي والإنجليزي في README الشريحة SW1) */
   fc_order_pickup_ready: "بانتظار موافقة المالك على النص (بديل fc_order_ready_pickup المرفوض) — غير مربوط بمرحلة",
   fc_staff_checkout_notice: "بانتظار موافقة المالك على النص (بديل fc_staff_checkout_watchdog المصنَّف تسويق؛ fc_staff_payment_alert موجود لنفس الغرض)",
+  /* RV1 (١٥/١٠): قالب النجوم — النص في docs/designs-2026-10/whatsapp/reviews-workflow.md */
+  fc_review_stars: "بانتظار موافقة المالك على النص (RV1 — التقييم بالنجوم بره النافذة؛ التقديم بـ force:true من المالك)",
 });
 
 /* دفعات التقديم بالأولوية. الدفعة ١ = قائمة «أول ٨» الأصلية. */

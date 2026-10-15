@@ -19,7 +19,8 @@ function rig({ invites, waReply = null, optedOut = [] }) {
   } };
   const routes = {}; const add = (m) => (path, h) => { routes[`${m} ${path}`] = h; };
   const app = { get: add("GET"), post: add("POST"), put: add("PUT"), delete: add("DELETE") };
-  const settings = { reviews: { askQuietStart: 0, askQuietEnd: 0 }, delivery: { alertPhones: [] } };
+  /* مفيش ساعات هدوء في الاختبار (القديمة ٠→٠، وبتاعة RV1 من = لحد) — النتيجة ماتعتمدش على ساعة التشغيل */
+  const settings = { reviews: { askQuietStart: 0, askQuietEnd: 0 }, delivery: { alertPhones: [] }, waBot: { reviewFlow: { quietFromHour: 0, quietFromMinute: 0, quietToHour: 0, quietToMinute: 0 } } };
   reviews.register(app, { pool, requireAdmin: async () => null, getSettingsData: async () => settings, jb: (x) => JSON.stringify(x), normPhone: (x) => x },
     { notify: () => ({ sendSmsTo: async (phone, body, meta) => { sms.push({ phone, body, meta }); return true; } }),
       ...(waReply ? { waReview: () => ({ reviewAsk: async (x) => { asked.push(x); return typeof waReply === "function" ? waReply(x) : waReply; } }) } : {}) });
