@@ -14,8 +14,8 @@
    ولما يتفتحوا، الضمانات دي بتشتغل على طول (مش اختيارية):
      ١) SHA-256 بس — الرقم الخام عمره ما بيطلع (ads.js hashPhoneDigits/Plus).
      ٢) أي رقم عامل إلغاء اشتراك (cms_contacts.opted_out_at) بيتشال، وكمان أرقام
-        الفريق (settings.delivery.alertPhones/newOrderPhones، cms.staffPhones،
-        cms.campaigns.excludePhones، journey.staffPhones)، السفراء (ambassadors)،
+        الفريق (settings.delivery.alertPhones/newOrderPhones، cms.staffPhones، journey.staffPhones،
+        وقوايم الأرقام settings.cms.phoneLists: «موظفين / فريق» + «مستثنين من الإعلانات بس»)، السفراء (ambassadors)،
         وأي رقم عليه طلب اختبار (shop_orders.is_test) أو كوبون المالك OMAR-9X4T.
      ٣) أي رقم مالوش موافقة إعلانات (mk_consent.ads_consent) بيتشال —
         ما عدا لو ap_settings.data.consentOnly = false **صريح** (قرار قانوني
@@ -27,6 +27,7 @@
 
 import crypto from "node:crypto";
 import { consentedSet } from "./consent.js";
+import { noMarketingPhones } from "./phonelists.js";
 
 let schemaP = null;
 function ensureSchema(pool) {
@@ -100,7 +101,10 @@ export function staffFromSettings(d = {}) {
     for (const x of list) { const n = nine(typeof x === "object" && x ? x.phone : x); if (/^5\d{8}$/.test(n)) out.add(n); }
   };
   add(d?.delivery?.alertPhones); add(d?.delivery?.newOrderPhones);
-  add(d?.cms?.staffPhones); add(d?.cms?.campaigns?.excludePhones); add(d?.journey?.staffPhones);
+  add(d?.cms?.staffPhones); add(d?.journey?.staffPhones);
+  /* SX1: الفريق + «مستثنين من الإعلانات بس» (phonelists.js) — اللي طلب مايوصلوش إعلانات مايترفعش لمنصة إعلانات.
+     القايمة القديمة excludePhones جوّاها لحد الترحيل بس. */
+  for (const n of noMarketingPhones(d || {})) out.add(n);
   return out;
 }
 async function nonCustomers(pool) {

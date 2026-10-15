@@ -25,7 +25,7 @@
 ═══════════════════════════════════════════════════════════════════════════ */
 import crypto from "node:crypto";
 import * as places from "./places.js";
-import { staffPhoneSet } from "./smsrules.js";
+import { teamPhoneSet } from "./smsrules.js";
 import { subscribe } from "./order-events.js";
 import { setLiveGoogleRating } from "./playbook.js";
 import { reviewDueAt } from "./prepstatus.js";
@@ -578,9 +578,9 @@ export function register(app, ctx, deps = {}) {
           WHERE sent_at IS NULL AND skip_reason IS NULL AND due_at <= $1::timestamptz
           ORDER BY due_at LIMIT 40`, [now.toISOString()])).rows;
       if (!due.length) return { sent: 0 };
-      /* المستبعدين: أرقام الفريق (التنبيهات/الطلبات الجديدة/استبعاد الحملات) + أرقام تجربة البوت + «البوت مايردش عليها» + جهات الاتصال المتعلّمة موظف */
+      /* المستبعدين: أرقام الفريق بس (SX1: المستثنى من الإعلانات بيتسأل عن تقييمه) + أرقام تجربة البوت + «البوت مايردش عليها» + جهات الاتصال المتعلّمة موظف */
       const bot = (s && s.waBot) || {};
-      const staff = new Set([...staffPhoneSet(s), ...[...(Array.isArray(bot.testPhones) ? bot.testPhones : []), ...(Array.isArray(bot.neverReplyPhones) ? bot.neverReplyPhones : []),
+      const staff = new Set([...teamPhoneSet(s), ...[...(Array.isArray(bot.testPhones) ? bot.testPhones : []), ...(Array.isArray(bot.neverReplyPhones) ? bot.neverReplyPhones : []),
         KNOWN_WA_NUMBER, bot.publicPhone || ""].map(norm).filter(Boolean)]);      // + رقم المطعم نفسه (لو اتكتب على طلب بالغلط)
       const n = notify();
       const out = { sent: 0, skipped: 0 };

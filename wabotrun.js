@@ -51,6 +51,7 @@ import { WA_POLICY_DEFAULTS, waPolicyCfg, FOLLOW_RE, reviewDecision, orderMessag
 import { providerInfo, maskText } from "./wabotllm.js";
 import { kbTokens } from "./wakb.js";
 import { teamConfig, staffRoleOf, nonCustomerKind } from "./wateam.js";
+import { silentMap as listSilentMap, listsOf as phoneListsOf, whereIs as phoneListOf, reasonLabel as phoneReasonAr } from "./phonelists.js";      // SX1: قايمة «موظفين / فريق» (عمرها ما فيها المستثنين من الإعلانات)
 import { ECHO, STAFF_ECHO_SQL } from "./waecho.js";
 import { makeStt, STT_PROVIDERS } from "./wasttkey.js";
 const STT_LABEL = Object.fromEntries(STT_PROVIDERS.map((p) => [p.id, p.label]));
@@ -2123,7 +2124,7 @@ export function decide(ev, ctx) {
 const REASON_EN = { review_low: "LOW RATING, please call", review_note: "note on their order", repeated_card: "the bot repeated the same card and the customer kept asking", loop_guard: "automatic messages in a loop, bot muted", repeated_question: "repeated the same question", late_message: "message arrived late", media_flood: "many files with no text", complaint: "complaint", problem: "payment/site problem", order_change: "change/cancel order", asked_human: "asked for staff", asked_manager: "asked for a MANAGER", needs_staff: "question for staff",
   media: "sent photo/voice", not_understood_twice: "not understood", rate_limit: "many messages", data_missing: "bot could not answer", order_not_found: "order not found",
   allergy_severe: "SEVERE ALLERGY question", custom_offer: "wants a tailored group offer", order_late: "LATE order", order_issue: "order issue", send_failed: "bot reply failed" };
-const REASON_AR = { review_low: "تقييم منخفض", review_note: "ملاحظة على طلب", repeated_card: "البوت كرر نفس الرد والعميل لسه بيسأل", loop_guard: "رسايل آلية متكررة من الرقم — البوت اتكتم", repeated_question: "كرر نفس السؤال", late_message: "رسالة وصلت متأخرة", media_flood: "صور/ملفات كتير من غير نص", allergy_severe: "حساسية شديدة", custom_offer: "عرض مخصص لتجمع", complaint: "شكوى", problem: "مشكلة دفع/موقع", order_change: "تعديل/الغاء طلب", asked_human: "طلب موظف", asked_manager: "طلب مسؤول", needs_staff: "سؤال", media: "صورة/صوت",
+const REASON_AR = { staff_silent: "رقم في قايمة الموظفين كتب ومحدش رد", review_low: "تقييم منخفض", review_note: "ملاحظة على طلب", repeated_card: "البوت كرر نفس الرد والعميل لسه بيسأل", loop_guard: "رسايل آلية متكررة من الرقم — البوت اتكتم", repeated_question: "كرر نفس السؤال", late_message: "رسالة وصلت متأخرة", media_flood: "صور/ملفات كتير من غير نص", allergy_severe: "حساسية شديدة", custom_offer: "عرض مخصص لتجمع", complaint: "شكوى", problem: "مشكلة دفع/موقع", order_change: "تعديل/الغاء طلب", asked_human: "طلب موظف", asked_manager: "طلب مسؤول", needs_staff: "سؤال", media: "صورة/صوت",
   not_understood_twice: "غير مفهوم", rate_limit: "رسائل كثيرة", data_missing: "البوت لم يجب", order_not_found: "طلب غير موجود", order_late: "طلب متاخر", order_issue: "مشكلة طلب", send_failed: "فشل رد البوت" };
 export function alertText({ phone, reason, orderNo = null }, lang = "en") {
   const ph = `0${phone}`;
@@ -3065,6 +3066,19 @@ const fl = await q(`SELECT count(*)::int AS n FROM wa_bot_log WHERE phone_norm=$
                            ORDER BY l.at LIMIT 20`, [Math.ceil(cfg.leadFollowUpMin)]);
       for (const l of ls || []) await q(`INSERT INTO wa_bot_jobs(wamid, phone_norm, kind, due_at, ev, log_id) VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT (wamid) DO NOTHING RETURNING id`, [`lead:${l.phone_norm}:${riyadhDay(now)}`, l.phone_norm, "lead_followup", now.toISOString(), jb({ at: new Date(l.at).toISOString(), lang: l.lang === "en" ? "en" : "ar" }), null]);
     }
+    /* SX1 — شبكة الأمان: رقم البوت ساكت عليه بسبب قايمة «موظفين / فريق» (أو مستني قرار المالك) — مش عضو في دليل الفريق — كتب ومحدش رد خلال
+       phoneLists.staffSilent.afterMin ⇒ تحويل عادي «رقم في قايمة الموظفين كتب ومحدش رد». «الحلقة» = أول رسالة ساكتة بعد آخر رد بشري وبعد آخر تحويل
+       للرقم ⇒ شغلة واحدة (ss:<الرقم>:<وقتها>)، وكل الشروط بتتراجع وقت التنفيذ (runStaffSilent). */
+    { const ss = phoneListsOf(settings).cfg.staffSilent;
+      if (cfg.mode === "live" && ss.enabled && ss.afterMin > 0) {
+        const cs = await q(STAFF_SILENT_SQL, [Math.ceil(ss.afterMin), [...STAFF_SILENT_WHY]]);
+        for (const c of cs || []) {
+          const fa = new Date(c.first_at);
+          if (!Number.isFinite(fa.getTime())) continue;
+          await q(`INSERT INTO wa_bot_jobs(wamid, phone_norm, kind, due_at, ev, log_id) VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT (wamid) DO NOTHING RETURNING id`, [`ss:${c.phone_norm}:${fa.getTime()}`, c.phone_norm, "staff_silent", now.toISOString(), jb({ firstAt: fa.toISOString() }), null]);
+        }
+      }
+    }
     /* FU1 — «متابعة اللي ردّ وماطلبش»: الفرامل الأول (نسبة «إيقاف» / حظر في متابعات اليوم)، وبعدها المرشّحين — جوّه الساعات المسموحة بس: بره الساعات مفيش شغلة،
        وأول دقيقة جوّاها بتلقط اللي سكتوا بالليل طول ما نافذتهم مفتوحة. شغلة واحدة لكل نافذة (rf:<الرقم>:<وقت آخر رسالة ليه>)، وكل الشروط بتتراجع في runReplyFollowUp. */
     if (cfg.replyFollowUp && cfg.replyFollowUpDailyCap > 0) {
@@ -3473,6 +3487,37 @@ const fl = await q(`SELECT count(*)::int AS n FROM wa_bot_log WHERE phone_norm=$
     if (assistStore && cfg.assist) { try { const s0 = await assistStore.loadSession(phone, now, cfg.assist.sessionMin); if (s0) { const s1 = JSON.parse(JSON.stringify(s0)); s1.messages.push({ role: "assistant", content: [{ type: "text", text: rep.body }] }); s1.state.say = [...(s1.state.say || []), rep.body].slice(-20); await assistStore.saveSession(phone, s1, now); } } catch (e) { console.error("[assist] followup session:", e.message); } }
     return end("done", `sent:${pick.via}`);
   }
+  /* ── SX1: شبكة أمان قايمة الموظفين ───────────────────────────────────────────────────────────────
+     رد بشري = صدى موظف (مش الصدى الآلي) أو رسالة حرة طلعت من الصندوق/البورتال (مش البوت ولا قالب). */
+  const STAFF_SILENT_WHY = ["staff_list", "staff_review"];
+  const HUMAN_OUT = `m.direction = 'out' AND COALESCE(m.status,'') NOT IN ('failed','skipped') AND ((m.source = 'echo' AND COALESCE(m.echo_kind,'staff') <> 'auto') OR (m.template IS NULL AND COALESCE(m.source,'api') NOT IN ('bot','window','echo')))`;
+  /* $1 الدقايق · $2 أسباب السكوت. أول رسالة ساكتة بعد آخر رد بشري وبعد آخر تحويل، عدّى عليها $1 دقيقة (ولسه جوّه ساعة بعدها) */
+  const STAFF_SILENT_SQL = `/*ss:candidates*/ SELECT l.phone_norm, min(l.at) AS first_at FROM wa_bot_log l
+     WHERE l.decision = 'silent' AND l.reason = 'never_reply' AND l.detail = ANY($2::text[]) AND COALESCE(l.msg_type,'') NOT IN ('revoke','reaction')
+       AND l.at > NOW() - make_interval(mins => $1::int + 60)
+       AND l.at > COALESCE((SELECT max(m.created_at) FROM wa_messages m WHERE m.phone_norm = l.phone_norm AND ${HUMAN_OUT}), '-infinity'::timestamptz)
+       AND l.at > COALESCE((SELECT max(h.at) FROM wa_handovers h WHERE h.phone_norm = l.phone_norm), '-infinity'::timestamptz)
+     GROUP BY l.phone_norm HAVING min(l.at) <= NOW() - make_interval(mins => $1::int) LIMIT 20`;
+  async function runStaffSilent(j, settings, cfg, now, end) {
+    const phone = String(j.phone_norm || ""), ev = typeof j.ev === "string" ? JSON.parse(j.ev) : (j.ev || {});
+    const no = (reason) => end("cancelled", reason);
+    const ss = phoneListsOf(settings).cfg.staffSilent;
+    if (!ss.enabled) return no("off"); if (!ev.firstAt) return no("bad_job");
+    if (cfg.mode !== "live") return no("mode_not_live");
+    if (now.getTime() - Date.parse(ev.firstAt) > (ss.afterMin + 120) * 60_000) return no("stale");
+    if (teamStaff(settings, phone)) return no("team_member");      // عضو في دليل الفريق ⇒ رسايله للفريق نفسه (wateam) مش لعميل
+    const why = await neverReplyOf(phone);
+    if (!STAFF_SILENT_WHY.includes(why)) return no(why ? `never:${why}` : "not_listed_anymore");      // اتنقل / اتشال من القايمة ⇒ البوت بيرد عليه عادي
+    const hu = await q(`SELECT 1 FROM wa_messages m WHERE m.phone_norm = $1 AND m.created_at > $2 AND ${HUMAN_OUT} LIMIT 1`, [phone, ev.firstAt]);
+    if (hu === null) return no("reply_check_failed"); if (hu.length) return no("staff_answered");
+    const ho = await q("SELECT 1 FROM wa_handovers WHERE phone_norm = $1 AND at >= $2 LIMIT 1", [phone, ev.firstAt]);
+    if (ho && ho.length) return no("handover_exists");
+    const lt = await q(`SELECT text FROM wa_bot_log WHERE phone_norm = $1 AND at >= $2 AND decision = 'silent' ORDER BY at DESC, id DESC LIMIT 1`, [phone, ev.firstAt]);
+    const where = phoneListOf(settings, phone);
+    const note = `البوت مابيردش على الرقم ده — في قايمة ${why === "staff_review" ? "«مستني قرار المالك»" : "«موظفين / فريق»"}${where.entry ? ` (السبب: ${phoneReasonAr(where.entry.reason)}${where.entry.name ? ` · ${where.entry.name}` : ""})` : ""}. رد عليه إنت، ولو عميل انقله من اللوحة ← الفريق والتنبيهات ← قوايم الأرقام.${lt && lt[0] && lt[0].text ? ` آخر رسالة: «${String(lt[0].text).slice(0, 60)}»` : ""}`;
+    const alert = await handoffNow(settings, cfg, phone, ["staff_silent", "normal"], null, note.slice(0, 200), "ar");
+    return end("done", `handover:${alert || "?"}`.slice(0, 80));
+  }
   async function runDueJobs() {
     await ready;
     try { await sweeps(); } catch (e) { console.error("[wabot] sweeps:", e.message); }
@@ -3499,6 +3544,7 @@ const fl = await q(`SELECT count(*)::int AS n FROM wa_bot_log WHERE phone_norm=$
         if (j.kind === "assist_reminder") { await runReminder(j, settings, cfg, now, end); ran++; continue; }
         if (j.kind === "media_burst") { await runMediaBurst(j, ev, settings, cfg, now, end); ran++; continue; }
         if (j.kind === "handover_check") { await runHandoverCheck(j, settings, cfg, now, end); ran++; continue; }
+        if (j.kind === "staff_silent") { await runStaffSilent(j, settings, cfg, now, end); ran++; continue; }      // SX1
         if (now.getTime() - new Date(j.due_at).getTime() > cfg.maxAgeMinutes * 60_000) { await cancel("stale"); continue; }
         const echo = await q(`SELECT 1 FROM wa_messages WHERE phone_norm=$1 AND source='echo' AND created_at > $2 AND ${STAFF_ECHO_SQL} LIMIT 1`, [j.phone_norm, ev.at || new Date(j.due_at).toISOString()]);
         if (echo === null) { await cancel("echo_check_failed"); continue; }      // مانعرفش الموظف رد ولا لأ ⇒ مانردّش
@@ -3554,13 +3600,14 @@ const fl = await q(`SELECT count(*)::int AS n FROM wa_bot_log WHERE phone_norm=$
       if (typeof deps.portalEmit === "function") { try { deps.portalEmit("wa_handover", { phone: `0${phone}`, phoneMasked: `…${phone.slice(-4)}`, reason: ev.reason, reasonAr: REASON_AR[ev.reason] || ev.reason, urgent: ev.urgent === true, orderNo: ev.orderNo || null, at: now.toISOString(), test: cfg.mode === "test", reopened: true }); } catch (e) { console.error("[wabot] portal:", e.message); } }
       if (cfg.mode === "live" || cfg.alertInTest) await alertStaff(settings, cfg, { phone, reason: ev.reason, orderNo: ev.orderNo, urgent: ev.urgent === true, stage: "reopened" });
     }
+    if (ev.stage !== "realert" && ev.reason === "staff_silent") return no("staff_list_no_note");      // SX1: البوت ساكت على الرقم ده — مفيش «رسالة للعميل» منه، التنبيه للفريق بس
     if (ev.stage === "realert") {
       const waited = Math.round((now.getTime() - Date.parse(ev.hoAt)) / 60_000);
       if (typeof deps.portalEmit === "function") { try { deps.portalEmit("wa_handover", { phone: `0${phone}`, phoneMasked: `…${phone.slice(-4)}`, reason: ev.reason, reasonAr: REASON_AR[ev.reason] || ev.reason, urgent: ev.urgent === true, orderNo: ev.orderNo || null,
         at: ev.hoAt, test: cfg.mode === "test", reminder: true, waitedMin: waited }); } catch (e) { console.error("[wabot] portal:", e.message); } }
       let alert = "would";
       if (cfg.mode === "live" || cfg.alertInTest) alert = await alertStaff(settings, cfg, { phone, reason: ev.reason, orderNo: ev.orderNo, urgent: ev.urgent === true, stage: "reminder", waitedMin: waited });
-      if (cfg.handoverCustomerNoteMin > 0) await scheduleHandoverCheck(phone, { ...ev, stage: "note" }, cfg);
+      if (cfg.handoverCustomerNoteMin > 0 && ev.reason !== "staff_silent") await scheduleHandoverCheck(phone, { ...ev, stage: "note" }, cfg);
       return end("done", `realert:${alert}`);
     }
     let open = null; try { open = settings?.hours ? openState(settings, now) : null; } catch { open = null; }
@@ -3662,20 +3709,26 @@ const fl = await q(`SELECT count(*)::int AS n FROM wa_bot_log WHERE phone_norm=$
      (waTeam.staffAsTesters): رقم فريق موجود في أرقام التجربة بيفضل يجرّب البوت. الدليل المؤقت (أرقام التنبيهات قبل ما الدليل يتكتب) على القاعدة القديمة:
      مستبعد لوحده إلا لو رقم تجربة. */
   const teamStaff = (settings, phone) => { const tc = teamConfig(settings); return !tc.fallback && Boolean(staffRoleOf(settings, phone)) && !(tc.staffAsTesters && staffPhones(settings?.waBot?.testPhones).includes(phone)); };
-  let autoNever = { at: -1e15, map: new Map() };
+  /* SX1 (١٥/١٠ — عميل 0568•••14 كتب «عندي ملاحظات» والبوت سكت): كان هنا «cms_contacts.is_staff» = قايمة استبعاد الحملات (السفراء) ⇒ عميل
+     في قايمة «مايوصلوش حملات» بقى «موظف» والبوت ساكت عليه. دلوقتي البوت بيقرا **قايمة «موظفين / فريق» بس** (phonelists.silentMap:
+     staff_list / staff_review) — عمره ما بيقرا «مستثنين من الإعلانات بس». الإعدادات بتتقري كل مرة (تعديل القايمة بيمسك على طول)،
+     والكاش (١٠ دقايق) للمناديب بس (من القاعدة). */
+  let autoNever = { at: -1e15, map: new Map() };      // المناديب بس
   async function autoNeverMap(settings, cfg) {
-    const t = clock().getTime();
-    if (t - autoNever.at < 600_000 && t >= autoNever.at) return autoNever.map;
     const m = new Map();
     const sc = staffConfig(settings);
     for (const p of [...cfg.alertPhones, ...sc.alertPhones, ...(sc.newOrderPhones || [])].map(normPh)) if (/^5\d{8}$/.test(p)) m.set(p, "alert_phone");
     for (const s of Array.isArray(settings?.portal?.staff) ? settings.portal.staff : []) { const p = normPh(s && (s.phone || s.mobile)); if (/^5\d{8}$/.test(p)) m.set(p, "staff"); }
     for (const tm of teamConfig(settings).members) if (tm.active && !m.has(tm.phone)) m.set(tm.phone, "staff");      // ST1: دليل الفريق
-    const stf = await q("SELECT phone_norm FROM cms_contacts WHERE is_staff LIMIT 500", []);      // «موظف» في ملف العملاء (نفس القايمة اللي بتستبعدهم من الحملات)
-    for (const r of stf || []) { const p = normPh(r.phone_norm); if (/^5\d{8}$/.test(p) && !m.has(p)) m.set(p, "staff"); }
-    const dr = await q(`SELECT DISTINCT driver->>'phone' AS phone FROM dl_shipments WHERE driver IS NOT NULL AND updated_at > NOW() - INTERVAL '30 days' AND COALESCE(driver->>'phone','') <> '' LIMIT 500`, []);
-    for (const r of dr || []) { const p = normPh(r.phone); if (/^5\d{8}$/.test(p) && !m.has(p)) m.set(p, "courier"); }
-    autoNever = { at: t, map: m };
+    for (const [p, why] of listSilentMap(settings || {})) if (!m.has(p)) m.set(p, why);      // SX1: قايمة «موظفين / فريق» + المستنيين قرار المالك
+    const t = clock().getTime();
+    if (!(t - autoNever.at < 600_000 && t >= autoNever.at)) {
+      const dm = new Map();
+      const dr = await q(`SELECT DISTINCT driver->>'phone' AS phone FROM dl_shipments WHERE driver IS NOT NULL AND updated_at > NOW() - INTERVAL '30 days' AND COALESCE(driver->>'phone','') <> '' LIMIT 500`, []);
+      for (const r of dr || []) { const p = normPh(r.phone); if (/^5\d{8}$/.test(p)) dm.set(p, "courier"); }
+      autoNever = { at: t, map: dm };
+    }
+    for (const [p, why] of autoNever.map) if (!m.has(p)) m.set(p, why);
     return m;
   }
   async function liveGate5({ cfg, settings, phone, chat, ev, now }) {
@@ -4684,7 +4737,7 @@ const fl = await q(`SELECT count(*)::int AS n FROM wa_bot_log WHERE phone_norm=$
     if (on) await q(`UPDATE wa_bot_jobs SET status='cancelled', reason='never_reply', done_at=NOW() WHERE phone_norm=$1 AND status='pending'`, [phone]);
     return { ok: true, phone: `0${phone}`, on: Boolean(on), count: next.length };
   }
-  /* ⇒ null (عميل عادي) أو السبب: never_list / alert_phone / staff / courier. رقم تجربة عمره ما يتستبعد لوحده. */
+  /* ⇒ null (عميل عادي) أو السبب: never_list / alert_phone / staff / courier / staff_list / staff_review (SX1: قايمة «موظفين / فريق»). رقم تجربة عمره ما يتستبعد لوحده. */
   async function neverReplyOf(rawPhone) {
     const phone = normPh(rawPhone); if (!/^5\d{8}$/.test(phone)) return null;
     const settings = (await getSettingsData()) || {}, cfg = botConfig(settings);

@@ -175,6 +175,24 @@ function world({ waBot = {}, notifications = { whatsappEnabled: true }, orders =
       if (/^SELECT acked_at FROM wa_handovers WHERE phone_norm=\$1/i.test(s)) return { rows: db.acks && db.acks[p[0]] ? [{ acked_at: db.acks[p[0]] }] : [] };
       if (/^SELECT count\(\*\)::int AS n FROM wa_bot_log WHERE phone_norm=\$1 AND msg_type IN \('image'/i.test(s)) return { rows: [{ n: db.log.filter((l) => l.phone_norm === p[0] && ["image", "video", "document", "audio", "voice", "sticker"].includes(l.msg_type) && nowMs - Date.parse(l.at) < p[1] * 60_000).length }] };
       if (/^SELECT phone_norm FROM cms_contacts WHERE is_staff/i.test(s)) return { rows: (db.staffContacts || []).map((phone_norm) => ({ phone_norm })) };
+      /* SX1: شبكة أمان قايمة الموظفين — نفس منطق STAFF_SILENT_SQL / HUMAN_OUT على db.log / db.msgs، والتحويلات من أحداث البوابة */
+      { const human = (m) => m.direction === "out" && okOut(m) && ((m.source === "echo" && (m.echo_kind || "staff") !== "auto") || (!m.template && !["bot", "window", "echo"].includes(m.source || "api")));
+        const hoAts = (pn) => portalEvents.filter(([e, d]) => e === "wa_handover" && d.phone === `0${pn}`).map(([, d]) => T0(d.at));
+        if (/^\/\*ss:candidates\*\//.test(s)) {
+          const by = new Map();
+          for (const l of db.log) {
+            if (l.decision !== "silent" || l.reason !== "never_reply" || !p[1].includes(l.detail) || ["revoke", "reaction"].includes(l.msg_type || "")) continue;
+            const at = T0(l.at); if (!(at > nowMs - (p[0] + 60) * 60_000)) continue;
+            const lh = Math.max(-Infinity, ...db.msgs.filter((m) => m.phone_norm === l.phone_norm && human(m)).map((m) => T0(m.created_at)));
+            const lo = Math.max(-Infinity, ...hoAts(l.phone_norm));
+            if (!(at > lh) || !(at > lo)) continue;
+            by.set(l.phone_norm, Math.min(by.get(l.phone_norm) ?? Infinity, at));
+          }
+          return { rows: [...by.entries()].filter(([, at]) => at <= nowMs - p[0] * 60_000).map(([phone_norm, at]) => ({ phone_norm, first_at: new Date(at).toISOString() })) };
+        }
+        if (/^SELECT 1 FROM wa_messages m WHERE m\.phone_norm = \$1 AND m\.created_at > \$2 AND m\.direction = 'out'/i.test(s)) return { rows: db.msgs.filter((m) => m.phone_norm === p[0] && T0(m.created_at) > T0(p[1]) && human(m)).slice(0, 1).map(() => ({})) };
+        if (/^SELECT 1 FROM wa_handovers WHERE phone_norm = \$1 AND at >= \$2/i.test(s)) return { rows: hoAts(p[0]).filter((at) => at >= T0(p[1])).slice(0, 1).map(() => ({})) };
+        if (/^SELECT text FROM wa_bot_log WHERE phone_norm = \$1 AND at >= \$2 AND decision = 'silent'/i.test(s)) return { rows: db.log.filter((l) => l.phone_norm === p[0] && T0(l.at) >= T0(p[1]) && l.decision === "silent").slice(-1).map((l) => ({ text: l.text })) }; }
       if (/^SELECT DISTINCT driver->>'phone' AS phone FROM dl_shipments/i.test(s)) return { rows: (db.drivers || []).map((phone) => ({ phone })) };
       if (/^SELECT 1 FROM wa_messages WHERE phone_norm=\$1 AND created_at < \$2::timestamptz LIMIT 1/i.test(s)) return { rows: db.msgs.filter((m) => m.phone_norm === p[0] && Date.parse(m.created_at) < Date.parse(p[1])).slice(0, 1).map(() => ({})) };
       // ── مساعد الطلبات: «جاري الكتابة» والمتابعة بعد رابط السلة
@@ -3732,13 +3750,17 @@ test("M4: the live-log wordings that used to end in «ما فهمت» or in the 
 test("M5: a number that is not a customer is never answered — the owner's list, the team's alert phones, couriers — with a one-tap route", withEnv(LOCKS_OPEN, async () => {
   const w = liveWorld({ waBot: { neverReplyPhones: ["0598765432"] } });
   w.db.drivers = ["0533000111", "+966 53 300 0222"];
-  w.db.staffContacts = ["544000999"];
+  w.db.staffContacts = ["544000999", "544000888"];      // SX1: is_staff في ملف العملاء مابقاش مصدر للبوت
+  w.db.settings.cms = { phoneLists: { migratedAt: "2026-10-15T00:00:00Z", staffPhones: [{ phone: "0544000999", reason: "employee", name: "موظف" }], noAdsPhones: [{ phone: "0544000888", reason: "ads_request" }] },
+    campaigns: { excludePhones: ["0544000777"] } };      // القايمة القديمة بعد الترحيل: محدش بيقراها
   const a = await w.say("السلام عليكم", { from: "966598765432" });
   assert.deepEqual([a.sent.length, a.log.decision, a.log.reason, a.log.detail], [0, "silent", "never_reply", "never_list"]);
   const b = await w.say("وين المطعم", { from: "966506338246" });          // an alert phone of the team
   assert.deepEqual([b.sent.length, b.log.reason, b.log.detail], [0, "never_reply", "alert_phone"]);
   for (const from of ["966533000111", "966533000222"]) { const c = await w.say("انا عند الباب", { from }); assert.deepEqual([c.sent.length, c.log.reason, c.log.detail], [0, "never_reply", "courier"], from); }
-  { const st = await w.say("صباح الخير", { from: "966544000999" }); assert.deepEqual([st.sent.length, st.log.reason, st.log.detail], [0, "never_reply", "staff"], "marked «موظف» in the customers file"); }
+  { const st = await w.say("صباح الخير", { from: "966544000999" }); assert.deepEqual([st.sent.length, st.log.reason, st.log.detail], [0, "never_reply", "staff_list"], "in the «موظفين / فريق» list"); }
+  /* SX1: «مستثنين من الإعلانات بس» والقايمة القديمة بعد الترحيل ⇒ البوت بيرد عادي (ده اللي سكّت البوت على 0568•••14) */
+  for (const from of ["966544000888", "966544000777"]) { const na = await w.say("السلام عليكم", { from }); assert.equal(na.sent.length, 1, from); assert.notEqual(na.log.reason, "never_reply", from); }
   assert.equal((await w.say("السلام عليكم")).sent.length, 1, "customers are answered as always");
   assert.equal(w.sms.length, 0, "no staff alert for a number that is not a customer");
   // a test phone is never excluded by itself (Omar's phone is an alert phone AND a test phone) — only by the owner's list
@@ -3763,6 +3785,60 @@ test("M5: a number that is not a customer is never answered — the owner's list
   assert.match(R.configFromBody({ neverReplyPhones: ["123"] }).errors[0], /neverReplyPhones/);
   assert.deepEqual(R.configFromBody({ neverReplyPhones: ["0512345678", "966512345678"] }).value.neverReplyPhones, ["512345678"]);
   assert.ok(R.SCHEMA.neverReplyPhones.ar && R.SCHEMA.liveScope.ar && R.SCHEMA.mediaFloodCount.ar);
+}));
+
+/* SX1 (١٥/١٠ ١٨:٣٧ — 0568•••14 كتب «السلام عليكم» / «عندي ملاحظات» والبوت سكت ومحدش رد): رقم في قايمة «موظفين / فريق» (مش عضو في دليل الفريق)
+   كتب ومحدش من الفريق رد خلال staffSilent.afterMin ⇒ تحويل عادي «رقم في قايمة الموظفين كتب ومحدش رد» — والبوت نفسه مابيبعتلوش ولا رسالة. */
+test("SX1: staff-listed number writes, nobody answers in N min ⇒ a normal handover; no bot message; a staff reply / team member / switch off ⇒ none", withEnv(LOCKS_OPEN, async () => {
+  const PL = (x = {}) => ({ cms: { phoneLists: { migratedAt: "2026-10-15T00:00:00Z", staffPhones: [{ phone: "0568000014", reason: "ambassador", name: "محمد" }], staffSilent: { enabled: true, afterMin: 5 }, ...x } } });
+  const FROM = "966568000014";
+  const toHim = (w) => w.calls.filter((c) => c.body && c.body.to && String(c.body.to).endsWith("568000014"));
+  const hos = (w) => w.portal.filter(([e, d]) => e === "wa_handover" && d.phone === "0568000014");
+  const w = liveWorld({ extraSettings: PL() });
+  const a = await w.say("السلام عليكم", { from: FROM }); w.clock.advance(1);
+  const b = await w.say("عندي ملاحظات", { from: FROM });
+  for (const r of [a, b]) assert.deepEqual([r.sent.length, r.log.decision, r.log.reason, r.log.detail], [0, "silent", "never_reply", "staff_list"]);
+  await w.tick(3);
+  assert.equal(hos(w).length, 0, "4 min after the first message: not yet");
+  await w.tick(2);
+  assert.equal(hos(w).length, 1, "5 min with no reply ⇒ one handover");
+  const [, ev] = hos(w)[0];
+  assert.equal(ev.reason, "staff_silent"); assert.equal(ev.reasonAr, "رقم في قايمة الموظفين كتب ومحدش رد"); assert.match(ev.note, /«موظفين \/ فريق»/); assert.match(ev.note, /سفير/);
+  assert.ok(w.sms.some((x) => /staff_silent/.test(String(x.ref || ""))), "the team is alerted like any handover");
+  assert.ok(w.db.jobs.some((j) => j.kind === "staff_silent" && j.status === "done"));
+  await w.tick(15); await w.tick(15);
+  assert.equal(hos(w).filter(([, d]) => !d.reminder && !d.reopened).length, 1, "one handover per silence, not one per minute");
+  assert.equal(toHim(w).length, 0, "the bot never writes to a staff-listed number — not even the «we will get back to you» note");
+  assert.ok(!w.db.jobs.some((j) => j.kind === "handover_check" && /:note$/.test(String(j.wamid)) && j.status === "done" && j.reason === "note_sent"), "no customer note from the bot");
+  // a staff member answered (echo from the restaurant phone) inside the window ⇒ no handover
+  const w2 = liveWorld({ extraSettings: PL() });
+  await w2.say("السلام عليكم", { from: FROM }); w2.clock.advance(2); await w2.cashier("هلا محمد، تفضل", FROM);
+  await w2.tick(10);
+  assert.equal(hos(w2).length, 0, "a human answered");
+  // a team member (waTeam) on the same list ⇒ silent as «staff» (the team's own number), never a handover
+  const w3 = liveWorld({ extraSettings: { ...PL(), waTeam: { members: [{ phone: "0568000014", name: "محمد", role: "cashier" }] } } });
+  const t3 = await w3.say("السلام عليكم", { from: FROM });
+  assert.equal(t3.log.detail, "staff"); await w3.tick(10);
+  assert.equal(hos(w3).length, 0);
+  // the switch is off ⇒ silent, no handover
+  const w4 = liveWorld({ extraSettings: PL({ staffSilent: { enabled: false, afterMin: 5 } }) });
+  await w4.say("السلام عليكم", { from: FROM }); await w4.tick(10);
+  assert.equal(hos(w4).length, 0);
+  // moved to «مستثنين من الإعلانات بس» before the job ran ⇒ the next message is answered by the bot, and no staff-list handover
+  const w5 = liveWorld({ extraSettings: PL() });
+  await w5.say("السلام عليكم", { from: FROM });
+  w5.db.settings.cms.phoneLists = { ...w5.db.settings.cms.phoneLists, staffPhones: [], noAdsPhones: [{ phone: "0568000014", reason: "ads_request" }] };
+  const r5 = await w5.say("عندي ملاحظات", { from: FROM });
+  assert.notEqual(r5.log.reason, "never_reply", "the customer is handled by the bot right away");
+  assert.ok(toHim(w5).length >= 1, "(the helper sees messages to him when the bot does answer)");
+  await w5.tick(6);
+  assert.equal(hos(w5).filter(([, d]) => d.reason === "staff_silent").length, 0);
+  // a number still waiting for the owner's decision (review) is covered too, and neverReplyOf says why the bot is quiet (inbox / portal header)
+  const w6 = liveWorld({ extraSettings: { cms: { phoneLists: { migratedAt: "2026-10-15T00:00:00Z", reviewPhones: [{ phone: "0568000014", reason: "ambassador" }] } } } });
+  const r6 = await w6.say("السلام عليكم", { from: FROM });
+  assert.equal(r6.log.detail, "staff_review"); assert.equal(await w6.bot.neverReplyOf("0568000014"), "staff_review");
+  await w6.tick(6);
+  assert.equal(hos(w6).length, 1);
 }));
 
 test("M5: live scope — ads only / ads + new numbers / everyone; outside the scope the bot is silent and logs the reply it would have sent", withEnv(LOCKS_OPEN, async () => {

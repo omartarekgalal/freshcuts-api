@@ -30,7 +30,7 @@ import {
   IDENTITY_RULES_AR,
 } from "./identity.js";
 import { initSmsLog, SMS_KINDS, partsOf } from "./smslog.js";
-import { staffPhoneSet, itemFamily } from "./smsrules.js";
+import { teamPhoneSet, itemFamily } from "./smsrules.js";
 import { plausibleName } from "./accounts.js";
 // 👁 قاعدة إظهار الجوال الكاملة — مصدر واحد للوحة كلها
 import { phoneOut } from "./phones.js";
@@ -551,7 +551,7 @@ export function register(app, ctx, deps = {}) {
     }));
 
     /* الرسايل: السجل الموحّد + الحملات */
-    const staff = staffPhoneSet(settings || {});
+    const staff = teamPhoneSet(settings || {});      // SX1: الفريق بس — المستثنى من الإعلانات عميل
     const sms = [
       ...logSms.map((m) => ({
         id: "s" + m.id, at: m.at, kind: m.kind === "other" && staff.has(pn) ? "staff" : m.kind,
@@ -624,7 +624,7 @@ export function register(app, ctx, deps = {}) {
     const tab = q("tab") === "otp" ? "otp" : "all";
     const settings = await getSettingsData().catch(() => ({}));
     const full = await fullPhones(c);
-    const staff = [...staffPhoneSet(settings || {})];
+    const staff = [...teamPhoneSet(settings || {})];
     const where = [], p = [staff];
     const P = (v) => { p.push(v); return `$${p.length}`; };
     where.push(tab === "otp" ? "u.kind = 'otp'" : "u.kind <> 'otp'");

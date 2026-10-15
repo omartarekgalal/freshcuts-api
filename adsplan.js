@@ -26,6 +26,7 @@ import {
   PLATFORMS as ADS_PLATFORMS, canManage as adsCanManage, dailySpendData as adsDailySpend, SALES_ONLY,
 } from "./ads.js";
 import { BOT_SQL } from "./botfilter.js";
+import { teamPhones } from "./phonelists.js";
 
 const r2 = (v) => Math.round((Number(v) || 0) * 100) / 100;
 const num = (v) => (v == null || v === "" ? 0 : Number(v) || 0);
@@ -600,7 +601,8 @@ export function register(app, ctx, deps = {}) {
     try {
       const d = ctx.getSettingsData ? await ctx.getSettingsData() : null;
       const list = Array.isArray(d?.cms?.staffPhones) ? d.cms.staffPhones : [];
-      return list.map((p) => normPhone(p)).filter(Boolean);
+      // SX1: + الفريق (دليل الفريق + قايمة «موظفين / فريق» + أرقام التنبيهات) — طلباتهم مش «عملاء من الإعلانات»
+      return [...new Set([...list.map((p) => normPhone(p)), ...teamPhones(d || {})].filter(Boolean))];
     } catch { return []; }
   }
 

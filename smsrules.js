@@ -8,12 +8,13 @@
      • فاصل متدرّج بين أي رسالتين تسويقيتين لنفس الرقم + سقف أسبوعي/شهري
        (٢١/٩ — بدل الرقم الواحد اللي كان ٢١ وبقى ٧؛ شوف GAP_DEFAULT تحت)
      • لازم يكون طلب مننا مباشرة (صالة/سفري/موقع) — أرقام التطبيقات بس ممنوعة
-     • الموظفين وأرقام التجارب برا
+     • الموظفين وأرقام التجارب والمستثنين من الإعلانات برا (phonelists.js — SX1)
      • جزئين UCS-2 كحد أقصى
 ═══════════════════════════════════════════════════════════════════════════ */
 import crypto from "node:crypto";
 
 import { logSms } from "./smslog.js";
+import { teamPhones, noMarketingPhones } from "./phonelists.js";
 
 export const QUIET_START = 22; // من ١٠ بالليل
 export const QUIET_END = 12;   // لحد ١٢ الضهر
@@ -81,17 +82,18 @@ export const normLocal = (p) => {
   return /^5\d{8}$/.test(d) ? d : null;
 };
 
-/* أرقام مستبعدة دايماً: إنذارات الإدارة + رسايل الطلبات + قايمة استبعاد الحملات */
+/* SX1 (١٥/١٠) — مين برا التسويق ومين «مش عميل». المصدر الوحيد: phonelists.js (settings.cms.phoneLists — كل رقم بسبب).
+   staffPhoneSet = «مايوصلهمش تسويق»: الفريق (أرقام تنبيهات الطلبات + دليل الفريق + قايمة «موظفين / فريق» + المستنيين
+   قرار المالك) + قايمة «مستثنين من الإعلانات بس». الاسم فضل زي ما هو عشان كل الحملات/الأتمتة/السلة/الولاء/واتساب
+   بتناديه — ودول كلهم تسويق. قبل الترحيل (أول إقلاع) القايمة القديمة excludePhones بتتحسب زي الأول.
+   teamPhoneSet = «مش عميل» بس (من غير المستثنين من الإعلانات): ملف العملاء (is_staff) والعدّ والتحليلات وطلب التقييم.
+   ⚠️ البوت مابيقراش ولا واحدة فيهم — بيقرا phonelists.silentMap (الموظفين بس، عمره ما بيقرا المستثنين من الإعلانات). */
 export function staffPhoneSet(settings = {}) {
-  const s = settings || {};
-  const out = new Set();
-  const add = (v) => {
-    const list = Array.isArray(v) ? v : String(v || "").split(/[,\s]+/);
-    for (const x of list) { const n = normLocal(typeof x === "object" && x ? x.phone : x); if (n) out.add(n); }
-  };
-  add(s.delivery?.alertPhones); add(s.delivery?.newOrderPhones);
-  add(s.cms?.campaigns?.excludePhones);
-  return out;
+  return noMarketingPhones(settings || {});
+}
+export const noMarketingPhoneSet = staffPhoneSet;
+export function teamPhoneSet(settings = {}) {
+  return teamPhones(settings || {});
 }
 
 /* علاقة مباشرة = عنده طلب واحد على الأقل مش من تطبيق توصيل (صالة/سفري/موقع).
@@ -383,7 +385,7 @@ export function filterAudience(members, { paused = new Set(), staff = new Set(),
 }
 export const EXCLUDE_LABELS = Object.freeze({
   apps_only: "رقمه من تطبيق توصيل بس (ماطلبش مننا مباشرة)",
-  staff: "موظف أو رقم مستبعد",
+  staff: "فريق / موظف أو مستثنى من الإعلانات",
   opted_out: "أوقف الرسائل الإعلانية",
   ad_blocked: "حاجب الإعلانات عند شركة الاتصالات (مابتوصلوش أصلاً)",
   sms_paused: "SMS موقوف مؤقتاً للشريحة دي (بنكلّمها واتساب)",

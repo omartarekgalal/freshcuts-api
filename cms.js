@@ -2497,7 +2497,8 @@ export function register(app, ctx, deps = {}) {
     const s = await getSettingsData();
     const apps = (Array.isArray(s?.deliveryAppMethods) && s.deliveryAppMethods.length
       ? s.deliveryAppMethods : (DEFAULT_DELIVERY_APPS || [])).map((x) => String(x).toLowerCase());
-    const staff = [...smsRules.staffPhoneSet(s)].filter((p) => /^5\d{8}$/.test(p));
+    /* SX1: is_staff = الفريق بس (teamPhoneSet) — المستثنين من الإعلانات عملاء عاديين في الملف، والتسويق بيشيلهم من staffPhoneSet */
+    const staff = [...smsRules.teamPhoneSet(s)].filter((p) => /^5\d{8}$/.test(p));
     const before = (await pool.query("SELECT count(*)::int n FROM cms_contacts")).rows[0].n;
     const r = await pool.query(`
       WITH pos AS (
@@ -3231,12 +3232,14 @@ ${smsRules.optoutLine(cfg, { code: c?.optout_code, host: STORE_PUBLIC(), sender:
     if (b.budgetSar != null) val.budgetSar = Math.max(0, Number(b.budgetSar) || 0);
     if (b.budgetSince !== undefined) val.budgetSince = b.budgetSince ? new Date(b.budgetSince).toISOString() : null;
     if (b.clearBrake === true) delete val.brake;
-    if (Array.isArray(b.excludePhones)) val.excludePhones = b.excludePhones.map(smsRules.normLocal).filter(Boolean).slice(0, 200);
+    /* SX1 (١٥/١٠): القايمة دي اتنقلت لـ«قوايم الأرقام» (phonelists.js) — كل رقم لازم يبقى معاه سبب، والموظف غير المستثنى من الإعلانات.
+       القديمة بتفضل زي ما هي (للرجوع للنسخة اللي قبل كده بس) ومحدش بيقراها بعد الترحيل. */
+    const moved = Array.isArray(b.excludePhones);
     await pool.query(
       `UPDATE settings SET data = jsonb_set(
          CASE WHEN data ? 'cms' THEN data ELSE jsonb_set(data,'{cms}','{}'::jsonb,true) END,
          '{cms,campaigns}', $1::jsonb, true) WHERE id=1`, [jb(val)]);
-    return c.json({ ok: true, ...val });
+    return c.json({ ok: true, ...val, ...(moved ? { warning: "excludePhones_moved", message: "قايمة الاستبعاد اتنقلت لـ«الفريق والتنبيهات ← قوايم الأرقام» — ضيف الرقم من هناك بسببه" } : {}) });
   });
 
   // عام: صفحة /u/<code> على المتجر بتناديه
@@ -3397,7 +3400,7 @@ ${smsRules.optoutLine(cfg, { code: c?.optout_code, host: STORE_PUBLIC(), sender:
       const rows = (await pool.query(LOYALTY_PENDING_SQL)).rows;
       if (!rows.length) return dry ? { dry: true, gate, send: [], skip: [], merged: [] } : { sent: 0 };
       const pns = [...new Set(rows.map((r) => r.phone_norm))];
-      // الموظفين: أرقام الإنذارات + استبعاد الحملات (السفراء) + cms_contacts.is_staff
+      // مايوصلهمش تسويق: الفريق + «مستثنين من الإعلانات بس» (smsrules.staffPhoneSet ⇐ phonelists.js — SX1) + cms_contacts.is_staff
       const staff = smsRules.staffPhoneSet({ ...s, cms: { ...(s.cms || {}), campaigns: camp } });
       const flags = (await pool.query(
         "SELECT phone_norm, is_staff, is_test FROM cms_contacts WHERE phone_norm = ANY($1) AND (is_staff OR is_test)", [pns])).rows;
@@ -4037,7 +4040,7 @@ ${smsRules.optoutLine(cfg, { code: c?.optout_code, host: STORE_PUBLIC(), sender:
     let b = {};
     try { b = await c.req.json(); } catch { b = {}; }
     const pn = smsRules.normLocal(b.phone);
-    if (!pn || !smsRules.staffPhoneSet(await getSettingsData()).has(pn)) return bad(c, "phone_not_staff");
+    if (!pn || !smsRules.teamPhoneSet(await getSettingsData()).has(pn)) return bad(c, "phone_not_staff");      // SX1: رقم من الفريق (مش مستثنى من الإعلانات — ده عميل)
     const cfg = await campaignCfg();
     if (flow.channel === "sms" && !process.env.TAQNYAT_SENDER_AD) return bad(c, "ad_sender_missing");
     await ensureFlowLink(flow);

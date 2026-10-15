@@ -73,6 +73,7 @@ import * as wahandover from "./wahandover.js";
 import * as wahub from "./wahub.js";
 import * as wastaff from "./wastaff.js";
 import * as wateam from "./wateam.js";
+import * as phonelists from "./phonelists.js";
 import * as waflow from "./waflow.js";
 import * as wakb from "./wakb.js";
 import * as wabotllm from "./wabotllm.js";
@@ -3300,7 +3301,10 @@ let waStaffApi = null;      // wastaff.register: رد الموظف على محا
 waHubApi = wahub.register(app, moduleCtx, { whoami: (c) => cmsApi.whoami(c), wa: waApi, waInbox: () => waInboxApi, bot: () => wabotApi, staff: () => waStaffApi, flow: () => waFlowApi });
 waStaffApi = wastaff.register(app, moduleCtx, { wa: waApi, hub: () => waHubApi, requirePortal: portalApi.requirePortal, audit: portalApi.audit, bot: () => wabotApi, broadcast: portalApi.broadcast, flow: () => waFlowApi });
 /* 👥 ST1 (١٢/١٠): تواصل الفريق على واتساب — كل إرسال من حارس whatsapp.js، وللأرقام اللي في دليل الفريق بس. */
-waTeamApi = wateam.register(app, moduleCtx, { wa: waApi, sendSms: accounts.sendSms, requirePortal: portalApi.requirePortal, flow: () => waFlowApi , presence: () => waHandoverApi });
+/* 📇 SX1 (١٥/١٠): قايمتين أرقام بسبب لكل رقم — «موظفين / فريق» (البوت ساكت) و«مستثنين من الإعلانات بس» (البوت بيرد) + ترحيل excludePhones
+   القديمة مرة واحدة + الفحص اليومي. البوت والتسويق بيقروا القوايم من الإعدادات (phonelists.js) مش من الموديول ده. */
+const phoneListsApi = phonelists.register(app, moduleCtx, { whoami: (c) => cmsApi.whoami(c) });
+waTeamApi = wateam.register(app, moduleCtx, { wa: waApi, sendSms: accounts.sendSms, requirePortal: portalApi.requirePortal, flow: () => waFlowApi , presence: () => waHandoverApi, phoneLists: () => phoneListsApi });
 waFlowApi = waflow.register(app, moduleCtx, { team: () => waTeamApi, staff: () => waStaffApi, bot: () => wabotApi, hub: () => waHubApi, requirePortal: portalApi.requirePortal, broadcast: portalApi.broadcast , handover: () => waHandoverApi });
 // 🍽 QR الطاولات: مفاتيح الطاولات + نداء الويتر (بيبعت إشعار البوابة) + تحليلات لكل طاولة
 tableOrder.register(app, moduleCtx, { portal: () => portalApi, shop: () => shopApi });

@@ -384,10 +384,12 @@ export function register(app, ctx, deps = {}) {
       if (!r.ok) return c.json(r, 404);
       /* للمحادثة نفسها: قفل القناة أولاً، وبعده النافذة (نص حر بره الـ٢٤ ساعة مرفوض — القالب للمالك والعمليات) */
       /* wastaff: حالة الرد للمحادثة دي بالظبط (رقم تجربة والقناة مقفولة = مفتوح للتجربة؛ العميل وقّف الرسايل = مقفول) + مين رد من اللوحة/البورتال */
+      /* SX1: البوت ساكت على الرقم ده ليه (never_list / alert_phone / staff / courier / staff_list / staff_review) — رأس المحادثة بيقول «رقم موظف — البوت ساكت» */
+      let neverReplyWhy = null; try { const bt = bot(); if (bt && typeof bt.neverReplyOf === "function") neverReplyWhy = (await bt.neverReplyOf(pn)) || null; } catch { neverReplyWhy = null; }
       const sf = staff();
-      if (sf) { await sf.annotate(r.messages); return c.json({ ...r, send: await sf.sendStateFor(pn) }); }
+      if (sf) { await sf.annotate(r.messages); return c.json({ ...r, neverReplyWhy, send: await sf.sendStateFor(pn) }); }
       const st = await sendState();
-      return c.json({ ...r, send: st.ok && !r.window.open ? { ok: false, gate: "window_closed" } : st });
+      return c.json({ ...r, neverReplyWhy, send: st.ok && !r.window.open ? { ok: false, gate: "window_closed" } : st });
     } catch (e) { log.error("[wa-hub] thread:", e.message); return c.json({ ok: false, error: "unavailable" }, 500); }
   });
   app.post("/api/cms/wa/threads/:key/read", async (c) => {

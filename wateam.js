@@ -370,13 +370,16 @@ export function keeperSms(lang = "en") {
     : "Fresh Cuts: your WhatsApp alerts are paused. Send the word ALERTS to the restaurant WhatsApp number to turn them back on (free).");
 }
 export const HELP_TEXT = ["أوامر الفريق (اكتبها هنا):", "• حالة — نافذة التنبيهات بتاعتك والمواضيع اللي بتوصلك", "• تنبيهات — تجديد التنبيهات المجانية (زي الزر)", "• ملخص — ملخص آخر ٢٤ ساعة (مدير / مالك)", "• مساعدة — القايمة دي"].join("\n");
-export function dailyText({ handovers = 0, urgent = 0, odd = [], bySms = 0, closed = [] }) {
+export function dailyText({ handovers = 0, urgent = 0, odd = [], bySms = 0, closed = [], staffFlags = 0, staffReview = 0 }) {
   const lines = ["🗒 ملخص واتساب — آخر ٢٤ ساعة", `تحويلات لموظف: ${handovers}${urgent ? ` (منها ${urgent} عاجل)` : ""}`];
   const total = odd.reduce((a, r) => a + Number(r.n || 0), 0);
   lines.push(`حاجات غريبة: ${total}`);
   for (const r of odd.slice(0, 8)) lines.push(`• ${ODD_KINDS[r.kind] || r.kind}: ${r.n}`);
   if (bySms) lines.push(`تنبيهات راحت SMS (النافذة كانت مقفولة): ${bySms}`);
   if (closed.length) lines.push(`نافذتهم مقفولة دلوقتي: ${closed.join("، ")}`);
+  /* SX1: الفحص اليومي لقايمة الموظفين — عدد بس، سطر واحد في اليوم (مفيش رسالة لكل رقم) */
+  if (staffFlags > 0) lines.push(`⚠️ أرقام في قايمة الموظفين بتتصرف زي عملاء: ${staffFlags} — راجعها: الفريق والتنبيهات ← قوايم الأرقام`);
+  if (staffReview > 0) lines.push(`📋 أرقام مستنية قرارك (موظف ولا عميل؟): ${staffReview}`);
   lines.push(`اللوحة: ${INBOX_URL}`);
   return lines.join("\n").slice(0, 1000);
 }
@@ -737,7 +740,9 @@ export function register(app, ctx, deps = {}) {
     const od = await q("SELECT kind, count(*)::int AS n FROM wa_team_odd WHERE at > $1 GROUP BY 1 ORDER BY 2 DESC", [since]);
     const closed = [];
     for (const m of cfg.members.filter((x) => x.active)) if (!windowState(await lastInOf(m.phone), now).open) closed.push(m.name || last4(m.phone));
-    return { handovers: Number(ho && ho[0] && ho[0].n) || 0, urgent: Number(ho && ho[0] && ho[0].u) || 0, bySms: Number(ho && ho[0] && ho[0].sms) || 0, odd: od || [], closed };
+    let pl = null; try { const api = typeof deps.phoneLists === "function" ? deps.phoneLists() : deps.phoneLists; pl = api && typeof api.flagCount === "function" ? await api.flagCount() : null; } catch { pl = null; }      // SX1
+    return { handovers: Number(ho && ho[0] && ho[0].n) || 0, urgent: Number(ho && ho[0] && ho[0].u) || 0, bySms: Number(ho && ho[0] && ho[0].sms) || 0, odd: od || [], closed,
+      staffFlags: Number(pl && pl.flagged) || 0, staffReview: Number(pl && pl.review) || 0 };
   }
   async function dailyDigest(cfg, now, { only = null } = {}) {
     const to = only ? [only] : recipientsFor(cfg, "digest");

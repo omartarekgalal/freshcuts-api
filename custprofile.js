@@ -30,7 +30,7 @@
 import { shopPaidSql, appOnlyPhonesSql, BIZ_DAY_START_HOUR } from "./identity.js";
 import { matchWebToPos, posChannel, itemCategory, CATEGORY_LABELS } from "./customer360.js";
 import { favDish, isDishName } from "./wamsg.js";
-import { foodGroup, foodGroupOf, FOOD_GROUPS, itemFamily, leanOf, staffPhoneSet } from "./smsrules.js";
+import { foodGroup, foodGroupOf, FOOD_GROUPS, itemFamily, leanOf, teamPhoneSet } from "./smsrules.js";
 import { rankDishes, cleanKey, normW, showW, deliveryLine, FAV_RULES, FAV_SQL, buildLive, inBox, boxLive, latinDigits } from "./wafavpick.js";
 import { loyaltyCfgOf, LOYALTY_COUNTED_SQL } from "./loyalty.js";
 import { ORDER_BUTTON, MENU_BUTTON } from "./watemplates.js";
@@ -831,7 +831,7 @@ export function register(app, ctx, deps = {}) {
       lc.enabled && lc.startedAt ? rows(GATHER_SQL.loyaltyCount, [pns, lc.startedAt]) : [],
       rows(GATHER_SQL.rewards, L), rows(GATHER_SQL.rewardCodes, L), rows(FAV_SQL.firstUsed, L), rows(FAV_SQL.web, L),
     ]);
-    const staffSet = new Set([...staffPhoneSet(s), ...((s.waBot || {}).testPhones || []).map((t) => nz(t && typeof t === "object" ? t.phone : t).replace(/\D/g, "").replace(/^966/, "").replace(/^0/, ""))]);
+    const staffSet = new Set([...teamPhoneSet(s), ...((s.waBot || {}).testPhones || []).map((t) => nz(t && typeof t === "object" ? t.phone : t).replace(/\D/g, "").replace(/^966/, "").replace(/^0/, ""))]);
     return assemble({ pns, pos, web, names, optins, contacts, invalid, appOnly, inbound, langs, mkt, loyalty, rewards, rewardCodes, firstUsed, webAgg, staffSet });
   }
   async function firstState() {
