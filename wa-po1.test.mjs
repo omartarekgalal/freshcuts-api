@@ -805,6 +805,11 @@ test("R2 minor — the database cannot be read: the tick says so in the log (onc
   const s2 = world({ start: "2026-10-14T15:00:00Z", failSql: /FROM wa_team_portal WHERE id='cashier'/ });
   assert.deepEqual((await s2.team.tick()).portal, { skipped: "state_db" });
   assert.equal((await s2.team.portalStatus(T.teamConfig(s2.db.settings), s2.now())).error, "state_db");
+  /* المراجعة التالتة: سجل الرسايل مش بيتقري (الاستعلام اللي فيه array_agg) ⇒ الدورة واقفة، واللوحة/verify.py بيقولوا كده بدل «كله تمام» */
+  const l = world({ start: "2026-10-14T15:00:00Z", failSql: /^SELECT phone_norm, count\(\*\) FILTER/ });
+  assert.equal((await l.team.tick()).portal.skipped, "log_db");
+  assert.equal(l.errors.filter((x) => /portal watch: log_db/.test(x)).length, 1);
+  assert.deepEqual([(await l.team.portalStatus(T.teamConfig(l.db.settings), l.now())).error, l.sent.length], ["log_db", 0]);
 });
 
 test("R2 minor — RG1-era presence rows (last_seen from on-screen polls only, no last_visible) get last_visible at boot: a deploy inside working hours does not tell the cashiers «مقفول من أول الشغل» for a portal seen minutes ago, and the dashboard says «مقفول من X», not «ماتفتحش»", async () => {

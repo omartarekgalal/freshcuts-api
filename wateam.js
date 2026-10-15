@@ -1038,7 +1038,8 @@ export function register(app, ctx, deps = {}) {
     });
     const st = await q("SELECT since, alerts, last_alert_at, manager_told, opened_at, reopened_at FROM wa_team_portal WHERE id='cashier'", []);
     const e = st && st[0];
-    const log = (await portalLog(now, e ? isoOf(e.opened_at || e.since) : null)) || new Map();
+    /* السجل مش بيتقري ⇒ الدورة واقفة (log_db) ⇒ error هنا كمان، فاللوحة وverify.py يقولوا إن التنبيه واقف بدل «كله تمام» */
+    const log0 = await portalLog(now, e ? isoOf(e.opened_at || e.since) : null), log = log0 || new Map();
     const today = await q("SELECT count(*) FILTER (WHERE ok)::int AS n, count(*) FILTER (WHERE NOT ok)::int AS failed FROM wa_team_log WHERE topic='portal_offline' AND kind IN ('cashier','manager') AND at >= $1",
       [bizStart(bizDay(now)).toISOString()]);
     const sig = portalSignal(list, now, po);
@@ -1069,7 +1070,7 @@ export function register(app, ctx, deps = {}) {
         reopenedAt: isoOf(ro), endsAt: Number.isFinite(ro) ? isoOf(ro + keep * MIN) : null, hold } : null,
       sentToday: Number(today && today[0] && today[0].n) || 0, failedToday: Number(today && today[0] && today[0].failed) || 0, recipients,
       muted: recipients.some((r) => r.role === "cashier") && !cashLeft && !mgrLeft,
-      ...(st === null ? { error: "state_db" } : {}), presence: health(), devices };
+      ...(st === null ? { error: "state_db" } : log0 === null ? { error: "log_db" } : {}), presence: health(), devices };
   }
 
   /* ── الحالة (اللوحة والبورتال) ───────────────────────────────────────────── */
