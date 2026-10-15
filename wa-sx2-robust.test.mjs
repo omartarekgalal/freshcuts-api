@@ -92,6 +92,8 @@ function world({ jobs = [], queue = [], settings = {}, media = {}, script = [], 
   const qrow = (id) => db.queue.find((q) => q.id === Number(id));
   const ch = (q) => q.channel || (job(q.job_id) || {}).channel || "wa_web";
   const waiting = (q) => q.status === "failed" && q.retry_at;
+  /* FAIL_REBASE: التكملة بعد آخر فرملة فشل بس هي اللي بتبدأ نسبة الفشل من جديد */
+  const rebase = (j) => { if (j.fail_brake_at && (!j.fail_base_at || Date.parse(j.fail_brake_at) > Date.parse(j.fail_base_at))) j.fail_base_at = iso(clock.t); };
   const pool = { db, connect: async () => ({ query: (s, p) => pool.query(s, p), release() {} }), async query(sql, p = []) {
     const s = String(sql).replace(/\s+/g, " ").trim();
     const rc = (rows) => ({ rows, rowCount: rows.length });
@@ -102,14 +104,14 @@ function world({ jobs = [], queue = [], settings = {}, media = {}, script = [], 
     if (/^SELECT id, spend_cap_sar, rate_sar, cloud_template, brake_ack_at FROM wa_send_jobs WHERE status='running'/i.test(s)) return rc(db.jobs.filter((j) => j.status === "running" && j.channel === "wa_cloud"));
     if (/^SELECT count\(\*\) FILTER \(WHERE status='sent' AND COALESCE\(cloud_status/i.test(s)) { const r = db.queue.filter((q) => q.job_id === Number(p[0]));
       return rc([{ sent: r.filter((q) => q.status === "sent" && q.cloud_status !== "failed").length,
-        failed: r.filter((q) => (q.status === "failed" || q.cloud_status === "failed") && Number(q.error_code) !== 131049 && !q.retry_at).length,
+        failed: r.filter((q) => (q.status === "failed" || q.cloud_status === "failed") && Number(q.error_code) !== 131049).length,
         capped: r.filter((q) => (q.status === "failed" || q.cloud_status === "failed") && Number(q.error_code) === 131049).length,
         stopped: r.filter((q) => q.optout_at).length, delivered: 0, read_n: 0, first_sent: null,
-        ...(() => { const ack = p[1] ? Date.parse(p[1]) : null, w = r.filter((q) => !ack || Date.parse(q.tried_at || q.claimed_at || 0) > ack);
+        ...(() => { const fb = (job(p[0]) || {}).fail_base_at, base = fb ? Date.parse(fb) : null, w = r.filter((q) => !base || Date.parse(q.tried_at || q.claimed_at || 0) > base);
           return { b_sent: w.filter((q) => q.status === "sent" && q.cloud_status !== "failed").length,
-            b_failed: w.filter((q) => (q.status === "failed" || q.cloud_status === "failed") && Number(q.error_code) !== 131049 && !q.retry_at).length,
-            b_stopped: w.filter((q) => q.optout_at).length }; })() }]); }
+            b_failed: w.filter((q) => (q.status === "failed" || q.cloud_status === "failed") && Number(q.error_code) !== 131049).length }; })() }]); }
     if (/^UPDATE wa_send_jobs SET status='paused', stop_reason=\$2 WHERE id=\$1 AND status='running'/i.test(s)) { const j = job(p[0]); if (j && j.status === "running") { j.status = "paused"; j.stop_reason = p[1]; return rc([{ id: j.id }]); } return rc([]); }
+    if (/^UPDATE wa_send_jobs SET fail_brake_at=NOW\(\) WHERE id=\$1/i.test(s)) { job(p[0]).fail_brake_at = iso(clock.t); return rc([]); }
     if (/^WITH s AS/i.test(s)) {       // recoverStuck
       const out = [];
       for (const q of db.queue.filter((x) => x.status === "sending" && x.channel === "wa_cloud" && x._stale)) {
@@ -134,7 +136,8 @@ function world({ jobs = [], queue = [], settings = {}, media = {}, script = [], 
       return rc([{ ...q }]);
     }
     if (/^UPDATE wa_send_queue SET status='sending'/i.test(s)) {
-      const q = db.queue.find((x) => x.status === "pending" && (job(x.job_id) || {}).status === "running" && ch(x) === "wa_cloud");
+      const held = (jid) => db.queue.some((m) => m.job_id === jid && waiting(m) && !m.retried_at && m.reason === "media_error");      // مراجعة SX2: 131053 مستنية إعادة
+      const q = db.queue.find((x) => x.status === "pending" && (job(x.job_id) || {}).status === "running" && ch(x) === "wa_cloud" && !held(x.job_id));
       if (!q) return rc([]);
       Object.assign(q, { status: "sending", channel: "wa_cloud", attempts: (q.attempts || 0) + 1, tried_at: iso(clock.t) }); return rc([{ ...q }]);
     }
@@ -185,7 +188,7 @@ function world({ jobs = [], queue = [], settings = {}, media = {}, script = [], 
     }
     if (/^UPDATE wa_send_jobs SET status='running', started_at=COALESCE/i.test(s)) {
       const j = job(p[0]); if (!(j && j.status === "paused" && j.start_at && Date.parse(j.start_at) <= Date.parse(p[1]))) return rc([]);
-      Object.assign(j, { status: "running", started_at: iso(clock.t), start_at: null, start_error: null, stop_reason: null }); return rc([{ id: j.id }]);
+      Object.assign(j, { status: "running", started_at: iso(clock.t), start_at: null, start_error: null, stop_reason: null, brake_ack_at: iso(clock.t) }); rebase(j); return rc([{ id: j.id }]);
     }
     if (/^SELECT id, name, status, channel, cloud_template, image_url, video_url, start_at FROM wa_send_jobs WHERE id = ANY/i.test(s)) return rc(db.jobs.filter((j) => p[0].includes(j.id)).map((j) => ({ ...j })));
     if (/^UPDATE wa_send_jobs SET start_at=\$2, start_by=\$3/i.test(s)) { const hit = db.jobs.filter((j) => p[0].includes(j.id) && j.status === "paused"); for (const j of hit) Object.assign(j, { start_at: p[1], start_by: p[2], start_error: null }); return rc(hit.map((j) => ({ id: j.id }))); }
@@ -193,10 +196,13 @@ function world({ jobs = [], queue = [], settings = {}, media = {}, script = [], 
     // التحكم
     if (/^SELECT channel FROM wa_send_jobs WHERE id=\$1/i.test(s)) return rc(job(p[0]) ? [{ channel: job(p[0]).channel }] : []);
     if (/^UPDATE wa_send_jobs SET status=\$2, finished_at/i.test(s)) { const j = job(p[0]); if (!j || ["done", "cancelled"].includes(j.status)) return rc([]);
-      j.status = p[1]; if (p[1] === "running") { j.stop_reason = null; j.brake_ack_at = iso(clock.t); } if (["running", "cancelled"].includes(p[1])) j.start_at = null; return rc([{ id: j.id }]); }
-    if (/^SELECT id, name, channel, cloud_template, image_url, video_url FROM wa_send_jobs WHERE status='paused' AND channel='wa_cloud'/i.test(s)) return rc(db.jobs.filter((j) => j.status === "paused" && j.channel === "wa_cloud").map((j) => ({ ...j })));
-    if (/^UPDATE wa_send_jobs SET status=\$2, stop_reason = CASE/i.test(s)) { const hit = db.jobs.filter((j) => j.status === p[0] && (p[2] || j.channel !== "wa_cloud") && !p[3].includes(j.id));
-      for (const j of hit) { j.status = p[1]; if (p[1] === "running") { j.stop_reason = null; j.start_at = null; j.brake_ack_at = iso(clock.t); } } return rc(hit.map((j) => ({ id: j.id }))); }
+      j.status = p[1]; if (p[1] === "running") { j.stop_reason = null; j.brake_ack_at = iso(clock.t); rebase(j); } if (["running", "cancelled"].includes(p[1])) j.start_at = null; return rc([{ id: j.id }]); }
+    if (/^SELECT id, name, channel, cloud_template, image_url, video_url FROM wa_send_jobs WHERE status='paused' AND channel='wa_cloud' AND start_at IS NULL/i.test(s)) return rc(db.jobs.filter((j) => j.status === "paused" && j.channel === "wa_cloud" && !j.start_at).map((j) => ({ ...j })));
+    if (/^UPDATE wa_send_jobs SET status=\$2, stop_reason = CASE/i.test(s)) {
+      if (!/AND \(\$2 <> 'running' OR start_at IS NULL\)/.test(s)) throw new Error("كمّل الكل من غير شرط المجدولة");
+      const hit = db.jobs.filter((j) => j.status === p[0] && (p[2] || j.channel !== "wa_cloud") && !p[3].includes(j.id) && (p[1] !== "running" || !j.start_at));
+      for (const j of hit) { j.status = p[1]; if (p[1] === "running") { j.stop_reason = null; j.brake_ack_at = iso(clock.t); rebase(j); } } return rc(hit.map((j) => ({ id: j.id }))); }
+    if (/^SELECT id, name, start_at FROM wa_send_jobs WHERE status='paused' AND start_at IS NOT NULL/i.test(s)) return rc(db.jobs.filter((j) => j.status === "paused" && j.start_at).map((j) => ({ id: j.id, name: j.name, start_at: j.start_at })));
     if (/^UPDATE wa_send_queue SET status='skipped', reason='cancelled' WHERE job_id/i.test(s)) { for (const q of db.queue) if (q.job_id === p[0] && q.status === "pending") Object.assign(q, { status: "skipped", reason: "cancelled" }); return rc([]); }
     if (/^UPDATE wa_send_queue SET retry_at=NULL WHERE job_id=\$1/i.test(s)) { for (const q of db.queue) if (q.job_id === p[0] && q.retry_at) q.retry_at = null; return rc([]); }
     // النتايج وقايمة المستلمين
@@ -531,28 +537,42 @@ test("الحارس في المصدر: الإعادة مابتعدّيش الحا
   assert.match(src, /start_at <= \$1::timestamptz/, "شرط البدء «<=» مش «=»");
   assert.match(src, /schemaReady\.then\(\(\) => startDueJobs\(\)\)/, "فحص المواعيد أول ما السيرفر يقوم");
   assert.equal((src.match(/wa\.sendTemplate\(/g) || []).length, 2, "إرسال الحملة + التجربة بس — الإعادة بتمشي من sendCloudRow نفسه");
-  assert.match(src, /COALESCE\(error_code,0\) <> \$\{META_CAPPED_CODE\} AND retry_at IS NULL\)::int AS failed/, "الفرامل مابتعدّش المستني إعادة كفشل");
+  assert.match(src, /COALESCE\(error_code,0\) <> \$\{META_CAPPED_CODE\}\)::int AS failed/, "مراجعة SX2: فرامل الفشل بتعدّ المستني إعادة فشل لحد ما الإعادة تنجح");
+  assert.doesNotMatch(src, /b_stopped/, "مراجعة SX2: نسبة «إيقاف» مابتتحسبش من التكملة");
+  assert.match(src, /AND \(\$2 <> 'running' OR start_at IS NULL\) RETURNING id/, "مراجعة SX2: «شغّل كل الحملات» مابيلمسش المجدولة");
   assert.match(src, /q\.status = 'failed' AND q\.retry_at IS NOT NULL AND j\.status IN \('running','paused'\)/, "المستني إعادة = لسه في طابور حملته (مايدخلش حملة تانية)");
 });
 
 // ───────── (ج) الفرامل: من بعد آخر «كمّل»، والفشل المؤقت اللي اتعاد ونجح مش محسوب ─────────
-test("نافذة الفرامل (دالة صافية): المحاولات من بعد آخر «كمّل» بس؛ المستني إعادة و131049 بره؛ اللي اتعاد ونجح = «اتبعتت»", () => {
-  const ACK = iso(AT_17), old = iso(AT_17 - 60 * MIN), neu = iso(AT_17 + 5 * MIN);
+test("نافذة الفرامل (دالة صافية): نسبة الفشل من التكملة بعد فرملة فشل؛ المستني إعادة فشل لحد ما ينجح؛ 131049 بره؛ «إيقاف» على الحملة كلها", () => {
+  const BASE = iso(AT_17), old = iso(AT_17 - 60 * MIN), neu = iso(AT_17 + 5 * MIN);
   const rows = [
-    { channel: "wa_cloud", status: "failed", error_code: 131026, tried_at: old },                       // قبل التكملة ⇒ بره
+    { channel: "wa_cloud", status: "failed", error_code: 131026, tried_at: old },                       // قبل التكملة ⇒ بره نسبة الفشل
+    { channel: "wa_cloud", status: "sent", cloud_status: "read", optout_at: neu, tried_at: old },        // «إيقاف» متأخر على رسالة قبل التكملة ⇒ محسوب
     { channel: "wa_cloud", status: "sent", cloud_status: "delivered", tried_at: neu },
-    { channel: "wa_cloud", status: "sent", cloud_status: "accepted", retried_at: neu, first_error_code: 131000, tried_at: neu },   // اتعاد ونجح
-    { channel: "wa_cloud", status: "failed", error_code: 131000, retry_at: iso(AT_17 + 15 * MIN), tried_at: neu },               // مستني إعادة
+    { channel: "wa_cloud", status: "sent", cloud_status: "accepted", retried_at: neu, first_error_code: 131000, tried_at: neu },   // اتعاد ونجح = «اتبعتت»
+    { channel: "wa_cloud", status: "failed", error_code: 131000, retry_at: iso(AT_17 + 15 * MIN), tried_at: neu },               // مستني إعادة = فشل لحد ما ينجح
     { channel: "wa_cloud", status: "failed", error_code: 131049, tried_at: neu },                       // ميتا حدّت العميل — بره النسبة
     { channel: "wa_cloud", status: "failed", error_code: 131026, tried_at: neu },
     { channel: "wa_cloud", status: "sent", cloud_status: "read", optout_at: neu, tried_at: neu },
     { channel: "wa_cloud", status: "sent", claimed_at: neu },                                           // صف قديم من غير tried_at
     { channel: "wa_web", status: "failed", tried_at: neu },                                             // مش Cloud
   ];
-  assert.deepEqual(C.brakeWindow(rows, ACK), { since: ACK, sent: 4, failed: 1, stopped: 1 });
-  assert.deepEqual(C.brakeWindow(rows, null), { since: null, sent: 4, failed: 2, stopped: 1 }, "من غير تكملة = كل الحملة");
-  const v = C.brakeView(C.brakeWindow(rows, ACK), C.cloudCfg({}));
-  assert.deepEqual([v.tried, v.failPct, v.stopPct, v.failLimit, v.minSends, v.armed], [5, 20, 25, 10, 30, false]);
+  assert.deepEqual(C.brakeWindow(rows, BASE), { since: BASE, sent: 4, failed: 2, waiting: 1, allSent: 5, stopped: 2 });
+  assert.deepEqual(C.brakeWindow(rows, null), { since: null, sent: 5, failed: 3, waiting: 1, allSent: 5, stopped: 2 }, "من غير تكملة بعد فرملة = كل الحملة");
+  const v = C.brakeView(C.brakeWindow(rows, BASE), C.cloudCfg({}));
+  assert.deepEqual([v.tried, v.failed, v.waiting, v.failPct, v.stopPct, v.allSent, v.failLimit, v.stopLimit, v.minSends, v.armed], [6, 2, 1, 33.3, 40, 5, 10, 2, 30, false]);
+  // brakeCheck: نسبة الفشل من failWin، و«إيقاف» من الحملة كلها (مثال المراجعة: ١٠٠ قبل التكملة فيهم ٣ «إيقاف» متأخر + ٤٠ بعدها)
+  const cc = C.cloudCfg({});
+  assert.deepEqual(C.brakeCheck({ sent: 140, failed: 0, stopped: 3, failWin: { sent: 40, failed: 0 } }, cc), { reason: "stop_rate", pct: 2.1, limit: 2 });
+  assert.equal(C.brakeCheck({ sent: 100, failed: 12, stopped: 0, failWin: { sent: 20, failed: 0 } }, cc), null, "الفشل القديم مش محسوب بعد التكملة، والنافذة لسه أقل من ٣٠");
+  assert.deepEqual(C.brakeCheck({ sent: 100, failed: 12, stopped: 0, failWin: { sent: 27, failed: 3 } }, cc), { reason: "fail_rate", pct: 10, limit: 10 });
+  assert.deepEqual(C.brakeCheck({ sent: 30, failed: 4, stopped: 0 }, cc), { reason: "fail_rate", pct: 11.8, limit: 10 }, "من غير failWin = زي الأول");
+  // مثال المراجعة: ٢٠٠ فشل 131000 مستنيين إعادة ⇒ الفرامل بتشوفهم
+  const wait = Array.from({ length: 200 }, () => ({ channel: "wa_cloud", status: "failed", error_code: 131000, retry_at: iso(AT_17 + 10 * MIN), tried_at: iso(AT_17) }));
+  const ww = C.brakeWindow(wait, null);
+  assert.deepEqual([ww.failed, ww.waiting], [200, 200]);
+  assert.deepEqual(C.brakeCheck({ sent: ww.allSent, failed: ww.failed, stopped: ww.stopped, failWin: ww }, cc), { reason: "fail_rate", pct: 100, limit: 10 });
 });
 
 test("حادثة ١٥/١٠: الفرامل وقّفت الحملة ⇒ «كمّل» من المالك مابتوقّفهاش تاني على طول (النسبة بتبدأ من لحظة التكملة) — ولو الفشل رجع بجد بتقف تاني", async () => {
@@ -566,18 +586,18 @@ test("حادثة ١٥/١٠: الفرامل وقّفت الحملة ⇒ «كمّ�
   assert.deepEqual([w.db.jobs[0].status, w.db.jobs[0].stop_reason, w.sent.length], ["paused", "fail_rate:10", 0], JSON.stringify(r0));
   // المالك كمّل ⇒ العدّ من دلوقتي: ٣ فشل قدام مابقوش بيتحسبوا
   assert.equal((await call(w.app, "POST /api/cms/wa-sender/jobs/:id/:action", { param: { id: "1", action: "resume" } })).status, 200);
-  assert.equal(w.db.jobs[0].brake_ack_at, iso(AT_17));
+  assert.deepEqual([w.db.jobs[0].fail_brake_at, w.db.jobs[0].fail_base_at], [iso(AT_17), iso(AT_17)], "التكملة جت بعد فرملة فشل ⇒ النسبة من دلوقتي");
   w.clock.t = AT_17 + MIN;
   const r1 = await w.api.cloudTick();
   assert.equal(r1.sent, 10, JSON.stringify(r1)); assert.deepEqual([w.db.jobs[0].status, w.db.jobs[0].stop_reason], ["running", null], "مابتقفش تاني على طول");
-  // فشل مؤقت (131000) من الويب هوك على رسالة من بعد التكملة ⇒ مستني إعادة، مش فشل في النسبة؛ وبعد الإعادة الناجحة = «اتبعتت»
+  // فشل مؤقت (131000) من الويب هوك على رسالة من بعد التكملة ⇒ مستني إعادة: بيتحسب فشل لحد ما الإعادة تنجح (مراجعة SX2)
   const t = w.db.queue.find((q) => q.id === 100);
   await w.api.onCloudStatus({ wamid: t.wamid, status: "failed", code: 131000 });
   assert.ok(t.retry_at);
-  // النتايج: الفرامل بتعدّ من التكملة، والنسبة صفر
+  // النتايج: الفرامل بتعدّ من التكملة، والمستني إعادة جوّه الفشل لحد ما ينجح
   let res = await call(w.app, "GET /api/cms/wa-sender/jobs/:id/results", { param: { id: "1" } });
-  assert.deepEqual([res.body.brake.since, res.body.brake.sinceRiyadh, res.body.brake.tried, res.body.brake.failed, res.body.brake.failPct, res.body.brake.armed],
-    [iso(AT_17), "2026-10-15 17:00", 9, 0, 0, false]);
+  assert.deepEqual([res.body.brake.since, res.body.brake.sinceRiyadh, res.body.brake.tried, res.body.brake.failed, res.body.brake.waiting, res.body.brake.failPct, res.body.brake.armed],
+    [iso(AT_17), "2026-10-15 17:00", 10, 1, 1, 10, false]);
   w.clock.t = AT_17 + 11 * MIN;
   const r2 = await w.api.cloudTick();
   assert.equal(r2.retried, 1, JSON.stringify(r2)); assert.equal(t.status, "sent");
@@ -593,6 +613,11 @@ test("حادثة ١٥/١٠: الفرامل وقّفت الحملة ⇒ «كمّ�
   res = await call(w.app, "GET /api/cms/wa-sender/jobs/:id/results", { param: { id: "1" } });
   assert.ok(res.body.brake.tried >= 30 && res.body.brake.failPct >= 10, JSON.stringify(res.body.brake));
   assert.equal(res.body.brake.failed, 3, "الـ٣ القديمين قبل التكملة مش منهم");
+  assert.equal(w.db.jobs[0].fail_brake_at, iso(AT_17 + 12 * MIN));
+  // «كمّل» تاني بعد الفرملة التانية ⇒ النسبة من جديد تاني
+  w.clock.t = AT_17 + 20 * MIN;
+  await call(w.app, "POST /api/cms/wa-sender/jobs/:id/:action", { param: { id: "1", action: "resume" } });
+  assert.equal(w.db.jobs[0].fail_base_at, iso(AT_17 + 20 * MIN));
 });
 
 test("سقف صرف الحملة فاضل على كل الرسايل (الفلوس اتصرفت فعلاً) — التكملة بتصفّر الفرامل بس", async () => {
@@ -602,4 +627,114 @@ test("سقف صرف الحملة فاضل على كل الرسايل (الفلو
   await w.api.schemaReady;
   const r = await w.api.cloudTick();
   assert.equal(r.sent || 0, 0, JSON.stringify(r)); assert.deepEqual([w.db.jobs[0].status, w.db.jobs[0].stop_reason], ["paused", "campaign_spend_cap"]);
+});
+
+// ───────── مراجعة SX2 ─────────
+test("مراجعة SX2: «▶ شغّل كل الحملات» مابيبدأش الحملة المجدولة — بتفضل على ميعادها والرد بيقول عليها؛ وبتبدأ في ميعادها", async () => {
+  const TOMORROW = iso(AT_17 + 20 * 3600e3);
+  const w = world({ jobs: [J({ status: "paused", stop_reason: "fail_rate:12", fail_brake_at: iso(AT_17 - 30 * MIN) }),
+    J({ id: 2, name: "موجة بكرة", status: "paused", start_at: TOMORROW, start_by: "عمر" }),
+    J({ id: 3, name: "موجة ويب", status: "paused", channel: "wa_web", start_at: TOMORROW })], queue: [Q(1), Q(2, { job_id: 2 })] });
+  await w.api.schemaReady;
+  const heads = w.db.heads;
+  const r = await call(w.app, "POST /api/cms/wa-sender/all/:action", { param: { action: "resume" } });
+  assert.equal(r.body.changed, 1, JSON.stringify(r.body));
+  assert.deepEqual(w.db.jobs.map((j) => [j.status, j.start_at]), [["running", null], ["paused", TOMORROW], ["paused", TOMORROW]]);
+  assert.deepEqual(r.body.scheduledKept.map((x) => [x.id, x.startAtRiyadh]), [[2, "2026-10-16 13:00"], [3, "2026-10-16 13:00"]]);
+  assert.equal(w.db.heads, heads + 1, "الصورة اتفحصت للي هتكمّل بس — مش للمجدولة");
+  assert.equal(w.db.jobs[0].fail_base_at, iso(AT_17), "الأولى وقفت بفرامل الفشل ⇒ النسبة من التكملة");
+  await w.api.cloudTick();
+  assert.deepEqual(w.sent.map((x) => x.phoneNorm), [w.db.queue[0].phone_norm], "ولا رسالة من الموجة المجدولة");
+  // الإيقاف الكلي مابيلمسش المجدولة (موقوفة أصلاً) — والميعاد لما ييجي بتبدأ
+  await call(w.app, "POST /api/cms/wa-sender/all/:action", { param: { action: "pause" } });
+  assert.equal(w.db.jobs[1].start_at, TOMORROW);
+  w.clock.t = Date.parse(TOMORROW) + MIN;
+  assert.deepEqual((await w.api.startDueJobs()).started, [2, 3]);
+});
+
+test("مراجعة SX2: نسبة «إيقاف» على الحملة كلها — تكملة عادية مابتصفّرهاش و«إيقاف» المتأخر على رسايل قبل التكملة محسوب (مثال المراجعة ١٠٠ + ٤٠)", async () => {
+  const old = iso(AT_17 - 3 * 3600e3);
+  const before = Array.from({ length: 100 }, (_, i) => Q(i + 1, { status: "sent", cloud_status: "read", tried_at: old, sent_at: old }));
+  const w = world({ jobs: [J({ status: "paused", stop_reason: null })], queue: [...before, ...Array.from({ length: 60 }, (_, i) => Q(200 + i))],
+    settings: { waCloud: { enabled: true, perTick: 40 } } });
+  await w.api.schemaReady;
+  // إيقاف يدوي وبعدين «كمّل» (مش بعد فرملة) ⇒ مفيش نافذة جديدة
+  await call(w.app, "POST /api/cms/wa-sender/jobs/:id/:action", { param: { id: "1", action: "resume" } });
+  assert.deepEqual([w.db.jobs[0].status, w.db.jobs[0].fail_base_at || null], ["running", null]);
+  assert.equal((await w.api.cloudTick()).sent, 40);
+  // «إيقاف» بيوصل بعدها بساعات على ٣ رسايل من قبل التكملة ⇒ ٣ من ١٤٠ = ٢٫١٪ ⇒ تقف
+  for (const q of before.slice(0, 3)) q.optout_at = iso(AT_17 + 30 * MIN);
+  w.clock.t = AT_17 + 31 * MIN;
+  await w.api.cloudTick();
+  assert.deepEqual([w.db.jobs[0].status, w.db.jobs[0].stop_reason], ["paused", "stop_rate:2.1"]);
+  // و«كمّل» بعد فرملة «إيقاف» مابتصفّرش النسبة ⇒ تقف تاني في نفس الدورة من غير ولا رسالة
+  w.db.queue.push(Q(300));
+  await call(w.app, "POST /api/cms/wa-sender/jobs/:id/:action", { param: { id: "1", action: "resume" } });
+  assert.equal(w.db.jobs[0].fail_base_at || null, null, "فرامل «إيقاف» مش فرامل فشل");
+  const sent0 = w.sent.length;
+  assert.equal(sent0, 40);
+  await w.api.cloudTick();
+  assert.deepEqual([w.db.jobs[0].status, w.db.jobs[0].stop_reason, w.sent.length], ["paused", "stop_rate:2.1", sent0]);
+  // تحذير الـ١٪ كمان على الحملة كلها: ١ «إيقاف» قديم من ١٠٠ ⇒ نص السرعة بعد التكملة
+  const x = world({ jobs: [J({ status: "paused" })], queue: [...Array.from({ length: 100 }, (_, i) => Q(i + 1, { status: "sent", cloud_status: "read", tried_at: old, sent_at: old, optout_at: i === 0 ? old : null })), Q(500)] });
+  await x.api.schemaReady;
+  await call(x.app, "POST /api/cms/wa-sender/jobs/:id/:action", { param: { id: "1", action: "resume" } });
+  const rx = await x.api.cloudTick();
+  assert.equal(rx.halved, true, JSON.stringify(rx));
+});
+
+test("مراجعة SX2: تكملة بعد إيقاف يدوي مابتبدأش نسبة الفشل من جديد؛ البدء المجدول لحملة وقفت بفرامل الفشل بيبدأها من جديد", async () => {
+  const old = iso(AT_17 - 60 * MIN);
+  const hist = () => [...Array.from({ length: 27 }, (_, i) => Q(i + 1, { status: "sent", cloud_status: "delivered", tried_at: old, sent_at: old })),
+    ...[28, 29].map((id) => Q(id, { status: "failed", cloud_status: "failed", reason: "undeliverable", error_code: 131026, tried_at: old }))];
+  // إيقاف يدوي: ٢ فشل من ٢٩ قبل التكملة + فشل واحد بعدها = ٣ من ٣٠ ⇒ تقف (النسبة ماتصفّرتش)
+  const w = world({ jobs: [J({ status: "paused" })], queue: [...hist(), Q(50)], script: [{ ok: false, error: "WA_131026", code: 131026 }] });
+  await w.api.schemaReady;
+  await call(w.app, "POST /api/cms/wa-sender/jobs/:id/:action", { param: { id: "1", action: "resume" } });
+  await w.api.cloudTick();
+  assert.deepEqual([w.db.jobs[0].status, w.db.jobs[0].stop_reason], ["paused", "fail_rate:10"]);
+  // نفس الحملة وقفت بفرامل الفشل واتجدولت تكمّل ⇒ في ميعادها النسبة بتبدأ من جديد: نفس الفشل الواحد مابيوقّفهاش
+  const v = world({ jobs: [J({ status: "paused", stop_reason: "fail_rate:10", fail_brake_at: iso(AT_17 - 30 * MIN), start_at: iso(AT_17 - MIN) })], queue: [...hist(), Q(50), Q(51)],
+    script: [{ ok: false, error: "WA_131026", code: 131026 }] });
+  await v.api.schemaReady;
+  assert.deepEqual((await v.api.startDueJobs()).started, [1]);
+  assert.equal(v.db.jobs[0].fail_base_at, iso(AT_17));
+  await v.api.cloudTick();
+  assert.deepEqual([v.db.jobs[0].status, v.db.jobs[0].stop_reason, v.sent.length], ["done", null, 2], "اتبعتت للآخر من غير ما تقف");
+});
+
+test("مراجعة SX2: فشل مؤقت منتظم (كل رسالة 131000) ⇒ المستني إعادة بيتحسب فشل والفرامل بتوقّف الحملة بعد ٣٠ محاولة — مش بالسرعة الكاملة لحد ميعاد الإعادة", async () => {
+  const w = world({ jobs: [J()], queue: Array.from({ length: 80 }, (_, i) => Q(i + 1)), settings: { waCloud: { enabled: true, perTick: 50, hourCap: 500 } },
+    script: Array.from({ length: 80 }, () => ({ ok: false, error: "WA_131000", code: 131000 })) });
+  await w.api.schemaReady;
+  const r = await w.api.cloudTick();
+  assert.equal(w.sent.length, 30, JSON.stringify(r));
+  assert.deepEqual([w.db.jobs[0].status, w.db.jobs[0].stop_reason], ["paused", "fail_rate:100"]);
+  assert.equal(w.db.queue.filter((q) => q.status === "pending").length, 50, "الباقي فضل في الطابور");
+  assert.ok(w.db.queue.filter((q) => q.status === "failed").every((q) => q.retry_at), "الـ٣٠ مستنيين إعادة (بعد «كمّل»)");
+  const res = await call(w.app, "GET /api/cms/wa-sender/jobs/:id/results", { param: { id: "1" } });
+  assert.deepEqual([res.body.brake.failed, res.body.brake.waiting, res.body.brake.failPct], [30, 30, 100]);
+  assert.equal(res.body.cloud.retryWaiting, 30);
+});
+
+test("مراجعة SX2: 131053 (ميتا ماقدرتش تنزّل الصورة وفحصنا بيفتحها) ⇒ الحملة دي مابتاخدش صفوف جديدة لحد ما الإعادة تتبعت؛ الحملات التانية تكمّل", async () => {
+  const w = world({ jobs: [J(), J({ id: 2, name: "حملة تانية" })], queue: [Q(1), Q(2), Q(3), Q(4, { job_id: 2 }), Q(5, { job_id: 2 })],
+    script: [{ ok: false, error: "WA_131053", code: 131053 }] });
+  await w.api.schemaReady;
+  await w.api.cloudTick();
+  assert.deepEqual(w.sent.map((x) => x.phoneNorm), ["520000001", "520000004", "520000005"], "رسالة واحدة بس للحملة الأولى");
+  assert.deepEqual(w.db.queue.slice(0, 3).map((q) => [q.status, q.reason || null]), [["failed", "media_error"], ["pending", null], ["pending", null]]);
+  assert.equal(w.db.jobs[0].status, "running");
+  w.clock.t = AT_17 + 10 * MIN;
+  const r = await w.api.cloudTick();
+  assert.equal(r.retried, 1, JSON.stringify(r));
+  assert.deepEqual(w.sent.slice(3).map((x) => x.phoneNorm), ["520000001", "520000002", "520000003"], "الإعادة نجحت ⇒ الحملة كمّلت");
+  // ولو الإعادة فشلت تاني بـ131053 ⇒ الحملة تقف بسبب الوسيط (من غير ما صفوف تانية تتبعت)
+  const x = world({ jobs: [J()], queue: [Q(1), Q(2), Q(3)], script: [{ ok: false, error: "WA_131053", code: 131053 }, { ok: false, error: "WA_131053", code: 131053 }] });
+  await x.api.schemaReady;
+  await x.api.cloudTick();
+  x.clock.t = AT_17 + 10 * MIN;
+  await x.api.cloudTick();
+  assert.deepEqual([x.db.jobs[0].status, x.db.jobs[0].stop_reason, x.sent.length], ["paused", "media:media_error", 2]);
+  assert.deepEqual(x.db.queue.slice(1).map((q) => q.status), ["pending", "pending"]);
 });

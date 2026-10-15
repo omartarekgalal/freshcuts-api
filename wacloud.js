@@ -138,7 +138,8 @@ export function cloudPacing(cc, st, inHours) {
    fallback تنفع قناة بديلة (sms = بس؛ both = واتساب ويب أو SMS)
    transient (SX2 ١٥/١٠) غلطة مؤقتة عند ميتا أو في تنزيل الوسيط — مش في العميل ولا في الحساب ⇒ الصف بيتعاد مرة واحدة لوحده بعد
            retryDelayMin (retryDecision). حادثة ١٥/١٠: ٧٦ رسالة فشلت بـ131000 لأن الـAPI اتعمل له ريستارت وميتا بتنزّل صورة الهيدر
-           (الصورة على سيرفرنا). 131053 = ميتا ماقدرتش تنزّل/ترفع الوسيط (كانت بتوقّف القناة كلها؛ دلوقتي إعادة + فحص الوسيط). */
+           (الصورة على سيرفرنا). 131053 = ميتا ماقدرتش تنزّل/ترفع الوسيط (كانت بتوقّف القناة كلها؛ دلوقتي إعادة + فحص الوسيط، والحملة دي بس
+           مابتاخدش صفوف جديدة لحد ما الإعادة تتبعت — فشلت تاني ⇒ الحملة تقف). المستني إعادة بيتحسب فشل في الفرامل لحد ما الإعادة تنجح. */
 export const META_ERRORS = {
   131026: { reason: "undeliverable", invalid: true, fallback: "sms" },
   /* QP1: ميتا نفسها حدّت رسايل التسويق للعميل ده — مش فشل عندنا: بيتعدّ لوحده (meta_capped) وبره نسبة الفشل، ومن غير SMS بديل افتراضياً */
@@ -444,44 +445,59 @@ export function cloudJobProblem({ cloudTemplate, cloudVars, imageUrl, videoUrl, 
 }
 
 /* SX2 (ج — حادثة ١٥/١٠): فرامل الـ١٠٪ وقّفت ١١ حملة لآخر الليل، و«كمّل» كانت بتوقّفها تاني على طول لأن النسبة كانت على كل الحملة من أولها.
-   نافذة الفرامل = المحاولات من بعد آخر «كمّل»/بدء (ackAt) بس — من غير ackAt = كل الحملة. نفس قواعد jobCounts بالظبط:
-   «اتبعتت» = sent ومافشلتش بعدها (الفشل المؤقت اللي اتعاد ونجح = «اتبعتت»)؛ «فشل» = فشل نهائي (مش 131049 ومش مستني إعادة)؛
-   «إيقاف» = اللي طلبوا إيقاف من المحاولات دي. وقت المحاولة = tried_at (آخر مرة الصف اتاخد لقناة Cloud) أو claimed_at للصفوف القديمة.
+   مراجعة SX2: اللي بيبدأ من جديد هو نسبة الفشل بس، وبعد «كمّل» لحملة وقفت بفرامل الفشل بس (baseAt = fail_base_at — السيرفر بيسجّله لما
+   التكملة تيجي بعد آخر فرملة فشل). أي تكملة تانية (إيقاف يدوي، ميعاد، صورة) مابتغيّرش النافذة. من غير baseAt = كل الحملة.
+   نسبة «إيقاف» وتحذير الـ١٪ دايماً على الحملة كلها: «إيقاف» بيوصل بعد الإرسال بساعات، فلو اتعدّ من التكملة كان بيضيع.
+   نفس قواعد jobCounts بالظبط: «اتبعتت» = sent ومافشلتش بعدها (الفشل المؤقت اللي اتعاد ونجح = «اتبعتت»)؛ «فشل» = أي فشل غير 131049 —
+   ومنه المستني إعادة (waiting): بيتحسب فشل لحد ما الإعادة تنجح، فلو الفشل المؤقت ده منتظم الفرامل بتوقّف الحملة بعد brakeMinSends
+   بدل ما الصفوف تتراكم مستنية. وقت المحاولة = tried_at (آخر مرة الصف اتاخد لقناة Cloud) أو claimed_at للصفوف القديمة.
    دالة صافية (النتايج بتستعملها، والدورة بتحسب نفس الأرقام بالـSQL). */
-export function brakeWindow(rows, ackAt = null) {
-  const ack = ackAt ? new Date(ackAt).getTime() : NaN;
+export function brakeWindow(rows, baseAt = null) {
+  const base = baseAt ? new Date(baseAt).getTime() : NaN;
   const at = (x) => new Date(x.tried_at || x.claimed_at || 0).getTime();
-  const inWin = (x) => !Number.isFinite(ack) || at(x) > ack;
+  const inWin = (x) => !Number.isFinite(base) || at(x) > base;
   const cloud = (x) => x.channel === "wa_cloud" || String(x.fallback_from || "").startsWith("wa_cloud");
-  let sent = 0, failed = 0, stopped = 0;
+  let sent = 0, failed = 0, waiting = 0, allSent = 0, stopped = 0;
   for (const x of rows || []) {
-    if (!cloud(x) || !inWin(x)) continue;
-    if (x.status === "sent" && x.cloud_status !== "failed") sent++;
-    if ((x.status === "failed" || x.cloud_status === "failed") && Number(x.error_code) !== META_CAPPED_CODE && !x.retry_at) failed++;
+    if (!cloud(x)) continue;
+    const ok = x.status === "sent" && x.cloud_status !== "failed";
+    if (ok) allSent++;
     if (x.optout_at) stopped++;
+    if (!inWin(x)) continue;
+    if (ok) sent++;
+    if ((x.status === "failed" || x.cloud_status === "failed") && Number(x.error_code) !== META_CAPPED_CODE) { failed++; if (x.status === "failed" && x.retry_at) waiting++; }
   }
-  return { since: Number.isFinite(ack) ? new Date(ack).toISOString() : null, sent, failed, stopped };
+  return { since: Number.isFinite(base) ? new Date(base).toISOString() : null, sent, failed, waiting, allSent, stopped };
 }
-/* ملخّص الفرامل للوحة: النسب من بعد آخر تكملة + الحدود */
+/* ملخّص الفرامل للوحة: نسبة الفشل من النافذة (since = التكملة بعد فرملة فشل، أو null = من أول الحملة) + نسبة «إيقاف» على الحملة كلها */
 export function brakeView(w, cc) {
   const tried = w.sent + w.failed;
+  const allSent = Number.isFinite(Number(w.allSent)) ? Number(w.allSent) : w.sent;
   const r1 = (x) => Math.round(x * 10) / 10;
-  return { since: w.since, tried, sent: w.sent, failed: w.failed, stopped: w.stopped,
-    failPct: tried ? r1((w.failed / tried) * 100) : null, stopPct: w.sent ? r1((w.stopped / w.sent) * 100) : null,
+  return { since: w.since, tried, sent: w.sent, failed: w.failed, waiting: Number(w.waiting) || 0, stopped: w.stopped, allSent,
+    failPct: tried ? r1((w.failed / tried) * 100) : null, stopPct: allSent ? r1((w.stopped / allSent) * 100) : null,
     failLimit: cc.brakeFailPct, stopLimit: cc.brakeStopPct, minSends: cc.brakeMinSends, armed: tried >= cc.brakeMinSends };
 }
 
 /* فرامل الحملة (زي فرامل الـ٥٪ بتاعة SMS): بعد أول brakeMinSends محاولة، لو نسبة الفشل أو نسبة «إيقاف» عدّت الحد ⇒ الحملة تقف.
-   n = { sent, failed, stopped } لنفس الحملة. بترجع null أو { reason:"fail_rate"|"stop_rate", pct, limit }.
-   QP1: failed هنا من غير اللي ميتا حدّته (131049) — المنادي بيعدّه لوحده في n.capped ومابيدخلش في النسبة. */
+   n = { sent, failed, stopped } لنفس الحملة (كلها). بترجع null أو { reason:"fail_rate"|"stop_rate", pct, limit }.
+   QP1: failed هنا من غير اللي ميتا حدّته (131049) — المنادي بيعدّه لوحده في n.capped ومابيدخلش في النسبة.
+   SX2 (ج): n.failWin = { sent, failed } اختياري — نسبة الفشل (وحدّها الأدنى) بتتحسب منه لو موجود (من التكملة بعد فرملة فشل)؛
+   نسبة «إيقاف» دايماً من n نفسه (الحملة كلها). من غير failWin = زي الأول بالظبط. */
 export function brakeCheck(n, cc) {
   const sent = Number(n?.sent) || 0, failed = Number(n?.failed) || 0, stopped = Number(n?.stopped) || 0;
-  const tried = sent + failed;
-  if (tried < cc.brakeMinSends) return null;
-  const failPct = (failed / tried) * 100, stopPct = sent ? (stopped / sent) * 100 : 0;
+  const fw = n && n.failWin && typeof n.failWin === "object" ? n.failWin : null;
+  const fSent = fw ? Number(fw.sent) || 0 : sent, fFailed = fw ? Number(fw.failed) || 0 : failed;
+  const fTried = fSent + fFailed, tried = sent + failed;
   const r1 = (x) => Math.round(x * 10) / 10;
-  if (failPct >= cc.brakeFailPct) return { reason: "fail_rate", pct: r1(failPct), limit: cc.brakeFailPct };
-  if (stopPct >= cc.brakeStopPct) return { reason: "stop_rate", pct: r1(stopPct), limit: cc.brakeStopPct };
+  if (fTried >= cc.brakeMinSends) {
+    const failPct = (fFailed / fTried) * 100;
+    if (failPct >= cc.brakeFailPct) return { reason: "fail_rate", pct: r1(failPct), limit: cc.brakeFailPct };
+  }
+  if (tried >= cc.brakeMinSends) {
+    const stopPct = sent ? (stopped / sent) * 100 : 0;
+    if (stopPct >= cc.brakeStopPct) return { reason: "stop_rate", pct: r1(stopPct), limit: cc.brakeStopPct };
+  }
   return null;
 }
 /* TS1 (١٤/١٠): القالب عندنا (الكتالوج) زي النسخة اللي عند ميتا؟ — دالة صافية.

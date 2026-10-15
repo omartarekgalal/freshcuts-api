@@ -288,6 +288,9 @@ export function register(app, ctx, deps = {}) {
   const ownerOnly = (c) => c.json({ ok: false, error: "owner_only", message: "الخطوة دي للمالك بس" }, 403);
   /* صف الحملة اللي الدورة/التكملة/الإعادة محتاجينه (نفس الاستعلام في كل مكان) */
   const JOB_SQL = "SELECT id, cloud_template, cloud_vars, image_url, video_url, link_slug, offer, fallback, spend_cap_sar, rate_sar, brake_ack_at, status, name FROM wa_send_jobs WHERE id=$1";
+  /* مراجعة SX2 (ج): نسبة الفشل بتبدأ من جديد بس لما التكملة ($2='running') تيجي بعد آخر فرملة فشل (fail_brake_at أحدث من fail_base_at).
+     تكملة عادية (إيقاف يدوي / ميعاد / صورة) مابتغيّرش النافذة، ونسبة «إيقاف» مابتتصفّرش أبداً (jobCounts). */
+  const FAIL_REBASE = "fail_base_at = CASE WHEN $2='running' AND fail_brake_at IS NOT NULL AND (fail_base_at IS NULL OR fail_brake_at > fail_base_at) THEN NOW() ELSE fail_base_at END";
   /* الوسيط (صورة/فيديو) قبل الإرسال: نوعه وحجمه بحدود ميتا — بنسأل الرابط (HEAD) من غير ما ننزّل الملف */
   /* SX2: مهلة لكل طلب فحص — رابط معلّق مايوقّفش الدورة ولا البدء المجدول */
   const fetchOpts = (o = {}) => { try { return typeof AbortSignal !== "undefined" && AbortSignal.timeout ? { ...o, signal: AbortSignal.timeout(15000) } : o; } catch { return o; } };
@@ -459,7 +462,9 @@ export function register(app, ctx, deps = {}) {
       ALTER TABLE wa_send_queue ADD COLUMN IF NOT EXISTS retried_at TIMESTAMPTZ;  -- اتعاد فعلاً (مرة واحدة بس)
       ALTER TABLE wa_send_queue ADD COLUMN IF NOT EXISTS first_error_code INT;   -- كود فشل المحاولة الأولى
       ALTER TABLE wa_send_queue ADD COLUMN IF NOT EXISTS first_wamid TEXT;       -- wamid المحاولة الأولى (عشان نتأكد إنها ماوصلتش قبل الإعادة)
-      ALTER TABLE wa_send_queue ADD COLUMN IF NOT EXISTS tried_at TIMESTAMPTZ;   -- (ج) آخر محاولة على Cloud — نافذة الفرامل بتعدّ من بعد آخر «كمّل» بيه
+      ALTER TABLE wa_send_queue ADD COLUMN IF NOT EXISTS tried_at TIMESTAMPTZ;   -- (ج) آخر محاولة على Cloud — نافذة فرامل الفشل بتعدّ بيه
+      ALTER TABLE wa_send_jobs ADD COLUMN IF NOT EXISTS fail_brake_at TIMESTAMPTZ;  -- (ج) آخر مرة فرامل الفشل وقّفت الحملة
+      ALTER TABLE wa_send_jobs ADD COLUMN IF NOT EXISTS fail_base_at TIMESTAMPTZ;   -- (ج) «كمّل» بعد فرملة فشل ⇒ نسبة الفشل بتتحسب من هنا
       CREATE INDEX IF NOT EXISTS wa_send_queue_retry_idx ON wa_send_queue(retry_at) WHERE retry_at IS NOT NULL;
     `);
   }
@@ -1047,16 +1052,21 @@ export function register(app, ctx, deps = {}) {
     /* SX2 (ج): حملة Cloud صورتها/الفيديو بتاعها مابيفتحش مابتكمّلش — بتفضل موقوفة وسببها راجع في الرد */
     const refused = [];
     if (to === "running" && owner) {
-      const pj = (await pool.query(`SELECT id, name, channel, cloud_template, image_url, video_url FROM wa_send_jobs WHERE status='paused' AND channel='wa_cloud'`).catch(() => ({ rows: [] }))).rows || [];
+      const pj = (await pool.query(`SELECT id, name, channel, cloud_template, image_url, video_url FROM wa_send_jobs WHERE status='paused' AND channel='wa_cloud' AND start_at IS NULL`).catch(() => ({ rows: [] }))).rows || [];
       for (const j of pj) { const mp = await jobMediaErr(j, { cacheMs: 30_000 }); if (mp) refused.push({ id: Number(j.id), name: j.name, error: mp[0], message: mp[1] }); }
     }
+    /* مراجعة SX2: «شغّل كل الحملات» مابيلمسش الحملة المجدولة (start_at) — بتفضل موقوفة على ميعادها. موجة بكرة كانت بتبدأ تبعت
+       أول ما حد يضغط «كمّل الكل» عشان يكمّل حملة وقفت. المجدولة بتبدأ في ميعادها أو من «ابدأ دلوقتي» بتاعها لوحدها. */
     const r = await pool.query(`UPDATE wa_send_jobs SET status=$2, stop_reason = CASE WHEN $2='running' THEN NULL ELSE stop_reason END,
                                         brake_ack_at = CASE WHEN $2='running' THEN NOW() ELSE brake_ack_at END,
-                                        start_at = CASE WHEN $2='running' THEN NULL ELSE start_at END,
+                                        ${FAIL_REBASE},
                                         started_at = CASE WHEN $2='running' THEN COALESCE(started_at, NOW()) ELSE started_at END
-                                 WHERE status=$1 AND ($3::boolean OR COALESCE(channel,'wa_web') <> 'wa_cloud') AND NOT (id = ANY($4::bigint[])) RETURNING id`,
+                                 WHERE status=$1 AND ($3::boolean OR COALESCE(channel,'wa_web') <> 'wa_cloud') AND NOT (id = ANY($4::bigint[]))
+                                   AND ($2 <> 'running' OR start_at IS NULL) RETURNING id`,
       [from, to, owner, refused.map((x) => x.id)]);
-    return c.json({ ok: true, changed: r.rowCount, ...(refused.length ? { refused } : {}) });
+    const kept = to === "running" ? ((await pool.query("SELECT id, name, start_at FROM wa_send_jobs WHERE status='paused' AND start_at IS NOT NULL ORDER BY start_at, id LIMIT 50").catch(() => ({ rows: [] }))).rows || []) : [];
+    return c.json({ ok: true, changed: r.rowCount, ...(refused.length ? { refused } : {}),
+      ...(kept.length ? { scheduledKept: kept.map((j) => ({ id: Number(j.id), name: j.name, startAt: j.start_at, startAtRiyadh: riyadhClock(j.start_at) })) } : {}) });
   });
 
   /* ── SX2 (أ): جدولة البدء/التكملة — لحملة واحدة أو لموجة كاملة مرة واحدة ──────────────────────────────
@@ -1155,6 +1165,7 @@ export function register(app, ctx, deps = {}) {
       `UPDATE wa_send_jobs SET status=$2, finished_at = CASE WHEN $2='cancelled' THEN NOW() ELSE finished_at END,
               stop_reason = CASE WHEN $2='running' THEN NULL ELSE stop_reason END,
               brake_ack_at = CASE WHEN $2='running' THEN NOW() ELSE brake_ack_at END,
+              ${FAIL_REBASE},
               start_at = CASE WHEN $2 IN ('running','cancelled') THEN NULL ELSE start_at END,
               started_at = CASE WHEN $2='running' THEN COALESCE(started_at, NOW()) ELSE started_at END
         WHERE id=$1 AND status NOT IN ('done','cancelled') RETURNING id`, [id, to]);
@@ -1264,7 +1275,7 @@ export function register(app, ctx, deps = {}) {
       reasons: reasonRows(rows),
       startAt: job.start_at || null, startAtRiyadh: job.start_at ? riyadhClock(job.start_at) : null, startedAt: job.started_at || null, startError: job.start_error || null,
       /* SX2 (ج): الفرامل من بعد آخر «كمّل»/بدء (نفس أرقام الدورة) — اللوحة بتقول النسبة الحالية وبتتحسب من إمتى */
-      brake: job.channel === "wa_cloud" ? { ...brakeView(brakeWindow(rows, job.brake_ack_at || null), cloudCfg(sNow)), sinceRiyadh: job.brake_ack_at ? riyadhClock(job.brake_ack_at) : null } : null,
+      brake: job.channel === "wa_cloud" ? { ...brakeView(brakeWindow(rows, job.fail_base_at || null), cloudCfg(sNow)), sinceRiyadh: job.fail_base_at ? riyadhClock(job.fail_base_at) : null } : null,      // مراجعة SX2: نسبة الفشل من التكملة بعد فرملة فشل بس
       /* التكلفة = الرسايل اللي ميتا قبلتها على قناة Cloud × سعر الرسالة وقت إنشاء الحملة (تقدير — الفاتورة من ميتا) */
       cost: job.channel === "wa_cloud" ? (() => { const n = count((x) => x.channel === "wa_cloud" && x.status === "sent"); const rate = Number(job.rate_sar) > 0 ? Number(job.rate_sar) : rateOf(sNow).rateSar;
         return { messages: n, rateSar: rate || null, sar: campaignCost(n, rate) }; })() : null };
@@ -1443,39 +1454,46 @@ export function register(app, ctx, deps = {}) {
   }
 
   /* عدّادات الحملة (على قناة Cloud): اتبعت / فشل / «إيقاف» */
-  /* QP1: failed من غير اللي ميتا حدّته (131049 ⇒ capped)؛ ووصلت/اتقرت/أول إرسال من بعد آخر «كمّل» من المالك (ackAt) لفرملة القراءة */
+  /* QP1: failed من غير اللي ميتا حدّته (131049 ⇒ capped)؛ ووصلت/اتقرت/أول إرسال من بعد آخر «كمّل» من المالك (ackAt) لفرملة القراءة.
+     مراجعة SX2: failed فيه المستني إعادة (فشل لحد ما الإعادة تنجح — لو اتعادت ونجحت بقت sent). من غير كده فشل مؤقت منتظم (ميتا مش قادرة
+     تنزّل الصورة وفحصنا بيفتحها) كان بيفضل ياخد صفوف جديدة بالسرعة الكاملة لمدة retryDelayMin من غير ما الفرامل تشوف ولا فشل. */
   async function jobCounts(jobId, ackAt = null) {
     const r = (await pool.query(
       `SELECT count(*) FILTER (WHERE status='sent' AND COALESCE(cloud_status,'') <> 'failed')::int AS sent,
-              count(*) FILTER (WHERE (status='failed' OR cloud_status='failed') AND COALESCE(error_code,0) <> ${META_CAPPED_CODE} AND retry_at IS NULL)::int AS failed,
+              count(*) FILTER (WHERE (status='failed' OR cloud_status='failed') AND COALESCE(error_code,0) <> ${META_CAPPED_CODE})::int AS failed,
               count(*) FILTER (WHERE (status='failed' OR cloud_status='failed') AND error_code = ${META_CAPPED_CODE})::int AS capped,
               count(*) FILTER (WHERE optout_at IS NOT NULL)::int AS stopped,
               count(*) FILTER (WHERE cloud_status IN ('delivered','read') AND ($2::timestamptz IS NULL OR sent_at > $2))::int AS delivered,
               count(*) FILTER (WHERE cloud_status = 'read' AND ($2::timestamptz IS NULL OR sent_at > $2))::int AS read_n,
               min(sent_at) FILTER (WHERE status='sent' AND ($2::timestamptz IS NULL OR sent_at > $2)) AS first_sent,
-              -- SX2 (ج): نافذة الفرامل = المحاولات من بعد آخر «كمّل» (نفس brakeWindow في wacloud.js)
+              -- SX2 (ج): نافذة فرامل الفشل = المحاولات من بعد «كمّل» اللي جت بعد آخر فرملة فشل (b.fb = fail_base_at؛ فاضي = كل الحملة) — نفس brakeWindow في wacloud.js
               count(*) FILTER (WHERE status='sent' AND COALESCE(cloud_status,'') <> 'failed'
-                                 AND ($2::timestamptz IS NULL OR COALESCE(tried_at, claimed_at) > $2))::int AS b_sent,
-              count(*) FILTER (WHERE (status='failed' OR cloud_status='failed') AND COALESCE(error_code,0) <> ${META_CAPPED_CODE} AND retry_at IS NULL
-                                 AND ($2::timestamptz IS NULL OR COALESCE(tried_at, claimed_at) > $2))::int AS b_failed,
-              count(*) FILTER (WHERE optout_at IS NOT NULL AND ($2::timestamptz IS NULL OR COALESCE(tried_at, claimed_at) > $2))::int AS b_stopped
-         FROM wa_send_queue WHERE job_id=$1 AND (channel='wa_cloud' OR fallback_from LIKE 'wa_cloud%')`, [jobId, ackAt || null])).rows[0] || {};
+                                 AND (b.fb IS NULL OR COALESCE(tried_at, claimed_at) > b.fb))::int AS b_sent,
+              count(*) FILTER (WHERE (status='failed' OR cloud_status='failed') AND COALESCE(error_code,0) <> ${META_CAPPED_CODE}
+                                 AND (b.fb IS NULL OR COALESCE(tried_at, claimed_at) > b.fb))::int AS b_failed
+         FROM wa_send_queue LEFT JOIN (SELECT fail_base_at AS fb FROM wa_send_jobs WHERE id=$1) b ON true
+        WHERE job_id=$1 AND (channel='wa_cloud' OR fallback_from LIKE 'wa_cloud%')`, [jobId, ackAt || null])).rows[0] || {};
     const sent = r.sent || 0, failed = r.failed || 0, stopped = r.stopped || 0;
     const num = (v, d) => (v === undefined || v === null ? d : Number(v) || 0);
     return { sent, failed, capped: r.capped || 0, stopped, delivered: r.delivered || 0, read: r.read_n || 0, firstSentAt: r.first_sent || null,
-      /* الفرامل (نسبة الفشل ونسبة «إيقاف») بتتحسب من النافذة دي بس — «كمّل» بعد فرملة مابتوقّفش الحملة تاني على طول بسبب الفشل القديم.
-         sent التراكمي فاضل لسقف صرف الحملة (الفلوس اتصرفت فعلاً). */
-      brake: { since: ackAt || null, sent: num(r.b_sent, sent), failed: num(r.b_failed, failed), stopped: num(r.b_stopped, stopped) } };
+      /* نسبة الفشل بس هي اللي بتتحسب من النافذة دي (brakeCheck ⇒ failWin): «كمّل» بعد فرملة فشل مابتوقّفش الحملة تاني على طول بسبب الفشل القديم.
+         نسبة «إيقاف» وتحذير الـ١٪ وسقف صرف الحملة على الحملة كلها. */
+      failWin: { sent: num(r.b_sent, sent), failed: num(r.b_failed, failed) } };
   }
-  const pauseJob = (jobId, reason) => pool.query("UPDATE wa_send_jobs SET status='paused', stop_reason=$2 WHERE id=$1 AND status='running'", [jobId, String(reason).slice(0, 80)]);
+  /* مراجعة SX2 (ج): وقفة فرامل الفشل بتتسجّل (fail_brake_at) — «كمّل» بعدها بس هي اللي بتبدأ نسبة الفشل من جديد (FAIL_REBASE) */
+  const pauseJob = async (jobId, reason) => {
+    const r = await pool.query("UPDATE wa_send_jobs SET status='paused', stop_reason=$2 WHERE id=$1 AND status='running'", [jobId, String(reason).slice(0, 80)]);
+    if (r && r.rowCount && /^fail_rate(:|$)/.test(String(reason))) await pool.query("UPDATE wa_send_jobs SET fail_brake_at=NOW() WHERE id=$1", [jobId]).catch((e) => console.error("[wasender] fail_brake_at:", e.message));
+    return r;
+  };
   /* الفرامل وسقف صرف الحملة. بترجع سبب الوقوف (والحملة اتوقفت) أو null. */
   async function jobBrake(job, cc, rateSar, flags = null) {
     const n = await jobCounts(job.id, job.brake_ack_at || null);
-    const nb = { ...n, ...n.brake };      // SX2 (ج): الفرامل والتحذير من بعد آخر «كمّل» بس
-    const b = brakeCheck(nb, cc) || lowReadCheck(n, cc, now());      // QP1: + فرملة القراءة الضعيفة
+    /* SX2 (ج): نسبة الفشل من n.failWin؛ نسبة «إيقاف» من الحملة كلها؛ القراءة الضعيفة من آخر «كمّل» (QP1 زي ما هي) */
+    const b = brakeCheck(n, cc) || lowReadCheck(n, cc, now());      // QP1: + فرملة القراءة الضعيفة
     if (b) { const why = `${b.reason}:${b.pct}`; await pauseJob(job.id, why); return why; }
-    /* QP1: منطقة التحذير (١٪): الحملة تكمّل بنص السرعة، والمالك ياخد تنبيه واحد للحملة */
-    const w = brakeWarn(nb, cc);
+    /* QP1: منطقة التحذير (١٪) — على الحملة كلها: الحملة تكمّل بنص السرعة، والمالك ياخد تنبيه واحد للحملة */
+    const w = brakeWarn(n, cc);
     if (w && flags) {
       flags.warn = true;
       const first = await pool.query("UPDATE wa_send_jobs SET warn_at=NOW() WHERE id=$1 AND warn_at IS NULL RETURNING id", [job.id]).catch(() => ({ rowCount: 0 }));
@@ -1603,7 +1621,7 @@ export function register(app, ctx, deps = {}) {
   };
 
   /* ══ SX2 (١٥/١٠ — ب): إعادة تلقائية مرة واحدة للفشل المؤقت ═══════════════════════════════════════════════
-     الصف بيفضل «فشل» وعليه retry_at: اللوحة بتعدّه «مستني إعادة» (مش فشل)، والفرامل مابتحسبوش لحد ما الإعادة تفشل هي كمان.
+     الصف بيفضل «فشل» وعليه retry_at: اللوحة بتعدّه «مستني إعادة» لوحده، وفرامل الفشل بتحسبه فشل لحد ما الإعادة تنجح (مراجعة SX2).
      في الميعاد الدورة بتاخده قبل الصفوف الجديدة، وبتتأكد: (١) الرسالة الأولى ماوصلتش فعلاً (حالة الـwamid الأول في wa_messages —
      وصلت ⇒ مفيش إعادة والصف يرجع «اتبعتت»)، (٢) وسيط الحملة بيفتح من السيرفر، وبعدين بتبعته — مرة واحدة بس (retried_at).
      إعادة ماتبعتتش خلال retryMaxHours من ميعادها (ساعات الإرسال خلصت / القناة اتقفلت) بتتلغي: رسالة حملة مابتوصلش اليوم اللي بعده. */
@@ -1758,7 +1776,8 @@ export function register(app, ctx, deps = {}) {
           continue;
         }
         const r = await pool.query(
-          `UPDATE wa_send_jobs SET status='running', started_at=COALESCE(started_at, NOW()), start_at=NULL, start_error=NULL, stop_reason=NULL, brake_ack_at=NOW()
+          `UPDATE wa_send_jobs SET status='running', started_at=COALESCE(started_at, NOW()), start_at=NULL, start_error=NULL, stop_reason=NULL, brake_ack_at=NOW(),
+                  fail_base_at = CASE WHEN fail_brake_at IS NOT NULL AND (fail_base_at IS NULL OR fail_brake_at > fail_base_at) THEN NOW() ELSE fail_base_at END
             WHERE id=$1 AND status='paused' AND start_at IS NOT NULL AND start_at <= $2::timestamptz RETURNING id`, [id, T]);
         if (r.rowCount) out.started.push(id);
       }
@@ -1929,6 +1948,10 @@ export function register(app, ctx, deps = {}) {
             WHERE id = (SELECT q.id FROM wa_send_queue q JOIN wa_send_jobs j ON j.id=q.job_id
                          WHERE q.status='pending' AND j.status='running'
                            AND COALESCE(q.channel, j.channel, 'wa_web') = 'wa_cloud'
+                           -- مراجعة SX2: صف للحملة دي فشل لأن ميتا ماقدرتش تنزّل صورتها/الفيديو (131053) ومستني إعادة ⇒ مفيش صفوف جديدة للحملة دي
+                           -- لحد ما الإعادة دي تتبعت (فحصنا للرابط مابيشوفش لو المشكلة عند ميتا بس). نجحت ⇒ الحملة تكمّل؛ فشلت تاني ⇒ mediaPause.
+                           AND NOT EXISTS (SELECT 1 FROM wa_send_queue m WHERE m.job_id = j.id AND m.status = 'failed' AND m.retry_at IS NOT NULL
+                                             AND m.retried_at IS NULL AND m.reason = 'media_error')
                          ORDER BY j.id, q.score DESC, q.id LIMIT 1 FOR UPDATE SKIP LOCKED)
             RETURNING id, job_id, phone_norm, message, name, vars, link_code, coupon, attempts, retried_at, first_wamid, first_error_code`)).rows[0];
         if (!q) {
