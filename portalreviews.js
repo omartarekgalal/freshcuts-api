@@ -136,14 +136,16 @@ async function releaseLowChat(pool, phone) {
 
 /* القفل / المتابعة — الدالة الوحيدة اللي بتكتب نتيجة تقييم (البورتال + «تم الحل» في اللوحة).
    ⇒ { ok, status: closed|follow, outcome, by, handoversAcked, chatReleased } أو { ok:false, error } */
-export async function closeReview(pool, { id, outcome = "resolved", note = null, by = null, role = null, via = "portal" } = {}) {
+/* verbatim = «تم الحل» في اللوحة من غير نتيجة صريحة: الملاحظة بتتكتب زي ما اتبعتت (زي main قبل RV1) — كارت اللوحة (RV3) بيكتب النتيجة
+   جوّه الملاحظة («النتيجة: كوبون تعويض — …») وبيرجع يقراها؛ لو سبقناها بـ«اتحلت — » مابتتقريش. النتيجة نفسها بتتسجّل resolved زي الأول. */
+export async function closeReview(pool, { id, outcome = "resolved", note = null, by = null, role = null, via = "portal", verbatim = false } = {}) {
   const oc = outcomeOf(outcome);
   if (!oc) return { ok: false, error: "bad_outcome", message: "اختار نتيجة من القايمة" };
   const nt = clip(note, 500);
   if (oc.needsNote && !nt) return { ok: false, error: "note_required", message: "اكتب السبب في الملاحظة" };
   const who = clip(by, 60) || "المدير";
   const label = oc.ar.replace(/\s*✅\s*$/, "");
-  const summary = `${label}${nt ? ` — ${nt}` : ""}`.slice(0, 500);
+  const summary = verbatim ? nt : `${label}${nt ? ` — ${nt}` : ""}`.slice(0, 500);
   const r = oc.closes
     ? await pool.query(`UPDATE reviews SET resolved=TRUE, resolved_by=$2, resolved_at=NOW(), resolution_note=$3, outcome=$4, outcome_at=NOW(), outcome_by=$2, outcome_via=$5,
                                portal_seen_at=COALESCE(portal_seen_at, NOW()), portal_seen_by=COALESCE(portal_seen_by, $2)

@@ -413,8 +413,14 @@ test("decision 5: closing from the portal writes the SAME row the dashboard inbo
   assert.deepEqual(dash.body, { ok: true, status: "closed", outcome: "resolved" });
   const list = (await r.call("GET", "/api/portal/reviews")).body;
   const twelve = list.reviews.find((x) => x.id === 12);
-  assert.deepEqual([twelve.status, twelve.outcomeVia, twelve.resolvedBy, twelve.note], ["closed", "dashboard", "المالك", "اتحلت — كلمته أنا"]);
+  assert.deepEqual([twelve.status, twelve.outcomeVia, twelve.resolvedBy, twelve.note], ["closed", "dashboard", "المالك", "كلمته أنا"], "the dashboard's note is kept as typed (main behaviour)");
   assert.deepEqual(twelve.actions.map((a) => [a.action, a.outcome, a.via]), [["outcome", "no_answer", "portal"], ["outcome", "resolved", "dashboard"]]);
+  /* RV3 (اللوحة على main): كارت اللوحة بيحط النتيجة جوّه الملاحظة («النتيجة: …») وبيرجع يقراها ⇒ لازم تتكتب زي ما هي، مش «اتحلت — النتيجة: …» */
+  const rv3 = await r.call("POST", "/api/cms/reviews/:id/resolve", { id: "13", body: { note: "النتيجة: كوبون تعويض — اتصلنا ٨:٣٠" } });
+  assert.deepEqual(rv3.body, { ok: true, status: "closed", outcome: "resolved" });
+  const thirteen = r.db.reviews.find((x) => x.id === 13);
+  assert.deepEqual([thirteen.resolved, thirteen.resolution_note, thirteen.outcome, thirteen.outcome_via], [true, "النتيجة: كوبون تعويض — اتصلنا ٨:٣٠", "resolved", "dashboard"]);
+  // the portal's own close still writes «النتيجة بالعربي — الملاحظة» (its screen reads outcomeAr + note)
   // reopen (manager)
   const ro = await r.call("POST", "/api/portal/reviews/:id/reopen", { id: "11" });
   assert.equal(ro.body.status, "new");

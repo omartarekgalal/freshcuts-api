@@ -855,7 +855,8 @@ export function register(app, ctx, deps = {}) {
     if (!(id > 0)) return bad(c, "bad_id");
     let b = {}; try { b = await c.req.json(); } catch { /* لا شيء */ }
     await ready;
-    const r = await closeReview(pool, { id, outcome: b.outcome || "resolved", note: b.note, by: await whoName(c), via: "dashboard" });
+    /* مراجعة RV1 بعد RV3 (اللوحة على main): من غير outcome ⇒ الملاحظة زي ما هي (كارت اللوحة بيحط النتيجة جوّاها) */
+    const r = await closeReview(pool, { id, outcome: b.outcome || "resolved", note: b.note, by: await whoName(c), via: "dashboard", verbatim: !b.outcome });
     if (!r.ok) return c.json(r, r.error === "not_found" ? 404 : 400);
     for (const hid of r.handoversAcked || []) portalSay("wa_handover_ack", { id: hid, by: r.by }, { scope: "reviews" });
     portalSay("review_update", { id, status: r.status });
