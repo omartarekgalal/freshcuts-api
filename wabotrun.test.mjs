@@ -3844,6 +3844,40 @@ test("SX1: staff-listed number writes, nobody answers in N min ⇒ a normal hand
   assert.equal(hos(w6).filter(([, d]) => d.reason === "staff_silent").length, 0);
 }));
 
+/* SX1 (مراجعة): الكاشير ضغط «تم» على كارت «رقم في قايمة الموظفين» من غير مايكتب — العادي هنا لأن الرقم غالباً بتاع زميل. كان الكارت بيرجع يتفتح
+   والفريق يتنبّه تاني عند ميعاد «رسالة العميل» (١٠ دقايق). دلوقتي: مفيش مرحلة رسالة للعميل لتحويل staff_silent خالص ⇒ «تم» بتقفله، ومن غير «تم» تنبيه تاني واحد بس. */
+test("SX1: «تم» on a staff-list handover closes it — no reopened card, no note stage, no extra alerts; without «تم» one reminder only", withEnv(LOCKS_OPEN, async () => {
+  const PL = { cms: { phoneLists: { migratedAt: "2026-10-15T00:00:00Z", staffPhones: [{ phone: "0568000014", reason: "ambassador", name: "محمد" }], staffSilent: { enabled: true, afterMin: 5 } } } };
+  const FROM = "966568000014";
+  const hos = (w) => w.portal.filter(([e, d]) => e === "wa_handover" && d.phone === "0568000014");
+  const alerts = (w) => w.sms.filter((x) => /staff_silent/.test(String(x.ref || ""))).length;
+  const checks = (w) => w.db.jobs.filter((j) => j.kind === "handover_check").map((j) => [String(j.wamid).split(":").pop(), j.status, j.reason]);
+  // acked from the portal with no reply
+  const w = liveWorld({ extraSettings: PL });
+  assert.equal(R.botConfig(w.db.settings).handoverAckNeedsReply, true, "the default that used to reopen the card");
+  await w.say("السلام عليكم", { from: FROM });
+  await w.tick(5);
+  assert.equal(hos(w).length, 1, "the safety-net handover");
+  const first = alerts(w); assert.ok(first >= 1);
+  w.db.acks = { 568000014: w.clock.now().toISOString() };
+  for (let i = 0; i < 6; i++) await w.tick(5);
+  assert.deepEqual(hos(w).map(([, d]) => [d.reason, d.reopened === true, d.reminder === true]), [["staff_silent", false, false]], "no reopened card, no reminder");
+  assert.deepEqual(checks(w), [["realert", "done", "realert:skipped_acked"]], "no note stage is scheduled");
+  assert.equal(alerts(w), first, "the team is not alerted again");
+  // nobody tapped «تم» ⇒ one reminder at handoverRealertMin, then nothing (no note stage, so no 10-min alert either)
+  const v = liveWorld({ extraSettings: PL });
+  await v.say("السلام عليكم", { from: FROM });
+  await v.tick(5);
+  const once = alerts(v);
+  await v.tick(5);
+  assert.deepEqual(hos(v).map(([, d]) => [d.reason, d.reopened === true, d.reminder === true]), [["staff_silent", false, false], ["staff_silent", false, true]]);
+  const twice = alerts(v); assert.ok(twice > once, "the reminder alerts the team");
+  for (let i = 0; i < 6; i++) await v.tick(5);
+  assert.equal(hos(v).length, 2); assert.equal(alerts(v), twice);
+  assert.ok(!checks(v).some(([stage]) => stage === "note"), "no note stage");
+  assert.equal(v.calls.filter((c) => c.body && c.body.to && String(c.body.to).endsWith("568000014")).length, 0, "the bot never writes to him");
+}));
+
 test("M5: live scope — ads only / ads + new numbers / everyone; outside the scope the bot is silent and logs the reply it would have sent", withEnv(LOCKS_OPEN, async () => {
   const AD = { source_id: "120251224485800593", source_type: "ad", ctwa_clid: "X" };
   assert.equal(R.botConfig({}).liveScope, "all"); assert.match(R.configFromBody({ liveScope: "x" }).errors[0], /liveScope/);

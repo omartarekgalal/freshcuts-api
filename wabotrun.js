@@ -1007,7 +1007,7 @@ export const SCHEMA = Object.freeze({
   handoffOpenHours: S("staff", "number", "التحويل لموظف يفضل مفتوح", "طول المدة دي البوت بيرد على المواعيد والموقع وحالة الطلب بس، ومفيش تنبيه مكرر.", { min: 1, max: 168, unit: "ساعة" }),
   staffAlert: S("alerts", "boolean", "SMS للفريق عند التحويل", "في وضع «شغّال»؛ وفي التجربة لو المفتاح اللي بعده مفتوح."),
   alertInTest: S("alerts", "boolean", "ابعت التنبيه في وضع التجربة", ""),
-  handoverAckNeedsReply: S("staff", "boolean", "«تم» من غير رد مايقفلش متابعة العميل", "لو الموظف ضغط «تم» في البورتال ومحدش كتب للعميل: التنبيه التاني بيتلغي، بس بعد مدة «رسالة العميل» العميل ياخد رسالة الاعتذار والكارت يرجع يظهر. اقفلها لو الفريق بيرد على العملاء بالتليفون."),
+  handoverAckNeedsReply: S("staff", "boolean", "«تم» من غير رد مايقفلش متابعة العميل", "لو الموظف ضغط «تم» في البورتال ومحدش كتب للعميل: التنبيه التاني بيتلغي، بس بعد مدة «رسالة العميل» العميل ياخد رسالة الاعتذار والكارت يرجع يظهر. اقفلها لو الفريق بيرد على العملاء بالتليفون. (تحويل «رقم في قايمة الموظفين» مالوش رسالة عميل، فـ«تم» بتقفله على طول.)"),
   alertPhones: S("alerts", "phones", "أرقام تنبيه التحويل", "فاضي = أرقام الإنذارات في إعدادات التوصيل."),
   maxAlertsPerHour: S("alerts", "number", "أقصى تنبيهات في الساعة", "", { min: 1, max: 30, unit: "تنبيه" }),
   maxAgeMinutes: S("limits", "number", "عمر الرسالة الأقصى", "رسالة وصلت متأخر أكتر من كده مابيتردش عليها.", { min: 1, max: 120, unit: "دقيقة" }),
@@ -3594,13 +3594,15 @@ const fl = await q(`SELECT count(*)::int AS n FROM wa_bot_log WHERE phone_norm=$
        (الكارت اتقفل)، بس لو ميعاد رسالة العميل جه ولسه محدش رد عليه ⇒ كارت جديد على البورتال + التنبيه، والعميل ياخد رسالته. */
     const acked = Boolean(ack && ack[0] && ack[0].acked_at);
     if (acked && !cfg.handoverAckNeedsReply) return no("staff_acked");
+    /* SX1: تحويل «رقم في قايمة الموظفين» (staff_silent) — البوت ساكت على الرقم ده، فمفيش مرحلة «رسالة للعميل» خالص: ولا بتتجدول، ولا الكارت بيرجع يتفتح
+       («تم» من غير رد هنا العادي — الرقم غالباً بتاع زميل) ⇒ التنبيه التاني للفريق بس، ولو حد ضغط «تم» قبله يتلغي. */
+    if (ev.stage !== "realert" && ev.reason === "staff_silent") return no("staff_list_no_note");
     const assistOn = (await assistAudience({ cfg, phone, chat, now, hasReferral: false, count: false })).on;
-    if (ev.stage === "realert" && acked) { if (cfg.handoverCustomerNoteMin > 0) await scheduleHandoverCheck(phone, { ...ev, stage: "note" }, cfg); return end("done", "realert:skipped_acked"); }
+    if (ev.stage === "realert" && acked) { if (cfg.handoverCustomerNoteMin > 0 && ev.reason !== "staff_silent") await scheduleHandoverCheck(phone, { ...ev, stage: "note" }, cfg); return end("done", "realert:skipped_acked"); }
     if (ev.stage !== "realert" && acked) {
       if (typeof deps.portalEmit === "function") { try { deps.portalEmit("wa_handover", { phone: `0${phone}`, phoneMasked: `…${phone.slice(-4)}`, reason: ev.reason, reasonAr: REASON_AR[ev.reason] || ev.reason, urgent: ev.urgent === true, orderNo: ev.orderNo || null, at: now.toISOString(), test: cfg.mode === "test", reopened: true }); } catch (e) { console.error("[wabot] portal:", e.message); } }
       if (cfg.mode === "live" || cfg.alertInTest) await alertStaff(settings, cfg, { phone, reason: ev.reason, orderNo: ev.orderNo, urgent: ev.urgent === true, stage: "reopened" });
     }
-    if (ev.stage !== "realert" && ev.reason === "staff_silent") return no("staff_list_no_note");      // SX1: البوت ساكت على الرقم ده — مفيش «رسالة للعميل» منه، التنبيه للفريق بس
     if (ev.stage === "realert") {
       const waited = Math.round((now.getTime() - Date.parse(ev.hoAt)) / 60_000);
       if (typeof deps.portalEmit === "function") { try { deps.portalEmit("wa_handover", { phone: `0${phone}`, phoneMasked: `…${phone.slice(-4)}`, reason: ev.reason, reasonAr: REASON_AR[ev.reason] || ev.reason, urgent: ev.urgent === true, orderNo: ev.orderNo || null,
