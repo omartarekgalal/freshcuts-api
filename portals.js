@@ -196,6 +196,13 @@ function jwtExpired(tok) {
   } catch { return true; }
 }
 
+/* portalsessions.js بيجدّد جلسة نينجا استباقياً وبيضخّ التوكن الطازة هنا كمان،
+   عشان كارت الحالة الحي (checkAll) يستعمل نفس التوكن المحفوظ مش بتاع env القديم. */
+export function setNinjaSession({ jwt = null, refresh = null } = {}) {
+  if (jwt) NINJA._jwt = jwt;
+  if (refresh) NINJA.refresh = refresh;
+}
+
 async function ninjaToken() {
   const current = NINJA._jwt || NINJA.jwt;
   if (current && !jwtExpired(current)) return current;

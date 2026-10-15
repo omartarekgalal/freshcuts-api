@@ -209,9 +209,41 @@ const NINJA = {
   jwt: process.env.NINJA_JWT || "",
   refresh: process.env.NINJA_REFRESH_TOKEN || "",
   _jwt: null,
+  _refresh: null,
 };
 
-const portalConfigured = () => !!(NINJA.branchId && (NINJA.jwt || NINJA.refresh));
+const portalConfigured = () => !!(NINJA.branchId && (NINJA.jwt || NINJA.refresh || NINJA._refresh));
+
+/* ── جلسة محفوظة (portal_sessions) — الحل الدايم ──────────────────────────────
+   التوكن اللي بييجي من env بيبقى هو البذرة الأولى بس. التجديد بيدوّر الـrefresh،
+   والقديم عمره ٧ أيام؛ لو ما حفظناش المدوّر، ساعة الـ٧ أيام ما بترجعش والجلسة
+   بتموت (ده اللي حصل ٦/٨). هنا بنحفظ المدوّر في الداتابيز عن طريق store محقون
+   من portalsessions.js، ونقرا منه عند الإقلاع — فالجلسة تعيش طول ما بنجدّد
+   جوّه النافذة. لو مفيش store (تست / نداء مباشر) السلوك زي الأول بالظبط. */
+let sessionStore = null;             // { load():{jwt,refresh}|null, save({jwt,refresh,meta}) }
+let loadedOnce = false;
+const sess = { jwt: null, refresh: null, lastRefreshAt: null, lastError: null };
+function expMsOf(tok) {
+  try { const p = JSON.parse(Buffer.from(String(tok).split(".")[1], "base64url").toString()); return p.exp ? p.exp * 1000 : null; } catch { return null; }
+}
+/** الأطول صلاحية من مجموعة توكنات، يفضّل الصالح. */
+function freshestTok(list) {
+  const cands = (list || []).filter((t) => typeof t === "string" && t).map((t) => ({ t, e: expMsOf(t) }));
+  if (!cands.length) return null;
+  const valid = cands.filter((c) => c.e != null && c.e > Date.now() + 30_000);
+  const pool = valid.length ? valid : cands;
+  pool.sort((a, b) => (b.e ?? -Infinity) - (a.e ?? -Infinity));
+  return pool[0].t;
+}
+async function ensureSession() {
+  if (loadedOnce) return;
+  loadedOnce = true;
+  if (!sessionStore) return;
+  try {
+    const row = await sessionStore.load();
+    if (row) { sess.jwt = row.jwt || null; sess.refresh = row.refresh || null; sess.lastRefreshAt = (row.meta && row.meta.lastRefreshAt) || row.updatedAt || null; }
+  } catch (e) { console.error("[ninja] session load:", e.message); }
+}
 
 function rawGet(url, headers = {}, timeoutMs = 25000) {
   return new Promise((resolve, reject) => {
@@ -242,27 +274,63 @@ function jwtExpired(tok) {
  *  GET to a DIFFERENT host carrying the REFRESH token in the Authorization
  *  header — the same shape portals.js uses. The refresh token rotates on each
  *  call but the old one stays valid to its own expiry, so nothing is persisted. */
-async function ninjaToken() {
-  const current = NINJA._jwt || NINJA.jwt;
-  if (current && !jwtExpired(current)) return current;
-  if (!NINJA.refresh) throw new Error("انتهت صلاحية التوكن ومفيش refresh token — لازم تسجيل دخول جديد وتحديث NINJA_JWT");
+/** نداء التجديد الخام: بياخد refresh، بيرجّع { jwt, refresh } المدوّرين أو بيرمي.
+ *  الـrefresh بيتدوّر كل مرة؛ بنرجّع المدوّر عشان يتحفظ وتترجّع ساعة الـ٧ أيام. */
+async function doNinjaRefresh() {
+  await ensureSession();
+  const refresh = freshestTok([sess.refresh, NINJA.refresh, NINJA._refresh]);
+  if (!refresh) throw new Error("انتهت صلاحية التوكن ومفيش refresh token — لازم تسجيل دخول جديد وتحديث نينجا");
   const r = await rawGet(`${NINJA.adminBase}/users/users/refresh`, {
     "User-Agent": UA,
     "Content-Type": "application/json",
     Accept: "application/json",
-    Authorization: `Bearer ${NINJA.refresh}`,
+    Authorization: `Bearer ${refresh}`,
   });
   if (r.status < 200 || r.status >= 300) {
-    throw new Error(`فشل تحديث التوكن (HTTP ${r.status}) — سجّل دخول على بوابة نينجا وحدّث NINJA_JWT و NINJA_REFRESH_TOKEN`);
+    sess.lastError = `refresh HTTP ${r.status}`;
+    throw new Error(`فشل تحديث التوكن (HTTP ${r.status}) — سجّل دخول على بوابة نينجا و«اربط من جديد»`);
   }
-  let tok = null;
+  let tok = null, rot = null;
   try {
     const j = JSON.parse(r.body);
-    tok = j?.data?.attributes?.jwtToken || j.jwtToken || j.token || j.accessToken;
+    const a = j?.data?.attributes || j || {};
+    tok = a.jwtToken || j.jwtToken || j.token || j.accessToken;
+    rot = a.refreshToken || j.refreshToken || null;
   } catch { /* fall through */ }
-  if (!tok) throw new Error("رد التحديث مافيهوش توكن — سجّل دخول وحدّث NINJA_JWT");
-  NINJA._jwt = tok;
-  return tok;
+  if (!tok) { sess.lastError = "رد التحديث مافيهوش توكن"; throw new Error("رد التحديث مافيهوش توكن — سجّل دخول و«اربط من جديد»"); }
+  // احفظ الـjwt الجديد والـrefresh المدوّر (لو اتدوّر) — ده اللي بيخلّي الجلسة تعيش
+  const newRefresh = rot || refresh;
+  NINJA._jwt = tok; NINJA._refresh = newRefresh;
+  sess.jwt = tok; sess.refresh = newRefresh; sess.lastRefreshAt = new Date().toISOString(); sess.lastError = null;
+  if (sessionStore) { try { await sessionStore.save({ jwt: tok, refresh: newRefresh, meta: { lastRefreshAt: sess.lastRefreshAt } }); } catch (e) { console.error("[ninja] session save:", e.message); } }
+  return { jwt: tok, refresh: newRefresh };
+}
+
+async function ninjaToken() {
+  await ensureSession();
+  const current = freshestTok([NINJA._jwt, sess.jwt, NINJA.jwt]);
+  if (current && !jwtExpired(current)) { NINJA._jwt = current; return current; }
+  return (await doNinjaRefresh()).jwt;
+}
+
+/* واجهة لـportalsessions.js: ضخ جلسة جديدة، تجديد فوري، وقراية الحالة. */
+function attachStore(store) { sessionStore = store; loadedOnce = false; }
+function setNinjaSession({ jwt = null, refresh = null } = {}) {
+  if (jwt) { NINJA._jwt = jwt; sess.jwt = jwt; }
+  if (refresh) { NINJA._refresh = refresh; sess.refresh = refresh; }
+  sess.lastError = null;
+}
+async function refreshNow() {
+  try { return await doNinjaRefresh(); }
+  catch (e) { return { error: String(e.message || e).slice(0, 160) }; }
+}
+async function sessionInfo() {
+  await ensureSession();
+  const jwt = freshestTok([NINJA._jwt, sess.jwt, NINJA.jwt]);
+  const refresh = freshestTok([sess.refresh, NINJA._refresh, NINJA.refresh]);
+  return { hasSession: !!(jwt || refresh), jwt, refresh,
+    jwtExp: jwt ? expMsOf(jwt) : null, refreshExp: refresh ? expMsOf(refresh) : null,
+    lastRefreshAt: sess.lastRefreshAt, lastError: sess.lastError };
 }
 
 /** One authenticated GET against the vendor portal. Returns the raw body and
@@ -1410,6 +1478,7 @@ export function register(app, ctx) {
   });
 
   console.log("[ninja] routes ready (/api/ninja/overview|orders|items|portal|customers|reconcile)");
+  return { attachStore, setSession: setNinjaSession, refreshNow, sessionInfo };
 }
 
 export default { register };

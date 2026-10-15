@@ -152,6 +152,18 @@ export function register(app, ctx) {
     catch (e) { return c.json({ ok: false, error: e.message, status: e.status || null, body: e.body || null }); }
   });
 
+  /* إعادة ربط من غير نشر: عمر بيلصق جلسة البوابة (نفس شكل HS_PORTAL_SESSION) من
+     صفحة هنقرستيشن بعد ما سجّل دخوله بنفسه. بنكتبها في الداتابيز وبنجرّب توكن
+     وصول على طول. envFp = بصمة الـenv الحالي عشان load() تفضّل الصف ده. */
+  async function setSession(raw) {
+    const parsed = parseEnvSession(typeof raw === "string" ? raw : JSON.stringify(raw || {}));
+    if (!parsed) return { ok: false, error: "الجلسة لازم تحتوي userId و refreshToken و deviceToken" };
+    mem = { ...parsed, access: null, accessExp: null, refreshUrl: null, envFp: fingerprint(process.env.HS_PORTAL_SESSION || "") };
+    await save();
+    try { await accessToken(true); state.lastError = null; return { ok: true, accessValidFor: mem.accessExp ? Math.round((mem.accessExp - Date.now()) / 1000) : null }; }
+    catch (e) { return { ok: false, error: e.message }; }
+  }
+
   console.log(`[hs-portal] ready (${parseEnvSession(process.env.HS_PORTAL_SESSION) ? "env session present" : "no env session"})`);
-  return { offers, accessToken, load: () => load() };
+  return { offers, accessToken, load: () => load(), setSession };
 }

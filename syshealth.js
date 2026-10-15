@@ -241,6 +241,19 @@ export function register(app, ctx, deps = {}) {
           quotaNote: "جوجل مابيدّيش الكوتة من الـAPI — العدد هنا = نداءات فعلية (كل عنوان جديد مرة في ٣٠ يوم)." } });
     });
 
+    add("delivery_portals", "ops", "جلسات البوابات (هنقرستيشن/نينجا — العروض والحالة)", async () => {
+      const r = await inner("/api/portals/sessions", auth);
+      if (!r.ok) return comp("delivery_portals", "ops", "جلسات البوابات (هنقرستيشن/نينجا — العروض والحالة)", "unknown", `مقدرناش نقرا حالة الجلسات (${r.why}).`);
+      const sess = (r.data && r.data.sessions) || [];
+      const worst = sess.reduce((w, x) => (["bad", "warn", "good", "unknown"].indexOf(x.tone) < ["bad", "warn", "good", "unknown"].indexOf(w) ? x.tone : w), "good");
+      const st = worst === "bad" ? "bad" : worst === "warn" ? "warn" : worst === "unknown" ? "unknown" : "good";
+      const needy = sess.filter((x) => x.needsReconnect).map((x) => x.label || x.platform);
+      return comp("delivery_portals", "ops", "جلسات البوابات (هنقرستيشن/نينجا — العروض والحالة)", st,
+        sess.map((x) => `${x.label || x.platform}: ${x.line || x.state}`).join(" · ") || "مفيش جلسات مربوطة.",
+        { last: new Date(), detail: { sessions: sess.map((x) => ({ platform: x.platform, tone: x.tone, state: x.state, accessLeftMin: x.accessLeftMin, refreshLeftMin: x.refreshLeftMin, needsReconnect: x.needsReconnect })) },
+          fix: needy.length ? `اللوحة ← الإعدادات ← جلسات البوابات ← «اربط من جديد» لـ${needy.join("، ")} (سجّل دخولك بنفسك على المنصة وانسخ الجلسة).` : null });
+    });
+
     /* ── الإعلانات والنشر ─────────────────────────────────────────────── */
     add("ads", "marketing", "منصات الإعلانات (ميتا/سناب/تيك توك) + الطيّار", async () => {
       const [ads, runs] = await Promise.all([

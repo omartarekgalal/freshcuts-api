@@ -34,6 +34,7 @@ import * as keetaControl from "./keeta_control.js";
 import * as hsControl from "./hs_control.js";
 import * as appSync from "./app_sync.js";
 import * as hsPortal from "./hs_portal.js";
+import * as portalSessions from "./portalsessions.js";
 import * as funnel from "./funnel.js";
 import * as audiences from "./audiences.js";
 import * as autopilot from "./autopilot.js";
@@ -3041,7 +3042,7 @@ const notif = notifications.register(app, moduleCtx);
 retarget.register(app, moduleCtx);
 keetaReports.register(app, moduleCtx);
 keetaPayouts.register(app, moduleCtx);
-ninja.register(app, moduleCtx);
+const ninjaApi = ninja.register(app, moduleCtx);
 chat.register(app, moduleCtx);
 dayreport.register(app, moduleCtx);
 // ads.register returns { syncOrders } so the autopilot can push CAPI events
@@ -3061,7 +3062,21 @@ const hsControlApi = hsControl.register(app, moduleCtx);
 const appSyncApi = appSync.register(app, moduleCtx, { keeta: keetaControlApi, hs: hsControlApi });
 // دخول بوابة شركاء هنقرستيشن (للعروض) — hs_portal.js
 const hsPortalApi = hsPortal.register(app, moduleCtx);
-void hsPortalApi;
+/* 🔁 جلسات البوابات — الحل الدايم (١٥/١٠): تجديد استباقي لهنقرستيشن + حفظ دوران
+   refresh نينجا (الجلسة تعيش طول ما بنجدّد)، تنبيه المالك قبل ما تموت، وإعادة
+   ربط بضغطة من اللوحة من غير نشر. كله قراءة/تجديد — مفيش كتابة على أي منصة. */
+const portalAlertNotifier = makeStaffNotifier({ getSettingsData, sendSms: accounts.sendSms });
+const portalSessionsApi = portalSessions.register(app, moduleCtx, {
+  hsPortal: () => hsPortalApi,
+  ninja: () => ninjaApi,
+  setNinjaTile: (s) => { try { portals.setNinjaSession(s); } catch { /* الكارت الحي مش حرج */ } },
+  alert: async (platform) => {
+    const label = platform === "ninja" ? "نينجا" : "هنقرستيشن";
+    try { await portalAlertNotifier.critical(() => `فريش كاتس: جلسة ${label} محتاجة اعادة ربط من اللوحة`, `portal-${platform}`); } catch { /* التنبيه مايوقّفش المسح */ }
+  },
+});
+// late-bind: نينجا بتحفظ دوران الـrefresh في نفس المخزن اللي portalsessions بيقراه
+if (ninjaApi && typeof ninjaApi.attachStore === "function") ninjaApi.attachStore(portalSessionsApi.ninjaStore);
 // attribution.register hands back { sweepAndRoll, linkOrder, overviewData }.
 // It registers BEFORE funnel so a storefront Purchase can link itself to the
 // ad lead that produced it the moment it lands, and before autopilot so the
