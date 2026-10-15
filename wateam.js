@@ -56,6 +56,7 @@ import { staffPhones, fitOneSms, staffConfig } from "./staffalerts.js";
 import { bizDay, bizStart } from "./bizday.js";
 import { maskText } from "./wabotllm.js";
 import { openState } from "./wabot.js";
+import { isReviewHandover } from "./reviewaudience.js";
 
 export const ROLES = Object.freeze(["cashier", "manager", "owner"]);
 export const ROLE_AR = Object.freeze({ cashier: "كاشير", manager: "مدير", owner: "مالك" });
@@ -647,7 +648,8 @@ export function register(app, ctx, deps = {}) {
     if (!cfg.enabled) return null;
     /* ST2: سلّم التصعيد شغّال ⇒ waflow هو اللي بيقرر مين يتبلّغ دلوقتي (الكاشير أولاً) وبيصعّد بعدين */
     { const fl = flowApi(); if (fl && cfg.ladder.enabled && typeof fl.onHandover === "function") return fl.onHandover({ cfg, phone, reason, reasonAr, urgent, orderNo, stage, waitedMin, sms }); }
-    const to = recipientsFor(cfg, urgent ? ["handover", "urgent"] : ["handover"]);
+    /* RV1: «تقييم واطي» للمدير والملاك بس — الكاشير مابيتبلّغش (التقييمات الواطية «عند المدير»، reviewaudience.js) */
+    const to = recipientsFor(cfg, urgent ? ["handover", "urgent"] : ["handover"]).filter((m) => !isReviewHandover(reason) || m.role !== "cashier");
     if (!to.length) return null;
     const body = handoverText({ phone, reasonAr: reasonAr || reason, urgent, orderNo, stage, waitedMin, lastText: await lastCustomerText(phone) });
     const summary = clip(`عميل ${last4(phone)} محتاج موظف (${reasonAr || reason})${stage === "reminder" ? " — تذكير" : ""}`, 120);

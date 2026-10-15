@@ -165,6 +165,16 @@ test("urgent handover: the owners get it too; reminder and reopened say so in Eg
   assert.equal(T.handoverText({ phone: CUST, reasonAr: "شكوى", urgent: true, stage: "reopened" }).split("\n")[0], "♻️ عاجل — التحويل اتقفل بـ«تم» من غير رد للعميل — شكوى");
 }));
 
+test("RV1 (review 15/10): a WhatsApp low rating (review_low, urgent) reaches the manager and the owners — never the cashiers (the low ratings are the manager's)", withEnv(OPEN, async () => {
+  const w = world(); allOpen(w);
+  await w.team.handover({ phone: CUST, reason: "review_low", reasonAr: "تقييم واطي", urgent: true, orderNo: "W1790012345678" });
+  assert.deepEqual(w.to(), [MGR, OWN1, OWN2].map(wa966));
+  assert.ok(!w.db.log.some((l) => l.role === "cashier"));
+  const cashiersOnly = world({ waTeam: { members: MEMBERS.filter((m) => m.role === "cashier") } }); allOpen(cashiersOnly);
+  assert.equal(await cashiersOnly.team.handover({ phone: CUST, reason: "review_low", reasonAr: "تقييم واطي", urgent: true, sms: "x" }), null, "nobody but cashiers ⇒ null (the old SMS to the alert phones takes over)");
+  assert.equal(cashiersOnly.calls.length, 0);
+}));
+
 test("window closed: an APPROVED staff template (Arabic, one line, last 4 digits) goes out with no customer opt-in; not approved ⇒ no Graph call, SMS fallback recorded as SMS", withEnv(OPEN, async () => {
   const w = world({ approved: ["fc_staff_team_notice"] });
   w.wrote(CASH1, 1); w.wrote(CASH2, 30);                     // منى مفتوحة · سارة مقفولة · خالد عمره ما كتب

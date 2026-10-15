@@ -344,6 +344,19 @@ test("RG1 «طلب مسؤول»: the cashiers AND the manager at once (WhatsApp 
   await off.handover({ reason: "asked_manager", reasonAr: "طلب مسؤول" }); assert.deepEqual(roles(off), ["cashier", "cashier"]);
   assert.deepEqual(F.firstSteps(T.teamConfig({ waTeam: { members: MEMBERS.slice(2) } }), false, "asked_manager"), ["manager"], "no cashier ⇒ the manager first");
 });
+test("RV1 (review 15/10): a WhatsApp low rating (review_low, urgent) goes to the MANAGER first — never the cashiers — and climbs to the owners like any handover; no manager in the directory ⇒ the owners", async () => {
+  const w = world({ handoverApi: hoStub() });
+  await w.handover({ reason: "review_low", reasonAr: "تقييم واطي", urgent: true, orderNo: "W1790012345678" });
+  assert.deepEqual(roles(w), ["manager"], "urgent complaints wake everyone; a low rating is the manager's");
+  w.clock.advance(5); await w.flow.tick(); assert.equal(w.sent.length, 1);
+  w.clock.advance(10); await w.flow.tick(); assert.deepEqual(roles(w, 1), ["owner", "owner"], "nobody took it ⇒ the owners, as the ladder does");
+  await w.flow.onHandover({ cfg: w.cfg(), phone: CUST, reason: "review_low", reasonAr: "تقييم واطي", urgent: true, stage: "reminder", waitedMin: 20, sms: "SMS" });
+  assert.ok(!roles(w).includes("cashier"), "reminders go to who was alerted — still no cashier");
+  const noMgr = T.teamConfig({ waTeam: { members: MEMBERS.filter((m) => m.role !== "manager") } });
+  assert.deepEqual(F.firstSteps(noMgr, true, "review_low"), ["owners"]);
+  assert.deepEqual(F.firstSteps(T.teamConfig({ waTeam: { members: MEMBERS } }), true, "complaint"), ["cashier", "manager", "owners"], "a complaint still wakes everyone");
+  assert.deepEqual(F.firstSteps(T.teamConfig({ waTeam: { members: MEMBERS.filter((m) => m.role === "cashier") } }), true, "review_low"), [], "cashiers only ⇒ nobody on WhatsApp (the portal + SMS fallback stay)");
+});
 test("RG1: «استلم» closes the portal card (wa_handover_ack) so it stops ringing; the minute tick drives the portal ring even with team WhatsApp off", async () => {
   const h = hoStub(), w = world({ handoverApi: h });
   await w.handover(); w.db.handovers.push({ id: 7, phone: CUST, acked_at: null });

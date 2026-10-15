@@ -31,6 +31,7 @@ import { makeNameResolver, backfillItemNames } from "./product-names.js";
 import { register as registerSoldOut } from "./soldout.js";
 import { loadOffers } from "./offers.js";
 import { applyService, serviceState } from "./service.js";
+import { reviewScoped, reviewPortalRole } from "./reviewaudience.js";
 
 export const AUDIT_DDL = Object.freeze([
   `CREATE TABLE IF NOT EXISTS portal_audit (
@@ -301,9 +302,23 @@ export function register(app, ctx, deps = {}) {
   /* ═══ البث الحي ═══════════════════════════════════════════════════════ */
   const hub = { clients: new Set(), sigs: new Map(), primed: false, pending: new Set(), flushTimer: null, scanTimer: null, seq: 0, scanning: false };
 
-  function broadcast(event, data) {
+  function sendAll(event, data, to = null) {
     const frame = sseFrame(event, data, ++hub.seq);
-    for (const cl of [...hub.clients]) cl.send(frame);
+    for (const cl of [...hub.clients]) {
+      if (to) { let ok = false; try { ok = to(cl.user) === true; } catch { ok = false; } if (!ok) continue; }
+      cl.send(frame);
+    }
+  }
+  /* RV1: أحداث التقييمات الواطية (review_low / review_update، تنبيه واتساب reason = review_low، أو opts.scope = "reviews") بتروح لجمهور
+     التقييمات بس — المدير، والكاشير لو «الكاشير كمان يشوف التقييمات الواطية في البورتال» مفتوح (reviewaudience.js). الإعداد بيتقري
+     وقت الحدث؛ لو القراية وقعت ⇒ المدير بس. باقي الأحداث لكل الأجهزة زي ما هي. */
+  function broadcast(event, data, opts = null) {
+    if (!reviewScoped(event, data, opts)) return sendAll(event, data);
+    if (!hub.clients.size) return undefined;
+    Promise.resolve().then(() => getSettingsData()).catch(() => null)
+      .then((s) => sendAll(event, data, (u) => Boolean(u) && reviewPortalRole(u.role, s)))
+      .catch((e) => { try { log.error("[portal] review broadcast:", e?.message || e); } catch { /* */ } });
+    return undefined;
   }
   function remember(o) {
     const sig = orderSignature(o);

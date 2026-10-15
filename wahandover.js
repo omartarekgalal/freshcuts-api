@@ -33,6 +33,7 @@
        فيها failing / readFailing (آخر كتابة / قراية فشلت) عشان التحذير يبقى «دلوقتي» مش «حصل مرة من يوم التشغيل».
 ═══════════════════════════════════════════════════════════════════════════ */
 import { bizDay, bizStart } from "./bizday.js";
+import { isReviewHandover, reviewPortalRole, reviewPushRoles } from "./reviewaudience.js";
 
 const clip = (v, n) => (v == null ? null : String(v).slice(0, n));
 const normPhone = (p) => { const d = String(p || "").replace(/\D/g, "").replace(/^966/, "").replace(/^0/, ""); return /^5\d{8}$/.test(d) ? d : null; };
@@ -122,7 +123,8 @@ export function publicRow(r) {
    نفس الـtag ⇒ الإشعار الجديد بيحل محل القديم على نفس الجهاز بدل ما يتكوّموا، وrenotify ⇒ بيرن تاني. */
 export function pushPayloadFor(row, baseUrl, opts = {}) {
   const p = publicRow(row);
-  const loud = p.urgent || p.reason === "asked_manager";
+  /* RV1: تنبيه «تقييم واطي» إشعار هادي (من غير requireInteraction) — المدير بيقفله من شاشة التقييمات */
+  const loud = (p.urgent && !isReviewHandover(p.reason)) || p.reason === "asked_manager";
   const tail = `${p.orderNo ? ` · طلب ${p.orderNo}` : ""}`;
   if (opts.escalated) {
     const w = Number(opts.waitedMin) || 0;
@@ -148,6 +150,7 @@ export function ringPlan(rows, { now, everyMin, capMin, enabled = true }) {
     if (r.taken) { settle.push({ id: Number(r.id), by: "استلمها موظف" }); continue; }
     if (r.answered) { settle.push({ id: Number(r.id), by: "اترد على العميل" }); continue; }
     if (!enabled || r.superseded || r.test === true) continue;
+    if (isReviewHandover(r.reason)) continue;      // RV1: «تقييم واطي» مابيرنّش تاني — الرنّة الهادية بتاعة شاشة التقييمات (مرة لكل تقييم) هي بس
     const at = new Date(r.at).getTime(), last = r.rung_at ? new Date(r.rung_at).getTime() : at;
     if (!Number.isFinite(at) || t - at > capMin * MIN) continue;
     if (t - last >= everyMin * MIN) ring.push(r);
@@ -163,6 +166,15 @@ export function register(app, ctx, deps = {}) {
     .then(() => true).catch((e) => { log.error("[wa-handover] schema:", e.message); return false; });
   const pushApi = () => { try { return typeof deps.push === "function" ? deps.push() : deps.push || null; } catch { return null; } };
   const say = (ev, d) => { try { deps.broadcast?.(ev, d); } catch (e) { log.error("[wa-handover] broadcast:", e.message); } };
+  const settingsNow = async () => { try { return typeof ctx.getSettingsData === "function" ? await ctx.getSettingsData() : null; } catch { return null; } };
+  /* إشعار التحويل: لكل الأجهزة — إلا «تقييم واطي» (RV1): أجهزة المدير بس، والكاشير لو الإعداد مفتوح (reviewaudience.js). بيرجّع وعد مابيرميش. */
+  async function pushRow(push, row, payload) {
+    if (!push || typeof push.sendToSubs !== "function") return null;
+    if (!isReviewHandover(row && row.reason)) return push.sendToSubs(payload);
+    let last = null;
+    for (const role of reviewPushRoles(await settingsNow())) last = await push.sendToSubs(payload, { role });
+    return last;
+  }
 
   /* البوت نده: سجّل، وبعدين ابعت الحدث (بالـid وآخر رسالة) + الإشعار. أي فشل في التسجيل مايمنعش الحدث الحي. */
   async function emit(data) {
@@ -179,7 +191,7 @@ export function register(app, ctx, deps = {}) {
         if (!open) return null;
         const out = { ...publicRow(open), reminder: true, waitedMin: Number(d.waitedMin) || null };
         try { deps.broadcast?.("wa_handover", out); } catch (e) { log.error("[wa-handover] broadcast:", e.message); }
-        if (open.test !== true) { try { const push = pushApi(); if (push && typeof push.sendToSubs === "function") push.sendToSubs(pushPayloadFor(open, push.PORTAL_URL || "")).catch(() => {}); } catch { /* الإشعار مايوقّفش حاجة */ } }
+        if (open.test !== true) { try { const push = pushApi(); if (push && typeof push.sendToSubs === "function") pushRow(push, open, pushPayloadFor(open, push.PORTAL_URL || "")).catch(() => {}); } catch { /* الإشعار مايوقّفش حاجة */ } }
         /* RG1: التنبيه التاني ده بيتحسب رنّة — الرنّة المتكررة بتعد من هنا (مفيش إشعارين ورا بعض) */
         try { await pool.query("UPDATE wa_handovers SET rung_at=$2 WHERE id=$1", [open.id, now().toISOString()]); } catch { /* */ }
         return out;
@@ -207,20 +219,26 @@ export function register(app, ctx, deps = {}) {
     if (row && row.test !== true) {
       try {
         const push = pushApi();
-        if (push && typeof push.sendToSubs === "function") push.sendToSubs(pushPayloadFor(row, push.PORTAL_URL || "")).catch(() => {});
+        if (push && typeof push.sendToSubs === "function") pushRow(push, row, pushPayloadFor(row, push.PORTAL_URL || "")).catch(() => {});
       } catch { /* الإشعار مايوقّفش حاجة */ }
     }
     return out;
   }
 
-  /* تحويلات اليوم التشغيلي اللي لسه مفتوحة (الأحدث فوق) */
-  async function openList() {
+  /* تحويلات اليوم التشغيلي اللي لسه مفتوحة (الأحدث فوق). role = دور اللي بيسأل من البورتال: «تقييم واطي» بيظهر لجمهور التقييمات بس
+     (المدير، والكاشير لو الإعداد مفتوح — RV1). من غير role (نداء داخلي) ⇒ الكل. */
+  async function openList({ role = null } = {}) {
     await ready;
     const since = bizStart(bizDay(now()));
     const r = await pool.query(
       `SELECT id, phone_norm, reason, reason_ar, urgent, order_no, test, last_text, at
          FROM wa_handovers WHERE acked_at IS NULL AND at >= $1 ORDER BY at DESC LIMIT 50`, [since.toISOString()]);
-    return (r.rows || []).map(publicRow);
+    let rows = r.rows || [];
+    if (role != null && rows.some((x) => isReviewHandover(x.reason))) {
+      const s = await settingsNow();
+      if (!reviewPortalRole(role, s)) rows = rows.filter((x) => !isReviewHandover(x.reason));
+    }
+    return rows.map(publicRow);
   }
 
   /* ── RG1: الرنّة المتكررة لحد ما حد يستلم ─────────────────────────────────
@@ -366,7 +384,7 @@ export function register(app, ctx, deps = {}) {
   app.get("/api/portal/wa-handovers", async (c) => {
     const a = await deps.requirePortal(c); if (a.res) return a.res;
     if (!a.seen) touch(a.user, uaOf(c), "poll");      // requirePortal بتاع البوابة سجّلها خلاص (a.seen) ⇒ مفيش كتابة تانية
-    try { return c.json({ ok: true, handovers: await openList() }); }
+    try { return c.json({ ok: true, handovers: await openList({ role: String((a.user && a.user.role) || "") }) }); }
     catch (e) { log.error("[wa-handover] list:", e.message); return c.json({ ok: true, handovers: [] }); }
   });
 

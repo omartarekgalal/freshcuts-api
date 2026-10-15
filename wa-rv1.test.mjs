@@ -107,13 +107,21 @@ test("copy: white dialect, no numbers in the texts, no incentive, no app name ne
 /* ═══ reviews.js: المسح (مين يتسأل وامتى) ═══════════════════════════════ */
 const ORDER_T = Date.parse("2026-10-15T15:00:00Z");      // 18:00 Riyadh
 const ago = (min) => new Date(ORDER_T - min * 60_000).toISOString();
-function rig({ ts = [], invites = [], reviewsRows = [], chats = {}, contacts = {}, shop = [], flow = {}, reviewsCfg = {}, waReply = null, sms = true, failRe = null } = {}) {
+function rig({ ts = [], invites = [], reviewsRows = [], chats = {}, contacts = {}, shop = [], flow = {}, reviewsCfg = {}, waReply = null, sms = true, failRe = null, bills = {} } = {}) {
   const db = { invites: invites.map((x) => ({ ...x })), reviews: reviewsRows.map((x) => ({ ...x })), sms: [], asked: [], sql: [] };
   const inv = (no) => db.invites.find((x) => x.order_no === no);
   const pool = { async query(q, p = []) {
     const s = String(q).replace(/\s+/g, " ").trim(); db.sql.push(s);
     if (failRe && failRe.test(s)) throw new Error("db down");
     if (/^SELECT order_no, phone_norm, option, is_test, created_at, table_no FROM shop_orders WHERE order_no=\$1/i.test(s)) return { rows: shop.filter((o) => o.order_no === p[0]) };
+    /* الفاتورة وقت السؤال (reviews.js بيقراها تاني قبل أي رسالة): bills[id] = { pn, src, order_type } | "missing" | "error" — من غيره نفس جوال الفاتورة/الدعوة */
+    if (/^SELECT o\.order_type, COALESCE\(s\.source, ''\) AS src/i.test(s)) {
+      const b = bills[p[0]];
+      if (b === "error") throw new Error("db down");
+      if (b === "missing") return { rows: [] };
+      const t = ts.find((o) => String(o.order_id) === String(p[0])), iv0 = inv(`pos:${p[0]}`);
+      return { rows: [{ order_type: (b && b.order_type) ?? null, src: (b && b.src) ?? "", pn: b && "pn" in b ? b.pn : t ? t.pn || null : iv0 ? iv0.phone_norm : null }] };
+    }
     if (/FROM ts_orders o LEFT JOIN order_sources s/i.test(s) && /review_invites i WHERE i\.order_no = 'pos:'/i.test(s)) {
       return { rows: ts.filter((o) => Date.parse(o.order_date) > Date.parse(p[0]) && !inv(`pos:${o.order_id}`)).map((o) => ({ order_id: o.order_id, receipt: o.receipt || "", order_date: o.order_date, order_option: o.order_option, pn: o.pn || null, is_app: Boolean(o.is_app), web_near: Boolean(o.web_near) })) };
     }

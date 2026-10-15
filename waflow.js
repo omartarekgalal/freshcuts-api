@@ -20,6 +20,7 @@
 ═══════════════════════════════════════════════════════════════════════════ */
 import { teamConfig, ACTIONS, OUTCOMES, OUTCOME_IDS, ROLE_AR, PORTAL_URL, INBOX_URL } from "./wateam.js";
 import { maskText } from "./wabotllm.js";
+import { isReviewHandover } from "./reviewaudience.js";
 
 const H = 3600_000, MIN = 60_000;
 const clip = (v, n) => String(v ?? "").slice(0, n);
@@ -75,8 +76,11 @@ export function nextStep({ step, hoAt, now, ladder }) {
 }
 /* خطوات أول تبليغ: العادي ⇒ الكاشير. العاجل ⇒ التلاتة مع بعض. خطوة مافيهاش حد في الدليل بتتخطّى للي بعدها. */
 /* RG1: «طلب مسؤول» (asked_manager) والمفتاح ladder.managerDirect شغّال ⇒ الكاشير والمدير مع بعض من أول لحظة (الملاك بالسلّم بعدها). */
+/* RV1 (عمر ١٥/١٠: التقييمات الواطية «عند المدير»): تحويل «تقييم واطي» ⇒ المدير بس (مفيش مدير في الدليل ⇒ الملاك) — الكاشير مابيتبلّغش،
+   والسلّم بيكمل من المدير للملاك زي أي تحويل. */
 export function firstSteps(cfg, urgent, reason = null) {
   const has = (s) => cfg.members.some((m) => m.active && m.role === STEP_ROLE[s]);
+  if (isReviewHandover(reason)) { const s = ["manager", "owners"].find(has); return s ? [s] : []; }
   if (urgent) return STEPS.filter(has);
   if (reason === "asked_manager" && cfg.ladder && cfg.ladder.managerDirect !== false) { const d = ["cashier", "manager"].filter(has); if (d.length) return d; }
   const s = STEPS.find(has);
@@ -245,7 +249,7 @@ export function register(app, ctx, deps = {}) {
     /* تذكير / اتفتح تاني: لنفس اللي اتبلّغوا لحد دلوقتي */
     const roles = [...new Set((Array.isArray(row.alerted) ? row.alerted : []).map((a) => a.role).filter((s) => STEPS.includes(s)))];
     let out = { sent: 0, wa: 0, sms: 0, failed: 0, to: 0 };
-    for (const s of roles.length ? roles : firstSteps(cfg, urgent)) out = sum(out, await alertStep(cfg, { ...row, alerted: (row.alerted || []).filter((a) => a.role !== s) }, s, { stage, sms, waitedMin }));
+    for (const s of roles.length ? roles : firstSteps(cfg, urgent, reason)) out = sum(out, await alertStep(cfg, { ...row, alerted: (row.alerted || []).filter((a) => a.role !== s) }, s, { stage, sms, waitedMin }));
     return out.to ? out : null;
   }
   /* التحويل ده لسه مفتوح ومحدش استلمه ولا رد؟ */

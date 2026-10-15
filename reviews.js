@@ -187,7 +187,9 @@ export function register(app, ctx, deps = {}) {
   const ready = ensureSchema().then(() => { console.log("[reviews] ready"); return true; })
     .catch((e) => { console.error("[reviews] init failed:", e.message); return false; });
   /* RV1: تقييم واطي جديد ⇒ حدث للبورتال (رنّة هادية + العدّاد عند المدير). البوابة بتتعرّف بعد الموديول ده ⇒ النداء وقت التشغيل، وأي فشل بيتبلع. */
-  const portalSay = (ev, d) => { try { if (typeof deps.broadcast === "function") deps.broadcast(ev, d); } catch { /* البوابة مش جاهزة */ } };
+  /* أحداث التقييمات (review_low / review_update، وقفل تنبيه «تقييم واطي») بتروح لجمهور التقييمات بس: المدير، والكاشير لو الإعداد مفتوح
+     (portal.js broadcast — reviewaudience.js). opts.scope = "reviews" للحدث اللي مالوش علامة في نفسه (wa_handover_ack). */
+  const portalSay = (ev, d, opts) => { try { if (typeof deps.broadcast === "function") deps.broadcast(ev, d, opts); } catch { /* البوابة مش جاهزة */ } };
 
   async function cfg() {
     const s = await getSettingsData();
@@ -564,8 +566,26 @@ export function register(app, ctx, deps = {}) {
         /* RV1: طلب كاشير والمسار اتقفل بعد ما الدعوة اتعملت ⇒ مفيش رسالة. النوع اتقفل من اللوحة ⇒ برضه. */
         if (visit && !flow.enabled) { await skip("flow_off"); continue; }
         if (flow.enabled && !kindOn(kind, flow)) { await skip("kind_off"); continue; }
-        /* طلب كاشير اتلغى/اترجع بعد ما الدعوة اتعملت (تاب سينس بيقلب نوعه Void/Refund) ⇒ مانسألش عن طلب ماحصلش */
-        if (/^pos:/.test(String(iv.order_no)) && await one(`SELECT 1 FROM ts_orders WHERE order_id=$1 AND (order_type ILIKE '%void%' OR order_type ILIKE '%refund%')`, [String(iv.order_no).slice(4)])) { await skip("voided"); continue; }
+        /* طلب كاشير: الفاتورة بتتقري تاني دلوقتي (مش اللي اتسجّل وقت الدعوة):
+             • اتلغت/اترجعت بعد ما الدعوة اتعملت (تاب سينس بيقلب نوعها Void/Refund) ⇒ مانسألش عن طلب ماحصلش.
+             • اتربطت بطلب موقع (order_sources.source = website) أو بقت QR-Menu ⇒ ده طلب موقع، دعوته من مسار الموقع.
+             • الجوال اللي عليها دلوقتي مش اللي الدعوة اتعملت بيه (الكاشير صلّح رقم غلط بعد المسح) ⇒ ولا رسالة للرقم القديم
+               (ده غريب: موافقة الدفع عند الكاشير مش بتاعته). الدعوة بتتقفل phone_changed — مابنحوّلهاش للرقم الجديد من غير فحوص وقت الدعوة.
+             • الفاتورة مش موجودة ⇒ مانسألش. القاعدة وقعت ⇒ الدعوة تستنى المسح الجاي. */
+        if (/^pos:/.test(String(iv.order_no))) {
+          let bill = null;
+          try {
+            bill = ((await pool.query(
+              `SELECT o.order_type, COALESCE(s.source, '') AS src, COALESCE(NULLIF(s.phone_norm,''), NULLIF(tc.phone_norm,'')) AS pn
+                 FROM ts_orders o LEFT JOIN order_sources s ON s.order_id = o.order_id LEFT JOIN ts_customers tc ON tc.customer_id = o.customer_id
+                WHERE o.order_id = $1 LIMIT 1`, [String(iv.order_no).slice(4)])).rows || [])[0] || null;
+          } catch (e) { console.error("[reviews] bill check:", e.message); throw CHECK_FAILED; }
+          if (!bill) { await skip("bill_missing"); continue; }
+          const ot = String(bill.order_type || "");
+          if (/void|refund/i.test(ot)) { await skip("voided"); continue; }
+          if (String(bill.src || "") === "website" || /qr-menu/i.test(ot)) { await skip("web_order"); continue; }
+          if (String(bill.pn || "") !== String(iv.phone_norm || "")) { await skip("phone_changed"); continue; }
+        }
         if (flow.enabled) {
           /* طلب تقييم واحد للعميل كل capDays (أي قناة، أي نوع) · قيّم من قريب · محادثته عند موظف/مكتومة · عنده تقييم واطي لسه مااتقفلش ⇒ مانسألش */
           if (flow.capDays > 0 && await one(`SELECT 1 FROM review_invites WHERE phone_norm=$1 AND order_no <> $2 AND sent_at IS NOT NULL AND order_no NOT LIKE 'TEST-%'
@@ -801,7 +821,7 @@ export function register(app, ctx, deps = {}) {
     await ready;
     const r = await closeReview(pool, { id, outcome: b.outcome || "resolved", note: b.note, by: await whoName(c), via: "dashboard" });
     if (!r.ok) return c.json(r, r.error === "not_found" ? 404 : 400);
-    for (const hid of r.handoversAcked || []) portalSay("wa_handover_ack", { id: hid, by: r.by });
+    for (const hid of r.handoversAcked || []) portalSay("wa_handover_ack", { id: hid, by: r.by }, { scope: "reviews" });
     portalSay("review_update", { id, status: r.status });
     return c.json({ ok: true, status: r.status, outcome: r.outcome });
   });

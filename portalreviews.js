@@ -19,7 +19,8 @@
        المطبخ أبداً (requirePortal بيقفله).
    مفيش أي رسالة للعميل من هنا: «اتصل» = tel: من موبايل المدير، و«واتساب» = محادثة البوابة نفسها (حارس الإرسال المعتاد).
 ═══════════════════════════════════════════════════════════════════════════ */
-import { reviewFlowConfig, KIND_AR, REVIEW_KINDS } from "./wareviews.js";
+import { KIND_AR, REVIEW_KINDS } from "./wareviews.js";
+import { reviewPortalRole } from "./reviewaudience.js";
 
 export const REVIEW_PORTAL_DDL = `
   ALTER TABLE reviews ADD COLUMN IF NOT EXISTS outcome TEXT;
@@ -147,7 +148,8 @@ export function register(app, ctx, deps = {}) {
   const { pool, getSettingsData } = ctx;
   const log = deps.log || console;
   const ready = async () => { try { return typeof deps.ready === "function" ? (await deps.ready()) !== false : true; } catch { return false; } };
-  const say = (ev, d) => { try { deps.broadcast?.(ev, d); } catch (e) { log.error("[portal-reviews] broadcast:", e.message); } };
+  /* كل أحداث الملف ده لجمهور التقييمات بس (المدير، والكاشير لو الإعداد مفتوح) — portal.js broadcast بيفلتر بالدور */
+  const say = (ev, d) => { try { deps.broadcast?.(ev, d, { scope: "reviews" }); } catch (e) { log.error("[portal-reviews] broadcast:", e.message); } };
   const audit = (user, action, ok, detail) => { try { deps.audit?.(user, action, null, ok, detail, null, { emit: false }); } catch { /* السجل مايوقفش حاجة */ } };
 
   /* المدير (والمالك) دايماً؛ الكاشير بس لو الإعداد مفتوح؛ المطبخ أبداً (requirePortal). ⇒ { user } أو { res } */
@@ -155,9 +157,9 @@ export function register(app, ctx, deps = {}) {
     const a = await deps.requirePortal(c);
     if (a.res) return a;
     if (a.user.role === "manager") return a;
-    let allow = false;
-    try { allow = reviewFlowConfig((((await getSettingsData()) || {}).waBot || {}).reviewFlow).portalCashier === true; } catch { allow = false; }
-    if (a.user.role === "cashier" && allow) return a;
+    let s = null;
+    try { s = await getSettingsData(); } catch { s = null; }
+    if (reviewPortalRole(a.user.role, s)) return a;      // نفس القاعدة اللي البث والإشعارات وقايمة التحويلات بيفلتروا بيها (reviewaudience.js)
     return { res: c.json({ ok: false, error: "forbidden", message: "التقييمات للمدير بس" }, 403) };
   }
   const who = (u) => clip((u && (u.name || u.role)) || "البوابة", 60);

@@ -14,6 +14,7 @@ const RV = await import("./wareviews.js");
 const reviews = await import("./reviews.js");
 const PR = await import("./portalreviews.js");
 const WC = await import("./waconsent.js");
+const AU = await import("./reviewaudience.js");
 const W = await import("./whatsapp.js");
 const CAT = await import("./watemplates.js");
 W.registerCatalog(CAT);
@@ -59,11 +60,19 @@ test("decisions 2 + 4: Keeta switch ON by default, «عملاء الكاشير �
 /* ═══ ٤) مصدر الموافقة: بيتسجّل لفواتير الصالة/السفري بس، ومع الإعداد بس ═══ */
 const ORDER_T = Date.parse("2026-10-15T15:00:00Z");      // 18:00 الرياض
 const ago = (min) => new Date(ORDER_T - min * 60_000).toISOString();
-function reviewsRig({ ts = [], invites = [], flow = {}, waReply = null, consent = [] } = {}) {
+function reviewsRig({ ts = [], invites = [], flow = {}, waReply = null, consent = [], bills = {} } = {}) {
   const db = { invites: invites.map((x) => ({ ...x })), consent, sms: [], asked: [] };
   const inv = (no) => db.invites.find((x) => x.order_no === no);
   const pool = { async query(q, p = []) {
     const s = String(q).replace(/\s+/g, " ").trim();
+    /* الفاتورة وقت السؤال (reviews.js بيقراها تاني قبل أي رسالة): bills[id] = { pn, src, order_type } | "missing" | "error" — من غيره نفس جوال الفاتورة/الدعوة */
+    if (/^SELECT o\.order_type, COALESCE\(s\.source, ''\) AS src/i.test(s)) {
+      const b = bills[p[0]];
+      if (b === "error") throw new Error("db down");
+      if (b === "missing") return { rows: [] };
+      const t = ts.find((o) => String(o.order_id) === String(p[0])), iv0 = inv(`pos:${p[0]}`);
+      return { rows: [{ order_type: (b && b.order_type) ?? null, src: (b && b.src) ?? "", pn: b && "pn" in b ? b.pn : t ? t.pn || null : iv0 ? iv0.phone_norm : null }] };
+    }
     if (/FROM ts_orders o LEFT JOIN order_sources s/i.test(s)) {
       return { rows: ts.filter((o) => Date.parse(o.order_date) > Date.parse(p[0]) && !inv(`pos:${o.order_id}`)).map((o) => ({ order_id: o.order_id, receipt: o.receipt || "", order_date: o.order_date, order_option: o.order_option, pn: o.pn || null, is_app: Boolean(o.is_app), web_near: false })) };
     }
@@ -193,6 +202,46 @@ test("decision 4 (sweep): till invite + setting on ⇒ the stars template goes; 
   assert.deepEqual([keeta.iv.skip_reason, keeta.calls.length, keeta.consent.length], ["no_sms_visit:no_optin", 0, 0], "a Keeta order has no cashier consent: no template outside the window");
 }));
 
+/* ═══ مراجعة ١٥/١٠ — الشخص الغلط: الفاتورة بتتقري تاني وقت السؤال ═══
+   الكاشير صلّح رقم غلط بعد ما الدعوة اتعملت ⇒ ولا رسالة للرقم القديم (موافقة الدفع عند الكاشير مش بتاعته). قبل قرار ١٥/١٠ الدعوة القديمة
+   ماكانتش بتطلع لأن الغريب مالوش نافذة وsmsVisits مقفول — موافقة الكاشير هي اللي كانت هتخلّيها تطلع. */
+test("review fix (wrong person): the bill is read again right before the ask — phone corrected after queueing ⇒ nothing to the old number (phone_changed); bill now a website order ⇒ web_order; voided ⇒ voided; bill gone ⇒ bill_missing; bill check fails ⇒ the invite waits", withEnv(ALLOW, async () => {
+  const TYPO = "551234567", RIGHT = "551234576";
+  // the scenario from the review, end to end: dine-in bill 18:00 with the typo (this rig: ago(100)), the 17:40 sweep queues it (not due yet: +90)
+  const ts = [{ order_id: "9101", order_date: ago(100), order_option: "Dine in", pn: TYPO, receipt: "2001" }];
+  const consent = [];
+  let w = null;
+  const ask = async (x) => {
+    const r = await w.wa.sendTemplate({ phoneNorm: norm(x.phone), template: "fc_review_stars", params: { body: ["زيارتك للمطعم"] }, orderNo: x.orderNo, stage: "review", source: "review" });
+    return r.ok ? { ok: true, channel: "wa_stars", wamid: r.wamid } : { ok: false, skipped: r.skipped };
+  };
+  const r = reviewsRig({ ts, consent, flow: { starsTemplate: true }, waReply: ask });
+  w = waWorld({ consent, settings: { waBot: { testPhones: [], reviewFlow: { starsTemplate: true } } } });
+  await r.run(ago(20));
+  assert.deepEqual(r.db.invites.map((x) => [x.order_no, x.phone_norm, x.sent_at, x.skip_reason]), [["pos:9101", TYPO, undefined, undefined]], "queued with the typo, not due yet");
+  assert.deepEqual(consent.map((c) => c.phone_norm), [TYPO], "the queue-time proof row (written before anyone could know)");
+  ts[0].pn = RIGHT;      // 18:45: the cashier corrects the number (order_sources ON CONFLICT … phone_norm=EXCLUDED.phone_norm)
+  await r.run("2026-10-15T15:00:00Z");
+  assert.deepEqual([r.db.invites[0].skip_reason, r.db.asked.length, w.calls.length, r.db.sms.length], ["phone_changed", 0, 0, 0], "no template, no SMS — to anyone");
+  assert.equal(consent.length, 1, "no proof row re-written for the old number before an ask");
+  // unchanged phone ⇒ goes as before (same rig shape)
+  const ok = reviewsRig({ invites: [{ order_no: "pos:9102", code: "ab12cd35", phone_norm: RIGHT, option: "dinein", kind: "dinein", due_at: ago(5), order_at: ago(95), ref: "فاتورة 2002" }], bills: { 9102: { pn: RIGHT } }, waReply: { ok: true, channel: "wa_stars" } });
+  await ok.run("2026-10-15T15:00:00Z");
+  assert.deepEqual([ok.db.invites[0].channel, ok.db.asked.length], ["wa_stars", 1]);
+  // the other re-checks
+  const one = async (bill, kind = "dinein") => {
+    const x = reviewsRig({ invites: [{ order_no: "pos:9103", code: "ab12cd36", phone_norm: RIGHT, option: kind, kind, due_at: ago(5), order_at: ago(95), ref: null }], bills: { 9103: bill }, waReply: { ok: true, channel: "wa_stars" } });
+    await x.run("2026-10-15T15:00:00Z");
+    return [x.db.invites[0].skip_reason, x.db.invites[0].sent_at ? "sent" : null, x.db.asked.length, x.db.consent.length];
+  };
+  assert.deepEqual(await one({ pn: RIGHT, src: "website" }), ["web_order", null, 0, 0], "linked to a website order since ⇒ its invite is the website one");
+  assert.deepEqual(await one({ pn: RIGHT, order_type: "QR-Menu" }), ["web_order", null, 0, 0]);
+  assert.deepEqual(await one({ pn: RIGHT, order_type: "Void" }), ["voided", null, 0, 0]);
+  assert.deepEqual(await one("missing"), ["bill_missing", null, 0, 0]);
+  assert.deepEqual(await one({ pn: null }), ["phone_changed", null, 0, 0], "phone removed from the bill");
+  assert.deepEqual(await one("error"), [undefined, null, 0, 0], "database down ⇒ the invite waits for the next sweep (no decision)");
+}));
+
 /* ═══ ٥) البورتال: التقييمات الواطية عند المدير — نفس صف الوارد في اللوحة ═══ */
 const NOW = Date.now();
 const minsAgo = (m) => new Date(NOW - m * 60_000).toISOString();
@@ -252,8 +301,8 @@ function portalRig({ rows = [], settings = {}, handovers = [] } = {}) {
     if (role === "kitchen") return { res: c.json({ ok: false, error: "kitchen_only" }, 403) };
     return { user: { id: role === "manager" ? "st_m" : "st_c", name: role === "manager" ? "أبو فهد" : "أحمد", role } };
   };
-  PR.register(app, ctx, { requirePortal, broadcast: (e, d) => events.push([e, d]), audit: (...a) => audits.push(a), ready: async () => true });
-  reviews.register(app, ctx, { broadcast: (e, d) => events.push([e, d]), sessionUser: null });
+  PR.register(app, ctx, { requirePortal, broadcast: (e, d, o) => events.push([e, d, o]), audit: (...a) => audits.push(a), ready: async () => true });
+  reviews.register(app, ctx, { broadcast: (e, d, o) => events.push([e, d, o]), sessionUser: null });
   const call = async (method, path, { role = "manager", id = null, body = {}, query = {} } = {}) => {
     const c = { __role: role, req: { param: (k) => (k === "id" ? id : undefined), json: async () => body, header: () => undefined, query: (k) => query[k] }, json: (b, status = 200) => ({ body: b, status }) };
     return app.routes[`${method} ${path}`](c);
@@ -347,6 +396,19 @@ test("decision 5: closing from the portal writes the SAME row the dashboard inbo
   const ro = await r.call("POST", "/api/portal/reviews/:id/reopen", { id: "11" });
   assert.equal(ro.body.status, "new");
   assert.deepEqual([r.db.reviews.find((x) => x.id === 11).resolved, r.db.reviews.find((x) => x.id === 11).outcome], [false, null]);
+});
+
+test("review fix (audience): every live event from the reviews screen and from the dashboard's «تم الحل» is scoped to the reviews audience (portal.js sends it to the manager, and the cashier only with the setting)", async () => {
+  const r = portalRig({ rows: LOW(), handovers: [{ id: 501, phone_norm: "512345678", reason: "review_low" }, { id: 601, phone_norm: "523456789", reason: "review_low" }] });
+  await r.call("POST", "/api/portal/reviews/seen", { body: { ids: [11] } });
+  await r.call("POST", "/api/portal/reviews/:id/note", { id: "11", body: { note: "كلمته" } });
+  await r.call("POST", "/api/portal/reviews/:id/close", { id: "11", body: { outcome: "resolved" } });
+  await r.call("POST", "/api/portal/reviews/:id/reopen", { id: "11" });
+  await r.call("POST", "/api/cms/reviews/:id/resolve", { id: "12", body: { note: "كلمته أنا" } });
+  assert.ok(r.events.length >= 6, JSON.stringify(r.events.map((e) => e[0])));
+  assert.deepEqual(r.events.filter(([, , o]) => !(o && o.scope === "reviews")).map(([e]) => e).filter((e) => e !== "review_update" && e !== "review_low"), [], "acks carry the scope explicitly");
+  assert.deepEqual(r.events.filter(([e]) => e === "wa_handover_ack").map(([, d, o]) => [d.id, o && o.scope]), [[501, "reviews"], [601, "reviews"]]);
+  assert.ok(r.events.filter(([e]) => e === "review_update").every(([, , o]) => AU.reviewScoped("review_update", {}, o)));
 });
 
 test("decision 5: the rating page's low rating pings the portal live (review_low); a test code does not", async () => {
