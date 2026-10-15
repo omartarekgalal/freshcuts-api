@@ -538,8 +538,10 @@ export function register(app, ctx, deps = {}) {
         KNOWN_WA_NUMBER, bot.publicPhone || ""].map(norm).filter(Boolean)]);      // + رقم المطعم نفسه (لو اتكتب على طلب بالغلط)
       const n = notify();
       const out = { sent: 0, skipped: 0 };
-      const one = async (sql, p) => { try { return (await pool.query(sql, p)).rows.length > 0; } catch { return false; } };
-      for (const iv of due) {
+      /* فحص بيرمي لو القاعدة وقعت ⇒ الدعوة بتستنى المسح الجاي (مانبعتش واحنا مش متأكدين من الحد/التحويل/الموظف) */
+      const CHECK_FAILED = new Error("check_failed");
+      const one = async (sql, p) => { try { return (await pool.query(sql, p)).rows.length > 0; } catch (e) { console.error("[reviews] check:", e.message); throw CHECK_FAILED; } };
+      for (const iv of due) try {
         const mark = (col, val) => pool.query(`UPDATE review_invites SET ${col}=$2 WHERE order_no=$1`, [iv.order_no, val]);
         const skip = async (why) => { await mark("skip_reason", why); out.skipped++; };
         const kind = kindOfInvite(iv), visit = VISIT_KINDS.has(kind);
@@ -591,7 +593,7 @@ export function register(app, ctx, deps = {}) {
           await mark("skip_reason", "sms_failed: " + String(e.message).slice(0, 80));
           out.skipped++;
         }
-      }
+      } catch (e) { if (e === CHECK_FAILED) { out.retry = (out.retry || 0) + 1; continue; } throw e; }
       if (out.sent) console.log(`[reviews] invites → sent ${out.sent}, skipped ${out.skipped}`);
       return out;
     } finally { sweeping = false; }

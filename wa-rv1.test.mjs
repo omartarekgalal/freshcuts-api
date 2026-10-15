@@ -107,11 +107,12 @@ test("copy: white dialect, no numbers in the texts, no incentive, no app name ne
 /* ═══ reviews.js: المسح (مين يتسأل وامتى) ═══════════════════════════════ */
 const ORDER_T = Date.parse("2026-10-15T15:00:00Z");      // 18:00 Riyadh
 const ago = (min) => new Date(ORDER_T - min * 60_000).toISOString();
-function rig({ ts = [], invites = [], reviewsRows = [], chats = {}, contacts = {}, shop = [], flow = {}, reviewsCfg = {}, waReply = null, sms = true } = {}) {
+function rig({ ts = [], invites = [], reviewsRows = [], chats = {}, contacts = {}, shop = [], flow = {}, reviewsCfg = {}, waReply = null, sms = true, failRe = null } = {}) {
   const db = { invites: invites.map((x) => ({ ...x })), reviews: reviewsRows.map((x) => ({ ...x })), sms: [], asked: [], sql: [] };
   const inv = (no) => db.invites.find((x) => x.order_no === no);
   const pool = { async query(q, p = []) {
     const s = String(q).replace(/\s+/g, " ").trim(); db.sql.push(s);
+    if (failRe && failRe.test(s)) throw new Error("db down");
     if (/^SELECT order_no, phone_norm, option, is_test, created_at, table_no FROM shop_orders WHERE order_no=\$1/i.test(s)) return { rows: shop.filter((o) => o.order_no === p[0]) };
     if (/FROM ts_orders o LEFT JOIN order_sources s/i.test(s) && /review_invites i WHERE i\.order_no = 'pos:'/i.test(s)) {
       return { rows: ts.filter((o) => Date.parse(o.order_date) > Date.parse(p[0]) && !inv(`pos:${o.order_id}`)).map((o) => ({ order_id: o.order_id, receipt: o.receipt || "", order_date: o.order_date, order_option: o.order_option, pn: o.pn || null, is_app: Boolean(o.is_app), web_near: Boolean(o.web_near) })) };
@@ -267,4 +268,11 @@ test("the daily numbers: requests by channel and kind, ratings (exact stars only
   assert.deepEqual(r.place, { rating: 4.9, count: 296, at: "x" });
   assert.deepEqual(RV.bizDayWindow("2026-10-15"), { day: "2026-10-15", from: "2026-10-15T01:00:00.000Z", to: "2026-10-16T01:00:00.000Z" });
   assert.equal(RV.bizDayWindow(null, new Date("2026-10-16T00:30:00Z")).day, "2026-10-15", "03:30 Riyadh still belongs to the 15th");
+});
+
+test("a check that cannot run (database error) never lets an ask out: the invite waits for the next sweep, untouched", async () => {
+  const due = { order_no: "W1790012345678", code: "ab12cd34", phone_norm: "512345678", option: "delivery", kind: "delivery", due_at: ago(5) };
+  const r = rig({ invites: [due], waReply: { ok: true, channel: "wa_list" }, failRe: /^SELECT 1 FROM review_invites WHERE phone_norm=\$1 AND order_no <> \$2/ });
+  const out = await r.run("2026-10-15T15:00:00Z");
+  assert.deepEqual([out.retry, out.sent, r.db.asked.length, r.db.invites[0].skip_reason, r.db.invites[0].sent_at], [1, 0, 0, undefined, undefined]);
 });
