@@ -34,6 +34,7 @@ import { reviewFlowConfig, dueFor, nextAllowed, inQuiet, kindOfInvite, posKindOf
 import { KNOWN_WA_NUMBER } from "./wapolicy.js";
 /* RV1 (عمر ١٥/١٠): «عملاء المحل صالة وتيك أواي موافقين مسبقاً وقت الدفع عند الكاشير» ⇒ صف إثبات pos_payment لكل فاتورة (طلب التقييم بس) */
 import { recordPosReviewConsent, POS_REVIEW_CONSENT } from "./waconsent.js";
+import { isPlaceholderPhone } from "./phonecheck.js";
 /* RV1: التقييمات الواطية في بورتال المدير — نفس صف التقييم (resolved/resolution_note) اللي الوارد في اللوحة بيقراه + سجل الإجراءات */
 import { REVIEW_PORTAL_DDL, OUTCOMES, outcomeOf, closeReview } from "./portalreviews.js";
 
@@ -449,6 +450,20 @@ export function register(app, ctx, deps = {}) {
      من كاش نقطة البيع ts_orders: طلب مقفول (مش ملغي/مرتجع/معلّق) عليه جوال عميل (الكاشير/FeedUs في order_sources، أو عميل
      نقطة البيع ts_customers) ⇒ دعوة واحدة «pos:<رقم الطلب>». مش طلب موقع (QR-Menu أو order_sources.source='website')، ولا مرآة
      طلب موقع (نفس الجوال له طلب موقع ±٣ ساعات). الجوال بيتربط بعد ~٣٠ دقيقة ⇒ بنبص على آخر posLookbackHours كل مسح. */
+  /* مراجعة RV1: كام فاتورة كاشير (مش ملغية/مرتجعة) عليها الرقم ده في آخر ٢٤ ساعة ⇒ Map(pn → n). رقم على فواتير كتير = رقم الكاشير
+     الافتراضي، مش عميل واحد (POS_REVIEW_CONSENT.sharedBills). بيرمي لو القاعدة وقعت (المنادي مابيبعتش وهو مش متأكد). */
+  async function posBillCounts(pns, now) {
+    const since = new Date(now.getTime() - 24 * 3600_000).toISOString();
+    const rows = (await pool.query(
+      `SELECT x.pn, count(DISTINCT x.oid)::int AS n FROM (
+         SELECT b.order_id AS oid, COALESCE(NULLIF(bs.phone_norm,''), NULLIF(bc.phone_norm,'')) AS pn
+           FROM ts_orders b LEFT JOIN order_sources bs ON bs.order_id = b.order_id LEFT JOIN ts_customers bc ON bc.customer_id = b.customer_id
+          WHERE b.order_date > $1::timestamptz
+            AND (b.order_type IS NULL OR (b.order_type NOT ILIKE '%void%' AND b.order_type NOT ILIKE '%refund%'))) x
+        WHERE x.pn = ANY($2::text[]) GROUP BY x.pn`, [since, pns])).rows || [];
+    return new Map(rows.map((r) => [String(r.pn), Number(r.n) || 0]));
+  }
+
   async function queuePosInvites(now, settings, flow) {
     if (!flow.enabled || !(flow.dinein || flow.takeaway || flow.apps)) return 0;
     const apps = (Array.isArray(settings?.deliveryAppMethods) && settings.deliveryAppMethods.length ? settings.deliveryAppMethods : APP_METHODS).map((x) => String(x).toLowerCase());
@@ -468,6 +483,11 @@ export function register(app, ctx, deps = {}) {
           AND COALESCE(s.source, '') <> 'website'
           AND NOT EXISTS (SELECT 1 FROM review_invites i WHERE i.order_no = 'pos:' || o.order_id)
         ORDER BY o.order_date LIMIT 200`, [since, apps])).rows || [];
+    /* مراجعة RV1: الرقم لازم يكون رقم عميل فعلاً — مش حشو كتبه الكاشير (555555555 / 500000000 / نفس الرقم ٨ مرات / 512345678)،
+       ومش رقم على فواتير كتير في ٢٤ ساعة (رقم الكاشير الافتراضي). غير كده ⇒ صف دعوة مقفول بالسبب (bad_number / shared_phone)،
+       من غير رسالة ومن غير صف «موافقة وقت الدفع». العدّ لو القاعدة وقعت ⇒ المسح ده مايعملش دعوات (المسح الجاي يعوّض). */
+    const cand = [...new Set(rows.map((r) => String(r.pn || "")).filter((pn) => /^5\d{8}$/.test(pn) && !isPlaceholderPhone(pn)))];
+    const bills = cand.length ? await posBillCounts(cand, now) : new Map();
     let n = 0;
     for (const r of rows) {
       if (!/^5\d{8}$/.test(String(r.pn || "")) || r.web_near) continue;
@@ -475,6 +495,14 @@ export function register(app, ctx, deps = {}) {
       if (!kind || !kindOn(kind, flow)) continue;
       const due = dueFor(kind, { orderAt: r.order_date }, flow, now.getTime());
       const ref = String(r.receipt || "").trim() ? `فاتورة ${String(r.receipt).trim().slice(0, 20)}` : null;
+      const bad = isPlaceholderPhone(r.pn) ? "bad_number" : (bills.get(String(r.pn)) || 0) >= POS_REVIEW_CONSENT.sharedBills ? "shared_phone" : null;
+      if (bad) {
+        await pool.query(
+          `INSERT INTO review_invites(order_no, code, phone_norm, option, due_at, kind, order_at, ref, skip_reason)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT (order_no) DO NOTHING`,
+          [`pos:${r.order_id}`, inviteCode(), r.pn, kind, due.toISOString(), kind, r.order_date, ref, bad]).catch(() => {});
+        continue;
+      }
       const ins = await pool.query(
         `INSERT INTO review_invites(order_no, code, phone_norm, option, due_at, kind, order_at, ref)
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT (order_no) DO NOTHING RETURNING code`,
@@ -537,7 +565,8 @@ export function register(app, ctx, deps = {}) {
       if (flow.enabled) {
         if (inQuiet(now, flow)) {
           const until = nextAllowed(now, flow).toISOString();
-          const d0 = await pool.query(`UPDATE review_invites SET due_at=$2 WHERE sent_at IS NULL AND skip_reason IS NULL AND due_at < $2::timestamptz`, [now.toISOString(), until]);
+          /* مراجعة RV1: براميتر واحد ومستخدم ($1) — Postgres بيرفض أي براميتر مش مستخدم نوعه مش معروف (42P18) فالمسح كله كان بيقع بالليل */
+          const d0 = await pool.query(`UPDATE review_invites SET due_at=$1::timestamptz WHERE sent_at IS NULL AND skip_reason IS NULL AND due_at < $1::timestamptz`, [until]);
           return { skipped: "quiet", deferredTo: until, deferred: d0.rowCount || 0 };
         }
       } else if (inAskQuiet(riyadhHour(now), cf.askQuietStart, cf.askQuietEnd)) return { skipped: "quiet" };
@@ -585,6 +614,13 @@ export function register(app, ctx, deps = {}) {
           if (/void|refund/i.test(ot)) { await skip("voided"); continue; }
           if (String(bill.src || "") === "website" || /qr-menu/i.test(ot)) { await skip("web_order"); continue; }
           if (String(bill.pn || "") !== String(iv.phone_norm || "")) { await skip("phone_changed"); continue; }
+          /* مراجعة RV1: رقم حشو، أو الرقم بقى على فواتير كتير في آخر ٢٤ ساعة (الكاشير بيكتبه لكل الناس) ⇒ ده مش العميل اللي دفع.
+             قبل تسجيل «موافقة وقت الدفع» وقبل أي رسالة. العدّ وقع ⇒ الدعوة تستنى المسح الجاي. */
+          if (isPlaceholderPhone(iv.phone_norm)) { await skip("bad_number"); continue; }
+          let nb = 0;
+          try { nb = (await posBillCounts([String(iv.phone_norm)], now)).get(String(iv.phone_norm)) || 0; }
+          catch (e) { console.error("[reviews] bill count:", e.message); throw CHECK_FAILED; }
+          if (nb >= POS_REVIEW_CONSENT.sharedBills) { await skip("shared_phone"); continue; }
         }
         if (flow.enabled) {
           /* طلب تقييم واحد للعميل كل capDays (أي قناة، أي نوع) · قيّم من قريب · محادثته عند موظف/مكتومة · عنده تقييم واطي لسه مااتقفلش ⇒ مانسألش */

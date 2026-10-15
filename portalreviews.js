@@ -20,7 +20,7 @@
    مفيش أي رسالة للعميل من هنا: «اتصل» = tel: من موبايل المدير، و«واتساب» = محادثة البوابة نفسها (حارس الإرسال المعتاد).
 ═══════════════════════════════════════════════════════════════════════════ */
 import { KIND_AR, REVIEW_KINDS } from "./wareviews.js";
-import { reviewPortalRole } from "./reviewaudience.js";
+import { reviewPortalRole, REVIEW_HANDOVER_REASONS } from "./reviewaudience.js";
 
 export const REVIEW_PORTAL_DDL = `
   ALTER TABLE reviews ADD COLUMN IF NOT EXISTS outcome TEXT;
@@ -121,8 +121,21 @@ async function ackLowHandovers(pool, phone, by) {
   } catch { return []; }
 }
 
+/* مراجعة RV1: التقييم اتعامل معاه (أي نتيجة — نفس اللحظة اللي تنبيه «تقييم واطي» بيتقفل فيها) ⇒ محادثة واتساب ترجع للبوت، زي «خلصت»:
+   handoff_at / handoff_reason بيتمسحوا لو التحويل المفتوح عليها لسه «تقييم واطي». مابنلمسش كتم أو سحب موظف (muted_until)، ولا تحويل
+   تاني اتفتح بعده (طلب تعديل، شكوى…) — ده بيفضل زي ما هو. الجدول مش موجود / القاعدة وقعت ⇒ false (القفل نفسه مايتأثرش). */
+async function releaseLowChat(pool, phone) {
+  if (!/^5\d{8}$/.test(String(phone || ""))) return false;
+  try {
+    const r = await pool.query(
+      "UPDATE wa_bot_chats SET handoff_at=NULL, handoff_reason=NULL, unknown_streak=0, released_at=NOW(), updated_at=NOW() WHERE phone_norm=$1 AND handoff_reason = ANY($2::text[])",
+      [phone, REVIEW_HANDOVER_REASONS]);
+    return Boolean(r && r.rowCount);
+  } catch { return false; }
+}
+
 /* القفل / المتابعة — الدالة الوحيدة اللي بتكتب نتيجة تقييم (البورتال + «تم الحل» في اللوحة).
-   ⇒ { ok, status: closed|follow, outcome, by, handoversAcked } أو { ok:false, error } */
+   ⇒ { ok, status: closed|follow, outcome, by, handoversAcked, chatReleased } أو { ok:false, error } */
 export async function closeReview(pool, { id, outcome = "resolved", note = null, by = null, role = null, via = "portal" } = {}) {
   const oc = outcomeOf(outcome);
   if (!oc) return { ok: false, error: "bad_outcome", message: "اختار نتيجة من القايمة" };
@@ -141,7 +154,8 @@ export async function closeReview(pool, { id, outcome = "resolved", note = null,
   if (!r.rowCount) return { ok: false, error: "not_found", message: "التقييم مش موجود" };
   await logAction(pool, { id, action: "outcome", outcome: oc.id, note: nt, by: who, role, via }).catch(() => {});
   const handoversAcked = await ackLowHandovers(pool, r.rows[0] && r.rows[0].phone_norm, who);
-  return { ok: true, status: oc.closes ? "closed" : "follow", outcome: oc.id, by: who, handoversAcked };
+  const chatReleased = await releaseLowChat(pool, r.rows[0] && r.rows[0].phone_norm);
+  return { ok: true, status: oc.closes ? "closed" : "follow", outcome: oc.id, by: who, handoversAcked, chatReleased };
 }
 
 export function register(app, ctx, deps = {}) {

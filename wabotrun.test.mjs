@@ -5536,3 +5536,39 @@ test("RV1: «عندي ملاحظة» never shows an internal till id («pos:…�
   const en = R.buildReply("review_note", { cfg, lang: "en", data, arg: { code: "ab12cd34", order: "pos:9001" } }).body;
   assert.doesNotMatch(en, /pos:|\nOrder\s*(\n|$)/);
 });
+
+/* مراجعة RV1 (١٥/١٠ بالليل): التقييم الواطي كان ماسك المحادثة زي الشكوى ٢٤ ساعة — البوت مابيردش على المنيو ولا الطلب، و«تعديل الطلب» بعده
+   مابيفتحش تنبيه (والتنبيه الوحيد كارت هادي عند المدير). دلوقتي: المنيو والطلب بيتخدموا، والطلب التشغيلي بيفتح تحويله بتنبيهه العادي. */
+test("RV1 review fix: a low rating does not hold the chat like a complaint — the menu and a new order are served, «تعديل الطلب» after it opens its own order-change alert for the whole team (even after the manager replied), a typed complaint stays with the manager (no second alert)", withEnv(CONFIGURED, async () => {
+  const w = rvWorld();
+  await w.say("هلا"); await w.bot.reviewAsk({ phone: "0512345678", orderNo: "W1790012345678", code: "ab12cd34", kind: "delivery", ref: "W1790012345678" });
+  const low = await listTap(w, "rs:2:ab12cd34", "⭐⭐ مقبول");
+  assert.equal(low.log.handoff, "review_low");
+  await listTap(w, "rr:food:1", "الأكل (الطعم أو الجودة)");
+  await w.say("الأكل وصل بارد");      // أول نص ⇒ تعليق التقييم
+  const alerts = () => w.portal.filter(([e]) => e === "wa_handover");
+  const n0 = alerts().length;
+  w.clock.advance(180);
+  const menu = await w.say("ورّني المنيو");
+  assert.equal(menu.log.decision, "replied", JSON.stringify(menu.log)); assert.equal(menu.log.reply_key, "cats");
+  const order = await w.say("ابغى اطلب مشاوي");
+  assert.equal(order.log.decision, "replied", JSON.stringify(order.log)); assert.equal(order.log.reply_key, "order");
+  const cmp = await w.say("وكمان الرز كان بارد جدا");
+  assert.notEqual(cmp.log.handoff, "complaint", "a complaint typed after the rating stays with the manager"); assert.equal(alerts().length, n0, "no second alert");
+  const ch = await w.say(null, { raw: { type: "interactive", interactive: { type: "button_reply", button_reply: { id: "cw:order", title: "تعديل الطلب" } } } });
+  assert.equal(ch.log.handoff, "order_change", JSON.stringify(ch.log));
+  const oc = alerts().filter(([, d]) => d.reason === "order_change");
+  assert.equal(oc.length, 1, "the order change reaches the team with its normal alert");
+  // the manager already replied to the low rating (staff echo) ⇒ an order change still alerts
+  const w2 = rvWorld();
+  await w2.say("هلا"); await w2.bot.reviewAsk({ phone: "0512345678", orderNo: "W1790012345678", code: "ab12cd34", kind: "delivery", ref: "W1790012345678" });
+  await listTap(w2, "rs:1:ab12cd34", "⭐ سيء");
+  w2.clock.advance(2);
+  await w2.cashier("نعتذر منك، بنتواصل معك");
+  w2.clock.advance(40);
+  const ch2 = await w2.say(null, { raw: { type: "interactive", interactive: { type: "button_reply", button_reply: { id: "cw:order", title: "تعديل الطلب" } } } });
+  assert.equal(ch2.log.handoff, "order_change", JSON.stringify(ch2.log));
+  // a real complaint handover is unchanged: menu stays info-only (factual) — the carve-out is for review_low only
+  assert.equal(R.decide({ phone: "512345678", text: "ورّني المنيو", type: "text", at: new Date(Date.parse(OPEN_AT)).toISOString() },
+    { cfg: R.botConfig({ waBot: { mode: "live" } }), now: new Date(Date.parse(OPEN_AT) + 60_000), chat: { handoff_at: new Date(Date.parse(OPEN_AT) - 3600_000).toISOString(), handoff_reason: "complaint" }, data: {} }).key, "handoff_remind");
+}));

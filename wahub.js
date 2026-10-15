@@ -23,6 +23,7 @@ import * as CAT from "./watemplates.js";
 import { TEMPLATES as REG, STAGE_TEMPLATES, GRAPH_VERSION } from "./whatsapp.js";
 import { publicMedia } from "./wamedia.js";
 import { teamConfig } from "./wateam.js";
+import { REVIEW_HANDOVER_REASONS, isReviewHandover } from "./reviewaudience.js";
 
 export const DEFAULT_INBOX_ROLES = Object.freeze(["owner", "operations", "kitchen"]);
 const ROLE_IDS = ["owner", "marketing", "operations", "accounting", "kitchen"];
@@ -181,12 +182,23 @@ export function register(app, ctx, deps = {}) {
     held: "b.muted_until > NOW()",      // SR2: مسحوبة (نفس عمود الكتم)
     mine: "b.muted_until > NOW()",      // + قايمة أرقام الحساب من waowner (تحت)
   };
-  async function listThreads({ filter = "all", q = "", limit = 40, before = null, full = false, me = null, team = false } = {}) {
+  /* مراجعة RV1 — «تقييم واطي» للمدير بس (reviewaudience.js): بوابة الكاشير من غير الإعداد «الكاشير كمان يشوف التقييمات الواطية» (hideReviewLow):
+       • المحادثة اللي تحويلها المفتوح «تقييم واطي» (جوّه مدة التحويل handoffOpenHours) مش في قايمته ولا عدّاداته ولا بتتفتح عنده.
+       • «تقييم واطي» عمره ما بيدخّل محادثة «مستنية موظف» عنده (حتى بعد المدة)، وسببه مابيظهرش في حالة المحادثة.
+     المدير والمالك واللوحة زي ما هم. أي تحويل تاني (طلب تعديل، شكوى، موظف) بيظهر للكاشير عادي. */
+  const RV_IN = `(${REVIEW_HANDOVER_REASONS.map((r) => `'${r.replace(/'/g, "")}'`).join(",")})`;
+  const hoHoursNow = async () => { try { const cfg = await bot()?.botConfig?.(); const h = Math.round(Number(cfg?.handoffOpenHours)); return h > 0 && h <= 168 ? h : 24; } catch { return 24; } };
+  const reviewHiddenSql = (hours) => `COALESCE(b.handoff_reason IN ${RV_IN} AND b.handoff_at > NOW() - make_interval(hours => ${Math.round(Number(hours)) || 24}), FALSE)`;
+  const WAITING_NO_REVIEW = `NOT COALESCE(b.muted_until > NOW(), FALSE) AND ((b.handoff_at IS NOT NULL AND NOT COALESCE(b.handoff_reason IN ${RV_IN}, FALSE)) OR ${UNANSWERED})`;
+  const maskReview = (r) => (r && isReviewHandover(r.handoff_reason) ? { ...r, handoff_at: null, handoff_reason: null } : r);
+  async function listThreads({ filter = "all", q = "", limit = 40, before = null, full = false, me = null, team = false, hideReviewLow = false } = {}) {
     const f = FILTERS.includes(filter) ? filter : "all";
     const lim = Math.min(Math.max(Number(limit) || 40, 1), 100);
     const term = String(q || "").trim().slice(0, 40);
     const digits = term.replace(/\D/g, "");
-    const p = [], where = [COND[f]];
+    const hideRv = hideReviewLow === true ? reviewHiddenSql(await hoHoursNow()) : null;
+    const waitingCond = hideRv ? WAITING_NO_REVIEW : COND.waiting;
+    const p = [], where = [f === "waiting" ? waitingCond : COND[f], ...(hideRv ? [`NOT ${hideRv}`] : [])];
     const tp = await teamPhones();
     if (tp.length) { p.push(tp); where.push(team === true ? `t.phone_norm = ANY($${p.length}::text[])` : `NOT (t.phone_norm = ANY($${p.length}::text[]))`); }
     else if (team === true) where.push("FALSE");
@@ -222,14 +234,15 @@ export function register(app, ctx, deps = {}) {
                            WHERE m.phone_norm = t.phone_norm AND COALESCE(m.source, 'api') <> 'history' ORDER BY m.id DESC LIMIT 1) lm ON TRUE
        WHERE ${pageWhere.join(" AND ")}
        ORDER BY ${byWait ? "COALESCE(b.handoff_at, t.last_in_at) ASC NULLS LAST, t.last_at DESC" : "t.last_at DESC"} LIMIT $${p.length}`, p)).rows || [];
+    const cntWhere = [...(tp.length ? ["NOT (t.phone_norm = ANY($1::text[]))"] : []), ...(hideRv ? [`NOT ${hideRv}`] : [])];
     const cnt = (await pool.query(
-      `SELECT count(*)::int AS total, count(*) FILTER (WHERE ${COND.waiting})::int AS waiting, count(*) FILTER (WHERE ${COND.bot})::int AS bot,
+      `SELECT count(*)::int AS total, count(*) FILTER (WHERE ${waitingCond})::int AS waiting, count(*) FILTER (WHERE ${COND.bot})::int AS bot,
               count(*) FILTER (WHERE ${COND.muted})::int AS muted, count(*) FILTER (WHERE ${COND.ad})::int AS ad,
               count(*) FILTER (WHERE ${COND.unread})::int AS unread, COALESCE(sum(t.unread), 0)::int AS unread_messages,
-              min(COALESCE(b.handoff_at, t.last_in_at)) FILTER (WHERE ${COND.waiting}) AS oldest_waiting
-       ${FROM}${tp.length ? " WHERE NOT (t.phone_norm = ANY($1::text[]))" : ""}`, tp.length ? [tp] : [])).rows[0] || {};
+              min(COALESCE(b.handoff_at, t.last_in_at)) FILTER (WHERE ${waitingCond}) AS oldest_waiting
+       ${FROM}${cntWhere.length ? ` WHERE ${cntWhere.join(" AND ")}` : ""}`, tp.length ? [tp] : [])).rows[0] || {};
     const t0 = now(), pauseMin = await pauseMinNow();
-    const page = rows.slice(0, byWait ? 100 : lim);
+    const page = rows.slice(0, byWait ? 100 : lim).map((r) => (hideRv ? maskReview(r) : r));
     const owners = own ? await own.ownersFor(page, me) : new Map();
     const fl = flow(), flows = fl && team !== true ? await fl.flowsFor(page.map((r) => r.phone_norm), owners, me, new Map(page.map((r) => [r.phone_norm, { lastInAt: r.last_in_at, unanswered: r.unanswered === true }]))) : new Map();
     const transferred = fl && typeof fl.transferredCount === "function" ? await fl.transferredCount().catch(() => 0) : 0;
@@ -253,9 +266,9 @@ export function register(app, ctx, deps = {}) {
   }
 
   /* ═══ N1: المحادثة ═══ */
-  async function getThread(pn, { limit = 80, before = null, full = false, me = null } = {}) {
+  async function getThread(pn, { limit = 80, before = null, full = false, me = null, hideReviewLow = false } = {}) {
     const lim = Math.min(Math.max(Number(limit) || 80, 1), 200);
-    const head = (await pool.query(
+    let head = (await pool.query(
       `SELECT t.phone_norm, t.last_in_at, t.last_at, t.unread, t.order_no, COALESCE(c.name, n.full_name, n.profile_name) AS name, c.orders AS orders,
               b.muted_until, b.mute_reason, b.muted_by, b.handoff_at, b.handoff_reason, (b.referral IS NOT NULL) AS ad,
               (SELECT max(m.created_at) FROM wa_messages m WHERE m.phone_norm = t.phone_norm AND m.source = 'echo' AND COALESCE(m.echo_kind,'staff') <> 'auto') AS last_echo_at,
@@ -263,6 +276,12 @@ export function register(app, ctx, deps = {}) {
        ${FROM} LEFT JOIN wa_optins o ON o.phone_norm = t.phone_norm
        WHERE t.phone_norm = $1`, [pn])).rows[0];
     if (!head) return { ok: false, error: "not_found" };
+    /* مراجعة RV1: بوابة الكاشير من غير الإعداد — «تقييم واطي» مفتوح على المحادثة ⇒ مش عنده (نفس رد «مش موجودة»)؛ بعد المدة ⇒ من غير سببه */
+    if (hideReviewLow === true && isReviewHandover(head.handoff_reason)) {
+      const at = head.handoff_at ? new Date(head.handoff_at).getTime() : NaN;
+      if (Number.isFinite(at) && now() - at < (await hoHoursNow()) * 3600_000) return { ok: false, error: "not_found" };
+      head = maskReview(head);
+    }
     const b4 = before && Number.isFinite(Date.parse(before)) ? new Date(before).toISOString() : null;
     const msgs = (await pool.query(
       `SELECT wamid, direction, status, error, body, template, category, order_no, created_at, source, pricing, id, media
@@ -290,7 +309,7 @@ export function register(app, ctx, deps = {}) {
     const lastReal = [...msgs].filter((m) => (m.source || "api") !== "history").sort((a, b) => new Date(a.created_at) - new Date(b.created_at)).pop() || null;
     const pending = Boolean(lastReal && lastReal.direction === "in" && head.last_in_at && Date.now() - new Date(head.last_in_at).getTime() < 24 * 3600_000);
     const fl = flow(), flowObj = fl && !isTeam ? await fl.flowFor(pn, me, owner, { lastInAt: head.last_in_at, unanswered: pending }).catch(() => null) : null;      // ST2
-    const events = botRows.filter((r) => r.handoff).map((r) => ({ at: iso(r.at), kind: "handover", reason: String(r.handoff).split(":")[0] }));
+    const events = botRows.filter((r) => r.handoff && !(hideReviewLow === true && isReviewHandover(String(r.handoff).split(":")[0]))).map((r) => ({ at: iso(r.at), kind: "handover", reason: String(r.handoff).split(":")[0] }));
     if (state.state === "muted") events.push({ at: null, kind: "mute", until: state.mutedUntil, by: state.mutedBy, reason: state.reason });
     return {
       ok: true, key: keyOf(pn), phone: full ? `0${pn}` : maskPhone(pn), phoneMasked: maskPhone(pn),
@@ -316,17 +335,21 @@ export function register(app, ctx, deps = {}) {
      سحب/ترك/قفل، تحويل لموظف أو كتم. مفيهاش أي محتوى ولا أرقام.
      الحاجة الوحيدة اللي بتتغيّر بالوقت من غير صف بيتعدّل (مهلة السحب خلصت، النافذة قفلت) مش في البصمة — الشاشة بتعيد
      التحميل الكامل كل دقيقة احتياطي. */
-  async function tick(pn = null) {
+  async function tick(pn = null, { hideReviewLow = false } = {}) {
     const tp = await teamPhones();
-    const X = tp.length ? " WHERE NOT (phone_norm = ANY($2::text[]))" : "", XT = tp.length ? " AND NOT (t.phone_norm = ANY($2::text[]))" : "";
+    /* مراجعة RV1: بوابة الكاشير من غير الإعداد ⇒ محادثة «تقييم واطي» مفتوح مش في عدّاداته (مستني موظف / الجديد / البصمة) */
+    const hideRv = hideReviewLow === true ? reviewHiddenSql(await hoHoursNow()) : null;
+    const xw = [...(tp.length ? ["NOT (phone_norm = ANY($2::text[]))"] : []), ...(hideRv ? [`NOT EXISTS (SELECT 1 FROM wa_bot_chats b WHERE b.phone_norm = wa_threads.phone_norm AND ${hideRv})`] : [])];
+    const X = xw.length ? ` WHERE ${xw.join(" AND ")}` : "", XT = `${tp.length ? " AND NOT (t.phone_norm = ANY($2::text[]))" : ""}${hideRv ? ` AND NOT ${hideRv}` : ""}`;
+    const waitingCond = hideRv ? WAITING_NO_REVIEW : COND.waiting;
     const r = (await pool.query(
       `SELECT (SELECT count(*) FROM wa_threads${X})::int AS n,
               (SELECT COALESCE(sum(unread), 0) FROM wa_threads${X})::int AS u,
               (SELECT (extract(epoch FROM max(GREATEST(last_at, COALESCE(read_at, last_at)))) * 1000)::bigint FROM wa_threads${X}) AS tl,
               (SELECT (extract(epoch FROM max(updated_at)) * 1000)::bigint FROM wa_bot_chats) AS tb,
-              (SELECT count(*) FROM wa_threads t LEFT JOIN wa_bot_chats b ON b.phone_norm = t.phone_norm WHERE ${COND.waiting}${XT})::int AS w,
+              (SELECT count(*) FROM wa_threads t LEFT JOIN wa_bot_chats b ON b.phone_norm = t.phone_norm WHERE ${waitingCond}${XT})::int AS w,
               (SELECT count(*) FROM wa_bot_chats WHERE muted_until > NOW())::int AS h,
-              (SELECT min(COALESCE(b.handoff_at, t.last_in_at)) FROM wa_threads t LEFT JOIN wa_bot_chats b ON b.phone_norm = t.phone_norm WHERE ${COND.waiting}${XT}) AS ow,
+              (SELECT min(COALESCE(b.handoff_at, t.last_in_at)) FROM wa_threads t LEFT JOIN wa_bot_chats b ON b.phone_norm = t.phone_norm WHERE ${waitingCond}${XT}) AS ow,
               (SELECT (extract(epoch FROM max(GREATEST(created_at, updated_at))) * 1000)::bigint FROM wa_messages WHERE phone_norm = $1) AS tm,
               (SELECT count(*) FROM wa_messages WHERE phone_norm = $1)::int AS cm,
               (SELECT (extract(epoch FROM updated_at) * 1000)::bigint FROM wa_bot_chats WHERE phone_norm = $1) AS tc`, tp.length ? [pn, tp] : [pn])).rows[0] || {};

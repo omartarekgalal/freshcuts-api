@@ -49,7 +49,7 @@ function world({ settings = {}, optins = {}, inbound = [CUST, TESTER], threads =
     normPhone: (x) => String(x || "").replace(/\D/g, "").replace(/^966/, "").replace(/^0/, "") };
   const wa = W.register(waApp, ctx, { fetch, sendSms: async () => ({ ok: true }) });
   const hubCalls = [];
-  const hub = { tick: async (pn) => { hubCalls.push(["tick", pn]); return { ok: true, list: "1.0.5.0.0.0", chat: pn ? "3.9.0.0" : null, waiting: 0, unread: 0 }; }, listThreads: async (o) => { hubCalls.push(["list", o]); return { ok: true, counts: { waiting: 1 }, threads: [{ key: keyOf(CUST), phone: "0" + CUST }], nextBefore: null }; },
+  const hub = { tick: async (pn, o) => { hubCalls.push(["tick", pn, o]); return { ok: true, list: "1.0.5.0.0.0", chat: pn ? "3.9.0.0" : null, waiting: 0, unread: 0 }; }, listThreads: async (o) => { hubCalls.push(["list", o]); return { ok: true, counts: { waiting: 1 }, threads: [{ key: keyOf(CUST), phone: "0" + CUST }], nextBefore: null }; },
     getThread: async (pn, o) => { hubCalls.push(["get", pn, o]); return threads.includes(pn) ? { ok: true, key: keyOf(pn), phone: "0" + pn, window: { open: db.inbound.includes(pn) },
       messages: [{ id: "wamid.G1", dir: "out", source: "echo", text: "x" }, { id: "wamid.PHONE", dir: "out", source: "echo", text: "من الموبايل" }, { id: "m-in", dir: "in", source: "api", text: "هلا" }] } : { ok: false, error: "not_found" }; } };
   const audits = [];
@@ -137,7 +137,7 @@ test("البورتال: كاشير ومدير بس، القراءة بتشتغل
     const w = world();
     const list = await call(w.app, "GET /api/portal/wa/chats", { query: {} });
     assert.equal(list.status, 200); assert.equal(list.body.threads.length, 1); assert.deepEqual(list.body.send, { ok: false, gate: "disabled" }); assert.equal(list.body.role, "cashier");
-    assert.deepEqual(w.hubCalls[0], ["list", { filter: "waiting", q: "", limit: undefined, before: null, full: true, me: { id: "p1", name: "سلمى", role: "cashier", via: "portal" }, team: false }]);     // الافتراضي: المستنيين موظف
+    assert.deepEqual(w.hubCalls[0], ["list", { filter: "waiting", q: "", limit: undefined, before: null, full: true, me: { id: "p1", name: "سلمى", role: "cashier", via: "portal" }, team: false, hideReviewLow: true }]);     // الافتراضي: المستنيين موظف · مراجعة RV1: كاشير من غير الإعداد ⇒ «تقييم واطي» مخفي عنه
     const one = await call(w.app, "GET /api/portal/wa/chats/:key", { param: { key: keyOf(CUST) } });
     assert.equal(one.status, 200); assert.deepEqual(one.body.send, { ok: false, gate: "disabled", test: false }); assert.equal(one.body.messages.length, 3);
     const bad = await call(w.app, "POST /api/portal/wa/chats/:key/reply", { param: { key: keyOf(CUST) }, json: { text: "هلا" } });
@@ -189,7 +189,7 @@ test("LR1 portal tick: cashier and manager get the same light answer; the chat k
   const a = await call(w.app, "GET /api/portal/wa/chats-tick", { query: {} });
   assert.deepEqual(a.body, { ok: true, list: "1.0.5.0.0.0", chat: null, waiting: 0, unread: 0 });
   const b = await call(w.app, "GET /api/portal/wa/chats-tick", { query: { chat: keyOf(CUST) } });
-  assert.equal(b.body.chat, "3.9.0.0"); assert.deepEqual(w.hubCalls.slice(-1)[0], ["tick", CUST]);
+  assert.equal(b.body.chat, "3.9.0.0"); assert.deepEqual(w.hubCalls.slice(-1)[0].slice(0, 2), ["tick", CUST]);
   assert.equal((await call(world({ portalUser: { id: "k", name: "مطبخ", role: "kitchen" } }).app, "GET /api/portal/wa/chats-tick", { query: {} })).status, 403);
   assert.equal((await call(world({ portalUser: null }).app, "GET /api/portal/wa/chats-tick", { query: {} })).status, 401);
 });
@@ -218,4 +218,25 @@ test("EX4: the manager's «مش عميل» button — POST never-reply is manage
     assert.equal((await call(nobot.app, "POST /api/portal/wa/chats/:key/never-reply", { param: { key: keyOf(CUST) }, json: {} })).status, 503);
     assert.equal((await call(nobot.app, "GET /api/portal/wa/chats/:key", { param: { key: keyOf(CUST) } })).body.neverReply, false);
   });
+});
+
+/* مراجعة RV1: «تقييم واطي» للمدير بس — الكاشير من غير الإعداد بياخد hideReviewLow في القايمة والمحادثة والعدّاد الخفيف؛ المدير لأ؛
+   الكاشير والإعداد مفتوح لأ؛ الإعدادات ماتتقريش ⇒ مخفي عن الكاشير (زي البث) */
+test("RV1 review fix: the portal WhatsApp tab hides open low ratings from a cashier (list, chat, 20 s tick) unless «الكاشير كمان يشوف التقييمات الواطية» is on; the manager always sees them; unreadable settings ⇒ hidden", async () => {
+  const flags = async (w) => {
+    w.hubCalls.length = 0;
+    await call(w.app, "GET /api/portal/wa/chats", { query: { filter: "all" } });
+    await call(w.app, "GET /api/portal/wa/chats/:key", { param: { key: keyOf(CUST) } });
+    await call(w.app, "GET /api/portal/wa/chats-tick", { query: {} });
+    return [w.hubCalls[0][1].hideReviewLow, w.hubCalls[1][2].hideReviewLow, w.hubCalls[2][2].hideReviewLow];
+  };
+  const cashier = world();
+  assert.deepEqual(await flags(cashier), [true, true, true]);
+  const manager = world({ portalUser: { id: "p2", name: "خالد", role: "manager" } });
+  assert.deepEqual(await flags(manager), [false, false, false]);
+  const allowed = world({ settings: { waBot: { testPhones: [], reviewFlow: { portalCashier: true } } } });
+  assert.deepEqual(await flags(allowed), [false, false, false]);
+  const ctxThrows = world();
+  ctxThrows.db.settings = null;      // JSON.parse(JSON.stringify(null)) = null ⇒ مفيش إعداد ⇒ مخفي
+  assert.deepEqual(await flags(ctxThrows), [true, true, true]);
 });

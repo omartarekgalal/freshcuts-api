@@ -1914,6 +1914,14 @@ const FACTUAL_KEYS = new Set(["other_city", "whoami", "delivery_time", "hours", 
 /* أسئلة المنيو والأسعار والتوصيل: معلومات. بتتجاوب حتى والمحادثة عند الموظف — إلا لو التحويل شكوى/مشكلة (SERIOUS). */
 const MENU_KEYS = new Set(["main", "menu", "cats", "cat", "item", "items", "boxes", "tier", "box", "best", "spicy", "notmenu", "packs", "payment", "pickup", "delivery", "area", "faq", "dishfact", "rf_yes"]);
 const SERIOUS = new Set(["allergy_severe", "complaint", "problem", "order_change", "order_late", "order_issue", "send_failed", "review_low"]);      // RV1: تقييم واطي = شكوى (معلومات بس، ومفيش تنبيه تاني لو كتب شكوى بعده)
+/* مراجعة RV1: «تقييم واطي» عند المدير رأي على طلب خلص — مايمسكش المحادثة زي الشكوى. طول ما هو مفتوح:
+     • المنيو والأسعار والطلب الجديد / «نفس طلبي» / العروض بيتخدموا عادي (REVIEW_SOFT_KEYS).
+     • طلب تشغيلي جديد (تعديل/إلغاء طلب، تأخير، مشكلة طلب، حساسية — OPS_SERIOUS) بيفتح تحويل جديد بتنبيهه العادي للفريق، حتى لو المدير رد.
+     • الشكوى أو «موظف» المكتوبين بعده بيفضلوا عند المدير زي ما هم (من غير تنبيه تاني) — والمدير رد ⇒ البوت ساكت زي الشكوى.
+   وقفل التقييم (البورتال أو «تم الحل») بيرجّع المحادثة للبوت خالص (portalreviews.releaseLowChat). */
+const REVIEW_SOFT = new Set(["review_low"]);
+const REVIEW_SOFT_KEYS = new Set([...MENU_KEYS, "order", "reorder", "offers"]);
+const OPS_SERIOUS = new Set(["order_change", "order_late", "order_issue", "allergy_severe", "send_failed"]);
 /* سطر التعريف بالمساعد مابيتحطش فوق رد رحلة التقييم (رد على زر إحنا بعتناه، مش بداية محادثة) */
 const NO_DISCLOSE = new Set(["whoami", "review_ok", "review_star", "review_reason"]);
 const iso = (ms) => new Date(ms).toISOString();
@@ -1973,10 +1981,12 @@ export function decide(ev, ctx) {
   const ho = hoReason && !(staffTook && !SERIOUS.has(hoReason)) ? hoReason : null;
   const hoUntil = ho ? iso(hoAt + cfg.handoffOpenHours * 3600_000) : null;
   let factual = Boolean(ho);
+  /* مراجعة RV1: تقييم واطي مفتوح ⇒ الطلب التشغيلي الجديد بيعدّي (escalates) — شوف REVIEW_SOFT فوق */
+  const softHo = Boolean(ho && REVIEW_SOFT.has(ho));
+  const escalates = Boolean(ho && HANDOFF_KEYS[key] && SERIOUS.has(HANDOFF_KEYS[key][0]) && (!SERIOUS.has(ho) || (softHo && OPS_SERIOUS.has(HANDOFF_KEYS[key][0]))));
   /* قرار عمر ١٢/١٠: شكوى والموظف رد عليها ⇒ البوت «يسكت خالص» (ولا معلومات ولا تذكير) لحد ما التحويل يخلص أو «رجّع البوت».
      «إيقاف» وزرار الرجوع بيتنفّذوا ويتأكدوا للعميل برضه (ده حقه). */
-  if (ho && SERIOUS.has(ho) && staffTook && !["stop", "start", "resume_all", "resume_updates"].includes(key)) return silent("complaint_with_staff", { key, resumeAt: hoUntil, detail: ho });
-  const escalates = Boolean(ho && HANDOFF_KEYS[key] && SERIOUS.has(HANDOFF_KEYS[key][0]) && !SERIOUS.has(ho));
+  if (ho && SERIOUS.has(ho) && staffTook && !escalates && !["stop", "start", "resume_all", "resume_updates"].includes(key)) return silent("complaint_with_staff", { key, resumeAt: hoUntil, detail: ho });
   // «تمام/لا»: إجابة على سؤال الموافقة لو لسه مطروح، وإلا مفيش رد (العميل بيقفل الكلام)
   if (key === "ack" || key === "nack") {
     const asked = chat.optin_asked_at ? Date.parse(chat.optin_asked_at) : NaN;
@@ -1987,6 +1997,7 @@ export function decide(ev, ctx) {
   }
   if (factual && !FACTUAL_KEYS.has(key) && !escalates) {
     if (!SERIOUS.has(ho) && MENU_KEYS.has(key)) factual = false;          // تحويل عادي: المنيو والأسعار بتتجاوب عادي
+    else if (softHo && REVIEW_SOFT_KEYS.has(key)) factual = false;         // مراجعة RV1: تقييم واطي مفتوح ⇒ المنيو والطلب الجديد بيتخدموا
     else {
       /* العميل لسه بيكتب والمحادثة عند الموظف: نقول له مرة واحدة (بميعاد الفتح لو مقفول)، وبعدها سكوت. */
       const reminded = chat.handoff_reminded_at && Date.parse(chat.handoff_reminded_at) >= hoAt;
@@ -2055,7 +2066,7 @@ export function decide(ev, ctx) {
   }
   if (reply.handoff) handoff = reply.handoff;
   // تحويل مفتوح أصلاً ⇒ مفيش تنبيه تاني للفريق على نفس المحادثة (إلا لو الجديد أخطر من القديم)
-  if (handoff && ho && !(SERIOUS.has(handoff[0]) && !SERIOUS.has(ho))) handoff = null;
+  if (handoff && ho && !(SERIOUS.has(handoff[0]) && (!SERIOUS.has(ho) || (softHo && OPS_SERIOUS.has(handoff[0]))))) handoff = null;      // مراجعة RV1: تقييم واطي ⇒ الطلب التشغيلي بيتنبّه
   // ٧) التعريف: أول رسالة من البوت في المحادثة (مرة كل ٢٤ ساعة)
   const disclose = !NO_DISCLOSE.has(key) && (!chat.last_disclosed_at || nowMs - Date.parse(chat.last_disclosed_at) >= cfg.disclosureHours * 3600_000);
   let disclosed = false;       // سطر التعريف اتحط فعلاً فوق الرد

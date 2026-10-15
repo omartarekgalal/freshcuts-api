@@ -107,12 +107,27 @@ test("copy: white dialect, no numbers in the texts, no incentive, no app name ne
 /* ═══ reviews.js: المسح (مين يتسأل وامتى) ═══════════════════════════════ */
 const ORDER_T = Date.parse("2026-10-15T15:00:00Z");      // 18:00 Riyadh
 const ago = (min) => new Date(ORDER_T - min * 60_000).toISOString();
-function rig({ ts = [], invites = [], reviewsRows = [], chats = {}, contacts = {}, shop = [], flow = {}, reviewsCfg = {}, waReply = null, sms = true, failRe = null, bills = {} } = {}) {
+/* مراجعة RV1: Postgres (node-pg من غير أنواع) بيرفض أي براميتر مش مستخدم في الجملة (42P18) وأي $n مالوش قيمة — الأداة المزيّفة بترفض زيه */
+function pgParamsCheck(sql, params = []) {
+  const used = new Set([...String(sql).matchAll(/\$(\d+)/g)].map((m) => Number(m[1])));
+  for (let i = 1; i <= params.length; i++) if (!used.has(i)) throw Object.assign(new Error("could not determine data type of parameter $" + i), { code: "42P18" });
+  for (const i of used) if (i > params.length) throw Object.assign(new Error("bind message supplies " + params.length + " parameters, but prepared statement requires " + Math.max(...used)), { code: "08P01" });
+}
+function rig({ ts = [], invites = [], reviewsRows = [], chats = {}, contacts = {}, shop = [], flow = {}, reviewsCfg = {}, waReply = null, sms = true, failRe = null, bills = {}, billCounts = {} } = {}) {
   const db = { invites: invites.map((x) => ({ ...x })), reviews: reviewsRows.map((x) => ({ ...x })), sms: [], asked: [], sql: [] };
   const inv = (no) => db.invites.find((x) => x.order_no === no);
   const pool = { async query(q, p = []) {
     const s = String(q).replace(/\s+/g, " ").trim(); db.sql.push(s);
+    pgParamsCheck(s, p);
     if (failRe && failRe.test(s)) throw new Error("db down");
+    /* عدد فواتير الرقم في آخر ٢٤ ساعة (رقم الكاشير الافتراضي): billCounts[pn] أو العدّ من ts */
+    if (/FROM ts_orders b LEFT JOIN order_sources bs/i.test(s)) {
+      return { rows: p[1].map((pn) => ({ pn, n: pn in billCounts ? billCounts[pn] : ts.filter((o) => o.pn === pn && Date.parse(o.order_date) > Date.parse(p[0])).length })).filter((r) => r.n > 0) };
+    }
+    if (/^INSERT INTO review_invites\(order_no, code, phone_norm, option, due_at, kind, order_at, ref, skip_reason\)/i.test(s)) {
+      if (inv(p[0])) return { rows: [], rowCount: 0 };
+      db.invites.push({ order_no: p[0], code: p[1], phone_norm: p[2], option: p[3], due_at: p[4], kind: p[5], order_at: p[6], ref: p[7], skip_reason: p[8] }); return { rows: [], rowCount: 1 };
+    }
     if (/^SELECT order_no, phone_norm, option, is_test, created_at, table_no FROM shop_orders WHERE order_no=\$1/i.test(s)) return { rows: shop.filter((o) => o.order_no === p[0]) };
     /* الفاتورة وقت السؤال (reviews.js بيقراها تاني قبل أي رسالة): bills[id] = { pn, src, order_type } | "missing" | "error" — من غيره نفس جوال الفاتورة/الدعوة */
     if (/^SELECT o\.order_type, COALESCE\(s\.source, ''\) AS src/i.test(s)) {
@@ -129,8 +144,8 @@ function rig({ ts = [], invites = [], reviewsRows = [], chats = {}, contacts = {
       if (inv(p[0])) return { rows: [], rowCount: 0 };
       db.invites.push({ order_no: p[0], code: p[1], phone_norm: p[2], option: p[3], due_at: p[4], kind: p[5], order_at: p[6], ref: p[7] }); return { rows: [{ code: p[1] }], rowCount: 1 };
     }
-    if (/^UPDATE review_invites SET due_at=\$2 WHERE sent_at IS NULL AND skip_reason IS NULL AND due_at < \$2::timestamptz/i.test(s)) {
-      let n = 0; for (const iv of db.invites) if (!iv.sent_at && !iv.skip_reason && Date.parse(iv.due_at) < Date.parse(p[1])) { iv.due_at = p[1]; n++; } return { rows: [], rowCount: n };
+    if (/^UPDATE review_invites SET due_at=\$1::timestamptz WHERE sent_at IS NULL AND skip_reason IS NULL AND due_at < \$1::timestamptz/i.test(s)) {
+      let n = 0; for (const iv of db.invites) if (!iv.sent_at && !iv.skip_reason && Date.parse(iv.due_at) < Date.parse(p[0])) { iv.due_at = p[0]; n++; } return { rows: [], rowCount: n };
     }
     if (/FROM review_invites WHERE sent_at IS NULL AND skip_reason IS NULL AND due_at <=/i.test(s)) return { rows: db.invites.filter((iv) => !iv.sent_at && !iv.skip_reason && Date.parse(iv.due_at) <= Date.parse(p[0])).sort((a, b) => Date.parse(a.due_at) - Date.parse(b.due_at)) };
     if (/^SELECT opted_out_at FROM cms_contacts/i.test(s)) return { rows: contacts[p[0]] && contacts[p[0]].opted_out_at ? [{ opted_out_at: contacts[p[0]].opted_out_at }] : [] };
@@ -157,14 +172,14 @@ function rig({ ts = [], invites = [], reviewsRows = [], chats = {}, contacts = {
 
 test("till orders: a closed bill with the customer's phone gets ONE invite (dine-in +90, takeaway +50); no phone, a website mirror, or an app order with its switch off ⇒ none; staff contacts are skipped at send time", async () => {
   const ts = [
-    { order_id: "9001", order_date: ago(100), order_option: "Dine in", pn: "511111111", receipt: "1043" },
-    { order_id: "9002", order_date: ago(40), order_option: "Take away", pn: "522222222" },
-    { order_id: "9003", order_date: ago(120), order_option: "Take away", pn: "533333333", is_app: true },
+    { order_id: "9001", order_date: ago(100), order_option: "Dine in", pn: "531478260", receipt: "1043" },
+    { order_id: "9002", order_date: ago(40), order_option: "Take away", pn: "542689137" },
+    { order_id: "9003", order_date: ago(120), order_option: "Take away", pn: "553791024", is_app: true },
     { order_id: "9004", order_date: ago(120), order_option: "Dine in", pn: null },
-    { order_id: "9005", order_date: ago(120), order_option: "Dine in", pn: "544444444", web_near: true },
-    { order_id: "9006", order_date: ago(60), order_option: "Take away", pn: "566666666" },
+    { order_id: "9005", order_date: ago(120), order_option: "Dine in", pn: "564802135", web_near: true },
+    { order_id: "9006", order_date: ago(60), order_option: "Take away", pn: "576913246" },
   ];
-  const r = rig({ ts, flow: { apps: false }, contacts: { "566666666": { is_staff: true } }, waReply: { ok: false, skipped: "no_visit_template" } });
+  const r = rig({ ts, flow: { apps: false }, contacts: { "576913246": { is_staff: true } }, waReply: { ok: false, skipped: "no_visit_template" } });
   const out = await r.run("2026-10-15T15:00:00Z");
   assert.deepEqual(r.db.invites.map((x) => [x.order_no, x.kind, x.due_at, x.ref]).sort(), [
     ["pos:9001", "dinein", new Date(ORDER_T - 10 * 60_000).toISOString(), "فاتورة 1043"],
@@ -283,4 +298,20 @@ test("a check that cannot run (database error) never lets an ask out: the invite
   const r = rig({ invites: [due], waReply: { ok: true, channel: "wa_list" }, failRe: /^SELECT 1 FROM review_invites WHERE phone_norm=\$1 AND order_no <> \$2/ });
   const out = await r.run("2026-10-15T15:00:00Z");
   assert.deepEqual([out.retry, out.sent, r.db.asked.length, r.db.invites[0].skip_reason, r.db.invites[0].sent_at], [1, 0, 0, undefined, undefined]);
+});
+
+/* مراجعة RV1: جملة التأجيل بالليل كانت بتبعت براميترين وبتستخدم $2 بس ⇒ Postgres (node-pg) بيرفضها (42P18) والمسح كله كان بيقع بالليل —
+   والدعوة اللي ميعادها جه في الهدوء كانت بتطلع ١١:٣٠ بدل ١ الضهر. الأداة المزيّفة دلوقتي بترفض زي Postgres (pgParamsCheck). */
+test("review fix (quiet SQL): the night deferral is valid for real Postgres (one parameter, used); a WhatsApp paid-gap deferral that lands at night moves to 13:00 — nothing goes out at 11:30", async () => {
+  assert.throws(() => pgParamsCheck("UPDATE review_invites SET due_at=$2 WHERE due_at < $2::timestamptz", ["2026-10-15T21:00:00Z", "2026-10-16T10:00:00Z"]), /could not determine data type of parameter \$1/, "the old statement is what Postgres rejects");
+  const gap = { order_no: "W1790012345670", code: "ab12cd30", phone_norm: "534781260", option: "delivery", kind: "delivery", due_at: "2026-10-15T20:50:00.000Z" };      // 23:50 Riyadh (paid_gap until)
+  const q = rig({ invites: [gap], waReply: { ok: true, channel: "wa_list" } });
+  const out = await q.run("2026-10-15T21:05:00Z");
+  assert.deepEqual([out.skipped, out.deferred], ["quiet", 1]);
+  const upd = q.db.sql.find((s) => /^UPDATE review_invites SET due_at=/i.test(s));
+  assert.match(upd, /SET due_at=\$1::timestamptz .* due_at < \$1::timestamptz$/); assert.doesNotMatch(upd, /\$2/);
+  const at1130 = await q.run("2026-10-16T08:30:00Z");      // 11:30 Riyadh
+  assert.equal(q.db.asked.length, 0, "not at 11:30"); assert.equal(at1130.sent, 0);
+  await q.run("2026-10-16T10:00:00Z");
+  assert.equal(q.db.asked.length, 1, "at 13:00");
 });

@@ -18,6 +18,7 @@
 /* النص اللي العميل شافه، لكل نسخة — المتجر بيبعت رقم النسخة بس، والنص بيتسجّل من هنا (إثبات).
    أي تغيير في الصياغة = نسخة جديدة (ومفتاح جديد في المتجر: checkout2.js WA_TEXT). */
 import { createHash } from "node:crypto";
+import { isPlaceholderPhone } from "./phonecheck.js";
 export const WA_UPDATES_TEXTS = Object.freeze({
   "wa-updates-v1": Object.freeze({
     ar: "تحديثات طلبك على واتساب؟ نرسل لك من فريش كاتس على هذا الرقم: تأكيد الطلب، وقت جاهزيته، وخروجه مع المندوب. توقفها في أي وقت بإرسال كلمة «إيقاف».",
@@ -190,6 +191,9 @@ export const POS_REVIEW_CONSENT = Object.freeze({
   text: "قرار المالك (١٥/١٠/٢٠٢٦): عملاء المحل (صالة وسفري) اللي جوالهم على الفاتورة موافقين مسبقاً وقت الدفع عند الكاشير على رسالة طلب التقييم على واتساب.",
   templates: Object.freeze(["fc_review_stars"]),       // رسالة التقييم بس — أي قالب تاني مايعدّيش بالموافقة دي
   kinds: Object.freeze(["dinein", "takeaway"]),       // فواتير الكاشير بس (مش التطبيقات ولا طلبات الموقع)
+  /* مراجعة RV1: رقم على العدد ده من الفواتير أو أكتر في ٢٤ ساعة = رقم الكاشير الافتراضي (حشو)، مش عميل واحد ⇒ مفيش موافقة ولا رسالة.
+     والرقم «الحشو» الصريح (555555555 / 500000000 / نفس الرقم ٨ مرات / 512345678 — phonecheck.js) مالوش موافقة أبداً. */
+  sharedBills: 4,
 });
 const POS_ORDER_RE = /^pos:[A-Za-z0-9_-]{1,64}$/;
 /* الإعداد مفتوح؟ (نفس افتراضيات wareviews.reviewFlowConfig: المسار الجديد والموافقة مفتوحين إلا لو اتقفلوا صراحةً) */
@@ -201,6 +205,7 @@ export function posReviewConsentOn(settings) {
 /* صف الإثبات (مرة واحدة لكل فاتورة وجوال). at = وقت الفاتورة. ⇒ { ok, recorded } — بيرمي لو القاعدة وقعت (المنادي يقرر). */
 export async function recordPosReviewConsent(pool, { phoneNorm, orderNo, kind, at = null, receipt = null }) {
   if (!/^5\d{8}$/.test(String(phoneNorm || ""))) return { ok: false, error: "invalid_phone" };
+  if (isPlaceholderPhone(phoneNorm)) return { ok: false, error: "placeholder_phone" };      // رقم حشو من الكاشير ⇒ ده مش عميل وافق
   if (!POS_ORDER_RE.test(String(orderNo || ""))) return { ok: false, error: "not_pos_order" };
   if (!POS_REVIEW_CONSENT.kinds.includes(kind)) return { ok: false, error: "kind_not_covered" };
   await ensureWaConsentSchema(pool);
@@ -214,7 +219,7 @@ export async function recordPosReviewConsent(pool, { phoneNorm, orderNo, kind, a
 }
 /* الفاتورة دي عليها موافقة الدفع عند الكاشير لنفس الجوال؟ (للحارس) — أي خطأ = لأ */
 export async function posReviewConsentCovers(pool, phoneNorm, orderNo) {
-  if (!POS_ORDER_RE.test(String(orderNo || "")) || !/^5\d{8}$/.test(String(phoneNorm || ""))) return false;
+  if (!POS_ORDER_RE.test(String(orderNo || "")) || !/^5\d{8}$/.test(String(phoneNorm || "")) || isPlaceholderPhone(phoneNorm)) return false;
   try {
     await ensureWaConsentSchema(pool);
     const r = await pool.query(

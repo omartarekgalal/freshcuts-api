@@ -34,6 +34,7 @@ import { tokenSecret } from "./portal-core.js";
 import { FAQ_DEFS } from "./wabotrun.js";
 import * as waowner from "./waowner.js";
 import * as wamedia from "./wamedia.js";
+import { reviewPortalRole } from "./reviewaudience.js";
 
 export const MAX_TEXT = 4096;
 export const GATES = Object.freeze(["disabled", "unconfigured", "settings_unreadable", "master_off", "settings_off", "window_closed", "opted_out", "not_in_allow_list"]);
@@ -218,6 +219,13 @@ export function register(app, ctx, deps = {}) {
       const h = hub(); if (!h) return { res: c.json({ ok: false, error: "unavailable" }, 503) };
       return { user: a.user, h, me: { id: a.user.id, name: a.user.name, role: a.user.role, via: "portal" } };
     };
+    /* مراجعة RV1: «تقييم واطي» للمدير بس — الكاشير من غير الإعداد «الكاشير كمان يشوف التقييمات الواطية» مايشوفش محادثته المفتوحة
+       ولا بتتعدّ عنده «مستني موظف» (wahub hideReviewLow). الإعدادات ماتتقريش ⇒ مخفية عن الكاشير (زي البث). */
+    const hideReviewFor = async (user) => {
+      if (!user || user.role === "manager") return false;
+      let s = null; try { s = getSettingsData ? await getSettingsData() : null; } catch { s = null; }
+      return !reviewPortalRole(user.role, s);
+    };
     const ownerAct = (fn) => async (c) => {
       const a = await gateP(c); if (a.res) return a.res;
       const pn = await phoneOfKey(c.req.param("key"));
@@ -254,7 +262,8 @@ export function register(app, ctx, deps = {}) {
     app.get("/api/portal/wa/chats", async (c) => {
       const a = await gateP(c); if (a.res) return a.res;
       try {
-        const out = await a.h.listThreads({ filter: c.req.query("filter") || "waiting", q: c.req.query("q") || "", limit: c.req.query("limit"), before: c.req.query("before") || null, full: true, me: a.me, team: c.req.query("team") === "1" && a.user.role === "manager" });
+        const out = await a.h.listThreads({ filter: c.req.query("filter") || "waiting", q: c.req.query("q") || "", limit: c.req.query("limit"), before: c.req.query("before") || null, full: true, me: a.me, team: c.req.query("team") === "1" && a.user.role === "manager",
+          hideReviewLow: await hideReviewFor(a.user) });
         return c.json({ ...out, send: await channelState(), role: a.user.role });
       } catch (e) { log.error("[wa-staff] chats:", e.message); return c.json({ ok: false, error: "unavailable" }, 500); }
     });
@@ -263,7 +272,7 @@ export function register(app, ctx, deps = {}) {
       const pn = await phoneOfKey(c.req.param("key"));
       if (!pn) return c.json({ ok: false, error: "not_found" }, 404);
       try {
-        const r = await a.h.getThread(pn, { limit: c.req.query("limit"), before: c.req.query("before") || null, full: true, me: a.me });
+        const r = await a.h.getThread(pn, { limit: c.req.query("limit"), before: c.req.query("before") || null, full: true, me: a.me, hideReviewLow: await hideReviewFor(a.user) });
         if (!r.ok) return c.json(r, 404);
         await annotate(r.messages);
         /* EX4: «مش عميل — البوت مايردش عليه» (never_list = من القايمة، والباقي مستبعد لوحده: alert_phone / staff / courier) */
@@ -307,7 +316,7 @@ export function register(app, ctx, deps = {}) {
     app.get("/api/portal/wa/chats-tick", async (c) => {
       const a = await gateP(c); if (a.res) return a.res;
       if (typeof a.h.tick !== "function") return c.json({ ok: false, error: "unavailable" }, 503);
-      try { const k = c.req.query("chat"); return c.json(await a.h.tick(k ? await phoneOfKey(k) : null)); }
+      try { const k = c.req.query("chat"); return c.json(await a.h.tick(k ? await phoneOfKey(k) : null, { hideReviewLow: await hideReviewFor(a.user) })); }
       catch (e) { log.error("[wa-staff] tick:", e.message); return c.json({ ok: false, error: "unavailable" }, 500); }
     });
     app.get("/api/portal/wa/quick-replies", async (c) => {

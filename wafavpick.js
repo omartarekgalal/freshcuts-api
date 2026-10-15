@@ -44,6 +44,7 @@ import { teamConfig } from "./wateam.js";
 import { findTemplate } from "./watemplates.js";
 import { pausedOffersOf } from "./soldout.js";
 import { serviceBlock } from "./service.js";
+import { FAKE_PHONE_RE } from "./phonecheck.js";
 
 export const FAV_PICK = "fav_pick";
 export const FAV_AUDIENCE = Object.freeze({
@@ -604,7 +605,7 @@ export const FAV_SQL = Object.freeze({
   outboundSince: `SELECT 1 FROM wa_messages WHERE phone_norm = $1 AND direction = 'out' AND created_at > $2::timestamptz
        AND COALESCE(wamid,'') <> COALESCE($3::text,'') AND COALESCE(status,'') NOT IN ('failed','skipped') LIMIT 1`,
 });
-const FAKE_RE = /^5(\d)\1{7}$|^5?12345678|^500000000$|^555555555$/;
+const FAKE_RE = FAKE_PHONE_RE;      // phonecheck.js — نفس القاعدة بقت لفواتير الكاشير كمان (RV1)
 const todayStart = (now) => new Date(new Date(now).toDateString());
 
 export function makeFavPick(deps = {}) {

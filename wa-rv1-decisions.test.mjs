@@ -31,7 +31,7 @@ function withEnv(vals, fn) {
 }
 const norm = (x) => String(x || "").replace(/\D/g, "").replace(/^966/, "").replace(/^0/, "");
 const fakeApp = () => { const routes = {}; const add = (m) => (p, h) => { routes[`${m} ${p}`] = h; }; return { routes, get: add("GET"), post: add("POST"), put: add("PUT"), delete: add("DELETE") }; };
-const CUST = "512345678";
+const CUST = "534781260";      // رقم عميل شكله حقيقي (512345678 رقم حشو — phonecheck.js)
 
 /* ═══ ١) القالب: النص اتوافق عليه، بس التقديم بعد النشر (لسه HOLD ⇒ force:true) ═══ */
 test("decision 1: fc_review_stars wording is the approved one and stays held until the post-deploy submit (force:true)", () => {
@@ -60,11 +60,27 @@ test("decisions 2 + 4: Keeta switch ON by default, «عملاء الكاشير �
 /* ═══ ٤) مصدر الموافقة: بيتسجّل لفواتير الصالة/السفري بس، ومع الإعداد بس ═══ */
 const ORDER_T = Date.parse("2026-10-15T15:00:00Z");      // 18:00 الرياض
 const ago = (min) => new Date(ORDER_T - min * 60_000).toISOString();
-function reviewsRig({ ts = [], invites = [], flow = {}, waReply = null, consent = [], bills = {} } = {}) {
-  const db = { invites: invites.map((x) => ({ ...x })), consent, sms: [], asked: [] };
+/* Postgres (node-pg من غير أنواع) بيرفض أي براميتر مش مستخدم (42P18) وأي $n مالوش قيمة — القاعدة المزيّفة بترفض زيه */
+function pgParamsCheck(sql, params = []) {
+  const used = new Set([...String(sql).matchAll(/\$(\d+)/g)].map((m) => Number(m[1])));
+  for (let i = 1; i <= params.length; i++) if (!used.has(i)) throw Object.assign(new Error("could not determine data type of parameter $" + i), { code: "42P18" });
+  for (const i of used) if (i > params.length) throw Object.assign(new Error("bind message supplies " + params.length + " parameters"), { code: "08P01" });
+}
+function reviewsRig({ ts = [], invites = [], flow = {}, waReply = null, consent = [], bills = {}, billCounts = {}, countFail = false } = {}) {
+  const db = { invites: invites.map((x) => ({ ...x })), consent, sms: [], asked: [], sql: [] };
   const inv = (no) => db.invites.find((x) => x.order_no === no);
   const pool = { async query(q, p = []) {
-    const s = String(q).replace(/\s+/g, " ").trim();
+    const s = String(q).replace(/\s+/g, " ").trim(); db.sql.push(s);
+    pgParamsCheck(s, p);
+    /* عدد فواتير الرقم في آخر ٢٤ ساعة: billCounts[pn] أو العدّ من ts (countFail ⇒ القاعدة وقعت) */
+    if (/FROM ts_orders b LEFT JOIN order_sources bs/i.test(s)) {
+      if (countFail) throw new Error("db down");
+      return { rows: p[1].map((pn) => ({ pn, n: pn in billCounts ? billCounts[pn] : ts.filter((o) => o.pn === pn && Date.parse(o.order_date) > Date.parse(p[0])).length })).filter((r) => r.n > 0) };
+    }
+    if (/^INSERT INTO review_invites\(order_no, code, phone_norm, option, due_at, kind, order_at, ref, skip_reason\)/i.test(s)) {
+      if (inv(p[0])) return { rows: [], rowCount: 0 };
+      db.invites.push({ order_no: p[0], code: p[1], phone_norm: p[2], option: p[3], due_at: p[4], kind: p[5], order_at: p[6], ref: p[7], skip_reason: p[8] }); return { rows: [], rowCount: 1 };
+    }
     /* الفاتورة وقت السؤال (reviews.js بيقراها تاني قبل أي رسالة): bills[id] = { pn, src, order_type } | "missing" | "error" — من غيره نفس جوال الفاتورة/الدعوة */
     if (/^SELECT o\.order_type, COALESCE\(s\.source, ''\) AS src/i.test(s)) {
       const b = bills[p[0]];
@@ -98,15 +114,15 @@ function reviewsRig({ ts = [], invites = [], flow = {}, waReply = null, consent 
 
 test("decision 4: a dine-in / takeaway bill with the customer's phone records ONE pos_payment consent row (phone, bill, time of the bill, the owner's wording); app orders and web orders never; setting off ⇒ nothing recorded", async () => {
   const ts = [
-    { order_id: "9001", order_date: ago(100), order_option: "Dine in", pn: "511111111", receipt: "1043" },
-    { order_id: "9002", order_date: ago(60), order_option: "Take away", pn: "522222222" },
-    { order_id: "9003", order_date: ago(120), order_option: "Take away", pn: "533333333", is_app: true },
+    { order_id: "9001", order_date: ago(100), order_option: "Dine in", pn: "531478260", receipt: "1043" },
+    { order_id: "9002", order_date: ago(60), order_option: "Take away", pn: "542689137" },
+    { order_id: "9003", order_date: ago(120), order_option: "Take away", pn: "553791024", is_app: true },
   ];
   const r = reviewsRig({ ts, waReply: { ok: false, skipped: "no_visit_template" } });
   await r.run("2026-10-15T15:00:00Z");
   assert.deepEqual(r.db.consent.map((c) => [c.phone_norm, c.order_no, c.source, c.kind, c.text_version, c.at]).sort(), [
-    ["511111111", "pos:9001", "pos_payment", "review", WC.POS_REVIEW_CONSENT.version, ago(100)],
-    ["522222222", "pos:9002", "pos_payment", "review", WC.POS_REVIEW_CONSENT.version, ago(60)],
+    ["531478260", "pos:9001", "pos_payment", "review", WC.POS_REVIEW_CONSENT.version, ago(100)],
+    ["542689137", "pos:9002", "pos_payment", "review", WC.POS_REVIEW_CONSENT.version, ago(60)],
   ].sort(), "Keeta (app) order: the consent is the cashier's payment, apps have none");
   assert.match(r.db.consent[0].text, /وقت الدفع عند الكاشير/);
   assert.equal(r.db.consent.find((c) => c.order_no === "pos:9001").ua, "receipt:1043");
@@ -117,7 +133,7 @@ test("decision 4: a dine-in / takeaway bill with the customer's phone records ON
   await off.run("2026-10-15T15:00:00Z");
   assert.equal(off.db.consent.length, 0);
   // the setting opened AFTER the invite was queued ⇒ the row is written just before the ask
-  const late = reviewsRig({ invites: [{ order_no: "pos:7001", code: "ab12cd34", phone_norm: "544444444", option: "dinein", kind: "dinein", due_at: ago(5), order_at: ago(95), ref: "فاتورة 88" }], waReply: { ok: false, skipped: "no_optin" } });
+  const late = reviewsRig({ invites: [{ order_no: "pos:7001", code: "ab12cd34", phone_norm: "564802135", option: "dinein", kind: "dinein", due_at: ago(5), order_at: ago(95), ref: "فاتورة 88" }], waReply: { ok: false, skipped: "no_optin" } });
   await late.run("2026-10-15T15:00:00Z");
   assert.deepEqual(late.db.consent.map((c) => [c.order_no, c.at, c.ua]), [["pos:7001", ago(95), "receipt:88"]]);
   assert.equal(await WC.recordPosReviewConsent({ query: async () => ({ rows: [], rowCount: 1 }) }, { phoneNorm: CUST, orderNo: "W1790012345678", kind: "delivery" }).then((x) => x.error), "not_pos_order");
@@ -245,14 +261,21 @@ test("review fix (wrong person): the bill is read again right before the ask —
 /* ═══ ٥) البورتال: التقييمات الواطية عند المدير — نفس صف الوارد في اللوحة ═══ */
 const NOW = Date.now();
 const minsAgo = (m) => new Date(NOW - m * 60_000).toISOString();
-function portalRig({ rows = [], settings = {}, handovers = [] } = {}) {
-  const db = { reviews: rows.map((r) => ({ resolved: false, is_test: false, hidden_at: null, rating_exact: true, categories: [], outcome: null, portal_seen_at: null, ...r })), actions: [], handovers: handovers.map((h) => ({ ...h })), sql: [] };
+function portalRig({ rows = [], settings = {}, handovers = [], chats = {} } = {}) {
+  const db = { reviews: rows.map((r) => ({ resolved: false, is_test: false, hidden_at: null, rating_exact: true, categories: [], outcome: null, portal_seen_at: null, ...r })), actions: [], handovers: handovers.map((h) => ({ ...h })), sql: [],
+    chats: Object.fromEntries(Object.entries(chats).map(([k, v]) => [k, { ...v }])) };
   const byId = (id) => db.reviews.find((r) => r.id === Number(id));
   const lowReal = (r) => r.rating < 4 && !r.is_test && !r.hidden_at;
   const inPortal = (r) => lowReal(r) && ((!r.resolved && Date.parse(r.created_at) > NOW - 30 * 86400_000) || (r.resolved && r.resolved_at && Date.parse(r.resolved_at) > NOW - 7 * 86400_000));
   const pool = { async query(q, p = []) {
     const s = String(q).replace(/\s+/g, " ").trim(); db.sql.push(s);
+    pgParamsCheck(s, p);
     if (/^(CREATE|ALTER)/i.test(s) || /^ALTER TABLE reviews ADD COLUMN IF NOT EXISTS outcome/i.test(s)) return { rows: [], rowCount: 0 };
+    /* مراجعة RV1: قفل التقييم ⇒ تحويل «تقييم واطي» المفتوح على محادثة واتساب بيتمسح (البوت يرجع) */
+    if (/^UPDATE wa_bot_chats SET handoff_at=NULL, handoff_reason=NULL, unknown_streak=0, released_at=NOW\(\), updated_at=NOW\(\) WHERE phone_norm=\$1 AND handoff_reason = ANY\(\$2::text\[\]\)/i.test(s)) {
+      const ch = db.chats[p[0]]; if (!ch || !p[1].includes(ch.handoff_reason)) return { rows: [], rowCount: 0 };
+      Object.assign(ch, { handoff_at: null, handoff_reason: null, unknown_streak: 0, released_at: new Date().toISOString() }); return { rows: [], rowCount: 1 };
+    }
     if (/count\(\*\) FILTER \(WHERE NOT r\.resolved AND \(r\.outcome IS NULL/i.test(s)) {
       const f = p[0]; const list = db.reviews.filter(inPortal);
       const unread = list.filter((r) => !r.resolved && !r.portal_seen_at && !r.outcome);
@@ -427,4 +450,95 @@ test("decision 5 (pure): every outcome has Arabic copy; only «متابعة» ou
   const c = PR.publicReview({ id: 5, rating: 2, order_no: "pos:9001", phone_norm: "512345678", created_at: new Date(NOW).toISOString() });
   assert.equal(c.ref, "طلب من الكاشير"); assert.equal(c.orderNo, null); assert.doesNotMatch(JSON.stringify({ ref: c.ref, orderNo: c.orderNo }), /pos:/);
   assert.deepEqual(PR.countsOf({ new: 2, follow: 1, closed: 3, unread: 1, newest_unread: "9" }), { new: 2, follow: 1, closed: 3, open: 3, unread: 1, newestUnread: 9 });
+});
+
+/* ═══ مراجعة RV1 (١٥/١٠ بالليل): أرقام «حشو» على فاتورة الكاشير ═══
+   الكاشير ساعات بيكتب 555555555 / 500000000 / نفس الرقم ٨ مرات / 512345678، أو رقم واحد لكل الناس. ده مش عميل وافق وقت الدفع ⇒ ولا صف موافقة ولا رسالة. */
+test("review fix (phones): a placeholder number on a till bill, or one number on 4+ bills in 24 h, gets NO consent row and NO message — a closed invite with the reason instead; the real customer next to it is asked; the send-time re-check catches a number that became shared after queueing; a failed count waits", async () => {
+  const PC = await import("./phonecheck.js");
+  const SHARED = "534000111";
+  const ts = [
+    { order_id: "7001", order_date: ago(100), order_option: "Dine in", pn: "555555555" },
+    { order_id: "7002", order_date: ago(100), order_option: "Take away", pn: "500000000" },
+    { order_id: "7003", order_date: ago(100), order_option: "Dine in", pn: "577777777" },
+    { order_id: "7004", order_date: ago(100), order_option: "Dine in", pn: "512345678" },
+    { order_id: "7010", order_date: ago(115), order_option: "Dine in", pn: SHARED },
+    { order_id: "7011", order_date: ago(110), order_option: "Take away", pn: SHARED },
+    { order_id: "7012", order_date: ago(105), order_option: "Dine in", pn: SHARED },
+    { order_id: "7013", order_date: ago(100), order_option: "Dine in", pn: SHARED },
+    { order_id: "7020", order_date: ago(100), order_option: "Dine in", pn: CUST, receipt: "88" },
+  ];
+  const r = reviewsRig({ ts, waReply: { ok: true, channel: "wa_stars", wamid: "wamid.X1" } });
+  await r.run("2026-10-15T15:00:00Z");
+  assert.deepEqual(r.db.consent.map((c) => [c.phone_norm, c.order_no]), [[CUST, "pos:7020"]], "a consent row only for the real customer");
+  assert.deepEqual(r.db.asked.map((x) => [x.phone, x.orderNo]), [[CUST, "pos:7020"]], "a message only to the real customer");
+  assert.deepEqual(Object.fromEntries(r.db.invites.map((x) => [x.order_no, x.skip_reason || null])), {
+    "pos:7001": "bad_number", "pos:7002": "bad_number", "pos:7003": "bad_number", "pos:7004": "bad_number",
+    "pos:7010": "shared_phone", "pos:7011": "shared_phone", "pos:7012": "shared_phone", "pos:7013": "shared_phone", "pos:7020": null,
+  }, "the skipped bills keep a closed row with the reason (visible in the invite log, never scanned again)");
+  assert.equal(r.db.sms.length, 0);
+  await r.run("2026-10-15T15:05:00Z");
+  assert.equal(r.db.invites.length, 9, "no second row per bill"); assert.equal(r.db.asked.length, 1);
+  // 3 bills in 24 h is still a customer
+  const three = reviewsRig({ ts: ts.filter((o) => o.order_id !== "7013" && o.pn === SHARED), waReply: { ok: true, channel: "wa_stars" } });
+  await three.run("2026-10-15T15:00:00Z");
+  assert.equal(three.db.invites.filter((x) => !x.skip_reason).length, 3);
+  // queued while it looked like one customer, then the till used it on more bills ⇒ skipped at send time: no message, no new consent row
+  const later = reviewsRig({ invites: [{ order_no: "pos:7030", code: "ab12cd34", phone_norm: "534000222", option: "dinein", kind: "dinein", due_at: ago(5), order_at: ago(95), ref: null }],
+    billCounts: { "534000222": 4 }, waReply: { ok: true, channel: "wa_stars" } });
+  await later.run("2026-10-15T15:00:00Z");
+  assert.deepEqual([later.db.invites[0].skip_reason, later.db.asked.length, later.db.consent.length, later.db.sms.length], ["shared_phone", 0, 0, 0]);
+  // a placeholder invite that already exists (queued before this rule) ⇒ bad_number at send time, before the consent re-record
+  const old = reviewsRig({ invites: [{ order_no: "pos:7031", code: "ab12cd35", phone_norm: "566666666", option: "takeaway", kind: "takeaway", due_at: ago(5), order_at: ago(55), ref: null }],
+    waReply: { ok: true, channel: "wa_stars" } });
+  await old.run("2026-10-15T15:00:00Z");
+  assert.deepEqual([old.db.invites[0].skip_reason, old.db.asked.length, old.db.consent.length], ["bad_number", 0, 0]);
+  // the count fails ⇒ the invite waits (send time) / no invites this sweep (queue time)
+  const down = reviewsRig({ invites: [{ order_no: "pos:7032", code: "ab12cd36", phone_norm: "534000333", option: "dinein", kind: "dinein", due_at: ago(5), order_at: ago(95), ref: null }],
+    countFail: true, waReply: { ok: true, channel: "wa_stars" } });
+  const o = await down.run("2026-10-15T15:00:00Z");
+  assert.deepEqual([o.retry, down.db.invites[0].skip_reason, down.db.invites[0].sent_at, down.db.asked.length, down.db.consent.length], [1, undefined, undefined, 0, 0]);
+  const qdown = reviewsRig({ ts: [ts[8]], countFail: true, waReply: { ok: true, channel: "wa_stars" } });
+  await qdown.run("2026-10-15T15:00:00Z");
+  assert.deepEqual([qdown.db.invites.length, qdown.db.consent.length, qdown.db.asked.length], [0, 0, 0]);
+  // the consent record and the guard refuse a placeholder on their own; one rule shared with «طبقك المفضل»
+  assert.equal((await WC.recordPosReviewConsent({ query: async () => { throw new Error("must not write"); } }, { phoneNorm: "555555555", orderNo: "pos:1", kind: "dinein" })).error, "placeholder_phone");
+  assert.equal(await WC.posReviewConsentCovers({ query: async () => ({ rows: [{}] }) }, "511111111", "pos:1"), false);
+  assert.equal(await WC.posReviewConsentCovers({ query: async () => ({ rows: [{}] }) }, CUST, "pos:1"), true);
+  for (const pn of ["555555555", "500000000", "511111111", "599999999", "512345678"]) assert.equal(PC.isPlaceholderPhone(pn), true, pn);
+  for (const pn of [CUST, SHARED, "551234567", "501234568"]) assert.equal(PC.isPlaceholderPhone(pn), false, pn);
+  const fs = await import("node:fs");
+  assert.match(fs.readFileSync(new URL("./wafavpick.js", import.meta.url), "utf8"), /const FAKE_RE = FAKE_PHONE_RE;/, "wafavpick uses the same rule");
+  assert.equal(WC.POS_REVIEW_CONSENT.sharedBills, 4);
+});
+
+/* ═══ مراجعة RV1: قفل التقييم بيرجّع محادثة واتساب للبوت ═══ */
+test("review fix (chat back to the bot): closing a low rating from the portal or the dashboard — or recording any outcome — clears the open «تقييم واطي» WhatsApp handover of that customer (like «خلصت»); a staff hold, a later order-change handover and other customers are untouched", async () => {
+  const chats = () => ({
+    "512345678": { handoff_at: minsAgo(20), handoff_reason: "review_low", muted_until: null },
+    "523456789": { handoff_at: minsAgo(15), handoff_reason: "order_change", muted_until: null },
+    "534567890": { handoff_at: minsAgo(60), handoff_reason: "review_low", muted_until: minsAgo(-30) },
+  });
+  const r = portalRig({ rows: LOW(), chats: chats() });
+  const res = await r.call("POST", "/api/portal/reviews/:id/close", { id: "11", body: { outcome: "resolved" } });
+  assert.equal(res.status, 200);
+  assert.deepEqual([r.db.chats["512345678"].handoff_at, r.db.chats["512345678"].handoff_reason, Boolean(r.db.chats["512345678"].released_at)], [null, null, true], "the bot serves this customer again");
+  assert.equal(r.db.chats["523456789"].handoff_reason, "order_change", "another customer untouched");
+  // follow-up outcome: the manager acted ⇒ also handed back (the rating stays open in «متابعة»)
+  const f = portalRig({ rows: LOW(), chats: chats() });
+  await f.call("POST", "/api/portal/reviews/:id/close", { id: "13", body: { outcome: "no_answer" } });
+  assert.deepEqual([f.db.chats["534567890"].handoff_reason, f.db.chats["534567890"].muted_until], [null, minsAgo(-30)], "a staff hold (muted_until) stays");
+  // the rating's customer got an order-change handover since ⇒ that one stays (not a review)
+  const oc = portalRig({ rows: LOW(), chats: { "523456789": { handoff_at: minsAgo(5), handoff_reason: "order_change" } } });
+  await oc.call("POST", "/api/portal/reviews/:id/close", { id: "12", body: { outcome: "resolved" } });
+  assert.equal(oc.db.chats["523456789"].handoff_reason, "order_change");
+  // the dashboard's «تم الحل» goes through the same function
+  const d = portalRig({ rows: LOW(), chats: chats() });
+  const dr = await d.call("POST", "/api/cms/reviews/:id/resolve", { id: "11", body: { note: "كلمناه" } });
+  assert.equal(dr.status, 200); assert.equal(d.db.chats["512345678"].handoff_reason, null);
+  // the bot table missing / down ⇒ the close itself still works
+  const PRm = await import("./portalreviews.js");
+  const pool = { async query(q) { if (/wa_bot_chats/.test(q)) throw new Error("relation does not exist"); if (/^UPDATE reviews SET resolved=TRUE/.test(String(q).trim())) return { rows: [{ phone_norm: "512345678" }], rowCount: 1 }; return { rows: [], rowCount: 0 }; } };
+  const cr = await PRm.closeReview(pool, { id: 11, outcome: "resolved", by: "المدير" });
+  assert.deepEqual([cr.ok, cr.chatReleased], [true, false]);
 });

@@ -24,11 +24,18 @@ function world({ role = "owner", settings = {}, threads = [], messages = [], bot
       const hit = db.threads.find((t) => crypto.createHash("md5").update(`${p[0]}:${t.phone_norm}`).digest("hex") === p[1]);
       return { rows: hit ? [{ phone_norm: hit.phone_norm }] : [] };
     }
+    /* مراجعة RV1: بوابة الكاشير من غير الإعداد — «تقييم واطي» مفتوح (آخر ٢٤ ساعة) مستبعد، و«تقييم واطي» عمره ما بيتعدّ «مستني موظف» */
+    const rvOpen = (y) => y.handoff_reason === "review_low" && Date.parse(y.handoff_at) > NOW - 24 * 3600_000;
+    if (/^SELECT \(SELECT count\(\*\) FROM wa_threads WHERE NOT EXISTS \(SELECT 1 FROM wa_bot_chats b/i.test(s)) {
+      const vis = db.threads.filter((y) => !rvOpen(y)); db.tickArgs = p;
+      return { rows: [{ n: vis.length, u: vis.reduce((x, y) => x + (y.unread || 0), 0), tl: db.tl || 1000, tb: db.tb || 0, w: vis.filter((y) => y.handoff_at && y.handoff_reason !== "review_low").length, h: 0, tm: p[0] ? (db.tm || 500) : null, cm: p[0] ? (db.cm || 3) : 0, tc: null }] };
+    }
     if (/^SELECT \(SELECT count\(\*\) FROM wa_threads( WHERE NOT \(phone_norm = ANY\(\$2::text\[\]\)\))?\)::int AS n,/i.test(s)) { db.tickArgs = p; return { rows: [{ n: db.threads.length, u: db.threads.reduce((x, y) => x + (y.unread || 0), 0), tl: db.tl || 1000, tb: db.tb || 0, w: db.threads.filter((y) => y.handoff_at).length, h: 0, tm: p[0] ? (db.tm || 500) : null, cm: p[0] ? (db.cm || 3) : 0, tc: null }] }; }
     if (/^SELECT count\(\*\)::int AS total,/i.test(s)) return { rows: [{ total: db.threads.length, waiting: db.threads.filter((t) => t.handoff_at).length, bot: 1, muted: 0, ad: 0,
       unread: db.threads.filter((t) => t.unread).length, unread_messages: db.threads.reduce((a, t) => a + t.unread, 0), oldest_waiting: db.threads.map((t) => t.handoff_at).filter(Boolean).sort()[0] || null }] };
     if (/^SELECT t\.phone_norm, t\.last_in_at, t\.last_at, t\.last_text/i.test(s)) {
       let rows = [...db.threads].sort((a, b) => Date.parse(b.last_at) - Date.parse(a.last_at));
+      if (s.includes("NOT COALESCE(b.handoff_reason IN ('review_low') AND b.handoff_at > NOW()")) rows = rows.filter((t) => !rvOpen(t));      // مراجعة RV1
       const before = p.find((x) => typeof x === "string" && /^\d{4}-\d\d-\d\dT/.test(x));
       if (before) rows = rows.filter((t) => Date.parse(t.last_at) < Date.parse(before));
       return { rows: rows.slice(0, p[p.length - 1]) };
@@ -446,4 +453,46 @@ test("ST2 team threads: hidden from the list, the counts and the tick by default
   // no directory and no alert phones ⇒ the queries are exactly the old ones
   const plain = world({ threads: [T("512345678")] }); await plain.call("GET", "/api/cms/wa/threads"); await plain.call("GET", "/api/cms/wa/threads-tick");
   assert.ok(plain.db.sql.every((s) => !/ANY\(\$[12]::text\[\]\)\)/.test(s) || /phone_norm = ANY\(\$1::text\[\]\)$/.test(s)));
+});
+
+/* ══ مراجعة RV1: «تقييم واطي» للمدير بس — بوابة الكاشير من غير الإعداد (hideReviewLow) ══════════════════════════════
+   المحادثة اللي تحويلها المفتوح «تقييم واطي» مش في قايمة الكاشير ولا عدّاد «مستني موظف» عنده ولا بتتفتح؛ أي تحويل تاني زي ما هو. */
+test("RV1 review fix: a cashier without «الكاشير كمان يشوف التقييمات الواطية» never gets a low-rating chat — not in the list, not in «مستني موظف» (list counts and the 20 s tick), not openable; after the hold its reason is not shown; the manager / dashboard view is unchanged", async () => {
+  const RV = T("531478260", { handoff_at: ago(10), handoff_reason: "review_low", last_text: "الأكل وصل بارد" });
+  const OLD = T("542689137", { handoff_at: ago(26 * 60), handoff_reason: "review_low", last_in_at: ago(26 * 60), last_at: ago(26 * 60) });
+  const CH = T("553791024", { handoff_at: ago(5), handoff_reason: "order_change" });
+  const w = world({ threads: [RV, OLD, CH] });
+  const hidden = "NOT COALESCE(b.handoff_reason IN ('review_low') AND b.handoff_at > NOW() - make_interval(hours => 24), FALSE)";
+  const noReviewWait = "NOT COALESCE(b.muted_until > NOW(), FALSE) AND ((b.handoff_at IS NOT NULL AND NOT COALESCE(b.handoff_reason IN ('review_low'), FALSE)) OR";
+  // كاشير: القايمة (الافتراضي «مستنية») والعدّادات بيستبعدوا التقييم الواطي المفتوح
+  w.db.sql.length = 0;
+  const out = await w.api.listThreads({ filter: "waiting", full: true, hideReviewLow: true });
+  const listSql = w.db.sql.find((s) => /^SELECT t\.phone_norm, t\.last_in_at, t\.last_at, t\.last_text/i.test(s));
+  const cntSql = w.db.sql.find((s) => /^SELECT count\(\*\)::int AS total,/i.test(s));
+  assert.ok(listSql.includes(hidden) && listSql.includes(noReviewWait), "list: hidden while open + never «waiting» for a review");
+  assert.ok(cntSql.includes(`WHERE ${hidden}`) && cntSql.includes(`count(*) FILTER (WHERE ${noReviewWait}`), "counts: same rule (badge = list)");
+  assert.ok(!out.threads.some((t) => t.phone === "0531478260"), "the open low rating is not in the cashier's list");
+  const old = out.threads.find((t) => t.phone === "0542689137");
+  assert.equal(old.bot.reason, null, "after the hold: no «review_low» reason on the cashier's row"); assert.notEqual(old.bot.state, "waiting");
+  assert.equal(out.threads.find((t) => t.phone === "0553791024").bot.reason, "order_change", "an order change still shows to the cashier");
+  // كاشير: فتح المحادثة ⇒ مش موجودة؛ بعد المدة ⇒ بتتفتح من غير سبب التقييم
+  assert.deepEqual(await w.api.getThread("531478260", { full: true, hideReviewLow: true }), { ok: false, error: "not_found" });
+  const o2 = await w.api.getThread("542689137", { full: true, hideReviewLow: true });
+  assert.equal(o2.ok, true); assert.equal(o2.bot.reason, null);
+  // المدير / اللوحة: زي ما هم
+  w.db.sql.length = 0;
+  await w.api.listThreads({ filter: "waiting", full: true });
+  assert.ok(!w.db.sql.some((s) => s.includes("review_low")), "manager / dashboard SQL untouched");
+  const m = await w.api.getThread("531478260", { full: true });
+  assert.equal(m.ok, true); assert.equal(m.bot.reason, "review_low");
+  // العدّاد الخفيف (كل ٢٠ ث): نفس الاستبعاد
+  w.db.sql.length = 0;
+  const tk = await w.api.tick(null, { hideReviewLow: true });
+  const tickSql = w.db.sql.find((s) => /^SELECT \(SELECT count\(\*\) FROM wa_threads/i.test(s));
+  assert.ok(tickSql.includes(`NOT EXISTS (SELECT 1 FROM wa_bot_chats b WHERE b.phone_norm = wa_threads.phone_norm AND ${hidden.slice(4)})`), "thread / unread counts skip the hidden chat");
+  assert.ok(tickSql.includes(`WHERE ${noReviewWait}`) && tickSql.includes(`AND NOT ${hidden.slice(4)}`), "«مستني موظف» skips it");
+  assert.equal(tk.waiting, 1, "only the order change waits for the cashier");
+  w.db.sql.length = 0;
+  await w.api.tick(null);
+  assert.ok(!w.db.sql.some((s) => s.includes("review_low")), "manager tick untouched");
 });
