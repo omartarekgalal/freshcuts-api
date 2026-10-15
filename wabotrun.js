@@ -1435,7 +1435,10 @@ export function buildReply(key, c) {
     /* RV1: ضغطة نجوم (arg من wareviews.applyStar في work: route/link/ref/reviewId) ⇒ جوجل للعالي، اعتذار + الأسباب + المدير للواطي */
     case "review_star": return starReply({ T, F, arg: c.arg || {}, callLine: c.arg && c.arg.route === "low" ? callLine() : "" });
     case "review_reason": return { body: T("rs_reason_ok") };
-    case "review_note": return { body: F("rv_note", { order_no: (c.arg && c.arg.order) || "", wait: wait() }), handoff: HANDOFF_KEYS.review_note };
+    /* RV1: رقم الطلب في الرد = رقم طلب موقع بس (دعوة الكاشير «pos:…» رقم داخلي)؛ من غير رقم ⇒ سطر «طلب رقم» بيتشال بدل ما يفضل فاضي */
+    case "review_note": { const no = /^W\d{6,20}$/.test(String((c.arg && c.arg.order) || "")) ? String(c.arg.order) : "";
+      const body = F("rv_note", { order_no: no, wait: wait() });
+      return { body: no ? body : body.split("\n").filter((l) => !/^(طلب رقم|Order)$/.test(l.trim())).join("\n"), handoff: HANDOFF_KEYS.review_note }; }
     /* FU1 — الرد على رسالة «متابعة اللي ردّ»: «أبغى أطلب» والمتابعة كان فيها سلة جاهزة لسه صالحة (work بيتأكد) ⇒ نفس السلة بزر؛ من غير سلة ⇒ رد «أبي أطلب» العادي.
        «لا شكراً» ⇒ سطر واحد (والـ٧ أيام بتتسجّل في work). */
     case "rf_yes": {

@@ -5522,3 +5522,17 @@ test("RV1: «تمام» on an invite the scheduler closed for a staff number or 
     assert.equal((w.db.chats.get("512345678") || {}).review_stars_at || null, null, why);
   }
 }));
+
+test("RV1: «عندي ملاحظة» never shows an internal till id («pos:…») and never leaves an empty «طلب رقم» line", () => {
+  const cfg = R.botConfig({ waBot: { mode: "live" } });
+  const data = { settings: {}, now: new Date(OPEN_AT), open: null, chat: {} };
+  const web = R.buildReply("review_note", { cfg, lang: "ar", data, arg: { code: "ab12cd34", order: "W1790012345678" } }).body;
+  assert.match(web, /\nطلب رقم W1790012345678\n/);
+  for (const order of ["pos:9001", null, ""]) {
+    const b = R.buildReply("review_note", { cfg, lang: "ar", data, arg: { code: "ab12cd34", order } }).body;
+    assert.doesNotMatch(b, /pos:|طلب رقم\s*(\n|$)/, String(order));
+    assert.match(b, /حوّلت ملاحظتك للمدير/);
+  }
+  const en = R.buildReply("review_note", { cfg, lang: "en", data, arg: { code: "ab12cd34", order: "pos:9001" } }).body;
+  assert.doesNotMatch(en, /pos:|\nOrder\s*(\n|$)/);
+});
