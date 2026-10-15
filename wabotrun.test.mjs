@@ -63,11 +63,86 @@ function world({ waBot = {}, notifications = { whatsappEnabled: true }, orders =
     ...extraSettings };
   const iso = () => new Date(nowMs).toISOString();
   const chat = (p) => { if (!db.chats.has(p)) db.chats.set(p, { phone_norm: p, unknown_streak: 0, ...(disclosure ? {} : { last_disclosed_at: iso() }) }); return db.chats.get(p); };
+  /* FU1: نسخة في الذاكرة من جمل wafollow.FU_SQL (نفس المنطق على db.msgs / db.log / db.jobs / db.fu) */
+  db.fu = []; db.fuBrake = null;
+  const T0 = (v) => (v ? Date.parse(v) : NaN);
+  const isMkt = (c) => c.direction === "out" && c.template && (c.category === "MARKETING" || c.source === "campaign");
+  const okOut = (c) => !["failed", "skipped"].includes(c.status || "");
+  const inAfter = (pn, from, to) => db.msgs.some((m) => m.phone_norm === pn && m.direction === "in" && m.source !== "history" && T0(m.created_at) > from && T0(m.created_at) < to);
+  const stoppedAfter = (pn, at) => { const o = db.optins[pn] || {}; return (o.stopped_at && T0(o.stopped_at) >= at) || (o.marketing_off_at && T0(o.marketing_off_at) >= at); };
+  const fuRows = (r) => ({ rows: r, rowCount: r.length });
+  function fuFake(name, p) {
+    const maxOf = (l) => l.sort().pop() || null;
+    switch (name) {
+      case "candidates": {
+        const by = new Map();
+        for (const m of db.msgs) { if (!/^5\d{8}$/.test(String(m.phone_norm || "")) || nowMs - T0(m.created_at) >= 25 * 3600_000) continue; const e = by.get(m.phone_norm) || { ins: [], outs: [] };
+          if (m.direction === "in" && m.source !== "history") e.ins.push(m.created_at); if (m.direction === "out" && m.source !== "echo" && okOut(m)) e.outs.push(m.created_at); by.set(m.phone_norm, e); }
+        const out = [];
+        for (const [pn, e] of by) {
+          const li = maxOf(e.ins), lo = maxOf(e.outs);
+          if (!li || !lo || !(nowMs - T0(li) < p[1] * 60_000) || !(T0(lo) >= T0(li)) || nowMs - T0(lo) < p[0] * 60_000) continue;
+          if (p[5] && !p[5].includes(pn)) continue;
+          if (db.jobs.some((j) => j.phone_norm === pn && j.kind === "reply_followup" && T0(j.created_at) >= T0(li))) continue;
+          if (db.fu.some((f) => f.phone_norm === pn && f.status !== "failed" && nowMs - T0(f.sent_at) < 24 * 3600_000)) continue;
+          if (db.msgs.some((c) => c.phone_norm === pn && isMkt(c) && T0(c.created_at) > T0(li))) continue;
+          const camp = db.msgs.some((c) => c.phone_norm === pn && isMkt(c) && okOut(c) && nowMs - T0(c.created_at) < p[2] * 3600_000 && T0(c.created_at) < T0(li));
+          const tap = db.log.some((l) => l.phone_norm === pn && ["interactive", "button"].includes(l.msg_type) && p[3].includes(l.reply_key) && T0(l.at) > T0(li) - p[4] * 3600_000 && T0(l.at) <= T0(li) + 120_000);
+          if (camp || tap) out.push({ phone_norm: pn, last_in: li, last_out: lo });
+        }
+        return fuRows(out.slice(0, p[6]));
+      }
+      case "last_out": { const o = db.msgs.filter((c) => c.phone_norm === p[0] && c.direction === "out" && c.source !== "echo" && okOut(c) && T0(c.created_at) >= T0(p[1])); return fuRows([{ at: maxOf(o.map((c) => c.created_at)), mkt: o.filter(isMkt).length }]); }
+      case "trigger": {
+        const camp = maxOf(db.msgs.filter((c) => c.phone_norm === p[0] && isMkt(c) && okOut(c) && nowMs - T0(c.created_at) < p[2] * 3600_000 && T0(c.created_at) < T0(p[1])).map((c) => c.created_at));
+        const tap = db.log.filter((l) => l.phone_norm === p[0] && ["interactive", "button"].includes(l.msg_type) && p[3].includes(l.reply_key) && T0(l.at) > T0(p[1]) - p[4] * 3600_000 && T0(l.at) <= T0(p[1]) + 120_000).map((l) => l.at).sort()[0] || null;
+        return fuRows([{ camp_at: camp, tap_at: tap }]);
+      }
+      case "conv": return fuRows(db.log.filter((l) => l.phone_norm === p[0] && T0(l.at) >= T0(p[1])).sort((a, b) => T0(b.at) - T0(a.at) || b.id - a.id).slice(0, 60)
+        .map((l) => ({ reply_key: l.reply_key, reply_arg: l.reply_arg ?? null, msg_type: l.msg_type, decision: l.decision, lang: l.lang, wamid: l.wamid, at: l.at })));
+      case "recent": return fuRows([{ mine: db.fu.filter((f) => f.phone_norm === p[0] && f.status !== "failed" && nowMs - T0(f.sent_at) < 24 * 3600_000).length,
+        others: db.jobs.filter((j) => j.phone_norm === p[0] && p[2].includes(j.kind) && j.status === "done" && T0(j.done_at) > T0(p[1])).length,
+        pending: db.jobs.filter((j) => j.phone_norm === p[0] && p[2].includes(j.kind) && j.status === "pending").length }]);
+      case "ignored": return fuRows([{ n: db.log.filter((l) => l.phone_norm === p[0] && l.msg_type === "followup" && l.decision === "replied" && p[1].includes(l.reply_key) && nowMs - T0(l.at) < p[2] * 86400_000
+        && !inAfter(p[0], T0(l.at), T0(l.at) + 24 * 3600_000)).length }]);
+      case "opted_out": return fuRows(db.optouts.includes(p[0]) ? [{}] : []);
+      case "ordered": return fuRows(orders.filter((o) => o.phone_norm === p[0] && T0(o.created_at) > T0(p[1]) && !["expired", "pending_payment"].includes(o.status)).map(() => ({})));
+      case "cart_live": return fuRows(db.botCarts.filter((x) => x.phone === p[0] && !x.expired && T0(x.created_at) > T0(p[1])).slice(-1).map((x) => ({ code: x.code })));
+      case "cart_ok": return fuRows(db.botCarts.filter((x) => x.code === p[0] && x.phone === p[1] && !x.expired).map(() => ({})));
+      case "day_count": return fuRows([{ n: db.fu.filter((f) => f.status !== "failed" && T0(f.sent_at) >= T0(p[0])).length }]);
+      case "day_stats": { const l = db.fu.filter((f) => f.status === "sent" && T0(f.sent_at) >= T0(p[0])); const st = (f) => stoppedAfter(f.phone_norm, T0(f.sent_at)), bl = (f) => db.msgs.some((m) => f.wamid && m.wamid === f.wamid && m.status === "failed");
+        return fuRows([{ sent: l.length, stopped: l.filter(st).length, blocked: l.filter(bl).length, bad: l.filter((f) => st(f) || bl(f)).length }]); }
+      case "brake_get": return fuRows(db.fuBrake ? [{ ...db.fuBrake }] : []);
+      case "brake_set": { const b = db.fuBrake; if (b && b.on_at && !(b.cleared_at && T0(b.cleared_at) >= T0(b.on_at))) return fuRows([]); db.fuBrake = { on_at: iso(), sent: p[0], bad: p[1], pct: p[2], detail: p[3], cleared_at: null, cleared_by: null }; return fuRows([{ id: 1 }]); }
+      case "brake_clear": { const b = db.fuBrake; if (!b || !b.on_at || (b.cleared_at && T0(b.cleared_at) >= T0(b.on_at))) return fuRows([]); b.cleared_at = iso(); b.cleared_by = p[0]; return fuRows([{ on_at: b.on_at }]); }
+      case "reserve": { if (db.fu.some((f) => f.job_key === p[0])) return fuRows([]); const f = { id: db.fu.length + 1, job_key: p[0], phone_norm: p[1], trigger: p[2], trigger_at: p[3], last_in: p[4], via: p[5], ref: p[6], lang: p[7], cart_code: p[8], cart_total: p[9], status: "sending", sent_at: iso(), answer: null, answered_at: null }; db.fu.push(f); return fuRows([{ id: f.id }]); }
+      case "mark": { const f = db.fu.find((x) => x.id === p[0]); if (f) Object.assign(f, { status: p[1], wamid: p[2], error: p[3], sent_at: iso() }); return fuRows([]); }
+      case "defer": { const j = db.jobs.find((x) => x.id === p[0]); if (j) Object.assign(j, { status: "pending", due_at: p[1], reason: p[2], done_at: null }); return fuRows([]); }
+      case "cancel_pending": { for (const j of db.jobs) if (j.kind === "reply_followup" && j.status === "pending") Object.assign(j, { status: "cancelled", reason: p[0], done_at: iso() }); return fuRows([]); }
+      case "latest": return fuRows(db.fu.filter((f) => f.phone_norm === p[0] && f.status === "sent" && nowMs - T0(f.sent_at) < 24 * 3600_000).slice(-1).map((f) => ({ id: f.id, cart_code: f.cart_code, sent_at: f.sent_at, answered_at: f.answered_at, via: f.via })));
+      case "other_reply": return fuRows(db.log.filter((l) => l.phone_norm === p[0] && l.wamid && l.id !== p[1] && T0(l.at) > T0(p[2])).slice(0, 1).map(() => ({})));
+      case "answer": { const f = db.fu.filter((x) => x.phone_norm === p[0] && x.status === "sent" && !x.answered_at && nowMs - T0(x.sent_at) < 24 * 3600_000).slice(-1)[0]; if (!f) return fuRows([]); f.answered_at = iso(); f.answer = p[1]; return fuRows([{ id: f.id }]); }
+      case "decline": chat(p[0]).follow_declined_at = iso(); return fuRows([]);
+      case "report": {
+        const l = db.fu.filter((f) => f.status === "sent" && T0(f.sent_at) >= T0(p[0]) && T0(f.sent_at) < T0(p[1]));
+        const ordOf = (f) => orders.filter((o) => o.phone_norm === f.phone_norm && !o.is_test && T0(o.created_at) > T0(f.sent_at) && T0(o.created_at) < T0(f.sent_at) + 24 * 3600_000 && !["pending_payment", "expired", "rejected_refunded", "refund_failed", "paid_pos_failed"].includes(o.status));
+        return fuRows([{ sent: l.length, replied: l.filter((f) => f.answered_at || inAfter(f.phone_norm, T0(f.sent_at), T0(f.sent_at) + 24 * 3600_000)).length, said_yes: l.filter((f) => f.answer === "yes").length, said_no: l.filter((f) => f.answer === "no").length,
+          stopped: l.filter((f) => stoppedAfter(f.phone_norm, T0(f.sent_at))).length, blocked: l.filter((f) => db.msgs.some((m) => f.wamid && m.wamid === f.wamid && m.status === "failed")).length,
+          carts: l.filter((f) => f.cart_code).length, carts_opened: l.filter((f) => db.botCarts.some((x) => x.code === f.cart_code && Number(x.opens) > 0)).length,
+          ordered: l.filter((f) => ordOf(f).length).length, paid_orders: l.reduce((a, f) => a + ordOf(f).length, 0), paid_sar: l.reduce((a, f) => a + ordOf(f).reduce((b, o) => b + Number(o.total), 0), 0),
+          paid_via_link: l.reduce((a, f) => a + ordOf(f).filter((o) => o.attribution && o.attribution.fc_link === "wa-followup").length, 0) }]);
+      }
+      case "report_via": { const g = {}; for (const f of db.fu.filter((x) => x.status === "sent" && T0(x.sent_at) >= T0(p[0]) && T0(x.sent_at) < T0(p[1]))) g[f.via || "-"] = (g[f.via || "-"] || 0) + 1; return fuRows(Object.entries(g).map(([via, n]) => ({ via, n }))); }
+      default: throw new Error(`fuFake: unknown statement ${name}`);
+    }
+  }
   const pool = {
     async query(sql, p = []) {
       const s = String(sql).replace(/\s+/g, " ").trim();
       if (failDb && failDb.test(s)) throw new Error("db down");
       if (/^CREATE TABLE|^DELETE FROM wa_bot_log|wa_webhook_health|wa_contact_names|wa_threads/i.test(s)) return { rows: [], rowCount: 0 };
+      /* FU1: «متابعة اللي ردّ» — كل جمل wafollow.FU_SQL بتبدأ بعلامة /*fu:<الاسم>*\/ */
+      { const fm = /^\/\*fu:([a-z_]+)\*\//.exec(s); if (fm) return fuFake(fm[1], p); }
       if (/^SELECT phone_norm, max\(created_at\) AS last_in FROM wa_messages WHERE direction='in'/i.test(s)) { const last = new Map(); for (const m of db.msgs) if (m.direction === "in" && m.source !== "history") last.set(m.phone_norm, m.created_at > (last.get(m.phone_norm) || "") ? m.created_at : last.get(m.phone_norm));
         return { rows: [...last.entries()].filter(([, at]) => nowMs - Date.parse(at) >= p[0] * 3600_000 && nowMs - Date.parse(at) < 23.5 * 3600_000).map(([phone_norm, last_in]) => ({ phone_norm, last_in })) }; }
       // ── EX6: رسالة مش مدعومة، تأكيد الدفع، متابعة المحادثة
@@ -108,7 +183,7 @@ function world({ waBot = {}, notifications = { whatsappEnabled: true }, orders =
       if (/^UPDATE wa_bot_jobs SET status='cancelled', reason='replaced'/i.test(s)) { for (const j of db.jobs) if (j.phone_norm === p[0] && j.kind === "assist_followup" && j.status === "pending") { j.status = "cancelled"; j.reason = "replaced"; } return { rows: [] }; }
       /* PK1: متابعة المحادثة اللي وقفت عند سؤال المساعد (assist_nudge) */
       if (/^UPDATE wa_bot_jobs SET status='pending', reason=NULL, done_at=NULL, due_at=\$2, ev=\$3 WHERE wamid=\$1/i.test(s)) { const j = db.jobs.find((x) => x.wamid === p[0] && ["pending", "cancelled"].includes(x.status)); if (!j) return { rows: [] }; Object.assign(j, { status: "pending", reason: null, due_at: p[1], ev: JSON.parse(p[2]) }); return { rows: [{ id: j.id }] }; }
-      if (/^SELECT 1 FROM wa_bot_jobs WHERE phone_norm=\$1 AND kind IN \('assist_nudge'/i.test(s)) return { rows: db.jobs.filter((j) => j.phone_norm === p[0] && ["assist_nudge", "lead_followup", "assist_followup"].includes(j.kind) && j.status === "done").map(() => ({})) };
+      if (/^SELECT 1 FROM wa_bot_jobs WHERE phone_norm=\$1 AND kind IN \('assist_nudge'/i.test(s)) return { rows: db.jobs.filter((j) => j.phone_norm === p[0] && ["assist_nudge", "lead_followup", "assist_followup", "reply_followup"].includes(j.kind) && j.status === "done").map(() => ({})) };
       if (/^SELECT 1 FROM wa_bot_carts WHERE phone_norm=\$1 AND created_at > \$2/i.test(s)) return { rows: db.botCarts.filter((x) => x.phone === p[0]).map(() => ({})) };
       if (/^SELECT 1 FROM wa_bot_jobs WHERE phone_norm=\$1 AND kind='assist_followup' AND status='done'/i.test(s)) return { rows: db.jobs.filter((j) => j.phone_norm === p[0] && j.kind === "assist_followup" && j.status === "done").map(() => ({})) };
       if (/^SELECT last_loc FROM wa_bot_chats/i.test(s)) return { rows: db.chats.has(p[0]) ? [{ last_loc: db.chats.get(p[0]).last_loc || null }] : [] };
@@ -183,7 +258,7 @@ function world({ waBot = {}, notifications = { whatsappEnabled: true }, orders =
       }
       if (/^INSERT INTO wa_bot_jobs/i.test(s)) {
         if (p[0] && db.jobs.some((j) => j.wamid === p[0])) return { rows: [], rowCount: 0 };
-        const j = { id: db.jobs.length + 1, wamid: p[0], phone_norm: p[1], kind: p[2], due_at: p[3], ev: JSON.parse(p[4]), log_id: p[5], status: "pending", reason: null };
+        const j = { id: db.jobs.length + 1, wamid: p[0], phone_norm: p[1], kind: p[2], due_at: p[3], ev: JSON.parse(p[4]), log_id: p[5], status: "pending", reason: null, created_at: iso() };
         db.jobs.push(j); return { rows: [{ id: j.id }], rowCount: 1 };
       }
       if (/^SELECT id FROM wa_bot_jobs WHERE status='pending' AND due_at <= \$1/i.test(s)) return { rows: db.jobs.filter((j) => j.status === "pending" && Date.parse(j.due_at) <= Date.parse(p[0])).map((j) => ({ id: j.id })) };
@@ -192,7 +267,7 @@ function world({ waBot = {}, notifications = { whatsappEnabled: true }, orders =
         if (!j) return { rows: [], rowCount: 0 };
         j.status = "running"; return { rows: [{ ...j }], rowCount: 1 };
       }
-      if (/^UPDATE wa_bot_jobs SET status=\$2, reason=\$3/i.test(s)) { const j = db.jobs.find((x) => x.id === p[0]); j.status = p[1]; j.reason = p[2]; return { rows: [] }; }
+      if (/^UPDATE wa_bot_jobs SET status=\$2, reason=\$3/i.test(s)) { const j = db.jobs.find((x) => x.id === p[0]); j.status = p[1]; j.reason = p[2]; j.done_at = iso(); return { rows: [] }; }
       if (/^UPDATE wa_bot_jobs SET status='cancelled', reason='manual_mute'/i.test(s)) { for (const j of db.jobs) if (j.phone_norm === p[0] && j.status === "pending") { j.status = "cancelled"; j.reason = "manual_mute"; } return { rows: [] }; }
       if (/FROM wa_bot_jobs WHERE status='pending'/i.test(s)) return { rows: [{ n: db.jobs.filter((j) => j.status === "pending").length }] };
       if (/FROM wa_messages WHERE phone_norm=\$1 AND source='echo'/i.test(s)) {
@@ -269,7 +344,7 @@ function world({ waBot = {}, notifications = { whatsappEnabled: true }, orders =
       if (/^UPDATE review_invites SET sent_at=COALESCE/i.test(s)) { const iv = (db.invites || []).find((x) => x.code === p[0]); if (iv) { iv.sent_at = iv.sent_at || iso(); iv.channel = iv.channel || "wa_tap"; } return { rows: [] }; }
       if (/^SELECT window_sell_at FROM wa_bot_chats/i.test(s)) return { rows: [{ window_sell_at: (db.chats.get(p[0]) || {}).window_sell_at || null }] };
       if (/^UPDATE wa_bot_chats SET window_sell_at=NOW\(\)/i.test(s)) { chat(p[0]).window_sell_at = iso(); return { rows: [] }; }
-      if (/^SELECT 1 FROM wa_bot_jobs WHERE phone_norm=\$1 AND kind IN \('assist_followup','assist_nudge','lead_followup','window_keep'/i.test(s)) return { rows: db.jobs.filter((j) => j.phone_norm === p[0] && ["assist_followup", "assist_nudge", "lead_followup", "window_keep", "assist_reminder"].includes(j.kind) && j.status === "done").map(() => ({})) };
+      if (/^SELECT 1 FROM wa_bot_jobs WHERE phone_norm=\$1 AND kind IN \('assist_followup','assist_nudge','lead_followup','window_keep'/i.test(s)) return { rows: db.jobs.filter((j) => j.phone_norm === p[0] && ["assist_followup", "assist_nudge", "lead_followup", "window_keep", "assist_reminder", "reply_followup"].includes(j.kind) && j.status === "done").map(() => ({})) };
       if (/count\(\*\) FILTER \(WHERE done_at >= \(date_trunc/i.test(s)) { const d = db.jobs.filter((j) => j.kind === "window_keep" && j.status === "done"); return { rows: [{ today: d.length, week: d.filter((j) => j.phone_norm === p[0]).length }] }; }
       if (/^SELECT order_no FROM shop_orders WHERE phone_norm=\$1 AND NOT COALESCE\(is_test,false\) AND status IN \('pos_created'/i.test(s)) return { rows: orders.filter((o) => o.phone_norm === p[0] && ["pos_created", "accepted", "courier_requested", "courier_assigned", "on_the_way"].includes(o.status)).slice(-1) };
       if (/^SELECT b\.code FROM wa_bot_carts b/i.test(s)) return { rows: db.botCarts.filter((x) => x.phone === p[0] && !x.expired).slice(-1).map((x) => ({ code: x.code })) };
@@ -306,7 +381,7 @@ function world({ waBot = {}, notifications = { whatsappEnabled: true }, orders =
   if (mediaFile) wa.fetchMedia = async (id, o) => { mediaAsked.push([id, o]); return typeof mediaFile === "function" ? mediaFile(id, o) : mediaFile; };
   const sms = [];
   const botCarts = { ensure: async () => {}, lastOrderCarts: async (ph, days, o) => { const v = typeof lastCart === "function" ? lastCart(ph, days, o) : lastCart; return (Array.isArray(v) ? v : v ? [v] : []).map((x, i) => ({ latest: i === 0, ...x })); },
-    create: async (x) => { if (failDb && failDb.test("INSERT INTO wa_bot_carts")) return null; const code = `rc${String(db.botCarts.length + 1).padStart(6, "0")}`; db.botCarts.push({ code, ...x }); return { code }; }, open: async () => null, restore: async () => null, coverage: async () => ({ orders: 40, with_snapshot: 30, with_raw: 28, usable: 26, avg_diff: 0, mismatched: 2, links: db.botCarts.length, opened: 0 }) };
+    create: async (x) => { if (failDb && failDb.test("INSERT INTO wa_bot_carts")) return null; const code = `rc${String(db.botCarts.length + 1).padStart(6, "0")}`; db.botCarts.push({ code, created_at: iso(), ...x }); return { code }; }, open: async () => null, restore: async () => null, coverage: async () => ({ orders: 40, with_snapshot: 30, with_raw: 28, usable: 26, avg_diff: 0, mismatched: 2, links: db.botCarts.length, opened: 0 }) };
   const portalEvents = [];
   const bot = R.register(app, ctx, { app, wa, now: clock.now, noTimer: true, botCarts, ...(team ? { team: () => team } : {}), ...(flow ? { flow: () => flow } : {}), ...(fav ? { fav: () => fav } : {}),
     assist: { expandBundle: expandBundle || (async () => ({ ok: false, error: "bundle_not_found" })), modifiersCatalog: async () => ({ cfg: { enabled: true }, catalog: {} }), modifiersResolve: async () => ({ ok: true, shown: 0 }),
@@ -4579,8 +4654,9 @@ test("SB4 window: the daily report carries paid templates vs free messages, SAR 
   const w = world({ waBot: { mode: "test", testPhones: TESTERS } });
   const r = await w.call("GET", "/api/cms/wabot/assist/daily");
   const win = r.body.report.window;
-  assert.deepEqual(Object.keys(win).sort(), ["free_messages", "free_order_updates", "keeper", "note", "orders", "paid_templates", "saved_sar"]);      // ١٤/١٠: + orders (لكل طلب بفلوس/ببلاش/اتشال)
+  assert.deepEqual(Object.keys(win).sort(), ["free_messages", "free_order_updates", "keeper", "note", "orders", "paid_templates", "reply_followups", "saved_sar"]);      // ١٤/١٠: + orders (لكل طلب بفلوس/ببلاش/اتشال) · FU1: + reply_followups
   assert.deepEqual(Object.keys(win.keeper).sort(), ["nothing_useful", "ordered", "replied", "sent"]);
+  assert.deepEqual(Object.keys(win.reply_followups).sort(), ["blocked", "brake", "by_via", "carts", "carts_opened", "ordered", "paid_orders", "paid_sar", "paid_via_link", "replied", "said_no", "said_yes", "sent", "stopped"]);
   assert.equal(typeof win.paid_templates.sar, "number");
 }));
 
@@ -5026,4 +5102,183 @@ test("مراجعة FD1 ٣ — كاش المنيو الصارم: صنف بالو�
     const w94 = ((strict.items.find((i) => String(i.id) === "94")) || {}).weights || [];
     assert.ok(w94.length > 0, "صنف تاني بالوزن (طرب ٩٤) جلبه نجح ⇒ أوزانه موجودة");
   } finally { Date.now = realNow; }
+}));
+
+/* ══ FU1 (١٥/١٠): «متابعة اللي ردّ وماطلبش» — رسالة حرة واحدة جوّه النافذة للي ردّ على حملة أو ضغط زر ═══════════════════════════════
+   عمر: «ليه البوت مش بيرجع يبعت رسالة تانية للناس اللي ردّت ويلحقهم في النافذة». المثال الحي: «ورّني المنيو» على «طبقك المفضل» ⇒ قايمة الأقسام ⇒ سكوت ⇒ ولا حاجة. */
+const FU_NEUTRAL = "تبي أجهّز لك طلبك؟ 🙂";
+const campTpl = (w, agoMin = 10, o = {}) => w.db.msgs.push({ wamid: `wamid.CAMPX${w.db.msgs.length}`, direction: "out", phone_norm: o.phone || "512345678", template: o.template || "fc_frame_video", category: "MARKETING", status: "delivered", source: "campaign", created_at: new Date(w.clock.now().getTime() - agoMin * 60_000).toISOString() });
+const menuTap = (w, o = {}) => w.say(null, { ...o, raw: { type: "button", button: { payload: "ورّني المنيو", text: "ورّني المنيو" } } });
+const fuLive = (o = {}) => { const w = liveWorld({ ...o, waBot: { paidNoteEnabled: false, ...(o.waBot || {}) } }); campTpl(w); return w; };
+const fuIds = (p) => p.interactive.action.buttons.map((b) => b.reply.id);
+const fuJob = (w) => w.db.jobs.filter((j) => j.kind === "reply_followup").at(-1) || null;
+const fuOut = (list) => list.filter((p) => p.type === "interactive" && p.interactive.type === "button" && fuIds(p).includes("rf:yes"));
+
+test("FU1 المثال الحي: «ورّني المنيو» على «طبقك المفضل» ⇒ سكوت ٤٠ دقيقة ⇒ متابعة واحدة بنفس العرض وسعره + سلة جاهزة + «أبغى أطلب / لا شكراً»؛ «أبغى أطلب» ⇒ نفس السلة بزر", withEnv(LOCKS_OPEN, async () => {
+  const w = fd1World();
+  const m = await menuTap(w);
+  assert.equal(m.log.reply_key, "cats");
+  assert.deepEqual(await w.tick(39), [], "not before 40 minutes of silence after our reply");
+  const out = await w.tick(2);
+  assert.equal(out.length, 1, JSON.stringify(w.db.jobs.map((j) => [j.kind, j.status, j.reason])));
+  assert.equal(bodyOf(out[0]), "العرض اللي وصلك ما زال متاح: بوكس الكريب لشخصين بـ65 ر.س 🛒\nسلتك جاهزة بنفس السعر: https://freshcuts.sa/c/rc000001");
+  assert.deepEqual(out[0].interactive.action.buttons.map((b) => [b.reply.id, b.reply.title]), [["rf:yes", "أبغى أطلب"], ["rf:no", "لا شكراً"]]);
+  assert.ok(bodyOf(out[0]).split("\n").length <= 2, "two short lines at most");
+  assert.deepEqual([w.db.botCarts[0].source, w.db.botCarts[0].plan.items[0].p], ["followup", 65], "the cart is the offer at the price that was in the campaign");
+  assert.deepEqual([w.db.fu[0].via, w.db.fu[0].trigger, w.db.fu[0].status, w.db.fu[0].cart_code], ["offer", "campaign", "sent", "rc000001"]);
+  assert.deepEqual([w.db.log.at(-1).reply_key, w.db.log.at(-1).msg_type, w.db.log.at(-1).decision], ["reply_followup", "followup", "replied"]);
+  assert.deepEqual(await w.tick(120), [], "one per window");
+  const y = await w.press("rf:yes", "أبغى أطلب");
+  assert.equal(bodyOf(y.sent[0]), "تمام 👍 سلتك جاهزة، كمّل الدفع من الزر 👇"); assert.equal(urlOf(y.sent[0]), "https://freshcuts.sa/c/rc000001");
+  assert.equal(w.db.botCarts.length, 1, "no second cart");
+  assert.equal(w.db.fu[0].answer, "yes");
+}));
+
+test("FU1 العرض اتغيّر من ساعة الحملة (السعر) ⇒ مفيش سعر في المتابعة: سطر محايد من غير أرقام ولا سلة", withEnv(LOCKS_OPEN, async () => {
+  const b79 = JSON.parse(JSON.stringify(FXF.bundles)); b79.find((x) => x.slug === "box-crepe-duo").price = 79;
+  const w = fd1World({ bundles: b79 });
+  await menuTap(w);
+  const out = fuOut(await w.tick(41));
+  assert.equal(out.length, 1);
+  assert.equal(bodyOf(out[0]), FU_NEUTRAL);
+  assert.ok(!/\d/.test(bodyOf(out[0])), "no price at all");
+  assert.equal(w.db.botCarts.length, 0); assert.match(w.db.fu[0].ref, /^offer_changed:/);
+}));
+
+test("FU1 بالليل: سكت بعد ١:٣٠ ⇒ ولا رسالة بالليل، والمتابعة بتطلع أول الساعات المسموحة (١٢:٠٠) طول ما النافذة مفتوحة", withEnv(LOCKS_OPEN, async () => {
+  const w = fuLive({ at: "2026-10-12T22:16:00Z" });      // الثلاثاء ١:١٦ الرياض (زي المثال الحي)
+  const m = await menuTap(w);
+  assert.equal(m.log.reply_key, "cats");
+  assert.deepEqual(fuOut(await w.tick(41)), [], "01:57 — late night: nothing");
+  assert.equal(fuJob(w), null, "no job outside the allowed hours");
+  w.clock.set("2026-10-13T06:00:00Z"); assert.deepEqual(fuOut(await w.tick(0)), [], "09:00 — still quiet");
+  w.clock.set("2026-10-13T09:01:00Z");
+  const out = fuOut(await w.tick(0));
+  assert.equal(out.length, 1, JSON.stringify(w.db.jobs.map((j) => [j.kind, j.status, j.reason])));
+  assert.equal(bodyOf(out[0]), FU_NEUTRAL, "no offer stored, nothing looked at, no history ⇒ the neutral line");
+  assert.deepEqual(fuIds(out[0]), ["rf:yes", "rf:no"]);
+  assert.deepEqual(fuOut(await w.tick(180)), []);
+}));
+
+test("FU1 ضغطة زر من غير حملة: القسم اللي فتحه ⇒ رابط المنيو؛ الصنف اللي فتحه ⇒ سلة جاهزة بسعره؛ كلام مكتوب بس ⇒ مش مرشّح", withEnv(LOCKS_OPEN, async () => {
+  const s = liveWorld({ waBot: { paidNoteEnabled: false } });
+  await s.press("m:cats", "📋 المنيو بالأقسام"); await s.press("cat:23", "كريبات");
+  const o1 = fuOut(await s.tick(41));
+  assert.equal(o1.length, 1);
+  assert.equal(bodyOf(o1[0]), "تبي تطلب من «كريبات»؟ الأصناف بأسعارها هنا 👇\nhttps://freshcuts.sa/l/wab-menu");
+  assert.deepEqual([s.db.fu[0].via, s.db.fu[0].trigger], ["section", "tap"]);
+  const i = liveWorld({ waBot: { paidNoteEnabled: false } });
+  await i.press("item:8", "كريب زنجر سوبريم");
+  const o2 = fuOut(await i.tick(41));
+  assert.equal(o2.length, 1);
+  assert.equal(bodyOf(o2[0]), "جهّزنا لك كريب زنجر سوبريم بـ25 ر.س في السلة 🛒\nتكمّل طلبك من هنا: https://freshcuts.sa/c/rc000001");
+  assert.deepEqual([i.db.botCarts[0].source, i.db.botCarts[0].plan.items[0].p, i.db.fu[0].cart_code], ["followup", 25, "rc000001"]);
+  const t = liveWorld({ waBot: { paidNoteEnabled: false } });
+  await t.say("السلام عليكم");
+  assert.deepEqual(fuOut(await t.tick(60)), []); assert.equal(fuJob(t), null);
+}));
+
+test("FU1 مابتتبعتش: طلب من ساعتها، كتب تاني (بتتأجل لنافذته الجديدة)، موظف رد، «إيقاف»، شكوى، «شكراً»، المفتاح مقفول، متابعتين ماحدش رد عليهم في ٧ أيام", withEnv(LOCKS_OPEN, async () => {
+  const orders = []; const o = fuLive({ orders }); await menuTap(o); orders.push(order({ status: "paid", created_at: o.clock.now().toISOString() }));
+  assert.deepEqual(fuOut(await o.tick(41)), []); assert.equal(fuJob(o).reason, "ordered");
+  const a = fuLive(); await menuTap(a); a.clock.advance(20); await a.say("كم سعر كريب زنجر سوبريم");
+  assert.deepEqual(fuOut(await a.tick(21)), [], "40 min after the first reply: he wrote since");
+  const ao = fuOut(await a.tick(21));
+  assert.equal(ao.length, 1); assert.match(bodyOf(ao[0]), /كريب زنجر سوبريم بـ25 ر\.س/);
+  assert.deepEqual(fuOut(await a.tick(120)), []);
+  const b = fuLive(); await menuTap(b); b.clock.advance(5); await b.cashier("تفضل، تبي شي معين؟");
+  assert.deepEqual(fuOut(await b.tick(36)), []); assert.equal(fuJob(b).reason, "staff_in_chat");
+  const c = fuLive(); await menuTap(c); c.clock.advance(2); await c.say("إيقاف");
+  assert.deepEqual(fuOut(await c.tick(41)), []); assert.equal(fuJob(c).reason, "stopped");
+  const d = fuLive(); await menuTap(d); d.clock.advance(2); await d.say("الأكل وصل بارد وناقص");
+  assert.deepEqual(fuOut(await d.tick(41)), []); assert.match(fuJob(d).reason, /^(handover_open|complaint_today|closing:complaint)$/);
+  const e = fuLive(); await menuTap(e); e.clock.advance(1); await e.say("شكراً");
+  assert.deepEqual(fuOut(await e.tick(41)), []); assert.equal(fuJob(e).reason, "closing:thanks");
+  const f = fuLive({ waBot: { replyFollowUp: false } }); await menuTap(f);
+  assert.deepEqual(fuOut(await f.tick(60)), []); assert.equal(fuJob(f), null);
+  const g = fuLive();
+  for (const [k, days] of [["window_keep", 3], ["reply_followup", 2]]) g.db.log.push({ id: g.db.log.length + 1, wamid: null, phone_norm: "512345678", msg_type: "followup", decision: "replied", reply_key: k, at: new Date(g.clock.now().getTime() - days * 86400_000).toISOString() });
+  await menuTap(g);
+  assert.deepEqual(fuOut(await g.tick(41)), []); assert.equal(fuJob(g).reason, "ignored");
+  const h = fuLive(); h.db.log.push({ id: 1, wamid: null, phone_norm: "512345678", msg_type: "followup", decision: "replied", reply_key: "window_keep", at: new Date(h.clock.now().getTime() - 3 * 86400_000).toISOString() });
+  await menuTap(h); assert.equal(fuOut(await h.tick(41)).length, 1, "only one unanswered follow-up in 7 days ⇒ still allowed");
+}));
+
+test("FU1 «لا شكراً» (زر أو مكتوبة كأول رد) ⇒ سطر واحد ومفيش متابعات ٧ أيام؛ «ايوه» مكتوبة كأول رد ⇒ نفس السلة", withEnv(LOCKS_OPEN, async () => {
+  const w = fuLive(); await menuTap(w);
+  assert.equal(fuOut(await w.tick(41)).length, 1);
+  const n = await w.press("rf:no", "لا شكراً");
+  assert.deepEqual(n.sent.map(bodyOf), ["أبشر، حيّاك الله في أي وقت 🌟"]); assert.equal(n.log.handoff, null);
+  assert.ok(w.db.chats.get("512345678").follow_declined_at); assert.equal(w.db.fu[0].answer, "no");
+  w.clock.advance(24 * 60); campTpl(w, 5); await menuTap(w);
+  assert.deepEqual(fuOut(await w.tick(41)), [], "a new window the next day: still declined"); assert.equal(fuJob(w).reason, "declined");
+  w.clock.advance(7 * 24 * 60); campTpl(w, 5); await menuTap(w);
+  assert.equal(fuOut(await w.tick(41)).length, 1, "after 7 days the decline is over");
+  const t = fuLive(); await menuTap(t); await t.tick(41);
+  const tn = await t.say("لا شكرا");
+  assert.equal(tn.log.reply_key, "rf_no"); assert.equal(bodyOf(tn.sent[0]), "أبشر، حيّاك الله في أي وقت 🌟");
+  const y = fd1World(); await menuTap(y); await y.tick(41);
+  const yy = await y.say("ايوه");
+  assert.equal(yy.log.reply_key, "rf_yes"); assert.equal(urlOf(yy.sent[0]), "https://freshcuts.sa/c/rc000001");
+  const z = fuLive(); await menuTap(z); await z.tick(41);
+  const zz = await z.press("rf:yes", "أبغى أطلب");
+  assert.equal(zz.log.reply_key, "order"); assert.match(bodyOf(zz.sent[0]), /^الطلب من موقعنا يأخذ دقيقة 👇/);
+}));
+
+test("FU1 الفرامل: «إيقاف» بعد متابعة فوق ٢٪ من متابعات اليوم ⇒ المتابعات تقف لوحدها + تنبيه للمالك، ومابترجعش غير لما المالك يفكّها", withEnv(LOCKS_OPEN, async () => {
+  const w = fuLive(); await menuTap(w);
+  assert.equal(fuOut(await w.tick(41)).length, 1);
+  await w.say("إيقاف");
+  await w.tick(1);
+  assert.ok(w.db.fuBrake && w.db.fuBrake.on_at, "brake on"); assert.match(w.db.fuBrake.detail, /1 من 1/);
+  assert.equal(w.sms.filter((x) => x.ref === "wabot followup_brake").length, 2, "one SMS to each alert phone");
+  campTpl(w, 5, { phone: "598765432" }); await menuTap(w, { from: "966598765432" });
+  assert.deepEqual(fuOut(await w.tick(45)), [], "braked: nothing for anyone");
+  await w.tick(30); assert.equal(w.sms.filter((x) => x.ref === "wabot followup_brake").length, 2, "the alert goes once");
+  w.setOwner(false); assert.equal((await w.call("POST", "/api/cms/wabot/followups/brake", { clear: true })).status, 403); w.setOwner(true);
+  const cl = await w.call("POST", "/api/cms/wabot/followups/brake", { clear: true });
+  assert.deepEqual([cl.status, cl.body.cleared, cl.body.brake.on], [200, true, false]);
+  assert.equal(w.db.cfgLog.at(-1).changes[0].path, "replyFollowUpBrake");
+  campTpl(w, 1, { phone: "598765432" }); await menuTap(w, { from: "966598765432" });
+  const out = fuOut(await w.tick(41));
+  assert.equal(out.length, 1, "after the owner clears it the follow-ups come back (counting from the clear)"); assert.equal(out[0].to, "966598765432");
+}));
+
+test("FU1 «تقرير ماجد» + ‎/followups‎: اتبعت كام، ردّوا، «أبغى أطلب»، طلبات مدفوعة وقيمتها خلال ٢٤ ساعة", withEnv(LOCKS_OPEN, async () => {
+  const orders = []; const w = fuLive({ orders }); await menuTap(w);
+  assert.equal(fuOut(await w.tick(41)).length, 1);
+  await w.press("rf:yes", "أبغى أطلب");
+  w.clock.advance(10); orders.push(order({ status: "paid", total: "120", created_at: w.clock.now().toISOString(), attribution: { fc_link: "wa-boxes" } }));
+  const r = await w.call("GET", "/api/cms/wabot/assist/daily", {}, { day: "2026-10-12" });
+  const f = r.body.report.window.reply_followups;
+  assert.deepEqual([f.sent, f.replied, f.said_yes, f.said_no, f.carts, f.ordered, f.paid_orders, f.paid_sar, f.paid_via_link], [1, 1, 1, 0, 0, 1, 1, 120, 0]);
+  assert.deepEqual(f.by_via, { neutral: 1 }); assert.equal(f.brake.on, false);
+  const g = await w.call("GET", "/api/cms/wabot/followups", {}, { day: "2026-10-12" });
+  assert.deepEqual([g.status, g.body.enabled, g.body.totals.sent, g.body.totals.paid_sar, g.body.settings.replyFollowUpMin], [200, true, 1, 120, 40]);
+}));
+
+test("FU1 الإعدادات: كلها في مخطط اللوحة بأسماء عربية في مجموعتها، الافتراضي شغّال (٤٠ دقيقة، ١٢:٠٠–١:٣٠، ٧ أيام، متابعتين، ٢٪)، والحفظ بيتراجع", withEnv(LOCKS_OPEN, async () => {
+  const keys = Object.keys(R.SCHEMA).filter((k) => /^replyFollowUp/.test(k));
+  assert.equal(keys.length, 16);
+  for (const k of keys) { assert.equal(R.SCHEMA[k].group, "followUp", k); assert.match(R.SCHEMA[k].ar, /[؀-ۿ]/, k); }
+  assert.equal(R.SCHEMA_GROUPS.followUp, "متابعة اللي ردّ وماطلبش (جوّه النافذة)");
+  const c = R.botConfig({});
+  assert.deepEqual([c.replyFollowUp, c.replyFollowUpMin, c.replyFollowUpFromHour, c.replyFollowUpFromMinute, c.replyFollowUpToHour, c.replyFollowUpToMinute, c.replyFollowUpDeclineDays, c.replyFollowUpIgnoredMax, c.replyFollowUpIgnoredDays, c.replyFollowUpBrakePct, c.replyFollowUpOffer, c.replyFollowUpLooked, c.replyFollowUpFav],
+    [true, 40, 12, 0, 1, 30, 7, 2, 7, 2, true, true, true]);
+  const w = liveWorld();
+  assert.equal((await w.call("PUT", "/api/cms/wabot/config", { replyFollowUpMin: 60, replyFollowUpFav: false })).status, 200);
+  assert.deepEqual([w.db.settings.waBot.replyFollowUpMin, w.db.settings.waBot.replyFollowUpFav], [60, false]);
+  assert.equal((await w.call("PUT", "/api/cms/wabot/config", { replyFollowUpMin: 5 })).status, 400);
+  assert.equal((await w.call("PUT", "/api/cms/wabot/config", { replyFollowUpBrakePct: 0 })).status, 400);
+  const sch = (await w.call("GET", "/api/cms/wabot/schema")).body;
+  assert.ok(sch.settings.some((x) => x.key === "replyFollowUpMin" && x.groupAr === "متابعة اللي ردّ وماطلبش (جوّه النافذة)"));
+  for (const k of ["rf_offer", "rf_neutral", "rf_yes_cart", "rf_no", "btn_rf_yes", "btn_rf_no"]) assert.ok(sch.texts.some((t) => t.key === k), k);
+}));
+
+test("FU1 وضع التجربة: أرقام التجربة بس", withEnv(CONFIGURED, async () => {
+  const w = world({ waBot: { mode: "test", testPhones: TESTERS, paidNoteEnabled: false }, bundles: LIVE.bundles, links: ALL_LINKS });
+  campTpl(w); campTpl(w, 10, { phone: "598765432" });
+  await menuTap(w); await menuTap(w, { from: "966598765432" });
+  const out = fuOut(await w.tick(41));
+  assert.equal(out.length, 1); assert.equal(out[0].to, "966512345678");
 }));

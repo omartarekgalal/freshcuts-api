@@ -99,3 +99,18 @@ test("FD1 مراجعة ٣: سلة حملة «طبقك المفضل» اللي ر
   await bc2.create({ phone: "512345678", source: "assistant", plan: { ok: true, raw: RAW, items: ITEMS }, option: "delivery" });
   assert.deepEqual(made, [{ removed: [], repriced: [], review: [], noChatLoc: true }, { removed: [], repriced: [], review: [] }]);
 });
+
+test("FU1: سلة رسالة المتابعة (source followup) بتفتح بـ fc_link wa-followup (عشان «تقرير ماجد» يعدّ طلباتها)، وعلامة noChatLoc بتاعة العرض بتتحترم زي سلة الحملة", async () => {
+  const pin = { lat: 21.581, lng: 39.1502, at: ago(1) };
+  const pool = { async query(sql, p = []) {
+    const s = String(sql).replace(/\s+/g, " ").trim();
+    if (/^UPDATE wa_bot_carts SET opens = opens \+ 1/.test(s)) return { rows: p[0] === "fol00001" ? [{ source: "followup" }] : p[0] === "cam00001" ? [{ source: "campaign" }] : [] };
+    if (/^SELECT c\.items, c\.cart_raw, c\.option, ch\.last_loc, c\.source, c\.note FROM wa_bot_carts c/.test(s)) return { rows: [{ items: ITEMS, cart_raw: RAW, option: "delivery", last_loc: pin, source: "followup", note: { noChatLoc: p[0] === "fol00001" } }] };
+    return { rows: [] };
+  } };
+  const bc = makeBotCarts({ pool, log: () => {}, now: () => NOW });
+  assert.match(await bc.open("fol00001"), /fc_link=wa-followup/); assert.match(await bc.open("fol00001"), /utm_campaign=wa_followup/);
+  assert.match(await bc.open("cam00001"), /fc_link=wa-campaign/, "the campaign cart is unchanged");
+  assert.ok(!("location" in (await bc.restore("fol00001"))), "the offer's fee was for his saved address ⇒ no chat pin");
+  assert.deepEqual((await bc.restore("fol00002")).location, pin);
+});

@@ -791,8 +791,8 @@ export function makeAssistTools(deps = {}) {
     const out = { ok: true, option, lines, subtotal, problems, note: "prices include VAT; the delivery fee is separate and shown by quote_delivery and again on the site before payment" };
     if (!save) return { ...out, saved: false };
     if (!okPhone(phone) || !deps.botCarts) return { ...out, saved: false, error_link: "cannot_save" };
-    /* FD1: سلة حملة «طبقك المفضل» (ضغطة «أبغى أطلب») مصدرها campaign — عشان رابطها يتحسب على الحملة مش على المساعد */
-    const made = await deps.botCarts.create({ phone, source: source === "campaign" ? "campaign" : "assistant", plan: { ok: true, raw, items, removed: [], repriced: [], review: [], ...(chatLocation === false ? { noChatLoc: true } : {}) }, option, days: deps.linkDays || 7 });
+    /* FD1: سلة حملة «طبقك المفضل» (ضغطة «أبغى أطلب») مصدرها campaign — عشان رابطها يتحسب على الحملة مش على المساعد. FU1: سلة رسالة المتابعة ⇒ followup */
+    const made = await deps.botCarts.create({ phone, source: ["campaign", "followup"].includes(source) ? source : "assistant", plan: { ok: true, raw, items, removed: [], repriced: [], review: [], ...(chatLocation === false ? { noChatLoc: true } : {}) }, option, days: deps.linkDays || 7 });
     if (!made) return { ...out, saved: false, error_link: "cannot_save" };
     return { ...out, saved: true, link: `${STORE}/c/${made.code}`, code: made.code };
   }

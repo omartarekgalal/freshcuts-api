@@ -660,3 +660,31 @@ test("مراجعة FD1 ٣ — delivery.quote بـmemo: السياسة والإع
     if (keep.b === undefined) delete process.env.DISPATCH_LOST_SWEEP_SECONDS; else process.env.DISPATCH_LOST_SWEEP_SECONDS = keep.b;
   }
 });
+
+// ═════════ FU1 (١٥/١٠): رسالة «متابعة اللي ردّ» ═════════
+test("FU1: tapOffer بيرجّع نفس العرض في سطر قصير (shortMain + سطر التوصيل dlText)، الحفظ بمصدر followup، وطبقه المفضل (favDishFor) بسعره الحي ووزنه المعتاد", async () => {
+  const people = { ...PEOPLE(), "501000055": { name: "تجربة ضغطة", orders: 12, spend: 520, daysAgo: 5, hist: [] } };
+  const w = favWorld({ people });
+  const seen = [];
+  const assist = { build_cart: async (pn, input, o) => { seen.push(o); return { ok: true, lines: [{}], subtotal: 65, ...(o.save ? { link: "https://freshcuts.sa/c/abc12345", code: "abc12345" } : {}) }; } };
+  const t = await w.api.tapOffer("501000055", CREPE_FAV, { assist, sent: CREPE_SENT });
+  assert.deepEqual([t.shortMain, t.delivery, t.dlText], ["بوكس الكريب لشخصين بـ65 ر.س", "no_location", "وأول طلب من الموقع توصيله مجاني بكود FIRST داخل نطاق التوصيل"]);
+  assert.deepEqual(await w.api.saveCart("501000055", t, { assist, source: "followup" }), { ok: true, url: "https://freshcuts.sa/c/abc12345", code: "abc12345" });
+  assert.equal(seen.at(-1).source, "followup");
+  assert.equal((await w.api.saveCart("501000055", t, { assist, source: "anything" })).ok, true); assert.equal(seen.at(-1).source, "campaign", "unknown source ⇒ campaign (as before)");
+  const pz = await w.api.favDishFor("501000011");
+  assert.deepEqual([pz.ok, pz.spec, pz.name, pz.price, pz.input], [true, { kind: "item", pid: "43", vid: null }, "بيتزا تشيكن رانش", 28, { option: "delivery", items: [{ id: "43", qty: 1 }] }]);
+  const gr = await w.api.favDishFor("501000044");
+  assert.deepEqual([gr.spec.vid, gr.name, gr.price], [49, "طرب مشوي كيلو", 140], "by weight: his usual weight with its live price");
+  assert.deepEqual(await w.api.favDishFor("520000006"), { ok: false, why: "no_live_dish" }, "drinks only ⇒ no dish");
+  assert.deepEqual(await w.api.favDishFor("599999999"), { ok: false, why: "no_history" });
+  assert.deepEqual(await w.api.favDishFor("12"), { ok: false, why: "bad_phone" });
+  w.st.menu = menuOf({ soldOut: { 43: true } });
+  const next = await w.api.favDishFor("501000011");
+  assert.ok(next.ok && next.spec.pid !== "43", "sold out today ⇒ the next dish in his ranking");
+  /* renderPick: الاسم القصير من غير وصف المحتوى، ونفس «بسعر يبدأ من» وتاريخ الباقة */
+  const live = liveOf();
+  assert.equal(F.renderPick({ kind: "box", slug: "box-solo-crepe", pid: "11", catOnly: true }, live).shortMain, "بوكس الكريب الفردي بسعر يبدأ من 29 ر.س");
+  assert.equal(F.renderPick({ kind: "pack", slug: "gathering-4", pid: "94", slot: "grill1", favV: 49 }, live).shortMain, "باقة تجمّع 4–6 أشخاص بـ225 ر.س حتى 15 أكتوبر");
+  assert.equal(F.renderPick({ kind: "item", pid: "97", vid: 51 }, live).shortMain, "كباب مشوي نص كيلو بـ70 ر.س");
+});

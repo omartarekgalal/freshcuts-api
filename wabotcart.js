@@ -184,8 +184,8 @@ export function makeBotCarts({ pool, log = console.error, locationHours = null, 
     if (!r || !r[0]) return null;
     const p = new URLSearchParams();
     p.set("cart", code); p.set("utm_source", "whatsapp"); p.set("utm_medium", "bot");
-    /* FD1: سلة حملة «طبقك المفضل» (ضغطة «أبغى أطلب») ⇒ wa_campaign — مش «نفس الطلب» */
-    const src = r[0].source === "assistant" ? "assistant" : r[0].source === "campaign" ? "campaign" : "reorder";
+    /* FD1: سلة حملة «طبقك المفضل» (ضغطة «أبغى أطلب») ⇒ wa_campaign — مش «نفس الطلب». FU1: سلة رسالة المتابعة ⇒ wa_followup (fc_link wa-followup في تقرير ماجد) */
+    const src = r[0].source === "assistant" ? "assistant" : r[0].source === "campaign" ? "campaign" : r[0].source === "followup" ? "followup" : "reorder";
     p.set("utm_campaign", `wa_${src}`); p.set("fc_link", `wa-${src}`);
     return "/?" + p.toString();
   }
@@ -198,7 +198,7 @@ export function makeBotCarts({ pool, log = console.error, locationHours = null, 
     let hours = 24; try { if (typeof locationHours === "function") hours = Number(await locationHours()) || 24; } catch { hours = 24; }
     /* FD1 مراجعة ٣: سلة حملة «طبقك المفضل» اللي رسالتها قالت رسم توصيل «لعنوانك» (note.noChatLoc) مابتشيلش موقع المحادثة —
        الرسم اللي اتقال محسوب لعنوان آخر طلب، ودبوس تاني من المحادثة كان هيفتح السلة على رسم تاني */
-    const noLoc = r[0].source === "campaign" && isObj(r[0].note) && r[0].note.noChatLoc === true;
+    const noLoc = ["campaign", "followup"].includes(r[0].source) && isObj(r[0].note) && r[0].note.noChatLoc === true;      // FU1: نفس العرض في رسالة المتابعة ⇒ نفس العنوان
     const location = noLoc ? null : chatLocation(r[0].last_loc, now(), hours);
     let raw = isObj(r[0].cart_raw) && Object.keys(r[0].cart_raw).length ? r[0].cart_raw : null;
     if (raw && typeof weightsNow === "function") { try { const by = await weightsNow(); if (by) { const rp = repriceVariants(raw, by); raw = Object.keys(rp.raw).length ? rp.raw : null; } } catch (e) { log("[wa-cart] reprice:", e.message); } }

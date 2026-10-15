@@ -57,6 +57,8 @@ const STT_LABEL = Object.fromEntries(STT_PROVIDERS.map((p) => [p.id, p.label]));
 import { lookImage, makeTranscriber, voiceSeconds, transcriptUsable, IMAGE_MAX_BYTES, VOICE_MAX_BYTES } from "./waassistmedia.js";
 import { ASSIST_CFG_DEFAULTS, ASSIST_SCHEMA, PROMPT_HASH, LIVE_AUDIENCES, assistConfig, assistFromBody, assistEligible, makeAssistLoop, makeAssistStore, makeModelCaller, billableUsage, newSession, noteRulesTurn, buildContext, hintOf, introSay, ensureIntro, hasIntro, heardContext, planReminder } from "./waassistrun.js";
 import { declineMemory } from "./wapersonal.js";      // S1: ذاكرة الرفض بين المحادثات
+import { FU_KIND, FU_GROUP, FU_GROUP_AR, FU_DEFAULTS, FU_NUMS, FU_BOOLS, FU_SCHEMA, FU_TAP_KEYS, FU_CLOSING_KEYS, FU_PROACTIVE_KEYS, FU_OTHER_JOBS, FU_SQL, FU_DDL,
+  fuConfig, inFollowHours, nextFollowStart, bizDayStart, brakeVerdict, followTrigger, convFacts, pickLooked, offerPhrase } from "./wafollow.js";      // FU1 (١٥/١٠): متابعة اللي ردّ وماطلبش
 import { WA_UPDATES_TEXTS, WA_UPDATES_CURRENT, recordWaUpdatesBot, recordWaMarketingBot, ensureWaConsentSchema } from "./waconsent.js";
 
 export const STORE = "https://freshcuts.sa";
@@ -89,6 +91,7 @@ export const DEFAULTS = Object.freeze({
   reviewReplyHours: 24,        // SB2: «تمام» / «عندي ملاحظة» مكتوبة (مش ضغطة) بتتحسب رد على رسالة التقييم لحد المدة دي
   paidNoteEnabled: true,       // EX6: العميل دفع طلب بعد ما كلّم البوت/المساعد والنافذة مفتوحة ⇒ سطر تأكيد برقم الطلب
   leadFollowUpMin: 20,         // EX6: «متابعة المحادثة» — رسالة عميل ماخدتش رد مفيد (سكوت، بره النطاق، «ما فهمت») ومحدش رد ⇒ متابعة واحدة بعد الدقايق دي. صفر = مقفول. مرة في اليوم للمحادثة
+  ...FU_DEFAULTS,              // FU1 (١٥/١٠): متابعة واحدة جوّه النافذة للي ردّ على حملة أو ضغط زر وماطلبش (wafollow.js)
   autoInboundPatterns: true,   // EX5: رسالة واردة شكلها رد آلي من نشاط تجاري («شكراً لتواصلك»، «لسنا متوفرين»، thank you for contacting…) ⇒ auto_inbound: لا رد ولا مساعد ولا تحويل
   autoInboundSec: 15,          // EX5: نص ٢٥ حرف+ وصل خلال الثواني دي من **قالب** إحنا بعتناه للرقم ⇒ auto_inbound (محدش بيقرا ويكتب بالسرعة دي). صفر = مقفول
   loopGuardCount: 3,           // EX5: حارس الحلقات — العدد ده من الرسايل «السريعة» ورا بعض (كل واحدة وصلت خلال loopGuardFastSec من ردّنا، ونصها ٢٥ حرف+ أو مكرر) ⇒ كتم. صفر = مقفول
@@ -344,6 +347,22 @@ export const TEXTS = Object.freeze({
   lead_nudge_ad_weight: t("متابعة محادثة وقفت عند سؤال المساعد: إعلان صنف بالوزن", "بخصوص {dish}: {prices}.\nكم شخص أنتم؟ أرشّح لك الأنسب وأجهّز سلتك.", "About {dish}: {prices}.\nHow many of you are there? I will suggest what fits and get your cart ready.", ["dish", "prices"], [], 500),
   lead_nudge_ad: t("متابعة محادثة وقفت عند سؤال المساعد: إعلان بوكس / صنف / عرض", "بخصوص {dish}: بـ {price} ر.س.\nأجهّزه لك توصيل ولا استلام؟", "About {dish}: SAR {price}.\nShall I get it ready for delivery or pickup?", ["dish", "price"], [], 400),
   lead_nudge: t("متابعة محادثة وقفت عند سؤال المساعد: من غير إعلان", "أنا معك 🙂 قل لي كم شخص أنتم، وأرشّح لك طلب جاهز بسعره وأجهّز سلتك.", "Still with you 🙂 Tell me how many of you there are and I will suggest a ready order with its price and prepare your cart.", [], [], 400),
+  /* FU1 (١٥/١٠) — «متابعة اللي ردّ وماطلبش» (رسالة حرة واحدة جوّه النافذة): سطرين بالكتير + «أبغى أطلب» / «لا شكراً». كل {…} من النظام وقت الإرسال
+     (عرض الحملة المخزّن محسوب تاني الحين، المنيو الحي، السلة الجاهزة) — مفيش رقم مكتوب في النص. */
+  rf_hi: t("متابعة اللي ردّ: التحية بالاسم (أول الرسالة)", "هلا {name}،", "Hi {name}!", ["name"], [], 60),
+  rf_offer: t("متابعة اللي ردّ: عرض الحملة بنفس السعر + السلة الجاهزة", "{hi} العرض اللي وصلك ما زال متاح: {offer} 🛒\nسلتك جاهزة بنفس السعر: {link}", "{hi} The offer we sent you is still on: {offer} 🛒\nYour cart is ready at the same price: {link}", ["offer", "link"], ["hi"], 500),
+  rf_offer_box: t("متابعة اللي ردّ: عرض الحملة (بوكس يختار فيه)", "{hi} العرض اللي وصلك ما زال متاح: {offer} 🛒\nاختر اللي يعجبك وكمّل من هنا: {link}", "{hi} The offer we sent you is still on: {offer} 🛒\nPick what you like and finish here: {link}", ["offer", "link"], ["hi"], 500),
+  rf_cart: t("متابعة اللي ردّ: سلة اتجهّزت في المحادثة", "{hi} سلتك ما زالت جاهزة 🛒\nتكمّلها من هنا: {link}", "{hi} Your cart is still ready 🛒\nFinish it here: {link}", ["link"], ["hi"], 300),
+  rf_item: t("متابعة اللي ردّ: الصنف اللي سأل عنه في السلة", "{hi} جهّزنا لك {dish} بـ{price} ر.س في السلة 🛒\nتكمّل طلبك من هنا: {link}", "{hi} We put {dish} (SAR {price}) in your cart 🛒\nFinish your order here: {link}", ["dish", "price", "link"], ["hi"], 400),
+  rf_item_page: t("متابعة اللي ردّ: صنف بالوزن (يختار الوزن)", "{hi} تبي تكمّل طلب {dish}؟ اختر الوزن من هنا 👇\n{link}", "{hi} Shall we finish your {dish} order? Pick the weight here 👇\n{link}", ["dish", "link"], ["hi"], 400),
+  rf_box: t("متابعة اللي ردّ: البوكس اللي شافه", "{hi} {box} بـ{price} ر.س 🛒\nاختر اللي يعجبك وكمّل من هنا: {link}", "{hi} {box} for SAR {price} 🛒\nPick what you like and finish here: {link}", ["box", "price", "link"], ["hi"], 400),
+  rf_section: t("متابعة اللي ردّ: القسم اللي فتحه", "{hi} تبي تطلب من «{section}»؟ الأصناف بأسعارها هنا 👇\n{link}", "{hi} Want to order from {section}? All the dishes with prices are here 👇\n{link}", ["section", "link"], ["hi"], 400),
+  rf_fav: t("متابعة اللي ردّ: طبقه المفضل في السلة", "{hi} جهّزنا لك طبقك المفضل {dish} بـ{price} ر.س في السلة 🛒\nتكمّل طلبك من هنا: {link}", "{hi} We put your favourite {dish} (SAR {price}) in your cart 🛒\nFinish your order here: {link}", ["dish", "price", "link"], ["hi"], 400),
+  rf_neutral: t("متابعة اللي ردّ: سطر محايد (من غير أرقام)", "{hi} تبي أجهّز لك طلبك؟ 🙂", "{hi} Shall I get your order ready? 🙂", [], ["hi"], 200),
+  rf_yes_cart: t("رد «أبغى أطلب» على المتابعة (السلة جاهزة)", "تمام 👍 سلتك جاهزة، كمّل الدفع من الزر 👇", "Great 👍 Your cart is ready, pay from the button 👇", [], [], 200),
+  rf_no: t("رد «لا شكراً» على المتابعة", "أبشر، حيّاك الله في أي وقت 🌟", "Sure, you're welcome any time 🌟", [], [], 200),
+  btn_rf_yes: t("زر المتابعة: أبغى أطلب", "أبغى أطلب", "I want to order", [], [], LIMITS.btnTitle),
+  btn_rf_no: t("زر المتابعة: لا شكراً", "لا شكراً", "No thanks", [], [], LIMITS.btnTitle),
   media_voice: t("رسالة صوتية والمساعد مابيسمعش ⇒ موظف + «اكتبها»", "ما أقدر أسمع المقاطع الصوتية 🙏 اكتب لي طلبك هنا وأجهّزه لك على طول.\nوحوّلت محادثتك لموظف يسمعها.\n{wait}", "I cannot listen to voice notes 🙏 Type your order here and I will get it ready right away.\nI have also passed your chat to a staff member who will listen to it.\n{wait}", [], ["wait"], 400),
   thanks: t("شكر / وداع", "العفو، حيّاك الله في أي وقت 🌟", "You're welcome, any time 🌟"),
   /* «إيقاف» = كل رسايلنا المبادِرة (العروض وتحديثات الطلب) — حارس الإرسال بيسكّت كل القوالب. الرد على سؤاله في المحادثة شغّال. */
@@ -518,7 +537,8 @@ export const TREE_KEYS = ["repeat_short", "other_city", "delivery_time", "whoami
 export const REPLY_KEYS = ["greet", "menu", "order", "offers", "delivery", "hours", "location", "payment", "status", "complaint", "problem", "change", "human", "staff", "media", "unknown", "thanks", "stop", "start"];
 const HANDOFF_KEYS = { review_note: ["review_note", "urgent"], custom_offer: ["custom_offer", "normal"], complaint: ["complaint", "urgent"], problem: ["problem", "urgent"], change: ["order_change", "urgent"], human: ["asked_human", "normal"], staff: ["needs_staff", "normal"], media: ["media", "normal"] };
 const BUTTON_IDS = { "bot:menu": "main", "bot:status": "status", "bot:human": "human", "optin:yes": "optin_yes", "optin:no": "optin_no", "resume:all": "resume_all", "resume:updates": "resume_updates", "re:last": "reorder", "bot:custom": "custom_offer",
-  "cw:order": "change", "cw:stop": "stop", "stop:updates": "stop_updates", "stop:ok": "ack", "stop:undo": "start" };      // M2: «الغاء» لوحدها ⇒ سؤال بزرارين؛ الإيقاف ⇒ العروض بس + زر تحديثات الطلب
+  "cw:order": "change", "cw:stop": "stop", "stop:updates": "stop_updates", "stop:ok": "ack", "stop:undo": "start",      // M2: «الغاء» لوحدها ⇒ سؤال بزرارين؛ الإيقاف ⇒ العروض بس + زر تحديثات الطلب
+  "rf:yes": "rf_yes", "rf:no": "rf_no" };      // FU1: زرّين رسالة «متابعة اللي ردّ»
 const MENU_IDS = { main: "main", boxes: "boxes", cats: "cats", offers: "offers", delivery: "delivery", pickup: "pickup", status: "status", hours: "hoursloc", location: "location", packs: "packs", pay: "payment", human: "human", channel: "channel" };
 const IGNORED_TYPES = new Set(["reaction", "sticker", "system", "ephemeral", "request_welcome", "order", "revoke"]);      // PK1: رسالة العميل مسحها (revoke) كانت بتوصل للمساعد كنص «[revoke]» وبيرد عليها بالإنجليزي (١٣/١٠)
 const MEDIA_TYPES = new Set(["image", "audio", "voice", "video", "document", "contacts", "location"]);
@@ -652,6 +672,7 @@ export function botConfig(settings) {
     windowV2Stages: (Array.isArray(x.windowV2Stages) ? x.windowV2Stages : []).filter((k) => WINDOW_V2_STAGES.includes(k)),
     windowKeeperHour: num(x.windowKeeperHour, 12, 23, DEFAULTS.windowKeeperHour), windowKeeperDailyCap: num(x.windowKeeperDailyCap, 0, 500, DEFAULTS.windowKeeperDailyCap), windowKeeperWeekly: num(x.windowKeeperWeekly, 0, 7, DEFAULTS.windowKeeperWeekly),
     windowKeeperQuietStart: num(x.windowKeeperQuietStart, 0, 23, DEFAULTS.windowKeeperQuietStart), windowKeeperQuietEnd: num(x.windowKeeperQuietEnd, 0, 23, DEFAULTS.windowKeeperQuietEnd), leadFollowUpMin: num(x.leadFollowUpMin, 0, 180, DEFAULTS.leadFollowUpMin),
+    ...fuConfig(x),      // FU1
     autoInboundPatterns: x.autoInboundPatterns !== false, autoInboundSec: num(x.autoInboundSec, 0, 120, DEFAULTS.autoInboundSec),
     loopGuardCount: num(x.loopGuardCount, 0, 20, DEFAULTS.loopGuardCount), loopGuardFastSec: num(x.loopGuardFastSec, 1, 30, DEFAULTS.loopGuardFastSec),
     loopGuardSeconds: num(x.loopGuardSeconds, 10, 600, DEFAULTS.loopGuardSeconds), loopGuardMuteHours: num(x.loopGuardMuteHours, 1, 168, DEFAULTS.loopGuardMuteHours),
@@ -727,10 +748,10 @@ export function configFromBody(b, prev = {}) {
   delete out.humanWindowHours;      // اتلغى (١٢/١٠) — أي حفظ بينضّف المخزّن القديم
   for (const k of ["humanPauseMin", "staffWaitMin", "closedEchoPauseMin", "manualMuteHours", "handoffOpenHours", "freeRepliesPerMonth", "replyRateSar", "disclosureHours", "unknownHandoverAfter", "adWindowHours", "optinAnswerWindowMin",
     "offerEndWithinDays", "boxesCacheMin", "menuCacheMin", "offersCacheMin", "staleCacheMin", "logKeepDays", "reorderMaxDays", "reorderLinkDays", "reorderMinTotal", "reorderLookback",
-    "handoverRealertMin", "handoverCustomerNoteMin", "greetWindowHours", "maxAgeMinutes", "sameTextSeconds", "autoEchoMaxSec", "autoInboundSec", "openerHours", "leadFollowUpMin", "reviewReplyHours", "reviewPaidGapMin", "windowKeeperHour", "windowKeeperDailyCap", "windowKeeperWeekly", "windowKeeperQuietStart", "windowKeeperQuietEnd", "loopGuardCount", "loopGuardFastSec", "loopGuardSeconds", "loopGuardMuteHours", "mediaFloodBuyerCount", "mediaFloodCount", "mediaFloodMinutes", "mediaFloodMuteHours", "maxRepliesPerHour", "maxTapsPerHour", "maxRepliesPerMinute", "orderLookbackHours", "lateAfterMinutes", "maxAlertsPerHour", "campaignOfferHours", "campaignYesQuietMin"]) {
+    "handoverRealertMin", "handoverCustomerNoteMin", "greetWindowHours", "maxAgeMinutes", "sameTextSeconds", "autoEchoMaxSec", "autoInboundSec", "openerHours", "leadFollowUpMin", "reviewReplyHours", "reviewPaidGapMin", "windowKeeperHour", "windowKeeperDailyCap", "windowKeeperWeekly", "windowKeeperQuietStart", "windowKeeperQuietEnd", "loopGuardCount", "loopGuardFastSec", "loopGuardSeconds", "loopGuardMuteHours", "mediaFloodBuyerCount", "mediaFloodCount", "mediaFloodMinutes", "mediaFloodMuteHours", "maxRepliesPerHour", "maxTapsPerHour", "maxRepliesPerMinute", "orderLookbackHours", "lateAfterMinutes", "maxAlertsPerHour", "campaignOfferHours", "campaignYesQuietMin", ...Object.keys(FU_NUMS)]) {
     if (k in src) { if (Number.isFinite(Number(src[k])) && src[k] !== "" && src[k] !== null) out[k] = Number(src[k]); else errors.push(k); }
   }
-  for (const k of ["interactive", "staffAlert", "alertInTest", "autoEchoSkipCovered", "autoInboundPatterns", "paidNoteEnabled", "reviewWhatsApp", "windowFreeUpdates", "windowSell", "windowKeeper", "courierContact", "courierTemplate", "followLink", "closedPolicy", "closedSkipPreparing", "mergeDeliveredReview", "handoverAckNeedsReply", "reorderEnabled", "dishFactsEnabled", "campaignCart"]) if (k in src) out[k] = src[k] === true;
+  for (const k of ["interactive", "staffAlert", "alertInTest", "autoEchoSkipCovered", "autoInboundPatterns", "paidNoteEnabled", "reviewWhatsApp", "windowFreeUpdates", "windowSell", "windowKeeper", "courierContact", "courierTemplate", "followLink", "closedPolicy", "closedSkipPreparing", "mergeDeliveredReview", "handoverAckNeedsReply", "reorderEnabled", "dishFactsEnabled", "campaignCart", ...FU_BOOLS]) if (k in src) out[k] = src[k] === true;
   if ("llm" in src) {
     const L = src.llm || {}, cur = { ...(prev.llm || {}) };
     if ("enabled" in L) cur.enabled = L.enabled === true;
@@ -1030,9 +1051,10 @@ export const SCHEMA = Object.freeze({
   freeRepliesPerMonth: S("cost", "number", "ردود واتساب المجانية في الشهر", "", { min: 0, max: 100000, unit: "رد" }),
   replyRateSar: S("cost", "number", "سعر الرد بعد المجاني", "", { min: 0, max: 5, unit: "ر.س", step: 0.0001 }),
   waRates: S("cost", "rates", "بطاقة أسعار قوالب واتساب", "تسويقي / خدمي / رمز تحقق + تاريخ البطاقة."),
+  ...FU_SCHEMA,      // FU1 (١٥/١٠): متابعة اللي ردّ وماطلبش — مجموعتها لوحدها في اللوحة
   ...ASSIST_SCHEMA,
 });
-export const SCHEMA_GROUPS = Object.freeze({ mode: "الوضع", orderMsgs: "رسايل الطلب: توفير القوالب وزر «تابع طلبك»", greeting: "التحية والتعريف", staff: "البوت والموظف", alerts: "التنبيهات", limits: "الحدود", orders: "الطلبات", links: "الروابط", data: "البيانات الحيّة",
+export const SCHEMA_GROUPS = Object.freeze({ mode: "الوضع", orderMsgs: "رسايل الطلب: توفير القوالب وزر «تابع طلبك»", [FU_GROUP]: FU_GROUP_AR, greeting: "التحية والتعريف", staff: "البوت والموظف", alerts: "التنبيهات", limits: "الحدود", orders: "الطلبات", links: "الروابط", data: "البيانات الحيّة",
   faq: "الأسئلة الشائعة", texts: "النصوص", optin: "موافقة التحديثات", ai: "الذكاء الاصطناعي", cost: "التكلفة", assist: "مساعد الطلبات" });
 const getPath = (o, p) => p.split(".").reduce((a, k) => (a && typeof a === "object" ? a[k] : undefined), o);
 /* للّوحة: كل إعداد بقيمته الحالية والافتراضية وحدوده وشرحه. */
@@ -1401,6 +1423,14 @@ export function buildReply(key, c) {
       if (!/^[a-z0-9]{4,16}$/i.test(String(code || ""))) return { body: `${T("rv_ok_nolink")}${extra}` };
       return { body: `${T("rv_ok")}${extra}`, cta: { title: T("cta_rate"), url: `${STORE}/r?c=${encodeURIComponent(code)}` } }; }
     case "review_note": return { body: F("rv_note", { order_no: (c.arg && c.arg.order) || "", wait: wait() }), handoff: HANDOFF_KEYS.review_note };
+    /* FU1 — الرد على رسالة «متابعة اللي ردّ»: «أبغى أطلب» والمتابعة كان فيها سلة جاهزة لسه صالحة (work بيتأكد) ⇒ نفس السلة بزر؛ من غير سلة ⇒ رد «أبي أطلب» العادي.
+       «لا شكراً» ⇒ سطر واحد (والـ٧ أيام بتتسجّل في work). */
+    case "rf_yes": {
+      const url = c.arg && typeof c.arg === "object" ? String(c.arg.url || "") : "";
+      if (!/^https:\/\/freshcuts\.sa\/c\/[a-z0-9]{6,16}$/.test(url)) return buildReply("order", c);
+      return { body: T("rf_yes_cart"), cta: { title: T("cta_reorder"), url }, link: "wa-followup" };
+    }
+    case "rf_no": return { body: T("rf_no") };
     default: throw new DataMissing(`key:${key}`);
   }
 }
@@ -1857,9 +1887,9 @@ export function pauseState({ cfg, now, open, lastEchoAt, hours }) {
   const until = t + cfg.humanPauseMin * 60_000;
   return { paused: until > now.getTime(), until, kind: "staff_pause" };
 }
-const FACTUAL_KEYS = new Set(["other_city", "whoami", "delivery_time", "hours", "hoursloc", "location", "status", "thanks", "stop", "stop_updates", "cancel_what", "start", "optin_yes", "optin_no", "resume_all", "resume_updates"]);
+const FACTUAL_KEYS = new Set(["other_city", "whoami", "delivery_time", "hours", "hoursloc", "location", "status", "thanks", "stop", "stop_updates", "cancel_what", "start", "optin_yes", "optin_no", "resume_all", "resume_updates", "rf_no"]);
 /* أسئلة المنيو والأسعار والتوصيل: معلومات. بتتجاوب حتى والمحادثة عند الموظف — إلا لو التحويل شكوى/مشكلة (SERIOUS). */
-const MENU_KEYS = new Set(["main", "menu", "cats", "cat", "item", "items", "boxes", "tier", "box", "best", "spicy", "notmenu", "packs", "payment", "pickup", "delivery", "area", "faq", "dishfact"]);
+const MENU_KEYS = new Set(["main", "menu", "cats", "cat", "item", "items", "boxes", "tier", "box", "best", "spicy", "notmenu", "packs", "payment", "pickup", "delivery", "area", "faq", "dishfact", "rf_yes"]);
 const SERIOUS = new Set(["allergy_severe", "complaint", "problem", "order_change", "order_late", "order_issue", "send_failed"]);
 const iso = (ms) => new Date(ms).toISOString();
 
@@ -1884,7 +1914,7 @@ export function decide(ev, ctx) {
   const waited = ctx.afterWait === "staff_wait" ? cfg.staffWaitMin : ctx.afterWait === "unknown_wait" ? cfg.unknownWaitMin : 0;
   /* M4: رسالة وصلتنا متأخرة (ويب هوك اتأخر) مابتتسابش من غير رد: بتتحوّل لموظف والعميل بيتقال له. (الرد المؤجّل اللي فات ميعاده بيتلغي من منفّذ الردود المؤجّلة، مش هنا.) */
   const stale = ageMin > cfg.maxAgeMinutes + waited;
-  if (stale && (ctx.afterWait || c.key === "ack" || c.key === "nack")) return silent("stale");
+  if (stale && (ctx.afterWait || c.key === "ack" || c.key === "nack" || c.key === "rf_no")) return silent("stale");      // FU1: «لا شكراً» المتأخرة بتتسجّل (work) من غير رد ولا تحويل
   const optout = c.key === "stop" || c.key === "start" ? c.key : c.key === "stop_updates" ? "stop_all" : null;
   const chat = ctx.chat || {};
   const nowMs = now.getTime();
@@ -2158,6 +2188,8 @@ export function register(app, ctx, deps = {}) {
       );
       CREATE INDEX IF NOT EXISTS wa_ad_chats_first_idx ON wa_ad_chats(first_at DESC);
     `);
+    /* FU1 (١٥/١٠): دفتر «متابعة اللي ردّ» + الفرامل + «لا شكراً» على المحادثة (wafollow.js). فشل هنا مايوقّفش البوت: المتابعة بس هي اللي مابتشتغلش. */
+    await pool.query(FU_DDL).catch((e) => console.error("[wabot] followup schema:", e.message));
     for (const l of SEED_LINKS) {
       await pool.query(
         `INSERT INTO cms_links(slug, label, target_type, target_id, coupon, utm_source, utm_medium, utm_campaign, created_by)
@@ -2601,6 +2633,30 @@ export function register(app, ctx, deps = {}) {
           if (camp) { campOffer = camp; cls = { ...cls, key: "order", rawIntent: tap ? "campaign_tap" : "campaign_yes" }; }
         }
       }
+      /* FU1 — رد على رسالة «متابعة اللي ردّ» (آخر متابعة للرقم في ٢٤ ساعة):
+         • زر «أبغى أطلب» (rf:yes) — أو «نعم / أبغى أطلب» مكتوبة كأول رسالة بعد المتابعة — والمتابعة كان فيها سلة جاهزة لسه صالحة ⇒ نفس السلة بزر (rf_yes)؛ من غير سلة ⇒ «أبي أطلب» العادي.
+         • زر «لا شكراً» (rf:no) — أو «لا / لا شكراً» مكتوبة كأول رسالة بعدها ⇒ rf_no + مفيش متابعات replyFollowUpDeclineDays يوم.
+         • أي رسالة بعد المتابعة ⇒ «اتردّ عليها» في الدفتر (التقرير والفرامل). مش في الرد المؤجّل (اتسجّل وقت وصول الرسالة). */
+      if (ok && !afterWait && cfg.replyFollowUp && !campOffer) {
+        const tapId = ev.interactiveId ? String(ev.interactiveId) : "";
+        const plain = !ev.interactiveId && String(ev.type || "text") === "text" ? String(ev.text || "") : "";
+        const typedYes = Boolean(plain) && isCampaignYes(plain), typedNo = Boolean(plain) && NACK_RE.test(normalize(plain));
+        if (tapId === "rf:yes" || tapId === "rf:no" || typedYes || typedNo) {
+          const fu = ((await q(FU_SQL.latest, [phone])) || [])[0] || null;
+          /* المكتوبة بتتحسب رد على المتابعة بس لو مفيش ولا رسالة تانية من العميل بعدها (الضغطة على زرّها نفسه بتتحسب دايماً) */
+          let first = false;
+          if (fu && !fu.answered_at && !tapId) { const other = await q(FU_SQL.otherReply, [phone, logId, new Date(fu.sent_at).toISOString()]); first = other !== null && other.length === 0; }
+          if (tapId === "rf:no" || (typedNo && first)) {
+            cls = { ...cls, key: "rf_no", arg: null, rawIntent: "followup_no" };
+            if (cfg.mode !== "dry") await q(FU_SQL.decline, [phone]);
+          } else if (tapId === "rf:yes" || (typedYes && first)) {
+            let url = null;
+            if (fu && fu.cart_code) { const ck = await q(FU_SQL.cartOk, [String(fu.cart_code), phone]); if (ck && ck.length) url = `${STORE}/c/${fu.cart_code}`; }
+            cls = url ? { ...cls, key: "rf_yes", arg: { url }, rawIntent: "followup_yes" } : { ...cls, key: "order", arg: null, rawIntent: "followup_yes" };
+          }
+        }
+        if (cfg.mode !== "dry") await q(FU_SQL.answer, [phone, cls.rawIntent === "followup_yes" ? "yes" : cls.key === "rf_no" ? "no" : ["stop", "stop_updates"].includes(cls.key) ? "stop" : "text"]);
+      }
       /* هجين (اختياري، من اللوحة): الرسالة اللي القواعد مافهمتهاش تتصنّف بموديل — **تصنيف بس**: بيرجّع اسم نية من قايمتنا
          (+ صنف/قسم/بوكس من البيانات) بدرجة ثقة، والرد نفسه نص ثابت بيتعبّى من البيانات الحيّة زي أي رد. فشل/تأخر/ثقة قليلة ⇒ «غير مفهوم». */
       if (cls.key === "unknown" && cfg.llm.enabled && llm && !afterWait && String(ev.text || "").trim().length >= 2) {
@@ -2931,12 +2987,26 @@ const fl = await q(`SELECT count(*)::int AS n FROM wa_bot_log WHERE phone_norm=$
                            ORDER BY l.at LIMIT 20`, [Math.ceil(cfg.leadFollowUpMin)]);
       for (const l of ls || []) await q(`INSERT INTO wa_bot_jobs(wamid, phone_norm, kind, due_at, ev, log_id) VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT (wamid) DO NOTHING RETURNING id`, [`lead:${l.phone_norm}:${riyadhDay(now)}`, l.phone_norm, "lead_followup", now.toISOString(), jb({ at: new Date(l.at).toISOString(), lang: l.lang === "en" ? "en" : "ar" }), null]);
     }
+    /* FU1 — «متابعة اللي ردّ وماطلبش»: الفرامل الأول (نسبة «إيقاف» / حظر في متابعات اليوم)، وبعدها المرشّحين — جوّه الساعات المسموحة بس: بره الساعات مفيش شغلة،
+       وأول دقيقة جوّاها بتلقط اللي سكتوا بالليل طول ما نافذتهم مفتوحة. شغلة واحدة لكل نافذة (rf:<الرقم>:<وقت آخر رسالة ليه>)، وكل الشروط بتتراجع في runReplyFollowUp. */
+    if (cfg.replyFollowUp && cfg.replyFollowUpDailyCap > 0) {
+      let br = null; try { br = await brakeTick(settings, cfg, now); } catch (e) { console.error("[wabot] followup brake:", e.message); br = null; }
+      if (br && !br.on && inFollowHours(now, cfg)) {
+        const cs = await q(FU_SQL.candidates, [Math.ceil(cfg.replyFollowUpMin), 24 * 60 - 10, Math.ceil(cfg.replyFollowUpCampaignHours), [...FU_TAP_KEYS], Math.ceil(cfg.replyFollowUpTapHours), cfg.mode === "test" ? cfg.testPhones : null, 30]);
+        for (const c of cs || []) {
+          const li = new Date(c.last_in);
+          if (!Number.isFinite(li.getTime())) continue;
+          await q(`INSERT INTO wa_bot_jobs(wamid, phone_norm, kind, due_at, ev, log_id) VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT (wamid) DO NOTHING RETURNING id`, [`rf:${c.phone_norm}:${li.getTime()}`, c.phone_norm, FU_KIND, now.toISOString(), jb({ lastIn: li.toISOString() }), null]);
+        }
+      }
+    }
   }
   /* رسالة من البوت من غير رسالة عميل وراها: إرسال + صف في السجل (زي متابعة السلة). ⇒ خطأ الإرسال أو null */
-  async function sendOwn(phone, cfg, now, rep, lang, key, detail) {
+  /* FU1: نفس الإرسال بس بيرجّع رقم الرسالة كمان (wamid) — دفتر المتابعة محتاجه عشان يعرف لو الرسالة فشلت بعدين (حظر / ماوصلتش) للفرامل */
+  async function sendOwnX(phone, cfg, now, rep, lang, key, detail) {
     let pl, plain;
-    try { pl = toPayload(rep, { cfg, lang, interactive: cfg.interactive, footer: false }); plain = toPayload(rep, { cfg, lang, interactive: false, footer: false }); } catch { return "text_invalid"; }
-    if (payloadProblem(pl) || payloadProblem(plain)) return "payload_invalid";
+    try { pl = toPayload(rep, { cfg, lang, interactive: cfg.interactive, footer: false }); plain = toPayload(rep, { cfg, lang, interactive: false, footer: false }); } catch { return { err: "text_invalid", wamid: null }; }
+    if (payloadProblem(pl) || payloadProblem(plain)) return { err: "payload_invalid", wamid: null };
     const allow = cfg.mode === "test" ? cfg.testPhones : null;
     let r = await wa.sendFreeform({ phoneNorm: phone, payload: pl, source: "bot", allowList: allow });
     if (!r.ok && !r.skipped && pl.type === "interactive") { pl = plain; r = await wa.sendFreeform({ phoneNorm: phone, payload: pl, source: "bot", allowList: allow }); }
@@ -2946,8 +3016,9 @@ const fl = await q(`SELECT count(*)::int AS n FROM wa_bot_log WHERE phone_norm=$
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'pending',$11) ON CONFLICT (wamid) DO NOTHING RETURNING id`,
       [null, now.toISOString(), phone, cfg.mode, "followup", "", key, key, 0, lang, false]);
     if (lg && lg[0]) await finishLog(lg[0].id, { decision: r.ok ? "replied" : "failed", reason: key, key, replies: r.ok ? [pl] : null, sent: r.ok ? 1 : 0, error: err, detail });
-    return err;
+    return { err, wamid: r.ok ? r.wamid || null : null };
   }
+  async function sendOwn(phone, cfg, now, rep, lang, key, detail) { return (await sendOwnX(phone, cfg, now, rep, lang, key, detail)).err; }
   /* شروط مشتركة للرسالتين: الوضع، رقم التجربة، «مش عميل»، نافذة الـ٢٤ ساعة، الإيقاف، الكتم. ⇒ سبب المنع أو null (+ m = صف النافذة). */
   /* ST2: سطر ثابت واحد للعميل من حركة الفريق (حوّل للمدير). نفس أقفال رسايل البوت: الوضع، أرقام التجربة، نافذة الـ٢٤ ساعة، «إيقاف». المحادثة المكتومة مش مانع هنا
      (التحويل نفسه هو اللي كاتمها). ⇒ "sent" أو سبب المنع. */
@@ -3036,7 +3107,7 @@ const fl = await q(`SELECT count(*)::int AS n FROM wa_bot_log WHERE phone_norm=$
     if (qs !== qe && (qs < qe ? hr >= qs && hr < qe : hr >= qs || hr < qe)) return no("quiet_hours");
     if (chat.handoff_at && now.getTime() - Date.parse(chat.handoff_at) < cfg.handoffOpenHours * 3600_000) return no("handover_open");
     if (chat.window_sell_at && Date.parse(chat.window_sell_at) > Date.parse(ev.lastIn)) return no("window_used");
-    const used = await q(`SELECT 1 FROM wa_bot_jobs WHERE phone_norm=$1 AND kind IN ('assist_followup','assist_nudge','lead_followup','window_keep','assist_reminder') AND status='done' AND done_at > $2 LIMIT 1`, [phone, ev.lastIn]);
+    const used = await q(`SELECT 1 FROM wa_bot_jobs WHERE phone_norm=$1 AND kind IN ('assist_followup','assist_nudge','lead_followup','window_keep','assist_reminder','${FU_KIND}') AND status='done' AND done_at > $2 LIMIT 1`, [phone, ev.lastIn]);      // FU1: + متابعة اللي ردّ
     if (used === null) return no("used_check_failed"); if (used.length) return no("window_used");
     const caps = await q(`SELECT count(*) FILTER (WHERE done_at >= (date_trunc('day', NOW() AT TIME ZONE 'Asia/Riyadh') AT TIME ZONE 'Asia/Riyadh'))::int AS today,
                                  count(*) FILTER (WHERE phone_norm=$1 AND done_at > NOW() - INTERVAL '7 days')::int AS week
@@ -3050,6 +3121,9 @@ const fl = await q(`SELECT count(*)::int AS n FROM wa_bot_log WHERE phone_norm=$
     let rep = null, reason = null;
     const ord = await q(`SELECT order_no FROM shop_orders WHERE phone_norm=$1 AND NOT COALESCE(is_test,false) AND status IN ('pos_created','accepted','courier_requested','courier_assigned','on_the_way') AND created_at > NOW() - INTERVAL '12 hours' ORDER BY created_at DESC LIMIT 1`, [phone]);
     if (ord && ord[0]) { reason = "open_order"; rep = { body: fill("wk_order", textOf(cfg, "wk_order", lang), { order_no: ord[0].order_no }), cta: { title: textOf(cfg, "cta_track", lang), url: `${STORE}/track/${encodeURIComponent(ord[0].order_no)}` } }; }
+    /* FU1: «لا شكراً» على متابعة خلال replyFollowUpDeclineDays ⇒ مفيش رسايل بيع (مكافأة / سلة) — تتبّع طلبه الشغّال بس */
+    const declinedFu = Boolean(chat.follow_declined_at && now.getTime() - Date.parse(chat.follow_declined_at) < cfg.replyFollowUpDeclineDays * 86400_000);
+    if (!rep && declinedFu) return no("declined");
     if (!rep && assist && !op.marketing_off_at) { try { const of = await assist.get_offers(phone), soon = ((of && of.rewards) || []).find((r) => r.freeDelivery && r.expires && Date.parse(`${r.expires}T23:59:59+03:00`) - now.getTime() < 3 * 86400_000);
       if (soon) { const line = salesTextOf(cfg, "sb_reward_until", { code: soon.code, from: soon.minTotal, until: dayMonth(soon.expires) }, lang); if (line) { reason = "reward_expiring"; rep = { body: line }; } } } catch { /* من غير المكافأة */ } }
     if (!rep) { const cart = await q(`SELECT b.code FROM wa_bot_carts b WHERE b.phone_norm=$1 AND b.created_at > $2::timestamptz - INTERVAL '2 hours' AND b.expires_at > NOW()
@@ -3079,6 +3153,7 @@ const fl = await q(`SELECT count(*)::int AS n FROM wa_bot_log WHERE phone_norm=$
     if (Number(m.wrote) > 0) return no("customer_wrote"); if (Number(m.staff) > 0) return no("staff_in_chat");
     if (op.marketing_off_at) return no("stopped");
     if (chat.handoff_at && now.getTime() - Date.parse(chat.handoff_at) < cfg.handoffOpenHours * 3600_000) return no("handover_open");
+    if (chat.follow_declined_at && now.getTime() - Date.parse(chat.follow_declined_at) < cfg.replyFollowUpDeclineDays * 86400_000) return no("declined");      // FU1: «لا شكراً» = مفيش متابعات
     const g5 = await liveGate5({ cfg, settings, phone, chat, ev: {}, now });
     if (g5.never || g5.out) return no(g5.never ? "never_reply" : "out_of_scope");
     const out = await q(OUT_AFTER_SQL, [phone, ev.at]);
@@ -3092,6 +3167,191 @@ const fl = await q(`SELECT count(*)::int AS n FROM wa_bot_log WHERE phone_norm=$
     const err = await sendOwn(phone, cfg, now, rep, lang, "lead_followup", null);
     if (!err) await q("UPDATE wa_bot_chats SET last_disclosed_at=NOW() WHERE phone_norm=$1", [phone]);
     return end(err ? "cancelled" : "done", err ? `send_failed:${err}`.slice(0, 80) : null);
+  }
+
+  /* ══ FU1 (١٥/١٠) — «متابعة اللي ردّ وماطلبش» (wafollow.js) ═══════════════════════════════════════════════
+     الفرامل: صف واحد (wa_followup_brake). مشدودة = اتشدّت ومااتفكّتش بعدها. ⇒ { on, at, … } أو null (القاعدة ماردّتش ⇒ المتابعة مابتتبعتش). */
+  async function brakeState() {
+    const r = await q(FU_SQL.brakeGet, []);
+    if (r === null) return null;
+    const x = r[0] || null;
+    const on = Boolean(x && x.on_at && !(x.cleared_at && Date.parse(x.cleared_at) >= Date.parse(x.on_at)));
+    return { on, at: x && x.on_at ? isoOf(x.on_at) : null, clearedAt: x && x.cleared_at ? isoOf(x.cleared_at) : null, clearedBy: (x && x.cleared_by) || null,
+      sent: x ? Number(x.sent) || 0 : 0, bad: x ? Number(x.bad) || 0 : 0, pct: x ? Number(x.pct) || 0 : 0, detail: (x && x.detail) || null };
+  }
+  /* كل دقيقة (sweeps): متابعات يوم الشغل (من آخر فكّ للفرامل لو بعد بدايته) — «إيقاف» بعد المتابعة أو رسالتها فشلت فوق الحد ⇒ تتشدّ مرة واحدة،
+     الشغلات المستنية تتلغي، ويتبعت تنبيه للمالك. مابتتفكّش لوحدها: المالك بيفكّها من اللوحة (POST /api/cms/wabot/followups/brake). */
+  async function brakeTick(settings, cfg, now) {
+    const st = await brakeState();
+    if (!st || st.on) return st;
+    const from = Math.max(bizDayStart(now).getTime(), st.clearedAt ? Date.parse(st.clearedAt) : 0);
+    const r = await q(FU_SQL.dayStats, [new Date(from).toISOString()]);
+    if (!r || !r[0]) return st;
+    const x = r[0], v = brakeVerdict({ sent: x.sent, bad: x.bad }, cfg.replyFollowUpBrakePct);
+    if (!v.trip) return st;
+    const detail = `${Number(x.bad) || 0} من ${Number(x.sent) || 0} متابعة النهارده (${Number(x.stopped) || 0} إيقاف، ${Number(x.blocked) || 0} ماوصلتش) = ${v.pct}٪، والحد ${cfg.replyFollowUpBrakePct}٪`;
+    const set = await q(FU_SQL.brakeSet, [Number(x.sent) || 0, Number(x.bad) || 0, v.pct, detail]);
+    if (!set || !set.length) return { ...st, on: true };      // اتشدّت من نسخة تانية قبلنا ⇒ التنبيه بتاعها
+    await q(FU_SQL.cancelPending, ["braked"]);
+    try { await brakeAlert(settings, cfg, detail); } catch (e) { console.error("[wabot] brake alert:", e.message); }
+    return { ...st, on: true, detail };
+  }
+  /* التنبيه: «حاجة غريبة» للمدير والملاك (wateam)، ولو مااتبعتتش من هناك ⇒ SMS واحد لأرقام التنبيه — في وضع العملاء (أو التجربة مع alertInTest) بس */
+  async function brakeAlert(settings, cfg, detail) {
+    const res = await oddThing(settings, cfg, "followup_brake", null, { detail: `متابعات الردود وقفت لوحدها: ${detail}. فكّ الفرامل من إعدادات البوت بعد ما تراجع.`, repeatMin: 60 });
+    if (["sent", "queued", "quiet", "held", "repeat"].includes(res)) return res;
+    if (!(cfg.mode === "live" || (cfg.mode === "test" && cfg.alertInTest)) || !sendSms) return res || "off";
+    const sc = staffConfig(settings);
+    const phones = cfg.llm.alertPhones.length ? cfg.llm.alertPhones : cfg.alertPhones.length ? cfg.alertPhones : sc.alertPhones;
+    const body = fitOneSms(sc.lang === "ar" ? "فريش كاتس: متابعات واتساب وقفت لوحدها (إيقاف/حظر فوق الحد). فكّها من اللوحة." : "Fresh Cuts WhatsApp: reply follow-ups paused automatically (too many stops/blocks today). Clear the brake in the dashboard.");
+    let sent = 0;
+    for (const p of phones) { try { const r = await sendSms({ phoneNorm: p, body, kind: "staff", ref: "wabot followup_brake" }); if (!(r && r.suppressed)) sent++; } catch (e) { console.error("[wabot] brake sms:", e.message); } }
+    return sent ? "sms" : "failed";
+  }
+  /* المحتوى بالترتيب (wafollow.js): عرض الحملة المخزّن بنفس سعره وتوصيله ⇒ سلة اتعملت في المحادثة ⇒ اللي شافه ⇒ طبقه المفضل ⇒ سطر محايد.
+     كل سعر من النظام الحين (العرض = tapOffer بالحرف، الصنف/البوكس = المنيو والبوكسات بالكاش المحدّث بس، والسلة لازم تطلع بنفس السعر وإلا مفيش).
+     ⇒ { via, ref, lang, rep: { body, buttons }, cart_code?, cart_total? } */
+  async function followContent({ phone, cfg, settings, now, tg, conv, lastIn, name }) {
+    const L = conv.lang === "en" ? "en" : "ar";
+    const hiOf = (LL) => { if (!name) return ""; try { return fill("rf_hi", textOf(cfg, "rf_hi", LL), { name }).trim(); } catch { return ""; } };
+    const make = (key, LL, vars, extra) => ({ ...extra, lang: LL, rep: { body: fill(key, textOf(cfg, key, LL), { hi: hiOf(LL), ...vars }), buttons: [{ id: "rf:yes", title: textOf(cfg, "btn_rf_yes", LL) }, { id: "rf:no", title: textOf(cfg, "btn_rf_no", LL) }] } });
+    const neutral = (ref) => make("rf_neutral", L, {}, { via: "neutral", ref: ref || null });
+    const CART_URL = /^https:\/\/freshcuts\.sa\/c\/[a-z0-9]{6,16}$/;
+    const linksOn = async (slugs) => { const r = await q("SELECT slug FROM cms_links WHERE slug = ANY($1::text[]) AND active", [[...new Set(slugs.filter(Boolean))]]); return new Set((r || []).map((x) => x.slug)); };
+    const liveCart = async () => { const r = await q(FU_SQL.cartLive, [phone, tg.at]); return r && r[0] ? String(r[0].code) : null; };
+    /* ١) عرض الحملة: آخر رسالة حملة للرقم ده «طبقك المفضل» (FD1) وردّه جه بعدها ⇒ نفس العرض بالحرف محسوب الحين + سلة جاهزة بنفس السعر. اتغيّر أي حاجة ⇒ سطر من غير أرقام. */
+    if (cfg.replyFollowUpOffer && tg.trigger === "campaign" && favApi()) {
+      let camp = null; try { camp = await favApi().lastOffer(phone, cfg.campaignOfferHours); } catch (e) { console.error("[wabot] followup offer:", e.message); camp = null; }
+      if (camp && camp.fav && Date.parse(camp.sentAt) <= Date.parse(lastIn)) {
+        let t = null; try { t = await favApi().tapOffer(phone, camp.fav, { assist, sent: camp.values }); } catch (e) { console.error("[wabot] followup offer check:", e.message); t = null; }
+        const phrase = t && t.ok ? offerPhrase(t) : null;
+        const ref = String(camp.fav.slug || camp.fav.pid || "").slice(0, 60);
+        if (phrase && t.cart) {
+          let sv = null; try { sv = await favApi().saveCart(phone, t, { assist, source: "followup" }); } catch (e) { console.error("[wabot] followup offer cart:", e.message); sv = null; }
+          if (sv && sv.ok && CART_URL.test(String(sv.url || ""))) return make("rf_offer", "ar", { offer: phrase, link: sv.url }, { via: "offer", ref, cart_code: sv.code || String(sv.url).split("/").pop(), cart_total: t.price });
+        } else if (phrase && t.boxSlug) {
+          const on = await linksOn([t.boxSlug, cfg.links.organic]);
+          const slug = on.has(t.boxSlug) ? t.boxSlug : on.has(cfg.links.organic) ? cfg.links.organic : null;
+          if (slug) return make("rf_offer_box", "ar", { offer: phrase, link: `${STORE}/l/${slug}` }, { via: "offer_box", ref: t.boxSlug });
+        }
+        const why = `offer_changed:${String((t && t.why) || (t && t.ok ? "cart_not_saved" : "failed")).slice(0, 40)}`;
+        const code = await liveCart();
+        return code ? make("rf_cart", L, { link: `${STORE}/c/${code}` }, { via: "cart", ref: why, cart_code: code }) : neutral(why);
+      }
+    }
+    /* ٢) سلة جاهزة اتعملت في المحادثة (المساعد / الوزن / نفس الطلب / الحملة) ولسه صالحة ⇒ نفس الرابط، من غير أرقام */
+    { const code = await liveCart(); if (code) return make("rf_cart", L, { link: `${STORE}/c/${code}` }, { via: "cart", ref: null, cart_code: code }); }
+    /* ٣) اللي شافه: أحدث صنف / بوكس / قسم البوت عرضه في المحادثة ولسه متاح */
+    if (cfg.replyFollowUpLooked) {
+      const menu = await menuIndex(settings, now, true), bl = await bundles(true);
+      const lk = menu ? pickLooked(conv.looked, { menu, bundles: bl }) : null;
+      if (lk) {
+        const on = await linksOn([lk.kind === "box" ? lk.slug : null, "wab-menu", cfg.links.organic]);
+        const fallback = on.has(cfg.links.organic) ? cfg.links.organic : null;
+        const nm = L === "en" ? lk.nameEn : lk.name;
+        if (lk.kind === "item" && !lk.byWeight && assist) {
+          let made = null; try { made = await assist.build_cart(phone, { option: "delivery", items: [{ id: lk.id, qty: 1 }] }, { save: true, source: "followup" }); } catch (e) { console.error("[wabot] followup item cart:", e.message); made = null; }
+          if (made && made.ok && CART_URL.test(String(made.link || "")) && Math.abs((Number(made.subtotal) || 0) - lk.price) < 0.01) return make("rf_item", L, { dish: nm, price: money(lk.price), link: made.link }, { via: "item", ref: lk.id, cart_code: made.code, cart_total: lk.price });
+        } else if (lk.kind === "item" && lk.byWeight) {
+          const slug = on.has("wab-menu") ? "wab-menu" : fallback;
+          if (slug) return make("rf_item_page", L, { dish: nm, link: `${STORE}/l/${slug}#item-${lk.id}` }, { via: "item_page", ref: lk.id });
+        } else if (lk.kind === "box") {
+          const slug = on.has(lk.slug) ? lk.slug : fallback;
+          if (slug) return make("rf_box", L, { box: nm, price: money(lk.price), link: `${STORE}/l/${slug}` }, { via: "box", ref: lk.slug });
+        } else if (lk.kind === "section") {
+          const slug = on.has("wab-menu") ? "wab-menu" : fallback;
+          if (slug) return make("rf_section", L, { section: nm, link: `${STORE}/l/${slug}` }, { via: "section", ref: lk.id });
+        }
+      }
+    }
+    /* ٤) طبقه المفضل (نفس ترتيب الحملة) في سلة جاهزة بسعره الحين */
+    if (cfg.replyFollowUpFav && favApi() && assist && typeof favApi().favDishFor === "function") {
+      let fd = null; try { fd = await favApi().favDishFor(phone); } catch (e) { console.error("[wabot] followup fav:", e.message); fd = null; }
+      if (fd && fd.ok) {
+        let made = null; try { made = await assist.build_cart(phone, fd.input, { save: true, source: "followup" }); } catch (e) { console.error("[wabot] followup fav cart:", e.message); made = null; }
+        if (made && made.ok && CART_URL.test(String(made.link || "")) && Math.abs((Number(made.subtotal) || 0) - Number(fd.price)) < 0.01) return make("rf_fav", L, { dish: fd.name, price: money(fd.price), link: made.link }, { via: "fav", ref: String(fd.spec.pid), cart_code: made.code, cart_total: Number(fd.price) });
+      }
+    }
+    return neutral(null);
+  }
+  /* الشغلة نفسها: كل الشروط بتتراجع وقت التنفيذ (أي فحص مانعرفش نتيجته ⇒ مانبعتش). الحاجات المؤقتة (لسه في وقت السكوت، بره الساعات المسموحة، المطعم مقفول،
+     سقف اليوم، متابعة تانية مستنية ميعادها) ⇒ الشغلة بتستنى (due_at جديد) طول ما النافذة هتفضل مفتوحة، وإلا بتتلغي. */
+  async function runReplyFollowUp(j, settings, cfg, now, end) {
+    const phone = String(j.phone_norm || ""), ev = typeof j.ev === "string" ? JSON.parse(j.ev) : (j.ev || {});
+    const no = (reason) => end("cancelled", reason);
+    if (!cfg.replyFollowUp || !(cfg.replyFollowUpDailyCap > 0)) return no("off");
+    const lastInMs = Date.parse(ev.lastIn || "");
+    if (!Number.isFinite(lastInMs)) return no("bad_job");
+    const windowEnd = lastInMs + (24 * 60 - 10) * 60_000;
+    const later = async (atMs, reason) => {
+      if (!(atMs < windowEnd)) return no(`window_would_close:${reason}`);
+      await q(FU_SQL.defer, [j.id, new Date(Math.max(atMs, now.getTime() + 1000)).toISOString(), `wait:${reason}`]);
+      return "deferred";
+    };
+    const br = await brakeState();
+    if (br === null) return no("brake_check_failed"); if (br.on) return no("braked");
+    /* +١ مللي ثانية: الوقت المخزّن في الشغلة متقطّع للمللي (Postgres بالميكرو) — من غيرها رسالته الأخيرة نفسها كانت هتتعدّ «كتب تاني» */
+    const [why, m, chat, op] = await ownGate(phone, settings, cfg, now, new Date(lastInMs + 1).toISOString());
+    if (why) return no(why);
+    if (Number(m.wrote) > 0) return no("customer_wrote");
+    if (Number(m.staff) > 0) return no("staff_in_chat");
+    if (op.marketing_off_at) return no("stopped");
+    const oo = await q(FU_SQL.optedOut, [phone]);
+    if (oo === null) return no("optout_check_failed"); if (oo.length) return no("opted_out");
+    if (chat.handoff_at && now.getTime() - Date.parse(chat.handoff_at) < cfg.handoffOpenHours * 3600_000) return no("handover_open");
+    if (chat.follow_declined_at && now.getTime() - Date.parse(chat.follow_declined_at) < cfg.replyFollowUpDeclineDays * 86400_000) return no("declined");
+    const g5 = await liveGate5({ cfg, settings, phone, chat, ev: {}, now });
+    if (g5.never || g5.out) return no(g5.never ? "never_reply" : "out_of_scope");
+    const lo = await q(FU_SQL.lastOut, [phone, ev.lastIn]);
+    if (lo === null || !lo[0]) return no("out_check_failed");
+    if (!lo[0].at) return no("not_answered");      // البوت سكت على رسالته ⇒ دي متابعة EX6 (leadFollowUpMin) مش دي
+    if (Number(lo[0].mkt) > 0) return no("campaign_after");
+    const quietFrom = Date.parse(isoOf(lo[0].at)) + cfg.replyFollowUpMin * 60_000;
+    if (quietFrom > now.getTime()) return later(quietFrom, "silence");
+    const tr = await q(FU_SQL.trigger, [phone, ev.lastIn, Math.ceil(cfg.replyFollowUpCampaignHours), [...FU_TAP_KEYS], Math.ceil(cfg.replyFollowUpTapHours)]);
+    if (tr === null) return no("trigger_check_failed");
+    const tg = followTrigger({ campAt: tr[0] ? tr[0].camp_at : null, tapAt: tr[0] ? tr[0].tap_at : null });
+    if (!tg) return no("no_trigger");
+    const cv = await q(FU_SQL.conv, [phone, tg.at]);
+    if (cv === null) return no("conv_check_failed");
+    const conv = convFacts(cv);
+    if (conv.lastKey && FU_CLOSING_KEYS.includes(conv.lastKey)) return no(`closing:${conv.lastKey}`);
+    if (conv.saidNo) return no("said_no");
+    const cmp = await q("SELECT 1 FROM wa_bot_log WHERE phone_norm=$1 AND at > NOW() - INTERVAL '24 hours' AND (reply_key IN ('complaint','problem','change') OR handoff IN ('complaint','problem','order_change','allergy_severe')) LIMIT 1", [phone]);
+    if (cmp === null) return no("complaint_check_failed"); if (cmp.length) return no("complaint_today");
+    const ord = await q(FU_SQL.ordered, [phone, new Date(Math.min(Date.parse(tg.at), now.getTime() - 24 * 3600_000)).toISOString()]);
+    if (ord === null) return no("order_check_failed"); if (ord.length) return no("ordered");
+    const rc = await q(FU_SQL.recent, [phone, ev.lastIn, [...FU_OTHER_JOBS]]);
+    if (rc === null || !rc[0]) return no("recent_check_failed");
+    if (Number(rc[0].mine) > 0 || Number(rc[0].others) > 0) return no("window_used");
+    if (Number(rc[0].pending) > 0) return later(now.getTime() + 5 * 60_000, "other_followup_pending");
+    const ig = await q(FU_SQL.ignored, [phone, [...FU_PROACTIVE_KEYS], Math.ceil(cfg.replyFollowUpIgnoredDays)]);
+    if (ig === null || !ig[0]) return no("ignored_check_failed");
+    if (Number(ig[0].n) >= cfg.replyFollowUpIgnoredMax) return no("ignored");
+    if (!inFollowHours(now, cfg)) return later(nextFollowStart(now, cfg).getTime(), "quiet_hours");
+    let open = null; try { open = settings?.hours ? openState(settings, now) : null; } catch { open = null; }
+    if (!open) return no("hours_unknown");
+    if (open.open !== true) { const nx = now.getTime() + 15 * 60_000; return later(inFollowHours(new Date(nx), cfg) ? nx : nextFollowStart(now, cfg).getTime(), "closed"); }
+    const dc = await q(FU_SQL.dayCount, [bizDayStart(now).toISOString()]);
+    if (dc === null || !dc[0]) return no("cap_check_failed");
+    if (Number(dc[0].n) >= cfg.replyFollowUpDailyCap) return later(nextFollowStart(now, cfg).getTime(), "daily_cap");
+    const nmRow = ((await q(`SELECT customer->>'name' AS name FROM shop_orders WHERE phone_norm=$1 AND NOT COALESCE(is_test,false) AND status NOT IN ('expired','pending_payment') ORDER BY created_at DESC LIMIT 1`, [phone])) || [])[0];
+    let pick = null;
+    try { pick = await followContent({ phone, cfg, settings, now, tg, conv, lastIn: ev.lastIn, name: greetName(nmRow && nmRow.name) }); } catch (e) { console.error("[wabot] followup content:", e.message); pick = null; }
+    if (!pick) { try { pick = { via: "neutral", ref: "content_failed", lang: conv.lang, rep: { body: fill("rf_neutral", textOf(cfg, "rf_neutral", conv.lang), {}), buttons: [{ id: "rf:yes", title: textOf(cfg, "btn_rf_yes", conv.lang) }, { id: "rf:no", title: textOf(cfg, "btn_rf_no", conv.lang) }] } }; } catch { return no("text_invalid"); } }
+    let rep = pick.rep, disclosed = false;
+    /* رسالة بنبدأها إحنا: لو التعريف مستحق (مااتقالش في آخر disclosureHours) بيتقال فوقها */
+    if (!chat.last_disclosed_at || now.getTime() - Date.parse(chat.last_disclosed_at) >= cfg.disclosureHours * 3600_000) { try { rep = { ...rep, body: `${disclosureLine(cfg, pick.lang, settings)}\n${rep.body}` }; disclosed = true; } catch { /* من غير التعريف */ } }
+    /* الحجز قبل الإرسال: صف واحد للنافذة — مستحيل متابعتين لنفس النافذة */
+    const rs = await q(FU_SQL.reserve, [String(j.wamid || `rf:${phone}:${lastInMs}`), phone, tg.trigger, tg.at, ev.lastIn, pick.via, pick.ref ? String(pick.ref).slice(0, 80) : null, pick.lang, pick.cart_code || null, pick.cart_total ?? null]);
+    if (rs === null) return no("reserve_failed"); if (!rs.length) return no("already_reserved");
+    const sx = await sendOwnX(phone, cfg, now, rep, pick.lang, FU_KIND, `${pick.via}${pick.ref ? `:${String(pick.ref).slice(0, 60)}` : ""}`);
+    await q(FU_SQL.mark, [rs[0].id, sx.err ? "failed" : "sent", sx.wamid || null, sx.err ? String(sx.err).slice(0, 120) : null]);
+    if (sx.err) return end("cancelled", `send_failed:${sx.err}`.slice(0, 80));
+    if (disclosed) await q("UPDATE wa_bot_chats SET last_disclosed_at=NOW() WHERE phone_norm=$1", [phone]);
+    /* المساعد لو له جلسة شغّالة مع العميل: الرسالة بتتلحق بيها عشان ردّه المكتوب يتفهم (زي متابعة المساعد نفسه) */
+    if (assistStore && cfg.assist) { try { const s0 = await assistStore.loadSession(phone, now, cfg.assist.sessionMin); if (s0) { const s1 = JSON.parse(JSON.stringify(s0)); s1.messages.push({ role: "assistant", content: [{ type: "text", text: rep.body }] }); s1.state.say = [...(s1.state.say || []), rep.body].slice(-20); await assistStore.saveSession(phone, s1, now); } } catch (e) { console.error("[assist] followup session:", e.message); } }
+    return end("done", `sent:${pick.via}`);
   }
   async function runDueJobs() {
     await ready;
@@ -3114,6 +3374,7 @@ const fl = await q(`SELECT count(*)::int AS n FROM wa_bot_log WHERE phone_norm=$
         if (j.kind === "paid_note") { await runPaidNote(j, settings, cfg, now, end); ran++; continue; }
         if (j.kind === "window_keep") { await runWindowKeep(j, settings, cfg, now, end); ran++; continue; }
         if (j.kind === "lead_followup") { await runLeadFollowUp(j, settings, cfg, now, end); ran++; continue; }
+        if (j.kind === FU_KIND) { await runReplyFollowUp(j, settings, cfg, now, end); ran++; continue; }      // FU1
         if (j.kind === "assist_nudge") { await runNudge(j, settings, cfg, now, end); ran++; continue; }
         if (j.kind === "assist_reminder") { await runReminder(j, settings, cfg, now, end); ran++; continue; }
         if (j.kind === "media_burst") { await runMediaBurst(j, ev, settings, cfg, now, end); ran++; continue; }
@@ -3570,6 +3831,7 @@ const fl = await q(`SELECT count(*)::int AS n FROM wa_bot_log WHERE phone_norm=$
     if (Number(m.wrote) > 0) return no("customer_wrote"); if (Number(m.staff) > 0) return no("staff_in_chat");
     if (op.marketing_off_at) return no("stopped");
     if (chat.handoff_at && now.getTime() - Date.parse(chat.handoff_at) < cfg.handoffOpenHours * 3600_000) return no("handover_open");
+    if (chat.follow_declined_at && now.getTime() - Date.parse(chat.follow_declined_at) < cfg.replyFollowUpDeclineDays * 86400_000) return no("declined");      // FU1: «لا شكراً» = مفيش متابعات
     const out = await q(OUT_AFTER_SQL, [phone, ev.at]);
     if (out === null) return no("out_check_failed"); if (out.length) return no("already_answered");
     const cmp = await q("SELECT 1 FROM wa_bot_log WHERE phone_norm=$1 AND at > NOW() - INTERVAL '24 hours' AND (reply_key IN ('complaint','problem','change') OR handoff IN ('complaint','problem','order_change','allergy_severe')) LIMIT 1", [phone]);
@@ -3579,7 +3841,7 @@ const fl = await q(`SELECT count(*)::int AS n FROM wa_bot_log WHERE phone_norm=$
     if (cart === null) return no("cart_check_failed"); if (cart.length) return no("has_cart");
     const ord = await q("SELECT 1 FROM shop_orders WHERE phone_norm=$1 AND created_at > $2 AND status <> 'expired' LIMIT 1", [phone, since]);
     if (ord === null) return no("order_check_failed"); if (ord.length) return no("ordered");
-    const prior = await q(`SELECT 1 FROM wa_bot_jobs WHERE phone_norm=$1 AND kind IN ('assist_nudge','lead_followup','assist_followup') AND status='done' AND done_at > NOW() - INTERVAL '24 hours' LIMIT 1`, [phone]);
+    const prior = await q(`SELECT 1 FROM wa_bot_jobs WHERE phone_norm=$1 AND kind IN ('assist_nudge','lead_followup','assist_followup','${FU_KIND}') AND status='done' AND done_at > NOW() - INTERVAL '24 hours' LIMIT 1`, [phone]);      // FU1: + متابعة اللي ردّ
     if (prior === null) return no("prior_check_failed"); if (prior.length) return no("already_followed_up");
     let open = null; try { open = settings?.hours ? openState(settings, now) : null; } catch { open = null; }
     if (!open || open.open !== true) return no("closed");
@@ -3715,6 +3977,7 @@ const fl = await q(`SELECT count(*)::int AS n FROM wa_bot_log WHERE phone_norm=$
     const chat = await chatOf(phone);
     if (chat.muted_until && Date.parse(chat.muted_until) > now.getTime()) return no("muted");
     if (chat.handoff_at && now.getTime() - Date.parse(chat.handoff_at) < cfg.handoffOpenHours * 3600_000) return no("handover_open");
+    if (chat.follow_declined_at && now.getTime() - Date.parse(chat.follow_declined_at) < cfg.replyFollowUpDeclineDays * 86400_000) return no("declined");      // FU1: «لا شكراً» = مفيش متابعات
     let open = null; try { open = settings?.hours ? openState(settings, now) : null; } catch { open = null; }
     if (!open) return no("hours_unknown"); if (open.open !== true) return no("closed");
     const left = minutesToClose(settings.hours, now);
@@ -3875,10 +4138,47 @@ const fl = await q(`SELECT count(*)::int AS n FROM wa_bot_log WHERE phone_norm=$
     const om = (await q(`SELECT order_no, stage, template, source FROM wa_messages WHERE direction='out' AND order_no IS NOT NULL AND stage IS NOT NULL
                            AND COALESCE(status,'') NOT IN ('failed','skipped') AND created_at >= $1 AND created_at < $2 ORDER BY created_at LIMIT 3000`, [w.from, w.to])) || [];
     const os = (await q("SELECT order_no, stage, reason FROM wa_policy_skips WHERE at >= $1 AND at < $2 ORDER BY at LIMIT 3000", [w.from, w.to])) || [];
+    /* FU1: «متابعة اللي ردّ وماطلبش» — اتبعت كام، ردّوا كام (أبغى أطلب / لا شكراً)، وقّفوا أو ماوصلتش، سلات، طلبات مدفوعة وقيمتها خلال ٢٤ ساعة من المتابعة، وحالة الفرامل */
+    const fr = ((await q(FU_SQL.report, [w.from, w.to])) || [])[0] || {};
+    const fv = (await q(FU_SQL.reportVia, [w.from, w.to])) || [];
+    const fb = await brakeState();
+    const replyFollowups = { sent: fr.sent || 0, replied: fr.replied || 0, said_yes: fr.said_yes || 0, said_no: fr.said_no || 0, stopped: fr.stopped || 0, blocked: fr.blocked || 0,
+      carts: fr.carts || 0, carts_opened: fr.carts_opened || 0, ordered: fr.ordered || 0, paid_orders: fr.paid_orders || 0, paid_sar: r2(Number(fr.paid_sar) || 0), paid_via_link: fr.paid_via_link || 0,
+      by_via: Object.fromEntries(fv.map((x) => [x.via, Number(x.n) || 0])), brake: fb ? { on: fb.on, at: fb.at, detail: fb.detail } : null };
     const window = { paid_templates: { utility: wm.utility || 0, marketing: wm.marketing || 0, sar: r2((wm.utility || 0) * ru + (wm.marketing || 0) * rmk) }, free_messages: wm.free || 0,
       free_order_updates: wm.free_updates || 0, saved_sar: r2((wm.free_updates || 0) * ru), orders: orderMessagesReport(om, os, ru), keeper: { sent: kp.sent || 0, nothing_useful: kp.nothing_useful || 0, replied: kp.replied || 0, ordered: kp.ordered || 0 },
-      note: "saved_sar = order updates that went out free inside an open window × the utility rate; keeper replied / ordered = within 24 h of the message" };
+      reply_followups: replyFollowups,
+      note: "saved_sar = order updates that went out free inside an open window × the utility rate; keeper replied / ordered = within 24 h of the message; reply_followups: paid orders / SAR = paid website orders from the same number within 24 h of the follow-up (paid_via_link = through the follow-up's own cart link)" };
     return c.json({ ok: true, from: w.from, to: w.to, report: { ...buildMajedReport({ day: w.day, turns, orders, kbRows }), window } });
+  });
+  /* ── FU1 — «متابعة اللي ردّ وماطلبش»: أرقام يوم شغل (‎?day=YYYY-MM-DD‎، من غيره: النهارده) + الإعدادات + الفرامل. قراءة بس، من غير أرقام جوالات. */
+  app.get("/api/cms/wabot/followups", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    await ready;
+    const cfg = botConfig((await getSettingsData()) || {}), now = clock();
+    const today = new Date(bizDayStart(now).getTime() + 3 * 3600_000).toISOString().slice(0, 10);
+    const w = businessDay(/^\d{4}-\d{2}-\d{2}$/.test(String(c.req.query("day") || "")) ? c.req.query("day") : today, now);
+    const r = await q(FU_SQL.report, [w.from, w.to]);
+    if (r === null) return c.json({ ok: false, error: "unavailable" }, 503);
+    const via = (await q(FU_SQL.reportVia, [w.from, w.to])) || [];
+    const x = r[0] || {};
+    return c.json({ ok: true, day: w.day, from: w.from, to: w.to, enabled: cfg.replyFollowUp && cfg.replyFollowUpDailyCap > 0, settings: fuConfig(cfg), brake: await brakeState(),
+      totals: { sent: x.sent || 0, replied: x.replied || 0, said_yes: x.said_yes || 0, said_no: x.said_no || 0, stopped: x.stopped || 0, blocked: x.blocked || 0, carts: x.carts || 0, carts_opened: x.carts_opened || 0,
+        ordered: x.ordered || 0, paid_orders: x.paid_orders || 0, paid_sar: Math.round((Number(x.paid_sar) || 0) * 100) / 100, paid_via_link: x.paid_via_link || 0 },
+      by_via: Object.fromEntries(via.map((v) => [v.via, Number(v.n) || 0])) });
+  });
+  /* فكّ الفرامل (المالك بس): المتابعات بترجع، والنسبة بتتحسب من دلوقتي (اللي قبل الفكّ مابيتعدّش تاني). بيتسجّل في سجل تعديلات البوت. */
+  app.post("/api/cms/wabot/followups/brake", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    const no = ownerOnly(c); if (no) return no;
+    let b; try { b = await c.req.json(); } catch { return c.json({ ok: false, error: "bad_json" }, 400); }
+    if (!b || b.clear !== true) return c.json({ ok: false, error: "invalid", errors: ["clear: true لفكّ الفرامل"] }, 400);
+    await ready;
+    const who = await actorOf(c);
+    const r = await q(FU_SQL.brakeClear, [who]);
+    if (r === null) return c.json({ ok: false, error: "unavailable" }, 503);
+    if (r.length) await q("INSERT INTO wa_bot_config_log(who, changes) VALUES ($1, $2::jsonb)", [who, JSON.stringify([{ path: "replyFollowUpBrake", from: "on", to: "cleared" }])]);
+    return c.json({ ok: true, cleared: r.length > 0, brake: await brakeState() });
   });
 
   /* «اللي البوت عارفه دلوقتي»: نفس الحقايق اللي هيقولها لو اتسأل الحين، من نفس المصادر وبنفس الكاش — عشان المالك يتأكد

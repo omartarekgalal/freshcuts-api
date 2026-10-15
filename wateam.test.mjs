@@ -335,7 +335,7 @@ test("odd things: every kind has its own label and its own switch; an unknown ki
     assert.equal(await off.team.odd({ kind, phone: CUST }), "kind_off", kind);
     assert.equal(off.calls.length, 0, kind);
   }
-  assert.equal(T.ODD_KEYS.length, 13);
+  assert.equal(T.ODD_KEYS.length, 14);      // FU1 (١٥/١٠): + followup_brake
   // 14/10: «quiet» kinds are counted (status quiet: daily digest + dashboard) and send nothing; unsupported_opener is quiet by default
   const q = world(); allOpen(q);
   assert.equal(await q.team.odd({ kind: "unsupported_opener", phone: CUST }), "quiet");
@@ -473,7 +473,7 @@ test("routes: the status shows each member's window (open until … / closed sin
   assert.deepEqual([m3.window.open, m3.window.closedSince, m3.keeper.next], [false, "2026-10-13T06:00:00.000Z", "closed"]);
   assert.deepEqual([m4.window.open, m4.window.lastInAt, m4.window.closedSince, m4.keeper.why], [false, null, null, "never_wrote"]);
   assert.deepEqual(r.templates, { fc_staff_alerts_renew: { approved: true, source: "meta" }, fc_staff_team_notice: { approved: false, source: null }, fc_staff_wa_handoff: { approved: false, source: null } });
-  assert.deepEqual([r.odd.cap, r.odd.sentLastHour], [12, 0]); assert.equal(r.schema.oddKinds.length, 13); assert.equal(r.config.members, undefined);
+  assert.deepEqual([r.odd.cap, r.odd.sentLastHour], [12, 0]); assert.equal(r.schema.oddKinds.length, 14); assert.equal(r.config.members, undefined);      // FU1: + followup_brake
   w.setOwner(false);
   const r2 = (await w.call("GET", "/api/cms/wabot/team")).body;
   assert.ok(r2.members.every((m) => m.phone === undefined && /^\d{4}$/.test(m.last4)));

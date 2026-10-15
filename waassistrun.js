@@ -267,7 +267,8 @@ export const ASSIST_SCHEMA = Object.freeze({
    حالة الطلب، «نفس طلبي السابق»، أسئلة الوصفات (سطر ثابت)، الحساسية الشديدة، المواعيد والموقع وطرق الدفع، الشكر، «القائمة»،
    وكل ضغطة زر أو صف قايمة. المساعد بياخد الباقي — وبس لو مفيش تحويل مفتوح ولا سكوت موظف ولا كتم ولا حارس حلقات. */
 const RULES_OWN = new Set(["review_ok", "review_note", "stop", "start", "resume_all", "resume_updates", "optin_yes", "optin_no", "complaint", "problem", "change", "human", "media", "status", "reorder",
-  "secret", "custom_offer", "hours", "hoursloc", "location", "payment", "thanks", "main", "other_city", "whoami", "weight"]);
+  "secret", "custom_offer", "hours", "hoursloc", "location", "payment", "thanks", "main", "other_city", "whoami", "weight",
+  "rf_yes", "rf_no"]);      // FU1: «أبغى أطلب» (والسلة جاهزة) / «لا شكراً» على رسالة المتابعة — القواعد (السلة نفسها، وتسجيل «لا» لـ٧ أيام)
 const RULES_NOTICE = new Set(["rate", "rate_burst", "handoff_remind"]);
 /* جوّه محادثة المساعد الشغّالة، الأسئلة المعلوماتية دي بتفضل معاه (عطل تقييم ١٢/١٠: «استلام لما تفتحون» راحت لرد المواعيد وقطعت الطلب). */
 const IN_SESSION = new Set(["hours", "hoursloc", "location", "payment", "thanks", "weight"]);      // EX6: طلب بالوزن جوّه جلسة المساعد بيفضل معاه (السلة بتاعته)

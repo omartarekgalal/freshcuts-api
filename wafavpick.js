@@ -353,7 +353,7 @@ export function renderPick(spec, live) {
       phrase = `${dishName(it)} ${showW(normW(w.label_ar) || nz(w.label_ar))}`;
     } else if (it.byWeight) return { ok: false, why: "weight_unknown" };
     if (!(price > 0)) return { ok: false, why: "no_price" };
-    return { ok: true, kind: "item", title: FAV_TITLES.item, main: `${phrase} بـ${money(price)} ر.س`, price, phrase };
+    return { ok: true, kind: "item", title: FAV_TITLES.item, main: `${phrase} بـ${money(price)} ر.س`, price, phrase, short: phrase, shortMain: `${phrase} بـ${money(price)} ر.س` };
   }
   const b = live.boxes.get(nz(spec.slug));
   if (!b) return { ok: false, why: "box_gone" };
@@ -375,7 +375,10 @@ export function renderPick(spec, live) {
      التاريخ نفسه مش «فاضل كام يوم» — نفس النص وقت التجهيز والإرسال والضغطة؛ التاريخ اتغيّر من اللوحة ⇒ النص اتغيّر ⇒ مايتبعتش (offer_changed). */
   const until = b.tier === "group" && b.offerId && live.offerUntil ? untilAr(live.offerUntil.get(b.offerId)) : "";
   const tail = until ? ` ${until}` : "";
-  return { ok: true, kind: b.tier === "group" ? "pack" : "box", title, main: from ? `${phrase} بسعر يبدأ من ${money(price)} ر.س${tail}` : `${phrase} بـ${money(price)} ر.س${tail}`, price, phrase, from, ...(until ? { until } : {}) };
+  /* FU1 (١٥/١٠): نفس السطر من غير وصف المحتوى («بوكس الكريب لشخصين بـ65 ر.س») — لرسالة المتابعة القصيرة. السعر والتاريخ نفس اللي فوق بالظبط. */
+  const short = latinDigits(b.name);
+  return { ok: true, kind: b.tier === "group" ? "pack" : "box", title, main: from ? `${phrase} بسعر يبدأ من ${money(price)} ر.س${tail}` : `${phrase} بـ${money(price)} ر.س${tail}`, price, phrase, from, ...(until ? { until } : {}),
+    short, shortMain: from ? `${short} بسعر يبدأ من ${money(price)} ر.س${tail}` : `${short} بـ${money(price)} ر.س${tail}` };
 }
 
 /* ── التوصيل ────────────────────────────────────────────────────────────────
@@ -684,7 +687,7 @@ export function makeFavPick(deps = {}) {
     if (lineProblem(r.title, line) === "line_too_long" && dl.alt) { dl = { ...dl, text: dl.alt.text, via: dl.alt.via, short: true }; line = `${r.main}، ${dl.text}`; }
     const bad = lineProblem(r.title, line);
     if (bad) return { ok: false, why: bad };
-    return { ok: true, kind: r.kind, title: r.title, line, price: r.price, dl, km: q && q.distanceSource === "google" ? Number(q.routeKm) || null : null };
+    return { ok: true, kind: r.kind, title: r.title, line, price: r.price, dl, km: q && q.distanceSource === "google" ? Number(q.routeKm) || null : null, shortMain: r.shortMain || null };
   }
 
   /* ── الشريحة ───────────────────────────────────────────────────────────── */
@@ -836,7 +839,8 @@ export function makeFavPick(deps = {}) {
     const r = await renderSpec(spec, g, c, { memo: {} });
     if (!r.ok) return { ok: false, why: r.why };
     if (r.title !== sent["offer.title"] || r.line !== sent["offer.line"]) return { ok: false, why: "offer_changed" };
-    const out = { ok: true, kind: r.kind, title: r.title, line: r.line, price: r.price, delivery: r.dl.status, slug: spec.slug || null };
+    /* FU1: shortMain + dlText = نفس العرض في سطر أقصر لرسالة المتابعة (السعر والتوصيل نفس اللي اتراجعوا هنا بالحرف) */
+    const out = { ok: true, kind: r.kind, title: r.title, line: r.line, price: r.price, delivery: r.dl.status, slug: spec.slug || null, shortMain: r.shortMain || null, dlText: r.dl.text || null };
     /* مراجعة FD1 ٣ — السلة على نفس العنوان اللي الرسالة اتكلمت عنه:
        • الرسالة قالت رسم «لعنوانك» (status fee) ⇒ السلة مابتشيلش موقع المحادثة (wa_bot_chats.last_loc) — كان ممكن تفتح على دبوس تاني برسم تاني.
        • العنوان بره النطاق («وتقدر تستلمه من فرعنا») ⇒ السلة استلام. */
@@ -853,14 +857,38 @@ export function makeFavPick(deps = {}) {
     return { ...out, cart: true, cartInput: ci.input, picks: ci.picks, ...(noChatLoc ? { noChatLoc: true } : {}) };
   }
   /* حفظ السلة الجاهزة (صف wa_bot_carts + الرابط) — بعد ما البوت قرر إن الرد هيطلع بيها. نفس السعر تاني وإلا مفيش رابط. */
-  async function saveCart(phone, t, { assist = null } = {}) {
+  async function saveCart(phone, t, { assist = null, source = "campaign" } = {}) {      // FU1: source "followup" ⇒ رابط السلة بيتحسب على المتابعة (fc_link wa-followup)
     if (!t || !t.cartInput || !assist || typeof assist.build_cart !== "function") return { ok: false, why: "no_cart" };
     let made = null;
-    try { made = await assist.build_cart(phone, t.cartInput, { save: true, source: "campaign", ...(t.noChatLoc ? { chatLocation: false } : {}) }); } catch { made = null; }
+    try { made = await assist.build_cart(phone, t.cartInput, { save: true, source: source === "followup" ? "followup" : "campaign", ...(t.noChatLoc ? { chatLocation: false } : {}) }); } catch { made = null; }
     if (!made || !made.ok || !made.link || !(made.lines || []).length) return { ok: false, why: `cart:${(made && (made.error || made.error_link)) || "failed"}` };
     if (Math.abs((Number(made.subtotal) || 0) - Number(t.price)) > 0.01) return { ok: false, why: "cart_price_mismatch" };
     return { ok: true, url: made.link, code: made.code || null };
   }
 
-  return { audienceRows, recheck, lastOffer, yesGate, tapOffer, saveCart, globals, contextFor, renderSpec };
+  /* FU1 (١٥/١٠): طبقه المفضل لرسالة «متابعة اللي ردّ» — نفس ترتيب الحملة (عدد × حداثة من طلبات الموقع ونقطة البيع)، أول طبق متاح الحين في المنيو
+     (مش مشروب ولا إضافة)؛ المشوي بالوزن بوزنه المعتاد (أوزانه مش معروفة الحين ⇒ الطبق اللي بعده). السعر من المنيو الحي بالكاش المحدّث بس (strict).
+     ⇒ { ok, spec, name, price, input (مدخل بنّاء السلة) } أو { ok:false, why } */
+  async function favDishFor(phone) {
+    if (!/^5\d{8}$/.test(nz(phone))) return { ok: false, why: "bad_phone" };
+    const g = await globals();
+    if (!g.ok) return { ok: false, why: g.why };
+    const H = ((await pool.query(FAV_SQL.history, [[phone], FAV_RULES.histPerSource])).rows || []).sort((a, b) => atMs(b.at) - atMs(a.at));
+    if (!H.length) return { ok: false, why: "no_history" };
+    const { list, weights } = rankDishes(H, now());
+    for (const [c] of list) {
+      const it = g.live.byClean.get(c);
+      if (!it || !liveItem(it)) continue;
+      const wv = it.byWeight ? usualWeight(c, weights, it) : null;
+      if (it.byWeight && !wv) continue;
+      const spec = { kind: "item", pid: nz(it.id), vid: wv ? wv.vid : null };
+      const r = renderPick(spec, g.live);
+      const ci = r.ok ? cartInput(spec, g.live) : null;
+      if (!ci) continue;
+      return { ok: true, spec, name: r.phrase, price: r.price, input: ci.input };
+    }
+    return { ok: false, why: "no_live_dish" };
+  }
+
+  return { audienceRows, recheck, lastOffer, yesGate, tapOffer, saveCart, favDishFor, globals, contextFor, renderSpec };
 }
