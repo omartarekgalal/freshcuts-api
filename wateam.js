@@ -142,7 +142,7 @@ export const KNOBS = Object.freeze([
   { key: "portalOffline.backStableMin", type: "num", label: "يتحسب رجع لما يفضل مفتوح", unit: "دقيقة ورا بعض", hint: "فتحة سريعة (بصّة) مابتنهيش التنبيه. ولو بيتفتح كل شوية ومابيفضلش مقفول المدة اللي فوق، طول مدة التكرار، التنبيه بيخلص برضه." },
   { key: "portalOffline.repeatMin", type: "num", label: "الموظف مايوصلوش أكتر من رسالة كل", unit: "دقيقة", hint: "للكاشير والمدير، حتى لو البورتال فتح وقفل كذا مرة: لو اتقفل تاني بعد رسالة بشوية، الرسالة الجاية بتستنى لحد ما المدة دي تخلص. «تمام، رجع» مابتتحسبش." },
   { key: "portalOffline.dailyCap", type: "num", label: "أقصى رسايل «البورتال مقفول» للموظف في اليوم", unit: "رسالة", hint: "بعدها مفيش رسايل «مقفول» تانية للموظف ده لحد اليوم الجاي (٤ الفجر)، والدور بيروح على اللي لسه ليه رصيد. «تمام، رجع» مابتتحسبش، والرسالة اللي ماوصلتش مابتتحسبش." },
-  { key: "portalOffline.managerAfter", type: "num", label: "المدير يتبلّغ بعد", unit: "تنبيهات للكاشير من غير ما يتفتح", hint: "في نفس المرة (من ساعة ما يتقفل لحد ما يرجع). بعدها الدور على المدير في ميعاد رسالة الكاشير الجاية، وياخد تذكير كل مدة التكرار لحد ما يتفتح أو يوصل لأقصى عدد في اليوم. مفيش مدير، أو المدير وصل لأقصى عدد ⇒ الكاشير ياخد تاني. الكاشير وصل لأقصى عدد ⇒ الدور على المدير في ميعاد رسالة الكاشير الجاية." },
+  { key: "portalOffline.managerAfter", type: "num", label: "المدير يتبلّغ بعد", unit: "تنبيهات للكاشير من غير ما يتفتح", hint: "في نفس المرة (من ساعة ما يتقفل لحد ما يرجع). بعدها الدور على المدير في ميعاد رسالة الكاشير الجاية، وياخد تذكير كل مدة التكرار لحد ما يتفتح أو يوصل لأقصى عدد في اليوم. مفيش مدير، أو المدير وصل لأقصى عدد ⇒ الكاشير ياخد تاني. الكاشير وصل لأقصى عدد ⇒ الدور على المدير في ميعاد رسالة الكاشير الجاية. واتساب المدير مش بيوصله (آخر محاولتين فشلوا) ⇒ الكاشير ياخد تاني، والمدير بيتجرّب كل مدة التكرار لحد ما رسالة توصله فيرجعله الدور." },
   { key: "portalOffline.managerOnHold", type: "bool", label: "اتقفل تاني بعد رسالة للكاشير بشوية ⇒ المدير يعرف على طول", hint: "الكاشير مايوصلوش رسالة تانية قبل مدة التكرار، فلو قفل البورتال تاني بعد رسالة بشوية محدش بيعرف لحد ما المدة تخلص. شغّله لو عايز المدير ياخد رسالة واحدة ساعتها (من رصيده اليومي)." },
   { key: "portalOffline.backNotice", type: "bool", label: "«تمام، البورتال رجع» للمدير", hint: "أول ما يرجع ويفضل مفتوح (أو يفضل يتفتح كل شوية من غير ما يتقفل) — للمدير اللي اتبلّغ في المرة دي بس." },
 ]);
@@ -456,7 +456,7 @@ export function workStartOf(settings, now, maxMin = 18 * 60) {
        طولها ≥ backStableMin وآخر إشارة فيها لسه طازة), streakStart, lastAny (آخر إشارة من أي نوع), hidden (مقفول بالقاعدة بس البوابة شغّالة
        في الخلفية — countBackground مقفول) }. countBackground=false (الافتراضي) ⇒ الإشارات «الظاهرة» بس (last_visible / visible_since). */
 export const PORTAL_FRESH_MS = 150_000;      // = STREAK_GAP_MS في wahandover.js: الجهاز المفتوح بيكتب كل ~٦٠–٧٥ ث
-export const MGR_FAIL_MAX = 2;               // محاولتين للمدير فشلوا في نفس المرة من غير ما واحدة توصل بعدهم ⇒ نرجع للكاشير
+export const MGR_FAIL_MAX = 2;               // آخر محاولتين للمدير في المرة دي فشلوا (مفيش رسالة وصلتله بعدهم) ⇒ الدور للكاشير، والمدير بيتجرّب تاني كل repeatMin
 export const PORTAL_SLACK_MS = 30_000;       // تذبذب الدورة: التكرار كل ٤٥ مايبقاش ٤٦
 /* المراجعة التانية — الحلقة بتخلص لو البورتال مااتقفلش (بقاعدة التنبيه) المدة دي ورا بعض، حتى من غير ما يفضل ظاهر backStableMin.
    أكبر من afterMin دايماً ⇒ بصّة واحدة (بتخلّيه «مش مقفول» afterMin بالظبط) عمرها ما بتنهي الحلقة؛ ومش أقل من repeatMin ⇒ اللي بيتشاف
@@ -767,18 +767,21 @@ export function register(app, ctx, deps = {}) {
     return Number.isFinite(last) ? { ok: false, lastAt: isoOf(last), until: isoOf(last + po.repeatMin * MIN - PORTAL_SLACK_MS) } : { ok: false, lastAt: null, until: null };
   }
   /* رسايل «مقفول» من السجل لكل رقم: day = كاشير + مدير **وصلوا** في اليوم التشغيلي (السقف — «رجع» واللي ماوصلش مابيتحسبوش) ·
-     lastMgr = آخر رسالة مدير وصلت من from (بداية الحلقة) ⇒ المدير اتبلّغ في المرة دي؟ · cashOk = تنبيهات كاشير وصلت للرقم ده من from */
+     lastMgr = آخر رسالة مدير وصلت من from (بداية الحلقة) ⇒ المدير اتبلّغ في المرة دي؟ · cashOk = تنبيهات كاشير وصلت للرقم ده من from ·
+     mgrFail = محاولات مدير فشلت من from **بعد آخر رسالة مدير وصلت** (مراجعة ١٥/١٠: مش كل فشل المرة — فشل ⇐ وصل ⇐ فشل = ١، مش ٢) */
   async function portalLog(now, from = null) {
     const day = bizStart(bizDay(now)).toISOString();
     const rows = await q(`SELECT phone_norm, count(*) FILTER (WHERE kind IN ('cashier','manager') AND ok AND at >= $1::timestamptz)::int AS day,
         max(at) FILTER (WHERE kind='manager' AND ok AND at >= $2::timestamptz) AS last_mgr,
         count(*) FILTER (WHERE kind='cashier' AND ok AND at >= $2::timestamptz)::int AS cash_ok,
-        count(*) FILTER (WHERE kind='manager' AND NOT ok AND at >= $2::timestamptz)::int AS mgr_fail,
-        max(at) FILTER (WHERE kind='manager' AND NOT ok AND at >= $2::timestamptz) AS last_mgr_fail FROM wa_team_log
+        array_agg(at ORDER BY at) FILTER (WHERE kind='manager' AND NOT ok AND at >= $2::timestamptz) AS mgr_fails FROM wa_team_log
         WHERE topic='portal_offline' AND at >= LEAST($1::timestamptz, $2::timestamptz) GROUP BY phone_norm`, [day, from || day]);
     if (rows === null) return null;
     const m = new Map();
-    for (const r of rows) m.set(r.phone_norm, { day: Number(r.day) || 0, lastMgr: tms(r.last_mgr), cashOk: Number(r.cash_ok) || 0, mgrFail: Number(r.mgr_fail) || 0, lastMgrFail: tms(r.last_mgr_fail) });
+    for (const r of rows) {
+      const lastMgr = tms(r.last_mgr), fails = (Array.isArray(r.mgr_fails) ? r.mgr_fails : []).map(tms).filter(Number.isFinite);
+      m.set(r.phone_norm, { day: Number(r.day) || 0, lastMgr, cashOk: Number(r.cash_ok) || 0, mgrFail: fails.filter((f) => !(f <= lastMgr)).length });
+    }
     return m;
   }
   /* وقت الشغل زي ما الدورة شافته (في الذاكرة): open = المواعيد + المطعم مش متوقف (من غير مهلة) · work = عدّت مهلة afterMin من بداية الشغل أو من
@@ -873,7 +876,7 @@ export function register(app, ctx, deps = {}) {
     const opened = e.opened_at || e.since || null;
     const log = await portalLog(now, isoOf(opened));
     if (log === null) { dbTrouble("log_db"); return { ...base, skipped: "log_db" }; }
-    const of = (m) => log.get(m.phone) || { day: 0, lastMgr: NaN, cashOk: 0, mgrFail: 0, lastMgrFail: NaN };
+    const of = (m) => log.get(m.phone) || { day: 0, lastMgr: NaN, cashOk: 0, mgrFail: 0 };
     const capped = (m) => of(m).day >= po.dailyCap;
     /* alerts = جولات اتبعتت للكاشير في المرة دي (السلّم بيمشي بيها حتى لو الإرسال فشل — رقم كاشير مش بيوصله واتساب لازم يوصل للمدير برضه)،
        delivered = جولات وصلت لكاشير واحد على الأقل (من السجل) ⇒ رسالة المدير بتقول اللي وصل بس */
@@ -881,10 +884,13 @@ export function register(app, ctx, deps = {}) {
     /* الدور على مين؟ الكاشير لحد managerAfter جولة في المرة دي؛ بعدها — أو لو الكاشير وصل للسقف اليومي — المدير. المدير وصل للسقف (أو
        مفيش مدير) ⇒ الكاشير يكمّل لحد سقفه: الرسايل ماتقفش طول ما فيه حد ليه رصيد. */
     const reason = !cashiers.some((m) => !capped(m)) ? "cap" : alerts >= po.managerAfter ? "ignored" : null;
-    /* مدير واتساب مش بيوصله (MGR_FAIL_MAX محاولات فشلت في المرة دي ومفيش رسالة وصلت بعد آخر فشل) = مش متاح: الدور يرجع للكاشير بدل ما الكل يسكت
-       طول القفلة (مراجعة ١٥/١٠: الفشل مابيتحسبش في السقف، فمدير رقمه بايظ كان بيمسك الدور للأبد) */
-    const unreachable = (m) => { const o = of(m); return o.mgrFail >= MGR_FAIL_MAX && !(o.lastMgr > o.lastMgrFail); };
+    /* مدير واتساب مش بيوصله = آخر MGR_FAIL_MAX محاولات ليه في المرة دي فشلوا (الفشل بعد آخر رسالة وصلتله بس): مايمسكش الدور — الكاشير ياخد
+       بدل ما الكل يسكت (الفشل مابيتحسبش في السقف، فكان بيمسك الدور طول القفلة). وطول ما الدور كان هيبقى عليه (reason) بنفضل نجرّبه: الحجز
+       بيخلّيها محاولة كل repeatMin للرقم، والفشل مابياخدش من رصيده، وأول رسالة توصله بترجّعله الدور (مراجعة ١٥/١٠: كان بيتساب للآخر، فمدير
+       رجع واتساب بتاعه يشتغل كان بيتعدّى، والكل يسكت أول ما الكاشير يخلّص رصيده). */
+    const unreachable = (m) => of(m).mgrFail >= MGR_FAIL_MAX;
     const managerTurn = reason !== null && managers.some((m) => !capped(m) && !unreachable(m));
+    const retry = reason !== null && !managerTurn && managers.some((m) => !capped(m));      // كل مدير ليه رصيد هنا مش بيوصله
     const heldOf = (m, c) => ({ to: last4(m.phone), why: c.db ? "state_db" : "repeat", ...(c.until ? { lastAt: c.lastAt, until: c.until } : {}) });
     const sent = [], held = [];
     if (managerTurn) for (const m of cashiers) held.push({ to: last4(m.phone), why: capped(m) ? "daily_cap" : "manager_turn" });
@@ -906,9 +912,11 @@ export function register(app, ctx, deps = {}) {
     const hold = !managerTurn && po.managerOnHold === true && alerts === 0 && e.manager_told !== true && !sent.length
       && repeatHeld.length > 0 && repeatHeld.every((h) => h.until) && held.every((h) => h.why === "repeat" || h.why === "daily_cap");
     let mgr = null;
-    if (managerTurn || hold) {
-      /* أول رسالة مدير بعد السلّم: في ميعاد التنبيه اللي كان على الكاشير (مش على طول بعد آخر تنبيه ليه في المرة دي). hold ⇒ على طول. بعدها التكرار لكل رقم هو اللي بيظبط */
-      const due = hold || !Number.isFinite(tms(e.last_alert_at)) || t - tms(e.last_alert_at) >= po.repeatMin * MIN - PORTAL_SLACK_MS;
+    if (managerTurn || hold || retry) {
+      /* أول رسالة مدير بعد السلّم: في ميعاد التنبيه اللي كان على الكاشير (مش على طول بعد آخر تنبيه ليه في المرة دي). hold ⇒ على طول. بعدها التكرار لكل رقم هو اللي بيظبط.
+         retry (المدير مش بيوصله والتنبيهات رجعت للكاشير) ⇒ الحجز لوحده: محاولة كل repeatMin من آخر محاولة ليه — بس مش في نفس دورة جولة كاشير:
+         بيستنى الدورة الجاية (دقيقة)، فمفيش رسالتين في نفس الثانية، و«رغم N» بتعدّ الجولة دي (كانت بتقول ٥ والجولة السادسة لسه طالعة) */
+      const due = hold || (retry ? !sent.length : (!Number.isFinite(tms(e.last_alert_at)) || t - tms(e.last_alert_at) >= po.repeatMin * MIN - PORTAL_SLACK_MS));
       const lastCash = hold ? Math.max(...repeatHeld.map((h) => tms(h.lastAt))) : NaN;
       const heldInfo = hold ? { lastAt: isoOf(lastCash), until: isoOf(Math.min(...repeatHeld.map((h) => tms(h.until)))), opened: tms(sig.lastSeen) > lastCash } : null;
       const out = [];
@@ -922,13 +930,14 @@ export function register(app, ctx, deps = {}) {
           reopened: reminder && tms(sig.lastSeen) > of(m).lastMgr, held: heldInfo };      // cap = اللي الكاشير خده فعلاً النهارده
         const r = await sendToStaff(cfg, m, { topic: "portal_offline", kind: "manager", body: portalOfflineManagerText(x), button: true,
           templates: [{ name: TPL_NOTICE, data: { notice: { text: portalOfflineManagerNotice(x) } } }], sms: null });
-        out.push({ to: last4(m.phone), via: r.via, ok: r.ok, reminder, ...(hold ? { hold: true } : {}) });
+        out.push({ to: last4(m.phone), via: r.via, ok: r.ok, reminder, ...(hold ? { hold: true } : {}), ...(retry ? { retry: true } : {}) });
       }
       /* «المدير اتبلّغ» = رسالة وصلت بس (لو فشلت، رسالة المدير الجاية مش «تذكير» و«رجع» مش مستحقة) */
       if (out.some((x) => x.ok)) await q("UPDATE wa_team_portal SET manager_told=TRUE WHERE id='cashier'", []);
       if (out.length) mgr = { sent: out.filter((x) => x.ok).length, to: out, reason: hold ? "hold" : reason };
     }
-    return { ...base, stage: managerTurn ? "manager" : "cashier", round: sent.length ? alerts + 1 : 0, cashiers: sent, held, manager: mgr };
+    const gone = managers.filter((m) => !capped(m) && unreachable(m)).map((m) => last4(m.phone));
+    return { ...base, stage: managerTurn ? "manager" : "cashier", round: sent.length ? alerts + 1 : 0, cashiers: sent, held, manager: mgr, ...(gone.length ? { unreachable: gone } : {}) };
   }
 
   /* دورة كل دقيقة: حارس النافذة لكل عضو، ملخص الحاجات الغريبة، سلسلة فشل الإرسال، والملخص اليومي. عمرها ما بترمي. */
@@ -1038,10 +1047,15 @@ export function register(app, ctx, deps = {}) {
     const claims = team.length ? await q("SELECT phone_norm, last_at FROM wa_team_portal_to WHERE phone_norm = ANY($1::text[])", [team.map((m) => m.phone)]) : [];
     const lastAtOf = new Map((claims || []).map((r) => [r.phone_norm, tms(r.last_at)]));
     const recipients = team.map((m) => {
-      const n = (log.get(m.phone) || { day: 0 }).day, la = lastAtOf.get(m.phone), next = Number.isFinite(la) ? la + po.repeatMin * MIN - PORTAL_SLACK_MS : NaN;
-      return { name: m.name || null, role: m.role, today: n, capped: n >= po.dailyCap, lastAt: isoOf(la), nextAt: next > t ? isoOf(next) : null };
+      const lg = log.get(m.phone) || { day: 0, mgrFail: 0 }, n = lg.day, la = lastAtOf.get(m.phone), next = Number.isFinite(la) ? la + po.repeatMin * MIN - PORTAL_SLACK_MS : NaN;
+      return { name: m.name || null, role: m.role, today: n, capped: n >= po.dailyCap, lastAt: isoOf(la), nextAt: next > t ? isoOf(next) : null,
+        ...(m.role === "manager" ? { unreachable: Boolean(e) && lg.mgrFail >= MGR_FAIL_MAX } : {}) };      // نفس قاعدة الدورة: آخر محاولتين في المرة دي فشلوا
     });
     const cashLeft = recipients.some((r) => r.role === "cashier" && !r.capped), mgrLeft = recipients.some((r) => r.role === "manager" && !r.capped);
+    /* الدور زي الدورة بالظبط (managerTurn): مدير ليه رصيد **وبيوصله واتساب**. المدير اللي مش بيوصله بيتجرّب كل repeatMin والتنبيهات للكاشير ⇒
+       stage «cashier» (كانت «manager» واللوحة تقول «الدور على المدير» والكاشير هو اللي بياخد). muted = كله وصل للسقف بس: مدير مش بيوصله ولسه ليه
+       رصيد لسه بيتجرّب، فمش «مفيش رسايل تانية النهارده». */
+    const mgrReach = recipients.some((r) => r.role === "manager" && !r.capped && !r.unreachable);
     const alerts = e ? Number(e.alerts) || 0 : 0;
     const delivered = Math.min(alerts, Math.max(0, ...team.filter((m) => m.role === "cashier").map((m) => (log.get(m.phone) || { cashOk: 0 }).cashOk)));
     const waiting = recipients.filter((r) => r.role === "cashier" && !r.capped);
@@ -1051,7 +1065,7 @@ export function register(app, ctx, deps = {}) {
     return { ...head, working: workingNow(settings, now, 0),
       cashier: { open: !sig.closed, stable: sig.stable, lastSeen: sig.lastSeen, offMin: sig.offMin, hidden: sig.hidden },
       alerts: e ? { count: alerts, delivered, lastAt: e.last_alert_at || null, managerTold: e.manager_told === true, since: e.since || null, openedAt: e.opened_at || null,
-        stage: (!cashLeft || alerts >= po.managerAfter) && mgrLeft ? "manager" : "cashier", managerLeft: mgrLeft, cashierLeft: cashLeft,
+        stage: (!cashLeft || alerts >= po.managerAfter) && mgrReach ? "manager" : "cashier", managerLeft: mgrLeft, cashierLeft: cashLeft,
         reopenedAt: isoOf(ro), endsAt: Number.isFinite(ro) ? isoOf(ro + keep * MIN) : null, hold } : null,
       sentToday: Number(today && today[0] && today[0].n) || 0, failedToday: Number(today && today[0] && today[0].failed) || 0, recipients,
       muted: recipients.some((r) => r.role === "cashier") && !cashLeft && !mgrLeft,

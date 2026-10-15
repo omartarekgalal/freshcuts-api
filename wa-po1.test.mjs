@@ -82,15 +82,16 @@ function world({ start = "2026-10-14T13:00:00Z", waTeam = {}, members = MEMBERS,
       for (const [ph, r] of by) { const o = db.to.get(ph); db.to.set(ph, o ? { phone_norm: ph, last_at: later(o.last_at, r.last_at), last_mgr_at: later(o.last_mgr_at, r.last_mgr_at), last_back_at: later(o.last_back_at, r.last_back_at) } : { phone_norm: ph, ...r }); }
       return { rows: [] };
     }
-    if (/^SELECT phone_norm, count\(\*\) FILTER \(WHERE kind IN \('cashier','manager'\) AND ok AND at >= \$1::timestamptz\)::int AS day, max\(at\) FILTER \(WHERE kind='manager' AND ok AND at >= \$2::timestamptz\) AS last_mgr, count\(\*\) FILTER \(WHERE kind='cashier' AND ok AND at >= \$2::timestamptz\)::int AS cash_ok/i.test(s)) {
+    /* السجل لكل رقم — الاستعلام كله بالنص (أي عمود يتغيّر في الكود ⇒ الاختبار يقع هنا بدل ما يعدّي على عمود مش موجود) */
+    if (/^SELECT phone_norm, count\(\*\) FILTER \(WHERE kind IN \('cashier','manager'\) AND ok AND at >= \$1::timestamptz\)::int AS day, max\(at\) FILTER \(WHERE kind='manager' AND ok AND at >= \$2::timestamptz\) AS last_mgr, count\(\*\) FILTER \(WHERE kind='cashier' AND ok AND at >= \$2::timestamptz\)::int AS cash_ok, array_agg\(at ORDER BY at\) FILTER \(WHERE kind='manager' AND NOT ok AND at >= \$2::timestamptz\) AS mgr_fails FROM wa_team_log WHERE topic='portal_offline' AND at >= LEAST\(\$1::timestamptz, \$2::timestamptz\) GROUP BY phone_norm$/i.test(s)) {
       const day = ms(p[0]), from = ms(p[1]), lo = Math.min(day, from), by = new Map();
-      for (const l of db.log) {
+      for (const l of [...db.log].sort((a, b) => a.at - b.at)) {
         if (l.topic !== "portal_offline" || l.at < lo) continue;
-        const r = by.get(l.to) || { phone_norm: l.to, day: 0, last_mgr: null, cash_ok: 0, mgr_fail: 0, last_mgr_fail: null };
+        const r = by.get(l.to) || { phone_norm: l.to, day: 0, last_mgr: null, cash_ok: 0, mgr_fails: null };
         if ((l.kind === "cashier" || l.kind === "manager") && l.ok && l.at >= day) r.day++;
         if (l.kind === "cashier" && l.ok && l.at >= from) r.cash_ok++;
         if (l.kind === "manager" && l.ok && l.at >= from && (!r.last_mgr || l.at > ms(r.last_mgr))) r.last_mgr = new Date(l.at).toISOString();
-        if (l.kind === "manager" && !l.ok && l.at >= from) { r.mgr_fail++; if (!r.last_mgr_fail || l.at > ms(r.last_mgr_fail)) r.last_mgr_fail = new Date(l.at).toISOString(); }
+        if (l.kind === "manager" && !l.ok && l.at >= from) (r.mgr_fails ||= []).push(new Date(l.at));      // array_agg(at ORDER BY at) FILTER ⇒ Date[] من pg، أو NULL
         by.set(l.to, r);
       }
       return { rows: [...by.values()] };
@@ -145,14 +146,15 @@ const everySec = (a, b, step) => { const o = []; for (let t = a; t <= b; t += st
 const polls = (a, b, via = "poll") => everySec(utc(a), utc(b), 20).map((t) => ({ t, via }));
 const ticks47 = (a, b, day) => everySec(utc(a, day), utc(b, day), 60);
 const closedKinds = (l) => l.kind === "cashier" || l.kind === "manager";
-/* قواعد ثابتة لكل رقم: مفيش رسالتين «مقفول» قبل repeatMin (بسماح ٣٠ ث)، ولا أكتر من السقف في اليوم التشغيلي (٠٤:٠٠ الرياض = ٠١:٠٠ UTC) */
+/* قواعد ثابتة لكل رقم في السجل: مفيش محاولتين «مقفول» (حتى اللي فشلت — الحجز قبل الإرسال) قبل repeatMin (بسماح ٣٠ ث)، ولا أكتر من السقف
+   **وصلوا** في اليوم التشغيلي (٠٤:٠٠ الرياض = ٠١:٠٠ UTC — الفشل مابيتحسبش في السقف) */
 function assertLimits(w, { repeatMin = 45, cap = 6 } = {}) {
-  for (const ph of [CASH1, CASH2, MGR, OWN]) {
-    const ts = w.offLog().filter((l) => l.to === ph && closedKinds(l)).map((l) => l.at).sort((a, b) => a - b);
+  for (const ph of new Set(w.offLog().map((l) => l.to))) {
+    const mine = w.offLog().filter((l) => l.to === ph && closedKinds(l)).sort((a, b) => a.at - b.at), ts = mine.map((l) => l.at);
     for (let i = 1; i < ts.length; i++) assert.ok(ts[i] - ts[i - 1] >= repeatMin * MIN - 30 * SEC, `${ph.slice(-4)}: ${hms(ts[i - 1])} → ${hms(ts[i])} < ${repeatMin} min`);
     const per = new Map();
-    for (const t of ts) { const d = new Date(t - 60 * MIN).toISOString().slice(0, 10); per.set(d, (per.get(d) || 0) + 1); }
-    for (const [d, n] of per) assert.ok(n <= cap, `${ph.slice(-4)}: ${n} on ${d} > cap ${cap}`);
+    for (const l of mine.filter((x) => x.ok)) { const d = new Date(l.at - 60 * MIN).toISOString().slice(0, 10); per.set(d, (per.get(d) || 0) + 1); }
+    for (const [d, n] of per) assert.ok(n <= cap, `${ph.slice(-4)}: ${n} delivered on ${d} > cap ${cap}`);
   }
 }
 const at = (w, ph, pred = () => true) => w.offLog().filter((l) => l.to === ph && pred(l)).map((l) => `${hms(l.at)} ${l.kind}`);
@@ -819,20 +821,111 @@ test("R2 minor — RG1-era presence rows (last_seen from on-screen polls only, n
   assert.deepEqual(st.devices.map((d) => [d.name, d.open, d.offMin]), [["سارة", false, 21], ["منى", false, 36], ["خالد", false, 387]], "a background-only device: «مقفول من 21 د» from its last request");
 });
 
-test("R3 — a manager WhatsApp cannot reach does not silence everyone: after MGR_FAIL_MAX failed manager attempts in the round (none delivered after them) the turn goes back to the cashiers, within the cap and repeat limits; one delivered manager message makes him reachable again", async () => {
+/* ═══ ٥) المراجعة التالتة (١٥/١٠): مدير واتساب مش بيوصله ═════════════════════════════════════════════════
+   5b9af52: الفشل مابيتحسبش في السقف ⇒ مدير مش بيوصله كان بيمسك الدور والكاشير محجوز «manager_turn» طول القفلة. 6d25ff0: بعد محاولتين فاشلتين
+   كان بيتساب لآخر المرة (مدير رجع واتساب بتاعه يشتغل بيتعدّى، والكل يسكت أول ما الكاشير يخلّص رصيده)، والفشل كان بيتعدّ في المرة كلها مش بعد
+   آخر رسالة وصلت، واللوحة كانت بتقول «الدور على المدير». سيناريوهات المراجع (po1r3): قفلة ١٣:٠٠–٢٣:٣٠Z من غير ولا إشارة، والدورة كل دقيقة على :47. */
+const MGR2 = "507000005";
+const M2 = [...MEMBERS.slice(0, 3), { phone: `0${MGR2}`, name: "حسن", role: "manager" }, MEMBERS[3]];
+const tries = (w, ph) => w.offLog().filter((l) => l.to === ph && closedKinds(l)).map((l) => `${hms(l.at)}${l.ok ? "" : " ✗"}`);
+const downAt = (...spans) => (t) => spans.some(([a, b]) => t >= utc(a) && t < utc(b));      // واتساب الرقم مش بيوصل في الفترات دي
+/* القفلة، واللوحة قبل كل دورة بثانية (نفس الحالة اللي الدورة هتشوفها) ⇒ stage و«المدير مش بيوصله» زي الدورة بالظبط في كل دقيقة */
+async function closedAfternoon({ members = MEMBERS, down = {}, gap = null } = {}) {
+  const fail = (ph, t) => Boolean(down[ph] && down[ph](t));
+  const w = world({ start: "2026-10-14T13:00:00Z", members, fail });
+  const ticks = ticks47("13:00:47", "23:29:47").filter((t) => !gap || t < utc(gap[0]) || t >= utc(gap[1])), before = new Map();      // gap = السيرفر واقف (مفيش دورات)
+  const out = await play(w, { from: utc("13:00:00"), to: utc("23:30:00"), signals: [], ticks,
+    events: ticks.map((t) => ({ t: t - SEC, fn: async (x) => { before.set(t, await x.team.portalStatus(T.teamConfig(x.db.settings), x.now())); } })) });
+  const name4 = new Map(members.map((m) => [`…${m.phone.slice(-4)}`, m.name]));
+  let compared = 0;
+  for (const o of out) {
+    const s = before.get(o.t);
+    if (!o.portal || !o.portal.stage || !s || !s.alerts) continue;
+    assert.equal(s.alerts.stage, o.portal.stage, `${hms(o.t)}: the dashboard's stage = the tick's`);
+    assert.deepEqual(s.recipients.filter((r) => r.unreachable).map((r) => r.name), (o.portal.unreachable || []).map((x) => name4.get(x)), `${hms(o.t)}: «unreachable» on the dashboard = the tick's`);
+    compared++;
+  }
+  assert.ok(compared > 600, `compared ${compared} ticks`);
+  const tk = (hm) => out.find((x) => x.t === utc(hm)).portal;
+  return { w, tk, fail, before: (hm) => before.get(utc(hm)), end: await w.team.portalStatus(T.teamConfig(w.db.settings), w.now()) };
+}
+/* «مفيش سكوت»: أي دقيقة فيها رقم بيوصله واتساب طول آخر B ولسه تحت السقف ⇒ رسالة «مقفول» وصلت لحد في آخر B.
+   B = MGR_FAIL_MAX × repeatMin + 2 د = تمن السماح قبل ما المدير يبان «مش بيوصله» (محاولتين بفرق repeatMin والكاشير مستني دوره) */
+function assertNoSilence(w, fail, phones, { from = utc("13:00:00"), to = utc("23:30:00"), repeatMin = 45, cap = 6 } = {}) {
+  const B = (T.MGR_FAIL_MAX * repeatMin + 2) * MIN, del = w.offLog().filter((l) => closedKinds(l) && l.ok);
+  for (let t = from + B; t <= to; t += MIN) {
+    const room = phones.filter((ph) => del.filter((d) => d.to === ph && d.at <= t).length < cap && everySec(t - B, t, 60).every((u) => !fail(ph, u)));
+    if (room.length) assert.ok(del.some((d) => d.at > t - B && d.at <= t), `${hms(t)}: silence while ${room.map((p) => p.slice(-4)).join(",")} could be reached and had budget`);
+  }
+}
+
+test("R3 — a manager WhatsApp never reaches (5b9af52's case): two failed tries in a row hand the turn back to the cashiers (was: held «manager_turn» the whole closure), he is still tried every repeatMin (failures use none of his cap), and the dashboard says «cashier», not muted", async () => {
   assert.equal(T.MGR_FAIL_MAX, 2);
-  const w = world({ start: "2026-10-14T13:00:00Z", fail: (ph) => ph === MGR });
-  await play(w, { from: utc("13:00:00"), to: utc("23:30:00"), signals: [], ticks: ticks47("13:00:47", "23:29:47") });
-  const mgr = w.offLog().filter((l) => l.to === MGR && l.kind === "manager");
-  assert.equal(mgr.length, 2, "two failed manager attempts, then the cashiers take over");
-  assert.ok(mgr.every((l) => l.ok === false));
-  const lastFail = Math.max(...mgr.map((l) => l.at));
-  const cash = w.offLog().filter((l) => l.to === CASH1 && l.kind === "cashier" && l.ok);
-  assert.ok(cash.some((l) => l.at > lastFail), "the cashier hears again after the manager proved unreachable (was: silence until the end of the day)");
-  assert.ok(cash.length <= 6, "daily cap kept");
-  /* a manager failing once and then reached keeps his turn (the earlier R2 case) */
-  const once = world({ start: "2026-10-14T08:00:00Z", fail: (ph, t) => ph === MGR && t < utc("11:00:00") });
-  await play(once, { from: utc("08:00:00"), to: utc("11:30:00"), signals: [], ticks: ticks47("08:00:47", "11:29:47") });
-  assert.deepEqual(once.offLog().filter((l) => l.to === MGR && l.kind === "manager").map((l) => l.ok), [false, true]);
-  assertLimits(w); assertLimits(once);
+  const { w, tk, fail, before, end } = await closedAfternoon({ down: { [MGR]: () => true } });
+  assert.deepEqual(tries(w, CASH1), ["13:00:47", "13:45:47", "14:30:47", "16:01:47", "16:46:47", "17:31:47"]);
+  assert.deepEqual(tries(w, CASH2), tries(w, CASH1));
+  assert.deepEqual(tries(w, MGR), ["15:15:47 ✗", "16:00:47 ✗", "16:45:47 ✗", "17:30:47 ✗", "18:15:47 ✗", "19:00:47 ✗", "19:45:47 ✗", "20:30:47 ✗", "21:15:47 ✗", "22:00:47 ✗", "22:45:47 ✗"]);
+  assert.deepEqual([tk("16:00:47").stage, tk("16:00:47").held.map((h) => h.why), tk("16:00:47").unreachable], ["manager", ["manager_turn", "manager_turn"], undefined], "one failure is a blip, not «unreachable»");
+  assert.deepEqual([tk("16:01:47").stage, tk("16:01:47").unreachable, tk("16:01:47").cashiers.map((c) => c.ok), tk("16:01:47").held],
+    ["cashier", ["…0003"], [true, true], [{ to: "…0003", why: "not_due" }]], "the cashiers at once (never his try in the same tick as their round)");
+  assert.deepEqual(tk("16:02:47").held.at(-1), { to: "…0003", why: "repeat", lastAt: "2026-10-14T16:00:47.000Z", until: "2026-10-14T16:45:17.000Z" }, "his next try waits for his own repeat");
+  assert.deepEqual([tk("16:45:47").manager.to.map((x) => [x.ok, x.retry]), tk("18:15:47").manager.reason], [[[false, true]], "cap"]);
+  assert.deepEqual([before("16:20:47").alerts.stage, before("16:20:47").recipients.map((r) => r.unreachable)], ["cashier", [undefined, undefined, true]]);
+  assert.deepEqual([end.muted, end.alerts.stage, end.alerts.managerLeft, end.alerts.managerTold, end.recipients.map((r) => [r.name, r.today, r.capped, r.unreachable])],
+    [false, "cashier", true, false, [["منى", 6, true, undefined], ["سارة", 6, true, undefined], ["خالد", 0, false, true]]], "not «muted»: he is still being tried");
+  assert.deepEqual([end.sentToday, end.failedToday], [12, 11]);
+  assertLimits(w); assertNoSilence(w, fail, [CASH1, CASH2, MGR]);
+});
+
+test("R3 — unreachable twice, then reachable (the reviewer's 16:30 case): tried again at his next slot, and the try that reaches him gives him the turn back (6d25ff0: never tried again ⇒ the cashiers ran out at 17:31 and everyone went silent); the same once the cashiers are already at their cap", async () => {
+  const a = await closedAfternoon({ down: { [MGR]: (t) => t < utc("16:30:00") } });
+  assert.deepEqual(tries(a.w, CASH1), ["13:00:47", "13:45:47", "14:30:47", "16:01:47", "20:31:47", "21:16:47"]);
+  assert.deepEqual(tries(a.w, MGR), ["15:15:47 ✗", "16:00:47 ✗", "16:45:47", "17:30:47", "18:15:47", "19:00:47", "19:45:47", "20:30:47"]);
+  assert.deepEqual(texts(a.w, MGR).slice(0, 2), ["16:45:47 ⚠️ بورتال الكاشير مقفول من أول الشغل رغم 4 تنبيهات للكاشير. الطلبات ومحادثات واتساب ممكن ماترنّش في المطعم.",
+    "17:30:47 ⚠️ تذكير: بورتال الكاشير لسه مقفول من أول الشغل. الطلبات ومحادثات واتساب ممكن ماترنّش في المطعم."], "the first message that reached him is not a «reminder»; 4 = what the cashiers really got");
+  assert.deepEqual([a.tk("16:45:47").stage, a.tk("16:45:47").manager.to[0].retry, a.tk("16:46:47").stage, a.tk("16:46:47").held.map((h) => h.why), a.tk("16:46:47").unreachable],
+    ["cashier", true, "manager", ["manager_turn", "manager_turn", "repeat"], undefined], "his turn again the minute after a try reached him");
+  assert.deepEqual([a.before("16:46:47").alerts.stage, a.before("16:46:47").alerts.managerTold, a.end.muted], ["manager", true, true]);
+  assertLimits(a.w); assertNoSilence(a.w, a.fail, [CASH1, CASH2, MGR]);
+  /* الكاشير خلّص رصيده ١٧:٣١ والمدير لسه واقع لحد ٢١:٠٠ ⇒ بيتجرّب كل ٤٥ د، وأول محاولة توصله (٢١:١٥) بتقول الحقيقة: «الكاشير خد 6 (أقصى عدد)» */
+  const b = await closedAfternoon({ down: { [MGR]: (t) => t < utc("21:00:00") } });
+  assert.deepEqual(tries(b.w, CASH1), ["13:00:47", "13:45:47", "14:30:47", "16:01:47", "16:46:47", "17:31:47"]);
+  assert.deepEqual(tries(b.w, MGR), ["15:15:47 ✗", "16:00:47 ✗", "16:45:47 ✗", "17:30:47 ✗", "18:15:47 ✗", "19:00:47 ✗", "19:45:47 ✗", "20:30:47 ✗", "21:15:47", "22:00:47", "22:45:47"]);
+  assert.deepEqual(texts(b.w, MGR), ["21:15:47 ⚠️ بورتال الكاشير مقفول من أول الشغل — الكاشير خد 6 تنبيهات النهارده (أقصى عدد) ومش هيوصله تاني النهارده. الطلبات ومحادثات واتساب ممكن ماترنّش في المطعم.",
+    "22:00:47 ⚠️ تذكير: بورتال الكاشير لسه مقفول من أول الشغل. الطلبات ومحادثات واتساب ممكن ماترنّش في المطعم.",
+    "22:45:47 ⚠️ تذكير: بورتال الكاشير لسه مقفول من أول الشغل. الطلبات ومحادثات واتساب ممكن ماترنّش في المطعم."]);
+  assert.deepEqual([b.before("20:00:47").muted, b.before("20:00:47").alerts.stage, b.tk("21:16:47").stage], [false, "cashier", "manager"]);
+  assertLimits(b.w); assertNoSilence(b.w, b.fail, [CASH1, CASH2, MGR]);
+  /* السيرفر واقف ١٦:٤٥–١٦:٤٧:٣٠ (deploy) ⇒ أول دورة بعده ميعاد الكاشير والمدير الاتنين: جولة الكاشير، والمدير الدورة اللي بعدها (مش رسالتين في نفس
+     الثانية)، و«رغم 5» بتعدّ الجولة دي (العشوائي لقى «رغم 5» والجولة السادسة طالعة في نفس الدورة) */
+  const c = await closedAfternoon({ down: { [MGR]: (t) => t < utc("16:30:00") }, gap: ["16:45:00", "16:47:30"] });
+  assert.deepEqual(tries(c.w, CASH1), ["13:00:47", "13:45:47", "14:30:47", "16:01:47", "16:47:47", "20:34:47"]);
+  assert.deepEqual(tries(c.w, MGR), ["15:15:47 ✗", "16:00:47 ✗", "16:48:47", "17:33:47", "18:18:47", "19:03:47", "19:48:47", "20:33:47"]);
+  assert.deepEqual(c.tk("16:47:47").held, [{ to: "…0003", why: "not_due" }]);
+  assert.match(texts(c.w, MGR)[0], /^16:48:47 ⚠️ بورتال الكاشير مقفول من أول الشغل رغم 5 تنبيهات للكاشير\./);
+  assertLimits(c.w); assertNoSilence(c.w, c.fail, [CASH1, CASH2, MGR]);
+});
+
+test("R3 — only the failures after his last delivered message count: fail → reached → fail keeps his turn (6d25ff0 counted 2 in the round, handed it back and went silent once the cashiers ran out); fail → reached → fail → fail hands it back, and the next try that reaches him takes it again", async () => {
+  const a = await closedAfternoon({ down: { [MGR]: downAt(["15:00:00", "15:30:00"], ["16:30:00", "17:00:00"]) } });
+  assert.deepEqual(tries(a.w, MGR), ["15:15:47 ✗", "16:00:47", "16:45:47 ✗", "17:30:47", "18:15:47", "19:00:47", "19:45:47", "20:30:47"]);
+  assert.deepEqual(tries(a.w, CASH1), ["13:00:47", "13:45:47", "14:30:47", "20:31:47", "21:16:47", "22:01:47"]);
+  assert.deepEqual([a.tk("16:46:47").stage, a.tk("16:46:47").unreachable], ["manager", undefined], "one failure since he was last reached");
+  assertLimits(a.w); assertNoSilence(a.w, a.fail, [CASH1, CASH2, MGR]);
+  const b = await closedAfternoon({ down: { [MGR]: downAt(["15:00:00", "15:30:00"], ["16:30:00", "17:45:00"]) } });
+  assert.deepEqual(tries(b.w, MGR), ["15:15:47 ✗", "16:00:47", "16:45:47 ✗", "17:30:47 ✗", "18:15:47", "19:00:47", "19:45:47", "20:30:47", "21:15:47"]);
+  assert.deepEqual(tries(b.w, CASH1), ["13:00:47", "13:45:47", "14:30:47", "17:31:47", "21:16:47", "22:01:47"]);
+  assert.deepEqual([b.tk("17:31:47").stage, b.tk("17:31:47").unreachable, b.tk("18:16:47").stage], ["cashier", ["…0003"], "manager"]);
+  assert.match(texts(b.w, MGR)[1], /^18:15:47 ⚠️ تذكير: بورتال الكاشير لسه مقفول من أول الشغل\./, "he was told at 16:00 in this round ⇒ a reminder");
+  assertLimits(b.w); assertNoSilence(b.w, b.fail, [CASH1, CASH2, MGR]);
+});
+
+test("R3 — two managers, one WhatsApp cannot reach (the reviewer's X1): the good one carries the turn to his cap, then the cashiers to theirs; the bad one is tried along and then every repeatMin, and never holds the turn", async () => {
+  const { w, tk, fail, end } = await closedAfternoon({ members: M2, down: { [MGR]: () => true } });
+  assert.deepEqual(tries(w, CASH1), ["13:00:47", "13:45:47", "14:30:47", "19:01:47", "19:46:47", "20:31:47"]);
+  assert.deepEqual(tries(w, MGR2), ["15:15:47", "16:00:47", "16:45:47", "17:30:47", "18:15:47", "19:00:47"]);
+  assert.deepEqual(tries(w, MGR), ["15:15:47 ✗", "16:00:47 ✗", "16:45:47 ✗", "17:30:47 ✗", "18:15:47 ✗", "19:00:47 ✗", "19:45:47 ✗", "20:30:47 ✗", "21:15:47 ✗", "22:00:47 ✗", "22:45:47 ✗"]);
+  assert.deepEqual([tk("16:45:47").stage, tk("16:45:47").unreachable, tk("19:01:47").stage, tk("19:01:47").unreachable], ["manager", ["…0003"], "cashier", ["…0003"]]);
+  assert.deepEqual([end.muted, end.recipients.map((r) => [r.name, r.capped, r.unreachable])], [false, [["منى", true, undefined], ["سارة", true, undefined], ["خالد", false, true], ["حسن", true, false]]]);
+  assertLimits(w); assertNoSilence(w, fail, [CASH1, CASH2, MGR, MGR2]);
 });
