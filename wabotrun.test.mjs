@@ -357,7 +357,7 @@ function world({ waBot = {}, notifications = { whatsappEnabled: true }, orders =
       if (/^SELECT review_code, review_stars_at, review_answered_at FROM wa_bot_chats/i.test(s)) { const ch = db.chats.get(p[0]); return { rows: ch ? [{ review_code: ch.review_code || null, review_stars_at: ch.review_stars_at || null, review_answered_at: ch.review_answered_at || null }] : [] }; }
       if (/^SELECT 1 FROM wa_messages WHERE phone_norm=\$1 AND direction='out' AND created_at > \$2::timestamptz \+ INTERVAL '15 seconds'/i.test(s)) return { rows: db.msgs.filter((m) => m.phone_norm === p[0] && m.direction === "out" && Date.parse(m.created_at) > Date.parse(p[1]) + 15_000).slice(0, 1).map(() => ({})) };
       if (/^SELECT review_code FROM wa_bot_chats WHERE phone_norm=\$1 AND review_asked_at/i.test(s)) { const ch = db.chats.get(p[0]); return { rows: ch && ch.review_asked_at && nowMs - Date.parse(ch.review_asked_at) < 48 * 3600_000 ? [{ review_code: ch.review_code || null }] : [] }; }
-      if (/^SELECT kind, option, ref, rating FROM review_invites WHERE code=\$1 AND phone_norm=\$2/i.test(s)) return { rows: (db.invites || []).filter((x) => x.code === p[0] && x.phone_norm === p[1]).map((x) => ({ kind: x.kind || null, option: x.option || null, ref: x.ref || null, rating: x.rating ?? null })) };
+      if (/^SELECT kind, option, ref, rating, skip_reason FROM review_invites WHERE code=\$1 AND phone_norm=\$2/i.test(s)) return { rows: (db.invites || []).filter((x) => x.code === p[0] && x.phone_norm === p[1]).map((x) => ({ kind: x.kind || null, option: x.option || null, ref: x.ref || null, rating: x.rating ?? null, skip_reason: x.skip_reason || null })) };
       if (/^SELECT order_no, code, phone_norm, option, kind, rating, review_id, ref FROM review_invites WHERE code=\$1/i.test(s)) return { rows: (db.invites || []).filter((x) => x.code === p[0]).map((x) => ({ option: null, kind: null, rating: null, review_id: null, ref: null, ...x })) };
       if (/^SELECT order_no, code, phone_norm, option, kind, rating, review_id, ref FROM review_invites WHERE wa_msg_id=\$1 AND phone_norm=\$2/i.test(s)) return { rows: (db.invites || []).filter((x) => x.wa_msg_id && x.wa_msg_id === p[0] && x.phone_norm === p[1]).map((x) => ({ option: null, kind: null, rating: null, review_id: null, ref: null, ...x })) };
       if (/^SELECT order_no, code, phone_norm, option, kind, rating, review_id, ref FROM review_invites WHERE phone_norm=\$1 AND created_at/i.test(s)) return { rows: (db.invites || []).filter((x) => x.phone_norm === p[0] && !/^TEST-/.test(x.order_no)).slice(-1).map((x) => ({ option: null, kind: null, rating: null, review_id: null, ref: null, ...x })) };
@@ -5510,4 +5510,15 @@ test("RV1: a typed number counts as stars only while the stars question is the L
   assert.notEqual(two.log.reply_key, "review_star", JSON.stringify(two.log));
   assert.equal((w.db.reviews || []).length, 0, "no rating saved");
   assert.equal(w.portal.filter(([e, d0]) => e === "wa_handover" && d0.reason === "review_low").length, 0, "no manager alert");
+}));
+
+test("RV1: «تمام» on an invite the scheduler closed for a staff number or a stopped customer ⇒ a warm line only, no stars question and no rating row", withEnv(CONFIGURED, async () => {
+  for (const why of ["staff", "opted_out", "wa_stopped"]) {
+    const w = rvWorld({ invites: [{ phone_norm: "512345678", code: "kk55jj66", order_no: "W1790012347777", kind: "delivery", skip_reason: why }] });
+    const r = await qrTap(w, "تمام 👍");
+    assert.equal(r.log.reply_key, "review_ok", why);
+    assert.match(JSON.stringify(r.sent), /بالعافية عليك/, why);
+    assert.equal(r.sent.filter((b) => b.type === "interactive" && b.interactive.type === "list").length, 0, why);
+    assert.equal((w.db.chats.get("512345678") || {}).review_stars_at || null, null, why);
+  }
 }));

@@ -2536,8 +2536,10 @@ export function register(app, ctx, deps = {}) {
     }
     /* RV1: «تمام» ⇒ قايمة النجوم لنفس الطلب: نوعه ورقمه، ولو اتقيّم قبل كده ⇒ شكر بس */
     if (!afterWait && cls.key === "review_ok" && cfg.reviewFlow.enabled && cls.arg && cls.arg.code && /^5\d{8}$/.test(phone)) {
-      const iv = ((await q("SELECT kind, option, ref, rating FROM review_invites WHERE code=$1 AND phone_norm=$2", [cls.arg.code, phone])) || [])[0];
-      if (iv) cls = { ...cls, arg: { ...cls.arg, kind: iv.kind || (iv.option === "pickup" ? "pickup" : "delivery"), ref: iv.ref || null, rated: iv.rating != null } };
+      const iv = ((await q("SELECT kind, option, ref, rating, skip_reason FROM review_invites WHERE code=$1 AND phone_norm=$2", [cls.arg.code, phone])) || [])[0];
+      /* دعوة اتقفلت لأن الرقم موظف / موقِّف الرسايل ⇒ سطر شكر بس، من غير سؤال نجوم (مانسجّلش تقييم موظف، ومانطلبش من اللي وقّف) */
+      if (iv && /^(staff|opted_out|wa_)/.test(String(iv.skip_reason || ""))) cls = { ...cls, arg: { ...cls.arg, code: null } };
+      else if (iv) cls = { ...cls, arg: { ...cls.arg, kind: iv.kind || (iv.option === "pickup" ? "pickup" : "delivery"), ref: iv.ref || null, rated: iv.rating != null } };
     }
     /* SB4 سطر الولاء مع «تمام»: مش مع سؤال التقييم الجديد (RV1) — مايبانش إنه مقابل التقييم */
     if (!afterWait && cls.key === "review_ok" && cfg.windowSell && !cfg.reviewFlow.enabled && assist && /^5\d{8}$/.test(phone)) {
