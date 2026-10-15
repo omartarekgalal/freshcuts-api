@@ -33,6 +33,7 @@ import { logSms } from "./smslog.js";
 import { parseRecipientSlug, recipientLink } from "./wamsg.js";
 import { couponQueries, firstEligibility } from "./couponrules.js";
 import * as loyaltyLib from "./loyalty.js";
+import { profileCmsSegments, profileCfg } from "./custprofile.js";
 // نفس قواعد الـSLA بتاعة الـwatchdog — لوحة التشغيل مابتكتبش كتاب قواعد تاني
 import { slaCheck, DEFAULT_SLA } from "./shop.js";
 import { prepCfg, prepCheck } from "./prepstatus.js";
@@ -2217,6 +2218,7 @@ export function register(app, ctx, deps = {}) {
   /* عميل واحد = رقم جوال واحد، محسوب من كل الطلبات (نفس IDENT_SQL بتاع
      المؤشرات) + عملاء الموقع اللي طلباتهم لسه مانزلتش نقطة البيع. */
   let segCache = { at: 0, rows: null };
+  let profileSegCfg = profileCfg({});      // CP1: حدود إعدادات التصنيف لنص شرح شرايح الملف (بتتحدّث مع كل customerRows)
   async function customerRows() {
     if (segCache.rows && Date.now() - segCache.at < 5 * 60_000) return segCache.rows;
     const s = await getSettingsData();
@@ -2275,6 +2277,12 @@ export function register(app, ctx, deps = {}) {
       pool.query(`WITH ${FIRST_ORDER_CTE} SELECT pn, first_day FROM firsts WHERE pn ~ '${PHONE_RE}'`)
         .catch((e) => { console.error("[cms] first-order days:", e.message); return { rows: [] }; }),
     ]);
+    /* CP1 (١٥/١٠): شرايح «ملف العميل المصنّف» (custprofile.js — cust_profile.segments، بتتحدّث كل ليلة وبعد كل طلب).
+       الجدول لسه مااتعملش = مفيش أعضاء، مش غلطة. */
+    const psegs = await pool.query("SELECT phone_norm AS pn, segments FROM cust_profile WHERE segments IS NOT NULL AND cardinality(segments) > 0")
+      .then((r) => new Map((r.rows || []).map((x) => [x.pn, Array.isArray(x.segments) ? x.segments : []])))
+      .catch((e) => { if (!(e && e.code === "42P01")) console.error("[cms] profile segments:", e.message); return new Map(); });
+    profileSegCfg = profileCfg(s);
     const firstOf = new Map(firsts.rows.map((r) => [r.pn, r.first_day]));
     const onl = new Map(online.rows.map((r) => [r.pn, r]));
     const pushSet = new Set(push.rows.map((r) => r.pn));
@@ -2342,6 +2350,7 @@ export function register(app, ctx, deps = {}) {
       r.vip = r.spend >= cut && r.spend > 0;
       const fd = firstOf.get(r.pn);
       r.firstDaysAgo = fd ? daysSince(fd) : null;
+      r.psegs = psegs.get(r.pn) || [];
     }
     rows.sort((a, b) => a.daysSince - b.daysSince);
     segCache = { at: Date.now(), rows };
@@ -2390,6 +2399,9 @@ export function register(app, ctx, deps = {}) {
     ...smsRules.KEETA_SEGMENTS,
     ...smsRules.KEETA_WA_SEGMENTS,      // KS1: حملة واتساب لعملاء كيتا (٤ أكلات × ٣ موجات)
     ...smsRules.APP_FOOD_SEGMENTS,
+    /* CP1 (١٥/١٠): شرايح «ملف العميل المصنّف» — نفس الأعضاء في حملات SMS والأتمتة وحملات واتساب (segment:p_<id>).
+       الحساب في custprofile.js (deriveSegments بحدود إعدادات التصنيف)؛ هنا القراية بس. */
+    ...profileCmsSegments(() => profileSegCfg),
   ];
   const segById = Object.fromEntries(SEGMENTS.map((s) => [s.id, s]));
   const pub = (s) => ({ id: s.id, icon: s.icon, label: s.label, hint: s.hint, ...(s.allowApps ? { allowApps: true } : {}) });

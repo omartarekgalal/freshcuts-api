@@ -78,6 +78,7 @@ import * as wabotllm from "./wabotllm.js";
 import * as extsettle from "./extsettle.js";
 import * as wasender from "./wasender.js";
 import * as wafavpick from "./wafavpick.js";
+import * as custprofile from "./custprofile.js";
 import * as waoffers from "./waoffers.js";
 import { sendAdSms as smsSendAd } from "./smsrules.js";
 // 🔎 البحث الشامل في اللوحة (Ctrl+K) + 👁 قاعدة إظهار الجوال الكاملة
@@ -3220,6 +3221,9 @@ reviews.register(app, moduleCtx, { notify: () => notifyApi, sessionUser: cmsApi.
 extsettle.register(app, moduleCtx, { sessionUser: cmsApi.sessionUser });
 // 👥 Customer 360 — ملف العميل + سجل الرسايل + قايمة الإيقاف (identity.js = قاعدة العميل الجديد)
 const c360Api = customer360.register(app, moduleCtx, { whoami: (c) => cmsApi.whoami(c) });
+/* 🧬 CP1 (١٥/١٠): تصنيف العملاء التلقائي (custprofile.js) — cust_profile بيتحدّث كل ليلة وبعد كل طلب مدفوع؛ الاستهداف من wasender (فلتر + قيم لكل مستلم)
+   والشرايح المشتقّة في cms.js. المنيو/البوكسات لـ{fav_box} من كاش بوت واتساب (wabotApi.live — النداء وقت التشغيل). */
+const profileApi = custprofile.register(app, moduleCtx, { whoami: (c) => cmsApi.whoami(c), c360: () => c360Api, live: () => (wabotApi ? wabotApi.live : null) });
 /* 📇 قايمة التواصل اليدوي (واتساب من موبايل المحل) — بعد customer360 لأنها
    بتعيد استخدام QUICK_STATS_SQL بتاعته، وبعد الـCMS عشان canSeePhones. */
 const outreachApi = outreach.register(app, moduleCtx);
@@ -3231,7 +3235,7 @@ const waCloudApi = wacloud.register(app, moduleCtx, { wa: waApi, sessionUser: cm
    (wabotApi.live — نفس الكاش، بيتسجّل تحت؛ النداء وقت التشغيل)، والتوصيل من delivery.quote نفسها (كاش المسافات بس). */
 const favPickApi = wafavpick.makeFavPick({ pool, getSettingsData, live: () => (wabotApi ? wabotApi.live : null), quote: (x) => deliveryApi.quote(x) });
 const waSenderApi = wasender.register(app, moduleCtx, { outreach: outreachApi, sessionUser: cmsApi.sessionUser, cms: () => cmsApi,
-  wa: waApi, cloud: () => waCloudApi, fav: () => favPickApi,
+  wa: waApi, cloud: () => waCloudApi, fav: () => favPickApi, profile: () => profileApi,
   /* QP1: تنبيه المالك لما بوابة الجودة توقّف الحملات — SMS لأرقام تنبيهات الإدارة + حدث للبورتال (portalApi بيتعرّف تحت؛ النداء وقت التشغيل) */
   sendSms: (m) => accounts.sendSms(m), broadcast: (...a) => portalApi.broadcast(...a) });
 /* OF1: مكتبة عروض واتساب (طبقة فوق البوكسات/العروض الموجودة، في settings.waOffers) — الحملة نفسها من wasender */

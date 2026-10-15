@@ -50,6 +50,7 @@ import { cloudCfg, cloudPacing, classifyError, fallbackFor, campaignParams, clou
   CAMPAIGN_TEMPLATES, campaignTemplateNames, campaignSpec, brakeCheck, campaignCost, mediaProblem, MEDIA_LIMITS, CLOUD_KEYS, CLOUD_CEILINGS, CLOUD_DEFAULTS } from "./wacloud.js";
 import { waRatesOf } from "./waaicost.js";
 import { FAV_PICK, FAV_AUDIENCE, FAV_DEFAULT_FILTERS, FAV_HOLD, favJobProblem, lineProblem } from "./wafavpick.js";
+import { PROFILE_ALL, PROFILE_TOKENS, PROFILE_TOKEN_KEYS, profileTokensIn, tokensOf, exampleProfileValues } from "./custprofile.js";
 
 export const MIN_GAP_DAYS = 3;
 export const DEFAULTS = {
@@ -186,7 +187,7 @@ export function jobInput(b = {}, { hosts = [] } = {}) {
   /* FD1 (١٤/١٠): شريحة «طبقك المفضل» = قيم القالب لكل مستلم (perRecipient)، من غير كوبون، ومن غير قناة بديلة (نص الواتساب ويب/SMS
      مايعرفش العرض بتاع كل عميل). القيم على مستوى الحملة بتتجاهل. perRecipient مايتبعتش من بره من غير الشريحة دي. */
   const favAud = Boolean(b.filters && typeof b.filters === "object" && b.filters.audience === FAV_PICK);
-  let cloudTemplate = null, cloudVars = null;
+  let cloudTemplate = null, cloudVars = null, profileVars = false;
   if (channel === "wa_cloud") {
     cloudTemplate = String(b.cloudTemplate || "").trim();
     const cv = b.cloudVars && typeof b.cloudVars === "object" ? b.cloudVars : {};
@@ -196,13 +197,27 @@ export function jobInput(b = {}, { hosts = [] } = {}) {
     }
     cloudVars = favAud ? { offer: "", perRecipient: true }
       : { offer: String(cv.offer || "").replace(/\r/g, "").trim().slice(0, 400), ...(Object.keys(values).length ? { values } : {}) };
+    /* CP1 (١٥/١٠): قيم من ملف العميل جوّه خانات قالب كتالوج ({fav_dish} …) ⇒ الحملة بقيم لكل مستلم (profileVars) — custprofile.js بيحسبها
+       وقت التجهيز، واللي قيمته ناقصة بيطلع من الحملة. متغيّر مش معروف أو قالب قديم (سطر العرض) = خطأ صريح، مش أقواس توصل لعميل. */
+    if (!favAud) {
+      const toks = profileTokensIn(values);
+      const unknown = toks.find((t) => !PROFILE_TOKEN_KEYS.includes(t));
+      const spec = campaignSpec(cloudTemplate);
+      if (profileTokensIn({ offer: cloudVars.offer }).some((t) => PROFILE_TOKEN_KEYS.includes(t))) errs.push(["profile_vars_catalog", "قيم ملف العميل ({fav_dish}…) بتشتغل في خانات قوالب الكتالوج بس، مش في «سطر العرض»"]);
+      else if (unknown) errs.push(["unknown_var", `متغير مش معروف: {${unknown}} — المتاح: ${PROFILE_TOKEN_KEYS.map((k) => `{${k}}`).join(" ")}`]);
+      else if (toks.length && (!spec || spec.kind !== "catalog")) errs.push(["profile_vars_catalog", "قيم ملف العميل بتشتغل مع قوالب الكتالوج بس"]);
+      else if (toks.length) { cloudVars.profileVars = true; profileVars = true; }
+    }
     const p = cloudJobProblem({ cloudTemplate, cloudVars, imageUrl, videoUrl, offer, link: { coupon: staticCoupon } });
     if (p) errs.push(p);
   }
   if (favAud) { const fp = favJobProblem({ channel, cloudTemplate, offer, coupon: staticCoupon }); if (fp) errs.push(fp); }
   return { errs, template, link: { slug: slug || null, target_type, target_id, coupon: staticCoupon }, holdoutPct, imageUrl, videoUrl, offer,
-    channel, cloudTemplate, cloudVars, fallback: channel === "wa_cloud" && !favAud ? fallback : "none", spendCapSar: channel === "wa_cloud" ? spendCapSar : null, perRecipient: favAud };
+    channel, cloudTemplate, cloudVars, fallback: channel === "wa_cloud" && !favAud && !profileVars ? fallback : "none", spendCapSar: channel === "wa_cloud" ? spendCapSar : null, perRecipient: favAud, profileVars };
 }
+/* CP1: أقصى طول لكل خانة في القالب (للتحقق من النص بعد قيم العميل) */
+const fieldMaxOf = (input) => { const sp = input && input.cloudTemplate ? campaignSpec(input.cloudTemplate) : null; return sp ? Object.fromEntries((sp.fields || []).map((f) => [f.key, f.max || 200])) : null; };
+const profileBuildOpts = (input) => (input && input.profileVars ? { profileValues: (input.cloudVars && input.cloudVars.values) || {}, fieldMax: fieldMaxOf(input) } : {});
 
 /* كود الرابط لكل مستلم + كود الكوبون (من غير حروف متشابهة) */
 const B36 = "abcdefghijklmnopqrstuvwxyz0123456789";
@@ -225,6 +240,7 @@ export function register(app, ctx, deps = {}) {
   const outreach = deps.outreach || null;          // { AUDIENCES, audienceRows, cfg }
   const cmsApi = () => (typeof deps.cms === "function" ? deps.cms() : deps.cms) || null;   // شرايح لوحة المتجر
   const favApi = () => { try { return (typeof deps.fav === "function" ? deps.fav() : deps.fav) || null; } catch { return null; } };   // FD1: «طبقك المفضل» (wafavpick.js)
+  const profApi = () => { try { return (typeof deps.profile === "function" ? deps.profile() : deps.profile) || null; } catch { return null; } };   // CP1: ملف العميل المصنّف (custprofile.js)
   const now = deps.now || (() => Date.now());
   const J = (v) => JSON.stringify(v);
   const bad = (c, error, message, status = 400) => c.json({ ok: false, error, message }, status);
@@ -480,6 +496,7 @@ export function register(app, ctx, deps = {}) {
     const out = outreach ? Object.entries(outreach.AUDIENCES).map(([id, a]) => ({ id, ...a, group: "wa" })) : [];
     out.push({ id: WEB_ORDERERS, label: "طلبوا من الموقع", hint: "كل اللي دفع طلب من الموقع ولو مرة واحدة", group: "wa" });
     if (favApi()) out.push({ id: FAV_PICK, ...FAV_AUDIENCE, group: "wa", cloudOnly: true, defaults: FAV_DEFAULT_FILTERS });
+    if (profApi()) out.push({ id: PROFILE_ALL, label: "👥 كل العملاء — بفلاتر ملف العميل", hint: "كل اللي طلب مننا ولو مرة. ضيّقها بفلاتر «ملف العميل» (القيمة، أكله المفضّل، آخر الليل، الفاتورة الكبيرة…)", group: "wa", profile: true });
     const cms = cmsApi();
     if (cms && typeof cms.segmentList === "function") {
       for (const s of cms.segmentList()) out.push({ id: `segment:${s.id}`, label: `${s.icon || ""} ${s.label}`.trim(), hint: s.hint, group: "cms" });
@@ -488,6 +505,11 @@ export function register(app, ctx, deps = {}) {
   }
   async function resolveAudience(aud) {
     if (aud === FAV_PICK) return favApi() ? { aud, segmentPhones: null, fav: true } : null;
+    if (aud === PROFILE_ALL) {
+      const P = profApi();
+      if (!P) return null;
+      try { return { aud, segmentPhones: new Set(await P.phones()), profileAll: true }; } catch { return null; }
+    }
     if (aud === WEB_ORDERERS) {
       const r = await pool.query(`SELECT DISTINCT so.phone_norm FROM shop_orders so WHERE ${shopPaidSql("so")} AND so.phone_norm IS NOT NULL`).catch(() => null);
       return r ? { aud, segmentPhones: new Set(r.rows.map((x) => x.phone_norm)) } : null;
@@ -540,13 +562,15 @@ export function register(app, ctx, deps = {}) {
     return { ...out, message: syncBlock(out) === "template_not_approved" ? SYNC_AR.review : SYNC_AR[r.state] || null };
   }
 
-  async function build(filters, s, { channel = "wa_web" } = {}) {
+  async function build(filters, s, { channel = "wa_web", profileValues = null, fieldMax = null } = {}) {
     if (!outreach) throw new Error("outreach_missing");
     const cloud = channel === "wa_cloud";
     const cfg = senderCfg(s);
     const A = (await resolveAudience(filters.audience)) || { aud: "never_online", segmentPhones: null };
     /* FD1: «طبقك المفضل» مايرجعش لشريحة تانية في صمت لو مش متوصّلة (العروض محسوبة لكل عميل) */
     if (filters.audience === FAV_PICK && !A.fav) throw Object.assign(new Error("شريحة «طبقك المفضل» مش متاحة دلوقتي"), { code: "fav_unavailable", status: 503 });
+    /* CP1: نفس الكلام لـ«كل العملاء — بفلاتر ملف العميل» */
+    if (filters.audience === PROFILE_ALL && !A.profileAll) throw Object.assign(new Error("ملف العميل مش متاح دلوقتي — جرّب بعد شوية"), { code: "profile_unavailable", status: 503 });
     const minLast = Number(filters.minLastOrder) > 0 ? Number(filters.minLastOrder) : 0;
     /* الفاصل الافتراضي للشريحة دي (٥–٩٠ يوم) لو الحملة مابعتتش فلتر */
     const blank = (v) => v === undefined || v === null || v === "";
@@ -559,7 +583,25 @@ export function register(app, ctx, deps = {}) {
     } else all = await outreach.audienceRows(A.aud, { canSee: true, minLastOrder: minLast, segmentPhones: A.segmentPhones });
     // مفيش ولا طلب ≥ الحد (بيشتري مية/بيبسي بس) ⇒ مالوش رسالة تفكّره بأكلة
     const smallOnly = all.filter((r) => r.noMeaningfulOrder).length;
-    const filtered = applyFilters(all.filter((r) => !r.noMeaningfulOrder), F);
+    let filtered = applyFilters(all.filter((r) => !r.noMeaningfulOrder), F);
+    /* CP1 (١٥/١٠): فلتر «ملف العميل» فوق الشريحة (filters.profile — custprofile.js normalizeProfileFilter/matchProfile، نفس عدّاد بنّاء الجمهور).
+       اللي مالوش ملف لسه بيطلع وبيتعدّ لوحده (missing). */
+    const pfRaw = F && F.profile;
+    const hasPf = Boolean(pfRaw && typeof pfRaw === "object" && !Array.isArray(pfRaw) && Object.keys(pfRaw).length);
+    let prof = null, profMap = null;
+    if (hasPf || profileValues) {
+      const P = profApi();
+      if (!P) throw Object.assign(new Error("ملف العميل مش متاح دلوقتي — جرّب بعد شوية"), { code: "profile_unavailable", status: 503 });
+      const nf = P.normalizeFilter(hasPf ? pfRaw : {});
+      if (!nf.ok) throw Object.assign(new Error(nf.error[1]), { code: nf.error[0], status: 422 });
+      profMap = await P.profilesFor(filtered.map((r) => r.pn));
+      if (hasPf) {
+        let missing = 0, notMatched = 0;
+        const T = now();
+        filtered = filtered.filter((r) => { const p = profMap.get(r.pn); if (!p) { missing++; return false; } if (!P.match(p, nf.filter, T)) { notMatched++; return false; } return true; });
+        prof = { filter: nf.filter, missing, notMatched, matched: filtered.length };
+      }
+    }
     const pns = filtered.map((r) => r.pn);
     const staff = staffPhoneSet(s);
     const recent = await recentMap(pns, cfg.gapDays, cloud ? { waGapDays: CLOUD_MIN_GAP_DAYS } : {});
@@ -586,16 +628,34 @@ export function register(app, ctx, deps = {}) {
       if (cloud && custCapReason(mk.get(r.pn), cap)) { excluded.waCap++; continue; }      // QP1: سقف العميل ١/٧ أيام و٣/٣٠ يوم
       ok.push(r);
     }
+    /* CP1: قيم الرسالة لكل مستلم من ملفه ({fav_dish} …). اللي قيمته ناقصة (مالوش طبق مفضّل، مفيش بوكس شغّال فيه طبقه…) بيطلع هنا —
+       قبل «أقصى عدد»، فالحملة بتتملي بالمؤهلين — وعمره ما بيوصله نص عام. vars.prof = اللي لازم يتراجع وقت الإرسال (البوكس/FIRST/الولاء). */
+    let okList = ok;
+    if (profileValues) {
+      const P = profApi();
+      const needBox = Object.values(profileValues).some((v) => /\{fav_box\}/.test(String(v)));
+      const tctx = await P.tokenContext({ needBox, fieldMax });
+      const why = {};
+      okList = [];
+      for (const r of ok) {
+        const res = P.resolveValues(profileValues, profMap.get(r.pn) || null, tctx);
+        if (!res.ok) { excluded.profileValue = (excluded.profileValue || 0) + 1; const k = String(res.why).split(":").slice(0, 2).join(":"); why[k] = (why[k] || 0) + 1; continue; }
+        okList.push({ ...r, vars: { ...(r.vars || {}), cloud: { values: res.values }, prof: res.uses || {} } });
+      }
+      prof = { ...(prof || {}), values: { tokens: [...new Set(Object.values(profileValues).flatMap((v) => tokensOf(v)))], missing: why,
+        catalog: needBox ? Boolean(tctx.live) : null } };
+    }
     const limit = Math.min(1000, Math.max(1, Number(filters.limit) || 100));
     excluded.smallOnly = smallOnly;
-    excluded.smallSkipped = ok.filter((r) => r.skippedSmall > 0).length;   // اترجعنا لطلب أقدم
+    excluded.smallSkipped = okList.filter((r) => r.skippedSmall > 0).length;   // اترجعنا لطلب أقدم
     const C = typeof outreach.cfg === "function" ? await outreach.cfg() : { template: "" };
-    const picked = ok.slice(0, limit);
+    const picked = okList.slice(0, limit);
     /* QP1: كام رقم في اللي هيتبعتلهم جاي من تطبيق توصيل بس — المالك لازم يأكد العدد ده قبل البدء (قناة Cloud) */
     let appOnly = null;
     if (cloud) { const set = await appOnlySet(picked.map((x) => x.pn)); appOnly = set ? { count: set.size, label: APP_ONLY_LABEL, needsConfirm: set.size > 0 } : { count: null, label: APP_ONLY_LABEL, needsConfirm: true, error: "unreadable" }; }
-    return { audience: A.aud, inAudience: all.length, afterFilters: filtered.length, excluded, eligible: ok.length,
-      picked, cfg, globalTemplate: C.template, appOnly, ...(A.fav ? { fav: { filters: { minDaysSince: F.minDaysSince, maxDaysSince: F.maxDaysSince }, stats: all.stats || null, digest: favDigest(picked) } } : {}) };
+    return { audience: A.aud, inAudience: all.length, afterFilters: filtered.length, excluded, eligible: okList.length,
+      picked, cfg, globalTemplate: C.template, appOnly, ...(A.fav ? { fav: { filters: { minDaysSince: F.minDaysSince, maxDaysSince: F.maxDaysSince }, stats: all.stats || null, digest: favDigest(picked) } } : {}),
+      ...(prof ? { profile: prof } : {}) };
   }
   /* FD1 (مراجعة ١٤/١٠): بصمة الرسايل نفسها (الرقم + العنوان + السطر لكل مستلم، بالترتيب). المعاينة بترجّعها والبدء بيقارنها (confirmDigest):
      confirmCount بيقارن العدد بس — لكن العروض بتتحسب تاني وقت البدء، فممكن نفس العدد بعملاء/أسعار/سطور توصيل غير اللي المالك قراها. */
@@ -642,6 +702,7 @@ export function register(app, ctx, deps = {}) {
       audiences: await audienceList(),
       jobs: jobs.map((j) => ({ ...j, id: Number(j.id) })), minGapDays: MIN_GAP_DAYS,
       templateVars: TEMPLATE_VARS, defaultTemplate: C.template, linkHost: STORE().replace(/^https?:\/\//, ""),
+      profileTokens: profApi() ? PROFILE_TOKENS : [],      // CP1: قيم ملف العميل اللي تتكتب في خانات قوالب الكتالوج
       invalidCount: extra.invalid, replies7: extra.replies7, optouts7: extra.optouts7 });
   });
 
@@ -703,7 +764,7 @@ export function register(app, ctx, deps = {}) {
     let b = {}; try { b = await c.req.json(); } catch { return bad(c, "bad_json", "بيانات غلط"); }
     const input = jobInput(b, { hosts: imageHosts() });
     const s = await getSettingsData();
-    const bo = await buildOr(c, b.filters || {}, s, { channel: input.channel });
+    const bo = await buildOr(c, b.filters || {}, s, { channel: input.channel, ...profileBuildOpts(input) });
     if (bo.res) return bo.res;
     const r = bo.r;
     const tpl = tplOf(r, input);
@@ -756,6 +817,8 @@ export function register(app, ctx, deps = {}) {
       /* FD1: كل رسالة هتتبعت ({{1}} و{{2}} لكل مستلم) — المالك يراجعهم كلهم قبل البدء. الجوال مخفي. */
       ...(r.fav ? { fav: r.fav, perRecipient: input.perRecipient === true, texts: r.picked.map((x) => ({ phone: `${x.pn.slice(0, 3)}••••${x.pn.slice(-2)}`, name: x.name || null,
         title: (x.vars && x.vars.cloud && x.vars.cloud.values && x.vars.cloud.values["offer.title"]) || null, line: (x.vars && x.vars.cloud && x.vars.cloud.values && x.vars.cloud.values["offer.line"]) || null, ...(x.favView ? { fav: x.favView } : {}) })) } : {}),
+      /* CP1: فلتر ملف العميل (اتطابق/اتشال/مالوش ملف) + قيم الرسالة لكل مستلم (مين طلع وليه) */
+      ...(r.profile ? { profile: r.profile } : {}), profileVars: input.profileVars === true,
       customTemplate: Boolean(input.template), template: tpl, footer: r.cfg.footer, channel: input.channel,
       problems: [...input.errs.map(([error, message]) => ({ error, message })),
         ...(cloudExtra.templateSync && syncBlock(cloudExtra.templateSync) ? [{ error: syncBlock(cloudExtra.templateSync), message: cloudExtra.templateSync.message }] : [])] });
@@ -782,7 +845,7 @@ export function register(app, ctx, deps = {}) {
       if (taken) return bad(c, "slug_taken", "اسم الرابط ده مستخدم — اختار اسم تاني أو سيبه فاضي", 409);
     }
     const s = await getSettingsData();
-    const bo = await buildOr(c, b.filters || {}, s, { channel: input.channel });
+    const bo = await buildOr(c, b.filters || {}, s, { channel: input.channel, ...profileBuildOpts(input) });
     if (bo.res) return bo.res;
     const r = bo.r;
     if (!r.picked.length) return bad(c, "empty", "مفيش حد مؤهل بالفلاتر دي");
@@ -853,7 +916,7 @@ export function register(app, ctx, deps = {}) {
           }
         }
         /* FD1: حملة قيمها لكل مستلم ⇒ نص الصف = نص قالب واتساب نفسه بقيم العميل ده (اللي هيتبعت فعلاً) — للوحة والسجل */
-        const msg = input.perRecipient ? (cloudText(input, x, slug, code) || "-") : messageFor(x, { template: tpl, footer: r.cfg.footer, host, slug, code, coupon, couponDays: input.offer?.validDays });
+        const msg = input.perRecipient || input.profileVars ? (cloudText(input, x, slug, code) || "-") : messageFor(x, { template: tpl, footer: r.cfg.footer, host, slug, code, coupon, couponDays: input.offer?.validDays });
         if (hold) holdN++;
         await client.query(
           `INSERT INTO wa_send_queue(job_id, phone_norm, name, message, score, status, reason, link_code, coupon, vars)
@@ -885,7 +948,7 @@ export function register(app, ctx, deps = {}) {
     if (/\{\w+\}/.test(msg)) return bad(c, "raw_only", "التعديل الفردي نص نهائي — من غير متغيرات زي {name}");
     /* مراجعة FD1 ٣: رسالة «طبقك المفضل» بتتبعت من قيم القالب المحسوبة للعميل (vars.cloud)، مش من النص ده — تعديله كان بيغيّر اللي بيتعرض بس */
     const jr = (await pool.query("SELECT j.cloud_vars FROM wa_send_queue q JOIN wa_send_jobs j ON j.id = q.job_id WHERE q.id=$1", [Number(c.req.param("id"))])).rows[0];
-    if (jr && jr.cloud_vars && jr.cloud_vars.perRecipient === true) return bad(c, "per_recipient", "رسايل الحملة دي محسوبة لكل عميل (العرض والسعر والتوصيل) — الرسالة مابتتعدّلش من هنا؛ شيلها من الطابور لو مش عايزها تتبعت", 409);
+    if (jr && jr.cloud_vars && (jr.cloud_vars.perRecipient === true || jr.cloud_vars.profileVars === true)) return bad(c, "per_recipient", "رسايل الحملة دي محسوبة لكل عميل (العرض والسعر والتوصيل) — الرسالة مابتتعدّلش من هنا؛ شيلها من الطابور لو مش عايزها تتبعت", 409);
     const r = await pool.query(
       "UPDATE wa_send_queue SET message=$2, edited_by=$3 WHERE id=$1 AND status='pending' RETURNING id",
       [Number(c.req.param("id")), msg, await whoOf(c)]);
@@ -923,7 +986,7 @@ export function register(app, ctx, deps = {}) {
     const job = (await pool.query("SELECT * FROM wa_send_jobs WHERE id=$1", [jobId])).rows[0];
     if (!job || ["done", "cancelled"].includes(job.status)) return bad(c, "not_found", "الحملة خلصت أو مش موجودة", 404);
     /* FD1: رسايل «طبقك المفضل» محسوبة لكل عميل من قالب واتساب — مفيش نص حملة يتغيّر من هنا */
-    if (job.cloud_vars && job.cloud_vars.perRecipient === true) return bad(c, "per_recipient", "رسايل الحملة دي محسوبة لكل عميل (العرض والسعر والتوصيل) — النص مايتغيّرش من هنا", 409);
+    if (job.cloud_vars && (job.cloud_vars.perRecipient === true || job.cloud_vars.profileVars === true)) return bad(c, "per_recipient", "رسايل الحملة دي محسوبة لكل عميل (العرض والسعر والتوصيل) — النص مايتغيّرش من هنا", 409);
     const rows = (await pool.query("SELECT id, phone_norm, vars, link_code, coupon FROM wa_send_queue WHERE job_id=$1 AND status='pending'", [jobId])).rows;
     const missing = rows.filter((x) => !x.vars || !Object.keys(x.vars).length);
     let fresh = new Map();
@@ -1210,7 +1273,7 @@ export function register(app, ctx, deps = {}) {
       templates: campaignTemplateNames().map((n) => { const sp = campaignSpec(n); const legacy = TEMPLATES[n].campaign;
         return { name: n, label: sp.label, needs: [...(legacy ? legacy.needs || [] : []), ...(sp.header && !(legacy && (legacy.needs || []).includes(sp.header)) ? [sp.header] : []), ...(sp.needsCoupon && !(legacy && (legacy.needs || []).includes("coupon")) ? ["coupon"] : [])],
           status: approved.get(n) || (tpl && tpl.ok ? "NOT_SUBMITTED" : null), body: sp.body, footer: sp.footer, header: sp.header, button: sp.button, buttonText: sp.buttonText,
-          fields: sp.fields, auto: sp.auto, held: sp.held === true }; }) };
+          fields: sp.fields, auto: sp.auto, held: sp.held === true, kind: sp.kind }; }) };      // CP1: kind = catalog ⇒ خاناته تقبل قيم ملف العميل
   }
 
   function cloudStats(rows) {
@@ -1276,6 +1339,19 @@ export function register(app, ctx, deps = {}) {
          مش «والتوصيل لعنوانك …» وصفحة الدفع رافضة التوصيل */
       if (fw && FAV_HOLD.includes(fw)) { await pool.query("UPDATE wa_send_queue SET status='pending', attempts=GREATEST(attempts-1,0) WHERE id=$1", [q.id]); return { halt: fw }; }
       if (fw) { await pool.query("UPDATE wa_send_queue SET status='skipped', reason=$2 WHERE id=$1", [q.id, String(fw).slice(0, 60)]); return { skipped: fw }; }
+    }
+    /* CP1: قيم ملف العميل اللي ممكن تتغيّر بعد التجهيز (البوكس اتوقف، FIRST اتستخدم، رصيد الولاء اتحرّك) بتتراجع الحين — اتغيّرت أو
+       ماقدرناش نتأكد ⇒ الصف يتخطّى بسببها. صف مافيهوش حاجة متغيّرة (الاسم/الطبق/النوع) بيكمّل من غير استعلام. */
+    if (job.cloud_vars && job.cloud_vars.profileVars === true) {
+      const u = (q.vars && q.vars.prof) || {};
+      const volatile = Boolean(u.box || u.firstHint || u.loy != null);
+      const P = profApi();
+      let why = null;
+      if (volatile) {
+        if (P && typeof P.recheckRow === "function") { try { why = await P.recheckRow(q); } catch { why = "profile_unverified"; } }
+        else why = "profile_unverified";
+      }
+      if (why) { await pool.query("UPDATE wa_send_queue SET status='skipped', reason=$2 WHERE id=$1", [q.id, String(why).slice(0, 60)]); return { skipped: why }; }
     }
     let built;
     try { built = campaignParams(job.cloud_template, q, job); }
@@ -1628,6 +1704,8 @@ export function register(app, ctx, deps = {}) {
       if (!title || !line || lineProblem(title, line)) return bad(c, "test_values_required", "حملة «طبقك المفضل»: ابعت testValues {title, line} من عينة المعاينة (سطر واحد لكل واحد، من غير «:»)", 422);
       tvars = { cloud: { values: { "offer.title": title, "offer.line": line } } };
     }
+    /* CP1: حملة بقيم من ملف العميل — التجربة بقيم المثال ({fav_dish} = «كريب زنجر سوبريم» …)، لرقم تجربة بس */
+    if (input.profileVars) tvars = { cloud: { values: exampleProfileValues((input.cloudVars && input.cloudVars.values) || {}) } };
     let built;
     try { built = campaignParams(input.cloudTemplate, { name: String(b.testName || "تجربة").slice(0, 30), vars: tvars, link_code: "", coupon },
       { link_slug: slug, image_url: input.imageUrl, video_url: input.videoUrl, cloud_vars: input.cloudVars }); }

@@ -260,6 +260,8 @@ export const campaignTemplateNames = () => Object.keys(TEMPLATES).filter((n) => 
 
 const setPath = (obj, path, val) => { const ks = String(path).split("."); let o = obj; ks.forEach((k, i) => { if (i === ks.length - 1) o[k] = val; else o = o[k] = (o[k] && typeof o[k] === "object" ? o[k] : {}); }); };
 export const campaignValues = (cloudVars) => { const v = (cloudVars && cloudVars.values && typeof cloudVars.values === "object") ? cloudVars.values : {}; return { ...v, ...(cloudVars && cloudVars.offer ? { offer: cloudVars.offer } : {}) }; };
+/* CP1 (١٥/١٠): خانة فيها قيمة من ملف العميل ({fav_dish} …) — custprofile.js بيبدّلها لكل مستلم وقت التجهيز */
+export const PROFILE_TOKEN_RE = /\{[a-z_]+\}/;
 
 export function campaignParams(template, row, job) {
   const t = TEMPLATES[template];
@@ -272,10 +274,13 @@ export function campaignParams(template, row, job) {
   if (spec && spec.kind === "catalog") {
     /* قالب كتالوج: كائن البيانات بمسارات المتغيّرات — قيم الحملة + الاسم + الكوبون + الرابط المتتبّع، وbind بتاع الكتالوج يرتّبها ويطلّع الناقص */
     const data = {};
-    for (const [k, val] of Object.entries(campaignValues(job.cloud_vars))) if (k !== "offer") setPath(data, k, val);
+    /* CP1 (١٥/١٠): حملة بقيم من ملف العميل (cloud_vars.profileVars): الخانة اللي فيها {token} قيمتها من صف المستلم بس (vars.cloud.values —
+       اتحسبت وقت التجهيز). صف من غير قيمته = متغيّر ناقص ⇒ الحارس مابيبعتش (missing_param) — النص الخام بالأقواس عمره ما يوصل لعميل. */
+    const profVars = Boolean(job.cloud_vars && job.cloud_vars.profileVars === true);
+    for (const [k, val] of Object.entries(campaignValues(job.cloud_vars))) if (k !== "offer" && !(profVars && PROFILE_TOKEN_RE.test(String(val)))) setPath(data, k, val);
     /* FD1 (١٤/١٠): حملة قيمها لكل مستلم (perRecipient — «طبقك المفضل»): قيم الصف نفسه (vars.cloud) هي اللي بتتبعت. الحملة مالهاش
        قيم أصلاً، فصف من غير قيمه = متغيّر ناقص ⇒ الحارس مابيبعتش (missing_param) — عمره ما بيطلع بقيمة عامة. */
-    if (job.cloud_vars && job.cloud_vars.perRecipient === true) for (const [k, val] of Object.entries(campaignValues(v.cloud))) if (k !== "offer") setPath(data, k, val);
+    if (job.cloud_vars && (job.cloud_vars.perRecipient === true || profVars)) for (const [k, val] of Object.entries(campaignValues(v.cloud))) if (k !== "offer") setPath(data, k, val);
     setPath(data, "customer.name", first || "عميلنا");
     if (row.coupon) setPath(data, "coupon.code", row.coupon);
     setPath(data, "link.suffix", linkSuffix);
