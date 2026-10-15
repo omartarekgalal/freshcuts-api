@@ -65,12 +65,17 @@ export const CLOUD_DEFAULTS = {
   /* QP1 (١٣/١٠ — مراجعة الخبير M7): الإيقاف ٥٪ ⇒ ٢٪ وبعد ٣٠ رسالة بدل ٢٠ */
   spendDaySar: 50, brakeMinSends: 30, brakeStopPct: 2, brakeFailPct: 10,
   ...QUALITY_DEFAULTS, warmup: { steps: WARMUP_DEFAULTS.steps.map((x) => ({ ...x })), stepUpStopPct: WARMUP_DEFAULTS.stepUpStopPct, minStepSends: WARMUP_DEFAULTS.minStepSends },
+  /* SX2 (١٥/١٠): إعادة تلقائية مرة واحدة للفشل المؤقت من ميتا (بعد retryDelayMin، ولو ماتبعتتش خلال retryMaxHours من ميعادها بتتلغي)،
+     والبدء المجدول: لو السيرفر كان واقف وقت البدء، الحملة تبدأ لوحدها لو التأخير أقل من startLateMaxMin وإلا تستنى المالك */
+  retryTransient: true, retryDelayMin: 10, retryMaxHours: 3, startLateMaxMin: 120,
   configId: DEFAULT_CONFIG_ID,
 };
-export const CLOUD_KEYS = Object.freeze(["enabled", "dailyCap", "hourCap", "perTick", "tierLimit", "reserveUtility", "spendDaySar", "brakeMinSends", "brakeStopPct", "brakeFailPct", ...QUALITY_KEYS]);
+export const CLOUD_KEYS = Object.freeze(["enabled", "dailyCap", "hourCap", "perTick", "tierLimit", "reserveUtility", "spendDaySar", "brakeMinSends", "brakeStopPct", "brakeFailPct", ...QUALITY_KEYS,
+  "retryTransient", "retryDelayMin", "retryMaxHours", "startLateMaxMin"]);
 /* مفاتيح «رفع السقف» = للمالك بس؛ تقليلها أو قفل القناة مسموح لأي دور يدخل الشاشة */
 export const CLOUD_CEILINGS = Object.freeze(["dailyCap", "hourCap", "perTick", "tierLimit", "spendDaySar", "brakeStopPct", "brakeFailPct",
-  "brakeWarnPct", "lowReadMinDelivered", "lowReadHours", "lowReadPct", "cappedFallbackSms", "allowUnknownQuality", "qualityMaxAgeMin", "custCap7d", "custCap30d", "warmup"]);
+  "brakeWarnPct", "lowReadMinDelivered", "lowReadHours", "lowReadPct", "cappedFallbackSms", "allowUnknownQuality", "qualityMaxAgeMin", "custCap7d", "custCap30d", "warmup",
+  "retryTransient", "retryMaxHours", "startLateMaxMin"]);
 const clampF = (v, lo, hi, d) => { const n = Number(v); return Number.isFinite(n) && v !== null && v !== "" ? Math.min(hi, Math.max(lo, Math.round(n * 100) / 100)) : d; };
 export function cloudCfg(settings) {
   const x = { ...CLOUD_DEFAULTS, ...(((settings || {}).waCloud) || {}) };
@@ -89,6 +94,10 @@ export function cloudCfg(settings) {
     perTick: clampN(x.perTick, 1, 50, 5),
     tierLimit: tier,
     reserveUtility: clampN(x.reserveUtility, 0, tier, 50),
+    retryTransient: x.retryTransient !== false,                  // SX2: مفتوحة افتراضياً — false صريح بس اللي بيقفلها
+    retryDelayMin: clampN(x.retryDelayMin, 2, 180, 10),
+    retryMaxHours: clampN(x.retryMaxHours, 1, 24, 3),
+    startLateMaxMin: clampN(x.startLateMaxMin, 5, 1440, 120),
     configId: /^\d{6,25}$/.test(String(x.configId || "")) ? String(x.configId) : DEFAULT_CONFIG_ID,
   };
 }
@@ -126,7 +135,10 @@ export function cloudPacing(cc, st, inHours) {
    retry   مؤقتة ⇒ الصف يرجع للطابور
    invalid الرقم مش على واتساب ⇒ مايدخلش حملات تانية
    optout  العميل وقّف التسويق من واتساب نفسه ⇒ إيقاف عندنا كمان
-   fallback تنفع قناة بديلة (sms = بس؛ both = واتساب ويب أو SMS) */
+   fallback تنفع قناة بديلة (sms = بس؛ both = واتساب ويب أو SMS)
+   transient (SX2 ١٥/١٠) غلطة مؤقتة عند ميتا أو في تنزيل الوسيط — مش في العميل ولا في الحساب ⇒ الصف بيتعاد مرة واحدة لوحده بعد
+           retryDelayMin (retryDecision). حادثة ١٥/١٠: ٧٦ رسالة فشلت بـ131000 لأن الـAPI اتعمل له ريستارت وميتا بتنزّل صورة الهيدر
+           (الصورة على سيرفرنا). 131053 = ميتا ماقدرتش تنزّل/ترفع الوسيط (كانت بتوقّف القناة كلها؛ دلوقتي إعادة + فحص الوسيط). */
 export const META_ERRORS = {
   131026: { reason: "undeliverable", invalid: true, fallback: "sms" },
   /* QP1: ميتا نفسها حدّت رسايل التسويق للعميل ده — مش فشل عندنا: بيتعدّ لوحده (meta_capped) وبره نسبة الفشل، ومن غير SMS بديل افتراضياً */
@@ -138,8 +150,10 @@ export const META_ERRORS = {
   130429: { reason: "rate_limited", retry: true },
   80007: { reason: "rate_limited", retry: true },
   4: { reason: "rate_limited", retry: true },
-  131016: { reason: "meta_unavailable", retry: true },
-  131000: { reason: "meta_error" },
+  131016: { reason: "meta_unavailable", retry: true, transient: true },
+  131000: { reason: "meta_error", transient: true },
+  133004: { reason: "meta_server_down", transient: true },
+  2: { reason: "meta_api_temporary", transient: true },
   131021: { reason: "recipient_is_sender", invalid: true },
   131048: { reason: "spam_rate_limit", stop: true },
   131042: { reason: "payment_issue", stop: true },
@@ -155,7 +169,7 @@ export const META_ERRORS = {
   132015: { reason: "template_paused", stop: true },
   132016: { reason: "template_disabled", stop: true },
   132018: { reason: "template_params", stop: true },
-  131053: { reason: "media_error", stop: true },
+  131053: { reason: "media_error", transient: true, media: true },
   131008: { reason: "template_params", stop: true },
   131009: { reason: "template_params", stop: true },
   100: { reason: "bad_request", stop: true },
@@ -166,9 +180,116 @@ export const META_ERRORS = {
 export function classifyError(code) {
   const n = Number(code);
   const m = META_ERRORS[n];
-  if (m) return { code: n, stop: false, retry: false, invalid: false, optout: false, capped: false, fallback: null, ...m };
+  if (m) return { code: n, stop: false, retry: false, invalid: false, optout: false, capped: false, fallback: null, transient: false, media: false, ...m };
   return { code: Number.isFinite(n) ? n : null, reason: Number.isFinite(n) && n ? `meta_${n}` : "send_failed",
-    stop: false, retry: false, invalid: false, optout: false, capped: false, fallback: null };
+    stop: false, retry: false, invalid: false, optout: false, capped: false, fallback: null, transient: false, media: false };
+}
+/* SX2: الصف ده يتعاد لوحده؟ (دالة صافية) — مرة واحدة بس، للغلطات المؤقتة بس، والمفتاح شغّال، والرسالة الأولى ماوصلتش فعلاً.
+   مش بتتعاد أبداً: 131049 (ميتا حدّت تسويق العميل)، 131026 (مش على واتساب)، 130472 (تجربة ميتا)، وأي غلطة مش مؤقتة.
+   فشل الإرسال من غير كود من ميتا (شبكة/مهلة) مش «مؤقت» هنا: ممكن ميتا تكون استلمته — مانخاطرش برسالة مكررة. */
+export function retryDecision({ cls, row = null, cc = null, jobStatus = null } = {}) {
+  if (!cls || cls.transient !== true) return { retry: false, why: "not_transient" };
+  if (!cc || cc.retryTransient !== true) return { retry: false, why: "retry_off" };
+  if (row && row.retried_at) return { retry: false, why: "already_retried" };
+  if (row && ["delivered", "read"].includes(String(row.cloud_status || ""))) return { retry: false, why: "delivered" };
+  if (jobStatus === "cancelled") return { retry: false, why: "job_cancelled" };
+  return { retry: true, delayMin: cc.retryDelayMin };
+}
+
+/* ── SX2 (d): أسباب الفشل والتخطّي بالعربي — للنتايج وقايمة المستلمين (اللوحة بتعرضها زي ما هي) ── */
+export const REASON_AR = Object.freeze({
+  /* من ميتا */
+  undeliverable: "الرقم مش على واتساب",
+  meta_marketing_limit: "ميتا مابتوصّلش رسايل تسويق كتير للعميل ده",
+  meta_experiment: "العميل في تجربة عند ميتا مابتوصّلش له رسايل تسويق",
+  user_stopped_marketing: "العميل وقّف رسايل التسويق من واتساب نفسه",
+  window_closed: "نافذة الـ٢٤ ساعة مقفولة",
+  pair_rate_limit: "اتبعت للعميل ده كتير ورا بعض — ميتا قالت استنّى",
+  rate_limited: "ميتا طلبت نبطّأ الإرسال",
+  meta_unavailable: "خدمة ميتا كانت مضغوطة لحظتها (مؤقت)",
+  meta_error: "غلطة مؤقتة عند ميتا (131000)",
+  meta_server_down: "سيرفر ميتا كان واقف مؤقتاً",
+  meta_api_temporary: "خدمة ميتا كانت واقفة مؤقتاً",
+  media_error: "ميتا ماقدرتش تنزّل الصورة/الفيديو بتاع الرسالة",
+  recipient_is_sender: "ده رقم المطعم نفسه",
+  spam_rate_limit: "ميتا حدّت رقمنا بسبب بلاغات إزعاج",
+  payment_issue: "مشكلة في الدفع عند ميتا",
+  account_locked: "حساب واتساب مقفول عند ميتا",
+  policy_block: "ميتا رفضت بسبب مخالفة سياسة",
+  phone_not_registered: "رقم المطعم مش متسجّل على واتساب API",
+  template_params: "متغيّرات القالب غلط",
+  template_missing: "القالب مش موجود عند ميتا",
+  template_too_long: "نص القالب طويل بعد ما اتملى",
+  template_policy: "القالب مخالف لسياسة ميتا",
+  template_paused: "ميتا وقّفت القالب مؤقتاً",
+  template_disabled: "ميتا عطّلت القالب",
+  bad_request: "طلب الإرسال غلط",
+  token_invalid: "توكن واتساب مش صالح",
+  permission_denied: "صلاحية واتساب ناقصة",
+  send_failed: "الإرسال فشل من غير رد واضح من ميتا",
+  /* اتخطّى عندنا قبل الإرسال */
+  opted_out: "طلب إيقاف الرسايل",
+  staff: "رقم من الفريق",
+  invalid_number: "الرقم مش على واتساب أو مكتوب غلط",
+  gap_7d: "وصلته رسالة واتساب في آخر ٧ أيام",
+  gap_3d: "وصلته رسالة واتساب في آخر ٣ أيام",
+  gap_sms: "وصله SMS تسويقي قريب",
+  ordered_online: "طلب من الموقع قريب",
+  open_order: "عنده طلب مفتوح دلوقتي",
+  no_optin: "مش موافق على الرسايل",
+  missing_param: "قيمة ناقصة في رسالته (زي الاسم أو الطبق)",
+  marketing_cap_7d: "وصله قالب تسويقي في آخر ٧ أيام (حد العميل)",
+  marketing_cap_30d: "وصله ٣ قوالب تسويقية في آخر ٣٠ يوم (حد العميل)",
+  removed_by_owner: "اتشال من الطابور يدوي",
+  cancelled: "الحملة اتلغت قبل ما يوصله الدور",
+  holdout: "مجموعة المقارنة — مابيستلمش عن قصد",
+  bad_template: "القالب مش معروف",
+  stuck: "الإرسال علق ومارجعش رد",
+  ordered_since: "طلب من وقت ما الحملة اتجهّزت",
+  offer_missing: "العرض بتاعه ناقص",
+  offer_changed: "العرض اتغيّر من وقت المعاينة",
+  offer_unverified: "ماقدرناش نتأكد من العرض لحظة الإرسال",
+  offer_check_failed: "فحص العرض وقع لحظة الإرسال",
+  offer_ending: "العرض بيخلص النهارده",
+  profile_box_gone: "البوكس اللي في رسالته اتوقف",
+  profile_first_changed: "كوبون أول طلب اتغيّر حاله",
+  profile_loyalty_changed: "رصيد الولاء اتغيّر",
+  profile_unverified: "ماقدرناش نتأكد من قيم ملفه لحظة الإرسال",
+});
+export function reasonText(reason) {
+  const s = String(reason || "");
+  if (!s) return "من غير سبب متسجّل";
+  if (REASON_AR[s]) return REASON_AR[s];
+  if (s.startsWith("offer_gone")) return "العرض بتاعه خلص أو اتشال";
+  const m = /^meta_(\d+)$/.exec(s);
+  if (m) return `ميتا رفضت بكود ${m[1]}`;
+  return `سبب تاني (${s})`;
+}
+/* صفوف الطابور ⇒ [{status, reason, n, text}] للفاشل والمتخطّى (الأكتر الأول). الفاشل المستني إعادة مش منهم (بيتعدّ في retryStats). */
+export function reasonRows(rows) {
+  const m = new Map();
+  for (const x of rows || []) {
+    const failed = x.status === "failed" && !x.retry_at;
+    if (!failed && x.status !== "skipped") continue;
+    const k = `${x.status}|${x.reason || ""}`;
+    const cur = m.get(k) || { status: x.status, reason: x.reason || null, n: 0, text: reasonText(x.reason) };
+    cur.n++; m.set(k, cur);
+  }
+  return [...m.values()].sort((a, b) => b.n - a.n || a.status.localeCompare(b.status) || String(a.reason || "").localeCompare(String(b.reason || "")));
+}
+/* عدّادات الإعادة: مستنية · اتعادت · نجحت (ميتا قبلتها ومافشلتش بعدها) · وصلت · فشلت تاني · وصلت متأخر (الأولى طلعت واصلة ⇒ مااتعادتش) */
+export function retryStats(rows) {
+  const r = { waiting: 0, retried: 0, ok: 0, delivered: 0, failedAgain: 0, deliveredLate: 0, expired: 0 };
+  for (const x of rows || []) {
+    if (x.status === "failed" && x.retry_at) r.waiting++;
+    if (x.note === "delivered_after_failure") r.deliveredLate++;
+    if (x.note === "retry_expired" || x.note === "retry_off") r.expired++;
+    if (!x.retried_at) continue;
+    r.retried++;
+    if (x.status === "sent" && x.cloud_status !== "failed") { r.ok++; if (["delivered", "read"].includes(x.cloud_status)) r.delivered++; }
+    else if (x.status === "failed") r.failedAgain++;
+  }
+  return r;
 }
 /* القناة البديلة المسموحة للصف ده: job.fallback × نوع الغلطة */
 export function fallbackFor(cls, jobFallback, { cappedSms = false } = {}) {

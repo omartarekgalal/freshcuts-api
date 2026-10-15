@@ -47,7 +47,8 @@ import { brakeWarn, lowReadCheck, qualityVerdict, qualityEventRow, warmupAdvance
   CLOUD_MIN_GAP_DAYS, META_CAPPED_CODE, qualityAlertText, warnAlertText } from "./waquality.js";
 import { nextStatus, TEMPLATES } from "./whatsapp.js";
 import { cloudCfg, cloudPacing, classifyError, fallbackFor, campaignParams, cloudJobProblem, defaultChannel,
-  CAMPAIGN_TEMPLATES, campaignTemplateNames, campaignSpec, brakeCheck, campaignCost, mediaProblem, MEDIA_LIMITS, CLOUD_KEYS, CLOUD_CEILINGS, CLOUD_DEFAULTS } from "./wacloud.js";
+  CAMPAIGN_TEMPLATES, campaignTemplateNames, campaignSpec, brakeCheck, campaignCost, mediaProblem, MEDIA_LIMITS, CLOUD_KEYS, CLOUD_CEILINGS, CLOUD_DEFAULTS,
+  retryDecision, reasonText, reasonRows, retryStats } from "./wacloud.js";
 import { waRatesOf } from "./waaicost.js";
 import { FAV_PICK, FAV_AUDIENCE, FAV_DEFAULT_FILTERS, FAV_HOLD, favJobProblem, lineProblem } from "./wafavpick.js";
 import { PROFILE_ALL, PROFILE_TOKENS, PROFILE_TOKEN_KEYS, profileTokensIn, tokensOf, exampleProfileValues } from "./custprofile.js";
@@ -128,6 +129,36 @@ export function pacing(cfg, st, now = Date.now(), rnd = Math.random) {
   }
   const nextGapSec = Math.round(cfg.minDelaySec + rnd() * (cfg.maxDelaySec - cfg.minDelaySec));
   return { wait: 0, nextGapSec };
+}
+
+/* ── SX2 (١٥/١٠ — أ): ميعاد بدء الحملة ─────────────────────────────────────
+   «YYYY-MM-DDTHH:mm» = بتوقيت الرياض (اللي خانة الوقت في اللوحة بتبعته، مهما كانت ساعة الجهاز)، أو ISO بمنطقة زمنية صريحة.
+   السعودية مافيهاش توقيت صيفي ⇒ +03:00 ثابتة. لازم يكون بعد دلوقتي ولحد START_MAX_DAYS يوم. فاضي = مفيش ميعاد. (دالة صافية) */
+export const START_MAX_DAYS = 14;
+export const riyadhClock = (t) => new Date(new Date(t).getTime() + 3 * 3600e3).toISOString().slice(0, 16).replace("T", " ");
+export function parseStartAt(v, now = Date.now()) {
+  if (v === null || v === undefined || String(v).trim() === "") return { at: null };
+  const s = String(v).trim();
+  let t = NaN;
+  if (/^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(:\d{2})?$/.test(s)) t = Date.parse(`${s.replace(" ", "T")}${s.length === 16 ? ":00" : ""}+03:00`);
+  else if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d{1,3})?)?(Z|[+-]\d{2}:\d{2})$/.test(s)) t = Date.parse(s);
+  if (!Number.isFinite(t)) return { error: ["bad_start_at", "ميعاد البدء مش مفهوم — اختار اليوم والساعة"] };
+  t = Math.floor(t / 60000) * 60000;
+  if (t <= now) return { error: ["start_at_past", "ميعاد البدء لازم يكون بعد دلوقتي"] };
+  if (t > now + START_MAX_DAYS * 86400e3) return { error: ["start_at_far", `ميعاد البدء لازم يكون خلال ${START_MAX_DAYS} يوم`] };
+  return { at: new Date(t).toISOString(), riyadh: riyadhClock(t) };
+}
+/* تنبيه المالك لما البدء المجدول مايحصلش أو الحملة تقف بسبب الوسيط (SMS واحد — fitOneSms بيقصّه) */
+export function startAlertText(kind, { name = "", detail = "", lateMin = 0 } = {}, lang = "ar") {
+  const n = String(name || "").slice(0, 40);
+  if (lang === "ar") {
+    if (kind === "late") return `فريش كاتس: حملة واتساب «${n}» مابدأتش لوحدها — فات ميعادها بـ${lateMin} دقيقة (السيرفر كان واقف). ابدأها من اللوحة لو لسه عايزها.`;
+    if (kind === "media_pause") return `فريش كاتس: حملة واتساب «${n}» وقفت — ${detail}. راجع اللوحة.`;
+    return `فريش كاتس: حملة واتساب «${n}» مابدأتش في ميعادها — ${detail}. راجع اللوحة.`;
+  }
+  if (kind === "late") return `Fresh Cuts: WhatsApp campaign "${n}" did not auto-start - its start time passed ${lateMin} min ago (server was down). Start it from the dashboard if still wanted.`;
+  if (kind === "media_pause") return `Fresh Cuts: WhatsApp campaign "${n}" paused - its image/video stopped opening. Check the dashboard.`;
+  return `Fresh Cuts: WhatsApp campaign "${n}" did not start on schedule - its image/video check failed. Check the dashboard.`;
 }
 
 export const withFooter = (msg, footer) => (footer ? `${msg}\n\n${footer}` : msg);
@@ -255,16 +286,20 @@ export function register(app, ctx, deps = {}) {
   /* سعر الرسالة التسويقية من بطاقة الأسعار المخزّنة عند البوت (settings.waBot.waRates) — مفيش سعر في الملف ده */
   const rateOf = (s) => { const r = waRatesOf(((s || {}).waBot || {}).waRates); return { rateSar: Number(r.marketing) || 0, rateDate: r.date || null }; };
   const ownerOnly = (c) => c.json({ ok: false, error: "owner_only", message: "الخطوة دي للمالك بس" }, 403);
+  /* صف الحملة اللي الدورة/التكملة/الإعادة محتاجينه (نفس الاستعلام في كل مكان) */
+  const JOB_SQL = "SELECT id, cloud_template, cloud_vars, image_url, video_url, link_slug, offer, fallback, spend_cap_sar, rate_sar, brake_ack_at, status, name FROM wa_send_jobs WHERE id=$1";
   /* الوسيط (صورة/فيديو) قبل الإرسال: نوعه وحجمه بحدود ميتا — بنسأل الرابط (HEAD) من غير ما ننزّل الملف */
+  /* SX2: مهلة لكل طلب فحص — رابط معلّق مايوقّفش الدورة ولا البدء المجدول */
+  const fetchOpts = (o = {}) => { try { return typeof AbortSignal !== "undefined" && AbortSignal.timeout ? { ...o, signal: AbortSignal.timeout(15000) } : o; } catch { return o; } };
   async function checkMedia(kind, url) {
     if (!url) return null;
     try {
-      const r = await doFetch(url, { method: "HEAD" });
+      const r = await doFetch(url, fetchOpts({ method: "HEAD" }));
       if (!r.ok) return ["media_unreachable", `الرابط مابيفتحش (HTTP ${r.status})`];
       let mime = r.headers?.get?.("content-type"), bytes = r.headers?.get?.("content-length");
       if (!(Number(bytes) > 0)) {
         /* السيرفر مارجّعش الحجم في HEAD: ننزّل الملف (من دوميناتنا بس — الرابط اتفحص في jobInput) ونقيسه */
-        const g = await doFetch(url);
+        const g = await doFetch(url, fetchOpts());
         if (!g.ok) return ["media_unreachable", `الرابط مابيفتحش (HTTP ${g.status})`];
         mime = g.headers?.get?.("content-type") || mime;
         bytes = (await g.arrayBuffer()).byteLength;
@@ -276,6 +311,22 @@ export function register(app, ctx, deps = {}) {
     const spec = campaignSpec(input.cloudTemplate);
     if (!spec || !spec.header) return null;
     return checkMedia(spec.header, spec.header === "video" ? input.videoUrl : input.imageUrl);
+  }
+  /* SX2 (ج): فحص وسيط حملة متخزّنة (صف wa_send_jobs) قبل ما تبدأ / تكمّل / تتعاد رسايلها. null = تمام أو القالب من غير وسيط.
+     cacheMs: نتيجة فحص نفس الرابط من قريب تتستعمل (الدورة بتعيد الفحص كل دقيقة بالكتير، مش مع كل رسالة). */
+  const mediaCache = new Map();
+  async function jobMediaErr(job, { cacheMs = 0, cacheFail = false } = {}) {
+    if (!job || (job.channel && job.channel !== "wa_cloud")) return null;
+    const spec = campaignSpec(job.cloud_template);
+    if (!spec || !spec.header) return null;
+    const url = spec.header === "video" ? job.video_url : job.image_url;
+    if (!url) return ["media_missing", spec.header === "video" ? "القالب بفيديو بس مفيش فيديو متحدد للحملة" : "القالب بصورة بس مفيش صورة متحددة للحملة"];
+    const hit = cacheMs > 0 ? mediaCache.get(url) : null;
+    if (hit && now() - hit.at < cacheMs && (!hit.problem || cacheFail)) return hit.problem;      // نقطة البدء: النجاح بس بيتخزّن (المالك صلّح ⇒ يجرّب على طول)
+    const problem = await checkMedia(spec.header, url);
+    mediaCache.set(url, { at: now(), problem });
+    if (mediaCache.size > 200) mediaCache.delete(mediaCache.keys().next().value);
+    return problem;
   }
   const whoOf = async (c) => {
     try {
@@ -398,6 +449,17 @@ export function register(app, ctx, deps = {}) {
         job_id BIGINT,
         hits INT NOT NULL DEFAULT 1
       );
+      -- SX2 (١٥/١٠): البدء المجدول من السيرفر نفسه (مش cron بره) + إعادة تلقائية مرة واحدة للفشل المؤقت من ميتا
+      ALTER TABLE wa_send_jobs ADD COLUMN IF NOT EXISTS start_at TIMESTAMPTZ;     -- حملة موقوفة بتبدأ لوحدها في الميعاد ده
+      ALTER TABLE wa_send_jobs ADD COLUMN IF NOT EXISTS start_by TEXT;
+      ALTER TABLE wa_send_jobs ADD COLUMN IF NOT EXISTS started_at TIMESTAMPTZ;
+      ALTER TABLE wa_send_jobs ADD COLUMN IF NOT EXISTS start_error TEXT;        -- آخر بدء مجدول ماحصلش ليه (فحص الوسيط / فات الميعاد)
+      CREATE INDEX IF NOT EXISTS wa_send_jobs_start_idx ON wa_send_jobs(start_at) WHERE start_at IS NOT NULL;
+      ALTER TABLE wa_send_queue ADD COLUMN IF NOT EXISTS retry_at TIMESTAMPTZ;    -- فشل مؤقت ⇒ هيتعاد في الميعاد ده
+      ALTER TABLE wa_send_queue ADD COLUMN IF NOT EXISTS retried_at TIMESTAMPTZ;  -- اتعاد فعلاً (مرة واحدة بس)
+      ALTER TABLE wa_send_queue ADD COLUMN IF NOT EXISTS first_error_code INT;   -- كود فشل المحاولة الأولى
+      ALTER TABLE wa_send_queue ADD COLUMN IF NOT EXISTS first_wamid TEXT;       -- wamid المحاولة الأولى (عشان نتأكد إنها ماوصلتش قبل الإعادة)
+      CREATE INDEX IF NOT EXISTS wa_send_queue_retry_idx ON wa_send_queue(retry_at) WHERE retry_at IS NOT NULL;
     `);
   }
   const schemaReady = ensureSchema().catch((e) => console.error("[wasender] schema:", e.message));
@@ -612,6 +674,8 @@ export function register(app, ctx, deps = {}) {
       `SELECT q.phone_norm, bool_or(q.status = 'holdout') AS held FROM wa_send_queue q JOIN wa_send_jobs j ON j.id=q.job_id
         WHERE q.phone_norm = ANY($1::text[])
           AND ((q.status IN ('pending','sending') AND j.status IN ('running','paused'))
+            -- SX2: مستني إعادة تلقائية = لسه في طابور حملته
+            OR (q.status = 'failed' AND q.retry_at IS NOT NULL AND j.status IN ('running','paused'))
             -- المحجوزين لسه في نافذة القياس (٧ أيام): مانبعتلهمش من حملة تانية وإلا المقارنة تبوظ
             OR (q.status = 'holdout' AND j.created_at > NOW() - make_interval(days => $2::int + 7)))
         GROUP BY 1`, [pns, ATTR_DAYS])).rows;
@@ -674,7 +738,10 @@ export function register(app, ctx, deps = {}) {
     const st = await stateNow();
     const jobs = (await pool.query(
       `SELECT j.*, count(q.*) FILTER (WHERE q.status='sent')::int AS sent,
-              count(q.*) FILTER (WHERE q.status='failed')::int AS failed,
+              count(q.*) FILTER (WHERE q.status='failed' AND q.retry_at IS NULL)::int AS failed,
+              count(q.*) FILTER (WHERE q.status='failed' AND q.retry_at IS NOT NULL)::int AS retry_wait,
+              count(q.*) FILTER (WHERE q.retried_at IS NOT NULL)::int AS retried,
+              count(q.*) FILTER (WHERE q.retried_at IS NOT NULL AND q.status='sent' AND COALESCE(q.cloud_status,'') <> 'failed')::int AS retry_ok,
               count(q.*) FILTER (WHERE q.status='failed' AND q.error_code = ${META_CAPPED_CODE})::int AS meta_capped,
               count(q.*) FILTER (WHERE q.status='skipped')::int AS skipped,
               count(q.*) FILTER (WHERE q.status='holdout')::int AS holdout,
@@ -700,7 +767,7 @@ export function register(app, ctx, deps = {}) {
       pace: pacing(cfg, st, now(), () => 0), inWindow: inWindow(cfg, now()),
       effectiveDailyCap: effectiveDailyCap(cfg, now()),
       audiences: await audienceList(),
-      jobs: jobs.map((j) => ({ ...j, id: Number(j.id) })), minGapDays: MIN_GAP_DAYS,
+      jobs: jobs.map((j) => ({ ...j, id: Number(j.id), start_at_riyadh: j.start_at ? riyadhClock(j.start_at) : null })), minGapDays: MIN_GAP_DAYS, startMaxDays: START_MAX_DAYS,
       templateVars: TEMPLATE_VARS, defaultTemplate: C.template, linkHost: STORE().replace(/^https?:\/\//, ""),
       profileTokens: profApi() ? PROFILE_TOKENS : [],      // CP1: قيم ملف العميل اللي تتكتب في خانات قوالب الكتالوج
       invalidCount: extra.invalid, replies7: extra.replies7, optouts7: extra.optouts7 });
@@ -831,6 +898,9 @@ export function register(app, ctx, deps = {}) {
     /* حملة واتساب بتتبعت من السيرفر لعملاء حقيقيين وبفلوس: البدء للمالك بس (التسويق يجهّز ويعاين) */
     if (input.channel === "wa_cloud" && !(await isOwner(c))) return ownerOnly(c);
     if (input.errs.length) return bad(c, input.errs[0][0], input.errs[0][1], 422);
+    /* SX2 (أ): startAt ⇒ الحملة بتتحفظ موقوفة والسيرفر نفسه بيبدأها في الميعاد (startDueJobs) — مفيش cron بره */
+    const sched = parseStartAt(b.startAt, now());
+    if (sched.error) return bad(c, sched.error[0], sched.error[1], 422);
     if (input.channel === "wa_cloud") { const mp = await mediaErr(input); if (mp) return bad(c, mp[0], mp[1], 422); }
     if (input.channel === "wa_cloud") {      // TS1: نسخة ميتا لسه مختلفة عن الكتالوج ⇒ مفيش بدء
       const ts = await tplSync(input.cloudTemplate);
@@ -881,13 +951,14 @@ export function register(app, ctx, deps = {}) {
       await client.query("BEGIN");
       jobId = Number((await client.query(
         `INSERT INTO wa_send_jobs(name, filters, total, created_by, template, holdout_pct, image_url, offer, audience_label,
-                                  channel, cloud_template, cloud_vars, fallback, video_url, spend_cap_sar, rate_sar, app_only)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17) RETURNING id`,
+                                  channel, cloud_template, cloud_vars, fallback, video_url, spend_cap_sar, rate_sar, app_only, status, start_at, start_by, started_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20, CASE WHEN $18 = 'running' THEN NOW() ELSE NULL END) RETURNING id`,
         [name, J(b.filters || {}), r.picked.length, by, input.template || null, input.holdoutPct, input.imageUrl,
           input.offer ? J(input.offer) : null, aud ? aud.label : r.audience,
           input.channel, input.cloudTemplate, input.cloudVars ? J(input.cloudVars) : null, input.fallback,
           input.videoUrl, input.spendCapSar, input.channel === "wa_cloud" ? (rateOf(s).rateSar || null) : null,
-          input.channel === "wa_cloud" && r.appOnly ? r.appOnly.count : null])).rows[0].id);
+          input.channel === "wa_cloud" && r.appOnly ? r.appOnly.count : null,
+          sched.at ? "paused" : "running", sched.at, sched.at ? by : null])).rows[0].id);
       /* الرابط المتتبّع: /l/<slug> (utm_source=whatsapp, utm_campaign=wa-<id>) —
          وكل عميل بياخد /l/<slug>-<code> عشان نعرف مين ضغط (cms.js resolve). */
       slug = input.link.slug || `w${jobId}`;
@@ -932,7 +1003,8 @@ export function register(app, ctx, deps = {}) {
       throw e;
     } finally { client.release(); }
     return c.json({ ok: true, jobId, total: r.picked.length, holdout: holdN, slug, link: recipientLink(host, slug, null), channel: input.channel,
-      target: { type: input.link.target_type, id: input.link.target_id, opens: `${host}${linkTargetPath(input.link)}` } });
+      target: { type: input.link.target_type, id: input.link.target_id, opens: `${host}${linkTargetPath(input.link)}` },
+      status: sched.at ? "paused" : "running", startAt: sched.at || null, startAtRiyadh: sched.riyadh || null });
   });
 
   /* ── التحكم في الطابور وهو شغّال (طلب عمر ٢٦/٩) ────────────────────────
@@ -971,10 +1043,55 @@ export function register(app, ctx, deps = {}) {
     if (!from) return bad(c, "bad_action", "أمر مش معروف");
     /* تكملة حملات Cloud (بتبعت من السيرفر) للمالك بس — غير المالك بيكمّل حملات واتساب ويب بس. الإيقاف لأي حد. */
     const owner = to === "running" ? await isOwner(c) : true;
+    /* SX2 (ج): حملة Cloud صورتها/الفيديو بتاعها مابيفتحش مابتكمّلش — بتفضل موقوفة وسببها راجع في الرد */
+    const refused = [];
+    if (to === "running" && owner) {
+      const pj = (await pool.query(`SELECT id, name, channel, cloud_template, image_url, video_url FROM wa_send_jobs WHERE status='paused' AND channel='wa_cloud'`).catch(() => ({ rows: [] }))).rows || [];
+      for (const j of pj) { const mp = await jobMediaErr(j, { cacheMs: 30_000 }); if (mp) refused.push({ id: Number(j.id), name: j.name, error: mp[0], message: mp[1] }); }
+    }
     const r = await pool.query(`UPDATE wa_send_jobs SET status=$2, stop_reason = CASE WHEN $2='running' THEN NULL ELSE stop_reason END,
-                                        brake_ack_at = CASE WHEN $2='running' THEN NOW() ELSE brake_ack_at END
-                                 WHERE status=$1 AND ($3::boolean OR COALESCE(channel,'wa_web') <> 'wa_cloud') RETURNING id`, [from, to, owner]);
-    return c.json({ ok: true, changed: r.rowCount });
+                                        brake_ack_at = CASE WHEN $2='running' THEN NOW() ELSE brake_ack_at END,
+                                        start_at = CASE WHEN $2='running' THEN NULL ELSE start_at END,
+                                        started_at = CASE WHEN $2='running' THEN COALESCE(started_at, NOW()) ELSE started_at END
+                                 WHERE status=$1 AND ($3::boolean OR COALESCE(channel,'wa_web') <> 'wa_cloud') AND NOT (id = ANY($4::bigint[])) RETURNING id`,
+      [from, to, owner, refused.map((x) => x.id)]);
+    return c.json({ ok: true, changed: r.rowCount, ...(refused.length ? { refused } : {}) });
+  });
+
+  /* ── SX2 (أ): جدولة البدء/التكملة — لحملة واحدة أو لموجة كاملة مرة واحدة ──────────────────────────────
+     startAt فاضي/null = شيل الميعاد. الحملة لازم تكون موقوفة. حملة Cloud: المالك بس (زي التكملة)، ووسيطها بيتفحص دلوقتي
+     (عشان المشكلة تبان من بدري) وتاني لحظة البدء. البدء نفسه بيعمله السيرفر (startDueJobs) — مش cron ولا جلسة حد. */
+  async function scheduleJobs(c, idsRaw, startAtRaw) {
+    const ids = [...new Set((Array.isArray(idsRaw) ? idsRaw : []).map(Number).filter((x) => Number.isInteger(x) && x > 0))].slice(0, 50);
+    if (!ids.length) return bad(c, "no_jobs", "اختار حملة واحدة على الأقل");
+    const sched = parseStartAt(startAtRaw, now());
+    if (sched.error) return bad(c, sched.error[0], sched.error[1], 422);
+    const jobs = (await pool.query(`SELECT id, name, status, channel, cloud_template, image_url, video_url, start_at FROM wa_send_jobs WHERE id = ANY($1::bigint[])`, [ids])).rows || [];
+    if (jobs.some((j) => j.channel === "wa_cloud") && !(await isOwner(c))) return ownerOnly(c);
+    const by = await whoOf(c);
+    const skipped = [];
+    for (const id of ids) if (!jobs.some((j) => Number(j.id) === id)) skipped.push({ id, error: "not_found", message: "الحملة مش موجودة" });
+    if (!sched.at) {
+      const r = await pool.query("UPDATE wa_send_jobs SET start_at=NULL, start_error=NULL WHERE id = ANY($1::bigint[]) AND start_at IS NOT NULL RETURNING id", [ids]);
+      return c.json({ ok: true, startAt: null, cleared: (r.rows || []).map((x) => Number(x.id)), skipped });
+    }
+    const ok = [];
+    for (const j of jobs) {
+      if (j.status !== "paused") { skipped.push({ id: Number(j.id), name: j.name, error: `status_${j.status}`, message: j.status === "running" ? "الحملة شغّالة أصلاً" : "الحملة خلصت أو اتلغت" }); continue; }
+      const mp = await jobMediaErr(j, { cacheMs: 30_000 });
+      if (mp) { skipped.push({ id: Number(j.id), name: j.name, error: mp[0], message: `ماتجدولتش: ${mp[1]}` }); continue; }
+      ok.push(Number(j.id));
+    }
+    const r = ok.length ? await pool.query(
+      "UPDATE wa_send_jobs SET start_at=$2, start_by=$3, start_error=NULL WHERE id = ANY($1::bigint[]) AND status='paused' RETURNING id", [ok, sched.at, by]) : { rows: [] };
+    const scheduled = (r.rows || []).map((x) => Number(x.id));
+    if (!scheduled.length) return c.json({ ok: false, error: (skipped[0] && skipped[0].error) || "nothing_scheduled", message: (skipped[0] && skipped[0].message) || "مفيش حملة اتجدولت", skipped }, 409);
+    return c.json({ ok: true, startAt: sched.at, startAtRiyadh: sched.riyadh, scheduled, skipped });
+  }
+  app.post("/api/cms/wa-sender/schedule", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    let b = {}; try { b = await c.req.json(); } catch { return bad(c, "bad_json", "بيانات غلط"); }
+    return scheduleJobs(c, b.jobIds, b.startAt);
   });
   /* نص جديد لكل اللي لسه في الطابور: نفس المتغيرات (المتخزّنة مع كل صف)، ونفس
      رابط وكوبون كل عميل. الصفوف القديمة من غير متغيرات بنعيد حسابها من الشريحة. */
@@ -1017,19 +1134,34 @@ export function register(app, ctx, deps = {}) {
     const err = await requireAdmin(c); if (err) return err;
     const id = Number(c.req.param("id")), action = c.req.param("action");
     if (action === "retemplate") return retemplate(c, id);
+    if (action === "schedule") {      // SX2: {startAt} — فاضي = شيل الميعاد
+      let b = {}; try { b = await c.req.json(); } catch { return bad(c, "bad_json", "بيانات غلط"); }
+      return scheduleJobs(c, [id], b.startAt);
+    }
     const to = { pause: "paused", resume: "running", cancel: "cancelled" }[action];
     if (!to) return bad(c, "bad_action", "أمر مش معروف");
     if (to === "running") {
       const ch = (await pool.query("SELECT channel FROM wa_send_jobs WHERE id=$1", [id])).rows[0];
       if (ch && ch.channel === "wa_cloud" && !(await isOwner(c))) return ownerOnly(c);
+      /* SX2 (ج): قبل ما حملة Cloud بصورة/فيديو تكمّل — السيرفر بيفتح الرابط بنفسه. مابيفتحش ⇒ مفيش تكملة وسبب واضح */
+      if (ch && ch.channel === "wa_cloud") {
+        const job = (await pool.query(JOB_SQL, [id])).rows[0];
+        const mp = job ? await jobMediaErr(job) : null;
+        if (mp) return bad(c, mp[0], `الحملة ماكمّلتش: ${mp[1]}`, 422);
+      }
     }
     const r = await pool.query(
       `UPDATE wa_send_jobs SET status=$2, finished_at = CASE WHEN $2='cancelled' THEN NOW() ELSE finished_at END,
               stop_reason = CASE WHEN $2='running' THEN NULL ELSE stop_reason END,
-              brake_ack_at = CASE WHEN $2='running' THEN NOW() ELSE brake_ack_at END
+              brake_ack_at = CASE WHEN $2='running' THEN NOW() ELSE brake_ack_at END,
+              start_at = CASE WHEN $2 IN ('running','cancelled') THEN NULL ELSE start_at END,
+              started_at = CASE WHEN $2='running' THEN COALESCE(started_at, NOW()) ELSE started_at END
         WHERE id=$1 AND status NOT IN ('done','cancelled') RETURNING id`, [id, to]);
     if (!r.rowCount) return bad(c, "not_found", "الحملة خلصت أو مش موجودة", 404);
-    if (to === "cancelled") await pool.query("UPDATE wa_send_queue SET status='skipped', reason='cancelled' WHERE job_id=$1 AND status='pending'", [id]);
+    if (to === "cancelled") {
+      await pool.query("UPDATE wa_send_queue SET status='skipped', reason='cancelled' WHERE job_id=$1 AND status='pending'", [id]);
+      await pool.query("UPDATE wa_send_queue SET retry_at=NULL WHERE job_id=$1 AND retry_at IS NOT NULL", [id]);      // SX2: الإلغاء = مفيش إعادة
+    }
     return c.json({ ok: true });
   });
 
@@ -1039,7 +1171,7 @@ export function register(app, ctx, deps = {}) {
     const r = await pool.query(
       `SELECT q.id, q.phone_norm, q.name, q.status, q.reason, q.attempts, q.sent_at, q.message, q.clicks, q.replied_at,
               q.optout_at, q.media, q.note, q.coupon, q.edited_by, q.channel, q.cloud_status, q.error_code,
-              q.delivered_at, q.read_at, q.fallback_from,
+              q.delivered_at, q.read_at, q.fallback_from, q.retry_at, q.retried_at, q.first_error_code,
               (SELECT w.text FROM wa_replies w WHERE w.phone_norm = q.phone_norm AND w.at >= q.sent_at
                 ORDER BY w.at DESC LIMIT 1) AS reply
          FROM wa_send_queue q WHERE q.job_id=$1
@@ -1048,7 +1180,10 @@ export function register(app, ctx, deps = {}) {
         ORDER BY (q.status='pending') DESC, (q.status='holdout'), q.sent_at DESC NULLS LAST, q.score DESC LIMIT 500`,
       [Number(c.req.param("id")), String(c.req.query("q") || "").trim().replace(/[%_\\]/g, "").slice(0, 40),
         ["pending", "sent", "failed", "skipped", "holdout"].includes(c.req.query("status")) ? c.req.query("status") : ""]);
+    /* SX2 (د): سبب كل صف بالعربي (فشل / اتخطّى / مستني إعادة) */
     return c.json({ ok: true, items: r.rows.map((x) => ({ ...x, id: Number(x.id),
+      reason_ar: x.status === "failed" || x.status === "skipped" || (x.status === "pending" && x.reason) ? reasonText(x.reason) : null,
+      retry_ar: x.status === "failed" && x.retry_at ? `هتتعاد لوحدها ${riyadhClock(x.retry_at).slice(11)} (فشل مؤقت)` : x.retried_at ? `اتعادت ${riyadhClock(x.retried_at).slice(11)} بعد ${reasonText(classifyError(x.first_error_code).reason)}` : null,
       phone_norm: canSee ? x.phone_norm : `${x.phone_norm.slice(0, 3)}••••${x.phone_norm.slice(-2)}` })) });
   });
 
@@ -1098,7 +1233,8 @@ export function register(app, ctx, deps = {}) {
     const jobId = Number(job.id);
     const sNow = await getSettingsData().catch(() => ({}));
     const rows = (await pool.query(
-      `SELECT phone_norm pn, status, reason, sent_at, clicks, replied_at, optout_at, media, coupon, channel, cloud_status, error_code, fallback_from
+      `SELECT phone_norm pn, status, reason, sent_at, clicks, replied_at, optout_at, media, coupon, channel, cloud_status, error_code, fallback_from,
+              retry_at, retried_at, first_error_code, note
          FROM wa_send_queue WHERE job_id=$1`, [jobId])).rows;
     const sent = rows.filter((x) => x.status === "sent");
     const hold = rows.filter((x) => x.status === "holdout");
@@ -1107,7 +1243,7 @@ export function register(app, ctx, deps = {}) {
     const pns = [...new Set([...sent, ...hold].map((x) => x.pn))];
     const linkRow = job.link_slug ? (await pool.query("SELECT clicks FROM cms_links WHERE slug=$1", [job.link_slug])).rows[0] : null;
     const base = { ok: true, id: jobId, name: job.name, status: job.status, slug: job.link_slug, windowDays: ATTR_DAYS,
-      sent: sent.length, holdout: hold.length, failed: count((x) => x.status === "failed"),
+      sent: sent.length, holdout: hold.length, failed: count((x) => x.status === "failed" && !x.retry_at),
       invalid: count((x) => x.reason === "invalid_number"), skipped: count((x) => x.status === "skipped"),
       pending: count((x) => ["pending", "sending"].includes(x.status)),
       replies: count((x) => x.replied_at), optouts: count((x) => x.optout_at),
@@ -1122,6 +1258,10 @@ export function register(app, ctx, deps = {}) {
       channel: job.channel || "wa_web", cloudTemplate: job.cloud_template || null, fallback: job.fallback || "none",
       cloud: cloudStats(rows), stopReason: job.stop_reason || null, spendCapSar: job.spend_cap_sar != null ? Number(job.spend_cap_sar) : null,
       videos: count((x) => x.media === "video"),
+      /* SX2 (ب، د): الإعادة التلقائية بتتعدّ لوحدها (retried / retry_ok …)، وأسباب الفشل والتخطّي بالعربي، وميعاد البدء */
+      retry: retryStats(rows), retried: rows.filter((x) => x.retried_at).length, retry_ok: retryStats(rows).ok,
+      reasons: reasonRows(rows),
+      startAt: job.start_at || null, startAtRiyadh: job.start_at ? riyadhClock(job.start_at) : null, startedAt: job.started_at || null, startError: job.start_error || null,
       /* التكلفة = الرسايل اللي ميتا قبلتها على قناة Cloud × سعر الرسالة وقت إنشاء الحملة (تقدير — الفاتورة من ميتا) */
       cost: job.channel === "wa_cloud" ? (() => { const n = count((x) => x.channel === "wa_cloud" && x.status === "sent"); const rate = Number(job.rate_sar) > 0 ? Number(job.rate_sar) : rateOf(sNow).rateSar;
         return { messages: n, rateSar: rate || null, sar: campaignCost(n, rate) }; })() : null };
@@ -1215,15 +1355,17 @@ export function register(app, ctx, deps = {}) {
       `UPDATE wa_sender_state SET last_sent_at=NOW(), fail_streak=0,
               since_break = CASE WHEN since_break >= $1 THEN 1 ELSE since_break + 1 END WHERE id=$2`,
       [batchSize, channel === "wa_cloud" ? 2 : 1]);
-    // الكوبون مرة واحدة بيتفتح دلوقتي بس، وصلاحيته من يوم الإرسال
-    if (q.coupon) {
-      const job = (await pool.query("SELECT offer FROM wa_send_jobs WHERE id=$1", [q.job_id])).rows[0] || {};
-      const days = Number(job.offer?.validDays) || 0;
-      if (job.offer?.oneTime && days) {
-        await pool.query(
-          `UPDATE shop_coupons SET active=true, expires_at = CURRENT_DATE + $3::int
-            WHERE code=$1 AND phone_norm=$2 AND NOT active AND used_count=0`, [q.coupon, q.phone_norm, days]).catch(() => {});
-      }
+    await activateCoupon(q);
+  }
+  // الكوبون مرة واحدة بيتفتح دلوقتي بس، وصلاحيته من يوم الإرسال
+  async function activateCoupon(q) {
+    if (!q.coupon) return;
+    const job = (await pool.query("SELECT offer FROM wa_send_jobs WHERE id=$1", [q.job_id])).rows[0] || {};
+    const days = Number(job.offer?.validDays) || 0;
+    if (job.offer?.oneTime && days) {
+      await pool.query(
+        `UPDATE shop_coupons SET active=true, expires_at = CURRENT_DATE + $3::int
+          WHERE code=$1 AND phone_norm=$2 AND NOT active AND used_count=0`, [q.coupon, q.phone_norm, days]).catch(() => {});
     }
   }
 
@@ -1283,13 +1425,16 @@ export function register(app, ctx, deps = {}) {
     const delivered = cl.filter((x) => ["delivered", "read"].includes(x.cloud_status)).length;
     const read = cl.filter((x) => x.cloud_status === "read").length;
     /* QP1: اللي ميتا حدّته (131049) بيتعدّ لوحده — مش «فشل» */
-    const isFail = (x) => x.cloud_status === "failed" || (x.status === "failed" && x.channel === "wa_cloud");
+    /* SX2: الفاشل اللي مستني إعادة تلقائية مش «فشل» لسه — بيتعدّ لوحده (retryWaiting) */
+    const waiting = (x) => x.status === "failed" && Boolean(x.retry_at);
+    const isFail = (x) => (x.cloud_status === "failed" || (x.status === "failed" && x.channel === "wa_cloud")) && !waiting(x);
     const metaCapped = cl.filter((x) => isFail(x) && Number(x.error_code) === META_CAPPED_CODE).length;
     const failed = cl.filter(isFail).length - metaCapped;
     const reasons = {};
-    for (const x of cl) if (x.cloud_status === "failed" || x.status === "failed") { const k = x.reason || "failed"; reasons[k] = (reasons[k] || 0) + 1; }
+    for (const x of cl) if ((x.cloud_status === "failed" || x.status === "failed") && !waiting(x)) { const k = x.reason || "failed"; reasons[k] = (reasons[k] || 0) + 1; }
     const pct = (a, b) => (b ? Math.round((a / b) * 1000) / 10 : null);
-    return { attempted: cl.length, accepted, delivered, read, failed, metaCapped, reasons,
+    return { attempted: cl.length, accepted, delivered, read, failed, metaCapped, reasons, retryWaiting: cl.filter(waiting).length,
+      reasonsAr: Object.fromEntries(Object.keys(reasons).map((k) => [k, reasonText(k)])),
       deliveredRate: pct(delivered, cl.length), readRate: pct(read, delivered),
       fellBack: cl.filter((x) => x.fallback_from).length };
   }
@@ -1299,7 +1444,7 @@ export function register(app, ctx, deps = {}) {
   async function jobCounts(jobId, ackAt = null) {
     const r = (await pool.query(
       `SELECT count(*) FILTER (WHERE status='sent' AND COALESCE(cloud_status,'') <> 'failed')::int AS sent,
-              count(*) FILTER (WHERE (status='failed' OR cloud_status='failed') AND COALESCE(error_code,0) <> ${META_CAPPED_CODE})::int AS failed,
+              count(*) FILTER (WHERE (status='failed' OR cloud_status='failed') AND COALESCE(error_code,0) <> ${META_CAPPED_CODE} AND retry_at IS NULL)::int AS failed,
               count(*) FILTER (WHERE (status='failed' OR cloud_status='failed') AND error_code = ${META_CAPPED_CODE})::int AS capped,
               count(*) FILTER (WHERE optout_at IS NOT NULL)::int AS stopped,
               count(*) FILTER (WHERE cloud_status IN ('delivered','read') AND ($2::timestamptz IS NULL OR sent_at > $2))::int AS delivered,
@@ -1326,7 +1471,7 @@ export function register(app, ctx, deps = {}) {
     return null;
   }
 
-  async function sendCloudRow(q, job, cfg, staff) {
+  async function sendCloudRow(q, job, cfg, staff, cc = null) {
     const why = await skipReason(q.phone_norm, cfg, staff, { cloud: true });
     if (why) { await pool.query("UPDATE wa_send_queue SET status='skipped', reason=$2 WHERE id=$1", [q.id, why]); return { skipped: why }; }
     /* FD1: حملة قيمها لكل مستلم (السعر والتوصيل في الرسالة) ⇒ نفس العرض بيتحسب تاني من البيانات الحيّة الحين، ولازم يطلع نفس النص بالحرف.
@@ -1382,7 +1527,14 @@ export function register(app, ctx, deps = {}) {
       await pool.query("UPDATE wa_send_queue SET status='pending', reason=$2, error_code=$3 WHERE id=$1", [q.id, cls.reason, cls.code]);
       return { halt: cls.reason };
     }
+    /* SX2 (ب): غلطة مؤقتة من ميتا وقت الإرسال (ميتا رفضت بكود ⇒ الرسالة ماتبعتتش أكيد) ⇒ إعادة واحدة بعد retryDelayMin */
+    if (cc && retryDecision({ cls, row: q, cc, jobStatus: job.status }).retry) {
+      const at = await scheduleRetry(q, job, cls, cc, { sync: true });
+      return { failed: cls.reason, retryAt: at };
+    }
     await cloudFailed(q, job, cls, { sync: true });
+    if (cls.transient) suspectMedia(job, q.job_id);
+    if (cls.media && q.retried_at) await mediaPause(job, ["media_error", "ميتا لسه مش قادرة تنزّل الصورة/الفيديو حتى بعد الإعادة"]);
     if (cls.stop) {
       await pool.query("UPDATE wa_sender_state SET stopped_reason=$1, fail_streak=fail_streak+1 WHERE id=2", [cls.reason]);
       return { stop: cls.reason };
@@ -1434,6 +1586,173 @@ export function register(app, ctx, deps = {}) {
     for (const f of footers) if (f && t.endsWith(f)) t = t.slice(0, -f.length).trimEnd();
     return t;
   };
+
+  /* ══ SX2 (١٥/١٠ — ب): إعادة تلقائية مرة واحدة للفشل المؤقت ═══════════════════════════════════════════════
+     الصف بيفضل «فشل» وعليه retry_at: اللوحة بتعدّه «مستني إعادة» (مش فشل)، والفرامل مابتحسبوش لحد ما الإعادة تفشل هي كمان.
+     في الميعاد الدورة بتاخده قبل الصفوف الجديدة، وبتتأكد: (١) الرسالة الأولى ماوصلتش فعلاً (حالة الـwamid الأول في wa_messages —
+     وصلت ⇒ مفيش إعادة والصف يرجع «اتبعتت»)، (٢) وسيط الحملة بيفتح من السيرفر، وبعدين بتبعته — مرة واحدة بس (retried_at).
+     إعادة ماتبعتتش خلال retryMaxHours من ميعادها (ساعات الإرسال خلصت / القناة اتقفلت) بتتلغي: رسالة حملة مابتوصلش اليوم اللي بعده. */
+  const mediaSuspect = new Set();     // حملات بصورة/فيديو جالها فشل مؤقت ⇒ قبل رسالتها الجاية: فحص الوسيط
+  const mediaHold = new Map();        // jobId ⇒ أول مرة الفحص فشل (لو فضل فاشل retryDelayMin ⇒ الحملة تقف)
+  async function scheduleRetry(q, job, cls, cc, { sync = false } = {}) {
+    const at = new Date(now() + cc.retryDelayMin * 60000).toISOString();
+    await pool.query("UPDATE wa_send_queue SET status='failed', reason=$2, error_code=$3, cloud_status='failed', retry_at=$4::timestamptz WHERE id=$1",
+      [q.id, cls.reason, cls.code, at]);
+    if (!sync) {      // فشل جه من الويب هوك بعد ما اتعلّمت «اتبعتت»: سجل التواصل والكوبون يرجعوا لحد ما الإعادة تنجح
+      await pool.query("DELETE FROM wa_contact_log WHERE phone_norm=$1 AND job_id=$2 AND by='cloud'", [q.phone_norm, q.job_id]);
+      if (q.coupon) await pool.query("UPDATE shop_coupons SET active=false WHERE code=$1 AND phone_norm=$2 AND used_count=0", [q.coupon, q.phone_norm]).catch(() => {});
+      /* الحملة ممكن تكون اتعلّمت «خلصت» قبل ما الفشل يوصل ⇒ ترجع «شغّالة» لحد ما الإعادة تخلص (الإلغاء بس هو اللي بيمنع) */
+      await pool.query("UPDATE wa_send_jobs SET status='running', finished_at=NULL WHERE id=$1 AND status='done'", [q.job_id]).catch(() => {});
+    }
+    suspectMedia(job, q.job_id);
+    return at;
+  }
+  function suspectMedia(job, jobId) {
+    const spec = campaignSpec(job && job.cloud_template);
+    if (spec && spec.header) mediaSuspect.add(Number(jobId || (job && job.id)));
+  }
+  /* الرسالة وصلت فعلاً بعد ما اتسجّل فشلها (ميتا بعتت «وصلت» بعد «فشلت»، أو الـwamid الأول طلع واصل وقت الإعادة) ⇒ «اتبعتت» من غير إعادة */
+  async function restoreDelivered(q, cs, wamid = null, { undoRetry = false } = {}) {
+    const r = await pool.query(
+      `UPDATE wa_send_queue SET status='sent', channel='wa_cloud', reason=NULL, error_code=NULL, retry_at=NULL, claimed_at=NULL,
+              retried_at = CASE WHEN $4::boolean THEN NULL ELSE retried_at END,
+              cloud_status=$2, wamid=COALESCE($3, wamid), note = CASE WHEN note LIKE 'sms_fallback%' THEN note ELSE 'delivered_after_failure' END
+        WHERE id=$1 AND status IN ('failed','sending','pending') RETURNING id`, [q.id, cs, wamid, undoRetry]);
+    if (!r.rowCount) return false;
+    await pool.query("INSERT INTO wa_contact_log(phone_norm, channel, job_id, by) VALUES ($1,'auto',$2,'cloud')", [q.phone_norm, q.job_id]);
+    await activateCoupon(q);
+    return true;
+  }
+  /* صف إعادة اتاخد بس مانفعش يتبعت دلوقتي (الوسيط مابيفتحش / ماقدرناش نتأكد) ⇒ يرجع «فشل — مستني إعادة» من غير ما الإعادة تتحسب */
+  async function unclaimRetry(q, retryAt) {
+    await pool.query(
+      `UPDATE wa_send_queue SET status='failed', cloud_status='failed', retried_at=NULL, retry_at=$2::timestamptz, error_code=COALESCE(first_error_code, error_code),
+              reason=$3, attempts=GREATEST(attempts-1,0) WHERE id=$1`,
+      [q.id, retryAt, classifyError(q.first_error_code).reason]);
+  }
+  /* الحملة تقف بسبب وسيطها (مش هتتصلّح لوحدها): مرة واحدة + تنبيه للمالك */
+  async function mediaPause(job, mp) {
+    const id = Number(job && job.id);
+    if (!id) return false;
+    mediaHold.delete(id); mediaSuspect.delete(id);
+    const r = await pauseJob(id, `media:${mp[0]}`).catch(() => ({ rowCount: 0 }));
+    if (r && r.rowCount) await alertOwner((lang) => startAlertText("media_pause", { name: job.name || `#${id}`, detail: mp[1] }, lang), `wa-campaign-media ${id}`, { kind: "campaign_media", jobId: id, error: mp[0] });
+    return Boolean(r && r.rowCount);
+  }
+  /* قبل رسالة لحملة وسيطها اتشك فيه (أو قبل أي إعادة): الوسيط بيفتح؟ null = ابعت. فاشل ⇒ مانبعتش؛ ولو فضل فاشل retryDelayMin ⇒ الحملة تقف */
+  async function mediaGate(job, cc) {
+    const id = Number(job.id);
+    const mp = await jobMediaErr(job, { cacheMs: 60_000, cacheFail: true });
+    if (!mp) { mediaHold.delete(id); mediaSuspect.delete(id); return null; }
+    mediaSuspect.add(id);      // لحد ما يفتح: ولا رسالة جديدة للحملة دي كمان
+    if (!mediaHold.has(id)) mediaHold.set(id, now());
+    if (now() - mediaHold.get(id) >= cc.retryDelayMin * 60000) await mediaPause(job, mp);
+    return mp;
+  }
+  /* الإعادة اللي جه ميعادها (الأقدم الأول) — نفس شروط الصف العادي: الحملة شغّالة، والقناة Cloud */
+  async function claimRetry(cc) {
+    return (await pool.query(
+      `UPDATE wa_send_queue AS r SET status='sending', claimed_at=NOW(), attempts=r.attempts+1, retry_at=NULL, retried_at=NOW(),
+              first_error_code=COALESCE(r.first_error_code, r.error_code), first_wamid=COALESCE(r.first_wamid, r.wamid),
+              cloud_status=NULL, error_code=NULL, reason=NULL
+        WHERE r.id = (SELECT q.id FROM wa_send_queue q JOIN wa_send_jobs j ON j.id=q.job_id
+                       WHERE q.status='failed' AND q.retry_at IS NOT NULL AND q.retried_at IS NULL
+                         AND q.retry_at <= $1::timestamptz AND q.retry_at > $1::timestamptz - make_interval(hours => $2::int)
+                         AND j.status='running' AND COALESCE(q.channel, j.channel, 'wa_web') = 'wa_cloud'
+                       ORDER BY q.retry_at, q.id LIMIT 1 FOR UPDATE SKIP LOCKED)
+        RETURNING r.id, r.job_id, r.phone_norm, r.message, r.name, r.vars, r.link_code, r.coupon, r.attempts, r.retried_at, r.first_wamid, r.first_error_code`,
+      [new Date(now()).toISOString(), cc.retryMaxHours])).rows[0] || null;
+  }
+  /* إعادات فات ميعادها بأكتر من retryMaxHours (القناة مقفولة / بره ساعات الإرسال) ⇒ تتلغي: الصف يفضل «فشل» بسببه الأصلي */
+  async function expireRetries(cc) {
+    /* المالك قفل الإعادة التلقائية ⇒ اللي كان مستني إعادة مابيتعادش (بيفضل «فشل» بسببه) */
+    if (!cc.retryTransient) {
+      const off = await pool.query("UPDATE wa_send_queue SET retry_at=NULL, note='retry_off' WHERE status='failed' AND retry_at IS NOT NULL AND retried_at IS NULL RETURNING id");
+      return off.rowCount || 0;
+    }
+    const r = await pool.query(
+      `UPDATE wa_send_queue SET retry_at=NULL, note='retry_expired' WHERE status='failed' AND retry_at IS NOT NULL AND retried_at IS NULL
+          AND retry_at <= $1::timestamptz - make_interval(hours => $2::int) RETURNING id`, [new Date(now()).toISOString(), cc.retryMaxHours]);
+    return r.rowCount || 0;
+  }
+  /* الرسالة الأولى وصلت؟ (حالة الـwamid الأول في wa_messages — الويب هوك بيحدّثها حتى لو «وصلت» جت بعد «فشلت»).
+     بترجع الحالة لو وصلت/اتقرت، null لو لأ، أو «unknown» لو ماقدرناش نقرا (⇒ مانعيدش دلوقتي). */
+  async function firstDelivered(q) {
+    if (!q.first_wamid) return null;
+    try {
+      const m = (await pool.query("SELECT status FROM wa_messages WHERE wamid=$1 LIMIT 1", [q.first_wamid])).rows[0];
+      return m && ["delivered", "read"].includes(String(m.status)) ? String(m.status) : null;
+    } catch { return "unknown"; }
+  }
+  /* صف علق في «بيتبعت» أكتر من ١٠ دقايق (ريستارت في نص الإرسال) بس ميتا كانت قبلت رسالته (wa_messages فيها قالب الحملة لنفس الرقم
+     من وقت ما الصف اتاخد) ⇒ اتبعتت فعلاً: «اتبعتت» بدل ما يرجع للطابور ويتبعت تاني. */
+  async function recoverStuck() {
+    const r = await pool.query(
+      `WITH s AS (
+         SELECT q.id, m.wamid, m.status AS mstatus, m.created_at
+           FROM wa_send_queue q JOIN wa_send_jobs j ON j.id = q.job_id
+           JOIN LATERAL (SELECT wamid, status, created_at FROM wa_messages m
+                          WHERE m.phone_norm = q.phone_norm AND m.direction = 'out' AND m.source = 'campaign' AND m.template = j.cloud_template
+                            AND m.wamid IS NOT NULL AND m.created_at >= q.claimed_at - INTERVAL '1 minute' AND COALESCE(m.status,'') NOT IN ('failed','skipped')
+                          ORDER BY m.created_at LIMIT 1) m ON true
+          WHERE q.status = 'sending' AND q.channel = 'wa_cloud' AND q.claimed_at < NOW() - INTERVAL '10 minutes')
+       UPDATE wa_send_queue q SET status='sent', sent_at=COALESCE(q.sent_at, s.created_at), wamid=s.wamid, reason=NULL, note='recovered_after_restart',
+              cloud_status = CASE WHEN s.mstatus IN ('sent','delivered','read') THEN s.mstatus ELSE 'accepted' END
+         FROM s WHERE q.id = s.id RETURNING q.id, q.phone_norm, q.job_id, q.coupon`);
+    for (const x of r.rows || []) {
+      await pool.query("INSERT INTO wa_contact_log(phone_norm, channel, job_id, by) VALUES ($1,'auto',$2,'cloud')", [x.phone_norm, x.job_id]);
+      await activateCoupon(x);
+    }
+    return r.rowCount || 0;
+  }
+
+  /* ══ SX2 (١٥/١٠ — أ): البدء المجدول — السيرفر نفسه بيبدأ الحملة في ميعادها ═══════════════════════════════════════
+     حادثة ١٥/١٠: مواعيد البدء/التكملة كانت بتتعمل من cron بره (جلسة المشغّل) ومااشتغلش ⇒ الموجة طلعت متأخرة ساعة.
+     حملة موقوفة عليها start_at ⇒ أول دورة بعد الميعاد بتشغّلها. الشرط «start_at <= دلوقتي» (مش «= الدقيقة دي») فالريستارت مابيفوّتهاش،
+     وبتتنادى أول ما السيرفر يقوم. فات الميعاد بأكتر من startLateMaxMin (السيرفر كان واقف) ⇒ مابتبدأش لوحدها: موقوفة بسبب واضح + تنبيه.
+     حملة Cloud بصورة/فيديو: الوسيط بيتفحص من السيرفر لحظتها — مابيفتحش ⇒ مفيش بدء وسبب بالعربي + تنبيه. التحديث مشروط
+     (status='paused' AND start_at <= دلوقتي) فكونتينرين وقت النشر مابيبدأوهاش مرتين ولا بيبعتوا التنبيه مرتين. */
+  let scheduling = false;
+  async function startDueJobs() {
+    if (scheduling) return { busy: true };
+    scheduling = true;
+    const out = { started: [], refused: [], late: [] };
+    try {
+      await schemaReady;
+      const T = new Date(now()).toISOString();
+      const due = (await pool.query(
+        `SELECT id, name, channel, cloud_template, image_url, video_url, start_at FROM wa_send_jobs
+          WHERE status='paused' AND start_at IS NOT NULL AND start_at <= $1::timestamptz ORDER BY start_at, id LIMIT 50`, [T])).rows || [];
+      if (!due.length) return out;
+      const cc = cloudCfg(await getSettingsData().catch(() => ({})));
+      const refuse = (j, why, stop) => pool.query(
+        `UPDATE wa_send_jobs SET start_at=NULL, start_error=$3, stop_reason=$4 WHERE id=$1 AND status='paused' AND start_at IS NOT NULL AND start_at <= $2::timestamptz RETURNING id`,
+        [j.id, T, String(why).slice(0, 300), String(stop).slice(0, 80)]);
+      for (const j of due) {
+        const id = Number(j.id), name = j.name || `#${id}`;
+        const lateMin = Math.floor((now() - new Date(j.start_at).getTime()) / 60000);
+        if (lateMin > cc.startLateMaxMin) {
+          const r = await refuse(j, `فات ميعاد البدء بـ${lateMin} دقيقة (السيرفر كان واقف) — مابدأتش لوحدها`, `start_late:${lateMin}`);
+          if (r.rowCount) { out.late.push(id); await alertOwner((lang) => startAlertText("late", { name, lateMin }, lang), `wa-campaign-late ${id}`, { kind: "campaign_start_late", jobId: id, lateMin }); }
+          continue;
+        }
+        const mp = j.channel === "wa_cloud" ? await jobMediaErr(j, { cacheMs: 30_000 }) : null;
+        if (mp) {
+          const r = await refuse(j, `مابدأتش: ${mp[1]}`, `preflight:${mp[0]}`);
+          if (r.rowCount) { out.refused.push({ id, error: mp[0] }); await alertOwner((lang) => startAlertText("refused", { name, detail: mp[1] }, lang), `wa-campaign-preflight ${id}`, { kind: "campaign_preflight", jobId: id, error: mp[0] }); }
+          continue;
+        }
+        const r = await pool.query(
+          `UPDATE wa_send_jobs SET status='running', started_at=COALESCE(started_at, NOW()), start_at=NULL, start_error=NULL, stop_reason=NULL, brake_ack_at=NOW()
+            WHERE id=$1 AND status='paused' AND start_at IS NOT NULL AND start_at <= $2::timestamptz RETURNING id`, [id, T]);
+        if (r.rowCount) out.started.push(id);
+      }
+      return out;
+    } catch (e) {
+      console.error("[wasender] scheduled start:", e.message);
+      return { ...out, error: e.message };
+    } finally { scheduling = false; }
+  }
 
   /* ══ QP1: حماية الجودة ══════════════════════════════════════════════════════════════════════════════
      تنبيه المالك: SMS واحد لأرقام تنبيهات الإدارة (delivery.alertPhones — نفس قايمة التنبيهات الحرجة) + حدث «wa_quality»
@@ -1580,33 +1899,65 @@ export function register(app, ctx, deps = {}) {
       if (!p.allow) return { reason: p.reason, ...(p.reason === "warmup_cap" ? { warmup: { step: wv.step, cap: wv.cap, refused: wv.refused } } : {}) };
       const staff = staffPhoneSet(s);
       const out = { sent: 0, skipped: 0, failed: 0, ...(flags.warn ? { halved: true } : {}) };
+      /* SX2: اللي علق في «بيتبعت» بس ميتا كانت قبلته = اتبعت فعلاً (مفيش إرسال تاني) — قبل ما الباقي يرجع للطابور */
+      await recoverStuck().catch((e) => console.error("[wasender] recover stuck:", e.message));
       // «فشلت بسبب مؤقت» ترجع — الصفوف اللي علقت في sending أكتر من ١٠ دقايق
       await pool.query(`UPDATE wa_send_queue SET status='pending' WHERE status='sending' AND channel='wa_cloud' AND claimed_at < NOW() - INTERVAL '10 minutes' AND attempts < 3`);
+      await expireRetries(cc).catch((e) => console.error("[wasender] expire retries:", e.message));      // SX2
+      const later = () => new Date(now() + cc.retryDelayMin * 60000).toISOString();
       for (let i = 0, budget = p.allow, tries = 0; budget > 0 && tries < p.allow * 4; i++, tries++) {
-        const q = (await pool.query(
+        /* SX2 (ب): الإعادات اللي جه ميعادها الأول (استنّت retryDelayMin)، وبعدين الصفوف الجديدة */
+        let q = cc.retryTransient ? await claimRetry(cc).catch((e) => { console.error("[wasender] claim retry:", e.message); return null; }) : null;
+        const isRetry = Boolean(q);
+        if (!q) q = (await pool.query(
           `UPDATE wa_send_queue SET status='sending', claimed_at=NOW(), attempts=attempts+1, channel='wa_cloud'
             WHERE id = (SELECT q.id FROM wa_send_queue q JOIN wa_send_jobs j ON j.id=q.job_id
                          WHERE q.status='pending' AND j.status='running'
                            AND COALESCE(q.channel, j.channel, 'wa_web') = 'wa_cloud'
                          ORDER BY j.id, q.score DESC, q.id LIMIT 1 FOR UPDATE SKIP LOCKED)
-            RETURNING id, job_id, phone_norm, message, name, vars, link_code, coupon, attempts`)).rows[0];
+            RETURNING id, job_id, phone_norm, message, name, vars, link_code, coupon, attempts, retried_at, first_wamid, first_error_code`)).rows[0];
         if (!q) {
+          /* SX2: حملة لسه فيها صفوف مستنية إعادة مابتخلصش */
           await pool.query(`UPDATE wa_send_jobs j SET status='done', finished_at=NOW() WHERE status='running' AND channel='wa_cloud'
-                             AND NOT EXISTS (SELECT 1 FROM wa_send_queue q WHERE q.job_id=j.id AND q.status IN ('pending','sending'))`);
+                             AND NOT EXISTS (SELECT 1 FROM wa_send_queue q WHERE q.job_id=j.id AND (q.status IN ('pending','sending') OR (q.status='failed' AND q.retry_at IS NOT NULL)))`);
           out.reason = "queue_empty";
           break;
         }
-        const job = (await pool.query("SELECT id, cloud_template, cloud_vars, image_url, video_url, link_slug, offer, fallback, spend_cap_sar, rate_sar, brake_ack_at FROM wa_send_jobs WHERE id=$1", [q.job_id])).rows[0];
+        const job = (await pool.query(JOB_SQL, [q.job_id])).rows[0];
+        if (isRetry) {
+          /* مفيش رسالة مكررة: الأولى طلعت واصلة ⇒ الصف «اتبعتت» من غير إعادة؛ ماقدرناش نتأكد ⇒ تستنى */
+          const fd = await firstDelivered(q);
+          if (fd === "unknown") { await unclaimRetry(q, later()); out.reason = "retry_unverified"; break; }
+          if (fd) { await restoreDelivered(q, fd, q.first_wamid, { undoRetry: true }); out.deliveredLate = (out.deliveredLate || 0) + 1; continue; }
+        }
+        /* SX2 (ج): قبل الإعادة، أو قبل أي رسالة لحملة وسيطها اتشك فيه (فشل مؤقت): الوسيط لازم يفتح من السيرفر */
+        if (isRetry || mediaSuspect.has(Number(q.job_id))) {
+          const mp = await mediaGate(job || { id: q.job_id }, cc);
+          if (mp) {
+            if (isRetry) await unclaimRetry(q, later());
+            else await pool.query("UPDATE wa_send_queue SET status='pending', attempts=GREATEST(attempts-1,0) WHERE id=$1", [q.id]);
+            out.reason = "media_unreachable"; out.media = mp[0];
+            break;
+          }
+        }
         /* سقف صرف الحملة قبل الإرسال: لو الرسالة دي هتعدّيه، الصف يرجع للطابور والحملة تقف */
         const pre = await jobBrake(job, cc, rateSar);
-        if (pre) { await pool.query("UPDATE wa_send_queue SET status='pending', attempts=GREATEST(attempts-1,0) WHERE id=$1", [q.id]); out.braked = pre; continue; }
-        const r = await sendCloudRow(q, job, cfg, staff);
+        if (pre) {
+          if (isRetry) await unclaimRetry(q, new Date(now()).toISOString());
+          else await pool.query("UPDATE wa_send_queue SET status='pending', attempts=GREATEST(attempts-1,0) WHERE id=$1", [q.id]);
+          out.braked = pre; continue;
+        }
+        const r = await sendCloudRow(q, job, cfg, staff, cc);
         if (r.sent) {
           out.sent++; budget--;
+          if (isRetry) out.retried = (out.retried || 0) + 1;
           if (!warm) { warm = warmupStart(today); await saveWarmup(warm); }      // QP1: أول رسالة حملة على Cloud = يوم ١ في السلّم
         }
-        else if (r.skipped) out.skipped++;
-        else if (r.failed) { out.failed++; budget--; }
+        else if (r.skipped) {
+          out.skipped++;
+          if (isRetry) await pool.query("UPDATE wa_send_queue SET retried_at=NULL WHERE id=$1 AND status='skipped'", [q.id]);      // SX2: اتخطّى وقت الإعادة ⇒ ماتعادش فعلاً
+        }
+        else if (r.failed) { out.failed++; budget--; if (r.retryAt) out.retryLater = (out.retryLater || 0) + 1; }
         if (r.sent || r.failed) { const post = await jobBrake(job, cc, rateSar); if (post) out.braked = post; }
         if (r.halt || r.stop) { out.reason = r.halt || r.stop; if (r.stop) out.stopped = true; break; }
       }
@@ -1632,9 +1983,26 @@ export function register(app, ctx, deps = {}) {
               delivered_at = CASE WHEN $2 IN ('delivered','read') THEN COALESCE(delivered_at, COALESCE($3::timestamptz, NOW())) ELSE delivered_at END,
               read_at = CASE WHEN $2 = 'read' THEN COALESCE(read_at, COALESCE($3::timestamptz, NOW())) ELSE read_at END
         WHERE id=$1`, [q.id, next, s.at || null]);
+    /* SX2: «وصلت» بعد ما فشلها اتسجّل ⇒ اتبعتت فعلاً — الإعادة المستنية (أو رجوعها لواتساب ويب) بتتلغي: مفيش رسالة مكررة */
+    if (["delivered", "read"].includes(next) && (q.status === "failed" || q.status === "pending")) {
+      const x = q.status === "pending" ? ((await pool.query("SELECT fallback_from FROM wa_send_queue WHERE id=$1", [q.id])).rows[0] || {}) : {};
+      if (q.status === "failed" || String(x.fallback_from || "").startsWith("wa_cloud")) { await restoreDelivered(q, next); return; }
+    }
     if (next === "failed" && q.status === "sent" && q.channel === "wa_cloud") {
       const job = (await pool.query("SELECT id, fallback FROM wa_send_jobs WHERE id=$1", [q.job_id])).rows[0] || {};
-      await cloudFailed(q, job, classifyError(s.code));
+      const cls = classifyError(s.code);
+      /* SX2 (ب): فشل مؤقت جه من الويب هوك (زي 131000 وميتا بتنزّل صورة الهيدر والسيرفر بيعمل ريستارت) ⇒ إعادة واحدة بعد retryDelayMin */
+      if (cls.transient) {
+        q.retried_at = ((await pool.query("SELECT retried_at FROM wa_send_queue WHERE id=$1", [q.id])).rows[0] || {}).retried_at || null;
+        const full = (await pool.query(JOB_SQL, [q.job_id])).rows[0] || null;
+        const cc = cloudCfg(await getSettingsData().catch(() => ({})));
+        if (full && retryDecision({ cls, row: q, cc, jobStatus: full.status }).retry) { await scheduleRetry(q, full, cls, cc); return; }
+        await cloudFailed(q, job, cls);
+        if (full) suspectMedia(full);
+        if (full && cls.media && q.retried_at) await mediaPause(full, ["media_error", "ميتا لسه مش قادرة تنزّل الصورة/الفيديو حتى بعد الإعادة"]);
+        return;
+      }
+      await cloudFailed(q, job, cls);
     }
   }
 
@@ -1666,9 +2034,11 @@ export function register(app, ctx, deps = {}) {
     wa.on("inbound", onCloudInbound);
     wa.on("quality", (ev) => onQualityEvent(ev));      // QP1
   }
-  if (deps.cloudLoop !== false && wa) {
+  if (deps.cloudLoop !== false) {
     const sec = Math.max(5, Number(process.env.WA_CLOUD_TICK_SEC) || 15);
-    const t = setInterval(() => { cloudTick().catch(() => {}); }, sec * 1000);
+    /* SX2 (أ): البدء المجدول قبل دورة الإرسال (فنفس الدورة تبعت أول رسايل الحملة اللي بدأت) — وكمان أول ما السيرفر يقوم، فالريستارت مابيفوّتش ميعاد */
+    schemaReady.then(() => startDueJobs()).catch(() => {});
+    const t = setInterval(() => { startDueJobs().catch(() => {}).then(() => (wa ? cloudTick() : null)).catch(() => {}); }, sec * 1000);
     t.unref?.();
   }
 
@@ -1771,7 +2141,7 @@ export function register(app, ctx, deps = {}) {
           RETURNING id, job_id, phone_norm, message`)).rows[0];
       if (!q) {
         await pool.query(`UPDATE wa_send_jobs j SET status='done', finished_at=NOW() WHERE status='running'
-                           AND NOT EXISTS (SELECT 1 FROM wa_send_queue q WHERE q.job_id=j.id AND q.status IN ('pending','sending'))`);
+                           AND NOT EXISTS (SELECT 1 FROM wa_send_queue q WHERE q.job_id=j.id AND (q.status IN ('pending','sending') OR (q.status='failed' AND q.retry_at IS NOT NULL)))`);
         return c.json({ ok: true, wait: 300, reason: "queue_empty" });
       }
       const why = await skipReason(q.phone_norm, cfg, staff);
@@ -1853,5 +2223,6 @@ export function register(app, ctx, deps = {}) {
       phone_norm: canSee ? x.phone_norm : `${x.phone_norm.slice(0, 3)}••••${x.phone_norm.slice(-2)}` })) });
   });
 
-  return { reconcileStatuses, recentSet, recentMap, build, cloudTick, onCloudStatus, onCloudInbound, onQualityEvent, stateNow, schemaReady, imageHosts };
+  return { reconcileStatuses, recentSet, recentMap, build, cloudTick, onCloudStatus, onCloudInbound, onQualityEvent, stateNow, schemaReady, imageHosts,
+    startDueJobs, recoverStuck };
 }
