@@ -26,7 +26,7 @@
 import { GRAPH_VERSION, TEMPLATES, STAGE_TEMPLATES, renderTemplateText, registerTemplates } from "./whatsapp.js";
 import { waStagesOf, waReplacesSms, stageRows, stagesProblem, checklistView, MANDATORY_SMS_STAGES } from "./waswitches.js";
 import * as CAT from "./watemplates.js";
-import { qualityCfg, QUALITY_KEYS, QUALITY_DEFAULTS, WARMUP_DEFAULTS, migrateQuality } from "./waquality.js";
+import { qualityCfg, QUALITY_KEYS, QUALITY_DEFAULTS, WARMUP_DEFAULTS, migrateQuality, META_CAPPED_CODE } from "./waquality.js";
 
 const env = (k, d) => (process.env[k] || d || "").toString().trim();
 export const APP_ID = "1073414588466040";
@@ -441,6 +441,34 @@ export function cloudJobProblem({ cloudTemplate, cloudVars, imageUrl, videoUrl, 
     if (/[\n\t]/.test(o)) return [f.key === "offer" ? "offer_line_newline" : "value_newline", `${what} لازم يبقى سطر واحد`];
   }
   return null;
+}
+
+/* SX2 (ج — حادثة ١٥/١٠): فرامل الـ١٠٪ وقّفت ١١ حملة لآخر الليل، و«كمّل» كانت بتوقّفها تاني على طول لأن النسبة كانت على كل الحملة من أولها.
+   نافذة الفرامل = المحاولات من بعد آخر «كمّل»/بدء (ackAt) بس — من غير ackAt = كل الحملة. نفس قواعد jobCounts بالظبط:
+   «اتبعتت» = sent ومافشلتش بعدها (الفشل المؤقت اللي اتعاد ونجح = «اتبعتت»)؛ «فشل» = فشل نهائي (مش 131049 ومش مستني إعادة)؛
+   «إيقاف» = اللي طلبوا إيقاف من المحاولات دي. وقت المحاولة = tried_at (آخر مرة الصف اتاخد لقناة Cloud) أو claimed_at للصفوف القديمة.
+   دالة صافية (النتايج بتستعملها، والدورة بتحسب نفس الأرقام بالـSQL). */
+export function brakeWindow(rows, ackAt = null) {
+  const ack = ackAt ? new Date(ackAt).getTime() : NaN;
+  const at = (x) => new Date(x.tried_at || x.claimed_at || 0).getTime();
+  const inWin = (x) => !Number.isFinite(ack) || at(x) > ack;
+  const cloud = (x) => x.channel === "wa_cloud" || String(x.fallback_from || "").startsWith("wa_cloud");
+  let sent = 0, failed = 0, stopped = 0;
+  for (const x of rows || []) {
+    if (!cloud(x) || !inWin(x)) continue;
+    if (x.status === "sent" && x.cloud_status !== "failed") sent++;
+    if ((x.status === "failed" || x.cloud_status === "failed") && Number(x.error_code) !== META_CAPPED_CODE && !x.retry_at) failed++;
+    if (x.optout_at) stopped++;
+  }
+  return { since: Number.isFinite(ack) ? new Date(ack).toISOString() : null, sent, failed, stopped };
+}
+/* ملخّص الفرامل للوحة: النسب من بعد آخر تكملة + الحدود */
+export function brakeView(w, cc) {
+  const tried = w.sent + w.failed;
+  const r1 = (x) => Math.round(x * 10) / 10;
+  return { since: w.since, tried, sent: w.sent, failed: w.failed, stopped: w.stopped,
+    failPct: tried ? r1((w.failed / tried) * 100) : null, stopPct: w.sent ? r1((w.stopped / w.sent) * 100) : null,
+    failLimit: cc.brakeFailPct, stopLimit: cc.brakeStopPct, minSends: cc.brakeMinSends, armed: tried >= cc.brakeMinSends };
 }
 
 /* فرامل الحملة (زي فرامل الـ٥٪ بتاعة SMS): بعد أول brakeMinSends محاولة، لو نسبة الفشل أو نسبة «إيقاف» عدّت الحد ⇒ الحملة تقف.

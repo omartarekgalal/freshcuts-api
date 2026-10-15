@@ -48,7 +48,7 @@ import { brakeWarn, lowReadCheck, qualityVerdict, qualityEventRow, warmupAdvance
 import { nextStatus, TEMPLATES } from "./whatsapp.js";
 import { cloudCfg, cloudPacing, classifyError, fallbackFor, campaignParams, cloudJobProblem, defaultChannel,
   CAMPAIGN_TEMPLATES, campaignTemplateNames, campaignSpec, brakeCheck, campaignCost, mediaProblem, MEDIA_LIMITS, CLOUD_KEYS, CLOUD_CEILINGS, CLOUD_DEFAULTS,
-  retryDecision, reasonText, reasonRows, retryStats } from "./wacloud.js";
+  retryDecision, reasonText, reasonRows, retryStats, brakeWindow, brakeView } from "./wacloud.js";
 import { waRatesOf } from "./waaicost.js";
 import { FAV_PICK, FAV_AUDIENCE, FAV_DEFAULT_FILTERS, FAV_HOLD, favJobProblem, lineProblem } from "./wafavpick.js";
 import { PROFILE_ALL, PROFILE_TOKENS, PROFILE_TOKEN_KEYS, profileTokensIn, tokensOf, exampleProfileValues } from "./custprofile.js";
@@ -459,6 +459,7 @@ export function register(app, ctx, deps = {}) {
       ALTER TABLE wa_send_queue ADD COLUMN IF NOT EXISTS retried_at TIMESTAMPTZ;  -- اتعاد فعلاً (مرة واحدة بس)
       ALTER TABLE wa_send_queue ADD COLUMN IF NOT EXISTS first_error_code INT;   -- كود فشل المحاولة الأولى
       ALTER TABLE wa_send_queue ADD COLUMN IF NOT EXISTS first_wamid TEXT;       -- wamid المحاولة الأولى (عشان نتأكد إنها ماوصلتش قبل الإعادة)
+      ALTER TABLE wa_send_queue ADD COLUMN IF NOT EXISTS tried_at TIMESTAMPTZ;   -- (ج) آخر محاولة على Cloud — نافذة الفرامل بتعدّ من بعد آخر «كمّل» بيه
       CREATE INDEX IF NOT EXISTS wa_send_queue_retry_idx ON wa_send_queue(retry_at) WHERE retry_at IS NOT NULL;
     `);
   }
@@ -1234,7 +1235,7 @@ export function register(app, ctx, deps = {}) {
     const sNow = await getSettingsData().catch(() => ({}));
     const rows = (await pool.query(
       `SELECT phone_norm pn, status, reason, sent_at, clicks, replied_at, optout_at, media, coupon, channel, cloud_status, error_code, fallback_from,
-              retry_at, retried_at, first_error_code, note
+              retry_at, retried_at, first_error_code, note, tried_at, claimed_at
          FROM wa_send_queue WHERE job_id=$1`, [jobId])).rows;
     const sent = rows.filter((x) => x.status === "sent");
     const hold = rows.filter((x) => x.status === "holdout");
@@ -1262,6 +1263,8 @@ export function register(app, ctx, deps = {}) {
       retry: retryStats(rows), retried: rows.filter((x) => x.retried_at).length, retry_ok: retryStats(rows).ok,
       reasons: reasonRows(rows),
       startAt: job.start_at || null, startAtRiyadh: job.start_at ? riyadhClock(job.start_at) : null, startedAt: job.started_at || null, startError: job.start_error || null,
+      /* SX2 (ج): الفرامل من بعد آخر «كمّل»/بدء (نفس أرقام الدورة) — اللوحة بتقول النسبة الحالية وبتتحسب من إمتى */
+      brake: job.channel === "wa_cloud" ? { ...brakeView(brakeWindow(rows, job.brake_ack_at || null), cloudCfg(sNow)), sinceRiyadh: job.brake_ack_at ? riyadhClock(job.brake_ack_at) : null } : null,
       /* التكلفة = الرسايل اللي ميتا قبلتها على قناة Cloud × سعر الرسالة وقت إنشاء الحملة (تقدير — الفاتورة من ميتا) */
       cost: job.channel === "wa_cloud" ? (() => { const n = count((x) => x.channel === "wa_cloud" && x.status === "sent"); const rate = Number(job.rate_sar) > 0 ? Number(job.rate_sar) : rateOf(sNow).rateSar;
         return { messages: n, rateSar: rate || null, sar: campaignCost(n, rate) }; })() : null };
@@ -1449,18 +1452,30 @@ export function register(app, ctx, deps = {}) {
               count(*) FILTER (WHERE optout_at IS NOT NULL)::int AS stopped,
               count(*) FILTER (WHERE cloud_status IN ('delivered','read') AND ($2::timestamptz IS NULL OR sent_at > $2))::int AS delivered,
               count(*) FILTER (WHERE cloud_status = 'read' AND ($2::timestamptz IS NULL OR sent_at > $2))::int AS read_n,
-              min(sent_at) FILTER (WHERE status='sent' AND ($2::timestamptz IS NULL OR sent_at > $2)) AS first_sent
+              min(sent_at) FILTER (WHERE status='sent' AND ($2::timestamptz IS NULL OR sent_at > $2)) AS first_sent,
+              -- SX2 (ج): نافذة الفرامل = المحاولات من بعد آخر «كمّل» (نفس brakeWindow في wacloud.js)
+              count(*) FILTER (WHERE status='sent' AND COALESCE(cloud_status,'') <> 'failed'
+                                 AND ($2::timestamptz IS NULL OR COALESCE(tried_at, claimed_at) > $2))::int AS b_sent,
+              count(*) FILTER (WHERE (status='failed' OR cloud_status='failed') AND COALESCE(error_code,0) <> ${META_CAPPED_CODE} AND retry_at IS NULL
+                                 AND ($2::timestamptz IS NULL OR COALESCE(tried_at, claimed_at) > $2))::int AS b_failed,
+              count(*) FILTER (WHERE optout_at IS NOT NULL AND ($2::timestamptz IS NULL OR COALESCE(tried_at, claimed_at) > $2))::int AS b_stopped
          FROM wa_send_queue WHERE job_id=$1 AND (channel='wa_cloud' OR fallback_from LIKE 'wa_cloud%')`, [jobId, ackAt || null])).rows[0] || {};
-    return { sent: r.sent || 0, failed: r.failed || 0, capped: r.capped || 0, stopped: r.stopped || 0, delivered: r.delivered || 0, read: r.read_n || 0, firstSentAt: r.first_sent || null };
+    const sent = r.sent || 0, failed = r.failed || 0, stopped = r.stopped || 0;
+    const num = (v, d) => (v === undefined || v === null ? d : Number(v) || 0);
+    return { sent, failed, capped: r.capped || 0, stopped, delivered: r.delivered || 0, read: r.read_n || 0, firstSentAt: r.first_sent || null,
+      /* الفرامل (نسبة الفشل ونسبة «إيقاف») بتتحسب من النافذة دي بس — «كمّل» بعد فرملة مابتوقّفش الحملة تاني على طول بسبب الفشل القديم.
+         sent التراكمي فاضل لسقف صرف الحملة (الفلوس اتصرفت فعلاً). */
+      brake: { since: ackAt || null, sent: num(r.b_sent, sent), failed: num(r.b_failed, failed), stopped: num(r.b_stopped, stopped) } };
   }
   const pauseJob = (jobId, reason) => pool.query("UPDATE wa_send_jobs SET status='paused', stop_reason=$2 WHERE id=$1 AND status='running'", [jobId, String(reason).slice(0, 80)]);
   /* الفرامل وسقف صرف الحملة. بترجع سبب الوقوف (والحملة اتوقفت) أو null. */
   async function jobBrake(job, cc, rateSar, flags = null) {
     const n = await jobCounts(job.id, job.brake_ack_at || null);
-    const b = brakeCheck(n, cc) || lowReadCheck(n, cc, now());      // QP1: + فرملة القراءة الضعيفة
+    const nb = { ...n, ...n.brake };      // SX2 (ج): الفرامل والتحذير من بعد آخر «كمّل» بس
+    const b = brakeCheck(nb, cc) || lowReadCheck(n, cc, now());      // QP1: + فرملة القراءة الضعيفة
     if (b) { const why = `${b.reason}:${b.pct}`; await pauseJob(job.id, why); return why; }
     /* QP1: منطقة التحذير (١٪): الحملة تكمّل بنص السرعة، والمالك ياخد تنبيه واحد للحملة */
-    const w = brakeWarn(n, cc);
+    const w = brakeWarn(nb, cc);
     if (w && flags) {
       flags.warn = true;
       const first = await pool.query("UPDATE wa_send_jobs SET warn_at=NOW() WHERE id=$1 AND warn_at IS NULL RETURNING id", [job.id]).catch(() => ({ rowCount: 0 }));
@@ -1652,7 +1667,7 @@ export function register(app, ctx, deps = {}) {
   /* الإعادة اللي جه ميعادها (الأقدم الأول) — نفس شروط الصف العادي: الحملة شغّالة، والقناة Cloud */
   async function claimRetry(cc) {
     return (await pool.query(
-      `UPDATE wa_send_queue AS r SET status='sending', claimed_at=NOW(), attempts=r.attempts+1, retry_at=NULL, retried_at=NOW(),
+      `UPDATE wa_send_queue AS r SET status='sending', claimed_at=NOW(), attempts=r.attempts+1, retry_at=NULL, retried_at=NOW(), tried_at=NOW(),
               first_error_code=COALESCE(r.first_error_code, r.error_code), first_wamid=COALESCE(r.first_wamid, r.wamid),
               cloud_status=NULL, error_code=NULL, reason=NULL
         WHERE r.id = (SELECT q.id FROM wa_send_queue q JOIN wa_send_jobs j ON j.id=q.job_id
@@ -1910,7 +1925,7 @@ export function register(app, ctx, deps = {}) {
         let q = cc.retryTransient ? await claimRetry(cc).catch((e) => { console.error("[wasender] claim retry:", e.message); return null; }) : null;
         const isRetry = Boolean(q);
         if (!q) q = (await pool.query(
-          `UPDATE wa_send_queue SET status='sending', claimed_at=NOW(), attempts=attempts+1, channel='wa_cloud'
+          `UPDATE wa_send_queue SET status='sending', claimed_at=NOW(), attempts=attempts+1, channel='wa_cloud', tried_at=NOW()
             WHERE id = (SELECT q.id FROM wa_send_queue q JOIN wa_send_jobs j ON j.id=q.job_id
                          WHERE q.status='pending' AND j.status='running'
                            AND COALESCE(q.channel, j.channel, 'wa_web') = 'wa_cloud'

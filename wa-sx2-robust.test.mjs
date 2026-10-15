@@ -104,7 +104,11 @@ function world({ jobs = [], queue = [], settings = {}, media = {}, script = [], 
       return rc([{ sent: r.filter((q) => q.status === "sent" && q.cloud_status !== "failed").length,
         failed: r.filter((q) => (q.status === "failed" || q.cloud_status === "failed") && Number(q.error_code) !== 131049 && !q.retry_at).length,
         capped: r.filter((q) => (q.status === "failed" || q.cloud_status === "failed") && Number(q.error_code) === 131049).length,
-        stopped: r.filter((q) => q.optout_at).length, delivered: 0, read_n: 0, first_sent: null }]); }
+        stopped: r.filter((q) => q.optout_at).length, delivered: 0, read_n: 0, first_sent: null,
+        ...(() => { const ack = p[1] ? Date.parse(p[1]) : null, w = r.filter((q) => !ack || Date.parse(q.tried_at || q.claimed_at || 0) > ack);
+          return { b_sent: w.filter((q) => q.status === "sent" && q.cloud_status !== "failed").length,
+            b_failed: w.filter((q) => (q.status === "failed" || q.cloud_status === "failed") && Number(q.error_code) !== 131049 && !q.retry_at).length,
+            b_stopped: w.filter((q) => q.optout_at).length }; })() }]); }
     if (/^UPDATE wa_send_jobs SET status='paused', stop_reason=\$2 WHERE id=\$1 AND status='running'/i.test(s)) { const j = job(p[0]); if (j && j.status === "running") { j.status = "paused"; j.stop_reason = p[1]; return rc([{ id: j.id }]); } return rc([]); }
     if (/^WITH s AS/i.test(s)) {       // recoverStuck
       const out = [];
@@ -125,14 +129,14 @@ function world({ jobs = [], queue = [], settings = {}, media = {}, script = [], 
       const q = db.queue.filter((x) => waiting(x) && !x.retried_at && Date.parse(x.retry_at) <= T && Date.parse(x.retry_at) > lim && (job(x.job_id) || {}).status === "running" && ch(x) === "wa_cloud")
         .sort((a, b) => Date.parse(a.retry_at) - Date.parse(b.retry_at) || a.id - b.id)[0];
       if (!q) return rc([]);
-      Object.assign(q, { status: "sending", attempts: (q.attempts || 0) + 1, retry_at: null, retried_at: p[0], first_error_code: q.first_error_code ?? q.error_code ?? null,
+      Object.assign(q, { status: "sending", attempts: (q.attempts || 0) + 1, retry_at: null, retried_at: p[0], tried_at: p[0], first_error_code: q.first_error_code ?? q.error_code ?? null,
         first_wamid: q.first_wamid ?? q.wamid ?? null, cloud_status: null, error_code: null, reason: null });
       return rc([{ ...q }]);
     }
     if (/^UPDATE wa_send_queue SET status='sending'/i.test(s)) {
       const q = db.queue.find((x) => x.status === "pending" && (job(x.job_id) || {}).status === "running" && ch(x) === "wa_cloud");
       if (!q) return rc([]);
-      Object.assign(q, { status: "sending", channel: "wa_cloud", attempts: (q.attempts || 0) + 1 }); return rc([{ ...q }]);
+      Object.assign(q, { status: "sending", channel: "wa_cloud", attempts: (q.attempts || 0) + 1, tried_at: iso(clock.t) }); return rc([{ ...q }]);
     }
     if (/^UPDATE wa_send_jobs j SET status='done'/i.test(s)) {
       for (const j of db.jobs.filter((x) => x.status === "running" && x.channel === "wa_cloud")) if (!db.queue.some((q) => q.job_id === j.id && (["pending", "sending"].includes(q.status) || waiting(q)))) j.status = "done";
@@ -189,10 +193,10 @@ function world({ jobs = [], queue = [], settings = {}, media = {}, script = [], 
     // التحكم
     if (/^SELECT channel FROM wa_send_jobs WHERE id=\$1/i.test(s)) return rc(job(p[0]) ? [{ channel: job(p[0]).channel }] : []);
     if (/^UPDATE wa_send_jobs SET status=\$2, finished_at/i.test(s)) { const j = job(p[0]); if (!j || ["done", "cancelled"].includes(j.status)) return rc([]);
-      j.status = p[1]; if (p[1] === "running") j.stop_reason = null; if (["running", "cancelled"].includes(p[1])) j.start_at = null; return rc([{ id: j.id }]); }
+      j.status = p[1]; if (p[1] === "running") { j.stop_reason = null; j.brake_ack_at = iso(clock.t); } if (["running", "cancelled"].includes(p[1])) j.start_at = null; return rc([{ id: j.id }]); }
     if (/^SELECT id, name, channel, cloud_template, image_url, video_url FROM wa_send_jobs WHERE status='paused' AND channel='wa_cloud'/i.test(s)) return rc(db.jobs.filter((j) => j.status === "paused" && j.channel === "wa_cloud").map((j) => ({ ...j })));
     if (/^UPDATE wa_send_jobs SET status=\$2, stop_reason = CASE/i.test(s)) { const hit = db.jobs.filter((j) => j.status === p[0] && (p[2] || j.channel !== "wa_cloud") && !p[3].includes(j.id));
-      for (const j of hit) { j.status = p[1]; if (p[1] === "running") { j.stop_reason = null; j.start_at = null; } } return rc(hit.map((j) => ({ id: j.id }))); }
+      for (const j of hit) { j.status = p[1]; if (p[1] === "running") { j.stop_reason = null; j.start_at = null; j.brake_ack_at = iso(clock.t); } } return rc(hit.map((j) => ({ id: j.id }))); }
     if (/^UPDATE wa_send_queue SET status='skipped', reason='cancelled' WHERE job_id/i.test(s)) { for (const q of db.queue) if (q.job_id === p[0] && q.status === "pending") Object.assign(q, { status: "skipped", reason: "cancelled" }); return rc([]); }
     if (/^UPDATE wa_send_queue SET retry_at=NULL WHERE job_id=\$1/i.test(s)) { for (const q of db.queue) if (q.job_id === p[0] && q.retry_at) q.retry_at = null; return rc([]); }
     // النتايج وقايمة المستلمين
@@ -529,4 +533,73 @@ test("الحارس في المصدر: الإعادة مابتعدّيش الحا
   assert.equal((src.match(/wa\.sendTemplate\(/g) || []).length, 2, "إرسال الحملة + التجربة بس — الإعادة بتمشي من sendCloudRow نفسه");
   assert.match(src, /COALESCE\(error_code,0\) <> \$\{META_CAPPED_CODE\} AND retry_at IS NULL\)::int AS failed/, "الفرامل مابتعدّش المستني إعادة كفشل");
   assert.match(src, /q\.status = 'failed' AND q\.retry_at IS NOT NULL AND j\.status IN \('running','paused'\)/, "المستني إعادة = لسه في طابور حملته (مايدخلش حملة تانية)");
+});
+
+// ───────── (ج) الفرامل: من بعد آخر «كمّل»، والفشل المؤقت اللي اتعاد ونجح مش محسوب ─────────
+test("نافذة الفرامل (دالة صافية): المحاولات من بعد آخر «كمّل» بس؛ المستني إعادة و131049 بره؛ اللي اتعاد ونجح = «اتبعتت»", () => {
+  const ACK = iso(AT_17), old = iso(AT_17 - 60 * MIN), neu = iso(AT_17 + 5 * MIN);
+  const rows = [
+    { channel: "wa_cloud", status: "failed", error_code: 131026, tried_at: old },                       // قبل التكملة ⇒ بره
+    { channel: "wa_cloud", status: "sent", cloud_status: "delivered", tried_at: neu },
+    { channel: "wa_cloud", status: "sent", cloud_status: "accepted", retried_at: neu, first_error_code: 131000, tried_at: neu },   // اتعاد ونجح
+    { channel: "wa_cloud", status: "failed", error_code: 131000, retry_at: iso(AT_17 + 15 * MIN), tried_at: neu },               // مستني إعادة
+    { channel: "wa_cloud", status: "failed", error_code: 131049, tried_at: neu },                       // ميتا حدّت العميل — بره النسبة
+    { channel: "wa_cloud", status: "failed", error_code: 131026, tried_at: neu },
+    { channel: "wa_cloud", status: "sent", cloud_status: "read", optout_at: neu, tried_at: neu },
+    { channel: "wa_cloud", status: "sent", claimed_at: neu },                                           // صف قديم من غير tried_at
+    { channel: "wa_web", status: "failed", tried_at: neu },                                             // مش Cloud
+  ];
+  assert.deepEqual(C.brakeWindow(rows, ACK), { since: ACK, sent: 4, failed: 1, stopped: 1 });
+  assert.deepEqual(C.brakeWindow(rows, null), { since: null, sent: 4, failed: 2, stopped: 1 }, "من غير تكملة = كل الحملة");
+  const v = C.brakeView(C.brakeWindow(rows, ACK), C.cloudCfg({}));
+  assert.deepEqual([v.tried, v.failPct, v.stopPct, v.failLimit, v.minSends, v.armed], [5, 20, 25, 10, 30, false]);
+});
+
+test("حادثة ١٥/١٠: الفرامل وقّفت الحملة ⇒ «كمّل» من المالك مابتوقّفهاش تاني على طول (النسبة بتبدأ من لحظة التكملة) — ولو الفشل رجع بجد بتقف تاني", async () => {
+  const old = iso(AT_17 - 60 * MIN);
+  const before = [...Array.from({ length: 27 }, (_, i) => Q(i + 1, { status: "sent", cloud_status: "delivered", tried_at: old, sent_at: old })),
+    ...[28, 29, 30].map((id) => Q(id, { status: "failed", cloud_status: "failed", reason: "undeliverable", error_code: 131026, tried_at: old }))];
+  const pend = Array.from({ length: 40 }, (_, i) => Q(100 + i));
+  const w = world({ jobs: [J()], queue: [...before, ...pend], settings: { waCloud: { enabled: true, perTick: 10 } } });
+  await w.api.schemaReady;
+  const r0 = await w.api.cloudTick();
+  assert.deepEqual([w.db.jobs[0].status, w.db.jobs[0].stop_reason, w.sent.length], ["paused", "fail_rate:10", 0], JSON.stringify(r0));
+  // المالك كمّل ⇒ العدّ من دلوقتي: ٣ فشل قدام مابقوش بيتحسبوا
+  assert.equal((await call(w.app, "POST /api/cms/wa-sender/jobs/:id/:action", { param: { id: "1", action: "resume" } })).status, 200);
+  assert.equal(w.db.jobs[0].brake_ack_at, iso(AT_17));
+  w.clock.t = AT_17 + MIN;
+  const r1 = await w.api.cloudTick();
+  assert.equal(r1.sent, 10, JSON.stringify(r1)); assert.deepEqual([w.db.jobs[0].status, w.db.jobs[0].stop_reason], ["running", null], "مابتقفش تاني على طول");
+  // فشل مؤقت (131000) من الويب هوك على رسالة من بعد التكملة ⇒ مستني إعادة، مش فشل في النسبة؛ وبعد الإعادة الناجحة = «اتبعتت»
+  const t = w.db.queue.find((q) => q.id === 100);
+  await w.api.onCloudStatus({ wamid: t.wamid, status: "failed", code: 131000 });
+  assert.ok(t.retry_at);
+  // النتايج: الفرامل بتعدّ من التكملة، والنسبة صفر
+  let res = await call(w.app, "GET /api/cms/wa-sender/jobs/:id/results", { param: { id: "1" } });
+  assert.deepEqual([res.body.brake.since, res.body.brake.sinceRiyadh, res.body.brake.tried, res.body.brake.failed, res.body.brake.failPct, res.body.brake.armed],
+    [iso(AT_17), "2026-10-15 17:00", 9, 0, 0, false]);
+  w.clock.t = AT_17 + 11 * MIN;
+  const r2 = await w.api.cloudTick();
+  assert.equal(r2.retried, 1, JSON.stringify(r2)); assert.equal(t.status, "sent");
+  res = await call(w.app, "GET /api/cms/wa-sender/jobs/:id/results", { param: { id: "1" } });
+  assert.equal(res.body.brake.failed, 0, "الفشل المؤقت اللي اتعاد ونجح مش محسوب");
+  // الفشل الحقيقي رجع من بعد التكملة (٣ من ٣٠ = ١٠٪) ⇒ تقف تاني بنفس الحد
+  for (const q of w.db.queue.filter((x) => x.status === "sent" && x.tried_at && Date.parse(x.tried_at) > AT_17).slice(0, 3)) {
+    await w.api.onCloudStatus({ wamid: q.wamid, status: "failed", code: 131026 });
+  }
+  w.clock.t = AT_17 + 12 * MIN;
+  for (let i = 0; i < 3 && w.db.jobs[0].status === "running"; i++) await w.api.cloudTick();
+  assert.equal(w.db.jobs[0].status, "paused"); assert.match(w.db.jobs[0].stop_reason, /^fail_rate:/);
+  res = await call(w.app, "GET /api/cms/wa-sender/jobs/:id/results", { param: { id: "1" } });
+  assert.ok(res.body.brake.tried >= 30 && res.body.brake.failPct >= 10, JSON.stringify(res.body.brake));
+  assert.equal(res.body.brake.failed, 3, "الـ٣ القديمين قبل التكملة مش منهم");
+});
+
+test("سقف صرف الحملة فاضل على كل الرسايل (الفلوس اتصرفت فعلاً) — التكملة بتصفّر الفرامل بس", async () => {
+  const old = iso(AT_17 - 60 * MIN);
+  const before = Array.from({ length: 10 }, (_, i) => Q(i + 1, { status: "sent", cloud_status: "delivered", tried_at: old, sent_at: old }));
+  const w = world({ jobs: [J({ spend_cap_sar: 2.5, rate_sar: 0.25, brake_ack_at: iso(AT_17 - 30 * MIN) })], queue: [...before, Q(50)] });
+  await w.api.schemaReady;
+  const r = await w.api.cloudTick();
+  assert.equal(r.sent || 0, 0, JSON.stringify(r)); assert.deepEqual([w.db.jobs[0].status, w.db.jobs[0].stop_reason], ["paused", "campaign_spend_cap"]);
 });
