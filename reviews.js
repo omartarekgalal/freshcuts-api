@@ -32,6 +32,10 @@ import { reviewDueAt } from "./prepstatus.js";
 /* RV1 (عمر ١٥/١٠): النجوم جوّه واتساب + كل أنواع الطلبات (موقع + كاشير) — القواعد والإعدادات في wareviews.js (waBot.reviewFlow) */
 import { reviewFlowConfig, dueFor, nextAllowed, inQuiet, kindOfInvite, posKindOf, kindOn, KIND_AR, PAGE_LABEL, VISIT_KINDS, APP_METHODS, reviewsDaily, bizDayWindow } from "./wareviews.js";
 import { KNOWN_WA_NUMBER } from "./wapolicy.js";
+/* RV1 (عمر ١٥/١٠): «عملاء المحل صالة وتيك أواي موافقين مسبقاً وقت الدفع عند الكاشير» ⇒ صف إثبات pos_payment لكل فاتورة (طلب التقييم بس) */
+import { recordPosReviewConsent, POS_REVIEW_CONSENT } from "./waconsent.js";
+/* RV1: التقييمات الواطية في بورتال المدير — نفس صف التقييم (resolved/resolution_note) اللي الوارد في اللوحة بيقراه + سجل الإجراءات */
+import { REVIEW_PORTAL_DDL, OUTCOMES, outcomeOf, closeReview } from "./portalreviews.js";
 
 const CATEGORIES = ["الأكل", "التوصيل", "الخدمة", "السعر", "النظافة", "الوقت"];
 export const DEFAULTS = {
@@ -160,6 +164,7 @@ export function register(app, ctx, deps = {}) {
       ALTER TABLE reviews ADD COLUMN IF NOT EXISTS kind TEXT;
       CREATE TABLE IF NOT EXISTS cms_migrations (id TEXT PRIMARY KEY, at TIMESTAMPTZ NOT NULL DEFAULT NOW());
     `);
+    await pool.query(REVIEW_PORTAL_DDL);      // RV1: نتيجة القفل (outcome) + «شافها» في البورتال + سجل الإجراءات (review_actions)
     // ربط التقييمات القديمة بطلبها (من الدعوة) وبجوال الطلب — كل إقلاع، idempotent
     await pool.query(`
       UPDATE reviews r SET order_no = iv.order_no
@@ -179,8 +184,10 @@ export function register(app, ctx, deps = {}) {
              hidden_reason = COALESCE(hidden_reason, 'owner_19_9_all_before_18_9_were_tests'), hidden_by = 'migration'
        WHERE created_at < '2026-09-18T01:00:00Z' AND EXISTS (SELECT 1 FROM m)`);
   }
-  ensureSchema().then(() => console.log("[reviews] ready"))
-    .catch((e) => console.error("[reviews] init failed:", e.message));
+  const ready = ensureSchema().then(() => { console.log("[reviews] ready"); return true; })
+    .catch((e) => { console.error("[reviews] init failed:", e.message); return false; });
+  /* RV1: تقييم واطي جديد ⇒ حدث للبورتال (رنّة هادية + العدّاد عند المدير). البوابة بتتعرّف بعد الموديول ده ⇒ النداء وقت التشغيل، وأي فشل بيتبلع. */
+  const portalSay = (ev, d) => { try { if (typeof deps.broadcast === "function") deps.broadcast(ev, d); } catch { /* البوابة مش جاهزة */ } };
 
   async function cfg() {
     const s = await getSettingsData();
@@ -319,6 +326,7 @@ export function register(app, ctx, deps = {}) {
       "UPDATE review_invites SET review_id=$2, rating=$3 WHERE code=$1 AND review_id IS NULL", [code, id, rating]
     ).catch(() => {});
     const route = routeFor(rating, cf.threshold, cf.googleUrl);
+    if (rating < 4 && !(orderNo && orderNo.startsWith("TEST-")) && code !== "test") portalSay("review_low", { id: Number(id), rating, channel: kind, at: new Date().toISOString() });      // RV1: بورتال المدير
     return c.json({ ok: true, id, route, googleUrl: cf.googleUrl || "", threshold: cf.threshold });
   });
 
@@ -470,6 +478,10 @@ export function register(app, ctx, deps = {}) {
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT (order_no) DO NOTHING RETURNING code`,
         [`pos:${r.order_id}`, inviteCode(), r.pn, kind, due.toISOString(), kind, r.order_date, ref]).catch(() => ({ rowCount: 0 }));
       n += ins.rowCount || 0;
+      /* موافقة الدفع عند الكاشير (صالة/سفري، والإعداد مفتوح): صف الإثبات بيتسجّل مع الدعوة بوقت الفاتورة. فشل هنا مايوقفش — بيتعاد قبل الإرسال. */
+      if (ins.rowCount && flow.posConsent && POS_REVIEW_CONSENT.kinds.includes(kind)) {
+        await recordPosReviewConsent(pool, { phoneNorm: r.pn, orderNo: `pos:${r.order_id}`, kind, at: r.order_date, receipt: String(r.receipt || "").trim() || null }).catch((e) => console.error("[reviews] pos consent:", e.message));
+      }
     }
     return n;
   }
@@ -528,7 +540,7 @@ export function register(app, ctx, deps = {}) {
         }
       } else if (inAskQuiet(riyadhHour(now), cf.askQuietStart, cf.askQuietEnd)) return { skipped: "quiet" };
       const due = (await pool.query(
-        `SELECT order_no, code, phone_norm, kind, option, ref FROM review_invites
+        `SELECT order_no, code, phone_norm, kind, option, ref, order_at FROM review_invites
           WHERE sent_at IS NULL AND skip_reason IS NULL AND due_at <= $1::timestamptz
           ORDER BY due_at LIMIT 40`, [now.toISOString()])).rows;
       if (!due.length) return { sent: 0 };
@@ -570,6 +582,12 @@ export function register(app, ctx, deps = {}) {
            طلب الكاشير من غير واتساب ⇒ SMS بس لو المالك فتح smsVisits، وإلا مفيش رسالة (السبب بيتسجّل). */
         const wr = typeof deps.waReview === "function" ? deps.waReview() : null;
         let waWhy = null;
+        /* RV1: فاتورة صالة/سفري والإعداد «عملاء الكاشير موافقين وقت الدفع» مفتوح ⇒ صف الإثبات لازم يكون موجود قبل القالب (لو الإعداد اتفتح بعد ما الدعوة
+           اتعملت، أو التسجيل وقت الدعوة فشل). القاعدة وقعت ⇒ الدعوة تستنى المسح الجاي (مانقررش «مفيش موافقة» واحنا مش متأكدين). */
+        if (wr && flow.enabled && flow.posConsent && /^pos:/.test(String(iv.order_no)) && POS_REVIEW_CONSENT.kinds.includes(kind)) {
+          try { await recordPosReviewConsent(pool, { phoneNorm: iv.phone_norm, orderNo: iv.order_no, kind, at: iv.order_at || null, receipt: String(iv.ref || "").replace(/^فاتورة\s*/, "") || null }); }
+          catch (e) { console.error("[reviews] pos consent:", e.message); throw CHECK_FAILED; }
+        }
         if (wr && typeof wr.reviewAsk === "function") {
           let r = null; try { r = await wr.reviewAsk({ phone: iv.phone_norm, orderNo: iv.order_no, code: iv.code, ...(iv.kind ? { kind: iv.kind } : {}), ...(iv.ref ? { ref: iv.ref } : {}) }); } catch { r = null; }
           if (r && r.ok) {
@@ -621,14 +639,17 @@ export function register(app, ctx, deps = {}) {
     const rows = (await pool.query(
       `SELECT id, rating, comment, categories, code_label, channel, phone_norm, name,
               went_google, resolved, resolved_by, resolved_at, resolution_note, created_at,
-              order_no, is_test, hidden_at, hidden_reason
+              order_no, is_test, hidden_at, hidden_reason,
+              rating_exact, kind, outcome, outcome_at, outcome_by, outcome_via, portal_seen_at, portal_seen_by
          FROM reviews WHERE ${where.join(" AND ")} ORDER BY created_at DESC LIMIT 300`, p)).rows;
     const hiddenCount = (await pool.query(`SELECT count(*)::int AS n FROM reviews WHERE NOT ${REAL_REVIEW_SQL}`)).rows[0].n;
     // ٢١/٩: الجوال كامل للي دوره يشوف «العملاء» (phones.js) — غير كده بيتشال خالص
     const full = ctx.canSeePhones ? await ctx.canSeePhones(c).catch(() => false) : false;
     return c.json({
       ok: true, hiddenCount, fullPhones: full,
-      reviews: rows.map((r) => ({ ...r, phone: full && r.phone_norm ? "0" + r.phone_norm : null })),
+      /* RV1: outcomeAr = نتيجة القفل/المتابعة بالعربي (من البورتال أو من هنا) — نفس الصف، مصدر واحد */
+      reviews: rows.map((r) => ({ ...r, phone: full && r.phone_norm ? "0" + r.phone_norm : null, outcomeAr: r.outcome ? (outcomeOf(r.outcome) || {}).ar || r.outcome : null })),
+      outcomes: OUTCOMES,
     });
   });
 
@@ -770,15 +791,19 @@ export function register(app, ctx, deps = {}) {
     } catch (e) { return c.json({ ok: false, error: String(e.message).slice(0, 160), body, link }, 502); }
   });
 
+  /* «تم الحل» من اللوحة — نفس دالة القفل بتاعة البورتال (portalreviews.closeReview): نفس الأعمدة ونفس سجل الإجراءات، فالاتنين بيشوفوا نفس الحالة.
+     outcome اختياري (الافتراضي «اتحلت») — اللوحة القديمة بتبعت note بس وبتفضل شغّالة. */
   app.post("/api/cms/reviews/:id/resolve", async (c) => {
     const err = await requireAdmin(c); if (err) return err;
     const id = Number(c.req.param("id"));
+    if (!(id > 0)) return bad(c, "bad_id");
     let b = {}; try { b = await c.req.json(); } catch { /* لا شيء */ }
-    const who = await whoName(c);
-    await pool.query(
-      `UPDATE reviews SET resolved=TRUE, resolved_by=$2, resolved_at=NOW(), resolution_note=$3 WHERE id=$1`,
-      [id, who, clip(b.note, 500)]);
-    return c.json({ ok: true });
+    await ready;
+    const r = await closeReview(pool, { id, outcome: b.outcome || "resolved", note: b.note, by: await whoName(c), via: "dashboard" });
+    if (!r.ok) return c.json(r, r.error === "not_found" ? 404 : 400);
+    for (const hid of r.handoversAcked || []) portalSay("wa_handover_ack", { id: hid, by: r.by });
+    portalSay("review_update", { id, status: r.status });
+    return c.json({ ok: true, status: r.status, outcome: r.outcome });
   });
 
   /* ١٩/٩ حذف ناعم: إخفاء (تجربة/مش حقيقي) أو إرجاع. الصف مابيتمسحش. */
@@ -921,5 +946,5 @@ export function register(app, ctx, deps = {}) {
   }
 
   console.log("[reviews] routes registered");
-  return { queueInvite, runInvites, refreshPlace, placeCache, queuePosInvites };
+  return { queueInvite, runInvites, refreshPlace, placeCache, queuePosInvites, ready };
 }

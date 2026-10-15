@@ -284,7 +284,7 @@ export const TEMPLATES = [
     meta: { purpose: "طلب التقييم بره النافذة + «تمام / عندي ملاحظة»", trigger: "reviews.js — لما waBot.windowV2Stages فيها review", send: "auto-candidate", replaces: "fc_review_request", fallbackSms: "review.invite" } }),
   /* RV1 (عمر ١٥/١٠: «ناخد التقييم من الواتساب بالنجوم»): النجوم في القالب نفسه بره النافذة — ضغطة واحدة. ٤–٥ ⇒ رابط جوجل في المحادثة، «يحتاج تحسين» ⇒ اعتذار + المدير.
      الضغطة رسالة واردة ⇒ الرد بعدها حر وببلاش. {{1}} = «طلبك رقم W…» (موقع) / «زيارتك للمطعم» (صالة) / «طلبك من الفرع» (سفري) — نصوص البوت rs_subj_*.
-     **موقوف (HOLD) لحد موافقة عمر على النص**؛ بعد اعتماد ميتا: waBot.reviewFlow.starsTemplate = مفتوح. */
+     **موقوف (HOLD) عن الدفعات** — عمر وافق على النص ١٥/١٠ ١٤:١٥؛ بيتقدّم بعد النشر بـ force:true، وبعد اعتماد ميتا: waBot.reviewFlow.starsTemplate = مفتوح. */
   T({ name: "fc_review_stars", category: "UTILITY", group: "order",
     body: "فريش كاتس تشكرك 🌟\nكيف تقيّم {{1}}؟ اختر من الأزرار 👇",
     vars: [{ path: "review.subject", label: "الطلب أو الزيارة (طلبك رقم … / زيارتك للمطعم / طلبك من الفرع)", ex: "طلبك رقم W1790012345678" }],
@@ -718,7 +718,7 @@ export const HOLD = Object.freeze({
   fc_order_pickup_ready: "بانتظار موافقة المالك على النص (بديل fc_order_ready_pickup المرفوض) — غير مربوط بمرحلة",
   fc_staff_checkout_notice: "بانتظار موافقة المالك على النص (بديل fc_staff_checkout_watchdog المصنَّف تسويق؛ fc_staff_payment_alert موجود لنفس الغرض)",
   /* RV1 (١٥/١٠): قالب النجوم — النص في docs/designs-2026-10/whatsapp/reviews-workflow.md */
-  fc_review_stars: "بانتظار موافقة المالك على النص (RV1 — التقييم بالنجوم بره النافذة؛ التقديم بـ force:true من المالك)",
+  fc_review_stars: "النص اتوافق عليه (عمر ١٥/١٠ ١٤:١٥: «موافق على كل حاجة») — بيتقدّم لميتا بعد النشر بـ force:true (RV1 — التقييم بالنجوم بره النافذة)، وبعد الاعتماد يتفتح مفتاح «قالب النجوم»",
 });
 
 /* دفعات التقديم بالأولوية. الدفعة ١ = قائمة «أول ٨» الأصلية. */

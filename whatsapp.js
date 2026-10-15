@@ -41,7 +41,7 @@ import { isOptOutText } from "./wamsg.js";
 import { echoKind, echoSettings, ECHO, STAFF_ECHO_SQL } from "./waecho.js";
 import * as CAT from "./watemplates.js";
 import { staffPhones } from "./staffalerts.js";
-import { termsCoverOrder, TERMS_CURRENT, TERMS_VERSIONS } from "./waconsent.js";
+import { termsCoverOrder, TERMS_CURRENT, TERMS_VERSIONS, POS_REVIEW_CONSENT, posReviewConsentOn, posReviewConsentCovers } from "./waconsent.js";
 import { custCapOf, custCapReason } from "./waquality.js";
 import { waStageOn } from "./waswitches.js";
 import { staffRoleOf } from "./wateam.js";
@@ -710,6 +710,17 @@ export function register(app, ctx, deps = {}) {
       return custCapReason((r.rows && r.rows[0]) || {}, custCapOf(s));
     } catch { return "marketing_cap_unreadable"; }
   }
+  /* RV1 (عمر ١٥/١٠: «عملاء المحل صالة وتيك أواي موافقين مسبقاً وقت الدفع عند الكاشير») — أساس موافقة تالت للقالب الخدمي، ضيّق بالقصد:
+     قالب التقييم بس (POS_REVIEW_CONSENT.templates) · المصدر "review" (مسح التقييمات) · الطلب فاتورة كاشير pos:… · ميتا ماحوّلتش القالب تسويق ·
+     إعداد «عملاء الكاشير موافقين وقت الدفع» مفتوح · وصف إثبات pos_payment لنفس الجوال ونفس الفاتورة (waconsent.js). أي حاجة تانية ⇒ لأ.
+     بيتنده بعد «إيقاف» و«لا» الصريحة (هما بيغلبوه)، وجوّه فرع الخدمي بس — العروض وقواعدها مابتتلمسش. */
+  async function posReviewBasis({ s, template, source, orderNo, pn }) {
+    if (!POS_REVIEW_CONSENT.templates.includes(template) || source !== "review") return false;
+    if (!/^pos:/.test(String(orderNo || ""))) return false;
+    if (Object.keys(CAT.META_CATEGORY || {}).some((k) => k.startsWith(`${template}:`))) return false;
+    if (!posReviewConsentOn(s)) return false;
+    return posReviewConsentCovers(pool, pn, orderNo);
+  }
   const TICKETS = new WeakSet();
   const TICKET_TTL_MS = 60_000;
   async function guardSend({ phoneNorm, kind, template = null, purpose = null, source = null, test = false, allowList = null, fromId = null, orderNo = null, staff = false } = {}) {
@@ -776,7 +787,7 @@ export function register(app, ctx, deps = {}) {
       if (o.stoppedForUpdates) return no("opted_out");
       if (!o.updates) {
         if (o.saidNoToUpdates) return no("no_optin");
-        if (!(orderNo && await termsCoverOrder(pool, pn, orderNo))) return no("no_optin");
+        if (!(orderNo && await termsCoverOrder(pool, pn, orderNo)) && !(await posReviewBasis({ s, template, source, orderNo, pn }))) return no("no_optin");
       }
     }
     return grant();

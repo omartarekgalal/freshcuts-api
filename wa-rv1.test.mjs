@@ -71,13 +71,13 @@ test("stars: list ids, the template's three buttons (5 / 4 / «3 or less»), typ
   assert.equal(RV.reasonOfListId("rr:clean:4x"), null);
 });
 
-test("kinds: till orders by option (dine-in / takeaway), app orders only behind their switch (off by default — Keeta rules 5.1); the settings carry every knob with Arabic labels", () => {
+test("kinds: till orders by option (dine-in / takeaway), app orders behind their own switch (ON by default since Omar 15/10: «ابعت أرقام كيتا عادي»); the settings carry every knob with Arabic labels", () => {
   assert.equal(RV.posKindOf({ is_app: false, order_option: "Dine in" }), "dinein");
   assert.equal(RV.posKindOf({ is_app: false, order_option: "Take away" }), "takeaway");
   assert.equal(RV.posKindOf({ is_app: true, order_option: "Take away" }), "app");
   assert.equal(RV.posKindOf({ is_app: false, order_option: "توصيل Delivery" }), null);
-  assert.deepEqual(["delivery", "pickup", "table", "dinein", "takeaway", "app"].map((k) => RV.kindOn(k, F0)), [true, true, true, true, true, false]);
-  assert.equal(RV.kindOn("app", RV.reviewFlowConfig({ apps: true })), true);
+  assert.deepEqual(["delivery", "pickup", "table", "dinein", "takeaway", "app"].map((k) => RV.kindOn(k, F0)), [true, true, true, true, true, true]);
+  assert.equal(RV.kindOn("app", RV.reviewFlowConfig({ apps: false })), false, "still a dashboard switch");
   assert.equal(RV.kindOfInvite({ option: "pickup" }), "pickup"); assert.equal(RV.kindOfInvite({ option: "delivery" }), "delivery"); assert.equal(RV.kindOfInvite({ kind: "dinein", option: "dinein" }), "dinein");
   for (const k of Object.keys(RV.REVIEW_FLOW_DEFAULTS)) { const row = RV.REVIEW_FLOW_SCHEMA[`reviewFlow.${k}`]; assert.ok(row && /[؀-ۿ]/.test(row.ar) && row.group === "reviews", k); }
   assert.equal(Object.keys(RV.REVIEW_FLOW_SCHEMA).length, Object.keys(RV.REVIEW_FLOW_DEFAULTS).length);
@@ -147,7 +147,7 @@ function rig({ ts = [], invites = [], reviewsRows = [], chats = {}, contacts = {
   return { api, db, routes, run: (iso) => api.runInvites(new Date(iso)) };
 }
 
-test("till orders: a closed bill with the customer's phone gets ONE invite (dine-in +90, takeaway +50); no phone, a website mirror, or an app order (switch off) ⇒ none; staff contacts are skipped at send time", async () => {
+test("till orders: a closed bill with the customer's phone gets ONE invite (dine-in +90, takeaway +50); no phone, a website mirror, or an app order with its switch off ⇒ none; staff contacts are skipped at send time", async () => {
   const ts = [
     { order_id: "9001", order_date: ago(100), order_option: "Dine in", pn: "511111111", receipt: "1043" },
     { order_id: "9002", order_date: ago(40), order_option: "Take away", pn: "522222222" },
@@ -156,7 +156,7 @@ test("till orders: a closed bill with the customer's phone gets ONE invite (dine
     { order_id: "9005", order_date: ago(120), order_option: "Dine in", pn: "544444444", web_near: true },
     { order_id: "9006", order_date: ago(60), order_option: "Take away", pn: "566666666" },
   ];
-  const r = rig({ ts, contacts: { "566666666": { is_staff: true } }, waReply: { ok: false, skipped: "no_visit_template" } });
+  const r = rig({ ts, flow: { apps: false }, contacts: { "566666666": { is_staff: true } }, waReply: { ok: false, skipped: "no_visit_template" } });
   const out = await r.run("2026-10-15T15:00:00Z");
   assert.deepEqual(r.db.invites.map((x) => [x.order_no, x.kind, x.due_at, x.ref]).sort(), [
     ["pos:9001", "dinein", new Date(ORDER_T - 10 * 60_000).toISOString(), "فاتورة 1043"],
@@ -171,8 +171,8 @@ test("till orders: a closed bill with the customer's phone gets ONE invite (dine
   // second sweep: nothing new, nothing twice
   await r.run("2026-10-15T15:05:00Z");
   assert.equal(r.db.invites.length, 3); assert.equal(r.db.asked.length, 1);
-  // apps on (owner's call) ⇒ the Keeta order gets one too
-  const ap = rig({ ts, flow: { apps: true }, waReply: { ok: false, skipped: "no_visit_template" } });
+  // apps ON by default (Omar 15/10) ⇒ the Keeta order gets one too
+  const ap = rig({ ts, waReply: { ok: false, skipped: "no_visit_template" } });
   await ap.run("2026-10-15T15:00:00Z");
   assert.ok(ap.db.invites.some((x) => x.order_no === "pos:9003" && x.kind === "app"));
   // smsVisits on ⇒ SMS with the rating-page link when WhatsApp is not possible

@@ -83,7 +83,7 @@ export function ensureWaConsentSchema(pool) {
       CREATE TABLE IF NOT EXISTS wa_optin_log (
         id BIGSERIAL PRIMARY KEY,
         phone_norm TEXT NOT NULL,
-        kind TEXT NOT NULL,            -- updates
+        kind TEXT NOT NULL,            -- updates | marketing | terms | review (RV1: موافقة الدفع عند الكاشير على طلب التقييم)
         value BOOLEAN NOT NULL,
         text_version TEXT,
         text TEXT,
@@ -175,6 +175,52 @@ export async function termsCoverOrder(pool, phoneNorm, orderNo) {
       [String(orderNo), String(phoneNorm)]);
     const v = r.rows && r.rows[0] && r.rows[0].text_version;
     return Boolean(v && TERMS_VERSIONS[v] && TERMS_VERSIONS[v].waOrderUpdates === true);
+  } catch { return false; }
+}
+
+/* ── RV1 (عمر ١٥/١٠/٢٠٢٦ ١٤:١٥، بنصّه: «عملاء المحل صالة وتيك أواي موافقين مسبقاً وقت الدفع عند الكاشير») ───────────────────────
+   مصدر موافقة صريح ومحدود: فاتورة صالة أو سفري في نقطة البيع عليها جوال العميل = موافقة على **رسالة طلب التقييم** على واتساب، بس.
+     • بيتسجّل صف إثبات لكل فاتورة في نفس السجل (wa_optin_log): kind = review، source = pos_payment، order_no = pos:<رقم طلب نقطة البيع>،
+       الوقت = وقت الفاتورة (لحظة الدفع)، النص = قرار المالك بنسخته. مابيلمسش wa_optins (ده مش «نعم» على تحديثات الطلب ولا العروض).
+     • الحارس (whatsapp.js guardSend) بيقبله لقالب التقييم (POS_REVIEW_CONSENT.templates) لما المصدر "review" والطلب pos:… والصف موجود لنفس
+       الجوال ونفس الفاتورة والإعداد مفتوح — غير كده ولا حاجة اتغيّرت: «إيقاف» و«لا» الصريحة بيغلبوا، والعروض وتحديثات الطلب على قواعدهم.
+     • الإعداد: waBot.reviewFlow.posConsent («عملاء الكاشير موافقين وقت الدفع» — مفتوح افتراضياً). مقفول ⇒ مفيش تسجيل ولا استخدام. */
+export const POS_REVIEW_CONSENT = Object.freeze({
+  kind: "review", source: "pos_payment", version: "pos-payment-2026-10-15",
+  text: "قرار المالك (١٥/١٠/٢٠٢٦): عملاء المحل (صالة وسفري) اللي جوالهم على الفاتورة موافقين مسبقاً وقت الدفع عند الكاشير على رسالة طلب التقييم على واتساب.",
+  templates: Object.freeze(["fc_review_stars"]),       // رسالة التقييم بس — أي قالب تاني مايعدّيش بالموافقة دي
+  kinds: Object.freeze(["dinein", "takeaway"]),       // فواتير الكاشير بس (مش التطبيقات ولا طلبات الموقع)
+});
+const POS_ORDER_RE = /^pos:[A-Za-z0-9_-]{1,64}$/;
+/* الإعداد مفتوح؟ (نفس افتراضيات wareviews.reviewFlowConfig: المسار الجديد والموافقة مفتوحين إلا لو اتقفلوا صراحةً) */
+export function posReviewConsentOn(settings) {
+  const f = (((settings || {}).waBot) || {}).reviewFlow;
+  const x = f && typeof f === "object" ? f : {};
+  return x.enabled !== false && x.posConsent !== false;
+}
+/* صف الإثبات (مرة واحدة لكل فاتورة وجوال). at = وقت الفاتورة. ⇒ { ok, recorded } — بيرمي لو القاعدة وقعت (المنادي يقرر). */
+export async function recordPosReviewConsent(pool, { phoneNorm, orderNo, kind, at = null, receipt = null }) {
+  if (!/^5\d{8}$/.test(String(phoneNorm || ""))) return { ok: false, error: "invalid_phone" };
+  if (!POS_ORDER_RE.test(String(orderNo || ""))) return { ok: false, error: "not_pos_order" };
+  if (!POS_REVIEW_CONSENT.kinds.includes(kind)) return { ok: false, error: "kind_not_covered" };
+  await ensureWaConsentSchema(pool);
+  const when = at && Number.isFinite(Date.parse(at)) ? new Date(at).toISOString() : new Date().toISOString();
+  const r = await pool.query(
+    `INSERT INTO wa_optin_log(phone_norm, kind, value, text_version, text, source, order_no, ip, ua, at)
+     SELECT $1, 'review', TRUE, $2, $3, 'pos_payment', $4, NULL, $5, $6::timestamptz
+      WHERE NOT EXISTS (SELECT 1 FROM wa_optin_log WHERE kind='review' AND source='pos_payment' AND order_no=$4 AND phone_norm=$1)`,
+    [String(phoneNorm), POS_REVIEW_CONSENT.version, POS_REVIEW_CONSENT.text, String(orderNo), receipt ? clip(`receipt:${receipt}`, 60) : null, when]);
+  return { ok: true, recorded: Boolean(r && r.rowCount) };
+}
+/* الفاتورة دي عليها موافقة الدفع عند الكاشير لنفس الجوال؟ (للحارس) — أي خطأ = لأ */
+export async function posReviewConsentCovers(pool, phoneNorm, orderNo) {
+  if (!POS_ORDER_RE.test(String(orderNo || "")) || !/^5\d{8}$/.test(String(phoneNorm || ""))) return false;
+  try {
+    await ensureWaConsentSchema(pool);
+    const r = await pool.query(
+      "SELECT 1 FROM wa_optin_log WHERE kind='review' AND source='pos_payment' AND value AND order_no=$1 AND phone_norm=$2 AND text_version=$3 LIMIT 1",
+      [String(orderNo), String(phoneNorm), POS_REVIEW_CONSENT.version]);
+    return Boolean(r && r.rows && r.rows.length);
   } catch { return false; }
 }
 

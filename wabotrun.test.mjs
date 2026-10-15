@@ -5475,7 +5475,7 @@ test("RV1: classify understands only our own ids and buttons; settings render fr
   assert.deepEqual(R.classify({ type: "button", text: "يحتاج تحسين", interactiveId: "يحتاج تحسين" }).arg, { stars: 3, exact: false, code: null });
   for (const bad of ["rs:6:ab12cd34", "rs:5:AB", "rs:5:ab12cd34; DROP", "rr:steak:1", "rr:food:x"]) assert.notEqual(R.classify({ type: "interactive", text: "x", interactiveId: bad }).key, bad.startsWith("rs") ? "review_star" : "review_reason", bad);
   const def = R.botConfig({});
-  assert.deepEqual([def.reviewFlow.enabled, def.reviewFlow.starsTemplate, def.reviewFlow.apps, def.reviewFlow.smsVisits, def.reviewFlow.dineinMin, def.reviewFlow.capDays], [true, false, false, false, 90, 7]);
+  assert.deepEqual([def.reviewFlow.enabled, def.reviewFlow.starsTemplate, def.reviewFlow.apps, def.reviewFlow.smsVisits, def.reviewFlow.dineinMin, def.reviewFlow.capDays, def.reviewFlow.posConsent, def.reviewFlow.portalCashier], [true, false, true, false, 90, 7, true, false], "apps + cashier consent ON (Omar 15/10), portal cashier view OFF");
   assert.equal(R.configFromBody({ reviewFlow: { apps: "yes" } }).ok, false);
   assert.equal(R.configFromBody({ reviewFlow: { quietFromHour: 24 } }).ok, false);
   assert.deepEqual(R.configFromBody({ reviewFlow: { dineinMin: 75, smsVisits: true } }).value.reviewFlow, { dineinMin: 75, smsVisits: true });

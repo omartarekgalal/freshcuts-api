@@ -57,6 +57,7 @@ import * as modifiers from "./modifiers.js";
 import * as posnames from "./posnames.js";
 import * as cms from "./cms.js";
 import * as reviews from "./reviews.js";
+import * as portalReviews from "./portalreviews.js";      // RV1 (عمر ١٥/١٠): التقييمات الواطية في بورتال المدير
 import * as couriercontact from "./couriercontact.js";
 import * as customer360 from "./customer360.js";
 import * as outreach from "./outreach.js";
@@ -3216,7 +3217,7 @@ const cmsApi = cms.register(app, moduleCtx, { notify: () => notifyApi, smsBlock:
 /* 📵 حاجبين الإعلانات عند المشغّل — بيتشالوا من FreshCut-AD بس */
 smsBlockApi = smsblock.register(app, moduleCtx);
 couriercontact.register(app, moduleCtx);      // SB5: «راسل المندوب» (تحويل لواتساب المندوب ما دام الطلب معه)
-reviews.register(app, moduleCtx, { notify: () => notifyApi, sessionUser: cmsApi.sessionUser, waReview: () => wabotApi });      // SB2: طلب التقييم على واتساب أولاً (wabotApi بيتسجّل تحت)
+const reviewsApi = reviews.register(app, moduleCtx, { notify: () => notifyApi, sessionUser: cmsApi.sessionUser, waReview: () => wabotApi, broadcast: (...a) => portalApi.broadcast(...a) });      // RV1: broadcast = حدث «تقييم واطي» للبورتال (portalApi بيتعرّف تحت؛ النداء وقت التشغيل)      // SB2: طلب التقييم على واتساب أولاً (wabotApi بيتسجّل تحت)
 // 26/9: external-courier settlement (cost + paid tasks)
 extsettle.register(app, moduleCtx, { sessionUser: cmsApi.sessionUser });
 // 👥 Customer 360 — ملف العميل + سجل الرسايل + قايمة الإيقاف (identity.js = قاعدة العميل الجديد)
@@ -3291,6 +3292,8 @@ preorder.register(app, moduleCtx);
 let courierOpsApi = null;
 const portalApi = portal.register(app, moduleCtx, { shop: () => shopApi, delivery: () => deliveryApi, cmsWhoami: (c) => cmsApi.whoami(c), courierOps: () => courierOpsApi, wa: () => waInboxApi, appsSync: (args) => appSyncApi.sync(args), onSeen: (u, x) => waHandoverApi?.seen?.(u, x) });
 waHandoverApi = wahandover.register(app, moduleCtx, { requirePortal: portalApi.requirePortal, broadcast: portalApi.broadcast, push: () => portalApi.push });
+/* ⭐ RV1 (عمر ١٥/١٠: «التقييمات لازم تظهر ف البورتال عند المدير عشان يقفلها من عنده») — نفس صف التقييم اللي الوارد في اللوحة بيقراه */
+portalReviews.register(app, moduleCtx, { requirePortal: portalApi.requirePortal, audit: portalApi.audit, broadcast: portalApi.broadcast, ready: () => reviewsApi.ready });
 let waKbApi = null;         // wakb.register: assistant knowledge base (manager answers) - portal manager + dashboard
 waKbApi = wakb.register(app, moduleCtx, { requirePortal: portalApi.requirePortal, broadcast: portalApi.broadcast, actor: async (c) => { const u = await cmsApi.whoami(c); return (u && (u.name || u.username)) || null; } });
 let waStaffApi = null;      // wastaff.register: رد الموظف على محادثة واتساب من اللوحة ومن البورتال (نفس حارس الإرسال)
