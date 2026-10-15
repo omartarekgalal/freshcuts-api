@@ -12,16 +12,19 @@
      staffPhones   «موظفين / فريق»: البوت والمساعد ساكتين، برا كل الحملات والتسويق ورفع الإعلانات، ومش بيتحسبوا عملاء.
      noAdsPhones   «مستثنين من الإعلانات بس»: برا الحملات/التسويق/رفع الإعلانات — بس البوت والمساعد بيردّوا عادي،
                    ورسايل الطلبات والتقييم عادي، وبيتحسبوا عملاء.
-     reviewPhones  «مستني قرار المالك»: رقم من القايمة القديمة عنده طلبات موقع مدفوعة أو محادثات واتساب. مايتنقلش
-                   لوحده: لحد ما المالك يقرر بيفضل زي ما كان (البوت ساكت + برا الحملات) وشبكة الأمان شغّالة عليه.
+     reviewPhones  «مستني قرار المالك»: رقم من القايمة القديمة عنده طلبات موقع مدفوعة أو محادثات واتساب ⇒ شكله عميل، فمايتحطّش
+                   في «موظفين» لوحده. لحد ما المالك يقرر: البوت والمساعد بيردّوا عليه عادي (ده بالظبط اللي كان ناقص 0568•••14)،
+                   وبيفضل برا الحملات والتسويق (القايمة القديمة كانت «مايوصلهمش حملات»)، وبيتحسب عميل — يعني زي «مستثنين من
+                   الإعلانات بس» بالظبط، وده المقترح الأول في قراره.
 
    مين بيقرا إيه (مصدر واحد):
-     teamPhones(settings)         = الفريق: أرقام تنبيهات الطلبات + دليل الفريق (waTeam) + staffPhones + reviewPhones
+     teamPhones(settings)         = الفريق: أرقام تنبيهات الطلبات + دليل الفريق (waTeam) + staffPhones
                                     (+ القايمة القديمة لو الترحيل لسه ماحصلش) — «مش عميل».
-     noMarketingPhones(settings)  = teamPhones + noAdsPhones — «مايوصلوش تسويق ولا يترفعوا لمنصات الإعلانات».
-     silentMap(settings)          = اللي البوت ساكت عليهم بسبب القايمة (staff_list / staff_review) — **عمرها ما فيها noAds**.
+     noMarketingPhones(settings)  = teamPhones + noAdsPhones + reviewPhones — «مايوصلوش تسويق ولا يترفعوا لمنصات الإعلانات».
+     silentMap(settings)          = اللي البوت ساكت عليهم بسبب القايمة (staff_list) = staffPhones بس — **عمرها ما فيها noAds
+                                    ولا المستنيين قرار**.
 
-   شبكة الأمان (staffSilent): رقم البوت ساكت عليه بسبب القايمة (مش عضو في دليل الفريق) كتب ومحدش رد خلال afterMin
+   شبكة الأمان (staffSilent): رقم البوت ساكت عليه بسبب قايمة «موظفين / فريق» (مش عضو في دليل الفريق) كتب ومحدش رد خلال afterMin
    دقيقة ⇒ تحويل عادي على البورتال والصندوق «رقم في قايمة الموظفين كتب ومحدش رد» (wabotrun.js sweeps / staff_silent).
 
    الفحص اليومي (check): أرقام قايمة الموظفين اللي بتتصرف زي عملاء (طلب موقع مدفوع برقمهم، أو محادثة فيها نية عميل)
@@ -81,9 +84,9 @@ export const LISTS_AR = Object.freeze({
   review: {
     label: "مستني قرارك",
     effects: [
-      "كان في قايمة الاستبعاد القديمة وعنده طلبات من الموقع أو محادثات واتساب — ماتنقلش لوحده",
-      "لحد ما تقرر: زي ما كان بالظبط (البوت ساكت عليه + برا الحملات)",
-      "شبكة الأمان شغّالة: لو كتب ومحدش رد ⇒ تحويل لموظف",
+      "كان في قايمة الاستبعاد القديمة وعنده طلبات من الموقع أو محادثات واتساب — شكله عميل، فماتحطّش في «موظفين» لوحده",
+      "لحد ما تقرر: البوت والمساعد بيردّوا عليه عادي، ورسايل طلباته عادي",
+      "ولحد ما تقرر برضه: مابيوصلوش حملات ولا تسويق (زي ما كان — القايمة القديمة كانت لاستبعاد الحملات)",
     ],
   },
 });
@@ -180,7 +183,6 @@ export function teamPhones(settings = {}) {
   for (const p of alertPhones(s)) out.add(p);
   for (const m of teamMembers(s)) out.add(m.phone);
   for (const e of L.staff) out.add(e.phone);
-  for (const e of L.review) out.add(e.phone);
   if (!L.migrated) for (const p of legacyPhones(s)) out.add(p);
   return out;
 }
@@ -190,18 +192,19 @@ export function noAdsPhones(settings = {}) {
 export function noMarketingPhones(settings = {}) {
   const out = teamPhones(settings);
   for (const p of noAdsPhones(settings)) out.add(p);
+  for (const e of listsOf(settings || {}).review) out.add(e.phone);      // مستني قرار المالك: برا التسويق زي ما كان لحد القرار
   return out;
 }
-/* البوت ساكت بسبب القايمة: phone ⇒ "staff_list" | "staff_review". دليل الفريق وأرقام التنبيهات ليهم أسبابهم في wabotrun (staff / alert_phone). */
+/* البوت ساكت بسبب القايمة: phone ⇒ "staff_list" — قايمة «موظفين / فريق» بس. المستنيين قرار المالك والمستثنين من الإعلانات البوت بيرد عليهم.
+   دليل الفريق وأرقام التنبيهات ليهم أسبابهم في wabotrun (staff / alert_phone). */
 export function silentMap(settings = {}) {
   const s = settings || {}, L = listsOf(s), m = new Map();
   for (const e of L.staff) m.set(e.phone, "staff_list");
-  for (const e of L.review) if (!m.has(e.phone)) m.set(e.phone, "staff_review");
   if (!L.migrated) for (const p of legacyPhones(s)) if (!m.has(p)) m.set(p, "staff_list");
   return m;
 }
-export const SILENT_WHY = Object.freeze(["staff_list", "staff_review"]);
-export const SILENT_WHY_AR = Object.freeze({ staff_list: "رقم موظف — البوت ساكت", staff_review: "رقم موظف — البوت ساكت (مستني قرار المالك)" });
+export const SILENT_WHY = Object.freeze(["staff_list"]);
+export const SILENT_WHY_AR = Object.freeze({ staff_list: "رقم موظف — البوت ساكت" });
 /* الرقم ده فين؟ ⇒ { list: staff|noAds|review|team|alert|null, entry, member } */
 export function whereIs(settings, phone) {
   const pn = normPhone(phone); if (!pn) return { list: null };
@@ -218,18 +221,20 @@ export function whereIs(settings, phone) {
    legacy = أرقام excludePhones · team = دليل الفريق · ambassadors = أرقام السفراء · evidence: Map(pn ⇒ { web, chats, intent, pos, name, webAt, chatAt }) أو null (القراية فشلت)
    ⇒ { staff, review }:
      • عضو في دليل الفريق ⇒ staff بسبب دوره (مالك ⇒ owner، غير كده employee)
-     • عنده طلب موقع مدفوع أو محادثة واتساب ⇒ review (مايتنقلش لوحده)
-     • الدليل مش مقروء ⇒ review (مانعرفش ⇒ المالك يقرر)
+     • رقم تنبيهات الطلبات (إعدادات التوصيل) ⇒ staff «موظف» (أرقام الإدارة من الأول — البوت أصلاً ساكت عليها alert_phone)
+     • عنده طلب موقع مدفوع أو محادثة واتساب ⇒ review (شكله عميل: البوت بيرد عليه وبرا التسويق لحد قرار المالك — مايتحطّش «موظف» لوحده)
+     • الدليل مش مقروء ⇒ review (مانعرفش ⇒ المالك يقرر، والبوت بيرد لحد ما يقرر)
      • غير كده ⇒ staff بسببه الحقيقي: سفير لو في قايمة السفراء، وإلا legacy («السبب مش متسجّل») */
-export function planMigration({ legacy = [], team = [], ambassadors = new Set(), names = new Map(), evidence = null, who = "ترحيل تلقائي (SX1)", now = new Date() } = {}) {
+export function planMigration({ legacy = [], team = [], alerts = [], ambassadors = new Set(), names = new Map(), evidence = null, who = "ترحيل تلقائي (SX1)", now = new Date() } = {}) {
   const at = new Date(now).toISOString(), staff = [], review = [];
-  const byTeam = new Map(team.map((m) => [m.phone, m]));
+  const byTeam = new Map(team.map((m) => [m.phone, m])), alertSet = new Set(alerts.map(normPhone).filter(Boolean));
   for (const raw of legacy) {
     const phone = normPhone(raw); if (!phone) continue;
     const mem = byTeam.get(phone), amb = ambassadors.has(phone);
     const name = clip((mem && mem.name) || names.get(phone) || (evidence && evidence.get(phone) && evidence.get(phone).name) || "", LIMITS.name);
     const base = { phone, name, added_by: who, added_at: at, source: "migration" };
     if (mem) { staff.push({ ...base, reason: mem.role === "owner" ? "owner" : "employee", note: `في دليل الفريق (${mem.role === "owner" ? "مالك" : mem.role === "manager" ? "مدير" : "كاشير"})` }); continue; }
+    if (alertSet.has(phone)) { staff.push({ ...base, reason: "employee", note: "رقم تنبيهات الطلبات (إعدادات التوصيل)" }); continue; }
     const ev = evidence ? evidence.get(phone) || { web: 0, chats: 0, intent: 0 } : null;
     const reason = amb ? "ambassador" : LEGACY_REASON.id;
     if (!ev) { review.push({ ...base, reason, note: "مقدرناش نقرا طلباته ومحادثاته وقت الترحيل", evidence: null, suggest: "none" }); continue; }
@@ -341,7 +346,7 @@ export function flagsOf(settings, evidence) {
     const web = Number(ev.web) || 0, intent = Number(ev.intent) || 0;
     if (web <= 0 && intent <= 0) continue;
     out.push({ phone: e.phone, name: e.name || ev.name || "", reason: e.reason, web, intent, webAt: iso(ev.webAt), chatAt: iso(ev.chatAt),
-      why: [web > 0 ? `${web} طلب موقع مدفوع برقمه` : null, intent > 0 ? `${intent} رسالة فيها نية عميل (طلب / منيو / شكوى…)` : null].filter(Boolean).join(" · ") });
+      why: [web > 0 ? `${web} طلب موقع مدفوع برقمه` : null, intent > 0 ? `${intent} رسالة فيها نية عميل (طلب / منيو / شكوى…)` : null].filter(Boolean).join("، ") });
   }
   return out;
 }
@@ -446,7 +451,7 @@ export function register(app, ctx, deps = {}) {
       const a = await q("SELECT phone_norm, name FROM ambassadors WHERE COALESCE(phone_norm,'') <> ''", []);
       for (const r of a || []) { const p = normPhone(r.phone_norm); if (p) { ambassadors.add(p); if (r.name) names.set(p, r.name); } }
     }
-    const plan = planMigration({ legacy, team: teamMembers(s), ambassadors, names, evidence, now });
+    const plan = planMigration({ legacy, team: teamMembers(s), alerts: alertPhones(s), ambassadors, names, evidence, now });
     const cur = (s.cms && s.cms.phoneLists) || {};
     const next = { ...cur, staffPhones: [...(Array.isArray(cur.staffPhones) ? cur.staffPhones : []), ...plan.staff], reviewPhones: [...(Array.isArray(cur.reviewPhones) ? cur.reviewPhones : []), ...plan.review],
       noAdsPhones: Array.isArray(cur.noAdsPhones) ? cur.noAdsPhones : [], migratedAt: new Date(now).toISOString(), migratedFrom: legacy.length };

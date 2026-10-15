@@ -3066,7 +3066,7 @@ const fl = await q(`SELECT count(*)::int AS n FROM wa_bot_log WHERE phone_norm=$
                            ORDER BY l.at LIMIT 20`, [Math.ceil(cfg.leadFollowUpMin)]);
       for (const l of ls || []) await q(`INSERT INTO wa_bot_jobs(wamid, phone_norm, kind, due_at, ev, log_id) VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT (wamid) DO NOTHING RETURNING id`, [`lead:${l.phone_norm}:${riyadhDay(now)}`, l.phone_norm, "lead_followup", now.toISOString(), jb({ at: new Date(l.at).toISOString(), lang: l.lang === "en" ? "en" : "ar" }), null]);
     }
-    /* SX1 — شبكة الأمان: رقم البوت ساكت عليه بسبب قايمة «موظفين / فريق» (أو مستني قرار المالك) — مش عضو في دليل الفريق — كتب ومحدش رد خلال
+    /* SX1 — شبكة الأمان: رقم البوت ساكت عليه بسبب قايمة «موظفين / فريق» — مش عضو في دليل الفريق — كتب ومحدش رد خلال
        phoneLists.staffSilent.afterMin ⇒ تحويل عادي «رقم في قايمة الموظفين كتب ومحدش رد». «الحلقة» = أول رسالة ساكتة بعد آخر رد بشري وبعد آخر تحويل
        للرقم ⇒ شغلة واحدة (ss:<الرقم>:<وقتها>)، وكل الشروط بتتراجع وقت التنفيذ (runStaffSilent). */
     { const ss = phoneListsOf(settings).cfg.staffSilent;
@@ -3489,7 +3489,7 @@ const fl = await q(`SELECT count(*)::int AS n FROM wa_bot_log WHERE phone_norm=$
   }
   /* ── SX1: شبكة أمان قايمة الموظفين ───────────────────────────────────────────────────────────────
      رد بشري = صدى موظف (مش الصدى الآلي) أو رسالة حرة طلعت من الصندوق/البورتال (مش البوت ولا قالب). */
-  const STAFF_SILENT_WHY = ["staff_list", "staff_review"];
+  const STAFF_SILENT_WHY = ["staff_list"];      // قايمة «موظفين / فريق» بس — «مستني قرار المالك» البوت بيرد عليه أصلاً
   const HUMAN_OUT = `m.direction = 'out' AND COALESCE(m.status,'') NOT IN ('failed','skipped') AND ((m.source = 'echo' AND COALESCE(m.echo_kind,'staff') <> 'auto') OR (m.template IS NULL AND COALESCE(m.source,'api') NOT IN ('bot','window','echo')))`;
   /* $1 الدقايق · $2 أسباب السكوت. أول رسالة ساكتة بعد آخر رد بشري وبعد آخر تحويل، عدّى عليها $1 دقيقة (ولسه جوّه ساعة بعدها) */
   const STAFF_SILENT_SQL = `/*ss:candidates*/ SELECT l.phone_norm, min(l.at) AS first_at FROM wa_bot_log l
@@ -3514,7 +3514,7 @@ const fl = await q(`SELECT count(*)::int AS n FROM wa_bot_log WHERE phone_norm=$
     if (ho && ho.length) return no("handover_exists");
     const lt = await q(`SELECT text FROM wa_bot_log WHERE phone_norm = $1 AND at >= $2 AND decision = 'silent' ORDER BY at DESC, id DESC LIMIT 1`, [phone, ev.firstAt]);
     const where = phoneListOf(settings, phone);
-    const note = `البوت مابيردش على الرقم ده — في قايمة ${why === "staff_review" ? "«مستني قرار المالك»" : "«موظفين / فريق»"}${where.entry ? ` (السبب: ${phoneReasonAr(where.entry.reason)}${where.entry.name ? ` · ${where.entry.name}` : ""})` : ""}. رد عليه إنت، ولو عميل انقله من اللوحة ← الفريق والتنبيهات ← قوايم الأرقام.${lt && lt[0] && lt[0].text ? ` آخر رسالة: «${String(lt[0].text).slice(0, 60)}»` : ""}`;
+    const note = `البوت مابيردش على الرقم ده — في قايمة «موظفين / فريق»${where.entry ? ` (السبب: ${phoneReasonAr(where.entry.reason)}${where.entry.name ? ` · ${where.entry.name}` : ""})` : ""}. رد عليه إنت، ولو عميل انقله من اللوحة ← الفريق والتنبيهات ← قوايم الأرقام.${lt && lt[0] && lt[0].text ? ` آخر رسالة: «${String(lt[0].text).slice(0, 60)}»` : ""}`;
     const alert = await handoffNow(settings, cfg, phone, ["staff_silent", "normal"], null, note.slice(0, 200), "ar");
     return end("done", `handover:${alert || "?"}`.slice(0, 80));
   }
@@ -3711,7 +3711,7 @@ const fl = await q(`SELECT count(*)::int AS n FROM wa_bot_log WHERE phone_norm=$
   const teamStaff = (settings, phone) => { const tc = teamConfig(settings); return !tc.fallback && Boolean(staffRoleOf(settings, phone)) && !(tc.staffAsTesters && staffPhones(settings?.waBot?.testPhones).includes(phone)); };
   /* SX1 (١٥/١٠ — عميل 0568•••14 كتب «عندي ملاحظات» والبوت سكت): كان هنا «cms_contacts.is_staff» = قايمة استبعاد الحملات (السفراء) ⇒ عميل
      في قايمة «مايوصلوش حملات» بقى «موظف» والبوت ساكت عليه. دلوقتي البوت بيقرا **قايمة «موظفين / فريق» بس** (phonelists.silentMap:
-     staff_list / staff_review) — عمره ما بيقرا «مستثنين من الإعلانات بس». الإعدادات بتتقري كل مرة (تعديل القايمة بيمسك على طول)،
+     staff_list) — عمره ما بيقرا «مستثنين من الإعلانات بس» ولا «مستني قرار المالك» (دول شكلهم عملاء ⇒ البوت بيرد). الإعدادات بتتقري كل مرة (تعديل القايمة بيمسك على طول)،
      والكاش (١٠ دقايق) للمناديب بس (من القاعدة). */
   let autoNever = { at: -1e15, map: new Map() };      // المناديب بس
   async function autoNeverMap(settings, cfg) {
@@ -3720,7 +3720,7 @@ const fl = await q(`SELECT count(*)::int AS n FROM wa_bot_log WHERE phone_norm=$
     for (const p of [...cfg.alertPhones, ...sc.alertPhones, ...(sc.newOrderPhones || [])].map(normPh)) if (/^5\d{8}$/.test(p)) m.set(p, "alert_phone");
     for (const s of Array.isArray(settings?.portal?.staff) ? settings.portal.staff : []) { const p = normPh(s && (s.phone || s.mobile)); if (/^5\d{8}$/.test(p)) m.set(p, "staff"); }
     for (const tm of teamConfig(settings).members) if (tm.active && !m.has(tm.phone)) m.set(tm.phone, "staff");      // ST1: دليل الفريق
-    for (const [p, why] of listSilentMap(settings || {})) if (!m.has(p)) m.set(p, why);      // SX1: قايمة «موظفين / فريق» + المستنيين قرار المالك
+    for (const [p, why] of listSilentMap(settings || {})) if (!m.has(p)) m.set(p, why);      // SX1: قايمة «موظفين / فريق» بس (المستنيين قرار المالك البوت بيرد عليهم)
     const t = clock().getTime();
     if (!(t - autoNever.at < 600_000 && t >= autoNever.at)) {
       const dm = new Map();
@@ -4737,7 +4737,7 @@ const fl = await q(`SELECT count(*)::int AS n FROM wa_bot_log WHERE phone_norm=$
     if (on) await q(`UPDATE wa_bot_jobs SET status='cancelled', reason='never_reply', done_at=NOW() WHERE phone_norm=$1 AND status='pending'`, [phone]);
     return { ok: true, phone: `0${phone}`, on: Boolean(on), count: next.length };
   }
-  /* ⇒ null (عميل عادي) أو السبب: never_list / alert_phone / staff / courier / staff_list / staff_review (SX1: قايمة «موظفين / فريق»). رقم تجربة عمره ما يتستبعد لوحده. */
+  /* ⇒ null (عميل عادي) أو السبب: never_list / alert_phone / staff / courier / staff_list (SX1: قايمة «موظفين / فريق»). رقم تجربة عمره ما يتستبعد لوحده. */
   async function neverReplyOf(rawPhone) {
     const phone = normPh(rawPhone); if (!/^5\d{8}$/.test(phone)) return null;
     const settings = (await getSettingsData()) || {}, cfg = botConfig(settings);

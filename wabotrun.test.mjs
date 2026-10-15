@@ -3789,7 +3789,7 @@ test("M5: a number that is not a customer is never answered — the owner's list
 
 /* SX1 (١٥/١٠ ١٨:٣٧ — 0568•••14 كتب «السلام عليكم» / «عندي ملاحظات» والبوت سكت ومحدش رد): رقم في قايمة «موظفين / فريق» (مش عضو في دليل الفريق)
    كتب ومحدش من الفريق رد خلال staffSilent.afterMin ⇒ تحويل عادي «رقم في قايمة الموظفين كتب ومحدش رد» — والبوت نفسه مابيبعتلوش ولا رسالة. */
-test("SX1: staff-listed number writes, nobody answers in N min ⇒ a normal handover; no bot message; a staff reply / team member / switch off ⇒ none", withEnv(LOCKS_OPEN, async () => {
+test("SX1: staff-listed number writes, nobody answers in N min ⇒ a normal handover; no bot message; a staff reply / team member / switch off ⇒ none; the owner's review queue is answered by the bot", withEnv(LOCKS_OPEN, async () => {
   const PL = (x = {}) => ({ cms: { phoneLists: { migratedAt: "2026-10-15T00:00:00Z", staffPhones: [{ phone: "0568000014", reason: "ambassador", name: "محمد" }], staffSilent: { enabled: true, afterMin: 5 }, ...x } } });
   const FROM = "966568000014";
   const toHim = (w) => w.calls.filter((c) => c.body && c.body.to && String(c.body.to).endsWith("568000014"));
@@ -3833,12 +3833,15 @@ test("SX1: staff-listed number writes, nobody answers in N min ⇒ a normal hand
   assert.ok(toHim(w5).length >= 1, "(the helper sees messages to him when the bot does answer)");
   await w5.tick(6);
   assert.equal(hos(w5).filter(([, d]) => d.reason === "staff_silent").length, 0);
-  // a number still waiting for the owner's decision (review) is covered too, and neverReplyOf says why the bot is quiet (inbox / portal header)
+  // neverReplyOf names the staff list (the inbox / portal header «رقم موظف — البوت ساكت»)
+  assert.equal(await w.bot.neverReplyOf("0568000014"), "staff_list");
+  /* a number waiting for the owner's decision — the migration puts an old-list number with chats or paid web orders there, 0568•••14 himself —
+     looks like a customer: the bot answers him from the first message, and there is no staff-list handover */
   const w6 = liveWorld({ extraSettings: { cms: { phoneLists: { migratedAt: "2026-10-15T00:00:00Z", reviewPhones: [{ phone: "0568000014", reason: "ambassador" }] } } } });
   const r6 = await w6.say("السلام عليكم", { from: FROM });
-  assert.equal(r6.log.detail, "staff_review"); assert.equal(await w6.bot.neverReplyOf("0568000014"), "staff_review");
+  assert.equal(r6.sent.length, 1); assert.notEqual(r6.log.reason, "never_reply"); assert.equal(await w6.bot.neverReplyOf("0568000014"), null);
   await w6.tick(6);
-  assert.equal(hos(w6).length, 1);
+  assert.equal(hos(w6).filter(([, d]) => d.reason === "staff_silent").length, 0);
 }));
 
 test("M5: live scope — ads only / ads + new numbers / everyone; outside the scope the bot is silent and logs the reply it would have sent", withEnv(LOCKS_OPEN, async () => {

@@ -384,7 +384,7 @@ export function register(app, ctx, deps = {}) {
       if (!r.ok) return c.json(r, 404);
       /* للمحادثة نفسها: قفل القناة أولاً، وبعده النافذة (نص حر بره الـ٢٤ ساعة مرفوض — القالب للمالك والعمليات) */
       /* wastaff: حالة الرد للمحادثة دي بالظبط (رقم تجربة والقناة مقفولة = مفتوح للتجربة؛ العميل وقّف الرسايل = مقفول) + مين رد من اللوحة/البورتال */
-      /* SX1: البوت ساكت على الرقم ده ليه (never_list / alert_phone / staff / courier / staff_list / staff_review) — رأس المحادثة بيقول «رقم موظف — البوت ساكت» */
+      /* SX1: البوت ساكت على الرقم ده ليه (never_list / alert_phone / staff / courier / staff_list) — رأس المحادثة بيقول «رقم موظف — البوت ساكت» */
       let neverReplyWhy = null; try { const bt = bot(); if (bt && typeof bt.neverReplyOf === "function") neverReplyWhy = (await bt.neverReplyOf(pn)) || null; } catch { neverReplyWhy = null; }
       const sf = staff();
       if (sf) { await sf.annotate(r.messages); return c.json({ ...r, neverReplyWhy, send: await sf.sendStateFor(pn) }); }

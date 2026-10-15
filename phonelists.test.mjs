@@ -18,9 +18,10 @@ const sorted = (s) => [...s].sort();
 test("SX1 sets: team vs no-marketing vs bot-silent — the campaign-only list never silences the bot", () => {
   const s = { delivery: { alertPhones: ["0500000002"], newOrderPhones: "0500000005" }, waTeam: TEAM,
     cms: { campaigns: { excludePhones: ["0500000077"] }, phoneLists: { migratedAt: MIG, staffPhones: [{ phone: "0500000010", reason: "employee" }], reviewPhones: [{ phone: "0500000011", reason: "ambassador" }], noAdsPhones: [{ phone: "0500000012", reason: "ads_request" }] } } };
-  assert.deepEqual(sorted(P.teamPhones(s)), ["500000001", "500000002", "500000003", "500000004", "500000005", "500000010", "500000011"], "alert + team (active) + staff + review; not noAds; legacy ignored after migration");
-  assert.deepEqual(sorted(P.noMarketingPhones(s)), ["500000001", "500000002", "500000003", "500000004", "500000005", "500000010", "500000011", "500000012"]);
-  assert.deepEqual([...P.silentMap(s).entries()].sort(), [["500000010", "staff_list"], ["500000011", "staff_review"]], "only the staff list (and pending review) — never noAds, never the old list");
+  assert.deepEqual(sorted(P.teamPhones(s)), ["500000001", "500000002", "500000003", "500000004", "500000005", "500000010"], "alert + team (active) + staff; not noAds, not the owner's review queue; legacy ignored after migration");
+  assert.deepEqual(sorted(P.noMarketingPhones(s)), ["500000001", "500000002", "500000003", "500000004", "500000005", "500000010", "500000011", "500000012"], "+ noAds + review (the old list was «no campaigns» — kept until the owner decides)");
+  assert.deepEqual([...P.silentMap(s).entries()].sort(), [["500000010", "staff_list"]], "only the staff list — never noAds, never a number waiting for the owner's decision, never the old list");
+  assert.equal(R.teamPhoneSet(s).has("500000011"), false, "a number waiting for the owner's decision looks like a customer: counted as one, review request after an order");
   // smsrules: the campaign exclusion keeps its name (all marketing callers), the «not a customer» set is separate
   assert.deepEqual(sorted(R.staffPhoneSet(s)), sorted(P.noMarketingPhones(s)));
   assert.equal(R.teamPhoneSet(s).has("500000012"), false, "a customer who asked for no ads is still a customer");
@@ -51,6 +52,9 @@ test("SX1 migration plan: team members stay staff by role, numbers with paid web
   assert.equal(st["568000017"].reason, "legacy", "unknown reason is said as unknown, not invented");
   assert.equal(rv["568000014"].suggest, "noAds"); assert.deepEqual([rv["568000014"].evidence.web, rv["568000014"].evidence.chats], [2, 3]);
   for (const e of [...plan.staff, ...plan.review]) { assert.equal(e.source, "migration"); assert.equal(e.added_at, new Date(MIG).toISOString()); assert.ok(e.added_by); }
+  // an order-alert phone (delivery settings) that is not in the team directory ⇒ staff, whatever its chats say
+  const al = P.planMigration({ legacy: ["0568000014"], team, alerts: ["+966568000014"], ambassadors, evidence, now: new Date(MIG) });
+  assert.deepEqual([al.staff.length, al.review.length, al.staff[0].reason], [1, 0, "employee"]);
   // the evidence could not be read ⇒ every non-team number goes to review (the owner decides)
   const blind = P.planMigration({ legacy, team, ambassadors, evidence: null, now: new Date(MIG) });
   assert.deepEqual(blind.staff.map((e) => e.phone).sort(), ["500000001", "500000002", "500000003"]);
@@ -149,6 +153,9 @@ test("SX1 migration runs once: lists written with reasons + who/when, every move
   assert.equal(L.migrated, true); assert.equal(h.db.settings.cms.phoneLists.migratedFrom, 4);
   assert.deepEqual(L.staff.map((e) => [e.phone, e.reason]).sort(), [["500000001", "employee"], ["500000002", "owner"], ["568000016", "ambassador"]]);
   assert.deepEqual(L.review.map((e) => [e.phone, e.name]), [["568000014", "محمد"]]);
+  /* 0568•••14 (15/10) had chats ⇒ review ⇒ the bot answers him from the first boot, he still gets no campaigns until the owner decides */
+  assert.equal(P.silentMap(h.db.settings).has("568000014"), false); assert.ok(P.noMarketingPhones(h.db.settings).has("568000014"));
+  assert.equal(h.db.staffSync.at(-1).includes("568000014"), false, "not «staff» in the customers file");
   assert.deepEqual(h.db.settings.cms.campaigns.excludePhones.length, 4, "the old list is left as it was (only the previous version reads it)");
   assert.equal(h.db.log.length, 4); assert.ok(h.db.log.every((x) => x.action === "migrate"));
   assert.equal(h.db.log.find((x) => x.phone_norm === "568000014").to_list, "review");
