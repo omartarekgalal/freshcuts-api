@@ -629,3 +629,79 @@ test("C7) PUT كامل قديم مابيمسحش المفاتيح الجديدة
   const v = validatePatch([{ path: "adsGuard.platformCaps.tiktok", value: null }], C7());
   assert.deepEqual(v.values, [{ path: "adsGuard.platformCaps.tiktok", value: null, remove: true }]);
 });
+
+/* ── ADS13 (١٥/١٠): سقف الإعلانات من الدخل — عمر: «٧٥٠ ويزيدوا لو الدخل زاد، والإعلانات ماتعدّيش ١٣٪ من الدخل» ── */
+test("ADS13) revenueCap: أول حفظ بيكمّل الافتراضي، والأيام بتتدمج وnull بيشيل اليوم، وباقي الحارس زي ما هو", async () => {
+  const { db, call } = makeApp(C7());
+  assert.equal(db.data.adsGuard.revenueCap, undefined);
+  let r = await patch(call, [{ path: "adsGuard.revenueCap", value: { enabled: true, days: { "2026-10-16": "750" } } }]);
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  assert.deepEqual(db.data.adsGuard.revenueCap, { enabled: true, pct: 13, base: null, maxTotal: 3000, scale: true, days: { "2026-10-16": 750 } });
+  assert.deepEqual(r.body.adsGuard.revenueCap, db.data.adsGuard.revenueCap);
+  r = await patch(call, [{ path: "adsGuard.revenueCap", value: { pct: "15", days: { "2026-10-17": 800, "2026-10-16": null } } }]);
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  assert.deepEqual(db.data.adsGuard.revenueCap, { enabled: true, pct: 15, base: null, maxTotal: 3000, scale: true, days: { "2026-10-17": 800 } });
+  r = await patch(call, [{ path: "adsGuard.revenueCap", value: { base: 300, maxTotal: null, scale: false } }]);
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  assert.deepEqual(db.data.adsGuard.revenueCap, { enabled: true, pct: 15, base: 300, maxTotal: null, scale: false, days: { "2026-10-17": 800 } });
+  r = await patch(call, [{ path: "adsGuard.revenueCap", value: { base: "", enabled: false } }]);
+  assert.equal(r.status, 200);
+  assert.equal(db.data.adsGuard.revenueCap.base, null);
+  assert.equal(db.data.adsGuard.revenueCap.enabled, false);
+  const rest = clone(db.data.adsGuard); delete rest.revenueCap;
+  assert.deepEqual(rest, C7().adsGuard);
+  assert.ok(r.body.note.includes("adsGuard.revenueCap"));
+});
+
+test("ADS13) revenueCap: رفض القيم الغلط من غير أي كتابة، ولغير المالك 403", async () => {
+  const { db, call } = makeApp(C7());
+  const bad = async (value) => {
+    const r = await patch(call, [{ path: "adsGuard.revenueCap", value }]);
+    assert.equal(r.status, 400, JSON.stringify(value));
+    assert.ok(r.body.errors[0].error.length > 3);
+  };
+  await bad("13");
+  await bad({ pct: 0 });
+  await bad({ pct: 60 });
+  await bad({ pct: "x" });
+  await bad({ base: -5 });
+  await bad({ maxTotal: 10 });
+  await bad({ enabled: "yes" });
+  await bad({ days: [750] });
+  await bad({ days: { "16/10/2026": 750 } });
+  await bad({ days: { "2026-02-30": 750 } });
+  await bad({ days: { "2026-10-16": "x" } });
+  await bad({ days: { "2026-10-16": 4000 } });          // فوق السقف الصلب الافتراضي ٣٠٠٠
+  await bad({ base: 3500 });
+  await bad({ maxTotal: 600, days: { "2026-10-16": 750 } });
+  const many = Object.fromEntries(Array.from({ length: 63 }, (_, i) => [new Date(Date.UTC(2026, 9, 1 + i)).toISOString().slice(0, 10), 100]));
+  await bad({ days: many });
+  assert.equal(db.writes.length, 0);
+  assert.deepEqual(db.data, C7());
+  const ops = await call("POST", "/api/settings/patch", "cmsops", { changes: [{ path: "adsGuard.revenueCap", value: { enabled: true } }] });
+  assert.equal(ops.status, 403);
+  assert.equal(db.writes.length, 0);
+});
+
+test("ADS13) حالة الحارس: بترجّع الإعداد + آخر حساب للحارس لو من نفس اليوم بس، وPUT قديم مابيمسحش الإعداد", async () => {
+  const d = C7();
+  d.adsGuard.revenueCap = { enabled: true, pct: 13, base: null, maxTotal: 3000, scale: true, days: { "2026-10-16": 750 } };
+  const { pool, db, call } = makeApp(d);
+  const rc = { day: "2026-10-16", at: "18:15", revenue: 6200, pct: 13, base: 750, byRevenue: 806, ceiling: 806, spend: 512, factor: 1.07, hit: false };
+  let stateRow = { data: { lastRun: { at: "18:15", day: "2026-10-16" }, revenueCap: rc }, updated_at: "t" };
+  const q0 = pool.query;
+  pool.query = async (sql, p) => (/ads_sentry_state/.test(String(sql)) ? { rows: [stateRow] } : q0(sql, p));
+  let st = await call("GET", "/api/settings/ads-guard/status", "admin");
+  assert.equal(st.status, 200);
+  assert.deepEqual(st.body.revenueCap, d.adsGuard.revenueCap);
+  assert.deepEqual(st.body.revenueCapState, rc);
+  stateRow = { data: { lastRun: { at: "11:30", day: "2026-10-17" }, revenueCap: rc }, updated_at: "t" };
+  st = await call("GET", "/api/settings/ads-guard/status", "admin");
+  assert.equal(st.body.revenueCapState, null);
+  const old = clone(db.data); old.adsGuard = { floor: 500 };
+  assert.equal((await call("PUT", "/api/settings", "admin", old)).status, 200);
+  assert.deepEqual(db.data.adsGuard.revenueCap, d.adsGuard.revenueCap);
+  const none = await makeApp(SCOPED()).call("GET", "/api/settings/ads-guard/status", "admin");
+  assert.equal(none.body.revenueCap, null);
+  assert.equal(none.body.revenueCapState, null);
+});

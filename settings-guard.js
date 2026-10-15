@@ -402,6 +402,45 @@ export const PATCH_RULES = [
       return Object.keys(r.value).length ? r : REMOVE;
     },
   },
+  {
+    /* revenueCap (ADS13 — عمر ١٥/١٠: «٧٥٠ ويزيدوا لو الدخل زاد، بحيث الإعلانات ماتعدّيش ١٣٪ من الدخل»):
+       المسموح لصرف كل الإعلانات في يوم العمل = الأكبر بين «أساس اليوم» و pct٪ من دخل اليوم لحد دلوقتي
+       (نفس رقم /api/reports/biz/sales: المتجر + التطبيقات قبل العمولة + الصالة + السفري، شامل الضريبة).
+         days.<YYYY-MM-DD> = أساس يوم بعينه (المبلغ اللي المالك قاله، زي ٧٥٠) — null بيشيل اليوم.
+         base = أساس باقي الأيام. null = سقوف اليوم العادية (السقف المشترك + سقوف الحملات اللي بره السقف) — يعني
+                الدخل بيعلّي الصرف بس، عمره ما بينزّله تحت الإعدادات العادية.
+         scale = الحارس بيكبّر/يصغّر ميزانيات وسقوف كل الحملات بنفس النسبة لحد ما مجموعها = المسموح (نفس أوزان الخطة).
+         maxTotal = سقف صلب فوق كل ده (عمر ١٧/٩: ٣٠٠٠ في اليوم بالكتير).
+       fc-adsentry v4.9 بيقرا المفتاح ده كل ربع ساعة. أول حفظ بيكمّل الافتراضي (مقفول / ١٣٪ / من غير أساس / ٣٠٠٠ / scale). */
+    re: /^adsGuard\.revenueCap$/, withCurrent: true, check: (v, current) => {
+      const label = "سقف الإعلانات من الدخل";
+      if (!isObj(v)) return { ok: false, error: `${label}: لازم كائن` };
+      const cur = getAt(current, ["adsGuard", "revenueCap"]);
+      const out = { enabled: false, pct: 13, base: null, maxTotal: 3000, scale: true, ...(isObj(cur) ? cur : {}) };
+      out.days = { ...(isObj(cur?.days) ? cur.days : {}) };
+      if ("enabled" in v) { const r = bool(label)(v.enabled); if (!r.ok) return r; out.enabled = r.value; }
+      if ("scale" in v) { const r = bool(`${label} — توزيع الزيادة على الحملات`)(v.scale); if (!r.ok) return r; out.scale = r.value; }
+      if ("pct" in v) { const r = num(1, 50, { label: `${label} — النسبة ٪` })(v.pct); if (!r.ok) return r; out.pct = r.value; }
+      if ("base" in v) { const r = numOrNull(0, 20000, { int: true, label: `${label} — أساس الأيام العادية` })(v.base); if (!r.ok) return r; out.base = r.value; }
+      if ("maxTotal" in v) { const r = numOrNull(50, 20000, { int: true, label: `${label} — السقف الصلب` })(v.maxTotal); if (!r.ok) return r; out.maxTotal = r.value; }
+      if ("days" in v) {
+        if (!isObj(v.days)) return { ok: false, error: `${label} — أساس الأيام: لازم {YYYY-MM-DD: مبلغ}` };
+        for (const [d, x] of Object.entries(v.days)) {
+          if (!isDay(d)) return { ok: false, error: `${label}: التاريخ «${d}» لازم YYYY-MM-DD` };
+          if (x === null || x === "") { delete out.days[d]; continue; }
+          const r = num(0, 20000, { int: true, label: `${label} — أساس ${d}` })(x);
+          if (!r.ok) return r;
+          out.days[d] = r.value;
+        }
+        if (Object.keys(out.days).length > 62) return { ok: false, error: `${label}: ٦٢ يوم بالكتير — امسح الأيام القديمة` };
+      }
+      if (out.maxTotal != null) {
+        const over = [...(out.base != null ? [["أساس الأيام العادية", out.base]] : []), ...Object.entries(out.days)].find(([, x]) => Number(x) > Number(out.maxTotal));
+        if (over) return { ok: false, error: `${label}: ${over[0]} (${over[1]}) أكبر من السقف الصلب ${out.maxTotal}` };
+      }
+      return { ok: true, value: out };
+    },
+  },
   /* platformStopped: من هنا بس «امسح» (null) — الإيقاف نفسه بيحطّه السكربت */
   { re: /^adsGuard\.platformStopped\.(meta|google|tiktok|snapchat)$/, check: (v) => (v === null ? { ok: true, value: null } : { ok: false, error: "إيقاف المنصة بيتمسح بس من هنا (null)" }) },
   {
@@ -603,6 +642,9 @@ export function register(app, ctx) {
       capSms: !!state?.capSms, day: state?.day || null, reason: state?.reason || null,
       killRuleLast: g.killRuleLast || null, platformStopped: g.platformStopped || {},
       creditProtect: state?.creditProtect || null, cpYesterday: state?.cpYesterday || null,
+      /* ADS13: إعداد سقف الدخل + آخر حساب للحارس (الدخل، الأساس، المسموح، المصروف، معامل التوزيع) */
+      revenueCap: g.revenueCap || null,
+      revenueCapState: state?.revenueCap && state.revenueCap.day === state?.lastRun?.day ? state.revenueCap : null,
       adRule: g.adRule || null, platformCaps: g.platformCaps || {},
       intradayPerPlatform: g.intraday?.perPlatform || {}, killRulePerPlatform: g.killRule?.perPlatform || {},
     });
