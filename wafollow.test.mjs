@@ -89,6 +89,9 @@ test("اللي شافه: الأحدث اللي لسه متاح — صنف (مش 
   assert.equal(U.pickLooked([{ key: "item", arg: String(side) }], { menu, bundles }), null);
   const box = U.pickLooked([{ key: "box", arg: "box-solo-crepe" }], { menu, bundles });
   assert.deepEqual([box.kind, box.slug, box.name, box.price], ["box", "box-solo-crepe", "بوكس الكريب الفردي", 29]);
+  const withSur = [{ slug: "box-x", name: "بوكس س", price: 30, section: "بوكسات فردية", slots: [{ key: "a", type: "choice", choices: [{ product_id: "1", surcharge: 0 }, { product_id: "2", surcharge: 4 }] }] }];
+  assert.equal(U.pickLooked([{ key: "box", arg: "box-x" }], { menu, bundles: withSur }).from, true, "a choice with a surcharge ⇒ «بسعر يبدأ من»");
+  assert.equal(U.pickLooked([{ key: "box", arg: "box-x" }], { menu, bundles: [{ ...withSur[0], slots: [{ key: "a", type: "choice", choices: [{ product_id: "1", surcharge: 0 }] }] }] }).from, false);
   assert.equal(U.pickLooked([{ key: "box", arg: "gathering-4" }], { menu, bundles }), null, "a gathering pack has no section: not a box card");
   const wt = U.pickLooked([{ key: "weight", arg: JSON.stringify({ id: "97", parts: [[51, 1]] }) }], { menu, bundles });
   assert.deepEqual([wt.kind, wt.id, wt.byWeight], ["item", "97", true]);
@@ -99,6 +102,7 @@ test("اللي شافه: الأحدث اللي لسه متاح — صنف (مش 
 test("سطر العرض القصير: «الاسم بـX ر.س» + سطر التوصيل زي ما اتقال في الحملة بالظبط لو كان رسم مؤكد لعنوانه؛ من غير عنوان ⇒ السعر بس", () => {
   assert.equal(U.offerPhrase({ shortMain: "بوكس الكريب لشخصين بـ65 ر.س", delivery: "no_location", dlText: "وأول طلب من الموقع توصيله مجاني بكود FIRST داخل نطاق التوصيل" }), "بوكس الكريب لشخصين بـ65 ر.س");
   assert.equal(U.offerPhrase({ shortMain: "بوكس الكريب لشخصين بـ65 ر.س", delivery: "fee", dlText: "والتوصيل لعنوانك 15 ر.س" }), "بوكس الكريب لشخصين بـ65 ر.س، والتوصيل لعنوانك 15 ر.س");
+  assert.equal(U.offerPhrase({ shortMain: "وجبة كفتة بـ32 ر.س", delivery: "out_of_range", dlText: "وتقدر تستلمه من فرعنا" }), "وجبة كفتة بـ32 ر.س، وتقدر تستلمه من فرعنا", "pickup only is said: the cart itself is pickup");
   assert.equal(U.offerPhrase({ delivery: "fee" }), null); assert.equal(U.offerPhrase(null), null);
 });
 

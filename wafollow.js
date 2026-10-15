@@ -156,7 +156,9 @@ export function pickLooked(looked = [], { menu = null, bundles = [] } = {}) {
     }
     if (x.key === "box") {
       const b = (Array.isArray(bundles) ? bundles : []).find((y) => String(y.slug) === x.arg && String(y.section || "").trim() && Number(y.price) > 0);
-      if (b) return { kind: "box", slug: String(b.slug), name: String(b.name || b.slug), nameEn: String(b.name_en || b.name || b.slug), price: Number(b.price) };
+      /* from = فيه اختيار بزيادة ⇒ «بسعر يبدأ من» (زي الحملة) — مانقولش سعر البوكس كأنه نهائي */
+      const from = Boolean(b) && (Array.isArray(b.slots) ? b.slots : []).some((s) => s && s.type === "choice" && (Array.isArray(s.choices) ? s.choices : []).some((c) => Number(c && c.surcharge) > 0));
+      if (b) return { kind: "box", slug: String(b.slug), name: String(b.name || b.slug), nameEn: String(b.name_en || b.name || b.slug), price: Number(b.price), from };
       continue;
     }
     if (x.key === "cat") {
@@ -166,10 +168,11 @@ export function pickLooked(looked = [], { menu = null, bundles = [] } = {}) {
   }
   return null;
 }
-/* سطر عرض الحملة القصير (t = نتيجة wafavpick.tapOffer): «الاسم بـX ر.س» + سطر التوصيل زي ما اتقال في الحملة بالظبط لو كان رسم مؤكد لعنوانه */
+/* سطر عرض الحملة القصير (t = نتيجة wafavpick.tapOffer): «الاسم بـX ر.س» + سطر التوصيل زي ما اتقال في الحملة بالظبط لو كان رسم مؤكد لعنوانه
+   أو «استلام بس» (عنوانه بره النطاق: السلة نفسها استلام) — سطور «من غير عنوان» (FIRST بشرطه…) طويلة وصفحة الدفع بتقولها، فمابتتعادش */
 export function offerPhrase(t) {
   if (!t || !t.shortMain) return null;
-  return t.delivery === "fee" && t.dlText ? `${t.shortMain}، ${t.dlText}` : t.shortMain;
+  return ["fee", "out_of_range"].includes(t.delivery) && t.dlText ? `${t.shortMain}، ${t.dlText}` : t.shortMain;
 }
 
 /* ── الـSQL (كل جملة بعلامة /*fu:…*\/ في أولها: للتشخيص وللاختبارات) ───────────────── */
@@ -216,6 +219,10 @@ export const FU_SQL = Object.freeze({
        AND NOT EXISTS (SELECT 1 FROM wa_messages m WHERE m.phone_norm = l.phone_norm AND m.direction = 'in' AND COALESCE(m.source,'api') <> 'history'
                          AND m.created_at > l.at AND m.created_at < l.at + INTERVAL '24 hours')`,
   optedOut: "/*fu:opted_out*/ SELECT 1 FROM cms_contacts WHERE phone_norm = $1 AND opted_out_at IS NOT NULL LIMIT 1",
+  /* موظف كلّمه في المحادثة (من الزناد $2): رسالة حرة طلعت من غير البوت ولا تحديث الطلب — رد من الصندوق أو البورتال القديم (wainbox.replyText ⇒ sendText
+     بيتسجّل source «api» مش «echo»). صدى الموبايل والرد من اللوحة (source echo) بيتقروا من lastEcho في wabotrun. */
+  manual: `/*fu:manual*/ SELECT count(*)::int AS n FROM wa_messages WHERE phone_norm = $1 AND direction = 'out' AND template IS NULL
+     AND COALESCE(source,'api') NOT IN ('bot','window','echo') AND COALESCE(status,'') NOT IN ('failed','skipped') AND created_at > $2::timestamptz`,
   /* طلب (الموقع أو نقطة البيع) من $2 — نفس جملة حملة «طبقك المفضل» (wafavpick.FAV_SQL.orderedSince) */
   ordered: `/*fu:ordered*/ ${FAV_SQL.orderedSince}`,
   /* سلة جاهزة اتعملت في المحادثة (بعد الزناد) ولسه صالحة */

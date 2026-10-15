@@ -356,6 +356,7 @@ export const TEXTS = Object.freeze({
   rf_item: t("متابعة اللي ردّ: الصنف اللي سأل عنه في السلة", "{hi} جهّزنا لك {dish} بـ{price} ر.س في السلة 🛒\nتكمّل طلبك من هنا: {link}", "{hi} We put {dish} (SAR {price}) in your cart 🛒\nFinish your order here: {link}", ["dish", "price", "link"], ["hi"], 400),
   rf_item_page: t("متابعة اللي ردّ: صنف بالوزن (يختار الوزن)", "{hi} تبي تكمّل طلب {dish}؟ اختر الوزن من هنا 👇\n{link}", "{hi} Shall we finish your {dish} order? Pick the weight here 👇\n{link}", ["dish", "link"], ["hi"], 400),
   rf_box: t("متابعة اللي ردّ: البوكس اللي شافه", "{hi} {box} بـ{price} ر.س 🛒\nاختر اللي يعجبك وكمّل من هنا: {link}", "{hi} {box} for SAR {price} 🛒\nPick what you like and finish here: {link}", ["box", "price", "link"], ["hi"], 400),
+  rf_box_from: t("متابعة اللي ردّ: البوكس اللي شافه (فيه اختيارات بزيادة)", "{hi} {box} بسعر يبدأ من {price} ر.س 🛒\nاختر اللي يعجبك وكمّل من هنا: {link}", "{hi} {box} from SAR {price} 🛒\nPick what you like and finish here: {link}", ["box", "price", "link"], ["hi"], 400),
   rf_section: t("متابعة اللي ردّ: القسم اللي فتحه", "{hi} تبي تطلب من «{section}»؟ الأصناف بأسعارها هنا 👇\n{link}", "{hi} Want to order from {section}? All the dishes with prices are here 👇\n{link}", ["section", "link"], ["hi"], 400),
   rf_fav: t("متابعة اللي ردّ: طبقه المفضل في السلة", "{hi} جهّزنا لك طبقك المفضل {dish} بـ{price} ر.س في السلة 🛒\nتكمّل طلبك من هنا: {link}", "{hi} We put your favourite {dish} (SAR {price}) in your cart 🛒\nFinish your order here: {link}", ["dish", "price", "link"], ["hi"], 400),
   rf_neutral: t("متابعة اللي ردّ: سطر محايد (من غير أرقام)", "{hi} تبي أجهّز لك طلبك؟ 🙂", "{hi} Shall I get your order ready? 🙂", [], ["hi"], 200),
@@ -2637,11 +2638,11 @@ export function register(app, ctx, deps = {}) {
          • زر «أبغى أطلب» (rf:yes) — أو «نعم / أبغى أطلب» مكتوبة كأول رسالة بعد المتابعة — والمتابعة كان فيها سلة جاهزة لسه صالحة ⇒ نفس السلة بزر (rf_yes)؛ من غير سلة ⇒ «أبي أطلب» العادي.
          • زر «لا شكراً» (rf:no) — أو «لا / لا شكراً» مكتوبة كأول رسالة بعدها ⇒ rf_no + مفيش متابعات replyFollowUpDeclineDays يوم.
          • أي رسالة بعد المتابعة ⇒ «اتردّ عليها» في الدفتر (التقرير والفرامل). مش في الرد المؤجّل (اتسجّل وقت وصول الرسالة). */
-      if (ok && !afterWait && cfg.replyFollowUp && !campOffer) {
+      if (ok && !afterWait && cfg.replyFollowUp) {
         const tapId = ev.interactiveId ? String(ev.interactiveId) : "";
         const plain = !ev.interactiveId && String(ev.type || "text") === "text" ? String(ev.text || "") : "";
         const typedYes = Boolean(plain) && isCampaignYes(plain), typedNo = Boolean(plain) && NACK_RE.test(normalize(plain));
-        if (tapId === "rf:yes" || tapId === "rf:no" || typedYes || typedNo) {
+        if (!campOffer && (tapId === "rf:yes" || tapId === "rf:no" || typedYes || typedNo)) {
           const fu = ((await q(FU_SQL.latest, [phone])) || [])[0] || null;
           /* المكتوبة بتتحسب رد على المتابعة بس لو مفيش ولا رسالة تانية من العميل بعدها (الضغطة على زرّها نفسه بتتحسب دايماً) */
           let first = false;
@@ -2655,7 +2656,8 @@ export function register(app, ctx, deps = {}) {
             cls = url ? { ...cls, key: "rf_yes", arg: { url }, rawIntent: "followup_yes" } : { ...cls, key: "order", arg: null, rawIntent: "followup_yes" };
           }
         }
-        if (cfg.mode !== "dry") await q(FU_SQL.answer, [phone, cls.rawIntent === "followup_yes" ? "yes" : cls.key === "rf_no" ? "no" : ["stop", "stop_updates"].includes(cls.key) ? "stop" : "text"]);
+        /* «أبغى أطلب» على رسالة الحملة نفسها بعد المتابعة (campOffer) = «أبغى» برضه */
+        if (cfg.mode !== "dry") await q(FU_SQL.answer, [phone, campOffer || cls.rawIntent === "followup_yes" ? "yes" : cls.key === "rf_no" ? "no" : ["stop", "stop_updates"].includes(cls.key) ? "stop" : "text"]);
       }
       /* هجين (اختياري، من اللوحة): الرسالة اللي القواعد مافهمتهاش تتصنّف بموديل — **تصنيف بس**: بيرجّع اسم نية من قايمتنا
          (+ صنف/قسم/بوكس من البيانات) بدرجة ثقة، والرد نفسه نص ثابت بيتعبّى من البيانات الحيّة زي أي رد. فشل/تأخر/ثقة قليلة ⇒ «غير مفهوم». */
@@ -3219,6 +3221,16 @@ const fl = await q(`SELECT count(*)::int AS n FROM wa_bot_log WHERE phone_norm=$
     const CART_URL = /^https:\/\/freshcuts\.sa\/c\/[a-z0-9]{6,16}$/;
     const linksOn = async (slugs) => { const r = await q("SELECT slug FROM cms_links WHERE slug = ANY($1::text[]) AND active", [[...new Set(slugs.filter(Boolean))]]); return new Set((r || []).map((x) => x.slug)); };
     const liveCart = async () => { const r = await q(FU_SQL.cartLive, [phone, tg.at]); return r && r[0] ? String(r[0].code) : null; };
+    /* سلة بسعر معروف: معاينة الأول (من غير صف) ولو السعر نفس اللي هيتقال بيتحفظ — مفيش سلات يتيمة ولا سلة بسعر غير اللي في الرسالة */
+    const cartFor = async (input, price, what) => {
+      if (!assist) return null;
+      try {
+        const pre = await assist.build_cart(phone, input, { save: false, source: "followup" });
+        if (!pre || !pre.ok || Math.abs((Number(pre.subtotal) || 0) - Number(price)) >= 0.01) return null;
+        const made = await assist.build_cart(phone, input, { save: true, source: "followup" });
+        return made && made.ok && CART_URL.test(String(made.link || "")) && Math.abs((Number(made.subtotal) || 0) - Number(price)) < 0.01 ? made : null;
+      } catch (e) { console.error(`[wabot] followup ${what} cart:`, e.message); return null; }
+    };
     /* ١) عرض الحملة: آخر رسالة حملة للرقم ده «طبقك المفضل» (FD1) وردّه جه بعدها ⇒ نفس العرض بالحرف محسوب الحين + سلة جاهزة بنفس السعر. اتغيّر أي حاجة ⇒ سطر من غير أرقام. */
     if (cfg.replyFollowUpOffer && tg.trigger === "campaign" && favApi()) {
       let camp = null; try { camp = await favApi().lastOffer(phone, cfg.campaignOfferHours); } catch (e) { console.error("[wabot] followup offer:", e.message); camp = null; }
@@ -3249,15 +3261,15 @@ const fl = await q(`SELECT count(*)::int AS n FROM wa_bot_log WHERE phone_norm=$
         const on = await linksOn([lk.kind === "box" ? lk.slug : null, "wab-menu", cfg.links.organic]);
         const fallback = on.has(cfg.links.organic) ? cfg.links.organic : null;
         const nm = L === "en" ? lk.nameEn : lk.name;
-        if (lk.kind === "item" && !lk.byWeight && assist) {
-          let made = null; try { made = await assist.build_cart(phone, { option: "delivery", items: [{ id: lk.id, qty: 1 }] }, { save: true, source: "followup" }); } catch (e) { console.error("[wabot] followup item cart:", e.message); made = null; }
-          if (made && made.ok && CART_URL.test(String(made.link || "")) && Math.abs((Number(made.subtotal) || 0) - lk.price) < 0.01) return make("rf_item", L, { dish: nm, price: money(lk.price), link: made.link }, { via: "item", ref: lk.id, cart_code: made.code, cart_total: lk.price });
+        if (lk.kind === "item" && !lk.byWeight) {
+          const made = await cartFor({ option: "delivery", items: [{ id: lk.id, qty: 1 }] }, lk.price, "item");
+          if (made) return make("rf_item", L, { dish: nm, price: money(lk.price), link: made.link }, { via: "item", ref: lk.id, cart_code: made.code, cart_total: lk.price });
         } else if (lk.kind === "item" && lk.byWeight) {
           const slug = on.has("wab-menu") ? "wab-menu" : fallback;
           if (slug) return make("rf_item_page", L, { dish: nm, link: `${STORE}/l/${slug}#item-${lk.id}` }, { via: "item_page", ref: lk.id });
         } else if (lk.kind === "box") {
           const slug = on.has(lk.slug) ? lk.slug : fallback;
-          if (slug) return make("rf_box", L, { box: nm, price: money(lk.price), link: `${STORE}/l/${slug}` }, { via: "box", ref: lk.slug });
+          if (slug) return make(lk.from ? "rf_box_from" : "rf_box", L, { box: nm, price: money(lk.price), link: `${STORE}/l/${slug}` }, { via: "box", ref: lk.slug });
         } else if (lk.kind === "section") {
           const slug = on.has("wab-menu") ? "wab-menu" : fallback;
           if (slug) return make("rf_section", L, { section: nm, link: `${STORE}/l/${slug}` }, { via: "section", ref: lk.id });
@@ -3268,8 +3280,8 @@ const fl = await q(`SELECT count(*)::int AS n FROM wa_bot_log WHERE phone_norm=$
     if (cfg.replyFollowUpFav && favApi() && assist && typeof favApi().favDishFor === "function") {
       let fd = null; try { fd = await favApi().favDishFor(phone); } catch (e) { console.error("[wabot] followup fav:", e.message); fd = null; }
       if (fd && fd.ok) {
-        let made = null; try { made = await assist.build_cart(phone, fd.input, { save: true, source: "followup" }); } catch (e) { console.error("[wabot] followup fav cart:", e.message); made = null; }
-        if (made && made.ok && CART_URL.test(String(made.link || "")) && Math.abs((Number(made.subtotal) || 0) - Number(fd.price)) < 0.01) return make("rf_fav", L, { dish: fd.name, price: money(fd.price), link: made.link }, { via: "fav", ref: String(fd.spec.pid), cart_code: made.code, cart_total: Number(fd.price) });
+        const made = await cartFor(fd.input, fd.price, "fav");
+        if (made) return make("rf_fav", L, { dish: fd.name, price: money(fd.price), link: made.link }, { via: "fav", ref: String(fd.spec.pid), cart_code: made.code, cart_total: Number(fd.price) });
       }
     }
     return neutral(null);
@@ -3312,6 +3324,10 @@ const fl = await q(`SELECT count(*)::int AS n FROM wa_bot_log WHERE phone_norm=$
     if (tr === null) return no("trigger_check_failed");
     const tg = followTrigger({ campAt: tr[0] ? tr[0].camp_at : null, tapAt: tr[0] ? tr[0].tap_at : null });
     if (!tg) return no("no_trigger");
+    /* موظف كلّمه في أي وقت من الزناد: صدى الموبايل / الرد من اللوحة (lastEcho — إلا لو الموظف ساب المحادثة للبوت بعدها، SR2)، أو رد من الصندوق/البورتال القديم (source api) */
+    { let ea = await lastEcho(phone); if (ea && chat.released_at && Date.parse(ea) <= Date.parse(chat.released_at)) ea = null;
+      if (ea && Date.parse(ea) > Date.parse(tg.at)) return no("staff_in_chat");
+      const mn = await q(FU_SQL.manual, [phone, tg.at]); if (mn === null || !mn[0]) return no("staff_check_failed"); if (Number(mn[0].n) > 0) return no("staff_in_chat"); }
     const cv = await q(FU_SQL.conv, [phone, tg.at]);
     if (cv === null) return no("conv_check_failed");
     const conv = convFacts(cv);

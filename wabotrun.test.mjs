@@ -92,7 +92,8 @@ function world({ waBot = {}, notifications = { whatsappEnabled: true }, orders =
         }
         return fuRows(out.slice(0, p[6]));
       }
-      case "last_out": { const o = db.msgs.filter((c) => c.phone_norm === p[0] && c.direction === "out" && c.source !== "echo" && okOut(c) && T0(c.created_at) >= T0(p[1])); return fuRows([{ at: maxOf(o.map((c) => c.created_at)), mkt: o.filter(isMkt).length }]); }
+      case "last_out": { const o = db.msgs.filter((c) => c.phone_norm === p[0] && c.direction === "out" && c.source !== "echo" && okOut(c) && T0(c.created_at) >= T0(p[1]));
+        return fuRows([{ at: maxOf(o.map((c) => c.created_at)), mkt: o.filter(isMkt).length, manual: o.filter((c) => !c.template && !["bot", "window"].includes(c.source || "api")).length }]); }
       case "trigger": {
         const camp = maxOf(db.msgs.filter((c) => c.phone_norm === p[0] && isMkt(c) && okOut(c) && nowMs - T0(c.created_at) < p[2] * 3600_000 && T0(c.created_at) < T0(p[1])).map((c) => c.created_at));
         const tap = db.log.filter((l) => l.phone_norm === p[0] && ["interactive", "button"].includes(l.msg_type) && p[3].includes(l.reply_key) && T0(l.at) > T0(p[1]) - p[4] * 3600_000 && T0(l.at) <= T0(p[1]) + 120_000).map((l) => l.at).sort()[0] || null;
@@ -106,6 +107,7 @@ function world({ waBot = {}, notifications = { whatsappEnabled: true }, orders =
       case "ignored": return fuRows([{ n: db.log.filter((l) => l.phone_norm === p[0] && l.msg_type === "followup" && l.decision === "replied" && p[1].includes(l.reply_key) && nowMs - T0(l.at) < p[2] * 86400_000
         && !inAfter(p[0], T0(l.at), T0(l.at) + 24 * 3600_000)).length }]);
       case "opted_out": return fuRows(db.optouts.includes(p[0]) ? [{}] : []);
+      case "manual": return fuRows([{ n: db.msgs.filter((c) => c.phone_norm === p[0] && c.direction === "out" && !c.template && !["bot", "window", "echo"].includes(c.source || "api") && okOut(c) && T0(c.created_at) > T0(p[1])).length }]);
       case "ordered": return fuRows(orders.filter((o) => o.phone_norm === p[0] && T0(o.created_at) > T0(p[1]) && !["expired", "pending_payment"].includes(o.status)).map(() => ({})));
       case "cart_live": return fuRows(db.botCarts.filter((x) => x.phone === p[0] && !x.expired && T0(x.created_at) > T0(p[1])).slice(-1).map((x) => ({ code: x.code })));
       case "cart_ok": return fuRows(db.botCarts.filter((x) => x.code === p[0] && x.phone === p[1] && !x.expired).map(() => ({})));
@@ -4794,7 +4796,7 @@ const CREPE_SPEC = { v: 1, kind: "box", slug: "box-crepe-duo", pid: "6", slot: "
 const CREPE_LINE = "بوكس الكريب لشخصين (كريب شيش طاووق وكريب ثاني من اختيارك مع تشيز فرايز وصنف جانبي ومشروبين) بـ65 ر.س، وأول طلب من الموقع توصيله مجاني بكود FIRST داخل نطاق التوصيل";
 const CREPE_VALUES = { "offer.title": "بوكس فيه طبقك المفضل", "offer.line": CREPE_LINE };
 const FD1_SENT_AT = new Date(Date.parse(OPEN_AT) - 10 * 60_000).toISOString();
-function fd1World({ spec = CREPE_SPEC, values = CREPE_VALUES, sent = true, perRecipient = true, template = "fc_frame_ask_text", web = null, newer = false, orderedSince = false, waBot = {}, links = [], extraSettings = {}, bundles = FXF.bundles, loc = null } = {}) {
+function fd1World({ spec = CREPE_SPEC, values = CREPE_VALUES, sent = true, perRecipient = true, template = "fc_frame_ask_text", web = null, newer = false, orderedSince = false, waBot = {}, links = [], extraSettings = {}, bundles = FXF.bundles, loc = null, hist = null } = {}) {
   const holder = {};
   const lastSent = sent ? { id: 7, job_id: 3, sent_at: FD1_SENT_AT, wamid: "wamid.CAMP7", cloud_template: template, cloud_vars: perRecipient ? { offer: "", perRecipient: true } : { offer: "عرض" },
     vars: { fav: spec, cloud: { values } } } : null;
@@ -4807,6 +4809,7 @@ function fd1World({ spec = CREPE_SPEC, values = CREPE_VALUES, sent = true, perRe
     if (sql === S.web) return rows(web ? [{ pn: p[0][0], ...web }] : []);
     if (sql === S.lastDelivery) return rows(loc ? [{ pn: p[0][0], lat: loc.lat, lng: loc.lng, district: null }] : []);
     if ([S.firstUsed, S.accounts, S.rewards].includes(sql)) return rows([]);
+    if (sql === S.history) return rows((hist || []).map((o) => ({ pn: p[0][0], ...o })));      // FU1: طلباته القديمة (طبقه المفضل)
     if (sql === S.lastSent) return rows(lastSent && (p[2] == null || lastSent.wamid === p[2]) ? [lastSent] : []);      // $3 = wamid الرسالة اللي اتضغط زرها
     if (sql === S.newerTemplate) return rows(newer ? [{}] : []);
     /* yesGate على نفس سجل البوت والرسايل بتوع العالم ده */
@@ -4815,7 +4818,7 @@ function fd1World({ spec = CREPE_SPEC, values = CREPE_VALUES, sent = true, perRe
     if (sql === S.orderedSince) return rows(orderedSince ? [{}] : []);
     throw new Error(`unexpected fav sql: ${sql.slice(0, 60)}`);
   } };
-  const fav = { lastOffer: (...a) => holder.api.lastOffer(...a), yesGate: (...a) => holder.api.yesGate(...a), tapOffer: (...a) => holder.api.tapOffer(...a), saveCart: (...a) => holder.api.saveCart(...a) };
+  const fav = { lastOffer: (...a) => holder.api.lastOffer(...a), yesGate: (...a) => holder.api.yesGate(...a), tapOffer: (...a) => holder.api.tapOffer(...a), saveCart: (...a) => holder.api.saveCart(...a), favDishFor: (...a) => holder.api.favDishFor(...a) };
   /* زيادة الاختيار من البوكس نفسه (زي cms.expandBundle) */
   const expandBundle = async (slug, choices, qty) => {
     const b = bundles.find((x) => x.slug === slug); if (!b) return { ok: false, error: "bundle_not_found" };
@@ -5188,6 +5191,12 @@ test("FU1 مابتتبعتش: طلب من ساعتها، كتب تاني (بتت
   assert.deepEqual(fuOut(await a.tick(120)), []);
   const b = fuLive(); await menuTap(b); b.clock.advance(5); await b.cashier("تفضل، تبي شي معين؟");
   assert.deepEqual(fuOut(await b.tick(36)), []); assert.equal(fuJob(b).reason, "staff_in_chat");
+  /* رد موظف من الصندوق / البورتال القديم (wainbox.replyText ⇒ sendText ⇒ source «api» مش «echo») = موظف برضه */
+  const b2 = fuLive(); await menuTap(b2); b2.clock.advance(3); b2.db.msgs.push({ wamid: "wamid.PORTAL1", direction: "out", phone_norm: "512345678", status: "accepted", source: "api", body: "حاضر", created_at: b2.clock.now().toISOString() });
+  assert.deepEqual(fuOut(await b2.tick(44)), []); assert.equal(fuJob(b2).reason, "staff_in_chat");
+  /* موظف كلّمه قبل آخر رسالة (والبوت رد بعد ما سكوت الموظف خلص) ⇒ المحادثة كان فيها إنسان ⇒ مفيش متابعة */
+  const b3 = fuLive(); await menuTap(b3); b3.clock.advance(2); await b3.cashier("أهلاً، تحت أمرك"); b3.clock.advance(33); await b3.say("كم سعر كريب زنجر سوبريم");
+  assert.deepEqual(fuOut(await b3.tick(41)), []); assert.equal(fuJob(b3).reason, "staff_in_chat");
   const c = fuLive(); await menuTap(c); c.clock.advance(2); await c.say("إيقاف");
   assert.deepEqual(fuOut(await c.tick(41)), []); assert.equal(fuJob(c).reason, "stopped");
   const d = fuLive(); await menuTap(d); d.clock.advance(2); await d.say("الأكل وصل بارد وناقص");
@@ -5281,4 +5290,19 @@ test("FU1 وضع التجربة: أرقام التجربة بس", withEnv(CONFIG
   await menuTap(w); await menuTap(w, { from: "966598765432" });
   const out = fuOut(await w.tick(41));
   assert.equal(out.length, 1); assert.equal(out[0].to, "966512345678");
+}));
+
+test("FU1 ضغطة من غير حملة ولا صنف معيّن شافه: طبقه المفضل من طلباته في سلة جاهزة بسعره الحين (معاينة الأول، سلة واحدة بس)", withEnv(LOCKS_OPEN, async () => {
+  const day = (d) => new Date(Date.parse(OPEN_AT) - d * 86400_000).toISOString();
+  const w = fd1World({ sent: false, hist: [{ at: day(6), total: 60, names: "كريب زنجر سوبريم|بيبسي" }, { at: day(20), total: 55, names: "كريب زنجر سوبريم" }] });
+  await menuTap(w);
+  const out = fuOut(await w.tick(41));
+  assert.equal(out.length, 1, JSON.stringify(w.db.jobs.map((j) => [j.kind, j.status, j.reason])));
+  assert.equal(bodyOf(out[0]), "جهّزنا لك طبقك المفضل كريب زنجر سوبريم بـ25 ر.س في السلة 🛒\nتكمّل طلبك من هنا: https://freshcuts.sa/c/rc000001");
+  assert.deepEqual([w.db.fu[0].via, w.db.fu[0].trigger, w.db.botCarts.length, w.db.botCarts[0].source, w.db.botCarts[0].plan.items[0].p], ["fav", "tap", 1, "followup", 25]);
+  /* الطبق خلص النهارده ومفيش طبق تاني متاح ⇒ سطر محايد */
+  const s = fd1World({ sent: false, hist: [{ at: day(6), total: 60, names: "كريب زنجر سوبريم" }], extraSettings: { catalog: { soldOut: { 8: { until: null } } } } });
+  await menuTap(s);
+  const o2 = fuOut(await s.tick(41));
+  assert.equal(o2.length, 1); assert.equal(bodyOf(o2[0]), FU_NEUTRAL); assert.equal(s.db.botCarts.length, 0);
 }));
