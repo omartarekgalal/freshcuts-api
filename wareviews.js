@@ -12,7 +12,8 @@
      ١. السؤال: جوّه نافذة الـ٢٤ ساعة ⇒ قايمة نجوم (⭐ … ⭐⭐⭐⭐⭐) ببلاش. بره النافذة ⇒ قالب خدمي.
         ميتا بتسمح لحد ١٠ ردود سريعة في القالب، بس أكتر من ٣ ⇒ الموبايل بيعرض أول اتنين و«عرض كل الخيارات»، وواتساب
         الكمبيوتر مابيفتحوش خالص. خمس نجوم في القالب = ⭐⭐⭐⭐⭐ و⭐⭐⭐⭐ ظاهرين والنجوم الواطية مستخبية ⇒ مش أمين.
-        البديل: ٣ أزرار ظاهرين كلهم «ممتاز ⭐⭐⭐⭐⭐ / جيد جداً ⭐⭐⭐⭐ / يحتاج تحسين» = ٥ / ٤ / (٣ أو أقل، exact=false).
+        البديل: ٣ أزرار ظاهرين كلهم «ممتاز / جيد جداً / يحتاج تحسين» = ٥ / ٤ / (٣ أو أقل، exact=false).
+        RV4 (١٦/١٠): من غير إيموجي (ميتا رفضت النجوم في الأزرار — 2388060)، والنصوص القديمة بالنجوم لسه بتتفهم (starOfQr).
      ٢. التوجيه: ٤–٥ ⇒ شكر + زر جوجل في نفس الرسالة (عدّاد الضغطات بتاعنا لو trackGoogle). ٣ أو أقل ⇒ اعتذار + «وش اللي
         ما عجبك؟» (قايمة أسباب أو نص) + تحويل عاجل للمدير برقم الطلب. **عمر ما بنطلب من صاحب تقييم واطي يروح جوجل** —
         حتى لو عتبة صفحة التقييم اتغيّرت لـ٣ (هنا الحد الأدنى ٤ دايماً).
@@ -209,9 +210,13 @@ export function starOfListId(id) {
   const m = /^rs:([1-5]):([a-z0-9]{4,16})$/i.exec(String(id || ""));
   return m ? { stars: Number(m[1]), code: m[2].toLowerCase(), exact: true } : null;
 }
-/* زر القالب (الـpayload = نص الزر) */
-const QR_MAP = new Map(STAR_BUTTONS.map((b) => [clean(b.text), { stars: b.stars, exact: b.exact }]));
-export function starOfQr(text) { return QR_MAP.get(clean(text)) || null; }
+/* زر القالب (الـpayload = نص الزر). RV4: النص الجديد من غير إيموجي («ممتاز» / «جيد جداً» / «يحتاج تحسين») **والقديم بالنجوم**
+   (legacy — رسايل قديمة في جوال العميل) بيدّوا نفس النتيجة. الحركات (التنوين/الشدّة) والتطويل مابيفرقوش: «جيد جدا» = «جيد جداً». */
+const qrKey = (s) => clean(s).replace(/[\u0640\u064B-\u065F\u0670]/g, "");      // تطويل + حركات
+const QR_MAP = new Map(STAR_BUTTONS.flatMap((b) => [b.text, ...(b.legacy || [])].map((x) => [qrKey(x), Object.freeze({ stars: b.stars, exact: b.exact })])));
+export function starOfQr(text) { const v = QR_MAP.get(qrKey(text)); return v ? { stars: v.stars, exact: v.exact } : null; }
+/* RV4: كل نص زر بيتفهم نجوم (الجديد + القديم) — للاختبارات واللوحة */
+export const STAR_QR_TEXTS = Object.freeze(STAR_BUTTONS.flatMap((b) => [b.text, ...(b.legacy || [])]));
 /* «٥» / «5 نجوم» / «⭐⭐⭐⭐» مكتوبة — بتتحسب بس لو فيه سؤال نجوم مستني رد (wabotrun) */
 export function typedStar(text) {
   const s = clean(text).replace(/[٠-٩]/g, (d) => String(d.charCodeAt(0) - 0x660));

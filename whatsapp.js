@@ -207,6 +207,31 @@ export function registerCatalog(mod, { override = false } = {}) {
   return { ...registerTemplates(defs, { override }), invalid, shape: "list" };
 }
 export const isCatalogTemplate = (name) => Boolean(TEMPLATES[name] && TEMPLATES[name].catalog);
+
+/* RV4 (١٦/١٠): خطأ Graph ⇒ نتيجة مقروءة للوحة. ميتا بتحط السبب الحقيقي في error_user_title / error_user_msg
+   (مثلاً 100/2388060 «Button format is incorrect — Buttons can't have any variables, newlines, emojis…») و message بيبقى «Invalid parameter» بس.
+   error = message — title: msg (اللوحة بتعرض error)، و meta = {code, subcode, title, detail, type, fbtrace}.
+   التنضيف: أي توكن من secrets (≥ ٨ حروف) ⇒ [token]، أي رابط فيه access_token/token= ⇒ [link]، و Bearer/EAA… ⇒ [token]. */
+const scrubMeta = (v, secrets, max) => {
+  let s = String(v ?? "");
+  for (const t of secrets || []) if (t && String(t).length >= 8) s = s.split(String(t)).join("[token]");
+  s = s.replace(/https?:\/\/[^\s"'<>]*(?:access_token|[?&]token=|signature=)[^\s"'<>]*/gi, "[link]")
+    .replace(/access_token=[^&\s"'<>]+/gi, "access_token=[token]")
+    .replace(/\bBearer\s+[A-Za-z0-9._~+/=-]+/g, "Bearer [token]")
+    .replace(/\bEA[A-Za-z0-9]{20,}/g, "[token]");
+  return s.replace(/\s+/g, " ").trim().slice(0, max);
+};
+export function metaErrorOf(e, secrets = []) {
+  const g = (e && typeof e.graph === "object" && e.graph) || {};
+  const message = scrubMeta(e && e.message, secrets, 300);
+  const title = scrubMeta(g.error_user_title, secrets, 200) || null;
+  const detail = scrubMeta(g.error_user_msg, secrets, 600) || null;
+  const why = [title, detail].filter(Boolean).join(": ");
+  const error = [message, why && why !== message ? why : ""].filter(Boolean).join(" — ") || "meta_error";
+  const num = (x) => (x === undefined || x === null || x === "" ? null : Number.isFinite(Number(x)) ? Number(x) : null);
+  return { error, meta: { code: num(g.code), subcode: num(g.error_subcode), title, detail,
+    type: g.type ? scrubMeta(g.type, secrets, 60) : null, fbtrace: g.fbtrace_id ? scrubMeta(g.fbtrace_id, secrets, 40) : null } };
+}
 export const templateLanguages = (name) => (TEMPLATES[name] && TEMPLATES[name].variants ? Object.keys(TEMPLATES[name].variants) : ["ar"]);
 
 function money(n) { const v = Number(n); return Number.isFinite(v) ? v.toFixed(2) : String(n ?? ""); }
@@ -857,7 +882,7 @@ export function register(app, ctx, deps = {}) {
   async function graphGet(path) {
     const resp = await doFetch(`https://graph.facebook.com/${GRAPH_VERSION}/${path}`, { method: "GET", headers: { Authorization: `Bearer ${token()}` } });
     const data = await resp.json().catch(() => ({}));
-    if (!resp.ok || data.error) throw Object.assign(new Error(data.error?.message || `HTTP ${resp.status}`), { code: `WA_${data.error?.code || resp.status}` });
+    if (!resp.ok || data.error) throw Object.assign(new Error(data.error?.message || `HTTP ${resp.status}`), { code: `WA_${data.error?.code || resp.status}`, graph: data.error || null });      // RV4: graph زي graphPost (metaErrorOf)
     return data;
   }
 
@@ -1417,7 +1442,8 @@ export function register(app, ctx, deps = {}) {
         }
         results.push({ name: n, ...tag, ok: true, ...(await graphPost(`${wabaId()}/message_templates`, sub)) });
       }
-      catch (e) { results.push({ name: n, ...tag, ok: false, error: e.message }); }
+      /* RV4: سبب ميتا الحقيقي (error_user_title / error_user_msg + code/subcode) بدل «Invalid parameter» بس — من غير التوكن ولا روابط فيها توكن */
+      catch (e) { results.push({ name: n, ...tag, ok: false, ...metaErrorOf(e, [token()]) }); }
     }
     return c.json({ ok: true, results });
   });

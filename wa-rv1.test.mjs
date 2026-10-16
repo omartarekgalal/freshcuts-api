@@ -47,8 +47,8 @@ test("timing per order type: dine-in +90, takeaway +50, apps +100 from the order
 test("stars: list ids, the template's three buttons (5 / 4 / «3 or less»), typed digits or stars; routing never sends 3★ or «يحتاج تحسين» to Google", () => {
   assert.deepEqual(RV.starOfListId("rs:4:AB12cd34"), { stars: 4, code: "ab12cd34", exact: true });
   for (const bad of ["rs:0:ab12cd34", "rs:6:ab12cd34", "rs:5:ab", "rs:5:ab12cd34x!", "rs:5"]) assert.equal(RV.starOfListId(bad), null, bad);
-  assert.deepEqual(CAT.STAR_BUTTONS.map((b) => [b.text, b.stars, b.exact]), [["ممتاز ⭐⭐⭐⭐⭐", 5, true], ["جيد جداً ⭐⭐⭐⭐", 4, true], ["يحتاج تحسين", 3, false]]);
-  assert.deepEqual(RV.starOfQr("ممتاز ⭐️⭐️⭐️⭐️⭐️"), { stars: 5, exact: true }, "emoji variation selectors do not matter");
+  assert.deepEqual(CAT.STAR_BUTTONS.map((b) => [b.text, b.stars, b.exact]), [["ممتاز", 5, true], ["جيد جداً", 4, true], ["يحتاج تحسين", 3, false]], "RV4: no emoji on template buttons (Meta 2388060)");
+  assert.deepEqual(RV.starOfQr("ممتاز ⭐️⭐️⭐️⭐️⭐️"), { stars: 5, exact: true }, "emoji variation selectors do not matter (old starred text still understood — RV4)");
   assert.equal(RV.starOfQr("تمام"), null);
   for (const [t, n] of [["5", 5], ["٥", 5], ["4 نجوم", 4], ["3/5", 3], ["⭐⭐⭐", 3], ["⭐⭐⭐⭐⭐ ممتاز", 5], ["⭐", 1]]) assert.equal(RV.typedStar(t), n, t);
   for (const t of ["55", "6", "0", "تمام", "5 ريال", "ابي 2 شاورما", "⭐⭐⭐⭐⭐⭐"]) assert.equal(RV.typedStar(t), null, t);

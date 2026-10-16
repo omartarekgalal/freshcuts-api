@@ -5614,6 +5614,28 @@ test("RV1: outside the window ⇒ the stars template (after approval, switch on)
   assert.deepEqual(await off.bot.reviewAsk({ phone: "0512345678", orderNo: "pos:9003", code: "ab12cd35", kind: "takeaway" }), { ok: false, skipped: "no_visit_template" });
 }));
 
+test("RV4: the stars template's emoji-free taps «ممتاز» / «جيد جداً» go the Google way with 5 / 4 stars on the invite they answer; an OLD starred tap («جيد جداً ⭐⭐⭐⭐» on a message already in the phone) is still a 4★ rating; «يحتاج تحسين» stays the low path", withEnv(CONFIGURED, async () => {
+  const CAT = await import("./watemplates.js"); const WA = await import("./whatsapp.js"); WA.registerCatalog(CAT);
+  assert.deepEqual(WA.TEMPLATES.fc_review_stars.components.find((c) => c.type === "BUTTONS").buttons.map((b) => b.text), ["ممتاز", "جيد جداً", "يحتاج تحسين"], "what Meta gets on the new submission");
+  for (const [tap, stars, route] of [["ممتاز", 5, "google"], ["جيد جداً", 4, "google"], ["جيد جداً ⭐⭐⭐⭐", 4, "google"], ["ممتاز ⭐⭐⭐⭐⭐", 5, "google"], ["يحتاج تحسين", 3, "low"]]) {
+    const w = rvWorld({ waBot: { reviewFlow: { starsTemplate: true } }, invites: [{ phone_norm: "512345678", code: "pp11qq22", order_no: "W1790012345678", kind: "delivery", ref: "W1790012345678" }] });
+    const r = await w.bot.reviewAsk({ phone: "0512345678", orderNo: "W1790012345678", code: "pp11qq22", kind: "delivery", ref: "W1790012345678" });
+    assert.equal(r.channel, "wa_stars", tap);
+    w.db.invites[0].wa_msg_id = r.wamid;
+    const t = await qrTap(w, tap, { context: r.wamid });
+    assert.equal(t.log.reply_key, "review_star", tap);
+    assert.deepEqual([w.db.reviews.length, w.db.reviews[0].rating, w.db.reviews[0].rating_exact, w.db.invites[0].rating], [1, stars, route === "google", stars], tap);
+    const m = firstOut(t);
+    if (route === "google") {
+      assert.equal(m.interactive.type, "cta_url", tap);
+      assert.equal(m.interactive.action.parameters.url, `${RV_GO}pp11qq22`, tap);
+    } else {
+      assert.equal(t.log.handoff, "review_low", tap);
+      assert.doesNotMatch(JSON.stringify(t.sent), /\/api\/reviews\/g\/|g\.page/, tap);
+    }
+  }
+}));
+
 test("RV1: «تمام» on the delivered message ⇒ the stars list for that order (not the rating-page link); a typed «5» then counts as 5★; a typed «تمام» after a stars list is just an acknowledgement", withEnv(CONFIGURED, async () => {
   const w = rvWorld({ invites: [{ phone_norm: "512345678", code: "kk55jj66", order_no: "W1790012347777", kind: "pickup", ref: "W1790012347777" }] });
   const ok = await qrTap(w, "تمام 👍");
@@ -5643,7 +5665,9 @@ test("RV1: «تمام» on the delivered message ⇒ the stars list for that ord
 test("RV1: classify understands only our own ids and buttons; settings render from the schema and refuse bad values; every review reply fits WhatsApp's limits in both languages", () => {
   assert.deepEqual(R.classify({ type: "interactive", text: "x", interactiveId: "rs:4:ab12cd34" }).arg, { stars: 4, code: "ab12cd34", exact: true });
   assert.deepEqual(R.classify({ type: "interactive", text: "x", interactiveId: "rr:wrong:17" }).arg, { reason: "wrong", cat: "الطلب ناقص أو غلط", reviewId: 17 });
-  assert.deepEqual(R.classify({ type: "button", text: "ممتاز ⭐⭐⭐⭐⭐", interactiveId: "ممتاز ⭐⭐⭐⭐⭐" }).arg, { stars: 5, exact: true, code: null });
+  assert.deepEqual(R.classify({ type: "button", text: "ممتاز ⭐⭐⭐⭐⭐", interactiveId: "ممتاز ⭐⭐⭐⭐⭐" }).arg, { stars: 5, exact: true, code: null }, "old starred button (RV4 legacy)");
+  assert.deepEqual(R.classify({ type: "button", text: "ممتاز", interactiveId: "ممتاز" }).arg, { stars: 5, exact: true, code: null }, "RV4: the emoji-free button");
+  assert.deepEqual(R.classify({ type: "button", text: "جيد جداً", interactiveId: "جيد جداً" }).arg, { stars: 4, exact: true, code: null });
   assert.deepEqual(R.classify({ type: "button", text: "يحتاج تحسين", interactiveId: "يحتاج تحسين" }).arg, { stars: 3, exact: false, code: null });
   for (const bad of ["rs:6:ab12cd34", "rs:5:AB", "rs:5:ab12cd34; DROP", "rr:steak:1", "rr:food:x"]) assert.notEqual(R.classify({ type: "interactive", text: "x", interactiveId: bad }).key, bad.startsWith("rs") ? "review_star" : "review_reason", bad);
   const def = R.botConfig({});

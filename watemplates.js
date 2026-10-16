@@ -120,12 +120,26 @@ export const MENU_BUTTON_EN = "Show me the menu";
 export const OPTOUT_FOOTER_EN = "To stop, reply: STOP";
 /* RV1 (١٥/١٠): أزرار قالب النجوم fc_review_stars. ميتا بتسمح لحد ١٠ ردود سريعة، بس أكتر من ٣ ⇒ الموبايل بيعرض أول اتنين و«عرض كل الخيارات»
    (والكمبيوتر مابيفتحش القالب) ⇒ خمس نجوم = العالي ظاهر والواطي مستخبي. ٣ أزرار ظاهرين كلهم: ٥ / ٤ / «٣ أو أقل» (exact=false).
-   الضغطة بتوصل بنص الزر (wareviews.starOfQr) — أي تعديل هنا = تقديم القالب من جديد. */
+   الضغطة بتوصل بنص الزر (wareviews.starOfQr) — أي تعديل هنا = تقديم القالب من جديد.
+   RV4 (١٦/١٠): ميتا رفضت التقديم الأول (code 100 / subcode 2388060 «Button format is incorrect»): نص زر القالب ممنوع فيه إيموجي
+   ولا متغيّر ولا سطر جديد ولا رموز تنسيق ⇒ الأزرار من غير النجوم. legacy = النصوص القديمة بالنجوم: wareviews.starOfQr بيقبلها كمان
+   (أي رسالة قديمة في جوال عميل لسه بتتفهم صح). validateTemplate بيرفض أي زر فيه الحاجات دي (buttonTextProblem). */
 export const STAR_BUTTONS = Object.freeze([
-  Object.freeze({ text: "ممتاز ⭐⭐⭐⭐⭐", stars: 5, exact: true }),
-  Object.freeze({ text: "جيد جداً ⭐⭐⭐⭐", stars: 4, exact: true }),
-  Object.freeze({ text: "يحتاج تحسين", stars: 3, exact: false }),
+  Object.freeze({ text: "ممتاز", stars: 5, exact: true, legacy: Object.freeze(["ممتاز ⭐⭐⭐⭐⭐"]) }),
+  Object.freeze({ text: "جيد جداً", stars: 4, exact: true, legacy: Object.freeze(["جيد جداً ⭐⭐⭐⭐"]) }),
+  Object.freeze({ text: "يحتاج تحسين", stars: 3, exact: false, legacy: Object.freeze([]) }),
 ]);
+/* RV4: قاعدة ميتا لنص زر القالب (رفض 2388060): «Buttons can't have any variables, newlines, emojis or formatting characters».
+   بيرجّع سبب بالعربي أو null. الحركات العربية (الشدّة/التنوين) مسموحة — «تتبّع الطلب» و«كمّل طلبك» معتمدين عند ميتا. */
+const BTN_EMOJI = /\p{Extended_Pictographic}|\p{Emoji_Presentation}|[\u{1F000}-\u{1FAFF}\u2600-\u27BF\u2B00-\u2BFF\uFE0F\u200D\u20E3]/u;
+export function buttonTextProblem(text) {
+  const s = String(text ?? "");
+  if (/\{\{/.test(s)) return "متغيّر";
+  if (/[\r\n\t]/.test(s)) return "سطر جديد";
+  if (BTN_EMOJI.test(s)) return "إيموجي";
+  if (/[*_~`]/.test(s)) return "رموز تنسيق";
+  return null;
+}
 export const OPTOUT_BUTTON_EN = "STOP";
 const V = (path, label, ex, fmt) => ({ path, label, ex, ...(fmt ? { fmt } : {}) });
 const FRAMES_DEF = [
@@ -718,7 +732,7 @@ export const HOLD = Object.freeze({
   fc_order_pickup_ready: "بانتظار موافقة المالك على النص (بديل fc_order_ready_pickup المرفوض) — غير مربوط بمرحلة",
   fc_staff_checkout_notice: "بانتظار موافقة المالك على النص (بديل fc_staff_checkout_watchdog المصنَّف تسويق؛ fc_staff_payment_alert موجود لنفس الغرض)",
   /* RV1 (١٥/١٠): قالب النجوم — النص في docs/designs-2026-10/whatsapp/reviews-workflow.md */
-  fc_review_stars: "النص اتوافق عليه (عمر ١٥/١٠ ١٤:١٥: «موافق على كل حاجة») — بيتقدّم لميتا بعد النشر بـ force:true (RV1 — التقييم بالنجوم بره النافذة)، وبعد الاعتماد يتفتح مفتاح «قالب النجوم»",
+  fc_review_stars: "النص اتوافق عليه (عمر ١٥/١٠ ١٤:١٥: «موافق على كل حاجة») — بيتقدّم لميتا بعد النشر بـ force:true (RV1 — التقييم بالنجوم بره النافذة)، وبعد الاعتماد يتفتح مفتاح «قالب النجوم». ١٦/١٠: التقديم الأول اترفض (2388060 — إيموجي النجوم في الأزرار)؛ RV4 شال الإيموجي ⇒ تقديم جديد (مش edit — القالب مااتعملش عند ميتا)",
 });
 
 /* دفعات التقديم بالأولوية. الدفعة ١ = قائمة «أول ٨» الأصلية. */
@@ -817,6 +831,7 @@ export function validateTemplate(t) {
   if (btns.filter((b) => b.type === "URL").length > 2) e.push("روابط > 2");
   for (const b of btns) {
     if (!b.text || [...b.text].length > 25) e.push(`نص الزر «${b.text}» > 25`);
+    { const p = b.text ? buttonTextProblem(b.text) : null; if (p) e.push(`نص الزر «${b.text}» فيه ${p} — ميتا بترفضه (2388060)`); }      // RV4
     if (b.type === "URL") {
       if (!/^https:\/\//.test(b.url)) e.push(`رابط غير https: ${b.url}`);
       const vn = varNums(b.url);
