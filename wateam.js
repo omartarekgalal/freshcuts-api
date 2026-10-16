@@ -399,7 +399,7 @@ export function dailyText({ handovers = 0, urgent = 0, odd = [], bySms = 0, clos
 }
 
 /* ── TW1: إشعار البورتال بدل القالب للي برّه النافذة (صافي) ─────────────────
-   نفس كلام رسالة واتساب: أول سطر = العنوان والباقي تحت. سطور رابط البورتال نفسه بتتشال (الموظف فاتحه أصلاً). رسالة من غير نص (قالب التجديد) ⇒ كلام الحارس. */
+   نفس كلام رسالة واتساب: أول سطر = العنوان والباقي تحت. سطور رابط البورتال نفسه وصندوق اللوحة بتتشال (الموظف فاتح البورتال، والمحادثة في تاب واتساب بتاعه). رسالة من غير نص (قالب التجديد) ⇒ كلام الحارس. */
 export const keeperPortalText = ({ name = null } = {}) => `⏰ تنبيهات واتساب المجانية وقفت عند ${name || "موظف"} (عدّت ٢٤ ساعة من آخر رسالة منه)
 التنبيهات بتوصله هنا على البورتال بس. عشان ترجع على واتساب ببلاش: يبعت كلمة «تنبيهات» لواتساب المطعم.`;
 export function portalNoticeText(msg, member = {}) {
@@ -407,7 +407,7 @@ export function portalNoticeText(msg, member = {}) {
   let text = String(m.portalBody || m.body || "").trim();
   if (!text && m.topic === "keeper") text = keeperPortalText({ name: member && member.name });
   if (!text) { const t = Array.isArray(m.templates) && m.templates[0] && m.templates[0].data && m.templates[0].data.notice ? m.templates[0].data.notice.text : ""; text = String(t || "").trim(); }
-  const lines = text.split("\n").map((l) => l.trim()).filter((l) => l && !l.includes(PORTAL_URL));
+  const lines = text.split("\n").map((l) => l.trim()).filter((l) => l && !l.includes(PORTAL_URL) && !l.includes(INBOX_URL));
   return { title: clip(lines[0] || "تنبيه للفريق", 160), body: clip(lines.slice(1).join("\n"), 900) };
 }
 /* اللي برّه النافذة هيوصله إيه دلوقتي: "wa_free" (جوّه النافذة) · "portal" (إشعار بورتال بس) · "template" (القالب المدفوع ثم SMS زي الأول) */

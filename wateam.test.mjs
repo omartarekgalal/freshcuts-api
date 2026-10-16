@@ -580,6 +580,8 @@ test("TW1 text: the portal notice keeps the WhatsApp text (first line = title), 
   const k = T.portalNoticeText({ topic: "keeper", kind: "renew_closed", body: "", templates: [{ name: "fc_staff_alerts_renew", data: {} }] }, { name: "منى" });
   assert.match(k.title, /منى/); assert.match(k.body, /«تنبيهات»/);
   assert.equal(T.portalNoticeText({ topic: "odd", body: "", templates: NOTICE_TPL }).title, "سطر القالب");
+  const o = T.portalNoticeText({ topic: "odd", body: T.oddText({ kind: "complaint", phone: "512345678", detail: "الطلب وصل بارد" }) });
+  assert.match(o.title, /حاجة غريبة — شكوى/); assert.match(o.body, /…5678/); assert.ok(!o.body.includes(T.INBOX_URL), "the dashboard inbox link is dropped — the chat is in the portal's WhatsApp tab");
 });
 test("TW1 inside the window: free WhatsApp exactly as before — no portal notice", withEnv(OPEN, async () => {
   const w = world({ portal: true, approved: ["fc_staff_team_notice"] }); allOpen(w);
