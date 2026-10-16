@@ -281,7 +281,7 @@ export function register(app, ctx, deps = {}) {
   }
 
   /* الإرسال لكل رقم: واتساب حر (الحارس بيرفض لو النافذة مقفولة) ⇒ SMS. مابيرميش. */
-  async function deliver(cfg, phones, msg, ref) {
+  async function sendToPhones(cfg, phones, msg, ref) {
     const via = [];
     const w = wa();
     for (const p of phones) {
@@ -345,7 +345,7 @@ export function register(app, ctx, deps = {}) {
       const rec = await recipients(s, cfg);
       if (!rec.phones.length) { await fin("skipped", "no_phones", base); return { ok: true, skipped: "no_phones", slot: slot.key }; }
       if (!cfg.wa && !cfg.sms) { await fin("skipped", "no_channel", base); return { ok: true, skipped: "no_channel", slot: slot.key }; }
-      const via = await deliver(cfg, rec.phones, msg, `revenue-pulse ${slot.key} ${slot.kind}`);
+      const via = await sendToPhones(cfg, rec.phones, msg, `revenue-pulse ${slot.key} ${slot.kind}`);
       const okN = via.filter((v) => v.ok).length;
       await fin(okN ? "sent" : "failed", okN ? null : (via[0] && via[0].why) || "failed", { ...base, via });
       return { ok: true, sent: okN, slot: slot.key, kind: slot.kind, via };
@@ -414,7 +414,7 @@ export function register(app, ctx, deps = {}) {
       const t = now();
       const msg = await build("slot", t);
       const tagged = { ...msg, wa: `🧪 تجربة\n${msg.wa}`, sms: msg.sms };
-      const via = await deliver(cfg, rec.phones, tagged, "test");
+      const via = await sendToPhones(cfg, rec.phones, tagged, "test");
       const okN = via.filter((v) => v.ok).length;
       await pool.query(
         "INSERT INTO revenue_pulse_log(day, slot, kind, status, reason, orders, revenue, text, sms_text, via) VALUES ($1::date, $2, 'test', $3, $4, $5, $6, $7, $8, $9::jsonb)",
