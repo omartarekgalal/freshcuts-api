@@ -28,7 +28,7 @@ export const CR_SQL = Object.freeze({
                    l.target_type, l.target_id, l.active AS link_active
               FROM wa_send_queue q JOIN wa_send_jobs j ON j.id = q.job_id LEFT JOIN cms_links l ON l.slug = j.link_slug
              WHERE q.phone_norm = $1 AND q.status = 'sent' AND COALESCE(q.cloud_status,'') <> 'failed' AND q.wamid IS NOT NULL
-               AND COALESCE(j.channel,'wa_cloud') = 'wa_cloud' AND q.sent_at > NOW() - make_interval(hours => $2::int)
+               AND COALESCE(q.channel, j.channel, 'wa_cloud') = 'wa_cloud' AND q.sent_at > NOW() - make_interval(hours => $2::int)
                AND ($3::text IS NULL OR q.wamid = $3::text)
              ORDER BY q.sent_at DESC, q.id DESC LIMIT 1`,
   /* نية مكتوبة: طلبت بعد الحملة (موقع) ⇒ مش رد على العرض */
