@@ -126,7 +126,7 @@ function rig({ ts = [], invites = [], reviewsRows = [], chats = {}, contacts = {
     }
     if (/^INSERT INTO review_invites\(order_no, code, phone_norm, option, due_at, kind, order_at, ref, skip_reason\)/i.test(s)) {
       if (inv(p[0])) return { rows: [], rowCount: 0 };
-      db.invites.push({ order_no: p[0], code: p[1], phone_norm: p[2], option: p[3], due_at: p[4], kind: p[5], order_at: p[6], ref: p[7], skip_reason: p[8] }); return { rows: [], rowCount: 1 };
+      db.invites.push({ order_no: p[0], code: p[1], phone_norm: p[2], option: p[3], due_at: p[4], kind: p[5], order_at: p[6], ref: p[7], skip_reason: p[8], ...(db.clock ? { created_at: db.clock } : {}) }); return { rows: [], rowCount: 1 };
     }
     if (/^SELECT order_no, phone_norm, option, is_test, created_at, table_no FROM shop_orders WHERE order_no=\$1/i.test(s)) return { rows: shop.filter((o) => o.order_no === p[0]) };
     /* الفاتورة وقت السؤال (reviews.js بيقراها تاني قبل أي رسالة): bills[id] = { pn, src, order_type } | "missing" | "error" — من غيره نفس جوال الفاتورة/الدعوة */
@@ -142,7 +142,17 @@ function rig({ ts = [], invites = [], reviewsRows = [], chats = {}, contacts = {
     }
     if (/^INSERT INTO review_invites\(order_no, code, phone_norm, option, due_at, kind, order_at, ref\)/i.test(s)) {
       if (inv(p[0])) return { rows: [], rowCount: 0 };
-      db.invites.push({ order_no: p[0], code: p[1], phone_norm: p[2], option: p[3], due_at: p[4], kind: p[5], order_at: p[6], ref: p[7] }); return { rows: [{ code: p[1] }], rowCount: 1 };
+      db.invites.push({ order_no: p[0], code: p[1], phone_norm: p[2], option: p[3], due_at: p[4], kind: p[5], order_at: p[6], ref: p[7], ...(db.clock ? { created_at: db.clock } : {}) }); return { rows: [{ code: p[1] }], rowCount: 1 };
+    }
+    /* مراجعة RV1 (التالتة): قفل الدعوات القديمة (askMaxAgeHours) — العمر بيتحسب زي ما الجملة بتقول بالظبط:
+       CASE ⇒ طلب الكاشير من order_at والموقع من created_at؛ COALESCE لوحده (الشكل القديم) ⇒ order_at للكل. صف من غير وقت ⇒ مايتقفلش. */
+    if (/^UPDATE review_invites SET skip_reason='expired'/i.test(s)) {
+      const cut = Date.parse(p[0]) - Number(p[1]) * 3600_000;
+      const posCase = /\(CASE WHEN order_no LIKE 'pos:%' THEN COALESCE\(order_at, created_at\) ELSE created_at END\) </i.test(s);
+      const anyOrderAt = !posCase && /COALESCE\(order_at, created_at\) </i.test(s);
+      const base = (iv) => (posCase ? (/^pos:/.test(iv.order_no) ? iv.order_at ?? iv.created_at : iv.created_at) : anyOrderAt ? iv.order_at ?? iv.created_at : iv.created_at);
+      let n = 0; for (const iv of db.invites) if (!iv.sent_at && !iv.skip_reason && Date.parse(base(iv)) < cut) { iv.skip_reason = "expired"; n++; }
+      return { rows: [], rowCount: n };
     }
     if (/^UPDATE review_invites SET due_at=\$1::timestamptz WHERE sent_at IS NULL AND skip_reason IS NULL AND due_at < \$1::timestamptz/i.test(s)) {
       let n = 0; for (const iv of db.invites) if (!iv.sent_at && !iv.skip_reason && Date.parse(iv.due_at) < Date.parse(p[0])) { iv.due_at = p[0]; n++; } return { rows: [], rowCount: n };
@@ -167,7 +177,8 @@ function rig({ ts = [], invites = [], reviewsRows = [], chats = {}, contacts = {
   const api = reviews.register(app, { pool, requireAdmin: async () => null, getSettingsData: async () => settings, jb: (x) => JSON.stringify(x), normPhone: (x) => String(x || "").replace(/\D/g, "").replace(/^966/, "").replace(/^0/, "") },
     { notify: () => ({ sendSmsTo: async (phone, body, meta) => { db.sms.push({ phone, body, meta }); return sms; } }),
       ...(waReply ? { waReview: () => ({ reviewAsk: async (x) => { db.asked.push(x); return typeof waReply === "function" ? waReply(x) : waReply; } }) } : {}) });
-  return { api, db, routes, run: (iso) => api.runInvites(new Date(iso)) };
+  /* at(iso) = ساعة القاعدة المزيّفة (NOW() وقت تسجيل الدعوة)؛ run بيحرّكها لوقت المسح */
+  return { api, db, routes, at: (iso) => { db.clock = new Date(iso).toISOString(); }, run: (iso) => { if (db.clock) db.clock = new Date(iso).toISOString(); return api.runInvites(new Date(iso)); } };
 }
 
 test("till orders: a closed bill with the customer's phone gets ONE invite (dine-in +90, takeaway +50); no phone, a website mirror, or an app order with its switch off ⇒ none; staff contacts are skipped at send time", async () => {
@@ -314,4 +325,39 @@ test("review fix (quiet SQL): the night deferral is valid for real Postgres (one
   assert.equal(q.db.asked.length, 0, "not at 11:30"); assert.equal(at1130.sent, 0);
   await q.run("2026-10-16T10:00:00Z");
   assert.equal(q.db.asked.length, 1, "at 13:00");
+});
+
+/* مراجعة RV1 (التالتة) — SB2: الطلب المسبق (preorder.js: لبكرة) كان بيتقفل «expired» أول ما يتسلّم: عمر دعوة الموقع كان بيتحسب من وقت الطلب
+   (order_at = shop_orders.created_at) بدل وقت الدعوة نفسها (= التوصيل، زي main). طلب الساعة ٣ العصر لبكرة ٩ بالليل = ٣٠ ساعة > ٢٠ ⇒ لا واتساب ولا SMS. */
+test("review fix (pre-orders, SB2): a next-day pre-order is asked after delivery — a website invite's max age counts from the invite (= delivery), not from when the order was placed; a till invite still counts from its bill; an unsent website invite past the limit still expires", async () => {
+  const placed = "2026-10-14T12:00:00.000Z";      // 15:00 Riyadh — a pre-order for tomorrow's 20:00–23:00 slot
+  const delivered = "2026-10-15T18:00:00.000Z";   // 21:00 Riyadh the next day = 30 h after it was placed
+  const shop = [{ order_no: "W1790012349001", phone_norm: "534781260", option: "delivery", is_test: false, created_at: placed, table_no: null }];
+  const invites = [
+    /* فاتورة كاشير عمرها ٢١.٥ ساعة ودعوتها اتسجّلت متأخر (الجوال اتربط بعدين) ⇒ لسه بتتقفل من وقت الفاتورة */
+    { order_no: "pos:9301", code: "ab12cd31", phone_norm: "542689137", option: "dinein", kind: "dinein", due_at: "2026-10-15T17:00:00.000Z", order_at: "2026-10-14T21:00:00.000Z", created_at: "2026-10-15T17:00:00.000Z", ref: null },
+    /* دعوة موقع اتسجّلت من ٢١ ساعة ومااتبعتتش (زي main) ⇒ بتتقفل */
+    { order_no: "W1790012349002", code: "ab12cd32", phone_norm: "553791024", option: "delivery", kind: "delivery", due_at: "2026-10-14T22:00:00.000Z", order_at: "2026-10-14T20:00:00.000Z", created_at: "2026-10-14T21:30:00.000Z", ref: "W1790012349002" },
+  ];
+  const r = rig({ shop, invites, waReply: { ok: true, channel: "wa_stars" } });
+  r.at(delivered);
+  const qi = await r.api.queueInvite("W1790012349001", { at: new Date(delivered) });
+  assert.equal(qi.ok, true, JSON.stringify(qi));
+  const iv = r.db.invites.find((x) => x.order_no === "W1790012349001");
+  assert.deepEqual([iv.order_at, iv.created_at], [placed, delivered], "order_at = placed (30 h before), the invite row = delivery");
+  const out = await r.run("2026-10-15T18:31:00Z");      // 21:31 Riyadh — the invite is due
+  assert.equal(iv.skip_reason, undefined, "not expired");
+  assert.ok(iv.sent_at, "asked"); assert.equal(iv.channel, "wa_stars");
+  assert.deepEqual(r.db.asked.map((x) => x.orderNo), ["W1790012349001"]);
+  assert.equal(out.sent, 1);
+  assert.equal(r.db.invites.find((x) => x.order_no === "pos:9301").skip_reason, "expired", "till invite: age from the bill (unchanged)");
+  assert.equal(r.db.invites.find((x) => x.order_no === "W1790012349002").skip_reason, "expired", "website invite unsent for 21 h: expired as on main");
+  const sql = r.db.sql.find((q) => /^UPDATE review_invites SET skip_reason='expired'/i.test(q));
+  assert.match(sql, /AND \(CASE WHEN order_no LIKE 'pos:%' THEN COALESCE\(order_at, created_at\) ELSE created_at END\) < \$1::timestamptz - \(\$2 \|\| ' hours'\)::interval$/);
+  // the same pre-order without a WhatsApp path still gets the website SMS (SB2 fallback) — not expired either
+  const sm = rig({ shop, waReply: { ok: false, skipped: "no_optin" } });
+  sm.at(delivered);
+  await sm.api.queueInvite("W1790012349001", { at: new Date(delivered) });
+  await sm.run("2026-10-15T18:31:00Z");
+  assert.deepEqual([sm.db.invites[0].skip_reason, sm.db.invites[0].channel, sm.db.sms.length], [undefined, "sms", 1]);
 });

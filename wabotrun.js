@@ -1918,8 +1918,12 @@ const SERIOUS = new Set(["allergy_severe", "complaint", "problem", "order_change
      • المنيو والأسعار والطلب الجديد / «نفس طلبي» / العروض بيتخدموا عادي (REVIEW_SOFT_KEYS).
      • طلب تشغيلي جديد (تعديل/إلغاء طلب، تأخير، مشكلة طلب، حساسية — OPS_SERIOUS) بيفتح تحويل جديد بتنبيهه العادي للفريق، حتى لو المدير رد.
      • الشكوى أو «موظف» المكتوبين بعده بيفضلوا عند المدير زي ما هم (من غير تنبيه تاني) — والمدير رد ⇒ البوت ساكت زي الشكوى.
-   وقفل التقييم (البورتال أو «تم الحل») بيرجّع المحادثة للبوت خالص (portalreviews.releaseLowChat). */
+   وقفل التقييم بنتيجة بتقفله (البورتال أو «تم الحل») بيرجّع المحادثة للبوت (portalreviews.releaseLowChat) — «متابعة» لأ. الرسايل الآلية فرامل تانية: COMPLAINT_24H_SQL. */
 const REVIEW_SOFT = new Set(["review_low"]);
+/* مراجعة RV1 (التالتة): «شكوى في آخر ٢٤ ساعة» = الفرامل المشتركة للرسايل اللي البوت بيبدأها من نفسه (FU1 متابعة اللي ردّ، SB4 قبل ما النافذة تقفل،
+   EX6 متابعة اللي ماتردّش عليه، متابعة المساعد). التقييم الواطي من واتساب (wa_bot_log.handoff = review_low) بيتعدّ زي الشكوى: قفل التقييم بيرجّع
+   المحادثة للبوت (handoff_at بيتمسح)، بس ده مايفتحش الباب لرسالة بيع لعميل زعلان قبل ما يعدّي ٢٤ ساعة على تقييمه — نفس حماية «التحويل المفتوح» قبل كده. */
+export const COMPLAINT_24H_SQL = "SELECT 1 FROM wa_bot_log WHERE phone_norm=$1 AND at > NOW() - INTERVAL '24 hours' AND (reply_key IN ('complaint','problem','change') OR handoff IN ('complaint','problem','order_change','allergy_severe','review_low')) LIMIT 1";
 const REVIEW_SOFT_KEYS = new Set([...MENU_KEYS, "order", "reorder", "offers"]);
 const OPS_SERIOUS = new Set(["order_change", "order_late", "order_issue", "allergy_severe", "send_failed"]);
 /* سطر التعريف بالمساعد مابيتحطش فوق رد رحلة التقييم (رد على زر إحنا بعتناه، مش بداية محادثة) */
@@ -3216,7 +3220,7 @@ const fl = await q(`SELECT count(*)::int AS n FROM wa_bot_log WHERE phone_norm=$
                             FROM wa_bot_jobs WHERE kind='window_keep' AND status='done' AND done_at > NOW() - INTERVAL '7 days'`, [phone]);
     if (caps === null || !caps[0]) return no("cap_check_failed");
     if (Number(caps[0].today) >= cfg.windowKeeperDailyCap) return no("daily_cap"); if (Number(caps[0].week) >= cfg.windowKeeperWeekly) return no("weekly_cap");
-    const cmp = await q("SELECT 1 FROM wa_bot_log WHERE phone_norm=$1 AND at > NOW() - INTERVAL '24 hours' AND (reply_key IN ('complaint','problem','change') OR handoff IN ('complaint','problem','order_change','allergy_severe')) LIMIT 1", [phone]);
+    const cmp = await q(COMPLAINT_24H_SQL, [phone]);
     if (cmp === null) return no("complaint_check_failed"); if (cmp.length) return no("complaint_today");
     const lg = await q("SELECT lang FROM wa_bot_log WHERE phone_norm=$1 AND lang IS NOT NULL ORDER BY id DESC LIMIT 1", [phone]);
     const lang = lg && lg[0] && lg[0].lang === "en" ? "en" : "ar";
@@ -3260,7 +3264,7 @@ const fl = await q(`SELECT count(*)::int AS n FROM wa_bot_log WHERE phone_norm=$
     if (g5.never || g5.out) return no(g5.never ? "never_reply" : "out_of_scope");
     const out = await q(OUT_AFTER_SQL, [phone, ev.at]);
     if (out === null) return no("out_check_failed"); if (out.length) return no("already_answered");      // حد رد عليه (اللوحة / البوت) بعد رسالته
-    const cmp = await q("SELECT 1 FROM wa_bot_log WHERE phone_norm=$1 AND at > NOW() - INTERVAL '24 hours' AND (reply_key IN ('complaint','problem','change') OR handoff IN ('complaint','problem','order_change','allergy_severe')) LIMIT 1", [phone]);
+    const cmp = await q(COMPLAINT_24H_SQL, [phone]);
     if (cmp === null) return no("complaint_check_failed"); if (cmp.length) return no("complaint_today");
     let open = null; try { open = settings?.hours ? openState(settings, now) : null; } catch { open = null; }
     if (!open || open.open !== true) return no("closed");
@@ -3433,7 +3437,7 @@ const fl = await q(`SELECT count(*)::int AS n FROM wa_bot_log WHERE phone_norm=$
     const conv = convFacts(cv);
     if (conv.lastKey && FU_CLOSING_KEYS.includes(conv.lastKey)) return no(`closing:${conv.lastKey}`);
     if (conv.saidNo) return no("said_no");
-    const cmp = await q("SELECT 1 FROM wa_bot_log WHERE phone_norm=$1 AND at > NOW() - INTERVAL '24 hours' AND (reply_key IN ('complaint','problem','change') OR handoff IN ('complaint','problem','order_change','allergy_severe')) LIMIT 1", [phone]);
+    const cmp = await q(COMPLAINT_24H_SQL, [phone]);
     if (cmp === null) return no("complaint_check_failed"); if (cmp.length) return no("complaint_today");
     const ord = await q(FU_SQL.ordered, [phone, new Date(Math.min(Date.parse(tg.at), now.getTime() - 24 * 3600_000)).toISOString()]);
     if (ord === null) return no("order_check_failed"); if (ord.length) return no("ordered");
@@ -3950,7 +3954,7 @@ const fl = await q(`SELECT count(*)::int AS n FROM wa_bot_log WHERE phone_norm=$
     if (chat.follow_declined_at && now.getTime() - Date.parse(chat.follow_declined_at) < cfg.replyFollowUpDeclineDays * 86400_000) return no("declined");      // FU1: «لا شكراً» = مفيش متابعات
     const out = await q(OUT_AFTER_SQL, [phone, ev.at]);
     if (out === null) return no("out_check_failed"); if (out.length) return no("already_answered");
-    const cmp = await q("SELECT 1 FROM wa_bot_log WHERE phone_norm=$1 AND at > NOW() - INTERVAL '24 hours' AND (reply_key IN ('complaint','problem','change') OR handoff IN ('complaint','problem','order_change','allergy_severe')) LIMIT 1", [phone]);
+    const cmp = await q(COMPLAINT_24H_SQL, [phone]);
     if (cmp === null) return no("complaint_check_failed"); if (cmp.length) return no("complaint_today");
     const since = new Date(now.getTime() - 6 * 3600_000).toISOString();      // سلة أو طلب في آخر ٦ ساعات ⇒ مفيش متابعة (متابعة السلة لها رسالتها)
     const cart = await q("SELECT 1 FROM wa_bot_carts WHERE phone_norm=$1 AND created_at > $2 LIMIT 1", [phone, since]);

@@ -285,13 +285,16 @@ function portalRig({ rows = [], settings = {}, handovers = [], chats = {} } = {}
     if (/^SELECT r\.id, r\.rating, r\.rating_exact/i.test(s)) return { rows: db.reviews.filter(inPortal).sort((a, b) => (a.resolved - b.resolved) || Date.parse(b.created_at) - Date.parse(a.created_at)).map((r) => ({ ...r, ref: r.ref || null })) };
     if (/^SELECT review_id, at, by_name/i.test(s)) return { rows: db.actions.filter((a) => p[0].includes(a.review_id)) };
     if (/^SELECT id, rating, phone_norm, resolved, is_test, hidden_at FROM reviews WHERE id=\$1/i.test(s)) { const r = byId(p[0]); return { rows: r ? [r] : [] }; }
+    /* مراجعة RV1 (التالتة): الكتابة مشروطة بـ«لسه مفتوح» (AND NOT resolved) — زي Postgres: صف اتقفل ⇒ ولا صف */
+    const stillOpen = (r) => r && !(/ AND NOT resolved /i.test(s) && r.resolved);
+    if (/^SELECT resolved, resolved_by, resolved_at, outcome_via FROM reviews WHERE id=\$1/i.test(s)) { const r = byId(p[0]); return { rows: r ? [r] : [] }; }
     if (/^UPDATE reviews SET resolved=TRUE, resolved_by=\$2, resolved_at=NOW\(\), resolution_note=\$3, outcome=\$4/i.test(s)) {
-      const r = byId(p[0]); if (!r) return { rows: [], rowCount: 0 };
+      const r = byId(p[0]); if (!stillOpen(r)) return { rows: [], rowCount: 0 };
       Object.assign(r, { resolved: true, resolved_by: p[1], resolved_at: new Date().toISOString(), resolution_note: p[2], outcome: p[3], outcome_at: new Date().toISOString(), outcome_by: p[1], outcome_via: p[4], portal_seen_at: r.portal_seen_at || new Date().toISOString() });
       return { rows: [{ phone_norm: r.phone_norm }], rowCount: 1 };
     }
     if (/^UPDATE reviews SET resolved=FALSE, resolved_by=NULL, resolved_at=NULL, resolution_note=\$3, outcome=\$4/i.test(s)) {
-      const r = byId(p[0]); if (!r) return { rows: [], rowCount: 0 };
+      const r = byId(p[0]); if (!stillOpen(r)) return { rows: [], rowCount: 0 };
       Object.assign(r, { resolved: false, resolved_by: null, resolved_at: null, resolution_note: p[2], outcome: p[3], outcome_at: new Date().toISOString(), outcome_by: p[1], outcome_via: p[4], portal_seen_at: r.portal_seen_at || new Date().toISOString() });
       return { rows: [{ phone_norm: r.phone_norm }], rowCount: 1 };
     }
@@ -519,7 +522,7 @@ test("review fix (phones): a placeholder number on a till bill, or one number on
 });
 
 /* ═══ مراجعة RV1: قفل التقييم بيرجّع محادثة واتساب للبوت ═══ */
-test("review fix (chat back to the bot): closing a low rating from the portal or the dashboard — or recording any outcome — clears the open «تقييم واطي» WhatsApp handover of that customer (like «خلصت»); a staff hold, a later order-change handover and other customers are untouched", async () => {
+test("review fix (chat back to the bot): closing a low rating from the portal or the dashboard clears the open «تقييم واطي» WhatsApp handover of that customer (like «خلصت»); a «متابعة» outcome keeps it with the manager; a staff hold, a later order-change handover and other customers are untouched", async () => {
   const chats = () => ({
     "512345678": { handoff_at: minsAgo(20), handoff_reason: "review_low", muted_until: null },
     "523456789": { handoff_at: minsAgo(15), handoff_reason: "order_change", muted_until: null },
@@ -530,9 +533,19 @@ test("review fix (chat back to the bot): closing a low rating from the portal or
   assert.equal(res.status, 200);
   assert.deepEqual([r.db.chats["512345678"].handoff_at, r.db.chats["512345678"].handoff_reason, Boolean(r.db.chats["512345678"].released_at)], [null, null, true], "the bot serves this customer again");
   assert.equal(r.db.chats["523456789"].handoff_reason, "order_change", "another customer untouched");
-  // follow-up outcome: the manager acted ⇒ also handed back (the rating stays open in «متابعة»)
+  /* مراجعة RV1 (التالتة): «متابعة» = التقييم لسه مفتوح والمدير لسه ماسكه ⇒ المحادثة بتفضل عنده (مابترجعش للبوت ولا لرسايله الآلية) */
   const f = portalRig({ rows: LOW(), chats: chats() });
-  await f.call("POST", "/api/portal/reviews/:id/close", { id: "13", body: { outcome: "no_answer" } });
+  for (const [id, outcome] of [["11", "follow_up"], ["13", "no_answer"]]) {
+    const x = await f.call("POST", "/api/portal/reviews/:id/close", { id, body: { outcome } });
+    assert.deepEqual([x.status, x.body.status], [200, "follow"], outcome);
+  }
+  assert.deepEqual([f.db.chats["512345678"].handoff_reason, f.db.chats["512345678"].handoff_at, f.db.chats["512345678"].released_at], ["review_low", minsAgo(20), undefined], "follow_up: still with the manager");
+  assert.deepEqual([f.db.chats["534567890"].handoff_reason, f.db.chats["534567890"].released_at], ["review_low", undefined], "no_answer: still with the manager");
+  assert.ok(!f.db.sql.some((q) => /^UPDATE wa_bot_chats/i.test(q)), "no chat write at all for a follow-up outcome");
+  const fPool = { async query(q) { const t = String(q).trim(); if (/^UPDATE reviews SET resolved=FALSE/.test(t)) return { rows: [{ phone_norm: "512345678" }], rowCount: 1 }; if (/wa_bot_chats/.test(t)) throw new Error("must not touch the chat"); return { rows: [], rowCount: 0 }; } };
+  for (const outcome of ["follow_up", "no_answer"]) assert.deepEqual(await PR.closeReview(fPool, { id: 11, outcome, by: "المدير" }).then((x) => [x.ok, x.status, x.chatReleased]), [true, "follow", false], outcome);
+  // …and closing it later hands it back; a staff hold (muted_until) stays
+  await f.call("POST", "/api/portal/reviews/:id/close", { id: "13", body: { outcome: "resolved" } });
   assert.deepEqual([f.db.chats["534567890"].handoff_reason, f.db.chats["534567890"].muted_until], [null, minsAgo(-30)], "a staff hold (muted_until) stays");
   // the rating's customer got an order-change handover since ⇒ that one stays (not a review)
   const oc = portalRig({ rows: LOW(), chats: { "523456789": { handoff_at: minsAgo(5), handoff_reason: "order_change" } } });
@@ -547,4 +560,65 @@ test("review fix (chat back to the bot): closing a low rating from the portal or
   const pool = { async query(q) { if (/wa_bot_chats/.test(q)) throw new Error("relation does not exist"); if (/^UPDATE reviews SET resolved=TRUE/.test(String(q).trim())) return { rows: [{ phone_norm: "512345678" }], rowCount: 1 }; return { rows: [], rowCount: 0 }; } };
   const cr = await PRm.closeReview(pool, { id: 11, outcome: "resolved", by: "المدير" });
   assert.deepEqual([cr.ok, cr.chatReleased], [true, false]);
+});
+
+/* ═══ مراجعة RV1 (التالتة): القفل مرة واحدة — اللي اتقفل مايتكتبش فوقه، ونتيجة «متابعة» مابترجّعش تقييم مقفول ═══
+   المراجع: المالك قفل من كارت اللوحة (RV3) والمدير ورقته مفتوحة ⇒ حفظ المدير كان بيمسح ملاحظة المالك ومين وإمتى؛ والكاشير (بالإعداد) كان بيرجّع
+   تقييم مقفول مفتوح بـ«اتصلنا ومحدش رد» رغم إن /reopen للمدير بس. */
+test("review fix (close once): a second close — stale portal sheet, a second manager, or the owner from the dashboard — is refused (409 already_closed, who/where in the message) and writes NOTHING; a «متابعة» outcome never reopens a closed rating (the cashier cannot get around the manager-only reopen); concurrent closes ⇒ exactly one wins", async () => {
+  const r = portalRig({ rows: LOW(), settings: { waBot: { reviewFlow: { portalCashier: true } } }, handovers: [{ id: 501, phone_norm: "512345678", reason: "review_low" }] });
+  // the owner closes #11 from the dashboard card (RV3 note)…
+  const own = await r.call("POST", "/api/cms/reviews/:id/resolve", { id: "11", body: { note: "النتيجة: كوبون تعويض — اتبعتله كوبون ٣٠" } });
+  assert.deepEqual([own.status, own.body.status], [200, "closed"]);
+  const snap = (id) => { const x = r.db.reviews.find((y) => y.id === id); return JSON.stringify([x.resolved, x.resolved_by, x.resolved_at, x.resolution_note, x.outcome, x.outcome_at, x.outcome_by, x.outcome_via]); };
+  const before11 = snap(11), acts0 = r.db.actions.length, ev0 = r.events.length;
+  // …then the manager saves the sheet he opened before ⇒ refused, the owner's close is kept as it was
+  const late = await r.call("POST", "/api/portal/reviews/:id/close", { id: "11", body: { outcome: "resolved", note: "كلمته" } });
+  assert.equal(late.status, 409); assert.equal(late.body.error, "already_closed");
+  assert.match(late.body.message, /اتقفل قبل كده/); assert.match(late.body.message, /المالك/); assert.match(late.body.message, /اللوحة/);
+  assert.deepEqual([late.body.closedBy, late.body.closedVia], ["المالك", "dashboard"]);
+  assert.equal(snap(11), before11, "resolution_note / resolved_by / resolved_at untouched");
+  assert.equal(r.db.reviews.find((x) => x.id === 11).resolution_note, "النتيجة: كوبون تعويض — اتبعتله كوبون ٣٠");
+  assert.equal(r.db.actions.length, acts0, "no action logged for a refused close");
+  assert.equal(r.events.length, ev0, "no live event for a refused close");
+  assert.ok(r.audits.some((a) => a[1] === "review_close" && a[3] === false), "the refusal is audited");
+  // the dashboard on a rating the portal already closed ⇒ 409 with its message (the card's errText shows body.message)
+  const portalFirst = await r.call("POST", "/api/portal/reviews/:id/close", { id: "12", body: { outcome: "not_customer" } });
+  assert.equal(portalFirst.status, 200);
+  const before12 = snap(12);
+  const dashLate = await r.call("POST", "/api/cms/reviews/:id/resolve", { id: "12", body: { note: "النتيجة: اتحلت — كلمته أنا" } });
+  assert.deepEqual([dashLate.status, dashLate.body.error, dashLate.body.closedVia], [409, "already_closed", "portal"]);
+  assert.match(dashLate.body.message, /أبو فهد · من البورتال/);
+  assert.equal(snap(12), before12);
+  // the cashier (portalCashier on): reopen is the manager's ⇒ 403, and «اتصلنا ومحدش رد» on a closed rating is NOT a back door
+  assert.equal((await r.call("POST", "/api/portal/reviews/:id/reopen", { id: "17", role: "cashier" })).status, 403);
+  const before17 = snap(17);
+  for (const outcome of ["no_answer", "follow_up", "resolved"]) {
+    const x = await r.call("POST", "/api/portal/reviews/:id/close", { id: "17", role: "cashier", body: { outcome } });
+    assert.deepEqual([x.status, x.body.error], [409, "already_closed"], outcome);
+  }
+  assert.equal(snap(17), before17, "still closed, by/note unchanged");
+  assert.equal(r.db.reviews.find((x) => x.id === 17).resolved, true);
+  // an OPEN rating takes follow-ups as before (one after the other), then one close
+  const c1 = await r.call("POST", "/api/portal/reviews/:id/close", { id: "13", body: { outcome: "no_answer" } });
+  const c2 = await r.call("POST", "/api/portal/reviews/:id/close", { id: "13", body: { outcome: "follow_up", note: "هيجرب بكرة" } });
+  assert.deepEqual([c1.status, c2.status, c2.body.status], [200, 200, "follow"]);
+  // two people press «احفظ» at the same moment ⇒ one close, one refusal
+  const [a, b] = await Promise.all([
+    r.call("POST", "/api/portal/reviews/:id/close", { id: "13", body: { outcome: "resolved", note: "أنا كلمته" } }),
+    r.call("POST", "/api/portal/reviews/:id/close", { id: "13", role: "cashier", body: { outcome: "closed", note: "مكرر" } })]);
+  assert.deepEqual([a.status, b.status].sort(), [200, 409]);
+  assert.equal(r.db.actions.filter((x) => x.review_id === 13 && x.action === "outcome" && ["resolved", "closed"].includes(x.outcome)).length, 1);
+  // reopen by the manager, then a close works again
+  assert.equal((await r.call("POST", "/api/portal/reviews/:id/reopen", { id: "17" })).status, 200);
+  assert.equal((await r.call("POST", "/api/portal/reviews/:id/close", { id: "17", body: { outcome: "resolved" } })).status, 200);
+  // the SQL: the guard is in the write itself (one statement), both paths
+  const writes = r.db.sql.filter((q) => /^UPDATE reviews SET resolved=(TRUE|FALSE), .* outcome=\$4/i.test(q));      // القفل والمتابعة (مش /reopen)
+  assert.ok(writes.length > 0 && writes.every((q) => / WHERE id=\$1 AND NOT resolved RETURNING phone_norm$/i.test(q)), "every outcome write carries AND NOT resolved");
+  // pure: status mapping + a row reopened between the two statements ⇒ conflict (409), nothing written
+  assert.deepEqual(["not_found", "already_closed", "conflict", "bad_outcome", "note_required"].map(PR.closeStatus), [404, 409, 409, 400, 400]);
+  const racePool = { async query(q) { const t = String(q).trim(); if (/^UPDATE reviews/.test(t)) return { rows: [], rowCount: 0 }; if (/^SELECT resolved, resolved_by/.test(t)) return { rows: [{ resolved: false }] }; throw new Error("unexpected " + t.slice(0, 40)); } };
+  assert.deepEqual(await PR.closeReview(racePool, { id: 11, outcome: "resolved" }).then((x) => [x.ok, x.error]), [false, "conflict"]);
+  const gonePool = { async query(q) { const t = String(q).trim(); if (/^UPDATE reviews/.test(t)) return { rows: [], rowCount: 0 }; return { rows: [] }; } };
+  assert.deepEqual(await PR.closeReview(gonePool, { id: 99, outcome: "resolved" }).then((x) => [x.ok, x.error]), [false, "not_found"]);
 });

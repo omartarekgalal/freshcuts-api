@@ -153,7 +153,12 @@ function world({ waBot = {}, notifications = { whatsappEnabled: true }, orders =
         && db.log.some((l) => l.phone_norm === o.phone_norm && l.decision === "replied" && Date.parse(l.at) < Date.parse(o.created_at) + 600_000 && Date.parse(l.at) > Date.parse(o.created_at) - 86400_000) && !db.jobs.some((j) => j.wamid === `paid:${o.order_no}`)).map((o) => ({ order_no: o.order_no, phone_norm: o.phone_norm })) };
       if (/^SELECT l\.phone_norm, l\.at, l\.lang FROM wa_bot_log l/i.test(s)) { const last = new Map(); for (const l of db.log) last.set(l.phone_norm, l);
         return { rows: [...last.values()].filter((l) => nowMs - Date.parse(l.at) >= p[0] * 60_000 && nowMs - Date.parse(l.at) < (p[0] + 60) * 60_000 && l.decision === "silent" && ["out_of_scope", "ignored_type", "auto_reply_covered"].includes(l.reason) && !(/<> 'revoke'/.test(s) && l.msg_type === "revoke")).map((l) => ({ phone_norm: l.phone_norm, at: l.at, lang: l.lang })) }; }
-      if (/^SELECT 1 FROM wa_bot_log WHERE phone_norm=\$1 AND at > NOW\(\) - INTERVAL '24 hours' AND \(reply_key IN/i.test(s)) return { rows: db.log.filter((l) => l.phone_norm === p[0] && nowMs - Date.parse(l.at) < 86400_000 && (["complaint", "problem", "change"].includes(l.reply_key) || ["complaint", "problem", "order_change", "allergy_severe"].includes(l.handoff))).slice(0, 1).map(() => ({})) };
+      /* «شكوى في آخر ٢٤ ساعة» (COMPLAINT_24H_SQL): القوايم بتتقري من الجملة نفسها — اللي في الكود هو اللي بيتجرّب */
+      if (/^SELECT 1 FROM wa_bot_log WHERE phone_norm=\$1 AND at > NOW\(\) - INTERVAL '24 hours' AND \(reply_key IN/i.test(s)) {
+        const inList = (re) => ((re.exec(s) || [])[1] || "").split(",").map((x) => x.trim().replace(/^'|'$/g, "")).filter(Boolean);
+        const keys = inList(/reply_key IN \(([^)]*)\)/i), hos = inList(/handoff IN \(([^)]*)\)/i);
+        return { rows: db.log.filter((l) => l.phone_norm === p[0] && nowMs - Date.parse(l.at) < 86400_000 && (keys.includes(l.reply_key) || hos.includes(l.handoff))).slice(0, 1).map(() => ({})) };
+      }
       // ── FD1: البوت رد على الرقم ده بعد رسالة الحملة؟
       if (/^SELECT 1 FROM wa_bot_log WHERE phone_norm=\$1 AND id <> \$2 AND decision IN \('replied','dry'\) AND at > \$3::timestamptz/i.test(s)) return { rows: db.log.filter((l) => l.phone_norm === p[0] && l.id !== p[1] && ["replied", "dry"].includes(l.decision) && Date.parse(l.at) > Date.parse(p[2])).slice(0, 1).map(() => ({})) };
       // ── EX6: آخر ردّين (سياق الكارت)
@@ -5571,4 +5576,63 @@ test("RV1 review fix: a low rating does not hold the chat like a complaint — t
   // a real complaint handover is unchanged: menu stays info-only (factual) — the carve-out is for review_low only
   assert.equal(R.decide({ phone: "512345678", text: "ورّني المنيو", type: "text", at: new Date(Date.parse(OPEN_AT)).toISOString() },
     { cfg: R.botConfig({ waBot: { mode: "live" } }), now: new Date(Date.parse(OPEN_AT) + 60_000), chat: { handoff_at: new Date(Date.parse(OPEN_AT) - 3600_000).toISOString(), handoff_reason: "complaint" }, data: {} }).key, "handoff_remind");
+}));
+
+/* مراجعة RV1 (التالتة): قفل التقييم الواطي بيرجّع المحادثة للبوت (handoff_at بيتمسح) — وده كان الحاجة الوحيدة اللي مانعة الرسايل اللي البوت بيبدأها
+   (FU1، SB4 قبل ما النافذة تقفل، متابعة EX6، متابعة المساعد): فحص «شكوى النهارده» ماكانش بيعدّ review_low، والمنيو بعد التقييم (REVIEW_SOFT) بيسجّل
+   بالظبط الضغطة اللي بتشغّل FU1. دلوقتي التقييم الواطي = شكوى ٢٤ ساعة في الفحص المشترك (COMPLAINT_24H_SQL). */
+test("RV1 review fix (proactive jobs after a low rating): closing the rating hands the chat back to the bot, but FU1 counts the low rating like a complaint for 24 h — no «تبي أجهّز لك طلبك؟» to an unhappy customer; a day later a new tap is followed up as usual", withEnv(LOCKS_OPEN, async () => {
+  const run = async ({ release = false, rate = true } = {}) => {
+    const w = fuLive({ extraSettings: { reviews: { threshold: 4, googleUrl: RV_GOOGLE } } });
+    w.db.invites = [{ phone_norm: "512345678", code: "ab12cd34", order_no: "W1790012345678", kind: "delivery", ref: "W1790012345678" }];
+    await w.say("هلا");
+    if (rate) {
+      await w.bot.reviewAsk({ phone: "0512345678", orderNo: "W1790012345678", code: "ab12cd34", kind: "delivery", ref: "W1790012345678" });
+      const low = await listTap(w, "rs:2:ab12cd34", "⭐⭐ مقبول");
+      assert.equal(low.log.handoff, "review_low", JSON.stringify(low.log));
+    }
+    w.clock.advance(2);
+    const m = await menuTap(w);
+    assert.deepEqual([m.log.decision, m.log.reply_key], ["replied", "cats"], JSON.stringify(m.log));
+    /* بالظبط اللي portalreviews.releaseLowChat بيسيبه (القفل بنتيجة بتقفله — البورتال أو «تم الحل») */
+    if (release) Object.assign(w.db.chats.get("512345678"), { handoff_at: null, handoff_reason: null, unknown_streak: 0, released_at: w.clock.now().toISOString() });
+    return { w, out: fuOut(await w.tick(41)), job: fuJob(w) };
+  };
+  const rel = await run({ release: true });
+  assert.deepEqual(rel.out, [], "closed (chat released): still no follow-up " + JSON.stringify(rel.job));
+  assert.equal(rel.job.reason, "complaint_today");
+  const held = await run();
+  assert.deepEqual(held.out, []); assert.equal(held.job.reason, "handover_open", "still open: the open handover holds it (unchanged)");
+  const none = await run({ rate: false });
+  assert.equal(none.out.length, 1, "control: the same chat without a low rating is followed up " + JSON.stringify(none.job));
+  // 24 h after the rating the brake is over: a new campaign tap gets its normal follow-up
+  rel.w.clock.advance(24 * 60); campTpl(rel.w, 5); await menuTap(rel.w);
+  assert.equal(fuOut(await rel.w.tick(41)).length, 1, "a day later: normal follow-up");
+}));
+
+test("RV1 review fix (proactive jobs after a low rating): SB4 «before the window closes» is held too after the close; one shared 24 h gate (complaint + review_low) for FU1, SB4, the EX6 lead follow-up and the assistant nudge", withEnv(CONFIGURED, async () => {
+  const keeper = async ({ release = false, rate = true } = {}) => {
+    const w = rvWorld({ waBot: { paidNoteEnabled: false }, world: { at: "2026-10-12T15:00:00Z", orders: [{ order_no: "W1790012347777", phone_norm: "512345678", status: "on_the_way", option: "delivery", created_at: "2026-10-13T10:30:00Z" }] } });
+    await w.say("هلا");
+    if (rate) {
+      await w.bot.reviewAsk({ phone: "0512345678", orderNo: "W1790012345678", code: "ab12cd34", kind: "delivery", ref: "W1790012345678" });
+      assert.equal((await listTap(w, "rs:1:ab12cd34", "⭐ سيء")).log.handoff, "review_low");
+    }
+    if (release) Object.assign(w.db.chats.get("512345678"), { handoff_at: null, handoff_reason: null, unknown_streak: 0, released_at: w.clock.now().toISOString() });
+    const sent = (await w.tick(20 * 60 + 5)).filter((b) => b.type && /ما زال معنا/.test(JSON.stringify(b)));
+    return { sent, job: w.db.jobs.filter((j) => j.kind === "window_keep").at(-1) };
+  };
+  const rel = await keeper({ release: true });
+  assert.deepEqual([rel.sent.length, rel.job.reason], [0, "complaint_today"], "closed and released: no window-keeper message");
+  const held = await keeper();
+  assert.deepEqual([held.sent.length, held.job.reason], [0, "handover_open"]);
+  const none = await keeper({ rate: false });
+  assert.deepEqual([none.sent.length, none.job.reason], [1, "sent:open_order"], "control: no low rating ⇒ the useful message goes");
+  // the one gate: review_low is in it, and every proactive job uses it (no inline copy left behind)
+  assert.match(R.COMPLAINT_24H_SQL, /handoff IN \([^)]*'review_low'[^)]*\)/);
+  assert.match(R.COMPLAINT_24H_SQL, /handoff IN \('complaint','problem','order_change','allergy_severe','review_low'\)/, "the complaint reasons are unchanged");
+  const { readFileSync } = await import("node:fs");
+  const src = readFileSync(new URL("./wabotrun.js", import.meta.url), "utf8");
+  assert.equal((src.match(/handoff IN \('complaint'/g) || []).length, 1, "one shared gate, no inline copy");
+  assert.equal((src.match(/await q\(COMPLAINT_24H_SQL, \[phone\]\)/g) || []).length, 4, "FU1 + SB4 + EX6 lead follow-up + assistant nudge");
 }));

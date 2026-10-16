@@ -36,7 +36,7 @@ import { KNOWN_WA_NUMBER } from "./wapolicy.js";
 import { recordPosReviewConsent, POS_REVIEW_CONSENT } from "./waconsent.js";
 import { isPlaceholderPhone } from "./phonecheck.js";
 /* RV1: التقييمات الواطية في بورتال المدير — نفس صف التقييم (resolved/resolution_note) اللي الوارد في اللوحة بيقراه + سجل الإجراءات */
-import { REVIEW_PORTAL_DDL, OUTCOMES, outcomeOf, closeReview } from "./portalreviews.js";
+import { REVIEW_PORTAL_DDL, OUTCOMES, outcomeOf, closeReview, closeStatus } from "./portalreviews.js";
 
 const CATEGORIES = ["الأكل", "التوصيل", "الخدمة", "السعر", "النظافة", "الوقت"];
 export const DEFAULTS = {
@@ -554,11 +554,14 @@ export function register(app, ctx, deps = {}) {
       /* RV1: طلبات الكاشير (صالة/سفري) بتاخد دعوتها هنا — نفس الجدول ونفس الحدود */
       if (flow.enabled) await queuePosInvites(now, s, flow).catch((e) => console.error("[reviews] pos invites:", e.message));
       const maxAge = Math.min(72, Math.max(1, Number(cf.askMaxAgeHours) || 20));
-      // فات ميعادها بكتير ⇒ تتقفل بدل ما تتبعت بعد يومين (العمر من وقت الطلب — طلب الكاشير بيتسجّل بعد ما جواله يتربط)
+      /* فات ميعادها بكتير ⇒ تتقفل بدل ما تتبعت بعد يومين. العمر بيتحسب من:
+           • طلب الكاشير («pos:…»): وقت الفاتورة — الدعوة بتتسجّل بعد ما جواله يتربط (ممكن بساعات).
+           • طلب الموقع: وقت تسجيل الدعوة نفسها = وقت التوصيل/الاستلام (زي main). مراجعة RV1 (التالتة): كان وقت الطلب للكل ⇒ الطلب المسبق
+             (preorder.js: لبكرة، بيتطلب بـ٢٠–٣٠ ساعة قبل ما يتوصّل) كان بيتقفل expired أول ما يتسلّم — لا واتساب ولا SMS (SB2). */
       await pool.query(
         `UPDATE review_invites SET skip_reason='expired'
           WHERE sent_at IS NULL AND skip_reason IS NULL
-            AND COALESCE(order_at, created_at) < $1::timestamptz - ($2 || ' hours')::interval`,
+            AND (CASE WHEN order_no LIKE 'pos:%' THEN COALESCE(order_at, created_at) ELSE created_at END) < $1::timestamptz - ($2 || ' hours')::interval`,
         [now.toISOString(), String(maxAge)]);
       /* ساعات الهدوء: المسار الجديد (٢٣:٣٠ ← ١١:٣٠ افتراضياً، دقيقة بدقيقة) بيأجّل اللي ميعاده جه لـ«resume» (١ الضهر) بدل ما يسيبه يطلع أول ما الهدوء يخلص.
          المسار القديم: ساعات صفحة التقييمات زي ما كانت. */
@@ -857,7 +860,7 @@ export function register(app, ctx, deps = {}) {
     await ready;
     /* مراجعة RV1 بعد RV3 (اللوحة على main): من غير outcome ⇒ الملاحظة زي ما هي (كارت اللوحة بيحط النتيجة جوّاها) */
     const r = await closeReview(pool, { id, outcome: b.outcome || "resolved", note: b.note, by: await whoName(c), via: "dashboard", verbatim: !b.outcome });
-    if (!r.ok) return c.json(r, r.error === "not_found" ? 404 : 400);
+    if (!r.ok) return c.json(r, closeStatus(r.error));      // مراجعة RV1 (التالتة): اتقفل قبل كده (البورتال مثلاً) ⇒ 409 ورسالته — مابنكتبش فوقه
     for (const hid of r.handoversAcked || []) portalSay("wa_handover_ack", { id: hid, by: r.by }, { scope: "reviews" });
     portalSay("review_update", { id, status: r.status });
     return c.json({ ok: true, status: r.status, outcome: r.outcome });

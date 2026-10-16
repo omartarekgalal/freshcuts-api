@@ -11,6 +11,7 @@
        أو اتقفل في آخر ٧ أيام (للمراجعة).
      • النتيجة (outcome): «اتحلت» / «مش عميل» / «اتقفلت من غير إجراء» ⇒ بيتقفل. «اتواصلنا ومحتاج متابعة» / «اتصلنا ومحدش رد» ⇒ بيفضل مفتوح
        في «متابعة» (والعميل ده مابيتسألش تقييم تاني طول ما عنده تقييم واطي مفتوح — reviews.js open_complaint).
+     • القفل مرة واحدة: اتقفل قبل كده ⇒ 409 already_closed من غير أي كتابة (closeReview).
      • سجل الإجراءات (review_actions): كل ملاحظة / اتصال / واتساب / نتيجة / رجوع — مين وإمتى ومن فين (البورتال أو اللوحة).
      • «شافها» (portal_seen_at): أول ما المدير يفتح شاشة التقييمات، اللي كان جديد بيتعلّم اتشاف ⇒ عدّاد «جديد» بيصفر. الرنّة الهادية بتحصل
        في البورتال لما يوصل تقييم واطي جديد (عدّاد الجديد زاد) — مرة واحدة، مش رنّة متكررة.
@@ -121,9 +122,11 @@ async function ackLowHandovers(pool, phone, by) {
   } catch { return []; }
 }
 
-/* مراجعة RV1: التقييم اتعامل معاه (أي نتيجة — نفس اللحظة اللي تنبيه «تقييم واطي» بيتقفل فيها) ⇒ محادثة واتساب ترجع للبوت، زي «خلصت»:
+/* مراجعة RV1: التقييم اتقفل (نتيجة بتقفله — مش «متابعة») ⇒ محادثة واتساب ترجع للبوت، زي «خلصت»:
    handoff_at / handoff_reason بيتمسحوا لو التحويل المفتوح عليها لسه «تقييم واطي». مابنلمسش كتم أو سحب موظف (muted_until)، ولا تحويل
-   تاني اتفتح بعده (طلب تعديل، شكوى…) — ده بيفضل زي ما هو. الجدول مش موجود / القاعدة وقعت ⇒ false (القفل نفسه مايتأثرش). */
+   تاني اتفتح بعده (طلب تعديل، شكوى…) — ده بيفضل زي ما هو. الجدول مش موجود / القاعدة وقعت ⇒ false (القفل نفسه مايتأثرش).
+   مراجعة RV1 (التالتة): «اتواصلنا ومحتاج متابعة» / «اتصلنا ومحدش رد» التقييم لسه مفتوح والمدير لسه ماسكه ⇒ المحادثة بتفضل عنده (مابترجعش).
+   ورجوع المحادثة للبوت مايفتحش رسايل البيع الآلية (FU1 / SB4 / المتابعات): wabotrun.COMPLAINT_24H_SQL بيعدّ التقييم الواطي زي الشكوى ٢٤ ساعة. */
 async function releaseLowChat(pool, phone) {
   if (!/^5\d{8}$/.test(String(phone || ""))) return false;
   try {
@@ -134,8 +137,24 @@ async function releaseLowChat(pool, phone) {
   } catch { return false; }
 }
 
+/* الكتابة مالقتش صف مفتوح ⇒ ليه: مش موجود (404) ولا اتقفل قبل كده (409 — بمين ومنين وإمتى عشان الشاشة تقول كده) */
+const VIA_AR = Object.freeze({ portal: "البورتال", dashboard: "اللوحة" });
+async function closedAlready(pool, id) {
+  const cur = ((await pool.query("SELECT resolved, resolved_by, resolved_at, outcome_via FROM reviews WHERE id=$1", [id])).rows || [])[0];
+  if (!cur) return { ok: false, error: "not_found", message: "التقييم مش موجود" };
+  if (!cur.resolved) return { ok: false, error: "conflict", message: "التقييم اتغيّر دلوقتي — حدّث الشاشة وجرّب تاني" };      // اترجّع مفتوح بين الجملتين (نادر)
+  const tag = [clip(cur.resolved_by, 60), VIA_AR[cur.outcome_via] ? `من ${VIA_AR[cur.outcome_via]}` : null].filter(Boolean).join(" · ");
+  return { ok: false, error: "already_closed", message: `التقييم ده اتقفل قبل كده${tag ? ` (${tag})` : ""} — ماكتبناش فوق اللي اتسجّل. حدّث الشاشة`,
+    closedBy: cur.resolved_by || null, closedAt: iso(cur.resolved_at), closedVia: cur.outcome_via || null };
+}
+/* حالة رفض القفل ⇒ كود HTTP (البورتال واللوحة) */
+export const closeStatus = (error) => (error === "not_found" ? 404 : error === "already_closed" || error === "conflict" ? 409 : 400);
+
 /* القفل / المتابعة — الدالة الوحيدة اللي بتكتب نتيجة تقييم (البورتال + «تم الحل» في اللوحة).
-   ⇒ { ok, status: closed|follow, outcome, by, handoversAcked, chatReleased } أو { ok:false, error } */
+   ⇒ { ok, status: closed|follow, outcome, by, handoversAcked, chatReleased } أو { ok:false, error }
+   مراجعة RV1 (التالتة): مرة واحدة بس — الكتابة مشروطة بـ«لسه مفتوح» (AND NOT resolved، في نفس الجملة ⇒ Postgres بيقفل الصف فاللي يوصل تاني
+   بيلاقيه اتقفل). اتقفل قبل كده ⇒ already_closed (409) ومفيش أي كتابة: لا الملاحظة ولا مين ولا إمتى بيتغيّروا، ونتيجة «متابعة» مابترجّعش
+   تقييم مقفول مفتوح (الرجوع للمدير بس — /reopen). ورقة قديمة في البورتال أو مديرين في نفس الوقت أو المالك من اللوحة ⇒ أول واحد بس. */
 /* verbatim = «تم الحل» في اللوحة من غير نتيجة صريحة: الملاحظة بتتكتب زي ما اتبعتت (زي main قبل RV1) — كارت اللوحة (RV3) بيكتب النتيجة
    جوّه الملاحظة («النتيجة: كوبون تعويض — …») وبيرجع يقراها؛ لو سبقناها بـ«اتحلت — » مابتتقريش. النتيجة نفسها بتتسجّل resolved زي الأول. */
 export async function closeReview(pool, { id, outcome = "resolved", note = null, by = null, role = null, via = "portal", verbatim = false } = {}) {
@@ -149,14 +168,14 @@ export async function closeReview(pool, { id, outcome = "resolved", note = null,
   const r = oc.closes
     ? await pool.query(`UPDATE reviews SET resolved=TRUE, resolved_by=$2, resolved_at=NOW(), resolution_note=$3, outcome=$4, outcome_at=NOW(), outcome_by=$2, outcome_via=$5,
                                portal_seen_at=COALESCE(portal_seen_at, NOW()), portal_seen_by=COALESCE(portal_seen_by, $2)
-                         WHERE id=$1 RETURNING phone_norm`, [id, who, summary, oc.id, via])
+                         WHERE id=$1 AND NOT resolved RETURNING phone_norm`, [id, who, summary, oc.id, via])
     : await pool.query(`UPDATE reviews SET resolved=FALSE, resolved_by=NULL, resolved_at=NULL, resolution_note=$3, outcome=$4, outcome_at=NOW(), outcome_by=$2, outcome_via=$5,
                                portal_seen_at=COALESCE(portal_seen_at, NOW()), portal_seen_by=COALESCE(portal_seen_by, $2)
-                         WHERE id=$1 RETURNING phone_norm`, [id, who, summary, oc.id, via]);
-  if (!r.rowCount) return { ok: false, error: "not_found", message: "التقييم مش موجود" };
+                         WHERE id=$1 AND NOT resolved RETURNING phone_norm`, [id, who, summary, oc.id, via]);
+  if (!r.rowCount) return closedAlready(pool, id);
   await logAction(pool, { id, action: "outcome", outcome: oc.id, note: nt, by: who, role, via }).catch(() => {});
   const handoversAcked = await ackLowHandovers(pool, r.rows[0] && r.rows[0].phone_norm, who);
-  const chatReleased = await releaseLowChat(pool, r.rows[0] && r.rows[0].phone_norm);
+  const chatReleased = oc.closes ? await releaseLowChat(pool, r.rows[0] && r.rows[0].phone_norm) : false;
   return { ok: true, status: oc.closes ? "closed" : "follow", outcome: oc.id, by: who, handoversAcked, chatReleased };
 }
 
@@ -232,7 +251,7 @@ export function register(app, ctx, deps = {}) {
     const b = await body(c);
     const r = await closeReview(pool, { id, outcome: b.outcome, note: b.note, by: who(a.user), role: a.user.role, via: "portal" });
     audit(a.user, "review_close", r.ok, { id, outcome: b.outcome || null, error: r.ok ? null : r.error });
-    if (!r.ok) return c.json(r, r.error === "not_found" ? 404 : 400);
+    if (!r.ok) return c.json(r, closeStatus(r.error));
     for (const hid of r.handoversAcked || []) say("wa_handover_ack", { id: hid, by: r.by });
     say("review_update", { id, status: r.status, outcome: r.outcome, by: r.by });
     return c.json({ ok: true, id, status: r.status, outcome: r.outcome, counts: await counts().catch(() => null) });
