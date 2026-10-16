@@ -136,7 +136,7 @@ export function safeFileName(name, ext) {
 }
 
 /* ffmpeg من غير shell: الملف بيتكتب في ملف مؤقت (mp4 من سفاري ساعات فهرسه في الآخر فمايتقريش من pipe)، والناتج على stdout */
-function runFfmpeg(bin, args, input, timeoutMs) {
+function runFfmpeg(bin, args, timeoutMs) {
   return new Promise((resolve) => {
     let done = false; const out = [];
     const end = (v) => { if (!done) { done = true; resolve(v); } };
@@ -146,7 +146,6 @@ function runFfmpeg(bin, args, input, timeoutMs) {
     p.on("error", () => { clearTimeout(t); end(null); });
     p.stdout.on("data", (d) => out.push(d));
     p.on("close", (code) => { clearTimeout(t); const b = Buffer.concat(out); end(code === 0 ? b : null); });
-    void input;
   });
 }
 /* أي صوت ⇒ ogg/opus مونو (زي رسالة واتساب الصوتية). بيرجّع {buf, mime:"audio/ogg", how} أو null. */
@@ -158,10 +157,10 @@ export async function toOggOpus(buf, mime, { bin = "ffmpeg", timeoutMs = 30_000 
     await fs.writeFile(inFile, buf);
     const base = ["-hide_banner", "-loglevel", "error", "-nostdin", "-i", inFile, "-vn", "-map_metadata", "-1"];
     const ok = (b) => Buffer.isBuffer(b) && b.length > 100 && b.toString("latin1", 0, 4) === "OggS";
-    let b = await runFfmpeg(bin, [...base, "-ac", "1", "-ar", "48000", "-c:a", "libopus", "-b:a", "32k", "-application", "voip", "-f", "ogg", "pipe:1"], null, timeoutMs);
+    let b = await runFfmpeg(bin, [...base, "-ac", "1", "-ar", "48000", "-c:a", "libopus", "-b:a", "32k", "-application", "voip", "-f", "ogg", "pipe:1"], timeoutMs);
     if (ok(b)) return { buf: b, mime: "audio/ogg", how: "libopus" };
     if (baseMime(mime) === "audio/webm") {      // من غير libopus: كروم بيسجّل opus أصلاً ⇒ ننقله لـogg من غير إعادة ترميز
-      b = await runFfmpeg(bin, [...base, "-c:a", "copy", "-f", "ogg", "pipe:1"], null, timeoutMs);
+      b = await runFfmpeg(bin, [...base, "-c:a", "copy", "-f", "ogg", "pipe:1"], timeoutMs);
       if (ok(b)) return { buf: b, mime: "audio/ogg", how: "remux" };
     }
     return null;

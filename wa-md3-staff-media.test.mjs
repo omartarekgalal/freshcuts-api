@@ -310,3 +310,26 @@ test("ffmpeg مش موجود ⇒ التحويل null والقدرات false (م�
   const v = await M.capsView(async () => ({ ffmpeg: false, opus: false }));
   assert.deepEqual(v.voice, { ffmpeg: false, opus: false, webm: false, mp4: true, ogg: true });
 });
+
+test("Hono حقيقي: multipart من FormData بيتقرا (ملف + تعليق + voice) ويوصل لحد ميتا الوهمية", withEnv(ALLOW, async () => {
+  const { Hono } = await import("hono");
+  const w = world();
+  const app = new Hono();
+  /* نفس المسارات بس على Hono الحقيقي (parseBody / File / content-length زي السيرفر) */
+  for (const [k, h] of Object.entries(w.app.routes)) { const [m, p] = k.split(" "); app.on(m, p, h); }
+  const fd = new FormData();
+  fd.append("file", new File([JPEG], "صورة الطلب.jpg", { type: "image/jpeg" }));
+  fd.append("caption", "تفضّل يا غالي");
+  const res = await app.request(`/api/portal/wa/chats/${keyOf(CUST)}/media`, { method: "POST", body: fd });
+  const j = await res.json();
+  assert.equal(res.status, 200, JSON.stringify(j)); assert.deepEqual([j.ok, j.kind], [true, "image"]);
+  assert.deepEqual(msgsOut(w)[0].body.image, { id: "1112223334445", caption: "تفضّل يا غالي" });
+  assert.equal(uploads(w)[0].size, JPEG.length);
+  const fd2 = new FormData(); fd2.append("file", new File([WEBM], "voice.webm", { type: "audio/webm;codecs=opus" })); fd2.append("voice", "1");
+  const r2 = await app.request(`/api/portal/wa/chats/${keyOf(CUST)}/media`, { method: "POST", body: fd2 });
+  assert.equal((await r2.json()).kind, "audio");
+  const r3 = await app.request(`/api/portal/wa/chats/${keyOf(CUST)}/media`, { method: "POST", body: new FormData() });
+  assert.deepEqual([r3.status, (await r3.json()).error], [400, "no_file"]);
+  const r4 = await app.request(`/api/portal/wa/chats/${keyOf(CUST)}/media`, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
+  assert.equal(r4.status, 400);
+}));
