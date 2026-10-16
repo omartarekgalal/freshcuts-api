@@ -76,7 +76,8 @@ test("phoneIssues: حالة ١٦/١٠ (LIMITED بسبب الاسم) + الجود
   const live = { ok: true, health: "LIMITED", quality: "GREEN", status: "CONNECTED", tier: "TIER_250", nameStatus: "PENDING_REVIEW", portfolio: { ok: true, limit: "TIER_2K" },
     healthErrors: [{ entity: "PHONE_NUMBER", code: 141006, text: "message limit will increase after the display name is approved", fix: null }] };
   const a = H.phoneIssues(live, { tier: "TIER_250", portfolio: "TIER_2K" });
-  assert.deepEqual(a.map((i) => `${i.key}:${i.level}`), ["health_limited:warn", "name_pending:warn"]);
+  assert.deepEqual(a.map((i) => `${i.key}:${i.level}`), ["health_limited:warn"], "«الاسم في المراجعة» مش مشكلة تانية لما هو سبب المحدود");
+  assert.deepEqual(H.phoneIssues({ ...live, health: "AVAILABLE" }, {}).map((i) => `${i.key}:${i.level}`), ["name_pending:warn"]);
   assert.match(a[0].title, /الاسم المعروض/);
   assert.match(a[0].detail, /display name/);
   const b = H.phoneIssues({ ...live, health: "AVAILABLE", nameStatus: "APPROVED", quality: "YELLOW", tier: "TIER_50" }, { tier: "TIER_250" });
@@ -84,7 +85,8 @@ test("phoneIssues: حالة ١٦/١٠ (LIMITED بسبب الاسم) + الجود
   const c = H.phoneIssues({ ...live, health: "BLOCKED", quality: "RED", nameStatus: "DECLINED", status: "RESTRICTED", portfolio: { ok: true, limit: "TIER_250" } }, { portfolio: "TIER_2K" });
   assert.deepEqual(c.map((i) => i.key).sort(), ["health_blocked", "name_rejected", "phone_status", "portfolio_drop", "quality_red"]);
   assert.ok(c.every((i) => i.level === "crit"));
-  assert.deepEqual(H.phoneIssues({ ok: false, error: "no_token" }).map((i) => i.key), ["read_failed"]);
+  assert.deepEqual(H.phoneIssues({ ok: false, error: "no_token" }).map((i) => `${i.key}:${i.level}`), ["read_failed:info"], "مرة واحدة = للعلم");
+  assert.deepEqual(H.phoneIssues({ ok: false, error: "no_token" }, { readFails: 2 }).map((i) => `${i.key}:${i.level}`), ["read_failed:warn"], "التالتة ورا بعض = تحذير");
   assert.deepEqual(H.phoneIssues({ ...live, health: "AVAILABLE", nameStatus: "APPROVED" }, {}), [], "كله تمام ⇒ مفيش مشاكل");
 });
 
@@ -162,6 +164,7 @@ function fakeDb({ errorsRows = [] } = {}) {
         st.data = JSON.parse(p[0]); st.ver++; return { rows: [{ id: 1 }], rowCount: 1 };
       }
       if (/^UPDATE wa_health_state SET data = jsonb_set\(data, '\{log\}'/.test(s)) { st.data.log = JSON.parse(p[0]); return { rows: [], rowCount: 1 }; }
+      if (/^UPDATE wa_health_state SET data = jsonb_set\(jsonb_set\(data, '\{alerts\}', \$2::jsonb, true\), '\{log\}'/.test(s)) { st.data.log = JSON.parse(p[0]); st.data.alerts = JSON.parse(p[1]); return { rows: [], rowCount: 1 }; }
       if (/FROM wa_messages/.test(s)) return { rows: db.errorsRows };
       if (/FROM wa_send_queue WHERE error_code IS NOT NULL/.test(s)) return { rows: [] };
       if (/FROM wa_send_queue/.test(s)) return { rows: [{ marketing: 0, capped: 0 }] };
@@ -173,18 +176,19 @@ function fakeDb({ errorsRows = [] } = {}) {
   return db;
 }
 const LIVE_PHONE = { ok: true, health: "AVAILABLE", quality: "GREEN", status: "CONNECTED", tier: "TIER_250", nameStatus: "APPROVED", portfolio: { ok: true, limit: "TIER_2K" }, healthErrors: [] };
-function harness({ owner = true, phone = LIVE_PHONE, errorsRows = [], pricingFail = false, settings = null } = {}) {
+function harness({ owner = true, phone = LIVE_PHONE, errorsRows = [], pricingFail = false, settings = null, graphGet = null } = {}) {
   const db = fakeDb({ errorsRows });
   db.settings = settings || { waTeam: { members: [{ phone: P1, role: "owner" }] }, delivery: { alertPhones: [P1, P3] }, waHealth: { monthBudgetSar: 10000 } };
   const sms = [];
   const graphCalls = [];
   const cloud = { phoneInfo: async () => db.phone, wabaId: () => "WABA1",
-    graphGet: async (path, q) => { graphCalls.push([path, q]); if (pricingFail) throw Object.assign(new Error("(#100) nope"), { code: 100 }); return { pricing_analytics: RAW, id: "WABA1" }; } };
+    graphGet: graphGet || (async (path, q) => { graphCalls.push([path, q]); if (q && q.fields === "currency") return { currency: "SAR", id: "WABA1" };
+      if (pricingFail) throw Object.assign(new Error("(#100) nope"), { code: 100 }); return { pricing_analytics: RAW, id: "WABA1" }; }) };
   db.phone = phone;
   const app = new Hono();
   let clock = NOW;
   const api = H.register(app, { pool: db.pool, requireAdmin: async () => null, getSettingsData: async () => db.settings, isOwner: async () => owner },
-    { cloud: () => cloud, sendSms: async (m) => { sms.push(m); return { ok: true }; }, now: () => clock, schedule: false, log: () => {} });
+    { cloud: () => cloud, sendSms: async (m) => { if (db.smsDown) throw new Error("taqnyat down"); sms.push(m); return { ok: true }; }, now: () => clock, schedule: false, log: () => {} });
   return { db, sms, api, app, graphCalls, tick: (ms) => { clock += ms; } };
 }
 
@@ -199,6 +203,7 @@ test("التشغيل: أول 131042 ⇒ SMS واحد للمالك بالعلام
   assert.match(h.graphCalls[0][1].fields, /^pricing_analytics\.start\(\d+\)\.end\(\d+\)\.granularity\(DAILY\)\.dimensions\(\["PRICING_CATEGORY"\]\)$/);
   assert.equal(h.db.st.data.last.level, "crit");
   assert.equal(h.db.st.data.last.spend.month, 469.26);
+  assert.equal(h.db.st.data.last.spend.currency, "SAR");
   assert.equal(h.db.st.data.log[0].sent, 1);
   h.tick(15 * 60_000);
   const r2 = await h.api.check({ reason: "test" });
@@ -258,4 +263,64 @@ test("المسارات: GET للأدمن بأرقام مقنّعة لغير ال
   assert.equal(t.ok, true); assert.equal(o.sms.length, 1); assert.equal(o.sms[0].phoneNorm, P2); assert.ok(o.sms[0].body.startsWith("‼️ تجربة:"));
   const chk = await (await o.app.request("/api/cms/wa-health/check", { method: "POST" })).json();
   assert.equal(chk.ok, true); assert.equal(chk.state.level, "ok");
+});
+
+test("الصرف: لو الـfield expansion اترفض بنجرّب الـedge؛ مفتاح ناقص = مفيش صرف؛ العملة مش مقروءة = null", async () => {
+  const calls = [];
+  const h = harness({ graphGet: async (path, q) => { calls.push(path);
+    if (q && q.fields === "currency") throw Object.assign(new Error("no field"), { code: 100 });
+    if (q && q.fields) throw Object.assign(new Error("(#100) Tried accessing nonexisting field"), { code: 100 });
+    assert.equal(path, "WABA1/pricing_analytics"); assert.equal(q.granularity, "DAILY"); assert.equal(q.dimensions, '["PRICING_CATEGORY"]');
+    return { data: RAW.data }; } });
+  await h.api.check({});
+  assert.deepEqual(calls, ["WABA1", "WABA1/pricing_analytics", "WABA1"]);
+  assert.equal(h.db.st.data.last.spend.month, 469.26); assert.equal(h.db.st.data.last.spend.currency, null);
+  const h2 = harness({ graphGet: async (path, q) => (q && q.fields === "currency" ? { currency: "USD" } : { id: "WABA1" }) });
+  await h2.api.check({});
+  assert.equal(h2.db.st.data.last.spend.month, 0); assert.equal(h2.db.st.data.last.spend.currency, "USD"); assert.equal(h2.db.st.data.last.spendError, null);
+});
+
+test("رسايل الإدارة: «wa-health …» نوع لوحده (wa_health) يتحكم فيه من شاشة رسايل الإدارة، ورسالة التجربة «test»", async () => {
+  const { typeOfRef, ALERT_TYPES, allowStaff } = await import("./staffcontrol.js");
+  assert.deepEqual(typeOfRef("wa-health pay_error,budget_warn"), { type: "wa_health", code: null });
+  assert.deepEqual(typeOfRef("wa-health recovered"), { type: "wa_health", code: null });
+  assert.deepEqual(typeOfRef("wa-healthy"), { type: "other", code: "wa-healthy" });
+  const t = ALERT_TYPES.find((x) => x.id === "wa_health");
+  assert.ok(t && t.critical === true && /صحة واتساب/.test(t.label));
+  assert.equal(allowStaff({}, "wa-health pay_error", P1), true, "من غير إعدادات بيتبعت");
+  const h = harness({ errorsRows: [{ code: 131042, n: 1 }] });
+  await h.api.check({});
+  assert.match(h.sms[0].ref, /^wa-health pay_error/);
+  const o = harness({ owner: true });
+  await o.app.request("/api/cms/wa-health/test", { method: "POST" });
+  assert.equal(o.sms[0].ref, "test");
+});
+
+test("التشغيل: الـSMS وقع لكل الأرقام ⇒ الدورة الجاية بتحاول تاني؛ المراقبة مقفولة + فحص يدوي ⇒ مفيش تنبيه ولا علامة", async () => {
+  const h = harness({ errorsRows: [{ code: 131042, n: 1 }] });
+  h.db.smsDown = true;
+  const r1 = await h.api.check({});
+  assert.deepEqual(r1.alerted, ["pay_error"]); assert.equal(h.sms.length, 0);
+  assert.deepEqual(h.db.st.data.alerts, {}, "اتراجعت");
+  assert.equal(h.db.st.data.log[0].failed, 1);
+  h.db.smsDown = false; h.tick(15 * 60_000);
+  const r2 = await h.api.check({});
+  assert.deepEqual(r2.alerted, ["pay_error"]); assert.equal(h.sms.length, 1);
+  const off = harness({ errorsRows: [{ code: 131042, n: 1 }], settings: { waTeam: { members: [{ phone: P1, role: "owner" }] }, waHealth: { enabled: false } } });
+  assert.equal((await off.api.check({})).skipped, "disabled");
+  const r3 = await off.api.check({ force: true });
+  assert.equal(r3.ok, true); assert.deepEqual(r3.alerted, []); assert.equal(off.sms.length, 0);
+  assert.deepEqual(off.db.st.data.alerts, {}); assert.equal(off.db.st.data.last.level, "crit", "الحالة بتتعرض");
+});
+
+test("التشغيل: قراية ميتا وقعت مرة = من غير SMS؛ ٣ مرات ورا بعض = تحذير", async () => {
+  const h = harness({ phone: { ok: false, error: "HTTP 500" } });
+  await h.api.check({}); h.tick(15 * 60_000); await h.api.check({});
+  assert.equal(h.sms.length, 0); assert.equal(h.db.st.data.readFails, 2);
+  h.tick(15 * 60_000);
+  const r = await h.api.check({});
+  assert.deepEqual(r.alerted, ["read_failed"]); assert.equal(h.sms.length, 1);
+  h.db.phone = LIVE_PHONE; h.tick(15 * 60_000);
+  await h.api.check({});
+  assert.equal(h.db.st.data.readFails, 0); assert.match(h.sms[1].body, /رجع تمام: قراية الحالة/);
 });

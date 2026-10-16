@@ -188,7 +188,8 @@ const HEALTH_ERR_AR = (e) => String(e && (e.text || e.code) || "").slice(0, 160)
 export function phoneIssues(phone, prev = {}) {
   const out = [];
   if (!phone || phone.ok !== true) {
-    out.push({ key: "read_failed", level: "warn", title: "ماقدرناش نقرا حالة رقم واتساب من ميتا", sms: "ماقدرناش نقرا حالة رقم واتساب من ميتا",
+    /* قراية فاشلة مرة = للعلم بس (ميتا بتقع دقيقة وترجع)؛ ٣ مرات ورا بعض (~٤٥ دقيقة) = تحذير. prev.readFails = عدد الفشل قبل الفحص ده */
+    out.push({ key: "read_failed", level: (Number(prev && prev.readFails) || 0) >= 2 ? "warn" : "info", title: "ماقدرناش نقرا حالة رقم واتساب من ميتا", sms: "ماقدرناش نقرا حالة رقم واتساب من ميتا",
       detail: phone ? String(phone.error || phone.code || "").slice(0, 120) : null,
       todo: "لو استمرت أكتر من ساعة: التوكن أو الصلاحية فيها مشكلة — شوف «الربط» في قسم واتساب.", link: null });
     return out;
@@ -213,7 +214,7 @@ export function phoneIssues(phone, prev = {}) {
     todo: "خفّف الحملات (أقل عدد، جمهور أدفى، رسالة أوضح) لحد ما ترجع خضرا. لو بقت حمرا الإرسال هيتحد.", link: "quality" });
   if (nameStatus === "DECLINED" || nameStatus === "REJECTED") out.push({ key: "name_rejected", level: "crit", title: "ميتا رفضت الاسم المعروض", sms: "ميتا رفضت اسم رقم واتساب — الإرسال هيفضل محدود",
     todo: "عدّل الاسم في WhatsApp Manager ← Phone numbers ← Name ليطابق اسم المحل الرسمي (السجل التجاري/الموقع) وقدّمه تاني.", link: "phones" });
-  else if (nameStatus === "PENDING_REVIEW") out.push({ key: "name_pending", level: "warn", title: "الاسم المعروض لسه في مراجعة ميتا", sms: "اسم رقم واتساب لسه في مراجعة ميتا — الحد محدود",
+  else if (nameStatus === "PENDING_REVIEW" && !(h === "LIMITED" && out.some((i) => i.key === "health_limited" && /الاسم/.test(i.title)))) out.push({ key: "name_pending", level: "warn", title: "الاسم المعروض لسه في مراجعة ميتا", sms: "اسم رقم واتساب لسه في مراجعة ميتا — الحد محدود",
     todo: "مفيش حاجة تتعمل غير المتابعة. لو طوّلت أكتر من يومين أو اترفضت: عدّل الاسم ليطابق اسم المحل الرسمي.", link: "phones" });
   const st = up(phone.status);
   if (["BANNED", "RESTRICTED", "DISCONNECTED", "RATE_LIMITED", "DELETED"].includes(st)) out.push({ key: "phone_status", level: "crit", title: `حالة الرقم عند ميتا: ${st}`, sms: `حالة رقم واتساب عند ميتا بقت ${st}`,
@@ -389,8 +390,8 @@ export function register(app, ctx, deps = {}) {
     const add = (rows) => { for (const x of rows || []) { const code = Number(x.code); if (!Number.isFinite(code)) continue; const cur = out.get(code) || { code, n: 0, last: null };
       cur.n = Math.max(cur.n, Number(x.n) || 0); const l = x.last ? new Date(x.last).toISOString() : null; if (l && (!cur.last || l > cur.last)) cur.last = l; out.set(code, cur); } };
     try {
-      add((await pool.query(`SELECT substring(error from '^([0-9]+)')::int AS code, count(*)::int AS n, max(updated_at) AS last FROM wa_messages
-          WHERE direction='out' AND status='failed' AND updated_at > NOW() - ($1::int * INTERVAL '1 minute') AND error ~ '^[0-9]+' GROUP BY 1`, [windowMin])).rows);
+      add((await pool.query(`SELECT substring(error from '^([0-9]{1,9})')::int AS code, count(*)::int AS n, max(updated_at) AS last FROM wa_messages
+          WHERE direction='out' AND status='failed' AND updated_at > NOW() - ($1::int * INTERVAL '1 minute') AND error ~ '^[0-9]{1,9}(:|$)' GROUP BY 1`, [windowMin])).rows);
     } catch (e) { log("[wa-health] codes(wa_messages):", e.message); }
     try {
       add((await pool.query(`SELECT error_code AS code, count(*)::int AS n, max(COALESCE(tried_at, claimed_at)) AS last FROM wa_send_queue
@@ -419,15 +420,26 @@ export function register(app, ctx, deps = {}) {
     let start = Math.min(mStart, t - 8 * DAY);
     if (cfg.prepaidSince) start = Math.max(t - 62 * DAY, Math.min(start, Date.parse(`${cfg.prepaidSince}T00:00:00Z`)));
     const end = Date.parse(`${utcDay(t + DAY)}T00:00:00Z`);
-    const field = `pricing_analytics.start(${Math.floor(start / 1000)}).end(${Math.floor(end / 1000)}).granularity(DAILY).dimensions(["PRICING_CATEGORY"])`;
-    try {
-      const waba = typeof cl.wabaId === "function" ? cl.wabaId() : null;
-      if (!waba) return { ok: false, error: "no_waba" };
-      const d = await cl.graphGet(waba, { fields: field });
-      const raw = d && d.pricing_analytics ? d.pricing_analytics : d;
-      return { ok: true, ...parsePricing(raw) };
-    } catch (e) { return { ok: false, error: String(e && e.message || e).slice(0, 160), code: e && e.code != null ? e.code : null }; }
+    const S = Math.floor(start / 1000), E = Math.floor(end / 1000);
+    const field = `pricing_analytics.start(${S}).end(${E}).granularity(DAILY).dimensions(["PRICING_CATEGORY"])`;
+    const waba = typeof cl.wabaId === "function" ? cl.wabaId() : null;
+    if (!waba) return { ok: false, error: "no_waba" };
+    let raw = null, first = null;
+    /* الشكل الموثّق: حقل على الـWABA بالـfield expansion؛ ولو اترفض، نفس الطلب كـedge ({waba}/pricing_analytics) — الاتنين بيرجعوا data[].data_points[] */
+    try { const d = await cl.graphGet(waba, { fields: field }); raw = d && d.pricing_analytics ? d.pricing_analytics : { data: [] }; }      // مفيش مفتاح = مفيش صرف في الفترة
+    catch (e) { first = e; }
+    if (!raw) {
+      try { raw = await cl.graphGet(`${waba}/pricing_analytics`, { start: String(S), end: String(E), granularity: "DAILY", dimensions: '["PRICING_CATEGORY"]' }); }
+      catch { return { ok: false, error: String(first && first.message || first || "pricing_failed").slice(0, 160), code: first && first.code != null ? first.code : null }; }
+    }
+    /* عملة الحساب (الأسعار بتيجي بيها) — مرة كل ٦ ساعات؛ لو الحقل مش مقروء بنفترض ريال (بطاقة الأسعار عندنا بالريال) */
+    if (!curCache.at || t - curCache.at > 6 * 3600_000) {
+      try { const c = await cl.graphGet(waba, { fields: "currency" }); curCache = { at: t, cur: /^[A-Z]{3}$/.test(String(c && c.currency || "")) ? c.currency : null }; }
+      catch { curCache = { at: t, cur: null }; }
+    }
+    return { ok: true, currency: curCache.cur, ...parsePricing(raw) };
   }
+  let curCache = { at: 0, cur: null };
 
   async function evaluate(cfg) {
     const st = await readState();
@@ -437,8 +449,8 @@ export function register(app, ctx, deps = {}) {
     try { phone = cl && typeof cl.phoneInfo === "function" ? await cl.phoneInfo({ fresh: true }) : { ok: false, error: "no_reader" }; }
     catch (e) { phone = { ok: false, error: String(e.message || e).slice(0, 120) }; }
     const [pr, codes, m24, events] = await Promise.all([pricing(cfg), errorCodes(cfg.errorWindowMin), marketing24(), recentEvents()]);
-    const spend = pr.ok ? spendView(pr.days, { now: now(), prepaidSince: cfg.prepaidSince }) : null;
-    const seen = { tier: prev.tier || null, portfolio: prev.portfolio || null };
+    const spend = pr.ok ? { ...spendView(pr.days, { now: now(), prepaidSince: cfg.prepaidSince }), currency: pr.currency || null } : null;
+    const seen = { tier: prev.tier || null, portfolio: prev.portfolio || null, readFails: Number(prev.readFails) || 0 };
     const issues = mergeIssues(
       errorIssues(codes, m24, cfg),
       phoneIssues(phone, seen),
@@ -464,11 +476,13 @@ export function register(app, ctx, deps = {}) {
       const cfg = healthCfg(s);
       if (!cfg.enabled && !force) return { ok: true, skipped: "disabled" };
       const { snap, prev, st, phone, pf } = await evaluate(cfg);
-      const plan = alertPlan(snap.issues, prev.alerts, cfg, now());
+      /* فحص يدوي والمراقبة مقفولة: بنعرض الحالة بس — مفيش تنبيه ولا بنعلّم إنه اتبعت */
+      const plan = cfg.enabled ? alertPlan(snap.issues, prev.alerts, cfg, now()) : { announce: [], recovered: [], next: prev.alerts || {} };
       const text = alertText({ marker: cfg.marker, announce: plan.announce, recovered: plan.recovered, activeCrit: snap.issues.filter((i) => i.level === "crit").length });
       const rec = recipientsOf(s, cfg);
       const next = { ...prev, last: snap, alerts: plan.next,
-        tier: phone && phone.ok && phone.tier ? phone.tier : prev.tier || null, portfolio: pf || prev.portfolio || null, reason };
+        tier: phone && phone.ok && phone.tier ? phone.tier : prev.tier || null, portfolio: pf || prev.portfolio || null, reason,
+        readFails: phone && phone.ok ? 0 : (Number(prev.readFails) || 0) + 1 };
       const willSend = Boolean(text) && cfg.enabled && cfg.sms && rec.phones.length > 0 && Boolean(sendSms);
       if (text) {
         const entry = { at: snap.checkedAt, text, keys: plan.announce.map((i) => i.key), recovered: plan.recovered, to: rec.phones.map(mask), sent: 0,
@@ -479,13 +493,20 @@ export function register(app, ctx, deps = {}) {
       const claim = await pool.query("UPDATE wa_health_state SET data=$1::jsonb, ver=ver+1, updated_at=NOW() WHERE id=1 AND ver=$2::bigint RETURNING id",
         [J(next), st.ver]);
       if (!claim.rowCount) return { ok: true, skipped: "claimed_elsewhere", state: snap };
-      let sent = 0;
+      let sent = 0, failed = 0;
       if (willSend) {
         for (const p of rec.phones) {
           try { const r = await sendSms({ phoneNorm: p, body: text, kind: "staff", ref: `wa-health ${plan.announce.map((i) => i.key).join(",") || "recovered"}`.slice(0, 80) }); if (!(r && r.suppressed)) sent++; }
-          catch (e) { log(`[wa-health] sms → ${mask(p)} failed: ${e.message}`); }
+          catch (e) { failed++; log(`[wa-health] sms → ${mask(p)} failed: ${e.message}`); }
         }
-        if (next.log && next.log[0]) { next.log[0].sent = sent; await pool.query("UPDATE wa_health_state SET data = jsonb_set(data, '{log}', $1::jsonb, true) WHERE id=1", [J(next.log)]).catch(() => {}); }
+        if (next.log && next.log[0]) {
+          next.log[0].sent = sent;
+          if (failed) next.log[0].failed = failed;
+          /* الـSMS وقع لكل الأرقام (تقنيات واقفة مثلاً) ⇒ نرجّع «اتبعت عن إيه» زي ما كان، فالدورة الجاية تحاول تاني بدل ما التنبيه يضيع ٦ ساعات */
+          const revert = failed === rec.phones.length;
+          await pool.query(`UPDATE wa_health_state SET data = jsonb_set(${revert ? "jsonb_set(data, '{alerts}', $2::jsonb, true)" : "data"}, '{log}', $1::jsonb, true) WHERE id=1`,
+            revert ? [J(next.log), J(prev.alerts || {})] : [J(next.log)]).catch(() => {});
+        }
       }
       return { ok: true, state: snap, alerted: plan.announce.map((i) => i.key), recovered: plan.recovered, sent };
     })().catch((e) => { log("[wa-health] check:", e.message); return { ok: false, error: String(e.message || e).slice(0, 200) }; })
@@ -545,15 +566,21 @@ export function register(app, ctx, deps = {}) {
     if (!rec.phones.length) return c.json({ ok: false, error: "no_phones", message: "مفيش رقم تنبيه — اكتب رقمك" });
     let sent = 0;
     for (const p of rec.phones) {
-      try { const r = await sendSms({ phoneNorm: p, body: testText(cfg.marker), kind: "staff", ref: "wa-health test" }); if (!(r && r.suppressed)) sent++; }
+      /* «test» بيعدّي بوابة رسايل الإدارة دايماً (staffcontrol) — التجربة توصل حتى لو النوع مقفول */
+      try { const r = await sendSms({ phoneNorm: p, body: testText(cfg.marker), kind: "staff", ref: "test" }); if (!(r && r.suppressed)) sent++; }
       catch (e) { log(`[wa-health] test → ${mask(p)}: ${e.message}`); }
     }
     return c.json({ ok: sent > 0, sent, to: rec.phones.map(mask), text: testText(cfg.marker) });
   });
 
   /* ── الجدولة: كل everyMin دقيقة، وفحص سريع (بعد دقيقة) لما ويب هوك ييجي بغلطة خطيرة أو حدث حساب/جودة ── */
-  let soon = null;
-  const kick = (why) => { if (soon) return; soon = setTimeout(() => { soon = null; check({ reason: why }).catch(() => {}); }, 60_000); if (soon.unref) soon.unref(); };
+  /* فحص سريع بعد دقيقة من أول غلطة خطيرة — ومرة كل ٥ دقايق بالكتير وقت عاصفة أخطاء (كل حالة فاشلة بتيجي ويب هوك) */
+  let soon = null, lastKick = 0;
+  const kick = (why) => {
+    if (soon || now() - lastKick < 5 * 60_000) return;
+    lastKick = now();
+    soon = setTimeout(() => { soon = null; check({ reason: why }).catch(() => {}); }, 60_000); if (soon.unref) soon.unref();
+  };
   const wa = deps.wa || null;
   if (wa && typeof wa.on === "function") {
     wa.on("status", (s) => { const code = Number(s && s.code); if (Number.isFinite(code) && (CRIT_CODES.includes(code))) kick(`webhook ${code}`); });

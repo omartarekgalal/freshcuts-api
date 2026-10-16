@@ -63,6 +63,8 @@ export const ALERT_TYPES = [
     hint: "مشكلة في النشر التلقائي على السوشال." },
   { id: "optout_brake", label: "فرملة إيقاف الاشتراك", source: "cms.js", critical: true,
     hint: "حملة SMS اتوقفت لوحدها لأن ناس كتير ألغت الاشتراك." },
+  { id: "wa_health", label: "صحة واتساب (رصيد، دفع، جودة، حد، اسم)", source: "wahealth.js", critical: true,
+    hint: "تنبيه قبل ما رسايل واتساب تقف — أولها «‼️ واتساب فريش كاتس:». بيروح لأرقام «صحة واتساب» في قسم واتساب، مرة لكل تغيير." },
 ];
 const TYPE_BY_ID = Object.fromEntries(ALERT_TYPES.map((t) => [t.id, t]));
 
@@ -83,6 +85,7 @@ export function typeOfRef(ref) {
   if (/^optout_brake$/.test(r)) return { type: "optout_brake", code: null };
   if (/^content_alert$/.test(r)) return { type: "content_alert", code: null };
   if (/^review:/.test(r)) return { type: "review", code: null };
+  if (/^wa-health(\s|$)/.test(r)) return { type: "wa_health", code: null };          // WH1: wa-health <مفاتيح المشاكل>|recovered
   return { type: "other", code: w[0] || null };
 }
 
