@@ -79,6 +79,8 @@ export const DEFAULTS = Object.freeze({
   /* ١٤/١٠ — «مانبعتش قالب بفلوس لكل مرحلة» (wapolicy.js) */
   followLink: WA_POLICY_DEFAULTS.followLink,                   // زر «📲 تابع طلبك على واتساب» في صفحة الشكر/التتبع ⇒ «تابع طلبي W…» ⇒ البوت يرد بالحالة والنافذة تتفتح
   followNumber: WA_POLICY_DEFAULTS.followNumber,               // الرقم اللي الزر بيفتحه
+  followBanner: WA_POLICY_DEFAULTS.followBanner,               // TRK6: بانر «تابع طلبك على واتساب» في المتجر بعد الطلب
+  followBannerSkipHours: WA_POLICY_DEFAULTS.followBannerSkipHours, // TRK6: …مابيظهرش لو العميل كاتب لنا من أقل من كده
   closedPolicy: WA_POLICY_DEFAULTS.closedPolicy,               // النافذة مقفولة ⇒ القواعد اللي تحت
   closedSkipPreparing: WA_POLICY_DEFAULTS.closedSkipPreparing, // …«بنجهّز» مابتطلعش قالب
   mergeDeliveredReview: WA_POLICY_DEFAULTS.mergeDeliveredReview, // …التوصيل بزرّين التقييم ⇒ مفيش قالب تقييم تاني للطلب
@@ -675,7 +677,7 @@ export function botConfig(settings) {
     reviewFlow: reviewFlowConfig(x.reviewFlow),      // RV1
     courierContact: x.courierContact !== false, courierTemplate: x.courierTemplate === true,
     windowFreeUpdates: x.windowFreeUpdates !== false, windowSell: x.windowSell !== false, windowKeeper: x.windowKeeper !== false,
-    ...(({ followLink, followNumber, closedPolicy, closedSkipPreparing, mergeDeliveredReview, reviewPaidGapMin }) => ({ followLink, followNumber, closedPolicy, closedSkipPreparing, mergeDeliveredReview, reviewPaidGapMin }))(waPolicyCfg({ waBot: x })),
+    ...(({ followLink, followNumber, closedPolicy, closedSkipPreparing, mergeDeliveredReview, reviewPaidGapMin, followBanner, followBannerSkipHours }) => ({ followLink, followNumber, closedPolicy, closedSkipPreparing, mergeDeliveredReview, reviewPaidGapMin, followBanner, followBannerSkipHours }))(waPolicyCfg({ waBot: x })),
     windowV2Stages: (Array.isArray(x.windowV2Stages) ? x.windowV2Stages : []).filter((k) => WINDOW_V2_STAGES.includes(k)),
     windowKeeperHour: num(x.windowKeeperHour, 12, 23, DEFAULTS.windowKeeperHour), windowKeeperDailyCap: num(x.windowKeeperDailyCap, 0, 500, DEFAULTS.windowKeeperDailyCap), windowKeeperWeekly: num(x.windowKeeperWeekly, 0, 7, DEFAULTS.windowKeeperWeekly),
     windowKeeperQuietStart: num(x.windowKeeperQuietStart, 0, 23, DEFAULTS.windowKeeperQuietStart), windowKeeperQuietEnd: num(x.windowKeeperQuietEnd, 0, 23, DEFAULTS.windowKeeperQuietEnd), leadFollowUpMin: num(x.leadFollowUpMin, 0, 180, DEFAULTS.leadFollowUpMin),
@@ -755,10 +757,10 @@ export function configFromBody(b, prev = {}) {
   delete out.humanWindowHours;      // اتلغى (١٢/١٠) — أي حفظ بينضّف المخزّن القديم
   for (const k of ["humanPauseMin", "staffWaitMin", "closedEchoPauseMin", "manualMuteHours", "handoffOpenHours", "freeRepliesPerMonth", "replyRateSar", "disclosureHours", "unknownHandoverAfter", "adWindowHours", "optinAnswerWindowMin",
     "offerEndWithinDays", "boxesCacheMin", "menuCacheMin", "offersCacheMin", "staleCacheMin", "logKeepDays", "reorderMaxDays", "reorderLinkDays", "reorderMinTotal", "reorderLookback",
-    "handoverRealertMin", "handoverCustomerNoteMin", "greetWindowHours", "maxAgeMinutes", "sameTextSeconds", "autoEchoMaxSec", "autoInboundSec", "openerHours", "leadFollowUpMin", "reviewReplyHours", "reviewPaidGapMin", "windowKeeperHour", "windowKeeperDailyCap", "windowKeeperWeekly", "windowKeeperQuietStart", "windowKeeperQuietEnd", "loopGuardCount", "loopGuardFastSec", "loopGuardSeconds", "loopGuardMuteHours", "mediaFloodBuyerCount", "mediaFloodCount", "mediaFloodMinutes", "mediaFloodMuteHours", "maxRepliesPerHour", "maxTapsPerHour", "maxRepliesPerMinute", "orderLookbackHours", "lateAfterMinutes", "maxAlertsPerHour", "campaignOfferHours", "campaignYesQuietMin", ...Object.keys(FU_NUMS)]) {
+    "handoverRealertMin", "handoverCustomerNoteMin", "greetWindowHours", "maxAgeMinutes", "sameTextSeconds", "autoEchoMaxSec", "autoInboundSec", "openerHours", "leadFollowUpMin", "reviewReplyHours", "reviewPaidGapMin", "followBannerSkipHours", "windowKeeperHour", "windowKeeperDailyCap", "windowKeeperWeekly", "windowKeeperQuietStart", "windowKeeperQuietEnd", "loopGuardCount", "loopGuardFastSec", "loopGuardSeconds", "loopGuardMuteHours", "mediaFloodBuyerCount", "mediaFloodCount", "mediaFloodMinutes", "mediaFloodMuteHours", "maxRepliesPerHour", "maxTapsPerHour", "maxRepliesPerMinute", "orderLookbackHours", "lateAfterMinutes", "maxAlertsPerHour", "campaignOfferHours", "campaignYesQuietMin", ...Object.keys(FU_NUMS)]) {
     if (k in src) { if (Number.isFinite(Number(src[k])) && src[k] !== "" && src[k] !== null) out[k] = Number(src[k]); else errors.push(k); }
   }
-  for (const k of ["interactive", "staffAlert", "alertInTest", "autoEchoSkipCovered", "autoInboundPatterns", "paidNoteEnabled", "reviewWhatsApp", "windowFreeUpdates", "windowSell", "windowKeeper", "courierContact", "courierTemplate", "followLink", "closedPolicy", "closedSkipPreparing", "mergeDeliveredReview", "handoverAckNeedsReply", "reorderEnabled", "dishFactsEnabled", "campaignCart", ...FU_BOOLS]) if (k in src) out[k] = src[k] === true;
+  for (const k of ["interactive", "staffAlert", "alertInTest", "autoEchoSkipCovered", "autoInboundPatterns", "paidNoteEnabled", "reviewWhatsApp", "windowFreeUpdates", "windowSell", "windowKeeper", "courierContact", "courierTemplate", "followLink", "followBanner", "closedPolicy", "closedSkipPreparing", "mergeDeliveredReview", "handoverAckNeedsReply", "reorderEnabled", "dishFactsEnabled", "campaignCart", ...FU_BOOLS]) if (k in src) out[k] = src[k] === true;
   if ("llm" in src) {
     const L = src.llm || {}, cur = { ...(prev.llm || {}) };
     if ("enabled" in L) cur.enabled = L.enabled === true;
@@ -967,6 +969,8 @@ export const SCHEMA = Object.freeze({
   courierTemplate: S("mode", "boolean", "«طلبك مع المندوب» بره النافذة: القالب الجديد", "افتحه بعد ما ميتا تعتمد fc_order_on_the_way_courier: بره نافذة الـ٢٤ ساعة يتبعت هو بدل fc_order_on_the_way (لو للمندوب اسم وجوال؛ غير كده القديم)."),
   followLink: S("orderMsgs", "boolean", "زر «📲 تابع طلبك على واتساب» في صفحة الشكر والتتبع", "العميل يضغط ⇒ واتساب يفتح على رقمنا برسالة جاهزة «تابع طلبي W…» ⇒ البوت يرد بحالة الطلب. رسالته دي بتفتح نافذة ٢٤ ساعة، فكل تحديث بعدها بيطلع ببلاش بدل قالب بفلوس. الزر بيظهر بس والبوت «شغّال للعملاء» والطلب لسه ماتسلّمش."),
   followNumber: S("orderMsgs", "phone", "رقم واتساب زر «تابع طلبك»", "الرقم اللي الزر بيفتحه — دولي من غير + (966546715683)."),
+  followBanner: S("orderMsgs", "boolean", "بانر «تابع طلبك على واتساب» في الموقع بعد الطلب", "بعد ما العميل يدفع: كارت صغير تحت في صفحة التتبّع (مرة واحدة للطلب) + شريط صغير لو كمّل يتصفّح الموقع، بزرار «افتح واتساب» ⇒ نفس رسالة «مرحبا، أبي أتابع طلبي رقم W…» ⇒ البوت يرد بالحالة والنافذة تتفتح والتحديثات بعدها ببلاش. بيظهر بس والزر نفسه شغّال (المفتاح اللي فوق + البوت «شغّال للعملاء»). أرقامه في «تقرير ماجد»."),
+  followBannerSkipHours: S("orderMsgs", "number", "البانر: مايظهرش لو العميل كاتب لنا من أقل من", "العميل اللي كلّمنا على واتساب في المدة دي نافذته مفتوحة والتحديثات هتوصله ببلاش من غير ما يضغط — فمانزعجهوش بالبانر. صفر = يظهر دايماً.", { min: 0, max: 23, unit: "ساعة" }),
   closedPolicy: S("orderMsgs", "boolean", "توفير القوالب والنافذة مقفولة", "العميل ماكلّمناش آخر ٢٤ ساعة: أول رسالة (استلمنا طلبك) قالب، و«مع المندوب» قالب، والتوصيل والتقييم رسالة واحدة — والباقي حسب الخيارات اللي تحت. النافذة مفتوحة ⇒ كل المراحل ببلاش زي ما هي. مقفول = كل مرحلة قالب زي الأول."),
   closedSkipPreparing: S("orderMsgs", "boolean", "النافذة مقفولة: من غير رسالة «بنجهّز طلبك»", "رسالة «استلمنا طلبك» بتقول إننا هنبلّغه بكل تحديث، و«بنجهّز» قالب بفلوس مالوش لازمة. الإشعار (Push) وصفحة التتبع بيفضلوا شغّالين، ومفيش SMS بدلها لو المرحلة «تغني عن الـSMS»."),
   mergeDeliveredReview: S("orderMsgs", "boolean", "النافذة مقفولة: التوصيل والتقييم رسالة واحدة", "رسالة التوصيل الجديدة (v2) فيها زرّين «تمام 👍 / عندي ملاحظة» = نفس سؤال التقييم، فمفيش قالب تقييم تاني لنفس الطلب. ضغطة «تمام» بتبعت رابط التقييم ببلاش."),

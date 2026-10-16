@@ -60,7 +60,7 @@ import { posMilestones, prepCfg, prepCheck, prepSmsEnabled, orderKind, WEBHOOKS_
 import { computeTrackEta, trackStages } from "./tracketa.js";
 import { smartTrackContext, recordShownEta } from "./smarteta.js";
 import { courierOf, courierToken, COURIER_TEMPLATE_BASE } from "./couriercontact.js";
-import { followLinkOf, WINDOW_OPEN_SQL, FOLLOW_WINDOW_HOURS } from "./wapolicy.js";
+import { followLinkOf, waPolicyCfg, WINDOW_OPEN_SQL, FOLLOW_WINDOW_HOURS } from "./wapolicy.js";
 
 /* ناقل أحداث الطلب (W1-01) وترحيل أعمدة shop_orders — تحميل كسول ودفاعي (W1-02):
    لو الملفات مش موجودة أو الـimport وقع، shop.js بيشتغل عادي والأحداث بتتجاهل.
@@ -1802,15 +1802,16 @@ export function register(app, ctx, deps = {}) {
 
   /* TRK6: نافذة واتساب مفتوحة لرقم الطلب؟ (رسالة منه في آخر FOLLOW_WINDOW_HOURS ساعة) — كاش دقيقة للرقم، أي فشل = false. */
   const waWinCache = new Map();
-  async function waWindowOpen(phoneNorm) {
+  async function waWindowOpen(phoneNorm, hours = FOLLOW_WINDOW_HOURS) {
     const pn = String(phoneNorm || "");
     if (!pn) return false;
-    const hit = waWinCache.get(pn);
+    const key = `${pn}|${hours}`;
+    const hit = waWinCache.get(key);
     if (hit && Date.now() - hit.at < 60_000) return hit.open;
     let open = false;
-    try { open = Boolean(((await pool.query(WINDOW_OPEN_SQL, [pn, FOLLOW_WINDOW_HOURS])) || {}).rows?.length); } catch { open = false; }
+    try { open = Boolean(((await pool.query(WINDOW_OPEN_SQL, [pn, hours])) || {}).rows?.length); } catch { open = false; }
     if (waWinCache.size > 2000) waWinCache.clear();
-    waWinCache.set(pn, { at: Date.now(), open });
+    waWinCache.set(key, { at: Date.now(), open });
     return open;
   }
 
@@ -1899,8 +1900,9 @@ export function register(app, ctx, deps = {}) {
       if (eta && eta.promise) recordShownEta(row.order_no, eta, "track");
       const fl = followLinkOf({ settings: st, orderNo: row.order_no, status: row.status });
       /* TRK6: windowOpen = العميل كاتب لنا من أقل من ٢٠ ساعة ⇒ المتجر مايطلّعش بانر «تابع طلبك على واتساب» (الزرار في الصفحة يفضل).
-         بيتحسب بس لو الزرار ظاهر، وبكاش دقيقة للرقم (الصفحة بتسأل كل ١٢ ثانية)، وأي فشل = false (البانر يظهر عادي). */
-      wa = fl ? { follow: fl, windowOpen: await waWindowOpen(row.phone_norm) } : null;
+         بيتحسب بس لو الزرار ظاهر والبانر شغّال (اللوحة: waBot.followBanner / followBannerSkipHours)، وبكاش دقيقة للرقم (الصفحة بتسأل كل ١٢ ثانية)، وأي فشل = false (البانر يظهر عادي). */
+      const pc = waPolicyCfg(st);
+      wa = fl ? { follow: fl, banner: pc.followBanner, windowOpen: pc.followBanner && pc.followBannerSkipHours > 0 ? await waWindowOpen(row.phone_norm, pc.followBannerSkipHours) : false } : null;
     } catch (e) { console.error("[shop] track extras:", e.message); }
     return c.json({
       ok: true, found: true, orderNo: row.order_no, status: row.status,

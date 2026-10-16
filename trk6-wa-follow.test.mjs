@@ -6,7 +6,7 @@
 // Fake phones only. Run: node --test trk6-wa-follow.test.mjs
 import test from "node:test";
 import assert from "node:assert/strict";
-import { followLinkOf, followText, FOLLOW_RE, WINDOW_OPEN_SQL, FOLLOW_WINDOW_HOURS, FOLLOW_SQL, followLinkReport } from "./wapolicy.js";
+import { followLinkOf, followText, FOLLOW_RE, WINDOW_OPEN_SQL, FOLLOW_WINDOW_HOURS, FOLLOW_SQL, followLinkReport, waPolicyCfg, WA_POLICY_DEFAULTS } from "./wapolicy.js";
 
 const NO = "W1790012345678";
 
@@ -26,7 +26,31 @@ test("ready-made text: white dialect, carries the order number, the bot's FOLLOW
   }
 });
 
-test("window-open query: by phone, inbound only, last 20 h, one row max (index phone_norm, created_at)", () => {
+test("dashboard settings: banner on by default, skip-hours 20 (0–23, 0 = always show), bad values fall back", () => {
+  assert.equal(WA_POLICY_DEFAULTS.followBanner, true); assert.equal(WA_POLICY_DEFAULTS.followBannerSkipHours, 20);
+  assert.deepEqual([waPolicyCfg({}).followBanner, waPolicyCfg({}).followBannerSkipHours], [true, 20]);
+  assert.equal(waPolicyCfg({ waBot: { followBanner: false } }).followBanner, false);
+  assert.equal(waPolicyCfg({ waBot: { followBannerSkipHours: 0 } }).followBannerSkipHours, 0);
+  assert.equal(waPolicyCfg({ waBot: { followBannerSkipHours: 6 } }).followBannerSkipHours, 6);
+  for (const bad of [24, -1, 2.5, "", null, "x"]) assert.equal(waPolicyCfg({ waBot: { followBannerSkipHours: bad } }).followBannerSkipHours, 20, String(bad));
+});
+
+test("the two knobs are in the bot settings schema (dashboard «رسايل الطلب» renders them) and saved/validated like the others", async () => {
+  const B = await import("./wabotrun.js");
+  const S = B.SCHEMA;
+  assert.equal(S.followBanner.type, "boolean"); assert.equal(S.followBanner.group, "orderMsgs");
+  assert.equal(S.followBannerSkipHours.type, "number"); assert.deepEqual([S.followBannerSkipHours.min, S.followBannerSkipHours.max, S.followBannerSkipHours.unit], [0, 23, "ساعة"]);
+  assert.match(S.followBanner.ar, /بانر «تابع طلبك على واتساب»/); assert.ok(S.followBanner.help.length > 40 && S.followBannerSkipHours.help.length > 40, "Arabic explanation under each knob");
+  const ok = B.configFromBody({ followBanner: false, followBannerSkipHours: 6 }, {});
+  assert.deepEqual([ok.value?.followBanner ?? ok.followBanner, ok.value?.followBannerSkipHours ?? ok.followBannerSkipHours], [false, 6], JSON.stringify(ok).slice(0, 200));
+  const bad = B.configFromBody({ followBannerSkipHours: 30 }, {});
+  assert.ok(JSON.stringify(bad.errors || []).includes("followBannerSkipHours"), JSON.stringify(bad).slice(0, 200));
+  const cfg = B.botConfig({ waBot: { followBanner: false, followBannerSkipHours: 4 } });
+  assert.deepEqual([cfg.followBanner, cfg.followBannerSkipHours], [false, 4]);
+  assert.deepEqual([B.botConfig({}).followBanner, B.botConfig({}).followBannerSkipHours], [true, 20]);
+});
+
+test("window-open query: by phone, inbound only, last N hours, one row max (index phone_norm, created_at)", () => {
   assert.equal(FOLLOW_WINDOW_HOURS, 20);
   assert.match(WINDOW_OPEN_SQL, /FROM wa_messages WHERE phone_norm=\$1 AND direction='in' AND created_at > NOW\(\) - make_interval\(hours => \$2::int\) LIMIT 1/);
 });
@@ -56,7 +80,7 @@ const LIVE = { waBot: { mode: "live" } };
 test("track: wa.windowOpen false when the customer has not written to us; true when they did (< 20 h); cached a minute per phone", async () => {
   const a = build({ order: ORDER(), settings: LIVE });
   const r = (await a.get(NO)).body;
-  assert.equal(r.wa.windowOpen, false);
+  assert.equal(r.wa.windowOpen, false); assert.equal(r.wa.banner, true);
   assert.match(r.wa.follow.url, /^https:\/\/wa\.me\/966546715683\?text=/);
   assert.deepEqual(a.calls[0], ["500000001", 20]);
   const b = build({ order: ORDER({ phone_norm: "500000002" }), settings: LIVE, inbound: true });
@@ -75,6 +99,15 @@ test("track: a DB failure on the window check never breaks tracking (windowOpen 
   const done = build({ order: ORDER({ phone_norm: "500000005", status: "delivered" }), settings: LIVE, inbound: true });
   assert.equal((await done.get(NO)).body.wa, null);
   assert.equal(done.calls.length, 0);
+  // dashboard: banner off ⇒ banner:false, no window query (the page button stays); skip-hours from the dashboard; 0 ⇒ no query, always shown
+  const off2 = build({ order: ORDER({ phone_norm: "500000006" }), settings: { waBot: { mode: "live", followBanner: false } }, inbound: true });
+  const r2 = (await off2.get(NO)).body;
+  assert.deepEqual([r2.wa.banner, r2.wa.windowOpen, off2.calls.length], [false, false, 0]);
+  assert.ok(r2.wa.follow.url, "the page button keeps its link");
+  const h6 = build({ order: ORDER({ phone_norm: "500000007" }), settings: { waBot: { mode: "live", followBannerSkipHours: 6 } }, inbound: true });
+  assert.equal((await h6.get(NO)).body.wa.windowOpen, true); assert.deepEqual(h6.calls[0], ["500000007", 6]);
+  const h0 = build({ order: ORDER({ phone_norm: "500000008" }), settings: { waBot: { mode: "live", followBannerSkipHours: 0 } }, inbound: true });
+  assert.equal((await h0.get(NO)).body.wa.windowOpen, false); assert.equal(h0.calls.length, 0);
 });
 
 /* ═══ journey ═══ */

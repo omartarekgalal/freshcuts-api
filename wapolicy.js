@@ -21,6 +21,8 @@ export const WA_POLICY_DEFAULTS = Object.freeze({
   closedSkipPreparing: true,     // …«بنجهّز» مابتطلعش قالب
   mergeDeliveredReview: true,    // …التوصيل فيه زرّين التقييم ⇒ مفيش قالب تقييم منفصل لنفس الطلب
   reviewPaidGapMin: 30,          // …ومفيش قالبين بفلوس لنفس الطلب في أقل من كده (التقييم بيتأجل)
+  followBanner: true,            // TRK6: بانر «تابع طلبك على واتساب» في المتجر بعد الطلب (صفحة التتبّع + شريط صغير وهو بيتصفّح) — الزر في الصفحة بيفضل حسب followLink
+  followBannerSkipHours: 20,     // TRK6: …مابيظهرش لو العميل كاتب لنا من أقل من كده (النافذة مفتوحة وفاضل فيها وقت كفاية). صفر = يظهر دايماً
 });
 
 export function waPolicyCfg(settings = {}) {
@@ -35,6 +37,8 @@ export function waPolicyCfg(settings = {}) {
     closedSkipPreparing: x.closedSkipPreparing !== false,
     mergeDeliveredReview: x.mergeDeliveredReview !== false,
     reviewPaidGapMin: Number.isFinite(n) && x.reviewPaidGapMin !== "" && x.reviewPaidGapMin !== null && n >= 0 && n <= 240 ? n : WA_POLICY_DEFAULTS.reviewPaidGapMin,
+    followBanner: x.followBanner !== false,
+    followBannerSkipHours: Number.isInteger(Number(x.followBannerSkipHours)) && x.followBannerSkipHours !== "" && x.followBannerSkipHours !== null && Number(x.followBannerSkipHours) >= 0 && Number(x.followBannerSkipHours) <= 23 ? Number(x.followBannerSkipHours) : WA_POLICY_DEFAULTS.followBannerSkipHours,
   };
 }
 
@@ -47,7 +51,7 @@ export const FOLLOW_RE = /^\s*(?:📲\s*)?(?:(?:(?:مرحبا|مرحباً|هل�
 
 /* TRK6: البانر مابيظهرش لو العميل كاتب لنا على واتساب من أقل من FOLLOW_WINDOW_HOURS ساعة — النافذة مفتوحة ولسه فاضل فيها
    ≥٤ ساعات، يعني تحديثات الطلب كلها هتطلع ببلاش من غير ما يضغط. (wa_messages_phone_idx = phone_norm, created_at DESC) */
-export const FOLLOW_WINDOW_HOURS = 20;
+export const FOLLOW_WINDOW_HOURS = WA_POLICY_DEFAULTS.followBannerSkipHours;      // الافتراضي — القيمة الفعلية من اللوحة (waBot.followBannerSkipHours)
 export const WINDOW_OPEN_SQL = "SELECT 1 FROM wa_messages WHERE phone_norm=$1 AND direction='in' AND created_at > NOW() - make_interval(hours => $2::int) LIMIT 1";
 
 /* زر صفحة التتبع ⇒ { url, urlEn, text, textEn } أو null.
