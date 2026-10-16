@@ -1253,7 +1253,7 @@ export function register(app, ctx, deps = {}) {
   }
 
   /* TW1 — إشعارات الفريق على البورتال: المفتوحة (اليوم التشغيلي، لحد «تمام») لدور الجهاز بس؛ مفتاح المالك من اللوحة بيشوف الدورين */
-  const noticeRoles = (u) => (u && PORTAL_ROLES.includes(u.role) ? [u.role] : u && (u.admin === true || u.role === "dashboard") ? [...PORTAL_ROLES] : []);
+  const noticeRoles = (u) => (u && (u.admin === true || u.role === "dashboard") ? [...PORTAL_ROLES] : u && PORTAL_ROLES.includes(u.role) ? [u.role] : []);      // مفتاح المالك = role manager + admin ⇒ الاتنين
   async function openNotices(roles) {
     if (!roles.length) return [];
     await ready;

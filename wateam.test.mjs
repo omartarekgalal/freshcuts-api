@@ -655,6 +655,9 @@ test("TW1 routes: each portal role sees only its notices; «تمام» clears it
   w.setPortalUser({ name: "خالد", role: "manager" });
   const m = (await w.call("GET", "/api/portal/wa/team-notices")).body;
   assert.deepEqual(m.notices.map((n) => n.title), ["للمدير"]);
+  w.setPortalUser({ id: "admin", name: "المالك", role: "manager", admin: true });      // مفتاح المالك (portal.js authenticate)
+  assert.deepEqual((await w.call("GET", "/api/portal/wa/team-notices")).body.notices.map((n) => n.title).sort(), ["للكاشير", "للمدير"], "the owner key sees both portals' notices");
+  w.setPortalUser({ name: "خالد", role: "manager" });
   const cashierNoticeId = c.notices[0].id;
   assert.equal((await w.call("POST", "/api/portal/wa/team-notices/:id/ack", {}, String(cashierNoticeId))).body.already, true, "a manager cannot clear the cashier's notice");
   w.setPortalUser({ name: "منى", role: "cashier" });
