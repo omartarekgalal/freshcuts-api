@@ -30,6 +30,7 @@ import { districtCfg } from "./districts.js";
 import { applyPathChanges } from "./settings-guard.js";
 import { trackEtaCfg } from "./tracketa.js";
 import { smartEtaCfg, MIX_KEYS, MIX_LABELS, PERCENTILES } from "./smarteta-core.js";
+import { ljWatchCfg, LJ_WATCH_LIMITS, controlLine } from "./ljwatch.js";
 
 /* ── عنوان الحقل جوّه الإعدادات ──────────────────────────────────────────── */
 export function getAt(obj, path) {
@@ -110,6 +111,12 @@ export const FIELDS = [
     label: "اسم الشركة في الإرسال اليدوي", hint: "الاسم اللي الكاشير بيشوفه لما الإرسال يكون يدوي." },
   { path: "delivery.manualDashboardUrl", group: "provider", type: "url",
     label: "رابط لوحة الشركة (للإرسال اليدوي)" },
+  /* LJ2a (١٦/١٠): مراقب حساب لاجلك (ljwatch.js) — قراءة بس، ومابيشغّلش الطلب الآلي */
+  { path: "delivery.ljWatch.enabled", group: "provider", type: "bool",
+    label: "لاجلك — مراقبة حالة الحساب (موقوف ولا رجع)",
+    hint: "كل كام دقيقة سؤال قراءة واحد GET /shops — مفيش طلب بيتعمل عندهم. لو الحساب رجع من الإيقاف بتوصل SMS واحدة للمالك (وواتساب ببلاش لو نافذته مفتوحة). مابيشغّلش «طلب مندوب تلقائي» — ده قرارك." },
+  { path: "delivery.ljWatch.everyMin", group: "provider", type: "int", min: LJ_WATCH_LIMITS.everyMin[0], max: LJ_WATCH_LIMITS.everyMin[1],
+    label: "لاجلك — فحص الحساب كل (دقيقة)" },
 
   /* ── توقيت طلب المندوب ── */
   { path: "delivery.dispatchMode", group: "dispatch", type: "enum", danger: "any",
@@ -477,6 +484,7 @@ export function effectiveOf(path, settings, envRead) {
   if (path.startsWith("delivery.leajlakContract.")) return e.leajlakContract[path.slice("delivery.leajlakContract.".length)];
   if (path.startsWith("delivery.sla.")) return e.sla[path.slice("delivery.sla.".length)];
   if (path.startsWith("delivery.trackEta.")) return trackEtaCfg(settings)[path.slice("delivery.trackEta.".length)];
+  if (path.startsWith("delivery.ljWatch.")) return ljWatchCfg(settings)[path.slice("delivery.ljWatch.".length)];
   if (path.startsWith("delivery.smartEta.")) {
     const c = smartEtaCfg(settings), k = path.slice("delivery.smartEta.".length);
     if (k.startsWith("prepOverride.")) return c.prepOverride[k.slice("prepOverride.".length)];
@@ -556,8 +564,17 @@ export function auditLine(values, settings) {
 }
 
 /* ═══ المسارات ═════════════════════════════════════════════════════════ */
-export function register(app, ctx) {
+export function register(app, ctx, deps = {}) {
   const { pool, getSettingsData, requireAdmin, jb } = ctx;
+  /* LJ2a: حالة حساب لاجلك (ljwatch.js) — سطر فوق مفتاح المراقبة + حقل leajlakAccount. أي فشل هنا مايوقعش الشاشة. */
+  const ljWatch = typeof deps.ljWatch === "function" ? deps.ljWatch : () => null;
+  async function ljAccount() {
+    try { const w = ljWatch(); return w && typeof w.view === "function" ? await w.view() : null; } catch { return null; }
+  }
+  function withLjLine(fields, acct) {
+    if (!acct) return fields;
+    return fields.map((f) => (f.path === "delivery.ljWatch.enabled" ? { ...f, hint: `${controlLine(acct)}\n${f.hint || ""}`.trim() } : f));
+  }
   const log = ctx.log || console;
   const J = jb || ((v) => JSON.stringify(v));
   const envRead = (k) => (process.env[k] || "").trim();
@@ -611,10 +628,12 @@ export function register(app, ctx) {
   app.get("/api/delivery/control", async (c) => {
     const err = await requireAdmin(c); if (err) return err;
     const settings = await getSettingsData().catch(() => ({}));
+    const leajlakAccount = await ljAccount();
     return c.json({
       ok: true,
       groups: GROUPS,
-      fields: describeFields(settings, envRead),
+      fields: withLjLine(describeFields(settings, envRead), leajlakAccount),
+      leajlakAccount,
       providers: API_PROVIDER_IDS,
       env: envReport(),
       zonePolicy: await activePolicyMirror(),
@@ -654,7 +673,7 @@ export function register(app, ctx) {
 
     const after = await getSettingsData().catch(() => ({}));
     return c.json({ ok: true, changed: Object.keys(v.values), danger: danger.map((d) => d.path),
-      note, fields: describeFields(after, envRead) });
+      note, fields: withLjLine(describeFields(after, envRead), await ljAccount()) });
   });
 
   return { FIELDS: ALL_FIELDS, validatePatch, dangerousChanges, describeFields };

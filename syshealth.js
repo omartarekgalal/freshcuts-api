@@ -23,6 +23,7 @@
 ═══════════════════════════════════════════════════════════════════════════ */
 import { isOpenNow } from "./carts.js";
 import { reviewFlowConfig } from "./wareviews.js";      // RV1: ساعات هدوء رسايل التقييم الجديدة
+import { ljHealthOf } from "./ljwatch.js";               // LJ2a: حالة حساب لاجلك
 
 const CACHE_MS = 60_000;
 const STOREFRONT = () => (process.env.STOREFRONT_PUBLIC_URL || "https://freshcuts.sa").replace(/\/+$/, "");
@@ -65,6 +66,7 @@ export function register(app, ctx, deps = {}) {
   const tsp = deps.tsp || (() => null);
   const tsState = deps.tsState || (() => ({}));
   const insightsState = deps.insightsState || (() => ({}));
+  const ljWatch = deps.ljWatch || (() => null);
   let cache = { at: 0, payload: null };
 
   pool.query(`CREATE TABLE IF NOT EXISTS sys_heartbeats (
@@ -182,6 +184,14 @@ export function register(app, ctx, deps = {}) {
           : `مفيش مشاوير شغّالة دلوقتي — آخر تحديث مشوار ${ago(minsSince(lastAny.last))}.`,
         { last: r.newest || lastAny.last, detail: { inFlight: r.n, lastWebhook: iso(w.last) },
           fix: st === "bad" ? "المتابعة (poll) واقفة على مشوار شغّال — راجع اللوج [delivery] أو حالة لأجلك." : null });
+    });
+
+    /* LJ2a (١٦/١٠): حساب لاجلك نفسه — موقوف ولا شغّال (ljwatch.js: GET /shops قراءة بس كل ١٠ د) */
+    add("leajlak_account", "ops", "لأجلك — حالة الحساب", async () => {
+      const w = ljWatch();
+      if (!w || typeof w.view !== "function") return comp("leajlak_account", "ops", "لأجلك — حالة الحساب", "unknown", "مراقب الحساب مش متسجّل.");
+      const h = ljHealthOf(await w.view());
+      return comp("leajlak_account", "ops", "لأجلك — حالة الحساب", h.status, h.line, { last: h.last, detail: h.detail, fix: h.fix });
     });
 
     add("sms", "ops", "SMS (تقنيات)", async () => {

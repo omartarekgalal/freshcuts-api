@@ -110,6 +110,7 @@ import * as tableOrder from "./table-order.js";
 import * as checkoutwatch from "./checkoutwatch.js";
 import { makeStaffNotifier } from "./staffalerts.js";
 import * as courierops from "./courierops.js";
+import * as ljwatch from "./ljwatch.js";      // LJ2a (١٦/١٠): حساب لاجلك موقوف ولا رجع — GET /shops قراءة بس + SMS للمالك لما يرجع
 import * as courierlive from "./courierlive.js";
 import * as courierwa from "./courierwa.js";      // CW1: أزرار المندوب الخارجي على واتساب
 import * as cervotrial from "./cervotrial.js";
@@ -3153,7 +3154,8 @@ const deliveryApi = deliveryMod.register(app, moduleCtx, { shop: () => shopApi, 
 districts.register(app, moduleCtx);
 // 🛵 لوحة التوصيل والمندوبين (٢٤/٩): مكان واحد متحقق لكل مفاتيح التوصيل —
 // بيكتب في نفس مفاتيح settings.delivery / settings.shop اللي الكود بيقراها.
-deliveryControl.register(app, moduleCtx);
+let ljWatchApi = null;      // LJ2a: بيتسجّل تحت بعد waApi (ljwatch.register) — الشاشة بتقرا الحالة وقت الطلب
+deliveryControl.register(app, moduleCtx, { ljWatch: () => ljWatchApi });
 /* ⏱ معاد الوصول المتوقّع (٢٤/٩): لقطة كوانتايلات على خانات المسافة من تاريخ
    الطلبات اللي اتسلّمت فعلاً. قراية بس، ومابيلمسش أي حاجة تانية. الرقم
    مابيتعرضش للعميل غير لما التقييم الخارجي يعدّي البوابة — /api/delivery/eta/model
@@ -3350,6 +3352,9 @@ courierOpsApi = courierops.register(app, moduleCtx, { shop: () => shopApi, deliv
 courierLiveApi = courierlive.register(app, moduleCtx, { shop: () => shopApi, delivery: () => deliveryApi, portal: () => portalApi, courierWa: () => courierWaApi });
 /* 🛵 CW1 (١٦/١٠): المندوب الخارجي بياخد رسالة واتساب من رقم المطعم بأزرار «استلمت / وصلت / تم التسليم» — نفس مراحل /d/ */
 courierWaApi = courierwa.register(app, moduleCtx, { wa: waApi, courierLive: () => courierLiveApi, shop: () => shopApi, portal: () => portalApi });
+/* 🛵 LJ2a (١٦/١٠): لاجلك وقّفت الحساب — كل ١٠ د (settings.delivery.ljWatch) GET /shops بس، ولما يرجع SMS واحدة للمالك
+   (+ واتساب حر لو نافذته مفتوحة). مابيكتبش في الإعدادات ومابيرجّعش الطلب الآلي. */
+ljWatchApi = ljwatch.register(app, moduleCtx, { wa: waApi, sendSms: (m) => accounts.sendSms(m) });
 /* 🧪 تجربة Cervo — لازم بعد courierops (بتستعمل openIncident/onRedispatch بتاعته)
    وبعد delivery (بتنده dispatch/cancelShipment). شبكة الأمان بتكنس كل دقيقة. */
 cervoTrialApi = cervotrial.register(app, moduleCtx, { shop: () => shopApi, delivery: () => deliveryApi, courierOps: () => courierOpsApi });
@@ -3393,7 +3398,7 @@ growthnow.register(app, moduleCtx);   // «إيه اللي نعمله دلوقت
 readiness.register(app, moduleCtx);   // الجاهزية: مهام الأدوار + تقويم المواسم — /api/social/ready
 systemcheck.register(app, moduleCtx, { tsState: () => tsState });
 // «حالة النظام» بمكوّنات النهارده (تاب سينس/لأجلك/SMS/الدفع/جوجل/النشر/الرحلة/النسخ الاحتياطي…)
-syshealth.register(app, moduleCtx, { tsp: () => tspApi, tsState: () => tsState, insightsState: () => insightsState });
+syshealth.register(app, moduleCtx, { tsp: () => tspApi, tsState: () => tsState, insightsState: () => insightsState, ljWatch: () => ljWatchApi });
 console.log("[analytics] routes ready");
 console.log(`[ai] routes ready (provider: ${process.env.ANTHROPIC_API_KEY ? "anthropic" : process.env.LITELLM_KEY ? "litellm" : "NOT CONFIGURED"})`);
 
