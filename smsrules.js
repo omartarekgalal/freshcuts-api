@@ -264,6 +264,79 @@ export const KEETA_WA_SEGMENTS = KW_WAVES.flatMap((w) => KW_DISHES.map((d) => ({
 })));
 export const KEETA_WA_IDS = KEETA_WA_SEGMENTS.map((s) => s.id);
 
+/* ═══ SU1 (١٦/١٠): شريحة «عملاء مايوصلهمش واتساب» — SMS بس للي واتساب مش بيوصله ═══
+   قرار المالك ١٥/١٠: «الواتساب أحسن من الـSMS — الـSMS بس للي الواتساب مش بيوصله». موجات واتساب Cloud يوم الخميس ١٥/١٠ سابت
+   ~٧٨ عميل ميتا ماقدرتش توصّلهم: 131026 (مش على واتساب / الرسالة ماتوصلش) و130472 (تجربة تسويق من ميتا حجبت الرسالة).
+   مين في الشريحة (الاستعلام WA_UNREACHABLE_SQL تحت، بيتحسب مع customerRows في cms.js):
+     (أ) آخر محاولة حملة واتساب Cloud للرقم خلال آخر N يوم (settings.cms.campaigns.waUnreachableDays، افتراضي ٧) فشلت بكود من
+         القايمة (waUnreachableCodes، افتراضي 131026 + 130472). «آخر محاولة» = أحدث صف في wa_send_queue على قناة wa_cloud اتبعت أو
+         فشلت أو بتتبعت (وقتها = tried_at ثم sent_at ثم claimed_at). لو آخر محاولة نجحت أو فشلت بسبب تاني ⇒ مش في الشريحة.
+     (ب) أو رقمه في wa_invalid_numbers (ميتا قالت 131026، أو الإضافة قالت «مش على واتساب») — من غير حد أيام: الرقم ده عمره ما هيوصله واتساب.
+     وفي الحالتين: **مفيش رسالة واتساب وصلته بعد كده** (wa_messages صادرة delivered/read، أو صف حملة ليه delivered_at/read_at بعد الفشل).
+   الشريحة دي الأعضاء بس — كل حراس الحملات بتتطبّق زي أي شريحة (audienceFor ← filterAudience): الفريق/المستثنين (staffPhoneSet)،
+   اللي أوقف، حاجبين FreshCut-AD (ad_blocked)، الفاصل والسقوف، طلب من الموقع آخر ٣ أيام، أرقام التطبيقات بس (allowApps مش متفعّل)،
+   إيقاف SMS المؤقت، الـholdout، ساعات الهدوء، الجزئين، السقف اليومي والميزانية. الفشل نفسه مش بيتحسب «اتكلّم» في الفاصل (wasender بيمسح
+   سطر wa_contact_log لما الرسالة تفشل) — الـSMS البديل لو اتبعت بيتحسب (by='sms_fallback').
+   smsOnly: مابتظهرش في شرايح حملات واتساب (segmentList)، ولو اتطلبت هناك بترجع فاضية — مالهاش معنى نبعت واتساب للي واتساب مش بيوصله. */
+export const WA_UNREACHABLE_ID = "wa_unreachable";
+export const WA_UNREACHABLE_CODE_OPTIONS = Object.freeze([
+  Object.freeze({ code: 131026, label: "مش على واتساب / الرسالة ماتوصلش (131026)" }),
+  Object.freeze({ code: 130472, label: "تجربة تسويق من ميتا حجبت الرسالة (130472)" }),
+  Object.freeze({ code: 131049, label: "ميتا حدّت رسايل التسويق للعميل ده (131049)" }),
+]);
+export const WA_UNREACHABLE_DEFAULT = Object.freeze({ days: 7, codes: Object.freeze([131026, 130472]) });
+export const WA_UNREACHABLE_DAYS = Object.freeze([1, 60]);
+/* إعدادات الشريحة من settings.cms.campaigns (شاشة الحملات). قيمة غلط ⇒ الافتراضي. قايمة أكواد فاضية = مقصودة (الشريحة = (ب) بس). */
+export function waUnreachableOf(cfg) {
+  const c = cfg || {};
+  const allowed = WA_UNREACHABLE_CODE_OPTIONS.map((o) => o.code);
+  let codes = [...WA_UNREACHABLE_DEFAULT.codes];
+  if (Array.isArray(c.waUnreachableCodes)) {
+    const ok = [...new Set(c.waUnreachableCodes.map(Number).filter((n) => allowed.includes(n)))].sort((a, b) => allowed.indexOf(a) - allowed.indexOf(b));
+    if (ok.length || !c.waUnreachableCodes.length) codes = ok;
+  }
+  return { days: intIn(c.waUnreachableDays, WA_UNREACHABLE_DAYS[0], WA_UNREACHABLE_DAYS[1], WA_UNREACHABLE_DEFAULT.days), codes };
+}
+/* $1 = الأيام (int) · $2 = الأكواد (int[]). صف لكل رقم: pn, at (وقت الفشل), code (null لو من wa_invalid_numbers بس), job_id, src */
+export const WA_UNREACHABLE_SQL = `
+  WITH att AS (
+    SELECT DISTINCT ON (q.phone_norm)
+           q.phone_norm AS pn, q.status, q.job_id,
+           COALESCE(q.error_code, q.first_error_code) AS code,
+           COALESCE(q.tried_at, q.sent_at, q.claimed_at) AS at
+      FROM wa_send_queue q
+     WHERE q.channel = 'wa_cloud'
+       AND q.status IN ('sent', 'failed', 'sending')
+       AND COALESCE(q.tried_at, q.sent_at, q.claimed_at) > NOW() - ($1::int * INTERVAL '1 day')
+     ORDER BY q.phone_norm, COALESCE(q.tried_at, q.sent_at, q.claimed_at) DESC, q.id DESC
+  ), cand AS (
+    SELECT pn, at, code, job_id, 'wa_cloud'::text AS src FROM att
+     WHERE status = 'failed' AND code = ANY($2::int[])
+    UNION ALL
+    SELECT phone_norm, at, NULL::int, job_id, 'wa_invalid'::text FROM wa_invalid_numbers
+  )
+  SELECT DISTINCT ON (c.pn) c.pn, c.at, c.code, c.job_id, c.src
+    FROM cand c
+   WHERE c.pn ~ '^5[0-9]{8}$'
+     AND NOT EXISTS (SELECT 1 FROM wa_messages m
+                      WHERE m.phone_norm = c.pn AND m.direction = 'out'
+                        AND m.status IN ('delivered', 'read') AND m.created_at > c.at)
+     AND NOT EXISTS (SELECT 1 FROM wa_send_queue d
+                      WHERE d.phone_norm = c.pn AND COALESCE(d.delivered_at, d.read_at) > c.at)
+   ORDER BY c.pn, (c.code IS NOT NULL) DESC, c.at DESC`;
+/* الشريحة نفسها. cfgOf() = waUnreachableOf(...) الحالي (النص بيتغيّر مع الإعداد). العضوية من c.waUnreachable اللي customerRows بيحطه. */
+export function waUnreachableSegment(cfgOf = () => waUnreachableOf({})) {
+  return {
+    id: WA_UNREACHABLE_ID, icon: "📵", label: "عملاء مايوصلهمش واتساب", smsOnly: true,
+    get hint() {
+      let w; try { w = cfgOf() || waUnreachableOf({}); } catch { w = waUnreachableOf({}); }
+      const codes = w.codes.length ? w.codes.join(" / ") : "—";
+      return `آخر حملة واتساب ليهم خلال ${w.days} يوم فشلت (${codes}) أو رقمهم مش على واتساب، ومفيش واتساب وصلهم بعدها. للـSMS بس — حراس الحملات كلها شغّالة`;
+    },
+    test: (c) => Boolean(c && c.waUnreachable),
+  };
+}
+
 /* ═══ KS1: إيقاف SMS مؤقت لشرايح معيّنة (settings.cms.smsPause) ═══
    قرار عمر ١٣/١٠: «نوقف الـsms دلوقتي على الشريحة دي ونبعتلهم واتس اب». القاعدة من اللوحة: [{ segments[], until:"YYYY-MM-DD", note }]
    الافتراضي: مفيش حاجة موقوفة. الإيقاف بينتهي لوحده آخر يوم until (بتوقيت الرياض). بيعدّي من filterAudience، يعني الحملات

@@ -2219,6 +2219,7 @@ export function register(app, ctx, deps = {}) {
      المؤشرات) + عملاء الموقع اللي طلباتهم لسه مانزلتش نقطة البيع. */
   let segCache = { at: 0, rows: null };
   let profileSegCfg = profileCfg({});      // CP1: حدود إعدادات التصنيف لنص شرح شرايح الملف (بتتحدّث مع كل customerRows)
+  let waUnreachCfg = smsRules.waUnreachableOf({});      // SU1: أيام/أكواد شريحة «مايوصلهمش واتساب» (بتتحدّث مع كل customerRows)
   async function customerRows() {
     if (segCache.rows && Date.now() - segCache.at < 5 * 60_000) return segCache.rows;
     const s = await getSettingsData();
@@ -2283,6 +2284,12 @@ export function register(app, ctx, deps = {}) {
       .then((r) => new Map((r.rows || []).map((x) => [x.pn, Array.isArray(x.segments) ? x.segments : []])))
       .catch((e) => { if (!(e && e.code === "42P01")) console.error("[cms] profile segments:", e.message); return new Map(); });
     profileSegCfg = profileCfg(s);
+    /* SU1 (١٦/١٠): «عملاء مايوصلهمش واتساب» — آخر محاولة حملة Cloud فشلت بكود من القايمة خلال N يوم، أو رقم مش على واتساب، ومفيش
+       واتساب وصل بعدها (smsrules.WA_UNREACHABLE_SQL). جدول ناقص (قاعدة جديدة) = الشريحة فاضية، مش غلطة. */
+    waUnreachCfg = smsRules.waUnreachableOf(((s || {}).cms || {}).campaigns);
+    const waUnreach = await pool.query(smsRules.WA_UNREACHABLE_SQL, [waUnreachCfg.days, waUnreachCfg.codes])
+      .then((r) => new Map((r.rows || []).map((x) => [x.pn, { at: x.at, code: x.code == null ? null : Number(x.code), jobId: x.job_id == null ? null : Number(x.job_id), src: x.src }])))
+      .catch((e) => { if (!(e && e.code === "42P01")) console.error("[cms] wa_unreachable:", e.message); return new Map(); });
     const firstOf = new Map(firsts.rows.map((r) => [r.pn, r.first_day]));
     const onl = new Map(online.rows.map((r) => [r.pn, r]));
     const pushSet = new Set(push.rows.map((r) => r.pn));
@@ -2351,6 +2358,7 @@ export function register(app, ctx, deps = {}) {
       const fd = firstOf.get(r.pn);
       r.firstDaysAgo = fd ? daysSince(fd) : null;
       r.psegs = psegs.get(r.pn) || [];
+      r.waUnreachable = waUnreach.get(r.pn) || null;      // SU1
     }
     rows.sort((a, b) => a.daysSince - b.daysSince);
     segCache = { at: Date.now(), rows };
@@ -2395,6 +2403,8 @@ export function register(app, ctx, deps = {}) {
     { id: "lapsed_21", icon: "🔙", label: "غابوا ٢١–٤٥ يوم (استرجاع)",
       hint: "طلبوا مرة أو أكتر وآخر طلب من ٢١ لـ٤٥ يوم — بيدخلوا الشريحة يوم ٢١ بالظبط",
       test: (c) => (c.orders + (c.online || 0)) > 0 && c.daysSince >= 21 && c.daysSince <= 45 },
+    /* SU1 (١٦/١٠، قرار المالك ١٥/١٠: «الـSMS بس للي الواتساب مش بيوصله») — شرح القاعدة في smsrules.js عند waUnreachableSegment */
+    smsRules.waUnreachableSegment(() => waUnreachCfg),
     ...smsRules.WAVE_SEGMENTS,
     ...smsRules.KEETA_SEGMENTS,
     ...smsRules.KEETA_WA_SEGMENTS,      // KS1: حملة واتساب لعملاء كيتا (٤ أكلات × ٣ موجات)
@@ -2404,7 +2414,7 @@ export function register(app, ctx, deps = {}) {
     ...profileCmsSegments(() => profileSegCfg),
   ];
   const segById = Object.fromEntries(SEGMENTS.map((s) => [s.id, s]));
-  const pub = (s) => ({ id: s.id, icon: s.icon, label: s.label, hint: s.hint, ...(s.allowApps ? { allowApps: true } : {}) });
+  const pub = (s) => ({ id: s.id, icon: s.icon, label: s.label, hint: s.hint, ...(s.allowApps ? { allowApps: true } : {}), ...(s.smsOnly ? { smsOnly: true } : {}) });      // SU1: smsOnly
 
   app.get("/api/cms/segments", async (c) => {
     const err = await requireAdmin(c); if (err) return err;
@@ -2453,7 +2463,8 @@ export function register(app, ctx, deps = {}) {
         daysSince: x.daysSince, appOrders: x.appOrders, onlineOrders: x.online, vip: x.vip, push: x.push,
         keetaOrders: x.keetaOrders, keetaLean: x.keetaLean,
         appSrcOrders: x.appSrcOrders, appNames: x.appNames, appTopFood: x.appTopFood,
-        appFood: Object.fromEntries(Object.entries(x.appFood || {}).map(([k, v]) => [k, Math.round(v)])) })),
+        appFood: Object.fromEntries(Object.entries(x.appFood || {}).map(([k, v]) => [k, Math.round(v)])),
+        ...(x.waUnreachable ? { waUnreachable: x.waUnreachable } : {}) })),      // SU1: ليه واتساب مابيوصلهوش (كود + وقت الفشل)
     });
   });
 
@@ -2850,6 +2861,9 @@ ${smsRules.optoutLine(cfg, { code: c?.optout_code, host: STORE_PUBLIC(), sender:
       optoutMode: smsRules.optoutMode(cfg),
       optoutSample: smsRules.optoutLine(cfg, { code: "ab12cd34ef", host: STORE_PUBLIC(), sender: process.env.TAQNYAT_SENDER_AD }),
       excludeLabels: smsRules.EXCLUDE_LABELS,
+      /* SU1: إعدادات شريحة «عملاء مايوصلهمش واتساب» — اللوحة بتعرضها وبتعدّلها (PUT /api/cms/campaign-settings) */
+      waUnreachable: { ...smsRules.waUnreachableOf(cfg), segment: smsRules.WA_UNREACHABLE_ID, options: smsRules.WA_UNREACHABLE_CODE_OPTIONS,
+        defaults: smsRules.WA_UNREACHABLE_DEFAULT, daysRange: smsRules.WA_UNREACHABLE_DAYS },
       budgetSar: cfg.budgetSar, budgetLeft: Number.isFinite(await budgetLeft(cfg)) ? await budgetLeft(cfg) : null });
   });
 
@@ -3232,6 +3246,9 @@ ${smsRules.optoutLine(cfg, { code: c?.optout_code, host: STORE_PUBLIC(), sender:
     if (b.budgetSar != null) val.budgetSar = Math.max(0, Number(b.budgetSar) || 0);
     if (b.budgetSince !== undefined) val.budgetSince = b.budgetSince ? new Date(b.budgetSince).toISOString() : null;
     if (b.clearBrake === true) delete val.brake;
+    /* SU1: شريحة «عملاء مايوصلهمش واتساب» — كام يوم نبص ورا (١–٦٠) وأكواد ميتا اللي بتدخّل العميل (من القايمة بس؛ فاضية = «مش على واتساب» بس) */
+    if (b.waUnreachableDays != null) val.waUnreachableDays = smsRules.waUnreachableOf({ waUnreachableDays: b.waUnreachableDays }).days;
+    if (Array.isArray(b.waUnreachableCodes)) val.waUnreachableCodes = smsRules.waUnreachableOf({ waUnreachableCodes: b.waUnreachableCodes }).codes;
     /* SX1 (١٥/١٠): القايمة دي اتنقلت لـ«قوايم الأرقام» (phonelists.js) — كل رقم لازم يبقى معاه سبب، والموظف غير المستثنى من الإعلانات.
        القديمة بتفضل زي ما هي (للرجوع للنسخة اللي قبل كده بس) ومحدش بيقراها بعد الترحيل. */
     const moved = Array.isArray(b.excludePhones);
@@ -3239,6 +3256,7 @@ ${smsRules.optoutLine(cfg, { code: c?.optout_code, host: STORE_PUBLIC(), sender:
       `UPDATE settings SET data = jsonb_set(
          CASE WHEN data ? 'cms' THEN data ELSE jsonb_set(data,'{cms}','{}'::jsonb,true) END,
          '{cms,campaigns}', $1::jsonb, true) WHERE id=1`, [jb(val)]);
+    if (b.waUnreachableDays != null || Array.isArray(b.waUnreachableCodes)) segCache = { at: 0, rows: null };      // SU1: الشريحة تتحسب بالإعداد الجديد على طول
     return c.json({ ok: true, ...val, ...(moved ? { warning: "excludePhones_moved", message: "قايمة الاستبعاد اتنقلت لـ«الفريق والتنبيهات ← قوايم الأرقام» — ضيف الرقم من هناك بسببه" } : {}) });
   });
 
@@ -4274,10 +4292,12 @@ ${smsRules.optoutLine(cfg, { code: c?.optout_code, host: STORE_PUBLIC(), sender:
   // `expand` بيتصدّر عشان الـcheckout في shop.js يوسّع الباقة بنفس القواعد
   // بالظبط اللي المتجر عرضها — مفيش نسخة تانية من التسعير في أي مكان.
   /* شرايح لوحة المتجر لمُرسل واتساب (wasender: audience = «segment:<id>») */
-  const segmentList = () => SEGMENTS.map(pub);
+  /* SU1: شريحة smsOnly («مايوصلهمش واتساب») مابتظهرش لحملات واتساب، ولو اتطلبت بالاسم بترجع فاضية (مش null: null = wasender بيرجع لشريحة تانية) */
+  const segmentList = () => SEGMENTS.filter((s) => !s.smsOnly).map(pub);
   async function segmentPhones(id) {
     const seg = segById[id];
     if (!seg) return null;
+    if (seg.smsOnly) return [];
     return (await customerRows()).filter(seg.test).map((x) => x.pn);
   }
   /* ── تسخين كاش الباقات عند الإقلاع (١٠/١٠) ───────────────────────────────
