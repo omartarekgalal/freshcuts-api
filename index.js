@@ -3070,9 +3070,9 @@ const portalSessionsApi = portalSessions.register(app, moduleCtx, {
   hsPortal: () => hsPortalApi,
   ninja: () => ninjaApi,
   setNinjaTile: (s) => { try { portals.setNinjaSession(s); } catch { /* الكارت الحي مش حرج */ } },
-  alert: async (platform) => {
-    const label = platform === "ninja" ? "نينجا" : "هنقرستيشن";
-    try { await portalAlertNotifier.critical(() => `فريش كاتس: جلسة ${label} محتاجة اعادة ربط من اللوحة`, `portal-${platform}`); } catch { /* التنبيه مايوقّفش المسح */ }
+  // SMS لأرقام الإنذارات بلغة «رسايل الإدارة» (إنجليزي افتراضي / عربي) — رسالة واحدة من غير قص كلمة
+  alert: async (platform, kind, hoursLeft) => {
+    try { await portalAlertNotifier.critical((lang) => portalSessions.portalAlertText(platform, kind, lang, hoursLeft), `portal-${platform}-${kind}`); } catch { /* التنبيه مايوقّفش المسح */ }
   },
 });
 // late-bind: نينجا بتحفظ دوران الـrefresh في نفس المخزن اللي portalsessions بيقراه

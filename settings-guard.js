@@ -70,6 +70,7 @@ export const SERVER_OWNED_PATHS = [
   "shop.checkout2Default",      // recs.js (مفتاح «التجربة الجديدة لكل العملاء»)
   "shop.addressFirst",          // recs.js (مفتاح «العنوان قبل رقم الجوال» — G2)
   "freeBar",                    // freebar.js (شريط التوصيل المجاني — /api/delivery/free-bar)
+  "portals",                    // portalsessions.js (جلسات البوابات — POST /api/portals/settings، المالك)
 ];
 
 /* مسارات ليها كاتبين: شاشة PUT كاملة + السيرفر (catalog.hiddenIds: شاشة
