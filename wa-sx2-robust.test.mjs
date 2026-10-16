@@ -84,7 +84,7 @@ const call = (app, route, { json = {}, param = {}, auth = "Bearer cms:own", quer
 const OWNER = "Bearer cms:own", MK = "Bearer cms:mk";
 const iso = (t) => new Date(t).toISOString();
 
-function world({ jobs = [], queue = [], settings = {}, media = {}, script = [], msgs = [] } = {}) {
+function world({ jobs = [], queue = [], settings = {}, media = {}, script = [], msgs = [], health = null } = {}) {
   const clock = { t: AT_17 };
   const db = { jobs, queue, msgs: [...msgs], contactLog: [], coupons: [], invalid: new Set(), state: { 1: {}, 2: {} }, optouts: [], sms: [], heads: 0,
     settings: { waCloud: { enabled: true }, waSender: {}, delivery: { alertPhones: ["0555000111"] }, ...settings } };
@@ -180,7 +180,7 @@ function world({ jobs = [], queue = [], settings = {}, media = {}, script = [], 
     if (/^UPDATE wa_send_queue SET status='pending', attempts=GREATEST/i.test(s)) { const q = qrow(p[0]); q.status = "pending"; q.attempts = Math.max(0, (q.attempts || 0) - 1); return rc([]); }
     if (/^INSERT INTO wa_invalid_numbers/i.test(s)) { db.invalid.add(p[0]); return rc([]); }
     // البدء المجدول
-    if (/^SELECT id, name, channel, cloud_template, image_url, video_url, start_at FROM wa_send_jobs WHERE status='paused' AND start_at IS NOT NULL AND start_at <= \$1/i.test(s))
+    if (/^SELECT id, name, channel, cloud_template, image_url, video_url, start_at(?:, held_at)? FROM wa_send_jobs WHERE status='paused' AND start_at IS NOT NULL AND start_at <= \$1/i.test(s))
       return rc(db.jobs.filter((j) => j.status === "paused" && j.start_at && Date.parse(j.start_at) <= Date.parse(p[0])).map((j) => ({ ...j })));
     if (/^UPDATE wa_send_jobs SET start_at=NULL, start_error=\$3, stop_reason=\$4/i.test(s)) {
       const j = job(p[0]); if (!(j && j.status === "paused" && j.start_at && Date.parse(j.start_at) <= Date.parse(p[1]))) return rc([]);
@@ -188,7 +188,13 @@ function world({ jobs = [], queue = [], settings = {}, media = {}, script = [], 
     }
     if (/^UPDATE wa_send_jobs SET status='running', started_at=COALESCE/i.test(s)) {
       const j = job(p[0]); if (!(j && j.status === "paused" && j.start_at && Date.parse(j.start_at) <= Date.parse(p[1]))) return rc([]);
-      Object.assign(j, { status: "running", started_at: iso(clock.t), start_at: null, start_error: null, stop_reason: null, brake_ack_at: iso(clock.t) }); rebase(j); return rc([{ id: j.id }]);
+      Object.assign(j, { status: "running", started_at: iso(clock.t), start_at: null, start_error: null, stop_reason: null, brake_ack_at: iso(clock.t), ...(/held_at=NULL/.test(s) ? { held_at: null } : {}) }); rebase(j); return rc([{ id: j.id }]);
+    }
+    if (/^SELECT \(SELECT count\(\*\)::int FROM wa_invalid_numbers\) AS invalid/i.test(s)) return rc([{ invalid: 0, replies7: 0, optouts7: 0 }]);      // PH1: شاشة الحملات
+    // PH1: حملة مجدولة بتستنى إيقاف الدفع — start_at مابيتلمسش
+    if (/^UPDATE wa_send_jobs SET start_error=\$3, held_at=COALESCE\(held_at, NOW\(\)\) WHERE id=\$1 AND status='paused' AND start_at IS NOT NULL AND start_at <= \$2/i.test(s)) {
+      const j = job(p[0]); if (!(j && j.status === "paused" && j.start_at && Date.parse(j.start_at) <= Date.parse(p[1]))) return rc([]);
+      Object.assign(j, { start_error: p[2], held_at: j.held_at || iso(clock.t) }); return rc([{ id: j.id }]);
     }
     if (/^SELECT id, name, status, channel, cloud_template, image_url, video_url, start_at FROM wa_send_jobs WHERE id = ANY/i.test(s)) return rc(db.jobs.filter((j) => p[0].includes(j.id)).map((j) => ({ ...j })));
     if (/^UPDATE wa_send_jobs SET start_at=\$2, start_by=\$3/i.test(s)) { const hit = db.jobs.filter((j) => p[0].includes(j.id) && j.status === "paused"); for (const j of hit) Object.assign(j, { start_at: p[1], start_by: p[2], start_error: null }); return rc(hit.map((j) => ({ id: j.id }))); }
@@ -230,7 +236,7 @@ function world({ jobs = [], queue = [], settings = {}, media = {}, script = [], 
     templateInfo: async () => ({ ok: true, list: [] }) };
   const app = fakeApp();
   const ctx = { pool, requireAdmin: async () => null, getSettingsData: async () => JSON.parse(JSON.stringify(db.settings)), canSeePhones: async () => false };
-  const api = S.register(app, ctx, { wa, fetch, cloud: () => cloud, cloudLoop: false, lock: false, now: () => clock.t, cms: () => null,
+  const api = S.register(app, ctx, { wa, fetch, cloud: () => cloud, cloudLoop: false, lock: false, now: () => clock.t, cms: () => null, ...(health ? { health: () => health } : {}),
     sendSms: async (m) => { db.sms.push(m); return { ok: true }; },
     sessionUser: async (t) => (t === "cms:mk" ? { name: "تسويق", role: "marketing" } : { name: "عمر", role: "owner" }) });
   return { db, app, api, sent, clock, hooks, pool };
@@ -455,7 +461,7 @@ test("أول ما السيرفر يقوم بيبص على المواعيد ال�
     const db = { jobs: [J({ status: "paused", channel: "wa_web", start_at: iso(AT_17 - 5 * MIN) })] };
     const pool = { async query(sql, p = []) {
       const s = String(sql).replace(/\s+/g, " ").trim();
-      if (/^SELECT id, name, channel, cloud_template, image_url, video_url, start_at FROM wa_send_jobs WHERE status='paused'/.test(s)) return { rows: db.jobs.filter((j) => j.status === "paused" && j.start_at && Date.parse(j.start_at) <= Date.parse(p[0])) };
+      if (/^SELECT id, name, channel, cloud_template, image_url, video_url, start_at(?:, held_at)? FROM wa_send_jobs WHERE status='paused'/.test(s)) return { rows: db.jobs.filter((j) => j.status === "paused" && j.start_at && Date.parse(j.start_at) <= Date.parse(p[0])) };
       if (/^UPDATE wa_send_jobs SET status='running', started_at=COALESCE/.test(s)) { const j = db.jobs.find((x) => x.id === p[0]); j.status = "running"; return { rows: [{ id: j.id }], rowCount: 1 }; }
       return { rows: [], rowCount: 0 };
     } };
@@ -737,4 +743,65 @@ test("مراجعة SX2: 131053 (ميتا ماقدرتش تنزّل الصورة 
   await x.api.cloudTick();
   assert.deepEqual([x.db.jobs[0].status, x.db.jobs[0].stop_reason, x.sent.length], ["paused", "media:media_error", 2]);
   assert.deepEqual(x.db.queue.slice(1).map((q) => q.status), ["pending", "pending"]);
+});
+
+// ───────── PH1 (١٦/١٠): إيقاف الدفع عند ميتا (131042) — الحملات والبدء المجدول بيستنوا وبيكمّلوا لوحدهم ─────────
+const HOLD = { held: true, key: "pay_error", keys: ["pay_error"], reasonAr: "موقوفة لحد ما مشكلة الدفع عند ميتا تتحل", lastErr: "2026-10-15T13:41:00.000Z", lastErrRiyadh: "15/10 16:41", probeMin: 10 };
+const holdStub = () => { const h = { v: { ...HOLD }, calls: 0, async holdState() { h.calls++; return h.v; } }; return h; };
+
+test("PH1: إيقاف الدفع ⇒ الدورة مابتبعتش ولا رسالة والحملة تفضل «شغّالة»؛ أول ما يتشال بتكمّل لوحدها من غير «كمّل»", async () => {
+  const h = holdStub();
+  const w = world({ jobs: [J()], queue: [Q(1), Q(2)], health: h });
+  await w.api.schemaReady;
+  const r = await w.api.cloudTick();
+  assert.equal(r.reason, "pay_hold"); assert.equal(r.hold, "pay_error"); assert.equal(r.reasonAr, "موقوفة لحد ما مشكلة الدفع عند ميتا تتحل");
+  assert.equal(w.sent.length, 0, "ولا رسالة لميتا");
+  assert.deepEqual(w.db.queue.map((q) => q.status), ["pending", "pending"], "المستلمين ماتحرقوش");
+  assert.deepEqual([w.db.jobs[0].status, w.db.jobs[0].stop_reason], ["running", null]);
+  const list = await call(w.app, "GET /api/cms/wa-sender");
+  assert.equal(list.body.cloud.payHold.held, true); assert.equal(list.body.cloud.payHold.reasonAr, HOLD.reasonAr); assert.equal(list.body.cloud.payHold.lastErrRiyadh, "15/10 16:41");
+  h.v = { held: false };
+  assert.equal((await w.api.cloudTick()).sent, 2, "رجعت لوحدها");
+  assert.equal((await call(w.app, "GET /api/cms/wa-sender")).body.cloud.payHold.held, false);
+  /* من غير مراقب (أو المراقب بيرمي) ⇒ زي الأول */
+  const v = world({ jobs: [J()], queue: [Q(1)], health: { holdState: async () => { throw new Error("db down"); } } });
+  await v.api.schemaReady;
+  assert.equal((await v.api.cloudTick()).sent, 1);
+});
+
+test("PH1: البدء المجدول وقت الإيقاف ⇒ start_at مابيتحرقش + سبب بالعربي؛ بعد ما يتشال بتبدأ لوحدها حتى لو اتأخرت (لحد holdMaxHours)", async () => {
+  const h = holdStub();
+  const w = world({ jobs: [J({ status: "paused", start_at: iso(AT_17 - MIN) }), J({ id: 2, status: "paused", channel: "wa_web", start_at: iso(AT_17 - MIN) })], queue: [Q(1)], health: h });
+  await w.api.schemaReady;
+  const st = await w.api.startDueJobs();
+  assert.deepEqual(st.held, [1]); assert.deepEqual(st.started, [2], "واتساب ويب (الإضافة) مش داخل في الإيقاف");
+  const a = w.db.jobs[0];
+  assert.deepEqual([a.status, a.start_at, a.stop_reason], ["paused", iso(AT_17 - MIN), null]);
+  assert.equal(a.start_error, "موقوفة لحد ما مشكلة الدفع عند ميتا تتحل — هتبدأ لوحدها أول ما تتحل"); assert.ok(a.held_at);
+  assert.equal(w.db.sms.length, 0, "مفيش تنبيه «اتأخرت» — المالك عنده تنبيه الدفع");
+  /* الإيقاف طوّل ٣ ساعات (أكتر من startLateMaxMin = ١٢٠) — بعد ما يتشال بتبدأ عادي */
+  w.clock.t = AT_17 + 3 * 3600e3;
+  assert.deepEqual((await w.api.startDueJobs()).held, [1]);
+  h.v = { held: false };
+  const st2 = await w.api.startDueJobs();
+  assert.deepEqual(st2.started, [1]); assert.deepEqual([a.status, a.start_at, a.held_at], ["running", null, null]);
+  /* استنّت أكتر من holdMaxHours (الافتراضي ٦) ⇒ مابتبدأش لوحدها (start_late + تنبيه زي SX2) */
+  const h2 = holdStub();
+  const v = world({ jobs: [J({ status: "paused", start_at: iso(AT_17 - MIN) })], health: h2 });
+  await v.api.schemaReady;
+  await v.api.startDueJobs();
+  v.clock.t = AT_17 + 7 * 3600e3; h2.v = { held: false };
+  const st3 = await v.api.startDueJobs();
+  assert.deepEqual(st3.late, [1]); assert.match(v.db.jobs[0].stop_reason, /^start_late:/); assert.equal(v.db.sms.length, 1);
+  /* holdMaxHours من اللوحة (settings.waHealth) */
+  const h3 = holdStub();
+  const x = world({ jobs: [J({ status: "paused", start_at: iso(AT_17 - MIN) })], health: h3, settings: { waHealth: { holdMaxHours: 12 } } });
+  await x.api.schemaReady;
+  await x.api.startDueJobs();
+  x.clock.t = AT_17 + 7 * 3600e3; h3.v = { held: false };
+  assert.deepEqual((await x.api.startDueJobs()).started, [1]);
+  /* حملة ماستنّتش (held_at فاضي) ⇒ حدّ SX2 زي ما هو */
+  const y = world({ jobs: [J({ status: "paused", start_at: iso(AT_17 - 3 * 3600e3) })], health: { holdState: async () => ({ held: false }) } });
+  await y.api.schemaReady;
+  assert.deepEqual((await y.api.startDueJobs()).late, [1]);
 });

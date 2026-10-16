@@ -3252,12 +3252,14 @@ const outreachApi = outreach.register(app, moduleCtx);
 const waCloudApi = wacloud.register(app, moduleCtx, { wa: waApi, sessionUser: cmsApi.sessionUser });
 /* 🩺 WH1 (١٦/١٠): مراقب صحة واتساب — حالة الرقم/الجودة/الحد/الاسم + صرف ميتا قصاد ميزانية المالك + أكواد فشل إرسالنا ⇒
    SMS للمالك أوله «‼️ واتساب فريش كاتس:» (مرة لكل تغيير) + كارت في قسم واتساب. قراية بس من ميتا (wahealth.js). */
-wahealth.register(app, moduleCtx, { cloud: () => waCloudApi, wa: waApi, sendSms: (m) => accounts.sendSms(m) });
+const waHealthApi = wahealth.register(app, moduleCtx, { cloud: () => waCloudApi, wa: waApi, sendSms: (m) => accounts.sendSms(m) });
+/* PH1 (١٦/١٠ بعد حادثة 131042): مشكلة دفع/قفل/توكن لسه قايمة ⇒ الحارس المركزي بيتخطّى القوالب (pay_hold) والحملات بتستنى — الرسايل الحرة بتكمّل */
+if (typeof waApi.setPayHold === "function") waApi.setPayHold((ctx) => waHealthApi.templateHold(ctx));
 /* 🍽 FD1 (١٤/١٠): حملة «طبقك المفضل» — عرض لكل عميل + سعر توصيله (wafavpick.js). المنيو/البوكسات/العروض من بوت واتساب
    (wabotApi.live — نفس الكاش، بيتسجّل تحت؛ النداء وقت التشغيل)، والتوصيل من delivery.quote نفسها (كاش المسافات بس). */
 const favPickApi = wafavpick.makeFavPick({ pool, getSettingsData, live: () => (wabotApi ? wabotApi.live : null), quote: (x) => deliveryApi.quote(x) });
 const waSenderApi = wasender.register(app, moduleCtx, { outreach: outreachApi, sessionUser: cmsApi.sessionUser, cms: () => cmsApi,
-  wa: waApi, cloud: () => waCloudApi, fav: () => favPickApi, profile: () => profileApi,
+  wa: waApi, cloud: () => waCloudApi, fav: () => favPickApi, profile: () => profileApi, health: () => waHealthApi,
   /* QP1: تنبيه المالك لما بوابة الجودة توقّف الحملات — SMS لأرقام تنبيهات الإدارة + حدث للبورتال (portalApi بيتعرّف تحت؛ النداء وقت التشغيل) */
   sendSms: (m) => accounts.sendSms(m), broadcast: (...a) => portalApi.broadcast(...a) });
 /* OF1: مكتبة عروض واتساب (طبقة فوق البوكسات/العروض الموجودة، في settings.waOffers) — الحملة نفسها من wasender */

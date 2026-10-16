@@ -43,6 +43,7 @@ import {
 } from "./wamsg.js";
 import { shopPaidSql, appOnlyPhonesSql } from "./identity.js";
 import { staffConfig, fitOneSms } from "./staffalerts.js";
+import { healthCfg } from "./wahealth.js";      // PH1: holdMaxHours (البدء المجدول بعد إيقاف الدفع)
 import { brakeWarn, lowReadCheck, qualityVerdict, qualityEventRow, warmupAdvance, warmupView, warmupStart, warmupClean, riyadhDay, custCapOf, custCapReason,
   CLOUD_MIN_GAP_DAYS, META_CAPPED_CODE, qualityAlertText, warnAlertText } from "./waquality.js";
 import { nextStatus, TEMPLATES } from "./whatsapp.js";
@@ -273,6 +274,16 @@ export function register(app, ctx, deps = {}) {
   const favApi = () => { try { return (typeof deps.fav === "function" ? deps.fav() : deps.fav) || null; } catch { return null; } };   // FD1: «طبقك المفضل» (wafavpick.js)
   const profApi = () => { try { return (typeof deps.profile === "function" ? deps.profile() : deps.profile) || null; } catch { return null; } };   // CP1: ملف العميل المصنّف (custprofile.js)
   const now = deps.now || (() => Date.now());
+  /* PH1 (١٦/١٠): مراقب صحة واتساب (wahealth.js) — مشكلة دفع/قفل/توكن لسه قايمة ⇒ الحملات مابتبعتش والبدء المجدول بيستنى (start_at مابيتحرقش)،
+     والرجوع لوحده أول ما قالب ينجح بعد آخر غلطة. فاضي/خطأ ⇒ زي الأول (الإيقاف تحسين، مش قفل). */
+  const healthApi = () => { try { return (typeof deps.health === "function" ? deps.health() : deps.health) || null; } catch { return null; } };
+  let lastHold = null;                    // آخر حكم إيقاف شافته الدورة — للوحة
+  async function payHoldNow() {
+    const h = healthApi();
+    if (!h || typeof h.holdState !== "function") return null;
+    try { const v = await h.holdState(); lastHold = v && v.held ? { ...v, at: new Date(now()).toISOString() } : null; return lastHold; }
+    catch (e) { console.error("[wasender] pay hold:", e.message); return null; }
+  }
   const J = (v) => JSON.stringify(v);
   const bad = (c, error, message, status = 400) => c.json({ ok: false, error, message }, status);
   const STORE = () => (process.env.STOREFRONT_PUBLIC_URL || "https://freshcuts.sa").replace(/\/+$/, "");
@@ -466,6 +477,8 @@ export function register(app, ctx, deps = {}) {
       ALTER TABLE wa_send_jobs ADD COLUMN IF NOT EXISTS fail_brake_at TIMESTAMPTZ;  -- (ج) آخر مرة فرامل الفشل وقّفت الحملة
       ALTER TABLE wa_send_jobs ADD COLUMN IF NOT EXISTS fail_base_at TIMESTAMPTZ;   -- (ج) «كمّل» بعد فرملة فشل ⇒ نسبة الفشل بتتحسب من هنا
       CREATE INDEX IF NOT EXISTS wa_send_queue_retry_idx ON wa_send_queue(retry_at) WHERE retry_at IS NOT NULL;
+      -- PH1 (١٦/١٠): حملة مجدولة استنّت بسبب إيقاف الدفع عند ميتا (من إمتى) — التأخير ده مابيتحسبش «السيرفر كان واقف»
+      ALTER TABLE wa_send_jobs ADD COLUMN IF NOT EXISTS held_at TIMESTAMPTZ;
     `);
   }
   const schemaReady = ensureSchema().catch((e) => console.error("[wasender] schema:", e.message));
@@ -1094,7 +1107,7 @@ export function register(app, ctx, deps = {}) {
       ok.push(Number(j.id));
     }
     const r = ok.length ? await pool.query(
-      "UPDATE wa_send_jobs SET start_at=$2, start_by=$3, start_error=NULL WHERE id = ANY($1::bigint[]) AND status='paused' RETURNING id", [ok, sched.at, by]) : { rows: [] };
+      "UPDATE wa_send_jobs SET start_at=$2, start_by=$3, start_error=NULL, held_at=NULL WHERE id = ANY($1::bigint[]) AND status='paused' RETURNING id", [ok, sched.at, by]) : { rows: [] };
     const scheduled = (r.rows || []).map((x) => Number(x.id));
     if (!scheduled.length) return c.json({ ok: false, error: (skipped[0] && skipped[0].error) || "nothing_scheduled", message: (skipped[0] && skipped[0].message) || "مفيش حملة اتجدولت", skipped }, 409);
     return c.json({ ok: true, startAt: sched.at, startAtRiyadh: sched.riyadh, scheduled, skipped });
@@ -1415,7 +1428,10 @@ export function register(app, ctx, deps = {}) {
     /* QP1: سلّم التسخين وحالة بوابة الجودة للوحة (قراءة بس — الدورة هي اللي بتقرر وبتحفظ) */
     const wv = warmupView(st.warmup, cc.warmup, { today: riyadhDay(now()), dailyCap: cc.dailyCap });
     const qs = st.quality || {};
+    const hold = await payHoldNow();
     return { cfg: pubCfg, state: { today: st.today || 0, lastHour: st.lastHour || 0, uniq24h: st.uniq24h || 0, stoppedReason: st.stoppedReason || null },
+      payHold: hold ? { held: true, key: hold.key, keys: hold.keys || [], reasonAr: hold.reasonAr, lastErr: hold.lastErr || null, lastErrRiyadh: hold.lastErrRiyadh || null,
+        probeMin: hold.probeMin || null, lastProbeAt: hold.lastProbeAt || null } : { held: false },
       warmup: wv, effectiveDailyCap: wv.cap,
       qualityGate: { last: lastQuality, stoppedByQuality: /^quality_/.test(String(st.stoppedReason || "")), lastStop: qs.lastStop || null,
         seen: { tier: qs.tier || null, portfolio: qs.portfolio || null, at: qs.at || null }, allowUnknown: cc.allowUnknownQuality, maxAgeMin: cc.qualityMaxAgeMin, ownerResumeOnly: true },
@@ -1754,17 +1770,30 @@ export function register(app, ctx, deps = {}) {
       await schemaReady;
       const T = new Date(now()).toISOString();
       const due = (await pool.query(
-        `SELECT id, name, channel, cloud_template, image_url, video_url, start_at FROM wa_send_jobs
+        `SELECT id, name, channel, cloud_template, image_url, video_url, start_at, held_at FROM wa_send_jobs
           WHERE status='paused' AND start_at IS NOT NULL AND start_at <= $1::timestamptz ORDER BY start_at, id LIMIT 50`, [T])).rows || [];
       if (!due.length) return out;
-      const cc = cloudCfg(await getSettingsData().catch(() => ({})));
+      const S = await getSettingsData().catch(() => ({}));
+      const cc = cloudCfg(S);
+      /* PH1: إيقاف الدفع ⇒ حملات Cloud اللي جه ميعادها بتستنى: start_at زي ما هو، سبب بالعربي في start_error، وheld_at (أول مرة استنّت).
+         أول دورة بعد ما الإيقاف يتشال بتبدأها — والتأخير بسبب الإيقاف مسموح لحد holdMaxHours من ميعادها (بدل startLateMaxMin). */
+      const hasCloud = due.some((j) => j.channel === "wa_cloud");
+      const hold = hasCloud ? await payHoldNow() : null;
+      const holdMaxMin = healthCfg(S).holdMaxHours * 60;
       const refuse = (j, why, stop) => pool.query(
         `UPDATE wa_send_jobs SET start_at=NULL, start_error=$3, stop_reason=$4 WHERE id=$1 AND status='paused' AND start_at IS NOT NULL AND start_at <= $2::timestamptz RETURNING id`,
         [j.id, T, String(why).slice(0, 300), String(stop).slice(0, 80)]);
       for (const j of due) {
         const id = Number(j.id), name = j.name || `#${id}`;
+        if (hold && j.channel === "wa_cloud") {
+          const r = await pool.query(
+            `UPDATE wa_send_jobs SET start_error=$3, held_at=COALESCE(held_at, NOW()) WHERE id=$1 AND status='paused' AND start_at IS NOT NULL AND start_at <= $2::timestamptz RETURNING id`,
+            [id, T, `${hold.reasonAr} — هتبدأ لوحدها أول ما تتحل`.slice(0, 300)]);
+          if (r.rowCount) (out.held = out.held || []).push(id);      // بيظهر بس لو فيه حملة استنّت
+          continue;
+        }
         const lateMin = Math.floor((now() - new Date(j.start_at).getTime()) / 60000);
-        if (lateMin > cc.startLateMaxMin) {
+        if (lateMin > (j.held_at ? Math.max(cc.startLateMaxMin, holdMaxMin) : cc.startLateMaxMin)) {
           const r = await refuse(j, `فات ميعاد البدء بـ${lateMin} دقيقة (السيرفر كان واقف) — مابدأتش لوحدها`, `start_late:${lateMin}`);
           if (r.rowCount) { out.late.push(id); await alertOwner((lang) => startAlertText("late", { name, lateMin }, lang), `wa-campaign-late ${id}`, { kind: "campaign_start_late", jobId: id, lateMin }); }
           continue;
@@ -1776,7 +1805,7 @@ export function register(app, ctx, deps = {}) {
           continue;
         }
         const r = await pool.query(
-          `UPDATE wa_send_jobs SET status='running', started_at=COALESCE(started_at, NOW()), start_at=NULL, start_error=NULL, stop_reason=NULL, brake_ack_at=NOW(),
+          `UPDATE wa_send_jobs SET status='running', started_at=COALESCE(started_at, NOW()), start_at=NULL, start_error=NULL, held_at=NULL, stop_reason=NULL, brake_ack_at=NOW(),
                   fail_base_at = CASE WHEN fail_brake_at IS NOT NULL AND (fail_base_at IS NULL OR fail_brake_at > fail_base_at) THEN NOW() ELSE fail_base_at END
             WHERE id=$1 AND status='paused' AND start_at IS NOT NULL AND start_at <= $2::timestamptz RETURNING id`, [id, T]);
         if (r.rowCount) out.started.push(id);
@@ -1900,6 +1929,9 @@ export function register(app, ctx, deps = {}) {
       if (!cc.enabled) return { reason: "disabled" };
       const g = await wa.gate();
       if (g) return { reason: g };
+      /* PH1: مشكلة دفع/قفل/توكن عند ميتا لسه قايمة ⇒ ولا رسالة حملة (كانت هتفشل وتحرق المستلم). الحملات الشغّالة بتفضل «شغّالة» وتكمّل لوحدها بعدها. */
+      const hold = await payHoldNow();
+      if (hold) return { reason: "pay_hold", hold: hold.key, reasonAr: hold.reasonAr };
       if (deps.lock !== false && typeof pool.connect === "function") {
         client = await pool.connect();
         locked = (await client.query("SELECT pg_try_advisory_lock(771001) AS ok")).rows[0]?.ok === true;

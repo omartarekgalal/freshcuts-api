@@ -502,6 +502,15 @@ export function register(app, ctx, deps = {}) {
      رايحة/جاية تحدّث صف المحادثة. فاضي = الصندوق مش مركّب، وكله شغّال زي ما هو. */
   let inbox = null;
   const setInbox = (i) => { inbox = i; };
+  /* PH1 (١٦/١٠ بعد حادثة 131042): مراقب الصحة (wahealth.js) بيتركّب بعدنا — بيتحقن هنا. قبل أي قالب مش تجربة الحارس بيسأله:
+     مشكلة دفع/قفل/توكن لسه قايمة ⇒ القالب بيتخطّى «pay_hold» (من غير طلب لميتا، ومن غير ما يتحسب فشل) والـSMS البديل بيكمّل عند المنادي.
+     الرسايل الحرة جوّه النافذة مابتتسألش. فاضي = زي الأول. */
+  let payHold = null;
+  const setPayHold = (fn) => { payHold = typeof fn === "function" ? fn : null; };
+  async function holdBlocks(ctx) {
+    if (!payHold) return false;
+    try { return Boolean(await payHold(ctx)); } catch { return false; }
+  }
   /* LR1: كل رسالة اتخزّنت لمحادثة (عميل / بوت / مساعد / رد موظف / موبايل المطعم / قالب) ⇒ حدث «chat» للمستمعين
      (wastaff بيبعته لشاشة البورتال: wa_chat_update). رسايل التاريخ القديم (silent) مابتبعتش حدث. من غير نص ولا اسم. */
   const touchThread = async (a) => {
@@ -787,14 +796,17 @@ export function register(app, ctx, deps = {}) {
          • الرقم في دليل الفريق في الإعدادات (settings.waTeam.members، أو أرقام التنبيهات لحد ما الدليل يتكتب) وإلا not_staff
          • القالب من مجموعة «الفريق» في الكتالوج، فئته UTILITY، وميتا ماحوّلتوش تسويق، ومش حملة — وإلا not_staff_template
        موافقة العميل (wa_optins) مابتتطلبش: ده موظف عندنا مش عميل. أي رقم تاني أو أي قالب تاني بيكمل على قواعد العملاء تحت زي ما هو. */
+    /* PH1: آخر خطوة قبل التذكرة لأي قالب (بعد كل قواعد الموافقة، فالتجربة مابتتحرقش على رقم مرفوض أصلاً) */
+    const holdCtx = (mk) => ({ template, category: t.category, marketing: mk, source, orderNo, phoneNorm: pn });
     if (staff === true) {
       if (!staffRoleOf(s, pn)) return no("not_staff");
       const reclassed = Object.keys(CAT.META_CATEGORY || {}).some((k) => k.startsWith(`${template}:`));
       if (t.group !== "staff" || t.category !== "UTILITY" || reclassed || purpose === "marketing" || source === "campaign") return no("not_staff_template");
+      if (await holdBlocks(holdCtx(false))) return no("pay_hold");
       return grant();
     }
     const marketing = t.category === "MARKETING" || purpose === "marketing" || source === "campaign";
-    if (t.category === "AUTHENTICATION" && !marketing) return grant();   // كود تحقق العميل طلبه بنفسه
+    if (t.category === "AUTHENTICATION" && !marketing) return (await holdBlocks(holdCtx(false))) ? no("pay_hold") : grant();   // كود تحقق العميل طلبه بنفسه
     const o = await optInOf(pn);
     if (marketing) {
       /* TC2 (١٣/١٠، قرار المالك بنصّه: «العروض التسويقية تكون للكل على مسئوليتي الا لو العميل طلب ايقاف»):
@@ -815,6 +827,7 @@ export function register(app, ctx, deps = {}) {
         if (!(orderNo && await termsCoverOrder(pool, pn, orderNo)) && !(await posReviewBasis({ s, template, source, orderNo, pn }))) return no("no_optin");
       }
     }
+    if (await holdBlocks(holdCtx(marketing))) return no("pay_hold");
     return grant();
   }
 
@@ -1472,7 +1485,7 @@ export function register(app, ctx, deps = {}) {
     return c.json({ ok: true, results });
   });
 
-  return { fetchMedia, uploadMedia, sendTemplate, sendStaffTemplate, sendText, sendFreeform, sendTyping, sendOrderUpdate, sendOrderTemplateOnce, recordOptIn, applyIntent, gate, configured, masterOn, ready, setInbox,
+  return { fetchMedia, uploadMedia, sendTemplate, sendStaffTemplate, sendText, sendFreeform, sendTyping, sendOrderUpdate, sendOrderTemplateOnce, recordOptIn, applyIntent, gate, configured, masterOn, ready, setInbox, setPayHold,
     guardSend, deliver, envState, dashMasterOn: async () => dashMasterOf(await settingsSnap()), testPhones: async () => testPhonesOf(await settingsSnap()),
     on, processWebhook, token, phoneId, wabaId, setBot, setBotRuntime, humanActive,
     setActiveIds, idsInUse, setWebhookAccept };

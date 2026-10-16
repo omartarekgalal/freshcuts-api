@@ -50,11 +50,17 @@ export const HEALTH_DEFAULTS = Object.freeze({
   recovery: true,         // رسالة «رجع تمام» لما المشكلة تروح
   phones: [],             // أرقام التنبيه — فاضي = تلقائي (شوف recipientsOf)
   marker: MARKER_DEFAULT, // العلامة اللي أول الرسالة
+  /* PH1 (١٦/١٠ بعد حادثة 131042): وقت مشكلة دفع/قفل/توكن مش متحلّة — الحملات والقوالب بتستنى بدل ما تفشل */
+  payHold: true,          // وقّف الحملات والقوالب المدفوعة لحد ما المشكلة تتحل (الرسايل الحرة جوّه النافذة بتكمّل)
+  probeMin: 10,           // وقت الإيقاف: قالب خدمي واحد كل كام دقيقة بيتبعت كتجربة — أول واحد ينجح بيرجّع كله لوحده
+  holdMaxHours: 6,        // حملة مجدولة استنّت أكتر من كده بعد ميعادها ⇒ مابتبدأش لوحدها لما الإيقاف يتشال (تتبدأ بإيدك)
+  ownerWa: true,          // ابعت التنبيه كمان رسالة واتساب ببلاش لو نافذة رقمك مفتوحة (الـSMS يفضل الأساسي)
 });
 export const HEALTH_KEYS = Object.freeze(Object.keys(HEALTH_DEFAULTS));
 export const HEALTH_LIMITS = Object.freeze({
   everyMin: [5, 180], monthBudgetSar: [0, 1000000], warnPct: [10, 99], prepaidSar: [0, 1000000], lowDays: [1, 30],
   errorWindowMin: [15, 1440], rateLimitMin: [1, 10000], capSpikePct: [1, 100], repeatHours: [1, 72],
+  probeMin: [2, 120], holdMaxHours: [1, 48],
 });
 const okDay = (s) => /^\d{4}-\d{2}-\d{2}$/.test(String(s || "")) && Number.isFinite(Date.parse(`${s}T00:00:00Z`));
 
@@ -78,6 +84,10 @@ export function healthCfg(settings) {
     recovery: x.recovery !== false,
     phones: staffPhones(x.phones).slice(0, 5),
     marker: marker || MARKER_DEFAULT,
+    payHold: x.payHold !== false,
+    probeMin: clampN(x.probeMin, ...L.probeMin, D.probeMin),
+    holdMaxHours: clampN(x.holdMaxHours, ...L.holdMaxHours, D.holdMaxHours),
+    ownerWa: x.ownerWa !== false,
   };
 }
 
@@ -163,7 +173,7 @@ export const LINKS = Object.freeze({
 });
 const CODE_ISSUES = {
   131042: { key: "pay_error", level: "crit", title: "ميتا رفضت رسايل بسبب الدفع (131042)", sms: "الدفع عند ميتا فشل والرسايل مش بتوصل — حدّث الكارت أو زوّد الرصيد",
-    todo: "افتح إعدادات الدفع في Meta Business وحدّث الكارت أو زوّد الرصيد/حد الائتمان لحساب واتساب. بعد ما الدفع ينجح الإرسال بيرجع لوحده — الحملات الواقفة محتاجة «كمّل».", link: "billing" },
+    todo: "افتح إعدادات الدفع في Meta Business وحدّث الكارت أو زوّد الرصيد/حد الائتمان لحساب واتساب. بعد ما الدفع ينجح الإرسال بيرجع لوحده: الحملات والقوالب بتستنى وقت المشكلة وبتكمّل لوحدها أول ما قالب ينجح (ابعت رسالة تجربة عشان تتأكد).", link: "billing" },
   131031: { key: "account_locked", level: "crit", title: "حساب واتساب مقفول عند ميتا (131031)", sms: "حساب واتساب اتقفل عند ميتا — مفيش رسايل خارجة",
     todo: "افتح WhatsApp Manager وشوف التنبيه اللي فوق (سبب القفل + طلب مراجعة). مفيش حاجة تتعمل من السيرفر.", link: "waManager" },
   368: { key: "policy_block", level: "crit", title: "ميتا منعت الإرسال بسبب مخالفة سياسة (368)", sms: "ميتا منعت الإرسال بسبب مخالفة سياسة",
@@ -365,6 +375,49 @@ export function carryIssues(prevLast, { phoneOk = true, pricingOk = true, phone 
   return out;
 }
 
+/* ── PH1: إيقاف الإرسال المدفوع وقت مشكلة دفع/قفل/توكن (١٦/١٠) ────────────────
+   الحادثة: فاتورة واتساب Cloud ماكانتش مدفوعة ⇒ 131042 على ٨٣ رسالة (٠٠:١٥–١٣:٤١)، والمراقب بعت SMS ١٢:١٢ بس حملات ١٣:٠٠
+   بدأت وفشلت. القاعدة: لو في آخر فحص للمراقب مشكلة من HOLD_KEYS (crit) ولسه مفيش رسالة نجحت **بعد** آخر غلطة منها
+   (قالب للدفع — نفس قاعدة carryIssues، رسالة الخدمة ببلاش مش دليل) ⇒ الإيقاف قايم: الحملات مابتبعتش، البدء المجدول بيستنى
+   (start_at مابيتحرقش)، والقوالب (تحديثات الطلب/التقييم/الفريق) بتتخطّى بسبب «pay_hold» بدل ما تفشل. الرسايل الحرة جوّه
+   النافذة بتكمّل. الرجوع لوحده: قالب «تجربة» واحد كل probeMin دقيقة (خدمي، مش تسويق) — أول ما ينجح الإيقاف بيتشال.
+   last = snap آخر فحص (wa_health_state.data.last)؛ okSince = { any, tpl } أو null (ماقدرناش نقرا ⇒ الإيقاف بيفضل). */
+export const HOLD_KEYS = Object.freeze(["pay_error", "account_locked", "token", "permission"]);
+export const HOLD_AR = Object.freeze({
+  pay_error: "موقوفة لحد ما مشكلة الدفع عند ميتا تتحل",
+  account_locked: "موقوفة لحد ما ميتا تفك قفل حساب واتساب",
+  token: "موقوفة لحد ما توكن واتساب يتصلّح",
+  permission: "موقوفة لحد ما صلاحية واتساب تتصلّح",
+});
+export const HOLD_NONE = Object.freeze({ held: false, key: null, keys: [], lastErr: null, reasonAr: null });
+export function holdVerdict(last, okSince) {
+  if (!last || !Array.isArray(last.issues)) return { ...HOLD_NONE };
+  const checkedAt = Date.parse(last.checkedAt || "") || 0;
+  const act = [];
+  for (const i of last.issues) {
+    if (!i || !HOLD_KEYS.includes(i.key) || i.level !== "crit") continue;
+    const lastErr = Date.parse(i.last || "") || Date.parse(i.freshAt || "") || checkedAt;
+    if (okSince) {
+      const okAt = Date.parse((i.key === "pay_error" ? okSince.tpl : okSince.any) || "") || 0;
+      if (okAt > lastErr) continue;            // رسالة (قالب للدفع) نجحت بعد آخر غلطة ⇒ اتحلّت
+    }
+    act.push({ key: i.key, lastErr });
+  }
+  if (!act.length) return { ...HOLD_NONE };
+  const top = act.find((a) => a.key === "pay_error") || act[0];
+  const lastErr = Math.max(...act.map((a) => a.lastErr || 0));
+  return { held: true, key: top.key, keys: act.map((a) => a.key), lastErr: lastErr ? new Date(lastErr).toISOString() : null,
+    lastErrRiyadh: lastErr ? riyadhStamp(lastErr) : null, reasonAr: HOLD_AR[top.key] };
+}
+/* قالب يعدّي كـ«تجربة» وقت الإيقاف؟ خدمي بس (مش تسويق/حملة ولا كود تحقق)، ومرة كل probeMin دقيقة */
+export function probeAllowed({ marketing = false, category = null } = {}, lastProbeAt, probeMin, now = Date.now()) {
+  if (marketing || category !== "UTILITY") return false;
+  return !(now - (Number(lastProbeAt) || 0) < probeMin * 60_000);
+}
+/* واتساب نفسه شغّال كفاية إن المالك ياخد التنبيه رسالة حرة؟ الدفع لوحده مابيمنعش الرسايل الحرة؛ القفل/التوكن/الصلاحية/الحظر بيمنعوا كله */
+export const WA_DEAD_KEYS = Object.freeze(["account_locked", "token", "permission", "not_registered", "policy_block", "health_blocked", "phone_status"]);
+export const waUsable = (issues) => !(issues || []).some((i) => i && i.level === "crit" && WA_DEAD_KEYS.includes(i.key));
+
 /* ── خطة التنبيه (دالة صافية) ───────────────────────────────────────────────
    prev = { key: { level, at } } المشاكل اللي اتبعت عنها. بترجع { announce: [مشاكل], recovered: [keys], next }.
    بتتبعت: مشكلة جديدة، أو اتصعّدت (warn ⇒ crit)، أو لسه موجودة وعدّى عليها repeatHours (crit) / max(repeatHours, 24) (warn).
@@ -433,6 +486,10 @@ export function register(app, ctx, deps = {}) {
     await pool.query(`CREATE TABLE IF NOT EXISTS wa_health_state (
         id INT PRIMARY KEY, data JSONB NOT NULL DEFAULT '{}'::jsonb, ver BIGINT NOT NULL DEFAULT 0, updated_at TIMESTAMPTZ)`);
     await pool.query("INSERT INTO wa_health_state(id, data, ver, updated_at) VALUES (1, '{}'::jsonb, 0, NULL) ON CONFLICT (id) DO NOTHING");
+    /* PH1: القوالب اللي اتخطّت وقت الإيقاف (للكارت: كام رسالة ماتبعتتش وليه) */
+    await pool.query(`CREATE TABLE IF NOT EXISTS wa_hold_skips (id BIGSERIAL PRIMARY KEY, at TIMESTAMPTZ NOT NULL DEFAULT NOW(), hold_key TEXT,
+        template TEXT, source TEXT, order_no TEXT, phone_norm TEXT);
+      CREATE INDEX IF NOT EXISTS wa_hold_skips_at_idx ON wa_hold_skips(at)`);
   })().catch((e) => { log("[wa-health] schema:", e.message); });
 
   async function readState() {
@@ -541,6 +598,49 @@ export function register(app, ctx, deps = {}) {
     return { snap, prev, st, phone, pf };
   }
 
+  /* ── PH1: حالة الإيقاف (كاش ٢٠ ثانية — الحارس بيسأل مع كل قالب) ── */
+  let holdCache = { at: 0, v: null };
+  let lastProbeAt = 0;
+  async function holdState({ fresh = false } = {}) {
+    const t = now();
+    if (!fresh && holdCache.v && t - holdCache.at < 20_000) return holdCache.v;
+    const cfg = healthCfg(await getSettingsData());
+    let v = { ...HOLD_NONE };
+    if (cfg.enabled && cfg.payHold) {
+      const last = (await readState()).data.last;
+      const cand = Boolean(last && Array.isArray(last.issues) && last.issues.some((i) => i && HOLD_KEYS.includes(i.key) && i.level === "crit"));
+      if (cand) v = holdVerdict(last, await okSince());
+    }
+    v = { ...v, on: cfg.enabled && cfg.payHold, probeMin: cfg.probeMin, holdMaxHours: cfg.holdMaxHours, lastProbeAt: lastProbeAt ? new Date(lastProbeAt).toISOString() : null };
+    holdCache = { at: t, v };
+    return v;
+  }
+  /* الحارس المركزي (whatsapp.js guardSend) بيسأل قبل أي قالب مش تجربة: null = ابعت · غير كده = اتخطّى بسبب pay_hold (ويتسجّل).
+     أي خطأ هنا ⇒ null (الإيقاف تحسين، مش قفل أمان — مايوقّفش الإرسال لو الداتابيز اتلخبطت). */
+  async function templateHold({ template = null, category = null, marketing = false, source = null, orderNo = null, phoneNorm = null } = {}) {
+    try {
+      const v = await holdState();
+      if (!v.held) return null;
+      if (probeAllowed({ marketing, category }, lastProbeAt, v.probeMin, now())) {
+        lastProbeAt = now(); holdCache.at = 0;      // التجربة دي هتحسم: نقرا تاني بدري
+        log(`[wa-health] pay hold (${v.key}): probe ${template || "?"}`);
+        return null;
+      }
+      pool.query("INSERT INTO wa_hold_skips(hold_key, template, source, order_no, phone_norm) VALUES ($1,$2,$3,$4,$5)",
+        [v.key, template ? String(template).slice(0, 80) : null, source ? String(source).slice(0, 40) : null, orderNo ? String(orderNo).slice(0, 40) : null,
+          phoneNorm ? String(phoneNorm).slice(0, 20) : null]).catch(() => {});
+      return v;
+    } catch (e) { log("[wa-health] hold check:", e.message); return null; }
+  }
+  async function holdSkips() {
+    try {
+      const r = await pool.query(`SELECT COALESCE(template,'') AS template, count(*)::int AS n, max(at) AS last FROM wa_hold_skips
+          WHERE at > NOW() - INTERVAL '24 hours' GROUP BY 1 ORDER BY 2 DESC LIMIT 12`);
+      const rows = (r.rows || []).map((x) => ({ template: x.template || null, n: Number(x.n) || 0, last: x.last ? new Date(x.last).toISOString() : null }));
+      return { n: rows.reduce((a, x) => a + x.n, 0), byTemplate: rows };
+    } catch { return { n: 0, byTemplate: [] }; }
+  }
+
   let running = null;
   async function check({ reason = "timer", force = false } = {}) {
     if (running) return running;
@@ -557,31 +657,46 @@ export function register(app, ctx, deps = {}) {
         tier: phone && phone.ok && phone.tier ? phone.tier : prev.tier || null, portfolio: pf || prev.portfolio || null, reason,
         readFails: phone && phone.ok ? 0 : (Number(prev.readFails) || 0) + 1 };
       const willSend = Boolean(text) && cfg.enabled && cfg.sms && rec.phones.length > 0 && Boolean(sendSms);
+      /* PH1: قناة تانية للمالك — نفس النص رسالة واتساب حرة (ببلاش) لو نافذته مفتوحة وواتساب نفسه مش هو اللي واقع. الـSMS يفضل الأساسي. */
+      const waApi = deps.wa && typeof deps.wa.sendFreeform === "function" ? deps.wa : null;
+      const waState = !text ? null : !cfg.enabled ? "watch_off" : !cfg.ownerWa ? "off" : !rec.phones.length ? "no_phones" : !waApi ? "no_sender" : !waUsable(snap.issues) ? "wa_down" : null;
+      const willWa = Boolean(text) && !waState;
       if (text) {
         const entry = { at: snap.checkedAt, text, keys: plan.announce.map((i) => i.key), recovered: plan.recovered, to: rec.phones.map(mask), sent: 0,
-          skipped: !cfg.enabled ? "watch_off" : !cfg.sms ? "sms_off" : !rec.phones.length ? "no_phones" : !sendSms ? "no_sender" : null };
+          skipped: !cfg.enabled ? "watch_off" : !cfg.sms ? "sms_off" : !rec.phones.length ? "no_phones" : !sendSms ? "no_sender" : null,
+          wa: { sent: 0, skipped: willWa ? [] : [waState] } };
         next.log = [entry, ...(Array.isArray(prev.log) ? prev.log : [])].slice(0, 30);
       }
       /* الحجز: لو حاوية تانية كتبت بعد ما قرينا ⇒ مانبعتش (هي بعتت أو هتبعت) */
       const claim = await pool.query("UPDATE wa_health_state SET data=$1::jsonb, ver=ver+1, updated_at=NOW() WHERE id=1 AND ver=$2::bigint RETURNING id",
         [J(next), st.ver]);
       if (!claim.rowCount) return { ok: true, skipped: "claimed_elsewhere", state: snap };
-      let sent = 0, failed = 0;
+      let sent = 0, failed = 0, waSent = 0;
+      const waSkip = [];
       if (willSend) {
         for (const p of rec.phones) {
           try { const r = await sendSms({ phoneNorm: p, body: text, kind: "staff", ref: `wa-health ${plan.announce.map((i) => i.key).join(",") || "recovered"}`.slice(0, 80) }); if (!(r && r.suppressed)) sent++; }
           catch (e) { failed++; log(`[wa-health] sms → ${mask(p)} failed: ${e.message}`); }
         }
-        if (next.log && next.log[0]) {
-          next.log[0].sent = sent;
-          if (failed) next.log[0].failed = failed;
-          /* الـSMS وقع لكل الأرقام (تقنيات واقفة مثلاً) ⇒ نرجّع «اتبعت عن إيه» زي ما كان، فالدورة الجاية تحاول تاني بدل ما التنبيه يضيع ٦ ساعات */
-          const revert = failed === rec.phones.length;
-          await pool.query(`UPDATE wa_health_state SET data = jsonb_set(${revert ? "jsonb_set(data, '{alerts}', $2::jsonb, true)" : "data"}, '{log}', $1::jsonb, true) WHERE id=1`,
-            revert ? [J(next.log), J(prev.alerts || {})] : [J(next.log)]).catch(() => {});
+      }
+      if (willWa) {
+        for (const p of rec.phones) {
+          try {
+            const r = await waApi.sendFreeform({ phoneNorm: p, payload: { type: "text", text: { body: text, preview_url: false } }, source: "health", preview: text });
+            if (r && r.ok) waSent++; else waSkip.push(String((r && (r.skipped || r.error)) || "failed").slice(0, 40));
+          } catch (e) { waSkip.push("error"); log(`[wa-health] wa → ${mask(p)} failed: ${e.message}`); }
         }
       }
-      return { ok: true, state: snap, alerted: plan.announce.map((i) => i.key), recovered: plan.recovered, sent };
+      if ((willSend || willWa) && next.log && next.log[0]) {
+        if (willSend) { next.log[0].sent = sent; if (failed) next.log[0].failed = failed; }
+        if (willWa) next.log[0].wa = { sent: waSent, skipped: [...new Set(waSkip)] };
+        /* الـSMS وقع لكل الأرقام (تقنيات واقفة مثلاً) والواتساب ماوصّلش ⇒ نرجّع «اتبعت عن إيه» زي ما كان، فالدورة الجاية تحاول تاني بدل ما التنبيه يضيع ٦ ساعات */
+        const revert = willSend && failed === rec.phones.length && waSent === 0;
+        await pool.query(`UPDATE wa_health_state SET data = jsonb_set(${revert ? "jsonb_set(data, '{alerts}', $2::jsonb, true)" : "data"}, '{log}', $1::jsonb, true) WHERE id=1`,
+          revert ? [J(next.log), J(prev.alerts || {})] : [J(next.log)]).catch(() => {});
+      }
+      holdCache.at = 0;      // PH1: حالة جديدة ⇒ الحارس يقرا الإيقاف من جديد
+      return { ok: true, state: snap, alerted: plan.announce.map((i) => i.key), recovered: plan.recovered, sent, waSent };
     })().catch((e) => { log("[wa-health] check:", e.message); return { ok: false, error: String(e.message || e).slice(0, 200) }; })
       .finally(() => { running = null; });
     return running;
@@ -593,9 +708,11 @@ export function register(app, ctx, deps = {}) {
     const cfg = healthCfg(s);
     const st = await readState();
     const rec = recipientsOf(s, cfg);
+    const hold = await holdState({ fresh: true }).catch(() => ({ ...HOLD_NONE }));
     return { ok: true, cfg: owner ? cfg : { ...cfg, phones: cfg.phones.map(mask) }, defaults: HEALTH_DEFAULTS, limits: HEALTH_LIMITS, links: LINKS,
       recipients: { phones: rec.phones.map(mask), source: rec.source, sourceAr: SOURCE_AR[rec.source] || rec.source },
-      state: st.data.last || null, log: (Array.isArray(st.data.log) ? st.data.log : []).slice(0, 10), alerts: st.data.alerts || {}, owner };
+      state: st.data.last || null, log: (Array.isArray(st.data.log) ? st.data.log : []).slice(0, 10), alerts: st.data.alerts || {}, owner,
+      hold: { ...hold, skipped24h: await holdSkips() } };
   }
   app.get("/api/cms/wa-health", async (c) => {
     const err = await requireAdmin(c); if (err) return err;
@@ -643,7 +760,17 @@ export function register(app, ctx, deps = {}) {
       try { const r = await sendSms({ phoneNorm: p, body: testText(cfg.marker), kind: "staff", ref: "test" }); if (!(r && r.suppressed)) sent++; }
       catch (e) { log(`[wa-health] test → ${mask(p)}: ${e.message}`); }
     }
-    return c.json({ ok: sent > 0, sent, to: rec.phones.map(mask), text: testText(cfg.marker) });
+    /* PH1: نفس التجربة على واتساب (رسالة حرة) لو «التنبيه على واتساب» شغّال — بتوصل بس لو نافذة الرقم مفتوحة */
+    const wa = { sent: 0, skipped: [] };
+    if (cfg.ownerWa && deps.wa && typeof deps.wa.sendFreeform === "function") {
+      for (const p of rec.phones) {
+        try { const r = await deps.wa.sendFreeform({ phoneNorm: p, payload: { type: "text", text: { body: testText(cfg.marker), preview_url: false } }, source: "health", preview: testText(cfg.marker) });
+          if (r && r.ok) wa.sent++; else wa.skipped.push(String((r && (r.skipped || r.error)) || "failed").slice(0, 40)); }
+        catch { wa.skipped.push("error"); }
+      }
+      wa.skipped = [...new Set(wa.skipped)];
+    } else wa.skipped = [cfg.ownerWa ? "no_sender" : "off"];
+    return c.json({ ok: sent > 0 || wa.sent > 0, sent, wa, to: rec.phones.map(mask), text: testText(cfg.marker) });
   });
 
   /* ── الجدولة: كل everyMin دقيقة، وفحص سريع (بعد دقيقة) لما ويب هوك ييجي بغلطة خطيرة أو حدث حساب/جودة ── */
@@ -670,5 +797,5 @@ export function register(app, ctx, deps = {}) {
     const t0 = setTimeout(() => { tick(); const iv = setInterval(tick, 60_000); if (iv.unref) iv.unref(); }, 90_000);
     if (t0.unref) t0.unref();
   }
-  return { check, view, evaluate, readState };
+  return { check, view, evaluate, readState, holdState, templateHold };
 }
