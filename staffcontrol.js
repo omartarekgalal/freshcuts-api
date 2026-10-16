@@ -72,6 +72,8 @@ export const ALERT_TYPES = [
     codes: { slot: "الرسالة الدورية (كل ساعتين)", close: "ملخص القفلة" } },
   { id: "wa_health", label: "صحة واتساب (رصيد، دفع، جودة، حد، اسم)", source: "wahealth.js", critical: true,
     hint: "تنبيه قبل ما رسايل واتساب تقف — أولها «‼️ واتساب فريش كاتس:». بيروح لأرقام «صحة واتساب» في قسم واتساب، مرة لكل تغيير." },
+  { id: "lj_watch", label: "حساب لاجلك رجع شغّال", source: "ljwatch.js",
+    hint: "LJ2a (١٦/١٠): رسالة واحدة للمالك لما لاجلك ترجّع الحساب بعد الإيقاف — مرة كل ٦ ساعات بالكتير. مابيشغّلش الطلب الآلي." },
 ];
 const TYPE_BY_ID = Object.fromEntries(ALERT_TYPES.map((t) => [t.id, t]));
 
@@ -95,6 +97,7 @@ export function typeOfRef(ref) {
   if (/^review:/.test(r)) return { type: "review", code: null };
   if (/^revenue-pulse\b/.test(r)) return { type: "revenue_pulse", code: w[2] === "close" ? "close" : "slot" };      // revenue-pulse <HH:MM> slot|close
   if (/^wa-health(\s|$)/.test(r)) return { type: "wa_health", code: null };          // WH1: wa-health <مفاتيح المشاكل>|recovered
+  if (/^lj-watch(\s|$)/.test(r)) return { type: "lj_watch", code: null };            // LJ2a: lj-watch reopened
   return { type: "other", code: w[0] || null };
 }
 

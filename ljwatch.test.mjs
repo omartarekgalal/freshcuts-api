@@ -296,3 +296,10 @@ test("«التوصيل والمندوبين»: حقلين المراقبة في 
   const r2 = await routes2["GET /api/delivery/control"]({ json: (payload, status = 200) => ({ payload, status }) });
   assert.equal(r2.payload.ok, true); assert.equal(r2.payload.leajlakAccount, null);
 });
+test("بوابة رسايل الإدارة: «lj-watch reopened» نوع خاص lj_watch (مش «other») ويتقفل من اللوحة لو المالك عايز", async () => {
+  const sc = await import("./staffcontrol.js");
+  assert.deepEqual(sc.typeOfRef("lj-watch reopened"), { type: "lj_watch", code: null });
+  assert.ok(sc.ALERT_TYPES.some((t) => t.id === "lj_watch"));
+  assert.equal(sc.allowStaff({}, "lj-watch reopened", "551115082"), true);
+  assert.equal(sc.allowStaff({ staffAlerts: { types: { lj_watch: { enabled: false } } } }, "lj-watch reopened", "551115082"), false);
+});
