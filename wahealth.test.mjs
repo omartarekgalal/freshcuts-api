@@ -437,3 +437,15 @@ test("مراجعة: alertPlan — المحمولة بتحتفظ بعلامتها
   assert.deepEqual(p.announce, []); assert.deepEqual(p.next, { quality_red: { level: "crit", at } }); assert.deepEqual(p.recovered, []);
   assert.deepEqual(H.alertPlan([{ key: "pay_error", level: "crit", carried: true }], {}, cfg, NOW).announce, [], "محمولة من غير علامة قديمة ⇒ مابتتبعتش");
 });
+
+test("١٦/١٠: غلطة الدفع بتتشال من النافذة لما قالب مدفوع ينجح بعدها (مش بعد ساعتين)", async () => {
+  const { resolvedCodesDropped } = await import("./wahealth.js");
+  const codes = [{ code: 131042, n: 67, last: "2026-10-16T10:41:14.000Z" }, { code: 131049, n: 3, last: "2026-10-16T11:50:00.000Z" }];
+  const after = { tpl: "2026-10-16T11:05:03.000Z", any: "2026-10-16T11:12:00.000Z" };
+  const out = resolvedCodesDropped(codes, after);
+  assert.deepEqual(out.map((x) => x.code), [131049]);
+  // قالب لسه مانجحش بعد آخر غلطة دفع (رسالة خدمة ببلاش مش دليل) ⇒ الغلطة فاضلة
+  assert.deepEqual(resolvedCodesDropped(codes, { tpl: "2026-10-16T10:00:00.000Z", any: "2026-10-16T11:12:00.000Z" }).map((x) => x.code), [131042, 131049]);
+  // ماقدرناش نقرا ⇒ مانشيلش حاجة
+  assert.equal(resolvedCodesDropped(codes, null).length, 2);
+});

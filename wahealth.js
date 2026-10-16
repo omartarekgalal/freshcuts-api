@@ -239,6 +239,19 @@ export function phoneIssues(phone, prev = {}) {
   return out;
 }
 
+/* ١٦/١٠: نشيل من أكواد النافذة اللي اتحلّت فعلاً — آخر غلطة للكود أقدم من آخر رسالة نجحت (للدفع 131042/131031: قالب مدفوع).
+   okSince = { any, tpl } أو null (ماقدرناش نقرا ⇒ مانشيلش حاجة). */
+export function resolvedCodesDropped(codes, okSince) {
+  if (!okSince || !Array.isArray(codes)) return Array.isArray(codes) ? codes : [];
+  return codes.filter((x) => {
+    const d = CODE_ISSUES[Number(x && x.code)];
+    if (!d) return true;
+    const last = Date.parse((x && x.last) || "") || 0;
+    const ok = Date.parse((d.key === "pay_error" ? okSince.tpl : okSince.any) || "") || 0;
+    return !(last && ok && ok > last);
+  });
+}
+
 /* أكواد الفشل ⇒ مشاكل. codes = [{ code, n, last }] في النافذة؛ m24 = { marketing, capped } في ٢٤ ساعة */
 export function errorIssues(codes, m24, cfg) {
   const out = [], seen = new Set();
@@ -575,8 +588,12 @@ export function register(app, ctx, deps = {}) {
     const [pr, codes, m24, events] = await Promise.all([pricing(cfg), errorCodes(cfg.errorWindowMin), marketing24(), recentEvents()]);
     const spend = pr.ok ? { ...spendView(pr.days, { now: now(), prepaidSince: cfg.prepaidSince }), currency: pr.currency || null } : null;
     const seen = { tier: prev.tier || null, portfolio: prev.portfolio || null, readFails: Number(prev.readFails) || 0 };
+    /* ١٦/١٠ (عمر: «جايلي إشعار وأنا دافع»): غلطة إرسال جوه نافذة الساعتين بتتحسب «حاضرة» بس لو مفيش رسالة نجحت بعد آخر مرة حصلت —
+       الدفع: قالب مدفوع نجح بعدها؛ الباقي: أي رسالة نجحت. من غير كده الكارت بيفضل أحمر ساعتين بعد السداد. */
+    const okNow = codes && codes.length ? await okSince() : null;
+    const codesNow = resolvedCodesDropped(codes, okNow);
     const fresh = mergeIssues(
-      errorIssues(codes, m24, cfg),
+      errorIssues(codesNow, m24, cfg),
       phoneIssues(phone, seen),
       eventIssues(events),
       spendIssues(spend, cfg, { pricingOk: pr.ok, now: now() }),
