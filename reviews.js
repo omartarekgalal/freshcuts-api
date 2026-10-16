@@ -25,7 +25,7 @@
 ═══════════════════════════════════════════════════════════════════════════ */
 import crypto from "node:crypto";
 import * as places from "./places.js";
-import { teamPhoneSet } from "./smsrules.js";
+import { teamPhoneSet, normLocal } from "./smsrules.js";
 import { subscribe } from "./order-events.js";
 import { setLiveGoogleRating } from "./playbook.js";
 import { reviewDueAt } from "./prepstatus.js";
@@ -34,7 +34,7 @@ import { reviewFlowConfig, dueFor, nextAllowed, inQuiet, kindOfInvite, posKindOf
 import { KNOWN_WA_NUMBER } from "./wapolicy.js";
 /* RV1 (عمر ١٥/١٠): «عملاء المحل صالة وتيك أواي موافقين مسبقاً وقت الدفع عند الكاشير» ⇒ صف إثبات pos_payment لكل فاتورة (طلب التقييم بس) */
 import { recordPosReviewConsent, POS_REVIEW_CONSENT } from "./waconsent.js";
-import { isPlaceholderPhone } from "./phonecheck.js";
+import { isPlaceholderPhone, placeholderWhy, FAKE_PHONE_RE } from "./phonecheck.js";
 /* RV1: التقييمات الواطية في بورتال المدير — نفس صف التقييم (resolved/resolution_note) اللي الوارد في اللوحة بيقراه + سجل الإجراءات */
 import { REVIEW_PORTAL_DDL, OUTCOMES, outcomeOf, closeReview, closeStatus } from "./portalreviews.js";
 
@@ -54,6 +54,26 @@ export const DEFAULTS = {
   askQuietEnd: 11,    // …لحد ١١ الصبح: الطلب اللي اتسلّم بالليل بيتأجّل للصبح
   askMaxAgeHours: 20, // فات ٢٠ ساعة على التوصيل؟ خلاص، مانسألش على طلب قديم
 };
+
+/* RV5 (١٦/١٠): مين مايتسألش عن تقييم أبداً — على واتساب وعلى الـSMS (القايمة دي بتتشيك قبل القناتين). كانت teamPhoneSet + أرقام تجربة البوت +
+   «البوت مايردش عليها» + رقم المطعم بس؛ أرقام التنبيهات التانية (تحويل البوت، سقف الذكاء، صحة واتساب، تقرير الإعلانات) وموظفين البورتال
+   كانوا بيوصلوا لـreviewAsk ⇒ البوت يرفض (never_reply) ⇒ الـSMS تطلع لهم. القايمة دي = كل رقم في الإعدادات مش رقم عميل:
+     • teamPhoneSet: أرقام تنبيهات الطلبات (delivery.alertPhones / newOrderPhones) + دليل الفريق + قايمة «موظفين / فريق»
+     • waBot: testPhones / neverReplyPhones / alertPhones / llm.alertPhones / publicPhone + رقم واتساب المطعم
+     • waHealth.phones · adsReport.phones · portal.staff[].phone|mobile
+   «مستثنين من الإعلانات بس» و«مستني قرار المالك» مش هنا عن قصد (SX1: دول عملاء ويتسألوا عن تقييمهم). */
+export function reviewSkipPhones(settings = {}) {
+  const s = settings || {}, bot = s.waBot || {};
+  const list = (v) => (Array.isArray(v) ? v : String(v || "").split(/[\s,،;]+/));
+  const out = new Set(teamPhoneSet(s));
+  for (const raw of [
+    ...list(bot.testPhones), ...list(bot.neverReplyPhones), ...list(bot.alertPhones), ...list(bot.llm && bot.llm.alertPhones),
+    KNOWN_WA_NUMBER, bot.publicPhone || "",
+    ...list(s.waHealth && s.waHealth.phones), ...list(s.adsReport && s.adsReport.phones),
+    ...(Array.isArray(s.portal && s.portal.staff) ? s.portal.staff : []).map((x) => (x && (x.phone || x.mobile)) || ""),
+  ]) { const p = normLocal(raw); if (p) out.add(p); }
+  return out;
+}
 
 /* نافذة السكوت ممكن تلف حوالين نص الليل (٢٢ → ١١) — نفس منطق smsrules */
 export function inAskQuiet(hour, start, end) {
@@ -483,10 +503,12 @@ export function register(app, ctx, deps = {}) {
           AND COALESCE(s.source, '') <> 'website'
           AND NOT EXISTS (SELECT 1 FROM review_invites i WHERE i.order_no = 'pos:' || o.order_id)
         ORDER BY o.order_date LIMIT 200`, [since, apps])).rows || [];
-    /* مراجعة RV1: الرقم لازم يكون رقم عميل فعلاً — مش حشو كتبه الكاشير (555555555 / 500000000 / نفس الرقم ٨ مرات / 512345678)،
+    /* مراجعة RV1: الرقم لازم يكون رقم عميل فعلاً — مش حشو كتبه الكاشير (555555555 / 500000000 / نفس الرقم ٨ مرات / 512345678 — واتوسّعت في RV5: phonecheck.js)،
        ومش رقم على فواتير كتير في ٢٤ ساعة (رقم الكاشير الافتراضي). غير كده ⇒ صف دعوة مقفول بالسبب (bad_number / shared_phone)،
        من غير رسالة ومن غير صف «موافقة وقت الدفع». العدّ لو القاعدة وقعت ⇒ المسح ده مايعملش دعوات (المسح الجاي يعوّض). */
-    const cand = [...new Set(rows.map((r) => String(r.pn || "")).filter((pn) => /^5\d{8}$/.test(pn) && !isPlaceholderPhone(pn)))];
+    /* RV5: رقم فريق/تنبيه/موظف على فاتورة (الكاشير كتب رقمه أو رقم المدير) ⇒ دعوة مقفولة «staff» من غير صف موافقة — نفس قايمة وقت الإرسال */
+    const skipSet = reviewSkipPhones(settings);
+    const cand = [...new Set(rows.map((r) => String(r.pn || "")).filter((pn) => /^5\d{8}$/.test(pn) && !isPlaceholderPhone(pn) && !skipSet.has(pn)))];
     const bills = cand.length ? await posBillCounts(cand, now) : new Map();
     let n = 0;
     for (const r of rows) {
@@ -495,7 +517,7 @@ export function register(app, ctx, deps = {}) {
       if (!kind || !kindOn(kind, flow)) continue;
       const due = dueFor(kind, { orderAt: r.order_date }, flow, now.getTime());
       const ref = String(r.receipt || "").trim() ? `فاتورة ${String(r.receipt).trim().slice(0, 20)}` : null;
-      const bad = isPlaceholderPhone(r.pn) ? "bad_number" : (bills.get(String(r.pn)) || 0) >= POS_REVIEW_CONSENT.sharedBills ? "shared_phone" : null;
+      const bad = skipSet.has(String(r.pn)) ? "staff" : isPlaceholderPhone(r.pn) ? "bad_number" : (bills.get(String(r.pn)) || 0) >= POS_REVIEW_CONSENT.sharedBills ? "shared_phone" : null;
       if (bad) {
         await pool.query(
           `INSERT INTO review_invites(order_no, code, phone_norm, option, due_at, kind, order_at, ref, skip_reason)
@@ -578,10 +600,10 @@ export function register(app, ctx, deps = {}) {
           WHERE sent_at IS NULL AND skip_reason IS NULL AND due_at <= $1::timestamptz
           ORDER BY due_at LIMIT 40`, [now.toISOString()])).rows;
       if (!due.length) return { sent: 0 };
-      /* المستبعدين: أرقام الفريق بس (SX1: المستثنى من الإعلانات بيتسأل عن تقييمه) + أرقام تجربة البوت + «البوت مايردش عليها» + جهات الاتصال المتعلّمة موظف */
-      const bot = (s && s.waBot) || {};
-      const staff = new Set([...teamPhoneSet(s), ...[...(Array.isArray(bot.testPhones) ? bot.testPhones : []), ...(Array.isArray(bot.neverReplyPhones) ? bot.neverReplyPhones : []),
-        KNOWN_WA_NUMBER, bot.publicPhone || ""].map(norm).filter(Boolean)]);      // + رقم المطعم نفسه (لو اتكتب على طلب بالغلط)
+      /* المستبعدين: أرقام الفريق بس (SX1: المستثنى من الإعلانات بيتسأل عن تقييمه) + أرقام تجربة البوت + «البوت مايردش عليها» + جهات الاتصال المتعلّمة موظف
+         RV5: + كل أرقام التنبيهات وموظفين البورتال (reviewSkipPhones) + «مش عميل» بتاع البوت نفسه (wr.neverReplyOf: المناديب وغيرهم) — قبل واتساب وقبل الـSMS */
+      const staff = reviewSkipPhones(s);
+      const wr = typeof deps.waReview === "function" ? deps.waReview() : null;
       const n = notify();
       const out = { sent: 0, skipped: 0 };
       /* فحص بيرمي لو القاعدة وقعت ⇒ الدعوة بتستنى المسح الجاي (مانبعتش واحنا مش متأكدين من الحد/التحويل/الموظف) */
@@ -592,6 +614,11 @@ export function register(app, ctx, deps = {}) {
         const skip = async (why) => { await mark("skip_reason", why); out.skipped++; };
         const kind = kindOfInvite(iv), visit = VISIT_KINDS.has(kind);
         if (staff.has(iv.phone_norm)) { await skip("staff"); continue; }
+        /* RV5: البوت شايف الرقم «مش عميل» (مندوب على شحنة آخر ٣٠ يوم، رقم تنبيه، موظف) ⇒ ولا واتساب ولا SMS. قبل كده reviewAsk كان بيرجع never_reply
+           (مش final) والدعوة تكمّل للـSMS. القراية وقعت ⇒ null (زي البوت نفسه) والقايمة اللي فوق لسه شغّالة. */
+        let nr = null;
+        if (wr && typeof wr.neverReplyOf === "function") { try { nr = await wr.neverReplyOf(iv.phone_norm); } catch { nr = null; } }
+        if (nr) { await skip(`staff:${String(nr).slice(0, 40)}`); continue; }
         const oo = (await pool.query("SELECT opted_out_at FROM cms_contacts WHERE phone_norm=$1", [iv.phone_norm])).rows[0];
         if (oo?.opted_out_at) { await skip("opted_out"); continue; }
         if (await one("SELECT 1 FROM cms_contacts WHERE phone_norm=$1 AND is_staff", [iv.phone_norm])) { await skip("staff"); continue; }
@@ -639,7 +666,6 @@ export function register(app, ctx, deps = {}) {
            wabotrun.reviewAsk (إعداد البوت reviewWhatsApp). العميل موقِّف ⇒ ولا رسالة (ولا SMS). أي سبب تاني ⇒ الـSMS زي الأول، والسبب بيتسجّل. رسالة واحدة للطلب (الصف ده).
            RV1: المسار الجديد ⇒ جوّه النافذة قايمة نجوم؛ بره النافذة قالب النجوم (بعد اعتماده) أو القالب القديم لطلبات الموقع.
            طلب الكاشير من غير واتساب ⇒ SMS بس لو المالك فتح smsVisits، وإلا مفيش رسالة (السبب بيتسجّل). */
-        const wr = typeof deps.waReview === "function" ? deps.waReview() : null;
         let waWhy = null;
         /* RV1: فاتورة صالة/سفري والإعداد «عملاء الكاشير موافقين وقت الدفع» مفتوح ⇒ صف الإثبات لازم يكون موجود قبل القالب (لو الإعداد اتفتح بعد ما الدعوة
            اتعملت، أو التسجيل وقت الدعوة فشل). القاعدة وقعت ⇒ الدعوة تستنى المسح الجاي (مانقررش «مفيش موافقة» واحنا مش متأكدين). */
@@ -655,6 +681,8 @@ export function register(app, ctx, deps = {}) {
             out.sent++; out.wa = (out.wa || 0) + 1; continue;
           }
           if (r && r.final) { await mark("skip_reason", `wa_${String(r.skipped || "stopped")}`.slice(0, 80)); out.skipped++; continue; }
+          /* RV5: البوت رفض لأن الرقم «مش عميل» (القايمة اتغيّرت بين الفحص فوق والإرسال) ⇒ مفيش SMS بداله */
+          if (r && r.skipped === "never_reply") { await skip("staff:never_reply"); continue; }
           /* ١٤/١٠ (wapolicy): قالب بفلوس لنفس الطلب لسه طالع من دقايق ⇒ الدعوة تتأجل لحد «until» (مش SMS، ومش إلغاء) */
           if (r && r.defer && r.until && Number.isFinite(Date.parse(r.until))) { await mark("due_at", new Date(r.until).toISOString()); out.deferred = (out.deferred || 0) + 1; continue; }
           if (r && r.skipped) { waWhy = String(r.skipped).slice(0, 80); await mark("wa_skip", waWhy); }
@@ -798,6 +826,48 @@ export function register(app, ctx, deps = {}) {
       askText: cf.askText, askQuietStart: cf.askQuietStart, askQuietEnd: cf.askQuietEnd,
       askMaxAgeHours: cf.askMaxAgeHours,
     }, flow: flowOf(await getSettingsData()) });      // RV1: إعدادات المسار الجديد (بتتعدّل من «كل إعدادات البوت» ← التقييمات على واتساب)
+  });
+  /* RV5 (١٦/١٠) — أرقام «الحشو» على فواتير الكاشير (قراية بس، المالك/الأدمن): كام رقم كاشير في آخر days يوم (افتراضي ٣٠، ١–٩٠) القاعدة
+     بتقفله، منهم كام جديد على قاعدة RV1، وكل رقم جديد بشكله (القاعدة) وعدد فواتيره وآخر فاتورة — عشان نشوف هل فيه عميل حقيقي اتقفل غلط
+     (رقم بفواتير كتير وأسماء مختلفة = حشو؛ فاتورة واحدة = راجعه). الرقم مقنّع؛ الشكل في «why». + أسباب تخطّي الدعوات في نفس المدة.
+     ?phone=5XXXXXXXX ⇒ نفس الفحص لرقم واحد: حشو ولا لأ وليه، وهل هو في قايمة «مايتسألش» (فريق/تنبيهات/بورتال). */
+  app.get("/api/cms/reviews/dummy-phones", async (c) => {
+    const err = await requireAdmin(c); if (err) return err;
+    const days = Math.min(90, Math.max(1, Math.round(Number(c.req.query("days")) || 30)));
+    const s = await getSettingsData();
+    const skipSet = reviewSkipPhones(s);
+    const mask = (pn) => `${pn.slice(0, 2)}•••••${pn.slice(-2)}`;
+    const one = norm(c.req.query("phone") || "");
+    const check = one ? { phone: mask(one), placeholder: isPlaceholderPhone(one), why: placeholderWhy(one), rv1Rule: FAKE_PHONE_RE.test(one), skipList: skipSet.has(one) } : null;
+    const since = new Date(Date.now() - days * 86400_000).toISOString();
+    try {
+      const rows = (await pool.query(
+        `SELECT x.pn, count(DISTINCT x.oid)::int AS bills, max(x.at) AS last_at FROM (
+           SELECT o.order_id AS oid, o.order_date AS at, COALESCE(NULLIF(s.phone_norm,''), NULLIF(tc.phone_norm,'')) AS pn
+             FROM ts_orders o LEFT JOIN order_sources s ON s.order_id = o.order_id LEFT JOIN ts_customers tc ON tc.customer_id = o.customer_id
+            WHERE o.order_date > $1::timestamptz
+              AND (o.order_type IS NULL OR (o.order_type NOT ILIKE '%void%' AND o.order_type NOT ILIKE '%refund%'))) x
+          WHERE x.pn ~ '^5[0-9]{8}$' GROUP BY x.pn`, [since])).rows || [];
+      const byWhy = {}, fresh = [];
+      let blocked = 0, rv1 = 0, staff = 0;
+      for (const r of rows) {
+        const pn = String(r.pn);
+        if (skipSet.has(pn)) staff++;
+        const why = placeholderWhy(pn); if (!why) continue;
+        blocked++; byWhy[why] = (byWhy[why] || 0) + 1;
+        if (FAKE_PHONE_RE.test(pn)) { rv1++; continue; }
+        fresh.push({ phone: mask(pn), why, bills: Number(r.bills) || 0, lastAt: r.last_at });
+      }
+      fresh.sort((a, b) => b.bills - a.bills);
+      const inv = (await pool.query(
+        `SELECT split_part(skip_reason, ':', 1) AS reason, count(*)::int AS n FROM review_invites
+          WHERE created_at > $1::timestamptz AND skip_reason IS NOT NULL AND order_no NOT LIKE 'TEST-%' GROUP BY 1 ORDER BY 2 DESC`, [since]).catch(() => ({ rows: [] }))).rows || [];
+      return c.json({ ok: true, days, since, tillPhones: rows.length, placeholder: blocked, byRv1Rule: rv1, newByRv5: fresh.length, byWhy,
+        newOnes: fresh.slice(0, 50), oneBill: fresh.filter((x) => x.bills <= 1).length, onSkipList: staff, sharedBills: POS_REVIEW_CONSENT.sharedBills,
+        inviteSkips: Object.fromEntries(inv.map((x) => [x.reason, x.n])), check });
+    } catch (e) {
+      return c.json({ ok: false, error: String(e.message).slice(0, 200), check }, 500);
+    }
   });
   /* RV1: تقرير يوم (افتراضياً يوم العمل الحالي): اتبعت كام وبأنهي قناة، اتقيّم كام وبكام نجمة، روابط جوجل اتبعت/اتضغطت، والتقييمات الواطية اتعاملت ولا لأ.
      نفس التقرير جوّه /api/cms/wabot/assist/daily ← report.reviews (يوم امبارح افتراضياً هناك). */

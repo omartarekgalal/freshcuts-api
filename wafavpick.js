@@ -44,7 +44,7 @@ import { teamConfig } from "./wateam.js";
 import { findTemplate } from "./watemplates.js";
 import { pausedOffersOf } from "./soldout.js";
 import { serviceBlock } from "./service.js";
-import { FAKE_PHONE_RE } from "./phonecheck.js";
+import { isPlaceholderPhone } from "./phonecheck.js";
 
 export const FAV_PICK = "fav_pick";
 export const FAV_AUDIENCE = Object.freeze({
@@ -605,7 +605,7 @@ export const FAV_SQL = Object.freeze({
   outboundSince: `SELECT 1 FROM wa_messages WHERE phone_norm = $1 AND direction = 'out' AND created_at > $2::timestamptz
        AND COALESCE(wamid,'') <> COALESCE($3::text,'') AND COALESCE(status,'') NOT IN ('failed','skipped') LIMIT 1`,
 });
-const FAKE_RE = FAKE_PHONE_RE;      // phonecheck.js — نفس القاعدة بقت لفواتير الكاشير كمان (RV1)
+/* رقم الحشو: phonecheck.isPlaceholderPhone — نفس القاعدة بتاعة فواتير الكاشير (RV1)، واتوسّعت في RV5 (١٦/١٠) */
 const todayStart = (now) => new Date(new Date(now).toDateString());
 
 export function makeFavPick(deps = {}) {
@@ -712,7 +712,7 @@ export function makeFavPick(deps = {}) {
     for (const pn of pns0) {
       const x = st.get(pn);
       if (!x || !(Number(x.orders) > 0)) { ex("no_paid_order"); continue; }
-      if (FAKE_RE.test(pn)) { ex("bad_number"); continue; }
+      if (isPlaceholderPhone(pn)) { ex("bad_number"); continue; }
       if (today.has(pn)) { ex("ordered_today"); continue; }
       const daysAgo = Math.floor((T - atMs(x.last_at)) / DAY);
       if (!Number.isFinite(daysAgo) || daysAgo > FAV_RULES.poolDays) { ex("too_old"); continue; }

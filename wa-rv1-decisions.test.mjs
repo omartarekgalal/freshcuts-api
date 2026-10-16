@@ -222,7 +222,7 @@ test("decision 4 (sweep): till invite + setting on ⇒ the stars template goes; 
    الكاشير صلّح رقم غلط بعد ما الدعوة اتعملت ⇒ ولا رسالة للرقم القديم (موافقة الدفع عند الكاشير مش بتاعته). قبل قرار ١٥/١٠ الدعوة القديمة
    ماكانتش بتطلع لأن الغريب مالوش نافذة وsmsVisits مقفول — موافقة الكاشير هي اللي كانت هتخلّيها تطلع. */
 test("review fix (wrong person): the bill is read again right before the ask — phone corrected after queueing ⇒ nothing to the old number (phone_changed); bill now a website order ⇒ web_order; voided ⇒ voided; bill gone ⇒ bill_missing; bill check fails ⇒ the invite waits", withEnv(ALLOW, async () => {
-  const TYPO = "551234567", RIGHT = "551234576";
+  const TYPO = "551234756", RIGHT = "551234576";      // RV5: كان 551234567 — بقى رقم حشو (5X1234567)
   // the scenario from the review, end to end: dine-in bill 18:00 with the typo (this rig: ago(100)), the 17:40 sweep queues it (not due yet: +90)
   const ts = [{ order_id: "9101", order_date: ago(100), order_option: "Dine in", pn: TYPO, receipt: "2001" }];
   const consent = [];
@@ -515,9 +515,11 @@ test("review fix (phones): a placeholder number on a till bill, or one number on
   assert.equal(await WC.posReviewConsentCovers({ query: async () => ({ rows: [{}] }) }, "511111111", "pos:1"), false);
   assert.equal(await WC.posReviewConsentCovers({ query: async () => ({ rows: [{}] }) }, CUST, "pos:1"), true);
   for (const pn of ["555555555", "500000000", "511111111", "599999999", "512345678"]) assert.equal(PC.isPlaceholderPhone(pn), true, pn);
-  for (const pn of [CUST, SHARED, "551234567", "501234568"]) assert.equal(PC.isPlaceholderPhone(pn), false, pn);
+  /* RV5 (١٦/١٠): 551234567 (5X1234567) و501234568 (فيه 0123456) بقوا حشو — القاعدة اتوسّعت؛ الأرقام القريبة اللي شكلها حقيقي فضلت عميل */
+  for (const pn of ["551234567", "501234568"]) assert.equal(PC.isPlaceholderPhone(pn), true, pn);
+  for (const pn of [CUST, SHARED, "551234876", "501234968"]) assert.equal(PC.isPlaceholderPhone(pn), false, pn);
   const fs = await import("node:fs");
-  assert.match(fs.readFileSync(new URL("./wafavpick.js", import.meta.url), "utf8"), /const FAKE_RE = FAKE_PHONE_RE;/, "wafavpick uses the same rule");
+  assert.match(fs.readFileSync(new URL("./wafavpick.js", import.meta.url), "utf8"), /if \(isPlaceholderPhone\(pn\)\) \{ ex\("bad_number"\)/, "wafavpick uses the same rule");
   assert.equal(WC.POS_REVIEW_CONSENT.sharedBills, 4);
 });
 
