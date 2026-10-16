@@ -149,7 +149,9 @@ test("sendJob: window open ⇒ free interactive message with «استلمت ال
   assert.equal(r.sent, true); assert.equal(r.via, "free");
   assert.equal(state.sends.length, 1);
   const s = state.sends[0];
-  assert.equal(s.phoneNorm, COURIER); assert.equal(s.orderNo, ORDER.order_no); assert.equal(s.source, "courier");
+  assert.equal(s.phoneNorm, COURIER); assert.equal(s.source, "courier");
+  assert.equal(s.orderNo, undefined, "not an order message for the customer reports (wapolicy) — the order timeline gets its own line");
+  assert.ok(s.preview.includes(ORDER.order_no));
   assert.deepEqual(s.payload.interactive.action.buttons.map((b) => b.reply.title), ["استلمت الطلب", "عندي مشكلة"]);
   assert.ok(state.events.some((e) => /واتساب بالأزرار/.test(e.summary)));
 });

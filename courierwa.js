@@ -208,12 +208,15 @@ export function register(app, ctx, deps = {}) {
     return r.rows[0] || null;
   }
 
-  async function freeSend(pn, run, body, acts, stage = "courier_wa") {
+  /* رسايل المندوب بتتسجّل في wa_messages بمصدر "courier" ومن غير order_no/stage عن قصد: تقارير «رسايل الطلب» (wapolicy.orderMessagesReport)
+     وفاصل «قالب مدفوع قريب» قبل طلب التقييم (reviewDecision) بيعدّوا صفوف الطلب — ورسالة المندوب مش رسالة للعميل. سجل الطلب نفسه بياخد سطر
+     لكل رسالة من timeline() (courier_manual). */
+  async function freeSend(pn, run, body, acts) {
     const w = wa();
     if (!w || !w.sendFreeform) return { ok: false, skipped: "unavailable" };
     const payload = cwMessage(body, acts, run);
     try {
-      return await w.sendFreeform({ phoneNorm: pn, payload, source: "courier", orderNo: run.order_no, stage, preview: cut(body, 500) });
+      return await w.sendFreeform({ phoneNorm: pn, payload, source: "courier", preview: cut(body, 500) });
     } catch (e) { return { ok: false, error: String(e?.message || e).slice(0, 120) }; }
   }
 
@@ -224,14 +227,13 @@ export function register(app, ctx, deps = {}) {
     if (!row) return { sent: false, reason: "not_found" };
     const stage = stageOf(run);
     const body = jobCardText(row, { link, stage });
-    let r = await freeSend(pn, run, body, buttonsFor(stage, cfg), "courier_job");
+    let r = await freeSend(pn, run, body, buttonsFor(stage, cfg));
     let via = "free";
     if (!r.ok && r.skipped === "window_closed" && allowTemplate && cfg.useTemplate && stage !== "delivered") {
       const w = wa();
       via = "template";
       try {
-        r = await w.sendTemplate({ phoneNorm: pn, template: cfg.templateName, params: templateParams(row, run), orderNo: run.order_no,
-          stage: "courier_job", source: "courier", courier: true });
+        r = await w.sendTemplate({ phoneNorm: pn, template: cfg.templateName, params: templateParams(row, run), source: "courier", courier: true });
       } catch (e) { r = { ok: false, error: String(e?.message || e).slice(0, 120) }; }
     }
     const reason = r.ok ? null : String(r.skipped || r.error || "send_failed").slice(0, 60);
