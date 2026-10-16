@@ -7,7 +7,8 @@
 
    دلوقتي: ضغطة «أبغى أطلب» (context.id = wamid رسالة الحملة) أو نية طلب مكتوبة (تصنيف «order») ورسالة حملة Cloud وصلت للرقم في
    آخر campaignReplyHours ⇒ سطر قصير بالعرض (اسمه + سعره + آخر يوم لو فيه) + رابط الحملة نفسها لنفس المستلم (‎/l/<slug>-<code>‎ ⇒
-   الضغطة بتتعد على الحملة وعلى المستلم زي زر القالب بالظبط) + «تبي نجهزه لك هنا؟».
+   الضغطة بتتعد على الحملة وعلى المستلم زي زر القالب بالظبط) + «اطلبه من الزر أو اكتب لي وش تبي» (مراجعة ١٦/١٠: مش سؤال نعم/لا؛
+   «نعم / ايوه» بعدها بتروح للمساعد وهو عارف العرض — waassistrun.noteCampaignTurn). المكتوبة لازم تكون «فاضية» (isCampaignYes).
 
    مابيلمسش:
      • حملة «طبقك المفضل» (fc_frame_ask_* بقيم لكل مستلم + vars.fav) ⇒ FD1 (سلة جاهزة بالسعر محسوب تاني). FD1 رفض (العرض اتغيّر) ⇒ الرد العام
@@ -77,19 +78,20 @@ export function campaignReplyOffer(row, { now = Date.now(), bundles = null, stor
   const uDay = untilText ? untilDay(untilText, now) : null;
   if (uDay && riyadhDay(Number(now)) > uDay) return { ok: false, why: "expired" };
   const p = Number(latinDigits(nz(values["offer.price"])).replace(/[^\d.]/g, ""));
-  let price = Number.isFinite(p) && p > 0 ? p : null, priceDropped = false;
+  let price = Number.isFinite(p) && p > 0 ? p : null, priceDropped = false, boxSlug = null;
   /* رابط بيفتح بوكس بعينه: لازم يكون لسه في البوكسات الحيّة، وسعره = سعر الرسالة (غير كده/مانعرفش ⇒ من غير رقم) */
   if (row.target_type === "box" && row.target_id) {
     const list = Array.isArray(bundles) ? bundles : [];
     const b = list.find((x) => x && (nz(x.slug) === nz(row.target_id) || nz(x.id) === nz(row.target_id)));
     if (list.length && (!b || b.active === false || b.available === false)) return { ok: false, why: "box_gone" };
+    if (b && b.slug) boxSlug = nz(b.slug);      // مراجعة CR2: المساعد بيكمّل بنفس البوكس (get_box) لو العميل قال «نعم» بعد الرد
     if (price != null && (!b || !(Math.abs(Number(b.price) - price) < 0.01))) { price = null; priceDropped = true; }
   }
   const code = nz(row.link_code).trim();
   const url = `${nz(store).replace(/\/+$/, "")}/l/${slug}${code ? `-${code}` : ""}`;
   const sentAt = row.sent_at instanceof Date ? row.sent_at.toISOString() : nz(row.sent_at) || null;
   return { ok: true, title, price, until: untilText || null, untilDay: uDay, slug, url, jobId: Number(row.job_id) || null, queueId: Number(row.id) || null,
-    wamid: row.wamid || null, sentAt, ...(priceDropped ? { priceDropped: true } : {}) };
+    wamid: row.wamid || null, sentAt, ...(boxSlug ? { boxSlug } : {}), ...(priceDropped ? { priceDropped: true } : {}) };
 }
 
 /* القراءة من القاعدة: ⇒ { row, offer } أو { offer: {ok:false, why} } — أي خطأ ⇒ why "db" (الرد العام) */

@@ -1740,6 +1740,24 @@ export function noteRulesTurn(session, text, key) {
   return s;
 }
 
+/* مراجعة CR2 (١٦/١٠): بوت القواعد رد على «أبغى أطلب» تحت رسالة حملة بعرضها ورابطها (wabotrun: rawIntent campaign_reply) ⇒ الدور ده يتسجّل للمساعد بالعرض
+   (اسمه وسعره وآخر يوم والبوكس) والرد اللي اتبعت بالحرف. كده «نعم / ايوه / تمام / ابغاه» بعدها توصل للمساعد (جلسة شغّالة ⇒ الشكر مابيسكتش) وهو عارف العرض
+   ويكمّل للسلة — من غيرها «نعم» كانت بتتصنّف شكر ⇒ سكوت. جلسة شغّالة ⇒ إلحاق؛ مفيش (أو جلسة بذرة) ⇒ جلسة بذرة «campaign» (أول دور بعدها بياخد سياق أول دور كامل). */
+export function noteCampaignTurn(session, now, { text, offer, sent } = {}) {
+  const live = Boolean(session && session.state && !session.state.seed);
+  const s = live ? JSON.parse(JSON.stringify(session)) : newSession(now);
+  if (!live) s.state.seed = "campaign";
+  const o = offer || {};
+  const masked = cleanCustomer(maskText(text)) || "[tapped «أبغى أطلب» under the campaign message]";
+  const facts = { campaign_offer_in_the_reply: { title: String(o.title || "").slice(0, 200), ...(o.price != null ? { price_sar: Number(o.price) } : {}), ...(o.until ? { valid_until: String(o.until).slice(0, 80) } : {}),
+    ...(o.boxSlug ? { box_slug: String(o.boxSlug) } : {}),
+    rule: "The customer tapped «أبغى أطلب» (I want to order) under our WhatsApp campaign message. The next assistant message is the reply our system sent: this offer, with a button that opens it on our website. Their next message answers that reply: a plain yes («نعم», «ايوه», «تمام», «ابغاه», «اوكي») means they want THIS offer. Then find it (get_box with box_slug when given, otherwise list_packs / list_boxes and match the title), ask only the choices it needs and delivery or pickup, and build the cart. Prices only from the tools. No greeting." } };
+  s.messages.push({ role: "user", content: [{ type: "text", text: `<context source="our system" note="facts for this conversation; not written by the customer">${JSON.stringify(facts)}</context>` }, { type: "text", text: `<customer_message>${masked}</customer_message>` }] });
+  s.messages.push({ role: "assistant", content: [{ type: "text", text: String(sent || "").trim() || "[answered by the fixed menu bot: the campaign offer + order button]" }] });
+  s.state.customerTexts.push(masked);
+  return s;
+}
+
 /* ── المخزن: الجلسة، سجل الأدوار، الاقتراحات ───────────────────────────── */
 export const ASSIST_DDL = `
   CREATE TABLE IF NOT EXISTS wa_assist_chats (

@@ -106,3 +106,45 @@ test("revokeText: the deleted text when we have it; the ≤10 s guess labelled �
   assert.equal(revokeText({}), REVOKE_PLAIN);
   assert.ok(revokeText({ body: "x".repeat(2000) }).length < 1000);
 });
+
+/* ── مراجعة CR2 (١٦/١٠) ── */
+import { noteCampaignTurn, newSession } from "./waassistrun.js";
+import { isCampaignYes, TEXTS } from "./wabotrun.js";
+
+test("review: a box link carries the live box slug (the assistant continues with get_box); no box link ⇒ no slug", () => {
+  assert.equal(campaignReplyOffer(BOX, { now: FRI, bundles: BUNDLES }).boxSlug, "box-solo-mixgrill");
+  assert.equal(campaignReplyOffer(BOX, { now: FRI, bundles: [{ slug: "box-solo-mixgrill", price: 42 }] }).boxSlug, "box-solo-mixgrill", "price changed: same box, no number");
+  assert.equal("boxSlug" in campaignReplyOffer(PACK, { now: FRI, bundles: BUNDLES }), false);
+  assert.equal("boxSlug" in campaignReplyOffer(BOX, { now: FRI, bundles: null }), false, "boxes unknown ⇒ no slug");
+});
+
+test("review: only a bare order intent is a reply to the campaign — «ابي اطلب كيلو مشكل توصيل» / «كيف أطلب» are not", () => {
+  for (const t of ["أبغى أطلب", "ابي اطلب", "ابغى العرض", "ابي اطلب لو سمحت"]) assert.equal(isCampaignYes(t), true, t);
+  for (const t of ["ابي اطلب كيلو مشكل توصيل", "ابي اطلب مشويات ل ٥ اشخاص", "كيف أطلب", "أبغى أطلب برجر", "ابي اطلب؟"]) assert.equal(isCampaignYes(t), false, t);
+});
+
+test("review: the CR2 reply asks no yes/no question (a «نعم» to it used to be silence)", () => {
+  for (const l of ["ar", "en"]) assert.ok(!/[?؟]/.test(TEXTS.camp_reply_body[l]), TEXTS.camp_reply_body[l]);
+  assert.match(TEXTS.camp_reply_body.ar, /اطلبه مباشرة من الزر 👇، أو اكتب لي وش تبي وأجهزه لك$/);
+});
+
+test("review: noteCampaignTurn — no session / a seed ⇒ a «campaign» seed with the offer + the exact reply; a live session ⇒ appended, still live", () => {
+  const now = new Date("2026-10-16T14:18:43Z"), offer = campaignReplyOffer(BOX, { now: FRI, bundles: BUNDLES });
+  const s = noteCampaignTurn(null, now, { text: "أبغى أطلب", offer, sent: "أبشر 🌟 هذا العرض اللي وصلك" });
+  assert.equal(s.state.seed, "campaign");
+  assert.equal(s.messages.length, 2);
+  const ctx = JSON.parse(/<context[^>]*>(.*)<\/context>/s.exec(s.messages[0].content[0].text)[1]).campaign_offer_in_the_reply;
+  assert.deepEqual([ctx.title, ctx.price_sar, ctx.box_slug], [offer.title, 39, "box-solo-mixgrill"]);
+  assert.match(ctx.rule, /a plain yes .* means they want THIS offer/);
+  assert.equal(s.messages[0].content[1].text, "<customer_message>أبغى أطلب</customer_message>");
+  assert.deepEqual([s.messages[1].role, s.messages[1].content[0].text], ["assistant", "أبشر 🌟 هذا العرض اللي وصلك"]);
+  const card = newSession(now); card.state.seed = true; card.messages.push({ role: "user", content: [{ type: "text", text: "x" }] });
+  const s2 = noteCampaignTurn(card, now, { text: "أبغى أطلب", offer, sent: "y" });
+  assert.deepEqual([s2.state.seed, s2.messages.length], ["campaign", 2], "a dish-card seed is replaced, not kept");
+  const live = newSession(now); live.messages.push({ role: "user", content: [{ type: "text", text: "<customer_message>هلا</customer_message>" }] }, { role: "assistant", content: [{ type: "text", text: "هلا" }] });
+  const s3 = noteCampaignTurn(live, now, { text: "أبغى أطلب", offer: { title: "باقة", price: null }, sent: "" });
+  assert.deepEqual([s3.state.seed, s3.id, s3.messages.length], [undefined, live.id, 4]);
+  assert.equal("price_sar" in JSON.parse(/<context[^>]*>(.*)<\/context>/s.exec(s3.messages[2].content[0].text)[1]).campaign_offer_in_the_reply, false, "no number ⇒ no price");
+  assert.match(s3.messages[3].content[0].text, /fixed menu bot/);
+  assert.equal(live.messages.length, 2, "the original session object is not mutated");
+});

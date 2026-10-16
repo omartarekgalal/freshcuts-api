@@ -5895,7 +5895,7 @@ const MIX15_ROW = { id: 9102, job_id: 39, sent_at: "2026-10-15T15:50:00.000Z", w
 const FAV16_ROW = { id: 9103, job_id: 61, sent_at: "2026-10-16T11:20:00.000Z", wamid: "wamid.FAV16", vars: { fav: { kind: "item", pid: "6" }, cloud: { values: { "offer.title": "طبقك المفضل", "offer.line": "كريب بـ25 ر.س" } } },
   link_code: null, cloud_template: "fc_frame_ask_text", cloud_vars: { offer: "", perRecipient: true }, link_slug: "w61", job_name: "طبقك المفضل", target_type: "home", target_id: null, link_active: true };
 const CR2_AT = "2026-10-16T14:18:43Z";      // الجمعة ١٦/١٠ 17:18 الرياض (مفتوح)
-const CR2_BODY = "أبشر 🌟 هذا العرض اللي وصلك:\n*جمعتكم الليلة أو بكره؟ باقة التجمّع لـ4 إلى 6 أشخاص* بـ225 ر.س، والعرض لين الجمعة 16 أكتوبر.\nتبي نجهزه لك هنا؟ اكتب لي اختيارك وتبيه توصيل ولا استلام، أو اطلبه مباشرة من الزر 👇";
+const CR2_BODY = "أبشر 🌟 هذا العرض اللي وصلك:\n*جمعتكم الليلة أو بكره؟ باقة التجمّع لـ4 إلى 6 أشخاص* بـ225 ر.س، والعرض لين الجمعة 16 أكتوبر.\nاطلبه مباشرة من الزر 👇، أو اكتب لي وش تبي وأجهزه لك";
 function cr2World({ rows = [PACK15_ROW], ordered = false, waBot = {}, at = CR2_AT, ...o } = {}) {
   const sql = [];
   let w = null;
@@ -5982,7 +5982,7 @@ test("CR2 أحدث حملة هي اللي بتتقرا: «طبقك المفضل�
   assert.match(bodyOf(r1.sent[0]), GENERIC); assert.equal(r1.log.detail, "campaign_reply:fav_campaign");
   const box = cr2World({ rows: [MIX15_ROW] });
   const r2 = await cr2Tap(box, "wamid.MIX15");
-  assert.equal(bodyOf(r2.sent[0]), "أبشر 🌟 هذا العرض اللي وصلك:\n*اخترنا لك بوكس الميكس جريل الفردي* بـ39 ر.س.\nتبي نجهزه لك هنا؟ اكتب لي اختيارك وتبيه توصيل ولا استلام، أو اطلبه مباشرة من الزر 👇");
+  assert.equal(bodyOf(r2.sent[0]), "أبشر 🌟 هذا العرض اللي وصلك:\n*اخترنا لك بوكس الميكس جريل الفردي* بـ39 ر.س.\nاطلبه مباشرة من الزر 👇، أو اكتب لي وش تبي وأجهزه لك");
   assert.equal(urlOf(r2.sent[0]), "https://freshcuts.sa/l/wa-1015-solo-mixgrill-a-r-z9y8x7");
   const b42 = LIVE.bundles.map((b) => (b.slug === "box-solo-mixgrill" ? { ...b, price: 42 } : b));
   const ch = cr2World({ rows: [MIX15_ROW], bundles: b42 });
@@ -5992,6 +5992,80 @@ test("CR2 أحدث حملة هي اللي بتتقرا: «طبقك المفضل�
   const gone = cr2World({ rows: [MIX15_ROW], bundles: LIVE.bundles.filter((b) => b.slug !== "box-solo-mixgrill") });
   const r4 = await cr2Tap(gone, "wamid.MIX15");
   assert.match(bodyOf(r4.sent[0]), GENERIC); assert.equal(r4.log.detail, "campaign_reply:box_gone");
+}));
+
+/* ── مراجعة CR2 (١٦/١٠): المساعد شغّال للعملاء كلهم (زي الإنتاج: assist.mode=live، liveAudience=all) ── */
+const CR2_C = "966598765432";      // رقم وهمي، مش رقم تجربة
+const cr2A = (steps = [], o = {}) => {
+  const m = aModel(steps), store = memStore();
+  const w = cr2World({ ...o, waBot: { testPhones: TESTERS, footerMode: "smart", ...(o.waBot || {}), assist: { mode: "live", liveAudience: "all", liveDailyCustomers: 300, forceSuggestion: false, typing: false, ...LEGACY_ASSIST, ...((o.waBot || {}).assist || {}) } }, assistModel: m.callModel, assistStore: store });
+  return { ...w, m, store: store.st };
+};
+const sessOf = (w, phone = "598765432") => { const x = w.store.sessions.get(phone); return x ? JSON.parse(x.s) : null; };
+const cr2Ctx = (msg) => JSON.parse(/<context[^>]*>(.*)<\/context>/s.exec(msg.content[0].text)[1]);
+
+test("مراجعة CR2 ١: طلب مكتوب فيه صنف أو عدد («ابي اطلب كيلو مشكل توصيل»، «ابي اطلب مشويات ل ٥ اشخاص») ⇒ المساعد زي النهارده، مش عرض الحملة ولا قراءة حملات؛ «ابي اطلب» الفاضية بس هي اللي بتاخد العرض", withEnv(LOCKS_OPEN, async () => {
+  for (const text of ["ابي اطلب كيلو مشكل توصيل", "ابي اطلب مشويات ل ٥ اشخاص"]) {
+    const w = cr2A([mSay("أبشر، تبيه توصيل ولا استلام؟")]);
+    const r = await w.say(text, { from: CR2_C });
+    assert.deepEqual([r.log.decision, r.log.reply_key], ["replied", "assist"], `${text} ${JSON.stringify(r.log)}`);
+    assert.notEqual(r.log.intent, "campaign_reply");
+    assert.ok(!JSON.stringify(r.sent).includes("هذا العرض اللي وصلك"));
+    assert.equal(w.campSql.length, 0, "ولا قراءة للحملات");
+    const off = cr2World();      // من غير المساعد: الرد العادي زي قبل CR2
+    const r2 = await off.say(text, { from: CR2_C });
+    assert.ok(!JSON.stringify(r2.sent).includes("هذا العرض اللي وصلك"), text); assert.equal(off.campSql.length, 0);
+  }
+  const w = cr2A([]);
+  const r3 = await w.say("ابي اطلب", { from: CR2_C });
+  assert.equal(bodyOf(msgs(r3)[0]), CR2_BODY, "النية الفاضية: العرض من القواعد حتى والمساعد شغّال"); assert.equal(r3.log.intent, "campaign_reply"); assert.equal(w.m.seen.length, 0);
+}));
+
+test("مراجعة CR2 ٢: بعد رد العرض، «نعم» / «ايوه ابغاه» / «تمام» بتروح للمساعد وهو عارف العرض (الاسم والسعر والرد بالحرف) — مش سكوت", withEnv(LOCKS_OPEN, async () => {
+  for (const yes of ["نعم", "ايوه ابغاه", "تمام"]) {
+    const w = cr2A([mSay("أبشر، تبيها توصيل ولا استلام؟")]);
+    const t = await cr2Tap(w, "wamid.PACK15", { from: CR2_C });
+    assert.equal(bodyOf(msgs(t)[0]), CR2_BODY);
+    assert.equal(w.m.seen.length, 0, "العرض نفسه من بوت القواعد (من غير موديل)");
+    assert.equal(sessOf(w).state.seed, "campaign");
+    w.clock.advance(1);
+    const r = await w.say(yes, { from: CR2_C });
+    assert.deepEqual([r.log.decision, r.log.reply_key, msgs(r).length], ["replied", "assist", 1], `${yes} ${JSON.stringify(r.log)}`);
+    const ms = w.m.seen[0].messages;
+    const offer = cr2Ctx(ms[0]).campaign_offer_in_the_reply;
+    assert.deepEqual([offer.title, offer.price_sar, offer.valid_until], ["جمعتكم الليلة أو بكره؟ باقة التجمّع لـ4 إلى 6 أشخاص", 225, "الجمعة 16 أكتوبر"]);
+    assert.equal(ms[0].content[1].text, "<customer_message>أبغى أطلب</customer_message>");
+    assert.deepEqual([ms[1].role, ms[1].content[0].text], ["assistant", CR2_BODY], "المساعد شايف الرد اللي اتبعت بالحرف");
+    assert.ok(JSON.stringify(ms.at(-1)).includes(yes), "ورد العميل عليه");
+    assert.ok(!JSON.stringify(w.m.seen).includes("598765432"), "رقم العميل مابيوصلش للموديل");
+  }
+  // من غير المساعد: «نعم» شكر ⇒ سكوت زي أي رد — والرد خلاص مابيسألش «تبي نجهزه لك هنا؟»
+  const off = cr2World();
+  await cr2Tap(off, "wamid.PACK15", { from: CR2_C }); off.clock.advance(1);
+  const n = await off.say("نعم", { from: CR2_C });
+  assert.equal(n.sent.filter((b) => b.type).length, 0); assert.ok(!/[?؟]/.test(CR2_BODY.split("\n").at(-1)), "السطر الأخير مش سؤال (الـ؟ اللي فوق جزء من اسم العرض نفسه)");
+}));
+
+test("مراجعة CR2 ٢: بوكس بعينه ⇒ المساعد بياخد box_slug؛ محادثة مساعد شغّالة + ضغطة الحملة ⇒ العرض بيتلحق بيها (مش جلسة جديدة)؛ رد عام (العرض خلص) ⇒ مفيش عرض في الجلسة", withEnv(LOCKS_OPEN, async () => {
+  const b = cr2A([], { rows: [MIX15_ROW] });
+  await cr2Tap(b, "wamid.MIX15", { from: CR2_C });
+  const s0 = sessOf(b);
+  assert.deepEqual([s0.state.seed, cr2Ctx(s0.messages[0]).campaign_offer_in_the_reply.box_slug], ["campaign", "box-solo-mixgrill"]);
+  const w = cr2A([mSay("هلا 👋 وش تحب تطلب اليوم؟"), mSay("أبشر، تبيها توصيل ولا استلام؟")]);
+  await w.say("مرحبا", { from: CR2_C });
+  const s1 = sessOf(w); assert.ok(s1 && !s1.state.seed);
+  w.clock.advance(1);
+  const t = await cr2Tap(w, "wamid.PACK15", { from: CR2_C });
+  assert.equal(bodyOf(msgs(t)[0]), CR2_BODY);
+  const s2 = sessOf(w);
+  assert.deepEqual([s2.id, s2.state.seed, s2.messages.length], [s1.id, undefined, s1.messages.length + 2]);
+  assert.equal(cr2Ctx(s2.messages.at(-2)).campaign_offer_in_the_reply.price_sar, 225);
+  w.clock.advance(1);
+  assert.equal((await w.say("نعم", { from: CR2_C })).log.reply_key, "assist");
+  const sat = cr2A([], { at: "2026-10-17T14:00:00Z" });
+  const g = await cr2Tap(sat, "wamid.PACK15", { from: CR2_C });
+  assert.match(bodyOf(msgs(g)[0]), GENERIC);
+  assert.equal(sessOf(sat), null, "العرض خلص ⇒ الرد العام ومفيش جلسة بعرض");
 }));
 
 test("CR2 مابيلمسش غير «أبغى أطلب»: زر المنيو تحت نفس رسالة الحملة وسؤال حالة الطلب بيمشوا في طريقهم، ومن غير قراءة حملات", withEnv(LOCKS_OPEN, async () => {

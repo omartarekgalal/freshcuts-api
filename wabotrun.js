@@ -57,7 +57,7 @@ import { ECHO, STAFF_ECHO_SQL } from "./waecho.js";
 import { makeStt, STT_PROVIDERS } from "./wasttkey.js";
 const STT_LABEL = Object.fromEntries(STT_PROVIDERS.map((p) => [p.id, p.label]));
 import { lookImage, makeTranscriber, voiceSeconds, transcriptUsable, IMAGE_MAX_BYTES, VOICE_MAX_BYTES } from "./waassistmedia.js";
-import { ASSIST_CFG_DEFAULTS, ASSIST_SCHEMA, PROMPT_HASH, LIVE_AUDIENCES, assistConfig, assistFromBody, assistEligible, makeAssistLoop, makeAssistStore, makeModelCaller, billableUsage, newSession, noteRulesTurn, buildContext, hintOf, introSay, ensureIntro, hasIntro, heardContext, planReminder } from "./waassistrun.js";
+import { ASSIST_CFG_DEFAULTS, ASSIST_SCHEMA, PROMPT_HASH, LIVE_AUDIENCES, assistConfig, assistFromBody, assistEligible, makeAssistLoop, makeAssistStore, makeModelCaller, billableUsage, newSession, noteRulesTurn, noteCampaignTurn, buildContext, hintOf, introSay, ensureIntro, hasIntro, heardContext, planReminder } from "./waassistrun.js";
 import { declineMemory } from "./wapersonal.js";      // S1: ذاكرة الرفض بين المحادثات
 import { FU_KIND, FU_GROUP, FU_GROUP_AR, FU_DEFAULTS, FU_NUMS, FU_BOOLS, FU_SCHEMA, FU_TAP_KEYS, FU_CLOSING_KEYS, FU_PROACTIVE_KEYS, FU_OTHER_JOBS, FU_SQL, FU_DDL,
   fuConfig, inFollowHours, nextFollowStart, bizDayStart, brakeVerdict, followTrigger, convFacts, pickLooked, offerPhrase } from "./wafollow.js";      // FU1 (١٥/١٠): متابعة اللي ردّ وماطلبش
@@ -264,9 +264,10 @@ export const TEXTS = Object.freeze({
   camp_picks: t("حملة «طبقك المفضل»: سطر اختيارات البوكس في السلة", "اخترنا لك في البوكس: {names}.", "In the box we picked: {names}.", ["names"], [], 300),
   camp_box_body: t("حملة «طبقك المفضل»: رد «أبغى أطلب» لبوكس من نوع أكله (يختار هو)", "{offer}.\n{paused}\n{closed}\nاختر اللي يعجبك في البوكس وكمّل طلبك من الزر 👇",
     "{offer}.\n{paused}\n{closed}\nPick what you like in the box and complete your order from the button 👇", ["offer"], ["paused", "closed"], 900),
-  /* CR2 (١٦/١٠) — «أبغى أطلب» على رسالة أي حملة تانية: {offer} = اسم العرض + سطر السعر + سطر آخر يوم (من قيم الحملة نفسها) */
-  camp_reply_body: t("رد «أبغى أطلب» على رسالة حملة (العرض اللي وصله + رابط الحملة)", "أبشر 🌟 هذا العرض اللي وصلك:\n{offer}.\n{paused}\n{closed}\nتبي نجهزه لك هنا؟ اكتب لي اختيارك وتبيه توصيل ولا استلام، أو اطلبه مباشرة من الزر 👇",
-    "Sure 🌟 Here's the offer you received:\n{offer}.\n{paused}\n{closed}\nWant us to prepare it here? Write your choice and whether it's delivery or pickup, or order it directly from the button 👇", ["offer"], ["paused", "closed"], 900),
+  /* CR2 (١٦/١٠) — «أبغى أطلب» على رسالة أي حملة تانية: {offer} = اسم العرض + سطر السعر + سطر آخر يوم (من قيم الحملة نفسها).
+     مراجعة ١٦/١٠: الرد مابيسألش سؤال «نعم/لا» («تبي نجهزه لك هنا؟» كانت بتجيب «نعم» = شكر ⇒ سكوت). «نعم / ايوه / ابغاه» بعده بتروح للمساعد وهو عارف العرض (noteCampaignTurn). */
+  camp_reply_body: t("رد «أبغى أطلب» على رسالة حملة (العرض اللي وصله + رابط الحملة)", "أبشر 🌟 هذا العرض اللي وصلك:\n{offer}.\n{paused}\n{closed}\nاطلبه مباشرة من الزر 👇، أو اكتب لي وش تبي وأجهزه لك",
+    "Sure 🌟 Here's the offer you received:\n{offer}.\n{paused}\n{closed}\nOrder it directly from the button 👇, or write what you'd like and I'll prepare it for you", ["offer"], ["paused", "closed"], 900),
   camp_reply_price: t("رد الحملة: سطر السعر", "بـ{price} ر.س", "for SAR {price}", ["price"], [], 80),
   camp_reply_until: t("رد الحملة: سطر آخر يوم", "والعرض لين {until}", "valid until {until}", ["until"], [], 160),
   /* مساعد الطلبات: المتابعة الواحدة بعد رابط السلة (نص ثابت + نفس الرابط بزر «كمّل طلبك») */
@@ -1043,7 +1044,7 @@ export const SCHEMA = Object.freeze({
   campaignCart: S("orders", "boolean", "حملة «طبقك المفضل»: «أبغى أطلب» ⇒ سلة جاهزة بالعرض", "العميل وصلته رسالة الحملة (بوكس فيه طبقه المفضل أو طبقه نفسه بسعره وسعر التوصيل لعنوانه) وضغط «أبغى أطلب» أو رد «نعم»: البوت بيحسب نفس العرض تاني بالسعر والتوصيل الحين ويبعت رابط سلة جاهزة بيه. العرض اتغيّر أو خلص أو المفتاح مقفول ⇒ رد «أبي أطلب» العادي."),
   campaignOfferHours: S("orders", "number", "حملة «طبقك المفضل»: العرض المخزّن بيتقرا لحد", "من وقت إرسال رسالة الحملة للعميل.", { min: 1, max: 168, unit: "ساعة" }),
   campaignYesQuietMin: S("orders", "number", "حملة «طبقك المفضل»: «نعم» المكتوبة مش موافقة لو المحادثة كانت شغّالة قبل الرسالة بـ", "رد «نعم» على سؤال من البوت أو المساعد أو الموظف اتسأل قبل الحملة بالمدة دي بيمشي في طريقه العادي (ضغطة زر «أبغى أطلب» نفسه مش داخلة في الشرط ده). ٠ = من غير الشرط.", { min: 0, max: 720, unit: "دقيقة" }),
-  campaignReply: S("orders", "boolean", "«أبغى أطلب» على رسالة حملة ⇒ عرض الحملة نفسها", "العميل ضغط زر «أبغى أطلب» تحت رسالة حملة واتساب (أو كتب إنه عايز يطلب) والحملة وصلته في المدة اللي تحت: البوت بيرد بسطر فيه العرض ده باسمه وسعره وآخر يوم، ورابط الحملة نفسها (الضغطة بتتحسب على الحملة)، و«تبي نجهزه لك هنا؟». حملة «طبقك المفضل» ليها ردها (سلة جاهزة). العرض خلص، أو رابطه موقوف، أو البوكس اتشال ⇒ رد «أبي أطلب» العادي. لو سعر البوكس اتغيّر من ساعة الرسالة ⇒ العرض من غير رقم. مقفول ⇒ رد «أبي أطلب» العادي زي الأول."),
+  campaignReply: S("orders", "boolean", "«أبغى أطلب» على رسالة حملة ⇒ عرض الحملة نفسها", "العميل ضغط زر «أبغى أطلب» تحت رسالة حملة واتساب (أو كتب «أبغى أطلب» من غير ما يحدد حاجة) والحملة وصلته في المدة اللي تحت: البوت بيرد بسطر فيه العرض ده باسمه وسعره وآخر يوم، ورابط الحملة نفسها (الضغطة بتتحسب على الحملة)، و«اطلبه من الزر أو اكتب لي وش تبي». لو المساعد شغّال للرقم ده، «نعم / ايوه / ابغاه» بعدها بتروح له وهو عارف العرض فيكمّل للسلة. طلب مكتوب فيه صنف أو عدد («ابي اطلب كيلو مشكل») بيمشي في طريقه العادي. حملة «طبقك المفضل» ليها ردها (سلة جاهزة). العرض خلص، أو رابطه موقوف، أو البوكس اتشال ⇒ رد «أبي أطلب» العادي. لو سعر البوكس اتغيّر من ساعة الرسالة ⇒ العرض من غير رقم. مقفول ⇒ رد «أبي أطلب» العادي زي الأول."),
   campaignReplyHours: S("orders", "number", "رسالة الحملة بتتقرا للرد ده لحد", "من وقت وصول رسالة الحملة للعميل. أقدم من كده ⇒ رد «أبي أطلب» العادي.", { min: 1, max: 168, unit: "ساعة" }),
   firstCode: S("orders", "code", "كود أول طلب", "الكود اللي سطر «أول طلب» بيقرا شروطه من الكوبونات."),
   "links.organic": S("links", "slug", "رابط المحادثات العادية", "من «روابط الحملات»."),
@@ -2788,7 +2789,7 @@ export function register(app, ctx, deps = {}) {
       } else if (afterWait && ev.cls && ev.cls.key) cls = { ...cls, ...ev.cls };   // الرد المؤجّل بيكمل بنفس التصنيف اللي اتحسب وقت وصول الرسالة
       /* CR2 (١٦/١٠) — «أبغى أطلب» على رسالة حملة تانية غير «طبقك المفضل» (الحالة: ١٦/١٠ 17:18، باقات التجمّع ١٥/١٠ ⇒ البوت رد بالرد العام ورابط wab-boxes):
          • ضغطة زر «أبغى أطلب» تحت القالب ⇒ صف الرسالة اللي اتضغط زرها نفسها (context.id = wamid الصف)؛ من غير context ⇒ آخر حملة للرقم.
-         • نية طلب مكتوبة (تصنيف «order») ⇒ آخر حملة للرقم، بس لو: مش مقتبسة على رسالة تانية، مفيش طلب من الموقع من ساعتها، مفيش موظف كتب له بعد الحملة،
+         • نية طلب مكتوبة «فاضية» (تصنيف «order» + isCampaignYes: «أبغى أطلب» / «ابي اطلب»، مش «ابي اطلب كيلو مشكل») ⇒ آخر حملة للرقم، بس لو: مش مقتبسة على رسالة تانية، مفيش طلب من الموقع من ساعتها، مفيش موظف كتب له بعد الحملة،
            ومفيش محادثة مساعد شغّالة (ده كلام في سياق تاني). مش في الرد المؤجّل (الضغطة بتتقرا تاني من زرها).
          الأحدث «طبقك المفضل» والـFD1 رفض ⇒ مفيش عرض هنا (مانرجعش لحملة أقدم). «نعم» على متابعة FU1 (followup_yes) ليها ردها. العرض خلص/الرابط موقوف ⇒ الرد العام.
          rawIntent campaign_reply ⇒ القواعد دايماً (assistEligible: /^campaign_/) عشان رابط الحملة يطلع مضمون. */
@@ -2796,7 +2797,9 @@ export function register(app, ctx, deps = {}) {
       if (ok && cfg.campaignReply && !campOffer && cls.key === "order" && cls.rawIntent !== "followup_yes") {
         const tapId = ev.interactiveId ? String(ev.interactiveId).trim() : "";
         const tap = Boolean(tapId) && CAMPAIGN_TAP_IDS.has(tapId);
-        const typed = !tapId && !afterWait && String(ev.type || "text") === "text";
+        /* مراجعة CR2 (١٦/١٠): المكتوبة لازم تكون نية طلب «فاضية» (isCampaignYes: «أبغى أطلب» / «ابي اطلب» / «ابي العرض»). طلب فيه حاجة بعينها
+           («ابي اطلب كيلو مشكل توصيل»، «ابي اطلب مشويات ل ٥ اشخاص») أو سؤال («كيف أطلب») بيمشي في طريقه العادي (المساعد/القواعد) — نفس قاعدة FD1. */
+        const typed = !tapId && !afterWait && String(ev.type || "text") === "text" && isCampaignYes(ev.text);
         if (tap || typed) {
           const ctxId = ev.contextId ? String(ev.contextId) : null;
           let r = null;
@@ -3052,7 +3055,7 @@ const fl = await q(`SELECT count(*)::int AS n FROM wa_bot_log WHERE phone_norm=$
       if (handoff) alert = await handoffNow(settings, cfg, phone, handoff, d.orderNo || data.order?.order_no, d.note || null, d.lang);      // RV1: التقييم الواطي بيحوّل برقم طلبه هو
       await finish({ decision: cfg.mode === "dry" ? "dry" : sent ? "replied" : "failed", reason: d.reason, detail: d.detail, key: d.key, replies: used, sent, error,
         handoff: handoff ? handoff[0] : null, alert, link: d.link });
-      await assistDone({ okSent: okSent && cfg.mode !== "dry", error });
+      await assistDone({ okSent: okSent && cfg.mode !== "dry", error, sentText: used.map((pl) => String((pl && (pl.text?.body || pl.interactive?.body?.text)) || "")).filter(Boolean).join("\n").slice(0, 1500) });
       /* RV1: زر جوجل وصل فعلاً ⇒ «رابط جوجل اتبعت» على الدعوة (التقرير اليومي: اتبعت ↔ اتضغط) */
       if (okSent && cfg.mode !== "dry" && d.key === "review_star" && cls.arg && cls.arg.route === "google") await markGoogleSent(q, cls.arg.code);
       if (!afterWait) await oddAfter({ d, handoff, okSent: okSent && cfg.mode !== "dry" });
@@ -3923,7 +3926,7 @@ const fl = await q(`SELECT count(*)::int AS n FROM wa_bot_log WHERE phone_norm=$
     let session = await assistStore.loadSession(phone, now, acfg.sessionMin);
     /* PS2: «جلسة بذرة» = بوت القواعد رد على سؤال سعر صنف في أول المحادثة (rulesFirstPrice) وسجّل السؤال، والمساعد لسه مادخلش. مش محادثة مساعد شغّالة (المواعيد والموقع والشكر
        يفضلوا مع القواعد ببلاش)، وأول دور للمساعد بعدها بياخد سياق أول دور كامل (ملف العميل، العروض، البوكسات) وهو شايف سؤال العميل اللي فات. */
-    const seeded = Boolean(session && session.state && (session.state.seed === true || session.state.seed === "reminder")), cardSeed = Boolean(session && session.state && session.state.seed === true);
+    const seeded = Boolean(session && session.state && (session.state.seed === true || session.state.seed === "reminder" || session.state.seed === "campaign")), cardSeed = Boolean(session && session.state && session.state.seed === true);
     /* «بدون بصل» وهو بيجهّز سلة = ملاحظة للمساعد؛ بس لو له طلب حديث من الموقع تبقى «تعديل طلب» للموظف زي النهارده (ومانعرفش ⇒ نفترض إن له طلب). */
     let recentOrder = false;
     if (cls.key === "change" || cls.key === "complaint") { const ro = await q(`SELECT 1 FROM shop_orders WHERE phone_norm=$1 AND NOT COALESCE(is_test,false) AND status NOT IN ('expired','pending_payment') AND created_at > NOW() - INTERVAL '24 hours' LIMIT 1`, [phone]); recentOrder = ro === null || ro.length > 0; }
@@ -3935,9 +3938,12 @@ const fl = await q(`SELECT count(*)::int AS n FROM wa_bot_log WHERE phone_norm=$
     const ruleKey = () => String((d && d.key) || cls.key || "reply");
     const turnRow = (x) => assistStore.addTurn({ phone, sessionId: session ? session.id : null, logId, wamid: ev.wamid || null, lang, ...x });
     if (!el.run) {
-      return { d: null, done: async ({ okSent }) => {       // القواعد ماسكة الرسالة: لو ردّت وسط محادثة المساعد، تتسجّل عشان المساعد يفضل فاهم السياق
+      return { d: null, done: async ({ okSent, sentText = "" }) => {       // القواعد ماسكة الرسالة: لو ردّت وسط محادثة المساعد، تتسجّل عشان المساعد يفضل فاهم السياق
         if (!okSent) return;
-        if (session) await assistStore.saveSession(phone, noteRulesTurn(session, ev.text, ruleKey()), now);
+        /* مراجعة CR2: رد «أبغى أطلب» على رسالة حملة (عرضها + رابطها) ⇒ المساعد يعرف العرض والرد بالحرف، و«نعم / ايوه» بعده توصل له (مش سكوت) */
+        const campTurn = cls.rawIntent === "campaign_reply" && d && d.key === "order" && data && data.campReply && data.campReply.ok && ["tap", "rules:campaign_order"].includes(el.why);
+        if (campTurn) await assistStore.saveSession(phone, noteCampaignTurn(session, now, { text: ev.text, offer: data.campReply, sent: sentText }), now);
+        else if (session) await assistStore.saveSession(phone, noteRulesTurn(session, ev.text, ruleKey()), now);
         else if (el.seed) { const s0 = newSession(now); s0.state.seed = true; await assistStore.saveSession(phone, noteRulesTurn(s0, ev.text, "dish card: price + order button"), now); }
         await turnRow({ handledBy: "rules_owned", outcome: `rules:${el.why.replace(/^rules:/, "")}`, masked: maskText(ev.text), trace: {} });
       } };
