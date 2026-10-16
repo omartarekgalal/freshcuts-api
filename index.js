@@ -91,6 +91,7 @@ import * as notify from "./notify.js";
 import * as whatsapp from "./whatsapp.js";
 import * as wainbox from "./wainbox.js";
 import * as wacloud from "./wacloud.js";
+import * as wahealth from "./wahealth.js";      // WH1 (١٦/١٠): مراقب صحة توصيل واتساب + تنبيه المالك
 import * as carts from "./carts.js";
 import * as freebar from "./freebar.js";
 import * as openwait from "./openwait.js";
@@ -3234,6 +3235,9 @@ const outreachApi = outreach.register(app, moduleCtx);
 /* ☁️ 28/9: WhatsApp Cloud API Coexistence — ربط Embedded Signup + حالة الرقم (wacloud.js)،
    وقناة wa_cloud في الإرسال الآلي (السيرفر بيبعت القالب بنفسه + حالات الويب هوك). */
 const waCloudApi = wacloud.register(app, moduleCtx, { wa: waApi, sessionUser: cmsApi.sessionUser });
+/* 🩺 WH1 (١٦/١٠): مراقب صحة واتساب — حالة الرقم/الجودة/الحد/الاسم + صرف ميتا قصاد ميزانية المالك + أكواد فشل إرسالنا ⇒
+   SMS للمالك أوله «‼️ واتساب فريش كاتس:» (مرة لكل تغيير) + كارت في قسم واتساب. قراية بس من ميتا (wahealth.js). */
+wahealth.register(app, moduleCtx, { cloud: () => waCloudApi, wa: waApi, sendSms: (m) => accounts.sendSms(m) });
 /* 🍽 FD1 (١٤/١٠): حملة «طبقك المفضل» — عرض لكل عميل + سعر توصيله (wafavpick.js). المنيو/البوكسات/العروض من بوت واتساب
    (wabotApi.live — نفس الكاش، بيتسجّل تحت؛ النداء وقت التشغيل)، والتوصيل من delivery.quote نفسها (كاش المسافات بس). */
 const favPickApi = wafavpick.makeFavPick({ pool, getSettingsData, live: () => (wabotApi ? wabotApi.live : null), quote: (x) => deliveryApi.quote(x) });

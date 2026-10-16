@@ -45,6 +45,18 @@ export function pickPhoneId(list, ourNumber = KNOWN_NUMBER) {
   if (rows.length === 1) return { id: String(rows[0].id), by: "only", count: 1 };
   return { id: null, by: rows.length ? "ambiguous" : "empty", count: rows.length };
 }
+/* WH1 (١٦/١٠): health_status.entities[].errors ⇒ [{ entity, code, text, fix }] (لحد ٥) — أسباب «محدود/موقوف» زي ما ميتا كاتباها */
+export function healthErrorsOf(hs) {
+  const out = [];
+  for (const en of (hs && Array.isArray(hs.entities) ? hs.entities : [])) {
+    for (const e of (Array.isArray(en && en.errors) ? en.errors : [])) {
+      out.push({ entity: String(en.entity_type || "").slice(0, 20) || null, code: e.error_code ?? null,
+        text: String(e.error_description || "").slice(0, 200) || null, fix: String(e.possible_solution || "").slice(0, 200) || null });
+    }
+    for (const t of (Array.isArray(en && en.additional_info) ? en.additional_info : [])) out.push({ entity: String(en.entity_type || "").slice(0, 20) || null, code: null, text: String(t).slice(0, 200), fix: null });
+  }
+  return out.slice(0, 5);
+}
 /* الأرقام الفعّالة = آخر ربط ناجح (اشتراك التطبيق تم + الرقمين موجودين). rec = صف wa_onboarding. */
 export function activeFromRecord(rec) {
   if (!rec || !rec.waba_id || !rec.phone_id) return null;
@@ -855,6 +867,7 @@ export function register(app, ctx, deps = {}) {
       throughput: d.throughput?.level || null, tier: d.messaging_limit_tier || null,
       verification: d.code_verification_status || null, nameStatus: d.name_status || null,
       isOnBizApp: d.is_on_biz_app ?? null, health: d.health_status?.can_send_message || null,
+      healthErrors: healthErrorsOf(d.health_status),      // WH1: أسباب LIMITED/BLOCKED زي ما ميتا كاتباها (لمراقب الصحة wahealth.js)
       checkedAt: new Date(now()).toISOString() };      // QP1: بوابة الجودة بترفض قراءة أقدم من qualityMaxAgeMin
     phoneCache = { at: now(), data: x };
     return x;
@@ -1118,5 +1131,7 @@ export function register(app, ctx, deps = {}) {
     return c.json({ ok: true, cfg: clean });
   });
 
-  return { templateSync, phoneInfo, templateInfo, ready, cloudCfg, activeReady, webhookAccept, idsNow, qualityMigrated };
+  /* WH1 (١٦/١٠): قراية بس لمراقب صحة واتساب (wahealth.js — pricing_analytics على الـWABA). GET بس، مفيش طريق يكتب من هنا. */
+  const graphGet = (path, query = null) => graph("GET", path, { query });
+  return { templateSync, phoneInfo, templateInfo, ready, cloudCfg, activeReady, webhookAccept, idsNow, qualityMigrated, graphGet, wabaId: () => wabaId() || KNOWN_WABA_ID };
 }
