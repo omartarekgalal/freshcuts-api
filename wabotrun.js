@@ -3220,7 +3220,11 @@ const fl = await q(`SELECT count(*)::int AS n FROM wa_bot_log WHERE phone_norm=$
     const phone = String(j.phone_norm || ""), ev = typeof j.ev === "string" ? JSON.parse(j.ev) : (j.ev || {});
     const no = (reason) => end("cancelled", reason);
     if (!cfg.windowKeeper) return no("off"); if (!ev.lastIn) return no("bad_job");
-    const [why, m, chat, op] = await ownGate(phone, settings, cfg, now, ev.lastIn);
+    /* SB5 (١٦/١٠): +١ مللي ثانية زي FU1 — lastIn في الشغلة متقطّع للمللي (Postgres بالميكرو)، فرسالته الأخيرة نفسها (12:00:00.123456 > 12:00:00.123) كانت بتتعدّ «كتب تاني»
+       وكل شغلة تقريباً بتتلغي customer_wrote. فحص «اتبعتله رسالة في النافذة دي» (done_at > lastIn) فاضل على lastIn زي ما هو: التقطيع هناك بيغلط ناحية «مانبعتش». */
+    const lastInMs = Date.parse(ev.lastIn);
+    if (!Number.isFinite(lastInMs)) return no("bad_job");
+    const [why, m, chat, op] = await ownGate(phone, settings, cfg, now, new Date(lastInMs + 1).toISOString());
     if (why) return no(why);
     if (Number(m.wrote) > 0) return no("customer_wrote");
     const hr = new Date(now.getTime() + 3 * 3600_000).getUTCHours(), qs = Math.round(cfg.windowKeeperQuietStart), qe = Math.round(cfg.windowKeeperQuietEnd);

@@ -66,6 +66,9 @@ function world({ waBot = {}, notifications = { whatsappEnabled: true }, orders =
   /* FU1: نسخة في الذاكرة من جمل wafollow.FU_SQL (نفس المنطق على db.msgs / db.log / db.jobs / db.fu) */
   db.fu = []; db.fuBrake = null;
   const T0 = (v) => (v ? Date.parse(v) : NaN);
+  /* SB5: Postgres بيقارن بالميكرو ثانية و Date.parse بيقطّع للمللي ⇒ وقت ISO بأكتر من ٣ أرقام كسور بيتحسب بالميكرو (زي created_at الحقيقي) */
+  const US = (v) => { if (v == null || v === "") return NaN; if (v instanceof Date) return v.getTime() * 1000; const s = String(v), f = /T\d{2}:\d{2}:\d{2}\.(\d+)/.exec(s);
+    return Date.parse(s) * 1000 + (f && f[1].length > 3 ? Number(f[1].slice(3, 6).padEnd(3, "0")) : 0); };
   const isMkt = (c) => c.direction === "out" && c.template && (c.category === "MARKETING" || c.source === "campaign");
   const okOut = (c) => !["failed", "skipped"].includes(c.status || "");
   const inAfter = (pn, from, to) => db.msgs.some((m) => m.phone_norm === pn && m.direction === "in" && m.source !== "history" && T0(m.created_at) > from && T0(m.created_at) < to);
@@ -198,7 +201,7 @@ function world({ waBot = {}, notifications = { whatsappEnabled: true }, orders =
       // ── مساعد الطلبات: «جاري الكتابة» والمتابعة بعد رابط السلة
       if (/^SELECT 1 FROM wa_messages WHERE wamid=\$1 AND phone_norm=\$2 AND direction='in'/i.test(s)) return { rows: db.msgs.filter((m) => m.wamid === p[0] && m.phone_norm === p[1] && m.direction === "in" && nowMs - Date.parse(m.created_at) < 24 * 3600_000).map(() => ({})) };
       if (/^SELECT max\(created_at\) FILTER \(WHERE direction='in'/i.test(s)) { const mine = db.msgs.filter((m) => m.phone_norm === p[0] && nowMs - Date.parse(m.created_at) < 25 * 3600_000);
-        return { rows: [{ last_in: mine.filter((m) => m.direction === "in" && m.source !== "history").map((m) => m.created_at).sort().pop() || null, wrote: mine.filter((m) => m.direction === "in" && Date.parse(m.created_at) > Date.parse(p[1])).length, staff: mine.filter((m) => m.source === "echo" && Date.parse(m.created_at) > Date.parse(p[1])).length }] }; }
+        return { rows: [{ last_in: mine.filter((m) => m.direction === "in" && m.source !== "history").map((m) => m.created_at).sort((a, b) => US(a) - US(b)).pop() || null, wrote: mine.filter((m) => m.direction === "in" && US(m.created_at) > US(p[1])).length, staff: mine.filter((m) => m.source === "echo" && US(m.created_at) > US(p[1])).length }] }; }      // SB5: بالميكرو زي Postgres
       if (/^SELECT \(expires_at > NOW\(\)\) AS live FROM wa_bot_carts/i.test(s)) return { rows: db.botCarts.filter((x) => x.code === p[0] && x.phone === p[1]).map((x) => ({ live: !x.expired })) };
       if (/^SELECT 1 FROM shop_orders WHERE phone_norm=\$1 AND created_at > \$2 AND status <> 'expired'/i.test(s)) return { rows: orders.filter((o) => o.phone_norm === p[0] && Date.parse(o.created_at) > Date.parse(p[1]) && o.status !== "expired").map(() => ({})) };
       if (/^UPDATE wa_bot_jobs SET status='cancelled', reason=\$2, done_at=NOW\(\) WHERE phone_norm=\$1 AND kind='assist_reminder'/i.test(s)) { for (const j of db.jobs) if (j.phone_norm === p[0] && j.kind === "assist_reminder" && j.status === "pending") { j.status = "cancelled"; j.reason = p[1]; } return { rows: [] }; }
@@ -4790,6 +4793,34 @@ test("SB4 window keeper: ~20 h after the customer's last message ONE free messag
   assert.equal((await n.tick(20 * 60 + 5)).filter((b) => b.type).length, 0);
   assert.equal(n.db.jobs.find((j) => j.kind === "window_keep").reason, "nothing_useful", "no reason ⇒ nothing sent");
   const c = R.botConfig({ waBot: { windowKeeperHour: 30, windowKeeperDailyCap: -1 } }); assert.deepEqual([c.windowKeeperHour, c.windowKeeperDailyCap], [23, 0]);
+}));
+
+/* SB5 (١٦/١٠): على الإنتاج الحارس كان بيلغي كل شغلة تقريباً customer_wrote — created_at في Postgres بالميكرو (15:00:00.000456) والشغلة شايلة lastIn متقطّع للمللي (15:00:00.000)،
+   فرسالة العميل الأخيرة نفسها كانت «أحدث» من مرجع الشغلة. العالم الافتراضي بيقارن بالميكرو دلوقتي (US) زي Postgres. */
+test("SB5 window keeper: the customer's OWN last message stored with microseconds (1–999 µs past the millisecond) is not «he wrote again»; a real later message still cancels the older window's job", withEnv(CONFIGURED, async () => {
+  const mk = () => world({ at: "2026-10-12T15:00:00Z", waBot: { mode: "test", testPhones: TESTERS, paidNoteEnabled: false }, orders: [{ order_no: "W1790012347777", phone_norm: "512345678", status: "on_the_way", option: "delivery", created_at: "2026-10-13T10:30:00Z" }] });
+  const ins = (w) => w.db.msgs.filter((m) => m.phone_norm === "512345678" && m.direction === "in");
+  const withUs = (m, us) => { m.created_at = m.created_at.replace(/\.(\d{3})Z$/, `.$1${us}Z`); return m.created_at; };
+  for (const us of ["001", "456", "999"]) {
+    const w = mk(); await w.say("هلا");
+    const at = withUs(ins(w).at(-1), us);
+    assert.match(at, new RegExp(`\\.\\d{3}${us}Z$`));
+    const s = await w.tick(20 * 60 + 5);
+    const j = w.db.jobs.find((x) => x.kind === "window_keep");
+    assert.ok(j, "the sweep made the job");
+    assert.equal(j.ev.lastIn, new Date(Date.parse(at)).toISOString(), "the job carries the millisecond value, as on production");
+    assert.equal(j.reason, "sent:open_order", `${us} µs: ${j.reason}`);
+    assert.equal(s.filter((b) => b.type).length, 1, "one message");
+  }
+  // the customer really wrote again (5 minutes later): the job of the OLDER window is cancelled customer_wrote, the newer window's job sends ONE message
+  const w = mk(); await w.say("هلا"); const first = withUs(ins(w).at(-1), "456");
+  w.clock.advance(5); await w.say("تمام"); withUs(ins(w).at(-1), "789");
+  w.db.jobs.push({ id: w.db.jobs.length + 1, wamid: `wk:512345678:${Date.parse(first)}`, phone_norm: "512345678", kind: "window_keep", due_at: new Date(Date.parse(first)).toISOString(),
+    ev: { lastIn: new Date(Date.parse(first)).toISOString() }, log_id: null, status: "pending", reason: null, created_at: new Date(Date.parse(first)).toISOString() });
+  const s = await w.tick(20 * 60 + 1);
+  const ks = w.db.jobs.filter((x) => x.kind === "window_keep");
+  assert.deepEqual(ks.map((x) => x.reason), ["customer_wrote", "sent:open_order"], JSON.stringify(ks.map((x) => [x.wamid, x.status, x.reason])));
+  assert.equal(s.filter((b) => b.type).length, 1, "one message for the newer window");
 }));
 
 test("SB4 window: the daily report carries paid templates vs free messages, SAR paid and saved, and the window-keeper outcome", withEnv(CONFIGURED, async () => {
