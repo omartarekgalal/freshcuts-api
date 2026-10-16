@@ -55,6 +55,9 @@ export const ALERT_TYPES = [
     codes: { down: "الدفع واقف", stalled: "الدفع متعطّل (ناس بتوصل ومحدش بيدفع)", up: "الدفع رجع" } },
   { id: "adconnect", label: "ربط منصات الإعلانات", source: "adconnect.js",
     hint: "توكن منصة إعلانات انتهى أو الربط وقع." },
+  { id: "portal_session", label: "جلسات بوابات هنقرستيشن ونينجا", source: "portalsessions.js",
+    hint: "جلسة بوابة محتاجة تتربط من جديد (أو هتخلص قريب). مرة كل ١٢ ساعة بالكتير — المدة من «جلسات البوابات».",
+    codes: { hungerstation_down: "هنقرستيشن وقفت", hungerstation_soon: "هنقرستيشن هتخلص قريب", ninja_down: "نينجا وقفت", ninja_soon: "نينجا هتخلص قريب" } },
   { id: "daily_report", label: "التقرير اليومي", source: "adsreport.js",
     hint: "ملخّص اليوم (مبيعات وإعلانات) — رسالة أو اتنين في اليوم." },
   { id: "review", label: "تقييم سلبي جديد", source: "reviews.js",
@@ -81,6 +84,7 @@ export function typeOfRef(ref) {
   if (/^tabsense-down$/.test(r)) return { type: "tabsense_down", code: null };
   if (/^checkout-/.test(r)) return { type: "checkout", code: r.slice(9) || null }; // checkout-down|stalled|up
   if (/^adconnect\b/.test(r)) return { type: "adconnect", code: null };
+  if (/^portal-(hungerstation|ninja)-(down|soon)$/.test(r)) return { type: "portal_session", code: r.slice(7).replace("-", "_") }; // portal-<platform>-<kind>
   if (/^daily_report$/.test(r)) return { type: "daily_report", code: null };
   if (/^optout_brake$/.test(r)) return { type: "optout_brake", code: null };
   if (/^content_alert$/.test(r)) return { type: "content_alert", code: null };

@@ -367,10 +367,11 @@ export function register(app, ctx, deps = {}) {
     try {
       await loadState();
       const cfg = sweepConfig(await getSettingsData().catch(() => ({})));
-      if (!cfg.enabled && !force) return;
-      await tickHungerstation(cfg);
-      await tickNinja(cfg);
-      await saveState();
+      if (cfg.enabled || force) {                                    // التجديد مقفول من اللوحة ⇒ التنبيه بس
+        await tickHungerstation(cfg);
+        await tickNinja(cfg);
+        await saveState();
+      }
       await checkAlerts(cfg);
     } catch (e) { log.error("[portal-sessions] sweep:", e.message); }
     finally { sweeping = false; }

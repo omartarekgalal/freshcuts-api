@@ -245,3 +245,31 @@ test("settings route: owner only, validated, merged into settings.portals", asyn
   assert.equal(r.st, 200);
   assert.deepEqual(JSON.parse(seen[0]), { renewSweepMin: 20, alertsEnabled: false });
 });
+
+test("the alert ref (index.js: portal-<platform>-<kind>) is its own type in «الفريق والتنبيهات» (can be muted, counted)", async () => {
+  const { ALERT_TYPES, typeOfRef } = await import("./staffcontrol.js");
+  const t = ALERT_TYPES.find((x) => x.id === "portal_session");
+  assert.ok(t, "portal_session in the catalogue");
+  for (const p of ["hungerstation", "ninja"]) for (const kind of ["down", "soon"]) {
+    const r = typeOfRef(`portal-${p}-${kind}`);
+    assert.equal(r.type, "portal_session");
+    assert.ok(t.codes[r.code], `code ${r.code} has an Arabic label`);
+  }
+});
+
+test("renewal switched off from the dashboard: no platform calls, alerts still go out", async () => {
+  const pool = fakePool();
+  let calls = 0;
+  const alerts = [];
+  const ctx = { pool, requireAdmin: async () => null, isOwner: async () => true, getSettingsData: async () => ({ portals: { renewEnabled: false } }) };
+  const m = register(fakeApp(), ctx, {
+    autoStart: false, log: quietLog,
+    hsPortal: () => ({ load: async () => null, accessToken: async () => { calls++; return "x"; } }),
+    ninja: () => ({ sessionInfo: async () => ({ hasSession: true, jwt: mkJwt(Math.floor(Date.now() / 1000) - 3600), refresh: mkJwt(Math.floor(Date.now() / 1000) - 60), jwtExp: Date.now() - 3600_000, refreshExp: Date.now() - 60_000 }),
+      refreshNow: async () => { calls++; return { error: "x" }; } }),
+    alert: async (p, kind) => { alerts.push(`${p}:${kind}`); },
+  });
+  await m.sweepOnce();
+  assert.equal(calls, 0);
+  assert.deepEqual(alerts, ["ninja:down"]);
+});
