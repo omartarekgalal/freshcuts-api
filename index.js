@@ -60,6 +60,7 @@ import * as reviews from "./reviews.js";
 import * as portalReviews from "./portalreviews.js";      // RV1 (عمر ١٥/١٠): التقييمات الواطية في بورتال المدير
 import * as couriercontact from "./couriercontact.js";
 import * as customer360 from "./customer360.js";
+import * as c360wa from "./c360wa.js";      // C360a (عمر ١٦/١٠): تاريخ واتساب في ملف العميل + «ملف العميل» من أي مكان + «افتح الطلب»
 import * as outreach from "./outreach.js";
 import * as smsblock from "./smsblock.js";
 // 🔎 حالة الـSEO للوحة (اكتشافات + قرارات + خطة، وفحوص حيّة على الموقع)
@@ -3295,6 +3296,7 @@ const portalApi = portal.register(app, moduleCtx, { shop: () => shopApi, deliver
 waHandoverApi = wahandover.register(app, moduleCtx, { requirePortal: portalApi.requirePortal, broadcast: portalApi.broadcast, push: () => portalApi.push });
 /* ⭐ RV1 (عمر ١٥/١٠: «التقييمات لازم تظهر ف البورتال عند المدير عشان يقفلها من عنده») — نفس صف التقييم اللي الوارد في اللوحة بيقراه */
 portalReviews.register(app, moduleCtx, { requirePortal: portalApi.requirePortal, audit: portalApi.audit, broadcast: portalApi.broadcast, ready: () => reviewsApi.ready });
+c360wa.register(app, moduleCtx, { whoami: (c) => cmsApi.whoami(c), c360: () => c360Api, requirePortal: portalApi.requirePortal });
 let waKbApi = null;         // wakb.register: assistant knowledge base (manager answers) - portal manager + dashboard
 waKbApi = wakb.register(app, moduleCtx, { requirePortal: portalApi.requirePortal, broadcast: portalApi.broadcast, actor: async (c) => { const u = await cmsApi.whoami(c); return (u && (u.name || u.username)) || null; } });
 let waStaffApi = null;      // wastaff.register: رد الموظف على محادثة واتساب من اللوحة ومن البورتال (نفس حارس الإرسال)
