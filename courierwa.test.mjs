@@ -105,7 +105,7 @@ test("template params: 5 body values + 3 signed quick replies; payload carries t
 });
 
 /* ── التكامل: register() بعالم وهمي ──────────────────────────────────────── */
-function rig({ run = runOf(), window = true, cfg = {}, sendFails = false } = {}) {
+function rig({ run = runOf(), window = true, cfg = {}, sendFails = false, settings = {} } = {}) {
   const state = { run: { ...run }, sends: [], templates: [], stages: [], updates: [], claims: [] };
   const pool = { async query(sql, p = []) {
     const s = String(sql).replace(/\s+/g, " ");
@@ -135,7 +135,7 @@ function rig({ run = runOf(), window = true, cfg = {}, sendFails = false } = {})
     extDelivered: async () => { state.stages.push("delivered"); state.run.delivered_at = new Date().toISOString(); return { ok: true, stage: "delivered" }; },
   };
   const events = [];
-  const api = CW.register({ post() {} }, { pool, getSettingsData: async () => ({ waBot: { courierJob: cfg } }), jb: JSON.stringify, log: { error() {}, warn() {} } },
+  const api = CW.register({ post() {} }, { pool, getSettingsData: async () => ({ ...settings, waBot: { ...(settings.waBot || {}), courierJob: cfg } }), jb: JSON.stringify, log: { error() {}, warn() {} } },
     { wa, courierLive, shop: { getOrderRow: async (no) => (no === ORDER.order_no ? { ...ORDER } : null) }, portal: { scheduleRefresh() {}, push: { sendToSubs: async (pl, o) => { state.push = { pl, o }; return { sent: 1 }; } } },
       emitOrder: (n, e) => events.push(e), boot: false });
   state.events = events;
@@ -265,6 +265,67 @@ test("inbound courier text lands in the order timeline without long numbers", as
   await wa.hooks[0]({ phoneNorm: COURIER, text: "العميل ما يرد رقمه 0500000799" });
   const e = state.events.find((x) => /رسالة من المندوب/.test(x.summary));
   assert.ok(e); assert.ok(!/0500000799/.test(e.summary));
+});
+
+/* ── مراجعة CW1: جوال العميل نفسه / رقم الفريق ─────────────────────────── */
+const CUST = ORDER.phone_norm;           // 500000799 — عميل الطلب الوهمي
+const TEAM = "500000750";                // عضو فريق وهمي
+test("review: courier phone = the order's own customer ⇒ no card, no /d/ link, no opener line; portal gets the Arabic reason", async () => {
+  const { api, state } = rig({ run: runOf({ courier_phone: `0${CUST}` }) });
+  const r = await api.sendJob(ORDER.order_no, { link: "https://freshcuts.sa/d/x" });
+  assert.equal(r.sent, false); assert.equal(r.reason, "customer_phone");
+  assert.match(r.reasonAr, /جوال العميل نفسه/);
+  assert.equal(r.opener, false, "the wa.me fallback must not carry «تبي الأزرار» to the customer");
+  assert.equal(state.sends.length, 0); assert.equal(state.templates.length, 0);
+  assert.ok(state.events.some((e) => /جوال العميل نفسه/.test(e.summary)));
+  assert.equal(await api.openerFor(state.run, ORDER.order_no), null);
+  /* customer.phone بس (من غير phone_norm) برضه بيتمسك */
+  assert.equal(CW.customerPn({ customer: { phone: "+966500000799" } }), CUST);
+  /* مع القالب مفتوح والنافذة مقفولة — برضه ولا قالب */
+  const t = rig({ run: runOf({ courier_phone: `0${CUST}` }), window: false, cfg: { useTemplate: true } });
+  assert.equal((await t.api.sendJob(ORDER.order_no)).reason, "customer_phone");
+  assert.equal(t.state.templates.length, 0);
+  /* مندوب حقيقي ⇒ سطر الرابط موجود */
+  const ok = rig({ window: false });
+  assert.match(await ok.api.openerFor(ok.state.run, ORDER.order_no), /wa\.me/);
+});
+
+test("review: the customer's own messages are never grabbed from the bot, even when their number sits on the run", async () => {
+  const { state, wa } = rig({ run: runOf({ courier_phone: `0${CUST}` }) });
+  assert.equal(await wa.hooks[0]({ phoneNorm: CUST, text: "وين طلبي؟" }), false, "the bot answers the customer as usual");
+  assert.equal(state.sends.length, 0, "no courier card to the customer");
+  /* الرمز من العميل نفسه (وصله نص المندوب بالغلط) ⇒ البوت، من غير ربط ولا أزرار */
+  const g = rig({ run: runOf({ courier_phone: null }) });
+  const msg = decodeURIComponent(CW.openerLine(g.state.run, g.state.run.order_no).split("?text=")[1]);
+  assert.equal(await g.wa.hooks[0]({ phoneNorm: CUST, text: msg }), false);
+  assert.equal(g.state.run.courier_phone, null, "the customer is never bound as the courier");
+  assert.equal(g.state.sends.length, 0);
+  /* ضغطة موقّعة من جوال العميل (كارت قديم) ⇒ ولا مرحلة اتحركت */
+  const c = rig({ run: runOf({ courier_phone: `0${CUST}`, wa_phone: CUST }) });
+  assert.equal(await c.tap("d", CUST), true);
+  assert.deepEqual(c.state.stages, []);
+});
+
+test("review: a team member on a live run ⇒ plain texts + wateam taps go to the bot/wateam; signed cw1 taps still work", async () => {
+  const settings = { waTeam: { members: [{ phone: `0${TEAM}`, name: "مدير تجربة", role: "manager" }] } };
+  const { state, wa, tap } = rig({ run: runOf({ courier_phone: `0${TEAM}` }), settings });
+  const r = await rig({ run: runOf({ courier_phone: `0${TEAM}` }), settings }).api.sendJob(ORDER.order_no);
+  assert.equal(r.sent, true, "a manager delivering it themselves still gets the buttons");
+  assert.equal(await wa.hooks[0]({ phoneNorm: TEAM, interactiveId: "team:renew", text: "✅ جدّد التنبيهات", type: "interactive" }), false);
+  assert.equal(await wa.hooks[0]({ phoneNorm: TEAM, text: "حالة" }), false);
+  assert.equal(state.sends.length, 0, "no job card in reply to a team command");
+  assert.equal(await tap("p", TEAM), true);
+  assert.deepEqual(state.stages, ["start"]);
+  /* أرقام تنبيهات الطلبات (settings.delivery) برضه فريق */
+  const d = rig({ run: runOf({ courier_phone: `0${TEAM}` }), settings: { delivery: { alertPhones: [`0${TEAM}`] } } });
+  assert.equal(await d.wa.hooks[0]({ phoneNorm: TEAM, text: "مساعدة" }), false);
+  /* زر wateam من رقم مش في الدليل (مثلاً الدليل اتعدّل) ⇒ برضه مش بتاعنا — بس الكتابة العادية من المندوب بتتمسك */
+  const x = rig({ run: runOf({ courier_phone: `0${TEAM}` }) });
+  assert.equal(await x.wa.hooks[0]({ phoneNorm: TEAM, interactiveId: "team:renew", text: "✅ جدّد التنبيهات", type: "interactive" }), false);
+  assert.equal(await x.wa.hooks[0]({ phoneNorm: TEAM, text: "وصلت" }), true);
+  /* المندوب العادي لسه بيتمسك */
+  const n = rig({ settings });
+  assert.equal(await n.wa.hooks[0]({ phoneNorm: COURIER, text: "وصلت" }), true);
 });
 
 /* ── حارس القالب في whatsapp.js ─────────────────────────────────────────── */

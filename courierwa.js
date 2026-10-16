@@ -22,6 +22,9 @@
       وقواعد التوكن نفس /d/: ملغي ⇒ ولا حاجة · اتسلّم ⇒ خلاص · انتهى ⇒ «تم التسليم» بس اللي بيعدّي.
    ٤) رقم المندوب بيتعامل كمندوب: أي رسالة منه على رحلة شغّالة البوت مابيردّش عليها (claim في whatsapp.js)،
       والرسالة بتفضل في صندوق واتساب للموظفين.
+      حارس (مراجعة CW1): جوال عميل الطلب نفسه عمره ما بياخد كارت/أزرار/رابط /d/ (reason customer_phone ⇒ البوابة بتقول
+      «ده جوال العميل نفسه — اكتب جوال المندوب»)، ورسايله العادية مابتتسحبش من البوت. ورقم الفريق (teamPhones) رسايله العادية
+      وأزرار wateam بتروح للبوت/wateam زي الأول — الضغطات الموقّعة cw1.* بس هي اللي بتتمسك.
    كل رسالة رايحة للمندوب ليها صف في wa_messages برقم الطلب + سطر في سجل الطلب (courier_manual).
    المفاتيح كلها في اللوحة: «كل إعدادات البوت ← 🛵 المندوب الخارجي: الأزرار على واتساب» (waBot.courierJob).
 ═══════════════════════════════════════════════════════════════════════════ */
@@ -30,6 +33,7 @@ import { handoffText, localPhone } from "./courierlive.js";
 import { readableAddress } from "./couriers.js";
 import { emitOrder } from "./order-events.js";
 import { pushPayload } from "./portal-core.js";
+import { teamPhones } from "./phonelists.js";
 
 export { CW_TEMPLATE, COURIER_JOB_TEMPLATES, COURIER_JOB_DEFAULTS, courierJobConfig, courierJobFromBody, COURIER_JOB_SCHEMA, COURIER_JOB_SCHEMA_GROUP } from "./courierwa-cfg.js";
 import { courierJobConfig, COURIER_JOB_DEFAULTS } from "./courierwa-cfg.js";
@@ -73,6 +77,14 @@ export function pn9(p) {
   if (d.startsWith("966")) d = d.slice(3);
   if (d.startsWith("0")) d = d.slice(1);
   return /^5\d{8}$/.test(d) ? d : null;
+}
+
+/* جوال عميل الطلب نفسه (٩ أرقام) — مراجعة CW1: لو المدير كتب جوال العميل في «جواله» بالغلط، الكارت بأزرار «تم التسليم» ورابط /d/
+   كان هيروح للعميل نفسه، ورسايل العميل («وين طلبي؟») كانت هتتسحب من البوت. ده الحارس. */
+export function customerPn(row) {
+  if (!row) return null;
+  const c = row.customer && typeof row.customer === "object" ? row.customer : {};
+  return pn9(row.phone_norm) || pn9(c.phone) || null;
 }
 
 export const stageOf = (run) => (run.delivered_at ? "delivered" : run.arrived_at ? "arrived" : run.started_at ? "started" : "new");
@@ -140,6 +152,7 @@ export const REASON_AR = Object.freeze({
   no_phone: "مفيش جوال للمندوب", not_saudi_mobile: "جوال المندوب مش سعودي — واتساب يدوي بس",
   window_closed: "المندوب ماكلّمناش آخر ٢٤ ساعة والقالب لسه مش متفعّل — اتفتح الواتساب اليدوي",
   not_courier: "الحارس مالقاش الرقم على رحلة شغّالة", unknown_template: "القالب مش متسجّل",
+  customer_phone: "ده جوال العميل نفسه — اكتب جوال المندوب",
 });
 export const reasonAr = (r) => REASON_AR[r] || (r ? `ماوصلش (${String(r).slice(0, 40)})` : null);
 
@@ -225,6 +238,13 @@ export function register(app, ctx, deps = {}) {
     const sp = shop();
     const row = sp ? await sp.getOrderRow(run.order_no) : null;
     if (!row) return { sent: false, reason: "not_found" };
+    if (pn === customerPn(row)) {
+      /* جوال المندوب = جوال العميل ⇒ مانبعتش للعميل كارت «تم التسليم» ولا رابط /d/ — البوابة بترجع للواتساب اليدوي وبتعرض السبب */
+      await pool.query("UPDATE dl_ext_runs SET wa_error=$2 WHERE id=$1", [run.id, "customer_phone"]).catch(() => {});
+      timeline(run.order_no, `واتساب الأزرار ماتبعتش: ${reasonAr("customer_phone")}`, { ok: false, stage: "wa_job", reason: "customer_phone", why });
+      try { portal()?.scheduleRefresh?.(run.order_no); } catch {}
+      return { sent: false, via: null, reason: "customer_phone", reasonAr: reasonAr("customer_phone"), wamid: null };
+    }
     const stage = stageOf(run);
     const body = jobCardText(row, { link, stage });
     let r = await freeSend(pn, run, body, buttonsFor(stage, cfg));
@@ -263,7 +283,7 @@ export function register(app, ctx, deps = {}) {
         return { sent: false, reason, reasonAr: reasonAr(reason) };
       }
       const r = await sendCard(run, pn, { link, cfg, why });
-      return { ...r, by: by || null, opener: !r.sent && cfg.openerLink };
+      return { ...r, by: by || null, opener: !r.sent && cfg.openerLink && r.reason !== "customer_phone" };
     } catch (e) {
       log.error?.(`[courierwa] sendJob ${orderNo} failed: ${e?.message || e}`);
       return { sent: false, reason: "failed" };
@@ -276,6 +296,12 @@ export function register(app, ctx, deps = {}) {
       const s = settings || await settingsNow();
       const cfg = cfgOf(s);
       if (!cfg.enabled || !cfg.openerLink || !run || !run.token_hash) return null;
+      const cpn = pn9(run.courier_phone);
+      if (cpn) {
+        const sp = shop();
+        const row = sp ? await sp.getOrderRow(orderNo).catch(() => null) : null;
+        if (cpn === customerPn(row)) return null;      // جوال العميل نفسه — مانحطّلوش رابط أزرار المندوب
+      }
       const num = String((s.waBot && s.waBot.followNumber) || OUR_NUMBER).replace(/\D/g, "");
       return openerLine(run, orderNo, /^9665\d{8}$/.test(num) ? num : OUR_NUMBER);
     } catch { return null; }
@@ -304,11 +330,12 @@ export function register(app, ctx, deps = {}) {
     const pn = ev.phoneNorm;
     const owner = pn9(run.wa_phone || run.courier_phone);
     if (!owner || owner !== pn) { log.warn?.(`[courierwa] tap from another phone on run ${run.id}`); return; }
+    const sp = shop();
+    const row = sp ? await sp.getOrderRow(run.order_no) : null;
+    if (pn === customerPn(row)) { log.warn?.(`[courierwa] tap from the order's own customer on run ${run.id} — ignored`); return; }
     await ensureSchema();
     await pool.query("UPDATE dl_ext_runs SET wa_last_tap=$2, wa_last_tap_at=NOW() WHERE id=$1", [run.id, p.act]).catch(() => {});
     const cfg = cfgOf(await settingsNow());
-    const sp = shop();
-    const row = sp ? await sp.getOrderRow(run.order_no) : null;
     const no = run.order_no;
     const say = (kind, acts = []) => freeSend(pn, run, stageReply(kind, row, { no }), acts);
     if (run.revoked_at) { await say("revoked"); return; }
@@ -351,6 +378,11 @@ export function register(app, ctx, deps = {}) {
     const pn = ev.phoneNorm;
     const sp = shop();
     const row = sp ? await sp.getOrderRow(run.order_no) : null;
+    if (pn === customerPn(row)) {
+      /* العميل نفسه بعت الرمز (وصله نص المندوب بالغلط) ⇒ مانربطوش كمندوب ولا نبعتله أزرار — البوت بيرد عليه كعميل عادي */
+      timeline(run.order_no, "جوال العميل نفسه بعت رمز أزرار المندوب — مارديناش بالأزرار وسيبناه للبوت", { ok: false, stage: "opener", reason: "customer_phone" });
+      return false;
+    }
     const say = (kind) => freeSend(pn, run, stageReply(kind, row, { no: run.order_no }), []);
     if (run.revoked_at) { await say("revoked"); return true; }
     if (run.delivered_at) { await say("done"); return true; }
@@ -378,13 +410,25 @@ export function register(app, ctx, deps = {}) {
     const p = parseCwPayload(id);
     if (p) { await handleTap(ev, p); return true; }
     if (/^cw1\./.test(id)) return true;      // payload بتاعنا بس بايظ — نسكت بدل ما البوت يرد على «استلمت الطلب»
-    const cfg = cfgOf(await settingsNow());
+    if (id) return false;                    // زر مش بتاعنا (wateam «✅ جدّد التنبيهات» / أزرار المحادثات / زر بوت) ⇒ صاحبه يرد عليه، حتى لو الرقم على رحلة
+    const s = await settingsNow();
+    const cfg = cfgOf(s);
     if (!cfg.enabled) return false;
     if (!(await ensureSchema())) return false;
     const o = parseOpener(ev.text);
     if (o && (await handleOpener(ev, o, cfg))) return true;
     const run = await liveRunForPhone(ev.phoneNorm);
     if (!run) return false;
+    /* مراجعة CW1: الرسالة العادية (مش ضغطة cw1 موقّعة) من رقم الفريق أو من عميل الطلب نفسه مش بتاعتنا:
+       • الفريق (مدير بيوصّل بنفسه / موظف معاه الرابط) ⇒ «✅ جدّد التنبيهات» وأزرار المحادثات وأوامر حالة/مساعدة لازم توصل لـwateam جوّه البوت.
+       • العميل (المدير كتب جواله في «جواله» بالغلط) ⇒ البوت يرد عليه زي أي عميل. */
+    const me = pn9(ev.phoneNorm);
+    if (me && teamPhones(s).has(me)) return false;
+    {
+      const sp = shop();
+      const row = sp ? await sp.getOrderRow(run.order_no).catch(() => null) : null;
+      if (me && me === customerPn(row)) return false;
+    }
     /* رسالة المندوب نفسها في سجل الطلب (من غير أرقام طويلة — ممكن يكون كاتب جوال) */
     const said = String(ev.text || "").replace(/\d[\d\s-]{6,}\d/g, "…").replace(/\s+/g, " ").trim().slice(0, 120);
     if (said) timeline(run.order_no, `رسالة من المندوب الخارجي على الواتساب: «${said}»`, { stage: "courier_said" });
