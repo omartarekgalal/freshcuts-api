@@ -314,6 +314,18 @@ export function buildTemplatePayload(name, to, params = {}, lang = "ar") {
       idxs.forEach((idx, k) => { if (params.button[k] == null && k > 0) return; components.push({ type: "button", sub_type: "url", index: String(idx), parameters: [{ type: "text", text: String(params.button[k] ?? "") }] }); });
     }
   }
+  /* CW1: أزرار الرد السريع بـpayload خاص بكل رسالة (أزرار المندوب: رقم الرحلة + توقيع) ⇒ الضغطة بترجع بالـpayload ده في الويب هوك
+     (interactiveId) بدل نص الزر. params.quickReplies[i] = payload الزر رقم i من أزرار الرد السريع بالترتيب. */
+  if (Array.isArray(params.quickReplies) && params.quickReplies.length) {
+    const comps = (t.variants && t.variants[lang]) || t.components;
+    const btns = comps.find((c) => c.type === "BUTTONS")?.buttons || [];
+    let k = 0;
+    btns.forEach((b, idx) => {
+      if (b.type !== "QUICK_REPLY") return;
+      const pl = params.quickReplies[k++];
+      if (pl != null && String(pl)) components.push({ type: "button", sub_type: "quick_reply", index: String(idx), parameters: [{ type: "payload", payload: String(pl).slice(0, 256) }] });
+    });
+  }
   return { messaging_product: "whatsapp", recipient_type: "individual", to, type: "template",
     template: { name, language: { code: lang }, components } };
 }
@@ -521,7 +533,7 @@ export function register(app, ctx, deps = {}) {
 
   /* مستمعين للويب هوك (wasender بيسجّل هنا عشان حالات رسايل الحملة وردودها
      تحدّث صفوف الطابور). مستمع بيقع مابيوقّفش الباقي. */
-  const hooks = { inbound: [], status: [], account: [], chat: [], quality: [] };
+  const hooks = { inbound: [], status: [], account: [], chat: [], quality: [], claim: [] };      // CW1: claim = مستمع يقدر «يمسك» الرسالة (أزرار المندوب الخارجي) فالبوت والرد الآلي مايردّوش
   const on = (ev, fn) => { if (hooks[ev] && typeof fn === "function") hooks[ev].push(fn); };
   const emit = async (ev, x) => {
     for (const fn of hooks[ev] || []) { try { await fn(x); } catch (e) { console.error(`[wa] ${ev} hook:`, e.message); } }
@@ -757,7 +769,7 @@ export function register(app, ctx, deps = {}) {
   }
   const TICKETS = new WeakSet();
   const TICKET_TTL_MS = 60_000;
-  async function guardSend({ phoneNorm, kind, template = null, purpose = null, source = null, test = false, allowList = null, fromId = null, orderNo = null, staff = false } = {}) {
+  async function guardSend({ phoneNorm, kind, template = null, purpose = null, source = null, test = false, allowList = null, fromId = null, orderNo = null, staff = false, courier = false } = {}) {
     const no = (reason) => ({ ok: false, reason });
     await ready;
     const pn = String(phoneNorm || "");
@@ -782,7 +794,7 @@ export function register(app, ctx, deps = {}) {
       return grant();
     }
     /* ST1: قالب لموظف (staff) مش «تحديث طلب لعميل» ⇒ أقفال الرد الحر (الخادم + الإعداد + مفتاح المالك) من غير مفتاح تحديثات الطلب */
-    const staffTpl = staff === true && kind === "template";
+    const staffTpl = (staff === true || courier === true) && kind === "template";      // CW1: قالب المندوب الخارجي زي قالب الفريق — أقفال الرد الحر
     const blocked = channelBlock(s, staffTpl ? "session" : kind);      // SW1: الرد الحر مابيقفش على مفتاح تحديثات الطلب
     if (blocked) return no(blocked);
     if (kind === "session") {
@@ -798,6 +810,24 @@ export function register(app, ctx, deps = {}) {
        موافقة العميل (wa_optins) مابتتطلبش: ده موظف عندنا مش عميل. أي رقم تاني أو أي قالب تاني بيكمل على قواعد العملاء تحت زي ما هو. */
     /* PH1: آخر خطوة قبل التذكرة لأي قالب (بعد كل قواعد الموافقة، فالتجربة مابتتحرقش على رقم مرفوض أصلاً) */
     const holdCtx = (mk) => ({ template, category: t.category, marketing: mk, source, orderNo, phoneNorm: pn });
+    /* CW1 (١٦/١٠ — أزرار المندوب الخارجي): قالب «طلب توصيل» لمندوب خارجي. الحارس نفسه بيتأكد — المنادي مايقدرش يدّعي:
+         • الرقم = جوال مندوب على رحلة خارجية شغّالة (dl_ext_runs: مش ملغية ولا متسلّمة ولا منتهية) وإلا not_courier
+         • القالب من مجموعة «المندوب» في الكتالوج، فئته UTILITY، وميتا ماحوّلتوش تسويق، ومش حملة — وإلا not_courier_template
+       موافقة العميل مابتتطلبش: ده مندوب شغّال على طلب عندنا والمدير كتب رقمه بإيده، مش عميل. */
+    if (courier === true) {
+      const reclassed = Object.keys(CAT.META_CATEGORY || {}).some((k) => k.startsWith(`${template}:`));
+      if (t.group !== "courier" || t.category !== "UTILITY" || reclassed || purpose === "marketing" || source === "campaign") return no("not_courier_template");
+      let live = false;
+      try {
+        const r = await pool.query(
+          `SELECT 1 FROM dl_ext_runs WHERE right(regexp_replace(COALESCE(courier_phone,''), '[^0-9]', '', 'g'), 9) = $1
+              AND revoked_at IS NULL AND delivered_at IS NULL AND expires_at > NOW() LIMIT 1`, [pn]);
+        live = Boolean(r.rows && r.rows.length);
+      } catch { live = false; }
+      if (!live) return no("not_courier");
+      if (await holdBlocks(holdCtx(false))) return no("pay_hold");      // PH1: وقت مشكلة الدفع مفيش قالب مدفوع
+      return grant();
+    }
     if (staff === true) {
       if (!staffRoleOf(s, pn)) return no("not_staff");
       const reclassed = Object.keys(CAT.META_CATEGORY || {}).some((k) => k.startsWith(`${template}:`));
@@ -945,7 +975,7 @@ export function register(app, ctx, deps = {}) {
      source/body اختياريين: الحملات بتبعت نص القالب بعد التعويض عشان يظهر في
      المحادثة زي ما العميل شافه (مش «[قالب: …]»). */
   async function sendTemplate({ phoneNorm, template, params = {}, orderNo = null, stage = null, fallbackSms = null,
-    requireOptIn = true, source = null, body = null, lang = null, allowList = null, test = false, staff = false }) {
+    requireOptIn = true, source = null, body = null, lang = null, allowList = null, test = false, staff = false, courier = false }) {
     await ready;
     const t = TEMPLATES[template];
     if (!t) return { ok: false, error: "unknown_template" };
@@ -955,7 +985,7 @@ export function register(app, ctx, deps = {}) {
        مطلوبة)؛ الاستثناء الوحيد = أرقام التجربة اللي في اللوحة (test / allowList). */
     void requireOptIn;
     const g = await guardSend({ phoneNorm, kind: "template", template, source, purpose: source === "campaign" ? "marketing" : null,
-      test, allowList, orderNo, staff });
+      test, allowList, orderNo, staff, courier });
     if (!g.ok) return { ok: false, skipped: g.reason };
     const language = lang || t.language || "ar";
     const bad = paramProblem(template, params, language);
@@ -1215,6 +1245,13 @@ export function register(app, ctx, deps = {}) {
     const ev = { phone: pn, phoneNorm: pn, wamid: m.wamid, text: m.text || "", type: m.type, interactiveId: m.interactiveId || null, contextId: m.contextId || null,
       referral: m.referral || null, location: m.location || null, media: m.media || null, isEcho: false, ts: m.at, at: m.at, intent: m.intent, source: "api" };
     await emit("inbound", ev);
+    /* CW1 (١٦/١٠): رسالة من مندوب خارجي على رحلة شغّالة (ضغطة زر «استلمت / وصلت / سلّمت» أو أي رسالة منه) — courierwa.js بيمسكها:
+       بيطبّق المرحلة ويرد بالأزرار اللي بعدها، والبوت مايبيعلوش ولا يرحّب بيه. أي خطأ في المستمع ⇒ الرسالة تكمل للبوت زي الأول. */
+    for (const fn of hooks.claim) {
+      let mine = false;
+      try { mine = (await fn(ev)) === true; } catch (e) { console.error("[wa] claim hook:", e.message); }
+      if (mine) return;
+    }
     if (botRuntime) {
       let owned = false;
       try { owned = (await botRuntime(ev)) === true; } catch (e) { console.error("[wa] bot:", e.message); owned = true; }

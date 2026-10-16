@@ -506,6 +506,7 @@ export function register(app, ctx, deps = {}) {
   const notify = typeof deps.notify === "function" ? deps.notify : () => deps.notify || null;
   // التتبّع الحي (٢١ سبتمبر): رابط المندوب الخارجي بيتعمل في نفس الطلبة
   const courierLive = typeof deps.courierLive === "function" ? deps.courierLive : () => deps.courierLive || null;
+  const courierWa = typeof deps.courierWa === "function" ? deps.courierWa : () => deps.courierWa || null;      // CW1
   const emit = deps.emitOrder || emitOrder;
   const now = deps.now || (() => Date.now());
   const J = jb || ((v) => JSON.stringify(v));
@@ -811,6 +812,13 @@ export function register(app, ctx, deps = {}) {
              FROM dl_ext_runs r WHERE r.order_no = ANY($1::text[])`, [nos])).rows;
         runBy = new Map(runs.map((x) => [x.order_no, x]));
       } catch { /* الجدول لسه ما اتعملش — الشاشة بتشتغل من غيره */ }
+      /* CW1: حالة رسالة الأزرار على واتساب — استعلام لوحده عشان لو الأعمدة لسه ما اتضافتش حالة الرابط فوق ماتختفيش */
+      let waBy = new Map();
+      try {
+        const ws = (await pool.query(
+          `SELECT order_no, wa_sent_at, wa_via, wa_error, wa_last_tap, wa_last_tap_at, problem_at FROM dl_ext_runs WHERE order_no = ANY($1::text[])`, [nos])).rows;
+        waBy = new Map(ws.map((x) => [x.order_no, x]));
+      } catch { /* courierwa لسه ما ضافش الأعمدة */ }
       /* محاولات الإرسال (delivery.js، ٢١ سبتمبر): الكارت لازم يقول «آخر
          محاولة فشلت ليه» — قبل كده الفشل كان بيختفي تماماً والمدير بيفضل
          يدوس على نفس الزرار. أي عطل هنا بيتبلع: الخريطة بتفضل فاضية. */
@@ -856,6 +864,13 @@ export function register(app, ctx, deps = {}) {
                 deliveredAt: isoOf(rn.delivered_at), lastAt: isoOf(rn.last_at), pings: Number(rn.pings) || 0,
                 live: !rn.delivered_at && !rn.revoked_at && new Date(rn.expires_at).getTime() > t,
                 expiresAt: isoOf(rn.expires_at),
+                wa: (() => {
+                  const w = waBy.get(r.order_no) || null;
+                  return w && (w.wa_sent_at || w.wa_error || w.wa_last_tap_at || w.problem_at) ? {
+                    sentAt: isoOf(w.wa_sent_at), via: w.wa_via || null, error: w.wa_error || null,
+                    lastTap: w.wa_last_tap || null, lastTapAt: isoOf(w.wa_last_tap_at), problemAt: isoOf(w.problem_at),
+                  } : null;
+                })(),
               } : null,
             };
           })() : null,
@@ -1079,7 +1094,15 @@ export function register(app, ctx, deps = {}) {
         if (h && h.ok) handoff = h;
       } catch (e) { try { log.error(`[courierops] handoff ${orderNo}: ${e?.message || e}`); } catch {} }
     }
-    return c.json({ ok: true, shipmentId: Number(ins.rows[0].id), status: next, needsCost, handoff });
+    /* CW1 (١٦/١٠): السيرفر بيبعت للمندوب من رقم المطعم رسالة بالأزرار (استلمت / وصلت / تم التسليم). نجح ⇒ البوابة مابتفتحش
+       الواتساب اليدوي. ماوصلش (النافذة مقفولة والقالب لسه، جوال مش سعودي، الأزرار مقفولة) ⇒ الواتساب اليدوي زي الأول.
+       الفشل هنا مايوقّعش التسجيل. موظف من عندنا ⇒ مفيش رسالة. */
+    let courierWaRes = null;
+    if (!staffRun && !b.retro && stage !== "delivered") {
+      try { courierWaRes = await courierWa()?.sendJob?.(orderNo, { link: handoff ? handoff.link : null, by: user.name, why: "register" }) || null; }
+      catch (e) { try { log.error(`[courierops] courier wa ${orderNo}: ${e?.message || e}`); } catch {} }
+    }
+    return c.json({ ok: true, shipmentId: Number(ins.rows[0].id), status: next, needsCost, handoff, courierWa: courierWaRes });
   }));
 
   // ٢) حالات المندوب الخارجي + التكلفة

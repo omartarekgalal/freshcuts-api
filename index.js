@@ -110,6 +110,7 @@ import * as checkoutwatch from "./checkoutwatch.js";
 import { makeStaffNotifier } from "./staffalerts.js";
 import * as courierops from "./courierops.js";
 import * as courierlive from "./courierlive.js";
+import * as courierwa from "./courierwa.js";      // CW1: أزرار المندوب الخارجي على واتساب
 import * as cervotrial from "./cervotrial.js";
 import * as districts from "./districts.js";
 import * as etaMod from "./eta.js";
@@ -3341,10 +3342,13 @@ checkoutwatch.register(app, moduleCtx, {
 // لما المندوب مايجيش (١٩ سبتمبر): رفض/إلغاء لاجلك، مفيش كابتن، مخالفات SLA، مندوب خارجي،
 // تحويل لاستلام، حارس المشوار البعيد، وتقرير «مخالفات لاجلك» للمطالبات.
 let courierLiveApi = null;
-courierOpsApi = courierops.register(app, moduleCtx, { shop: () => shopApi, delivery: () => deliveryApi, portal: () => portalApi, notify: () => notifyApi, courierLive: () => courierLiveApi });
+let courierWaApi = null;
+courierOpsApi = courierops.register(app, moduleCtx, { shop: () => shopApi, delivery: () => deliveryApi, portal: () => portalApi, notify: () => notifyApi, courierLive: () => courierLiveApi, courierWa: () => courierWaApi });
 // 🗺️ التتبّع الحي (٢١ سبتمبر): أثر الكابتن على الخريطة (لاجلك بترجّع إحداثيات)،
 // ورابط المندوب الخارجي لمرة واحدة (/d/<token>) اللي بيبعت موقعه ويسجّل التسليم.
-courierLiveApi = courierlive.register(app, moduleCtx, { shop: () => shopApi, delivery: () => deliveryApi, portal: () => portalApi });
+courierLiveApi = courierlive.register(app, moduleCtx, { shop: () => shopApi, delivery: () => deliveryApi, portal: () => portalApi, courierWa: () => courierWaApi });
+/* 🛵 CW1 (١٦/١٠): المندوب الخارجي بياخد رسالة واتساب من رقم المطعم بأزرار «استلمت / وصلت / تم التسليم» — نفس مراحل /d/ */
+courierWaApi = courierwa.register(app, moduleCtx, { wa: waApi, courierLive: () => courierLiveApi, shop: () => shopApi, portal: () => portalApi });
 /* 🧪 تجربة Cervo — لازم بعد courierops (بتستعمل openIncident/onRedispatch بتاعته)
    وبعد delivery (بتنده dispatch/cancelShipment). شبكة الأمان بتكنس كل دقيقة. */
 cervoTrialApi = cervotrial.register(app, moduleCtx, { shop: () => shopApi, delivery: () => deliveryApi, courierOps: () => courierOpsApi });

@@ -201,6 +201,7 @@ export function register(app, ctx, deps = {}) {
   const shop = typeof deps.shop === "function" ? deps.shop : () => deps.shop || null;
   const delivery = typeof deps.delivery === "function" ? deps.delivery : () => deps.delivery || null;
   const portal = typeof deps.portal === "function" ? deps.portal : () => deps.portal || null;
+  const courierWa = typeof deps.courierWa === "function" ? deps.courierWa : () => deps.courierWa || null;      // CW1
   const emit = deps.emitOrder || emitOrder;
   const now = deps.now || (() => Date.now());
   const J = jb || ((v) => JSON.stringify(v));
@@ -531,6 +532,12 @@ export function register(app, ctx, deps = {}) {
     } else {
       text = handoffText(row, { link: link || `${base}/d/…` });
     }
+    /* CW1: سطر «تبي الأزرار على الواتساب؟» — رابط لرقم المطعم برسالة جاهزة فيها رمز الرحلة. المندوب يبعتها ⇒ النافذة بتتفتح ⇒
+       courierwa بيرد عليه بالأزرار ببلاش. مقفول من اللوحة (courierJob.openerLink) ⇒ الرسالة زي الأول بالظبط. */
+    try {
+      const ol = await courierWa()?.openerFor?.(run, orderNo, all);
+      if (ol) text = `${text}\n\n${ol}`;
+    } catch { /* السطر اختياري */ }
     return {
       ok: true, orderNo, shipmentId: Number(sh.id),
       link, hasLink: Boolean(link),
@@ -575,7 +582,12 @@ export function register(app, ctx, deps = {}) {
     }
     audit(a.user, "courier_driver", orderNo, true, { name, phone: phone ? "set" : null }, c);
     try { portal()?.scheduleRefresh?.(orderNo); } catch {}
-    return c.json({ ok: true, name, phone: phone ? localPhone(phone) : null });
+    /* CW1: جوال المندوب اتكتب بعد النشر في الجروب ⇒ نبعتله الأزرار من رقم المطعم (لو النافذة مفتوحة أو القالب متفعّل) */
+    let courierWaRes = null;
+    if (phone && sh.provider === "external") {
+      try { courierWaRes = await courierWa()?.sendJob?.(orderNo, { by: a.user?.name || "manager", why: "driver" }) || null; } catch { courierWaRes = null; }
+    }
+    return c.json({ ok: true, name, phone: phone ? localPhone(phone) : null, courierWa: courierWaRes });
   });
 
   /* ═══ صفحة المندوب الخارجي — عام، بالتوكن بس ══════════════════════════ */
@@ -652,35 +664,110 @@ export function register(app, ctx, deps = {}) {
     });
   });
 
+  /* ── مراحل المندوب الخارجي — دالة واحدة لكل مرحلة (CW1، ١٦/١٠) ──────────────
+     كانت جوّه مسارات /d/ نفسها. دلوقتي نفس الكود بالظبط بيشتغل من مكانين: صفحة الرابط (via "ext_link")
+     وأزرار واتساب المندوب (via "wa_button" من courierwa.js) — مصدر واحد للمراحل، فالبوابة وصفحة تتبّع
+     العميل بيشوفوا نفس الأثر مهما كان المندوب ضغط منين. */
+  const VIA = {
+    ext_link: { start: "ابدأ التوصيل من رابط المندوب", from: "من رابطه" },
+    wa_button: { start: "«استلمت الطلب» من واتساب المندوب", from: "من واتساب" },
+  };
+  const viaOf = (v) => VIA[v] || VIA.ext_link;
+
   /* «ابدأ التوصيل» = مسك الطلب وتحرّك — يعني نفس معنى زرار المدير «المندوب
      الخارجي استلم». فبنحرّك الشحنة لـpicked والطلب لـon_the_way، وساعتها
      صفحة تتبّع العميل بتقول «طلبك في الطريق إليك» زي أي كابتن لاجلك بالظبط. */
-  app.post("/api/d/:token/start", (c) => courierView(c, async ({ run, b }) => {
+  async function extStart(run, { lat = null, lng = null, via = "ext_link" } = {}) {
     const at = new Date(now()).toISOString();
-    const lat = num(b.lat), lng = num(b.lng);
+    const V = viaOf(via);
     if (lat != null && lng != null) await recordPing(run.shipment_id, run.order_no, { lat, lng, source: "ext" });
     await pool.query("UPDATE dl_ext_runs SET started_at = COALESCE(started_at, NOW()) WHERE id=$1", [run.id]);
     await pool.query(
       `UPDATE dl_shipments SET status = CASE WHEN status IN ('pending','assigned','created') THEN 'picked' ELSE status END,
               picked_at = COALESCE(picked_at, $2), events = events || $3::jsonb, updated_at=NOW() WHERE id=$1`,
       [run.shipment_id, at, J([{ at, provider: "external", event: "picked", by: run.courier_name || "مندوب خارجي",
-                                 via: "ext_link", note: "ابدأ التوصيل من رابط المندوب" }])]).catch(() => {});
+                                 via, note: V.start }])]).catch(() => {});
     try {
       const sp = shop();
       const row = sp ? await sp.getOrderRow(run.order_no) : null;
       if (row && ["courier_requested", "courier_assigned", "courier_cancelled", "accepted", "pos_created"].includes(row.status)) {
         await sp.setStatus(run.order_no, "on_the_way", {
-          note: `مندوب خارجي${run.courier_name ? ` (${run.courier_name})` : ""} بدأ التوصيل من رابطه`,
+          note: `مندوب خارجي${run.courier_name ? ` (${run.courier_name})` : ""} بدأ التوصيل ${V.from}`,
           from: row.status, source: "portal" });
       }
     } catch (e) { log.error(`[courierlive] start ${run.order_no} status failed: ${e?.message || e}`); }
     try {
       emit("courier_manual", { orderNo: run.order_no, source: "staff", ok: true,
-        summary: "المندوب الخارجي بدأ التوصيل", data: { stage: "picked", provider: "external", via: "ext_link" } });
+        summary: "المندوب الخارجي بدأ التوصيل", data: { stage: "picked", provider: "external", via } });
     } catch {}
     try { portal()?.scheduleRefresh?.(run.order_no); } catch {}
-    return c.json({ ok: true, stage: "started" });
-  }));
+    return { ok: true, stage: "started" };
+  }
+
+  async function extArrived(run, { lat = null, lng = null, via = "ext_link" } = {}) {
+    if (lat != null && lng != null) await recordPing(run.shipment_id, run.order_no, { lat, lng, source: "ext" });
+    await pool.query("UPDATE dl_ext_runs SET arrived_at = COALESCE(arrived_at, NOW()) WHERE id=$1", [run.id]);
+    await pool.query(
+      `UPDATE dl_shipments SET events = events || $2::jsonb, updated_at=NOW() WHERE id=$1`,
+      [run.shipment_id, J([{ at: new Date(now()).toISOString(), provider: "external", event: "ext_at_customer",
+                             by: run.courier_name || "مندوب خارجي", ...(via !== "ext_link" ? { via } : {}) }])]).catch(() => {});
+    try {
+      emit("courier_manual", { orderNo: run.order_no, source: "staff", ok: true,
+        summary: "المندوب الخارجي وصل للعميل", data: { stage: "at_customer", provider: "external", via } });
+    } catch {}
+    try { portal()?.scheduleRefresh?.(run.order_no); } catch {}
+    return { ok: true, stage: "arrived" };
+  }
+
+  /* «تم التسليم» — نفس الأثر بالظبط بتاع زرار المدير في البوابة:
+     الشحنة delivered + الطلب delivered + حدث على ناقل الطلب. الفرق الوحيد
+     إن اللي ضغط هو المندوب، فالمصدر متسجّل (ext_link / wa_button) والتوكن بيموت بعدها. */
+  async function extDelivered(run, { lat = null, lng = null, receivedBy = null, note = null, via = "ext_link" } = {}) {
+    const sp = shop(), dl = delivery();
+    if (!sp || !dl) return { ok: false, error: "unavailable", status: 503 };
+    if (run.delivered_at) return { ok: true, already: true, stage: "delivered" };
+    const V = viaOf(via);
+    if (lat != null && lng != null) await recordPing(run.shipment_id, run.order_no, { lat, lng, source: "ext" });
+    const at = new Date(now()).toISOString();
+    await pool.query(
+      `UPDATE dl_ext_runs SET delivered_at = NOW(), received_by = $2, note = $3, arrived_at = COALESCE(arrived_at, NOW()) WHERE id=$1`,
+      [run.id, receivedBy, note]);
+    await pool.query(
+      `UPDATE dl_shipments SET status='delivered',
+              picked_at = COALESCE(picked_at, $2), delivered_at = COALESCE(delivered_at, $2),
+              events = events || $3::jsonb, updated_at=NOW() WHERE id=$1`,
+      [run.shipment_id, at, J([{ at, provider: "external", event: "delivered", by: run.courier_name || "مندوب خارجي",
+                                 via, note: receivedBy ? `استلمه ${receivedBy}` : note }])]);
+    try {
+      const row = await sp.getOrderRow(run.order_no);
+      if (row && row.status !== "delivered") {
+        await sp.setStatus(run.order_no, "delivered", {
+          note: `مندوب خارجي${run.courier_name ? ` (${run.courier_name})` : ""} سجّل التسليم ${V.from}${receivedBy ? ` — استلمه ${receivedBy}` : ""}`,
+          from: row.status, source: "portal" });
+      }
+    } catch (e) { log.error(`[courierlive] delivered ${run.order_no} status failed: ${e?.message || e}`); }
+    try {
+      emit("courier_manual", { orderNo: run.order_no, source: "staff", ok: true,
+        summary: "المندوب الخارجي سلّم الطلب", data: { stage: "delivered", provider: "external", via, note: receivedBy } });
+    } catch {}
+    try { portal()?.scheduleRefresh?.(run.order_no); } catch {}
+    return { ok: true, stage: "delivered", deliveredAt: at };
+  }
+
+  /* رحلة برقمها (أزرار واتساب بتشاور على الرحلة برقمها + توقيع، مش بالتوكن — التوكن نفسه مابيتخزّنش) */
+  async function runById(id) {
+    if (!(await ensureSchema())) return null;
+    const n = Number(id);
+    if (!Number.isSafeInteger(n) || n <= 0) return null;
+    const r = await pool.query(
+      `SELECT r.*, sh.status AS ship_status, sh.provider, sh.shop_order_no
+         FROM dl_ext_runs r JOIN dl_shipments sh ON sh.id = r.shipment_id
+        WHERE r.id=$1`, [n]);
+    return r.rows[0] || null;
+  }
+
+  app.post("/api/d/:token/start", (c) => courierView(c, async ({ run, b }) =>
+    c.json(await extStart(run, { lat: num(b.lat), lng: num(b.lng), via: "ext_link" }))));
 
   app.post("/api/d/:token/ping", (c) => courierView(c, async ({ run, b }) => {
     const lat = num(b.lat), lng = num(b.lng), acc = num(b.acc);
@@ -702,57 +789,15 @@ export function register(app, ctx, deps = {}) {
     return c.json({ ok: true, saved });
   }));
 
-  app.post("/api/d/:token/arrived", (c) => courierView(c, async ({ run, b }) => {
-    const lat = num(b.lat), lng = num(b.lng);
-    if (lat != null && lng != null) await recordPing(run.shipment_id, run.order_no, { lat, lng, source: "ext" });
-    await pool.query("UPDATE dl_ext_runs SET arrived_at = COALESCE(arrived_at, NOW()) WHERE id=$1", [run.id]);
-    await pool.query(
-      `UPDATE dl_shipments SET events = events || $2::jsonb, updated_at=NOW() WHERE id=$1`,
-      [run.shipment_id, J([{ at: new Date(now()).toISOString(), provider: "external", event: "ext_at_customer",
-                             by: run.courier_name || "مندوب خارجي" }])]).catch(() => {});
-    try {
-      emit("courier_manual", { orderNo: run.order_no, source: "staff", ok: true,
-        summary: "المندوب الخارجي وصل للعميل", data: { stage: "at_customer", provider: "external", via: "ext_link" } });
-    } catch {}
-    try { portal()?.scheduleRefresh?.(run.order_no); } catch {}
-    return c.json({ ok: true, stage: "arrived" });
-  }));
+  app.post("/api/d/:token/arrived", (c) => courierView(c, async ({ run, b }) =>
+    c.json(await extArrived(run, { lat: num(b.lat), lng: num(b.lng), via: "ext_link" }))));
 
-  /* «تم التسليم» — نفس الأثر بالظبط بتاع زرار المدير في البوابة:
-     الشحنة delivered + الطلب delivered + حدث على ناقل الطلب. الفرق الوحيد
-     إن اللي ضغط هو المندوب، فالمصدر متسجّل ext_link والتوكن بيموت بعدها. */
   app.post("/api/d/:token/delivered", (c) => courierView(c, async ({ run, b }) => {
-    const sp = shop(), dl = delivery();
-    if (!sp || !dl) return c.json({ ok: false, error: "unavailable" }, 503);
-    if (run.delivered_at) return c.json({ ok: true, already: true, stage: "delivered" });
-    const lat = num(b.lat), lng = num(b.lng);
-    if (lat != null && lng != null) await recordPing(run.shipment_id, run.order_no, { lat, lng, source: "ext" });
-    const receivedBy = clean(b.receivedBy, 80), note = clean(b.note, 200);
-    const at = new Date(now()).toISOString();
-    await pool.query(
-      `UPDATE dl_ext_runs SET delivered_at = NOW(), received_by = $2, note = $3, arrived_at = COALESCE(arrived_at, NOW()) WHERE id=$1`,
-      [run.id, receivedBy, note]);
-    await pool.query(
-      `UPDATE dl_shipments SET status='delivered',
-              picked_at = COALESCE(picked_at, $2), delivered_at = COALESCE(delivered_at, $2),
-              events = events || $3::jsonb, updated_at=NOW() WHERE id=$1`,
-      [run.shipment_id, at, J([{ at, provider: "external", event: "delivered", by: run.courier_name || "مندوب خارجي",
-                                 via: "ext_link", note: receivedBy ? `استلمه ${receivedBy}` : note }])]);
-    try {
-      const row = await sp.getOrderRow(run.order_no);
-      if (row && row.status !== "delivered") {
-        await sp.setStatus(run.order_no, "delivered", {
-          note: `مندوب خارجي${run.courier_name ? ` (${run.courier_name})` : ""} سجّل التسليم من رابطه${receivedBy ? ` — استلمه ${receivedBy}` : ""}`,
-          from: row.status, source: "portal" });
-      }
-    } catch (e) { log.error(`[courierlive] delivered ${run.order_no} status failed: ${e?.message || e}`); }
-    try {
-      emit("courier_manual", { orderNo: run.order_no, source: "staff", ok: true,
-        summary: "المندوب الخارجي سلّم الطلب", data: { stage: "delivered", provider: "external", via: "ext_link", note: receivedBy } });
-    } catch {}
-    try { portal()?.scheduleRefresh?.(run.order_no); } catch {}
-    return c.json({ ok: true, stage: "delivered", deliveredAt: at });
+    const r = await extDelivered(run, { lat: num(b.lat), lng: num(b.lng), receivedBy: clean(b.receivedBy, 80), note: clean(b.note, 200), via: "ext_link" });
+    if (!r.ok) return c.json({ ok: false, error: r.error }, r.status || 503);
+    return c.json(r);
   }, { needLive: false }));
 
-  return { liveOf, recordPing, sweepTrails, refreshPosition, makeHandoff, handoffText, waUrl, ensureSchema };
+  return { liveOf, recordPing, sweepTrails, refreshPosition, makeHandoff, handoffText, waUrl, ensureSchema,
+           extStart, extArrived, extDelivered, runById, runState, extRunView };
 }

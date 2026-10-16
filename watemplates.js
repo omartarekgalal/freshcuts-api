@@ -48,6 +48,7 @@ export const GROUPS = {
   staff: "الإدارة والمتابعة (للفريق)",
   marketing: "تسويق وعروض",
   ads: "إعلانات «راسلنا على واتساب»",
+  courier: "المندوب الخارجي (أزرار التوصيل)",
 };
 
 /* ── بنّاء القالب ────────────────────────────────────────────────────────────
@@ -270,6 +271,19 @@ export const TEMPLATES = [
   /* SB5 (عمر ١٤/١٠: «في رسالة المندوب في الطريق يكون فيها بيانات المندوب وامكانية انه يتواصل معاه واتساب»): اسم المندوب الأول + زر «راسل المندوب» (رابطنا اللي بيحوّل
      لواتساب المندوب ما دام الطلب معه، ومابيحملش رقمه) + زر التتبع. مالوش stage: بيتبعت بدل fc_order_on_the_way بس لما waBot.courierTemplate مفتوح (بعد اعتماد ميتا)
      وللمندوب اسم وجوال؛ غير كده القالب القديم. */
+  /* CW1 (١٦/١٠، عمر: «المندوب بيكون عنده صعوبة انه يضغط ع اللينك… نبعتله رسالة على الواتس فيها الأزرار»): طلب توصيل لمندوب خارجي
+     (طلباتك وغيرهم) بره نافذة الـ٢٤ ساعة. ٣ ردود سريعة بالظبط (أكتر من ٣ بتستخبى ورا «عرض كل الخيارات») — كل زر بيرجع بـpayload موقّع
+     للرحلة دي (courierwa.js) مش بنصّه. بعد أول ضغطة النافذة بتتفتح والباقي رسايل حرة ببلاش. الحارس: الرقم لازم مندوب على رحلة شغّالة.
+     **مش متقدّم لميتا** — المالك/الجلسة الرئيسية بيقدّموه بعد النشر، وبعد الاعتماد يتفتح «courierJob.useTemplate» من اللوحة. */
+  T({ name: "fc_courier_job_v1", category: "UTILITY", group: "courier",
+    body: "طلب توصيل من فريش كاتس رقم {{1}} 🛵\nالعميل: {{2}}، وجواله {{3}}\nالعنوان: {{4}}\nالموقع على الخريطة: {{5}}\nالطلب مدفوع مسبقاً، لا تحصّل أي مبلغ من العميل.\nاضغط «استلمت الطلب» أول ما تستلمه من المطعم، و«تم التسليم» بعد ما تسلّمه للعميل.",
+    vars: [ORDER_NO, { path: "courier.customerName", label: "اسم العميل", ex: "أحمد" },
+      { path: "courier.customerPhone", label: "جوال العميل", ex: "0551234567" },
+      { path: "courier.address", label: "العنوان المقروء (couriers.readableAddress)", ex: "السلامة، شارع الأمير سلطان، عمارة 12، الدور 3، شقة 7" },
+      { path: "courier.map", label: "رابط الخريطة", ex: "https://maps.google.com/?q=21.614700,39.145036" }],
+    buttons: [qr("استلمت الطلب"), qr("وصلت عند العميل"), qr("تم التسليم")],
+    meta: { purpose: "طلب توصيل لمندوب خارجي بأزرار الاستلام والوصول والتسليم", trigger: "courierwa.js — تسجيل «مندوب من بره» في البوابة والنافذة مقفولة، لما waBot.courierJob.useTemplate مفتوح",
+      send: "auto-candidate", fallbackSms: null, notes: "الأزرار بترجع payload موقّع للرحلة (cw1.<run>.<action>.<sig>) — مش نص الزر." } }),
   T({ name: "fc_order_on_the_way_courier", category: "UTILITY", group: "order",
     body: "طلبك رقم {{1}} مع المندوب {{2}} وفي الطريق إليك 🛵\nتقدر تراسله على واتساب من الزر، أو تتابع الطلب من الرابط.",
     vars: [ORDER_NO, { path: "courier.first_name", label: "اسم المندوب الأول", ex: "أحمد" }],
@@ -754,6 +768,7 @@ export const SUBMIT_BATCHES = Object.freeze([
   ["fc_staff_alerts_renew", "fc_staff_team_notice"],
   // SB4 (١٤/١٠): نسخ v2 بزر رد سريع يفتح نافذة ٢٤ ساعة — التوصيل والتقييم أولاً (الضغطة = رأيه)، بعدين التتبع، وآخرهم الاسترجاع
   ["fc_order_on_the_way_courier"],      // SB5
+  ["fc_courier_job_v1"],      // CW1 (١٦/١٠): أزرار المندوب الخارجي بره النافذة — بعد الاعتماد يتفتح «courierJob.useTemplate» من اللوحة
   ["fc_order_delivered_v2", "fc_review_request_v2", "fc_order_on_the_way_v2", "fc_order_preparing_v2", "fc_order_received_v2", "fc_order_refunded_v2", "fc_refund_in_progress_v2"],
 ]);
 export const RECOMMENDED_FIRST = SUBMIT_BATCHES[0];

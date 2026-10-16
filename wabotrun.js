@@ -61,6 +61,7 @@ import { declineMemory } from "./wapersonal.js";      // S1: ذاكرة الرف
 import { FU_KIND, FU_GROUP, FU_GROUP_AR, FU_DEFAULTS, FU_NUMS, FU_BOOLS, FU_SCHEMA, FU_TAP_KEYS, FU_CLOSING_KEYS, FU_PROACTIVE_KEYS, FU_OTHER_JOBS, FU_SQL, FU_DDL,
   fuConfig, inFollowHours, nextFollowStart, bizDayStart, brakeVerdict, followTrigger, convFacts, pickLooked, offerPhrase } from "./wafollow.js";      // FU1 (١٥/١٠): متابعة اللي ردّ وماطلبش
 import { WA_UPDATES_TEXTS, WA_UPDATES_CURRENT, recordWaUpdatesBot, recordWaMarketingBot, ensureWaConsentSchema } from "./waconsent.js";
+import { COURIER_JOB_DEFAULTS, COURIER_JOB_SCHEMA, COURIER_JOB_SCHEMA_GROUP, courierJobConfig, courierJobFromBody } from "./courierwa-cfg.js";      // CW1
 import { REVIEW_FLOW_DEFAULTS, REVIEW_FLOW_SCHEMA, REVIEW_SCHEMA_GROUP, REVIEW_TEXTS, reviewFlowConfig, reviewFlowFromBody, starOfListId, starOfQr, typedStar, reasonOfListId, reviewsCfgOf,
   starsAskReply, starsSubject, starReply, applyStar, applyReason, captureLowComment, pendingStars, markGoogleSent, reviewCtaOk, reviewsDaily, WEB_KINDS, VISIT_KINDS } from "./wareviews.js";      // RV1: النجوم جوّه واتساب
 
@@ -94,6 +95,7 @@ export const DEFAULTS = Object.freeze({
   windowKeeperWeekly: 1,       // …وأقصى عدد للعميل الواحد في ٧ أيام
   windowKeeperQuietStart: 2, windowKeeperQuietEnd: 11,      // …ومفيش في الساعات دي (الرياض)
   reviewReplyHours: 24,        // SB2: «تمام» / «عندي ملاحظة» مكتوبة (مش ضغطة) بتتحسب رد على رسالة التقييم لحد المدة دي
+  courierJob: { ...COURIER_JOB_DEFAULTS },      // CW1 (عمر ١٦/١٠): أزرار المندوب الخارجي على واتساب (courierwa.js)
   reviewFlow: { ...REVIEW_FLOW_DEFAULTS },      // RV1 (عمر ١٥/١٠): النجوم جوّه واتساب + مواعيد كل نوع طلب + الحدود (wareviews.js)
   paidNoteEnabled: true,       // EX6: العميل دفع طلب بعد ما كلّم البوت/المساعد والنافذة مفتوحة ⇒ سطر تأكيد برقم الطلب
   leadFollowUpMin: 20,         // EX6: «متابعة المحادثة» — رسالة عميل ماخدتش رد مفيد (سكوت، بره النطاق، «ما فهمت») ومحدش رد ⇒ متابعة واحدة بعد الدقايق دي. صفر = مقفول. مرة في اليوم للمحادثة
@@ -675,6 +677,7 @@ export function botConfig(settings) {
     autoEchoSkipCovered: x.autoEchoSkipCovered === true,
     openerHours: num(x.openerHours, 1, 72, DEFAULTS.openerHours), paidNoteEnabled: x.paidNoteEnabled !== false, reviewWhatsApp: x.reviewWhatsApp !== false, reviewReplyHours: num(x.reviewReplyHours, 1, 72, DEFAULTS.reviewReplyHours),
     reviewFlow: reviewFlowConfig(x.reviewFlow),      // RV1
+    courierJob: courierJobConfig(x.courierJob),      // CW1
     courierContact: x.courierContact !== false, courierTemplate: x.courierTemplate === true,
     windowFreeUpdates: x.windowFreeUpdates !== false, windowSell: x.windowSell !== false, windowKeeper: x.windowKeeper !== false,
     ...(({ followLink, followNumber, closedPolicy, closedSkipPreparing, mergeDeliveredReview, reviewPaidGapMin, followBanner, followBannerSkipHours }) => ({ followLink, followNumber, closedPolicy, closedSkipPreparing, mergeDeliveredReview, reviewPaidGapMin, followBanner, followBannerSkipHours }))(waPolicyCfg({ waBot: x })),
@@ -781,6 +784,7 @@ export function configFromBody(b, prev = {}) {
   }
   if ("assist" in src) { const av = assistFromBody(src.assist, prev.assist); if (av.ok) out.assist = av.value; else errors.push(...av.errors); }
   if ("reviewFlow" in src) { const rv = reviewFlowFromBody(src.reviewFlow, prev.reviewFlow); if (rv.ok) out.reviewFlow = rv.value; else errors.push(...rv.errors); }      // RV1
+  if ("courierJob" in src) { const cj = courierJobFromBody(src.courierJob, prev.courierJob); if (cj.ok) out.courierJob = cj.value; else errors.push(...cj.errors); }      // CW1
   if ("faq" in src) {
     const cur = { ...(prev.faq || {}) };
     for (const [key, v] of Object.entries(src.faq || {})) {
@@ -1065,10 +1069,11 @@ export const SCHEMA = Object.freeze({
   waRates: S("cost", "rates", "بطاقة أسعار قوالب واتساب", "تسويقي / خدمي / رمز تحقق + تاريخ البطاقة."),
   ...FU_SCHEMA,      // FU1 (١٥/١٠): متابعة اللي ردّ وماطلبش — مجموعتها لوحدها في اللوحة
   ...ASSIST_SCHEMA,
+  ...COURIER_JOB_SCHEMA,      // CW1: «🛵 المندوب الخارجي: الأزرار على واتساب» — بتظهر في «كل إعدادات البوت» من غير تعديل في اللوحة
   ...REVIEW_FLOW_SCHEMA,      // RV1: «التقييمات على واتساب» — بتظهر في «كل إعدادات البوت» من غير تعديل في اللوحة
 });
 export const SCHEMA_GROUPS = Object.freeze({ mode: "الوضع", orderMsgs: "رسايل الطلب: توفير القوالب وزر «تابع طلبك»", [FU_GROUP]: FU_GROUP_AR, greeting: "التحية والتعريف", staff: "البوت والموظف", alerts: "التنبيهات", limits: "الحدود", orders: "الطلبات", links: "الروابط", data: "البيانات الحيّة",
-  faq: "الأسئلة الشائعة", texts: "النصوص", optin: "موافقة التحديثات", ai: "الذكاء الاصطناعي", cost: "التكلفة", assist: "مساعد الطلبات", ...REVIEW_SCHEMA_GROUP });
+  faq: "الأسئلة الشائعة", texts: "النصوص", optin: "موافقة التحديثات", ai: "الذكاء الاصطناعي", cost: "التكلفة", assist: "مساعد الطلبات", ...REVIEW_SCHEMA_GROUP, ...COURIER_JOB_SCHEMA_GROUP });
 const getPath = (o, p) => p.split(".").reduce((a, k) => (a && typeof a === "object" ? a[k] : undefined), o);
 /* للّوحة: كل إعداد بقيمته الحالية والافتراضية وحدوده وشرحه. */
 export function schemaFor(cfg) {

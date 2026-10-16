@@ -1769,7 +1769,7 @@ test("footer «للرجوع… أو موظف»: not under every message (smart, 
 test("settings are complete: every tunable has a schema row (type, limits, default, Arabic name), out-of-range saves are refused, every save is logged with who and what", withEnv(LOCKS_OPEN, async () => {
   // every key of DEFAULTS (nested for llm / optin / links) is described
   const flat = [];
-  for (const [k, v] of Object.entries(R.DEFAULTS)) { if (["llm", "optin", "links", "assist", "reviewFlow"].includes(k)) for (const k2 of Object.keys(v)) { if (k === "links" && k2 === "channel") for (const k3 of Object.keys(v[k2])) flat.push(`${k}.${k2}.${k3}`); else flat.push(`${k}.${k2}`); } else flat.push(k); }
+  for (const [k, v] of Object.entries(R.DEFAULTS)) { if (["llm", "optin", "links", "assist", "reviewFlow", "courierJob"].includes(k)) for (const k2 of Object.keys(v)) { if (k === "links" && k2 === "channel") for (const k3 of Object.keys(v[k2])) flat.push(`${k}.${k2}.${k3}`); else flat.push(`${k}.${k2}`); } else flat.push(k); }
   flat.push("waRates");
   assert.deepEqual(flat.filter((k) => !R.SCHEMA[k]), [], "a setting without a schema row");
   assert.deepEqual(Object.keys(R.SCHEMA).filter((k) => !flat.includes(k)), [], "a schema row without a setting");
