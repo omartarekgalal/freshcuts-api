@@ -25,6 +25,8 @@
        GET  /api/portal/wa/chats-tick[?chat=<key>]     (LR1 — «فيه جديد؟»: بصمة القايمة وبصمة المحادثة، للتحديث التلقائي)
        GET  /api/portal/wa/chats/:key/media/:ref[?as=mp3]      (MD1 — wamedia.js: صورة / صوت / فيديو / ملف الرسالة)
        POST /api/portal/wa/chats/:key/take {force?} · /release · /done      (SR2 — waowner.js: مين ماسك المحادثة)
+       POST /api/portal/wa/chats/:key/media   multipart {file, caption?, voice?}  (MD3 — wastaffmedia.js: صورة / ملف / رسالة صوتية، نفس أقفال الرد)
+       GET  /api/portal/wa/media-caps                                       (MD3: الحدود والأنواع، وهل السيرفر بيحوّل تسجيل كروم)
      اللوحة: GET /api/cms/wa/threads-quick (الردود السريعة)، والرد نفسه على مسار wahub الموجود
        POST /api/cms/wa/threads/:key/reply — بيتحوّل هنا (reply) لما الملف ده متسجّل.
    القراءة بتشتغل والإرسال مقفول (من دوال wahub، مش من صندوق البورتال القديم اللي بيرجّع disabled).
@@ -34,6 +36,7 @@ import { tokenSecret } from "./portal-core.js";
 import { FAQ_DEFS } from "./wabotrun.js";
 import * as waowner from "./waowner.js";
 import * as wamedia from "./wamedia.js";
+import * as staffmedia from "./wastaffmedia.js";
 import { reviewPortalRole } from "./reviewaudience.js";
 
 export const MAX_TEXT = 4096;
@@ -90,6 +93,10 @@ export function register(app, ctx, deps = {}) {
   /* MD1: ملفات الرسايل (صور / صوت / فيديو) — بتتجاب من ميتا بتوكن السيرفر وبتتخزن خاص */
   const media = wamedia.create({ pool, wa, getSettingsData, log, transcode: deps.transcode, noTimer: deps.noTimer });
   const owner = waowner.create({ pool, getSettingsData, bot: deps.bot, keyOf, broadcast: deps.broadcast, log, noTimer: deps.noTimer, now: deps.now });
+  /* MD3: الموظف بيبعت صورة / ملف / رسالة صوتية — نفس أقفال الرد النصي (sendStateFor تحت)، والإرسال من باب wastaffmedia (sendFreeform) */
+  let smedia = null;
+  const mediaSender = () => smedia || (smedia = staffmedia.create({ pool, wa, staff: { ready, sendStateFor, owner, media }, gates: GATES, gateAr: GATE_AR, log,
+    convert: deps.convertAudio, caps: deps.ffmpegCaps }));
 
   async function phoneOfKey(raw) {
     const k = String(raw || "").trim();
@@ -255,6 +262,22 @@ export function register(app, ctx, deps = {}) {
       if (!pn) return c.json({ ok: false, error: "not_found" }, 404);
       return media.serve(c, { phoneNorm: pn, ref: c.req.param("ref"), as: c.req.query("as") || null });
     });
+    /* MD3: صورة / ملف / رسالة صوتية من البورتال (كاشير ومدير — نفس الرد النصي) */
+    app.post("/api/portal/wa/chats/:key/media", async (c) => {
+      const a = await gateP(c); if (a.res) return a.res;
+      const pn = await phoneOfKey(c.req.param("key"));
+      if (!pn) return c.json({ ok: false, error: "not_found" }, 404);
+      const u = await staffmedia.readUpload(c);
+      if (!u.ok) return c.json({ ok: false, error: u.error, message: u.message }, u.status);
+      const r = await mediaSender().send({ phoneNorm: pn, file: u.file, caption: u.caption, voice: u.voice, by: a.user.name || a.user.id, role: a.user.role, via: "portal" });
+      try { deps.audit?.(a.user, "wa_media", null, r.ok, { via: "portal", kind: r.kind || null, error: r.ok ? null : r.error }, null, { emit: false }); } catch { /* السجل مايوقّفش */ }
+      if (!r.ok) return c.json({ ok: false, error: r.error, gate: r.gate || null, message: r.message }, r.status || 409);
+      return c.json({ ok: true, wamid: r.wamid, test: r.test, kind: r.kind, converted: r.converted, send: await sendStateFor(pn), owner: await owner.ownerFor(pn, a.me).catch(() => null) });
+    });
+    app.get("/api/portal/wa/media-caps", async (c) => {
+      const a = await gateP(c); if (a.res) return a.res;
+      return c.json(await mediaSender().caps());
+    });
     app.post("/api/portal/wa/chats/:key/take", ownerAct("take"));
     app.post("/api/portal/wa/chats/:key/release", ownerAct("release"));
     app.post("/api/portal/wa/chats/:key/done", ownerAct("done"));
@@ -325,5 +348,6 @@ export function register(app, ctx, deps = {}) {
     });
   }
 
-  return { ready, reply, sendStateFor, channelState, annotate, quick, phoneOfKey, owner, media, chatUpdate };
+  return { ready, reply, sendStateFor, channelState, annotate, quick, phoneOfKey, owner, media, chatUpdate,
+    sendMedia: (o) => mediaSender().send(o), mediaCaps: () => mediaSender().caps() };      // MD3: اللوحة (wahub) بتنده دول
 }

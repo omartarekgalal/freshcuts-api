@@ -22,6 +22,7 @@ import { bizDay, bizStart, shiftDay } from "./bizday.js";
 import * as CAT from "./watemplates.js";
 import { TEMPLATES as REG, STAGE_TEMPLATES, GRAPH_VERSION } from "./whatsapp.js";
 import { publicMedia } from "./wamedia.js";
+import { readUpload } from "./wastaffmedia.js";
 import { teamConfig } from "./wateam.js";
 import { REVIEW_HANDOVER_REASONS, isReviewHandover } from "./reviewaudience.js";
 
@@ -463,6 +464,26 @@ export function register(app, ctx, deps = {}) {
     if (!ib) return c.json({ ok: false, error: "inbox_unavailable" }, 503);
     const r = await ib.replyText({ phoneNorm: pn, text: b.text, by: a.user.name || a.user.role });
     return r.ok ? c.json({ ok: true, wamid: r.wamid || null, window: r.window || null }) : c.json(refusal(r), ["empty", "too_long", "bad_phone"].includes(r.error) ? 400 : 409);
+  });
+  /* MD3 (١٦/١٠): صورة / ملف / رسالة صوتية من اللوحة — نفس صلاحية الرد ونفس أقفاله (wastaffmedia.js من خلال wastaff)، جوّه النافذة بس.
+     multipart {file, caption?, voice?}. المسار تحت ‎/api/cms/wa/threads…‎ عشان ياخد نفس قسم الصلاحيات بتاع الرد. */
+  app.post("/api/cms/wa/threads/:key/media", async (c) => {
+    const a = await access(c); if (a.res) return a.res;
+    const pn = await phoneOfKey(c.req.param("key"), a.full);
+    if (!pn) return c.json({ ok: false, error: "not_found" }, 404);
+    const sf = staff();
+    if (!sf || typeof sf.sendMedia !== "function") return c.json({ ok: false, error: "unavailable", message: "إرسال الملفات مش متاح على السيرفر ده" }, 503);
+    const u = await readUpload(c);
+    if (!u.ok) return c.json({ ok: false, error: u.error, message: u.message }, u.status);
+    const x = await sf.sendMedia({ phoneNorm: pn, file: u.file, caption: u.caption, voice: u.voice, by: a.user.name || a.user.role, role: a.user.role, via: "dashboard" });
+    if (!x.ok) return c.json({ ok: false, error: x.error, gate: x.gate || null, message: x.message || undefined }, x.status || 409);
+    return c.json({ ok: true, wamid: x.wamid, test: x.test, kind: x.kind, converted: x.converted, send: await sf.sendStateFor(pn), ...(sf.owner ? { owner: await sf.owner.ownerFor(pn, meOf(a.user)).catch(() => null) } : {}) });
+  });
+  app.get("/api/cms/wa/threads-media-caps", async (c) => {
+    const a = await access(c); if (a.res) return a.res;
+    const sf = staff();
+    if (!sf || typeof sf.mediaCaps !== "function") return c.json({ ok: false, error: "unavailable" }, 503);
+    return c.json(await sf.mediaCaps());
   });
   app.post("/api/cms/wa/threads/:key/template", async (c) => {
     const a = await access(c); if (a.res) return a.res;

@@ -179,7 +179,15 @@ export function create(deps) {
         oldestAt: r.oldest ? new Date(r.oldest).toISOString() : null, storage: (await disk()) ? "disk" : "database" };
     } catch (e) { log.error("[wa-media] usage:", e.message); return null; }
   }
+  /* MD3: ملف الموظف اللي لسه اتبعت — البايتات اللي رفعناها بتتخزن نسخة «orig» على طول، فالمحادثة تعرضه من غير ما نجيبه من ميتا تاني */
+  async function put(msgId, mime, buf) {
+    const id = Number(msgId);
+    if (!Number.isSafeInteger(id) || id <= 0 || !Buffer.isBuffer(buf) || !buf.length || buf.length > MAX_BYTES) return false;
+    await ready;
+    await store(id, "orig", baseMime(mime) || "application/octet-stream", buf);
+    return true;
+  }
   let timer = null;
   if (!deps.noTimer) { timer = setInterval(() => { cleanup().catch(() => {}); }, 6 * 3600_000); if (timer.unref) timer.unref(); }
-  return { ready, get, serve, cleanup, usage, stop: () => { if (timer) clearInterval(timer); } };
+  return { ready, get, serve, put, cleanup, usage, stop: () => { if (timer) clearInterval(timer); } };
 }

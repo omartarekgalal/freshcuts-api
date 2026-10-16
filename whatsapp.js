@@ -857,6 +857,8 @@ export function register(app, ctx, deps = {}) {
         [row.wamid || null, row.phone_norm || null, row.template || null, row.category || null,
          row.order_no || null, row.stage || null, row.status, row.error || null,
          row.body || null, row.fallback_sms || null, row.source || "api"]);
+      /* MD3: ملف أرسله موظف (صورة / ملف / رسالة صوتية) — بياناته قبل ما المحادثة تتحدّث، عشان الشاشات تلاقيه أول ما تقرا */
+      if (row.media && row.wamid) await pool.query("UPDATE wa_messages SET media=$2::jsonb, msg_type=$3 WHERE wamid=$1", [row.wamid, JSON.stringify(row.media), row.media.kind || null]);
     } catch (e) { console.error("[wa] log failed:", e.message); }
     // الصادر اللي ميتا قبلته بس بيظهر في المحادثة (الفاشل له صفه في wa_messages).
     if (row.status === "accepted" && row.phone_norm) {
@@ -902,6 +904,28 @@ export function register(app, ctx, deps = {}) {
     if (buf.length > maxBytes) return { ok: false, error: "too_large" };
     if (!buf.length) return { ok: false, error: "unavailable" };
     return { ok: true, buf, mime: meta.mime_type ? String(meta.mime_type) : null };
+  }
+
+  /* MD3 (١٦/١٠، عمر: «الموظفين يقدروا يبعتوا صور ومرفقات وصوت»): رفع ملف لميتا ⇒ رقم الملف (media id) اللي رسالة الصورة/الملف/الصوت
+     بتشاور عليه. **ده مش إرسال**: مابيوصلش لأي عميل — الإرسال نفسه بعدها من الباب الوحيد (sendFreeform ⇒ guardSend ⇒ deliver).
+     التوكن رايح لـgraph.facebook.com بس. بيرجّع {ok, id} أو {ok:false, error: disabled|unconfigured|bad_file|upload_failed, code?, message?}. مابيرميش. */
+  async function uploadMedia({ buf, mime, filename = null } = {}) {
+    if (envState() === "kill") return { ok: false, error: "disabled" };
+    if (!configured()) return { ok: false, error: "unconfigured" };
+    const type = String(mime || "").split(";")[0].trim().toLowerCase();
+    if (!Buffer.isBuffer(buf) || !buf.length || !/^[a-z]+\/[a-z0-9.+-]+$/.test(type)) return { ok: false, error: "bad_file" };
+    try {
+      const fd = new FormData();
+      fd.append("messaging_product", "whatsapp");
+      fd.append("type", type);
+      fd.append("file", new Blob([buf], { type }), String(filename || "file").replace(/[\u0000-\u001f"\/]+/g, "_").slice(0, 120) || "file");
+      const resp = await doFetch(`https://graph.facebook.com/${GRAPH_VERSION}/${phoneId()}/media`, { method: "POST", headers: { Authorization: `Bearer ${token()}` }, body: fd });
+      const data = await resp.json().catch(() => ({}));
+      if (!resp.ok || data.error || !/^\d{5,40}$/.test(String(data.id || ""))) {
+        return { ok: false, error: "upload_failed", code: Number(data.error?.code) || resp.status || null, message: String(data.error?.message || `HTTP ${resp.status}`).slice(0, 200) };
+      }
+      return { ok: true, id: String(data.id) };
+    } catch (e) { return { ok: false, error: "upload_failed", code: null, message: String(e.message || e).slice(0, 200) }; }
   }
 
   /* الإرسال الأساسي. مابيرميش — بيرجّع {ok, wamid?, skipped?, error?, code?}.
@@ -953,7 +977,7 @@ export function register(app, ctx, deps = {}) {
   /* رسالة حرة بجسم Cloud API جاهز (نص / interactive) — للبوت. جوّه نافذة الـ٢٤ ساعة بس (المنادي مسؤول عنها).
      allowList = وضع التجربة: للأرقام دي بس ومن غير مفاتيح العملاء. من غيرها = البوابة الكاملة (gate).
      محاولة واحدة، مفيش إعادة. بيرجّع {ok, wamid?} أو {ok:false, skipped|error, code?, message?}. */
-  async function sendFreeform({ phoneNorm, payload, source = "bot", allowList = null, preview = null, test = false, orderNo = null, stage = null, fallbackSms = null }) {
+  async function sendFreeform({ phoneNorm, payload, source = "bot", allowList = null, preview = null, test = false, orderNo = null, stage = null, fallbackSms = null, media = null }) {
     await ready;
     const to = toWaId(phoneNorm);
     if (!to) return { ok: false, skipped: "invalid_phone" };
@@ -964,7 +988,7 @@ export function register(app, ctx, deps = {}) {
     try {
       const data = await deliver(g.ticket, { ...payload, messaging_product: "whatsapp", recipient_type: "individual", to });
       const wamid = data.messages?.[0]?.id || null;
-      await logOut({ wamid, phone_norm: phoneNorm, status: "accepted", source, body: text, order_no: orderNo, stage, fallback_sms: fallbackSms });      // SB4: تحديث الطلب الحر بيتسجّل بطلبه ومرحلته وبديل الـSMS
+      await logOut({ wamid, phone_norm: phoneNorm, status: "accepted", source, body: text, order_no: orderNo, stage, fallback_sms: fallbackSms, media });      // SB4: تحديث الطلب الحر بيتسجّل بطلبه ومرحلته وبديل الـSMS · MD3: + بيانات الملف
       return { ok: true, wamid };
     } catch (e) {
       const code = Number(String(e.code || "").replace(/^WA_/, "")) || null;
@@ -1448,7 +1472,7 @@ export function register(app, ctx, deps = {}) {
     return c.json({ ok: true, results });
   });
 
-  return { fetchMedia, sendTemplate, sendStaffTemplate, sendText, sendFreeform, sendTyping, sendOrderUpdate, sendOrderTemplateOnce, recordOptIn, applyIntent, gate, configured, masterOn, ready, setInbox,
+  return { fetchMedia, uploadMedia, sendTemplate, sendStaffTemplate, sendText, sendFreeform, sendTyping, sendOrderUpdate, sendOrderTemplateOnce, recordOptIn, applyIntent, gate, configured, masterOn, ready, setInbox,
     guardSend, deliver, envState, dashMasterOn: async () => dashMasterOf(await settingsSnap()), testPhones: async () => testPhonesOf(await settingsSnap()),
     on, processWebhook, token, phoneId, wabaId, setBot, setBotRuntime, humanActive,
     setActiveIds, idsInUse, setWebhookAccept };
