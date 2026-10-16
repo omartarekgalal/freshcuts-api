@@ -25,6 +25,7 @@ import { publicMedia } from "./wamedia.js";
 import { readUpload } from "./wastaffmedia.js";
 import { teamConfig } from "./wateam.js";
 import { REVIEW_HANDOVER_REASONS, isReviewHandover } from "./reviewaudience.js";
+import { classifyError, reasonText } from "./wacloud.js";      // TK1a: سبب فشل الرسالة بالعربي (نفس أسباب الحملات)
 
 export const DEFAULT_INBOX_ROLES = Object.freeze(["owner", "operations", "kitchen"]);
 const ROLE_IDS = ["owner", "marketing", "operations", "accounting", "kitchen"];
@@ -151,11 +152,13 @@ export function register(app, ctx, deps = {}) {
   }
   const pauseMinNow = async () => { try { const cfg = await bot()?.botConfig?.(); return Number(cfg?.humanPauseMin) || 30; } catch { return 30; } };
 
-  /* آخر رسالة في صف القايمة: من آخر صف متخزّن (lm_*) لو موجود، وإلا من صف المحادثة زي الأول */
+  /* آخر رسالة في صف القايمة: من آخر صف متخزّن (lm_*) لو موجود، وإلا من صف المحادثة زي الأول.
+     TK1a (١٦/١٠ — علامات ✓✓ زي واتساب في القايمة): lastStatus = حالة آخر رسالة لو مننا (accepted/sent/delivered/read/failed)، وإلا null. */
   const lastOf = (r) => {
-    if (!r.lm_dir) return { lastText: r.last_text || "", lastDir: r.last_dir || null, lastSource: r.last_source || null, lastAt: iso(r.last_at) };
+    if (!r.lm_dir) return { lastText: r.last_text || "", lastDir: r.last_dir || null, lastSource: r.last_source || null, lastAt: iso(r.last_at), lastStatus: null };
     const at = r.lm_at && r.last_at ? new Date(Math.max(new Date(r.lm_at).getTime(), new Date(r.last_at).getTime())) : r.lm_at || r.last_at;
-    return { lastText: String(r.lm_body || (r.lm_template ? `[قالب: ${r.lm_template}]` : r.last_text || "")).replace(/\s+/g, " ").trim().slice(0, 200), lastDir: r.lm_dir, lastSource: r.last_source || null, lastAt: iso(at) };
+    return { lastText: String(r.lm_body || (r.lm_template ? `[قالب: ${r.lm_template}]` : r.last_text || "")).replace(/\s+/g, " ").trim().slice(0, 200), lastDir: r.lm_dir, lastSource: r.last_source || null, lastAt: iso(at),
+      lastStatus: r.lm_dir === "out" ? r.lm_status || null : null };
   };
 
   /* ═══ N1: القايمة ═══ */
@@ -226,12 +229,12 @@ export function register(app, ctx, deps = {}) {
               COALESCE(c.name, n.full_name, n.profile_name) AS name, c.orders AS orders,
               b.muted_until, b.mute_reason, b.muted_by, b.handoff_at, b.handoff_reason, (b.referral IS NOT NULL) AS ad,
               ${UNANSWERED} AS unanswered,
-              lm.source AS last_source, lm.direction AS lm_dir, lm.body AS lm_body, lm.template AS lm_template, lm.created_at AS lm_at,
+              lm.source AS last_source, lm.direction AS lm_dir, lm.body AS lm_body, lm.template AS lm_template, lm.created_at AS lm_at, lm.status AS lm_status,
               (SELECT max(m.created_at) FROM wa_messages m WHERE m.phone_norm = t.phone_norm AND m.source = 'echo' AND COALESCE(m.echo_kind,'staff') <> 'auto') AS last_echo_at
        ${FROM}
        /* LR1 (عطل ١٣/١٠): آخر رسالة = آخر صف اتخزّن للمحادثة (أكبر id). wa_threads.last_text بيتحدّث بمقارنة أوقات بالثانية،
           فلما رسالتين يتخزّنوا في أقل من ثانية (رسالة العميل بوقت واتساب ورد البوت بوقت السيرفر) المعاينة كانت بتفضل على اللي قبلها. */
-       LEFT JOIN LATERAL (SELECT m.source, m.direction, m.body, m.template, m.created_at FROM wa_messages m
+       LEFT JOIN LATERAL (SELECT m.source, m.direction, m.body, m.template, m.created_at, m.status FROM wa_messages m
                            WHERE m.phone_norm = t.phone_norm AND COALESCE(m.source, 'api') <> 'history' ORDER BY m.id DESC LIMIT 1) lm ON TRUE
        WHERE ${pageWhere.join(" AND ")}
        ORDER BY ${byWait ? "COALESCE(b.handoff_at, t.last_in_at) ASC NULLS LAST, t.last_at DESC" : "t.last_at DESC"} LIMIT $${p.length}`, p)).rows || [];
@@ -267,6 +270,13 @@ export function register(app, ctx, deps = {}) {
   }
 
   /* ═══ N1: المحادثة ═══ */
+  /* TK1a: الرسالة اللي فشلت ⇒ السبب بالعربي من كود ميتا («131047:Re-engagement message» ⇒ «نافذة الـ٢٤ ساعة مقفولة»).
+     الشاشة بتعرضه لما الموظف يدوس على ⚠. من غير كود (شبكة/مهلة) أو رسالة مافشلتش ⇒ null (الشاشة بتقول «ماوصلتش» من غير سبب). */
+  const errorArOf = (m) => {
+    if (!m || m.status !== "failed" || !m.error) return null;
+    const code = /^\s*(\d{1,7})(?!\d)/.exec(String(m.error));
+    return code ? reasonText(classifyError(Number(code[1])).reason) : null;
+  };
   async function getThread(pn, { limit = 80, before = null, full = false, me = null, hideReviewLow = false } = {}) {
     const lim = Math.min(Math.max(Number(limit) || 80, 1), 200);
     let head = (await pool.query(
@@ -321,7 +331,7 @@ export function register(app, ctx, deps = {}) {
         const d = m.direction === "in" && m.wamid ? byWamid.get(m.wamid) : null;
         const pr = m.pricing && typeof m.pricing === "object" && "billable" in m.pricing ? { billable: m.pricing.billable === true, category: m.pricing.category || null } : null;
         return { id: m.wamid || `${m.direction}:${iso(m.created_at)}`, dir: m.direction, text: m.body || (m.template ? `[قالب: ${m.template}]` : ""),
-          template: m.template || null, category: m.category || null, status: m.status || null, error: m.error || null, orderNo: m.order_no || null,
+          template: m.template || null, category: m.category || null, status: m.status || null, error: m.error || null, errorAr: errorArOf(m), orderNo: m.order_no || null,
           source: m.source || "api", ...(m.source === "echo" ? { echoKind: autoIds.has(String(m.id)) ? "auto" : "staff" } : {}), at: iso(m.created_at), cost: pr, media: publicMedia(m),      // MD1: ملف الرسالة (من غير رقم ميتا)
           bot: d ? { decision: d.decision || null, replyKey: d.reply_key || null, reason: d.reason || null } : null };
       }),

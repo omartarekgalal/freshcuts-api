@@ -77,5 +77,5 @@ test("chat list: the preview, direction and time come from the last stored messa
   assert.equal(a.lastAt, ago(1), "the time never goes backwards");
   assert.deepEqual([b.lastText, b.lastDir, b.lastAt, b.lastSource], ["[قالب: fc_winback]", "out", ago(8), "campaign"]);
   assert.deepEqual([c.lastText, c.lastDir, c.lastAt], ["من غير رسايل متخزّنة", "in", ago(20)], "a chat with no stored message keeps the thread row's values");
-  assert.ok(sql.some((s) => /LEFT JOIN LATERAL \(SELECT m\.source, m\.direction, m\.body, m\.template, m\.created_at FROM wa_messages m WHERE m\.phone_norm = t\.phone_norm AND COALESCE\(m\.source, 'api'\) <> 'history' ORDER BY m\.id DESC LIMIT 1\) lm ON TRUE/.test(s)), "the newest row by id is the last message");
+  assert.ok(sql.some((s) => /LEFT JOIN LATERAL \(SELECT m\.source, m\.direction, m\.body, m\.template, m\.created_at, m\.status FROM wa_messages m WHERE m\.phone_norm = t\.phone_norm AND COALESCE\(m\.source, 'api'\) <> 'history' ORDER BY m\.id DESC LIMIT 1\) lm ON TRUE/.test(s)), "the newest row by id is the last message (TK1a: with its status in the same row)");
 });

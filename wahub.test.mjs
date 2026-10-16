@@ -133,7 +133,7 @@ test("N1 list: works with the sending switch off; rows carry the window, the bot
     assert.deepEqual(r.counts, { all: 3, waiting: 1, bot: 1, muted: 0, ad: 0, unread: 2, held: 0, mine: 0, transferred: 0, unreadMessages: 3, oldestWaitingAt: ago(4) });
     assert.equal(r.threads.length, 2);
     const a = r.threads[0];
-    assert.deepEqual(Object.keys(a).sort(), ["ad", "bot", "flow", "key", "lastAt", "lastDir", "lastSource", "lastText", "name", "orderNo", "orders", "owner", "phone", "phoneMasked", "team", "unanswered", "unread", "window"]);
+    assert.deepEqual(Object.keys(a).sort(), ["ad", "bot", "flow", "key", "lastAt", "lastDir", "lastSource", "lastStatus", "lastText", "name", "orderNo", "orders", "owner", "phone", "phoneMasked", "team", "unanswered", "unread", "window"]);
     assert.equal(a.phone, "0511111111"); assert.equal(a.phoneMasked, "…1111"); assert.equal(a.unread, 2);
     assert.deepEqual(a.bot, { state: "waiting", reason: "complaint", mutedUntil: null, mutedBy: null, handoffAt: ago(4) });
     assert.equal(a.window.open, true); assert.ok(a.window.msLeft > 23 * 3600_000);
@@ -205,6 +205,39 @@ test("N1 thread: messages oldest-first with source, template cost and the bot's 
   assert.equal(older.nextBefore, null);
   assert.equal((await w.call("GET", "/api/cms/wa/threads/:key", { params: { key: "0598765432" } })).status, 404);
   assert.equal((await w.call("GET", "/api/cms/wa/threads/:key", { params: { key: "f".repeat(32) } })).status, 404);
+});
+
+/* TK1a (١٦/١٠ — علامات واتساب): الرسالة اللي فشلت معاها سببها بالعربي من كود ميتا، وصف القايمة معاه حالة آخر رسالة مننا */
+test("TK1a: failed message carries errorAr from the Meta code; others null; list row carries lastStatus of our last message only", async () => {
+  const pn = "512345678";
+  const messages = [
+    { phone_norm: pn, wamid: "in1", direction: "in", status: "received", body: "فيه توصيل؟", created_at: ago(50), source: "api", pricing: null },
+    { phone_norm: pn, wamid: "f1", direction: "out", status: "failed", error: "131047:Re-engagement message", body: "أهلاً", created_at: ago(49), source: "staff", pricing: null },
+    { phone_norm: pn, wamid: "f2", direction: "out", status: "failed", error: "131026:Message undeliverable", body: "أهلاً", created_at: ago(48), source: "campaign", pricing: null },
+    { phone_norm: pn, wamid: "f3", direction: "out", status: "failed", error: "999123:Something new", body: "أهلاً", created_at: ago(47), source: "bot", pricing: null },
+    { phone_norm: pn, wamid: "f4", direction: "out", status: "failed", error: "network timeout", body: "أهلاً", created_at: ago(46), source: "bot", pricing: null },
+    { phone_norm: pn, wamid: "ok1", direction: "out", status: "read", error: null, body: "تمام", created_at: ago(45), source: "staff", pricing: null },
+    { phone_norm: pn, wamid: "d1", direction: "out", status: "delivered", error: "131047:old", body: "تمام", created_at: ago(44), source: "staff", pricing: null },
+  ];
+  const w = world({ threads: [T(pn)], messages });
+  const r = (await w.call("GET", "/api/cms/wa/threads/:key", { params: { key: "0512345678" } })).body;
+  const by = Object.fromEntries(r.messages.map((m) => [m.id, m]));
+  assert.equal(by.f1.errorAr, "نافذة الـ٢٤ ساعة مقفولة");
+  assert.equal(by.f2.errorAr, "الرقم مش على واتساب");
+  assert.equal(by.f3.errorAr, "ميتا رفضت بكود 999123");
+  assert.equal(by.f4.errorAr, null);
+  assert.equal(by.ok1.errorAr, null); assert.equal(by.in1.errorAr, null);
+  assert.equal(by.d1.errorAr, null, "a message that ended delivered is not «failed» even with an old error");
+  assert.equal(by.f1.error, "131047:Re-engagement message", "the raw error stays as it was");
+
+  const w2 = world({ threads: [
+    T("511111111", { last_at: ago(5), lm_dir: "out", lm_status: "read", lm_body: "تمام", lm_at: ago(5) }),
+    T("522222222", { last_at: ago(6), lm_dir: "in", lm_status: "received", lm_body: "طيب", lm_at: ago(6) }),
+    T("533333333", { last_at: ago(7) }),
+  ] });
+  const l = (await w2.call("GET", "/api/cms/wa/threads")).body.threads;
+  assert.deepEqual(l.map((t) => [t.lastDir, t.lastStatus]), [["out", "read"], ["in", null], ["in", null]]);
+  assert.ok(w2.db.sql.some((q) => /lm\.status AS lm_status/.test(q) && /SELECT m\.source, m\.direction, m\.body, m\.template, m\.created_at, m\.status FROM wa_messages m/.test(q)), "the list reads the status in the same lateral join (no extra query)");
 });
 
 test("N1 actions: read clears the count by name; «تم التعامل» calls the bot's own function and writes none of its tables", async () => {
