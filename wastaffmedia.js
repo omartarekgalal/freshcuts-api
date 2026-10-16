@@ -112,6 +112,8 @@ export function classify({ mime, name, buf, voice = false } = {}) {
   if (kind === "audio") {
     if (!sn || !sn.startsWith("audio/")) return bad("mismatch");
     if (sn !== m) { m = sn; convert = AUDIO_CONVERT.includes(m); }      // الامتداد غلط بس المحتوى صوت سليم ⇒ بنمشي بالمحتوى
+    /* ميتا بتقبل ogg بترميز opus بس — ogg/vorbis لازم يتحوّل (ولو التحويل فشل يترفض بدل ما ميتا ترفضه بعد الإرسال) */
+    if (m === "audio/ogg" && !buf.subarray(0, 512).includes("OpusHead")) convert = true;
   }
   if (kind === "document") {
     const ext = DOC_TYPES[m];
@@ -233,7 +235,7 @@ export function create(deps) {
     try { st = await staff.sendStateFor(pn); } catch (e) { log.error("[wa-staff-media] state:", e.message); st = { ok: false, gate: "settings_unreadable" }; }
     if (!st || !st.ok) return no(409, st && st.gate ? st.gate : "disabled", gateAr[st && st.gate] || undefined, st && st.gate ? st.gate : "disabled");
     let buf = file.buf, mime = cls.mime, converted = null;
-    if (cls.kind === "audio" && mime !== "audio/ogg") {
+    if (cls.kind === "audio" && (mime !== "audio/ogg" || cls.convert)) {
       let c = null; try { c = await convert(buf, mime); } catch (e) { log.error("[wa-staff-media] convert:", e.message); c = null; }
       if (c && Buffer.isBuffer(c.buf) && c.buf.length) { buf = c.buf; mime = "audio/ogg"; converted = c.how || "ffmpeg"; }
       else if (cls.convert) return no(422, "convert_failed");

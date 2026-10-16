@@ -33,7 +33,8 @@ const PDF = Buffer.concat([Buffer.from("%PDF-1.7\n"), Buffer.alloc(800, 0x20)]);
 const DOCX = Buffer.concat([Buffer.from([0x50, 0x4b, 0x03, 0x04]), Buffer.alloc(600, 2)]);
 const WEBM = Buffer.concat([Buffer.from([0x1a, 0x45, 0xdf, 0xa3]), Buffer.alloc(3000, 3)]);
 const MP4A = Buffer.concat([Buffer.from([0, 0, 0, 0x1c]), Buffer.from("ftypM4A "), Buffer.alloc(3000, 4)]);
-const OGG = Buffer.concat([Buffer.from("OggS"), Buffer.alloc(3000, 5)]);
+const OGG = Buffer.concat([Buffer.from("OggS"), Buffer.alloc(24, 0), Buffer.from("OpusHead"), Buffer.alloc(3000, 5)]);
+const VORBIS = Buffer.concat([Buffer.from("OggS"), Buffer.alloc(24, 0), Buffer.from("vorbis"), Buffer.alloc(3000, 5)]);
 const HEIC = Buffer.concat([Buffer.from([0, 0, 0, 0x18]), Buffer.from("ftypheic"), Buffer.alloc(900, 6)]);
 const EXE = Buffer.concat([Buffer.from("MZ"), Buffer.alloc(900, 9)]);
 
@@ -119,6 +120,7 @@ test("classify: الأنواع والحدود ومحتوى الملف لازم �
   const m4 = ok({ buf: MP4A, mime: "audio/mp4", voice: true }); assert.deepEqual([m4.kind, m4.convert], ["audio", false]);
   assert.equal(ok({ buf: MP4A, mime: "video/mp4", voice: true }).mime, "audio/mp4");          // سفاري ساعات بيسمّيه video/mp4
   assert.equal(ok({ buf: OGG, mime: "audio/ogg;codecs=opus" }).convert, false);
+  assert.deepEqual([ok({ buf: VORBIS, mime: "audio/ogg" }).mime, M.classify({ buf: VORBIS, mime: "audio/ogg" }).convert], ["audio/ogg", true]);      // ogg/vorbis: ميتا مابتقبلوش ⇒ لازم يتحوّل
   assert.deepEqual([ok({ buf: WEBM, mime: "audio/mp4", voice: true }).mime, M.classify({ buf: WEBM, mime: "audio/mp4", voice: true }).convert], ["audio/webm", true]);   // المحتوى بيغلب الاسم
   no({ buf: JPEG, mime: "image/jpeg", voice: true }, "bad_type");
   no({ buf: PDF, mime: "audio/mpeg" }, "mismatch");
@@ -186,6 +188,9 @@ test("webm والتحويل فشل ⇒ ٤٢٢ بسبب عربي، ولا رفع 
   /* ogg جاهز (فايرفوكس): مابيتحوّلش خالص */
   const w3 = world(); const r3 = await send(w3, { phoneNorm: CUST, file: { buf: OGG, mime: "audio/ogg", name: "v.ogg" }, voice: true });
   assert.equal(r3.ok, true); assert.deepEqual(w3.conv, []);
+  /* ogg/vorbis والتحويل فشل ⇒ مرفوض قبل الرفع (ميتا كانت هترفضه بعد الإرسال) */
+  const w4 = world({ convert: async () => null }); const r4 = await send(w4, { phoneNorm: CUST, file: { buf: VORBIS, mime: "audio/ogg", name: "song.ogg" } });
+  assert.deepEqual([r4.ok, r4.error], [false, "convert_failed"]); assert.equal(w4.calls.length, 0); assert.deepEqual(w4.conv, ["audio/ogg"]);
 }));
 
 test("النافذة مقفولة / القناة مقفولة / «إيقاف» / مفتاح المالك ⇒ رفض باسم القفل وبالعربي، ولا رفع ولا إرسال", async () => {
