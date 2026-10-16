@@ -3325,7 +3325,7 @@ waStaffApi = wastaff.register(app, moduleCtx, { wa: waApi, hub: () => waHubApi, 
 /* 📇 SX1 (١٥/١٠): قايمتين أرقام بسبب لكل رقم — «موظفين / فريق» (البوت ساكت) و«مستثنين من الإعلانات بس» (البوت بيرد) + ترحيل excludePhones
    القديمة مرة واحدة + الفحص اليومي. البوت والتسويق بيقروا القوايم من الإعدادات (phonelists.js) مش من الموديول ده. */
 const phoneListsApi = phonelists.register(app, moduleCtx, { whoami: (c) => cmsApi.whoami(c) });
-waTeamApi = wateam.register(app, moduleCtx, { wa: waApi, sendSms: accounts.sendSms, requirePortal: portalApi.requirePortal, flow: () => waFlowApi , presence: () => waHandoverApi, phoneLists: () => phoneListsApi });
+waTeamApi = wateam.register(app, moduleCtx, { wa: waApi, sendSms: accounts.sendSms, requirePortal: portalApi.requirePortal, flow: () => waFlowApi , presence: () => waHandoverApi, phoneLists: () => phoneListsApi, broadcast: portalApi.broadcast, broadcastTo: portalApi.broadcastTo, push: () => portalApi.push });
 waFlowApi = waflow.register(app, moduleCtx, { team: () => waTeamApi, staff: () => waStaffApi, bot: () => wabotApi, hub: () => waHubApi, requirePortal: portalApi.requirePortal, broadcast: portalApi.broadcast , handover: () => waHandoverApi });
 // 🍽 QR الطاولات: مفاتيح الطاولات + نداء الويتر (بيبعت إشعار البوابة) + تحليلات لكل طاولة
 tableOrder.register(app, moduleCtx, { portal: () => portalApi, shop: () => shopApi });

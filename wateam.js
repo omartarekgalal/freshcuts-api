@@ -89,6 +89,15 @@ export const ODD_KINDS = Object.freeze({
   followup_brake: "فرامل «متابعة اللي ردّ» وقّفتها («إيقاف» / حظر فوق الحد)",      // FU1 (١٥/١٠)
 });
 export const ODD_KEYS = Object.keys(ODD_KINDS);
+/* TW1 — الموظف برّه نافذة الـ٢٤ ساعة: إيه اللي يوصله */
+export const OUTSIDE_MODES = Object.freeze(["portal", "template"]);
+export const OUTSIDE_AR = Object.freeze({
+  portal: { label: "إشعار على البورتال بس (ببلاش)", hint: "الكاشير على بورتال الكاشير والمدير على بورتال المدير — من غير قالب واتساب مدفوع ولا SMS. اللي جوّه النافذة بيوصله واتساب ببلاش زي ما هو." },
+  template: { label: "قالب واتساب مدفوع (زي الأول)", hint: "قالب فريق معتمد من ميتا (بيتحاسب عليه)، ولو مش متاح SMS لو مفتاحه شغّال." },
+});
+export const PORTAL_ROLES = Object.freeze(["cashier", "manager"]);      // المالك مالوش بورتال ⇒ بيفضل على القالب
+/* مواضيع ليها كارت بيرن على البوابة أصلاً (كارت تحويل واتساب + رنّته + تصعيد المدير — wahandover.js) ⇒ مفيش إشعار تاني فوقه */
+export const ON_PORTAL_TOPICS = Object.freeze(["handover", "urgent"]);
 /* أنواع بتتعدّ في الملخص اليومي ولوحة الفريق بس — مابتبعتش تنبيه لحظي (رسالة واتساب مابيعرضهاش، غالباً من إعلان: ١٤/١٠ عمر «مش منطقي يجي إشعار كل مرة») */
 export const ODD_QUIET_DEFAULT = Object.freeze({ unsupported_opener: true });
 /* ST2 — أسماء الأفعال (نفس الكلام في البورتال واللوحة ورسايل وأزرار واتساب الفريق) ونتايج قفل المحادثة */
@@ -104,6 +113,9 @@ export const OUTCOME_IDS = OUTCOMES.map((o) => o.id);
 
 export const DEFAULTS = Object.freeze({
   enabled: true,                 // تنبيهات الفريق على واتساب (مقفول ⇒ SMS زي الأول بالظبط)
+  /* TW1 (١٦/١٠ — عمر: «الموظف اللي مش داخل النافذة ماتبعتلوش حاجة، ابعت إشعار على البورتال بس»): كاشير / مدير نافذته مقفولة ⇒
+     "portal" = إشعار على بورتال دوره بس (ولا قالب ولا SMS) · "template" = القالب المدفوع ثم SMS زي الأول. المالك مالوش بورتال ⇒ زي الأول. */
+  outsideWindow: "portal",
   routing: Object.freeze({ cashier: ["handover"], manager: ["handover", "odd"], owner: ["urgent", "odd", "digest"] }),
   smsFallback: true,             // تحويل ماقدرش يوصل واتساب (نافذة مقفولة ومفيش قالب معتمد / فشل) ⇒ SMS
   templatesApproved: [],         // أسماء قوالب المالك أكّد إنها معتمدة عند ميتا (لو حدث الاعتماد مااتسجّلش عندنا)
@@ -194,6 +206,7 @@ export function teamConfig(settings) {
   for (const key of ODD_KEYS) quiet[key] = o.quiet && typeof o.quiet[key] === "boolean" ? o.quiet[key] : ODD_QUIET_DEFAULT[key] === true;
   return {
     enabled: x.enabled !== false, members, fallback, routing,
+    outsideWindow: OUTSIDE_MODES.includes(x.outsideWindow) ? x.outsideWindow : DEFAULTS.outsideWindow,
     smsFallback: x.smsFallback !== false,
     templatesApproved: [...new Set((Array.isArray(x.templatesApproved) ? x.templatesApproved : []).map(String).filter((n) => /^fc_staff_[a-z0-9_]{1,60}$/.test(n)))].slice(0, 20),
     staffAsTesters: x.staffAsTesters === true,
@@ -233,6 +246,7 @@ export function configFromBody(b, prev = {}) {
   const src = b && typeof b === "object" ? b : {}, errors = [];
   const out = { ...(prev && typeof prev === "object" ? prev : {}) };
   for (const k of ["enabled", "smsFallback", "staffAsTesters"]) if (k in src) { if (typeof src[k] === "boolean") out[k] = src[k]; else errors.push(`${k}: true أو false`); }
+  if ("outsideWindow" in src) { if (OUTSIDE_MODES.includes(src.outsideWindow)) out.outsideWindow = src.outsideWindow; else errors.push(`outsideWindow: ${OUTSIDE_MODES.join(" أو ")}`); }
   if ("members" in src) {
     if (!Array.isArray(src.members) || src.members.length > LIMITS.members) errors.push(`members: قايمة لحد ${LIMITS.members} عضو`);
     else {
@@ -384,6 +398,26 @@ export function dailyText({ handovers = 0, urgent = 0, odd = [], bySms = 0, clos
   return lines.join("\n").slice(0, 1000);
 }
 
+/* ── TW1: إشعار البورتال بدل القالب للي برّه النافذة (صافي) ─────────────────
+   نفس كلام رسالة واتساب: أول سطر = العنوان والباقي تحت. سطور رابط البورتال نفسه بتتشال (الموظف فاتحه أصلاً). رسالة من غير نص (قالب التجديد) ⇒ كلام الحارس. */
+export const keeperPortalText = ({ name = null } = {}) => `⏰ تنبيهات واتساب المجانية وقفت عند ${name || "موظف"} (عدّت ٢٤ ساعة من آخر رسالة منه)
+التنبيهات بتوصله هنا على البورتال بس. عشان ترجع على واتساب ببلاش: يبعت كلمة «تنبيهات» لواتساب المطعم.`;
+export function portalNoticeText(msg, member = {}) {
+  const m = msg && typeof msg === "object" ? msg : {};
+  let text = String(m.portalBody || m.body || "").trim();
+  if (!text && m.topic === "keeper") text = keeperPortalText({ name: member && member.name });
+  if (!text) { const t = Array.isArray(m.templates) && m.templates[0] && m.templates[0].data && m.templates[0].data.notice ? m.templates[0].data.notice.text : ""; text = String(t || "").trim(); }
+  const lines = text.split("\n").map((l) => l.trim()).filter((l) => l && !l.includes(PORTAL_URL));
+  return { title: clip(lines[0] || "تنبيه للفريق", 160), body: clip(lines.slice(1).join("\n"), 900) };
+}
+/* اللي برّه النافذة هيوصله إيه دلوقتي: "wa_free" (جوّه النافذة) · "portal" (إشعار بورتال بس) · "template" (القالب المدفوع ثم SMS زي الأول) */
+export function reachOf(cfg, role, winOpen, portalOn = true) {
+  if (winOpen) return "wa_free";
+  return portalOn && cfg && cfg.outsideWindow === "portal" && PORTAL_ROLES.includes(role) ? "portal" : "template";
+}
+const fnv = (s) => { let h = 2166136261; for (const ch of String(s || "")) { h ^= ch.charCodeAt(0); h = Math.imul(h, 16777619) >>> 0; } return h.toString(36); };
+export const NOTICE_DEDUP_MIN = 3;      // نفس الإشعار لنفس الدور (كاشيرين برّه النافذة في نفس التوزيعة) ⇒ واحد بس على البورتال
+
 /* أوامر الفريق المكتوبة (بعد تنضيف بسيط) */
 const cmdNorm = (t) => String(t || "").replace(/[ً-ْـ]/g, "").replace(/[أإآ]/g, "ا").replace(/ى/g, "ي").replace(/ة/g, "ه").replace(/[^\p{L}\p{N} ]/gu, " ").replace(/\s+/g, " ").trim().toLowerCase();
 export function staffCommand(ev) {
@@ -422,6 +456,10 @@ const DDL = `
   ALTER TABLE wa_team_portal ADD COLUMN IF NOT EXISTS opened_at TIMESTAMPTZ;
   ALTER TABLE wa_team_portal ADD COLUMN IF NOT EXISTS reopened_at TIMESTAMPTZ;
   CREATE TABLE IF NOT EXISTS wa_team_portal_to (phone_norm TEXT PRIMARY KEY, last_at TIMESTAMPTZ, last_mgr_at TIMESTAMPTZ, last_back_at TIMESTAMPTZ);
+  CREATE TABLE IF NOT EXISTS wa_team_notices (
+    id BIGSERIAL PRIMARY KEY, at TIMESTAMPTZ NOT NULL DEFAULT NOW(), role TEXT NOT NULL, topic TEXT NOT NULL, kind TEXT, title TEXT NOT NULL, body TEXT,
+    dkey TEXT, names TEXT, urgent BOOLEAN NOT NULL DEFAULT FALSE, acked_at TIMESTAMPTZ, acked_by TEXT);
+  CREATE INDEX IF NOT EXISTS wa_team_notices_open_idx ON wa_team_notices(role, at DESC) WHERE acked_at IS NULL;
 `;
 /* PO1: كل تشغيل ⇒ حجز كل رقم بيلحق آخر رسالة «مقفول» في السجل (كاشير أو مدير؛ «رجع» مابتحجزش) — حتى لو كود تاني بعتها (حاوية RG1
    القديمة وقت التبديل، أو بعد rollback وdeploy تاني): GREATEST ⇒ الحجز عمره ما بيرجع لورا. مفيش رسالة على طول بعد الـdeploy لحد اتبعتله من دقيقتين.
@@ -568,7 +606,8 @@ export function register(app, ctx, deps = {}) {
   const q = async (sql, p = []) => { try { return (await pool.query(sql, p)).rows || []; } catch (e) { log.error("[wa-team] db:", e.message); return null; } };
   const ready = pool.query(DDL).then(() => pool.query(PORTAL_TO_SEED).catch((e) => log.error("[wa-team] portal seed:", e.message)))
     .then(() => pool.query("DELETE FROM wa_team_log WHERE at < NOW() - INTERVAL '90 days'").catch(() => {}))
-    .then(() => pool.query("DELETE FROM wa_team_odd WHERE at < NOW() - INTERVAL '90 days'").catch(() => {})).then(() => true)
+    .then(() => pool.query("DELETE FROM wa_team_odd WHERE at < NOW() - INTERVAL '90 days'").catch(() => {}))
+    .then(() => pool.query("DELETE FROM wa_team_notices WHERE at < NOW() - INTERVAL '30 days'").catch(() => {})).then(() => true)
     .catch((e) => { log.error("[wa-team] schema:", e.message); return false; });
   const settingsNow = async () => { try { return (await getSettingsData()) || {}; } catch { return null; } };
   const flowApi = () => { try { return (typeof deps.flow === "function" ? deps.flow() : deps.flow) || null; } catch { return null; } };      // ST2: waflow.js
@@ -596,6 +635,45 @@ export function register(app, ctx, deps = {}) {
       : { type: "text", text: { body: clip(body, 4096), preview_url: false } };
   };
 
+  /* ── TW1: إشعار على بورتال الدور (كاشير ⇒ بورتال الكاشير · مدير ⇒ بورتال المدير) ──────────────────────
+     صف في wa_team_notices (البورتال اللي يتفتح بعدين بيلاقيه لحد «تمام») + حدث team_notice على البث لأجهزة الدور + Web Push لأجهزة الدور.
+     ⇒ { ok, note?, error?, id? }. عمرها ما بترمي. */
+  const pushApi = () => { try { return (typeof deps.push === "function" ? deps.push() : deps.push) || null; } catch { return null; } };
+  const portalWired = () => typeof deps.broadcast === "function" || typeof deps.broadcastTo === "function" || Boolean(pushApi());
+  const portalMode = (cfg, role) => cfg.outsideWindow === "portal" && PORTAL_ROLES.includes(role) && portalWired();
+  const isoAt = (v) => (v == null ? null : v instanceof Date ? v.toISOString() : String(v));
+  const noticeRow = (r) => ({ id: Number(r.id), at: isoAt(r.at), role: r.role, topic: r.topic, kind: r.kind || null, title: r.title, body: r.body || "", names: r.names || null, urgent: r.urgent === true });
+  const tell = (event, data, roles) => {
+    try {
+      if (typeof deps.broadcastTo === "function") deps.broadcastTo(event, data, roles);
+      else if (typeof deps.broadcast === "function") deps.broadcast(event, data);      // البوابة بتفلتر بالدور
+    } catch (e) { log.error("[wa-team] notice broadcast:", e.message); }
+  };
+  async function portalNotice(member, msg) {
+    try {
+      if (ON_PORTAL_TOPICS.includes(msg.topic)) return { ok: true, note: "on_portal_card" };      // كارت التحويل بيرن على البوابة أصلاً
+      const role = member.role, { title, body } = portalNoticeText(msg, member), now = clock();
+      const urgent = msg.urgent === true || (msg.topic === "portal_offline" && msg.kind !== "back") || msg.topic === "transfer";
+      const dkey = clip(`${msg.topic}|${msg.kind || ""}|${msg.ref4 || ""}|${fnv(`${title}\n${body}`)}`, 200);
+      await ready;
+      const ins = await q(`INSERT INTO wa_team_notices(at, role, topic, kind, title, body, dkey, names, urgent)
+          SELECT $1::timestamptz,$2,$3,$4,$5,$6,$7,$8,$9 WHERE NOT EXISTS (SELECT 1 FROM wa_team_notices WHERE role=$2 AND dkey=$7 AND at > $10::timestamptz)
+          RETURNING id, at, role, topic, kind, title, body, names, urgent`,
+        [now.toISOString(), role, clip(msg.topic, 20), msg.kind ? clip(msg.kind, 40) : null, title, body || null, dkey, member.name ? clip(member.name, 40) : null, urgent,
+          new Date(now.getTime() - NOTICE_DEDUP_MIN * 60_000).toISOString()]);
+      if (ins === null) return { ok: false, error: "notice_db" };
+      if (!ins.length) return { ok: true, note: "dup" };
+      const row = noticeRow(ins[0]);
+      tell("team_notice", row, [role]);
+      const p = pushApi();
+      if (p && typeof p.sendToSubs === "function") {
+        Promise.resolve(p.sendToSubs({ kind: "team_notice", title: clip(title, 120), body: clip(body.split("\n")[0] || (member.name ? `كان رايح لـ${member.name} على واتساب` : ""), 180),
+          url: p.PORTAL_URL || PORTAL_URL, tag: `team-notice-${row.id}`, renotify: true, urgency: urgent ? "high" : "normal", ttl: 900, requireInteraction: urgent }, { role })).catch(() => {});
+      }
+      return { ok: true, id: row.id };
+    } catch (e) { log.error("[wa-team] portal notice:", e.message); return { ok: false, error: "notice_failed" }; }
+  }
+
   /* إرسال لموظف واحد. msg: { topic, kind, body, button?, templates?: [{ name, data }], sms?: string|null, ref4?, urgent? }
      ⇒ { ok, via: "wa_free" | "wa_template" | "sms" | "none", error? }. عمرها ما بترمي، وكل محاولة بتتسجّل في wa_team_log. */
   async function sendToStaff(cfg, member, msg) {
@@ -614,6 +692,11 @@ export function register(app, ctx, deps = {}) {
         if (!r.ok && !r.skipped && rich.type === "interactive") r = await wa.sendFreeform({ phoneNorm: m.phone, payload: freePayload(msg.body, false), source: "team", preview: clip(msg.body, 500) });
         if (r.ok) return done("wa_free", true);
         why = r.skipped || r.error || "send_failed";
+      }
+      /* TW1: برّه النافذة + «إشعار بورتال بس» (الافتراضي) ⇒ إشعار على بورتال دوره — ولا قالب مدفوع ولا SMS */
+      if (["window_closed", "WA_131047"].includes(String(why)) && portalMode(cfg, m.role)) {
+        const r = await portalNotice({ ...m, name: (member && member.name) || "" }, msg);
+        return done("portal", r.ok === true, r.ok ? (r.note || null) : (r.error || "portal_failed"));
       }
       /* النافذة مقفولة (أو الحر اترفض): قالب فريق معتمد — أول واحد معتمد من القايمة */
       if (typeof wa.sendStaffTemplate === "function" && ["window_closed", "WA_131047"].includes(String(why))) {
@@ -818,10 +901,17 @@ export function register(app, ctx, deps = {}) {
   }
   /* الحلقة خلصت (how = { kind: "stable" | "kept", at }): مسح الصف هو الحجز (دورتين مع بعض ⇒ واحدة بس تبعت)، و«رجع» على طول للمدير اللي اتبلّغ
      فيها (رسالة مدير وصلت من opened_at). مابتستناش التكرار ولا بتاخد منه، ومفتاح backNotice بيتشاف لحظة الإرسال. */
+  /* TW1: البورتال رجع ⇒ إشعارات «البورتال مقفول» (كاشير / مدير) اللي اتبعتت على البورتال بدل القالب بتتقفل لوحدها على كل الأجهزة */
+  async function clearOfflineNotices() {
+    const r = await q("UPDATE wa_team_notices SET acked_at=NOW(), acked_by='البورتال اتفتح' WHERE topic='portal_offline' AND kind IN ('cashier','manager') AND acked_at IS NULL RETURNING id, role", []);
+    for (const x of r || []) tell("team_notice_ack", { id: Number(x.id), by: "البورتال اتفتح" }, [x.role]);
+    return (r || []).length;
+  }
   async function endEpisode(cfg, managers, ep, now, po, how) {
     const del = await q("DELETE FROM wa_team_portal WHERE id='cashier' RETURNING since", []);
     if (del === null) return { error: "state_db" };
     if (!del.length) return { owed: 0, sent: [] };
+    await clearOfflineNotices();      // TW1: «البورتال مقفول» اللي على البورتال مالهاش لازمة خلاص
     const opened = ep.opened_at || ep.since || null;
     if (!po.backNotice) return { owed: 0, sent: [], off: true };
     if (!managers.length || !opened) return { owed: 0, sent: [] };
@@ -1093,6 +1183,7 @@ export function register(app, ctx, deps = {}) {
       const la = await q("SELECT at, topic, kind, via, ok FROM wa_team_log WHERE phone_norm=$1 ORDER BY at DESC, id DESC LIMIT 1", [m.phone]);
       members.push({ ...(full ? { phone: `0${m.phone}` } : {}), last4: m.phone.slice(-4), name: m.name || null, role: m.role, roleAr: ROLE_AR[m.role], active: m.active, topics: cfg.routing[m.role] || [],
         window: { open: win.open, until: win.until, closedSince: win.closedSince, lastInAt: win.lastInAt, minutesLeft: win.minutesLeft },
+        reach: reachOf(cfg, m.role, win.open, portalWired()),
         keeper: { next: plan.action, why: plan.why, dueAt: plan.dueAt || null, freeNudgeAt: st.free_nudge_at || null, closedNudgeAt: st.closed_nudge_at || null, closedNudgeVia: st.closed_nudge_via || null },
         testPhone: tests.includes(m.phone), lastAlert: la && la[0] ? la[0] : null });
     }
@@ -1115,7 +1206,8 @@ export function register(app, ctx, deps = {}) {
         odd: { sentLastHour: Number(oc && oc[0] && oc[0].sent_hour) || 0, cap: cfg.odd.perHour, pending: Number(oc && oc[0] && oc[0].pending) || 0, held: Number(oc && oc[0] && oc[0].held) || 0, byKind24h: byKind || [] },
         sends24h: via || [], recent: recent || [],
         schema: { knobs: KNOBS, roles: ROLES.map((id) => ({ id, label: ROLE_AR[id] })), topics: TOPICS.map((id) => ({ id, label: TOPIC_AR[id] })), oddKinds: ODD_KEYS.map((id) => ({ id, label: ODD_KINDS[id], quietDefault: ODD_QUIET_DEFAULT[id] === true })), limits: LIMITS, defaults: DEFAULTS, renewButton: RENEW_TITLE,
-          actions: Object.entries(ACTIONS).map(([id, label]) => ({ id, label })), outcomes: OUTCOMES.map((o) => ({ id: o.id, label: o.label, hint: o.hint })) } };
+          actions: Object.entries(ACTIONS).map(([id, label]) => ({ id, label })), outcomes: OUTCOMES.map((o) => ({ id: o.id, label: o.label, hint: o.hint })),
+          outsideModes: OUTSIDE_MODES.map((id) => ({ id, ...OUTSIDE_AR[id] })), portalRoles: PORTAL_ROLES, portalNotices: portalWired() } };
     };
     app.get("/api/cms/wabot/team", async (c) => {
       const err = await requireAdmin(c); if (err) return err;
@@ -1155,10 +1247,44 @@ export function register(app, ctx, deps = {}) {
       try {
         const st = await status({ full: false });
         return c.json({ ok: true, now: st.now, enabled: st.cfg.enabled, renewButton: RENEW_TITLE,
-          members: st.members.filter((m) => m.active).map((m) => ({ last4: m.last4, name: m.name, role: m.role, roleAr: m.roleAr, window: m.window })) });
+          members: st.members.filter((m) => m.active).map((m) => ({ last4: m.last4, name: m.name, role: m.role, roleAr: m.roleAr, window: m.window, reach: m.reach })) });
       } catch (e) { log.error("[wa-team] portal status:", e.message); return c.json({ ok: false, error: "unavailable" }, 500); }
     });
   }
 
-  return { ready, handover, odd, inbound, tick, status, portalWatch, portalStatus, sendToStaff, fanOut, lastCustomerText, dailyDigest, flushOdd, stop: () => { if (timer) clearInterval(timer); } };
+  /* TW1 — إشعارات الفريق على البورتال: المفتوحة (اليوم التشغيلي، لحد «تمام») لدور الجهاز بس؛ مفتاح المالك من اللوحة بيشوف الدورين */
+  const noticeRoles = (u) => (u && PORTAL_ROLES.includes(u.role) ? [u.role] : u && (u.admin === true || u.role === "dashboard") ? [...PORTAL_ROLES] : []);
+  async function openNotices(roles) {
+    if (!roles.length) return [];
+    await ready;
+    const r = await q("SELECT id, at, role, topic, kind, title, body, names, urgent FROM wa_team_notices WHERE acked_at IS NULL AND role = ANY($1::text[]) AND at >= $2 ORDER BY at DESC LIMIT 30",
+      [roles, bizStart(bizDay(clock())).toISOString()]);
+    return (r || []).map(noticeRow);
+  }
+  async function ackNotice(id, roles, by) {
+    await ready;
+    const r = await q("UPDATE wa_team_notices SET acked_at=NOW(), acked_by=$3 WHERE id=$1 AND role = ANY($2::text[]) AND acked_at IS NULL RETURNING id, role", [id, roles, clip(by || "portal", 60)]);
+    if (r === null) return { ok: false, error: "db" };
+    if (r.length) tell("team_notice_ack", { id, by: clip(by || "", 60) }, [r[0].role]);
+    return { ok: true, id, already: !r.length };
+  }
+  if (app && typeof app.get === "function" && deps.requirePortal) {
+    app.get("/api/portal/wa/team-notices", async (c) => {
+      const a = await deps.requirePortal(c); if (a.res) return a.res;
+      const roles = noticeRoles(a.user);
+      if (!roles.length) return c.json({ ok: false, error: "forbidden" }, 403);
+      try { return c.json({ ok: true, notices: await openNotices(roles) }); }
+      catch (e) { log.error("[wa-team] notices:", e.message); return c.json({ ok: true, notices: [] }); }
+    });
+    app.post("/api/portal/wa/team-notices/:id/ack", async (c) => {
+      const a = await deps.requirePortal(c); if (a.res) return a.res;
+      const roles = noticeRoles(a.user), id = Number(c.req.param("id"));
+      if (!roles.length) return c.json({ ok: false, error: "forbidden" }, 403);
+      if (!Number.isInteger(id) || id <= 0) return c.json({ ok: false, error: "bad_id" }, 400);
+      const r = await ackNotice(id, roles, (a.user && (a.user.name || a.user.role)) || "portal");
+      return c.json(r, r.ok ? 200 : 500);
+    });
+  }
+
+  return { ready, handover, odd, inbound, tick, status, portalWatch, portalStatus, sendToStaff, fanOut, lastCustomerText, dailyDigest, flushOdd, portalNotice, openNotices, ackNotice, stop: () => { if (timer) clearInterval(timer); } };
 }

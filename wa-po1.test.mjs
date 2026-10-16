@@ -23,10 +23,10 @@ const isoMs = (v) => (v == null ? NaN : Date.parse(v instanceof Date ? v.toISOSt
 const later = (a, b) => (!a ? b : !b ? a : isoMs(a) >= isoMs(b) ? a : b);      // GREATEST في Postgres (بيتجاهل NULL)
 
 /* ── عالم واحد: wahandover (الحضور) + wateam (التنبيهات) فوق نفس القاعدة الوهمية ────────────────────────── */
-function world({ start = "2026-10-14T13:00:00Z", waTeam = {}, members = MEMBERS, settings = {}, preLog = [], preTo = [], prePresence = [], app = null, owner = true, fail = () => false, failSql = null } = {}) {
+function world({ start = "2026-10-14T13:00:00Z", waTeam = {}, members = MEMBERS, settings = {}, preLog = [], preTo = [], prePresence = [], app = null, owner = true, fail = () => false, failSql = null, portal = false, windowsClosed = false } = {}) {
   let nowMs = Date.parse(start);
   const ms = isoMs;
-  const db = { presence: new Map(prePresence.map((r) => [`${r.staff_id}|${r.device}`, { ...r }])), writes: [], portal: null, to: new Map(preTo.map((r) => [r.phone_norm, { ...r }])), log: [...preLog],
+  const db = { presence: new Map(prePresence.map((r) => [`${r.staff_id}|${r.device}`, { ...r }])), writes: [], portal: null, to: new Map(preTo.map((r) => [r.phone_norm, { ...r }])), log: [...preLog], notices: [],
     settings: { waTeam: { members, keeper: { enabled: false }, odd: { enabled: false }, daily: { enabled: false }, ...waTeam }, ...settings } };
   const pool = { db, async query(sql, p = []) {
     const s = String(sql).replace(/\s+/g, " ").trim();
@@ -51,7 +51,18 @@ function world({ start = "2026-10-14T13:00:00Z", waTeam = {}, members = MEMBERS,
     if (/^SELECT staff_id, staff_name, role, device, last_seen, seen_since, via, last_visible, visible_since FROM portal_presence/i.test(s))
       return { rows: [...db.presence.values()].filter((x) => ms(x.last_seen) > ms(p[0])).sort((a, b) => ms(b.last_seen) - ms(a.last_seen)).map((x) => ({ ...x })) };
     /* ── wateam ── */
-    if (/^SELECT max\(created_at\) AS at FROM wa_messages/i.test(s)) return { rows: [{ at: new Date(nowMs - 60 * MIN).toISOString() }] };      // كل النوافذ مفتوحة
+    if (/^SELECT max\(created_at\) AS at FROM wa_messages/i.test(s)) return { rows: [{ at: new Date(nowMs - (windowsClosed ? 30 * 60 : 60) * MIN).toISOString() }] };      // كل النوافذ مفتوحة (أو كلها مقفولة: TW1)
+    /* TW1: wa_team_notices */
+    if (/^INSERT INTO wa_team_notices/i.test(s)) {
+      if (db.notices.some((n) => n.role === p[1] && n.dkey === p[6] && ms(n.at) > ms(p[9]))) return { rows: [] };
+      const row = { id: db.notices.length + 1, at: p[0], role: p[1], topic: p[2], kind: p[3], title: p[4], body: p[5], dkey: p[6], names: p[7], urgent: p[8], acked_at: null, acked_by: null };
+      db.notices.push(row); return { rows: [{ ...row }] };
+    }
+    if (/^UPDATE wa_team_notices SET acked_at=NOW\(\), acked_by='البورتال اتفتح' WHERE topic='portal_offline' AND kind IN \('cashier','manager'\) AND acked_at IS NULL RETURNING id, role/i.test(s)) {
+      const hit = db.notices.filter((n) => n.topic === "portal_offline" && ["cashier", "manager"].includes(n.kind) && !n.acked_at);
+      for (const n of hit) { n.acked_at = new Date(nowMs).toISOString(); n.acked_by = "البورتال اتفتح"; }
+      return { rows: hit.map((n) => ({ id: n.id, role: n.role })) };
+    }
     if (/^INSERT INTO wa_team_log/i.test(s)) { db.log.push({ at: nowMs, to: p[0], role: p[1], topic: p[2], kind: p[3], via: p[4], ok: p[5] }); return { rows: [] }; }
     if (/^SELECT since, alerts, last_alert_at, manager_told, opened_at, reopened_at FROM wa_team_portal/i.test(s)) return { rows: db.portal ? [{ ...db.portal }] : [] };
     if (/^UPDATE wa_team_portal SET reopened_at=\$1 WHERE id='cashier' AND reopened_at IS NULL/i.test(s)) { if (db.portal && !db.portal.reopened_at) db.portal.reopened_at = p[0]; return { rows: [] }; }
@@ -110,18 +121,20 @@ function world({ start = "2026-10-14T13:00:00Z", waTeam = {}, members = MEMBERS,
     sent.push({ at: nowMs, to: phoneNorm, text }); return { ok: true };
   } };
   let ho = null, team = null;
+  const told = [], pushed = [];
+  const portalDeps = portal ? { broadcastTo: (event, data, roles) => { told.push({ at: nowMs, event, data, roles }); }, push: () => ({ sendToSubs: async (payload, opts) => { pushed.push({ at: nowMs, payload, opts }); return { sent: 1, of: 1 }; } }) } : {};
   /* تشغيل جديد (deploy / وقوع): الذاكرة بتضيع (حدّ الكتابة، وقت الشغل اللي الدورة شافته)، والقاعدة زي ما هي */
   const errors = [];
   const logger = { error: (...a) => errors.push(a.join(" ")) };
   const boot = () => {
     ho = HO.register({ get() {}, post() {} }, { pool }, { requirePortal: async () => ({ res: "no" }), now: () => new Date(nowMs), noTimer: true, log: logger });
     team = T.register(app, { pool, requireAdmin: async () => null, isOwner: async () => owner, getSettingsData: async () => JSON.parse(JSON.stringify(db.settings)) },
-      { wa, now: () => new Date(nowMs), noTimer: true, log: logger, presence: () => ho });
+      { wa, now: () => new Date(nowMs), noTimer: true, log: logger, presence: () => ho, ...portalDeps });
     return Promise.all([team.ready, ho.ready]);
   };
   boot();
   const offLog = () => db.log.filter((l) => l.topic === "portal_offline");
-  return { db, get ho() { return ho; }, get team() { return team; }, restart: boot, sent, failed, errors, offLog, setNow: (t) => { nowMs = t; }, now: () => new Date(nowMs), nowMs: () => nowMs,
+  return { db, get ho() { return ho; }, get team() { return team; }, restart: boot, sent, failed, errors, offLog, told, pushed, setNow: (t) => { nowMs = t; }, now: () => new Date(nowMs), nowMs: () => nowMs,
     signal: (via = "poll", user = CASHIER, ua = TABLET) => ho.seen(user, { ua, via }) };
 }
 /* سيناريو بالثواني: إشارات + flush كل ١٥ ث (زي السيرفر) + دورات wateam + أحداث (تغيير إعدادات) ⇒ نتايج الدورات */
@@ -933,4 +946,25 @@ test("R3 — two managers, one WhatsApp cannot reach (the reviewer's X1): the go
   assert.deepEqual([tk("16:45:47").stage, tk("16:45:47").unreachable, tk("19:01:47").stage, tk("19:01:47").unreachable], ["manager", ["…0003"], "cashier", ["…0003"]]);
   assert.deepEqual([end.muted, end.recipients.map((r) => [r.name, r.capped, r.unreachable])], [false, [["منى", true, undefined], ["سارة", true, undefined], ["خالد", false, true], ["حسن", true, false]]]);
   assertLimits(w); assertNoSilence(w, fail, [CASH1, CASH2, MGR, MGR2]);
+});
+
+/* TW1 (١٦/١٠): الفريق كله برّه النافذة + «إشعار بورتال بس» (الافتراضي) ⇒ نفس سلّم PO1 بالظبط، بس على البورتال: ولا رسالة واتساب، الكاشير على بورتال
+   الكاشير (إشعار واحد للدور مش لكل كاشير)، المدير على بورتال المدير، و«البورتال مقفول» بيتقفل لوحده على كل الأجهزة أول ما البورتال يرجع */
+test("TW1: everyone outside the window ⇒ the same PO1 ladder lands on the portals (cashier portal / manager portal), zero WhatsApp; «closed» notices clear themselves when the portal comes back", async () => {
+  const w = world({ start: "2026-10-14T08:00:00Z", portal: true, windowsClosed: true });
+  const sig = [{ t: utc("08:00:00"), via: "poll" }, ...polls("10:30:00", "11:11:30"), ...polls("11:52:00", "13:00:00")];
+  await play(w, { from: utc("08:00:00"), to: utc("13:00:00"), signals: sig, ticks: ticks47("08:00:47", "12:59:47") });
+  assert.equal(w.sent.length + w.failed.length, 0, "no WhatsApp at all — every member is outside the window");
+  assert.deepEqual(at(w, MGR), ["10:25:47 manager", "10:32:47 back"], "same ladder as with WhatsApp");
+  assert.deepEqual(at(w, CASH1), ["08:10:47 cashier", "08:55:47 cashier", "09:40:47 cashier", "11:21:47 cashier"]);
+  assert.ok(w.offLog().every((l) => l.via === "portal" && l.ok === true));
+  assert.deepEqual(w.db.notices.map((n) => [hms(Date.parse(n.at)), n.role, n.kind]),
+    [["08:10:47", "cashier", "cashier"], ["08:55:47", "cashier", "cashier"], ["09:40:47", "cashier", "cashier"], ["10:25:47", "manager", "manager"], ["10:32:47", "manager", "back"], ["11:21:47", "cashier", "cashier"]],
+    "one notice per round on the cashier portal (two cashiers, one portal), the manager's on his");
+  assert.deepEqual(w.db.notices.filter((n) => !n.acked_at).map((n) => n.kind), ["back"], "every «closed» notice cleared itself when its round ended; only «back» waits for «تمام»");
+  const acks = w.told.filter((t) => t.event === "team_notice_ack").map((t) => [hms(t.at), t.data.id, t.roles[0]]);
+  assert.deepEqual(acks.slice(0, 4), [["10:32:47", 1, "cashier"], ["10:32:47", 2, "cashier"], ["10:32:47", 3, "cashier"], ["10:32:47", 4, "manager"]], "first round: the moment it is stably open");
+  assert.equal(acks.length, 5); assert.equal(acks[4][1], 6); assert.ok(acks[4][0] > "11:52:00" && acks[4][0] < "11:58:00", "the 11:21 round clears when the portal is back ~11:54");
+  assert.deepEqual([...new Set(w.pushed.map((x) => x.opts.role))].sort(), ["cashier", "manager"]);
+  assert.match(w.db.notices[3].title, /بورتال الكاشير مقفول/);
 });

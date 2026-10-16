@@ -27,11 +27,11 @@ const MEMBERS = [{ phone: `0${CASH1}`, name: "منى", role: "cashier" }, { phon
   { phone: `0${OWN1}`, name: "عمر", role: "owner" }, { phone: `0${OWN2}`, name: "طارق", role: "owner" }];
 const NOON = "2026-10-13T12:00:00Z";      // ٣:٠٠ العصر بتوقيت الرياض — بره ساعات الهدوء
 
-function world({ at = NOON, waTeam = { members: MEMBERS }, settings = {}, lastIn = {}, approved = [], chat = [], graphFail = null, flow = null } = {}) {
+function world({ at = NOON, waTeam = { members: MEMBERS }, settings = {}, lastIn = {}, approved = [], chat = [], graphFail = null, flow = null, portal = false } = {}) {
   let nowMs = Date.parse(at);
   const clock = { now: () => new Date(nowMs), advance: (min) => { nowMs += min * 60_000; }, set: (iso) => { nowMs = Date.parse(iso); } };
   const db = { settings: { waMaster: { enabled: true }, notifications: { whatsappEnabled: false }, delivery: { alertPhones: [], staffSmsLanguage: "en" }, waBot: { testPhones: [] }, ...(waTeam ? { waTeam } : {}), ...settings },
-    lastIn: { ...lastIn }, chat: [...chat], state: {}, log: [], odd: [], oddSeq: 0, events: approved.map((name) => ({ name, event: "APPROVED" })), out: [], botFailed: 0 };
+    lastIn: { ...lastIn }, chat: [...chat], state: {}, log: [], odd: [], oddSeq: 0, events: approved.map((name) => ({ name, event: "APPROVED" })), out: [], botFailed: 0, notices: [], noticeSeq: 0 };
   const iso = (v) => (v ? new Date(v).toISOString() : null);
   const pool = { db, async query(sql, p = []) {
     const s = String(sql).replace(/\s+/g, " ").trim();
@@ -72,6 +72,17 @@ function world({ at = NOON, waTeam = { members: MEMBERS }, settings = {}, lastIn
     if (/^SELECT count\(\*\) FILTER \(WHERE status='sent' AND sent_at > \$1\)::int AS sent_hour/i.test(s)) return { rows: [{ sent_hour: db.odd.filter((o) => o.status === "sent").length, pending: db.odd.filter((o) => o.status === "pending").length, held: db.odd.filter((o) => o.status === "held").length }] };
     if (/^SELECT count\(\*\)::int AS n FROM wa_bot_log WHERE decision='failed' AND at > \$1/i.test(s)) return { rows: [{ n: db.botFailed }] };
     if (/^UPDATE settings SET data = jsonb_set\(COALESCE\(data,'\{\}'::jsonb\), '\{waTeam\}'/i.test(s)) { db.settings.waTeam = JSON.parse(p[0]); return { rows: [], rowCount: 1 }; }
+    /* TW1: wa_team_notices */
+    if (/^INSERT INTO wa_team_notices\(at, role, topic, kind, title, body, dkey, names, urgent\) SELECT/i.test(s)) {
+      if (db.notices.some((n) => n.role === p[1] && n.dkey === p[6] && Date.parse(n.at) > Date.parse(p[9]))) return { rows: [], rowCount: 0 };
+      const row = { id: ++db.noticeSeq, at: p[0], role: p[1], topic: p[2], kind: p[3], title: p[4], body: p[5], dkey: p[6], names: p[7], urgent: p[8], acked_at: null, acked_by: null };
+      db.notices.push(row); return { rows: [{ ...row }], rowCount: 1 };
+    }
+    if (/^SELECT id, at, role, topic, kind, title, body, names, urgent FROM wa_team_notices WHERE acked_at IS NULL AND role = ANY/i.test(s)) return { rows: db.notices.filter((n) => !n.acked_at && p[0].includes(n.role) && Date.parse(n.at) >= Date.parse(p[1])).reverse().map((n) => ({ ...n })) };
+    if (/^UPDATE wa_team_notices SET acked_at=NOW\(\), acked_by=\$3 WHERE id=\$1 AND role = ANY/i.test(s)) {
+      const n = db.notices.find((x) => x.id === p[0] && p[1].includes(x.role) && !x.acked_at); if (!n) return { rows: [], rowCount: 0 };
+      n.acked_at = iso(nowMs); n.acked_by = p[2]; return { rows: [{ id: n.id, role: n.role }], rowCount: 1 };
+    }
     return { rows: [], rowCount: 0 };
   } };
   const calls = [];
@@ -89,12 +100,15 @@ function world({ at = NOON, waTeam = { members: MEMBERS }, settings = {}, lastIn
     normPhone: (x) => String(x || "").replace(/\D/g, "").replace(/^966/, "").replace(/^0/, "") };
   const wa = W.register(app, ctx, { fetch, sendSms: async () => ({ ok: true }) });
   const sms = [];
+  /* TW1: البث (لأدوار) + Web Push بيتسجّلوا بس — portal: true ⇒ الربط موجود زي index.js */
+  const told = [], pushed = [];
+  const portalDeps = portal ? { broadcastTo: (event, data, roles) => { told.push({ event, data, roles }); }, push: () => ({ PORTAL_URL: "https://x.test/portal/", sendToSubs: async (payload, opts) => { pushed.push({ payload, opts }); return { sent: 1, of: 1 }; } }) } : {};
   const team = T.register(app, ctx, { wa, sendSms: async (x) => { sms.push(x); return { ok: true }; }, now: clock.now, noTimer: true, log: { error() {} }, ...(flow ? { flow: () => flow } : {}),
-    requirePortal: async (c) => (portalUser ? { user: portalUser } : { res: c.json({ ok: false }, 401) }) });
-  const call = (method, path, json = {}) => routes[`${method} ${path}`]({ req: { json: async () => json, query: () => undefined, param: () => undefined }, json: (body, status = 200) => ({ body, status }) });
+    requirePortal: async (c) => (portalUser ? { user: portalUser } : { res: c.json({ ok: false }, 401) }), ...portalDeps });
+  const call = (method, path, json = {}, param = undefined) => routes[`${method} ${path}`]({ req: { json: async () => json, query: () => undefined, param: () => param }, json: (body, status = 200) => ({ body, status }) });
   const wrote = (phone, agoH = 0) => { db.lastIn[phone] = new Date(nowMs - agoH * H).toISOString(); };
   const to = () => calls.map((c) => c.body.to);
-  return { db, clock, calls, sms, wa, team, call, wrote, to, setOwner: (v) => { owner = v; }, setPortalUser: (u) => { portalUser = u; } };
+  return { db, clock, calls, sms, wa, team, call, wrote, to, told, pushed, setOwner: (v) => { owner = v; }, setPortalUser: (u) => { portalUser = u; } };
 }
 const allOpen = (w) => { for (const m of MEMBERS) w.wrote(m.phone.slice(1), 1); };
 const bodyOf = (c) => (c.body.type === "interactive" ? c.body.interactive.body.text : c.body.type === "text" ? c.body.text.body : null);
@@ -491,7 +505,7 @@ test("routes: the status shows each member's window (open until … / closed sin
   assert.equal((await w.call("POST", "/api/cms/wabot/team/test", { phone: `0${CASH1}` })).status, 403);
   const p = (await w.call("GET", "/api/portal/wa/team-status")).body;
   assert.equal(p.ok, true); assert.equal(p.members.length, 5);
-  assert.deepEqual(Object.keys(p.members[0]).sort(), ["last4", "name", "role", "roleAr", "window"]);
+  assert.deepEqual(Object.keys(p.members[0]).sort(), ["last4", "name", "reach", "role", "roleAr", "window"]);
   assert.ok(!JSON.stringify(p).includes(CASH1));
   w.setPortalUser({ name: "شيف", role: "kitchen" });
   assert.equal((await w.call("GET", "/api/portal/wa/team-status")).status, 403);
@@ -544,4 +558,111 @@ test("ST2 free-form payload: extra buttons come before the renew button (3 at mo
   const bad = world({ graphFail: (b) => b.type === "interactive" }); allOpen(bad);
   assert.deepEqual(await bad.team.sendToStaff(T.teamConfig(bad.db.settings), m, { topic: "flow", body: "نص", button: false, buttons: [{ id: "a", title: "x" }] }), { ok: true, via: "wa_free" });
   assert.deepEqual(bad.calls.map((c) => c.body.type), ["interactive", "text"]);
+}));
+
+/* ═══ TW1 (١٦/١٠ — عمر: «الموظف اللي مش داخل النافذة ماتبعتلوش حاجة — إشعار على البورتال بس: الكاشير على بورتال الكاشير والمدير على بورتال المدير») ═══ */
+const NOTICE_TPL = [{ name: "fc_staff_team_notice", data: { notice: { text: "سطر القالب" } } }];
+test("TW1 config: outsideWindow defaults to portal; only portal/template are accepted; reachOf says what an outside member gets", () => {
+  assert.equal(T.teamConfig({}).outsideWindow, "portal");
+  assert.equal(T.teamConfig({ waTeam: { members: [], outsideWindow: "template" } }).outsideWindow, "template");
+  assert.equal(T.teamConfig({ waTeam: { members: [], outsideWindow: "sms" } }).outsideWindow, "portal");
+  assert.deepEqual(T.configFromBody({ outsideWindow: "template" }, {}).value.outsideWindow, "template");
+  assert.equal(T.configFromBody({ outsideWindow: "whatever" }, {}).ok, false);
+  const cfg = T.teamConfig({ waTeam: { members: [] } });
+  assert.deepEqual([T.reachOf(cfg, "cashier", true), T.reachOf(cfg, "cashier", false), T.reachOf(cfg, "manager", false), T.reachOf(cfg, "owner", false), T.reachOf(cfg, "cashier", false, false)],
+    ["wa_free", "portal", "portal", "template", "template"]);
+  assert.equal(T.reachOf({ ...cfg, outsideWindow: "template" }, "cashier", false), "template");
+});
+test("TW1 text: the portal notice keeps the WhatsApp text (first line = title), drops the portal link line; the renew template gets the keeper text", () => {
+  const n = T.portalNoticeText({ topic: "portal_offline", body: T.portalOfflineText({ offMin: 12 }) });
+  assert.match(n.title, /البورتال مقفول من 12 دقيقة/);
+  assert.ok(!n.title.includes("http") && !n.body.includes(T.PORTAL_URL));
+  const k = T.portalNoticeText({ topic: "keeper", kind: "renew_closed", body: "", templates: [{ name: "fc_staff_alerts_renew", data: {} }] }, { name: "منى" });
+  assert.match(k.title, /منى/); assert.match(k.body, /«تنبيهات»/);
+  assert.equal(T.portalNoticeText({ topic: "odd", body: "", templates: NOTICE_TPL }).title, "سطر القالب");
+});
+test("TW1 inside the window: free WhatsApp exactly as before — no portal notice", withEnv(OPEN, async () => {
+  const w = world({ portal: true, approved: ["fc_staff_team_notice"] }); allOpen(w);
+  const cfg = T.teamConfig(w.db.settings), m = cfg.members.find((x) => x.role === "cashier");
+  const r = await w.team.sendToStaff(cfg, m, { topic: "odd", kind: "secret", body: "👀 حاجة غريبة\nتفاصيل", templates: NOTICE_TPL, sms: "x" });
+  assert.deepEqual([r.ok, r.via], [true, "wa_free"]);
+  assert.equal(w.calls.length, 1); assert.equal(w.db.notices.length, 0); assert.equal(w.told.length + w.pushed.length + w.sms.length, 0);
+}));
+test("TW1 outside the window (default): cashier ⇒ cashier-portal notice + push to cashier devices; manager ⇒ manager portal — no paid template, no SMS", withEnv(OPEN, async () => {
+  const w = world({ portal: true, approved: ["fc_staff_team_notice", "fc_staff_wa_handoff"] });      // القالب معتمد ومع ذلك مايتبعتش
+  const cfg = T.teamConfig(w.db.settings), cash = cfg.members.find((x) => x.phone === CASH1), mgr = cfg.members.find((x) => x.role === "manager");
+  const r1 = await w.team.sendToStaff(cfg, cash, { topic: "portal_offline", kind: "cashier", body: T.portalOfflineText({ offMin: 15 }), templates: NOTICE_TPL, sms: "fallback sms" });
+  assert.deepEqual([r1.ok, r1.via], [true, "portal"]);
+  const r2 = await w.team.sendToStaff(cfg, mgr, { topic: "transfer", kind: "transfer", body: "⤴️ منى حوّلت لك محادثة عميل …5678\nآخر رسالة: «فين طلبي»", ref4: "5678", templates: NOTICE_TPL, sms: "sms" });
+  assert.deepEqual([r2.ok, r2.via], [true, "portal"]);
+  assert.equal(w.calls.length, 0, "zero Graph calls — no template"); assert.equal(w.sms.length, 0, "no SMS either");
+  assert.deepEqual(w.db.notices.map((n) => [n.role, n.topic, n.names, n.urgent]), [["cashier", "portal_offline", "منى", true], ["manager", "transfer", "خالد", true]]);
+  assert.deepEqual(w.told.map((t) => [t.event, t.roles]), [["team_notice", ["cashier"]], ["team_notice", ["manager"]]]);
+  assert.deepEqual(w.pushed.map((x) => [x.opts.role, x.payload.kind, x.payload.requireInteraction]), [["cashier", "team_notice", true], ["manager", "team_notice", true]]);
+  assert.match(w.told[0].data.title, /البورتال مقفول/);
+  assert.deepEqual(w.db.log.map((l) => [l.role, l.via, l.ok]), [["cashier", "portal", true], ["manager", "portal", true]]);
+}));
+test("TW1 outside the window: a handover already rings on the portal card ⇒ no extra notice, no template, no SMS; the owner (no portal) keeps the template", withEnv(OPEN, async () => {
+  const w = world({ portal: true, approved: ["fc_staff_team_notice"] });
+  const cfg = T.teamConfig(w.db.settings), cash = cfg.members.find((x) => x.phone === CASH1), own = cfg.members.find((x) => x.phone === OWN1);
+  const r = await w.team.sendToStaff(cfg, cash, { topic: "handover", kind: "asked_human", body: "💬 تحويل لموظف", templates: NOTICE_TPL, sms: "sms" });
+  assert.deepEqual([r.ok, r.via], [true, "portal"]);
+  assert.equal(w.db.notices.length, 0); assert.equal(w.calls.length + w.sms.length, 0);
+  assert.equal(w.db.log[0].error, "on_portal_card");
+  const o = await w.team.sendToStaff(cfg, own, { topic: "odd", kind: "secret", body: "👀", templates: NOTICE_TPL, sms: null });
+  assert.deepEqual([o.ok, o.via], [true, "wa_template"]);
+  assert.equal(w.calls.length, 1); assert.equal(w.calls[0].body.type, "template");
+}));
+test("TW1 two cashiers outside the window in one fan-out ⇒ one notice on the cashier portal (dedup), both logged as portal", withEnv(OPEN, async () => {
+  const w = world({ portal: true });
+  const cfg = T.teamConfig(w.db.settings), cashiers = cfg.members.filter((x) => x.role === "cashier");
+  const out = await w.team.fanOut(cfg, cashiers, () => ({ topic: "close", kind: "close_reminder", body: "⏰ محادثة لسه مفتوحة", ref4: "5678", templates: [], sms: null }));
+  assert.deepEqual([out.sent, out.failed], [2, 0]);
+  assert.equal(w.db.notices.length, 1); assert.equal(w.pushed.length, 1);
+  assert.deepEqual(w.db.log.map((l) => [l.via, l.error]), [["portal", null], ["portal", "dup"]]);
+  w.clock.advance(T.NOTICE_DEDUP_MIN + 1);
+  await w.team.fanOut(cfg, cashiers.slice(0, 1), () => ({ topic: "close", kind: "close_reminder", body: "⏰ محادثة لسه مفتوحة", ref4: "5678", templates: [], sms: null }));
+  assert.equal(w.db.notices.length, 2, "after the dedup window it may ring again");
+}));
+test("TW1 setting «قالب واتساب»: outside the window goes back to template ⇒ SMS exactly like before", withEnv(OPEN, async () => {
+  const w = world({ portal: true, waTeam: { members: MEMBERS, outsideWindow: "template" }, approved: ["fc_staff_team_notice"] });
+  const cfg = T.teamConfig(w.db.settings), cash = cfg.members.find((x) => x.phone === CASH1);
+  const r = await w.team.sendToStaff(cfg, cash, { topic: "odd", kind: "secret", body: "👀", templates: NOTICE_TPL, sms: null });
+  assert.deepEqual([r.ok, r.via], [true, "wa_template"]); assert.equal(w.db.notices.length, 0);
+  const w2 = world({ portal: true, waTeam: { members: MEMBERS, outsideWindow: "template" } });
+  const r2 = await w2.team.sendToStaff(T.teamConfig(w2.db.settings), cash, { topic: "odd", kind: "secret", body: "👀", templates: NOTICE_TPL, sms: "sms text" });
+  assert.deepEqual([r2.ok, r2.via], [true, "sms"]); assert.equal(w2.sms.length, 1);
+}));
+test("TW1 keeper: a cashier whose window closed gets ONE portal notice (renew how-to) — no renew template, no SMS nudge", withEnv(OPEN, async () => {
+  const w = world({ portal: true, approved: ["fc_staff_alerts_renew"], waTeam: { members: [MEMBERS[0]] } });
+  w.wrote(CASH1, 30);
+  await w.team.tick();
+  assert.equal(w.calls.length, 0); assert.equal(w.sms.length, 0);
+  assert.equal(w.db.notices.length, 1); assert.match(w.db.notices[0].title, /منى/); assert.equal(w.db.notices[0].role, "cashier");
+  await w.team.tick();
+  assert.equal(w.db.notices.length, 1, "once per closure");
+}));
+test("TW1 routes: each portal role sees only its notices; «تمام» clears it on every device of that role; kitchen is refused; status shows who is inside/outside", withEnv(OPEN, async () => {
+  const w = world({ portal: true });
+  w.wrote(CASH2, 1);      // سارة جوّه النافذة
+  const cfg = T.teamConfig(w.db.settings);
+  await w.team.sendToStaff(cfg, cfg.members.find((x) => x.phone === CASH1), { topic: "odd", kind: "secret", body: "للكاشير", templates: [], sms: null });
+  await w.team.sendToStaff(cfg, cfg.members.find((x) => x.role === "manager"), { topic: "odd", kind: "secret", body: "للمدير", templates: [], sms: null });
+  const c = (await w.call("GET", "/api/portal/wa/team-notices")).body;
+  assert.deepEqual(c.notices.map((n) => n.title), ["للكاشير"]);
+  w.setPortalUser({ name: "خالد", role: "manager" });
+  const m = (await w.call("GET", "/api/portal/wa/team-notices")).body;
+  assert.deepEqual(m.notices.map((n) => n.title), ["للمدير"]);
+  const cashierNoticeId = c.notices[0].id;
+  assert.equal((await w.call("POST", "/api/portal/wa/team-notices/:id/ack", {}, String(cashierNoticeId))).body.already, true, "a manager cannot clear the cashier's notice");
+  w.setPortalUser({ name: "منى", role: "cashier" });
+  const a = (await w.call("POST", "/api/portal/wa/team-notices/:id/ack", {}, String(cashierNoticeId))).body;
+  assert.deepEqual([a.ok, a.already], [true, false]);
+  assert.deepEqual(w.told.at(-1), { event: "team_notice_ack", data: { id: cashierNoticeId, by: "منى" }, roles: ["cashier"] });
+  assert.equal((await w.call("GET", "/api/portal/wa/team-notices")).body.notices.length, 0);
+  w.setPortalUser({ name: "شيف", role: "kitchen" });
+  assert.equal((await w.call("GET", "/api/portal/wa/team-notices")).status, 403);
+  const st = (await w.call("GET", "/api/cms/wabot/team")).body;
+  assert.deepEqual(st.members.map((x) => [x.last4, x.reach]), [["0001", "portal"], ["0002", "wa_free"], ["0003", "portal"], ["0004", "template"], ["0005", "template"]]);
+  assert.deepEqual(st.schema.outsideModes.map((x) => x.id), ["portal", "template"]); assert.equal(st.config.outsideWindow, "portal"); assert.equal(st.schema.portalNotices, true);
 }));

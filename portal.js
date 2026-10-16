@@ -320,6 +320,11 @@ export function register(app, ctx, deps = {}) {
       .catch((e) => { try { log.error("[portal] review broadcast:", e?.message || e); } catch { /* */ } });
     return undefined;
   }
+  /* TW1 (١٦/١٠): حدث لأدوار بعينها — إشعار فريق لبورتال الكاشير أو بورتال المدير (wateam.js). مفتاح المالك من اللوحة (admin) بيشوف الكل. */
+  function broadcastTo(event, data, roles) {
+    const want = new Set((Array.isArray(roles) ? roles : [roles]).map(String));
+    return sendAll(event, data, (u) => Boolean(u) && (want.has(String(u.role)) || u.admin === true || u.role === "dashboard"));
+  }
   function remember(o) {
     const sig = orderSignature(o);
     const changed = hub.sigs.get(o.orderNo) !== sig;
@@ -1286,6 +1291,7 @@ export function register(app, ctx, deps = {}) {
     tabsenseDown: (detail) => push.tabsenseDown(detail).catch(() => null),
     pollNewOrders, scan, refresh, loadFeed, loadInfo, push, hub, limiter, scheduleRefresh,
     broadcast,      // بوت واتساب بينده عليه بحدث wa_handover (عميل عايز موظف) — نفس قناة SSE بتاعة الطلبات
+    broadcastTo,    // TW1: إشعارات الفريق لدور واحد (كاشير / مدير)
     stop() {
       try { unsub?.(); } catch {}
       clearInterval(pollTimer);
