@@ -15,8 +15,8 @@ test("config: every rule ON by default; bad values fall back (never a wild numbe
 test("follow link: only while the bot is live for customers, the switch is on and the order is still open; ar + en prefilled text the bot recognises", () => {
   const live = { waBot: { mode: "live" } };
   const f = followLinkOf({ settings: live, orderNo: "W1790012345678", status: "accepted" });
-  assert.equal(f.url, "https://wa.me/966546715683?text=" + encodeURIComponent("تابع طلبي W1790012345678"));
-  assert.equal(f.textEn, "Track my order W1790012345678");
+  assert.equal(f.url, "https://wa.me/966546715683?text=" + encodeURIComponent("مرحبا، أبي أتابع طلبي رقم W1790012345678"));   // TRK6: لهجة بيضاء
+  assert.equal(f.textEn, "Hi, I'd like to track my order W1790012345678");
   assert.ok(FOLLOW_RE.test(followText("W1790012345678")) && FOLLOW_RE.test(followText("W1790012345678", "en")));
   for (const st of ["delivered", "rejected_refunded", "expired", "pending_payment"]) assert.equal(followLinkOf({ settings: live, orderNo: "W1790012345678", status: st }), null, st);
   assert.equal(followLinkOf({ settings: { waBot: { mode: "test" } }, orderNo: "W1790012345678", status: "accepted" }), null);

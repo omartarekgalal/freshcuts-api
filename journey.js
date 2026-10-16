@@ -94,6 +94,9 @@ export const WEB_EVENTS = Object.freeze([
   // 10/10 (UX v2): the «added to cart» sheet (open / checkout / more) and the box tier tabs.
   // The storefront sent both from U5/U6 but the names were not listed here, so they were dropped.
   "added_sheet", "box_tier",
+  // 16/10 (TRK6): «تابع طلبك على واتساب» after paying — banner on the tracking page / small pill while browsing
+  // (props.where = banner | pill | track_btn): shown, tapped (opens wa.me), closed. The chats it opens: waBot follow_order/follow_at.
+  "wa_follow_shown", "wa_follow_tap", "wa_follow_close",
 ]);
 
 /* نوع خطأ الـJS. المتصفح بيبعت kind من ١٩/٩؛ القديم بنصنّفه من الرسالة والملف.

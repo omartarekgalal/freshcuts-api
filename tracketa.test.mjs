@@ -122,8 +122,8 @@ test("track route: stages + eta + courier card (first name, masked phone, our /m
   assert.equal(r.eta.basis, "position"); assert.ok(r.eta.minutes > 0); assert.ok(Date.parse(r.eta.at) > Date.now());
   assert.equal(r.courier.firstName, "أحمد"); assert.equal(r.courier.phoneMasked, "055•••4567");
   assert.match(r.courier.chatUrl, /^https:\/\/freshcuts\.sa\/m\/W1790012345678\.[A-Za-z0-9]{12}$/); assert.doesNotMatch(r.courier.chatUrl, /0551234567|966551234567/);
-  assert.equal(r.wa.follow.url, `https://wa.me/966546715683?text=${encodeURIComponent("تابع طلبي W1790012345678")}`);
-  assert.equal(r.wa.follow.urlEn, `https://wa.me/966546715683?text=${encodeURIComponent("Track my order W1790012345678")}`);
+  assert.equal(r.wa.follow.url, `https://wa.me/966546715683?text=${encodeURIComponent("مرحبا، أبي أتابع طلبي رقم W1790012345678")}`);   // TRK6: لهجة بيضاء
+  assert.equal(r.wa.follow.urlEn, `https://wa.me/966546715683?text=${encodeURIComponent("Hi, I'd like to track my order W1790012345678")}`);
   assert.equal(JSON.stringify(r).includes(String(CUST.lat)), false, "the customer's coordinates never leave the server");
   const off = build({ order, ship, settings: { waBot: { mode: "test" } } });
   assert.equal((await off.get("W1790012345678")).body.wa, null, "bot not live for customers ⇒ no button (nobody would answer)");

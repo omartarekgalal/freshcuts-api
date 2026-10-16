@@ -38,9 +38,17 @@ export function waPolicyCfg(settings = {}) {
   };
 }
 
-/* النص الجاهز اللي البوت بيتعرّف عليه (wabotrun FOLLOW_RE) — عربي أو إنجليزي حسب لغة الصفحة */
-export const followText = (orderNo, lang = "ar") => (lang === "en" ? `Track my order ${orderNo}` : `تابع طلبي ${orderNo}`);
-export const FOLLOW_RE = /^\s*(?:📲\s*)?(?:تابع طلبي|تابع طلبى|track my order)\s*(?:رقم|no\.?|#)?\s*#?\s*(W\d{10,15})\s*[.!؟?]?\s*$/i;
+/* النص الجاهز اللي البوت بيتعرّف عليه (wabotrun FOLLOW_RE) — عربي أو إنجليزي حسب لغة الصفحة.
+   TRK6 (عمر ١٦/١٠): بانر «تابع طلبك على واتساب» بعد الدفع ⇒ النص بقى بلهجة بيضاء «مرحبا، أبي أتابع طلبي رقم W…».
+   FOLLOW_RE بيفهم الجديد والقديم («تابع طلبي W…» — لينكات اتفتحت قبل النشر) — والرسالة لازم تكون النص الجاهز لوحده
+   (أي كلام زيادة زي «وين وصل وليش تأخر» ⇒ مش follow_link، يروح للقواعد/المساعد زي ما هو). */
+export const followText = (orderNo, lang = "ar") => (lang === "en" ? `Hi, I'd like to track my order ${orderNo}` : `مرحبا، أبي أتابع طلبي رقم ${orderNo}`);
+export const FOLLOW_RE = /^\s*(?:📲\s*)?(?:(?:(?:مرحبا|مرحباً|هلا|أهلا|اهلا|السلام عليكم)\s*[،,!.]?\s*)?(?:تابع طلبي|تابع طلبى|(?:أبي|ابي|أبغى|ابغى|ابغي|ودي)\s+(?:أتابع|اتابع)\s+(?:طلبي|طلبى))|(?:(?:hi|hello|hey)\s*[,!.]?\s*)?(?:i['’]?d like to\s+|i want to\s+)?track my order)\s*(?:رقم|no\.?|#)?\s*#?\s*(W\d{10,15})\s*[.!؟?]?\s*$/i;
+
+/* TRK6: البانر مابيظهرش لو العميل كاتب لنا على واتساب من أقل من FOLLOW_WINDOW_HOURS ساعة — النافذة مفتوحة ولسه فاضل فيها
+   ≥٤ ساعات، يعني تحديثات الطلب كلها هتطلع ببلاش من غير ما يضغط. (wa_messages_phone_idx = phone_norm, created_at DESC) */
+export const FOLLOW_WINDOW_HOURS = 20;
+export const WINDOW_OPEN_SQL = "SELECT 1 FROM wa_messages WHERE phone_norm=$1 AND direction='in' AND created_at > NOW() - make_interval(hours => $2::int) LIMIT 1";
 
 /* زر صفحة التتبع ⇒ { url, urlEn, text, textEn } أو null.
    بيظهر بس لو: المفتاح شغّال، والبوت شغّال للعملاء (live) — غير كده العميل يكتب ومحدش يرد عليه آلياً — والطلب لسه ماتسلّمش ولا اتلغى. */
@@ -105,5 +113,47 @@ export function orderMessagesReport(msgs = [], skips = [], rate = 0.0401) {
     saved_sar: r4((t.free + t.skipped) * rate),
     list: orders.slice(0, 200),
     note: "per order: paid = templates (billed), free = in-window messages, skipped = left out by the closed-window policy (preparing / review merged into delivered). saved_sar = (free + skipped) × the utility rate",
+  };
+}
+
+/* ═══ TRK6 (١٦/١٠): «تابع طلبك على واتساب» — اتعرض/اتضغط (أحداث المتجر) ومحادثات اتفتحت بيه (رسايل واتساب) ═══
+   FOLLOW_SQL.chats: رسايل العملاء في يوم الشغل اللي فيها رقم طلب W… + هل الرسالة دي فتحت نافذة جديدة (مفيش رسالة منه في الـ٢٤ ساعة اللي قبلها)
+   + كام تحديث طلب طلع ببلاش جوّه النافذة لنفس الطلب بعدها. الفلترة النهائية بـFOLLOW_RE في الكود (تعريف واحد للنص الجاهز).
+   FOLLOW_SQL.events: أحداث wa_follow_* من غير جلسات الاختبار/البوتات/الموظفين، مقسّمة بالمكان (banner | pill | track_btn). */
+export const FOLLOW_SQL = Object.freeze({
+  chats: `SELECT m.phone_norm, m.body, m.created_at,
+            NOT EXISTS (SELECT 1 FROM wa_messages p WHERE p.phone_norm = m.phone_norm AND p.direction = 'in' AND p.created_at < m.created_at AND p.created_at > m.created_at - INTERVAL '24 hours') AS opened
+          FROM wa_messages m WHERE m.direction = 'in' AND m.created_at >= $1 AND m.created_at < $2 AND m.body ~* 'W[0-9]{10,15}' ORDER BY m.created_at LIMIT 3000`,
+  freeAfter: `SELECT order_no, count(*)::int AS n FROM wa_messages WHERE direction = 'out' AND template IS NULL AND source = 'window' AND order_no = ANY($1::text[])
+                AND COALESCE(status,'') NOT IN ('failed','skipped') GROUP BY order_no`,
+  events: `SELECT e.name, COALESCE(NULLIF(e.props->>'where',''),'banner') AS where_, count(*)::int AS n, count(DISTINCT e.session_id)::int AS sessions
+           FROM journey_events e JOIN journey_sessions s ON s.session_id = e.session_id
+           WHERE e.at >= $1 AND e.at < $2 AND e.name IN ('wa_follow_shown','wa_follow_tap','wa_follow_close') AND NOT s.is_qa AND NOT s.is_bot AND NOT s.is_staff
+           GROUP BY 1, 2`,
+});
+export function followLinkReport({ chats = [], events = [], freeAfter = [], rate = 0.0401 } = {}) {
+  const follow = (chats || []).filter((m) => m && FOLLOW_RE.test(String(m.body || "")));
+  const orderOf = (m) => String((FOLLOW_RE.exec(String(m.body || "")) || [])[1] || "").toUpperCase();
+  const orders = [...new Set(follow.map(orderOf).filter(Boolean))];
+  const free = (freeAfter || []).reduce((a, r) => a + (orders.includes(String(r.order_no || "").toUpperCase()) ? Number(r.n) || 0 : 0), 0);
+  const ev = { shown: 0, tap: 0, close: 0, by_where: {} };
+  for (const r of events || []) {
+    const k = String(r.name || "").replace(/^wa_follow_/, "");
+    if (!(k in ev) || k === "by_where") continue;
+    const n = Number(r.n) || 0, w = String(r.where_ || r.where || "banner").slice(0, 20);
+    ev[k] += n;
+    ev.by_where[w] = ev.by_where[w] || { shown: 0, tap: 0, close: 0 };
+    ev.by_where[w][k] += n;
+  }
+  return {
+    shown: ev.shown, taps: ev.tap, closed: ev.close, by_where: ev.by_where,
+    tap_rate: ev.shown ? Math.round((ev.tap / ev.shown) * 1000) / 1000 : null,
+    chats: follow.length,
+    customers: new Set(follow.map((m) => String(m.phone_norm || ""))).size,
+    opened_window: follow.filter((m) => m.opened === true || m.opened === "t").length,
+    orders: orders.length,
+    free_updates: free,
+    saved_sar: Math.round(free * rate * 10000) / 10000,
+    note: "shown/taps/closed = storefront events (banner after paying, pill while browsing, the button on the tracking page; QA/bots/staff excluded). chats = customer messages that are the ready-made follow text; opened_window = no message from that number in the 24 h before it; free_updates = order updates sent free inside the window to those orders (× the utility rate = saved_sar)",
   };
 }

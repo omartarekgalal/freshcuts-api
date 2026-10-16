@@ -47,7 +47,7 @@ import { briefBlock, briefFromBody, briefForDashboard, menuDigest, BRIEF_SECTION
 import { buildMajedReport, businessDay } from "./wamajed.js";
 import { makeAiCost, pricesOf, waRatesOf, pricesFromBody, waRatesFromBody, BUDGET_DEFAULTS } from "./waaicost.js";
 import { dayMonth } from "./wasales.js";      // SB4
-import { WA_POLICY_DEFAULTS, waPolicyCfg, FOLLOW_RE, reviewDecision, orderMessagesReport } from "./wapolicy.js";      // ١٤/١٠: زر «تابع طلبك» + سياسة النافذة المقفولة
+import { WA_POLICY_DEFAULTS, waPolicyCfg, FOLLOW_RE, reviewDecision, orderMessagesReport, FOLLOW_SQL, followLinkReport } from "./wapolicy.js";      // ١٤/١٠: زر «تابع طلبك» + سياسة النافذة المقفولة
 import { providerInfo, maskText } from "./wabotllm.js";
 import { kbTokens } from "./wakb.js";
 import { teamConfig, staffRoleOf, nonCustomerKind } from "./wateam.js";
@@ -4323,12 +4323,16 @@ const fl = await q(`SELECT count(*)::int AS n FROM wa_bot_log WHERE phone_norm=$
     const fr = ((await q(FU_SQL.report, [w.from, w.to])) || [])[0] || {};
     const fv = (await q(FU_SQL.reportVia, [w.from, w.to])) || [];
     const fb = await brakeState();
+    /* TRK6: «تابع طلبك على واتساب» — اتعرض/اتضغط (المتجر) ومحادثات اتفتحت بيه + تحديثات ببلاش بعدها (wapolicy.followLinkReport) */
+    const flChats = (await q(FOLLOW_SQL.chats, [w.from, w.to])) || [], flEvents = (await q(FOLLOW_SQL.events, [w.from, w.to])) || [];
+    const flOrders = [...new Set(flChats.map((m) => String((FOLLOW_RE.exec(String(m.body || "")) || [])[1] || "").toUpperCase()).filter(Boolean))];
+    const followLink = followLinkReport({ chats: flChats, events: flEvents, freeAfter: flOrders.length ? (await q(FOLLOW_SQL.freeAfter, [flOrders])) || [] : [], rate: Number(rate.utility) || 0.0401 });
     const replyFollowups = { sent: fr.sent || 0, replied: fr.replied || 0, said_yes: fr.said_yes || 0, said_no: fr.said_no || 0, stopped: fr.stopped || 0, blocked: fr.blocked || 0,
       carts: fr.carts || 0, carts_opened: fr.carts_opened || 0, ordered: fr.ordered || 0, paid_orders: fr.paid_orders || 0, paid_sar: r2(Number(fr.paid_sar) || 0), paid_via_link: fr.paid_via_link || 0,
       by_via: Object.fromEntries(fv.map((x) => [x.via, Number(x.n) || 0])), brake: fb ? { on: fb.on, at: fb.at, detail: fb.detail } : null };
     const window = { paid_templates: { utility: wm.utility || 0, marketing: wm.marketing || 0, sar: r2((wm.utility || 0) * ru + (wm.marketing || 0) * rmk) }, free_messages: wm.free || 0,
       free_order_updates: wm.free_updates || 0, saved_sar: r2((wm.free_updates || 0) * ru), orders: orderMessagesReport(om, os, ru), keeper: { sent: kp.sent || 0, nothing_useful: kp.nothing_useful || 0, replied: kp.replied || 0, ordered: kp.ordered || 0 },
-      reply_followups: replyFollowups,
+      reply_followups: replyFollowups, follow_link: followLink,
       note: "saved_sar = order updates that went out free inside an open window × the utility rate; keeper replied / ordered = within 24 h of the message; reply_followups: paid orders / SAR = paid website orders from the same number within 24 h of the follow-up (paid_via_link = through the follow-up's own cart link)" };
     /* RV1: التقييمات — اتبعت كام وبأنهي قناة، اتقيّم كام وبكام نجمة، روابط جوجل اتبعت/اتضغطت، والواطي اتعامل ولا لأ (wareviews.reviewsDaily) */
     let reviews = null; try { reviews = await reviewsDaily(q, { from: w.from, to: w.to, place: ((await getSettingsData()) || {}).googlePlace || null }); } catch (e) { reviews = { ok: false, error: String(e.message).slice(0, 80) }; }

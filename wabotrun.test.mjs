@@ -4850,7 +4850,8 @@ test("SB4 window: the daily report carries paid templates vs free messages, SAR 
   const w = world({ waBot: { mode: "test", testPhones: TESTERS } });
   const r = await w.call("GET", "/api/cms/wabot/assist/daily");
   const win = r.body.report.window;
-  assert.deepEqual(Object.keys(win).sort(), ["free_messages", "free_order_updates", "keeper", "note", "orders", "paid_templates", "reply_followups", "saved_sar"]);      // ١٤/١٠: + orders (لكل طلب بفلوس/ببلاش/اتشال) · FU1: + reply_followups
+  assert.deepEqual(Object.keys(win).sort(), ["follow_link", "free_messages", "free_order_updates", "keeper", "note", "orders", "paid_templates", "reply_followups", "saved_sar"]);      // ١٤/١٠: + orders (لكل طلب بفلوس/ببلاش/اتشال) · FU1: + reply_followups · TRK6: + follow_link
+  assert.deepEqual(Object.keys(win.follow_link).sort(), ["by_where", "chats", "closed", "customers", "free_updates", "note", "opened_window", "orders", "saved_sar", "shown", "tap_rate", "taps"]);
   assert.deepEqual(Object.keys(win.keeper).sort(), ["nothing_useful", "ordered", "replied", "sent"]);
   assert.deepEqual(Object.keys(win.reply_followups).sort(), ["blocked", "brake", "by_via", "carts", "carts_opened", "ordered", "paid_orders", "paid_sar", "paid_via_link", "replied", "said_no", "said_yes", "sent", "stopped"]);
   assert.equal(typeof win.paid_templates.sar, "number");
@@ -4927,6 +4928,24 @@ test("follow button: «تابع طلبي W…» (ar/en) ⇒ that order's status 
   // another phone cannot read the order by its number
   const other = await w.say("تابع طلبي W1790012345678", { from: "966500000009" });
   assert.doesNotMatch(JSON.stringify(other.sent), /W1790012345678: /);
+}));
+
+test("TRK6: the banner's white-dialect text «مرحبا، أبي أتابع طلبي رقم W…» ⇒ the same order-status reply from the rules (not a sales menu, not a handover, not the assistant); the chat is marked order-follow", withEnv(CONFIGURED, async () => {
+  const P = await import("./wapolicy.js");
+  const ORD = { order_no: "W1790012345678", phone_norm: "512345678", status: "accepted", option: "delivery", created_at: "2026-10-12T14:50:00Z" };
+  const w = world({ waBot: { mode: "test", testPhones: TESTERS }, orders: [ORD] });
+  const t = await w.say(P.followText("W1790012345678"));
+  assert.equal(t.log.reply_key, "status", JSON.stringify(t.log));
+  const m = t.sent.find((b) => b.type);
+  assert.match(JSON.stringify(m), /طلبك رقم W1790012345678/); assert.match(JSON.stringify(m), /✅ تم — سنرسل لك هنا كل تحديث على طلبك\./);
+  assert.match(JSON.stringify(m), /freshcuts\.sa\/track\/W1790012345678/);
+  assert.equal(t.sent.length, 1, "one status reply — no menu after it"); assert.notEqual(t.log.reply_key, "handover"); assert.doesNotMatch(String(m.interactive && m.interactive.body && m.interactive.body.text), /نحوّلك|القائمة الرئيسية/);
+  assert.equal(w.db.chats.get("512345678").follow_order, "W1790012345678");
+  const c = R.classify({ type: "text", text: P.followText("W1790012345678", "en") });
+  assert.deepEqual([c.key, c.rawIntent, c.entities.orderNo], ["status", "follow_link", "W1790012345678"]);
+  const A = await import("./waassistrun.js");
+  const el = A.assistEligible({ acfg: { mode: "live" }, cfg: { mode: "live", testPhones: [] }, phone: "512345678", ev: { text: P.followText("W1790012345678") }, cls: R.classify({ type: "text", text: P.followText("W1790012345678") }), d: { act: "reply" }, allowed: true, openOrder: false });
+  assert.deepEqual([el.run, el.why], [false, "rules:follow_link"]);
 }));
 
 test("closed window: delivered went with «تمام 👍 / عندي ملاحظة» (v2 template or free) ⇒ NO separate paid review template for the order; plain delivered ⇒ the review waits reviewPaidGapMin after the last paid template", withEnv(LOCKS_OPEN, async () => {
