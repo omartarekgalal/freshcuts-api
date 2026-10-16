@@ -1664,6 +1664,8 @@ const AUTO_INBOUND_RE = [
 ];
 export function autoInboundKind({ text, sinceTemplateSec = null, cfg = DEFAULTS } = {}) {
   const raw = String(text || "").trim(); if (!raw) return null;
+  /* TRK6: نصّنا الجاهز من بانر «تابع طلبك على واتساب» (٤٠ حرف، بيوصل بعد قالب fc_order_received بثواني) = عميل ضغط الزرار، مش رد آلي */
+  if (FOLLOW_RE.test(raw)) return null;
   if (cfg.autoInboundPatterns !== false) { const n = normalize(raw); if (AUTO_INBOUND_RE.some((re) => re.test(n))) return "pattern"; }
   if (cfg.autoInboundSec > 0 && sinceTemplateSec != null && sinceTemplateSec >= -3 && sinceTemplateSec <= cfg.autoInboundSec && [...raw].length >= AUTO_INBOUND_MIN_CHARS) return "after_template";
   return null;

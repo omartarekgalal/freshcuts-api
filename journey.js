@@ -324,6 +324,9 @@ export function maskPhone(pn) {
 const SID_RE = /^s[a-z0-9]{8,40}$/;
 const ANON_RE = /^[a-z0-9_-]{2,64}$/i;
 const ORDER_RE = /^[A-Z]{0,3}\d{6,20}$/;
+/* رقم الطلب اللي الحدث بيختم بيه الجلسة (journey_sessions.order_no + shop_orders.journey_sid). أحداث «تابع طلبك على واتساب» (TRK6) لأ:
+   بتطلع في جلسة تصفّح بعد الطلب بساعات، ولو ختمتها بالطلب القديم الـsweep بيعدّ فلوسه مرتين على قناة غلط. المتجر بيبعت الرقم فيها كـprops.ord مش order_no. */
+export const eventOrderNo = (e) => (e && e.props && !/^wa_follow_/.test(String(e.name || "")) && ORDER_RE.test(String(e.props.order_no || "")) ? String(e.props.order_no) : null);
 export const validSid = (s) => typeof s === "string" && SID_RE.test(s);
 
 /* جسم /batch → {sessionId, anonId, session, events[]} أو {error} — صافي */
@@ -635,7 +638,7 @@ export function register(app, ctx, deps = {}) {
     let i = 1;
     for (const e of events) {
       cols.push(`($${i++},$${i++},$${i++},$${i++},$${i++},$${i++},$${i++}::jsonb,$${i++},$${i++})`);
-      const orderNo = e.props && ORDER_RE.test(String(e.props.order_no || "")) ? String(e.props.order_no) : null;
+      const orderNo = eventOrderNo(e);
       vals.push(sessionId, source, e.name, e.step, e.seq, e.clientTs || null, J(e.props || {}), orderNo, e.path || null);
     }
     const ins = await pool.query(

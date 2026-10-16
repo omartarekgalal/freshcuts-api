@@ -4948,6 +4948,31 @@ test("TRK6: the banner's white-dialect text «مرحبا، أبي أتابع ط�
   assert.deepEqual([el.run, el.why], [false, "rules:follow_link"]);
 }));
 
+test("TRK6 × EX5: the banner text 3–10 s after our paid fc_order_received template (ar + en) ⇒ exactly one status reply — not auto_inbound, no staff note; a real auto-responder after the same template is still caught", withEnv(LOCKS_OPEN, async () => {
+  const P = await import("./wapolicy.js");
+  const A = { order_no: "W1790012345678", phone_norm: "512345678", status: "accepted", option: "delivery", created_at: "2026-10-12T14:50:00Z" };
+  const B = { order_no: "W1790087654321", phone_norm: "500000007", status: "accepted", option: "delivery", created_at: "2026-10-12T14:50:00Z" };
+  const w = liveWorld({ orders: [A, B] });
+  assert.equal(R.botConfig({}).autoInboundSec, 15, "the live window that caught it");
+  const tpl = (pn) => w.db.msgs.push({ wamid: `wamid.REC${w.db.msgs.length}`, direction: "out", phone_norm: pn, template: "fc_order_received", category: "UTILITY", status: "sent", source: "cloud", created_at: w.clock.now().toISOString() });
+  for (const [o, lang, from, wait] of [[A, "ar", "966512345678", 3], [B, "en", "966500000007", 10]]) {
+    const txt = P.followText(o.order_no, lang);
+    assert.ok([...txt].length >= R.AUTO_INBOUND_MIN_CHARS, `${lang}: long enough for the time rule (${[...txt].length})`);
+    assert.equal(R.autoInboundKind({ text: txt, sinceTemplateSec: wait }), null, lang);
+    tpl(o.phone_norm); w.clock.advanceSec(wait);
+    const p0 = w.portal.length;
+    const r = await w.say(txt, { from });
+    assert.deepEqual([r.log.decision, r.log.reply_key, r.log.reason || null], ["replied", "status", null], `${lang}: ${JSON.stringify(r.log)}`);
+    assert.equal(r.sent.length, 1, `${lang}: exactly one reply`); assert.match(JSON.stringify(r.sent[0]), new RegExp(o.order_no));
+    assert.equal(w.portal.slice(p0).filter((e) => e[1] && e[1].reason === "auto_inbound").length, 0, `${lang}: no auto_inbound note`);
+    assert.equal(w.db.chats.get(o.phone_norm).follow_order, o.order_no);
+  }
+  // the guard itself is untouched: boilerplate a few seconds after the same template is still silent
+  tpl("577000001"); w.clock.advanceSec(5);
+  const biz = await w.say("اهلا وسهلا بكم في مؤسسة النور للمقاولات العامة والتوريدات", { from: "966577000001" });
+  assert.deepEqual([biz.sent.length, biz.log.reason, biz.log.detail], [0, "auto_inbound", "after_template:5s"]);
+}));
+
 test("closed window: delivered went with «تمام 👍 / عندي ملاحظة» (v2 template or free) ⇒ NO separate paid review template for the order; plain delivered ⇒ the review waits reviewPaidGapMin after the last paid template", withEnv(LOCKS_OPEN, async () => {
   const CAT = await import("./watemplates.js"); const WA = await import("./whatsapp.js"); WA.registerCatalog(CAT);
   const O = { order_no: "W1790012345678", phone_norm: "512345678", option: "delivery" };

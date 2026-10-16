@@ -120,6 +120,19 @@ test("journey: the storefront's wa_follow_* events are accepted (banner / pill /
   assert.equal(p.events[0].props.where, "banner");
 });
 
+test("journey: a wa_follow_* event never stamps the session with an order (a later browsing session would take the old order and the paid sweep would count it twice) — ordinary events still do", async () => {
+  const J = await import("./journey.js");
+  for (const n of ["wa_follow_shown", "wa_follow_tap", "wa_follow_close"]) {
+    assert.equal(J.eventOrderNo({ name: n, props: { where: "pill", order_no: NO } }), null, n + " / order_no (an old cached script)");
+    assert.equal(J.eventOrderNo({ name: n, props: { where: "pill", ord: NO } }), null, n + " / ord");
+  }
+  const p = J.parseBatch(JSON.stringify({ v: 1, sessionId: "s1abc2def3", anonId: "d1abc2def3", events: [{ n: "wa_follow_shown", t: Date.now(), seq: 1, path: "/", p: { where: "pill", ord: NO } }] }));
+  assert.equal(p.events[0].props.ord, NO, "the number is still kept on the event, under ord");
+  assert.equal(J.eventOrderNo(p.events[0]), null);
+  assert.equal(J.eventOrderNo({ name: "order_created", props: { order_no: NO } }), NO, "checkout still links its own session");
+  assert.equal(J.eventOrderNo({ name: "order_created", props: { order_no: "x" } }), null);
+});
+
 /* ═══ daily report ═══ */
 test("report: shown / taps by place, chats that are the ready-made text, windows they opened, orders, free updates after it", () => {
   const T0 = "2026-10-16T15:00:00Z";
