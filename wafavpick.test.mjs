@@ -276,7 +276,7 @@ function favWorld({ people = {}, bundles = FX.bundles, offers = FX.offers, soldO
     if (sql === S.outboundSince) { const x = people[params[0]]; return rows(x && (x.outboundSince || (x.outboundAt || []).some((t) => Date.parse(t) > Date.parse(params[1]))) ? [{ "?column?": 1 }] : []); }
     throw new Error(`unexpected sql: ${sql.slice(0, 80)}`);
   } };
-  const api = F.makeFavPick({ pool, now: () => now, getSettingsData: async () => ({ delivery: { alertPhones: ["0500000001"] }, ...settings }),
+  const api = F.makeFavPick({ pool, now: () => now, getSettingsData: async () => ({ delivery: { alertPhones: ["0500000901"] }, ...settings }),
     live: () => ({ menu: async (o) => { calls.live.push(["menu", o]); return st.menu; }, bundles: async (o) => { calls.live.push(["bundles", o]); return st.bundles; }, offers: async (o) => { calls.live.push(["offers", o]); return st.offers; } }),
     quote: async (x) => { calls.quote.push(x); const km = st.kmAt.get(`${x.lat},${x.lng}`); return km == null ? { deliverable: true, fee: 20, distanceSource: "straight" } : quoteAt(km, policy)(x); } });
   return { api, calls, st, people };
@@ -287,7 +287,7 @@ const PEOPLE = () => ({
   "501000022": { name: "تجربة ميكس", orders: 8, spend: 640, daysAgo: 6, web: { n: 3, deliv: 3 }, loc: { lat: 21.6, lng: 39.16, km: 3.8 }, hist: H([6, 88, "وجبة ميكس جريل ×2|مياه"], [19, 92, "وجبة ميكس جريل|وجبة صدور مشوية"]) },
   "501000033": { name: "Test Crepe", orders: 6, spend: 280, daysAgo: 13, web: { n: 3, deliv: 0 }, firstUsed: true, loc: { lat: 21.59, lng: 39.15, km: 1.4 }, rewards: [{ code: "FCTEST7Q2K", minTotal: 60 }], hist: H([13, 58, "كريب سوبر كرانشي|كريب شيش طاووق"], [29, 63, "كريب سوبر كرانشي"]) },
   "501000044": { name: "تجربة جمعات", orders: 3, spend: 620, daysAgo: 16, web: { n: 1, deliv: 0 }, hist: H([16, 470, "طرب مشوي بالوزن - كيلو ×4|طبق أرز بسمتي ×4"], [41, 72, "طرب مشوي بالوزن - نصف كيلو"]) },
-  "500000001": { name: "موظف", orders: 9, spend: 900, daysAgo: 6, hist: H([6, 60, "كريب زنجر سوبريم"]) },                 // أرقام التنبيهات
+  "500000901": { name: "موظف", orders: 9, spend: 900, daysAgo: 6, hist: H([6, 60, "كريب زنجر سوبريم"]) },                 // أرقام التنبيهات (RV5: كان 500000001 — بقى رقم حشو seven_run فكان بيتعدّ bad_number قبل staff)
   "511111111": { name: "رقم وهمي", orders: 9, spend: 900, daysAgo: 6, hist: H([6, 60, "كريب زنجر سوبريم"]) },
   "520000001": { name: "طلب النهارده", orders: 4, spend: 200, daysAgo: 0, today: true, hist: H([0, 60, "كريب زنجر سوبريم"]) },
   "520000002": { name: "موقّف", orders: 4, spend: 200, daysAgo: 9, optedOut: true, hist: H([9, 60, "كريب زنجر سوبريم"]) },
