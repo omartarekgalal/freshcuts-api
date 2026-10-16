@@ -69,7 +69,7 @@ export function reviewSkipPhones(settings = {}) {
   for (const raw of [
     ...list(bot.testPhones), ...list(bot.neverReplyPhones), ...list(bot.alertPhones), ...list(bot.llm && bot.llm.alertPhones),
     KNOWN_WA_NUMBER, bot.publicPhone || "",
-    ...list(s.waHealth && s.waHealth.phones), ...list(s.adsReport && s.adsReport.phones),
+    ...list(s.waHealth && s.waHealth.phones), ...list(s.adsReport && s.adsReport.phones), ...list(s.revenuePulse && s.revenuePulse.phones),
     ...(Array.isArray(s.portal && s.portal.staff) ? s.portal.staff : []).map((x) => (x && (x.phone || x.mobile)) || ""),
   ]) { const p = normLocal(raw); if (p) out.add(p); }
   return out;

@@ -50,6 +50,7 @@ export const SERVER_OWNED_PATHS = [
   "waMaster",                   // wacloud.js (SEC: مفتاح واتساب الرئيسي — المالك بس، POST /api/cms/wa-cloud/master)
   "waCloudActive",              // wacloud.js (W5: أرقام آخر ربط ناجح — الأرقام الفعّالة)
   "waHealth",                   // wahealth.js (WH1: مراقب صحة واتساب — POST /api/cms/wa-health/settings، المالك بس)
+  "revenuePulse",               // revpulse.js (RP2: رسالة الدخل الدورية — POST /api/cms/revenue-pulse/settings، المالك بس)
   "jobs",                       // fc-job-gate + /api/settings/patch
   "adsGuard",                   // fc-adsentry + /api/settings/patch
   "adsPacer",                   // fc-pacer

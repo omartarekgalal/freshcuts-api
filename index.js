@@ -93,6 +93,7 @@ import * as whatsapp from "./whatsapp.js";
 import * as wainbox from "./wainbox.js";
 import * as wacloud from "./wacloud.js";
 import * as wahealth from "./wahealth.js";      // WH1 (١٦/١٠): مراقب صحة توصيل واتساب + تنبيه المالك
+import * as revpulse from "./revpulse.js";      // RP2 (١٦/١٠): رسالة الدخل الدورية للمالك (واتساب حر لو النافذة مفتوحة، وإلا SMS)
 import * as carts from "./carts.js";
 import * as freebar from "./freebar.js";
 import * as openwait from "./openwait.js";
@@ -3364,6 +3365,9 @@ const adspendApi = adspend.register(app, moduleCtx);
 const mffeesApi = mffees.register(app, moduleCtx);
 const bizApi = bizreports.register(app, moduleCtx, { adspend: adspendApi, mffees: mffeesApi });
 adsreport.register(app, moduleCtx, { sendSms: (m) => accounts.sendSms(m), adspend: adspendApi, biz: bizApi });
+/* 📲 RP2 (عمر ١٦/١٠ «عايز رسالة دورية بالدخل»): الدخل كل ساعتين ١ الضهر → ١ بالليل + ملخص القفلة ٣:١٥ للمالك — أرقام
+   bizApi.salesData نفسها (نفس /api/reports/biz/sales?preset=today)، واتساب حر لو نافذة المالك مفتوحة وإلا SMS خدمي؛ عمره ما قالب مدفوع. */
+revpulse.register(app, moduleCtx, { biz: bizApi, wa: waApi, health: () => waHealthApi, sendSms: (m) => accounts.sendSms(m) });
 // mkhub بيقرا الصرف المتطابق مع اليوم التشغيلي من هنا (عقد: {days:[{day, meta, whatsapp, snapchat, tiktok}]}، meta شامل الواتساب)
 globalThis.__fcAlignedSpend = async (from, to) => ({
   source: "ad_spend_hourly",

@@ -66,6 +66,10 @@ export const ALERT_TYPES = [
     hint: "مشكلة في النشر التلقائي على السوشال." },
   { id: "optout_brake", label: "فرملة إيقاف الاشتراك", source: "cms.js", critical: true,
     hint: "حملة SMS اتوقفت لوحدها لأن ناس كتير ألغت الاشتراك." },
+  /* RP2 (عمر ١٦/١٠): الـSMS بتطلع بس لما نافذة واتساب المالك تكون مقفولة — جوّه النافذة بتروح واتساب ببلاش ومابتتعدّش هنا */
+  { id: "revenue_pulse", label: "رسالة الدخل الدورية", source: "revpulse.js",
+    hint: "الدخل كل ساعتين وقت الشغل + ملخص القفلة للمالك. بتروح واتساب ببلاش لو نافذتك مفتوحة، وإلا SMS. مواعيدها وأرقامها من «واتساب ← الإعدادات ← الفريق والتنبيهات ← 📲 رسالة الدخل الدورية».",
+    codes: { slot: "الرسالة الدورية (كل ساعتين)", close: "ملخص القفلة" } },
   { id: "wa_health", label: "صحة واتساب (رصيد، دفع، جودة، حد، اسم)", source: "wahealth.js", critical: true,
     hint: "تنبيه قبل ما رسايل واتساب تقف — أولها «‼️ واتساب فريش كاتس:». بيروح لأرقام «صحة واتساب» في قسم واتساب، مرة لكل تغيير." },
 ];
@@ -89,6 +93,7 @@ export function typeOfRef(ref) {
   if (/^optout_brake$/.test(r)) return { type: "optout_brake", code: null };
   if (/^content_alert$/.test(r)) return { type: "content_alert", code: null };
   if (/^review:/.test(r)) return { type: "review", code: null };
+  if (/^revenue-pulse\b/.test(r)) return { type: "revenue_pulse", code: w[2] === "close" ? "close" : "slot" };      // revenue-pulse <HH:MM> slot|close
   if (/^wa-health(\s|$)/.test(r)) return { type: "wa_health", code: null };          // WH1: wa-health <مفاتيح المشاكل>|recovered
   return { type: "other", code: w[0] || null };
 }
