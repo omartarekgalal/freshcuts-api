@@ -222,10 +222,10 @@ export function phoneIssues(phone, prev = {}) {
   else if (st === "FLAGGED") out.push({ key: "phone_status", level: "warn", title: "ميتا علّمت الرقم (FLAGGED) — الجودة نازلة", sms: "ميتا علّمت رقم واتساب (FLAGGED) — خفّف الحملات",
     todo: "خفّف الحملات لحد ما العلامة تتشال، وإلا الحد هينزل.", link: "quality" });
   if (prev && prev.tier && phone.tier && tierDown(prev.tier, phone.tier)) out.push({ key: "tier_drop", level: "crit", title: `حد الرقم نزل من ${prev.tier} لـ${phone.tier}`, sms: `حد رقم واتساب نزل لـ${phone.tier}`,
-    todo: "قلّل سقف الحملات اليومي في «السقوف» ليناسب الحد الجديد، وراجع الجودة.", link: "quality" });
+    from: prev.tier, to: phone.tier, todo: "قلّل سقف الحملات اليومي في «السقوف» ليناسب الحد الجديد، وراجع الجودة.", link: "quality" });
   const pf = phone.portfolio && phone.portfolio.ok ? phone.portfolio.limit : null;
   if (prev && prev.portfolio && pf && tierDown(prev.portfolio, pf)) out.push({ key: "portfolio_drop", level: "crit", title: `حد المحفظة نزل من ${prev.portfolio} لـ${pf}`, sms: `حد محفظة واتساب نزل لـ${pf}`,
-    todo: "قلّل سقف الحملات اليومي ليناسب الحد الجديد، وراجع الجودة.", link: "quality" });
+    from: prev.portfolio, to: pf, todo: "قلّل سقف الحملات اليومي ليناسب الحد الجديد، وراجع الجودة.", link: "quality" });
   return out;
 }
 
@@ -310,22 +310,79 @@ export function mergeIssues(...lists) {
   return [...m.values()].sort((a, b) => (RANK[b.level] || 0) - (RANK[a.level] || 0));
 }
 
+/* ── المشاكل المحمولة (مراجعة WH1، ١٦/١٠) ──────────────────────────────────
+   غياب المشكلة في الدورة دي مش معناه إنها اتحلّت لو إحنا ماشفناش:
+     • قراية الرقم وقعت ⇒ مشاكل الرقم (الحالة/الجودة/الاسم/الحد) من آخر قراية ناجحة.
+     • قراية الصرف وقعت ⇒ مشاكل الميزانية/الرصيد من آخر قراية ناجحة (نفس الشهر، والإعداد لسه شغّال).
+     • غلطة إرسال (131042، 131031، 131048، توكن…) خرجت من النافذة من غير ما رسالة تنجح بعدها ⇒ لسه قايمة
+       (الدفع: لازم قالب ينجح — رسايل خدمة العميل ببلاش فمش دليل).
+     • «الحد نزل» بيفضل ظاهر ٤٨ ساعة طول ما الحد لسه تحت اللي كان عليه.
+   المحمولة carried:true: بتظهر في الكارت والبانر بنفس مستواها ومعاها «آخر مرة اتشافت»، مابتتبعتش تاني (مفيش دليل جديد)،
+   ومابتتحسبش «رجع تمام». وأحداث EVENT_KEYS (حصلت مرة) اختفاؤها مش «رجع تمام» أصلاً. */
+export const PHONE_KEYS = Object.freeze(["health_blocked", "health_limited", "quality_red", "quality_yellow", "name_rejected", "name_pending", "phone_status", "tier_drop", "portfolio_drop"]);
+export const SPEND_KEYS = Object.freeze(["budget_over", "budget_warn", "budget_pace", "prepaid_out", "prepaid_low"]);
+export const CODE_KEYS = Object.freeze([...new Set(Object.values(CODE_ISSUES).map((d) => d.key))]);
+export const EVENT_KEYS = Object.freeze(["tier_drop", "portfolio_drop", "account_event"]);
+const STICKY_DROP_MS = 48 * 3600_000;
+export const riyadhStamp = (ms) => { const d = new Date(Number(ms) + 3 * 3600_000); const p2 = (n) => String(n).padStart(2, "0");
+  return `${p2(d.getUTCDate())}/${p2(d.getUTCMonth() + 1)} ${p2(d.getUTCHours())}:${p2(d.getUTCMinutes())}`; };
+/* prevLast = snap الدورة اللي فاتت؛ present = مشاكل الدورة دي؛ okSince = { any, tpl } آخر رسالة نجحت (null = مش معروف ⇒ مانمسكش أكواد) */
+export function carryIssues(prevLast, { phoneOk = true, pricingOk = true, phone = null, okSince = null, cfg = HEALTH_DEFAULTS, now = Date.now(), present = [] } = {}) {
+  const last = prevLast && Array.isArray(prevLast.issues) ? prevLast.issues : [];
+  const lastAt = Date.parse((prevLast && prevLast.checkedAt) || "") || now;
+  const have = new Set((present || []).map((i) => i && i.key));
+  const out = [];
+  const carry = (i, detail) => {
+    const freshAt = i.carried ? (Date.parse(i.freshAt || "") || lastAt) : lastAt;
+    const base = i.carried ? (i.baseDetail ?? null) : (i.detail ?? null);
+    out.push({ ...i, carried: true, freshAt: new Date(freshAt).toISOString(), baseDetail: base, detail: detail(base, freshAt) });
+    have.add(i.key);
+  };
+  const join = (...a) => a.filter(Boolean).join(" · ");
+  const month = utcDay(now).slice(0, 7);
+  const pf = phone && phone.ok && phone.portfolio && phone.portfolio.ok ? phone.portfolio.limit : null;
+  for (const i of last) {
+    if (!i || !i.key || have.has(i.key) || (i.level !== "crit" && i.level !== "warn")) continue;
+    if (PHONE_KEYS.includes(i.key) && !phoneOk) { carry(i, (b, t) => join(b, `آخر قراية ناجحة ${riyadhStamp(t)} — ميتا مابتردّش دلوقتي`)); continue; }
+    if ((i.key === "tier_drop" || i.key === "portfolio_drop") && i.from && phoneOk) {
+      const t0 = i.carried ? (Date.parse(i.freshAt || "") || lastAt) : lastAt;
+      const cur = i.key === "tier_drop" ? (phone && phone.tier) : pf;
+      if (cur && tierDown(i.from, cur) && now - t0 < STICKY_DROP_MS) carry(i, (b, t) => join(b, `من ${riyadhStamp(t)}`));
+      continue;
+    }
+    if (SPEND_KEYS.includes(i.key) && !pricingOk) {
+      const t0 = i.carried ? (Date.parse(i.freshAt || "") || lastAt) : lastAt;
+      const applies = i.key.startsWith("budget_") ? cfg.monthBudgetSar > 0 : cfg.prepaidSar > 0 && Boolean(cfg.prepaidSince);
+      if (applies && utcDay(t0).slice(0, 7) === month) carry(i, (b, t) => join(b, `من آخر قراية ناجحة للصرف ${riyadhStamp(t)}`));
+      continue;
+    }
+    if (CODE_KEYS.includes(i.key) && okSince) {
+      const lastErr = Date.parse(i.last || "") || (i.carried ? Date.parse(i.freshAt || "") : lastAt) || lastAt;
+      const okAt = Date.parse((i.key === "pay_error" ? okSince.tpl : okSince.any) || "") || 0;
+      if (okAt <= lastErr) carry(i, () => `آخر غلطة ${riyadhStamp(lastErr)} — لسه مفيش رسالة ${i.key === "pay_error" ? "قالب " : ""}نجحت بعدها`);
+    }
+  }
+  return out;
+}
+
 /* ── خطة التنبيه (دالة صافية) ───────────────────────────────────────────────
    prev = { key: { level, at } } المشاكل اللي اتبعت عنها. بترجع { announce: [مشاكل], recovered: [keys], next }.
    بتتبعت: مشكلة جديدة، أو اتصعّدت (warn ⇒ crit)، أو لسه موجودة وعدّى عليها repeatHours (crit) / max(repeatHours, 24) (warn).
-   info مابتتبعتش أبداً. اللي اتبعت عنها وراحت ⇒ recovered (لو cfg.recovery). */
+   info مابتتبعتش أبداً. المحمولة (carried) بتحتفظ بحالتها من غير تكرار. اللي اتبعت عنها وراحت ⇒ recovered (لو cfg.recovery)،
+   إلا أحداث EVENT_KEYS (اختفاؤها مش معناه إنها اترجعت). */
 export function alertPlan(issues, prev, cfg, now = Date.now()) {
   const p = prev && typeof prev === "object" ? prev : {};
   const next = {}, announce = [], recovered = [];
   for (const i of issues || []) {
     if (i.level !== "crit" && i.level !== "warn") continue;
     const old = p[i.key];
+    if (i.carried) { if (old) next[i.key] = old; continue; }
     const every = (i.level === "crit" ? cfg.repeatHours : Math.max(cfg.repeatHours, 24)) * 3600_000;
     const due = !old || (RANK[i.level] || 0) > (RANK[old.level] || 0) || !(now - Date.parse(old.at || 0) < every);
     if (due) { announce.push(i); next[i.key] = { level: i.level, at: new Date(now).toISOString() }; }
     else next[i.key] = { level: (RANK[i.level] || 0) >= (RANK[old.level] || 0) ? i.level : old.level, at: old.at };
   }
-  for (const k of Object.keys(p)) if (!next[k]) recovered.push(k);
+  for (const k of Object.keys(p)) if (!next[k] && !EVENT_KEYS.includes(k)) recovered.push(k);
   return { announce, recovered: cfg.recovery ? recovered : [], next };
 }
 
@@ -407,6 +464,16 @@ export function register(app, ctx, deps = {}) {
       return { marketing: r.marketing || 0, capped: r.capped || 0 };
     } catch { return { marketing: 0, capped: 0 }; }
   }
+  /* آخر رسالة طالعة نجحت (ميتا قالت sent/delivered/read) — any: أي رسالة من السيرفر، tpl: قالب (مدفوع). صدى الموبايل والتاريخ مش داخلين.
+     بالـcreated_at (إمتى بعتناها) مش updated_at — «اتقرت» لرسالة قديمة مش دليل إن الإرسال رجع. فشل القراية ⇒ null (مانمسكش أكواد) */
+  async function okSince() {
+    try {
+      const r = (await pool.query(`SELECT max(created_at) AS any_at, max(created_at) FILTER (WHERE template IS NOT NULL) AS tpl_at FROM wa_messages
+          WHERE direction='out' AND status IN ('sent','delivered','read') AND COALESCE(source,'api') NOT IN ('echo','history') AND created_at > NOW() - INTERVAL '7 days'`)).rows[0] || {};
+      const iso = (v) => (v ? new Date(v).toISOString() : null);
+      return { any: iso(r.any_at), tpl: iso(r.tpl_at) };
+    } catch (e) { log("[wa-health] okSince:", e.message); return null; }
+  }
   async function recentEvents() {
     try {
       return (await pool.query(`SELECT kind, event, state, tier, at FROM wa_quality_events WHERE at > NOW() - INTERVAL '48 hours' AND kind IN ('account','phone') ORDER BY id LIMIT 200`)).rows || [];
@@ -451,12 +518,18 @@ export function register(app, ctx, deps = {}) {
     const [pr, codes, m24, events] = await Promise.all([pricing(cfg), errorCodes(cfg.errorWindowMin), marketing24(), recentEvents()]);
     const spend = pr.ok ? { ...spendView(pr.days, { now: now(), prepaidSince: cfg.prepaidSince }), currency: pr.currency || null } : null;
     const seen = { tier: prev.tier || null, portfolio: prev.portfolio || null, readFails: Number(prev.readFails) || 0 };
-    const issues = mergeIssues(
+    const fresh = mergeIssues(
       errorIssues(codes, m24, cfg),
       phoneIssues(phone, seen),
       eventIssues(events),
       spendIssues(spend, cfg, { pricingOk: pr.ok, now: now() }),
     );
+    /* مراجعة WH1: اللي ماقدرناش نحكم عليه الدورة دي بيفضل زي ما هو (مش «رجع تمام») — شوف carryIssues */
+    const prevLast = prev.last && typeof prev.last === "object" ? prev.last : null;
+    const freshKeys = new Set(fresh.map((i) => i.key));
+    const needOk = Boolean(prevLast && Array.isArray(prevLast.issues) && prevLast.issues.some((i) => i && CODE_KEYS.includes(i.key) && !freshKeys.has(i.key)));
+    const issues = mergeIssues(fresh, carryIssues(prevLast, { phoneOk: Boolean(phone && phone.ok), pricingOk: pr.ok, phone, cfg, now: now(), present: fresh,
+      okSince: needOk ? await okSince() : null }));
     const pf = phone && phone.ok && phone.portfolio && phone.portfolio.ok ? phone.portfolio.limit : null;
     const snap = {
       level: levelOf(issues), issues, checkedAt: new Date(now()).toISOString(),

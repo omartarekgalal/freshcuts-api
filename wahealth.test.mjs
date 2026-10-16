@@ -165,6 +165,7 @@ function fakeDb({ errorsRows = [] } = {}) {
       }
       if (/^UPDATE wa_health_state SET data = jsonb_set\(data, '\{log\}'/.test(s)) { st.data.log = JSON.parse(p[0]); return { rows: [], rowCount: 1 }; }
       if (/^UPDATE wa_health_state SET data = jsonb_set\(jsonb_set\(data, '\{alerts\}', \$2::jsonb, true\), '\{log\}'/.test(s)) { st.data.log = JSON.parse(p[0]); st.data.alerts = JSON.parse(p[1]); return { rows: [], rowCount: 1 }; }
+      if (/AS any_at/.test(s)) { db.okReads = (db.okReads || 0) + 1; return { rows: [db.okRow || {}] }; }
       if (/FROM wa_messages/.test(s)) return { rows: db.errorsRows };
       if (/FROM wa_send_queue WHERE error_code IS NOT NULL/.test(s)) return { rows: [] };
       if (/FROM wa_send_queue/.test(s)) return { rows: [{ marketing: 0, capped: 0 }] };
@@ -209,6 +210,18 @@ test("التشغيل: أول 131042 ⇒ SMS واحد للمالك بالعلام
   const r2 = await h.api.check({ reason: "test" });
   assert.deepEqual(r2.alerted, []); assert.equal(h.sms.length, 1, "نفس المشكلة مابتتبعتش تاني قبل ٦ ساعات");
   h.db.errorsRows = [];
+  h.tick(15 * 60_000);
+  /* مراجعة WH1: الغلطة خرجت من النافذة بس مفيش قالب نجح بعدها ⇒ لسه قايمة (محمولة)، من غير «رجع تمام» ولا تكرار */
+  const rHeld = await h.api.check({ reason: "test" });
+  assert.deepEqual(rHeld.recovered, []); assert.deepEqual(rHeld.alerted, []); assert.equal(h.sms.length, 1);
+  const held = h.db.st.data.last.issues.find((i) => i.key === "pay_error");
+  assert.ok(held && held.carried && held.level === "crit", "لسه ظاهرة في الكارت والبانر");
+  assert.match(held.detail, /آخر غلطة 16\/10 06:00 — لسه مفيش رسالة قالب نجحت بعدها/);
+  assert.equal(h.db.st.data.last.level, "crit");
+  h.db.okRow = { any_at: new Date(NOW + 20 * 60_000).toISOString(), tpl_at: null };
+  h.tick(15 * 60_000);
+  assert.deepEqual((await h.api.check({ reason: "test" })).recovered, [], "رسالة خدمة نجحت (ببلاش) مش دليل إن الدفع رجع");
+  h.db.okRow = { any_at: new Date(NOW + 40 * 60_000).toISOString(), tpl_at: new Date(NOW + 40 * 60_000).toISOString() };
   h.tick(15 * 60_000);
   const r3 = await h.api.check({ reason: "test" });
   assert.deepEqual(r3.recovered, ["pay_error"]); assert.equal(h.sms.length, 2);
@@ -323,4 +336,104 @@ test("التشغيل: قراية ميتا وقعت مرة = من غير SMS؛ ٣
   h.db.phone = LIVE_PHONE; h.tick(15 * 60_000);
   await h.api.check({});
   assert.equal(h.db.st.data.readFails, 0); assert.match(h.sms[1].body, /رجع تمام: قراية الحالة/);
+});
+
+/* ── مراجعة WH1 (١٦/١٠): قراية ميتا الفاشلة مرة مابتبعتش «رجع تمام» كدب ولا بتشيل البانر ── */
+const LIMITED_PHONE = { ...LIVE_PHONE, health: "LIMITED", nameStatus: "PENDING_REVIEW" };
+test("مراجعة: قراية الرقم وقعت مرة والحالة LIMITED ⇒ مفيش «رجع تمام: حد الرقم» ولا تنبيه تاني لما ترجع", async () => {
+  const h = harness({ phone: LIMITED_PHONE });
+  await h.api.check({});
+  assert.equal(h.sms.length, 1); assert.match(h.sms[0].body, /الإرسال محدود/);
+  h.tick(15 * 60_000); h.db.phone = { ok: false, error: "HTTP 500" };
+  const r2 = await h.api.check({});
+  assert.deepEqual(r2.recovered, []); assert.equal(h.sms.length, 1);
+  const c = h.db.st.data.last.issues.find((i) => i.key === "health_limited");
+  assert.ok(c && c.carried && c.level === "warn"); assert.match(c.detail, /آخر قراية ناجحة 16\/10 06:00/);
+  assert.equal(h.db.st.data.last.level, "warn", "البانر العنبري لسه ظاهر");
+  h.tick(15 * 60_000); h.db.phone = { ok: false, error: "HTTP 500" };
+  await h.api.check({});
+  const c2 = h.db.st.data.last.issues.find((i) => i.key === "health_limited");
+  assert.match(c2.detail, /آخر قراية ناجحة 16\/10 06:00/, "فشل تاني ورا بعض ⇒ لسه آخر قراية ناجحة هي الأولى");
+  assert.equal((c2.detail.match(/آخر قراية/g) || []).length, 1, "الملاحظة مابتتكررش");
+  h.tick(15 * 60_000); h.db.phone = LIMITED_PHONE;
+  const r4 = await h.api.check({});
+  assert.deepEqual(r4.alerted, []); assert.deepEqual(r4.recovered, []); assert.equal(h.sms.length, 1, "٣ دورات ⇒ رسالة واحدة بس");
+  assert.ok(!h.db.st.data.last.issues.find((i) => i.key === "health_limited").carried, "القراية الطازة بتحل محل المحمولة");
+  h.tick(15 * 60_000); h.db.phone = LIVE_PHONE;
+  const r5 = await h.api.check({});
+  assert.deepEqual(r5.recovered, ["health_limited"]); assert.equal(h.sms[1].body, "‼️ واتساب فريش كاتس: رجع تمام: حد الرقم", "الحل الحقيقي لسه بيبعت «رجع تمام»");
+});
+
+test("مراجعة: الجودة حمرا وقراية وقعت ⇒ البانر لسه أحمر ومفيش «رجع تمام: الجودة»", async () => {
+  const h = harness({ phone: { ...LIVE_PHONE, quality: "RED" } });
+  await h.api.check({});
+  assert.equal(h.sms.length, 1); assert.match(h.sms[0].body, /حمرا/);
+  h.tick(15 * 60_000); h.db.phone = { ok: false, error: "HTTP 500" };
+  const r = await h.api.check({});
+  assert.deepEqual(r.recovered, []); assert.equal(h.sms.length, 1);
+  assert.equal(h.db.st.data.last.level, "crit");
+  assert.deepEqual(h.db.st.data.alerts.quality_red, { level: "crit", at: new Date(NOW).toISOString() }, "علامة «اتبعت» زي ما هي — التكرار بعد ٦ ساعات من أول رسالة");
+  /* لو القراية فضلت واقعة: المحمولة مابتتكررش، بس «قراية الحالة» بتبقى تحذير بعد ٣ مرات */
+  h.tick(15 * 60_000); await h.api.check({});
+  h.tick(7 * 3600_000);
+  const r3 = await h.api.check({});
+  assert.deepEqual(r3.alerted, ["read_failed"], "بعد ٧ ساعات: الجودة المحمولة مابتتكررش، اللي بيتبعت «ماقدرناش نقرا»"); assert.equal(h.sms.length, 2);
+});
+
+test("مراجعة: الميزانية ٨٥٪ وقراية الصرف وقعت مرة ⇒ مفيش «رجع تمام: الميزانية» ولا ٨٥٪ تاني", async () => {
+  let fail = false;
+  const RAW85 = { data: [{ data_points: [pt("2026-10-15", "MARKETING", 850, 3000)] }] };
+  const h = harness({ settings: { waTeam: { members: [{ phone: P1, role: "owner" }] }, delivery: { alertPhones: [P1] }, waHealth: { monthBudgetSar: 1000 } },
+    graphGet: async (path, q) => { if (q && q.fields === "currency") return { currency: "SAR" }; if (fail) throw new Error("HTTP 500"); return { pricing_analytics: RAW85 }; } });
+  await h.api.check({});
+  assert.equal(h.sms.length, 1); assert.match(h.sms[0].body, /85٪/);
+  h.tick(15 * 60_000); fail = true;
+  const r2 = await h.api.check({});
+  assert.deepEqual(r2.recovered, []); assert.equal(h.sms.length, 1);
+  const c = h.db.st.data.last.issues.find((i) => i.key === "budget_warn");
+  assert.ok(c && c.carried); assert.match(c.detail, /من آخر قراية ناجحة للصرف 16\/10 06:00/);
+  assert.ok(h.db.st.data.last.issues.some((i) => i.key === "spend_unread"));
+  h.tick(15 * 60_000); fail = false;
+  const r3 = await h.api.check({});
+  assert.deepEqual(r3.alerted, []); assert.deepEqual(r3.recovered, []); assert.equal(h.sms.length, 1);
+});
+
+test("مراجعة: نزول الحد ⇒ رسالة واحدة، يفضل ظاهر ٤٨ ساعة طول ما الحد تحت، واختفاؤه مش «رجع تمام»", async () => {
+  const h = harness();
+  await h.api.check({});
+  h.db.phone = { ...LIVE_PHONE, tier: "TIER_50" }; h.tick(15 * 60_000);
+  assert.deepEqual((await h.api.check({})).alerted, ["tier_drop"]);
+  h.tick(15 * 60_000);
+  const r = await h.api.check({});
+  assert.deepEqual(r.recovered, []); assert.equal(h.sms.length, 1);
+  const c = h.db.st.data.last.issues.find((i) => i.key === "tier_drop");
+  assert.ok(c && c.carried && c.from === "TIER_250"); assert.match(c.detail, /من 16\/10 06:15/);
+  h.tick(49 * 3600_000);
+  const r2 = await h.api.check({});
+  assert.deepEqual(r2.recovered, []); assert.equal(h.sms.length, 1, "بعد ٤٨ ساعة بيختفي من غير رسالة");
+  assert.ok(!h.db.st.data.last.issues.some((i) => i.key === "tier_drop"));
+});
+
+test("مراجعة: carryIssues — الحد رجع ⇒ مايتشالش؛ ميزانية اتشالت أو شهر جديد ⇒ مايتشالش؛ okSince مش معروف ⇒ مانمسكش أكواد", () => {
+  const cfg = H.healthCfg({ waHealth: { monthBudgetSar: 1000 } });
+  const last = { checkedAt: new Date(NOW).toISOString(), issues: [
+    { key: "tier_drop", level: "crit", from: "TIER_250", to: "TIER_50" }, { key: "budget_warn", level: "warn" },
+    { key: "token", level: "crit", last: new Date(NOW).toISOString() }, { key: "no_budget", level: "info" }, { key: "rate_limit", level: "warn" }] };
+  const keys = (a) => a.map((i) => i.key).sort();
+  assert.deepEqual(keys(H.carryIssues(last, { phone: { ...LIVE_PHONE, tier: "TIER_250" }, pricingOk: false, cfg, now: NOW + 60_000, okSince: null })), ["budget_warn"]);
+  assert.deepEqual(keys(H.carryIssues(last, { phone: { ...LIVE_PHONE, tier: "TIER_50" }, pricingOk: false, cfg: H.healthCfg({}), now: NOW + 60_000,
+    okSince: { any: null, tpl: null } })), ["tier_drop", "token"]);
+  assert.deepEqual(keys(H.carryIssues(last, { phone: LIVE_PHONE, pricingOk: false, cfg, now: Date.parse("2026-11-01T00:10:00Z"), okSince: { any: "2026-10-16T03:05:00Z", tpl: null } })), [],
+    "شهر جديد ⇒ ميزانية أكتوبر مش بتتشال؛ رسالة نجحت بعد غلطة التوكن ⇒ اتحلّت");
+  assert.deepEqual(keys(H.carryIssues(last, { phone: LIVE_PHONE, pricingOk: true, cfg, now: NOW + 60_000, present: [{ key: "token" }], okSince: { any: null, tpl: null } })), [],
+    "موجودة طازة ⇒ مفيش نسخة محمولة؛ الصرف اتقرا ⇒ الحكم الجديد هو اللي يمشي");
+  assert.equal(H.riyadhStamp(Date.parse("2026-10-16T21:05:00Z")), "17/10 00:05");
+});
+
+test("مراجعة: alertPlan — المحمولة بتحتفظ بعلامتها من غير تكرار، وأحداث EVENT_KEYS مش «رجع تمام»", () => {
+  const cfg = H.healthCfg({});
+  const at = new Date(NOW).toISOString();
+  const p = H.alertPlan([{ key: "quality_red", level: "crit", carried: true }], { quality_red: { level: "crit", at }, account_event: { level: "crit", at }, portfolio_drop: { level: "crit", at } }, cfg, NOW + 7 * 3600_000);
+  assert.deepEqual(p.announce, []); assert.deepEqual(p.next, { quality_red: { level: "crit", at } }); assert.deepEqual(p.recovered, []);
+  assert.deepEqual(H.alertPlan([{ key: "pay_error", level: "crit", carried: true }], {}, cfg, NOW).announce, [], "محمولة من غير علامة قديمة ⇒ مابتتبعتش");
 });
