@@ -3230,7 +3230,9 @@ const fl = await q(`SELECT count(*)::int AS n FROM wa_bot_log WHERE phone_norm=$
     const hr = new Date(now.getTime() + 3 * 3600_000).getUTCHours(), qs = Math.round(cfg.windowKeeperQuietStart), qe = Math.round(cfg.windowKeeperQuietEnd);
     if (qs !== qe && (qs < qe ? hr >= qs && hr < qe : hr >= qs || hr < qe)) return no("quiet_hours");
     if (chat.handoff_at && now.getTime() - Date.parse(chat.handoff_at) < cfg.handoffOpenHours * 3600_000) return no("handover_open");
-    if (chat.window_sell_at && Date.parse(chat.window_sell_at) > Date.parse(ev.lastIn)) return no("window_used");
+    /* SB5: window_sell_at جاية من pg كـDate، و Date.parse(Date) بيعدّي على toString فبيقطّع للثانية (سطر بيع في نفس ثانية رسالته كان بيتشاف «قبلها» ⇒ رسالة تانية في نفس النافذة).
+       getTime() بالمللي، و >= : نفس المللي يتحسب «اتبعت» — يغلط ناحية «مانبعتش» زي done_at تحت. */
+    if (chat.window_sell_at && new Date(chat.window_sell_at).getTime() >= lastInMs) return no("window_used");
     const used = await q(`SELECT 1 FROM wa_bot_jobs WHERE phone_norm=$1 AND kind IN ('assist_followup','assist_nudge','lead_followup','window_keep','assist_reminder','${FU_KIND}') AND status='done' AND done_at > $2 LIMIT 1`, [phone, ev.lastIn]);      // FU1: + متابعة اللي ردّ
     if (used === null) return no("used_check_failed"); if (used.length) return no("window_used");
     const caps = await q(`SELECT count(*) FILTER (WHERE done_at >= (date_trunc('day', NOW() AT TIME ZONE 'Asia/Riyadh') AT TIME ZONE 'Asia/Riyadh'))::int AS today,

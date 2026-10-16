@@ -4823,6 +4823,29 @@ test("SB5 window keeper: the customer's OWN last message stored with microsecond
   assert.equal(s.filter((b) => b.type).length, 1, "one message for the newer window");
 }));
 
+/* SB5 مراجعة: «اتبعتله سطر بيع في النافذة دي» — node-postgres بيرجّع window_sell_at كـDate (SELECT * FROM wa_bot_chats)، و Date.parse(Date) بيقطّع للثانية،
+   فسطر بيع بعد رسالته بـ١٥٠ مللي في نفس الثانية كان بيتشاف «قبلها» والحارس بيبعت رسالة تانية في نفس النافذة. */
+test("SB5 window keeper: «already sold in this window» reads window_sell_at as node-postgres returns it (a Date) — a sell line 150 ms after his last message (same second) blocks the keeper; one from an older window does not", withEnv(CONFIGURED, async () => {
+  const run = async (sellAt) => {
+    const w = world({ at: "2026-10-12T15:00:00Z", waBot: { mode: "test", testPhones: TESTERS, paidNoteEnabled: false }, orders: [{ order_no: "W1790012347777", phone_norm: "512345678", status: "on_the_way", option: "delivery", created_at: "2026-10-13T10:30:00Z" }] });
+    await w.say("هلا");
+    const m = w.db.msgs.filter((x) => x.phone_norm === "512345678" && x.direction === "in").at(-1);
+    m.created_at = m.created_at.replace(/\.(\d{3})Z$/, ".$1456Z");
+    const lastInMs = Date.parse(m.created_at), ch = w.db.chats.get("512345678");
+    assert.ok(ch, "the chat row exists");
+    ch.window_sell_at = sellAt(lastInMs);
+    const s = await w.tick(20 * 60 + 5);
+    const j = w.db.jobs.find((x) => x.kind === "window_keep");
+    assert.ok(j, "the sweep made the job");
+    return [j.reason, s.filter((b) => b.type).length];
+  };
+  assert.equal(new Date(Date.parse("2026-10-12T15:00:00.150Z")).toString().includes(".150"), false, "Date → string has no milliseconds (why Date.parse(Date) truncates)");
+  assert.deepEqual(await run((t) => new Date(t + 150)), ["window_used", 0], "pg Date, 150 ms after his message");
+  assert.deepEqual(await run((t) => new Date(t + 150).toISOString()), ["window_used", 0], "ISO string, 150 ms after");
+  assert.deepEqual(await run((t) => new Date(t)), ["window_used", 0], "same millisecond ⇒ counted as used (errs toward not sending)");
+  assert.deepEqual(await run((t) => new Date(t - 2 * 3600_000)), ["sent:open_order", 1], "a sell line from before his last message (older window) does not block");
+}));
+
 test("SB4 window: the daily report carries paid templates vs free messages, SAR paid and saved, and the window-keeper outcome", withEnv(CONFIGURED, async () => {
   const w = world({ waBot: { mode: "test", testPhones: TESTERS } });
   const r = await w.call("GET", "/api/cms/wabot/assist/daily");
