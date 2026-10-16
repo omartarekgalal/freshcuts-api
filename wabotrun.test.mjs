@@ -53,7 +53,7 @@ const LOCKS_OPEN = { ...CONFIGURED, WHATSAPP_ENABLED: "1" };
 
 /* ── عالم صغير: قاعدة في الذاكرة + ساعة + Graph مزيّف ─────────────────────── */
 function world({ waBot = {}, notifications = { whatsappEnabled: true }, orders = [], bundles = BUNDLES, policy = POLICY, first = FIRST, links = ["wab-boxes", "wa-boxes", "wa-box-d4"],
-  at = OPEN_AT, graph = null, failDb = null, extraSettings = {}, disclosure = false, pages = LIVE.pages, quote = null, llm = null, greetMenu = false, offers = LIVE.offers, resolveMapsLink = null, lastCart = null, assistModel = null, assistStore = null, kb = null, adReport = [], channelReport = [], mediaFile = null, transcribe = null, sttFetch = null, variants = null, team = null, flow = null, fav = null, expandBundle = null } = {}) {
+  at = OPEN_AT, graph = null, failDb = null, extraSettings = {}, disclosure = false, pages = LIVE.pages, quote = null, llm = null, greetMenu = false, offers = LIVE.offers, resolveMapsLink = null, lastCart = null, assistModel = null, assistStore = null, kb = null, adReport = [], channelReport = [], mediaFile = null, transcribe = null, sttFetch = null, variants = null, team = null, flow = null, fav = null, expandBundle = null, campReply = null } = {}) {
   let nowMs = Date.parse(at);
   const clock = { now: () => new Date(nowMs), advance: (min) => { nowMs += min * 60_000; }, advanceSec: (s) => { nowMs += s * 1000; }, set: (iso) => { nowMs = Date.parse(iso); } };
   const db = { msgs: [], log: [], jobs: [], proofs: [], consentLog: [], ai: [], aiAlerts: [], tpl: [], cfgLog: [], botCarts: [], chats: new Map(), optouts: [], optins: {}, links: links.map((s) => (typeof s === "string" ? { slug: s, active: true, clicks: 0 } : { active: true, clicks: 0, ...s })), adChats: [], adReportParams: null, channelOffers: [], channelReportParams: null, sttKey: null, liveDay: [], marketingTo: [], settings: null };
@@ -268,10 +268,17 @@ function world({ waBot = {}, notifications = { whatsappEnabled: true }, orders =
         const n = db.msgs.filter((m) => m.phone_norm === p[0] && m.direction === "in" && m.source !== "history" && nowMs - Date.parse(m.created_at) < 24 * 3600_000).length;
         return { rows: n ? [{}] : [], rowCount: n ? 1 : 0 };
       }
+      /* CR2: «رسالة اتمسحت» — نسختنا للرسالة الأصلية بالمرجع، والتقدير من آخر رسالة (من غير مرجع)، وحفظ المرجع */
+      if (/^SELECT body, direction FROM wa_messages WHERE wamid=\$1/i.test(s)) return { rows: db.msgs.filter((m) => m.wamid === p[0] && (p[1] == null || m.phone_norm === p[1])).slice(0, 1).map((m) => ({ body: m.body, direction: m.direction })) };
+      if (/^SELECT body, created_at FROM wa_messages WHERE phone_norm=\$1 AND direction='in' AND COALESCE\(msg_type,''\) <> 'revoke'/i.test(s)) {
+        const at = Date.parse(p[1]);
+        return { rows: db.msgs.filter((m) => m.phone_norm === p[0] && m.direction === "in" && m.msg_type !== "revoke" && Date.parse(m.created_at) <= at + 5000 && Date.parse(m.created_at) > at - p[2] * 1000).sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at)).slice(0, 1).map((m) => ({ body: m.body, created_at: m.created_at })) };
+      }
+      if (/^UPDATE wa_messages SET revoked_wamid=\$2 WHERE wamid=\$1/i.test(s)) { const m = db.msgs.find((x) => x.wamid === p[0]); if (m) m.revoked_wamid = p[1]; return { rows: [], rowCount: m ? 1 : 0 }; }
       if (/^INSERT INTO wa_messages/i.test(s)) {
         if (p[0] && db.msgs.some((m) => m.wamid === p[0])) return { rows: [], rowCount: 0 };
         const echo = /'echo'/.test(s), inbound = /'in'/.test(s);
-        const row = inbound ? { wamid: p[0], direction: "in", phone_norm: p[1], body: p[2], source: "api", created_at: iso() }
+        const row = inbound ? { wamid: p[0], direction: "in", phone_norm: p[1], body: p[2], source: "api", created_at: iso(), pricing: p[3] ? JSON.parse(p[3]) : null, msg_type: p[4] || null }
           : echo ? { wamid: p[0], direction: "out", phone_norm: p[1], body: p[2], source: "echo", created_at: p[4] || iso() }
             : { wamid: p[0], direction: "out", phone_norm: p[1], template: p[2], category: p[3], order_no: p[4], stage: p[5], status: p[6], body: p[8], source: p[10], created_at: iso() };
         db.msgs.push(row);
@@ -308,6 +315,7 @@ function world({ waBot = {}, notifications = { whatsappEnabled: true }, orders =
       if (/^UPDATE wa_bot_chats SET optin_asked_at=NOW\(\)/i.test(s)) { chat(p[0]).optin_asked_at = iso(); return { rows: [] }; }
       if (/^UPDATE wa_bot_chats SET optin_answered_at=NOW\(\)/i.test(s)) { chat(p[0]).optin_answered_at = iso(); return { rows: [] }; }
       if (/^UPDATE wa_bot_log SET reply_arg=\$2/i.test(s)) { const l = db.log.find((x) => x.id === p[0]); if (l) l.reply_arg = p[1]; return { rows: [] }; }
+      if (/^UPDATE wa_bot_log SET intent=\$2, detail=\$3 WHERE id=\$1/i.test(s)) { const l = db.log.find((x) => x.id === p[0]); if (l) Object.assign(l, { intent: p[1], detail: p[2] }); return { rows: [] }; }      // CR2
       if (/^UPDATE wa_bot_log SET intent=\$2, reply_key=\$3, detail=\$4/i.test(s)) { const l = db.log.find((x) => x.id === p[0]); Object.assign(l, { intent: p[1], reply_key: p[2], detail: p[3] }); return { rows: [] }; }
       if (/FROM wa_messages WHERE direction='in'/i.test(s)) return { rows: db.msgs.filter((m) => m.direction === "in").map((m) => ({ wamid: m.wamid, phone_norm: m.phone_norm, body: m.body, msg_type: "text", created_at: m.created_at })).reverse() };
       if (/^INSERT INTO wa_optins\(phone_norm, updates, marketing, source, order_no, updates_answered_at, updates_version\)/i.test(s)) {   // waconsent.js — the shared consent storage
@@ -431,7 +439,7 @@ function world({ waBot = {}, notifications = { whatsappEnabled: true }, orders =
   const botCarts = { ensure: async () => {}, lastOrderCarts: async (ph, days, o) => { const v = typeof lastCart === "function" ? lastCart(ph, days, o) : lastCart; return (Array.isArray(v) ? v : v ? [v] : []).map((x, i) => ({ latest: i === 0, ...x })); },
     create: async (x) => { if (failDb && failDb.test("INSERT INTO wa_bot_carts")) return null; const code = `rc${String(db.botCarts.length + 1).padStart(6, "0")}`; db.botCarts.push({ code, created_at: iso(), ...x }); return { code }; }, open: async () => null, restore: async () => null, coverage: async () => ({ orders: 40, with_snapshot: 30, with_raw: 28, usable: 26, avg_diff: 0, mismatched: 2, links: db.botCarts.length, opened: 0 }) };
   const portalEvents = [];
-  const bot = R.register(app, ctx, { app, wa, now: clock.now, noTimer: true, botCarts, ...(team ? { team: () => team } : {}), ...(flow ? { flow: () => flow } : {}), ...(fav ? { fav: () => fav } : {}),
+  const bot = R.register(app, ctx, { app, wa, now: clock.now, noTimer: true, botCarts, ...(team ? { team: () => team } : {}), ...(flow ? { flow: () => flow } : {}), ...(fav ? { fav: () => fav } : {}), ...(campReply ? { campReply } : {}),
     assist: { expandBundle: expandBundle || (async () => ({ ok: false, error: "bundle_not_found" })), modifiersCatalog: async () => ({ cfg: { enabled: true }, catalog: {} }), modifiersResolve: async () => ({ ok: true, shown: 0 }),
       quote: async (x) => (typeof quote === "function" ? quote(x.lat, x.lng) : quote), buildProfile: async () => ({ identity: { name: "أحمد" }, summary: { orders: 2, status: "repeat" }, orders: [], favorites: { items: [] }, addresses: [] }) }, whoami: async () => actor.who, ...(resolveMapsLink ? { resolveMapsLink } : { resolveMapsLink: async () => null }), sendSms: async (x) => { sms.push(x); return { ok: true }; },
     portalEmit: (ev2, data) => portalEvents.push([ev2, data]), whoami: async () => actor.who, ...(resolveMapsLink ? { resolveMapsLink } : { resolveMapsLink: async () => null }), sendSms: async (x) => { sms.push(x); return { ok: true }; },
@@ -5870,4 +5878,157 @@ test("RV1 review fix (proactive jobs after a low rating): SB4 «before the windo
   const src = readFileSync(new URL("./wabotrun.js", import.meta.url), "utf8");
   assert.equal((src.match(/handoff IN \('complaint'/g) || []).length, 1, "one shared gate, no inline copy");
   assert.equal((src.match(/await q\(COMPLAINT_24H_SQL, \[phone\]\)/g) || []).length, 4, "FU1 + SB4 + EX6 lead follow-up + assistant nudge");
+}));
+
+/* ══ CR2 (١٦/١٠): «أبغى أطلب» على رسالة حملة تانية غير «طبقك المفضل» ⇒ العرض اللي وصلها هي + رابط الحملة نفسها ══════════════════
+   الحالة الحقيقية: ١٦/١٠ 17:18 الرياض (جوال 59•••58، هنا رقم وهمي) — وصلتها حملة باقات التجمّع ١٥/١٠ (fc_frame_limited_img، رابط wa-1015-packs-a)
+   وضغطت «أبغى أطلب» ⇒ البوت رد بالرد العام ورابط wab-boxes. الصفوف هنا بنفس شكل صفوف ١٥/١٠ الحقيقية (قيم الحملة وقالبها ورابطها). */
+const CRM = await import("./wacampreply.js");
+const PACK15_VALUES = { "offer.line": "2 كيلو مشاوي على الفحم من اختيارك مع أرز وبطاطس وكولسلو و4 مشروبات، والسلطة والطحينة والخبز مع المشاوي، وفيه باقة لـ8 إلى 10 أشخاص بـ395 ر.س ولـ15 شخص وأكثر بـ595 ر.س",
+  "offer.price": "225", "offer.title": "جمعتكم الليلة أو بكره؟ باقة التجمّع لـ4 إلى 6 أشخاص", "offer.untilText": "الجمعة 16 أكتوبر" };
+const PACK15_ROW = { id: 9101, job_id: 21, sent_at: "2026-10-15T14:28:43.000Z", wamid: "wamid.PACK15", vars: { name: "عميلتنا", first_name: "عميلتنا" }, link_code: "q7k2m9",
+  cloud_template: "fc_frame_limited_img", cloud_vars: { offer: "", values: PACK15_VALUES }, link_slug: "wa-1015-packs-a", job_name: "واتساب 15/10 A1 — باقات التجمّع (محل/تطبيقات)",
+  target_type: "gather", target_id: null, link_active: true };
+const MIX15_ROW = { id: 9102, job_id: 39, sent_at: "2026-10-15T15:50:00.000Z", wamid: "wamid.MIX15", vars: { name: "عميلنا" }, link_code: "z9y8x7", cloud_template: "fc_frame_offer_img",
+  cloud_vars: { offer: "", values: { "offer.line": "وجبة ميكس جريل أو كفتة وطرب على الفحم مع بطاطس أو كولسلو أو دوريتوس ومشروب غازي، وتقييمنا 4.9 على جوجل", "offer.price": "39", "offer.title": "اخترنا لك بوكس الميكس جريل الفردي" } },
+  link_slug: "wa-1015-solo-mixgrill-a-r", job_name: "واتساب 15/10 B19 — بوكس الميكس جريل الفردي", target_type: "box", target_id: "box-solo-mixgrill", link_active: true };
+const FAV16_ROW = { id: 9103, job_id: 61, sent_at: "2026-10-16T11:20:00.000Z", wamid: "wamid.FAV16", vars: { fav: { kind: "item", pid: "6" }, cloud: { values: { "offer.title": "طبقك المفضل", "offer.line": "كريب بـ25 ر.س" } } },
+  link_code: null, cloud_template: "fc_frame_ask_text", cloud_vars: { offer: "", perRecipient: true }, link_slug: "w61", job_name: "طبقك المفضل", target_type: "home", target_id: null, link_active: true };
+const CR2_AT = "2026-10-16T14:18:43Z";      // الجمعة ١٦/١٠ 17:18 الرياض (مفتوح)
+const CR2_BODY = "أبشر 🌟 هذا العرض اللي وصلك:\n*جمعتكم الليلة أو بكره؟ باقة التجمّع لـ4 إلى 6 أشخاص* بـ225 ر.س، والعرض لين الجمعة 16 أكتوبر.\nتبي نجهزه لك هنا؟ اكتب لي اختيارك وتبيه توصيل ولا استلام، أو اطلبه مباشرة من الزر 👇";
+function cr2World({ rows = [PACK15_ROW], ordered = false, waBot = {}, at = CR2_AT, ...o } = {}) {
+  const sql = [];
+  let w = null;
+  const cpool = { async query(q, p = []) {
+    sql.push([q, p]);
+    if (q === CRM.CR_SQL.lastRow) {
+      const list = rows.filter((r) => (p[2] == null || r.wamid === p[2]) && Date.parse(r.sent_at) > w.clock.now().getTime() - p[1] * 3600_000)
+        .sort((a, b) => Date.parse(b.sent_at) - Date.parse(a.sent_at));
+      return { rows: list.slice(0, 1) };
+    }
+    if (q === CRM.CR_SQL.orderedSince) return { rows: ordered ? [{}] : [] };
+    throw new Error(`unexpected campaign sql: ${q.slice(0, 60)}`);
+  } };
+  w = liveWorld({ at, waBot, campReply: CRM.makeCampaignReply({ pool: cpool }), ...o });
+  w.campSql = sql;
+  return w;
+}
+const cr2Tap = (w, ctxId, o = {}) => w.say(null, { ...o, raw: { type: "button", button: { payload: "أبغى أطلب", text: "أبغى أطلب" }, ...(ctxId ? { context: { from: BIZ, id: ctxId } } : {}) } });
+
+test("CR2 ضغطة «أبغى أطلب» تحت رسالة باقات التجمّع ١٥/١٠ (الحالة الحقيقية ١٦/١٠ 17:18): اسم العرض + سعره + آخر يوم + رابط الحملة لنفس المستلم، مش الرد العام ورابط wab-boxes", withEnv(LOCKS_OPEN, async () => {
+  const w = cr2World();
+  const r = await cr2Tap(w, "wamid.PACK15");
+  assert.equal(r.sent.length, 1, JSON.stringify(r.log));
+  assert.equal(bodyOf(r.sent[0]), CR2_BODY);
+  assert.equal(urlOf(r.sent[0]), "https://freshcuts.sa/l/wa-1015-packs-a-q7k2m9", "رابط الحملة الشخصي (الضغطة بتتعد على الحملة وعلى المستلم زي زر القالب)");
+  assert.equal(r.sent[0].interactive.action.parameters.display_text, "اطلب الآن");
+  assert.deepEqual([r.log.reply_key, r.log.intent, r.log.link_slug, r.log.detail], ["order", "campaign_reply", "wa-1015-packs-a", "campaign_reply:job21"]);
+  assert.ok(!JSON.stringify(r.sent).includes("wab-boxes"), "مش رابط البوت العام");
+  assert.equal(w.campSql[0][1][2], "wamid.PACK15", "الضغطة بتتقرا على الرسالة اللي اتضغط زرها بالظبط (context.id)");
+  assert.equal(w.campSql[0][1][1], 72, "campaignReplyHours الافتراضي");
+}));
+
+test("CR2 نية طلب مكتوبة («أبغى أطلب» / «ابي اطلب») بعد الحملة ⇒ نفس العرض؛ طلبت من الموقع من ساعتها / مقتبسة على رسالة تانية ⇒ الرد العام", withEnv(LOCKS_OPEN, async () => {
+  for (const text of ["أبغى أطلب", "ابي اطلب"]) {
+    const w = cr2World();
+    const r = await w.say(text);
+    assert.equal(bodyOf(r.sent[0]), CR2_BODY, text);
+    assert.equal(urlOf(r.sent[0]), "https://freshcuts.sa/l/wa-1015-packs-a-q7k2m9");
+    assert.equal(w.campSql[0][1][2], null, "من غير context ⇒ آخر حملة للرقم");
+  }
+  const ord = cr2World({ ordered: true });
+  const r1 = await ord.say("أبغى أطلب");
+  assert.match(bodyOf(r1.sent[0]), GENERIC); assert.equal(r1.log.detail, "campaign_reply:ordered_since");
+  const q = cr2World();
+  const r3 = await q.say(null, { raw: { type: "text", text: { body: "أبغى أطلب" }, context: { from: BIZ, id: "wamid.SOMETHINGELSE" } } });
+  assert.match(bodyOf(r3.sent[0]), GENERIC); assert.equal(r3.log.detail, "campaign_reply:not_campaign_msg");
+}));
+
+test("CR2 موظف كتب لها من موبايل المطعم بعد الحملة ⇒ «أبغى أطلب» المكتوبة مش رد على الحملة (الضغطة على زر الحملة نفسها بتفضل رد عليها)", withEnv(LOCKS_OPEN, async () => {
+  const w = cr2World();
+  await w.cashier("أهلاً، كيف أخدمك؟");
+  w.clock.advance(40);
+  const r = await w.say("أبغى أطلب");
+  assert.ok(!JSON.stringify(r.sent).includes("هذا العرض اللي وصلك"), JSON.stringify(r.log));
+  assert.equal(r.log.detail, "campaign_reply:staff_since", JSON.stringify(r.log));
+  assert.match(bodyOf(r.sent[0]), GENERIC);
+  w.clock.advanceSec(20);      // بعد مدة «نفس النص» (sameTextSeconds)
+  const t = await cr2Tap(w, "wamid.PACK15");
+  assert.equal(bodyOf(t.sent[0]), CR2_BODY, "ضغطة زر الحملة نفسها = رد عليها حتى بعد كلام الموظف");
+}));
+
+test("CR2 العرض خلص أو مش متاح ⇒ الرد العام زي الأول: آخر يوم عدّى (السبت ١٧/١٠)، الرابط موقوف، أقدم من campaignReplyHours، ضغطة تحت رسالة تانية، المفتاح مقفول", withEnv(LOCKS_OPEN, async () => {
+  const sat = cr2World({ at: "2026-10-17T14:00:00Z" });
+  const r1 = await cr2Tap(sat, "wamid.PACK15");
+  assert.match(bodyOf(r1.sent[0]), GENERIC); assert.equal(r1.log.detail, "campaign_reply:expired");
+  assert.ok(!/225/.test(bodyOf(r1.sent[0])), "مفيش سعر عرض خلص");
+  const off = cr2World({ rows: [{ ...PACK15_ROW, link_active: false }] });
+  const r2 = await cr2Tap(off, "wamid.PACK15");
+  assert.match(bodyOf(r2.sent[0]), GENERIC); assert.equal(r2.log.detail, "campaign_reply:link_off");
+  const old = cr2World({ waBot: { campaignReplyHours: 12 } });
+  const r3 = await cr2Tap(old, "wamid.PACK15");
+  assert.match(bodyOf(r3.sent[0]), GENERIC); assert.equal(r3.log.detail, "campaign_reply:not_campaign_msg");
+  const other = cr2World();
+  const r4 = await cr2Tap(other, "wamid.REVIEW1");
+  assert.match(bodyOf(r4.sent[0]), GENERIC);
+  const sw = cr2World({ waBot: { campaignReply: false } });
+  const r5 = await cr2Tap(sw, "wamid.PACK15");
+  assert.match(bodyOf(r5.sent[0]), GENERIC); assert.equal(sw.campSql.length, 0, "مقفول ⇒ ولا قراءة");
+}));
+
+test("CR2 أحدث حملة هي اللي بتتقرا: «طبقك المفضل» أحدث (FD1 مش متوصّل/رفض) ⇒ الرد العام مش باقات امبارح؛ بوكس الميكس جريل بسعره الحي، وسعره اتغيّر ⇒ العرض من غير رقم", withEnv(LOCKS_OPEN, async () => {
+  const fav = cr2World({ rows: [PACK15_ROW, FAV16_ROW], at: "2026-10-16T12:00:00Z" });
+  const r1 = await fav.say("أبغى أطلب");
+  assert.match(bodyOf(r1.sent[0]), GENERIC); assert.equal(r1.log.detail, "campaign_reply:fav_campaign");
+  const box = cr2World({ rows: [MIX15_ROW] });
+  const r2 = await cr2Tap(box, "wamid.MIX15");
+  assert.equal(bodyOf(r2.sent[0]), "أبشر 🌟 هذا العرض اللي وصلك:\n*اخترنا لك بوكس الميكس جريل الفردي* بـ39 ر.س.\nتبي نجهزه لك هنا؟ اكتب لي اختيارك وتبيه توصيل ولا استلام، أو اطلبه مباشرة من الزر 👇");
+  assert.equal(urlOf(r2.sent[0]), "https://freshcuts.sa/l/wa-1015-solo-mixgrill-a-r-z9y8x7");
+  const b42 = LIVE.bundles.map((b) => (b.slug === "box-solo-mixgrill" ? { ...b, price: 42 } : b));
+  const ch = cr2World({ rows: [MIX15_ROW], bundles: b42 });
+  const r3 = await cr2Tap(ch, "wamid.MIX15");
+  assert.equal(bodyOf(r3.sent[0]).split("\n")[1], "*اخترنا لك بوكس الميكس جريل الفردي*.", "السعر اتغيّر من ساعة الرسالة ⇒ من غير رقم");
+  assert.ok(!/39|42/.test(bodyOf(r3.sent[0])));
+  const gone = cr2World({ rows: [MIX15_ROW], bundles: LIVE.bundles.filter((b) => b.slug !== "box-solo-mixgrill") });
+  const r4 = await cr2Tap(gone, "wamid.MIX15");
+  assert.match(bodyOf(r4.sent[0]), GENERIC); assert.equal(r4.log.detail, "campaign_reply:box_gone");
+}));
+
+test("CR2 مابيلمسش غير «أبغى أطلب»: زر المنيو تحت نفس رسالة الحملة وسؤال حالة الطلب بيمشوا في طريقهم، ومن غير قراءة حملات", withEnv(LOCKS_OPEN, async () => {
+  const w = cr2World();
+  const m = await w.say(null, { raw: { type: "button", button: { payload: "ورّني المنيو", text: "ورّني المنيو" }, context: { from: BIZ, id: "wamid.PACK15" } } });
+  assert.equal(m.log.reply_key, "cats");
+  const s = await w.say("وين طلبي");
+  assert.notEqual(s.log.reply_key, "order");
+  assert.ok(!JSON.stringify(s.sent).includes("هذا العرض اللي وصلك"));
+  assert.equal(w.campSql.length, 0, "ولا قراءة للحملات لغير «أبغى أطلب»");
+}));
+
+/* ══ CR2 (ب): العميل مسح رسالة — ميتا بتبعت revoke ومعاها revoke.original_message_id ══ */
+test("CR2 رسالة اتمسحت: المرجع في الحمولة ⇒ صفها «مسحت رسالتها: <نصها>» + revoked_wamid، ونسختنا للأصل زي ما هي؛ البوت ساكت", withEnv(LOCKS_OPEN, async () => {
+  const w = liveWorld({ at: CR2_AT });
+  const a = await w.say("أبغى أطلب");
+  w.clock.advanceSec(4);
+  const before = w.calls.length;
+  const d = await w.say(null, { raw: { type: "revoke", revoke: { original_message_id: a.wamid } } });
+  assert.equal(w.calls.length, before, "البوت مابيردش على المسح");
+  const row = w.db.msgs.find((m) => m.wamid === d.wamid);
+  assert.equal(row.body, "مسحت رسالتها: أبغى أطلب");
+  assert.equal(row.revoked_wamid, a.wamid);
+  assert.deepEqual(row.pricing.revoke, { original: a.wamid, keys: ["original_message_id"], found: true });
+  assert.equal(w.db.msgs.find((m) => m.wamid === a.wamid).body, "أبغى أطلب", "نسختنا من الرسالة عمرها ما بتتمسح");
+  const x = await w.say(null, { raw: { type: "revoke", revoke: { original_message_id: "wamid.NOTOURS" } } });
+  const rx = w.db.msgs.find((m) => m.wamid === x.wamid);
+  assert.equal(rx.body, "[رسالة اتمسحت]"); assert.equal(rx.revoked_wamid, "wamid.NOTOURS");
+}));
+
+test("CR2 رسالة اتمسحت من غير مرجع ⇒ تقدير بس لو آخر رسالة منها قبلها بـ١٠ ثواني بالكتير «مسحت رسالة بعد N ثانية من …» (تقدير)، وإلا «[رسالة اتمسحت]»", withEnv(LOCKS_OPEN, async () => {
+  const w = liveWorld({ at: CR2_AT });
+  await w.say("عندكم مشاوي اليوم");
+  w.clock.advanceSec(4);
+  const d = await w.say(null, { raw: { type: "revoke" } });
+  assert.equal(w.db.msgs.find((m) => m.wamid === d.wamid).body, "مسحت رسالة بعد 4 ثواني من «عندكم مشاوي اليوم» (تقدير)");
+  w.clock.advanceSec(30);
+  const e = await w.say(null, { raw: { type: "revoke", revoke: {} } });
+  assert.equal(w.db.msgs.find((m) => m.wamid === e.wamid).body, "[رسالة اتمسحت]", "آخر رسالة من ٣٠ ثانية ⇒ مفيش تقدير");
 }));

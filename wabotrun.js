@@ -38,6 +38,7 @@ import { matchIntent, detectLang, normalize, msgText, msgButtons, msgCta, msgLis
 import { staffPhones, fitOneSms, staffConfig } from "./staffalerts.js";
 import { loyaltyCfgOf } from "./loyalty.js";
 import { MAPS_URL, ORDER_BUTTON, ORDER_BUTTON_EN } from "./watemplates.js";
+import { CR_DEFAULTS, makeCampaignReply } from "./wacampreply.js";      // CR2 (١٦/١٠): «أبغى أطلب» على رسالة حملة ⇒ عرض الحملة نفسها
 import { isOpenNow } from "./carts.js";
 import { preorderCfg } from "./preorder.js";
 import { makeBotCarts, reorderPlan, planSummary, orderDay, chatLocation } from "./wabotcart.js";
@@ -145,6 +146,7 @@ export const DEFAULTS = Object.freeze({
   reorderLookback: 5,          // لو آخر طلب مايتجهّزش، نجرّب اللي قبله لحد العدد ده
   campaignCart: true,          // FD1 (١٤/١٠): «أبغى أطلب» على رسالة حملة «طبقك المفضل» ⇒ سلة جاهزة بالعرض اللي وصله بالظبط (بسعره وتوصيله الحين)
   campaignOfferHours: 72,      // …العرض المخزّن بيفضل يتقرا للضغطة/«نعم» لحد المدة دي من الإرسال
+  ...CR_DEFAULTS,              // CR2 (١٦/١٠): campaignReply (مفتوح) + campaignReplyHours (72) — «أبغى أطلب» على رسالة حملة ⇒ عرضها هي برابطها، مش الرد العام
   campaignYesQuietMin: 60,     // FD1 مراجعة ٣: «نعم» المكتوبة مابتتحسبش موافقة على الحملة لو المحادثة كان فيها كلام في المدة دي قبل الرسالة (رد على سؤال تاني)
   maxAgeMinutes: 20,           // رسالة أقدم من كده (ويب هوك متأخر) مابيتردش عليها
   sameTextSeconds: 8,          // نفس النص من نفس العميل خلال الثواني دي = تكرار ويب هوك/ضغطة مرتين ⇒ مايتردّش عليه تاني. عميل بيكرر سؤاله بعدها بيترد عليه (١٢/١٠)
@@ -262,6 +264,11 @@ export const TEXTS = Object.freeze({
   camp_picks: t("حملة «طبقك المفضل»: سطر اختيارات البوكس في السلة", "اخترنا لك في البوكس: {names}.", "In the box we picked: {names}.", ["names"], [], 300),
   camp_box_body: t("حملة «طبقك المفضل»: رد «أبغى أطلب» لبوكس من نوع أكله (يختار هو)", "{offer}.\n{paused}\n{closed}\nاختر اللي يعجبك في البوكس وكمّل طلبك من الزر 👇",
     "{offer}.\n{paused}\n{closed}\nPick what you like in the box and complete your order from the button 👇", ["offer"], ["paused", "closed"], 900),
+  /* CR2 (١٦/١٠) — «أبغى أطلب» على رسالة أي حملة تانية: {offer} = اسم العرض + سطر السعر + سطر آخر يوم (من قيم الحملة نفسها) */
+  camp_reply_body: t("رد «أبغى أطلب» على رسالة حملة (العرض اللي وصله + رابط الحملة)", "أبشر 🌟 هذا العرض اللي وصلك:\n{offer}.\n{paused}\n{closed}\nتبي نجهزه لك هنا؟ اكتب لي اختيارك وتبيه توصيل ولا استلام، أو اطلبه مباشرة من الزر 👇",
+    "Sure 🌟 Here's the offer you received:\n{offer}.\n{paused}\n{closed}\nWant us to prepare it here? Write your choice and whether it's delivery or pickup, or order it directly from the button 👇", ["offer"], ["paused", "closed"], 900),
+  camp_reply_price: t("رد الحملة: سطر السعر", "بـ{price} ر.س", "for SAR {price}", ["price"], [], 80),
+  camp_reply_until: t("رد الحملة: سطر آخر يوم", "والعرض لين {until}", "valid until {until}", ["until"], [], 160),
   /* مساعد الطلبات: المتابعة الواحدة بعد رابط السلة (نص ثابت + نفس الرابط بزر «كمّل طلبك») */
   assist_followup: t("مساعد الطلبات: متابعة بعد رابط السلة", "سلتك ما زالت جاهزة 🛒 تقدر تكمّل طلبك من الزر 👇\nوإذا تحتاج شي ثاني اكتب لي.", "Your cart is still ready 🛒 You can complete your order from the button 👇\nIf you need anything else, just write.", [], [], 300),
   /* PS3 — التذكير اللي العميل طلبه: بيفتح الكلام تاني باسم ماجد وبالصنف اللي كان بيسأل عنه (لو معروف ولسه متاح). مش رسالة تسويق: بتتبعت بس لعميل قال «فكّرني» وحدد الوقت. */
@@ -672,6 +679,7 @@ export function botConfig(settings) {
     reorderMinTotal: num(x.reorderMinTotal, 0, 500, DEFAULTS.reorderMinTotal), reorderLookback: num(x.reorderLookback, 1, 10, DEFAULTS.reorderLookback),
     campaignCart: x.campaignCart !== false, campaignOfferHours: num(x.campaignOfferHours, 1, 168, DEFAULTS.campaignOfferHours),      // FD1
     campaignYesQuietMin: num(x.campaignYesQuietMin, 0, 720, DEFAULTS.campaignYesQuietMin),
+    campaignReply: x.campaignReply !== false, campaignReplyHours: num(x.campaignReplyHours, 1, 168, DEFAULTS.campaignReplyHours),      // CR2
     maxAgeMinutes: num(x.maxAgeMinutes, 1, 120, DEFAULTS.maxAgeMinutes),
     sameTextSeconds: num(x.sameTextSeconds, 0, 120, DEFAULTS.sameTextSeconds),
     autoEchoSkipCovered: x.autoEchoSkipCovered === true,
@@ -759,11 +767,11 @@ export function configFromBody(b, prev = {}) {
   errors.push(...rangeErrors(src));
   delete out.humanWindowHours;      // اتلغى (١٢/١٠) — أي حفظ بينضّف المخزّن القديم
   for (const k of ["humanPauseMin", "staffWaitMin", "closedEchoPauseMin", "manualMuteHours", "handoffOpenHours", "freeRepliesPerMonth", "replyRateSar", "disclosureHours", "unknownHandoverAfter", "adWindowHours", "optinAnswerWindowMin",
-    "offerEndWithinDays", "boxesCacheMin", "menuCacheMin", "offersCacheMin", "staleCacheMin", "logKeepDays", "reorderMaxDays", "reorderLinkDays", "reorderMinTotal", "reorderLookback",
+    "offerEndWithinDays", "boxesCacheMin", "menuCacheMin", "offersCacheMin", "staleCacheMin", "logKeepDays", "reorderMaxDays", "reorderLinkDays", "reorderMinTotal", "reorderLookback", "campaignReplyHours",
     "handoverRealertMin", "handoverCustomerNoteMin", "greetWindowHours", "maxAgeMinutes", "sameTextSeconds", "autoEchoMaxSec", "autoInboundSec", "openerHours", "leadFollowUpMin", "reviewReplyHours", "reviewPaidGapMin", "followBannerSkipHours", "windowKeeperHour", "windowKeeperDailyCap", "windowKeeperWeekly", "windowKeeperQuietStart", "windowKeeperQuietEnd", "loopGuardCount", "loopGuardFastSec", "loopGuardSeconds", "loopGuardMuteHours", "mediaFloodBuyerCount", "mediaFloodCount", "mediaFloodMinutes", "mediaFloodMuteHours", "maxRepliesPerHour", "maxTapsPerHour", "maxRepliesPerMinute", "orderLookbackHours", "lateAfterMinutes", "maxAlertsPerHour", "campaignOfferHours", "campaignYesQuietMin", ...Object.keys(FU_NUMS)]) {
     if (k in src) { if (Number.isFinite(Number(src[k])) && src[k] !== "" && src[k] !== null) out[k] = Number(src[k]); else errors.push(k); }
   }
-  for (const k of ["interactive", "staffAlert", "alertInTest", "autoEchoSkipCovered", "autoInboundPatterns", "paidNoteEnabled", "reviewWhatsApp", "windowFreeUpdates", "windowSell", "windowKeeper", "courierContact", "courierTemplate", "followLink", "followBanner", "closedPolicy", "closedSkipPreparing", "mergeDeliveredReview", "handoverAckNeedsReply", "reorderEnabled", "dishFactsEnabled", "campaignCart", ...FU_BOOLS]) if (k in src) out[k] = src[k] === true;
+  for (const k of ["interactive", "staffAlert", "alertInTest", "autoEchoSkipCovered", "autoInboundPatterns", "paidNoteEnabled", "reviewWhatsApp", "windowFreeUpdates", "windowSell", "windowKeeper", "courierContact", "courierTemplate", "followLink", "followBanner", "closedPolicy", "closedSkipPreparing", "mergeDeliveredReview", "handoverAckNeedsReply", "reorderEnabled", "dishFactsEnabled", "campaignCart", "campaignReply", ...FU_BOOLS]) if (k in src) out[k] = src[k] === true;
   if ("llm" in src) {
     const L = src.llm || {}, cur = { ...(prev.llm || {}) };
     if ("enabled" in L) cur.enabled = L.enabled === true;
@@ -1035,6 +1043,8 @@ export const SCHEMA = Object.freeze({
   campaignCart: S("orders", "boolean", "حملة «طبقك المفضل»: «أبغى أطلب» ⇒ سلة جاهزة بالعرض", "العميل وصلته رسالة الحملة (بوكس فيه طبقه المفضل أو طبقه نفسه بسعره وسعر التوصيل لعنوانه) وضغط «أبغى أطلب» أو رد «نعم»: البوت بيحسب نفس العرض تاني بالسعر والتوصيل الحين ويبعت رابط سلة جاهزة بيه. العرض اتغيّر أو خلص أو المفتاح مقفول ⇒ رد «أبي أطلب» العادي."),
   campaignOfferHours: S("orders", "number", "حملة «طبقك المفضل»: العرض المخزّن بيتقرا لحد", "من وقت إرسال رسالة الحملة للعميل.", { min: 1, max: 168, unit: "ساعة" }),
   campaignYesQuietMin: S("orders", "number", "حملة «طبقك المفضل»: «نعم» المكتوبة مش موافقة لو المحادثة كانت شغّالة قبل الرسالة بـ", "رد «نعم» على سؤال من البوت أو المساعد أو الموظف اتسأل قبل الحملة بالمدة دي بيمشي في طريقه العادي (ضغطة زر «أبغى أطلب» نفسه مش داخلة في الشرط ده). ٠ = من غير الشرط.", { min: 0, max: 720, unit: "دقيقة" }),
+  campaignReply: S("orders", "boolean", "«أبغى أطلب» على رسالة حملة ⇒ عرض الحملة نفسها", "العميل ضغط زر «أبغى أطلب» تحت رسالة حملة واتساب (أو كتب إنه عايز يطلب) والحملة وصلته في المدة اللي تحت: البوت بيرد بسطر فيه العرض ده باسمه وسعره وآخر يوم، ورابط الحملة نفسها (الضغطة بتتحسب على الحملة)، و«تبي نجهزه لك هنا؟». حملة «طبقك المفضل» ليها ردها (سلة جاهزة). العرض خلص، أو رابطه موقوف، أو البوكس اتشال ⇒ رد «أبي أطلب» العادي. لو سعر البوكس اتغيّر من ساعة الرسالة ⇒ العرض من غير رقم. مقفول ⇒ رد «أبي أطلب» العادي زي الأول."),
+  campaignReplyHours: S("orders", "number", "رسالة الحملة بتتقرا للرد ده لحد", "من وقت وصول رسالة الحملة للعميل. أقدم من كده ⇒ رد «أبي أطلب» العادي.", { min: 1, max: 168, unit: "ساعة" }),
   firstCode: S("orders", "code", "كود أول طلب", "الكود اللي سطر «أول طلب» بيقرا شروطه من الكوبونات."),
   "links.organic": S("links", "slug", "رابط المحادثات العادية", "من «روابط الحملات»."),
   "links.ads": S("links", "slug", "رابط محادثات الإعلانات", ""),
@@ -1332,6 +1342,12 @@ export function buildReply(key, c) {
          بوكس «من نوع أكله» من غير طبقه ⇒ البوكس نفسه يختار هو. العرض اتغيّر/خلص ⇒ data.campaign فاضي ⇒ الرد العادي تحت. */
       const cp = data.campaign && data.campaign.ok ? data.campaign : null;
       const vars = { offer: cp ? cp.line : "", paused: pausedLine(cfg, lang, data), closed: closedLine(cfg, lang, data, "closed_short") };
+      /* CR2: «أبغى أطلب» على رسالة حملة تانية ⇒ عرض الحملة دي (اسمه + سعره + آخر يوم) ورابطها لنفس المستلم — الضغطة بتتحسب على الحملة */
+      const cr = !cp && data.campReply && data.campReply.ok ? data.campReply : null;
+      if (cr) {
+        const head = [`*${cr.title}*`, cr.price != null ? F("camp_reply_price", { price: money(cr.price) }) : ""].filter(Boolean).join(" ") + (cr.until ? `${lang === "en" ? ", " : "، "}${F("camp_reply_until", { until: cr.until })}` : "");
+        return { body: F("camp_reply_body", { ...vars, offer: head }), cta: { title: T("cta_order"), url: cr.url }, link: cr.slug };
+      }
       if (cp && cp.url) return { body: F("camp_order_body", { ...vars, picks: cp.picks && cp.picks.length ? F("camp_picks", { names: cp.picks.join(lang === "en" ? ", " : "، ") }) : "" }), cta: { title: T("cta_reorder"), url: cp.url }, link: "wa-campaign" };
       if (cp && cp.boxSlug) {
         if (data.links && data.links[cp.boxSlug] === true) return { body: F("camp_box_body", vars), cta: { title: T("cta_box"), url: linkUrl(cp.boxSlug) }, link: cp.boxSlug };
@@ -2362,9 +2378,11 @@ export function register(app, ctx, deps = {}) {
   const q = async (sql, params) => { try { return (await pool.query(sql, params)).rows; } catch (e) { console.error("[wabot] db:", e.message); return null; } };
   /* FD1 (١٤/١٠): حملة «طبقك المفضل» (wafavpick.js) — العرض اللي وصل لكل رقم + حسابه تاني الحين + مدخلات السلة. مش متوصّلة ⇒ الرد العادي. */
   const favApi = () => { try { return (typeof deps.fav === "function" ? deps.fav() : deps.fav) || null; } catch { return null; } };
+  /* CR2 (١٦/١٠): آخر رسالة حملة Cloud للرقم (أو الرسالة اللي اتضغط زرها) ⇒ عرضها باسمه وسعره ورابطها (wacampreply.js) */
+  const campReplyApi = deps.campReply || makeCampaignReply({ pool });
 
   /* البيانات الحية لرسالة واحدة. أي مصدر وقع ⇒ قيمته null/فاضية ⇒ الرد اللي محتاجه بيتحوّل لموظف. */
-  async function loadData({ settings, cfg, phone, orderNo, key, now, know = null, arg = null, campaign = null }) {
+  async function loadData({ settings, cfg, phone, orderNo, key, now, know = null, arg = null, campaign = null, campReply = null }) {
     const data = { settings, now, bundles: [], policy: null, first: null, loyalty: null, order: null, links: {}, open: null, chat: null, menu: know?.menu || null, quote: null, optinUpdates: null };
     try { data.open = settings?.hours ? openState(settings, now) : null; } catch { data.open = null; }
     try { data.loyalty = loyaltyCfgOf(settings); } catch { data.loyalty = null; }
@@ -2405,6 +2423,7 @@ export function register(app, ctx, deps = {}) {
     }
     /* FD1: رد على رسالة «طبقك المفضل» (الضغطة أو «نعم» أول رد — القرار في work) ⇒ العرض المخزّن للرقم ده بس */
     data.campaign = key === "order" && campaign && campaign.fav ? campaign : null;
+    data.campReply = key === "order" && !data.campaign && campReply && campReply.ok ? campReply : null;      // CR2: عرض الحملة اللي العميل رد عليها
     const campSlug = data.campaign && data.campaign.fav.slug ? [String(data.campaign.fav.slug)] : [];
     const slugs = [...new Set([cfg.links.organic, cfg.links.ads, cfg.links.packs, "wab-menu", ...(key === "box" && arg ? [String(arg)] : []), ...campSlug, ...Object.values(cfg.links.adMap)])];
     const lr = await q("SELECT slug FROM cms_links WHERE slug = ANY($1::text[]) AND active", [slugs]);
@@ -2767,10 +2786,36 @@ export function register(app, ctx, deps = {}) {
           }
         }
       } else if (afterWait && ev.cls && ev.cls.key) cls = { ...cls, ...ev.cls };   // الرد المؤجّل بيكمل بنفس التصنيف اللي اتحسب وقت وصول الرسالة
+      /* CR2 (١٦/١٠) — «أبغى أطلب» على رسالة حملة تانية غير «طبقك المفضل» (الحالة: ١٦/١٠ 17:18، باقات التجمّع ١٥/١٠ ⇒ البوت رد بالرد العام ورابط wab-boxes):
+         • ضغطة زر «أبغى أطلب» تحت القالب ⇒ صف الرسالة اللي اتضغط زرها نفسها (context.id = wamid الصف)؛ من غير context ⇒ آخر حملة للرقم.
+         • نية طلب مكتوبة (تصنيف «order») ⇒ آخر حملة للرقم، بس لو: مش مقتبسة على رسالة تانية، مفيش طلب من الموقع من ساعتها، مفيش موظف كتب له بعد الحملة،
+           ومفيش محادثة مساعد شغّالة (ده كلام في سياق تاني). مش في الرد المؤجّل (الضغطة بتتقرا تاني من زرها).
+         الأحدث «طبقك المفضل» والـFD1 رفض ⇒ مفيش عرض هنا (مانرجعش لحملة أقدم). «نعم» على متابعة FU1 (followup_yes) ليها ردها. العرض خلص/الرابط موقوف ⇒ الرد العام.
+         rawIntent campaign_reply ⇒ القواعد دايماً (assistEligible: /^campaign_/) عشان رابط الحملة يطلع مضمون. */
+      let campReply = null;
+      if (ok && cfg.campaignReply && !campOffer && cls.key === "order" && cls.rawIntent !== "followup_yes") {
+        const tapId = ev.interactiveId ? String(ev.interactiveId).trim() : "";
+        const tap = Boolean(tapId) && CAMPAIGN_TAP_IDS.has(tapId);
+        const typed = !tapId && !afterWait && String(ev.type || "text") === "text";
+        if (tap || typed) {
+          const ctxId = ev.contextId ? String(ev.contextId) : null;
+          let r = null;
+          try { r = await campReplyApi.lastCampaign(phone, { hours: cfg.campaignReplyHours, wamid: ctxId, typed, now: now.getTime(), bundles: (know && Array.isArray(know.bundles) && know.bundles.length ? know.bundles : await bundles()), store: STORE }); }
+          catch (e) { console.error("[wabot] campaign reply:", e.message); r = null; }
+          let why = r && r.offer ? (r.offer.ok ? null : r.offer.why) : "failed";
+          if (!why && typed) {
+            if (echoAt && r.offer.sentAt && Date.parse(echoAt) > Date.parse(r.offer.sentAt)) why = "staff_since";
+            else { let sess = null; try { sess = await assistStore.loadSession(phone, now, cfg.assist.sessionMin); } catch { sess = null; } if (sess && !(sess.state && sess.state.seed)) why = "assist_session"; }
+          }
+          if (!why) { campReply = r.offer; cls = { ...cls, arg: `camp:${r.offer.jobId || 0}`, rawIntent: "campaign_reply", lang: "ar" };      /* arg: «نفس المعلومة» بيتحسب على نفس الحملة بس، مش على رد «أبي أطلب» العام */
+            await q("UPDATE wa_bot_log SET intent=$2, detail=$3 WHERE id=$1", [logId, "campaign_reply", `campaign_reply:job${r.offer.jobId || "?"}`]); }
+          else if (!["no_campaign", "bad_phone"].includes(why)) await q("UPDATE wa_bot_log SET detail=$2 WHERE id=$1", [logId, `campaign_reply:${String(why).slice(0, 40)}`]);
+        }
+      }
       const rc = cls.key ? await recent(phone, cls.key, cls.arg, ["text", "interactive", "button"].includes(String(ev.type || "text")) ? String(ev.text || "").slice(0, 300) : "") : { n: 0, lastSame: null, sameTextAt: null, sameTextKey: null, failedRecently: false };
       await q("UPDATE wa_bot_log SET reply_arg=$2 WHERE id=$1", [logId, argOf(cls.arg)]);
       let data;
-      try { data = await loadData({ settings, cfg, phone, orderNo: cls.entities?.orderNo || null, key: cls.key, now, know, arg: cls.arg, campaign: campOffer }); }
+      try { data = await loadData({ settings, cfg, phone, orderNo: cls.entities?.orderNo || null, key: cls.key, now, know, arg: cls.arg, campaign: campOffer, campReply }); }
       catch (e) {   // مصدر بيانات وقع كله ⇒ بيانات فاضية: أي رد محتاج بيانات هيتحوّل لموظف من نفسه (DataMissing)
         console.error("[wabot] data:", e.message);
         data = { settings, now, bundles: [], policy: null, first: null, loyalty: null, order: null, orderDbFailed: true, links: {}, open: null };

@@ -20,7 +20,7 @@ import { windowState } from "./wainbox.js";
 import { tokenSecret } from "./portal-core.js";
 import { bizDay, bizStart, shiftDay } from "./bizday.js";
 import * as CAT from "./watemplates.js";
-import { TEMPLATES as REG, STAGE_TEMPLATES, GRAPH_VERSION } from "./whatsapp.js";
+import { TEMPLATES as REG, STAGE_TEMPLATES, GRAPH_VERSION, revokeText, REVOKE_PLAIN } from "./whatsapp.js";
 import { publicMedia } from "./wamedia.js";
 import { readUpload } from "./wastaffmedia.js";
 import { teamConfig } from "./wateam.js";
@@ -300,6 +300,14 @@ export function register(app, ctx, deps = {}) {
         ORDER BY created_at DESC LIMIT $3`, [pn, b4, lim + 1])).rows || [];
     const page = msgs.slice(0, lim).reverse();
     const from = page.length ? iso(page[0].created_at) : null;
+    /* CR2 (١٦/١٠): «رسالة اتمسحت» — المرجع محفوظ في pricing.revoke.original وقت الوصول. صف لسه نصه «[رسالة اتمسحت]» (الـrevoke وصل قبل الرسالة نفسها:
+       ميتا مابتضمنش الترتيب) ⇒ نصه يتحل هنا من نسختنا. والرسالة الأصلية بتاخد revoked:true (نسختها زي ما هي، عمرها ما بتتمسح). */
+    const revRefs = new Map();
+    for (const m of page) { const ref = m.pricing && typeof m.pricing === "object" && m.pricing.revoke && m.pricing.revoke.original; if (ref) revRefs.set(String(ref), m); }
+    const revBodies = new Map();
+    const unresolved = [...revRefs].filter(([, m]) => String(m.body || "").trim() === REVOKE_PLAIN).map(([ref]) => ref);
+    if (unresolved.length) { try { for (const r of (await pool.query("SELECT wamid, body FROM wa_messages WHERE wamid = ANY($1::text[]) AND phone_norm = $2", [unresolved, pn])).rows || []) revBodies.set(String(r.wamid), r.body); } catch { /* النص يفضل «رسالة اتمسحت» */ } }
+    const revokeRef = (m) => (m.pricing && typeof m.pricing === "object" && m.pricing.revoke && m.pricing.revoke.original ? String(m.pricing.revoke.original) : null);
     /* M1: أنهي صدى في الصفحة دي «آلي» (رد من تطبيق واتساب بزنس مش موظف) — للشارة «آلي» في الشاشات. أي خطأ ⇒ من غير شارة. */
     let autoIds = new Set();
     try { const ids = page.filter((m) => m.source === "echo").map((m) => m.id); if (ids.length) { const ar = await pool.query("SELECT id FROM wa_messages WHERE id = ANY($1::bigint[]) AND echo_kind = 'auto'", [ids]); autoIds = new Set(((ar && ar.rows) || []).map((r) => String(r.id))); } } catch { autoIds = new Set(); }
@@ -330,7 +338,9 @@ export function register(app, ctx, deps = {}) {
       messages: page.map((m) => {
         const d = m.direction === "in" && m.wamid ? byWamid.get(m.wamid) : null;
         const pr = m.pricing && typeof m.pricing === "object" && "billable" in m.pricing ? { billable: m.pricing.billable === true, category: m.pricing.category || null } : null;
-        return { id: m.wamid || `${m.direction}:${iso(m.created_at)}`, dir: m.direction, text: m.body || (m.template ? `[قالب: ${m.template}]` : ""),
+        const rref = revokeRef(m), rtext = rref && revBodies.has(rref) ? revokeText({ body: revBodies.get(rref), echo: m.source === "echo" }) : null;      // CR2
+        return { id: m.wamid || `${m.direction}:${iso(m.created_at)}`, dir: m.direction, text: rtext || m.body || (m.template ? `[قالب: ${m.template}]` : ""),
+          ...(rref ? { revokeOf: rref } : {}), ...(m.wamid && revRefs.has(String(m.wamid)) ? { revoked: true } : {}),      // CR2: صف المسح بيشاور على الأصل، والأصل عليه علامة «اتمسحت»
           template: m.template || null, category: m.category || null, status: m.status || null, error: m.error || null, errorAr: errorArOf(m), orderNo: m.order_no || null,
           source: m.source || "api", ...(m.source === "echo" ? { echoKind: autoIds.has(String(m.id)) ? "auto" : "staff" } : {}), at: iso(m.created_at), cost: pr, media: publicMedia(m),      // MD1: ملف الرسالة (من غير رقم ميتا)
           bot: d ? { decision: d.decision || null, replyKey: d.reply_key || null, reason: d.reason || null } : null };

@@ -46,6 +46,7 @@ function world({ role = "owner", settings = {}, threads = [], messages = [], bot
       if (p[1]) rows = rows.filter((m) => Date.parse(m.created_at) < Date.parse(p[1]));
       return { rows: rows.slice(0, p[2]) };
     }
+    if (/^SELECT wamid, body FROM wa_messages WHERE wamid = ANY\(\$1::text\[\]\) AND phone_norm = \$2/i.test(s)) return { rows: messages.filter((m) => p[0].includes(m.wamid) && m.phone_norm === p[1]).map((m) => ({ wamid: m.wamid, body: m.body })) };      // CR2
     if (/^SELECT wamid, at, decision, reason, reply_key, handoff FROM wa_bot_log/i.test(s)) return { rows: botLog.filter((l) => l.phone_norm === p[0]) };
     if (/^UPDATE wa_threads SET unread=0/i.test(s)) { const t = db.threads.find((x) => x.phone_norm === p[0]); if (t) { t.unread = 0; t.read_by = p[1]; } return { rows: [], rowCount: t ? 1 : 0 }; }
     if (/^SELECT template, count\(\*\) FILTER/i.test(s)) return { rows: [{ template: "fc_order_preparing", sent: 40, delivered: 38, read: 30, failed: 2, last_at: ago(60) }] };
@@ -528,4 +529,26 @@ test("RV1 review fix: a cashier without «الكاشير كمان يشوف ال�
   w.db.sql.length = 0;
   await w.api.tick(null);
   assert.ok(!w.db.sql.some((s) => s.includes("review_low")), "manager tick untouched");
+});
+
+/* CR2 (١٦/١٠): «رسالة اتمسحت» — صف الـrevoke اللي وصل قبل الرسالة نفسها (نصه لسه «[رسالة اتمسحت]») بيتحل وقت القراءة من نسختنا،
+   والرسالة الأصلية بتاخد revoked:true ونصها زي ما هو (عمره ما بيتمسح). صف من غير مرجع بيفضل زي ما هو. */
+test("CR2 thread: a revoke row stored before its original resolves to «مسحت رسالتها: <text>» at read time; the original keeps its text and gets revoked:true", async () => {
+  const pn = "512345678";
+  const messages = [
+    { wamid: "wamid.A1", direction: "in", phone_norm: pn, status: "received", body: "أبغى أطلب", created_at: ago(10), source: "api", pricing: null, id: 1 },
+    { wamid: "wamid.R1", direction: "in", phone_norm: pn, status: "received", body: "[رسالة اتمسحت]", created_at: ago(9), source: "api", pricing: { revoke: { original: "wamid.A1", keys: ["original_message_id"], found: false } }, id: 2 },
+    { wamid: "wamid.R2", direction: "in", phone_norm: pn, status: "received", body: "[رسالة اتمسحت]", created_at: ago(8), source: "api", pricing: null, id: 3 },
+    { wamid: "wamid.E1", direction: "out", phone_norm: pn, status: "sent", body: "[رسالة اتمسحت]", created_at: ago(7), source: "echo", pricing: null, id: 4 },
+  ];
+  const w = world({ threads: [T(pn)], messages });
+  const r = await w.call("GET", "/api/cms/wa/threads/:key", { params: { key: "0512345678" } });
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  const by = Object.fromEntries(r.body.messages.map((m) => [m.id, m]));
+  assert.equal(by["wamid.R1"].text, "مسحت رسالتها: أبغى أطلب");
+  assert.equal(by["wamid.R1"].revokeOf, "wamid.A1");
+  assert.equal(by["wamid.A1"].text, "أبغى أطلب", "نسختنا من الرسالة زي ما هي");
+  assert.equal(by["wamid.A1"].revoked, true);
+  assert.equal(by["wamid.R2"].text, "[رسالة اتمسحت]", "من غير مرجع ⇒ زي ما هو");
+  assert.equal(by["wamid.R2"].revoked, undefined);
 });

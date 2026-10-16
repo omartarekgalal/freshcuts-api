@@ -371,6 +371,26 @@ export function messageText(m) {
   if (m?.type === "template") return "[قالب]";
   return m?.type ? `[${MEDIA_AR[m.type] || m.type}]` : "";
 }
+/* CR2 (١٦/١٠) — العميل مسح رسالة («حذف للجميع»): ميتا بتبعت رسالة نوعها revoke ومعاها revoke.original_message_id = wamid الرسالة اللي اتمسحت
+   (مرجع ميتا: webhooks/reference/messages/revoke — لأرقام تطبيق واتساب بزنس «Coexistence»، لحد يومين من إرسال الرسالة). نسختنا من الرسالة
+   عمرها ما بتتمسح: صف الـrevoke بيتكتب نصه «مسحت رسالتها: <نصها>» وبيحفظ المرجع في wa_messages.revoked_wamid.
+   مرجع مش موجود في الحمولة (نسخة قديمة / شكل تاني) ⇒ تقدير: آخر رسالة منها قبلها بـREVOKE_GAP_SEC ثانية بالكتير ⇒ «مسحت رسالة بعد N ثانية من …» (تقدير). */
+export const REVOKE_GAP_SEC = 10;
+export const REVOKE_PLAIN = "[رسالة اتمسحت]";
+export function revokeOf(m) {
+  if (m?.type !== "revoke") return null;
+  const r = m.revoke && typeof m.revoke === "object" ? m.revoke : {};
+  const ref = [r.original_message_id, r.message_id, r.id].find((x) => typeof x === "string" && x.trim());
+  return { original: ref ? ref.trim().slice(0, 200) : null, keys: Object.keys(r).slice(0, 10) };
+}
+const clipQ = (t, n = 300) => { const x = String(t ?? "").replace(/\s+/g, " ").trim(); return x.length > n ? `${x.slice(0, n - 1)}…` : x; };
+/* نص صف الـrevoke: body = نص الرسالة اللي اتمسحت (عندنا) · gapSec + lastText = التقدير (من غير مرجع) · echo = الموظف مسح من موبايل المطعم */
+export function revokeText({ body = null, gapSec = null, lastText = null, echo = false } = {}) {
+  if (body != null && String(body).trim()) return echo ? `اتمسحت من موبايل المطعم: ${clipQ(body, 900)}` : `مسحت رسالتها: ${clipQ(body, 900)}`;
+  if (!echo && lastText != null && String(lastText).trim() && Number.isFinite(Number(gapSec)) && Number(gapSec) >= 0 && Number(gapSec) <= REVOKE_GAP_SEC)
+    { const n = Math.round(Number(gapSec)); return `مسحت رسالة بعد ${n} ${n >= 3 && n <= 10 ? "ثواني" : "ثانية"} من «${clipQ(lastText, 200)}» (تقدير)`; }
+  return REVOKE_PLAIN;
+}
 /* MD1 (١٣/١٠): بيانات ملف الرسالة (صورة / صوت / فيديو / ملف / ملصق) زي ما ميتا بعتتها — بتتحفظ في wa_messages.media
    عشان الصندوق يقدر يفتح الملف بعدين (wamedia.js). رقم الملف ده مابيطلعش للمتصفح. */
 const MEDIA_KINDS = ["image", "video", "audio", "document", "sticker"];
@@ -456,10 +476,11 @@ export function parseWebhook(body, { phoneId = null, phoneIds = [], ownNumbers =
           location: m.type === "location" && Number.isFinite(Number(m.location?.latitude)) && Number.isFinite(Number(m.location?.longitude))
             ? { lat: Number(m.location.latitude), lng: Number(m.location.longitude) } : null,
           ...(mediaOf(m) ? { media: mediaOf(m) } : {}),
-          intent: m.type === "reaction" ? null : intentOf(text) });
+          ...(revokeOf(m) ? { revoke: revokeOf(m) } : {}),      // CR2: الرسالة اتمسحت — مرجع الرسالة الأصلية
+          intent: m.type === "reaction" || m.type === "revoke" ? null : intentOf(text) });
       }
       for (const m of v.message_echoes || []) {
-        out.echoes.push({ wamid: m.id, from: m.from, to: m.to, type: m.type, text: messageText(m), at: isoOf(m.timestamp), ...(mediaOf(m) ? { media: mediaOf(m) } : {}) });
+        out.echoes.push({ wamid: m.id, from: m.from, to: m.to, type: m.type, text: messageText(m), at: isoOf(m.timestamp), ...(mediaOf(m) ? { media: mediaOf(m) } : {}), ...(revokeOf(m) ? { revoke: revokeOf(m) } : {}) });
       }
       for (const s of v.state_sync || []) {
         const c = s?.contact || {};
@@ -622,6 +643,7 @@ export function register(app, ctx, deps = {}) {
       ALTER TABLE wa_messages ADD COLUMN IF NOT EXISTS msg_type TEXT;
       ALTER TABLE wa_messages ADD COLUMN IF NOT EXISTS echo_kind TEXT;   -- M1: صدى موبايل المطعم «auto» (رد آلي من تطبيق واتساب بزنس) أو «staff» — waecho.js
       ALTER TABLE wa_messages ADD COLUMN IF NOT EXISTS media JSONB;      -- MD1: بيانات ملف الرسالة (mediaOf)
+      ALTER TABLE wa_messages ADD COLUMN IF NOT EXISTS revoked_wamid TEXT;      -- CR2: صف «رسالة اتمسحت» ⇒ wamid الرسالة اللي اتمسحت (نسختها بتفضل زي ما هي)
       -- SEC (١٢/١٠): العميل كتب «إيقاف» على واتساب ⇒ ولا قالب (تسويق ولا تحديثات) لحد ما يرجع يوافق.
       -- عمود مستقل عشان source بيتكتب فوقه مع كل طلب (shop.js) فماينفعش يبقى هو العلامة.
       ALTER TABLE wa_optins ADD COLUMN IF NOT EXISTS stopped_at TIMESTAMPTZ;
@@ -1230,13 +1252,36 @@ export function register(app, ctx, deps = {}) {
     }
   }
 
+  /* CR2 (١٦/١٠): رسالة اتمسحت ⇒ نص صفها من نسختنا للرسالة الأصلية (بالمرجع)، أو تقدير من آخر رسالة لو المرجع مش في الحمولة. أي خطأ ⇒ «[رسالة اتمسحت]» زي الأول. */
+  async function revokeInfo(pn, m, { echo = false } = {}) {
+    const ref = m.revoke && m.revoke.original ? String(m.revoke.original) : null;
+    const meta = { original: ref, keys: (m.revoke && m.revoke.keys) || [] };
+    try {
+      if (ref) {
+        const r = (await pool.query("SELECT body, direction FROM wa_messages WHERE wamid=$1 AND ($2::text IS NULL OR phone_norm=$2) LIMIT 1", [ref, pn || null])).rows[0];
+        return { ref, text: revokeText({ body: r ? r.body : null, echo }), meta: { ...meta, found: Boolean(r) } };
+      }
+      if (echo || !pn) return { ref: null, text: REVOKE_PLAIN, meta: { ...meta, found: false } };
+      const at = m.at && Number.isFinite(Date.parse(m.at)) ? new Date(m.at) : new Date();
+      const r = (await pool.query(
+        `SELECT body, created_at FROM wa_messages WHERE phone_norm=$1 AND direction='in' AND COALESCE(msg_type,'') <> 'revoke'
+            AND created_at <= $2::timestamptz + INTERVAL '5 seconds' AND created_at > $2::timestamptz - make_interval(secs => $3::int) ORDER BY created_at DESC LIMIT 1`,
+        [pn, at.toISOString(), REVOKE_GAP_SEC])).rows[0];
+      const gap = r ? Math.max(0, (at.getTime() - new Date(r.created_at).getTime()) / 1000) : null;
+      return { ref: null, text: revokeText({ gapSec: gap, lastText: r ? r.body : null }), meta: { ...meta, found: false, guess: Boolean(r) } };
+    } catch (e) { console.error("[wa] revoke:", e.message); return { ref, text: REVOKE_PLAIN, meta: { ...meta, error: true } }; }
+  }
+
   async function handleInbound(m) {
     const pn = fromWaId(m.from);
+    const rv = m.revoke ? await revokeInfo(pn, m) : null;      // CR2
+    if (rv) m = { ...m, text: rv.text };
     const ins = await pool.query(
       `INSERT INTO wa_messages(wamid, direction, phone_norm, status, body, pricing, source, msg_type)
        VALUES ($1,'in',$2,'received',$3,$4,'api',$5) ON CONFLICT (wamid) DO NOTHING RETURNING id`,
-      [m.wamid, pn, String(m.text || `[${m.type}]`).slice(0, 1000), m.referral || m.unsupported ? jb({ ...(m.referral ? { referral: m.referral } : {}), ...(m.unsupported ? { unsupported: m.unsupported } : {}) }) : null, m.type || null]);
+      [m.wamid, pn, String(m.text || `[${m.type}]`).slice(0, 1000), m.referral || m.unsupported || rv ? jb({ ...(m.referral ? { referral: m.referral } : {}), ...(m.unsupported ? { unsupported: m.unsupported } : {}), ...(rv ? { revoke: rv.meta } : {}) }) : null, m.type || null]);
     if (ins.rowCount === 0) return; // ويب هوك مكرر — اتعالج قبل كده
+    if (rv && rv.ref) await pool.query("UPDATE wa_messages SET revoked_wamid=$2 WHERE wamid=$1", [m.wamid, rv.ref]).catch((e) => console.error("[wa] revoke ref:", e.message));
     if (m.media) await pool.query("UPDATE wa_messages SET media=$2::jsonb WHERE wamid=$1", [m.wamid, jb(m.media)]).catch((e) => console.error("[wa] media meta:", e.message));
     if (!pn) return;
     /* يفتح/يجدّد نافذة الـ٢٤ ساعة ويرفع «غير مقروء» للكاشير. */
@@ -1271,11 +1316,14 @@ export function register(app, ctx, deps = {}) {
      في نفس المحادثة عشان الصندوق يعرض كل حاجة — ومفيش أي رد آلي عليه. */
   async function handleEcho(e) {
     const pn = fromWaId(e.to);
+    const rv = e.revoke ? await revokeInfo(pn, e, { echo: true }) : null;      // CR2: الموظف مسح رسالة من موبايل المطعم
+    if (rv) e = { ...e, text: rv.text };
     const ins = await pool.query(
       `INSERT INTO wa_messages(wamid, direction, phone_norm, status, body, source, msg_type, created_at)
        VALUES ($1,'out',$2,'sent',$3,'echo',$4, COALESCE($5::timestamptz, NOW())) ON CONFLICT (wamid) DO NOTHING RETURNING id`,
       [e.wamid, pn, String(e.text || `[${e.type}]`).slice(0, 1000), e.type || null, e.at]);
     if (ins.rowCount === 0 || !pn) return;
+    if (rv && rv.ref) await pool.query("UPDATE wa_messages SET revoked_wamid=$2 WHERE wamid=$1", [e.wamid, rv.ref]).catch((x) => console.error("[wa] revoke ref:", x.message));
     if (e.media) await pool.query("UPDATE wa_messages SET media=$2::jsonb WHERE wamid=$1", [e.wamid, jb(e.media)]).catch((x) => console.error("[wa] media meta:", x.message));
     /* M1 (١٢/١٠): رد آلي من تطبيق واتساب بزنس (ترحيب / أسئلة الإعلان الجاهزة) ولا موظف؟ بيتحدد لحظة التسجيل من التوقيت (waecho.js) وبيتخزّن في echo_kind.
        الصدى الآلي **مش** «موظف بيرد»: البوت مايسكتش بسببه. أي خطأ في التصنيف ⇒ يفضل «موظف» (السلوك القديم). رد الموظف من اللوحة/البورتال مابيعدّيش من هنا أصلاً. */
