@@ -1173,6 +1173,9 @@ export function register(app, ctx, deps = {}) {
               : { type: "text", text: { body, preview_url: false } };
             const r = await sendFreeform({ phoneNorm: pn, payload, source: "window", preview: body, orderNo: order.order_no, stage, fallbackSms });      // الحارس الكامل جوّه sendFreeform
             if (r.ok) return { ok: true, wamid: r.wamid, free: true };
+            /* CJ1 مراجعة (١٧/١٠): السقف رفض الرسالة الحرة (policy:true) ⇒ بنقف هنا. لو كمّلنا لمسار القالب، guardSend هيرفضه بنفس العدّ وهيسجّل صف **تاني**
+               لنفس الطلب/المرحلة/السبب في wa_policy_skips ⇒ «تقرير ماجد» (skipped + saved_sar) كان بيتضاعف. الشكل نفس اللي كان القالب هيرجّعه. */
+            if (r.policy === true) return { ok: false, skipped: r.skipped, policy: true };
           }
         }
       } catch (e) { console.error("[wa] window update:", e.message); }

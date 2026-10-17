@@ -132,3 +132,15 @@ test("الأقفال اللي قبل كده لسه هي اللي بتحكم: ع�
   assert.equal((await closed.wa.guardSend({ phoneNorm: CUST, kind: "session", source: "bot", proactive: true })).reason, "burst_hold", "الهدوء بيتقال الأول (التأجيل أرخص من قفل النافذة للمنادي)");
   assert.equal((await closed.wa.guardSend({ phoneNorm: CUST, kind: "session", source: "bot" })).reason, "window_closed");
 }));
+
+test("(٤) مراجعة CJ1: sendOrderUpdate والنافذة مفتوحة — السقف بيشيل «بنجهّز» **مرة واحدة**: صف واحد في wa_policy_skips (مش اتنين)، ولا طلب لميتا، policy:true؛ ونفس المسار لما السقف سامح بيبعت الرسالة الحرة زي الأول", withEnv(ALLOW, async () => {
+  const w = world({ sentByOrder: { W1: 1 } });
+  const r = await w.wa.sendOrderUpdate({ order_no: "W1", phone_norm: CUST }, "accepted");
+  assert.deepEqual(r, { ok: false, skipped: "order_cap_low", policy: true }, "نفس الشكل اللي كان مسار القالب هيرجّعه (notify مابيبعتش SMS بدلها)");
+  assert.deepEqual(w.db.skips, [{ order_no: "W1", phone: CUST, stage: "accepted", reason: "order_cap_low" }], "صف واحد بس — المسار الحر اترفض بالسياسة فمابنكمّلش لمسار القالب (كان بيسجّل صفين وتقرير ماجد بيتضاعف)");
+  assert.equal(w.calls.length, 0, "ولا طلب لميتا");
+  const ok = await w.wa.sendOrderUpdate({ order_no: "W0", phone_norm: CUST }, "accepted");
+  assert.equal(ok.ok, true); assert.equal(ok.free, true, "السقف سامح ⇒ الرسالة الحرة جوّه النافذة زي الأول");
+  assert.equal(w.calls.length, 1, "طلب واحد لميتا للرسالة الحرة");
+  assert.equal(w.db.skips.length, 1, "ولا صف شطب زيادة");
+}));
