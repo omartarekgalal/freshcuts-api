@@ -37,6 +37,7 @@
           GET  /api/journey/sessions?range=&q=&filter=
           GET  /api/journey/sessions/:sid
           GET  /api/journey/health
+          GET  /api/journey/pickup-optin?days=14   (JE1: تفعيل التنبيهات لطلبات الاستلام — كارت RT4)
 ═══════════════════════════════════════════════════════════════════════════ */
 
 import crypto from "node:crypto";
@@ -64,6 +65,21 @@ export const STEPS = Object.freeze([
   { step: 7, key: "paid", label: "دفع" },
 ]);
 export const PAID_STEP = 7;
+
+/* JE1 (١٧/١٠): كارت «🔔 نبّهك لما يجهز؟» على صفحة تتبّع طلب الاستلام (RT4 pickupnotify.js) — المالك: «نطلب تفعيل الإشعارات ونبعته على
+   الواتس عشان بعد كده نبعتله عروض» ⇒ عايز يشوف كام عميل استلام بيفعّل في اليوم وبأي قناة، وإيه اللي بيمنع الإشعارات على جهازه.
+   المتجر بيبعت: shown (props.push = حالة الجهاز، wa = btn|done|none) · push_ok (how = web|fcm|silent) · push_denied (how = pre|prompt) ·
+   push_unsupported (why = ios_install|iab|none) · wa_click. رقم الطلب في props.ord (مش order_no — الأحداث دي ماتختمش الجلسة، شوف eventOrderNo). */
+export const PICKUP_OPTIN_EVENTS = Object.freeze(["pickup_optin_shown", "pickup_optin_push_ok", "pickup_optin_push_denied", "pickup_optin_push_unsupported", "pickup_optin_wa_click"]);
+export const PICKUP_OPTIN_LABELS = Object.freeze({
+  pickup_optin_shown: "شاف كارت «نبّهك لما يجهز؟»", pickup_optin_push_ok: "فعّل إشعارات الجوال", pickup_optin_push_denied: "رفض الإشعارات",
+  pickup_optin_push_unsupported: "جهازه مش بيدعم الإشعارات", pickup_optin_wa_click: "ضغط «تابعه على واتساب»",
+});
+// why بتاع push_unsupported (+ مرفوض من push_denied) ⇒ «إيه اللي بيمنع الإشعارات» — مفاتيح pickupnotify.js H.decide
+export const PICKUP_BLOCKER_LABELS = Object.freeze({ ios_install: "آيفون من غير تثبيت", iab: "متصفح داخل تطبيق", denied: "مرفوض من المتصفح", none: "المتصفح مش بيدعم الإشعارات", other: "سبب تاني" });
+const PICKUP_BLOCKER_ALIAS = Object.freeze({ ios_not_installed: "ios_install", inapp: "iab", in_app: "iab" });
+export const PICKUP_PUSH_HOW = Object.freeze({ web: "من المتصفح", fcm: "من تطبيق فريش كاتس", silent: "إذن قديم (من غير سؤال)", other: "غير معروف" });
+export const PICKUP_DENIED_HOW = Object.freeze({ pre: "كان رافض من قبل", prompt: "رفض لما سألناه", other: "غير معروف" });
 
 // أحداث المتصفح المسموحة — أي اسم تاني بيترفض
 export const WEB_EVENTS = Object.freeze([
@@ -97,6 +113,8 @@ export const WEB_EVENTS = Object.freeze([
   // 16/10 (TRK6): «تابع طلبك على واتساب» after paying — banner on the tracking page / small pill while browsing
   // (props.where = banner | pill | track_btn): shown, tapped (opens wa.me), closed. The chats it opens: waBot follow_order/follow_at.
   "wa_follow_shown", "wa_follow_tap", "wa_follow_close",
+  // 17/10 (JE1): the five opt-in events of the pickup «نبّهك لما يجهز؟» card (RT4) — see PICKUP_OPTIN_EVENTS above
+  ...PICKUP_OPTIN_EVENTS,
 ]);
 
 /* نوع خطأ الـJS. المتصفح بيبعت kind من ١٩/٩؛ القديم بنصنّفه من الرسالة والملف.
@@ -324,9 +342,28 @@ export function maskPhone(pn) {
 const SID_RE = /^s[a-z0-9]{8,40}$/;
 const ANON_RE = /^[a-z0-9_-]{2,64}$/i;
 const ORDER_RE = /^[A-Z]{0,3}\d{6,20}$/;
-/* رقم الطلب اللي الحدث بيختم بيه الجلسة (journey_sessions.order_no + shop_orders.journey_sid). أحداث «تابع طلبك على واتساب» (TRK6) لأ:
-   بتطلع في جلسة تصفّح بعد الطلب بساعات، ولو ختمتها بالطلب القديم الـsweep بيعدّ فلوسه مرتين على قناة غلط. المتجر بيبعت الرقم فيها كـprops.ord مش order_no. */
-export const eventOrderNo = (e) => (e && e.props && !/^wa_follow_/.test(String(e.name || "")) && ORDER_RE.test(String(e.props.order_no || "")) ? String(e.props.order_no) : null);
+/* أحداث مابتختمش الجلسة برقم طلب: «تابع طلبك على واتساب» (TRK6) وكارت «نبّهك لما يجهز؟» (JE1). بتطلع على صفحة التتبّع في جلسة ممكن تكون
+   غير جلسة الشراء (بعد الطلب بساعات)، ولو ختمناها بالطلب القديم الـsweep بيعدّ فلوسه مرتين على قناة غلط. المتجر بيبعت الرقم فيهم كـprops.ord مش order_no. */
+const NO_STAMP_RE = /^(wa_follow|pickup_optin)_/;
+export const stampsSession = (name) => !NO_STAMP_RE.test(String(name || ""));
+/* رقم الطلب اللي الحدث بيختم بيه الجلسة (journey_sessions.order_no + shop_orders.journey_sid) */
+export const eventOrderNo = (e) => (e && e.props && stampsSession(e.name) && ORDER_RE.test(String(e.props.order_no || "")) ? String(e.props.order_no) : null);
+/* رقم الطلب اللي بيتكتب في عمود journey_events.order_no: اللي بيختم، + props.ord بتاع أحداث JE1 — عشان تقرير التفعيل يربط الحدث بطلب الاستلام
+   (shop_orders: مدفوع/تجربة/طاولة) من غير ما الجلسة تتختم. */
+export const eventOrderRef = (e) => eventOrderNo(e)
+  || (e && e.props && /^pickup_optin_/.test(String(e.name || "")) && ORDER_RE.test(String(e.props.ord || "")) ? String(e.props.ord) : null);
+/* أرقام الطلبات (W + ١٣ رقم) مش أرقام جوال، بس منضّف الجوال في sanitizeProps بيبدّل «٥ وبعدها ٨ أرقام» بـ[redacted] — وأرقام الطلبات بتوصل
+   W17925… يوم ٢٠/١٠ وW17935… يوم ٣١/١٠ (وأي W1795…) ⇒ كل ربط حدث↔طلب (order_no بتاع الشيك أوت، ord بتاع TRK6/JE1) كان هيضيع في الأيام دي.
+   الرقم الصحيح بيرجع زي ما هو بعد التنضيف لو شكله رقم طلب فعلاً. */
+const KEEP_ORDER_RE = /^[A-Z]{1,3}\d{6,20}$/;   // بحرف في الأول (W…) — رقم من غير حرف ممكن يكون جوال فمايرجعش
+export function keepOrderIds(raw, props) {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw) || !props) return props;
+  for (const k of ["order_no", "ord"]) {
+    const v = raw[k];
+    if (typeof v === "string" && KEEP_ORDER_RE.test(v)) props[k] = v;
+  }
+  return props;
+}
 export const validSid = (s) => typeof s === "string" && SID_RE.test(s);
 
 /* جسم /batch → {sessionId, anonId, session, events[]} أو {error} — صافي */
@@ -361,7 +398,7 @@ export function parseBatch(raw, { now = Date.now(), maxEvents = 50 } = {}) {
     const t = Number(e.t);
     const clientTs = Number.isFinite(t) && Math.abs(t - now) < 12 * 3600_000 ? new Date(t) : null;
     const seq = Number.isSafeInteger(Number(e.seq)) && Number(e.seq) > 0 ? Number(e.seq) : null;
-    const props = sanitizeProps(e.p);
+    const props = keepOrderIds(e.p, sanitizeProps(e.p));
     events.push({
       name, seq, clientTs, props,
       path: e.path ? scrubString(String(e.path).split("?")[0].replace(/\/track\/[^/]+/, "/track/:order"), 120) : null,
@@ -488,6 +525,80 @@ export function adMatches(adName, utmContent) {
   const a = n(adName), u = n(utmContent);
   if (!a || !u) return false;
   return a === u || u.endsWith(a) || a.endsWith(u) || (a.length >= 4 && u.includes(a));
+}
+
+/* ═══ JE1 — تفعيل التنبيهات لطلبات الاستلام (صافي؛ متجرّب في journey-pickup-optin.test.mjs) ═══
+   from/to أيام عمل (الرياض −٤ س). الصفوف جاية من ٣ استعلامات (buildPickupOptin):
+     orderRows: {day|null, orders, customers}                 طلبات الاستلام المدفوعة (مش طاولة، مش تجربة) من shop_orders — day=null = إجمالي الفترة
+     eventRows: {day, name, sub, n, orders}                   أحداث الكارت من journey_events (sub = why بتاع unsupported / how بتاع ok وdenied)
+     flagRows:  {day|null, shown_orders, push_orders, wa_orders, optin_orders, both_orders, denied_orders, unsup_orders, customers}
+                                                              طلب واحد = صف واحد (يومه = أول يوم ظهر فيه الكارت) — day=null = إجمالي الفترة
+   كل النسب بـpct ⇒ صفر لما المقام صفر (مفيش قسمة على صفر ولا NaN). */
+export function dayList(from, to) {
+  const out = [];
+  const a = Date.parse(String(from) + "T00:00:00Z"), b = Date.parse(String(to) + "T00:00:00Z");
+  if (!Number.isFinite(a) || !Number.isFinite(b)) return out;
+  for (let t = a; t <= b && out.length < 400; t += 86400_000) out.push(new Date(t).toISOString().slice(0, 10));
+  return out;
+}
+export function pickupOptinSummary({ from, to, orderRows = [], eventRows = [], flagRows = [] }) {
+  const days = dayList(from, to);
+  const blank = () => ({ orders: 0, shown: 0, pushOk: 0, pushDenied: 0, pushUnsupported: 0, waClick: 0,
+    shownOrders: 0, pushOrders: 0, waOrders: 0, optinOrders: 0, bothOrders: 0, deniedOrders: 0, unsupportedOrders: 0, customers: 0 });
+  const byDay = Object.fromEntries(days.map((d) => [d, { day: d, ...blank() }]));
+  const T = { ...blank(), orderCustomers: 0 };
+  const num = (v) => Number(v) || 0;
+  const dayKey = (r) => (r.day == null ? null : String(r.day).slice(0, 10));
+  for (const r of orderRows) {
+    const k = dayKey(r);
+    if (k == null) { T.orders = num(r.orders); T.orderCustomers = num(r.customers); continue; }
+    if (byDay[k]) byDay[k].orders = num(r.orders);
+  }
+  const EV = { pickup_optin_shown: "shown", pickup_optin_push_ok: "pushOk", pickup_optin_push_denied: "pushDenied", pickup_optin_push_unsupported: "pushUnsupported", pickup_optin_wa_click: "waClick" };
+  const blockers = {}, howPush = {}, howDenied = {};
+  const add = (m, key, r) => { const x = m[key] || (m[key] = { key, n: 0, orders: 0 }); x.n += num(r.n); x.orders += num(r.orders); };
+  for (const r of eventRows) {
+    const k = EV[r.name];
+    if (!k) continue;
+    const d = byDay[dayKey(r)];
+    if (d) d[k] += num(r.n);
+    T[k] += num(r.n);
+    const sub0 = String(r.sub || "").toLowerCase();
+    const sub = PICKUP_BLOCKER_ALIAS[sub0] || sub0;
+    if (r.name === "pickup_optin_push_unsupported") add(blockers, sub && sub !== "denied" && sub !== "other" && PICKUP_BLOCKER_LABELS[sub] ? sub : "other", r);
+    else if (r.name === "pickup_optin_push_denied") { add(blockers, "denied", r); add(howDenied, sub !== "other" && PICKUP_DENIED_HOW[sub] ? sub : "other", r); }
+    else if (r.name === "pickup_optin_push_ok") add(howPush, sub !== "other" && PICKUP_PUSH_HOW[sub] ? sub : "other", r);
+  }
+  const FL = { shown_orders: "shownOrders", push_orders: "pushOrders", wa_orders: "waOrders", optin_orders: "optinOrders", both_orders: "bothOrders",
+    denied_orders: "deniedOrders", unsup_orders: "unsupportedOrders", customers: "customers" };
+  let flagTotal = false;
+  for (const r of flagRows) {
+    const k = dayKey(r);
+    const tgt = k == null ? T : byDay[k];
+    if (!tgt) continue;
+    if (k == null) flagTotal = true;
+    for (const [col, key] of Object.entries(FL)) if (r[col] != null) tgt[key] = num(r[col]);
+  }
+  // مفيش صف إجمالي (داتابيز قديمة / اختبار) ⇒ نجمع من الأيام — ما عدا العملاء (مش قابلين للجمع)
+  if (!orderRows.some((r) => r.day == null)) T.orders = days.reduce((s, d) => s + byDay[d].orders, 0);
+  if (!flagTotal) for (const key of ["shownOrders", "pushOrders", "waOrders", "optinOrders", "bothOrders", "deniedOrders", "unsupportedOrders"]) T[key] = days.reduce((s, d) => s + byDay[d][key], 0);
+  const r4 = (x) => Math.round((Number(x) || 0) * 10000) / 10000;
+  const rates = {
+    shownOfOrders: r4(pct(T.shownOrders, T.orders)),          // الكارت وصل لكام طلب من طلبات الاستلام
+    pushOfShown: r4(pct(T.pushOrders, T.shownOrders)),        // فعّلوا إشعارات من اللي شافوا
+    waOfShown: r4(pct(T.waOrders, T.shownOrders)),            // فتحوا واتساب من اللي شافوا
+    optinOfShown: r4(pct(T.optinOrders, T.shownOrders)),      // أي قناة من اللي شافوا
+    optinOfOrders: r4(pct(T.optinOrders, T.orders)),          // أي قناة من كل طلبات الاستلام
+    bothOfShown: r4(pct(T.bothOrders, T.shownOrders)),
+    deniedOfShown: r4(pct(T.deniedOrders, T.shownOrders)),
+    unsupportedOfShown: r4(pct(T.unsupportedOrders, T.shownOrders)),
+  };
+  const list = (m, L) => Object.values(m).map((x) => ({ ...x, label: L[x.key] || x.key })).sort((a, b) => b.n - a.n);
+  return {
+    ok: true, from, to, days: days.length, daily: days.map((d) => byDay[d]), totals: T, rates,
+    blockers: list(blockers, PICKUP_BLOCKER_LABELS), how: { push: list(howPush, PICKUP_PUSH_HOW), denied: list(howDenied, PICKUP_DENIED_HOW) },
+    labels: PICKUP_OPTIN_LABELS,
+  };
 }
 
 /* ═══ register ════════════════════════════════════════════════════════════ */
@@ -638,7 +749,7 @@ export function register(app, ctx, deps = {}) {
     let i = 1;
     for (const e of events) {
       cols.push(`($${i++},$${i++},$${i++},$${i++},$${i++},$${i++},$${i++}::jsonb,$${i++},$${i++})`);
-      const orderNo = eventOrderNo(e);
+      const orderNo = eventOrderRef(e);   // JE1: pickup_optin_* carry props.ord in the column but never stamp the session (below)
       vals.push(sessionId, source, e.name, e.step, e.seq, e.clientTs || null, J(e.props || {}), orderNo, e.path || null);
     }
     const ins = await pool.query(
@@ -649,7 +760,7 @@ export function register(app, ctx, deps = {}) {
     // C6: address/OTP steps count only once the session has opened checkout
     const { ifOpen, ifClosed } = batchMaxSteps(rows);
     const cartMax = rows.reduce((m, r) => Math.max(m, Number(r.props?.cart_subtotal) || 0), 0);
-    const orderNo = rows.map((r) => r.order_no).filter(Boolean).pop() || null;
+    const orderNo = rows.filter((r) => stampsSession(r.name)).map((r) => r.order_no).filter(Boolean).pop() || null;
     const last = rows[rows.length - 1].name;
     await pool.query(
       `UPDATE journey_sessions SET events = events + $2, last_seen_at = NOW(),
@@ -785,7 +896,7 @@ export function register(app, ctx, deps = {}) {
     if (!ready || !SERVER_SET.has(name)) return;
     const sid = props && props.journey_sid;
     if (!validSid(sid)) return;
-    const clean = sanitizeProps({ ...props, journey_sid: undefined, client: undefined });
+    const clean = keepOrderIds(props, sanitizeProps({ ...props, journey_sid: undefined, client: undefined }));
     const step = stepOf(name, clean, "server");
     await applyEvents(sid, [{ name, step, seq: null, props: clean }], "server");
   }
@@ -1193,6 +1304,73 @@ export function register(app, ctx, deps = {}) {
       return c.json(val);
     } catch (e) {
       console.error("[journey] report failed:", e.message);
+      return c.json({ ok: false, error: String(e.message || e).slice(0, 200) });
+    }
+  });
+
+  /* ═══ JE1 — GET /api/journey/pickup-optin?days=14 ═══
+     لكل يوم عمل: طلبات الاستلام (مدفوعة، مش طاولة، مش تجربة) + أحداث الكارت + الطلبات اللي الكارت وصلها/فعّلت إشعارات/فتحت واتساب +
+     العملاء المميّزين، وإجمالي ونسب و«إيه اللي بيمنع الإشعارات». QA/الموظفين/البوتات مستبعدين زي باقي التقرير (REAL)، وطلبات التجربة
+     وكوبون المالك برضه. الربط حدث↔طلب بعمود order_no (JE1 بيكتبه من props.ord) أو props.ord نفسها (أحداث قبل النشر). كاش ٦٠ ث. */
+  const optinCache = new Map();
+  const BIZ_DATE = (col) => `((${col} AT TIME ZONE '${TZ}') - interval '${BIZ_DAY_START_HOUR} hours')::date`;
+  async function buildPickupOptin(days) {
+    const to = bizDayOf(new Date());
+    const from = new Date(Date.parse(to + "T00:00:00Z") - (days - 1) * 86400_000).toISOString().slice(0, 10);
+    const staffC = [...STAFF_COUPONS];
+    const ORD = `COALESCE(e.order_no, NULLIF(e.props->>'ord',''))`;
+    const EV_WHERE = `e.name = ANY($3::text[]) AND e.at >= ($1::date - interval '1 day') AND ${BIZ_DATE("e.at")} BETWEEN $1::date AND $2::date
+            AND ${REAL} AND NOT COALESCE(o.is_test,false) AND upper(COALESCE(o.coupon,'')) <> ALL($4::text[])`;
+    const [orders, events, flags] = await Promise.all([
+      pool.query(
+        `SELECT day, count(*)::int AS orders, count(DISTINCT phone_norm)::int AS customers
+           FROM (SELECT ${BIZ_DATE("o.created_at")}::text AS day, o.phone_norm FROM shop_orders o
+                  WHERE o.option = 'pickup' AND COALESCE(NULLIF(o.table_no::text,''),'0') = '0'
+                    AND ${BIZ_DATE("o.created_at")} BETWEEN $1::date AND $2::date
+                    AND ${PAID_SQL} AND NOT COALESCE(o.is_test,false) AND upper(COALESCE(o.coupon,'')) <> ALL($3::text[])) q
+          GROUP BY GROUPING SETS ((day), ())`, [from, to, staffC]),
+      pool.query(
+        `SELECT ${BIZ_DATE("e.at")}::text AS day, e.name, COALESCE(NULLIF(e.props->>'why',''), NULLIF(e.props->>'how',''), '') AS sub,
+                count(*)::int AS n, count(DISTINCT COALESCE(${ORD}, 's:' || e.session_id))::int AS orders
+           FROM journey_events e JOIN journey_sessions s ON s.session_id = e.session_id
+           LEFT JOIN shop_orders o ON o.order_no = ${ORD}
+          WHERE ${EV_WHERE}
+          GROUP BY 1,2,3`, [from, to, [...PICKUP_OPTIN_EVENTS], staffC]),
+      pool.query(
+        `WITH x AS (
+           SELECT COALESCE(${ORD}, 's:' || e.session_id) AS ord, min(${BIZ_DATE("e.at")})::text AS day,
+                  min(COALESCE(s.customer_id, s.phone_norm, s.anon_id)) AS cust,
+                  bool_or(e.name = 'pickup_optin_push_ok') AS push, bool_or(e.name = 'pickup_optin_wa_click') AS wa,
+                  bool_or(e.name = 'pickup_optin_push_denied') AS denied, bool_or(e.name = 'pickup_optin_push_unsupported') AS unsup
+             FROM journey_events e JOIN journey_sessions s ON s.session_id = e.session_id
+             LEFT JOIN shop_orders o ON o.order_no = ${ORD}
+            WHERE ${EV_WHERE}
+            GROUP BY 1)
+         SELECT day, count(*)::int AS shown_orders, count(*) FILTER (WHERE push)::int AS push_orders, count(*) FILTER (WHERE wa)::int AS wa_orders,
+                count(*) FILTER (WHERE push OR wa)::int AS optin_orders, count(*) FILTER (WHERE push AND wa)::int AS both_orders,
+                count(*) FILTER (WHERE denied)::int AS denied_orders, count(*) FILTER (WHERE unsup)::int AS unsup_orders,
+                count(DISTINCT cust)::int AS customers
+           FROM x GROUP BY GROUPING SETS ((day), ())`, [from, to, [...PICKUP_OPTIN_EVENTS], staffC]),
+    ]);
+    return {
+      ...pickupOptinSummary({ from, to, orderRows: orders.rows, eventRows: events.rows, flagRows: flags.rows }),
+      generatedAt: new Date().toISOString(),
+      source: "journey_events (كارت RT4 على /track) + shop_orders",
+      note: "طلبات الاستلام = مدفوعة، مش طاولة، مش تجربة · «شاف الكارت» بيتعدّ من نشر JE1-api (قبلها السيرفر كان بيرفض أحداث الكارت) · QA والموظفين والبوتات مستبعدين",
+    };
+  }
+  app.get("/api/journey/pickup-optin", async (c) => {
+    const denied = await requireAdmin(c);
+    if (denied) return denied;
+    try {
+      const days = Math.min(60, Math.max(1, Math.round(Number(c.req.query("days")) || 14)));
+      const hit = optinCache.get(days);
+      if (hit && Date.now() - hit.at < 60_000 && c.req.query("fresh") !== "1") return c.json({ ...hit.val, cached: true });
+      const val = await buildPickupOptin(days);
+      optinCache.set(days, { at: Date.now(), val });
+      return c.json(val);
+    } catch (e) {
+      console.error("[journey] pickup-optin failed:", e.message);
       return c.json({ ok: false, error: String(e.message || e).slice(0, 200) });
     }
   });
