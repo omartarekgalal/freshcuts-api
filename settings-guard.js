@@ -75,6 +75,7 @@ export const SERVER_OWNED_PATHS = [
   "freeBar",                    // freebar.js (شريط التوصيل المجاني — /api/delivery/free-bar)
   "portals",                    // portalsessions.js (جلسات البوابات — POST /api/portals/settings، المالك)
   "staffKpi",                   // staffkpi.js (KP1: أهداف أداء الفريق — POST /api/cms/staff-kpis/settings، المالك)
+  "insights",                   // poslink.js (PC1: إيقاع سحب نقطة البيع وربط العميل بالطلب — POST /api/insights/link-settings، المالك)
 ];
 
 /* مسارات ليها كاتبين: شاشة PUT كاملة + السيرفر (catalog.hiddenIds: شاشة

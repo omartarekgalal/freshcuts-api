@@ -269,6 +269,7 @@ export function register(app, ctx) {
     const err = await requireAdmin(c); if (err) return err;
 
     const apps = await deliveryApps();
+    const linkSettings = await getSettingsData();   // PC1: نافذة «لسه بيتربط» لآخر ١٠ طلبات
     const { day: bizDay, elapsedH } = await bizNow();
     const date = dayArg(c.req.query("date"), bizDay);
     const isToday = date === bizDay;
@@ -382,6 +383,7 @@ export function register(app, ctx) {
                 ${channelSql("$3::text[]")} AS channel,
                 COALESCE(NULLIF(CASE WHEN tc.name ~ '^عميل( |$)' THEN '' ELSE tc.name END, ''), NULLIF(s.customer_name, ''), '') AS customer_name,
                 (${IDENT_SQL} IS NOT NULL) AS has_customer,
+                o.order_date,
                 COALESCE(NULLIF(btrim(o.staff_name), ''), '') AS staff_name,
                 COALESCE(s.source, '') AS source
            FROM ts_orders o
@@ -677,6 +679,8 @@ export function register(app, ctx) {
       channelLabel: chLabel(r.channel),
       customerName: r.customer_name || "",
       hasCustomer: !!r.has_customer,
+      // PC1 (١٧/١٠): لسه جوّه نافذة الربط ⇒ «⏳ بيتربط» مش «بدون عميل»
+      customerPending: ctx.customerPending ? ctx.customerPending(r.order_date, !!r.has_customer, linkSettings) : false,
       staffName: r.staff_name || "",
       source: r.source || "",
       sourceLabel: r.source ? srcLabel(r.source) : "",

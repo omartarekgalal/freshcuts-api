@@ -654,6 +654,11 @@ function mapOrderRow(r) {
 // IMPORTANT: the /orders endpoint hard-caps at 200 rows and ignores `start`
 // UNLESS the date-range params are present — with start_date/end_date it
 // paginates correctly and honours big lengths. Always send the range.
+// PC1 (عمر ١٧/١٠ «طلبات بدون عميل وهي على السيستم ليها عميل»): القايمة دي لسه
+// مافيهاش أي عمود عميل (customer_id / customer.* — اتفحصت بأعمدة إضافية قبل
+// كده ورجعت فاضية)، فمافيش «مسار سريع» من هنا؛ الربط بيتم بمسح
+// /customers/{id}/orders في poslink.runLinkPass على إيقاع اللوحة. ماتضيفش عمود
+// عميل هنا بالتخمين — لو تاب سينس ضافوه يوم، اتأكد من الاسم الفعلي في الرد الأول.
 async function fetchOrdersSince(sinceDate, { maxPages = 30, pageSize = 200 } = {}) {
   const cols = [
     "main_order_id", "order_created_at", "order_calendar_day", "order_option_id",
@@ -1061,6 +1066,7 @@ export {
   fetchCustomerSales,
   fetchCustomerOrders,
   fetchOrdersSince,
+  mapOrderRow,   // PC1: للاختبار — صف /orders مافيهوش عميل، والـupsert مابيلمسش customer_id
   fetchCustomersList,
   fetchCustomerGroups,
   fetchOrderProducts,

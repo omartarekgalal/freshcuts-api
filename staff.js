@@ -348,6 +348,8 @@ export function register(app, ctx) {
       customerName: r.customer_name || "",
       customerPhone: r.customer_phone || "",
       hasCustomer: !!r.customer_id,
+      // PC1 (١٧/١٠): لسه جوّه نافذة الربط ⇒ «⏳ بيتربط» مش «بدون عميل — سجّله»
+      customerPending: ctx.customerPending ? ctx.customerPending(r.order_date, !!r.customer_id, settings) : false,
       staffName: r.staff_name || "",
       // POS bug: aggregator orders are logged as Dine-in, so order_option
       // lies. order_type 'External' and the aggregator payment method are the

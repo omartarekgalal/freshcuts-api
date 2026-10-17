@@ -136,6 +136,7 @@ import * as consent from "./consent.js";
 import * as waconsent from "./waconsent.js";
 import * as settingsGuard from "./settings-guard.js";
 import { cashierPinOf } from "./portal-core.js";
+import * as poslink from "./poslink.js";   // PC1 (عمر ١٧/١٠): ربط عميل نقطة البيع بالطلب لحظياً — إيقاع السحب/الربط من اللوحة + «⏳ بيتربط»
 
 const { Pool } = pg;
 
@@ -1664,10 +1665,16 @@ function isDeliveryOrder(orderOption, payments, settings, orderType) {
 }
 
 const insightsState = {
-  lastOrdersSyncAt: null, lastOrdersCount: 0,
+  lastOrdersSyncAt: null, lastOrdersCount: 0, lastNewOrders: 0,
   lastCustomersSyncAt: null, lastLinkAt: null, lastError: null,
+  // PC1 (١٧/١٠): آخر مسح ربط من أي نوع (النهارده أو الكامل) — المسح الكامل لوحده في lastLinkAt
+  lastTodayLinkAt: null, lastTodayLinkCount: 0, lastTodayLinked: 0, lastLinkMode: null, lastLinkReason: null,
   feedusEnabled: feedus.ENABLED, lastFeedusSyncAt: null, lastFeedusTagged: 0, lastFeedusError: null,
 };
+
+/* PC1: إيقاع السحب/الربط من اللوحة (settings.insights)؛ إيقاع البيئة القديم TABSENSE_SYNC_MINUTES
+   بقى مجرد افتراضي لو الإعداد مش متسجّل. */
+function posLinkCfg(settings) { return poslink.poslinkCfg(settings, { syncEveryMin: TS_SYNC_MINUTES }); }
 
 // Names that identify the middleware rather than the delivery app the order
 // actually came from. Never good enough to store as an order's source.
@@ -1767,32 +1774,18 @@ async function syncFeedusSources({ pages = 3, full = false } = {}) {
 // actual app (Keeta / HungerStation / Ninja…) from the queue. Orders nobody
 // tagged within 48h get auto-tagged with the payment-method name as fallback
 // so analytics never lose the delivery attribution.
+// Returns { count, created } — `created` = order ids this call INSERTED (new to
+// the cache). PC1 (١٧/١٠): الطلب الجديد هو اللي بيستاهل مسح ربط فوري.
+// NOTE: the /orders list carries NO customer column (verified again 17/10 —
+// see tabsense.js above fetchOrdersSince), so the upsert in poslink.js has no
+// customer_id at all and can never null-out a link made by linkCustomersOrders.
 async function syncOrdersCache(sinceDate) {
   const settings = await getSettingsData();
   const orders = await ts.fetchOrdersSince(sinceDate);
+  const created = [];
   for (const o of orders) {
-    // VAT-inclusive figures, derived from the order's own effective tax rate so
-    // we never hardcode 15%: gross*(1+rate) is the pre-discount price the
-    // customer saw, and the difference to `total` is the discount they got.
-    const rate = o.net > 0 ? o.tax / o.net : 0.15;
-    const grossIncl = Math.round(o.gross * (1 + rate) * 1000) / 1000;
-    const discountIncl = Math.max(0, Math.round((grossIncl - o.total) * 1000) / 1000);
-    await pool.query(
-      `INSERT INTO ts_orders (order_id, receipt, order_date, calendar_day, order_option, order_type,
-                              order_status, gross, discount, promotion, net, tax, gross_incl, discount_incl,
-                              total, payments, branch, staff_name, updated_at)
-       VALUES ($1,$2,$3::timestamptz,$4::date,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16::jsonb,$17,$18,NOW())
-       ON CONFLICT (order_id) DO UPDATE SET
-         receipt=EXCLUDED.receipt, order_date=EXCLUDED.order_date, calendar_day=EXCLUDED.calendar_day,
-         order_option=EXCLUDED.order_option, order_type=EXCLUDED.order_type, order_status=EXCLUDED.order_status,
-         gross=EXCLUDED.gross, discount=EXCLUDED.discount, promotion=EXCLUDED.promotion,
-         net=EXCLUDED.net, tax=EXCLUDED.tax, gross_incl=EXCLUDED.gross_incl, discount_incl=EXCLUDED.discount_incl,
-         total=EXCLUDED.total, payments=EXCLUDED.payments, branch=EXCLUDED.branch,
-         staff_name=COALESCE(NULLIF(EXCLUDED.staff_name,''), ts_orders.staff_name), updated_at=NOW()`,
-      [o.orderId, o.receipt, o.orderDate, o.calendarDay, o.orderOption, o.orderType,
-       o.orderStatus, o.gross, o.discount, o.promotion, o.net, o.tax, grossIncl, discountIncl,
-       o.total, jb(o.payments), o.branch, o.staffName || ""]
-    );
+    const r = await pool.query(poslink.ORDER_UPSERT_SQL, poslink.orderUpsertParams(o, jb));
+    if (r?.rows?.[0]?.inserted) created.push(String(r.rows[0].order_id));
   }
   const appList = (Array.isArray(settings?.deliveryAppMethods) && settings.deliveryAppMethods.length)
     ? settings.deliveryAppMethods.map((s) => String(s).toLowerCase())
@@ -1812,7 +1805,8 @@ async function syncOrdersCache(sinceDate) {
      ON CONFLICT (order_id) DO NOTHING`,
     [appList]
   );
-  return orders.length;
+  insightsState.lastNewOrders = created.length;
+  return { count: orders.length, created };
 }
 
 async function syncCustomersCache() {
@@ -1900,10 +1894,26 @@ async function syncRecentOrderItems(cap = 40) {
   return fetched;
 }
 
+/* PC1 (١٧/١٠): مسح ربط واحد — الكامل (يومين) لو مستحق على linkEveryMin، وإلا النهارده.
+   بيتنادى فوراً بعد ما السحب يلاقي طلبات جديدة، وفي خانة الربط المعتادة لو ماتناداش. */
+async function runLinkPass(cfg, reason) {
+  return poslink.runLinkPass({
+    pool, ts, insightsState, cfg, linkCustomersOrders, syncCustomersCache, daysAgoISO, todayISO, normPhone,
+  }, { reason });
+}
+
 async function runInsightsSync() {
-  const n = await syncOrdersCache(daysAgoISO(3));
+  const cfg = posLinkCfg(await getSettingsData());
+  const { count: n, created } = await syncOrdersCache(daysAgoISO(3));
   insightsState.lastOrdersSyncAt = new Date().toISOString();
   insightsState.lastOrdersCount = n;
+  // طلب جديد في الكاش ⇒ اربط عملاء النهارده دلوقتي، قبل الأصناف وFeedUs (اللي بياخدوا
+  // ثواني) — عشان الطلب يبان بعميله في نفس الدورة مش بعد ٣٠ دقيقة (عمر ١٧/١٠).
+  let linkRan = false;
+  if (created.length) {
+    try { linkRan = !!(await runLinkPass(cfg, "new_orders")).ran; }
+    catch (e) { console.error("[insights] link after new orders failed:", e.message); }
+  }
   try {
     insightsState.lastItemsFetched = await syncRecentOrderItems(40);
   } catch (e) { console.error("[items] sweep failed:", e.message); }
@@ -1922,19 +1932,14 @@ async function runInsightsSync() {
       console.error("[feedus] sync error:", e.message);
     }
   }
-  const THIRTY_MIN = 30 * 60 * 1000;
-  const due = !insightsState.lastLinkAt || (Date.now() - new Date(insightsState.lastLinkAt).getTime() > THIRTY_MIN);
-  if (due) {
-    await syncCustomersCache();
-    insightsState.lastCustomersSyncAt = new Date().toISOString();
-    // Link EVERY customer active in the last 2 days (not a top-N slice) — a day
-    // is only ~15-25 unique customers, and full coverage is what makes a NULL
-    // customer_id mean "no customer on the order" instead of "not swept yet".
-    // That distinction is the basis of the cashier attach-rate score.
-    const actives = await ts.fetchCustomerSales(daysAgoISO(2), todayISO());
-    await linkCustomersOrders(actives.slice(0, 150).map((c) => c.id));
-    insightsState.lastLinkAt = new Date().toISOString();
-    insightsState.lastLinkCount = actives.length;
+  // Link EVERY customer active in the last 2 days (not a top-N slice) — a day
+  // is only ~15-25 unique customers, and full coverage is what makes a NULL
+  // customer_id mean "no customer on the order" instead of "not swept yet".
+  // That distinction is the basis of the cashier attach-rate score.
+  // PC1 (١٧/١٠): الإيقاع من اللوحة (كان ٣٠ دقيقة ثابتة) + مسح النهارده كل دورة؛
+  // لو المسح اتعمل فوق بعد طلبات جديدة والكامل مش مستحق، مفيش مسح تاني في نفس الدورة.
+  if (!linkRan || poslink.linkDue(insightsState.lastLinkAt, cfg.linkEveryMin)) {
+    await runLinkPass(cfg, "cycle");
   }
 
   // Every delivery customer FeedUs gave us a phone for gets created in the
@@ -2229,7 +2234,53 @@ app.get("/api/insights/status", async (c) => {
            (SELECT count(*)::int FROM ts_customers) AS customers,
            (SELECT count(*)::int FROM order_sources WHERE source <> 'skipped') AS tagged,
            (SELECT max(order_date) FROM ts_orders) AS latest_order`);
-  return c.json({ ok: true, ...r.rows[0], state: insightsState });
+  // PC1 (١٧/١٠): حالة ربط العميل بالطلب — الإيقاع الفعلي، آخر مسح، وكام طلب لسه «بيتربط» دلوقتي
+  const cfg = posLinkCfg(await getSettingsData());
+  const windowMin = poslink.pendingWindowMin(cfg);
+  const pend = await pool.query(
+    `SELECT count(*)::int AS pending_now,
+            count(*) FILTER (WHERE order_type NOT ILIKE '%external%')::int AS pending_inhouse
+       FROM ts_orders WHERE customer_id IS NULL AND order_date > NOW() - ($1 || ' minutes')::interval`,
+    [String(windowMin)]
+  ).catch(() => ({ rows: [{ pending_now: null, pending_inhouse: null }] }));
+  const posLink = {
+    ...cfg, pendingWindowMin: windowMin,
+    lastLinkAt: insightsState.lastLinkAt, lastTodayLinkAt: insightsState.lastTodayLinkAt,
+    lastLinkMode: insightsState.lastLinkMode, lastLinkReason: insightsState.lastLinkReason,
+    lastTodayLinkCount: insightsState.lastTodayLinkCount, lastTodayLinked: insightsState.lastTodayLinked,
+    lastLinkCount: insightsState.lastLinkCount ?? 0, lastLinked: insightsState.lastLinked ?? 0,
+    lastNewOrders: insightsState.lastNewOrders, pendingNow: pend.rows[0].pending_now, pendingInhouse: pend.rows[0].pending_inhouse,
+  };
+  return c.json({ ok: true, ...r.rows[0], state: insightsState, posLink });
+});
+
+/* PC1 (عمر ١٧/١٠): إعدادات إيقاع سحب نقطة البيع وربط العميل بالطلب — settings.insights.
+   قراءة لأي أدمن، حفظ للمالك بس (زي إعدادات تصنيف العملاء). المسار "insights" محمي في
+   settings-guard (SERVER_OWNED_PATHS) فالـPUT الكامل من الشاشات القديمة مابيمسحوش. */
+app.get("/api/insights/link-settings", async (c) => {
+  const err = await requireAdmin(c); if (err) return err;
+  const s = await getSettingsData();
+  const fb = { syncEveryMin: TS_SYNC_MINUTES };
+  return c.json({
+    ok: true, settings: poslink.schemaView(s, fb), groups: poslink.POSLINK_GROUPS, canEdit: await isOwnerAuth(c),
+    status: {
+      lastOrdersSyncAt: insightsState.lastOrdersSyncAt, lastLinkAt: insightsState.lastLinkAt, lastTodayLinkAt: insightsState.lastTodayLinkAt,
+      lastLinkMode: insightsState.lastLinkMode, lastLinkReason: insightsState.lastLinkReason, lastTodayLinked: insightsState.lastTodayLinked,
+      pendingWindowMin: poslink.pendingWindowMin(poslink.poslinkCfg(s, fb)), intervalMinutes: tsState.intervalMinutes,
+    },
+  });
+});
+app.post("/api/insights/link-settings", async (c) => {
+  const err = await requireAdmin(c); if (err) return err;
+  if (!(await isOwnerAuth(c))) return c.json({ ok: false, error: "owner_only", message: "إعدادات إيقاع نقطة البيع للمالك بس" }, 403);
+  let b = {}; try { b = await c.req.json(); } catch { return c.json({ ok: false, error: "bad_json", message: "بيانات غلط" }, 400); }
+  const s = await getSettingsData();
+  const r = poslink.cleanPoslinkSettings(b, s, { syncEveryMin: TS_SYNC_MINUTES });
+  if (!r.ok) return c.json({ ok: false, error: "invalid", errors: r.errors, message: r.errors[0][1] }, 422);
+  await pool.query(`UPDATE settings SET data = jsonb_set(COALESCE(data,'{}'::jsonb), '{insights}', $1::jsonb, true) WHERE id=1`, [JSON.stringify(r.cfg)]);
+  moduleCtx.auditNote?.(c, `insights: ${Object.keys(b).join(", ")}`)?.catch?.(() => {});
+  tsState.intervalMinutes = r.cfg.syncEveryMin;   // الدورة الجاية بتتجدول على الإيقاع الجديد (scheduleNextCycle بيقرا الإعداد)
+  return c.json({ ok: true, cfg: r.cfg, pendingWindowMin: poslink.pendingWindowMin(r.cfg) });
 });
 
 // ─── Cashier auth + task queue ──────────────────────────────────────────────
@@ -2282,6 +2333,7 @@ async function sourceRank() {
 app.get("/api/cashier/queue", async (c) => {
   const err = await requireCashierOrAdmin(c); if (err) return err;
   const settings = await getSettingsData();
+  const linkCfg = posLinkCfg(settings);   // PC1: نافذة «لسه بيتربط»
   const hours = Math.max(1, Math.min(168, Number(c.req.query("hours")) || 48));
   const pending = (await pool.query(
     `SELECT o.order_id, o.receipt, o.order_date, o.calendar_day, o.order_option, o.order_type,
@@ -2301,6 +2353,8 @@ app.get("/api/cashier/queue", async (c) => {
     customerName: r.customer_name || "",
     customerPhone: r.customer_phone || "",
     hasCustomer: !!r.customer_id,
+    // PC1 (١٧/١٠): لسه جوّه نافذة الربط ⇒ اللوحة تكتب «⏳ بيتربط» مش «بدون عميل»
+    customerPending: poslink.customerPending(r.order_date, !!r.customer_id, linkCfg),
     staffName: r.staff_name || "",
     // POS bug: delivery-app orders are logged as Dine-in — order_type
     // 'External' (FeedUs) and the aggregator payment method are the
@@ -2603,6 +2657,7 @@ app.get("/api/manager/orders", async (c) => {
   const err = await requireAdmin(c); if (err) return err;
   const q = c.req.query();
   const settings = await getSettingsData();
+  const linkCfg = posLinkCfg(settings);   // PC1: نافذة «لسه بيتربط»
   const appList = (Array.isArray(settings?.deliveryAppMethods) && settings.deliveryAppMethods.length)
     ? settings.deliveryAppMethods.map((s) => String(s).toLowerCase())
     : DEFAULT_DELIVERY_APPS;
@@ -2680,6 +2735,8 @@ app.get("/api/manager/orders", async (c) => {
     total: Number(r.total) || 0, grossIncl: Number(r.gross_incl) || 0, discount: Number(r.discount_incl) || 0,
     staffName: r.staff_name || "", customerName: r.customer_name || "", customerPhone: r.customer_phone || "",
     hasCustomer: !!(r.customer_id || r.customer_phone),
+    // PC1 (١٧/١٠): طلب جديد من غير عميل لسه جوّه نافذة الربط ⇒ «⏳ بيتربط» (عمر: «على السيستم ليها عميل»)
+    customerPending: poslink.customerPending(r.order_date, !!(r.customer_id || r.customer_phone), linkCfg),
     source: r.source || "", sourceNote: r.source_note || "", filledBy: r.filled_by || "",
     deliveryApp: deliveryAppOf(r.payments, settings) || (/external/i.test(r.order_type || "") ? "Feedus" : null),
   }));
@@ -3018,6 +3075,8 @@ const moduleCtx = {
   pool, requireAdmin, requireCashierOrAdmin, getSettingsData, jb,
   todayISO, daysAgoISO, normPhone, ts, deliveryAppOf, DEFAULT_DELIVERY_APPS,
   sourceRank,
+  // PC1 (١٧/١٠): «لسه بيتربط» لقوايم الطلبات في الموديولات (staff.js البوابة، dayreport.js /api/day)
+  customerPending: (orderDate, hasCustomer, settings) => poslink.customerPending(orderDate, hasCustomer, posLinkCfg(settings)),
   // المالك = مفتاح الأدمن أو مستخدم فريق دوره «مالك» (getAuth → kind admin)
   isOwner: isOwnerAuth,
   setCmsHooks: (h) => { _cmsHooks = h; },
@@ -3413,10 +3472,18 @@ console.log(`[ai] routes ready (provider: ${process.env.ANTHROPIC_API_KEY ? "ant
 serve({ fetch: app.fetch, port: PORT, hostname: "0.0.0.0" }, (info) => {
   console.log(`freshcuts-api listening on http://0.0.0.0:${info.port}`);
   if (TS_ENABLED) {
-    console.log(`[tabsense] worker on — sync=${TS_AUTOSYNC} push=${TS_AUTOPUSH} every ${TS_SYNC_MINUTES}m`);
+    console.log(`[tabsense] worker on — sync=${TS_AUTOSYNC} push=${TS_AUTOPUSH} every ${TS_SYNC_MINUTES}m (env default; settings.insights.syncEveryMin wins)`);
     // First cycle shortly after boot, then on the configured interval.
-    setTimeout(runCycle, 15_000);
-    setInterval(runCycle, TS_SYNC_MINUTES * 60_000);
+    // PC1 (١٧/١٠): الإيقاع بيتقرا من اللوحة قبل كل دورة (settings.insights.syncEveryMin) بدل
+    // setInterval ثابت من البيئة — فتغيير الإعداد بيسري من الدورة الجاية من غير ريستارت.
+    // الدورات مابتتراكبش: الجاية بتتجدول بعد ما الحالية تخلص.
+    const scheduleNextCycle = async () => {
+      let min = TS_SYNC_MINUTES;
+      try { min = posLinkCfg(await getSettingsData()).syncEveryMin; } catch { /* الداتابيز وقعت لحظياً ⇒ إيقاع البيئة */ }
+      tsState.intervalMinutes = min;
+      setTimeout(async () => { try { await runCycle(); } finally { scheduleNextCycle(); } }, min * 60_000);
+    };
+    setTimeout(async () => { try { await runCycle(); } finally { scheduleNextCycle(); } }, 15_000);
   } else {
     console.log("[tabsense] worker off — set TABSENSE_EMAIL/TABSENSE_PASSWORD to enable");
   }
