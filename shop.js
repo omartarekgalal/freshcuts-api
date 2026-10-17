@@ -57,7 +57,7 @@ import { recordCheckoutConsent } from "./consent.js";
 import { makeNameResolver } from "./product-names.js";
 import { tableSessionForCheckout, tableGate, touchTableSession, tableCfg, tableBusy, TABLE_MSG, posOptionOf, tableNote, tableWho, tableTrackLabel, cleanCustomerText } from "./table-order.js";
 import { posMilestones, prepCfg, prepCheck, prepSmsEnabled, orderKind, WEBHOOKS_SQL, PREP_DDL,
-  sweepSecOf, readyGraceMinOf, readyNotifyDue } from "./prepstatus.js";   // ⚡ RT1 (١٧/١٠)
+  sweepSecOf, readyGraceMinOf, readyNotifyDue, SWEEP_LIMITS } from "./prepstatus.js";   // ⚡ RT1 (١٧/١٠)
 import { computeTrackEta, trackStages } from "./tracketa.js";
 import { smartTrackContext, recordShownEta } from "./smarteta.js";
 import { pickupTrackState, pickupLateCfg } from "./pickuptrack.js";
@@ -639,6 +639,12 @@ export function register(app, ctx, deps = {}) {
     return r.rows[0] || null;
   }
 
+  /* extra.onlyFrom (⚡ RT1 مراجعة ١٧/١٠): قايمة الحالات اللي الانتقال مسموح منها بس — الشرط
+     جوّه جملة الـUPDATE نفسها (`AND status IN (…)`)، ولو ماغيّرتش صف (حد تاني سبقنا:
+     ويبهوك مكرر، الكنس، أو الحاوية التانية وقت الـrollover) مفيش حدث ولا إشعار ولا
+     صف history — بيرجّع false. المراجعة أثبتت إن تاب سينس بيبعت completed مرتين
+     (١٠٠ مللي بينهم) وكان بيطلع «استلمت طلبك» مرتين على واتساب. من غير onlyFrom
+     السلوك القديم بالحرف (الـSQL نفسه — shop-hooks بيقارنه نصاً). */
   async function setStatus(orderNo, status, extra = {}) {
     const sets = ["status=$2", "history = history || $3::jsonb", "updated_at=NOW()"];
     /* وقت القبول بيتكتب لحظتها. كان بيتملى من backfill وقت الإقلاع بس، فطلبات
@@ -650,7 +656,14 @@ export function register(app, ctx, deps = {}) {
       vals.push(v);
       sets.push(`${col}=$${vals.length}`);
     }
-    await pool.query(`UPDATE shop_orders SET ${sets.join(", ")} WHERE order_no=$1`, vals);
+    const onlyFrom = Array.isArray(extra.onlyFrom) ? extra.onlyFrom.map(String).filter(Boolean) : null;
+    let guard = "";
+    if (onlyFrom && onlyFrom.length) {
+      const ph = onlyFrom.map((st) => { vals.push(st); return `$${vals.length}`; });
+      guard = ` AND status IN (${ph.join(", ")})`;
+    }
+    const u = await pool.query(`UPDATE shop_orders SET ${sets.join(", ")} WHERE order_no=$1${guard}`, vals);
+    if (guard && u && u.rowCount != null && u.rowCount === 0) return false;   // حد سبقنا — مفيش حدث ولا إشعار
     // حدث واحد لكل تغيير حالة (§٤-١). from اختياري: المنادي اللي معاه الصف بيبعته.
     emitOrder("order_status", {
       orderNo: String(orderNo), source: extra.source || "shop",
@@ -667,6 +680,7 @@ export function register(app, ctx, deps = {}) {
         if (row) await staff.critical((lang) => posFailedText(row, lang), `pos-failed ${orderNo}`);
       }).catch((e) => console.error(`[shop] staff pos-failed sms ${orderNo}:`, e.message));
     }
+    return true;
   }
 
   /* ── coupons ──
@@ -2531,6 +2545,8 @@ export function register(app, ctx, deps = {}) {
     return run;
   }
   const READY_WATCH = new Set(["accepted", "courier_requested", "courier_assigned", "on_the_way", "out_for_delivery", "courier_cancelled"]);
+  // الحالات اللي طلب الاستلام بيتقفل منها (⚡ RT1 مراجعة: شرط الانتقال لـdelivered جوّه الـUPDATE)
+  const PICKUP_OPEN = Object.freeze(["pos_created", "accepted"]);
   const LAST_APPROVAL_SQL = `SELECT jsonb_build_object('resource', jsonb_build_object('statuses_slugs',
                     payload->'resource'->'statuses_slugs')) AS payload
              FROM tsp_webhooks
@@ -2599,8 +2615,10 @@ export function register(app, ctx, deps = {}) {
                   collected_at = COALESCE(collected_at, $4::timestamptz)
             WHERE order_no = $1`,
           [r.order_no, pm.readyAt || pm.closedAt, pm.readyBasis || "pos_closed", pm.closedAt]);
-        await setStatus(r.order_no, "delivered", { note: "الكاشير سلّم الطلب (تاب سينس)" });
-        out.closed = true;
+        /* ⚡ RT1 مراجعة (١٧/١٠): الانتقال لـdelivered مشروط بالحالة المفتوحة جوّه الجملة نفسها —
+           completed بيوصل مرتين من تاب سينس، و«استلمت طلبك» لازم تطلع مرة. */
+        const closed = await setStatus(r.order_no, "delivered", { note: "الكاشير سلّم الطلب (تاب سينس)", onlyFrom: PICKUP_OPEN });
+        if (closed) { out.closed = true; r.status = "delivered"; }
       }
       return out;
     }
@@ -2628,8 +2646,8 @@ export function register(app, ctx, deps = {}) {
       await pool.query(
         "UPDATE shop_orders SET pos_approval=$2, pos_ready_at = COALESCE(pos_ready_at, NOW()) WHERE order_no=$1",
         [r.order_no, a || o]);
-      await setStatus(r.order_no, "delivered", { note: "الكاشير سلّم الطلب (تاب سينس)" });
-      out.closed = true;
+      const closed = await setStatus(r.order_no, "delivered", { note: "الكاشير سلّم الطلب (تاب سينس)", onlyFrom: PICKUP_OPEN });
+      if (closed) { out.closed = true; r.status = "delivered"; }
     }
     return out;
   }
@@ -2683,8 +2701,10 @@ export function register(app, ctx, deps = {}) {
       if (!r.pos_ready_at) { emitOrder("pos_ready", { orderNo: r.order_no, source: "shop", data: { source: "pos", by: null, approval: a } }); out.ready = true; }
     }
     if (acceptedLike) {
-      await setStatus(r.order_no, "accepted", { from: "pos_created" });
-      out.accepted = true;
+      /* ⚡ RT1 مراجعة (١٧/١٠): pos_created → accepted مرة واحدة بالشرط جوّه الجملة — ويبهوك accepted
+         مكرر (أو الكنس/الحاوية التانية) مايطلّعش «الطلب دخل المطبخ» تاني. */
+      const accepted = await setStatus(r.order_no, "accepted", { from: "pos_created", onlyFrom: ["pos_created"] });
+      if (accepted) { out.accepted = true; r.status = "accepted"; }
       // طلب الكابتن في الخطوة 2b من الكنس: بعد «جاهز» أو بعد مهلة التحضير.
     } else if (rejectedLike) {
       // لو كنا طلبنا كابتن قبل الرفض, نلغي عندهم — رسوم الإلغاء أرخص من
@@ -2703,8 +2723,26 @@ export function register(app, ctx, deps = {}) {
   /* طلب واحد، كل محطات نقطة البيع، بنفس ترتيب الكنس (١ب ← ١ج ← ٢) وتحت قفل
      الطلب. r لازم يكون فيه: order_no, status, option, branch_id, pos_order_id,
      pos_ready_at, handed_at, handed_source, total, mf_payment_id, refund_id. */
+  /* ⚡ RT1 مراجعة (١٧/١٠): الصف اللي المنادي جايبه اتقري **قبل** القفل. لو ويبهوكين وصلوا ورا بعض
+     (completed مرتين بفرق ١٠٠ مللي — حقيقي) أو الكنس لقط صف وقبل ما يوصل للقفل الويبهوك قفل الطلب،
+     التاني كان بيشتغل على صورة قديمة (status=accepted) وبيعيد pickupCloseStep/inboxStep ⇒ «استلمت
+     طلبك» مرتين. فجوّه القفل بنعيد قراية الأعمدة اللي بتحدّد الخطوات ونكمّل على الطازة. لو القراية
+     وقعت أو مارجّعتش صف (اختبارات قديمة) بنكمّل على الصورة اللي معانا — والشرط جوّه الـUPDATE
+     (onlyFrom / pos_ready_at IS NULL) هو الضمان التاني عبر العمليات. */
+  const FRESH_ROW_SQL = `SELECT status, option, pos_ready_at, pos_approval, collected_at,
+            NULLIF(to_jsonb(shop_orders)->>'handed_at','') AS handed_at,
+            NULLIF(to_jsonb(shop_orders)->>'handed_source','') AS handed_source
+       FROM shop_orders WHERE order_no = $1`;
+  async function refreshRow(r) {
+    try {
+      const fresh = (await pool.query(FRESH_ROW_SQL, [r.order_no])).rows?.[0];
+      if (fresh && typeof fresh === "object" && fresh.status) Object.assign(r, fresh);
+    } catch { /* نكمّل على الصورة اللي معانا */ }
+    return r;
+  }
   async function processPosOrder(r, opts = {}) {
     return withOrderLock(r.order_no, async () => {
+      await refreshRow(r);
       const out = { orderNo: r.order_no, status: String(r.status || ""), ready: false, handed: false, closed: false, accepted: false, rejected: false };
       const pm = await posMilestonesOf(r.pos_order_id);
       let status = out.status;
@@ -2752,6 +2790,10 @@ export function register(app, ctx, deps = {}) {
     const out = await processPosOrder(row, { via: "webhook" });
     const recv = receivedAt ? new Date(receivedAt).getTime() : NaN;
     const lagMs = Number.isFinite(recv) ? Math.max(0, Date.now() - recv) : null;
+    /* ⚡ RT1 مراجعة (١٧/١٠): الحدث بس لما الويبهوك **فعلاً** غيّر محطة — زي via=sweep بالظبط. قبل كده
+       كل ويبهوك مربوط بطلب (order-paid لحظة الإنشاء، completed المكرر) كان بيتحسب «اتطبّق في ٠٫٣ ث»
+       فالوسيط ونسبة «الكنس لمّها» في حالة النظام كانوا بيبانوا أحسن من الحقيقة. */
+    if (!changedAny(out)) return { ok: true, ...out, lagMs, noop: true };
     emitOrder("webhook_applied", { orderNo: row.order_no, source: "shop", ok: true,
       summary: lagMs == null ? "اتطبّق تحديث نقطة البيع فور وصوله" : `اتطبّق تحديث نقطة البيع بعد ${(lagMs / 1000).toFixed(1)} ث من وصوله`,
       data: { via: "webhook", event: event ? String(event).slice(0, 40) : null, approval: approval ? String(approval).slice(0, 40) : null,
@@ -2981,9 +3023,11 @@ export function register(app, ctx, deps = {}) {
                OR (status='delivered' AND option='delivery' AND updated_at > NOW() - INTERVAL '3 hours'))
           AND created_at > NOW() - INTERVAL '24 hours'`)).rows;
     // ⚡ RT1: الجسم في readyStep (نفس الدالة اللي الويبهوك الفوري بيناديها)
+    // مراجعة ١٧/١٠: الصف اتقري قبل القفل — بنعيد قرايته جوّه القفل (refreshRow) قبل أي خطوة
     for (const r of awaitingReady) {
       try {
         await withOrderLock(r.order_no, async () => {
+          await refreshRow(r);
           const pm = await posMilestonesOf(r.pos_order_id);
           const a = await readyStep(r, pm, { via: "sweep" });
           emitSweepApplied(r, pm, a);
@@ -3004,6 +3048,8 @@ export function register(app, ctx, deps = {}) {
     for (const r of pickupOpen) {
       try {
         await withOrderLock(r.order_no, async () => {
+          await refreshRow(r);
+          if (r.status && !PICKUP_OPEN.includes(String(r.status))) return;   // اتقفل بين الاستعلام والقفل
           const pm = await posMilestonesOf(r.pos_order_id);
           const a = await pickupCloseStep(r, pm, { via: "sweep" });
           emitSweepApplied(r, pm, a);
@@ -3020,6 +3066,8 @@ export function register(app, ctx, deps = {}) {
     // ⚡ RT1: الجسم في inboxStep (نفس الدالة اللي الويبهوك الفوري بيناديها)
     for (const r of watching) {
       await withOrderLock(r.order_no, async () => {
+        await refreshRow(r);
+        if (r.status && r.status !== "pos_created") return;   // الويبهوك سبقنا بين الاستعلام والقفل
         const pm = await posMilestonesOf(r.pos_order_id);
         const a = await inboxStep(r, pm, { via: "sweep" });
         emitSweepApplied(r, pm, a);
@@ -3117,10 +3165,42 @@ export function register(app, ctx, deps = {}) {
     try { return sweepSecOf(await getSettingsData(), envRead); }
     catch { return sweepSecOf({}, envRead); }
   }
+  /* ⚡ RT1 مراجعة (١٧/١٠): الكنس بقى سلسلة setTimeout، فدورة واحدة ماترجعش (نداء شبكة معلّق في
+     tsstore/المندوب) كانت هتوقّف شبكة الأمان كلها لحد الريستارت ومحدش يعرف. فكل دورة:
+       • بتتسابق مع مهلة = ٥ × الفترة (وأقلها ٥ دقايق) — مش خانة جديدة، مشتقة من shop.sweepSec؛
+         لو المهلة كسبت الدورة الجاية بتتحجز عادي (زي setInterval زمان) والقديمة بتكمّل في الخلفية
+         تحت قفل الطلب.
+       • بتكتب نبضة sys_heartbeats('shop_sweep') (ok + المدة/السبب) — «حالة النظام» بتعرض
+         «الكنس الاحتياطي» وبتصفرّ لو آخر نبضة أقدم من ٣ × الفترة وتحمرّ عند ١٠ ×. */
+  const sweepLimitMs = (sec) => Math.max(5 * 60_000, 5 * Number(sec || SWEEP_LIMITS.def) * 1000);
+  async function pulse(ok, note) {
+    try {
+      await pool.query(
+        `INSERT INTO sys_heartbeats(name, at, ok, note) VALUES ('shop_sweep', NOW(), $1, $2)
+         ON CONFLICT (name) DO UPDATE SET at=NOW(), ok=$1, note=$2, count=sys_heartbeats.count+1`,
+        [ok !== false, note ? String(note).slice(0, 300) : null]);
+    } catch { /* الجدول بيتعمل في syshealth وقت الإقلاع — أول ثواني بس */ }
+  }
+  async function sweepTick(opts = {}) {
+    const t0 = Date.now();
+    const sec = await nextSweepSec();
+    const limitMs = Number(opts.limitMs) > 0 ? Number(opts.limitMs) : sweepLimitMs(sec);
+    let timer = null, ok = true, note = null;
+    // المؤقّت ده **مش** unref: لازم يرن حتى لو مفيش حاجة تانية ماسكة الحلقة (بيتشال في finally لما الدورة ترجع)
+    const timeout = new Promise((_, rej) => {
+      timer = setTimeout(() => rej(new Error(`sweep tick exceeded ${Math.round(limitMs / 1000)}s`)), limitMs);
+    });
+    try { await Promise.race([(opts.run || sweep)(), timeout]); }
+    catch (e) { ok = false; note = String(e && e.message || e).slice(0, 200); console.error("[shop] sweep failed:", note); }
+    finally { clearTimeout(timer); }
+    const ms = Date.now() - t0;
+    await pulse(ok, `${ms} ms · كل ${sec} ث${note ? ` — ${note}` : ""}`);
+    return { ok, ms, sec, note };
+  }
   let _sweepTimer = null;
   async function sweepLoop() {
-    try { await sweep(); } catch (e) { console.error("[shop] sweep failed:", e.message); }
-    const sec = await nextSweepSec();
+    let sec = SWEEP_LIMITS.def;
+    try { sec = (await sweepTick()).sec || sec; } catch (e) { console.error("[shop] sweep tick failed:", e.message); }
     _sweepTimer = setTimeout(sweepLoop, sec * 1000);
     if (_sweepTimer && typeof _sweepTimer.unref === "function") _sweepTimer.unref();
   }
@@ -3132,5 +3212,5 @@ export function register(app, ctx, deps = {}) {
   }
 
   return { confirmOrder, onShipmentEvent, sweep, refundOrder, watchdog, setStatus, getOrderRow, createPosOrder, prepWatch, posMilestonesOf, applyPosMilestones,
-    processPosOrder, applyWebhookFor, nextSweepSec };   // ⚡ RT1
+    processPosOrder, applyWebhookFor, nextSweepSec, sweepTick };   // ⚡ RT1
 }

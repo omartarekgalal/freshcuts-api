@@ -242,6 +242,8 @@ test("الكنس (استلام): «جاهز» من غير قفل ⇒ إشعار 
         if (/WHERE option='pickup' AND pos_order_id IS NOT NULL/.test(sql)) return { rows: [{ order_no: "P2", pos_order_id: "8", option: "pickup", pos_ready_at: readySet ? at(22) : null }] };
         if (/FROM tsp_webhooks/.test(sql)) return { rows: hooks(22, closedAtMin) };
         if (/SET pos_ready_at = \$2::timestamptz/.test(sql)) { if (readySet) return { rows: [], rowCount: 0 }; readySet = true; return { rows: [], rowCount: 1 }; }
+        // ⚡ RT1 مراجعة: الانتقال لـdelivered مشروط (AND status IN …) وبيطلّع الإشعار بس لو غيّر صف — الطلب لسه accepted هنا
+        if (/UPDATE shop_orders SET status=\$2/.test(sql)) { assert.match(sql, /AND status IN \(/, "الشرط جوّه الجملة"); return { rows: [], rowCount: 1 }; }
         return null;
       },
     });

@@ -709,6 +709,11 @@ export function register(app, ctx, deps = {}) {
           const w = await wa.sendOrderUpdate(o, "pickup_ready");
           if (w.skipped !== "no_template_for_stage") emitNotify(o.order_no, "pickup_ready", "whatsapp", w.ok === true,
             w.ok ? {} : { error: String(w.skipped || w.error || "send_failed").slice(0, 60) });
+        } else if (cfg.whatsappEnabled === true) {
+          /* ⚡ RT1 مراجعة (١٧/١٠): «موصلتش رسايل واتساب إن الطلب جاهز» — السبب الحي إن مرحلة pickup_ready
+             مش مشغّلة في اللوحة (واتساب ← المراحل)، مش الكود. بنسجّلها في أحداث الطلب بنفس شكل
+             sendOrderUpdate (stage_off) عشان السبب يبان على كل طلب استلام بدل ما يفضل لغز. */
+          emitNotify(o.order_no, "pickup_ready", "whatsapp", false, { error: "stage_off" });
         }
       } catch (e) { console.error(`[notify] WA ready failed for ${o.order_no}:`, e?.message); }
     }

@@ -24,6 +24,7 @@
 import { isOpenNow } from "./carts.js";
 import { reviewFlowConfig } from "./wareviews.js";      // RV1: ساعات هدوء رسايل التقييم الجديدة
 import { ljHealthOf } from "./ljwatch.js";               // LJ2a: حالة حساب لاجلك
+import { sweepSecOf } from "./prepstatus.js";             // ⚡ RT1 مراجعة: فترة الكنس من اللوحة (لحكم نبضة shop_sweep)
 
 const CACHE_MS = 60_000;
 const STOREFRONT = () => (process.env.STOREFRONT_PUBLIC_URL || "https://freshcuts.sa").replace(/\/+$/, "");
@@ -66,6 +67,19 @@ export function readyLagTone({ n = 0, bySweep = 0, p50 = null } = {}) {
   if (!n || p50 == null) return "unknown";
   if (p50 > 60) return "bad";
   if (p50 > 5 || bySweep > n / 5) return "warn";
+  return "good";
+}
+
+/** ⚡ RT1 مراجعة (١٧/١٠): لون نبضة الكنس الاحتياطي (sys_heartbeats.shop_sweep). صافية.
+    مفيش نبضة ⇒ رمادي (أول دورة بعد النشر لسه ماجاتش) · آخر نبضة أقدم من ١٠ × الفترة ⇒ أحمر (السلسلة وقفت)
+    · أقدم من ٣ × الفترة أو آخر دورة فشلت/اتعدّت مهلتها ⇒ أصفر · وإلا أخضر. */
+export function sweepPulseTone({ at = null, ok = true, sweepSec = 120, now = Date.now() } = {}) {
+  const t = at ? new Date(at).getTime() : NaN;
+  if (!Number.isFinite(t)) return "unknown";
+  const sec = Math.max(30, Number(sweepSec) || 120);
+  const ageSec = Math.max(0, (now - t) / 1000);
+  if (ageSec > 10 * sec) return "bad";
+  if (ageSec > 3 * sec || ok === false) return "warn";
   return "good";
 }
 
@@ -202,6 +216,20 @@ export function register(app, ctx, deps = {}) {
     });
 
     /* ── التشغيل ───────────────────────────────────────────────────── */
+    /* ⚡ RT1 مراجعة (١٧/١٠): الكنس الاحتياطي بقى سلسلة setTimeout — لو دورة ماترجعتش محدش كان هيعرف.
+       shop.js بيكتب نبضة sys_heartbeats('shop_sweep') آخر كل دورة (ok + المدة)، وهنا بنحكم عليها بفترة
+       الكنس نفسها من اللوحة (shop.sweepSec): أصفر بعد ٣ × الفترة أو دورة فاشلة، أحمر بعد ١٠ ×. */
+    add("shop_sweep", "ops", "الكنس الاحتياطي للطلبات (شبكة أمان الويبهوك)", async () => {
+      const sec = sweepSecOf(s);
+      const r = await q1(`SELECT at, ok, note, count FROM sys_heartbeats WHERE name='shop_sweep'`);
+      const st = sweepPulseTone({ at: r.at, ok: r.ok, sweepSec: sec });
+      const line = !r.at ? `لسه مفيش نبضة من الكنس (أول دورة بعد النشر بعد ${ar(sec)} ث) — أو النسخة الحيّة أقدم من RT1.`
+        : `آخر دورة ${r.ok === false ? "فشلت/اتعدّت مهلتها" : "ناجحة"} ${ago(minsSince(r.at))} — الفترة ${ar(sec)} ث${r.note ? ` (${String(r.note).slice(0, 80)})` : ""}.`;
+      return comp("shop_sweep", "ops", "الكنس الاحتياطي للطلبات (شبكة أمان الويبهوك)", st, line,
+        { last: r.at, detail: { sweepSec: sec, ok: r.ok ?? null, note: r.note || null, count: r.count ?? null },
+          fix: st === "bad" ? "سلسلة الكنس وقفت (الويبهوك الفوري لسه شغّال، بس شبكة الأمان لأ) — Restart للـapi من Coolify وراجع اللوج على [shop] sweep."
+            : st === "warn" ? "راجع لوج الـapi على [shop] sweep failed — غالباً نداء شبكة (تاب سينس/المندوب) اتعلّق." : null });
+    });
     add("leajlak", "ops", "لأجلك — متابعة المندوب", async () => {
       const r = await q1(`SELECT count(*)::int AS n, min(updated_at) AS oldest, max(updated_at) AS newest FROM dl_shipments
                             WHERE lower(coalesce(status,'')) NOT IN ('delivered','cancelled','canceled','failed','returned','completed','rejected')
