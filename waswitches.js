@@ -35,12 +35,23 @@ export const STAGE_LABELS = Object.freeze({
 });
 
 /* 📍 RT2 (١٧/١٠): مراحل «رسالة حرة بس» — مالهاش قالب عند ميتا ولا SMS بديل: بتطلع جوّه نافذة الـ٢٤ ساعة بس (ببلاش)، وبره النافذة بتتسجّل window_closed.
-   collected = الكاشير سلّم طلب الاستلام (delivered لطلب pickup). notify.js مابيبعتهاش لو دعوة التقييم جاية خلال «أقل مدة بين قالبين» (covered_by_review). */
+   collected = الكاشير سلّم طلب الاستلام (delivered لطلب pickup). notify.js مابيبعتهاش لو دعوة التقييم جاية خلال waBot.collectedSkipIfReviewWithinMin (covered_by_review).
+   RT2 مراجعة (١٧/١٠): السجل الواحد للمراحل الحرة — whatsapp.FREE_STAGE_TEXT بيتبني منه (اختبار الانجراف)، والنص للعميل من اللوحة:
+   «كل إعدادات البوت» ← النصوص ← textKey (wabotrun.TEXTS بياخد الافتراضي من هنا)، وده الافتراضي لو المالك ماكتبش حاجة. */
 export const FREE_STAGES = Object.freeze({
-  collected: Object.freeze({ label: STAGE_LABELS.collected, only: "pickup",
-    note: "رسالة حرة جوّه نافذة الـ٢٤ ساعة بس (ببلاش) — مفيش قالب ولا SMS. مابتتبعتش لو دعوة التقييم جاية خلال «أقل مدة بين قالبين بفلوس» (covered_by_review)." }),
+  collected: Object.freeze({ label: STAGE_LABELS.collected, only: "pickup", textKey: "collected_thanks",
+    text: Object.freeze({ ar: "بالهنا والشفا 🌟 تقييمك يهمنا", en: "Enjoy your meal 🌟 Your feedback matters to us" }),
+    note: "رسالة حرة جوّه نافذة الـ٢٤ ساعة بس (ببلاش) — مفيش قالب ولا SMS. مابتتبعتش لو دعوة التقييم جاية خلال «اتسلّم من الفرع: مابنبعتش لو التقييم جاي خلال» (كل إعدادات البوت، ٦٠ د افتراضياً — بالافتراضيات التقييم بعد ٤٥ د فهي مش بتطلع) ⇒ covered_by_review. نصها في «كل إعدادات البوت» ← النصوص." }),
 });
 export const isFreeStage = (stage) => Object.prototype.hasOwnProperty.call(FREE_STAGES, String(stage));
+/* RT2 مراجعة: نص المرحلة الحرة من اللوحة (settings.waBot.texts[textKey][lang]) وإلا الافتراضي. نفس حدود wabotrun.textProblem البسيطة: فاضي = الافتراضي، ≤ ٣٠٠ حرف. */
+export function freeStageText(stage, settings, lang = "ar") {
+  const f = FREE_STAGES[stage]; if (!f) return null;
+  const L = lang === "en" ? "en" : "ar";
+  const own = (((settings || {}).waBot || {}).texts || {})[f.textKey];
+  const s = own && typeof own === "object" ? String(own[L] ?? "").trim() : "";
+  return s && [...s].length <= 300 ? s : f.text[L];
+}
 
 /* 📍 RT2 (١٧/١٠ — طلب المالك): «جاهز للاستلام» تتضاف للمصفوفات الحيّة لو ناقصة — مرة واحدة (notify.js بيقفلها بـcms_migrations وبيكتبها في cms_audit).
    smsStages مابتتلمسش (SMS بفلوس — قرار المالك من شاشة SMS). whatsappReplacesSmsStages لو مش قايمة (المفتاح القديم العام) بتفضل زي ما هي.

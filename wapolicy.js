@@ -21,10 +21,15 @@ export const WA_POLICY_DEFAULTS = Object.freeze({
   closedSkipPreparing: true,     // …«بنجهّز» مابتطلعش قالب
   mergeDeliveredReview: true,    // …التوصيل فيه زرّين التقييم ⇒ مفيش قالب تقييم منفصل لنفس الطلب
   reviewPaidGapMin: 30,          // …ومفيش قالبين بفلوس لنفس الطلب في أقل من كده (التقييم بيتأجل)
+  /* 📍 RT2 مراجعة (١٧/١٠): «اتسلّم من الفرع» (collected) مابتتبعتش لو دعوة التقييم جاية خلال المدة دي — مفتاح لوحده (كان بيستخدم reviewPaidGapMin ٣٠
+     وده أقل من pickupMin ٤٥ فالقاعدة ماكانتش بتتطبّق أبداً بالافتراضيات). ٦٠ = بالافتراضيات (التقييم بعد ٤٥ د) رسالة واحدة بس هي التقييم. */
+  collectedSkipIfReviewWithinMin: 60,
   followBanner: true,            // TRK6: بانر «تابع طلبك على واتساب» في المتجر بعد الطلب (صفحة التتبّع + شريط صغير وهو بيتصفّح) — الزر في الصفحة بيفضل حسب followLink
   followBannerSkipHours: 20,     // TRK6: …مابيظهرش لو العميل كاتب لنا من أقل من كده (النافذة مفتوحة وفاضل فيها وقت كفاية). صفر = يظهر دايماً
 });
 
+/* دقايق ٠..٢٤٠ وإلا الافتراضي (RT2 مراجعة) */
+const minutesOr = (v, d) => { const n = Number(v); return Number.isFinite(n) && v !== "" && v !== null && n >= 0 && n <= 240 ? n : d; };
 export function waPolicyCfg(settings = {}) {
   const x = ((settings || {}).waBot) || {};
   const n = Number(x.reviewPaidGapMin);
@@ -37,6 +42,7 @@ export function waPolicyCfg(settings = {}) {
     closedSkipPreparing: x.closedSkipPreparing !== false,
     mergeDeliveredReview: x.mergeDeliveredReview !== false,
     reviewPaidGapMin: Number.isFinite(n) && x.reviewPaidGapMin !== "" && x.reviewPaidGapMin !== null && n >= 0 && n <= 240 ? n : WA_POLICY_DEFAULTS.reviewPaidGapMin,
+    collectedSkipIfReviewWithinMin: minutesOr(x.collectedSkipIfReviewWithinMin, WA_POLICY_DEFAULTS.collectedSkipIfReviewWithinMin),      // RT2 مراجعة
     followBanner: x.followBanner !== false,
     followBannerSkipHours: Number.isInteger(Number(x.followBannerSkipHours)) && x.followBannerSkipHours !== "" && x.followBannerSkipHours !== null && Number(x.followBannerSkipHours) >= 0 && Number(x.followBannerSkipHours) <= 23 ? Number(x.followBannerSkipHours) : WA_POLICY_DEFAULTS.followBannerSkipHours,
   };

@@ -43,7 +43,7 @@ import * as CAT from "./watemplates.js";
 import { staffPhones } from "./staffalerts.js";
 import { termsCoverOrder, TERMS_CURRENT, TERMS_VERSIONS, POS_REVIEW_CONSENT, posReviewConsentOn, posReviewConsentCovers } from "./waconsent.js";
 import { custCapOf, custCapReason } from "./waquality.js";
-import { waStageOn } from "./waswitches.js";
+import { waStageOn, FREE_STAGES, freeStageText } from "./waswitches.js";      // RT2 مراجعة: سجل المراحل الحرة الواحد
 import { staffRoleOf } from "./wateam.js";
 import { journeyCfg, holdUntil, orderCapDecision, ORDER_SENT_SQL, CAP_EXEMPT_SOURCES } from "./wajourney.js";      // CJ1a (١٧/١٠): مفيش رسايل ورا بعض + سقف رسايل الطلب
 
@@ -154,10 +154,14 @@ export const STAGE_TEMPLATES = Object.fromEntries(
    نفس الاسم بيدّي **نص الرسالة الحرة** جوّه النافذة (ببلاش، من غير اعتماد)، وبره النافذة بيتبعت قالب بس لو ميتا بتقول APPROVED. */
 export const V2_TEMPLATE_NAMES = Object.freeze({ pickup_ready: "fc_order_pickup_ready" });
 export const v2TemplateOf = (stage, template) => V2_TEMPLATE_NAMES[stage] || `${template}_v2`;
-/* 📍 RT2: مراحل «رسالة حرة بس» (من غير قالب ولا SMS): collected = الكاشير سلّم طلب الاستلام. جوّه نافذة الـ٢٤ ساعة بس؛ النص بلهجة بيضاء. */
-export const FREE_STAGE_TEXT = Object.freeze({
-  collected: Object.freeze({ guard: (o) => o.option === "pickup" && !o.table_no, text: () => "بالهنا والشفا 🌟 تقييمك يهمنا" }),
-});
+/* 📍 RT2: مراحل «رسالة حرة بس» (من غير قالب ولا SMS): collected = الكاشير سلّم طلب الاستلام. جوّه نافذة الـ٢٤ ساعة بس؛ النص بلهجة بيضاء.
+   RT2 مراجعة (١٧/١٠): السجل الواحد waswitches.FREE_STAGES (نفس المفاتيح — اختبار الانجراف)، والنص من اللوحة (waBot.texts) وإلا الافتراضي من هناك. */
+const FREE_STAGE_GUARDS = Object.freeze({ collected: (o) => o.option === "pickup" && !o.table_no });
+export const FREE_STAGE_TEXT = Object.freeze(Object.fromEntries(Object.keys(FREE_STAGES).map((stage) => [stage,
+  Object.freeze({ guard: FREE_STAGE_GUARDS[stage] || (() => true), text: (o, snap) => freeStageText(stage, snap, "ar") })])));
+/* RT2 مراجعة (١٧/١٠): حالات ميتا اللي الإرسال بيها **أكيد** هيفشل ⇒ template_not_approved من غير نداء. PENDING بعد تعديل (ميتا بتبعت النسخة المعتمدة
+   القديمة) / IN_APPEAL / PAUSED بيكمّلوا لـsendTemplate زي الأول وميتا بتقرر (وSMS الويب هوك «failed» لسه شغّالة). */
+export const TEMPLATE_BLOCKING_STATUSES = Object.freeze(["REJECTED", "NOT_SUBMITTED", "DISABLED", "PENDING_DELETION", "DELETED"]);
 
 /* ── سجل قوالب قابل للتوسيع ─────────────────────────────────────────────
    كتالوج قوالب خارجي (مثلاً watemplates.js) بيتسجّل هنا وقت الإقلاع، والتقديم
@@ -1223,7 +1227,7 @@ export function register(app, ctx, deps = {}) {
        notify.js بيبعت SMS البديل (لو المرحلة في smsStages) وبيسجّل السبب في notify_sent. مانعرفش الحالة ⇒ زي الأول وميتا بتقرر. */
     const paid = async (name, p) => {
       const st = await templateStatusOf(name, "ar");
-      if (st && st !== "APPROVED") return { ok: false, skipped: "template_not_approved", template: name, status: st };
+      if (st && TEMPLATE_BLOCKING_STATUSES.includes(st)) return { ok: false, skipped: "template_not_approved", template: name, status: st };      // RT2 مراجعة: الأكيد بس
       return sendTemplate({ phoneNorm: order.phone_norm, template: name, params: p, orderNo: order.order_no, stage, fallbackSms });
     };
     /* SB4: نسخة v2 (بزر رد سريع يفتح نافذة) بعد ما المالك يحط المرحلة في waBot.windowV2Stages (يعني ميتا اعتمدتها) */
@@ -1252,7 +1256,7 @@ export function register(app, ctx, deps = {}) {
     const consent = !op.stoppedForUpdates && (op.updates || (!op.saidNoToUpdates && await termsCoverOrder(pool, pn, o.order_no)));
     if (!consent) return { ok: false, skipped: op.stoppedForUpdates ? "stopped" : "no_optin" };
     if (!(await windowOpen(pn))) return { ok: false, skipped: "window_closed" };
-    const body = String(def.text(o)).slice(0, 1000);
+    const body = String(def.text(o, snap)).slice(0, 1000);      // RT2 مراجعة: النص من اللوحة (waBot.texts) وإلا الافتراضي
     const r = await sendFreeform({ phoneNorm: pn, payload: { type: "text", text: { body, preview_url: false } }, source: "window", preview: body, orderNo: o.order_no, stage });
     if (r.ok) return { ok: true, wamid: r.wamid, free: true };
     return { ok: false, skipped: r.skipped || r.error || "send_failed", ...(r.policy ? { policy: true } : {}) };

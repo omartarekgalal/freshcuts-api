@@ -5,6 +5,8 @@
         no_template_for_stage بيتسجّل مش بيتبلع؛ التوصيل والطاولة زي ما هم
      ٣) لحظة «اتسلّم» (collected): دعوة التقييم جاية قريب ⇒ covered_by_review؛ غير كده والمرحلة مفتوحة ⇒ رسالة حرة جوّه النافذة بس
      ٤) الكتالوج: fc_order_pickup_ready بصياغة المالك (ar + en) ولسه HOLD؛ المخطط والافتراضيات
+     ٥) RT2 مراجعة (١٧/١٠): shop.js — «جاهز» من غير محطات ويبهوك (الكنس الاحتياطي) بيبلّغ العميل برضه؛ PENDING/PAUSED عند ميتا بيكمّلوا للقالب (الأكيد بس بيتقفل)؛
+        نص «اتسلّم» من اللوحة + اختبار انجراف السجل الواحد؛ مفتاح collectedSkipIfReviewWithinMin في المخطط؛ الـPush مابيستناش واتساب؛ pickup_ready مش في افتراضي SMS
    node --test rt2-pickup-ready-wa.test.mjs — قاعدة وهمية وfetch وهمي؛ مفيش شبكة حقيقية ولا أي إرسال. أرقام وهمية بس (9665xxxxxxx).
 ═══════════════════════════════════════════════════════════════════════════ */
 import test from "node:test";
@@ -177,9 +179,11 @@ test("orderReady والنافذة مقفولة والقالب مرفوض: templa
       assert.deepEqual(cap.of("pickup_ready", "sms").map((e) => [e.ok, e.data.error]), [[false, "stage_not_in_sms_stages"]]);
     } finally { cap.stop(); }
   }
-  // (ج) الافتراضي الجديد (مفيش smsStages مكتوبة) بيشمل pickup_ready
-  assert.ok(smsStagesOf({}).includes("pickup_ready"));
-  assert.ok(!smsStagesOf(LIVE_N).includes("pickup_ready"), "القايمة الحيّة اللي المالك كتبها بتغلب الافتراضي");
+  // (ج) RT2 مراجعة: pickup_ready **مش** في الافتراضي ولا في القايمة الفاضية — SMS بفلوس = تعليم صريح من شاشة SMS (لو كانت في الافتراضي ومسح المالك القايمة كانت هتبدأ لوحدها)
+  assert.ok(!smsStagesOf({}).includes("pickup_ready"));
+  assert.ok(!smsStagesOf({ smsStages: [] }).includes("pickup_ready"));
+  assert.ok(!smsStagesOf(LIVE_N).includes("pickup_ready"), "القايمة الحيّة زي ما هي");
+  assert.ok(smsStagesOf({ smsStages: [...LIVE_N.smsStages, "pickup_ready"] }).includes("pickup_ready"), "المالك علّمها ⇒ موجودة");
 });
 
 test("orderReady: no_template_for_stage / stage_off / whatsapp_off بتتسجّل بدل ما تتبلع", async () => {
@@ -214,11 +218,11 @@ test("orderReady: طلب التوصيل مالوش «جاهز» (0 ومفيش و
 });
 
 // ═════════ ٣) لحظة «اتسلّم» (collected) ═════════
-test("collected: دعوة التقييم جاية خلال reviewPaidGapMin ⇒ covered_by_review (مش stage_not_applicable) ومفيش إرسال؛ بعيدة والمرحلة مفتوحة ⇒ رسالة حرة", async () => {
+test("collected: دعوة التقييم جاية خلال collectedSkipIfReviewWithinMin (٦٠ افتراضياً) ⇒ covered_by_review (مش stage_not_applicable) ومفيش إرسال — وده اللي بيحصل بالافتراضيات (التقييم بعد ٤٥)؛ المالك ينزّل المفتاح ⇒ رسالة حرة", async () => {
   const N_COL = { ...N_ON, whatsappStages: [...N_ON.whatsappStages, "collected"] };
   // المسار القديم للتقييم (reviewFlow مقفول) عشان الحساب ثابت ومش بيتأثر بساعات الهدوء وقت تشغيل الاختبار
   const flowOff = (askAfterMinutes, extra = {}) => ({ reviews: { askAfterMinutes }, waBot: { reviewFlow: { enabled: false }, ...extra } });
-  // (أ) التقييم بعد ٢٠ د (≤ ٣٠) ⇒ covered
+  // (أ) التقييم بعد ٢٠ د (≤ ٦٠) ⇒ covered — والفاصل المسجّل هو المفتاح الجديد مش reviewPaidGapMin
   {
     const { api, calls } = notifyWith({ waResult: { ok: true, free: true }, notifications: N_COL, order: PICKUP, settings: flowOff(20) });
     const cap = capture();
@@ -227,30 +231,40 @@ test("collected: دعوة التقييم جاية خلال reviewPaidGapMin ⇒ 
       assert.equal(calls.filter((c) => c.st === "collected").length, 0);
       assert.equal(calls.filter((c) => c.st === "delivered").length, 0, "قالب التوصيل مش بتاع الاستلام — مابنجرّبوش");
       const ev = cap.of("collected", "whatsapp");
-      assert.equal(ev.length, 1); assert.deepEqual([ev[0].ok, ev[0].data.error, ev[0].data.reviewInMin, ev[0].data.gapMin], [false, "covered_by_review", 20, 30]);
+      assert.equal(ev.length, 1); assert.deepEqual([ev[0].ok, ev[0].data.error, ev[0].data.reviewInMin, ev[0].data.gapMin], [false, "covered_by_review", 20, 60]);
       assert.equal(cap.events.some((e) => e.data.error === "stage_not_applicable"), false);
     } finally { cap.stop(); }
   }
-  // (ب) التقييم بعد ٤٥ د (> ٣٠) والمرحلة مفتوحة ⇒ رسالة حرة + حدث ok
+  // (ب) RT2 مراجعة — **التوقيت الافتراضي بصراحة**: التقييم بعد ٤٥ د (pickupMin) والمفتاح ٦٠ ⇒ covered حتى لو المالك شغّل المرحلة: رسالة واحدة بس (التقييم)
   {
     const { api, calls } = notifyWith({ waResult: { ok: true, free: true }, notifications: N_COL, order: PICKUP, settings: flowOff(45) });
     const cap = capture();
     try {
       await api.orderStatusChanged(NO, "delivered"); await flush();
-      assert.deepEqual(calls.map((c) => c.st), ["collected"]);
+      assert.equal(calls.length, 0, "بالافتراضيات مفيش رسالة شكر — التقييم جاي خلال ٤٥");
+      assert.deepEqual([cap.of("collected")[0].data.error, cap.of("collected")[0].data.reviewInMin, cap.of("collected")[0].data.gapMin], ["covered_by_review", 45, 60]);
+    } finally { cap.stop(); }
+  }
+  // (ج) المالك نزّل المفتاح لـ٣٠ («عايز الشكر والتقييم الاتنين») ⇒ نفس الـ٤٥ بقت بعيدة ⇒ رسالة حرة + حدث ok؛ وصفر = الشكر دايماً
+  for (const gap of [30, 0]) {
+    const { api, calls } = notifyWith({ waResult: { ok: true, free: true }, notifications: N_COL, order: PICKUP, settings: flowOff(45, { collectedSkipIfReviewWithinMin: gap }) });
+    const cap = capture();
+    try {
+      await api.orderStatusChanged(NO, "delivered"); await flush();
+      assert.deepEqual(calls.map((c) => c.st), ["collected"], `gap ${gap}`);
       const ev = cap.of("collected", "whatsapp");
       assert.deepEqual([ev[0].ok, ev[0].data.free, ev[0].data.reviewInMin], [true, true, 45]);
     } finally { cap.stop(); }
   }
-  // (ج) المالك رفع «أقل مدة بين قالبين» لـ٦٠ ⇒ نفس الـ٤٥ بقت قريبة ⇒ covered
+  // (ج٢) reviewPaidGapMin لوحده مابقاش بيأثّر على القرار ده
   {
-    const { api, calls } = notifyWith({ waResult: { ok: true, free: true }, notifications: N_COL, order: PICKUP, settings: flowOff(45, { reviewPaidGapMin: 60 }) });
+    const { api, calls } = notifyWith({ waResult: { ok: true, free: true }, notifications: N_COL, order: PICKUP, settings: flowOff(45, { reviewPaidGapMin: 0, collectedSkipIfReviewWithinMin: 60 }) });
     const cap = capture();
     try { await api.orderStatusChanged(NO, "delivered"); await flush(); assert.equal(calls.length, 0); assert.equal(cap.of("collected")[0].data.error, "covered_by_review"); } finally { cap.stop(); }
   }
-  // (د) المرحلة مقفولة (الوضع الحي بعد الترحيل — collected مش مشغّلة) والتقييم بعيد ⇒ stage_off بميعاد التقييم، مفيش إرسال
+  // (د) المرحلة مقفولة (الوضع الحي بعد الترحيل — collected مش مشغّلة) والتقييم بعيد (المفتاح ٣٠) ⇒ stage_off بميعاد التقييم، مفيش إرسال
   {
-    const { api, calls } = notifyWith({ waResult: { ok: true, free: true }, notifications: N_ON, order: PICKUP, settings: flowOff(45) });
+    const { api, calls } = notifyWith({ waResult: { ok: true, free: true }, notifications: N_ON, order: PICKUP, settings: flowOff(45, { collectedSkipIfReviewWithinMin: 30 }) });
     const cap = capture();
     try { await api.orderStatusChanged(NO, "delivered"); await flush(); assert.equal(calls.length, 0); assert.deepEqual([cap.of("collected")[0].data.error, cap.of("collected")[0].data.reviewInMin], ["stage_off", 45]); } finally { cap.stop(); }
   }
@@ -268,7 +282,7 @@ test("collected: دعوة التقييم جاية خلال reviewPaidGapMin ⇒ 
   }
   // (ز) النافذة مقفولة ⇒ whatsapp.js بيرجّع window_closed ⇒ بيتسجّل زي ما هو، ومفيش SMS (مرحلة حرة بس)
   {
-    const { api, sms } = notifyWith({ waResult: { ok: false, skipped: "window_closed" }, notifications: { ...N_COL, smsStages: [...LIVE_N.smsStages, "delivered"] }, order: PICKUP, settings: flowOff(45) });
+    const { api, sms } = notifyWith({ waResult: { ok: false, skipped: "window_closed" }, notifications: { ...N_COL, smsStages: [...LIVE_N.smsStages, "delivered"] }, order: PICKUP, settings: flowOff(45, { collectedSkipIfReviewWithinMin: 30 }) });
     const cap = capture();
     try {
       await api.orderStatusChanged(NO, "delivered"); await flush();
@@ -435,4 +449,133 @@ test("التسميات والصفوف: «جاهز للاستلام (استلام
   assert.deepEqual([sms.stage, sms.group, sms.label], ["pickup_ready", "order", "جاهز للاستلام (استلام من الفرع)"]);
   assert.equal(sms.def.replace("{order_no}", NO), statusSmsText("pickup_ready", { order_no: NO }));
   assert.equal(SMS.previewOf("order.pickup_ready", sms.def).parts, 1, "جزء UCS-2 واحد");
+});
+
+// ═════════ ٦) RT2 مراجعة (١٧/١٠) ═════════
+const SHOP_DELIVERY = { quote: async () => ({ deliverable: true, fee: 0 }), shipmentOf: async () => null, cancelShipment: async () => null, dispatchGate: async () => ({ mode: "manual" }), canAutoDispatch: async () => false };
+const shopCtx = (pool) => ({ pool, requireAdmin: async () => null, requireCashierOrAdmin: async () => null, getSettingsData: async () => ({}), jb: JSON.stringify, normPhone: String });
+test("shop.js: «جاهز» من غير محطات ويبهوك (الكنس الاحتياطي) — طلب الاستلام: حدث pos_ready واحد + notify.orderReady ⇒ notify_sent واتساب pickup_ready واحد؛ التوصيل: الحدث من غير رسالة؛ الكتابة مرة واحدة", async () => {
+  const { register: registerShop } = await import("./shop.js");
+  const prev = process.env.SHOP_SWEEP_SECONDS; process.env.SHOP_SWEEP_SECONDS = "0";
+  try {
+    for (const [order, expectWa] of [[PICKUP, 1], [DELIVERY, 0]]) {
+      const n = notifyWith({ waResult: { ok: true, wamid: "wamid.R1", free: true }, notifications: { ...N_ON, pushEnabled: false }, order });
+      const events = [], queries = [];
+      const pool = { async query(sql, vals) {
+        const s = String(sql); queries.push({ s, vals });
+        if (/pos_ready_at IS NULL\s+OR \(option='delivery'/.test(s)) return { rows: [{ order_no: order.order_no, pos_order_id: "88", branch_id: "1", option: order.option, pos_ready_at: null, handed_at: null, handed_source: null }], rowCount: 1 };
+        if (/approval_status' AS approval/.test(s)) return { rows: [], rowCount: 0 };           // مفيش محطات ويبهوك ⇒ المسار الاحتياطي (الطلب نزل من مسار المتجر العادي)
+        if (/jsonb_build_object\('resource'/.test(s)) return { rows: [{ payload: { resource: { statuses_slugs: { approval_status: "pickup_ready" } } } }], rowCount: 1 };
+        if (/pos_ready_at = NOW\(\)[\s\S]*pos_ready_at IS NULL/.test(s)) return { rows: [], rowCount: 1 };
+        return { rows: [], rowCount: 0 };
+      } };
+      const shop = registerShop(fakeApp(), shopCtx(pool), { pay: { configured: () => true }, delivery: SHOP_DELIVERY, emitOrder: (name, opts) => events.push({ name, ...opts }), journey: () => ({ emit() {} }), notify: n.api });
+      const cap = capture();
+      try {
+        await shop.sweep(); await flush();
+        const ready = events.filter((e) => e.name === "pos_ready");
+        assert.equal(ready.length, 1, order.option); assert.deepEqual([ready[0].orderNo, ready[0].data.approval], [order.order_no, "pickup_ready"]);
+        const up = queries.filter((q) => /pos_ready_at = NOW\(\)/.test(q.s));
+        assert.equal(up.length, 1); assert.match(up[0].s, /WHERE order_no = \$1 AND pos_ready_at IS NULL/); assert.deepEqual(up[0].vals, [order.order_no, "pickup_ready"]);
+        assert.deepEqual(n.calls.map((c) => c.st), expectWa ? ["pickup_ready"] : [], order.option);
+        const wa = cap.of("pickup_ready", "whatsapp");
+        assert.equal(wa.length, expectWa, order.option);
+        if (expectWa) assert.deepEqual([wa[0].ok, wa[0].data.free, wa[0].orderNo], [true, true, order.order_no]);
+      } finally { cap.stop(); }
+      // الكتابة اتعملت قبل كده (rowCount 0 — حد تاني سبقنا) ⇒ لا حدث ولا رسالة — نفس حارس applyPosMilestones
+      const n2 = notifyWith({ waResult: { ok: true, free: true }, notifications: { ...N_ON, pushEnabled: false }, order });
+      const ev2 = [];
+      const pool2 = { async query(sql) { const s = String(sql);
+        if (/pos_ready_at IS NULL\s+OR \(option='delivery'/.test(s)) return { rows: [{ order_no: order.order_no, pos_order_id: "88", branch_id: "1", option: order.option, pos_ready_at: null, handed_at: null, handed_source: null }], rowCount: 1 };
+        if (/jsonb_build_object\('resource'/.test(s)) return { rows: [{ payload: { resource: { statuses_slugs: { approval_status: "ready" } } } }], rowCount: 1 };
+        return { rows: [], rowCount: 0 }; } };
+      const shop2 = registerShop(fakeApp(), shopCtx(pool2), { pay: { configured: () => true }, delivery: SHOP_DELIVERY, emitOrder: (name, opts) => ev2.push({ name, ...opts }), journey: () => ({ emit() {} }), notify: n2.api });
+      await shop2.sweep(); await flush();
+      assert.equal(ev2.filter((e) => e.name === "pos_ready").length, 0); assert.equal(n2.calls.length, 0);
+    }
+  } finally { if (prev === undefined) delete process.env.SHOP_SWEEP_SECONDS; else process.env.SHOP_SWEEP_SECONDS = prev; }
+});
+
+test("حالة ميتا: REJECTED / NOT_SUBMITTED / DISABLED / PENDING_DELETION بس اللي بتقفل من غير نداء؛ PENDING (بعد تعديل) / IN_APPEAL / PAUSED بيكمّلوا للقالب وميتا بتقرر", withEnv(ALLOW, async () => {
+  assert.deepEqual([...W.TEMPLATE_BLOCKING_STATUSES], ["REJECTED", "NOT_SUBMITTED", "DISABLED", "PENDING_DELETION", "DELETED"]);
+  const N_SMS = { ...N_ON, smsStages: [...LIVE_N.smsStages, "pickup_ready"] };
+  for (const status of ["PENDING", "IN_APPEAL", "PAUSED"]) {
+    const w = world({ settings: { notifications: N_SMS, waBot: { windowV2Stages: [...V2_ON] } }, optins: OPT, inbound: [], orders: ORDERS,
+      metaList: META([{ name: "fc_order_pickup_ready", language: "ar", category: "UTILITY", status }]) });
+    const cap = capture();
+    try {
+      await w.notify.orderReady(NO); await flush();
+      assert.equal(w.calls.length, 1, status); assert.equal(w.calls[0].body.template.name, "fc_order_pickup_ready", status);
+      assert.deepEqual(cap.of("pickup_ready", "whatsapp").map((e) => e.ok), [true], status);
+      assert.equal(w.db.sms.length, 0, `${status}: واتساب اتقبل ⇒ مفيش SMS (الويب هوك failed هو اللي يبعتها لو ميتا رفضت)`);
+    } finally { cap.stop(); }
+  }
+  for (const status of ["DISABLED", "PENDING_DELETION"]) {
+    const w = world({ settings: { notifications: N_SMS, waBot: { windowV2Stages: [...V2_ON] } }, optins: OPT, inbound: [], orders: ORDERS,
+      metaList: META([{ name: "fc_order_pickup_ready", language: "ar", category: "UTILITY", status }]) });
+    const cap = capture();
+    try {
+      await w.notify.orderReady(NO); await flush();
+      assert.equal(w.calls.length, 0, status);
+      assert.deepEqual([cap.of("pickup_ready", "whatsapp")[0].data.error, cap.of("pickup_ready", "whatsapp")[0].data.status], ["template_not_approved", status]);
+      assert.equal(w.db.sms.length, 1, `${status}: SMS البديل`);
+    } finally { cap.stop(); }
+  }
+}));
+
+test("نص «اتسلّم من الفرع» من اللوحة: السجل الواحد (FREE_STAGES ⇔ FREE_STAGE_TEXT ⇔ TEXTS.collected_thanks)، النص المخصّص بيطلع في الرسالة الحرة، والفاضي/الطويل = الافتراضي", withEnv(ALLOW, async () => {
+  assert.deepEqual(Object.keys(W.FREE_STAGE_TEXT), Object.keys(SW.FREE_STAGES), "مرحلة حرة في اللوحة لازم whatsapp.js يعرف يبعتها");
+  const f = SW.FREE_STAGES.collected;
+  assert.equal(f.textKey, "collected_thanks");
+  assert.equal(BOT.TEXTS[f.textKey].ar, f.text.ar); assert.equal(BOT.TEXTS[f.textKey].en, f.text.en);
+  assert.ok(BOT.TEXT_KEYS.includes(f.textKey), "بيظهر في شاشة النصوص");
+  assert.equal(BOT.textProblem(f.textKey, "ar", "شكراً لزيارتك 🌟"), null);
+  assert.equal(SW.freeStageText("collected", {}), "بالهنا والشفا 🌟 تقييمك يهمنا");
+  assert.equal(SW.freeStageText("collected", { waBot: { texts: { collected_thanks: { ar: "  شكراً لزيارتك 🌟 نسعد بتقييمك  " } } } }), "شكراً لزيارتك 🌟 نسعد بتقييمك");
+  assert.equal(SW.freeStageText("collected", { waBot: { texts: { collected_thanks: { ar: "   " } } } }), f.text.ar, "فاضي = الافتراضي");
+  assert.equal(SW.freeStageText("collected", { waBot: { texts: { collected_thanks: { ar: "x".repeat(301) } } } }), f.text.ar, "أطول من ٣٠٠ = الافتراضي");
+  assert.equal(SW.freeStageText("nope", {}), null);
+  const N_COL = { ...N_ON, whatsappStages: [...N_ON.whatsappStages, "collected"] };
+  const w = world({ settings: { notifications: N_COL, waBot: { texts: { collected_thanks: { ar: "شكراً لزيارتك 🌟 نسعد بتقييمك" } } } }, optins: OPT, inbound: [CUST], orders: ORDERS, metaList: META() });
+  const r = await w.wa.sendOrderUpdate({ order_no: NO, phone_norm: CUST, option: "pickup" }, "collected");
+  assert.deepEqual([r.ok, r.free], [true, true]);
+  assert.deepEqual(w.calls[0].body.text, { body: "شكراً لزيارتك 🌟 نسعد بتقييمك", preview_url: false });
+  assert.match(SW.FREE_STAGES.collected.note, /كل إعدادات البوت/, "صف المرحلة بيقول فين النص والمفتاح");
+}));
+
+test("مفتاح «اتسلّم من الفرع: مابنبعتش لو التقييم جاي خلال» في المخطط (orderMsgs، ٠..٢٤٠ دقيقة، ٦٠ افتراضياً)، في config، والحفظ بيرفض بره المدى", () => {
+  const s = BOT.SCHEMA.collectedSkipIfReviewWithinMin;
+  assert.ok(s); assert.deepEqual([s.group, s.type, s.min, s.max, s.unit], ["orderMsgs", "number", 0, 240, "دقيقة"]); assert.match(s.ar, /اتسلّم من الفرع/); assert.match(s.help, /٤٥/);
+  assert.equal(BOT.DEFAULTS.collectedSkipIfReviewWithinMin, 60);
+  assert.equal(BOT.botConfig({}).collectedSkipIfReviewWithinMin, 60);
+  assert.equal(BOT.botConfig({ waBot: { collectedSkipIfReviewWithinMin: 30 } }).collectedSkipIfReviewWithinMin, 30);
+  assert.equal(BOT.botConfig({ waBot: { collectedSkipIfReviewWithinMin: 999 } }).collectedSkipIfReviewWithinMin, 60, "بره المدى = الافتراضي");
+  assert.equal(BOT.botConfig({ waBot: { collectedSkipIfReviewWithinMin: 0 } }).collectedSkipIfReviewWithinMin, 0);
+  const row = BOT.schemaFor(BOT.botConfig({})).find((x) => x.key === "collectedSkipIfReviewWithinMin");
+  assert.deepEqual([row.default, row.value], [60, 60]);
+  assert.deepEqual(BOT.configFromBody({ collectedSkipIfReviewWithinMin: 30 }).value.collectedSkipIfReviewWithinMin, 30);
+  assert.equal(BOT.configFromBody({ collectedSkipIfReviewWithinMin: 999 }).ok, false);
+});
+
+test("orderReady: الـPush (مجاني وفوري) بيطلع من غير ما يستنى مسار واتساب — ولو واتساب رمى، الـPush بيرجع برضه", async () => {
+  const seq = [];
+  let release; const gate = new Promise((r) => { release = r; });
+  const pool = { async query(sql) {
+    const s = String(sql);
+    if (/FROM push_subs/.test(s)) { seq.push("push_lookup"); return { rows: [] }; }
+    if (/FROM shop_orders/.test(s)) return { rows: [PICKUP] };
+    return { rows: [], rowCount: 0 };
+  } };
+  const mk = (sendOrderUpdate) => registerNotify(fakeApp(), { pool, requireAdmin: async () => null, jb: JSON.stringify, normPhone: String, webpush: fakePush(),
+    getSettingsData: async () => ({ webPushKeys: { publicKey: "p", privateKey: "q" }, notifications: { ...N_ON, pushEnabled: true } }), sendSms: async () => {} }, { wa: { sendOrderUpdate } });
+  const api = mk(async () => { seq.push("wa_start"); await gate; seq.push("wa_done"); return { ok: true, free: true }; });
+  const p = api.orderReady(NO);
+  for (let i = 0; i < 30 && !seq.includes("push_lookup"); i++) await new Promise((r) => setImmediate(r));
+  assert.ok(seq.includes("push_lookup") && !seq.includes("wa_done"), `الـPush اتبعت وواتساب لسه مستني: ${seq.join(" > ")}`);
+  release(); await p; await flush();
+  assert.deepEqual(seq.filter((x) => x !== "wa_start"), ["push_lookup", "wa_done"]);
+  // واتساب رمى ⇒ orderReady مابيرميش (الـPush اتعمل وفيه حدث بالسبب)
+  const api2 = mk(async () => { throw new Error("meta down"); });
+  const cap = capture();
+  try { assert.equal(await api2.orderReady(NO), 0); await flush(); assert.equal(cap.of("pickup_ready", "whatsapp")[0].data.error, "send_failed"); } finally { cap.stop(); }
 });

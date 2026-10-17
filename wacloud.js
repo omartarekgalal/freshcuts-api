@@ -935,9 +935,16 @@ export function register(app, ctx, deps = {}) {
   }
   /* 📍 RT2 (١٧/١٠): whatsapp.js بيسأل قبل أي قالب بفلوس في تحديث طلب «القالب ده معتمد؟» — من نفس كاش قايمة ميتا (١٠ دقايق، من غير قراءة جديدة).
      مانقدرش نقرا ⇒ null (whatsapp بيحاول زي الأول وميتا بتقرر). مش في القايمة والقايمة كاملة (أقل من حد الصفحة ٢٠٠) ⇒ NOT_SUBMITTED. */
+  /* RT2 مراجعة (١٧/١٠): على كاش بارد القراءة دي GET لقايمة القوالب كلها جوّه مسار «جاهز» للعميل — مانستناهاش أكتر من ٥ ثواني (أقصى انتظار، مش إعداد):
+     لو ميتا بطيئة بنرجّع null = زي الأول (القالب بيتبعت وميتا بتقرر) والقراءة بتكمّل في الخلفية وبتملا الكاش للمرة الجاية. */
+  const TEMPLATE_STATUS_WAIT_MS = 5000;
   if (wa && typeof wa.setTemplateStatus === "function") {
     wa.setTemplateStatus(async (name, lang = "ar") => {
-      let info = null; try { info = await templateInfo(); } catch { info = null; }
+      let info = null;
+      try {
+        info = await Promise.race([templateInfo().catch(() => null),
+          new Promise((res) => { const tm = setTimeout(() => res(null), TEMPLATE_STATUS_WAIT_MS); if (tm && typeof tm.unref === "function") tm.unref(); })]);
+      } catch { info = null; }
       if (!info || info.ok !== true || !Array.isArray(info.list)) return null;
       const l2 = String(lang || "ar").slice(0, 2);
       const row = info.list.find((t) => t.name === name && String(t.language || "").slice(0, 2) === l2) || info.list.find((t) => t.name === name);

@@ -2517,6 +2517,26 @@ export function register(app, ctx, deps = {}) {
     return out;
   }
 
+  /* 📍 RT2 مراجعة (١٧/١٠): «جاهز» من غير محطات ويبهوك (الـapproval جاي من آخر ويبهوك أو من getOrder) — المسارين دول
+     (readyStep الاحتياطي لما مفيش ويبهوكات + inboxStep لما الـapproval فيها ready) كانوا بيكتبوا pos_ready_at وبيطلّعوا pos_ready بس،
+     من غير ما العميل يعرف: notify.orderReady كان بينادى من applyPosMilestones بس ⇒ طلب استلام «جاهز» من هنا ماكانش بياخد واتساب
+     «جاهز للاستلام» ولا سجل بيقول ليه. دلوقتي نفس قاعدة applyPosMilestones: مرة واحدة (الشرط في الـUPDATE نفسها — فالويبهوك الفوري
+     والكنس مايبلّغوش مرتين)، حدث pos_ready، والعميل يعرف — الاستلام/الطاولة بس (التوصيل مالوش «جاهز» للعميل).
+     الصف r بيتحدّث في الذاكرة لما الكتابة تنجح (زي applyPosMilestones) عشان الخطوة الجاية في نفس الدورة ماتعيدهاش. */
+  async function readyWithoutMilestones(r, a, { setApproval = false } = {}) {
+    const u = await pool.query(
+      `UPDATE shop_orders SET pos_approval = COALESCE($2, pos_approval), pos_ready_at = NOW(), ready_source = COALESCE(ready_source, 'pos'),
+              updated_at = NOW()
+        WHERE order_no = $1 AND pos_ready_at IS NULL`, [r.order_no, setApproval ? a : null]);
+    if (!(u && (u.rowCount == null || u.rowCount > 0))) return false;
+    r.pos_ready_at = new Date().toISOString();
+    emitOrder("pos_ready", { orderNo: r.order_no, source: "shop", data: { source: "pos", by: null, approval: a } });
+    if (r.option !== "delivery" && notify && typeof notify.orderReady === "function") {
+      notify.orderReady(String(r.order_no)).catch((e) => console.error(`[shop] ready notify failed for ${r.order_no}:`, e.message));
+    }
+    return true;
+  }
+
   /* ═══ ⚡ RT1 (عمر ١٧/١٠): معالجة طلب واحد من ويبهوكات نقطة البيع — تنفيذ واحد ═══
      «التحديثات موصلتش بشكل فوري»: الويبهوك كان بيتسجّل في tsp_webhooks وبس، والكنس
      (كل ١٢٠ ث) هو اللي بيطبّقه ⇒ العميل والبورتال وواتساب بيعرفوا «جاهز» بعد
@@ -2579,15 +2599,8 @@ export function register(app, ctx, deps = {}) {
       try { a = String(tsstore.approvalOf(await tsstore.getOrder(r.pos_order_id, r.branch_id)) || "").toLowerCase(); }
       catch { /* مش متاح — الدورة الجاية */ }
     }
-    if (a.includes("ready")) {
-      await pool.query(
-        `UPDATE shop_orders SET pos_approval=$2, pos_ready_at = COALESCE(pos_ready_at, NOW()),
-                ready_source = COALESCE(ready_source, 'pos'),
-                updated_at=NOW() WHERE order_no=$1`, [r.order_no, a]);
-      emitOrder("pos_ready", { orderNo: r.order_no, source: "shop", data: { source: "pos", by: null, approval: a } });
-      r.pos_ready_at = new Date().toISOString();
-      out.ready = true;
-    }
+    // RT2 مراجعة (١٧/١٠): نفس كتابة «جاهز» القديمة (مرة واحدة بالشرط جوّه الجملة) + العميل يعرف (كانت من غير notify.orderReady)
+    if (a.includes("ready") && await readyWithoutMilestones(r, a, { setApproval: true })) out.ready = true;
     return out;
   }
 
@@ -2695,10 +2708,9 @@ export function register(app, ctx, deps = {}) {
       const m = await applyPosMilestones(r, pm, opts);
       out.ready = m.ready; out.handed = m.handed;
     } else if (a.includes("ready")) {
-      await pool.query(
-        "UPDATE shop_orders SET pos_ready_at = COALESCE(pos_ready_at, NOW()), ready_source = COALESCE(ready_source, 'pos'), updated_at=NOW() WHERE order_no=$1",
-        [r.order_no]);
-      if (!r.pos_ready_at) { emitOrder("pos_ready", { orderNo: r.order_no, source: "shop", data: { source: "pos", by: null, approval: a } }); out.ready = true; }
+      // RT2 مراجعة (١٧/١٠): نفس الكتابة القديمة (مرة واحدة — الشرط جوّه الجملة بدل r.pos_ready_at في الذاكرة) + العميل يعرف
+      // (كانت من غير notify.orderReady)؛ pos_approval اتكتب فوق
+      if (await readyWithoutMilestones(r, a)) out.ready = true;
     }
     if (acceptedLike) {
       /* ⚡ RT1 مراجعة (١٧/١٠): pos_created → accepted مرة واحدة بالشرط جوّه الجملة — ويبهوك accepted

@@ -62,8 +62,9 @@ const MESSAGES = {
      بيفضل ولّع لحد ما حد يسترجع فعلاً. */
   refund_failed: (o) => `فريش كاتس: نعتذر عن طلبك ${o.order_no}. استرجاع المبلغ جارٍ وفريقنا يتابعه، وسنتواصل معك للتأكيد 🙏`,
 };
-/* RT2 (١٧/١٠): + pickup_ready في الافتراضي (التركيب الجديد بس — القايمة الحيّة اللي المالك ضبطها من شاشة SMS مابتتلمسش) */
-const DEFAULT_SMS_STAGES = ["pos_created", "pickup_ready", "rejected_refunded", "refund_failed"];
+/* RT2 مراجعة (١٧/١٠): pickup_ready **مش** في الافتراضي — SMS «جاهز للاستلام» بفلوس وقرار المالك الصريح من شاشة SMS (chip «جاهز للاستلام»)؛
+   لو كانت في الافتراضي ومسح المالك القايمة كانت هتبدأ تتبعت لوحدها. */
+const DEFAULT_SMS_STAGES = ["pos_created", "rejected_refunded", "refund_failed"];
 /* رسايل الاسترجاع مش اختيارية: العميل دفع ولازم يعرف إن فلوسه راجعة. بتتبعت
    طول ما SMS مفعّل، حتى لو smsStages في الإعدادات ماذكرتهاش. */
 export const MANDATORY_SMS_STAGES = ["rejected_refunded", "refund_failed"];
@@ -482,7 +483,8 @@ export function register(app, ctx, deps = {}) {
 
   /* 📍 RT2 (١٧/١٠): دعوة التقييم جاية خلال كام دقيقة لطلب الاستلام ده؟ نفس حساب reviews.js queueInvite: reviews.askAfterDelivery، نوع pickup مفتوح في
      waBot.reviewFlow، والميعاد من wareviews.dueFor (pickupMin ٤٥ افتراضياً + مش قبل ساعة من الطلب + ساعات الهدوء) — أو reviewDueAt القديم لو المسار الجديد مقفول.
-     covered = الدعوة جاية خلال «أقل مدة بين قالبين بفلوس» (waBot.reviewPaidGapMin، ٣٠ د) ⇒ رسالة شكر دلوقتي = رسالتين عن نفس الحاجة. ماقدرناش نحسب ⇒ مش covered. */
+     covered = الدعوة جاية خلال waBot.collectedSkipIfReviewWithinMin (٦٠ د افتراضياً — RT2 مراجعة ١٧/١٠: كان reviewPaidGapMin ٣٠ وده أقل من pickupMin ٤٥
+     فالقاعدة ماكانتش بتتطبّق أبداً بالافتراضيات؛ دلوقتي مفتاح لوحده في «كل إعدادات البوت») ⇒ رسالة شكر دلوقتي = رسالتين عن نفس الحاجة. ماقدرناش نحسب ⇒ مش covered. */
   async function reviewCovers(order, all) {
     const rv = (all && all.reviews) || {};
     if (rv.askAfterDelivery === false) return { covered: false, reason: "review_disabled" };
@@ -502,13 +504,13 @@ export function register(app, ctx, deps = {}) {
       const mins = Math.min(720, Math.max(1, Number(rv.askAfterMinutes) || 30));
       due = reviewDueAt({ deliveredAt: now, askAfterMin: mins, option: "pickup", createdAt: order.created_at }).getTime();
     }
-    const gapMin = waPolicyCfg(all || {}).reviewPaidGapMin;
+    const gapMin = waPolicyCfg(all || {}).collectedSkipIfReviewWithinMin;
     const inMin = Math.max(0, Math.round((due - now) / 60000));
     return { covered: inMin <= gapMin, inMin, gapMin };
   }
 
   /* 📍 RT2 (١٧/١٠): لحظة «اتسلّم» لطلب الاستلام. القرار من الكود (README الشريحة): reviews.js بيحجز دعوة تقييم لكل طلب استلام أول ما يبقى delivered وبيبعتها بعد
-     reviewFlow.pickupMin — فلو جاية خلال reviewPaidGapMin ⇒ covered_by_review ومفيش إرسال (مش stage_not_applicable). غير كده، ولو المالك شغّل مرحلة collected:
+     reviewFlow.pickupMin — فلو جاية خلال collectedSkipIfReviewWithinMin ⇒ covered_by_review ومفيش إرسال (مش stage_not_applicable). غير كده، ولو المالك شغّل مرحلة collected:
      رسالة حرة «بالهنا والشفا 🌟 تقييمك يهمنا» جوّه نافذة الـ٢٤ ساعة بس (ببلاش، سقف CJ1a بيحكمها، ومفيش قالب ولا SMS). كل نتيجة بتتسجّل notify_sent بسببها. */
   async function collectedWa(order, all, cfg) {
     const stage = "collected";
@@ -793,9 +795,12 @@ export function register(app, ctx, deps = {}) {
        📍 RT2 (١٧/١٠ — عمر: «موصلتش رسايل واتس اب ان الطلب جاهز»): ٧ أيام من طلبات الاستلام من غير ولا رسالة «جاهز» — المرحلة ماكانتش في whatsappStages،
        ولما القالب مش موجود كان السبب بيتبلع من غير سجل. دلوقتي لطلب الاستلام: واتساب (رسالة حرة ببلاش بصياغة المالك جوّه النافذة، أو القالب لو ميتا معتمداه)،
        وإلا SMS البديل لو المرحلة في smsStages — **وكل نتيجة بتتسجّل** notify_sent بسببها الحقيقي عشان اللوحة تقول ليه. */
+    /* RT2 مراجعة (١٧/١٠): الـPush (مجاني وفوري) يطلع **الأول** ومايستناش مسار واتساب — قراءة حالة القالب من ميتا على كاش بارد ممكن تاخد ثواني. */
+    const pushed = sendOrderPush(o.order_no, { stage: "ready", title: "فريش كاتس 🍔", body: READY_TEXT[kind](o),
+      url: `${env("STOREFRONT_PUBLIC_URL", "https://freshcuts.sa").split(",")[0]}/track/${o.order_no}` })
+      .catch((e) => { console.error(`[notify] ready push failed for ${o.order_no}:`, e?.message); return 0; });
     if (kind === "pickup") await pickupReadyWa(o);
-    return sendOrderPush(o.order_no, { stage: "ready", title: "فريش كاتس 🍔", body: READY_TEXT[kind](o),
-      url: `${env("STOREFRONT_PUBLIC_URL", "https://freshcuts.sa").split(",")[0]}/track/${o.order_no}` });
+    return pushed;
   }
   async function pickupReadyWa(o) {
     const stage = "pickup_ready";
